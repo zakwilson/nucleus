@@ -1,0 +1,15 @@
+set n=2
+set alpha=1
+set zeta=0
+map width=640
+map height=480
+map depth=none
+vec n=3
+vec x=1
+interned=1
+list-nonnull=1
+lit-set n=2 red=1 blue=0
+lit-vec n=3 one=1
+lit-map height=480
+lit-map val-is-sym=1
+done

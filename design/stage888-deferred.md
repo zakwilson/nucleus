@@ -101,3 +101,31 @@ then nothing in the language would mean "this conversion is exact".
 ## Flow-sensitive typing
 
 Stage15 added some capabilities, and a later stage should examine expanding them.
+
+## Symbols for struct filed access
+
+Bare symbols as arguments *may* be struct field names or *may* be variables. The ambiguity is undesirable.
+
+## Struct packing
+ 
+ remains deferred — it wants a layout-attribute
+  design that overlaps [stage14/attributes.md](../stage14/attributes.md)'s
+  reserved-but-unimplemented `:align`/`:section` slots. Still the top
+  layout-design candidate for the next stage.
+
+## Type reachability
+  
+  a struct type named in a unit's signatures
+  must still be defined in a reachable file. W1 removed the *order*
+  constraint, not the reachability constraint, and that did not change.
+  
+This could make trouble using libraries with headers only, no source.
+
+
+## Compiler types
+
+### (raw T) should (maybe) be ?T
+
+* c-type-to-nucleus
+* c-typedef-find
+* cdecl-site-find

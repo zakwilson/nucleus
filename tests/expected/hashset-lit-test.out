@@ -6,4 +6,9 @@ has-z=0
 ncount=3
 has-20=1
 has-99=0
+fcount=2
+has-1.5=1
+has-9.5=0
+zcount=1
+find-neg=1
 done

@@ -1,0 +1,11 @@
+set n=2
+set foo=1
+set baz=0
+map a=1
+map b=2
+map z=none
+vec n=3
+vec x=1
+vec z=0
+interned=1
+done

@@ -613,9 +613,28 @@
 (defn lit-alloca (ty:ptr line:i32):ptr
   (return (lit-list2 (lit-sym "alloca") ty line)))
 
-; Classify one literal element node into a coarse "kind": 1 = integer,
-; 2 = float, 3 = string, 0 = not a permitted scalar literal. Same-kind is the
-; mixing rule (int / float / string may not mix in one literal).
+; Is `n` the form `(quote <symbol>)` — i.e. `'foo`? A symbol ELEMENT has to be
+; written quoted (bare `foo` is a variable reference), and the reader macro turns
+; `'foo` into a two-element list, so this is a shape check rather than the kind
+; check every other element kind gets.
+(defn lit-is-quoted-sym (n:ptr):i32
+  (when (= n null) (return 0))
+  (let (nn:ptr:Node (as ptr:Node n))
+    (when (!= (nn kind) NODE-CELL) (return 0))
+    (when (!= (node-len n) 2) (return 0))
+    (let (h:ptr (node-at n 0)
+          a:ptr (node-at n 1))
+      (when (or (= h null) (= a null)) (return 0))
+      (let (hn:ptr:Node (as ptr:Node h)
+            an:ptr:Node (as ptr:Node a))
+        (when (!= (hn kind) NODE-SYM) (return 0))
+        (when (!= (hn s) "quote") (return 0))
+        (when (!= (an kind) NODE-SYM) (return 0))
+        (return 1)))))
+
+; Classify one literal element node into a coarse "kind": 1 = integer, 2 = float,
+; 3 = string, 4 = keyword, 5 = quoted symbol, 0 = not a permitted element.
+; Same-kind is the mixing rule (the five may not mix in one literal).
 ;
 ; Integer literals always infer `i32` (the compiler types a NODE-INT as i32 and
 ; has no native i64 integer literal — see emit-int in src/nucleusc.nuc); a
@@ -624,29 +643,44 @@
 ; / f64 / CStr matches the corresponding collection element parameter directly,
 ; so the expansion needs no element casts.
 (defn lit-elem-kind (n:ptr):i32
+  (when (= n null) (return 0))
   (let (nn:ptr:Node (as ptr:Node n))
     (when (= (nn kind) NODE-INT) (return 1))
     (when (= (nn kind) NODE-FLOAT) (return 2))
     (when (= (nn kind) NODE-STR) (return 3))
+    (when (= (nn kind) NODE-KEYWORD) (return 4))
+    (when (!= (lit-is-quoted-sym n) 0) (return 5))
     (return 0)))
 
-; Map an element kind to its type spelling.
-(defn lit-kind-type (kind:i32):ptr
-  (when (= kind 1) (return "i32"))
-  (when (= kind 2) (return "f64"))
-  (when (= kind 3) (return "CStr"))
+; The element type for a kind, as a FRESH type node.
+;
+; A node rather than a spelling because a symbol's type is the compound
+; `(ref Node)`, which `lit-sym` cannot spell. Fresh per call because the readers
+; stamp the type into two positions (the `ref` binding and the `alloca`) and must
+; not share one node between them.
+;
+; `Keyword` is defined in lib/keyword.nuc, so a keyword literal is the one bracket
+; literal whose element type the collection import does not reach; the
+; unknown-type diagnostic names the file to import. `Node` is in lib/prelude.nuc,
+; so a symbol literal needs nothing extra.
+(defn lit-type-node (kind:i32 line:i32):ptr
+  (when (= kind 1) (return (lit-sym "i32")))
+  (when (= kind 2) (return (lit-sym "f64")))
+  (when (= kind 3) (return (lit-sym "CStr")))
+  (when (= kind 4) (return (lit-sym "Keyword")))
+  ; A quoted symbol lowers to intern-symbol, whose result is non-null — see
+  ; quoted-datum-type in src/nucleusc.nuc.
+  (when (= kind 5) (return (lit-list2 (lit-sym "ref") (lit-sym "Node") line)))
   (return null))
 
-; Infer the uniform element-type spelling of a sub-sequence of literal elements.
-; Starting at element index `start`, every `stride`-th element is examined; all
-; must share a kind (int/float/string). Integer width is promoted to i64 if any
-; examined integer overshoots the signed-32 range. Returns the type spelling
-; ("i32"/"i64"/"f64"/"CStr") as an ok ptr, or reports `bad-msg`/`mix-msg` and
-; returns the parse-error. `head` is the element cell-list; `line` the literal's
-; opening line.
+; Infer the uniform element KIND of a sub-sequence of literal elements. Starting
+; at element index `start`, every `stride`-th element is examined; all must share
+; a kind. Returns the kind (feed it to `lit-type-node`), or reports
+; `bad-msg`/`mix-msg` and returns the parse-error. `head` is the element
+; cell-list; `line` the literal's opening line.
 ;   start=0 stride=1 : every element (vector / set).
 ;   start=0 stride=2 : keys of a map.   start=1 stride=2 : values of a map.
-(defn infer-lit-type (head:ptr start:i32 stride:i32 line:i32 bad-msg:ptr mix-msg:ptr):!ptr
+(defn infer-lit-type (head:ptr start:i32 stride:i32 line:i32 bad-msg:ptr mix-msg:ptr):!i32
   (let (cur:ptr head
         idx:i32 0
         kind:i32 0
@@ -665,7 +699,7 @@
                     (return (err! parse-error))))))))
       (set! idx (+ idx 1))
       (set! cur (as ptr ((as ptr:Node cur) cdr))))
-    (return (ok (lit-kind-type kind)))))
+    (return (ok kind))))
 
 ; Read literal elements until the given close-token kind, collecting them into a
 ; cell-list (head returned via out-pointer slots is awkward here, so we return
@@ -700,15 +734,14 @@
       (do (report-at line "empty vector literal: use (vector-new), e.g. (let (v:(ref (Vector T)) (vector-new)) ...)")
           (return (err! parse-error))))
     ; Infer element type from the elements (all must share a kind).
-    (let (et:ptr (try (infer-lit-type head 0 1 line
-                        "vector literal elements must be scalar literals (int, float, or string)"
+    (let (ek:i32 (try (infer-lit-type head 0 1 line
+                        "vector literal elements must be scalar literals (int, float, string, keyword, or quoted symbol)"
                         "vector literal: mixed element types")))
       ; Build the expansion.
-      (let (gs:ptr (nucleus_gensym)
-            etsym:ptr (lit-sym et))
+      (let (gs:ptr (nucleus_gensym))
         ; (Vector E)  — built fresh for the ref and the alloca positions.
-        (let (coll-ty1:ptr (lit-list2 (lit-sym "Vector") etsym line)
-              coll-ty2:ptr (lit-list2 (lit-sym "Vector") (lit-sym et) line))
+        (let (coll-ty1:ptr (lit-list2 (lit-sym "Vector") (lit-type-node ek line) line)
+              coll-ty2:ptr (lit-list2 (lit-sym "Vector") (lit-type-node ek line) line))
           ; binding list: ( (gs (ref (Vector E)))  (alloca (Vector E)) )
           (let (decl:ptr (lit-list2 gs (lit-ref coll-ty1 line) line)
                 bindings:ptr (lit-list2 decl (lit-alloca coll-ty2 line) line))
@@ -749,12 +782,12 @@
     (when (= head null)
       (do (report-at line "empty set literal: use (hashset-new), e.g. (let (s:(ref (HashSet T)) (hashset-new)) ...)")
           (return (err! parse-error))))
-    (let (et:ptr (try (infer-lit-type head 0 1 line
-                        "set literal elements must be scalar literals (int, float, or string)"
+    (let (ek:i32 (try (infer-lit-type head 0 1 line
+                        "set literal elements must be scalar literals (int, float, string, keyword, or quoted symbol)"
                         "set literal: mixed element types")))
       (let (gs:ptr (nucleus_gensym))
-        (let (coll-ty1:ptr (lit-list2 (lit-sym "HashSet") (lit-sym et) line)
-              coll-ty2:ptr (lit-list2 (lit-sym "HashSet") (lit-sym et) line))
+        (let (coll-ty1:ptr (lit-list2 (lit-sym "HashSet") (lit-type-node ek line) line)
+              coll-ty2:ptr (lit-list2 (lit-sym "HashSet") (lit-type-node ek line) line))
           (let (decl:ptr (lit-list2 gs (lit-ref coll-ty1 line) line)
                 bindings:ptr (lit-list2 decl (lit-alloca coll-ty2 line) line))
             (let (chead:ptr null
@@ -789,16 +822,16 @@
       (do (report-at line "map literal: odd number of elements")
           (return (err! parse-error))))
     ; Infer K from keys (even positions) and V from values (odd positions).
-    (let (kt:ptr (try (infer-lit-type head 0 2 line
-                        "map literal keys must be scalar literals (int, float, or string)"
+    (let (kk:i32 (try (infer-lit-type head 0 2 line
+                        "map literal keys must be scalar literals (int, float, string, keyword, or quoted symbol)"
                         "map literal: mixed key types"))
-          vt:ptr (try (infer-lit-type head 1 2 line
-                        "map literal values must be scalar literals (int, float, or string)"
+          vk:i32 (try (infer-lit-type head 1 2 line
+                        "map literal values must be scalar literals (int, float, string, keyword, or quoted symbol)"
                         "map literal: mixed value types")))
       (let (gs:ptr (nucleus_gensym))
         ; (HashMap K V) built fresh for ref and alloca positions.
-        (let (coll-ty1:ptr (lit-list3 (lit-sym "HashMap") (lit-sym kt) (lit-sym vt) line)
-              coll-ty2:ptr (lit-list3 (lit-sym "HashMap") (lit-sym kt) (lit-sym vt) line))
+        (let (coll-ty1:ptr (lit-list3 (lit-sym "HashMap") (lit-type-node kk line) (lit-type-node vk line) line)
+              coll-ty2:ptr (lit-list3 (lit-sym "HashMap") (lit-type-node kk line) (lit-type-node vk line) line))
           (let (decl:ptr (lit-list2 gs (lit-ref coll-ty1 line) line)
                 bindings:ptr (lit-list2 decl (lit-alloca coll-ty2 line) line))
             ; Build (assoc gs k v) per pair.

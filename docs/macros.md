@@ -142,6 +142,24 @@ including inside a loop, inside a `cond` arm, in argument position, inside a
 generic template body (compiled once per monomorphization), and inside a
 `defmacro` body.
 
+## The type of a quoted form
+
+`'x` yields a `Node*`, but **which** pointer type depends on what was quoted:
+
+| Quoted | Type | Why |
+|---|---|---|
+| a symbol — `'foo` | `(ref Node)` | Lowers to `intern-symbol`, whose signature returns `ref:Node`. One canonical node per spelling, so the value is non-null *and* an identity. |
+| anything else — `'(a b)`, `'1`, `'()` | `(raw Node)` | Built by `make-cell`/`alloc-node`, and `'()` **is** null. |
+
+The distinction is load-bearing, not cosmetic: because `'foo` is non-null and
+interned, symbols work directly as collection elements and keys — see
+[Symbols as keys](collections.md#symbols-as-keys). A quoted symbol still fits a
+`(raw Node)` slot (non-null narrows into nullable), so nothing written before
+this rule needs changing.
+
+`quasiquote` stays `(raw Node)` throughout: an unquote can inject any value, so
+its result type is expansion-dependent.
+
 ## Macros and pass-through arguments
 
 Macro parameters are typed `(raw Node)` — the macro sees AST. Because the

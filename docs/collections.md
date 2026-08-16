@@ -143,11 +143,29 @@ Every owning collection conforms to `Drop` so a `with`-bound value frees its buf
 | `i32` | `lib/hash.nuc` | Folds 4 bytes of the value. |
 | `i64` | `lib/hash.nuc` | Folds 8 bytes. |
 | `usize` | `lib/hash.nuc` | Folds 8 bytes (high bytes are zero on 32-bit targets). |
+| `f64` | `lib/hash.nuc` | Folds the 8-byte bit pattern, with `-0.0` normalised to `+0.0`. |
+| `f32` | `lib/hash.nuc` | Folds the 4-byte bit pattern, with `-0.0` normalised to `+0.0`. |
+| `(ref Node)` | `lib/hash.nuc` | A symbol. Folds the canonical node pointer — `intern-symbol` gives one node per spelling, so pointer identity is symbol identity. |
 | `CStr` | `lib/hash.nuc` | Folds each character byte up to (not including) the NUL terminator. |
 | `StrView` | `lib/strview.nuc` | FNV-1a fold over exactly `len` bytes (handles embedded NULs). |
 | `Keyword` | `lib/keyword.nuc` | Returns the hash cached at intern time — O(1), no byte walk. |
 
 Unlike `numeric.nuc`'s code-free operator conformances, these are real method bodies because there is no built-in `hash` operator.
+
+### Symbols as keys
+
+`'foo` is an interned symbol: `intern-symbol` keeps one canonical `Node` per spelling, so pointer identity is symbol identity, `=` already compared correctly, and Stage 16 supplied the missing `hash`. A quoted symbol types `(ref Node)` (see [the quote table](macros.md#the-type-of-a-quoted-form)), so it drops straight into a collection with no cast — and because `Node` comes from `lib/prelude.nuc`, symbol keys need **no import** beyond the collections themselves, unlike `Keyword`.
+
+```lisp
+(with ((s (ref (HashSet (ref Node)))) #{'alpha 'beta})
+  (printf "%d\n" (contains? s 'alpha)))            ; 1
+```
+
+**Look a symbol key up with `(invoke m 'k)`, never `(m 'k)`.** In head position a selector is resolved as a *field name* first, and quoting does not exempt it — `(m 'count)` reads `HashMap`'s `count` field and returns a **wrong answer rather than an error**. `invoke` is the always-a-value escape hatch. This is the general head-position rule (see [Gotchas](#gotchas-and-constraints)); symbol keys just make it easy to hit.
+
+Choose between the two key types by what the key *is*: `Keyword` for a name that is data (a config key, a tag), `(ref Node)` for a name that is program text you are already holding as AST. `Keyword`'s hash is a cached load; a symbol's is a pointer fold.
+
+**Floats as keys** hash their bit pattern rather than their value, so the two IEEE-754 cases where bits and equality disagree matter. `0.0` and `-0.0` are `=` but differ in bits, so zero is normalised — they dedupe to one entry and either spelling finds it. `NaN` needs no special case: it is `=` to nothing, itself included, so a `NaN` key can never be found again whatever it hashes to. Prefer an exact-valued key (a scaled integer) where you need lookups to be reliable.
 
 **Keywords as ergonomic map/set keys.** `Keyword` conforms to both `Hash` and `Eq`, making it the idiomatic lightweight key type when keys are known names rather than arbitrary strings. Because equality is identity (intern `id` compare) and hashing is a single cached load, keyword-keyed maps are faster than `CStr`-keyed ones (no `strcmp`, no byte walk):
 
@@ -550,24 +568,42 @@ The example expands `[1 2 3]` to roughly:
 
 **Element-type inference.** Element types are inferred from the literal's scalar
 elements: an integer literal infers `i32`, a float literal `f64`, a string
-literal `CStr`. All elements of a vector or set must share a kind; a map's keys
-must agree and its values must agree (keys and values are independent). Integers
-always infer `i32` — there is no magnitude-based `i64` promotion, because the
-compiler types every integer literal as `i32` and has no native `i64` integer
-literal. For an `i64` (or other non-default-typed) collection, use the explicit
-`(alloca (Vector T))` + `vector-init` idiom and `(unsafe/cast T …)` the elements.
+literal `CStr`, a keyword literal `Keyword`, a quoted symbol `(ref Node)`. All
+elements of a vector or set must share a kind; a map's keys must agree and its
+values must agree (keys and values are independent). Integers always infer `i32` — there is no magnitude-based `i64`
+promotion, because the compiler types every integer literal as `i32` and has no
+native `i64` integer literal. For an `i64` (or other non-default-typed)
+collection, use the explicit `(alloca (Vector T))` + `vector-init` idiom and
+`(unsafe/cast T …)` the elements.
+
+**A keyword literal needs `(import-use keyword)`.** The other three element types
+are builtins, but `Keyword` is defined in `lib/keyword.nuc` and is not reached
+transitively from the collection imports — so `#{:a :b}` is the one bracket
+literal that can fail with `unknown type: Keyword` despite the collection itself
+being imported. The diagnostic names the file to import. Keywords are the
+idiomatic key type when keys are known names: equality is an interned-id compare
+and hashing is a cached load, both cheaper than `CStr`.
+
+```lisp
+(with ((m (ref (HashMap Keyword i32))) {:width 640 :height 480})
+  (match (m :width) ((some w) (printf "%d\n" w)) (none (printf "?\n"))))
+```
 
 **Errors.** Each of these is a compile-time reader error:
 
 - **Empty literal** (`[]`, `{}`, `#{}`) — the element type cannot be inferred; use
   the explicit `(alloca (Coll T))` + init idiom.
 - **Mixed element kinds** (`[1 2.0 3]`) — element kinds do not widen.
-- **Non-scalar elements** (`[foo (g x)]`) — only int, float, and string literals
-  are permitted.
+- **Non-scalar elements** (`[foo (g x)]`) — only int, float, string, keyword and
+  quoted-symbol literals are permitted. The symbol case is admitted by a **shape**
+  check for `(quote <symbol>)` specifically, so its near neighbours are all still
+  refused: `'(a b)` is a quoted list, `'1` a quoted int, and a bare `a` is a
+  variable reference rather than a symbol value.
 - **Odd map element count** (`{"a" 1 "b"}`) — keys and values must pair up.
 
-Only success-path literals appear in the test suite's example programs; the error
-paths are reader diagnostics (compile-time `error:` messages), not runtime output.
+Success paths live in `examples/{vector,hashmap,hashset,keyword}-lit-test.nuc`;
+the refusals are reader diagnostics (compile-time `error:` messages, not runtime
+output) covered by `run_s16_keyword_literal_refused` in `tests/run-tests.sh`.
 
 ---
 
