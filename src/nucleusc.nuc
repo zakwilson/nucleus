@@ -10647,24 +10647,8 @@
     (when (= (strcmp ns g-current-ns) 0) (return (as ptr bare)))
     (when (= (strcmp ns "user") 0) (return (as ptr bare)))
     (when (!= (file-flattens-ns-named ns) 0) (return (as ptr bare)))
-    ; A `prefix/name` spelling is offered for every registry where a qualified
-    ; reference actually resolves — `g-globals` (B2b), `g-protocols` (B2a), the
-    ; five type registries B3′ re-keyed, `g-generics` (B4, through
-    ; `Method.src-ns` rather than through a key) and `g-macros` (B7). Since B7
-    ; that is every row that HAS a `src-ns`; the rows this excludes are the ones
-    ; with no owning namespace at all — a special form, a built-in type name, a
-    ; compiler-minted `__fnty_N` — whose bare spelling is their only spelling and
-    ; which returned above.
-    (when
-      ; (contains? #{BK-GLOBAL BK-PROTOCOL BK-GENERIC BK-STRUCT BK-UNION
-      ;                        BK-MACRO BK-STRUCT-TEMPLATE BK-UNION-TEMPLATE BK-ENUM}
-      ;             kind)
-      (or (or (or (= kind BK-GLOBAL) (= kind BK-PROTOCOL)) (= kind BK-GENERIC))
-          (or (or (or (= kind BK-STRUCT) (= kind BK-UNION)) (= kind BK-MACRO))
-              (or (= kind BK-STRUCT-TEMPLATE)
-                  (or (= kind BK-UNION-TEMPLATE) (= kind BK-ENUM)))))
-      (let (p:ptr (file-prefix-for-ns ns))
-        (when (!= p null) (return (fmt-2s "%s/%s" (as CStr p) bare)))))
+    (let (p:ptr (file-prefix-for-ns ns))
+      (when (!= p null) (return (fmt-2s "%s/%s" (as CStr p) bare))))
     (return null)))
 
 ; ------------------------------------------------------------
