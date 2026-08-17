@@ -2352,10 +2352,10 @@
 (defn narrow-kill-all ():void
   (when (= g-nundo null) (return))
   (doseq (n g-nundo (VecIter (ref NarrowUndo)))
-    (let (u:ref:NarrowUndo n)
-      (let (sym:?ptr:Sym (scope-lookup (u scope) (u name)))
-        (when (and (!= sym null) (!= (sym ntype) null))
-              (narrow-kill sym))))))
+    (let (u:ref:NarrowUndo n
+          sym:?ptr:Sym (scope-lookup (u scope) (u name)))
+      (when (and (!= sym null) (!= (sym ntype) null))
+        (narrow-kill sym)))))
 
 ; Is `node` the symbol `null`? (content compare — macro-built nodes may not be
 ; interned).
@@ -2683,10 +2683,8 @@
 ; delimiter ends one: whitespace, the bracket family, `;` and `"`.
 (defn source-name-char (c:i32):i32
   (when (<= c 32) (return 0))
-  (when (or (= c 40) (= c 41)) (return 0))      ; ( )
-  (when (or (= c 91) (= c 93)) (return 0))      ; [ ]
-  (when (or (= c 123) (= c 125)) (return 0))    ; { }
-  (when (or (= c 59) (= c 34)) (return 0))      ; ; "
+  (when (contains? #{40 41 91 93 123 125 59 34} c); ()[]{};"
+    (return 0))
   (return 1))
 
 ; Does the token at [start, end) name a top-level definer that introduces a name
@@ -2705,20 +2703,22 @@
   (let (e:i64 end)
     (when (and (> e start) (= (char-at text (- e 1)) 45))
       (set! e (- e 1)))
-    (when (!= want-type 0)
-      (when (!= (text-token-is text start e "defstruct") 0) (return 1))
-      (when (!= (text-token-is text start e "defunion") 0) (return 1))
-      (when (!= (text-token-is text start e "defprotocol") 0) (return 1))
-      (return 0))
-    (when (!= (text-token-is text start e "defn") 0) (return 1))
-    (when (!= (text-token-is text start e "defmacro") 0) (return 1))
-    (when (!= (text-token-is text start e "defvar") 0) (return 1))
-    (when (!= (text-token-is text start e "defconst") 0) (return 1))
-    (when (!= (text-token-is text start e "defenum") 0) (return 1))
-    (when (!= (text-token-is text start e "deferror") 0) (return 1))
-    (when (!= (text-token-is text start e "extern") 0) (return 1))
-    (when (!= (text-token-is text start e "declare") 0) (return 1))
-    (when (!= (text-token-is text start e "defmethod") 0) (return 1)))
+    (macrolet ((true-if (tok)
+                 `(when (!= (text-token-is text start e ~tok) 0) (return 1))))
+              (when (!= want-type 0)
+                (true-if "defstruct")
+                (true-if "defunion")
+                (true-if "defprotocol")
+                (return 0))
+              (true-if "defn")
+              (true-if "defmacro")
+              (true-if "defvar")
+              (true-if "defconst")
+              (true-if "defenum")
+              (true-if "deferror")
+              (true-if "extern")
+              (true-if "declare")
+              (true-if "defmethod")))
   (return 0))
 
 ; Does the source text `text` (length `len`) define `name` with a top-level
@@ -3820,34 +3820,23 @@
       (when (!= ((av type) kind)
                ((bv type) kind))
         (die-at line (fmt-s "%s float operand width mismatch — use explicit cast" (bop name))))
-      (let (finstr:ptr null
-            op-name:ptr (bop name))
-        (cond (or (= op-name "+")
-                  (= op-name "_+")
-                  (= op-name "_+"))
-                (set! finstr "fadd")
-              (or (= op-name "-")
-                  (= op-name "_-")
-                  (= op-name "_-"))
-                (set! finstr "fsub")
-              (or (= op-name "*")
-                  (= op-name "_*")
-                  (= op-name "_*"))
-                (set! finstr "fmul")
-              (or (= op-name "/")
-                  (= op-name "_/")
-                  (= op-name "_/"))
-                (set! finstr "fdiv")
-              (= op-name "%")  (set! finstr "frem")
-              (= op-name "=")  (set! finstr "fcmp oeq")
-              (= op-name "!=") (set! finstr "fcmp one")
-              (= op-name "<")  (set! finstr "fcmp olt")
-              (= op-name "<=") (set! finstr "fcmp ole")
-              (= op-name ">")  (set! finstr "fcmp ogt")
-              (= op-name ">=") (set! finstr "fcmp oge")
-              true (do))
+      (let (finstr:ptr null)
+        (match (invoke {"_+" "fadd"
+                        "_-" "fsub"
+                        "_*" "fmul"
+                        "_/" "fdiv"
+                        "%" "frem"
+                        "=" "fcmp oeq"
+                        "!=" "fcmp one"
+                        "<" "fcmp olt"
+                        "<=" "fcmp ole"
+                        ">" "fcmp ogt"
+                        ">=" "fcmp oge"}
+                       (bop name))
+          ((some name) (set! finstr name))
+          (none null))
         (when (= finstr null)
-          (die-at line (fmt-s "%s does not apply to floats" op-name)))
+          (die-at line (fmt-s "%s does not apply to floats" (bop name))))
         (let (tmp:ptr (new-tmp))
           (fprintf g-body-stream "  %s = %s %s %s, %s\n"
             tmp finstr (type-to-ir (av type)) (av val) (bv val))
@@ -9273,81 +9262,82 @@
             i:i32 0)
         (while (< i (node-len binds))
           (let (bname:ptr (node-at binds i)
-                bval-node:ptr (node-at binds (+ i 1)))
-            (let (name:ptr null
-                  ty:ptr (extract-name-and-type bname (as ptr:ptr (addr-of name))
+                bval-node:ptr (node-at binds (+ i 1))
+                name:ptr null
+                ty:ptr (extract-name-and-type bname (as ptr:ptr (addr-of name))
                                                 (node-line bname (cc line)))
-                  pre-v:ptr null)
+                pre-v:ptr null)
               ; CE-1 (closure-enhancements.md §CE-1): env-type inference, mirror of
               ; emit-let. A bare-symbol binding with no spelled type adopts the type
               ; of its emitted init value so a closure (e.g. a cfn whose owning env
               ; drops at this with-scope via the TY-PTR with-drop-method path) can be
               ; `with`-bound. Gated to bare symbols; inert under self-compilation.
-              (when (and (= ty null)
-                         (= ((unsafe/cast ptr:Node bname) kind) NODE-SYM))
-                (set! pre-v (as ptr (emit-node bval-node inner)))
-                (set! ty ((as ptr:Val pre-v) type)))
-              (when (= ty null)
-                (die-at (node-line bname (cc line)) (fmt-s "with: missing :type on '%s'" name)))
+            (when (and (= ty null)
+                       (= ((unsafe/cast ptr:Node bname) kind) NODE-SYM))
+              (set! pre-v (as ptr (emit-node bval-node inner)))
+              (set! ty ((as ptr:Val pre-v) type)))
+            (when (= ty null)
+              (die-at (node-line bname (cc line)) (fmt-s "with: missing :type on '%s'" name)))
               ; W5d (§3.10), mirror of emit-let: an `(array T …)` initializer
               ; refines an elem-less declared pointer to `ptr:T`.
-              (set! ty (array-lit-binding-type ty bval-node))
-              (let (slot:ptr (fmt-sd "%%%s.addr.%d" (ir-name-token name) g-tmp)
-                    align:i32 (type-size ty)
-                    autofree:i32 (is-libc-alloc bval-node))
-                (inc! g-tmp)
-                (fprintf g-entry-stream "  %s = alloca %s, align %d\n"
-                  slot (type-to-ir ty) align)
-                (let (v:ref:Val (if (= pre-v null)
+
+            (set! ty (array-lit-binding-type ty bval-node))
+            (let (slot:ptr (fmt-sd "%%%s.addr.%d" (ir-name-token name) g-tmp)
+                  align:i32 (type-size ty)
+                  autofree:i32 (is-libc-alloc bval-node))
+              (inc! g-tmp)
+              (fprintf g-entry-stream "  %s = alloca %s, align %d\n"
+                       slot (type-to-ir ty) align)
+              (let (v:ref:Val (if (= pre-v null)
                                   ; TC-3: emit the init with target-typed
                                   ; materialization (mirror of emit-let).
-                                  (tc3-emit-binding-init bval-node inner ty
-                                    (node-line bval-node (cc line)))
-                                  (as ref:Val pre-v))
+                                (tc3-emit-binding-init bval-node inner ty
+                                                       (node-line bval-node (cc line)))
+                                (as ref:Val pre-v))
                       ; Stage 13 TE-3: a closure flowing into a (BoxedFn …) slot is
                       ; heap-boxed into the shared fat pointer here (inert otherwise).
                       ; (TE-4 wires the box's Drop; for now an unboxed with-binding
                       ; of a BoxedFn is non-owning — with-drop-method box-ty = null.)
-                      coerced:ptr (coerce-int-val
-                                    (maybe-box-into-slot v ty inner (node-line bval-node (cc line)))
-                                    ty (node-line bval-node (cc line))))
-                  (when (= coerced null)
-                    (note-cast-rule-near-miss (v type) ty)
-                    (die-at (node-line bval-node (cc line))
-                      (fmt-s "with: init type mismatch for '%s'" name)))
-                  (let (cv:ptr:Val (unsafe/cast ptr:Val coerced))
-                    (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
-                      (type-to-ir ty) (cv val) slot align)
-                    (let (sym:ref:Sym (scope-define inner name ty slot 1))
-                      (let (dm:ptr:Method (unsafe/cast ptr:Method (with-drop-method ty)))
+                    coerced:ptr (coerce-int-val
+                                 (maybe-box-into-slot v ty inner (node-line bval-node (cc line)))
+                                 ty (node-line bval-node (cc line))))
+                (when (= coerced null)
+                  (note-cast-rule-near-miss (v type) ty)
+                  (die-at (node-line bval-node (cc line))
+                          (fmt-s "with: init type mismatch for '%s'" name)))
+                (let (cv:ptr:Val (unsafe/cast ptr:Val coerced))
+                  (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
+                           (type-to-ir ty) (cv val) slot align)
+                  (let (sym:ref:Sym (scope-define inner name ty slot 1))
+                    (let (dm:ptr:Method (unsafe/cast ptr:Method (with-drop-method ty)))
                         ; unions.md §7: an owning binding of a tagged union
                         ; whose arms hold Drop resources would free the box
                         ; and leak the live arm — dropping a union is a tag
                         ; switch the compiler does not emit yet. Rejected
                         ; unless the union itself conforms to Drop (a manual
                         ; (match ...) in its drop method).
-                        (when (and (= autofree 1) (= (as ptr dm) null))
-                          (let (bt:ptr:Type (as ptr:Type ty))
-                            (when (and (= (bt kind) TY-PTR) (!= (bt elem) null))
-                              (if-some (ud (uniondef-for-type (bt elem)))
-                                (let (darm:ptr (union-drop-arm (as ptr ud)))
-                                  (when (!= darm null)
-                                    (die-at (binds line)
-                                      (fmt-2s "with: arm '%s' of tagged union '%s' holds a Drop resource — dropping needs a tag switch; extend the union with Drop and (match ...) on the arms in its drop method"
-                                        darm (ud name)))))
-                                0))))
-                        (cond
+                      (when (and (= autofree 1) (= (as ptr dm) null))
+                        (let (bt:ptr:Type (as ptr:Type ty))
+                          (when (and (= (bt kind) TY-PTR) (!= (bt elem) null))
+                            (if-some (ud (uniondef-for-type (bt elem)))
+                                     (let (darm:ptr (union-drop-arm (as ptr ud)))
+                                       (when (!= darm null)
+                                         (die-at (binds line)
+                                                 (fmt-2s "with: arm '%s' of tagged union '%s' holds a Drop resource — dropping needs a tag switch; extend the union with Drop and (match ...) on the arms in its drop method"
+                                                         darm (ud name)))))
+                                     0))))
+                      (cond
                           ; Owning binding, libc shape: arm the legacy free
                           ; cleanup and seed the escape analysis — the value
                           ; aliases a resource freed when this with-scope
                           ; exits (lifecycle.md §2.1).
-                          (= autofree 1)
-                            (let (cl:ref:Cleanup (new Cleanup))
-                              (ptr-set! cl (Cleanup-libc-free slot))
-                              (scope-push-cleanup inner (as ptr cl))
-                              (.set! sym owns 1)
-                              (.set! sym cslot slot)
-                              (.set! sym taint inner))
+                        (= autofree 1)
+                          (let (cl:ref:Cleanup (new Cleanup))
+                            (ptr-set! cl (Cleanup-libc-free slot))
+                            (scope-push-cleanup inner (as ptr cl))
+                            (.set! sym owns 1)
+                            (.set! sym cslot slot)
+                            (.set! sym taint inner))
                           ; Owning binding, Drop shape: statically dispatched
                           ; (drop binding) at scope exit (lifecycle.md §5).
                           ; CE-3 fix (c): a struct-VALUE binding (TY-STRUCT — an
@@ -9361,29 +9351,29 @@
                           ; nulls the handle to disarm exactly like a TY-PTR
                           ; binding. This is the `owns=1` that lets emit-move
                           ; consume a struct-value Drop capture into an `mfn`.
-                          (!= (as ptr dm) null)
-                            (let (cslot:ptr slot)
-                              (when (= (-> ty (unsafe/cast ptr:Type _) (_ kind)) TY-STRUCT)
-                                (set! cslot (fmt-sd "%%%s.drophandle.%d" (ir-name-token name) g-tmp))
-                                (inc! g-tmp)
-                                (fprintf g-entry-stream "  %s = alloca ptr, align 8\n" cslot)
-                                (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" slot cslot))
-                              (let (cl:ref:Cleanup (new Cleanup))
+                        (!= (as ptr dm) null)
+                          (let (cslot:ptr slot)
+                            (when (= (-> ty (unsafe/cast ptr:Type _) (_ kind)) TY-STRUCT)
+                              (set! cslot (fmt-sd "%%%s.drophandle.%d" (ir-name-token name) g-tmp))
+                              (inc! g-tmp)
+                              (fprintf g-entry-stream "  %s = alloca ptr, align 8\n" cslot)
+                              (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" slot cslot))
+                            (let (cl:ref:Cleanup (new Cleanup))
                                 ; drop-ty was write-only in the old struct — omitted.
-                                (ptr-set! cl (Cleanup-drop cslot (dm ir-name) (dm ret-type)))
-                                (scope-push-cleanup inner (as ptr cl))
-                                (.set! sym owns 1)
-                                (.set! sym cslot cslot)
-                                (.set! sym taint inner)))
+                              (ptr-set! cl (Cleanup-drop cslot (dm ir-name) (dm ret-type)))
+                              (scope-push-cleanup inner (as ptr cl))
+                              (.set! sym owns 1)
+                              (.set! sym cslot cslot)
+                              (.set! sym taint inner)))
                           ; Non-owning with-binding: behaves like let (adopts
                           ; the init value's taint and frame-region flag).
-                          true
-                            (do
-                              (.set! sym taint ((as ptr:Val v) taint))
-                              (.set! sym taint-frame ((as ptr:Val v) taint-frame)))))
-                      (when (and (= (ptr-pkind ty) PTR-MAYBE)
-                                 (= (ptr-pkind ((as ptr:Val v) type)) PTR-REF))
-                        (narrow-apply inner name))))))))
+                        true
+                          (do
+                            (.set! sym taint ((as ptr:Val v) taint))
+                            (.set! sym taint-frame ((as ptr:Val v) taint-frame)))))
+                    (when (and (= (ptr-pkind ty) PTR-MAYBE)
+                               (= (ptr-pkind ((as ptr:Val v) type)) PTR-REF))
+                      (narrow-apply inner name)))))))
           (set! i (+ i 2)))
         ; W4c: mirror of emit-let — catch a binding that an extra `)` pushed out
         ; of the binding list before the body emits it as an undefined name.
@@ -10665,10 +10655,14 @@
     ; with no owning namespace at all — a special form, a built-in type name, a
     ; compiler-minted `__fnty_N` — whose bare spelling is their only spelling and
     ; which returned above.
-    (when (or (or (or (= kind BK-GLOBAL) (= kind BK-PROTOCOL)) (= kind BK-GENERIC))
-              (or (or (or (= kind BK-STRUCT) (= kind BK-UNION)) (= kind BK-MACRO))
-                  (or (= kind BK-STRUCT-TEMPLATE)
-                      (or (= kind BK-UNION-TEMPLATE) (= kind BK-ENUM)))))
+    (when
+      ; (contains? #{BK-GLOBAL BK-PROTOCOL BK-GENERIC BK-STRUCT BK-UNION
+      ;                        BK-MACRO BK-STRUCT-TEMPLATE BK-UNION-TEMPLATE BK-ENUM}
+      ;             kind)
+      (or (or (or (= kind BK-GLOBAL) (= kind BK-PROTOCOL)) (= kind BK-GENERIC))
+          (or (or (or (= kind BK-STRUCT) (= kind BK-UNION)) (= kind BK-MACRO))
+              (or (= kind BK-STRUCT-TEMPLATE)
+                  (or (= kind BK-UNION-TEMPLATE) (= kind BK-ENUM)))))
       (let (p:ptr (file-prefix-for-ns ns))
         (when (!= p null) (return (fmt-2s "%s/%s" (as CStr p) bare)))))
     (return null)))
