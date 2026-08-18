@@ -117,6 +117,35 @@ Two follow-on lessons from W2b, which extended that same rule to make a
   guard. Provenance that depends on *what a name means here* must be looked up
   through the scope chain that emission itself used.
 
+## Rung 3 OVERWRITES emit's type — a form typed from emit-time state must return null
+
+`emit-node` ends with
+
+```lisp
+(let (t (node-type n scope)) (when (!= t null) (.set! v type t)))
+```
+
+so a non-null `node-type` answer **replaces** the type codegen just computed. It
+is not an assertion and there is no mismatch diagnostic: disagree and the Val is
+silently retyped, which is how a wrong type reaches the next bootstrap.
+
+The consequence for a new special form: if its type depends on state that only
+exists *during* emission, `node-type` must take the unmodelled escape (`return
+null`, as `cond`/`macrolet`/`quasiquote` do) rather than recompute. The want
+channel is exactly such state — `g-want-type` is armed only around a binding-init
+probe/emit and is already consumed by the time Rung 3 runs (`generics.nuc`, the
+TC-3 comment). Stage 16's collection literals hit this: `(vector-lit …)` takes
+its element type from the want when one is armed, so a `node-type` arm that
+recomputed would answer for a *different* element type than the one emit had
+just built the collection with.
+
+This does **not** weaken the node-type↔emit-node lockstep above; it is where the
+lockstep is satisfied by having one computation instead of two. The price is
+that node-type knows less — a generic call whose argument is such a form no
+longer resolves through the node-type path — and that is safe by construction,
+because null means "emit's own type stands" and emit resolves the call from the
+emitted argument Vals.
+
 ## `coerce-int-val` is THE coercion chokepoint — and one caller reads a null return as "do nothing"
 
 Despite the name, `coerce-int-val` (`src/abi.nuc`) is not integer-specific: it
@@ -1747,6 +1776,31 @@ is simpler and more reliable as
 ; ...
     )
 ```
+
+## A `let` should never be the only child of a `let` (same for `with`)
+
+Merge the binding lists. Both forms bind **sequentially** — a later binding sees
+every earlier one — so a nested level buys nothing and costs indentation:
+
+```lisp
+(let (coll-ty:ptr (lit-list2 …))                    ; not
+  (let (decl:ptr (lit-list2 gs coll-ty line))
+    (let (bindings:ptr (lit-list2 decl alloca line))
+      …)))
+
+(let (coll-ty:ptr (lit-list2 …)                     ; but
+      decl:ptr (lit-list2 gs coll-ty line)
+      bindings:ptr (lit-list2 decl alloca line))
+  …)
+```
+
+When flattening an existing stack the hazard is the **body**, not the bindings:
+every level being collapsed may carry trailing forms after its inner `let`, and
+all of them have to survive into the single merged body. Losing them is not a
+type error — a `!T` function that falls off the end still compiles.
+`read-vector-literal` and `read-hashset-literal` (`src/reader.nuc`) were flattened
+correctly and lost their `(return (ok …))` tails, which surfaced as
+`'()' is not an expression` reported against the *caller's* source line.
 
 ## Avoid untyped pointers
 

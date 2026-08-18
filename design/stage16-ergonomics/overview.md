@@ -69,3 +69,56 @@ Design: [container-literal-elements.md](container-literal-elements.md). **Done**
 On the framing: the earlier "semantic fork" objection — that `'foo` would have to mean a `Node` in macro position and a `Symbol` in literal position — was retired by checking Common Lisp, Scheme and Clojure, which all make a symbol an ordinary first-class value meaning the same thing everywhere; even Scheme's syntax objects bridge by explicit `syntax->datum`/`datum->syntax` rather than by context. The real question was whether the macro layer should traffic in `Node`, the *compiler's* structure, at all — all three answer no — and the deciding cost is the `Node`/arena dependency, which is [compile-time-imports.md](compile-time-imports.md)'s subject.
 
 Also fixed in the same pass: `#{1.0 2.0}` was *already* broken — `f64` had no `Hash` conformance, so floats were one kind too generous for sets and maps. `f64`/`f32` now hash their bit pattern (there is no bitcast operator; the bits come back through the `(ref Self)` receiver), with `-0.0` normalised to `+0.0` so it stays findable.
+
+## Collection literals should accept variables, not just literals
+
+`[a b c]` and `#{a b c}` refuse any element that is not a scalar literal, so a
+set of `defenum` members cannot be written as one.
+
+Design: [collection-literal-variables.md](collection-literal-variables.md).
+**Done** — elements may now be any typed expression, and the item closed a
+soundness bug on the way.
+
+The restriction is a phase artifact, not a semantic rule: the readers rewrite
+`[1 2 3]` into an already-typed `(let (g:(ref (Vector i32)) …) …)` at read time,
+so the element type must be derivable from a token's node *kind* — and
+`read-program` completes before any binding is registered, so for a local the
+answer does not exist at any price. Nothing downstream objects: the identical
+expansion with an enum member and a local spliced in compiles and runs today.
+The fix is to defer the literal to a marker form the type pass can see, with the
+element type coming from the want channel when one is armed and from the
+elements otherwise (literals adapt to the value-tier elements; two values of
+different types are an error).
+
+**Target-first turned out to be a correctness fix, not just ergonomics.** Before
+this item `(with ((v (ref (Vector i64))) [1 2 3]) (invoke v 0))` printed
+`8589934593` — `0x2_00000001`, two `i32`s read back as one `i64` — because the
+declared type was ignored and the reader's guess won. It prints `1` now, and no
+stray `Vector.i32` is stamped. The *underlying* hole is general to stamped
+template instances (a `(ref (Vector i32))` binds to a `(ref (Vector i64))` slot
+and passes as that parameter with no error anywhere), unrelated to literals, and
+deferred to its own document.
+
+The implementation inverted the design's hardest question. It assumed the three
+new heads would need real `node-type` arms and that the difficulty was keeping
+stamping out of them; in fact **`node-type` must return null**, because Rung 3
+*overwrites* emit's type rather than asserting against it, and E depends on a
+want channel already consumed by the time Rung 3 runs. An arm that recomputed
+would silently retype the value. Two other things the plan missed: the gensym has
+to stay minted in the *reader* or every `%__gs_N` in the IR renames, and a want
+must not excuse a mixed literal — the element scan runs in both paths, checking
+elements against each other while a declared type names the element type.
+
+Also worth recording: **a literal in expression position is a per-call
+construction** — `hashset_init` plus one `conj` per element, buckets leaked — so
+the motivating site (`binding-usable-spelling`) should still not adopt one. That
+condition was a tautology and was deleted instead.
+
+773 tests (was 760), byte-identical IR across all 30 literal-using examples and
+fixtures, `make bootstrap` converges.
+
+## Broad auto-cast to bool
+
+It's a convenience in some languages, including lisps that most values can be used as booleans. Right now, Nucleus just uses i1 - neither broad acceptance nor a dedicated boolean type.
+
+The `bool` type can be `true` or `false`. Internally, those can be 1 and 0, but there could be some ergonomic benefit to treating numbers as truthy like most lisps.

@@ -10900,6 +10900,191 @@
     (die-at (node-line head ((unsafe/cast ptr:Node n) line))
       (fmt-2s "'%s' names %s, not a function" h ((binding-row k) noun)))))
 
+; ------------------------------------------------------------
+; collection literals
+; ------------------------------------------------------------
+; `[…]` / `#{…}` / `{…}` reach here as `(vector-lit <g> e …)` and friends. The
+; reader used to build the whole expansion, which is why an element had to be a
+; scalar literal; it waits until emit because this is the first phase where an
+; element has a TYPE.
+; design/stage16-ergonomics/collection-literal-variables.md
+
+; The element type node for a value-tier element, from the compiler's own
+; round-trip spelling. `type-spelling` flattens `(ref T)` to `ptr:T` and cannot
+; spell an array or a function type at all, so those are refused with the fix
+; named rather than silently stamping an instance the user did not write.
+(defn collection-lit-value-type-node (t:raw:Type what:CStr tmpl:CStr line:i32):ptr
+  (let (k:i32 (t kind))
+    (when (or (or (= k TY-ARRAY) (= k TY-FN))
+              (or (= k TY-PTR) (= k TY-VOID)))
+      (die-at line
+        (fmt-3s "%s literal: cannot infer an element type from a value of type '%s' -- declare the collection's type, as in (let (v:(ref (%s T)) ...) ...)"
+                what (type-spelling t) tmpl)))
+    (return (lit-sym (as ptr (type-spelling t))))))
+
+; The element type of a literal's sub-sequence, as a fresh type node, or null
+; when every element is an adaptable numeric literal — in which case `kind-out`
+; carries the kind. Starting at `start`, every `stride`-th element is examined.
+;   start=0 stride=1 : every element (vector / set)
+;   start=0 stride=2 : map keys.   start=1 stride=2 : map values.
+;
+; Two tiers, per the design: an integer/float literal ADAPTS to whatever the
+; rest settles on, everything else is fixed and must agree. Same asymmetry a
+; call site already has — `(conj v 1)` on a `(Vector i64)` is accepted, and
+; `(conj v n)` at `n:i64` is not.
+(defn collection-lit-elem-type (head:ptr start:i32 stride:i32 scope:ref:Scope
+                                what:CStr noun:CStr tmpl:CStr line:i32
+                                want-armed:i32 kind-out:ptr:i32):ptr
+  (let (cur:ptr head
+        idx:i32 0
+        lit-kind:i32 0
+        fixed:ptr null
+        fixed-ty:ptr null)
+    (while (!= cur null)
+      (when (and (>= idx start) (= (% (- idx start) stride) 0))
+        (let (e:ptr ((as ptr:Node cur) car)
+              k:i32 (lit-elem-kind e))
+          (if (or (= k 1) (= k 2))
+            ; Adaptable — but two adaptable elements must still agree with each
+            ; other, since there is nothing for an int and a float to adapt TO.
+            (do
+              (when (and (!= lit-kind 0) (!= lit-kind k))
+                (die-at line (fmt-2s "%s literal: mixed %s types" what noun)))
+              (set! lit-kind k))
+            ; A want already names the element type, so a value element needs
+            ; neither a spelling nor an agreement test here — `conj`/`assoc` at
+            ; the declared type is the check, and it is the more precise one.
+            (when (or (!= k 0) (= want-armed 0))
+            (let (tn:ptr (if (!= k 0)
+                           (lit-type-node k line)
+                           (let (et:?ptr:Type (node-type (as raw:Node e) scope))
+                             (when (= et null)
+                               (die-at line
+                                 (fmt-s "%s literal: cannot determine the type of this element" what)))
+                             (collection-lit-value-type-node (as raw:Type et) what tmpl line)))
+                  ty:ptr (as ptr (parse-type-from-node tn line)))
+              (if (= fixed null)
+                (do (set! fixed tn) (set! fixed-ty ty))
+                (when (= (type-eq (as raw:Type ty) (as raw:Type fixed-ty)) 0)
+                  (die-at line
+                    (fmt-3s "%s -- '%s' and '%s'"
+                            (fmt-2s "%s literal: mixed %s types" what noun)
+                            (type-spelling (as raw:Type fixed-ty))
+                            (type-spelling (as raw:Type ty)))))))))))
+      (set! idx (+ idx 1))
+      (set! cur (as ptr ((as ptr:Node cur) cdr))))
+    ; A numeric literal adapts to a fixed element only when that element is a
+    ; number. `["a" 1]` has no join and stays the error it has always been.
+    (when (and (!= fixed null) (!= lit-kind 0))
+      (let (ft:raw:Type (as raw:Type fixed-ty)
+            okj:i32 (if (= lit-kind 1) (is-int-type ft) (is-float-type ft)))
+        (when (= okj 0)
+          (die-at line (fmt-2s "%s literal: mixed %s types" what noun)))))
+    (aset! kind-out 0 lit-kind)
+    (return fixed)))
+
+; The wanted collection type when the declared type at this position is an
+; instance of `tmpl` — `(let (v:(ref (Vector i64)) …) [1 2 3])`. Returned as the
+; instance's own registry name, one symbol (`Vector.i64`), which is exact:
+; re-spelling the ELEMENT would go back through type-spelling and could stamp a
+; different instance than the one that was asked for.
+(defn collection-lit-want-node (tmpl:CStr):ptr
+  (when (= g-want-type null) (return null))
+  (let (w:raw:Type (as raw:Type g-want-type))
+    ; A binding declares `(ref (Vector i64))`, so the struct is one hop in.
+    (let (s:raw:Type (if (and (= (w kind) TY-PTR) (!= (w elem) null))
+                       (as raw:Type (w elem))
+                       w))
+      (when (!= (s kind) TY-STRUCT) (return null))
+      (let (sd:raw:StructDef (as raw:StructDef (s sdef)))
+        (when (= (as ptr (sd origin-template)) null) (return null))
+        (let (st:?ptr:StructTemplate (struct-template-lookup-ref tmpl))
+          (when (= st null) (return null))
+          (when (!= (as ptr (sd origin-template)) (as ptr st)) (return null))
+          (return (lit-sym (as ptr (sd name)))))))))
+
+; One literal's expansion:
+;   (let (g:(ref <Coll>) (alloca <Coll>)) (<init> g) (<add> g e …) … g)
+; built exactly as the reader used to build it, so a literal-only element list
+; emits the IR it always did. `<Coll>` comes from the want when one is armed and
+; from the elements otherwise. The two `<Coll>` positions get separate list
+; nodes because each stamps the type; an interned type SYMBOL inside them is
+; shared, as it always was.
+(defn emit-collection-lit (n:(raw Node) scope:ref:Scope tmpl:CStr what:CStr
+                           init-fn:CStr add-fn:CStr is-map:i32 empty-msg:CStr):ref:Val
+  (let (line:i32 (node-line (as ptr n) g-form-line)
+        ; the reader always puts the gensym here, so the cdr is never null
+        gcell:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node n) cdr))
+        gs:ptr (gcell car)
+        head:ptr (as ptr (gcell cdr))
+        want:ptr (collection-lit-want-node tmpl))
+    (when (and (= head null) (= want null)) (die-at line empty-msg))
+    (let (kk:i32 0  vk:i32 0
+          coll1:ptr null  coll2:ptr null)
+      (if (!= want null)
+        ; A want names the type; it does not make a mixed literal meaningful, so
+        ; the elements are still scanned for agreement among themselves.
+        (do
+          (if (!= is-map 0)
+            (do (collection-lit-elem-type head 0 2 scope what "key" tmpl line 1 (addr-of kk))
+                (collection-lit-elem-type head 1 2 scope what "value" tmpl line 1 (addr-of vk)))
+            (collection-lit-elem-type head 0 1 scope what "element" tmpl line 1 (addr-of kk)))
+          (set! coll1 want) (set! coll2 want))
+        (if (!= is-map 0)
+          (let (kt1:ptr (collection-lit-elem-type head 0 2 scope what "key" tmpl line 0 (addr-of kk))
+                vt1:ptr (collection-lit-elem-type head 1 2 scope what "value" tmpl line 0 (addr-of vk))
+                kt2:ptr (collection-lit-elem-type head 0 2 scope what "key" tmpl line 0 (addr-of kk))
+                vt2:ptr (collection-lit-elem-type head 1 2 scope what "value" tmpl line 0 (addr-of vk)))
+            (set! coll1 (lit-list3 (lit-sym tmpl)
+                          (if (!= kt1 null) kt1 (lit-type-node kk line))
+                          (if (!= vt1 null) vt1 (lit-type-node vk line)) line))
+            (set! coll2 (lit-list3 (lit-sym tmpl)
+                          (if (!= kt2 null) kt2 (lit-type-node kk line))
+                          (if (!= vt2 null) vt2 (lit-type-node vk line)) line)))
+          (let (et1:ptr (collection-lit-elem-type head 0 1 scope what "element" tmpl line 0 (addr-of kk))
+                et2:ptr (collection-lit-elem-type head 0 1 scope what "element" tmpl line 0 (addr-of kk)))
+            (set! coll1 (lit-list2 (lit-sym tmpl)
+                          (if (!= et1 null) et1 (lit-type-node kk line)) line))
+            (set! coll2 (lit-list2 (lit-sym tmpl)
+                          (if (!= et2 null) et2 (lit-type-node kk line)) line)))))
+      ; Body, forward: (init g) (add g e …) … g
+      (let (chead:ptr null
+            ctail:ptr null
+            cur:ptr head)
+        (while (!= cur null)
+          (let (a:ptr ((as ptr:Node cur) car)
+                form:ptr null)
+            (if (!= is-map 0)
+              ; pairs: the odd-count refusal in the reader guarantees a value
+              (let (vcell:ptr:Node (unsafe/cast ptr:Node ((as ptr:Node cur) cdr)))
+                (set! form (as ptr (make-cell (lit-sym add-fn)
+                             (make-cell gs (make-cell a
+                               (make-cell (vcell car) null line) line) line) line)))
+                (set! cur (as ptr (vcell cdr))))
+              (do (set! form (lit-list3 (lit-sym add-fn) gs a line))
+                  (set! cur (as ptr ((as ptr:Node cur) cdr)))))
+            (let (cell:ptr (make-cell form null line))
+              (when (= ctail null) (set! chead cell))
+              (when (!= ctail null) (.set! (as ptr:Node ctail) cdr cell))
+              (set! ctail cell))))
+        (let (gscell:ptr (make-cell gs null line))
+          (when (= ctail null) (set! chead gscell))
+          (when (!= ctail null) (.set! (as ptr:Node ctail) cdr gscell))
+          (let (decl:ptr (lit-list2 gs (lit-ref coll1 line) line)
+                bindings:ptr (lit-list2 decl (lit-alloca coll2 line) line)
+                init-form:ptr (lit-list2 (lit-sym init-fn) gs line)
+                full-body:ptr (make-cell init-form chead line)
+                form:ptr (as ptr (make-cell (lit-sym "let")
+                                   (make-cell bindings full-body line) line)))
+            ; The want belongs to the literal, not to the `let` it expands into —
+            ; leaving it armed hands a `(ref (Vector i64))` want down to the
+            ; binding init `(alloca …)` underneath it.
+            (let (saved:ptr g-want-type)
+              (set! g-want-type null)
+              (let (v:ref:Val (emit-node form scope))
+                (set! g-want-type saved)
+                (return v)))))))))
+
 (defn emit-list (n:(raw Node) scope:ref:Scope):ref:Val
   (let (nn:ptr:Node (unsafe/cast ptr:Node n))
     (when (= (node-len nn) 0) (die-at (nn line) "empty list"))
@@ -10951,6 +11136,18 @@
         ; compiled and pushed, the body emits as a `do`, the bindings pop.
         (when (= hp 'macrolet) (return (emit-macrolet n scope)))
         (when (= hp 'let) (return (emit-let n scope)))
+        ; Collection literals. Reader-generated heads (reserved in
+        ; g-special-form-set so nothing may shadow them); see
+        ; emit-collection-lit above.
+        (when (= hp 'vector-lit)
+          (return (emit-collection-lit n scope "Vector" "vector" "vector-init" "conj" 0
+                    "empty vector literal: use (vector-new), e.g. (let (v:(ref (Vector T)) (vector-new)) ...)")))
+        (when (= hp 'hashset-lit)
+          (return (emit-collection-lit n scope "HashSet" "set" "hashset-init" "conj" 0
+                    "empty set literal: use (hashset-new), e.g. (let (s:(ref (HashSet T)) (hashset-new)) ...)")))
+        (when (= hp 'hashmap-lit)
+          (return (emit-collection-lit n scope "HashMap" "map" "hashmap-init" "assoc" 1
+                    "empty map literal: use (hashmap-new), e.g. (let (m:(ref (HashMap K V)) (hashmap-new)) ...)")))
         (when (= hp 'with) (return (emit-with n scope)))
         (when (= hp 'cond) (return (emit-cond n scope)))
         (when (= hp 'quote) (return (emit-quote n)))
@@ -17072,6 +17269,9 @@
        "sizeof" "alloca" "aref" "aset!"
        ; literals / quoting
        "quote" "quasiquote" "char"
+       ; Stage 16: reader-generated collection-literal heads. Reserved (not
+       ; user-writable sugar) so nothing may shadow what `[…]` expands to.
+       "vector-lit" "hashset-lit" "hashmap-lit"
         ; logic
         "not" "_and" "_or"
        ; macros / functions
