@@ -8414,25 +8414,30 @@ mix-key|(defn main ():i32 (with ((m (ref (HashMap Keyword i32))) {:a 1 "b" 2}) 0
 mix-val|(defn main ():i32 (with ((m (ref (HashMap Keyword Keyword))) {:a :x :b 2}) 0) 0)|map literal: mixed value types
 mix-sym|(defn main ():i32 (with ((s (ref (HashSet (ref Node)))) #{'a "b"}) 0) 0)|set literal: mixed element types
 EOF
-  # Element kinds that are still refused. `'foo` is admitted by a SHAPE check for
-  # `(quote <symbol>)` specifically, so these pin the edges of that shape: a
-  # quoted list is not a symbol, a quoted int is not a symbol, and a bare symbol
-  # is still a variable reference rather than a value.
-  while IFS='|' read -r name src; do
+  # Element kinds that are still refused at a `(HashSet (ref Node))`. These used
+  # to share one blanket "must be scalar literals" message; the collection-literal
+  # variables item (collection-literal-variables.md) removed that refusal, so each
+  # now fails for its own reason — and the reasons are what the shape check always
+  # meant. A quoted LIST or INT is `(raw Node)`, not the `(ref Node)` a quoted
+  # symbol lowers to, so nullability refuses it; a bare symbol is a variable
+  # reference, which is now admitted as an element and so reports the missing
+  # variable instead. Losing the blanket message is the feature; losing the
+  # refusals would be the bug, which is what these pin.
+  while IFS='|' read -r name src want; do
     [ -n "$name" ] || continue
-    printf '(import-use "stdio.h")\n(import-use numeric)\n(import-use hash)\n(import-use allocator)\n(import-use coll)\n(import-use iterator)\n(import-use hashset)\n(defn main ():i32 (with ((s (ref (HashSet (ref Node)))) %s) 0) 0)\n' "$src" > "$d/$name.nuc"
+    printf '(import-use "stdio.h")\n(import-use numeric)\n(import-use node)\n(import-use hash)\n(import-use allocator)\n(import-use coll)\n(import-use iterator)\n(import-use hashset)\n(defn main ():i32 (with ((s (ref (HashSet (ref Node)))) %s) 0) 0)\n' "$src" > "$d/$name.nuc"
     err="$(./build/nucleusc --emit-llvm "$d/$name.nuc" 2>&1 >/dev/null || true)"
-    if printf '%s' "$err" | qgrep -F 'must be scalar literals (int, float, string, keyword, or quoted symbol)'; then
+    if printf '%s' "$err" | qgrep -F "$want"; then
       echo "PASS  s16-symlit-refused-$name"
     else
       echo "FAIL  s16-symlit-refused-$name (a non-symbol datum was admitted)"
       printf '%s\n' "$err" | sed 's/^/    got: /' | head -3
     fi
   done <<'EOF'
-qlist|#{'(a b) '(c d)}
-qint|#{'1 '2}
-bare|#{a b}
-call|#{(f x)}
+qlist|#{'(a b) '(c d)}|raw pointer where non-null (ref ...) is required
+qint|#{'1 '2}|raw pointer where non-null (ref ...) is required
+bare|#{a b}|undefined: a
+call|#{(f x)}|unknown: f
 EOF
   # Without (import-use keyword) the expansion names a type the unit cannot see.
   # The note must point at the file, not merely say the type is unknown.
@@ -8963,6 +8968,153 @@ EOF
   rm -rf "$d"
 }
 spawn run_s16_keyword_markers
+
+# Stage 16 — variables (and any typed expression) as collection-literal elements.
+# The readers used to expand `[…]` themselves, so an element had to be a scalar
+# literal; the expansion moved to emit-collection-lit, which is the first phase
+# where an element has a type.
+# design/stage16-ergonomics/collection-literal-variables.md
+run_s16_literal_variables() {
+  local d out err
+  d="$(mktemp -d)"
+  local PRE='(import-use "stdio.h")
+(import-use vector)
+(import-use hashset)
+(import-use hashmap)'
+
+  # 1. The feature: enum members, a defconst, a local, and a call, in all three
+  #    literal kinds. Every one of these was a hard error before this item.
+  cat > "$d/ok.nuc" <<EOF
+$PRE
+(defenum BK BK-GLOBAL BK-PROTOCOL BK-GENERIC BK-MACRO)
+(defconst LIMIT 40)
+(defn twice (x:i32):i32 (return (* 2 x)))
+(defn main ():i32
+  (let (kind:i32 BK-MACRO other:i32 7)
+    (with ((s (ref (HashSet i32))) #{BK-GLOBAL BK-PROTOCOL other (twice 9)})
+      (printf "set=%d %d %d %d\n" (unsafe/cast i32 (count s))
+        (unsafe/cast i32 (contains? s BK-GLOBAL)) (unsafe/cast i32 (contains? s 18))
+        (unsafe/cast i32 (contains? s kind))))
+    (with ((v (ref (Vector i32))) [LIMIT other])
+      (printf "vec=%d %d\n" (invoke v 0) (invoke v 1)))
+    (with ((m (ref (HashMap i32 i32))) {BK-GLOBAL other BK-MACRO LIMIT})
+      (printf "map=%d\n" (unsafe/cast i32 (count m)))))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/ok.nuc" -o "$d/ok.bin" 2>"$d/ok.err" || true
+  out="$("$d/ok.bin" 2>/dev/null || true)"
+  if [ "$out" = "set=4 1 1 0
+vec=40 7
+map=2" ]; then
+    echo "PASS  s16-litvar-accepted"
+  else
+    echo "FAIL  s16-litvar-accepted"
+    sed 's/^/    /' "$d/ok.err" | head -3; printf '%s\n' "$out" | sed 's/^/    got: /'
+  fi
+
+  # 2. Target-first, and the soundness regression it closes. Before this item
+  #    `(ref (Vector i64))` bound to a literal-built (Vector i32) with no error
+  #    and `(invoke v 0)` read two i32 elements back as one i64 — 8589934593.
+  cat > "$d/want.nuc" <<EOF
+$PRE
+(defn main ():i32
+  (with ((v (ref (Vector i64))) [1 2 3])
+    (printf "want=%lld %d\n" (invoke v 0) (unsafe/cast i32 (count v))))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/want.nuc" -o "$d/want.bin" 2>/dev/null || true
+  out="$("$d/want.bin" 2>/dev/null || true)"
+  if [ "$out" = "want=1 3" ]; then
+    echo "PASS  s16-litvar-target-wins"
+  else
+    echo "FAIL  s16-litvar-target-wins (expected 'want=1 3', a wrong element type reads 8589934593)"
+    printf '%s\n' "$out" | sed 's/^/    got: /'
+  fi
+  # …and it must stamp only the wanted instance, not build i32 and reinterpret.
+  if ./build/nucleusc --emit-llvm "$d/want.nuc" 2>/dev/null | qgrep -F 'Vector.i32'; then
+    echo "FAIL  s16-litvar-target-stamps-once (a stray Vector.i32 was built)"
+  else
+    echo "PASS  s16-litvar-target-stamps-once"
+  fi
+
+  # 3. A numeric literal ADAPTS to a value element, exactly as `(conj v 1)` on a
+  #    (Vector i64) already does; a value is never narrowed to suit a literal.
+  cat > "$d/adapt.nuc" <<EOF
+$PRE
+(defn main ():i32
+  (let (n:i64 5000000000)
+    (with ((v (ref (Vector i64))) [n 1 2])
+      (printf "adapt=%lld %lld\n" (invoke v 0) (invoke v 1))))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/adapt.nuc" -o "$d/adapt.bin" 2>/dev/null || true
+  out="$("$d/adapt.bin" 2>/dev/null || true)"
+  if [ "$out" = "adapt=5000000000 1" ]; then
+    echo "PASS  s16-litvar-literal-adapts"
+  else
+    echo "FAIL  s16-litvar-literal-adapts"; printf '%s\n' "$out" | sed 's/^/    got: /'
+  fi
+
+  # 4. Elements evaluate left to right, which only became observable once an
+  #    element could be a call.
+  cat > "$d/order.nuc" <<EOF
+$PRE
+(defvar seq:i32 0)
+(defn tick (tag:i32):i32 (printf "%d" tag) (set! seq (+ seq 1)) (return tag))
+(defn main ():i32
+  (with ((v (ref (Vector i32))) [(tick 1) (tick 2) (tick 3)])
+    (printf "|%d\n" (unsafe/cast i32 (count v))))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/order.nuc" -o "$d/order.bin" 2>/dev/null || true
+  out="$("$d/order.bin" 2>/dev/null || true)"
+  if [ "$out" = "123|3" ]; then
+    echo "PASS  s16-litvar-eval-order"
+  else
+    echo "FAIL  s16-litvar-eval-order (expected '123|3')"; printf '%s\n' "$out" | sed 's/^/    got: /'
+  fi
+
+  # 5. An empty literal is legal exactly when a target supplies the element type;
+  #    with no target it keeps the message naming the constructor.
+  cat > "$d/empty.nuc" <<EOF
+$PRE
+(defn main ():i32
+  (with ((v (ref (Vector i32))) [])
+    (printf "empty=%d\n" (unsafe/cast i32 (count v))))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/empty.nuc" -o "$d/empty.bin" 2>/dev/null || true
+  out="$("$d/empty.bin" 2>/dev/null || true)"
+  if [ "$out" = "empty=0" ]; then
+    echo "PASS  s16-litvar-empty-with-target"
+  else
+    echo "FAIL  s16-litvar-empty-with-target"; printf '%s\n' "$out" | sed 's/^/    got: /'
+  fi
+
+  # 6. Refusals. Each names the literal and, where two types clash, both of them.
+  local name src want
+  while IFS='|' read -r name src want; do
+    [ -n "$name" ] || continue
+    printf '%s\n%s\n' "$PRE" "$src" > "$d/$name.nuc"
+    err="$(./build/nucleusc --emit-llvm "$d/$name.nuc" 2>&1 >/dev/null || true)"
+    if printf '%s' "$err" | qgrep -F "$want"; then
+      echo "PASS  s16-litvar-refused-$name"
+    else
+      echo "FAIL  s16-litvar-refused-$name"
+      printf '%s\n' "$err" | sed 's/^/    got: /' | head -2
+    fi
+  done <<'EOF'
+mixed-values|(defn main ():i32 (let (a:i32 1 b:i64 2) (let (v [a b]) (return 0))))|vector literal: mixed element types -- 'i32' and 'i64'
+int-float|(defn main ():i32 (let (v [1 2.5]) (return 0)))|vector literal: mixed element types
+int-string|(defn main ():i32 (let (v ["a" 1]) (return 0)))|vector literal: mixed element types
+empty-no-target|(defn main ():i32 (let (v []) (return 0)))|empty vector literal: use (vector-new)
+narrow-value|(defn main ():i32 (let (n:i64 5) (with ((v (ref (Vector i32))) [n 1]) (return 0))))|no matching method for overloaded 'conj'
+unspellable|(defstruct P x:i32) (defn main ():i32 (let (p:(ref P) (alloca P)) (let (v [p p]) (return 0))))|cannot infer an element type from a value of type 'ptr:P'
+shadow-head|(defn vector-lit (x:i32):i32 (return x)) (defn main ():i32 (return 0))|already names a special form
+EOF
+  rm -rf "$d"
+}
+spawn run_s16_literal_variables
 
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided

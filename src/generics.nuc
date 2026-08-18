@@ -4953,6 +4953,16 @@
         ; escape hatch `cond`, macros and `quasiquote` take. Codegen keeps its
         ; own type. (node-type↔emit-node lockstep: emit-macrolet, nucleusc.nuc.)
         (when (= hp 'macrolet) (return null))
+        ; Stage 16 collection literals: the type is the `let` the expansion
+        ; builds, and that expansion depends on the want channel, which is
+        ; armed at emit and consumed by the time the Rung-3 cross-check runs
+        ; here. Recomputing it would answer for a DIFFERENT element type and
+        ; Rung 3 overwrites rather than asserts — so take the unmodelled
+        ; escape hatch `cond`/`macrolet`/`quasiquote` take and let emit's own
+        ; type stand. (lockstep: emit-collection-lit, nucleusc.nuc.)
+        (when (= hp 'vector-lit) (return null))
+        (when (= hp 'hashset-lit) (return null))
+        (when (= hp 'hashmap-lit) (return null))
         (when (= hp 'let) (return (node-type-block n scope)))
         (when (= hp 'with) (return (node-type-block n scope)))
         (when (= hp 'cond) (return null))

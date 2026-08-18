@@ -557,7 +557,8 @@ outer `with` fires `Drop` at scope exit because every collection conforms to
   (printf "%d\n" (contains? s "a")))             ; 1
 ```
 
-The example expands `[1 2 3]` to roughly:
+The example expands `[1 2 3]` to roughly this — at emit time, which is what
+lets an element be a variable rather than only a literal:
 
 ```lisp
 (let ((__gs_N (ref (Vector i32))) (alloca (Vector i32)))
@@ -566,21 +567,42 @@ The example expands `[1 2 3]` to roughly:
   __gs_N)
 ```
 
-**Element-type inference.** Element types are inferred from the literal's scalar
-elements: an integer literal infers `i32`, a float literal `f64`, a string
-literal `CStr`, a keyword literal `Keyword`, a quoted symbol `(ref Node)`. All
-elements of a vector or set must share a kind; a map's keys must agree and its
-values must agree (keys and values are independent). Integers always infer `i32` — there is no magnitude-based `i64`
-promotion, because the compiler types every integer literal as `i32` and has no
-native `i64` integer literal. For an `i64` (or other non-default-typed)
-collection, use the explicit `(alloca (Vector T))` + `vector-init` idiom and
-`(unsafe/cast T …)` the elements.
+**Elements may be any typed expression.** A variable, a `defconst` or `defenum`
+member, a call — not only a literal:
 
-**A keyword literal needs `(import-use keyword)`.** The other three element types
-are builtins, but `Keyword` is defined in `lib/keyword.nuc` and is not reached
-transitively from the collection imports — so `#{:a :b}` is the one bracket
-literal that can fail with `unknown type: Keyword` despite the collection itself
-being imported. The diagnostic names the file to import. Keywords are the
+```lisp
+(defenum BK BK-GLOBAL BK-PROTOCOL BK-GENERIC BK-MACRO)
+(let (extra:i32 7)
+  (with ((s (ref (HashSet i32))) #{BK-GLOBAL BK-PROTOCOL extra (twice 9)})
+    (printf "%d\n" (unsafe/cast i32 (count s)))))     ; 4
+```
+
+Elements are evaluated **left to right**, keys before values within a map pair.
+
+**Element-type inference.** The element type comes from the **declared type**
+when there is one, and from the elements otherwise:
+
+```lisp
+(with ((v (ref (Vector i64))) [1 2 3]) …)   ; (Vector i64) — the binding decides
+(let (n:i64 9) (with ((v (ref (Vector i64))) [n 1 2]) …))
+(contains? #{BK-GLOBAL BK-MACRO} kind)      ; no declared type — (HashSet i32)
+```
+
+Inferring from the elements has two tiers. An **integer or float literal
+adapts** to whatever the other elements settle on — `[1 n]` at `n:i64` is a
+`(Vector i64)`, exactly as `(conj v 1)` on a `(Vector i64)` is already accepted.
+Everything else is **fixed and must agree**: a string literal is `CStr`, a
+keyword literal `Keyword`, a quoted symbol `(ref Node)`, and any other
+expression contributes its own type. A value is never narrowed to suit the
+collection, so `[n 1]` at a declared `(Vector i32)` with `n:i64` is refused
+rather than truncated. With nothing but adaptable literals the defaults are
+`i32` and `f64`, and there is no magnitude-based `i64` promotion.
+
+**A keyword literal needs `(import-use keyword)`.** The other three literal
+element types are builtins, but `Keyword` is defined in `lib/keyword.nuc` and is
+not reached transitively from the collection imports — so `#{:a :b}` is the one
+bracket literal that can fail with `unknown type: Keyword` despite the collection
+itself being imported. The diagnostic names the file to import. Keywords are the
 idiomatic key type when keys are known names: equality is an interned-id compare
 and hashing is a cached load, both cheaper than `CStr`.
 
@@ -589,21 +611,27 @@ and hashing is a cached load, both cheaper than `CStr`.
   (match (m :width) ((some w) (printf "%d\n" w)) (none (printf "?\n"))))
 ```
 
-**Errors.** Each of these is a compile-time reader error:
+**Errors.** Each of these is a compile-time error:
 
-- **Empty literal** (`[]`, `{}`, `#{}`) — the element type cannot be inferred; use
-  the explicit `(alloca (Coll T))` + init idiom.
-- **Mixed element kinds** (`[1 2.0 3]`) — element kinds do not widen.
-- **Non-scalar elements** (`[foo (g x)]`) — only int, float, string, keyword and
-  quoted-symbol literals are permitted. The symbol case is admitted by a **shape**
-  check for `(quote <symbol>)` specifically, so its near neighbours are all still
-  refused: `'(a b)` is a quoted list, `'1` a quoted int, and a bare `a` is a
-  variable reference rather than a symbol value.
+- **Empty literal with no declared type** (`[]`, `{}`, `#{}`) — there is nothing
+  to infer from; the message names the constructor. With a declared type an
+  empty literal is fine: `(with ((v (ref (Vector i32))) []) …)`.
+- **Mixed element types** (`[1 2.0 3]`, `[a b]` at `a:i32 b:i64`) — types do not
+  widen against each other. Where both are known the message names them.
+- **An element type that cannot be spelled** (`[p p]` at `p:(ref P)`) — inference
+  goes through the compiler's round-trip type spelling, which flattens `(ref T)`
+  to `ptr:T` and cannot spell an array or function type at all. Declare the
+  collection's type and the element type comes from there instead.
 - **Odd map element count** (`{"a" 1 "b"}`) — keys and values must pair up.
 
+A bare `a` in a literal is a **variable reference**, as everywhere else; it is
+not a symbol value. A symbol element is written `'a`, and its near neighbours
+are still refused because they are not `(ref Node)`: `'(a b)` is a quoted list
+and `'1` a quoted int, both `(raw Node)`.
+
 Success paths live in `examples/{vector,hashmap,hashset,keyword}-lit-test.nuc`;
-the refusals are reader diagnostics (compile-time `error:` messages, not runtime
-output) covered by `run_s16_keyword_literal_refused` in `tests/run-tests.sh`.
+the refusals are covered by `run_s16_keyword_literal_refused` and
+`run_s16_literal_variables` in `tests/run-tests.sh`.
 
 ---
 

@@ -584,12 +584,20 @@
 ; `{k1 v1 k2 v2}` -> HashMap  literal
 ; `#{e1 e2 …}`    -> HashSet  literal
 ;
-; Each expands to a `let` that stack-allocates the (stamped) collection, runs
-; its in-place init constructor with the default allocator, conj/assoc-es every
-; literal element, and yields the `(ref Coll)`. Placed as the RHS of a `with`
-; binding, the outer `with` fires `Drop` on the returned ref at scope exit
-; because every collection type conforms to `Drop`. The element type is inferred
-; from the literal's elements (all must agree); empty and mixed literals error.
+; Each reads as `(vector-lit <g> e …)` / `(hashset-lit <g> e …)` /
+; `(hashmap-lit <g> k v …)` and is EXPANDED at emit time by
+; `emit-collection-lit` (src/nucleusc.nuc), which stack-allocates the stamped
+; collection, runs its in-place init with the default allocator, conj/assoc-es
+; every element, and yields the `(ref Coll)`.
+;
+; Stage 16: the expansion used to happen right here, which is why an element had
+; to be a scalar *literal* — the reader can only type what it can see in a token,
+; and `read-program` finishes before any binding is registered. Deferring it to
+; the first phase that has types is what lets an element be a variable
+; (design/stage16-ergonomics/collection-literal-variables.md).
+;
+; The gensym is still minted HERE so its counter order — and therefore the
+; emitted IR — is unchanged from when the reader built the whole expansion.
 ; ============================================================
 
 ; Build a single-symbol Node from a C string (interned: identical spellings
@@ -633,15 +641,14 @@
         (return 1)))))
 
 ; Classify one literal element node into a coarse "kind": 1 = integer, 2 = float,
-; 3 = string, 4 = keyword, 5 = quoted symbol, 0 = not a permitted element.
-; Same-kind is the mixing rule (the five may not mix in one literal).
+; 3 = string, 4 = keyword, 5 = quoted symbol, 0 = anything else, whose type
+; `emit-collection-lit` asks `node-type` for instead.
 ;
-; Integer literals always infer `i32` (the compiler types a NODE-INT as i32 and
-; has no native i64 integer literal — see emit-int in src/nucleusc.nuc); a
-; magnitude-based i64 promotion is intentionally NOT done because `(cast i64
-; bigval)` on an i32-typed literal truncates. A literal whose natural type is i32
-; / f64 / CStr matches the corresponding collection element parameter directly,
-; so the expansion needs no element casts.
+; Kinds 1 and 2 are *adaptable* — an integer literal alongside an `i64` value
+; makes the collection `i64`, exactly as `(conj v 1)` on a `(Vector i64)` is
+; already accepted. Kinds 3-5 are fixed, and deliberately keep the spelling the
+; reader always gave them: `node-type` types a NODE-STR as StrView (NS-3), so
+; asking it here would silently retype every existing `["a" "b"]`.
 (defn lit-elem-kind (n:ptr):i32
   (when (= n null) (return 0))
   (let (nn:ptr:Node (as ptr:Node n))
@@ -673,34 +680,6 @@
   (when (= kind 5) (return (lit-list2 (lit-sym "ref") (lit-sym "Node") line)))
   (return null))
 
-; Infer the uniform element KIND of a sub-sequence of literal elements. Starting
-; at element index `start`, every `stride`-th element is examined; all must share
-; a kind. Returns the kind (feed it to `lit-type-node`), or reports
-; `bad-msg`/`mix-msg` and returns the parse-error. `head` is the element
-; cell-list; `line` the literal's opening line.
-;   start=0 stride=1 : every element (vector / set).
-;   start=0 stride=2 : keys of a map.   start=1 stride=2 : values of a map.
-(defn infer-lit-type (head:ptr start:i32 stride:i32 line:i32 bad-msg:ptr mix-msg:ptr):!i32
-  (let (cur:ptr head
-        idx:i32 0
-        kind:i32 0
-        seen:i32 0)
-    (while (!= cur null)
-      (when (= (% (- idx start) stride) 0)
-        (when (>= idx start)
-          (let (k:i32 (lit-elem-kind ((as ptr:Node cur) car)))
-            (when (= k 0)
-              (do (report-at line bad-msg)
-                  (return (err! parse-error))))
-            (if (= seen 0)
-              (do (set! kind k) (set! seen 1))
-              (when (!= k kind)
-                (do (report-at line mix-msg)
-                    (return (err! parse-error))))))))
-      (set! idx (+ idx 1))
-      (set! cur (as ptr ((as ptr:Node cur) cdr))))
-    (return (ok kind))))
-
 ; Read literal elements until the given close-token kind, collecting them into a
 ; cell-list (head returned via out-pointer slots is awkward here, so we return
 ; the head node and the count). Consumes the close token. On EOF before close,
@@ -727,130 +706,29 @@
           (set! tail cell))))
     (return (ok head))))
 
-; `[e1 e2 …]` -> Vector literal.
+; `[e1 e2 …]` -> `(vector-lit <g> e1 e2 …)`. The empty case is NOT refused here
+; any more: with a declared target type there is an element type to build from,
+; so `emit-collection-lit` owns that diagnostic now.
 (defn read-vector-literal (line:i32):!ptr
   (let (head:ptr (try (read-lit-elems "vector" TOK-RBRACK line)))
-    (when (= head null)
-      (do (report-at line "empty vector literal: use (vector-new), e.g. (let (v:(ref (Vector T)) (vector-new)) ...)")
-          (return (err! parse-error))))
-    ; Infer element type from the elements (all must share a kind).
-    (let (ek:i32 (try (infer-lit-type head 0 1 line
-                        "vector literal elements must be scalar literals (int, float, string, keyword, or quoted symbol)"
-                        "vector literal: mixed element types")))
-      ; Build the expansion.
-      (let (gs:ptr (nucleus_gensym))
-        ; (Vector E)  — built fresh for the ref and the alloca positions.
-        (let (coll-ty1:ptr (lit-list2 (lit-sym "Vector") (lit-type-node ek line) line)
-              coll-ty2:ptr (lit-list2 (lit-sym "Vector") (lit-type-node ek line) line)
-              decl:ptr (lit-list2 gs (lit-ref coll-ty1 line) line)
-              bindings:ptr (lit-list2 decl (lit-alloca coll-ty2 line) line)
-              chead:ptr null
-              ctail:ptr null
-              cur2:ptr head)
-          (while (!= cur2 null)
-            (let (elem:ptr ((as ptr:Node cur2) car)
-                  conj-form:ptr (lit-list3 (lit-sym "conj") gs elem line)
-                  cell:ptr (make-cell conj-form null line))
-              (when (= ctail null) (set! chead cell))
-              (when (!= ctail null) (.set! (as ptr:Node ctail) cdr cell))
-              (set! ctail cell))
-            (set! cur2 (as ptr ((as ptr:Node cur2) cdr))))
-          ; The chain ends in a bare `gs` so the emitted `let` yields the vector.
-          (let (gscell:ptr (make-cell gs null line))
-            (when (= ctail null) (set! chead gscell))
-            (when (!= ctail null) (.set! (as ptr:Node ctail) cdr gscell))
-            (let (init-form:ptr (lit-list2 (lit-sym "vector-init") gs line)
-                  full-body:ptr (make-cell init-form chead line))
-              (return (ok (make-cell (lit-sym "let")
-                            (make-cell bindings full-body line)
-                            line))))))))))
+    (return (ok (make-cell (lit-sym "vector-lit")
+                  (make-cell (nucleus_gensym) head line) line)))))
 
-; `#{e1 e2 …}` -> HashSet literal. Same shape as the Vector literal but stamps
-; (HashSet E), calls hashset-init, and inserts with `conj` (which == insert).
+; `#{e1 e2 …}` -> `(hashset-lit <g> e1 e2 …)`.
 (defn read-hashset-literal (line:i32):!ptr
   (let (head:ptr (try (read-lit-elems "set" TOK-RBRACE line)))
-    (when (= head null)
-      (do (report-at line "empty set literal: use (hashset-new), e.g. (let (s:(ref (HashSet T)) (hashset-new)) ...)")
-          (return (err! parse-error))))
-    (let (ek:i32 (try (infer-lit-type head 0 1 line
-                        "set literal elements must be scalar literals (int, float, string, keyword, or quoted symbol)"
-                        "set literal: mixed element types")))
-      (let (gs:ptr (nucleus_gensym))
-        (let (coll-ty1:ptr (lit-list2 (lit-sym "HashSet") (lit-type-node ek line) line)
-              coll-ty2:ptr (lit-list2 (lit-sym "HashSet") (lit-type-node ek line) line)
-              decl:ptr (lit-list2 gs (lit-ref coll-ty1 line) line)
-              bindings:ptr (lit-list2 decl (lit-alloca coll-ty2 line) line)
-              chead:ptr null
-              ctail:ptr null
-              cur2:ptr head)
-          (while (!= cur2 null)
-            (let (elem:ptr ((as ptr:Node cur2) car)
-                  conj-form:ptr (lit-list3 (lit-sym "conj") gs elem line)
-                  cell:ptr (make-cell conj-form null line))
-              (when (= ctail null) (set! chead cell))
-              (when (!= ctail null) (.set! (as ptr:Node ctail) cdr cell))
-              (set! ctail cell))
-            (set! cur2 (as ptr ((as ptr:Node cur2) cdr))))
-          (let (gscell:ptr (make-cell gs null line))
-            (when (= ctail null) (set! chead gscell))
-            (when (!= ctail null) (.set! (as ptr:Node ctail) cdr gscell))
-            (let (init-form:ptr (lit-list2 (lit-sym "hashset-init") gs line)
-                  full-body:ptr (make-cell init-form chead line))
-              (return (ok (make-cell (lit-sym "let")
-                            (make-cell bindings full-body line)
-                            line))))))))))
+    (return (ok (make-cell (lit-sym "hashset-lit")
+                  (make-cell (nucleus_gensym) head line) line)))))
 
-; `{k1 v1 k2 v2 …}` -> HashMap literal. Elements come in key/value pairs; an odd
-; count is an error. Keys infer K, values infer V (each set must agree). Stamps
-; (HashMap K V), calls hashmap-init, and `assoc`-es each pair.
+; `{k1 v1 k2 v2 …}` -> `(hashmap-lit <g> k1 v1 k2 v2 …)`. The odd-count check
+; stays here because it is purely syntactic — it needs no types.
 (defn read-hashmap-literal (line:i32):!ptr
   (let (head:ptr (try (read-lit-elems "map" TOK-RBRACE line)))
-    (when (= head null)
-      (do (report-at line "empty map literal: use (hashmap-new), e.g. (let (m:(ref (HashMap K V)) (hashmap-new)) ...)")
-          (return (err! parse-error))))
     (when (!= (bit-and (node-len head) 1) 0)
       (do (report-at line "map literal: odd number of elements")
           (return (err! parse-error))))
-    ; Infer K from keys (even positions) and V from values (odd positions).
-    (let (kk:i32 (try (infer-lit-type head 0 2 line
-                        "map literal keys must be scalar literals (int, float, string, keyword, or quoted symbol)"
-                        "map literal: mixed key types"))
-          vk:i32 (try (infer-lit-type head 1 2 line
-                        "map literal values must be scalar literals (int, float, string, keyword, or quoted symbol)"
-                        "map literal: mixed value types")))
-      (let (gs:ptr (nucleus_gensym))
-        ; (HashMap K V) built fresh for ref and alloca positions.
-        (let (coll-ty1:ptr (lit-list3 (lit-sym "HashMap") (lit-type-node kk line) (lit-type-node vk line) line)
-              coll-ty2:ptr (lit-list3 (lit-sym "HashMap") (lit-type-node kk line) (lit-type-node vk line) line))
-          (let (decl:ptr (lit-list2 gs (lit-ref coll-ty1 line) line)
-                bindings:ptr (lit-list2 decl (lit-alloca coll-ty2 line) line))
-            ; Build (assoc gs k v) per pair.
-            (let (chead:ptr null
-                  ctail:ptr null
-                  cur2:ptr head)
-              (while (!= cur2 null)
-                (let (knode:ptr ((as ptr:Node cur2) car)
-                      vcell:ptr (as ptr ((as ptr:Node cur2) cdr)))
-                  (let (vnode:ptr ((as ptr:Node vcell) car)
-                        ; (assoc gs k v)
-                        assoc-form:ptr (as ptr (make-cell (lit-sym "assoc")
-                                          (make-cell gs
-                                            (make-cell knode
-                                              (make-cell vnode null line) line) line)
-                                          line))
-                        cell:ptr (make-cell assoc-form null line))
-                    (when (= ctail null) (set! chead cell))
-                    (when (!= ctail null) (.set! (as ptr:Node ctail) cdr cell))
-                    (set! ctail cell)
-                    (set! cur2 (as ptr ((as ptr:Node vcell) cdr))))))
-              (let (gscell:ptr (make-cell gs null line))
-                (when (= ctail null) (set! chead gscell))
-                (when (!= ctail null) (.set! (as ptr:Node ctail) cdr gscell))
-                (let (init-form:ptr (lit-list2 (lit-sym "hashmap-init") gs line)
-                      full-body:ptr (make-cell init-form chead line))
-                  (return (ok (make-cell (lit-sym "let")
-                                (make-cell bindings full-body line)
-                                line))))))))))))
+    (return (ok (make-cell (lit-sym "hashmap-lit")
+                  (make-cell (nucleus_gensym) head line) line)))))
 
 (defn read-form ():!ptr
   (let (t:ptr:Tok (as ptr:Tok (try (eat-tok))))
