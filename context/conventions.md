@@ -4573,6 +4573,42 @@ before reaching for the 2-stage dance** — and note that a failed `make` trunca
 `build/nucleusc.ll` through the shell redirect, so `build/stage2.ll` is usually
 the surviving copy.
 
+## Adopting a value-level sugar in `src/` fails only where the boot's silent reading changes DISPATCH
+
+`make` builds `src/` with `bin/nucleusc` — the **boot** compiler — so a spelling
+the boot does not implement is not an error there; it is whatever the boot
+already made of it. For the Stage 16 value-position annotation (`x:T`,
+design/stage16-ergonomics/as-sugar.md) the boot's reading is "discard the
+annotation, use `x`", which is silent and *usually harmless*: the ordinary
+argument coercion re-widens `n:i64`, a `CStr` parameter absorbs `s:CStr`. It
+stops being harmless at exactly one kind of position — an argument whose type
+selects an **overload**. Adopting seventeen sites in `src/nucleusc.nuc` built
+cleanly for all sixteen `:CStr`/`:i32`/`:i64` ones and died on the single
+`(invoke g-include-paths j:usize)`, with `no matching method for overloaded
+'invoke' with argument types (ptr:Vector.cstr, i32)`. The symptom therefore reads
+as **"the sugar does not work for `usize`"**, and it is really "the boot is
+stale, and that was the only adopted site whose meaning the boot could not fake".
+
+The fix is the repo's two-commit dance — the `Boot for …` commits in the log:
+refresh `boot/nucleusc.ll` **first**, then adopt. When the adoption is already in
+the working tree, `make update-bootstrap` cannot run (its `$(BIN)` dependency is
+what fails), so use the relink escape above — a `build/nucleusc` from before the
+adoption still implements the sugar, so it can seed the new boot:
+
+```
+./build/nucleusc --emit-llvm src/nucleusc.nuc > boot/nucleusc.ll
+make boot-binary && make
+```
+
+Then `make windows-boot`, which `update-bootstrap` would have run for you — the
+Windows boot IRs are committed and must stay in lockstep.
+
+Generalizing past `usize`: before adopting a new spelling in `src/`, ask what the
+boot will **silently make of it**, not whether the boot rejects it. A spelling the
+boot rejects fails loudly at the first site. A spelling the boot *reinterprets*
+fails only where the difference is observable — which makes a stale boot look
+like a type-specific bug in the new feature.
+
 ## Parameter-list markers are keywords, and `&` is still not free
 
 `:rest` / `:where` / `:optional` / `:repr` (Stage 16,
