@@ -17,10 +17,10 @@ struct DecodeResult decode_err(void) asm("decode-err");
 struct DecodeResult char_decode_utf8(uint8_t* p, size_t len) asm("char-decode-utf8");
 uint32_t char_to_u32(uint32_t c) asm("char-to-u32");
 /* char-from-u32: uses an error-union or option type; not exported */
-int32_t char_is_ascii(uint32_t c) asm("char-is-ascii");
-int32_t char_is_digit(uint32_t c) asm("char-is-digit");
-int32_t char_is_alpha(uint32_t c) asm("char-is-alpha");
-int32_t char_is_alnum(uint32_t c) asm("char-is-alnum");
-int32_t char_is_whitespace(uint32_t c) asm("char-is-whitespace");
+bool char_is_ascii(uint32_t c) asm("char-is-ascii");
+bool char_is_digit(uint32_t c) asm("char-is-digit");
+bool char_is_alpha(uint32_t c) asm("char-is-alpha");
+bool char_is_alnum(uint32_t c) asm("char-is-alnum");
+bool char_is_whitespace(uint32_t c) asm("char-is-whitespace");
 uint32_t char_ascii_upper(uint32_t c) asm("char-ascii-upper");
 uint32_t char_ascii_lower(uint32_t c) asm("char-ascii-lower");

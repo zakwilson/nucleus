@@ -19,8 +19,8 @@
 (defn mkq (n:i32):ptr:Q
   (let (r:ptr:Q (as ptr:Q (malloc (as i64 (sizeof Q))))) (.set! r v n) (return r)))
 (defn _+ (a:ptr:Q b:ptr:Q):ptr:Q (return (mkq (+ (a v) (b v)))))
-(defn <  (a:ptr:Q b:ptr:Q):i1 (return (< (a v) (b v))))
-(defn >  (a:ptr:Q b:ptr:Q):i1 (return (> (a v) (b v))))
+(defn <  (a:ptr:Q b:ptr:Q):bool (return (< (a v) (b v))))
+(defn >  (a:ptr:Q b:ptr:Q):bool (return (> (a v) (b v))))
 
 ; A derived-value chain: (twice x) is a value derived from T whose own use must
 ; also resolve. For i32, twice→i32 then + → i32; the whole chain is checked.

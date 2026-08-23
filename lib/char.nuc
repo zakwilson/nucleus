@@ -216,41 +216,39 @@
 ; ---------------------------------------------------------------------------
 ; Classification — ASCII-only for now (stage888: full Unicode tables).
 ;
-; All functions are total: non-ASCII input returns 0 / is returned unchanged.
+; All functions are total: non-ASCII input answers false / is returned unchanged.
 ; ---------------------------------------------------------------------------
 
-; char-is-ascii — 1 if the codepoint is in U+0000..U+007F, else 0.
-(defn char-is-ascii ((c Char)):i32
-  (if (<= (as ui32 c) 127) 1 0))
+; char-is-ascii — true if the codepoint is in U+0000..U+007F.
+(defn char-is-ascii ((c Char)):bool
+  (<= (as ui32 c) 127))
 
-; char-is-digit — 1 if c is ASCII '0'..'9', else 0.
-(defn char-is-digit ((c Char)):i32
+; char-is-digit — true if c is ASCII '0'..'9'.
+(defn char-is-digit ((c Char)):bool
   (let (n:ui32 (as ui32 c))
-    (if (and (>= n 48) (<= n 57)) 1 0)))
+    (and (>= n 48) (<= n 57))))
 
-; char-is-alpha — 1 if c is ASCII 'a'..'z' or 'A'..'Z', else 0.
-(defn char-is-alpha ((c Char)):i32
+; char-is-alpha — true if c is ASCII 'a'..'z' or 'A'..'Z'.
+(defn char-is-alpha ((c Char)):bool
   (let (n:ui32 (as ui32 c))
-    (if (or (and (>= n 65) (<= n 90))
-            (and (>= n 97) (<= n 122)))
-      1 0)))
+    (or (and (>= n 65) (<= n 90))
+        (and (>= n 97) (<= n 122)))))
 
-; char-is-alnum — 1 if c is ASCII alphanumeric (digit or alpha), else 0.
-(defn char-is-alnum ((c Char)):i32
-  (if (or (= (char-is-digit c) 1) (= (char-is-alpha c) 1)) 1 0))
+; char-is-alnum — true if c is ASCII alphanumeric (digit or alpha).
+(defn char-is-alnum ((c Char)):bool
+  (or (char-is-digit c) (char-is-alpha c)))
 
-; char-is-whitespace — 1 if c is ASCII whitespace, else 0.
+; char-is-whitespace — true if c is ASCII whitespace.
 ; ASCII whitespace: space (32), tab (9), newline (10), carriage return (13),
 ; form feed (12), vertical tab (11).
-(defn char-is-whitespace ((c Char)):i32
+(defn char-is-whitespace ((c Char)):bool
   (let (n:ui32 (as ui32 c))
-    (if (or (= n 32)
-            (or (= n 9)
-                (or (= n 10)
-                    (or (= n 13)
-                        (or (= n 12)
-                            (= n 11))))))
-      1 0)))
+    (or (= n 32)
+        (or (= n 9)
+            (or (= n 10)
+                (or (= n 13)
+                    (or (= n 12)
+                        (= n 11))))))))
 
 ; char-ascii-upper — convert ASCII 'a'..'z' to 'A'..'Z'. Total: non-lowercase
 ; ASCII and non-ASCII codepoints are returned unchanged.

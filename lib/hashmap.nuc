@@ -320,9 +320,9 @@
 (defn count ((self (ref (HashMap K V)))):usize
   (return (self count)))
 
-; empty?: 1 if no live entries, else 0.
-(defn empty? ((self (ref (HashMap K V)))):i32
-  (return (if (= (self count) 0) 1 0)))
+; empty?: true if no live entries.
+(defn empty? ((self (ref (HashMap K V)))):bool
+  (return (= (self count) 0)))
 
 ; conj: insert an entry. The Entry is passed by value; bind it to a local and
 ; `addr-of` to read its fields (the (hash (addr-of k)) idiom), then assoc.

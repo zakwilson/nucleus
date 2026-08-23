@@ -25,7 +25,7 @@
       (conj v c1))
     ; complement: x -> !(x < 5)  (1 when x >= 5)
     (let (c2:(BoxedFn (i32) i32)
-            (complement (fn (x:i32):i32 (< x 5))))
+            (complement (fn (x:i32):bool (< x 5))))
       (conj v c2))
     ; constantly: _ -> 42
     (let (c3:(BoxedFn (i32) i32)

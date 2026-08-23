@@ -13,15 +13,15 @@
 
 ; Equality.
 (defprotocol Eq
-  (=  (a:Self b:Self):i1)
-  (!= (a:Self b:Self):i1))
+  (=  (a:Self b:Self):bool)
+  (!= (a:Self b:Self):bool))
 
 ; Ordering. Every Ord type is also an Eq type (protocol inheritance).
 (defprotocol Ord
-  (<  (a:Self b:Self):i1)
-  (<= (a:Self b:Self):i1)
-  (>  (a:Self b:Self):i1)
-  (>= (a:Self b:Self):i1))
+  (<  (a:Self b:Self):bool)
+  (<= (a:Self b:Self):bool)
+  (>  (a:Self b:Self):bool)
+  (>= (a:Self b:Self):bool))
 (extend Ord Eq)
 
 ; Arithmetic. Num is {+ - * /} — not % or the bit operators, which belong to a

@@ -20,7 +20,7 @@
 ; __attribute__((noreturn))), so recognize the standard noreturn libc functions
 ; by name. A statement-position call to one terminates its block, so a
 ; (when (= x null) (exit 1)) / (abort) guard narrows the tested binding past it.
-(defn c-fn-noreturn (fname:CStr):i32
+(defn c-fn-noreturn (fname:CStr):bool
   (return (contains? #{"exit" "abort" "_exit" "_Exit" "quick_exit"
                        "abort_handler_s" "longjmp" "siglongjmp"}
                       fname)))
@@ -326,7 +326,7 @@
 (defn c-type-to-nucleus (name:CStr is-unsigned:i32 is-long:i32 is-short:i32):(raw Type)
   ; Handle base types
   (when (= name "void")  (return ty-void))
-  (when (= name "_Bool") (return ty-i1))
+  (when (= name "_Bool") (return ty-bool))
   (when (= name "char")
     (if (!= is-unsigned 0) (return ty-ui8) (return ty-i8)))
   (when (= name "short")
@@ -901,7 +901,7 @@
               (let (csym:ref:Sym (scope-define g-globals fname (as ptr ft)
                                   (fmt-s "@%s" fname) 0))
                 ; Stage 10 Phase F1: mark known-noreturn libc functions.
-                (when (!= (c-fn-noreturn fname) 0)
+                (when (c-fn-noreturn fname)
                   (.set! (as ptr:Sym csym) noreturn 1)))
               (when (= fname "malloc")
                 (set! g-malloc-decl-done 1))
@@ -948,7 +948,7 @@
                       (when (!= need-comma 0) (set! sep ", "))
                       (fprintf g-out "%s..." sep)))))
               ; Stage 10 Phase F1: trailing LLVM `noreturn` function attribute.
-              (if (!= (c-fn-noreturn fname) 0)
+              (if (c-fn-noreturn fname)
                 (fprintf g-out ") noreturn\n")
                 (fprintf g-out ")\n"))))
         (return 1)))))
@@ -1929,7 +1929,6 @@
 (defn type-name-to-c (name:ptr):ptr
   (let ((mapping (ref (HashMap CStr CStr)))
         {"void" "void"
-         "i1" "_Bool"
          "i8" "int8_t"
          "i16" "int16_t"
          "i32" "int32_t"
@@ -1941,7 +1940,7 @@
          "ui64" "uint64_t"
          "f32" "float"
          "f64" "double"
-         "bool" "_Bool"
+         "bool" "bool"
          "usize" "size_t"
          "ssize" "ptrdiff_t"
          "Char" "uint32_t"
@@ -1981,10 +1980,38 @@
       NODE-SYM
         (let (nc:ptr (niche-sym-to-c (n s)))
           (when (!= nc null) (return nc))
+          ; Stage 16: an alias has no C spelling of its own — it is a second
+          ; spelling for its body (container-type-sugar.md §3.2), so the header
+          ; must show the body's C type. Without this the alias name leaked out
+          ; as `struct Count`, naming nothing the header defines.
+          (if-some (ta (type-alias-lookup-ref (n s)))
+            (do
+              (when (>= g-type-alias-depth MAX-TYPE-ALIAS-DEPTH) (return "void"))
+              (let (bn:ptr (as ptr (ta body)))
+                ; A colon-chain body (`ref:Pt`) needs the same split the return
+                ; and parameter positions do before it is a type NODE.
+                (when (and (= (node-kind bn) NODE-SYM)
+                           (!= (strchr (-> bn (unsafe/cast ptr:Node _) (_ s)) 58) null))
+                  (set! bn (split-colon-segments
+                             (-> bn (unsafe/cast ptr:Node _) (_ s)) (n line))))
+                (set! g-type-alias-depth (+ g-type-alias-depth 1))
+                (let (c:ptr (type-node-to-c bn))
+                  (set! g-type-alias-depth (- g-type-alias-depth 1))
+                  (return c))))
+            0)
           (return (type-name-to-c (n s))))
       NODE-CELL
         (let (head:ptr (n car)
               rest:ptr (n cdr))
+          ; §3.7: same reason as the NODE-SYM arm above — a parametric alias has
+          ; no C spelling, so the header must show its expanded body.
+          (let (ex:raw:Node (type-alias-apply (as raw:Node tn) (n line)))
+            (when (!= ex null)
+              (when (>= g-type-alias-depth MAX-TYPE-ALIAS-DEPTH) (return "void"))
+              (set! g-type-alias-depth (+ g-type-alias-depth 1))
+              (let (c:ptr (type-node-to-c (as ptr ex)))
+                (set! g-type-alias-depth (- g-type-alias-depth 1))
+                (return c))))
           (when (and (!= head null)
                      (and (= ((unsafe/cast ptr:Node head) kind) NODE-SYM)
                           (= ((unsafe/cast ptr:Node head) s) "ptr")))

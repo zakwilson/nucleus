@@ -1202,7 +1202,7 @@
 ; is-err discriminant for a niche-ERRPTR value (errors.md §2/§8): one unsigned
 ; compare against -4096 (0xFFFF…F000). A valid object address is never ≥ that,
 ; so this cleanly separates the err sentinels (the top page) from real (ok)
-; pointers with no discriminant word. Returns the SSA name of the i1 result.
+; pointers with no discriminant word. Returns the SSA name of the i1 (bool) result.
 (defn emit-errptr-is-err (rval:ptr):ptr
   (let (pi:ptr (new-tmp)
         thresh:ptr (new-tmp)
@@ -1632,11 +1632,11 @@
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "not expects 1 arg"))
     (let (a:ref:Val (emit-node (node-at cc 1) scope))
-      (when (-> a (_ type) (unsafe/cast ptr:Type _) (_ kind) (!= _ TY-I1))
-        (die-at (cc line) "not expects i1 operand"))
+      (when (-> a (_ type) (unsafe/cast ptr:Type _) (_ kind) (!= _ TY-BOOL))
+        (die-at (cc line) "not expects a bool operand"))
       (let (tmp:ptr (new-tmp))
         (fprintf g-body-stream "  %s = xor i1 %s, 1\n" tmp (a val))
-        (return (alloc-val ty-i1 tmp))))))
+        (return (alloc-val ty-bool tmp))))))
 
 (defn emit-short-circuit (call:ptr scope:ref:Scope is-and:i32):ref:Val
   (let (cc:ptr:Node (unsafe/cast ptr:Node call)
@@ -1650,9 +1650,9 @@
           slot:ptr (fmt-sd "%%%s.val%d" tag id))
       (fprintf g-entry-stream "  %s = alloca i1, align 1\n" slot)
       (let (lhs:ref:Val (emit-node (node-at cc 1) scope))
-        (when (-> lhs (_ type) (unsafe/cast ptr:Type _) (_ kind) (!= _ TY-I1))
+        (when (-> lhs (_ type) (unsafe/cast ptr:Type _) (_ kind) (!= _ TY-BOOL))
           (die-at ((unsafe/cast ptr:Node (node-at cc 1)) line)
-            (fmt-s "%s expects i1 operands" tag)))
+            (fmt-s "%s expects bool operands" tag)))
         (fprintf g-body-stream "  store i1 %s, ptr %s, align 1\n"
           (lhs val) slot)
         (if (!= is-and 0)
@@ -1673,9 +1673,9 @@
           (narrow-names scope scfacts)
         (let (rhs:ref:Val (emit-node (node-at cc 2) scope))
           (narrow-restore scmark)
-          (when (-> rhs (_ type) (unsafe/cast ptr:Type _) (_ kind) (!= _ TY-I1))
+          (when (-> rhs (_ type) (unsafe/cast ptr:Type _) (_ kind) (!= _ TY-BOOL))
             (die-at ((unsafe/cast ptr:Node (node-at cc 2)) line)
-              (fmt-s "%s expects i1 operands" tag)))
+              (fmt-s "%s expects bool operands" tag)))
           (fprintf g-body-stream "  store i1 %s, ptr %s, align 1\n"
             (rhs val) slot)
           (fprintf g-body-stream "  br label %%%s\n" end-lbl)
@@ -1683,4 +1683,4 @@
           (set! g-block-term 0)
           (let (tmp:ptr (new-tmp))
             (fprintf g-body-stream "  %s = load i1, ptr %s, align 1\n" tmp slot)
-            (return (alloc-val ty-i1 tmp)))))))))
+            (return (alloc-val ty-bool tmp)))))))))

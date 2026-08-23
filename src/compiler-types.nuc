@@ -16,6 +16,12 @@
 (defconst MAX-UNION-TEMPLATES 64)
 ; Stage 11 parametric structs (design/stage11/parametric-structs.md §1)
 (defconst MAX-STRUCT-TEMPLATES 64)
+; Stage 16 type aliases (design/stage16-ergonomics/container-type-sugar.md §3)
+(defconst MAX-TYPE-ALIASES 128)
+; §3.6: an alias body is expanded recursively, so a cycle would not terminate.
+; A depth cap rather than a visited set — expansion is a plain recursive descent
+; with nowhere natural to hang set state, and no honest chain is deep.
+(defconst MAX-TYPE-ALIAS-DEPTH 32)
 (defconst MAX-ENUMS 128)
 (defconst MAX-UNION-ARMS 64)
 ; Stage 10 errors (design/stage10/errors.md §8): global error-id cap. Ids are
@@ -78,7 +84,8 @@
 (defconst BK-ENUM 10)            ; g-enumdefs
 (defconst BK-FNTY 11)            ; fn-type aliases (g-fnty)
 (defconst BK-CONFORMANCE 12)     ; the (Type, Protocol) conformance relation
-(defconst BINDING-KIND-COUNT 13)
+(defconst BK-TYPE-ALIAS 13)      ; g-type-aliases
+(defconst BINDING-KIND-COUNT 14)
 
 ; The first row `emit-dispatch` probes. Rows 0–2 are answered earlier, by
 ; `emit-list`'s macro loop and its interned-pointer special-form ladder; a
@@ -164,7 +171,7 @@
 ; from a plain i32 by `type-eq`/mangling so `with-handler`, the E3 handler check,
 ; and U4's future niche detection can key on it. `deferror` defines TY-ERR
 ; constants; the `err` arm of an `!T` (`(Result T Err)`) is TY-ERR.
-(defenum TypeKind TY-VOID TY-I1 TY-I8 TY-I16 TY-I32 TY-I64
+(defenum TypeKind TY-VOID TY-BOOL TY-I8 TY-I16 TY-I32 TY-I64
                   TY-UI8 TY-UI16 TY-UI32 TY-UI64
                   TY-PTR TY-FN TY-STRUCT
                   TY-F32 TY-F64 TY-TYVAR TY-CSTR TY-UNION TY-ERR
@@ -396,6 +403,23 @@
   tyvars:ptr        ; ptr array of tyvar name strings
   ntv:i32
   (form (raw Node)) ; retained (defstruct (Name T ...) field-specs...) Node*
+  priv:i32          ; Stage 15 B5 — see StructDef.priv
+  src-ns:CStr
+  src-file:CStr     ; Stage 15 B4 — see UnionTemplate.src-file
+  src-line:i32)
+
+; Stage 16: `(deftype Name Type)` — a second spelling for one type, not a new
+; one (container-type-sugar.md §3.2). `body` is the retained type expression,
+; re-parsed on each use, so declaration order inside a file does not matter.
+(defstruct TypeAlias
+  name:CStr
+  (body (raw Node))
+  ; §3.7 phase 2: `(deftype (Table V) …)` — the declared parameter names, whose
+  ; occurrences in `body` are replaced by the argument NODES at each use. Node
+  ; substitution, not spelling substitution as StructTemplate does, because an
+  ; argument may still be a free tyvar in a method receiver pattern.
+  tyvars:ptr        ; ptr array of tyvar name strings; null when ntv is 0
+  ntv:i32           ; 0 for a plain alias
   priv:i32          ; Stage 15 B5 — see StructDef.priv
   src-ns:CStr
   src-file:CStr     ; Stage 15 B4 — see UnionTemplate.src-file
@@ -767,6 +791,11 @@
   args:ptr          ; ptr array of Node* (proto-application Args), or null
   nargs:i32)        ; count of Arg nodes (0 for a plain constraint)
 
+; The pointer kind is left OUTSIDE this alias because a constraint clause is
+; genuinely held both ways — `raw:` on a struct field (null for no :where),
+; `ref:` once a site has proved it non-null (container-type-sugar.md §3.10).
+(deftype ConstraintVec (Vector (ref Constraint)))
+
 (defstruct Method
   param-types:ptr   ; ptr to array of ptr:Type (length num-params); null for intrinsic
   num-params:i32
@@ -795,7 +824,7 @@
   ; is the cached count — the shared length, kept so every
   ; `(dotimes (i (mm num-constraints)))` loop stays intact rather than becoming a
   ; null-guarded `(count …)`.
-  (constraints (raw (Vector (ref Constraint))))
+  constraints:raw:ConstraintVec
   num-constraints:i32
   checked:i32       ; A2 def-time check done (so it runs once per template)
   ; --- Stage 14 LW-1: stamped-instance marker ---
@@ -818,7 +847,7 @@
   ; reason `DynAnnot` records all three. Only a TEMPLATE needs it (its body is
   ; re-emitted, once per instantiation, from whichever file happens to call it),
   ; but it is written wherever the other two are so the trio cannot drift.
-  (src-imports (raw (Vector (ref ImportBind))))
+  src-imports:raw:ImportVec
   priv:i32
   ; --- Stage 15 W9 item 24: the symbol is a fact from another translation unit ---
   ; Set on a method registered from a `declare`/`defmethod` — its `ir-name` is
@@ -917,7 +946,7 @@
   num-tyvars:i32    ; count of tyvars above (template ntv for a :where-free extend)
   ; Stage 14 §14.4: the parsed :where clause as a (Vector (ref Constraint)),
   ; mirroring Method; null for a :where-free extend (num-constraints = 0).
-  (constraints (raw (Vector (ref Constraint))))
+  constraints:raw:ConstraintVec
   num-constraints:i32)  ; 0 for a :where-free extend
 
 ; A queued generic instantiation: the stamped concrete defn form awaiting body
@@ -936,7 +965,7 @@
   context:CStr
   ns:CStr
   path:CStr
-  (imports (raw (Vector (ref ImportBind)))))
+  imports:raw:ImportVec)
 
 ; Stage 15 W8 G-3 (design/global-init.md §5): a queued *runtime* global
 ; initializer — a `defvar` whose initializer G-1/G-2 could not render as a
@@ -1101,6 +1130,11 @@
   path:ptr      ; resolved path of the imported file / header spelling
   private:i32)  ; 1 iff this import asked for the file's private names too
 
+; Pointer kind left outside, as for ConstraintVec: `g-file-imports` and the
+; saved copies of it are `raw:` (null before the first import), the locals that
+; index the table are `ref:`.
+(deftype ImportVec (Vector (ref ImportBind)))
+
 ; Stage 15 B2a (design/stage15-stress-test/name-resolution.md §5.2 B2, §8.3) —
 ; the result of `resolve-spelling`, the ONE canonicaliser on the *reference*
 ; side. It replaces the ad-hoc splitting each registry used to do inline
@@ -1200,5 +1234,5 @@
   path:ptr                                  ; source file of the annotation
   line:i32
   ns:ptr                                    ; g-current-ns at the annotation
-  imports:(raw (Vector (ref ImportBind))))  ; g-file-imports at the annotation
+  imports:raw:ImportVec)  ; g-file-imports at the annotation
 

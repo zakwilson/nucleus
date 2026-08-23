@@ -22,6 +22,21 @@ The corollary, since absorption is driven purely by adjacency: **put a space bet
 
 **Colon-chain fuse.** A colon chain ending in a paren also works: `name:k1:…:kN:(T …)` reads as `(name (k1 (… (kN (T …)))))`. The first segment is the binding name; each remaining segment wraps the paren form right-to-left as a unary constructor application — e.g. `v:ref:(Vector i32)` → `(v (ref (Vector i32)))`, `p:ptr:ptr:(fn i32)` → `(p (ptr (ptr (fn i32))))`. (The reader does not validate that segments are pointer-kind constructors — `a:Foo:(T)` fuses to `(a (Foo (T)))` and the type parser rejects the unknown segment naturally. An empty interior segment `a::(T)` is a reader error.) This applies to a parametric *return* type on a `defn` name too: `make-vec:ref:(Vector ptr)` reads as `(make-vec (ref (Vector ptr)))`. Either the colon-chain sugar or the canonical list form works in every binding position.
 
+**Container types in a chain, and where the chain stops.** A pointer-kind segment absorbs its *whole* remaining tail as one type, so a template application needs no parens at all when every type argument is a single token: `m:ref:HashMap:CStr:i32` is `(m (ref (HashMap CStr i32)))`, and `v:ref:Vector:i32` is `(v (ref (Vector i32)))`.
+
+That flat absorption is also the limit. **A type argument may not itself be a chain**, because nothing in a flat tail says where one argument ends and the next begins. Parenthesise the inner type instead:
+
+```lisp
+v:ref:(Vector (ref Node))                  ; correct
+v:ref:Vector:ref:Node                      ; error
+m:ref:(HashMap CStr (ref (Vector i32)))    ; correct
+m:ref:HashMap:CStr:ref:Vector:i32          ; error
+```
+
+Both mistakes are reported at the declaration. A pointer kind in argument position names itself — `Vector: 'ref' is a pointer kind, not a type argument -- a colon chain cannot nest, so parenthesize the inner type: ref:(Vector (ref X))`. A chain that merely overshoots the template's arity reports `Vector: wrong number of type arguments for defstruct template (2 given)`; `v:ref:Vector:ptr:i8` lands here rather than in the message above because bare `ptr` *is* a type (the opaque `void*`) and is consumed as an argument, where bare `ref` is not a type at all.
+
+For a container type you write more than once, prefer naming it with [`deftype`](#type-aliases--deftype) — `v:ref:NodeVec`, or `v:NodeVec` with the pointer kind inside the alias. An alias removes the type expression from the declaration rather than compressing its punctuation, and a single-token type name needs no fuse at all.
+
 **Return-position lone-colon fuse.** A bare `:` immediately before `(` fuses to the paren form itself, with no name, so a parenthesised return type in `fn`/`defn`/lambda position may be written `):(T …)`. Thus `(fn (x:i32):(ref T) …)` reads as `(fn (x:i32) (ref T) …)`, and a keyword with a trailing colon followed by `(` fuses too (`:ptr:(Vector T)` → `(ptr (Vector T))`). This makes parenthesised returns use the same colon discipline as scalar returns — no space-separated exception is required.
 
 **Whitespace near-miss.** Adjacency remains **required**: the sigil binds tight (matching `:keyword` lexing; fusing across whitespace could rewrite quoted data at a distance). If a binding name ends in `:` but is *not* adjacent to `(` — e.g. `x: (raw Node)` — the compiler reports a clear fatal error: `binding name ends in ':' (<atom>) -- write name:(Type) with no space, or (name Type)`. Write `name:(Type …)` with no space, or the canonical list form `(name Type …)`. A trailing-colon symbol in value or quoted positions stays legal.
@@ -91,6 +106,103 @@ demo.nuc:1: error: 'i32' is a type, not a type constructor -- (i32 ...) is not a
 **The emitted LLVM type name composes the namespace's IR prefix**, the same `<prefix>__<name>` composition a namespaced function or global already uses: a type declared in `(ns dp)` emits `%dp__Fox`, overridable with [`set-ir-prefix`](toplevel.md) exactly as for functions. A mangled overload token composes the same name, so an overloaded method on `dp/Fox` appears as `@f.dp__Fox` in a symbol. In the default `user` namespace nothing changes — `%Fox`, byte-identical to before namespaces existed.
 
 `--emit-cheader` composes the same prefix into the emitted C `typedef` name, for the same collision reason: two namespaces' `Pt` would otherwise both emit `typedef struct {…} Pt;`, and a program that includes both headers would fail to compile. A struct declared in `(ns gt)` emits `} gt__Pt;` in place of `} Pt;`; a `user`-namespace struct's header is unaffected. See [`--emit-cheader`](compiler.md#compiler-flags).
+
+## Type aliases — `deftype`
+
+`(deftype Name Type)` gives a type a second **spelling**. It is not a new type:
+the alias and the type it names are the same type everywhere — same identity
+under `type-eq`, same stamped instance, same mangled name, and *one* overload
+for dispatch, not two. A program written with aliases emits byte-identical IR
+to the same program with the types spelled out.
+
+```lisp
+(deftype SymTab  (ref (HashMap CStr i32)))
+(deftype NameSet (ref (HashSet CStr)))
+(deftype Count   i64)
+```
+
+The point is the use sites. A one-token type name is what the colon annotation
+is best at, so an alias replaces the whole wrapper in every declaration
+position — parameter, return, `defstruct` field, `defvar` name, `let`, `with`:
+
+```lisp
+(defstruct Reg tbl:SymTab names:NameSet)
+(defvar g-special-form-set:NameSet (build-special-form-set))
+(defn tally (m:SymTab):Count (return (as Count (count m))))
+(defn main ():i32
+  (with (m:SymTab (alloca (HashMap CStr i32)))
+    (hashmap-init m)
+    (printf "%ld\n" (tally m)))
+  (return 0))
+```
+
+The body is an ordinary type expression, so the colon-paren sugar works inside
+it and an alias may name another alias:
+
+```lisp
+(deftype IntVec ref:(Vector i32))    ; colon-paren sugar in the body
+(deftype Tally  Count)               ; alias of an alias
+```
+
+Everything else composes without special cases — the `?`/`!` sigils (`?PtRef`),
+pointer-kind chains (`ref:P`), template arguments (`(ref (Vector Count))`), and
+a **forward reference** (the body is re-parsed on use, so an alias may be
+declared below the signature that names it).
+
+**`deftype-`** is the private variant, like `defstruct-`/`defunion-`. Privacy is
+per *namespace*: a private alias is invisible to a consumer outside the
+namespace that declared it, and is not written into the `.nuch` header. A public
+`deftype` **is** written to the header, because an exported signature may name
+it.
+
+**A colliding alias is refused**, not silently ignored. An alias name that
+already names a built-in type, a struct, a struct or union template, or an
+enumeration would never resolve — type names are probed before aliases — so it
+is a hard error in either declaration order:
+
+```
+demo.nuc:2: error: deftype: 'Pt' already names a type — an alias of an existing type name would never resolve
+```
+
+An alias that expands into a cycle (`(deftype A B)` + `(deftype B A)`) is
+refused when it is used.
+
+### Parametric aliases
+
+An alias may take type parameters, spelled exactly as a `defstruct` template's:
+
+```lisp
+(deftype (Vec T)   (ref (Vector T)))
+(deftype (Table V) (ref (HashMap CStr V)))
+
+(defn size (m:(Table i32)):i64 (return (as i64 (count m))))
+```
+
+Applying one substitutes the argument types into the body and parses the result,
+so `(Vec CStr)` **is** `(ref (Vector CStr))` — a parametric alias is exactly as
+transparent as a plain one, with the same byte-identical IR. Because the
+expansion happens before type variables are collected, an application also works
+as a **generic method's receiver**, where the argument is still a free tyvar:
+
+```lisp
+(defn first-of (v:(Vec T)):T (return (invoke v (as usize 0))))
+```
+
+Three rules follow from the substitution being positional:
+
+- The argument count must match the declaration — `(Vec i32 CStr)` reports
+  `Vec: wrong number of type arguments for type alias (2 given)`.
+- A parametric alias must be applied. Using the bare name reports
+  `type alias 'Vec' takes 1 type arguments`.
+- A parameter spelled inside a **colon chain** in the body substitutes
+  segment-wise, so its argument has to be one token: `(deftype (Ref T) ref:T)`
+  accepts `(Ref Pt)` but not `(Ref (ref Node))`, since a chain segment has
+  nowhere to put a paren form. Write the body in list form — `(ref T)` — where
+  an argument may be compound.
+
+**Not a newtype.** An alias creates no distinct identity, so it cannot be used
+to give an existing type separate dispatch or to prevent implicit conversion
+between the two spellings.
 
 ## Pointer kinds: `(ptr T)`, `(raw T)`, and `?T`
 
@@ -608,6 +720,28 @@ to a narrower float parameter when selecting an overload (`(over 0.1)` picks
 narrows a runtime value to choose which function runs. Cast at the call, or add
 the overload. This mirrors the integer rule, where a typed `i64` value likewise
 only ever dispatches to an `i64`-or-wider parameter.
+
+### Variadic arguments: C's default argument promotions
+
+An argument past a **variadic** callee's fixed prefix has no declared parameter
+type to convert toward, so it takes C's default argument promotions instead
+(C17 §6.5.2.2p6) — the rule `va_arg` on the other side assumes:
+
+- an integer narrower than C's `int` widens to `int`: `zext` for an unsigned
+  source (`bool`/`i1` among them, so `true` arrives as `1`), `sext` for a signed
+  one;
+- `f32` widens to `f64`;
+- everything already `int`-wide or wider is untouched, including `Char` (a
+  `ui32`) and `usize`/`ssize` (pointer-width).
+
+So `(printf "%d %f\n" n:i16 x:f32)` passes an `i32` and a `double`, exactly as
+the equivalent C does. The target is the **target's** C `int` — 16-bit on AVR,
+32-bit elsewhere — not Nucleus's `int` spelling, which is a fixed alias for
+`i32`.
+
+A variadic callee's **fixed** parameters are ordinary typed slots and take the
+rules above; only the `...` tail is promoted. A materialized `StrView` in the
+tail contributes just its `data` pointer — see [Strings](strings.md).
 
 ## Literal Values
 

@@ -28,11 +28,11 @@
   (return none))
 
 ; new-style defprotocol method sig: return keyword after the params
-(defprotocol Ord (less (a:Self b:Self):i1))
+(defprotocol Ord (less (a:Self b:Self):bool))
 
 ; new-style overloaded conformer defns
-(defn less (a:i32 b:i32):i1 (< a b))
-(defn less (a:i64 b:i64):i1 (< a b))
+(defn less (a:i32 b:i32):bool (< a b))
+(defn less (a:i64 b:i64):bool (< a b))
 (extend i32 Ord)
 (extend i64 Ord)
 

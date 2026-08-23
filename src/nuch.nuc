@@ -208,6 +208,10 @@
               ; deferror exports verbatim; the importer re-registers it, getting
               ; a fresh id in its own dense order (ids are per-build).
               "deferror"     (do (print-node (as ptr f)) (printf "\n"))
+              ; Stage 16: a type alias exports verbatim. It has to be carried —
+              ; a `defn` exported below may name it in its signature, and the
+              ; importer resolves that spelling in its own unit.
+              "deftype"      (do (print-node (as ptr f)) (printf "\n"))
               "defenum"      (emit-nuch-defenum (as ptr f))
               "defmacro"     (emit-nuch-defmacro (as ptr f))
               0)))))))
@@ -716,6 +720,11 @@
                 (emit-defconst (as ptr f))
               "defenum"
                 (emit-defenum (as ptr f))
+              ; Stage 16: re-register the alias in this unit. Emits nothing —
+              ; the exported signatures below resolve its spelling through the
+              ; importer's own registry.
+              "deftype"
+                (register-type-alias (as ptr f) 0)
               "defmacro"
                 (emit-defmacro (as ptr f))
               "def-rmacro"

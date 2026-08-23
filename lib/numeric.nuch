@@ -1,6 +1,6 @@
 ; .nuch header for lib/numeric.nuc
-(defprotocol Eq (= (a:Self b:Self) :i1) (!= (a:Self b:Self) :i1))
-(defprotocol Ord (< (a:Self b:Self) :i1) (<= (a:Self b:Self) :i1) (> (a:Self b:Self) :i1) (>= (a:Self b:Self) :i1))
+(defprotocol Eq (= (a:Self b:Self) :bool) (!= (a:Self b:Self) :bool))
+(defprotocol Ord (< (a:Self b:Self) :bool) (<= (a:Self b:Self) :bool) (> (a:Self b:Self) :bool) (>= (a:Self b:Self) :bool))
 (extend Ord Eq)
 (defprotocol Num (_+ (a:Self b:Self) :Self) (_- (a:Self b:Self) :Self) (_* (a:Self b:Self) :Self) (_/ (a:Self b:Self) :Self))
 (extend i32 Ord)

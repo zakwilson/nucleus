@@ -139,10 +139,10 @@
     (when (= ln 0) (return encl))
     (return ln)))
 
-(defn node-is-list (n:ptr):i32
-  (when (= n null) (return 1))
-  (when (= ((as ptr:Node n) kind) NODE-CELL) (return 1))
-  (return 0))
+(defn node-is-list (n:ptr):bool
+  (when (= n null) (return true))
+  (when (= ((as ptr:Node n) kind) NODE-CELL) (return true))
+  (return false))
 
 ; The kind of a NULL node. Deliberately outside NodeKind's 0..n range, so a
 ; `(= (node-kind x) NODE-SYM)` test answers false rather than matching a real

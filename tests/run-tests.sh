@@ -3775,42 +3775,24 @@ run_w9_as_float_literal_narrowing() {
   rm -rf "$d"
 }
 
-# W9 item 9: `i1`/bool holds {0, 1}, and both numeric spellings must survive
-# the range check that now rejects everything else. The IR assertion is the
-# half a run cannot make: an initializer wrongly emitted as `global i1 true`
-# for the written `1` would still exit 0.
-run_w9_i1_literal_range() {
-  local d ir
-  d="$(mktemp -d)"
-  w1_run w9-i1-literal-fits "$d" tests/fixtures/w9-i1-literal-fits.nuc 0
-  ir="$(./build/nucleusc --emit-llvm tests/fixtures/w9-i1-literal-fits.nuc 2>/dev/null || true)"
-  if printf '%s' "$ir" | qgrep -F '@w9i1-one = global i1 1' \
-     && printf '%s' "$ir" | qgrep -F '@w9i1-zero = global i1 0'; then
-    echo "PASS  w9-i1-literal-emits-written-value"
-  else
-    echo "FAIL  w9-i1-literal-emits-written-value"
-    echo "    want '@w9i1-one = global i1 1' and '@w9i1-zero = global i1 0'"
-  fi
-  rm -rf "$d"
-}
-
-# W9 item 31: `i1`/bool is unsigned, so every consumer of `is-unsigned` must
+# W9 item 31: bool is unsigned, so every consumer of `is-unsigned` must
 # pick the unsigned instruction for it. The run covers the values; the IR
 # assertion covers the instruction, and it is the half a run cannot make on
 # this host — `sext i1` and `zext i1` differ only in the bit pattern above
 # bit 0, and every consumer in the compiler's own source tests `(!= x 0)`,
 # which -1 and 1 both satisfy. That is exactly why the defect survived every
-# bootstrap until it was measured directly.
-run_w9_i1_unsigned() {
+# bootstrap until it was measured directly. (The greps name `i1` because that
+# is bool's IR type — Stage 16 C1's divorce is source-level only.)
+run_w9_bool_unsigned() {
   local d ir
   d="$(mktemp -d)"
-  w1_run w9-i1-unsigned "$d" tests/fixtures/w9-i1-unsigned.nuc 0
-  ir="$(./build/nucleusc --emit-llvm tests/fixtures/w9-i1-unsigned.nuc 2>/dev/null || true)"
+  w1_run w9-bool-unsigned "$d" tests/fixtures/w9-bool-unsigned.nuc 0
+  ir="$(./build/nucleusc --emit-llvm tests/fixtures/w9-bool-unsigned.nuc 2>/dev/null || true)"
   if ! printf '%s' "$ir" | qgrep -E 'sext i1|icmp s(lt|gt|le|ge) i1|sitofp i1'; then
-    echo "PASS  w9-i1-unsigned-picks-unsigned-instructions"
+    echo "PASS  w9-bool-unsigned-picks-unsigned-instructions"
   else
-    echo "FAIL  w9-i1-unsigned-picks-unsigned-instructions"
-    echo "    an i1 operand reached a signed instruction"
+    echo "FAIL  w9-bool-unsigned-picks-unsigned-instructions"
+    echo "    a bool operand reached a signed instruction"
     printf '%s' "$ir" | grep -nE 'sext i1|icmp s(lt|gt|le|ge) i1|sitofp i1' | head -6 | sed 's/^/    /'
   fi
   rm -rf "$d"
@@ -5762,23 +5744,11 @@ spawn run_reject w9-as-float-global-inexact \
   tests/fixtures/w9-as-float-global-inexact.nuc \
   "as: lossy conversion from f64 to f32 -- use unsafe/cast"
 
-# W9 item 9: the width-1 arm of `int-literal-fits`. `i1` is a bool over {0, 1},
-# so 5 and -1 are both out of range — the negative case is what pins the rule,
-# since reading i1 as a 1-bit two's complement integer gives [-1, 0] and would
-# invert both answers. The local fixture pins that the fix landed in the shared
-# predicate rather than in `defvar-init-ir` alone.
-spawn run_w9_i1_literal_range
-spawn run_w9_i1_unsigned
+spawn run_w9_bool_unsigned
 spawn run_w9_unsigned_index
 spawn run_w9_arg_coerce
 spawn run_w9_dyn_solitary
 spawn run_w9_fnslot_arg
-spawn run_reject w9-i1-literal-too-big tests/fixtures/w9-i1-literal-too-big.nuc \
-  "defvar: integer literal 5 does not fit i1"
-spawn run_reject w9-i1-literal-negative tests/fixtures/w9-i1-literal-negative.nuc \
-  "defvar: integer literal -1 does not fit i1"
-spawn run_reject w9-i1-local-too-big tests/fixtures/w9-i1-local-too-big.nuc \
-  "integer literal 5 does not fit i1"
 
 # W9 item 13: an unrecognized list head in type position used to fall out of
 # `parse-type-from-node` as null, which every caller reads as "no annotation was
@@ -7741,7 +7711,7 @@ run_w9_cheader_overload_symbols() {
 (defstruct Pt x:i32 y:i32)
 (defn scale (p:(ref Pt) k:i32):i32 (return (* (+ (p x) (p y)) k)))
 (defn scale (a:i32 k:i32):i32 (return (* a k)))
-(defn = (a:Pt b:Pt):i1
+(defn = (a:Pt b:Pt):bool
   (let (la:Pt a lb:Pt b)
     (return (if (and (= ((addr-of la) x) ((addr-of lb) x))
                      (= ((addr-of la) y) ((addr-of lb) y))) true false))))
@@ -7755,7 +7725,7 @@ EOF
   # its bare name and needs no label at all.
   if qgrep -xF 'int32_t scale_pPt_i32(void* p, int32_t k) asm("scale.pPt.i32");' "$d/ovlib.h" \
      && qgrep -xF 'int32_t scale_i32_i32(int32_t a, int32_t k) asm("scale.i32.i32");' "$d/ovlib.h" \
-     && qgrep -xF '_Bool eq_Pt_Pt(struct Pt a, struct Pt b) asm("eq.Pt.Pt");' "$d/ovlib.h" \
+     && qgrep -xF 'bool eq_Pt_Pt(struct Pt a, struct Pt b) asm("eq.Pt.Pt");' "$d/ovlib.h" \
      && qgrep -xF 'int32_t solo(int32_t n);' "$d/ovlib.h"; then
     echo "PASS  w9-cheader-overload-distinct-symbols"
   else
@@ -8853,8 +8823,8 @@ run_s16_keyword_markers() {
 (import-use "stdio.h")
 (import-use node)
 (import-use keyword)
-(defprotocol Ord3 (less3 (a:Self b:Self):i1))
-(defn less3 (a:i32 b:i32):i1 (return (< a b)))
+(defprotocol Ord3 (less3 (a:Self b:Self):bool))
+(defn less3 (a:i32 b:i32):bool (return (< a b)))
 (extend i32 Ord3)
 (defstruct Point x:i32 y:i32)
 (defunion Shape (circle p:(ref Point)) none :repr tagged)
@@ -8895,7 +8865,7 @@ EOF
         "'&rest' is no longer a marker -- write ':rest'" \
      && legacy_says '(defn f (n:i32 &optional (m:i32 7)):i32 (return n))' \
         "'&optional' is no longer a marker -- write ':optional'" \
-     && legacy_says '(defprotocol Ord (less (a:Self b:Self):i1))
+     && legacy_says '(defprotocol Ord (less (a:Self b:Self):bool))
 (defn maxv (a:T b:T &where (Ord T)):T (return a))' \
         "'&where' is no longer a marker -- write ':where'" \
      && legacy_says '(defprotocol Show (shout (a:Self):i32))
@@ -8927,7 +8897,7 @@ EOF
         'defn: :optional cannot be combined with :rest' \
      && refuses '(declare printf (fmt:CStr :rest args:i32) :i32)' \
         "declare: ':rest' is not supported in a declaration" \
-     && refuses '(defprotocol Ord (less (a:Self b:Self):i1))
+     && refuses '(defprotocol Ord (less (a:Self b:Self):bool))
 (defn maxv (a:T b:T :rest xs:i64 :where (Ord T)):T (return a))' \
         'defn: :rest combined with a generic method is not supported yet' \
      && refuses '(defmacro m (x :rest r y) `~x)' \
@@ -8943,8 +8913,8 @@ EOF
   #    re-read. Assert on the emitted text AND on a real import of it.
   mkdir -p "$d/lib"
   cat > "$d/lib/mklib.nuc" <<'EOF'
-(defprotocol Ord2 (less2 (a:Self b:Self):i1))
-(defn less2 (a:i32 b:i32):i1 (return (< a b)))
+(defprotocol Ord2 (less2 (a:Self b:Self):bool))
+(defn less2 (a:i32 b:i32):bool (return (< a b)))
 (extend i32 Ord2)
 (defn mk-max (a:T b:T :where (Ord2 T)):T (return (if (less2 a b) b a)))
 (defmacro mk-first (x :rest r) `~x)
@@ -8968,6 +8938,143 @@ EOF
   rm -rf "$d"
 }
 spawn run_s16_keyword_markers
+
+# Stage 16 — `bool` is its own type, not a 1-bit integer.
+# design/stage16-ergonomics/bool-type-plan.md (Part 1 of bool-truthiness.md).
+# These replace the four `w9-i1-*literal*` fixtures, which pinned the {0,1}
+# range rule this item deletes: a bool slot no longer takes ANY integer, so
+# there is no range left to check. The headline defect is `(+ true true)`,
+# which used to evaluate to `false` by one-bit wraparound.
+run_s16_bool_type() {
+  local d ir out
+  d="$(mktemp -d)"
+
+  refuses_bool() {   # refuses_bool <file-body> <expected-substring>
+    printf '%s\n' "$1" > "$d/ref.nuc"
+    ./build/nucleusc --emit-llvm "$d/ref.nuc" >/dev/null 2>"$d/ref.err"
+    qgrep -F "$2" "$d/ref.err"
+  }
+
+  # 1. No implicit coercion, in either direction — the {0,1} rule's replacement.
+  if refuses_bool '(defvar g:bool 1)
+(defn main ():i32 (return 0))' \
+        'defvar: integer literal incompatible with type bool' \
+     && refuses_bool '(defn main ():i32 (let (b:bool 1) (return 0)))' \
+        "let: init type mismatch for 'b'" \
+     && refuses_bool '(defn main ():i32 (let (n:i32 true) (return 0)))' \
+        "let: init type mismatch for 'n'" \
+     && refuses_bool '(defn main ():i32 (let (b:bool (as bool 1)) (return 0)))' \
+        'as: lossy conversion from i32 to bool -- use unsafe/cast'; then
+    echo "PASS  s16-bool-no-implicit-coercion"
+  else
+    echo "FAIL  s16-bool-no-implicit-coercion (an integer still flowed to or from a bool slot)"
+    sed 's/^/    /' "$d/ref.err" | head -3
+  fi
+
+  # 2. Arithmetic refuses a bool operand, and a comparison refuses a MIXED pair.
+  #    All six comparisons on two bools stay legal (w9-bool-unsigned covers them).
+  if refuses_bool '(defn main ():i32 (let (b:bool (+ true true)) (return 0)))' \
+        '_+ does not apply to bool' \
+     && refuses_bool '(defn main ():i32 (let (b:bool (bit-and true true)) (return 0)))' \
+        'bit-and does not apply to bool' \
+     && refuses_bool '(defn main ():i32 (let (b:bool (= true 1)) (return 0)))' \
+        '=: mixed bool and non-bool operands'; then
+    echo "PASS  s16-bool-not-an-integer-operand"
+  else
+    echo "FAIL  s16-bool-not-an-integer-operand (an arithmetic or mixed-operand form was accepted)"
+    sed 's/^/    /' "$d/ref.err" | head -3
+  fi
+
+  # 3. `i1` is retired as a spelling, in every type position, and names bool.
+  if refuses_bool '(defn main ():i32 (let (b:i1 true) (return 0)))' \
+        'i1 is no longer a type — use bool' \
+     && refuses_bool '(defn f (a:i1):i32 (return 0))
+(defn main ():i32 (return 0))' \
+        'i1 is no longer a type — use bool' \
+     && refuses_bool '(defn f ():i1 (return true))
+(defn main ():i32 (return 0))' \
+        'i1 is no longer a type — use bool'; then
+    echo "PASS  s16-bool-i1-spelling-retired"
+  else
+    echo "FAIL  s16-bool-i1-spelling-retired (i1 was accepted, or did not name its replacement)"
+    sed 's/^/    /' "$d/ref.err" | head -3
+  fi
+
+  # 4. The accepting half. `(as i32 b)` is the sanctioned widening (zext, since
+  #    bool is unsigned), and a bool global must hold the value that was WRITTEN
+  #    — the assertion a run cannot make, since `global i1 false` for a written
+  #    `true` still exits 0 through every check below.
+  cat > "$d/ok.nuc" <<'EOF'
+(import-use "stdio.h")
+(defvar s16b-t:bool true)
+(defvar s16b-f:bool false)
+(defn main ():i32
+  (printf "%d %d\n" (as i32 s16b-t) (as i32 s16b-f))
+  (return 0))
+EOF
+  ir="$(./build/nucleusc --emit-llvm "$d/ok.nuc" 2>"$d/ok.err" || true)"
+  ./build/nucleusc "$d/ok.nuc" -o "$d/ok.bin" 2>>"$d/ok.err" || true
+  out=""
+  # Never a bare `cmd && assign` here: under `set -e` a false test kills the
+  # unit before its first echo, which the replay shows as silence, not FAIL.
+  if [ -x "$d/ok.bin" ]; then out="$("$d/ok.bin" 2>/dev/null || true)"; fi
+  if [ "$out" = "1 0" ] \
+     && printf '%s' "$ir" | qgrep -F '@s16b-t = global i1 true' \
+     && printf '%s' "$ir" | qgrep -F '@s16b-f = global i1 false' \
+     && printf '%s' "$ir" | qgrep -F 'zext i1'; then
+    echo "PASS  s16-bool-widens-to-int"
+  else
+    echo "FAIL  s16-bool-widens-to-int (got '$out')"
+    sed 's/^/    /' "$d/ok.err" | head -3
+    printf '%s' "$ir" | grep -nE '@s16b-|zext i1' | head -4 | sed 's/^/    /' || true
+  fi
+
+  # 5. `as` names `unsafe/cast` in every bool rejection, so the hatch has to be
+  #    TOTAL: all five instruction-selection gates must admit a bool operand, or
+  #    the diagnostic above advertises a conversion that cannot be written.
+  cat > "$d/uc.nuc" <<'EOF'
+(import-use "stdio.h")
+(defn main ():i32
+  (let (b:bool (unsafe/cast bool 1)
+        z:bool (unsafe/cast bool 0)
+        n:i32  (unsafe/cast i32 true)
+        f:f64  (unsafe/cast f64 true)
+        w:i64  (unsafe/cast i64 false))
+    (printf "%d %d %d %.1f %ld\n" (as i32 b) (as i32 z) n f w))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/uc.nuc" -o "$d/uc.bin" 2>"$d/uc.err" || true
+  out=""
+  if [ -x "$d/uc.bin" ]; then out="$("$d/uc.bin" 2>/dev/null || true)"; fi
+  if [ "$out" = "1 0 1 1.0 0" ]; then
+    echo "PASS  s16-bool-unsafe-cast-is-total"
+  else
+    echo "FAIL  s16-bool-unsafe-cast-is-total (got '$out')"
+    sed 's/^/    /' "$d/uc.err" | head -3
+  fi
+
+  # 6. The two permanent, user-visible spellings of the type: the mangle token in
+  #    an overload's link name, and the C rendering in a generated header. Both
+  #    read `i1` before this item; a header consumer sees whichever ships.
+  cat > "$d/cs.nuc" <<'EOF'
+(defn f (a:bool):i32 (return (as i32 a)))
+(defn f (a:i32):i32 (return a))
+(defn g (b:bool):bool (return (not b)))
+EOF
+  ./build/nucleusc --emit-llvm    "$d/cs.nuc" > "$d/cs.ll" 2>"$d/cs.err" || true
+  ./build/nucleusc --emit-cheader "$d/cs.nuc" > "$d/cs.h"  2>>"$d/cs.err" || true
+  if qgrep -F 'define i32 @f.bool(i1 %a.arg)' "$d/cs.ll" \
+     && qgrep -xF 'int32_t f_bool(bool a) asm("f.bool");' "$d/cs.h" \
+     && qgrep -xF 'bool g(bool b);' "$d/cs.h" \
+     && qgrep -xF '#include <stdbool.h>' "$d/cs.h"; then
+    echo "PASS  s16-bool-mangle-and-c-spelling"
+  else
+    echo "FAIL  s16-bool-mangle-and-c-spelling"
+    grep -n 'f_bool\|f\.bool\|g(' "$d/cs.h" | head -4 | sed 's/^/    /' || true
+  fi
+  rm -rf "$d"
+}
+spawn run_s16_bool_type
 
 # Stage 16 — variables (and any typed expression) as collection-literal elements.
 # The readers used to expand `[…]` themselves, so an element had to be a scalar
@@ -9115,6 +9222,628 @@ EOF
   rm -rf "$d"
 }
 spawn run_s16_literal_variables
+
+# C's default argument promotions at a variadic call position (C17 6.5.2.2p6).
+# Before this fix `emit-call-with-args` passed the narrow type straight through,
+# so `(printf "%d %f" x:i16 y:f32)` emitted `i16`/`float` operands where clang
+# emits `i32`/`double`. Two of the five cases were live wrong answers; the other
+# three were right only because LLVM's x86-64 lowering happens to zero the
+# register, which is why unit 2 asserts on the INSTRUCTION and not just the run.
+# design/stage16-ergonomics/varargs-promotion.md
+run_s16_vararg_promotion() {
+  local d out ir
+  d="$(mktemp -d)"
+
+  # 1. The run: every promoted type, against the answers C gives for the
+  #    identical program. i16 printed 1321270996 and f32 printed 0.000000.
+  cat > "$d/run.nuc" <<'EOF'
+(import-use "stdio.h")
+(defn main ():i32
+  (let (a:i8 65 b:i16 -300 c:ui8 200 d:f32 2.5 e:bool true f:Char \A)
+    (printf "%d %d %u %f %d %d\n" a b c d e f))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/run.nuc" -o "$d/run.bin" 2>"$d/run.err" || true
+  out="$("$d/run.bin" 2>/dev/null || true)"
+  if [ "$out" = "65 -300 200 2.500000 1 65" ]; then
+    echo "PASS  s16-vararg-promotion-run"
+  else
+    echo "FAIL  s16-vararg-promotion-run"
+    sed 's/^/    /' "$d/run.err" | head -3; printf '%s\n' "$out" | sed 's/^/    got: /'
+  fi
+
+  # 2. The instruction. `bool`/`i8`/`ui8` print correctly under BOTH behaviours,
+  #    so the run above cannot distinguish them — only the IR can.
+  ./build/nucleusc "$d/run.nuc" --emit-llvm > "$d/run.ll" 2>/dev/null || true
+  ir="$(grep 'call i32 (ptr, ...) @printf' "$d/run.ll" | head -1)"
+  if printf '%s\n' "$ir" | qgrep 'i32 %.*, i32 %.*, i32 %.*, double %.*, i32 %.*, i32 %' &&
+     ! printf '%s\n' "$ir" | qgrep -E '(i1|i8|i16|float) %'; then
+    echo "PASS  s16-vararg-promotion-ir"
+  else
+    echo "FAIL  s16-vararg-promotion-ir"
+    printf '%s\n' "$ir" | sed 's/^/    got: /'
+  fi
+
+  # 3. Only the `...` tail promotes. A variadic callee's FIXED narrow parameter
+  #    keeps its declared type — the promotion is a property of the position,
+  #    not of the type, so a rule applied one argument too early would widen it.
+  cat > "$d/fix.h" <<'EOF'
+int narrowfix(signed char tag, ...);
+EOF
+  cat > "$d/fix.nuc" <<EOF
+(import-use "$d/fix.h")
+(defn go (a:i8 b:i8 c:f32):i32 (return (narrowfix a b c)))
+EOF
+  ./build/nucleusc "$d/fix.nuc" --emit-llvm > "$d/fix.ll" 2>"$d/fix.err" || true
+  if qgrep 'call i32 (i8, ...) @narrowfix(i8 %.*, i32 %.*, double %' "$d/fix.ll"; then
+    echo "PASS  s16-vararg-promotion-fixed-param-untouched"
+  else
+    echo "FAIL  s16-vararg-promotion-fixed-param-untouched"
+    sed 's/^/    /' "$d/fix.err" | head -3
+    grep 'narrowfix' "$d/fix.ll" | sed 's/^/    got: /'
+  fi
+
+  # 4. Nothing already `int`-wide or wider is touched — a spurious promotion
+  #    would be as wrong as a missing one, and costs an instruction per call.
+  cat > "$d/wide.nuc" <<'EOF'
+(import-use "stdio.h")
+(defn main ():i32
+  (let (a:i32 1 b:i64 2 c:f64 3.5 d:ui32 4)
+    (printf "%d %ld %f %u\n" a b c d))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/wide.nuc" --emit-llvm > "$d/wide.ll" 2>/dev/null || true
+  ir="$(grep 'call i32 (ptr, ...) @printf' "$d/wide.ll" | head -1)"
+  if printf '%s\n' "$ir" | qgrep 'i32 %.*, i64 %.*, double %.*, i32 %'; then
+    echo "PASS  s16-vararg-promotion-no-spurious-widening"
+  else
+    echo "FAIL  s16-vararg-promotion-no-spurious-widening"
+    printf '%s\n' "$ir" | sed 's/^/    got: /'
+  fi
+
+  rm -rf "$d"
+}
+spawn run_s16_vararg_promotion
+
+# --- Stage 16 type aliases (design/stage16-ergonomics/container-type-sugar.md) ---
+run_s16_type_aliases() {
+  local d out
+  d="$(mktemp -d)"
+  mkdir -p "$d/lib"
+
+  refuses_alias() {
+    printf '%s\n' "$1" > "$d/ref.nuc"
+    ./build/nucleusc --emit-llvm "$d/ref.nuc" >/dev/null 2>"$d/ref.err"
+    qgrep -F "$2" "$d/ref.err"
+  }
+
+  # 1. An alias works in every declaration position, and composes with the
+  #    colon sugar (§3.9 — a single-token type name needs no fuse at all).
+  cat > "$d/all.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use hashset)
+(import-use coll)
+(deftype NameSet (ref (HashSet CStr)))
+(deftype Count i64)
+(defstruct Reg names:NameSet)
+(defvar gv:Count 7)
+(defn size (s:NameSet):Count (return (as Count (count s))))
+(defn main ():i32
+  (with (s:NameSet (alloca (HashSet CStr)))
+    (hashset-init s)
+    (conj s (as CStr "a"))
+    (conj s (as CStr "b"))
+    (let (t:NameSet s)
+      (printf "%ld %ld\n" (size t) gv)))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/all.nuc" -o "$d/all.bin" 2>"$d/all.err" || true
+  out="$("$d/all.bin" 2>/dev/null || true)"
+  if [ "$out" = "2 7" ]; then
+    echo "PASS  s16-deftype-every-position"
+  else
+    echo "FAIL  s16-deftype-every-position"
+    sed 's/^/    /' "$d/all.err" | head -3; printf '%s\n' "$out" | sed 's/^/    got: /'
+  fi
+
+  # 2. Transparency (§3.2) is the load-bearing claim: an alias is a second
+  #    SPELLING, not a second type, so the IR must be identical to the
+  #    spelled-out program. This is also what keeps the bootstrap byte-identical
+  #    until a source file adopts one.
+  cat > "$d/alias.nuc" <<'EOF'
+(import-use hashmap)
+(import-use coll)
+(deftype SymTab (ref (HashMap CStr i32)))
+(defn tally (m:SymTab):i64 (return (as i64 (count m))))
+EOF
+  cat > "$d/plain.nuc" <<'EOF'
+(import-use hashmap)
+(import-use coll)
+(defn tally (m:(ref (HashMap CStr i32))):i64 (return (as i64 (count m))))
+EOF
+  ./build/nucleusc --emit-llvm "$d/alias.nuc" 2>/dev/null \
+    | grep -v '^; ModuleID\|^source_filename' > "$d/alias.ll" || true
+  ./build/nucleusc --emit-llvm "$d/plain.nuc" 2>/dev/null \
+    | grep -v '^; ModuleID\|^source_filename' > "$d/plain.ll" || true
+  if [ -s "$d/alias.ll" ] && cmp -s "$d/alias.ll" "$d/plain.ll"; then
+    echo "PASS  s16-deftype-transparent-ir"
+  else
+    echo "FAIL  s16-deftype-transparent-ir (an alias changed the emitted IR)"
+    diff "$d/alias.ll" "$d/plain.ll" 2>/dev/null | head -6 | sed 's/^/    /'
+  fi
+
+  # 3. Composition (§3.3): the ?/! sigils, pointer-kind chains, template
+  #    arguments, alias-of-alias, and a forward reference all route through the
+  #    two resolution sites without their own code.
+  cat > "$d/comp.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use vector)
+(defstruct Pt x:i32 y:i32)
+(deftype P Pt)
+(deftype PRef (ref P))
+(deftype Later i32)
+(defn viaq (v:?PRef):i32 (if-some (p v) (return (p x)) (return -1)))
+(defn chain (v:ref:P):i32 (return (v y)))
+(defn intmpl (v:(ref (Vector Later))):i32 (return 0))
+(defn fwd (n:Later):i32 (return n))
+(defn main ():i32
+  (with (p:PRef (alloca Pt))
+    (.set! p x 3) (.set! p y 4)
+    (printf "%d %d %d\n" (viaq p) (chain p) (fwd 5)))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/comp.nuc" -o "$d/comp.bin" 2>"$d/comp.err" || true
+  out="$("$d/comp.bin" 2>/dev/null || true)"
+  if [ "$out" = "3 4 5" ]; then
+    echo "PASS  s16-deftype-composes"
+  else
+    echo "FAIL  s16-deftype-composes"
+    sed 's/^/    /' "$d/comp.err" | head -3; printf '%s\n' "$out" | sed 's/^/    got: /'
+  fi
+
+  # 4. A colliding alias would be DEAD, not merely ambiguous — parse-type-name
+  #    probes aliases last — so every collision is refused rather than silently
+  #    ignored (§3.4 / type-name-collision). Both orders, since the check runs
+  #    on the prescan pass and again on the emit pass.
+  if refuses_alias '(defstruct Pt x:i32)
+(deftype Pt i32)' "already names a type" \
+     && refuses_alias '(import-use vector)
+(deftype Vector i32)' "already names a struct template" \
+     && refuses_alias '(defenum E A B)
+(deftype E i32)' "already names an enumeration" \
+     && refuses_alias '(deftype i32 i64)' "already names a built-in type" \
+     && refuses_alias '(deftype Q i32)
+(defstruct Q a:i32)' "already names a type" \
+     && refuses_alias '(defn Q ():i32 (return 0))
+(deftype Q i32)' "a symbol may name only one kind of thing" \
+     && refuses_alias '(deftype Q i32)
+(deftype Q i64)' "redefinition of 'Q'"; then
+    echo "PASS  s16-deftype-collisions-refused"
+  else
+    echo "FAIL  s16-deftype-collisions-refused (a colliding alias was accepted)"
+    sed 's/^/    /' "$d/ref.err" | head -3
+  fi
+
+  # 5. Malformed forms, and the §3.6 cycle guard (a recursive body would not
+  #    otherwise terminate).
+  if refuses_alias '(deftype Q)' 'deftype: expects a name and one type' \
+     && refuses_alias '(deftype Q i32 i64)' 'deftype: expects a name and one type' \
+     && refuses_alias '(deftype Q:i32 i64)' 'deftype: takes no type annotation' \
+     && refuses_alias '(deftype () i32)' 'deftype: alias name must be a symbol' \
+     && refuses_alias '(deftype (Tbl) i32)' 'deftype: parameter list required' \
+     && refuses_alias '(deftype (Tbl 3) i32)' 'deftype: each type parameter must be a symbol' \
+     && refuses_alias '(deftype A B)
+(deftype B A)
+(defn f (x:A):i32 (return 0))' 'expands into a cycle'; then
+    echo "PASS  s16-deftype-malformed-refused"
+  else
+    echo "FAIL  s16-deftype-malformed-refused"
+    sed 's/^/    /' "$d/ref.err" | head -3
+  fi
+
+  # 6. `.nuch` round-trip. The header must CARRY the alias — an exported defn
+  #    may name it in its signature, and the importer resolves that spelling in
+  #    its own unit. (This is the one part of the design that needed code: the
+  #    export and import dispatches are both explicit form lists.)
+  cat > "$d/lib/alib.nuc" <<'EOF'
+(deftype Count i64)
+(defn twice (n:Count):Count (return (* n 2)))
+EOF
+  ./build/nucleusc --emit-nuch "$d/lib/alib.nuc" > "$d/lib/alib.nuch" 2>/dev/null
+  cat > "$d/use.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use alib)
+(defn main ():i32 (printf "%ld\n" (twice 21)) (return 0))
+EOF
+  if qgrep -F '(deftype Count i64)' "$d/lib/alib.nuch" \
+     && [ "$(./build/nucleusc -I "$d/lib" "$d/use.nuc" -o "$d/use.bin" 2>/dev/null \
+             && "$d/use.bin")" = "42" ]; then
+    echo "PASS  s16-deftype-nuch-roundtrip"
+  else
+    echo "FAIL  s16-deftype-nuch-roundtrip (an alias did not survive .nuch export/import)"
+    sed 's/^/    /' "$d/lib/alib.nuch" | head -4
+  fi
+
+  # 7. `deftype-`. Privacy here is NAMESPACE-level, as it is for the other four
+  #    private type definers (see run_b5_private_definers), so the check needs a
+  #    namespaced library and a consumer outside it — spelling the name through
+  #    the prefix, so a refusal measures privacy and not just scope. Plus the
+  #    positive control that a file INSIDE the namespace still sees it, and that
+  #    the header does not carry it.
+  cat > "$d/lib/tplib.nuc" <<'EOF'
+(ns t16p)
+(deftype- T16Hidden i64)
+(deftype T16Public i64)
+(defn- t16-inside (n:T16Hidden):T16Hidden (return (* n 3)))
+(defn t16-pub (n:T16Public):T16Public (return (t16-inside n)))
+EOF
+  cat > "$d/tp-out.nuc" <<'EOF'
+(import-prefixed tplib tp)
+(defn t16-take (n:tp/T16Hidden):i64 (return n))
+(defn main ():i32 (return 0))
+EOF
+  cat > "$d/tp-pub.nuc" <<'EOF'
+(import-prefixed tplib tp)
+(defn t16-take (n:tp/T16Public):i64 (return n))
+(defn main ():i32 (return 0))
+EOF
+  ./build/nucleusc -I "$d/lib" --emit-nuch "$d/lib/tplib.nuc" > "$d/lib/tplib.nuch" 2>/dev/null
+  ./build/nucleusc -I "$d/lib" --emit-llvm "$d/tp-out.nuc" >/dev/null 2>"$d/tp-out.err" || true
+  ./build/nucleusc -I "$d/lib" --emit-llvm "$d/tp-pub.nuc" >/dev/null 2>"$d/tp-pub.err" || true
+  if qgrep -F 'T16Hidden' "$d/tp-out.err" \
+     && [ ! -s "$d/tp-pub.err" ] \
+     && ! qgrep -F 'T16Hidden' "$d/lib/tplib.nuch" \
+     && qgrep -F 'T16Public' "$d/lib/tplib.nuch"; then
+    echo "PASS  s16-deftype-private-namespaced"
+  else
+    echo "FAIL  s16-deftype-private-namespaced (a deftype- alias leaked, or deftype stopped exporting)"
+    sed 's/^/    out: /' "$d/tp-out.err" | head -2
+    sed 's/^/    pub: /' "$d/tp-pub.err" | head -2
+    sed 's/^/    hdr: /' "$d/lib/tplib.nuch" | head -4
+  fi
+
+  # 8. The C header must show the alias's BODY. It has no C spelling of its own,
+  #    and `type-node-to-c` resolved names by spelling — so the alias name leaked
+  #    out as `struct Count`, naming nothing the header defines. Asserted against
+  #    the spelled-out program, which is the only definition of "right" here.
+  cat > "$d/chA.nuc" <<'EOF'
+(defstruct Pt x:i32 y:i32)
+(deftype Count i64)
+(deftype PtRef (ref Pt))
+(defn twice (n:Count):Count (return (* n 2)))
+(defn getx (p:PtRef):i32 (return (p x)))
+EOF
+  cat > "$d/chB.nuc" <<'EOF'
+(defstruct Pt x:i32 y:i32)
+(defn twice (n:i64):i64 (return (* n 2)))
+(defn getx (p:(ref Pt)):i32 (return (p x)))
+EOF
+  ./build/nucleusc --emit-cheader "$d/chA.nuc" 2>/dev/null | grep -v '^/\* Generated' > "$d/chA.h" || true
+  ./build/nucleusc --emit-cheader "$d/chB.nuc" 2>/dev/null | grep -v '^/\* Generated' > "$d/chB.h" || true
+  if [ -s "$d/chA.h" ] && cmp -s "$d/chA.h" "$d/chB.h"; then
+    echo "PASS  s16-deftype-cheader-expands"
+  else
+    echo "FAIL  s16-deftype-cheader-expands (an alias name leaked into the C header)"
+    diff "$d/chA.h" "$d/chB.h" 2>/dev/null | head -6 | sed 's/^/    /'
+  fi
+
+  # 9. The REPL has its own top-level form chain; without an arm there `deftype`
+  #    was `unknown: deftype` and every later use of the name failed too.
+  out="$(printf '(deftype C i64)\n(defn d (n:C):C (return (* n 2)))\n(d 21)\n' \
+         | ./build/nucleusc -i 2>&1 | tr -d '\n')"
+  case "$out" in
+    *42*) echo "PASS  s16-deftype-repl" ;;
+    *)    echo "FAIL  s16-deftype-repl"
+          printf '%s\n' "$out" | sed 's/^/    got: /' ;;
+  esac
+
+  rm -rf "$d"
+}
+spawn run_s16_type_aliases
+
+# CT-D (container-type-sugar.md §1.2): a colon chain absorbs its whole tail as
+# one type, so a chain that tries to nest a pointer kind overshoots the
+# template's arity. The surplus symbols used to be collected as tyvars, which
+# reclassified a concrete defn as an uninstantiable template — emit-defn skipped
+# its define and NOTHING was reported; the only symptom was an error at the call
+# site naming a function the module no longer contained.
+run_s16_chain_nesting() {
+  local d out ir
+  d="$(mktemp -d)"
+
+  refuses_chain() {
+    printf '(import-use vector)\n(import-use hashmap)\n(import-use node)\n%s\n(defn main ():i32 (return 0))\n' "$1" > "$d/c.nuc"
+    ./build/nucleusc --emit-llvm "$d/c.nuc" >/dev/null 2>"$d/c.err"
+    qgrep -F "$2" "$d/c.err" && qgrep -F "c.nuc:4:" "$d/c.err"
+  }
+
+  # 1. The three silent rows of §1.2, each located and each naming the template.
+  #    Bare `ref` is the trigger: `ptr` and `raw` are types (tyname-resolvable),
+  #    so they overshoot into the arity check below instead.
+  if refuses_chain '(defn f (x:ref:Vector:ref:Node):i32 (return 21))' \
+       "Vector: 'ref' is a pointer kind" \
+     && refuses_chain '(defn f (x:ref:HashMap:CStr:ref:Vector:i32):i32 (return 21))' \
+       "HashMap: 'ref' is a pointer kind" \
+     && refuses_chain '(defn f (x:ref:HashMap:ref:Vector:i32:i32):i32 (return 21))' \
+       "HashMap: 'ref' is a pointer kind"; then
+    echo "PASS  s16-chain-nested-ref-refused"
+  else
+    echo "FAIL  s16-chain-nested-ref-refused"
+    sed 's/^/    /' "$d/c.err" | head -3
+  fi
+
+  # 2. The general net behind that one case: any over-long argument list in a
+  #    type pattern is an arity error, matching what the concrete path already
+  #    said for `ref:Vector:ptr:i8` before it could reach the template stamp.
+  if refuses_chain '(defn f (x:ref:Vector:ptr:i8):i32 (return 21))' \
+       "Vector: wrong number of type arguments for defstruct template (2 given)" \
+     && refuses_chain '(defn f (x:ref:(Vector i32 CStr)):i32 (return 21))' \
+       "Vector: wrong number of type arguments for defstruct template (2 given)"; then
+    echo "PASS  s16-chain-arity-refused"
+  else
+    echo "FAIL  s16-chain-arity-refused"
+    sed 's/^/    /' "$d/c.err" | head -3
+  fi
+
+  # 3. The guards must not cost the spellings docs/types.md now advertises, and
+  #    a genuine tyvar must still be a tyvar. Asserted as a `define` per
+  #    function, because a missing define IS the §1.2 bug — the original failure
+  #    compiled a module with zero of them and said nothing.
+  cat > "$d/ok.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use vector)
+(import-use hashmap)
+(import-use node)
+(import-use coll)
+(defn ca (x:ref:HashMap:CStr:i32):i32 (return 1))
+(defn cb (x:ref:Vector:i32):i32 (return 2))
+(defn cc (x:ref:(Vector (ref Node))):i32 (return 3))
+(defn cd (x:ref:(HashMap CStr i32)):i32 (return 4))
+(defn ce (x:ref:Vector:ptr):i32 (return 5))
+(defn tyv (v:(ref (Vector T))):i64 (return (as i64 (count v))))
+(defn main ():i32
+  (with (v:(ref (Vector i32)) (alloca (Vector i32)))
+    (vector-init v)
+    (conj v 9)
+    (printf "%d %ld\n" (cb v) (tyv v)))
+  (return 0))
+EOF
+  ir="$(./build/nucleusc --emit-llvm "$d/ok.nuc" 2>"$d/ok.err" || true)"
+  ./build/nucleusc "$d/ok.nuc" -o "$d/ok.bin" 2>>"$d/ok.err" || true
+  out="$("$d/ok.bin" 2>/dev/null || true)"
+  ndef="$(printf '%s' "$ir" | grep -cE '^define i32 @c[abcde]\(' || true)"
+  if [ "$ndef" = "5" ] && [ "$out" = "2 1" ]; then
+    echo "PASS  s16-chain-working-spellings"
+  else
+    echo "FAIL  s16-chain-working-spellings (defines: $ndef of 5)"
+    sed 's/^/    /' "$d/ok.err" | head -4; printf '%s\n' "$out" | sed 's/^/    got: /'
+  fi
+
+  # 4. The fuse and the list form are two spellings of one type, not two types:
+  #    assert it as IR equality rather than as a claim (the §3.11 convention).
+  printf '(import-use hashmap)\n(import-use coll)\n(defn t (m:ref:(HashMap CStr i32)):i64 (return (as i64 (count m))))\n' > "$d/fuse.nuc"
+  printf '(import-use hashmap)\n(import-use coll)\n(defn t (m:(ref (HashMap CStr i32))):i64 (return (as i64 (count m))))\n' > "$d/list.nuc"
+  for f in fuse list; do
+    ./build/nucleusc --emit-llvm "$d/$f.nuc" 2>/dev/null \
+      | grep -v '^; ModuleID\|^source_filename' > "$d/$f.ll" || true
+  done
+  if [ -s "$d/fuse.ll" ] && cmp -s "$d/fuse.ll" "$d/list.ll"; then
+    echo "PASS  s16-chain-fuse-transparent-ir"
+  else
+    echo "FAIL  s16-chain-fuse-transparent-ir"
+    diff "$d/fuse.ll" "$d/list.ll" 2>/dev/null | head -6 | sed 's/^/    /'
+  fi
+
+  rm -rf "$d"
+}
+spawn run_s16_chain_nesting
+
+# CT-B phase 2 (container-type-sugar.md §3.7): `(deftype (Vec T) …)`. The alias
+# is applied by substituting the argument NODES into its body and parsing the
+# result, so — exactly as for the plain form — no Type ever carries the alias
+# name. The load-bearing site is the method receiver: an unexpanded `(Vec T)`
+# matches no template and no pointer wrapper, so `T` would never be collected as
+# a tyvar and the template would be misread as concrete.
+run_s16_parametric_aliases() {
+  local d out
+  d="$(mktemp -d)"
+  mkdir -p "$d/lib"
+
+  refuses_p() {
+    printf '%s\n' "$1" > "$d/p.nuc"
+    ./build/nucleusc --emit-llvm "$d/p.nuc" >/dev/null 2>"$d/p.err"
+    qgrep -F "$2" "$d/p.err"
+  }
+
+  # 1. Every declaration position, plus a colon-spelled body (`(Ref T) ref:T`),
+  #    which substitutes segment-wise rather than by node.
+  cat > "$d/all.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use vector)
+(import-use hashmap)
+(import-use coll)
+(deftype (Vec T) (ref (Vector T)))
+(deftype (Table V) (ref (HashMap CStr V)))
+(deftype (Ref T) ref:T)
+(defstruct Pt x:i32 y:i32)
+(defstruct Reg items:(Vec i32) names:(Table i32))
+(defn total (v:(Vec i32)):i64 (return (as i64 (count v))))
+(defn look (m:(Table i32)):i64 (return (as i64 (count m))))
+(defn getx (p:(Ref Pt)):i32 (return (p x)))
+(defn main ():i32
+  (with (v:(Vec i32) (alloca (Vector i32))
+         m:(Table i32) (alloca (HashMap CStr i32))
+         p:(Ref Pt) (alloca Pt))
+    (vector-init v) (hashmap-init m)
+    (conj v 4) (conj v 5)
+    (assoc m "a" 1)
+    (.set! p x 9)
+    (printf "%ld %ld %d\n" (total v) (look m) (getx p)))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/all.nuc" -o "$d/all.bin" 2>"$d/all.err" || true
+  out="$("$d/all.bin" 2>/dev/null || true)"
+  if [ "$out" = "2 1 9" ]; then
+    echo "PASS  s16-deftype-parametric-every-position"
+  else
+    echo "FAIL  s16-deftype-parametric-every-position"
+    sed 's/^/    /' "$d/all.err" | head -3; printf '%s\n' "$out" | sed 's/^/    got: /'
+  fi
+
+  # 2. §3.7's stated hard case: a generic template whose RECEIVER is an alias
+  #    application, instantiated at two element types. This is the one that
+  #    needed collect-pattern-tyvars and unify-tpat taught about aliases.
+  cat > "$d/recv.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use vector)
+(import-use coll)
+(deftype (Vec T) (ref (Vector T)))
+(defn second (v:(Vec T)):T (return (invoke v (as usize 1))))
+(defn main ():i32
+  (with (a:(Vec i32) (alloca (Vector i32))
+         b:(Vec CStr) (alloca (Vector CStr)))
+    (vector-init a) (vector-init b)
+    (conj a 10) (conj a 20)
+    (conj b "x") (conj b "y")
+    (printf "%d %s\n" (second a) (second b)))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/recv.nuc" -o "$d/recv.bin" 2>"$d/recv.err" || true
+  out="$("$d/recv.bin" 2>/dev/null || true)"
+  if [ "$out" = "20 y" ]; then
+    echo "PASS  s16-deftype-parametric-receiver"
+  else
+    echo "FAIL  s16-deftype-parametric-receiver"
+    sed 's/^/    /' "$d/recv.err" | head -3; printf '%s\n' "$out" | sed 's/^/    got: /'
+  fi
+
+  # 3. Transparency, asserted as IR equality against the spelled-out program —
+  #    including the generic `t3`, whose stamped instance must mangle from the
+  #    expansion and not from the alias name.
+  cat > "$d/alias.nuc" <<'EOF'
+(import-use vector)
+(import-use hashmap)
+(import-use coll)
+(deftype (Vec T) (ref (Vector T)))
+(deftype (Table V) (ref (HashMap CStr V)))
+(defn t1 (v:(Vec i32)):i64 (return (as i64 (count v))))
+(defn t2 (m:(Table i32)):i64 (return (as i64 (count m))))
+(defn t3 (v:(Vec T)):i64 (return (as i64 (count v))))
+(defn use ():i64 (return (t3 (unsafe/cast (ref (Vector CStr)) null))))
+EOF
+  cat > "$d/plain.nuc" <<'EOF'
+(import-use vector)
+(import-use hashmap)
+(import-use coll)
+(defn t1 (v:(ref (Vector i32))):i64 (return (as i64 (count v))))
+(defn t2 (m:(ref (HashMap CStr i32))):i64 (return (as i64 (count m))))
+(defn t3 (v:(ref (Vector T))):i64 (return (as i64 (count v))))
+(defn use ():i64 (return (t3 (unsafe/cast (ref (Vector CStr)) null))))
+EOF
+  for f in alias plain; do
+    ./build/nucleusc --emit-llvm "$d/$f.nuc" 2>/dev/null \
+      | grep -v '^; ModuleID\|^source_filename' > "$d/$f.ll" || true
+  done
+  if [ -s "$d/alias.ll" ] && cmp -s "$d/alias.ll" "$d/plain.ll"; then
+    echo "PASS  s16-deftype-parametric-transparent-ir"
+  else
+    echo "FAIL  s16-deftype-parametric-transparent-ir"
+    diff "$d/alias.ll" "$d/plain.ll" 2>/dev/null | head -6 | sed 's/^/    /'
+  fi
+
+  # 4. Arity in both directions, a bare application, and the colon-body limit.
+  #    A cycle must be caught on the PATTERN path too: the depth guard in
+  #    parse-type-from-node does not cover collect-pattern-tyvars, which reaches
+  #    a defn parameter first and looped forever until it got its own.
+  if refuses_p '(import-use vector)
+(deftype (Vec T) (ref (Vector T)))
+(defn f (v:(Vec i32 CStr)):i32 (return 0))' 'Vec: wrong number of type arguments for type alias (2 given)' \
+     && refuses_p '(import-use hashmap)
+(deftype (Table K V) (ref (HashMap K V)))
+(defn f (m:(Table CStr)):i32 (return 0))' 'Table: wrong number of type arguments for type alias (1 given)' \
+     && refuses_p '(import-use vector)
+(deftype (Vec T) (ref (Vector T)))
+(defn f (v:Vec):i32 (return 0))' "type alias 'Vec' takes 1 type arguments" \
+     && refuses_p '(import-use node)
+(deftype (Ref T) ref:T)
+(defn f (v:(Ref (ref Node))):i32 (return 0))' 'must be a single token' \
+     && refuses_p '(deftype (A T) (A T))
+(defn f (v:(A i32)):i32 (return 0))' 'expands into a cycle' \
+     && refuses_p '(deftype (A T) (B T))
+(deftype (B T) (A T))
+(defn f (v:(A i32)):i32 (return 0))' 'expands into a cycle'; then
+    echo "PASS  s16-deftype-parametric-refusals"
+  else
+    echo "FAIL  s16-deftype-parametric-refusals"
+    sed 's/^/    /' "$d/p.err" | head -3
+  fi
+
+  # 5. A parametric alias crosses a `.nuch` and a real object-file link: the
+  #    header must carry the `deftype` itself, since the `declare` beside it
+  #    spells its parameters in terms of the alias.
+  cat > "$d/lib/plib.nuc" <<'EOF'
+(import-use vector)
+(import-use coll)
+(deftype (Vec T) (ref (Vector T)))
+(defn plen (v:(Vec i32)):i64 (return (as i64 (count v))))
+EOF
+  cat > "$d/use.nuc" <<EOF
+(import-use "stdio.h")
+(import-use vector)
+(import-use coll)
+(import-use "$d/lib/plib.nuch")
+(defn main ():i32
+  (with (v:(ref (Vector i32)) (alloca (Vector i32)))
+    (vector-init v) (conj v 1) (conj v 2) (conj v 3)
+    (printf "%ld\n" (plen v)))
+  (return 0))
+EOF
+  ./build/nucleusc --emit-nuch "$d/lib/plib.nuc" > "$d/lib/plib.nuch" 2>"$d/nuch.err" || true
+  ./build/nucleusc -c "$d/lib/plib.nuc" -o "$d/plib.o" 2>>"$d/nuch.err" || true
+  ./build/nucleusc "$d/use.nuc" -o "$d/use.bin" --link-arg="$d/plib.o" 2>>"$d/nuch.err" || true
+  out="$("$d/use.bin" 2>/dev/null || true)"
+  if [ "$out" = "3" ] && qgrep -F '(deftype (Vec T) (ref (Vector T)))' "$d/lib/plib.nuch"; then
+    echo "PASS  s16-deftype-parametric-nuch-roundtrip"
+  else
+    echo "FAIL  s16-deftype-parametric-nuch-roundtrip"
+    sed 's/^/    /' "$d/nuch.err" | head -3; printf '%s\n' "$out" | sed 's/^/    got: /'
+  fi
+
+  # 6. The C header has no spelling for an alias, parametric or not, so it must
+  #    show the expansion — asserted against the spelled-out program's header.
+  cat > "$d/chA.nuc" <<'EOF'
+(import-use vector)
+(import-use coll)
+(deftype (Vec T) (ref (Vector T)))
+(defn plen (v:(Vec i32)):i64 (return (as i64 (count v))))
+EOF
+  cat > "$d/chB.nuc" <<'EOF'
+(import-use vector)
+(import-use coll)
+(defn plen (v:(ref (Vector i32))):i64 (return (as i64 (count v))))
+EOF
+  for f in chA chB; do
+    ./build/nucleusc --emit-cheader "$d/$f.nuc" 2>/dev/null | grep -v '^/\* Generated from' > "$d/$f.h" || true
+  done
+  if [ -s "$d/chA.h" ] && cmp -s "$d/chA.h" "$d/chB.h"; then
+    echo "PASS  s16-deftype-parametric-cheader-expands"
+  else
+    echo "FAIL  s16-deftype-parametric-cheader-expands"
+    diff "$d/chA.h" "$d/chB.h" 2>/dev/null | head -6 | sed 's/^/    /'
+  fi
+
+  # 7. The REPL's own form chain, as for the plain alias.
+  out="$(printf '(deftype (Pair T) (ptr T))\n(defn takes (p:(Pair i32)):i32 (return (aref p 0)))\n(let (a:ptr:i32 (array i32 41 42)) (takes a))\n' \
+         | ./build/nucleusc -i 2>&1 | tr -d '\n')"
+  case "$out" in
+    *41*) echo "PASS  s16-deftype-parametric-repl" ;;
+    *)    echo "FAIL  s16-deftype-parametric-repl"
+          printf '%s\n' "$out" | sed 's/^/    got: /' ;;
+  esac
+
+  rm -rf "$d"
+}
+spawn run_s16_parametric_aliases
 
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided

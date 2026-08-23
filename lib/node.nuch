@@ -12,6 +12,6 @@
 (declare node-at ((n ptr) (i i32)) :?ptr:Node)
 (declare node-len ((n ptr)) :i32)
 (declare node-line ((n ptr) (encl i32)) :i32)
-(declare node-is-list ((n ptr)) :i32)
+(declare node-is-list ((n ptr)) :bool)
 (defconst NODE-NIL -1)
 (declare node-kind ((n ptr)) :i32)

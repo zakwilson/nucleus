@@ -68,7 +68,7 @@
 ; the first initializers to run (source order, and this is the top of the file);
 ; `make-type` needs only the arena, which `arena-alloc` brings up lazily.
 (defvar ty-void:ref:Type (make-type TY-VOID))
-(defvar ty-i1:ref:Type   (make-type TY-I1))
+(defvar ty-bool:ref:Type (make-type TY-BOOL))
 (defvar ty-i8:ref:Type   (make-type TY-I8))
 (defvar ty-i16:ref:Type  (make-type TY-I16))
 (defvar ty-i32:ref:Type  (make-type TY-I32))
@@ -181,6 +181,11 @@
 ; Stage 11 parametric structs: defstruct-template registry. Inert until a use
 ; `(Vector i32)` in type position fires a stamp (parametric-structs.md §1).
 (defvar (g-struct-templates (ref (Vector (ref StructTemplate)))) (vector-new-in (addr-of g-arena-alloc)))
+; Stage 16 type aliases: `deftype` registry, consulted by parse-type-name
+; (container-type-sugar.md §3.3). Defines no type and emits no IR.
+(defvar (g-type-aliases (ref (Vector (ref TypeAlias)))) (vector-new-in (addr-of g-arena-alloc)))
+; §3.6 cycle guard: expansion depth, bumped across the recursive body parse.
+(defvar g-type-alias-depth:i32 0)
 ; (Vector ptr) of EnumDef* (each individually arena-allocated).
 (defvar (g-enumdefs (ref (Vector (ref EnumDef)))) (vector-new-in (addr-of g-arena-alloc)))
 (defvar (g-pending-unions (ref (Vector (ref StructDef)))) (vector-new-in (addr-of g-arena-alloc)))
@@ -207,8 +212,9 @@
 ; Name-kind membership sets (built by their own initializers; never dropped).
 ; special-form-named and primitive-type-named consult these instead of long
 ; string-comparison chains.
-(defvar (g-special-form-set (ref (HashSet CStr))) (build-special-form-set))
-(defvar (g-primitive-type-set (ref (HashSet CStr))) (build-primitive-type-set))
+(deftype NameSet (ref (HashSet CStr)))
+(defvar g-special-form-set:NameSet (build-special-form-set))
+(defvar g-primitive-type-set:NameSet (build-primitive-type-set))
 
 ; Stage 15 B5: the shared binding table — one row per name-keyed registry, in
 ; resolution priority order. See `build-binding-kinds` (beside `emit-dispatch`)
@@ -799,7 +805,7 @@
 ; it is genuinely null for a file with no imports yet (the g-ns-prefix-table
 ; precedent), which is also what keeps a unit with no prefixed import on exactly
 ; the pre-B1 path.
-(defvar (g-file-imports (raw (Vector (ref ImportBind)))))
+(defvar g-file-imports:raw:ImportVec)
 
 ; Stage 15 B2a (name-resolution.md §9.1): the unit-global `path → namespace` map
 ; B1 deliberately did not materialise. An `ImportBind` records the *file* an
@@ -2709,6 +2715,7 @@
                 (true-if "defstruct")
                 (true-if "defunion")
                 (true-if "defprotocol")
+                (true-if "deftype")
                 (return 0))
               (true-if "defn")
               (true-if "defmacro")
@@ -3238,8 +3245,8 @@
       (let (nv:ref:Val (alloc-val ty-raw "null"))
         (.set! nv is-nlit 1)
         (return nv)))
-    (when (= n 'true)  (return (alloc-val ty-i1 "1")))
-    (when (= n 'false) (return (alloc-val ty-i1 "0")))
+    (when (= n 'true)  (return (alloc-val ty-bool "1")))
+    (when (= n 'false) (return (alloc-val ty-bool "0")))
     (when (= n 'none)  (return (alloc-val ty-maybe-ptr "null")))
     ; Strip any trailing :type annotation so typed names (e.g. i:i32 from macro
     ; expansion) resolve correctly in value position.
@@ -3562,9 +3569,12 @@
             tk:i32 (to kind))
         (when (= fk tk)
           (die-at (cc line) "defcast: identity cast is implicit; rule rejected"))
-        (when (and (!= (is-int-type from) 0) (!= (is-int-type to) 0))
+        ; bool joins this rejection: a user rule for a bool/int pair would be
+        ; picked up by coerce-int-val's tail, reinstating the implicit bool->int
+        ; the Stage 16 divorce removes. `as` and `unsafe/cast` already spell it.
+        (when (and (!= (is-int-or-bool from) 0) (!= (is-int-or-bool to) 0))
           (die-at (cc line)
-            "defcast: integer↔integer pairs are handled by built-in coercion; rule rejected"))
+            "defcast: integer/bool pairs are handled by built-in coercion, `as` and `unsafe/cast`; rule rejected"))
         (when (and (= fk TY-F32) (= tk TY-F64))
           (die-at (cc line)
             "defcast: f32→f64 is handled by built-in coercion; rule rejected")))
@@ -3616,9 +3626,9 @@
   (when (= at null) (return null))
   (when (= bt null) (return null))
   (when (!= (type-eq at bt) 0) (return at))
-  (let (a-num:i32 (or (!= (is-int-type at) 0) (!= (is-float-type at) 0))
-        b-num:i32 (or (!= (is-int-type bt) 0) (!= (is-float-type bt) 0)))
-    (when (or (= a-num 0) (= b-num 0)) (return null)))
+  (let (a-num:bool (or (!= (is-int-type at) 0) (!= (is-float-type at) 0))
+        b-num:bool (or (!= (is-int-type bt) 0) (!= (is-float-type bt) 0)))
+    (when (or (not a-num) (not b-num)) (return null)))
   ; Stage 15 W2b: `scope` is what makes a *named* literal (`defconst`/`defenum`)
   ; count as one — see operand-is-int-literal. Both callers supply the scope the
   ; operands were resolved in, so emit and node-type classify identically.
@@ -3765,10 +3775,10 @@
       (when (and (!= b-null 0) (!= (is-ptr-repr (av type)) 0)) (set! null-cmp 1))
     (let (av-sv:i32 (type-is-strview (av type))
           bv-sv:i32 (type-is-strview (bv type))
-          av-cstr:i32 (= ((av type) kind) TY-CSTR)
-          bv-cstr:i32 (= ((bv type) kind) TY-CSTR))
+          av-cstr:bool (= ((av type) kind) TY-CSTR)
+          bv-cstr:bool (= ((bv type) kind) TY-CSTR))
       (when (and (= null-cmp 0)
-                 (or (!= av-cstr 0) (!= bv-cstr 0) (!= av-sv 0) (!= bv-sv 0)))
+                 (or av-cstr bv-cstr (!= av-sv 0) (!= bv-sv 0)))
         ; Each operand must be a comparable string kind: ptr-like (ptr/CStr) or a
         ; StrView. Anything else (int/float/other struct) is a type error.
         (when (or (and (= (is-ptr-like (av type)) 0) (= av-sv 0))
@@ -3786,7 +3796,7 @@
                   icmp-op:ptr "eq")
               (when (= op-name "!=") (set! icmp-op "ne"))
               (fprintf g-body-stream "  %s = icmp %s i32 %s, 0\n" r icmp-op c)
-              (return (alloc-val ty-i1 r))))))))
+              (return (alloc-val ty-bool r))))))))
     ; Pointer comparison — both operands are one `ptr` register, so the
     ; comparison is machine identity.
     ; Stage 15 W5c: a representation test, not TY-PTR — the only way a `CStr`
@@ -3807,7 +3817,18 @@
         (let (tmp:ptr (new-tmp))
           (fprintf g-body-stream "  %s = %s ptr %s, %s\n"
             tmp (bop instr) (av val) (bv val))
-          (return (alloc-val ty-i1 tmp)))))
+          (return (alloc-val ty-bool tmp)))))
+    ; Stage 16 (design/stage16-ergonomics/bool-type-plan.md): bool takes the six
+    ; comparisons and no arithmetic — `(+ true true)` used to be `false`. Decided
+    ; before the numeric tiers so a bool mixed with a float or an int gets its own
+    ; message; the float and signed/unsigned ones below would both misname it.
+    (let (a-bool:i32 (is-bool-type (av type))
+          b-bool:i32 (is-bool-type (bv type)))
+      (when (or (!= a-bool 0) (!= b-bool 0))
+        (when (!= a-bool b-bool)
+          (die-at line (fmt-s "%s: mixed bool and non-bool operands" (bop name))))
+        (when (= (bop is-cmp) 0)
+          (die-at line (fmt-s "%s does not apply to bool" (bop name))))))
     ; Widen / adapt mixed numeric operands (untyped int literals + int/float widening).
     (let (adapted:ptr (binop-coerce a b a-node b-node scope line))
       (when (!= adapted null)
@@ -3841,9 +3862,12 @@
           (fprintf g-body-stream "  %s = %s %s %s, %s\n"
             tmp finstr (type-to-ir (av type)) (av val) (bv val))
           (let (rtype:ptr (av type))
-            (when (!= (bop is-cmp) 0) (set! rtype ty-i1))
+            (when (!= (bop is-cmp) 0) (set! rtype ty-bool))
             (return (alloc-val rtype tmp))))))
-    (when (or (= (is-int-type (av type)) 0) (= (is-int-type (bv type)) 0))
+    ; `is-int-or-bool`: a bool pair reaching here is a comparison (the gate
+    ; above refused everything else), and `is-unsigned` answers 1 for bool, so
+    ; the unsigned instruction selection below is already the right one.
+    (when (or (= (is-int-or-bool (av type)) 0) (= (is-int-or-bool (bv type)) 0))
       (die-at line (fmt-s "%s expects integer operands" (bop name))))
     (when (!= (is-unsigned (av type)) (is-unsigned (bv type)))
       (die-at line (fmt-s "%s: mixed signed/unsigned operands — use explicit cast" (bop name))))
@@ -3856,7 +3880,7 @@
       (fprintf g-body-stream "  %s = %s %s %s, %s\n"
         tmp instr (type-to-ir (av type)) (av val) (bv val))
       (let (rtype:ptr (av type))
-        (when (!= (bop is-cmp) 0) (set! rtype ty-i1))
+        (when (!= (bop is-cmp) 0) (set! rtype ty-bool))
         (return (alloc-val rtype tmp))))))
 
 (defn emit-binop (call:(raw Node) scope:ref:Scope op:(raw BinOp)):ref:Val
@@ -3926,8 +3950,13 @@
           (let (rv:ref:Val (alloc-val dst (v val)))
             (val-copy-taint rv v)
             (return rv)))
+        ; Stage 16: every gate below asks `is-int-or-bool`, not `is-int-type`.
+        ; `as` now routes each rejected bool pair here by name ("use
+        ; unsafe/cast"), so a gate that excluded bool would advertise an escape
+        ; hatch that does not exist. `is-unsigned` answers 1 for bool, so the
+        ; selections are zext / uitofp — never sext.
         (let (instr:ptr null)
-          (when (and (!= (is-int-type src) 0) (!= (is-int-type dst) 0))
+          (when (and (!= (is-int-or-bool src) 0) (!= (is-int-or-bool dst) 0))
             (let (sw:i32 (int-width src) dw:i32 (int-width dst))
               (when (= sw dw)
                 ; Same width, different signedness — reinterpret (no IR needed)
@@ -3937,9 +3966,9 @@
                 (if (!= (is-unsigned src) 0)
                   (set! instr "zext")
                   (set! instr "sext")))))
-          (when (and (!= (is-int-type src) 0) (!= (is-ptr-like dst) 0))
+          (when (and (!= (is-int-or-bool src) 0) (!= (is-ptr-like dst) 0))
             (set! instr "inttoptr"))
-          (when (and (!= (is-ptr-like src) 0) (!= (is-int-type dst) 0))
+          (when (and (!= (is-ptr-like src) 0) (!= (is-int-or-bool dst) 0))
             (set! instr "ptrtoint"))
           ; Float-to-float (different widths): fpext or fptrunc.
           (when (and (!= (is-float-type src) 0) (!= (is-float-type dst) 0))
@@ -3949,12 +3978,12 @@
                     (and (= sk TY-F64) (= dk TY-F32)) (set! instr "fptrunc")
                     true (do))))
           ; Int-to-float: sitofp or uitofp depending on src signedness.
-          (when (and (!= (is-int-type src) 0) (!= (is-float-type dst) 0))
+          (when (and (!= (is-int-or-bool src) 0) (!= (is-float-type dst) 0))
             (if (!= (is-unsigned src) 0)
               (set! instr "uitofp")
               (set! instr "sitofp")))
           ; Float-to-int: fptosi or fptoui depending on dst signedness.
-          (when (and (!= (is-float-type src) 0) (!= (is-int-type dst) 0))
+          (when (and (!= (is-float-type src) 0) (!= (is-int-or-bool dst) 0))
             (if (!= (is-unsigned dst) 0)
               (set! instr "fptoui")
               (set! instr "fptosi")))
@@ -4091,7 +4120,18 @@
               (fprintf g-body-stream "  %s = call %s %s(%s %s)\n"
                 tmp (type-to-ir dst) (cr ir-name) (type-to-ir src) (v val))
               (return (alloc-val dst tmp)))))
-        ; 5. int -> int: widening (zext/sext) and same-width sign reinterpret are
+        ; 5. bool -> int is a safe widening (`zext`), emitted by the one function
+        ; the vararg promoter also calls (widen-bool-to-int, src/abi.nuc) — never
+        ; by the implicit chokepoint, which has no bool arm on purpose. The
+        ; reverse, and float -> bool, are lossy: bool has two values.
+        (when (and (!= (is-bool-type src) 0) (!= (is-int-type dst) 0))
+          (return (widen-bool-to-int v dst)))
+        (when (and (!= (is-bool-type dst) 0)
+                   (or (!= (is-int-type src) 0) (!= (is-float-type src) 0)))
+          (die-at (cc line)
+            (fmt-2s "as: lossy conversion from %s to %s -- use unsafe/cast"
+              (type-spelling src) (type-spelling dst))))
+        ; 5b. int -> int: widening (zext/sext) and same-width sign reinterpret are
         ; safe (coerce-int-val emits them / no IR); narrowing is lossy — unless
         ; the operand is a literal that FITS the destination (Stage 15 W9 item 8),
         ; which is exactly the set `coerce-int-val` already admits implicitly.
@@ -4302,7 +4342,7 @@
 (defn file-import-record (prefix:ptr path:ptr):void
   (when (= g-file-imports null)
     (set! g-file-imports (vector-new-in (addr-of g-arena-alloc))))
-  (let (tbl:(ref (Vector (ref ImportBind))) (unsafe/cast (ref (Vector (ref ImportBind))) g-file-imports))
+  (let (tbl:ref:ImportVec (unsafe/cast ref:ImportVec g-file-imports))
     (dotimes (i (unsafe/cast i32 (count tbl)))
       (let (e:ref:ImportBind (invoke tbl (as usize i)))
         ; Stage 15 B3′: the dedup compares CONTENT, not pointers. B1 could get
@@ -4333,7 +4373,7 @@
 (defn file-prefixes-in-scope ():ptr
   (when (= g-file-imports null) (return null))
   (let (out:ptr null
-        tbl:(ref (Vector (ref ImportBind))) (unsafe/cast (ref (Vector (ref ImportBind))) g-file-imports))
+        tbl:ref:ImportVec (unsafe/cast ref:ImportVec g-file-imports))
     (dotimes (i (unsafe/cast i32 (count tbl)))
       (let (e:ref:ImportBind (invoke tbl (as usize i)))
         (when (!= (e prefix) null)
@@ -4429,7 +4469,7 @@
 ; path is what names the namespace.)
 (defn file-prefix-path (spelling:ptr n:i64):ptr
   (when (= g-file-imports null) (return null))
-  (let (tbl:(ref (Vector (ref ImportBind))) (unsafe/cast (ref (Vector (ref ImportBind))) g-file-imports))
+  (let (tbl:ref:ImportVec (unsafe/cast ref:ImportVec g-file-imports))
     (dotimes (i (unsafe/cast i32 (count tbl)))
       (let (e:ref:ImportBind (invoke tbl (as usize i)))
         (when (and (!= (e prefix) null) (!= (qualifier-eq spelling (e prefix) n) 0))
@@ -4441,7 +4481,7 @@
 ; file-private names as well as its public ones. Null for every other binding.
 (defn file-prefix-private-path (spelling:ptr n:i64):ptr
   (when (= g-file-imports null) (return null))
-  (let (tbl:(ref (Vector (ref ImportBind))) (unsafe/cast (ref (Vector (ref ImportBind))) g-file-imports))
+  (let (tbl:ref:ImportVec (unsafe/cast ref:ImportVec g-file-imports))
     (dotimes (i (unsafe/cast i32 (count tbl)))
       (let (e:ref:ImportBind (invoke tbl (as usize i)))
         (when (and (!= (e prefix) null) (!= (e private) 0)
@@ -4453,7 +4493,7 @@
 ; set. Paired with `file-flattened-ns-at`, which answers null for a prefixed one.
 (defn file-imports-count ():i32
   (when (= g-file-imports null) (return 0))
-  (let (tbl:(ref (Vector (ref ImportBind))) (unsafe/cast (ref (Vector (ref ImportBind))) g-file-imports))
+  (let (tbl:ref:ImportVec (unsafe/cast ref:ImportVec g-file-imports))
     (return (unsafe/cast i32 (count tbl)))))
 
 ; The namespace flattened by import form `i`, or null when that form bound a
@@ -4461,7 +4501,7 @@
 ; point of the fix).
 (defn file-flattened-ns-at (i:i32):ptr
   (when (= g-file-imports null) (return null))
-  (let (tbl:(ref (Vector (ref ImportBind))) (unsafe/cast (ref (Vector (ref ImportBind))) g-file-imports))
+  (let (tbl:ref:ImportVec (unsafe/cast ref:ImportVec g-file-imports))
     (when (>= i (unsafe/cast i32 (count tbl))) (return null))
     (let (e:ref:ImportBind (invoke tbl (as usize i)))
       (when (!= (e prefix) null) (return null))
@@ -4480,7 +4520,7 @@
 ; a did-you-mean can offer `zx/zfun` instead of echoing `zfun`.
 (defn file-prefix-for-ns (ns:CStr):ptr
   (when (= g-file-imports null) (return null))
-  (let (tbl:(ref (Vector (ref ImportBind))) (unsafe/cast (ref (Vector (ref ImportBind))) g-file-imports))
+  (let (tbl:ref:ImportVec (unsafe/cast ref:ImportVec g-file-imports))
     (dotimes (i (unsafe/cast i32 (count tbl)))
       (let (e:ref:ImportBind (invoke tbl (as usize i)))
         (when (!= (e prefix) null)
@@ -4853,11 +4893,11 @@
         o:i64 0)
     (dotimes (i n)
       (let (c:i32 (bit-and (as i32 (aref (as ptr:i8 prefix) i)) 255)
-            is-digit:i1 (!= (isdigit c) 0)
-            is-lower:i1 (and (>= c 97) (<= c 122))
-            is-upper:i1 (and (>= c 65) (<= c 90))
-            is-safe:i1  (or (= c 95) (= c 46))
-            ok:i1       (or is-digit is-lower is-upper is-safe))
+            is-digit:bool (!= (isdigit c) 0)
+            is-lower:bool (and (>= c 97) (<= c 122))
+            is-upper:bool (and (>= c 65) (<= c 90))
+            is-safe:bool  (or (= c 95) (= c 46))
+            ok:bool       (or is-digit is-lower is-upper is-safe))
         (cond
           ; The namespace divider lowers to the `__` separator.
           (= c 47)
@@ -6199,6 +6239,32 @@
             (set! nargs np))))
       (return (emit-call-with-args call scope sym args nargs)))))
 
+; C's default argument promotions at a variadic position (C17 6.5.2.2p6): a
+; narrow integer promotes to `int`, `float` to `double`. This cannot live in
+; coerce-int-val — a vararg has no declared parameter type to coerce toward —
+; so it sits beside the StrView vararg rule, at the one site that knows where
+; the `...` tail begins. design/stage16-ergonomics/varargs-promotion.md
+(defn vararg-promote (av:ptr:Val line:i32):void
+  (let (t:(raw Type) (av type)
+        target:ptr null)
+    (when (= (t kind) TY-F32) (set! target ty-f64))
+    ; `is-int-or-bool`: C promotes `_Bool` too, and after the Stage 16 divorce a
+    ; bool would otherwise stop being promoted — `(printf "%d" b)` regressing to
+    ; an `i1` operand is the exact defect varargs-promotion.md just fixed.
+    (when (and (= target null) (!= (is-int-or-bool t) 0))
+      ; C's `int`, not Nucleus's: 16-bit wherever pointers are (AVR).
+      (let (pt:ref:Type (if (= g-target-ptr-bytes 2) ty-i16 ty-i32))
+        (when (< (int-width t) (int-width pt)) (set! target (as ptr pt)))))
+    (when (!= target null)
+      ; bool cannot go through the implicit chokepoint (it has no bool arm by
+      ; design), so this position asks for the widening explicitly.
+      (when (!= (is-bool-type t) 0)
+        (let (wv:ref:Val (widen-bool-to-int (as ptr av) target))
+          (memcpy (as ptr av) (as ptr wv) (sizeof Val)))
+        (return))
+      (let (nc:?ptr:Val (coerce-int-val (as ptr av) target line))
+        (when (!= nc null) (memcpy (as ptr av) nc (sizeof Val)))))))
+
 ; Emit a call given already-emitted argument Vals. Shared by the ordinary call
 ; path and the multimethod dispatch path (which must resolve the method from
 ; argument types before the call can be emitted). Handles :rest folding, the
@@ -6429,6 +6495,8 @@
                 d (type-to-ir (av type)) (av val))
               (.set! av type ty-ptr)
               (.set! av val d)))
+          (when (and (!= (ft0 variadic) 0) (>= i (ft0 num-params)))
+            (vararg-promote (as ptr av) (cc line)))
           ; abi-arg-frag returns "<ty> <val>" for scalars/pointers (unchanged),
           ; or the byval / register-coerced fragment for a struct-by-value arg
           ; (emitting the materialization instructions as a side effect).
@@ -6751,7 +6819,7 @@
         ; capture there is still a capture); the body sees the extended set.
         (when (or (= (strcmp h "let") 0) (= (strcmp h "with") 0))
           (let (binds:ptr (node-at node 1))
-            (when (!= (node-is-list binds) 0)
+            (when (node-is-list binds)
               (let (bi:i32 1)
                 (while (< bi (node-len binds))
                   (fn-capture-walk (node-at binds bi) scope bound cap-box line)
@@ -6769,7 +6837,7 @@
         ; threads through). We only avoid flagging the inner lambda's own params.
         (when (!= (fn-is-lambda-head h) 0)
           (let (params:ptr (node-at node 1))
-            (when (!= (node-is-list params) 0)
+            (when (node-is-list params)
               (let (inner-bound:ptr (fn-bind-param-names params bound)
                     j:i32 2)
                 (while (< j (node-len node))
@@ -6819,7 +6887,7 @@
       (die-at line "fn: expects (fn (params):ret body…)"))
     (let (params-node:ptr (node-at cc 1)
           ret-node:ptr (node-at cc 2))
-      (when (= (node-is-list params-node) 0)
+      (when (not (node-is-list params-node))
         (die-at line "fn: params must be a list"))
       ; Capture analysis over the body. The fn's own parameters are bound; any
       ; free symbol resolving to an enclosing runtime local is rejected.
@@ -7164,7 +7232,7 @@
         ; extended by the new binding names (a shadowing binding stops rewrite).
         (when (or (= (strcmp h "let") 0) (= (strcmp h "with") 0))
           (let (binds:ptr (node-at node 1))
-            (when (!= (node-is-list binds) 0)
+            (when (node-is-list binds)
               (let (inner-bound:ptr (fn-bind-let-names binds bound)
                     new-binds:ptr (fn-rewrite-let-binds binds caps bound self-sym line mode)
                     new-body:ptr (fn-rewrite-list-from node 2 caps inner-bound self-sym line mode))
@@ -7178,7 +7246,7 @@
         ; access on our env; the inner lambda then captures it from us).
         (when (!= (fn-is-lambda-head h) 0)
           (let (params:ptr (node-at node 1))
-            (when (!= (node-is-list params) 0)
+            (when (node-is-list params)
               (let (inner-bound:ptr (fn-bind-param-names params bound)
                     new-body:ptr (fn-rewrite-list-from node 2 caps inner-bound self-sym line mode))
                 (return (make-cell (as ptr hd)
@@ -7671,7 +7739,7 @@
 (defn drain-dyn-annots ():void
   (let (save-path:ptr g-source-path
         save-ns:ptr g-current-ns
-        save-imports:(raw (Vector (ref ImportBind))) g-file-imports)
+        save-imports:raw:ImportVec g-file-imports)
     (while (< g-dyn-annots-drained (count g-dyn-annots))
       (let (j:ref:DynAnnot (invoke g-dyn-annots g-dyn-annots-drained))
         (set! g-dyn-annots-drained (+ g-dyn-annots-drained (as usize 1)))
@@ -8598,7 +8666,7 @@
       (die-at line "vfn: expects (vfn (params):ret body…)"))
     (let (params-node:ptr (node-at cc 1)
           ret-node:ptr (node-at cc 2))
-      (when (= (node-is-list params-node) 0)
+      (when (not (node-is-list params-node))
         (die-at line "vfn: params must be a list"))
       ; --- Capture collection (COLLECT mode) ---
       (let (bound:ptr (fn-bind-param-names params-node null)
@@ -8679,7 +8747,7 @@
       (die-at line "mfn: expects (mfn (params):ret body…)"))
     (let (params-node:ptr (node-at cc 1)
           ret-node:ptr (node-at cc 2))
-      (when (= (node-is-list params-node) 0)
+      (when (not (node-is-list params-node))
         (die-at line "mfn: params must be a list"))
       ; --- Capture collection (COLLECT mode) — shared with vfn ---
       (let (bound:ptr (fn-bind-param-names params-node null)
@@ -8764,7 +8832,7 @@
     (let (alloc-node:ptr (node-at cc 1)
           params-node:ptr (node-at cc 2)
           ret-node:ptr (node-at cc 3))
-      (when (= (node-is-list params-node) 0)
+      (when (not (node-is-list params-node))
         (die-at line "cfn: params must be a list"))
       ; --- Capture collection (COLLECT mode) — shared with vfn/mfn ---
       (let (bound:ptr (fn-bind-param-names params-node null)
@@ -9450,8 +9518,8 @@
                   (set! has-fallthrough 1))
                 (set! next-lbl (fmt-i32-i32 "cond.test%d.%d" id (+ i 1))))
               (let (test:ref:Val (emit-node (as ptr test-node) scope))
-                (when (!= ((test type) kind) TY-I1)
-                  (die-at (node-line (as ptr test-node) (cc line)) "cond: test must be i1"))
+                (when (!= ((test type) kind) TY-BOOL)
+                  (die-at (node-line (as ptr test-node) (cc line)) "cond: test must be bool"))
                 (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n"
                   (test val) then-lbl next-lbl))
               (fprintf g-body-stream "%s:\n" then-lbl)
@@ -9555,9 +9623,9 @@
       (fprintf g-body-stream "%s:\n" cond-lbl)
       (set! g-block-term 0)
       (let (cnd:ref:Val (emit-node (node-at cc 1) scope))
-        (when (-> cnd (_ type) (unsafe/cast ptr:Type _) (_ kind) (!= _ TY-I1))
+        (when (-> cnd (_ type) (unsafe/cast ptr:Type _) (_ kind) (!= _ TY-BOOL))
           (die-at ((unsafe/cast ptr:Node (node-at cc 1)) line)
-            "while condition must be i1"))
+            "while condition must be bool"))
         (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n"
           (cnd val) body-lbl end-lbl))
       (fprintf g-body-stream "%s:\n" body-lbl)
@@ -10550,6 +10618,10 @@
     ; spelling, and is not re-keyed by B3′ (see `binding-probe`).
     (add-binding-kind v BK-FNTY           "a function type"    NK-TYPE       0   1   0)
     (add-binding-kind v BK-CONFORMANCE    "a conformance"      NK-NONE       0   0   0)
+    ; Stage 16 (container-type-sugar.md §3.4): same three flags as the other
+    ; type rows — an alias collides with every kind a type name can be, and a
+    ; facade re-exports it through the same alias table.
+    (add-binding-kind v BK-TYPE-ALIAS     "a type alias"       NK-TYPE       1   1   1)
     (return v)))
 
 (defn binding-row (kind:i32):ref:BindingKind
@@ -10692,6 +10764,7 @@
     BK-UNION-TEMPLATE  (return (as ptr (union-template-lookup-ref name)))
     BK-ENUM       (return (as ptr (enumdef-lookup-ref name)))
     BK-FNTY       (return (as ptr (fnty-resolve name)))
+    BK-TYPE-ALIAS (return (as ptr (type-alias-lookup-ref name)))
     0)
   (return null))
 
@@ -11287,13 +11360,13 @@
       (return (unsafe-op-named (as CStr (r bare)))))))
 
 (defn special-form-named (name:CStr):i32
-  (when (!= (contains? g-special-form-set name) 0) (return 1))
+  (when (contains? g-special-form-set name) (return 1))
   ; The `unsafe/` roster left the set in B2b, but the spellings stay reserved:
   ; a `defn`/`defvar`/… may not shadow one, exactly as before.
   (return (unsafe-qualified-op name)))
 
 (defn primitive-type-named (name:CStr):i32
-  (return (contains? g-primitive-type-set name)))
+  (if (contains? g-primitive-type-set name) (return 1) (return 0)))
 
 (defn kind-noun (k:i32):CStr
   (when (= k NK-SPECIAL)  (return "a special form"))
@@ -11529,7 +11602,7 @@
 ; The foldable binary operators, by their POST-macroexpansion spelling: the
 ; variadic `+`/`-`/`*`/`/` and `bit-not` are macros (lib/macros.nuc) that expand
 ; to these, so a source-level `(+ a b c)` arrives as nested `_+` cells.
-; Comparisons and `_and`/`_or` are deliberately absent — they yield i1 and belong
+; Comparisons and `_and`/`_or` are deliberately absent — they yield bool and belong
 ; to a value domain this folder does not model (see the G-1 record).
 ; 0 means "not a foldable operator".
 (defn cfold-op-code (h:ptr):i32
@@ -11992,7 +12065,7 @@
     (when (= (nn kind) NODE-INT)
       (when (= (is-int-type ty) 0)
         (die-at (node-line init encl)
-          (fmt-s "defvar: integer literal incompatible with type %s" (type-to-ir ty))))
+          (fmt-s "defvar: integer literal incompatible with type %s" (type-spelling ty))))
       ; Stage 15 W2b: this is a *second* literal-narrowing site, outside
       ; coerce-int-val's chokepoint — a global initializer is a decimal string
       ; handed straight to LLVM, which truncates `i32 5000000000` to 705032704
@@ -12121,12 +12194,12 @@
         (pkind-flow-check ty-raw ty (node-line init encl) "defvar")
         (return "null"))
       (when (= (strcmp (nn s) "true") 0)
-        (when (!= ty-kind TY-I1)
-          (die-at (node-line init encl) "defvar: true requires i1/bool type"))
+        (when (!= ty-kind TY-BOOL)
+          (die-at (node-line init encl) "defvar: true requires bool type"))
         (return "true"))
       (when (= (strcmp (nn s) "false") 0)
-        (when (!= ty-kind TY-I1)
-          (die-at (node-line init encl) "defvar: false requires i1/bool type"))
+        (when (!= ty-kind TY-BOOL)
+          (die-at (node-line init encl) "defvar: false requires bool type"))
         (return "false"))
       (let (sym:?ptr:Sym (scope-lookup g-globals (nn s)))
         (when (and (!= sym null) (!= (sym is-const) 0))
@@ -13293,7 +13366,7 @@
       (require-defn-form (as ptr cc))
     (let (name-node:ptr (node-at cc 1)
           params-node:ptr (node-at cc 2))
-      (when (= (node-is-list params-node) 0)
+      (when (not (node-is-list params-node))
         (die-at ((unsafe/cast ptr:Node name-node) line) "defn: params must be list"))
       ; A bounded-generic template — `:where` or a parametric-struct receiver —
 
@@ -13425,7 +13498,7 @@
                         (when (and (!= opt-idx -1) (> i opt-idx)) (set! is-opt 1))
                         (when (!= is-opt 0)
                           ; Optional param: a 2-element list (name:type default).
-                          (when (or (= (node-is-list p) 0) (!= (node-len p) 2))
+                          (when (or (not (node-is-list p)) (!= (node-len p) 2))
                             (die-at (node-line p (cc line))
                               "defn: :optional param must be (name:type default)"))
                           (set! spec (node-at p 0))
@@ -13757,7 +13830,7 @@
                          (-> bf (node-at _ 0) (unsafe/cast ptr:Node _) (_ s) (= _ "defn")))
                 (let (name-node:ptr (node-at bf 1)
                       params-node:ptr (node-at bf 2))
-                  (when (!= (node-is-list params-node) 0)
+                  (when (node-is-list params-node)
                     (let (fname:ptr null
                           ct-ret-node:ptr null
                           ct-params:ptr null
@@ -14001,7 +14074,7 @@
       (reject-colon-in-def-name (as raw:Node name-node) "defmacro" (ff line))
       (when (!= (name-node kind) NODE-SYM)
         (die-at (name-node line) "defmacro: name must be symbol"))
-      (when (= (node-is-list params-node) 0)
+      (when (not (node-is-list params-node))
         (die-at (name-node line) "defmacro: params must be a list"))
       (guard-name-kind (name-node s) (ff line) NK-MACRO)
       ; Stage 15 B4 (R4): a second `defmacro` of one name used to append a second
@@ -14277,7 +14350,7 @@
                        (as ptr:ptr (addr-of tyname)))
           (when (!= tyname null)
             (die-at bline (fmt-s "macrolet: a binding name takes no type annotation; write (%s (params) ...)" base))))
-        (when (= (node-is-list params-node) 0)
+        (when (not (node-is-list params-node))
           (die-at bline "macrolet: params must be a list"))
         (let (mname:ptr (nn s))
           ; The macro table is consulted BEFORE special forms (emit-list), so a
@@ -14320,7 +14393,7 @@
     (when (< (node-len cc) 3)
       (die-at (cc line) "macrolet: expects a binding list and at least one body form"))
     (let (binds:ptr (node-at cc 1))
-      (when (= (node-is-list binds) 0)
+      (when (not (node-is-list binds))
         (die-at (cc line) "macrolet: bindings must be a list"))
       (let (nb:i32 (node-len binds))
         (dotimes (i nb)
@@ -14845,7 +14918,7 @@
     (defn-parse-sig form (as ptr:ptr (addr-of fname)) (as ptr:ptr (addr-of vd-ret))
                     (as ptr:ptr (addr-of vd-params)) (as ptr:i32 (addr-of vd-bstart)))
     (let (params:ptr (node-at form 2))
-      (when (= (node-is-list params) 0)
+      (when (not (node-is-list params))
         (die-at (node-line (node-at form 1) (ff line)) "defn: params must be list"))
       (dotimes (i (node-len params))
         (validate-decl-node (node-at params i) (ff line)))
@@ -15031,7 +15104,7 @@
                           ; recurring here as a key rather than as provenance.
                           save-ns:ptr g-current-ns
                           save-ns-seen:i32 g-ns-seen
-                          save-file-imports:(raw (Vector (ref ImportBind))) g-file-imports)
+                          save-file-imports:raw:ImportVec g-file-imports)
                       (let (src:ptr (read-file path))
                         (set! g-source-path path)
                         (set! g-src src)
@@ -15094,6 +15167,12 @@
                   ; (Vector i32) resolve in the signature prescan that follows.
                   (when (= (node-kind (as ptr nn)) NODE-CELL)
                     (register-struct-template (as ptr f))))))
+            ; Stage 16 (container-type-sugar.md §3.5): register the alias NAME and
+            ; body here, so defn signatures naming it resolve in the signature
+            ; prescan that follows. Privacy is written at emission, per the note
+            ; above — this pass passes 0.
+            (when (or (= h "deftype") (= h "deftype-"))
+              (register-type-alias (as ptr f) 0))
             ; defunion/defunion-: pre-register the backing struct's name (monomorphic)
             ; or the template, so defn signatures mentioning the type resolve in
             ; the signature prescan that follows.
@@ -15307,7 +15386,7 @@
             (set! g-defining-private (if (= ph3 "defn-") 1 0))
           (let (name-node:ptr (node-at (as ptr f) 1)
                 params-node:ptr (node-at (as ptr f) 2))
-            (when (!= (node-is-list params-node) 0)
+            (when (node-is-list params-node)
               ; A `:where` clause OR a receiver over a parametric struct marks a
               ; bounded-generic template: retain it for on-demand monomorphization
               ; rather than parsing its (free-tyvar) parameter/return types now.
@@ -15586,7 +15665,7 @@
                           ; it walks import forms without calling `do-import` — so
                           ; the honest state while prescanning file F is "F has no
                           ; bindings yet", not "F inherits its importer's".
-                          save-file-imports:(raw (Vector (ref ImportBind))) g-file-imports)
+                          save-file-imports:raw:ImportVec g-file-imports)
                       (let (src:ptr (read-file path))
                         (set! g-source-path path)
                         (set! g-src src)
@@ -16166,6 +16245,11 @@
               (do (set! g-out g-type-stream) (emit-defstruct (as ptr f)))
             'defunion
               (do (set! g-out g-type-stream) (emit-defunion (as ptr f)))
+            ; Stage 16: registered in prescan-struct-names; emits no IR. Re-run
+            ; here only so the emit pass, the one point where privacy is armed,
+            ; reaches the registration (container-type-sugar.md §3.4).
+            'deftype
+              (register-type-alias (as ptr f) 0)
             'defcast
               (emit-defcast (as ptr f))
             'extern
@@ -16211,6 +16295,10 @@
               (do (set! g-defining-private 1)
                   (set! g-out g-type-stream)
                   (emit-defunion (as ptr f))
+                  (set! g-defining-private 0))
+            'deftype-
+              (do (set! g-defining-private 1)
+                  (register-type-alias (as ptr f) 1)
                   (set! g-defining-private 0))
             'defn-
               (do (set! g-defining-private 1)
@@ -16635,7 +16723,7 @@
                           ; Stage 15 B1: the imported file gets its OWN import
                           ; environment — this save/clear/restore is what makes
                           ; a prefix file-scoped rather than unit-scoped.
-                          save-file-imports:(raw (Vector (ref ImportBind))) g-file-imports)
+                          save-file-imports:raw:ImportVec g-file-imports)
                       (set! g-importing (import-list-push g-importing path))
                       (let (src:ptr (read-file path))
                         (set! g-source-path path)
@@ -16766,7 +16854,7 @@
                     ; Stage 15 B1: and its own import environment — the
                     ; save/clear/restore below is what makes a prefix
                     ; file-scoped rather than unit-scoped (§2.4).
-                    save-file-imports:(raw (Vector (ref ImportBind))) g-file-imports)
+                    save-file-imports:raw:ImportVec g-file-imports)
                 ; Push onto importing stack
                 (set! g-importing (import-list-push g-importing path))
                 ; Read and parse the imported file
@@ -17242,7 +17330,7 @@
 ; G-5: `init-name-sets` split into two value-returning builders, one per set —
 ; §4.4 item 1. Each still allocates through g-arena-alloc and is never dropped
 ; (process lifetime).
-(defn build-special-form-set ():(ref (HashSet CStr))
+(defn build-special-form-set ():NameSet
   ; --- special-form-named set (87 members) ---
   ; Stage 15 B2b removed the seven `unsafe/*` whole-string entries UN-2 added:
   ; `unsafe` is a real built-in namespace now, so `special-form-named` answers
@@ -17250,8 +17338,8 @@
   ; roster) instead of by string membership. The bare retired spellings (`cast`,
   ; `ptr+`, `funcall-ptr-*`, `unsafe-import-private`) stay in the set, still
   ; reserved so nothing may shadow them.
-  (let (s:(ref (HashSet CStr))
-          (unsafe/cast (ref (HashSet CStr))
+  (let (s:NameSet
+          (unsafe/cast NameSet
             (alloc-handle-alloc (addr-of g-arena-alloc) (sizeof (HashSet CStr)) 8)))
   (hashset-init-alloc s (addr-of g-arena-alloc))
   (into s
@@ -17292,9 +17380,11 @@
        ; top-level definers
        "defn" "defvar" "defconst" "defenum" "defstruct"
        "defmacro" "defprotocol" "extend" "def-rmacro"
+       ; Stage 16: type aliases (container-type-sugar.md)
+       "deftype"
        ; Stage 12 N3: private definer variants (trailing `-`)
        "defn-" "defvar-" "defconst-" "defenum-" "defstruct-"
-       "defmacro-" "defprotocol-" "defunion-"
+       "defmacro-" "defprotocol-" "defunion-" "deftype-"
        "import" "import-use" "import-only" "import-prefixed"
        "unsafe-import-private" "extern" "declare" "compile-time"
        ; Stage 12 N4: namespace IR-prefix override
@@ -17307,15 +17397,15 @@
     (HashSetIter CStr))
   (return s)))
 
-; --- primitive-type-named set (19 members) ---
-(defn build-primitive-type-set ():(ref (HashSet CStr))
-  (let (s:(ref (HashSet CStr))
-          (unsafe/cast (ref (HashSet CStr))
+; --- primitive-type-named set (18 members) ---
+(defn build-primitive-type-set ():NameSet
+  (let (s:NameSet
+          (unsafe/cast NameSet
             (alloc-handle-alloc (addr-of g-arena-alloc) (sizeof (HashSet CStr)) 8)))
   (hashset-init-alloc s (addr-of g-arena-alloc))
   (into s
-    #{ ; integer types
-       "int" "bool" "i1" "i8" "i16" "i32" "i64"
+    #{ ; integer types (plus bool, which is not one)
+       "int" "bool" "i8" "i16" "i32" "i64"
        "ui8" "ui16" "ui32" "ui64"
        ; float types
        "f32" "f64" "float" "double"

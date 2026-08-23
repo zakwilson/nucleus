@@ -52,6 +52,102 @@ It would be nice if something like `(contains #{"foo" "bar"} (as CStr baz))` cou
 
 `(ref (HashMap CStr i32))` is ugly
 
+Evaluation: [container-type-sugar.md](container-type-sugar.md). **The proposed
+spelling buys zero characters** — `ref:(HashMap CStr i32)` is 22 characters and
+already works in every type position (the Stage 14 CP-1 chain fuse, never
+applied to collections in the docs or in any source file); `ref:HashMap:(CStr
+i32)` is also 22 and would cost the reader a pointer-kind special case to keep
+`p:ptr:(fn i32)` wrapping. The paren-free `ref:HashMap:CStr:i32` (20) works too,
+but only while every type argument is a single token.
+
+**Two characters is not why nobody adopted it.** The sugar appears in no real
+source file, while the list form it replaces appears 55× as `(ref (Vector T))`,
+43× as `(ref (HashSet T))`, 36× as `(ref (HashMap K V))`. The type expression
+itself is the cost, not its punctuation — so the recommendation is **type
+aliases** (`(deftype SymTab (ref (HashMap CStr i32)))` → `m:SymTab`), the one
+option that removes the expression from the use sites rather than compressing
+it, and the one that adds no reader rule at all. There is no way to name a type
+in Nucleus today: no `deftype`, nothing alias-like in `src/`, `docs/`, or
+`design/`. Transparent, not nominal — same stamped type, same mangled name, one
+overload — which is what keeps `type-spelling` untaught and the bootstrap
+byte-identical until a file actually adopts one.
+
+**Aliases and the colon sugar compose, and that combination is the real
+answer.** A single-token type name already works through the plain colon sugar
+in every declaration position — `defvar` name, field, param, return, `let`,
+`with`, chain tail — with nothing new to implement, so
+`(defvar g-special-form-set:NameSet …)` needs only the alias. On that binding
+the sugar alone saves 5%, the alias alone 32%, the two together 37%. It also
+explains why the sugar was never adopted: it is at its best exactly when the
+type is one token, and the tree has almost no single-token collection types to
+use it on. Aliases create them — and in doing so make arity-driven chains
+(which only compress *multi-token* expressions) largely pointless.
+
+**Done** (2026-08-22) — all four steps: `deftype`/`deftype-`, the silent
+mis-parse fixed, the compiler's own sources adopted, and parametric aliases.
+**799 tests (was 778)**, bootstrap byte-identical, `examples/type-aliases.nuc`.
+CT-A (arity-driven flat chains) is **dropped**: it compresses only multi-token
+type expressions, which is exactly what the other three remove.
+
+Phase 1 gave `deftype`/`deftype-`, transparent, with forward references,
+alias-of-alias, `.nuch` export and `deftype-` privacy.
+Three corrections came out of building it. `guard-name-kind` **cannot** carry
+collisions the way the design assumed — it skips every row reporting the kind
+being defined, and struct/template/enum/alias all report `NK-TYPE`, so
+type-over-type is invisible to it by construction; since aliases are probed
+last, a colliding alias is *dead*, not merely ambiguous, so `deftype` needed its
+own `type-name-collision` check running on both the prescan and emit passes to
+catch a clashing type declared either above or below it. And "the `.nuch`
+carries definer forms verbatim" was wrong: **both** `.nuch` sides are explicit
+form lists, so an unlisted form is silently dropped — the header emitted a
+`declare` naming a `Count` it did not carry. The same shape then bit twice more,
+in `--emit-cheader` (which resolved type names by spelling, so an alias leaked
+out as `struct Count`, a header that does not compile) and in the REPL's own
+form chain. **A new top-level form has six dispatch sites here** — prescan, emit,
+`.nuch` export, `.nuch` import, C header, REPL — plus the special-form set and
+`text-token-is-definer`; only the first two follow from the feature's
+description.
+
+Probing for the filed spelling also **turned up a silent mis-parse** to fix
+first, independent of the option chosen: `x:ref:Vector:ref:Node` puts `ref` and
+`Node` in template-argument position, where `collect-pattern-tyvars` collects
+any unresolvable symbol as a tyvar (bare `ptr` *is* resolvable, which is why
+`ref:Vector:ptr:i8` gets an honest arity error and this does not). The `defn` is
+classified as an unmonomorphized template, `emit-defn` skips its define, and
+nothing is reported — the call site fails with `no matching method for
+overloaded 'f'` about a function that was dropped from the module. **Fixed**:
+a pointer kind in type-argument position is refused by name (only `ref` can get
+there — bare `ptr`/`raw` are types, which is the whole asymmetry), and any type
+*pattern* whose argument count misses the template's arity now gets the arity
+error the concrete path already gave. `docs/types.md` gained the working
+container-chain spellings and the rule that a type argument may not itself be a
+chain.
+
+**Adoption** took the compiler's own three sites — `NameSet`, `ConstraintVec`,
+`ImportVec` — each verified byte-identical against a pre-adoption
+`build/nucleusc.ll`. Two lessons. Adopting a *new* form in `src/` needs
+`make update-bootstrap` **first**, because `boot/nucleusc.ll` is the compiler
+that builds `src/`; that is the two-commit dance the repo history already shows.
+And the §3.10 guidance ("kind inside the alias when it is stable, outside when
+the type is genuinely held both ways") decided all three by itself: `NameSet` is
+only ever a `ref`, while the other two are `raw` on a field and `ref` once a site
+has proved non-null — a difference the Stage 10 pointer-kind discipline exists
+to keep visible, so it stayed at the use site. Two high-count spellings were
+deliberately left alone: `(ref (Vector ptr))` is what Stage 14's type-safety work
+retypes site by site, so an alias would obstruct it.
+
+**Parametric aliases** (`(deftype (Vec T) (ref (Vector T)))`) close it out. They
+substitute the argument *nodes* rather than `StructTemplate`'s spellings,
+because in a method receiver an argument may still be a free tyvar with no
+`Type*` to spell. The receiver case is the one the design flagged, and its
+diagnosis was half right: an unexpanded `(Vec T)` matches no template and no
+pointer wrapper, so `collect-pattern-tyvars` walks straight past it and `T` is
+never collected — the opposite mechanism from the predicted "alias name
+collected as a tyvar", same consequence. The trap worth carrying forward is that
+`MAX-TYPE-ALIAS-DEPTH` in the parse path did **not** protect the pattern path,
+and `(deftype (A T) (A T))` hung the compiler until that descent got its own
+guard: a depth counter is a property of each recursion site, not of the concept.
+
 ## `import` doesn't seem to work in the REPL
 
 ## Container type literals should take more element types
@@ -119,6 +215,52 @@ fixtures, `make bootstrap` converges.
 
 ## Broad auto-cast to bool
 
-It's a convenience in some languages, including lisps that most values can be used as booleans. Right now, Nucleus just uses i1 - neither broad acceptance nor a dedicated boolean type.
+It's a convenience in some languages, including lisps that most values can be used as booleans. Right now, Nucleus just uses i1 - neither broad acceptance nor a dedicated boolean type. I would like to add a dedicated `bool` type to represent truth, and automatic casts when something wants `bool` even though that's obviously lossy.
 
-The `bool` type can be `true` or `false`. Internally, those can be 1 and 0, but there could be some ergonomic benefit to treating numbers as truthy like most lisps.
+The `bool` type can be `true` or `false`. Internally, those can be 1 and 0, but there could be some ergonomic benefit to treating all numbers as truthy like most lisps. That probably means all primitive values are true, but raw pointers and references to `null` or `none` are false.
+
+Evaluation: [bool-truthiness.md](bool-truthiness.md). **Split the item and drop
+one half.** The dedicated type is worth doing and smaller than it looks (under 70
+`:i1` sites; `bool` is *already* a spelling for `ty-i1` and already dispatches, so
+the change is a divorce from the integers, not a new type — and it deletes the
+`{0,1}` range rule rather than adding one). Note that "all numbers are true"
+*requires* it: `false` would otherwise be a number, hence true.
+
+But that number rule is the half to drop. In a static language every conditional
+it newly admits is one whose answer is already known — `(when n:i32 …)` is a
+constant, and so is `(when p:ptr:Node …)` since Stage 10 made `ptr` non-null — so
+it shortens **zero** lines of working code while silently inverting `(when
+(str-empty? s) …)`, `(when (char-is-digit c) …)` and every C `int` predicate,
+which return `i32` (confirmed by running them). It is also the exact blind spot
+`conventions.md` records from W9 item 31, where a wrong `i1` survived every
+bootstrap because its only consumers were truthiness tests. And it is the only
+option that cannot be revised: it gives `(when n:i32 …)` the opposite of the
+meaning anyone would later want, where the alternatives leave it an error.
+
+What survives is **nil punning** — `raw`/`CStr`/`?T`/`Maybe`, 1,135 null-test
+sites in `src/` — and it belongs at the six condition sites (`cond`, `while`,
+`not`, `_and`/`_or` ×2), *not* in the coercion set as the item words it: a lossy
+implicit coercion contradicts types.md's "exactly `as`'s safe set" invariant and
+would make a `bool` parameter a universal overload candidate, against the
+already-decided rule that dispatch is stricter than assignment. The one cost the
+framing misses is that `test-true-nonnull` matches node *shapes*, so a bare
+symbol needs its own arm or `(when m (m kind))` typechecks the test and then
+fails on the body. Zero-is-false is the larger prize (a further 522 sites, and it
+matches this codebase's `(!= flag 0)` idiom — C semantics fit here where Lisp's
+do not) and stays available later.
+
+Fixed out of that evaluation, on its own and ahead of any `bool` work:
+[varargs-promotion.md](varargs-promotion.md). Arguments past a variadic callee's
+fixed prefix took no default argument promotions, so `(printf "%d %f" n:i16
+x:f32)` passed `i16`/`float` where C passes `i32`/`double` — `-300` printed as
+`-1940914476` and `2.5` as `0.000000`. Nothing to do with `bool`; `bool` was
+simply next in line. The fix is keyed on argument **position**, not on a
+source/target type pair, which is why it sits at the argument walk beside the
+StrView vararg rule rather than in `coerce-int-val` — it delegates the widening
+back to that chokepoint so `zext`-vs-`sext` stays decided once. 10 of 149
+examples changed IR, **0 changed output** (all ten were `bool` under `%d`, the
+case that was already right by luck). 777 tests, bootstrap converges.
+
+## `case` taking a list
+
+`lisp (case foo :bar 1 (:baz :qux) 2 3)` - expands to individual comparisons at compile time

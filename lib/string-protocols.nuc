@@ -86,23 +86,23 @@
 ;   char-count   — codepoint count.  O(n): walks UTF-8 bytes counting lead
 ;                  bytes.  Never an unqualified "count" (byte vs. codepoint
 ;                  ambiguity rule from string.md §4).
-;   str-empty?   — 1 when byte-len == 0, else 0.  Cheap: no codepoint walk.
+;   str-empty?   — true when byte-len == 0.  Cheap: no codepoint walk.
 ;   char-at      — nth codepoint, O(n).  Errors str-index-out-of-bounds when
 ;                  i is past the last codepoint.
 ;   chars        — return a fresh char iterator by VALUE (associated type
 ;                  CharI).  Drive with (addr-of it) + next.
-;   starts-with? — 1 when self begins with the given prefix StrView, else 0.
-;   ends-with?   — 1 when self ends with the given suffix StrView, else 0.
-;   contains-str?— 1 when self contains the given needle StrView, else 0.
+;   starts-with? — true when self begins with the given prefix StrView.
+;   ends-with?   — true when self ends with the given suffix StrView.
+;   contains-str?— true when self contains the given needle StrView.
 ; ---------------------------------------------------------------------------
 (defprotocol (Str CharI)
   (char-count    ((self (ref Self))):usize)
-  (str-empty?      ((self (ref Self))):i32)
+  (str-empty?      ((self (ref Self))):bool)
   (char-at       ((self (ref Self)) i:usize):!Char)
   (chars         ((self (ref Self))):CharI)
-  (starts-with?    ((self (ref Self)) (prefix (ref StrView))):i32)
-  (ends-with?      ((self (ref Self)) (suffix (ref StrView))):i32)
-  (contains-str?   ((self (ref Self)) (needle (ref StrView))):i32))
+  (starts-with?    ((self (ref Self)) (prefix (ref StrView))):bool)
+  (ends-with?      ((self (ref Self)) (suffix (ref StrView))):bool)
+  (contains-str?   ((self (ref Self)) (needle (ref StrView))):bool))
 
 ; Str extends Eq: every type that conforms to Str must also conform to Eq
 ; (content comparison).  This mirrors `(extend Ord Eq)` in lib/numeric.nuc.

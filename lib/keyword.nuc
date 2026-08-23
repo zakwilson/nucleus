@@ -122,11 +122,11 @@
 ; ---------------------------------------------------------------------------
 
 (extend Keyword Eq)
-(defn = (a:Keyword b:Keyword):i1
+(defn = (a:Keyword b:Keyword):bool
   (let (la:Keyword a
         lb:Keyword b)
     (return (if (= ((addr-of la) id) ((addr-of lb) id)) true false))))
-(defn != (a:Keyword b:Keyword):i1
+(defn != (a:Keyword b:Keyword):bool
   (let (la:Keyword a
         lb:Keyword b)
     (return (if (= ((addr-of la) id) ((addr-of lb) id)) false true))))

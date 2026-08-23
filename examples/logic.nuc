@@ -2,9 +2,9 @@
 ; primitives (Stage 13). Mirrors the (+)/_+ convention:
 ;   (and)         => true
 ;   (or)          => false
-;   (and x)       => x   [1-arg returns the operand UNCHECKED — not forced to i1]
+;   (and x)       => x   [1-arg returns the operand UNCHECKED — not forced to bool]
 ;   (or x)        => x
-;   (and a b c..) => (_and a (and b c..))   [short-circuits; i1-checked]
+;   (and a b c..) => (_and a (and b c..))   [short-circuits; bool-checked]
 ;   (or  a b c..) => (_or  a (or  b c..))
 (import-use "stdio.h")
 
@@ -17,9 +17,9 @@
   (printf "(and) = %d\n" (as i32 (and)))
   (printf "(or)  = %d\n" (as i32 (or)))
 
-  ; 1-arg returns the operand UNCHECKED. The operand is an i32 value (not i1),
+  ; 1-arg returns the operand UNCHECKED. The operand is an i32 value (not bool),
   ; so the result is the value itself — 5, not 1. This distinguishes the new
-  ; 1-arg-returns-operand semantics from an i1 coercion.
+  ; 1-arg-returns-operand semantics from a bool coercion.
   (printf "(and 5) = %d\n" (and 5))
   (printf "(or  9) = %d\n" (or 9))
 

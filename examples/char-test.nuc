@@ -21,9 +21,8 @@
   (printf "u41=%u\n"    (as ui32 \u{41}))         ; 65
   (printf "u1F600=%u\n" (as ui32 \u{1F600}))      ; 128512
 
-  ; `=`/`!=` dispatch on two Char values. (Normalize the i1 result to 0/1 with
-  ; `if` — a bare (cast i32 bool) sign-extends true to -1 for every scalar type,
-  ; which is pre-existing Nucleus semantics, not Char-specific.)
+  ; `=`/`!=` dispatch on two Char values. The `if` narrows the bool result to an
+  ; i32 0/1 for `%d`.
   (printf "eq-aa=%d\n" (if (= \a \a) 1 0))          ; 1
   (printf "eq-ab=%d\n" (if (= \a \b) 1 0))          ; 0
   (printf "ne-ab=%d\n" (if (!= \a \b) 1 0))         ; 1

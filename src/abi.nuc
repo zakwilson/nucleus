@@ -1047,6 +1047,18 @@
     ; specific pair, not "no built-in applies".
     (return (coerce-via-cast-rule v target))))
 
+; THE bool -> integer widening, in one function its two explicit askers CALL
+; (`emit-as` step 5 and `vararg-promote`). It is deliberately NOT reachable from
+; `coerce-int-val` above: an implicit bool->int would make `(let (n:i32 true) …)`
+; compile, which is the divorce this item performs
+; (design/stage16-ergonomics/bool-type-plan.md).
+(defn widen-bool-to-int (v:raw:Val target:raw:Type):ref:Val
+  (let (vv:raw:Val v
+        tmp:ptr (new-tmp))
+    (fprintf g-body-stream "  %s = zext %s %s to %s\n"
+      tmp (type-to-ir (vv type)) (vv val) (type-to-ir target))
+    (return (alloc-val target tmp))))
+
 ; SM-5 diagnostic backstop (design/stage14/symbol-mangling.md): validate a
 ; FINAL ir-name at the point a defn/defvar/struct/union is defined or declared,
 ; so an LLVM-illegal character ir-name-token/sanitize-for-ir/sanitize-for-c

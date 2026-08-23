@@ -250,12 +250,11 @@
 (defn builtin-type-name (name:CStr):?ptr:Type
   (when (= name "int") (return (as ptr ty-i32)))
   (when (= name "Err") (return (as ptr ty-err)))
-  (when (= name "i1") (return (as ptr ty-i1)))
   (when (= name "i8") (return (as ptr ty-i8)))
   (when (= name "i16") (return (as ptr ty-i16)))
   (when (= name "i32") (return (as ptr ty-i32)))
   (when (= name "i64") (return (as ptr ty-i64)))
-  (when (= name "bool") (return (as ptr ty-i1)))
+  (when (= name "bool") (return (as ptr ty-bool)))
   (when (= name "ptr") (return (as ptr ty-ptr)))
   (when (= name "raw") (return (as ptr ty-raw)))
   (when (= name "CStr") (return (as ptr ty-cstr)))
@@ -331,6 +330,10 @@
   ; separately in emit-float. `f32`/`float` are unaffected. Inert off AVR.
   ; Deliberately NOT inside `builtin-type-name`, which must answer without dying.
   (when (or (= name "f64") (= name "double")) (avr-reject-f64 line))
+  ; Retired in Stage 16 (design/stage16-ergonomics/bool-type-plan.md): bool is
+  ; its own kind, so the language has no 1-bit integer for `i1` to name. Named
+  ; here rather than left to `unknown type` so the replacement is in the message.
+  (when (= name "i1") (die-at line "i1 is no longer a type — use bool"))
   (let (bt:?ptr:Type (builtin-type-name name))
     (when (!= bt null) (return (unsafe/cast ref:Type bt))))
   ; Stage 13 L7: a TY-FN spelling (interned "__fnty_<id>" from type-spelling)
@@ -355,6 +358,25 @@
         (when (!= ud null)
           (return (union-instance-type ud))))
       (return (type-for-sdef sd))))
+  ; Stage 16 (container-type-sugar.md §3.3): a type alias expands to its retained
+  ; body. Probed after the real definers, so an alias can never mask one — though
+  ; `guard-name-kind` already makes that collision unreachable. Transparent: the
+  ; Type returned is the body's, so nothing downstream can tell the two spellings
+  ; apart (§3.2), which is why `type-spelling` is deliberately not taught aliases.
+  (if-some (ta (type-alias-lookup-ref name))
+    (do
+      ; §3.7: a parametric alias used bare would otherwise expand to a body full
+      ; of free tyvars and fail as `unknown type: T`, naming the wrong thing.
+      (when (!= (ta ntv) 0)
+        (die-at line
+          (fmt-sd "type alias '%s' takes %d type arguments — apply it as (Name Arg...)" name (ta ntv))))
+      (when (>= g-type-alias-depth MAX-TYPE-ALIAS-DEPTH)
+        (die-at line (fmt-s "type alias '%s' expands into a cycle" name)))
+      (set! g-type-alias-depth (+ g-type-alias-depth 1))
+      (let (t:ref:Type (parse-type-from-node (as ptr (ta body)) line))
+        (set! g-type-alias-depth (- g-type-alias-depth 1))
+        (return t)))
+    0)
   ; Stage 15 W1c: `unknown-type-message` (src/nucleusc.nuc) says plainly that
   ; the name is defined nowhere in the unit, and — for §2.7's reachability
   ; constraint, which W1 keeps — names the on-path file that does define it.
@@ -701,6 +723,27 @@
   (let (al:ptr (binding-alias-find spelling BK-STRUCT-TEMPLATE))
     (when (!= al null) (return (as ptr:StructTemplate al))))
   (when (!= g-type-key-ok 0) (return (struct-template-lookup (intern-str spelling))))
+  (return null))
+
+; Stage 16 type aliases (container-type-sugar.md §3.4). Mirror of
+; struct-template-lookup / -lookup-ref: names compare by pointer equality, so
+; callers pass an interned spelling.
+(defn type-alias-lookup (name:ptr):?ptr:TypeAlias
+  (doseq (ta g-type-aliases (VecIter ref:TypeAlias))
+           (when (and (= (ta name) name)
+                      (or (= g-priv-bindings 0) (!= (binding-visible (ta priv) (ta src-ns)) 0)))
+                 (return ta)))
+  (return null))
+
+(defn type-alias-lookup-ref (spelling:CStr):?ptr:TypeAlias
+  (dotimes (i (name-ref-key-count spelling))
+    (let (k:CStr (name-ref-key-at spelling i))
+      (when (!= k null)
+        (let (hit:?ptr:TypeAlias (type-alias-lookup (as ptr k)))
+          (when (!= hit null) (return hit))))))
+  (let (al:ptr (binding-alias-find spelling BK-TYPE-ALIAS))
+    (when (!= al null) (return (as ptr:TypeAlias al))))
+  (when (!= g-type-key-ok 0) (return (type-alias-lookup (intern-str spelling))))
   (return null))
 
 ; The UnionDef behind a type, or null: a defunion value is TY-STRUCT whose
@@ -1168,6 +1211,165 @@
           (.set! st src-file g-source-path)
           (.set! st src-line (ff line))
           (when (!= g-defining-private 0) (set! g-priv-bindings 1)))))))
+
+; What `name` already names as a TYPE, as a noun for a diagnostic, or null.
+;
+; `guard-name-kind` cannot answer this: it skips every row reporting the kind
+; being defined, and struct / template / enum / alias all report NK-TYPE, so a
+; type-over-type collision is by construction invisible to it. The codebase
+; leaves that gap open generally (`(defenum Pt …)` over a struct is accepted
+; today), but an alias cannot afford it — `parse-type-name` probes aliases LAST,
+; so a colliding alias is not merely ambiguous, it is dead on arrival and
+; silently so. Scoped to `deftype` rather than fixing the general gap here.
+(defn type-name-collision (name:CStr):CStr
+  (when (!= (builtin-type-name name) null) (return "a built-in type"))
+  (when (!= (as ptr (struct-lookup-ref name)) null) (return "a type"))
+  (when (!= (as ptr (struct-template-lookup-ref name)) null) (return "a struct template"))
+  (when (!= (as ptr (union-template-lookup-ref name)) null) (return "a union template"))
+  (when (!= (as ptr (enumdef-lookup-ref name)) null) (return "an enumeration"))
+  (return null))
+
+; §3.7: replace each of a parametric alias's parameters in `node` with the
+; corresponding argument NODE. Node substitution, not StructTemplate's spelling
+; substitution, because in a method receiver pattern an argument may still be a
+; free tyvar with no Type to spell.
+(defn subst-alias-args (node:raw:Node tyvars:ptr args:ptr ntv:i32 line:i32):raw:Node
+  (when (= node null) (return null))
+  (let (n:raw:Node node)
+    (when (= (n kind) NODE-CELL)
+      (return (make-cell (subst-alias-args (n car) tyvars args ntv line)
+                         (subst-alias-args (n cdr) tyvars args ntv line)
+                         (n line))))
+    (when (!= (n kind) NODE-SYM) (return node))
+    (let (idx:i32 (tyvar-index-of (as CStr (n s)) tyvars ntv))
+      (when (>= idx 0)
+        (return (as raw:Node (aref (as ptr:ptr args) idx)))))
+    ; A colon spelling in the body (`ref:T`) substitutes segment-wise, so the
+    ; argument has to be one token — a segment has nowhere to put a paren form.
+    (when (!= (strchr (n s) 58) null)
+      (let (segs:ptr (split-colon-segments (as CStr (n s)) line)
+            acc:ptr null
+            hit:i32 0)
+        (let (it:ListIter (list-iter segs))
+          (doseq-iter (e (addr-of it))
+            (let (seg:ptr ((as ptr:Node e) s)
+                  si:i32 (tyvar-index-of (as CStr seg) tyvars ntv)
+                  piece:ptr seg)
+              (when (>= si 0)
+                (do (set! hit 1)
+                    (let (a:ptr (aref (as ptr:ptr args) si))
+                      (when (!= (node-kind a) NODE-SYM)
+                        (die-at line (fmt-s "deftype: parameter '%s' is spelled in a colon chain, so its argument must be a single token — write the alias body in list form" seg)))
+                      (set! piece ((unsafe/cast ptr:Node a) s)))))
+              (if (= acc null) (set! acc piece) (set! acc (fmt-2s "%s:%s" acc piece))))))
+        (when (and (!= hit 0) (!= acc null))
+          (let (new:ptr:Node (as ptr:Node (alloc-node)))
+            (.set! new kind NODE-SYM)
+            (.set! new line (n line))
+            (.set! new s (intern-str acc))
+            (return (as raw:Node (as ptr new)))))))
+    (return node)))
+
+; §3.7: the substituted body of a parametric alias application `(Name Arg…)`, or
+; null when `node` is not one. Callers guard the recursion with
+; `g-type-alias-depth`, exactly as the plain-alias path in parse-type-name does.
+(defn type-alias-apply (node:raw:Node line:i32):raw:Node
+  (when (= node null) (return null))
+  (let (n:raw:Node node)
+    (when (!= (n kind) NODE-CELL) (return null))
+    (let (head:raw:Node (n car))
+      (when (or (= head null) (!= (head kind) NODE-SYM)) (return null))
+      (if-some (ta (type-alias-lookup-ref (as CStr (head s))))
+        (do
+          (when (= (ta ntv) 0) (return null))
+          (let (nargs:i32 (- (node-len (as ptr n)) 1))
+            (when (!= nargs (ta ntv))
+              (die-at line
+                (fmt-sd "%s: wrong number of type arguments for type alias (%d given)"
+                        (ta name) nargs)))
+            (let (args:ptr (arena-alloc (* (as i64 nargs) (ptr-bytes))))
+              (dotimes (i nargs)
+                (aset! (as ptr:ptr args) i (node-at (as ptr n) (+ i 1))))
+              (return (subst-alias-args (ta body) (ta tyvars) args nargs line)))))
+        0)
+      (return null))))
+
+; Stage 16: register `(deftype Name Type)` / `(deftype- Name Type)`
+; (container-type-sugar.md §3.4). Defines no type and emits no IR — a use of
+; `Name` in type position re-parses `Type` through parse-type-name, so the alias
+; never reaches type identity, mangling or dispatch (§3.2). The body is retained
+; unparsed, which is what makes declaration order inside a file irrelevant.
+;
+; Called twice for each form: once from the prescan (is-priv 0, so signatures
+; below it resolve) and once from the emit pass, which is the only point at which
+; `g-defining-private` is armed — hence the same-site update rather than the
+; early return `register-struct-template` can afford.
+(defn register-type-alias (form:ptr is-priv:i32):void
+  (let (ff:ptr:Node (unsafe/cast ptr:Node form))
+    (when (!= (node-len form) 3)
+      (die-at (ff line) "deftype: expects a name and one type — (deftype Name Type)"))
+    (let (spec:ptr (node-at form 1)
+          tyvars:ptr null
+          ntv:i32 0)
+      ; §3.7: `(deftype (Table V) …)` — the parameter list is spelled exactly as
+      ; a struct template's, so the two definers read alike at a glance.
+      (when (= (node-kind spec) NODE-CELL)
+        (do (set! ntv (- (node-len spec) 1))
+            (when (<= ntv 0)
+              (die-at (ff line) "deftype: parameter list required — (deftype (Name T ...) Type)"))
+            (set! tyvars (arena-alloc (* (as i64 ntv) (ptr-bytes))))
+            (dotimes (i ntv)
+              (let (tv:ptr (node-at spec (+ i 1)))
+                (when (!= (node-kind tv) NODE-SYM)
+                  (die-at (ff line) "deftype: each type parameter must be a symbol"))
+                (aset! (as ptr:ptr tyvars) i (intern-str ((unsafe/cast ptr:Node tv) s)))))
+            (set! spec (node-at spec 0))))
+      ; W9 item 45: `node-kind`, so a name spelled `()` reaches this message
+      ; rather than dereferencing the NULL node it reads as.
+      (when (!= (node-kind spec) NODE-SYM)
+        (die-at (ff line) "deftype: alias name must be a symbol"))
+      (reject-colon-in-def-name (as raw:Node spec) "deftype" (ff line))
+      (let (name-node:ptr:Node (unsafe/cast ptr:Node spec)
+            name:ptr ((unsafe/cast ptr:Node spec) s)
+            key:ptr (qualify-name ((unsafe/cast ptr:Node spec) s))
+            body:ptr (node-at form 2))
+        (when (= body null)
+          (die-at (ff line) "deftype: type expression required — (deftype Name Type)"))
+        ; Deliberately ahead of the same-site early return, so it runs on BOTH
+        ; calls: the prescan pass catches a type name defined ABOVE the alias,
+        ; the emit pass one defined BELOW it (by then the whole unit is
+        ; registered). One check, both directions, no other definer touched.
+        (let (clash:CStr (type-name-collision (as CStr name)))
+          (when (!= clash null)
+            (die-at (ff line)
+              (fmt-2s "deftype: '%s' already names %s — an alias of an existing type name would never resolve"
+                      name clash))))
+        (if-some (prev (type-alias-lookup key))
+          (do
+            (when (!= (same-definition-site (prev src-file) (prev src-line) (ff line)) 0)
+              (do (.set! prev priv is-priv)
+                  (when (!= is-priv 0)
+                    (do (.set! prev src-ns g-current-ns)
+                        (set! g-priv-bindings 1)))
+                  (return)))
+            (die-redefinition (as CStr name) (ff line) BK-TYPE-ALIAS
+                              (prev src-file) (prev src-line)))
+          0)
+        (guard-name-kind name (ff line) NK-TYPE)
+        (when (>= (unsafe/cast i32 (count g-type-aliases)) MAX-TYPE-ALIASES)
+          (die-at (ff line) "too many type aliases"))
+        (let (ta:ptr:TypeAlias (as ptr:TypeAlias (arena-alloc (sizeof TypeAlias))))
+          (conj g-type-aliases ta)
+          (.set! ta name key)
+          (.set! ta body (as raw:Node body))
+          (.set! ta tyvars tyvars)
+          (.set! ta ntv ntv)
+          (.set! ta priv is-priv)
+          (.set! ta src-ns g-current-ns)
+          ; Stage 15 B4 (R4): the defining site — see `same-definition-site`.
+          (.set! ta src-file g-source-path)
+          (.set! ta src-line (ff line))
+          (when (!= is-priv 0) (set! g-priv-bindings 1)))))))
 
 ; Stamp (and memoize) a concrete instance of a defunion template from a type
 ; The Type a defunion instance resolves to. For a niche layout (unions.md §6
@@ -1661,6 +1863,17 @@
                     t:ref:Type (make-type TY-UNION))
                 (.set! t sdef sd)
                 (return t))))))
+      ; §3.7: a parametric alias application expands before any registry is
+      ; consulted, so the alias name never reaches type identity or mangling —
+      ; the same transparency the plain form has in parse-type-name.
+      (let (ex:raw:Node (type-alias-apply (as raw:Node n) line))
+        (when (!= ex null)
+          (when (>= g-type-alias-depth MAX-TYPE-ALIAS-DEPTH)
+            (die-at line "type alias expands into a cycle"))
+          (set! g-type-alias-depth (+ g-type-alias-depth 1))
+          (let (t:ref:Type (parse-type-from-node (as ptr ex) line))
+            (set! g-type-alias-depth (- g-type-alias-depth 1))
+            (return t))))
       ; Stage 11: a parameterized defstruct use — (Vector i32), (HashMap K V) —
       ; in type position stamps (and memoizes) a concrete monomorphic instance
       ; (parametric-structs.md §3). The colon-sugar composes for free: ptr:T and
