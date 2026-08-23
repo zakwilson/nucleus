@@ -1,0 +1,13 @@
+; Stage 16 as-sugar negative fixture: the pkind flow gate fires through the
+; sugar exactly as through `(as ref:Rec p)` — an annotation may not launder a
+; raw pointer into a non-null slot. Must FAIL with:
+;   "use as-ref (checked) or unsafe/cast (unchecked assertion)"
+(defstruct Rec (k i32))
+
+(defn use-ref (r:ref:Rec):i32 (return (r k)))
+
+(defn launder (p:raw:Rec):i32
+  (return (use-ref p:ref:Rec)))
+
+(defn main ():i32
+  (return 0))

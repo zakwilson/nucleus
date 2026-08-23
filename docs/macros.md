@@ -45,6 +45,16 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 | `into-iter` | `(into-iter dest-coll iter-ref)` | Drain a **bare iterator reference** `iter-ref` into `dest-coll`: calls `(next iter-ref)` each step and `(conj dest-coll elem)` for each element. The pre-Coll form, kept for pure iterators that have no `iter`. |
 | `->` | `(-> x form ...)` | Threads `x` through each form. If a form contains `_`, the value replaces `_`; otherwise inserts as first arg (thread-first). Bare symbols wrap as `(sym value)`. `_` is only special inside `->`. |
 
+Two notes on the `:type` annotation inside these expansions. `for` and `dotimes`
+splice the annotated loop variable into the body, so `(dotimes (i:i32 n) (foo
+i:i32))` writes the annotation twice: the first is the binding's declaration, the
+second is a [value-position cast](types.md#type-syntax-and-desugar) — an identity
+one, since it names the variable's own type, so it emits no instruction. It is no
+longer decoration, though: an annotation there that names a *different* type
+converts (or is refused, if the conversion is unsafe). And `->` finds its hole by
+matching the bare symbol `_`, so an annotated hole (`_:ptr:Node`) is not
+recognised as one — cast the threaded value in a form of its own instead.
+
 `case` is multi-way equality dispatch: it compares `form` against each value `vi` with `=` and yields the first matching result `ri`. The final unpaired argument is the **required** default. Because `=` is overloadable, `case` works over any type with an equality (integers, enum constants, symbols, C strings). `form` is re-evaluated per comparison, so it should be side-effect free.
 
 `(import-use arena)` additionally provides `(new T)` — allocate one zeroed `T` from the arena, typed `(ref T)` (non-null: `arena-alloc` aborts on exhaustion rather than returning null). It expands to `(as (ref T) (arena-alloc (sizeof T)))`, collapsing the `as` + `sizeof` boilerplate for the common "allocate a single struct" case (`arena-alloc` returns bare `ptr`; retyping it to a non-null `(ref T)` is exactly the elem-less-`ptr` `void*` hatch `as` accepts). It is **not** in the prelude (it depends on `arena-alloc`), so it requires an explicit `(import-use arena)`.

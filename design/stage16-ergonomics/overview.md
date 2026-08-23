@@ -48,6 +48,58 @@ I'm split between a simple variadic set! with an extra quoted symbol or variable
 
 It would be nice if something like `(contains #{"foo" "bar"} (as CStr baz))` could be written as `(contains #{"foo" "bar"} baz:CStr)`. I don't want to make the reader work too hard though.
 
+Evaluation: [as-sugar.md](as-sugar.md). **Done** (2026-08-23) — evaluated and
+implemented in the same pass, exactly as the evaluation recommended: the atom
+form only, at emit time, with the parenthesised form excluded and diagnosed.
+**804 tests (was 799)**, `make bootstrap` byte-identical on the first try,
+`examples/as-sugar.nuc` plus four rejection fixtures. Findings follow.
+
+**The reader needs no work at all** — and
+the one spelling that would require some is exactly the one to leave out.
+`baz:CStr` already lexes as a single symbol; `split-typed` cuts it downstream and
+`emit-symbol-ref` **discards** the type half, so `baz:CStr` compiles today and
+means `baz` — as does `baz:NoSuchType`, which is the same silently-unvalidated
+colon spelling the W4b `defconst` sweep chased out of definition names. So the
+slot is free, and the change is ~30 lines in two functions (`emit-symbol-ref` +
+its `node-type-sym` lockstep partner), reusing `emit-as`'s conversion body lifted
+into a shared `as-convert`.
+
+**Where it goes decides whether seven passes break.** A tree rewrite (reader or
+desugar) is the tempting shape and the wrong one: seven passes strip a
+value-position annotation and key on the bare name — the `set!` target, closure
+capture detection and rewrite, the Stage 10 non-null flow facts, const folding,
+plus the two typing halves. Demonstrated: `(when (!= p:?ptr:N null) (p k))`
+narrows today and `(when (!= (as ?ptr:N p) null) (p k))` does **not**. Emitting
+the cast inside `emit-symbol-ref`, leaving the node a `NODE-SYM`, keeps all seven
+working and keeps `set!`/`addr-of` on the lvalue reading for free.
+
+**Exposure is 16 sites, measured** by instrumenting the compiler and running it
+over `src/`, all 150 examples and `lib/`: every one a `for`/`dotimes` loop counter
+(`i:i32`, `i:usize`) whose annotation names the variable's own type, so the cast
+is identity and emits no IR. The adoptable set on the other side is **2411 of
+3327** `(as …)` forms in `src/`+`lib/` (72 %) — bare-symbol operand, atom-spellable
+type, led by `ptr` ×1055 and `ptr:ptr` ×323. `unsafe/cast` deliberately gets no
+sugar: the short spelling should be the safe one.
+
+**The real price is a third meaning for one atom.** `name:Type` is already a
+declaration in binding position and a *type* in type position (`ptr:Node`); this
+makes it a cast in value position, so `(let (a:i32 b:i32) …)` declares `a` and
+casts `b`. Not ambiguous to the compiler — no position takes both a type and a
+value — but the tree already has locals named `raw`, `ref` and `fn`
+(`reader.nuc:948` `raw:ptr`, `generics.nuc:536` `raw:i32`, `nucleusc.nuc:2235`
+`ref:CStr`), where one atom would carry all three readings. If that is too much,
+`baz::CStr` reaches the identical code path with no extra reader work and keeps
+the readings apart.
+
+Parenthesised types (`q:(ref P)`) are the part to **exclude**: the colon-paren
+fuse already claims them in every list context, so `(getp q:(ref P))` reads as a
+*call* `(q (ref P))` and dies `unknown: ref`. The fuse cannot be made
+value-aware — its output is indistinguishable from `(v i)` indexing and `(m 'k)`
+lookup. `deftype` is the answer, as it was for
+[container-type-sugar.md](container-type-sugar.md): an alias makes any type a
+single token, and the atom sugar works on single tokens. Worth doing regardless:
+that near-miss deserves a diagnostic naming the fix instead of `unknown: ref`.
+
 ## Container type sugar
 
 `(ref (HashMap CStr i32))` is ugly

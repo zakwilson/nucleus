@@ -5714,6 +5714,23 @@ spawn run_reject as-raw-to-ref-rejected tests/fixtures/as-raw-to-ref.nuc \
   "where non-null ptr:Rec is required -- use as-ref (checked) or unsafe/cast"
 spawn run_reject as-reinterpret-rejected tests/fixtures/as-reinterpret.nuc \
   "as: reinterpretation from ptr:Sym to ptr:Rec -- use unsafe/cast"
+
+# Stage 16 as-sugar.md — a value-position `:type` annotation is that same `as`
+# cast (`baz:CStr` == `(as CStr baz)`), so the first three pin that it inherits
+# `as`'s refusals rather than getting a laxer path of its own; the accept side
+# runs as examples/as-sugar.nuc. The first is also the WART being closed: the
+# annotation used to be discarded unread, so `x:NoSuchType` compiled silently.
+# The fourth holds the excluded spelling: a parenthesised type is claimed by the
+# reader's colon-paren fuse in every list context, so it reads as a call and
+# must SAY so instead of reporting `unknown: ref`.
+spawn run_reject as-sugar-unknown-type tests/fixtures/as-sugar-unknown-type.nuc \
+  "unknown type 'NoSuchType' in the annotation 'x:NoSuchType'"
+spawn run_reject as-sugar-lossy tests/fixtures/as-sugar-lossy.nuc \
+  "as: lossy conversion from i64 to i32 -- use unsafe/cast"
+spawn run_reject as-sugar-raw-to-ref tests/fixtures/as-sugar-raw-to-ref.nuc \
+  "use as-ref (checked) or unsafe/cast (unchecked assertion)"
+spawn run_reject as-sugar-paren tests/fixtures/as-sugar-paren.nuc \
+  "'q:(ref ...)' reads as a call here"
 #
 # Stage 15 W9 item 8 refines the FIRST category only: a narrowing whose operand
 # is a literal that provably fits is not lossy. `as-lossy.nuc` above narrows a

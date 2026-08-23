@@ -1,0 +1,8 @@
+; Stage 16 as-sugar negative fixture: the sugar is `as`, so it inherits `as`'s
+; refusals — a narrowing annotation is not a silent truncation. Must FAIL with:
+;   "as: lossy conversion from i64 to i32 -- use unsafe/cast"
+(defn narrow (n:i64):i32
+  (return n:i32))
+
+(defn main ():i32
+  (return (narrow 5)))
