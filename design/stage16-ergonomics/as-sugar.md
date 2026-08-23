@@ -315,3 +315,42 @@ side. What that does give is the weak form of the gate: the front end's
 behaviour on 25k lines of external source is unchanged up to the point where it
 already failed. The strong form — does the sugar's new refusal set reject
 anything real — remains unmeasured until the port builds again.
+
+## 10. Adoption and the boot refresh (2026-08-23, follow-up)
+
+Reported after the feature landed: *"the sugar does not work when the type is
+`usize`."* It does — the boot did not.
+
+`make` builds `src/` with `bin/nucleusc`, and the committed boot predated the
+feature, so it read every adopted annotation the old way: **discard it, use the
+bare name**. That is silent and harmless wherever an ordinary coercion re-derives
+the type, which covered sixteen of the seventeen sites adopted in
+`src/nucleusc.nuc` (`g-source-path:CStr`, `NODE-SYM:i32`, `i0:i64`, `sp:CStr`,
+`buf:CStr`, …). The seventeenth, `(invoke g-include-paths j:usize)`, is an
+argument whose type **selects an overload**, so dropping it dispatched on `i32`
+and failed `no matching method for overloaded 'invoke' with argument types
+(ptr:Vector.cstr, i32)`. One type failing out of five is what made it look like a
+`usize` bug in the feature; every shape of `usize` sugar compiles and runs
+correctly under `build/nucleusc` (bare, chained `ptr:usize`, `return`, `let`
+init, both binop operand slots, field store, dispatch argument, `dotimes`
+counter, and `ssize` beside it).
+
+Resolved by refreshing the bootstrap, the repo's standing two-commit dance
+(`Boot for deftype`, `Boot for variables in collection literals`). `make
+update-bootstrap` could not run — its `$(BIN)` dependency is the build that was
+failing — so the seed came from the relink escape (context/conventions.md): the
+already-built `build/nucleusc` implements the sugar, so it emitted the new
+`boot/nucleusc.ll` directly, `make boot-binary` relinked `bin/nucleusc` from it,
+and `make windows-boot` kept the committed Windows IRs in lockstep.
+
+**The adoption is IR-neutral, verified rather than assumed.** A pre-adoption copy
+of the tree (HEAD's `src/nucleusc.nuc` against the same `src/`+`lib/`) compiled
+with the same compiler yields IR **byte-identical** to the adopted tree's, module
+header aside — 0 diff lines over 155,044. Gates after the refresh: 804 tests,
+`make bootstrap` converges, abi/layout/check-headers/avr green.
+
+The durable lesson is in conventions.md rather than here: before adopting a new
+spelling in `src/`, ask what the boot will *silently* make of it, not whether the
+boot rejects it. A rejected spelling fails loudly at the first site; a
+reinterpreted one fails only where the difference is observable, which makes a
+stale boot look like a type-specific defect in the new feature.
