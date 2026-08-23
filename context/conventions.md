@@ -389,6 +389,40 @@ generic monomorphizer (`subst-tyvars-node`) therefore substitutes at the
 colon-*segment* level (like `subst-self-node` for protocols), not by matching
 standalone symbol nodes — that handles both shapes uniformly.
 
+**In value position that annotation is an `as` CAST, applied in exactly one
+place — and that placement is load-bearing.** Stage 16
+(design/stage16-ergonomics/as-sugar.md) made `baz:CStr` mean `(as CStr baz)`,
+implemented in `emit-symbol-ref` + `node-type-sym` (the lockstep pair), both
+calling `value-annot-type` (generics.nuc) for the destination and `as-convert`
+(nucleusc.nuc, split out of `emit-as`) for the conversion.
+
+**It is NOT a tree rewrite, and must never become one.** SEVEN passes split a
+value-position annotation and key on the bare name: `emit-symbol-ref-bound`, the
+`emit-set` target, `fn-capture-walk`, `fn-rewrite-captures` (+ its `addr-of` and
+`set!` arms), `node-binding-name` (the Stage 10 non-null flow facts),
+`node-is-const-int-literal` / `const-fold-int`, and `node-type-sym`. Emitting the
+cast at the value read leaves the node a `NODE-SYM`, so all seven keep working
+and `set!`/`addr-of` keep the lvalue reading for free. A reader or `desugar`
+rewrite would break them at once — the demonstration is
+`(when (!= p:?ptr:N null) (p k))`, which narrows, against
+`(when (!= (as ?ptr:N p) null) (p k))`, which does not (`node-binding-name`
+returns null for a non-`NODE-SYM`). A reader rewrite would additionally destroy
+the *type* reading: `(as ptr:i8 x)` would become `(as (as i8 ptr) x)`.
+
+Two consequences of the cast semantics. The annotation is now **checked** —
+`x:NoSuchType` was compiling silently, the same unvalidated-colon-spelling class
+W4b swept out of definition *names* (`reject-colon-in-def-name`), one position
+further along. And `node-type-sym` must not abort, so it resolves through
+`value-annot-type`'s `tyname-resolvable` probe and returns null (= "not
+modelled") on an unknown spelling, leaving the located error to emit.
+
+Two spellings are deliberately outside the sugar. A **parenthesised** type
+(`q:(ref P)`) is claimed by the colon-paren fuse in every list context and reads
+as the call `(q (ref P))` — `emit-callable-value` diagnoses that shape by name;
+the fix for a user is `deftype`. And the four self-evaluating names
+(`null`/`true`/`false`/`none`) are matched by interned identity *above* the
+split, so `null:raw:T` is an undefined name, not a cast.
+
 ## Colon-binding diagnostics span multiple chokepoints (CP-3)
 
 A trailing-colon binding name (the whitespace near-miss, e.g. `x: (raw Node)`) is **not** caught by a single chokepoint — the desugar/emit split means top-level and body-local bindings take different paths. `split-colon-segments`/`desugar-symbol` only cover **top-level** binding positions (defvar/defn-name/params); a `defn` body is not desugared (see the note above), so a `let`/`with` inside a body never reaches the desugar path — `emit-let`/`emit-with`'s even-count check masks it first. And `defstruct` field CELLs bypass colon desugar entirely. CP-3 therefore needs complementary checks at three sites: `split-colon-segments` (desugar path), `extract-name-and-type` (both the SYM and CELL branches, emit-time), and a `check-colon-bindings` scan in `emit-let`/`emit-with` before the even-count check. Lesson: don't assume a single chokepoint for binding-name diagnostics — when adding one, audit both the desugar and emit trees for every binding-introducing form.

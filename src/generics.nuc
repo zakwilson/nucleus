@@ -4573,6 +4573,20 @@
 ; "not modeled — keep the emit-computed type"; callers treat null as unknown.
 ; node-type never emits and never aborts: ambiguous lookups yield null.
 
+; Stage 16: the destination type of a value-position annotation (`x:CStr`), or
+; null when there is none. Both halves of the annotation-cast lockstep pair call
+; it — emit-symbol-ref to pick the `as-convert` target, node-type-sym to report
+; the type that conversion yields — so neither re-derives the other's answer.
+;
+; The resolvability probe is what lets node-type keep its "never aborts" contract
+; (parse-type-name dies on an unknown spelling): an unresolvable annotation
+; yields null here, node-type reports "not modelled", and emit-symbol-ref raises
+; the located `unknown type` itself.
+(defn value-annot-type (annot:ptr line:i32):?ptr:Type
+  (when (= annot null) (return null))
+  (when (= (tyname-resolvable (as CStr annot)) 0) (return null))
+  (return (as ptr (parse-type-name (as CStr annot) line))))
+
 (defn node-type-sym (n:raw:Node scope:ref:Scope):?ptr:Type
   ; Phase F flip: the `null` literal is raw, so it flows into raw/? slots but
   ; not into a non-null `ref`/`ptr` slot without an explicit guard or cast.
@@ -4581,11 +4595,17 @@
   (when (= n 'false) (return ty-bool))
   (when (= n 'none)  (return ty-maybe-ptr))
   (let (lookup-name:ptr null
-        ignored:ptr null)
+        annot:ptr null)
     (split-typed (n s)
-                 (as ptr:ptr (addr-of lookup-name)) (as ptr:ptr (addr-of ignored)))
+                 (as ptr:ptr (addr-of lookup-name)) (as ptr:ptr (addr-of annot)))
     (let (sym:?ptr:Sym (scope-lookup scope lookup-name))
       (when (= sym null) (return null))
+      ; Stage 16 annotation cast: `x:T` in value position converts, so the type
+      ; it contributes is the annotation's, not the binding's. Kept after the
+      ; lookup so an unbound name still reports "unknown" from emit rather than
+      ; typing successfully here.
+      (when (!= annot null)
+        (return (value-annot-type annot (node-line (as ptr n) 0))))
       ; Stage 15 W8 G-2 lockstep with emit-symbol-ref (conventions.md
       ; node-type<->emit-node): reading an `(array T N)` binding yields the
       ; decayed `(ref T)`, never the aggregate. One shared rule, called from

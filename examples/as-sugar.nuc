@@ -1,0 +1,44 @@
+; Value-position type annotation = an `as` cast (design/stage16-ergonomics/as-sugar.md).
+;
+; `x:T` in a VALUE position converts x to T, with exactly `as`'s safe set — the
+; same annotation spelling that DECLARES a type in a binding position. In a
+; binding list the two alternate: `(let (a:i32 b:i32) …)` declares `a` and casts
+; `b`.
+
+(import-use "stdio.h")
+(import-use hashset)
+
+(defstruct Rec (k i32))
+
+(defn take-i64 (n:i64):void (printf "widened: %ld\n" n))
+(defn take-cstr (s:CStr):void (printf "cstr: %s\n" s))
+(defn rec-k (r:raw:Rec):i32 (if (= r null) 0 (r k)))
+
+; The motivating shape: a cast in argument position, without the extra parens.
+(defn lookup (baz:ptr:i8):void
+  (if (contains? #{"foo" "bar"} baz:CStr)
+    (printf "hit\n")
+    (printf "miss\n")))
+
+(defn main ():i32
+  (let (n:i32 42
+        big:i64 5000000000
+        s:CStr "hello"
+        r:ref:Rec (alloca Rec))
+    ; int widening
+    (take-i64 n:i64)
+    ; The sugar attaches to a NAME. A computed operand still spells `as` in
+    ; full — `(as ptr:i8 "world"):CStr` would lex `:CStr` as a keyword.
+    (take-cstr s:CStr)
+    (take-cstr (as CStr (as ptr:i8 "world")))
+    ; pointer weakening: ref -> raw
+    (.set! r k 7)
+    (printf "k: %d\n" (rec-k r:raw:Rec))
+    ; an annotation naming the binding's own type is an identity cast, and is
+    ; what the `for`/`dotimes` loop idiom has always written
+    (dotimes (i:i32 3)
+      (printf "i: %d\n" i:i32))
+    (printf "big: %ld\n" big:i64)
+    (lookup (as ptr:i8 "foo"))
+    (lookup (as ptr:i8 "quux"))
+    (return 0)))

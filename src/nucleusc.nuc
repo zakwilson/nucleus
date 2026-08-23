@@ -3237,6 +3237,83 @@
 ; `node-line`), so the caller supplies the enclosing form's line: emit-node hands
 ; over the ambient g-form-line it maintains, emit-dispatch the call cell's line.
 ; Stage 15 W4a: before this, every raise below reported `:0:`.
+; The bound-name half of emit-symbol-ref: everything the reference means once
+; its `:type` annotation (if any) has been split off. Separate so the annotation
+; can convert the RESULT — see emit-symbol-ref below — without every return path
+; here having to know about it.
+(defn emit-symbol-ref-bound (n:(raw Node) scope:ref:Scope line:i32 lookup-name:ptr):ref:Val
+  (let (nn:(raw Node) n)
+    (if-some (sym (scope-lookup scope lookup-name))
+      (do
+        (when (!= (sym moved) 0)
+          (die-at (node-line n line) (fmt-s "use after move: '%s'" (nn s))))
+        (when (!= (sym is-const) 0)
+          (let (cv:ref:Val (alloc-val (sym type) (sym const-val)))
+            ; Stage 15 W2b: a `defconst`/`defenum` name stands for the integer
+            ; literal it was defined with, so its Val carries the same
+            ; `is-lit`/`lit-i64` provenance emit-int gives an inline literal.
+            ; Two consequences, both wanted: the operand adapts at a binop
+            ; (via binop-result-type's scope-aware literal test), and
+            ; coerce-int-val's LW-4 range check rejects a narrowing the value
+            ; does not survive rather than wrapping it silently. `deferror`
+            ; constants leave const-lit at 0 — an `Err` is not an int literal.
+            (when (!= (sym const-lit) 0)
+              (.set! cv is-lit 1)
+              (.set! cv lit-i64 (sym const-lit-i64)))
+            (return cv)))
+        ; After the is-const branch on purpose: a ct-imported `defconst` is a
+        ; compile-time SUBSTITUTION with no storage, so it survives the import
+        ; that dropped every definition. Everything below reads a global or
+        ; materializes a function — both need a symbol that was emitted.
+        (when (= (sym is-local) 0)
+          (reject-ct-only (as (raw Sym) sym) (node-line n line)))
+        (when (= (sym is-local) 0)
+          (when (-> sym (_ type) (unsafe/cast ptr:Type _) (_ kind) (= _ TY-FN))
+            ; AVR-6 Harvard hazard: on a target whose program memory is a
+            ; distinct address space (prog-as != 0 — AVR's `P1`), a function
+            ; materialized as a first-class data-pointer VALUE is `ptr
+            ; addrspace(1)` where a plain `ptr` is required, an LLVM verifier
+            ; error. Direct calls (routed to emit-call, never here) are fine;
+            ; only value uses — funcall/dyn/BoxedFn sources, let inits, args —
+            ; reach this single materialization chokepoint. v1 diagnoses rather
+            ; than emitting IR the backend rejects; the full addrspace(1)-
+            ; carrying fix is deferred (design/stage14/avr-targets.md §5 AVR-6).
+            (when (!= ((as ptr:Target g-target) prog-as) 0)
+              (die-at (node-line n line)
+                (fmt-sd "cannot use function '%s' as a value on this target: functions live in program memory (address space %d) and cannot be materialized as a data pointer -- call it directly instead"
+                  (nn s) ((as ptr:Target g-target) prog-as))))
+            (return (alloc-val (sym type) (sym ir-name))))
+          (die-at (node-line n line) (fmt-s "cannot use '%s' as value" (nn s))))
+        ; Stage 15 W8 G-2: an `(array T N)`-typed binding DECAYS — reading it
+        ; yields the address of element 0, not a loaded aggregate. The Sym's
+        ; ir-name already IS that address (`@g` for a global, the alloca slot
+        ; for a local), so this is the load being skipped, not an extra
+        ; instruction. `array-decay` (src/type-utils.nuc) is the shared rule
+        ; node-type-sym calls too, so the two passes cannot drift.
+        (when (= (-> sym (_ type) (unsafe/cast ptr:Type _) (_ kind)) TY-ARRAY)
+          (return (alloc-val (array-decay (sym type)) (sym ir-name))))
+        (let (tmp:ptr (new-tmp))
+          (emit-load tmp (type-to-ir (sym type)) (sym ir-name) (sym type))
+          ; Stage 10: the read uses the flow-narrowed view of the binding's
+          ; type and carries the binding's escape taint.
+          (let (rv:ref:Val (alloc-val (sym-effective-type sym) tmp))
+            (.set! rv taint (sym taint))
+            (.set! rv taint-frame (sym taint-frame))
+            (return rv))))
+      (die-at (node-line n line) (undefined-name-message (as CStr (nn s)))))))
+
+; Stage 16 (design/stage16-ergonomics/as-sugar.md): a value-position `:type`
+; annotation is an `as` CAST of the named binding — `baz:CStr` is `(as CStr baz)`
+; — not the decoration it used to be (parsed, then silently discarded, so
+; `x:NoSuchType` compiled). It lives here, at the one place a name becomes a
+; value, rather than as a reader/desugar tree rewrite: the node stays a NODE-SYM,
+; so the `set!` target, closure capture, non-null flow facts and const folding
+; all keep reading it as the plain name they always did.
+;
+; The four self-evaluating names are matched by interned identity ABOVE the
+; split, so `null:raw:T` is not sugar — it is an undefined name, and stays one
+; (`(as raw:T null)` is what a raw null is spelled, and Phase F refuses the
+; non-null targets anyway).
 (defn emit-symbol-ref (n:(raw Node) scope:ref:Scope line:i32):ref:Val
   (let (nn:(raw Node) n)
     ; W9 item 20: tag the literal so the coercion chokepoint can tell it from a
@@ -3248,69 +3325,16 @@
     (when (= n 'true)  (return (alloc-val ty-bool "1")))
     (when (= n 'false) (return (alloc-val ty-bool "0")))
     (when (= n 'none)  (return (alloc-val ty-maybe-ptr "null")))
-    ; Strip any trailing :type annotation so typed names (e.g. i:i32 from macro
-    ; expansion) resolve correctly in value position.
     (let (lookup-name:ptr null
-          ignored-type:ptr null)
-      (split-typed (nn s) (as ptr:ptr (addr-of lookup-name)) (as ptr:ptr (addr-of ignored-type)))
-      (if-some (sym (scope-lookup scope lookup-name))
-        (do
-          (when (!= (sym moved) 0)
-            (die-at (node-line n line) (fmt-s "use after move: '%s'" (nn s))))
-          (when (!= (sym is-const) 0)
-            (let (cv:ref:Val (alloc-val (sym type) (sym const-val)))
-              ; Stage 15 W2b: a `defconst`/`defenum` name stands for the integer
-              ; literal it was defined with, so its Val carries the same
-              ; `is-lit`/`lit-i64` provenance emit-int gives an inline literal.
-              ; Two consequences, both wanted: the operand adapts at a binop
-              ; (via binop-result-type's scope-aware literal test), and
-              ; coerce-int-val's LW-4 range check rejects a narrowing the value
-              ; does not survive rather than wrapping it silently. `deferror`
-              ; constants leave const-lit at 0 — an `Err` is not an int literal.
-              (when (!= (sym const-lit) 0)
-                (.set! cv is-lit 1)
-                (.set! cv lit-i64 (sym const-lit-i64)))
-              (return cv)))
-          ; After the is-const branch on purpose: a ct-imported `defconst` is a
-          ; compile-time SUBSTITUTION with no storage, so it survives the import
-          ; that dropped every definition. Everything below reads a global or
-          ; materializes a function — both need a symbol that was emitted.
-          (when (= (sym is-local) 0)
-            (reject-ct-only (as (raw Sym) sym) (node-line n line)))
-          (when (= (sym is-local) 0)
-            (when (-> sym (_ type) (unsafe/cast ptr:Type _) (_ kind) (= _ TY-FN))
-              ; AVR-6 Harvard hazard: on a target whose program memory is a
-              ; distinct address space (prog-as != 0 — AVR's `P1`), a function
-              ; materialized as a first-class data-pointer VALUE is `ptr
-              ; addrspace(1)` where a plain `ptr` is required, an LLVM verifier
-              ; error. Direct calls (routed to emit-call, never here) are fine;
-              ; only value uses — funcall/dyn/BoxedFn sources, let inits, args —
-              ; reach this single materialization chokepoint. v1 diagnoses rather
-              ; than emitting IR the backend rejects; the full addrspace(1)-
-              ; carrying fix is deferred (design/stage14/avr-targets.md §5 AVR-6).
-              (when (!= ((as ptr:Target g-target) prog-as) 0)
-                (die-at (node-line n line)
-                  (fmt-sd "cannot use function '%s' as a value on this target: functions live in program memory (address space %d) and cannot be materialized as a data pointer -- call it directly instead"
-                    (nn s) ((as ptr:Target g-target) prog-as))))
-              (return (alloc-val (sym type) (sym ir-name))))
-            (die-at (node-line n line) (fmt-s "cannot use '%s' as value" (nn s))))
-          ; Stage 15 W8 G-2: an `(array T N)`-typed binding DECAYS — reading it
-          ; yields the address of element 0, not a loaded aggregate. The Sym's
-          ; ir-name already IS that address (`@g` for a global, the alloca slot
-          ; for a local), so this is the load being skipped, not an extra
-          ; instruction. `array-decay` (src/type-utils.nuc) is the shared rule
-          ; node-type-sym calls too, so the two passes cannot drift.
-          (when (= (-> sym (_ type) (unsafe/cast ptr:Type _) (_ kind)) TY-ARRAY)
-            (return (alloc-val (array-decay (sym type)) (sym ir-name))))
-          (let (tmp:ptr (new-tmp))
-            (emit-load tmp (type-to-ir (sym type)) (sym ir-name) (sym type))
-            ; Stage 10: the read uses the flow-narrowed view of the binding's
-            ; type and carries the binding's escape taint.
-            (let (rv:ref:Val (alloc-val (sym-effective-type sym) tmp))
-              (.set! rv taint (sym taint))
-              (.set! rv taint-frame (sym taint-frame))
-              (return rv))))
-        (die-at (node-line n line) (undefined-name-message (as CStr (nn s))))))))
+          annot:ptr null)
+      (split-typed (nn s) (as ptr:ptr (addr-of lookup-name)) (as ptr:ptr (addr-of annot)))
+      (let (v:ref:Val (emit-symbol-ref-bound n scope line lookup-name))
+        (when (= annot null) (return v))
+        (let (dst:?ptr:Type (value-annot-type annot (node-line n line)))
+          (when (= dst null)
+            (die-at (node-line n line)
+              (fmt-2s "unknown type '%s' in the annotation '%s'" (as CStr annot) (nn s))))
+          (return (as-convert v dst (node-line n line))))))))
 
 ; ============================================================
 ; Binary operations
@@ -4068,6 +4092,98 @@
       (as-die-flow src dst line))
     (return (as-retype v dst))))
 
+; The conversion half of `as`, with no node and no want channel: given a value
+; and a destination type, either produce the converted value or refuse. Split out
+; of `emit-as` so the value-position annotation sugar (`x:T`, emit-symbol-ref)
+; asks the same rule rather than mirroring it — the shared-rule shape
+; conventions.md prescribes. `line` is what every refusal below blames.
+(defn as-convert (v:ref:Val dst:(raw Type) line:i32):ref:Val
+  (let (src:(raw Type) (v type))
+    ; 1. StrView source (chameleon literal or value): the coercer collapses a
+    ; literal to ptr/CStr with no IR, materializes a StrView target, or returns
+    ; null for an unrelated struct target (a reinterpretation).
+    (when (!= (type-is-strview src) 0)
+      (let (cv:?ptr:Val (coerce-int-val v dst line))
+        (when (= cv null)
+          (die-at line
+            (fmt-2s "as: reinterpretation from %s to %s -- use unsafe/cast"
+              (type-spelling src) (type-spelling dst))))
+        (return (as ref:Val cv))))
+    ; 2. pointer-like <-> pointer-like: always route through as-ptr-convert so
+    ; the pkind flow gate fires (a plain identity short-circuit would launder).
+    (when (and (!= (is-ptr-like src) 0) (!= (is-ptr-like dst) 0))
+      (return (as-ptr-convert v src dst line)))
+    ; 3. identity (non-pointer same type): struct, fn, same scalar — no IR.
+    (when (!= (type-eq src dst) 0)
+      (return (as-retype v dst)))
+    ; 4. user `defcast` rule extends the safe set (implicit AND `as`). Every
+    ; registered rule has distinct from/to kinds (emit-defcast rejects the
+    ; built-in same-kind/int/float pairs), so this never shadows steps 5-7.
+    (let (rule:(raw CastRule) (lookup-cast-rule src dst))
+      (when (!= rule null)
+        (let (cr:(raw CastRule) rule
+              tmp:ptr (new-tmp))
+          (fprintf g-body-stream "  %s = call %s %s(%s %s)\n"
+            tmp (type-to-ir dst) (cr ir-name) (type-to-ir src) (v val))
+          (return (alloc-val dst tmp)))))
+    ; 5. bool -> int is a safe widening (`zext`), emitted by the one function
+    ; the vararg promoter also calls (widen-bool-to-int, src/abi.nuc) — never
+    ; by the implicit chokepoint, which has no bool arm on purpose. The
+    ; reverse, and float -> bool, are lossy: bool has two values.
+    (when (and (!= (is-bool-type src) 0) (!= (is-int-type dst) 0))
+      (return (widen-bool-to-int v dst)))
+    (when (and (!= (is-bool-type dst) 0)
+               (or (!= (is-int-type src) 0) (!= (is-float-type src) 0)))
+      (die-at line
+        (fmt-2s "as: lossy conversion from %s to %s -- use unsafe/cast"
+          (type-spelling src) (type-spelling dst))))
+    ; 5b. int -> int: widening (zext/sext) and same-width sign reinterpret are
+    ; safe (coerce-int-val emits them / no IR); narrowing is lossy — unless
+    ; the operand is a literal that FITS the destination (Stage 15 W9 item 8),
+    ; which is exactly the set `coerce-int-val` already admits implicitly.
+    ; The narrowing test lives in `as-int-narrowing` (src/type-utils.nuc) so
+    ; the constant folder in `defvar-init-ir` (Stage 15 W8 G-1) asks the same
+    ; question of the same rule rather than mirroring this comparison.
+    (when (and (!= (is-int-type src) 0) (!= (is-int-type dst) 0))
+      (when (!= (as-int-narrowing src dst (v is-lit) (v lit-i64)) 0)
+        (die-at line
+          (fmt-2s "as: lossy conversion from %s to %s -- use unsafe/cast"
+            (type-spelling src) (type-spelling dst))))
+      (return (unsafe/cast ref:Val (coerce-int-val v dst line))))
+    ; 6. float -> float: a widening (fpext) is safe, and so is a narrowing
+    ; whose operand is a LITERAL that round-trips exactly (Stage 15 W9 item
+    ; 30) — precisely the set `coerce-int-val` already re-renders as a
+    ; constant with no instruction. The rule lives in `as-float-narrowing`
+    ; (src/type-utils.nuc) beside its integer twin, for the same reason: the
+    ; question has more than one asker and mirroring the logic drifts.
+    ; The EMISSION is `coerce-int-val`'s float branch rather than a second
+    ; `fpext` written here — this arm used to spell the widening out itself,
+    ; which is the duplication step 5 had already stopped making, and the
+    ; text it produced is character-for-character what the chokepoint emits.
+    (when (and (!= (is-float-type src) 0) (!= (is-float-type dst) 0))
+      (when (!= (as-float-narrowing src dst (v is-flit) (v lit-f64)) 0)
+        (die-at line
+          (fmt-2s "as: lossy conversion from %s to %s -- use unsafe/cast"
+            (type-spelling src) (type-spelling dst))))
+      (return (unsafe/cast ref:Val (coerce-int-val v dst line))))
+    ; 7. float <-> int, either direction, is lossy. Unlike the float->float
+    ; case above there is no asymmetry to close here: the implicit path
+    ; refuses it too (`(let (a:f32 5) …)` is a `let: init type mismatch`),
+    ; so `as` is not stricter than the coercion it makes explicit.
+    (when (or (and (!= (is-float-type src) 0) (!= (is-int-type dst) 0))
+              (and (!= (is-int-type src) 0) (!= (is-float-type dst) 0)))
+      (die-at line
+        (fmt-2s "as: lossy conversion from %s to %s -- use unsafe/cast"
+          (type-spelling src) (type-spelling dst))))
+    ; 8. everything else — ptr<->int, fn<->ptr, unrelated structs — is a
+    ; reinterpretation: route to unsafe/cast. W9 item 42: unless a defcast
+    ; rule reaches this target from a neighbouring type, in which case
+    ; "use unsafe/cast" is the wrong advice and the note says so.
+    (note-cast-rule-near-miss src dst)
+    (die-at line
+      (fmt-2s "as: reinterpretation from %s to %s -- use unsafe/cast"
+        (type-spelling src) (type-spelling dst)))))
+
 (defn emit-as (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:(raw Node) call)
     (when (!= (node-len cc) 3)
@@ -4091,92 +4207,8 @@
                         (set! g-want-type (as ptr dst))
                         (let (vv:ref:Val (emit-node (node-at cc 2) scope))
                           (set! g-want-type save-want)
-                          vv))
-            src:(raw Type) (v type))
-        ; 1. StrView source (chameleon literal or value): the coercer collapses a
-        ; literal to ptr/CStr with no IR, materializes a StrView target, or returns
-        ; null for an unrelated struct target (a reinterpretation).
-        (when (!= (type-is-strview src) 0)
-          (let (cv:?ptr:Val (coerce-int-val v dst (cc line)))
-            (when (= cv null)
-              (die-at (cc line)
-                (fmt-2s "as: reinterpretation from %s to %s -- use unsafe/cast"
-                  (type-spelling src) (type-spelling dst))))
-            (return (as ref:Val cv))))
-        ; 2. pointer-like <-> pointer-like: always route through as-ptr-convert so
-        ; the pkind flow gate fires (a plain identity short-circuit would launder).
-        (when (and (!= (is-ptr-like src) 0) (!= (is-ptr-like dst) 0))
-          (return (as-ptr-convert v src dst (cc line))))
-        ; 3. identity (non-pointer same type): struct, fn, same scalar — no IR.
-        (when (!= (type-eq src dst) 0)
-          (return (as-retype v dst)))
-        ; 4. user `defcast` rule extends the safe set (implicit AND `as`). Every
-        ; registered rule has distinct from/to kinds (emit-defcast rejects the
-        ; built-in same-kind/int/float pairs), so this never shadows steps 5-7.
-        (let (rule:(raw CastRule) (lookup-cast-rule src dst))
-          (when (!= rule null)
-            (let (cr:(raw CastRule) rule
-                  tmp:ptr (new-tmp))
-              (fprintf g-body-stream "  %s = call %s %s(%s %s)\n"
-                tmp (type-to-ir dst) (cr ir-name) (type-to-ir src) (v val))
-              (return (alloc-val dst tmp)))))
-        ; 5. bool -> int is a safe widening (`zext`), emitted by the one function
-        ; the vararg promoter also calls (widen-bool-to-int, src/abi.nuc) — never
-        ; by the implicit chokepoint, which has no bool arm on purpose. The
-        ; reverse, and float -> bool, are lossy: bool has two values.
-        (when (and (!= (is-bool-type src) 0) (!= (is-int-type dst) 0))
-          (return (widen-bool-to-int v dst)))
-        (when (and (!= (is-bool-type dst) 0)
-                   (or (!= (is-int-type src) 0) (!= (is-float-type src) 0)))
-          (die-at (cc line)
-            (fmt-2s "as: lossy conversion from %s to %s -- use unsafe/cast"
-              (type-spelling src) (type-spelling dst))))
-        ; 5b. int -> int: widening (zext/sext) and same-width sign reinterpret are
-        ; safe (coerce-int-val emits them / no IR); narrowing is lossy — unless
-        ; the operand is a literal that FITS the destination (Stage 15 W9 item 8),
-        ; which is exactly the set `coerce-int-val` already admits implicitly.
-        ; The narrowing test lives in `as-int-narrowing` (src/type-utils.nuc) so
-        ; the constant folder in `defvar-init-ir` (Stage 15 W8 G-1) asks the same
-        ; question of the same rule rather than mirroring this comparison.
-        (when (and (!= (is-int-type src) 0) (!= (is-int-type dst) 0))
-          (when (!= (as-int-narrowing src dst (v is-lit) (v lit-i64)) 0)
-            (die-at (cc line)
-              (fmt-2s "as: lossy conversion from %s to %s -- use unsafe/cast"
-                (type-spelling src) (type-spelling dst))))
-          (return (unsafe/cast ref:Val (coerce-int-val v dst (cc line)))))
-        ; 6. float -> float: a widening (fpext) is safe, and so is a narrowing
-        ; whose operand is a LITERAL that round-trips exactly (Stage 15 W9 item
-        ; 30) — precisely the set `coerce-int-val` already re-renders as a
-        ; constant with no instruction. The rule lives in `as-float-narrowing`
-        ; (src/type-utils.nuc) beside its integer twin, for the same reason: the
-        ; question has more than one asker and mirroring the logic drifts.
-        ; The EMISSION is `coerce-int-val`'s float branch rather than a second
-        ; `fpext` written here — this arm used to spell the widening out itself,
-        ; which is the duplication step 5 had already stopped making, and the
-        ; text it produced is character-for-character what the chokepoint emits.
-        (when (and (!= (is-float-type src) 0) (!= (is-float-type dst) 0))
-          (when (!= (as-float-narrowing src dst (v is-flit) (v lit-f64)) 0)
-            (die-at (cc line)
-              (fmt-2s "as: lossy conversion from %s to %s -- use unsafe/cast"
-                (type-spelling src) (type-spelling dst))))
-          (return (unsafe/cast ref:Val (coerce-int-val v dst (cc line)))))
-        ; 7. float <-> int, either direction, is lossy. Unlike the float->float
-        ; case above there is no asymmetry to close here: the implicit path
-        ; refuses it too (`(let (a:f32 5) …)` is a `let: init type mismatch`),
-        ; so `as` is not stricter than the coercion it makes explicit.
-        (when (or (and (!= (is-float-type src) 0) (!= (is-int-type dst) 0))
-                  (and (!= (is-int-type src) 0) (!= (is-float-type dst) 0)))
-          (die-at (cc line)
-            (fmt-2s "as: lossy conversion from %s to %s -- use unsafe/cast"
-              (type-spelling src) (type-spelling dst))))
-        ; 8. everything else — ptr<->int, fn<->ptr, unrelated structs — is a
-        ; reinterpretation: route to unsafe/cast. W9 item 42: unless a defcast
-        ; rule reaches this target from a neighbouring type, in which case
-        ; "use unsafe/cast" is the wrong advice and the note says so.
-        (note-cast-rule-near-miss src dst)
-        (die-at (cc line)
-          (fmt-2s "as: reinterpretation from %s to %s -- use unsafe/cast"
-            (type-spelling src) (type-spelling dst)))))))
+                          vv)))
+        (return (as-convert v dst (cc line)))))))
 
 ; ============================================================
 ; Struct field access
@@ -5673,6 +5705,24 @@
 (defn emit-callable-value (n:(raw Node) scope:ref:Scope callee-val:(raw Val)):ref:Val
   (let (nargs:i32 (- (node-len n) 1)
         ct:(raw Type) (callee-val type))
+    ; Stage 16 (design/stage16-ergonomics/as-sugar.md §A3): `name:(Type …)` in
+    ; VALUE position is fused by the reader into the call `(name (Type …))` — a
+    ; binding annotation where nothing is being bound. Recognize it here, while
+    ; the shape is still legible, rather than letting the type expression emit
+    ; and report `unknown: ref` about a pointer kind nobody called. Only a
+    ; pointer-kind head can reach this: none of `ptr`/`ref`/`raw`/`fn` names a
+    ; function or a binding anywhere, so a real call can never take this shape.
+    (when (= nargs 1)
+      (let (a:(raw Node) (node-at n 1))
+        (when (and (!= a null) (= (a kind) NODE-CELL))
+          (let (ah:(raw Node) (node-at (as ptr a) 0))
+            (when (and (!= ah null)
+                       (= (ah kind) NODE-SYM)
+                       (or (= (ah s) "ptr") (= (ah s) "ref")
+                           (= (ah s) "raw") (= (ah s) "fn")))
+              (die-at (node-line (node-at n 0) ((unsafe/cast ptr:Node n) line))
+                (fmt-2s "'%s:(%s ...)' reads as a call here -- a parenthesised type after ':' is a binding annotation, not a cast: spell the cast (as (...) name), or name the type with deftype"
+                  (-> (node-at n 0) (unsafe/cast ptr:Node _) (_ s)) (ah s))))))))
     ; A function-pointer value folds to an indirect call (callable-values.md §4.2).
     (when (= (ct kind) TY-FN)
       (return (emit-funcall-value n scope callee-val 1)))

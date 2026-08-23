@@ -1,0 +1,9 @@
+; Stage 16 as-sugar negative fixture: a value-position annotation is CHECKED.
+;
+; Before the sugar, emit-symbol-ref split `x:NoSuchType` and discarded the type
+; half, so this compiled silently and meant `x`. It is now the cast's
+; destination, so an unresolvable spelling is a located error. Must FAIL with:
+;   "unknown type 'NoSuchType' in the annotation 'x:NoSuchType'"
+(defn main ():i32
+  (let (x:i32 1)
+    (return x:NoSuchType)))

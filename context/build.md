@@ -67,6 +67,18 @@ cd /home/zak/code/nuc-doom-claude
 ./build.sh src/test_demo_monsters.nuc && SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./build/test_demo_monsters
 ```
 
+**Currently RED, for reasons that predate any one change (checked 2026-08-23).**
+`src/doomdata.nuc:66` is refused with `as: raw pointer CStr where non-null
+ptr:ui8 is required` (the W9 item 7 tightening), and past that `src/w_file.nuc:43`
+collides on `SEEK_SET` with `g_game.nuc:111` (one name, one definition). Both
+reproduce byte-identically under the committed **boot** compiler across ten entry
+points, so this is the port needing an update on its own side, not a regression
+in `build/nucleusc` — and the `./build.sh … && ./build/test_demo` line below will
+happily run a **stale** binary and print `ALL 35 TICS BIT-EXACT` while the
+compile fails, because the pipeline's exit code is `tail`'s. Check `build.sh`'s
+own status. Until the port is fixed, this gate yields only its weak form:
+diff the pre- and post-change diagnostics and confirm they are identical.
+
 `build.sh` invokes `/home/zak/code/nucleus/build/nucleusc` directly, so it tests
 whatever was last built here — no install step. Both gates print `BIT-EXACT`
 and check against the real engine's recorded state, so a **codegen** regression

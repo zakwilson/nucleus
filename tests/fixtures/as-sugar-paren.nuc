@@ -1,0 +1,13 @@
+; Stage 16 as-sugar negative fixture (§A3): a PARENTHESISED type after `:` is
+; not sugar — the reader's colon-paren fuse claims it in every list context, so
+; `q:(ref Rec)` in value position reads as the call `(q (ref Rec))`. The
+; diagnostic must name that, rather than reporting `unknown: ref` about a
+; pointer kind nobody called. Must FAIL with:
+;   "'q:(ref ...)' reads as a call here"
+(defstruct Rec (k i32))
+
+(defn use-ref (r:(ref Rec)):i32 (return (r k)))
+
+(defn main ():i32
+  (let (q:(ref Rec) (alloca Rec))
+    (return (use-ref q:(ref Rec)))))

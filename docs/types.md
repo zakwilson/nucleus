@@ -14,6 +14,27 @@ Because bare `ptr` erases the element type, operations that need one (`aref`, `a
 
 In inline type positions (the type argument of `as`/`unsafe/cast`, `sizeof`, `alloca`), either the canonical list form or the colon sugar works: `(unsafe/cast (ptr Node) x)` and `(unsafe/cast ptr:Node x)` are equivalent.
 
+**In value position, `name:type` is an `as` cast.** `baz:CStr` means `(as CStr baz)` — so the same annotation spelling declares a type in a binding position, *names* a type in a type position, and *converts* in a value position, chosen by where it appears:
+
+```nucleus
+(let (a:i32 0                  ; declaration — a is an i32
+      b:i64 x:i64)             ; declaration of b; x:i64 is a cast of x
+  (take-cstr s:CStr)           ; cast — (as CStr s)
+  (aset! p (as i64 i) v))      ; ptr:… inside `as` is a TYPE, not a cast
+```
+
+In a binding list the two readings alternate, as above: the name slot declares, the initializer slot casts.
+
+The conversion is exactly `as` (see [Implicit Type Coercion](#implicit-type-coercion) and the `as` form): widening is free, a narrowing or a reinterpretation is refused and routed to `unsafe/cast`, the pointer-kind flow rule applies (`p:ref:T` on a `raw` pointer is a laundering error, not a silent promotion), and a `defcast` rule extends the set. There is deliberately **no** sugar for `unsafe/cast`: the short spelling is the safe one.
+
+Three limits follow from the spelling rather than the rule:
+
+- **It attaches to a name.** A computed operand has nowhere to hang the colon — `(f x):CStr` lexes `:CStr` as a keyword — so spell those `(as CStr (f x))`.
+- **A parenthesised type is not a cast.** `q:(ref Rec)` in value position is claimed by the colon-paren fuse below and reads as the *call* `(q (ref Rec))`; the compiler says so. Give the type a name with [`deftype`](#type-aliases--deftype) and the annotation works: `q:RecRef`.
+- **`null`, `true`, `false` and `none` take no annotation** — they are matched by name before the split, so `null:raw:T` is an undefined name. Write `(as raw:T null)`.
+
+An annotation whose type does not exist is an error (`unknown type 'Foo' in the annotation 'x:Foo'`); it is not ignored.
+
 **Colon-paren binding sugar.** A binding's type may also be a parenthesised form written directly after the colon, with no space: `name:(ref (Vector T))`, `v:(ptr u8)`, `f:(fn i32)(i32 i32)`. In list (binding) context the reader fuses a trailing-colon atom that is *immediately* followed by `(` into the canonical list node `(name <paren-form>)`. So `v:(ref (Vector i32))` is exactly `(v (ref (Vector i32)))`, in both parameter lists and `let` bindings. The fusion only fires when the colon is the last character of the atom and the very next character is `(` (no whitespace); a mid-colon symbol such as `foo:i32` is unaffected.
 
 **Function-pointer types take a second, adjacent group.** A function pointer type is *two* parenthesised groups — `(fn ret)` and its parameter list — so the colon-paren fuse absorbs one more group when the first is `(fn …)`-headed **and the next character is `(` with no space**: `f:(fn i32)(i32 i32)` reads as `(f ((fn i32) (i32 i32)))`, and `acv:(fn void)()` (the zero-parameter case) as `(acv ((fn void) ()))`. Adjacency is required, exactly as for the first group — a *space*-separated second group is genuinely ambiguous with the next binding in the enclosing list (in `(f:(fn i32) (i32 i32) a:i32)` nothing distinguishes the parameter list from a `(name type)` binding), so it is not absorbed and `f` would be typed as a zero-parameter function pointer. `name:(fn ret)` with no following group is a *zero-parameter* function pointer, which is well-defined and useful (C's `ret (*)(void)`); it is only a mistake when you meant to give it parameters.
