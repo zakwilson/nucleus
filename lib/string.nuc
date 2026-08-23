@@ -299,7 +299,7 @@
   (let (sv:StrView (string-as-view self))
     (strview-char-count (addr-of sv))))
 
-(defn str-empty? ((self (ref String))):i32
+(defn str-empty? ((self (ref String))):bool
   (let (sv:StrView (string-as-view self))
     (strview-empty (addr-of sv))))
 
@@ -311,15 +311,15 @@
   (let (sv:StrView (string-as-view self))
     (strview-chars (addr-of sv))))
 
-(defn starts-with? ((self (ref String)) (prefix (ref StrView))):i32
+(defn starts-with? ((self (ref String)) (prefix (ref StrView))):bool
   (let (sv:StrView (string-as-view self))
     (strview-starts-with (addr-of sv) prefix)))
 
-(defn ends-with? ((self (ref String)) (suffix (ref StrView))):i32
+(defn ends-with? ((self (ref String)) (suffix (ref StrView))):bool
   (let (sv:StrView (string-as-view self))
     (strview-ends-with (addr-of sv) suffix)))
 
-(defn contains-str? ((self (ref String)) (needle (ref StrView))):i32
+(defn contains-str? ((self (ref String)) (needle (ref StrView))):bool
   (let (sv:StrView (string-as-view self))
     (strview-contains-str (addr-of sv) needle)))
 
@@ -328,33 +328,33 @@
 ; Eq methods take Self by VALUE (see strview.nuc and numeric.nuc patterns).
 ; ---------------------------------------------------------------------------
 (extend String Eq)
-(defn = (a:String b:String):i1
+(defn = (a:String b:String):bool
   (let (sva:StrView (string-as-view (addr-of a))
         svb:StrView (string-as-view (addr-of b)))
-    (if (= (strview-eq (addr-of sva) (addr-of svb)) 1) true false)))
-(defn != (a:String b:String):i1
+    (strview-eq (addr-of sva) (addr-of svb))))
+(defn != (a:String b:String):bool
   (let (sva:StrView (string-as-view (addr-of a))
         svb:StrView (string-as-view (addr-of b)))
-    (if (= (strview-eq (addr-of sva) (addr-of svb)) 1) false true)))
+    (not (strview-eq (addr-of sva) (addr-of svb)))))
 
 ; ---------------------------------------------------------------------------
 ; Ord conformance — byte-lexicographic ordering via StrView comparison.
 ; Ord methods take Self by VALUE (see strview.nuc pattern).
 ; ---------------------------------------------------------------------------
 (extend String Ord)
-(defn < (a:String b:String):i1
+(defn < (a:String b:String):bool
   (let (sva:StrView (string-as-view (addr-of a))
         svb:StrView (string-as-view (addr-of b)))
     (if (< (strview-cmp-raw (addr-of sva) (addr-of svb)) 0) true false)))
-(defn <= (a:String b:String):i1
+(defn <= (a:String b:String):bool
   (let (sva:StrView (string-as-view (addr-of a))
         svb:StrView (string-as-view (addr-of b)))
     (if (<= (strview-cmp-raw (addr-of sva) (addr-of svb)) 0) true false)))
-(defn > (a:String b:String):i1
+(defn > (a:String b:String):bool
   (let (sva:StrView (string-as-view (addr-of a))
         svb:StrView (string-as-view (addr-of b)))
     (if (> (strview-cmp-raw (addr-of sva) (addr-of svb)) 0) true false)))
-(defn >= (a:String b:String):i1
+(defn >= (a:String b:String):bool
   (let (sva:StrView (string-as-view (addr-of a))
         svb:StrView (string-as-view (addr-of b)))
     (if (>= (strview-cmp-raw (addr-of sva) (addr-of svb)) 0) true false)))

@@ -14,7 +14,7 @@
 ; defined in the JIT module, only in the main output module. This causes an
 ; LLVM IR parse error at compile time.
 ;
-; Instead, each iterator carries a `done:i32` field. Callers drive iteration
+; Instead, each iterator carries a `done:bool` field. Callers drive iteration
 ; with a while loop checking `(split-iter-done it)` and calling
 ; `(split-iter-next it)` to get each StrView by value.
 ;
@@ -44,15 +44,15 @@
 ;   rem      — bytes remaining from `buf` to the end of the source.
 ;   sep-data — pointer to the separator bytes.
 ;   sep-len  — byte length of the separator.
-;   done     — 0 while segments remain, 1 after the final segment was yielded.
+;   done     — false while segments remain, true after the final segment was yielded.
 ;
 ; Iteration convention:
-;   1. Check done: if 1, stop.
+;   1. Check done: if true, stop.
 ;   2. Call split-iter-next → get the next StrView segment.
 ;   3. Repeat.
 ;
 ; After split-iter-next yields the LAST segment (no more separators), it sets
-; done=1 so the NEXT call to the check step stops iteration. This means the
+; done=true so the NEXT call to the check step stops iteration. This means the
 ; last segment IS yielded (even if empty), and exactly one empty segment is
 ; yielded for empty input.
 ; ---------------------------------------------------------------------------
@@ -61,24 +61,24 @@
   rem:usize
   sep-data:(ptr ui8)
   sep-len:usize
-  done:i32
+  done:bool
   ; cur: scratch slot holding the most recently yielded segment, so the
   ; Iterator `next` can hand back a (ref StrView) into the iterator itself
   ; (see the Iterator conformance below). Filled by `next`; unused by the
   ; done-flag `split-iter-next` API.
   cur:StrView)
 
-; split-iter-done — 1 if the iterator is exhausted (no more segments).
-(defn split-iter-done ((it (ref SplitIter))):i32
+; split-iter-done — true if the iterator is exhausted (no more segments).
+(defn split-iter-done ((it (ref SplitIter))):bool
   (return (it done)))
 
 ; split-iter-next — advance to and return the next segment.
 ;
 ; Find the first occurrence of the separator starting at buf[0..rem).
 ; If found at offset k: yield buf[0..k], advance buf by k+sep-len, rem by k+sep-len.
-; If not found: yield buf[0..rem] (the tail), set done=1.
+; If not found: yield buf[0..rem] (the tail), set done=true.
 ;
-; Precondition: done == 0.
+; Precondition: done is false.
 (defn split-iter-next ((it (ref SplitIter))):StrView
   (let (slen:usize (it sep-len)
         rem:usize  (it rem)
@@ -108,7 +108,7 @@
                (let ((seg (ref StrView)) (alloca StrView))
                  (.set! seg data buf)
                  (.set! seg len  rem)
-                 (.set! it done 1)
+                 (.set! it done true)
                  (return (deref seg)))))))))
     ; Sep-len == 0 edge case: yield one-byte segments (or mark done immediately
     ; on empty). For simplicity and to match common expectations when sep is
@@ -116,7 +116,7 @@
     (let ((seg (ref StrView)) (alloca StrView))
       (.set! seg data buf)
       (.set! seg len  rem)
-      (.set! it done 1)
+      (.set! it done true)
       (return (deref seg)))))
 
 ; strview-split — construct a SplitIter over sv splitting on sep.
@@ -128,10 +128,10 @@
     (.set! it rem       (sv len))
     (.set! it sep-data  (sep data))
     (.set! it sep-len   (sep len))
-    ; done=0 unless source is empty AND sep is non-empty: in that case the
-    ; first call will yield an empty segment and then set done=1, so start
-    ; with done=0 always (one empty segment for empty input matches Python/Rust).
-    (.set! it done 0)
+    ; done=false unless source is empty AND sep is non-empty: in that case the
+    ; first call will yield an empty segment and then set done=true, so start
+    ; with false always (one empty segment for empty input matches Python/Rust).
+    (.set! it done false)
     (return (deref it))))
 
 ; ---------------------------------------------------------------------------
@@ -146,13 +146,13 @@
 ;
 ; Behavior is identical to the done-flag loop: one segment per `next`, the same
 ; segments in the same order; iteration ends (none) on the call after the final
-; segment set done=1. Recover each segment with (cast ptr:StrView e);
+; segment set done=true. Recover each segment with (cast ptr:StrView e);
 ; the returned pointer aliases `cur` and is valid until the next `next` call.
 ; ---------------------------------------------------------------------------
 (extend SplitIter (Iterator ptr))
 
 (defn next ((self (ref SplitIter))) (Maybe ptr)
-  (when (= (self done) 1) (return none))
+  (when (self done) (return none))
   (.set! self cur (split-iter-next self))
   (return (some (.& self cur))))
 
@@ -164,21 +164,21 @@
 (defstruct LineIter
   buf:(ptr ui8)
   rem:usize
-  done:i32
+  done:bool
   ; cur: scratch slot for the most recently yielded line (see SplitIter.cur).
   cur:StrView)
 
-; lines-iter-done — 1 if the iterator is exhausted.
-(defn lines-iter-done ((it (ref LineIter))):i32
+; lines-iter-done — true if the iterator is exhausted.
+(defn lines-iter-done ((it (ref LineIter))):bool
   (return (it done)))
 
 ; lines-iter-next — return the next line (without its trailing newline).
 ;
 ; Scans for '\n' (0x0A). If found at byte k: yields buf[0..k] with any
 ; trailing '\r' (0x0D) stripped, advances past the '\n'. If not found:
-; yields the entire remaining buffer (no trailing newline), sets done=1.
+; yields the entire remaining buffer (no trailing newline), sets done=true.
 ;
-; Precondition: done == 0.
+; Precondition: done is false.
 (defn lines-iter-next ((it (ref LineIter))):StrView
   (let (buf:ptr:ui8 (it buf)
         rem:usize   (it rem)
@@ -210,7 +210,7 @@
         (let ((seg (ref StrView)) (alloca StrView))
           (.set! seg data buf)
           (.set! seg len  rem)
-          (.set! it done 1)
+          (.set! it done true)
           (return (deref seg)))))))
 
 ; strview-lines — construct a LineIter over sv.
@@ -219,7 +219,7 @@
   (let ((it (ref LineIter)) (alloca LineIter))
     (.set! it buf  (sv data))
     (.set! it rem  (sv len))
-    (.set! it done 0)
+    (.set! it done false)
     (return (deref it))))
 
 ; ---------------------------------------------------------------------------
@@ -229,7 +229,7 @@
 (extend LineIter (Iterator ptr))
 
 (defn next ((self (ref LineIter))) (Maybe ptr)
-  (when (= (self done) 1) (return none))
+  (when (self done) (return none))
   (.set! self cur (lines-iter-next self))
   (return (some (.& self cur))))
 

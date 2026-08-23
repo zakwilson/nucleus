@@ -63,13 +63,13 @@
 ; ---------------------------------------------------------------------------
 ; strview-eq — byte equality. Equal length AND identical bytes. The length test
 ; comes first so memcmp is only reached for same-length views (and so two views
-; of different length never read past either buffer). Returns 1 (equal) / 0.
+; of different length never read past either buffer).
 ; ---------------------------------------------------------------------------
-(defn strview-eq ((a (ref StrView)) (b (ref StrView))):i32
-  (when (!= (a len) (b len)) (return 0))
-  (when (= (a len) 0) (return 1))
+(defn strview-eq ((a (ref StrView)) (b (ref StrView))):bool
+  (when (!= (a len) (b len)) (return false))
+  (when (= (a len) 0) (return true))
   (let (c:i32 (memcmp (as ptr (a data)) (as ptr (b data)) (as i64 (a len))))
-    (return (if (= c 0) 1 0))))
+    (return (= c 0))))
 
 ; ---------------------------------------------------------------------------
 ; S3: ByteIter — iterates raw bytes of a StrView in order.
@@ -137,7 +137,7 @@
 ; Hash's receiver is (ref Self), so the StrView Hash conformance takes the view
 ; by reference and delegates to strview-hash.
 ;
-; Eq is by VALUE (the protocol is `(=:i1 (a:Self b:Self))`, and collection key
+; Eq is by VALUE (the protocol is `(=:bool (a:Self b:Self))`, and collection key
 ; comparison loads two K values and calls `(= k1 k2)`), so the StrView Eq
 ; conformance takes two StrView VALUES. It copies each to a local and takes its
 ; address (the same `(addr-of k)` idiom the collections use to call Hash) so the
@@ -149,14 +149,14 @@
   (return (strview-hash self)))
 
 (extend StrView Eq)
-(defn = (a:StrView b:StrView):i1
+(defn = (a:StrView b:StrView):bool
   (let (la:StrView a
         lb:StrView b)
-    (return (if (= (strview-eq (addr-of la) (addr-of lb)) 1) true false))))
-(defn != (a:StrView b:StrView):i1
+    (return (strview-eq (addr-of la) (addr-of lb)))))
+(defn != (a:StrView b:StrView):bool
   (let (la:StrView a
         lb:StrView b)
-    (return (if (= (strview-eq (addr-of la) (addr-of lb)) 1) false true))))
+    (return (not (strview-eq (addr-of la) (addr-of lb))))))
 
 ; ---------------------------------------------------------------------------
 ; S3: CharIter — iterates UTF-8 codepoints of a StrView.
@@ -357,36 +357,36 @@
     (.set! it len (sv len))
     (return (deref it))))
 
-; strview-empty — 1 if the view has zero bytes, else 0.
-(defn strview-empty ((sv (ref StrView))):i32
-  (if (= (sv len) 0) 1 0))
+; strview-empty — true if the view has zero bytes.
+(defn strview-empty ((sv (ref StrView))):bool
+  (= (sv len) 0))
 
-; strview-starts-with — 1 if sv begins with prefix (byte-level), else 0.
-(defn strview-starts-with ((sv (ref StrView)) (prefix (ref StrView))):i32
+; strview-starts-with — true if sv begins with prefix (byte-level).
+(defn strview-starts-with ((sv (ref StrView)) (prefix (ref StrView))):bool
   (let (plen:usize (prefix len))
-    (when (> plen (sv len)) (return 0))
-    (when (= plen 0) (return 1))
+    (when (> plen (sv len)) (return false))
+    (when (= plen 0) (return true))
     (let (c:i32 (memcmp (as ptr (sv data)) (as ptr (prefix data)) (as i64 plen)))
-      (if (= c 0) 1 0))))
+      (= c 0))))
 
-; strview-ends-with — 1 if sv ends with suffix (byte-level), else 0.
-(defn strview-ends-with ((sv (ref StrView)) (suffix (ref StrView))):i32
+; strview-ends-with — true if sv ends with suffix (byte-level).
+(defn strview-ends-with ((sv (ref StrView)) (suffix (ref StrView))):bool
   (let (slen:usize (suffix len)
         svlen:usize (sv len))
-    (when (> slen svlen) (return 0))
-    (when (= slen 0) (return 1))
+    (when (> slen svlen) (return false))
+    (when (= slen 0) (return true))
     (let (offset:usize (- svlen slen)
           c:i32 (memcmp (as ptr (unsafe/ptr+ (sv data) (as i64 offset)))
                         (as ptr (suffix data))
                         (as i64 slen)))
-      (if (= c 0) 1 0))))
+      (= c 0))))
 
-; strview-contains-str — 1 if sv contains needle as a substring, else 0.
-(defn strview-contains-str ((sv (ref StrView)) (needle (ref StrView))):i32
+; strview-contains-str — true if sv contains needle as a substring.
+(defn strview-contains-str ((sv (ref StrView)) (needle (ref StrView))):bool
   (let ((found (Maybe usize)) (strview-byte-find sv needle))
     (match found
-      ((some i) 1)
-      (none 0))))
+      ((some i) true)
+      (none false))))
 
 ; ---------------------------------------------------------------------------
 ; Trim — ASCII whitespace only (space 0x20, tab 0x09, LF 0x0A, CR 0x0D).
@@ -394,21 +394,16 @@
 ; data pointer and/or reduced len).
 ; ---------------------------------------------------------------------------
 
-; is-ascii-ws — internal helper: 1 if b is an ASCII whitespace byte.
-(defn strview-is-ascii-ws (b:ui8):i32
-  (let (n:ui32 (as ui32 b))
-    (if (or (= n 32)
-            (or (= n 9)
-                (or (= n 10)
-                    (= n 13))))
-      1 0)))
+; is-ascii-ws — internal helper: true if b is an ASCII whitespace byte.
+(defn strview-is-ascii-ws (b:ui8):bool
+  (or (= b 32) (= b 9) (= b 10) (= b 13)))
 
 ; strview-trim-start — remove leading ASCII whitespace.
 (defn strview-trim-start ((sv (ref StrView))):StrView
   (let (p:ptr:ui8 (sv data)
         len:usize (sv len)
         i:usize 0)
-    (while (and (< i len) (= (strview-is-ascii-ws (aref p (as i64 i))) 1))
+    (while (and (< i len) (strview-is-ascii-ws (aref p (as i64 i))))
       (set! i (+ i 1)))
     (let ((result (ref StrView)) (alloca StrView))
       (.set! result data (unsafe/ptr+ p (as i64 i)))
@@ -420,7 +415,7 @@
   (let (p:ptr:ui8 (sv data)
         len:usize (sv len))
     (while (and (> len 0)
-                (= (strview-is-ascii-ws (aref p (as i64 (- len 1)))) 1))
+                (strview-is-ascii-ws (aref p (as i64 (- len 1)))))
       (set! len (- len 1)))
     (let ((result (ref StrView)) (alloca StrView))
       (.set! result data p)
@@ -463,15 +458,15 @@
       (if (> alen blen) (return 1)
         (return 0)))))
 
-(defn < (a:StrView b:StrView):i1
+(defn < (a:StrView b:StrView):bool
   (let (la:StrView a lb:StrView b)
     (if (< (strview-cmp-raw (addr-of la) (addr-of lb)) 0) true false)))
-(defn <= (a:StrView b:StrView):i1
+(defn <= (a:StrView b:StrView):bool
   (let (la:StrView a lb:StrView b)
     (if (<= (strview-cmp-raw (addr-of la) (addr-of lb)) 0) true false)))
-(defn > (a:StrView b:StrView):i1
+(defn > (a:StrView b:StrView):bool
   (let (la:StrView a lb:StrView b)
     (if (> (strview-cmp-raw (addr-of la) (addr-of lb)) 0) true false)))
-(defn >= (a:StrView b:StrView):i1
+(defn >= (a:StrView b:StrView):bool
   (let (la:StrView a lb:StrView b)
     (if (>= (strview-cmp-raw (addr-of la) (addr-of lb)) 0) true false)))

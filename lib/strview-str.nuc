@@ -39,15 +39,15 @@
 (extend StrView (Str CharIter))
 (defn char-count ((self (ref StrView))):usize
   (strview-char-count self))
-(defn str-empty? ((self (ref StrView))):i32
+(defn str-empty? ((self (ref StrView))):bool
   (strview-empty self))
 (defn char-at ((self (ref StrView)) i:usize):!Char
   (strview-char-at self i))
 (defn chars ((self (ref StrView))):CharIter
   (strview-chars self))
-(defn starts-with? ((self (ref StrView)) (prefix (ref StrView))):i32
+(defn starts-with? ((self (ref StrView)) (prefix (ref StrView))):bool
   (strview-starts-with self prefix))
-(defn ends-with? ((self (ref StrView)) (suffix (ref StrView))):i32
+(defn ends-with? ((self (ref StrView)) (suffix (ref StrView))):bool
   (strview-ends-with self suffix))
-(defn contains-str? ((self (ref StrView)) (needle (ref StrView))):i32
+(defn contains-str? ((self (ref StrView)) (needle (ref StrView))):bool
   (strview-contains-str self needle))

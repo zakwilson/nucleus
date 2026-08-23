@@ -1,0 +1,80 @@
+; Type aliases — design/stage16-ergonomics/container-type-sugar.md
+;
+; `(deftype Name Type)` gives a type a second SPELLING, not a second identity:
+; the alias and the type it names are the same type everywhere (§3.2). Its point
+; is the use sites — a one-token name is what the colon sugar is best at, so
+; `m:SymTab` replaces the whole `(ref (HashMap CStr i32))` wrapper (§3.9).
+
+(import-use "stdio.h")
+(import-use hashmap)
+(import-use hashset)
+(import-use vector)
+(import-use coll)
+
+(deftype SymTab  (ref (HashMap CStr i32)))
+(deftype NameSet (ref (HashSet CStr)))
+(deftype Count   i64)
+
+; The body is an ordinary type expression, so the colon-paren sugar works there
+; too — and an alias may name another alias.
+(deftype IntVec ref:(Vector i32))
+(deftype Tally  Count)
+
+; Every declaration position takes the alias through the plain colon sugar.
+(defstruct Reg
+  tbl:SymTab
+  names:NameSet)
+
+(defvar gv:Count 7)
+
+(defn tally (m:SymTab):Tally
+  (return (as Tally (count m))))
+
+(defn names (s:NameSet):Count
+  (return (as Count (count s))))
+
+; An alias in a template argument, and behind a pointer kind.
+(defn total (v:IntVec):i32
+  (let (sum:i32 0)
+    (doseq (x v (VecIter i32)) (set! sum (+ sum x)))
+    (return sum)))
+
+; An alias may take type parameters (§3.7). Its arguments are substituted into
+; the body and the result parsed, so `(Vec CStr)` IS `(ref (Vector CStr))` — a
+; parametric alias is exactly as transparent as a plain one.
+(deftype (Vec T)   (ref (Vector T)))
+(deftype (Table V) (ref (HashMap CStr V)))
+
+; Because the expansion happens before type variables are collected, an alias
+; application works as a generic method's receiver too: `T` here is still free.
+(defn first-of (v:(Vec T)):T
+  (return (invoke v (as usize 0))))
+
+(defn size (m:(Table i32)):Count
+  (return (as Count (count m))))
+
+(defn main ():i32
+  (with (m:SymTab (alloca (HashMap CStr i32))
+         s:NameSet (alloca (HashSet CStr))
+         v:IntVec (alloca (Vector i32)))
+    (hashmap-init m)
+    (hashset-init s)
+    (vector-init v)
+    (assoc m (as CStr "a") 1)
+    (assoc m (as CStr "b") 2)
+    (conj s (as CStr "x"))
+    (conj v 10)
+    (conj v 32)
+    (printf "%ld %ld %d %ld\n" (tally m) (names s) (total v) gv))
+  ; The same template, instantiated through the alias at two element types.
+  (with (names:(Vec CStr) (alloca (Vector CStr))
+         nums:(Vec i32) (alloca (Vector i32))
+         t:(Table i32) (alloca (HashMap CStr i32)))
+    (vector-init names)
+    (vector-init nums)
+    (hashmap-init t)
+    (conj names (as CStr "hello"))
+    (conj nums 99)
+    (assoc t (as CStr "k") 5)
+    (printf "%s %d %ld\n" (first-of names) (first-of nums) (size t)))
+  (return 0))

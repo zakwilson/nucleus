@@ -131,7 +131,9 @@
   (let (tt:raw:Type t)
     (case (tt kind)
       TY-VOID   (return "void")
-      TY-I1     (return "i1")
+      ; bool still lowers to i1: the Stage 16 divorce is source-level, so no
+      ; emitted IR, ABI or generated header moves.
+      TY-BOOL   (return "i1")
       TY-I8     (return "i8")
       TY-I16    (return "i16")
       TY-I32    (return "i32")
@@ -214,7 +216,7 @@
         tk:i32 (tt kind))
     (when (!= (is-ptr-repr ty) 0) (return "null"))
     (when (or (= tk TY-F32) (= tk TY-F64)) (return "0.0"))
-    (when (= tk TY-I1) (return "false"))
+    (when (= tk TY-BOOL) (return "false"))
     (when (or (= tk TY-STRUCT) (= tk TY-UNION) (= tk TY-ARRAY))
       (return "zeroinitializer"))
     (return "0")))
@@ -277,7 +279,9 @@
   (let (tt:raw:Type t)
     (case (tt kind)
       TY-VOID   (return "void")
-      TY-I1     (return "_Bool")
+      ; `bool`, not `_Bool`: the generated preamble already includes
+      ; <stdbool.h>, and it is the spelling a C23 reader expects.
+      TY-BOOL   (return "bool")
       TY-I8     (return "int8_t")
       TY-I16    (return "int16_t")
       TY-I32    (return "int32_t")
@@ -342,7 +346,7 @@
   (let (tt:raw:Type t)
     (when (!= (is-ptr-repr tt) 0) (return g-target-ptr-bytes))
     (case (tt kind)
-      TY-I1   (return 1)
+      TY-BOOL (return 1)
       TY-I8   (return 1)
       TY-I16  (return 2)
       TY-I32  (return 4)
@@ -369,10 +373,13 @@
       TY-ARRAY  (return (type-size (tt elem)))
       (return 1))))
 
+; The SEMANTIC "is this an integer" question. TY-BOOL is deliberately absent
+; (design/stage16-ergonomics/bool-type-plan.md): bool has two values, no
+; arithmetic and no implicit conversion. Ask `is-int-or-bool` below for the
+; representation question instead.
 (defn is-int-type (t:raw:Type):i32
   (let (k:i32 (t kind))
     (case k
-      TY-I1 (return 1)
       TY-I8 (return 1)
       TY-I16 (return 1)
       TY-I32 (return 1)
@@ -398,6 +405,20 @@
       TY-F32 (return 1)
       TY-F64 (return 1)
       (return 0))))
+
+(defn is-bool-type (t:raw:Type):i32
+  (when (= (t kind) TY-BOOL) (return 1))
+  (return 0))
+
+; A type whose *representation* is an integer register: the integers plus bool.
+; Distinct from `is-int-type` on purpose, exactly as `is-ptr-repr` is distinct
+; from `is-ptr-like` — that predicate carries meanings (arithmetic, implicit
+; widening, literal adoption) bool must never acquire. Ask THIS one where the
+; question is which instruction to emit: `unsafe/cast`'s selection ladder and
+; the binop operand gate.
+(defn is-int-or-bool (t:raw:Type):i32
+  (when (!= (is-int-type t) 0) (return 1))
+  (return (is-bool-type t)))
 
 ; A type whose IR representation is `ptr` and whose ABI is a plain pointer:
 ; TY-PTR and TY-CSTR (a C-string is a `char*`). They are interconvertible with
@@ -431,7 +452,7 @@
 (defn int-width (t:raw:Type):i32
   (let (k:i32 (t kind))
     (case k
-      TY-I1 (return 1)
+      TY-BOOL (return 1)
       TY-I8 (return 8)
       TY-I16 (return 16)
       TY-I32 (return 32)
@@ -446,18 +467,14 @@
       TY-CHAR  (return 32)
       (return 0))))
 
-; Stage 15 W9 item 31: i1/bool is UNSIGNED. It holds {0, 1} — the two values
-; `false` and `true` denote — not a 1-bit two's complement range, so unsigned is
-; the only reading under which `true` widens to 1 and `false < true`. Missing
-; this arm made all three consumers pick the signed instruction at once: `sext`
-; here and in abi.nuc turned `(as i32 true)` into -1, and `icmp slt i1` read
-; `true`'s bit as -1, so `(< false true)` and `(> true false)` were BOTH false —
-; self-contradictory for two distinct values. The same {0, 1} reading is why
-; `int-literal-fits` special-cases width 1 (W9 item 9); keep the two together.
+; bool is not an integer, but its REPRESENTATION is a 1-bit unsigned value, and
+; that is what picks the instruction: `zext`/`icmp u*` so `true` widens to 1 and
+; `false < true`. Reading it as signed (Stage 15 W9 item 31) made `(as i32 true)`
+; -1 and `(< false true)` and `(> true false)` both false.
 (defn is-unsigned (t:raw:Type):i32
   (let (k:i32 (t kind))
     (case k
-      TY-I1    (return 1)
+      TY-BOOL  (return 1)
       TY-UI8   (return 1)
       TY-UI16  (return 1)
       TY-UI32  (return 1)
@@ -470,26 +487,14 @@
 ; Stage 14 LW-4 (int-widening.md §"LW-4"): is the signed i64 literal value `v`
 ; representable in integer type `t`? A 64-bit-wide target holds any i64 bit
 ; pattern (a ui64/usize literal is stored as a signed i64 carrying the right
-; bits, so no check is meaningful), and i1/bool accepts the 0/1 idioms. A
-; narrower target is checked against its exact range: signed [-2^(w-1),
+; bits, so no check is meaningful). A narrower target is checked against its
+; exact range: signed [-2^(w-1),
 ; 2^(w-1)-1], unsigned [0, 2^w-1]. Bounds are built with shifts rather than
 ; large decimal literals so this predicate stays a bootstrap fixed point (a
 ; literal above i32 range in its own source would be wrapped by the old boot
 ; compiler before LW-4's widening lands).
 (defn int-literal-fits (v:i64 t:raw:Type):i32
   (let (w:i32 (int-width t))
-    ; Stage 15 W9 item 9: i1/bool holds {0, 1} — the two values `false` and
-    ; `true` denote — not a 1-bit two's complement range. This arm used to
-    ; `(return 1)` for every value, so `(defvar g:i1 5)` reached LLVM as
-    ; `global i1 5` and was silently truncated to true. Falling through to the
-    ; signed branch below would be wrong the other way: it computes [-1, 0] and
-    ; would reject 1. `true`/`false` are NODE-SYM literals and never arrive
-    ; here, so this arm sees only the numeric spelling. Every caller gates on
-    ; `is-int-type`, whose kind list is exactly `int-width`'s, so w is never 0
-    ; in practice — and a caller that did not gate now gets a diagnosed error
-    ; rather than a silent truncation.
-    (when (<= w 1)
-      (if (or (= v 0) (= v 1)) (return 1) (return 0)))
     (when (>= w 64) (return 1))
     (let (wi:i64 (as i64 w)
           one:i64 1)

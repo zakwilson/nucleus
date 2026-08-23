@@ -225,17 +225,17 @@
               (set! idx (bit-and (+ idx 1) mask)))))))))
 
 ; ---------------------------------------------------------------------------
-; contains?: 1 if elem is in the set, else 0. Skips tombstones, stops on
-; empty. Set conformance.
+; contains?: is elem in the set? Skips tombstones, stops on empty.
+; Set conformance.
 ; ---------------------------------------------------------------------------
-(defn contains? ((self (ref (HashSet T))) elem:T):i1
+(defn contains? ((self (ref (HashSet T))) elem:T):bool
   (let (kbuf:ptr:T (as ptr:T (as ptr (self keys)))
         sbuf:ptr:ui8 (as ptr:ui8 (as ptr (self states)))
         mask:usize (- (self cap) 1)
         k:T elem
         idx:usize (bit-and (hash (addr-of k)) mask)
         done:i32 0
-        result:i32 0)
+        result:bool false)
     (while (= done 0)
       (let (st:i32 (as i32 (aref sbuf (as i64 idx))))
         (if (= st 0)
@@ -244,7 +244,7 @@
           (if (= st 1)
             (if (= (aref kbuf (as i64 idx)) elem)
               ; Match.
-              (do (set! result 1) (set! done 1))
+              (do (set! result true) (set! done 1))
               (set! idx (bit-and (+ idx 1) mask)))
             ; Tombstone: keep probing.
             (set! idx (bit-and (+ idx 1) mask))))))
@@ -284,8 +284,8 @@
 (defn count ((self (ref (HashSet T)))):usize
   (return (self count)))
 
-(defn empty? ((self (ref (HashSet T)))):i32
-  (return (if (= (self count) 0) 1 0)))
+(defn empty? ((self (ref (HashSet T)))):bool
+  (return (= (self count) 0)))
 
 ; conj for a set == insert (add a member).
 (defn conj ((self (ref (HashSet T))) elem:T):void
@@ -317,7 +317,7 @@
         i:usize 0)
     (while (< i cap)
       (when (= (as i32 (aref sbuf (as i64 i))) 1)
-        (when (!= (contains? other (aref kbuf (as i64 i))) 0)
+        (when (contains? other (aref kbuf (as i64 i)))
           (aset! sbuf (as i64 i) 2)
           (.set! self count (- (self count) 1))))
       (set! i (+ i 1)))))
@@ -330,7 +330,7 @@
         i:usize 0)
     (while (< i cap)
       (when (= (as i32 (aref sbuf (as i64 i))) 1)
-        (when (= (contains? other (aref kbuf (as i64 i))) 0)
+        (when (not (contains? other (aref kbuf (as i64 i))))
           (aset! sbuf (as i64 i) 2)
           (.set! self count (- (self count) 1))))
       (set! i (+ i 1)))))

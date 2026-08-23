@@ -1,13 +1,13 @@
-; Stage 15 W9 item 31: i1/bool is unsigned — it holds {0, 1}, so `true` widens
-; to 1 and orders above `false`. Each check returns a distinct code so a failure
-; names itself.
+; Stage 15 W9 item 31: bool is unsigned — it holds {false, true}, so `true`
+; widens to 1 and orders above `false`. Each check returns a distinct code so a
+; failure names itself.
 (import-use "stdio.h")
 (import "prelude")
 
 (defn main ():i32
   ; The widening half. `true` must widen to 1, matching docs/types.md's literal
   ; table and the bool->_Bool C mapping, where (int)true is 1. Before the fix
-  ; `is-unsigned` had no TY-I1 arm, every one of these picked `sext`, and all
+  ; `is-unsigned` had no bool arm, every one of these picked `sext`, and all
   ; four were -1.
   (when (!= (as i32 true) 1) (return 1))
   (when (!= (as i64 true) 1) (return 2))
@@ -25,11 +25,11 @@
   (when (not (<= false true)) (return 10))
   (when (not (>= true false)) (return 11))
 
-  ; A bool reaching an i32 slot implicitly must agree with the explicit cast:
-  ; the whole point of item 31 is that one rule feeds all consumers.
-  (let (n:i32 (= 1 1))
+  ; A computed bool widens the same way a named one does — the whole point of
+  ; item 31 is that one rule feeds all consumers.
+  (let (n:i32 (as i32 (= 1 1)))
     (when (!= n 1) (return 12)))
-  (let (z:i32 (= 1 2))
+  (let (z:i32 (as i32 (= 1 2)))
     (when (!= z 0) (return 13)))
 
   ; A bool converted to a float goes uitofp, not sitofp. `as` refuses int<->float
@@ -37,5 +37,5 @@
   ; is-unsigned consumer here.
   (when (!= (unsafe/cast f64 true) 1.0) (return 14))
 
-  (printf "w9-i1-unsigned ok\n")
+  (printf "w9-bool-unsigned ok\n")
   (return 0))

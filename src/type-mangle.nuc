@@ -17,7 +17,7 @@
         k:i32 (tt kind))
     (case k
       TY-VOID (return "void")
-      TY-I1   (return "i1")
+      TY-BOOL (return "bool")
       TY-I8   (return "i8")
       TY-I16  (return "i16")
       TY-I32  (return "i32")
@@ -106,7 +106,7 @@
         k:i32 (tt kind))
     (case k
       TY-VOID (return "void")
-      TY-I1   (return "i1")
+      TY-BOOL (return "bool")
       TY-I8   (return "i8")
       TY-I16  (return "i16")
       TY-I32  (return "i32")

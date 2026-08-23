@@ -391,7 +391,7 @@
           (aset! (as ptr:i8 buf) len 0)
           (let (t:ptr:Tok (as ptr:Tok (alloc-tok))
                 errp:ptr:i32 (as ptr:i32 (__errno_location))
-                neg:i32 (= (char-at text 0) 45)
+                neg:bool (= (char-at text 0) 45)
                 val:i64 0)
             (.set! t kind TOK-INT)
             (.set! t line start-line)
@@ -407,7 +407,7 @@
             (if (!= (aref errp 0) 34)
               (.set! t i val)
               (do
-                (when (!= neg 0)
+                (when neg
                   (do (report-at start-line "integer literal out of range")
                       (return (err! parse-error))))
                 (aset! errp 0 0)

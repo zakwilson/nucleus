@@ -251,6 +251,21 @@
       (conj v (as ref:Generic g))))
     (return v)))
 
+; A function-pointer type IS its signature. Without this, `type-eq`'s default arm
+; answered 1 for every TY-FN pair, so two closures differing only in return type
+; shared one `apply` conformance — see design/stage16-ergonomics/bool-type-plan.md.
+(defn fn-sig-eq (a:raw:Type b:raw:Type):i32
+  (let (aa:raw:Type a
+        bb:raw:Type b)
+    (when (or (!= (aa num-params) (bb num-params))
+              (!= (aa variadic) (bb variadic)))
+      (return 0))
+    (dotimes (i (aa num-params))
+      (when (= (type-eq ((field-at (aa params) i) type)
+                        ((field-at (bb params) i) type)) 0)
+        (return 0)))
+    (return (type-eq (aa ret) (bb ret)))))
+
 ; Structural type equality. Primitive types are singletons, so pointer equality
 ; handles them; structs are equal iff they share a StructDef; pointers compare
 ; their pointee (untyped ptr has elem=null, distinct from typed ptr).
@@ -264,7 +279,6 @@
     ; are compatible under the unify-tpat TY-FN-into-(ref G) rule. Treat them
     ; as type-eq so defn-ir-name finds the method registered with the bare
     ; argtype when emit-defn re-parses the stamped (ref __fnty_N) param.
-    ; Consistent with type-eq's existing TY-FN imprecision (any two TY-FN are eq).
     (when (and (= (aa kind) TY-FN)
                (= (bb kind) TY-PTR) (= (bb pkind) PTR-REF))
       (return (type-eq a (bb elem))))
@@ -287,6 +301,7 @@
       ; the same template (sdef = owning Method*, num-params = tyvar index).
       TY-TYVAR (if (and (= (aa sdef) (bb sdef)) (= (aa num-params) (bb num-params)))
                  (return 1) (return 0))
+      TY-FN (return (fn-sig-eq a b))
       (return 1))))
 
 ; MC-1 (design/stage14/macro-conditional-casts.md): join two branch types for a
@@ -1273,23 +1288,52 @@
       ; through the receiver application).
       NODE-SYM (return)
       NODE-CELL
+       (do
+        ; §3.7: expand a parametric alias FIRST. Left unexpanded, `(Table V)`
+        ; matches no template and no pointer wrapper, so `V` is never collected
+        ; and the method is misread as concrete — §1.2's failure in a new costume.
+        (let (ex:raw:Node (type-alias-apply node (node-line (as ptr node) 0)))
+          (when (!= ex null)
+            (when (>= g-type-alias-depth MAX-TYPE-ALIAS-DEPTH)
+              (die-at (node-line (as ptr node) 0) "type alias expands into a cycle"))
+            (set! g-type-alias-depth (+ g-type-alias-depth 1))
+            (collect-pattern-tyvars ex out-tyvars io-ntv)
+            (set! g-type-alias-depth (- g-type-alias-depth 1))
+            (return)))
         ; Template application: each unresolvable symbol arg is a tyvar; recurse
         ; into list args (e.g. (HashMap K (Vector V))).
         (let (st:?ptr:StructTemplate (node-template-of node))
           (when (!= st null)
-            (let (it:ListIter (list-iter (n cdr)))
-              (doseq-iter (cur (addr-of it))
-                (let (arg:ptr cur
-                      an:ptr:Node (unsafe/cast ptr:Node arg))
-                  (if (= (an kind) NODE-SYM)
-                    (when (= (tyname-resolvable (an s)) 0)
-                      (tyvars-add (an s) out-tyvars io-ntv))
-                    (collect-pattern-tyvars arg out-tyvars io-ntv)))))
+            ; CT-D: a colon chain that nests (x:ref:Vector:ref:Node) lands here as
+            ; an over-long argument list; without these two guards its surplus
+            ; symbols become tyvars and the defn silently vanishes as an
+            ; uninstantiable template (container-type-sugar.md §1.2).
+            (let (stt:raw:StructTemplate st
+                  nargs:i32 (- (node-len (as ptr node)) 1))
+              (let (it:ListIter (list-iter (n cdr)))
+                (doseq-iter (cur (addr-of it))
+                  (let (arg:ptr cur
+                        an:ptr:Node (unsafe/cast ptr:Node arg))
+                    (if (= (an kind) NODE-SYM)
+                      (do
+                        ; Bare `ptr`/`raw` are types, so they reach the arity check
+                        ; below; bare `ref` is not, and would be collected instead.
+                        (when (= (an s) "ref")
+                          (die-at (node-line (as ptr an) (node-line (as ptr node) 0))
+                            (fmt-2s "%s: 'ref' is a pointer kind, not a type argument -- a colon chain cannot nest, so parenthesize the inner type: ref:(%s (ref X))"
+                                    (stt name) (stt name))))
+                        (when (= (tyname-resolvable (an s)) 0)
+                          (tyvars-add (an s) out-tyvars io-ntv)))
+                      (collect-pattern-tyvars arg out-tyvars io-ntv)))))
+              (when (!= nargs (stt ntv))
+                (die-at (node-line (as ptr node) 0)
+                  (fmt-sd "%s: wrong number of type arguments for defstruct template (%d given)"
+                          (stt name) nargs))))
             (return))
           ; Pointer wrapper: descend into the inner pattern.
           (when (!= (node-is-ptr-wrapper node) 0)
             (collect-pattern-tyvars (wrapper-inner-pattern node) out-tyvars io-ntv)
-            (return)))
+            (return))))
       0)))
 
 ; Collect the type variables appearing in a parametric-constraint argument node
@@ -1322,6 +1366,16 @@
 ;   - anything else: parse the whole pattern concretely and type-eq.
 (defn unify-tpat (pat:raw:Node at:raw:Type tyvars:ptr ntv:i32 out-bound:ptr line:i32):i32
   (when (or (= pat null) (= at null)) (return 0))
+  ; §3.7: match against what the alias means, not its name — the argument Type
+  ; was built from the expansion, so an unexpanded pattern could never agree.
+  (let (ex:raw:Node (type-alias-apply pat line))
+    (when (!= ex null)
+      (when (>= g-type-alias-depth MAX-TYPE-ALIAS-DEPTH)
+        (die-at line "type alias expands into a cycle"))
+      (set! g-type-alias-depth (+ g-type-alias-depth 1))
+      (let (r:i32 (unify-tpat ex at tyvars ntv out-bound line))
+        (set! g-type-alias-depth (- g-type-alias-depth 1))
+        (return r))))
   (let (pn:raw:Node pat)
     (case (pn kind)
       NODE-SYM
@@ -1376,7 +1430,7 @@
 (defn defn-has-receiver-tyvars (form:raw:Node):i32
   (let (name-node:ptr (node-at form 1)
         params-node:ptr (node-at form 2))
-    (when (= (node-is-list params-node) 0) (return 0))
+    (when (not (node-is-list params-node)) (return 0))
     ; Capacity must cover one tyvar per type-argument of any struct-template
     ; receiver, not just one per parameter (Item 4a) — size by the node count of
     ; each parameter/return type pattern, a safe upper bound on collectible
@@ -1501,11 +1555,11 @@
 ; (size already provisioned by the caller) with `io-ntv` (a ptr:i32 box) bumped.
 ; Diagnostics attribute to `line`.
 (defn parse-where-constraints (params-node:raw:Node base:i32 nc:i32
-                                    (constraints (ref (Vector (ref Constraint))))
+                                    constraints:ref:ConstraintVec
                                     tyvars:ptr io-ntv:ptr line:i32):void
   (dotimes (ci nc)
     (let (cnode:ptr (node-at params-node (+ base ci)))
-      (when (or (= (node-is-list cnode) 0) (!= (node-len cnode) 2))
+      (when (or (not (node-is-list cnode)) (!= (node-len cnode) 2))
         (die-at line "defn: each :where constraint must be (Protocol Var)"))
       ; Element 0 is the protocol slot: either a bare symbol (plain
       ; protocol, unchanged path) or a list `(Proto Arg…)` (a protocol
@@ -1537,7 +1591,7 @@
           ; patterns. Each Arg is a type-spelling node; any tyvar in it is
           ; collected (recovered/constrained at dispatch — A2).
           (do
-            (when (or (= (node-is-list (as ptr c0)) 0) (< (node-len (as ptr c0)) 1))
+            (when (or (not (node-is-list (as ptr c0))) (< (node-len (as ptr c0)) 1))
               (die-at line "defn: :where constraint protocol application must be (Protocol Arg...)"))
             (let (hn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr c0) 0)))
               (when (!= (hn kind) NODE-SYM)
@@ -1614,7 +1668,7 @@
                                 (count-pattern-nodes
                                   (node-at (node-at params-node (+ (+ wi 1) sb-c)) 0)))))
         (let (cap:i32 (if (> slot-bound 0) slot-bound 1)
-              (constraints (ref (Vector (ref Constraint)))) (vector-new-in (addr-of g-arena-alloc))
+              constraints:ref:ConstraintVec (vector-new-in (addr-of g-arena-alloc))
               tyvars:ptr     (arena-alloc (* (as i64 cap) (ptr-bytes)))
               ntv:i32 0)
           ; Parse the :where constraint list into the `constraints` Vector and
@@ -1786,11 +1840,11 @@
 ; raw→ref cast is sound — it centralizes the assertion the flow-checker demands at
 ; the `invoke` site (the field is honestly `(raw …)`: most Methods are non-generic
 ; and carry no constraints).
-(defn constraints-at ((cons (raw (Vector (ref Constraint)))) i:i32):ref:Constraint
-  (invoke (unsafe/cast (ref (Vector (ref Constraint))) cons) (as usize i)))
+(defn constraints-at (cons:raw:ConstraintVec i:i32):ref:Constraint
+  (invoke (unsafe/cast ref:ConstraintVec cons) (as usize i)))
 
 (defn recover-one-constraint (tyvar-names:ptr num-tyvars:i32
-                                  (constraints (raw (Vector (ref Constraint))))
+                                  constraints:raw:ConstraintVec
                                   ci:i32 out-bound:ptr io-changed:ptr line:i32):i32
   (let (crec:ref:Constraint (constraints-at constraints ci)
         na:i32 (crec nargs))
@@ -1871,7 +1925,7 @@
 ;   constraints — the parsed :where clause (Vector (ref Constraint));
 ;   num-constraints — count; line — diagnostic line for hard errors.
 (defn recover-assoc-into (tyvar-names:ptr out-bound:ptr num-tyvars:i32
-                              (constraints (raw (Vector (ref Constraint))))
+                              constraints:raw:ConstraintVec
                               num-constraints:i32 line:i32):i32
   (let (nc:i32 num-constraints)
     (when (= nc 0) (return 1))
@@ -2518,7 +2572,7 @@
 ; not a string kind, so this `=` is a plain `icmp eq ptr` regardless of hp's
 ; declared pointer kind — (raw Node) here costs nothing (unlike the CStr/
 ; Node.s identity trap for genuine *string* params elsewhere in this file).
-(defn gcheck-special-form (hp:raw:Node):i1
+(defn gcheck-special-form (hp:raw:Node):bool
   (if-some (head (as-ref hp))
            (contains? #{'let 'with 'do 'cond 'return 'while 'set! 'inc! 'quote 'quasiquote
                         'not '_and '_or 'cast 'addr-of 'deref 'ptr-set! 'ptr+ '_get '.set!
@@ -2530,7 +2584,7 @@
                         'unwrap-or 'if-some 'when-some 'move 'defer 'err-name 'err-message
                         'match 'make 'err! 'type-token 'signal}
                        head)
-           0))
+           false))
 
 ; Declared type of a let/with binding name in a generic body. Handles both the
 ; un-desugared colon symbol ("r:T") and the desugared (name type) cell. Returns
@@ -2667,7 +2721,7 @@
         (when (= hp 'macrolet) (return null))
         ; cond / _and / _or / not / set! / inc! / return / while and the structural
         ; special forms: walk compound children; result type is not modeled.
-        (when (!= (gcheck-special-form hp) 0)
+        (when (gcheck-special-form hp)
           (gcheck-walk-children n scope m)
           (return null))
         ; A genuine call: type the arguments (catching nested abstract calls),
@@ -2691,12 +2745,12 @@
               (set! rt (abstract-call-via-generic h argtypes nargs m (nn line)))
               (when (!= rt null) (return rt))))
           (let (g:ptr (generic-lookup h))
-            ; Intrinsic operator: best-effort type (i1 for comparisons, else the
+            ; Intrinsic operator: best-effort type (bool for comparisons, else the
             ; first operand's type — possibly the abstract tyvar). Deferred, no error.
             (when (!= g null)
               (let (m0:ptr:Method (as ptr:Method (invoke (-> g (as ptr:Generic _) (_ methods)) 0)))
                 (when (= (m0 kind) METHOD-INTRINSIC)
-                  (when (!= ((m0 binop) is-cmp) 0) (return ty-i1))
+                  (when (!= ((m0 binop) is-cmp) 0) (return ty-bool))
                   (return (gcheck (node-at n 1) scope m)))))
             ; A name that is neither a generic nor scope-bound is a typo — error
             ; whether or not an argument is abstract.
@@ -2943,7 +2997,7 @@
         ; Stage 16 `macrolet`: defer, for the same reason gcheck does — the
         ; bindings do not exist yet, so the body's local calls are unresolvable.
         (when (= hp 'macrolet) (return null))
-        (when (!= (gcheck-special-form hp) 0)
+        (when (gcheck-special-form hp)
           (valid-walk-children n scope gname cty line)
           (return (node-type n scope)))
         ; A genuine call: type the arguments, then require it to resolve.
@@ -3041,7 +3095,7 @@
       (let (saved-copy:i32 g-emitting-copy
             save-ns:ptr g-current-ns
             save-path:ptr g-source-path
-            save-imports:(raw (Vector (ref ImportBind))) g-file-imports)
+            save-imports:raw:ImportVec g-file-imports)
         (set! g-emitting-copy 1)
         (when (!= (as ptr (job ns)) null) (set! g-current-ns (as ptr (job ns))))
         (when (!= (as ptr (job path)) null) (set! g-source-path (as ptr (job path))))
@@ -3861,7 +3915,7 @@
       (set! fc (fc cdr)))))
 
 ; Built-in result type of an operator generic `g` applied to a same-typed pair
-; of operands, or null if the operator does not apply. Comparisons yield i1;
+; of operands, or null if the operator does not apply. Comparisons yield bool;
 ; arithmetic yields the operand type. This is what lets numeric/pointer built-ins
 ; satisfy operator protocol requirements (Num/Eq/Ord) with no user method (§10.3).
 (defn builtin-op-result-type (g:raw:Generic ptypes:ptr nparams:i32):ptr
@@ -3876,14 +3930,16 @@
         (when (= (type-eq at bt) 0) (return null))
         (if (!= (bop is-cmp) 0)
           (do
-           (when (or (!= (is-int-type at) 0) (!= (is-float-type at) 0)
+           ; bool keeps all six comparisons after the Stage 16 divorce, so it
+           ; still satisfies Eq/Ord with no user method (§10.3).
+           (when (or (!= (is-int-or-bool at) 0) (!= (is-float-type at) 0)
                      (= (-> at (unsafe/cast ptr:Type _) (_ kind)) TY-PTR))
-              (return ty-i1))
+              (return ty-bool))
             ; CStr satisfies Eq (= / !=) only — content comparison via strcmp.
             (when (and (= (-> at (unsafe/cast ptr:Type _) (_ kind)) TY-CSTR)
                        (or (= (bop name) "=")
                            (= (bop name) "!=")))
-              (return ty-i1))
+              (return ty-bool))
             (return null))
           (do
             (when (or (!= (is-int-type at) 0) (!= (is-float-type at) 0))
@@ -4032,7 +4088,7 @@
 ; arrays, and num-constraints = 0 — identical downstream behaviour to T4.
 (defn tmpl-conformance-add (template:raw:StructTemplate proto:raw:Protocol bindings:ptr nbindings:i32
                                  tyvars:ptr num-tyvars:i32
-                                 (constraints (raw (Vector (ref Constraint))))
+                                 constraints:raw:ConstraintVec
                                  num-constraints:i32):void
   (doseq (c g-tmpl-conformances (VecIter ref:TmplConformance))
     (when (and (= (c template) template) (= (c proto) proto)) (return)))
@@ -4312,7 +4368,7 @@
                                             (count-pattern-nodes
                                               (aref (as ptr:ptr proto-args) sb-p)))))
                       (let (cap:i32 (if (> slot-bound 0) slot-bound 1)
-                            (constraints (ref (Vector (ref Constraint)))) (vector-new-in (addr-of g-arena-alloc))
+                            constraints:ref:ConstraintVec (vector-new-in (addr-of g-arena-alloc))
                             tyvars:ptr     (arena-alloc (* (as i64 cap) (ptr-bytes)))
                             ntv:i32 0)
                         ; Seed the tyvars array with the template's own tyvars; they
@@ -4521,8 +4577,8 @@
   ; Phase F flip: the `null` literal is raw, so it flows into raw/? slots but
   ; not into a non-null `ref`/`ptr` slot without an explicit guard or cast.
   (when (= n 'null)  (return ty-raw))
-  (when (= n 'true)  (return ty-i1))
-  (when (= n 'false) (return ty-i1))
+  (when (= n 'true)  (return ty-bool))
+  (when (= n 'false) (return ty-bool))
   (when (= n 'none)  (return ty-maybe-ptr))
   (let (lookup-name:ptr null
         ignored:ptr null)
@@ -4789,7 +4845,7 @@
     (return (ft ret))))
 
 ; A call head (not a special form): mirror emit-dispatch. Operator → a matching
-; user overload's return type, else i1 for comparisons / the first operand's type
+; user overload's return type, else bool for comparisons / the first operand's type
 ; (the intrinsic peephole result); overloaded set → the exactly matched method's
 ; return type; solitary/extern → the bound function's return.
 ;
@@ -4825,7 +4881,7 @@
                 (let (um:?ptr:Method (operator-user-resolve g argtypes arg-nodes nargs))
                   (when (!= um null) (return (um ret-type)))))))
           (let (bop:ptr:BinOp (unsafe/cast ptr:BinOp (m0 binop)))
-            (when (!= (bop is-cmp) 0) (return ty-i1))
+            (when (!= (bop is-cmp) 0) (return ty-bool))
             ; Stage 15 W2a: a binop's result type is the type its operands
             ; *unify* to, from the one shared rule emit's binop-coerce uses
             ; (binop-result-type, src/nucleusc.nuc) — not operand 1's type
@@ -4983,9 +5039,9 @@
               (when (= sym null) (return ty-void))
               (return (sym type)))))
         (when (= hp 'inc!) (return ty-void))
-        (when (= hp 'not) (return ty-i1))
-        (when (= hp '_and) (return ty-i1))
-        (when (= hp '_or) (return ty-i1))
+        (when (= hp 'not) (return ty-bool))
+        (when (= hp '_and) (return ty-bool))
+        (when (= hp '_or) (return ty-bool))
         ; `unsafe/cast` types exactly as the retired bare `cast` used to.
         (when (= hp 'unsafe/cast) (return (node-type-cast n)))
         (when (= hp 'as) (return (node-type-as n)))

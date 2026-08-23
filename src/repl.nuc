@@ -212,6 +212,12 @@
                           (fprintf g-repl-preamble "@%s = external global %s\n"
                             (ns-ir-base vname) (type-to-ir vty))))))
                   (fprintf stderr "  defined\n"))
+            ; Stage 16: an alias emits no IR and defines no layout, so unlike
+            ; defstruct it has no module to open and no preamble to push —
+            ; registering it is the whole job (container-type-sugar.md §3.2).
+            (and (!= h null) (or (= h "deftype") (= h "deftype-")))
+              (do (register-type-alias (as ptr f) (if (= h "deftype-") 1 0))
+                  (fprintf stderr "  defined\n"))
             (and (!= h null) (= h "defstruct"))
               (do (open-module-streams)
                   (set! g-out g-type-stream)
@@ -418,7 +424,7 @@
                   ; Default depth: -1 (fixpoint) for macroexpand, 1 for macroexpand-1.
                   ; macroexpand-all uses recursive expansion (depth ignored).
                   (let (depth:i32 -1
-                        is-all:i32 (= h "macroexpand-all"))
+                        is-all:bool (= h "macroexpand-all"))
                     (when (= h "macroexpand-1") (set! depth 1))
                     ; Optional second arg overrides the default depth.
                     (when (>= (node-len f) 3)
@@ -453,13 +459,13 @@
                           (let (ah:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr:Node arg) 0)))
                             (when (= (ah kind) NODE-SYM)
                               (set! head-name (ah s)))))
-                        (if (and (= is-all 0)
+                        (if (and (not is-all)
                                  (or (= head-name null)
                                      (= (find-macro head-name) null)))
                           (do (fprintf stderr "  not a macro call: ")
                               (fprint-node stderr arg)
                               (fprintf stderr "\n"))
-                          (let (expanded:ptr (if (!= is-all 0)
+                          (let (expanded:ptr (if is-all
                                                (macroexpand-all-form arg)
                                                (macroexpand-form arg depth)))
                             (fprintf stderr "  ")
@@ -565,12 +571,12 @@
                         (cond (= result-kind TY-VOID)
                                 (fprintf g-body-stream "  ret void\n")
                               (or (= result-kind TY-I32)
-                                  (= result-kind TY-I1)
+                                  (= result-kind TY-BOOL)
                                   (= result-kind TY-I8) (= result-kind TY-I16))
                                 (do (let (ret-val:ptr (result val))
                                       (when (!= result-kind TY-I32)
                                         (let (ext-tmp:ptr (new-tmp))
-                                          (cond (= result-kind TY-I1)
+                                          (cond (= result-kind TY-BOOL)
                                                   (fprintf g-body-stream "  %s = zext i1 %s to i32\n"
                                                            ext-tmp (result val))
                                                 (= result-kind TY-I8)
@@ -597,7 +603,7 @@
                       (fclose g-body-stream)
                       (let (ret-ir:ptr "void")
                         (when (or (= result-kind TY-I32)
-                                  (= result-kind TY-I1)
+                                  (= result-kind TY-BOOL)
                                   (= result-kind TY-I8)
                                   (= result-kind TY-I16))
                           (set! ret-ir "i32"))
@@ -635,7 +641,7 @@
                             (when (!= addr 0)
                               ; Call and print result based on type
                                   (cond (or (= result-kind TY-I32)
-                                            (= result-kind TY-I1)
+                                            (= result-kind TY-BOOL)
                                             (= result-kind TY-I8)
                                             (= result-kind TY-I16))
                                       (let (fn:ptr (unsafe/cast ptr addr)

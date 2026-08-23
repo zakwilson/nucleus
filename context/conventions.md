@@ -155,7 +155,10 @@ slot* routes through it — `let`/`with` init, `set!`, `.set!` field store,
 explicit and implicit `return`, struct-literal and array initializers (positional
 **and** designated are separate call sites), union-variant construction — plus
 `coerce-num-val` (binops) and `safe-coerce-val` (call arguments) which delegate
-to it. **Add a new implicit conversion here, not at the call sites.**
+to it. **Add a new implicit conversion here, not at the call sites.** The one
+documented exception is a conversion keyed on the argument's *position* rather
+than on a source/target type pair — see "A conversion keyed on POSITION cannot
+live in the type-pair chokepoint" below.
 
 The trap that makes a missing case cost double: those callers do not agree on
 what a null return means. All of the typed-slot ones raise a "type mismatch"
@@ -3725,28 +3728,71 @@ Two related traps:
   being the new accept fixture) and stage 2 the strong evidence for a
   restrictive one. Know which kind you are making.
 
-## `i1` is a bool over `{0, 1}`, not a 1-bit integer
+## `bool` is not an integer — `is-int-type` is SEMANTIC, `is-int-or-bool` is REPRESENTATION
 
-Every other integer type in the language is a two's complement range, so the
-reflex when handling `i1` generically is to treat width 1 the same way. That
-range is `[-1, 0]` — it accepts `-1` and **rejects `1`**, the value `true`
-denotes. Any width-driven rule that reaches `i1` will therefore be wrong in one
-of two directions, and both have already happened:
+Stage 16 C1 (design/stage16-ergonomics/bool-type-plan.md) made `bool` its own
+`TypeKind` (`TY-BOOL`, singleton `ty-bool`) and took it out of `is-int-type`.
+The divorce is source-level only: `type-to-ir` still answers `i1`, so no emitted
+IR, ABI classification or generated header moved. `i1` is retired as a *spelling*
+(`parse-type-name` names the replacement).
 
-- `int-literal-fits` short-circuited `(when (<= w 1) (return 1))` — "anything
-  fits" — so `(defvar g:i1 5)` reached LLVM as `global i1 5` and was silently
-  truncated to `true` (W9 item 9). Fixed with an explicit `{0, 1}` arm; the
-  fall-through to the signed branch would have been the opposite error.
-- `is-unsigned` has no `TY-I1` arm and falls through to "signed", so `true`
-  widens with `sext` (`(as i32 true)` is **−1**) and comparisons use `icmp slt`,
-  which makes `(< false true)` and `(> true false)` *both* false (W9 item 31,
-  open).
+The split is the whole design, and it is the same shape as `is-ptr-like` vs
+`is-ptr-repr`:
 
-When adding a rule keyed on `int-width` or `is-unsigned`, check what it does at
-width 1 before assuming the generic path covers it. `true`/`false` are
-`NODE-SYM` literals that emit `true`/`false` directly and never reach the
-integer-literal predicates, so a test written only with the named spellings will
-not exercise any of this — use the numeric one.
+- **`is-int-type`** answers the *semantic* question — arithmetic, implicit
+  widening, untyped-literal adoption. `bool` is absent, which is what makes
+  `(+ true true)` an error (it used to be `false`, one-bit wrap) and
+  `(let (b:bool 1) …)` / `(let (n:i32 true) …)` type mismatches.
+- **`is-int-or-bool`** answers the *representation* question — which instruction
+  to emit. `emit-cast`'s five selection gates, `emit-binop-vals`' operand gate
+  and `vararg-promote` ask this one. Do not write `(= (t kind) TY-BOOL)` at a new
+  site; pick one of the two predicates, and say which question you are asking.
+
+Three consequences worth keeping:
+
+- **`int-width` and `is-unsigned` KEEP their bool arm** (1, unsigned). They are
+  representation queries, so `zext` / `icmp u*` / `uitofp` fall out of the
+  existing machinery instead of needing a second copy. `is-unsigned` answering
+  "signed" for bool is Stage 15 W9 item 31: `(as i32 true)` was **−1** and
+  `(< false true)` and `(> true false)` were *both* false. `int-literal-fits`'s
+  width-1 special case is **gone** — no integer type has width 1 any more, and
+  every caller gates on `is-int-type`.
+- **The bool→int widening is ONE function with exactly two callers.**
+  `widen-bool-to-int` (`src/abi.nuc`, beside `coerce-int-val`) is called by
+  `emit-as` step 5 and by `vararg-promote`, and is deliberately unreachable from
+  `coerce-int-val` — an implicit bool→int would make `(let (n:i32 true) …)`
+  compile again. `defcast` refuses bool/int pairs for the same reason: a user
+  rule for that pair is picked up by `coerce-int-val`'s tail.
+- **`unsafe/cast` must stay TOTAL for bool.** `as` names it in every bool
+  rejection ("use unsafe/cast"), so all five `emit-cast` gates — int↔int,
+  int→ptr, ptr→int, int→float, float→int — take `is-int-or-bool`. Excluding bool
+  from any one of them advertises an escape hatch that does not exist.
+
+`true`/`false` are `NODE-SYM` literals that emit `true`/`false` directly and
+never reach the integer-literal predicates, so a test written only with the named
+spellings exercises none of the widening rules — write one with `(as i32 b)` and
+one with `%d` through `printf`.
+
+## A value-collapsed `cond` in return position emits the zero constant, silently
+
+`type-join` (`src/generics.nuc`) answers `ty-void` for two branches whose types
+do not reconcile, so a `cond`/`if`/`if-some` in **implicit-return** position
+collapses to void — and a non-void function whose body produced a void value
+falls off the end and gets its return type's zero emitted for it, with **no
+diagnostic**.
+
+Stage 16 C1 hit it: `gcheck-special-form` was
+`(if-some (head …) (contains? …) 0)`, a `bool` branch joined with an `i32`
+literal branch. While bool was an integer the join widened; the moment it was not,
+the whole function compiled to `ret i1 0` and every special form was reported as
+an unknown function in a generic body. Nothing in `make`, `make test` or
+`./build/nucleusc --emit-llvm src/nucleusc.nuc` said a word — only *running the
+stage-2 binary* did (see build.md, "Updating bootstrap artifacts").
+
+Generalize: **any change that narrows what two branch types will join turns
+previously-widening joins into silent void collapses.** The slot positions
+(`let` init, `set!`, argument, explicit `return`) all diagnose; the branch and
+tail positions do not. When you narrow a join rule, build and *run* stage 2.
 
 ## A parser's null must not mean both "absent" and "malformed"
 
@@ -4546,3 +4592,124 @@ had been hiding a genuine regression for the whole of the prelude-split work:
 165 libc names had left the no-import set and `docs/stdlib.md` still claimed
 them. **When `make test` exits non-zero with no `FAIL` line, look for an empty
 result file, not a flake.**
+
+## A conversion keyed on POSITION cannot live in the type-pair chokepoint
+
+`coerce-int-val` is the implicit-coercion chokepoint and the standing rule is to
+add conversions there. Stage 16's C default argument promotions are the
+exception, and the line is worth stating because it is not "this one is special":
+**`coerce-int-val` converts a value toward a declared type, and a variadic
+argument has none.** There is no target to pass it. The rule is a property of
+*where the argument sits* — past the callee's fixed prefix — and the only code
+that knows where the `...` tail begins is the argument walk in
+`emit-call-with-args`.
+
+So the test for where a conversion belongs is not "is it a conversion" but **"is
+it keyed on a source/target pair, or on a position?"** Two position-keyed rules
+now live at that argument walk, and they are the same shape: the Stage 14 NS-3
+StrView collapse (a materialized view past the fixed prefix contributes only its
+`data` pointer) and `vararg-promote`.
+
+The half that keeps this from being a second code path: a position-keyed rule
+should **choose the target and delegate the emission**. `vararg-promote` picks
+`i32`/`f64` and then calls `coerce-int-val` to emit the widening, so
+`zext`-vs-`sext` — and `i1`'s unsignedness, which is exactly the trap the `i1`
+section above records — stays decided in one place. A hand-rolled `sext`/`zext`
+at the call site would have been the second place to get it wrong.
+
+Two things such a rule must be tested for, neither of which a positive test
+catches:
+
+- **The argument one position too early.** A variadic callee's *fixed* narrow
+  parameter must keep its declared type. A rule that fires at `i >= 0` instead
+  of `i >= num-params` widens it, and nothing else in the compiler objects.
+- **The argument that should not move.** An already-`int`-wide value must gain
+  no instruction — a spurious promotion is as wrong as a missing one and costs
+  an instruction per call.
+
+And the run alone will not tell you: of the six types `vararg-promote` handles,
+**three print correctly under both behaviours** on x86-64, because the backend
+materialises a narrow value into a zeroed register. That is the same blindness
+the truthiness-test section above records, in a different costume — assert on the
+emitted instruction. design/stage16-ergonomics/varargs-promotion.md
+
+## A new top-level form has SIX dispatch sites, not one
+
+`deftype` (Stage 16) was implemented as "a registry, a prescan arm, an emit
+arm" — and shipped three times with a hole, because the compiler routes
+top-level forms through six independent, explicitly-enumerated lists:
+
+1. `prescan-struct-names` (or a sibling prescan) — registers the name.
+2. `emit-toplevel`'s `case` in `src/nucleusc.nuc` — the public spelling, and a
+   separate arm for the `-`-suffixed private one.
+3. **`.nuch` export** — `src/nuch.nuc`'s emit dispatch, one arm per carried head.
+4. **`.nuch` import** — `src/nuch.nuc`'s import dispatch, one arm per re-registered head.
+5. **`--emit-cheader`** — `src/cheader.nuc`.
+6. **The REPL** — `src/repl.nuc` has its own top-level form chain.
+
+Plus `build-special-form-set` (so the name is reserved and cannot be shadowed)
+and `text-token-is-definer` (so the "defined nowhere" note can name the file).
+
+**A form missing from any of these is silently dropped, never diagnosed.** The
+`.nuch` pair is the sharpest: the header exported `(declare twice ((n Count))
+:Count)` naming a `Count` it did not carry, so the *importer* failed on an
+unresolvable type with nothing pointing back at the exporter.
+
+The specific wrong inference worth not repeating: reading `lib/hashmap.nuch` and
+seeing a literal `(defstruct (Entry K V) …)` looks like proof the format is a
+verbatim pass-through. It is not — that form is there because `"defstruct"` has
+an arm. **"The format carries X verbatim" is a claim about a dispatch table, not
+about the format, and no amount of reading output files can distinguish the
+two.** Grep the dispatch.
+
+## `guard-name-kind` cannot see a type-over-type collision
+
+`guard-name-kind name line newk` asks for the first binding whose kind is *not*
+`newk`, so it skips every row reporting that noun. `BK-STRUCT`,
+`BK-STRUCT-TEMPLATE`, `BK-UNION-TEMPLATE`, `BK-ENUM` and `BK-TYPE-ALIAS` all
+report `NK-TYPE` — so **no** collision between two kinds of type is visible to
+it, by construction. It catches a type against a function/value/macro/protocol
+and nothing else.
+
+The codebase leaves that gap open: `(defenum Pt …)` over a `defstruct Pt` is
+accepted today. Whether that is survivable depends on probe order in
+`parse-type-name` — the winner is silently whichever it reaches first. A
+registry probed **last** (as `deftype`'s is, so an alias can never mask a real
+definer) makes the loser *dead on arrival*, so such a registry needs its own
+collision check; `type-name-collision` in `src/union-registry.nuc` is the
+`deftype` one.
+
+Place such a check **ahead of the same-definition-site early return**, so it
+runs on both the prescan call and the emit call: whole-file prescans have
+registered everything *above* by the first, everything *below* by the second.
+That two-pass trick does not reach registries that register per-form during
+emission (`prescan-defenum-names` takes one form, not a form list). See
+design/stage16-ergonomics/container-type-sugar.md.
+
+## A depth guard protects one recursion, not one concept
+
+`MAX-TYPE-ALIAS-DEPTH` guarded alias expansion in `parse-type-name` and
+`parse-type-from-node`, and a self-referential parametric alias still hung the
+compiler forever — because a `defn` parameter reaches `collect-pattern-tyvars`
+*first*, and that descent had no guard of its own.
+
+A recursion counter is a property of **each descent**, not of the construct it
+protects: it is only as good as its least-guarded caller. When a construct is
+expanded at N sites (for type aliases: the concrete parse, the two pattern
+walks in `src/generics.nuc`, and `type-node-to-c`), every one of them needs
+`when (>= depth CAP) → die`, increment, recurse, decrement. Sharing one
+`type-alias-apply` helper does **not** share the guard — the helper returns the
+expansion, while the guard has to span the caller's own recursive call.
+
+The symptom is a hang, not a crash, so it does not show up as a failing test
+unless something bounds the run: exercise a cycle through *every* path that can
+expand, and give the check a `timeout`.
+
+## A `case` arm takes exactly one expression — inserting a second silently reparses
+
+Adding a form to the top of an existing `case` arm in the compiler's own source
+turns the *next* form into a case LABEL, because `case` reads arms as
+(label, one-expression) pairs. The failure surfaces far from the edit and as a
+type error on the label, e.g. `= expects integer operands` pointing at the
+`case` head. Wrap the arm in `(do …)` when it grows past one form; the same
+applies to a `cond` clause body.

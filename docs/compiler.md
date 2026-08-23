@@ -203,6 +203,18 @@ declared signature, *fewer* is still an error. Importing the function's C header
 instead (`(import "stdio.h")`) is the precise route — the header carries a real
 variadic flag, so the fixed prefix is checked exactly and the tail is free.
 
+**Arguments past the fixed prefix take C's default argument promotions.** An
+integer narrower than C's `int` is widened to `int` (`zext` for an unsigned
+source — `bool`/`i1` included — `sext` for a signed one) and an `f32` is widened
+to `f64`, exactly as a C compiler does at the same call, because that is what
+`va_arg` on the other side reads. `Char` is `ui32` and so is already `int`-wide;
+`usize`/`ssize` are pointer-width; neither moves. The promotion target follows
+the *target*'s C `int` — 16-bit on AVR, 32-bit elsewhere — not Nucleus's `int`
+spelling, which is a fixed alias for `i32`. A variadic callee's **fixed**
+parameters are unaffected: they have declared types and take the ordinary
+coercion rules. See [Implicit Type Coercion](types.md#implicit-type-coercion)
+and, for the related `StrView` rule, [Strings](strings.md).
+
 An **overloaded** name (two or more `defn`s sharing a spelling), a multimethod,
 a protocol method and a bounded-generic template are resolved by argument
 *types*, so a wrong count is reported as a resolution failure — `no matching

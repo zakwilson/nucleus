@@ -7,11 +7,11 @@
 
 ; A capability: any type that can be ordered.
 (defprotocol Ord
-  (less (a:Self b:Self):i1))
+  (less (a:Self b:Self):bool))
 
 ; Concrete implementations are ordinary overloaded defns (the Option-1 substrate).
-(defn less (a:i32 b:i32):i1 (return (< a b)))
-(defn less (a:f64 b:f64):i1 (return (< a b)))
+(defn less (a:i32 b:i32):bool (return (< a b)))
+(defn less (a:f64 b:f64):bool (return (< a b)))
 
 ; Code-free conformance assertions.
 (extend i32 Ord)

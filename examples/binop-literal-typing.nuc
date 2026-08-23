@@ -56,7 +56,7 @@
   (printf "both-lit    %s %s %s\n"
     (tkind (* 2 3)) (tkind (* 5000000000 2)) (tkind (* 2 5000000000)))
 
-  ; ---- the same matrix, comparisons: always i1, but the *operand* unification
+  ; ---- the same matrix, comparisons: always bool, but the *operand* unification
   ;      decides signed vs unsigned lowering -------------------------------
   (printf "cmp-lit-first  %d %d %d %d\n"
     (if (< 5 s32) 1 0) (if (< 5 s64) 1 0) (if (< 5 u32) 1 0) (if (< 5 u64) 1 0))

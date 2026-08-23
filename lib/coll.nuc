@@ -40,7 +40,7 @@
 ;   count  -> number of live elements (usize)
 ;   conj   -> add an element in the collection's natural/efficient way,
 ;             MUTATING in place (append for a vector)
-;   empty? -> 1 when count = 0, else 0
+;   empty? -> true when count = 0
 ;   iter   -> a fresh iterator over the collection's elements
 ;
 ; It is the associated iterator type (C2.1, design/stage11/cleanup2.md);
@@ -54,7 +54,7 @@
 (defprotocol (Coll E It)
   (count  ((self (ref Self))):usize)
   (conj    ((self (ref Self)) elem:E):void)
-  (empty?   ((self (ref Self))):i32)
+  (empty?   ((self (ref Self))):bool)
   (iter      ((self (ref Self))):It))
 
 ; ---------------------------------------------------------------------------
@@ -62,13 +62,13 @@
 ; design's Seq; the lazy map/reduce/filter live on the Iterator side, M2).
 ;   invoke    -> index access `(s i)` -> E (panics out of bounds)
 ;   append    -> add at the back, MUTATING (same as conj for a vector)
-;   contains? -> linear membership test, 1/0 (uses = on E)
+;   contains? -> linear membership test, bool (uses = on E)
 ;   insert    -> insert at an index, shifting the tail right, MUTATING
 ; ---------------------------------------------------------------------------
 (defprotocol (Seq E)
   (invoke      ((self (ref Self)) i:usize):E)
   (append   ((self (ref Self)) elem:E):void)
-  (contains? ((self (ref Self)) elem:E):i1)
+  (contains? ((self (ref Self)) elem:E):bool)
   (insert   ((self (ref Self)) i:usize elem:E):void))
 
 ; ---------------------------------------------------------------------------
@@ -102,7 +102,7 @@
 ;   union        -> add every member of `other` into self, MUTATING self.
 ;   difference   -> remove from self every member also in `other`, MUTATING.
 ;   intersection -> keep in self only members also in `other`, MUTATING.
-;   contains?    -> membership test, 1/0.
+;   contains?    -> membership test, bool.
 ; The set-algebra methods mutate the receiver (the efficient primitive); a
 ; fresh-result variant is just `iter` + `into`. `select` (filter to a new set)
 ; is not in the protocol — it produces a Self-derived new collection that has
@@ -113,7 +113,7 @@
   (union        ((self (ref Self)) (other (ref Self))):void)
   (difference   ((self (ref Self)) (other (ref Self))):void)
   (intersection ((self (ref Self)) (other (ref Self))):void)
-  (contains?     ((self (ref Self)) elem:E):i1))
+  (contains?     ((self (ref Self)) elem:E):bool))
 
 ; ---------------------------------------------------------------------------
 ; Drop — the Stage 10 lifecycle protocol. An owning collection conforms so a

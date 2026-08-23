@@ -34,16 +34,16 @@ struct StrView as_view_pString(void* self) asm("as_view.pString");
 void* sub_bytes_pString_usize_usize(void* self, size_t start, size_t end) asm("sub_bytes.pString.usize.usize");
 /* byte-find: uses a defunion-template instance type; not exported */
 size_t char_count_pString(void* self) asm("char_count.pString");
-int32_t str_empty_QMARK_pString(void* self) asm("str_empty_QMARK.pString");
+bool str_empty_QMARK_pString(void* self) asm("str_empty_QMARK.pString");
 /* char-at: uses an error-union or option type; not exported */
 struct CharIter chars_pString(void* self) asm("chars.pString");
-int32_t starts_with_QMARK_pString_pStrView(void* self, void* prefix) asm("starts_with_QMARK.pString.pStrView");
-int32_t ends_with_QMARK_pString_pStrView(void* self, void* suffix) asm("ends_with_QMARK.pString.pStrView");
-int32_t contains_str_QMARK_pString_pStrView(void* self, void* needle) asm("contains_str_QMARK.pString.pStrView");
-_Bool eq_String_String(struct String a, struct String b) asm("eq.String.String");
-_Bool ne_String_String(struct String a, struct String b) asm("ne.String.String");
-_Bool lt_String_String(struct String a, struct String b) asm("lt.String.String");
-_Bool le_String_String(struct String a, struct String b) asm("le.String.String");
-_Bool gt_String_String(struct String a, struct String b) asm("gt.String.String");
-_Bool ge_String_String(struct String a, struct String b) asm("ge.String.String");
+bool starts_with_QMARK_pString_pStrView(void* self, void* prefix) asm("starts_with_QMARK.pString.pStrView");
+bool ends_with_QMARK_pString_pStrView(void* self, void* suffix) asm("ends_with_QMARK.pString.pStrView");
+bool contains_str_QMARK_pString_pStrView(void* self, void* needle) asm("contains_str_QMARK.pString.pStrView");
+bool eq_String_String(struct String a, struct String b) asm("eq.String.String");
+bool ne_String_String(struct String a, struct String b) asm("ne.String.String");
+bool lt_String_String(struct String a, struct String b) asm("lt.String.String");
+bool le_String_String(struct String a, struct String b) asm("le.String.String");
+bool gt_String_String(struct String a, struct String b) asm("gt.String.String");
+bool ge_String_String(struct String a, struct String b) asm("ge.String.String");
 size_t hash_pString(void* self) asm("hash.pString");

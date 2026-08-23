@@ -22,6 +22,6 @@ void* intern_symbol(void* s) asm("intern-symbol");
 void* node_at(void* n, int32_t i) asm("node-at");
 int32_t node_len(void* n) asm("node-len");
 int32_t node_line(void* n, int32_t encl) asm("node-line");
-int32_t node_is_list(void* n) asm("node-is-list");
+bool node_is_list(void* n) asm("node-is-list");
 #define NODE_NIL -1
 int32_t node_kind(void* n) asm("node-kind");

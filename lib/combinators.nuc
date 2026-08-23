@@ -61,31 +61,31 @@
           (none (set! done 1)))))
     (return (deref out))))
 
-; filter — keep every element for which pred is truthy, into a new (Vector S).
-; pred : (UnaryFn S i32). Returns the new Vector by value (caller drops it).
+; filter — keep every element for which pred answers true, into a new (Vector S).
+; pred : (UnaryFn S bool). Returns the new Vector by value (caller drops it).
 (defn filter ((pred (ref P)) (it (ref I))
                            :where ((Iterator S) I)
-                                  ((UnaryFn S i32) P)) (Vector S)
+                                  ((UnaryFn S bool) P)) (Vector S)
   (let ((out (ref (Vector S))) (alloca (Vector S)))
     (vector-init out)
     (let (done:i32 0)
       (while (= done 0)
         (match (next it)
-          ((some v) (when (!= (apply pred v) 0) (conj out v)))
+          ((some v) (when (apply pred v) (conj out v)))
           (none (set! done 1)))))
     (return (deref out))))
 
 ; remove-if — the complement of filter: keep every element for which pred is
-; FALSE. pred : (UnaryFn S i32). Returns a new (Vector S) by value.
+; FALSE. pred : (UnaryFn S bool). Returns a new (Vector S) by value.
 (defn remove-if ((pred (ref P)) (it (ref I))
                               :where ((Iterator S) I)
-                                     ((UnaryFn S i32) P)) (Vector S)
+                                     ((UnaryFn S bool) P)) (Vector S)
   (let ((out (ref (Vector S))) (alloca (Vector S)))
     (vector-init out)
     (let (done:i32 0)
       (while (= done 0)
         (match (next it)
-          ((some v) (when (= (apply pred v) 0) (conj out v)))
+          ((some v) (when (not (apply pred v)) (conj out v)))
           (none (set! done 1)))))
     (return (deref out))))
 
@@ -133,29 +133,29 @@
 ; Search (early-stopping)
 ; ===========================================================================
 
-; find — the first element for which pred is truthy, or none. Stops early.
-; pred : (UnaryFn S i32). Returns (Maybe S) (S must be a matchable scalar).
+; find — the first element for which pred answers true, or none. Stops early.
+; pred : (UnaryFn S bool). Returns (Maybe S) (S must be a matchable scalar).
 (defn find ((pred (ref P)) (it (ref I))
                         :where ((Iterator S) I)
-                               ((UnaryFn S i32) P)) (Maybe S)
+                               ((UnaryFn S bool) P)) (Maybe S)
   (let (done:i32 0)
     (while (= done 0)
       (match (next it)
-        ((some v) (when (!= (apply pred v) 0) (return (some v))))
+        ((some v) (when (apply pred v) (return (some v))))
         (none (set! done 1)))))
   (return none))
 
-; find-index — the index of the first element for which pred is truthy, or -1.
-; Stops early. pred : (UnaryFn S i32).
+; find-index — the index of the first element for which pred answers true, or -1.
+; Stops early. pred : (UnaryFn S bool). The -1 sentinel keeps the result i32.
 (defn find-index ((pred (ref P)) (it (ref I))
                       :where ((Iterator S) I)
-                             ((UnaryFn S i32) P)):i32
+                             ((UnaryFn S bool) P)):i32
   (let (idx:i32 0
         done:i32 0)
     (while (= done 0)
       (match (next it)
         ((some v)
-         (when (!= (apply pred v) 0) (return idx))
+         (when (apply pred v) (return idx))
          (set! idx (+ idx 1)))
         (none (set! done 1)))))
   (return -1))
@@ -166,53 +166,54 @@
 ; `@any?`/`@every?` that LLVM would reject — exactly like `reduce`.
 ; ===========================================================================
 
-; any? — 1 if pred is truthy for any element, else 0. Stops early on the first
-; truthy element. pred : (UnaryFn S i32).
+; any? — true if pred holds for any element. Stops early on the first such
+; element. pred : (UnaryFn S bool).
 (defn any? ((pred (ref P)) (it (ref I))
                 :where ((Iterator S) I)
-                       ((UnaryFn S i32) P)):i32
+                       ((UnaryFn S bool) P)):bool
   (let (done:i32 0)
     (while (= done 0)
       (match (next it)
-        ((some v) (when (!= (apply pred v) 0) (return 1)))
+        ((some v) (when (apply pred v) (return true)))
         (none (set! done 1)))))
-  (return 0))
+  (return false))
 
 ; exists? — alias of any?.
 (defn exists? ((pred (ref P)) (it (ref I))
                    :where ((Iterator S) I)
-                          ((UnaryFn S i32) P)):i32
+                          ((UnaryFn S bool) P)):bool
   (return (any? pred it)))
 
-; every? — 1 if pred is truthy for every element (vacuously 1 for empty), else 0.
-; Stops early on the first FALSE element. pred : (UnaryFn S i32).
+; every? — true if pred holds for every element (vacuously true for empty).
+; Stops early on the first FALSE element. pred : (UnaryFn S bool).
 (defn every? ((pred (ref P)) (it (ref I))
                   :where ((Iterator S) I)
-                         ((UnaryFn S i32) P)):i32
+                         ((UnaryFn S bool) P)):bool
   (let (done:i32 0)
     (while (= done 0)
       (match (next it)
-        ((some v) (when (= (apply pred v) 0) (return 0)))
+        ((some v) (when (not (apply pred v)) (return false)))
         (none (set! done 1)))))
-  (return 1))
+  (return true))
 
 ; all? — alias of every?.
 (defn all? ((pred (ref P)) (it (ref I))
                 :where ((Iterator S) I)
-                       ((UnaryFn S i32) P)):i32
+                       ((UnaryFn S bool) P)):bool
   (return (every? pred it)))
 
 ; count-if — how many elements satisfy pred. Visits every element (a count
 ; cannot stop early). Named `count-if` (not `count`) so it does not overload the
-; `(Coll E It)` `count` method. pred : (UnaryFn S i32).
+; `(Coll E It)` `count` method. pred : (UnaryFn S bool); the result is a count,
+; so it stays i32.
 (defn count-if ((pred (ref P)) (it (ref I))
                     :where ((Iterator S) I)
-                           ((UnaryFn S i32) P)):i32
+                           ((UnaryFn S bool) P)):i32
   (let (n:i32 0
         done:i32 0)
     (while (= done 0)
       (match (next it)
-        ((some v) (when (!= (apply pred v) 0) (set! n (+ n 1))))
+        ((some v) (when (apply pred v) (set! n (+ n 1))))
         (none (set! done 1))))
     (return n)))
 
@@ -462,24 +463,27 @@
   (return (compose g f)))
 
 ; complement — `(complement pred)` → a box `x → ¬(pred x)` (i32: 1 when pred is
-; falsy, 0 when truthy). pred : (UnaryFn A i32), a bare predicate fn pointer.
+; false, 0 when true). pred : (UnaryFn A bool), a bare predicate fn pointer.
+; The BOX stays i32-valued: `BoxedFn` conforms to no `UnaryFn`, so a bool box
+; could never be fed back to a predicate slot, and homogeneous box storage
+; (examples/comb-storage.nuc) needs one element type.
 (defn complement ((pred (ref P))
-                                       :where ((UnaryFn A i32) P)) (BoxedFn (A) i32)
-  (return (vfn (x:A) i32 (if (!= (apply pred x) 0) 0 1))))
+                                       :where ((UnaryFn A bool) P)) (BoxedFn (A) i32)
+  (return (vfn (x:A) i32 (if (apply pred x) 0 1))))
 
-; conjoin — `(conjoin p q)` → a box `x → (p x) ∧ (q x)` (i32: 1 when both truthy).
-; p, q : (UnaryFn A i32), bare predicate fn pointers.
+; conjoin — `(conjoin p q)` → a box `x → (p x) ∧ (q x)` (i32: 1 when both hold).
+; p, q : (UnaryFn A bool), bare predicate fn pointers.
 (defn conjoin ((p (ref P)) (q (ref Q))
-                                    :where ((UnaryFn A i32) P)
-                                           ((UnaryFn A i32) Q)) (BoxedFn (A) i32)
-  (return (vfn (x:A) i32 (if (!= (apply p x) 0) (if (!= (apply q x) 0) 1 0) 0))))
+                                    :where ((UnaryFn A bool) P)
+                                           ((UnaryFn A bool) Q)) (BoxedFn (A) i32)
+  (return (vfn (x:A) i32 (if (and (apply p x) (apply q x)) 1 0))))
 
-; disjoin — `(disjoin p q)` → a box `x → (p x) ∨ (q x)` (i32: 1 when either truthy).
-; p, q : (UnaryFn A i32), bare predicate fn pointers.
+; disjoin — `(disjoin p q)` → a box `x → (p x) ∨ (q x)` (i32: 1 when either holds).
+; p, q : (UnaryFn A bool), bare predicate fn pointers.
 (defn disjoin ((p (ref P)) (q (ref Q))
-                                    :where ((UnaryFn A i32) P)
-                                           ((UnaryFn A i32) Q)) (BoxedFn (A) i32)
-  (return (vfn (x:A) i32 (if (!= (apply p x) 0) 1 (if (!= (apply q x) 0) 1 0)))))
+                                    :where ((UnaryFn A bool) P)
+                                           ((UnaryFn A bool) Q)) (BoxedFn (A) i32)
+  (return (vfn (x:A) i32 (if (or (apply p x) (apply q x)) 1 0))))
 
 ; constantly — `(constantly v)` → a box `_ → v` that always returns v, ignoring
 ; its argument. The value v is captured BY VALUE (cloned into the heap env, like

@@ -42,18 +42,18 @@
 
       ; ---- filter ----
       (let ((it (VecIter i32)) (iter v))
-        (let ((f (Vector i32)) (filter (vfn (x:i32):i32 (return (bit-and x 1))) (addr-of it)))
+        (let ((f (Vector i32)) (filter (vfn (x:i32):bool (return (!= (bit-and x 1) 0))) (addr-of it)))
           (show "filt-inline" (addr-of f)) (drop (addr-of f))))
-      (let (gtthr (vfn (x:i32):i32 (return (if (> x thr) 1 0))))
+      (let (gtthr (vfn (x:i32):bool (return (> x thr))))
         (let ((it (VecIter i32)) (iter v))
           (let ((f (Vector i32)) (filter gtthr (addr-of it)))
             (show "filt-named " (addr-of f)) (drop (addr-of f)))))
 
       ; ---- remove-if ----
       (let ((it (VecIter i32)) (iter v))
-        (let ((r (Vector i32)) (remove-if (vfn (x:i32):i32 (return (bit-and x 1))) (addr-of it)))
+        (let ((r (Vector i32)) (remove-if (vfn (x:i32):bool (return (!= (bit-and x 1) 0))) (addr-of it)))
           (show "rmif-inline" (addr-of r)) (drop (addr-of r))))
-      (let (gtthr (vfn (x:i32):i32 (return (if (> x thr) 1 0))))
+      (let (gtthr (vfn (x:i32):bool (return (> x thr))))
         (let ((it (VecIter i32)) (iter v))
           (let ((r (Vector i32)) (remove-if gtthr (addr-of it)))
             (show "rmif-named " (addr-of r)) (drop (addr-of r)))))

@@ -8,7 +8,7 @@
 (defstruct Pt x:i32 y:i32)
 
 ; A fallible lookup: nullability is explicit in the signature.
-(defn lookup (give:i1 p:ptr:Pt):?ptr:Pt
+(defn lookup (give:bool p:ptr:Pt):?ptr:Pt
   (if give
     (return (some (as ref:Pt p)))
     (return none)))

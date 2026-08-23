@@ -7,9 +7,9 @@
 ; the importer re-derives symbols that match the lib object at link time.
 
 ; A local Ord capability so the template is self-contained across the .nuch.
-(defprotocol Ord (less (a:Self b:Self):i1))
-(defn less (a:i32 b:i32):i1 (< a b))
-(defn less (a:i64 b:i64):i1 (< a b))
+(defprotocol Ord (less (a:Self b:Self):bool))
+(defn less (a:i32 b:i32):bool (< a b))
+(defn less (a:i64 b:i64):bool (< a b))
 (extend i32 Ord)
 (extend i64 Ord)
 
