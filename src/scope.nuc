@@ -42,9 +42,9 @@
     (when (= (sc len) (sc cap))
       (let (nc:i32 8)
         (when (!= (sc cap) 0) (set! nc (* (sc cap) 2)))
-        (let (ns:ptr (arena-alloc (* (as i64 nc) (sizeof Sym))))
+        (let (ns:ptr (arena-alloc (* nc (sizeof Sym))))
           (when (!= (sc len) 0)
-            (memcpy ns (sc syms) (* (as i64 (sc len)) (sizeof Sym))))
+            (memcpy ns (sc syms) (* (sc len) (sizeof Sym))))
           (.set! sc syms ns)
           (.set! sc cap nc))))
     (let (sym:ptr:Sym (as ptr:Sym (unsafe/ptr+ (as ptr:Sym (sc syms)) (sc len))))
@@ -160,7 +160,7 @@
   ; arena-allocated and its pointer appended in order.
   (let (id:i32 (unsafe/cast i32 (count g-strs))
         sl:ref:StrLit (as ref:StrLit (arena-alloc (sizeof StrLit))))
-    (.set! sl bytes (arena-strndup bytes (as i64 len)))
+    (.set! sl bytes (arena-strndup bytes len))
     (.set! sl len len)
     (.set! sl id id)
     (conj g-strs sl)
@@ -170,7 +170,7 @@
   (let (p:ptr:StrView (addr-of sv)
         id:i32 (unsafe/cast i32 (count g-strs))
         sl:ref:StrLit (as ref:StrLit (arena-alloc (sizeof StrLit))))
-    (.set! sl bytes (arena-strndup (as ptr (p data)) (as i64 (p len))))
+    (.set! sl bytes (arena-strndup (as ptr (p data)) (p len)))
     (.set! sl len (unsafe/cast i32 (p len)))
     (.set! sl id id)
     (conj g-strs sl)
@@ -289,7 +289,7 @@
 ; only invite the same trap the next time a null-guard is added.
 (defn program-defn-lookup (irn:ptr):?ptr:ProgDefn
   (dotimes (i (unsafe/cast i32 (count g-program-defns)))
-    (let (pd:ref:ProgDefn (invoke g-program-defns (as usize i)))
+    (let (pd:ref:ProgDefn (invoke g-program-defns i:usize))
       (when (= (strcmp (pd ir-name) irn) 0)
         (return pd))))
   (return null))

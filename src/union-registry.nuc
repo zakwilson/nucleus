@@ -32,14 +32,14 @@
   (when (= t null) (return (fnv-byte h 255)))
   (let (tt:raw:Type t
         k:i32 (tt kind))
-    (set! h (fnv-byte h (as i64 k)))
-    (set! h (fnv-byte h (as i64 (tt is-volatile))))
+    (set! h (fnv-byte h k))
+    (set! h (fnv-byte h (tt is-volatile)))
     (when (= k TY-PTR)
       (set! h (hash-type h (tt elem))))
     ; Stage 15 W8 G-2: two array types are the same shape only if both the
     ; element type and the length match, so both go into the hash.
     (when (= k TY-ARRAY)
-      (set! h (fnv-byte h (as i64 (tt arr-len))))
+      (set! h (fnv-byte h (tt arr-len)))
       (set! h (hash-type h (tt elem))))
     (when (= k TY-STRUCT)
       (set! h (fnv-str h ((tt sdef) name))))
@@ -47,7 +47,7 @@
       (set! h (fnv-str h ((tt sdef) name))))
     (when (= k TY-FN)
       (set! h (hash-type h (tt ret)))
-      (set! h (fnv-byte h (as i64 (tt num-params))))
+      (set! h (fnv-byte h (tt num-params)))
       (dotimes (i (tt num-params))
         (set! h (hash-type h ((field-at (tt params) i) type)))))
     (return h)))
@@ -202,7 +202,7 @@
 (defn drain-pending-union-irs ():void
   (when (= g-pending-unions null) (return))
   (dotimes (i (unsafe/cast i32 (count g-pending-unions)))
-    (let (sd:ptr (invoke g-pending-unions (as usize i)))
+    (let (sd:ptr (invoke g-pending-unions i:usize))
       (when (!= (pending-union-deps-ready sd) 0)
         (emit-union-ir-type sd)))))
 
@@ -220,7 +220,7 @@
 ; `:T` annotation holds a spelling.
 (defn lookup-struct (name:CStr):?ptr:StructDef
   (dotimes (i (unsafe/cast i32 (count g-structs)))
-    (let (sd:ptr:StructDef (as ptr:StructDef (invoke g-structs (as usize i))))
+    (let (sd:ptr:StructDef (as ptr:StructDef (invoke g-structs i:usize)))
       (when (and (= (sd name) name)
                  (or (= g-priv-bindings 0) (!= (binding-visible (sd priv) (sd src-ns)) 0)))
         (return (as ptr sd)))))
@@ -314,7 +314,7 @@
           ut:?ptr:UnionTemplate (union-template-lookup-ref "Result"))
       (when (= ut null)
         (die-at line "!T: (Result T E) template not in scope (import the prelude)"))
-      (let (argts:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
+      (let (argts:ptr (arena-alloc (* 2 (ptr-bytes))))
         (aset! (as ptr:ptr argts) 0 inner)
         (aset! (as ptr:ptr argts) 1 (as ptr ty-err))
         (return (union-template-stamp-types (as ptr ut) argts 2 line)))))
@@ -441,8 +441,8 @@
   (when (!= g-fatptr-sdef null) (return g-fatptr-sdef))
   (let (nm:ptr (intern-str (sanitize-for-ir "__fatptr"))
         sd:ref:StructDef (register-struct nm))
-    (let (fnm:ptr (arena-alloc (* (as i64 2) (ptr-bytes)))
-          fty:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
+    (let (fnm:ptr (arena-alloc (* 2 (ptr-bytes)))
+          fty:ptr (arena-alloc (* 2 (ptr-bytes))))
       (aset! (as ptr:ptr fnm) 0 (intern-str "data"))
       (aset! (as ptr:ptr fnm) 1 (intern-str "vtable"))
       (aset! (as ptr:ptr fty) 0 (as ptr ty-ptr))
@@ -485,7 +485,7 @@
 
 (defn boxedfn-memo-lookup (key:ptr):ptr
   (dotimes (i (unsafe/cast i32 (count g-boxedfn-table)))
-    (let (e:ref:BoxedFnEntry (invoke g-boxedfn-table (as usize i)))
+    (let (e:ref:BoxedFnEntry (invoke g-boxedfn-table i:usize))
       (when (= (e key) key) (return (as ptr (e ty))))))
   (return null))
 
@@ -518,8 +518,8 @@
     (when (!= hit null) (return hit))
     (let (nm:ptr (intern-str (sanitize-for-ir (fmt-s "__boxedfn.%s" tok)))
           sd:ref:StructDef (register-struct nm))
-      (let (fnm:ptr (arena-alloc (* (as i64 2) (ptr-bytes)))
-            fty:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
+      (let (fnm:ptr (arena-alloc (* 2 (ptr-bytes)))
+            fty:ptr (arena-alloc (* 2 (ptr-bytes))))
         (aset! (as ptr:ptr fnm) 0 (intern-str "data"))
         (aset! (as ptr:ptr fnm) 1 (intern-str "vtable"))
         (aset! (as ptr:ptr fty) 0 (as ptr ty-ptr))
@@ -550,7 +550,7 @@
     (let (sd:ptr (tt sdef))
       (when (= sd null) (return null))
       (dotimes (i (unsafe/cast i32 (count g-boxedfn-table)))
-        (let (e:ref:BoxedFnEntry (invoke g-boxedfn-table (as usize i)))
+        (let (e:ref:BoxedFnEntry (invoke g-boxedfn-table i:usize))
           (when (= ((e ty) sdef) sd) (return (as ptr (e ty))))))
       (return null))))
 
@@ -577,7 +577,7 @@
 
 (defn dyn-memo-lookup (key:ptr):ptr
   (dotimes (i (unsafe/cast i32 (count g-dyn-table)))
-    (let (e:ref:DynEntry (invoke g-dyn-table (as usize i)))
+    (let (e:ref:DynEntry (invoke g-dyn-table i:usize))
       (when (= (e key) key) (return (as ptr (e ty))))))
   (return null))
 
@@ -643,7 +643,7 @@
     (let (sd:ptr (tt sdef))
       (when (= sd null) (return null))
       (dotimes (i (unsafe/cast i32 (count g-dyn-table)))
-        (let (e:ref:DynEntry (invoke g-dyn-table (as usize i)))
+        (let (e:ref:DynEntry (invoke g-dyn-table i:usize))
           (when (= ((e ty) sdef) sd) (return (as ptr (e ty))))))
       (return null))))
 
@@ -657,7 +657,7 @@
     (let (sd:ptr (tt sdef))
       (when (= sd null) (return null))
       (dotimes (i (unsafe/cast i32 (count g-dyn-table)))
-        (let (e:ref:DynEntry (invoke g-dyn-table (as usize i)))
+        (let (e:ref:DynEntry (invoke g-dyn-table i:usize))
           (when (= ((e ty) sdef) sd) (return (e proto)))))
       (return null))))
 
@@ -669,7 +669,7 @@
 
 (defn uniondef-lookup (name:CStr):?ptr:UnionDef
   (dotimes (i (unsafe/cast i32 (count g-uniondefs)))
-    (let (ud:ptr:UnionDef (as ptr:UnionDef (invoke g-uniondefs (as usize i))))
+    (let (ud:ptr:UnionDef (as ptr:UnionDef (invoke g-uniondefs i:usize)))
       (when (and (= (ud name) name)
                  (or (= g-priv-bindings 0) (!= (binding-visible (ud priv) (ud src-ns)) 0)))
         (return (as ptr ud)))))
@@ -775,7 +775,7 @@
 (defn union-arm-index (ud:raw:UnionDef name:CStr):i32
   (let (udd:raw:UnionDef ud)
     (dotimes (i (udd num-arms))
-      (let (arm:ref:Arm (invoke (udd arms) (as usize i)))
+      (let (arm:ref:Arm (invoke (udd arms) i:usize))
         (when (= (strcmp (arm name) name) 0)
           (return i))))
     (return -1)))
@@ -826,7 +826,7 @@
   ; Rule 1: every arm payload-less → just the i32 tag (≅ defenum).
   (let (all-payloadless:i32 1)
     (dotimes (i narms)
-      (when (!= ((invoke arms (as usize i)) nfields) 0) (set! all-payloadless 0)))
+      (when (!= ((invoke arms i:usize) nfields) 0) (set! all-payloadless 0)))
     (when (!= all-payloadless 0)
       (when (= repr REPR-NICHE)
         (die-at line ":repr niche: an all-payload-less union is an enum, not a niche"))
@@ -994,7 +994,7 @@
                   mi:i32 0)
               (set! i 0)
               (while (< i narms)
-                (let (arm-rec:ref:Arm (invoke arms-vec (as usize i)))
+                (let (arm-rec:ref:Arm (invoke arms-vec i:usize))
                   (when (!= (arm-rec ptype) null)
                     (aset! (as ptr:ptr mnames) mi (arm-rec name))
                     (aset! (as ptr:ptr mtypes) mi (arm-rec ptype))
@@ -1007,8 +1007,8 @@
             (when (!= (sd emitted) 0)
               (die-at line (fmt-s "defunion: '%s' already names a struct" name)))
             (let (bnf:i32 (if (!= union-sd null) 2 1)
-                  bfn:ptr (arena-alloc (* (as i64 2) (ptr-bytes)))
-                  bft:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
+                  bfn:ptr (arena-alloc (* 2 (ptr-bytes)))
+                  bft:ptr (arena-alloc (* 2 (ptr-bytes))))
               (aset! (as ptr:ptr bfn) 0 (intern-str "tag"))
               (aset! (as ptr:ptr bft) 0 ty-i32)
               (when (!= union-sd null)
@@ -1085,7 +1085,7 @@
 ; helper) — scans the arms conj'd so far.
 (defn union-arm-index-in (name:CStr (arms (ref (Vector (ref Arm))))):i32
   (dotimes (i (unsafe/cast i32 (count arms)))
-    (when (= (strcmp ((invoke arms (as usize i)) name) name) 0)
+    (when (= (strcmp ((invoke arms i:usize) name) name) 0)
       (return i)))
   (return -1))
 
@@ -1123,13 +1123,13 @@
         (do
           (when (!= (same-definition-site (prevt src-file) (prevt src-line) (ff line)) 0)
             (return))
-          (die-redefinition (as CStr name) (ff line) BK-UNION-TEMPLATE
+          (die-redefinition name:CStr (ff line) BK-UNION-TEMPLATE
                             (prevt src-file) (prevt src-line)))
         0)
       (guard-name-kind name (ff line) NK-TYPE)
       (when (>= (unsafe/cast i32 (count g-union-templates)) MAX-UNION-TEMPLATES)
         (die-at (ff line) "too many defunion templates"))
-      (let (tyvars:ptr (arena-alloc (* (as i64 ntv) (ptr-bytes))))
+      (let (tyvars:ptr (arena-alloc (* ntv (ptr-bytes))))
         (dotimes (i ntv)
           (let (tv:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr head) (+ i 1))))
             (when (!= (node-kind (as ptr tv)) NODE-SYM)
@@ -1186,13 +1186,13 @@
         (do
           (when (!= (same-definition-site (prevt src-file) (prevt src-line) (ff line)) 0)
             (return))
-          (die-redefinition (as CStr name) (ff line) BK-STRUCT-TEMPLATE
+          (die-redefinition name:CStr (ff line) BK-STRUCT-TEMPLATE
                             (prevt src-file) (prevt src-line)))
         0)
       (guard-name-kind name (ff line) NK-TYPE)
       (when (>= (unsafe/cast i32 (count g-struct-templates)) MAX-STRUCT-TEMPLATES)
         (die-at (ff line) "too many defstruct templates"))
-      (let (tyvars:ptr (arena-alloc (* (as i64 ntv) (ptr-bytes))))
+      (let (tyvars:ptr (arena-alloc (* ntv (ptr-bytes))))
         (dotimes (i ntv)
           (let (tv:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr head) (+ i 1))))
             (when (!= (node-kind (as ptr tv)) NODE-SYM)
@@ -1253,7 +1253,7 @@
         (let (it:ListIter (list-iter segs))
           (doseq-iter (e (addr-of it))
             (let (seg:ptr ((as ptr:Node e) s)
-                  si:i32 (tyvar-index-of (as CStr seg) tyvars ntv)
+                  si:i32 (tyvar-index-of seg:CStr tyvars ntv)
                   piece:ptr seg)
               (when (>= si 0)
                 (do (set! hit 1)
@@ -1287,7 +1287,7 @@
               (die-at line
                 (fmt-sd "%s: wrong number of type arguments for type alias (%d given)"
                         (ta name) nargs)))
-            (let (args:ptr (arena-alloc (* (as i64 nargs) (ptr-bytes))))
+            (let (args:ptr (arena-alloc (* nargs (ptr-bytes))))
               (dotimes (i nargs)
                 (aset! (as ptr:ptr args) i (node-at (as ptr n) (+ i 1))))
               (return (subst-alias-args (ta body) (ta tyvars) args nargs line)))))
@@ -1317,7 +1317,7 @@
         (do (set! ntv (- (node-len spec) 1))
             (when (<= ntv 0)
               (die-at (ff line) "deftype: parameter list required — (deftype (Name T ...) Type)"))
-            (set! tyvars (arena-alloc (* (as i64 ntv) (ptr-bytes))))
+            (set! tyvars (arena-alloc (* ntv (ptr-bytes))))
             (dotimes (i ntv)
               (let (tv:ptr (node-at spec (+ i 1)))
                 (when (!= (node-kind tv) NODE-SYM)
@@ -1339,7 +1339,7 @@
         ; calls: the prescan pass catches a type name defined ABOVE the alias,
         ; the emit pass one defined BELOW it (by then the whole unit is
         ; registered). One check, both directions, no other definer touched.
-        (let (clash:CStr (type-name-collision (as CStr name)))
+        (let (clash:CStr (type-name-collision name:CStr))
           (when (!= clash null)
             (die-at (ff line)
               (fmt-2s "deftype: '%s' already names %s — an alias of an existing type name would never resolve"
@@ -1352,7 +1352,7 @@
                     (do (.set! prev src-ns g-current-ns)
                         (set! g-priv-bindings 1)))
                   (return)))
-            (die-redefinition (as CStr name) (ff line) BK-TYPE-ALIAS
+            (die-redefinition name:CStr (ff line) BK-TYPE-ALIAS
                               (prev src-file) (prev src-line)))
           0)
         (guard-name-kind name (ff line) NK-TYPE)
@@ -1401,7 +1401,7 @@
 (defn union-template-stamp (ut:raw:UnionTemplate use-node:ptr line:i32):ref:Type
   (let (utt:raw:UnionTemplate ut
         nargs:i32 (- (node-len use-node) 1)
-        argts:ptr (arena-alloc (* (as i64 (if (> nargs 0) nargs 1)) (ptr-bytes))))
+        argts:ptr (arena-alloc (* (if (> nargs 0) nargs 1) (ptr-bytes))))
     (dotimes (i nargs)
       (aset! (as ptr:ptr argts) i (parse-type-from-node (node-at use-node (+ i 1)) line)))
     (return (union-template-stamp-types ut argts nargs line))))
@@ -1426,7 +1426,7 @@
     (when (!= nargs (utt ntv))
       (die-at line
         (fmt-s "%s: wrong number of type arguments for defunion template" (utt name))))
-    (let (spellings:ptr (arena-alloc (* (as i64 nargs) (ptr-bytes)))
+    (let (spellings:ptr (arena-alloc (* nargs (ptr-bytes)))
           iname:ptr (utt name))
       (dotimes (i nargs)
         (let (at:ptr (aref (as ptr:ptr argts) i))
@@ -1463,7 +1463,7 @@
     (when (!= nargs (stt ntv))
       (die-at line
         (fmt-s "%s: wrong number of type arguments for defstruct template" (stt name))))
-    (let (spellings:ptr (arena-alloc (* (as i64 nargs) (ptr-bytes)))
+    (let (spellings:ptr (arena-alloc (* nargs (ptr-bytes)))
           iname:ptr (stt name))
       (dotimes (i nargs)
         (let (at:ptr (aref (as ptr:ptr argts) i))
@@ -1490,14 +1490,14 @@
         ; (template, args) from a concrete instance to bind a pattern `(Vector T)`
         ; against a concrete `Vector.i32`. Copy the arg Type*s into a stable arena
         ; array, since the caller's `argts` may be reused.
-        (let (origin-args:ptr (arena-alloc (* (as i64 (if (> nargs 0) nargs 1)) (ptr-bytes))))
+        (let (origin-args:ptr (arena-alloc (* (if (> nargs 0) nargs 1) (ptr-bytes))))
           (dotimes (oi nargs)
             (aset! (as ptr:ptr origin-args) oi (aref (as ptr:ptr argts) oi)))
           (.set! sd origin-template st)
           (.set! sd origin-args origin-args)
           (.set! sd origin-nargs nargs))
-        (let (fnm:ptr (arena-alloc (* (as i64 nfields) (ptr-bytes)))
-              ftp:ptr (arena-alloc (* (as i64 nfields) (ptr-bytes))))
+        (let (fnm:ptr (arena-alloc (* nfields (ptr-bytes)))
+              ftp:ptr (arena-alloc (* nfields (ptr-bytes))))
           (.set! sd src-file g-source-path)
           (.set! sd src-line line)
           (let (fi:i32 0)

@@ -93,7 +93,7 @@
 ; `(ref __fnty_3)` re-parses to the original TY-FN. String compare (the name
 ; reaching here may be a fresh fmt copy, not the cached interned pointer).
 (defn fnty-resolve (name:CStr):?ref:Type
-  (get g-fnty (as CStr name)))
+  (get g-fnty name:CStr))
 
 ; A type's source spelling as a colon-joined string: the inverse of the type
 ; parser. Serves two roles — the key into the conformance registry (matching the

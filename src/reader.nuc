@@ -237,7 +237,7 @@
   (let (t:ptr:Tok (as ptr:Tok (alloc-tok)))
     (.set! t kind TOK-CHAR)
     (.set! t line line)
-    (.set! t i (as i64 cp))
+    (.set! t i cp)
     (return (as ptr t))))
 
 (defn lex-char-literal (open-line:i32):!ptr
@@ -411,7 +411,7 @@
                   (do (report-at start-line "integer literal out of range")
                       (return (err! parse-error))))
                 (aset! errp 0 0)
-                (set! val (as i64 (strtoull buf null 10)))
+                (set! val (strtoull buf null 10))
                 (when (= (aref errp 0) 34)
                   (do (report-at start-line "integer literal out of range")
                       (return (err! parse-error))))
@@ -517,8 +517,8 @@
               match:i32 1
               j:i32 0)
           (while (< j plen)
-            (when (!= (char-at g-src (+ g-pos (as i64 j)))
-                      (char-at (rm prefix) (as i64 j)))
+            (when (!= (char-at g-src (+ g-pos j))
+                      (char-at (rm prefix) j))
               (do (set! match 0)
                   (set! j plen)))
             (set! j (+ j 1)))
@@ -527,7 +527,7 @@
                 (set! best-len plen))))
         (inc! ri))
       (when (>= best-idx 0)
-        (let (rm:ptr:RMacro (as ptr:RMacro (invoke g-rmacros (as usize best-idx))))
+        (let (rm:ptr:RMacro (as ptr:RMacro (invoke g-rmacros best-idx:usize)))
           ; Advance past prefix characters (tracking newlines)
           (let (k:i32 0)
             (while (< k best-len)
@@ -894,7 +894,7 @@
             (let (colon:ptr (strchr cur 58))
               (let (seg-len:i64 0)
                 (if (= colon null)
-                  (set! seg-len (as i64 (strlen cur)))
+                  (set! seg-len (strlen cur))
                   (set! seg-len (- (unsafe/cast i64 colon) (unsafe/cast i64 cur))))
                 ; An empty segment (e.g. body "a:" from atom "a::") is a reader error.
                 (when (= seg-len 0)
