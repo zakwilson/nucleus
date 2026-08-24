@@ -407,19 +407,19 @@
                   sym:ref:Sym (scope-define inner (xnode s) (mv type) slot 1)
                   ln:i32 (cc line))
               (.set! sym taint (mv taint))
-              (let (test:ptr (make-cell (as ptr '!=)
-                               (make-cell (as ptr xnode)
-                                 (make-cell (as ptr 'null) null ln) ln) ln)
+              (let (test:ptr (make-cell '!=
+                               (make-cell xnode
+                                 (make-cell 'null null ln) ln) ln)
                     tail:ptr null)
                 (if (!= is-when 0)
                   (let (body-chain:ptr (-> cc (_ cdr) (unsafe/cast ptr:Node _) (_ cdr)))
-                    (set! tail (make-cell (make-cell (as ptr 'do) body-chain ln) null ln)))
+                    (set! tail (make-cell (make-cell 'do body-chain ln) null ln)))
                   (if (= (node-len cc) 4)
                     (set! tail (make-cell (node-at cc 2)
-                                 (make-cell (as ptr 'true)
+                                 (make-cell 'true
                                    (make-cell (node-at cc 3) null ln) ln) ln))
                     (set! tail (make-cell (node-at cc 2) null ln))))
-                (let (synth:ptr (make-cell (as ptr 'cond)
+                (let (synth:ptr (make-cell 'cond
                                   (make-cell test tail ln) ln))
                   (return (emit-cond synth inner)))))))))))
 
@@ -628,7 +628,7 @@
         msd:ptr:StructDef (unsafe/cast ptr:StructDef (mudd sdef))
         noneai:i32 (union-arm-index (as ptr mudd) "none")
         mslot:ptr (new-tmp)
-        none-place:ptr (make-cell (as ptr (intern-symbol "none")) null line)
+        none-place:ptr (make-cell 'none null line)
         none-val:ref:Val (emit-union-construct (as ptr mudd) noneai none-place 1 scope))
     ; Result slot, defaulted to `none`.
     (fprintf g-entry-stream "  %s = alloca %%%s, align %d\n"
@@ -764,7 +764,7 @@
             (set! detail-val (dv val))))
         ; Result slot, defaulted to (err E).
         (let (rslot:ptr (new-tmp)
-              err-place:ptr (make-cell (as ptr (intern-symbol "err"))
+              err-place:ptr (make-cell 'err
                               (make-cell enode null ln) ln)
               err-val:ref:Val (emit-union-construct (as ptr udd) errai err-place 1 scope))
           (fprintf g-entry-stream "  %s = alloca %%%s, align %d\n"
@@ -812,8 +812,8 @@
                 vslot (type-to-ir okty) (type-size okty))
               (emit-store (type-to-ir okty) vtmp vslot okty)
               (scope-define scope "__errh_v" okty vslot 1)
-              (let (ok-place:ptr (make-cell (as ptr (intern-symbol "ok"))
-                                   (make-cell (as ptr (intern-symbol "__errh_v")) null ln) ln)
+              (let (ok-place:ptr (make-cell 'ok
+                                   (make-cell '__errh_v null ln) ln)
                     ok-val:ref:Val (emit-union-construct (as ptr udd) okai ok-place 1 scope))
                 (fprintf g-body-stream "  store %%%s %s, ptr %s\n"
                   (rsd ir-name) ((as ptr:Val ok-val) val) rslot)
@@ -888,8 +888,8 @@
             (when (= (strcmp hs "ok") 0) (set! arm "ok"))
             (when (or (= (strcmp hs "err") 0) (= (strcmp hs "err!") 0)) (set! arm "err"))
             (when (!= arm null)
-              (return (make-cell (as ptr (intern-symbol "__niche-ctor"))
-                        (make-cell (as ptr (intern-symbol arm))
+              (return (make-cell '__niche-ctor
+                        (make-cell (intern-symbol arm)
                           (-> (unsafe/cast ptr:Node form) (_ cdr)) ln)
                         ln))))))))
   (let (ud:?ptr:UnionDef (uniondef-for-type target))
@@ -904,9 +904,9 @@
                  (= (n s) "none")
                  (>= (union-arm-index (as ptr udd) "none") 0))
         (let (ln:i32 (n line))
-          (return (make-cell (as ptr 'make)
-                    (make-cell (as ptr (intern-symbol (udd name)))
-                      (make-cell (as ptr (intern-symbol "none")) null ln) ln)
+          (return (make-cell 'make
+                    (make-cell (intern-symbol (udd name))
+                      (make-cell 'none null ln) ln)
                     ln))))
       (when (!= (n kind) NODE-CELL) (return form))
       (when (= (node-len form) 0) (return form))
@@ -917,9 +917,9 @@
         ; never consults handlers). It is the err arm with its `!` stripped.
         (when (= (head s) "err!")
           (when (< (union-arm-index (as ptr udd) "err") 0) (return form))
-          (return (make-cell (as ptr 'make)
-                    (make-cell (as ptr (intern-symbol (udd name)))
-                      (make-cell (as ptr (intern-symbol "err")) (n cdr) ln)
+          (return (make-cell 'make
+                    (make-cell (intern-symbol (udd name))
+                      (make-cell 'err (n cdr) ln)
                       ln)
                     ln)))
         ; Plain `err` at an `!T` (err arm = Err) return site, with the error
@@ -931,10 +931,10 @@
         (when (and (= (head s) "err")
                    (= (result-err-arm-is-err (as ptr udd)) 1)
                    (= (error-lib-in-scope) 1))
-          (return (make-cell (as ptr (intern-symbol "__err-handled")) (n cdr) ln)))
+          (return (make-cell '__err-handled (n cdr) ln)))
         (when (< (union-arm-index (as ptr udd) (head s)) 0) (return form))
-        (return (make-cell (as ptr 'make)
-                  (make-cell (as ptr (intern-symbol (udd name))) (as ptr n) ln)
+        (return (make-cell 'make
+                  (make-cell (intern-symbol (udd name)) (as ptr n) ln)
                   ln))))))
 
 ; The EnumDef that owns `member`, or null. Member names are searched across

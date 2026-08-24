@@ -18,7 +18,7 @@ extern int32_t g_intern_len asm("g-intern-len");
 int64_t intern_hash(void* s) asm("intern-hash");
 void intern_raw_insert(void* table, int32_t cap, void* sp, void* nd) asm("intern-raw-insert");
 void intern_grow(void) asm("intern-grow");
-void* intern_symbol(void* s) asm("intern-symbol");
+void* intern_symbol(const char* s) asm("intern-symbol");
 void* node_at(void* n, int32_t i) asm("node-at");
 int32_t node_len(void* n) asm("node-len");
 int32_t node_line(void* n, int32_t encl) asm("node-line");
