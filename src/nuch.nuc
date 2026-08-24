@@ -189,7 +189,7 @@
   (let (it:ListIter (list-iter forms))
     (doseq-iter (fc (addr-of it))
       (let (f:ptr:Node (unsafe/cast ptr:Node fc))
-        (when (and (!= (as ptr f) null)
+        (when (and (!= f null)
                    (= (f kind) NODE-CELL)
                    (> (node-len (as ptr f)) 0)
                    (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ kind) (= _ NODE-SYM)))
@@ -222,8 +222,8 @@
 
 ; Generic string helper used by do-import's extension dispatch (.nuc/.nuch).
 (defn str-ends-with (s:CStr suffix:CStr):i32
-  (let (slen:i64 (as i64 (strlen s))
-        suflen:i64 (as i64 (strlen suffix)))
+  (let (slen:i64 (strlen s)
+        suflen:i64 (strlen suffix))
     (when (> suflen slen) (return 0))
     (when (= (unsafe/ptr+ (as raw:i8 s) (- slen suflen)) suffix)
       (return 1))
@@ -281,7 +281,7 @@
     (when (!= params-node null) (set! nparams (node-len params-node)))
     (aset! io-n 0 nparams)
     (when (<= nparams 0) (return null))
-    (let (ptypes:ptr (arena-alloc (* (as i64 nparams) (ptr-bytes))))
+    (let (ptypes:ptr (arena-alloc (* nparams (ptr-bytes))))
       (dotimes (j nparams)
         ; A parameter node is either an annotated `name:type` (a colon symbol, or
         ; the `(name type)` cell desugar produces) or a bare type operand. The line
@@ -300,7 +300,7 @@
 ; the same shape `declare-param-types` builds from source.
 (defn fn-type-param-array (ft:ptr:Type):ptr
   (when (<= (ft num-params) 0) (return null))
-  (let (a:ptr (arena-alloc (* (as i64 (ft num-params)) (ptr-bytes))))
+  (let (a:ptr (arena-alloc (* (ft num-params) (ptr-bytes))))
     (dotimes (j (ft num-params))
       (aset! (as ptr:ptr a) j (unsafe/cast ptr ((field-at (ft params) j) type))))
     (return a)))
@@ -323,16 +323,16 @@
 ; and an imported `declare` both answer null, which is the case the skip is FOR.
 ; Same provenance `duplicate-signature-message` uses.
 (defn nuch-definition-site (fname:ptr):ptr
-  (let (g:?ptr:Generic (generic-lookup (as CStr fname)))
+  (let (g:?ptr:Generic (generic-lookup fname:CStr))
     (when (= g null) (return null))
     (let (gg:ptr:Generic (as ptr:Generic g)
           i:i32 0)
       (while (< i (unsafe/cast i32 (count (gg methods))))
-        (let (mi:ptr:Method (as ptr:Method (invoke (gg methods) (as usize i))))
+        (let (mi:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
           (when (and (= (mi kind) METHOD-USER) (!= (as ptr (mi body)) null))
             (let (f:ptr (mi src-file))
               (when (= f null) (set! f "<unknown file>"))
-              (return (fmt-sd "%s:%d" (as CStr f)
+              (return (fmt-sd "%s:%d" f:CStr
                         (-> mi (_ body) (unsafe/cast ptr:Node _) (_ line)))))))
         (inc! i))
       (return null))))
@@ -355,17 +355,17 @@
         (when (!= pt null)
           (let (ft:ptr:Type (unsafe/cast ptr:Type pt))
             (when (= (ft kind) TY-FN)
-              (set! theirs (fmt-2s "%s%s" (as CStr fname)
+              (set! theirs (fmt-2s "%s%s" fname:CStr
                              (as CStr (fn-sig-spelling (unsafe/cast ptr (ft ret))
                                         (fn-type-param-array ft) (ft num-params))))))))))
     (return (as CStr
       (fmt-2s "%s\n  note: %s"
         (fmt-3s "declare '%s': this compilation unit already defines '%s', at %s"
-                (as CStr fname) (as CStr fname) (as CStr site))
+                fname:CStr fname:CStr site:CStr)
         (fmt-3s "the header declares %s%s, the unit has %s. One name is one key here, so nothing — not even a qualified call — would reach the header's. Rename one, or give the library an (ns ...) so its exports key and link under it."
-                (as CStr fname)
+                fname:CStr
                 (as CStr (fn-sig-spelling ret ptypes nparams))
-                (as CStr theirs)))))))
+                theirs:CStr))))))
 
 (defn emit-nuch-declare-import (form:(raw Node)):void
   (nuch-declare-import form NUCH-BOTH))
@@ -426,7 +426,7 @@
           ; register-and-emit.
           (when (= m NUCH-AFTER)
             (when (= (import-list-has g-nuch-registered
-                       (nuch-reg-key (as CStr g-source-path) (as CStr fname))) 0)
+                       (nuch-reg-key g-source-path:CStr fname:CStr)) 0)
               (set! m NUCH-BOTH)))
           ; Skip if already defined (e.g. from include or c-include).
           ; B2b: a KEY question — this is the definition side of the `scope-define`
@@ -451,7 +451,7 @@
           (when (and (!= m NUCH-AFTER)
                      (!= (scope-lookup-key g-globals fname) null))
             (when (and (!= g-source-path null)
-                       (!= (str-ends-with (as CStr g-source-path) ".nuch") 0))
+                       (!= (str-ends-with g-source-path:CStr ".nuch") 0))
               (let (site:ptr (nuch-definition-site fname))
                 (when (!= site null)
                   (die-at (ff line)
@@ -478,14 +478,14 @@
             ; and warn. Only a top-level `(declare …)` in a .nuc unit has a site
             ; (prescan-explicit-declares); a .nuch-borne declare has none and is
             ; unaffected.
-            (let (site:ptr (as ptr (cheader-explicit-declare-site (as CStr fname))))
+            (let (site:ptr (as ptr (cheader-explicit-declare-site fname:CStr)))
               (when (!= site null)
                 (let (msig:ptr (c-fn-sig-render (as raw:Type ret) ptypes nparams 0)
                       shadow:ptr (as ptr (cdecl-site-find g-cheader-shadowed
-                                                          (as CStr fname))))
+                                                          fname:CStr)))
                   (.set! (as ptr:CDeclSite site) sig msig)
                   (when (and (!= shadow null)
-                             (!= (as CStr ((as ptr:CDeclSite shadow) sig)) (as CStr msig)))
+                             (!= (as CStr ((as ptr:CDeclSite shadow) sig)) msig:CStr))
                     (cheader-warn-decl-conflict (as raw:CDeclSite site)
                                                 (as raw:CDeclSite shadow))))))
             (let (ft:ptr:Type (as ptr:Type (make-type TY-FN)))
@@ -519,7 +519,7 @@
             (when (= m NUCH-REG)
               (set! g-nuch-registered
                     (import-list-push g-nuch-registered
-                      (nuch-reg-key (as CStr g-source-path) (as CStr fname))))))
+                      (nuch-reg-key g-source-path:CStr fname:CStr)))))
           (when (!= m NUCH-REG)
             ; Emit LLVM declare, lowering struct-by-value params/return to the
             ; platform C ABI (sret / byval / register coercion) just like a defn.
@@ -674,7 +674,7 @@
   ; a second Method for every `defmethod`, which `finalize-generics` then reports
   ; as a duplicate overload.
   (let (mode:i32 (if (and (!= g-source-path null)
-                          (!= (import-list-has g-prescan-sigs (as CStr g-source-path)) 0))
+                          (!= (import-list-has g-prescan-sigs g-source-path:CStr) 0))
                    NUCH-AFTER NUCH-BOTH))
   (let (it:ListIter (list-iter forms))
     (doseq-iter (fc (addr-of it))

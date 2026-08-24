@@ -67,7 +67,7 @@
                   (do (free buf) (return null))
                   (set! done 1)))
           (when (= done 0)
-            (let (line-len:i64 (as i64 (strlen line-buf)))
+            (let (line-len:i64 (strlen line-buf))
               ; Grow buffer if needed
               (when (> (+ buf-len line-len) (- buf-cap 1))
                 (let (new-cap:i64 (* buf-cap 2))
@@ -127,7 +127,7 @@
 ; would be invisible.
 (defn repl-emit-init-fn ():ptr
   (when (>= g-init-drained (count g-init-worklist)) (return null))
-  (let (sym:ptr (fmt-i64 "__nucleus_init_%ld" (as i64 g-repl-id)))
+  (let (sym:ptr (fmt-i64 "__nucleus_init_%ld" g-repl-id))
     (inc! g-repl-id)
     (set! g-out g-def-stream)
     (when (= (init-emit-function sym 0) 0) (return null))
@@ -311,7 +311,7 @@
                             (let (rerr:ptr (LLVMOrcResourceTrackerRemove old-rt))
                               (when (!= rerr null)
                                 (let (msg:ptr (malloc 512))
-                                  (snprintf msg (as i64 512)
+                                  (snprintf msg 512
                                             "redefinition: tracker remove failed: %s"
                                             (LLVMGetErrorMessage rerr))
                                   (repl-error (f line) msg)
@@ -335,7 +335,7 @@
                                   ; compares against Method.param-types (still a raw array).
                                   (let (onp:i32 (old-ft num-params)
                                         oparr:ptr (if (> onp 0)
-                                                    (arena-alloc (* (as i64 onp) (ptr-bytes)))
+                                                    (arena-alloc (* onp (ptr-bytes)))
                                                     null))
                                     (dotimes (ok onp)
                                       (aset! (as ptr:ptr oparr) ok
@@ -433,7 +433,7 @@
                           (set! depth (unsafe/cast i32 (d-node i))))))
                     (when (< (node-len f) 2)
                       (let (msg:ptr (malloc 128))
-                        (snprintf msg (as i64 128)
+                        (snprintf msg 128
                                   "%s requires a form argument" h)
                         (repl-error (f line) msg)
                         (free msg))
@@ -559,7 +559,7 @@
             true
               ; Expression — wrap in __repl_eval_N and JIT
               (do (open-module-streams)
-                  (let (eval-sym:ptr (fmt-i64 "__repl_eval_%ld" (as i64 g-repl-id)))
+                  (let (eval-sym:ptr (fmt-i64 "__repl_eval_%ld" g-repl-id))
                     (inc! g-repl-id)
                     (set! g-out g-def-stream)
                     (reset-function-state)
@@ -633,7 +633,7 @@
                             (when (!= err null)
                               (let (em:ptr (LLVMGetErrorMessage err)
                                     msg:ptr (malloc 512))
-                                (snprintf msg (as i64 512)
+                                (snprintf msg 512
                                           "JIT lookup error: %s" em)
                                 (repl-error (f line) msg)
                                 (free msg))
@@ -676,21 +676,21 @@
   (when (= buf null) (return))
   (let (pat:ptr (fmt-s "@%s(" fname)
         rep:ptr (fmt-s "@%s(" impl-name)
-        n:i64 (as i64 (strlen buf))
+        n:i64 (strlen buf)
         i:i64 0
         done:i32 0)
-    (let (pat-len:i64 (as i64 (strlen pat)))
+    (let (pat-len:i64 (strlen pat))
       (while (and (= done 0) (<= (+ i pat-len) n))
         (when (= (memcmp (unsafe/ptr+ (as ptr:i8 buf) i) pat pat-len) 0)
-          (fwrite buf (as i64 1) i out)
+          (fwrite buf 1 i out)
           (fputs rep out)
           (let (rest-start:i64 (+ i pat-len))
-            (fwrite (unsafe/ptr+ (as ptr:i8 buf) rest-start) (as i64 1)
+            (fwrite (unsafe/ptr+ (as ptr:i8 buf) rest-start) 1
                     (- n rest-start) out))
           (set! done 1))
         (set! i (+ i 1)))
       (when (= done 0)
-        (fwrite buf (as i64 1) n out)))))
+        (fwrite buf 1 n out)))))
 
 ; Emit a "thunk" function `@<fname>` that loads the current implementation
 ; pointer from `@<fname>.tgt` and calls it. The thunk is what callers (and
@@ -776,7 +776,7 @@
         err1:ptr (LLVMOrcLLJITLookup g-jit (as ptr (addr-of impl-addr)) impl-name))
     (when (!= err1 null)
       (let (msg:ptr (malloc 256))
-        (snprintf msg (as i64 256)
+        (snprintf msg 256
                   "redefinition: lookup of %s failed: %s"
                   impl-name (LLVMGetErrorMessage err1))
         (repl-error line msg)
@@ -786,7 +786,7 @@
           err2:ptr (LLVMOrcLLJITLookup g-jit (as ptr (addr-of tgt-addr)) tgt-name))
       (when (!= err2 null)
         (let (msg:ptr (malloc 256))
-          (snprintf msg (as i64 256)
+          (snprintf msg 256
                     "redefinition: lookup of %s failed: %s"
                     tgt-name (LLVMGetErrorMessage err2))
           (repl-error line msg)
@@ -804,7 +804,7 @@
           saved-out:ptr g-out)
       (set! g-out g-repl-preamble)
       (dotimes (i (ud num-arms))
-        (let (arm:ref:Arm (invoke (ud arms) (as usize i))
+        (let (arm:ref:Arm (invoke (ud arms) i:usize)
               aname:ptr (arm name)
               nf:i32 (arm nfields)
               ftypes:ptr (arm ftypes))
@@ -911,8 +911,8 @@
   ; from (spec cdr), and the chained (... car) dies in emit-get-intrinsic
   ; ("not a pointer-to-struct"). Must stay in lockstep with the prelude def.
   (let (sd:ptr:StructDef (as ptr:StructDef (register-struct "Node"))
-        fnm:ptr (arena-alloc (* (as i64 6) (as i64 8)))
-        ftp:ptr (arena-alloc (* (as i64 6) (as i64 8))))
+        fnm:ptr (arena-alloc (* 6 8))
+        ftp:ptr (arena-alloc (* 6 8)))
     (aset! (as ptr:ptr fnm) 0 (intern-str "kind"))
     (aset! (as ptr:ptr fnm) 1 (intern-str "line"))
     (aset! (as ptr:ptr fnm) 2 (intern-str "i"))
@@ -937,16 +937,16 @@
   ; would type `(= k:ui32 NODE-SYM)` differently from a batch compile.
   (let (sym:ref:Sym (scope-define g-globals "NODE-INT" (as ptr ty-i32) null 0))
     (.set! sym is-const 1) (.set! sym const-val "0")
-    (.set! sym const-lit 1) (.set! sym const-lit-i64 (as i64 0)))
+    (.set! sym const-lit 1) (.set! sym const-lit-i64 0))
   (let (sym:ref:Sym (scope-define g-globals "NODE-STR" (as ptr ty-i32) null 0))
     (.set! sym is-const 1) (.set! sym const-val "1")
-    (.set! sym const-lit 1) (.set! sym const-lit-i64 (as i64 1)))
+    (.set! sym const-lit 1) (.set! sym const-lit-i64 1))
   (let (sym:ref:Sym (scope-define g-globals "NODE-SYM" (as ptr ty-i32) null 0))
     (.set! sym is-const 1) (.set! sym const-val "2")
-    (.set! sym const-lit 1) (.set! sym const-lit-i64 (as i64 2)))
+    (.set! sym const-lit 1) (.set! sym const-lit-i64 2))
   (let (sym:ref:Sym (scope-define g-globals "NODE-CELL" (as ptr ty-i32) null 0))
     (.set! sym is-const 1) (.set! sym const-val "3")
-    (.set! sym const-lit 1) (.set! sym const-lit-i64 (as i64 3))))
+    (.set! sym const-lit 1) (.set! sym const-lit-i64 3)))
 
 ; Auto-import lib/macros.nuc so the standard macros (if, when, unless, for,
 ; dotimes, ->) are available at the REPL without an explicit (import-use macros).

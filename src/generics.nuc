@@ -80,11 +80,11 @@
 ; Is `m` reachable through the spelling that asked for it? `ns` names the one
 ; namespace a QUALIFIED spelling denotes; null asks the bare question.
 (defn method-visible-as (m:ptr:Method ns:CStr):i32
-  (when (!= (as ptr ns) null) (return (method-in-ns m ns)))
+  (when (!= ns null) (return (method-in-ns m ns)))
   (let (s:CStr (m src-ns))
     ; An intrinsic operator seed belongs to no file, so no import can put it out
     ; of reach — `+` must work in a namespaced file that imports nothing.
-    (when (= (as ptr s) null) (return 1))
+    (when (= s null) (return 1))
     (return (ns-reachable-bare s))))
 
 ; `g` restricted to the methods reachable through the spelling that asked for it
@@ -181,7 +181,7 @@
     ; legal and unique — read it from the key rather than from g-current-ns
     ; (which is `user`, the empty prefix, for exactly these definitions).
     (let (pq:CStr (priv-qualifier-of name))
-      (if (= (as ptr pq) null)
+      (if (= pq null)
         (.set! g ir-prefix (ns-ir-prefix g-current-ns))
         (.set! g ir-prefix (ns-ir-prefix pq))))
     (return (as ref:Generic g))))
@@ -444,7 +444,7 @@
     (let (ns:CStr (mm src-ns))
       ; No src-ns is an intrinsic operator seed, which belongs to no file — the
       ; same convention method-in-ns states. Those are never mangled here.
-      (when (= (as ptr ns) null) (return (gg ir-prefix)))
+      (when (= ns null) (return (gg ir-prefix)))
       (return (as CStr (ns-ir-prefix (as ptr ns)))))))
 
 ; How many METHOD-USER methods of `g` would emit under `prefix`? Grouping by the
@@ -678,8 +678,8 @@
 (defn methods-share-symbol-space (g:raw:Generic a:ptr:Method b:ptr:Method):i32
   (let (ap:CStr (method-ir-prefix g (as raw:Method a))
         bp:CStr (method-ir-prefix g (as raw:Method b)))
-    (when (= (as ptr ap) null) (return 1))
-    (when (= (as ptr bp) null) (return 1))
+    (when (= ap null) (return 1))
+    (when (= bp null) (return 1))
     (when (= (strcmp ap bp) 0) (return 1))
     (return 0)))
 
@@ -4882,7 +4882,7 @@
 ; produces a diagnostic.
 (defn node-type-call (n:raw:Node scope:ref:Scope h:CStr want:raw:Type):?ptr:Type
   (let (ghit:?ref:BindingHit (binding-find h scope BK-DISPATCH-FIRST (+ BK-GLOBAL 1) 0 NK-NONE))
-    (when (= (as ptr ghit) null) (return null))
+    (when (= ghit null) (return null))
     (when (!= ((unsafe/cast ptr:BindingHit ghit) kind) BK-GENERIC)
       (return (node-type-binding (unsafe/cast ref:BindingHit ghit) n scope)))
   (let (g:?ptr:Generic (as ptr:Generic ((unsafe/cast ptr:BindingHit ghit) payload)))

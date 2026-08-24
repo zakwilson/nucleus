@@ -54,7 +54,7 @@
         udd:raw:UnionDef ud
         sd:raw:StructDef (udd sdef)
         oi:i32 (union-arm-index ud "ok")
-        ok-ty:ptr ((invoke (udd arms) (as usize oi)) ptype)
+        ok-ty:ptr ((invoke (udd arms) oi:usize) ptype)
         poff:i32 (union-payload-off ud))
     (when (= (scope-lookup g-globals "printf") null)
       (die-at line "unwrap on a Result needs printf in scope — add (import-use \"stdio.h\")"))
@@ -137,7 +137,7 @@
         udd:raw:UnionDef ud
         sd:raw:StructDef (udd sdef)
         oi:i32 (union-arm-index ud "ok")
-        ok-ty:ptr ((invoke (udd arms) (as usize oi)) ptype)
+        ok-ty:ptr ((invoke (udd arms) oi:usize) ptype)
         poff:i32 (union-payload-off ud)
         base:ptr (new-tmp)
         id:i32 (new-label-id)
@@ -440,7 +440,7 @@
   (let (udd:raw:UnionDef ud
         cc:ptr:Node (unsafe/cast ptr:Node call)
         sd:raw:StructDef (udd sdef)
-        arm-rec:ref:Arm (invoke (udd arms) (as usize arm))
+        arm-rec:ref:Arm (invoke (udd arms) arm:usize)
         nf:i32 (arm-rec nfields)
         nargs:i32 (- (node-len cc) argi)
         taint:ptr null)
@@ -855,7 +855,7 @@
   (let (ai:i32 (union-arm-index ud "err"))
     (when (< ai 0) (return 0))
     (let (udd:raw:UnionDef ud
-          arm:ref:Arm (invoke (udd arms) (as usize ai)))
+          arm:ref:Arm (invoke (udd arms) ai:usize))
       (when (!= (arm nfields) 1) (return 0))
       (let (pty:raw:Type (arm ptype))
         (when (= pty null) (return 0))
@@ -962,7 +962,7 @@
 (defn emit-match-binders (ud:raw:UnionDef ai:i32 binders:ptr pp:ptr inner:ref:Scope
                                is-ptr:i32 staint:raw:Scope line:i32):void
   (let (udd:raw:UnionDef ud
-        arm:ref:Arm (invoke (udd arms) (as usize ai))
+        arm:ref:Arm (invoke (udd arms) ai:usize)
         nf:i32 (arm nfields)
         ftypes:ptr (arm ftypes)
         ptype:ptr:Type (unsafe/cast ptr:Type (arm ptype))
@@ -1141,7 +1141,7 @@
   (let (cc:ptr:Node (unsafe/cast ptr:Node call)
         svv:raw:Val sv
         nclauses:i32 (- (node-len cc) 2)
-        clause-val:ptr (arena-alloc (* (as i64 (+ nclauses 1)) 4))
+        clause-val:ptr (arena-alloc (* (+ nclauses 1) 4))
         ed:ptr null
         ndefault:i32 0
         ci:i32 0)
@@ -1525,8 +1525,8 @@
             "match: scrutinee must be a defunion value, a pointer to one, or a defenum integer"))
         (let (udd:ptr:UnionDef (unsafe/cast ptr:UnionDef ud)
               nclauses:i32 (- (node-len cc) 2)
-              clause-val:ptr (arena-alloc (* (as i64 (+ nclauses 1)) 4))
-              clause-binders:ptr (arena-alloc (* (as i64 (+ nclauses 1)) (ptr-bytes)))
+              clause-val:ptr (arena-alloc (* (+ nclauses 1) 4))
+              clause-binders:ptr (arena-alloc (* (+ nclauses 1) (ptr-bytes)))
               ndefault:i32 0
               ci:i32 0)
           ; Pass 1: resolve patterns to arm indices; collect binder chains.
@@ -1547,7 +1547,7 @@
                       (when (< ai 0)
                         (die-at (node-line (as ptr pat) (clause line))
                           (fmt-2s "match: no arm '%s' on '%s'" (pat s) (udd name))))
-                      (when (!= ((invoke (udd arms) (as usize ai)) nfields) 0)
+                      (when (!= ((invoke (udd arms) ai:usize) nfields) 0)
                         (die-at (node-line (as ptr pat) (clause line))
                           (fmt-s "match: arm '%s' carries a payload — bind its fields with (arm f...)" (pat s))))
                       (aset! (as ptr:i32 clause-val) ci ai)))
@@ -1562,7 +1562,7 @@
                           (die-at (node-line (as ptr an) (clause line))
                             (fmt-2s "match: no arm '%s' on '%s'" (an s) (udd name))))
                         (when (!= (- (node-len (as ptr pat)) 1)
-                                  ((invoke (udd arms) (as usize ai)) nfields))
+                                  ((invoke (udd arms) ai:usize) nfields))
                           (die-at (node-line (as ptr pat) (clause line))
                             (fmt-s "match: arm '%s' binder count does not match its field count (use _ to ignore a field)" (an s))))
                         (aset! (as ptr:i32 clause-val) ci ai)
@@ -1588,7 +1588,7 @@
                   (when (= hit 0)
                     (die-at (cc line)
                       (fmt-s "match: non-exhaustive — missing arm '%s' (add it or a _ default)"
-                             ((invoke (udd arms) (as usize ai)) name)))))
+                             ((invoke (udd arms) ai:usize) name)))))
                 (inc! ai))))
           ; Read the tag and hand off to the shared switch/join emitter.
           (let (sd:ptr:StructDef (unsafe/cast ptr:StructDef (udd sdef))
