@@ -2040,8 +2040,8 @@
     (.set! strnode line line)
     (.set! strnode s (nn s))
     ; (keyword-intern "name")
-    (let (call:ptr (make-cell (as ptr 'keyword-intern)
-                     (make-cell (as ptr strnode) null line)
+    (let (call:ptr (make-cell 'keyword-intern
+                     (make-cell strnode null line)
                      line))
       (return (emit-node call scope)))))
 
@@ -7001,14 +7001,11 @@
               ; Body tail: the cons cell whose car is the first body form. The fn
               ; form is (fn . (params . (ret . body…))), so the body sublist is
               ; the cdr of the cdr of the cdr of the head cell.
-              (let (defn-sym:ptr (as ptr (intern-symbol "defn"))
-                    name-sym:ptr (as ptr (intern-symbol lifted))
-                    ret-node:ptr (as ptr (intern-symbol (type-spelling ret)))
-                    body-list:ptr (-> cc (_ cdr) (_ cdr) (_ cdr))
-                    after-ret:ptr (make-cell ret-node body-list line)
+              (let (body-list:ptr (-> cc (_ cdr) (_ cdr) (_ cdr))
+                    after-ret:ptr (make-cell (intern-symbol (type-spelling ret)) body-list line)
                     after-params:ptr (make-cell params-node after-ret line)
-                    after-name:ptr (make-cell name-sym after-params line)
-                    defn-form:ptr (make-cell defn-sym after-name line))
+                    after-name:ptr (make-cell (intern-symbol lifted) after-params line)
+                    defn-form:ptr (make-cell 'defn after-name line))
                 (conj g-mono-worklist
                       (mono-job-here defn-form
                         (fmt-2s-i "while emitting lambda %s (defined at %s:%d)"
@@ -7108,17 +7105,17 @@
           ; (vfn/mfn): the field holds the value — (. self name).
           (if (= mode 2)
             (let (field-access:ptr
-                    (make-cell (as ptr (intern-symbol "."))
+                    (make-cell (intern-symbol ".")
                       (make-cell self-sym
-                        (make-cell (as ptr (intern-symbol name)) null line)
+                        (make-cell (intern-symbol name) null line)
                         line)
                       line))
-              (return (make-cell (as ptr (intern-symbol "deref"))
+              (return (make-cell (intern-symbol "deref")
                         (make-cell field-access null line)
                         line)))
-            (return (make-cell (as ptr (intern-symbol "."))
+            (return (make-cell (intern-symbol ".")
                       (make-cell self-sym
-                        (make-cell (as ptr (intern-symbol name)) null line)
+                        (make-cell (intern-symbol name) null line)
                         line)
                       line)))))
       (return node))
@@ -7148,14 +7145,14 @@
                            (= (fn-bound-has bound oname) 0)
                            (!= (fn-bound-has caps oname) 0))
                   (if (= mode 2)
-                    (return (make-cell (as ptr (intern-symbol "."))
+                    (return (make-cell (intern-symbol ".")
                               (make-cell self-sym
-                                (make-cell (as ptr (intern-symbol oname)) null line)
+                                (make-cell (intern-symbol oname) null line)
                                 line)
                               line))
-                    (return (make-cell (as ptr (intern-symbol ".&"))
+                    (return (make-cell (intern-symbol ".&")
                               (make-cell self-sym
-                                (make-cell (as ptr (intern-symbol oname)) null line)
+                                (make-cell (intern-symbol oname) null line)
                                 line)
                               line))))))))
         ; Field access: index-2 operand is a literal field name; rewrite only the
@@ -7163,7 +7160,7 @@
         (when (or (= (strcmp h ".") 0)
                   (= (strcmp h "_get") 0) (= (strcmp h ".&") 0))
           (let (subj:ptr (fn-rewrite-captures (node-at node 1) caps bound self-sym line mode))
-            (return (make-cell (as ptr hd)
+            (return (make-cell hd
                       (make-cell subj
                         (make-cell (node-at node 2) null line)
                         line)
@@ -7175,7 +7172,7 @@
             ; make-cell was missing its `line` argument, so the rewritten
             ; `.set!` cell of a closure capture took an uninitialized register
             ; as its line. Every sibling cell here passes `line`.
-            (return (make-cell (as ptr hd)
+            (return (make-cell hd
                       (make-cell subj
                         (make-cell (node-at node 2)
                           (make-cell val null line)
@@ -7203,18 +7200,18 @@
                   (let (val-rw:ptr (fn-rewrite-captures (node-at node 2) caps bound self-sym line mode)
                         cname-sym:ptr (as ptr (intern-symbol cname))
                         field-access:ptr
-                          (make-cell (as ptr (intern-symbol "."))
+                          (make-cell (intern-symbol ".")
                             (make-cell self-sym
                               (make-cell cname-sym null line)
                               line)
                             line))
                     (if (= mode 2)
-                      (return (make-cell (as ptr (intern-symbol "ptr-set!"))
+                      (return (make-cell (intern-symbol "ptr-set!")
                                 (make-cell field-access
                                   (make-cell val-rw null line)
                                   line)
                                 line))
-                      (return (make-cell (as ptr (intern-symbol ".set!"))
+                      (return (make-cell (intern-symbol ".set!")
                                 (make-cell self-sym
                                   (make-cell cname-sym
                                     (make-cell val-rw null line)
@@ -7243,19 +7240,19 @@
                         cname-sym:ptr (as ptr (intern-symbol cname)))
                     (if (= mode 2)
                       (let (fa1:ptr
-                              (make-cell (as ptr (intern-symbol "."))
+                              (make-cell (intern-symbol ".")
                                 (make-cell self-sym
                                   (make-cell cname-sym null line)
                                   line)
                                 line)
                             fa2:ptr
-                              (make-cell (as ptr (intern-symbol "."))
+                              (make-cell (intern-symbol ".")
                                 (make-cell self-sym
                                   (make-cell cname-sym null line)
                                   line)
                                 line)
                             deref-node:ptr
-                              (make-cell (as ptr (intern-symbol "deref"))
+                              (make-cell (intern-symbol "deref")
                                 (make-cell fa2 null line)
                                 line)
                             arith:ptr
@@ -7264,13 +7261,13 @@
                                   (make-cell (fn-make-int-node 1) null line)
                                   line)
                                 line))
-                        (return (make-cell (as ptr (intern-symbol "ptr-set!"))
+                        (return (make-cell (intern-symbol "ptr-set!")
                                   (make-cell fa1
                                     (make-cell arith null line)
                                     line)
                                   line)))
                       (let (read-field:ptr
-                              (make-cell (as ptr (intern-symbol "."))
+                              (make-cell (intern-symbol ".")
                                 (make-cell self-sym
                                   (make-cell cname-sym null line)
                                   line)
@@ -7281,7 +7278,7 @@
                                   (make-cell (fn-make-int-node 1) null line)
                                   line)
                                 line))
-                        (return (make-cell (as ptr (intern-symbol ".set!"))
+                        (return (make-cell (intern-symbol ".set!")
                                   (make-cell self-sym
                                     (make-cell cname-sym
                                       (make-cell arith null line)
@@ -7296,7 +7293,7 @@
               (let (inner-bound:ptr (fn-bind-let-names binds bound)
                     new-binds:ptr (fn-rewrite-let-binds binds caps bound self-sym line mode)
                     new-body:ptr (fn-rewrite-list-from node 2 caps inner-bound self-sym line mode))
-                (return (make-cell (as ptr hd)
+                (return (make-cell hd
                           (make-cell new-binds new-body line)
                           line))))
             ; A malformed binding list is left to the real emit to diagnose.
@@ -7309,12 +7306,12 @@
             (when (node-is-list params)
               (let (inner-bound:ptr (fn-bind-param-names params bound)
                     new-body:ptr (fn-rewrite-list-from node 2 caps inner-bound self-sym line mode))
-                (return (make-cell (as ptr hd)
+                (return (make-cell hd
                           (make-cell params new-body line)
                           line))))
             (return node)))
         ; Ordinary form: keep the head verbatim, rewrite every argument.
-        (return (make-cell (as ptr hd)
+        (return (make-cell hd
                   (fn-rewrite-list-rest node caps bound self-sym line mode)
                   line))))))
 
@@ -7460,8 +7457,8 @@
       ; Synthesized params: (self (ref Env)) prepended to the original param
       ; specs. The receiver uses the list form so the env name (which never
       ; contains a colon) is parsed as a type node, not colon-sugar.
-      (let (env-ref-node:ptr (make-cell (as ptr (intern-symbol "ref"))
-                               (make-cell (as ptr (intern-symbol (env-sd name)))
+      (let (env-ref-node:ptr (make-cell (intern-symbol "ref")
+                               (make-cell (intern-symbol (env-sd name))
                                  null line)
                                line)
             self-spec:ptr (make-cell self-sym
@@ -7522,35 +7519,35 @@
       ; cfn: free the env block through the stored allocator handle.
       (let (alloc-sym:ptr (as ptr (intern-symbol "__alloc"))
             ; (. self __alloc) → the stored (ref AllocHandle).
-            handle-access:ptr (make-cell (as ptr (intern-symbol "."))
+            handle-access:ptr (make-cell (intern-symbol ".")
                                   (make-cell self-sym
                                     (make-cell alloc-sym null line)
                                     line)
                                   line)
             ; (unsafe/cast (raw ui8) self) — self is (ptr Env); reinterpret as
             ; (raw ui8) (both lower to ptr; unsafe/cast is a no-IR reinterpret).
-            raw-ty:ptr (make-cell (as ptr (intern-symbol "raw"))
-                          (make-cell (as ptr (intern-symbol "ui8")) null line)
+            raw-ty:ptr (make-cell (intern-symbol "raw")
+                          (make-cell (intern-symbol "ui8") null line)
                           line)
             ; Stage 14 UN-5: bare "cast" is retired — synthesize the
             ; `unsafe/cast` spelling instead (D2 Class 1: identical emitter).
-            raw-self:ptr (make-cell (as ptr (intern-symbol "unsafe/cast"))
+            raw-self:ptr (make-cell (intern-symbol "unsafe/cast")
                             (make-cell raw-ty
                               (make-cell self-sym null line)
                               line)
                             line)
             ; (sizeof Env) — the block size, matching the alloc-handle-alloc call.
-            sizeof-node:ptr (make-cell (as ptr (intern-symbol "sizeof"))
-                              (make-cell (as ptr (intern-symbol (sd name))) null line)
+            sizeof-node:ptr (make-cell (intern-symbol "sizeof")
+                              (make-cell (intern-symbol (sd name)) null line)
                               line)
             ; 8 — pointer alignment of the env block. Stage 14 UN-5: bare "cast"
             ; is retired — synthesize `unsafe/cast` (same emitter as before).
-            align-node:ptr (make-cell (as ptr (intern-symbol "unsafe/cast"))
-                            (make-cell (as ptr (intern-symbol "usize"))
+            align-node:ptr (make-cell (intern-symbol "unsafe/cast")
+                            (make-cell (intern-symbol "usize")
                               (make-cell (fn-make-int-node 8) null line)
                               line)
                             line)
-            freecall:ptr (make-cell (as ptr (intern-symbol "alloc-handle-free"))
+            freecall:ptr (make-cell (intern-symbol "alloc-handle-free")
                             (make-cell handle-access
                               (make-cell raw-self
                                 (make-cell sizeof-node
@@ -7566,18 +7563,18 @@
         (let (fty:ptr ((field-at (sd fields) k) type))
           (when (!= (type-conforms-drop fty) 0)
                 (let (fname:ptr ((field-at (sd fields) k) name)
-                                addr:ptr (make-cell (as ptr (intern-symbol ".&"))
+                                addr:ptr (make-cell (intern-symbol ".&")
                                                     (make-cell self-sym
-                                                               (make-cell (as ptr (intern-symbol fname)) null line)
+                                                               (make-cell (intern-symbol fname) null line)
                                                                line)
                                                     line)
-                                dropcall:ptr (make-cell (as ptr (intern-symbol "drop"))
+                                dropcall:ptr (make-cell (intern-symbol "drop")
                                                         (make-cell addr null line)
                                                         line))
                   (set! body (make-cell dropcall body line)))))))
     ; Synthesize (defn drop:void ((self (ptr Env))) body…).
-    (let (env-ptr-node:ptr (make-cell (as ptr (intern-symbol "ptr"))
-                             (make-cell (as ptr (intern-symbol (sd name))) null line)
+    (let (env-ptr-node:ptr (make-cell (intern-symbol "ptr")
+                             (make-cell (intern-symbol (sd name)) null line)
                              line)
           self-spec:ptr (make-cell self-sym
                            (make-cell env-ptr-node null line)
@@ -8092,7 +8089,7 @@
       (let (ahsym:?ptr:Sym (scope-lookup scope "alloc-handle-alloc"))
         (when (= ahsym null)
           (die-at line "BoxedFn: boxing a function requires (import-use allocator)"))
-        (let (da-node:ptr (make-cell (as ptr (intern-symbol "default-allocator")) null line)
+        (let (da-node:ptr (make-cell (intern-symbol "default-allocator") null line)
               hv:ref:Val (emit-node da-node scope)
               blk:ptr (new-tmp))
           (fprintf g-body-stream "  %s = call ptr %s(ptr %s, %s %d, %s 8)\n"
@@ -8168,10 +8165,10 @@
     (let (ahsym:?ptr:Sym (scope-lookup scope "alloc-handle-alloc"))
       (when (= ahsym null)
         (die-at line "type-erasure: boxing a value requires (import-use allocator)"))
-      (let (da-node:ptr (make-cell (as ptr (intern-symbol "default-allocator")) null line)
+      (let (da-node:ptr (make-cell (intern-symbol "default-allocator") null line)
             hv:ref:Val (emit-node da-node scope)
-            sz-node:ptr (make-cell (as ptr (intern-symbol "sizeof"))
-                          (make-cell (as ptr (intern-symbol struct-name)) null line)
+            sz-node:ptr (make-cell (intern-symbol "sizeof")
+                          (make-cell (intern-symbol struct-name) null line)
                           line)
             saved-key-ok:i32 g-type-key-ok
             sz-val:ref:Val (do (set! g-type-key-ok 1)
@@ -8572,8 +8569,8 @@
           (die-at line "cfn: 'alloc-handle-alloc' not in scope — (import-use allocator) is required to use cfn"))
         (let (ah-ir:ptr (ahsym ir-name)
               ; sizeof Env as a runtime usize (mirrors emit-sizeof).
-              sz-node:ptr (make-cell (as ptr (intern-symbol "sizeof"))
-                              (make-cell (as ptr (intern-symbol (sd name))) null line)
+              sz-node:ptr (make-cell (intern-symbol "sizeof")
+                              (make-cell (intern-symbol (sd name)) null line)
                               line)
               sz-val:ref:Val (emit-node sz-node scope)
               blk:ptr (new-tmp))
@@ -8600,8 +8597,8 @@
                       gep:ptr (new-tmp))
                   (fprintf g-body-stream "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
                     gep (sd ir-name) blk (+ k 1))
-                  (let (addr-node:ptr (make-cell (as ptr (intern-symbol "addr-of"))
-                                          (make-cell (as ptr (intern-symbol cname)) null line)
+                  (let (addr-node:ptr (make-cell (intern-symbol "addr-of")
+                                          (make-cell (intern-symbol cname) null line)
                                           line)
                         av:ref:Val (emit-node addr-node scope))
                     (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" (av val) gep)
@@ -8668,9 +8665,9 @@
                         (fmt-2s "vfn cannot clone-capture '%s' (type %s is Drop with no Clone); use mfn to move it instead"
                                 cname (type-spelling fty))))
                     (ptr-set! out-owns-drop 1)
-                    (let (clone-node:ptr (make-cell (as ptr (intern-symbol "clone"))
-                                           (make-cell (make-cell (as ptr (intern-symbol "addr-of"))
-                                                        (make-cell (as ptr (intern-symbol cname)) null line)
+                    (let (clone-node:ptr (make-cell (intern-symbol "clone")
+                                           (make-cell (make-cell (intern-symbol "addr-of")
+                                                        (make-cell (intern-symbol cname) null line)
                                                         line)
                                                      null line)
                                            line)
@@ -8699,8 +8696,8 @@
                           (die-at line (fmt-s "mfn: capture '%s' value type mismatch" cname)))
                         (fprintf g-body-stream "  store %s %s, ptr %s\n"
                           fty-ir (-> coerced (as ptr:Val _) (_ val)) gep))
-                      (let (move-node:ptr (make-cell (as ptr (intern-symbol "move"))
-                                              (make-cell (as ptr (intern-symbol cname)) null line)
+                      (let (move-node:ptr (make-cell (intern-symbol "move")
+                                              (make-cell (intern-symbol cname) null line)
                                               line)
                             v:ref:Val (emit-move move-node scope)
                             coerced:ptr (coerce-int-val v fty line))
@@ -12449,10 +12446,10 @@
 ; interned symbols (the `set!` head and the target name) have no line of their
 ; own (context/conventions.md).
 (defn defvar-queue-init (name:CStr init:(raw Node) line:i32):void
-  (let (args:ptr (as ptr (make-cell (as ptr (intern-symbol name))
-                                    (as ptr (make-cell (as ptr init) null line))
+  (let (args:ptr (as ptr (make-cell (intern-symbol name)
+                                    (as ptr (make-cell init null line))
                                     line))
-        form:ptr (as ptr (make-cell (as ptr (intern-symbol "set!")) args line))
+        form:ptr (as ptr (make-cell (intern-symbol "set!") args line))
         job:ptr:InitJob (new InitJob))
     (.set! job form (as raw:Node form))
     (.set! job ns g-current-ns)
@@ -13200,14 +13197,14 @@
               tname:ptr null)
           (extract-name-type ((unsafe/cast ptr:Node fcur) car)
                              (as ptr:ptr (addr-of fname)) (as ptr:ptr (addr-of tname)))
-          (let (cell:ptr (make-cell (as ptr (intern-symbol fname)) null line))
+          (let (cell:ptr (make-cell (intern-symbol fname) null line))
             (when (= make-args null) (set! make-args cell))
             (when (!= make-tail null) (.set! (unsafe/cast ptr:Node make-tail) cdr cell))
             (set! make-tail cell)))
         (set! fcur ((unsafe/cast ptr:Node fcur) cdr)))
-      (let (body:ptr (make-cell (as ptr 'make)
-                       (make-cell (as ptr (intern-symbol uname))
-                         (make-cell (as ptr (intern-symbol aname)) make-args line)
+      (let (body:ptr (make-cell 'make
+                       (make-cell (intern-symbol uname)
+                         (make-cell (intern-symbol aname) make-args line)
                          line)
                        line)
             params:ptr null
@@ -13223,10 +13220,10 @@
         ; An empty params list is null — node-is-list treats null as a list.
         ; New-style: the return operand (the union type name) sits between the
         ; params and the body.
-        (return (make-cell (as ptr 'defn)
+        (return (make-cell 'defn
                   (make-cell name-node
                     (make-cell params
-                      (make-cell (as ptr (intern-symbol uname))
+                      (make-cell (intern-symbol uname)
                         (make-cell body null line)
                         line)
                       line)
@@ -14702,7 +14699,7 @@
                          (= new-params (node-at form 2)))
                 (return form))
               ; Rebuild: (defn new-name new-params body...)
-              (return (make-cell (as ptr head)
+              (return (make-cell head
                        (make-cell new-name
                          (make-cell new-params
                            ((unsafe/cast ptr:Node ((unsafe/cast ptr:Node (f cdr)) cdr)) cdr)
@@ -14714,7 +14711,7 @@
           (when (>= (node-len form) 2)
             (let (new-name:ptr (desugar-typed (node-at form 1) (f line)))
               (when (= new-name (node-at form 1)) (return form))
-              (return (make-cell (as ptr head)
+              (return (make-cell head
                        (make-cell new-name
                          ((unsafe/cast ptr:Node (f cdr)) cdr)
                          (f line))
@@ -14726,7 +14723,7 @@
             (let (new-rest:ptr (desugar-params ((unsafe/cast ptr:Node (f cdr)) cdr) (f line)))
               (when (= new-rest ((unsafe/cast ptr:Node (f cdr)) cdr))
                 (return form))
-              (return (make-cell (as ptr head)
+              (return (make-cell head
                        (make-cell (node-at form 1)
                          new-rest
                          (f line))
@@ -14736,7 +14733,7 @@
           (when (= (node-len form) 2)
             (let (new-name:ptr (desugar-typed (node-at form 1) (f line)))
               (when (= new-name (node-at form 1)) (return form))
-              (return (make-cell (as ptr head)
+              (return (make-cell head
                        (make-cell new-name null (f line))
                        (f line))))))
         ; (declare name:type (params...))            — legacy
@@ -14756,14 +14753,14 @@
                                       (unsafe/cast ptr:Node _) (_ cdr)))
                   (when (and (= new-name (node-at form 1)) (= new-params (node-at form 2)))
                     (return form))
-                  (return (make-cell (as ptr head)
+                  (return (make-cell head
                            (make-cell new-name
                              (make-cell new-params tail3 (f line))
                              (f line))
                            (f line))))
                 (do
                   (when (= new-name (node-at form 1)) (return form))
-                  (return (make-cell (as ptr head)
+                  (return (make-cell head
                            (make-cell new-name null (f line))
                            (f line))))))))
         ; (let (bindings...) body...) — desugar binding names
@@ -14772,7 +14769,7 @@
           (when (>= (node-len form) 2)
             (let (new-binds:ptr (desugar-let-bindings (node-at form 1) (f line)))
               (when (= new-binds (node-at form 1)) (return form))
-              (return (make-cell (as ptr head)
+              (return (make-cell head
                        (make-cell new-binds
                          ((unsafe/cast ptr:Node (f cdr)) cdr)
                          (f line))
@@ -14781,7 +14778,7 @@
         (when (or (= h "compile-time") (= h "do"))
           (let (new-body:ptr (desugar (f cdr)))
             (when (= new-body (f cdr)) (return form))
-            (return (make-cell (as ptr head) new-body (f line)))))
+            (return (make-cell head new-body (f line)))))
         (return form)))))
 
 ; Pre-register the names of all top-level structs so that defn signatures

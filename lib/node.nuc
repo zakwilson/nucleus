@@ -9,7 +9,7 @@
 (defn alloc-node ():ref:Node
   (return (as ref:Node (arena-alloc (sizeof Node)))))
 
-(defn make-cell (car:ptr cdr:ptr line:i32):ref:Node
+(defn make-cell (car:raw:Node cdr:raw:Node line:i32):ref:Node
   (let (c:ref:Node (alloc-node))
     (.set! c kind NODE-CELL)
     (.set! c line line)
@@ -76,7 +76,7 @@
             (intern-raw-insert new-table new-cap (e spelling) (e node))))
         (inc! i)))))
 
-(defn intern-symbol (s:ptr):ref:Node
+(defn intern-symbol (s:CStr):ref:Node
   (when (= g-intern-cap 0)
     (set! g-intern-cap 1024)
     (set! g-intern-table (arena-alloc (* (as i64 g-intern-cap)
@@ -102,22 +102,27 @@
           (return (e node))))
       (set! j (bit-and (+ j 1) mask)))))
 
-(defn node-at (n:ptr i:i32):?ptr:Node
-  (let (nn:ptr:Node (as ptr:Node n))
-    (while (and (and (!= n null) (= (nn kind) NODE-CELL)) (> i 0))
-      (set! n (nn cdr))
-      (set! nn (as ptr:Node n))
-      (set! i (- i 1)))
-    (when (and (!= n null) (= (nn kind) NODE-CELL)) (return (nn car)))
-    (return null)))
+(defn node-at (n:raw:Node i:i32):?ptr:Node
+  (match (as-ref n)
+    ((some nn)
+     (while (and (= (nn kind) NODE-CELL) (> i 0))
+       (match (as-ref (nn cdr))
+         ((some nnn)
+          (set! n nnn)
+          (set! nn nnn))
+         (none (return none)))
+       (set! i (- i 1)))
+     (when (= (nn kind) NODE-CELL)
+       (return (as-ref (nn car)))))
+    (none (return none))))
 
-(defn node-len (n:ptr):i32
+(defn node-len (n:raw:Node):i32
   (let (k:i32 0
-        nn:ptr:Node (as ptr:Node n))
+        nn:raw:Node n)
     (while (and (!= n null) (= (nn kind) NODE-CELL))
       (set! k (+ k 1))
       (set! n (nn cdr))
-      (set! nn (as ptr:Node n)))
+      (set! nn n))
     (return k)))
 
 ; Source line to blame for a diagnostic about `n`, given the line of the
@@ -133,15 +138,15 @@
 ; the enclosing form, which its emitter has in hand. Writing a line *into* a
 ; symbol node is never correct: it would be observed by every other occurrence
 ; of the same spelling anywhere in the program.
-(defn node-line (n:ptr encl:i32):i32
+(defn node-line (n:raw:Node encl:i32):i32
   (when (= n null) (return encl))
-  (let (ln:i32 ((as ptr:Node n) line))
+  (let (ln:i32 (n line))
     (when (= ln 0) (return encl))
     (return ln)))
 
-(defn node-is-list (n:ptr):bool
+(defn node-is-list (n:raw:Node):bool
   (when (= n null) (return true))
-  (when (= ((as ptr:Node n) kind) NODE-CELL) (return true))
+  (when (= (n kind) NODE-CELL) (return true))
   (return false))
 
 ; The kind of a NULL node. Deliberately outside NodeKind's 0..n range, so a
@@ -155,6 +160,6 @@
 ; ("name must be a symbol") already existed at the site, and the kind test that
 ; would have fired it crashed first. Use this wherever the node came from
 ; `node-at`, whose return type is `?ptr:Node` and says so.
-(defn node-kind (n:ptr):i32
+(defn node-kind (n:raw:Node):i32
   (when (= n null) (return NODE-NIL))
-  (return ((as ptr:Node n) kind)))
+  (return (n kind)))

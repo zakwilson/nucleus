@@ -897,7 +897,7 @@
                   (aset! (as ptr:i32 repr-out) 0 REPR-NICHE)
                   (die-at (node-line (as ptr m) line) "defunion: :repr mode must be `tagged` or `niche`"))))
             (set! scur mcell))   ; advance past the mode; the cdr step skips it
-          (let (cell:ptr (make-cell (as ptr a) null line))
+          (let (cell:ptr (make-cell a null line))
             (when (= head null) (set! head cell))
             (when (!= tail null) (.set! (unsafe/cast ptr:Node tail) cdr cell))
             (set! tail cell))))
