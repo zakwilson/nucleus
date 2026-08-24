@@ -334,7 +334,15 @@ Two deliberate limits. A **field name wins** over a same-named local — `(m cou
 reads `HashMap`'s `count` field, not the entry under key `"count"`. And only
 **locals** demote, never globals: every function lives in the global scope too, so
 demoting on globals would re-interpret `(sd name)` the moment any global named
-`name` existed. Both cases have the same escape hatch — see `invoke` below.
+`name` existed.
+
+Both cases have two escape hatches: the explicit `(invoke m count)` below, and a
+**type annotation on the selector**. `(m count:CStr)` is the ordinary
+[value-position `as` sugar](types.md#types) — and because a field name can never
+contain a colon, an annotated symbol in selector position is always a value,
+whatever fields the callee has. Unlike the demotion above it does not consult the
+scope, so it works for a global key too. A quoted `'name` keeps the opposite,
+always-a-field reading.
 
 **`get` — member access (the `Struct` default).** Every struct conforms to the
 built-in `Struct` blanket protocol, whose `get` is supplied by an **intrinsic**: a

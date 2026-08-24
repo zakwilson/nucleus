@@ -7,6 +7,7 @@
 
 (import-use "stdio.h")
 (import-use hashset)
+(import-use hashmap)
 
 (defstruct Rec (k i32))
 
@@ -19,6 +20,14 @@
   (if (contains? #{"foo" "bar"} baz:CStr)
     (printf "hit\n")
     (printf "miss\n")))
+
+; Selector position, where a bare symbol otherwise always names a FIELD: the
+; annotation is what says "this is a value". `(m k:CStr)` is a keyed lookup,
+; never a field called `k:CStr` — a field name can never carry a colon.
+(defn describe ((m (ref (HashMap CStr i32))) k:ptr):void
+  (match (m k:CStr)
+    ((some v) (printf "%s -> %d\n" k v))
+    (none     (printf "%s -> absent\n" k))))
 
 (defn main ():i32
   (let (n:i32 42
@@ -41,4 +50,7 @@
     (printf "big: %ld\n" big:i64)
     (lookup (as ptr:i8 "foo"))
     (lookup (as ptr:i8 "quux"))
+    (let ((counts (ref (HashMap CStr i32))) {"a" 1 "b" 2})
+      (describe counts "a")
+      (describe counts "zz"))
     (return 0)))

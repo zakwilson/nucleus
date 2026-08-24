@@ -767,7 +767,7 @@
   ; String equality, not pointer identity: `do-import` resolves a path afresh per
   ; import form, so the root re-entered through the auto-prelude carries an equal
   ; but distinct string. Inherits `g-imported`'s spelling-equality limit (W9-1).
-  (when (= (as CStr g-source-path) (as CStr g-unit-entry-path)) (return ""))
+  (when (= g-source-path:CStr g-unit-entry-path:CStr) (return ""))
   (return "weak_odr "))
 
 ; Stage 15 B5: has this unit registered ANY private binding of a kind that has
@@ -1007,7 +1007,7 @@
           n:ptr:Node (as ptr:Node (malloc (sizeof Node))))
       (snprintf buf 32 "__gs_%d" id)
       (memset (as ptr n) 0 (sizeof Node))
-      (.set! n kind (as i32 NODE-SYM))
+      (.set! n kind NODE-SYM:i32)
       (.set! n s buf)
       (return (as ptr n)))))
 
@@ -1973,7 +1973,7 @@
 (defn emit-string (n:(raw Node) target:(raw Type)):ref:Val
   (let (nn:(raw Node) n
         id:i32 (intern-string (nn s) (unsafe/cast i32 (strlen (nn s))))
-         slen:i32 ((invoke g-strs (as usize id)) len)
+        slen:i32 ((invoke g-strs (as usize id)) len)
         ir-len:i32 (+ slen 1)
         tmp:ptr (new-tmp))
     (fprintf g-body-stream
@@ -2020,7 +2020,7 @@
       (when (= svty null) (return (alloc-val ty-cstr tmp)))
       (let (rv:ref:Val (alloc-val svty tmp))
         (.set! rv is-lit 1)
-        (.set! rv lit-i64 (as i64 slen))
+        (.set! rv lit-i64 slen:i64)
         (return (as ptr rv))))))
 
 ; Keyword literal (Stage 11 cleanup §2). `:foo` self-evaluates to the one
@@ -2174,7 +2174,7 @@
                 (= (nn kind) NODE-FLOAT)
                 (= (nn kind) NODE-KEYWORD))
         (let (sid:i32 (intern-string (nn s) (unsafe/cast i32 (strlen (nn s))))
-            ir-len:i32 (+ ((invoke g-strs (as usize sid)) len) 1)
+              ir-len:i32 (+ ((invoke g-strs (as usize sid)) len) 1)
               sp:CStr (new-tmp))
           (fprintf g-body-stream
             "  %s = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %s, i32 0, i32 3\n"
@@ -2561,7 +2561,7 @@
       (dotimes (i0 la)
         (aset! cur 0 (+ i0 1))
         (dotimes (j0 lb)
-          (let (cost:i32 (if (= (char-at a (as i64 i0)) (char-at b (as i64 j0))) 0 1)
+          (let (cost:i32 (if (= (char-at a i0:i64) (char-at b j0:i64)) 0 1)
                 d:i32 (+ (aref prev j0) cost)
                 ins:i32 (+ (aref cur j0) 1)
                 del:i32 (+ (aref prev (+ j0 1)) 1))
@@ -2593,7 +2593,7 @@
     (when (>= d (aref bestd 0)) (return))
     (let (sp:ptr (binding-usable-spelling kind payload bare))
       (when (= sp null) (return))
-      (when (= (strcmp (as CStr sp) name) 0) (return))
+      (when (= (strcmp sp:CStr name) 0) (return))
       (aset! bestd 0 d)
       (aset! best 0 sp))))
 
@@ -2808,7 +2808,7 @@
         (let (nr:i64 (fread buf (as i64 1) sz f))
           (aset! (as ptr:i8 buf) nr 0)
           (fclose f)
-          (let (hit:i32 (text-defines-name (as CStr buf) nr name want-type))
+          (let (hit:i32 (text-defines-name buf:CStr nr name want-type))
             (free buf)
             (return hit)))))))
 
@@ -2823,8 +2823,8 @@
   (when (!= (import-list-has g-prescan-visited path) 0) (return 1))
   (when (!= (import-list-has g-prescan-sigs path) 0) (return 1))
   (when (!= (import-list-has g-imported path) 0) (return 1))
-  (when (= path (as CStr g-source-path)) (return 1))
-  (when (and (!= g-unit-entry-path null) (= path (as CStr g-unit-entry-path)))
+  (when (= path g-source-path:CStr) (return 1))
+  (when (and (!= g-unit-entry-path null) (= path g-unit-entry-path:CStr))
     (return 1))
   (return 0))
 
@@ -2853,7 +2853,7 @@
 (defn path-in-unit (path:CStr):i32
   (when (!= (path-in-unit-exact path) 0) (return 1))
   (let (sib:ptr (import-sibling-path path))
-    (when (!= sib null) (return (path-in-unit-exact (as CStr sib)))))
+    (when (!= sib null) (return (path-in-unit-exact sib:CStr))))
   (return 0))
 
 ; Scan one directory (non-recursive) for a `.nuc`/`.nuch` file outside the unit
@@ -2869,8 +2869,8 @@
         (let (fname:CStr (as CStr (unsafe/ptr+ (as ptr:i8 e) DIRENT-D-NAME-OFFSET)))
           (when (!= (nuc-source-name fname) 0)
             (let (path:ptr (fmt-2s "%s/%s" dir fname))
-              (when (= (path-in-unit (as CStr path)) 0)
-                (when (!= (file-defines-name (as CStr path) name want-type) 0)
+              (when (= (path-in-unit path:CStr) 0)
+                (when (!= (file-defines-name path:CStr name want-type) 0)
                   (closedir d)
                   (return path)))))))))
   (return null))
@@ -2898,8 +2898,8 @@
   (let (scanned:ptr null)
     (let (own-dir:ptr (source-file-dir))
       (when (!= own-dir null)
-        (set! scanned (import-list-push scanned (as CStr own-dir)))
-        (let (hit:ptr (scan-dir-for-definer (as CStr own-dir) name want-type))
+        (set! scanned (import-list-push scanned own-dir:CStr))
+        (let (hit:ptr (scan-dir-for-definer own-dir:CStr name want-type))
           (when (!= hit null) (return hit)))))
     (when (= (import-list-has scanned "lib") 0)
       (set! scanned (import-list-push scanned "lib"))
@@ -2907,7 +2907,7 @@
         (when (!= hit null) (return hit))))
     (do
       (dotimes (j (unsafe/cast i32 (count g-include-paths)))
-        (let (dir:CStr (invoke g-include-paths (as usize j)))
+        (let (dir:CStr (invoke g-include-paths j:usize))
           (when (= (import-list-has scanned dir) 0)
             (set! scanned (import-list-push scanned dir))
             (let (hit:ptr (scan-dir-for-definer dir name want-type))
@@ -2959,7 +2959,7 @@
   (let (partner:ptr (import-cycle-partner defpath))
     (when (= partner null)
       (return (fmt-s "%s is part of an import cycle in this unit" defpath)))
-    (return (fmt-2s "%s is in an import cycle with %s" defpath (as CStr partner)))))
+    (return (fmt-2s "%s is in an import cycle with %s" defpath partner:CStr))))
 
 ; The shared closing advice. Kept in one place so the macro/const/enum, layout
 ; and prefix messages cannot drift apart on what the user should actually do.
@@ -2981,7 +2981,7 @@
           ; that names a coupling the compiler no longer has sends the reader to
           ; break a cycle they do not need to break.
           note:ptr (fmt-2s "  note: %s; a cycle resolves function signatures and value names before any emission, but a macro, deferror id or extern declaration registers only when its file is emitted -- and a cycle member's body is emitted before the rest of the file it back-imports. Either %s"
-                           (import-cycle-note (as CStr defpath)) (import-cycle-advice)))
+                           (import-cycle-note defpath:CStr) (import-cycle-advice)))
       (return (fmt-2s "%s\n%s" head note)))))
 
 ; The layout message, used by reject-cycle-pending-layout (src/type-utils.nuc).
@@ -2991,7 +2991,7 @@
   (let (defpath:ptr (cycle-definer-file sname 1)
         where:ptr "it is defined in a file this unit imports circularly")
     (when (!= defpath null)
-      (set! where (import-cycle-note (as CStr defpath))))
+      (set! where (import-cycle-note defpath:CStr)))
     (let (head:ptr (fmt-2s "%s: '%s' has no layout at this point — its definition has not been emitted yet"
                            what sname)
           note:ptr (fmt-2s "  note: %s; a cycle resolves function signatures but not struct layouts, so across a cycle a type is usable only behind a pointer. Either use ptr:%s here, or "
@@ -3038,8 +3038,8 @@
     (let (q:ptr (arena-strndup name (qualifier-len name)))
       (return (fmt-2s "%s\n%s"
                       (as CStr (fmt-3s "%s: %s — '%s' is not in scope in this file"
-                                       verb name (as CStr q)))
-                      (as CStr note))))))
+                                       verb name q:CStr))
+                      note:CStr)))))
 
 (defn unresolved-name-message (verb:CStr name:CStr):ptr
   ; Stage 15 B2b: the retired bare `unsafe/` spellings first — the roster names
@@ -3095,7 +3095,7 @@
   (let (elsewhere:ptr (unreachable-definer-file name 0))
     (when (!= elsewhere null)
       (return (fmt-3s "%s: %s — not defined anywhere in this compilation unit\n  note: %s"
-                      verb name (unreachable-file-note name (as CStr elsewhere))))))
+                      verb name (unreachable-file-note name elsewhere:CStr)))))
   ; Stage 15 B3′: R1's failure mode reaches head position too — a bare struct
   ; constructor `(Zs 4)` for a type defined in a namespace this file did not
   ; import. Same answer as the annotation position gives, so the same function.
@@ -3133,7 +3133,7 @@
           sp1:ptr null
           sp2:ptr null)
       (dotimes (i (unsafe/cast i32 (count (gg methods))))
-        (let (m:ptr:Method (as ptr:Method (invoke (gg methods) (as usize i)))
+        (let (m:ptr:Method (as ptr:Method (invoke (gg methods) i:usize))
               mns:CStr (m src-ns))
           (when (and (!= (as ptr mns) null) (= (ns-reachable-bare mns) 0))
             (let (fresh:i32 1)
@@ -3143,10 +3143,10 @@
                 (let (p:ptr (file-prefix-for-ns mns))
                   (if (= (as ptr ns1) null)
                     (do (set! ns1 mns)
-                        (when (!= p null) (set! sp1 (fmt-2s "%s/%s" (as CStr p) name))))
+                        (when (!= p null) (set! sp1 (fmt-2s "%s/%s" p:CStr name))))
                     (when (= (as ptr ns2) null)
                       (set! ns2 mns)
-                      (when (!= p null) (set! sp2 (fmt-2s "%s/%s" (as CStr p) name)))))))))))
+                      (when (!= p null) (set! sp2 (fmt-2s "%s/%s" p:CStr name)))))))))))
       (when (= (as ptr ns1) null) (return null))
       ; A prefix this file already bound is the spelling that compiles; the
       ; namespace name alone is what it would have to import. Same two answers,
@@ -3156,10 +3156,10 @@
           (return (fmt-2s "%s\n  note: write %s here"
                           (as CStr (fmt-3s "%s: %s — defined in namespaces %s" verb name
                                      (as CStr (fmt-2s "'%s' and '%s'" ns1 ns2))))
-                          (as CStr (fmt-2s "'%s' or '%s'" (as CStr sp1) (as CStr sp2))))))
+                          (as CStr (fmt-2s "'%s' or '%s'" sp1:CStr sp2:CStr)))))
         (return (fmt-2s "%s\n  note: write '%s' here"
                         (as CStr (fmt-3s "%s: %s — defined in namespace '%s'" verb name ns1))
-                        (as CStr sp1))))
+                        sp1:CStr)))
       (return (fmt-3s "%s: %s — defined in namespace '%s', which this file does not import"
                       verb name ns1)))))
 
@@ -3177,15 +3177,15 @@
   (when (= g-ns-declared 0) (return null))
   (let (bare:CStr (as CStr (strip-ns-qualifier (as ptr name))))
     (dotimes (i (unsafe/cast i32 (count g-structs)))
-      (let (sd:ptr:StructDef (as ptr:StructDef (invoke g-structs (as usize i))))
+      (let (sd:ptr:StructDef (as ptr:StructDef (invoke g-structs i:usize)))
         (when (and (!= (qualifier-len (as ptr (sd name))) 0)
                    (= (strcmp (as CStr (strip-ns-qualifier (as ptr (sd name)))) bare) 0))
           (let (usable:ptr (binding-usable-spelling BK-STRUCT (as ptr sd) bare))
-            (when (and (!= usable null) (!= (strcmp (as CStr usable) name) 0))
+            (when (and (!= usable null) (!= (strcmp usable:CStr name) 0))
               (return (fmt-2s "%s\n  note: write '%s' here"
                               (as CStr (fmt-3s "%s: %s — defined in namespace '%s'"
                                                verb name (key-namespace (sd name))))
-                              (as CStr usable))))
+                              usable:CStr)))
             (return (fmt-3s "%s: %s — defined in namespace '%s', which this file does not import"
                             verb name (key-namespace (sd name))))))))
     (return null)))
@@ -3209,7 +3209,7 @@
   (let (elsewhere:ptr (unreachable-definer-file name 1))
     (when (!= elsewhere null)
       (return (fmt-2s "unknown type: %s — not defined anywhere in this compilation unit\n  note: %s"
-                      name (unreachable-file-note name (as CStr elsewhere))))))
+                      name (unreachable-file-note name elsewhere:CStr)))))
   ; The type may be in this unit under a namespace this file cannot name — R1's
   ; new failure mode, and the one the reachability message describes wrongly.
   (let (ns-note:ptr (type-in-other-namespace-message "unknown type" name))
@@ -3223,7 +3223,7 @@
   ; fixed-arity trap). `tests/fixtures/b3-type-typo.nuc` executes this line.
   (let (near:ptr (closest-known-name name))
     (when (!= near null)
-      (return (fmt-2s "unknown type: %s (did you mean '%s'?)" name (as CStr near)))))
+      (return (fmt-2s "unknown type: %s (did you mean '%s'?)" name near:CStr))))
   (return (fmt-s "unknown type: %s — not defined anywhere in this compilation unit" name)))
 
 (defn unknown-name-message (name:CStr):ptr
@@ -3333,7 +3333,7 @@
         (let (dst:?ptr:Type (value-annot-type annot (node-line n line)))
           (when (= dst null)
             (die-at (node-line n line)
-              (fmt-2s "unknown type '%s' in the annotation '%s'" (as CStr annot) (nn s))))
+              (fmt-2s "unknown type '%s' in the annotation '%s'" annot:CStr (nn s))))
           (return (as-convert v dst (node-line n line))))))))
 
 ; ============================================================
@@ -4220,7 +4220,7 @@
 ; repl-register-node) and selectors arrive interned (the reader/`quote` intern at
 ; lex time), so struct-field-index matches by identity.
 (defn intern-str (s:ptr):ptr
-  (return ((as ptr:Node (intern-symbol s)) s)))
+  (return ((intern-symbol s) s)))
 
 ; Stage 12 namespaces (design/stage12/namespaces.md §"Syntax", §"Implementation").
 ; Map a *source spelling* to the interned key under which its global is stored in
@@ -4376,7 +4376,7 @@
     (set! g-file-imports (vector-new-in (addr-of g-arena-alloc))))
   (let (tbl:ref:ImportVec (unsafe/cast ref:ImportVec g-file-imports))
     (dotimes (i (unsafe/cast i32 (count tbl)))
-      (let (e:ref:ImportBind (invoke tbl (as usize i)))
+      (let (e:ref:ImportBind (invoke tbl i:usize))
         ; Stage 15 B3′: the dedup compares CONTENT, not pointers. B1 could get
         ; away with identity because `do-import` was the only writer and reached
         ; each form once; `prescan-file-imports` now records the same form
@@ -4407,11 +4407,11 @@
   (let (out:ptr null
         tbl:ref:ImportVec (unsafe/cast ref:ImportVec g-file-imports))
     (dotimes (i (unsafe/cast i32 (count tbl)))
-      (let (e:ref:ImportBind (invoke tbl (as usize i)))
+      (let (e:ref:ImportBind (invoke tbl i:usize))
         (when (!= (e prefix) null)
           (if (= out null)
             (set! out (e prefix))
-            (set! out (fmt-2s "%s, %s" (as CStr out) (as CStr (e prefix))))))))
+            (set! out (fmt-2s "%s, %s" out:CStr (as CStr (e prefix))))))))
     (return out)))
 
 ; ============================================================
@@ -4503,7 +4503,7 @@
   (when (= g-file-imports null) (return null))
   (let (tbl:ref:ImportVec (unsafe/cast ref:ImportVec g-file-imports))
     (dotimes (i (unsafe/cast i32 (count tbl)))
-      (let (e:ref:ImportBind (invoke tbl (as usize i)))
+      (let (e:ref:ImportBind (invoke tbl i:usize))
         (when (and (!= (e prefix) null) (!= (qualifier-eq spelling (e prefix) n) 0))
           (return (e path))))))
   (return null))
@@ -4515,7 +4515,7 @@
   (when (= g-file-imports null) (return null))
   (let (tbl:ref:ImportVec (unsafe/cast ref:ImportVec g-file-imports))
     (dotimes (i (unsafe/cast i32 (count tbl)))
-      (let (e:ref:ImportBind (invoke tbl (as usize i)))
+      (let (e:ref:ImportBind (invoke tbl i:usize))
         (when (and (!= (e prefix) null) (!= (e private) 0)
                    (!= (qualifier-eq spelling (e prefix) n) 0))
           (return (e path))))))
@@ -4535,7 +4535,7 @@
   (when (= g-file-imports null) (return null))
   (let (tbl:ref:ImportVec (unsafe/cast ref:ImportVec g-file-imports))
     (when (>= i (unsafe/cast i32 (count tbl))) (return null))
-    (let (e:ref:ImportBind (invoke tbl (as usize i)))
+    (let (e:ref:ImportBind (invoke tbl i:usize))
       (when (!= (e prefix) null) (return null))
       (return (import-path-ns (e path))))))
 
@@ -4544,7 +4544,7 @@
 (defn file-flattens-ns-named (ns:CStr):i32
   (dotimes (i (file-imports-count))
     (let (f:ptr (file-flattened-ns-at i))
-      (when (and (!= f null) (= (strcmp (as CStr f) ns) 0)) (return 1))))
+      (when (and (!= f null) (= (strcmp f:CStr ns) 0)) (return 1))))
   (return 0))
 
 ; Stage 15 B5: a prefix this file bound whose library lives in namespace `ns`,
@@ -4554,10 +4554,10 @@
   (when (= g-file-imports null) (return null))
   (let (tbl:ref:ImportVec (unsafe/cast ref:ImportVec g-file-imports))
     (dotimes (i (unsafe/cast i32 (count tbl)))
-      (let (e:ref:ImportBind (invoke tbl (as usize i)))
+      (let (e:ref:ImportBind (invoke tbl i:usize))
         (when (!= (e prefix) null)
           (let (pns:ptr (import-path-ns (e path)))
-            (when (and (!= pns null) (= (strcmp (as CStr pns) ns) 0))
+            (when (and (!= pns null) (= (strcmp pns:CStr ns) 0))
               (return (e prefix))))))))
   (return null))
 
@@ -4753,12 +4753,12 @@
         (when (and (!= ns null) (!= (strcmp ns "user") 0))
           (if (= out null)
             (set! out ns)
-            (set! out (fmt-2s "%s, %s" (as CStr out) (as CStr ns)))))))
+            (set! out (fmt-2s "%s, %s" out:CStr ns:CStr))))))
     (let (pre:ptr (file-prefixes-in-scope))
       (when (!= pre null)
         (if (= out null)
           (set! out pre)
-          (set! out (fmt-2s "%s, %s" (as CStr out) (as CStr pre))))))
+          (set! out (fmt-2s "%s, %s" out:CStr pre:CStr)))))
     (return out)))
 
 ; The note that turns a bare "unknown X" into a SCOPE diagnostic: null when
@@ -4784,7 +4784,7 @@
       (let (tail:ptr "This file has no import qualifiers in scope."
             inscope:ptr (file-qualifiers-in-scope))
         (when (!= inscope null)
-          (set! tail (fmt-s "In scope here: %s." (as CStr inscope))))
+          (set! tail (fmt-s "In scope here: %s." inscope:CStr)))
         ; Tier 1 (was B1's `unbound-prefix-message`): some OTHER file in this
         ; unit binds this qualifier as an import prefix. Cannot collide with
         ; W1d's cycle tier — that one fires for a prefix the file DID declare,
@@ -4793,11 +4793,11 @@
           (when (!= path null)
             (return
               (fmt-3s "  note: an import prefix is file-scoped: another file in this unit binds '%s' to %s, but a prefix reaches only the file whose own import declares it. %s"
-                      (as CStr (r qual)) (as CStr path) (as CStr tail)))))
+                      (as CStr (r qual)) path:CStr tail:CStr))))
         ; Tier 2: the general rule.
         (return
           (fmt-2s "  note: '%s' is not in scope in this file — a prefixed import binds its library under the prefix it names and not under the library's own namespace, and an unimported namespace is not nameable at all. %s"
-                  (as CStr (r qual)) (as CStr tail)))))))
+                  (as CStr (r qual)) tail:CStr))))))
 
 ; Append `qualifier-scope-note` to a diagnostic head, when there is one to
 ; append. Every raise about an unresolved *reference* should go through this:
@@ -4805,7 +4805,7 @@
 (defn with-qualifier-note (head:ptr spelling:ptr):ptr
   (let (note:ptr (qualifier-scope-note spelling))
     (when (= note null) (return head))
-    (return (fmt-2s "%s\n%s" (as CStr head) (as CStr note)))))
+    (return (fmt-2s "%s\n%s" head:CStr note:CStr))))
 
 ; Stage 15 W9 defect 21: the PROTOCOL half of what `strip-ns-qualifier` used to
 ; do for both halves. Map a protocol *reference* (any source spelling) to the
@@ -4951,7 +4951,7 @@
     (set! g-ns-prefix-table (vector-new-in (addr-of g-arena-alloc))))
   (let (tbl:(ref (Vector (ref NsPrefixEntry))) (unsafe/cast (ref (Vector (ref NsPrefixEntry))) g-ns-prefix-table))
     (dotimes (i (unsafe/cast i32 (count tbl)))
-      (let (e:ref:NsPrefixEntry (invoke tbl (as usize i)))
+      (let (e:ref:NsPrefixEntry (invoke tbl i:usize))
         (when (= (e ns) ns)
           (.set! e prefix prefix)
           (return))))
@@ -4965,7 +4965,7 @@
   (when (= g-ns-prefix-table null) (return null))
   (let (tbl:(ref (Vector (ref NsPrefixEntry))) (unsafe/cast (ref (Vector (ref NsPrefixEntry))) g-ns-prefix-table))
     (dotimes (i (unsafe/cast i32 (count tbl)))
-      (let (e:ref:NsPrefixEntry (invoke tbl (as usize i)))
+      (let (e:ref:NsPrefixEntry (invoke tbl i:usize))
         (when (= (e ns) ns) (return (e prefix))))))
   (return null))
 
@@ -4998,7 +4998,7 @@
   (when (= g-fn-attr-table null) (return))
   (let (tbl:(ref (Vector (ref FnAttrEntry))) (unsafe/cast (ref (Vector (ref FnAttrEntry))) g-fn-attr-table))
     (dotimes (i (unsafe/cast i32 (count tbl)))
-      (let (e:ref:FnAttrEntry (invoke tbl (as usize i)))
+      (let (e:ref:FnAttrEntry (invoke tbl i:usize))
         (when (= (e name) fname)
           (fprintf g-out " \"%s\"" (e attr)))))))
 
@@ -5094,7 +5094,7 @@
     (set! g-priv-files (vector-new-in (addr-of g-arena-alloc))))
   (let (tbl:(ref (Vector (ref PrivFile))) (unsafe/cast (ref (Vector (ref PrivFile))) g-priv-files))
     (dotimes (i (unsafe/cast i32 (count tbl)))
-      (let (pf:ref:PrivFile (invoke tbl (as usize i)))
+      (let (pf:ref:PrivFile (invoke tbl i:usize))
         (when (= (strcmp (pf path) path) 0) (return pf))))
     (let (n:i32 (+ (unsafe/cast i32 (count tbl)) 1)
           base:ptr (path-basename-token path)
@@ -5119,7 +5119,7 @@
   (when (= g-priv-files null) (return null))
   (let (tbl:(ref (Vector (ref PrivFile))) (unsafe/cast (ref (Vector (ref PrivFile))) g-priv-files))
     (dotimes (i (unsafe/cast i32 (count tbl)))
-      (let (pf:ref:PrivFile (invoke tbl (as usize i)))
+      (let (pf:ref:PrivFile (invoke tbl i:usize))
         (when (= (strcmp (pf path) path) 0) (return (pf ns))))))
   (return null))
 
@@ -5159,7 +5159,7 @@
   (let (tbl:(ref (Vector (ref PrivFile))) (unsafe/cast (ref (Vector (ref PrivFile))) g-priv-files)
         r:ptr null)
     (dotimes (i (unsafe/cast i32 (count tbl)))
-      (let (pf:ref:PrivFile (invoke tbl (as usize i)))
+      (let (pf:ref:PrivFile (invoke tbl i:usize))
         (when (= (strcmp (pf path) g-source-path) 0) (set! r (as ptr pf)))))
     (set! g-priv-cache-path g-source-path)
     (set! g-priv-cache (unsafe/cast (raw PrivFile) r))
@@ -5186,7 +5186,7 @@
     (when (!= (strchr name 47) null) (return name))
     (let (p:ptr:PrivFile (unsafe/cast ptr:PrivFile pf))
       (dotimes (i (unsafe/cast i32 (count (p names))))
-        (let (pn:ref:PrivName (invoke (p names) (as usize i)))
+        (let (pn:ref:PrivName (invoke (p names) i:usize))
           (when (= (pn bare) name) (return (pn key)))))
       (let (pn:ref:PrivName (new PrivName))
         (.set! pn bare (intern-str name))
@@ -5203,7 +5203,7 @@
     (when (= pf null) (return name))
     (let (p:ptr:PrivFile (unsafe/cast ptr:PrivFile pf))
       (dotimes (i (unsafe/cast i32 (count (p names))))
-        (let (pn:ref:PrivName (invoke (p names) (as usize i)))
+        (let (pn:ref:PrivName (invoke (p names) i:usize))
           (when (= (pn bare) name) (return (pn key)))))
       (return name))))
 
@@ -5317,10 +5317,20 @@
 ; `(quote field)` — return the symbol Node; else null (a computed selector). A
 ; bare symbol is always a field, never a variable: field interpretation wins so
 ; it never depends on what is in scope (callable-values.md §3.5).
+;
+; Stage 16: an *annotated* bare symbol is the one exception, and it is not a
+; scope question either — a field name can never carry a colon, so `k:CStr` in
+; selector position can only be the as-sugar cast (as-sugar.md). Quoted `'k:T`
+; keeps the always-a-name reading.
 (defn selector-literal-sym (node:(raw Node)):(raw Node)
   (when (= node null) (return null))
   (let (nn:(raw Node) node)
-    (when (= (nn kind) NODE-SYM) (return node))
+    (when (= (nn kind) NODE-SYM)
+      (let (base:ptr null
+            annot:ptr null)
+        (split-typed (nn s) (as ptr:ptr (addr-of base)) (as ptr:ptr (addr-of annot)))
+        (when (!= annot null) (return null)))
+      (return node))
     (when (and (= (nn kind) NODE-CELL) (= (node-len node) 2))
       (when (= (node-at node 0) 'quote)
         (let (inner:(raw Node) (node-at node 1))
@@ -5474,7 +5484,7 @@
         found:?ptr:Method null)
     ; tier 0: exact concrete (METHOD-USER) match.
     (dotimes (i (unsafe/cast i32 (count (gg methods))))
-      (let (m:(raw Method) (invoke (gg methods) (as usize i)))
+      (let (m:(raw Method) (invoke (gg methods) i:usize))
         (when (and (= (m kind) METHOD-USER)
                    (= (m num-params) nargs)
                    (!= (params-type-eq (m param-types) argtypes nargs) 0))
@@ -5485,9 +5495,9 @@
           cand-bound:ptr null
           ncand:i32 0)
       (dotimes (j (unsafe/cast i32 (count (gg methods))))
-        (let (m:(raw Method) (invoke (gg methods) (as usize j)))
+        (let (m:(raw Method) (invoke (gg methods) j:usize))
           (when (= (m kind) METHOD-GENERIC)
-            (let (bound:ptr (arena-alloc (* (as i64 (+ (m num-tyvars) 1)) (ptr-bytes))))
+            (let (bound:ptr (arena-alloc (* (+ (m num-tyvars) 1) (ptr-bytes))))
               ; Stage 15 W9 defect 12 (found by the new arity check): this call
               ; was missing its trailing `arg-nodes` argument, so the callee read
               ; an uninitialized register as the argument-node array. This
@@ -5516,7 +5526,7 @@
   (when (= g null) (return 0))
   (let (gg:(raw Generic) g)
     (dotimes (i (unsafe/cast i32 (count (gg methods))))
-      (let (m:(raw Method) (invoke (gg methods) (as usize i)))
+      (let (m:(raw Method) (invoke (gg methods) i:usize))
         (when (> (m num-params) 0)
           (if (= (m kind) METHOD-USER)
             (when (!= (type-eq (aref (as ptr:ptr (m param-types)) 0) ct) 0)
@@ -5525,7 +5535,7 @@
             ; only writes the scratch bound array, so this is side-effect-free.
             (let (params-node:(raw Node) (node-at (m body) 2)
                   ntv:i32 (m num-tyvars)
-                  bound:ptr (arena-alloc (* (as i64 (+ ntv 1)) (ptr-bytes)))
+                  bound:ptr (arena-alloc (* (+ ntv 1) (ptr-bytes)))
                   ptn:(raw Node) (binding-type-node (node-at params-node 0)))
               (when (!= ptn null)
                 (dotimes (k ntv) (aset! (as ptr:ptr bound) k null))
@@ -5581,13 +5591,13 @@
     (if (!= sym null)
       ; --- Branch A: literal-symbol selector (unchanged field-access path) ---
       (when (!= g null)
-        (let (argtypes:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
+        (let (argtypes:ptr (arena-alloc (* 2 (ptr-bytes))))
           (aset! (as ptr:ptr argtypes) 0 ct)
           (aset! (as ptr:ptr argtypes) 1 ty-ptr)
           (let (m:?ptr:Method (generic-find-method-exact g argtypes 2))
             (when (!= m null)
               (let (sel-val:ref:Val (emit-selector-value sel-node scope)
-                    args:ptr (arena-alloc (* (as i64 2) (sizeof Val))))
+                    args:ptr (arena-alloc (* 2 (sizeof Val))))
                 (memcpy (unsafe/ptr+ (as ptr:Val args) 0) cv (sizeof Val))
                 (memcpy (unsafe/ptr+ (as ptr:Val args) 1) sel-val (sizeof Val))
                 (return (emit-resolved-call n scope "get" m args 2 line)))))))
@@ -5595,7 +5605,7 @@
       (when (!= g null)
         (let (sel-val:ref:Val (emit-node sel-node scope)
               kt:(raw Type) (sel-val type)
-              argtypes:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
+              argtypes:ptr (arena-alloc (* 2 (ptr-bytes))))
           (aset! (as ptr:ptr argtypes) 0 ct)
           (aset! (as ptr:ptr argtypes) 1 kt)
           (let (m:?ptr:Method (generic-resolve-nullable g argtypes 2 line))
@@ -5615,7 +5625,7 @@
               (aset! (as ptr:ptr argtypes) 1 ty-cstr)
               (set! m (generic-resolve-nullable g argtypes 2 line)))
             (when (!= m null)
-              (let (args:ptr (arena-alloc (* (as i64 2) (sizeof Val))))
+              (let (args:ptr (arena-alloc (* 2 (sizeof Val))))
                 (memcpy (unsafe/ptr+ (as ptr:Val args) 0) cv (sizeof Val))
                 (memcpy (unsafe/ptr+ (as ptr:Val args) 1) (as ptr sel-val) (sizeof Val))
                 (return (emit-resolved-call n scope "get" m args 2 line))))))))
@@ -5896,7 +5906,7 @@
   (let (cc:(raw Node) call)
     (when (!= (node-len cc) 2) (die-at (cc line) "char expects 1 arg"))
     (let (arg:(raw Node) (node-at cc 1))
-      (when (or (!= (arg kind) NODE-STR) (!= (as i64 (strlen (arg s))) 1))
+      (when (or (!= (arg kind) NODE-STR) (!= (strlen (arg s)) 1))
         (die-at (node-line (as ptr arg) (cc line)) "char: arg must be single-char string"))
       (return (alloc-val ty-char (fmt-i32 "%d" (char-at (arg s) 0)))))))
 
@@ -6088,7 +6098,7 @@
         ret-type:(raw Type) (fn-type ret)
         nargs:i32 (- (node-len cc) arg-start))
     (check-call-arity "call" null fn-type nargs 0 (cc line))
-    (let (arg-vals:ptr (arena-alloc (* (as i64 (+ nargs 1)) (ptr-bytes)))
+    (let (arg-vals:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
           i:i32 0)
       (while (< i nargs)
         (aset! (as ptr:ptr arg-vals) i (emit-node (node-at cc (+ i arg-start)) scope))
@@ -6266,7 +6276,7 @@
             (when (and (!= tsym null) (!= (tsym owns) 0))
               (die-at (cc line)
                 (fmt-2s "double free: '%s' is freed at `with` scope exit — use (move %s) to take ownership first" tname tname)))))))
-    (let (args:ptr (arena-alloc (* (as i64 (+ max-args 1)) (sizeof Val)))
+    (let (args:ptr (arena-alloc (* (+ max-args 1) (sizeof Val)))
           i:i32 0)
       (while (< i nargs)
         (let (v:ref:Val (emit-node (node-at cc (+ i 1)) scope))
@@ -6551,10 +6561,10 @@
           ; or the byval / register-coerced fragment for a struct-by-value arg
           ; (emitting the materialization instructions as a side effect).
           (let (w:i32 (snprintf (unsafe/ptr+ (as ptr:i8 arglist) apos)
-                                (- (as i64 2048) apos)
+                                (- 2048 apos)
                                 "%s%s" sep
                                 (abi-arg-frag (as ptr av))))
-            (set! apos (+ apos (as i64 w)))))
+            (set! apos (+ apos w:i64))))
         (inc! i))
       (let (ft:ptr:Type (unsafe/cast ptr:Type (ss type)))
         (when (!= (ft kind) TY-FN)
@@ -6566,20 +6576,20 @@
           (do
             (let (sig:ptr (alloca i8 512)
                   sp:i64 0
-                  w:i32 (snprintf sig (as i64 512) "%s (" (type-to-ir (ft ret))))
-              (set! sp (as i64 w))
+                  w:i32 (snprintf sig 512 "%s (" (type-to-ir (ft ret))))
+              (set! sp w)
               (set! i 0)
               (while (< i (ft num-params))
                 (let (pt:ptr ((field-at (ft params) i) type)
                       sep:ptr "")
                   (when (!= i 0) (set! sep ", "))
-                  (set! w (snprintf (unsafe/ptr+ (as ptr:i8 sig) sp) (- (as i64 512) sp)
+                  (set! w (snprintf (unsafe/ptr+ (as ptr:i8 sig) sp) (- 512 sp)
                                     "%s%s" sep (type-to-ir pt)))
-                  (set! sp (+ sp (as i64 w))))
+                  (set! sp (+ sp w)))
                 (inc! i))
               (let (va-sep:ptr "")
                 (when (!= (ft num-params) 0) (set! va-sep ", "))
-                (snprintf (unsafe/ptr+ (as ptr:i8 sig) sp) (- (as i64 512) sp)
+                (snprintf (unsafe/ptr+ (as ptr:i8 sig) sp) (- 512 sp)
                           "%s...)" va-sep))
               (if (-> ft (_ ret) (unsafe/cast ptr:Type _) (_ kind) (= _ TY-VOID))
                 (do
@@ -6712,7 +6722,7 @@
 (defn union-drop-arm (ud:(raw UnionDef)):ptr
   (let (udd:(raw UnionDef) ud)
     (dotimes (i (udd num-arms))
-      (let (arm:ref:Arm (invoke (udd arms) (as usize i))
+      (let (arm:ref:Arm (invoke (udd arms) i:usize)
             nf:i32 (arm nfields)
             ftypes:ptr (arm ftypes))
         (dotimes (j nf)
@@ -6953,8 +6963,8 @@
             param-types:ptr null
             param-names:ptr null)
         (when (> nparams 0)
-          (set! param-types (arena-alloc (* (as i64 nparams) (ptr-bytes))))
-          (set! param-names (arena-alloc (* (as i64 nparams) (ptr-bytes)))))
+          (set! param-types (arena-alloc (* nparams (ptr-bytes))))
+          (set! param-names (arena-alloc (* nparams (ptr-bytes)))))
         (dotimes (pi nparams)
           (let (pname:ptr null
                           pty:ptr (extract-name-and-type (node-at params-node pi)
@@ -7385,8 +7395,8 @@
         ename:ptr (sanitize-for-ir (intern-str (fmt-i32 "__vfn_env_%d" g-vfn-env-id))))
     (inc! g-vfn-env-id)
     (let (sd:ref:StructDef (register-struct ename)
-          fnm:ptr (arena-alloc (* (as i64 nf) (ptr-bytes)))
-          ftp:ptr (arena-alloc (* (as i64 nf) (ptr-bytes))))
+          fnm:ptr (arena-alloc (* nf (ptr-bytes)))
+          ftp:ptr (arena-alloc (* nf (ptr-bytes))))
       (.set! sd src-file g-source-path)
       (.set! sd src-line line)
       (when (!= has-alloc 0)
@@ -7438,7 +7448,7 @@
   ; exact signature generic-find-method-exact / defn-ir-name will match on.
   (let (self-ty:ptr (fn-env-ref-type env-sd)
         total:i32 (+ nparams 1)
-        mtypes:ptr (arena-alloc (* (as i64 total) (ptr-bytes))))
+        mtypes:ptr (arena-alloc (* total (ptr-bytes))))
     (aset! (as ptr:ptr mtypes) 0 self-ty)
     (dotimes (i nparams)
       (aset! (as ptr:ptr mtypes) (+ i 1) (aref (as ptr:ptr param-types) i)))
@@ -7626,7 +7636,7 @@
 ; Memo lookup: the already-emitted vtable symbol for interned `key`, or null.
 (defn vtable-memo-lookup (key:ptr):ptr
   (dotimes (i (unsafe/cast i32 (count g-vtable-table)))
-    (let (e:ref:VtableEntry (invoke g-vtable-table (as usize i)))
+    (let (e:ref:VtableEntry (invoke g-vtable-table i:usize))
       (when (= (e key) key) (return (e name)))))
   (return null))
 
@@ -7651,7 +7661,7 @@
       (when (= ig null) (return null))
       (let (igg:ptr:Generic (as ptr:Generic ig))
         (dotimes (mi (unsafe/cast i32 (count (igg methods))))
-          (let (mm:ptr:Method (as ptr:Method (invoke (igg methods) (as usize mi))))
+          (let (mm:ptr:Method (as ptr:Method (invoke (igg methods) mi:usize)))
             (when (= (mm kind) METHOD-USER)
               (let (self-ty:ptr (aref (as ptr:ptr (mm param-types)) 0))
                 (when (!= self-ty null)
@@ -7792,7 +7802,7 @@
         save-imports:raw:ImportVec g-file-imports)
     (while (< g-dyn-annots-drained (count g-dyn-annots))
       (let (j:ref:DynAnnot (invoke g-dyn-annots g-dyn-annots-drained))
-        (set! g-dyn-annots-drained (+ g-dyn-annots-drained (as usize 1)))
+        (set! g-dyn-annots-drained (+ g-dyn-annots-drained 1))
         (set! g-source-path (j path))
         (set! g-current-ns (j ns))
         (set! g-file-imports (j imports))
@@ -7931,7 +7941,7 @@
       (when (= ig null) (return null))
       (let (igg:ptr:Generic (as ptr:Generic ig))
         (dotimes (mi (unsafe/cast i32 (count (igg methods))))
-          (let (mm:ptr:Method (as ptr:Method (invoke (igg methods) (as usize mi))))
+          (let (mm:ptr:Method (as ptr:Method (invoke (igg methods) mi:usize)))
             (when (= (mm kind) METHOD-USER)
               (let (self-ty:ptr (aref (as ptr:ptr (mm param-types)) 0))
                 (when (!= self-ty null)
@@ -8373,7 +8383,7 @@
         (fprintf g-body-stream "  %s = getelementptr inbounds { ptr, ptr }, ptr %s, i32 0, i32 0\n"
           invslotp vt)
         (fprintf g-body-stream "  %s = load ptr, ptr %s, align 8\n" invfn invslotp)
-        (let (arg-vals:ptr (arena-alloc (* (as i64 (+ nargs 1)) (ptr-bytes)))
+        (let (arg-vals:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
               i:i32 0)
           (while (< i nargs)
             (let (av:ref:Val (emit-node (node-at n (+ arg-start i)) scope)
@@ -8431,7 +8441,7 @@
                 name-node:ptr (node-at sig 0)
                 mname:ptr null)
             (extract-name-and-type name-node (as ptr:ptr (addr-of mname)) 0)
-            (when (and (!= mname null) (= (strcmp mname (as CStr mkey)) 0)) (return i))))
+            (when (and (!= mname null) (= (strcmp mname mkey:CStr) 0)) (return i))))
         (return -1))))))
 
 ; TE-6: forward a `(dyn P)` method call `(method box args…)` through the box's
@@ -8478,7 +8488,7 @@
         (fprintf g-body-stream "  %s = load ptr, ptr %s, align 8\n" mfn slotp)
         ; Coerce each (already-emitted) call arg to the protocol method's non-self
         ; param type.
-        (let (arg-vals:ptr (arena-alloc (* (as i64 (+ np 1)) (ptr-bytes)))
+        (let (arg-vals:ptr (arena-alloc (* (+ np 1) (ptr-bytes)))
               i:i32 0)
           (while (< i np)
             (let (pnode:ptr (node-at params-node (+ i 1))
@@ -8736,8 +8746,8 @@
               param-types:ptr null
               param-names:ptr null)
           (when (> nparams 0)
-            (set! param-types (arena-alloc (* (as i64 nparams) (ptr-bytes))))
-            (set! param-names (arena-alloc (* (as i64 nparams) (ptr-bytes)))))
+            (set! param-types (arena-alloc (* nparams (ptr-bytes))))
+            (set! param-names (arena-alloc (* nparams (ptr-bytes)))))
           (dotimes (pi nparams)
             (let (pname:ptr null
                             pty:ptr (extract-name-and-type (node-at params-node pi)
@@ -8817,8 +8827,8 @@
               param-types:ptr null
               param-names:ptr null)
           (when (> nparams 0)
-            (set! param-types (arena-alloc (* (as i64 nparams) (ptr-bytes))))
-            (set! param-names (arena-alloc (* (as i64 nparams) (ptr-bytes)))))
+            (set! param-types (arena-alloc (* nparams (ptr-bytes))))
+            (set! param-names (arena-alloc (* nparams (ptr-bytes)))))
           (dotimes (pi nparams)
             (let (pname:ptr null
                             pty:ptr (extract-name-and-type (node-at params-node pi)
@@ -8919,8 +8929,8 @@
                 param-types:ptr null
                 param-names:ptr null)
             (when (> nparams 0)
-              (set! param-types (arena-alloc (* (as i64 nparams) (ptr-bytes))))
-              (set! param-names (arena-alloc (* (as i64 nparams) (ptr-bytes)))))
+              (set! param-types (arena-alloc (* nparams (ptr-bytes))))
+              (set! param-names (arena-alloc (* nparams (ptr-bytes)))))
             (dotimes (pi nparams)
               (let (pname:ptr null
                               pty:ptr (extract-name-and-type (node-at params-node pi)
@@ -9006,7 +9016,7 @@
     (when (= n 0) (return))
     (let (i:i32 (- n 1))
       (while (>= i 0)
-        (let (cl:ref:Cleanup (invoke (sc cleanup-slots) (as usize i)))
+        (let (cl:ref:Cleanup (invoke (sc cleanup-slots) i:usize))
           ; The tag makes the three shapes exhaustive (was a null-probing cond on
           ; defer-node then drop-fn, else free). Arm order is irrelevant — match
           ; dispatches on the stored tag, so the shapes cannot be confused, and
@@ -9128,7 +9138,7 @@
           (let (en:ptr:Node (unsafe/cast ptr:Node e))
             (when (= (en kind) NODE-SYM)
               (let (es:ptr (en s)
-                    elen:i64 (as i64 (strlen (en s))))
+                    elen:i64 (strlen (en s)))
                 (when (and (> elen 0) (= (char-at es (- elen 1)) 58))
                   (die-at (node-line (as ptr en) encl) (fmt-s "binding name ends in ':' (%s) -- write name:(Type) with no space, or (name Type)" es))))))))
       (set! cur ((unsafe/cast ptr:Node cur) cdr)))))
@@ -10097,7 +10107,7 @@
       ; Pass 1: scan inits to compute length and parse designated keys.
       (let (max-idx:i32 -1
             pos-count:i32 0
-            keys:ptr (arena-alloc (* (as i64 ninits) 4)))
+            keys:ptr (arena-alloc (* ninits 4)))
         (dotimes (i ninits)
           (let (arg:ptr:Node (unsafe/cast ptr:Node (node-at cc (+ 2 i)))
                 is-designated:i32 0)
@@ -10117,8 +10127,8 @@
         (let (length:i32 pos-count)
           (when (> (+ max-idx 1) length) (set! length (+ max-idx 1)))
           (when (= length 0) (die-at (cc line) "array: at least one initializer required"))
-          (let (vals:ptr (arena-alloc (* (as i64 length) 8))
-                seen:ptr (arena-alloc (* (as i64 length) 4))
+          (let (vals:ptr (arena-alloc (* length 8))
+                seen:ptr (arena-alloc (* length 4))
                 pos-cursor:i32 0
                 j:i32 0)
             (while (< j length)
@@ -10192,8 +10202,8 @@
     (reject-cycle-pending-sdef sd (cc line) "struct literal")
     (when (> nargs nfields)
       (die-at (cc line) (fmt-s "struct literal: too many initializers for struct '%s'" (sdef name))))
-    (let (vals:ptr (arena-alloc (* (as i64 nfields) 8))
-          seen:ptr (arena-alloc (* (as i64 nfields) 4))
+    (let (vals:ptr (arena-alloc (* nfields 8))
+          seen:ptr (arena-alloc (* nfields 4))
           pos-idx:i32 0
           i:i32 0)
       (while (< i nfields)
@@ -10303,7 +10313,7 @@
   (let (n:i32 (unsafe/cast i32 (count g-macrolet-stack))
         i:i32 (- n 1))
     (while (>= i 0)
-      (let (mdef:ref:MacroDef (invoke g-macrolet-stack (as usize i)))
+      (let (mdef:ref:MacroDef (invoke g-macrolet-stack i:usize))
         (when (= (mdef name) spelling) (return (as ptr mdef))))
       (dec! i)))
   (return null))
@@ -10371,7 +10381,7 @@
           (die-at ((unsafe/cast ptr:Node call) line)
                   (fmt-s-2i "macro '%s': expects %d args, got %d"
                             (mdef name) (mdef num-params) nargs)))))
-    (let (args-arr:ptr (malloc (* (as i64 (mdef num-params)) (ptr-bytes)))
+    (let (args-arr:ptr (malloc (* (mdef num-params) (ptr-bytes)))
           regular-params:i32 (mdef num-params))
       (when (!= (mdef variadic) 0)
         (set! regular-params (- (mdef num-params) 1)))
@@ -10514,9 +10524,9 @@
 (defn emit-generic-call (n:(raw Node) scope:ref:Scope g:ref:Generic):ref:Val
   (let (nn:ptr:Node (unsafe/cast ptr:Node n)
         nargs:i32 (- (node-len nn) 1)
-        args:ptr (arena-alloc (* (as i64 (+ nargs 1)) (sizeof Val)))
-        argtypes:ptr (arena-alloc (* (as i64 (+ nargs 1)) (ptr-bytes)))
-        arg-nodes:ptr (arena-alloc (* (as i64 (+ nargs 1)) (ptr-bytes))))
+        args:ptr (arena-alloc (* (+ nargs 1) (sizeof Val)))
+        argtypes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
+        arg-nodes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes))))
     ; TC-2: consume the want channel once, at entry and BEFORE emitting any
     ; argument, so an argument sub-expression that is itself a call never sees
     ; the outer want. The first generic call emitted in a binding init claims it;
@@ -10556,9 +10566,9 @@
 (defn emit-operator-dispatch (n:(raw Node) scope:ref:Scope g:ref:Generic binop:(raw BinOp)):ref:Val
   (let (nn:ptr:Node (unsafe/cast ptr:Node n)
         nargs:i32 (- (node-len nn) 1)
-        args:ptr (arena-alloc (* (as i64 (+ nargs 1)) (sizeof Val)))
-        argtypes:ptr (arena-alloc (* (as i64 (+ nargs 1)) (ptr-bytes)))
-        arg-nodes:ptr (arena-alloc (* (as i64 (+ nargs 1)) (ptr-bytes))))
+        args:ptr (arena-alloc (* (+ nargs 1) (sizeof Val)))
+        argtypes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
+        arg-nodes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes))))
     (dotimes (i nargs)
       (let (anode:ptr (node-at nn (+ i 1))
             v:ref:Val (emit-node anode scope))
@@ -10675,7 +10685,7 @@
     (return v)))
 
 (defn binding-row (kind:i32):ref:BindingKind
-  (return (invoke g-binding-kinds (as usize kind))))
+  (return (invoke g-binding-kinds kind:usize)))
 
 ; ------------------------------------------------------------
 ; is-private / src-ns, and the ONE visibility rule they feed
@@ -10770,7 +10780,7 @@
     (when (= (strcmp ns "user") 0) (return (as ptr bare)))
     (when (!= (file-flattens-ns-named ns) 0) (return (as ptr bare)))
     (let (p:ptr (file-prefix-for-ns ns))
-      (when (!= p null) (return (fmt-2s "%s/%s" (as CStr p) bare))))
+      (when (!= p null) (return (fmt-2s "%s/%s" p:CStr bare))))
     (return null)))
 
 ; ------------------------------------------------------------
@@ -10891,7 +10901,7 @@
     (set! g-binding-aliases (vector-new-in (addr-of g-arena-alloc))))
   (let (tbl:(ref (Vector (ref BindingAlias))) (unsafe/cast (ref (Vector (ref BindingAlias))) g-binding-aliases))
     (dotimes (i (unsafe/cast i32 (count tbl)))
-      (let (e:ref:BindingAlias (invoke tbl (as usize i)))
+      (let (e:ref:BindingAlias (invoke tbl i:usize))
         ; Idempotent: a facade re-exporting the same name twice (or a re-imported
         ; facade) must not stack entries.
         (when (and (= (e kind) kind) (= (strcmp (e key) key) 0)) (return))))
@@ -10912,7 +10922,7 @@
       (let (k:CStr (name-ref-key-at spelling i))
         (when (!= k null)
           (dotimes (j (unsafe/cast i32 (count tbl)))
-            (let (e:ref:BindingAlias (invoke tbl (as usize j)))
+            (let (e:ref:BindingAlias (invoke tbl j:usize))
               (when (and (= (e kind) kind) (= (strcmp (e key) k) 0))
                 (return (e payload)))))))))
   (return null))
@@ -11237,7 +11247,7 @@
         ; filter applies here — this is the site a macro reference actually
         ; reaches. The two scans were otherwise identical (both first-match,
         ; both content comparison).
-        (if-some (mdef (find-macro (as CStr h)))
+        (if-some (mdef (find-macro h:CStr))
           (return (emit-macro-expand n scope (as ptr mdef)))
           0)
         (when (and (= hp 'gensym) (= (node-len nn) 1))
@@ -11701,7 +11711,7 @@
         ty:(raw Type) (parse-type-from-node (as ptr tn) tl))
     (reject-opaque-type ty tl "sizeof")
     (reject-cycle-pending-layout ty tl "sizeof")
-    (return (as i64 (abi-sizeof ty)))))
+    (return (abi-sizeof ty))))
 
 ; Evaluate `n` as an integer constant expression. Returns 1 and stores the value
 ; through `out` on success; 0 when `n` is simply not a constant expression (the
@@ -11758,7 +11768,7 @@
                       (!= (arg kind) NODE-STR)
                       (!= (strlen (arg s)) 1))
               (die-at nl "defvar: (char ...) requires a single-char string"))
-            (aset! out 0 (as i64 (char-at (arg s) 0)))
+            (aset! out 0 (char-at (arg s) 0))
             (return 1)))
         ; (as T x) at an INTEGER T. The narrowing rule is `as-int-narrowing`
         ; (src/type-utils.nuc), the same call `emit-as` step 5 makes, so the two
@@ -11899,7 +11909,7 @@
           (let (k:i64 (-> (node-at (as ptr arg) 0) (unsafe/cast ptr:Node _) (_ i)))
             (when (< k 0)
               (die-at aline "defvar: array initializer: designated index must be non-negative"))
-            (when (>= k (as i64 n))
+            (when (>= k n)
               (die-at aline
                 (fmt-i32-i32 "defvar: array initializer: index %d is out of range for a %d-element array"
                   (unsafe/cast i32 k) n)))
@@ -11946,7 +11956,7 @@
                    (!= (node-at (as ptr arg) 0) null)
                    (= (-> (node-at (as ptr arg) 0) (unsafe/cast ptr:Node _) (_ kind)) NODE-INT))
             (let (k:i64 (-> (node-at (as ptr arg) 0) (unsafe/cast ptr:Node _) (_ i)))
-              (when (> k (as i64 maxi)) (set! maxi (unsafe/cast i32 k))))
+              (when (> k maxi) (set! maxi (unsafe/cast i32 k))))
             (inc! pos))))
       (let (n:i32 pos)
         (when (> (+ maxi 1) n) (set! n (+ maxi 1)))
@@ -11977,7 +11987,7 @@
           (die-at (node-line init encl)
             (fmt-2s "defvar: array initializer element type %s does not match the declared element type %s"
               (type-spelling lit-ety) (type-spelling ety))))
-        (let (slots:ptr (arena-alloc (* (as i64 n) (ptr-bytes)))
+        (let (slots:ptr (arena-alloc (* n (ptr-bytes)))
               ety-ir:CStr (type-to-ir ety))
           (dotimes (i n) (aset! (as ptr:ptr slots) i null))
           (const-array-place init slots n encl)
@@ -12010,7 +12020,7 @@
         (reject-cycle-pending-sdef sd (node-line init encl) "struct literal")
         (let (nfields:i32 (sd num-fields)
               nargs:i32 (- (node-len (as ptr init)) 1)
-              slots:ptr (arena-alloc (* (as i64 (+ nfields 1)) (ptr-bytes)))
+              slots:ptr (arena-alloc (* (+ nfields 1) (ptr-bytes)))
               pos-idx:i32 0)
           (when (> nargs nfields)
             (die-at (node-line init encl)
@@ -12643,7 +12653,7 @@
           (if-some (prevv (scope-lookup-key g-globals name))
             (when (and (= (prevv defvar-state) DEFVAR-REACHED)
                        (= (same-definition-site (prevv src-file) (prevv src-line) (cc line)) 0))
-              (die-redefinition (as CStr name) (cc line) BK-GLOBAL
+              (die-redefinition name:CStr (cc line) BK-GLOBAL
                                 (prevv src-file) (prevv src-line)))
             0)
           ; G-5 step 4: a non-null typed-pointer global must be initialized.
@@ -12710,7 +12720,7 @@
               ; inside a constant aggregate never reaches this point either: an
               ; element must be constant regardless of order, and it keeps the
               ; better "init must be a compile-time constant" diagnostic.
-              (defvar-check-init-order init-node (as CStr name) (cc line))
+              (defvar-check-init-order init-node name:CStr (cc line))
               (defvar-queue-init name init-node (cc line)))
             ; No initializer (or a runtime one, whose slot starts at zero and is
             ; filled by @__nucleus_init): the type's zero. G-2 moved the
@@ -12998,7 +13008,7 @@
                  ; reference resolver.
                  (= (as ptr (enumdef-lookup (as CStr (qualify-name (en s))))) null))
         (let (n:i32 (- (node-len cc) 2)
-              members:ptr (arena-alloc (* (as i64 n) (ptr-bytes)))
+              members:ptr (arena-alloc (* n (ptr-bytes)))
               ed:ptr:EnumDef (as ptr:EnumDef (arena-alloc (sizeof EnumDef))))
           (dotimes (j n)
             (aset! (as ptr:ptr members) j
@@ -13017,7 +13027,7 @@
 
 (defn enumdef-lookup (name:CStr):?ptr:EnumDef
   (dotimes (i (count g-enumdefs))
-    (let (ed:ptr:EnumDef (invoke g-enumdefs (as usize i)))
+    (let (ed:ptr:EnumDef (invoke g-enumdefs i:usize))
       (when (= (ed name) name)
         (return (as ptr ed)))))
   (return null))
@@ -13051,8 +13061,8 @@
   (let (cc:ptr:Node (unsafe/cast ptr:Node form)
         nfields:i32 (- (node-len (as ptr form)) 2))
     (set! g-layout-defer 0)
-    (let (fnm:ptr (arena-alloc (* (as i64 nfields) (ptr-bytes)))
-          ftp:ptr (arena-alloc (* (as i64 nfields) (ptr-bytes))))
+    (let (fnm:ptr (arena-alloc (* nfields (ptr-bytes)))
+          ftp:ptr (arena-alloc (* nfields (ptr-bytes))))
       (dotimes (i nfields)
         ; W5f: `field` may be NULL — an empty list `()` in the field list
         ; reads as a null node — so its line must come from the null-safe
@@ -13324,7 +13334,7 @@
       ; before assuming; a name it skipped is still a plain register-and-emit.
       (when (= m NUCH-AFTER)
         (when (= (import-list-has g-nuch-registered
-                   (nuch-reg-key (as CStr g-source-path) (as CStr name))) 0)
+                   (nuch-reg-key (as CStr g-source-path) name:CStr)) 0)
           (set! m NUCH-BOTH)))
       ; Dedup: an `(extern X)` re-declared by a second imported library (e.g. two
       ; collection libs both declaring `stderr`) must emit `@X = external global`
@@ -13350,7 +13360,7 @@
           (when (= m NUCH-REG)
             (set! g-nuch-registered
                   (import-list-push g-nuch-registered
-                    (nuch-reg-key (as CStr g-source-path) (as CStr name))))))))))
+                    (nuch-reg-key (as CStr g-source-path) name:CStr)))))))))
 
 ; ============================================================
 ; C header handling — imported from src/cheader.nuc
@@ -13396,7 +13406,7 @@
       ; Already emitted (it precedes this import), so its signature is on the
       ; site; compare here instead.
       (when (and (!= ((as ptr:CDeclSite site) sig) null)
-                 (!= (as CStr ((as ptr:CDeclSite site) sig)) (as CStr hsig)))
+                 (!= (as CStr ((as ptr:CDeclSite site) sig)) hsig:CStr))
         (cheader-warn-decl-conflict (as raw:CDeclSite site)
                                     (cdecl-site-find g-cheader-shadowed fname))))))
 
@@ -13529,10 +13539,10 @@
                   opt-defaults:ptr null
                   required:i32 (- nparams nopt))
               (when (> nparams 0)
-                  (set! param-types (arena-alloc (* (as i64 nparams) (ptr-bytes))))
-                  (set! param-names (arena-alloc (* (as i64 nparams) (ptr-bytes)))))
+                  (set! param-types (arena-alloc (* nparams (ptr-bytes))))
+                  (set! param-names (arena-alloc (* nparams (ptr-bytes)))))
               (when (> nopt 0)
-                  (set! opt-defaults (arena-alloc (* (as i64 nopt) (ptr-bytes)))))
+                  (set! opt-defaults (arena-alloc (* nopt (ptr-bytes)))))
               (let (i:i32 0
                     di:i32 0)
                 (while (< i raw-nparams)
@@ -13793,7 +13803,7 @@
   ; parsing context directly. tsctx is only used for ThreadSafeModule locking
   ; which is irrelevant in single-threaded compilation. ctx leaks (fine).
   (let (ctx:ptr (LLVMContextCreate)
-        ir-len:i64 (as i64 (strlen ir))
+        ir-len:i64 (strlen ir)
         mb:ptr (LLVMCreateMemoryBufferWithMemoryRangeCopy ir ir-len "<compile-time>")
         mod:ptr null
         errmsg:ptr null
@@ -14090,7 +14100,7 @@
           pi:i32 0
           ai:i32 0)
       (when (> pcount 0)
-        (set! pnames (arena-alloc (* (as i64 pcount) (ptr-bytes)))))
+        (set! pnames (arena-alloc (* pcount (ptr-bytes)))))
       (while (< pi num-params)
         (let (p:(raw Node) (as raw:Node (node-at params-node pi)))
           ; The marker test precedes the symbol check: a `:rest` marker is a
@@ -14406,7 +14416,7 @@
           ; The macro table is consulted BEFORE special forms (emit-list), so a
           ; binding named `let` would silently take `let` over for the whole
           ; body. Refuse rather than shadow.
-          (when (!= (special-form-named (as CStr mname)) 0)
+          (when (!= (special-form-named mname:CStr) 0)
             (die-at bline (fmt-s "macrolet: '%s' is a special form and may not be shadowed" mname)))
           (let (variadic:i32 0
                 pnames:ptr null
@@ -14511,7 +14521,7 @@
       (when (> i 0) (fprintf out ", "))
       (if (= i 0)
           (fprintf out "ptr null")
-          (fprintf out "ptr @.str.%d" (invoke g-deferror-name-sids (as usize i)))))
+          (fprintf out "ptr @.str.%d" (invoke g-deferror-name-sids i:usize))))
     (fprintf out "]")
     (when (!= g-elf-sections 0)
       (fprintf out ", section \".rodata.nuc_err_names\""))
@@ -14521,7 +14531,7 @@
       (when (> i 0) (fprintf out ", "))
       (if (= i 0)
           (fprintf out "ptr null")
-          (fprintf out "ptr @.str.%d" (invoke g-deferror-msg-sids (as usize i)))))
+          (fprintf out "ptr @.str.%d" (invoke g-deferror-msg-sids i:usize))))
     (fprintf out "]")
     (when (!= g-elf-sections 0)
       (fprintf out ", section \".rodata.nuc_err_messages\""))
@@ -14557,7 +14567,7 @@
         tail:ptr null
         start:i64 0
         i:i64 0
-        slen:i64 (as i64 (strlen s)))
+        slen:i64 (strlen s))
     ; CP-3: a binding name ending in ':' is a whitespace near-miss (e.g. `x: (T)`) —
     ; reject here instead of letting the empty final segment produce a remote error.
     (when (and (> slen 0) (= (char-at s (- slen 1)) 58))
@@ -15391,7 +15401,7 @@
             (when (!= aname null)
               (let (ptypes:ptr null)
                 (when (> nf 0)
-                  (set! ptypes (arena-alloc (* (as i64 nf) (ptr-bytes))))
+                  (set! ptypes (arena-alloc (* nf (ptr-bytes))))
                   (let (fi:i32 0
                         fcur:ptr fields)
                     (while (!= fcur null)
@@ -15930,7 +15940,7 @@
             (when (= (as ptr first) null)
               (die-at lin (fmt-s "export: symbol not found: '%s'" spelling)))
             (while (< k BINDING-KIND-COUNT)
-              (let (h2:?ref:BindingHit (binding-find (as CStr spelling) g-globals
+              (let (h2:?ref:BindingHit (binding-find spelling:CStr g-globals
                                                      k BINDING-KIND-COUNT 0 NK-NONE))
                 (when (= (as ptr h2) null) (set! k BINDING-KIND-COUNT))
                 (when (!= (as ptr h2) null)
@@ -15945,7 +15955,7 @@
             ; let the re-register qualify it against g-current-ns.
             (let (bare:ptr (strip-ns-qualifier spelling)
                   hh:ptr:BindingHit (unsafe/cast ptr:BindingHit hit))
-              (binding-re-register (hh kind) (hh payload) (as CStr bare) lin))))
+              (binding-re-register (hh kind) (hh payload) bare:CStr lin))))
         (inc! i)))))
 
 ; Consume a leading `(ns NAME)` directive, setting the current namespace for the
@@ -16074,8 +16084,8 @@
   (let (i:i32 g-init-drained
         n:i32 (unsafe/cast i32 (count g-init-worklist)))
     (while (< i n)
-      (let (job:ptr:InitJob (as ptr:InitJob (invoke g-init-worklist (as usize i))))
-        (when (!= (as CStr (job path)) (as CStr g-unit-entry-path))
+      (let (job:ptr:InitJob (as ptr:InitJob (invoke g-init-worklist i:usize)))
+        (when (!= (as CStr (job path)) g-unit-entry-path:CStr)
           ; The location prefix already names the declaring file and line, so the
           ; sentence does not repeat the path.
           (fprintf stderr "%s:%d: warning: %s\n" (job path) (job line)
@@ -16205,9 +16215,9 @@
   ; Skipped when the path is already on `g-importing`: a REPL `(import-use …)`
   ; reaches depth 1 through `do-import`, which pushed it and will pop it.
   (when (and (= sigs-done 0) (!= g-source-path null))
-    (set! g-prescan-sigs (import-list-push g-prescan-sigs (as CStr g-source-path)))
-    (when (= (import-list-has g-importing (as CStr g-source-path)) 0)
-      (set! g-importing (import-list-push g-importing (as CStr g-source-path)))
+    (set! g-prescan-sigs (import-list-push g-prescan-sigs g-source-path:CStr))
+    (when (= (import-list-has g-importing g-source-path:CStr) 0)
+      (set! g-importing (import-list-push g-importing g-source-path:CStr))
       (set! root-pushed 1)
       ; A cycle skip alone would be wrong for the prelude's own libraries: the
       ; skipped file's macros/externs are exactly what the rest of the chain
@@ -16392,7 +16402,7 @@
       (when (= g-toplevel-depth 1)
         (set! g-root-hoist-ok 0)
         (when (and (!= g-unit-entry-path null)
-                   (!= (import-list-has g-imported (as CStr g-unit-entry-path)) 0))
+                   (!= (import-list-has g-imported g-unit-entry-path:CStr) 0))
           (set! fc null)))))
   ; A2: type-check generic template bodies against their abstract protocol
   ; interface. Only at the outermost level — every import has now registered its
@@ -16514,7 +16524,7 @@
 (defn import-reentry-hoists-root (path:CStr):i32
   (when (= g-root-hoist-ok 0) (return 0))
   (when (= g-unit-entry-path null) (return 0))
-  (when (= (as CStr g-unit-entry-path) path)
+  (when (= g-unit-entry-path:CStr path)
     (set! g-root-hoist-ok 0)
     (return 1))
   (return 0))
@@ -16576,7 +16586,7 @@
 ; (macros, prelude, …) when run from an arbitrary working directory.
 (defn try-import-path (filename:CStr):ptr
   ; Try directory of the current source file
-  (let (pathlen:i64 (as i64 (strlen g-source-path))
+  (let (pathlen:i64 (strlen g-source-path)
         last-slash:i64 -1)
     (dotimes (i pathlen)
       (when (= (char-at g-source-path i) 47)
@@ -16628,7 +16638,7 @@
 ; design/stage16-ergonomics/compile-time-imports.md §4a.
 (defn ct-sink-here (path:ptr):i32
   (when (= g-import-ct 0) (return 0))
-  (when (!= (import-list-has g-real-reachable (as CStr path)) 0) (return 0))
+  (when (!= (import-list-has g-real-reachable path:CStr) 0) (return 0))
   (return 1))
 
 ; Emit an imported file's forms, discarding its DEFINITIONS when this import is
@@ -16710,8 +16720,8 @@
             ; file fell through to `read-file`'s unlocated `perror` — while the
             ; symbol spelling of the same mistake says `import: cannot find 'x'`
             ; at the import's own line. Same mistake, same diagnostic now.
-            (when (= (file-exists (as CStr path)) 0)
-              (die-import-not-found (as CStr name) line))
+            (when (= (file-exists path:CStr) 0)
+              (die-import-not-found name:CStr line))
             ; Stage 15 B1: bind in the importing FILE's environment before any
             ; early return below. Every one of them — the (file, prefix) dedup,
             ; the already-loaded flatten dedup and the W1d cycle skip — leaves
@@ -16841,7 +16851,7 @@
     (let (name:ptr (nn s)
           path:ptr (resolve-import name line))
       (when (= path null)
-        (die-import-not-found (as CStr name) line))
+        (die-import-not-found name:CStr line))
       ; Stage 15 B1: bind in the importing FILE's environment before any early
       ; return below — see the twin site in the string-path branch above.
       (file-import-record prefix path)
@@ -17074,7 +17084,7 @@
 ; Scans for the last `.` inline rather than via strrchr so it depends on no extra
 ; libc declaration beyond what `strlen`/the prelude already provide.
 (defn import-default-prefix (name:CStr):ptr
-  (let (n:i64 (as i64 (strlen name))
+  (let (n:i64 (strlen name)
         last-dot:i64 -1)
     (dotimes (i n)
       (when (= (char-at name i) 46)
@@ -17091,9 +17101,9 @@
 ; already-bound diagnostic the symbol form gives and is fixed the same way — an
 ; explicit second operand.
 (defn path-import-default-prefix (path:CStr line:i32):ptr
-  (let (n:i64 (as i64 (strlen path))
+  (let (n:i64 (strlen path)
         base:i64 0
-        end:i64 (as i64 (strlen path)))
+        end:i64 (strlen path))
     (dotimes (i n)
       (when (= (char-at path i) 47)
         (set! base (+ i 1))))
@@ -17104,7 +17114,7 @@
       (die-at line
         (fmt-2s "import: cannot derive a prefix from path '%s' -- give one explicitly, as (import \"%s\" name)" path path)))
     (let (stem:ptr (strndup (unsafe/ptr+ (as raw:i8 path) base) (- end base)))
-      (return (import-default-prefix (as CStr stem))))))
+      (return (import-default-prefix stem:CStr)))))
 
 ; `import-only` — import a concrete list of symbols (design decision 5).
 ; Signature: (import-only LIB SYM1 SYM2 ...). The listed symbols are brought in
@@ -17293,7 +17303,7 @@
 ; when no such token exists (every hosted/RISC-V datalayout has no `P` segment).
 (defn datalayout-prog-as (dl:ptr):i32
   (when (= dl null) (return 0))
-  (let (n:i64 (as i64 (strlen dl))
+  (let (n:i64 (strlen dl)
         i:i64 0)
     (while (< i n)
       ; 'P' == 80; token boundary is start-of-string or a preceding '-' (45).
@@ -17702,7 +17712,7 @@
                 (when (!= g-elf-sections 0)
                   (fprintf cmds " -Wl,--gc-sections"))
                 (dotimes (j (unsafe/cast i32 (count g-link-args)))
-                  (fprintf cmds " %s" (invoke g-link-args (as usize j))))
+                  (fprintf cmds " %s" (invoke g-link-args j:usize)))
                 (fclose cmds)
                 (let (rc2:i32 (system cmd-bufp))
                   (free cmd-bufp)
@@ -17794,10 +17804,10 @@
 ; runs before `main` is entered. So the lazy guard is gone and the backing is
 ; uniform.
 (defn add-include-path (path:ptr):void
-  (conj g-include-paths (as CStr path)))
+  (conj g-include-paths path:CStr))
 
 (defn add-link-arg (arg:ptr):void
-  (conj g-link-args (as CStr arg)))
+  (conj g-link-args arg:CStr))
 
 (defn main (argc:i32 argv:ptr):int
   (let (source-file:ptr null
@@ -17842,7 +17852,7 @@
               (= (strncmp arg "--link-arg=" 11) 0)
                 (add-link-arg (unsafe/ptr+ (as ptr:i8 arg) 11))
               (= (strncmp arg "-I" 2) 0)
-                (if (> (as i64 (strlen arg)) 2)
+                (if (> (strlen arg) 2)
                   ; -I/path/to/dir (no space)
                   (add-include-path (unsafe/ptr+ (as ptr:i8 arg) 2))
                   ; -I /path/to/dir (next arg)

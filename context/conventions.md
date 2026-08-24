@@ -1510,6 +1510,20 @@ The demotion cannot change code that compiled before: any such site resolves its
 field, so the gate is false there (verified by A/B-diffing emitted IR for every
 example against the pre-change compiler — 135 byte-identical, 0 differing).
 
+**Selector position is not value position, and a new value spelling will miss it.**
+`selector-literal-sym` (src/nucleusc.nuc) classifies a bare `NODE-SYM` as a field
+name *before* anything emits it, so a selector never reaches `emit-symbol-ref` —
+the "one place a name becomes a value" that a value-position feature is naturally
+built in. Stage 16's `as` sugar landed there and `(m k:CStr)` still died with
+`no field 'k:CStr'` (as-sugar.md §11). When adding a spelling that makes a symbol
+mean something new, check this classifier as a second site. Its saving grace is
+that it is *shared*: emit (`emit-get-with-callee`) and node-type
+(`callable-get-type`, generics.nuc) both call it, so the `node-type`↔`emit-node`
+lockstep holds by construction — fix it once, not twice. The rule that resolved
+it needs no scope lookup, which is what makes it safe at a classifier: **a field
+name can never carry a colon**, so an annotated symbol is unambiguously a value
+in any program. Quoted `'k:T` stays always-a-name.
+
 The `->` macro (`lib/macros.nuc`) was extended to substitute `_` in **head**
 position (it scans the whole form, not just args), so a threaded value can land in
 call position: `(-> s (_ field))` ⇒ `(s field)`. The migration rewrites a 1-arg
