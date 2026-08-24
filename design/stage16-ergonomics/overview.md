@@ -54,6 +54,14 @@ form only, at emit time, with the parenthesised form excluded and diagnosed.
 **804 tests (was 799)**, `make bootstrap` byte-identical on the first try,
 `examples/as-sugar.nuc` plus four rejection fixtures. Findings follow.
 
+Two follow-ups landed during adoption, both recorded in as-sugar.md: a boot
+refresh (§10 — a stale boot *reinterprets* the new spelling rather than
+rejecting it, so it fails only where the difference is observable), and
+**selector position** (§11 — a bare symbol in `(m k)` is classified as a field
+name before it ever reaches `emit-symbol-ref`, so `(m k:CStr)` died with `no
+field 'k:CStr'`; fixed in the shared `selector-literal-sym` classifier, on the
+scope-free rule that a field name can never carry a colon).
+
 **The reader needs no work at all** — and
 the one spelling that would require some is exactly the one to leave out.
 `baz:CStr` already lexes as a single symbol; `split-typed` cuts it downstream and

@@ -104,7 +104,7 @@
         n:i32 (unsafe/cast i32 (count (gg methods)))
         keep:i32 0)
     (dotimes (i n)
-      (when (!= (method-visible-as (as ptr:Method (invoke (gg methods) (as usize i))) ns) 0)
+      (when (!= (method-visible-as (as ptr:Method (invoke (gg methods) i:usize)) ns) 0)
         (inc! keep)))
     (when (= keep 0) (return null))
     (when (= keep n) (return (as ptr gg)))
@@ -113,7 +113,7 @@
       (.set! f mangled (gg mangled))
       (.set! f ir-prefix (gg ir-prefix))
       (dotimes (i n)
-        (let (m:ptr:Method (as ptr:Method (invoke (gg methods) (as usize i))))
+        (let (m:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
           (when (!= (method-visible-as m ns) 0) (conj (f methods) (as ref:Method m)))))
       (return (as ptr f)))))
 
@@ -152,7 +152,7 @@
       ; `globals-lookup-ref` and `name-ref-key-count` take, and what makes this
       ; byte-identical rather than merely believed to be.
       (when (= g-ns-declared 0) (return g))
-      (return (generic-filter-by-ns (unsafe/cast ptr:Generic g) (as CStr null)))))
+      (return (generic-filter-by-ns (unsafe/cast ptr:Generic g) null))))
   (let (r:ref:NameRef (resolve-spelling (as ptr spelling)))
     ; A qualifier this file did not bind names nothing (R3) — the same answer the
     ; global, protocol and type resolvers give, so the diagnostic tiers agree.
@@ -215,11 +215,11 @@
 (defn generic-remove-matching-user-method (g:raw:Generic param-types:ptr nparams:i32):void
   (let (gg:raw:Generic g)
     (dotimes (i (unsafe/cast i32 (count (gg methods))))
-      (let (mi:ptr:Method (as ptr:Method (invoke (gg methods) (as usize i))))
+      (let (mi:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
         (when (and (= (mi kind) METHOD-USER)
                    (= (mi num-params) nparams)
                    (!= (params-type-eq (mi param-types) param-types nparams) 0))
-          (remove-at (gg methods) (as usize i))
+          (remove-at (gg methods) i:usize)
           (return))))))
 
 ; Seed the operator family as intrinsic generics. Each intrinsic method defers
@@ -455,7 +455,7 @@
   (let (gg:raw:Generic g
         n:i32 0)
     (dotimes (i (unsafe/cast i32 (count (gg methods))))
-      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) (as usize i))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
         (when (and (= (m kind) METHOD-USER)
                    (= (strcmp (method-ir-prefix g (as raw:Method m)) prefix) 0))
           (inc! n))))
@@ -464,7 +464,7 @@
 (defn generic-find-method-exact (g:raw:Generic param-types:ptr nparams:i32):?ptr:Method
   (let (gg:raw:Generic g)
     (dotimes (i (unsafe/cast i32 (count (gg methods))))
-      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) (as usize i))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
         (when (and (= (m kind) METHOD-USER)
                    (= (m num-params) nparams)
                    (!= (params-type-eq (m param-types) param-types nparams) 0))
@@ -486,7 +486,7 @@
 (defn generic-find-method-exact-in-ns (g:raw:Generic param-types:ptr nparams:i32 ns:CStr):?ptr:Method
   (let (gg:raw:Generic g)
     (dotimes (i (unsafe/cast i32 (count (gg methods))))
-      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) (as usize i))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
         (when (and (= (m kind) METHOD-USER)
                    (= (m num-params) nparams)
                    (!= (method-in-ns m ns) 0)
@@ -515,9 +515,9 @@
 (defn generic-binds-for (g:raw:Generic param-types:ptr nparams:i32 out-ret:ptr:ptr line:i32 arg-nodes:ptr):i32
   (let (gg:raw:Generic g)
     (dotimes (j (unsafe/cast i32 (count (gg methods))))
-      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) (as usize j))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) j:usize)))
         (when (= (m kind) METHOD-GENERIC)
-          (let (bound:ptr (arena-alloc (* (as i64 (+ (m num-tyvars) 1)) (ptr-bytes))))
+          (let (bound:ptr (arena-alloc (* (+ (m num-tyvars) 1) (ptr-bytes))))
             (when (and (= (m num-params) nparams)
                        (!= (generic-method-bind (as ptr m) param-types nparams bound null arg-nodes) 0))
               (when (!= (generic-constraints-ok (as ptr m) bound line) 0)
@@ -563,7 +563,7 @@
       (when (!= opt-idx -1) (set! nparams (- nparams 1)))
       (let (ptypes:ptr null)
         (when (> nparams 0)
-          (set! ptypes (arena-alloc (* (as i64 nparams) (ptr-bytes)))))
+          (set! ptypes (arena-alloc (* nparams (ptr-bytes)))))
         (let (di:i32 0)
           (dotimes (i raw)
             (let (skip:i32 0)
@@ -581,7 +581,7 @@
                   ; prescan only registers a signature; emit-defn raises the real,
                   ; located diagnostic before any of this reaches codegen.
                   (let (pty:ptr (if (= spec null)
-                                  (as ptr null)
+                                  null
                                   (extract-name-and-type spec (as ptr:ptr (addr-of pn))
                                                          (node-line spec 0))))
                     (when (= pty null) (set! pty ty-i32))
@@ -690,9 +690,9 @@
 (defn method-pair-line (later:raw:Method earlier:raw:Method):i32
   (let (a:raw:Method later
         b:raw:Method earlier)
-    (when (!= (as ptr (a body)) null)
+    (when (!= (a body) null)
       (return (-> a (_ body) (unsafe/cast ptr:Node _) (_ line))))
-    (when (!= (as ptr (b body)) null)
+    (when (!= (b body) null)
       (return (-> b (_ body) (unsafe/cast ptr:Node _) (_ line))))
     (return 0)))
 
@@ -701,8 +701,8 @@
   (let (f:CStr (m src-file)
         node:(raw Node) (m body)
         line:i32 0)
-    (when (= (as ptr f) null) (set! f "<unknown file>"))
-    (when (!= (as ptr node) null) (set! line ((unsafe/cast ptr:Node node) line)))
+    (when (= f null) (set! f "<unknown file>"))
+    (when (!= node null) (set! line ((unsafe/cast ptr:Node node) line)))
     (return (fmt-sd "%s:%d" f line))))
 
 ; Stage 15 W9 item 35: the message for a bare reference that two namespaces
@@ -719,8 +719,8 @@
         bare:CStr (strip-priv-qualifier (gg name))
         ans:CStr (a src-ns)
         bns:CStr (b src-ns))
-    (when (= (as ptr ans) null) (set! ans "user"))
-    (when (= (as ptr bns) null) (set! bns "user"))
+    (when (= ans null) (set! ans "user"))
+    (when (= bns null) (set! bns "user"))
     (let (acand:CStr (fmt-2s "'%s' (defined at %s)"
                        (fmt-2s "%s/%s" ans bare) (method-def-site a))
           bcand:CStr (fmt-2s "'%s' (defined at %s)"
@@ -783,11 +783,11 @@
                   (.set! gg mangled 1)
                   (let (i:i32 0)
                     (while (< i (unsafe/cast i32 (count (gg methods))))
-                      (let (mi:ptr:Method (as ptr:Method (invoke (gg methods) (as usize i))))
+                      (let (mi:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
                         (when (= (mi kind) METHOD-USER)
                           (let (j:i32 0)
                             (while (< j i)
-                              (let (mj:ptr:Method (as ptr:Method (invoke (gg methods) (as usize j))))
+                              (let (mj:ptr:Method (as ptr:Method (invoke (gg methods) j:usize)))
                                 ; Stage 15 W9 item 24: two DEFINITIONS in this
                                 ; unit is the question; an imported method is a
                                 ; reference to one somewhere else. Two headers
@@ -914,12 +914,12 @@
         pos:i32 0)
     (dotimes (i nargs)
       (when (!= i 0)
-        (set! pos (+ pos (snprintf (unsafe/ptr+ (as ptr:i8 buf) (as i64 pos))
-                                   (as i64 (- 512 pos)) ", "))))
+        (set! pos (+ pos (snprintf (unsafe/ptr+ (as ptr:i8 buf) pos)
+                                   (- 512 pos) ", "))))
       (let (ts:ptr (type-spelling (aref (as ptr:ptr argtypes) i)))
-        (set! pos (+ pos (snprintf (unsafe/ptr+ (as ptr:i8 buf) (as i64 pos))
-                                   (as i64 (- 512 pos)) "%s" ts)))))
-    (return (arena-strndup buf (as i64 pos)))))
+        (set! pos (+ pos (snprintf (unsafe/ptr+ (as ptr:i8 buf) pos)
+                                   (- 512 pos) "%s" ts)))))
+    (return (arena-strndup buf pos))))
 
 ; Select the method of a generic for a concrete argument-type tuple.
 ; Tier 0: an exact concrete method (type-eq on every param) — concrete beats
@@ -934,7 +934,7 @@
   (let (gg:raw:Generic g
         found:?ptr:Method null)
     (dotimes (i (unsafe/cast i32 (count (gg methods))))
-      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) (as usize i))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
         (when (and (= (m kind) METHOD-USER)
                    (= (m num-params) nargs)
                    (!= (params-type-eq (m param-types) argtypes nargs) 0))
@@ -965,9 +965,9 @@
           ; instead of the misleading "no matching method".
           infer-tyvar:ptr null)
       (dotimes (j (unsafe/cast i32 (count (gg methods))))
-        (let (m:ptr:Method (as ptr:Method (invoke (gg methods) (as usize j))))
+        (let (m:ptr:Method (as ptr:Method (invoke (gg methods) j:usize)))
           (when (= (m kind) METHOD-GENERIC)
-            (let (bound:ptr (arena-alloc (* (as i64 (+ (m num-tyvars) 1)) (ptr-bytes))))
+            (let (bound:ptr (arena-alloc (* (+ (m num-tyvars) 1) (ptr-bytes))))
               (if (!= (generic-method-bind (as ptr m) argtypes nargs bound want arg-nodes) 0)
                 (if (!= (generic-constraints-ok (as ptr m) bound line) 0)
                   (do (set! cand (as ptr m)) (set! cand-bound bound) (inc! ncand))
@@ -1015,7 +1015,7 @@
 (defn operator-user-resolve (g:raw:Generic argtypes:ptr arg-nodes:ptr nargs:i32):?ptr:Method
   (let (gg:raw:Generic g)
     (dotimes (i (unsafe/cast i32 (count (gg methods))))
-      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) (as usize i))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
         (when (and (= (m kind) METHOD-USER)
                    (= (m num-params) nargs)
                    (!= (params-type-eq (m param-types) argtypes nargs) 0))
@@ -1023,7 +1023,7 @@
     (let (wcand:ptr null
           wn:i32 0)
       (dotimes (k (unsafe/cast i32 (count (gg methods))))
-        (let (m:ptr:Method (as ptr:Method (invoke (gg methods) (as usize k))))
+        (let (m:ptr:Method (as ptr:Method (invoke (gg methods) k:usize)))
           (when (and (= (m kind) METHOD-USER)
                      (= (m has-rest) 0) (= (m num-params) nargs))
             (let (ok:i32 1)
@@ -1056,7 +1056,7 @@
 (defn defn-ir-name (fname:CStr param-types:ptr nparams:i32):ptr
   (let (g:ptr (generic-lookup fname))
     (when (!= g null)
-      (let (m:ptr (generic-find-method-exact-in-ns g param-types nparams (as CStr g-current-ns)))
+      (let (m:ptr (generic-find-method-exact-in-ns g param-types nparams g-current-ns:CStr))
         (when (and (!= m null) (!= (-> m (unsafe/cast ptr:Method _) (_ ir-name)) null))
           (return (-> m (unsafe/cast ptr:Method _) (_ ir-name)))))))
   ; Stage 12 N4: a solitary (non-overloaded) defn keeps `@name` but, in a
@@ -1089,7 +1089,7 @@
             ; reason `defn-ir-name` above asks the three-part question.
             m:ptr (generic-find-method-exact-in-ns g (defn-params-to-types params-node)
                                                    (defn-params-count params-node)
-                                                   (as CStr g-current-ns)))
+                                                   g-current-ns:CStr))
         (when (= m null) (return null))
         (return (-> m (unsafe/cast ptr:Method _) (_ ir-name)))))))
 
@@ -1597,7 +1597,7 @@
               (when (!= (hn kind) NODE-SYM)
                 (die-at line "defn: :where constraint protocol application head must be a protocol name"))
               (let (na:i32 (- (node-len (as ptr c0)) 1)
-                    argv:ptr (if (> na 0) (arena-alloc (* (as i64 na) (ptr-bytes))) null))
+                    argv:ptr (if (> na 0) (arena-alloc (* na (ptr-bytes))) null))
                 (dotimes (ai na)
                   (let (argn:ptr (node-at (as ptr c0) (+ ai 1)))
                     (aset! (as ptr:ptr argv) ai argn)
@@ -1669,7 +1669,7 @@
                                   (node-at (node-at params-node (+ (+ wi 1) sb-c)) 0)))))
         (let (cap:i32 (if (> slot-bound 0) slot-bound 1)
               constraints:ref:ConstraintVec (vector-new-in (addr-of g-arena-alloc))
-              tyvars:ptr     (arena-alloc (* (as i64 cap) (ptr-bytes)))
+              tyvars:ptr     (arena-alloc (* cap (ptr-bytes)))
               ntv:i32 0)
           ; Parse the :where constraint list into the `constraints` Vector and
           ; collect constraint variables + Arg tyvars (assoc-types A1). Shared with
@@ -1697,7 +1697,7 @@
           ;   repeat until no change.
           ; A plain `(Proto V)` constraint has no Arg nodes, so it adds nothing —
           ; identical to the pre-A1 single-pass behaviour.
-          (let (determined:ptr (arena-alloc (* (as i64 (if (> ntv 0) ntv 1)) 4)))
+          (let (determined:ptr (arena-alloc (* (if (> ntv 0) ntv 1) 4)))
             (dotimes (ti ntv)
               (let (tvname:CStr (aref (as ptr:ptr tyvars) ti)
                     bnd:i32 0)
@@ -1712,7 +1712,7 @@
                 (set! changed 0)
                 (let (ck:i32 0)
                   (while (< ck nc)
-                    (let (crec:ref:Constraint (invoke constraints (as usize ck))
+                    (let (crec:ref:Constraint (invoke constraints ck:usize)
                           vidx:i32 (tyvar-index-of (crec var) tyvars ntv)
                           na:i32 (crec nargs))
                       ; Constraint's conforming variable determined and it carries
@@ -1841,7 +1841,7 @@
 ; the `invoke` site (the field is honestly `(raw …)`: most Methods are non-generic
 ; and carry no constraints).
 (defn constraints-at (cons:raw:ConstraintVec i:i32):ref:Constraint
-  (invoke (unsafe/cast ref:ConstraintVec cons) (as usize i)))
+  (invoke (unsafe/cast ref:ConstraintVec cons) i:usize))
 
 (defn recover-one-constraint (tyvar-names:ptr num-tyvars:i32
                                   constraints:raw:ConstraintVec
@@ -1883,7 +1883,7 @@
                 cargsv:(ref (Vector CStr)) (unsafe/cast (ref (Vector CStr)) cargs))
             (dotimes (j na)
               (let (argn:ptr (aref (as ptr:ptr argv) j)
-                    conspell:CStr (invoke cargsv (as usize j))
+                    conspell:CStr (invoke cargsv j:usize)
                     an:ptr:Node (unsafe/cast ptr:Node argn)
                     tidx:i32 -1)
                 ; A bare colon-free symbol naming a declared tyvar may be
@@ -2090,7 +2090,7 @@
       (when (= (strchr (pn s) 58) null)
         (let (idx:i32 (tyvar-index-of (pn s) tyvars ntv))
           (when (>= idx 0) (return (aref (as ptr:ptr bound) idx))))))
-    (let (spellings:ptr (arena-alloc (* (as i64 (+ ntv 1)) (ptr-bytes))))
+    (let (spellings:ptr (arena-alloc (* (+ ntv 1) (ptr-bytes))))
       (dotimes (si ntv)
         (aset! (as ptr:ptr spellings) si (type-spelling (aref (as ptr:ptr bound) si))))
       (return (parse-type-from-node (subst-tyvars-node ptn tyvars spellings ntv) line)))))
@@ -2123,7 +2123,7 @@
         params-node:ptr (node-at (mm body) 2)
         nargs:i32 (mm num-params)
         ntv:i32 (mm num-tyvars)
-        ptypes:ptr (arena-alloc (* (as i64 (+ nargs 1)) (ptr-bytes))))
+        ptypes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes))))
     (dotimes (i nargs)
       (aset! (as ptr:ptr ptypes) i
              (resolve-param-type-bound (binding-type-node (node-at params-node i))
@@ -2144,8 +2144,8 @@
     (when (!= (mm num-params) nargs) (return 0))
     (let (params-node:ptr (node-at (mm body) 2)
           ntv:i32 (mm num-tyvars)
-          matched:ptr (arena-alloc (* (as i64 (+ nargs 1)) 4))
-          saved:ptr (arena-alloc (* (as i64 (+ ntv 1)) (ptr-bytes)))
+          matched:ptr (arena-alloc (* (+ nargs 1) 4))
+          saved:ptr (arena-alloc (* (+ ntv 1) (ptr-bytes)))
           any-remaining:i32 0)
       (dotimes (k ntv) (aset! (as ptr:ptr out-bound) k null))
       ; Pass 1: bind tyvars from every parameter that unifies exactly. A failed
@@ -2239,7 +2239,7 @@
     ; of its template, which competes below, so counting both would spuriously read
     ; as an ambiguous overload after the first widened call instantiates it.
     (dotimes (k (unsafe/cast i32 (count (gg methods))))
-      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) (as usize k))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) k:usize)))
         (when (and (= (m kind) METHOD-USER)
                    (= (m origin-template) null)
                    (= (m has-rest) 0) (= (m num-params) nargs))
@@ -2258,9 +2258,9 @@
               (set! wmethod (as ptr m)) (set! wbound null) (inc! wn))))))
     ; METHOD-GENERIC (template) candidates reachable by receiver-bind + adaptation.
     (dotimes (k (unsafe/cast i32 (count (gg methods))))
-      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) (as usize k))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) k:usize)))
         (when (= (m kind) METHOD-GENERIC)
-          (let (bound:ptr (arena-alloc (* (as i64 (+ (m num-tyvars) 1)) (ptr-bytes))))
+          (let (bound:ptr (arena-alloc (* (+ (m num-tyvars) 1) (ptr-bytes))))
             (when (!= (generic-method-bind-adapt (as ptr m) argtypes arg-nodes nargs bound line want) 0)
               (when (!= (generic-constraints-ok (as ptr m) bound line) 0)
                 (set! wmethod (as ptr m)) (set! wbound bound) (inc! wn)))))))
@@ -2315,7 +2315,7 @@
         (return existing)))
     ; Concrete spelling for each bound type variable, used to stamp the body.
     (let (ntv:i32 (mm num-tyvars)
-          spellings:ptr (arena-alloc (* (as i64 (+ ntv 1)) (ptr-bytes))))
+          spellings:ptr (arena-alloc (* (+ ntv 1) (ptr-bytes))))
       (dotimes (si ntv)
         (aset! (as ptr:ptr spellings) si (type-spelling (aref (as ptr:ptr bound) si))))
     (let (stamped:ptr (monomorphize-form (mm body) (mm tyvars) spellings
@@ -2523,9 +2523,9 @@
     (when (= g null) (return null))
     (let (gg:ptr:Generic (as ptr:Generic g))
       (dotimes (gi (unsafe/cast i32 (count (gg methods))))
-        (let (m2:ptr:Method (as ptr:Method (invoke (gg methods) (as usize gi))))
+        (let (m2:ptr:Method (as ptr:Method (invoke (gg methods) gi:usize)))
           (when (= (m2 kind) METHOD-GENERIC)
-            (let (bound:ptr (arena-alloc (* (as i64 (+ (m2 num-tyvars) 1)) (ptr-bytes))))
+            (let (bound:ptr (arena-alloc (* (+ (m2 num-tyvars) 1) (ptr-bytes))))
               (when (!= (generic-method-bind (as ptr m2) argtypes nargs bound null null) 0)
                 (let (ok:i32 1)
                   (dotimes (ci (m2 num-constraints))
@@ -2554,7 +2554,7 @@
                       ; failing with "unknown type: T".
                       (let (ntv:i32 (m2 num-tyvars)
                             spellings:ptr (arena-alloc
-                                            (* (as i64 (+ ntv 1)) (ptr-bytes))))
+                                            (* (+ ntv 1) (ptr-bytes))))
                         (dotimes (si ntv)
                           (aset! (as ptr:ptr spellings) si
                                  (type-spelling (aref (as ptr:ptr bound) si))))
@@ -2731,7 +2731,7 @@
         ; (operator, foreign/concrete function) on an abstract value is deferred
         ; to stamp-time (A1), since it may well be valid for the concrete type.
         (let (nargs:i32 (- (node-len n) 1)
-              argtypes:ptr (arena-alloc (* (as i64 (+ nargs 1)) (ptr-bytes)))
+              argtypes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
               any-abstract:i32 0)
           (dotimes (i nargs)
             (let (at:ptr (gcheck (node-at n (+ i 1)) scope m))
@@ -2829,9 +2829,9 @@
 ; stamp-time error from instantiation).
 (defn check-generic-templates ():void
   (dotimes (gi (unsafe/cast i32 (count g-generics)))
-    (let (gg:ptr:Generic (as ptr:Generic (invoke g-generics (as usize gi))))
+    (let (gg:ptr:Generic (as ptr:Generic (invoke g-generics gi:usize)))
       (dotimes (mi (unsafe/cast i32 (count (gg methods))))
-        (let (m:ptr:Method (as ptr:Method (invoke (gg methods) (as usize mi))))
+        (let (m:ptr:Method (as ptr:Method (invoke (gg methods) mi:usize)))
           (when (and (= (m kind) METHOD-GENERIC) (= (m checked) 0))
             (.set! m checked 1)
             ; Receiver-inferred methods (nested tyvar receivers) defer body
@@ -2904,7 +2904,7 @@
     ; widen on a concrete user method
     (let (wcand:ptr null wn:i32 0)
       (dotimes (i (unsafe/cast i32 (count (gg methods))))
-        (let (m:ptr:Method (as ptr:Method (invoke (gg methods) (as usize i))))
+        (let (m:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
           (when (and (= (m kind) METHOD-USER)
                      (and (= (m has-rest) 0) (= (m num-params) nargs)))
             (let (ok:i32 1)
@@ -2925,9 +2925,9 @@
       (when (= wn 1) (return (-> wcand (unsafe/cast ptr:Method _) (_ ret-type)))))
     ; bounded-generic template
     (dotimes (j (unsafe/cast i32 (count (gg methods))))
-      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) (as usize j))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) j:usize)))
         (when (= (m kind) METHOD-GENERIC)
-          (let (bound:ptr (arena-alloc (* (as i64 (+ (m num-tyvars) 1)) (ptr-bytes))))
+          (let (bound:ptr (arena-alloc (* (+ (m num-tyvars) 1) (ptr-bytes))))
             (when (and (!= (generic-method-bind (as ptr m) argtypes nargs bound null arg-nodes) 0)
                        (!= (generic-constraints-ok (as ptr m) bound line) 0))
               (return (template-result-type (as ptr m) bound line)))))))
@@ -3002,8 +3002,8 @@
           (return (node-type n scope)))
         ; A genuine call: type the arguments, then require it to resolve.
         (let (nargs:i32 (- (node-len n) 1)
-              argtypes:ptr (arena-alloc (* (as i64 (+ nargs 1)) (ptr-bytes)))
-              arg-nodes:ptr (arena-alloc (* (as i64 (+ nargs 1)) (ptr-bytes)))
+              argtypes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
+              arg-nodes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
               all-known:i32 1)
           (dotimes (i nargs)
             (let (anode:ptr (node-at n (+ i 1))
@@ -3166,7 +3166,7 @@
 ; into an unrelated `user` one it merely shadows.
 (defn protocol-lookup-exact (key:CStr):?ptr:Protocol
   (dotimes (i (unsafe/cast i32 (count g-protocols)))
-    (let (p:ptr:Protocol (as ptr:Protocol (invoke g-protocols (as usize i))))
+    (let (p:ptr:Protocol (as ptr:Protocol (invoke g-protocols i:usize)))
       (when (= (p name) key) (return (as ptr p)))))
   (return null))
 
@@ -3244,7 +3244,7 @@
             (when (!= fns null)
               (let (k:ptr (ns-qualify-in fns (r bare)))
                 (when (and (!= k (r canonical)) (!= k (r bare)))
-                  (let (h3:?ptr:Protocol (protocol-visible (protocol-lookup-exact (as CStr k))))
+                  (let (h3:?ptr:Protocol (protocol-visible (protocol-lookup-exact k:CStr)))
                     (when (!= h3 null) (return h3)))))))))
       (return null))))
 
@@ -3286,7 +3286,7 @@
 ; the nominal conformance registry.
 (defn blanket-lookup (name:CStr):i32
   (dotimes (i (unsafe/cast i32 (count g-blanket)))
-    (when (= (invoke g-blanket (as usize i)) name) (return 1)))
+    (when (= (invoke g-blanket i:usize) name) (return 1)))
   (return 0))
 
 ; A name usable as a `:where` constraint: a declared protocol, a blanket protocol
@@ -3382,7 +3382,7 @@
   (set! type-name (type-canon-name type-name))
   (set! proto-name (protocol-canon-name proto-name))
   (dotimes (i (unsafe/cast i32 (count g-conformances)))
-    (let (c:ptr:Conformance (invoke g-conformances (as usize i)))
+    (let (c:ptr:Conformance (invoke g-conformances i:usize))
       (when (and (= (c type-name) type-name)
                  (= (c proto-name) proto-name))
         (return 1))))
@@ -3406,7 +3406,7 @@
   (set! type-name (type-canon-name type-name))
   (set! proto-name (protocol-canon-name proto-name))
   (dotimes (i (unsafe/cast i32 (count g-conformances)))
-    (let (c:ptr:Conformance (invoke g-conformances (as usize i)))
+    (let (c:ptr:Conformance (invoke g-conformances i:usize))
       (when (and (= (c type-name) type-name)
                  (= (c proto-name) proto-name))
         (aset! (as ptr:i32 out-nargs) 0 (conf-args-count (c args)))
@@ -3426,7 +3426,7 @@
     (let (av:(ref (Vector CStr)) (unsafe/cast (ref (Vector CStr)) a)
           bv:(ref (Vector CStr)) (unsafe/cast (ref (Vector CStr)) b))
       (dotimes (i na)
-        (when (!= (invoke av (as usize i)) (invoke bv (as usize i)))
+        (when (!= (invoke av i:usize) (invoke bv i:usize))
           (return 0))))
     (return 1)))
 
@@ -3454,7 +3454,7 @@
         (dotimes (i nargs) (conj v (as CStr (aref (as ptr:ptr args) i))))
         (set! av (as (raw (Vector CStr)) v))))
     (dotimes (i (unsafe/cast i32 (count g-conformances)))
-      (let (c:ptr:Conformance (invoke g-conformances (as usize i)))
+      (let (c:ptr:Conformance (invoke g-conformances i:usize))
         (when (and (= (c type-name) type-name) (= (c proto-name) proto-name))
           ; Incoming call supplies no args → nothing to add or check; keep as-is.
           (when (= nargs 0) (return))
@@ -3485,7 +3485,7 @@
     (when (= g null) (return 0))
     (let (gg:ptr:Generic (as ptr:Generic g))
       (dotimes (i (unsafe/cast i32 (count (gg methods))))
-        (let (m:ptr:Method (as ptr:Method (invoke (gg methods) (as usize i))))
+        (let (m:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
           (when (and (!= (m ir-name) null)
                      (= (strcmp (m ir-name) mangled) 0))
             (return 1))))
@@ -3526,7 +3526,7 @@
     (when (!= ig null)
       (let (igg:ptr:Generic (as ptr:Generic ig))
         (dotimes (mi (unsafe/cast i32 (count (igg methods))))
-          (let (mm:ptr:Method (as ptr:Method (invoke (igg methods) (as usize mi))))
+          (let (mm:ptr:Method (as ptr:Method (invoke (igg methods) mi:usize)))
             (when (= (mm kind) METHOD-USER)
               (let (self-ty:ptr (aref (as ptr:ptr (mm param-types)) 0))
                 (when (!= self-ty null)
@@ -3549,12 +3549,12 @@
       ; matching invoke method exists (the TY-FN case, or a non-callable type).
       (let (imp-src:?ptr:Method null
             call-style:i32 0)
-        (if (!= (as ptr im) null)
+        (if (!= im null)
           (set! imp-src (unsafe/cast ptr:Method im))
           (when (= (cv kind) TY-FN)
             (let (fn-np:i32 (cv num-params)
                   total:i32 (+ fn-np 1)
-                  ptypes:ptr (arena-alloc (* (as i64 total) (ptr-bytes)))
+                  ptypes:ptr (arena-alloc (* total (ptr-bytes)))
                   self-ty:ptr:Type (as ptr:Type (make-type TY-PTR)))
               (.set! self-ty elem cvtype)
               (.set! self-ty pkind PTR-REF)
@@ -3571,14 +3571,14 @@
                 (.set! syn variadic 0)
                 (set! imp-src (as ptr syn))
                 (set! call-style 1)))))
-        (when (= (as ptr imp-src) null) (return 0))
+        (when (= imp-src null) (return 0))
         ; Steps 4-5: protocol must be single-method; parse its sig.  imp is the
         ; non-null source method (cast from the nullable imp-src above).
         (let (imp:ptr:Method (unsafe/cast ptr:Method imp-src)
               ; B2a: `proto` arrives from a `(dyn P)` box, downstream of the
               ; box-construction scope gate — see `protocol-resolve-any`.
               pp:ptr:Protocol (unsafe/cast ptr:Protocol (protocol-resolve-any proto)))
-          (when (= (as ptr pp) null) (return 0))
+          (when (= pp null) (return 0))
           (when (!= (pp num-sigs) 1) (return 0))
         (let (sig:ptr (aref (as ptr:ptr (pp sigs)) 0)
               ; S1: route the method name / return / params through the accessor so
@@ -3726,7 +3726,7 @@
   (set! sub (protocol-canon-name sub))
   (set! super (protocol-canon-name super))
   (dotimes (i (unsafe/cast i32 (count g-proto-supers)))
-    (let (e:ptr:Conformance (invoke g-proto-supers (as usize i)))
+    (let (e:ptr:Conformance (invoke g-proto-supers i:usize))
       (when (and (= (e type-name) sub) (= (e proto-name) super))
         (return))))
   (let (e:ptr:Conformance (as ptr:Conformance (arena-alloc (sizeof Conformance))))
@@ -3778,8 +3778,8 @@
 ; building a combined name→spelling map {Self→typename, E→…}.
 (defn subst-proto-sig-node (node:raw:Node typename:CStr params:ptr pspellings:ptr nparams:i32):raw:Node
   (let (n:i32 (+ nparams 1)
-        names:ptr (arena-alloc (* (as i64 n) (ptr-bytes)))
-        spellings:ptr (arena-alloc (* (as i64 n) (ptr-bytes))))
+        names:ptr (arena-alloc (* n (ptr-bytes)))
+        spellings:ptr (arena-alloc (* n (ptr-bytes))))
     (aset! (as ptr:ptr names) 0 "Self")
     (aset! (as ptr:ptr spellings) 0 typename)
     (dotimes (i nparams)
@@ -3830,7 +3830,7 @@
                      (= (node-kind (node-at (as ptr name-node) 1)) NODE-CELL))
             (die-at (name-node line)
               (fmt-s "defprotocol: takes no type annotation; write (defprotocol %s ...)" (head s))))
-          (set! params (arena-alloc (* (as i64 nparams) (ptr-bytes))))
+          (set! params (arena-alloc (* nparams (ptr-bytes))))
           (dotimes (pi nparams)
             (let (pv:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr name-node) (+ pi 1))))
               (when (!= (node-kind (as ptr pv)) NODE-SYM)
@@ -3855,14 +3855,14 @@
         (do
           (when (!= (same-definition-site (prev src-file) (prev src-line) (ff line)) 0)
             (return))
-          (die-redefinition (as CStr pname) (ff line) BK-PROTOCOL
+          (die-redefinition pname:CStr (ff line) BK-PROTOCOL
                             (prev src-file) (prev src-line)))
         0)
       (guard-name-kind pname (ff line) NK-PROTOCOL)
       (let (nsigs:i32 (- (node-len form) 2)
             sigs:ptr null)
         (when (> nsigs 0)
-          (set! sigs (arena-alloc (* (as i64 nsigs) (ptr-bytes))))
+          (set! sigs (arena-alloc (* nsigs (ptr-bytes))))
           (dotimes (i nsigs)
             (let (sig:ptr (node-at form (+ i 2))
                   snn:ptr (node-at (node-at form (+ i 2)) 0))
@@ -3963,7 +3963,7 @@
   (let (g:ptr (generic-lookup mname))
     (when (= g null) (return 0))
     (let (um:?ptr:Method (generic-find-method-exact g ptypes nparams))
-      (when (!= (as ptr um) null)
+      (when (!= um null)
         (when (= check-ret 0) (return 1))
         (when (or (= ret null)
                   (and (!= (-> um (unsafe/cast ptr:Method _) (_ ret-type)) null)
@@ -4068,7 +4068,7 @@
     ; Conforming to `proto-name` requires conforming to each declared super. The
     ; supers are plain (Self-only) protocols here, so they carry no extra params.
     (dotimes (si (unsafe/cast i32 (count g-proto-supers)))
-      (let (e:ptr:Conformance (invoke g-proto-supers (as usize si)))
+      (let (e:ptr:Conformance (invoke g-proto-supers si:usize))
         (when (= (e type-name) proto-name)
           (verify-conformance-params typename (e proto-name) null 0 line check))))))
 
@@ -4160,8 +4160,8 @@
       (let (ntv:i32 (cc num-tyvars)
             ; out-bound[tyvar-index] = Type* (or null), the same representation
             ; recover-assoc-into / generic-method-bind use at dispatch time.
-            out-bound:ptr (arena-alloc (* (as i64 (if (> ntv 0) ntv 1)) (ptr-bytes)))
-            spellings:ptr (arena-alloc (* (as i64 (if (> ntv 0) ntv 1)) (ptr-bytes))))
+            out-bound:ptr (arena-alloc (* (if (> ntv 0) ntv 1) (ptr-bytes)))
+            spellings:ptr (arena-alloc (* (if (> ntv 0) ntv 1) (ptr-bytes))))
         ; Seed: every tyvar starts unbound; the first `nargs` entries of the
         ; conformance's tyvar array are the template's own tyvars (seeded by
         ; emit-extend in template order, hence aligned with `arg-spellings`).
@@ -4187,7 +4187,7 @@
         (set! subst-spellings spellings)
         (set! subst-ntv ntv)))
     (when (> nb 0)
-      (set! pspellings (arena-alloc (* (as i64 nb) (ptr-bytes))))
+      (set! pspellings (arena-alloc (* nb (ptr-bytes))))
       (dotimes (i nb)
         (let (bnode:ptr (aref (as ptr:ptr (cc bindings)) i)
               ; Substitute the conformance's tyvars with the concrete spellings
@@ -4209,7 +4209,7 @@
 (defn tmpl-conformance-check-instance (st:raw:StructTemplate iname:CStr arg-spellings:ptr nargs:i32 line:i32):void
   (dotimes (i (unsafe/cast i32 (count g-tmpl-conformances)))
     (let (c:ptr:TmplConformance (as ptr:TmplConformance
-                                  (invoke g-tmpl-conformances (as usize i))))
+                                  (invoke g-tmpl-conformances i:usize)))
       (when (= (c template) st)
         (tmpl-conformance-check-one c st iname arg-spellings nargs line)))))
 
@@ -4220,12 +4220,12 @@
 ; StructDef origin fields (T2) and runs the per-instance check.
 (defn tmpl-conformance-recheck-stamped (c:raw:TmplConformance st:raw:StructTemplate line:i32):void
   (dotimes (i (unsafe/cast i32 (count g-structs)))
-    (let (sd:ptr:StructDef (as ptr:StructDef (invoke g-structs (as usize i))))
+    (let (sd:ptr:StructDef (as ptr:StructDef (invoke g-structs i:usize)))
       (when (= (sd origin-template) st)
         (let (na:i32 (sd origin-nargs)
               spell:ptr null)
           (when (> na 0)
-            (set! spell (arena-alloc (* (as i64 na) (ptr-bytes))))
+            (set! spell (arena-alloc (* na (ptr-bytes))))
             (dotimes (k na)
               (aset! (as ptr:ptr spell) k
                      (type-spelling (aref (as ptr:ptr (sd origin-args)) k)))))
@@ -4258,7 +4258,7 @@
           (let (na:i32 (- (node-len pn) 1)
                 args:ptr null)
             (when (> na 0)
-              (set! args (arena-alloc (* (as i64 na) (ptr-bytes))))
+              (set! args (arena-alloc (* na (ptr-bytes))))
               (dotimes (i na)
                 (aset! (as ptr:ptr args) i (node-at pn (+ i 1)))))
             (ptr-set! out-args args)
@@ -4308,11 +4308,11 @@
           ; Stage 12 N4: a qualified template head (`coll/Vector`) resolves to the
           ; bare-keyed template registry. Identity under `user`.
           (let (st:?ptr:StructTemplate (struct-template-lookup-ref (thead s)))
-            (when (= (as ptr st) null)
+            (when (= st null)
               (die-at (node-line (as ptr type-node) (ff line))
                 (fmt-s "extend: '%s' is not a struct template" (thead s))))
             (let (proto:?ptr:Protocol proto-rec)
-              (when (= (as ptr proto) null)
+              (when (= proto null)
                 (die-at (node-line (as ptr proto-node) (ff line))
                   (with-qualifier-note
                     (fmt-s "extend: unknown protocol '%s'" proto-spelling)
@@ -4394,7 +4394,7 @@
                         ; first base-ntv entries); step = for each constraint whose
                         ; conforming var V is determined, every tyvar appearing in an
                         ; Arg position becomes determined; repeat to fixpoint.
-                        (let (determined:ptr (arena-alloc (* (as i64 (if (> ntv 0) ntv 1)) 4)))
+                        (let (determined:ptr (arena-alloc (* (if (> ntv 0) ntv 1) 4)))
                           (dotimes (di ntv)
                             (aset! (as ptr:i32 determined) di (if (< di base-ntv) 1 0)))
                           (let (changed:i32 1)
@@ -4402,7 +4402,7 @@
                               (set! changed 0)
                               (let (ck:i32 0)
                                 (while (< ck nc)
-                                  (let (crec:ref:Constraint (invoke constraints (as usize ck))
+                                  (let (crec:ref:Constraint (invoke constraints ck:usize)
                                         vidx:i32 (tyvar-index-of (crec var) tyvars ntv)
                                         na:i32 (crec nargs))
                                     (when (and (>= vidx 0)
@@ -4470,7 +4470,7 @@
         ; is automatic and structural — so accept it as a no-op.
         (when (and (!= (blanket-lookup proto-name) 0) (= proto-nargs 0)) (return))
         (let (proto:?ptr:Protocol proto-rec)
-          (when (= (as ptr proto) null)
+          (when (= proto null)
             (die-at (node-line (as ptr proto-node) (ff line))
               (with-qualifier-note
                 (fmt-s "extend: unknown protocol '%s'" proto-spelling)
@@ -4490,11 +4490,12 @@
           ; Concrete protocol params (`(Seq i32)`): canonicalize each arg's spelling.
           (let (pspellings:ptr null)
             (when (> proto-nargs 0)
-              (set! pspellings (arena-alloc (* (as i64 proto-nargs) (ptr-bytes))))
+              (set! pspellings (arena-alloc (* proto-nargs (ptr-bytes))))
               (dotimes (i proto-nargs)
                 (aset! (as ptr:ptr pspellings) i
                        (type-spelling (parse-type-from-node
-                                        (aref (as ptr:ptr proto-args) i) (node-line (as ptr proto-node) (ff line)))))))
+                                        (aref (as ptr:ptr proto-args) i)
+                                        (node-line (as ptr proto-node) (ff line)))))))
             (verify-conformance-params typename proto-name pspellings proto-nargs (ff line) 1)))))))
 
 ; Import side: trust the exporting unit's check; record the fact (and recurse
@@ -4540,7 +4541,7 @@
               (proto-super-add (type-node s) proto-name)
               (let (pspellings:ptr null)
                 (when (> proto-nargs 0)
-                  (set! pspellings (arena-alloc (* (as i64 proto-nargs) (ptr-bytes))))
+                  (set! pspellings (arena-alloc (* proto-nargs (ptr-bytes))))
                   (dotimes (i proto-nargs)
                     (aset! (as ptr:ptr pspellings) i
                            (type-spelling (parse-type-from-node
@@ -4584,8 +4585,8 @@
 ; the located `unknown type` itself.
 (defn value-annot-type (annot:ptr line:i32):?ptr:Type
   (when (= annot null) (return null))
-  (when (= (tyname-resolvable (as CStr annot)) 0) (return null))
-  (return (as ptr (parse-type-name (as CStr annot) line))))
+  (when (= (tyname-resolvable annot:CStr) 0) (return null))
+  (return (as ptr (parse-type-name annot:CStr line))))
 
 (defn node-type-sym (n:raw:Node scope:ref:Scope):?ptr:Type
   ; Phase F flip: the `null` literal is raw, so it flows into raw/? slots but
@@ -4681,14 +4682,17 @@
   (let (binds:ptr:Node (unsafe/cast ptr:Node
                          (attrs-normalize-bindings (as ptr (node-at n 1))
                            ((unsafe/cast ptr:Node n) line))))
-    (when (or (= (as ptr binds) null) (!= (binds kind) NODE-CELL)) (return null))
+    (when (or (= binds null)
+              (!= (binds kind) NODE-CELL))
+      (return null))
     (let (inner:ref:Scope (scope-new scope)
           i:i32 0
           bl:i32 (node-len (as ptr binds)))
       (while (< i bl)
         (let (bname:ptr (node-at (as ptr binds) i)
               name:ptr null
-              ty:ptr (extract-name-and-type bname (as ptr:ptr (addr-of name))
+              ty:ptr (extract-name-and-type bname
+                                            (as ptr:ptr (addr-of name))
                                             ((unsafe/cast ptr:Node bname) line)))
           ; W5d (§3.10) lockstep with emit-let/emit-with: an `(array T …)` init
           ; refines an elem-less declared pointer to `ptr:T`, so a probe over the
@@ -4790,7 +4794,7 @@
   (let (ctt:raw:Type ct
         g:?ptr:Generic (generic-lookup "get"))
     (when (!= g null)
-      (let (argtypes:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
+      (let (argtypes:ptr (arena-alloc (* 2 (ptr-bytes))))
         (aset! (as ptr:ptr argtypes) 0 ct)
         (aset! (as ptr:ptr argtypes) 1 ty-ptr)
         (let (m:?ptr:Method (generic-find-method-exact g argtypes 2))
@@ -4813,7 +4817,7 @@
   (let (g:?ptr:Generic (generic-lookup "invoke"))
     (when (= g null) (return null))
     (let (total:i32 (+ nargs 1)
-          argtypes:ptr (arena-alloc (* (as i64 (+ total 1)) (ptr-bytes)))
+          argtypes:ptr (arena-alloc (* (+ total 1) (ptr-bytes)))
           ok:i32 1)
       (aset! (as ptr:ptr argtypes) 0 ct)
       (dotimes (i nargs)
@@ -4888,8 +4892,8 @@
           ; A user overload of this operator, if any, wins (mirror emit).
           (when (!= (g mangled) 0)
             (let (nargs:i32 (- (node-len n) 1)
-                  argtypes:ptr (arena-alloc (* (as i64 (+ nargs 1)) (ptr-bytes)))
-                  arg-nodes:ptr (arena-alloc (* (as i64 (+ nargs 1)) (ptr-bytes)))
+                  argtypes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
+                  arg-nodes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
                   ok:i32 1)
               (dotimes (i nargs)
                 (let (anode:ptr (node-at n (+ i 1))
@@ -4922,8 +4926,8 @@
                                          a-node b-node scope)))))
         (when (!= (g mangled) 0)
           (let (nargs:i32 (- (node-len n) 1)
-                argtypes:ptr (arena-alloc (* (as i64 (+ nargs 1)) (ptr-bytes)))
-                arg-nodes:ptr (arena-alloc (* (as i64 (+ nargs 1)) (ptr-bytes)))
+                argtypes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
+                arg-nodes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
                 ok:i32 1)
             (dotimes (i nargs)
               (let (anode:ptr (node-at n (+ i 1))

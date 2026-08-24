@@ -4,7 +4,8 @@
 landed as recommended. 804 tests (was 799), `make bootstrap` byte-identical on
 the first try, `examples/as-sugar.nuc` plus four rejection fixtures. The reader
 was not touched. Implementation notes, including the two things the evaluation
-below did not predict, are in §9.
+below did not predict, are in §9; the boot-refresh follow-up is §10 and the
+selector-position gap found during adoption is §11.
 
 Original recommendation, unchanged: **do the atom form, at emit time, in two
 functions** (`emit-symbol-ref` + `node-type-sym`); leave the parenthesised form
@@ -354,3 +355,50 @@ spelling in `src/`, ask what the boot will *silently* make of it, not whether th
 boot rejects it. A rejected spelling fails loudly at the first site; a
 reinterpreted one fails only where the difference is observable, which makes a
 stale boot look like a type-specific defect in the new feature.
+
+## 11. Selector position — the position §4 did not enumerate (2026-08-23)
+
+Found while adopting the sugar in `src/cheader.nuc`: `(mapping name:CStr)` on a
+`(ref (HashMap CStr CStr))` died with `get: no field 'name:CStr' on struct
+'HashMap.cstr.cstr'`.
+
+§4's premise — "`emit-symbol-ref` has exactly two callers, so *value position* is
+well-defined and small" — is right about value position and wrong about coverage.
+A **selector** never reaches `emit-symbol-ref` at all: `selector-literal-sym`
+(`src/nucleusc.nuc`) classifies any bare `NODE-SYM` as a field name *before* the
+symbol is ever emitted, which is the callable-values.md §3.5 rule that a bare
+symbol in selector position names a field rather than a variable. So the sugar
+lost to the field reading, silently, with a diagnostic about a field nobody wrote.
+
+The Stage 15 W7 demotion did not save it: that fires only when the symbol is
+*itself* a local binding, and the local is `name`, not `name:CStr`.
+
+**Fix: an annotated bare symbol is never a field selector.** One line of
+condition in `selector-literal-sym`, which is the shared classifier — emit
+(`emit-get-with-callee` → Branch B, value-keyed dispatch) and node-type
+(`callable-get-type`, generics.nuc) both call it, so the `node-type`↔`emit-node`
+lockstep holds by construction rather than by a mirrored edit.
+
+The rule needs no scope lookup and no resolvability probe, which is what makes it
+safe: **a field name can never carry a colon** (`split-typed` cuts every
+declaration spelling at the first one), so the annotated reading cannot collide
+with a real field in any program. It is therefore position-independent in the
+same way the original always-a-field rule is. Quoted `'k:T` keeps the
+always-a-name reading — it is the explicit spelling and the one deliberate way
+back.
+
+Consequences, all verified: unannotated selectors are untouched (`(p x)` still
+reads the field even with a local `x` in scope); `(m k:CStr)` becomes a third
+escape hatch from the field-wins limit, and the only one that works for a
+*global* key, since it never consults the scope. An annotated selector on a
+plain struct with no `get`/`invoke` now reports `value is not callable` instead
+of `no field 'x:i32'` — correct routing, blunter message; a hint there is
+possible but was not built.
+
+Gates: 804 tests (the accept side is two new lines in `examples/as-sugar.nuc`),
+`make bootstrap` fixed point in one pass. **The boot needed refreshing again**,
+for the reason §10 records — `bin/nucleusc` predated the fix, so it could not
+compile the `src/` site that motivated it. Same relink escape: a stepping-stone
+`build/nucleusc` built with that one site spelled `(as CStr name)`, then the real
+tree through it, then `boot/nucleusc.ll` + `make boot-binary` + `make
+windows-boot`.

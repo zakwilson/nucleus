@@ -8,3 +8,5 @@ i: 2
 big: 5000000000
 hit
 miss
+a -> 1
+zz -> absent

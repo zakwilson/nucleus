@@ -119,7 +119,7 @@
 ; Idempotent: a header imported twice, or included transitively by two headers,
 ; re-declares the same typedef and must not grow the table without bound.
 (defn c-typedef-record (name:ptr ty:ptr):void
-  (when (!= (c-typedef-find (as CStr name)) null) (return))
+  (when (!= (c-typedef-find name:CStr) null) (return))
   (let (n:ref:Node (new Node))
     (.set! n kind NODE-STR)
     (.set! n line 0)
@@ -420,13 +420,13 @@
         (when (= done 0)
           (let (tok-end:i64 0
                 tok:ptr (c-read-ident buf pos len (as ptr:i64 (addr-of tok-end))))
-            (when (= (as i64 (strlen tok)) 0) (set! done 1))
+            (when (= (strlen tok) 0) (set! done 1))
             (when (= done 0)
               (cond
                 (contains? #{"const" "volatile" "restrict" "__restrict" "_Atomic"
                              "extern" "static" "inline" "__inline" "__inline__"
                              "__extension__" "_Noreturn" "signed"}
-                            (as CStr tok))
+                            tok:CStr)
                   (set! pos tok-end)
                 (= tok "unsigned")
                   (do (set! is-unsigned 1) (set! pos tok-end))
@@ -561,7 +561,7 @@
           (set! base-name "int"))
         (when (= base-name null) (return ty-ptr)))
     (let (base-type:ptr (c-type-to-nucleus base-name is-unsigned is-long is-short)
-          td:ptr (as ptr (c-typedef-find (as CStr base-name))))
+          td:ptr (as ptr (c-typedef-find base-name:CStr)))
       ; W3c: not a builtin — consult the typedef table (cheader.md §1.4). The
       ; entry already holds the fully-resolved type, so a chain costs one lookup.
       (when (and (= base-type null) (!= td null))
@@ -734,7 +734,7 @@
          (ptr-set! out-end pos) (return 0))
       (set! pos (+ pos 1))
       ; Parse parameters
-      (let (param-types:ptr (arena-alloc (* (as i64 C-MAX-PARAMS) (as i64 8)))
+      (let (param-types:ptr (arena-alloc (* C-MAX-PARAMS 8))
             num-params:i32 0
             is-variadic:i32 0
             pdone:i32 0
@@ -874,7 +874,7 @@
             ; as W3b left it.
             (let (loud:i32 1)
               (when (and (= why unrep-why) (!= unrep-quiet 0)) (set! loud 0))
-              (cheader-record-skip (as CStr fname) why
+              (cheader-record-skip fname:CStr why
                                    (cheader-line-at buf decl-start) loud))
             (return 1)))
         ; W3c precedence (cheader.md §1.4): an explicit `(declare …)` anywhere in
@@ -883,9 +883,9 @@
         ; declaration — registering it would make the *header* win when it
         ; precedes the declare, and emitting a second `declare` for the same
         ; symbol is invalid IR even when the two agree.
-        (when (!= (as ptr (cheader-explicit-declare-site (as CStr fname))) null)
+        (when (!= (as ptr (cheader-explicit-declare-site fname:CStr)) null)
           (cheader-yield-to-explicit-declare
-            (as CStr fname)
+            fname:CStr
             (c-fn-sig-render (as raw:Type ret-type) param-types num-params
                              is-variadic)
             (cheader-line-at buf decl-start))
@@ -975,12 +975,12 @@
   (let (cur:ptr g-cheader-cache)
     (while (!= cur null)
       (let (e:ptr:Node (unsafe/cast ptr:Node cur))
-        (when (= (as CStr (e s)) (as CStr header-path))
+        (when (= (as CStr (e s)) header-path:CStr)
           (ptr-set! out-len (e i))
           (return (as ptr (e car))))
         (set! cur (e cdr)))))
   (let (cmd:ptr (alloca i8 512))
-    (snprintf cmd (as i64 512) "clang -E -x c -include %s /dev/null 2>/dev/null" header-path)
+    (snprintf cmd 512 "clang -E -x c -include %s /dev/null 2>/dev/null" header-path)
     (let (buf-len:i64 0
           buf:ptr (read-pipe-output cmd (as ptr:i64 (addr-of buf-len))))
       (when (= buf null) (ptr-set! out-len 0) (return null))
@@ -1003,13 +1003,13 @@
     (let (bufsz:i64 65536
           buf:ptr (malloc bufsz)
           total:i64 0)
-      (let (chunk:i64 (fread (unsafe/ptr+ (as ptr:i8 buf) total) (as i64 1) (- (- bufsz total) 1) fp))
+      (let (chunk:i64 (fread (unsafe/ptr+ (as ptr:i8 buf) total) 1 (- (- bufsz total) 1) fp))
         (set! total (+ total chunk))
         (while (> chunk 0)
           (when (>= (+ total 1) bufsz)
              (set! bufsz (* bufsz 2))
              (set! buf (realloc buf bufsz)))
-          (set! chunk (fread (unsafe/ptr+ (as ptr:i8 buf) total) (as i64 1) (- (- bufsz total) 1) fp))
+          (set! chunk (fread (unsafe/ptr+ (as ptr:i8 buf) total) 1 (- (- bufsz total) 1) fp))
           (set! total (+ total chunk))))
       (ptr-set! (as ptr:i8 (unsafe/ptr+ (as ptr:i8 buf) total)) 0)
       (pclose fp)
@@ -1092,7 +1092,7 @@
 ; opaque. `alias-of` is the only link between the two registry entries.
 (defn struct-upgrade-aliases (tag:ptr:StructDef):void
   (dotimes (i (unsafe/cast i32 (count g-structs)))
-    (let (a:ptr:StructDef (as ptr:StructDef (invoke g-structs (as usize i))))
+    (let (a:ptr:StructDef (as ptr:StructDef (invoke g-structs i:usize)))
       (when (and (= (as ptr (a alias-of)) (as ptr tag)) (!= (a opaque) 0))
         (cheader-adopt-shape a tag)))))
 
@@ -1140,8 +1140,8 @@
     (ptr-set! out-end body-end))
   (set! pos (+ pos 1))
   (let (max-fields:i32 64
-        fnames:ptr (arena-alloc (* (as i64 64) (as i64 8)))
-        ftypes:ptr (arena-alloc (* (as i64 64) (as i64 8)))
+        fnames:ptr (arena-alloc (* 64 8))
+        ftypes:ptr (arena-alloc (* 64 8))
         nfields:i32 0
         bad:i32 0
         done:i32 0
@@ -1174,7 +1174,7 @@
           (set! pos (c-skip-ws buf pos len))))
       (when (= done 0)
         (set! fname (c-read-ident buf pos len (as ptr:i64 (addr-of ne))))
-        (when (= (as i64 (strlen fname)) 0)
+        (when (= (strlen fname) 0)
           (set! bad 1) (set! done 1)))
       (when (= done 0)
         (set! pos ne)
@@ -1250,7 +1250,7 @@
           tag-end:i64 0
           tag-line:i32 (cheader-line-at buf pos)
           maybe-tag:ptr (c-read-ident buf pos len (as ptr:i64 (addr-of tag-end))))
-      (when (!= (as i64 (strlen maybe-tag)) 0)
+      (when (!= (strlen maybe-tag) 0)
         (set! tag maybe-tag)
         (set! pos tag-end)
         (set! pos (c-skip-ws buf pos len)))
@@ -1274,7 +1274,7 @@
             ; untouched.
             (let (ne:i64 0
                   tname:ptr (c-read-ident buf pos len (as ptr:i64 (addr-of ne))))
-              (when (= (as i64 (strlen tname)) 0)
+              (when (= (strlen tname) 0)
                 ; Not a plain identifier — `*Bar`, `(*fp)(…)`, an array
                 ; declarator. The tag is registered; the declaration itself is
                 ; a shape we do not model, so fall back to the caller's skip.
@@ -1315,7 +1315,7 @@
           (let (ne:i64 0
                 tname:ptr (c-read-ident buf pos len (as ptr:i64 (addr-of ne))))
             (when (and (!= sd null)
-                       (!= (as i64 (strlen tname)) 0))
+                       (!= (strlen tname) 0))
               ; Register as a second alias if not already known. W3a: an entry
               ; that already exists because the alias name was forward-declared
               ; opaque is upgraded in place instead of being skipped.
@@ -1329,7 +1329,7 @@
                   (let (psd:ptr:StructDef (as ptr:StructDef prior))
                     (when (!= (psd opaque) 0)
                       (cheader-adopt-shape psd (as ptr:StructDef sd)))))))
-            (when (!= (as i64 (strlen tname)) 0)
+            (when (!= (strlen tname) 0)
               (set! pos ne))))
         ; Skip trailing __attribute__ if any.
         (set! pos (c-skip-ws buf pos len))
@@ -1400,7 +1400,7 @@
               (set! q (c-skip-type-quals buf (+ q 1) len)))
             (let (ne:i64 0
                   fpn:ptr (c-read-ident buf q len (as ptr:i64 (addr-of ne))))
-              (when (and (> stars 0) (!= (as i64 (strlen fpn)) 0))
+              (when (and (> stars 0) (!= (strlen fpn) 0))
                 (set! name fpn)
                 (set! base ty-ptr)
                 (set! bad 0))))
@@ -1413,7 +1413,7 @@
                 dn:ptr (c-read-ident buf p len (as ptr:i64 (addr-of ne))))
             ; No declarator identifier — a shape not modelled at all. Decline, so
             ; nothing is recorded under a name that is not the declarator's.
-            (when (= (as i64 (strlen dn)) 0)
+            (when (= (strlen dn) 0)
               (ptr-set! out-end pos) (return 0))
             (set! name dn)
             (set! p ne)))
@@ -1458,7 +1458,7 @@
         depth:i32 0
         done:i32 0)
     (while (and (= done 0) (< p len))
-      (let (c:i32 (as i32 (char-at buf p)))
+      (let (c:i32 (char-at buf p))
         (case c
           123 (do (inc! depth) (set! p (+ p 1)))
           125 (do (when (> depth 0) (set! depth (- depth 1)))
@@ -1478,7 +1478,7 @@
   (let (p:i64 (+ pos 1)
         depth:i32 1)
     (while (and (< p len) (> depth 0))
-      (let (c:i32 (as i32 (char-at buf p)))
+      (let (c:i32 (char-at buf p))
         (when (= c 123) (inc! depth))
         (when (= c 125) (set! depth (- depth 1))))
       (set! p (+ p 1)))
@@ -1500,7 +1500,7 @@
         p:i64 pos)
     ; Punctuation (not an identifier): step one character so the caller's loop
     ; always makes progress.
-    (when (= (as i64 (strlen tok)) 0) (return (+ pos 1)))
+    (when (= (strlen tok) 0) (return (+ pos 1)))
     (set! p te)
     (when (= tok "typedef")
       (set! is-typedef 1)
@@ -1522,7 +1522,7 @@
           tend:i64 0
           tag:ptr (c-read-ident buf p len (as ptr:i64 (addr-of tend)))
           has-tag:i32 0)
-      (when (!= (as i64 (strlen tag)) 0)
+      (when (!= (strlen tag) 0)
         (set! has-tag 1)
         (set! p (c-skip-ws buf tend len)))
       (when (>= p len) (return (cheader-skip-to-semi buf p len)))
@@ -1536,7 +1536,7 @@
             (let (ne:i64 0
                   dname:ptr (c-read-ident buf (c-skip-ws buf p len) len
                                           (as ptr:i64 (addr-of ne))))
-              (when (!= (as i64 (strlen dname)) 0)
+              (when (!= (strlen dname) 0)
                 (cheader-register-opaque dname decl-line is-union null)))
             (when (!= has-tag 0)
               (cheader-register-opaque tag decl-line is-union null))))
@@ -1549,7 +1549,7 @@
             (let (ne:i64 0
                   tname:ptr (c-read-ident buf p len (as ptr:i64 (addr-of ne)))
                   tag-sd:ptr (cheader-register-opaque tag decl-line is-union null))
-              (when (!= (as i64 (strlen tname)) 0)
+              (when (!= (strlen tname) 0)
                 (cheader-register-opaque tname decl-line is-union
                                          (as raw:StructDef tag-sd))))
             ; `struct X;` (a forward declaration) or a `struct X *…` use — the tag
@@ -1564,7 +1564,7 @@
   (let (buf-len:i64 0
         buf:ptr (cheader-preprocess header-path (as ptr:i64 (addr-of buf-len))))
     (when (= buf null) (return))
-    (set! g-cheader-file (as CStr header-path))
+    (set! g-cheader-file header-path:CStr)
     (set! g-cheader-dline 1)
     (set! g-cheader-dpos 0)
     (let (pos:i64 0
@@ -1588,7 +1588,7 @@
   ; `# N "file"` marker is seen, attribute declarations to the header we were
   ; asked to import (never to line 0 — a `:0:` in a diagnostic is exactly what
   ; W4a's guard forbids).
-  (set! g-cheader-file (as CStr header-path))
+  (set! g-cheader-file header-path:CStr)
   (set! g-cheader-dline 1)
   (set! g-cheader-dpos 0)
   ; The preprocessed text is cached by path (cheader-preprocess) — the same header
@@ -1872,7 +1872,7 @@
       ; type (a closure env, a stamped instance) has no header to name at all.
       (when (and (= (str-ends-with f ".nuc") 0) (= (str-ends-with f ".nuch") 0))
         (return))
-      (when (= (strcmp f (as CStr g-source-path)) 0) (return))
+      (when (= (strcmp f g-source-path:CStr) 0) (return))
       (let (k:CStr (as CStr (intern-str (as ptr f))))
         (when (= (import-list-has g-cheader-includes k) 0)
           (set! g-cheader-includes (import-list-push g-cheader-includes k)))))))
@@ -1885,19 +1885,19 @@
 ; keeps its path as written: there is no include search path to consult, and
 ; inventing one would be a guess (the C compiler needs a matching `-I`).
 (defn cheader-include-spelling (src:CStr):ptr
-  (let (n:i64 (as i64 (strlen src))
+  (let (n:i64 (strlen src)
         base:i64 0
-        end:i64 (as i64 (strlen src))
+        end:i64 (strlen src)
         selfbase:i64 0)
     (dotimes (i n) (when (= (char-at (as ptr src) i) 47) (set! base (+ i 1))))
     (if (!= (str-ends-with src ".nuch") 0)
       (set! end (- end 5))
       (when (!= (str-ends-with src ".nuc") 0) (set! end (- end 4))))
-    (let (m:i64 (as i64 (strlen (as CStr g-source-path))))
+    (let (m:i64 (strlen g-source-path:CStr))
       (dotimes (i m)
         (when (= (char-at (as ptr g-source-path) i) 47) (set! selfbase (+ i 1)))))
     (when (or (!= selfbase base)
-              (and (> base 0) (!= (strncmp src (as CStr g-source-path) base) 0)))
+              (and (> base 0) (!= (strncmp src g-source-path:CStr base) 0)))
       (set! base 0))
     (return (fmt-s "%s.h" (strndup (unsafe/ptr+ (as raw:i8 src) base) (- end base))))))
 
@@ -1913,7 +1913,7 @@
       (set! n (+ n 1))
       (set! cur ((unsafe/cast ptr:Node cur) cdr)))
     (when (= n 0) (return))
-    (let (arr:ptr (arena-alloc (* (as i64 n) (ptr-bytes)))
+    (let (arr:ptr (arena-alloc (* n (ptr-bytes)))
           i:i32 n)
       (set! cur g-cheader-includes)
       (while (!= cur null)
@@ -1947,10 +1947,10 @@
          "Err" "int32_t"
          "CStr" "const char*"
          "ptr" "void*"})
-    (match (mapping (as CStr name))
+    (match (mapping name:CStr)
       ((some n) (return n))
       (none
-       (do (cheader-note-type-file (as CStr name))
+       (do (cheader-note-type-file name:CStr)
          (return (fmt-s "struct %s" (cheader-c-ident (as raw:i8 (ns-ir-base name))))))))))
 
 ; Convert a type AST node to a C type string. Handles SYM types and
@@ -2726,7 +2726,7 @@
   ; those — which is right, since the header cannot `#define` a name it does not
   ; export.
   (when (!= g-source-path null)
-    (set! g-prescan-sigs (import-list-push g-prescan-sigs (as CStr g-source-path))))
+    (set! g-prescan-sigs (import-list-push g-prescan-sigs g-source-path:CStr)))
   (prescan-imported-signatures forms)
   ; W9 item 38: ask the questions the prescans deferred to an emitter this mode
   ; never runs. Before any output, so a refused program produces no partial
