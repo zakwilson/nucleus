@@ -1,0 +1,30 @@
+; Stage 16 R5 (design/stage16-ergonomics/repl-libraries.md §3.5): all six import
+; spellings at the prompt. Four of them — `import`, `import-prefixed`,
+; `import-ct` and `unsafe/import-private` — used to fall through to the
+; expression arm and be compiled as a CALL whose head was `import` (D7).
+;
+; `import-ct` first, so the compile-time-only surface is registered and nothing
+; is emitted: `square` resolves and is refused at the reference.
+(import-ct mathlib)
+(square 5)
+; The same library imported for real afterwards. The ct import recorded it as
+; registered-but-not-emitted, so this one still reads and emits the file.
+(import-use mathlib)
+(square 5)
+; ...and now the flatten dedup really is a no-op, which the prompt says out loud.
+(import-use mathlib)
+; `import` binds the library's last path component as a prefix (Stage 12 N7).
+(import nsgeom)
+(nsgeom/area 3 4)
+; `import-prefixed` with an explicit prefix, over a file already loaded.
+(import-prefixed nsgeom g)
+(g/perimeter 3 4)
+(import-only testmacros my-if)
+(my-if (> 2 1) 111 222)
+; `unsafe/import-private` also reaches the library's private symbols. Each REPL
+; module is its own object, so a private definition may not be `internal` here.
+(unsafe/import-private unsafe-priv-demo pv priv-secret)
+(pv/pub-double 21)
+(pv/priv-secret)
+; A C header the session preloaded: idempotent, and no longer silent about it.
+(import-use "stdio.h")

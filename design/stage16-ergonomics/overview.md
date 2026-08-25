@@ -44,7 +44,7 @@ Two discoveries. **`&repr` had no test coverage at all** — documented in `docs
 
 I'm split between a simple variadic set! with an extra quoted symbol or variable resolving to symbol for struct field assignment, or a more generic mechanism allowing its extension to arbitrary scenarios.
 
-## Potential `as` sugar
+## `as` sugar
 
 It would be nice if something like `(contains #{"foo" "bar"} (as CStr baz))` could be written as `(contains #{"foo" "bar"} baz:CStr)`. I don't want to make the reader work too hard though.
 
@@ -209,6 +209,165 @@ and `(deftype (A T) (A T))` hung the compiler until that descent got its own
 guard: a depth counter is a property of each recursion site, not of the concept.
 
 ## `import` doesn't seem to work in the REPL
+
+Design: [repl-libraries.md](repl-libraries.md). **The item understates it, and
+the understatement is the finding.** `import` does work; what does not work is
+everything a library needs *after* the import. **Sixteen of the 34 modules in
+`lib/` fail to import at all** — every collection, every string module, and the
+prelude itself — and no generic function, no lambda and no collection literal
+can be evaluated at the prompt at all, import or no import. The ones that load
+are exactly the ones that name no prelude type.
+
+Seven independent defects, all reproduced against `bin/nucleusc`. Three are the
+same underlying mistake in different clothes: **a compiler global whose
+invariant holds for one module and one process, reused by a driver that
+assembles many modules and never exits.** `StructDef.emitted` means "written
+once this process", so a type emitted into a REPL module that is then discarded
+is marked done forever — `context/repl.md`'s "module-assembly invariant" section
+is a hand-maintained workaround for exactly that, and it has *already* been
+forgotten once (`lookup-or-make-anon-struct` bypasses the queue it assumes).
+`drain-mono-worklist` has **one call site in the whole compiler**, at the tail of
+`emit-toplevel-forms`, which a prompt entry never reaches — so every stamped
+body, lambda lift and closure method is a call to a function that is never
+emitted, while two *sibling* queues were REPL-adapted and this one silently was
+not. And `die-at` longjmps out of `do-import` through every save/restore pair,
+which is why the whole session afterwards reports `lib/iterator.nuc:1`.
+
+Two things the transcript hides. The REPL's error-recovery block is **dead
+code** — `repl_try` is called twice per form, so a throw resumes at the second
+call and the arm at the first never runs; `tests/expected/repl-s16-macrolet.out`
+has been documenting that silently by *lacking* a line. And a failed import
+leaves `g-importing` dirty, so retrying the same import is a **silent no-op**,
+which is what made the reported session look like it was making progress when it
+was not.
+
+The prelude is the root: the REPL never loads it, hand-mirroring `Node` and four
+of the seven `NODE-*` ordinals instead (`NODE-CHAR` therefore types differently
+at the prompt than in a batch compile) — and that hand mirror writes `%Node` into
+the preamble without setting `emitted`, which is precisely what makes the real
+prelude unloadable on top of it. So the diagnostic that says `import the prelude`
+names a fix that cannot be applied. [../4a-repl-issues.md](../4a-repl-issues.md)
+reports the same class against the first-pass REPL; the hand mirror is the patch
+that closed *those* cases, and this is that decision's bill.
+
+Also recorded, because both cost reading time and both are stated wrongly in the
+tree: `<compile-time>` in a REPL IR error is the hardcoded MemoryBuffer name, not
+the compile-time path (the module's own ID is `'<repl>'`), and the
+prefix-qualified imports do not "fall to the compiler path" as
+`src/repl.nuc:474-483` and `design/stage12/namespaces.md:202` both claim — there
+is no compiler path from the prompt; they fall to the *expression* path and are
+compiled as calls. The REPL being the dispatch site that gets forgotten is
+already on record in this file, from the `deftype` work; this item is the
+standing evidence for it.
+
+One alternative was evaluated and deferred (§3.6): replacing `repl_try` with
+Nucleus's own `!T` channel, which is the direction Stage 10 §7.2 already named
+and which the reader half of the REPL loop already uses. It is gated on `!void`,
+which does not exist — `try` propagates only inside an `!T` function, so one
+converted `die-at` pulls its whole transitive call graph with it, and emit
+functions overwhelmingly return `void`. R1 reshapes the shim instead. The prize
+that would justify the full conversion is multi-error reporting (`die-at` calls
+`exit(1)`, and `src/` has no error-count machinery, so the compiler reports one
+error per run), not REPL tidiness.
+
+**Done: R1 (2026-08-24), R2, R3, R4 and R5 (2026-08-25).**
+Staged R1–R5, R1 (the unwind) first because every other fix is unobservable while
+state corruption masks it. None of the eight REPL fixtures that existed when this
+was filed imports a Nucleus library — `lib/` is tested only through batch
+compiles, which always get the auto-prelude — which is why a total failure of the
+REPL's library surface never showed up in `make test`.
+
+R1 shipped the shim reshape (`repl_protect(body, ctx)`, plus a depth counter so
+an unprotected `die-at` exits instead of jumping into a returned frame), a
+`ReplState` snapshot/restore spelling the roster once and truncating every
+append-only registry to a per-form watermark, and the `g-prescan-sigs` ordering
+fix. That last one could not be the literal "move the push" the plan called for:
+the pre-order push is also the walk's cycle breaker, so the marker had to be
+*split* into an in-flight list and a completed list. Byte-identical batch IR
+across all 152 examples and `make bootstrap` converged with no boot refresh;
+`tests/expected/repl-s16-macrolet.out` gained the `error (recovered)` line it
+never had, and `tests/repl/import-error.in` is the new fixture — the first REPL
+fixture that imports at all. See
+[repl-libraries.md](repl-libraries.md) §3.4, "R1 as built".
+
+R2 deleted the hand mirror outright: `repl-preload-prelude` feeds the reader
+`"(import-use prelude)"` where its predecessor fed `"(import-use macros)"`, so
+the REPL boots through the same import arm batch `main` splices, and the prelude
+pulls in `lib/macros.nuc` itself. **The 34-module probe goes 18 clean → 33
+clean**, one fresh session each; the survivor is `node`, already scoped out as a
+JIT symbol-resolution item. All seven `NODE-*` ordinals now agree with a batch
+compile — three of them previously had no binding at the prompt at all, so the
+mirror was silently *wrong*, not merely short. Startup cost +22 ms (188 → 210).
+One pre-existing defect surfaced and was filed rather than fixed (**D8**): a
+declare latch scoped to a CT module's own buffers is blind to the REPL preamble,
+so two imports in one session can collide on `declare ptr @alloc-node()`. See
+[repl-libraries.md](repl-libraries.md) §3.1, "R2 as built".
+
+R3 gave the REPL its own monomorphization drain. `drain-mono-worklist` has
+exactly one call site in the compiler — the tail of `emit-toplevel-forms`, which
+a prompt entry never reaches — so every stamped body, lifted lambda and closure
+method was a call whose callee was never emitted. `repl-flush-mono` drains into a
+module of its own, JITted untracked on the main dylib (a `defn`'s per-impl module
+carries a resource tracker the next redefinition removes, which would silently
+un-define unrelated stamps), and backfills one ABI-lowered `declare` per `define`
+into the preamble afterwards, because `g-mono-drained` is a persistent cursor and
+a body emitted for one entry is otherwise invisible to the next. **The reported
+transcript now works end to end.** It also closed D8, the declare collision R2
+surfaced, whose root cause is §3.3's principle one level down: a dedup list
+scoped to the CT module's own buffers while the assembled module is *preamble +
+ct-decl + ct-def*. A latch is a claim about a buffer, and is only correct if it
+names the buffer it is about.
+[repl-libraries.md](repl-libraries.md) §3.2, "R3 as built".
+
+R4 retired the process-wide `StructDef.emitted` latch. A `StructDef` now records
+*which buffer* holds its `%Name = type {…}` line — `emit-epoch` (the module,
+bumped by `open-module-streams`), `in-type-buf`, `in-preamble` — and one
+predicate, `sdef-in-module`, replaces every read that meant "already in this
+module"; `emitted` keeps only the redefinition question it also answered. Making
+the copy sites collapse into one rule took more than tidying them: a REPL module
+used to be assembled as *preamble + its own type buffer*, which is exactly why
+the preamble could only be appended to after the JIT and why each arm carried its
+own `strdup`. **The preamble is now the type section of every module**, absorbed
+at close by `repl-absorb-type-buf` — six ad-hoc copies became one rule, and
+`context/repl.md`'s hand-maintained invariant became a description of a
+mechanism. D6 is closed (a `?T`-returning `defn` then a `match` at the next entry
+used to die `Cannot allocate unsized type`), and a capturing `vfn`/`mfn` at the
+prompt works for the first time — its env struct's type line was going to the def
+buffer while the `invoke` body it types was drained into a later module.
+Byte-identical emitted IR for all 186 fixed inputs (152 examples + 34 `lib/`
+modules) plus 96 header-mode outputs, `make bootstrap` at its fixed point,
+808 PASS / 0 FAIL. Still open (**D9**): a type is recoverable across modules only
+if it is queued or absorbed, and a `defstruct` inside a REPL `(compile-time …)`
+is neither. See [repl-libraries.md](repl-libraries.md) §3.3, "R4 as built".
+
+R5 closed the item. All six import spellings are top-level arms now — `import`,
+`import-prefixed`, `import-ct` and `unsafe/import-private` used to fall to the
+*expression* path and be compiled as a call whose head was `import`. The
+objection the code recorded against doing this (that alias-injecting forms would
+confuse a name-keyed declare backfill) was stale twice over: R3's backfill is
+keyed on definitions, and **Stage 15 B2b had already deleted
+`inject-import-aliases`**, so no spelling injects alias `Sym`s at all. Two
+defects were hiding behind "compiled as a call" and only became reachable once
+the forms reached their emitters — a private definition emitted `internal` is
+invisible to every later REPL module, so `unsafe/import-private` could import a
+symbol nobody could then call; and `do-import` asks `ct-sink-here` three times,
+which in the REPL disagreed with itself, because an imported file at the prompt
+runs at `g-toplevel-depth` 1 (the depth that means "unit root" everywhere else)
+and re-sampled `g-real-reachable` from inside the file being sunk — filing a
+compile-time-only import on the EMITTED list, so a later real import of it was
+deduplicated away. Both are fixed and both fixes are inert in batch. The
+diagnostics half: the seven `(import the prelude)` messages now route through
+W1c's `unknown-type-message`, so they name the file that defines `Maybe`/
+`Result`; every import at the prompt says `  imported <lib>` or
+`  <lib> already imported`, answered by *measuring* the four registries an
+import can grow rather than by re-deriving `do-import`'s dedup gates; and the
+per-method conformance detail became `\n  note:` lines below its headline
+instead of bare `fprintf`s above it. Batch output byte-identical for the same
+186 inputs plus 96 header-mode outputs, `make bootstrap` at its fixed point,
+809 PASS / 0 FAIL with a new `repl-import-forms` fixture. Two items are left
+open deliberately: **D9** above, and the `(import-use node)` duplicate-symbol
+item (§6 of the design), which is a JIT symbol-resolution question rather than
+an import one. See [repl-libraries.md](repl-libraries.md) §3.5, "R5 as built".
 
 ## Container type literals should take more element types
 

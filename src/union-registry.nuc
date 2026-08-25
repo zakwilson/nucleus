@@ -75,16 +75,19 @@
         ; `--emit-nuch` has always died on an anonymous struct in a signature;
         ; `--emit-cheader` inherited it the moment it started prescanning. Nothing
         ; is codegen'd in those modes, so there is nothing to write — and
-        ; `emitted` must then stay 0, since the flag means "already in the type
-        ; buffer". Same guard the `!T` payload path at the bottom of this file
-        ; already uses.
+        ; nothing may be recorded as written. Same guard the `!T` payload path at
+        ; the bottom of this file already uses.
         (when (!= g-type-stream null)
-          (.set! sd2 emitted 1)
+          (sdef-note-emitted (as raw:StructDef sd2) g-type-stream)
           (fprintf g-type-stream "%%%s = type { " synth)
           (dotimes (i nfields)
             (when (!= i 0) (fprintf g-type-stream ", "))
             (fprintf g-type-stream "%s" (type-to-ir (aref (as ptr:ptr field-types) i))))
-          (fprintf g-type-stream " }\n\n"))
+          (fprintf g-type-stream " }\n\n")
+          ; R4: queue it too, so this eager write is replayable into a later
+          ; module like every other type. Inert wherever the eager write already
+          ; landed — the drain re-checks `sdef-in-module` — so the IR is unmoved.
+          (conj g-pending-unions sd2))
         (.set! sd2 src-file g-source-path)
         (.set! sd2 src-line 0)))
     ; Both arms leave sd non-null, but the set!-kill is sticky across the join
@@ -132,11 +135,11 @@
 ; parametric-struct instance (parametric-structs.md §3). Shares the pending queue
 ; with unions; distinguished by is-union == 0. A plain struct line — no
 ; repr-member/padding — so a stamped instance is byte-identical to the
-; hand-written struct. The `emitted` flag guards double-emit.
+; hand-written struct. `sdef-in-module` guards double-emit.
 (defn emit-pending-struct-ir-type (sd:raw:StructDef):void
   (let (sdd:raw:StructDef sd)
-    (when (!= (sdd emitted) 0) (return))
-    (.set! sdd emitted 1)
+    (when (!= (sdef-in-module sdd) 0) (return))
+    (sdef-note-emitted sdd g-type-stream)
     (fprintf g-type-stream "%%%s = type { " (sdd ir-name))
     (dotimes (i (sdd num-fields))
       (when (!= i 0) (fprintf g-type-stream ", "))
@@ -146,13 +149,13 @@
 ; Write the deferred `%name = type { repr [, pad] }` definition for one union.
 (defn emit-union-ir-type (sd:raw:StructDef):void
   (let (sdd:raw:StructDef sd)
-    (when (!= (sdd emitted) 0) (return))
+    (when (!= (sdef-in-module sdd) 0) (return))
     ; Stage 11: a stamped parametric struct queued on the shared pending list is
     ; not a union — emit a plain struct line instead of the union wrapper.
     (when (= (sdd is-union) 0)
       (emit-pending-struct-ir-type sd)
       (return))
-    (.set! sdd emitted 1)
+    (sdef-note-emitted sdd g-type-stream)
     (let (ri:i32 (union-repr-member sd)
           rt:ptr ((field-at (sdd fields) ri) type)
           total:i32 (abi-union-size sd)
@@ -163,18 +166,12 @@
         (fprintf g-type-stream "%%%s = type { %s }\n\n"
           (sdd ir-name) (type-to-ir rt))))))
 
-; Are all of `sd`'s by-value named-type field dependencies already emitted into
-; the shared type buffer (g-type-bufp)? A field lowers to a `%Name` reference
-; only when its kind is TY-STRUCT/TY-UNION (type-to-ir); TY-PTR fields lower to
-; opaque `ptr` and carry no named dependency. Since `emitted` is set exactly
-; when a StructDef's `%Name = type {...}` line is written into the single shared
-; g-type-bufp (the one buffer every module — batch, CT, macro-JIT, REPL —
-; concatenates), `dep.emitted == 1` is precisely "the dependency's definition is
-; already present in the module currently being assembled." When every named
-; dependency is present, this returns 1 and the type emits exactly as before
-; (the current source never stamps a (Vector ptr) ahead of its %AllocHandle dep,
-; so this is always 1 → zero deferrals → byte-identical). The deferral exists for
-; a type stamped at prescan (signature occurrence) before the import that defines
+; Is every by-value named-type field dependency of `sd` present in the module
+; currently being assembled? A field lowers to a `%Name` reference only when its
+; kind is TY-STRUCT/TY-UNION (type-to-ir); TY-PTR fields lower to opaque `ptr`
+; and carry no named dependency. `sdef-in-module` is what makes the question true
+; as stated rather than only in batch (Stage 16 R4). The deferral exists for a
+; type stamped at prescan (signature occurrence) before the import that defines
 ; its struct-by-value field has run: it stays queued until a later drain, after
 ; that import emits the dependency. See cleanup3.md "two-stage boot refresh".
 (defn pending-union-deps-ready (sd:raw:StructDef):i32
@@ -189,16 +186,16 @@
             ; dependency; treat as not-ready so we defer rather than emit a
             ; dangling %ref.
             (when (= (as ptr dep) null) (return 0))
-            (when (= (dep emitted) 0) (return 0)))))))
+            (when (= (sdef-in-module dep) 0) (return 0)))))))
   (return 1))
 
 ; Emit every still-pending union/struct type definition whose named field
-; dependencies are already present in the shared type buffer. Idempotent (each
-; emit re-checks `emitted` and is a no-op once written); entries are never
-; removed from the queue, so a type skipped here for an unready dependency is
-; retried on the next drain — by which point the import that defines the
-; dependency will have emitted it. Called before each module assembly (batch
-; output, compile-time JIT, macro JIT, REPL).
+; dependencies are already present in the module being assembled. Idempotent
+; (each emit re-checks `sdef-in-module`); entries are never removed from the
+; queue, so a type skipped here for an unready dependency is retried on the next
+; drain — and, since R4, a type whose module has come and gone is re-emitted into
+; the next one. Called before each module assembly (batch output, compile-time
+; JIT, macro JIT, REPL).
 (defn drain-pending-union-irs ():void
   (when (= g-pending-unions null) (return))
   (dotimes (i (unsafe/cast i32 (count g-pending-unions)))
@@ -284,7 +281,7 @@
     (let (result-ty:ptr (parse-type-name (unsafe/ptr+ (as raw:i8 name) 1) line)
           ut:?ptr:UnionTemplate (union-template-lookup-ref "Maybe"))
       (when (= ut null)
-        (die-at line "?!T: value-Maybe template not in scope (import the prelude)"))
+        (die-at line (missing-template-message "?!T" "Maybe")))
       (let (argts:ptr (arena-alloc (ptr-bytes)))
         (aset! (as ptr:ptr argts) 0 result-ty)
         (return (union-template-stamp-types (as ptr ut) argts 1 line)))))
@@ -301,7 +298,7 @@
       ; Value operand: stamp the value-Maybe template (E2 / errors.md §10).
       (let (ut:?ptr:UnionTemplate (union-template-lookup-ref "Maybe"))
         (when (= ut null)
-          (die-at line "?T: value-Maybe template not in scope (import the prelude)"))
+          (die-at line (missing-template-message "?T" "Maybe")))
         (let (argts:ptr (arena-alloc (ptr-bytes)))
           (aset! (as ptr:ptr argts) 0 inner)
           (return (union-template-stamp-types (as ptr ut) argts 1 line))))))
@@ -313,7 +310,7 @@
     (let (inner:ptr (parse-type-name (unsafe/ptr+ (as raw:i8 name) 1) line)
           ut:?ptr:UnionTemplate (union-template-lookup-ref "Result"))
       (when (= ut null)
-        (die-at line "!T: (Result T E) template not in scope (import the prelude)"))
+        (die-at line (missing-template-message "!T" "Result")))
       (let (argts:ptr (arena-alloc (* 2 (ptr-bytes))))
         (aset! (as ptr:ptr argts) 0 inner)
         (aset! (as ptr:ptr argts) 1 (as ptr ty-err))
@@ -434,7 +431,7 @@
 ; parametric-struct stamp (struct-template-stamp-types): reserve the name via
 ; register-struct, fill the two ptr fields, and queue its `%__fatptr = type {…}`
 ; IR on the shared deferred queue (emit-pending-struct-ir-type writes the plain
-; struct line at drain time; the `emitted` flag guards double-emit). Both fields
+; struct line at drain time; `sdef-in-module` guards double-emit). Both fields
 ; are opaque `ptr`, so the type has no named dependency and emits on the next
 ; drain. Idempotent — subsequent calls return the cached def.
 (defn ensure-fatptr-sdef ():ptr
@@ -1044,7 +1041,7 @@
               (if (and (!= g-type-stream null)
                        (!= layout LAYOUT-NICHE-MAYBE) (!= layout LAYOUT-NICHE-ERRPTR)
                        (!= union-sd null)
-                       (= ((as ptr:StructDef union-sd) emitted) 0)
+                       (= (sdef-in-module (as raw:StructDef union-sd)) 0)
                        (= (pending-union-deps-ready union-sd) 0))
                 (conj g-pending-unions sd)
                 (do
@@ -1054,7 +1051,7 @@
                       (fprintf g-type-stream "%%%s = type { i32, %%%s }\n\n"
                         (sd ir-name) ((as ptr:StructDef union-sd) ir-name))
                       (fprintf g-type-stream "%%%s = type { i32 }\n\n" (sd ir-name))))
-                  (.set! sd emitted 1))))
+                  (sdef-note-emitted (as raw:StructDef sd) g-type-stream))))
             (let (ud:ptr:UnionDef (new UnionDef))
               (conj g-uniondefs ud)
               (.set! ud ctors-emitted 0)
@@ -1516,10 +1513,10 @@
               (set! cur ((unsafe/cast ptr:Node cur) cdr))))
           (struct-set-fields sd fnm ftp nfields))
         ; Queue the `%name = type {…}` IR on the shared deferred queue. emit-pending
-        ; -struct-ir-type writes the plain struct line at drain time; the `emitted`
-        ; flag guards double-emit. Deferring (rather than emitting inline) keeps a
-        ; mid-function stamp from interleaving into a def-stream body, the same
-        ; discipline unions use.
+        ; -struct-ir-type writes the plain struct line at drain time, and
+        ; `sdef-in-module` guards double-emit. Deferring (rather than emitting
+        ; inline) keeps a mid-function stamp from interleaving into a def-stream
+        ; body, the same discipline unions use.
         (conj g-pending-unions sd)
         ; Stage 11 T4: per-instance protocol conformance check. For each template
         ; conformance recorded via `(extend (Vector T) (Seq T))`, substitute this
@@ -1709,13 +1706,13 @@
                   ; Value operand: stamp the value-Maybe template (Phase F uniform ?).
                   (let (ut:?ptr:UnionTemplate (union-template-lookup-ref "Maybe"))
                     (when (= ut null)
-                      (die-at line "?T: value-Maybe template not in scope (import the prelude)"))
+                      (die-at line (missing-template-message "?T" "Maybe")))
                     (let (argts:ptr (arena-alloc (ptr-bytes)))
                       (aset! (as ptr:ptr argts) 0 inner)
                       (return (union-template-stamp-types (as ptr ut) argts 1 line)))))
                 (let (ut:?ptr:UnionTemplate (union-template-lookup-ref "Result"))
                   (when (= ut null)
-                    (die-at line "!T: (Result T E) template not in scope (import the prelude)"))
+                    (die-at line (missing-template-message "!T" "Result")))
                   (let (argts:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
                     (aset! (as ptr:ptr argts) 0 inner)
                     (aset! (as ptr:ptr argts) 1 (as ptr ty-err))
@@ -1986,7 +1983,7 @@
               ; Any other payload: stamp the value-Maybe template.
               (let (ut:?ptr:UnionTemplate (union-template-lookup-ref "Maybe"))
                 (when (= ut null)
-                  (die-at line "(Maybe T): value-Maybe template not in scope (import the prelude)"))
+                  (die-at line (missing-template-message "(Maybe T)" "Maybe")))
                 (let (argts:ptr (arena-alloc (ptr-bytes)))
                   (aset! (as ptr:ptr argts) 0 inner)
                   (return (union-template-stamp-types (as ptr ut) argts 1 line))))))))

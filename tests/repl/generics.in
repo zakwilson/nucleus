@@ -1,0 +1,40 @@
+; Stage 16 R3 (design/stage16-ergonomics/repl-libraries.md §3.2). Four
+; producers feed `g-mono-worklist` — parametric stamps, lambda lifting, closure
+; invoke/drop and the blanket-impl path — and the REPL drained none of them, so
+; every one of these forms named a function nothing defined (D3).
+;
+; 1. A bounded-generic template. It emits no `define` at all, so the thunk /
+;    @name.impl.N machinery has nothing to rename; it used to report a spurious
+;    `redefinition: lookup of ident.impl.0 failed` before printing `defined`.
+(defn ident (x:T :where (Any T)):T (return x))
+(ident 5)
+; 2. The SAME instance three entries later. `g-mono-drained` is a persistent
+;    cursor, so this call gets no body of its own — it resolves against the
+;    `declare` the first call left in the preamble (§3.2 constraint 3).
+(if (> 2 1) 10 20)
+(if (> 2 1) 30 40)
+(ident 7)
+(ident 9)
+; 3. A lambda in expression position: lambda lifting queues @__fn_lift_N on the
+;    same worklist.
+((fn (x:i32):i32 (* x 2)) 5)
+((fn (x:i32):i32 (+ x 100)) 5)
+; 4. §3.2 constraint 4. `useit` stamps `ident.i64` while its own body is being
+;    emitted; redefining `useit` removes that impl's resource tracker. A stamp
+;    drained into the impl module would be un-defined by the removal, and the
+;    call below would fail to link.
+(defn useit (n:i64):i64 (return (ident n)))
+(useit 5)
+(defn useit (n:i64):i64 (return (+ 1 (ident n))))
+(useit 5)
+(useit 41)
+; 5. Collection literals need the prelude's templates and the drain together.
+(import-use vector)
+(let (v [1 2 3]) (v 2))
+(let (v [4 5 6]) (unsafe/cast i32 (count v)))
+; 6. Stage 16 R4 (§3.3): a CAPTURING closure. Its `%__vfn_env_N` type line went
+;    into the module's def buffer while the `invoke` body it types is drained
+;    into the mono-flush module — `base element of getelementptr must be sized`
+;    on every capturing lambda typed at the prompt, before or after R3.
+(let (k 7) (let (g (vfn (a:i32):i32 (+ a k))) (g 1)))
+(let (k 9) (let (g (vfn (a:i32):i32 (+ a k))) (g 2)))

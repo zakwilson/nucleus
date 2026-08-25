@@ -1113,6 +1113,9 @@
                              (ir-name-token (strip-ns-qualifier (as ptr name)))))))
     (.set! sd num-fields 0)
     (.set! sd emitted 0)
+    (.set! sd emit-epoch 0)
+    (.set! sd in-type-buf 0)
+    (.set! sd in-preamble 0)
     (.set! sd laid-out 0)
     ; W3a: a fresh registration is not opaque — `opaque` marks a type whose
     ; layout is known to be *unavailable* (a C forward declaration), which only

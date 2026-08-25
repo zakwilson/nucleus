@@ -1,0 +1,45 @@
+; Stage 16 R2 (design/stage16-ergonomics/repl-libraries.md §3.1): the REPL boots
+; by evaluating (import-use prelude) through the ordinary import arm, so a
+; session sees the same types a batch compile does. One form per line.
+;
+; 1. all seven NODE-* ordinals — the hand mirror this replaced registered only
+;    the first four, so NODE-FLOAT/NODE-KEYWORD/NODE-CHAR typed differently here
+;    than in a batch compile (D1).
+NODE-INT
+NODE-STR
+NODE-SYM
+NODE-CELL
+NODE-FLOAT
+NODE-KEYWORD
+NODE-CHAR
+; 2. the standard macros still load — the prelude imports lib/macros.nuc itself
+(-> 3 (+ 4))
+(if (> 2 1) 10 20)
+; 3. "string.h" is imported by the prelude AND preloaded by repl-include-all-libc;
+;    header dedup must make both that and a prompt-typed repeat silent
+(import-use "string.h")
+(import-use "stdio.h")
+; 4. a library whose types come from the prelude imports cleanly. Pre-R2 this
+;    died with "unknown type: StrView" (D1), and importing the prelude to fix
+;    that died with "redefinition of type %Node" (D2).
+(import-use strview)
+; 5. the prelude's templates and types are usable at the prompt
+(defn r2-half (n:i32):?i32 (when (= (% n 2) 0) (return (some (/ n 2)))) (return (none)))
+(match (r2-half 8) ((some v) (printf "half %d\n" v)) ((none) (printf "odd\n")))
+(match (r2-half 7) ((some v) (printf "half %d\n" v)) ((none) (printf "odd\n")))
+(defn r2-view-len (s:(ref StrView)):usize (return (s len)))
+; 6. Stage 16 R4 (§3.3, D6): a `?T` whose union type NO earlier entry stamped.
+;    Its `%Maybe.i16` line goes into this form's own module, and pre-R4 the
+;    process-wide `emitted` latch meant the next entry never saw it again —
+;    `IR parse error: Cannot allocate unsized type %Maybe.i16`.
+(defn r4-halve (n:i16):?i16 (when (= (% n 2) 0) (return (some (/ n 2)))) (return (none)))
+(match (r4-halve 8) ((some v) (printf "half %d\n" v)) ((none) (printf "odd\n")))
+(match (r4-halve 7) ((some v) (printf "half %d\n" v)) ((none) (printf "odd\n")))
+; 7. Stage 16 D9 (§3.3): a `defstruct` inside a `(compile-time …)` block used to
+;    write its `%D9Pt` line into the CT module's own type buffer, which no later
+;    module carries, so the next entry naming the type died `IR parse error: base
+;    element of getelementptr must be sized`. D9 ruled it a program type, so the
+;    line goes to the module's type buffer and the preamble carries it.
+(compile-time (defstruct D9Pt x:i32 y:i32))
+(defn d9-sum (a:i32 b:i32):i32 (let (q:ptr:D9Pt (as ptr:D9Pt (alloca D9Pt))) (.set! q x a) (.set! q y b) (return (+ (q x) (q y)))))
+(d9-sum 3 4)

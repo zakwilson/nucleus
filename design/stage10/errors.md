@@ -933,6 +933,20 @@ path)."
   separate adoption than the reader. The `--emit-cheader` template-instance gap
   (§11.7) is untouched because no *exported* surface adopted `!T`.
 
+- **`!void` is the gate on every further increment** (recorded 2026-08-24 while
+  designing [repl-libraries.md](../stage16-ergonomics/repl-libraries.md) §3.6).
+  `try` propagates only inside a function already declared `!T`, so converting
+  one `die-at` forces its whole transitive call graph to `!T` — and emit
+  functions overwhelmingly return `void`, which `!T` cannot yet express
+  (`docs/strings.md:329`; workaround is `!i32` with `0` for success). That, not
+  a lack of will, is why the coercion path above has stayed unconverted: 634
+  `(die-at` sites across 235 of `src/`'s 1048 `defn`s as of 2026-08-24, roughly
+  double the ~347 at E4. Implement `!void` before scoping the next increment.
+  The payoff that justifies the cost is **multi-error reporting** — `die-at`
+  calls `exit(1)` and `src/` has no error-count machinery, so the compiler
+  reports one error per run — not REPL recovery, which the REPL gets far more
+  cheaply from a reshaped `setjmp` shim (repl-libraries.md §3.4).
+
 **Phase C1 landed (N2 cold-site cleanup, 2026-06-14)** (`make test` 71/71,
 `make bootstrap` fixed point). The ~25 guarded `(cast ptr:Sym (scope-lookup …))`
 nullable-launder casts in cold emitter paths (defvar/defconst/inc-dec/addr-of

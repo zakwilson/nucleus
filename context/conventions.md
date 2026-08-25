@@ -523,6 +523,21 @@ it. Note the symmetry with §4.6's AVR rule in `design/global-init.md` — "a
 mechanism that is emitted but never runs" is the same defect in both places, and
 neither is visible without looking at the value.
 
+The sharper consequence, found in Stage 16 R5: **at the prompt, the file at depth
+1 is the IMPORTED one.** The prompt itself is depth 0, so an import's own frame
+occupies the depth batch reserves for the unit's root — and anything a depth-1
+block treats as "this unit" is then a *library*. `(set! g-real-reachable
+g-prescan-sigs)` is the case that bit: it re-sampled from inside a file an
+`import-ct` was sinking, adding that file to the "reachable for real" set. Since
+`do-import` asks `ct-sink-here` three times (choose the sink, pass it to
+`emit-import-forms`, decide which list to file the path on), the first call said
+"sink" and the third said "real" — so a compile-time-only import was recorded on
+`g-imported`, the EMITTED list, and a later real import of the same library was
+deduplicated away with nothing emitted for it. Now guarded on `g-ct-emitting`.
+Two rules: before putting anything in a depth-1 block, ask what it means when the
+depth-1 file is a library; and a question whose answer depends on mutable state
+gets asked **once** and reused, not re-asked per use site.
+
 ## Emitting a function mid-emission needs the worklist, not a direct `emit-defn`
 
 `emit-defn` calls `reset-function-state`, clobbering the per-function streams
@@ -707,6 +722,15 @@ file bytes (`global-section-prefix` is the single decision).
 Consequence for measuring a codegen change: normalize `weak_odr` away before
 diffing IR, exactly as you strip SSA names (see the bootstrap-gate section
 above), or every multi-file program looks like it moved.
+
+`internal` has a second consumer that batch reasoning misses: **the REPL
+assembles one module per entry**, so "private to this module" hides a private
+definition from every later entry that can spell it. `def-linkage` therefore
+returns `weak_odr` for a private definition under `g-interactive`; without it
+`(unsafe/import-private lib p)` imports `p/secret` successfully and then dies
+`Symbols not found: [ …p1__secret ]` at the call (Stage 16 R5). Batch is
+unaffected because `g-interactive` is 0 there — which is also what keeps the
+change out of the byte-identical bar.
 
 ## The want channel: target-typed construction (TC-1..TC-5)
 
@@ -1060,8 +1084,8 @@ breaks. **`ir-name`** is the LLVM-safe spelling (`?`→`_QMARK`, `!`→`_BANG` v
 `ir-name-token`; every other char, hyphens included, unchanged) and is what **every**
 `%Name` reference and definition prints, so a `(defstruct Full? …)` emits legal
 `%Full_QMARK`, not `%Full?`. `ir-name` is computed **once** in `register-struct`
-(src/abi.nuc) — the sole StructDef allocator (`repl-register-node`, the anon-struct/
-union, fatptr/boxedfn/dyn, and closure-env builders all route through it), so setting
+(src/abi.nuc) — the sole StructDef allocator (the anon-struct/union, fatptr/boxedfn/dyn,
+and closure-env builders all route through it), so setting
 it there covers 100% of StructDefs. For a name without `?`/`!`, `ir-name-token` is a
 pointer-identity no-op, so `ir-name == name` and the whole compiler self-IR is
 byte-identical.
@@ -1176,33 +1200,27 @@ canonical string pointer). The three field-access paths — `.` (`emit-field-get
 the `get` intrinsic (`emit-get-intrinsic`), and the non-emitting type pass
 (`node-type-field`) — all route through `struct-field-index`, so they cannot drift.
 
-There are exactly **two** places that populate a StructDef's `field-names`:
-`emit-defstruct` (the normal path, incl. `.nuch` imports) and `repl-register-node`
-(the REPL's hand-built `Node`). **Both must intern each name** (`(intern-str fname)`).
-A raw string literal would `strcmp`-equal a selector but **not** be pointer-identical,
-so the field would silently look absent (`-1` ⇒ "no field" / null type). If you add a
-third StructDef builder, intern its field names too. The `make bootstrap` fixed point
-does **not** exercise the REPL path — the `repl-redefinition` test does (its `*`/`-`/`if`
-macros do `(. (cast ptr:Node args) cdr)` at expansion time), so keep `make test` green,
-not just `make bootstrap`, when touching field interning.
+There is exactly **one** place that populates a StructDef's `field-names`:
+`emit-defstruct` (the normal path, incl. `.nuch` imports). It **must intern each name**
+(`(intern-str fname)`). A raw string literal would `strcmp`-equal a selector but **not**
+be pointer-identical, so the field would silently look absent (`-1` ⇒ "no field" / null
+type). If you add a second StructDef builder, intern its field names too. The
+`make bootstrap` fixed point does **not** exercise the REPL path — the
+`repl-redefinition` test does (its `*`/`-`/`if` macros do `(. (cast ptr:Node args) cdr)`
+at expansion time), so keep `make test` green, not just `make bootstrap`, when touching
+field interning.
 
-**Field TYPES drift too — `repl-register-node` must mirror `lib/prelude.nuc`'s `defstruct Node`.**
-The same lockstep that applies to field *names* applies to field *types*: every field-type
-slot `repl-register-node` writes must match the canonical `defstruct Node` in
-`lib/prelude.nuc` (and `lib/list.nuc`). When `car`/`cdr` were retyped `ptr`→`(raw Node)`
-for macro ergonomics, `repl-register-node` was missed and kept assigning bare `ty-ptr`.
-The symptom is subtle: a macro that reads `(p car)` once and binds it works (bare `ptr`
-flows into a `(raw Node)` slot), but a macro that **chains** without a cast — e.g.
-`((spec cdr) car)` in `dotimes` (lib/macros.nuc) — dies in `emit-get-intrinsic`
-(src/nucleusc.nuc:~2056, "callable value: not callable — no matching get/invoke method
-and not a pointer-to-struct") because `(spec cdr)` returns an untyped `ptr` (elem=null),
-so `ek` resolves to `TY-VOID` and the `TY-STRUCT`/`TY-UNION` gate fails. This fires the
-moment the REPL JITs any new-ergonomics macro, so `nucleusc -i` dies at startup inside
-`repl-preload-macros` and `(import-use macros)` dies interactively even with the preload
-removed — the failure is independent of *when* the macro library loads. Build the typed
-slot with the same pattern the macro emitter uses (src/nucleusc.nuc, `make-type TY-PTR`
-+ `elem` = `(parse-type-name "Node" 0)` + `pkind PTR-RAW`); `parse-type-name` succeeds
-because `register-struct "Node"` already ran earlier in the same function.
+**A hand-mirrored struct drifts in its field TYPES too, and Stage 16 R2 removed the
+only one.** `repl-register-node` used to build `Node` by hand for the REPL, and had to
+mirror `lib/prelude.nuc`'s `defstruct Node` slot for slot. It did not: when `car`/`cdr`
+were retyped `ptr`→`(raw Node)` the mirror kept bare `ty-ptr`, and three `NODE-*`
+ordinals were never registered at all. The bare-`ptr` symptom is worth knowing on its
+own — a macro that reads `(p car)` once works, while one that **chains** without a cast
+(`((spec cdr) car)` in `dotimes`) dies in `emit-get-intrinsic` with "callable value: not
+callable", because `(spec cdr)` returns an untyped `ptr` (elem=null) so `ek` resolves to
+`TY-VOID` and the `TY-STRUCT`/`TY-UNION` gate fails. The REPL now imports the real
+prelude instead (`repl-preload-prelude`), which is why the drift is gone rather than
+merely fixed; see design/stage16-ergonomics/repl-libraries.md §3.1.
 
 ## `()` reads as a **NULL node** — never deref a user-supplied node without `node-line`/a guard
 
@@ -2335,11 +2353,13 @@ but phantom parameters.
 `g-pending-unions` + `pending-union-deps-ready` + `drain-pending-union-irs`
 (`src/union-registry.nuc`) exist because a parametric instance can be *stamped*
 long before the `defstruct` its fields name has been processed. The contract is
-narrow and easy to state: **`StructDef.emitted` means "this type's definition is
+narrow and easy to state: **`sdef-in-module` means "this type's definition is
 already in the module currently being assembled", and a type's line enters the
-shared buffer only once every named type it references is there.** Every module
+buffer only once every named type it references is there.** Every module
 assembly point (batch flush, `emit-compile-time`, the macro JIT, the REPL) drains
-first, so a type deferred at one drain lands at a later one.
+first, so a type deferred at one drain lands at a later one. (Stage 16 R4 split
+that question out of `StructDef.emitted`, which now means only "this type has a
+definition at all" — see "A latch is a claim about a buffer" below.)
 
 **Any path that writes a type line outside the queue must re-establish that
 contract itself, and one did not.** `defunion-register` wrote a union's backing
@@ -4483,7 +4503,7 @@ module streams (`g-type-stream`/`g-decl-stream`/`g-def-stream`) are **closed**;
 them.
 
 The tell that this class hides well: the prelude's own macros load through
-`repl-preload-macros`, a different path, so the REPL could expand `when`,
+`repl-preload-prelude`, a different path, so the REPL could expand `when`,
 `dotimes` and `->` perfectly while dying on the first macro a user wrote. When
 adding a `repl-eval-form` arm, ask whether the emitter it calls writes to a
 module stream — and if so, open one, as its neighbours do.
@@ -4516,9 +4536,10 @@ declaration stream too, and `lib/arena.nuc`'s own `defmacro` then JIT'd a
 The cause generalizes past that one flag. The compiler keeps a family of
 booleans meaning *"this line is in the module, do not write it again"* —
 `g-malloc-decl-done`, `g-trap-declared`, `g-boxdrop-emitted`, `g-nuch-registered`,
-`StructDef.emitted`, `g-mono-drained`. Every one of them is a claim about a
-buffer. Point that buffer somewhere else and the claim is false, and the symptom
-lands far away: in a *different* module, at a line nobody edited.
+`g-mono-drained` (and, until Stage 16 R4, `StructDef.emitted`). Every one of them
+is a claim about a buffer. Point that buffer somewhere else and the claim is
+false, and the symptom lands far away: in a *different* module, at a line nobody
+edited.
 
 Two rules that follow:
 
@@ -4531,6 +4552,110 @@ Two rules that follow:
   as emitted by `g-mono-drained`, and the *program* may be what calls it — so
   `drain-mono-worklist` writes to `g-def-stream-program`, which always names the
   module's own stream, rather than to `g-def-stream`, which may be a sink.
+
+## A latch is a claim about a buffer — name the buffer, or the module must stop having two
+
+`StructDef.emitted` meant "this type's `%Name = type {…}` line has been written
+**once in this process**". In batch there is one module, so once is right; the
+REPL opens a fresh stream trio per prompt entry and frees the buffers, so a type
+written into a module that is then discarded — or into an arm that did not copy
+its type buffer forward — was marked emitted forever. Stage 16 R4 replaced it
+with `emit-epoch` + `in-type-buf` + `in-preamble` on the StructDef and two
+functions in `src/type-utils.nuc`: `sdef-in-module` (every read that meant
+"already present here") and `sdef-note-emitted` (every write). `emitted` keeps
+only "does this type have a definition at all", which is the question the
+`defstruct`/`defunion` redefinition diagnostics ask — the same split W9 item 40
+made for `laid-out`, and for the same reason.
+
+Four things that generalize, and one that bites:
+
+- **Recording the epoch is not enough; the type needs a way back.** A stale epoch
+  only says "re-emit me"; something has to actually do it. Only queued types
+  (`g-pending-unions`) have that path, which is why R4 also queues
+  `lookup-or-make-anon-struct`'s eager write. **Deferring the write itself is a
+  different change and is not IR-neutral** — position within the type section is
+  observable, so routing those lines through the drain moves every one of them.
+  Queue *and* write eagerly: the drain then finds `sdef-in-module` already true
+  and skips.
+- **Ad-hoc "copy this forward" sites do not collapse by tidying the call sites.**
+  A REPL module used to be assembled as *preamble + this module's own type
+  buffer*, which is precisely why the preamble could only be appended to after
+  the JIT and why each arm carried its own `strdup`. Making the preamble the
+  module's whole type section — absorb *before* assembly, emit no separate type
+  buffer — produces byte-identical module text and makes one shared rule
+  possible. Look for the structural reason a duplicated step could not be shared
+  before assuming the duplication was laziness.
+- **A module assembled INSIDE another shares its preamble.** `repl-flush-mono`
+  drains into its own module while the entry's module is still open. Once
+  "emitted" became per-module, its drain correctly judged the entry's types
+  absent and re-emitted them — and the entry's module then defined them twice.
+  The fix is to close the entry's type buffer into the preamble *first*
+  (`repl-cycle-type-buf`) so both read them from there. Whenever a nested module
+  appears, ask which buffers the two share.
+- **Not every type line goes to the type buffer.** `fn-make-env-struct` writes
+  `%__vfn_env_N` to `g-out` — the *def* stream. (`emit-defstruct` under
+  `emit-compile-time` used to write to that module's own type stream; D9 ruled
+  that a CT `defstruct` defines a *program* type and moved it.) A per-module
+  "carry these forward" mark must know which, or it records a false claim; that
+  is what `in-type-buf` is for, and it is deliberately **not** consulted by
+  `sdef-in-module`, so outside the REPL `sdef-in-module` is identically `emitted`
+  and no batch decision can move.
+
+(Stage 16 R4, design/stage16-ergonomics/repl-libraries.md §3.3.)
+
+## Queueing buys recoverability across EPOCHS, not across BUFFERS — and a CT module shares the batch epoch
+
+The sequel (Stage 16 D9). `sdef-note-emitted sd out` stamps the *current*
+`g-module-epoch` whatever `out` is, so a type written into a module that is
+assembled **inside** the current epoch — a `compile-time` or macro JIT module,
+with its own type buffer — claims to be present in the epoch's real module and
+is not. The recovery path R4 built is the pending queue, and it only fires once
+`sdef-in-module` goes false, i.e. once the epoch advances. **The REPL advances
+it at every prompt entry; batch never does.** So giving `emit-defstruct` a queue
+entry makes a `(compile-time (defstruct P …))` recoverable at the prompt and
+did nothing at all in batch, where the same program emitted `%P` references with
+no `%P = type` line, exited **0**, and died later at the LLVM parser.
+
+Two rules follow. **A type that must appear in two buffers of one epoch has to
+be written into the shared one** — queueing cannot move it sideways. That is how
+the batch half was actually fixed: `emit-compile-time`'s `defstruct` arm sets
+`g-out` to `g-type-stream`, not to the CT module's own `ct-type`. And when you
+add a queue entry beside an eager write, state which of the two questions it
+answers: "replay me into the next module" (epochs) or "put me where both modules
+read from" (buffers). D9 has both, and the queue entry is now the redundant one
+— kept as a standing invariant, measured inert, not a live fix.
+
+The queue entry is still worth having and is IR-inert, but only because the two
+renderers agree character for character. Prove that before adding one:
+`emit-pending-struct-ir-type` (`src/union-registry.nuc`) and `emit-defstruct`
+(`src/nucleusc.nuc`) share a header, a `", "` separator and a `" }\n\n"`
+terminator; the field **count** is equal because `defstruct-fill-layout`
+computes `(- (node-len cc) 2)` from the same node and `struct-set-fields` stores
+it as `num-fields`; the field **types** are equal because `struct-set-fields`
+stores the very array the eager write prints from; and no padding or repr member
+is inserted, because that rule lives in `emit-union-ir-type` and it dispatches
+to the plain renderer whenever `is-union` is 0.
+
+## A module-assembly point must flush the shared buffers AT the assembly, not at the top of the function
+
+Same step, and the plainer half. `emit-compile-time` and `compile-macro-body`
+each build a JIT module out of the *program's* `g-type-bufp` / `g-decl-bufp`
+plus their own. `compile-macro-body` drains and flushes immediately before
+copying them; `emit-compile-time` did it at the **top** of the function and then
+emitted the whole CT body in between — so every type the body itself stamped
+(`?i32` stamps `%Maybe.i32`) reached `g-type-stream` after `g-type-bufp` was
+last materialized, and the module referenced a type it did not define.
+
+`open_memstream`'s buffer pointer is only meaningful as of the last flush, so
+"I flushed at the start" is a claim about a buffer that the intervening work
+invalidates. Put the drain-and-flush next to the `fputs` that reads the buffer,
+never at the top of the emitter — the two are separated by hundreds of lines
+here, which is exactly why it survived.
+
+Note which gate can see this: a `--emit-llvm` corpus sweep compares **program**
+modules and is blind to CT-module IR by construction, so a change to what a
+compile-time or macro module contains needs a gate that compiles a program with
+such a block and asserts the block's own output.
 
 ## A "discard this file" mode is per FILE, and must be set in both directions
 
@@ -4789,6 +4914,70 @@ The symptom is a hang, not a crash, so it does not show up as a failing test
 unless something bounds the run: exercise a cycle through *every* path that can
 expand, and give the check a `timeout`.
 
+## One marker cannot mean both "in progress" and "done" — split it, don't move it
+
+`prescan-imported-signatures` pushed a path onto `g-prescan-sigs` *before*
+reading the file, and `emit-toplevel-forms` reads that same list to decide
+whether the file's signatures are already registered. Under the REPL, where a
+`die-at` unwinds instead of exiting, a prescan that died left the marker and not
+the registration, and the later real import skipped the prescan it never
+performed. The obvious repair — move the push to after the prescan — is
+**unsound**: the pre-order push is also the walk's cycle breaker, and a cycle
+that does not include the unit root (`A → B → C → B`) then recurses forever,
+because the root is the only file the walk finds already on the list.
+
+Two markers, not one moved marker: `g-prescan-inflight` is pushed before the
+read and popped after (the cycle breaker), `g-prescan-sigs` only once the
+prescan actually ran (the claim `sigs-done` reads). Whenever a single list is
+serving both "do not re-enter this" and "this is finished", assume the two want
+different lifetimes and check every *reader* to see which question it is asking:
+`path-in-unit-exact` was asking the first, so it had to be taught to consult the
+new list or it would silently start answering a narrower question. (Stage 16 R1,
+design/stage16-ergonomics/repl-libraries.md §3.4.)
+
+## `setjmp` in a helper that has returned is UB — pass the body as a callback
+
+The REPL's shim used to be `repl_try()` → `setjmp` in **its own** frame, with
+the caller running the risky work after it returned. Every `repl_throw` was
+therefore a `longjmp` into a dead frame; it appeared to work on glibc/x86-64 and
+is exactly the kind of thing a new target or LLVM breaks. The fix is a
+**protected call** — `repl_protect(body, ctx)` runs `body(ctx)` while its own
+`setjmp` frame is live and returns 0/1 — and it removes a second bug for free:
+with two sequential `repl_try` calls around one body, "which call re-armed the
+buffer?" is invisible in the source, and the recovery arm had been dead code for
+a whole stage without anyone noticing. Keep a depth counter beside the buffer so
+a throw from a path **no** protect covers exits with a message instead of
+jumping somewhere undefined.
+
+Handing C the callback needs no cast, but only if you type the *parameter*:
+`(declare repl_protect (body:(fn void)(ptr) ctx:ptr):i32)` accepts a bare `defn`
+name as the argument. `(as ptr some-defn)` is refused (`as: reinterpretation
+from __fnty_0 to ptr`), so a `ptr`-typed shim parameter forces an
+`unsafe/cast` at every call site.
+
+## A longjmp skips every save/restore on the stack — spell the roster once
+
+`die-at` under the REPL unwinds through `do-import` and `emit-toplevel-forms`
+without running one of their `let`-save / `set!`-restore pairs, because every one
+of them sits *after* the call that died. Each site is correct in isolation and
+none survives the unwind, so the answer is not more save/restore pairs — it is
+one `ReplState` snapshot taken at the top of every top-level form and one
+`repl-restore` on the unwind path (`src/repl.nuc`). Two things generalize:
+
+- **Registry mutations are not stack saves, and need their own watermark.** The
+  registries are append-only, so the watermark is a count (a `Vector`) or a head
+  pointer (a prepend-only cons list). A *nested* append needs a nested watermark:
+  truncating `g-generics` recovers only the generics a died import **created**,
+  while `generic-register-method` also appends to pre-existing ones — hence
+  `GenericMark`, which also restores `finalized`/`mangled` because
+  `generic-add-method` clears `finalized` as a side effect.
+- **Roll back the whole family or none of it.** The three erasure memo tables
+  (`g-vtable-table`, `g-boxedfn-table`, `g-dyn-table`) each hand back a
+  `StructDef`; keeping an entry whose `StructDef` was just truncated resolves to
+  a type no longer in `g-structs`. Where truncation genuinely is not available
+  (an `open_memstream`, a pool an already-emitted line references), record the
+  registry and the reason in the design doc rather than leaving the gap silent.
+
 ## A `case` arm takes exactly one expression — inserting a second silently reparses
 
 Adding a form to the top of an existing `case` arm in the compiler's own source
@@ -4797,3 +4986,21 @@ turns the *next* form into a case LABEL, because `case` reads arms as
 type error on the label, e.g. `= expects integer operands` pointing at the
 `case` head. Wrap the arm in `(do …)` when it grows past one form; the same
 applies to a `cond` clause body.
+
+## The REPL preamble is a second module buffer, and per-module declare latches are blind to it
+
+`macro-jit-declare-raw` dedups against `g-macro-decls`, a list scoped to the CT
+module it is writing. Under the REPL that module is assembled as **preamble +
+ct-decl + ct-def**, and the import arm's declare-backfill may already have put
+the same line in the preamble — so a second `declare ptr @alloc-node()` lands in
+one module and LLVM refuses it with `invalid redefinition of function`. Reproduce
+with `(import-use error)` then `(import-use arena)`: `lib/error.nuc` does
+`(import-ct node)`, which registers `alloc-node` as a `TY-FN` global, and
+`lib/arena.nuc`'s `defmacro new` builds a node.
+
+It predates Stage 16 R2 (the pre-R1 boot binary fails identically) and R2 only
+made it reachable, by making both imports succeed on their own. The rule it
+generalizes to: a latch scoped to the freshly-opened buffers is a claim about
+*part* of the assembled module, so every REPL emission site that has one must
+also consult the preamble. Filed as D8 in
+design/stage16-ergonomics/repl-libraries.md.

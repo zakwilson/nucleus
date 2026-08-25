@@ -9862,6 +9862,95 @@ EOF
 }
 spawn run_s16_parametric_aliases
 
+# Stage 16 D9 (design/stage16-ergonomics/repl-libraries.md §3.3): a type is
+# recoverable across modules only if it is queued or absorbed. The batch-visible
+# half is a missing flush — `emit-compile-time` materialized `g-type-bufp` at its
+# TOP and copied it into the CT module at assembly, so any type the CT body
+# itself stamped was written to the stream after the buffer was last read and
+# never reached the module. `compile-macro-body` has always re-drained; this is
+# that same pair of lines.
+run_s16_d9_ct_types() {
+  local d n dup
+  d="$(mktemp -d)"
+
+  # 1. A `?i32` whose `%Maybe.i32` is stamped INSIDE the compile-time body.
+  #    Pre-D9: `IR parse error: Cannot allocate unsized type %Maybe.i32`. This is
+  #    a batch failure, not a REPL one — the design note framed it as REPL-only.
+  cat > "$d/d9-ct-stamp.nuc" <<'EOF'
+(import-use "stdio.h")
+(compile-time
+  (defn d9-ct-maybe (n:i32):?i32 (some n))
+  (match (d9-ct-maybe 7)
+    ((some v) (printf "d9 ct some %d\n" v))
+    (none (printf "d9 ct none\n"))))
+(defn main ():i32 (return 0))
+EOF
+  ./build/nucleusc --emit-llvm "$d/d9-ct-stamp.nuc" > "$d/d9-ct-stamp.ll" 2> "$d/ct.err" || true
+  if qgrep -F 'd9 ct some 7' "$d/ct.err" && ! qgrep -F 'IR parse error' "$d/ct.err"; then
+    echo "PASS  s16-d9-ct-body-stamp"
+  else
+    echo "FAIL  s16-d9-ct-body-stamp"
+    sed 's/^/    got: /' "$d/ct.err" | head -4
+  fi
+
+  # 2. The drain that fixes (1) writes into the PROGRAM's type buffer, and the
+  #    final drain runs over the same queue — so the line must arrive exactly
+  #    once. A count, not a presence test: a double-emit is what a re-drain
+  #    gets wrong, and LLVM rejects the module rather than picking one.
+  n="$(grep -c '^%Maybe\.i32 = type' "$d/d9-ct-stamp.ll" 2>/dev/null || true)"
+  if [ "$n" = "1" ]; then
+    echo "PASS  s16-d9-ct-type-once"
+  else
+    echo "FAIL  s16-d9-ct-type-once"
+    echo "    got: %Maybe.i32 defined $n times"
+  fi
+
+  # 3. `emit-defstruct` now queues every StructDef it writes, so the shared
+  #    drain sees types whose line is already in the buffer. `sdef-in-module` is
+  #    what keeps that inert; assert it by counting, over a program with several
+  #    structs, that no type is defined twice.
+  ./build/nucleusc --emit-llvm examples/struct.nuc > "$d/struct.ll" 2>/dev/null || true
+  dup="$(grep -oE '^%[^ ]+ = type' "$d/struct.ll" | sort | uniq -d | head -3 || true)"
+  if [ -s "$d/struct.ll" ] && [ -z "$dup" ]; then
+    echo "PASS  s16-d9-no-duplicate-type-lines"
+  else
+    echo "FAIL  s16-d9-no-duplicate-type-lines"
+    printf '%s\n' "$dup" | sed 's/^/    dup: /'
+  fi
+
+  # 4. The ruling: a `defstruct` inside a `compile-time` body defines a PROGRAM
+  #    type, so its line goes to the module's own type buffer rather than the CT
+  #    module's. Pre-D9 this exited **0** from `--emit-llvm` with three `%D9P`
+  #    references and no `%D9P = type` line, and died only at `-o`. Three
+  #    assertions in one, because each catches a different way to get it wrong:
+  #    the count is 1 (0 = the old bug; 2 = written to both buffers), the binary
+  #    links, and it computes. The CT module's own copy is checked by the absence
+  #    of `IR parse error` — LLVM refuses a duplicate `%X = type` outright, so a
+  #    module that parses contains the line exactly once.
+  cat > "$d/d9-ct-struct.nuc" <<'EOF'
+(import-use "stdio.h")
+(compile-time (defstruct D9P x:i32 y:i32))
+(defn d9-sum (a:i32 b:i32):i32
+  (let (q:ptr:D9P (as ptr:D9P (alloca D9P)))
+    (.set! q x a) (.set! q y b) (return (+ (q x) (q y)))))
+(defn main ():i32 (printf "%d\n" (d9-sum 3 4)) (return 0))
+EOF
+  ./build/nucleusc --emit-llvm "$d/d9-ct-struct.nuc" > "$d/d9-ct-struct.ll" 2> "$d/cs.err" || true
+  n="$(grep -c '^%D9P = type' "$d/d9-ct-struct.ll" 2>/dev/null || true)"
+  ./build/nucleusc "$d/d9-ct-struct.nuc" -o "$d/d9-ct-struct.bin" >> "$d/cs.err" 2>&1 || true
+  out="$("$d/d9-ct-struct.bin" 2>/dev/null || true)"
+  if [ "$n" = "1" ] && [ "$out" = "7" ] && ! qgrep -F 'IR parse error' "$d/cs.err"; then
+    echo "PASS  s16-d9-ct-defstruct-is-program-type"
+  else
+    echo "FAIL  s16-d9-ct-defstruct-is-program-type"
+    echo "    got: %D9P = type x$n, ran '$out'"
+    sed 's/^/    /' "$d/cs.err" | head -3
+  fi
+
+  rm -rf "$d"
+}
+spawn run_s16_d9_ct_types
+
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided
 # by scanning buffered output, since `set -e` does not propagate across `&`).

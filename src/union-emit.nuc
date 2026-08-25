@@ -832,7 +832,7 @@
 (defn stamp-maybe-type (t:raw:Type line:i32):ref:Type
   (let (ut:?ptr:UnionTemplate (union-template-lookup-ref "Maybe"))
     (when (= ut null)
-      (die-at line "err handler: value-Maybe template not in scope (import the prelude)"))
+      (die-at line (missing-template-message "err handler" "Maybe")))
     (let (argts:ptr (arena-alloc (ptr-bytes)))
       (aset! (as ptr:ptr argts) 0 t)
       (return (union-template-stamp-types ut argts 1 line)))))

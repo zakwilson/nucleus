@@ -1,0 +1,17 @@
+Nucleus REPL (type Ctrl-D to exit)
+nuc> nuc> nuc> nuc> nuc> nuc>   imported hashset
+nuc>   1
+nuc>   0
+nuc> nuc> nuc> nuc>   111
+nuc>   333
+nuc>   1
+nuc> nuc>   1
+nuc>   0
+nuc> nuc> nuc> nuc>   imported vector
+nuc>   20
+nuc>   555
+nuc>   2
+nuc> nuc> nuc> nuc>   imported error
+nuc>   arena already imported
+nuc>   777
+nuc> 
