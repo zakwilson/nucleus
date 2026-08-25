@@ -1,0 +1,2 @@
+; The sibling of r1-import-fails.nuc: imports cleanly.
+(defn r1-works ():i32 (return 42))

@@ -4,7 +4,7 @@
 ; (g-globals, emit-defn, type registry, etc.) — this dependence is intentional
 ; since the REPL needs the full compiler API to evaluate forms incrementally.
 
-; The REPL shim FFI (repl_try / repl_throw / repl_print_f*) is declared in
+; The REPL shim FFI (repl_protect / repl_throw / repl_print_f*) is declared in
 ; src/nucleusc.nuc before this file is source-imported, so the symbols are
 ; already in scope here.
 
@@ -144,6 +144,22 @@
     (when (!= addr 0)
       (funcall-void (unsafe/cast ptr addr)))))
 
+; Non-zero while the session boots its own `(import-use prelude)`, which goes
+; through the ordinary import arm but is not something the user typed.
+(defvar g-repl-booting:i32 0)
+
+; Confirm what an import form did. Success and the dedup no-op were both silent,
+; so a swallowed retry looked exactly like a fresh import (repl-libraries.md §3.5).
+(defn repl-report-import (form:(raw Node) fresh:i32):void
+  (when (!= g-repl-booting 0) (return))
+  (let (nn:ptr (node-at form 1)
+        k:i32 (node-kind nn))
+    (when (and (!= k NODE-SYM) (!= k NODE-STR)) (return))
+    (let (name:ptr ((unsafe/cast ptr:Node nn) s))
+      (if (!= fresh 0)
+        (fprintf stderr "  imported %s\n" name)
+        (fprintf stderr "  %s already imported\n" name)))))
+
 ; Process a single REPL form: parse, compile to IR, JIT, and call.
 ; Returns the result type kind (TY-VOID, TY-I32, etc.) or -1 on error.
 (defn repl-eval-form (form:(raw Node)):void
@@ -187,6 +203,7 @@
                   (set! g-out g-decl-stream)
                   (emit-defvar (as ptr f))
                   (let (init-sym:ptr (repl-emit-init-fn))
+                    (repl-flush-mono (f line))
                     (repl-jit-module (f line))
                     (repl-run-init-fn init-sym (f line)))
                   ; Add external global reference to preamble AFTER successful JIT
@@ -210,7 +227,9 @@
                           ; arena_alloc) and mis-map `?`/`!` (full? → full_ vs
                           ; batch full_QMARK).
                           (fprintf g-repl-preamble "@%s = external global %s\n"
-                            (ns-ir-base vname) (type-to-ir vty))))))
+                            (ns-ir-base vname) (type-to-ir vty))
+                          (repl-preamble-note-decl
+                            (as CStr (fmt-s "@%s" (ns-ir-base vname))))))))
                   (fprintf stderr "  defined\n"))
             ; Stage 16: an alias emits no IR and defines no layout, so unlike
             ; defstruct it has no module to open and no preamble to push —
@@ -222,11 +241,9 @@
               (do (open-module-streams)
                   (set! g-out g-type-stream)
                   (emit-defstruct (as ptr f))
-                  ; Append type def to preamble for future modules
                   (drain-pending-union-irs)
                   (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
-                  (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp 0) 0))
-                    (fputs g-type-bufp g-repl-preamble))
+                  (repl-absorb-type-buf)
                   (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
                   (fprintf stderr "  defined\n"))
             (and (!= h null) (= h "defunion"))
@@ -249,26 +266,23 @@
                   (set! g-out g-def-stream)
                   (emit-defunion (as ptr f))
                   (drain-pending-union-irs)
-                  (fflush g-type-stream)
-                  (let (tcopy:ptr null)
-                    (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp 0) 0))
-                      (set! tcopy (strdup g-type-bufp)))
-                    (repl-jit-module (f line))
-                    (when (!= tcopy null)
-                      (fputs tcopy g-repl-preamble)
-                      (free tcopy)))
+                  (repl-flush-mono (f line))
+                  (repl-jit-module (f line))
                   (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at form 1)))
                     (when (= (nn kind) NODE-SYM)
                       (repl-declare-union-ctors (nn s))))
                   (fprintf stderr "  defined\n"))
             (and (!= h null) (= h "extern"))
-              (do (open-module-streams)
+              (let (pre-len:i32 ((as ptr:Scope g-globals) len))
+                  (open-module-streams)
                   (set! g-out g-decl-stream)
                   (emit-extern (as ptr f))
                   (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
+                  (repl-absorb-type-buf)
                   (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp 0) 0))
                     (fputs g-decl-bufp g-repl-preamble))
-                  (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp))
+                  (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
+                  (repl-note-globals-decls pre-len))
             (and (!= h null) (= h "defn"))
               ; Redefinition strategy: each defn produces a stable thunk
               ; @<fname> (defined once on first sight) that loads its current
@@ -287,6 +301,24 @@
                 (cond
                   (= fname null)
                     (repl-error (f line) "defn: missing name")
+                  ; R3 (repl-libraries.md §6): a bounded-generic / parametric-
+                  ; receiver template emits no `define` at all — it is stamped
+                  ; per call site — so the thunk + @name.impl.N machinery below
+                  ; has nothing to rename and reported a spurious
+                  ; `lookup of <name>.impl.0 failed`. Registering it is the
+                  ; whole job; the stamps are drained by repl-flush-mono at
+                  ; whichever entry first calls it.
+                  (!= (defn-is-generic-template (as raw:Node f)) 0)
+                    (do (open-module-streams)
+                        (let (one-form:ptr (make-cell form null (f line)))
+                          (prescan-defn-signatures one-form))
+                        (set! g-out g-def-stream)
+                        (emit-defn (as ptr f))
+                        (drain-pending-union-irs)
+                        (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
+                        (repl-absorb-type-buf)
+                        (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
+                        (fprintf stderr "  defined\n"))
                   true
                     ; Derive fname-ir the same way batch does for a solitary
                     ; defn: ns-ir-base composes the current namespace's prefix
@@ -382,7 +414,19 @@
                                           ((field-at (ft params) pi) type)
                                           null)
                                         (set! need-comma 1)))
-                                    (fprintf g-repl-preamble ")\n")))))))
+                                    (fprintf g-repl-preamble ")\n")
+                                    ; R3/D8: a later macro JIT module is
+                                    ; assembled with this preamble, so its own
+                                    ; declare latch has to know this line exists.
+                                    (repl-preamble-note-decl
+                                      (as CStr (fmt-s "@%s" fname-ir)))))))))
+                        ; R3 constraint 4: after the thunk (a lifted lambda can
+                        ; call @fname-ir recursively, so its declare must be in
+                        ; the preamble first) and into a module of its own — the
+                        ; tracker created below is removed on the next
+                        ; redefinition of THIS defn, which would take every
+                        ; unrelated stamp drained beside it.
+                        (repl-flush-mono (f line))
                         ; JIT the impl module under a fresh tracker, renaming
                         ; the captured "@fname-ir(" to "@impl-name(".
                         (let (rt:ptr (LLVMOrcJITDylibCreateResourceTracker g-jit-dylib))
@@ -399,8 +443,13 @@
                         (fprintf stderr "  redefined\n")
                         (fprintf stderr "  defined\n")))))
             (and (!= h null) (= h "compile-time"))
+              ; R4: the CT module is assembled inside emit-compile-time; close
+              ; this entry's own buffers after it and carry their types forward.
               (do (open-module-streams)
-                  (emit-compile-time (as ptr f)))
+                  (emit-compile-time (as ptr f))
+                  (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
+                  (repl-absorb-type-buf)
+                  (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp))
             (and (!= h null) (= h "defmacro"))
               ; open-module-streams first, exactly as the `compile-time` arm
               ; above does and for the same reason: compile-macro-body starts by
@@ -409,9 +458,12 @@
               ; prompt aborted the session with "glibc detected an invalid stdio
               ; handle" (pre-Stage-16 behaviour; reproduced on the stage-15
               ; boot). The prelude's own macros never hit this: they are loaded
-              ; through repl-preload-macros, not this arm.
+              ; through repl-preload-prelude, not this arm.
               (do (open-module-streams)
                   (emit-defmacro (as ptr f))
+                  (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
+                  (repl-absorb-type-buf)
+                  (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
                   (fprintf stderr "  defined\n"))
             (and (!= h null) (= h "def-rmacro"))
               (do (emit-def-rmacro (as ptr f))
@@ -471,28 +523,32 @@
                             (fprintf stderr "  ")
                             (fprint-node stderr expanded)
                             (fprintf stderr "\n")))))))
-            ; Stage 12 N7: the flatten import forms (`import-use`, `import-only`)
-            ; behave like the old `import` in the REPL — symbols enter g-globals
-            ; directly under their bare names and the declare-backfill below
-            ; surfaces them for later modules. The C-header string-path form
-            ; (`(import-use "stdio.h")`) flows through the same path; do-import
-            ; routes the .h string to emit-c-include and the backfill below
-            ; declares the parsed externs. The prefix-qualified forms (`import`,
-            ; `import-prefixed`, `unsafe-import-private`) inject ir-name-sharing
-            ; aliases that this name-keyed backfill would mis-declare, so they are
-            ; left to the compiler path for now.
+            ; All six import spellings. Stage 15 B2b retired the alias `Sym`s a
+            ; prefixed import injected, so the backfill below sees what a flat one gives.
             (and (!= h null)
-                 (or (= h "import-use") (= h "import-only")))
-              (do (let (pre-len:i32 ((as ptr:Scope g-globals) len))
+                 (or (or (= h "import-use") (= h "import-only"))
+                     (or (or (= h "import") (= h "import-prefixed"))
+                         (or (= h "import-ct") (= h "unsafe/import-private")))))
+              (do (let (pre-len:i32 ((as ptr:Scope g-globals) len)
+                        pre-imported:ptr g-imported
+                        pre-ct-imported:ptr g-ct-imported
+                        pre-aliased:ptr g-import-aliased)
                     (open-module-streams)
-                    (if (= h "import-only")
-                      (emit-import-only (as ptr f))
-                      (emit-import-use (as ptr f)))
+                    (cond (= h "import-use")  (emit-import-use (as ptr f))
+                          (= h "import-only") (emit-import-only (as ptr f))
+                          (= h "import-ct")   (emit-import-ct (as ptr f))
+                          (= h "unsafe/import-private")
+                            (emit-unsafe-import-private (as ptr f))
+                          true (emit-import-prefixed (as ptr f)))
                     ; Land lazily-emitted union type defs in this module's type
                     ; buffer, copy it, and append the copy to the preamble only
                     ; AFTER the module is JIT'd — the module itself already
                     ; includes both the preamble and its own type buffer, so an
                     ; early append would define every type twice.
+                    ; R3: emit-toplevel-forms already drains into THIS module at
+                    ; every depth, so this is normally a no-op; it is here for
+                    ; anything an import queues after that tail drain.
+                    (repl-flush-mono (f line))
                     (drain-pending-union-irs)
                     (fflush g-type-stream)
                     ; G-3 (§4.5): an imported file's `defvar` with a run-time
@@ -502,15 +558,17 @@
                     ; and call it after the JIT — otherwise the import would
                     ; register an `llvm.global_ctors` entry ORC never runs and
                     ; the global would silently read back its zero (measured).
-                    (let (init-sym:ptr (repl-emit-init-fn)
-                          tcopy:ptr null)
-                      (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp 0) 0))
-                        (set! tcopy (strdup g-type-bufp)))
+                    (let (init-sym:ptr (repl-emit-init-fn))
                       (repl-jit-module (f line))
-                      (repl-run-init-fn init-sym (f line))
-                      (when (!= tcopy null)
-                        (fputs tcopy g-repl-preamble)
-                        (free tcopy)))
+                      (repl-run-init-fn init-sym (f line)))
+                    ; R3 (D7): a stamp, a lifted lambda and a closure
+                    ; invoke/drop are emitted into this module by the drain at
+                    ; the tail of emit-toplevel-forms, and none of them is a
+                    ; `Sym` — so the name-keyed walk below cannot see them and
+                    ; the next entry that calls one finds no declare. Same for
+                    ; every overloaded defn the library exports, which lives in
+                    ; the generic registry rather than in g-globals.
+                    (repl-backfill-progdefn-decls)
                     ; Add declares for newly imported functions to preamble
                     ; Skip duplicate scope entries (prescan + emit-defn both register)
                     (let (si:i32 pre-len)
@@ -526,7 +584,13 @@
                                   (when (= (nxt name) (sym name))
                                     (set! is-dup 1)))
                                 (inc! dj))
+                              ; R3/D8: the preamble is a module buffer of its
+                              ; own, and a second `declare` of one name in one
+                              ; module is an LLVM parse error.
+                              (when (!= (repl-preamble-has-decl (as CStr (sym ir-name))) 0)
+                                (set! is-dup 1))
                               (when (= is-dup 0)
+                                (repl-preamble-note-decl (as CStr (sym ir-name)))
                                 ; ABI-lower exactly as the define does (see the
                                 ; first-definition declare above). need-comma
                                 ; rather than `pi != 0` / `num-params != 0`
@@ -555,7 +619,15 @@
                                         (when (!= need-comma 0) (set! sep ", "))
                                         (fprintf g-repl-preamble "%s..." sep))))
                                   (fprintf g-repl-preamble ")\n"))))))
-                        (inc! si)))))
+                        (inc! si)))
+                    ; Nothing new on any of the four registries an import can
+                    ; grow means `do-import` returned on a dedup gate.
+                    (let (fresh:i32 0)
+                      (when (!= g-imported pre-imported) (set! fresh 1))
+                      (when (!= g-ct-imported pre-ct-imported) (set! fresh 1))
+                      (when (!= g-import-aliased pre-aliased) (set! fresh 1))
+                      (when (> ((as ptr:Scope g-globals) len) pre-len) (set! fresh 1))
+                      (repl-report-import form fresh))))
             true
               ; Expression — wrap in __repl_eval_N and JIT
               (do (open-module-streams)
@@ -625,6 +697,10 @@
                         ; Build and JIT module
                         (when (!= g-qq-used 0)
                           (emit-qq-helpers g-decl-stream g-def-stream))
+                        ; R3: the expression may have stamped a generic, lifted
+                        ; a lambda or built a closure — their bodies and the
+                        ; preamble `declare`s this module needs come from here.
+                        (repl-flush-mono (f line))
                         (repl-jit-module (f line))
                         (set! g-qq-used 0)
                         ; Look up and call the eval function
@@ -756,9 +832,7 @@
     ; that never defined it — `use of undefined type named 'Pt'`. The preamble
     ; holds only types, `declare`s and `external global`s, so pulling it in
     ; cannot collide with the two symbols this module defines.
-    (fflush g-repl-preamble)
-    (when (and (!= g-repl-preamble-bufp null) (!= (char-at g-repl-preamble-bufp 0) 0))
-      (fputs g-repl-preamble-bufp s))
+    (repl-put-preamble s null)
     (emit-fn-thunk s fname-ir ft)
     (fclose s)
     (when (and (!= buf null) (!= (char-at buf 0) 0))
@@ -822,7 +896,8 @@
               (abi-print-param (abi-classify-arg (aref (as ptr:ptr ftypes) j))
                                (aref (as ptr:ptr ftypes) j) null)
               (set! need-comma 1)))
-          (fprintf g-out ")\n")))
+          (fprintf g-out ")\n")
+          (repl-preamble-note-decl (as CStr (fmt-2s "@%s-%s" uname aname)))))
       (set! g-out saved-out))
     0))
 
@@ -852,17 +927,15 @@
   (fclose g-type-stream)
   (fclose g-decl-stream)
   (fclose g-def-stream)
+  (repl-absorb-type-buf)
   (let (ir-bufp:ptr null  ir-sizep:i64 0
         irs:ptr (open_memstream (addr-of ir-bufp) (as ptr (addr-of ir-sizep))))
     (fprintf irs "; ModuleID = '<repl>'\n")
     (fprintf irs "target triple = \"%s\"\n\n" ((as ptr:Target g-host-target) triple))
-    ; Preamble (accumulated types + declarations from includes)
-    (fflush g-repl-preamble)
-    (when (and (!= g-repl-preamble-bufp null) (!= (char-at g-repl-preamble-bufp 0) 0))
-      (fputs g-repl-preamble-bufp irs))
-    ; This module's types
-    (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp 0) 0))
-      (fputs g-type-bufp irs))
+    ; Preamble (accumulated types + declarations from includes), minus any
+    ; declare this module defines — see repl-put-preamble. R4: this module's own
+    ; types were just absorbed into it, so it is the whole type section.
+    (repl-put-preamble irs (if (= fname null) null (fmt-s "@%s" fname)))
     (emit-string-table irs 0)
     ; This module's declarations
     (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp 0) 0))
@@ -881,6 +954,180 @@
     (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
     (free ir-bufp)))
 
+; ============================================================
+; Monomorphization drain + declare backfill (Stage 16 R3)
+; ============================================================
+; design/stage16-ergonomics/repl-libraries.md §3.2 (D3).
+
+; ABI-lower a `declare` for one emitted definition into the preamble, exactly as
+; `emit-defn` lowered the `define` it names — the ProgDefn holds that very
+; signature, which is why this covers stamps and lifted lambdas as well as
+; ordinary defns (neither is a `Sym`, so the name-keyed backfills cannot see
+; them). Idempotent: a second `declare` of one name is an LLVM parse error.
+(defn repl-preamble-declare-progdefn ((pd (ref ProgDefn))):void
+  (when (!= (repl-preamble-has-decl (pd ir-name)) 0) (return))
+  (repl-preamble-note-decl (pd ir-name))
+  (when (!= (pd variadic) 0)
+    (fprintf g-repl-preamble "declare %s %s(...)\n" (type-to-ir (pd ret)) (pd ir-name))
+    (return))
+  (let (rinfo:ptr:AbiInfo (unsafe/cast ptr:AbiInfo (abi-classify (pd ret))))
+    (fprintf g-repl-preamble "declare %s %s(" (abi-ret-ir rinfo (pd ret)) (pd ir-name))
+    (let (need-comma:i32 0)
+      ; An sret prefix occupies the first operand slot even at zero parameters.
+      (when (= ((as ptr:AbiInfo rinfo) kind) ABI-MEMORY)
+        (fprintf g-repl-preamble "ptr sret(%s) align %d"
+          (type-to-ir (pd ret)) ((as ptr:AbiInfo rinfo) align))
+        (set! need-comma 1))
+      (abi-args-begin rinfo)
+      (dotimes (j (pd nparams))
+        (when (!= need-comma 0) (fprintf g-repl-preamble ", "))
+        (abi-print-param-to g-repl-preamble
+          (abi-classify-arg (aref (as ptr:ptr (pd ptypes)) j))
+          (aref (as ptr:ptr (pd ptypes)) j)
+          null)
+        (set! need-comma 1)))
+    (fprintf g-repl-preamble ")\n")))
+
+; Does the `@symbol` starting at `buf[a]` name a function THIS module defines?
+; `keep` (an `@`-prefixed name, or null) is the one exception: a defn's impl
+; module renamed its own `define` to `@name.impl.N` and calls back through the
+; thunk, so it declares `@name` without defining it.
+(defn repl-preamble-line-defines-here (buf:ptr a:i64 keep:ptr):i32
+  (dotimes (k (unsafe/cast i32 (count g-program-defns)))
+    (let (pd:ref:ProgDefn (invoke g-program-defns k:usize)
+          irn:ptr (pd ir-name)
+          l:i64 (strlen (pd ir-name)))
+      (when (and (= (memcmp (unsafe/ptr+ (as ptr:i8 buf) a) irn l) 0)
+                 (= (char-at buf (+ a l)) 40))
+        (when (or (= keep null) (!= (strcmp (as CStr irn) (as CStr keep)) 0))
+          (return 1)))))
+  (return 0))
+
+; R4: the one place a type line crosses out of a module — the preamble is the
+; type section of every module the session assembles
+; (design/stage16-ergonomics/repl-libraries.md §3.3). Type stream already closed.
+(defn repl-absorb-type-buf ():void
+  (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp 0) 0))
+    (fputs g-type-bufp g-repl-preamble))
+  (dotimes (i (unsafe/cast i32 (count g-structs)))
+    (let (sd:ref:StructDef (invoke g-structs i:usize))
+      (when (and (!= (sd in-type-buf) 0) (= (sd emit-epoch) g-module-epoch))
+        (.set! sd in-preamble 1)))))
+
+; R4: hand the entry's types to the preamble and start a fresh buffer, so a
+; module assembled INSIDE this one (the mono drain) can name them without the
+; entry's own module then defining them twice.
+(defn repl-cycle-type-buf ():void
+  (fflush g-type-stream)
+  (fclose g-type-stream)
+  (repl-absorb-type-buf)
+  (free g-type-bufp)
+  (set! g-type-bufp null)
+  (inc! g-module-epoch)
+  (set! g-type-stream (open_memstream (addr-of g-type-bufp) (as ptr (addr-of g-type-sizep)))))
+
+; Copy the preamble into a module being assembled, minus any `declare` for a
+; function that module defines itself — one name cannot be both in one module
+; (LLVM: "invalid redefinition of function"). The preamble is written for OTHER
+; modules, which still need the declare, so this filters the copy rather than
+; the source. Stage 16 R3 / D8, repl-libraries.md §3.2.
+(defn repl-put-preamble (out:ptr keep:ptr):void
+  (fflush g-repl-preamble)
+  (when (= g-repl-preamble-bufp null) (return))
+  (when (= (char-at g-repl-preamble-bufp 0) 0) (return))
+  ; An expression module defines nothing, which is most prompt entries.
+  (when (= (count g-program-defns) 0)
+    (fputs g-repl-preamble-bufp out)
+    (return))
+  (let (buf:ptr g-repl-preamble-bufp
+        n:i64 (strlen g-repl-preamble-bufp)
+        i:i64 0)
+    (while (< i n)
+      (let (e:i64 i)
+        (while (and (< e n) (!= (char-at buf e) 10)) (set! e (+ e 1)))
+        (when (< e n) (set! e (+ e 1)))
+        (let (drop:i32 0)
+          (when (and (>= (- e i) 8)
+                     (= (memcmp (unsafe/ptr+ (as ptr:i8 buf) i) "declare " 8) 0))
+            (let (a:i64 i)
+              (while (and (< a e) (!= (char-at buf a) 64)) (set! a (+ a 1)))
+              (when (< a e)
+                (set! drop (repl-preamble-line-defines-here buf a keep)))))
+          (when (= drop 0)
+            (fwrite (unsafe/ptr+ (as ptr:i8 buf) i) 1 (- e i) out)))
+        (set! i e)))))
+
+; Record — without emitting — that every function Sym from `from` onward is
+; already declared in the preamble. Used where the preamble receives a whole
+; declaration buffer verbatim (the libc preload, `extern`) rather than one
+; ABI-lowered line at a time, so the D8 latch still knows what is in there.
+(defn repl-note-globals-decls (from:i32):void
+  (let (si:i32 from)
+    (while (< si ((as ptr:Scope g-globals) len))
+      (let (sym:ptr:Sym (as ptr:Sym (unsafe/ptr+ (as ptr:Sym ((as ptr:Scope g-globals) syms)) si))
+            ft:ptr:Type (unsafe/cast ptr:Type (sym type)))
+        (when (and (= (ft kind) TY-FN) (!= (sym ir-name) null))
+          (repl-preamble-note-decl (as CStr (sym ir-name)))))
+      (inc! si))))
+
+; Publish every function the module just JIT'd defines. `g-program-defns` is
+; per-module (open-module-streams resets it), so this is exactly that module's
+; `define`s — call it AFTER the module is assembled, since a `declare` and a
+; `define` of one name in one module is the same LLVM error a duplicate
+; `declare` is.
+(defn repl-backfill-progdefn-decls ():void
+  (dotimes (i (unsafe/cast i32 (count g-program-defns)))
+    (repl-preamble-declare-progdefn (invoke g-program-defns i:usize))))
+
+; Emit the bodies of every stamped instance, lifted lambda and closure
+; invoke/drop queued since the last flush. `drain-mono-worklist`'s only compiler
+; call site is the tail of `emit-toplevel-forms`, which a prompt entry never
+; reaches — so the call was emitted and the callee never was.
+;
+; Into a module of its OWN, for two reasons: a `defn`'s per-impl module carries
+; a resource tracker that the next redefinition of that `defn` removes, which
+; would silently un-define every unrelated stamp drained alongside it; and
+; `g-mono-drained` is a persistent cursor, so a body emitted here is invisible
+; to the next entry unless its `declare` reaches the preamble.
+(defn repl-flush-mono (line:i32):void
+  (when (>= g-mono-drained (count g-mono-worklist)) (return))
+  ; R4: the drained bodies are assembled from the preamble, so the entry's types
+  ; go there first — and its type buffer restarts, or its own module would then
+  ; define them a second time.
+  (repl-cycle-type-buf)
+  ; The caller's module streams are mid-assembly; open-module-streams rebinds
+  ; all of them plus the two per-module registries.
+  (let (s-type:ptr g-type-stream
+        s-epoch:i32 g-module-epoch
+        s-decl:ptr g-decl-stream
+        s-def:ptr g-def-stream
+        s-def-prog:ptr g-def-stream-program
+        s-decl-out:ptr g-decl-out
+        s-out:ptr g-out
+        s-macro-decls:(ref (Vector CStr)) g-macro-decls
+        s-prog-defns:(ref (Vector (ref ProgDefn))) g-program-defns)
+    (open-module-streams)
+    ; Before drain-pending-union-irs (repl-jit-module's first step): a drained
+    ; body can stamp new parametric instances that then need their type lines.
+    (drain-mono-worklist)
+    (drain-pending-union-irs)
+    ; Untracked, on the main dylib: a stamp outlives every `defn` that asked for
+    ; it. R4: the assembler absorbs this module's types into the preamble.
+    (repl-jit-module line)
+    (repl-backfill-progdefn-decls)
+    (set! g-program-defns s-prog-defns)
+    (set! g-macro-decls s-macro-decls)
+    (set! g-out s-out)
+    (set! g-decl-out s-decl-out)
+    (set! g-def-stream-program s-def-prog)
+    (set! g-def-stream s-def)
+    (set! g-decl-stream s-decl)
+    (set! g-type-stream s-type)
+    (set! g-module-epoch s-epoch)
+    ; The nested module's fclose left its own (now freed) buffers in the three
+    ; globals; the caller's streams rewrite them on their own flush.
+    (set! g-type-bufp null) (set! g-decl-bufp null) (set! g-def-bufp null)))
+
 ; Pre-include standard libc headers into the REPL preamble and global scope.
 (defn repl-include-all-libc ():void
   (open-module-streams)
@@ -896,82 +1143,288 @@
   ; already sees them via the preamble — a redefinition error).
   (drain-pending-union-irs)
   (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
-  (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp 0) 0))
-    (fputs g-type-bufp g-repl-preamble))
+  (repl-absorb-type-buf)
   (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp 0) 0))
     (fputs g-decl-bufp g-repl-preamble))
   (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
+  ; The whole declaration buffer went in verbatim, so tell the D8 latch which
+  ; names it just carried (`@malloc` is the one a macro body re-declares).
+  (repl-note-globals-decls 0)
   (fprintf g-repl-preamble "\n"))
 
-; Pre-register the Node struct and NODE-* constants for macros support in REPL.
-(defn repl-register-node ():void
-  ; Register Node struct mirroring lib/prelude.nuc's defstruct Node: car/cdr
-  ; are (raw Node) so macros can chain field access without casts (e.g.
-  ; ((spec cdr) car) in dotimes). A bare ty-ptr here returns an untyped ptr
-  ; from (spec cdr), and the chained (... car) dies in emit-get-intrinsic
-  ; ("not a pointer-to-struct"). Must stay in lockstep with the prelude def.
-  (let (sd:ptr:StructDef (as ptr:StructDef (register-struct "Node"))
-        fnm:ptr (arena-alloc (* 6 8))
-        ftp:ptr (arena-alloc (* 6 8)))
-    (aset! (as ptr:ptr fnm) 0 (intern-str "kind"))
-    (aset! (as ptr:ptr fnm) 1 (intern-str "line"))
-    (aset! (as ptr:ptr fnm) 2 (intern-str "i"))
-    (aset! (as ptr:ptr fnm) 3 (intern-str "s"))
-    (aset! (as ptr:ptr fnm) 4 (intern-str "car"))
-    (aset! (as ptr:ptr fnm) 5 (intern-str "cdr"))
-    (aset! (as ptr:ptr ftp) 0 ty-i32)
-    (aset! (as ptr:ptr ftp) 1 ty-i32)
-    (aset! (as ptr:ptr ftp) 2 ty-i64)
-    (aset! (as ptr:ptr ftp) 3 ty-ptr)
-    (let (raw-node-ty:ref:Type (make-type TY-PTR))
-      (.set! raw-node-ty elem (parse-type-name "Node" 0))
-      (.set! raw-node-ty pkind PTR-RAW)
-      (aset! (as ptr:ptr ftp) 4 (as ptr raw-node-ty))
-      (aset! (as ptr:ptr ftp) 5 (as ptr raw-node-ty)))
-    (struct-set-fields sd fnm ftp 6))
-  ; Add Node IR type to preamble
-  (fprintf g-repl-preamble "%%Node = type { i32, i32, i64, ptr, ptr, ptr }\n\n")
-  ; Register NODE-* constants
-  ; Stage 15 W2b: these mirror `defenum NODE-*` in lib/prelude.nuc, so they get
-  ; the same literal provenance emit-defenum sets — otherwise a REPL session
-  ; would type `(= k:ui32 NODE-SYM)` differently from a batch compile.
-  (let (sym:ref:Sym (scope-define g-globals "NODE-INT" (as ptr ty-i32) null 0))
-    (.set! sym is-const 1) (.set! sym const-val "0")
-    (.set! sym const-lit 1) (.set! sym const-lit-i64 0))
-  (let (sym:ref:Sym (scope-define g-globals "NODE-STR" (as ptr ty-i32) null 0))
-    (.set! sym is-const 1) (.set! sym const-val "1")
-    (.set! sym const-lit 1) (.set! sym const-lit-i64 1))
-  (let (sym:ref:Sym (scope-define g-globals "NODE-SYM" (as ptr ty-i32) null 0))
-    (.set! sym is-const 1) (.set! sym const-val "2")
-    (.set! sym const-lit 1) (.set! sym const-lit-i64 2))
-  (let (sym:ref:Sym (scope-define g-globals "NODE-CELL" (as ptr ty-i32) null 0))
-    (.set! sym is-const 1) (.set! sym const-val "3")
-    (.set! sym const-lit 1) (.set! sym const-lit-i64 3)))
+; ============================================================
+; Session state snapshot / restore (Stage 16 R1)
+; ============================================================
+;
+; A longjmp skips every `let`-save / `set!`-restore pair on the stack, so the
+; roster is spelled here once instead of at each site.
+; See design/stage16-ergonomics/repl-libraries.md §3.4 (D4) for what is left out.
+(defstruct ReplState
+  ; --- reader ---
+  source-path:ptr
+  src:ptr
+  pos:i64
+  line:i32
+  peek:ptr
+  peek-valid:i32
+  ; --- import bookkeeping (prepend-only lists: the head IS the watermark) ---
+  imported:ptr
+  importing:ptr
+  ct-imported:ptr
+  prescan-sigs:ptr
+  prescan-inflight:ptr
+  prescan-visited:ptr
+  real-reachable:ptr
+  nuch-registered:ptr
+  import-aliased:ptr
+  import-prefixes:ptr
+  (cheader-skipped (raw Node))
+  ; --- unit / namespace / privacy ---
+  toplevel-depth:i32
+  unit-entry-path:ptr
+  root-hoist-ok:i32
+  current-ns:ptr
+  ns-seen:i32
+  (file-imports (raw ImportVec))
+  import-ct:i32
+  import-include-private:i32
+  defining-private:i32
+  mono-context:ptr
+  ; --- emission streams ---
+  out:ptr
+  def-stream:ptr
+  def-stream-program:ptr
+  ct-emitting:i32
+  ; --- registry watermarks ---
+  globals-len:i32
+  n-structs:i32
+  n-uniondefs:i32
+  n-union-templates:i32
+  n-struct-templates:i32
+  n-type-aliases:i32
+  n-enumdefs:i32
+  n-pending-unions:i32
+  n-generics:i32
+  n-protocols:i32
+  n-conformances:i32
+  n-proto-supers:i32
+  n-tmpl-conformances:i32
+  n-macros:i32
+  n-macrolet:i32
+  n-cast-rules:i32
+  n-rmacros:i32
+  n-vtables:i32
+  n-boxedfns:i32
+  n-dyns:i32
+  n-mono:i32
+  n-init:i32
+  n-dyn-annots:i32)
 
-; Auto-import lib/macros.nuc so the standard macros (if, when, unless, for,
-; dotimes, ->) are available at the REPL without an explicit (import-use macros).
-; Errors are tolerated via repl_try so the session still starts if the library
-; can't be found or fails to JIT.
-(defn repl-preload-macros ():void
+; Truncating `g-generics` recovers only the generics a died import CREATED; a
+; method appended to a pre-existing one needs this per-entry watermark instead.
+(defstruct GenericMark
+  n-methods:i32
+  finalized:i32
+  mangled:i32)
+
+(defvar g-repl-saved:ReplState)
+; The desugared form list of the input line, handed back from the protected
+; `desugar` step (a callback returns nothing).
+(defvar g-repl-forms:ptr)
+; Reused, not rebuilt: a snapshot per top-level form would grow the arena forever.
+(defvar (g-repl-generic-marks (ref (Vector (ref GenericMark))))
+  (vector-new-in (addr-of g-arena-alloc)))
+
+; Every registry below is append-only, so dropping the tail is a true rollback.
+(defn repl-vec-truncate ((v (ref (Vector T))) n:i32):void
+  (while (> (unsafe/cast i32 (count v)) n)
+    (remove-at v (as usize (- (unsafe/cast i32 (count v)) 1)))))
+
+(defn repl-snapshot ((st (ref ReplState))):void
+  (.set! st source-path g-source-path)
+  (.set! st src g-src)
+  (.set! st pos g-pos)
+  (.set! st line g-line)
+  (.set! st peek g-peek)
+  (.set! st peek-valid g-peek-valid)
+  (.set! st imported g-imported)
+  (.set! st importing g-importing)
+  (.set! st ct-imported g-ct-imported)
+  (.set! st prescan-sigs g-prescan-sigs)
+  (.set! st prescan-inflight g-prescan-inflight)
+  (.set! st prescan-visited g-prescan-visited)
+  (.set! st real-reachable g-real-reachable)
+  (.set! st nuch-registered g-nuch-registered)
+  (.set! st import-aliased g-import-aliased)
+  (.set! st import-prefixes g-import-prefixes)
+  (.set! st cheader-skipped g-cheader-skipped)
+  (.set! st toplevel-depth g-toplevel-depth)
+  (.set! st unit-entry-path g-unit-entry-path)
+  (.set! st root-hoist-ok g-root-hoist-ok)
+  (.set! st current-ns g-current-ns)
+  (.set! st ns-seen g-ns-seen)
+  (.set! st file-imports g-file-imports)
+  (.set! st import-ct g-import-ct)
+  (.set! st import-include-private g-import-include-private)
+  (.set! st defining-private g-defining-private)
+  (.set! st mono-context g-mono-context)
+  (.set! st out g-out)
+  (.set! st def-stream g-def-stream)
+  (.set! st def-stream-program g-def-stream-program)
+  (.set! st ct-emitting g-ct-emitting)
+  (.set! st globals-len ((as ptr:Scope g-globals) len))
+  (.set! st n-structs (unsafe/cast i32 (count g-structs)))
+  (.set! st n-uniondefs (unsafe/cast i32 (count g-uniondefs)))
+  (.set! st n-union-templates (unsafe/cast i32 (count g-union-templates)))
+  (.set! st n-struct-templates (unsafe/cast i32 (count g-struct-templates)))
+  (.set! st n-type-aliases (unsafe/cast i32 (count g-type-aliases)))
+  (.set! st n-enumdefs (unsafe/cast i32 (count g-enumdefs)))
+  (.set! st n-pending-unions (unsafe/cast i32 (count g-pending-unions)))
+  (.set! st n-generics (unsafe/cast i32 (count g-generics)))
+  (.set! st n-protocols (unsafe/cast i32 (count g-protocols)))
+  (.set! st n-conformances (unsafe/cast i32 (count g-conformances)))
+  (.set! st n-proto-supers (unsafe/cast i32 (count g-proto-supers)))
+  (.set! st n-tmpl-conformances (unsafe/cast i32 (count g-tmpl-conformances)))
+  (.set! st n-macros (unsafe/cast i32 (count g-macros)))
+  (.set! st n-macrolet (unsafe/cast i32 (count g-macrolet-stack)))
+  (.set! st n-cast-rules (unsafe/cast i32 (count g-cast-rules)))
+  (.set! st n-rmacros (unsafe/cast i32 (count g-rmacros)))
+  (.set! st n-vtables (unsafe/cast i32 (count g-vtable-table)))
+  (.set! st n-boxedfns (unsafe/cast i32 (count g-boxedfn-table)))
+  (.set! st n-dyns (unsafe/cast i32 (count g-dyn-table)))
+  (.set! st n-mono (unsafe/cast i32 (count g-mono-worklist)))
+  (.set! st n-init (unsafe/cast i32 (count g-init-worklist)))
+  (.set! st n-dyn-annots (unsafe/cast i32 (count g-dyn-annots)))
+  ; Per-generic method watermarks, refilled in place.
+  (let (n:i32 (unsafe/cast i32 (count g-generics))
+        have:i32 (unsafe/cast i32 (count g-repl-generic-marks))
+        gi:i32 0)
+    (while (< gi n)
+      (when (>= gi have)
+        (conj g-repl-generic-marks (new GenericMark)))
+      (let (mk:ptr:GenericMark (as ptr:GenericMark (invoke g-repl-generic-marks gi:usize))
+            gg:ptr:Generic (as ptr:Generic (invoke g-generics gi:usize)))
+        (.set! mk n-methods (unsafe/cast i32 (count (gg methods))))
+        (.set! mk finalized (gg finalized))
+        (.set! mk mangled (gg mangled)))
+      (inc! gi))))
+
+(defn repl-restore ((st (ref ReplState))):void
+  ; Methods first: `g-generics` still holds the entries these marks index.
+  (let (n:i32 (st n-generics)
+        have:i32 (unsafe/cast i32 (count g-repl-generic-marks))
+        gi:i32 0)
+    (when (> n have) (set! n have))
+    (when (> n (unsafe/cast i32 (count g-generics)))
+      (set! n (unsafe/cast i32 (count g-generics))))
+    (while (< gi n)
+      (let (mk:ptr:GenericMark (as ptr:GenericMark (invoke g-repl-generic-marks gi:usize))
+            gg:ptr:Generic (as ptr:Generic (invoke g-generics gi:usize)))
+        (repl-vec-truncate (gg methods) (mk n-methods))
+        (.set! gg finalized (mk finalized))
+        (.set! gg mangled (mk mangled)))
+      (inc! gi)))
+  (repl-vec-truncate g-generics (st n-generics))
+  (repl-vec-truncate g-structs (st n-structs))
+  (repl-vec-truncate g-uniondefs (st n-uniondefs))
+  (repl-vec-truncate g-union-templates (st n-union-templates))
+  (repl-vec-truncate g-struct-templates (st n-struct-templates))
+  (repl-vec-truncate g-type-aliases (st n-type-aliases))
+  (repl-vec-truncate g-enumdefs (st n-enumdefs))
+  (repl-vec-truncate g-pending-unions (st n-pending-unions))
+  (repl-vec-truncate g-protocols (st n-protocols))
+  (repl-vec-truncate g-conformances (st n-conformances))
+  (repl-vec-truncate g-proto-supers (st n-proto-supers))
+  (repl-vec-truncate g-tmpl-conformances (st n-tmpl-conformances))
+  (repl-vec-truncate g-macros (st n-macros))
+  ; A longjmp out of emit-macrolet skips its pop.
+  (repl-vec-truncate g-macrolet-stack (st n-macrolet))
+  (repl-vec-truncate g-cast-rules (st n-cast-rules))
+  (repl-vec-truncate g-rmacros (st n-rmacros))
+  ; These three hand back a StructDef, so an entry must not outlive g-structs'.
+  (repl-vec-truncate g-vtable-table (st n-vtables))
+  (repl-vec-truncate g-boxedfn-table (st n-boxedfns))
+  (repl-vec-truncate g-dyn-table (st n-dyns))
+  (repl-vec-truncate g-mono-worklist (st n-mono))
+  (repl-vec-truncate g-init-worklist (st n-init))
+  (repl-vec-truncate g-dyn-annots (st n-dyn-annots))
+  ; A drain cursor may not point past the queue it indexes.
+  (when (> g-mono-drained (as usize (st n-mono))) (set! g-mono-drained (as usize (st n-mono))))
+  (when (> g-init-drained (as usize (st n-init))) (set! g-init-drained (as usize (st n-init))))
+  (when (> g-dyn-annots-drained (as usize (st n-dyn-annots)))
+    (set! g-dyn-annots-drained (as usize (st n-dyn-annots))))
+  (.set! (as ptr:Scope g-globals) len (st globals-len))
+  (set! g-ct-emitting (st ct-emitting))
+  (set! g-def-stream-program (st def-stream-program))
+  (set! g-def-stream (st def-stream))
+  (set! g-out (st out))
+  (set! g-mono-context (st mono-context))
+  (set! g-defining-private (st defining-private))
+  (set! g-import-include-private (st import-include-private))
+  (set! g-import-ct (st import-ct))
+  (set! g-file-imports (st file-imports))
+  (set! g-ns-seen (st ns-seen))
+  (set! g-current-ns (st current-ns))
+  (set! g-root-hoist-ok (st root-hoist-ok))
+  (set! g-unit-entry-path (st unit-entry-path))
+  (set! g-toplevel-depth (st toplevel-depth))
+  (set! g-cheader-skipped (st cheader-skipped))
+  (set! g-import-prefixes (st import-prefixes))
+  (set! g-import-aliased (st import-aliased))
+  (set! g-nuch-registered (st nuch-registered))
+  (set! g-real-reachable (st real-reachable))
+  (set! g-prescan-visited (st prescan-visited))
+  (set! g-prescan-inflight (st prescan-inflight))
+  (set! g-prescan-sigs (st prescan-sigs))
+  (set! g-ct-imported (st ct-imported))
+  (set! g-importing (st importing))
+  (set! g-imported (st imported))
+  (set! g-peek-valid (st peek-valid))
+  (set! g-peek (st peek))
+  (set! g-line (st line))
+  (set! g-pos (st pos))
+  (set! g-src (st src))
+  (set! g-source-path (st source-path)))
+
+; `repl_protect` calls back into Nucleus so its own `setjmp` frame is still live
+; when `repl_throw` fires; an "arm, then run" shape has already returned by then.
+(defn repl-protect-desugar (ctx:ptr):void
+  (set! g-repl-forms (desugar ctx))
+  (return))
+
+(defn repl-protect-eval (ctx:ptr):void
+  (repl-eval-form ctx)
+  (return))
+
+; The body of repl-preload-prelude, as a protected callback.
+(defn repl-protect-preload (ctx:ptr):void
+  (match (read-program)
+    ((ok raw)
+      (let (fc:ptr (desugar raw))
+        (while (!= fc null)
+          (repl-eval-form ((unsafe/cast ptr:Node fc) car))
+          (set! fc ((unsafe/cast ptr:Node fc) cdr)))))
+    ((err e) (set! g-peek-valid 0)))
+  (return))
+
+; The prelude goes through the ordinary import arm, exactly as batch `main`
+; splices it, so a session and a batch compile agree on its types; a hand mirror
+; here did not (design/stage16-ergonomics/repl-libraries.md §3.1).
+(defn repl-preload-prelude ():void
   (let (save-src:ptr g-src
         save-pos:i64 g-pos
         save-line:i32 g-line
         save-peek:ptr g-peek
         save-peek-valid:i32 g-peek-valid)
-    (set! g-src "(import-use macros)")
+    (set! g-src "(import-use prelude)")
     (set! g-pos 0)
     (set! g-line 1)
     (set! g-peek-valid 0)
-    (when (= (repl_try) 0)
-      (match (read-program)
-        ((ok raw)
-          (let (forms:ptr (desugar raw))
-            (let (fc:ptr forms)
-              (while (!= fc null)
-                (let (f:ptr ((unsafe/cast ptr:Node fc) car))
-                  (repl-eval-form f))
-                (set! fc ((unsafe/cast ptr:Node fc) cdr))))))
-        ((err e) (set! g-peek-valid 0))))
+    (repl-snapshot (addr-of g-repl-saved))
+    (set! g-repl-booting 1)
+    (when (!= (repl_protect repl-protect-preload null) 0)
+      (repl-restore (addr-of g-repl-saved)))
+    (set! g-repl-booting 0)
     (set! g-src save-src)
     (set! g-pos save-pos)
     (set! g-line save-line)
@@ -996,12 +1449,9 @@
                                          (as ptr (addr-of g-repl-preamble-sizep))))
   ; Pre-include all libc functions (so they're available without explicit include)
   (repl-include-all-libc)
-  ; Pre-register Node struct and constants for macro support
-  (repl-register-node)
-  ; Auto-import the standard macro library (if, when, unless, for, dotimes, ->).
-  ; Failures are tolerated so a session still starts if lib/macros.nuc is
-  ; unavailable; the user will just get "not a macro call" for those forms.
-  (repl-preload-macros)
+  ; Tolerates failure so a session still starts without lib/prelude.nuc; the
+  ; user just gets "unknown type" for everything the prelude defines.
+  (repl-preload-prelude)
   (let (running:i32 1)
     (while (!= running 0)
       (let (input:ptr (repl-read-input))
@@ -1016,22 +1466,22 @@
               (set! g-peek-valid 0)
               (match (read-program)
                 ((ok raw)
-                  (let (forms:ptr (desugar raw))
-                    ; Process each form
-                    (let (fc:ptr forms)
+                  (do
+                    ; `desugar` can die too, and runs before any form does.
+                    (set! g-repl-forms null)
+                    (repl-snapshot (addr-of g-repl-saved))
+                    (when (!= (repl_protect repl-protect-desugar raw) 0)
+                      (repl-restore (addr-of g-repl-saved))
+                      (repl-error 0 "error (recovered)"))
+                    ; One snapshot per form, so a form that dies rolls back only
+                    ; its own registrations.
+                    (let (fc:ptr g-repl-forms)
                       (while (!= fc null)
                         (let (f:ptr ((unsafe/cast ptr:Node fc) car))
-                          (when (!= (repl_try) 0)
-                            ; Stage 16: a longjmp out of emit-macrolet skips its
-                            ; pop, so lexical macro bindings would leak into the
-                            ; next form. The invariant is an empty stack at the
-                            ; start of every top-level form; restore it here.
-                            (while (!= (count g-macrolet-stack) 0)
-                              (remove-at g-macrolet-stack
-                                         (as usize (- (unsafe/cast i32 (count g-macrolet-stack)) 1))))
-                            (repl-error ((as ptr:Node f) line) "error (recovered)"))
-                          (when (= (repl_try) 0)
-                            (repl-eval-form f)))
+                          (repl-snapshot (addr-of g-repl-saved))
+                          (when (!= (repl_protect repl-protect-eval f) 0)
+                            (repl-restore (addr-of g-repl-saved))
+                            (repl-error (node-line f 0) "error (recovered)")))
                         (set! fc ((unsafe/cast ptr:Node fc) cdr))))))
                 ((err e) (set! g-peek-valid 0)))
               (free input)))))))

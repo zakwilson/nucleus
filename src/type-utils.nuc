@@ -96,6 +96,27 @@
   (when (!= (sd laid-out) 0) (return 0))
   (return 1))
 
+; ---- Stage 16 R4: which buffer holds a type's `%Name = type {…}` line -------
+; `emitted` says one was written; these say where. A latch is a claim about a
+; buffer and is only correct if it names one — the REPL assembles many modules
+; per process (design/stage16-ergonomics/repl-libraries.md §3.3).
+
+; Is `sd`'s definition present in the module currently being assembled? Outside
+; the REPL there is one epoch and no preamble, so this is exactly `emitted`.
+(defn sdef-in-module (sd:(raw StructDef)):i32
+  (when (= sd null) (return 0))
+  (when (!= (sd in-preamble) 0) (return 1))
+  (when (= (sd emit-epoch) g-module-epoch) (return 1))
+  (return 0))
+
+; Record that `sd`'s definition line was just written into `out`.
+(defn sdef-note-emitted (sd:(raw StructDef) out:ptr):void
+  (.set! sd emitted 1)
+  (.set! sd emit-epoch g-module-epoch)
+  ; Only the type buffer is carried into the REPL preamble at module close; a
+  ; line in a def or compile-time buffer dies with its module.
+  (.set! sd in-type-buf (if (= out g-type-stream) 1 0)))
+
 (defn cycle-pending-sdef (t:raw:Type):(raw StructDef)
   (when (= g-import-cycles null) (return null))
   (when (= t null) (return null))

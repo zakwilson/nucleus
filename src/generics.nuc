@@ -3983,7 +3983,7 @@
 ; Returns 1 if all resolve, 0 (after printing each missing method) otherwise.
 ; The Self-only path passes nparams=0 — the substitution reduces to Self alone,
 ; byte-identical to the historical subst-self-node behavior.
-(defn proto-sigs-resolve (proto:raw:Protocol typename:CStr pspellings:ptr line:i32):i32
+(defn proto-sigs-resolve (proto:raw:Protocol typename:CStr pspellings:ptr line:i32 notes:ptr:ptr):i32
 ; Stage 15 B3′: a protocol-signature substitution is a SYNTHESIS region — every type spelling parsed inside it
 ; was written by the compiler (a `type-spelling` of a bound tyvar, a `Self`
 ; substitution), not by any file, so the type reference resolvers take an exact-key
@@ -3991,11 +3991,11 @@
 ; permission rather than a global relaxation.
   (let (saved:i32 g-type-key-ok)
     (set! g-type-key-ok 1)
-    (let (r:i32 (proto-sigs-resolve-in proto typename pspellings line))
+    (let (r:i32 (proto-sigs-resolve-in proto typename pspellings line notes))
       (set! g-type-key-ok saved)
       (return r))))
 
-(defn proto-sigs-resolve-in (proto:raw:Protocol typename:CStr pspellings:ptr line:i32):i32
+(defn proto-sigs-resolve-in (proto:raw:Protocol typename:CStr pspellings:ptr line:i32 notes:ptr:ptr):i32
   (let (pp:raw:Protocol proto
         missing:i32 0)
     (dotimes (i (pp num-sigs))
@@ -4020,8 +4020,10 @@
               check-ret:i32 (if (> (pp num-params) 0) 1 0))
           (when (= (method-satisfies-sig mname ptypes nparams ret check-ret line) 0)
             (set! missing 1)
-            (fprintf (as ptr stderr)
-              "  %s does not implement %s.%s\n" typename (pp name) mname)))))
+            (aset! notes 0
+              (fmt-2s "%s\n  note: %s" (as CStr (aref notes 0))
+                (as CStr (fmt-3s "%s does not implement %s.%s"
+                                 typename (pp name) mname))))))))
     (when (!= missing 0) (return 0))
     (return 1)))
 
@@ -4061,9 +4063,12 @@
         (die-at line (fmt-s "extend: unknown protocol '%s'" proto-name)))
       (return))
     (when (!= check 0)
-      (when (= (proto-sigs-resolve proto typename pspellings line) 0)
-        (die-at line
-          (fmt-2s "type '%s' does not conform to protocol '%s'" typename proto-name))))
+      (let (notes:ptr "")
+        (when (= (proto-sigs-resolve proto typename pspellings line
+                                     (as ptr:ptr (addr-of notes))) 0)
+          (die-at line
+            (fmt-3s "type '%s' does not conform to protocol '%s'%s"
+                    typename proto-name (as CStr notes))))))
     (conformance-add typename proto-name pspellings npspellings line)
     ; Conforming to `proto-name` requires conforming to each declared super. The
     ; supers are plain (Self-only) protocols here, so they carry no extra params.

@@ -217,9 +217,12 @@ inside a generic template body is compiled once per monomorphization.
 ### 5.6 REPL
 
 `g-macrolet-stack` must be empty at the start of every top-level form. `die-at`
-exits the process in batch mode, so nothing can leak; the REPL's `repl_try`
-recovery arm (src/repl.nuc:1010) longjmps past the pop, so **truncate the stack
-to zero there**, beside the existing recovery work.
+exits the process in batch mode, so nothing can leak; the REPL's recovery arm
+longjmps past the pop, so **truncate the stack to zero there**, beside the
+existing recovery work. (Stage 16 R1 moved that truncation into `repl-restore`,
+where it is one watermark among many, and made the arm actually run — it was
+dead code until the shim became `repl_protect`; see
+[repl-libraries.md](repl-libraries.md) §3.4.)
 
 ## 6. Diagnostics
 

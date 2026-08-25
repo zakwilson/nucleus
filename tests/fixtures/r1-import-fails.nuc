@@ -1,0 +1,4 @@
+; Stage 16 R1 (design/stage16-ergonomics/repl-libraries.md §3.4): a library that
+; registers a name and THEN dies, so a REPL import of it exercises the rollback.
+(defn r1-registered ():i32 (return 1))
+(defn r1-bad ():i32 (return (r1-no-such-name)))

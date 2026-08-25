@@ -1,0 +1,12 @@
+Nucleus REPL (type Ctrl-D to exit)
+nuc> nuc> nuc> nuc> nuc> tests/fixtures/r1-import-fails.nuc:4: error: unknown: r1-no-such-name — not defined anywhere in this compilation unit
+  error: error (recovered)
+nuc> nuc> <repl>:1: error: unknown: zzz — not defined anywhere in this compilation unit
+  error: error (recovered)
+nuc> nuc> <repl>:1: error: unknown: r1-registered — not defined anywhere in this compilation unit
+  error: error (recovered)
+nuc> nuc> tests/fixtures/r1-import-fails.nuc:4: error: unknown: r1-no-such-name — not defined anywhere in this compilation unit
+  error: error (recovered)
+nuc> nuc>   imported tests/fixtures/r1-import-works.nuc
+nuc>   42
+nuc> 

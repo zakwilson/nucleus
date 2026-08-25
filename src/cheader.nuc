@@ -1048,16 +1048,12 @@
           (fprintf g-type-stream "%s" (type-to-ir (aref (as ptr:ptr ftypes) i)))
           (inc! i)))
       (fprintf g-type-stream " }\n\n")
-      ; W3c: `emitted` means exactly "this type's definition is already in the
-      ; shared type buffer", and it is what pending-union-deps-ready consults
-      ; before writing a queued union whose field names this struct. The cheader
-      ; path writes its `%X = type {…}` line directly rather than through
-      ; emit-struct-ir-type, so it has to set the flag itself — without it, a C
-      ; union with a struct member (SDL's `SDL_WindowShapeParams`, whose
-      ; `SDL_Color` member only became a real TY-STRUCT once W3c resolved the
-      ; typedef) was deferred on every drain and its `%…` type never appeared,
-      ; while the struct that *contained* the union referenced it.
-      (.set! sd emitted 1))))
+      ; W3c: pending-union-deps-ready consults this before writing a queued union
+      ; whose field names this struct, and the cheader path writes its
+      ; `%X = type {…}` line directly rather than through emit-struct-ir-type —
+      ; so it has to record the write itself. Without it a C union with a struct
+      ; member (SDL's `SDL_WindowShapeParams`) deferred on every drain.
+      (sdef-note-emitted (as raw:StructDef sd) g-type-stream))))
 
 ; Stage 15 W3a: make `dst` share `src`'s layout and write `dst`'s own LLVM type
 ; definition. Used for a `typedef struct Tag Name;` alias entry (which is a
@@ -1083,9 +1079,9 @@
             (type-to-ir ((field-at (src fields) k) type)))
           (inc! k)))
       (fprintf g-type-stream " }\n\n")
-      ; W3c: see cheader-struct-define — the alias's definition is now in the
-      ; shared type buffer, so a queued union naming it must count it as ready.
-      (.set! dst emitted 1))))
+      ; W3c: see cheader-struct-define — the alias's definition is now in this
+      ; module's type buffer, so a queued union naming it must count it as ready.
+      (sdef-note-emitted (as raw:StructDef dst) g-type-stream))))
 
 ; Stage 15 W3a: propagate a just-upgraded tag's layout to every
 ; `typedef struct Tag Name;` alias that was registered while Tag was still

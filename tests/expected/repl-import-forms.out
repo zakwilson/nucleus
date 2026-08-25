@@ -1,0 +1,18 @@
+Nucleus REPL (type Ctrl-D to exit)
+nuc> nuc> nuc> nuc> nuc> nuc> nuc> nuc>   imported mathlib
+nuc> <repl>:1: error: 'square' was imported compile-time-only — it has no definition in this program (import-ct)
+  error: error (recovered)
+nuc> nuc> nuc>   imported mathlib
+nuc>   25
+nuc> nuc>   mathlib already imported
+nuc> nuc>   imported nsgeom
+nuc>   12
+nuc> nuc>   imported nsgeom
+nuc>   14
+nuc>   imported testmacros
+nuc>   111
+nuc> nuc> nuc>   imported unsafe-priv-demo
+nuc>   42
+nuc>   99
+nuc> nuc>   stdio.h already imported
+nuc> 

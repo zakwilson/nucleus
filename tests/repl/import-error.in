@@ -1,0 +1,14 @@
+; Stage 16 R1 (design/stage16-ergonomics/repl-libraries.md §3.4): a failed import
+; must leave the session exactly as it found it. One form per line.
+;
+; 1. the import dies partway through the library
+(import-use "tests/fixtures/r1-import-fails.nuc")
+; 2. the next diagnostic is attributed to <repl>, not to the failed library (D4)
+(zzz 1)
+; 3. the name the library registered before dying is gone again (§3.4 rollback)
+(r1-registered)
+; 4. a retry reports the same error rather than silently doing nothing (D4)
+(import-use "tests/fixtures/r1-import-fails.nuc")
+; 5. and an unrelated import still works
+(import-use "tests/fixtures/r1-import-works.nuc")
+(r1-works)

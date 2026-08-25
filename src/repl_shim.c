@@ -1,15 +1,18 @@
 /* repl_shim.c — thin wrapper around setjmp/longjmp for the Nucleus REPL.
  *
  * jmp_buf is an opaque, platform-specific type that Nucleus cannot express
- * directly.  This shim hides it behind two simple functions callable from
+ * directly.  This shim hides it behind simple functions callable from
  * Nucleus via -rdynamic symbol resolution.
  */
 
 #include <setjmp.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
-static jmp_buf repl_jmpbuf;
+#define REPL_MAX_PROTECT 16
+static jmp_buf repl_jmpbufs[REPL_MAX_PROTECT];
+static int repl_depth = 0;
 
 /* Call a function pointer that returns a `double` (no args) and print the
  * result on stderr as a Nucleus float literal — `%.17g`, with `.0` appended
@@ -55,12 +58,32 @@ void repl_print_f32(void *fp) {
     }
 }
 
-/* Returns 0 on initial call (setjmp), 1 when jumped back via repl_throw. */
-int32_t repl_try(void) {
-    return setjmp(repl_jmpbuf) != 0 ? 1 : 0;
+/* Run `body(ctx)`: 0 if it returned normally, 1 if repl_throw unwound out of it.
+ * A callback, not the caller's own continuation, so this setjmp frame is still
+ * live when the longjmp fires (design/stage16-ergonomics/repl-libraries.md §3.4). */
+int32_t repl_protect(void (*body)(void *), void *ctx) {
+    int d = repl_depth;
+    if (d >= REPL_MAX_PROTECT) {
+        fprintf(stderr, "nucleus: repl_protect nested deeper than %d\n",
+                REPL_MAX_PROTECT);
+        exit(1);
+    }
+    repl_depth = d + 1;
+    if (setjmp(repl_jmpbufs[d]) == 0) {
+        body(ctx);
+        repl_depth = d;
+        return 0;
+    }
+    repl_depth = d;
+    return 1;
 }
 
-/* Jump back to the most recent repl_try call site.  Never returns. */
+/* Unwind to the innermost repl_protect.  Never returns. */
 void repl_throw(void) {
-    longjmp(repl_jmpbuf, 1);
+    if (repl_depth == 0) {
+        /* Exiting is what batch does, and beats jumping into a dead frame. */
+        fprintf(stderr, "nucleus: fatal error outside the REPL's protected region\n");
+        exit(1);
+    }
+    longjmp(repl_jmpbufs[repl_depth - 1], 1);
 }

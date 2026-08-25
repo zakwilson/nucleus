@@ -1,0 +1,27 @@
+Nucleus REPL (type Ctrl-D to exit)
+nuc> nuc> nuc> nuc> nuc> nuc> nuc> nuc>   0
+nuc>   1
+nuc>   2
+nuc>   3
+nuc>   4
+nuc>   5
+nuc>   6
+nuc> nuc>   7
+nuc>   10
+nuc> nuc> nuc>   string.h already imported
+nuc>   stdio.h already imported
+nuc> nuc> nuc> nuc>   imported strview
+nuc> nuc>   defined
+nuc> half 4
+  7
+nuc> odd
+  4
+nuc>   defined
+nuc> nuc> nuc> nuc> nuc>   defined
+nuc> half 4
+  7
+nuc> odd
+  4
+nuc> nuc> nuc> nuc> nuc> nuc> nuc>   defined
+nuc>   7
+nuc> 

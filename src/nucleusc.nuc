@@ -11,7 +11,7 @@
 ; this file call repl_throw on errors when running under the REPL. The
 ; implementations live in src/repl_shim.c; the rest of the REPL is in
 ; src/repl.nuc, source-imported below.
-(declare repl_try ():i32)
+(declare repl_protect (body:(fn void)(ptr) ctx:ptr):i32)
 (declare repl_throw ():void)
 (declare repl_print_f64 (ptr):void)
 (declare repl_print_f32 (ptr):void)
@@ -304,6 +304,12 @@
 (defvar g-type-bufp:ptr)
 (defvar g-decl-bufp:ptr)
 (defvar g-def-bufp:ptr)
+; Stage 16 R4: identity of the module whose buffers are open, bumped by
+; open-module-streams. `StructDef.emit-epoch` records it, so "already emitted"
+; can mean "in THIS module" rather than "once in this process"
+; (design/stage16-ergonomics/repl-libraries.md §3.3). Starts at 1 so the header
+; modes, which open no module, still differ from a StructDef's default 0.
+(defvar g-module-epoch:i32 1)
 (defvar g-type-sizep:i64 0)
 (defvar g-decl-sizep:i64 0)
 (defvar g-def-sizep:i64 0)
@@ -608,6 +614,10 @@
 (defvar g-repl-preamble:ptr)
 (defvar g-repl-preamble-bufp:ptr)
 (defvar g-repl-preamble-sizep:i64 0)
+; Stage 16 R3 (D8): the @symbols the preamble already `declare`s. Every REPL
+; module is assembled as preamble + its own buffers, so a latch scoped to the
+; fresh buffers is a claim about only half of it — repl-libraries.md §3.2.
+(defvar (g-repl-preamble-decls (ref (Vector CStr))) (vector-new-in (addr-of g-arena-alloc)))
 
 ; Import tracking — duplicate guard and cycle detection.
 ; Each is a linked list of (path-string . next) pairs using Node cells.
@@ -670,6 +680,10 @@
 ; signatures look like a duplicate overload. `emit-toplevel-forms` therefore
 ; skips its own protocol/signature prescan for a path on this list.
 (defvar g-prescan-sigs:ptr)
+; The cycle breaker for the walk below, split out of `g-prescan-sigs` so that list
+; can mean "COMPLETED" (repl-libraries.md §3.4, D5) — a died prescan leaves no
+; marker claiming a registration that never happened.
+(defvar g-prescan-inflight:ptr)
 ; Stage 15 W9 item 29: how much of a `.nuch` form's work to do. A header's
 ; functions and values used to be registered by the same walk that emits their
 ; LLVM `declare`s, so one of its names resolved only if the import form sat
@@ -760,7 +774,11 @@
 ; unused imported function is no longer dead-stripped from the IR; it is
 ; reclaimed at the link instead, by `ir-sections-on`/`write-ir-section`.
 (defn def-linkage ():CStr
-  (when (!= g-defining-private 0) (return "internal "))
+  ; A REPL module is its own object, so `internal` would hide a private
+  ; definition from the later entry that spells it (unsafe/import-private).
+  (when (!= g-defining-private 0)
+    (when (= g-interactive 0) (return "internal "))
+    (return "weak_odr "))
   (when (!= g-emitting-copy 0) (return "weak_odr "))
   (when (= g-unit-entry-path null) (return ""))
   (when (= g-source-path null) (return ""))
@@ -1209,6 +1227,19 @@
 ; g-macro-decls. The declare reproduces emit-defn's ABI-lowered signature from
 ; the captured ProgDefn (the Sym's type may carry no usable param array); the
 ; symbol resolves from the -rdynamic host binary at JIT link time.
+; Stage 16 R3 (D8, repl-libraries.md §3.2): a REPL CT/macro module is assembled
+; as preamble + this module's buffers, so every per-module declare latch must
+; also ask the preamble. Batch has no preamble and answers 0.
+(defn repl-preamble-has-decl (irn:CStr):i32
+  (when (= g-interactive 0) (return 0))
+  (doseq (m g-repl-preamble-decls (VecIter CStr))
+    (when (= (strcmp m irn) 0) (return 1)))
+  (return 0))
+
+(defn repl-preamble-note-decl (irn:CStr):void
+  (when (!= (repl-preamble-has-decl irn) 0) (return))
+  (conj g-repl-preamble-decls (as CStr (intern-str irn))))
+
 ; Write a hand-written `declare` line into a macro/CT JIT module's decl stream
 ; unless `irn` is already declared there. Shares `g-macro-decls` with
 ; macro-jit-ensure-decl, so a macro body that both quotes and calls one of the
@@ -1216,6 +1247,7 @@
 ; LLVM rejects the redefinition, and the collision is otherwise invisible until
 ; someone writes that macro.
 (defn macro-jit-declare-raw (out:ptr irn:CStr proto:CStr):void
+  (when (!= (repl-preamble-has-decl irn) 0) (return))
   (doseq (m g-macro-decls (VecIter CStr))
     (when (= (strcmp m irn) 0) (return)))
   (conj g-macro-decls (as CStr (intern-str irn)))
@@ -1226,6 +1258,7 @@
   (let (s:(raw Sym) ss
         irn:ptr (s ir-name))
     (when (= irn null) (return))
+    (when (!= (repl-preamble-has-decl (as CStr irn)) 0) (return))
     (let (pd:?ptr:ProgDefn (program-defn-lookup irn))
       (when (= pd null) (return))
       ; Dedup within this module.
@@ -2822,6 +2855,8 @@
 (defn path-in-unit-exact (path:CStr):i32
   (when (!= (import-list-has g-prescan-visited path) 0) (return 1))
   (when (!= (import-list-has g-prescan-sigs path) 0) (return 1))
+  ; A file the walk is still inside is in the unit as much as one it has finished.
+  (when (!= (import-list-has g-prescan-inflight path) 0) (return 1))
   (when (!= (import-list-has g-imported path) 0) (return 1))
   (when (= path g-source-path:CStr) (return 1))
   (when (and (!= g-unit-entry-path null) (= path g-unit-entry-path:CStr))
@@ -3225,6 +3260,11 @@
     (when (!= near null)
       (return (fmt-2s "unknown type: %s (did you mean '%s'?)" name near:CStr))))
   (return (fmt-s "unknown type: %s — not defined anywhere in this compilation unit" name)))
+
+; A `?T`/`!T`/`(Maybe T)` whose template is unregistered is a missing-TYPE
+; failure, so it gets W1c's tiered answer, not a flat "import the prelude".
+(defn missing-template-message (sugar:CStr tmpl:CStr):ptr
+  (return (fmt-2s "%s: %s" sugar (as CStr (unknown-type-message tmpl)))))
 
 (defn unknown-name-message (name:CStr):ptr
   (return (unresolved-name-message "unknown" name)))
@@ -4216,9 +4256,9 @@
 
 ; Intern `s` and return its canonical string pointer. Two equal spellings yield
 ; the same pointer, so interned strings compare by pointer identity (`=`) rather
-; than `strcmp`. Field names are stored interned (emit-defstruct,
-; repl-register-node) and selectors arrive interned (the reader/`quote` intern at
-; lex time), so struct-field-index matches by identity.
+; than `strcmp`. Field names are stored interned (emit-defstruct) and selectors
+; arrive interned (the reader/`quote` intern at lex time), so struct-field-index
+; matches by identity.
 (defn intern-str (s:ptr):ptr
   (return ((intern-symbol s) s)))
 
@@ -7420,12 +7460,17 @@
             (inc! i)
             (set! cur (cur cdr)))))
       (struct-set-fields sd fnm ftp nf)
-      (fprintf g-out "%%%s = type { " ename)
-      (dotimes (i nf)
-        (when (!= i 0) (fprintf g-out ", "))
-        (fprintf g-out "%s" (type-to-ir (aref (as ptr:ptr ftp) i))))
-      (fprintf g-out " }\n\n")
-      (.set! sd emitted 1)
+      ; R4: under the REPL the type buffer is what the session carries forward,
+      ; and the `invoke` body naming this env is drained into a LATER module
+      ; (design/stage16-ergonomics/repl-libraries.md §3.3). Batch keeps g-out, so
+      ; its IR is unmoved.
+      (let (ts:ptr (if (!= g-interactive 0) g-type-stream g-out))
+        (fprintf ts "%%%s = type { " ename)
+        (dotimes (i nf)
+          (when (!= i 0) (fprintf ts ", "))
+          (fprintf ts "%s" (type-to-ir (aref (as ptr:ptr ftp) i))))
+        (fprintf ts " }\n\n")
+        (sdef-note-emitted (as raw:StructDef sd) ts))
       (return (as ptr sd)))))
 
 ; Synthesize, register, and queue the closure's `invoke` method:
@@ -13177,7 +13222,10 @@
             (when (!= i 0) (fprintf g-out ", "))
             (fprintf g-out "%s" (type-to-ir (aref (as ptr:ptr ftp) i))))
           (fprintf g-out " }\n\n")
-          (.set! sd emitted 1)))))))
+          (sdef-note-emitted (as raw:StructDef sd) g-out)
+          ; D9: queued as well, so the line replays into a later module; inert
+          ; where the eager write landed. repl-libraries.md §3.3.
+          (conj g-pending-unions sd)))))))
 
 ; The synthesized constructor defn for one defunion arm (new-style signature):
 ;   (defn Shape-circle (r:f64) Shape (make Shape circle r))
@@ -13351,7 +13399,17 @@
       (let (ir-name:ptr (fmt-s "@%s" (ns-ir-base name)))
         (check-ir-name-legal (cc line) name ir-name)
         (when (!= m NUCH-REG)
-          (fprintf g-out "%s = external global %s\n\n" ir-name (type-to-ir ty)))
+          ; Stage 16 R3: the dedup above is process-wide, which is right for a
+          ; single batch module and leaves every LATER REPL module without the
+          ; line — `(extern stderr:ptr)` in two collection libs emitted it into
+          ; the first import's module only. The preamble is prepended to every
+          ; module including the one being assembled now, so it is the buffer
+          ; this belongs in. repl-libraries.md §3.2.
+          (if (!= g-interactive 0)
+            (when (= (repl-preamble-has-decl (as CStr ir-name)) 0)
+              (repl-preamble-note-decl (as CStr ir-name))
+              (fprintf g-repl-preamble "%s = external global %s\n\n" ir-name (type-to-ir ty)))
+            (fprintf g-out "%s = external global %s\n\n" ir-name (type-to-ir ty))))
         (when (!= m NUCH-AFTER)
           (scope-define g-globals name ty ir-name 1)
           (when (= m NUCH-REG)
@@ -13764,7 +13822,7 @@
   ; Backends are already registered process-wide by targets-init-all (called from
   ; target-init, which runs before any JIT use on every path —
   ; batch CT-JIT via emit-toplevel-forms, and the REPL via repl-main
-  ; before repl-preload-macros), so no per-call native-target init is needed here.
+  ; before repl-preload-prelude), so no per-call native-target init is needed here.
   ; Create LLJIT
   (let (jit-ref:ptr null
         err:ptr (LLVMOrcCreateLLJIT (addr-of jit-ref) null))
@@ -13935,7 +13993,9 @@
                           (-> bf (node-at _ 0) (unsafe/cast ptr:Node _) (_ kind) (= _ NODE-SYM)))
                 (let (bh:ptr (-> bf (node-at _ 0) (unsafe/cast ptr:Node _) (_ s)))
                   (when (= bh "defstruct")
-                     (set! is-tl 1) (set! g-out ct-type) (emit-defstruct (as ptr bf)))
+                     ; D9 ruling: a CT `defstruct` defines a PROGRAM type, so its
+                     ; line belongs in the module's own buffer, not ct-type.
+                     (set! is-tl 1) (set! g-out g-type-stream) (emit-defstruct (as ptr bf)))
                   (when (= bh "defconst")
                      (set! is-tl 1) (emit-defconst (as ptr bf)))
                   (when (= bh "defenum")
@@ -14024,6 +14084,12 @@
             (fclose ct-type)
             (fclose ct-decl)
             (fclose ct-def)
+
+            ; D9: the flush at the top of this function is stale by now — the CT
+            ; body itself stamps types — so re-drain and re-flush before
+            ; g-type-bufp is copied below, exactly as compile-macro-body does.
+            (drain-pending-union-irs)
+            (fflush g-type-stream)
 
             ; Assemble full CT module IR in a memstream.
             (let (ir-bufp:ptr null  ir-sizep:i64 0
@@ -15706,8 +15772,11 @@
                 (let (path:ptr (import-form-path (as raw:Node nn) (f line)))
                   (when (and (!= path null)
                              (= (import-list-has g-prescan-sigs path) 0)
+                             (= (import-list-has g-prescan-inflight path) 0)
                              (= (as ptr (import-list-find g-imported path)) null))
-                    (set! g-prescan-sigs (import-list-push g-prescan-sigs path))
+                    ; In-flight here (the cycle breaker); DONE only once the
+                    ; prescan has actually run — see g-prescan-inflight.
+                    (set! g-prescan-inflight (import-list-push g-prescan-inflight path))
                     (let (save-src:ptr g-src
                           save-pos:i64 g-pos
                           save-line:i32 g-line
@@ -15760,6 +15829,8 @@
                               (prescan-struct-layouts ifs)
                               (prescan-union-layouts ifs))))
                         (free src))
+                      (set! g-prescan-sigs (import-list-push g-prescan-sigs path))
+                      (set! g-prescan-inflight (import-list-pop g-prescan-inflight))
                       (set! g-source-path save-path)
                       (set! g-src save-src)
                       (set! g-pos save-pos)
@@ -16232,7 +16303,11 @@
     ; The walk above followed every import form EXCEPT `import-ct`, so what it
     ; visited is precisely "reachable for real". Sampled here, before the first
     ; form is emitted, because emission pushes onto the same list.
-    (set! g-real-reachable g-prescan-sigs))
+    ; A file being SUNK is not the unit root, which is what depth 1 means
+    ; everywhere else: only a REPL import reaches depth 1 under a sink, and
+    ; re-sampling there told `do-import` its own ct-import was real (R5).
+    (when (= g-ct-emitting 0)
+      (set! g-real-reachable g-prescan-sigs)))
   ; Stage 15 W9 item 40: this file's own struct and union layouts, last of the
   ; prescans for the same reason the graph walk runs them last — a field's
   ; `(array T N)` length is a constant expression, so every `defconst` this file
@@ -17565,6 +17640,7 @@
 ; ============================================================
 
 (defn open-module-streams ():void
+  (inc! g-module-epoch)
   (set! g-type-stream (open_memstream (addr-of g-type-bufp) (as ptr (addr-of g-type-sizep))))
   (set! g-decl-stream (open_memstream (addr-of g-decl-bufp) (as ptr (addr-of g-decl-sizep))))
   (set! g-def-stream  (open_memstream (addr-of g-def-bufp)  (as ptr (addr-of g-def-sizep))))

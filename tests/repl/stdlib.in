@@ -1,0 +1,30 @@
+; Stage 16 R3 (design/stage16-ergonomics/repl-libraries.md §3.2): the reported
+; session, end to end. Every one of these calls a monomorphized stamp, whose
+; body `drain-mono-worklist` used to emit only from `emit-toplevel-forms` — a
+; path a prompt entry never reaches (D3). Results are printed as integers: a
+; collection literal's own value is a stack address, which differs per run.
+(import-use hashset)
+(contains? #{1 2 3} 2)
+(contains? #{1 2 3} 9)
+; The same instance, several entries later: `g-mono-drained` is a persistent
+; cursor, so this call gets no new body of its own and has to resolve against
+; the `declare` the first entry left in the preamble.
+(if (> 2 1) 111 222)
+(if (> 2 1) 333 444)
+(contains? #{1 2 3} 3)
+; A second element type stamps a fresh instance in a session that already has one.
+(contains? #{"a" "b"} "b")
+(contains? #{"a" "b"} "z")
+; Two more libraries in the same session. `(extern stderr:ptr)` appears in both
+; hashset and vector, and its process-wide dedup used to leave the second
+; import's module without the line.
+(import-use vector)
+(let (v [10 20 30]) (v 1))
+(if (> 2 1) 555 666)
+(let (v [7 8]) (unsafe/cast i32 (count v)))
+; D8: `lib/error.nuc` does `(import-ct node)`, so `alloc-node` reaches the
+; preamble as a declare; `lib/arena.nuc`'s `defmacro new` then builds a node and
+; its JIT module declared it a second time.
+(import-use error)
+(import-use arena)
+(if (> 2 1) 777 888)

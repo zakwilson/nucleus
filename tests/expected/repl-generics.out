@@ -1,0 +1,20 @@
+Nucleus REPL (type Ctrl-D to exit)
+nuc> nuc> nuc> nuc> nuc> nuc> nuc> nuc> nuc>   defined
+nuc>   5
+nuc> nuc> nuc> nuc>   10
+nuc>   30
+nuc>   7
+nuc>   9
+nuc> nuc> nuc>   10
+nuc>   105
+nuc> nuc> nuc> nuc> nuc>   defined
+nuc>   5
+nuc>   redefined
+nuc>   6
+nuc>   42
+nuc> nuc>   imported vector
+nuc>   3
+nuc>   3
+nuc> nuc> nuc> nuc> nuc>   8
+nuc>   11
+nuc> 
