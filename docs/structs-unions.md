@@ -96,7 +96,44 @@ zero-fill, struct-, union- and `CStr`-typed slots included.
 
 ## C header struct ingestion
 
-C headers consumed via `(import-use "foo.h")` or `(import "foo.h" prefix)` now register their `struct Foo { ... };` and `typedef struct { ... } Bar;` definitions as Nucleus structs with the same name. Anonymous inline struct fields are registered as memoized anonymous structs (same `__anon_struct_h<hex>` machinery). Pass-by-value parameters typed as a C struct work through this path. `union { ... }` fields, named unions, and `typedef union` are registered as untagged union types (see [Untagged `(union ...)`](#untagged-union-)); headers like SDL's or pthread's no longer degrade over them. Field types that the parser cannot represent yet (arrays, bitfields, multi-declarator lines like `int a, b;`) cause the whole struct to be skipped — it becomes an **opaque type** (below) rather than a layout-incompatible partial struct.
+C headers consumed via `(import-use "foo.h")` or `(import "foo.h" prefix)` now register their `struct Foo { ... };` and `typedef struct { ... } Bar;` definitions as Nucleus structs with the same name. Anonymous inline struct fields are registered as memoized anonymous structs (same `__anon_struct_h<hex>` machinery). Pass-by-value parameters typed as a C struct work through this path. `union { ... }` fields, named unions, and `typedef union` are registered as untagged union types (see [Untagged `(union ...)`](#untagged-union-)); headers like SDL's or pthread's no longer degrade over them.
+
+A member whose type the parser genuinely cannot represent — a bitfield, a multi-declarator line (`int a, b;`), a C11 anonymous struct/union member, an inline function-pointer member (`void (*f)(int);` — a function pointer *behind a typedef* is fine), an array whose extent does not fold to a compile-time constant, or a by-value use of an unresolvable typedef — makes the **whole struct opaque** (below), with a located error at every by-value use, rather than a layout-incompatible partial struct. A size is never guessed: a member reached indirectly, through a typedef the parser could not follow, used to resolve to `ptr` silently, giving a wrong struct *layout* with no diagnostic; it is refused the same way a direct unrepresentable member always was.
+
+### Array members
+
+A struct field whose C declaration carries an array extent is read as
+`(array T N)`, laid out exactly as the corresponding
+[fixed-size array field](#fixed-size-array-fields):
+
+```c
+struct sockaddr_in6 { ... uint8_t sin6_addr[16]; ... };            /* literal extent */
+struct grid          { int cells[3][4]; };                         /* [a][b] folds right-to-left into (array (array i32 4) 3) */
+struct with_pad      { char pad[15 * sizeof(int) - sizeof(void*)]; int x; };  /* constant-expression extent */
+```
+
+The extent may be a decimal literal, a macro that expands to one, a
+multi-dimensional `[a][b]…` (folded right-to-left into nested array types), or
+a constant expression — `+ - * / % << >> ( )`, integer literals, and
+`sizeof(type)` — evaluated by the importer's own integer evaluator. **The
+expression is folded for the emission *target*, never the preprocessing
+host**: `clang -E` always preprocesses for the machine running the compiler
+even under `--target=`, so an extent naming `sizeof(long)` or `sizeof(void*)`
+is evaluated against the *target's* type sizes.
+
+An extent the evaluator cannot fold — an unexpanded macro, a `sizeof` of a
+type it cannot resolve, a name that is not a compile-time constant — does not
+produce a guess: the struct is left opaque, exactly as if the member could not
+be parsed at all.
+
+A `#` linemarker `clang -E` writes **inside** a struct body — a routine
+preprocessing artifact, not a code smell — no longer aborts the struct either;
+`struct timespec`, `struct stat` and `struct itimerspec` all import correctly
+because of this.
+
+`__attribute__((packed))` and other layout attributes are still not modeled:
+`struct epoll_event` imports at 16 bytes where C's packed attribute makes it
+12, silently. Only the shapes above are covered.
 
 A header's type names are visible to `defn` **signatures** in the importing unit,
 not only inside function bodies — `(defn play (m:ptr:Mix_Music):i32 …)` resolves,
@@ -136,10 +173,16 @@ glibc. Nucleus registers the **name** with no layout, so:
   upgrade also reaches any `typedef struct Foo Bar;` alias registered while the
   tag was still opaque.
 
-A type stays opaque either because no header in the translation unit defines it,
-or because its definition uses a construct the C declaration parser cannot
-represent (bitfields, arrays, multi-declarator lines) — `FILE` is the second
-kind, and SDL's `SDL_GUID` (`struct { Uint8 data[16]; }`) is another. Both are
+A type stays opaque either because no header in the translation unit defines
+it — `FILE` is this case: a plain `(import-use "stdio.h")` only ever sees
+`typedef struct _IO_FILE FILE;`, never `struct _IO_FILE`'s body — or because
+its definition uses a construct the C declaration parser cannot represent: a
+bitfield, a multi-declarator line, a C11 anonymous struct/union member
+(`struct rusage`'s `__extension__ union { long ru_maxrss; ...; };`), an
+inline function-pointer member (`struct sigaction`'s
+`void (*sa_handler)(int);` — a function pointer *behind a typedef*, like a
+callback field typed with a `typedef void (*cb)(int);` alias, is fine), or an
+array member whose extent does not fold to a compile-time constant. Both are
 usable as handles; neither can be used by value. `examples/cheader-opaque.nuc`
 is a worked example (a real `fopen`/`fprintf`/`fgets` round trip through
 `ptr:FILE`).
@@ -204,8 +247,102 @@ A typedef the parser cannot follow is **never silently `ptr`**. The name is
 recorded as known-but-unrepresentable and any *by-value* use of it is refused
 (below); a *pointer* to it stays `ptr`, which is correct — every C pointer is one
 machine word. In practice the unrepresentable set is `long double`, `_Float128`,
-`_Float16`, an array typedef (`typedef int v4[4];`), and a typedef of a struct
-whose body the parser could not read.
+`_Float16`, and a typedef of a struct whose body the parser could not read (see
+[Array members](#array-members) for when that is).
+
+### Array typedefs decay like any other C array
+
+`typedef long __jmp_buf[8];` (a scalar element) and `typedef struct Tag
+Name[N];` (an aggregate element — the upgrade this alias gets when `Tag`'s own
+body becomes known is the same one described in
+[Opaque types](#opaque-forward-declared-c-types)) are both representable, as
+`(array T N)`, under the same extent rules as a
+[struct member](#array-members). C decays an array **parameter or return** to
+a pointer, and the importer follows the same rule at the same boundary — a
+**struct member** of the typedef's type does not decay, exactly as a C struct
+member never does:
+
+```c
+int setjmp(jmp_buf env);          /* jmp_buf = struct __jmp_buf_tag[1] */
+struct s { jmp_buf saved; };      /* member: stays the full inline array */
+```
+
+```
+declare i32 @setjmp(ptr) returns_twice        ; parameter: decayed to one word
+%s = type { [1 x %__jmp_buf_tag] }            ; member: still the full inline array
+```
+
+**One shape still gets this wrong, silently.** A *with-body* aggregate array
+typedef — `typedef struct Tag { ... } Name[N];`, body and array declarator in
+the same statement — takes a different branch from the no-body form above and
+still discards its extent: a `Name`-typed parameter is passed at the wrong
+ABI (`declare void @f(i64, i64)` where clang says `ptr`). This shape does not
+occur in any header this compiler is tested against.
+
+## A C typedef is a Nucleus type name
+
+A C typedef — scalar, pointer, function pointer, enum, or (per above) array —
+is usable directly as a Nucleus type name, in every position a type is
+expected: a `defn` parameter or return, a `defvar`, a struct field, a `let` or
+`with` binding. It is **transparent**, exactly like a Nucleus
+[`deftype`](types.md#type-aliases--deftype) alias: `type-eq` to the type it
+names, one overload for dispatch, and it mangles as that type, not as its own
+name.
+
+```lisp
+(import-use "unistd.h")
+(defn seek (fd:i32 off:off_t):off_t off)   ; -> i64 @seek(i32, i64) — off_t IS i64
+```
+
+```lisp
+(import-use "setjmp.h")
+(defvar env:jmp_buf)                        ; 200 bytes of storage — jmp_buf is an array typedef
+```
+
+**A `deftype` is never masked by an import, and never masks one either.** A
+type name is probed the same way regardless of which came from where: a
+`(deftype off_t ...)` naming an already-imported C typedef is refused, in
+either declaration order, the same way redefining any other type name is —
+see [Type aliases — `deftype`](types.md#type-aliases--deftype):
+
+```
+prog.nuc:2: error: deftype: 'off_t' already names a C typedef imported from
+/usr/include/unistd.h — an alias of an existing type name would never resolve
+```
+
+**A known-but-unrepresentable typedef gets its own message**, distinct from an
+absent name:
+
+```
+prog.nuc:2: error: 'weird_ld_t' names a C type this compiler cannot represent (/tmp/weird.h:1)
+```
+
+versus the ordinary `unknown type: 'nosuch' — not defined anywhere in this
+compilation unit` for a name that was never a typedef at all.
+
+**Known limitation: a `defn` signature or a `defvar`'s declared type is
+resolved before any import runs**, in the whole-unit signature prescan (see
+[Declarations the importer skips](#declarations-the-importer-skips) for the
+same ordering elsewhere). A typedef the prescan cannot yet finish — because
+its element is a struct whose body import hasn't laid out yet, such as
+`sigset_t` — is indistinguishable there from a name that was never a typedef,
+so a **signature** naming it gets the plain `unknown type: sigset_t (did you
+mean '__sigset_t'?)` rather than the message above. A **body** position,
+reached after the import has actually run, resolves it correctly:
+`(sizeof sigset_t)` is `128`, matching clang, even though `(defn f
+(x:sigset_t):i32 ...)` is refused.
+
+An array typedef is a storage type, just like the Nucleus `(array T N)`
+spelling it now stands for, and is refused at the same positions with the same
+message — see [Fixed-size arrays](types.md#fixed-size-arrays--array-t-n).
+`(defn g (x:jmp_buf):i32 ...)` is refused as storage, not a value;
+`(defvar env:jmp_buf)` and a struct field of that type are the legal
+positions.
+
+`--emit-cheader` does not add an `#include` for the header a rendered
+typedef came from — unlike a type borrowed from another Nucleus unit (see
+[`--emit-cheader`](compiler.md#compiler-flags)), a consumer of the generated
+header is expected to `#include` the same C header itself.
 
 ## Declaration precedence: an explicit `declare` wins
 
@@ -300,6 +437,46 @@ through the same platform C ABI as a `defn` or a `.nuch` `declare` — so
 `declare { i64, i64 } @ldiv(i64, i64)`, and `fopencookie`'s 32-byte struct
 parameter as `ptr byval(%cookie_io_functions_t) align 8`, matching what the call
 site emits.
+
+## Recognized libc function attributes: `noreturn` and `returns_twice`
+
+A C header carries no attribute metadata the importer trusts — even an
+explicit `__attribute__((noreturn))` is discarded — so a small set of
+well-known libc functions is recognized **by name** instead and gets the
+matching LLVM attribute on its `declare`: `exit`, `abort`, `_exit`, `_Exit`,
+`quick_exit`, `abort_handler_s`, `longjmp` and `siglongjmp` get `noreturn` (a
+statement-position call to one terminates its block, so a
+`(when (= x null) (exit 1))` guard narrows the tested binding past it, exactly
+as a call to a `noreturn` Nucleus `defn` does); `setjmp`, `_setjmp`,
+`__sigsetjmp`, `sigsetjmp`, `savectx`, `vfork` and `getcontext` get
+`returns_twice`. The setjmp family needs the by-name list for the same reason
+`noreturn` does: `clang -E -x c -include setjmp.h /dev/null` contains **zero**
+`returns_twice` annotations on glibc, because clang supplies the attribute
+itself, treating these as compiler builtins. Without it, the optimizer may
+turn a call into a `tail call`, which reuses the frame the later `longjmp`
+needs to return into.
+
+Three details are properties of **glibc's headers**, not of the compiler, and
+matter to any program that calls into this family:
+
+* **`setjmp` is a macro on glibc**, unconditionally: `#define setjmp(env)
+  _setjmp (env)`. Nucleus consumes C functions and data structures but not C
+  macros, so a Nucleus `(setjmp env)` reaches the *function* `setjmp` — which is
+  `__sigsetjmp(env, 1)` and additionally saves the signal mask — where C source
+  spelling `setjmp(e)` reaches `_setjmp`, which does not. **Spell `_setjmp`
+  explicitly to get C's behaviour.**
+* **`sigsetjmp` is likewise `#define sigsetjmp(env, savemask) __sigsetjmp
+  (env, savemask)`**; the callable symbol is `__sigsetjmp`.
+* **`longjmp` already gets `noreturn`** from the list above, so a block
+  containing a `longjmp` call ends there, same as any other `noreturn` call.
+
+A local that must survive the jump needs `:volatile` — a `longjmp` does not
+restore registers, so an optimizer-promoted local reads back its pre-jump
+value otherwise. See [Volatile qualifier](types.md#volatile-qualifier).
+`examples/setjmp-guard.nuc` is a full worked example: a `(defvar env:jmp_buf)`
+storage declaration, `_setjmp`/`_longjmp` driving a retry loop, and a
+`:volatile` counter that survives the jump — nothing here is writable through
+any other combination of C header import features.
 
 ## Unions and tagged sums
 

@@ -25,6 +25,13 @@
                        "abort_handler_s" "longjmp" "siglongjmp"}
                       fname)))
 
+; Likewise by name: the setjmp family. clang treats these as builtins and adds
+; `returns_twice` itself, so `clang -E` leaves no attribute here to parse.
+(defn c-fn-returns-twice (fname:CStr):bool
+  (return (contains? #{"setjmp" "_setjmp" "__sigsetjmp" "sigsetjmp"
+                       "savectx" "vfork" "getcontext"}
+                      fname)))
+
 ; ============================================================
 ; C header parsing (clang -E)
 ; ============================================================
@@ -76,57 +83,6 @@
   (set! g-cheader-unrep 1)
   (set! g-cheader-unrep-why why)
   (set! g-cheader-unrep-quiet quiet))
-
-; ============================================================
-; Stage 15 W3c: the C typedef table (cheader.md §1.4)
-;
-; Before this, `c-parse-type` resolved every name it did not recognize as a
-; builtin to `ptr`, so EVERY scalar typedef degraded — `off_t f(int)` imported as
-; `declare ptr @f(i32)`, and so did SDL's `Uint8`/`Uint32` and even a one-level
-; `typedef int myint;`. Only `size_t`/`ssize_t` resolved, and only because
-; c-type-to-nucleus hardcodes those two names.
-;
-; A typedef is resolved ONCE, at the point its `typedef` declaration is parsed,
-; and the table stores the *resolved* Type. Two consequences are worth keeping:
-;
-;   * A chain (`off_t` → `__off_t` → `long int`) costs one lookup at each use,
-;     not a walk — the intermediate entry was already collapsed.
-;   * A cycle is impossible by construction. A name can only ever resolve against
-;     entries recorded strictly before it, so a malformed `typedef foo foo;`
-;     records `foo` as unrepresentable instead of looping forever.
-;
-; A record whose `car` is null means "this is a real C type name and we cannot
-; represent it" (an array typedef, a typedef of an unparsable aggregate). That is
-; deliberately distinct from an *absent* record: a by-value use of either is
-; refused, but the messages differ, and only the recorded form proves the name
-; was declared rather than merely unknown.
-;
-; The record reuses a Node cell, exactly as the import lists and the
-; preprocessed-text cache do: `s` = the typedef name, `car` = the resolved Type*
-; (or null), `cdr` = the next entry.
-; ============================================================
-(defvar (g-cheader-typedefs (raw Node)))
-
-(defn c-typedef-find (name:CStr):(raw Node)
-  (let (cur:ptr g-cheader-typedefs)
-    (while (!= cur null)
-      (let (e:ptr:Node (unsafe/cast ptr:Node cur))
-        (when (= (as CStr (e s)) name) (return (as raw:Node e)))
-        (set! cur (e cdr)))))
-  (return null))
-
-; Record `name` as resolving to `ty` (null = known but not representable).
-; Idempotent: a header imported twice, or included transitively by two headers,
-; re-declares the same typedef and must not grow the table without bound.
-(defn c-typedef-record (name:ptr ty:ptr):void
-  (when (!= (c-typedef-find name:CStr) null) (return))
-  (let (n:ref:Node (new Node))
-    (.set! n kind NODE-STR)
-    (.set! n line 0)
-    (.set! n s (intern-str name))
-    (.set! n car ty)
-    (.set! n cdr g-cheader-typedefs)
-    (set! g-cheader-typedefs (as raw:Node n))))
 
 ; ============================================================
 ; Stage 15 W3c: declaration precedence (cheader.md §1.4)
@@ -400,6 +356,35 @@
           (set! more 1))))
     (return p)))
 
+; Consume a run of `__attribute__ ((…))`, returning the position after the last
+; one. C admits one between `struct`/`union` and the tag, where a scanner that
+; reads the next identifier as the tag registers a phantom type named
+; `__attribute__` (glibc's `struct __attribute__ ((__may_alias__)) sockaddr`).
+(defn c-skip-attributes (buf:ptr pos:i64 len:i64):i64
+  (let (p:i64 (c-skip-ws buf pos len)
+        more:i32 1)
+    (while (!= more 0)
+      (set! more 0)
+      (let (ae:i64 0
+            at:ptr (c-read-ident buf p len (as ptr:i64 (addr-of ae))))
+        (when (= at "__attribute__")
+          (set! p (c-skip-ws buf ae len))
+          (when (and (< p len) (= (char-at buf p) 40))
+            (set! p (c-skip-parens buf p len)))
+          (set! p (c-skip-ws buf p len))
+          (set! more 1))))
+    (return p)))
+
+; Whitespace plus `#`-led lines — clang -E emits linemarkers inside struct bodies.
+; Not recorded: that moves g-cheader-dpos past a declaration still being parsed.
+(defn c-skip-body-ws (buf:ptr pos:i64 len:i64):i64
+  (let (p:i64 (c-skip-ws buf pos len))
+    (while (and (< p len) (= (char-at buf p) 35))
+      (while (and (< p len) (!= (char-at buf p) 10))
+        (set! p (+ p 1)))
+      (set! p (c-skip-ws buf p len)))
+    (return p)))
+
 ; Parse a C type from the buffer. Handles qualifiers (const, restrict, volatile,
 ; unsigned, signed, long, short, struct), pointer stars.
 ; Returns the Nucleus Type*. Sets out-end to position after the type.
@@ -561,11 +546,11 @@
           (set! base-name "int"))
         (when (= base-name null) (return ty-ptr)))
     (let (base-type:ptr (c-type-to-nucleus base-name is-unsigned is-long is-short)
-          td:ptr (as ptr (c-typedef-find base-name:CStr)))
+          td:?ptr:CTypedef (c-typedef-find base-name:CStr))
       ; W3c: not a builtin — consult the typedef table (cheader.md §1.4). The
       ; entry already holds the fully-resolved type, so a chain costs one lookup.
-      (when (and (= base-type null) (!= td null))
-        (set! base-type (as ptr ((unsafe/cast ptr:Node td) car))))
+      (when (= base-type null)
+        (if-some (e td) (set! base-type (as ptr (e ty))) 0))
       ; W3c: a typedef NAME for a C aggregate is registered as a StructDef, not
       ; in the typedef table (c-parse-struct-decl owns that path), so resolve it
       ; the same way the `struct Tag` branch above does — a known layout gives
@@ -721,6 +706,9 @@
         decl-start:i64 pos
         ret-type:ptr (c-parse-type buf pos len (as ptr:i64 (addr-of ret-end))))
     (set! pos ret-end)
+    ; C decays an array in a parameter or return position; a struct MEMBER keeps
+    ; its extent, which is why the call is here and not in c-parse-type.
+    (set! ret-type (as ptr (array-decay ret-type)))
     (set! pos (c-skip-ws buf pos len))
     ; Read the function name
     (let (name-end:i64 0
@@ -821,6 +809,9 @@
                       ; int)` is the case that proved this must clear the flag.
                       (set! g-cheader-unrep 0)
                       (set! ptype ty-ptr))
+                    ; The syntactic `[N]` above cannot see an array reached
+                    ; through a typedef; array-decay covers both spellings.
+                    (set! ptype (as ptr (array-decay ptype)))
                     ; W3b: this parameter's contribution to the gate, taken after
                     ; every override above.
                     (when (and (!= g-cheader-unrep 0) (= unrep-why null))
@@ -902,7 +893,9 @@
                                   (fmt-s "@%s" fname) 0))
                 ; Stage 10 Phase F1: mark known-noreturn libc functions.
                 (when (c-fn-noreturn fname)
-                  (.set! (as ptr:Sym csym) noreturn 1)))
+                  (.set! (as ptr:Sym csym) noreturn 1))
+                (when (c-fn-returns-twice fname)
+                  (.set! (as ptr:Sym csym) returns-twice 1)))
               (when (= fname "malloc")
                 (set! g-malloc-decl-done 1))
               ; Emit LLVM declare, lowering a struct-by-value parameter or return
@@ -948,9 +941,10 @@
                       (when (!= need-comma 0) (set! sep ", "))
                       (fprintf g-out "%s..." sep)))))
               ; Stage 10 Phase F1: trailing LLVM `noreturn` function attribute.
-              (if (c-fn-noreturn fname)
-                (fprintf g-out ") noreturn\n")
-                (fprintf g-out ")\n"))))
+              (cond
+                (c-fn-noreturn fname)      (fprintf g-out ") noreturn\n")
+                (c-fn-returns-twice fname) (fprintf g-out ") returns_twice\n")
+                true                       (fprintf g-out ")\n"))))
         (return 1)))))
 
 ; ============================================================
@@ -1111,6 +1105,237 @@
     (.set! sd src-line line)
     (return (as ptr sd))))
 
+; ============================================================
+; Stage 16 L2: a C array extent
+; (design/stage16-ergonomics/c-header-layout.md §3.2)
+;
+; The preprocessor has already expanded every macro, so what is left in a `[…]`
+; is a C constant expression over literals and `sizeof`. It is evaluated for the
+; EMISSION target — `clang -E` preprocesses for the host even under `--target=`,
+; so a host `sizeof` would silently size an array for the wrong machine, the
+; same trap that keeps `size_t`/`ssize_t` hardcoded in c-type-to-nucleus.
+;
+; Anything the evaluator cannot fold clears `ok`, which abandons the struct and
+; leaves the name opaque (L1) rather than guessing an extent.
+; ============================================================
+
+; Is a C type name next? Separates `( type )` — a cast, or a sizeof operand —
+; from `( expr )`; an identifier that is neither a specifier keyword nor a
+; recorded typedef or tag is not one.
+(defn c-cexpr-type-ahead (buf:ptr pos:i64 len:i64):i32
+  (let (p:i64 (c-skip-ws buf pos len)
+        e:i64 0
+        tok:ptr (c-read-ident buf p len (as ptr:i64 (addr-of e))))
+    (when (= (strlen tok) 0) (return 0))
+    (when (contains? #{"void" "char" "short" "int" "long" "float" "double"
+                       "signed" "unsigned" "_Bool" "const" "volatile"
+                       "restrict" "__restrict" "_Atomic" "struct" "union"
+                       "enum" "__extension__"}
+                     tok:CStr)
+      (return 1))
+    (if-some (td (c-typedef-find tok:CStr)) (return 1) 0)
+    (let (sd:ptr (lookup-struct tok))
+      (when (!= sd null) (return 1)))
+    (return 0)))
+
+; An integer literal: `0x…` hex, `0…` octal, decimal, with C's u/U/l/L suffixes.
+(defn c-cexpr-number (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
+  (let (p:i64 pos
+        v:i64 0
+        base:i64 10)
+    (when (and (< (+ p 1) len) (= (char-at buf p) 48))
+      (let (c1:i32 (char-at buf (+ p 1)))
+        (when (or (= c1 120) (= c1 88)) (set! base 16) (set! p (+ p 2)))
+        (when (and (= base 10) (!= (isdigit c1) 0)) (set! base 8) (set! p (+ p 1)))))
+    (let (start:i64 p
+          more:i32 1)
+      (while (!= more 0)
+        (set! more 0)
+        (when (< p len)
+          (let (c:i32 (char-at buf p)
+                d:i32 -1)
+            (when (!= (isdigit c) 0) (set! d (- c 48)))
+            (when (and (= base 16) (and (>= c 97) (<= c 102))) (set! d (- c 87)))
+            (when (and (= base 16) (and (>= c 65) (<= c 70))) (set! d (- c 55)))
+            (when (and (>= d 0) (< (as i64 d) base))
+              (set! v (+ (* v base) (as i64 d)))
+              (set! p (+ p 1))
+              (set! more 1)))))
+      (when (= p start) (ptr-set! ok 0)))
+    (let (more:i32 1)
+      (while (!= more 0)
+        (set! more 0)
+        (when (< p len)
+          (let (c:i32 (char-at buf p))
+            (when (or (or (= c 117) (= c 85)) (or (= c 108) (= c 76)))
+              (set! p (+ p 1))
+              (set! more 1))))))
+    (ptr-set! out-end p)
+    (return v)))
+
+; `sizeof (<type>)`, with `pos` just past the `(`.
+(defn c-cexpr-sizeof (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
+  (let (save-unrep:i32 g-cheader-unrep
+        save-why:ptr g-cheader-unrep-why
+        save-quiet:i32 g-cheader-unrep-quiet
+        te:i64 0
+        ty:ptr null
+        n:i64 0)
+    (set! g-cheader-unrep 0)
+    (set! ty (c-parse-type buf pos len (as ptr:i64 (addr-of te))))
+    ; An unresolvable name comes back as `ptr` with the flag raised, so folding
+    ; its size here would be exactly the silent wrong answer L1/L2 remove.
+    (when (or (= ty null) (!= g-cheader-unrep 0)) (ptr-set! ok 0) (set! ty null))
+    (set! g-cheader-unrep save-unrep)
+    (set! g-cheader-unrep-why save-why)
+    (set! g-cheader-unrep-quiet save-quiet)
+    (set! te (c-skip-body-ws buf te len))
+    (if (and (< te len) (= (char-at buf te) 41))
+      (set! te (+ te 1))
+      (ptr-set! ok 0))
+    (ptr-set! out-end te)
+    (when (!= ty null) (set! n (as i64 (abi-sizeof ty))))
+    (return n)))
+
+(defn c-cexpr-primary (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
+  (let (p:i64 (c-skip-body-ws buf pos len))
+    (when (>= p len) (ptr-set! ok 0) (ptr-set! out-end p) (return 0))
+    (let (c:i32 (char-at buf p))
+      (when (!= (isdigit c) 0)
+        (return (c-cexpr-number buf p len out-end ok)))
+      (when (= c 40)
+        ; A cast's own width is discarded: `(int)` in front of a `sizeof` cannot
+        ; narrow an extent that has to fit an array bound anyway.
+        (when (!= (c-cexpr-type-ahead buf (+ p 1) len) 0)
+          (return (c-cexpr-unary buf (c-skip-parens buf p len) len out-end ok)))
+        (let (e:i64 0
+              v:i64 (c-cexpr-shift buf (+ p 1) len (as ptr:i64 (addr-of e)) ok))
+          (set! e (c-skip-body-ws buf e len))
+          (if (and (< e len) (= (char-at buf e) 41))
+            (set! e (+ e 1))
+            (ptr-set! ok 0))
+          (ptr-set! out-end e)
+          (return v)))
+      (let (e:i64 0
+            tok:ptr (c-read-ident buf p len (as ptr:i64 (addr-of e))))
+        (when (= tok "sizeof")
+          (let (q:i64 (c-skip-body-ws buf e len))
+            (when (and (< q len) (= (char-at buf q) 40))
+              (return (c-cexpr-sizeof buf (+ q 1) len out-end ok))))))
+      (ptr-set! ok 0)
+      (ptr-set! out-end p)
+      (return 0))))
+
+(defn c-cexpr-unary (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
+  (let (p:i64 (c-skip-body-ws buf pos len))
+    (when (>= p len) (ptr-set! ok 0) (ptr-set! out-end p) (return 0))
+    (let (c:i32 (char-at buf p))
+      (when (= c 43) (return (c-cexpr-unary buf (+ p 1) len out-end ok)))
+      (when (= c 45)
+        (return (- 0 (c-cexpr-unary buf (+ p 1) len out-end ok))))
+      (return (c-cexpr-primary buf p len out-end ok)))))
+
+(defn c-cexpr-mul (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
+  (let (e:i64 0
+        v:i64 (c-cexpr-unary buf pos len (as ptr:i64 (addr-of e)) ok)
+        more:i32 1)
+    (while (!= more 0)
+      (set! more 0)
+      (let (p:i64 (c-skip-body-ws buf e len))
+        (when (< p len)
+          (let (c:i32 (char-at buf p))
+            (when (or (= c 42) (or (= c 47) (= c 37)))
+              (let (e2:i64 0
+                    r:i64 (c-cexpr-unary buf (+ p 1) len (as ptr:i64 (addr-of e2)) ok))
+                ; Executing the division would SIGFPE the compiler itself.
+                (when (and (!= c 42) (= r 0)) (ptr-set! ok 0) (set! r 1))
+                (cond
+                  (= c 42) (set! v (* v r))
+                  (= c 47) (set! v (/ v r))
+                  true     (set! v (% v r)))
+                (set! e e2)
+                (set! more 1)))))))
+    (ptr-set! out-end e)
+    (return v)))
+
+(defn c-cexpr-add (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
+  (let (e:i64 0
+        v:i64 (c-cexpr-mul buf pos len (as ptr:i64 (addr-of e)) ok)
+        more:i32 1)
+    (while (!= more 0)
+      (set! more 0)
+      (let (p:i64 (c-skip-body-ws buf e len))
+        (when (< p len)
+          (let (c:i32 (char-at buf p))
+            (when (or (= c 43) (= c 45))
+              (let (e2:i64 0
+                    r:i64 (c-cexpr-mul buf (+ p 1) len (as ptr:i64 (addr-of e2)) ok))
+                (if (= c 43) (set! v (+ v r)) (set! v (- v r)))
+                (set! e e2)
+                (set! more 1)))))))
+    (ptr-set! out-end e)
+    (return v)))
+
+(defn c-cexpr-shift (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
+  (let (e:i64 0
+        v:i64 (c-cexpr-add buf pos len (as ptr:i64 (addr-of e)) ok)
+        more:i32 1)
+    (while (!= more 0)
+      (set! more 0)
+      (let (p:i64 (c-skip-body-ws buf e len))
+        (when (< (+ p 1) len)
+          (let (c:i32 (char-at buf p))
+            (when (and (or (= c 60) (= c 62)) (= (char-at buf (+ p 1)) c))
+              (let (e2:i64 0
+                    r:i64 (c-cexpr-add buf (+ p 2) len (as ptr:i64 (addr-of e2)) ok))
+                ; A count outside [0,64) is poison, not a value.
+                (when (or (< r 0) (>= r 64)) (ptr-set! ok 0) (set! r 0))
+                (if (= c 60) (set! v (bit-shl v r)) (set! v (bit-shr v r)))
+                (set! e e2)
+                (set! more 1)))))))
+    (ptr-set! out-end e)
+    (return v)))
+
+; One `[ … ]` extent, `pos` at the `[`. Sets out-end past the `]`; clears `ok`
+; for anything that does not fold to a positive i32 count.
+(defn c-array-extent (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i32
+  (let (e:i64 0
+        v:i64 (c-cexpr-shift buf (+ pos 1) len (as ptr:i64 (addr-of e)) ok))
+    (set! e (c-skip-body-ws buf e len))
+    (if (and (< e len) (= (char-at buf e) 93))
+      (set! e (+ e 1))
+      (ptr-set! ok 0))
+    (ptr-set! out-end e)
+    ; The clamp above is what makes the narrowing exact.
+    (when (or (< v 1) (> v 2147483647)) (ptr-set! ok 0) (set! v 1))
+    (return (unsafe/cast i32 v))))
+
+; Wrap `elem` in the `[…]` extents at `pos`, or return `elem` unchanged when
+; there are none. Null when an extent does not fold. C reads `[a][b]` left to
+; right, so the extents wrap right to left.
+(defn c-array-declarator (buf:ptr elem:ptr pos:i64 len:i64 out-end:ptr:i64):ptr
+  (let (dims:ptr (arena-alloc 32)
+        nd:i32 0
+        ok:i32 1
+        p:i64 pos)
+    (while (and (!= ok 0) (and (< p len) (= (char-at buf p) 91)))
+      (let (ee:i64 0
+            n:i32 (c-array-extent buf p len (as ptr:i64 (addr-of ee))
+                                  (as ptr:i32 (addr-of ok))))
+        (when (>= nd 8) (set! ok 0))
+        (when (!= ok 0)
+          (aset! (as ptr:i32 dims) nd n)
+          (inc! nd))
+        (set! p (c-skip-body-ws buf ee len))))
+    (ptr-set! out-end p)
+    (when (= ok 0) (return null))
+    (let (t:ptr elem
+          k:i32 (- nd 1))
+      (while (>= k 0)
+        (set! t (as ptr (array-type t (aref (as ptr:i32 dims) k))))
+        (set! k (- k 1)))
+      (return t))))
+
 ; Parse a C struct/union body `{ field; field; ... }` into a StructDef.
 ; tag-name null means anonymous (memoized by shape); is-union selects the
 ; union registration path (members at offset 0, deferred IR type definition).
@@ -1146,20 +1371,30 @@
         fty:ptr null
         fname:ptr null
         te:i64 0
-        ne:i64 0)
+        ne:i64 0
+        ; c-parse-type's unrep channel is scoped to the enclosing declaration,
+        ; and this body may be a nested anonymous member of one — so save the
+        ; caller's verdict rather than let a per-field clear erase it.
+        save-unrep:i32 g-cheader-unrep
+        save-why:ptr g-cheader-unrep-why
+        save-quiet:i32 g-cheader-unrep-quiet)
     ; Per-field loop. On any anomaly we set bad=1 done=1 and abandon
     ; the struct (out-end is already past `}`, so the caller is fine).
     (while (= done 0)
-      (set! pos (c-skip-ws buf pos len))
+      (set! pos (c-skip-body-ws buf pos len))
       (when (>= pos len) (set! bad 1) (set! done 1))
       (when (and (= done 0) (= (char-at buf pos) 125))
         (set! pos (+ pos 1)) (set! done 1))
       (when (= done 0)
+        (set! g-cheader-unrep 0)
         (set! fty (c-parse-type buf pos len (as ptr:i64 (addr-of te))))
-        (when (= fty null) (set! bad 1) (set! done 1)))
+        (when (= fty null) (set! bad 1) (set! done 1))
+        ; D1: keeping the `ptr` c-parse-type returns here would give the struct a
+        ; silently wrong layout; abandoning it leaves the name opaque instead.
+        (when (and (= done 0) (!= g-cheader-unrep 0)) (set! bad 1) (set! done 1)))
       (when (= done 0)
         (set! pos te)
-        (set! pos (c-skip-ws buf pos len))
+        (set! pos (c-skip-body-ws buf pos len))
         ; Function-pointer field: type (*name)(args...). Collapse to ptr.
         (when (and (< pos len) (= (char-at buf pos) 40))
           (set! pos (c-skip-parens buf pos len))
@@ -1174,10 +1409,17 @@
           (set! bad 1) (set! done 1)))
       (when (= done 0)
         (set! pos ne)
-        (set! pos (c-skip-ws buf pos len))
-        ; Reject array `[`, bitfield `:`, and multi-decl `,` — abandon
-        ; the whole struct on any of them. Anything but `;` is bad.
-        (when (>= pos len) (set! bad 1) (set! done 1))
+        (set! pos (c-skip-body-ws buf pos len))
+        ; L2b/L2c: `[N]` declarators. A member's array type does not decay.
+        (when (and (< pos len) (= (char-at buf pos) 91))
+          (let (ae:i64 0
+                at:ptr (c-array-declarator buf fty pos len (as ptr:i64 (addr-of ae))))
+            (set! pos ae)
+            (if (= at null)
+              (do (set! bad 1) (set! done 1))
+              (set! fty at))))
+        ; Bitfield `:` and multi-declarator `,` still abandon the struct.
+        (when (and (= done 0) (>= pos len)) (set! bad 1) (set! done 1))
         (when (and (= done 0) (!= (char-at buf pos) 59))
           (set! bad 1) (set! done 1)))
       (when (= done 0)
@@ -1187,6 +1429,11 @@
         (aset! (as ptr:ptr ftypes) nfields fty)
         (inc! nfields)
         (set! pos (+ pos 1))))
+    ; Every exit below this point is covered: nothing after the loop parses a
+    ; type, so nothing after it can touch the channel again.
+    (set! g-cheader-unrep save-unrep)
+    (set! g-cheader-unrep-why save-why)
+    (set! g-cheader-unrep-quiet save-quiet)
     (when (!= bad 0) (return null))
     ; A union with no members would have no IR representation.
     (when (and (!= is-union 0) (= nfields 0)) (return null))
@@ -1240,8 +1487,8 @@
           (= t2 "union" ) (set! is-union 1)
           true (do (ptr-set! out-end pos) (return 0)))
         (set! pos te2)))
-    ; After 'struct': optional tag, then optional body.
-    (set! pos (c-skip-ws buf pos len))
+    ; After 'struct': an optional attribute run, then optional tag, then body.
+    (set! pos (c-skip-attributes buf pos len))
     (let (tag:ptr null
           tag-end:i64 0
           tag-line:i32 (cheader-line-at buf pos)
@@ -1275,8 +1522,24 @@
                 ; declarator. The tag is registered; the declaration itself is
                 ; a shape we do not model, so fall back to the caller's skip.
                 (ptr-set! out-end pos) (return 0))
-              (cheader-register-opaque tname tag-line is-union (as raw:StructDef tag-sd))
-              (set! pos ne))
+              (set! pos ne)
+              (let (ab:i64 (c-skip-ws buf ne len)
+                    tsd:ptr:StructDef (as ptr:StructDef tag-sd))
+                ; `typedef struct Foo Bar[N];` — Bar names an ARRAY of Foo, not a
+                ; second name for Foo, so it belongs in the typedef table (D4);
+                ; the StructDef alias is what discarded the extent. With no
+                ; layout on the tag there is no element type to build over, so
+                ; fall back to the opaque alias, which still refuses every
+                ; by-value use with a located reason.
+                (if (and (< ab len)
+                         (and (= (char-at buf ab) 91) (= (tsd opaque) 0)))
+                  (let (ae:i64 0
+                        at:ptr (c-array-declarator buf (as ptr (type-for-sdef tsd))
+                                                   ab len (as ptr:i64 (addr-of ae))))
+                    (c-typedef-record tname at g-cheader-file tag-line)
+                    (set! pos ae))
+                  (cheader-register-opaque tname tag-line is-union
+                                           (as raw:StructDef tag-sd)))))
             ; Plain `struct Foo;`. Anything else after the tag (a `*` declarator,
             ; a variable name, a function declarator) is not a forward declaration.
             (when (!= (char-at buf pos) 59)
@@ -1328,18 +1591,7 @@
             (when (!= (strlen tname) 0)
               (set! pos ne))))
         ; Skip trailing __attribute__ if any.
-        (set! pos (c-skip-ws buf pos len))
-        (let (attr-check:i32 1)
-          (while (!= attr-check 0)
-            (set! attr-check 0)
-            (let (ae:i64 0
-                  at:ptr (c-read-ident buf pos len (as ptr:i64 (addr-of ae))))
-              (when (= (strcmp at "__attribute__") 0)
-                (set! pos (c-skip-ws buf ae len))
-                (when (and (< pos len) (= (char-at buf pos) 40))
-                  (set! pos (c-skip-parens buf pos len)))
-                (set! pos (c-skip-ws buf pos len))
-                (set! attr-check 1)))))
+        (set! pos (c-skip-attributes buf pos len))
         ; Consume trailing semicolon.
         (when (and (< pos len) (= (char-at buf pos) 59))
           (set! pos (+ pos 1)))
@@ -1364,7 +1616,8 @@
   (let (te:i64 0
         tok:ptr (c-read-ident buf pos len (as ptr:i64 (addr-of te))))
     (when (!= tok "typedef") (ptr-set! out-end pos) (return 0))
-    (let (save-unrep:i32 g-cheader-unrep
+    (let (dline:i32 (cheader-line-at buf pos)
+          save-unrep:i32 g-cheader-unrep
           save-why:ptr g-cheader-unrep-why
           save-quiet:i32 g-cheader-unrep-quiet
           tend:i64 0
@@ -1414,15 +1667,21 @@
             (set! name dn)
             (set! p ne)))
         (set! p (c-skip-ws buf p len))
-        ; An array declarator (`typedef int v4[4];`). The element type is known,
-        ; but this parser has no C array type and a by-value use would silently
-        ; take the ELEMENT's ABI — record the name as known-but-unrepresentable.
-        (when (and (< p len) (= (char-at buf p) 91)) (set! bad 1))
+        ; An array declarator (`typedef int v4[4];`). L2 gives the parser a real
+        ; array type to record, which is what makes `__jmp_buf` — and therefore
+        ; every struct whose member is one — come out at the C size.
+        (when (and (< p len) (= (char-at buf p) 91))
+          (let (ae:i64 0
+                at:ptr (c-array-declarator buf base p len (as ptr:i64 (addr-of ae))))
+            (set! p ae)
+            (if (or (= at null) (!= bad 0))
+              (set! bad 1)
+              (set! base at))))
         ; A comma-separated declarator list (`typedef int a, *b;`) gives each
         ; declarator its own pointer depth, which a single-declarator parse
         ; cannot recover. Only the first is recorded; the rest stay unknown,
         ; which the by-value gate reports rather than mis-typing.
-        (c-typedef-record name (if (!= bad 0) null base))
+        (c-typedef-record name (if (!= bad 0) null base) g-cheader-file dline)
         (ptr-set! out-end (cheader-skip-to-semi buf p len))
         (return 1)))))
 
@@ -1488,6 +1747,26 @@
 ; equality is what keeps this pass free of IR consequences — the real import then
 ; upgrades the same entry in place and writes the same single `%X = type {…}` it
 ; always did, rather than defining a second name.
+; Stage 16 L5 (c-header-layout.md §3.5): record a NON-aggregate `typedef` during
+; the signature prescan, so a `defn` signature may spell `off_t` — signatures are
+; resolved before any import runs. The real parser is reused rather than
+; mirrored; every record it makes is provisional (c-typedef-record), since this
+; pass resolves with every C struct still opaque.
+;
+; Declines any specifier run that reaches `struct`/`union`: `c-parse-type` would
+; parse the body and write a `%X = type` line, and a prescan has no module stream
+; open. Measured zero times across 21 standard headers, guarded anyway.
+(defn cheader-scan-typedef (buf:ptr start:i64 p:i64 len:i64):i64
+  (let (q:i64 (c-skip-type-quals buf p len)
+        te:i64 0
+        t:ptr (c-read-ident buf q len (as ptr:i64 (addr-of te))))
+    (when (or (= t "struct") (= t "union"))
+      (return (cheader-skip-to-semi buf p len))))
+  (let (e:i64 0)
+    (when (= (c-parse-typedef-decl buf start len (as ptr:i64 (addr-of e))) 0)
+      (return (cheader-skip-to-semi buf p len)))
+    (return e)))
+
 (defn cheader-scan-opaque-decl (buf:ptr pos:i64 len:i64):i64
   (let (te:i64 0
         tok:ptr (c-read-ident buf pos len (as ptr:i64 (addr-of te)))
@@ -1504,7 +1783,7 @@
       (let (te2:i64 0
             t2:ptr (c-read-ident buf p len (as ptr:i64 (addr-of te2))))
         (when (and (!= t2 "struct") (!= t2 "union"))
-          (return (cheader-skip-to-semi buf p len)))
+          (return (cheader-scan-typedef buf pos p len)))
         (when (= t2 "union") (set! is-union 1))
         (set! p te2)))
     (when (= is-typedef 0)
@@ -1512,8 +1791,8 @@
         (= tok "struct") 0
         (= tok "union")  (set! is-union 1)
         true             (return (cheader-skip-to-semi buf p len))))
-    ; Optional tag, then optional body.
-    (set! p (c-skip-ws buf p len))
+    ; An optional attribute run, then optional tag, then optional body.
+    (set! p (c-skip-attributes buf p len))
     (let (decl-line:i32 (cheader-line-at buf p)
           tend:i64 0
           tag:ptr (c-read-ident buf p len (as ptr:i64 (addr-of tend)))
@@ -1545,9 +1824,27 @@
             (let (ne:i64 0
                   tname:ptr (c-read-ident buf p len (as ptr:i64 (addr-of ne)))
                   tag-sd:ptr (cheader-register-opaque tag decl-line is-union null))
-              (when (!= (strlen tname) 0)
-                (cheader-register-opaque tname decl-line is-union
-                                         (as raw:StructDef tag-sd))))
+              ; `typedef struct Foo Bar[N];` registers no StructDef for Bar (D4,
+              ; it is an array typedef) — and this scan must stay name-for-name
+              ; with c-parse-struct-decl, or struct-upgrade-aliases emits a %Bar
+              ; the real import never defines.
+              (let (ab:i64 (c-skip-ws buf ne len))
+                (if (and (!= (strlen tname) 0)
+                         (and (< ab len) (= (char-at buf ab) 91)))
+                  ; L5: `typedef struct Foo Bar[N];` — Bar belongs in the typedef
+                  ; table (D4), and a `defvar`/signature naming it is resolved
+                  ; before any import runs, so record it here. The element wraps
+                  ; the TAG's own StructDef, which the real import upgrades in
+                  ; place; the record itself is provisional either way.
+                  (let (ae:i64 0)
+                    (c-typedef-record tname
+                      (c-array-declarator buf
+                        (as ptr (type-for-sdef (as ptr:StructDef tag-sd)))
+                        ab len (as ptr:i64 (addr-of ae)))
+                      g-cheader-file decl-line))
+                  (when (!= (strlen tname) 0)
+                    (cheader-register-opaque tname decl-line is-union
+                                             (as raw:StructDef tag-sd))))))
             ; `struct X;` (a forward declaration) or a `struct X *…` use — the tag
             ; names a real type either way.
             (cheader-register-opaque tag decl-line is-union null))))
@@ -1563,6 +1860,9 @@
     (set! g-cheader-file header-path:CStr)
     (set! g-cheader-dline 1)
     (set! g-cheader-dpos 0)
+    ; L5: every typedef this pass records is provisional — the real import
+    ; re-records it with the struct layouts this pass does not have yet.
+    (set! g-cheader-typedef-provisional 1)
     (let (pos:i64 0
           prev:i64 -1)
       (while (< pos buf-len)
@@ -1577,7 +1877,8 @@
               (cheader-note-linemarker buf dstart pos buf-len))
             (set! pos (cheader-scan-opaque-decl buf pos buf-len))))
         ; Progress guard (mirrors emit-c-include's): never spin.
-        (when (<= pos prev) (set! pos (+ prev 1)))))))
+        (when (<= pos prev) (set! pos (+ prev 1)))))
+    (set! g-cheader-typedef-provisional 0)))
 
 (defn emit-c-include (header-path:ptr line:i32):void
   ; W3a: reset the linemarker provenance for this header. Until the first
@@ -1946,7 +2247,13 @@
     (match (mapping name:CStr)
       ((some n) (return n))
       (none
-       (do (cheader-note-type-file name:CStr)
+       (do
+         ; Stage 16 L5: a name that resolves only through the C typedef table is
+         ; already a C type name — `struct off_t` names nothing. Probed after the
+         ; struct registry, the order parse-type-name uses.
+         (when (= (as ptr (struct-lookup-ref name:CStr)) null)
+           (if-some (td (c-typedef-find name:CStr)) (return name) 0))
+         (cheader-note-type-file name:CStr)
          (return (fmt-s "struct %s" (cheader-c-ident (as raw:i8 (ns-ir-base name))))))))))
 
 ; Convert a type AST node to a C type string. Handles SYM types and

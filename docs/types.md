@@ -179,13 +179,19 @@ namespace that declared it, and is not written into the `.nuch` header. A public
 it.
 
 **A colliding alias is refused**, not silently ignored. An alias name that
-already names a built-in type, a struct, a struct or union template, or an
-enumeration would never resolve — type names are probed before aliases — so it
-is a hard error in either declaration order:
+already names a built-in type, a struct, a struct or union template, an
+enumeration, or a **C typedef an import brought in** would never resolve — type
+names are probed before aliases — so it is a hard error in either declaration
+order:
 
 ```
 demo.nuc:2: error: deftype: 'Pt' already names a type — an alias of an existing type name would never resolve
+demo.nuc:2: error: deftype: 'off_t' already names a C typedef imported from /usr/include/unistd.h — an alias of an existing type name would never resolve
 ```
+
+See [A C typedef is a Nucleus type name](structs-unions.md#a-c-typedef-is-a-nucleus-type-name)
+for the reverse direction — a C typedef is itself usable as a type name with no
+`deftype` at all, transparently, the same way an alias's body is.
 
 An alias that expands into a cycle (`(deftype A B)` + `(deftype B A)`) is
 refused when it is used.

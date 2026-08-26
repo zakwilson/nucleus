@@ -1179,6 +1179,11 @@
   import-aliased:ptr
   import-prefixes:ptr
   (cheader-skipped (raw Node))
+  ; Stage 16 L5: a C typedef is a Nucleus type NAME now, so a half-loaded header
+  ; that leaves one behind is not merely untidy — the entry can hold a Type over
+  ; a StructDef `g-structs` just rolled back, and the next module emits a `%X`
+  ; reference nothing defines.
+  (cheader-typedefs (raw CTypedef))
   ; --- unit / namespace / privacy ---
   toplevel-depth:i32
   unit-entry-path:ptr
@@ -1258,6 +1263,7 @@
   (.set! st import-aliased g-import-aliased)
   (.set! st import-prefixes g-import-prefixes)
   (.set! st cheader-skipped g-cheader-skipped)
+  (.set! st cheader-typedefs g-cheader-typedefs)
   (.set! st toplevel-depth g-toplevel-depth)
   (.set! st unit-entry-path g-unit-entry-path)
   (.set! st root-hoist-ok g-root-hoist-ok)
@@ -1369,6 +1375,7 @@
   (set! g-unit-entry-path (st unit-entry-path))
   (set! g-toplevel-depth (st toplevel-depth))
   (set! g-cheader-skipped (st cheader-skipped))
+  (set! g-cheader-typedefs (st cheader-typedefs))
   (set! g-import-prefixes (st import-prefixes))
   (set! g-import-aliased (st import-aliased))
   (set! g-nuch-registered (st nuch-registered))

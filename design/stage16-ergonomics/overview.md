@@ -483,3 +483,153 @@ case that was already right by luck). 777 tests, bootstrap converges.
 ## `case` taking a list
 
 `lisp (case foo :bar 1 (:baz :qux) 2 3)` - expands to individual comparisons at compile time
+
+## Any libc detail must be reachable from pure Nucleus
+
+Nucleus is a drop-in replacement for C, so it must be usable anywhere C is
+usable — which means any required libc detail (a layout, a size, a calling
+convention, an attribute a call depends on) has to be obtainable from a pure
+Nucleus program. The REPL's `src/repl_shim.c` exists partly because it is not:
+its own header comment says *"jmp_buf is an opaque, platform-specific type that
+Nucleus cannot express directly."* Cost constraint: it may add size to the
+compiler, but must add none to compiled programs that do not use it.
+
+Design: [c-header-layout.md](c-header-layout.md). **Done (2026-08-26)** — all
+five staged items (L1–L5) landed, in the staged order (L1 → L2 → L3 → L5 →
+L4). `setjmp` is the symptom; the defect is general to C header import, and
+the survey is the argument.
+
+**The cost story is already paid.** Two programs, one with `(import-use
+"setjmp.h")` and one without, link to **15848 bytes, byte-identical**. LLVM type
+definitions are compile-time only, and unused imported functions are already
+reclaimed at the link by Stage 16's own section stripping. Nothing below has to
+invent a cost story, only preserve one. (The comparison needs both files to share
+a *basename* — the binary embeds it, and the resulting one-byte diff reads as a
+cost difference and is not one.)
+
+**The defect is that a struct member the C parser cannot represent becomes `ptr`,
+silently.** `%__jmp_buf_tag = type { ptr, i32, ptr }` — 24 bytes where C says 200,
+no error, no warning, and `(alloca __jmp_buf_tag 1)` handed to `setjmp` smashes
+the stack. Isolated to four lines of C: a **direct** array member (`long a[8]`)
+abandons the struct and fails *safe* as a located opaque-type error, while the
+same array **behind a typedef** resolves to nothing, becomes `ptr`, and fails
+silently. glibc hides both of `jmp_buf`'s large members behind typedefs.
+
+**The rule is already written in the tree, at `src/cheader.nuc:583-585`** — *"a
+typedef the parser cannot follow must be an error or a skip, never a silent
+`ptr`"* — and `c-parse-type` already raises `cheader-mark-unrep` on all five
+shapes that matter. It has two consumers, the function-declaration boundary and
+the typedef recorder, and **neither is a struct member**. The second of those is a
+literal working template for the save/clear/check/restore the fix needs.
+
+**The survey, which is the strongest part of the argument.** Across 15 headers,
+65 comparable struct types, **18 wrong-size rows / 16 distinct types** — `jmp_buf`
+24/200, `siginfo_t` 24/128, `in6_addr` 8/16, `itimerspec` 16/32, `__fpos_t`
+24/16, and so on. Classifying 34 named libc types: 12 OK, 4 silently WRONG, 14
+OPAQUE (refused with a located error), 4 ABSENT. And a census of 232 struct
+bodies over 30 headers finds **163 (70 %) carry a shape the body parser cannot
+read** — 132 of them nothing worse than an array member with a literal extent.
+The honest reading, against the framing that filed this: most of that 70 % fails
+*safe*; the silent class is the narrower, sharper set where an unparseable body is
+reached *indirectly*, through a typedef or an opaque tag. Both are worth fixing
+and they are the same fix.
+
+**Three findings the framing did not contain.** `struct timespec` — two scalar
+fields — is unusable because `clang -E` puts a `#` **linemarker inside the
+body** and `c-skip-ws` skips whitespace only; that blocks `stat` and `itimerspec`
+too, so it has to land before the array work or the array work delivers none of
+them. `struct epoll_event` is 16/12 because Nucleus ignores
+`__attribute__((packed))` — same silent-wrong *class*, different mechanism, out of
+scope. And `struct __attribute__((__may_alias__)) sockaddr` registers a phantom
+opaque type literally named `__attribute__`.
+
+**Staging L1 → L2 → L3 → L4, with the cost of L1 landing alone stated rather than
+hidden.** L1 (an unresolvable member makes the struct opaque) is pure safety and
+independent; it also removes five wrong `stdio.h` type lines from **163 of the
+186 sweep modules** and leaves `setjmp`/`siglongjmp` undeclared-with-a-reason
+until L3. Its warning volume is **zero new loud warnings** — `c-decl-skip-reason`
+returns the unrepresentable reason first, and every arm that raises it is on
+W3c's quiet, reported-at-the-point-of-use tier.
+
+**The IR-neutrality sweep is the wrong gate here, twice over.** It is *blind*: the
+whole tree imports six C headers, exposing 14 of the 65 surveyed struct types, so
+a change that broke `signal.h`, `pthread.h` or `netinet/in.h` outright would sweep
+clean. And it is *not neutral*: 163 of 186 modules change. So the bar becomes a
+**characterized diff** — every hunk must be a `%X = type` line for a named type
+(or an `__anon_struct_hXXXX` rename following from one, since anonymous C structs
+are memoized by content hash), with the 96 header-mode outputs still
+byte-identical. Same shape as the D9 case above, where the blind spot was a
+*stream*; here it is *coverage*.
+
+**On integrating C typedefs with `deftype`: separate registries, shared lookup
+path.** The brief's hypothesis — that a C array typedef "has no Nucleus
+representation" only because the eager path needs a `Type*` and there was no
+array type — is **right, and it is what makes the array work cheap**. It is not
+the whole story: the C table has no `Node` to be lazy with (the parser works over
+a text buffer, not an AST), its order semantics are deliberately the *opposite*
+of `deftype`'s and are what make a cycle impossible by construction, and its
+redefinition and export policies are opposite too. Against the "one answer to
+what a name means" argument: `parse-type-name` already consults five sources in
+sequence, so a sixth probe is the established pattern, not a new cost. What the
+question does uncover is a real gap — a C **struct** name is a Nucleus type name
+(`ptr:FILE` works), a C **scalar typedef** is not: `x:off_t` is `unknown type`,
+because `g-cheader-typedefs` has exactly one reader, inside the C parser. So
+`(defn seek (fd:i32 off:off_t):off_t …)` cannot be written, which is a direct hit
+on the goal. L5 — written up as a recommendation, **now approved** — is a sixth
+probe in `parse-type-name` placed
+*after* the alias probe, a `type-name-collision` arm so `(deftype off_t …)` is
+refused rather than dead, a distinct message for the table's recorded-but-
+unrepresentable entries, and — the one place a lazy body would genuinely have
+been easier — the new probe consulting `g-array-ok` itself, because a `Type` that
+arrives already parsed is exactly what `reject-array-type` exists to backstop.
+
+**As built.** 834 tests (was 813), `make bootstrap` converges, abi/layout/
+check-headers (69/69) green. Two corrections surfaced during implementation
+and are recorded in place in [c-header-layout.md](c-header-layout.md) rather
+than silently folded in: the L3 aggregate-array-typedef fix needs **two**
+sites moved together (the alias registered in `c-parse-struct-decl`, but the
+`%X = type {…}` line is actually written later by `struct-upgrade-aliases`,
+keyed on that alias — editing only the first site is a no-op); and L5's
+"consult `g-array-ok` itself" was not implementable as written, because
+`parse-type-from-node` reads-and-clears the permission *before* delegating a
+bare name to `parse-type-name` — fixed by classifying each delegation as a
+nesting (consume) or a same-type reference (inherit), which also closed a
+pre-existing, pre-L5 bug (`(deftype Buf (array i32 4))` + `(defvar env:Buf)`
+was refused). A third bug was found and fixed along the way, not anticipated
+by the design: `ReplState` snapshotting `cheader-skipped` but not
+`g-cheader-typedefs` was reasoned about as a write-safety question and is
+actually a read hazard — a rolled-back REPL form could leave a typedef entry
+pointing at a StructDef the rollback had just removed, reproduced as `IR
+parse error: base element of getelementptr must be sized`. And **L4 is not
+"inert for every other header"** as staged: the compiler's own `unistd.h`
+import puts `vfork` on the `returns_twice` by-name list, so L4 changed the
+compiler's own IR and needed the same `make update-bootstrap` refresh L1 and
+L2 did — the one item in the sequence for which "L3, L4 and L5 converge with
+no refresh" turned out false.
+
+The worked example is [examples/setjmp-guard.nuc](../../examples/setjmp-guard.nuc)
+(§7), now a running test (`tests/expected/setjmp-guard.out`): `(defvar
+env:jmp_buf)` is 200 bytes of storage, `_setjmp`/`_longjmp` decay to a single
+pointer word with `returns_twice` on the declaration, and a `:volatile`
+counter survives the jump. Three details are glibc's, not the compiler's, and
+are written down in [docs/structs-unions.md](../../docs/structs-unions.md)
+now that this lands: `setjmp`/`sigsetjmp` are unconditional macros to
+`_setjmp`/`__sigsetjmp` on glibc, so a Nucleus `(setjmp env)` reaches a
+different, signal-mask-saving function than C source `setjmp(e)` does — spell
+`_setjmp` for C's behaviour; and `longjmp` already gets `noreturn` from the
+same by-name list.
+
+**Follow-ups, deferred and recorded in [c-header-layout.md](c-header-layout.md)
+§6**, none of which regress anything L1–L5 touched: an inline function-pointer
+struct member still abandons the struct (blocks `sigaction`/`sigevent_t`); a
+*with-body* aggregate array typedef (`typedef struct T {…} Name[N];`) still
+discards its extent (zero occurrences surveyed); `__attribute__((packed))`
+is still ignored (`epoll_event` 16 vs 12, silently); `--emit-cheader` renders
+a C typedef bare, with no `#include` of the header it came from; and
+`Sym.returns-twice` is write-only by design (no Nucleus-side consumer, unlike
+`noreturn`). The survey's own oracle needed a correction too: a `sizeof`-only
+comparison missed that `SDL_HapticConstant` matched on size (40 bytes, both
+sides) while every field after the first was at the wrong offset and the
+struct's alignment was wrong — offsets and alignment are the right oracle,
+and the shipped gates (`run_l2_layout_matrix`, `make layout-test`) compare
+them, not just size.

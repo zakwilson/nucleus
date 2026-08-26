@@ -90,7 +90,7 @@ compile-time error naming their replacement.
 | [Compiler](compiler.md) | Flags (`-O`, `--emit-llvm`, `--target`, …), diagnostics (locations, unresolved names, did-you-mean), REPL, `.nuch` header format |
 | [Top-level forms](toplevel.md) | `defn`, `defvar`, `defstruct`, `defunion`, `defprotocol`, `import`, `defmacro`, … |
 | [Types](types.md) | Built-in types, pointer kinds (`ptr`/`ref`/`raw`/`?T`), volatile, function pointer types, coercions, literals, keyword literals (`:foo`), symbols |
-| [Structs and unions](structs-unions.md) | Anonymous structs, passing by value, `defunion`, `match`, niche layout, parametric struct templates |
+| [Structs and unions](structs-unions.md) | Anonymous structs, passing by value, `defunion`, `match`, niche layout, parametric struct templates, C header struct/array ingestion, opaque types, C typedefs as type names |
 | [Special forms](special-forms.md) | Control flow, memory ops, `with`/`move`/`defer`, binary operators, callable values (`get`/`invoke`) |
 | [Macros](macros.md) | Standard macros (`if`, `when`, `for`, `dotimes`, `->`), variadic arithmetic, writing macros |
 | [Generics](generics.md) | Multimethods, `defprotocol`/`extend`, parametric protocols, bounded `:where` generics |

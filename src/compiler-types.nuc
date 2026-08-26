@@ -545,6 +545,9 @@
   ; (die-at …)) guard idiom narrows past the guard via emit-cond's g-block-term
   ; accumulation — no narrowing-engine change needed.
   noreturn:i32
+  ; The callee can return a second time (the setjmp family). Unlike `noreturn`
+  ; it rides only the emitted `declare` — a Nucleus `defn` cannot claim it.
+  returns-twice:i32
   ; Stage 12 N3: symbol is private — not importable from another namespace.
   ; Set by `defn-`, `defvar-`, `defconst-`, `defenum-` (private member values).
   ; For link-emitting forms, also implies internal LLVM linkage.
