@@ -850,6 +850,28 @@ stay honest about round-tripping** — it is a conformance-registry key and a
 generic-substitution replacement text, so a kind with no colon spelling is only
 safe if that kind is refused in every position where the spelling is re-parsed.
 
+## A consume-once permission does not survive a delegation
+
+`g-array-ok` is read-and-cleared by `parse-type-from-node` on entry, and only
+*then* does it delegate a bare symbol to `parse-type-name`. So any arm inside
+`parse-type-name` that wants to consult the permission sees 0 — which is why an
+array-bodied `deftype` at a `defvar` was refused for as long as `deftype`
+existed, and why Stage 16 L5's "the new probe must consult `g-array-ok` itself"
+was not implementable as written.
+
+The fix is to classify each delegation. `(ptr (array i32 4))` is a **nesting**
+and must not inherit — that is what consume-once is for. A bare name, and a
+transparent alias's body, are the **same type node under another spelling** and
+must inherit: `(set! g-array-ok array-ok)` immediately before the call.
+`parse-type-name` then consumes it in turn (a thin wrapper capturing into
+`resolve-type-name`'s third parameter), so its own `?T` / `!T` / colon
+recursions see 0 without a clear at each one.
+
+Generally: before writing code that reads a one-shot global, walk the callers
+between the arming site and your reader and find the first read-and-clear. If a
+transparent alias for the same concept already exists, the bug is usually already
+observable through it — a two-line repro is cheaper than reasoning.
+
 ## A decay rule belongs in ONE function that emit and node-type both CALL
 
 `array-decay` (`src/type-utils.nuc`) maps `TY-ARRAY` → `(ref T)` and is the
@@ -2115,10 +2137,15 @@ produced by a branch that should never have run.
 ## The C typedef table resolves at RECORD time — which is what makes chains and cycles free
 
 `c-parse-typedef-decl` (`src/cheader.nuc`, Stage 15 W3c) records a non-aggregate
-`typedef` into `g-cheader-typedefs` as a Node cell (`s` = name, `car` = the
-**already-resolved** `Type*`). Resolving at the point the `typedef` is parsed —
-rather than walking the chain at each use — buys two properties that are easy to
-lose if someone "simplifies" it into a lazy walk:
+`typedef` into `g-cheader-typedefs` — a `CTypedef` list (name, the
+**already-resolved** `Type*`, header file/line, a `provisional` bit) that lives
+in **`src/type-utils.nuc`**, not beside its writer: since Stage 16 L5 the table
+is read by `parse-type-name` / `type-name-collision` (union-registry.nuc) and
+`unknown-type-message` (nucleusc.nuc), all of which are processed before
+`(import-use cheader)`. Same cross-import wall the W3a opaque helpers sit behind.
+Resolving at the point the `typedef` is parsed — rather than walking the chain at
+each use — buys two properties that are easy to lose if someone "simplifies" it
+into a lazy walk:
 
 - **A chain costs one lookup.** `off_t` → `__off_t` → `long int` is collapsed
   when `off_t` is recorded, because `__off_t` was recorded first.
@@ -2132,8 +2159,21 @@ lose if someone "simplifies" it into a lazy walk:
 `c-parse-struct-decl` declines**, which is what keeps W3a's opaque
 registration/upgrade paths untouched: every `typedef struct|union …` shape that
 introduces a named aggregate is handled there and can never reach the scalar
-path. A record whose `car` is null means "real C type name, no Nucleus
+path. A record whose `ty` is null means "real C type name, no Nucleus
 representation" and is deliberately distinct from an *absent* record.
+
+**Stage 16 L5 added a third state, and it is the one to get right.** A `defn`
+signature and a `defvar` type are resolved by prescans that run *before* any
+import, so `cheader-prescan-opaque` now runs the real typedef parser too — with
+every C struct still opaque. Those records are **provisional**: the real import
+overwrites them whatever it concludes (first-wins would freeze
+`typedef __sigset_t sigset_t;` as unrepresentable and silently skip every
+declaration using it). Two rules follow. The prescan must **decline any specifier
+run reaching `struct`/`union`** — `c-parse-type` would parse the body and write a
+`%X = type` line, and a prescan has no module stream open. And a **provisional
+null must not produce the "cannot represent" diagnostic**: in that window the
+compiler cannot tell "no representation" from "not resolved yet", so it falls
+back to the pre-L5 `unknown type` wording rather than making a false claim.
 
 Two adjacent parser facts, both found because the table is useless without them:
 **`enum` was not a declaration specifier at all** (so `enum Tag e` read `enum` as

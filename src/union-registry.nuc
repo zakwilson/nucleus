@@ -271,7 +271,16 @@
   (when (= name "double") (return (as ptr ty-f64)))
   (return null))
 
+; The one-shot `(array T N)` permission (`g-array-ok`, src/nucleusc.nuc) is
+; consumed HERE, as parse-type-from-node consumes it on entry, so every
+; recursion below — `?T`, `!T`, the colon delegation, an alias body — sees 0 and
+; an array can appear only at the very name a permitting site handed us.
 (defn parse-type-name (name:CStr line:i32):ref:Type
+  (let (array-ok:i32 g-array-ok)
+    (set! g-array-ok 0)
+    (return (resolve-type-name name line array-ok))))
+
+(defn resolve-type-name (name:CStr line:i32 array-ok:i32):ref:Type
   ; Stage 10 errors sugar: ?!T => (Maybe (Result T Err)) — a fallible result
   ; that may be absent. The leading ?! reads as a *value* Maybe over the Result
   ; (errors.md §10): the operand is already a complete value type, so it is not
@@ -370,9 +379,28 @@
       (when (>= g-type-alias-depth MAX-TYPE-ALIAS-DEPTH)
         (die-at line (fmt-s "type alias '%s' expands into a cycle" name)))
       (set! g-type-alias-depth (+ g-type-alias-depth 1))
+      ; The alias body is this same type node under another spelling, so it
+      ; inherits the array permission — `(deftype Buf (array i32 4))` must name
+      ; storage wherever `(array i32 4)` itself can, and nowhere else.
+      (set! g-array-ok array-ok)
       (let (t:ref:Type (parse-type-from-node (as ptr (ta body)) line))
         (set! g-type-alias-depth (- g-type-alias-depth 1))
         (return t)))
+    0)
+  ; Stage 16 L5 (c-header-layout.md §3.5): a C typedef imported by this unit is
+  ; a Nucleus type name. Probed after every Nucleus definer, so an import can
+  ; never mask a `deftype` or a struct; transparent like `deftype`, so `off_t`
+  ; and `i64` are one type, one mangling and one overload. A recorded entry whose
+  ; type is null is a name we know and cannot represent — `unknown-type-message`
+  ; below says so in its own words.
+  (if-some (td (c-typedef-find name))
+    (when (!= (td ty) null)
+      ; The Type arrives already built, which is the one case `parse-type-from-
+      ; node`'s g-array-ok gate never sees; answer it here with the words the
+      ; `(array T N)` spelling gives. `reject-array-type` stays the backstop.
+      (when (and (= (-> (td ty) (_ kind)) TY-ARRAY) (= array-ok 0))
+        (die-at line "(array T N) is a storage type: it is valid only as a defvar type or a defstruct / (struct ...) field type -- everywhere else use ptr:T, the pointer an array decays to when it is read"))
+      (return (unsafe/cast ref:Type (td ty))))
     0)
   ; Stage 15 W1c: `unknown-type-message` (src/nucleusc.nuc) says plainly that
   ; the name is defined nowhere in the unit, and — for §2.7's reachability
@@ -1224,6 +1252,11 @@
   (when (!= (as ptr (struct-template-lookup-ref name)) null) (return "a struct template"))
   (when (!= (as ptr (union-template-lookup-ref name)) null) (return "a union template"))
   (when (!= (as ptr (enumdef-lookup-ref name)) null) (return "an enumeration"))
+  ; Stage 16 L5: since a C typedef resolves in `parse-type-name`, an alias over
+  ; one is dead on arrival in exactly the way this check exists to prevent.
+  (if-some (td (c-typedef-find name))
+    (return (fmt-s "a C typedef imported from %s" (td file)))
+    0)
   (return null))
 
 ; §3.7: replace each of a parametric alias's parameters in `node` with the
@@ -1684,6 +1717,10 @@
       ; Colon-sugar in inline type position: "ptr:Node" → (ptr Node).
       (when (!= (strchr (n s) 58) null)
         (return (parse-type-from-node (split-colon-segments (n s) line) line)))
+      ; A bare name is this same type node under another spelling, not a nested
+      ; one, so the permission crosses into parse-type-name (which consumes it):
+      ; without this no transparent alias could ever name storage.
+      (set! g-array-ok array-ok)
       (return (parse-type-name (n s) line)))
       NODE-CELL
       (do

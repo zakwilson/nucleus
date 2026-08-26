@@ -375,21 +375,27 @@
 ; LLVM `declare` lines (NUCH-AFTER) from exactly where it always has.
 (defn nuch-declare-import (form:(raw Node) mode:i32):void
   (let (ff:ptr:Node (unsafe/cast ptr:Node form))
-    ; Stage 10 Phase F1: an optional trailing `noreturn` keyword (carried
-    ; verbatim by desugar) marks the declared/extern function as never
-    ; returning — e.g. (declare repl_throw:void () noreturn). eff-len is the
-    ; length with that keyword stripped, so the param-list index logic below is
-    ; unchanged; is-noreturn drives the Sym flag and the LLVM attribute.
+    ; Stage 10 Phase F1: an optional trailing `noreturn` / `returns_twice`
+    ; keyword (carried verbatim by desugar) marks the declared/extern function
+    ; as never returning / as returning more than once — e.g. (declare
+    ; repl_throw:void () noreturn). eff-len is the length with that keyword
+    ; stripped, so the param-list index logic below is unchanged; the flag
+    ; drives the Sym field and the LLVM attribute.
     (let (is-noreturn:i32 0
+          is-returns-twice:i32 0
           m:i32 mode
           eff-len:i32 (node-len form))
       (when (>= (node-len form) 3)
         (let (last:ptr (node-at form (- (node-len form) 1)))
           (when (and (!= last null)
-                     (= (-> last (unsafe/cast ptr:Node _) (_ kind)) NODE-SYM)
-                     (= (-> last (unsafe/cast ptr:Node _) (_ s)) "noreturn"))
-            (set! is-noreturn 1)
-            (set! eff-len (- eff-len 1)))))
+                     (= (-> last (unsafe/cast ptr:Node _) (_ kind)) NODE-SYM))
+            (let (kw:ptr (-> last (unsafe/cast ptr:Node _) (_ s)))
+              (when (= kw "noreturn")
+                (set! is-noreturn 1)
+                (set! eff-len (- eff-len 1)))
+              (when (= kw "returns_twice")
+                (set! is-returns-twice 1)
+                (set! eff-len (- eff-len 1)))))))
       ; A new-style declare `(declare name (params) :rettype [noreturn])` has a
       ; bare name and the return operand at index 3 (eff-len 4). Both the toplevel
       ; `declare` form (desugared) and .nuch imports reach here; as of S3 the .nuch
@@ -500,7 +506,9 @@
                 ; `:rest`-in-a-declaration diagnostic points users at, and which
                 ; `docs/toplevel.md` documents. Too few arguments is still refused.
                 (.set! (as ptr:Sym dsym) extern-decl 1)
-                (when (!= is-noreturn 0) (.set! (as ptr:Sym dsym) noreturn 1))))
+                (when (!= is-noreturn 0) (.set! (as ptr:Sym dsym) noreturn 1))
+                (when (!= is-returns-twice 0)
+                  (.set! (as ptr:Sym dsym) returns-twice 1))))
             ; Stage 15 W9 item 24: and in the generic registry, which is where
             ; every OTHER producer of a callable name puts it — `emit-defn`
             ; registers even a solitary function, and that is why a protocol
@@ -541,9 +549,10 @@
                    null)
                   (set! need-comma 1)))
               ; Stage 10 Phase F1: trailing LLVM `noreturn` function attribute.
-              (if (!= is-noreturn 0)
-                (fprintf g-out ") noreturn\n")
-                (fprintf g-out ")\n")))))))))))
+              (cond
+                (!= is-noreturn 0)      (fprintf g-out ") noreturn\n")
+                (!= is-returns-twice 0) (fprintf g-out ") returns_twice\n")
+                true                    (fprintf g-out ")\n")))))))))))
 
 ; Import one exported overloaded method: register it (with its mangled symbol)
 ; in the generic registry so calls in the importing unit dispatch to it, and

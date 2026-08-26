@@ -68,6 +68,95 @@
           (fmt-3s "%s: '%s' is an opaque type declared at %s; only pointers to it are valid"
                   what (sd name) loc))))))
 
+; ============================================================
+; Stage 15 W3c: the C typedef table (stage15-stress-test/cheader.md §1.4)
+;
+; Before this, `c-parse-type` resolved every name it did not recognize as a
+; builtin to `ptr`, so EVERY scalar typedef degraded — `off_t f(int)` imported as
+; `declare ptr @f(i32)`, and so did SDL's `Uint8`/`Uint32` and even a one-level
+; `typedef int myint;`. Only `size_t`/`ssize_t` resolved, and only because
+; c-type-to-nucleus hardcodes those two names.
+;
+; A typedef is resolved ONCE, at the point its `typedef` declaration is parsed,
+; and the table stores the *resolved* Type. Two consequences are worth keeping:
+;
+;   * A chain (`off_t` → `__off_t` → `long int`) costs one lookup at each use,
+;     not a walk — the intermediate entry was already collapsed.
+;   * A cycle is impossible by construction. A name can only ever resolve against
+;     entries recorded strictly before it, so a malformed `typedef foo foo;`
+;     records `foo` as unrepresentable instead of looping forever.
+;
+; A record whose `ty` is null means "this is a real C type name and we cannot
+; represent it" (a typedef of an unparsable aggregate, a `long double`). That is
+; deliberately distinct from an *absent* record: a by-value use of either is
+; refused, but the messages differ, and only the recorded form proves the name
+; was declared rather than merely unknown.
+;
+; The table lives here rather than in `src/cheader.nuc` (where it was written)
+; because Stage 16 L5 made a C typedef a Nucleus type name: `parse-type-name`
+; and `type-name-collision` (src/union-registry.nuc) and `unknown-type-message`
+; (src/nucleusc.nuc) all read it, and all three are processed before
+; `(import-use cheader)` — the cross-import wall the W3a block above records.
+; ============================================================
+(defstruct CTypedef
+  ; `name`/`file` are `ptr`, not `CStr`, for the reason CDeclSite records: they
+  ; are compared and null-checked as identities, and a `CStr` operand lowers
+  ; `=`/`!=` to `strcmp`.
+  name:ptr
+  ; The resolved type, or null = "known C type name, no Nucleus representation".
+  (ty (raw Type))
+  ; Where the typedef was declared, for the L5 diagnostics.
+  file:ptr
+  line:i32
+  ; 1 = written by the signature prescan, which resolves types with every C
+  ; struct still opaque. A real import overwrites it; see c-typedef-record.
+  provisional:i32
+  (next (raw CTypedef)))
+
+(defvar (g-cheader-typedefs (raw CTypedef)))
+; Armed for the duration of `cheader-prescan-opaque` (src/cheader.nuc). A global
+; rather than a parameter because the prescan reaches c-typedef-record through
+; the whole real declaration parser, which has no business knowing which pass it
+; is running in.
+(defvar g-cheader-typedef-provisional:i32 0)
+
+(defn c-typedef-find (name:CStr):?ptr:CTypedef
+  (let (cur:ptr g-cheader-typedefs)
+    (while (!= cur null)
+      (let (e:ptr:CTypedef (as ptr:CTypedef cur))
+        (when (= (as CStr (e name)) name) (return e))
+        (set! cur (e next)))))
+  (return null))
+
+; Record `name` as resolving to `ty` (null = known but not representable).
+; Idempotent: a header imported twice, or included transitively by two headers,
+; re-declares the same typedef and must not grow the table without bound.
+;
+; With one exception: a PROVISIONAL record — one the L5 signature prescan made —
+; is overwritten by the real import. The prescan resolves a typedef with every C
+; struct still opaque, so `typedef __sigset_t sigset_t;` is unrepresentable there
+; and representable at the import; first-wins would freeze the prescan's verdict
+; and silently skip every declaration using it. Provisional never overwrites.
+(defn c-typedef-record (name:ptr ty:ptr file:ptr line:i32):void
+  (if-some (prev (c-typedef-find name:CStr))
+    (do
+      (when (or (= (prev provisional) 0) (!= g-cheader-typedef-provisional 0))
+        (return))
+      (.set! prev ty (as raw:Type ty))
+      (.set! prev file file)
+      (.set! prev line line)
+      (.set! prev provisional 0)
+      (return))
+    0)
+  (let (e:ptr:CTypedef (new CTypedef))
+    (.set! e name (intern-str name))
+    (.set! e ty (as raw:Type ty))
+    (.set! e file file)
+    (.set! e line line)
+    (.set! e provisional g-cheader-typedef-provisional)
+    (.set! e next g-cheader-typedefs)
+    (set! g-cheader-typedefs (as raw:CTypedef e))))
+
 ; ---- Stage 15 W1d: a layout that has not been emitted yet ------------------
 ; W1d makes a circular `(import)` legal — `do-import` skips the re-entry rather
 ; than erroring — but a cycle member's body is emitted BEFORE the rest of the

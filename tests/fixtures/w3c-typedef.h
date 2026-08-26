@@ -41,7 +41,7 @@ struct w3c_opaque_tag;
 typedef struct w3c_opaque_tag w3c_opaque;
 typedef struct { int a; int b; } w3c_pair;
 
-/* --- typedef to an array: known name, no Nucleus representation ------- */
+/* --- typedef to an array: L2 records the extent, L3 decays it ---------- */
 typedef int w3c_vec4[4];
 
 /* --- the declarations under test -------------------------------------- */
@@ -63,9 +63,14 @@ extern w3c_enum w3c_f_enum(enum w3c_tagged t);
 extern w3c_opaque *w3c_f_opaque(w3c_opaque *h);
 extern int      w3c_f_pairp(w3c_pair *p);
 
-/* A by-value use of the array typedef: recorded as known-but-unrepresentable,
- * so this declaration is SKIPPED rather than silently given the element ABI. */
+/* A by-value use of the array typedef: C decays it to a pointer, and so does
+ * the importer (Stage 16 L3). Before L2/L3 the name recorded as
+ * known-but-unrepresentable and the whole declaration was skipped. */
 extern int      w3c_f_vec(w3c_vec4 v);
+
+/* A by-value use of an OPAQUE tag: still unrepresentable, so this declaration is
+ * skipped and the reason is reported at the point of use. */
+extern int      w3c_f_opaqv(w3c_opaque h);
 
 /* A function declaration whose first token is `struct`/`union` and which has no
  * `extern`. W3b recorded this as silently dropped: the top-level dispatch routed

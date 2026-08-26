@@ -3241,6 +3241,17 @@
   ; every reachability tier — B2b's ordering rule, applied to the type side.
   (let (unbound:ptr (qualifier-scope-message "unknown type" name))
     (when (!= unbound null) (return unbound)))
+  ; Stage 16 L5 (c-header-layout.md §3.5): the C typedef table is the one
+  ; registry that distinguishes "declared, and we have no type for it" from
+  ; "absent", and this is the only consumer of that distinction. Ahead of every
+  ; reachability tier: the name IS defined in this unit, just not representably.
+  (if-some (td (c-typedef-find name))
+    ; Not a PROVISIONAL null: that one means "the prescan could not resolve it
+    ; yet", and the import may still. Only the import's own null is a verdict.
+    (when (and (= (td ty) null) (= (td provisional) 0))
+      (return (fmt-2s-i "'%s' names a C type this compiler cannot represent (%s:%d)"
+                        name (td file) (td line))))
+    0)
   (let (elsewhere:ptr (unreachable-definer-file name 1))
     (when (!= elsewhere null)
       (return (fmt-2s "unknown type: %s — not defined anywhere in this compilation unit\n  note: %s"

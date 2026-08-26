@@ -1,0 +1,44 @@
+; Stage 16 L1-L5, the worked example of design/stage16-ergonomics/c-header-layout.md
+; §7: non-local exit driven entirely through `(import-use "setjmp.h")`, with no
+; hand-written `declare`, no `defstruct`, and no shim. Before this stage the
+; program was not writable at any spelling:
+;
+;   L1/L2  `struct __jmp_buf_tag` imported at 24 bytes against C's 200, silently,
+;          because both of its size-carrying members hide behind typedefs
+;          (`__jmp_buf` is `long[8]`, `__sigset_t` wraps `unsigned long[16]`).
+;          `(_setjmp env)` on a 24-byte object smashes 176 bytes of stack.
+;   L3     `jmp_buf` is the array typedef `struct __jmp_buf_tag[1]`, so C decays
+;          it to a pointer at a parameter. The importer passed it `byval`.
+;   L4     without `returns_twice` the optimizer may tail-call `_setjmp`, which
+;          destroys the frame the jump has to return into.
+;   L5     `jmp_buf` is a C typedef, so `(defvar env:jmp_buf)` needs the typedef
+;          table to be a Nucleus type name. Without it this is `(array
+;          __jmp_buf_tag 1)` spelled by hand.
+;
+; Only libc is called - tests/run-tests.sh has no per-test link-flag mechanism.
+
+(import-use "stdio.h")
+(import-use "setjmp.h")
+
+; 200 bytes of storage, not a pointer: `jmp_buf` is an array typedef, and an
+; `(array T N)` is a storage type, legal exactly at a `defvar` or a field.
+(defvar env:jmp_buf)
+
+(defn risky (n:i32):void
+  (when (< n 0) (_longjmp env 1))
+  (printf "ok %d\n" n))
+
+(defn main ():i32
+  ; `setjmp` and `sigsetjmp` are unconditional #defines on glibc, and Nucleus
+  ; consumes C functions but deliberately not C macros - so C source spelling
+  ; `setjmp(e)` reaches `_setjmp`, while a Nucleus `(setjmp e)` would reach the
+  ; *function* `setjmp`, i.e. `__sigsetjmp(e, 1)`, which also saves the signal
+  ; mask. Spell `_setjmp` to get C's behaviour. (c-header-layout.md §7)
+  ;
+  ; `tries` is :volatile because a longjmp does not restore registers: a local
+  ; the optimizer had promoted would read back its pre-jump value.
+  (let (:volatile tries:i32 0)
+    (if (= (_setjmp env) 0)
+      (do (set! tries (+ tries 1)) (risky -1))
+      (printf "recovered after %d tries\n" tries)))
+  (return 0))
