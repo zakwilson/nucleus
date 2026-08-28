@@ -196,6 +196,11 @@ update-bootstrap: $(BIN)
 	$(BIN) --emit-llvm src/nucleusc.nuc > boot/nucleusc.ll
 	cp $(BIN) bin/nucleusc
 	$(MAKE) windows-boot
+	@# stage1 is a function of the BOOT compiler, which just changed, but make
+	@# only tracks $(BIN) against the sources -- so the next `make bootstrap`
+	@# would diff a stale stage1 against a fresh stage2 and report a divergence
+	@# that is really this staleness. Drop the two derived artifacts instead.
+	@rm -f $(BUILD)/nucleusc.ll $(BIN)
 	@echo "DONE: boot/nucleusc.ll, bin/nucleusc, and Windows boot IRs updated"
 
 # ---- Library compilation ----

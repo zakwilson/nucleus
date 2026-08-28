@@ -52,22 +52,43 @@
         (set! h (hash-type h ((field-at (tt params) i) type)))))
     (return h)))
 
-(defn hash-struct-shape (field-names:ptr field-types:ptr nfields:i32):i64
+(defn hash-struct-shape (field-names:ptr field-types:ptr faligns:ptr fbits:ptr
+                         nfields:i32):i64
   (let (h:i64 -3750763034362895579)
     (dotimes (i nfields)
       (set! h (fnv-str h (aref (as ptr:ptr field-names) i)))
       (set! h (fnv-byte h 0))
-      (set! h (hash-type h (aref (as ptr:ptr field-types) i))))
+      (set! h (hash-type h (aref (as ptr:ptr field-types) i)))
+      ; PK-3: a member alignment moves offsets, so it is part of the SHAPE.
+      ; Only a NON-ZERO one is folded in: "no alignment" and "alignment 0" are
+      ; the same shape, and hashing the zero would rename every anonymous type
+      ; the C importer has ever memoized.
+      (when (and (!= faligns null) (!= (aref (as ptr:i32 faligns) i) 0))
+        (set! h (fnv-byte h (aref (as ptr:i32 faligns) i))))
+      ; BF-4: and a bit width, for the same reason and under the same rule.
+      (when (and (!= fbits null) (!= (aref (as ptr:i32 fbits) i) 0))
+        (set! h (fnv-byte h (+ 257 (aref (as ptr:i32 fbits) i))))))
     (return h)))
 
-(defn lookup-or-make-anon-struct (field-names:ptr field-types:ptr nfields:i32):ref:StructDef
-  (let (hash:i64 (hash-struct-shape field-names field-types nfields)
+; Stage 16 PK-2: `packed` is part of the memoization KEY, not a property applied
+; after the lookup — two structurally identical bodies, one packed and one not,
+; are different types, and sharing one StructDef between them would be a silent
+; wrong layout for whichever arrived second.
+(defn lookup-or-make-anon-struct (field-names:ptr field-types:ptr faligns:ptr
+                                  fbits:ptr nfields:i32 packed:i32
+                                  align:i32):ref:StructDef
+  (let (hash:i64 (+ (hash-struct-shape field-names field-types faligns fbits nfields)
+                    (+ packed (* (as i64 align) 65599)))
         synth:ptr (fmt-i64 "__anon_struct_h%016lx" hash)
         sd:ptr (lookup-struct synth))
     (when (= sd null)
       (set! sd (register-struct synth))
       (let (sd2:ptr:StructDef (as ptr:StructDef sd))
+        (.set! sd2 packed packed)
+        (.set! sd2 align-attr align)
         (struct-set-fields sd2 field-names field-types nfields)
+        (struct-set-field-aligns (as raw:StructDef sd2) faligns nfields)
+        (struct-set-field-bits (as raw:StructDef sd2) fbits nfields)
         ; Stage 15 W9 item 26: this is the ONE eager writer among the anonymous
         ; type constructors — `lookup-or-make-anon-union` queues instead — and it
         ; is reachable from the signature prescan, which the header-emit modes run
@@ -79,11 +100,7 @@
         ; the bottom of this file already uses.
         (when (!= g-type-stream null)
           (sdef-note-emitted (as raw:StructDef sd2) g-type-stream)
-          (fprintf g-type-stream "%%%s = type { " synth)
-          (dotimes (i nfields)
-            (when (!= i 0) (fprintf g-type-stream ", "))
-            (fprintf g-type-stream "%s" (type-to-ir (aref (as ptr:ptr field-types) i))))
-          (fprintf g-type-stream " }\n\n")
+          (emit-struct-type-line g-type-stream (as raw:StructDef sd2))
           ; R4: queue it too, so this eager write is replayable into a later
           ; module like every other type. Inert wherever the eager write already
           ; landed — the drain re-checks `sdef-in-module` — so the IR is unmoved.
@@ -104,14 +121,21 @@
 ; module-assembly point (named types are order-independent in a module).
 ; ============================================================
 
-(defn lookup-or-make-anon-union (field-names:ptr field-types:ptr nfields:i32):ref:StructDef
-  (let (hash:i64 (hash-struct-shape field-names field-types nfields)
+(defn lookup-or-make-anon-union (field-names:ptr field-types:ptr faligns:ptr
+                                 fbits:ptr nfields:i32 packed:i32
+                                 align:i32):ref:StructDef
+  (let (hash:i64 (+ (hash-struct-shape field-names field-types faligns fbits nfields)
+                    (+ packed (* (as i64 align) 65599)))
         synth:ptr (fmt-i64 "__anon_union_h%016lx" hash)
         sd:ptr (lookup-struct synth))
     (when (= sd null)
       (set! sd (register-struct synth))
       (let (sd2:ptr:StructDef (as ptr:StructDef sd))
+        (.set! sd2 packed packed)
+        (.set! sd2 align-attr align)
         (struct-set-fields sd2 field-names field-types nfields)
+        (struct-set-field-aligns (as raw:StructDef sd2) faligns nfields)
+        (struct-set-field-bits (as raw:StructDef sd2) fbits nfields)
         (.set! sd2 is-union 1)
         (.set! sd2 emitted 0)
         (.set! sd2 src-file g-source-path)
@@ -140,11 +164,7 @@
   (let (sdd:raw:StructDef sd)
     (when (!= (sdef-in-module sdd) 0) (return))
     (sdef-note-emitted sdd g-type-stream)
-    (fprintf g-type-stream "%%%s = type { " (sdd ir-name))
-    (dotimes (i (sdd num-fields))
-      (when (!= i 0) (fprintf g-type-stream ", "))
-      (fprintf g-type-stream "%s" (type-to-ir ((field-at (sdd fields) i) type))))
-    (fprintf g-type-stream " }\n\n")))
+    (emit-struct-type-line g-type-stream sdd)))
 
 ; Write the deferred `%name = type { repr [, pad] }` definition for one union.
 (defn emit-union-ir-type (sd:raw:StructDef):void
@@ -159,12 +179,16 @@
     (let (ri:i32 (union-repr-member sd)
           rt:ptr ((field-at (sdd fields) ri) type)
           total:i32 (abi-union-size sd)
-          pad:i32 (- total (abi-sizeof rt)))
+          pad:i32 (- total (abi-sizeof rt))
+          ; PK-1: a union's line is `{ repr [, pad] }`, not its field table, so
+          ; it cannot share emit-struct-type-line — only the brackets.
+          op:CStr (if (!= (sdd packed) 0) "<{" "{")
+          cl:CStr (if (!= (sdd packed) 0) "}>" "}"))
       (if (> pad 0)
-        (fprintf g-type-stream "%%%s = type { %s, [%d x i8] }\n\n"
-          (sdd ir-name) (type-to-ir rt) pad)
-        (fprintf g-type-stream "%%%s = type { %s }\n\n"
-          (sdd ir-name) (type-to-ir rt))))))
+        (fprintf g-type-stream "%%%s = type %s %s, [%d x i8] %s\n\n"
+          (sdd ir-name) op (type-to-ir rt) pad cl)
+        (fprintf g-type-stream "%%%s = type %s %s %s\n\n"
+          (sdd ir-name) op (type-to-ir rt) cl)))))
 
 ; Is every by-value named-type field dependency of `sd` present in the module
 ; currently being assembled? A field lowers to a `%Name` reference only when its
@@ -269,6 +293,12 @@
   (when (= name "f64") (return (as ptr ty-f64)))
   (when (= name "float") (return (as ptr ty-f32)))
   (when (= name "double") (return (as ptr ty-f64)))
+  ; Stage 16 FL-1: named for the REPRESENTATION, since C's `long double` is
+  ; f80 on x86-64/i386 and f128 on aarch64/riscv64 — the C spelling maps per
+  ; target (c-type-to-nucleus), these do not.
+  (when (= name "f16") (return (as ptr ty-f16)))
+  (when (= name "f80") (return (as ptr ty-f80)))
+  (when (= name "f128") (return (as ptr ty-f128)))
   (return null))
 
 ; The one-shot `(array T N)` permission (`g-array-ok`, src/nucleusc.nuc) is
@@ -336,6 +366,8 @@
   ; separately in emit-float. `f32`/`float` are unaffected. Inert off AVR.
   ; Deliberately NOT inside `builtin-type-name`, which must answer without dying.
   (when (or (= name "f64") (= name "double")) (avr-reject-f64 line))
+  (when (or (= name "f16") (or (= name "f80") (= name "f128")))
+    (reject-unavailable-float name line))
   ; Retired in Stage 16 (design/stage16-ergonomics/bool-type-plan.md): bool is
   ; its own kind, so the language has no 1-bit integer for `i1` to name. Named
   ; here rather than left to `unknown type` so the replacement is in the message.
@@ -986,7 +1018,7 @@
                                (if (= nf 1)
                                  (as raw:Type (aref (as ptr:ptr ftypes) 0))
                                  (as raw:Type
-                                   (type-for-sdef (lookup-or-make-anon-struct fnames ftypes nf))))))
+                                   (type-for-sdef (lookup-or-make-anon-struct fnames ftypes null null nf 0 0))))))
             (.set! rec name (as CStr (intern-str aname)))
             (.set! rec ptype pty)
             (.set! rec fnames fnames)
@@ -1025,7 +1057,7 @@
                     (aset! (as ptr:ptr mtypes) mi (arm-rec ptype))
                     (inc! mi)))
                 (inc! i))
-              (set! union-sd (as ptr (lookup-or-make-anon-union mnames mtypes npay)))))
+              (set! union-sd (as ptr (lookup-or-make-anon-union mnames mtypes null null npay 0 0)))))
           ; Backing struct: {tag:i32 [, payload:(union ...)]}.
           (let (sd:ref:StructDef (if-some (e (lookup-struct name)) e (register-struct name)))
             (check-ir-name-legal line name (sd ir-name))
@@ -1588,6 +1620,52 @@
 ; row for `:thread-local`, and a catch-all that rejects unknown keywords so a
 ; typo (`:volatle`) can never silently no-op.
 ;
+; Stage 16 PK-2: the leading `:keyword` attributes of a `defstruct` form, in the
+; position `defvar`'s `:volatile`/`:const` occupy. Returns how many there were,
+; with their flags through `out-flags`. Positional rather than parse-decl-attrs'
+; cursor walk because defstruct reads its parts by index. `strict` 0 only counts:
+; the name prescan needs the count to find the name and must not diagnose, since
+; a prescan defers every diagnostic to the emitter.
+(defn struct-attr-scan (form:(raw Node) out-flags:ptr:i32 out-align:ptr:i32
+                        strict:i32 line:i32):i32
+  (let (cc:ptr:Node (unsafe/cast ptr:Node form)
+        n:i32 (node-len (as ptr form))
+        i:i32 1
+        flags:i32 0
+        align:i32 0
+        done:i32 0)
+    (while (and (= done 0) (< i n))
+      (let (nd:ptr (node-at cc i))
+        (if (!= (node-kind nd) NODE-KEYWORD)
+          (set! done 1)
+          (do
+            (let (nm:ptr ((unsafe/cast ptr:Node nd) s))
+              (cond
+                (= nm "packed")
+                  (set! flags (bit-or flags STRUCT-ATTR-PACKED))
+                ; PK-3: the one attribute that takes an argument, so it consumes
+                ; the operand after it — `(defstruct :align 16 P …)`, keeping the
+                ; flat shape `:packed` set rather than growing a nested list form.
+                (= nm "align")
+                  (let (av:ptr (if (< (+ i 1) n) (node-at cc (+ i 1)) null))
+                    (if (or (= av null) (!= (node-kind av) NODE-INT))
+                      (when (!= strict 0)
+                        (die-at line "':align' takes an integer: (defstruct :align 16 Name …)"))
+                      (do
+                        (set! align (unsafe/cast i32 ((unsafe/cast ptr:Node av) i)))
+                        (when (and (!= strict 0) (= (align-attr-valid align) 0))
+                          (die-at line
+                            (fmt-i32 "':align %d' must be a power of two between 1 and 4096" align)))
+                        (set! i (+ i 1)))))
+                true
+                  (when (!= strict 0)
+                    (die-at line
+                      (fmt-s "unknown defstruct attribute ':%s' (known: :packed, :align)" nm)))))
+            (set! i (+ i 1))))))
+    (aset! out-flags 0 flags)
+    (aset! out-align 0 align)
+    (return (- i 1))))
+
 ; parse-decl-attrs scans zero-or-more leading NODE-KEYWORD operands from a
 ; declaration operand list (`cursor` is a cons cell, or null), OR's each
 ; recognized attribute's flag bit into *out-flags (a DECL-ATTR-* bitset), and
@@ -1859,7 +1937,7 @@
                   (aset! (as ptr:ptr ftypes) i fty))
                 (inc! i)
                 (set! cur ((unsafe/cast ptr:Node cur) cdr)))
-              (let (sd:ptr (lookup-or-make-anon-struct fnames ftypes nfields)
+              (let (sd:ptr (lookup-or-make-anon-struct fnames ftypes null null nfields 0 0)
                     t:ref:Type (make-type TY-STRUCT))
                 (.set! t sdef sd)
                 (return t))))))
@@ -1893,7 +1971,7 @@
                   (aset! (as ptr:ptr ftypes) i fty))
                 (inc! i)
                 (set! cur ((unsafe/cast ptr:Node cur) cdr)))
-              (let (sd:ptr (lookup-or-make-anon-union fnames ftypes nfields)
+              (let (sd:ptr (lookup-or-make-anon-union fnames ftypes null null nfields 0 0)
                     t:ref:Type (make-type TY-UNION))
                 (.set! t sdef sd)
                 (return t))))))

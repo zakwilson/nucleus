@@ -615,6 +615,78 @@ function(s). The design docs' "byte-identical (additive)" claims for TC-1/2/3 re
 *not* to the literal `nucleusc.ll` diff — which a careful read of those phases shows also
 shifted (new `tc3-*` functions, etc.) and was reconciled by the same `make bootstrap` gate.
 
+## Widening what the C importer can represent moves the compiler's OWN declare set
+
+`src/nucleusc.nuc` imports `<stdio.h>`, `<string.h>`, `<ctype.h>`, `<unistd.h>`
+and `<stdlib.h>`, and the importer emits a `declare` for every function it can
+represent. So teaching `c-parse-type` a new C type **adds `declare` lines to the
+compiler's own IR** — Stage 16 FL-7 made `long double` representable and picked
+up `strtold`, `qecvt`, `qfcvt`, `qgcvt` and the two `_r` forms.
+
+The consequence is a `make bootstrap` failure that looks like a miscompile and is
+not: stage1 comes from the committed *boot* compiler, which still skips those
+declarations, so it differs from stage2 by exactly the new lines. Confirm the new
+fixed point before touching the artifacts — emit stage3 with `build/nucleusc-stage2`
+and diff it against stage2.ll — then `make update-bootstrap`, rebuild, and re-run
+`make bootstrap`. A divergence that is *not* confined to the new declare lines is
+a real one.
+
+## Shifts: `bit-shr` on a signed operand is arithmetic, and a count ≥ width is poison
+
+`bit-shr` lowers to `ashr` for a signed operand and `lshr` for an unsigned one,
+so a logical right shift needs `(unsafe/cast ui64 x)` — and then the *count* must
+be cast too, or the compiler rejects the form as mixed signed/unsigned. LLVM
+makes any shift by ≥ the operand width poison, which a data-driven count reaches
+easily (`128 - p` is a shift of 64 at `p = 64`). Wrap both in total helpers that
+answer 0 / the operand at the out-of-range counts rather than open-coding shifts
+whose count is computed; `u64-shr` / `u64-shl` / `u64-mask` in `type-utils.nuc`
+are those.
+
+## A layout test that RUNS both binaries can only ever check the host
+
+`tests/run-layout-test.sh` compiles a struct with `cc` and with `nucleusc` and
+diffs `sizeof`/`offsetof` at runtime, so it validates x86-64 and nothing else —
+and alignment rules are target-parameterised. Stage 16 PK-1 added a
+compile-time oracle instead: emit `(defvar s:i64 (sizeof S))` (it folds to
+`@s = global i64 N` in the IR, no execution needed), generate the matching
+`_Static_assert`s, and check them with `clang --target=<t> -ffreestanding
+-fsyntax-only`. No sysroot, no linker, no libclang, every target clang supports.
+
+It found a defect on its first run that had been shipping for the whole project:
+**AVR's `BIGGEST_ALIGNMENT` is 8 bits**, so every type on that target is
+byte-aligned regardless of width, and `abi-alignof` must return 1 there before
+it consults the type. `struct { int8_t; int32_t; int16_t; }` is 7 bytes on AVR
+and Nucleus was emitting 12.
+
+## LLVM knows only the element list — an alignment the TYPE does not carry is a lie
+
+`getelementptr … i32 0, i32 n` and `[k x %S]`'s stride are computed from the
+emitted element list and nothing else, so any layout rule LLVM does not model
+must be spelled into the type. `packed` it models (`<{ … }>`); an over-aligned
+struct or member (Stage 16 PK-3) it does not, so the gap becomes a real
+`[k x i8]` element — which is also what clang emits. Two consequences that are
+easy to miss:
+
+- **A pad is an element, so field index ≠ element index.** Every GEP needs the
+  mapped one (`field-ir-index`). The off-by-one: the pad before field `i` shifts
+  field `i` **itself**, so the count runs over `0..i`, not `0..i-1`.
+- **An `alloca`/global must state the alignment explicitly**, because LLVM
+  derives the aggregate's own from that same element list.
+
+Make both computations answer "no change" unless the feature is actually
+present; that is what keeps every existing type line and GEP byte-identical, and
+it is what lets `make bootstrap` stay converged through the change.
+
+## Folding a zero into a memoization key renames everything it keys
+
+`hash-struct-shape` keys the anonymous struct/union memoizer, and its output is
+the `%__anon_struct_h<hex>` name in the IR. Adding a per-field property to the
+key must fold in only the NON-DEFAULT value: hashing the default for every field
+that lacks the property is a different hash for the identical shape, and the
+result is every anonymous C type in the program renamed (42 lines of bootstrap
+diff, Stage 16 PK-3). "Absent" and "zero" are the same shape — the key must say
+so.
+
 ## A wrong value that only reaches a truthiness test is invisible to every gate
 
 The bootstrap fixed point proves the compiler is *self-consistent*, not that it is
@@ -1014,6 +1086,12 @@ bites once the producer's output outgrows a stdio buffer. Measured on the 54KB o
 IR `w1-late-overload-symbol` greps: 186 of 200 identical runs said "no match" for
 a pattern that is present. `qgrep` (defined at the top of the file) is
 `grep "$@" >/dev/null` — same exit status, reads its input to the end.
+
+`qgrep` fixes the producer-SIGPIPE half only. **`pipefail` also reports a
+producer that legitimately fails** — which every rejection test has, since the
+compiler exits non-zero on the error it is asserting. `nucleusc … 2>&1 >/dev/null
+| qgrep -F 'the message'` is false whenever the message is present. Redirect
+stderr to a file with `|| true`, then grep the file.
 
 A second trap when writing a test *about* headers: `resolve-import` tries
 `NAME.nuc` in every directory before any `NAME.nuch`, so a header sitting beside
@@ -1569,27 +1647,24 @@ position (it scans the whole form, not just args), so a threaded value can land 
 call position: `(-> s (_ field))` ⇒ `(s field)`. The migration rewrites a 1-arg
 `->`-step `(. field)` to `(_ field)` and a normal `(. s field)` to `(s field)`.
 
-## A by-value struct parameter needs `(addr-of v)` before field access
+## Reading a struct value's field is direct; writing one needs a binding
 
-Head-position `(v field)` and `_get` both require a **pointer-to-struct**
-receiver: `emit-field-get` (`src/nucleusc.nuc:2172`) gates on `pt.kind == TY-PTR`
-with a `TY-STRUCT`/`TY-UNION` elem, and the callable `get` path raises "callable
-value: not callable — no matching get/invoke method and not a pointer-to-struct"
-otherwise. A function parameter typed `v:StrView` (by value) is a `TY-STRUCT`,
-not a `TY-PTR` — so `(v data)` / `(_get v data)` both fail at emit time. The
-`(ref StrView)` spelling works because it is already a pointer. For a by-value
-struct param, bind a pointer once and access through it:
+Since Stage 16 SV-1 a struct **value** is a legal member-access receiver, so
+`(. v f)`, head-position `(v f)`, and `(_get v f)` all work on a by-value
+parameter, a `let`-bound struct local, or a call result read in place. The
+emitter copies the value into a fresh slot (`materialize-struct-value`,
+`src/nucleusc.nuc`) and `access-receiver-sdef` (`src/generics.nuc`) unwraps the
+same receivers in the type pass — the cross-file lockstep this file opens with.
 
-```lisp
-(defn intern-string (sv:StrView):i32
-  (let (p:ptr:StrView (addr-of sv) ...)
-    (.set! sl bytes (arena-strndup (cast ptr (p data)) (cast i64 (p len))))))
-```
+`.set!` and `.&` are the exception: they need the receiver's own **storage**, so
+they take exactly what `addr-of` takes — a binding, whose slot they use directly.
+A temporary is an error ("the receiver is a temporary struct value, so it has no
+address"), which is also what stops a pointer into a compiler-made copy from
+being returned.
 
-The `=` conformance (`lib/strview.nuc:152`) and `examples/comb-order.nuc:30`
-(`((addr-of sv) len)`) use the same `addr-of`-then-access shape. A `let`-bound
-struct local is already an alloca (addressable directly); only **by-value
-parameters** need the explicit `addr-of`. (NS-5 adoption.)
+The older `(addr-of v)`-then-access shape (`lib/strview.nuc`,
+`examples/comb-order.nuc:30`) is still correct and is what `.set!` on a by-value
+parameter is spelled as when the receiver is not already a name.
 
 ## Every `declare` emitter must ABI-lower exactly like the `define` — there are SIX, and three had silently drifted
 
@@ -5044,3 +5119,107 @@ generalizes to: a latch scoped to the freshly-opened buffers is a claim about
 *part* of the assembled module, so every REPL emission site that has one must
 also consult the preamble. Filed as D8 in
 design/stage16-ergonomics/repl-libraries.md.
+
+## A short-circuit *before* a comparison discards the comparison, not just its cost
+
+`safe-coerce-val` and `coerce-int-val` (`src/nucleusc.nuc`, `src/abi.nuc`) both
+opened with `(when (= sk dk) (return v))`. Two `TY-FN` types have the same kind
+whatever their signatures, so **every** typed function-pointer slot accepted any
+function — and the call site above it already called `type-eq`, which already
+dispatched `TY-FN` to `fn-sig-eq`, which already answered 0. The right answer was
+computed and thrown away. Stage 16 FP-1 puts the `TY-FN`/`TY-FN` arm *ahead* of
+the identity short-circuit in `coerce-int-val`, and `safe-coerce-val` delegates,
+so all four typed slots agree.
+
+Two consequences worth keeping:
+
+- **`fn-sig-eq`/`type-eq` live in `src/abi.nuc`, not `generics.nuc`.** `abi.nuc`
+  is imported at `nucleusc.nuc:1195` and `generics.nuc` at `:1217`, so the
+  coercion chokepoint could not call forward. Anything a chokepoint needs has to
+  be at or before the chokepoint's own import.
+- **Use `is-ptr-like`, not `is-ptr-repr`, for the `void *` relaxation.**
+  `is-ptr-repr` admits `TY-FN`, which would let a bare `ptr` parameter match a
+  `(fn …)` one and reinstate the data-pointer-into-callable conversion
+  `unsafe/cast` deliberately owns.
+
+## An indirect call is the same call — give it the same argument path
+
+`emit-funcall-value` (`funcall` and a `TY-FN` value in head position both fold to
+it) stopped at `check-call-arity` and printed each argument as raw `type-to-ir`:
+no coercion, no diagnostic, no `vararg-promote`, no `abi-classify`. The BoxedFn
+call path coerced but did not ABI-lower — the same rule at a second site with a
+different subset applied. Stage 16 FP-2 extracted the direct path's per-argument
+work into `coerce-call-argument` and both indirect emitters call it, then run
+`abi-args-begin` / `abi-arg-frag` / `abi-emit-struct-call`.
+
+**The closure environment pointer is argument zero and spends a GPR**, so it goes
+through `abi-arg-frag` like any other. Printing it by hand leaves the register
+budget one short for everything after it — which is invisible on x86-64 until an
+argument list is long enough to spill.
+
+If you add a third way to call something, it needs `coerce-call-argument` and the
+`abi-*` sequence, not a fresh subset of them.
+
+## `struct-walk` is the layout — do not re-derive a size, an offset, or an index
+
+A struct's ABI size, the element list `emit-struct-type-line` prints, each
+field's GEP element index and each bit-field's absolute bit position are four
+answers to one walk over the field list, and Stage 16 BF-1 made them come from
+one function (`src/abi.nuc:struct-walk`). `struct-walk-size`, `struct-tail-pad`,
+`field-ir-index` and `field-bit-offset` are one line each on top of it.
+
+They must stay that way because `aligned(N)` pads and bit-field runs both make
+**field index ≠ element index**: a run of adjacent bit-fields is ONE opaque
+`[k x i8]` element, and a pad is an element of its own. A second implementation
+of any of the four disagrees with the GEP that addresses it, and the disagreement
+is a wrong offset at run time rather than a compile error.
+
+## `arr-len` 0 means PROVISIONAL, and a flexible array member is -1
+
+`type-to-ir` asserts that a TY-ARRAY with `arr-len` 0 never reaches IR: zero is
+the marker `g-array-ok` mode 2 leaves behind when the prescan cannot fold an
+extent (`src/nucleusc.nuc`, near `g-array-ok`). So C's flexible array member —
+`int f[];`, which really is a zero-extent trailing member — could not reuse it.
+It is `(array T -1)`, which prints `[0 x T]` and sizes as 0 (Stage 16 C1a).
+
+If you ever want a real `(array T 0)` in the surface language, the provisional
+marker has to move first.
+
+## A compiler-minted field name is a decidable fact, and `struct-field-index` cannot see through one
+
+Two field-name prefixes are minted rather than written, and both are unspellable
+as a C or Nucleus identifier, which is what makes "did the compiler mint this?"
+answerable with a `strncmp` and no extra state:
+
+- `__bf.N` — C's unnamed bit-fields, `unsigned :3;` and `unsigned :0;` (BF-4).
+  `bf-align-contrib` keys the SysV "an unnamed bit-field contributes no
+  alignment" rule on it.
+- `__anon.N` — C11 anonymous members, and the `(:anon T)` surface (AN-1/AN-2).
+  `struct-field-ref` descends through these; **`struct-field-index` does not.**
+
+That last line is the trap. A site that resolves a member with
+`struct-field-index` alone silently answers "no such field" for every name an
+anonymous member supplies. The four access sites (`_get`, head-position `get`,
+`.set!`, `.&`) each fall through their `idx < 0` branch into `struct-field-ref`
+for exactly this reason; a fifth would need the same fall-through. The type side
+(`node-type-field`, `callable-get-type`) already goes through `struct-field-ref`,
+so it needs nothing — but that is also why a site that skips it breaks the
+`node-type`↔`emit-node` lockstep in the direction that is hardest to see.
+
+## C leaves bit-field allocation to the psABI, and the targets really disagree
+
+Three rules that cannot be read off the C standard and were each found by
+`clang --target=` disagreeing with an implementation that looked right
+(design/stage16-ergonomics/c-boundary-defects.md §15.4):
+
+1. **AVR drops the "may not cross a boundary of the declared type" rule
+   entirely** (GCC's `PCC_BITFIELD_TYPE_MATTERS` is off there). Only a
+   zero-width member still forces a boundary, and there it is a **byte**.
+2. **`packed` drops the crossing rule but NOT the zero-width one.**
+3. **aarch64 gives every bit-field its declared type's alignment, named or
+   unnamed, and keeps a zero-width one's even under `packed`**; the SysV targets
+   give an *unnamed* bit-field none.
+
+Any change to bit-field layout has to be re-run against
+`s16-bf-layout-cross-target`, and its shapes I, J and K are the ones that tell
+these apart — A–H are green under all four wrong combinations.

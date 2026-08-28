@@ -633,3 +633,210 @@ sides) while every field after the first was at the wrong offset and the
 struct's alignment was wrong — offsets and alignment are the right oracle,
 and the shipped gates (`run_l2_layout_matrix`, `make layout-test`) compare
 them, not just size.
+
+**Whether to finish those follow-ups by hand or switch to libclang was then
+evaluated on its own:**
+[cheader-parser-vs-libclang.md](cheader-parser-vs-libclang.md). **Finish the
+parser.** The §1.5 census that motivated the question is stale — it measured
+70 % of struct bodies blocked *before* L1–L5. Re-measured today across 32
+headers: **102 of 111** named bodies lay out, **101 of 103** emitted C types
+match clang's `sizeof` exactly (the one mismatch is `epoll_event`/packed), and
+the nine blocked types reduce to four shapes plus one type-system item. Four of
+the nine fall to a **single ~15-line repair** — the inline function-pointer
+branch already exists at `src/cheader.nuc:1398-1405` and already collapses the
+field to `ptr`; it just drops the field *name*, because it skips `(*name)`
+wholesale instead of reading through it.
+
+A libclang-shaped API was probed end to end from Nucleus (by-value `CXCursor`
+arguments, by-value `CXString` return, a Nucleus function used as a C callback
+taking two by-value structs) and **works** — the ABI is not the obstacle. The
+economics are: the dependency is smaller than it looks (`bin/nucleusc` already
+links `libLLVM.so.19.1`, 129 MB, and already shells out to `clang`; libclang is
++38 MB), performance is a wash (the hand-rolled parse is free to measurement —
+the whole 103 ms header-import delta is the `clang -E` subprocess already paid,
+and `-fsyntax-only` costs ~2 % more than `-E`), and it is **not** a line-count
+win (only 1,314 of `cheader.nuc`'s 3,085 lines are the reader; the rest is the
+`--emit-cheader` writer, which libclang does not touch). Of the three genuinely
+hard remaining items, libclang pays for exactly one: `__attribute__((packed))`.
+Bitfields and C11 anonymous members are hard because *Nucleus cannot express
+them*, and a better front end answers a question the language cannot yet ask.
+**All three landed without one, 2026-08-28** (c-boundary-defects.md §14–§16);
+Nucleus expresses both now, and the census is 111/111.
+
+Two defects the original survey could not see turned up while probing: **a bare
+`unsigned` or `signed` is not a type** (`unsigned x;` abandons the struct,
+`unsigned f(void);` is dropped — `unsigned int` is fine), which is zero
+occurrences in pedantically-written glibc headers and pervasive in third-party
+ones, including libclang's own `clang-c/Index.h`; and **that path records no
+skip reason**, so the use site says the bare `unknown: … not defined anywhere`
+rather than W3c's `… its C header declaration was skipped (<reason>)`. Staged as
+C1 (the ~50-line tranche), C2 (record a reason on every skip path), C3 (packed,
+its own item since it reaches `defstruct`), C4 (pass `--target`/`-isysroot` into
+the `clang -E` line at `src/cheader.nuc:977`, which today reads *host* headers
+when cross-compiling — a prerequisite for the AVR/RISC-V tracks under either
+front end). The document also states the triggers that would flip the answer.
+
+### The §4 frictions, re-read as language defects
+
+Design: [c-boundary-defects.md](c-boundary-defects.md). The three "frictions"
+`cheader-parser-vs-libclang.md` §4.1 attributes to a libclang binding are not
+costs of that binding — two of them are defects in Nucleus that every C library
+with a callback or a by-value struct hits. Measuring them turned up **two live
+silent miscompiles** §4 could not see, because the binding it built used
+`unsafe/cast` and `unsafe/funcall-ptr-*` throughout and so never exercised the
+typed path.
+
+**Function-pointer types are erased at every C boundary, in both directions.**
+The importer collapses them to `ptr` in all four declarator positions (parameter
+`src/cheader.nuc:787`, member `:1404`, typedef `:1654`, and the
+function-returning-function-pointer shape not modelled at all), so `qsort`,
+`atexit` and every callback API needs `(unsafe/cast ptr f)`; `--emit-cheader`
+collapses them to `void*` (`src/type-utils.nuc:404`), which is not standard C
+(ISO C does not define function-pointer↔`void *` conversion). **The type system
+is not the gap** — the identical declaration written by hand as
+`(declare qsort2 (… (cmp (fn i32) (ptr ptr))) :void)` type-checks and emits
+correctly.
+
+**And the type it hands back means nothing.** `safe-coerce-val` short-circuits
+on `sk == dk` (`src/nucleusc.nuc:3605`) before any signature comparison, so every
+typed fn-pointer slot — `let`, `set!`, `.set!`, argument — accepts any function
+(`fn-sig-eq` exists, computes the right answer at the call site, and is
+discarded); and `emit-funcall-value` (`:6145`) never consults the parameter list
+after the arity check, so an indirect call performs **no** coercion, no
+diagnostic, no vararg promotion and no ABI lowering. Demonstrated: the same
+function called directly and through a pointer prints `907` and `7`; an
+`(fn i32)()` slot fed an `():f64` function prints `-1780842467`. One call site
+already routes around this by hand (`src/union-emit.nuc:689`). This is why the
+ordering is forced — fixing the importer first would trade a compile error for
+silent stack corruption in exactly the case that motivated it.
+
+**A struct value is not a member-access receiver** (`(. v x)` on a by-value
+parameter or a call result), which is friction 2 and is not C-specific.
+Staged FP-1…FP-5 (enforce signatures → lower indirect calls → render fn types in
+diagnostics, the importer, and the generated header) then SV-1/SV-2 (struct-value
+receivers, and the docs that teach a longer idiom than the language requires),
+with C1/C2 riding along in `cheader.nuc`.
+
+**The same document then closes the four deferred C-parity items** — the missing
+float types, `packed`, bitfields, and C11 anonymous members — on the standard
+that Nucleus should express anything C can. Two were smaller than their
+deferrals imply. **Wide floats are not blocked on the bootstrap**: LLVM already
+carries `half`/`x86_fp80`/`fp128` and their ABIs (measured, all three targets),
+and although a decimal literal is rejected at those widths, f64→f80 and f64→f128
+are *exact* widenings, so the constant renderer is integer bit-shuffling on the
+f64 pattern — the compiler never needs f80 arithmetic to compile an f80 program
+(FL-1…FL-7; `long double` is `x86_fp80` on x86-64 but `fp128` on aarch64/riscv64,
+so the Nucleus types are the representations and the C name maps per target).
+**C11 anonymous members are mostly already built**: clang's model is an ordinary
+nested member reached by a two-level GEP, and Nucleus's anon-struct/union
+memoizer (`union-registry.nuc:63`/`:107`) — which the C parser already calls —
+supplies exactly that, so the sibling document's "Nucleus has nothing to lower
+that onto" is stale; only name lookup through the member is missing (AN-1/AN-2).
+Bitfields are the real work (BF-1…BF-4), and they share one prerequisite with
+anonymous members: both break "one Nucleus field = one LLVM member at the same
+index", fixed once by a resolved field reference (FR-1) carrying a GEP path plus
+an optional bit range. `packed` is the cheapest (PK-1…PK-3) and its non-obvious
+half is that `emit-load`/`emit-store` derive `align` from the type, so a packed
+field needs `align 1` or the IR carries a false promise. **All four landed
+(2026-08-26/28.)** The shared FR-1 prerequisite was the load-bearing call: it
+converged byte-identically on its own, and it is why anonymous members came in
+under their "medium" price while bitfields came in over theirs — see
+c-boundary-defects.md §15 and §16.
+
+Two limits are named rather than planned around. **Decimal literals at f80/f128
+stay f64-rounded** — staged separately as
+[future/decimal-float-literals.md](../future/decimal-float-literals.md)
+(DL-1…DL-4: a correctly-rounded decimal→binary converter routed through
+`float-literal-ir-at`, which also retires `f32-const-ir`'s existing
+decimal→f64→f32 double-rounding). Nothing is blocked on it and it has no
+ordering constraint in either direction; it is separate because a *nearly*
+correctly-rounded converter is indistinguishable from a correct one until it is
+not. **`_Complex` is out of scope** — a distinct type constructor with its own
+ABI class and Annex G arithmetic, much easier to add after FL-1 than with it.
+
+**The gate is the differential layout test, widened to every target.**
+`tests/run-layout-test.sh` diffs `sizeof` and every field offset against the
+platform `cc`, but it *runs* both binaries, so it validates the host only —
+and bitfield and packing rules are target-parameterised. The fix is
+`clang --target=<triple> -ffreestanding -fsyntax-only` over generated
+`_Static_assert`s: a complete compile-time layout oracle on every target clang
+supports, with no execution, sysroot, linking or libclang. Verified on x86_64,
+aarch64, riscv64 and avr — and it earns its place immediately, since
+`struct BF { int a:3; unsigned b:5; short c:9; int d; }` is 8 bytes on x86-64
+and is not on AVR (16-bit `int`), where `int c:24` is a hard error rather than a
+different layout. Acceptance is the 32-header census going 102/111 → 111/111.
+
+**Status: the whole plan landed.** Phases 1–4 (D1–D7) and the float phase (D8)
+2026-08-26; packing (D10, PK-1/PK-2/PK-3), bitfields (D9, FR-1 + BF-1…BF-4),
+anonymous members (D11, AN-1/AN-2) and the flexible array member (C1a)
+2026-08-28. **The census closed at 111/111**, with every one of the nine
+formerly-blocked types sizing exactly as `cc` sizes it. `c-boundary-defects.md`
+§12, §13, §14, §15 and §16 record what each item turned out to be.
+
+The two corrections worth carrying forward from the last two phases. **AN was
+cheaper than priced and BF was dearer, for the same reason:** the "language
+question" AN was priced for — lowering a name that reaches through a member —
+is FR-1, which bitfields needed anyway, so AN came to two functions on top of a
+prerequisite already paid for. Bitfields cost what they cost not because the
+type was hard but because C leaves allocation implementation-defined and AVR,
+aarch64 and the SysV targets genuinely disagree; only the cross-target oracle
+found that. And **`(array T 0)` could not represent a flexible array member** —
+zero is already the layout prescan's provisional-length marker — so C1a spells
+one `(array T -1)`.
+
+Three plan corrections came out of the float work: FL-3's hex
+literals needed a real 128-bit significand rather than a lexer arm (through
+`strtod`'s f64 the hex spelling would have been no more precise than decimal at
+f80/f128, which is its entire purpose); naming `f80` off x86 became a diagnostic
+rather than a documented caveat, since it was emitting `x86_fp80` no other
+backend can select; and **FL-7 does not unblock `max_align_t`** — clang's
+definition is held up by a member `__attribute__((__aligned__(…)))`, so it comes
+off the blocked list with PK-3, and the census figure moves with it.
+
+Two more came out of packing. **One of the three C attribute positions has to be
+ignored**: `typedef struct { … } S __attribute__((packed));` is warned-and-
+discarded by both clang and gcc, so honouring it would disagree with every C
+compiler on the platform. And **the cross-target oracle paid for itself on its
+first run, but not on the predicted defect** — it found that AVR's
+`BIGGEST_ALIGNMENT` is 8 bits, so every type there is byte-aligned and Nucleus
+had been oversizing plain structs on that target since long before packing
+existed. A host-only layout test structurally cannot see that.
+
+And one from `aligned(N)`. The plan called it "not in the type" and therefore
+cheap; re-measured against a *definition* rather than a declaration, **clang does
+put it in the type** — `%struct.A = type { i32, [12 x i8] }` — and has to, since
+LLVM computes array strides and GEP offsets from the element list alone. So PK-3
+is a padding machine with a source-index → element-index remap, not a flag, and
+that is what carried it past `max_align_t` to a member `aligned(N)` that actually
+displaces a field. The oracle then caught the AVR half of the same mistake: an
+`aligned(N)` raises an alignment past `BIGGEST_ALIGNMENT` there too, so PK-1's
+AVR short-circuit had to move below the aggregate arms.
+
+And three from bitfields, all of the same kind and all found by the oracle
+rather than by reading a spec: **AVR drops C's declared-type rule entirely**
+(GCC's `PCC_BITFIELD_TYPE_MATTERS` is off there, so bit-fields pack straight
+across byte boundaries and only a zero-width member still forces a byte);
+**`packed` drops the crossing rule but not the zero-width one** (a `:0` still
+forces bit 32 in a packed struct); and **aarch64 gives every bit-field its
+declared type's alignment, named or unnamed, and keeps a zero-width one's even
+under `packed`**, where the SysV targets give an unnamed bit-field none. The
+first implementation was green on eight shapes and wrong on all three rules;
+shapes I, J and K in `s16-bf-layout-cross-target` exist to tell them apart.
+
+### Does this change the libclang answer?
+
+No — see [cheader-parser-vs-libclang.md](cheader-parser-vs-libclang.md) §8, the
+re-price its own §7 called for. Deciding to implement bitfields and anonymous
+members was that document's second stated trigger, so the question was reopened
+properly. **The answer holds and one of its arguments had to be withdrawn to say
+so honestly**: §5.2's claim that these items are hard "because Nucleus has no way
+to express them" is stale for anonymous members, which are nine-tenths built
+already. What decides it is a count — **four of roughly fifteen items in §§6–9
+are parser work**, and libclang replaces those four and none of the other eleven.
+The reason is structural: `defstruct` must be able to *declare* a bitfield and a
+packed struct and `--emit-cheader` must *write* both back out, so the layout
+algorithms must live in `abi.nuc` whichever front end reads the headers. That
+takes `packed` — the one row §2 conceded to libclang outright — down with it.
+libclang's real remaining advantage, correct bitfield offsets on every target, is
+better bought as the cross-target *test* oracle above than as a linked
+dependency.

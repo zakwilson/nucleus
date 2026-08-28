@@ -260,6 +260,12 @@
       TY-ERR    (return "i32")
       TY-F32    (return "float")
       TY-F64    (return "double")
+      ; Stage 16 FL-1: the remaining C float widths. `f80` is x86's 80-bit
+      ; extended format, which LLVM spells x86_fp80 and stores in 16 bytes on
+      ; x86-64 (12 on i386) — the size is target-keyed, the IR name is not.
+      TY-F16    (return "half")
+      TY-F80    (return "x86_fp80")
+      TY-F128   (return "fp128")
       TY-USIZE  (return (ptr-int-ir))
       TY-SSIZE  (return (ptr-int-ir))
       TY-STRUCT (return (fmt-s "%%%s" ((tt sdef) ir-name)))
@@ -275,8 +281,12 @@
                   ; a prescan type escaped into codegen — fail loudly instead of
                   ; emitting a plausible `[0 x i32]` (legal LLVM: a flexible
                   ; array member).
-                  (when (<= (tt arr-len) 0)
+                  (when (= (tt arr-len) 0)
                     (die-at g-form-line "internal: a provisional (prescan) array type reached code generation"))
+                  ; C1a: -1 is C99's flexible array member, which HAS no extent
+                  ; — `[0 x T]`, distinct from the 0 above.
+                  (when (< (tt arr-len) 0)
+                    (return (fmt-s "[0 x %s]" (type-to-ir (tt elem)))))
                   (return (fmt-2s "[%s x %s]"
                             (fmt-i32 "%d" (tt arr-len))
                             (type-to-ir (tt elem)))))
@@ -321,11 +331,386 @@
 ; and scalars (`0` / `0.0` / `false`). Shared by emit-defvar's no-init default
 ; and the G-2 constant-aggregate renderer's unspecified slots, so a zeroed
 ; `defvar` and a zeroed array element can never disagree.
+; Stage 16 FL-2 (design/stage16-ergonomics/c-boundary-defects.md §6.2): LLVM
+; refuses a decimal constant at x86_fp80 and fp128 outright, so the compiler has
+; to render the bits — the f32-const-ir problem one width up, and the reason the
+; wide float types looked like a bootstrap blocker. They are not: f64→f80 and
+; f64→f128 are EXACT widenings, so this is integer arithmetic on the f64 pattern
+; and the compiler never performs f80 arithmetic to compile an f80 program.
+;
+; A decimal literal is therefore exact to f64's 53 bits and no further; see
+; design/future/decimal-float-literals.md for what closes that, and FL-3's
+; hex-float syntax for the bit-exact spelling in the meantime.
+(defn f64-bits (d:f64):i64
+  (let (r:f64 d
+        p:ptr:f64 (addr-of r))
+    (return (deref (unsafe/cast ptr:i64 p)))))
+
+; `0xK` is 4 hex digits of sign|exponent followed by 16 of the significand —
+; which, unlike `0xL` below, is high half first.
+(defn f80-const-ir (d:f64):CStr
+  (let (bits:i64 (f64-bits d)
+        sign:i64 (unsafe/cast i64 (bit-shr (unsafe/cast ui64 bits) 63))
+        exp:i64 (bit-and (bit-shr bits 52) 2047)
+        mant:i64 (bit-and bits 4503599627370495)
+        se:i64 0
+        sig:i64 0)
+    (cond
+      (= exp 2047)
+        ; inf / NaN: the explicit integer bit is set in both, and a NaN keeps
+        ; its payload plus the quiet bit x86 requires.
+        (do (set! se 32767)
+            (set! sig (bit-or (bit-shl (as i64 1) 63) (bit-shl mant 11))))
+      (= exp 0)
+        (if (= mant 0)
+          (do (set! se 0) (set! sig 0))
+          ; An f64 subnormal is a NORMAL f80 — the exponent range is far wider —
+          ; so normalize rather than truncate.
+          (let (m:i64 mant
+                e:i64 (- 1 1023))
+            (while (= (bit-and m 4503599627370496) 0)
+              (set! m (bit-shl m 1))
+              (set! e (- e 1)))
+            (set! se (+ e 16383))
+            (set! sig (bit-shl m 11))))
+      true
+        (do (set! se (+ (- exp 1023) 16383))
+            (set! sig (bit-or (bit-shl (as i64 1) 63) (bit-shl mant 11)))))
+    (return (as CStr (fmt-2s "0xK%s%s"
+      (fmt-i64 "%04lX" (bit-or (bit-shl sign 15) se))
+      (fmt-i64 "%016lX" sig))))))
+
+; `0xL` is the LOW 64 bits first, then the high 64 — the opposite order from
+; `0xK`. An f64 widens exactly: rebias the exponent and shift the significand
+; from 52 bits to 112, which leaves the low half all zero for every finite f64.
+(defn f128-const-ir (d:f64):CStr
+  (let (bits:i64 (f64-bits d)
+        sign:i64 (unsafe/cast i64 (bit-shr (unsafe/cast ui64 bits) 63))
+        exp:i64 (bit-and (bit-shr bits 52) 2047)
+        mant:i64 (bit-and bits 4503599627370495)
+        e128:i64 0
+        hi-mant:i64 0
+        lo:i64 0)
+    (cond
+      (= exp 2047)
+        (do (set! e128 32767)
+            ; Keep the payload so a signalling NaN stays one; bit 111 of the
+            ; f128 significand is bit 51 of the f64's, which the shift carries.
+            (set! hi-mant (bit-shr mant 4))
+            (set! lo (bit-shl mant 60)))
+      (= exp 0)
+        (if (= mant 0)
+          (do (set! e128 0) (set! hi-mant 0) (set! lo 0))
+          (let (m:i64 mant
+                e:i64 (- 1 1023))
+            (while (= (bit-and m 4503599627370496) 0)
+              (set! m (bit-shl m 1))
+              (set! e (- e 1)))
+            ; Drop the now-explicit leading bit: fp128's is implicit.
+            (set! m (bit-and m 4503599627370495))
+            (set! e128 (+ e 16383))
+            (set! hi-mant (bit-shr m 4))
+            (set! lo (bit-shl m 60))))
+      true
+        (do (set! e128 (+ (- exp 1023) 16383))
+            (set! hi-mant (bit-shr mant 4))
+            (set! lo (bit-shl mant 60))))
+    (return (as CStr (fmt-2s "0xL%s%s"
+      (fmt-i64 "%016lX" lo)
+      (fmt-i64 "%016lX" (bit-or (bit-shl sign 63) (bit-or (bit-shl e128 48) hi-mant))))))))
+
+; f64→f16 is a NARROWING, so unlike the two above it rounds — round-to-nearest,
+; ties-to-even, written out rather than delegated to a host cast because Nucleus
+; has no f16 to cast through. `0xH` is the 16 bits, zero-extended.
+(defn f16-const-ir (d:f64):CStr
+  (let (bits:i64 (f64-bits d)
+        sign:i64 (unsafe/cast i64 (bit-shr (unsafe/cast ui64 bits) 63))
+        exp:i64 (bit-and (bit-shr bits 52) 2047)
+        mant:i64 (bit-and bits 4503599627370495)
+        out:i64 0)
+    (cond
+      (= exp 2047)
+        ; A NaN must stay a NaN: a payload whose low bits are all that survive
+        ; the shift would round to infinity.
+        (if (= mant 0) (set! out 31744) (set! out 32256))
+      (= exp 0)
+        (set! out 0)                       ; an f64 subnormal underflows to ±0
+      true
+        (let (e:i64 (- exp 1023))
+          (cond
+            (> e 15)
+              (set! out 31744)             ; overflow to inf, as C does
+            (>= e (- 14))
+              ; Normal: 10 stored significand bits, so 42 are dropped.
+              (let (m:i64 (bit-shr mant 42)
+                    rest:i64 (bit-and mant 4398046511103)
+                    half:i64 2199023255552
+                    ee:i64 (+ e 15))
+                (when (or (> rest half) (and (= rest half) (!= (bit-and m 1) 0)))
+                  (set! m (+ m 1))
+                  (when (= m 1024) (set! m 0) (set! ee (+ ee 1))))
+                (if (> ee 30)
+                  (set! out 31744)
+                  (set! out (bit-or (bit-shl ee 10) m))))
+            (>= e (- 25))
+              ; Subnormal: the implicit 1 becomes explicit and the whole
+              ; significand shifts right by how far below the minimum it is.
+              (let (full:i64 (bit-or 4503599627370496 mant)
+                    sh:i64 (+ 42 (- (- 14) e))
+                    m:i64 (bit-shr full sh)
+                    rest:i64 (bit-and full (- (bit-shl 1 sh) 1))
+                    half:i64 (bit-shl 1 (- sh 1)))
+                (when (or (> rest half) (and (= rest half) (!= (bit-and m 1) 0)))
+                  (set! m (+ m 1)))
+                (set! out m))
+            true
+              (set! out 0))))
+    (return (as CStr (fmt-i64 "0xH%04lX" (bit-or (bit-shl sign 15) out))))))
+
+; ---------------------------------------------------------------------------
+; Stage 16 FL-3 (design/stage16-ergonomics/c-boundary-defects.md §6.3): C's
+; hex-float literals. The significand travels as a 128-bit integer rather than
+; through the host f64, because at f80 and f128 a round trip through 53 bits
+; would discard exactly what this spelling exists to express.
+; ---------------------------------------------------------------------------
+
+; `bit-shr` on a signed i64 is arithmetic, and LLVM's shifts are poison at a
+; count of 64 or more; these three are the unsigned, total forms.
+(defn u64-shr (x:i64 n:i64):i64
+  (when (>= n 64) (return 0))
+  (when (<= n 0) (return x))
+  (return (unsafe/cast i64 (bit-shr (unsafe/cast ui64 x) (unsafe/cast ui64 n)))))
+
+(defn u64-shl (x:i64 n:i64):i64
+  (when (>= n 64) (return 0))
+  (when (<= n 0) (return x))
+  (return (bit-shl x n)))
+
+(defn u64-mask (n:i64):i64
+  (when (>= n 64) (return -1))
+  (when (<= n 0) (return 0))
+  (return (- (bit-shl (as i64 1) n) 1)))
+
+(defn u128-bit (hi:i64 lo:i64 n:i64):i64
+  (when (>= n 64) (return (bit-and (u64-shr hi (- n 64)) 1)))
+  (return (bit-and (u64-shr lo n) 1)))
+
+(defn u128-low-any (hi:i64 lo:i64 n:i64):i64
+  (when (<= n 0) (return 0))
+  (when (<= n 64)
+    (if (!= (bit-and lo (u64-mask n)) 0) (return 1) (return 0)))
+  (when (!= lo 0) (return 1))
+  (if (!= (bit-and hi (u64-mask (- n 64))) 0) (return 1) (return 0)))
+
+(defn u128-set-bit (n:i64 out-hi:ptr:i64 out-lo:ptr:i64):void
+  (aset! out-hi 0 0)
+  (aset! out-lo 0 0)
+  (if (>= n 64)
+    (aset! out-hi 0 (bit-shl (as i64 1) (- n 64)))
+    (aset! out-lo 0 (bit-shl (as i64 1) n))))
+
+; A C hex-float lexeme -> sign, the significand normalized so bit 127 is set
+; (both limbs zero for a zero), the unbiased exponent OF THAT BIT, and whether
+; a nonzero digit fell off the low end. Returns 0 when `lex` is not one.
+(defn hexfloat-parse (lex:CStr out-sign:ptr:i64 out-hi:ptr:i64 out-lo:ptr:i64
+                      out-exp:ptr:i64 out-sticky:ptr:i64):i32
+  (let (len:i64 (strlen lex)
+        i:i64 0
+        sign:i64 0)
+    (when (< len 3) (return 0))
+    (when (= (char-at lex 0) 43) (set! i 1))
+    (when (= (char-at lex 0) 45) (do (set! sign 1) (set! i 1)))
+    (when (> (+ i 3) len) (return 0))
+    (when (!= (char-at lex i) 48) (return 0))
+    (when (and (!= (char-at lex (+ i 1)) 120) (!= (char-at lex (+ i 1)) 88))
+      (return 0))
+    (set! i (+ i 2))
+    (let (hi:i64 0
+          lo:i64 0
+          drop:i64 0
+          frac:i64 0
+          sticky:i64 0
+          seen-dot:i32 0
+          any:i32 0
+          done:i32 0)
+      ; The digits form one integer M; the value is M * 16^(drop-frac) * 2^p.
+      ; Once the accumulator is full the remaining digits only move the
+      ; exponent, and whether any of them was nonzero is the sticky bit.
+      (while (and (= done 0) (< i len))
+        (let (c:i32 (char-at lex i))
+          (cond
+            (= c 46)
+              (if (!= seen-dot 0)
+                (set! done 1)
+                (do (set! seen-dot 1) (set! i (+ i 1))))
+            true
+              (let (v:i32 (hex-digit-val c))
+                (if (< v 0)
+                  (set! done 1)
+                  (do (set! any 1)
+                      (when (!= seen-dot 0) (set! frac (+ frac 1)))
+                      (if (= (u64-shr hi 60) 0)
+                        (do (set! hi (bit-or (bit-shl hi 4) (u64-shr lo 60)))
+                            (set! lo (bit-or (bit-shl lo 4) (as i64 v))))
+                        (do (set! drop (+ drop 1))
+                            (when (!= v 0) (set! sticky 1))))
+                      (set! i (+ i 1))))))))
+      (when (= any 0) (return 0))
+      ; C makes the binary exponent mandatory, which is also what keeps a hex
+      ; float distinguishable from a hex integer at the lexer.
+      (when (>= i len) (return 0))
+      (when (and (!= (char-at lex i) 112) (!= (char-at lex i) 80)) (return 0))
+      (set! i (+ i 1))
+      (let (esign:i64 1
+            pexp:i64 0
+            edig:i32 0)
+        (when (and (< i len) (= (char-at lex i) 43)) (set! i (+ i 1)))
+        (when (and (< i len) (= (char-at lex i) 45))
+          (do (set! esign -1) (set! i (+ i 1))))
+        (while (and (< i len) (!= (isdigit (char-at lex i)) 0))
+          (set! pexp (+ (* pexp 10) (- (as i64 (char-at lex i)) 48)))
+          ; Clamp rather than overflow: past this every format saturates to
+          ; infinity or zero anyway.
+          (when (> pexp 1000000) (set! pexp 1000000))
+          (set! i (+ i 1))
+          (set! edig 1))
+        (when (= edig 0) (return 0))
+        (when (!= i len) (return 0))
+        (set! pexp (* pexp esign))
+        (aset! out-sign 0 sign)
+        (aset! out-sticky 0 sticky)
+        (when (and (= hi 0) (= lo 0))
+          (do (aset! out-hi 0 0) (aset! out-lo 0 0) (aset! out-exp 0 0)
+              (return 1)))
+        (let (n:i64 0)
+          (while (= (bit-and hi (bit-shl (as i64 1) 63)) 0)
+            (set! hi (bit-or (bit-shl hi 1) (u64-shr lo 63)))
+            (set! lo (bit-shl lo 1))
+            (set! n (+ n 1)))
+          (aset! out-hi 0 hi)
+          (aset! out-lo 0 lo)
+          (aset! out-exp 0 (+ (- (+ (* 4 (- drop frac)) pexp) n) 127))
+          (return 1))))))
+
+; Round the normalized significand to `p` bits, round-to-nearest-ties-to-even,
+; and return its BIASED exponent — all-ones (2*bias+1) for an overflow to
+; infinity, 0 for a zero or a subnormal. out-hi/out-lo receive the p-bit
+; significand with the leading bit included; every format but f80 drops it.
+(defn hexfloat-fit (hi:i64 lo:i64 sticky:i64 ue:i64
+                    p:i64 emin:i64 emax:i64 bias:i64
+                    out-hi:ptr:i64 out-lo:ptr:i64):i64
+  (aset! out-hi 0 0)
+  (aset! out-lo 0 0)
+  (when (and (= hi 0) (= lo 0)) (return 0))
+  (when (> ue emax) (return (+ (* 2 bias) 1)))
+  (let (keep:i64 p
+        sub:i32 0)
+    (when (< ue emin)
+      (do (set! keep (- p (- emin ue))) (set! sub 1)))
+    (when (< keep 0) (return 0))
+    (when (= keep 0)
+      ; The leading bit sits exactly at the guard position: a tie rounds to
+      ; even, which here is zero; anything above it, to the least subnormal.
+      (do (when (or (!= (u128-low-any hi lo 127) 0) (!= sticky 0))
+            (aset! out-lo 0 1))
+          (return 0)))
+    (let (s:i64 (- 128 keep)
+          rhi:i64 0
+          rlo:i64 0
+          guard:i64 (u128-bit hi lo (- s 1))
+          rest:i64 0)
+      (when (or (!= (u128-low-any hi lo (- s 1)) 0) (!= sticky 0)) (set! rest 1))
+      (if (>= s 64)
+        (set! rlo (u64-shr hi (- s 64)))
+        (do (set! rhi (u64-shr hi s))
+            (set! rlo (bit-or (u64-shl hi (- 64 s)) (u64-shr lo s)))))
+      (when (and (!= guard 0) (or (!= rest 0) (!= (bit-and rlo 1) 0)))
+        (do (set! rlo (+ rlo 1))
+            (when (= rlo 0) (set! rhi (+ rhi 1)))))
+      (when (= (u128-bit rhi rlo keep) 0)
+        (do (aset! out-hi 0 rhi) (aset! out-lo 0 rlo)
+            (if (!= sub 0) (return 0) (return (+ ue bias)))))
+      ; The rounding carried into a new leading bit.
+      (when (= sub 0)
+        (do (u128-set-bit (- p 1) out-hi out-lo)
+            (when (> (+ ue 1) emax) (return (+ (* 2 bias) 1)))
+            (return (+ (+ ue 1) bias))))
+      ; A subnormal that carries all the way to 2^emin is the least NORMAL, and
+      ; is the one place the two branches meet.
+      (when (= keep (- p 1))
+        (do (u128-set-bit (- p 1) out-hi out-lo) (return 1)))
+      (u128-set-bit keep out-hi out-lo)
+      (return 0))))
+
+; An f32 (sign, biased exponent, 24-bit significand) as the bit pattern of the
+; DOUBLE it widens to — LLVM spells a `float` constant that way (see
+; f32-const-ir). An f32 subnormal is a normal double, so it renormalizes here.
+(defn f32-parts-as-f64-bits (sign:i64 be:i64 sig:i64):i64
+  (when (= be 255)
+    (return (bit-or (bit-shl sign 63) (bit-shl (as i64 2047) 52))))
+  (when (and (= be 0) (= sig 0)) (return (bit-shl sign 63)))
+  (let (e:i64 (- be 127)
+        m:i64 (bit-and sig 8388607))
+    (when (= be 0)
+      (let (k:i64 22)
+        (while (= (bit-and sig (bit-shl (as i64 1) k)) 0) (set! k (- k 1)))
+        (set! e (- k 149))
+        (set! m (bit-and (bit-shl sig (- 23 k)) 8388607))))
+    (return (bit-or (bit-shl sign 63)
+                    (bit-or (bit-shl (+ e 1023) 52) (bit-shl m 29))))))
+
+; The LLVM constant text for hex-float lexeme `lex` at type kind `tk`, or null
+; when `lex` is not a hex float. Assembling f80 and f128 from the 128-bit
+; significand directly is the whole reason this path exists.
+(defn hexfloat-const-ir (lex:CStr tk:i32):CStr
+  (let (sign:i64 0 hi:i64 0 lo:i64 0 ue:i64 0 sticky:i64 0
+        rhi:i64 0 rlo:i64 0)
+    (when (= (hexfloat-parse lex (as ptr:i64 (addr-of sign))
+                                 (as ptr:i64 (addr-of hi))
+                                 (as ptr:i64 (addr-of lo))
+                                 (as ptr:i64 (addr-of ue))
+                                 (as ptr:i64 (addr-of sticky))) 0)
+      (return null))
+    (let (rhp:ptr:i64 (as ptr:i64 (addr-of rhi))
+          rlp:ptr:i64 (as ptr:i64 (addr-of rlo)))
+      (when (= tk TY-F16)
+        (let (be:i64 (hexfloat-fit hi lo sticky ue 11 -14 15 15 rhp rlp))
+          (return (as CStr (fmt-i64 "0xH%04lX"
+            (bit-or (bit-shl sign 15)
+                    (bit-or (bit-shl be 10) (bit-and rlo 1023))))))))
+      (when (= tk TY-F32)
+        (let (be:i64 (hexfloat-fit hi lo sticky ue 24 -126 127 127 rhp rlp))
+          (return (as CStr (fmt-i64 "0x%016lX"
+            (f32-parts-as-f64-bits sign be rlo))))))
+      (when (= tk TY-F80)
+        (let (be:i64 (hexfloat-fit hi lo sticky ue 64 -16382 16383 16383 rhp rlp))
+          ; x87 carries the leading bit explicitly, and an infinity has it set.
+          (when (= be 32767) (set! rlo (bit-shl (as i64 1) 63)))
+          (return (as CStr (fmt-2s "0xK%s%s"
+            (fmt-i64 "%04lX" (bit-or (bit-shl sign 15) be))
+            (fmt-i64 "%016lX" rlo))))))
+      (when (= tk TY-F128)
+        (let (be:i64 (hexfloat-fit hi lo sticky ue 113 -16382 16383 16383 rhp rlp))
+          (return (as CStr (fmt-2s "0xL%s%s"
+            (fmt-i64 "%016lX" rlo)
+            (fmt-i64 "%016lX" (bit-or (bit-shl sign 63)
+                                      (bit-or (bit-shl be 48)
+                                              (bit-and rhi 281474976710655)))))))))
+      (let (be:i64 (hexfloat-fit hi lo sticky ue 53 -1022 1023 1023 rhp rlp))
+        (return (as CStr (fmt-i64 "0x%016lX"
+          (bit-or (bit-shl sign 63)
+                  (bit-or (bit-shl be 52) (bit-and rlo 4503599627370495))))))))))
+
 (defn type-zero-const-ir (ty:(raw Type)):CStr
   (let (tt:(raw Type) ty
         tk:i32 (tt kind))
     (when (!= (is-ptr-repr ty) 0) (return "null"))
+    ; f32/f64 take the decimal spelling LLVM accepts for them; the three wide
+    ; widths do not have one (FL-2), so they route through their renderers.
     (when (or (= tk TY-F32) (= tk TY-F64)) (return "0.0"))
+    (when (= tk TY-F16)  (return (f16-const-ir 0.0)))
+    (when (= tk TY-F80)  (return (f80-const-ir 0.0)))
+    (when (= tk TY-F128) (return (f128-const-ir 0.0)))
     (when (= tk TY-BOOL) (return "false"))
     (when (or (= tk TY-STRUCT) (= tk TY-UNION) (= tk TY-ARRAY))
       (return "zeroinitializer"))
@@ -408,6 +793,12 @@
       TY-ERR    (return "int32_t")
       TY-F32    (return "float")
       TY-F64    (return "double")
+      ; FL-1: `_Float16`/`_Float128` are the portable C spellings; `long double`
+      ; is deliberately NOT used, because which of f80/f128 it names is
+      ; target-dependent and a generated header must mean one thing.
+      TY-F16    (return "_Float16")
+      TY-F80    (return "long double")
+      TY-F128   (return "_Float128")
       TY-USIZE  (return "size_t")
       TY-SSIZE  (return "ssize_t")
       TY-STRUCT (return (fmt-s "struct %s" ((tt sdef) name)))
@@ -469,6 +860,13 @@
       TY-ERR   (return 4)
       TY-F32   (return 4)
       TY-F64   (return 8)
+      ; FL-1: `half` is 2; `fp128` is 16 everywhere. `x86_fp80` holds 80 bits
+      ; but is PADDED to the ABI's stack slot — 16 bytes under LP64 (x86-64),
+      ; 12 under ILP32 (i386). It exists on no other target, so keying on the
+      ; pointer width is the whole rule.
+      TY-F16   (return 2)
+      TY-F80   (return (if (= g-target-ptr-bytes 4) 12 16))
+      TY-F128  (return 16)
       TY-USIZE (return g-target-ptr-bytes)
       TY-SSIZE (return g-target-ptr-bytes)
       ; A struct value is laid out by LLVM; we use the pointer alignment as a
@@ -512,9 +910,26 @@
 (defn is-float-type (t:raw:Type):i32
   (let (k:i32 (t kind))
     (case k
+      TY-F16 (return 1)
       TY-F32 (return 1)
       TY-F64 (return 1)
+      TY-F80 (return 1)
+      TY-F128 (return 1)
       (return 0))))
+
+; FL-1: significand bits, which is what orders the float widths for a
+; conversion. NOT the storage size — `x86_fp80` is wider than `fp128` in
+; storage on i386 and narrower in precision everywhere, so a width comparison
+; over `type-size` would pick `fptrunc` where `fpext` is meant. Zero for a
+; non-float, so a caller must have asked `is-float-type` first.
+(defn float-rank (t:raw:Type):i32
+  (case (t kind)
+    TY-F16  (return 11)
+    TY-F32  (return 24)
+    TY-F64  (return 53)
+    TY-F80  (return 64)
+    TY-F128 (return 113)
+    (return 0)))
 
 (defn is-bool-type (t:raw:Type):i32
   (when (= (t kind) TY-BOOL) (return 1))
@@ -640,6 +1055,15 @@
 (defn float-literal-fits (d:f64 t:raw:Type):i32
   (let (k:i32 (t kind))
     (when (= k TY-F64) (return 1))
+    ; Stage 16 FL-1: f80 and f128 carry every f64 exactly — the widening is what
+    ; makes FL-2's renderers integer arithmetic — so a literal always fits.
+    (when (or (= k TY-F80) (= k TY-F128)) (return 1))
+    ; f16 is a narrowing with no host type to round-trip through, so the test is
+    ; the renderer's own: a value that survives is one whose f16 bits widen back
+    ; unchanged. Rather than duplicate the rounding, refuse every f16 literal
+    ; here — `as` promises exactness and cannot promise it without the check;
+    ; the implicit path at a typed slot still rounds, exactly as it does for f32.
+    (when (= k TY-F16) (return 0))
     (when (!= k TY-F32) (return 0))
     (when (!= d d) (return 1))
     (if (= (as f64 (unsafe/cast f32 d)) d) (return 1) (return 0))))

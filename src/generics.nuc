@@ -251,59 +251,6 @@
       (conj v (as ref:Generic g))))
     (return v)))
 
-; A function-pointer type IS its signature. Without this, `type-eq`'s default arm
-; answered 1 for every TY-FN pair, so two closures differing only in return type
-; shared one `apply` conformance — see design/stage16-ergonomics/bool-type-plan.md.
-(defn fn-sig-eq (a:raw:Type b:raw:Type):i32
-  (let (aa:raw:Type a
-        bb:raw:Type b)
-    (when (or (!= (aa num-params) (bb num-params))
-              (!= (aa variadic) (bb variadic)))
-      (return 0))
-    (dotimes (i (aa num-params))
-      (when (= (type-eq ((field-at (aa params) i) type)
-                        ((field-at (bb params) i) type)) 0)
-        (return 0)))
-    (return (type-eq (aa ret) (bb ret)))))
-
-; Structural type equality. Primitive types are singletons, so pointer equality
-; handles them; structs are equal iff they share a StructDef; pointers compare
-; their pointee (untyped ptr has elem=null, distinct from typed ptr).
-(defn type-eq (a:raw:Type b:raw:Type):i32
-  (when (= a b) (return 1))
-  (when (or (= a null) (= b null)) (return 0))
-  (let (aa:raw:Type a
-        bb:raw:Type b)
-    ; Stage 13 L7: a bare TY-FN (function pointer, as passed at a call site)
-    ; and a (ref TY-FN) (as written in a generic param list after stamping)
-    ; are compatible under the unify-tpat TY-FN-into-(ref G) rule. Treat them
-    ; as type-eq so defn-ir-name finds the method registered with the bare
-    ; argtype when emit-defn re-parses the stamped (ref __fnty_N) param.
-    (when (and (= (aa kind) TY-FN)
-               (= (bb kind) TY-PTR) (= (bb pkind) PTR-REF))
-      (return (type-eq a (bb elem))))
-    (when (and (= (bb kind) TY-FN)
-               (= (aa kind) TY-PTR) (= (aa pkind) PTR-REF))
-      (return (type-eq (aa elem) b)))
-    (when (!= (aa kind) (bb kind)) (return 0))
-    (case (aa kind)
-      TY-STRUCT (if (= (aa sdef) (bb sdef)) (return 1) (return 0))
-      TY-UNION (if (= (aa sdef) (bb sdef)) (return 1) (return 0))
-      TY-PTR (return (type-eq (aa elem) (bb elem)))
-      ; Stage 15 W8 G-2: same element type AND same length. Reached from the
-      ; constant-aggregate renderer, which checks the element type an
-      ; `(array T …)` literal declares against the one its destination slot
-      ; declares.
-      TY-ARRAY (if (and (= (aa arr-len) (bb arr-len))
-                        (!= (type-eq (aa elem) (bb elem)) 0))
-                 (return 1) (return 0))
-      ; Abstract type variables (A2 check only): equal iff the same variable of
-      ; the same template (sdef = owning Method*, num-params = tyvar index).
-      TY-TYVAR (if (and (= (aa sdef) (bb sdef)) (= (aa num-params) (bb num-params)))
-                 (return 1) (return 0))
-      TY-FN (return (fn-sig-eq a b))
-      (return 1))))
-
 ; MC-1 (design/stage14/macro-conditional-casts.md): join two branch types for a
 ; value-position control-flow merge (cond / match arm / if-some phi). Three
 ; sites shared this logic verbatim (emit-cond, emit-match over unions,
@@ -916,7 +863,9 @@
       (when (!= i 0)
         (set! pos (+ pos (snprintf (unsafe/ptr+ (as ptr:i8 buf) pos)
                                    (- 512 pos) ", "))))
-      (let (ts:ptr (type-spelling (aref (as ptr:ptr argtypes) i)))
+      ; FP-3: a *message*, so type-display — a fn-pointer argument printed as
+      ; the `__fnty_N` registry key named nothing the caller wrote.
+      (let (ts:ptr (type-display (aref (as ptr:ptr argtypes) i)))
         (set! pos (+ pos (snprintf (unsafe/ptr+ (as ptr:i8 buf) pos)
                                    (- 512 pos) "%s" ts)))))
     (return (arena-strndup buf pos))))
@@ -4772,24 +4721,34 @@
       (when (or (!= (tt kind) TY-PTR) (= (tt elem) null)) (return null))
       (return (tt elem)))))
 
+; Stage 16 SV-1 lockstep (design/stage16-ergonomics/c-boundary-defects.md §3):
+; the struct a member access reads through, whether the receiver is a POINTER to
+; one or a struct VALUE. The emitter materializes the value
+; (materialize-struct-value); the type pass has to unwrap it in exactly the same
+; places, or the two disagree about what has fields.
+(defn access-receiver-sdef (t:raw:Type):?ptr:StructDef
+  (when (= t null) (return null))
+  (let (tt:ptr:Type (unsafe/cast ptr:Type t))
+    (when (= (tt kind) TY-STRUCT) (return (as ptr (tt sdef))))
+    (when (and (= (tt kind) TY-PTR)
+               (!= (tt elem) null)
+               (-> tt (_ elem) (unsafe/cast ptr:Type _) (_ kind) (= _ TY-STRUCT)))
+      (return (as ptr (-> tt (_ elem) (unsafe/cast ptr:Type _) (_ sdef)))))
+    (return null)))
+
 (defn node-type-field (n:raw:Node scope:ref:Scope):?ptr:Type
   (let (t:ptr (node-type (node-at n 1) scope))
     (when (= t null) (return null))
-    (let (tt:ptr:Type (as ptr:Type t))
-      (when (or (!= (tt kind) TY-PTR)
-                (= (tt elem) null)
-                (-> tt (_ elem)
-                    (unsafe/cast ptr:Type _)
-                    (_ kind)
-                    (!= _ TY-STRUCT)))
-        (return null))
+    (let (sd:?ptr:StructDef (access-receiver-sdef (as raw:Type t)))
+      (when (= sd null) (return null))
       (let (fn-node:ptr:Node (unsafe/cast ptr:Node (node-at n 2)))
         (when (!= (fn-node kind) NODE-SYM) (return null))
-        (let (sd:ptr:StructDef (unsafe/cast ptr:StructDef (-> tt (_ elem) (unsafe/cast ptr:Type _) (_ sdef)))
-              idx:i32 (struct-field-index (as ptr sd) (fn-node s)))
-          (when (< idx 0) (return null))
+        ; FR-1: the same resolver the emit side uses, so a path that reaches
+        ; through an anonymous member cannot answer differently in the two.
+        (let (fr:?ptr:FieldRef (struct-field-ref (as ptr sd) (fn-node s)))
+          (when (= fr null) (return null))
           ; G-2 lockstep with emit-field-load: an array field decays.
-          (return (array-decay ((field-at (sd fields) idx) type))))))))
+          (return (array-decay (fr type))))))))
 
 ; Result type of `(get callee selector)` for callee type `ct` — mirrors
 ; emit-get-with-callee / emit-get-intrinsic so the type pass cannot drift from
@@ -4804,17 +4763,17 @@
         (aset! (as ptr:ptr argtypes) 1 ty-ptr)
         (let (m:?ptr:Method (generic-find-method-exact g argtypes 2))
           (when (!= m null) (return (m ret-type))))))
-    (when (or (!= (ctt kind) TY-PTR) (= (ctt elem) null)
-              (!= ((ctt elem) kind) TY-STRUCT))
-      (return null))
-    (let (lit:ptr (selector-literal-sym sel-node))
-      (when (= lit null) (return null))
-      (let (sd:raw:StructDef ((ctt elem) sdef)
-            idx:i32 (struct-field-index ((ctt elem) sdef)
-                                        (-> lit (unsafe/cast ptr:Node _) (_ s))))
-        (when (< idx 0) (return null))
-        ; G-2 lockstep with emit-get-intrinsic -> emit-field-load: array decay.
-        (return (array-decay ((field-at (sd fields) idx) type)))))))
+    ; SV-1: same unwrap as node-type-field — a struct VALUE in head position is
+    ; a member access too.
+    (let (sd:?ptr:StructDef (access-receiver-sdef ct))
+      (when (= sd null) (return null))
+      (let (lit:ptr (selector-literal-sym sel-node))
+        (when (= lit null) (return null))
+        (let (fr:?ptr:FieldRef (struct-field-ref (as ptr sd)
+                                 (-> lit (unsafe/cast ptr:Node _) (_ s))))
+          (when (= fr null) (return null))
+          ; G-2 lockstep with emit-get-intrinsic -> emit-field-load: array decay.
+          (return (array-decay (fr type))))))))
 
 ; Result type of `(invoke callee arg…)` for callee type `ct` — the tier-0 `invoke`
 ; method's return, else null (mirrors emit-invoke-with-callee at the exact tier).

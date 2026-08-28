@@ -193,7 +193,15 @@
                   ; `(ref T)` — the address of element 0 — exactly as C does,
                   ; via the one shared rule `array-decay` (src/type-utils.nuc).
                   ; Appended last, same reasoning as TY-CHAR above.
-                  TY-ARRAY)
+                  TY-ARRAY
+                  ; Stage 16 FL-1 (design/stage16-ergonomics/c-boundary-defects.md
+                  ; §6): the remaining C float widths, named for their
+                  ; REPRESENTATION rather than for a C spelling — `long double` is
+                  ; x86_fp80 on x86-64/i386, fp128 on aarch64/riscv64 and plain
+                  ; double elsewhere, so the C name maps per target the way
+                  ; `usize`/`ptr-int-type` already do. Appended last, same
+                  ; reasoning as TY-ARRAY above.
+                  TY-F16 TY-F80 TY-F128)
 
 ; Pointer kinds (Stage 10 nullability, design/stage10/nullability.md). A
 ; compile-time contract carried on TY-PTR types; all three lower to IR `ptr`
@@ -251,6 +259,11 @@
 (defconst DECL-ATTR-VOLATILE 1)
 (defconst DECL-ATTR-CONST 2)
 
+; Stage 16 PK-2: a `defstruct`'s own attributes, which are properties of the
+; TYPE rather than of a declared binding, so they get their own bitset and their
+; own scanner (struct-attr-scan) instead of joining the DECL-ATTR-* set.
+(defconst STRUCT-ATTR-PACKED 1)
+
 ; ============================================================
 ; Struct definitions (ordered by dependency)
 ; ============================================================
@@ -265,7 +278,48 @@
 ; stage-14 Type-pointer idiom and every consumer's `t:raw:Type` parameter).
 (defstruct Field
   name:ptr           ; interned field-name string (identity-compared — stays ptr)
-  (type (raw Type)))  ; field Type*
+  (type (raw Type))  ; field Type*
+  ; Stage 16 PK-3: member `__attribute__((aligned(N)))` / `(:align N x:T)`, 0 =
+  ; none. Raises the offset this field is placed at (and so the struct's own
+  ; alignment); it beats `packed`, which is why abi-field-align consults it
+  ; first. Almost always a no-op in real headers — the `aligned(__alignof__(T))`
+  ; idiom pins an alignment rather than raising one — but when it does raise,
+  ; the gap has to appear as an explicit pad element in the type line.
+  align-attr:i32
+  ; Stage 16 BF-1: C's `int flags:24`. Three values, not two:
+  ;   0  — not a bitfield (every field until one is written)
+  ;   >0 — a bitfield of that many bits, held inside a shared storage run
+  ;   -1 — an unnamed zero-width member, which allocates nothing and forces the
+  ;        next bitfield to the next boundary of its declared type
+  ; `type` stays the DECLARED type: it is what sets the boundary the allocator
+  ; may not cross and what the struct's own alignment is taken from.
+  bit-width:i32
+  bf-signed:i32)
+
+; Stage 16 FR-1 (design/stage16-ergonomics/c-boundary-defects.md §8.1): a
+; RESOLVED field reference. The old contract at the access sites was "one Nucleus
+; field = one LLVM member at the same index", which bitfields break in one
+; direction (several fields share one storage unit) and C11 anonymous members
+; break in the other (one member holds a nested struct whose fields are named
+; from outside, reached by a multi-level GEP). Both are the same broken
+; invariant, so the access sites take a descriptor rather than an `i32`.
+(defstruct FieldRef
+  ; The struct that DECLARES the field — not necessarily the one the access was
+  ; written on, once a path runs through an anonymous member (§9 AN-2).
+  (owner (raw StructDef))
+  index:i32           ; source field index within `owner`
+  (type (raw Type))   ; the field's declared type
+  ; The GEP chain, outermost first: `psd[j]` is the StructDef whose LLVM type is
+  ; indexed at level j, `pidx[j]` the member index within it. Length 1 for every
+  ; ordinary field, which is what makes a one-level path today's GEP verbatim.
+  psd:ptr
+  pidx:ptr
+  depth:i32
+  ; BF-1: where the value sits inside the storage unit the path addresses.
+  ; `bit-width` 0 means "not a bitfield", which is every field until BF-1.
+  bit-offset:i32
+  bit-width:i32
+  bf-signed:i32)
 
 (defstruct StructDef
   ; Stage 15 B3′ (name-resolution.md §8.1 step 1): the CANONICAL registry key —
@@ -329,6 +383,21 @@
   ; every alias registered before it (struct-upgrade-aliases, src/cheader.nuc).
   ; null for every non-alias StructDef.
   (alias-of (raw StructDef))
+  ; --- Stage 16 PK-1 (design/stage16-ergonomics/c-boundary-defects.md §7) ---
+  ; 1 = `__attribute__((packed))` / `(defstruct :packed …)`: every field sits at
+  ; the next byte with no padding and the struct's own alignment is 1. Three
+  ; consequences, and the third is the one that is not a flag: the IR type line
+  ; prints `<{ … }>`, the ABI walks skip `abi-align-up`, and every load/store
+  ; through a field must carry `align 1` or the IR states an alignment the layout
+  ; does not provide.
+  packed:i32
+  ; Stage 16 PK-3: `__attribute__((aligned(N)))` / `(defstruct :align N …)`, 0 =
+  ; none. A DIFFERENT mechanism from `packed`, not a second flag on it: it raises
+  ; the struct's own alignment (never lowers it) and so grows `sizeof` by tail
+  ; padding, while the field offsets are untouched. LLVM does not model it, so
+  ; the growth has to be an explicit `[k x i8]` in the type line and every
+  ; alloca/global of one has to say `align N`.
+  align-attr:i32
   ; --- Stage 10 unions ---
   is-union:i32      ; 1 = untagged union: all fields at offset 0, size = max member
   (udef (raw UnionDef)) ; UnionDef* when this struct is a defunion backing struct, else null
@@ -691,6 +760,11 @@
   ; coercion, so an already-narrowed value is not re-folded.
   is-flit:i32
   lit-f64:f64
+  ; Stage 16 FL-3: the literal's own LEXEME, kept beside the f64 value because
+  ; a hex float carries more precision than the value does — re-rendering an
+  ; f80/f128 slot from `lit-f64` would silently drop it. Null for every other
+  ; Val (arena zero-init), which is what selects the f64 path below.
+  lit-lex:CStr
   ; Stage 15 W9 item 20: 1 when this Val is the literal `null` (set only by
   ; emit-symbol-ref's `null` arm). Same shape and same reason as is-lit/is-flit
   ; above — the coercion chokepoint needs a fact only the emitter knows, and
@@ -715,6 +789,16 @@
 ;   ABI-COERCE1 — ≤8 bytes: one eightbyte, coerced to reg0 (e.g. i64/double).
 ;   ABI-COERCE2 — 9..16 bytes: two eightbytes reg0,reg1; return is {reg0,reg1}.
 (defenum AbiKind ABI-DIRECT ABI-MEMORY ABI-COERCE1 ABI-COERCE2)
+
+; Stage 16 FL-4 (design/stage16-ergonomics/c-boundary-defects.md §6): the two
+; SysV eightbyte classes the wide float types add, numbered ABOVE INTEGER (3)
+; because `abi-class-eightbyte` merges by taking the maximum and both must win
+; against everything they can meet.
+; BF-1 needs the INTEGER class by name: SysV classifies a bit-field as INTEGER
+; whatever its declared type, so a storage run merges as one regardless.
+(defconst ABI-CLS-INTEGER 3)
+(defconst ABI-CLS-X87 4)     ; x86_fp80: poisons the whole aggregate to MEMORY
+(defconst ABI-CLS-SSEUP 5)   ; fp128: one xmm across both eightbytes
 
 (defstruct AbiInfo
   kind:i32     ; AbiKind
