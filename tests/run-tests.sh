@@ -3991,16 +3991,62 @@ run_w9_fnslot_arg() {
     echo "FAIL  w9-fnslot-arg-matches-let"
   fi
 
-  # The diagnostic names the fn type the way every other slot's does — the
-  # interned `__fnty_<id>` spelling, which is type-spelling's identity-bearing
-  # name for a function pointer, not a pretty-printed signature.
+  # Stage 16 FP-3 (design/stage16-ergonomics/c-boundary-defects.md §3): the
+  # diagnostic names the fn type as the user WROTE it. It used to print
+  # type-spelling's `__fnty_<id>` — the conformance-registry key, which has to
+  # stay round-trippable and names nothing in the source. `type-display`
+  # (src/abi.nuc) renders the signature; `type-spelling` is unchanged and is
+  # still what keys are built from.
   printf '%s(defn main ():i32\n  (let (c:CStr "hi") (return (take-fn c))))\n' "$hdr" > "$d/fs-msg.nuc"
   got_arg="$(./build/nucleusc --emit-llvm "$d/fs-msg.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$got_arg" | qgrep -F "take-fn: argument 1 has type CStr, which does not match parameter type __fnty_"; then
+  if printf '%s' "$got_arg" | qgrep -F "take-fn: argument 1 has type CStr, which does not match parameter type (i32):i32"; then
     echo "PASS  w9-fnslot-arg-diagnostic"
   else
     echo "FAIL  w9-fnslot-arg-diagnostic"
     echo "    got: ${got_arg:-<none>}"
+  fi
+
+  # FP-1: a fn-pointer slot now checks the SIGNATURE, not just the kind. Both
+  # halves matter — a matching signature must still pass at every typed slot,
+  # and each shape of mismatch must be refused with both signatures named.
+  printf '%s(defn one-arg (a:i32):i32 (return a))\n(defn wrong-ret (a:i32):i64 (return 1))\n(defn main ():i32\n  (let (ok:(fn i32)(i32) fscb) (return (funcall ok 1))))\n' "$hdr" > "$d/fs-sig-ok.nuc"
+  if ./build/nucleusc --emit-llvm "$d/fs-sig-ok.nuc" >/dev/null 2>&1; then
+    echo "PASS  s16-fp1-fnsig-match-accepted"
+  else
+    echo "FAIL  s16-fp1-fnsig-match-accepted"
+    ./build/nucleusc --emit-llvm "$d/fs-sig-ok.nuc" 2>&1 >/dev/null | sed 's/^/    /'
+  fi
+
+  ok=1
+  # spelling:substring the diagnostic must contain. Arity and return type are
+  # the two mismatches that silently produced wrong values before FP-1
+  # (c-boundary-defects.md §2.3).
+  printf '%s(defn wrong-arity (a:i32 b:i32):i32 (return a))\n(defn main ():i32 (return (take-fn wrong-arity)))\n' "$hdr" > "$d/fs-sig-arity.nuc"
+  got_arg="$(./build/nucleusc --emit-llvm "$d/fs-sig-arity.nuc" 2>&1 >/dev/null || true)"
+  printf '%s' "$got_arg" | qgrep -F "has type (i32, i32):i32, which does not match parameter type (i32):i32" || ok=0
+  printf '%s(defn wrong-ret (a:i32):i64 (return 1))\n(defn main ():i32 (return (take-fn wrong-ret)))\n' "$hdr" > "$d/fs-sig-ret.nuc"
+  got_arg="$(./build/nucleusc --emit-llvm "$d/fs-sig-ret.nuc" 2>&1 >/dev/null || true)"
+  printf '%s' "$got_arg" | qgrep -F "has type (i32):i64, which does not match parameter type (i32):i32" || ok=0
+  # The `let` slot reaches the same rule through coerce-int-val and names both.
+  printf '%s(defn wrong-arity (a:i32 b:i32):i32 (return a))\n(defn main ():i32\n  (let (f:(fn i32)(i32) wrong-arity) (return 0)))\n' "$hdr" > "$d/fs-sig-let.nuc"
+  got_arg="$(./build/nucleusc --emit-llvm "$d/fs-sig-let.nuc" 2>&1 >/dev/null || true)"
+  printf '%s' "$got_arg" | qgrep -F "let: init type mismatch for 'f': value is (i32, i32):i32, slot is (i32):i32" || ok=0
+  # The two deliberate relaxations: pointer KIND is not part of a signature, and
+  # a bare elem-less `ptr` is the fn-pointer analogue of `void *`. Without these
+  # the ubiquitous `qsort` comparator shape would stop compiling.
+  printf '(declare qs ((cmp (fn i32) (ptr ptr))) :void)\n(defn c1 (a:ptr:i32 b:(ref i32)):i32 (return 0))\n(defn main ():i32 (qs c1) (return 0))\n' > "$d/fs-sig-void.nuc"
+  ./build/nucleusc --emit-llvm "$d/fs-sig-void.nuc" >/dev/null 2>&1 || ok=0
+  # …but a bare ptr is NOT a wildcard for a function pointer: that would
+  # reinstate the data-pointer-into-callable conversion `unsafe/cast` owns.
+  printf '(declare qs2 ((cmp (fn i32) ((fn i32)(i32)))) :void)\n(defn c2 (f:ptr):i32 (return 0))\n(defn main ():i32 (qs2 c2) (return 0))\n' > "$d/fs-sig-fnwild.nuc"
+  if ./build/nucleusc --emit-llvm "$d/fs-sig-fnwild.nuc" >/dev/null 2>&1; then ok=0; fi
+  # …and two different pointee types stay a refusal.
+  printf '(defstruct N a:i32)\n(declare qs3 ((cmp (fn i32) (ptr:N))) :void)\n(defn c3 (p:ptr:i32):i32 (return 0))\n(defn main ():i32 (qs3 c3) (return 0))\n' > "$d/fs-sig-elem.nuc"
+  if ./build/nucleusc --emit-llvm "$d/fs-sig-elem.nuc" >/dev/null 2>&1; then ok=0; fi
+  if [ "$ok" = 1 ]; then
+    echo "PASS  s16-fp1-fnsig-mismatch-refused"
+  else
+    echo "FAIL  s16-fp1-fnsig-mismatch-refused"
   fi
 
   # The other half of the widened guard: two types that lower to the same IR
@@ -4014,6 +4060,382 @@ run_w9_fnslot_arg() {
   else
     echo "FAIL  w9-fnslot-arg-samewidth-sign-checked"
     echo "    got: ${got_arg:-<none>}"
+  fi
+  rm -rf "$d"
+}
+
+# Stage 16 FP-2 (design/stage16-ergonomics/c-boundary-defects.md §2.4): an
+# indirect call goes through the same argument path as a direct one. It used to
+# stop at the arity check — no coercion, no diagnostic, no vararg promotion and
+# no struct ABI, so a by-value struct argument was handed to the callee as a raw
+# aggregate the callee never reads. Asserted on the IR, because the wrong code
+# links and can even return the right answer for small structs by luck.
+run_s16_fp2_indirect_call() {
+  local d ir got ok=1
+  d="$(mktemp -d)"
+  cat > "$d/fp2.nuc" <<'FP2EOF'
+(declare printf (fmt:CStr):i32)
+(defstruct Pt x:i64 y:i64)
+(defstruct Big a:i64 b:i64 c:i64)
+(defn sum-pt (p:Pt):i64
+  (let (q:ptr:Pt (addr-of p)) (return (+ (q x) (q y)))))
+(defn make-big (n:i64):Big (return (Big n (+ n 1) (+ n 2))))
+(defn addl (a:i64):i64 (return (+ a 1)))
+(defn main ():i32
+  (let (f:(fn i64)(Pt) sum-pt
+        g:(fn Big)(i64) make-big
+        h:(fn i64)(i64) addl)
+    (printf "%lld\n" (funcall f (Pt 3 4)))
+    (let (b:Big (funcall g 10)
+          bp:ptr:Big (addr-of b))
+      (printf "%lld\n" (bp c)))
+    (printf "%lld\n" (funcall h 5))
+    (return 0)))
+FP2EOF
+  ir="$(./build/nucleusc --emit-llvm "$d/fp2.nuc" 2>/dev/null || true)"
+  # Pt is a two-eightbyte INTEGER struct, so SysV passes it in two registers;
+  # Big is over the limit and returns through sret. Both at an indirect site.
+  printf '%s' "$ir" | qgrep -E '= call i64 %t[0-9]+\(i64 %t[0-9]+, i64 %t[0-9]+\)' || ok=0
+  printf '%s' "$ir" | qgrep -E 'call void %t[0-9]+\(ptr sret\(%Big\) align 8 ' || ok=0
+  # The i32 literal widens to the i64 parameter, as it does on the direct path.
+  printf '%s' "$ir" | qgrep -E '= call i64 %t[0-9]+\(i64 %t[0-9]+\)$' || ok=0
+  if [ "$ok" = 1 ]; then echo "PASS  s16-fp2-indirect-call-abi"; else
+    echo "FAIL  s16-fp2-indirect-call-abi"
+    printf '%s' "$ir" | grep -E 'call .*%t[0-9]+\(' | sed 's/^/    /'
+  fi
+  w1_run s16-fp2-indirect-call-runs "$d" "$d/fp2.nuc" 0
+
+  # A variadic fn pointer keeps its `(ptr, ...)` call signature and promotes
+  # f32 to double — the promotion is the caller's job and there was nobody
+  # doing it here before.
+  cat > "$d/va.nuc" <<'VAEOF'
+(import-use "stdio.h")
+(defn main ():i32
+  (let (p printf
+        fv:f32 1.5)
+    (funcall p "%s %d %.1f\n" "x" 7 fv)
+    (return 0)))
+VAEOF
+  ir="$(./build/nucleusc --emit-llvm "$d/va.nuc" 2>/dev/null || true)"
+  if printf '%s' "$ir" | qgrep -E 'call i32 \(ptr, \.\.\.\) %t[0-9]+\(.*double %t[0-9]+\)'; then
+    echo "PASS  s16-fp2-indirect-vararg-promoted"
+  else
+    echo "FAIL  s16-fp2-indirect-vararg-promoted"
+    printf '%s' "$ir" | grep -E 'call .*%t[0-9]+\(' | sed 's/^/    /'
+  fi
+
+  # And the argument check itself now reaches indirect calls.
+  cat > "$d/bad.nuc" <<'BADEOF'
+(defn addl (a:i64):i64 (return (+ a 1)))
+(defn main ():i32
+  (let (h:(fn i64)(i64) addl
+        c:CStr "hi")
+    (return (as i32 (funcall h c)))))
+BADEOF
+  got="$(./build/nucleusc --emit-llvm "$d/bad.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$got" | qgrep -F "call: argument 1 has type CStr, which does not match parameter type i64"; then
+    echo "PASS  s16-fp2-indirect-arg-diagnostic"
+  else
+    echo "FAIL  s16-fp2-indirect-arg-diagnostic"
+    echo "    got: ${got:-<none>}"
+  fi
+  rm -rf "$d"
+}
+
+# Stage 16 FP-4 (design/stage16-ergonomics/c-boundary-defects.md §2.1): the C
+# importer builds a real TY-FN for each of C's four function-pointer declarator
+# positions. Every one used to become `ptr`, so `qsort`/`atexit` refused a
+# Nucleus function, a struct with such a member came out opaque, and the
+# `signal` shape was skipped outright. Paired with FP-1, which is what turns the
+# recovered type into a checked one.
+run_s16_fp4_cheader_fnptr() {
+  local d ir got ok=1
+  d="$(mktemp -d)"
+
+  # The headline case, against the real system header: the two most canonical
+  # callbacks in C, called with a Nucleus function and no cast.
+  cat > "$d/q.nuc" <<'QEOF'
+(import-use "stdlib.h")
+(defn cmpi (a:ptr b:ptr):i32 (return 0))
+(defn bye ():void (return))
+(defn main ():i32
+  (let (arr:ptr (malloc 40))
+    (qsort arr 10 4 cmpi)
+    (atexit bye)
+    (return 0)))
+QEOF
+  got="$(./build/nucleusc --emit-llvm "$d/q.nuc" 2>&1 >/dev/null || true)"
+  if [ -z "$got" ]; then
+    echo "PASS  s16-fp4-qsort-atexit"
+  else
+    echo "FAIL  s16-fp4-qsort-atexit"
+    printf '%s\n' "$got" | sed 's/^/    /' | head -3
+  fi
+
+  # All four declarator positions, plus a nested one and `(void)`.
+  cat > "$d/t.nuc" <<'TEOF'
+(import-use "tests/fixtures/s16-fnptr.h")
+(declare printf (fmt:CStr):i32)
+(defn cmpv (a:ptr b:ptr):i32 (return 0))
+(defn ten (a:i32):i32 (return (* a 10)))
+(defn main ():i32
+  (let (h:ptr:S16Hold (S16Hold ten 5)
+        c:s16_cmp cmpv)
+    (printf "member=%d field=%d\n" (funcall (h cb) 4) (h n))
+    (.set! h cb ten)
+    (funcall c null null)
+    (return 0)))
+TEOF
+  ir="$(./build/nucleusc --emit-llvm "$d/t.nuc" 2>/dev/null || true)"
+  # The member's NAME was dropped before FP-4, which abandoned the struct.
+  printf '%s' "$ir" | qgrep -F '%S16Hold = type { ptr, i32 }' || ok=0
+  # `void (*s16_signal(int, void (*)(int)))(int)` and `int (*s16_get(void))(int,int)`
+  # were skipped entirely; both now register.
+  printf '%s' "$ir" | qgrep -F 'declare ptr @s16_signal(i32, ptr)' || ok=0
+  printf '%s' "$ir" | qgrep -F 'declare ptr @s16_get()' || ok=0
+  printf '%s' "$ir" | qgrep -F 'declare i32 @s16_nest(ptr)' || ok=0
+  if [ "$ok" = 1 ]; then echo "PASS  s16-fp4-declarator-positions"; else
+    echo "FAIL  s16-fp4-declarator-positions"
+    printf '%s' "$ir" | grep -E '@s16_|%S16Hold' | sed 's/^/    /' | head -6
+  fi
+  w1_run s16-fp4-callbacks-run "$d" "$d/t.nuc" 0
+
+  # The recovered type is a CHECKED type — the point of doing this after FP-1.
+  # Each of the four positions refuses a wrong signature by name.
+  ok=1
+  cat > "$d/bad1.nuc" <<'B1EOF'
+(import-use "tests/fixtures/s16-fnptr.h")
+(defn one (a:i32):i32 (return a))
+(defn main ():i32 (s16_apply_inline one 1 2) (return 0))
+B1EOF
+  got="$(./build/nucleusc --emit-llvm "$d/bad1.nuc" 2>&1 >/dev/null || true)"
+  printf '%s' "$got" | qgrep -F "s16_apply_inline: argument 1 has type (i32):i32, which does not match parameter type (i32, i32):i32" || ok=0
+  cat > "$d/bad2.nuc" <<'B2EOF'
+(import-use "tests/fixtures/s16-fnptr.h")
+(defn one (a:i32):i32 (return a))
+(defn main ():i32
+  (let (h:ptr:S16Hold (S16Hold one 5))
+    (return (funcall (h cb) 1 2))))
+B2EOF
+  got="$(./build/nucleusc --emit-llvm "$d/bad2.nuc" 2>&1 >/dev/null || true)"
+  printf '%s' "$got" | qgrep -F "expected 1 args, got 2" || ok=0
+  cat > "$d/bad3.nuc" <<'B3EOF'
+(import-use "tests/fixtures/s16-fnptr.h")
+(defn one (a:i32):i32 (return a))
+(defn main ():i32 (let (c:s16_cmp one) (return 0)))
+B3EOF
+  got="$(./build/nucleusc --emit-llvm "$d/bad3.nuc" 2>&1 >/dev/null || true)"
+  printf '%s' "$got" | qgrep -F "let: init type mismatch for 'c'" || ok=0
+  if [ "$ok" = 1 ]; then echo "PASS  s16-fp4-recovered-type-is-checked"; else
+    echo "FAIL  s16-fp4-recovered-type-is-checked"
+  fi
+  rm -rf "$d"
+}
+
+# Stage 16 FP-5 (design/stage16-ergonomics/c-boundary-defects.md §2.2): the
+# export side used to render every function-pointer type as `void*` — which is
+# not merely unchecked but not standard C, since ISO C defines no conversion
+# between a function pointer and `void *`, so a conforming compiler may diagnose
+# every call site. Asserted against a real C consumer built with -Werror, not
+# just against the text.
+run_s16_fp5_cheader_fnptr() {
+  local d ok=1
+  d="$(mktemp -d)"
+  cat > "$d/lib.nuc" <<'LEOF'
+(defstruct Hold (cb (fn i32) (i32 i32)) n:i32)
+(defstruct Arr (xs (array i32 4)) k:i32)
+(defn addem (a:i32 b:i32):i32 (return (+ a b)))
+(defn use2 (f:(fn i32)(i32 i32)):i32 (return (funcall f 1 2)))
+(defn getf ():(fn i32)(i32 i32) (return addem))
+(defn holdsum (h:ptr:Hold):i32 (return (funcall (h cb) (h n) (h n))))
+LEOF
+  ./build/nucleusc --emit-cheader "$d/lib.nuc" > "$d/lib.h" 2>"$d/h.err" || true
+  qgrep -F -x '    int32_t (*cb)(int32_t, int32_t);' "$d/lib.h" || ok=0
+  qgrep -F -x 'int32_t use2(int32_t (*f)(int32_t, int32_t));' "$d/lib.h" || ok=0
+  # A function RETURNING a function pointer wraps its own declarator.
+  qgrep -F -x 'int32_t (*getf(void))(int32_t, int32_t);' "$d/lib.h" || ok=0
+  # The array declarator still comes out of the same renderer unchanged.
+  qgrep -F -x '    int32_t xs[4];' "$d/lib.h" || ok=0
+  if [ "$ok" = 1 ]; then echo "PASS  s16-fp5-cheader-declarators"; else
+    echo "FAIL  s16-fp5-cheader-declarators"
+    sed 's/^/    /' "$d/lib.h" | head -20
+    sed 's/^/    err: /' "$d/h.err" | head -3
+  fi
+
+  if ! command -v cc >/dev/null 2>&1; then
+    echo "PASS  s16-fp5-c-consumer (SKIP: no cc)"
+  else
+    ./build/nucleusc -c "$d/lib.nuc" -o "$d/lib.o" 2>"$d/o.err" || true
+    cat > "$d/main.c" <<'CEOF'
+#include <stdio.h>
+#include "lib.h"
+static int times(int a, int b) { return a * b; }
+int main(void) {
+  Hold h = { times, 6 };
+  printf("use2=%d getf=%d hold=%d\n", use2(times), getf()(3, 4), holdsum(&h));
+  return 0;
+}
+CEOF
+    if cc -std=c11 -Wall -Wextra -Werror -I"$d" "$d/main.c" "$d/lib.o" -o "$d/cmain" 2>"$d/c.err" \
+       && [ "$("$d/cmain")" = "use2=2 getf=7 hold=36" ]; then
+      echo "PASS  s16-fp5-c-consumer"
+    else
+      echo "FAIL  s16-fp5-c-consumer"
+      sed 's/^/    /' "$d/c.err" | head -6
+      sed 's/^/    /' "$d/o.err" | head -3
+    fi
+  fi
+  rm -rf "$d"
+}
+
+# Stage 16 SV-1 (design/stage16-ergonomics/c-boundary-defects.md §2.5): a struct
+# VALUE is a member-access receiver. `(. v x)` on a by-value parameter, a call
+# result or a struct local all used to be `_get: operand must be pointer to
+# struct or union` — not a C-specific gap, but it is what made every by-value C
+# API (libclang's cursors, every struct-returning libc call) need an alloca and
+# a ptr-set! first.
+run_s16_sv1_struct_value_receiver() {
+  local d got ok=1
+  d="$(mktemp -d)"
+  cat > "$d/sv.nuc" <<'SVEOF'
+(declare printf (fmt:CStr):i32)
+(defstruct Pt x:i64 y:i64)
+(defn mk (n:i64):Pt (return (Pt n (* n 2))))
+; All three read spellings against a by-value PARAMETER.
+(defn sum (p:Pt):i64 (return (+ (. p x) (+ (p y) (_get p x)))))
+; And straight off a call result, with no binding at all.
+(defn direct ():i64 (return (. (mk 5) y)))
+(defn main ():i32
+  (let (v:Pt (mk 3))
+    (printf "%lld %lld %lld %lld\n" (sum v) (direct) (. v x) (v y))
+    ; `.set!` on a by-value local mutates the local copy, as in C.
+    (.set! v x 40)
+    (printf "%lld %d\n" (. v x) (if (= (.& v y) null) 0 1))
+    (return 0)))
+SVEOF
+  ./build/nucleusc "$d/sv.nuc" -o "$d/sv.bin" 2>"$d/sv.err" || true
+  if [ -x "$d/sv.bin" ] && [ "$("$d/sv.bin")" = "12 10 3 6
+40 1" ]; then
+    echo "PASS  s16-sv1-struct-value-receiver"
+  else
+    echo "FAIL  s16-sv1-struct-value-receiver"
+    sed 's/^/    /' "$d/sv.err" | head -4
+    [ -x "$d/sv.bin" ] && "$d/sv.bin" | sed 's/^/    got: /'
+  fi
+
+  # The other half: `.set!`/`.&` need the receiver's STORAGE, so a temporary
+  # stays an error rather than a store into something about to be discarded.
+  # This is also what keeps a pointer into that copy from being returned.
+  cat > "$d/t1.nuc" <<'T1EOF'
+(defstruct Pt x:i64 y:i64)
+(defn mk (n:i64):Pt (return (Pt n n)))
+(defn main ():i32 (.set! (mk 1) x 5) (return 0))
+T1EOF
+  got="$(./build/nucleusc --emit-llvm "$d/t1.nuc" 2>&1 >/dev/null || true)"
+  printf '%s' "$got" | qgrep -F ".set!: the receiver is a temporary struct value, so it has no address" || ok=0
+  cat > "$d/t2.nuc" <<'T2EOF'
+(defstruct Pt x:i64 y:i64)
+(defn mk (n:i64):Pt (return (Pt n n)))
+(defn leak ():ptr:i64 (return (.& (mk 1) x)))
+(defn main ():i32 (return 0))
+T2EOF
+  got="$(./build/nucleusc --emit-llvm "$d/t2.nuc" 2>&1 >/dev/null || true)"
+  printf '%s' "$got" | qgrep -F ".&: the receiver is a temporary struct value" || ok=0
+  # A non-struct receiver is still refused, and the message now names both
+  # legal receivers.
+  cat > "$d/t3.nuc" <<'T3EOF'
+(defstruct Pt x:i64 y:i64)
+(defn main ():i32 (let (k:i64 5) (return (as i32 (. k x)))))
+T3EOF
+  got="$(./build/nucleusc --emit-llvm "$d/t3.nuc" 2>&1 >/dev/null || true)"
+  printf '%s' "$got" | qgrep -F "_get: operand must be a struct or union, or a pointer to one" || ok=0
+  # A missing field on a VALUE receiver reports the field, not the receiver —
+  # which is only possible if the type pass unwrapped it in lockstep.
+  cat > "$d/t4.nuc" <<'T4EOF'
+(defstruct Pt x:i64 y:i64)
+(defn f (p:Pt):i64 (return (. p zzz)))
+(defn main ():i32 (return 0))
+T4EOF
+  got="$(./build/nucleusc --emit-llvm "$d/t4.nuc" 2>&1 >/dev/null || true)"
+  printf '%s' "$got" | qgrep -F "_get: no field 'zzz' on struct 'Pt'" || ok=0
+  if [ "$ok" = 1 ]; then echo "PASS  s16-sv1-lvalue-and-refusals"; else
+    echo "FAIL  s16-sv1-lvalue-and-refusals"
+  fi
+  rm -rf "$d"
+}
+
+# Stage 16 C1/C2 (design/stage16-ergonomics/cheader-parser-vs-libclang.md §3).
+# C1: a bare `unsigned`/`signed` used to make the DECLARATOR name the base type,
+# so `unsigned a;` abandoned its struct and `unsigned f(void);` was dropped —
+# zero occurrences in glibc, which is why the census missed it, and pervasive in
+# third-party headers (libclang's own `clang-c/Index.h` among them). C2: a
+# declaration the parser declines is recorded with a reason, so the use site
+# says more than "not defined anywhere".
+run_s16_c1_bare_unsigned() {
+  local d ok=1 got
+  d="$(mktemp -d)"
+
+  if ! command -v cc >/dev/null 2>&1; then
+    echo "PASS  s16-c1-bare-unsigned (SKIP: no cc to build the oracle against)"
+  else
+    cat > "$d/o.c" <<'OEOF'
+#include <stdio.h>
+#include "s16-unsigned.h"
+int main(void){
+  printf("%zu %zu %zu %zu %zu %zu %zu %zu\n",
+    sizeof(struct S16U01), sizeof(struct S16U02), sizeof(struct S16U03),
+    sizeof(struct S16U04), sizeof(struct S16U05), sizeof(struct S16U06),
+    sizeof(struct S16U07), sizeof(struct S16U08));
+  return 0;
+}
+OEOF
+    if ! cc -I tests/fixtures "$d/o.c" -o "$d/o.bin" 2>"$d/o.err"; then
+      echo "PASS  s16-c1-bare-unsigned (SKIP: the C oracle does not build)"
+    else
+      cat > "$d/n.nuc" <<'NEOF'
+(import-use "tests/fixtures/s16-unsigned.h")
+(declare printf (fmt:CStr):i32)
+(defn main ():i32
+  (printf "%ld %ld %ld %ld %ld %ld %ld %ld\n"
+    (as i64 (sizeof S16U01)) (as i64 (sizeof S16U02)) (as i64 (sizeof S16U03))
+    (as i64 (sizeof S16U04)) (as i64 (sizeof S16U05)) (as i64 (sizeof S16U06))
+    (as i64 (sizeof S16U07)) (as i64 (sizeof S16U08)))
+  (return 0))
+NEOF
+      ./build/nucleusc "$d/n.nuc" -o "$d/n.bin" 2>"$d/n.err" || true
+      if [ -x "$d/n.bin" ] && [ "$("$d/n.bin")" = "$("$d/o.bin")" ]; then
+        echo "PASS  s16-c1-bare-unsigned"
+      else
+        echo "FAIL  s16-c1-bare-unsigned (Nucleus disagrees with cc on size)"
+        echo "    cc:      $("$d/o.bin")"
+        [ -x "$d/n.bin" ] && echo "    nucleus: $("$d/n.bin")"
+        sed 's/^/    /' "$d/n.err" | head -3
+      fi
+    fi
+  fi
+
+  # Signedness, not just size: an out-of-range literal is refused for the
+  # unsigned field and accepted for the signed one.
+  printf '(import-use "tests/fixtures/s16-unsigned.h")\n(defn main ():i32\n  (let (p:ptr:S16U01 (alloca S16U01)) (.set! p a -1) (return 0)))\n' > "$d/neg.nuc"
+  got="$(./build/nucleusc --emit-llvm "$d/neg.nuc" 2>&1 >/dev/null || true)"
+  printf '%s' "$got" | qgrep -F 'integer literal -1 does not fit ui32' || ok=0
+  printf '(import-use "tests/fixtures/s16-unsigned.h")\n(defn main ():i32\n  (let (p:ptr:S16U02 (alloca S16U02)) (.set! p a -1) (return 0)))\n' > "$d/pos.nuc"
+  ./build/nucleusc --emit-llvm "$d/pos.nuc" >/dev/null 2>&1 || ok=0
+  # The two bare-specifier FUNCTIONS register at all.
+  printf '(import-use "tests/fixtures/s16-unsigned.h")\n(defn main ():i32 (s16u_f) (s16u_g 1 2) (return 0))\n' > "$d/fn.nuc"
+  ./build/nucleusc --emit-llvm "$d/fn.nuc" 2>/dev/null | qgrep -F 'declare i32 @s16u_f()' || ok=0
+  if [ "$ok" = 1 ]; then echo "PASS  s16-c1-signedness-and-functions"; else
+    echo "FAIL  s16-c1-signedness-and-functions"
+  fi
+
+  # C2: the use site names the header, the line and a reason.
+  printf '(import-use "tests/fixtures/s16-unsigned.h")\n(defn main ():i32 (return (s16u_odd 1)))\n' > "$d/c2.nuc"
+  got="$(./build/nucleusc --emit-llvm "$d/c2.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$got" | qgrep -E "unknown: 's16u_odd' — its C header declaration was skipped \(.*s16-unsigned\.h:[0-9]+: a declaration shape the C header parser does not recognize\)"; then
+    echo "PASS  s16-c2-skip-reason-recorded"
+  else
+    echo "FAIL  s16-c2-skip-reason-recorded"
+    echo "    got: ${got:-<none>}"
   fi
   rm -rf "$d"
 }
@@ -5766,6 +6188,1071 @@ spawn run_w9_unsigned_index
 spawn run_w9_arg_coerce
 spawn run_w9_dyn_solitary
 spawn run_w9_fnslot_arg
+spawn run_s16_fp2_indirect_call
+spawn run_s16_fp4_cheader_fnptr
+spawn run_s16_fp5_cheader_fnptr
+spawn run_s16_sv1_struct_value_receiver
+spawn run_s16_c1_bare_unsigned
+
+# Stage 16 §6 (design/stage16-ergonomics/c-boundary-defects.md): the three float
+# widths C has and Nucleus did not — f16/f80/f128 — plus FL-3's hex literals.
+# clang is the oracle throughout, because "the value is right" is not the claim:
+# the claim is that the emitted CONSTANT and the emitted SIGNATURE are the ones
+# the platform C compiler emits, bit for bit.
+run_s16_fl_float_widths() {
+  local d
+  d="$(mktemp -d)"
+
+  if ! command -v clang >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+    echo "PASS  s16-fl-constants-vs-clang (SKIP: needs clang and python3)"
+    echo "PASS  s16-fl-aggregate-abi (SKIP: needs clang)"
+    echo "PASS  s16-fl-vararg-unpromoted (SKIP: needs clang)"
+  else
+    # 1. Every literal at every width, against clang's own constant. Decimal is
+    #    asserted only at f16/f32/f64: a decimal literal folds through the host
+    #    f64, so at f80/f128 it is deliberately LESS precise than C's answer
+    #    (§10 limit 1, staged as design/future/decimal-float-literals.md). Hex
+    #    is asserted at all five, which is exactly what FL-3 buys.
+    python3 - "$d" <<'PYEOF'
+import sys
+d = sys.argv[1]
+hexl = ["0x1p0", "0x1.8p+3", "-0x1.8p-3", "0x0p0", "-0x0p0",
+        "0x1.921fb54442d18469898cc51701b8p+1", "0xabcdefp-20", "-0x1.fp-5",
+        "0x1.0000000000001p0", "0x1.00000000000008p0", "0x1.00000000000018p0",
+        "0x123456789abcdef0123456789abcdefp0", "0X1.8P1", "0x1p16",
+        "0x1p+1024", "0x1p-16445"]
+dec = ["1.0", "2.5", "0.5", "3.14", "-0.0", "1e3", "100.0", "0.125"]
+kinds = [("f16", "_Float16", "f16"), ("f32", "float", "f"), ("f64", "double", ""),
+         ("f80", "long double", "L"), ("f128", "__float128", "q")]
+nuc, c = [], []
+def row(tag, lit):
+    for nk, ct, suf in kinds:
+        if tag == "d" and nk in ("f80", "f128"):
+            continue
+        nm = f"v{len(nuc)}_{nk}"
+        nuc.append(f"(defvar {nm}:{nk} {lit})")
+        c.append(f"__attribute__((used)) static {ct} {nm} = {lit}{suf};")
+for l in hexl: row("h", l)
+for l in dec:  row("d", l)
+nuc.append("(defn main ():i32 (return 0))")
+open(f"{d}/lit.nuc", "w").write("\n".join(nuc) + "\n")
+open(f"{d}/lit.c", "w").write("\n".join(c) + "\n")
+PYEOF
+    ./build/nucleusc --emit-llvm "$d/lit.nuc" 2>"$d/lit.err" | grep -E '^@v' > "$d/lit.nuc.raw" || true
+    clang -S -emit-llvm -O0 -w -o - "$d/lit.c" 2>/dev/null | grep -E '^@v' > "$d/lit.c.raw" || true
+    if ! [ -s "$d/lit.c.raw" ]; then
+      echo "PASS  s16-fl-constants-vs-clang (SKIP: this clang has no _Float16/__float128)"
+    else
+      python3 - "$d" > "$d/lit.cmp" <<'PYEOF'
+import re, struct, sys
+d = sys.argv[1]
+def load(p):
+    out = {}
+    for line in open(p):
+        m = re.match(r'^@(\w+) = (?:dso_local )?(?:internal )?global (\S+) ([^,]+)', line)
+        if not m: continue
+        name, ty, val = m.group(1), m.group(2), m.group(3).strip()
+        # LLVM prints a float/double constant as a decimal when it round-trips
+        # and as the f64 bit pattern otherwise; normalize to the bit pattern.
+        if not val.startswith(("0xH", "0xK", "0xL")):
+            val = "0x%016X" % struct.unpack("<Q", struct.pack("<d", float.fromhex(val) if val.startswith("0x") and "p" in val.lower() else (struct.unpack("<d", struct.pack("<Q", int(val, 16)))[0] if val.startswith("0x") else float(val))))[0]
+        out[name] = (ty, val)
+    return out
+a, b = load(f"{d}/lit.nuc.raw"), load(f"{d}/lit.c.raw")
+bad = 0
+for k in sorted(b):
+    if k not in a:
+        print(f"    {k}: missing from nucleus"); bad += 1
+    elif a[k] != b[k]:
+        print(f"    {k}: nucleus {a[k]}  clang {b[k]}"); bad += 1
+print(f"ROWS {len(b)} BAD {bad}")
+PYEOF
+      if grep -q " BAD 0$" "$d/lit.cmp" && ! grep -q "^ROWS 0 " "$d/lit.cmp"; then
+        echo "PASS  s16-fl-constants-vs-clang ($(sed -n 's/^ROWS \([0-9]*\).*/\1/p' "$d/lit.cmp") constants)"
+      else
+        echo "FAIL  s16-fl-constants-vs-clang"
+        sed 's/^/    /' "$d/lit.err" | head -3
+        head -20 "$d/lit.cmp"
+      fi
+    fi
+
+    # 2. FL-4: the aggregate ABI, which is where the three widths differ from
+    #    each other rather than from f64. X87 poisons its aggregate to MEMORY;
+    #    a 16-byte fp128 stays ONE eightbyte-pair in xmm (forcing MEMORY there
+    #    would be an ABI mismatch, so the conservative answer is the wrong one);
+    #    an f16 beside an i32 max-merges into a single INTEGER eightbyte.
+    cat > "$d/agg.c" <<'EOF'
+struct S1 { long double x; };
+struct S2 { __float128 x; };
+struct S3 { _Float16 x; int y; };
+long double f0(long double a){return a;}
+_Float16 f4(_Float16 a){return a;}
+__float128 f5(__float128 a){return a;}
+struct S1 f1(struct S1 s){return s;}
+struct S2 f2(struct S2 s){return s;}
+struct S3 f3(struct S3 s){return s;}
+EOF
+    cat > "$d/agg.nuc" <<'EOF'
+(defstruct S1 x:f80)
+(defstruct S2 x:f128)
+(defstruct S3 x:f16 y:i32)
+(defn f0 (a:f80):f80 (return a))
+(defn f4 (a:f16):f16 (return a))
+(defn f5 (a:f128):f128 (return a))
+(defn f1 (s:S1):S1 (return s))
+(defn f2 (s:S2):S2 (return s))
+(defn f3 (s:S3):S3 (return s))
+(defn main ():i32 (return 0))
+EOF
+    clang -S -emit-llvm -O0 -w -o - "$d/agg.c" 2>/dev/null |
+      sed -nE 's/^define dso_local (.*) @(f[0-9])\((.*)\) #.*/\2 \1 \3/p' |
+      sed -E 's/ noundef//g; s/%struct\.//g' | sort > "$d/agg.c.sig"
+    ./build/nucleusc --emit-llvm "$d/agg.nuc" 2>"$d/agg.err" |
+      sed -nE 's/^define (.*) @(f[0-9])\((.*)\) section.*/\2 \1 \3/p' |
+      sed -E 's/%[A-Za-z0-9_.]+\.arg//g; s/%[0-9]+//g; s/%//g; s/ +$//' | sort > "$d/agg.nuc.sig"
+    sed -E 's/%[0-9]+//g; s/ +$//' "$d/agg.c.sig" > "$d/agg.c.sig2"
+    if [ -s "$d/agg.c.sig2" ] && diff -q "$d/agg.nuc.sig" "$d/agg.c.sig2" >/dev/null; then
+      echo "PASS  s16-fl-aggregate-abi"
+    elif ! [ -s "$d/agg.c.sig2" ]; then
+      echo "PASS  s16-fl-aggregate-abi (SKIP: this clang has no __float128)"
+    else
+      echo "FAIL  s16-fl-aggregate-abi"
+      diff "$d/agg.nuc.sig" "$d/agg.c.sig2" | sed 's/^/    /' | head -20
+      sed 's/^/    /' "$d/agg.err" | head -3
+    fi
+
+    # 3. FL-5: `...` promotes f32 to double and leaves the other four alone —
+    #    measured from clang, and the tempting generalization ("promote any
+    #    float narrower than f64") would break `half` in exactly this line.
+    printf 'int flp(const char *fmt, ...);\n' > "$d/va.h"
+    cat > "$d/va.nuc" <<EOF
+(import-use "$d/va.h")
+(defn g (h:f16 f:f32 ld:f80 q:f128 dd:f64):void (flp "" h f ld q dd))
+(defn main ():i32 (return 0))
+EOF
+    ./build/nucleusc --emit-llvm "$d/va.nuc" 2>"$d/va.err" > "$d/va.ll" || true
+    if qgrep -E 'call i32 \(ptr, \.\.\.\) @flp\(ptr [^,]*, half [^,]*, double [^,]*, x86_fp80 [^,]*, fp128 [^,]*, double ' "$d/va.ll"; then
+      echo "PASS  s16-fl-vararg-unpromoted"
+    else
+      echo "FAIL  s16-fl-vararg-unpromoted"
+      grep 'call i32' "$d/va.ll" | sed 's/^/    /' | head -3
+      sed 's/^/    /' "$d/va.err" | head -3
+    fi
+  fi
+
+  # 4. FL-6 and §10 limit 3: a width the emission target has no format for is a
+  #    located error, not IR no backend can select. C's own `long double` stays
+  #    portable — only the representation spelling `f80` is target-bound.
+  # Every check here writes to a file first: the compiler EXITS NON-ZERO on the
+  # rejections, and under this script's `set -o pipefail` a pipeline into grep
+  # would report the compiler's status, not the match.
+  local ok=1 t n
+  printf '(defn f (x:f80):f80 (return x))\n(defn main ():i32 (return 0))\n' > "$d/w.nuc"
+  for t in aarch64-unknown-linux-gnu riscv64-unknown-linux-gnu; do
+    ./build/nucleusc --target="$t" --emit-llvm "$d/w.nuc" >/dev/null 2>"$d/w.err" || true
+    qgrep -F 'f80 is the x87 80-bit format and exists only on x86' "$d/w.err" || ok=0
+  done
+  for n in f16 f80 f128; do
+    printf '(defn f (x:%s):%s (return x))\n(defn main ():i32 (return 0))\n' "$n" "$n" > "$d/a.nuc"
+    ./build/nucleusc --target=avr-unknown-unknown-elf --emit-llvm "$d/a.nuc" >/dev/null 2>"$d/a.err" || true
+    qgrep -F "$n is not supported on AVR" "$d/a.err" || ok=0
+  done
+  ./build/nucleusc --emit-llvm "$d/w.nuc" >/dev/null 2>&1 || ok=0
+  # FL-7: `long double` is whatever the target's C compiler makes it.
+  printf 'long double ldf(long double x);\n' > "$d/ld.h"
+  printf '(import-use "%s/ld.h")\n(defn main ():i32 (return 0))\n' "$d" > "$d/ld.nuc"
+  ld_decl() {  # <triple> <expected declare line>
+    ./build/nucleusc --target="$1" --emit-llvm "$d/ld.nuc" > "$d/ld.ll" 2>/dev/null || true
+    qgrep -F "$2" "$d/ld.ll" || ok=0
+  }
+  ld_decl aarch64-unknown-linux-gnu 'declare fp128 @ldf(fp128)'
+  ld_decl riscv64-unknown-linux-gnu 'declare fp128 @ldf(fp128)'
+  ld_decl x86_64-unknown-linux-gnu  'declare x86_fp80 @ldf(x86_fp80)'
+  # MSVC keeps it a plain double even on x86_64, which is why the check for it
+  # has to precede the architecture check.
+  ld_decl x86_64-pc-windows-msvc    'declare double @ldf(double)'
+  if [ "$ok" = 1 ]; then echo "PASS  s16-fl-target-availability"; else
+    echo "FAIL  s16-fl-target-availability"
+  fi
+
+  # 5. FL-3 at run time, and the two shapes that are NOT hex floats: C requires
+  #    the binary exponent, so `0x1F` is an integer and `0x1.8` is neither.
+  ok=1
+  cat > "$d/hx.nuc" <<'EOF'
+(import-use "stdio.h")
+(defn id80 (x:f80):f80 (return x))
+(defn main ():i32
+  (let (a:i64 0xDEADBEEF b:i32 0x7F c:ui64 0xFFFFFFFFFFFFFFFF d:i64 -0x10
+        e:f64 0x1.8p+3)
+    (printf "%ld %d %lu %ld %.4f\n" a b c d e)
+    (printf "%.21Lg\n" (id80 0x1.921fb54442d18469p+1)))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/hx.nuc" -o "$d/hx.bin" 2>"$d/hx.err" || true
+  if [ -x "$d/hx.bin" ] &&
+     [ "$("$d/hx.bin")" = "$(printf '3735928559 127 18446744073709551615 -16 12.0000\n3.1415926535897932383')" ]; then
+    echo "PASS  s16-fl3-hex-literals"
+  else
+    echo "FAIL  s16-fl3-hex-literals"
+    sed 's/^/    /' "$d/hx.err" | head -3
+    [ -x "$d/hx.bin" ] && "$d/hx.bin" | sed 's/^/    got: /'
+  fi
+  printf '(defn main ():i32 (let (x:f64 0x1.8) (return 0)))\n' > "$d/noexp.nuc"
+  ./build/nucleusc --emit-llvm "$d/noexp.nuc" >/dev/null 2>"$d/noexp.err" || true
+  qgrep -F "undefined: 0x1.8" "$d/noexp.err" || ok=0
+  if [ "$ok" = 1 ]; then echo "PASS  s16-fl3-exponent-required"; else
+    echo "FAIL  s16-fl3-exponent-required"
+  fi
+  rm -rf "$d"
+}
+spawn run_s16_fl_float_widths
+
+# Stage 16 §7 (design/stage16-ergonomics/c-boundary-defects.md): packed structs.
+# The gate is deliberately three-part, because a `sizeof`/offset diff cannot see
+# two of the three consequences: the IR type line has to say `<{ … }>`, and every
+# access through a packed field has to say `align 1` or the IR states an
+# alignment the layout does not provide — a real miscompile on a
+# strict-alignment target and under vectorization on x86.
+run_s16_pk_packed() {
+  local d ok=1 t nt ct
+  d="$(mktemp -d)"
+
+  cat > "$d/xt.nuc" <<'EOF'
+(defstruct :packed A c:i8 i:i32 s:i16)
+(defstruct B c:i8 i:i32 s:i16)
+(defstruct :packed C c:i8 l:i64)
+(defstruct D a:i16 (b (array i32 3)) c:i8)
+(defstruct :packed E a:i16 (b (array i32 3)) c:i8)
+(defstruct F c:i8 inner:A i:i32)
+(defvar sA:i64 (sizeof A))
+(defvar sB:i64 (sizeof B))
+(defvar sC:i64 (sizeof C))
+(defvar sD:i64 (sizeof D))
+(defvar sE:i64 (sizeof E))
+(defvar sF:i64 (sizeof F))
+EOF
+  cat > "$d/xt.c" <<'EOF'
+#include <stdint.h>
+struct __attribute__((packed)) A { int8_t c; int32_t i; int16_t s; };
+struct B { int8_t c; int32_t i; int16_t s; };
+struct __attribute__((packed)) C { int8_t c; int64_t l; };
+struct D { int16_t a; int32_t b[3]; int8_t c; };
+struct __attribute__((packed)) E { int16_t a; int32_t b[3]; int8_t c; };
+struct F { int8_t c; struct A inner; int32_t i; };
+EOF
+
+  # 1. THE CROSS-TARGET ORACLE (§11). `clang --target=<t> -ffreestanding
+  #    -fsyntax-only` over generated `_Static_assert`s is a complete compile-time
+  #    sizeof/offsetof oracle on every target clang supports — no execution, no
+  #    sysroot, no linking. It earns its place immediately: it caught AVR's
+  #    BIGGEST_ALIGNMENT being 8 bits (every type byte-aligned, so `struct B` is
+  #    7 bytes there and not 12), which had been wrong since before packing
+  #    existed and which run-layout-test.sh, being host-only, cannot see.
+  if ! command -v clang >/dev/null 2>&1; then
+    echo "PASS  s16-pk-layout-cross-target (SKIP: no clang)"
+  else
+    for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu \
+             riscv64-unknown-linux-gnu i386-unknown-linux-gnu avr; do
+      nt="$t"; [ "$t" = avr ] && nt=avr-unknown-unknown-elf
+      ./build/nucleusc --target="$nt" --emit-llvm "$d/xt.nuc" > "$d/xt.ll" 2>/dev/null || true
+      { cat "$d/xt.c"
+        sed -nE 's/^@s([A-F]) = global i64 ([0-9]+).*/_Static_assert(sizeof(struct \1)==\2,"\1");/p' "$d/xt.ll"
+      } > "$d/chk-$t.c"
+      # An empty assertion list would pass vacuously; six shapes, six asserts.
+      [ "$(grep -c _Static_assert "$d/chk-$t.c")" = 6 ] || ok=0
+      clang --target="$t" -ffreestanding -fsyntax-only "$d/chk-$t.c" 2>"$d/chk-$t.err" || ok=0
+      grep -q 'error' "$d/chk-$t.err" && ok=0
+    done
+    if [ "$ok" = 1 ]; then echo "PASS  s16-pk-layout-cross-target (6 shapes x 5 targets)"; else
+      echo "FAIL  s16-pk-layout-cross-target"
+      grep -h 'error' "$d"/chk-*.err | sed 's/^/    /' | head -10
+    fi
+  fi
+
+  # 2. The two consequences a layout diff is blind to: the type line and the
+  #    access alignment. Asserted on the IR, not on a printed size.
+  ok=1
+  cat > "$d/ir.nuc" <<'EOF'
+(defstruct :packed P c:i8 i:i32)
+(defstruct Q c:i8 i:i32)
+(defn rd (p:ptr:P):i32 (return (. p i)))
+(defn wr (p:ptr:P):void (.set! p i 7))
+(defn lit ():ptr:P (return (P 1 2)))
+(defn rdq (q:ptr:Q):i32 (return (. q i)))
+EOF
+  ./build/nucleusc --emit-llvm "$d/ir.nuc" > "$d/ir.ll" 2>"$d/ir.err" || true
+  qgrep -F '%P = type <{ i8, i32 }>' "$d/ir.ll" || ok=0
+  qgrep -F '%Q = type { i8, i32 }' "$d/ir.ll" || ok=0
+  # Every load/store through a P field says align 1; Q's says align 4.
+  [ "$(grep -cE '(load|store) i32[, ].*align 1$' "$d/ir.ll")" -ge 3 ] || ok=0
+  qgrep -E 'load i32, ptr %[a-z0-9]+, align 4' "$d/ir.ll" || ok=0
+  # ...and nothing through a P field claims more than it has.
+  ! qgrep -E 'store i32 2, ptr %[a-z0-9]+$' "$d/ir.ll" || ok=0
+  if [ "$ok" = 1 ]; then echo "PASS  s16-pk-access-align"; else
+    echo "FAIL  s16-pk-access-align"
+    sed 's/^/    /' "$d/ir.err" | head -3
+    grep -E '= type|align' "$d/ir.ll" | sed 's/^/    /' | head -12
+  fi
+
+  # 3. The values actually round-trip, against the identical C program.
+  ok=1
+  cat > "$d/run.nuc" <<'EOF'
+(import-use "stdio.h")
+(defstruct :packed R c:i8 i:i32 s:i16)
+(defn main ():i32
+  (let (p:ptr:R (alloca R))
+    (.set! p c 1) (.set! p i 305419896) (.set! p s -3)
+    (printf "%ld %d %d %d\n" (sizeof R)
+      (as i32 (. p c)) (. p i) (as i32 (. p s))))
+  (let (r:ptr:R (R 7 8 9))
+    (printf "%d %d %d\n" (as i32 (. r c)) (. r i) (as i32 (. r s))))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/run.nuc" -o "$d/run.bin" 2>"$d/run.err" || true
+  if [ -x "$d/run.bin" ] &&
+     [ "$("$d/run.bin")" = "$(printf '7 1 305419896 -3\n7 8 9')" ]; then
+    echo "PASS  s16-pk-values"
+  else
+    echo "FAIL  s16-pk-values"
+    sed 's/^/    /' "$d/run.err" | head -3
+    [ -x "$d/run.bin" ] && "$d/run.bin" | sed 's/^/    got: /'
+  fi
+
+  # 4. PK-2, import side: the two positions C honours, the one it ignores (both
+  #    clang and gcc warn `-Wignored-attributes` there, so honouring it would
+  #    disagree with every C compiler on the platform), and the alias path — an
+  #    alias shares the field table, which is NOT the same as sharing the layout.
+  ok=1
+  cat > "$d/h.h" <<'EOF'
+struct __attribute__((packed)) PK1 { char c; int i; short s; };
+struct PK2 { char c; int i; short s; } __attribute__((packed));
+typedef struct { char c; int i; } __attribute__((packed)) PK3;
+typedef struct { char c; int i; } PK4;
+typedef struct { char c; int i; } PK5 __attribute__((packed));
+struct __attribute__((__packed__)) PK7 { char c; long l; };
+EOF
+  cat > "$d/h.nuc" <<EOF
+(import-use "stdio.h")
+(import-use "$d/h.h")
+(defn main ():i32
+  (printf "%ld %ld %ld %ld %ld %ld\n" (sizeof PK1) (sizeof PK2) (sizeof PK3)
+    (sizeof PK4) (sizeof PK5) (sizeof PK7))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/h.nuc" -o "$d/h.bin" 2>"$d/h.err" || true
+  if command -v cc >/dev/null 2>&1; then
+    cat > "$d/h.c" <<EOF
+#include <stdio.h>
+#include "$d/h.h"
+int main(void){ printf("%zu %zu %zu %zu %zu %zu\n", sizeof(struct PK1),
+  sizeof(struct PK2), sizeof(PK3), sizeof(PK4), sizeof(PK5), sizeof(struct PK7));
+  return 0; }
+EOF
+    cc -w "$d/h.c" -o "$d/h.cbin" 2>/dev/null || ok=0
+    [ -x "$d/h.bin" ] && [ -x "$d/h.cbin" ] &&
+      [ "$("$d/h.bin")" = "$("$d/h.cbin")" ] || ok=0
+    if [ "$ok" = 1 ]; then echo "PASS  s16-pk-import-positions"; else
+      echo "FAIL  s16-pk-import-positions"
+      sed 's/^/    /' "$d/h.err" | head -3
+      [ -x "$d/h.cbin" ] && echo "    cc:      $("$d/h.cbin")"
+      [ -x "$d/h.bin" ] && echo "    nucleus: $("$d/h.bin")"
+    fi
+  else
+    echo "PASS  s16-pk-import-positions (SKIP: no cc to build the oracle against)"
+  fi
+
+  # 5. PK-2, export side: `--emit-cheader` writes the attribute back out, a C
+  #    consumer's own `_Static_assert` agrees, and re-importing the generated
+  #    header reproduces the size.
+  ok=1
+  cat > "$d/x.nuc" <<'EOF'
+(defstruct :packed WireHdr tag:i8 len:i32 flags:i16)
+(defstruct PlainHdr tag:i8 len:i32 flags:i16)
+(defn wire-len (h:ptr:WireHdr):i32 (return (. h len)))
+EOF
+  ./build/nucleusc --emit-cheader "$d/x.nuc" > "$d/x.h" 2>"$d/x.err" || ok=0
+  qgrep -F '} __attribute__((packed)) WireHdr;' "$d/x.h" || ok=0
+  qgrep -F '} PlainHdr;' "$d/x.h" || ok=0
+  if command -v clang >/dev/null 2>&1; then
+    cat > "$d/x-c.c" <<EOF
+#include "$d/x.h"
+_Static_assert(sizeof(WireHdr)==7,"packed");
+_Static_assert(sizeof(PlainHdr)==12,"plain");
+EOF
+    clang -std=gnu11 -Wall -Wextra -Werror -c "$d/x-c.c" -o /dev/null 2>"$d/x-c.err" || ok=0
+  fi
+  printf '(import-use "%s/x.h")\n(import-use "stdio.h")\n(defn main ():i32 (printf "%%ld %%ld\\n" (sizeof WireHdr) (sizeof PlainHdr)) (return 0))\n' "$d" > "$d/rt.nuc"
+  ./build/nucleusc "$d/rt.nuc" -o "$d/rt.bin" 2>"$d/rt.err" || ok=0
+  [ -x "$d/rt.bin" ] && [ "$("$d/rt.bin")" = "7 12" ] || ok=0
+  if [ "$ok" = 1 ]; then echo "PASS  s16-pk-cheader-roundtrip"; else
+    echo "FAIL  s16-pk-cheader-roundtrip"
+    sed 's/^/    /' "$d/x.err" "$d/x-c.err" "$d/rt.err" 2>/dev/null | head -6
+    grep -E 'Hdr' "$d/x.h" | sed 's/^/    /' | head -6
+  fi
+
+  # 6. `epoll_event` — cheader-parser-vs-libclang.md §2 measured this as the one
+  #    `sizeof` mismatch in its 103-type census, and the one row it conceded to
+  #    libclang outright.
+  ok=1
+  if command -v cc >/dev/null 2>&1; then
+    printf '(import-use "sys/epoll.h")\n(import-use "stdio.h")\n(defn main ():i32 (printf "%%ld\\n" (sizeof epoll_event)) (return 0))\n' > "$d/ep.nuc"
+    printf '#include <stdio.h>\n#include <sys/epoll.h>\nint main(void){printf("%%zu\\n",sizeof(struct epoll_event));return 0;}\n' > "$d/ep.c"
+    ./build/nucleusc "$d/ep.nuc" -o "$d/ep.bin" 2>"$d/ep.err" || ok=0
+    cc -w "$d/ep.c" -o "$d/ep.cbin" 2>/dev/null || ok=0
+    if [ "$ok" = 1 ] && [ "$("$d/ep.bin")" = "$("$d/ep.cbin")" ]; then
+      echo "PASS  s16-pk-epoll-event ($("$d/ep.bin") bytes, matching cc)"
+    else
+      echo "FAIL  s16-pk-epoll-event"
+      sed 's/^/    /' "$d/ep.err" | head -3
+      [ -x "$d/ep.bin" ] && echo "    nucleus: $("$d/ep.bin")"
+      [ -x "$d/ep.cbin" ] && echo "    cc:      $("$d/ep.cbin")"
+    fi
+  else
+    echo "PASS  s16-pk-epoll-event (SKIP: no cc)"
+  fi
+
+  # 7. An unknown attribute is refused rather than silently ignored.
+  printf '(defstruct :squished S x:i32)\n(defn main ():i32 (return 0))\n' > "$d/bad.nuc"
+  ./build/nucleusc --emit-llvm "$d/bad.nuc" >/dev/null 2>"$d/bad.err" || true
+  if qgrep -F "unknown defstruct attribute ':squished'" "$d/bad.err"; then
+    echo "PASS  s16-pk-unknown-attribute-refused"
+  else
+    echo "FAIL  s16-pk-unknown-attribute-refused"
+    sed 's/^/    /' "$d/bad.err" | head -3
+  fi
+  rm -rf "$d"
+}
+spawn run_s16_pk_packed
+
+# --- Stage 16 PK-3: `__attribute__((aligned(N)))` -----------------------------
+# design/stage16-ergonomics/c-boundary-defects.md §7 PK-3. A DIFFERENT mechanism
+# from packing: it raises a struct's or a member's alignment (never lowers it),
+# which grows `sizeof` and moves offsets while LLVM's own type models neither —
+# so the growth has to be explicit `[k x i8]` elements, and every GEP index past
+# one of them shifts. Surface: `(defstruct :align 16 …)` and `(:align 16 x:T)`.
+run_s16_pk3_aligned() {
+  local d ok=1 t nt
+  d="$(mktemp -d)"
+
+  cat > "$d/at.nuc" <<'EOF'
+(defstruct :align 16 A x:i32)
+(defstruct B c:i8 (:align 16 i:i32))
+(defstruct :packed :align 4 C c:i8 i:i32)
+(defstruct :packed D c:i8 (:align 4 i:i32))
+(defstruct :align 2 E x:i32)
+(defstruct F inner:A c:i8)
+(defvar sA:i64 (sizeof A))
+(defvar sB:i64 (sizeof B))
+(defvar sC:i64 (sizeof C))
+(defvar sD:i64 (sizeof D))
+(defvar sE:i64 (sizeof E))
+(defvar sF:i64 (sizeof F))
+EOF
+  cat > "$d/at.c" <<'EOF'
+#include <stdint.h>
+struct A { int32_t x; } __attribute__((aligned(16)));
+struct B { int8_t c; int32_t i __attribute__((aligned(16))); };
+struct __attribute__((packed,aligned(4))) C { int8_t c; int32_t i; };
+struct __attribute__((packed)) D { int8_t c; int32_t i __attribute__((aligned(4))); };
+struct E { int32_t x; } __attribute__((aligned(2)));
+struct F { struct A inner; int8_t c; };
+EOF
+
+  # 1. The same cross-target oracle PK-1 introduced. `aligned` is where it earns
+  #    its keep twice over: `aligned(2)` on an `int` struct is IGNORED (alignment
+  #    only ever rises), and the packed+aligned pair means the two mechanisms
+  #    have to compose rather than override.
+  if ! command -v clang >/dev/null 2>&1; then
+    echo "PASS  s16-pk3-align-cross-target (SKIP: no clang)"
+  else
+    for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu \
+             riscv64-unknown-linux-gnu i386-unknown-linux-gnu avr; do
+      nt="$t"; [ "$t" = avr ] && nt=avr-unknown-unknown-elf
+      ./build/nucleusc --target="$nt" --emit-llvm "$d/at.nuc" > "$d/at.ll" 2>/dev/null || true
+      { cat "$d/at.c"
+        sed -nE 's/^@s([A-F]) = global i64 ([0-9]+).*/_Static_assert(sizeof(struct \1)==\2,"\1");/p' "$d/at.ll"
+      } > "$d/ck-$t.c"
+      [ "$(grep -c _Static_assert "$d/ck-$t.c")" = 6 ] || ok=0
+      clang --target="$t" -ffreestanding -fsyntax-only "$d/ck-$t.c" 2>"$d/ck-$t.err" || ok=0
+      grep -q 'error' "$d/ck-$t.err" && ok=0
+    done
+    if [ "$ok" = 1 ]; then echo "PASS  s16-pk3-align-cross-target (6 shapes x 5 targets)"; else
+      echo "FAIL  s16-pk3-align-cross-target"
+      grep -h 'error' "$d"/ck-*.err | sed 's/^/    /' | head -10
+    fi
+  fi
+
+  # 2. What a size diff is blind to: the pad elements in the type line, the
+  #    `align N` an alloca must state (LLVM derives its own from the element
+  #    list, which knows nothing about the attribute), and the GEP index of
+  #    every field sitting after a pad.
+  ok=1
+  cat > "$d/ir.nuc" <<'EOF'
+(import-use "stdio.h")
+(defstruct :align 16 A x:i32)
+(defstruct B c:i8 (:align 16 i:i32))
+(defn read-i (p:ptr:B):i32 (return (. p i)))
+(defn main ():i32
+  (let (a:ptr:A (alloca A) b:ptr:B (B 1 7))
+    (.set! a x 5)
+    (printf "%d %d\n" (. a x) (read-i b)))
+  (return 0))
+EOF
+  ./build/nucleusc --emit-llvm "$d/ir.nuc" > "$d/ir.ll" 2>"$d/ir.err" || ok=0
+  # Tail pad on the over-aligned struct; inter-field pad on the over-aligned
+  # member; the alloca states the alignment LLVM cannot infer; and `i` is
+  # element 2, not element 1.
+  qgrep -E '^%A = type \{ i32, \[12 x i8\] \}' "$d/ir.ll" || ok=0
+  qgrep -E '^%B = type \{ i8, \[[0-9]+ x i8\], i32, \[[0-9]+ x i8\] \}' "$d/ir.ll" || ok=0
+  qgrep -E 'alloca %A, align 16' "$d/ir.ll" || ok=0
+  qgrep -E 'getelementptr inbounds %B, ptr %[A-Za-z0-9._]+, i32 0, i32 2' "$d/ir.ll" || ok=0
+  qgrep -E 'getelementptr inbounds %B, ptr %[A-Za-z0-9._]+, i32 0, i32 1' "$d/ir.ll" && ok=0
+  if [ "$ok" = 1 ]; then echo "PASS  s16-pk3-type-line-and-slots"; else
+    echo "FAIL  s16-pk3-type-line-and-slots"
+    sed 's/^/    /' "$d/ir.err" | head -3
+    grep -E '^%[AB] = type|alloca %A|getelementptr inbounds %B' "$d/ir.ll" | sed 's/^/    /' | head -8
+  fi
+
+  # 3. The values round-trip, and the member really is where C puts it — the
+  #    offset is read back rather than assumed.
+  ok=1
+  cat > "$d/run.nuc" <<'EOF'
+(import-use "stdio.h")
+(defstruct B c:i8 (:align 16 i:i32))
+(defn main ():i32
+  (let (p:ptr:B (B 1 305419896))
+    (printf "%ld %ld %d %d\n" (sizeof B)
+      (- (unsafe/cast i64 (.& p i)) (unsafe/cast i64 p))
+      (as i32 (. p c)) (. p i)))
+  (return 0))
+EOF
+  cat > "$d/run.c" <<'EOF'
+#include <stdio.h>
+#include <stddef.h>
+struct B { char c; int i __attribute__((aligned(16))); };
+int main(void){ struct B b = {1, 305419896};
+  printf("%zu %zu %d %d\n", sizeof(struct B), offsetof(struct B,i), b.c, b.i);
+  return 0; }
+EOF
+  ./build/nucleusc "$d/run.nuc" -o "$d/run.bin" 2>"$d/run.err" || ok=0
+  if command -v cc >/dev/null 2>&1; then
+    cc -w "$d/run.c" -o "$d/run.cbin" 2>/dev/null || ok=0
+    [ -x "$d/run.bin" ] && [ -x "$d/run.cbin" ] &&
+      [ "$("$d/run.bin")" = "$("$d/run.cbin")" ] || ok=0
+    if [ "$ok" = 1 ]; then echo "PASS  s16-pk3-values"; else
+      echo "FAIL  s16-pk3-values"
+      sed 's/^/    /' "$d/run.err" | head -3
+      [ -x "$d/run.cbin" ] && echo "    cc:      $("$d/run.cbin")"
+      [ -x "$d/run.bin" ] && echo "    nucleus: $("$d/run.bin")"
+    fi
+  else
+    echo "PASS  s16-pk3-values (SKIP: no cc)"
+  fi
+
+  # 4. Import side: every position C honours, plus the `__alignof__(T)` argument
+  #    form — the idiom that PINS a member's alignment rather than raising it,
+  #    and the one that matters, since it is what `max_align_t` is made of.
+  ok=1
+  cat > "$d/h.h" <<'EOF'
+struct __attribute__((aligned(16))) AL1 { int x; };
+struct AL2 { int x; } __attribute__((aligned(16)));
+typedef struct { int x; } __attribute__((aligned(32))) AL3;
+struct AL4 { char c; int i __attribute__((aligned(16))); };
+struct AL5 { char c; long l __attribute__((__aligned__(__alignof__(long)))); };
+struct __attribute__((packed, aligned(4))) AL6 { char c; int i; };
+EOF
+  cat > "$d/h.nuc" <<EOF
+(import-use "stdio.h")
+(import-use "$d/h.h")
+(defn main ():i32
+  (printf "%ld %ld %ld %ld %ld %ld\n" (sizeof AL1) (sizeof AL2) (sizeof AL3)
+    (sizeof AL4) (sizeof AL5) (sizeof AL6))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/h.nuc" -o "$d/h.bin" 2>"$d/h.err" || ok=0
+  if command -v cc >/dev/null 2>&1; then
+    cat > "$d/h.c" <<EOF
+#include <stdio.h>
+#include "$d/h.h"
+int main(void){ printf("%zu %zu %zu %zu %zu %zu\n", sizeof(struct AL1),
+  sizeof(struct AL2), sizeof(AL3), sizeof(struct AL4), sizeof(struct AL5),
+  sizeof(struct AL6)); return 0; }
+EOF
+    cc -w "$d/h.c" -o "$d/h.cbin" 2>/dev/null || ok=0
+    [ -x "$d/h.bin" ] && [ -x "$d/h.cbin" ] &&
+      [ "$("$d/h.bin")" = "$("$d/h.cbin")" ] || ok=0
+    if [ "$ok" = 1 ]; then echo "PASS  s16-pk3-import-positions"; else
+      echo "FAIL  s16-pk3-import-positions"
+      sed 's/^/    /' "$d/h.err" | head -3
+      [ -x "$d/h.cbin" ] && echo "    cc:      $("$d/h.cbin")"
+      [ -x "$d/h.bin" ] && echo "    nucleus: $("$d/h.bin")"
+    fi
+  else
+    echo "PASS  s16-pk3-import-positions (SKIP: no cc)"
+  fi
+
+  # 5. `max_align_t` — cheader-parser-vs-libclang.md §1 listed it among the nine
+  #    blocked types, misattributed to `long double`; the actual blocker is the
+  #    member `__attribute__((__aligned__(…)))` in clang's own definition.
+  ok=1
+  if command -v cc >/dev/null 2>&1; then
+    printf '(import-use "stddef.h")\n(import-use "stdio.h")\n(defn main ():i32 (printf "%%ld\\n" (sizeof max_align_t)) (return 0))\n' > "$d/ma.nuc"
+    printf '#include <stdio.h>\n#include <stddef.h>\nint main(void){printf("%%zu\\n",sizeof(max_align_t));return 0;}\n' > "$d/ma.c"
+    ./build/nucleusc "$d/ma.nuc" -o "$d/ma.bin" 2>"$d/ma.err" || ok=0
+    cc -w "$d/ma.c" -o "$d/ma.cbin" 2>/dev/null || ok=0
+    if [ "$ok" = 1 ] && [ "$("$d/ma.bin")" = "$("$d/ma.cbin")" ]; then
+      echo "PASS  s16-pk3-max-align-t ($("$d/ma.bin") bytes, matching cc)"
+    else
+      echo "FAIL  s16-pk3-max-align-t"
+      sed 's/^/    /' "$d/ma.err" | head -3
+      [ -x "$d/ma.bin" ] && echo "    nucleus: $("$d/ma.bin")"
+      [ -x "$d/ma.cbin" ] && echo "    cc:      $("$d/ma.cbin")"
+    fi
+  else
+    echo "PASS  s16-pk3-max-align-t (SKIP: no cc)"
+  fi
+
+  # 6. Export side: both attributes are written back out, at the struct and at
+  #    the member, and a C consumer agrees on the sizes they produce.
+  ok=1
+  cat > "$d/x.nuc" <<'EOF'
+(defstruct :align 32 Cache x:i64)
+(defstruct Slot c:i8 (:align 16 v:i32))
+(defn slot-v (s:ptr:Slot):i32 (return (. s v)))
+EOF
+  ./build/nucleusc --emit-cheader "$d/x.nuc" > "$d/x.h" 2>"$d/x.err" || ok=0
+  qgrep -F '} __attribute__((aligned(32))) Cache;' "$d/x.h" || ok=0
+  qgrep -F '__attribute__((aligned(16)))' "$d/x.h" || ok=0
+  if command -v clang >/dev/null 2>&1; then
+    cat > "$d/x-c.c" <<EOF
+#include "$d/x.h"
+_Static_assert(sizeof(Cache)==32,"cache");
+_Static_assert(sizeof(Slot)==32,"slot");
+EOF
+    clang -std=gnu11 -Wall -Wextra -Werror -c "$d/x-c.c" -o /dev/null 2>"$d/x-c.err" || ok=0
+  fi
+  if [ "$ok" = 1 ]; then echo "PASS  s16-pk3-cheader-roundtrip"; else
+    echo "FAIL  s16-pk3-cheader-roundtrip"
+    sed 's/^/    /' "$d/x.err" "$d/x-c.err" 2>/dev/null | head -6
+    grep -E 'Cache|Slot|aligned' "$d/x.h" | sed 's/^/    /' | head -6
+  fi
+
+  # 7. A non-power-of-two alignment is refused rather than reaching LLVM as an
+  #    unparseable `align 3`, and an `aligned(N)` whose N we cannot evaluate
+  #    leaves the C type opaque WITH a reason instead of a guessed layout.
+  ok=1
+  printf '(defstruct :align 3 S x:i32)\n(defn main ():i32 (return 0))\n' > "$d/bad.nuc"
+  ./build/nucleusc --emit-llvm "$d/bad.nuc" >/dev/null 2>"$d/bad.err" || true
+  qgrep -F "':align 3' must be a power of two" "$d/bad.err" || ok=0
+  printf 'struct __attribute__((aligned(NOPE))) UA { int x; };\n' > "$d/ua.h"
+  cat > "$d/ua.nuc" <<EOF
+(import-use "$d/ua.h")
+(defn main ():i32 (return (as i32 (sizeof UA))))
+EOF
+  ./build/nucleusc --emit-llvm "$d/ua.nuc" >/dev/null 2>"$d/ua.err" || true
+  qgrep -F "is an opaque type declared at" "$d/ua.err" || ok=0
+  if [ "$ok" = 1 ]; then echo "PASS  s16-pk3-bad-align-refused"; else
+    echo "FAIL  s16-pk3-bad-align-refused"
+    sed 's/^/    /' "$d/bad.err" "$d/ua.err" 2>/dev/null | head -6
+  fi
+  rm -rf "$d"
+}
+spawn run_s16_pk3_aligned
+
+# --- Stage 16 §8: bitfields (BF-1…BF-4) ---------------------------------------
+# design/stage16-ergonomics/c-boundary-defects.md §8. `(:bits 24 flags2:i32)` on
+# the declaring side, `: 24` on the importing side. Several Nucleus fields share
+# one storage unit, which is the invariant FR-1 had to break first — so every
+# assertion here is really about `struct-walk` being the one place the layout is
+# decided, and about the shift/mask access agreeing with what C compiled.
+run_s16_bf_bitfields() {
+  local d ok=1 t nt
+  d="$(mktemp -d)"
+
+  cat > "$d/bt.nuc" <<'EOF'
+(defstruct A (:bits 3 a:i32) (:bits 5 b:ui32) (:bits 24 c:i32) d:i32)
+(defstruct B c:i8 (:bits 3 a:i32))
+(defstruct C (:bits 1 x:ui32) (:bits 0 z:ui32) (:bits 1 y:ui32))
+(defstruct D (:bits 31 a:ui32) (:bits 2 b:ui32))
+(defstruct E c:i8 (:bits 40 l:i64))
+(defstruct :packed F c:i8 (:bits 3 a:i32) (:bits 30 b:i32))
+(defstruct G (:bits 9 s:i16) c:i8 (:bits 20 i:i32))
+(defstruct H (:bits 3 a:ui32) (:bits 3 b:ui32))
+(defstruct I (:bits 31 a:ui32) (:bits 2 b:ui32) (:bits 31 c:ui32))
+(defstruct J c:i8 (:bits 0 z:ui32) d:i8)
+(defstruct :packed K (:bits 1 x:ui32) (:bits 0 z:ui32) (:bits 1 y:ui32))
+(defvar sA:i64 (sizeof A))
+(defvar sB:i64 (sizeof B))
+(defvar sC:i64 (sizeof C))
+(defvar sD:i64 (sizeof D))
+(defvar sE:i64 (sizeof E))
+(defvar sF:i64 (sizeof F))
+(defvar sG:i64 (sizeof G))
+(defvar sH:i64 (sizeof H))
+(defvar sI:i64 (sizeof I))
+(defvar sJ:i64 (sizeof J))
+(defvar sK:i64 (sizeof K))
+EOF
+  # Fixed-width C types, so the same eight shapes are legal on every target —
+  # `int c:24` would be a hard error on AVR, where `int` is 16 bits.
+  cat > "$d/bt.c" <<'EOF'
+#include <stdint.h>
+struct A { int32_t a:3; uint32_t b:5; int32_t c:24; int32_t d; };
+struct B { int8_t c; int32_t a:3; };
+struct C { uint32_t x:1; uint32_t :0; uint32_t y:1; };
+struct D { uint32_t a:31; uint32_t b:2; };
+struct E { int8_t c; int64_t l:40; };
+struct __attribute__((packed)) F { int8_t c; int32_t a:3; int32_t b:30; };
+struct G { int16_t s:9; int8_t c; int32_t i:20; };
+struct H { uint32_t a:3; uint32_t b:3; };
+struct I { uint32_t a:31; uint32_t b:2; uint32_t c:31; };
+struct J { int8_t c; uint32_t :0; int8_t d; };
+struct __attribute__((packed)) K { uint32_t x:1; uint32_t :0; uint32_t y:1; };
+EOF
+
+  # 1. The allocator, against clang, on every target. The rules it encodes —
+  #    "may not cross a boundary of the declared type", "a zero-width member
+  #    forces that boundary", "packed drops the crossing rule but not the
+  #    zero-width one", "AVR drops the crossing rule and makes zero-width's
+  #    boundary a byte" — are exactly the parts C leaves implementation-defined,
+  #    so matching the platform compiler IS the specification. I/J/K are the
+  #    shapes that tell those four apart; A-H alone cannot.
+  if ! command -v clang >/dev/null 2>&1; then
+    echo "PASS  s16-bf-layout-cross-target (SKIP: no clang)"
+  else
+    for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu \
+             riscv64-unknown-linux-gnu i386-unknown-linux-gnu avr; do
+      nt="$t"; [ "$t" = avr ] && nt=avr-unknown-unknown-elf
+      ./build/nucleusc --target="$nt" --emit-llvm "$d/bt.nuc" > "$d/bt.ll" 2>/dev/null || true
+      { cat "$d/bt.c"
+        sed -nE 's/^@s([A-K]) = global i64 ([0-9]+).*/_Static_assert(sizeof(struct \1)==\2,"\1");/p' "$d/bt.ll"
+      } > "$d/bk-$t.c"
+      [ "$(grep -c _Static_assert "$d/bk-$t.c")" = 11 ] || ok=0
+      clang --target="$t" -ffreestanding -fsyntax-only "$d/bk-$t.c" 2>"$d/bk-$t.err" || ok=0
+      grep -q 'error' "$d/bk-$t.err" && ok=0
+    done
+    if [ "$ok" = 1 ]; then echo "PASS  s16-bf-layout-cross-target (11 shapes x 5 targets)"; else
+      echo "FAIL  s16-bf-layout-cross-target"
+      grep -h 'error' "$d"/bk-*.err | sed 's/^/    /' | head -10
+    fi
+  fi
+
+  # 2. The values. A correct offset with a wrong shift or mask is invisible to a
+  #    layout diff, which is why §11 asks for this one specifically: write a
+  #    pattern through every bitfield and read it back, against the identical C
+  #    program. Signed truncation, an unsigned neighbour, a field that crosses a
+  #    natural boundary inside a packed struct, and a struct literal.
+  ok=1
+  cat > "$d/v.nuc" <<'EOF'
+(import-use "stdio.h")
+(defstruct A (:bits 3 a:i32) (:bits 5 b:ui32) (:bits 24 c:i32) d:i32)
+(defstruct :packed F c:i8 (:bits 3 a:i32) (:bits 30 b:i32))
+(defn main ():i32
+  (let (p:ptr:A (alloca A))
+    (.set! p a -3) (.set! p b 21) (.set! p c -100000) (.set! p d 7)
+    (printf "%ld %d %d %d %d\n" (sizeof A) (. p a) (as i32 (. p b)) (. p c) (. p d)))
+  (let (q:ptr:F (alloca F))
+    (.set! q c 65) (.set! q a 2) (.set! q b 123456789)
+    (printf "%ld %d %d %d\n" (sizeof F) (as i32 (. q c)) (. q a) (. q b)))
+  (let (r:ptr:A (A 1 2 3 4))
+    (printf "%d %d %d %d\n" (. r a) (as i32 (. r b)) (. r c) (. r d)))
+  (return 0))
+EOF
+  cat > "$d/v.c" <<'EOF'
+#include <stdio.h>
+struct A { int a:3; unsigned b:5; int c:24; int d; };
+struct __attribute__((packed)) F { char c; int a:3; int b:30; };
+int main(void){
+  struct A p; p.a=-3; p.b=21; p.c=-100000; p.d=7;
+  printf("%zu %d %d %d %d\n", sizeof(struct A), p.a, p.b, p.c, p.d);
+  struct F q; q.c=65; q.a=2; q.b=123456789;
+  printf("%zu %d %d %d\n", sizeof(struct F), q.c, q.a, q.b);
+  struct A r = {1,2,3,4};
+  printf("%d %d %d %d\n", r.a, r.b, r.c, r.d);
+  return 0; }
+EOF
+  ./build/nucleusc "$d/v.nuc" -o "$d/v.bin" 2>"$d/v.err" || ok=0
+  if command -v cc >/dev/null 2>&1; then
+    cc -w "$d/v.c" -o "$d/v.cbin" 2>/dev/null || ok=0
+    [ -x "$d/v.bin" ] && [ -x "$d/v.cbin" ] &&
+      [ "$("$d/v.bin")" = "$("$d/v.cbin")" ] || ok=0
+    if [ "$ok" = 1 ]; then echo "PASS  s16-bf-values"; else
+      echo "FAIL  s16-bf-values"
+      sed 's/^/    /' "$d/v.err" | head -3
+      [ -x "$d/v.cbin" ] && "$d/v.cbin" | sed 's/^/    cc:      /'
+      [ -x "$d/v.bin" ] && "$d/v.bin" | sed 's/^/    nucleus: /'
+    fi
+  else
+    echo "PASS  s16-bf-values (SKIP: no cc)"
+  fi
+
+  # 3. BF-4, the importer: `: width`, unnamed members, a zero-width boundary,
+  #    and the same declaration reached through a typedef.
+  ok=1
+  cat > "$d/h.h" <<'EOF'
+struct BI1 { int a:3; unsigned b:5; int c:24; int d; };
+struct BI2 { unsigned x:1; unsigned :3; unsigned y:1; };
+struct BI3 { unsigned x:1; unsigned :0; unsigned y:1; };
+typedef struct { char c; int a:3; } BI4;
+struct __attribute__((packed)) BI5 { char c; int a:3; int b:30; };
+EOF
+  cat > "$d/h.nuc" <<EOF
+(import-use "stdio.h")
+(import-use "$d/h.h")
+(defn main ():i32
+  (let (p:ptr:BI1 (alloca BI1))
+    (.set! p a -3) (.set! p b 21) (.set! p c -100000) (.set! p d 7)
+    (printf "%ld %ld %ld %ld %ld %d %d %d %d\n" (sizeof BI1) (sizeof BI2)
+      (sizeof BI3) (sizeof BI4) (sizeof BI5)
+      (. p a) (as i32 (. p b)) (. p c) (. p d)))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/h.nuc" -o "$d/h.bin" 2>"$d/h.err" || ok=0
+  if command -v cc >/dev/null 2>&1; then
+    cat > "$d/h.c" <<EOF
+#include <stdio.h>
+#include "$d/h.h"
+int main(void){ struct BI1 p; p.a=-3; p.b=21; p.c=-100000; p.d=7;
+  printf("%zu %zu %zu %zu %zu %d %d %d %d\n", sizeof(struct BI1),
+    sizeof(struct BI2), sizeof(struct BI3), sizeof(BI4), sizeof(struct BI5),
+    p.a, p.b, p.c, p.d);
+  return 0; }
+EOF
+    cc -w "$d/h.c" -o "$d/h.cbin" 2>/dev/null || ok=0
+    [ -x "$d/h.bin" ] && [ -x "$d/h.cbin" ] &&
+      [ "$("$d/h.bin")" = "$("$d/h.cbin")" ] || ok=0
+    if [ "$ok" = 1 ]; then echo "PASS  s16-bf-import"; else
+      echo "FAIL  s16-bf-import"
+      sed 's/^/    /' "$d/h.err" | head -3
+      [ -x "$d/h.cbin" ] && echo "    cc:      $("$d/h.cbin")"
+      [ -x "$d/h.bin" ] && echo "    nucleus: $("$d/h.bin")"
+    fi
+  else
+    echo "PASS  s16-bf-import (SKIP: no cc)"
+  fi
+
+  # 4. `FILE` — the marquee casualty in cheader-parser-vs-libclang.md §1, opaque
+  #    for one reason (`int _flags2:24`). Nine blocked types become seven.
+  ok=1
+  if command -v cc >/dev/null 2>&1; then
+    printf '(import-use "stdio.h")\n(defn main ():i32 (printf "%%ld\\n" (sizeof FILE)) (return 0))\n' > "$d/f.nuc"
+    printf '#include <stdio.h>\nint main(void){printf("%%zu\\n",sizeof(FILE));return 0;}\n' > "$d/f.c"
+    ./build/nucleusc "$d/f.nuc" -o "$d/f.bin" 2>"$d/f.err" || ok=0
+    cc -w "$d/f.c" -o "$d/f.cbin" 2>/dev/null || ok=0
+    if [ "$ok" = 1 ] && [ "$("$d/f.bin")" = "$("$d/f.cbin")" ]; then
+      echo "PASS  s16-bf-file ($("$d/f.bin") bytes, matching cc)"
+    else
+      echo "FAIL  s16-bf-file"
+      sed 's/^/    /' "$d/f.err" | head -3
+      [ -x "$d/f.bin" ] && echo "    nucleus: $("$d/f.bin")"
+      [ -x "$d/f.cbin" ] && echo "    cc:      $("$d/f.cbin")"
+    fi
+  else
+    echo "PASS  s16-bf-file (SKIP: no cc)"
+  fi
+
+  # 5. Export: `--emit-cheader` writes `: w` back out and a C consumer agrees.
+  ok=1
+  cat > "$d/x.nuc" <<'EOF'
+(defstruct Hdr (:bits 4 ver:ui32) (:bits 12 len:ui32) (:bits 16 id:i32) tail:i32)
+(defn hdr-ver (h:ptr:Hdr):ui32 (return (. h ver)))
+EOF
+  ./build/nucleusc --emit-cheader "$d/x.nuc" > "$d/x.h" 2>"$d/x.err" || ok=0
+  qgrep -E ': 4;' "$d/x.h" || ok=0
+  if command -v clang >/dev/null 2>&1; then
+    cat > "$d/x-c.c" <<EOF
+#include "$d/x.h"
+_Static_assert(sizeof(Hdr)==8,"hdr");
+EOF
+    clang -std=gnu11 -Wall -Wextra -Werror -c "$d/x-c.c" -o /dev/null 2>"$d/x-c.err" || ok=0
+  fi
+  if [ "$ok" = 1 ]; then echo "PASS  s16-bf-cheader-roundtrip"; else
+    echo "FAIL  s16-bf-cheader-roundtrip"
+    sed 's/^/    /' "$d/x.err" "$d/x-c.err" 2>/dev/null | head -6
+    grep -E 'Hdr|:' "$d/x.h" | sed 's/^/    /' | head -8
+  fi
+
+  # 6. The three things a bit-field may not be. `.&` is C's own constraint, not
+  #    a Nucleus limitation, which is what makes refusing it the faithful
+  #    answer rather than a gap.
+  ok=1
+  printf '(defstruct S (:bits 3 a:i32))\n(defn f (p:ptr:S):ptr (return (.& p a)))\n(defn main ():i32 (return 0))\n' > "$d/e1.nuc"
+  ./build/nucleusc --emit-llvm "$d/e1.nuc" >/dev/null 2>"$d/e1.err" || true
+  qgrep -F "a bit-field has no address" "$d/e1.err" || ok=0
+  printf '(defstruct S (:bits 40 a:i32))\n(defn main ():i32 (return 0))\n' > "$d/e2.nuc"
+  ./build/nucleusc --emit-llvm "$d/e2.nuc" >/dev/null 2>"$d/e2.err" || true
+  qgrep -F "exceeds the 32 bits of its declared type" "$d/e2.err" || ok=0
+  printf '(defstruct S (:bits 3 a:f32))\n(defn main ():i32 (return 0))\n' > "$d/e3.nuc"
+  ./build/nucleusc --emit-llvm "$d/e3.nuc" >/dev/null 2>"$d/e3.err" || true
+  qgrep -F "must have an integer type" "$d/e3.err" || ok=0
+  if [ "$ok" = 1 ]; then echo "PASS  s16-bf-refusals"; else
+    echo "FAIL  s16-bf-refusals"
+    sed 's/^/    /' "$d/e1.err" "$d/e2.err" "$d/e3.err" 2>/dev/null | head -8
+  fi
+  rm -rf "$d"
+}
+spawn run_s16_bf_bitfields
+
+# Stage 16 AN-1/AN-2 + C1a — C11 anonymous members, and the flexible array
+# member that closes the census with them
+# (design/stage16-ergonomics/c-boundary-defects.md §9, §11).
+#
+# An anonymous member is an ordinary nested member whose OWN names are the ones
+# visible from outside, so the whole feature is a transitive lookup over FR-1's
+# path. Every check below therefore compares against the identical C program:
+# the outside names must resolve to the same bytes clang resolves them to, not
+# merely to some consistent bytes of our own.
+run_s16_an_anonymous() {
+  local d ok=1
+  d="$(mktemp -d)"
+
+  # 1. Import. Two levels of minted name (a struct inside an anonymous union
+  #    inside a struct), a named member of an anonymous type beside them, and
+  #    an anonymous struct that opens a declaration — the three shapes glibc
+  #    uses. Values AND sizes, against the same header compiled by cc.
+  cat > "$d/a.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use "tests/fixtures/s16-anon.h")
+(defn main ():i32
+  (let (s:ptr:s16_sig (alloca s16_sig))
+    (.set! s code 7) (.set! s pid 42) (.set! s uid 99)
+    (.set! (.& s named) a 1) (.set! (.& s named) b 2)
+    (printf "%d %d %d %d %d %d\n" (. s code) (. s pid) (. s uid) (. s si_int)
+            (. (.& s named) a) (. (.& s named) b)))
+  (let (r:ptr:s16_rus (alloca s16_rus))
+    (.set! r sec 5) (.set! r usec 6) (.set! r maxrss 8)
+    (printf "%ld %ld %d %ld %ld\n" (. r sec) (. r usec) (. r maxrss)
+            (sizeof s16_sig) (sizeof s16_rus)))
+  (return 0))
+EOF
+  cat > "$d/a.c" <<'EOF'
+#include <stdio.h>
+#include "tests/fixtures/s16-anon.h"
+int main(void){
+  s16_sig s; s.code=7; s.pid=42; s.uid=99; s.named.a=1; s.named.b=2;
+  printf("%d %d %d %d %d %d\n", s.code, s.pid, s.uid, s.si_int, s.named.a, s.named.b);
+  s16_rus r; r.sec=5; r.usec=6; r.maxrss=8;
+  printf("%ld %ld %d %zu %zu\n", r.sec, r.usec, r.maxrss, sizeof(s16_sig), sizeof(s16_rus));
+  return 0; }
+EOF
+  ./build/nucleusc "$d/a.nuc" -o "$d/a.nucbin" 2>"$d/a.err" || ok=0
+  [ "$ok" = 1 ] && "$d/a.nucbin" > "$d/a.nucout" 2>&1
+  if cc -I. "$d/a.c" -o "$d/a.cbin" 2>>"$d/a.err"; then
+    "$d/a.cbin" > "$d/a.cout" 2>&1
+    diff "$d/a.cout" "$d/a.nucout" > "$d/a.diff" 2>&1 || ok=0
+  else
+    ok=0
+  fi
+  if [ "$ok" = 1 ]; then echo "PASS  s16-an-import ($(cat "$d/a.nucout" | tr '\n' '/'))"; else
+    echo "FAIL  s16-an-import"
+    sed 's/^/    /' "$d/a.err" 2>/dev/null | head -4
+    sed 's/^/    /' "$d/a.diff" 2>/dev/null | head -6
+  fi
+
+  # 2. The census (§11) is the acceptance test for §§6-9, and these are the nine
+  #    names it listed as blocked. All nine must now emit a `%Name = type` line;
+  #    a regression in any one of the four features shows up here by name.
+  ok=1
+  cat > "$d/n.nuc" <<'EOF'
+(import-use "signal.h")
+(import-use "pthread.h")
+(import-use "sys/resource.h")
+(import-use "stdio.h")
+(import-use "sys/socket.h")
+(import-use "stddef.h")
+(defn main ():i32 (return 0))
+EOF
+  ./build/nucleusc --emit-llvm "$d/n.nuc" > "$d/n.ll" 2>"$d/n.err" || ok=0
+  local t missing=""
+  for t in sigaction sigevent __pthread_cleanup_frame _pthread_cleanup_buffer \
+           sigcontext rusage _IO_FILE cmsghdr max_align_t; do
+    qgrep -E "^%$t = type" "$d/n.ll" || { ok=0; missing="$missing $t"; }
+  done
+  if [ "$ok" = 1 ]; then echo "PASS  s16-an-census (9 of 9 formerly-blocked types lay out)"; else
+    echo "FAIL  s16-an-census (still blocked:$missing)"
+  fi
+
+  # 3. `sizeof` on the two the anonymous-member work unblocked, against cc.
+  #    A layout that is merely PRESENT is the weaker claim; these are the names
+  #    §1 of cheader-parser-vs-libclang.md listed, so they are the ones to size.
+  ok=1
+  cat > "$d/s.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use "signal.h")
+(import-use "sys/resource.h")
+(import-use "sys/socket.h")
+(defn main ():i32
+  (printf "%ld %ld %ld\n" (sizeof sigcontext) (sizeof rusage) (sizeof cmsghdr))
+  (return 0))
+EOF
+  cat > "$d/s.c" <<'EOF'
+#include <stdio.h>
+#include <signal.h>
+#include <sys/resource.h>
+#include <sys/socket.h>
+int main(void){ printf("%zu %zu %zu\n", sizeof(struct sigcontext),
+  sizeof(struct rusage), sizeof(struct cmsghdr)); return 0; }
+EOF
+  ./build/nucleusc "$d/s.nuc" -o "$d/s.nucbin" 2>"$d/s.err" || ok=0
+  [ "$ok" = 1 ] && "$d/s.nucbin" > "$d/s.nucout" 2>&1
+  if cc "$d/s.c" -o "$d/s.cbin" 2>>"$d/s.err"; then
+    "$d/s.cbin" > "$d/s.cout" 2>&1
+    diff "$d/s.cout" "$d/s.nucout" > "$d/s.diff" 2>&1 || ok=0
+  else
+    ok=0
+  fi
+  if [ "$ok" = 1 ]; then echo "PASS  s16-an-census-sizeof ($(cat "$d/s.nucout"), matching cc)"; else
+    echo "FAIL  s16-an-census-sizeof"
+    sed 's/^/    /' "$d/s.diff" 2>/dev/null | head -6
+  fi
+
+  # 4. The `defstruct` surface. `(:anon T)` is the same member the importer
+  #    mints, so the same lookup has to reach it — including through `.&`,
+  #    which is the path a GEP chain gets wrong differently from a load.
+  ok=1
+  cat > "$d/g.nuc" <<'EOF'
+(import-use "stdio.h")
+(defstruct Inner a:i32 b:i32)
+(defstruct Extra c:i32)
+(defstruct Outer tag:i32 (:anon Inner) (:anon Extra) z:i32)
+(defn main ():i32
+  (let (p:ptr:Outer (alloca Outer))
+    (.set! p tag 1) (.set! p a 2) (.set! p b 3) (.set! p c 4) (.set! p z 5)
+    (printf "%ld %d %d %d %d %d %d\n" (sizeof Outer)
+            (. p tag) (. p a) (. p b) (. p c) (. p z) (deref (.& p b))))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/g.nuc" -o "$d/g" 2>"$d/g.err" || ok=0
+  [ "$ok" = 1 ] && "$d/g" > "$d/g.out" 2>&1
+  qgrep -Fx "20 1 2 3 4 5 3" "$d/g.out" || ok=0
+  if [ "$ok" = 1 ]; then echo "PASS  s16-an-defstruct"; else
+    echo "FAIL  s16-an-defstruct"
+    sed 's/^/    /' "$d/g.err" 2>/dev/null | head -4
+    sed 's/^/    got: /' "$d/g.out" 2>/dev/null | head -2
+  fi
+
+  # 5. The three refusals. The first is C's own ambiguity rule; the second is
+  #    a member that could not contribute a name at all; the third is the one
+  #    place the surface is NOT a superset of C — C spells an anonymous member
+  #    by inlining its body, so a named type has no rendering on export.
+  ok=1
+  printf '(defstruct A dup:i32 x:i32)\n(defstruct B dup:i32 y:i32)\n(defstruct C (:anon A) (:anon B))\n(defn f (p:ptr:C):i32 (return (. p dup)))\n(defn main ():i32 (return 0))\n' > "$d/r1.nuc"
+  ./build/nucleusc --emit-llvm "$d/r1.nuc" >/dev/null 2>"$d/r1.err" || true
+  qgrep -F "more than one anonymous member supplies it" "$d/r1.err" || ok=0
+  printf '(defstruct D (:anon i32))\n(defn main ():i32 (return 0))\n' > "$d/r2.nuc"
+  ./build/nucleusc --emit-llvm "$d/r2.nuc" >/dev/null 2>"$d/r2.err" || true
+  qgrep -F "must be a struct or a union, not i32" "$d/r2.err" || ok=0
+  printf '(defstruct A dup:i32)\n(defstruct C (:anon A) z:i32)\n(defn main ():i32 (return 0))\n' > "$d/r3.nuc"
+  ./build/nucleusc --emit-cheader "$d/r3.nuc" >/dev/null 2>"$d/r3.err" || true
+  qgrep -F "has no standard C spelling" "$d/r3.err" || ok=0
+  if [ "$ok" = 1 ]; then echo "PASS  s16-an-refusals"; else
+    echo "FAIL  s16-an-refusals"
+    sed 's/^/    /' "$d/r1.err" "$d/r2.err" "$d/r3.err" 2>/dev/null | head -8
+  fi
+
+  rm -rf "$d"
+}
+spawn run_s16_an_anonymous
 
 # W9 item 13: an unrecognized list head in type position used to fall out of
 # `parse-type-from-node` as null, which every caller reads as "no annotation was
@@ -9987,11 +11474,11 @@ run_l1_member_opaque() {
       bad=1
     fi
   done <<'EOF'
-l1_m_long_double|23
-l1_m_unrep_typedef|29
-l1_m_opaque_tag|33
-l1_m_unknown_tag|36
-l1_m_bad_body|42
+l1_m_wide_int|27
+l1_m_unrep_typedef|33
+l1_m_opaque_tag|37
+l1_m_unknown_tag|40
+l1_m_bad_body|46
 EOF
   [ "$bad" = 0 ] && echo "PASS  l1-member-opaque"
 
@@ -10003,7 +11490,7 @@ EOF
   cat > "$d/safe.nuc" <<'EOF'
 (import-use "stdio.h")
 (import-use "tests/fixtures/l1-members.h")
-(defn t1 (p:ptr:l1_m_long_double):i32 (return 0))
+(defn t1 (p:ptr:l1_m_wide_int):i32 (return 0))
 (defn t2 (p:ptr:l1_m_unrep_typedef):i32 (return 0))
 (defn t3 (p:ptr:l1_m_opaque_tag):i32 (return 0))
 (defn t4 (p:ptr:l1_m_unknown_tag):i32 (return 0))
@@ -10017,7 +11504,7 @@ EOF
     sed 's/^/    got: /' "$d/safe.err" | head -3
     bad=1
   fi
-  for name in l1_m_long_double l1_m_unrep_typedef l1_m_opaque_tag l1_m_unknown_tag l1_m_bad_body; do
+  for name in l1_m_wide_int l1_m_unrep_typedef l1_m_opaque_tag l1_m_unknown_tag l1_m_bad_body; do
     if qgrep -E "^%$name = type" "$d/safe.ll"; then
       echo "FAIL  l1-member-fails-safe ($name got an LLVM layout it has no basis for)"
       { grep -E "^%$name = type" "$d/safe.ll" || true; } | sed 's/^/    got: /'
@@ -10166,9 +11653,10 @@ EOF
   [ "$bad" = 0 ] && echo "PASS  l2-layout-sizeof"
 
   # 3. An extent the evaluator cannot fold abandons the struct and leaves the
-  #    name OPAQUE (L1), rather than guessing a count. Three shapes: a name
-  #    (an enum constant — the evaluator resolves no names), no extent at all,
-  #    and a zero extent.
+  #    name OPAQUE (L1), rather than guessing a count. Two shapes: a name (an
+  #    enum constant — the evaluator resolves no names) and a zero extent. `[]`
+  #    used to be a third; Stage 16 C1a made it a flexible array member, which
+  #    is checked positively below instead.
   bad=0
   while IFS='|' read -r name line; do
     [ -z "$name" ] && continue
@@ -10186,10 +11674,34 @@ EOF
     fi
   done <<'EOF'
 l2_unfoldable_enum|56
-l2_unfoldable_flex|59
 l2_unfoldable_zero|62
 EOF
   [ "$bad" = 0 ] && echo "PASS  l2-layout-unfoldable"
+
+  # 3b. Stage 16 C1a: `int f[];` is C99's flexible array member — a trailing
+  #     member that contributes no bytes. It must lay out, size like clang's,
+  #     and print `[0 x …]` rather than reuse the prescan's provisional 0.
+  bad=0
+  printf '(import-use "stdio.h")\n(import-use "tests/fixtures/l2-arrays.h")\n(defn main ():i32 (printf "%%ld\\n" (sizeof l2_unfoldable_flex)) (return 0))\n' \
+    > "$d/fx.nuc"
+  ./build/nucleusc --emit-llvm "$d/fx.nuc" > "$d/fx.ll" 2>"$d/fx.err" || bad=1
+  qgrep -E '^%l2_unfoldable_flex = type \{ i32, \[0 x i32\] \}' "$d/fx.ll" || bad=1
+  ./build/nucleusc "$d/fx.nuc" -o "$d/fx" 2>>"$d/fx.err" || bad=1
+  [ "$bad" = 0 ] && "$d/fx" > "$d/fx.out" 2>&1
+  cat > "$d/fx.c" <<'EOF'
+#include <stdio.h>
+#include "tests/fixtures/l2-arrays.h"
+int main(void){ printf("%zu\n", sizeof(struct l2_unfoldable_flex)); return 0; }
+EOF
+  if cc -I. "$d/fx.c" -o "$d/fx.coracle" 2>/dev/null; then
+    "$d/fx.coracle" > "$d/fx.cout" 2>&1
+    diff "$d/fx.cout" "$d/fx.out" >/dev/null 2>&1 || bad=1
+  fi
+  if [ "$bad" = 0 ]; then echo "PASS  l2-layout-flex-array"; else
+    echo "FAIL  l2-layout-flex-array"
+    sed 's/^/    /' "$d/fx.err" 2>/dev/null | head -4
+    grep -E '^%l2_unfoldable_flex' "$d/fx.ll" | sed 's/^/    got: /' | head -2
+  fi
 
   rm -rf "$d"
 }
@@ -10267,6 +11779,15 @@ int main(void){
     sizeof(struct in6_addr), _Alignof(struct in6_addr), offsetof(struct in6_addr, __in6_u));
   printf("sigset_t size=%zu align=%zu\n", sizeof(sigset_t), _Alignof(sigset_t));
   printf("pthread_mutex_t size=%zu align=%zu\n", sizeof(pthread_mutex_t), _Alignof(pthread_mutex_t));
+  /* Stage 16 FP-4: both were opaque until the importer built a real type for
+     their inline function-pointer members. */
+  printf("sigaction size=%zu align=%zu sa_mask=%zu sa_flags=%zu sa_restorer=%zu\n",
+    sizeof(struct sigaction), _Alignof(struct sigaction),
+    offsetof(struct sigaction, sa_mask), offsetof(struct sigaction, sa_flags),
+    offsetof(struct sigaction, sa_restorer));
+  printf("sigevent_t size=%zu align=%zu sigev_signo=%zu sigev_notify=%zu\n",
+    sizeof(sigevent_t), _Alignof(sigevent_t),
+    offsetof(sigevent_t, sigev_signo), offsetof(sigevent_t, sigev_notify));
   return 0;
 }
 EOF
@@ -10311,6 +11832,8 @@ EOF
 (defstruct AP9 pad:i8 v:in6_addr)
 (defstruct AP10 pad:i8 v:__sigset_t)
 (defstruct AP11 pad:i8 v:pthread_mutex_t)
+(defstruct AP12 pad:i8 v:sigaction)
+(defstruct AP13 pad:i8 v:sigevent_t)
 
 (defn off (base:ptr fld:ptr):i64 (return (- (unsafe/cast i64 fld) (unsafe/cast i64 base))))
 
@@ -10350,6 +11873,14 @@ EOF
     (printf "sigset_t size=%lld align=%lld\n" (as i64 (sizeof sigset_t)) (off a (.& a v))))
   (let (a:ptr:AP11 (alloca AP11))
     (printf "pthread_mutex_t size=%lld align=%lld\n" (as i64 (sizeof pthread_mutex_t)) (off a (.& a v))))
+  (let (s:ptr:sigaction (alloca sigaction) a:ptr:AP12 (alloca AP12))
+    (printf "sigaction size=%lld align=%lld sa_mask=%lld sa_flags=%lld sa_restorer=%lld\n"
+      (as i64 (sizeof sigaction)) (off a (.& a v)) (off s (.& s sa_mask))
+      (off s (.& s sa_flags)) (off s (.& s sa_restorer))))
+  (let (s:ptr:sigevent_t (alloca sigevent_t) a:ptr:AP13 (alloca AP13))
+    (printf "sigevent_t size=%lld align=%lld sigev_signo=%lld sigev_notify=%lld\n"
+      (as i64 (sizeof sigevent_t)) (off a (.& a v)) (off s (.& s sigev_signo))
+      (off s (.& s sigev_notify))))
   (return 0))
 EOF
   bad=0
@@ -10368,32 +11899,35 @@ EOF
   fi
   [ "$bad" = 0 ] && echo "PASS  l2-libc-layouts"
 
-  # The honest half of the survey: three of §1.5's rows are STILL opaque after
-  # L1/L2, for §6 reasons L2 deliberately does not reach — `_IO_FILE` carries a
-  # bitfield, `sigaction` and `sigevent_t` each carry an inline function-pointer
-  # member. Assert THAT, with its located reason, rather than pretending the
-  # roster is uniformly fixed. Each must still fail SAFE.
+  # `FILE` was the last of §1.5's rows still opaque after L1/L2, and it was
+  # opaque for one reason — `int _flags2:24`. BF-4 gave that a real layout, so
+  # the assertion flips from "still fails safe" to "agrees with cc", which is
+  # the only claim worth making about the type stdio hands every program.
   bad=0
-  while IFS='|' read -r name file; do
-    [ -z "$name" ] && continue
-    printf '(import-use "stdio.h")\n(import-use "signal.h")\n(defn main ():i32 (printf "%%ld\\n" (sizeof %s)) (return 0))\n' \
-      "$name" > "$d/o.nuc"
-    ./build/nucleusc --emit-llvm "$d/o.nuc" > "$d/o.ll" 2>"$d/o2.err" || true
-    if ! qgrep -E "'$name' is an opaque type declared at [^ ]*$file:[0-9]+;" "$d/o2.err"; then
-      echo "FAIL  l2-libc-opaque ($name: expected a located opaque error naming $file)"
-      sed 's/^/    got: /' "$d/o2.err" | head -2
-      bad=1
+  if command -v cc >/dev/null 2>&1; then
+    printf '#include <stdio.h>\n#include <stddef.h>\nint main(void){printf("%%zu %%zu %%zu\\n",sizeof(FILE),offsetof(FILE,_flags),offsetof(FILE,_lock));return 0;}\n' > "$d/f.c"
+    cat > "$d/f.nuc" <<'NUCEOF'
+(import-use "stdio.h")
+(defn main ():i32
+  (let (f:ptr:FILE (alloca FILE))
+    (printf "%ld %ld %ld\n" (sizeof FILE)
+      (- (unsafe/cast i64 (.& f _flags)) (unsafe/cast i64 f))
+      (- (unsafe/cast i64 (.& f _lock)) (unsafe/cast i64 f))))
+  (return 0))
+NUCEOF
+    cc -w "$d/f.c" -o "$d/f.cbin" 2>/dev/null || bad=1
+    ./build/nucleusc "$d/f.nuc" -o "$d/f.bin" 2>"$d/f.err" || bad=1
+    if [ "$bad" = 0 ] && [ "$("$d/f.bin")" = "$("$d/f.cbin")" ]; then
+      echo "PASS  l2-libc-file-layout ($("$d/f.bin"), matching cc)"
+    else
+      echo "FAIL  l2-libc-file-layout"
+      sed 's/^/    /' "$d/f.err" | head -3
+      [ -x "$d/f.cbin" ] && echo "    cc:      $("$d/f.cbin")"
+      [ -x "$d/f.bin" ] && echo "    nucleus: $("$d/f.bin")"
     fi
-    if qgrep -E "^%$name = type" "$d/o.ll"; then
-      echo "FAIL  l2-libc-opaque ($name got an LLVM layout)"
-      bad=1
-    fi
-  done <<'EOF'
-FILE|FILE.h
-sigaction|sigaction.h
-sigevent_t|sigevent_t.h
-EOF
-  [ "$bad" = 0 ] && echo "PASS  l2-libc-opaque"
+  else
+    echo "PASS  l2-libc-file-layout (SKIP: no cc)"
+  fi
 
   rm -rf "$d"
 }
@@ -10606,13 +12140,15 @@ run_l5_typedef_names() {
   #    §5's stated subject for this row is stale: it names
   #    `(let (x:__jmp_buf …))`, but after L2/L3 `__jmp_buf` is REPRESENTABLE (an
   #    `(array i64 8)`) and that program now gives the storage-type message
-  #    instead. A `long double` typedef is the durable subject — `_Float64x` /
-  #    `_Float128` also work but are glibc-dependent.
+  #    instead. `long double` was the replacement and is stale in turn — Stage 16
+  #    FL-7 made it f80/f128 per target. `__int128` is the durable subject:
+  #    deliberately unscheduled, and deliberately kept out of C1's implicit-int
+  #    rule so it reaches this path rather than being narrowed.
   bad=0
-  printf 'typedef long double l5_ld_t;\n' > "$d/l5.h"
-  printf '(import-use "%s/l5.h")\n(defn f ():i32 (let (x:l5_ld_t 0) (return 0)))\n' "$d" > "$d/nl.nuc"
+  printf 'typedef __int128 l5_wi_t;\n' > "$d/l5.h"
+  printf '(import-use "%s/l5.h")\n(defn f ():i32 (let (x:l5_wi_t 0) (return 0)))\n' "$d" > "$d/nl.nuc"
   ./build/nucleusc --emit-llvm "$d/nl.nuc" >/dev/null 2>"$d/nl.err" || true
-  if ! qgrep -E "'l5_ld_t' names a C type this compiler cannot represent \([^ ]*l5\.h:1\)" "$d/nl.err"; then
+  if ! qgrep -E "'l5_wi_t' names a C type this compiler cannot represent \([^ ]*l5\.h:1\)" "$d/nl.err"; then
     echo "FAIL  l5-unrepresentable-message"
     sed 's/^/    got: /' "$d/nl.err" | head -2
     bad=1

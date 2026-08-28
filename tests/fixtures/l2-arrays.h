@@ -55,7 +55,7 @@ struct l2_chararr { unsigned short sa_family; char sa_data[14]; };
 enum { L2_ENUM_N = 5 };
 struct l2_unfoldable_enum { int u[L2_ENUM_N]; int b; };
 
-/* A flexible array member: no extent at all. */
+/* A flexible array member. C1a: the one shape here that DOES lay out (3b). */
 struct l2_unfoldable_flex { int n; int f[]; };
 
 /* A zero extent: legal as a GNU extension, not a positive count. */

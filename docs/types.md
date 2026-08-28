@@ -345,6 +345,14 @@ Volatility lives on the storage site, not the value: `volatile T` and `T` are as
 
 > The older postfix spellings (`(T volatile)` list form, `T:volatile` colon segment) are retired: the compiler rejects them with a targeted error naming the `:volatile` attribute-slot spelling above.
 
+The **struct** attributes use the same two slots but are properties of the type
+rather than of a binding. `:packed` and `:align N` go before the struct name or
+heading a field cell; `:bits W` and `:anon` head a field cell only. See
+[Packed structs](structs-unions.md#packed-structs--defstruct-packed),
+[Over-aligned structs and fields](structs-unions.md#over-aligned-structs-and-fields--align-n),
+[Bit-fields](structs-unions.md#bit-fields--bits-w-namet) and
+[Anonymous members](structs-unions.md#anonymous-members--anon-t).
+
 ## Const globals
 
 A `defvar` global can be made read-only through the same keyword-attribute
@@ -396,8 +404,11 @@ tracked).
 | `ui16` | 16-bit unsigned integer | `uint16_t` |
 | `ui32` | 32-bit unsigned integer | `uint32_t` |
 | `ui64` | 64-bit unsigned integer | `uint64_t` |
+| `f16` | IEEE-754 binary16 | `_Float16` |
 | `f32` / `float` | IEEE-754 binary32 | `float` |
 | `f64` / `double` | IEEE-754 binary64 | `double` |
+| `f80` | x87 80-bit extended (x86 only) | `long double` on x86 |
+| `f128` | IEEE-754 binary128 | `_Float128` / `__float128` |
 | `usize` | Unsigned pointer-sized integer (resolves to `i32` on ILP32 targets, `i64` on LP64) | `size_t` |
 | `ssize` | Signed pointer-sized integer (resolves to `i32` on ILP32 targets, `i64` on LP64) | `ssize_t` / `ptrdiff_t` |
 | `ptr` | Opaque pointer | `void*` |
@@ -420,7 +431,34 @@ A `c"…"` literal — a `c` glued directly onto the opening quote, with no whit
 
 **`Char`** is a single Unicode scalar value — a codepoint in `0..=0x10FFFF` excluding the UTF-16 surrogate range `0xD800..=0xDFFF` (Rust's `char` model; "character" means codepoint, not grapheme cluster). It is a **built-in distinct 32-bit scalar over `ui32`**, the same kind of distinct scalar `CStr` is: it lowers to IR `i32` (C `uint32_t`, size 4) and participates in the integer operators, but it is its own type for dispatch. `=` / `!=` on two `Char` compare codepoints (`(= \a \a)` is true, `(= \a \b)` is false), and a `Char`-vs-int overload is distinguishable. A same-width `as` (or `unsafe/cast`) between `Char` and `ui32`/`i32` is a no-op reinterpret (`(as ui32 \A)` is `65`). Because `Char` is distinct, two *typed* operands of different kind do **not** silently unify: `(= \a (as ui32 65))` is a compile error (`operand type mismatch`) — convert one side explicitly with `as`. An untyped integer literal still adapts to a `Char` operand, so `(= \a 97)` is allowed. Write a `Char` value with a [char literal](#char-literals--a) (below) or, equivalently, the `(char "x")` form. (The `Char` UTF-8 encode/decode and classification library is a separate task.)
 
-Float literals: `1.5`, `-0.25`, `1e10`, `1.5e-3`, `.5`. Special values use Scheme syntax: `+inf.0`, `-inf.0`, `+nan.0`. Float arithmetic uses `+ - * / %` and comparisons use `= != < <= > >=` (LLVM `fadd`/`fcmp`).
+Float literals: `1.5`, `-0.25`, `1e10`, `1.5e-3`, `.5`, and C's hex form `0x1.921fb54442d18p+1`. Special values use Scheme syntax: `+inf.0`, `-inf.0`, `+nan.0`. Float arithmetic uses `+ - * / %` and comparisons use `= != < <= > >=` (LLVM `fadd`/`fcmp`).
+
+Integer literals are decimal or C hex: `255` and `0xFF` are the same value, and `0x` accepts either case in the prefix and the digits. There is no octal form — a leading zero is not significant, so `0644` is six hundred and forty-four.
+
+### The wide float widths, and which targets have them
+
+`f16`, `f80` and `f128` exist alongside `f32`/`f64`, and each is the format C
+names on the same target: `_Float16`, x87 80-bit extended, and IEEE binary128.
+Constants, struct layout, and the by-value calling convention all match the
+platform C compiler bit for bit, including the three cases where the aggregate
+ABI differs from the scalar one (a struct holding a `long double` goes through
+memory; a struct holding one `__float128` stays in a single xmm pair; an `f16`
+beside an `i32` merges into one integer eightbyte).
+
+**A width is refused on a target that has no format for it**, rather than
+emitting IR the backend cannot select. AVR has none of the three; `f80` is an
+x87 format and exists only on x86. The portable spelling is C's: `long double`
+imported from a header is `f80` on x86, `f128` on aarch64 and riscv64, and
+`f64` under MSVC and on AVR — so a header-driven program cross-compiles while
+one that names `f80` directly is pinned to x86, which is the intended trade.
+
+**Write a wide constant in hex.** A decimal float literal is folded through a
+host `double`, so `(let (x:f128 1.1) …)` gets the `f64` value of 1.1 widened
+exactly — seventeen significant digits, not thirty-four. The hex form is exact
+by construction and carries the full significand at every width:
+`0x1.921fb54442d18469898cc51701b8p+1`. C requires the binary exponent, and so
+does this: `0x1.8` is not a float literal (nor an integer — it is an error), and
+`0x18` is an integer.
 
 **A float literal is untyped: it adapts to whatever float width the position wants**, and only falls back to `f64` when nothing asks for anything else. That covers both a binop operand — with `alpha:f32`, `(* alpha 2.0)` and `(* 2.0 alpha)` are both `f32`, in either order — and every *typed target* position: `(let (a:f32 0.1) …)`, `with`, `(set! a 0.1)`, `(.set! p x 0.1)`, `(return 0.1)` from an `f32` function (explicit or implicit), an `f32` field in a struct literal, an `f32` element in an `(array f32 …)`, an `f32` argument at a call, and an `f32` `defvar` initializer. None of these need an `(unsafe/cast f32 …)` wrapper, and the literal is rounded to single precision at compile time — no conversion instruction is emitted.
 
@@ -527,6 +565,61 @@ A `defn` function name used in value position decays to a function pointer, matc
 (defn add (a:i32 b:i32):i32 (return (+ a b)))
 (apply add 3 4)  ; passes add as a function pointer
 ```
+
+### Signatures are checked, in both directions
+
+**Every typed function-pointer slot compares signatures**, not just kinds — a
+`let`/`with` init, a `set!`, a `.set!` field store, a `return`, and a call
+argument all refuse a function whose parameter list or return type does not
+match, and the diagnostic prints both signatures as written:
+
+```
+take-fn: argument 1 has type (i32, i32):i32, which does not match parameter type (i32):i32
+let: init type mismatch for 'f': value is (i32, i32):i32, slot is (i32):i32
+```
+
+Two relaxations, both matching C:
+
+- **Pointer *kind* is not part of a signature.** `ptr:i32`, `(ref i32)` and
+  `raw:i32` are interchangeable in a parameter or return position, so the
+  `qsort` comparator shape (`(fn i32) (ptr ptr))` accepts
+  `(defn cmp (a:ptr:i32 b:(ref i32)):i32 …)`.
+- **A bare elem-less `ptr` is the function-pointer analogue of `void *`.** It
+  matches any pointer in the same position, in either direction. It is *not* a
+  wildcard for a function-pointer parameter: turning a data pointer into
+  something callable stays `unsafe/cast`'s job.
+
+**Calling through a pointer is the same call.** `(funcall f …)` and a
+function-pointer value in head position go through the identical argument path a
+direct call does — literal widening, `f32`→`double` promotion for a variadic
+tail, the by-value struct ABI (`byval` / `sret` / register coercion), and the
+same argument diagnostics.
+
+### At the C boundary
+
+A C function-pointer type imports as a real `(fn ret)(params)` in all four of C's
+declarator positions — parameter, struct or union member, `typedef`, and the
+function-returning-function-pointer shape (`void (*signal(int, void (*)(int)))(int)`).
+So a callback API takes a Nucleus function directly:
+
+```lisp
+(import-use "stdlib.h")
+(defn cmpi (a:ptr b:ptr):i32 (return 0))
+(defn main ():i32 (qsort arr 10 4 cmpi) (return 0))   ; no cast
+```
+
+`--emit-cheader` writes the C declarator back out, since C's function-pointer
+type is postfix and has no prefix spelling:
+
+```c
+typedef struct Hold { int32_t (*cb)(int32_t, int32_t); int32_t n; } Hold;
+int32_t use2(int32_t (*f)(int32_t, int32_t));
+int32_t (*getf(void))(int32_t, int32_t);
+```
+
+If a C declarator's inner types are ones the header parser cannot describe, the
+type narrows to a plain `ptr` rather than being mis-stated, and the enclosing
+declaration is still imported.
 
 ### Function-pointer globals
 

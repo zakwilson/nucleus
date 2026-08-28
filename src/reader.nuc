@@ -362,6 +362,46 @@
       (when (and (!= saw-e 0) (= digits-exp 0)) (return 0))
       (return 1))))
 
+; Stage 16 FL-3: 0 = not a hex literal, 1 = hex integer, 2 = hex float. C makes
+; the binary exponent mandatory on a hex float, which is exactly what separates
+; the two — `0x1F` is an integer, `0x1p0` is a float, and `0x1.8` is neither
+; (clang: "hexadecimal floating constant requires an exponent").
+(defn hex-atom-kind (text:ptr len:i64):i32
+  (let (i:i64 0)
+    (when (< len 3) (return 0))
+    (when (or (= (char-at text 0) 43) (= (char-at text 0) 45)) (set! i 1))
+    (when (> (+ i 3) len) (return 0))
+    (when (!= (char-at text i) 48) (return 0))
+    (when (and (!= (char-at text (+ i 1)) 120) (!= (char-at text (+ i 1)) 88))
+      (return 0))
+    (set! i (+ i 2))
+    (let (digits:i32 0
+          seen-dot:i32 0)
+      (while (and (< i len) (>= (hex-digit-val (char-at text i)) 0))
+        (set! digits 1)
+        (set! i (+ i 1)))
+      (when (and (< i len) (= (char-at text i) 46))
+        (do (set! seen-dot 1)
+            (set! i (+ i 1))
+            (while (and (< i len) (>= (hex-digit-val (char-at text i)) 0))
+              (set! digits 1)
+              (set! i (+ i 1)))))
+      (when (= digits 0) (return 0))
+      (when (= i len)
+        (if (= seen-dot 0) (return 1) (return 0)))
+      (when (and (!= (char-at text i) 112) (!= (char-at text i) 80)) (return 0))
+      (set! i (+ i 1))
+      (when (and (< i len)
+                 (or (= (char-at text i) 43) (= (char-at text i) 45)))
+        (set! i (+ i 1)))
+      (let (edig:i32 0)
+        (while (and (< i len) (!= (isdigit (char-at text i)) 0))
+          (set! edig 1)
+          (set! i (+ i 1)))
+        (when (= edig 0) (return 0))
+        (when (!= i len) (return 0))
+        (return 2)))))
+
 (defn lex-atom ():!ptr
   (let (start-line:i32 g-line
         start:i64 g-pos)
@@ -417,6 +457,46 @@
                       (return (err! parse-error))))
                 (.set! t i val)))
             (return (ok (as ptr t))))))
+      ; Stage 16 FL-3: C's hex literals. Both spellings were plain symbols
+      ; before — and so an "undefined" error at every use — which is why this
+      ; is purely additive to every existing program.
+      (let (hk:i32 (hex-atom-kind text len))
+        (when (= hk 2)
+          (let (tf:ptr:Tok (as ptr:Tok (alloc-tok)))
+            (.set! tf kind TOK-FLOAT)
+            (.set! tf line start-line)
+            (.set! tf s (arena-strndup text len))
+            (return (ok (as ptr tf)))))
+        (when (= hk 1)
+          (let (buf:ptr (alloca i8 96))
+            (when (>= len 96)
+              (do (report-at start-line "integer literal too long")
+                  (return (err! parse-error))))
+            (memcpy buf text len)
+            (aset! (as ptr:i8 buf) len 0)
+            (let (t:ptr:Tok (as ptr:Tok (alloc-tok))
+                  errp:ptr:i32 (as ptr:i32 (__errno_location))
+                  neg:bool (= (char-at text 0) 45)
+                  val:i64 0)
+              (.set! t kind TOK-INT)
+              (.set! t line start-line)
+              ; Same two-step as the decimal path (LW-4): a positive literal
+              ; that overflows signed i64 may still be a ui64/usize value.
+              (aset! errp 0 0)
+              (set! val (strtol buf null 16))
+              (if (!= (aref errp 0) 34)
+                (.set! t i val)
+                (do
+                  (when neg
+                    (do (report-at start-line "integer literal out of range")
+                        (return (err! parse-error))))
+                  (aset! errp 0 0)
+                  (set! val (strtoull buf null 16))
+                  (when (= (aref errp 0) 34)
+                    (do (report-at start-line "integer literal out of range")
+                        (return (err! parse-error))))
+                  (.set! t i val)))
+              (return (ok (as ptr t)))))))
       (when (!= (is-float-literal text len) 0)
         (let (tf:ptr:Tok (as ptr:Tok (alloc-tok)))
           (.set! tf kind TOK-FLOAT)

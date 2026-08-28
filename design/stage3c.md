@@ -99,9 +99,13 @@ were already being stripped was wrong.
 
 The `restrict` qualifier is stripped. LLVM can use `noalias` for optimization, but this is low priority.
 
-### `long double`
+### `long double` — DONE (Stage 16 FL-7, 2026-08-26)
 
-`long double` is 80-bit on x86-64 Linux. Nucleus has no floating-point types at all yet. This is blocked on adding float/double support.
+`long double` is 80-bit on x86-64 Linux, IEEE binary128 on aarch64 and riscv64,
+and a plain `double` under MSVC and on AVR. It imports as the target's format
+now, alongside `_Float16`/`__fp16` → `f16` and `_Float128`/`__float128` → `f128`.
+See [stage16-ergonomics/c-boundary-defects.md](stage16-ergonomics/c-boundary-defects.md)
+§6 and §13. What is still unrepresentable, deliberately: `__int128` and `_BitInt`.
 
 ### Function pointers in struct fields
 
@@ -163,10 +167,32 @@ keeps `FILE` and SDL's `SDL_GUID` opaque. It is a real recursive-declarator
 problem rather than a lookup problem, and it is the first place a real C front end
 would pay for itself. The type-system gaps beside it (`long double`, `_Float128`,
 `_Float16` — 156 skipped declarations across the standard headers) are not parser
-problems at all and libclang would not help with them.
+problems at all and libclang would not have helped with them; Stage 16 FL-1…FL-7
+closed all three directly.
 
 The safety net matters here too: since W3b, a declaration the parser cannot
 faithfully describe is **skipped with a located warning** rather than emitted as
 invalid IR, so the cost of a remaining parser gap is a named missing function
 instead of a failed build. That materially lowers the pressure to replace the
 parser wholesale.
+
+**Settled 2026-08-26 —
+[stage16-ergonomics/cheader-parser-vs-libclang.md](stage16-ergonomics/cheader-parser-vs-libclang.md):
+finish the parser.** The prediction above named the right item and then Stage 16
+L1–L5 did it by hand: the struct-body declarator grammar now reads array members
+with literal *and* constant-expression extents (`sizeof`-bearing ones included),
+so `SDL_GUID` and the whole array class are no longer the blocker. Re-measured
+across 32 headers, **102 of 111** named struct/union bodies lay out and **101 of
+103** emitted C types match clang's `sizeof`. `FILE` is still opaque, but for a
+*different* reason than this note gives — glibc 2.41's `_IO_FILE` carries
+`int _flags2:24;`, a bitfield, not an array field. The nine remaining blocked
+types were four shapes plus `long double`, four of them fell to a single ~15-line
+repair, and of the three genuinely hard ones libclang would pay for exactly one
+(`__attribute__((packed))`); bitfields and C11 anonymous members are blocked by
+Nucleus having no way to express them, which a better front end does not fix.
+(Both of those claims were re-priced in that document's §8 and the anonymous-member
+half was withdrawn — the memoizer already lowers them. `long double` came off the
+list entirely with FL-7.) A
+libclang-shaped API was probed end to end from Nucleus and works — the SysV ABI
+is not the obstacle — so the decision rests on economics, and those are laid out
+there along with the triggers that would flip it.

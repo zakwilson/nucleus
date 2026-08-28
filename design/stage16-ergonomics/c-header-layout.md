@@ -997,6 +997,21 @@ is concentrated in one shape (array members, 132 of 163 blocked bodies), which i
 an argument that the hand-rolled parser is closer to sufficient than the raw 70 %
 figure suggests.
 
+> **Evaluated on 2026-08-26, after L1–L5 landed:
+> [cheader-parser-vs-libclang.md](cheader-parser-vs-libclang.md) — finish the
+> parser.** The prediction in the paragraph above held, and by a wider margin
+> than it claimed: re-measuring the same way across 32 headers gives **102 of
+> 111** named bodies laid out and **101 of 103** emitted C types matching
+> clang's `sizeof`. The nine blocked types are four shapes plus `long double`,
+> and **four of the nine fall to one ~15-line repair** — the inline
+> function-pointer item below, which is half-built rather than absent (the
+> branch at `src/cheader.nuc:1398-1405` already collapses the field to `ptr`; it
+> loses the field *name*, because `c-skip-parens` swallows `(*name)` whole). A
+> libclang-shaped API was probed end to end from Nucleus and works, so the ABI
+> is not the obstacle; the economics are. Two defects this survey could not see
+> also turned up — a bare `unsigned`/`signed` is not a type, and that path
+> records no skip reason — both staged there.
+
 **The rest of `src/repl_shim.c`.** The shim's own header comment is the
 motivating instance — *"jmp_buf is an opaque, platform-specific type that Nucleus
 cannot express directly"* — and L1–L4 remove that reason. They do not remove the

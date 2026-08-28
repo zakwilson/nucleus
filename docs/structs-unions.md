@@ -2,6 +2,9 @@
 
 ## Anonymous structs
 
+*(For C11's unnamed **member** whose fields are visible from the outer struct, see
+[Anonymous members](#anonymous-members--anon-t) below — a different feature.)*
+
 `(struct field:type ...)` is a type expression accepted wherever a type is expected — `let` bindings, `defn` parameter and return types, `defstruct` field types, `(ptr (struct ...))`, `as`/`unsafe/cast` targets. Members use the same `name:type` / `(name type)` form as `defstruct`. Anonymous structs are **memoized by structural content**: two `(struct ...)` literals with the same field name+type list share a single underlying `StructDef`, so values flow between sites that spell out the same shape. The synthetic LLVM type name is `%__anon_struct_h<16-hex>`, derived from a 64-bit FNV-1a hash of the field list.
 
 Examples:
@@ -11,6 +14,154 @@ Examples:
 - `(defn take ((p (ptr (struct x:i32)))):i32  ...)` — parameter typed as anonymous struct pointer
 
 Use `(.& obj field)` to obtain a pointer to a field without loading it. Result is typed `(ptr field-type)`, so it composes with `.set!`, `deref`, and further `.&` calls — e.g. `(.set! (.& o point) x 10)` writes through a value-typed nested struct field.
+
+## Packed structs — `(defstruct :packed …)`
+
+`:packed` between `defstruct` and the name is C's `__attribute__((packed))`: every
+field sits at the next byte with no padding, and the struct's own alignment is 1.
+
+```lisp
+(defstruct :packed WireHdr tag:i8 len:i32 flags:i16)   ; sizeof 7
+(defstruct        PlainHdr tag:i8 len:i32 flags:i16)   ; sizeof 12
+```
+
+Three things change together, and only the first is visible in a `sizeof`:
+
+- The layout: field offsets and the total size drop their padding, and a packed
+  struct nested inside another contributes alignment 1 to it.
+- The LLVM type line becomes `<{ … }>`.
+- **Every read and write through a packed field emits `align 1`.** A packed field
+  can sit at any byte, so an access claiming the field type's natural alignment
+  would be a false promise — a fault on a strict-alignment target and a
+  miscompile under vectorization on x86.
+
+`(.& p field)` on a packed struct hands back an ordinary `(ref T)`, which carries
+no alignment record — a load through *that* pointer claims the type's natural
+alignment again. This is the same hole C has (`&packed.x` is why GCC has
+`-Waddress-of-packed-member`); take the field by value instead.
+
+**On import**, `__attribute__((packed))` is honoured in the two positions C
+honours it: before the tag (`struct __attribute__((packed)) S { … };`) and after
+the closing brace (`struct S { … } __attribute__((packed));`), including the
+`__packed__` spelling. It is deliberately *ignored* after the declared name of a
+typedef (`typedef struct { … } S __attribute__((packed));`) because clang and gcc
+both ignore it there — honouring it would produce a `sizeof` that disagrees with
+every C compiler on the platform. This is what makes `struct epoll_event` import
+at 12 bytes rather than 16.
+
+**On export**, `--emit-cheader` writes the attribute back out after the closing
+brace, so a C consumer of a generated header gets the same layout.
+
+**On AVR every type is byte-aligned** (`BIGGEST_ALIGNMENT` is 8 bits), so packed
+and unpacked structs lay out identically there; the annotation is accepted and
+has no effect.
+
+## Over-aligned structs and fields — `:align N`
+
+`__attribute__((aligned(N)))` is the opposite mechanism to `:packed`: it *raises*
+an alignment. `:align N` takes an integer operand (a power of two, at most 4096)
+and goes in the same two places a declaration attribute goes — before the struct
+name, or heading a field cell:
+
+```lisp
+(defstruct :align 32 CacheLine v:i64)          ; sizeof 32, alignment 32
+(defstruct Slot c:i8 (:align 16 v:i32))        ; v at offset 16, sizeof 32
+```
+
+Alignment only ever goes up. `(defstruct :align 2 S x:i32)` leaves `S` at
+alignment 4, exactly as C does. On a `:packed` struct the two compose: packing
+drops every field to alignment 1 and `:align` then raises what it names, so
+`(defstruct :packed :align 4 D c:i8 i:i32)` is 8 bytes with `i` still at offset 1,
+while `(defstruct :packed E c:i8 (:align 4 i:i32))` puts `i` back at 4.
+
+Two consequences beyond the offsets:
+
+- **The gap becomes a real `[k x i8]` element in the LLVM type**, because LLVM
+  models neither form of over-alignment and computes array strides and GEP
+  offsets from the element list alone. `(defstruct :align 16 A x:i32)` emits
+  `%A = type { i32, [12 x i8] }`, which is also what clang emits.
+- **Every `alloca` and global of an over-aligned struct states its alignment**,
+  since LLVM would otherwise derive the smaller one from that same element list.
+
+**On import** all three positions C honours are read — before the tag, after the
+closing brace, and on a member — with both the `aligned` and `__aligned__`
+spellings. The argument may be an integer or `__alignof__(T)` / `sizeof(T)`; the
+`aligned(__alignof__(T))` idiom is the common one in real headers, where it pins
+a member's natural alignment rather than raising it, and it is what
+`max_align_t` is built from. An argument that is none of those (a macro that
+survived preprocessing, an arithmetic expression) leaves the type opaque with a
+recorded reason rather than a guessed layout.
+
+**On export**, `--emit-cheader` writes both the struct-level and the member-level
+attribute back out.
+
+## Bit-fields — `(:bits W name:T)`
+
+A field cell headed by `:bits` declares a C bit-field: `W` bits of an integer
+field of declared type `T`, sharing storage with its neighbours.
+
+```lisp
+(defstruct Hdr (:bits 4 ver:ui32) (:bits 4 hlen:ui32) (:bits 24 flow:ui32))
+```
+
+`W` must be between 0 and 64 and no wider than `T` (`':bits 40' exceeds the 32
+bits of its declared type`), and `T` must be an integer type. A **zero** width
+is C's unnamed boundary member: it stores nothing and forces the next bit-field
+to start at the next boundary of its declared type.
+
+```lisp
+(defstruct C (:bits 1 x:ui32) (:bits 0 z:ui32) (:bits 1 y:ui32))   ; sizeof 8
+```
+
+Reads and writes look like any other field — `(. p ver)`, `(.set! p ver 4)` —
+and a signed bit-field sign-extends on read, as in C. **`(.& p ver)` is refused**:
+a bit-field shares its bytes with its neighbours and has no address. That is C's
+own rule (`&s.bits` is ill-formed there too), not a Nucleus limitation.
+
+The layout rules are C's, which means they are the *platform's*: a bit-field may
+not cross a boundary of its declared type, `:packed` drops that rule but not the
+zero-width one, and AVR drops the crossing rule while keeping a zero-width
+member's byte boundary. Nucleus matches the platform C compiler on every target
+it supports — see
+[design/stage16-ergonomics/c-boundary-defects.md](../design/stage16-ergonomics/c-boundary-defects.md)
+§15.4 for the measured table.
+
+**On import**, `int x:3;` and the unnamed forms `unsigned :3;` / `unsigned :0;`
+are all read. **On export**, `--emit-cheader` writes the width back out.
+
+## Anonymous members — `(:anon T)`
+
+C11 lets a struct hold an unnamed struct or union member whose *own* field names
+are visible from the outside. `(:anon T)` declares one over an already-declared
+type:
+
+```lisp
+(defstruct Inner a:i32 b:i32)
+(defstruct Outer tag:i32 (:anon Inner) z:i32)
+(defstruct Inline tag:i32 (:anon (struct a:i32 b:i32)))   ; C's own spelling
+
+(defn read (p:ptr:Outer):i32 (return (. p a)))     ; reaches through the member
+```
+
+The member is an ordinary nested member — it occupies its own space and has its
+own alignment — and the lookup for a name that is not a direct field descends
+through it, at any depth, including through an anonymous union. A name supplied
+by **two** anonymous members is ambiguous and refused, as C refuses it; give the
+member you mean a name.
+
+`T` must be a struct or a union. `--emit-cheader` **refuses** an `:anon` member:
+C writes an anonymous member by inlining its body, so a member naming a declared
+type has no standard C spelling.
+
+**On import**, `struct { … };` and `union { … };` with no declarator are read as
+anonymous members, which is how `sigcontext` and `rusage` are written.
+
+## Flexible array members
+
+A C trailing member declared `T name[];` is read as a flexible array member: it
+contributes no bytes to the struct's size, and appears in the LLVM type as
+`[0 x T]`. `struct cmsghdr` is the usual example. There is no `defstruct`
+spelling for one; it exists so real headers import.
 
 ## Fixed-size array fields
 
@@ -59,7 +210,7 @@ rules, including where it is refused.
 
 ## Passing and returning structs by value
 
-A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or return type is passed/returned per the **platform C ABI**, so it interoperates correctly with C functions compiled by the system `cc`. On x86_64 System V this means small structs are coerced into registers (e.g. `{i32,i32}` → one `i64`; a struct with a `float` field whose eightbyte also holds an integer → `i64`), and structs larger than 16 bytes are passed `byval` / returned via a hidden `sret` pointer. aarch64, `avr`, and `riscv64` instead pass every `ABI-MEMORY`-classified struct as a plain pointer (no `byval` — none of those targets' ABIs has that attribute); on `avr` this applies to **every** struct/union regardless of size, not just those over 16 bytes, because the SysV eightbyte classifier's register-sized-chunk model has no counterpart on an 8-bit target — `abi-classify` bypasses eightbyte classification for `avr` entirely rather than adapting it. On `riscv64` (lp64d), struct-by-value follows the psABI's **hard-float** rules. An aggregate is first *flattened*: nested structs and arrays expand recursively into their scalar members, and a union never flattens. If the flattened list is exactly one FP real, two FP reals, or one FP real plus one integer ≤ XLEN **in either order**, the value travels in FP registers with its members' own IR types and offsets — `struct {float f;}` → `float`, `struct {double a,b;}` → `{double,double}`, `struct {float v[2];}` → `{float,float}` (two separate FPRs, where x86_64 SysV packs the same struct into one `<2 x float>` eightbyte), `struct {i32 i; f32 f;}` → `{i32,float}`, `struct {f32 f; i32 i;}` → `{float,i32}`. This applies only while the registers the rule needs are still free at that argument position: the budget is fa0-fa7 and a0-a7, an `ABI-MEMORY` return spends one of the latter on its hidden `sret` pointer, and every argument in a call or parameter list is charged in declaration order. Anything that does not qualify — three or more flattened members, a union, an over-wide member, a **variadic** argument (the `...` tail always uses the integer convention, with no flattening and no FP registers), or exhausted registers — falls back to the integer convention, coercing a struct ≤ 16 bytes into integer registers (`i64` / `{i64,i64}`). Returns are classified against a0/a1/fa0/fa1, which are always available, so a return never falls back for want of registers. A struct value is produced by dereferencing a pointer (`@p`) and consumed by storing the call result (`(ptr-set! q (make ...))`); field *access* still requires a pointer (`(. p f)` needs `p : (ptr S)`), so to read fields of a by-value struct parameter, first store it: `(let (q:ptr:S (alloca S)) (ptr-set! q p) (. q f))`. A function may take or return a struct defined anywhere in the same compilation unit or an import — struct definitions are registered before function signatures are resolved.
+A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or return type is passed/returned per the **platform C ABI**, so it interoperates correctly with C functions compiled by the system `cc`. On x86_64 System V this means small structs are coerced into registers (e.g. `{i32,i32}` → one `i64`; a struct with a `float` field whose eightbyte also holds an integer → `i64`), and structs larger than 16 bytes are passed `byval` / returned via a hidden `sret` pointer. aarch64, `avr`, and `riscv64` instead pass every `ABI-MEMORY`-classified struct as a plain pointer (no `byval` — none of those targets' ABIs has that attribute); on `avr` this applies to **every** struct/union regardless of size, not just those over 16 bytes, because the SysV eightbyte classifier's register-sized-chunk model has no counterpart on an 8-bit target — `abi-classify` bypasses eightbyte classification for `avr` entirely rather than adapting it. On `riscv64` (lp64d), struct-by-value follows the psABI's **hard-float** rules. An aggregate is first *flattened*: nested structs and arrays expand recursively into their scalar members, and a union never flattens. If the flattened list is exactly one FP real, two FP reals, or one FP real plus one integer ≤ XLEN **in either order**, the value travels in FP registers with its members' own IR types and offsets — `struct {float f;}` → `float`, `struct {double a,b;}` → `{double,double}`, `struct {float v[2];}` → `{float,float}` (two separate FPRs, where x86_64 SysV packs the same struct into one `<2 x float>` eightbyte), `struct {i32 i; f32 f;}` → `{i32,float}`, `struct {f32 f; i32 i;}` → `{float,i32}`. This applies only while the registers the rule needs are still free at that argument position: the budget is fa0-fa7 and a0-a7, an `ABI-MEMORY` return spends one of the latter on its hidden `sret` pointer, and every argument in a call or parameter list is charged in declaration order. Anything that does not qualify — three or more flattened members, a union, an over-wide member, a **variadic** argument (the `...` tail always uses the integer convention, with no flattening and no FP registers), or exhausted registers — falls back to the integer convention, coercing a struct ≤ 16 bytes into integer registers (`i64` / `{i64,i64}`). Returns are classified against a0/a1/fa0/fa1, which are always available, so a return never falls back for want of registers. A struct value is produced by dereferencing a pointer (`@p`) and consumed by storing the call result (`(ptr-set! q (make ...))`). Reading a field needs no pointer: `(. p f)`, `(p f)` and `(_get p f)` all accept a struct **value** — a by-value parameter, a `let`-bound struct local, or a call result read in place (`(. (mk 3) f)`). Writing one does: `.set!` and `.&` need the receiver's storage, so they take the same receivers `addr-of` does — a binding, not a temporary (`(.set! (mk 3) f 1)` is an error; bind it first). A function may take or return a struct defined anywhere in the same compilation unit or an import — struct definitions are registered before function signatures are resolved.
 
 ### Compound literals in by-value struct positions
 
@@ -98,7 +249,16 @@ zero-fill, struct-, union- and `CStr`-typed slots included.
 
 C headers consumed via `(import-use "foo.h")` or `(import "foo.h" prefix)` now register their `struct Foo { ... };` and `typedef struct { ... } Bar;` definitions as Nucleus structs with the same name. Anonymous inline struct fields are registered as memoized anonymous structs (same `__anon_struct_h<hex>` machinery). Pass-by-value parameters typed as a C struct work through this path. `union { ... }` fields, named unions, and `typedef union` are registered as untagged union types (see [Untagged `(union ...)`](#untagged-union-)); headers like SDL's or pthread's no longer degrade over them.
 
-A member whose type the parser genuinely cannot represent — a bitfield, a multi-declarator line (`int a, b;`), a C11 anonymous struct/union member, an inline function-pointer member (`void (*f)(int);` — a function pointer *behind a typedef* is fine), an array whose extent does not fold to a compile-time constant, or a by-value use of an unresolvable typedef — makes the **whole struct opaque** (below), with a located error at every by-value use, rather than a layout-incompatible partial struct. A size is never guessed: a member reached indirectly, through a typedef the parser could not follow, used to resolve to `ptr` silently, giving a wrong struct *layout* with no diagnostic; it is refused the same way a direct unrepresentable member always was.
+An **inline function-pointer member** (`void (*f)(int);`) imports as a real
+`(fn void)(i32)` field, as does the same shape behind a `typedef` and in a
+parameter, a `typedef` declarator, or a function's return
+(`void (*signal(int, void (*)(int)))(int)`) — see
+[Function pointer types](types.md#function-pointer-types). If the declarator's
+inner types are ones the parser cannot describe, the field narrows to a plain
+`ptr` (a function pointer is pointer-sized either way, so the layout is
+unaffected) rather than making the struct opaque.
+
+A member whose type the parser genuinely cannot represent — a multi-declarator line (`int a, b;`), an array whose extent does not fold to a compile-time constant, or a by-value use of an unresolvable typedef — makes the **whole struct opaque** (below), with a located error at every by-value use, rather than a layout-incompatible partial struct. (Bit-fields, C11 anonymous members and flexible array members are all represented now — see the sections above.) A size is never guessed: a member reached indirectly, through a typedef the parser could not follow, used to resolve to `ptr` silently, giving a wrong struct *layout* with no diagnostic; it is refused the same way a direct unrepresentable member always was.
 
 ### Array members
 
@@ -177,12 +337,12 @@ A type stays opaque either because no header in the translation unit defines
 it — `FILE` is this case: a plain `(import-use "stdio.h")` only ever sees
 `typedef struct _IO_FILE FILE;`, never `struct _IO_FILE`'s body — or because
 its definition uses a construct the C declaration parser cannot represent: a
-bitfield, a multi-declarator line, a C11 anonymous struct/union member
-(`struct rusage`'s `__extension__ union { long ru_maxrss; ...; };`), an
-inline function-pointer member (`struct sigaction`'s
-`void (*sa_handler)(int);` — a function pointer *behind a typedef*, like a
-callback field typed with a `typedef void (*cb)(int);` alias, is fine), or an
-array member whose extent does not fold to a compile-time constant. Both are
+multi-declarator line, or an array member whose extent does not fold to a
+compile-time constant. The other four constructs that used to belong on this
+list — bit-fields, C11 anonymous members, inline function-pointer members, and
+the flexible array member — are all represented now, so `FILE`, `sigcontext`,
+`rusage`, `sigaction` and `cmsghdr` lay out with the same sizes and offsets the
+platform `cc` gives them. Both are
 usable as handles; neither can be used by value. `examples/cheader-opaque.nuc`
 is a worked example (a real `fopen`/`fprintf`/`fgets` round trip through
 `ptr:FILE`).
@@ -212,6 +372,21 @@ ended the type, its token was eaten as the parameter's name, and the following
 two-parameter `(i32, ptr)` function. Only the `void` spelling produced IR that
 LLVM rejected; the rest were silently wrong at the ABI.
 
+### Declaration specifiers are order-independent
+
+C's integer specifiers may be written in any order and a bare `unsigned` or
+`signed` is itself a type (implicitly `unsigned int` / `signed int`), so all six
+of these import identically to the corresponding `ui32`/`i32` and `ui64`/`i16`:
+
+```c
+unsigned a;   signed b;      unsigned int c;   int unsigned d;
+unsigned long e;  long unsigned f;  short unsigned g;  unsigned short h;
+```
+
+A base this parser has no width for (`__int128`, `_BitInt(N)`) is *not* narrowed
+to `int` — it reaches the unresolved-base path and the enclosing declaration is
+skipped with a reason, as it was before.
+
 ## Typedefs in imported declarations
 
 A C `typedef` of a scalar, pointer, function pointer or enum resolves to the type
@@ -223,7 +398,7 @@ typedef __off_t  off_t;          /* off_t -> __off_t -> long int -> i64 */
 typedef unsigned char Uint8;     /* -> ui8  */
 typedef unsigned int  Uint32;    /* -> ui32 */
 typedef char        *string_t;   /* -> ptr  */
-typedef int   (*handler)(int);   /* -> ptr  */
+typedef int   (*handler)(int);   /* -> (fn i32)(i32) */
 typedef enum { A, B } mode_t2;   /* -> i32  (a C enum's underlying type) */
 typedef struct Foo   *FooPtr;    /* -> ptr  */
 ```
@@ -246,8 +421,11 @@ wrong struct *layout*, silently. `examples/cheader-posix.nuc` is a worked exampl
 A typedef the parser cannot follow is **never silently `ptr`**. The name is
 recorded as known-but-unrepresentable and any *by-value* use of it is refused
 (below); a *pointer* to it stays `ptr`, which is correct — every C pointer is one
-machine word. In practice the unrepresentable set is `long double`, `_Float128`,
-`_Float16`, and a typedef of a struct whose body the parser could not read (see
+machine word. Stage 16 FL-7 emptied most of this set: `long double`, `_Float128`,
+`__float128`, `_Float16` and `__fp16` all import as real types now (see [The
+wide float widths](types.md#the-wide-float-widths-and-which-targets-have-them)).
+What remains is `__int128` and `_BitInt`, both deliberately unscheduled, and a
+typedef of a struct whose body the parser could not read (see
 [Array members](#array-members) for when that is).
 
 ### Array typedefs decay like any other C array
@@ -400,16 +578,15 @@ zero such warnings.
 a type Nucleus has no equivalent for:
 
 ```
-prog.nuc:12: error: unknown: 'strtold' — its C header declaration was skipped
-(/usr/include/stdlib.h:127: a by-value 'long double' (no Nucleus type is that
-wide))
+prog.nuc:12: error: unknown: 'wide' — its C header declaration was skipped
+(/usr/include/thing.h:127: a by-value '__int128' (no Nucleus type is that wide))
 ```
 
-These are common and irrelevant to a build that never calls the function —
-`<math.h>` alone contributes ~30 `long double` entries, and importing
-`SDL2/SDL.h` reaches 165 across everything it pulls in — so warning about each at
-import time would bury the tier above. Nothing is silent either way: the reason,
-header and line are delivered exactly where they matter.
+These are irrelevant to a build that never calls the function, so warning about
+each at import time would bury the tier above. Nothing is silent either way: the
+reason, header and line are delivered exactly where they matter. This tier used
+to be dominated by `long double` — ~30 entries from `<math.h>` alone, 165 across
+everything `SDL2/SDL.h` pulls in — and FL-7 removed all of them.
 
 A declaration is skipped when it has:
 
@@ -421,10 +598,15 @@ A declaration is skipped when it has:
   function results"*;
 * an **opaque** parameter or return type;
 * a **by-value parameter or return whose type could not be resolved** — an
-  unfollowable typedef, or a builtin Nucleus has no width for (`long double`,
-  `_Float128`);
+  unfollowable typedef, or a builtin Nucleus has no width for (`__int128`,
+  `_BitInt`);
 * **more than 32 parameters** (the importer's fixed parameter array), so a
-  truncated signature is never registered.
+  truncated signature is never registered;
+* a **declarator shape the parser does not recognize at all** — a parenthesised
+  declarator (`int (f)(int);`) is the canonical case. This one reports only at
+  the point of use, since a preprocessed header is full of variables and macro
+  remnants that legitimately take the same path, and a warning on every one of
+  them would bury the tier above.
 
 Skipping is a deliberate destination, not a failure mode: a program that gets 95%
 of a header plus three named diagnostics is in far better shape than one that gets

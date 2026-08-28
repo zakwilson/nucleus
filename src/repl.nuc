@@ -668,6 +668,12 @@
                                 (fprintf g-body-stream "  ret float %s\n" (result val))
                               (= result-kind TY-F64)
                                 (fprintf g-body-stream "  ret double %s\n" (result val))
+                              ; FL-1: the wide widths return through the JIT the
+                              ; same way; only the PRINTING side below has no
+                              ; helper for them yet, so they show as <value>.
+                              (!= (is-float-type (result type)) 0)
+                                (fprintf g-body-stream "  ret %s %s\n"
+                                  (type-to-ir (result type)) (result val))
                               true
                                 (fprintf g-body-stream "  ret void\n")))
                       ; Build function definition
@@ -683,6 +689,9 @@
                         (when (= result-kind TY-PTR) (set! ret-ir "ptr"))
                         (when (= result-kind TY-F32) (set! ret-ir "float"))
                         (when (= result-kind TY-F64) (set! ret-ir "double"))
+                        (when (or (= result-kind TY-F16)
+                                  (or (= result-kind TY-F80) (= result-kind TY-F128)))
+                          (set! ret-ir (as ptr (type-to-ir (result type)))))
                         (fprintf g-def-stream "define %s @%s() {\n" ret-ir eval-sym)
                         (fprintf g-def-stream "entry:\n")
                         (when (and (!= g-entry-bufp null) (!= (char-at g-entry-bufp 0) 0))

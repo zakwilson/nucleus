@@ -19,14 +19,18 @@
 
 /* ---- the five unrepresentable member shapes ------------------------------ */
 
-/* c-parse-type:596 — a by-value `long double`. */
-struct l1_m_long_double { long double d; int b; };
+/* c-parse-type:596 — a by-value builtin with no Nucleus width. Stage 16 FL-7
+   made `long double` representable (it is f80 here, f128 on aarch64/riscv64),
+   so the durable subject is `__int128`: a GCC extension deliberately left
+   unscheduled, and one c-parse-type keeps OUT of the bare-`unsigned` implicit
+   -int rule for exactly this reason. */
+struct l1_m_wide_int { __int128 d; int b; };
 
 /* c-parse-type:599 — a by-value name the typedef table records as known but
-   unrepresentable. `long double` again, one level of indirection away, so the
-   member spelling itself looks perfectly ordinary. */
-typedef long double l1_ld_t;
-struct l1_m_unrep_typedef { l1_ld_t d; int b; };
+   unrepresentable. The same type one level of indirection away, so the member
+   spelling itself looks perfectly ordinary. */
+typedef __int128 l1_wi_t;
+struct l1_m_unrep_typedef { l1_wi_t d; int b; };
 
 /* c-parse-type:554 — a by-value `struct Tag` whose tag is opaque. */
 struct l1_opaque_tag;
@@ -36,10 +40,10 @@ struct l1_m_opaque_tag { struct l1_opaque_tag o; int b; };
 struct l1_m_unknown_tag { struct l1_nowhere_at_all z; int b; };
 
 /* c-parse-type:529 — a by-value aggregate whose `{…}` body the parser could not
-   read. A bitfield is the shape design/stage3c.md defers, reached here through a
-   typedef so the enclosing member is an ordinary name. */
-typedef struct { int x; int y:3; } l1_bitfield_t;
-struct l1_m_bad_body { l1_bitfield_t t; int b; };
+   read. A multi-declarator member line is that shape now that BF-4 gave
+   bitfields a real one; reached through a typedef so the member is a plain name. */
+typedef struct { int x; int a, b; } l1_multi_t;
+struct l1_m_bad_body { l1_multi_t t; int b; };
 
 /* ---- positive controls --------------------------------------------------- */
 

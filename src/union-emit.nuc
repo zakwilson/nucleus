@@ -686,9 +686,8 @@
               ctxgep (hsd ir-name) h (struct-field-index (as ptr hsd) (intern-str "ctx")))
             (fprintf g-body-stream "  %s = load ptr, ptr %s\n" ctx ctxgep)
             ; m:(Maybe T) = hfn(ctx, detail) through the struct-return ABI.
-            ; Must go through abi-emit-struct-call (not emit-funcall-value):
-            ; the handler defn returns (Maybe T) coerced per the Stage-8 struct
-            ; ABI, so the call site must coerce to match.
+            ; Emitted here rather than via emit-funcall-value: there is no AST
+            ; for this call, so the ABI lowering has to be spelled out.
             (let (arglist:ptr (fmt-2s "ptr %s, ptr %s" ctx detail-val)
                   mres:ref:Val (abi-emit-struct-call (abi-classify maybe-ty)
                                                      maybe-ty hfn arglist 2))
