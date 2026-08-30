@@ -4846,8 +4846,10 @@
     (when (= t null) (return null))
     (let (sd:?ptr:StructDef (access-receiver-sdef (as raw:Type t)))
       (when (= sd null) (return null))
-      (let (fn-node:ptr:Node (unsafe/cast ptr:Node (node-at n 2)))
-        (when (!= (fn-node kind) NODE-SYM) (return null))
+      ; Lockstep with emit-field-load / emit-field-set / emit-field-addr, which
+      ; all take the selector through selector-literal-sym (dot-forms.md §5).
+      (let (fn-node:(raw Node) (selector-literal-sym (node-at n 2)))
+        (when (= fn-node null) (return null))
         ; FR-1: the same resolver the emit side uses, so a path that reaches
         ; through an anonymous member cannot answer differently in the two.
         (let (fr:?ptr:FieldRef (struct-field-ref (as ptr sd) (fn-node s)))

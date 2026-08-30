@@ -599,6 +599,8 @@
 (defvar g-interactive:i32 0)  ; when 1, run in REPL mode (-i / --interactive)
 (defvar g-repl-format:i32 0)  ; 0 = text (default), 1 = json (one JSON object per error)
 (defvar g-opt-level:i32 0)    ; -O0..-O3; LLVMCodeGenOptLevel: None=0, Less=1, Default=2, Aggressive=3
+(defvar g-strict-selectors:i32 0)     ; --strict-selectors: report a bare symbol in selector position
+(defvar g-strict-selector-hits:i32 0) ; sites so reported; a nonzero count fails the compile
 
 ; REPL eval counter (for unique __repl_eval_N symbols).
 (defvar g-repl-id:i32 0)
@@ -5722,9 +5724,10 @@
       (when (and (!= ek TY-STRUCT) (!= ek TY-UNION))
         (die-at (cc line) "_get: operand must be a struct or union, or a pointer to one"))
       (require-derefable pt (cc line) "field access")
-      (let (fn-node:(raw Node) (node-at cc 2))
-        (when (!= (fn-node kind) NODE-SYM)
-          (die-at (node-line (as ptr fn-node) (cc line)) "_get: field name must be symbol"))
+      (let (fn-node:(raw Node) (selector-literal-sym (node-at cc 2)))
+        (when (= fn-node null)
+          (die-at (node-line (node-at cc 2) (cc line)) "_get: field name must be symbol"))
+        (note-bare-selector (node-at cc 2) fn-node (cc line) "_get")
         (let (sd:(raw StructDef) ((pt elem) sdef)
               idx:i32 (struct-field-index sd (fn-node s)))
           ; W3a: an opaque type has no fields at all, so "no field 'x'" would be
@@ -5796,6 +5799,17 @@
         (let (inner:(raw Node) (node-at node 1))
           (when (= (inner kind) NODE-SYM) (return inner)))))
     (return null)))
+
+; dot-forms.md §5 step 1: the migration to `'field` is enumerated by the compiler
+; because head-position `(p x)` is indistinguishable from a call by shape alone.
+(defn note-bare-selector (sel-node:(raw Node) lit:(raw Node) line:i32 what:CStr):void
+  (when (= g-strict-selectors 0) (return))
+  ; selector-literal-sym returns the node itself for a bare symbol, the inner one for `'x`.
+  (when (or (= lit null) (!= lit sel-node)) (return))
+  (inc! g-strict-selector-hits)
+  (report-at (node-line sel-node line)
+    (fmt-3s "strict-selectors: %s selector '%s' is a bare symbol -- write '%s"
+            what (lit s) (lit s))))
 
 ; Stage 15 W7 (design/stage15-stress-test/selector-ambiguity.md): does the callee
 ; type `ct` denote a pointer to a struct/union that actually carries a field named
@@ -6057,6 +6071,9 @@
                (= (callee-has-field ct sym) 0)
                (!= (selector-shadowed-by-local scope sym) 0))
       (set! sym null))
+    ; After the demotion: a selector already reading as a value is what step 3
+    ; makes the rule, so it is not a site the migration has to touch.
+    (note-bare-selector sel-node sym line "get")
     (if (!= sym null)
       ; --- Branch A: literal-symbol selector (unchanged field-access path) ---
       (when (!= g null)
@@ -6724,9 +6741,12 @@
       (when (and (!= ek TY-STRUCT) (!= ek TY-UNION))
         (die-at (cc line) ".set!: operand must be a struct or union, or a pointer to one"))
       (require-derefable pt (cc line) ".set!")
-      (let (fn-node:(raw Node) (node-at cc 2))
-        (when (!= (fn-node kind) NODE-SYM)
-          (die-at (node-line (as ptr fn-node) (cc line)) ".set!: field name must be symbol"))
+      ; The read paths' selector rule, so a bare and a quoted field name mean the
+      ; same thing at every member form (dot-forms.md §5 phase 0).
+      (let (fn-node:(raw Node) (selector-literal-sym (node-at cc 2)))
+        (when (= fn-node null)
+          (die-at (node-line (node-at cc 2) (cc line)) ".set!: field name must be symbol"))
+        (note-bare-selector (node-at cc 2) fn-node (cc line) ".set!")
         (let (sd:(raw StructDef) ((pt elem) sdef)
               idx:i32 (struct-field-index sd (fn-node s))
               ; AN-2: null unless the name came from an anonymous member, in
@@ -10634,9 +10654,10 @@
       (when (and (!= ek TY-STRUCT) (!= ek TY-UNION))
         (die-at (cc line) ".&: operand must be a struct or union, or a pointer to one"))
       (require-derefable pt (cc line) ".&")
-      (let (fn-node:ptr:Node (unsafe/cast ptr:Node (node-at cc 2)))
-        (when (!= (fn-node kind) NODE-SYM)
-          (die-at (node-line (as ptr fn-node) (cc line)) ".&: field name must be symbol"))
+      (let (fn-node:(raw Node) (selector-literal-sym (node-at cc 2)))
+        (when (= fn-node null)
+          (die-at (node-line (node-at cc 2) (cc line)) ".&: field name must be symbol"))
+        (note-bare-selector (node-at cc 2) fn-node (cc line) ".&")
         (let (sd:ptr:StructDef (unsafe/cast ptr:StructDef ((pt elem) sdef))
               idx:i32 (struct-field-idx (as ptr sd) (fn-node s))
               afr:?ptr:FieldRef null)
@@ -18668,6 +18689,8 @@
                 (set! g-repl-format 0)
               (= arg "--repl-format=json")
                 (set! g-repl-format 1)
+              (= arg "--strict-selectors")
+                (set! g-strict-selectors 1)
               (= arg "-O0")
                 (set! g-opt-level 0)
               (= arg "-O1")
@@ -18714,7 +18737,7 @@
 
     ; Batch mode — require source file
     (when (= source-file null)
-       (fprintf stderr "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [--mmcu=<device>] [--sysroot=<path>] [--linker=<cmd>] [--link-arg=<arg>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
+       (fprintf stderr "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [--mmcu=<device>] [--sysroot=<path>] [--linker=<cmd>] [--link-arg=<arg>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [--strict-selectors] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
     (set! g-source-path source-file)
     (let (src:ptr (read-file source-file))
       ; G-5: `compiler-init` is gone. Every global it used to build is now built
@@ -18777,5 +18800,11 @@
           (fprintf stderr "nucleusc: internal error: %d (dyn P) annotation checks were never drained\n"
                    (unsafe/cast i32 (- (count g-dyn-annots) g-dyn-annots-drained)))
           (exit 1))
+        ; Reported rather than fatal at the first site, so one compile enumerates
+        ; a whole file; no output is written (dot-forms.md §5 step 1).
+        (when (!= g-strict-selector-hits 0)
+          (fprintf stderr "nucleusc: %d bare selector(s) under --strict-selectors\n"
+                   g-strict-selector-hits)
+          (return 1))
         (flush-module-ir source-file))))
     (return 0)))

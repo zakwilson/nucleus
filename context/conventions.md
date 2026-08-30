@@ -5683,3 +5683,25 @@ in `emit-symbol-ref`, `node-type-sym` and `fn-rewrite-captures`. Note that
 `def-rmacro` cannot do this from source: a unit is read in full before its forms
 are processed, so a `def-rmacro` never affects its own file (it does work in the
 REPL, which reads a form at a time).
+
+## A check on an emit path counts INSTANTIATIONS, not source sites
+
+`die-at` is `:noreturn`, so a check that has to *enumerate* rather than stop —
+an audit flag, a migration driver, a deprecation sweep — is `report-at` plus a
+counter that `main` tests before `flush-module-ir`. Two things about the count
+are easy to get wrong, and both were measured on Stage 16's
+`--strict-selectors` (`design/stage16-ergonomics/dot-forms.md` §2):
+
+- **A generic body is emitted once per instantiation**, so a site inside one is
+  reported once per instantiation: `lib/vector.nuc`'s 29 `(_get …)` sites
+  produced 629 reports. Dedup on `file:line:name` before believing a total —
+  raw 7555 vs. real 6106.
+- **A generic this unit never instantiates is never visited at all.** 27 files
+  under `src/`+`lib/` reported nothing, `lib/string.nuc` among them. A per-unit
+  check is not a tree-wide inventory; `examples/` and `tests/fixtures/` need
+  their own runs, and a form inside a quasiquote template is data that no run
+  reaches.
+
+The same asymmetry applies to any "how many places do X" question answered from
+inside the compiler: it answers about emitted code, and a grep answers about
+source text. Neither is the other's sanity check.

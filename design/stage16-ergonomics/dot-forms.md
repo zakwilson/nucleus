@@ -1,6 +1,8 @@
 # Retiring the `.` forms, and the selector rule underneath them
 
-**Status: planned** (2026-08-30). Phase 0 in progress.
+**Status: in progress** (2026-08-30). **Steps 0 and 1 done** — every member form
+takes the quoted selector, and `--strict-selectors` enumerates the sites that
+still do not. See §5.
 
 Three special forms are spelled with a leading dot — `.` (member read), `.&`
 (member address) and `.set!` (member write). They are the last forms whose name
@@ -22,7 +24,8 @@ is the fallback. `selector-literal-sym` accepts either a bare `NODE-SYM` or a
 `(quote sym)` cell, which is why the quoted spelling already works on every
 read path.
 
-Site counts:
+Textual occurrences (what a grep sees — §2 counts the sites the compiler
+actually emits, which is the number that governs the migration):
 
 | form | src | lib | examples | fixtures | ≈ |
 |---|---:|---:|---:|---:|---:|
@@ -65,13 +68,12 @@ What it costs is `'` on the most common read in the language, and a migration.
 
 Two populations, and only one of them is hard.
 
-**Fixed-position selectors** — `.` / `.&` / `.set!` argument 2, ~1585 sites. The
-position is known from the form, so this is a regex.
+**Fixed-position selectors** — `.` / `.&` / `.set!` argument 2. The position is
+known from the form, so this is a regex.
 
 **Head-position `(p x)`** — not regexable, because `(foo bar)` is a function
 call, a callable-value invoke, or a field access and nothing in the shape says
-which. Sampling 80 field names from `compiler-types.nuc` alone finds 1002 in
-`src/`, 45 in `lib/`, 42 in `examples/` — a lower bound from one header.
+which.
 
 But head-position sites do not break *silently* under the new rule, because the
 computed path is double-gated: the selector must evaluate to a `ptr`
@@ -81,10 +83,45 @@ homogeneous (`computed field access requires a homogeneous struct`). So
 hits the ptr gate. Silent breakage needs all three of: a local shadowing the
 field name, typed `ptr`, on a homogeneous struct.
 
-So the migration is driven by the compiler, not by a regex: a
-`--strict-selectors` flag that refuses a bare symbol in selector position
-enumerates every site, the tree builds at every step, and the flag becomes the
-default when the list is empty.
+So the migration is driven by the compiler, not by a regex: `--strict-selectors`
+(§5 step 1) reports every bare selector, the tree builds at every step, and the
+flag becomes the default when the list is empty.
+
+### How big it actually is
+
+Counted by the flag itself, compiling `src/nucleusc.nuc` (which pulls in all of
+`src/` and the `lib/` prelude) — **6106 sites**, deduplicated on file:line:name:
+
+| form | sites |
+|---|---:|
+| head-position / `get` | 4976 |
+| `.set!` | 1094 |
+| `_get` (incl. `.`) | 21 |
+| `.&` | 15 |
+
+Head position is **81%** of the work, which the earlier estimate here understated
+by 5× — it sampled 80 field names from one header and found 1002, and the tail
+past that sample is most of the total. Three consequences:
+
+- The flag is not a convenience, it is the only way to do step 2 at all.
+- Step 2 is a script over the flag's own output (`file:line:name` is enough to
+  rewrite a site precisely), not a regex pass with hand cleanup.
+- `.` is already dead — 21 sites, and `_get` counts them together. Step 4's
+  rename is a rounding error next to step 2.
+
+**The flag sees emitted code, not source.** It reports what one compilation unit
+actually emits, which is narrower than the tree in two ways, both of which step 2
+has to cover by other means:
+
+- 27 files under `src/`+`lib/` report nothing, because nothing in this unit
+  reaches them (`lib/string.nuc`, `lib/parse.nuc`, `lib/nsdescribe*.nuc`, …).
+  `examples/` and `tests/fixtures/` need their own runs.
+- An **uninstantiated generic is unchecked**, and an instantiated one is checked
+  once per instantiation — `lib/vector.nuc`'s 29 `_get` sites report 629 times.
+  Dedup on file:line:name; the raw stream was 7555 lines for 6106 sites.
+
+A `.set!` inside a quasiquote template is data, not emitted code, so it is
+invisible here too. There are only 5, and step 2 rewrites them by hand.
 
 ## 3. Retiring the forms
 
@@ -131,13 +168,39 @@ syntax removes it.
 
 ## 5. Staging
 
-0. **`.set!` and `.&` accept `'x`.** Both demand a raw `NODE-SYM` today and
-   reject the quoted form the read paths already take. Route them through
-   `selector-literal-sym`. Purely additive, and it is what lets step 2 rewrite
-   into a spelling the *current* compiler accepts.
-1. `--strict-selectors`, refusing a bare symbol in selector position.
+0. **Every member form accepts `'x`. (done 2026-08-30.)** Purely additive, and
+   it is what lets step 2 rewrite into a spelling the *current* compiler
+   accepts. Four sites, all now routed through `selector-literal-sym`:
+   `emit-field-set` (`.set!`), `emit-field-addr` (`.&`), the `_get` emitter —
+   which is where `.` lands, so `(. p 'x)` was refused too even though
+   `(get p 'x)` and `(p 'x)` worked — and the `node-type-field` mirror
+   (`src/generics.nuc`), without which the type pass and codegen would resolve a
+   quoted selector differently. `_get` was missed on the first pass and caught
+   by `s16-quoted-selector-ir-identical`, which is why that assertion diffs the
+   IR of a *whole* member vocabulary rather than one form.
+1. **`--strict-selectors`. (done 2026-08-30.)** One helper, `note-bare-selector`,
+   called from the four sites step 0 unified — `emit-field-set`,
+   `emit-field-addr`, `emit-field-get`, and `emit-get-with-callee`, which covers
+   both `get` and head position. The discriminator is the one step 0 already
+   relied on: `selector-literal-sym` returns the node itself for a bare symbol
+   and the *inner* node for `'x`.
+
+   Two decisions worth keeping:
+
+   - It **reports and continues**, then fails in `main` on the count, rather than
+     dying at the first site. Enumerating a tree is the entire purpose; a fatal
+     diagnostic would need 6106 compiles. No output is written when the count is
+     nonzero, so a strict run still reads as a failed compile.
+   - In `emit-get-with-callee` the call sits **after** the W7 demotion, so a
+     selector that already reads as a value — the callee has no such field and a
+     local shadows it — is not reported. That case is what step 3 makes the
+     universal rule, so it is not a site the migration has to touch.
+
+   Off by default, so `make`, the bootstrap, and every other test are unaffected.
 2. Migrate `src`/`lib`/`examples`/fixtures under the flag; `make
-   update-bootstrap` so the boot compiler speaks the new source.
+   update-bootstrap` so the boot compiler speaks the new source. Drive it from
+   the flag's output, deduplicated, and re-run per directory — one unit does not
+   cover the tree (see §2).
 3. Flip the default; retire the annotation escape hatch.
 4. `.` → `get`, `.&` → `(addr-of p f)`.
 5. `set!` as a place form; fold in `ptr-set!` and `aset!`.
