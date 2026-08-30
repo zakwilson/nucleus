@@ -157,7 +157,7 @@ store, argument, return) — narrow first, or assert with `(cast ref:T x)` (the
 audited C-boundary escape hatch). An elem-less bare `ptr` (`void*`) slot carries
 no contract and is exempt. Widening (non-null→raw, non-null→`?T`, raw↔`?T`) is
 always allowed. `none` is the null `?T` literal. Stack addresses are non-null by
-construction: `(addr-of x)`, `(.& p 'f)`, `(alloca T)`, `(array T …)`, and a
+construction: `(addr-of x)`, `(addr-of p 'f)` (the 2-argument arity), `(alloca T)`, `(array T …)`, and a
 `(S …)` compound literal all yield `(ref T)`.
 
 **Uniform `?` (Maybe)** (Stage 10 Phase F): `?T` ≡ `(Maybe T)` with no
@@ -221,11 +221,11 @@ Examples:
 - `(defstruct Outer (pt (struct x:i32 y:i32)) tag:i32)` — nested by value
 - `(defn take ((p (ptr (struct x:i32)))):i32  ...)` — parameter typed as anonymous struct pointer
 
-Use `(.& obj 'field)` to obtain a pointer to a field without loading it. Result is typed `(ptr field-type)`, so it composes with `.set!`, `deref`, and further `.&` calls — e.g. `(.set! (.& o 'point) 'x 10)` writes through a value-typed nested struct field.
+Use `(addr-of obj 'field)` to obtain a pointer to a field without loading it. Result is typed `(ptr field-type)`, so it composes with `.set!`, `deref`, and further `addr-of` calls — e.g. `(.set! (addr-of o 'point) 'x 10)` writes through a value-typed nested struct field.
 
 ### Passing and returning structs by value
 
-A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or return type is passed/returned per the **platform C ABI**, so it interoperates correctly with C functions compiled by the system `cc`. On x86_64 System V this means small structs are coerced into registers (e.g. `{i32,i32}` → one `i64`; a struct with a `float` field whose eightbyte also holds an integer → `i64`), and structs larger than 16 bytes are passed `byval` / returned via a hidden `sret` pointer. Other targets' ABIs are not yet implemented (see `design/stage8/platform.md`). A struct value is produced by dereferencing a pointer (`@p`) and consumed by storing the call result (`(ptr-set! q (make ...))`). Reading a field needs no pointer: `(. p 'f)`, `(p 'f)` and `(_get p 'f)` all accept a struct **value** — a by-value parameter, a `let`-bound struct local, or a call result read in place (`(. (mk 3) 'f)`). Writing one does: `.set!` and `.&` need the receiver's storage, so they take the same receivers `addr-of` does — a binding, not a temporary (`(.set! (mk 3) 'f 1)` is an error; bind it first). A function may take or return a struct defined anywhere in the same compilation unit or an import — struct definitions are registered before function signatures are resolved.
+A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or return type is passed/returned per the **platform C ABI**, so it interoperates correctly with C functions compiled by the system `cc`. On x86_64 System V this means small structs are coerced into registers (e.g. `{i32,i32}` → one `i64`; a struct with a `float` field whose eightbyte also holds an integer → `i64`), and structs larger than 16 bytes are passed `byval` / returned via a hidden `sret` pointer. Other targets' ABIs are not yet implemented (see `design/stage8/platform.md`). A struct value is produced by dereferencing a pointer (`@p`) and consumed by storing the call result (`(ptr-set! q (make ...))`). Reading a field needs no pointer: `(get p 'f)`, `(p 'f)` and `(_get p 'f)` all accept a struct **value** — a by-value parameter, a `let`-bound struct local, or a call result read in place (`(get (mk 3) 'f)`). Writing one does: `.set!` and the 2-argument `addr-of` need the receiver's storage, so they take the same receivers 1-argument `addr-of` does — a binding, not a temporary (`(.set! (mk 3) 'f 1)` is an error; bind it first). A function may take or return a struct defined anywhere in the same compilation unit or an import — struct definitions are registered before function signatures are resolved.
 
 ### C header struct ingestion
 
@@ -259,7 +259,7 @@ reinterpretation, exactly `cast`'s contract (no checking; the raw frontier):
 ```lisp
 (defstruct Scalar kind:i32 (data (union as-int:i64 as-float:f64)))
 (let (s:ptr:Scalar (alloca Scalar)
-      (d (ptr (union as-int:i64 as-float:f64))) (.& s 'data))
+      (d (ptr (union as-int:i64 as-float:f64))) (addr-of s 'data))
   (.set! d 'as-int (cast i64 42))
   (d 'as-int))
 ```
@@ -865,12 +865,12 @@ only the AST representation is uniform.
 
 ```
 ; Pick a printf format from the literal kind, then splice the original
-; expression in. The macro inspects (. x 'kind) at expansion time; the
+; expression in. The macro inspects (get x 'kind) at expansion time; the
 ; spliced ~x is compiled at the call site with whatever type it has.
 (defmacro tprint (x)
-  (cond (= (. x 'kind) NODE-INT) `(printf "%d\n" ~x)
-        (= (. x 'kind) NODE-STR) `(printf "%s\n" ~x)
-        (= (. x 'kind) NODE-FLOAT) `(printf "%f\n" ~x)
+  (cond (= (get x 'kind) NODE-INT) `(printf "%d\n" ~x)
+        (= (get x 'kind) NODE-STR) `(printf "%s\n" ~x)
+        (= (get x 'kind) NODE-FLOAT) `(printf "%f\n" ~x)
         true                    `(printf "%p\n" ~x)))
 
 (tprint 42)        ; → (printf "%d\n" 42)        — i32 at the call site
@@ -944,11 +944,12 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `and` | Short-circuit logical AND | `&&` |
 | `or` | Short-circuit logical OR | `\|\|` |
 | `cast` | Type cast | `(type)x` |
-| `addr-of` | Take address of a variable | `&x` |
+| `addr-of` | Take the address of a **variable** (`(addr-of x)`, reader sugar `&x`) or of a **field** (`(addr-of s 'field)`, the 2-argument arity that replaced `.&`). The two cannot collide: a variable address takes a bare symbol, a field address a receiver plus a quoted selector. | `&x` / `&s.field` |
 | `deref` | Dereference a pointer (reader sugar: `@p` → `(deref p)`) | `*p` |
 | `ptr-set!` | Write through a pointer; yields the stored value | `*p = val` |
 | `ptr+` | Pointer arithmetic | `p + n` |
-| `.` | Struct field access; equivalent to head position `(s 'field)` and lowers to the `_get` primitive for a plain struct. | `s.field` |
+| `.` | **Retired in Stage 16** — a targeted hard error: `'.' was retired in Stage 16: use 'get'`. Write `(get s 'field)`, or head position `(s 'field)`. | — |
+| `.&` | **Retired in Stage 16** — a targeted hard error naming the 2-argument `addr-of`: `(addr-of s 'field)`. | — |
 | `_get` | Low-level struct field read (compiler-internal primitive; bypasses any user `get` override). Prefer head position `(s 'field)` in ordinary code; use `_get` only where head position would dispatch wrongly (a user `get` method reading its own field, or a struct held in a special-form-named variable). | `s.field` |
 | `.set!` | Struct field assignment; yields the stored value | `s.field = val` |
 | `get` | Member access / field read: `(get s 'field)` ≡ `(s 'field)`; for a plain struct this lowers to the `_get` primitive (zero-overhead), overridable per type. See [Callable values](#callable-values-non-function-call-position) | `s.field` |
@@ -988,7 +989,7 @@ dangle. The compiler tracks aliases (its **taint**) at compile time and rejects
 escapes (see `design/stage10/lifecycle.md`):
 
 - Taint follows pointer **identity**: binding a tainted value (`let`/`with`/
-  `set!`), `cast`, `ptr+`, `.&`, `addr-of`, and control-flow joins keep it.
+  `set!`), `cast`, `ptr+`, `addr-of`, and control-flow joins keep it.
   Copying the pointee **value** out (`deref`, field loads) clears it — so
   `(return (deref p))` and `(return (p count))` are fine.
 - **Escape sinks** (compile errors on tainted operands): `return` (explicit or
@@ -1103,8 +1104,8 @@ A `defn` whose name already exists but whose **parameter types differ** does not
 (defstruct Circle rad:i32)
 (defstruct Rect w:i32 h:i32)
 
-(defn area (c:ptr:Circle):i32 (return (* (* (. c 'rad) (. c 'rad)) 3)))
-(defn area (s:ptr:Rect):i32   (return (* (. s 'w) (. s 'h))))
+(defn area (c:ptr:Circle):i32 (return (* (* (get c 'rad) (get c 'rad)) 3)))
+(defn area (s:ptr:Rect):i32   (return (* (get s 'w) (get s 'h))))
 
 (defn kind (x:i32):i32 (return 1))   ; overload on primitive type
 (defn kind (x:f64):i32 (return 2))
@@ -1138,7 +1139,7 @@ A **protocol** names a capability — a set of required method signatures — an
 `extend Type Protocol` is a **checked, code-free conformance assertion**. It runs after the whole-file prescan: for each required signature it substitutes `Self → Type` and requires that a concrete method already resolves at the exact tier (the implementations are ordinary overloaded `defn`s). It records the `(Type, Protocol)` fact and emits nothing.
 
 ```lisp
-(defn area (s:ptr:Circle):i32 (return (* (* (. s 'rad) (. s 'rad)) 3)))
+(defn area (s:ptr:Circle):i32 (return (* (* (get s 'rad) (get s 'rad)) 3)))
 (defn label (s:ptr:Circle):ptr (return "circle"))
 
 (extend Circle Shape)   ; OK — both methods exist for Circle
@@ -1307,7 +1308,7 @@ uses `_get` for its own fields to avoid recursing into itself).
 
 ```lisp
 (defstruct Point x:i32 y:i32)
-(p 'x)         ; ≡ (. p 'x) — a plain field load
+(p 'x)         ; ≡ (get p 'x) — a plain field load
 ```
 
 The intrinsic is **overridable**: a concrete user `get` method for a type sits at
@@ -1316,7 +1317,7 @@ type. A user `get` takes the selector as an interned symbol (`ptr`):
 
 ```lisp
 (defn get (self:ptr:Temp sel:ptr):i32
-  (if (= sel 'f) (return …) (return (. self 'c))))   ; (t 'f) and (t 'c) both route here
+  (if (= sel 'f) (return …) (return (_get self 'c))))  ; (t 'f) and (t 'c) both route here
 ```
 
 **Value-keyed `get` (computed selectors).** Dispatch splits on the selector kind.
@@ -1411,7 +1412,7 @@ The interning is global to the process. The reader interns at lex time, and `quo
 
 `gensym` deliberately bypasses the intern table — `(gensym)` always returns a fresh unique `Node*` whose spelling (e.g. `__gs_0`) does not collide with anything else, so it is safe in hygienic macros.
 
-Symbol identity replaces `strcmp` for matching known spellings. Prefer `(= h 'defn)` over `(= (strcmp (. h 's) "defn") 0)`.
+Symbol identity replaces `strcmp` for matching known spellings. Prefer `(= h 'defn)` over `(= (strcmp (get h 's) "defn") 0)`.
 
 ## Built-in Types
 
@@ -1598,7 +1599,7 @@ protocol system is static-only (no vtables) and `funcall-ptr-*` cannot call a
 | `libc-allocator` | `((h (ref AllocHandle))) -> (ref AllocHandle)` | initialise a caller-owned slot as a libc handle |
 | `arena-allocator` | `((h (ref AllocHandle))) -> (ref AllocHandle)` | initialise a caller-owned slot as an arena handle (state lives in `lib/arena.nuc`'s globals) |
 
-A collection stores the `AllocHandle` by value; use `(.& coll 'alloc-field)` to get
+A collection stores the `AllocHandle` by value; use `(addr-of coll 'alloc-field)` to get
 a `(ref AllocHandle)` into it for the helpers. Example: `examples/allocator-test.nuc`.
 
 **Why no static `(extend MyAlloc Allocator)` in the library.** A generic method

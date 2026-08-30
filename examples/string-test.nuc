@@ -33,7 +33,7 @@
 
   ; ---- 1. Build "Hello" with push-char ----------------------------------------
   (with ((s (ref String)) (alloca String))
-    (vector-init (.& s 'bytes))
+    (vector-init (addr-of s 'bytes))
 
     (string-push-char s \H)
     (string-push-char s \e)
@@ -103,7 +103,7 @@
 
   ; ---- 6. Drop via with block --------------------------------------------------
   (with ((s2 (ref String)) (alloca String))
-    (vector-init (.& s2 'bytes))
+    (vector-init (addr-of s2 'bytes))
     (string-push-char s2 \X)
     (printf "in-with\n"))
   ; Drop fires at the closing paren above.

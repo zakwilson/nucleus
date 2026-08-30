@@ -107,7 +107,7 @@ BINDING ::= (NAME (PARAM ...) MACRO-BODY-FORM ...)
 ```lisp
 (defn point-sum ((p (ref Point))):i32
   (let (total:i32 0)
-    (macrolet ((take (f) `(set! total (+ total (. p ~f)))))
+    (macrolet ((take (f) `(set! total (+ total (get p '~f)))))
       (take x)
       (take y))
     total))
@@ -201,12 +201,12 @@ only the AST representation is uniform.
 
 ```lisp
 ; Pick a printf format from the literal kind, then splice the original
-; expression in. The macro inspects (. x 'kind) at expansion time; the
+; expression in. The macro inspects (get x 'kind) at expansion time; the
 ; spliced ~x is compiled at the call site with whatever type it has.
 (defmacro tprint (x)
-  (cond (= (. x 'kind) NODE-INT) `(printf "%d\n" ~x)
-        (= (. x 'kind) NODE-STR) `(printf "%s\n" ~x)
-        (= (. x 'kind) NODE-FLOAT) `(printf "%f\n" ~x)
+  (cond (= (get x 'kind) NODE-INT) `(printf "%d\n" ~x)
+        (= (get x 'kind) NODE-STR) `(printf "%s\n" ~x)
+        (= (get x 'kind) NODE-FLOAT) `(printf "%f\n" ~x)
         true                    `(printf "%p\n" ~x)))
 
 (tprint 42)        ; → (printf "%d\n" 42)        — i32 at the call site

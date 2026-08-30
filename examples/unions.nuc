@@ -60,7 +60,7 @@
 (defn main ():i32
   ; Untagged: write one member, read it back; .& gives the field pointer.
   (let (s:ptr:Scalar (alloca Scalar)
-        (d (ptr (union as-int:i64 as-float:f64))) (.& s 'data))
+        (d (ptr (union as-int:i64 as-float:f64))) (addr-of s 'data))
     (.set! s 'kind 1)
     (.set! d 'as-int 42)
     (printf "scalar kind %d as-int %lld (sizeof %lld)\n"

@@ -53,11 +53,11 @@
     (.set! src 'data arr)
     (.set! src 'pos  0)
     (.set! src 'len  5)
-    (memcpy (as ptr (.& mi 'source)) (as ptr src) (as i64 (sizeof I64ArrayIter)))
-    (memcpy (as ptr (.& mi 'f))      (as ptr sq)  (as i64 (sizeof SquareI64)))
-    (memcpy (as ptr (.& fi 'source)) (as ptr mi)
+    (memcpy (as ptr (addr-of mi 'source)) (as ptr src) (as i64 (sizeof I64ArrayIter)))
+    (memcpy (as ptr (addr-of mi 'f))      (as ptr sq)  (as i64 (sizeof SquareI64)))
+    (memcpy (as ptr (addr-of fi 'source)) (as ptr mi)
             (as i64 (sizeof (MapIter I64ArrayIter SquareI64))))
-    (memcpy (as ptr (.& fi 'pred)) (as ptr ev) (as i64 (sizeof IsEvenI64)))
+    (memcpy (as ptr (addr-of fi 'pred)) (as ptr ev) (as i64 (sizeof IsEvenI64)))
     (return (reduce sm 0 fi))))
 
 (defn main ():i32

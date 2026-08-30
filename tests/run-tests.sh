@@ -2031,7 +2031,7 @@ EOF
 (defn main ():i32
   (let (p:ptr:2Pair (2Pair 3 4))
     (printf "%d %d %d %d %d %d\n"
-      (2fast 20) 2count 2LIM (. p 'a) (2pick (make 2Shape 2circle 7)) (2loop)))
+      (2fast 20) 2count 2LIM (get p 'a) (2pick (make 2Shape 2circle 7)) (2loop)))
   0)
 EOF
   if ./build/nucleusc -I "$d" "$d/w39dig.nuc" -o "$d/dig" 2>"$d/err"; then
@@ -4383,7 +4383,7 @@ CEOF
 }
 
 # Stage 16 SV-1 (design/stage16-ergonomics/c-boundary-defects.md §2.5): a struct
-# VALUE is a member-access receiver. `(. v '\''x)` on a by-value parameter, a call
+# VALUE is a member-access receiver. `(get v '\''x)` on a by-value parameter, a call
 # result or a struct local all used to be `_get: operand must be pointer to
 # struct or union` — not a C-specific gap, but it is what made every by-value C
 # API (libclang's cursors, every struct-returning libc call) need an alloca and
@@ -4396,15 +4396,15 @@ run_s16_sv1_struct_value_receiver() {
 (defstruct Pt x:i64 y:i64)
 (defn mk (n:i64):Pt (return (Pt n (* n 2))))
 ; All three read spellings against a by-value PARAMETER.
-(defn sum (p:Pt):i64 (return (+ (. p 'x) (+ (p 'y) (_get p 'x)))))
+(defn sum (p:Pt):i64 (return (+ (get p 'x) (+ (p 'y) (_get p 'x)))))
 ; And straight off a call result, with no binding at all.
-(defn direct ():i64 (return (. (mk 5) 'y)))
+(defn direct ():i64 (return (get (mk 5) 'y)))
 (defn main ():i32
   (let (v:Pt (mk 3))
-    (printf "%lld %lld %lld %lld\n" (sum v) (direct) (. v 'x) (v 'y))
+    (printf "%lld %lld %lld %lld\n" (sum v) (direct) (get v 'x) (v 'y))
     ; `.set!` on a by-value local mutates the local copy, as in C.
     (.set! v 'x 40)
-    (printf "%lld %d\n" (. v 'x) (if (= (.& v 'y) null) 0 1))
+    (printf "%lld %d\n" (get v 'x) (if (= (addr-of v 'y) null) 0 1))
     (return 0)))
 SVEOF
   ./build/nucleusc "$d/sv.nuc" -o "$d/sv.bin" 2>"$d/sv.err" || true
@@ -4417,7 +4417,7 @@ SVEOF
     [ -x "$d/sv.bin" ] && "$d/sv.bin" | sed 's/^/    got: /'
   fi
 
-  # The other half: `.set!`/`.&` need the receiver's STORAGE, so a temporary
+  # The other half: `.set!`/`addr-of` need the receiver's STORAGE, so a temporary
   # stays an error rather than a store into something about to be discarded.
   # This is also what keeps a pointer into that copy from being returned.
   cat > "$d/t1.nuc" <<'T1EOF'
@@ -4430,16 +4430,16 @@ T1EOF
   cat > "$d/t2.nuc" <<'T2EOF'
 (defstruct Pt x:i64 y:i64)
 (defn mk (n:i64):Pt (return (Pt n n)))
-(defn leak ():ptr:i64 (return (.& (mk 1) 'x)))
+(defn leak ():ptr:i64 (return (addr-of (mk 1) 'x)))
 (defn main ():i32 (return 0))
 T2EOF
   got="$(./build/nucleusc --emit-llvm "$d/t2.nuc" 2>&1 >/dev/null || true)"
-  printf '%s' "$got" | qgrep -F ".&: the receiver is a temporary struct value" || ok=0
+  printf '%s' "$got" | qgrep -F "addr-of: the receiver is a temporary struct value" || ok=0
   # A non-struct receiver is still refused, and the message now names both
   # legal receivers.
   cat > "$d/t3.nuc" <<'T3EOF'
 (defstruct Pt x:i64 y:i64)
-(defn main ():i32 (let (k:i64 5) (return (as i32 (. k 'x)))))
+(defn main ():i32 (let (k:i64 5) (return (as i32 (_get k 'x)))))
 T3EOF
   got="$(./build/nucleusc --emit-llvm "$d/t3.nuc" 2>&1 >/dev/null || true)"
   printf '%s' "$got" | qgrep -F "_get: operand must be a struct or union, or a pointer to one" || ok=0
@@ -4447,7 +4447,7 @@ T3EOF
   # which is only possible if the type pass unwrapped it in lockstep.
   cat > "$d/t4.nuc" <<'T4EOF'
 (defstruct Pt x:i64 y:i64)
-(defn f (p:Pt):i64 (return (. p 'zzz)))
+(defn f (p:Pt):i64 (return (_get p 'zzz)))
 (defn main ():i32 (return 0))
 T4EOF
   got="$(./build/nucleusc --emit-llvm "$d/t4.nuc" 2>&1 >/dev/null || true)"
@@ -4695,7 +4695,7 @@ G2EOF
 (defn main ():i32
   (let (s:ptr:G2Rec (alloca G2Rec))
     (printf "%lld %lld %lld %lld\n" (as i64 (sizeof G2Rec))
-      (g2off s (.& s 'cells)) (g2off s (.& s 'names)) (g2off s (.& s 'mark))))
+      (g2off s (addr-of s 'cells)) (g2off s (addr-of s 'names)) (g2off s (addr-of s 'mark))))
   (return 0))
 G2EOF
   if ! ./build/nucleusc --emit-cheader "$d/g2h.nuc" > "$d/g2h.h" 2>"$d/err"; then
@@ -6570,10 +6570,10 @@ EOF
   cat > "$d/ir.nuc" <<'EOF'
 (defstruct :packed P c:i8 i:i32)
 (defstruct Q c:i8 i:i32)
-(defn rd (p:ptr:P):i32 (return (. p 'i)))
+(defn rd (p:ptr:P):i32 (return (get p 'i)))
 (defn wr (p:ptr:P):void (.set! p 'i 7))
 (defn lit ():ptr:P (return (P 1 2)))
-(defn rdq (q:ptr:Q):i32 (return (. q 'i)))
+(defn rdq (q:ptr:Q):i32 (return (get q 'i)))
 EOF
   ./build/nucleusc --emit-llvm "$d/ir.nuc" > "$d/ir.ll" 2>"$d/ir.err" || true
   qgrep -F '%P = type <{ i8, i32 }>' "$d/ir.ll" || ok=0
@@ -6598,9 +6598,9 @@ EOF
   (let (p:ptr:R (alloca R))
     (.set! p 'c 1) (.set! p 'i 305419896) (.set! p 's -3)
     (printf "%ld %d %d %d\n" (sizeof R)
-      (as i32 (. p 'c)) (. p 'i) (as i32 (. p 's))))
+      (as i32 (get p 'c)) (get p 'i) (as i32 (get p 's))))
   (let (r:ptr:R (R 7 8 9))
-    (printf "%d %d %d\n" (as i32 (. r 'c)) (. r 'i) (as i32 (. r 's))))
+    (printf "%d %d %d\n" (as i32 (get r 'c)) (get r 'i) (as i32 (get r 's))))
   (return 0))
 EOF
   ./build/nucleusc "$d/run.nuc" -o "$d/run.bin" 2>"$d/run.err" || true
@@ -6663,7 +6663,7 @@ EOF
   cat > "$d/x.nuc" <<'EOF'
 (defstruct :packed WireHdr tag:i8 len:i32 flags:i16)
 (defstruct PlainHdr tag:i8 len:i32 flags:i16)
-(defn wire-len (h:ptr:WireHdr):i32 (return (. h 'len)))
+(defn wire-len (h:ptr:WireHdr):i32 (return (get h 'len)))
 EOF
   ./build/nucleusc --emit-cheader "$d/x.nuc" > "$d/x.h" 2>"$d/x.err" || ok=0
   qgrep -F '} __attribute__((packed)) WireHdr;' "$d/x.h" || ok=0
@@ -6786,11 +6786,11 @@ EOF
 (import-use "stdio.h")
 (defstruct :align 16 A x:i32)
 (defstruct B c:i8 (:align 16 i:i32))
-(defn read-i (p:ptr:B):i32 (return (. p 'i)))
+(defn read-i (p:ptr:B):i32 (return (get p 'i)))
 (defn main ():i32
   (let (a:ptr:A (alloca A) b:ptr:B (B 1 7))
     (.set! a 'x 5)
-    (printf "%d %d\n" (. a 'x) (read-i b)))
+    (printf "%d %d\n" (get a 'x) (read-i b)))
   (return 0))
 EOF
   ./build/nucleusc --emit-llvm "$d/ir.nuc" > "$d/ir.ll" 2>"$d/ir.err" || ok=0
@@ -6817,8 +6817,8 @@ EOF
 (defn main ():i32
   (let (p:ptr:B (B 1 305419896))
     (printf "%ld %ld %d %d\n" (sizeof B)
-      (- (unsafe/cast i64 (.& p 'i)) (unsafe/cast i64 p))
-      (as i32 (. p 'c)) (. p 'i)))
+      (- (unsafe/cast i64 (addr-of p 'i)) (unsafe/cast i64 p))
+      (as i32 (get p 'c)) (get p 'i)))
   (return 0))
 EOF
   cat > "$d/run.c" <<'EOF'
@@ -6913,7 +6913,7 @@ EOF
   cat > "$d/x.nuc" <<'EOF'
 (defstruct :align 32 Cache x:i64)
 (defstruct Slot c:i8 (:align 16 v:i32))
-(defn slot-v (s:ptr:Slot):i32 (return (. s 'v)))
+(defn slot-v (s:ptr:Slot):i32 (return (get s 'v)))
 EOF
   ./build/nucleusc --emit-cheader "$d/x.nuc" > "$d/x.h" 2>"$d/x.err" || ok=0
   qgrep -F '} __attribute__((aligned(32))) Cache;' "$d/x.h" || ok=0
@@ -7045,12 +7045,12 @@ EOF
 (defn main ():i32
   (let (p:ptr:A (alloca A))
     (.set! p 'a -3) (.set! p 'b 21) (.set! p 'c -100000) (.set! p 'd 7)
-    (printf "%ld %d %d %d %d\n" (sizeof A) (. p 'a) (as i32 (. p 'b)) (. p 'c) (. p 'd)))
+    (printf "%ld %d %d %d %d\n" (sizeof A) (get p 'a) (as i32 (get p 'b)) (get p 'c) (get p 'd)))
   (let (q:ptr:F (alloca F))
     (.set! q 'c 65) (.set! q 'a 2) (.set! q 'b 123456789)
-    (printf "%ld %d %d %d\n" (sizeof F) (as i32 (. q 'c)) (. q 'a) (. q 'b)))
+    (printf "%ld %d %d %d\n" (sizeof F) (as i32 (get q 'c)) (get q 'a) (get q 'b)))
   (let (r:ptr:A (A 1 2 3 4))
-    (printf "%d %d %d %d\n" (. r 'a) (as i32 (. r 'b)) (. r 'c) (. r 'd)))
+    (printf "%d %d %d %d\n" (get r 'a) (as i32 (get r 'b)) (get r 'c) (get r 'd)))
   (return 0))
 EOF
   cat > "$d/v.c" <<'EOF'
@@ -7099,7 +7099,7 @@ EOF
     (.set! p 'a -3) (.set! p 'b 21) (.set! p 'c -100000) (.set! p 'd 7)
     (printf "%ld %ld %ld %ld %ld %d %d %d %d\n" (sizeof BI1) (sizeof BI2)
       (sizeof BI3) (sizeof BI4) (sizeof BI5)
-      (. p 'a) (as i32 (. p 'b)) (. p 'c) (. p 'd)))
+      (get p 'a) (as i32 (get p 'b)) (get p 'c) (get p 'd)))
   (return 0))
 EOF
   ./build/nucleusc "$d/h.nuc" -o "$d/h.bin" 2>"$d/h.err" || ok=0
@@ -7150,7 +7150,7 @@ EOF
   ok=1
   cat > "$d/x.nuc" <<'EOF'
 (defstruct Hdr (:bits 4 ver:ui32) (:bits 12 len:ui32) (:bits 16 id:i32) tail:i32)
-(defn hdr-ver (h:ptr:Hdr):ui32 (return (. h 'ver)))
+(defn hdr-ver (h:ptr:Hdr):ui32 (return (get h 'ver)))
 EOF
   ./build/nucleusc --emit-cheader "$d/x.nuc" > "$d/x.h" 2>"$d/x.err" || ok=0
   qgrep -E ': 4;' "$d/x.h" || ok=0
@@ -7167,11 +7167,11 @@ EOF
     grep -E 'Hdr|:' "$d/x.h" | sed 's/^/    /' | head -8
   fi
 
-  # 6. The three things a bit-field may not be. `.&` is C's own constraint, not
+  # 6. The three things a bit-field may not be. A field address is C's own constraint, not
   #    a Nucleus limitation, which is what makes refusing it the faithful
   #    answer rather than a gap.
   ok=1
-  printf '(defstruct S (:bits 3 a:i32))\n(defn f (p:ptr:S):ptr (return (.& p '\''a)))\n(defn main ():i32 (return 0))\n' > "$d/e1.nuc"
+  printf '(defstruct S (:bits 3 a:i32))\n(defn f (p:ptr:S):ptr (return (addr-of p '\''a)))\n(defn main ():i32 (return 0))\n' > "$d/e1.nuc"
   ./build/nucleusc --emit-llvm "$d/e1.nuc" >/dev/null 2>"$d/e1.err" || true
   qgrep -F "a bit-field has no address" "$d/e1.err" || ok=0
   printf '(defstruct S (:bits 40 a:i32))\n(defn main ():i32 (return 0))\n' > "$d/e2.nuc"
@@ -7211,12 +7211,12 @@ run_s16_an_anonymous() {
 (defn main ():i32
   (let (s:ptr:s16_sig (alloca s16_sig))
     (.set! s 'code 7) (.set! s 'pid 42) (.set! s 'uid 99)
-    (.set! (.& s 'named) 'a 1) (.set! (.& s 'named) 'b 2)
-    (printf "%d %d %d %d %d %d\n" (. s 'code) (. s 'pid) (. s 'uid) (. s 'si_int)
-            (. (.& s 'named) 'a) (. (.& s 'named) 'b)))
+    (.set! (addr-of s 'named) 'a 1) (.set! (addr-of s 'named) 'b 2)
+    (printf "%d %d %d %d %d %d\n" (get s 'code) (get s 'pid) (get s 'uid) (get s 'si_int)
+            (get (addr-of s 'named) 'a) (get (addr-of s 'named) 'b)))
   (let (r:ptr:s16_rus (alloca s16_rus))
     (.set! r 'sec 5) (.set! r 'usec 6) (.set! r 'maxrss 8)
-    (printf "%ld %ld %d %ld %ld\n" (. r 'sec) (. r 'usec) (. r 'maxrss)
+    (printf "%ld %ld %d %ld %ld\n" (get r 'sec) (get r 'usec) (get r 'maxrss)
             (sizeof s16_sig) (sizeof s16_rus)))
   (return 0))
 EOF
@@ -7302,7 +7302,7 @@ EOF
   fi
 
   # 4. The `defstruct` surface. `(:anon T)` is the same member the importer
-  #    mints, so the same lookup has to reach it — including through `.&`,
+  #    mints, so the same lookup has to reach it — including through `addr-of`,
   #    which is the path a GEP chain gets wrong differently from a load.
   ok=1
   cat > "$d/g.nuc" <<'EOF'
@@ -7314,7 +7314,7 @@ EOF
   (let (p:ptr:Outer (alloca Outer))
     (.set! p 'tag 1) (.set! p 'a 2) (.set! p 'b 3) (.set! p 'c 4) (.set! p 'z 5)
     (printf "%ld %d %d %d %d %d %d\n" (sizeof Outer)
-            (. p 'tag) (. p 'a) (. p 'b) (. p 'c) (. p 'z) (deref (.& p 'b))))
+            (get p 'tag) (get p 'a) (get p 'b) (get p 'c) (get p 'z) (deref (addr-of p 'b))))
   (return 0))
 EOF
   ./build/nucleusc "$d/g.nuc" -o "$d/g" 2>"$d/g.err" || ok=0
@@ -7331,7 +7331,7 @@ EOF
   #    place the surface is NOT a superset of C — C spells an anonymous member
   #    by inlining its body, so a named type has no rendering on export.
   ok=1
-  printf '(defstruct A dup:i32 x:i32)\n(defstruct B dup:i32 y:i32)\n(defstruct C (:anon A) (:anon B))\n(defn f (p:ptr:C):i32 (return (. p '\''dup)))\n(defn main ():i32 (return 0))\n' > "$d/r1.nuc"
+  printf '(defstruct A dup:i32 x:i32)\n(defstruct B dup:i32 y:i32)\n(defstruct C (:anon A) (:anon B))\n(defn f (p:ptr:C):i32 (return (get p '\''dup)))\n(defn main ():i32 (return 0))\n' > "$d/r1.nuc"
   ./build/nucleusc --emit-llvm "$d/r1.nuc" >/dev/null 2>"$d/r1.err" || true
   qgrep -F "more than one anonymous member supplies it" "$d/r1.err" || ok=0
   printf '(defstruct D (:anon i32))\n(defn main ():i32 (return 0))\n' > "$d/r2.nuc"
@@ -10542,7 +10542,7 @@ spawn run_s16_keyword_markers
 # `&T` reads as `ref:T`, expanded in the lexer. `examples/ref-sigil.nuc` covers
 # the spellings end to end; this unit covers what an example cannot: that the
 # sigil is EXACTLY the `ref:` spelling and not a second type, that it never
-# escapes into a `.nuch`, and that the atoms it must NOT claim — `.&` and the
+# escapes into a `.nuch`, and that the atoms it must NOT claim — `&`-prefixed and the
 # four retired `&x` markers — still read the way they did.
 run_s16_ref_sigil() {
   local d out
@@ -10570,13 +10570,13 @@ EOF
     sed 's/^/    /' "$d/id.err" | head -3
   fi
 
-  # 2. The sigil is only a *leading* `&`, so `.&` (field-address, ~200 uses in
+  # 2. The sigil is only a *leading* `&`, so a mid-token `&` (as in `a&b`, and in
   #    the compiler) keeps its name, and the two spellings compose in one file.
   cat > "$d/amp.nuc" <<'EOF'
 (import-use "stdio.h")
 (defstruct Pt x:i32 y:i32)
 (defn bump (p:&Pt):i32
-  (let (xp:&i32 (.& p 'x))
+  (let (xp:&i32 (addr-of p 'x))
     (ptr-set! xp (+ (deref xp) 1))
     (return (p 'x))))
 (defn main ():i32
@@ -10746,7 +10746,7 @@ spawn run_s16_pointer_kind_names
 # the field; a BARE symbol is an ordinary variable reference like anywhere else,
 # which is what lets a field name live in a variable with no annotation. The two
 # are no longer spellings of one thing, so this pins the difference rather than
-# the old identity -- and pins it at every member form, because `.`/`.&`/`.set!`
+# the old identity -- and pins it at every member form, because `.set!`/`addr-of`
 # need a LITERAL selector and must say which spelling is missing.
 run_s16_selector_rule() {
   local d ok out
@@ -10761,10 +10761,10 @@ run_s16_selector_rule() {
 (defn main ():i32
   (let (p:ptr:Pt (alloca Pt))
     (.set! p 'x 1)
-    (ptr-set! (.& p 'y) 2)
+    (ptr-set! (addr-of p 'y) 2)
     (let (sel:ptr (quote y))
       (printf "%d %d %d %d
-" (. p 'x) (get p 'y) (p 'x) (p sel))))
+" (_get p 'x) (get p 'y) (p 'x) (p sel))))
   (return 0))
 EOF
   ./build/nucleusc "$d/sel.nuc" -o "$d/sel.bin" 2>"$d/sel.err" || ok=0
@@ -10788,7 +10788,7 @@ EOF
   # 3. The three fixed-position forms need a literal, and a bare symbol is not
   #    one -- "must be symbol" would describe a bare symbol as failing a test it
   #    appears to pass.
-  for form in "(.set! p x 1)" "(ptr-set! (.& p x) 1)" "(let (v:i32 (. p x)) 0)"; do
+  for form in "(.set! p x 1)" "(ptr-set! (addr-of p x) 1)" "(let (v:i32 (_get p x)) 0)"; do
     printf '(defstruct Pt x:i32)
 (defn f (p:&Pt):i32 %s (return 0))
 ' "$form" > "$d/lit.nuc"
@@ -10810,6 +10810,104 @@ EOF
   rm -rf "$d"
 }
 spawn run_s16_selector_rule
+
+# dot-forms.md §5 step 4: `.` and `.&` are gone. `.` was `_get` verbatim, so its
+# sites become `get` (or `_get` where a user override must be bypassed); `.&`
+# becomes an ARITY OVERLOAD on `addr-of` -- 1-arg is a binding's address, 2-arg
+# is a field's, and the two cannot collide because a binding address takes a
+# bare symbol. Both retired spellings stay RESERVED so the answer is exact
+# rather than "undefined function".
+run_s16_dot_forms_retired() {
+  local d ok out
+  d="$(mktemp -d)"
+  ok=1
+  # 1. The 2-arg addr-of covers every shape `.&` did: a plain field, a nested
+  #    one, an array field (which DECAYS to ptr:elem -- a pointer-to-array is
+  #    useless), a union member, and a by-value struct receiver.
+  cat > "$d/ao.nuc" <<'EOF'
+(import-use "stdio.h")
+(defstruct Inner a:i32)
+(defstruct Outer p:Inner cells:(array i32 3) n:i32)
+(defstruct Holder u:(union as-int:i64 as-f:f64))
+(defn by-val (o:Outer):i32 (return (deref (addr-of (addr-of o) 'n))))
+(defn main ():i32
+  (let (o:ptr:Outer (alloca Outer)
+        h:ptr:Holder (alloca Holder))
+    (ptr-set! (addr-of o 'n) 5)
+    (ptr-set! (addr-of (addr-of o 'p) 'a) 6)
+    (aset! (addr-of o 'cells) 1 7)
+    (ptr-set! (addr-of (addr-of h 'u) 'as-int) 8)
+    ; the array field's address is ptr:i32, so it binds to one
+    (let (c:ptr:i32 (addr-of o 'cells)
+          n:i32 5 q:ptr:i32 (addr-of n))
+      (printf "%d %d %d %lld %d %d %d\n"
+              (deref (addr-of o 'n)) (deref (addr-of (addr-of o 'p) 'a))
+              (aref c 1) (deref (addr-of (addr-of h 'u) 'as-int))
+              (by-val (deref o)) (deref q) (aref (addr-of o 'cells) 1))))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/ao.nuc" -o "$d/ao.bin" 2>"$d/ao.err" || ok=0
+  out="$("$d/ao.bin" 2>/dev/null || true)"
+  [ "$out" = "5 6 7 8 5 5 7" ] || ok=0
+  if [ "$ok" = 1 ]; then
+    echo "PASS  s16-addr-of-2arg"
+  else
+    echo "FAIL  s16-addr-of-2arg (got '$out')"
+    sed 's/^/    /' "$d/ao.err" | head -3
+  fi
+  # 2. node-type must split on the same arity the emitter does. Without the
+  #    mirror the 2-arg form types as the BINDING's address (ptr:ptr:Outer),
+  #    which only shows up where the type is load-bearing -- an argument
+  #    position and an annotated binding, not in the value itself.
+  ok=1
+  cat > "$d/ty.nuc" <<'EOF'
+(import-use "stdio.h")
+(defstruct Pt x:i32 y:i32)
+(defn takes (q:ptr:i32):i32 (return (deref q)))
+(defn main ():i32
+  (let (p:ptr:Pt (alloca Pt))
+    (.set! p 'x 3)
+    (let (q:ptr:i32 (addr-of p 'x))
+      (printf "%d %d\n" (takes (addr-of p 'x)) (deref q))))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/ty.nuc" -o "$d/ty.bin" 2>"$d/ty.err" || ok=0
+  out="$("$d/ty.bin" 2>/dev/null || true)"
+  [ "$out" = "3 3" ] || ok=0
+  if [ "$ok" = 1 ]; then
+    echo "PASS  s16-addr-of-2arg-node-type"
+  else
+    echo "FAIL  s16-addr-of-2arg-node-type (got '$out')"
+    sed 's/^/    /' "$d/ty.err" | head -3
+  fi
+  # 3. Both retired spellings answer with the replacement, not "undefined".
+  ok=1
+  printf '(defstruct Pt x:i32)\n(defn f (p:&Pt):i32 (return (. p (quote x))))\n' > "$d/dot.nuc"
+  ./build/nucleusc --emit-llvm "$d/dot.nuc" >/dev/null 2>"$d/dot.err" || true
+  qgrep -F "'.' was retired in Stage 16: use 'get'" "$d/dot.err" || ok=0
+  printf '(defstruct Pt x:i32)\n(defn f (p:&Pt):ptr:i32 (return (.& p (quote x))))\n' > "$d/amp.nuc"
+  ./build/nucleusc --emit-llvm "$d/amp.nuc" >/dev/null 2>"$d/amp.err" || true
+  qgrep -F "'.&' was retired in Stage 16: use the 2-argument 'addr-of'" "$d/amp.err" || ok=0
+  # Reserved, so a user definition cannot shadow the spelling and silence it.
+  printf '(defn . (a:i32):i32 (return a))\n' > "$d/shadow.nuc"
+  ./build/nucleusc --emit-llvm "$d/shadow.nuc" >/dev/null 2>"$d/shadow.err" || true
+  qgrep -F "already names a special form" "$d/shadow.err" || ok=0
+  # 4. addr-of's own diagnostics name the form the user wrote, not `.&`.
+  printf '(defstruct Pt x:i32)\n(defn f (p:&Pt):ptr:i32 (return (addr-of p (quote z))))\n' > "$d/nf.nuc"
+  ./build/nucleusc --emit-llvm "$d/nf.nuc" >/dev/null 2>"$d/nf.err" || true
+  qgrep -F "addr-of: no field 'z' on struct 'Pt'" "$d/nf.err" || ok=0
+  printf '(defstruct Pt x:i32)\n(defn f (p:&Pt):ptr:i32 (return (addr-of p (quote x) 1)))\n' > "$d/ar.nuc"
+  ./build/nucleusc --emit-llvm "$d/ar.nuc" >/dev/null 2>"$d/ar.err" || true
+  qgrep -F "addr-of expects 1 or 2 args" "$d/ar.err" || ok=0
+  if [ "$ok" = 1 ]; then
+    echo "PASS  s16-dot-forms-retired"
+  else
+    echo "FAIL  s16-dot-forms-retired"
+    sed 's/^/    /' "$d/dot.err" "$d/amp.err" "$d/shadow.err" "$d/nf.err" "$d/ar.err" 2>/dev/null | head -8
+  fi
+  rm -rf "$d"
+}
+spawn run_s16_dot_forms_retired
 
 # keyword-markers.md §7, follow-up 1: the two signature-registration sites
 # inferred `has-rest` from `(< (defn-params-count …) (node-len …))`, which is
@@ -12664,47 +12762,47 @@ EOF
 (defn main ():i32
   (let (s:ptr:__jmp_buf_tag (alloca __jmp_buf_tag) a:ptr:AP1 (alloca AP1))
     (printf "__jmp_buf_tag size=%lld align=%lld __jmpbuf=%lld __mask_was_saved=%lld __saved_mask=%lld\n"
-      (as i64 (sizeof __jmp_buf_tag)) (off a (.& a 'v))
-      (off s (.& s '__jmpbuf)) (off s (.& s '__mask_was_saved)) (off s (.& s '__saved_mask))))
+      (as i64 (sizeof __jmp_buf_tag)) (off a (addr-of a 'v))
+      (off s (addr-of s '__jmpbuf)) (off s (addr-of s '__mask_was_saved)) (off s (addr-of s '__saved_mask))))
   (let (s:ptr:timespec (alloca timespec) a:ptr:AP2 (alloca AP2))
     (printf "timespec size=%lld align=%lld tv_sec=%lld tv_nsec=%lld\n"
-      (as i64 (sizeof timespec)) (off a (.& a 'v)) (off s (.& s 'tv_sec)) (off s (.& s 'tv_nsec))))
+      (as i64 (sizeof timespec)) (off a (addr-of a 'v)) (off s (addr-of s 'tv_sec)) (off s (addr-of s 'tv_nsec))))
   (let (s:ptr:itimerspec (alloca itimerspec) a:ptr:AP3 (alloca AP3))
     (printf "itimerspec size=%lld align=%lld it_interval=%lld it_value=%lld\n"
-      (as i64 (sizeof itimerspec)) (off a (.& a 'v)) (off s (.& s 'it_interval)) (off s (.& s 'it_value))))
+      (as i64 (sizeof itimerspec)) (off a (addr-of a 'v)) (off s (addr-of s 'it_interval)) (off s (addr-of s 'it_value))))
   (let (s:ptr:stat (alloca stat) a:ptr:AP4 (alloca AP4))
     (printf "stat size=%lld align=%lld st_dev=%lld st_ino=%lld st_mode=%lld st_uid=%lld st_size=%lld st_mtim=%lld\n"
-      (as i64 (sizeof stat)) (off a (.& a 'v)) (off s (.& s 'st_dev)) (off s (.& s 'st_ino))
-      (off s (.& s 'st_mode)) (off s (.& s 'st_uid)) (off s (.& s 'st_size)) (off s (.& s 'st_mtim))))
+      (as i64 (sizeof stat)) (off a (addr-of a 'v)) (off s (addr-of s 'st_dev)) (off s (addr-of s 'st_ino))
+      (off s (addr-of s 'st_mode)) (off s (addr-of s 'st_uid)) (off s (addr-of s 'st_size)) (off s (addr-of s 'st_mtim))))
   (let (s:ptr:dirent (alloca dirent) a:ptr:AP5 (alloca AP5))
     (printf "dirent size=%lld align=%lld d_ino=%lld d_off=%lld d_reclen=%lld d_type=%lld d_name=%lld\n"
-      (as i64 (sizeof dirent)) (off a (.& a 'v)) (off s (.& s 'd_ino)) (off s (.& s 'd_off))
-      (off s (.& s 'd_reclen)) (off s (.& s 'd_type)) (off s (.& s 'd_name))))
+      (as i64 (sizeof dirent)) (off a (addr-of a 'v)) (off s (addr-of s 'd_ino)) (off s (addr-of s 'd_off))
+      (off s (addr-of s 'd_reclen)) (off s (addr-of s 'd_type)) (off s (addr-of s 'd_name))))
   (let (s:ptr:termios (alloca termios) a:ptr:AP6 (alloca AP6))
     (printf "termios size=%lld align=%lld c_iflag=%lld c_oflag=%lld c_cflag=%lld c_lflag=%lld c_line=%lld c_cc=%lld c_ispeed=%lld c_ospeed=%lld\n"
-      (as i64 (sizeof termios)) (off a (.& a 'v)) (off s (.& s 'c_iflag)) (off s (.& s 'c_oflag))
-      (off s (.& s 'c_cflag)) (off s (.& s 'c_lflag)) (off s (.& s 'c_line)) (off s (.& s 'c_cc))
-      (off s (.& s 'c_ispeed)) (off s (.& s 'c_ospeed))))
+      (as i64 (sizeof termios)) (off a (addr-of a 'v)) (off s (addr-of s 'c_iflag)) (off s (addr-of s 'c_oflag))
+      (off s (addr-of s 'c_cflag)) (off s (addr-of s 'c_lflag)) (off s (addr-of s 'c_line)) (off s (addr-of s 'c_cc))
+      (off s (addr-of s 'c_ispeed)) (off s (addr-of s 'c_ospeed))))
   (let (a:ptr:AP7 (alloca AP7))
-    (printf "fd_set size=%lld align=%lld\n" (as i64 (sizeof fd_set)) (off a (.& a 'v))))
+    (printf "fd_set size=%lld align=%lld\n" (as i64 (sizeof fd_set)) (off a (addr-of a 'v))))
   (let (s:ptr:sockaddr (alloca sockaddr) a:ptr:AP8 (alloca AP8))
     (printf "sockaddr size=%lld align=%lld sa_family=%lld sa_data=%lld\n"
-      (as i64 (sizeof sockaddr)) (off a (.& a 'v)) (off s (.& s 'sa_family)) (off s (.& s 'sa_data))))
+      (as i64 (sizeof sockaddr)) (off a (addr-of a 'v)) (off s (addr-of s 'sa_family)) (off s (addr-of s 'sa_data))))
   (let (s:ptr:in6_addr (alloca in6_addr) a:ptr:AP9 (alloca AP9))
     (printf "in6_addr size=%lld align=%lld __in6_u=%lld\n"
-      (as i64 (sizeof in6_addr)) (off a (.& a 'v)) (off s (.& s '__in6_u))))
+      (as i64 (sizeof in6_addr)) (off a (addr-of a 'v)) (off s (addr-of s '__in6_u))))
   (let (a:ptr:AP10 (alloca AP10))
-    (printf "sigset_t size=%lld align=%lld\n" (as i64 (sizeof sigset_t)) (off a (.& a 'v))))
+    (printf "sigset_t size=%lld align=%lld\n" (as i64 (sizeof sigset_t)) (off a (addr-of a 'v))))
   (let (a:ptr:AP11 (alloca AP11))
-    (printf "pthread_mutex_t size=%lld align=%lld\n" (as i64 (sizeof pthread_mutex_t)) (off a (.& a 'v))))
+    (printf "pthread_mutex_t size=%lld align=%lld\n" (as i64 (sizeof pthread_mutex_t)) (off a (addr-of a 'v))))
   (let (s:ptr:sigaction (alloca sigaction) a:ptr:AP12 (alloca AP12))
     (printf "sigaction size=%lld align=%lld sa_mask=%lld sa_flags=%lld sa_restorer=%lld\n"
-      (as i64 (sizeof sigaction)) (off a (.& a 'v)) (off s (.& s 'sa_mask))
-      (off s (.& s 'sa_flags)) (off s (.& s 'sa_restorer))))
+      (as i64 (sizeof sigaction)) (off a (addr-of a 'v)) (off s (addr-of s 'sa_mask))
+      (off s (addr-of s 'sa_flags)) (off s (addr-of s 'sa_restorer))))
   (let (s:ptr:sigevent_t (alloca sigevent_t) a:ptr:AP13 (alloca AP13))
     (printf "sigevent_t size=%lld align=%lld sigev_signo=%lld sigev_notify=%lld\n"
-      (as i64 (sizeof sigevent_t)) (off a (.& a 'v)) (off s (.& s 'sigev_signo))
-      (off s (.& s 'sigev_notify))))
+      (as i64 (sizeof sigevent_t)) (off a (addr-of a 'v)) (off s (addr-of s 'sigev_signo))
+      (off s (addr-of s 'sigev_notify))))
   (return 0))
 EOF
   bad=0
@@ -12735,8 +12833,8 @@ EOF
 (defn main ():i32
   (let (f:ptr:FILE (alloca FILE))
     (printf "%ld %ld %ld\n" (sizeof FILE)
-      (- (unsafe/cast i64 (.& f '_flags)) (unsafe/cast i64 f))
-      (- (unsafe/cast i64 (.& f '_lock)) (unsafe/cast i64 f))))
+      (- (unsafe/cast i64 (addr-of f '_flags)) (unsafe/cast i64 f))
+      (- (unsafe/cast i64 (addr-of f '_lock)) (unsafe/cast i64 f))))
   (return 0))
 NUCEOF
     cc -w "$d/f.c" -o "$d/f.cbin" 2>/dev/null || bad=1
@@ -13433,7 +13531,7 @@ EOF
 (defn main ():i32
   (let (a:ptr:TAlign (alloca TAlign))
     (printf "tcp_info %lld %lld\n" (as i64 (sizeof tcp_info))
-      (- (unsafe/cast i64 (.& a 'v)) (unsafe/cast i64 a))))
+      (- (unsafe/cast i64 (addr-of a 'v)) (unsafe/cast i64 a))))
   (return 0))
 EOF
     ./build/nucleusc "$d/t.nuc" -o "$d/t.bin" 2>"$d/t.err" || bad=1

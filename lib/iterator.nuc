@@ -93,9 +93,9 @@
 (defn next ((self (ref (MapIter I F)))
                         :where ((Iterator S) I)
                                ((UnaryFn S E) F)) (Maybe E)
-  (let ((res (Maybe S)) (next (.& self 'source)))
+  (let ((res (Maybe S)) (next (addr-of self 'source)))
     (match res
-      ((some v) (return (some (apply (.& self 'f) v))))
+      ((some v) (return (some (apply (addr-of self 'f) v))))
       (none (return none)))))
 
 (extend (MapIter I F) (Iterator E)
@@ -115,10 +115,10 @@
                                ((UnaryFn S i32) F)) (Maybe S)
   (let (done:i32 0)
     (while (= done 0)
-      (let ((item (Maybe S)) (next (.& self 'source)))
+      (let ((item (Maybe S)) (next (addr-of self 'source)))
         (match item
           ((some v)
-           (when (!= (apply (.& self 'pred) v) 0)
+           (when (!= (apply (addr-of self 'pred) v) 0)
              (return (some v))))
           (none (return none)))))
     (return none)))

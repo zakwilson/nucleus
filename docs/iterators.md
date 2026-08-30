@@ -141,25 +141,25 @@ This means they are first-class `Iterator` values and can be nested or passed to
 any generic function bounded on `Iterator`.
 
 Fields are stored **by value** inside the struct. Use `memcpy` with
-`(.& struct 'field)` to copy a source iterator or function object into a
+`(addr-of struct 'field)` to copy a source iterator or function object into a
 combinator's field:
 
 ```lisp
 (let ((mi (ref (MapIter I64ArrayIter SquareI64)))
       (alloca (MapIter I64ArrayIter SquareI64)))
-  (memcpy (as ptr (.& mi 'source)) (as ptr src) (sizeof I64ArrayIter))
-  (memcpy (as ptr (.& mi 'f))      (as ptr sq)  (sizeof SquareI64))
+  (memcpy (as ptr (addr-of mi 'source)) (as ptr src) (sizeof I64ArrayIter))
+  (memcpy (as ptr (addr-of mi 'f))      (as ptr sq)  (sizeof SquareI64))
   ...)
 ```
 
 To call `next` on a field stored by value inside a struct, use
-`(.& self 'fieldname)` to get a `(ref FieldType)`:
+`(addr-of self 'fieldname)` to get a `(ref FieldType)`:
 
 ```lisp
 (defn next ((self (ref (MapIter I F)))
                         :where ((Iterator S) I)
                                ((UnaryFn S E) F)) (Maybe E)
-  (let ((res (Maybe S)) (next (.& self 'source)))
+  (let ((res (Maybe S)) (next (addr-of self 'source)))
     ...))
 ```
 
@@ -217,13 +217,13 @@ Chain `[1,2,3,4,5]` → square → keep even → sum (= 4 + 16 = 20):
       (.set! src 'data arr) (.set! src 'pos 0) (.set! src 'len 5)
       (let ((mi (ref (MapIter I64ArrayIter SquareI64)))
             (alloca (MapIter I64ArrayIter SquareI64)))
-        (memcpy (as ptr (.& mi 'source)) (as ptr src) (sizeof I64ArrayIter))
-        (memcpy (as ptr (.& mi 'f))      (as ptr sq)  (sizeof SquareI64))
+        (memcpy (as ptr (addr-of mi 'source)) (as ptr src) (sizeof I64ArrayIter))
+        (memcpy (as ptr (addr-of mi 'f))      (as ptr sq)  (sizeof SquareI64))
         (let ((fi (ref (FilterIter (MapIter I64ArrayIter SquareI64) IsEvenI64)))
               (alloca (FilterIter (MapIter I64ArrayIter SquareI64) IsEvenI64)))
-          (memcpy (as ptr (.& fi 'source)) (as ptr mi)
+          (memcpy (as ptr (addr-of fi 'source)) (as ptr mi)
                   (sizeof (MapIter I64ArrayIter SquareI64)))
-          (memcpy (as ptr (.& fi 'pred)) (as ptr ev) (sizeof IsEvenI64))
+          (memcpy (as ptr (addr-of fi 'pred)) (as ptr ev) (sizeof IsEvenI64))
           (printf "sum=%lld\n" (reduce sm 0 fi)))))))))
   (return 0))
 ```

@@ -265,8 +265,8 @@ pp:&&Point   q:?&Point   r:&raw:Point    ; ref:ref:T, ?ref:T, ref:raw:T
 
 The sigil is only a `&` at the *start* of a segment — offset 0, after a `:`,
 after another `&`, or after a `?`/`!` prefix. An interior `&` is an ordinary
-symbol character, which is what leaves the [`.&` field-address
-form](structs-unions.md) alone, and the retired `&rest`/`&where`/`&optional`/
+symbol character, so a `&` inside a token keeps its name, and the retired
+`&rest`/`&where`/`&optional`/
 `&repr` markers still report their keyword replacements rather than reading as
 types.
 
@@ -289,7 +289,7 @@ assertion; see [Implicit Type Coercion](#implicit-type-coercion)). An elem-less
 bare `ptr` (`void*`) slot carries
 no contract and is exempt. Widening (non-null→raw, non-null→`?T`, raw↔`?T`) is
 always allowed. `none` is the null `?T` literal. Stack addresses are non-null by
-construction: `(addr-of x)`, `(.& p 'f)`, `(alloca T)`, `(array T …)`, and a
+construction: `(addr-of x)`, `(addr-of p 'f)` (the 2-argument arity), `(alloca T)`, `(array T …)`, and a
 `(S …)` compound literal all yield `(ref T)`.
 
 **A global declared non-null must be initialized.** `(defvar g:ptr:T)` with no
@@ -1100,4 +1100,4 @@ The interning is global to the process. The reader interns at lex time, and `quo
 
 `gensym` deliberately bypasses the intern table — `(gensym)` always returns a fresh unique `Node*` whose spelling (e.g. `__gs_0`) does not collide with anything else, so it is safe in hygienic macros.
 
-Symbol identity replaces `strcmp` for matching known spellings. Prefer `(= h 'defn)` over `(= (strcmp (. h 's) "defn") 0)`.
+Symbol identity replaces `strcmp` for matching known spellings. Prefer `(= h 'defn)` over `(= (strcmp (get h 's) "defn") 0)`.

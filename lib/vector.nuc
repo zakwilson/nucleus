@@ -72,7 +72,7 @@
   (.set! v 'data null)
   (.set! v 'len 0)
   (.set! v 'cap 0)
-  (libc-allocator (.& v 'alloc)))
+  (libc-allocator (addr-of v 'alloc)))
 
 ; Initialise an empty Vector with an explicit allocator handle (copied in).
 (defn vector-init-alloc ((v (ref (Vector T))) (a (ref AllocHandle))):void
@@ -121,7 +121,7 @@
         elem-size:usize (as usize (sizeof T)))
     (let (old-bytes:usize (* (_get v 'cap) elem-size)
           new-bytes:usize (* new-cap elem-size)
-          ah:ref:AllocHandle (.& v 'alloc))
+          ah:ref:AllocHandle (addr-of v 'alloc))
       (let ((new-data (raw ui8))
             (alloc-handle-realloc ah (_get v 'data) old-bytes new-bytes 8))
         (when (= (as ptr new-data) null) (vector-oom))
@@ -220,7 +220,7 @@
 
 (defn drop ((self (ptr (Vector T)))):void
   (when (!= (as ptr (_get self 'data)) null)
-    (alloc-handle-free (.& self 'alloc)
+    (alloc-handle-free (addr-of self 'alloc)
                        (_get self 'data)
                        (* (_get self 'cap) (as usize (sizeof T)))
                        8))

@@ -17,7 +17,7 @@
 ; because it is written for this function.
 (defn point-sum ((p (ref Point))):i32
   (let (total:i32 0)
-    (macrolet ((take (f) `(set! total (+ total (. p '~f)))))
+    (macrolet ((take (f) `(set! total (+ total (get p '~f)))))
       (take x)
       (take y))
     total))

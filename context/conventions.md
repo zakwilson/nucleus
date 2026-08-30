@@ -1334,7 +1334,7 @@ have different element parities, different failure modes, and different layers.
 `struct-field-index` (src/nucleusc.nuc) matches a selector against a struct's
 `field-names` by **pointer identity** (`=`), not `strcmp`. This works because both
 sides are interned: selectors arrive interned (the reader / `quote` intern symbol
-spellings at lex time, so `(. fn-node s)` is the canonical string) and stored field
+spellings at lex time, so `(fn-node 's)` is the canonical string) and stored field
 names are interned at build time via `intern-str` (interns the spelling, returns the
 canonical string pointer). The three field-access paths — `.` (`emit-field-get`),
 the `get` intrinsic (`emit-get-intrinsic`), and the non-emitting type pass
@@ -1346,7 +1346,7 @@ There is exactly **one** place that populates a StructDef's `field-names`:
 be pointer-identical, so the field would silently look absent (`-1` ⇒ "no field" / null
 type). If you add a second StructDef builder, intern its field names too. The
 `make bootstrap` fixed point does **not** exercise the REPL path — the
-`repl-redefinition` test does (its `*`/`-`/`if` macros do `(. (cast ptr:Node args) cdr)`
+`repl-redefinition` test does (its `*`/`-`/`if` macros do `((cast ptr:Node args) 'cdr)`
 at expansion time), so keep `make test` green, not just `make bootstrap`, when touching
 field interning.
 
@@ -1449,7 +1449,7 @@ string literal is `StrView`, not `CStr`; the `c"…"` literal (NS-4) and any
 (`emit-binop-vals`) instead of pointer identity. **Everywhere else it must behave
 exactly like `TY-PTR`:** `type-to-ir` → `ptr`, `type-size` → 8, zero-init →
 `null`, `cast` to/from `ptr` is a no-op, and it must never be `inttoptr`'d (it is
-already a pointer). A bare `(= (. t kind) TY-PTR)` ABI check therefore *misses*
+already a pointer). A bare `(= (t 'kind) TY-PTR)` ABI check therefore *misses*
 `CStr` — use the `is-ptr-like` predicate ({`TY-PTR`, `TY-CSTR`}; `TY-FN`
 deliberately excluded, `StrView` is a struct not a pointer). This bit the
 `:rest` arg-folding (`emit-call-with-args`), which `inttoptr`'d any non-`TY-PTR`
@@ -1637,8 +1637,10 @@ before/after IR diff does.
 The `.` field-access special form was renamed **`_get`** (compiler-internal
 primitive; `emit-field-get`) and ordinary code uses **head position `(s 'field)`**
 instead (the callable-values `get` path: Struct-blanket intrinsic, byte-identical
-GEP+load). The selector is **quoted** — see the next section. Two non-obvious
-hazards — both bit the `.`→head-position migration and are why `_get` still exists:
+GEP+load). The selector is **quoted** — see the next section. Stage 16 finished
+the job: `.` and `.&` are gone (`get` and the 2-argument `addr-of` replace them),
+but both stay **reserved** so a retired-form message carrying the replacement
+always reaches the user. Two non-obvious hazards — both bit the `.`→head-position migration and are why `_get` still exists:
 
 - **A user `get` method must read its own fields with `_get`, not head position.**
   `(self 'field)` inside a `(defn get … (self:ptr:T sel))` dispatches back into that
@@ -1649,9 +1651,9 @@ hazards — both bit the `.`→head-position migration and are why `_get` still 
   dispatched before scope lookup). Fix by renaming the variable (preferred) or using
   `(_get cond 'field)`. **Functions don't collide** — a local shadows them in scope
   lookup, so `(localvar 'field)` is member access even if a function shares the name.
-  The migration script special-cases reserved-named *direct* heads (`(. cond f)` →
-  `(_get cond f)`); a reserved-named **`->` base** (`(-> cond … (. type))`) is not
-  caught and must be renamed.
+  The one-time `.`→head-position migration special-cased reserved-named *direct*
+  heads by routing them to `_get`; a reserved-named **`->` base** was not caught
+  and had to be renamed.
 
 **A field name is QUOTED; a bare symbol in selector position is a variable.**
 `selector-literal-sym` (src/nucleusc.nuc) accepts `(quote sym)` and nothing else;
@@ -1662,7 +1664,7 @@ W7 demotion (`callee-has-field` + `selector-shadowed-by-local`) and Stage 16's
 (`design/stage16-ergonomics/dot-forms.md` §5 step 3) deleted all three. Three
 things that fall out of it, each of which had to be built:
 
-- **`.`, `.&` and `.set!` require a literal** and refuse a bare symbol rather
+- **`_get`, `.set!` and the 2-argument `addr-of` require a literal** and refuse a bare symbol rather
   than reading it as a variable — they name a field statically, so there is
   nothing for a computed selector to mean there (`die-nonliteral-selector`).
 - **Head position and `get` route on the RECEIVER, not on the argument's shape.**
@@ -1687,21 +1689,31 @@ lockstep holds by construction. `is-member-access-receiver` is the same shape an
 is called from both `emit-callable-value` and `callable-value-type` for the same
 reason.
 
+**An arity overload still needs a `node-type` mirror.** `(addr-of x)` is a
+binding's address and `(addr-of p 'f)` is a field's — one emitter, split on
+`node-len`. `node-type-addr-of` has to split on the *same* arity or the 2-arg
+form falls into the 1-arg path and types as `ptr:ptr:Point`, the address of the
+BINDING. That is invisible in the value itself: it only surfaces where the type
+is load-bearing (an argument position, an annotated binding), which is the
+`node-type`↔`emit-node` lockstep at its least obvious. The mirror must also
+reproduce emit's rules from the RAW field type — an array field decays to
+`ptr:elem`, and wrapping `node-type-field`'s already-decayed answer gives
+`ptr:ptr:elem`.
+
 The `->` macro (`lib/macros.nuc`) was extended to substitute `_` in **head**
 position (it scans the whole form, not just args), so a threaded value can land in
-call position: `(-> s (_ 'field))` ⇒ `(s 'field)`. The migration rewrites a 1-arg
-`->`-step `(. field)` to `(_ field)` and a normal `(. s field)` to `(s field)`.
+call position: `(-> s (_ 'field))` ⇒ `(s 'field)`.
 
 ## Reading a struct value's field is direct; writing one needs a binding
 
 Since Stage 16 SV-1 a struct **value** is a legal member-access receiver, so
-`(. v f)`, head-position `(v f)`, and `(_get v f)` all work on a by-value
+`(get v 'f)`, head-position `(v 'f)`, and `(_get v 'f)` all work on a by-value
 parameter, a `let`-bound struct local, or a call result read in place. The
 emitter copies the value into a fresh slot (`materialize-struct-value`,
 `src/nucleusc.nuc`) and `access-receiver-sdef` (`src/generics.nuc`) unwraps the
 same receivers in the type pass — the cross-file lockstep this file opens with.
 
-`.set!` and `.&` are the exception: they need the receiver's own **storage**, so
+`.set!` and the 2-argument `addr-of` are the exception: they need the receiver's own **storage**, so
 they take exactly what `addr-of` takes — a binding, whose slot they use directly.
 A temporary is an error ("the receiver is a temporary struct value, so it has no
 address"), which is also what stops a pointer into a compiler-made copy from
@@ -5713,16 +5725,19 @@ source text. Neither is the other's sanity check.
 
 ## The compiler SYNTHESIZES member accesses — a source migration cannot reach them
 
-`fn-rewrite-captures` builds `(. self field)` for every captured variable, and
-the env-drop / `__alloc` paths build more; there are twelve such construction
-sites. They carry a bare symbol selector that no grep, and no rewrite driven by
-source text, will ever see — the cell is built, not read.
+`fn-rewrite-captures` builds a member read for every captured variable, and the
+env-drop / `__alloc` paths build more; there are twelve such construction sites.
+They carry a selector that no grep, and no rewrite driven by source text, will
+ever see — the cell is built, not read.
 
 This is why Stage 16's selector migration built `--strict-selectors` before
 touching any source: the flag reports what is *emitted*, so it found these,
 and a spelling change that had only rewritten source would have broken every
 closure in the language the moment the rule flipped. They now go through
-`quoted-selector` (`src/nucleusc.nuc`).
+`quoted-selector` (`src/nucleusc.nuc`). The same twelve sites bit again when
+`.`/`.&` were retired — they synthesize `_get` and `addr-of` now, `_get` rather
+than `get` because a synthesized read of a compiler-generated env struct means
+*raw field load*, which is what the bypass primitive is for.
 
 The general rule: before changing what a **spelling** means, ask the compiler
 which of its own emissions use that spelling. A macro's quasiquote template is

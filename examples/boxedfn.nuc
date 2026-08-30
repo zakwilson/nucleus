@@ -28,7 +28,7 @@
 (defstruct Holder f:(BoxedFn (i32) i32))
 (extend Holder Drop)
 (defn drop ((self (ptr Holder))):void
-  (drop (.& self 'f)))
+  (drop (addr-of self 'f)))
 
 (defn main ():i32
   ; (1) bare-fn box: a non-capturing closure decays to a function pointer, which
@@ -47,7 +47,7 @@
   (let (k:i32 7
         cb:(BoxedFn (i32) i32) (vfn (x:i32):i32 (+ x k)))
     (with ((h (ref Holder)) (Holder cb))
-      (printf "struct field box: %d\n" (invoke (. h 'f) 100))))  ; 107
+      (printf "struct field box: %d\n" (invoke (get h 'f) 100))))  ; 107
 
   ; (2) Vector of heterogeneously-captured closures — CE-4's headline use case.
   ;     Box each closure into a let (no drop), conj the box, then iterate, invoke,
