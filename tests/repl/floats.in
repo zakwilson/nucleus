@@ -1,0 +1,16 @@
+; The REPL's float value printer (src/repl.nuc: repl-print-f64 / repl-print-f32).
+; Since Stage 16 retired src/repl_shim.c this is Nucleus, not C: it calls the
+; JIT'd nullary thunk through a `(fn f64)()` parameter and renders `%.17g` /
+; `%.9g` with `.0` appended when the rendering carries no `.`, exponent, or
+; nan/inf marker. c-header-layout.md §11.
+1.0
+2.5
+(+ 1.0 2.5)
+(/ 1.0 3.0)
+(- 0.0 4.0)
+(* 1.0 1e300)
+(/ 1.0 0.0)
+(/ 0.0 0.0)
+(as f32 0.5)
+(let (x:f32 2.0) x)
+(let (x:f32 (/ 1.0 3.0)) x)

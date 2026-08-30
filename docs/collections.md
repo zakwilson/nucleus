@@ -218,6 +218,15 @@ Vectors are initialised in place — there is no value constructor because a zer
 | `vector-init-capacity` | `((v (ref (Vector T))) n:usize) -> void` | Initialise empty with at least `n` slots pre-reserved. |
 | `vector-init-alloc` | `((v (ref (Vector T))) (a (ref AllocHandle))) -> void` | Initialise empty with an explicit allocator. |
 
+There are also **value** constructors — `vector-new`, `vector-new-alloc`,
+`vector-new-capacity` (by value) and `vector-new-in` (heap-placed, returning an
+escapable `(ref (Vector T))`) — for which `T` comes from the *declared type of
+the position*, since no argument carries it. They therefore need one: a bare
+`(vector-new-in a)` with no annotation to read is refused with `cannot infer type
+variable 'T'`. See [generics.md](generics.md#bounded-generic-defn). An owning
+collection still may not escape by `return` without `move`, so the in-place
+`*-init` family above remains the idiom for a `with`-scoped vector.
+
 ### Operations
 
 ```lisp

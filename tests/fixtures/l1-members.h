@@ -40,9 +40,9 @@ struct l1_m_opaque_tag { struct l1_opaque_tag o; int b; };
 struct l1_m_unknown_tag { struct l1_nowhere_at_all z; int b; };
 
 /* c-parse-type:529 — a by-value aggregate whose `{…}` body the parser could not
-   read. A multi-declarator member line is that shape now that BF-4 gave
-   bitfields a real one; reached through a typedef so the member is a plain name. */
-typedef struct { int x; int a, b; } l1_multi_t;
+   read. CD-1 gave `int a, b;` a real body, so the durable subject is CD-1's own
+   residue: declarators that disagree in pointer depth, reached through a typedef. */
+typedef struct { int x; int *a, b; } l1_multi_t;
 struct l1_m_bad_body { l1_multi_t t; int b; };
 
 /* ---- positive controls --------------------------------------------------- */

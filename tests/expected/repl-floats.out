@@ -1,0 +1,13 @@
+Nucleus REPL (type Ctrl-D to exit)
+nuc> nuc> nuc> nuc> nuc> nuc>   1.0
+nuc>   2.5
+nuc>   3.5
+nuc>   0.33333333333333331
+nuc>   -4.0
+nuc>   1.0000000000000001e+300
+nuc>   inf
+nuc>   nan
+nuc>   0.5
+nuc>   2.0
+nuc>   0.333333343
+nuc> 

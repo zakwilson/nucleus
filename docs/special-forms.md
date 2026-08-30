@@ -28,10 +28,10 @@ failure.
 | `macrolet` | Bind macros over a body: `(macrolet ((name (params) body...) ...) body-form...)`. The bindings exist for the body and nowhere else, so a deliberately capturing macro need not become a global `defmacro`. The body emits as a `do` (same value, no new variable scope). Bindings are **sequential** like Nucleus `let` — a later binding's body sees an earlier one — and a binding is visible inside its own body, like `defmacro`. A binding shadows a global macro/function/local of the same spelling in head position, and an inner `macrolet` shadows an outer one; it may **not** shadow a special form (the macro table is consulted first, so this is refused rather than allowed). `:rest` works as in `defmacro`. Not a top-level form. See [macrolet](macros.md#macrolet--lexically-scoped-macros). | Common Lisp `macrolet` |
 | `let` | Bind local variables; yields the body's last expression | local variable declaration |
 | `with` | Like `let`, but **owns** any binding whose init is a libc allocator (`malloc`/`calloc`/`realloc`/`strdup`, possibly through `as`) or whose declared type conforms to the `Drop` protocol. Owned bindings are released at scope exit (libc → `free`; Drop → statically dispatched `(drop b)`, null-guarded) in reverse binding order, on fall-through and on early `return`. The compiler verifies at compile time that an owned resource does not **escape** the scope — see [Pointer lifecycle](#pointer-lifecycle-escape-analysis). Use `(move b)` to transfer ownership out. | `let` + scoped `free` / RAII |
-| `cond` | Multi-way conditional; yields the matched branch's value (strict-typed across branches) | `if` / `else if` / `else` chain |
+| `cond` | Multi-way conditional; yields the matched branch's value (strict-typed across branches). The test is `bool`, or a nullable value eliminated to one — see [Condition position](#condition-position-a-nullable-value-is-a-condition). | `if` / `else if` / `else` chain |
 | `match` | Eliminate a `defunion` value (or a `defenum` integer) by arm, with exhaustiveness checking. See [Unions and tagged sums](structs-unions.md#unions-and-tagged-sums). | `switch` on the tag |
 | `make` | Construct a `defunion` value by arm: `(make Type arm args...)` — the explicit-instance spelling required for template instances, e.g. `(make (Result i64 i32) ok v)`. | designated initializer |
-| `while` | Loop; yields `void` | `while` |
+| `while` | Loop; yields `void`. Same condition rule as `cond` — see [Condition position](#condition-position-a-nullable-value-is-a-condition). | `while` |
 | `set!` | Assign to a variable; yields the assigned value | `x = val` |
 | `inc!` | Increment a variable by 1 (or by an optional delta). Yields the new value. | `x++` / `x += n` |
 | `dec!` | Decrement a variable by 1 (or by an optional delta). Yields the new value. | `x--` / `x -= n` |
@@ -40,15 +40,15 @@ failure.
 | `label-addr` | Yields a `ptr` to a label (for computed gotos). | `&&label` (GCC) |
 | `goto-ptr` | Indirect branch to a label address. The IR lists every label declared in the current function as a possible destination. | `goto *p` (GCC) |
 | `return` | Return from function | `return` |
-| `not` | Logical negation | `!x` |
-| `and` | **Variadic prelude macro** (same split as `_+`/`+`) that right-folds to the binary `_and` primitive: `(and)`→`true`, `(and x)`→`x`, `(and a b c…)`→`(_and a (and b c…))`. For ≥2 args each operand is i1-checked and evaluated left-to-right, stopping at the first false; cumulative narrowing is preserved across the chain (a later `(m field)` typechecks after an earlier `(!= m null)`). The 1-arg form returns `x` **unchecked** — no i1 check, matching CL/`+` variadic semantics (the i1 check fires only inside the ≥2-arg binary lowering). Fold table: [Variadic logical operators](macros.md#variadic-logical-operators). | `&&` (N-ary) |
-| `or` | **Variadic prelude macro** that right-folds to the binary `_or` primitive: `(or)`→`false`, `(or x)`→`x`, `(or a b c…)`→`(_or a (or b c…))`. For ≥2 args each operand is i1-checked and evaluated left-to-right, stopping at the first true; cumulative narrowing is preserved. The 1-arg form returns `x` **unchecked**. Fold table: [Variadic logical operators](macros.md#variadic-logical-operators). | `\|\|` (N-ary) |
-| `_and` | Binary short-circuit logical AND primitive — the underscore-prefixed form behind the `and` macro (same split as `_+` behind `+`). Both operands are i1-checked; the RHS is evaluated, and narrows under the LHS, only when the LHS is true. Usable directly for hand-written binary short-circuit. | `&&` |
-| `_or` | Binary short-circuit logical OR primitive — the underscore-prefixed form behind the `or` macro. Both operands are i1-checked; the RHS is evaluated, and narrows under the LHS, only when the LHS is false. Usable directly for hand-written binary short-circuit. | `\|\|` |
+| `not` | Logical negation. The operand is a condition — see [Condition position](#condition-position-a-nullable-value-is-a-condition) — so `(not p)` on a `raw`/`CStr`/`?T` is a null test. | `!x` |
+| `and` | **Variadic prelude macro** (same split as `_+`/`+`) that right-folds to the binary `_and` primitive: `(and)`→`true`, `(and x)`→`x`, `(and a b c…)`→`(_and a (and b c…))`. For ≥2 args each operand is a [condition](#condition-position-a-nullable-value-is-a-condition) evaluated left-to-right, stopping at the first false; cumulative narrowing is preserved across the chain (a later `(m field)` typechecks after an earlier `(!= m null)`). The 1-arg form returns `x` **unchecked** — no condition check, matching CL/`+` variadic semantics (the check fires only inside the ≥2-arg binary lowering). Fold table: [Variadic logical operators](macros.md#variadic-logical-operators). | `&&` (N-ary) |
+| `or` | **Variadic prelude macro** that right-folds to the binary `_or` primitive: `(or)`→`false`, `(or x)`→`x`, `(or a b c…)`→`(_or a (or b c…))`. For ≥2 args each operand is a [condition](#condition-position-a-nullable-value-is-a-condition) evaluated left-to-right, stopping at the first true; cumulative narrowing is preserved. The 1-arg form returns `x` **unchecked**. Fold table: [Variadic logical operators](macros.md#variadic-logical-operators). | `\|\|` (N-ary) |
+| `_and` | Binary short-circuit logical AND primitive — the underscore-prefixed form behind the `and` macro (same split as `_+` behind `+`). Both operands are [conditions](#condition-position-a-nullable-value-is-a-condition); the RHS is evaluated, and narrows under the LHS, only when the LHS is true. Usable directly for hand-written binary short-circuit. | `&&` |
+| `_or` | Binary short-circuit logical OR primitive — the underscore-prefixed form behind the `or` macro. Both operands are [conditions](#condition-position-a-nullable-value-is-a-condition); the RHS is evaluated, and narrows under the LHS, only when the LHS is false. Usable directly for hand-written binary short-circuit. | `\|\|` |
 | `cast` | **Retired in Stage 14** — bare `cast` is now a targeted hard error: `'cast' was split in Stage 14: use 'as' (safe) or 'unsafe/cast' (unchecked)`. Use `as` (below) for statically-safe conversions, `unsafe/cast` (below) for anything lossy or contract-manufacturing. | — |
 | `as` | **Statically-safe** conversion — `(as TYPE expr)`, same shape as `unsafe/cast`. Accepts the *non-lossy* part of what the implicit-coercion machinery accepts in an assignment position (identity, int widening, same-width sign reinterpret, `f32`→`f64`, user `defcast` rules, `CStr`↔pointer, the elem-less-`ptr` `void*` hatch) **plus** pure pointer-contract weakening (`(ref T)`→`(raw T)`; a typed pointer → elem-less bare `ptr`) **plus** a narrowing whose operand is a *literal* the target can hold exactly — an integer that fits (`(as i8 5)`, `(as ui8 200)`, and the same through a `defconst` name) or a float that round-trips (`(as f32 1.5)`, `(as f32 -0.25)`) — which is lossless and so lowers to exactly what the implicit spelling `(let (a:i8 5) …)` / `(let (a:f32 1.5) …)` emits. Refuses everything lossy or contract-manufacturing — narrowing/truncation of a **value** (integer *and* `f64`→`f32`), a literal that does *not* fit (`(as i8 300)`, `(as ui8 -1)`) or does *not* round-trip (`(as f32 3.14)`), `float`→`int`, `ptr`↔`int`, `fn`↔`ptr`, element-retyping `ptr`↔`ptr` (each routed to `unsafe/cast`) — note that an implicit coercion at a typed slot narrows a *value* silently (integers and floats alike) and rounds a float *literal* silently, so `as` stays deliberately stricter than assignment there — and, unlike `unsafe/cast`, **honors the nullability flow check**: a `raw`/nullable pointer into a non-null `(ref T)`/`(ptr T)` slot is rejected (routed to `as-ref` for a runtime-checked launder, or `unsafe/cast` for an unchecked assertion). Use `as` for conversions you can prove correct; reach for `unsafe/cast` only when the compiler refuses. **`as` also names a type for inference**: its target type is supplied as the expected type of its operand, exactly as a `let`/`with` binding annotation, a `set!` target, a `return` or a `.set!` field does — so a generic whose type variable appears only in its return type resolves against it (`(as (ref (Vector i32)) (vector-new-in a))`). | `static_cast`-ish |
 | `unsafe/cast` | **Unchecked** type reinterpretation — `(unsafe/cast TYPE expr)`. Today's (pre-Stage-14) `cast`, verbatim: same-kind reinterpret, `ptr`↔`ptr` (any/all element retyping, including `raw`→`ref` laundering with **no** nullability check), `CStr`↔`ptr`, `fn`↔`ptr`, int narrowing/widening, same-width sign reinterpret, `float`↔`float` (`fpext`/`fptrunc`), `int`↔`float` (`sitofp`/`uitofp`/`fptosi`/`fptoui`). Its only "check" is that the kind pair appears in the conversion ladder — no range check, no null check. A strict superset of `as`'s accepted set, so it never blocks a migration; reach for it only when `as` refuses. | `(type)x` |
-| `addr-of` | Take address of a variable. The address of **frame-local storage** (a `let`/`with` value binding or a by-value parameter) is escape-tracked, but only at the two actual escape sinks: `return` and a store into longer-lived memory. **Passing it as a call argument is allowed** — downward flow into a callee is a borrow, so the ordinary C out-parameter idiom works with no cast or workaround: `(defn set-both (out-a:ptr:i32):void (ptr-set! out-a 41)) (let (a:i32 0) (set-both (addr-of a)) ...)` compiles and, after the call, `a` holds the written value. See [Pointer lifecycle](#pointer-lifecycle-escape-analysis) for the full escape-sink list; the address of a global or of a reference/pointer binding is never tainted. | `&x` |
+| `addr-of` | Take address of a variable (reader sugar: `&x` → `(addr-of x)`, when the `&` starts a token — a `&` inside one is the [`&T` type sigil](types.md#pointer-kinds-ptr-t-raw-t-and-t)). The address of **frame-local storage** (a `let`/`with` value binding or a by-value parameter) is escape-tracked, but only at the two actual escape sinks: `return` and a store into longer-lived memory. **Passing it as a call argument is allowed** — downward flow into a callee is a borrow, so the ordinary C out-parameter idiom works with no cast or workaround: `(defn set-both (out-a:ptr:i32):void (ptr-set! out-a 41)) (let (a:i32 0) (set-both (addr-of a)) ...)` compiles and, after the call, `a` holds the written value. See [Pointer lifecycle](#pointer-lifecycle-escape-analysis) for the full escape-sink list; the address of a global or of a reference/pointer binding is never tainted. | `&x` |
 | `deref` | Dereference a pointer (reader sugar: `@p` → `(deref p)`) | `*p` |
 | `ptr-set!` | Write through a pointer; yields the stored value | `*p = val` |
 | `ptr+` | **Retired in Stage 14** — bare `ptr+` is now a targeted hard error: `'ptr+' was split in Stage 14: use 'unsafe/ptr+'`. | — |
@@ -67,7 +67,7 @@ failure.
 | `array` | `(array ElemType init...)` — array compound literal. Each `init` is either `(index val)` (designated) or a bare value (positional). Length is implicit: `max(positional-count, max-designated-index + 1)`. Unspecified slots are zero-initialized (including struct and `CStr` element types). Yields `ptr:ElemType`, alloca-backed. When `ElemType` is a struct, an element may be written as a bare `(ElemType …)` compound literal — it is loaded into the slot, so the older `(deref (ElemType …))` spelling is no longer required (both are accepted and emit the same IR). A binding annotated with the bare, elem-less `:ptr` takes `ptr:ElemType` from the literal, so `(aref a i)` works without a cast. **Not to be confused with the `(array T N)` *type*** ([Fixed-size arrays](types.md#fixed-size-arrays--array-t-n)): the two are told apart by position, and `(array i32 4)` means a one-element array holding `4` here but a four-element array type in a type annotation. | `(T[]){1, 2, [3] = 99}` |
 | `quote` | Yields its argument as a `Node*` (reader sugar: `'x` → `(quote x)`). Quoted symbols are interned — see [Symbols](types.md#symbols). | — |
 | `quasiquote` | Like `quote` but `~expr` splices a runtime value and `~@list` splices a list (reader: `` `x ``, `~x`, `~@x`) | — |
-| `compile-time` | Execute body forms at compile time via LLVM JIT; output goes to stderr. A `defstruct` in the body defines a **program** type, not a compile-time-private one: its definition is emitted into the program module and the type is usable by ordinary code, including at a later REPL entry. **Known limitation:** it is usable in a function *body* but not in a *signature* — `(defn f (p:T):i32 …)` for such a `T` fails `unknown type: T`, because the signature prescan does not descend into a `compile-time` body. | — |
+| `compile-time` | Execute body forms at compile time via LLVM JIT; output goes to stderr. A `defstruct` in the body defines a **program** type, not a compile-time-private one: its definition is emitted into the program module and the type is usable by ordinary code — in a *body*, in a *signature*, by value or by reference, anywhere in the unit including **above** the block, and at a later REPL entry. `defstruct` is the only definer the body registers for the program this way: a `defvar`, `defconst`, `defenum` or `defn` in a `compile-time` body belongs to the compile-time module, and naming one from ordinary code is an error. | — |
 | `funcall` | Call a typed function pointer: `(funcall fn args...)`. The function pointer must have a `TY-FN` type with known return type and parameter types. | `fn(args...)` |
 | `funcall-void` | Call a function pointer with no arguments and no return value | `fn()` |
 | `funcall-ptr-1` `funcall-ptr-i32` `funcall-ptr-i64` `funcall-ptr-ptr` | **Retired in Stage 14** — each bare spelling is now a targeted hard error: `'funcall-ptr-1' was split in Stage 14: use 'unsafe/funcall-ptr-1'` (and the `-i32`/`-i64`/`-ptr` siblings analogously). | — |
@@ -180,6 +180,56 @@ be created inside a `with`, moved out of it, held in a `let`/`with` binding
 [Type erasure](generics.md#type-erasure-boxedfn-and-dyn-protocol) and
 `examples/boxedfn.nuc`.
 
+## Condition position: a nullable value is a condition
+
+There are exactly **six** condition sites in the language — the `cond` test, the
+`while` condition, the `not` operand, and each operand of `_and` / `_or`.
+Everything else that reads like a conditional (`if`, `when`, `unless`, `case`,
+`if-some`, `when-some`, and the variadic `and` / `or`) is a macro over those, so
+whatever holds here holds everywhere.
+
+At those six sites a **nullable** value is accepted directly and eliminated to
+`bool`:
+
+| Condition type | True when | Lowers to |
+|---|---|---|
+| `bool` | it is `true` | unchanged |
+| `(raw T)` / bare `raw` | non-null | `icmp ne ptr … null` |
+| `CStr` | non-null | `icmp ne ptr … null` |
+| `?T` / `(Maybe (ref T))` | present | `icmp ne ptr … null` |
+| `(Maybe T)`, `T` a non-pointer | the `some` arm | tag compare |
+
+```lisp
+(when m (m kind))          ; same as (when (!= m null) (m kind))
+(while cur (walk cur))
+(when (not p) (return -1))
+(and m (> (m x) 0))        ; the rhs still narrows under the lhs
+```
+
+Narrowing follows the sugar: a bare `m` in a condition proves `m` non-null
+exactly where `(!= m null)` would, so a `?T` binding reads as `(ref T)` inside
+the taken branch, inside an `_and`'s right operand, and after a terminating
+`(when (not m) …)` guard.
+
+**Everything else stays a type error**, and deliberately so:
+
+- **Numbers and other scalars.** `(when n:i32 …)` is `cond: condition must be
+  bool, not i32 -- compare explicitly`. Nucleus always knows the type, so a
+  numeric condition is a constant no reader intends; refusing it also keeps the
+  meaning of `(when n …)` free for a later decision.
+- **A non-null pointer.** `ptr` and `(ref T)` are non-null by type, so
+  `(when p:ptr:Node …)` is a test whose answer is already known. It reports
+  `cond: ptr:Node is non-null, so this test is always true -- spell the value
+  (raw T) or ?T if it can be null`.
+- **`!T` / `Result`.** Neither true nor false: `a Result (!T) is neither true
+  nor false -- eliminate it with match, try or unwrap`.
+- **`(dyn P)`, `BoxedFn`, `StrView`, structs.** A fat pointer has two halves and
+  a string view is not a pointer; none of them has a defensible truth value.
+
+This is an **elimination rule at condition position, not an implicit
+coercion** — see [Implicit Type Coercion](types.md#implicit-type-coercion). A
+`bool` parameter, field, or `let` slot still refuses a pointer.
+
 ## Pointer lifecycle: escape analysis
 
 The compiler tracks pointer provenance (its **taint**) at compile time and
@@ -290,7 +340,7 @@ The rule is **symmetric in operand order** and the operator's *result type* is t
 ```lisp
 (defstruct V2 x:i32 y:i32)
 (defn _+ (a:ptr:V2 b:ptr:V2):ptr:V2 …)   ; (+ u v) now dispatches here
-(defn = (a:ptr:V2 b:ptr:V2):i1 …)    ; (= u v) dispatches here
+(defn = (a:ptr:V2 b:ptr:V2):bool …)  ; (= u v) dispatches here
 ```
 
 A user operator method is emitted under a mangled symbol (`@add.pV2.pV2`, `@eq.pV2.pV2` — the symbols `+`/`=` are mapped to IR-safe mnemonics). A call with operand types that match no user method falls back to the built-in inline peephole.

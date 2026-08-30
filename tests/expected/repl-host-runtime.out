@@ -1,0 +1,15 @@
+Nucleus REPL (type Ctrl-D to exit)
+nuc> nuc> nuc> nuc> nuc> nuc> nuc> nuc> nuc> nuc> nuc>   a
+nuc>   (a b)
+nuc> nuc> nuc> nuc> nuc>   101
+nuc> nuc> nuc>   imported node
+nuc>   arena already imported
+nuc> nuc>   3
+nuc>   0
+nuc> nuc>   202
+nuc> nuc> nuc> nuc> nuc> nuc> nuc> nuc> nuc>   defined
+nuc> <repl>:1: error: unknown: cond — not defined anywhere in this compilation unit
+  error: error (recovered)
+nuc> nuc> nuc>   defined
+nuc>   42
+nuc> 

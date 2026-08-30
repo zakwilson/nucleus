@@ -1,0 +1,76 @@
+; Stage 16 — `&`: the non-null pointer TYPE, and the address-of OPERATOR.
+;
+; `&` inside an atom is the type sigil. The reader expands a `&` that starts a
+; chain segment into `ref:`, so each spelling lowers IDENTICALLY to the `ref:` /
+; `(ref …)` form it replaces:
+;   x:&T        -> x:ref:T      -> (x (ref T))
+;   x:&(T …)    -> x:ref:(T …)  -> (x (ref (T …)))   [via the colon-paren fuse]
+;   ):&T        -> ):ref:T      [return position, keyword-led spelling too]
+;   &&T         -> ref:ref:T    and  ?&T -> ?ref:T,  &raw:T -> ref:raw:T
+;
+; `&` at the start of a token is the reader macro `&x -> (addr-of x)`. It runs
+; before the token is lexed, so it takes the standalone spelling and the sigil
+; keeps the rest; a type slot handed `(addr-of T)` reads it as `(ref T)`, which
+; is why `(link &Point)` and `(Vector &Point)` below are still types.
+;
+; A `&` anywhere else in an atom is an ordinary symbol character — `.&` (the
+; field-address form) is untouched — and the four retired `&x` markers keep
+; naming their keyword replacements rather than reading as types.
+
+(import-use "stdio.h")
+(import-use node)
+(import-use vector)
+
+(defstruct Point
+  x:i32
+  y:i32)
+
+; defstruct field, list form: a non-null link to another Point.
+(defstruct Holder
+  (link &Point)
+  (tag i32))
+
+; defn param (`p:&Point`) and defn return type after ')' (`):&Point`).
+(defn shift (p:&Point d:i32):&Point
+  (.set! p x (+ (p x) d))
+  (return p))
+
+(defn sum-xy (p:&Point):i32
+  (return (+ (p x) (p y))))
+
+; `&` through a chain: a pointer to a non-null pointer.
+(defn deref-sum (pp:&&Point):i32
+  (return (sum-xy (deref pp))))
+
+; `&` in front of a parenthesised type — the colon-paren fuse — and as a
+; template type argument.
+(defn total (v:&(Vector &Point)):i32
+  (let (s:i32 0)
+    (dotimes (i (count v))
+      (set! s (+ s (sum-xy (v i)))))
+    (return s)))
+
+; The keyword-led return spelling, with `&` on the paren form.
+(defn only (p:&Point) :&(Vector &Point)
+  (let (v:&(Vector &Point) (vector-new-in (default-allocator)))
+    (conj v p)
+    (return v)))
+
+(defn main ():i32
+  ; `&a` is the operator; `&Point` in the same binding list is the type.
+  (let (a:Point (Point 1 2)
+        b:Point (Point 10 20)
+        ap:&Point &a
+        bp:&Point &b
+        pp:&&Point &ap
+        h:Holder (Holder bp 7)
+        v:&(Vector &Point) (vector-new-in (default-allocator)))
+    (conj v ap)
+    (conj v bp)
+    (printf "sum-xy=%d\n" (sum-xy &a))
+    (printf "shift=%d\n" (sum-xy (shift ap 4)))
+    (printf "deref-sum=%d\n" (deref-sum pp))
+    (printf "holder=%d tag=%d\n" (sum-xy (h link)) (h tag))
+    (printf "total=%d\n" (total v))
+    (printf "only=%d\n" (total (only bp))))
+  (return 0))

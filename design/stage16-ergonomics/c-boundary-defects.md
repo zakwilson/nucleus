@@ -38,15 +38,17 @@ layout claim.
 | **D6** | Bare `unsigned`/`signed` is not a type; the drop records no reason | friction 3 | = C1/C2 | **done** (C1/C2) |
 | **D7** | `__fnty_N` — an internal registry key — is what diagnostics call a function pointer | — | §2.6 | **done** (FP-3) |
 | **D8** | No `long double` / `_Float128` / `_Float16`; 156 declarations refused across the standard headers | — | §6 | **done** (FL-1…FL-7) |
-| **D9** | No bitfields — the sole remaining blocker on `FILE` | — | §8 | open |
+| **D9** | No bitfields — the sole remaining blocker on `FILE` | — | §8 | **done** (FR-1, BF-1…BF-4) |
 | **D10** | No `__attribute__((packed))`; `epoll_event` imports at 16 bytes where C says 12 | — | §7 | **done** (PK-1/PK-2/PK-3) |
-| **D11** | No C11 anonymous members — but the layout half already exists | — | §9 | open |
+| **D11** | No C11 anonymous members — but the layout half already exists | — | §9 | **done** (AN-1/AN-2, C1a) |
 
 **Phases 1–4 landed 2026-08-26**, and **phase 5 (§6, the float widths) and
-phase 6 (§7, packing) with them** — PK-3 on 2026-08-28. D1–D8 and D10 are
-closed; §8 and §9 remain. What each change actually turned out to be, where it
-diverged from the plan above, and what it is pinned by, is in §12 (phases 1–4),
-§13 (the floats) and §14 (packing and alignment).
+phase 6 (§7, packing) with them** — PK-3 on 2026-08-28. **Bitfields (§8, D9) and
+anonymous members (§9, D11) landed 2026-08-28 too.** D1–D11 are all closed —
+the 111-type census (§16.4) is the acceptance test for the last two. What each
+change actually turned out to be, where it diverged from the plan above, and
+what it is pinned by, is in §12 (phases 1–4), §13 (the floats), §14 (packing
+and alignment), §15 (bitfields) and §16 (anonymous members).
 
 D3 and D4 are the load-bearing discoveries. Nucleus has had a real
 function-pointer type since Stage 6 and a signature-equality predicate

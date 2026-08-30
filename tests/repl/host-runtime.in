@@ -1,0 +1,40 @@
+; Stage 16 (design/stage16-ergonomics/repl-jit-symbol-precedence.md): the REPL
+; used to refuse `(import-use node)` with `Duplicate definition of symbol
+; 'alloc-node'`. The compiler attached its own process-symbol generator to the
+; MAIN JITDylib, so the first macro that referenced a node-runtime symbol made
+; ORC reflect the host's copy INTO main, and the name was then taken for the
+; rest of the session. LLJIT already reflects process symbols through its own
+; "<Process Symbols>" JITDylib, linked LAST, so removing the redundant generator
+; restores the documented precedence: a module's own definition wins.
+;
+; 1. quote works at the prompt (it lowers to a runtime intern-symbol call)
+'a
+'(a b)
+; 2. `case` expands to `cond`. Expanding it HERE materializes its JIT module
+;    while the only intern-symbol in the session is the host compiler's, which
+;    binds it to that copy permanently (ORC materialization is lazy and
+;    one-shot). §5 below re-checks it after the import.
+(case 1 1 101 999)
+; 3. the node runtime imports — this is the form the whole item was about.
+;    It pulls lib/arena.nuc in with it, so the explicit import dedups.
+(import-use node)
+(import-use arena)
+; 4. and its functions are callable afterwards
+(node-len '(a b c))
+(node-len '())
+; 5. the already-materialized macro still works across the import
+(case 2 2 202 999)
+; 6. RESIDUAL, pinned deliberately (§5 of the design doc): a macro first
+;    expanded AFTER the import binds intern-symbol to the SESSION's copy of
+;    lib/node.nuc, whose intern table is a second table. `emit-node` dispatches
+;    special forms by POINTER identity on the interned head symbol
+;    (conventions.md, "Symbol nodes are interned singletons"), so a special-form
+;    head minted from that second table is not recognised. It fails LOUDLY.
+;    When the follow-up item lands, this stops erroring and this fixture must be
+;    updated rather than deleted.
+(defmacro hr-pick (a) `(cond (> ~a 5) 111 true 222))
+(hr-pick 9)
+; 7. ...while a macro whose expansion has no special-form head is unaffected,
+;    because a function head is resolved by SPELLING, not by pointer identity
+(defmacro hr-add (a b) `(+ ~a ~b))
+(hr-add 20 22)

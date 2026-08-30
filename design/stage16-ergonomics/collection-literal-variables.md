@@ -265,6 +265,14 @@ in the first place, but the underlying hole is general to stamped template
 instances and needs a type-equality check at every binding, argument, `set!` and
 `return`. That has its own blast radius and belongs in its own document.
 
+**Closed 2026-08-29 — [template-ref-equality.md](template-ref-equality.md).** Two
+things in the paragraph above needed correcting there. The hole is not specific
+to stamped instances: two hand-written structs behave identically, because the
+short-circuit that admits the pair is on the type's *kind*. And the blast radius
+turned out to be 61 sites of which 60 were one call in this compiler, resting on
+a second defect — a generic whose type variable appears only in its return type
+had one memo entry and one symbol for every instantiation.
+
 ### 6.2 A collection literal in expression position is a per-call construction
 
 Not a defect in the feature, but the reason the motivating site should not
@@ -420,7 +428,12 @@ the unknown `f`.
 
 ## Out of scope
 
-- The template-ref type-equality hole (§6.1) — its own document.
+- The template-ref type-equality hole (§6.1) — **written and closed**:
+  [template-ref-equality.md](template-ref-equality.md) (2026-08-29). It is D3's
+  chokepoint one arm lower, it is general to pointers rather than to templates,
+  and closing it exposed a second defect — a generic whose type variable appears
+  only in its return type had one memo entry and one symbol for every
+  instantiation.
 - Making a constant collection cheap (§6.2): a compile-time-constructed or
   static collection is a separate feature, and the honest advice for a constant
   membership test today is `case`, an `or` chain, or a bitmask.

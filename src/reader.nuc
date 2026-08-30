@@ -8,7 +8,7 @@
 ; and the stderr extern.
 ;
 ; Stage 10 E4: the reader's recoverable syntax errors are returned as `!ptr`
-; values (a `(Result ptr Err)`) rather than aborting via `die-at`/`repl_throw`.
+; values (a `(Result ptr Err)`) rather than aborting via `die-at`/`repl-throw`.
 ; The human-readable diagnostic is still printed at the fault site by
 ; `report-at` (so line/path context is preserved exactly); the propagated
 ; `parse-error` is the value-channel signal callers `try`/`match` on. `die-at`
@@ -33,7 +33,7 @@
 ; ============================================================
 
 (defn die-at (line:i32 msg:ptr):void
-  noreturn
+  :noreturn
   ; Stage 10 C3: consult the panic-tier debugger hook before aborting. With no
   ; (unhandled-error, i32) handler bound this is a one-load chain walk that
   ; returns none and falls straight through to today's abort; a bound handler
@@ -45,13 +45,13 @@
   (when (!= g-mono-context null)
     (fprintf stderr "  note: %s\n" g-mono-context))
   ; W9 item 42: a note the diagnosing site staged before calling. Cleared here so
-  ; an interactive session, where repl_throw unwinds instead of exiting, cannot
+  ; an interactive session, where repl-throw unwinds instead of exiting, cannot
   ; carry it onto an unrelated later error.
   (when (!= g-diag-note null)
     (fprintf stderr "  note: %s\n" g-diag-note)
     (set! g-diag-note null))
   (when (!= g-interactive 0)
-    (repl_throw))
+    (repl-throw))
   (exit 1))
 
 ; Stage 10 E4: report a recoverable reader error without aborting. Prints the
@@ -402,6 +402,60 @@
         (when (!= i len) (return 0))
         (return 2)))))
 
+; Stage 16: `&T` is sugar for `ref:T`, expanded before the parser so that every
+; reader of a type spelling — not just the type parser — sees the colon chain
+; (design/stage16-ergonomics/ref-sigil.md).
+
+; Does the character after this one still start a chain segment? A sigil and a
+; ':' open one; `?`/`!` keep one open, so `?&T` reads as `?ref:T`.
+(defn ref-sigil-seg-next (c:i32 seg:i32):i32
+  (when (and (= c 38) (!= seg 0)) (return 1))
+  (when (or (= c 63) (= c 33)) (return seg))
+  (return (if (= c 58) 1 0)))
+
+(defn expand-ref-sigil (text:ptr len:i64):ptr
+  (let (n:i64 0
+        i:i64 0
+        seg:i32 1)
+    (while (< i len)
+      (let (c:i32 (char-at text i))
+        (when (and (= c 38) (!= seg 0)) (set! n (+ n 1)))
+        (set! seg (ref-sigil-seg-next c seg)))
+      (set! i (+ i 1)))
+    (let (s:ptr (arena-strndup text len))
+      (when (= n 0) (return s))
+      ; Left unexpanded so a retired marker still reaches reject-legacy-marker,
+      ; which names its replacement instead of failing as `unknown type: rest`.
+      (when (!= (legacy-marker-tail s) null) (return s))
+      (let (out:ptr (arena-alloc (+ (+ len (* 3 n)) 1))
+            o:i64 0
+            j:i64 0
+            seg2:i32 1)
+        (while (< j len)
+          (let (c:i32 (char-at text j))
+            (if (and (= c 38) (!= seg2 0))
+              (do (aset! (as ptr:i8 out) o (unsafe/cast i8 114))          ; 'r'
+                  (aset! (as ptr:i8 out) (+ o 1) (unsafe/cast i8 101))    ; 'e'
+                  (aset! (as ptr:i8 out) (+ o 2) (unsafe/cast i8 102))    ; 'f'
+                  (aset! (as ptr:i8 out) (+ o 3) (unsafe/cast i8 58))     ; ':'
+                  (set! o (+ o 4)))
+              (do (aset! (as ptr:i8 out) o (unsafe/cast i8 c))
+                  (set! o (+ o 1))))
+            (set! seg2 (ref-sigil-seg-next c seg2)))
+          (set! j (+ j 1)))
+        (aset! (as ptr:i8 out) o (unsafe/cast i8 0))
+        (return out)))))
+
+; A retired `&x` marker must reach reject-legacy-marker, which names its keyword
+; replacement, instead of being consumed by the `&` reader macro (ref-sigil.md §6).
+(defn at-legacy-marker ():i32
+  (let (end:i64 g-pos)
+    (while (!= (is-sym-char (char-at g-src end)) 0)
+      (set! end (+ end 1)))
+    (when (<= (- end g-pos) 1) (return 0))
+    (let (tok:ptr (arena-strndup (unsafe/ptr+ (as ptr:i8 g-src) g-pos) (- end g-pos)))
+      (return (if (= (legacy-marker-tail tok) null) 0 1)))))
+
 (defn lex-atom ():!ptr
   (let (start-line:i32 g-line
         start:i64 g-pos)
@@ -515,12 +569,12 @@
         (let (tk:ptr:Tok (as ptr:Tok (alloc-tok)))
           (.set! tk kind TOK-KEYWORD)
           (.set! tk line start-line)
-          (.set! tk s (arena-strndup (unsafe/ptr+ (as ptr:i8 text) 1) (- len 1)))
+          (.set! tk s (expand-ref-sigil (unsafe/ptr+ (as ptr:i8 text) 1) (- len 1)))
           (return (ok (as ptr tk)))))
       (let (ts:ptr:Tok (as ptr:Tok (alloc-tok)))
         (.set! ts kind TOK-SYMBOL)
         (.set! ts line start-line)
-        (.set! ts s (arena-strndup text len))
+        (.set! ts s (expand-ref-sigil text len))
         (return (ok (as ptr ts)))))))
 
 (defn next-tok ():!ptr
@@ -587,6 +641,9 @@
           (.set! trc kind TOK-RBRACE)
           (.set! trc line line)
           (return (ok (as ptr trc))))))
+    ; The `&` reader macro must not swallow a retired marker (at-legacy-marker).
+    (when (and (= c 38) (!= (at-legacy-marker) 0))
+      (return (lex-atom)))
     ; Reader macro table lookup — longest prefix match
     (let (best-idx:i32 -1
           best-len:i32 0

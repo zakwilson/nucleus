@@ -108,6 +108,10 @@
   ; Where the typedef was declared, for the L5 diagnostics.
   file:ptr
   line:i32
+  ; Stage 16: the header spelling the SOURCE imported to reach it — `"stdio.h"`,
+  ; not the `/usr/include/…` file a linemarker names. `--emit-cheader` writes an
+  ; `#include` of it, and only the imported spelling is portable.
+  hdr:ptr
   ; 1 = written by the signature prescan, which resolves types with every C
   ; struct still opaque. A real import overwrites it; see c-typedef-record.
   provisional:i32
@@ -119,6 +123,13 @@
 ; the whole real declaration parser, which has no business knowing which pass it
 ; is running in.
 (defvar g-cheader-typedef-provisional:i32 0)
+; The `(import-use "…")` spelling currently being read, for `CTypedef.hdr`. Set
+; at the top of emit-c-include / cheader-prescan-opaque and, unlike
+; g-cheader-file, never rewritten by a linemarker: a typedef reached through
+; <stdio.h> is spelled `#include <stdio.h>` by a consumer whatever glibc header
+; it physically lives in. Lives here for the same cross-import reason as the
+; table itself.
+(defvar g-cheader-import-header:ptr)
 
 (defn c-typedef-find (name:CStr):?ptr:CTypedef
   (let (cur:ptr g-cheader-typedefs)
@@ -145,6 +156,7 @@
       (.set! prev ty (as raw:Type ty))
       (.set! prev file file)
       (.set! prev line line)
+      (.set! prev hdr g-cheader-import-header)
       (.set! prev provisional 0)
       (return))
     0)
@@ -153,6 +165,7 @@
     (.set! e ty (as raw:Type ty))
     (.set! e file file)
     (.set! e line line)
+    (.set! e hdr g-cheader-import-header)
     (.set! e provisional g-cheader-typedef-provisional)
     (.set! e next g-cheader-typedefs)
     (set! g-cheader-typedefs (as raw:CTypedef e))))

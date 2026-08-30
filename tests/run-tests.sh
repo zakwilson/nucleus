@@ -3831,7 +3831,7 @@ run_w9_unsigned_index() {
   fi
 
   # The ui32-at-2^31 case from the item, which only the IR can witness.
-  printf '(import "prelude")\n(defn f (p:ptr:i32 i:ui32):i32 (return (aref p i)))\n(defn main ():i32 (return 0))\n' > "$d/w9ui32.nuc"
+  printf '(import prelude)\n(defn f (p:ptr:i32 i:ui32):i32 (return (aref p i)))\n(defn main ():i32 (return 0))\n' > "$d/w9ui32.nuc"
   uir="$(./build/nucleusc --emit-llvm "$d/w9ui32.nuc" 2>/dev/null || true)"
   if printf '%s' "$uir" | qgrep -E 'zext i32 %[A-Za-z0-9_.]+ to i64'; then
     echo "PASS  w9-unsigned-index-ui32"
@@ -4060,6 +4060,100 @@ run_w9_fnslot_arg() {
   else
     echo "FAIL  w9-fnslot-arg-samewidth-sign-checked"
     echo "    got: ${got_arg:-<none>}"
+  fi
+  rm -rf "$d"
+}
+
+# Stage 16 SE-1/SE-2 (design/stage16-ergonomics/template-ref-equality.md): a
+# typed slot checks the TYPE, not only the kind. Four claims, in the order the
+# document makes them: the §6.1 shape is refused at every position; the pointee
+# rule is general, not template-specific; the two relaxations FP-1 installed
+# survive; and two instances of a return-only-tyvar constructor are two symbols.
+run_s16_se_template_ref() {
+  local d got ok=1
+  d="$(mktemp -d)"
+
+  # 1. §6.1, all three positions. Each names both types, so a regression that
+  #    refuses for the wrong reason cannot pass.
+  printf '(import-use "stdio.h")\n(import-use vector)\n(defn takes ((v (ref (Vector i64)))):i64 (return (invoke v 0)))\n(defn main ():i32\n  (with ((a (ref (Vector i32))) [1 2 3])\n    (printf "%%lld\\n" (takes a)))\n  (return 0))\n' > "$d/tre-arg.nuc"
+  got="$(./build/nucleusc --emit-llvm "$d/tre-arg.nuc" 2>&1 >/dev/null || true)"
+  printf '%s' "$got" | qgrep -F "argument 1 has type ptr:Vector.i32, which does not match parameter type ptr:Vector.i64" || ok=0
+  printf '(import-use "stdio.h")\n(import-use vector)\n(defn main ():i32\n  (with ((a (ref (Vector i32))) [1 2 3])\n    (let (b:(ref (Vector i64)) a) (return 0))))\n' > "$d/tre-let.nuc"
+  got="$(./build/nucleusc --emit-llvm "$d/tre-let.nuc" 2>&1 >/dev/null || true)"
+  printf '%s' "$got" | qgrep -F "let: init type mismatch for 'b': value is ptr:Vector.i32, slot is ptr:Vector.i64" || ok=0
+  printf '(import-use "stdio.h")\n(import-use vector)\n(defn main ():i32\n  (with ((a (ref (Vector i32))) [1 2 3]\n         (b (ref (Vector i64))) [4 5 6])\n    (set! b a) (return 0)))\n' > "$d/tre-set.nuc"
+  got="$(./build/nucleusc --emit-llvm "$d/tre-set.nuc" 2>&1 >/dev/null || true)"
+  printf '%s' "$got" | qgrep -F "set!: type mismatch for 'b': value is ptr:Vector.i32, slot is ptr:Vector.i64" || ok=0
+  if [ "$ok" = 1 ]; then
+    echo "PASS  s16-se1-template-ref-refused"
+  else
+    echo "FAIL  s16-se1-template-ref-refused"
+    echo "    got: ${got:-<none>}"
+  fi
+
+  # 2. The runtime shape §6.1 measured: a correctly-typed literal reads element
+  #    0 as one i64. The defect printed 8589934593 (0x2_00000001) here — two
+  #    i32s read at the wrong stride — so the value IS the assertion.
+  ok=1
+  printf '(import-use "stdio.h")\n(import-use vector)\n(defn takes ((v (ref (Vector i64)))):i64 (return (invoke v 0)))\n(defn main ():i32\n  (with ((a (ref (Vector i64))) [1 2 3])\n    (printf "%%lld\\n" (takes a)))\n  (return 0))\n' > "$d/tre-ok.nuc"
+  ./build/nucleusc "$d/tre-ok.nuc" -o "$d/tre-ok" >/dev/null 2>&1 || ok=0
+  if [ "$ok" = 1 ]; then
+    got="$("$d/tre-ok" 2>&1 || true)"
+    [ "$got" = "1" ] || ok=0
+  fi
+  if [ "$ok" = 1 ]; then
+    echo "PASS  s16-se1-template-ref-runtime"
+  else
+    echo "FAIL  s16-se1-template-ref-runtime"
+    echo "    got: ${got:-<none>} (wanted 1)"
+  fi
+
+  # 3. The rule is about pointees, not about templates: two plain structs are
+  #    the same shape of defect and the same refusal.
+  ok=1
+  printf '(defstruct SA x:i32)\n(defstruct SB y:i64 z:i64)\n(defn takes (b:(ref SB)):i64 (return (b y)))\n(defn main ():i32\n  (let (a:(ref SA) (SA 7)) (return (as i32 (takes a)))))\n' > "$d/tre-struct.nuc"
+  got="$(./build/nucleusc --emit-llvm "$d/tre-struct.nuc" 2>&1 >/dev/null || true)"
+  printf '%s' "$got" | qgrep -F "has type ptr:SA, which does not match parameter type ptr:SB" || ok=0
+  # …and the two relaxations stay: pointer KIND is not part of the question
+  # (pkind-flow-check owns that), and an elem-less bare `ptr` is `void *`.
+  printf '(defstruct SA x:i32)\n(defn takes (b:(ref SA)):i32 (return (b x)))\n(defn wild (p:ptr):i32 (return 0))\n(defn main ():i32\n  (let (a:ptr:SA (SA 7) q:ptr (unsafe/cast ptr (SA 1)))\n    (let (r:(ref SA) (unsafe/cast (ref SA) q) w:ptr a)\n      (return (+ (takes a) (+ (wild a) (takes r)))))))\n' > "$d/tre-relax.nuc"
+  ./build/nucleusc --emit-llvm "$d/tre-relax.nuc" >/dev/null 2>&1 || ok=0
+  # …and the CONSTANT renderer asks the same rule: `defvar` is the second
+  # typed-slot path and had the identity hole independently (conventions.md's
+  # "a SECOND value-into-a-typed-slot path"). A bare `ptr` global still takes
+  # any address, which is what makes the check safe to add.
+  printf '(defstruct SA x:i32)\n(defstruct SB y:i64)\n(defvar ga:SA)\n(defvar gp:(ref SB) (addr-of ga))\n(defn main ():i32 (return 0))\n' > "$d/tre-gv.nuc"
+  got="$(./build/nucleusc --emit-llvm "$d/tre-gv.nuc" 2>&1 >/dev/null || true)"
+  printf '%s' "$got" | qgrep -F "defvar: addr-of: 'ga' has type ptr:SA, which does not match ptr:SB" || ok=0
+  printf '(defstruct SA x:i32)\n(defvar ga:SA)\n(defvar gq:ptr (addr-of ga))\n(defvar gr:(ref SA) (addr-of ga))\n(defn main ():i32 (return 0))\n' > "$d/tre-gv-ok.nuc"
+  ./build/nucleusc --emit-llvm "$d/tre-gv-ok.nuc" >/dev/null 2>&1 || ok=0
+  if [ "$ok" = 1 ]; then
+    echo "PASS  s16-se1-pointee-rule-general"
+  else
+    echo "FAIL  s16-se1-pointee-rule-general"
+    echo "    got: ${got:-<none>}"
+  fi
+
+  # 4. SE-2: a constructor whose type variable appears only in its return type
+  #    is stamped once per instance, under a symbol that says which. Before this
+  #    the `.pAllocHandle` key was the whole name, so the first stamp answered
+  #    for every later element type — which is what made claim 1 reachable from
+  #    ordinary code with no cast in it.
+  ok=1
+  printf '(import-use "stdio.h")\n(import-use vector)\n(defn main ():i32\n  (let (a:(ref (Vector i32)) (vector-new-in (default-allocator))\n        b:(ref (Vector i64)) (vector-new-in (default-allocator)))\n    (conj a 5) (conj b 7000000000)\n    (let (i:usize 0)\n      (printf "%%d %%lld\\n" (invoke a i) (invoke b i))))\n  (return 0))\n' > "$d/tre-stamp.nuc"
+  ./build/nucleusc --emit-llvm "$d/tre-stamp.nuc" > "$d/tre-stamp.ll" 2>/dev/null || ok=0
+  qgrep -F '@vector_new_in.pAllocHandle.$r.pVector.i32' "$d/tre-stamp.ll" || ok=0
+  qgrep -F '@vector_new_in.pAllocHandle.$r.pVector.i64' "$d/tre-stamp.ll" || ok=0
+  ./build/nucleusc "$d/tre-stamp.nuc" -o "$d/tre-stamp" >/dev/null 2>&1 || ok=0
+  if [ "$ok" = 1 ]; then
+    got="$("$d/tre-stamp" 2>&1 || true)"
+    [ "$got" = "5 7000000000" ] || ok=0
+  fi
+  if [ "$ok" = 1 ]; then
+    echo "PASS  s16-se2-want-stamped-instances"
+  else
+    echo "FAIL  s16-se2-want-stamped-instances"
+    echo "    got: ${got:-<none>} (wanted '5 7000000000')"
   fi
   rm -rf "$d"
 }
@@ -5270,9 +5364,9 @@ run_w3c_precedence() {
 
 # Stage 15 W3c fallout: a `declare` parameter list's UNNAMED spelling carries
 # types. Every written type was ignored and emitted as `i32`, so the bare list
-# was correct exactly when the signature was all-`i32` — including the compiler's
-# own `(declare repl_print_f64 (ptr):void)`, which declared an `i32` parameter
-# against a C shim taking a pointer.
+# was correct exactly when the signature was all-`i32` — including, at the time,
+# the compiler's own `(declare repl_print_f64 (ptr):void)`, which declared an
+# `i32` parameter against a C shim taking a pointer (shim retired 2026-08-30).
 #
 # The pairs in the fixture are the same signature written both ways, so the
 # assertion is that the two spellings AGREE; a default cannot satisfy both sides
@@ -6188,6 +6282,7 @@ spawn run_w9_unsigned_index
 spawn run_w9_arg_coerce
 spawn run_w9_dyn_solitary
 spawn run_w9_fnslot_arg
+spawn run_s16_se_template_ref
 spawn run_s16_fp2_indirect_call
 spawn run_s16_fp4_cheader_fnptr
 spawn run_s16_fp5_cheader_fnptr
@@ -10443,6 +10538,354 @@ EOF
 }
 spawn run_s16_keyword_markers
 
+# --- Stage 16: the `&` type sigil (design/stage16-ergonomics/ref-sigil.md) ----
+# `&T` reads as `ref:T`, expanded in the lexer. `examples/ref-sigil.nuc` covers
+# the spellings end to end; this unit covers what an example cannot: that the
+# sigil is EXACTLY the `ref:` spelling and not a second type, that it never
+# escapes into a `.nuch`, and that the atoms it must NOT claim — `.&` and the
+# four retired `&x` markers — still read the way they did.
+run_s16_ref_sigil() {
+  local d out
+  d="$(mktemp -d)"
+
+  # 1. Sugar, not a second type: both spellings emit byte-identical IR. Written
+  #    to the SAME path both times so nothing path-derived can differ.
+  cat > "$d/id.nuc" <<'EOF'
+(import-use node)
+(import-use vector)
+(defstruct Pt x:i32 y:i32)
+(defn s1 (p:&Pt):i32 (return (+ (p x) (p y))))
+(defn id1 (p:&Pt):&Pt (return p))
+(defn dd (pp:&&Pt):i32 (return (s1 (deref pp))))
+(defn tot (v:&(Vector &Pt)):i32
+  (let (s:i32 0) (dotimes (i (count v)) (set! s (+ s (s1 (v i))))) (return s)))
+EOF
+  ./build/nucleusc --emit-llvm "$d/id.nuc" > "$d/sigil.ll" 2>"$d/id.err" || true
+  sed 's/&/ref:/g' "$d/id.nuc" > "$d/plain.nuc" && mv "$d/plain.nuc" "$d/id.nuc"
+  ./build/nucleusc --emit-llvm "$d/id.nuc" > "$d/plain.ll" 2>>"$d/id.err" || true
+  if [ -s "$d/sigil.ll" ] && diff -q "$d/sigil.ll" "$d/plain.ll" >/dev/null; then
+    echo "PASS  s16-ref-sigil-ir-identical"
+  else
+    echo "FAIL  s16-ref-sigil-ir-identical (&T did not lower exactly like ref:T)"
+    sed 's/^/    /' "$d/id.err" | head -3
+  fi
+
+  # 2. The sigil is only a *leading* `&`, so `.&` (field-address, ~200 uses in
+  #    the compiler) keeps its name, and the two spellings compose in one file.
+  cat > "$d/amp.nuc" <<'EOF'
+(import-use "stdio.h")
+(defstruct Pt x:i32 y:i32)
+(defn bump (p:&Pt):i32
+  (let (xp:&i32 (.& p x))
+    (ptr-set! xp (+ (deref xp) 1))
+    (return (p x))))
+(defn main ():i32
+  (let (a:Pt (Pt 1 2) ap:&Pt (addr-of a))
+    (printf "%d\n" (bump ap))
+    (return 0)))
+EOF
+  ./build/nucleusc "$d/amp.nuc" -o "$d/amp.bin" 2>"$d/amp.err" || true
+  out="$("$d/amp.bin" 2>/dev/null || true)"
+  if [ "$out" = "2" ]; then
+    echo "PASS  s16-ref-sigil-field-address-unclaimed"
+  else
+    echo "FAIL  s16-ref-sigil-field-address-unclaimed (got '$out')"
+    sed 's/^/    /' "$d/amp.err" | head -3
+  fi
+
+  # 3. `&T` IS `(ref T)`, so it carries `ref`'s non-null obligation, and the
+  #    whitespace near-miss is the same reader error `name: (T)` gets.
+  sig_refuses() {   # sig_refuses <file-body> <expected-substring>
+    printf '%s\n' "$1" > "$d/rej.nuc"
+    ./build/nucleusc --emit-llvm "$d/rej.nuc" >/dev/null 2>"$d/rej.err"
+    qgrep -F "$2" "$d/rej.err"
+  }
+  if sig_refuses '(defstruct Pt x:i32)
+(defvar p:&Pt null)' \
+        'defvar: raw pointer where non-null (ref ...) is required' \
+     && sig_refuses '(defstruct Pt x:i32)
+(defn f (p:&Pt):i32 (return 0))
+(defn g (q:raw:Pt):i32 (return (f q)))' \
+        'argument: raw pointer where non-null (ref ...) is required' \
+     && sig_refuses '(defstruct Pt x:i32)
+(defn f (p:& Pt):i32 (return 0))' \
+        "binding name ends in ':'"; then
+    echo "PASS  s16-ref-sigil-rules-preserved"
+  else
+    echo "FAIL  s16-ref-sigil-rules-preserved (a ref rule stopped firing under the & spelling)"
+    sed 's/^/    /' "$d/rej.err" | head -3
+  fi
+
+  # 4. A `.nuch` is a serialization format, and the sigil is a *reader* rule —
+  #    so a header must carry the canonical `(ref T)` / `:ref:T` spelling and
+  #    no `&` at all, or an importer re-reads a form the exporter never meant.
+  mkdir -p "$d/lib"
+  cat > "$d/lib/siglib.nuc" <<'EOF'
+(defstruct Pt x:i32 y:i32)
+(defn pt-sum (p:&Pt):i32 (return (+ (p x) (p y))))
+(defn pt-id (p:&Pt):&Pt (return p))
+EOF
+  ./build/nucleusc --emit-nuch "$d/lib/siglib.nuc" > "$d/lib/siglib.nuch" 2>/dev/null
+  cat > "$d/siguse.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use siglib)
+(defn main ():i32
+  (let (a:Pt (Pt 4 5) ap:&Pt (addr-of a))
+    (printf "%d\n" (pt-sum (pt-id ap)))
+    (return 0)))
+EOF
+  if qgrep -F '((p (ref Pt)))' "$d/lib/siglib.nuch" \
+     && qgrep -F ':ref:Pt' "$d/lib/siglib.nuch" \
+     && ! qgrep -F '&' "$d/lib/siglib.nuch" \
+     && [ "$(./build/nucleusc -I "$d/lib" "$d/siguse.nuc" -o "$d/siguse.bin" 2>/dev/null \
+             && "$d/siguse.bin")" = "9" ]; then
+    echo "PASS  s16-ref-sigil-nuch-roundtrip"
+  else
+    echo "FAIL  s16-ref-sigil-nuch-roundtrip (& leaked into a header, or the import broke)"
+    sed 's/^/    /' "$d/lib/siglib.nuch" | head -6
+  fi
+
+  # 5. A `&` that starts a token is the address-of reader macro, and it is sugar
+  #    in the same strict sense: identical IR to the `(addr-of x)` it stands for.
+  #    Same path both times, as in 1.
+  cat > "$d/ao.nuc" <<'EOF'
+(defstruct Pt x:i32 y:i32)
+(defn s1 (p:&Pt):i32 (return (+ (p x) (p y))))
+(defn go ():i32 (let (a:Pt (Pt 1 2)) (return (s1 &a))))
+EOF
+  ./build/nucleusc --emit-llvm "$d/ao.nuc" > "$d/amp-op.ll" 2>"$d/ao.err" || true
+  cat > "$d/ao.nuc" <<'EOF'
+(defstruct Pt x:i32 y:i32)
+(defn s1 (p:&Pt):i32 (return (+ (p x) (p y))))
+(defn go ():i32 (let (a:Pt (Pt 1 2)) (return (s1 (addr-of a)))))
+EOF
+  ./build/nucleusc --emit-llvm "$d/ao.nuc" > "$d/named.ll" 2>>"$d/ao.err" || true
+  if [ -s "$d/amp-op.ll" ] && diff -q "$d/amp-op.ll" "$d/named.ll" >/dev/null; then
+    echo "PASS  s16-ref-sigil-addr-of-ir-identical"
+  else
+    echo "FAIL  s16-ref-sigil-addr-of-ir-identical (&x did not lower exactly like (addr-of x))"
+    sed 's/^/    /' "$d/ao.err" | head -3
+  fi
+
+  # 6. The two meanings are split by token position, not by context, so they have
+  #    to compose: `(as &Pt &p)` is a type and an operator in one form, and a
+  #    standalone `&T` in a type slot — which the reader wrote as `(addr-of T)`
+  #    before position was known — must still read as `(ref T)`.
+  cat > "$d/both.nuc" <<'EOF'
+(import-use "stdio.h")
+(defstruct Pt x:i32 y:i32)
+(defstruct Holder (link &Pt) (tag i32))
+(defn hx (h:&Holder):i32 (return ((h link) x)))
+(defn main ():i32
+  (let (a:Pt (Pt 3 4) ap:&Pt &a)
+    (printf "%d %d %d\n" ((as &Pt &a) x) (unsafe/cast i32 (sizeof &Pt)) ((deref &ap) y))
+    (return 0)))
+EOF
+  ./build/nucleusc "$d/both.nuc" -o "$d/both.bin" 2>"$d/both.err" || true
+  out="$("$d/both.bin" 2>/dev/null || true)"
+  if [ "$out" = "3 8 4" ]; then
+    echo "PASS  s16-ref-sigil-both-meanings"
+  else
+    echo "FAIL  s16-ref-sigil-both-meanings (got '$out')"
+    sed 's/^/    /' "$d/both.err" | head -3
+  fi
+  rm -rf "$d"
+}
+spawn run_s16_ref_sigil
+
+# name-resolution.md §15: `ptr` was caught by the one-symbol-one-kind rule only
+# because it doubles as a standalone type; `ref` and `raw` are constructors that
+# no type registry holds, so nothing guarded them. They ride BK-PRIMITIVE now,
+# with their own noun. The teeth are the two things that must NOT change: the
+# kinds still parse as types, and `ref` stays UNRESOLVABLE as a type name, which
+# is what keeps collect-pattern-tyvars' targeted diagnostic firing rather than
+# silently taking `ref` for a type argument.
+run_s16_pointer_kind_names() {
+  local d ok
+  d="$(mktemp -d)"
+  ok=1
+  for n in ref raw ptr; do
+    for def in "(defvar $n:i32 5)" "(defn $n ():i32 (return 5))" \
+               "(defstruct $n x:i32)" "(defconst $n 5)"; do
+      printf '%s\n' "$def" > "$d/k.nuc"
+      ./build/nucleusc "$d/k.nuc" -o "$d/k.bin" >/dev/null 2>"$d/k.err" || true
+      qgrep -F "a symbol may name only one kind of thing" "$d/k.err" || ok=0
+    done
+  done
+  # The noun is per-name, not per-row: `ref`/`raw` are not types.
+  printf '(defvar ref:i32 5)\n' > "$d/k.nuc"
+  ./build/nucleusc "$d/k.nuc" -o "$d/k.bin" >/dev/null 2>"$d/k.err" || true
+  qgrep -F "'ref' already names a pointer kind" "$d/k.err" || ok=0
+  # Unchanged: the kinds are still type syntax…
+  cat > "$d/ty.nuc" <<'EOF'
+(defstruct Pt x:i32)
+(defn f (a:ref:Pt b:raw:Pt c:ptr:Pt):i32 (return (a x)))
+(defn g (v:(ref Pt) w:(raw Pt)):i32 (return (v x)))
+EOF
+  ./build/nucleusc --emit-llvm "$d/ty.nuc" >/dev/null 2>"$d/ty.err" || ok=0
+  # …and `ref` is still not a resolvable type NAME, so a bare one in a template
+  # argument is still reported instead of collected as a tyvar.
+  cat > "$d/tv.nuc" <<'EOF'
+(import-use node)
+(import-use vector)
+(defn h (v:(Vector ref)):i32 (return 0))
+EOF
+  ./build/nucleusc --emit-llvm "$d/tv.nuc" >/dev/null 2>"$d/tv.err" || true
+  qgrep -F "'ref' is a pointer kind, not a type argument" "$d/tv.err" || ok=0
+  if [ "$ok" = 1 ]; then
+    echo "PASS  s16-pointer-kind-names-reserved"
+  else
+    echo "FAIL  s16-pointer-kind-names-reserved"
+    sed 's/^/    /' "$d/k.err" "$d/ty.err" "$d/tv.err" 2>/dev/null | head -6
+  fi
+  rm -rf "$d"
+}
+spawn run_s16_pointer_kind_names
+
+# keyword-markers.md §7, follow-up 1: the two signature-registration sites
+# inferred `has-rest` from `(< (defn-params-count …) (node-len …))`, which is
+# equally true of an `:optional` list — so every `:optional` defn registered
+# has-rest = 1. `finalize-generics` binds that Type for a SOLITARY name, so a
+# call above the definition took the `:rest` path; and the widening dispatch
+# tiers gate on `(= (m has-rest) 0)`, so an overloaded one never resolved.
+# The two sites are the signature prescan (src/nucleusc.nuc) and the `.nuch`
+# `defmethod` importer (src/nuch.nuc); both are asserted below.
+run_s16_optional_has_rest() {
+  local d bad out
+  d="$(mktemp -d)"
+  mkdir -p "$d/lib" "$d/use"
+  bad=0
+
+  # 1. Solitary, called from ABOVE its definition, optional omitted. This is the
+  #    prescan Type verbatim — before the fix it reported
+  #    `a :rest call needs the node runtime` for a defn with no `:rest` in it.
+  cat > "$d/fwd.nuc" <<'EOF'
+(import-use "stdio.h")
+(defn caller ():i64 (return (early 1)))
+(defn early (a:i32 :optional (b:i64 5)):i64 (return b))
+(defn main ():i32 (printf "%ld\n" (caller)) (return 0))
+EOF
+  ./build/nucleusc "$d/fwd.nuc" -o "$d/fwd.bin" 2>"$d/fwd.err" || true
+  out="$("$d/fwd.bin" 2>/dev/null || true)"
+  if [ "$out" != "5" ]; then
+    echo "FAIL  s16-optional-forward-call (got '$out')"
+    sed 's/^/    /' "$d/fwd.err" | head -3
+    bad=1
+  fi
+
+  # 2. Overloaded, so the call resolves through the generic registry rather than
+  #    the scope binding; the literal `3` needs widening to i64, which lands it
+  #    in the adapt tier — the one gated on has-rest.
+  cat > "$d/ov.nuc" <<'EOF'
+(import-use "stdio.h")
+(defn pick (a:CStr :optional (b:i64 7)):i64 (return b))
+(defn pick (a:i32):i64 (return (as i64 a)))
+(defn main ():i32 (printf "%ld %ld\n" (pick "x" 3) (pick 5)) (return 0))
+EOF
+  ./build/nucleusc "$d/ov.nuc" -o "$d/ov.bin" 2>"$d/ov.err" || true
+  out="$("$d/ov.bin" 2>/dev/null || true)"
+  if [ "$out" != "3 5" ]; then
+    echo "FAIL  s16-optional-overload-widen (got '$out')"
+    sed 's/^/    /' "$d/ov.err" | head -3
+    bad=1
+  fi
+
+  # 3. The second site: the same overload set arriving as `.nuch` `defmethod`
+  #    entries. (A SOLITARY `:optional` defn exports a `(declare …)` its own
+  #    importer refuses — `declare-param-type` rejects the marker outright — so
+  #    the overloaded shape is the only round-trip there is; see
+  #    c-header-layout.md §10.)
+  #    `resolve-import` tries `.nuc` in every directory before any `.nuch`, so
+  #    the source must live where nothing searches or the test silently
+  #    exercises it instead (conventions.md, `qgrep` section).
+  mkdir -p "$d/src"
+  cat > "$d/src/optlib.nuc" <<'EOF'
+(defn pick (a:CStr :optional (b:i64 7)):i64 (return b))
+(defn pick (a:i32):i64 (return (as i64 a)))
+EOF
+  ./build/nucleusc --emit-nuch "$d/src/optlib.nuc" > "$d/lib/optlib.nuch" 2>/dev/null
+  cat > "$d/use/u.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use optlib)
+(defn main ():i32 (printf "%ld\n" (pick "x" 3)) (return 0))
+EOF
+  ./build/nucleusc -I "$d/lib" --emit-llvm "$d/use/u.nuc" > "$d/u.ll" 2>"$d/u.err" || true
+  if ! qgrep -F 'declare i64 @pick.cstr.i64(ptr, i64)' "$d/u.ll"; then
+    echo "FAIL  s16-optional-nuch-defmethod"
+    sed 's/^/    /' "$d/u.err" | head -3
+    bad=1
+  fi
+
+  # 4. The rule the fix must not lose: a real `:rest` defn still registers
+  #    has-rest at the prescan, so a forward call folds its tail into a node list.
+  cat > "$d/rest.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use node)
+(defn caller ():i64 (return (sum 1 2 3 4)))
+(defn sum (:rest args:i64):i64
+  (let (total:i64 0)
+    (while (!= args null)
+      (set! total (+ total (unsafe/cast i64 ((unsafe/cast ptr:Node args) car))))
+      (set! args ((unsafe/cast ptr:Node args) cdr)))
+    total))
+(defn main ():i32 (printf "%ld\n" (caller)) (return 0))
+EOF
+  ./build/nucleusc "$d/rest.nuc" -o "$d/rest.bin" 2>"$d/rest.err" || true
+  out="$("$d/rest.bin" 2>/dev/null || true)"
+  if [ "$out" != "10" ]; then
+    echo "FAIL  s16-rest-still-folds (got '$out')"
+    sed 's/^/    /' "$d/rest.err" | head -3
+    bad=1
+  fi
+
+  [ "$bad" = 0 ] && echo "PASS  s16-optional-has-rest"
+  rm -rf "$d"
+}
+spawn run_s16_optional_has_rest
+
+# keyword-markers.md §7, follow-up 2: a parametric union's arms are parsed at
+# STAMP time, so a never-instantiated `(defunion (Box T) … :repr …)` validated
+# nothing — a bogus mode, a mode-less marker and the retired `&repr` were all
+# silently accepted. The mode is decidable without stamping, so
+# `register-union-template` now runs the real stripper for its diagnostics.
+run_s16_template_repr() {
+  local d bad
+  d="$(mktemp -d)"
+  bad=0
+  trepr_says() {   # trepr_says <arm-chain-tail> <expected-substring>
+    printf '(defunion (Box T) (some v:T) none %s)\n(defn main ():i32 (return 0))\n' "$1" \
+      > "$d/t.nuc"
+    ./build/nucleusc --emit-llvm "$d/t.nuc" >/dev/null 2>"$d/t.err"
+    qgrep -F "$2" "$d/t.err"
+  }
+  if ! trepr_says ':repr bogus' 'defunion: :repr mode must be `tagged` or `niche`'; then
+    echo "FAIL  s16-template-repr-mode (a bogus mode on an uninstantiated template was accepted)"
+    bad=1
+  fi
+  if ! trepr_says ':repr' 'defunion: :repr needs a mode (tagged or niche)'; then
+    echo "FAIL  s16-template-repr-missing-mode"
+    bad=1
+  fi
+  if ! trepr_says '&repr tagged' "'&repr' is no longer a marker -- write ':repr'"; then
+    echo "FAIL  s16-template-repr-legacy (the retired spelling was accepted on a template)"
+    bad=1
+  fi
+  # And a VALID uninstantiated template still compiles — the check must diagnose,
+  # not stamp.
+  cat > "$d/ok.nuc" <<'EOF'
+(defunion (Box T) (some v:T) none :repr tagged)
+(defn main ():i32 (return 0))
+EOF
+  if ! ./build/nucleusc --emit-llvm "$d/ok.nuc" >/dev/null 2>"$d/ok.err"; then
+    echo "FAIL  s16-template-repr-valid-accepted"
+    sed 's/^/    /' "$d/ok.err" | head -3
+    bad=1
+  fi
+  [ "$bad" = 0 ] && echo "PASS  s16-template-repr"
+  rm -rf "$d"
+}
+spawn run_s16_template_repr
+
 # Stage 16 — `bool` is its own type, not a 1-bit integer.
 # design/stage16-ergonomics/bool-type-plan.md (Part 1 of bool-truthiness.md).
 # These replace the four `w9-i1-*literal*` fixtures, which pinned the {0,1}
@@ -10579,6 +11022,236 @@ EOF
   rm -rf "$d"
 }
 spawn run_s16_bool_type
+
+# Stage 16 — nil punning at condition position (Part 2 of bool-truthiness.md,
+# Recommendation items 3/4/5). A nullable value IS a condition at the six sites
+# `cond`/`while`/`not`/`_and`/`_or` (everything else is a macro over `cond`),
+# and nowhere else: this is an elimination rule, not a coercion, so a `bool`
+# slot still refuses a pointer. `(when n:i32 …)` stays an error — the design
+# drops "all primitive values are true" and leaves zero-is-false open, and both
+# decisions depend on that refusal standing.
+run_s16_bool_truthiness() {
+  local d ir out
+  d="$(mktemp -d)"
+
+  refuses_cond() {   # refuses_cond <file-body> <expected-substring>
+    printf '%s\n' "$1" > "$d/ref.nuc"
+    ./build/nucleusc --emit-llvm "$d/ref.nuc" >/dev/null 2>"$d/ref.err"
+    qgrep -F "$2" "$d/ref.err"
+  }
+
+  # 1. The feature: all six sites, for each of the four nullable types. Each
+  #    probe returns a bitmask so one number pins every site at once —
+  #    1 cond, 2 not, 4 _and (lhs AND rhs), 8 _or (lhs OR rhs), 16 while.
+  cat > "$d/ok.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use arena)
+
+(defstruct Pt x:i32)
+
+(defn probe-raw (p:(raw Pt) q:(raw Pt)):i32
+  (let (n:i32 0)
+    (when p (set! n (+ n 1)))
+    (when (not p) (set! n (+ n 2)))
+    (when (and p q) (set! n (+ n 4)))
+    (when (or p q) (set! n (+ n 8)))
+    (let (c:(raw Pt) p)
+      (while c (set! n (+ n 16)) (set! c null)))
+    (return n)))
+
+(defn probe-cstr (p:CStr q:CStr):i32
+  (let (n:i32 0)
+    (when p (set! n (+ n 1)))
+    (when (not p) (set! n (+ n 2)))
+    (when (and p q) (set! n (+ n 4)))
+    (when (or p q) (set! n (+ n 8)))
+    (let (c:CStr p)
+      (while c (set! n (+ n 16)) (set! c null)))
+    (return n)))
+
+(defn probe-maybe-ptr (p:?ptr:Pt q:?ptr:Pt):i32
+  (let (n:i32 0)
+    (when p (set! n (+ n 1)))
+    (when (not p) (set! n (+ n 2)))
+    (when (and p q) (set! n (+ n 4)))
+    (when (or p q) (set! n (+ n 8)))
+    (let (c:?ptr:Pt p)
+      (while c (set! n (+ n 16)) (set! c null)))
+    (return n)))
+
+(defn probe-maybe-val (p:(Maybe i64) q:(Maybe i64)):i32
+  (let (n:i32 0)
+    (when p (set! n (+ n 1)))
+    (when (not p) (set! n (+ n 2)))
+    (when (and p q) (set! n (+ n 4)))
+    (when (or p q) (set! n (+ n 8)))
+    (let (c:(Maybe i64) p)
+      (while c (set! n (+ n 16)) (set! c (make (Maybe i64) none))))
+    (return n)))
+
+(defn main ():i32
+  (let (a:(ref Pt) (new Pt)
+        b:(ref Pt) (new Pt)
+        s:CStr c"x"
+        t:CStr c"y"
+        nc:CStr (as CStr null)
+        sm:(Maybe i64) (make (Maybe i64) some 5)
+        nm:(Maybe i64) (make (Maybe i64) none))
+    (printf "raw %d %d %d %d\n"
+      (probe-raw (as (raw Pt) a) (as (raw Pt) b))
+      (probe-raw (as (raw Pt) a) null)
+      (probe-raw null (as (raw Pt) b))
+      (probe-raw null null))
+    (printf "cstr %d %d %d %d\n"
+      (probe-cstr s t) (probe-cstr s nc) (probe-cstr nc t) (probe-cstr nc nc))
+    (printf "mptr %d %d %d %d\n"
+      (probe-maybe-ptr (as-ref a) (as-ref b))
+      (probe-maybe-ptr (as-ref a) null)
+      (probe-maybe-ptr null (as-ref b))
+      (probe-maybe-ptr null null))
+    (printf "mval %d %d %d %d\n"
+      (probe-maybe-val sm sm) (probe-maybe-val sm nm)
+      (probe-maybe-val nm sm) (probe-maybe-val nm nm)))
+  (return 0))
+EOF
+  ir="$(./build/nucleusc --emit-llvm "$d/ok.nuc" 2>"$d/ok.err" || true)"
+  ./build/nucleusc "$d/ok.nuc" -o "$d/ok.bin" 2>>"$d/ok.err" || true
+  out=""
+  if [ -x "$d/ok.bin" ]; then out="$("$d/ok.bin" 2>/dev/null || true)"; fi
+  # A truthiness test is exactly the shape a run cannot audit (conventions.md,
+  # "A wrong value that only reaches a truthiness test is invisible to every
+  # gate"), so also pin the two eliminations at the instruction level: a pointer
+  # test is `icmp ne ptr`, a value-Maybe test reads the tag word.
+  if [ "$out" = "raw 29 25 10 2
+cstr 29 25 10 2
+mptr 29 25 10 2
+mval 29 25 10 2" ] \
+     && printf '%s' "$ir" | qgrep -F 'icmp ne ptr' \
+     && printf '%s' "$ir" | qgrep -E 'extractvalue %Maybe\.i64 %[a-z0-9.]+, 0'; then
+    echo "PASS  s16-truthiness-six-sites"
+  else
+    echo "FAIL  s16-truthiness-six-sites (got '$out')"
+    sed 's/^/    /' "$d/ok.err" | head -4
+  fi
+
+  # 2. The narrowing half (item 4). test-true-nonnull matches node SHAPES, so
+  #    the bare symbol needed its own arm — without it the condition compiles
+  #    and the BODY fails, i.e. the sugar would break exactly the case that
+  #    motivates it. All four shapes that reach that arm are here.
+  cat > "$d/nw.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use arena)
+
+(defstruct Pt x:i32)
+
+(defn f-when (m:?ptr:Pt):i32
+  (when m (return (m x)))
+  (return -1))
+
+(defn f-and (m:?ptr:Pt):i32
+  (when (and m (> (m x) 0)) (return (m x)))
+  (return -1))
+
+(defn f-guard (m:?ptr:Pt):i32
+  (when (not m) (return -1))
+  (return (m x)))
+
+(defn f-while (m:?ptr:Pt):i32
+  (let (n:i32 -1)
+    (while m
+      (set! n (m x))
+      (return n))
+    (return n)))
+
+(defn main ():i32
+  (let (a:(ref Pt) (new Pt))
+    (.set! a x 7)
+    (printf "%d %d %d %d %d %d %d %d\n"
+      (f-when (as-ref a))  (f-when null)
+      (f-and (as-ref a))   (f-and null)
+      (f-guard (as-ref a)) (f-guard null)
+      (f-while (as-ref a)) (f-while null)))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/nw.nuc" -o "$d/nw.bin" 2>"$d/nw.err" || true
+  out=""
+  if [ -x "$d/nw.bin" ]; then out="$("$d/nw.bin" 2>/dev/null || true)"; fi
+  if [ "$out" = "7 -1 7 -1 7 -1 7 -1" ]; then
+    echo "PASS  s16-truthiness-narrows-bare-symbol"
+  else
+    echo "FAIL  s16-truthiness-narrows-bare-symbol (got '$out')"
+    sed 's/^/    /' "$d/nw.err" | head -4
+  fi
+
+  # 3. The refusals that must STAY refusals. `(when n:i32 …)` is what keeps
+  #    both zero-is-false and all-numbers-true revisable; the non-null pointer
+  #    is item 5 — the test is a constant, so say so and name the fix.
+  if refuses_cond '(defn main ():i32 (let (n:i32 3) (when n (return 1))) (return 0))' \
+        'cond: condition must be bool, not i32' \
+     && refuses_cond '(defn main ():i32 (let (n:i32 3) (while n (dec! n))) (return 0))' \
+        'while: condition must be bool, not i32' \
+     && refuses_cond '(defn main ():i32 (let (n:i32 3) (when (not n) (return 1))) (return 0))' \
+        'not: condition must be bool, not i32' \
+     && refuses_cond '(defn main ():i32 (let (n:i32 3) (when (and n (> n 0)) (return 1))) (return 0))' \
+        'and: condition must be bool, not i32' \
+     && refuses_cond '(defn main ():i32 (let (n:i32 3) (when (or n (> n 0)) (return 1))) (return 0))' \
+        'or: condition must be bool, not i32' \
+     && refuses_cond '(defn main ():i32 (let (f:f64 1.0) (when f (return 1))) (return 0))' \
+        'cond: condition must be bool, not f64'; then
+    echo "PASS  s16-truthiness-numbers-stay-refused"
+  else
+    echo "FAIL  s16-truthiness-numbers-stay-refused (a non-bool scalar was accepted as a condition)"
+    sed 's/^/    /' "$d/ref.err" | head -3
+  fi
+
+  # 4. Item 5 plus the two types nil punning deliberately does not reach: a
+  #    Result is neither true nor false, and a non-null pointer's test is a
+  #    constant. Both name their own way out.
+  if refuses_cond '(defstruct Pt x:i32)
+(defn f (p:(ref Pt)):i32 (when p (return 1)) (return 0))
+(defn main ():i32 (return 0))' \
+        'ptr:Pt is non-null, so this test is always true' \
+     && refuses_cond '(defn f (p:ptr):i32 (when p (return 1)) (return 0))
+(defn main ():i32 (return 0))' \
+        'ptr is non-null, so this test is always true' \
+     && refuses_cond '(defstruct Pt x:i32)
+(deferror Boom "boom")
+(defn g ():!ptr:Pt (return (err Boom)))
+(defn f ():i32 (let (r:!ptr:Pt (g)) (when r (return 1))) (return 0))
+(defn main ():i32 (return 0))' \
+        'a Result (!T) is neither true nor false'; then
+    echo "PASS  s16-truthiness-nonnull-and-result-refused"
+  else
+    echo "FAIL  s16-truthiness-nonnull-and-result-refused"
+    sed 's/^/    /' "$d/ref.err" | head -3
+  fi
+
+  # 5. It is an ELIMINATION RULE, NOT A COERCION: `coerce-int-val` is untouched,
+  #    so `bool` did not become a universal sink. If any of these ever compiles,
+  #    truthiness has leaked into the coercion set and overload resolution is
+  #    next (bool-truthiness.md, "Do it at condition position").
+  if refuses_cond '(defstruct Pt x:i32)
+(defn f (b:bool):i32 (return 0))
+(defn g (p:(raw Pt)):i32 (return (f p)))
+(defn main ():i32 (return 0))' \
+        'f: argument 1 has type ptr:Pt, which does not match parameter type bool' \
+     && refuses_cond '(defstruct Pt x:i32)
+(defn g (p:(raw Pt)):i32 (let (b:bool p) (return 0)))
+(defn main ():i32 (return 0))' \
+        "let: init type mismatch for 'b'" \
+     && refuses_cond '(defstruct Pt x:i32)
+(defstruct S flag:bool)
+(defn g (p:(raw Pt)):i32 (let (s:(ref S) (alloca S)) (.set! s flag p)) (return 0))
+(defn main ():i32 (return 0))' \
+        ".set!: type mismatch for field 'flag': value is ptr:Pt, field is bool"; then
+    echo "PASS  s16-truthiness-is-not-a-coercion"
+  else
+    echo "FAIL  s16-truthiness-is-not-a-coercion (a pointer reached a bool slot)"
+    sed 's/^/    /' "$d/ref.err" | head -3
+  fi
+  rm -rf "$d"
+}
+spawn run_s16_bool_truthiness
 
 # Stage 16 — variables (and any typed expression) as collection-literal elements.
 # The readers used to expand `[…]` themselves, so an element had to be a scalar
@@ -11434,6 +12107,88 @@ EOF
     sed 's/^/    /' "$d/cs.err" | head -3
   fi
 
+  # 5. D9 residue: the same type named in a SIGNATURE. This failed EARLIER than
+  #    (4) — before any emission — because `prescan-struct-names` was a flat walk
+  #    over the top-level form list and never descended into a `compile-time`
+  #    body, so `prescan-defn-signatures` could not resolve the name. The
+  #    by-value `defn` is placed BEFORE the block deliberately: it needs the
+  #    LAYOUT, not just the name, and an unlaid-out struct is sized 0 rather than
+  #    diagnosed (`define i32 @f(i0 %p.arg)`) — so the assertion is on the
+  #    lowered parameter type as well as on the value.
+  cat > "$d/d9-ct-sig.nuc" <<'EOF'
+(import-use "stdio.h")
+(defn d9-byval (p:D9V):i32 (return (+ (p x) (p y))))
+(compile-time (defstruct D9V x:i32 y:i32))
+(defn d9-byref (p:(ref D9V)):i32 (return (* (p x) (p y))))
+(defn main ():i32
+  (let (q:D9V (D9V 3 4))
+    (printf "%d %d\n" (d9-byval q) (d9-byref (as ref:D9V (addr-of q)))))
+  (return 0))
+EOF
+  ./build/nucleusc --emit-llvm "$d/d9-ct-sig.nuc" > "$d/d9-ct-sig.ll" 2> "$d/sig.err" || true
+  ./build/nucleusc "$d/d9-ct-sig.nuc" -o "$d/d9-ct-sig.bin" >> "$d/sig.err" 2>&1 || true
+  out="$("$d/d9-ct-sig.bin" 2>/dev/null || true)"
+  if [ "$out" = "7 12" ] && qgrep -F 'define i32 @d9-byval(i64 ' "$d/d9-ct-sig.ll"; then
+    echo "PASS  s16-d9-ct-type-in-signature"
+  else
+    echo "FAIL  s16-d9-ct-type-in-signature"
+    echo "    got: ran '$out'"
+    grep -E '^define i32 @d9-byval' "$d/d9-ct-sig.ll" | sed 's/^/    /' | head -1
+    sed 's/^/    /' "$d/sig.err" | head -3
+  fi
+
+  # 6. The same, one level in: `emit-compile-time` runs its own defn-signature
+  #    prescan BEFORE its body-form loop, so a `defn` in the block naming a
+  #    `defstruct` in the same block hit the identical ordering.
+  cat > "$d/d9-ct-inner.nuc" <<'EOF'
+(import-use "stdio.h")
+(compile-time
+  (defstruct D9Q x:i32 y:i32)
+  (defn d9-ct-sum (p:(ref D9Q)):i32 (return (+ (p x) (p y))))
+  (let (q:ptr:D9Q (as ptr:D9Q (alloca D9Q)))
+    (.set! q x 5) (.set! q y 6)
+    (printf "d9 ct inner %d\n" (d9-ct-sum (as ref:D9Q q)))))
+(defn main ():i32 (return 0))
+EOF
+  ./build/nucleusc --emit-llvm "$d/d9-ct-inner.nuc" > /dev/null 2> "$d/in.err" || true
+  if qgrep -F 'd9 ct inner 11' "$d/in.err" && ! qgrep -F 'IR parse error' "$d/in.err"; then
+    echo "PASS  s16-d9-ct-type-in-ct-signature"
+  else
+    echo "FAIL  s16-d9-ct-type-in-ct-signature"
+    sed 's/^/    got: /' "$d/in.err" | head -3
+  fi
+
+  # 7. The descent mirrors `emit-compile-time`'s SKIPS, not just its walk. That
+  #    loop has an arm for `defstruct` and for nothing else this prescan
+  #    registers, so a name it would never define must stay UNKNOWN — registering
+  #    one resolves the signature, writes no `%Name = type` line, and exits 0 on
+  #    invalid IR, which is strictly worse than the diagnostic. Each of these is
+  #    already rejected as an unknown call inside the block; the assertion is
+  #    that the SIGNATURE is refused too.
+  local skipped=0 head_kw
+  for head_kw in 'defstruct- D9K x:i32' 'defunion D9K (a x:i32) (b)' 'deftype D9K i32'; do
+    cat > "$d/d9-skip.nuc" <<EOF
+(compile-time ($head_kw))
+(defn d9-skip (p:(ref D9K)):i32 (return 0))
+(defn main ():i32 (return 0))
+EOF
+    ./build/nucleusc --emit-llvm "$d/d9-skip.nuc" > /dev/null 2> "$d/skip.err" || true
+    qgrep -F 'unknown type: D9K' "$d/skip.err" || skipped=1
+  done
+  cat > "$d/d9-skip.nuc" <<'EOF'
+(compile-time (compile-time (defstruct D9K x:i32)))
+(defn d9-skip (p:(ref D9K)):i32 (return 0))
+(defn main ():i32 (return 0))
+EOF
+  ./build/nucleusc --emit-llvm "$d/d9-skip.nuc" > /dev/null 2> "$d/skip.err" || true
+  qgrep -F 'unknown type: D9K' "$d/skip.err" || skipped=1
+  if [ "$skipped" = "0" ]; then
+    echo "PASS  s16-d9-ct-descent-mirrors-skips"
+  else
+    echo "FAIL  s16-d9-ct-descent-mirrors-skips"
+    sed 's/^/    got: /' "$d/skip.err" | head -3
+  fi
+
   rm -rf "$d"
 }
 spawn run_s16_d9_ct_types
@@ -12084,6 +12839,152 @@ run_l4_returns_twice() {
 }
 spawn run_l4_returns_twice
 
+# c-header-layout.md §3.4's scope note, taken: `returns_twice` is now
+# user-declarable on a Nucleus `defn`, spelled `:returns-twice`. The whole set of
+# declaration attributes moved to the keyword spelling every other marker
+# already uses (keyword-markers.md), so `noreturn` became `:noreturn` and both
+# bare spellings are retired.
+run_s16_decl_attrs() {
+  local d bad out
+  d="$(mktemp -d)"
+  mkdir -p "$d/lib" "$d/use"
+  bad=0
+
+  # 1. The `define`. Both attributes, in either order, and both on one function.
+  cat > "$d/def.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(defn sj (b:ptr):i32 :returns-twice (return 0))
+(defn boom (m:CStr):void :noreturn (printf "%s\n" m) (exit 3))
+(defn both (m:CStr):void :noreturn :returns-twice (printf "%s\n" m) (exit 3))
+(defn plain (x:i32):i32 (return x))
+(defn main ():i32 (printf "%d\n" (sj null)) (return 0))
+EOF
+  ./build/nucleusc --emit-llvm "$d/def.nuc" > "$d/def.ll" 2>"$d/def.err" || true
+  for want in 'define i32 @sj(ptr %b.arg) returns_twice' \
+              'define void @boom(ptr %m.arg) noreturn' \
+              'define void @both(ptr %m.arg) noreturn returns_twice'; do
+    if ! qgrep -F "$want" "$d/def.ll"; then
+      echo "FAIL  s16-decl-attrs-define"
+      echo "    expected: $want"
+      bad=1
+    fi
+  done
+  # A function with no attribute must gain none — and the module must link.
+  if qgrep -E '^define i32 @plain\(i32 %x.arg\) (noreturn|returns_twice)' "$d/def.ll"; then
+    echo "FAIL  s16-decl-attrs-define (an unattributed defn gained an attribute)"
+    bad=1
+  fi
+  ./build/nucleusc "$d/def.nuc" -o "$d/def.bin" 2>>"$d/def.err" || true
+  out="$("$d/def.bin" 2>/dev/null || true)"
+  if [ "$out" != "0" ]; then
+    echo "FAIL  s16-decl-attrs-define (module did not link/run: got '$out')"
+    sed 's/^/    /' "$d/def.err" | head -3
+    bad=1
+  fi
+
+  # 2. A top-level `(declare … :noreturn)` still drives `terminate-after-noreturn`
+  #    (the one Nucleus-side consumer), and `:returns-twice` rides the declare.
+  cat > "$d/dec.nuc" <<'EOF'
+(declare my_abort ():void :noreturn)
+(declare my_sj (b:ptr):i32 :returns-twice)
+(defn main ():i32 (my_abort) (return 0))
+EOF
+  ./build/nucleusc --emit-llvm "$d/dec.nuc" > "$d/dec.ll" 2>"$d/dec.err" || true
+  for want in 'declare void @my_abort() noreturn' \
+              'declare i32 @my_sj(ptr) returns_twice'; do
+    if ! qgrep -F -x "$want" "$d/dec.ll"; then
+      echo "FAIL  s16-decl-attrs-declare"
+      echo "    expected: $want"
+      bad=1
+    fi
+  done
+  if ! qgrep -E '^  unreachable' "$d/dec.ll"; then
+    echo "FAIL  s16-decl-attrs-declare (a :noreturn call no longer terminates its block)"
+    bad=1
+  fi
+
+  # 3. `.nuch` round-trip, solitary AND overloaded — the exporter and the two
+  #    importers are three separate dispatch sites, and a missing one is silent.
+  #    `resolve-import` tries `.nuc` everywhere before any `.nuch`, so the source
+  #    must sit outside every search directory or the header is never read.
+  mkdir -p "$d/src"
+  cat > "$d/src/atlib.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(defn sj (b:ptr):i32 :returns-twice (return 0))
+(defn sj (b:ptr n:i32):i32 :returns-twice (return n))
+(defn nope (m:CStr):void :noreturn (printf "%s\n" m) (exit 3))
+EOF
+  ./build/nucleusc --emit-nuch "$d/src/atlib.nuc" > "$d/lib/atlib.nuch" 2>/dev/null
+  cat > "$d/use/u.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use atlib)
+(defn main ():i32 (printf "%d\n" (sj null)) (nope "bye") (return 0))
+EOF
+  ./build/nucleusc -I "$d/lib" --emit-llvm "$d/use/u.nuc" > "$d/u.ll" 2>"$d/u.err" || true
+  if ! qgrep -F '(declare nope ((m CStr)) :void :noreturn)' "$d/lib/atlib.nuch" \
+     || ! qgrep -F ':i32 :returns-twice)' "$d/lib/atlib.nuch"; then
+    echo "FAIL  s16-decl-attrs-nuch-export"
+    sed 's/^/    /' "$d/lib/atlib.nuch" | head -5
+    bad=1
+  fi
+  for want in 'declare i32 @sj.ptr(ptr) returns_twice' \
+              'declare i32 @sj.ptr.i32(ptr, i32) returns_twice' \
+              'declare void @nope(ptr) noreturn'; do
+    if ! qgrep -F -x "$want" "$d/u.ll"; then
+      echo "FAIL  s16-decl-attrs-nuch-import"
+      echo "    expected: $want"
+      sed 's/^/    /' "$d/u.err" | head -3
+      bad=1
+    fi
+  done
+
+  # 4. The retired bare spellings each name their replacement. Without this they
+  #    fall through as ordinary symbols — a body expression, or (in a declare)
+  #    a phantom trailing operand — and fail somewhere unrelated.
+  attr_says() {   # attr_says <file-body> <expected-substring>
+    printf '%s\n' "$1" > "$d/leg.nuc"
+    ./build/nucleusc --emit-llvm "$d/leg.nuc" >/dev/null 2>"$d/leg.err"
+    qgrep -F "$2" "$d/leg.err"
+  }
+  if attr_says '(defn f (m:CStr):void noreturn (while (= 0 0) 0))' \
+        "'noreturn' is no longer a declaration attribute -- write ':noreturn'" \
+     && attr_says '(declare foo ():void noreturn)
+(defn main ():i32 (return 0))' \
+        "'noreturn' is no longer a declaration attribute -- write ':noreturn'" \
+     && attr_says '(declare foo ():i32 returns_twice)
+(defn main ():i32 (return 0))' \
+        "'returns_twice' is no longer a declaration attribute -- write ':returns-twice'"; then
+    :
+  else
+    echo "FAIL  s16-decl-attrs-legacy-rejected"
+    sed 's/^/    /' "$d/leg.err" | head -3
+    bad=1
+  fi
+
+  # 5. A LONE trailing form is the body, never an attribute — otherwise a
+  #    keyword-returning one-expression body would be silently eaten.
+  cat > "$d/kw.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use keyword)
+(defn kw ():Keyword :noreturn)
+(defn main ():i32 (printf "%d\n" (if (= (kw) :noreturn) 1 0)) (return 0))
+EOF
+  ./build/nucleusc --emit-llvm "$d/kw.nuc" > "$d/kw.ll" 2>"$d/kw.err" || true
+  ./build/nucleusc "$d/kw.nuc" -o "$d/kw.bin" 2>>"$d/kw.err" || true
+  out="$("$d/kw.bin" 2>/dev/null || true)"
+  if qgrep -E '@kw\(.*\) noreturn' "$d/kw.ll" || [ "$out" != "1" ]; then
+    echo "FAIL  s16-decl-attrs-lone-body (a one-expression keyword body was read as an attribute)"
+    sed 's/^/    /' "$d/kw.err" | head -3
+    bad=1
+  fi
+
+  [ "$bad" = 0 ] && echo "PASS  s16-decl-attrs"
+  rm -rf "$d"
+}
+spawn run_s16_decl_attrs
+
 # L5 (§3.5): a C typedef is a Nucleus type NAME, resolved by a sixth probe in
 # `parse-type-name` placed after `type-alias-lookup-ref` (so a `deftype` can
 # never be masked by an import) and returning the stored `Type*` directly —
@@ -12269,12 +13170,17 @@ EOF
 
   # 8. `type-name-to-c` used to render any unmapped name `struct %s`, so
   #    `--emit-cheader` emitted `struct off_t f(struct off_t x);`. A C typedef
-  #    name renders verbatim. (Known gap, recorded rather than asserted: the
-  #    generated header does not `#include` the C header the name came from —
-  #    `cheader-note-type-file` is Nucleus-source-only, deliberately.)
+  #    name renders verbatim — and, since Stage 16, with an `#include` of the
+  #    header the import named, which is what makes the result compile
+  #    (asserted in full by run_cheader_c_include).
   bad=0
   printf '(import-use "sys/types.h")\n(defn f (x:off_t):off_t (return (+ x 1)))\n' > "$d/ch.nuc"
   ./build/nucleusc --emit-cheader "$d/ch.nuc" > "$d/ch.h" 2>"$d/ch.err" || true
+  if ! qgrep -F -x '#include <sys/types.h>' "$d/ch.h"; then
+    echo "FAIL  l5-cheader-typedef (no #include for the header off_t came from)"
+    sed 's/^/    got: /' "$d/ch.h" | head -6
+    bad=1
+  fi
   if ! qgrep -F -x 'off_t f(off_t x);' "$d/ch.h"; then
     echo "FAIL  l5-cheader-typedef (expected 'off_t f(off_t x);')"
     { grep -F ' f(' "$d/ch.h" || true; } | sed 's/^/    got: /' | head -2
@@ -12286,6 +13192,476 @@ EOF
   rm -rf "$d"
 }
 spawn run_l5_typedef_names
+
+# Stage 16 CD-1/CD-2/CD-3 (c-header-layout.md §8): the three C declarator shapes
+# the parser used to drop — a multi-declarator field line, a typedef declarator
+# list, and a with-body aggregate array typedef.
+#
+# The oracle is the exact `%X = type` line (which IS the field offsets, not
+# merely the size) plus `sizeof` against `cc` built from the same header, the
+# methodology run_l2_layout_matrix established. Every wrong row in §1.5's survey
+# compiles fine, so an exit-code or size-only check sees nothing.
+run_cd_declarators() {
+  local d bad
+  d="$(mktemp -d)"
+
+  cat > "$d/m.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use "tests/fixtures/cd-declarators.h")
+(defvar tv:cd_tagarr)
+(defvar av:cd_anonarr)
+(defn f_ta (x:cd_ta):i32 (return x))
+(defn f_tb (x:cd_tb):i32 (return 0))
+(defn f_tc (x:cd_tc):i32 (return 0))
+(defn main ():i32
+  (printf "cd_plain %lld\n" (as i64 (sizeof cd_plain)))
+  (printf "cd_ptrs %lld\n" (as i64 (sizeof cd_ptrs)))
+  (printf "cd_arrays %lld\n" (as i64 (sizeof cd_arrays)))
+  (printf "cd_bits %lld\n" (as i64 (sizeof cd_bits)))
+  (printf "cd_three %lld\n" (as i64 (sizeof cd_three)))
+  (printf "cd_td %lld\n" (as i64 (sizeof cd_td)))
+  (printf "cd_tagarr %lld\n" (as i64 (sizeof cd_tagarr)))
+  (printf "cd_anonarr %lld\n" (as i64 (sizeof cd_anonarr)))
+  (return 0))
+EOF
+  ./build/nucleusc --emit-llvm "$d/m.nuc" > "$d/m.ll" 2>"$d/m.err" || true
+
+  # 1. CD-1: the exact layout of every multi-declarator field line. Each
+  #    declarator's own stars (`cd_ptrs`), own extents (`cd_arrays`), own
+  #    bit-field width (`cd_bits` — the `tcp_info` shape).
+  bad=0
+  if [ -s "$d/m.err" ]; then
+    echo "FAIL  cd1-multi-declarator-types (import produced diagnostics)"
+    sed 's/^/    got: /' "$d/m.err" | head -3
+    bad=1
+  fi
+  while IFS='|' read -r name want; do
+    [ -z "$name" ] && continue
+    if ! qgrep -F -x "$want" "$d/m.ll"; then
+      echo "FAIL  cd1-multi-declarator-types ($name)"
+      echo "    expected: $want"
+      { grep -E "^%$name = type" "$d/m.ll" || true; } | sed 's/^/    got:      /'
+      bad=1
+    fi
+  done <<'EOF'
+cd_plain|%cd_plain = type { i32, i32 }
+cd_ptrs|%cd_ptrs = type { ptr, ptr, i32 }
+cd_arrays|%cd_arrays = type { i32, [3 x i32] }
+cd_bits|%cd_bits = type { [1 x i8], i32 }
+cd_three|%cd_three = type { i16, i16, i16, i32 }
+EOF
+  if ! llvm-as "$d/m.ll" -o /dev/null 2>/dev/null; then
+    echo "FAIL  cd1-multi-declarator-types (emitted IR does not parse)"
+    bad=1
+  fi
+  [ "$bad" = 0 ] && echo "PASS  cd1-multi-declarator-types"
+
+  # 2. Every size in the program above against `cc` on the same header.
+  bad=0
+  ./build/nucleusc "$d/m.nuc" -o "$d/m.bin" 2>>"$d/m.err" || true
+  if [ ! -x "$d/m.bin" ]; then
+    echo "FAIL  cd-sizeof-vs-cc (compile/link failed)"
+    sed 's/^/    /' "$d/m.err" | head -4
+    bad=1
+  elif ! command -v cc >/dev/null 2>&1; then
+    # Skip only the oracle comparison — the assertions below it are on the
+    # emitted IR and stay in force, or the unit reports a false clean.
+    echo "PASS  cd-sizeof-vs-cc (SKIP: no cc to build the oracle against)"
+    bad=2
+  else
+    "$d/m.bin" > "$d/m.out" 2>&1 || true
+    cat > "$d/m.c" <<'EOF'
+#include <stdio.h>
+#include "tests/fixtures/cd-declarators.h"
+int main(void){
+  printf("cd_plain %zu\n", sizeof(struct cd_plain));
+  printf("cd_ptrs %zu\n", sizeof(struct cd_ptrs));
+  printf("cd_arrays %zu\n", sizeof(struct cd_arrays));
+  printf("cd_bits %zu\n", sizeof(struct cd_bits));
+  printf("cd_three %zu\n", sizeof(struct cd_three));
+  printf("cd_td %zu\n", sizeof(cd_td));
+  printf("cd_tagarr %zu\n", sizeof(cd_tagarr));
+  printf("cd_anonarr %zu\n", sizeof(cd_anonarr));
+  return 0;
+}
+EOF
+    if cc -I. "$d/m.c" -o "$d/m.coracle" 2>"$d/cc.err"; then
+      "$d/m.coracle" > "$d/c.out" 2>&1 || true
+      if ! diff -u "$d/c.out" "$d/m.out" > "$d/cc.diff" 2>&1; then
+        echo "FAIL  cd-sizeof-vs-cc (Nucleus disagrees with cc on the same header)"
+        sed 's/^/    /' "$d/cc.diff" | head -14
+        bad=1
+      fi
+    else
+      echo "FAIL  cd-sizeof-vs-cc (the C oracle does not build)"
+      sed 's/^/    /' "$d/cc.err" | head -4
+      bad=1
+    fi
+  fi
+  [ "$bad" = 0 ] && echo "PASS  cd-sizeof-vs-cc"
+
+  # 3. CD-1's residue fails SAFE: declarators that disagree in pointer depth
+  #    leave the struct opaque with a located error and NO `%X = type` line.
+  #    Guessing `q`'s type from `*p` is exactly the silent class L1 removed.
+  bad=0
+  printf '(import-use "stdio.h")\n(import-use "tests/fixtures/cd-declarators.h")\n(defn main ():i32 (printf "%%lld\\n" (as i64 (sizeof cd_mixed_ptr))) (return 0))\n' \
+    > "$d/u.nuc"
+  ./build/nucleusc --emit-llvm "$d/u.nuc" > "$d/u.ll" 2>"$d/u.err" || true
+  if ! qgrep -E "'cd_mixed_ptr' is an opaque type declared at [^ ]*tests/fixtures/cd-declarators\.h:47;" "$d/u.err"; then
+    echo "FAIL  cd1-mixed-pointer-refused (expected a located error at cd-declarators.h:47)"
+    sed 's/^/    got: /' "$d/u.err" | head -2
+    bad=1
+  fi
+  if qgrep -E '^%cd_mixed_ptr = type' "$d/u.ll"; then
+    echo "FAIL  cd1-mixed-pointer-refused (got a layout it has no basis for)"
+    bad=1
+  fi
+  [ "$bad" = 0 ] && echo "PASS  cd1-mixed-pointer-refused"
+
+  # 4. CD-2: `typedef int cd_ta, *cd_tb;` — every declarator is recorded, each
+  #    with its own pointer depth and extents, not just the first.
+  bad=0
+  qgrep -E '^define i32 @f_ta\(i32 ' "$d/m.ll" || bad=1
+  qgrep -E '^define i32 @f_tb\(ptr ' "$d/m.ll" || bad=1
+  qgrep -E '^define i32 @f_tc\(i64 ' "$d/m.ll" || bad=1
+  if [ "$bad" = 0 ]; then echo "PASS  cd2-typedef-list"; else
+    echo "FAIL  cd2-typedef-list (a later declarator lost its own type)"
+    grep -E '^define i32 @f_t' "$d/m.ll" | sed 's/^/    got: /'
+  fi
+
+  # 5. CD-3: `typedef struct Tag { … } Name[N];`. The storage carries the
+  #    extent, and the parameter DECAYS — before this it was `declare void
+  #    @cd_take_tagarr(i64)`, a wrong calling convention with no diagnostic.
+  bad=0
+  qgrep -F -x '@tv = global [2 x %cd_tag] zeroinitializer, section ".bss.tv", align 8' "$d/m.ll" || bad=1
+  qgrep -F -x '@av = global [3 x %__carr.cd_anonarr] zeroinitializer, section ".bss.av", align 8' "$d/m.ll" || bad=1
+  qgrep -F -x 'declare void @cd_take_tagarr(ptr)' "$d/m.ll" || bad=1
+  qgrep -F -x 'declare void @cd_take_anonarr(ptr)' "$d/m.ll" || bad=1
+  if [ "$bad" = 0 ]; then echo "PASS  cd3-array-typedef-body"; else
+    echo "FAIL  cd3-array-typedef-body"
+    grep -E '^@tv|^@av|^declare void @cd_take' "$d/m.ll" | sed 's/^/    got: /'
+  fi
+
+  # 6. The real-header witness. `struct tcp_info` splits a bit-field run across
+  #    a declarator list (`tcpi_snd_wscale : 4, tcpi_rcv_wscale : 4`) and was the
+  #    one glibc type across the 40 standard headers surveyed that CD-1 unblocks.
+  bad=0
+  cat > "$d/t.c" <<'EOF'
+#include <netinet/tcp.h>
+#include <stdio.h>
+struct tcpi_align { char pad; struct tcp_info v; };
+int main(void){ printf("tcp_info %zu %zu\n", sizeof(struct tcp_info),
+                       __builtin_offsetof(struct tcpi_align, v)); return 0; }
+EOF
+  if ! cc "$d/t.c" -o "$d/t.coracle" 2>/dev/null; then
+    echo "PASS  cd-libc-tcp-info (SKIP: the C oracle does not build — no netinet/tcp.h)"
+  else
+    "$d/t.coracle" > "$d/t.cout" 2>&1 || true
+    cat > "$d/t.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use "netinet/tcp.h")
+(defstruct TAlign pad:i8 v:tcp_info)
+(defn main ():i32
+  (let (a:ptr:TAlign (alloca TAlign))
+    (printf "tcp_info %lld %lld\n" (as i64 (sizeof tcp_info))
+      (- (unsafe/cast i64 (.& a v)) (unsafe/cast i64 a))))
+  (return 0))
+EOF
+    ./build/nucleusc "$d/t.nuc" -o "$d/t.bin" 2>"$d/t.err" || bad=1
+    if [ "$bad" = 0 ]; then
+      "$d/t.bin" > "$d/t.out" 2>&1 || true
+      diff -u "$d/t.cout" "$d/t.out" > "$d/t.diff" 2>&1 || bad=1
+    fi
+    if [ "$bad" = 0 ]; then echo "PASS  cd-libc-tcp-info ($(cat "$d/t.out"), matching cc)"; else
+      echo "FAIL  cd-libc-tcp-info (size/alignment against cc)"
+      sed 's/^/    /' "$d/t.err" 2>/dev/null | head -3
+      sed 's/^/    /' "$d/t.diff" 2>/dev/null | head -6
+    fi
+  fi
+
+  rm -rf "$d"
+}
+spawn run_cd_declarators
+
+# Stage 16 CD-4 (c-header-layout.md §8.2): a declarator LIST after a struct or
+# union body. `typedef struct { … } A, B;` registered A and dropped B in
+# silence; `struct S { … } x, y;` left `x, y;` for the function-declaration
+# parser to make what it could of.
+#
+# Same oracle as run_cd_declarators: the exact `%X = type` line, plus `sizeof`
+# against `cc` built from the same header.
+run_cd4_declarator_list() {
+  local d bad
+  d="$(mktemp -d)"
+
+  cat > "$d/m.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use "tests/fixtures/cd4-declarator-list.h")
+(defvar gv:cd4_G)
+(defn f_ep (p:cd4_Ep):i32 (return 0))
+(defn main ():i32
+  (printf "cd4_A %lld\n" (as i64 (sizeof cd4_A)))
+  (printf "cd4_B %lld\n" (as i64 (sizeof cd4_B)))
+  (printf "cd4_C %lld\n" (as i64 (sizeof cd4_C)))
+  (printf "cd4_D %lld\n" (as i64 (sizeof cd4_D)))
+  (printf "cd4_E %lld\n" (as i64 (sizeof cd4_E)))
+  (printf "cd4_F %lld\n" (as i64 (sizeof cd4_F)))
+  (printf "cd4_G %lld\n" (as i64 (sizeof cd4_G)))
+  (printf "cd4_U %lld\n" (as i64 (sizeof cd4_U)))
+  (printf "cd4_V %lld\n" (as i64 (sizeof cd4_V)))
+  (printf "cd4_S %lld\n" (as i64 (sizeof cd4_S)))
+  (printf "cd4_after %lld\n" (as i64 (sizeof cd4_after)))
+  (return 0))
+EOF
+  ./build/nucleusc --emit-llvm "$d/m.nuc" > "$d/m.ll" 2>"$d/m.err" || true
+
+  # 1. Every declarator of every list is a real type, with the body's layout.
+  #    `cd4_B`/`cd4_D`/`cd4_V` are the ones that did not exist at all before;
+  #    `cd4_Ep` is a pointer declarator (a typedef-table entry, NOT a second
+  #    StructDef, or it shadows the record); `cd4_G` is an array declarator in a
+  #    LATER position, anchored on the minted `__carr.` element like CD-3's.
+  bad=0
+  if [ -s "$d/m.err" ]; then
+    echo "FAIL  cd4-declarator-list (import produced diagnostics)"
+    sed 's/^/    got: /' "$d/m.err" | head -3
+    bad=1
+  fi
+  while IFS='|' read -r name want; do
+    [ -z "$name" ] && continue
+    if ! qgrep -F -x "$want" "$d/m.ll"; then
+      echo "FAIL  cd4-declarator-list ($name)"
+      echo "    expected: $want"
+      { grep -E "^%$name = type" "$d/m.ll" || true; } | sed 's/^/    got:      /'
+      bad=1
+    fi
+  done <<'EOF'
+cd4_A|%cd4_A = type { i32, i32 }
+cd4_B|%cd4_B = type { i32, i32 }
+cd4_C|%cd4_C = type { i32, i32 }
+cd4_D|%cd4_D = type { i32, i32 }
+cd4_U|%cd4_U = type { i32 }
+cd4_V|%cd4_V = type { i32 }
+cd4_S|%cd4_S = type { i32, i64 }
+cd4_after|%cd4_after = type { i32 }
+EOF
+  # The array declarator's storage, and that `gv` really is 3 elements.
+  if ! qgrep -F 'global [3 x %__carr.cd4_G] zeroinitializer' "$d/m.ll"; then
+    echo "FAIL  cd4-declarator-list (cd4_G is not [3 x __carr.cd4_G])"
+    { grep -F '@gv =' "$d/m.ll" || true; } | sed 's/^/    got: /'
+    bad=1
+  fi
+  if ! llvm-as "$d/m.ll" -o /dev/null 2>/dev/null; then
+    echo "FAIL  cd4-declarator-list (emitted IR does not parse)"
+    bad=1
+  fi
+  [ "$bad" = 0 ] && echo "PASS  cd4-declarator-list"
+
+  # 2. Every size against `cc` on the same header.
+  bad=0
+  ./build/nucleusc "$d/m.nuc" -o "$d/m.bin" 2>>"$d/m.err" || true
+  if [ ! -x "$d/m.bin" ]; then
+    echo "FAIL  cd4-sizeof-vs-cc (compile/link failed)"
+    sed 's/^/    /' "$d/m.err" | head -4
+    bad=1
+  elif ! command -v cc >/dev/null 2>&1; then
+    echo "PASS  cd4-sizeof-vs-cc (SKIP: no cc to build the oracle against)"
+    bad=2
+  else
+    "$d/m.bin" > "$d/m.out" 2>&1 || true
+    cat > "$d/m.c" <<'EOF'
+#include <stdio.h>
+#include "tests/fixtures/cd4-declarator-list.h"
+int main(void){
+  printf("cd4_A %zu\ncd4_B %zu\ncd4_C %zu\ncd4_D %zu\ncd4_E %zu\ncd4_F %zu\n"
+         "cd4_G %zu\ncd4_U %zu\ncd4_V %zu\ncd4_S %zu\ncd4_after %zu\n",
+    sizeof(cd4_A), sizeof(cd4_B), sizeof(cd4_C), sizeof(cd4_D), sizeof(cd4_E),
+    sizeof(cd4_F), sizeof(cd4_G), sizeof(cd4_U), sizeof(cd4_V),
+    sizeof(struct cd4_S), sizeof(struct cd4_after));
+  return 0;
+}
+EOF
+    if cc -I. "$d/m.c" -o "$d/m.coracle" 2>"$d/cc.err"; then
+      "$d/m.coracle" > "$d/c.out" 2>&1 || true
+      if ! diff -u "$d/c.out" "$d/m.out" > "$d/cc.diff" 2>&1; then
+        echo "FAIL  cd4-sizeof-vs-cc (Nucleus disagrees with cc on the same header)"
+        sed 's/^/    /' "$d/cc.diff" | head -14
+        bad=1
+      fi
+    else
+      echo "FAIL  cd4-sizeof-vs-cc (the C oracle does not build)"
+      sed 's/^/    /' "$d/cc.err" | head -4
+      bad=1
+    fi
+  fi
+  [ "$bad" = 0 ] && echo "PASS  cd4-sizeof-vs-cc"
+
+  rm -rf "$d"
+}
+spawn run_cd4_declarator_list
+
+# Stage 16 C4 (cheader-parser-vs-libclang.md §6): `clang -E` reads the EMISSION
+# target's headers. Before this it read the host's under every `--target=`, so
+# an AVR build of `(import-use "string.h")` declared glibc's `strlen` returning
+# `i64` — on a machine whose `size_t` is 16 bits and whose libc does not have
+# half those symbols.
+#
+# Both lanes name their triple where it matters: the AVR lane is the claim, and
+# the host lane is the CONTRAST (an unflagged host build must be unchanged),
+# which is the one case conventions.md leaves host-relative on purpose.
+run_c4_target_headers() {
+  local d bad host avr
+  d="$(mktemp -d)"
+  printf '(exclude-prelude)\n(import-use "string.h")\n(defn main ():i32 (return 0))\n' \
+    > "$d/s.nuc"
+
+  # The host lane. No `--target=`, so no flags are added at all — this is the
+  # byte-for-byte pre-C4 path.
+  bad=0
+  ./build/nucleusc --emit-llvm "$d/s.nuc" > "$d/host.ll" 2>"$d/host.err" || true
+  if ! qgrep -E '^declare i(32|64) @strlen\(ptr\)$' "$d/host.ll"; then
+    echo "FAIL  c4-host-headers-unchanged (no host-width strlen)"
+    { grep -F '@strlen' "$d/host.ll" || true; } | sed 's/^/    got: /' | head -2
+    bad=1
+  fi
+  if [ -s "$d/host.err" ]; then
+    echo "FAIL  c4-host-headers-unchanged (a host build must print nothing)"
+    sed 's/^/    got: /' "$d/host.err" | head -3
+    bad=1
+  fi
+  [ "$bad" = 0 ] && echo "PASS  c4-host-headers-unchanged"
+
+  # The AVR lane, gated on the target's headers actually being installed —
+  # without avr-libc there is nothing for clang to read and the fallback below
+  # is the correct outcome, not a failure.
+  if ! clang -E --target=avr -x c -include string.h /dev/null >/dev/null 2>&1; then
+    echo "PASS  c4-avr-target-headers (SKIP: no avr-libc headers for clang to read)"
+  else
+    bad=0
+    ./build/nucleusc --target=avr --mcpu=atmega328p --emit-llvm "$d/s.nuc" \
+      > "$d/avr.ll" 2>"$d/avr.err" || true
+    # avr-libc's size_t is 16 bits, so every `size_t` in the declarations is
+    # `i16`. The host's is 64 — this is the whole measurement.
+    while IFS='|' read -r what want; do
+      [ -z "$what" ] && continue
+      if ! qgrep -F -x "$want" "$d/avr.ll"; then
+        echo "FAIL  c4-avr-target-headers ($what)"
+        echo "    expected: $want"
+        { grep -E "@$what\(" "$d/avr.ll" || true; } | sed 's/^/    got:      /' | head -2
+        bad=1
+      fi
+    done <<'EOF'
+strlen|declare i16 @strlen(ptr)
+memcpy|declare ptr @memcpy(ptr, ptr, i16)
+EOF
+    # A glibc-only symbol proves the HOST header is not what was read.
+    if qgrep -F '@__memcmpeq' "$d/avr.ll"; then
+      echo "FAIL  c4-avr-target-headers (glibc's __memcmpeq present: host headers were read)"
+      bad=1
+    fi
+    if [ -s "$d/avr.err" ]; then
+      echo "FAIL  c4-avr-target-headers (unexpected diagnostics)"
+      sed 's/^/    got: /' "$d/avr.err" | head -3
+      bad=1
+    fi
+    [ "$bad" = 0 ] && echo "PASS  c4-avr-target-headers"
+  fi
+
+  # A target whose headers are NOT installed must keep working — refusing would
+  # retire cross-compiling for every triple without a local sysroot, which is
+  # how every target lane in this suite runs. It falls back to the host text and
+  # says so; the warning is the contract, not the fallback being silent.
+  bad=0
+  ./build/nucleusc --target=i386-pc-linux-gnu --emit-llvm "$d/s.nuc" \
+    > "$d/i386.ll" 2>"$d/i386.err" || true
+  if clang -E --target=i386-pc-linux-gnu -x c -include string.h /dev/null >/dev/null 2>&1; then
+    echo "PASS  c4-missing-sysroot-falls-back (SKIP: i386 headers ARE installed here)"
+  else
+    if ! qgrep -F 'could not be preprocessed for target' "$d/i386.err"; then
+      echo "FAIL  c4-missing-sysroot-falls-back (no warning about the fallback)"
+      sed 's/^/    got: /' "$d/i386.err" | head -3
+      bad=1
+    fi
+    if ! qgrep -F 'target triple = "i386-pc-linux-gnu"' "$d/i386.ll"; then
+      echo "FAIL  c4-missing-sysroot-falls-back (the compile did not survive)"
+      bad=1
+    fi
+    [ "$bad" = 0 ] && echo "PASS  c4-missing-sysroot-falls-back"
+  fi
+
+  # A header that exists on NO search path is fatal and located — it used to be
+  # swallowed whole, leaving every name it declares unresolvable with nothing
+  # pointing at the import.
+  bad=0
+  printf '(import-use "no-such-header-c4.h")\n(defn main ():i32 (return 0))\n' \
+    > "$d/miss.nuc"
+  ./build/nucleusc --emit-llvm "$d/miss.nuc" > "$d/miss.ll" 2>"$d/miss.err" && bad=1
+  if [ "$bad" = 1 ]; then
+    echo "FAIL  c4-missing-header-is-fatal (compile succeeded)"
+  elif ! qgrep -E "miss\.nuc:1: error: c-include: failed to preprocess 'no-such-header-c4\.h'" "$d/miss.err"; then
+    echo "FAIL  c4-missing-header-is-fatal (no located diagnostic)"
+    sed 's/^/    got: /' "$d/miss.err" | head -4
+    bad=1
+  fi
+  [ "$bad" = 0 ] && echo "PASS  c4-missing-header-is-fatal"
+
+  rm -rf "$d"
+}
+spawn run_c4_target_headers
+
+# Stage 16 (c-header-layout.md §6, the `--emit-cheader` item): a public
+# signature naming a C typedef renders the name BARE — `struct off_t` names
+# nothing — so the generated header did not compile at all until it also
+# carried the `#include` the name came from. This is the rule the preamble
+# already applies to `size_t` with `<stddef.h>`.
+run_cheader_c_include() {
+  local d bad
+  d="$(mktemp -d)"
+  printf '(import-use "unistd.h")\n(defn seek (fd:i32 off:off_t):off_t (return off))\n' \
+    > "$d/o.nuc"
+  ./build/nucleusc --emit-cheader "$d/o.nuc" > "$d/o.h" 2>"$d/o.err" || true
+
+  bad=0
+  if ! qgrep -F -x '#include <unistd.h>' "$d/o.h"; then
+    echo "FAIL  cheader-c-typedef-include (no #include for the header off_t came from)"
+    sed 's/^/    got: /' "$d/o.h" | head -8
+    bad=1
+  fi
+  # The include is the IMPORT spelling, never the /usr/include file a
+  # linemarker names — only the former is portable.
+  if qgrep -F '/usr/include' "$d/o.h"; then
+    echo "FAIL  cheader-c-typedef-include (included an absolute system path)"
+    { grep -F '/usr/include' "$d/o.h" || true; } | sed 's/^/    got: /' | head -2
+    bad=1
+  fi
+  if ! qgrep -F -x 'off_t seek(int32_t fd, off_t off);' "$d/o.h"; then
+    echo "FAIL  cheader-c-typedef-include (declaration is not the bare typedef name)"
+    { grep -F ' seek(' "$d/o.h" || true; } | sed 's/^/    got: /' | head -2
+    bad=1
+  fi
+  # The point of the include: the header now compiles on its own.
+  if command -v clang >/dev/null 2>&1; then
+    if ! clang -fsyntax-only -Wno-pragma-once-outside-header -x c "$d/o.h" 2>"$d/o.cerr"; then
+      echo "FAIL  cheader-c-typedef-include (generated header does not compile)"
+      sed 's/^/    /' "$d/o.cerr" | head -4
+      bad=1
+    fi
+  fi
+  [ "$bad" = 0 ] && echo "PASS  cheader-c-typedef-include"
+
+  # A header naming NO C typedef gains no include — the list is the types the
+  # header actually names, as it is on the Nucleus side.
+  bad=0
+  printf '(import-use "unistd.h")\n(defn plain (x:i32):i32 (return x))\n' > "$d/p.nuc"
+  ./build/nucleusc --emit-cheader "$d/p.nuc" > "$d/p.h" 2>/dev/null || true
+  if qgrep -F '#include <unistd.h>' "$d/p.h"; then
+    echo "FAIL  cheader-c-include-only-when-named (included an unused C header)"
+    bad=1
+  fi
+  [ "$bad" = 0 ] && echo "PASS  cheader-c-include-only-when-named"
+
+  rm -rf "$d"
+}
+spawn run_cheader_c_include
 
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided

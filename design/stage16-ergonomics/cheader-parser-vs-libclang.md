@@ -97,9 +97,9 @@ class.
 | ~~**bitfield**~~ **DONE** (BF-1…BF-4) | 1 of 9 (`FILE`) | no Nucleus type; a partial answer (correct total size and correct offsets for the non-bitfield members, bitfields inaccessible) is reachable, a complete one is a type-system item | **medium**, or **large** if done completely | gives the layout; does **not** give Nucleus a bitfield type |
 | ~~**flexible array member**~~ **DONE** (C1a) | 1 of 9 | `[]` with no extent — a zero-extent trailing member. **`(array T 0)` could not be reused:** 0 is the prescan's provisional-length marker, so a flexible member is `(array T -1)` (c-boundary-defects.md §16.3) | **~10 lines**, and it was | yes, incidentally |
 | ~~**`__attribute__((packed))`**~~ **DONE** (PK-1/PK-2) | 0 of 9, but 1 silent wrong size | was: `StructDef`/`abi-sizeof` must learn packing — reaches `defstruct` too | **medium**, type-system-adjacent | was: **yes, and cleanly** — libclang's strongest single case, and it was done without one (c-boundary-defects.md §14) |
-| **bare `unsigned` / `signed`** (§3) | 0 of 9 in glibc; blocks third-party headers | declaration-specifier table gap | **~5 lines** | yes, incidentally |
-| **with-body aggregate array typedef** | 0 occurrences surveyed | `c-parse-struct-decl:1467` reads the post-body name with `c-read-ident`, which stops at `[` | **~10 lines** | yes, incidentally |
-| **multi-declarator field line** (`int a, b;`) | 0 of 9 in glibc | declarator loop | **~20 lines** | yes, incidentally |
+| ~~**bare `unsigned` / `signed`**~~ **DONE** (C1/C2, §3) | 0 of 9 in glibc; blocks third-party headers | declaration-specifier table gap — and not only the bare form: `long unsigned` and `short unsigned` were broken too (c-boundary-defects.md §12.2) | **~5 lines** | yes, incidentally |
+| ~~**with-body aggregate array typedef**~~ **DONE** (CD-3) | 0 occurrences surveyed | `c-parse-struct-decl` reads the post-body name with `c-read-ident`, which stops at `[` — and the whole-unit prescan has to branch on the same `[`, or its opaque `StructDef` shadows the typedef the import records | **~10 lines** estimated; ~35 with the prescan half and the minted anchor for an untagged body | yes, incidentally |
+| ~~**multi-declarator field line**~~ **DONE** (CD-1) (`int a, b;`) | 0 of 9 in glibc — but it is what blocked `tcp_info`, `SDL_Rect` and `SDL_Surface` | declarator loop, plus the fact that `c-parse-type` collapses pointer depth into a bare `ptr`, so a starred first declarator leaves no base for a later one | **~20 lines**, and it was | yes, incidentally |
 | ~~**`long double` / `_Float128` / `_Float16`**~~ **DONE** (FL-1…FL-7) | 0 of 9 | was: no Nucleus type | type-system item | **no** — and it was done without one |
 
 Adding up the parser-only rows: the four cheap ones are **~50 lines total** and
@@ -119,9 +119,16 @@ anyway, so AN-1/AN-2 came to two functions and a fall-through
 (c-boundary-defects.md §16.1). Bitfields were the expensive item, and not for
 the reason given: the type was straightforward, and the cost was that C leaves
 allocation implementation-defined and the three targets Nucleus supports
-genuinely disagree (§15.4). Three rows remain open and block nothing measured:
-bare `unsigned`/`signed`, the with-body aggregate array typedef, and the
-multi-declarator field line.
+genuinely disagree (§15.4).
+
+**Every row is now closed (2026-08-29).** The last three — bare
+`unsigned`/`signed` (C1/C2), the with-body aggregate array typedef (CD-3) and
+the multi-declarator field line (CD-1) — were the ones this section said
+"block nothing measured". That was true of the 9-type census and false of the
+wider survey: CD-1 alone unblocks `struct tcp_info` in glibc and `SDL_Rect`,
+`SDL_Surface` and `SDL_MessageBoxColor` in SDL2
+(c-header-layout.md §8). A census scoped to the types a previous survey already
+listed as blocked cannot see a type the survey never reached.
 
 ---
 
@@ -326,10 +333,12 @@ merits, and leave libclang as a live option with a stated trigger.**
   typedef. Unblocks `sigaction`, `sigevent`, both pthread cleanup structs,
   `cmsghdr`, and third-party headers generally. Highest value per line in the
   whole document.
-  **Partly done.** Function-pointer members landed as FP-4 and flexible array
-  members as C1a (c-boundary-defects.md §12, §16.3) — between them every census
-  type this row named. Bare `unsigned`/`signed` and the with-body aggregate
-  array typedef are still open; neither blocks a measured type.
+  **Done (2026-08-29).** Function-pointer members landed as FP-4 and flexible
+  array members as C1a (c-boundary-defects.md §12, §16.3) — between them every
+  census type this row named — bare `unsigned`/`signed` as C1, and the
+  with-body aggregate array typedef as CD-3 (c-header-layout.md §8). The
+  ~50-line estimate held for the first three and was low for the fourth, whose
+  cost is in the whole-unit prescan having to branch identically.
 - **C2 — record a reason on every skip path.** §3's second finding. Small, and it
   is what makes "fail safe" mean "fail *legibly*". Should ride with C1.
 - **C3 — `__attribute__((packed))`.** Its own item, as §6 says, because it is a
@@ -340,6 +349,10 @@ merits, and leave libclang as a live option with a stated trigger.**
   `clang -E` invocation at `src/cheader.nuc:977` when compiling for a non-host
   target. Independent of everything else here, and a prerequisite for the AVR and
   RISC-V tracks whichever front end reads the headers.
+  **Done (2026-08-29) — §9.** The flag spelling is `--sysroot=` (a new compiler
+  flag) rather than `-isysroot`, which is Darwin-only; and the item turned out
+  to be two things, not one: which headers are read, and how their constant
+  expressions are evaluated.
 - **Defer** anonymous members and bitfields with the existing `long double`
   deferral. They fail safe; `FILE` staying opaque costs a `ptr:FILE` handle,
   which every real user of `FILE` wanted anyway.
@@ -487,3 +500,145 @@ second is now retired, and what should replace it is narrower:
   "bitfields exist" but "the hand-written allocator disagrees with clang on a
   target we ship", which §8.3's cross-target oracle now makes a measurable event
   rather than a judgement call.
+
+---
+
+## 9. As built: C4 — target-correct preprocessing
+
+**Status: implemented 2026-08-29.** §4.3 named this one of the three things
+libclang buys outright ("libclang takes the same argument vector as the driver,
+so passing the target through is natural rather than a retrofit"). The retrofit
+came to one `snprintf` argument and a fallback policy; what it did *not* come to
+is the second half, which §4.3 did not separate out and which no front end
+would have given for free.
+
+### 9.1 The defect, measured
+
+`(exclude-prelude) (import-use "string.h")`, compiled for AVR:
+
+| | before | after |
+|---|---|---|
+| `strlen` | `declare i64 @strlen(ptr)` | `declare i16 @strlen(ptr)` |
+| `memcpy` | `declare ptr @memcpy(ptr, ptr, i64)` | `declare ptr @memcpy(ptr, ptr, i16)` |
+| declarations emitted | 59 (glibc's `string.h`) | 42 (avr-libc's) |
+| symbols avr-libc does not have | 21 (`__memcmpeq`, `strerror_l`, …) | none |
+| symbols avr-libc has and glibc does not | missing | 4 (`strlwr`, `strrev`, `strupr`, `memrchr`) |
+
+`clang -E --target=avr` reads
+`/usr/lib/gcc/avr/14.2.0/../../../avr/include/string.h` and gets
+`typedef unsigned int size_t` (16-bit); the unflagged run reads glibc's and gets
+`long unsigned int` (64-bit). On an 8-bit machine, every one of those `i64`s was
+a wrong ABI on a call the linker would have resolved.
+
+### 9.2 The second half: the header text is not the whole target
+
+`src/cheader.nuc`'s own L2 comment records that `clang -E` does **not** fold
+`sizeof` — the array-extent evaluator computes sizes itself, from
+`abi-sizeof` over the Nucleus `Type` the C parser built. So `--target=` fixes
+*which* text is read and nothing about how its constant expressions are
+evaluated. Three fixes make the two agree, all in `c-type-to-nucleus` /
+`target-long-size` and therefore in the extent evaluator with them:
+
+- **`int` is 16 bits on AVR.** It was unconditionally `i32`. `c-int-type` now
+  keys on the target's pointer size (2 ⇒ 16-bit, else 32), which is also the
+  width clang gives a C **enum** on AVR — verified with
+  `clang --target=avr -fsyntax-only` over `_Static_assert(sizeof(enum E) == 2)`,
+  i.e. clang does *not* short-enum AVR. (avr-**gcc** does, by default. A C
+  header enum passed *by value* across the link would disagree; nothing does
+  that today, and following clang is what every other ABI decision here does.)
+- **`long` is 4 bytes on AVR.** `target-long-size` tested `ptr-size = 4`, so
+  AVR's 2 fell through to 8. It tests `<= 4`.
+- **`size_t`/`ssize_t` are pointer-sized.** They stay intercepted **by name**
+  rather than followed through the typedef table — the L2 comment's reason
+  still stands, since the table's answer is only as target-correct as the
+  preprocessing was, and §9.4's fallback can make it the host's — but the width
+  is now the emission target's rather than a hardcoded 64.
+
+The result is that the evaluator is target-correct end to end:
+`struct { char buf[sizeof(void*) * 4]; int n; }` imports as
+`{ [32 x i8], i32 }` on x86-64 and `{ [8 x i8], i16 }` on AVR.
+
+### 9.3 The host path is byte-identical, by construction
+
+The flags are **empty** unless `--target=` names a triple that is not the host's
+(compared as whole strings against `((as ptr:Target g-host-target) triple)`), so
+a build with no `--target=` runs the same command line it always did. Measured
+anyway: the 187-module IR sweep (`examples/` + `lib/`, stdout + stderr + exit
+code) against the committed boot compiler is **zero diff**, and
+`make check-headers` is 69/69 with no regeneration.
+
+Passing the host's own triple explicitly would in fact have been safe here
+(`clang -E --target=x86_64-pc-linux-gnu` is byte-identical to bare `clang -E`
+for `stdio.h`/`stdlib.h`/`string.h` on this container), but not portably: on
+Darwin the driver's SDK detection is entangled with the default target, and an
+explicit triple with no `-isysroot` is a different question than no triple at
+all. Emptiness is the property worth having, so the gate is on being *cross*,
+not on `--target=` being present.
+
+### 9.4 The fallback, and why it is not a refusal
+
+Making the target's headers authoritative makes their **absence** reachable. On
+this container only AVR has them: `clang -E --target=riscv64-linux-gnu` /
+`aarch64` / `i386` / `x86_64-pc-windows-msvc` all fail with
+`'bits/libc-header-start.h' file not found`, because the cross packages carry
+`bin` and `lib` and no `include`.
+
+Refusing there would retire cross-compiling for every triple whose libc headers
+are not installed locally — which is how **every** target lane in `make test`
+runs (`run_target_triple`, `run_rv6_fp_abi`, the `long-abi-*` lanes, the
+`s16-*-cross-target` layout matrices), and how `make windows-boot` builds the
+committed Windows boot IRs. So the policy is: **retry on the host, and say so.**
+
+```
+warning: C header 'string.h' could not be preprocessed for target 'i386-pc-linux-gnu'; using the HOST's headers, whose type widths may differ
+  note: pass --sysroot=<path> naming a sysroot that carries the target's own headers
+```
+
+That is exactly the pre-C4 behaviour, announced instead of silent. It is a
+warning and not an error because the compiler cannot tell a genuinely wrong
+answer from a harmless one — for `i386` against an x86-64 host the pointer width
+differs and it matters; for `x86_64-pc-windows-msvc` the two data models agree
+on everything the boot IR uses, which is why the Windows boot IRs are unchanged.
+
+**A header that exists on no search path at all is fatal**, and located. It was
+previously swallowed whole: `clang -E`'s non-zero exit was never examined, so
+its built-in preamble was parsed as an empty header and every name the header
+declared became an unresolvable symbol with nothing pointing at the import.
+`read-pipe-output` now returns `pclose`'s status, the failure is cached like any
+other answer (so the pre-scan and the real import produce **one** diagnosis, not
+two), and the failing command is re-run with stderr attached so clang's own
+message is the diagnosis:
+
+```
+  note: clang -E --target=riscv64-unknown-linux-gnu -x c -include string.h /dev/null >/dev/null
+/usr/include/string.h:26:10: fatal error: 'bits/libc-header-start.h' file not found
+main.nuc:2: error: c-include: failed to preprocess 'string.h'
+```
+
+This tightening found one latent instance in the tree's own fixtures:
+`(import "prelude")` — a **string** import not ending in `.nuc`/`.nuch`, which
+`do-import` routes to the C-header path. There is no C header named `prelude`,
+so the form had always been a silent no-op. Two fixtures and one heredoc in
+`tests/run-tests.sh` spelled it that way; all three now say `(import prelude)`.
+
+### 9.5 What remains wrong
+
+- **A `compile-time`/`defmacro` body under `--target=` sees the target's C
+  declarations.** The JIT module concatenates `g-decl-bufp`, which carries the
+  header-derived `declare`s, and those are now AVR-shaped while the JIT runs on
+  the host. This is not new — the declarations were merely host-shaped-by-luck
+  before — and it is inherent to a design where the C declarations are one
+  per-unit set rather than per-module. A compile-time body that calls libc while
+  cross-compiling was already unsound; it is now unsound *visibly*. Fixing it
+  means a second header read under the host triple for the JIT's declare set.
+- **`--sysroot=` reaches the preprocessor only.** The link step takes it through
+  the existing `--link-arg=--sysroot=<path>`. Two flags for one concept is
+  unlovely; unifying them means deciding whether `--sysroot` should also
+  override the triple-keyed link-driver default, which is the question
+  conventions.md's "a triple-keyed toolchain default must ask whether the build
+  is CROSS" is about. Deferred deliberately, not overlooked.
+- **AVR enums follow clang, not avr-gcc.** §9.2. A C header enum passed by value
+  through an avr-gcc-compiled object would disagree.
+- **The riscv64 lane still cannot be exercised.** `make riscv-test` SKIPs for
+  the missing `libc6-dev-riscv64-cross`, which is also what makes riscv64 take
+  §9.4's fallback. Both clear with the same package.

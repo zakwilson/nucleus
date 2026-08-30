@@ -206,18 +206,18 @@ guarantee that every unit spoke.
 
 ## 7. Deliberately not done
 
-- **The `has-rest`-by-count bug.** `src/nucleusc.nuc:15100-15102` and
-  `src/nuch.nuc:570-573` infer `has-rest` from
-  `(< (defn-params-count params) (node-len params))` rather than a marker scan,
-  so an `:optional` defn is registered `has-rest = 1`. Pre-existing, untouched
-  by the rename, and real — but folding a semantic fix into a spelling sweep
-  would make both harder to review. **Follow-up.**
-- **A never-instantiated parametric union's arms are never parsed**, so
-  `(defunion (Box T) … &repr tagged)` with no instantiation reports nothing. Not
-  introduced here: the same is true of the existing `:repr mode must be
-  \`tagged\` or \`niche\`` diagnostic, verified both ways. Template arm
-  diagnostics fire at stamp time, and that is a separate question about when a
-  template body should be checked.
+- **~~The `has-rest`-by-count bug.~~ Closed 2026-08-29 — see §9.**
+  `src/nucleusc.nuc:15100-15102` and `src/nuch.nuc:570-573` infer `has-rest`
+  from `(< (defn-params-count params) (node-len params))` rather than a marker
+  scan, so an `:optional` defn is registered `has-rest = 1`. Pre-existing,
+  untouched by the rename, and real — but folding a semantic fix into a spelling
+  sweep would make both harder to review. **Follow-up.**
+- **~~A never-instantiated parametric union's arms are never parsed~~, so
+  `(defunion (Box T) … &repr tagged)` with no instantiation reports nothing.
+  Closed 2026-08-29 — see §10.** Not introduced here: the same is true of the
+  existing `:repr mode must be \`tagged\` or \`niche\`` diagnostic, verified
+  both ways. Template arm diagnostics fire at stamp time, and that is a separate
+  question about when a template body should be checked.
 - **Reserving the markers in `g-special-form-set`.** That set is a reservation
   against *shadowing by a definer* (conventions.md, "`g-special-form-set` is a
   RESERVATION"), and a keyword cannot be a definition name, so there is nothing
@@ -252,3 +252,106 @@ only remaining mentions are the retirement fixtures, three comments explaining
 what the rejection prevents, and Emacs Lisp's own `&optional`); each legacy
 spelling is a located hard error naming its replacement; the boot IRs carry no
 `&`-marker string constant; suite green; boot converged.
+
+---
+
+## 9. As built: the `has-rest`-by-count bug (§7 item 1, closed 2026-08-29)
+
+`defn-params-has-rest` (`src/generics.nuc`, beside `defn-params-count`) replaces
+the count inference at both filed sites — `prescan-defn-signatures`
+(`src/nucleusc.nuc`) and `nuch-defmethod-import` (`src/nuch.nuc`). It is a
+`marker-named … "rest"` scan, i.e. the bare-name helper §3 introduced, so the
+roster is still spelled once.
+
+### 9.1 What the filed description got wrong
+
+It called the bug "an `:optional` defn is registered `has-rest = 1`" and stopped
+there, which reads like a stale field nobody consults. Both halves of that
+understate it.
+
+**The registered Type is what a forward call is checked against.**
+`finalize-generics` binds `(m0 fn-type)` into `g-globals` for a **solitary**
+name (`src/generics.nuc`), so until `emit-defn` rebinds it, every call *above*
+the definition sees the prescan's Type. With `has-rest = 1` that call took the
+`:rest` path in `emit-call-with-args`, and the sharpest repro is a program with
+no `:rest` in it at all:
+
+```lisp
+(defn caller ():i64 (return (early 1)))
+(defn early (a:i32 :optional (b:i64 5)):i64 (return b))
+```
+→ `error: a :rest call needs the node runtime — add (import-use node)`
+
+**And the overloaded case is a silent non-resolution, not a wrong lowering.**
+Three widening tiers gate on `(= (m has-rest) 0)` —
+`generic-resolve-adapt-tier`, `operator-user-resolve`, `valid-resolve-type` — so
+an `:optional` method was skipped by all of them and reported `no matching
+method for overloaded 'pick'` for a call that matches it.
+
+### 9.2 The sibling defect the fix exposed, also closed
+
+With `has-rest` corrected, the forward call above became
+`call to 'early': expected 2 args, got 1` — accurate-sounding and wrong, because
+`generic-register-method` never set `nopt`/`opt-defaults` on the Type it builds.
+`has-rest` was one of **three** fields on which the prescan's Type and
+`emit-defn`'s disagreed. `defn-params-set-opt` (`src/generics.nuc`) writes the
+other two, from the same two call sites, and is conservative on a malformed
+`:optional` spec — `emit-defn` owns that located diagnostic.
+
+Generalizable: **a registration that builds a partial copy of a Type another
+pass builds fully is a divergence per field, not per bug.** The fix is a helper
+per field the prescan can compute, called from every registration site — not a
+recount at the site.
+
+### 9.3 Two limitations measured and left alone
+
+- **A solitary `:optional` (or `:rest`) defn exports a `.nuch` its own importer
+  refuses.** `emit-nuch-declare` prints the parameter list verbatim, marker and
+  all, and `declare-param-type` rejects `:optional`/`:rest` in a declaration by
+  design (`src/nuch.nuc`, and `docs/toplevel.md` documents the refusal). So the
+  `.nuch` regression test uses the **overloaded** shape, which round-trips as a
+  `defmethod` and is where the second filed site lives anyway.
+- **Overload dispatch matches on exact arity and declared parameter types**, so
+  an overloaded `:optional` method is reachable only with every argument
+  supplied, and an overloaded `:rest` method is not reachable at all — its rest
+  slot is typed `ptr`, which no ordinary argument adapts to. Now stated in
+  `docs/toplevel.md`; making either dispatch is a separate item.
+
+### 9.4 Verification
+
+`make test` 902 → 905 (three new units; one of them, `run_s16_optional_has_rest`,
+carries four assertions). Each was checked to fail against a compiler built from
+the pre-change `boot/nucleusc.ll`. `make bootstrap` reconverged after a refresh
+(the compiler's own IR moves: two new functions and three changed call sites);
+`abi-test`, `layout-test`, `check-headers` (69) and `avr-test` (8) green.
+
+---
+
+## 10. As built: a template's `:repr` at declaration time (§7 item 2, closed 2026-08-29)
+
+**Time-boxed as instructed, and it came in under the box** — the general
+question §7 raises ("when should a template body be checked?") did not have to
+be opened, because the `:repr` mode is decidable with no stamp. `register-union-template`
+(`src/union-registry.nuc`) now calls `defunion-strip-repr` on the arm chain
+purely for its diagnostics and discards the filtered chain.
+
+Calling the real stripper rather than writing a validate-only copy is the
+`binop-result-type` rule (conventions.md): a second implementation of the same
+recognition is what drifts. It costs one throwaway cons chain per template
+registration.
+
+**§7 undercounted what was silent.** It named the mode check; the same call site
+carries three more diagnostics a template never reached — a mode-less `:repr`,
+a non-symbol mode, and §3's retirement of `&repr`, which is one of the four
+chokepoints this document's own §3 table lists. So a `(defunion (Box T) … &repr
+tagged)` was accepted in silence *by the change that retired `&repr`*, and the
+table's fourth row was true only of concrete unions.
+
+What is still stamp-time, and correctly so: everything that needs the arms'
+**types** — `union-layout-classify`'s "arms are not nicheable" and
+"an all-payload-less union is an enum, not a niche". Those cannot be answered
+before `T` is known.
+
+Pinned by `run_s16_template_repr` (four assertions: bogus mode, missing mode,
+retired `&repr`, and a valid uninstantiated `:repr tagged` template still
+compiling — the check must diagnose, not stamp).

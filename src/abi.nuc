@@ -112,17 +112,18 @@
         (return 0)))
     (return (type-eq (aa ret) (bb ret)))))
 
-; Stage 16 FP-1: may a function of signature `src` be stored in a slot declared
-; `dst`? `fn-sig-eq` above is *identity* and is the wrong question here — it is
-; keyed on by the conformance registry, where two spellings of one type must
-; agree exactly. Assignment is looser in the two ways C is looser, and only
-; those two: pointer KIND is not part of a signature (`type-eq` already ignores
-; it for a bare fn against a `(ref fn)`), and an elem-less bare `ptr` is the
-; function-pointer analogue of `void *` — it matches any `ptr:T` in either
-; direction, the same absorption `type-join` performs for a bare `ptr` branch
-; (MC-1). Arity, variadicity, the return type and any differing pointee are
-; refused. See design/stage16-ergonomics/c-boundary-defects.md §3 FP-1.
-(defn fn-slot-type-compat (src:raw:Type dst:raw:Type):i32
+; May a value of type `src` be stored in a slot declared `dst`? Introduced for
+; function pointers (FP-1) and generalised in Stage 16 SE-1 to every same-kind
+; pair, which is what it always computed. `type-eq` is *identity* and is the
+; wrong question here — it is keyed on by the conformance registry, where two
+; spellings of one type must agree exactly. Assignment is looser in the two ways
+; C is looser, and only those two: pointer KIND is not part of the question
+; (`pkind-flow-check` owns the nullability contract), and an elem-less bare `ptr`
+; is `void *` — it matches any `ptr:T` in either direction, the same absorption
+; `type-join` performs for a bare `ptr` branch (MC-1). A differing pointee, a
+; differing StructDef, a differing arity or return type are refused.
+; See design/stage16-ergonomics/template-ref-equality.md §4.
+(defn slot-type-compat (src:raw:Type dst:raw:Type):i32
   (when (= src dst) (return 1))
   (when (or (= src null) (= dst null)) (return 0))
   (let (s:raw:Type src
@@ -138,9 +139,9 @@
     (when (and (= (d kind) TY-PTR) (= (d elem) null)
                (!= (is-ptr-like s) 0))
       (return 1))
-    ; Pointer kind is not part of a signature: compare pointees, not pkinds.
+    ; Pointer kind is not part of the question: compare pointees, not pkinds.
     (when (and (= (s kind) TY-PTR) (= (d kind) TY-PTR))
-      (return (fn-slot-type-compat (s elem) (d elem))))
+      (return (slot-type-compat (s elem) (d elem))))
     (return (type-eq src dst))))
 
 (defn fn-sig-compat (src:raw:Type dst:raw:Type):i32
@@ -150,10 +151,10 @@
               (!= (s variadic) (d variadic)))
       (return 0))
     (dotimes (i (s num-params))
-      (when (= (fn-slot-type-compat ((field-at (s params) i) type)
-                                    ((field-at (d params) i) type)) 0)
+      (when (= (slot-type-compat ((field-at (s params) i) type)
+                                 ((field-at (d params) i) type)) 0)
         (return 0)))
-    (return (fn-slot-type-compat (s ret) (d ret)))))
+    (return (slot-type-compat (s ret) (d ret)))))
 
 ; Structural type equality. Primitive types are singletons, so pointer equality
 ; handles them; structs are equal iff they share a StructDef; pointers compare
@@ -1430,8 +1431,15 @@
     ; c-boundary-defects.md §2.3. No IR either way — both are one ptr register.
     (when (and (= sk TY-FN) (= dk TY-FN))
       (if (!= (fn-sig-compat src target) 0) (return v) (return null)))
-    ; Same kind — identity
-    (when (= sk dk) (return v))
+    ; Stage 16 SE-1: same KIND is not same TYPE. This line used to be a bare
+    ; `(return v)`, so a `(ref (Vector i32))` entered a `(ref (Vector i64))` slot
+    ; unexamined — every pointer lowers to `ptr`, so nothing downstream objected
+    ; and the elements were read back at the wrong stride. FP-1 answered the
+    ; TY-FN half of the same line above; `slot-type-compat` is that rule for
+    ; every kind. template-ref-equality.md §4. No IR either way: a compatible
+    ; pair is the identity return it always was.
+    (when (= sk dk)
+      (if (!= (slot-type-compat src target) 0) (return v) (return null)))
     ; Stage 15 W5d (design/stage15-stress-test/ergonomics.md §3.9): a
     ; pointer-to-S value flowing into a BY-VALUE S slot is loaded here. A struct
     ; compound literal `(S …)` is alloca-backed and evaluates to `(ref S)`, so

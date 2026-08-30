@@ -43,6 +43,27 @@
         (do (fputc 32 (as ptr stdout)) (print-node rn))
         (printf " :%s" (rnn s))))))
 
+; A `defn`'s declaration attributes ride the exported entry, after the return
+; operand — they are a property of the signature, so the importing unit's
+; `declare` has to carry the same LLVM attributes the defining unit's `define`
+; does. `defn-scan-attrs` is the same reader emit-defn uses, so the exported and
+; consumed spellings cannot drift.
+(defn emit-nuch-fn-attrs (form:ptr):void
+  (let (fname:ptr null
+        rn:ptr null
+        ps:ptr null
+        bstart:i32 3
+        style:i32 (defn-parse-sig (as raw:Node form) (as ptr:ptr (addr-of fname))
+                    (as ptr:ptr (addr-of rn)) (as ptr:ptr (addr-of ps))
+                    (as ptr:i32 (addr-of bstart)))
+        nr:i32 0
+        rt:i32 0
+        body:i32 (defn-scan-attrs (as raw:Node form) bstart
+                   (as ptr:i32 (addr-of nr)) (as ptr:i32 (addr-of rt))
+                   (node-line (as raw:Node form) 0)))
+    (when (!= nr 0) (printf " :noreturn"))
+    (when (!= rt 0) (printf " :returns-twice"))))
+
 ; S3: a .nuch header names functions in the new signature style — `NAME (params)
 ; :ret` — matching every rewritten source form. Both signature styles funnel
 ; through the bare name (defn-name-only) + normalized return (emit-nuch-ret), so a
@@ -55,6 +76,7 @@
       (print-node (node-at params i))))
   (printf ")")
   (emit-nuch-ret form)
+  (emit-nuch-fn-attrs form)
   (printf ")\n"))
 
 (defn emit-nuch-defconst (form:ptr):void
@@ -86,6 +108,7 @@
       (print-node (node-at params i))))
   (printf ")")
   (emit-nuch-ret form)
+  (emit-nuch-fn-attrs form)
   (printf ")\n"))
 
 ; A solitary function exports as a plain (declare ...); an overloaded one
@@ -236,7 +259,7 @@
 ; therefore a *type operand*, not an untyped name, and is parsed as one here.
 ;
 ; It used to fall back to `ty-i32`, so every non-`i32` unnamed parameter silently
-; declared the wrong ABI — including the compiler's own
+; declared the wrong ABI — including, at the time, the compiler's own
 ; `(declare repl_print_f64 (ptr):void)`, which declared an `i32` parameter and
 ; worked only because x86-64 SysV happens to pass a pointer and an `i32` in the
 ; same register. The default also defeated W3c's declaration-precedence rule: a
@@ -375,28 +398,18 @@
 ; LLVM `declare` lines (NUCH-AFTER) from exactly where it always has.
 (defn nuch-declare-import (form:(raw Node) mode:i32):void
   (let (ff:ptr:Node (unsafe/cast ptr:Node form))
-    ; Stage 10 Phase F1: an optional trailing `noreturn` / `returns_twice`
-    ; keyword (carried verbatim by desugar) marks the declared/extern function
-    ; as never returning / as returning more than once — e.g. (declare
-    ; repl_throw:void () noreturn). eff-len is the length with that keyword
-    ; stripped, so the param-list index logic below is unchanged; the flag
-    ; drives the Sym field and the LLVM attribute.
+    ; Trailing declaration attributes (`:noreturn`, `:returns-twice`), carried
+    ; verbatim by desugar — e.g. (declare abort () :void :noreturn).
+    ; eff-len is the length with the run stripped, so the param-list index logic
+    ; below is unchanged; the flags drive the Sym fields and the LLVM attribute.
     (let (is-noreturn:i32 0
           is-returns-twice:i32 0
           m:i32 mode
-          eff-len:i32 (node-len form))
-      (when (>= (node-len form) 3)
-        (let (last:ptr (node-at form (- (node-len form) 1)))
-          (when (and (!= last null)
-                     (= (-> last (unsafe/cast ptr:Node _) (_ kind)) NODE-SYM))
-            (let (kw:ptr (-> last (unsafe/cast ptr:Node _) (_ s)))
-              (when (= kw "noreturn")
-                (set! is-noreturn 1)
-                (set! eff-len (- eff-len 1)))
-              (when (= kw "returns_twice")
-                (set! is-returns-twice 1)
-                (set! eff-len (- eff-len 1)))))))
-      ; A new-style declare `(declare name (params) :rettype [noreturn])` has a
+          eff-len:i32 (declare-scan-attrs form (node-len form) 4
+                        (as ptr:i32 (addr-of is-noreturn))
+                        (as ptr:i32 (addr-of is-returns-twice))
+                        (ff line)))
+      ; A new-style declare `(declare name (params) :rettype [:noreturn])` has a
       ; bare name and the return operand at index 3 (eff-len 4). Both the toplevel
       ; `declare` form (desugared) and .nuch imports reach here; as of S3 the .nuch
       ; writer emits new-style, so every well-formed input takes the bare-name path.
@@ -548,11 +561,12 @@
                    (aref (as ptr:ptr ptypes) j)
                    null)
                   (set! need-comma 1)))
-              ; Stage 10 Phase F1: trailing LLVM `noreturn` function attribute.
-              (cond
-                (!= is-noreturn 0)      (fprintf g-out ") noreturn\n")
-                (!= is-returns-twice 0) (fprintf g-out ") returns_twice\n")
-                true                    (fprintf g-out ")\n")))))))))))
+              ; Trailing LLVM function attributes, additive so a `declare` and the
+              ; `define` it names carry the same set (emit-defn does the same).
+              (fprintf g-out ")")
+              (when (!= is-noreturn 0) (fprintf g-out " noreturn"))
+              (when (!= is-returns-twice 0) (fprintf g-out " returns_twice"))
+              (fprintf g-out "\n"))))))))))
 
 ; Import one exported overloaded method: register it (with its mangled symbol)
 ; in the generic registry so calls in the importing unit dispatch to it, and
@@ -566,8 +580,15 @@
 (defn nuch-defmethod-import (form:(raw Node) mode:i32):void
   (let (ff:ptr:Node (unsafe/cast ptr:Node form))
     ; S3: new-style entry `(defmethod "@sym" NAME (params) :ret)` — the mangled
-    ; symbol (1), a bare name (2), the params (3) and the return operand (4).
-    (when (!= (node-len form) 5)
+    ; symbol (1), a bare name (2), the params (3) and the return operand (4),
+    ; plus any trailing declaration attributes.
+    (let (is-noreturn:i32 0
+          is-returns-twice:i32 0
+          eff-len:i32 (declare-scan-attrs form (node-len form) 5
+                        (as ptr:i32 (addr-of is-noreturn))
+                        (as ptr:i32 (addr-of is-returns-twice))
+                        (ff line)))
+    (when (!= eff-len 5)
       (die-at (ff line) "defmethod: expected (defmethod \"@sym\" name (params...) :ret)"))
     (let (sym-node:ptr:Node (unsafe/cast ptr:Node (node-at form 1))
           name-node:ptr:Node (unsafe/cast ptr:Node (node-at form 2))
@@ -581,10 +602,11 @@
           (die-at (ff line) "defmethod: missing return type"))
         (let (nparams:i32 (defn-params-count params-node)
               ptypes:ptr (defn-params-to-types params-node)
-              has-rest:i32 (if (< (defn-params-count params-node)
-                                  (node-len params-node)) 1 0))
+              has-rest:i32 (defn-params-has-rest params-node))
           (when (!= mode NUCH-AFTER)
             (let (m:ptr (generic-register-method fname ret ptypes nparams has-rest 0 null))
+              (defn-params-set-opt (as raw:Node params-node)
+                (unsafe/cast ptr:Type ((as ptr:Method m) fn-type)))
               (.set! (as ptr:Method m) ir-name mangled)
               ; Stage 15 W9 item 24: the producing unit emitted this symbol, so
               ; finalize-generics may not rename it. Until now that held only by
@@ -619,7 +641,10 @@
                   (aref (as ptr:ptr ptypes) j)
                   null)
                 (set! need-comma 1)))
-            (fprintf g-out ")\n"))))))))
+            (fprintf g-out ")")
+            (when (!= is-noreturn 0) (fprintf g-out " noreturn"))
+            (when (!= is-returns-twice 0) (fprintf g-out " returns_twice"))
+            (fprintf g-out "\n")))))))))
 
 ; A defunion arriving via .nuch: register the type (or template) exactly as
 ; the defining unit did, but emit `declare`s for the arm constructors — their

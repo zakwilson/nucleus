@@ -422,3 +422,125 @@ that forecloses its own correction.
 (1,657 sites) and the one that matches this codebase's `(!= flag 0)` idiom, but
 it conflates absent with zero and revives `(when (strcmp a b))`. Because item 3
 leaves `(when n:i32 …)` an error, this decision stays available indefinitely.
+
+## As built — Part 2 (2026-08-29)
+
+Items 3, 4 and 5 of the Recommendation, as one change. Item 1 (the type divorce)
+and item 2 (predicate retyping) landed earlier in `db895b2 Bool type, deftype`;
+`bool-type-plan.md` is that half.
+
+### What landed
+
+**One shared rule, called from six sites.** `condition-bool`
+(`src/union-emit.nuc`, immediately above `emit-not`) takes an already-emitted
+`Val` plus a line and a context word, and returns a `bool` `Val`:
+
+| Condition type | Result |
+|---|---|
+| `bool` | returned unchanged — no IR, so every existing program is byte-identical |
+| `is-ptr-like` at pkind `PTR-RAW`/`PTR-MAYBE` (`raw`, bare `raw`, `CStr`, `?T`) | `icmp ne ptr … null` |
+| `TY-STRUCT` recognised by `value-maybe-union-of` | `extractvalue` of the tag word, `icmp eq i32 … <some-arm>` |
+| `TY-PTR` at `PTR-REF` (`ptr`, `(ref T)`) | **diagnostic**: "is non-null, so this test is always true -- spell the value (raw T) or ?T if it can be null" |
+| `TY-PTR` at `PTR-ERRPTR` (`!T`) | **diagnostic**: "a Result (!T) is neither true nor false -- eliminate it with match, try or unwrap" |
+| anything else | "condition must be bool, not `<type>` -- compare explicitly" |
+
+The six callers are `emit-cond` (`src/nucleusc.nuc`), `emit-while`
+(`src/nucleusc.nuc`), `emit-not` and `emit-short-circuit` × lhs/rhs
+(`src/union-emit.nuc`). Each one previously carried its own inline
+`(!= kind TY-BOOL)` test and its own message; those five tests are gone, which
+is what makes it one rule rather than six copies (the shape `conventions.md`
+§"`node-type` mirrors `emit-node`" argues for).
+
+**`value-maybe-union-of`** (`src/union-registry.nuc`, beside `result-union-of`)
+recognises a value `(Maybe T)` **structurally** — two arms, a payload-carrying
+`some` and a payload-less `none` — for the same reason `result-union-of` does:
+a stamped instance is named `Maybe.<mangled-arg>`, so the name is not a stable
+key and the arms are.
+
+**Item 4** is one arm at the top of `test-true-nonnull` (`src/nucleusc.nuc`): a
+bare `NODE-SYM` conjs its binding name into the fact accumulator, exactly as
+`(!= x null)` does. `narrow-apply` already filters to local `PTR-MAYBE`
+bindings, so the arm is a no-op for a `bool`, a `raw` or a non-pointer and needs
+no type test of its own.
+
+**Item 5** is the `PTR-REF` row above. It fires for a typed `(ptr T)`/`(ref T)`
+*and* for the elem-less bare `ptr`. That is a deliberate simplification worth
+naming: `pkind-flow-check` exempts an elem-less bare `ptr` destination from the
+non-null obligation (the `void*` escape hatch, ~1550 bindings in this compiler),
+so a bare `ptr` can in practice hold `null` and its "always true" claim is
+weaker than the typed case's. Punning it instead would have been defensible.
+One rule was chosen over two because the diagnostic names the fix — `raw` is
+itself a bare, elem-less spelling — so the escape is one word away in both
+cases.
+
+### Where the plan diverged from what was found
+
+1. **"roughly five lines in each function" — `test-false-nonnull` needs no arm
+   at all.** A bare symbol being *false* proves the binding **null**, not
+   non-null, so there is nothing to record. The inverted guard still narrows,
+   because `test-false-nonnull`'s existing `not` arm delegates to
+   `test-true-nonnull`: `(when (not m) (return))` reaches the new arm through
+   that delegation and narrows `m` past the guard. Adding a mirror arm would
+   have been unsound.
+2. **The condition sites' line attribution was already `:0:` for a bare
+   symbol.** `emit-while` and `emit-short-circuit` blamed
+   `((unsafe/cast ptr:Node (node-at cc 1)) line)`, which is 0 for an interned
+   symbol node (`conventions.md` §"Symbol nodes are interned singletons"). That
+   was invisible while a bare symbol could not *be* a condition; the sugar makes
+   it the common case. Both now use `node-line … (cc line)`, as `emit-cond`
+   already did.
+3. **The five inline messages differed in wording** ("cond: test must be bool",
+   "while condition must be bool", "not expects a bool operand", "%s expects
+   bool operands"). Unifying them was necessary to share the rule and cost
+   nothing — no test or doc quoted any of them.
+4. **`(when c"lit" …)` compiles and is always true.** A `c"…"` literal is a
+   materialised, non-null `CStr`, and `CStr` is nullable *by type*, so it takes
+   the punning row rather than item 5's diagnostic. Same class as `(when true
+   …)`; not worth a special case.
+
+### Test counts
+
+`make test`: **883 → 888** (five new units in `run_s16_bool_truthiness`; 0 FAIL,
+exit 0, both before and after). `make bootstrap` converges **without a boot
+refresh** — the compiler's own IR does not move, because nothing in `src/` uses
+the sugar and the new arm in `test-true-nonnull` is a no-op for every condition
+the compiler currently writes. `make abi-test`, `make layout-test` and
+`make check-headers` (69 headers) stay green.
+
+The five units are: `s16-truthiness-six-sites` (all six sites × `raw`/`CStr`/
+`?T`/value-`Maybe`, as a bitmask, plus IR assertions for both eliminations —
+a truthiness test is precisely the shape `conventions.md` §"A wrong value that
+only reaches a truthiness test is invisible to every gate" says a run cannot
+audit); `s16-truthiness-narrows-bare-symbol` (item 4, all four shapes);
+`s16-truthiness-numbers-stay-refused`; `s16-truthiness-nonnull-and-result-refused`
+(item 5); `s16-truthiness-is-not-a-coercion` (a pointer still refused at a
+`bool` argument, `let` slot and struct field).
+
+### Deliberately not done
+
+- **"All primitive values are true"** and **zero-is-false** — the design's own
+  rulings. `(when n:i32 …)` and `(when f:f64 …)` are both still errors, which is
+  what keeps zero-is-false available.
+- **`TY-FN` (a function pointer) in condition position.** `(= hook null)` is a
+  real idiom (W9 item 18), so `(when hook …)` is a plausible extension. It is
+  not in the Recommendation's list, and `is-ptr-like` deliberately excludes
+  `TY-FN` (`conventions.md` §"The string-type lattice"), so admitting it means
+  asking `is-ptr-repr` and deciding whether a fn pointer is "nullable" — a
+  separate ruling. Refused for now, with the generic message.
+- **`(dyn P)` / `BoxedFn` / `StrView`** — refused, as the design's §"Where nil
+  punning does not reach" says. They reach the generic message
+  (`condition must be bool, not __dyn.Describe`), not a bespoke one.
+- **Adopting the sugar in `src/`.** The 1,135 measured null-test sites are the
+  payoff, but rewriting them moves the compiler's own IR and needs its own
+  `make update-bootstrap` cycle; it is a separate, purely mechanical item.
+- **Retyping the ~40 `i32`-returning predicates** (Recommendation item 2) —
+  belongs to Part 1 and is not in this change.
+
+### Found, not fixed
+
+`docs/types.md` still documents `i1` as a live spelling (the Built-in Types
+table's `` `i1` / `bool` `` row, the `{0, 1}` range-rule paragraph under
+Implicit Type Coercion, and the Literal Values table's "bool (i1)") even though
+Part 1 retired it — the compiler answers `i1 is no longer a type — use bool`.
+Part 1 also has no entry in `design/progress.md`. Both are Part 1's doc debt,
+left untouched here rather than silently rewritten.

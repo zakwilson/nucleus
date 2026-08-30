@@ -955,19 +955,28 @@ diff across every `lib/*.nuc` and `examples/*.nuc`.
 **What blocks the next rung.** There is no next rung in the spec's ladder; the
 remaining known gaps, in the order a real port would hit them, are:
 
-1. **Array fields in a struct body** (`struct { Uint8 data[16]; }`). The body
-   parser abandons the whole struct on `[`, so the type stays opaque and every
-   by-value use of it is skipped. This is what makes `SDL_GUID` and its six
-   `SDL_JoystickGUID` functions unavailable, and it is the single highest-value
-   remaining item: it is also why `FILE` is opaque. Bitfields and
-   multi-declarator field lines (`int a, b;`) are the same branch.
+1. ~~**Array fields in a struct body**~~ **— closed.** (`struct { Uint8
+   data[16]; }`). The body parser abandoned the whole struct on `[`, so the type
+   stayed opaque and every by-value use of it was skipped. This is what made
+   `SDL_GUID` and its six `SDL_JoystickGUID` functions unavailable, and it was
+   also why `FILE` was opaque. Bitfields and multi-declarator field lines
+   (`int a, b;`) were the same branch, and all three are done: arrays by Stage 16
+   L2, bitfields by BF-1…BF-4, multi-declarator lines by CD-1
+   (`design/stage16-ergonomics/c-header-layout.md` §3.2 and §8). What is left of
+   this branch is one shape: declarators that disagree in *pointer depth*
+   (`int *p, q;`), which still abandons the struct and still fails safe.
 2. **`long double` / `_Float128` / `_Float16`** have no Nucleus type. 156 skipped
    declarations, all correctly refused. Fixing this is a *type-system* change, not
    a parser one.
-3. A **comma-separated typedef declarator list** (`typedef int a, *b;`) records
-   only the first declarator; each declarator has its own pointer depth, which a
-   single-declarator parse cannot recover. Vanishingly rare in real headers; the
-   rest stay unknown, which the by-value gate reports rather than mis-typing.
+3. ~~A **comma-separated typedef declarator list**~~ **— closed as CD-2**
+   (`design/stage16-ergonomics/c-header-layout.md` §8). `typedef int a, *b;`
+   recorded only the first declarator. The stated reason — "each declarator has
+   its own pointer depth, which a single-declarator parse cannot recover" — is
+   exactly right and is what the fix is built on: `c-parse-type` collapses depth
+   ≥ 1 into a bare `ptr` with no pointee, so a *starred first* declarator really
+   does leave nothing to unwrap. Every declarator is recorded now, with its own
+   stars and extents; the residue is a 0-star declarator following a starred one,
+   which is recorded known-but-unrepresentable rather than mis-typed.
 
 ### Premises in the spec and the W3c brief that proved wrong
 

@@ -1627,15 +1627,50 @@
               (val-copy-taint (as ptr rv) (as ptr p))
               (return rv))))))))
 
+; Eliminate a condition to bool, for the six condition sites. An ELIMINATION,
+; not a coercion — kept out of `coerce-int-val` so a `bool` slot does not become
+; a universal sink. design/stage16-ergonomics/bool-truthiness.md
+(defn condition-bool (v:ref:Val line:i32 ctx:ptr):ref:Val
+  (let (t:ptr (v type))
+    (when (= t null)
+      (die-at line (fmt-s "%s: condition has no type" ctx)))
+    (let (tt:ptr:Type (unsafe/cast ptr:Type t))
+      (when (= (tt kind) TY-BOOL) (return v))
+      ; raw / bare raw / CStr / ?T. `ptr-pkind` answers PTR-RAW for CStr, which
+      ; is what admits it without a kind arm of its own.
+      (when (and (!= (is-ptr-like t) 0)
+                 (or (= (ptr-pkind t) PTR-RAW) (= (ptr-pkind t) PTR-MAYBE)))
+        (let (tmp:ptr (new-tmp))
+          (fprintf g-body-stream "  %s = icmp ne ptr %s, null\n" tmp (v val))
+          (return (alloc-val ty-bool tmp))))
+      (when (and (= (tt kind) TY-PTR) (= (tt pkind) PTR-ERRPTR))
+        (die-at line
+          (fmt-s "%s: a Result (!T) is neither true nor false -- eliminate it with match, try or unwrap" ctx)))
+      (when (and (= (tt kind) TY-PTR) (= (tt pkind) PTR-REF))
+        (die-at line
+          (fmt-2s "%s: %s is non-null, so this test is always true -- spell the value (raw T) or ?T if it can be null"
+            ctx (type-spelling t))))
+      (let (ud:?ptr:UnionDef (value-maybe-union-of t))
+        (when (!= ud null)
+          (let (si:i32 (union-arm-index (as ptr ud) "some")
+                sd:ptr:StructDef (unsafe/cast ptr:StructDef (ud sdef))
+                tag:ptr (new-tmp)
+                tmp:ptr (new-tmp))
+            (fprintf g-body-stream "  %s = extractvalue %%%s %s, 0\n"
+              tag (sd ir-name) (v val))
+            (fprintf g-body-stream "  %s = icmp eq i32 %s, %d\n" tmp tag si)
+            (return (alloc-val ty-bool tmp)))))
+      (die-at line
+        (fmt-2s "%s: condition must be bool, not %s -- compare explicitly" ctx (type-spelling t)))
+      (return v))))
+
 (defn emit-not (call:ptr scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "not expects 1 arg"))
-    (let (a:ref:Val (emit-node (node-at cc 1) scope))
-      (when (-> a (_ type) (unsafe/cast ptr:Type _) (_ kind) (!= _ TY-BOOL))
-        (die-at (cc line) "not expects a bool operand"))
-      (let (tmp:ptr (new-tmp))
-        (fprintf g-body-stream "  %s = xor i1 %s, 1\n" tmp (a val))
-        (return (alloc-val ty-bool tmp))))))
+    (let (a:ref:Val (condition-bool (emit-node (node-at cc 1) scope) (cc line) "not")
+          tmp:ptr (new-tmp))
+      (fprintf g-body-stream "  %s = xor i1 %s, 1\n" tmp (a val))
+      (return (alloc-val ty-bool tmp)))))
 
 (defn emit-short-circuit (call:ptr scope:ref:Scope is-and:i32):ref:Val
   (let (cc:ptr:Node (unsafe/cast ptr:Node call)
@@ -1648,10 +1683,8 @@
           end-lbl:ptr (fmt-sd "%s.end%d" tag id)
           slot:ptr (fmt-sd "%%%s.val%d" tag id))
       (fprintf g-entry-stream "  %s = alloca i1, align 1\n" slot)
-      (let (lhs:ref:Val (emit-node (node-at cc 1) scope))
-        (when (-> lhs (_ type) (unsafe/cast ptr:Type _) (_ kind) (!= _ TY-BOOL))
-          (die-at ((unsafe/cast ptr:Node (node-at cc 1)) line)
-            (fmt-s "%s expects bool operands" tag)))
+      (let (lhs:ref:Val (condition-bool (emit-node (node-at cc 1) scope)
+                          (node-line (node-at cc 1) (cc line)) tag))
         (fprintf g-body-stream "  store i1 %s, ptr %s, align 1\n"
           (lhs val) slot)
         (if (!= is-and 0)
@@ -1670,11 +1703,9 @@
             (test-true-nonnull (node-at cc 1) scfacts)
             (test-false-nonnull (node-at cc 1) scfacts))
           (narrow-names scope scfacts)
-        (let (rhs:ref:Val (emit-node (node-at cc 2) scope))
+        (let (rhs:ref:Val (condition-bool (emit-node (node-at cc 2) scope)
+                            (node-line (node-at cc 2) (cc line)) tag))
           (narrow-restore scmark)
-          (when (-> rhs (_ type) (unsafe/cast ptr:Type _) (_ kind) (!= _ TY-BOOL))
-            (die-at ((unsafe/cast ptr:Node (node-at cc 2)) line)
-              (fmt-s "%s expects bool operands" tag)))
           (fprintf g-body-stream "  store i1 %s, ptr %s, align 1\n"
             (rhs val) slot)
           (fprintf g-body-stream "  br label %%%s\n" end-lbl)

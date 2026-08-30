@@ -258,7 +258,37 @@ inner types are ones the parser cannot describe, the field narrows to a plain
 `ptr` (a function pointer is pointer-sized either way, so the layout is
 unaffected) rather than making the struct opaque.
 
-A member whose type the parser genuinely cannot represent — a multi-declarator line (`int a, b;`), an array whose extent does not fold to a compile-time constant, or a by-value use of an unresolvable typedef — makes the **whole struct opaque** (below), with a located error at every by-value use, rather than a layout-incompatible partial struct. (Bit-fields, C11 anonymous members and flexible array members are all represented now — see the sections above.) A size is never guessed: a member reached indirectly, through a typedef the parser could not follow, used to resolve to `ptr` silently, giving a wrong struct *layout* with no diagnostic; it is refused the same way a direct unrepresentable member always was.
+A **multi-declarator field line** shares one run of declaration specifiers
+across several declarators, each with its own pointer stars, array extents and
+bit-field width:
+
+```c
+struct cd { int a, b; char *s, *t; int x, y[3]; unsigned p : 3, q : 5; };
+```
+
+imports as `%cd = type { i32, i32, ptr, ptr, i32, [3 x i32], [1 x i8] }`. The one
+shape that is refused is declarators that **disagree in pointer depth**
+(`int *p, q;`): the first declarator's `*` has already collapsed the base type
+into `ptr`, so there is nothing left to give `q`, and the struct goes opaque
+rather than giving `q` the wrong type.
+
+A declaration may also carry a declarator list **after the body**, and every
+declarator in it is a type name:
+
+```c
+typedef struct png_image_struct { … } png_image, *png_imagep;
+typedef struct { int r; } Rec, RecAlias, RecArr[3];
+struct S { int a; long b; } x, y;
+```
+
+`png_image` and `Rec`/`RecAlias` are second names for the body; `png_imagep` is
+a pointer typedef (`ptr`, whatever the body was); `RecArr` is an array of it,
+which decays in parameter position exactly as a first-position array typedef
+does. In the last line `x` and `y` are C **variables**, which Nucleus does not
+import at all — only `struct S` is taken from the line, and the declarators are
+consumed so the declaration after them is read from the right place.
+
+A member whose type the parser genuinely cannot represent — an array whose extent does not fold to a compile-time constant, a declarator list of mixed pointer depth, or a by-value use of an unresolvable typedef — makes the **whole struct opaque** (below), with a located error at every by-value use, rather than a layout-incompatible partial struct. (Bit-fields, C11 anonymous members, multi-declarator lines and flexible array members are all represented now — see the sections above.) A size is never guessed: a member reached indirectly, through a typedef the parser could not follow, used to resolve to `ptr` silently, giving a wrong struct *layout* with no diagnostic; it is refused the same way a direct unrepresentable member always was.
 
 ### Array members
 
@@ -336,13 +366,14 @@ glibc. Nucleus registers the **name** with no layout, so:
 A type stays opaque either because no header in the translation unit defines
 it — `FILE` is this case: a plain `(import-use "stdio.h")` only ever sees
 `typedef struct _IO_FILE FILE;`, never `struct _IO_FILE`'s body — or because
-its definition uses a construct the C declaration parser cannot represent: a
-multi-declarator line, or an array member whose extent does not fold to a
-compile-time constant. The other four constructs that used to belong on this
-list — bit-fields, C11 anonymous members, inline function-pointer members, and
-the flexible array member — are all represented now, so `FILE`, `sigcontext`,
-`rusage`, `sigaction` and `cmsghdr` lay out with the same sizes and offsets the
-platform `cc` gives them. Both are
+its definition uses a construct the C declaration parser cannot represent: an
+array member whose extent does not fold to a compile-time constant, or a
+declarator list whose declarators disagree in pointer depth (`int *p, q;`). The
+five constructs that used to belong on this list — bit-fields, C11 anonymous
+members, inline function-pointer members, multi-declarator lines, and the
+flexible array member — are all represented now, so `FILE`, `sigcontext`,
+`rusage`, `sigaction`, `cmsghdr` and `tcp_info` lay out with the same sizes and
+offsets the platform `cc` gives them. Both are
 usable as handles; neither can be used by value. `examples/cheader-opaque.nuc`
 is a worked example (a real `fopen`/`fprintf`/`fgets` round trip through
 `ptr:FILE`).
@@ -450,12 +481,40 @@ declare i32 @setjmp(ptr) returns_twice        ; parameter: decayed to one word
 %s = type { [1 x %__jmp_buf_tag] }            ; member: still the full inline array
 ```
 
-**One shape still gets this wrong, silently.** A *with-body* aggregate array
-typedef — `typedef struct Tag { ... } Name[N];`, body and array declarator in
-the same statement — takes a different branch from the no-body form above and
-still discards its extent: a `Name`-typed parameter is passed at the wrong
-ABI (`declare void @f(i64, i64)` where clang says `ptr`). This shape does not
-occur in any header this compiler is tested against.
+A **with-body** aggregate array typedef — `typedef struct Tag { ... } Name[N];`,
+body and array declarator in the same statement — is read the same way, tagged
+or not:
+
+```c
+typedef struct cd_tag { int x, y; } cd_tagarr[2];
+typedef struct { int x, y; } cd_anonarr[3];
+void take(cd_tagarr a);
+```
+```
+%cd_tag = type { i32, i32 }
+@v = global [2 x %cd_tag] zeroinitializer      ; (defvar v:cd_tagarr)
+declare void @take(ptr)                        ; parameter: decayed
+```
+
+An untagged body has no C tag for the type name to hang on, so the importer
+mints one — `%__carr.<typedef name>` — which is what a `(defvar u:cd_anonarr)`
+shows as its element type. It is a compiler-minted name and is not spellable.
+
+### Comma-separated typedef declarator lists
+
+`typedef int a, *b;` declares two names, each with its own pointer depth and
+its own array extents, and each is recorded:
+
+```c
+typedef int  cd_ta, *cd_tb;      /* cd_ta -> i32,  cd_tb -> ptr        */
+typedef long cd_tc, cd_td[4];    /* cd_tc -> i64,  cd_td -> [4 x i64]  */
+```
+
+As with a [multi-declarator struct field
+line](#c-header-struct-ingestion), the one case that is refused is a later
+declarator whose base the first declarator's `*` already consumed
+(`typedef int *a, b;` — `b` is recorded known-but-unrepresentable rather than
+given `a`'s type).
 
 ## A C typedef is a Nucleus type name
 
@@ -652,13 +711,31 @@ matter to any program that calls into this family:
 * **`longjmp` already gets `noreturn`** from the list above, so a block
   containing a `longjmp` call ends there, same as any other `noreturn` call.
 
+Both attributes are also **user-declarable** on a Nucleus `defn` — see
+[Declaration attributes](toplevel.md#declaration-attributes). The by-name list
+above is only how they are recovered for functions that arrive through a C
+header, which carries nothing to read them from.
+
 A local that must survive the jump needs `:volatile` — a `longjmp` does not
 restore registers, so an optimizer-promoted local reads back its pre-jump
 value otherwise. See [Volatile qualifier](types.md#volatile-qualifier).
 `examples/setjmp-guard.nuc` is a full worked example: a `(defvar env:jmp_buf)`
 storage declaration, `_setjmp`/`_longjmp` driving a retry loop, and a
 `:volatile` counter that survives the jump — nothing here is writable through
-any other combination of C header import features.
+any other combination of C header import features. The compiler's own REPL is
+the second: `repl-protect` / `repl-throw` (`src/repl.nuc`) are the non-local
+exit behind interactive error recovery, and replaced the last C file in the
+tree.
+
+One shape a *global* still cannot take: `(array SomeCStructTag N)`. A `defvar`'s
+type is resolved by the global prescan, which runs before any `(import-use
+"header.h")` is read, so the tag is still the layout-less placeholder
+`cheader-prescan-opaque` registered and the array element is refused. A
+`defvar` whose type is the C *typedef* (`(defvar env:jmp_buf)`) is unaffected,
+because `emit-defvar` re-resolves it; and `(alloca (array Tag N))` inside a
+function body is unaffected, because bodies are emitted after the import. That
+is why `repl-protect` allocates its jump buffer in the frame rather than in a
+static array.
 
 ## Unions and tagged sums
 

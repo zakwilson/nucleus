@@ -804,6 +804,46 @@ returns `weak_odr` for a private definition under `g-interactive`; without it
 unaffected because `g-interactive` is 0 there — which is also what keeps the
 change out of the byte-identical bar.
 
+## An ORC definition generator DEFINES what it reflects — and LLJIT already has one
+
+Do not attach `LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess` to the JIT's
+**main** JITDylib. A `DefinitionGenerator` does not merely resolve a missing
+symbol; when it fires it **defines** that symbol, as an absolute address, in the
+JITDylib it is attached to. The name is then taken there for the life of the
+session, and any later module that *defines* it is rejected —
+`Duplicate definition of symbol 'alloc-node'`, which is exactly how
+`(import-use node)` in the REPL failed until 2026-08-29.
+
+`LLJITBuilderState` carries `LinkProcessSymbolsByDefault = true`, so LLJIT
+already builds a `<Process Symbols>` JITDylib with a process search generator and
+adds it **as the last item in the default link order**. Process symbols
+(`printf`, `malloc`, and the compiler's own `-rdynamic` exports) therefore
+resolve with no setup at all, *and* a module's own definitions take precedence
+over them. Attaching a second generator to main is redundant and defeats the
+precedence.
+
+Three things measured against LLVM 19.1.7 while establishing this, each worth not
+re-deriving:
+
+* The `LLVMOrcSymbolPredicate` filter argument is real and is consulted **per
+  looked-up symbol, per generate attempt** — a live hook, not a construction-time
+  one. It can even be flipped between module adds.
+* `-rdynamic` stays load-bearing. The process JITDylib reflects the dynamic
+  symbol table, so without it a JIT'd macro body dies
+  `Symbols not found: [ … ]`. See the `weak_odr` section above and
+  `design/stage16-ergonomics/compile-time-imports.md` §9.
+* There is **no C API for `JITDylib::setLinkOrder`**. If you ever need
+  host-before-session resolution for one class of module, the only routes are a
+  bare JITDylib plus `LLVMOrcCreateCustomCAPIDefinitionGenerator`, or emitting
+  host-pinned absolute-symbol aliases. Both are real work; see
+  `design/stage16-ergonomics/repl-jit-symbol-precedence.md` §5.
+
+The consequence to keep in mind when changing REPL emission: **in the REPL the
+session's own definition wins over the host compiler's.** That is right for a
+prompt-typed `defn`, and it is why importing `lib/node.nuc` gives the session a
+*second* intern table — and symbol identity is compared by pointer (see "Symbol
+nodes are interned singletons").
+
 ## The want channel: target-typed construction (TC-1..TC-5)
 
 A one-shot, downward expected-type ("want") flows from declared-type positions into
@@ -2153,6 +2193,31 @@ Stage 15 W3a). Three rules keep this coherent:
   everything else, so an undefined `%Foo` can never reach an IR stream and become
   an LLVM parse error thousands of lines away. Never substitute a size.
 
+## A C struct is opaque at the GLOBAL prescan, so `(array Tag N)` is refused in a `defvar` only
+
+`prescan-defvar-name` resolves a `defvar`'s type **before** any `(import-use
+"header.h")` is read, so the only registration under a C tag at that moment is
+the layout-less placeholder `cheader-prescan-opaque` puts there — and
+`parse-type-from-node`'s array branch calls `reject-opaque-type` on the element.
+The result is a diagnostic that reads like a compiler bug because it contradicts
+what the same file can do a line later:
+
+```lisp
+(defvar bufs:(array __jmp_buf_tag 16))   ; error: array element: '__jmp_buf_tag' is an opaque type
+(defvar env:jmp_buf)                     ; fine — a C TYPEDEF, re-resolved by emit-defvar
+(defstruct H xs:(array __jmp_buf_tag 4)) ; fine — the layout prescan (mode 3) DEFERS instead
+(alloca (array __jmp_buf_tag 16))        ; fine — a body, emitted after the import
+(sizeof __jmp_buf_tag)                   ; fine — 200, same reason
+```
+
+The rule: **a by-value C aggregate is usable everywhere except a global's own
+type.** Storage for one belongs in a frame (`alloca`) or on the heap; if you
+need it to outlive a call, keep a global array of *pointers* and let each frame
+allocate its own. Stage 16's `repl-protect` does exactly that, and the shape is
+better than the static array it replaced — the jump buffer lives in the frame the
+`longjmp` returns into, and the stack needs no target-dependent extent
+(`design/stage16-ergonomics/c-header-layout.md` §11.2).
+
 ## `desugar-typed` needs the enclosing form's line (the interned-symbol line-0 class, again)
 
 `desugar-symbol`/`split-colon-segments` stamp the cells they build with a line
@@ -2259,10 +2324,53 @@ long long int __quad_t;`). When adding a C declaration-specifier keyword, check
 both the specifier loop in `c-parse-type` *and* the top-level dispatch in
 `emit-c-include`.
 
-**`size_t`/`ssize_t` stay hardcoded in `c-type-to-nucleus`, on purpose.**
-`clang -E` preprocesses for the *host* even under `--target=`, so letting
-`<stddef.h>`'s own typedef win would make `size_t`'s width follow the
-preprocessing host rather than the emission target.
+**`size_t`/`ssize_t` are intercepted BY NAME in `c-type-to-nucleus`, on
+purpose — but at the emission target's width.** Letting `<stddef.h>`'s own
+typedef win would make the width follow whatever machine the preprocessor read
+headers for, and since Stage 16 C4 that is *usually* the target but falls back
+to the host when the target's headers are not installed. The name interception
+is the part that must stay; the hardcoded 64 it used to carry did not, and is
+now the target's pointer size.
+
+## `clang -E` reads the TARGET's headers, and folds none of their `sizeof`s
+
+Two independent halves, and Stage 16 C4 needed both. `cheader-preprocess`
+(`src/cheader.nuc`) passes `--target=<triple>` (and `--sysroot=` when given) to
+`clang -E` whenever the emission target is not the host, which decides *which
+header text* is read. It does **not** decide how that text's constant
+expressions are evaluated: the preprocessor leaves `sizeof` alone, and the
+array-extent evaluator folds it itself from `abi-sizeof` over the Nucleus `Type`
+the C parser built. So the C type mapping has to be target-correct in its own
+right, or `char buf[sizeof(void*) * 4]` is sized for the wrong machine even
+though the right header was read. `c-int-type` (`int`, and a C enum, are 16 bits
+where a pointer is 2), `target-long-size` (`<= 4`, not `= 4` — AVR's pointer is
+2 and its `long` is 4) and the `size_t`/`ssize_t` interception above are the
+three that carry it.
+
+**The flags must be EMPTY on a host build, not merely equivalent.** They are
+gated on the target triple differing from `((as ptr:Target g-host-target)
+triple)`, so an unflagged compile runs the byte-identical command line it always
+did. Passing the host's own triple explicitly happens to be safe on Linux and is
+not portably safe (Darwin's SDK detection is entangled with the default target),
+and "no flags" is a property you can assert; "the same output" is one you have to
+re-measure per platform.
+
+**Making the target's headers authoritative makes their ABSENCE reachable.** On
+a machine with only the host's libc headers — which is the normal case, and this
+container for every triple except AVR — the targeted `clang -E` fails. Refusing
+there would retire cross-compiling for every such triple, including every
+`--target=` lane in `make test` and `make windows-boot`. So the policy is retry
+on the host and **warn**: the pre-C4 behaviour, announced instead of silent. A
+header that exists on no search path at all is fatal and located.
+
+**A subprocess's exit status is part of its output.** `read-pipe-output` ignored
+`pclose`'s status for the whole of the parser's life, so a `clang -E` that failed
+returned its built-in preamble, which parsed as an empty header — every name the
+header declared then went missing with nothing pointing at the import. Cache the
+failure the same way you cache the text (a null buffer in the same record), or
+the pre-scan and the real import each print the diagnosis. This tightening also
+surfaces a latent class: **a string import not ending in `.nuc`/`.nuch` routes to
+the C-header path**, so `(import "prelude")` had always been a silent no-op.
 
 ## An unreachable code path is not a correct one — two cheader defects that only became reachable in W3c
 
@@ -2417,7 +2525,7 @@ worked example: `emit-nuch-declare-import` (`src/nuch.nuc`) wrote `ty-i32` on
 null, so `(declare f (i64 ptr ui32):i64)` emitted `declare i64 @f(i32, i32,
 i32)` — wrong for every parameter, and *correct exactly when the signature was
 all-`i32`*, which is why it survived years of use including the compiler's own
-`(declare repl_print_f64 (ptr):void)`. Each caller must decide what the null
+`(declare repl_print_f64 (ptr):void)` (retired with the C shim in 2026-08-30). Each caller must decide what the null
 means for its form and act on it: `emit-fn` dies (`fn: missing :type on param`),
 `declare` now parses the node as a **type operand** (`declare-param-type`),
 `defn` still defaults. When you add a caller, pick deliberately — and prefer an
@@ -2853,13 +2961,19 @@ Note `make lib-headers` / `make lib-cheaders` write their outputs **into
 leaving ~30 untracked files behind. Regenerate and diff those two rather than
 assuming; delete the rest when you are done.
 
-## A C struct with an array member is registered OPAQUE — hand-declare and validate, don't field-access
+## A C struct the importer cannot lay out is registered OPAQUE — hand-declare and validate, don't field-access
 
-`c-parse-struct-decl` declines a `char d_name[256]`-shaped member, so W3a
+**The example below is stale and kept for the technique, not the diagnosis.**
+`struct dirent` and `glob_t` both lay out now (array members landed in Stage 16
+L2, function-pointer members in FP-4), so `src/nucleusc.nuc`'s validated
+`d_name` byte-offset read is no longer *required* — it is simply not worth
+rewriting. What is durable is the shape of the workaround for whatever the
+importer cannot represent next (today: an array extent that does not fold, and a
+declarator list of mixed pointer depth).
+
+`c-parse-struct-decl` declines such a member, so W3a
 registers the whole type layout-less (`StructDef.opaque = 1`) and any field
-access on it is refused with the opaque diagnostic. This is not exotic: it hits
-`struct dirent` and, for a different reason (function-pointer members),
-`glob_t` — i.e. both obvious routes to directory enumeration. The working shape
+access on it is refused with the opaque diagnostic. The working shape
 when you need such a C API is to `(declare …)` the functions by hand (no
 `(import-use "<header>")`, which also avoids a `clang -E` run and the
 `MAX-STRUCTS` pressure) and reach the field through a byte offset — but only
@@ -2893,7 +3007,7 @@ carries `noreturn`, so a scan reached only from `die-at` call sites runs at most
 once per compile — a directory walk plus a file read per candidate is invisible
 (a failing fixture compiles in the same 0.135 s as a clean one). The same work
 on a speculative or recoverable path would be a real cost. In the REPL `die-at`
-unwinds via `repl_throw` rather than `exit`, which is still one run per *failed*
+unwinds via `repl-throw` rather than `exit`, which is still one run per *failed*
 command.
 
 ## A per-file scope is cheapest expressed as a *namespace*, not as a visibility filter
@@ -4813,8 +4927,7 @@ change and only the *binary* is unusable — which is what an LLVM soname flip
 under a built tree leaves behind:
 
 ```
-clang build/stage2.ll build/repl_shim.o -L/usr/lib/llvm-N/lib -lLLVM-N \
-      -ldl -rdynamic -o /tmp/c0
+clang build/stage2.ll -L/usr/lib/llvm-N/lib -lLLVM-N -ldl -rdynamic -o /tmp/c0
 cp /tmp/c0 bin/nucleusc && make
 ```
 
@@ -4901,6 +5014,27 @@ Four things worth knowing before touching this:
   (`scripts/check-headers.sh --fix` — it reaches `lib/mapiterlib.nuch`, which
   `$(LIB_NUCHS)` cannot).
 
+**The DECLARATION ATTRIBUTES are the same convention, one position further
+along**: `:noreturn` and `:returns-twice`, between a `defn`'s return operand and
+its body, and after a `declare`'s return operand. Same three-helper shape —
+`decl-attr-kind` / `defn-scan-attrs` / `declare-scan-attrs` beside `marker-any`
+— plus `reject-legacy-fn-attr` for the retired bare `noreturn` /
+`returns_twice`. Three things there are not obvious:
+
+- **A lone trailing form is the body, never an attribute.** Both scanners guard
+  on `(> (node-len form) (+ bs 1))`, so `(defn kw ():Keyword :noreturn)` returns
+  the keyword. This is the only reason a keyword-valued one-expression body is
+  still writable.
+- **`declare-scan-attrs` needs a `min-len`, because a RETURN TYPE is a keyword
+  too.** A scan from the end with no floor eats `:i32`. The floor is the entry's
+  attribute-free length: 4 for `(declare name (params) :ret)`, 5 for
+  `(defmethod "@sym" name (params) :ret)`.
+- **A `.nuch` reader existed with no writer for two stages.** `nuch-declare-import`
+  read a trailing `noreturn` from the day it was written, and `emit-nuch-declare`
+  never printed one — so a `:noreturn` `defn` exported to a header silently lost
+  it. When an attribute rides a signature, the export arm is a *separate*
+  dispatch site from the import arm; grep both.
+
 ## A test unit that dies before its first `echo` is invisible, not failing
 
 `tests/run-tests.sh` buffers each unit to a file and decides PASS/FAIL by
@@ -4956,6 +5090,37 @@ And the run alone will not tell you: of the six types `vararg-promote` handles,
 materialises a narrow value into a zeroed register. That is the same blindness
 the truthiness-test section above records, in a different costume — assert on the
 emitted instruction. design/stage16-ergonomics/varargs-promotion.md
+
+## An ELIMINATION at one position is not a coercion — and its two narrowing halves are not symmetric
+
+The section above splits conversions into "keyed on a type pair" (→
+`coerce-int-val`) and "keyed on a position" (→ the argument walk). Stage 16's
+nil punning is a **third** answer, and the distinction is what keeps it cheap:
+a nullable value at a condition site is not converted to `bool`, it is
+*eliminated* by the test the author would otherwise have written
+(`(!= p null)`, or a `some`-tag compare). So it belongs at the sites that
+consume a condition, not at any coercion chokepoint.
+
+Ask which one you have: **a coercion makes the value usable in a slot; an
+elimination answers a question about it.** Putting an elimination in
+`coerce-int-val` would have made `bool` a universal sink — a `bool` parameter
+accepting any pointer, and `(defn g (b:bool))` becoming a dispatch candidate for
+every call — for a feature nobody wanted outside condition position. The shape
+is the same one `emit-not`/`emit-short-circuit`/`emit-cond`/`emit-while` already
+had, six sites each testing `(!= kind TY-BOOL)` inline; one shared
+`condition-bool` replaces all six, per the "one shared rule function" rule
+above.
+
+**And when you add a shape to `test-true-nonnull`, do not reflexively mirror it
+into `test-false-nonnull`.** The two functions look like duals and are not:
+they collect what is proven **non-null**, one when the test is true and one when
+it is false. A bare symbol proves `m` non-null when true and proves `m` *null*
+when false — so the true side gets an arm and the false side gets **nothing**.
+The inverted guard still narrows, because `test-false-nonnull`'s existing `not`
+arm delegates to `test-true-nonnull`; `(when (not m) (return))` narrows `m` past
+the guard through that delegation alone. A mirror arm would have asserted the
+opposite of what the test proves.
+design/stage16-ergonomics/bool-truthiness.md §"As built"
 
 ## A new top-level form has SIX dispatch sites, not one
 
@@ -5052,23 +5217,25 @@ design/stage16-ergonomics/repl-libraries.md §3.4.)
 
 ## `setjmp` in a helper that has returned is UB — pass the body as a callback
 
-The REPL's shim used to be `repl_try()` → `setjmp` in **its own** frame, with
-the caller running the risky work after it returned. Every `repl_throw` was
-therefore a `longjmp` into a dead frame; it appeared to work on glibc/x86-64 and
-is exactly the kind of thing a new target or LLVM breaks. The fix is a
-**protected call** — `repl_protect(body, ctx)` runs `body(ctx)` while its own
-`setjmp` frame is live and returns 0/1 — and it removes a second bug for free:
-with two sequential `repl_try` calls around one body, "which call re-armed the
-buffer?" is invisible in the source, and the recovery arm had been dead code for
-a whole stage without anyone noticing. Keep a depth counter beside the buffer so
-a throw from a path **no** protect covers exits with a message instead of
-jumping somewhere undefined.
+The REPL's unwind used to be `repl_try()` → `setjmp` in **its own** frame, with
+the caller running the risky work after it returned. Every throw was therefore a
+`longjmp` into a dead frame; it appeared to work on glibc/x86-64 and is exactly
+the kind of thing a new target or LLVM breaks. The fix is a **protected call** —
+`(repl-protect body ctx)` runs `(body ctx)` while its own `_setjmp` frame is live
+and returns 0/1 — and it removes a second bug for free: with two sequential
+`repl_try` calls around one body, "which call re-armed the buffer?" is invisible
+in the source, and the recovery arm had been dead code for a whole stage without
+anyone noticing. Keep a depth counter beside the buffer so a throw from a path
+**no** protect covers exits with a message instead of jumping somewhere
+undefined.
 
-Handing C the callback needs no cast, but only if you type the *parameter*:
-`(declare repl_protect (body:(fn void)(ptr) ctx:ptr):i32)` accepts a bare `defn`
-name as the argument. `(as ptr some-defn)` is refused (`as: reinterpretation
-from __fnty_0 to ptr`), so a `ptr`-typed shim parameter forces an
-`unsafe/cast` at every call site.
+Passing a `defn` as the callback needs no cast, but only if you type the
+*parameter*: `body:(fn void)(ptr)` accepts a bare `defn` name as the argument.
+`(as ptr some-defn)` is refused (`as: reinterpretation from __fnty_0 to ptr`), so
+a `ptr`-typed parameter forces an `unsafe/cast` at every call site. This was a C
+shim until 2026-08-30 and is now `src/repl.nuc`; **the compiler compiles no C at
+all**, so a build failure mentioning an object file is a stale `Makefile`, not a
+missing toolchain.
 
 ## A longjmp skips every save/restore on the stack — spell the roster once
 
@@ -5223,3 +5390,296 @@ Three rules that cannot be read off the C standard and were each found by
 Any change to bit-field layout has to be re-run against
 `s16-bf-layout-cross-target`, and its shapes I, J and K are the ones that tell
 these apart — A–H are green under all four wrong combinations.
+
+## `c-parse-type` collapses pointer depth, so a second declarator's base is only recoverable when the first had none
+
+A C declaration shares one specifier run across several declarators — `int a, b;`
+in a struct body, `typedef int a, *b;` at top level — and each declarator carries
+its own `*` run, its own `[N]` extents and its own bit-field width.
+`c-parse-type` consumes the specifiers **and the first declarator's stars**, and
+any depth ≥ 1 becomes a bare `ty-ptr` with no pointee. There is therefore nothing
+to unwrap: for a later declarator, the base type is available exactly when the
+first one was unstarred, and `c-span-has-star` over the span the type parse
+consumed is the whole test (Stage 16 CD-1/CD-2). A later *starred* declarator is
+`ptr` regardless, so `char *s, *t;` — the common spelling — is exact, and only
+the mixed `int *p, q;` is refused.
+
+Do not "recover" the base by re-parsing the specifier run with a truncated `len`:
+an inline `struct { … }` base would be parsed twice (a second registration and a
+second type line), and a `*` inside an `__attribute__` argument would truncate
+the run mid-parse and silently yield a base of `ptr`.
+
+## A declarator LIST needs the first declarator to go through the loop too
+
+`c-parse-struct-decl` handled the declarator after a struct body inline, and
+CD-4 had to add the ones after a `,`. Writing that as a *second* implementation
+beside the first is the mechanism that produced the bug being fixed — a shape
+handled in one place and not the other. `c-struct-decl-declarator`
+(`src/cheader.nuc`) is therefore what the first declarator goes through as well,
+and the loop is: consume `*`s, call the helper, `,` continues / `;` ends. Same
+rule as `binop-result-type` and the array-decay note above: mirroring logic
+drifts, mirroring a *call* cannot.
+
+The pre-scan (`cheader-scan-opaque-decl`) still mirrors rather than calls,
+because it has no parsed body to anchor on — and the name-for-name rule bites
+here in a new place: a **pointer** declarator (`typedef struct { … } A, *Bp;`)
+must register a typedef-table entry and **no** `StructDef`, or the opaque entry
+shadows the record the real import makes. A *non*-typedef declarator list
+(`struct S { … } x, y;`) declares C variables, which the importer does not model
+at all; the only correct action is to consume them so the next declaration is
+read from the right offset.
+
+## `--emit-cheader` includes the C header a TYPEDEF came from, not the one a TAG came from
+
+The asymmetry is not an oversight and the reason is C's, not Nucleus's. A C
+struct reference renders `struct SDL_Rect`, and an incomplete tag is legal behind
+a pointer — the header compiles, and only a *by-value* use fails, silently. A C
+typedef renders **bare** (`off_t`, because `struct off_t` names nothing), so a
+header that names one does not compile at all. Only the second is a hard failure,
+and only the second is included today (`cheader-note-c-include`).
+
+Two things make the include correct rather than merely present. **The spelling is
+the `(import-use …)` string, not `g-cheader-file`** — that global is rewritten by
+every `# N "file"` linemarker, so it names `/usr/include/x86_64-linux-gnu/bits/types.h`,
+which is neither portable nor what a consumer would write. `CTypedef.hdr` carries
+the import spelling from `g-cheader-import-header` (`src/type-utils.nuc`), which
+linemarkers never touch. And **`--emit-cheader` never runs `emit-c-include`** — it
+runs the pre-scan only — so the global has to be set at the top of *both*
+`emit-c-include` and `cheader-prescan-opaque`, or the header mode sees nulls.
+
+The general form of the argument, worth reusing: the emitter already writes
+`#include <stddef.h>` unconditionally because it spells `size_t`. A "should we
+include this?" question about a name the emitter *learned* is already answered by
+what it does for the names it hardcodes.
+
+## A C typedef anchored on a StructDef needs THREE sites to agree, not two
+
+W3a's rule is that `cheader-scan-opaque-decl` must stay name-for-name with
+`c-parse-struct-decl`. Stage 16 CD-3 (`typedef struct Tag { … } Name[N];`) is the
+case where the two must *both* stop registering a name: `parse-type-name` probes
+the struct registry **before** the C typedef table, so an opaque `StructDef`
+named `Name` left behind by the prescan shadows the array typedef the real import
+records — and the shadowing is invisible everywhere except the positions the
+prescan exists for (a `defn` signature, a `defvar` type).
+
+The third site is the **element** the array wraps. It has to be a `StructDef`
+both passes can name, because the prescan resolves the typedef before any body
+has been parsed and the import upgrades that same entry in place. The C tag is
+that name when there is one. When there is not — an untagged
+`typedef struct { … } Name[N];`, whose body the import memoizes by content hash —
+neither pass can name the other's answer, so both mint one from the declarator:
+`__carr.<typedef name>`, the same `__bf.`/`__anon.` convention (a `.` is
+unspellable as a C or Nucleus identifier, so "the compiler minted this" stays
+decidable with no extra state).
+
+## A prescan that builds a partial copy of a Type diverges per FIELD, not per bug
+
+`prescan-defn-signatures` and `nuch-defmethod-import` register a `Method` whose
+`fn-type` is a **second** `TY-FN` Type for a signature `emit-defn` also builds.
+`finalize-generics` binds that one into `g-globals` for a **solitary** name, so
+every call emitted *above* the definition — a forward call, or a call from an
+earlier file — is arity-checked and default-filled against the prescan's copy,
+not `emit-defn`'s. The two copies must therefore agree field by field, and until
+Stage 16 they disagreed on three:
+
+- **`has-rest`** was inferred from `(< (defn-params-count params) (node-len
+  params))`, which is equally true of an `:optional` list. So an `:optional`
+  defn registered `has-rest = 1`, a forward call took the `:rest` folding path
+  (`a :rest call needs the node runtime` for a program with no `:rest` in it),
+  and the three widening dispatch tiers that gate on `(= (m has-rest) 0)` —
+  `generic-resolve-adapt-tier`, `operator-user-resolve`, `valid-resolve-type` —
+  skipped every overloaded `:optional` method.
+- **`nopt` / `opt-defaults`** were never set at all, so a forward call that
+  omitted an optional was refused `expected 2 args, got 1` for a function that
+  takes one or two.
+
+`defn-params-has-rest` and `defn-params-set-opt` (`src/generics.nuc`, beside
+`defn-params-count`) are the repair, called from both registration sites. The
+generalizable half: when you find one wrong field in a registered signature,
+**diff the whole Type against the emitter's**, because the registration is a
+hand-written subset and every field it forgets is its own silent divergence.
+
+Related, and the reason this is not visible from a call site: `emit-defn`
+rebinds the name with the full Type, so the same call one line *below* the
+definition is correct. A test for this class must call from above.
+
+## A template's body is checked at STAMP time — so a declaration-time chokepoint is not one for templates
+
+`register-union-template` / `register-struct-template` retain the form and parse
+nothing. Every diagnostic that lives in the concrete registrar is therefore
+absent for a template until something instantiates it — and a template nothing
+instantiates is checked by nobody. `(defunion (Box T) … :repr bogus)` compiled
+clean, and so did the **retired** `&repr` spelling, whose whole retirement rests
+on `defunion-strip-repr` being one of four chokepoints.
+
+The cheap repair is not a new checker: it is calling the existing one for its
+diagnostics and discarding its result. `register-union-template` runs
+`defunion-strip-repr` on the arm chain and drops the filtered chain, which
+recovers four diagnostics (bogus mode, missing mode, non-symbol mode, the `&repr`
+retirement) for one throwaway cons chain per template. Same rule as
+`binop-result-type`: mirroring the logic drifts, mirroring a *call* cannot.
+
+What genuinely cannot move earlier is anything needing the arms' **types** —
+`union-layout-classify`'s "arms are not nicheable" and "an all-payload-less union
+is an enum". Split the checks by that line rather than deferring all of them.
+
+**When you add a diagnostic to a definer that has a template twin, ask which of
+the two registrars it lands in**, and whether the answer needs a stamp.
+
+## A prescan that must reach a nested body is a DESCENT, and its filter is the emitter's arm list
+
+`prescan-struct-names` was a flat walk over the unit's top-level form list, so a
+type defined inside `(compile-time …)` had no name when `prescan-defn-signatures`
+ran and every signature naming it died `unknown type: T` — even though D9's
+ruling had already made it a *program* type whose `%T = type` line lands in the
+program module. The repair is small for a reason worth remembering: **a nested
+body is usually already the shape the walk consumes.** A `compile-time` form's
+`cdr` is a cons chain whose cars are forms — identical to the top-level chain —
+so the pass recurses into itself with a mode flag rather than growing a second
+walk that can drift.
+
+The mode flag is not decoration. **Over-registering is worse than the bug it
+fixes**: a name that resolves in a signature with no type line emitted is silent
+invalid IR at exit 0, which is the failure shape the whole item existed to
+remove. So the descent registers exactly what the nested emitter *defines* —
+here `emit-compile-time`'s body loop has an arm for `defstruct` and for nothing
+else the pass registers, and `defstruct-`/`defunion`/`deftype`/a nested
+`compile-time` are each already an `unknown: <head>` inside a block. Probe that
+list, do not read it off the grammar.
+
+Keep the skip in lockstep the way `binop-result-type` does: **one predicate both
+sides CALL** (`ct-emits-defstruct`), never two copies of the same `(= h "…")`.
+And ask the "and *where* does it write?" question of every sibling pass before
+descending it too — the answer split cleanly here: the two TYPE passes descend
+(the line is in the program module), the value passes must not (a CT `defvar`'s
+`@g = global` and a CT `defn`'s `define` go to the CT module alone, so an earlier
+registration converts a clean `unknown:` diagnostic into an undefined-symbol
+reference). Verify that by compiling a *backward* reference to each: the ones
+that already emit invalid IR are the ones a descent would only spread.
+
+## The `sk == dk` identity return is a chokepoint, not a shortcut
+
+`coerce-int-val` (`src/abi.nuc`) and `safe-coerce-val` (`src/nucleusc.nuc`) each
+open their pair-matching with `(when (= sk dk) …)`. That line accepts on the
+type's **kind**, and same kind is not same type: every pointer lowers to `ptr`,
+so a `(ref (Vector i32))` entered a `(ref (Vector i64))` slot and read its
+elements at the wrong stride, silently, at every binding, argument, `set!`,
+`.set!`, `return` and `aset!`. FP-1 answered the `TY-FN` half by inserting
+`fn-sig-compat` immediately *above* that line; Stage 16 SE-1 guards the line
+itself with `slot-type-compat` (FP-1's own predicate, renamed — it was never
+fn-specific: it recurses through pointers and ends at `type-eq`).
+
+Three things to carry forward.
+
+- **Only the pointer kinds were silent.** A struct, array or union mismatch was
+  already refused — by the *LLVM verifier*, at a synthetic line in generated IR
+  (`'%t8' defined with type '%Vector.i32' but expected '%Vector.i64'`). When you
+  find a checking hole, sort the pairs into "wrong answer" and "right answer,
+  wrong reporter" before pricing the fix; they are the same edit and very
+  different arguments.
+- **The direction nobody checks.** conventions' rule is "an explicit conversion
+  form must never reject what the implicit one accepts". `as` had refused this
+  pair since always (`as-ptr-convert` compares pointees), so the *implicit* path
+  was the looser one for years. Check both directions when you audit a
+  conversion: the rule as stated only catches half of it.
+- **`defvar-init-ir` needs the same rule, and got it late.** The constant
+  renderer's `(addr-of g)` fold (`defvar-addr-of-ir`) checked `pkind` and never
+  the pointee — the sixth instance of the "a SECOND value-into-a-typed-slot
+  path" trap above. The fix is the same *call*, guarded to `TY-PTR` destinations
+  so a bare `ptr` and a `CStr` keep their own rules.
+
+## A generic's tyvar may come from the WANT — and then the parameter types are not its key
+
+`vector-new-in` is `(defn vector-new-in ((a (ref AllocHandle))) (ref (Vector T)) …)`:
+`T` appears only in the return type, so the want channel binds it per call site.
+Two things were keyed on the parameter types alone and stopped being keys the
+moment `T` could vary — `generic-find-method-exact` (the monomorphizer's memo
+probe, and the tier-0 answer in `generic-resolve` and `node-type-call`) and
+`mangle-fn-name`. The compiler therefore held exactly **one** `vector-new-in`,
+stamped `(Vector i32)` by whichever call site got there first, and all 59 others
+silently took it. It was benign only because `(Vector T)` has no `T`-typed field;
+the by-value sibling `vector-new-capacity` reserves `n × sizeof T` from the wrong
+`T`. The sequel to "a key stops being a key the moment the thing it identified is
+allowed to vary", and the reason TC-1's want-arming (G-5) did **not** fix this on
+its own: the want decides the binding, and the memo probe runs before the binding
+is ever consulted.
+
+The shape of the repair is the reusable part — the reference/definition split,
+again:
+
+- **Reference** lookups (`generic-find-method-exact`, and `generic-resolve`'s
+  tier-0 loop, which is that function written out inline) must **skip** a stamp
+  whose template has an undetermined tyvar, so the caller falls through to tier 1
+  and re-binds from the want. Fixing the shared function reaches `node-type-call`
+  too, which is the lockstep half — check that it does, or fix it separately.
+- **Definition** lookups hold more of the key: `defn-ir-name` takes the return
+  type, and the stamp's symbol carries `.$r.<type-mangle-token>`. Mark such a
+  stamp `ir-fixed`, or `finalize-generics` re-mangles it from the parameter types
+  (dropping the discriminator) and reads its siblings as duplicate definitions of
+  one signature.
+
+Two traps found while doing it, both general:
+
+- **A computation with no reader is not "advisory", it is unverified.** The full
+  A1 determination fixpoint (params, then propagate through `:where` constraints)
+  was built in the template registration and never read; the question's one
+  consumer, `method-undetermined-tyvar`, used a params-only approximation of it.
+  Harmless while that consumer only fired after a bind had already failed —
+  and, the moment a *symbol* depended on the answer, it called `reduce`'s
+  constraint-recovered `S` return-only and renamed every `reduce` stamp in the
+  corpus. It is now one function, `tyvars-determined`, with one caller.
+- **`pattern-determines-tyvar` documents itself as mirroring `unify-tpat` and did
+  not expand parametric type aliases.** `(deftype (Vec T) …)` is the third place
+  the §3.7 expansion has to happen (`collect-pattern-tyvars` and `unify-tpat` are
+  the other two). A "mirrors X" comment is a claim with an expiry date; re-check
+  it whenever X grows an arm, and whenever a new caller asks the mirror a
+  question no caller asked before.
+
+## A type SPELLING is read by more than the type parser — so spelling sugar belongs in the lexer
+
+`parse-type-name` / `parse-type-from-node` look like the place to add a new type
+spelling, because that is where `?T` and `!T` live. They are not, and Stage 16's
+`&T`-for-`ref:T` sigil is the worked example.
+
+A colon-chain spelling is consumed by at least four independent readers before
+(and instead of) the type parser: `split-colon-segments` / `desugar-symbol` cut
+a binding's `name:type`, `fuse-colon-paren` joins a trailing-colon atom to an
+adjacent paren form, `collect-pattern-tyvars` walks a *type pattern* looking for
+tyvars, and `unify-tpat` / `pattern-determines-tyvar` mirror it. Add the sugar
+at the parser and each of those needs its own arm — and the one that bites is
+`collect-pattern-tyvars`, which collects any **unresolvable** symbol as a tyvar:
+a bare `&T` in `(Vector &T)` would have been registered as a type *variable*
+rather than reported, the same silent class as the `x:ref:Vector:ref:Node`
+mis-parse container-type-sugar.md found.
+
+The rule: if the sugar is a pure rewriting of one spelling into another, do it
+in `lex-atom` (`expand-ref-sigil`) so every consumer downstream sees the
+canonical form and nothing else changes. Two consequences to check when you do:
+
+- **It applies everywhere an atom appears**, including quoted data and value
+  position. That is only acceptable when the atom shape was previously an error
+  everywhere — check the current source and tests before assuming it is free.
+- **A retirement diagnostic that keys on the old spelling is a consumer too.**
+  `reject-legacy-marker` reads `&rest`/`&where`/`&optional`/`&repr` as *retired
+  markers*, so the sigil must leave exactly those four unexpanded or the
+  diagnostic silently stops firing and they fail later as `unknown type: rest`.
+  Share the roster (`legacy-marker-tail`) rather than copying it into the lexer.
+
+The mirror of this rule holds for **value**-position sugar, and it points the
+other way: do NOT reach for `lex-atom` there. Value position already has a
+grammar for `name:Type` — an ascription that lowers to `as` (`emit-symbol-ref`:
+`split-typed`, then `as-convert` to the annotation) — so an atom the lexer
+rewrites into a colon chain lands *inside* that grammar rather than beside it.
+Stage 16's `&x`-for-`(addr-of x)` is the worked example: expanded in the lexer
+it becomes `ref:x`, which already parses as "the variable `ref`, cast to type
+`x`", and `ref` is a legal *binding* name — a definition may not take it
+(name-resolution.md §15) but a `let` or a parameter still may, which is exactly
+the position the ambiguity lives in. The right layer is the **reader-macro
+table** (`build-rmacros`, beside `@` → `deref`), which is matched in `next-tok`
+*before* `lex-atom` and only at a token boundary — so it wraps the next form in
+an existing head instead of minting a spelling. Wrapping in a head the compiler
+already matches on costs nothing downstream; a *new* head would have needed arms
+in `emit-symbol-ref`, `node-type-sym` and `fn-rewrite-captures`. Note that
+`def-rmacro` cannot do this from source: a unit is read in full before its forms
+are processed, so a `def-rmacro` never affects its own file (it does work in the
+REPL, which reads a form at a time).
