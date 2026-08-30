@@ -103,7 +103,10 @@ rejecting it, so it fails only where the difference is observable), and
 **selector position** (§11 — a bare symbol in `(m k)` is classified as a field
 name before it ever reaches `emit-symbol-ref`, so `(m k:CStr)` died with `no
 field 'k:CStr'`; fixed in the shared `selector-literal-sym` classifier, on the
-scope-free rule that a field name can never carry a colon).
+scope-free rule that a field name can never carry a colon). That annotation
+hatch was retired by [dot-forms.md](dot-forms.md) §5 step 3, which removed the
+classification it worked around: a bare symbol in selector position is now an
+ordinary variable, so `(m k)` is the value lookup with no annotation at all.
 
 **The reader needs no work at all** — and
 the one spelling that would require some is exactly the one to leave out.
@@ -467,7 +470,7 @@ Design: [container-literal-elements.md](container-literal-elements.md). **Done**
 
 **Symbol** took the "make `Node` respectable as a value" path, chosen because the compiler itself deals in symbols and further string→symbol refactoring is planned. Three of the four recorded blockers proved softer than the measurement implied: `=` already worked and only `hash` was missing (and needs no `extend` — that takes a struct template, but a bare overload on `(ref (ref Node))` resolves); nullability was a *typing* artifact, since `'foo` lowers to `intern-symbol`, whose signature already returns `ref:Node`; and the spelling constraint was reader-only. So `quoted-datum-type` now types a quoted **symbol** `(ref Node)` while leaving `'(a b)`/`'()` raw — a node-type↔emit-node lockstep pair, both sites calling one rule — and `#{'a 'b}` / `['a 'b]` / `{'k 1}` infer `(ref Node)` via a **shape** check for `(quote <symbol>)`, so `'(a b)`, `'1` and a bare `a` stay refused. That forced `infer-lit-type` to return a *kind* and `lit-kind-type` to become `lit-type-node`, returning a fresh type **node**, since `(ref Node)` is compound. Symbol keys need no import at all — `Node` is in the prelude.
 
-**Deferred by decision:** in head position a selector resolves as a field name and the quote is silently stripped, so `(m 'count)` reads a field rather than looking up a symbol; lookup must be spelled `(invoke m 'k)`. Field access is due a larger rethink, and the constraint to carry into it is that an explicitly quoted symbol should be a value, never a selector.
+**Deferred by decision:** in head position a selector resolves as a field name and the quote is silently stripped, so `(m 'count)` reads a field rather than looking up a symbol; lookup must be spelled `(invoke m 'k)`. Field access is due a larger rethink, and the constraint to carry into it is that an explicitly quoted symbol should be a value, never a selector. **That rethink went the other way** ([dot-forms.md](dot-forms.md) §5 step 3): a quoted symbol is now the *only* selector, and the bare symbol is the value. A symbol-keyed lookup is therefore `(m sym)` on a variable, or still `(invoke m 'k)` on a literal — the collision is unchanged in kind, but it now costs the literal case rather than the variable one, which is the direction that has a spelling.
 
 On the framing: the earlier "semantic fork" objection — that `'foo` would have to mean a `Node` in macro position and a `Symbol` in literal position — was retired by checking Common Lisp, Scheme and Clojure, which all make a symbol an ordinary first-class value meaning the same thing everywhere; even Scheme's syntax objects bridge by explicit `syntax->datum`/`datum->syntax` rather than by context. The real question was whether the macro layer should traffic in `Node`, the *compiler's* structure, at all — all three answer no — and the deciding cost is the `Node`/arena dependency, which is [compile-time-imports.md](compile-time-imports.md)'s subject.
 

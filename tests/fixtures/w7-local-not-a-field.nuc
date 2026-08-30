@@ -1,6 +1,7 @@
-; Stage 15 W7: the selector names a local, but the callee has no such field AND
-; no `get` method can take it — the miss must still be reported, now with the
-; hint that a bare selector always names a field.
+; dot-forms.md §5 step 3: a bare symbol in selector position is an ordinary
+; variable, so `(p k)` reads the LOCAL `k` as a computed selector. `k` is an i32
+; here, and a computed selector must evaluate to an interned symbol (ptr) --
+; which is the refusal this fixture pins. The field reading is `(p 'k)`.
 (import-use "stdio.h")
 (defstruct Point x:i32 y:i32)
 (defn main ():i32

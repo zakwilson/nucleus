@@ -599,8 +599,6 @@
 (defvar g-interactive:i32 0)  ; when 1, run in REPL mode (-i / --interactive)
 (defvar g-repl-format:i32 0)  ; 0 = text (default), 1 = json (one JSON object per error)
 (defvar g-opt-level:i32 0)    ; -O0..-O3; LLVMCodeGenOptLevel: None=0, Less=1, Default=2, Aggressive=3
-(defvar g-strict-selectors:i32 0)     ; --strict-selectors: report a bare symbol in selector position
-(defvar g-strict-selector-hits:i32 0) ; sites so reported; a nonzero count fails the compile
 
 ; REPL eval counter (for unique __repl_eval_N symbols).
 (defvar g-repl-id:i32 0)
@@ -5726,8 +5724,7 @@
       (require-derefable pt (cc 'line) "field access")
       (let (fn-node:(raw Node) (selector-literal-sym (node-at cc 2)))
         (when (= fn-node null)
-          (die-at (node-line (node-at cc 2) (cc 'line)) "_get: field name must be symbol"))
-        (note-bare-selector (node-at cc 2) fn-node (node-at cc 1) (cc 'line) "_get")
+          (die-nonliteral-selector (node-at cc 2) (node-line (node-at cc 2) (cc 'line)) "_get"))
         (let (sd:(raw StructDef) ((pt 'elem) 'sdef)
               idx:i32 (struct-field-index sd (fn-node 's)))
           ; W3a: an opaque type has no fields at all, so "no field 'x'" would be
@@ -5776,72 +5773,29 @@
 ; by a user `get` method); `invoke` is purely user-supplied (indexing, function objects).
 ; ============================================================
 
-; If `node` is a literal field selector — a bare symbol `field` or an explicit
-; `(quote field)` — return the symbol Node; else null (a computed selector). A
-; bare symbol is always a field, never a variable: field interpretation wins so
-; it never depends on what is in scope (callable-values.md §3.5).
-;
-; Stage 16: an *annotated* bare symbol is the one exception, and it is not a
-; scope question either — a field name can never carry a colon, so `k:CStr` in
-; selector position can only be the as-sugar cast (as-sugar.md). Quoted `'k:T`
-; keeps the always-a-name reading.
+; A literal field selector is `(quote field)` and nothing else; anything else is
+; a computed selector. Stage 16 (dot-forms.md §5 step 3) retired the bare-symbol
+; spelling: selector position used to be the one place in the language where a
+; symbol was not a variable reference, which is what made a field name held in a
+; VARIABLE need an annotation to be readable at all.
 (defn selector-literal-sym (node:(raw Node)):(raw Node)
   (when (= node null) (return null))
   (let (nn:(raw Node) node)
-    (when (= (nn 'kind) NODE-SYM)
-      (let (base:ptr null
-            annot:ptr null)
-        (split-typed (nn 's) (as ptr:ptr (addr-of base)) (as ptr:ptr (addr-of annot)))
-        (when (!= annot null) (return null)))
-      (return node))
     (when (and (= (nn 'kind) NODE-CELL) (= (node-len node) 2))
       (when (= (node-at node 0) 'quote)
         (let (inner:(raw Node) (node-at node 1))
           (when (= (inner 'kind) NODE-SYM) (return inner)))))
     (return null)))
 
-; dot-forms.md §5 step 1: the migration to `'field` is enumerated by the compiler
-; because head-position `(p x)` is indistinguishable from a call by shape alone.
-; The receiver is named because line+selector is NOT a unique key — `(sd name)`
-; and `(strcmp name "x")` share both, and a rewriter must not touch the second.
-(defn note-bare-selector (sel-node:(raw Node) lit:(raw Node) recv:(raw Node) line:i32 what:CStr):void
-  (when (= g-strict-selectors 0) (return))
-  ; selector-literal-sym returns the node itself for a bare symbol, the inner one for `'x`.
-  (when (or (= lit null) (!= lit sel-node)) (return))
-  (inc! g-strict-selector-hits)
-  (let (rname:ptr (as ptr "()"))
-    (when (and (!= recv null) (= (recv 'kind) NODE-SYM)) (set! rname (recv 's)))
-    (report-at (node-line sel-node line)
-      (fmt-2s "%s -- write '%s"
-              (fmt-3s "strict-selectors: form=%s recv=%s sel=%s" what rname (lit 's))
-              (lit 's)))))
-
-; Stage 15 W7 (design/stage15-stress-test/selector-ambiguity.md): does the callee
-; type `ct` denote a pointer to a struct/union that actually carries a field named
-; by the interned symbol node `sym`? Mirrors emit-get-intrinsic's own unwrapping
-; (TY-PTR with a TY-STRUCT/TY-UNION elem, then struct-field-index) so the two can
-; never disagree about what "names a field" means — this predicate decides whether
-; the field reading of a bare symbol is even available, and emit-get-intrinsic is
-; what reports the error when it is not.
-(defn callee-has-field (ct:(raw Type) sym:(raw Node)):i32
-  (let (cct:(raw Type) ct)
-    (when (or (!= (cct 'kind) TY-PTR) (= (cct 'elem) null)) (return 0))
-    (let (ek:i32 ((cct 'elem) 'kind))
-      (when (and (!= ek TY-STRUCT) (!= ek TY-UNION)) (return 0))
-      (let (sd:(raw StructDef) ((cct 'elem) 'sdef))
-        (when (= sd null) (return 0))
-        (when (< (struct-field-index sd (sym 's)) 0) (return 0))
-        (return 1)))))
-
-; Stage 15 W7: is the selector symbol also a **local** binding in scope? Only
-; locals count. A global would be far too broad a net: every function lives in the
-; global scope too, so accepting non-locals would demote `(sd name)` to a value
-; lookup the moment any global named `name` existed. A global genuinely used as a
-; key has the explicit `(invoke m g-key)` spelling (see emit-invoke-with-callee).
-(defn selector-shadowed-by-local (scope:ref:Scope sym:(raw Node)):i32
-  (if-some (sy (scope-lookup scope (as CStr (sym 's))))
-    (return (if (!= (sy 'is-local) 0) 1 0))
-    (return 0)))
+; The three fixed-position member forms need a LITERAL selector, and since step 3
+; a bare symbol is not one — so "must be symbol" would describe a bare symbol as
+; failing a test it appears to pass. Name the spelling instead (dot-forms.md §5).
+(defn die-nonliteral-selector (sel:(raw Node) line:i32 what:CStr):void
+  :noreturn
+  (when (and (!= sel null) (= (sel 'kind) NODE-SYM))
+    (die-at line
+      (fmt-2s "%s: field name must be a quoted selector -- write '%s" what (sel 's))))
+  (die-at line (fmt-s "%s: field name must be a quoted selector" what)))
 
 ; Emit the selector argument as a value for a user `get` method: a literal
 ; selector becomes its interned symbol Node* (the same pointer the reader / a
@@ -5860,6 +5814,23 @@
 (defn emit-computed-field (n:(raw Node) scope:ref:Scope callee-val:(raw Val) sd:(raw StructDef) sel-node:(raw Node) line:i32):ref:Val
   (let (sdd:(raw StructDef) sd
         nf:i32 (sdd 'num-fields))
+    ; Since step 3 a bare symbol here is an ordinary variable, so an UNBOUND one
+    ; that names a real field is a missed quote rather than a computed read.
+    (when (and (= (sel-node 'kind) NODE-SYM)
+               (>= (struct-field-index sd (sel-node 's)) 0))
+      (let (bound:i32 0)
+        (if-some (sy (scope-lookup scope (as CStr (sel-node 's))))
+          (set! bound 1)
+          (set! bound 0))
+        (when (= bound 0)
+          ; Name the receiver: `(p x)` and a call `(f x)` on the same line read
+          ; alike, so the selector alone does not say which form is meant.
+          (let (recv:(raw Node) (if (= (node-at n 1) sel-node) (node-at n 0) (node-at n 1))
+                rname:ptr (as ptr "the receiver"))
+            (when (and (!= recv null) (= (recv 'kind) NODE-SYM)) (set! rname (recv 's)))
+            (die-at line
+              (fmt-3s "get: '%s' is undefined here, and a bare symbol in selector position is an ordinary variable -- write (%s '%s)"
+                      (sel-node 's) rname (sel-node 's)))))))
     (when (= nf 0) (die-at line "get: cannot index an empty struct with a computed selector"))
     (let (ftype:ptr ((field-at (sdd 'fields) 0) 'type))
       ; Homogeneity gate — a heterogeneous struct has no single result type.
@@ -5932,16 +5903,8 @@
             (when (!= afr null)
               (reject-anon-ambiguous (lit 's) (sd 'name) line "get")
               (return (emit-field-load cv afr))))
-          ; Stage 15 W7: the bare-symbol-names-a-field rule is the one place a
-          ; symbol is not a variable reference, so when the name IS a local the
-          ; unadorned message actively misleads — it names a struct the user was
-          ; not trying to read a field of. Say so, and name the escape hatch. Only
-          ; reachable for a genuine miss: emit-get-with-callee already demoted the
-          ; selector to a value if a `get` method could take it.
-          (when (!= (selector-shadowed-by-local scope lit) 0)
-            (die-at line
-              (fmt-3s "get: no field '%s' on struct '%s' -- and '%s' is a local binding here, but a bare symbol in selector position always names a field. To look it up by value, give the type a `get` method for the key type (then `(callee key)` works), or write `(invoke callee key)`."
-                      (lit 's) (sd 'name) (lit 's))))
+          ; The selector was explicitly quoted, so this is a plain miss: since
+          ; step 3 a bare symbol would have been the by-value reading instead.
           (die-at line
             (fmt-2s "get: no field '%s' on struct '%s'" (lit 's) (sd 'name))))
         ; Union member: typed load at offset 0 (mirrors emit-field-get).
@@ -6052,36 +6015,6 @@
         line:i32 (n 'line)
         g:(raw Generic) (generic-lookup "get")
         sym:(raw Node) (selector-literal-sym sel-node))
-    ; Stage 15 W7: a bare symbol in selector position always *names a field*, which
-    ; is the only place in the language where a bare symbol is not a variable
-    ; reference. Branch A used to be a one-way door: once classified as a symbol
-    ; the value reading was unreachable, so `(m k)` on a `(HashMap CStr i32)` died
-    ; with "no field 'k'" even though `k` was a CStr local sitting right there and
-    ; `(m "foo")` worked. Demote to a value selector when the field reading is
-    ; *provably unavailable* — the callee has no such field — and the symbol is a
-    ; local binding. A quoted `'field` is never demoted: it is the explicit
-    ; always-a-name spelling.
-    ;
-    ; This cannot change the meaning of code that compiles today: every existing
-    ; site resolves its field, so `callee-has-field` is 1 and the demotion never
-    ; fires (measured — 79 sites in the compiler's own source shadow a local with
-    ; a real field name, and all 79 keep the field). Diagnostics are preserved
-    ; too: when Branch B then finds no method it falls through to
-    ; emit-get-intrinsic, which re-reads the still-symbol sel-node and reports the
-    ; same "no field" error, now with a hint.
-    ; `(= sym sel-node)` is the bare-vs-quoted discriminator: selector-literal-sym
-    ; returns the node itself for a bare symbol and the *inner* node for `'sym`.
-    (when (and (!= sym null)
-               (= sym sel-node)
-               (= (callee-has-field ct sym) 0)
-               (!= (selector-shadowed-by-local scope sym) 0))
-      (set! sym null))
-    ; After the demotion: a selector already reading as a value is what step 3
-    ; makes the rule, so it is not a site the migration has to touch. The
-    ; selector sits at 1 in head position `(p x)` and at 2 in `(get p x)`, so
-    ; the receiver is whichever slot it is not.
-    (note-bare-selector sel-node sym
-      (if (= (node-at n 1) sel-node) (node-at n 0) (node-at n 1)) line "get")
     (if (!= sym null)
       ; --- Branch A: literal-symbol selector (unchanged field-access path) ---
       (when (!= g null)
@@ -6244,9 +6177,12 @@
     (when (and (= nargs 1)
                (!= (generic-has-receiver-method (generic-lookup "get") ct) 0))
       (return (emit-get-with-callee n scope callee-val (node-at n 1))))
-    ; Fall back: a single literal-symbol arg is the raw `_get` field intrinsic;
-    ; anything else has no callable meaning (emit-invoke-with-callee reports it).
-    (when (and (= nargs 1) (!= (selector-literal-sym (node-at n 1)) null))
+    ; Fall back: one argument applied to a struct receiver is the `get` intrinsic,
+    ; which splits literal from computed itself — routing on the RECEIVER, not on
+    ; the argument's shape, is what makes `(p sel)` reach the computed path now
+    ; that a bare symbol is a variable (dot-forms.md §5 step 3). Anything else has
+    ; no callable meaning (emit-invoke-with-callee reports it).
+    (when (and (= nargs 1) (!= (is-member-access-receiver ct) 0))
       (return (emit-get-with-callee n scope callee-val (node-at n 1))))
     (return (emit-invoke-with-callee n scope callee-val 1 nargs))))
 
@@ -6753,8 +6689,7 @@
       ; same thing at every member form (dot-forms.md §5 phase 0).
       (let (fn-node:(raw Node) (selector-literal-sym (node-at cc 2)))
         (when (= fn-node null)
-          (die-at (node-line (node-at cc 2) (cc 'line)) ".set!: field name must be symbol"))
-        (note-bare-selector (node-at cc 2) fn-node (node-at cc 1) (cc 'line) ".set!")
+          (die-nonliteral-selector (node-at cc 2) (node-line (node-at cc 2) (cc 'line)) ".set!"))
         (let (sd:(raw StructDef) ((pt 'elem) 'sdef)
               idx:i32 (struct-field-index sd (fn-node 's))
               ; AN-2: null unless the name came from an anonymous member, in
@@ -10671,8 +10606,7 @@
       (require-derefable pt (cc 'line) ".&")
       (let (fn-node:(raw Node) (selector-literal-sym (node-at cc 2)))
         (when (= fn-node null)
-          (die-at (node-line (node-at cc 2) (cc 'line)) ".&: field name must be symbol"))
-        (note-bare-selector (node-at cc 2) fn-node (node-at cc 1) (cc 'line) ".&")
+          (die-nonliteral-selector (node-at cc 2) (node-line (node-at cc 2) (cc 'line)) ".&"))
         (let (sd:ptr:StructDef (unsafe/cast ptr:StructDef ((pt 'elem) 'sdef))
               idx:i32 (struct-field-idx (as ptr sd) (fn-node 's))
               afr:?ptr:FieldRef null)
@@ -18704,8 +18638,6 @@
                 (set! g-repl-format 0)
               (= arg "--repl-format=json")
                 (set! g-repl-format 1)
-              (= arg "--strict-selectors")
-                (set! g-strict-selectors 1)
               (= arg "-O0")
                 (set! g-opt-level 0)
               (= arg "-O1")
@@ -18752,7 +18684,7 @@
 
     ; Batch mode — require source file
     (when (= source-file null)
-       (fprintf stderr "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [--mmcu=<device>] [--sysroot=<path>] [--linker=<cmd>] [--link-arg=<arg>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [--strict-selectors] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
+       (fprintf stderr "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [--mmcu=<device>] [--sysroot=<path>] [--linker=<cmd>] [--link-arg=<arg>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
     (set! g-source-path source-file)
     (let (src:ptr (read-file source-file))
       ; G-5: `compiler-init` is gone. Every global it used to build is now built
@@ -18815,11 +18747,5 @@
           (fprintf stderr "nucleusc: internal error: %d (dyn P) annotation checks were never drained\n"
                    (unsafe/cast i32 (- (count g-dyn-annots) g-dyn-annots-drained)))
           (exit 1))
-        ; Reported rather than fatal at the first site, so one compile enumerates
-        ; a whole file; no output is written (dot-forms.md §5 step 1).
-        (when (!= g-strict-selector-hits 0)
-          (fprintf stderr "nucleusc: %d bare selector(s) under --strict-selectors\n"
-                   g-strict-selector-hits)
-          (return 1))
         (flush-module-ir source-file))))
     (return 0)))

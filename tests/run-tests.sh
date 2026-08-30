@@ -811,7 +811,7 @@ EOF
   cat > "$ns6_dir/tylib.nuc" <<'EOF'
 (ns gt)
 (defstruct Pt x:i32 y:i32)
-(defn pt-sum ((p (ref Pt))):i32 (return (+ (_get p x) (_get p y))))
+(defn pt-sum ((p (ref Pt))):i32 (return (+ (_get p 'x) (_get p 'y))))
 EOF
   ./build/nucleusc --emit-nuch    "$ns6_dir/tylib.nuc" > "$ns6_dir/tylib.nuch" 2>/dev/null || true
   ./build/nucleusc --emit-cheader "$ns6_dir/tylib.nuc" > "$ns6_dir/tylib.h"    2>/dev/null || true
@@ -1685,7 +1685,7 @@ run_w9_cheader_identifiers() {
 (defunion My-Uni (uni-a x-val:i32) (uni-b p-one:i32 p-two:i32))
 (defvar my-count:i64 41)
 (defn my-bump (n-arg:i32):i32 (return (+ n-arg 1)))
-(defn my-rec-sum (r:ptr:My-Rec):i32 (return (+ (r a-field) 100)))
+(defn my-rec-sum (r:ptr:My-Rec):i32 (return (+ (r 'a-field) 100)))
 (defn plain (n:i32):i32 (return n))
 EOF
   if ! ./build/nucleusc --emit-cheader "$d/hlib.nuc" > "$d/hlib.h" 2>"$d/err"; then
@@ -1778,8 +1778,8 @@ run_w9_cheader_imported_types() {
 (defstruct Pt (x i32) (y i32))
 (defn pt-make (a:i32 b:i32):Pt
   (let ((p (ref Pt)) (alloca Pt))
-    (.set! p x a)
-    (.set! p y b)
+    (.set! p 'x a)
+    (.set! p 'y b)
     (return p)))
 EOF
   # Names Pt by value in an exported struct field AND in an exported return type.
@@ -1788,8 +1788,8 @@ EOF
 (defstruct Seg (a Pt) (b Pt))
 (defn seg-make (n:i32):Seg
   (let ((s (ref Seg)) (alloca Seg))
-    (.set! s a (pt-make n 1))
-    (.set! s b (pt-make n 2))
+    (.set! s 'a (pt-make n 1))
+    (.set! s 'b (pt-make n 2))
     (return s)))
 EOF
   # Imports the same library and uses Pt only INSIDE a body: nothing it exports
@@ -1798,8 +1798,8 @@ EOF
 (import-use w37base)
 (defn plain (n:i32):i32
   (let ((p (ref Pt)) (alloca Pt))
-    (.set! p x n)
-    (return (p x))))
+    (.set! p 'x n)
+    (return (p 'x))))
 EOF
   ./build/nucleusc --emit-cheader "$d/w37base.nuc"  > "$d/w37base.h"  2>"$d/err" || true
   ./build/nucleusc --emit-cheader "$d/w37use.nuc"   > "$d/w37use.h"   2>>"$d/err" || true
@@ -1905,7 +1905,7 @@ run_w9_cheader_niche_types() {
   (when (!= i 0) (return (err w44-range)))
   (return (ok (as ref:W44Pt p))))
 (defn w44-show (r:!ptr:W44Pt):i32
-  (match r ((ok q) (return (q x))) ((err e) (return -1))))
+  (match r ((ok q) (return (q 'x))) ((err e) (return -1))))
 EOF
   ./build/nucleusc --emit-cheader "$d/w44niche.nuc" > "$d/w44niche.h" 2>"$d/err" || true
 
@@ -1962,7 +1962,7 @@ EOF
 (import-use w44base)
 (deferror w44-only-bad "bad")
 (defn w44-probe (p:ptr:W44Only):!ui8
-  (when (< (p x) 0) (return (err w44-only-bad)))
+  (when (< (p 'x) 0) (return (err w44-only-bad)))
   (return (ok (unsafe/cast ui8 1))))
 EOF
   ./build/nucleusc --emit-cheader "$d/w44only.nuc" > "$d/w44only.h" 2>>"$d/err" || true
@@ -2031,7 +2031,7 @@ EOF
 (defn main ():i32
   (let (p:ptr:2Pair (2Pair 3 4))
     (printf "%d %d %d %d %d %d\n"
-      (2fast 20) 2count 2LIM (. p a) (2pick (make 2Shape 2circle 7)) (2loop)))
+      (2fast 20) 2count 2LIM (. p 'a) (2pick (make 2Shape 2circle 7)) (2loop)))
   0)
 EOF
   if ./build/nucleusc -I "$d" "$d/w39dig.nuc" -o "$d/dig" 2>"$d/err"; then
@@ -2662,7 +2662,7 @@ run_w9_source_outranks_header() {
   cat > "$d/l/w9sh.nuc" <<'EOF'
 (ns shn)
 (defstruct W9Rec (n i32))
-(defn w9sh-get ((r (ref W9Rec))):i32 (return (_get r n)))
+(defn w9sh-get ((r (ref W9Rec))):i32 (return (_get r 'n)))
 EOF
   cat > "$d/w9shuse.nuc" <<'EOF'
 (import-prefixed w9sh shp)
@@ -2852,10 +2852,10 @@ run_w9_defcast_reach() {
         l:ptr (as i64 2)
         b:ptr:Bx (alloca Bx)
         arr:ptr (alloca ptr 2))
-    (.set! b p (as i64 5))
+    (.set! b 'p (as i64 5))
     (aset! (as ptr:ptr arr) 0 (as i64 6))
     (printf "%lld %lld %lld %lld %lld %lld\n"
-      a (show l) (show (mk)) (show (mk2)) (show (b p))
+      a (show l) (show (mk)) (show (mk2)) (show (b 'p))
       (show (aref (as ptr:ptr arr) 0))))
   (return 0))
 EOF
@@ -2968,15 +2968,15 @@ EOF
   # `defconst`, and a union built with `make` and taken apart with `match`.
   cat > "$d/below.nuc" <<'EOF'
 (import-use "stdio.h")
-(defn w9lay-byval ((v W9LayBox)):i32 (return (+ (_get (addr-of v) a) (_get (addr-of v) b))))
+(defn w9lay-byval ((v W9LayBox)):i32 (return (+ (_get (addr-of v) 'a) (_get (addr-of v) 'b))))
 (defn main ():i32
   (let (bx (W9LayBox 3 4)
         ar:ptr:W9LayArr (alloca W9LayArr)
         u (make W9LayOpt W9LaySome 5))
-    (aset! (ar xs) 2 6)
-    (.set! ar n 7)
+    (aset! (ar 'xs) 2 6)
+    (.set! ar 'n 7)
     (printf "%d %d %d %d %d\n"
-      (_get bx a) (w9lay-byval bx) (aref (ar xs) 2) (_get ar n)
+      (_get bx 'a) (w9lay-byval bx) (aref (ar 'xs) 2) (_get ar 'n)
       (match u ((W9LaySome x) x) (W9LayNone 0))))
   (return 0))
 (import-use w9lay)
@@ -3008,7 +3008,7 @@ EOF
   # `(defstruct S …)`. Recorded as latent-and-unfixed since W1d — the layout
   # prescan closes it with the cross-file case, since neither is about imports.
   cat > "$d/fwd.nuc" <<'EOF'
-(defn w9lay-fwd ((v W9LayFwd)):i32 (return (+ (_get (addr-of v) p) (_get (addr-of v) q))))
+(defn w9lay-fwd ((v W9LayFwd)):i32 (return (+ (_get (addr-of v) 'p) (_get (addr-of v) 'q))))
 (defstruct W9LayFwd (p i32) (q i32))
 (defn main ():i32 (return (w9lay-fwd (W9LayFwd 2 3))))
 EOF
@@ -3030,7 +3030,7 @@ EOF
 (import-use "stdio.h")
 (defn main ():i32
   (let (bx (W9LayBox 8 9))
-    (printf "%d\n" (+ (_get bx a) (_get bx b))))
+    (printf "%d\n" (+ (_get bx 'a) (_get bx 'b))))
   (return 0))
 (import-use w9lay)
 EOF
@@ -3292,17 +3292,17 @@ run_w1d_cycle_diagnoses() {
   # itself stays: an array field whose length this early pass cannot fold leaves
   # its struct un-laid-out, and that struct is still a cycle's problem.
   printf '(import w1-scb)\n(defstruct W1SC\n  x:i32\n  y:i32)\n(defn w1-sca ():i32 (return 1))\n' > "$d/w1-sca.nuc"
-  printf '(import w1-sca)\n(defn w1-scb (p:ptr:W1SC):i32 (.set! p x 11) (return (p x)))\n' > "$d/w1-scb.nuc"
+  printf '(import w1-sca)\n(defn w1-scb (p:ptr:W1SC):i32 (.set! p '\''x 11) (return (p '\''x)))\n' > "$d/w1-scb.nuc"
   printf '(import w1-sca)\n(defn main ():i32 (let (s:ptr:W1SC (alloca W1SC)) (return (w1-scb s))))\n' > "$d/w1-scm.nuc"
   w1_run w1d-cycle-layout-resolves "$d" "$d/w1-scm.nuc" 11
 
   printf '(import w1-lcb)\n(defstruct W1LC\n  x:i32\n  y:i32)\n(defn w1-lca ():i32 (return 1))\n' > "$d/w1-lca.nuc"
-  printf '(import w1-lca)\n(defn w1-lcb ():i32 (let (v:W1LC (W1LC 3 4)) (return (+ (_get (addr-of v) x) (_get (addr-of v) y)))))\n' > "$d/w1-lcb.nuc"
+  printf '(import w1-lca)\n(defn w1-lcb ():i32 (let (v:W1LC (W1LC 3 4)) (return (+ (_get (addr-of v) '\''x) (_get (addr-of v) '\''y)))))\n' > "$d/w1-lcb.nuc"
   printf '(import w1-lca)\n(defn main ():i32 (return (w1-lcb)))\n' > "$d/w1-lcm.nuc"
   w1_run w1d-cycle-structlit-resolves "$d" "$d/w1-lcm.nuc" 7
 
   printf '(import w1-bcb)\n(defstruct W1BC\n  x:i32\n  y:i32\n  z:i32\n  w:i32)\n(defn w1-bca ():i32 (return 1))\n' > "$d/w1-bca.nuc"
-  printf '(import w1-bca)\n(defn w1-bcb (v:W1BC):i32 (return (+ (_get (addr-of v) x) (_get (addr-of v) w))))\n' > "$d/w1-bcb.nuc"
+  printf '(import w1-bca)\n(defn w1-bcb (v:W1BC):i32 (return (+ (_get (addr-of v) '\''x) (_get (addr-of v) '\''w))))\n' > "$d/w1-bcb.nuc"
   printf '(import w1-bca)\n(defn main ():i32 (let (v:W1BC (W1BC 1 2 3 4)) (return (w1-bcb v))))\n' > "$d/w1-bcm.nuc"
   w1_run w1d-cycle-byval-resolves "$d" "$d/w1-bcm.nuc" 5
 
@@ -3678,7 +3678,7 @@ EOF
   # a signature. 5 + 7 = 12, + 30 = 42, + 1 (sp-green) = 43.
   #
   # A field ACCESS before the import is deliberately not here: pass 1 registers
-  # struct names, not layouts, so `(_get r n)` fails ahead of the import for the
+  # struct names, not layouts, so `(_get r '\''n)` fails ahead of the import for the
   # SYMBOL spelling too (measured). That is the W1d name-vs-layout split, not
   # this item — and the claim being pinned is that the two spellings agree.
   cat > "$d/spmain.nuc" <<EOF
@@ -3918,7 +3918,7 @@ run_w9_dyn_solitary() {
 (ns w41)
 (defprotocol Describe (describe ((self (ref Self))) i32))
 (defstruct Fox n:i32)
-(defn describe ((self (ref Fox))):i32 (return (_get self n)))
+(defn describe ((self (ref Fox))):i32 (return (_get self 'n)))
 (extend Fox Describe)
 EOF
   # The library excludes the prelude so its object and the consumer's link
@@ -4111,12 +4111,12 @@ run_s16_se_template_ref() {
   # 3. The rule is about pointees, not about templates: two plain structs are
   #    the same shape of defect and the same refusal.
   ok=1
-  printf '(defstruct SA x:i32)\n(defstruct SB y:i64 z:i64)\n(defn takes (b:(ref SB)):i64 (return (b y)))\n(defn main ():i32\n  (let (a:(ref SA) (SA 7)) (return (as i32 (takes a)))))\n' > "$d/tre-struct.nuc"
+  printf '(defstruct SA x:i32)\n(defstruct SB y:i64 z:i64)\n(defn takes (b:(ref SB)):i64 (return (b '\''y)))\n(defn main ():i32\n  (let (a:(ref SA) (SA 7)) (return (as i32 (takes a)))))\n' > "$d/tre-struct.nuc"
   got="$(./build/nucleusc --emit-llvm "$d/tre-struct.nuc" 2>&1 >/dev/null || true)"
   printf '%s' "$got" | qgrep -F "has type ptr:SA, which does not match parameter type ptr:SB" || ok=0
   # …and the two relaxations stay: pointer KIND is not part of the question
   # (pkind-flow-check owns that), and an elem-less bare `ptr` is `void *`.
-  printf '(defstruct SA x:i32)\n(defn takes (b:(ref SA)):i32 (return (b x)))\n(defn wild (p:ptr):i32 (return 0))\n(defn main ():i32\n  (let (a:ptr:SA (SA 7) q:ptr (unsafe/cast ptr (SA 1)))\n    (let (r:(ref SA) (unsafe/cast (ref SA) q) w:ptr a)\n      (return (+ (takes a) (+ (wild a) (takes r)))))))\n' > "$d/tre-relax.nuc"
+  printf '(defstruct SA x:i32)\n(defn takes (b:(ref SA)):i32 (return (b '\''x)))\n(defn wild (p:ptr):i32 (return 0))\n(defn main ():i32\n  (let (a:ptr:SA (SA 7) q:ptr (unsafe/cast ptr (SA 1)))\n    (let (r:(ref SA) (unsafe/cast (ref SA) q) w:ptr a)\n      (return (+ (takes a) (+ (wild a) (takes r)))))))\n' > "$d/tre-relax.nuc"
   ./build/nucleusc --emit-llvm "$d/tre-relax.nuc" >/dev/null 2>&1 || ok=0
   # …and the CONSTANT renderer asks the same rule: `defvar` is the second
   # typed-slot path and had the identity hole independently (conventions.md's
@@ -4172,7 +4172,7 @@ run_s16_fp2_indirect_call() {
 (defstruct Pt x:i64 y:i64)
 (defstruct Big a:i64 b:i64 c:i64)
 (defn sum-pt (p:Pt):i64
-  (let (q:ptr:Pt (addr-of p)) (return (+ (q x) (q y)))))
+  (let (q:ptr:Pt (addr-of p)) (return (+ (q 'x) (q 'y)))))
 (defn make-big (n:i64):Big (return (Big n (+ n 1) (+ n 2))))
 (defn addl (a:i64):i64 (return (+ a 1)))
 (defn main ():i32
@@ -4182,7 +4182,7 @@ run_s16_fp2_indirect_call() {
     (printf "%lld\n" (funcall f (Pt 3 4)))
     (let (b:Big (funcall g 10)
           bp:ptr:Big (addr-of b))
-      (printf "%lld\n" (bp c)))
+      (printf "%lld\n" (bp 'c)))
     (printf "%lld\n" (funcall h 5))
     (return 0)))
 FP2EOF
@@ -4275,8 +4275,8 @@ QEOF
 (defn main ():i32
   (let (h:ptr:S16Hold (S16Hold ten 5)
         c:s16_cmp cmpv)
-    (printf "member=%d field=%d\n" (funcall (h cb) 4) (h n))
-    (.set! h cb ten)
+    (printf "member=%d field=%d\n" (funcall (h 'cb) 4) (h 'n))
+    (.set! h 'cb ten)
     (funcall c null null)
     (return 0)))
 TEOF
@@ -4309,7 +4309,7 @@ B1EOF
 (defn one (a:i32):i32 (return a))
 (defn main ():i32
   (let (h:ptr:S16Hold (S16Hold one 5))
-    (return (funcall (h cb) 1 2))))
+    (return (funcall (h 'cb) 1 2))))
 B2EOF
   got="$(./build/nucleusc --emit-llvm "$d/bad2.nuc" 2>&1 >/dev/null || true)"
   printf '%s' "$got" | qgrep -F "expected 1 args, got 2" || ok=0
@@ -4341,7 +4341,7 @@ run_s16_fp5_cheader_fnptr() {
 (defn addem (a:i32 b:i32):i32 (return (+ a b)))
 (defn use2 (f:(fn i32)(i32 i32)):i32 (return (funcall f 1 2)))
 (defn getf ():(fn i32)(i32 i32) (return addem))
-(defn holdsum (h:ptr:Hold):i32 (return (funcall (h cb) (h n) (h n))))
+(defn holdsum (h:ptr:Hold):i32 (return (funcall (h 'cb) (h 'n) (h 'n))))
 LEOF
   ./build/nucleusc --emit-cheader "$d/lib.nuc" > "$d/lib.h" 2>"$d/h.err" || true
   qgrep -F -x '    int32_t (*cb)(int32_t, int32_t);' "$d/lib.h" || ok=0
@@ -4383,7 +4383,7 @@ CEOF
 }
 
 # Stage 16 SV-1 (design/stage16-ergonomics/c-boundary-defects.md §2.5): a struct
-# VALUE is a member-access receiver. `(. v x)` on a by-value parameter, a call
+# VALUE is a member-access receiver. `(. v '\''x)` on a by-value parameter, a call
 # result or a struct local all used to be `_get: operand must be pointer to
 # struct or union` — not a C-specific gap, but it is what made every by-value C
 # API (libclang's cursors, every struct-returning libc call) need an alloca and
@@ -4396,15 +4396,15 @@ run_s16_sv1_struct_value_receiver() {
 (defstruct Pt x:i64 y:i64)
 (defn mk (n:i64):Pt (return (Pt n (* n 2))))
 ; All three read spellings against a by-value PARAMETER.
-(defn sum (p:Pt):i64 (return (+ (. p x) (+ (p y) (_get p x)))))
+(defn sum (p:Pt):i64 (return (+ (. p 'x) (+ (p 'y) (_get p 'x)))))
 ; And straight off a call result, with no binding at all.
-(defn direct ():i64 (return (. (mk 5) y)))
+(defn direct ():i64 (return (. (mk 5) 'y)))
 (defn main ():i32
   (let (v:Pt (mk 3))
-    (printf "%lld %lld %lld %lld\n" (sum v) (direct) (. v x) (v y))
+    (printf "%lld %lld %lld %lld\n" (sum v) (direct) (. v 'x) (v 'y))
     ; `.set!` on a by-value local mutates the local copy, as in C.
-    (.set! v x 40)
-    (printf "%lld %d\n" (. v x) (if (= (.& v y) null) 0 1))
+    (.set! v 'x 40)
+    (printf "%lld %d\n" (. v 'x) (if (= (.& v 'y) null) 0 1))
     (return 0)))
 SVEOF
   ./build/nucleusc "$d/sv.nuc" -o "$d/sv.bin" 2>"$d/sv.err" || true
@@ -4423,14 +4423,14 @@ SVEOF
   cat > "$d/t1.nuc" <<'T1EOF'
 (defstruct Pt x:i64 y:i64)
 (defn mk (n:i64):Pt (return (Pt n n)))
-(defn main ():i32 (.set! (mk 1) x 5) (return 0))
+(defn main ():i32 (.set! (mk 1) 'x 5) (return 0))
 T1EOF
   got="$(./build/nucleusc --emit-llvm "$d/t1.nuc" 2>&1 >/dev/null || true)"
   printf '%s' "$got" | qgrep -F ".set!: the receiver is a temporary struct value, so it has no address" || ok=0
   cat > "$d/t2.nuc" <<'T2EOF'
 (defstruct Pt x:i64 y:i64)
 (defn mk (n:i64):Pt (return (Pt n n)))
-(defn leak ():ptr:i64 (return (.& (mk 1) x)))
+(defn leak ():ptr:i64 (return (.& (mk 1) 'x)))
 (defn main ():i32 (return 0))
 T2EOF
   got="$(./build/nucleusc --emit-llvm "$d/t2.nuc" 2>&1 >/dev/null || true)"
@@ -4439,7 +4439,7 @@ T2EOF
   # legal receivers.
   cat > "$d/t3.nuc" <<'T3EOF'
 (defstruct Pt x:i64 y:i64)
-(defn main ():i32 (let (k:i64 5) (return (as i32 (. k x)))))
+(defn main ():i32 (let (k:i64 5) (return (as i32 (. k 'x)))))
 T3EOF
   got="$(./build/nucleusc --emit-llvm "$d/t3.nuc" 2>&1 >/dev/null || true)"
   printf '%s' "$got" | qgrep -F "_get: operand must be a struct or union, or a pointer to one" || ok=0
@@ -4447,7 +4447,7 @@ T3EOF
   # which is only possible if the type pass unwrapped it in lockstep.
   cat > "$d/t4.nuc" <<'T4EOF'
 (defstruct Pt x:i64 y:i64)
-(defn f (p:Pt):i64 (return (. p zzz)))
+(defn f (p:Pt):i64 (return (. p 'zzz)))
 (defn main ():i32 (return 0))
 T4EOF
   got="$(./build/nucleusc --emit-llvm "$d/t4.nuc" 2>&1 >/dev/null || true)"
@@ -4510,10 +4510,10 @@ NEOF
 
   # Signedness, not just size: an out-of-range literal is refused for the
   # unsigned field and accepted for the signed one.
-  printf '(import-use "tests/fixtures/s16-unsigned.h")\n(defn main ():i32\n  (let (p:ptr:S16U01 (alloca S16U01)) (.set! p a -1) (return 0)))\n' > "$d/neg.nuc"
+  printf '(import-use "tests/fixtures/s16-unsigned.h")\n(defn main ():i32\n  (let (p:ptr:S16U01 (alloca S16U01)) (.set! p '\''a -1) (return 0)))\n' > "$d/neg.nuc"
   got="$(./build/nucleusc --emit-llvm "$d/neg.nuc" 2>&1 >/dev/null || true)"
   printf '%s' "$got" | qgrep -F 'integer literal -1 does not fit ui32' || ok=0
-  printf '(import-use "tests/fixtures/s16-unsigned.h")\n(defn main ():i32\n  (let (p:ptr:S16U02 (alloca S16U02)) (.set! p a -1) (return 0)))\n' > "$d/pos.nuc"
+  printf '(import-use "tests/fixtures/s16-unsigned.h")\n(defn main ():i32\n  (let (p:ptr:S16U02 (alloca S16U02)) (.set! p '\''a -1) (return 0)))\n' > "$d/pos.nuc"
   ./build/nucleusc --emit-llvm "$d/pos.nuc" >/dev/null 2>&1 || ok=0
   # The two bare-specifier FUNCTIONS register at all.
   printf '(import-use "tests/fixtures/s16-unsigned.h")\n(defn main ():i32 (s16u_f) (s16u_g 1 2) (return 0))\n' > "$d/fn.nuc"
@@ -4695,7 +4695,7 @@ G2EOF
 (defn main ():i32
   (let (s:ptr:G2Rec (alloca G2Rec))
     (printf "%lld %lld %lld %lld\n" (as i64 (sizeof G2Rec))
-      (g2off s (.& s cells)) (g2off s (.& s names)) (g2off s (.& s mark))))
+      (g2off s (.& s 'cells)) (g2off s (.& s 'names)) (g2off s (.& s 'mark))))
   (return 0))
 G2EOF
   if ! ./build/nucleusc --emit-cheader "$d/g2h.nuc" > "$d/g2h.h" 2>"$d/err"; then
@@ -4743,9 +4743,9 @@ G2EOF
 (import-use g2lib)
 (defn main ():i32
   (let (b:ptr:G2Box (alloca G2Box))
-    (aset! (b slots) 2 7)
-    (.set! b n 9)
-    (return (+ (aref (b slots) 2) (+ (b n) (+ (unsafe/cast i32 (sizeof G2Box)) (aref g2tab 1)))))))
+    (aset! (b 'slots) 2 7)
+    (.set! b 'n 9)
+    (return (+ (aref (b 'slots) 2) (+ (b 'n) (+ (unsafe/cast i32 (sizeof G2Box)) (aref g2tab 1)))))))
 G2EOF
   if ! ./build/nucleusc --emit-nuch "$d/g2lib.nuc" > "$d/g2lib.nuch" 2>"$d/err"; then
     echo "FAIL  g2-nuch-array-field (--emit-nuch failed)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
@@ -5848,7 +5848,7 @@ EOF
 (import-use b0-uselib)
 (defn main ():i32
   (let (p:(ref B0Point) (B0Point 2))
-    (return (b0-add b0-base (_get p x)))))
+    (return (b0-add b0-base (_get p 'x)))))
 EOF
   w1_run b0-import-use-flatten "$d" "$d/b0-use.nuc" 42
   rm -rf "$d"
@@ -5984,7 +5984,7 @@ run_b2a_import_use_binds_namespace() {
 (import-use allocator)
 (import-use nsdescribe)
 (defstruct Cat n:i32)
-(defn describe ((self (ref Cat))):i32 (return (+ 40 (self n))))
+(defn describe ((self (ref Cat))):i32 (return (+ 40 (self 'n))))
 ; Bare: the flattened set. Qualified by the library's own namespace: R2's hatch.
 (extend Cat Describe)
 (defn main ():i32
@@ -6570,10 +6570,10 @@ EOF
   cat > "$d/ir.nuc" <<'EOF'
 (defstruct :packed P c:i8 i:i32)
 (defstruct Q c:i8 i:i32)
-(defn rd (p:ptr:P):i32 (return (. p i)))
-(defn wr (p:ptr:P):void (.set! p i 7))
+(defn rd (p:ptr:P):i32 (return (. p 'i)))
+(defn wr (p:ptr:P):void (.set! p 'i 7))
 (defn lit ():ptr:P (return (P 1 2)))
-(defn rdq (q:ptr:Q):i32 (return (. q i)))
+(defn rdq (q:ptr:Q):i32 (return (. q 'i)))
 EOF
   ./build/nucleusc --emit-llvm "$d/ir.nuc" > "$d/ir.ll" 2>"$d/ir.err" || true
   qgrep -F '%P = type <{ i8, i32 }>' "$d/ir.ll" || ok=0
@@ -6596,11 +6596,11 @@ EOF
 (defstruct :packed R c:i8 i:i32 s:i16)
 (defn main ():i32
   (let (p:ptr:R (alloca R))
-    (.set! p c 1) (.set! p i 305419896) (.set! p s -3)
+    (.set! p 'c 1) (.set! p 'i 305419896) (.set! p 's -3)
     (printf "%ld %d %d %d\n" (sizeof R)
-      (as i32 (. p c)) (. p i) (as i32 (. p s))))
+      (as i32 (. p 'c)) (. p 'i) (as i32 (. p 's))))
   (let (r:ptr:R (R 7 8 9))
-    (printf "%d %d %d\n" (as i32 (. r c)) (. r i) (as i32 (. r s))))
+    (printf "%d %d %d\n" (as i32 (. r 'c)) (. r 'i) (as i32 (. r 's))))
   (return 0))
 EOF
   ./build/nucleusc "$d/run.nuc" -o "$d/run.bin" 2>"$d/run.err" || true
@@ -6663,7 +6663,7 @@ EOF
   cat > "$d/x.nuc" <<'EOF'
 (defstruct :packed WireHdr tag:i8 len:i32 flags:i16)
 (defstruct PlainHdr tag:i8 len:i32 flags:i16)
-(defn wire-len (h:ptr:WireHdr):i32 (return (. h len)))
+(defn wire-len (h:ptr:WireHdr):i32 (return (. h 'len)))
 EOF
   ./build/nucleusc --emit-cheader "$d/x.nuc" > "$d/x.h" 2>"$d/x.err" || ok=0
   qgrep -F '} __attribute__((packed)) WireHdr;' "$d/x.h" || ok=0
@@ -6786,11 +6786,11 @@ EOF
 (import-use "stdio.h")
 (defstruct :align 16 A x:i32)
 (defstruct B c:i8 (:align 16 i:i32))
-(defn read-i (p:ptr:B):i32 (return (. p i)))
+(defn read-i (p:ptr:B):i32 (return (. p 'i)))
 (defn main ():i32
   (let (a:ptr:A (alloca A) b:ptr:B (B 1 7))
-    (.set! a x 5)
-    (printf "%d %d\n" (. a x) (read-i b)))
+    (.set! a 'x 5)
+    (printf "%d %d\n" (. a 'x) (read-i b)))
   (return 0))
 EOF
   ./build/nucleusc --emit-llvm "$d/ir.nuc" > "$d/ir.ll" 2>"$d/ir.err" || ok=0
@@ -6817,8 +6817,8 @@ EOF
 (defn main ():i32
   (let (p:ptr:B (B 1 305419896))
     (printf "%ld %ld %d %d\n" (sizeof B)
-      (- (unsafe/cast i64 (.& p i)) (unsafe/cast i64 p))
-      (as i32 (. p c)) (. p i)))
+      (- (unsafe/cast i64 (.& p 'i)) (unsafe/cast i64 p))
+      (as i32 (. p 'c)) (. p 'i)))
   (return 0))
 EOF
   cat > "$d/run.c" <<'EOF'
@@ -6913,7 +6913,7 @@ EOF
   cat > "$d/x.nuc" <<'EOF'
 (defstruct :align 32 Cache x:i64)
 (defstruct Slot c:i8 (:align 16 v:i32))
-(defn slot-v (s:ptr:Slot):i32 (return (. s v)))
+(defn slot-v (s:ptr:Slot):i32 (return (. s 'v)))
 EOF
   ./build/nucleusc --emit-cheader "$d/x.nuc" > "$d/x.h" 2>"$d/x.err" || ok=0
   qgrep -F '} __attribute__((aligned(32))) Cache;' "$d/x.h" || ok=0
@@ -7044,13 +7044,13 @@ EOF
 (defstruct :packed F c:i8 (:bits 3 a:i32) (:bits 30 b:i32))
 (defn main ():i32
   (let (p:ptr:A (alloca A))
-    (.set! p a -3) (.set! p b 21) (.set! p c -100000) (.set! p d 7)
-    (printf "%ld %d %d %d %d\n" (sizeof A) (. p a) (as i32 (. p b)) (. p c) (. p d)))
+    (.set! p 'a -3) (.set! p 'b 21) (.set! p 'c -100000) (.set! p 'd 7)
+    (printf "%ld %d %d %d %d\n" (sizeof A) (. p 'a) (as i32 (. p 'b)) (. p 'c) (. p 'd)))
   (let (q:ptr:F (alloca F))
-    (.set! q c 65) (.set! q a 2) (.set! q b 123456789)
-    (printf "%ld %d %d %d\n" (sizeof F) (as i32 (. q c)) (. q a) (. q b)))
+    (.set! q 'c 65) (.set! q 'a 2) (.set! q 'b 123456789)
+    (printf "%ld %d %d %d\n" (sizeof F) (as i32 (. q 'c)) (. q 'a) (. q 'b)))
   (let (r:ptr:A (A 1 2 3 4))
-    (printf "%d %d %d %d\n" (. r a) (as i32 (. r b)) (. r c) (. r d)))
+    (printf "%d %d %d %d\n" (. r 'a) (as i32 (. r 'b)) (. r 'c) (. r 'd)))
   (return 0))
 EOF
   cat > "$d/v.c" <<'EOF'
@@ -7096,10 +7096,10 @@ EOF
 (import-use "$d/h.h")
 (defn main ():i32
   (let (p:ptr:BI1 (alloca BI1))
-    (.set! p a -3) (.set! p b 21) (.set! p c -100000) (.set! p d 7)
+    (.set! p 'a -3) (.set! p 'b 21) (.set! p 'c -100000) (.set! p 'd 7)
     (printf "%ld %ld %ld %ld %ld %d %d %d %d\n" (sizeof BI1) (sizeof BI2)
       (sizeof BI3) (sizeof BI4) (sizeof BI5)
-      (. p a) (as i32 (. p b)) (. p c) (. p d)))
+      (. p 'a) (as i32 (. p 'b)) (. p 'c) (. p 'd)))
   (return 0))
 EOF
   ./build/nucleusc "$d/h.nuc" -o "$d/h.bin" 2>"$d/h.err" || ok=0
@@ -7150,7 +7150,7 @@ EOF
   ok=1
   cat > "$d/x.nuc" <<'EOF'
 (defstruct Hdr (:bits 4 ver:ui32) (:bits 12 len:ui32) (:bits 16 id:i32) tail:i32)
-(defn hdr-ver (h:ptr:Hdr):ui32 (return (. h ver)))
+(defn hdr-ver (h:ptr:Hdr):ui32 (return (. h 'ver)))
 EOF
   ./build/nucleusc --emit-cheader "$d/x.nuc" > "$d/x.h" 2>"$d/x.err" || ok=0
   qgrep -E ': 4;' "$d/x.h" || ok=0
@@ -7171,7 +7171,7 @@ EOF
   #    a Nucleus limitation, which is what makes refusing it the faithful
   #    answer rather than a gap.
   ok=1
-  printf '(defstruct S (:bits 3 a:i32))\n(defn f (p:ptr:S):ptr (return (.& p a)))\n(defn main ():i32 (return 0))\n' > "$d/e1.nuc"
+  printf '(defstruct S (:bits 3 a:i32))\n(defn f (p:ptr:S):ptr (return (.& p '\''a)))\n(defn main ():i32 (return 0))\n' > "$d/e1.nuc"
   ./build/nucleusc --emit-llvm "$d/e1.nuc" >/dev/null 2>"$d/e1.err" || true
   qgrep -F "a bit-field has no address" "$d/e1.err" || ok=0
   printf '(defstruct S (:bits 40 a:i32))\n(defn main ():i32 (return 0))\n' > "$d/e2.nuc"
@@ -7210,13 +7210,13 @@ run_s16_an_anonymous() {
 (import-use "tests/fixtures/s16-anon.h")
 (defn main ():i32
   (let (s:ptr:s16_sig (alloca s16_sig))
-    (.set! s code 7) (.set! s pid 42) (.set! s uid 99)
-    (.set! (.& s named) a 1) (.set! (.& s named) b 2)
-    (printf "%d %d %d %d %d %d\n" (. s code) (. s pid) (. s uid) (. s si_int)
-            (. (.& s named) a) (. (.& s named) b)))
+    (.set! s 'code 7) (.set! s 'pid 42) (.set! s 'uid 99)
+    (.set! (.& s 'named) 'a 1) (.set! (.& s 'named) 'b 2)
+    (printf "%d %d %d %d %d %d\n" (. s 'code) (. s 'pid) (. s 'uid) (. s 'si_int)
+            (. (.& s 'named) 'a) (. (.& s 'named) 'b)))
   (let (r:ptr:s16_rus (alloca s16_rus))
-    (.set! r sec 5) (.set! r usec 6) (.set! r maxrss 8)
-    (printf "%ld %ld %d %ld %ld\n" (. r sec) (. r usec) (. r maxrss)
+    (.set! r 'sec 5) (.set! r 'usec 6) (.set! r 'maxrss 8)
+    (printf "%ld %ld %d %ld %ld\n" (. r 'sec) (. r 'usec) (. r 'maxrss)
             (sizeof s16_sig) (sizeof s16_rus)))
   (return 0))
 EOF
@@ -7312,9 +7312,9 @@ EOF
 (defstruct Outer tag:i32 (:anon Inner) (:anon Extra) z:i32)
 (defn main ():i32
   (let (p:ptr:Outer (alloca Outer))
-    (.set! p tag 1) (.set! p a 2) (.set! p b 3) (.set! p c 4) (.set! p z 5)
+    (.set! p 'tag 1) (.set! p 'a 2) (.set! p 'b 3) (.set! p 'c 4) (.set! p 'z 5)
     (printf "%ld %d %d %d %d %d %d\n" (sizeof Outer)
-            (. p tag) (. p a) (. p b) (. p c) (. p z) (deref (.& p b))))
+            (. p 'tag) (. p 'a) (. p 'b) (. p 'c) (. p 'z) (deref (.& p 'b))))
   (return 0))
 EOF
   ./build/nucleusc "$d/g.nuc" -o "$d/g" 2>"$d/g.err" || ok=0
@@ -7331,7 +7331,7 @@ EOF
   #    place the surface is NOT a superset of C — C spells an anonymous member
   #    by inlining its body, so a named type has no rendering on export.
   ok=1
-  printf '(defstruct A dup:i32 x:i32)\n(defstruct B dup:i32 y:i32)\n(defstruct C (:anon A) (:anon B))\n(defn f (p:ptr:C):i32 (return (. p dup)))\n(defn main ():i32 (return 0))\n' > "$d/r1.nuc"
+  printf '(defstruct A dup:i32 x:i32)\n(defstruct B dup:i32 y:i32)\n(defstruct C (:anon A) (:anon B))\n(defn f (p:ptr:C):i32 (return (. p '\''dup)))\n(defn main ():i32 (return 0))\n' > "$d/r1.nuc"
   ./build/nucleusc --emit-llvm "$d/r1.nuc" >/dev/null 2>"$d/r1.err" || true
   qgrep -F "more than one anonymous member supplies it" "$d/r1.err" || ok=0
   printf '(defstruct D (:anon i32))\n(defn main ():i32 (return 0))\n' > "$d/r2.nuc"
@@ -8115,12 +8115,12 @@ spawn run_reject w5e-ns-hash-reserved tests/fixtures/w5e-ns-hash-reserved.nuc \
 # the field with `invoke` as the escape hatch. Checked by value, not by exit
 # code — "it compiles" was never the question for the field-access half.
 #
-# Here: the boundary the demotion must NOT cross. The selector falls back to a
-# value reading only when the callee provably has no such field AND the name is
-# a local; a genuine miss must still be reported.
+# Since step 3 the selector IS the local: `(p k)` reads `k` as a computed
+# selector, and an i32 is not one. The old W7 demotion this pinned is gone --
+# there is nothing left to demote when a bare symbol was never a field.
 spawn run_reject_at w7-local-not-a-field tests/fixtures/w7-local-not-a-field.nuc \
-  "tests/fixtures/w7-local-not-a-field.nuc:8: error:" \
-  "and 'k' is a local binding here, but a bare symbol in selector position always names a field"
+  "tests/fixtures/w7-local-not-a-field.nuc:9: error:" \
+  "computed selector must evaluate to a symbol (ptr)"
 # And the hint must not leak onto an ordinary typo — no local named `zz`, so the
 # message stays the plain unadorned one.
 spawn run_reject_at w7-plain-typo tests/fixtures/w7-plain-typo.nuc \
@@ -8321,7 +8321,7 @@ EOF
   # prefix resolves, the entry is found, and `binding-visible` hides it.
   cat > "$d/b5-cs.nuc" <<'EOF'
 (import-prefixed b5-plib bp)
-(defn b5-take ((h (ref bp/B5HiddenS))):i32 (return (h n)))
+(defn b5-take ((h (ref bp/B5HiddenS))):i32 (return (h 'n)))
 (defn main ():i32 (return 0))
 EOF
   cat > "$d/b5-cu.nuc" <<'EOF'
@@ -8360,7 +8360,7 @@ EOF
   (let (s:(ref B5HiddenS) (B5HiddenS 1)
         usz:i32 (if (> (sizeof B5HiddenU) 0) 2 0)
         m:i32 (b5-hidden-mac 4))
-    (return (+ (+ (s n) usz) m))))
+    (return (+ (+ (s 'n) usz) m))))
 EOF
   # B3′: the public struct is reached through the prefix here too — the bare
   # spelling was the pre-R1 "types are globally visible" behaviour.
@@ -8370,7 +8370,7 @@ EOF
 
 (defn main ():i32
   (let (p:(ref bp/B5PublicS) (bp/B5PublicS 6))
-    (return (+ (bin/b5-inside-sum) (+ (bp/b5-lib-ok) (- (p n) 5))))))
+    (return (+ (bin/b5-inside-sum) (+ (bp/b5-lib-ok) (- (p 'n) 5))))))
 EOF
   w1_run b5-private-visible-inside "$d" "$d/b5-pmain.nuc" 15
 
@@ -8471,7 +8471,7 @@ run_b5_export_kinds() {
   cat > "$d/b5-elib.nuc" <<'EOF'
 (ns b5e)
 (defstruct B5ExpS n:i32)
-(defn b5-exp-fn ((s (ref B5ExpS))):i32 (return (+ 1 (s n))))
+(defn b5-exp-fn ((s (ref B5ExpS))):i32 (return (+ 1 (s 'n))))
 (defmacro b5-exp-mac (x) x)
 EOF
   cat > "$d/b5-efac.nuc" <<'EOF'
@@ -8651,13 +8651,13 @@ run_b3_two_vectors() {
   cat > "$d/b3-veca.nuc" <<'EOF'
 (ns va)
 (defstruct Vector x:i32 y:i32)
-(defn sum-a ((v (ref Vector))):i32 (return (+ (_get v x) (_get v y))))
+(defn sum-a ((v (ref Vector))):i32 (return (+ (_get v 'x) (_get v 'y))))
 EOF
   cat > "$d/b3-vecb.nuc" <<'EOF'
 (ns vb)
 (defstruct Vector a:i32 b:i32 c:i32)
 (defn sum-b ((v (ref Vector))):i32
-  (return (+ (_get v a) (+ (_get v b) (_get v c)))))
+  (return (+ (_get v 'a) (+ (_get v 'b) (_get v 'c)))))
 EOF
   cat > "$d/b3-vmain.nuc" <<'EOF'
 (import-prefixed b3-veca va)
@@ -8692,7 +8692,7 @@ EOF
 (import-prefixed b3-veca va)
 (defn main ():i32
   (let (p:(ref va/Vector) (va/Vector 1 2))
-    (return (_get p c))))
+    (return (_get p 'c))))
 EOF
   w1_reject_multi b3-two-vectors-field "$d" "$d/b3-vfield.nuc" "no field 'c' on struct 'va/Vector'"
   rm -rf "$d"
@@ -8732,7 +8732,7 @@ EOF
 (import-prefixed b3a-lib bx)
 ; The subject is spelled through this file's prefix; `extend` canonicalizes it to
 ; `b3ang/Pt` and must NOT then re-resolve that canonical name as a reference.
-(defn area ((self (ref bx/Pt))):i32 (return (* (_get self x) (_get self y))))
+(defn area ((self (ref bx/Pt))):i32 (return (* (_get self 'x) (_get self 'y))))
 (extend bx/Pt bx/Areal)
 (defn main ():i32
   (with (v:(ref (Vector (ref bx/Pt))) (vector-new))
@@ -8740,7 +8740,7 @@ EOF
       (conj v a)
       (conj v b)
       (dotimes (i (unsafe/cast i32 (count v)))
-        (set! t (+ t (_get (invoke v (as usize i)) x))))
+        (set! t (+ t (_get (invoke v (as usize i)) 'x))))
       (return (+ t (area a))))))
 EOF
   # 3 + 5 + (3*4) = 20
@@ -8832,7 +8832,7 @@ run_b6_dyn_cross_ns() {
 (import-use allocator)
 (defprotocol Describe (describe ((self (ref Self))) i32))
 (defstruct Fox n:i32)
-(defn describe ((self (ref Fox))):i32 (return (+ 3 (_get self n))))
+(defn describe ((self (ref Fox))):i32 (return (+ 3 (_get self 'n))))
 (extend Fox Describe)
 ; Both directions across the boundary: a box this file MAKES and a box it TAKES.
 (defn make-fox ((n i32)):(dyn Describe) (return (Fox n)))
@@ -8842,7 +8842,7 @@ EOF
 (import-use allocator)
 (import-prefixed b6-dlib dpx)
 (defstruct Cat n:i32)
-(defn describe ((self (ref Cat))):i32 (return (+ 10 (_get self n))))
+(defn describe ((self (ref Cat))):i32 (return (+ 10 (_get self 'n))))
 (extend Cat dpx/Describe)
 (defn main ():i32
   (let (a:(dyn dpx/Describe) (dpx/make-fox 7))
@@ -8976,7 +8976,7 @@ run_w9_nuch_declare_generic() {
 (ns w24)
 (defprotocol Describe (describe ((self (ref Self))) i32))
 (defstruct Fox n:i32)
-(defn describe ((self (ref Fox))):i32 (return (_get self n)))
+(defn describe ((self (ref Fox))):i32 (return (_get self 'n)))
 (extend Fox Describe)
 EOF
   cat > "$d/w24use.nuc" <<EOF
@@ -9216,11 +9216,11 @@ run_w9_cheader_struct_tag() {
 (defn rec-sum (r:Rec):i32
   (let (q:ptr:Rec (alloca Rec))
     (ptr-set! q r)
-    (return (+ (q a) (q b)))))
+    (return (+ (q 'a) (q 'b)))))
 (defn holder-sum (h:(ref Holder)):i32
   (let (q:ptr:Rec (alloca Rec))
-    (ptr-set! q (h r))
-    (return (+ (+ (q a) (q b)) (h n)))))
+    (ptr-set! q (h 'r))
+    (return (+ (+ (q 'a) (q 'b)) (h 'n)))))
 (defn ch-echo (c:Char):Char (return c))
 EOF
   if ! ./build/nucleusc --emit-cheader "$d/tlib.nuc" > "$d/tlib.h" 2>"$d/err"; then
@@ -9308,12 +9308,12 @@ run_w9_cheader_overload_symbols() {
   d="$(mktemp -d)"
   cat > "$d/ovlib.nuc" <<'EOF'
 (defstruct Pt x:i32 y:i32)
-(defn scale (p:(ref Pt) k:i32):i32 (return (* (+ (p x) (p y)) k)))
+(defn scale (p:(ref Pt) k:i32):i32 (return (* (+ (p 'x) (p 'y)) k)))
 (defn scale (a:i32 k:i32):i32 (return (* a k)))
 (defn = (a:Pt b:Pt):bool
   (let (la:Pt a lb:Pt b)
-    (return (if (and (= ((addr-of la) x) ((addr-of lb) x))
-                     (= ((addr-of la) y) ((addr-of lb) y))) true false))))
+    (return (if (and (= ((addr-of la) 'x) ((addr-of lb) 'x))
+                     (= ((addr-of la) 'y) ((addr-of lb) 'y))) true false))))
 (defn solo (n:i32):i32 (return (+ n 1)))
 EOF
   if ! ./build/nucleusc --emit-cheader "$d/ovlib.nuc" > "$d/ovlib.h" 2>"$d/err"; then
@@ -9413,10 +9413,10 @@ run_w9_cheader_reserved_words() {
 (defvar delete:i32 41)
 (defn union (a:i32 b:i32):i32 (return (bit-or a b)))
 (defn xor (a:i32 default:i32):i32 (return (bit-xor a default)))
-(defn plain (b:(ref Box)):i32 (return (+ (b class) (b signed))))
+(defn plain (b:(ref Box)):i32 (return (+ (b 'class) (b 'signed))))
 (defn bump (v:class):class
   (let (l:class v)
-    (.set! (addr-of l) x (+ ((addr-of l) x) 1))
+    (.set! (addr-of l) 'x (+ ((addr-of l) 'x) 1))
     (return l)))
 EOF
   if ! ./build/nucleusc --emit-cheader "$d/kwlib.nuc" > "$d/kwlib.h" 2>"$d/err"; then
@@ -9842,7 +9842,7 @@ EOF
 
 (defn take6 (p:Pair q:Pair b:Big n:i32 m:i32):i64
   (let (pp:ptr:Pair (addr-of p) qq:ptr:Pair (addr-of q) bb:ptr:Big (addr-of b))
-    (_+ (_+ (pp x) (qq y)) (_+ (bb c) (as i64 (_+ n m))))))
+    (_+ (_+ (pp 'x) (qq 'y)) (_+ (bb 'c) (as i64 (_+ n m))))))
 
 (defn ml-argpos ():i64
   (let (p:Pair (Pair 1 2) q:Pair (Pair 3 4) b:Big (Big 5 6 7))
@@ -9875,7 +9875,7 @@ EOF
   # expands to its second argument.
   cat > "$d/s16-ml3.nuc" <<'EOF'
 (defmacro pick (a b)
-  (macrolet ((first-of (x) `(~x car)))
+  (macrolet ((first-of (x) `(~x 'car)))
     (if (= (first-of a) null) b a)))
 (defn main ():i32 (return (pick 5 6)))
 EOF
@@ -10107,7 +10107,7 @@ run_s16_prelude_split() {
   printf '(defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))\n' > "$d/quote.nuc"
   printf '(import-use node)\n(defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))\n' > "$d/quote-ok.nuc"
   printf '(defn takes (:rest xs:i64):i32 (return 0))\n(defn main ():i32 (return (takes 1 2)))\n' > "$d/rest.nuc"
-  printf '(defn f ((n (raw Node))):i32 (return (n kind)))\n(defn main ():i32 (return 0))\n' > "$d/type.nuc"
+  printf '(defn f ((n (raw Node))):i32 (return (n '\''kind)))\n(defn main ():i32 (return 0))\n' > "$d/type.nuc"
 
   # 1. The measured case: no node/arena definition survives into a program that
   #    never asked for one. Matched on `define`, not on the symbol — a `declare`
@@ -10430,8 +10430,8 @@ run_s16_keyword_markers() {
 (defn sum (:rest args:i64):i64
   (let (total:i64 0)
     (while (!= args null)
-      (set! total (+ total (unsafe/cast i64 ((unsafe/cast ptr:Node args) car))))
-      (set! args ((unsafe/cast ptr:Node args) cdr)))
+      (set! total (+ total (unsafe/cast i64 ((unsafe/cast ptr:Node args) 'car))))
+      (set! args ((unsafe/cast ptr:Node args) 'cdr)))
     total))
 (defn maxv (a:T b:T :where (Ord3 T)):T (return (if (less3 a b) b a)))
 (defn minv (a:T b:T :where(Ord3 T)):T (return (if (less3 b a) b a)))
@@ -10554,7 +10554,7 @@ run_s16_ref_sigil() {
 (import-use node)
 (import-use vector)
 (defstruct Pt x:i32 y:i32)
-(defn s1 (p:&Pt):i32 (return (+ (p x) (p y))))
+(defn s1 (p:&Pt):i32 (return (+ (p 'x) (p 'y))))
 (defn id1 (p:&Pt):&Pt (return p))
 (defn dd (pp:&&Pt):i32 (return (s1 (deref pp))))
 (defn tot (v:&(Vector &Pt)):i32
@@ -10576,9 +10576,9 @@ EOF
 (import-use "stdio.h")
 (defstruct Pt x:i32 y:i32)
 (defn bump (p:&Pt):i32
-  (let (xp:&i32 (.& p x))
+  (let (xp:&i32 (.& p 'x))
     (ptr-set! xp (+ (deref xp) 1))
-    (return (p x))))
+    (return (p 'x))))
 (defn main ():i32
   (let (a:Pt (Pt 1 2) ap:&Pt (addr-of a))
     (printf "%d\n" (bump ap))
@@ -10622,7 +10622,7 @@ EOF
   mkdir -p "$d/lib"
   cat > "$d/lib/siglib.nuc" <<'EOF'
 (defstruct Pt x:i32 y:i32)
-(defn pt-sum (p:&Pt):i32 (return (+ (p x) (p y))))
+(defn pt-sum (p:&Pt):i32 (return (+ (p 'x) (p 'y))))
 (defn pt-id (p:&Pt):&Pt (return p))
 EOF
   ./build/nucleusc --emit-nuch "$d/lib/siglib.nuc" > "$d/lib/siglib.nuch" 2>/dev/null
@@ -10650,13 +10650,13 @@ EOF
   #    Same path both times, as in 1.
   cat > "$d/ao.nuc" <<'EOF'
 (defstruct Pt x:i32 y:i32)
-(defn s1 (p:&Pt):i32 (return (+ (p x) (p y))))
+(defn s1 (p:&Pt):i32 (return (+ (p 'x) (p 'y))))
 (defn go ():i32 (let (a:Pt (Pt 1 2)) (return (s1 &a))))
 EOF
   ./build/nucleusc --emit-llvm "$d/ao.nuc" > "$d/amp-op.ll" 2>"$d/ao.err" || true
   cat > "$d/ao.nuc" <<'EOF'
 (defstruct Pt x:i32 y:i32)
-(defn s1 (p:&Pt):i32 (return (+ (p x) (p y))))
+(defn s1 (p:&Pt):i32 (return (+ (p 'x) (p 'y))))
 (defn go ():i32 (let (a:Pt (Pt 1 2)) (return (s1 (addr-of a)))))
 EOF
   ./build/nucleusc --emit-llvm "$d/ao.nuc" > "$d/named.ll" 2>>"$d/ao.err" || true
@@ -10675,10 +10675,10 @@ EOF
 (import-use "stdio.h")
 (defstruct Pt x:i32 y:i32)
 (defstruct Holder (link &Pt) (tag i32))
-(defn hx (h:&Holder):i32 (return ((h link) x)))
+(defn hx (h:&Holder):i32 (return ((h 'link) 'x)))
 (defn main ():i32
   (let (a:Pt (Pt 3 4) ap:&Pt &a)
-    (printf "%d %d %d\n" ((as &Pt &a) x) (unsafe/cast i32 (sizeof &Pt)) ((deref &ap) y))
+    (printf "%d %d %d\n" ((as &Pt &a) 'x) (unsafe/cast i32 (sizeof &Pt)) ((deref &ap) 'y))
     (return 0)))
 EOF
   ./build/nucleusc "$d/both.nuc" -o "$d/both.bin" 2>"$d/both.err" || true
@@ -10719,8 +10719,8 @@ run_s16_pointer_kind_names() {
   # Unchanged: the kinds are still type syntax…
   cat > "$d/ty.nuc" <<'EOF'
 (defstruct Pt x:i32)
-(defn f (a:ref:Pt b:raw:Pt c:ptr:Pt):i32 (return (a x)))
-(defn g (v:(ref Pt) w:(raw Pt)):i32 (return (v x)))
+(defn f (a:ref:Pt b:raw:Pt c:ptr:Pt):i32 (return (a 'x)))
+(defn g (v:(ref Pt) w:(raw Pt)):i32 (return (v 'x)))
 EOF
   ./build/nucleusc --emit-llvm "$d/ty.nuc" >/dev/null 2>"$d/ty.err" || ok=0
   # …and `ref` is still not a resolvable type NAME, so a bare one in a template
@@ -10742,99 +10742,74 @@ EOF
 }
 spawn run_s16_pointer_kind_names
 
-# dot-forms.md §5 phase 0: `selector-literal-sym` accepts a bare symbol OR a
-# quoted one, but only the READ paths went through it — `.set!` and `.&` demanded
-# a raw NODE-SYM, so `(.set! p 'x v)` was "field name must be symbol". All member
-# forms take the same rule now, which is what lets a migration spell the quoted
-# selector under the CURRENT compiler. The two spellings must be one form, not
-# two: same IR, and the node-type mirror (node-type-field) resolves the selector
-# the same way or the type pass and codegen disagree about what the field is.
-run_s16_quoted_selector() {
-  local d ok
+# dot-forms.md §5 step 3: the selector rule, after the flip. A quoted `'x` is
+# the field; a BARE symbol is an ordinary variable reference like anywhere else,
+# which is what lets a field name live in a variable with no annotation. The two
+# are no longer spellings of one thing, so this pins the difference rather than
+# the old identity -- and pins it at every member form, because `.`/`.&`/`.set!`
+# need a LITERAL selector and must say which spelling is missing.
+run_s16_selector_rule() {
+  local d ok out
   d="$(mktemp -d)"
   ok=1
+  # 1. A quoted selector is the field, at every form; a computed one needs no
+  #    annotation to be read as a value.
   cat > "$d/sel.nuc" <<'EOF'
 (import-use "stdio.h")
+(import-use node)
 (defstruct Pt x:i32 y:i32)
-(defn bump (p:&Pt):i32
-  (.set! p 'x (+ (. p 'x) 1))
-  (ptr-set! (.& p 'y) (+ (deref (.& p 'y)) 2))
-  (return (+ (p 'x) (get p 'y))))
+(defn main ():i32
+  (let (p:ptr:Pt (alloca Pt))
+    (.set! p 'x 1)
+    (ptr-set! (.& p 'y) 2)
+    (let (sel:ptr (quote y))
+      (printf "%d %d %d %d
+" (. p 'x) (get p 'y) (p 'x) (p sel))))
+  (return 0))
 EOF
-  ./build/nucleusc --emit-llvm "$d/sel.nuc" > "$d/quoted.ll" 2>"$d/sel.err" || true
-  sed "s/'//g" "$d/sel.nuc" > "$d/bare.nuc" && mv "$d/bare.nuc" "$d/sel.nuc"
-  ./build/nucleusc --emit-llvm "$d/sel.nuc" > "$d/bare.ll" 2>>"$d/sel.err" || true
-  if [ -s "$d/quoted.ll" ] && diff -q "$d/quoted.ll" "$d/bare.ll" >/dev/null; then
-    echo "PASS  s16-quoted-selector-ir-identical"
+  ./build/nucleusc "$d/sel.nuc" -o "$d/sel.bin" 2>"$d/sel.err" || ok=0
+  out="$("$d/sel.bin" 2>/dev/null || true)"
+  [ "$out" = "1 2 1 2" ] || ok=0
+  if [ "$ok" = 1 ]; then
+    echo "PASS  s16-selector-quoted-is-the-field"
   else
-    echo "FAIL  s16-quoted-selector-ir-identical (a quoted field name is not the bare one)"
+    echo "FAIL  s16-selector-quoted-is-the-field (got '$out')"
     sed 's/^/    /' "$d/sel.err" | head -3
   fi
-  # A selector that is neither spelling is still refused, at both forms.
-  for form in "(.set! p 3 9)" "(deref (.& p 3))"; do
-    printf '(defstruct Pt x:i32)\n(defn f (p:&Pt):i32 %s (return 0))\n' "$form" > "$d/bad.nuc"
-    ./build/nucleusc --emit-llvm "$d/bad.nuc" >/dev/null 2>"$d/bad.err" || true
-    qgrep -F "field name must be symbol" "$d/bad.err" || ok=0
+  # 2. A bare symbol is the variable. Unbound, it is refused -- and because the
+  #    overwhelmingly likely cause is a missed quote on a real field, the message
+  #    names the receiver and the spelling rather than saying "undefined".
+  ok=1
+  printf '(defstruct Pt x:i32 y:i32)
+(defn f (p:&Pt):i32 (return (p x)))
+' > "$d/bare.nuc"
+  ./build/nucleusc --emit-llvm "$d/bare.nuc" >/dev/null 2>"$d/bare.err" || true
+  qgrep -F "write (p 'x)" "$d/bare.err" || ok=0
+  # 3. The three fixed-position forms need a literal, and a bare symbol is not
+  #    one -- "must be symbol" would describe a bare symbol as failing a test it
+  #    appears to pass.
+  for form in "(.set! p x 1)" "(ptr-set! (.& p x) 1)" "(let (v:i32 (. p x)) 0)"; do
+    printf '(defstruct Pt x:i32)
+(defn f (p:&Pt):i32 %s (return 0))
+' "$form" > "$d/lit.nuc"
+    ./build/nucleusc --emit-llvm "$d/lit.nuc" >/dev/null 2>"$d/lit.err" || true
+    qgrep -F "field name must be a quoted selector -- write 'x" "$d/lit.err" || ok=0
   done
+  # 4. A selector that is neither spelling is still refused.
+  printf '(defstruct Pt x:i32)
+(defn f (p:&Pt):i32 (.set! p 3 9) (return 0))
+' > "$d/bad.nuc"
+  ./build/nucleusc --emit-llvm "$d/bad.nuc" >/dev/null 2>"$d/bad.err" || true
+  qgrep -F "field name must be a quoted selector" "$d/bad.err" || ok=0
   if [ "$ok" = 1 ]; then
-    echo "PASS  s16-quoted-selector-nonsymbol-refused"
+    echo "PASS  s16-selector-bare-is-a-variable"
   else
-    echo "FAIL  s16-quoted-selector-nonsymbol-refused"
-    sed 's/^/    /' "$d/bad.err" | head -3
+    echo "FAIL  s16-selector-bare-is-a-variable"
+    sed 's/^/    /' "$d/bare.err" "$d/lit.err" "$d/bad.err" 2>/dev/null | head -6
   fi
   rm -rf "$d"
 }
-spawn run_s16_quoted_selector
-
-# dot-forms.md §5 step 1: `--strict-selectors` is the migration driver. It has to
-# report rather than die, because the point is to enumerate a whole tree in one
-# compile, and it has to reach ALL FOUR member forms — head-position `(p x)` is
-# the population no regex can find, and it is 80% of the sites. Off by default,
-# so every other test in this file (and `make`) is unaffected.
-run_s16_strict_selectors() {
-  local d bad n
-  d="$(mktemp -d)"
-  bad=0
-  cat > "$d/sel.nuc" <<'EOF'
-(defstruct Pt x:i32 y:i32)
-(defn bump (p:&Pt):i32
-  (.set! p x 1)
-  (.set! p 'y 2)
-  (ptr-set! (.& p x) 3)
-  (ptr-set! (.& p 'y) 4)
-  (return (+ (. p x) (. p 'y) (p x) (get p 'y) (unsafe/cast i32 (strlen "z")))))
-EOF
-  # The prelude is not migrated yet and reports too, so score only this file.
-  ./build/nucleusc --strict-selectors --emit-llvm "$d/sel.nuc" >/dev/null 2>"$d/all.err" || true
-  grep "^$d/sel.nuc:" "$d/all.err" > "$d/err" || true
-  # The receiver is part of the report because line+selector is not a unique key.
-  for form in ".set!" ".&" "_get" "get"; do
-    n="$(grep -c "strict-selectors: form=$form recv=p sel=x" "$d/err" || true)"
-    [ "$n" = 1 ] || { echo "    $form: expected 1 report, got $n"; bad=1; }
-  done
-  # Every quoted spelling above names `y`, and none of them may be reported.
-  qgrep "sel=y" "$d/err" && { echo "    a quoted selector was reported"; bad=1; }
-  # A real call sharing the line must not be reported, whatever it is named.
-  qgrep "recv=strlen" "$d/err" && { echo "    a function call was reported"; bad=1; }
-  if [ "$bad" = 0 ]; then
-    echo "PASS  s16-strict-selectors-reports-bare-only"
-  else
-    echo "FAIL  s16-strict-selectors-reports-bare-only"
-    sed 's/^/    /' "$d/err" | head -6
-  fi
-  # A reported compile writes no output and fails, but only under the flag.
-  if [ -s "$d/all.err" ] && ! ./build/nucleusc --strict-selectors --emit-llvm "$d/sel.nuc" >"$d/strict.ll" 2>/dev/null \
-     && [ ! -s "$d/strict.ll" ] \
-     && ./build/nucleusc --emit-llvm "$d/sel.nuc" >"$d/plain.ll" 2>"$d/plain.err" \
-     && [ -s "$d/plain.ll" ] && ! qgrep "strict-selectors" "$d/plain.err"; then
-    echo "PASS  s16-strict-selectors-off-by-default"
-  else
-    echo "FAIL  s16-strict-selectors-off-by-default"
-    sed 's/^/    /' "$d/plain.err" | head -3
-  fi
-  rm -rf "$d"
-}
-spawn run_s16_strict_selectors
+spawn run_s16_selector_rule
 
 # keyword-markers.md §7, follow-up 1: the two signature-registration sites
 # inferred `has-rest` from `(< (defn-params-count …) (node-len …))`, which is
@@ -10919,8 +10894,8 @@ EOF
 (defn sum (:rest args:i64):i64
   (let (total:i64 0)
     (while (!= args null)
-      (set! total (+ total (unsafe/cast i64 ((unsafe/cast ptr:Node args) car))))
-      (set! args ((unsafe/cast ptr:Node args) cdr)))
+      (set! total (+ total (unsafe/cast i64 ((unsafe/cast ptr:Node args) 'car))))
+      (set! args ((unsafe/cast ptr:Node args) 'cdr)))
     total))
 (defn main ():i32 (printf "%ld\n" (caller)) (return 0))
 EOF
@@ -11239,27 +11214,27 @@ mval 29 25 10 2" ] \
 (defstruct Pt x:i32)
 
 (defn f-when (m:?ptr:Pt):i32
-  (when m (return (m x)))
+  (when m (return (m 'x)))
   (return -1))
 
 (defn f-and (m:?ptr:Pt):i32
-  (when (and m (> (m x) 0)) (return (m x)))
+  (when (and m (> (m 'x) 0)) (return (m 'x)))
   (return -1))
 
 (defn f-guard (m:?ptr:Pt):i32
   (when (not m) (return -1))
-  (return (m x)))
+  (return (m 'x)))
 
 (defn f-while (m:?ptr:Pt):i32
   (let (n:i32 -1)
     (while m
-      (set! n (m x))
+      (set! n (m 'x))
       (return n))
     (return n)))
 
 (defn main ():i32
   (let (a:(ref Pt) (new Pt))
-    (.set! a x 7)
+    (.set! a 'x 7)
     (printf "%d %d %d %d %d %d %d %d\n"
       (f-when (as-ref a))  (f-when null)
       (f-and (as-ref a))   (f-and null)
@@ -11335,7 +11310,7 @@ EOF
         "let: init type mismatch for 'b'" \
      && refuses_cond '(defstruct Pt x:i32)
 (defstruct S flag:bool)
-(defn g (p:(raw Pt)):i32 (let (s:(ref S) (alloca S)) (.set! s flag p)) (return 0))
+(defn g (p:(raw Pt)):i32 (let (s:(ref S) (alloca S)) (.set! s '\''flag p)) (return 0))
 (defn main ():i32 (return 0))' \
         ".set!: type mismatch for field 'flag': value is ptr:Pt, field is bool"; then
     echo "PASS  s16-truthiness-is-not-a-coercion"
@@ -11653,13 +11628,13 @@ EOF
 (deftype P Pt)
 (deftype PRef (ref P))
 (deftype Later i32)
-(defn viaq (v:?PRef):i32 (if-some (p v) (return (p x)) (return -1)))
-(defn chain (v:ref:P):i32 (return (v y)))
+(defn viaq (v:?PRef):i32 (if-some (p v) (return (p 'x)) (return -1)))
+(defn chain (v:ref:P):i32 (return (v 'y)))
 (defn intmpl (v:(ref (Vector Later))):i32 (return 0))
 (defn fwd (n:Later):i32 (return n))
 (defn main ():i32
   (with (p:PRef (alloca Pt))
-    (.set! p x 3) (.set! p y 4)
+    (.set! p 'x 3) (.set! p 'y 4)
     (printf "%d %d %d\n" (viaq p) (chain p) (fwd 5)))
   (return 0))
 EOF
@@ -11782,12 +11757,12 @@ EOF
 (deftype Count i64)
 (deftype PtRef (ref Pt))
 (defn twice (n:Count):Count (return (* n 2)))
-(defn getx (p:PtRef):i32 (return (p x)))
+(defn getx (p:PtRef):i32 (return (p 'x)))
 EOF
   cat > "$d/chB.nuc" <<'EOF'
 (defstruct Pt x:i32 y:i32)
 (defn twice (n:i64):i64 (return (* n 2)))
-(defn getx (p:(ref Pt)):i32 (return (p x)))
+(defn getx (p:(ref Pt)):i32 (return (p 'x)))
 EOF
   ./build/nucleusc --emit-cheader "$d/chA.nuc" 2>/dev/null | grep -v '^/\* Generated' > "$d/chA.h" || true
   ./build/nucleusc --emit-cheader "$d/chB.nuc" 2>/dev/null | grep -v '^/\* Generated' > "$d/chB.h" || true
@@ -11940,7 +11915,7 @@ run_s16_parametric_aliases() {
 (defstruct Reg items:(Vec i32) names:(Table i32))
 (defn total (v:(Vec i32)):i64 (return (as i64 (count v))))
 (defn look (m:(Table i32)):i64 (return (as i64 (count m))))
-(defn getx (p:(Ref Pt)):i32 (return (p x)))
+(defn getx (p:(Ref Pt)):i32 (return (p 'x)))
 (defn main ():i32
   (with (v:(Vec i32) (alloca (Vector i32))
          m:(Table i32) (alloca (HashMap CStr i32))
@@ -11948,7 +11923,7 @@ run_s16_parametric_aliases() {
     (vector-init v) (hashmap-init m)
     (conj v 4) (conj v 5)
     (assoc m "a" 1)
-    (.set! p x 9)
+    (.set! p 'x 9)
     (printf "%ld %ld %d\n" (total v) (look m) (getx p)))
   (return 0))
 EOF
@@ -12186,7 +12161,7 @@ EOF
 (compile-time (defstruct D9P x:i32 y:i32))
 (defn d9-sum (a:i32 b:i32):i32
   (let (q:ptr:D9P (as ptr:D9P (alloca D9P)))
-    (.set! q x a) (.set! q y b) (return (+ (q x) (q y)))))
+    (.set! q 'x a) (.set! q 'y b) (return (+ (q 'x) (q 'y)))))
 (defn main ():i32 (printf "%d\n" (d9-sum 3 4)) (return 0))
 EOF
   ./build/nucleusc --emit-llvm "$d/d9-ct-struct.nuc" > "$d/d9-ct-struct.ll" 2> "$d/cs.err" || true
@@ -12211,9 +12186,9 @@ EOF
   #    lowered parameter type as well as on the value.
   cat > "$d/d9-ct-sig.nuc" <<'EOF'
 (import-use "stdio.h")
-(defn d9-byval (p:D9V):i32 (return (+ (p x) (p y))))
+(defn d9-byval (p:D9V):i32 (return (+ (p 'x) (p 'y))))
 (compile-time (defstruct D9V x:i32 y:i32))
-(defn d9-byref (p:(ref D9V)):i32 (return (* (p x) (p y))))
+(defn d9-byref (p:(ref D9V)):i32 (return (* (p 'x) (p 'y))))
 (defn main ():i32
   (let (q:D9V (D9V 3 4))
     (printf "%d %d\n" (d9-byval q) (d9-byref (as ref:D9V (addr-of q)))))
@@ -12238,9 +12213,9 @@ EOF
 (import-use "stdio.h")
 (compile-time
   (defstruct D9Q x:i32 y:i32)
-  (defn d9-ct-sum (p:(ref D9Q)):i32 (return (+ (p x) (p y))))
+  (defn d9-ct-sum (p:(ref D9Q)):i32 (return (+ (p 'x) (p 'y))))
   (let (q:ptr:D9Q (as ptr:D9Q (alloca D9Q)))
-    (.set! q x 5) (.set! q y 6)
+    (.set! q 'x 5) (.set! q 'y 6)
     (printf "d9 ct inner %d\n" (d9-ct-sum (as ref:D9Q q)))))
 (defn main ():i32 (return 0))
 EOF
@@ -12689,47 +12664,47 @@ EOF
 (defn main ():i32
   (let (s:ptr:__jmp_buf_tag (alloca __jmp_buf_tag) a:ptr:AP1 (alloca AP1))
     (printf "__jmp_buf_tag size=%lld align=%lld __jmpbuf=%lld __mask_was_saved=%lld __saved_mask=%lld\n"
-      (as i64 (sizeof __jmp_buf_tag)) (off a (.& a v))
-      (off s (.& s __jmpbuf)) (off s (.& s __mask_was_saved)) (off s (.& s __saved_mask))))
+      (as i64 (sizeof __jmp_buf_tag)) (off a (.& a 'v))
+      (off s (.& s '__jmpbuf)) (off s (.& s '__mask_was_saved)) (off s (.& s '__saved_mask))))
   (let (s:ptr:timespec (alloca timespec) a:ptr:AP2 (alloca AP2))
     (printf "timespec size=%lld align=%lld tv_sec=%lld tv_nsec=%lld\n"
-      (as i64 (sizeof timespec)) (off a (.& a v)) (off s (.& s tv_sec)) (off s (.& s tv_nsec))))
+      (as i64 (sizeof timespec)) (off a (.& a 'v)) (off s (.& s 'tv_sec)) (off s (.& s 'tv_nsec))))
   (let (s:ptr:itimerspec (alloca itimerspec) a:ptr:AP3 (alloca AP3))
     (printf "itimerspec size=%lld align=%lld it_interval=%lld it_value=%lld\n"
-      (as i64 (sizeof itimerspec)) (off a (.& a v)) (off s (.& s it_interval)) (off s (.& s it_value))))
+      (as i64 (sizeof itimerspec)) (off a (.& a 'v)) (off s (.& s 'it_interval)) (off s (.& s 'it_value))))
   (let (s:ptr:stat (alloca stat) a:ptr:AP4 (alloca AP4))
     (printf "stat size=%lld align=%lld st_dev=%lld st_ino=%lld st_mode=%lld st_uid=%lld st_size=%lld st_mtim=%lld\n"
-      (as i64 (sizeof stat)) (off a (.& a v)) (off s (.& s st_dev)) (off s (.& s st_ino))
-      (off s (.& s st_mode)) (off s (.& s st_uid)) (off s (.& s st_size)) (off s (.& s st_mtim))))
+      (as i64 (sizeof stat)) (off a (.& a 'v)) (off s (.& s 'st_dev)) (off s (.& s 'st_ino))
+      (off s (.& s 'st_mode)) (off s (.& s 'st_uid)) (off s (.& s 'st_size)) (off s (.& s 'st_mtim))))
   (let (s:ptr:dirent (alloca dirent) a:ptr:AP5 (alloca AP5))
     (printf "dirent size=%lld align=%lld d_ino=%lld d_off=%lld d_reclen=%lld d_type=%lld d_name=%lld\n"
-      (as i64 (sizeof dirent)) (off a (.& a v)) (off s (.& s d_ino)) (off s (.& s d_off))
-      (off s (.& s d_reclen)) (off s (.& s d_type)) (off s (.& s d_name))))
+      (as i64 (sizeof dirent)) (off a (.& a 'v)) (off s (.& s 'd_ino)) (off s (.& s 'd_off))
+      (off s (.& s 'd_reclen)) (off s (.& s 'd_type)) (off s (.& s 'd_name))))
   (let (s:ptr:termios (alloca termios) a:ptr:AP6 (alloca AP6))
     (printf "termios size=%lld align=%lld c_iflag=%lld c_oflag=%lld c_cflag=%lld c_lflag=%lld c_line=%lld c_cc=%lld c_ispeed=%lld c_ospeed=%lld\n"
-      (as i64 (sizeof termios)) (off a (.& a v)) (off s (.& s c_iflag)) (off s (.& s c_oflag))
-      (off s (.& s c_cflag)) (off s (.& s c_lflag)) (off s (.& s c_line)) (off s (.& s c_cc))
-      (off s (.& s c_ispeed)) (off s (.& s c_ospeed))))
+      (as i64 (sizeof termios)) (off a (.& a 'v)) (off s (.& s 'c_iflag)) (off s (.& s 'c_oflag))
+      (off s (.& s 'c_cflag)) (off s (.& s 'c_lflag)) (off s (.& s 'c_line)) (off s (.& s 'c_cc))
+      (off s (.& s 'c_ispeed)) (off s (.& s 'c_ospeed))))
   (let (a:ptr:AP7 (alloca AP7))
-    (printf "fd_set size=%lld align=%lld\n" (as i64 (sizeof fd_set)) (off a (.& a v))))
+    (printf "fd_set size=%lld align=%lld\n" (as i64 (sizeof fd_set)) (off a (.& a 'v))))
   (let (s:ptr:sockaddr (alloca sockaddr) a:ptr:AP8 (alloca AP8))
     (printf "sockaddr size=%lld align=%lld sa_family=%lld sa_data=%lld\n"
-      (as i64 (sizeof sockaddr)) (off a (.& a v)) (off s (.& s sa_family)) (off s (.& s sa_data))))
+      (as i64 (sizeof sockaddr)) (off a (.& a 'v)) (off s (.& s 'sa_family)) (off s (.& s 'sa_data))))
   (let (s:ptr:in6_addr (alloca in6_addr) a:ptr:AP9 (alloca AP9))
     (printf "in6_addr size=%lld align=%lld __in6_u=%lld\n"
-      (as i64 (sizeof in6_addr)) (off a (.& a v)) (off s (.& s __in6_u))))
+      (as i64 (sizeof in6_addr)) (off a (.& a 'v)) (off s (.& s '__in6_u))))
   (let (a:ptr:AP10 (alloca AP10))
-    (printf "sigset_t size=%lld align=%lld\n" (as i64 (sizeof sigset_t)) (off a (.& a v))))
+    (printf "sigset_t size=%lld align=%lld\n" (as i64 (sizeof sigset_t)) (off a (.& a 'v))))
   (let (a:ptr:AP11 (alloca AP11))
-    (printf "pthread_mutex_t size=%lld align=%lld\n" (as i64 (sizeof pthread_mutex_t)) (off a (.& a v))))
+    (printf "pthread_mutex_t size=%lld align=%lld\n" (as i64 (sizeof pthread_mutex_t)) (off a (.& a 'v))))
   (let (s:ptr:sigaction (alloca sigaction) a:ptr:AP12 (alloca AP12))
     (printf "sigaction size=%lld align=%lld sa_mask=%lld sa_flags=%lld sa_restorer=%lld\n"
-      (as i64 (sizeof sigaction)) (off a (.& a v)) (off s (.& s sa_mask))
-      (off s (.& s sa_flags)) (off s (.& s sa_restorer))))
+      (as i64 (sizeof sigaction)) (off a (.& a 'v)) (off s (.& s 'sa_mask))
+      (off s (.& s 'sa_flags)) (off s (.& s 'sa_restorer))))
   (let (s:ptr:sigevent_t (alloca sigevent_t) a:ptr:AP13 (alloca AP13))
     (printf "sigevent_t size=%lld align=%lld sigev_signo=%lld sigev_notify=%lld\n"
-      (as i64 (sizeof sigevent_t)) (off a (.& a v)) (off s (.& s sigev_signo))
-      (off s (.& s sigev_notify))))
+      (as i64 (sizeof sigevent_t)) (off a (.& a 'v)) (off s (.& s 'sigev_signo))
+      (off s (.& s 'sigev_notify))))
   (return 0))
 EOF
   bad=0
@@ -12760,8 +12735,8 @@ EOF
 (defn main ():i32
   (let (f:ptr:FILE (alloca FILE))
     (printf "%ld %ld %ld\n" (sizeof FILE)
-      (- (unsafe/cast i64 (.& f _flags)) (unsafe/cast i64 f))
-      (- (unsafe/cast i64 (.& f _lock)) (unsafe/cast i64 f))))
+      (- (unsafe/cast i64 (.& f '_flags)) (unsafe/cast i64 f))
+      (- (unsafe/cast i64 (.& f '_lock)) (unsafe/cast i64 f))))
   (return 0))
 NUCEOF
     cc -w "$d/f.c" -o "$d/f.cbin" 2>/dev/null || bad=1
@@ -13458,7 +13433,7 @@ EOF
 (defn main ():i32
   (let (a:ptr:TAlign (alloca TAlign))
     (printf "tcp_info %lld %lld\n" (as i64 (sizeof tcp_info))
-      (- (unsafe/cast i64 (.& a v)) (unsafe/cast i64 a))))
+      (- (unsafe/cast i64 (.& a 'v)) (unsafe/cast i64 a))))
   (return 0))
 EOF
     ./build/nucleusc "$d/t.nuc" -o "$d/t.bin" 2>"$d/t.err" || bad=1

@@ -1,9 +1,11 @@
 # Retiring the `.` forms, and the selector rule underneath them
 
-**Status: in progress** (2026-08-30). **Steps 0-2 done** — every member form
-takes the quoted selector, `--strict-selectors` enumerates the sites that do
-not, and the tree is migrated (7254 sites, flag reports zero). What remains is
-the rule change itself: steps 3-6. See §5.
+**Status: in progress** (2026-08-30). **Steps 0-3 done** — the selector rule has
+flipped: a quoted `'x` is the field, and a bare symbol in selector position is
+an ordinary variable reference like a symbol anywhere else. Getting there took a
+migration aid (`--strict-selectors`, now retired) and 7254 rewritten sites. What
+remains is the `.`-form retirement the rule change was blocking: steps 4-6.
+See §5.
 
 Three special forms are spelled with a leading dot — `.` (member read), `.&`
 (member address) and `.set!` (member write). They are the last forms whose name
@@ -11,9 +13,10 @@ is punctuation rather than a word, and two of the three have a word-spelled
 equivalent already. Retiring them turns out to be mostly a question about
 something else: **what a bare symbol means in selector position**.
 
-## 1. What is already true
+## 1. What was already true
 
-Measured on this tree. Every one of these compiles and yields the same value:
+Measured on this tree before step 3. Every one of these compiled and yielded
+the same value:
 
 ```lisp
 (. pp x)   (get pp x)   (get pp 'x)   (pp x)   (pp 'x)   (_get pp x)
@@ -21,9 +24,9 @@ Measured on this tree. Every one of these compiles and yields the same value:
 
 `emit-get-intrinsic` is documented as byte-identical to `.`, and `get` is a
 **generic**: user `get` methods are tried first and the field-access intrinsic
-is the fallback. `selector-literal-sym` accepts either a bare `NODE-SYM` or a
-`(quote sym)` cell, which is why the quoted spelling already works on every
-read path.
+is the fallback. Six spellings of one thing is what made the migration a
+provable no-op (§5 step 2) — and three of them are gone now that a bare symbol
+is a variable.
 
 Textual occurrences (what a grep sees — §2 counts the sites the compiler
 actually emits, which is the number that governs the migration):
@@ -41,11 +44,11 @@ idiomatic read. `.set!` is 93% of the retirement work.
 
 ## 2. The selector rule is the real subject
 
-Today a bare symbol in selector position **always** names a field. That is the
-one place in the language where a symbol is not a variable reference, and the
-W7 diagnostic exists to say so when a local shares the name.
+Before step 3 a bare symbol in selector position **always** named a field. That
+was the one place in the language where a symbol was not a variable reference,
+and the W7 diagnostic existed to say so when a local shared the name.
 
-The cost lands on the case that wants a field name in a *variable*:
+The cost landed on the case that wants a field name in a *variable*:
 
 ```lisp
 (get foo (quote bar))     ; producing the symbol
@@ -53,9 +56,9 @@ The cost lands on the case that wants a field name in a *variable*:
                           ; force a symbol to read as a value
 ```
 
-That is the defect. Computed access itself already works —
+That was the defect. Computed access itself already worked —
 `emit-computed-field` lowers a runtime selector to a `select` chain over the
-field indices — but its spelling is an escape hatch rather than a rule.
+field indices — but its spelling was an escape hatch rather than a rule.
 
 ### The decision: the quoted selector becomes the only literal spelling
 
@@ -76,7 +79,7 @@ known from the form, so this is a regex.
 call, a callable-value invoke, or a field access and nothing in the shape says
 which.
 
-But head-position sites do not break *silently* under the new rule, because the
+Head-position sites do not break *silently* under the new rule, though, because the
 computed path is double-gated: the selector must evaluate to a `ptr`
 (`computed selector must evaluate to a symbol (ptr)`) and the struct must be
 homogeneous (`computed field access requires a homogeneous struct`). So
@@ -84,9 +87,9 @@ homogeneous (`computed field access requires a homogeneous struct`). So
 hits the ptr gate. Silent breakage needs all three of: a local shadowing the
 field name, typed `ptr`, on a homogeneous struct.
 
-So the migration is driven by the compiler, not by a regex: `--strict-selectors`
-(§5 step 1) reports every bare selector, the tree builds at every step, and the
-flag becomes the default when the list is empty.
+So the migration was driven by the compiler, not by a regex: `--strict-selectors`
+(§5 step 1) reported every bare selector, the tree built at every step, and the
+flag became the default — and was then deleted — when the list was empty.
 
 ### How big it actually is
 
@@ -247,7 +250,44 @@ syntax removes it.
    selector inside one changes the template's *data*, so 29 examples' IR grew by
    exactly the added `quote` nodes; those are held by `make test`'s byte
    comparison of runtime output instead.
-3. Flip the default; retire the annotation escape hatch.
+3. **Flip the default. (done 2026-08-30.)** `selector-literal-sym` now accepts
+   `(quote x)` and nothing else, which makes a bare symbol in selector position
+   an ordinary variable reference — the whole point of the exercise. Five
+   consequences, each of which had to be built rather than merely allowed:
+
+   - **The three fixed-position forms refuse a bare symbol** rather than reading
+     it as a variable. `.`, `.&` and `.set!` name a field statically; there is
+     nothing for a computed selector to mean there. `die-nonliteral-selector`
+     says which spelling is missing (`-- write 'x`), because "field name must be
+     symbol" would describe a bare symbol as failing a test it appears to pass.
+   - **Head position and `get` route on the RECEIVER, not on the argument's
+     shape.** `emit-callable-value` used to reach the member-access path only
+     for a single literal-symbol argument; with the literal gone, `(p sel)`
+     would have fallen through to `emit-invoke-with-callee` and reported "quote
+     needs the node runtime". The gate is now `is-member-access-receiver`
+     (`src/generics.nuc`), which answers the question `emit-get-intrinsic`
+     actually asks: is this a struct/union value, or a pointer to one.
+     `access-receiver-sdef` could not be reused — it answers with a `StructDef`
+     and so cannot speak for a `TY-UNION`, which is exactly the case a
+     receiver-shaped gate must not drop.
+   - **An unbound bare symbol that names a real field is a missed quote**, and
+     `emit-computed-field` says so with the spelling (`-- write (p 'x)`). A
+     plain "undefined variable" would be true and useless: it is what every
+     un-migrated line in a downstream tree will hit. The message names the
+     receiver because `(p x)` and a call `(f x)` read alike on the page.
+   - **The W7 demotion is dead.** `callee-has-field` and
+     `selector-shadowed-by-local` existed to rescue the value reading when the
+     callee provably had no such field; that is now the unconditional meaning of
+     a bare symbol, and neither reading can be foreclosed by what the callee
+     happens to contain. The collision case `(m 'count)` vs `(m count)` — which
+     W7 could not express at all — is now just the quote.
+   - **The `k:CStr` annotation hatch is retired** along with
+     `--strict-selectors` itself. A field name held in a variable is spelled
+     `(p sel)`, so there is nothing left to escape from.
+
+   `w7-local-not-a-field` now pins the *opposite* refusal: `(p k)` with an `i32`
+   local reaches the computed path and is refused for the selector's type, not
+   for the field's absence.
 4. `.` → `get`, `.&` → `(addr-of p f)`.
 5. `set!` as a place form; fold in `ptr-set!` and `aset!`.
 6. The `set` generic.

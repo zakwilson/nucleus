@@ -4841,6 +4841,20 @@
       (return (as ptr (-> tt (_ 'elem) (unsafe/cast ptr:Type _) (_ 'sdef)))))
     (return null)))
 
+; Would emit-get-intrinsic accept this callee? Its own unwrap: a struct or union
+; VALUE (SV-1 materializes it), or a pointer to one. Distinct from
+; access-receiver-sdef because that answers with a StructDef and so cannot speak
+; for a TY-UNION -- which is exactly the case a receiver-shaped routing gate must
+; not drop on the floor (dot-forms.md §5 step 3).
+(defn is-member-access-receiver (t:raw:Type):i32
+  (when (= t null) (return 0))
+  (let (tt:ptr:Type (unsafe/cast ptr:Type t))
+    (when (or (= (tt 'kind) TY-STRUCT) (= (tt 'kind) TY-UNION)) (return 1))
+    (when (and (= (tt 'kind) TY-PTR) (!= (tt 'elem) null))
+      (let (ek:i32 (-> tt (_ 'elem) (unsafe/cast ptr:Type _) (_ 'kind)))
+        (when (or (= ek TY-STRUCT) (= ek TY-UNION)) (return 1))))
+    (return 0)))
+
 (defn node-type-field (n:raw:Node scope:ref:Scope):?ptr:Type
   (let (t:ptr (node-type (node-at n 1) scope))
     (when (= t null) (return null))
@@ -4911,7 +4925,9 @@
     (when (and (= nargs 1)
                (!= (generic-has-receiver-method (generic-lookup "get") ct) 0))
       (return (callable-get-type ct (node-at n 1) scope)))
-    (when (and (= nargs 1) (!= (selector-literal-sym (node-at n 1)) null))
+    ; Lockstep with emit-callable-value: routes on the receiver, not the
+    ; argument's shape (dot-forms.md §5 step 3).
+    (when (and (= nargs 1) (!= (is-member-access-receiver ct) 0))
       (return (callable-get-type ct (node-at n 1) scope)))
     (return (callable-invoke-type ct n 1 nargs scope))))
 

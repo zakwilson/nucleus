@@ -142,8 +142,8 @@ See `examples/cstr-lit-test.nuc` for the full contract, including that a plain `
 Manual construction via a struct literal is also valid:
 ```lisp
 (let ((sv (ref StrView)) (alloca StrView))
-  (.set! sv data some-ptr)
-  (.set! sv len  some-len)
+  (.set! sv 'data some-ptr)
+  (.set! sv 'len  some-len)
   ...)
 ```
 
@@ -497,8 +497,8 @@ All three conformances are **strict**:
 
 (defn main ():i32
   (let ((sv (ref StrView)) (alloca StrView))
-    (.set! sv data (as ptr:ui8 (as ptr "42")))
-    (.set! sv len  2)
+    (.set! sv 'data (as ptr:ui8 (as ptr "42")))
+    (.set! sv 'len  2)
     (match (parse i32 sv)
       ((ok n)  (printf "parsed: %d\n" n))
       ((err e) (printf "error: %s\n" (err-name e)))))
