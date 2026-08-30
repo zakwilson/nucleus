@@ -1689,6 +1689,24 @@ lockstep holds by construction. `is-member-access-receiver` is the same shape an
 is called from both `emit-callable-value` and `callable-value-type` for the same
 reason.
 
+**A concrete type read as a TYVAR silently drops a whole instantiation.**
+`tyname-resolvable` (src/generics.nuc) decides whether a symbol in a stamped
+method's type pattern names a concrete type or a free type variable. Answer 0
+for a concrete one and `collect-pattern-tyvars` collects it,
+`defn-has-receiver-tyvars` returns 1, the stamp looks like an unmonomorphized
+template, and **`emit-defn` skips its define** — while the call site still
+references its ir-name. Nothing in the compiler complains: the symptom is
+LLVM's own parser saying `use of undefined value '@count.pVector.Char'`, and
+only for a program that reaches that instantiation.
+
+It has drifted from `parse-type-name` three times (`__fnty_N`, `ptr:X`, and
+`Char`). It now consults **`builtin-type-name`** — the probe that was extracted
+FROM `parse-type-name` precisely to be asked without dying — rather than
+`g-primitive-type-set`, which answers a different question (the
+one-symbol-one-kind rule) and omits `Char`/`usize`/`ssize`/`raw`. When adding a
+built-in type, `builtin-type-name` is the one list that matters here; adding it
+only to `g-primitive-type-set` leaves generics over it silently broken.
+
 **An arity overload still needs a `node-type` mirror.** `(addr-of x)` is a
 binding's address and `(addr-of p 'f)` is a field's — one emitter, split on
 `node-len`. `node-type-addr-of` has to split on the *same* arity or the 2-arg

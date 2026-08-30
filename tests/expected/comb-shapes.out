@@ -1,0 +1,15 @@
+vec map0=1
+vec filter-count=2
+vec find=30
+vec any=1
+vec every=1
+lst map count=4 m0=10
+lst filter-count=2
+lst find=30
+lst any=1
+lst every=1
+str map0=104 count=5
+str filter-count=3
+str find=101
+str any=1
+str every=1
