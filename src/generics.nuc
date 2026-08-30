@@ -1204,8 +1204,10 @@
 ; acceptance set without dying. A free symbol that is NOT resolvable here is a
 ; candidate type variable.
 (defn tyname-resolvable (name:CStr):i32
-  (when (!= (primitive-type-named name) 0) (return 1))
-  (when (or (= name "usize") (= name "ssize") (= name "raw")) (return 1))
+  ; `builtin-type-name`, not `g-primitive-type-set`: only the former was
+  ; extracted from parse-type-name, the set this mirrors (context/conventions.md,
+  ; "A concrete type read as a TYVAR silently drops a whole instantiation").
+  (when (!= (as ptr (builtin-type-name name)) null) (return 1))
   (when (!= (as ptr (struct-lookup-ref name)) null) (return 1))
   (when (!= (as ptr (struct-template-lookup-ref name)) null) (return 1))
   (when (!= (as ptr (union-template-lookup-ref name)) null) (return 1))

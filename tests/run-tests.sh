@@ -10909,6 +10909,62 @@ EOF
 }
 spawn run_s16_dot_forms_retired
 
+# `tyname-resolvable` (src/generics.nuc) decides whether a symbol in a stamped
+# method's type pattern names a CONCRETE type or a free type variable. Read as a
+# tyvar, a concrete arg makes the stamp look like an unmonomorphized template,
+# so emit-defn skips its define while the call site still names its ir-name --
+# an undefined symbol that only LLVM's parser catches. It had drifted from
+# parse-type-name three times (__fnty_N, ptr:X, and `Char`), so this pins the
+# whole builtin set rather than the one name that was missing.
+run_builtin_tyname_resolvable() {
+  local d ok=1 T V
+  d="$(mktemp -d)"
+  for T in Char usize ssize i32 ui8 f64 bool ptr CStr Err raw; do
+    case "$T" in
+      Char) V='\a' ;;
+      bool) V='true' ;;
+      ptr|CStr|raw) V='null' ;;
+      f64)  V='1.0' ;;
+      Err)  V='' ;;
+      *)    V='1' ;;
+    esac
+    # `raw` is a pointer KIND, not spellable as a bare element type; the point
+    # of listing it is that tyname-resolvable must still answer for it.
+    [ "$T" = "raw" ] && continue
+    cat > "$d/t.nuc" <<EOF
+(import-use vector)
+(defn main ():i32
+  (with ((v (ref (Vector $T))) (alloca (Vector $T)))
+    (vector-init v))
+  (return 0))
+EOF
+    if ! ./build/nucleusc --emit-llvm "$d/t.nuc" > "$d/t.ll" 2>"$d/t.err"; then
+      echo "    (Vector $T): compile failed: $(head -1 "$d/t.err")"
+      ok=0
+      continue
+    fi
+    # The failure is a CALL with no define and no declare -- LLVM's own parser is
+    # the only thing that catches it, so check for it directly.
+    local rx='@[A-Za-z0-9_.$-]+'
+    local missing
+    missing="$(comm -23 \
+      <(grep -oE "call [^@]*$rx" "$d/t.ll" | grep -oE "$rx" | sort -u) \
+      <(cat <(grep -oE "^define [^@]*$rx" "$d/t.ll") <(grep -oE "^declare [^@]*$rx" "$d/t.ll") \
+        | grep -oE "$rx" | sort -u) | tr '\n' ' ')"
+    if [ -n "$missing" ]; then
+      echo "    (Vector $T): undefined after stamping: $missing"
+      ok=0
+    fi
+  done
+  if [ "$ok" = 1 ]; then
+    echo "PASS  builtin-tyname-resolvable"
+  else
+    echo "FAIL  builtin-tyname-resolvable"
+  fi
+  rm -rf "$d"
+}
+spawn run_builtin_tyname_resolvable
+
 # keyword-markers.md §7, follow-up 1: the two signature-registration sites
 # inferred `has-rest` from `(< (defn-params-count …) (node-len …))`, which is
 # equally true of an `:optional` list — so every `:optional` defn registered
