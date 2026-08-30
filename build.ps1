@@ -6,11 +6,13 @@
 .DESCRIPTION
     Mirrors the Linux build exactly, step for step:
 
-        1. compile the REPL shim (src/repl_shim.c) to an object file;
-        2. ensure a runnable boot compiler exists (build it from the committed
+        1. ensure a runnable boot compiler exists (build it from the committed
            Windows boot IR in boot\ if bin\nucleusc.exe is missing/stale);
-        3. self-host: the boot compiler emits build\nucleusc.ll from
+        2. self-host: the boot compiler emits build\nucleusc.ll from
            src/nucleusc.nuc, which is then linked into build\nucleusc.exe.
+
+    Nothing here compiles C: the compiler has been pure Nucleus since Stage 16
+    retired src/repl_shim.c.
 
     There is no `nucleusc.exe` to begin with on a fresh Windows checkout, so
     the chicken-and-egg is broken exactly as on Linux: a committed boot IR
@@ -78,7 +80,7 @@ switch ($Toolchain) {
         $Triple   = 'x86_64-pc-windows-gnu'
         $BootIR   = Join-Path $Root 'boot\nucleusc-x86_64-windows-gnu.ll'
         # Export all symbols so the in-process ORC JIT (REPL) can resolve the
-        # repl_shim functions, the GNU analogue of Linux `-rdynamic`.
+        # compiler's own functions, the GNU analogue of Linux `-rdynamic`.
         $LinkFlags = @('-Wl,--export-all-symbols')
     }
     'msvc' {
@@ -93,7 +95,6 @@ switch ($Toolchain) {
 
 $NucleuscExe = Join-Path $Build 'nucleusc.exe'
 $BootExe     = Join-Path $Bin   'nucleusc.exe'
-$ShimObj     = Join-Path $Build 'repl_shim.obj'
 $StageLL     = Join-Path $Build 'nucleusc.ll'
 
 function Invoke-Native {
@@ -137,14 +138,11 @@ $SystemLib = Get-LLVMFlags @('--system-libs')
 
 function Link-Compiler {
     param([string]$InputIR, [string]$OutputExe)
-    $linkArgs = @($InputIR, $ShimObj) + $LdFlags + $Libs + $SystemLib + $LinkFlags + @('-O3', '-o', $OutputExe)
+    $linkArgs = @($InputIR) + $LdFlags + $Libs + $SystemLib + $LinkFlags + @('-O3', '-o', $OutputExe)
     Invoke-Native -File 'clang' -Arguments $linkArgs
 }
 
-# 1. REPL shim.
-Invoke-Native -File 'clang' -Arguments @('-std=c11', '-c', (Join-Path $Root 'src\repl_shim.c'), '-o', $ShimObj)
-
-# 2. Ensure a runnable boot compiler. Rebuild from the committed boot IR if the
+# 1. Ensure a runnable boot compiler. Rebuild from the committed boot IR if the
 #    boot exe is absent or cannot execute (e.g. an LLVM shared-lib mismatch).
 $needBoot = $true
 if (Test-Path $BootExe) {
@@ -156,7 +154,7 @@ if ($needBoot) {
     Link-Compiler -InputIR $BootIR -OutputExe $BootExe
 }
 
-# 3. Self-host. Pass --target explicitly so the emitted triple is deterministic
+# 2. Self-host. Pass --target explicitly so the emitted triple is deterministic
 #    (independent of how the host LLVM names itself) and matches the committed
 #    boot IR — which keeps the Phase-F fixed-point check below honest.
 Invoke-Native -File $BootExe -Arguments @("--target=$Triple", '--emit-llvm', (Join-Path $Root 'src\nucleusc.nuc')) -RedirectStdout $StageLL

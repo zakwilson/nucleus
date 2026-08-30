@@ -8,10 +8,18 @@ split by error kind: **reader/source syntax errors** (unbalanced `)`,
 unterminated form, bad escape, …) are an ordinary `!T` value path as of Stage 10
 E4 — `read-program` returns `(err parse-error)`, the REPL `match`es it and
 continues; **eval/JIT errors** (and the `die-at` panic tier) still unwind via
-`repl_throw` (setjmp/longjmp shim in `src/repl_shim.c`).
+`repl-throw` (`_setjmp`/`longjmp`, in `src/repl.nuc`). That was C —
+`src/repl_shim.c`, the tree's last C file — until 2026-08-30, when Stage 16's
+C-header-layout work (`jmp_buf` is expressible) and FP-2 (a `(fn f64)()` value
+is callable) let all four of its functions be rewritten in Nucleus. Its jump
+buffer is now an `alloca` in the protected frame rather than a static array,
+because a `(defvar g:(array __jmp_buf_tag N))` is refused: a global's type is
+resolved by the prescan, before the header import registers a layout. See
+[design/stage16-ergonomics/c-header-layout.md](../design/stage16-ergonomics/c-header-layout.md)
+§11.
 
-Since Stage 16 R1 that unwind is a real one. `repl_protect(body, ctx)` runs the
-body as a callback so its `setjmp` frame is still live when the `longjmp` fires,
+Since Stage 16 R1 that unwind is a real one. `(repl-protect body ctx)` runs the
+body as a callback so its `_setjmp` frame is still live when the `longjmp` fires,
 and the session state a `longjmp` skipped the restore of — reader state, the
 import/prescan lists, `g-toplevel-depth`, namespace/privacy flags, the stream
 globals, and a watermark for every append-only registry — is spelled once in
@@ -48,9 +56,11 @@ Prefer the REPL when iteration speed matters more than reproducibility:
 - **Exploring a library before using it.** Import the lib, call its functions
   with sample inputs, inspect return values. Faster than reading code top-down.
   **Working as of 2026-08-25.** Stage 16 R2 boots the session with
-  `(import-use prelude)` through the ordinary import arm, so 33 of the 34
-  modules in `lib/` import in a fresh session (`node` is the exception —
-  the compiler is `-rdynamic` and ORC resolves `alloc-node` to the host's copy).
+  `(import-use prelude)` through the ordinary import arm, so every one of the
+  34 modules in `lib/` imports in a fresh session. `node` was the last
+  exception, fixed 2026-08-29 by deleting a redundant process-symbol generator
+  the compiler attached to the JIT's *main* dylib — see "Importing a library the
+  compiler itself links" below.
   R3 added the REPL's own `repl-flush-mono`, so generics, lambdas and collection
   literals evaluate at the prompt and stamps stay resolvable across entries, and
   closed the two-imports-collide-on-a-`declare` bug (D8). R4 replaced the
@@ -112,6 +122,37 @@ Prefer the REPL when iteration speed matters more than reproducibility:
   produces N extra lines on stderr; a failed import prints its diagnostic
   instead of a confirmation.
 
+## Importing a library the compiler itself links
+
+**The session's own definition wins.** The JIT's main dylib is searched before
+the `<Process Symbols>` dylib LLJIT links last, so `(import-use vector)` at the
+prompt gives you the session's copy of `lib/vector.nuc`, not the one inside
+`build/nucleusc`. That is what makes a prompt-typed `(defn emit-defn …)` your
+function rather than the compiler's, and the prelude preload has relied on it
+since R2. For a stateless library the two copies are indistinguishable.
+
+**`node` is the one library where it shows.** Its state — the intern table — is
+the compiler's own identity mechanism, and `emit-node` dispatches special forms
+by **pointer** identity on interned symbols (conventions.md, "Symbol nodes are
+interned singletons"). After `(import-use node)`, a macro whose JIT module is
+*first expanded after* the import calls the session's `intern-symbol`, so its
+`cond`/`let`/`while` heads come from a second table and are not recognised:
+
+```
+nuc> (import-use node)
+nuc> (defmacro mc (a) `(cond (> ~a 5) 111 true 222))
+nuc> (mc 9)
+<repl>:1: error: unknown: cond — not defined anywhere in this compilation unit
+```
+
+Bounds worth knowing while probing: it is always **loud** (never a silent
+misexpansion); it does **not** affect a macro whose expansion has a function
+head, which resolves by spelling; and a macro **already expanded before** the
+import keeps working, because ORC materialisation is lazy and one-shot. So if
+you need both `node` and macros at the prompt, exercise the macros first.
+`design/stage16-ergonomics/repl-jit-symbol-precedence.md` §5 has the three
+candidate fixes.
+
 ## Where a REPL module's types come from (for compiler work)
 
 Since Stage 16 R4 this is a mechanism, not a rule to remember. **The preamble
@@ -163,5 +204,17 @@ half of the same case needed a different fix: D9 ruled that a `defstruct` inside
 `g-type-stream` rather than to the CT module's own buffer, and the queue entry
 is redundant for this shape (kept as the general invariant, measured inert). See
 [design/stage16-ergonomics/repl-libraries.md](../design/stage16-ergonomics/repl-libraries.md)
-§3.3 for the rest, including the one batch shape D9 leaves open — a CT-defined
-type named in a *signature*, which the prescan refuses before any emission.
+§3.3 for the rest.
+
+D9a closed the shape D9 left open — a CT-defined type named in a *signature*,
+which the prescan refused before any emission. `prescan-struct-names` and
+`prescan-struct-layouts` now **descend** into a `compile-time` body (their walk
+one level down; the body's `cdr` is a top-level-shaped chain), and
+`emit-compile-time` runs both over its own body before its defn-signature loop,
+which is the only registration the REPL gets. The descent registers `defstruct`
+and nothing else, because that is the only definer `emit-compile-time` emits —
+`ct-emits-defstruct` is the one predicate both sides call, so they cannot drift.
+The two value prescans deliberately do **not** descend: a CT `defvar`/`defn`
+writes its definition into the CT module alone, so registering the name earlier
+would turn a clean "unknown" diagnostic into an undefined-symbol reference in the
+program module.

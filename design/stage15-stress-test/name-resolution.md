@@ -2709,3 +2709,61 @@ Recorded as §13 asks, because it is a real finding.
    i.e. inside the noise and if anything slightly faster. But the general shape — a table walk where a hand-written ladder used to short-circuit
    — is a real cost that grows with the number of rows, and B3′ adding per-row
    canonicalisation will grow it again.
+
+## 15. The pointer kinds are reserved names (2026-08-30)
+
+`ptr`, `ref` and `raw` are the three pointer kinds. Before this, only `ptr` was
+refused as a definition name, and not because anything knew it was a pointer
+kind: `ptr` is *also* a standalone type (elem-less `void *`), so it sits in
+`g-primitive-type-set` and the §13 one-kind rule caught it on the way past.
+`ref` and `raw` name no type on their own — they are constructors that require
+an element — so no registry held them and nothing guarded them:
+
+```
+(defvar ptr:i32 5)   →  'ptr' already names a built-in type
+(defvar ref:i32 5)   →  accepted
+(defvar raw:i32 5)   →  accepted
+```
+
+Three definers deep, that meant `(defn ref ():i32 …)` and `(defstruct raw …)`
+were legal programs.
+
+### Where they were added, and where they were not
+
+`pointer-kind-named` (beside `primitive-type-named`) is a two-name roster, and
+`binding-probe`'s BK-PRIMITIVE arm answers yes for it as well. That row is
+payload-free — the spelling itself is the non-null "yes" (§13.2) — so
+`binding-noun` can refine the row's noun per name, and these two report **a
+pointer kind** rather than BK-PRIMITIVE's "a built-in type", which they are not.
+
+They are deliberately **not** added to `g-primitive-type-set`. That set has a
+second consumer: `tyname-resolvable` (`src/generics.nuc`), which decides whether
+a free symbol in a type pattern is a concrete type or a **tyvar**. `ref` is
+unresolvable there on purpose — `collect-pattern-tyvars` keys its targeted
+`'ref' is a pointer kind, not a type argument` diagnostic on exactly that, and a
+resolvable `ref` would retire the message and let `(Vector ref)` fall through to
+the arity check. Both behaviours are pinned by
+`s16-pointer-kind-names-reserved`.
+
+A new BK row (`BK-POINTER-KIND`, noun "a pointer kind") was the tidier-looking
+alternative and is wrong: rows are probed by index, `emit-dispatch` walks
+`BK-DISPATCH-FIRST … BINDING-KIND-COUNT`, and a row appended at the end would
+join that walk — so a `ref` in head position would start finding a binding hit
+in the expression path. Riding BK-PRIMITIVE (row 2, below `BK-DISPATCH-FIRST`)
+keeps the new names out of every walk except `guard-name-kind`'s, which is the
+only one that wants them.
+
+### Scope: definers, not bindings
+
+This is a rule about **top-level definers**, and it always was. Local binding
+names are unguarded — not just for the pointer kinds but for everything:
+
+```lisp
+(let (i32:i32 5 ref:i32 7) …)     ; both legal, before and after
+(defn f (addr-of:i32):i32 …)      ; a special form's name, as a parameter
+```
+
+So the premise "a type name is not a legal variable name" holds only above the
+top level. Extending the rule to `let`/`with`/parameter names is a separate,
+larger decision — it would have to answer for `i32` and `addr-of` too, not just
+`ref` — and is not taken here.

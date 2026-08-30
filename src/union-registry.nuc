@@ -829,6 +829,20 @@
     (let (oi:i32 (union-arm-index (as ptr ud) "ok"))
       (return ((invoke (ud arms) (as usize oi)) ptype)))))
 
+; The UnionDef behind a value-`Maybe`, or null. Structural like
+; `result-union-of`: a stamped instance is named `Maybe.<mangled-arg>`, so the
+; arms are the only stable tell.
+(defn value-maybe-union-of (t:raw:Type):?ptr:UnionDef
+  (let (ud:?ptr:UnionDef (uniondef-for-type t))
+    (when (= ud null) (return null))
+    (when (!= (ud num-arms) 2) (return null))
+    (let (si:i32 (union-arm-index (as ptr ud) "some")
+          ni:i32 (union-arm-index (as ptr ud) "none"))
+      (when (or (< si 0) (< ni 0)) (return null))
+      (when (!= ((invoke (ud arms) (as usize si)) nfields) 1) (return null))
+      (when (!= ((invoke (ud arms) (as usize ni)) nfields) 0) (return null))
+      (return ud))))
+
 (defn union-arm-index (ud:raw:UnionDef name:CStr):i32
   (let (udd:raw:UnionDef ud)
     (dotimes (i (udd num-arms))
@@ -1174,6 +1188,16 @@
                  (= (node-kind (node-at (as ptr head) 1)) NODE-CELL))
         (die-at (node-line (as ptr head) (ff line))
           (fmt-s "defunion: takes no type annotation; write (defunion %s ...)" name)))
+      ; Stage 16: a template's arms are only parsed when it is stamped, so a
+      ; never-instantiated template accepted `:repr bogus`, a mode-less `:repr`
+      ; and the retired `&repr` in silence (keyword-markers.md §7). None of that
+      ; needs a stamp — run the real stripper for its diagnostics and drop the
+      ; filtered chain; a validate-only copy is the shape that drifts.
+      (let (repr-box:i32 REPR-AUTO
+            checked:ptr (defunion-strip-repr
+                          (-> ff (_ cdr) (unsafe/cast ptr:Node _) (_ cdr))
+                          (as ptr:i32 (addr-of repr-box)) (ff line)))
+        0)
       ; Re-import of the same template (e.g. via .nuch) is a no-op. Stage 15 B4
       ; (R4): a hit from a DIFFERENT defining site is a second definition.
       (if-some (prevt (union-template-lookup key))
@@ -2056,8 +2080,10 @@
                   (return pt)))))))
       ; Stage 10: (ref T) — a non-null pointer to T. Same shape as (ptr T)
       ; (colon sugar ref:T arrives here too), but the element is required.
+      ; `addr-of` joins `ref` here: a standalone `&T` reaches the reader macro
+      ; before its position is known, so a type slot sees the value form (§6).
       (let (head:ptr (n car))
-        (when (= head 'ref)
+        (when (or (= head 'ref) (= head 'addr-of))
           (let (rest:ptr (n cdr))
             (when (= rest null)
               (die-at line "ref: element type required — (ref T)"))

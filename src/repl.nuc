@@ -4,9 +4,82 @@
 ; (g-globals, emit-defn, type registry, etc.) — this dependence is intentional
 ; since the REPL needs the full compiler API to evaluate forms incrementally.
 
-; The REPL shim FFI (repl_protect / repl_throw / repl_print_f*) is declared in
-; src/nucleusc.nuc before this file is source-imported, so the symbols are
-; already in scope here.
+(import-use "setjmp.h")
+
+; ============================================================
+; Non-local exit — the protected call and its throw. The callback shape and the
+; depth stack are both load-bearing; the reasons are in
+; design/stage16-ergonomics/repl-libraries.md §3.4 and c-header-layout.md §11.
+; ============================================================
+
+(defconst REPL-MAX-PROTECT 16)
+
+; A jump buffer belongs in the frame the jump returns into, so each protected
+; frame allocas its own and publishes the pointer here. (A `defvar` could not
+; hold them anyway: c-header-layout.md §11.2.)
+(defvar g-repl-jmpbufs:(array raw REPL-MAX-PROTECT))
+(defvar g-repl-depth:i32 0)
+
+; Run `(body ctx)`: 0 if it returned normally, 1 if `repl-throw` unwound out.
+(defn repl-protect (body:(fn void)(ptr) ctx:ptr):i32
+  ; `d` is read after the jump, and a longjmp does not restore registers.
+  (let (:volatile d:i32 g-repl-depth)
+    (when (>= d REPL-MAX-PROTECT)
+      (fprintf stderr "nucleus: repl-protect nested deeper than %d\n"
+               REPL-MAX-PROTECT)
+      (exit 1))
+    ; `_setjmp`, not `setjmp`: the latter is an unconditional glibc macro, and
+    ; Nucleus consumes C functions but not C macros (docs/structs-unions.md).
+    (let (env:ptr (alloca (array __jmp_buf_tag 1)))
+      (aset! g-repl-jmpbufs d env)
+      (set! g-repl-depth (+ d 1))
+      (if (= (_setjmp env) 0)
+        (do (body ctx)
+            (set! g-repl-depth d)
+            (return 0))
+        (do (set! g-repl-depth d)
+            (return 1))))))
+
+; Unwind to the innermost `repl-protect`. Never returns.
+(defn repl-throw ():void
+  (when (= g-repl-depth 0)
+    ; Exiting is what batch does, and beats jumping into a dead frame.
+    (fprintf stderr "nucleus: fatal error outside the REPL's protected region\n")
+    (exit 1))
+  (longjmp (aref g-repl-jmpbufs (- g-repl-depth 1)) 1))
+
+; Print a rendered float on stderr as a Nucleus literal: `.0` is appended unless
+; the rendering already carries a decimal point, an exponent, or is nan/inf.
+(defn repl-print-float-buf (buf:ptr:i8):void
+  (let (i:i64 0
+        marked:i32 0)
+    (while (and (= marked 0) (!= (aref buf i) 0))
+      (let (c:i32 (as i32 (aref buf i)))
+        (when (or (= c 46)     ; .
+                  (= c 101)    ; e
+                  (= c 69)     ; E
+                  (= c 110)    ; n  (nan)
+                  (= c 105))   ; i  (inf)
+          (set! marked 1)))
+      (set! i (+ i 1)))
+    (if (!= marked 0)
+      (fprintf stderr "  %s\n" buf)
+      (fprintf stderr "  %s.0\n" buf))))
+
+; Call a JIT'd nullary thunk and print its result. `%.17g` / `%.9g` are the
+; shortest round-trip widths for binary64 / binary32.
+(defn repl-print-f64 (fp:(fn f64)()):void
+  (let (v:f64 (fp)
+        buf:ptr:i8 (alloca (array i8 64)))
+    (snprintf buf 64 "%.17g" v)
+    (repl-print-float-buf buf)))
+
+(defn repl-print-f32 (fp:(fn f32)()):void
+  (let (v:f32 (fp)
+        buf:ptr:i8 (alloca (array i8 64)))
+    ; C promotes a `float` variadic argument to `double`; so must this one.
+    (snprintf buf 64 "%.9g" (as f64 v))
+    (repl-print-float-buf buf)))
 
 ; Print a single character to stderr, JSON-escaping if needed.
 (defn repl-error-json-putc (c:i32):void
@@ -743,9 +816,11 @@
                                           (fprintf stderr "  #<ptr %p>\n" rv)
                                           (fprintf stderr "  null\n")))
                                     (= result-kind TY-F64)
-                                      (repl_print_f64 (unsafe/cast ptr addr))
+                                      (repl-print-f64
+                                        (unsafe/cast ((fn f64)()) (unsafe/cast ptr addr)))
                                     (= result-kind TY-F32)
-                                      (repl_print_f32 (unsafe/cast ptr addr))
+                                      (repl-print-f32
+                                        (unsafe/cast ((fn f32)()) (unsafe/cast ptr addr)))
                                     (= result-kind TY-VOID)
                                       (do)
                                     true
@@ -1402,8 +1477,8 @@
   (set! g-src (st src))
   (set! g-source-path (st source-path)))
 
-; `repl_protect` calls back into Nucleus so its own `setjmp` frame is still live
-; when `repl_throw` fires; an "arm, then run" shape has already returned by then.
+; The three protected-callback bodies. `repl-protect` runs them as callbacks so
+; its `_setjmp` frame is still live when `repl-throw` fires.
 (defn repl-protect-desugar (ctx:ptr):void
   (set! g-repl-forms (desugar ctx))
   (return))
@@ -1438,7 +1513,7 @@
     (set! g-peek-valid 0)
     (repl-snapshot (addr-of g-repl-saved))
     (set! g-repl-booting 1)
-    (when (!= (repl_protect repl-protect-preload null) 0)
+    (when (!= (repl-protect repl-protect-preload null) 0)
       (repl-restore (addr-of g-repl-saved)))
     (set! g-repl-booting 0)
     (set! g-src save-src)
@@ -1486,7 +1561,7 @@
                     ; `desugar` can die too, and runs before any form does.
                     (set! g-repl-forms null)
                     (repl-snapshot (addr-of g-repl-saved))
-                    (when (!= (repl_protect repl-protect-desugar raw) 0)
+                    (when (!= (repl-protect repl-protect-desugar raw) 0)
                       (repl-restore (addr-of g-repl-saved))
                       (repl-error 0 "error (recovered)"))
                     ; One snapshot per form, so a form that dies rolls back only
@@ -1495,7 +1570,7 @@
                       (while (!= fc null)
                         (let (f:ptr ((unsafe/cast ptr:Node fc) car))
                           (repl-snapshot (addr-of g-repl-saved))
-                          (when (!= (repl_protect repl-protect-eval f) 0)
+                          (when (!= (repl-protect repl-protect-eval f) 0)
                             (repl-restore (addr-of g-repl-saved))
                             (repl-error (node-line f 0) "error (recovered)")))
                         (set! fc ((unsafe/cast ptr:Node fc) cdr))))))

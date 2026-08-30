@@ -7,6 +7,7 @@ Types are attached to names with `:` syntax: `name:type` (e.g., `x:i32`, `main:i
 - `foo:int` → `(foo int)` — name and type as separate symbols
 - `node:ptr:Node` → `(node (ptr Node))` — pointer-to-Node
 - `pp:ptr:ptr:Node` → `(pp (ptr ptr Node))` — pointer-to-pointer-to-Node
+- `node:&Node` → `(node (ref Node))` — `&` is sugar for `ref:` (see [Pointer kinds](#pointer-kinds-ptr-t-raw-t-and-t))
 
 Pointers to a typed element use the `ptr` constructor: `(ptr T)` is a **non-null** pointer to `T`, and `(ptr ptr T)` chains. Bare `ptr` (with no element) is the opaque `void*` pointer — it carries no element contract, so non-null obligations do not apply to it.
 
@@ -241,7 +242,7 @@ The safe default is **on**: a typed `(ptr T)` is non-null.
 
 | Surface | Meaning | Deref | Null? |
 |---|---|---|---|
-| `(ptr T)` / `ptr:T`, `(ref T)` / `ref:T` | **non-null** — always a valid `T` (the default) | always safe | no |
+| `(ptr T)` / `ptr:T`, `(ref T)` / `ref:T` / `&T` | **non-null** — always a valid `T` (the default) | always safe | no |
 | `(raw T)` / `raw:T`, bare `ptr` | **raw** — unchecked, the C-boundary / `void*` escape | allowed (your problem) | yes |
 | `?T` ≡ `(Maybe T)` | **nullable-checked** — may be none | **compile error** until narrowed (pointer `T`) | yes |
 
@@ -249,6 +250,35 @@ The safe default is **on**: a typed `(ptr T)` is non-null.
 the explicit, greppable spelling. A genuinely nullable pointer is spelled
 `(raw T)` / `raw:T`. The `null` literal is `raw`, so it flows into `raw`/`?`
 slots but not into a non-null `(ptr T)`/`(ref T)` slot.
+
+**`&T` is sugar for `ref:T`.** The reader expands a `&` that begins a type
+chain segment into `ref:`, so `&T` and `ref:T` are the same spelling — same
+type, same non-null obligations, byte-identical IR. It composes with everything
+the colon chain composes with:
+
+```lisp
+(defn shift (p:&Point d:i32):&Point …)   ; param and return
+(defstruct Holder (link &Point))         ; field, list form
+(let (v:&(Vector &Point) …) …)           ; colon-paren fuse, template argument
+pp:&&Point   q:?&Point   r:&raw:Point    ; ref:ref:T, ?ref:T, ref:raw:T
+```
+
+The sigil is only a `&` at the *start* of a segment — offset 0, after a `:`,
+after another `&`, or after a `?`/`!` prefix. An interior `&` is an ordinary
+symbol character, which is what leaves the [`.&` field-address
+form](structs-unions.md) alone, and the retired `&rest`/`&where`/`&optional`/
+`&repr` markers still report their keyword replacements rather than reading as
+types.
+
+A `&` that starts a whole **token** is the address-of reader macro instead —
+`&x` is `(addr-of x)`, see [Special forms](special-forms.md). The two are split
+by position in the token, not by context: the sigil is always preceded by
+something (`p:&T`, `?&T`, `):&T`), so only the standalone spelling is shared.
+There the reader has already written `(addr-of T)` before anyone knows the
+position, and a type slot reads that as `(ref T)` — which is why `(sizeof &Pt)`,
+`(link &Point)` and `(Vector &Point)` above are still types. The consequence to
+know is that `(addr-of T)` is therefore a legal, if strange, way to spell
+`(ref T)`.
 
 Only a **typed** non-null destination adds obligations: a `raw` or `?T` value
 may not flow into a `(ptr T)`/`(ref T)` slot (binding, `set!`, field/element
@@ -302,10 +332,17 @@ outside return position, `if-some`/`when-some`/`unwrap`/`unwrap-or`) stay
 pointer-only. `?!T` ≡ `(Maybe (Result T Err))` is the value-Maybe-over-Result
 sugar (a fallible result that may be absent).
 
+**A nullable value is a condition.** `raw`, `CStr`, `?T` and a value `(Maybe T)`
+may be written bare at a condition site — `(when m …)` means `(when (!= m null)
+…)` — while `ptr`/`(ref T)` may not, because a non-null pointer's test is a
+constant. See
+[Condition position](special-forms.md#condition-position-a-nullable-value-is-a-condition).
+
 **Flow narrowing**: inside a region dominated by a successful non-null test, a
 local `?ptr:T` binding reads as `(ref T)`. The compiler's own guard idioms are
 the mechanism — `(when (= m null) (return …))`, `(if (!= m null) … …)`,
-`(and (!= m null) (m field))` all narrow, as do `if-some`/`when-some`/`unwrap`.
+`(and (!= m null) (m field))`, and the bare `(when m …)` above all narrow, as do
+`if-some`/`when-some`/`unwrap`.
 A reassignment kills the narrow (sticky across joins); loop bodies drop narrows
 established outside the loop for any binding the body assigns; `label` kills
 all narrows (unknown predecessors). Kind mismatches at a `cond`/`if` join meet
@@ -396,7 +433,7 @@ tracked).
 | Name | Description | C Equivalent |
 |------|-------------|--------------|
 | `int` / `i32` | 32-bit signed integer | `int32_t` |
-| `i1` / `bool` | 1-bit boolean | `bool` |
+| `bool` | Boolean truth value (`true`/`false`); emitted as `i1` in IR, but `i1` is not a valid source spelling — naming it is a located error | `bool` |
 | `i8` | 8-bit signed integer | `int8_t` / `char` |
 | `i16` | 16-bit signed integer | `int16_t` |
 | `i64` | 64-bit signed integer | `int64_t` |
@@ -701,17 +738,19 @@ alignment (`align 8` on x86-64, `align 4` on a 32-bit target), and it is the
 
 The following conversions are applied automatically in assignment contexts (`let`, `set!`, `.set!`, `aset!`, `ptr-set!`, implicit and explicit `return`) **and at function call sites** (both direct calls and `funcall`). This is exactly the safe set `as` (see [Special Forms](special-forms.md#special-forms)) also accepts when written explicitly, plus `as`'s own pointer-contract-weakening allowance; `unsafe/cast` accepts this same set **and** everything lossy or contract-manufacturing besides (narrowing, `float`↔`int`, `ptr`↔`int`, `fn`↔`ptr`, element-retyping pointers, and laundering a `raw`/nullable pointer into a non-null slot):
 
-- **Pointer ↔ pointer** (any element types): identity, no IR. `ptr`, `ptr:Node`, `ptr:i8` are interchangeable at boundaries; the cast only matters when the result feeds a typed-pointer-only operation (`.`, `aref`, `aset!`, `unsafe/ptr+`, `deref`).
+- **Pointer ↔ pointer, when the pointees agree**: identity, no IR. Two things are *not* part of the question and so never block it — the pointer **kind** — `ptr:Node`, `(ref Node)`, `(raw Node)` and `?Node` are one type to *this* question, and nullability is judged separately by the non-null contract, which still refuses a `raw`/`?` source into a `(ref T)` slot (see [Pointer kinds](#pointer-kinds-ptr-t-raw-t-and-t)) — and an **elem-less bare `ptr`**, which is `void *` and matches any pointer in either direction. Everything else must match: `ptr:i32` into a `ptr:Node` slot, or `(ref (Vector i32))` into a `(ref (Vector i64))` slot, is a compile-time error naming both types.
+
+  ```
+  let: init type mismatch for 'b': value is ptr:Vector.i32, slot is ptr:Vector.i64
+  takes: argument 1 has type ptr:SA, which does not match parameter type ptr:SB
+  ```
+
+  This is the same rule at every typed slot — `let`/`with` init, `set!`, a `.set!` field store, an `aset!`/`ptr-set!` element store, `return`, a call argument, and a `defvar`'s `(addr-of g)` initializer. Retyping a pointer's element is what `unsafe/cast` is for.
 - **`StrView` → `CStr` / `ptr`**: takes the view's `data` field — no IR for an unmaterialized string literal (whose value already *is* `data`), one `extractvalue` for a general `StrView` value. Trusts that the buffer is NUL-terminated at `data[len]`, always true for a literal but not guaranteed for an arbitrary sub-slice (see [Strings — Gotchas and constraints](strings.md)).
 - **`ptr:S` → by-value `S`** (`S` a struct): one `load` of the pointee — the implicit form of `(deref p)`. This is what lets a `(S …)` compound literal, which is alloca-backed and evaluates to `(ref S)`, be written directly wherever a by-value `S` is expected: an element of an `(array S …)`, a struct-typed field in another struct literal, a `let`/`with` binding declared `:S`, an `aset!`/`ptr-set!` element store, and an implicit or explicit `return` from an `S`-returning function. Argument positions have always accepted it. The element type must match exactly (a compound literal of a *different* struct is still a type mismatch), and because the conversion is a `deref` it carries `deref`'s obligation: a `?T` source must be narrowed first. The explicit `(deref (S …))` spelling remains valid and emits byte-identical IR.
 - **Integer ↔ integer**:
   - Same width, different sign (e.g. `i32` ↔ `ui32`): reinterpret, no IR.
-  - Widening: `sext` for signed source, `zext` for unsigned source. `i1`/`bool`
-    counts as **unsigned**, so `(as i32 true)` is `1` and `(as i64 true)` is
-    `1` — matching this page's literal table and the `bool` → `_Bool` C mapping,
-    where `(int)true` is `1`. The same reading makes `i1` order correctly under
-    the comparison operators: `(< false true)` is true and `(> true false)` is
-    false.
+  - Widening: `sext` for signed source, `zext` for unsigned source.
   - Narrowing: `trunc` — **except** that a narrowing of an integer *literal*
     whose value does not fit the target type is a **compile-time error**
     (`integer literal 300 does not fit ui8`), never a silent wrap. This applies
@@ -724,15 +763,22 @@ The following conversions are applied automatically in assignment contexts (`let
     and emit the same IR. Only the narrowing of a *value* is outside `as`'s
     safe set. The float narrowing below follows the same rule, with a stricter
     notion of "fits" — see there.
-  - **`i1`/`bool` holds `{0, 1}`**, not a 1-bit two's-complement range, so the
-    range check above admits exactly those two values: `(defvar g:i1 1)` and
-    `(let (a:i1 0) …)` mean what `true` and `false` mean, while `(defvar g:i1
-    5)` and `(defvar g:i1 -1)` are compile-time errors rather than a silent
-    truncation to `true`. (`true`/`false` are their own literals and are not
-    range-checked.) The same `{0, 1}` reading is why `i1` is treated as
-    **unsigned** everywhere the signedness of a type is asked: widening picks
-    `zext`, comparison picks the unsigned `icmp`, and a conversion to a float
-    picks `uitofp`.
+- **`bool` takes none of the conversions above, in either direction.** `bool`
+  is not an integer kind (`is-int-type` excludes it), so this chokepoint never
+  fires for it: an integer literal or value assigned to a `bool` slot
+  (`(defvar g:bool 1)`, `(let (b:bool n:i32) …)`) is a **type mismatch**, not a
+  narrowing, and a `bool` value into an `i32` slot is refused the same way.
+  `true`/`false` are the only legal `bool` literals — `0` and `1` are not
+  numeric spellings of them. Both directions still have an explicit escape:
+  `(as i32 b)` is a safe `zext` (`bool` is unsigned, so `(as i32 true)` is `1`,
+  matching the `bool` → `_Bool` C mapping), and `(unsafe/cast bool n)` narrows
+  back, lossily. `bool` is the one exception to this section's opening claim
+  that `as` accepts exactly the implicit safe set: `(as i32 b)` compiles while
+  `(let (n:i32 b) …)` does not, because `bool`→`int` widening is reached only
+  through `as`'s own dedicated path, never through this chokepoint. `bool`
+  still orders correctly under the comparison operators — `(< false true)` is
+  true, `(> true false)` is false — because comparison is unified binop typing
+  (see below), not this coercion rule.
 - **Float ↔ float**:
   - Widening `f32` → `f64`: `fpext`.
   - Narrowing `f64` → `f32`: `fptrunc` for a *value*, and for a float **literal**
@@ -806,10 +852,12 @@ result type is that unified type (a comparison always yields `bool`). The rule i
   `(+ i32-value i64-value)` is `i64`, `(+ f32-value f64-value)` is `f64`.
 - Everything else is a compile error at the operator: a float operand against an
   integer operand (`float and non-float operands`), mixed-sign integers such as
-  `i32 + ui32` or `bool` against `i32` (`mixed signed/unsigned operands`) — `i1`
-  is unsigned, so a `bool` operand needs the same explicit cast any other
-  unsigned type would — and a typed `Char` against a
-  typed non-`Char` integer (`operand type mismatch`). Fix these with an explicit
+  `i32 + ui32` (`mixed signed/unsigned operands`), a typed `Char` against a
+  typed non-`Char` integer (`operand type mismatch`), and `bool` refused
+  outright — `+ - * / % bit-*` reject a `bool` operand even against another
+  `bool` (`_+ does not apply to bool`), and reject a mixed `bool`/non-`bool`
+  pair (`_+: mixed bool and non-bool operands`); only the six comparisons
+  accept `bool` operands. Fix the integer/float cases with an explicit
   `(as ...)` (widening / same-width sign reinterpret) or `(unsafe/cast ...)`
   (narrowing, `float`↔`int`) on the binop side — the compiler will not
   sign-reinterpret or truncate a *typed* value for you.
@@ -850,7 +898,7 @@ type to convert toward, so it takes C's default argument promotions instead
 (C17 §6.5.2.2p6) — the rule `va_arg` on the other side assumes:
 
 - an integer narrower than C's `int` widens to `int`: `zext` for an unsigned
-  source (`bool`/`i1` among them, so `true` arrives as `1`), `sext` for a signed
+  source (`bool` among them, so `true` arrives as `1`), `sext` for a signed
   one;
 - `f32` widens to `f64`;
 - everything already `int`-wide or wider is untouched, including `Char` (a
@@ -865,13 +913,33 @@ A variadic callee's **fixed** parameters are ordinary typed slots and take the
 rules above; only the `...` tail is promoted. A materialized `StrView` in the
 tail contributes just its `data` pointer — see [Strings](strings.md).
 
+### Condition position is an elimination, not a coercion
+
+A nullable value — `(raw T)`, `CStr`, `?T`, or a value `(Maybe T)` — is accepted
+directly as a condition at the six condition sites and eliminated to `bool`
+there. That rule is **not** part of the coercion set above, and `bool` is not a
+universal sink: a `bool` parameter, `defstruct` field, `let`/`with` slot,
+`set!` target or `return` still refuses a pointer, and `(defn g (b:bool))` does
+not become a dispatch candidate for every call.
+
+```lisp
+(defn g (b:bool):i32 …)
+(when p …)      ; fine — p is a condition
+(g p)           ; error: argument 1 has type ptr:Pt, which does not match
+                ;        parameter type bool
+(let (b:bool p) …)   ; error: let: init type mismatch for 'b'
+```
+
+The full rule, including what stays a type error and why, is in
+[Condition position](special-forms.md#condition-position-a-nullable-value-is-a-condition).
+
 ## Literal Values
 
 | Name | Type | C Equivalent |
 |------|------|--------------|
 | `null` | ptr | `NULL` |
-| `true` | bool (i1) | `1` / `true` |
-| `false` | bool (i1) | `0` / `false` |
+| `true` | `bool` | `1` / `true` |
+| `false` | `bool` | `0` / `false` |
 | `"…"` string literal | `StrView` | `"…"` (a `char*`/`{ptr,len}` view — see above) |
 | `c"…"` string literal | `CStr` | `"…"` (bare `char*`, no view header) |
 | `\a`, `\newline`, `\u{1F600}` char literal | `Char` | `(uint32_t)U'…'` |
@@ -894,12 +962,11 @@ The same width rule and the same range check apply to a **named** constant. A
 `(let (x:i32 BIG) …)` and `(defvar g:i32 BIG)` are compile-time errors rather
 than a silent 32-bit wrap. Enum members are always small enough to be `i32`.
 
-The narrowest destination is `i1`/`bool`, whose value set is `{0, 1}` — the two
-values `false` and `true` denote. `1` and `0` are legal numeric spellings of
-them; every other literal, including `-1`, is rejected. Reading `i1` as a 1-bit
-*signed* integer would give the range `[-1, 0]`, which is not the type Nucleus
-has — and would make `true` widen to `-1` and sit *below* `false` in a
-comparison. `i1` is unsigned; see the widening rule above.
+`bool` is not a destination for an integer literal at all — it takes no part in
+this adaptation. `true` and `false` are `bool`'s own literals, and `0`/`1` are
+**not** numeric spellings of them: `(defvar g:bool 1)` is a type mismatch, the
+same as any other integer literal assigned to a non-integer slot (see the
+`bool` bullet under *Implicit Type Coercion* above).
 
 ## String literal escapes — `\n`, `\xHH`
 
@@ -1011,6 +1078,11 @@ A `Keyword` has static type `Keyword` and conforms to both `Hash` and `Eq`, maki
 - **Colon-chain type syntax** (`ptr:i8`, `ref:Foo`) — the colon is interior, not leading.
 - **Colon-paren binding sugar** (`name:(ref T)`) — the colon is trailing on the name token; the paren that follows is read as a type expression.
 - A bare `:` by itself remains a plain symbol.
+
+The [`&` type sigil](#pointer-kinds-ptr-t-raw-t-and-t) *does* apply inside a
+keyword's name, which is what makes the keyword-led return spelling `):&T` work
+(the body `&T` expands to `ref:T` exactly as the bare symbol would). The
+consequence to know: a keyword **value** written `:&x` reads as `:ref:x`.
 
 **Intern pool limit.** The intern pool holds up to 256 distinct keywords per process. Exceeding this limit aborts with a diagnostic. 256 is ample for a typical program's keyword vocabulary.
 

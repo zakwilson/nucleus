@@ -18,7 +18,7 @@ A `defn` whose name already exists but whose **parameter types differ** does not
 (defn sum (a:i32 b:i32):i32 (return (+ a b)))
 ```
 
-**Symbol mangling.** A name with a single method keeps its unmangled symbol `@name` and stays C-callable. A name with two or more methods becomes an overload set: each method is emitted under a mangled symbol `@name.<tok>...` where each `<tok>` names a parameter type (`i32`, `f64`, `pCircle` for `ptr:Circle`, the struct name for a by-value struct, …). The mangle decision is made after a whole-file prescan, so all methods of a name agree. An **operator** name (`=`, `<`, `_+`, …) is mangled even when the user writes only one method, because its generic always carries the intrinsic seed method alongside; the mangled base is the operator's mnemonic, so `(defn = (a:Pt b:Pt):i1 …)` emits `@eq.Pt.Pt` and no `@=` exists. A generated C header declares each method under its own name and label — see [Overloaded and operator-named functions in a C header](compiler.md#overloaded-and-operator-named-functions-in-a-c-header).
+**Symbol mangling.** A name with a single method keeps its unmangled symbol `@name` and stays C-callable. A name with two or more methods becomes an overload set: each method is emitted under a mangled symbol `@name.<tok>...` where each `<tok>` names a parameter type (`i32`, `f64`, `pCircle` for `ptr:Circle`, the struct name for a by-value struct, …). The mangle decision is made after a whole-file prescan, so all methods of a name agree. An **operator** name (`=`, `<`, `_+`, …) is mangled even when the user writes only one method, because its generic always carries the intrinsic seed method alongside; the mangled base is the operator's mnemonic, so `(defn = (a:Pt b:Pt):bool …)` emits `@eq.Pt.Pt` and no `@=` exists. A generated C header declares each method under its own name and label — see [Overloaded and operator-named functions in a C header](compiler.md#overloaded-and-operator-named-functions-in-a-c-header).
 
 **Overloading is per namespace, and so is the symbol.** Both halves of the rule above — the `<prefix>__` a [namespaced](compiler.md#namespaced-libraries-nuch-round-trip) definition carries, and whether a `.tok` suffix is added at all — are decided from the methods *that namespace* defines, not from every method in the unit. Two namespaces that each define `describe` are not overloading each other: `(ns qa) (defn describe (x:i32):i32)` emits `@qa__describe` and `(ns qb) (defn describe (x:i64):i64)` emits `@qb__describe`, whether they are compiled together or apart, and in either import order. Dispatch is the separate question and stays unit-wide: a *bare* `(describe …)` still chooses among every visible method by argument type, and a qualified `qa/describe` sees only `qa`'s. This is what lets a library's `.nuch` and C header — which are written from the library alone — name the symbol its object actually defines. Within one namespace nothing changed: two `describe`s there are one overload set and both take `.tok` suffixes.
 
@@ -220,6 +220,23 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
   re-registers it (trusting the exporter's A2 check) and stamps its own
   instantiations locally, calling the exporter's concrete protocol methods by
   their mangled symbols.
+
+- **A type variable may be determined by the *expected* type alone.** The usual
+  case binds every variable from the arguments, but a constructor like
+  `(defn vector-new-in ((a (ref AllocHandle))) (ref (Vector T)) …)` mentions `T`
+  only in its return type, and takes it from whatever the position names — a
+  `let`/`with` annotation, a `set!` target, a `return`, a `.set!` field, or an
+  `as`. With nothing to take it from, the call is refused by name:
+  ```
+  error: cannot infer type variable 'T' for 'vector-new-in': no expected type
+    at this position — annotate the binding
+  ```
+  Such instantiations are distinguished by their return type in the emitted
+  symbol (`@vector_new_in.pAllocHandle.$r.pVector.i64`), because the parameter
+  types alone do not identify them — so one unit may use as many element types as
+  it likes. (Before Stage 16 SE-2 it could not: the first instantiation answered
+  for all of them, silently.) A variable a `:where` constraint recovers counts as
+  determined and is unaffected.
 
 Implementation: templates are registered as `METHOD-GENERIC` in `g-generics`
 (retaining the body); `generic-resolve` adds the protocol-bound tier and, on a

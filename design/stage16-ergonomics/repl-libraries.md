@@ -846,20 +846,17 @@ Three consequences worth recording:
   because it is the general "replayable across epochs" property D9 states as a
   rule, and it was proven inert; it is a standing invariant, not a live fix.
 * **Where the *name* is visible, the type line is now present. The name's
-  visibility to the prescan is a separate, wider defect and stays out of
-  scope.** Naming a CT-defined type in a **signature** — `(defn getx
-  (p:D9P):i32 …)` — still fails `unknown type: D9P — not defined anywhere in
-  this compilation unit`, because `prescan-struct-names`
-  (`src/nucleusc.nuc:15260`) is a flat walk over the top-level form list and
-  never descends into a `compile-time` body, so `prescan-defn-signatures` cannot
-  resolve it. Confirmed by discriminator rather than by reading: putting a
-  `(printf "CT RAN\n")` first in the CT block produces the diagnostic with **no**
-  `CT RAN`, so the refusal precedes any emission. The same ordering exists one
-  level in — `emit-compile-time`'s own defn-signature prescan loop
-  (`:13940-13984`) runs before its body-form loop (`:13986-14016`), so
-  `(compile-time (defstruct D9P …) (defn ct (p:D9P):i32 …))` fails too. Fixing
-  that means changing what a prescan walks, which is a much wider blast radius
-  than D9.
+  visibility to the prescan was a separate defect — CLOSED by D9a below.**
+  Naming a CT-defined type in a **signature** — `(defn getx (p:D9P):i32 …)` —
+  failed `unknown type: D9P — not defined anywhere in this compilation unit`,
+  because `prescan-struct-names` was a flat walk over the top-level form list
+  and never descended into a `compile-time` body, so `prescan-defn-signatures`
+  could not resolve it. Confirmed by discriminator rather than by reading:
+  putting a `(printf "CT RAN\n")` first in the CT block produced the diagnostic
+  with **no** `CT RAN`, so the refusal preceded any emission. The same ordering
+  existed one level in — `emit-compile-time`'s own defn-signature prescan loop
+  runs before its body-form loop, so
+  `(compile-time (defstruct D9P …) (defn ct (p:D9P):i32 …))` failed too.
 
 **Gates.**
 
@@ -920,6 +917,108 @@ needing its own diagnosis rather than that explanation.
 `repl-put-preamble`'s declare filter. R4 adds only *type* lines to the preamble,
 so it neither causes nor widens that gap, and the five probes R3 recorded still
 find nothing. Left as is.
+
+**D9a as built (2026-08-29) — the signature position, closed.** D9 left one
+shape open and framed it as needing "a much wider blast radius". It did not: the
+whole repair is a **descent**, because the prescans were already walking a form
+list of exactly the shape a `compile-time` body has.
+
+**The change.** `prescan-struct-names` and `prescan-struct-layouts`
+(`src/nucleusc.nuc:15953` / `:16052`) become one-line wrappers over
+`prescan-struct-names-mode` / `prescan-struct-layouts-mode`, which carry an
+`in-ct` flag and, at `in-ct 0`, recurse into a `compile-time` form's `cdr` with
+`in-ct 1`. That `cdr` *is* a top-level-shaped chain — the same cons list whose
+cars the outer walk already reads — so this is the existing walk one level down,
+not a second one. `emit-compile-time` (`:14628-14629`) calls both descents on
+its own body before its defn-signature loop; in batch that is idempotent (the
+unit prescan already descended), and in the REPL it is the only registration,
+because a `compile-time` entry reaches `emit-compile-time` with no unit prescan
+at all. Both drivers therefore agree, which is what §3.1-§3.5 exist for.
+
+**The layout half is load-bearing, not symmetry.** A CT-defined type named
+**by value** needs its size before `abi-classify` reads it, and W9 item 40's
+finding is that an unlaid-out struct is *sized 0* rather than diagnosed. With
+only the name descent, `(defn f (p:D9V):i32 …)` placed above the block lowers to
+`define i32 @f(i0 %p.arg)`; with both, `define i32 @f(i64 %p.arg)`, which is the
+correct SysV classification for an 8-byte struct. The gate asserts the lowered
+parameter type, not just the value.
+
+**Mirroring the emitter's SKIPS is the whole risk, and it is quantified.**
+conventions.md's rule ("a pre-pass that mirrors an emitter must mirror its
+skips") is the binding constraint here, because over-registering is *worse than
+the bug*: a name that resolves in a signature with no `%Name = type` line is
+silent invalid IR at exit 0 — the failure shape D9's own ruling calls the worst
+available. `emit-compile-time`'s body loop has an arm for `defstruct` and for
+nothing else this pass registers. Probed rather than read: `defstruct-`,
+`defunion`, `deftype` and a nested `compile-time` inside a CT block are each
+rejected today as `unknown: <head>`, i.e. the block never defines them. So the
+descent registers `defstruct` only, and the decision is shared rather than
+duplicated — `ct-emits-defstruct` (`:14586`) is one predicate that *both* the
+prescan filter and `emit-compile-time`'s own arm call, so the two cannot drift
+(the `binop-result-type` shape: mirroring a call cannot diverge, mirroring the
+logic can). `s16-d9-ct-descent-mirrors-skips` asserts the four refusals; it
+passes on the pre-D9a binary too, by construction — it guards against a future
+widening rather than a past regression.
+
+**Which prescans share the defect, and which do not.** Only the two type passes.
+The others were each checked against the same question — "does
+`emit-compile-time` define this, and *where*?":
+
+| pass | descends? | why |
+|---|---|---|
+| `prescan-struct-names` / `-layouts` | **yes** | a CT `defstruct` is a PROGRAM type (D9's ruling), so its line is in the program module and the name must be visible to the unit |
+| `prescan-value-names` (`defvar`/`defconst`/`defenum`) | no | a CT `defvar`'s `@g = global` goes to `ct-decl`, the CT module **alone** |
+| `prescan-defn-signatures` | no | a CT `defn`'s `define` goes to `ct-def`, likewise |
+| `prescan-union-layouts`, `prescan-protocols`, `prescan-file-imports`, `prescan-imported-types`, `prescan-imported-signatures`, `prescan-explicit-declares` | no | `defunion`, `defprotocol`, every import spelling and `declare` have no arm in that loop — a CT body spelling one is already an `unknown:` diagnostic |
+
+The `defvar`/`defn` rows are the interesting ones, and they are measured, not
+assumed. A **backward** reference to either already produces invalid IR today
+(`use of undefined value '@ctf'` / `'@ctv'` at `-o`, after `--emit-llvm` exits
+0), because `emit-compile-time` binds both names into `g-globals`. Descending
+would extend that broken shape to **forward** references, converting a clean
+`unknown: ctf` diagnostic into the same undefined-symbol IR. Making CT values
+and functions program-visible needs the ruling D9 took for types to be taken
+again for values — that is a real decision, not a prescan fix, and it is
+**deferred** with that reason. (The pre-existing backward-reference hole is
+noted here rather than fixed: it is D9-adjacent but not D9 residue.)
+
+**One pre-existing hole is now reachable one more way, and is deliberately left.**
+`--emit-cheader` will export `int32_t f(struct D9P p)` for a signature naming a
+CT-defined type it does not define. That is not new: `(defstruct- PrivS …)` +
+`(defn priv-sum (p:PrivS):i32 …)` emits exactly the same unusable header today,
+which is conventions.md's "a generated C header that COMPILES can still be
+unusable". The descent adds one instance to a recorded class rather than a class;
+closing it means a "does this header define every type it names?" check that
+private structs need first. `make check-headers` is 69/69 unchanged.
+
+**Gates.**
+
+* **IR neutrality:** every `examples/*.nuc` (152) and every `lib/*.nuc` (35),
+  `--emit-llvm`, pre-D9a `bin/nucleusc` vs. rebuilt `build/nucleusc`, `diff -rq`
+  clean on `.ll`, stdout, stderr **and** exit code — **187/187 byte-identical**.
+  Header modes swept too: `--emit-nuch` and `--emit-cheader` over all 35 `lib/`
+  + 14 `src/` modules, **96/96 identical**. (187 and 35 rather than D9's 186 and
+  34: one `lib/` module has been added since.) Run twice — before and after the
+  final source edit — with the same result.
+* **New batch assertions**, appended to `run_s16_d9_ct_types`:
+  `s16-d9-ct-type-in-signature` (a by-value `defn` **above** the block plus a
+  `ref` one below it; asserts `define i32 @d9-byval(i64 …)` and the runtime
+  `7 12`), `s16-d9-ct-type-in-ct-signature` (the one-level-in shape, asserting
+  the CT output `d9 ct inner 11`), and `s16-d9-ct-descent-mirrors-skips`. On the
+  pre-D9a binary the first two **FAIL** and the third PASSes.
+* **New REPL section** `tests/repl/prelude.in` §8, beside D9's §7: one entry
+  whose CT body defines the type *and* a `defn` naming it, then a later entry's
+  program-level signature over that type. Asserts values (`d9 ct sig 11`, `12`),
+  not merely that the entries compiled. On the pre-D9a binary all three entries
+  report `unknown type: D9Sig` / `unknown: d9-prog-call`.
+* `make test`: **908 PASS / 0 FAIL** (905 + the three new assertions; §8 grows an
+  existing fixture rather than adding a unit). `make abi-test`, `make
+  layout-test`, `make check-headers` (69/69) and `make avr-test` all PASS.
+* `make bootstrap`: `PASS: stage1.ll == stage2.ll`, `PASS: bootstrap complete`.
+  The compiler's own IR **did** move (three new functions, +136 lines), so
+  `make update-bootstrap` was run at this green milestone and the new fixed
+  point re-confirmed: `boot/nucleusc.ll == build/nucleusc.ll == build/stage2.ll`,
+  and stage3 (stage2 binary compiling `src/`) `== stage2.ll`.
 
 ### 3.4 A real unwind for the error path (D4, D5)
 
@@ -990,6 +1089,14 @@ Where truncation is not available for a registry, record which registry and why,
 rather than leaving the gap silent.
 
 #### R1 as built (2026-08-24)
+
+> **The shim is no longer C.** On 2026-08-30 all four of its functions were
+> rewritten in Nucleus and `src/repl_shim.c` was deleted — see
+> [c-header-layout.md](c-header-layout.md) §11. Everything below still describes
+> the shape, which was preserved exactly; only the language and the storage of
+> the jump buffer changed (each protected frame allocas its own, since a
+> `defvar` cannot name `(array __jmp_buf_tag N)`). Read `repl_protect` /
+> `repl_throw` below as `repl-protect` / `repl-throw` in `src/repl.nuc`.
 
 Three corrections to the plan above, and one gap the plan asked to be recorded.
 
@@ -1380,7 +1487,23 @@ as a red test before it.
 
 ## 6. Out of scope, and why
 
-**`(import-use node)` fails with a duplicate symbol.** The compiler is linked
+**`(import-use node)` fails with a duplicate symbol. — CLOSED 2026-08-29, and
+the diagnosis below was wrong.** See
+[repl-jit-symbol-precedence.md](repl-jit-symbol-precedence.md). ORC was not
+"finding the host's copies before the module's": LLJIT already links its own
+`<Process Symbols>` JITDylib **last**, so a module's own definitions win. The
+compiler was attaching a *second, redundant* process generator to the **main**
+JITDylib, and a generator **defines** what it reflects — so the first macro that
+referenced `alloc-node` claimed that name in main for the rest of the session.
+The fix is the deletion of that generator; `-rdynamic` is untouched and stays
+load-bearing. Of the two candidates sketched below, the first was chosen (as a
+deletion, not a new generator) and the second rejected as a general rule, because
+its discriminator would be `dlsym` on a name and so cannot tell "the compiler
+links this very file" from "a user's library happens to reuse a compiler-internal
+name" — which would turn today's loud `Duplicate definition` into a silent
+signature mismatch. The original note is kept below as filed.
+
+The compiler is linked
 `-rdynamic`, so its own copies of the node runtime are exported and ORC finds
 them before the module's. Verified:
 
@@ -1400,6 +1523,9 @@ own item. It is narrow: the Stage 16 prelude split means the compiler's node
 runtime is no longer pulled in by every program, so this bites `(import-use node)`
 and the handful of libraries that reach it, not the `lib/` tree at large. Noted
 here so the next session does not rediscover it from scratch.
+
+*(End of the note as filed. The `nm -D` evidence above is still accurate — it is
+the inference drawn from it that was not.)*
 
 **Redefining a `defn` with a different signature** remains unsafe
 (`context/repl.md` already says so), and the spurious

@@ -83,13 +83,13 @@ recognised as one — cast the threaded value in a form of its own instead.
 | Form          | Expansion                                       |
 |---------------|-------------------------------------------------|
 | `(and)`       | `true`                                          |
-| `(and x)`     | `x` — **unchecked** (no i1 check)              |
+| `(and x)`     | `x` — **unchecked** (no condition check)        |
 | `(and a b ...)` | `(_and a (and b ...))` — right-fold          |
 | `(or)`        | `false`                                         |
-| `(or x)`      | `x` — **unchecked** (no i1 check)              |
+| `(or x)`      | `x` — **unchecked** (no condition check)        |
 | `(or a b ...)` | `(_or a (or b ...))` — right-fold             |
 
-The binary `_and`/`_or` i1-check both operands and short-circuit left-to-right (`_and` stops at the first false, `_or` at the first true). Because the macro right-nests, each operand in an N-ary chain narrows under all prior ones (cumulative narrowing — a later `(m field)` typechecks after an earlier `(!= m null)`). See the [`and`/`or`/`_and`/`_or`](special-forms.md#special-forms) rows for the full short-circuit and narrowing semantics.
+The binary `_and`/`_or` eliminate both operands to `bool` at each condition site (not just `bool` itself — a nullable `raw`/`CStr`/`?T` or a value `Maybe` is punned too, and a non-null `ptr`/`(ref T)` or a `!T` gets its own diagnostic; see [Condition position](types.md#condition-position-is-an-elimination-not-a-coercion)) and short-circuit left-to-right (`_and` stops at the first false, `_or` at the first true). Because the macro right-nests, each operand in an N-ary chain narrows under all prior ones (cumulative narrowing — a later `(m field)` typechecks after an earlier `(!= m null)`). See the [`and`/`or`/`_and`/`_or`](special-forms.md#special-forms) rows for the full short-circuit and narrowing semantics.
 
 ## `macrolet` — lexically scoped macros
 

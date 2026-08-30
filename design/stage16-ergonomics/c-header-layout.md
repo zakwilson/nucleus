@@ -13,7 +13,9 @@ this document is the record of what was measured and when. See
 [docs/structs-unions.md](../../docs/structs-unions.md) (C header struct
 ingestion, array members, typedefs, `returns_twice`) and
 [examples/setjmp-guard.nuc](../../examples/setjmp-guard.nuc) (§7's worked
-example, now a running test) for the user-facing result.
+example, now a running test) for the user-facing result. **§8 (2026-08-29)
+closes three further §6 deferrals — CD-1/CD-2/CD-3, the declarator-grammar
+ones.**
 
 **The goal this serves.** Nucleus is a drop-in replacement for C. It must be
 usable anywhere C is usable, so it must be possible to obtain **any** required
@@ -348,7 +350,7 @@ a **characterized diff**: the sweep's output diff must consist of exactly the
 | **D2** | The C body parser has no array member type at all: `[` after a field name abandons the whole struct. | `src/cheader.nuc:1178-1182` |
 | **D3** | A `#` linemarker inside a struct body is read as a field type and abandons the struct — `clang -E` puts them there, and `struct timespec` is the casualty. | `src/cheader.nuc:304` (`c-skip-ws`), used at `:1153`/`:1162`/`:1177`; the top-level loop handles `#` correctly at `:1604-1613` |
 | **D4** | An array typedef of an aggregate with **no body** (`typedef struct T name[1];` — `T` declared separately) is registered as a plain alias of `T`; the extent is discarded and the parameter is passed `byval` where C decays it to a pointer. | `src/cheader.nuc:1272` (no `[` check); scalar array typedefs take the other branch and are recorded unrepresentable at `:1417-1420` |
-| **D4 residue** (not staged — see §6) | A **with-body** aggregate array typedef, `typedef struct Tag { … } Name[N];` (body and array declarator in the same statement), takes a different branch from D4 above and still discards its extent after L1–L5: `declare i32 @take_ptarr(i64, i64)` where clang says `ptr`. Verified identical on the pre-change binary — L1–L5 do not touch this branch. Occurs **zero** times across the 30 standard headers this document surveys. | `src/cheader.nuc:1467` (`c-parse-struct-decl`), body branch at `:1568-1580`: the typedef name after the body is read with `c-read-ident`, which stops at `[` and never checks for it, so `Name[N]` registers a plain alias `Name`. The no-body branch's `[N]` check that D4/L3 added (once at `:1272`, now drifted with the rest of the function) has no counterpart here. |
+| **D4 residue** (**closed 2026-08-29 as CD-3, §8**) | A **with-body** aggregate array typedef, `typedef struct Tag { … } Name[N];` (body and array declarator in the same statement), takes a different branch from D4 above and still discards its extent after L1–L5: `declare i32 @take_ptarr(i64, i64)` where clang says `ptr`. Verified identical on the pre-change binary — L1–L5 do not touch this branch. Occurs **zero** times across the 30 standard headers this document surveys. | `src/cheader.nuc:1467` (`c-parse-struct-decl`), body branch at `:1568-1580`: the typedef name after the body is read with `c-read-ident`, which stops at `[` and never checks for it, so `Name[N]` registers a plain alias `Name`. The no-body branch's `[N]` check that D4/L3 added (once at `:1272`, now drifted with the rest of the function) has no counterpart here. |
 | **D5** | Nucleus emits no `returns_twice`, so a `setjmp` call is indistinguishable from any other call to the optimizer. Measured: the compiler's own `build/nucleusc.ll` has **zero** `attributes #N = {…}` groups and **zero** `define … #N`; the only function attribute it emits anywhere is `noreturn`, from two `fprintf` sites. | `src/cheader.nuc:943-947`, `src/nuch.nuc:551-555` (line numbers as built — drifted from the design-time `:951-952`/`:544-545` above) |
 
 D1 is the root cause. D2, D3 and D4 are each independently sufficient to make a
@@ -610,6 +612,7 @@ no way for a user to say it about a `defn`. L4 is deliberately import-side only:
 the name list, and a `.nuch` `declare` keyword for symmetry with `noreturn` if
 that costs nothing. A Nucleus function that itself returns twice is not a thing
 the language can express and is not in scope.
+**~~Not in scope.~~ Taken 2026-08-29 — see §10.**
 
 ### 3.5 The `deftype` integration question
 
@@ -945,20 +948,25 @@ type inside the function-pointer's own signature (met while skipping past it)
 leaks into the enclosing struct's verdict and converts a case that already
 works today into a new refusal.
 
-**With-body aggregate array typedef.** `typedef struct Tag { … } Name[N];`
-(body and array declarator in the same statement) still discards its extent
-after L1–L5 — see the D4-residue row in §2. Silently wrong calling
-convention, zero occurrences across the standard headers surveyed, and not
-staged because of that combination: real cost, no known caller.
+**~~With-body aggregate array typedef.~~ Closed 2026-08-29 as CD-3 — see §8.**
+`typedef struct Tag { … } Name[N];` (body and array declarator in the same
+statement) discarded its extent after L1–L5 — see the D4-residue row in §2.
+Deferred here for the combination "silently wrong calling convention, zero
+occurrences across the standard headers surveyed"; taken because the *silence*
+is the class L1 exists to remove, whatever the occurrence count.
 
-**`Sym.returns-twice` is write-only.** Both registration sites (the C
-importer's by-name list and the `.nuch` round-trip reader) now set it, and
-nothing reads it — the attribute rides the emitted `declare` and has no
-call-site consequence *in Nucleus*, unlike `noreturn`, which
-`terminate-after-noreturn` consumes to end a block. This is deliberate, not
-an oversight: there is nothing for Nucleus itself to narrow or refuse on a
-"this call may return twice" fact. Worth a line so a future reader does not
-go looking for the reader that isn't there.
+**`Sym.returns-twice` has no reader, and now has a third writer.** *(Revised
+2026-08-29 with §10: the original note said "both registration sites", and there
+are three — `emit-defn` joined the C importer's by-name list and the `.nuch`
+round-trip reader when the attribute became user-settable.)* Nothing **reads**
+it: the attribute rides the emitted `define`/`declare` and has no call-site
+consequence *in Nucleus*, unlike `noreturn`, which `terminate-after-noreturn`
+consumes to end a block. That half is deliberate and survived the change —
+there is nothing for Nucleus itself to narrow or refuse on a "this call may
+return twice" fact, and LLVM derives the caller-side handling
+(`callsFunctionThatReturnsTwice`, alloca placement, stack colouring) from the
+attribute on the call itself. Worth a line so a future reader does not go
+looking for the reader that isn't there.
 
 **`__attribute__((packed))` and alignment attributes.** `struct epoll_event` is
 16 bytes in Nucleus and 12 in C, silently, and neither L1 nor L2 touches it: both
@@ -980,10 +988,14 @@ and Nucleus has no equivalent to lower it onto.
 bitfields, `long double` and `_Complex` together, and `design/progress.md` lists
 that deferral. Fails safe. Nothing here changes its standing.
 
-**Multi-declarator field lines (`int a, b;`) and comma-separated typedef
-declarator lists (`typedef int a, *b;`).** Both already recorded as known gaps in
+**~~Multi-declarator field lines (`int a, b;`) and comma-separated typedef
+declarator lists (`typedef int a, *b;`).~~ Closed 2026-08-29 as CD-1 and CD-2 —
+see §8.** Both were recorded as known gaps in
 `design/stage15-stress-test/cheader.md` ("What blocks the next rung", items 1 and
-3). Both fail safe. L1 does not make either worse and L2 does not need either.
+3), and both failed safe, so neither was a miscompile: this was coverage. L1 did
+not make either worse and L2 did not need either. What was left of them after
+CD-1/CD-2 is one shape — declarators that disagree in *pointer depth* — and it
+still fails safe (§8.2).
 
 **`long double` / `_Float128` / `_Float16`.** 156 declarations correctly refused
 across the standard headers, per W3c's measurement. A type-system change, not a
@@ -1012,26 +1024,28 @@ figure suggests.
 > also turned up — a bare `unsigned`/`signed` is not a type, and that path
 > records no skip reason — both staged there.
 
-**The rest of `src/repl_shim.c`.** The shim's own header comment is the
-motivating instance — *"jmp_buf is an opaque, platform-specific type that Nucleus
-cannot express directly"* — and L1–L4 remove that reason. They do not remove the
-shim: `repl_print_f64` and `repl_print_f32` are there for float formatting
-(`%.17g` with a `.0` suffix rule) and have nothing to do with `setjmp`. Retiring
-the shim is a separate item, and the setjmp half is its prerequisite, not its
-whole.
+**~~The rest of `src/repl_shim.c`.~~ Closed 2026-08-30 — see §11.** The shim's
+own header comment was the motivating instance — *"jmp_buf is an opaque,
+platform-specific type that Nucleus cannot express directly"* — and L1–L4
+removed that reason. Both halves went in one item: the `setjmp` half because
+L1–L5 made it writable, and the float-printing half because Stage 16 FP-2 made
+an indirect call through a typed function pointer ABI-lowered and coercing, so a
+`(fn f64)()` value is callable from Nucleus and needs no C wrapper either. The
+file is gone; the compiler is pure Nucleus.
 
-**A user-declarable `returns_twice` on a Nucleus `defn`.** §3.4's scope note.
+**~~A user-declarable `returns_twice` on a Nucleus `defn`.~~ Closed 2026-08-29
+— see §10.** §3.4's scope note.
 
-**`--emit-cheader` does not `#include` the header a rendered C typedef came
-from.** A public signature naming `off_t` renders as bare `off_t` in the
-generated header (verified: `off_t seek(int32_t fd, off_t off);`, no
-`#include <unistd.h>` anywhere in the output), unlike a type borrowed from
-another *Nucleus* unit, which does get an `#include` of that unit's generated
-header (`docs/compiler.md`, "Types a header borrows from another unit"). A
+**~~`--emit-cheader` does not `#include` the header a rendered C typedef came
+from.~~ Closed 2026-08-29 — see §9.2.** A public signature naming `off_t`
+rendered as bare `off_t` with no `#include <unistd.h>` anywhere in the output,
+unlike a type borrowed from another *Nucleus* unit, which does get an
+`#include` of that unit's generated header (`docs/compiler.md`, "Types a header
+borrows from another unit"). The counter-argument recorded here — that a
 consumer of the generated header is expected to `#include` the same C header
-itself. Not staged — L5's own
-scope is making the name resolve inside this compilation unit, and this is
-the export side of a name that came from outside it.
+itself — did not survive being measured against the header the compiler
+actually writes: a bare `off_t` is `error: unknown type name`, so the header
+did not compile at all.
 
 ---
 
@@ -1080,3 +1094,456 @@ that the docs should state when this lands:
 - **`longjmp` already gets `noreturn`** from the hardcoded list at
   `src/cheader.nuc:23-26`, so `terminate-after-noreturn` (`src/scope.nuc:143`)
   already ends the block after it. L4 adds the matching half on the other side.
+
+---
+
+## 8. As built: CD-1, CD-2, CD-3 — the three declarator shapes
+
+**Status: implemented 2026-08-29** on `stage16-ergonomics`, closing the last
+three §6 deferrals that are about the *declarator grammar* rather than about the
+type system. `make test` 888 → **894 PASS / 0 FAIL** (+6 assertions, one new
+unit `run_cd_declarators` + `tests/fixtures/cd-declarators.h`); `make bootstrap`
+converged with **no boot refresh**; `make abi-test`, `make layout-test` and
+`make check-headers` (69/69) green.
+
+| id | shape | before | after |
+|---|---|---|---|
+| **CD-1** | a multi-declarator field line, `int a, b;` | the `,` abandoned the body; the struct went opaque (fails safe) | every declarator becomes a field, with its own stars, extents and bit-field width |
+| **CD-2** | a typedef declarator list, `typedef int a, *b;` | only the first declarator was recorded; the rest were unknown names (fails safe) | every declarator is recorded, each with its own pointer depth and extents |
+| **CD-3** | a with-body aggregate array typedef, `typedef struct Tag { … } Name[N];` | the extent was discarded and `Name` registered as a plain struct alias — `declare void @f(i64)` where clang says `ptr` (**silently wrong**) | `Name` is an `(array Tag N)` in the typedef table, and decays in parameter position |
+
+### 8.1 Where the filed descriptions were wrong
+
+**"Both fail safe … this is coverage" (§6) understated CD-1's reach.** It is
+true of the *mechanism* — an abandoned body is an opaque type, not a wrong one —
+but the roster it blocked was not small. Across the 40 standard headers
+surveyed, CD-1 unblocks **`struct tcp_info`** (104 bytes, alignment 4, element
+list identical to clang's), which glibc writes as
+`__u8 tcpi_snd_wscale : 4, tcpi_rcv_wscale : 4;` — a bit-field run split across a
+declarator list. Outside libc it unblocks **`SDL_Rect`** (`typedef struct
+SDL_Rect { int x, y; int w, h; } SDL_Rect;`), and through it **`SDL_Surface`**
+and `SDL_MessageBoxColor` — six new types on `SDL2/SDL.h` alone, and `SDL_Rect`
+is arguably the most-used type in that API.
+
+**The `stage15-stress-test/cheader.md` item 3 premise — "each declarator has its
+own pointer depth, which a single-declarator parse cannot recover" — is exactly
+right, and is the whole design.** `c-parse-type` consumes the specifier run *and*
+the first declarator's `*` run, and collapses any depth ≥ 1 into a bare `ptr`
+with no pointee — so when the first declarator is starred there is genuinely
+nothing left to unwrap for the second. The fix does not try: `c-span-has-star`
+asks whether the span `c-parse-type` consumed carries a `*`, and if it does the
+base is recorded as lost. A later 0-star declarator then abandons the struct
+(CD-1) or is recorded known-but-unrepresentable (CD-2). A later *starred*
+declarator is `ptr` regardless, so `char *s, *t;` — the common case — is exact.
+
+**§3.3's "two sites kept name-for-name" correction generalized to CD-3, and
+needed a third mechanism.** The prescan (`cheader-scan-opaque-decl`) registered
+the declarator of every body-bearing typedef as an opaque `StructDef`, and
+`parse-type-name` probes the struct registry *before* the C typedef table — so
+leaving that registration in place would have shadowed the array typedef the
+import records and made CD-3 a no-op in exactly the positions (`defn` signature,
+`defvar` type) the prescan exists for. Both sites now branch on the `[`. What
+§3.3 does not cover is the **untagged** form, `typedef struct { … } Name[N];`:
+the prescan cannot see an anonymous body's shape, so there is no `StructDef` for
+it to anchor the array's element on. Both passes mint one instead —
+`__carr.<typedef name>`, in the same shape and for the same reason as `__bf.N`
+and `__anon.N` (a `.` is unspellable as a C or Nucleus identifier, which makes
+"the compiler minted this" decidable with a `strncmp` and no extra state). The
+import adopts the parsed body into that anchor, so `%__carr.cd_anonarr` is a real
+defined type and `(defvar u:cd_anonarr)` is `[3 x %__carr.cd_anonarr]`.
+
+### 8.2 What is left, and why it is not a defect
+
+Declarators that **disagree in pointer depth** — `int *p, q;` in a struct body,
+`typedef int *a, b;` at top level — are refused, for the reason above. A struct
+gets the located opaque error at every by-value use and no `%X = type` line; a
+typedef declarator is recorded known-but-unrepresentable, which is the state the
+L5 diagnostics already distinguish from "absent". This is the §6 discipline
+applied to itself: a shape the parser cannot represent is an error or a skip,
+never a silent `ptr`. It is also now the L1 fixture's own witness — see 8.4.
+
+~~Two shapes remain unhandled and were not in scope: a comma-separated
+declarator list *after a struct body* (`typedef struct { … } A, B;` — `B` is
+silently dropped today, and the shape is a `c-parse-struct-decl` item, not a
+`c-parse-typedef-decl` one), and a mixed list of a struct definition and a
+variable (`struct S { … } x, y;`).~~ **Both closed 2026-08-29 as CD-4 — §9.1.**
+
+### 8.3 Measurements
+
+- **IR sweep, 186 modules** (152 `examples/*.nuc` + 34 `lib/*.nuc`,
+  `--emit-llvm` + stdout + stderr + exit code) against a baseline built from
+  `HEAD:src/cheader.nuc`: **zero diff**. So was the 96-output header-mode sweep
+  (`--emit-nuch` / `--emit-cheader` over `lib/` + `src/`), and so was
+  `build/nucleusc.ll` compiled by each binary. §1.6 argued the sweep is
+  *structurally blind* here and it is — the tree's six C headers contain none of
+  the three shapes — which is also why no boot refresh was needed, against §5's
+  general rule for importer changes (`c-boundary-defects.md` §13). The rule is
+  the right default; the check that answers it is "does the shape occur in the
+  compiler's own six headers", and here it does not.
+- **Census, 40 standard headers**, emitted `%X = type` lines: **895 → 896**, the
+  one delta being `%tcp_info`. `declare` sets and stderr were byte-identical for
+  every one of the 40 — CD-1's new types are all passed by pointer in libc.
+- **`SDL2/SDL.h`: 192 → 198** types (`SDL_Rect`, `SDL_Surface`,
+  `SDL_MessageBoxColor` and three anonymous structs); `SDL_mixer.h`, `png.h` and
+  `zlib.h` unchanged.
+- Every layout above checked against `cc` on the same header: `tcp_info` 104/4,
+  `SDL_Rect` 16, `SDL_Surface` 96, and the whole fixture roster.
+
+### 8.4 Where it landed
+
+| file | what |
+|---|---|
+| `src/cheader.nuc` — `c-span-has-star` (beside `c-span-has-ident`) | the one question both CD-1 and CD-2 ask: did the first declarator's stars consume the base? |
+| `src/cheader.nuc` — `c-parse-struct-body` | `more` / `base-ty` / `spec-start`: a `,` continues the declaration instead of abandoning it, and the append path consumes the `,` exactly as it consumed the `;` |
+| `src/cheader.nuc` — `c-parse-typedef-decl` | `base0` / `bad0` captured before the first declarator's paths rewrite them, then a declarator loop after the first record |
+| `src/cheader.nuc` — `c-parse-struct-decl`, the body branch's typedef-name read | CD-3: an array declarator after the name records a typedef instead of registering a `StructDef` alias, anchored on the tag or on `__carr.<name>` |
+| `src/cheader.nuc` — `cheader-scan-opaque-decl`, the body branch | the same branch in the prescan, name-for-name |
+| `tests/fixtures/cd-declarators.h`, `tests/run-tests.sh` `run_cd_declarators` | 6 assertions: exact type lines, `sizeof` vs `cc`, the mixed-pointer refusal, the typedef list's per-declarator lowering, CD-3's storage + decay, and `tcp_info` against `cc` |
+| `tests/fixtures/l1-members.h` | **the L1 fixture's witness moved.** Its `c-parse-type:529` row was `typedef struct { int x; int a, b; } l1_multi_t;` — a multi-declarator line, chosen because BF-4 had made the previous witness (a bit-field) representable. CD-1 made *that* one representable in turn, so the row now uses CD-1's own residue, `int *a, b;`. The row guards "an unreadable by-value aggregate body marks the enclosing declaration", not any particular spelling, and it keeps guarding it. |
+
+---
+
+## 9. As built: CD-4 and the C-typedef `#include`
+
+**Status: implemented 2026-08-29** on `stage16-ergonomics`, closing the last two
+§6/§8.2 entries that are about what a C header *declaration* introduces and what
+the generated header *exports*. `make test` 894 → **902 PASS / 0 FAIL** (+8
+assertions across three new units); `make check-headers` 69/69 with **no
+regeneration** (no committed header names a C typedef); `make abi-test`,
+`make layout-test` and `make avr-test` green; `make bootstrap` converged after
+`make update-bootstrap` (the compiler's own IR moved — `src/cheader.nuc`
+changed).
+
+### 9.1 CD-4 — a declarator list after a struct body
+
+`typedef struct { … } A, B;` registered `A` and dropped `B` in silence.
+`struct S { … } x, y;` left `x, y;` on the floor for the function-declaration
+parser to make what it could of. Both are now a **declarator loop**, and every
+declarator kind the shape admits is handled:
+
+| declarator | before | after |
+|---|---|---|
+| a later plain name — `} A, B;` | `B` silently dropped | a second alias `StructDef` over the same shape |
+| a pointer declarator — `} A, *Bp;` | `Bp` silently dropped (the ident read stops at `*`) | a typedef-table entry, `ptr` |
+| a later array declarator — `} A, B[3];` | silently dropped | CD-3's array typedef, anchored on the tag or the minted `__carr.<name>` |
+| a variable list — `} x, y;` | left unconsumed | consumed; the importer models no C variable, so nothing is recorded |
+| a function declarator — `} f(void);` | mis-parsed | declined, and left to the caller's skip |
+
+**The whole design is that there is now exactly one implementation.**
+`c-struct-decl-declarator` (`src/cheader.nuc`) is what the *first* declarator
+goes through as well as every later one — a second copy of the rule for later
+declarators is precisely how `B` came to be dropped in the first place, and it
+is the shape conventions.md's "a decay rule belongs in ONE function" warns
+about. The pre-scan (`cheader-scan-opaque-decl`) mirrors the loop rather than
+calling it, because it has no parsed body to anchor on; it stays name-for-name
+with the import, which is the W3a/CD-3 rule — a *pointer* declarator registers a
+typedef and **no** `StructDef`, or the opaque entry shadows the record the
+import makes.
+
+**Measurements.**
+
+- **Occurrence count in the standard headers: zero.** Scanning the preprocessed
+  text of 39 common system headers for a declarator run after a `}` containing
+  a `,` finds 552 runs and **0** with a comma. §8.2's "not in scope" was right
+  about libc; the reason to take it anyway is that a silent drop is the class
+  L1 exists to remove, whatever the occurrence count.
+- **Third-party is where it lands.** `png.h` writes
+  `typedef struct png_image_struct { … } png_image, *png_imagep;`.
+  `(defn f (p:png_imagep):i32 …)` was `error: unknown type: png_imagep (did you
+  mean 'png_image'?)` and now compiles, with `%png_image` laid out. SDL2 and
+  zlib have no instance.
+- **Host IR sweep, 187 modules** (152 `examples/*.nuc` + 35 `lib/*.nuc`,
+  `--emit-llvm` + stdout + stderr + exit code) against the committed boot
+  compiler: **zero diff**. The tree's own headers contain none of these shapes,
+  which is also why no host output moved.
+
+### 9.2 The `#include` for a rendered C typedef
+
+§6 recorded this as out of scope with a counter-argument — "a consumer of the
+generated header is expected to `#include` the same C header itself" — and the
+counter-argument does not survive contact with the artifact. `off_t` renders
+**bare**, because `struct off_t` names nothing (the L5 arm in `type-name-to-c`),
+so the generated header was:
+
+```c
+#pragma once
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+
+off_t seek(int32_t fd, off_t off);
+```
+
+which is `error: unknown type name 'off_t'`, twice, under `clang -fsyntax-only`.
+Not "a consumer must remember something": the header does not compile at all,
+and `scripts/check-headers.sh` cannot see it because it only proves the
+committed text matches the compiler.
+
+**The decisive argument is that the emitter already accepts the rule.** It
+writes `#include <stddef.h>` unconditionally, for exactly one reason — it
+renders `usize` as `size_t` and `ssize` as `ptrdiff_t`, and a name it spells
+needs the header that defines it. `off_t` → `#include <unistd.h>` is that same
+rule applied to a name the emitter *learned* rather than one it hardcodes. So
+this is not a new policy; it is the existing policy reaching the dynamic half of
+`type-name-to-c`.
+
+**The spelling is the import's, not the linemarker's.** `CTypedef` gained an
+`hdr` field carrying the `(import-use "…")` string, set from
+`g-cheader-import-header` (`src/type-utils.nuc`, beside the table, for the same
+cross-import reason) at the top of `emit-c-include` **and**
+`cheader-prescan-opaque` — and, unlike `g-cheader-file`, never rewritten by a
+`# N "file"` linemarker. That distinction is the whole point: `off_t` physically
+lives in `/usr/include/x86_64-linux-gnu/bits/types.h` behind a feature-test
+macro, and `#include "/usr/include/…"` would be both unportable and wrong.
+`#include <unistd.h>` is portable, and re-including it is precisely what
+reproduces the typedef the compiler read. Angle brackets unless the import
+spelled a path (leading `/` or `.`), in which case it is quoted.
+
+`--emit-cheader` runs only the pre-scan, never `emit-c-include`, so the
+provisional records are the ones the emitter reads — which is why the global has
+to be set in both places.
+
+### 9.3 What is still not included, and why
+
+A **C struct or union tag** rendered `struct SDL_Rect` still produces no
+include. An incomplete tag is legal behind a pointer, which is how a C API is
+overwhelmingly used, so the header compiles; a *by-value* parameter of one
+parses and then cannot be called — the silent asymmetry conventions.md records
+under "In C, a typedef is not a tag". It is a real gap and it is deferred, for a
+concrete reason: the include would have to come from the `StructDef`, whose
+`src-file` is the **linemarker** path (`/usr/include/…`), not an import
+spelling. Closing it means a second provenance field on `StructDef` written at
+its four registration sites — the same shape as `CTypedef.hdr`, but four writers
+instead of one, and `cheader-note-type-file`'s "only a `.nuc`/`.nuch` file" gate
+would have to split rather than return. Worth doing when a by-value C struct
+appears in a public Nucleus signature; nothing in `lib/` has one today, so it
+would move no committed header.
+
+### 9.4 Where it landed
+
+| file | what |
+|---|---|
+| `src/cheader.nuc` — `c-struct-decl-declarator` (new, above `c-parse-struct-decl`) | CD-4: the one implementation of "record one declarator of a body-bearing declaration", used by the first declarator and every later one |
+| `src/cheader.nuc` — `c-parse-struct-decl`, after the body | the declarator loop: stars, then the helper, then `,` continues / `;` ends |
+| `src/cheader.nuc` — `cheader-scan-opaque-decl`, the body branch | the same loop in the pre-scan, name-for-name (a pointer declarator records a typedef and no `StructDef`) |
+| `src/type-utils.nuc` — `CTypedef.hdr`, `g-cheader-import-header`, `c-typedef-record` | the import spelling a typedef was reached through |
+| `src/cheader.nuc` — `cheader-note-c-include`, `cheader-c-include-spelling`, `cheader-emit-c-includes`, `g-cheader-c-includes` | the second include list and its angle-bracket spelling rule |
+| `src/cheader.nuc` — `type-name-to-c`, the L5 typedef arm | notes the header before returning the bare name |
+| `src/cheader.nuc` — `emit-cheader-header` | resets the list, emits it after `<stddef.h>` and before the borrowed Nucleus units' headers |
+| `tests/fixtures/cd4-declarator-list.h`, `tests/run-tests.sh` `run_cd4_declarator_list` | 2 assertions: exact type lines for every declarator of every list (including the array declarator's `[3 x %__carr.cd4_G]` storage), and every `sizeof` against `cc` |
+| `tests/run-tests.sh` `run_cheader_c_include` | 2 assertions: the `#include` is present, is the import spelling (never `/usr/include/…`), the declaration is the bare name, the header passes `clang -fsyntax-only`; and a header naming no C typedef gains no include |
+| `tests/run-tests.sh` `run_l5_typedef_names` item 8 | its "known gap, recorded rather than asserted" note is now an assertion |
+
+---
+
+## 10. As built: user-declarable declaration attributes (§3.4's scope note, taken 2026-08-29)
+
+`(defn my-setjmp (b:ptr):i32 :returns-twice …)` now says what only the C
+importer's by-name list could say before. The item as filed is one attribute;
+what landed is the **attribute slot**, because adding a keyword-spelled
+`:returns-twice` beside a bare-symbol `noreturn` would have recreated exactly
+the two-spellings-for-one-idea state `keyword-markers.md` exists to remove.
+
+### 10.1 Decisions
+
+| | |
+|---|---|
+| Spelling | `:noreturn` / `:returns-twice` — keywords, per `keyword-markers.md` §1 ("keywords already carry markers elsewhere") |
+| `returns_twice` → `returns-twice` | hyphen: the Nucleus spelling of the LLVM token, matching the `Sym` field name |
+| Position | `defn`: between the return operand and the body. `declare`: after the return operand. Both accept a **run**, in either order |
+| Old spelling | bare `noreturn` / `returns_twice` retired — a located error naming the replacement, the same retirement shape §3 of `keyword-markers.md` used |
+| A lone trailing form | always the body, never an attribute — `(defn kw ():Keyword :noreturn)` returns the keyword |
+
+### 10.2 The dispatch sites, enumerated
+
+`container-type-sugar.md`'s warning applies with a different count.
+`returns_twice` is not a top-level form, so the six-site list does not transfer;
+the honest enumeration is **"every pass that reads or writes a signature"**, and
+it is seven:
+
+| # | site | what it does |
+|---|---|---|
+| 1 | `emit-defn` (`src/nucleusc.nuc`) | consumes the run via `defn-scan-attrs`; body-start shifts past it |
+| 2 | `emit-defn`'s `scope-define` | sets `Sym.noreturn` / `Sym.returns-twice` — **solitary names only** (an overloaded method has no `Sym`; pre-existing, unchanged) |
+| 3 | `emit-defn`'s `define` line | ` noreturn` / ` returns_twice`, before `emit-fn-attrs-for`'s string attributes |
+| 4 | `emit-nuch-declare` / `emit-nuch-defmethod` (`src/nuch.nuc`) | re-emits the run onto the exported entry, via `emit-nuch-fn-attrs` |
+| 5 | `nuch-declare-import` | strips the trailing run (`declare-scan-attrs`), sets the `Sym` fields, emits the LLVM attributes |
+| 6 | `nuch-defmethod-import` | same, with `min-len` 5 rather than 4 |
+| 7 | the generic-template export | verbatim `print-node`, then re-parsed by `emit-defn` at stamp time — free, and only because the run sits inside the form |
+
+Two more that needed **checking and no change**: `--emit-cheader` renders neither
+attribute (C's `_Noreturn` / `__attribute__((returns_twice))` are not emitted
+today, for `noreturn` either), and the REPL's preamble `declare`s carry neither
+(also pre-existing; an attribute-free `declare` is legal IR, and the REPL JIT
+runs at -O0). `g-special-form-set` needs nothing — a keyword cannot be a
+definition name.
+
+The one site that was **missing before this change**: `emit-nuch-declare` never
+carried `noreturn` either, so a `(defn f ():void :noreturn)` exported to a
+`.nuch` silently lost it. Fixed for both attributes together.
+
+### 10.3 What the filed description got wrong
+
+**"a `.nuch` `declare` keyword for symmetry with `noreturn` if that costs
+nothing"** assumes `noreturn` already round-trips. It does not: `nuch-declare-import`
+*reads* a trailing attribute, and nothing *wrote* one, because
+`--emit-nuch` never re-exports a top-level `declare` and `emit-nuch-declare`
+(the `defn` exporter) did not print it. The reader had no writer.
+
+**The `declare` reader also had to stop being last-token-only.** It examined
+exactly the final operand, so two attributes could not be written at all; and
+its floor has to be the entry's attribute-free length (4 for `declare`, 5 for
+`defmethod`), because a *return type* is a keyword too and a naive scan from the
+end would eat it.
+
+### 10.4 The bootstrap cost, and why it was two refreshes
+
+`src/reader.nuc`'s own `die-at` carries the attribute, and `src/` is what the
+committed boot compiles — the fourth chicken-and-egg root cause in
+`context/build.md`. So the retirement could not land with the sweep in one step:
+
+1. Accept **both** spellings (`decl-attr-kind` falling through to
+   `legacy-fn-attr-kind`), sources unchanged. Refresh.
+2. Sweep `src/reader.nuc` and `tests/fixtures/s1-sugar-rets.nuc` — the only two
+   uses of the bare spelling in the tree — delete the shim, refresh again.
+
+Identical in shape to `keyword-markers.md` §4, and one line of sweep rather than
+58 files, because a declaration attribute is rare where a parameter marker is
+not.
+
+### 10.5 Still write-only, deliberately
+
+No Nucleus-side consumer was added, and §6's note is revised rather than
+retracted. LLVM computes the caller-side consequences (no tail call, alloca
+placement, stack colouring) from the attribute on the *call*, which it gets from
+the callee's `define`/`declare`; there is nothing for the front end to narrow or
+refuse. `:noreturn` remains the only one of the two with a reader
+(`terminate-after-noreturn`).
+
+### 10.6 Where it landed
+
+| file | what |
+|---|---|
+| `src/nucleusc.nuc` — `legacy-fn-attr-kind`, `reject-legacy-fn-attr`, `decl-attr-kind`, `defn-scan-attrs`, `declare-scan-attrs` (new, beside `marker-any`) | the recognizer, the retirement, and the two scan shapes |
+| `src/nucleusc.nuc` — `emit-defn` | the run replaces the single-`noreturn` test; `Sym.returns-twice`; ` returns_twice` on the `define` |
+| `src/nuch.nuc` — `emit-nuch-fn-attrs`, `emit-nuch-declare`, `emit-nuch-defmethod` | the export half, which did not exist |
+| `src/nuch.nuc` — `nuch-declare-import`, `nuch-defmethod-import` | trailing-run strip; attributes emitted additively so a `declare` and its `define` agree |
+| `src/reader.nuc` — `die-at` | the sweep |
+| `tests/fixtures/s1-sugar-rets.nuc` | the sweep |
+| `tests/run-tests.sh` — `run_s16_decl_attrs` | 5 assertions: the `define` (both attributes, both orders, and an unattributed defn gaining none), the `declare` plus `terminate-after-noreturn`, the `.nuch` round-trip solitary **and** overloaded, the two retired spellings, and the lone-trailing-form rule |
+| `docs/toplevel.md` — "Declaration attributes" | the user-facing section, plus the `defn`/`declare`/`fn-attr` rows |
+| `docs/structs-unions.md` — libc attributes | points at it: the by-name list is only how the attributes are *recovered* from a C header |
+
+---
+
+## 11. As built: retiring `src/repl_shim.c` (2026-08-30)
+
+The last C source file in the tree is gone. `src/repl.nuc` now carries all four
+of its functions in Nucleus, and neither the `Makefile` nor `build.ps1` compiles
+C any more.
+
+### 11.1 Both halves fell to work that had already landed
+
+* **`repl_protect` / `repl_throw`** needed `jmp_buf`, which is what L1–L5 made
+  expressible; `examples/setjmp-guard.nuc` is the worked example §7 predicted.
+* **`repl_print_f64` / `repl_print_f32`** needed to *call* a JIT'd nullary thunk
+  returning a float. That is FP-2 ([c-boundary-defects.md](c-boundary-defects.md)
+  §2.4): an indirect call is now ABI-lowered and coercing, so a parameter typed
+  `(fn f64)()` is callable directly and the C wrapper had nothing left to do.
+  The call sites in `repl-eval-form` gained one cast each —
+  `(unsafe/cast ((fn f64)()) (unsafe/cast ptr addr))` — because `unsafe/cast`
+  refuses `i64` straight to a function-pointer type; the `ptr` hop was already
+  there.
+
+### 11.2 The one place the C shape did not port, and the better shape it forced
+
+The C shim held a `static jmp_buf repl_jmpbufs[16]`. The Nucleus transcription
+`(defvar g-repl-jmpbufs:(array __jmp_buf_tag REPL-MAX-PROTECT))` is **refused**,
+and the refusal is correct: a `defvar`'s type is resolved by `prescan-defvar-name`,
+which runs before any `(import-use "setjmp.h")` is read, so the only thing
+registered under that tag at prescan time is the layout-less placeholder
+`cheader-prescan-opaque` puts there (§1.3, W3a), and an array element with no
+layout is exactly what `reject-opaque-type` exists to stop. Three neighbouring
+spellings are unaffected and show the boundary precisely: `(defvar env:jmp_buf)`
+(a C *typedef*, re-resolved by `emit-defvar`), `(alloca (array __jmp_buf_tag 1))`
+(a body, emitted after the import) and `(defstruct H xs:(array __jmp_buf_tag 4))`
+(the W9-item-40 layout prescan defers instead of refusing).
+
+So each protected frame **allocas its own jump buffer** and publishes the pointer
+into a global `(array raw 16)` stack. That is strictly better than the C shim,
+and for a reason worth keeping: the buffer now lives in exactly the frame the
+`longjmp` returns into, its lifetime is the protection's lifetime rather than the
+process's, and the stack needs no target-dependent extent. §3.4's two
+load-bearing properties are preserved unchanged — the body is still a callback,
+so the `_setjmp` frame is live when the throw fires, and the depth counter still
+makes the unarmed case a diagnostic-and-`exit` rather than a jump into a returned
+frame.
+
+`_setjmp` (not `setjmp`) and `longjmp` are the pair, matching what C source
+spelling `setjmp(e)`/`longjmp(e,1)` actually calls on glibc — §7's first caveat,
+now load-bearing in the compiler itself rather than only in an example. The depth
+local is `:volatile`, per §7's third.
+
+### 11.3 The staging
+
+Two refreshes were budgeted; **one** was needed, because the natural Nucleus
+spellings are already distinct symbols — `@repl-protect` versus `@repl_protect`
+— so there was never a duplicate-definition window and never a rename to undo.
+
+1. Add the Nucleus definitions, switch every call site, delete the four
+   `(declare …)` lines, leave the shim linked. `make bootstrap` converged on the
+   first try (the change is purely additive to the compiler's own source; it
+   alters no compilation behaviour), then `make update-bootstrap`.
+2. With all three boot IRs no longer naming the shim's symbols, delete
+   `src/repl_shim.c` and its nine `Makefile` references, its five in `build.ps1`,
+   and the now-unused `CFLAGS`. Nothing in `src/` changed, so the IR did not move
+   and `boot/nucleusc.ll` was already the fixed point — no second refresh.
+
+### 11.4 Measurements
+
+* `make test` 913 units, 0 FAIL — unchanged, including all 14 `tests/repl/`
+  fixtures (`repl-s16-macrolet`'s `error (recovered)` line and
+  `repl-import-error` among them).
+* Batch IR sweep, 187 modules (`examples/*.nuc` + `lib/*.nuc`): `--emit-llvm`
+  output **and** stderr byte-identical to the pre-change compiler's, exit codes
+  equal. The REPL is the only thing that moved.
+* A 11-form REPL probe covering `f64`, `f32`, `nan`, `inf`, `%.17g` round-trip
+  and two recovered errors: output byte-identical between the old binary and the
+  new one.
+* `make bootstrap`, `make abi-test`, `make layout-test`, `make check-headers`,
+  `make avr-test` all green.
+* The compiler's own IR grows by 6 `declare`s (`setjmp`, `__sigsetjmp`,
+  `_setjmp`, `longjmp`, `_longjmp`, `siglongjmp`) and 2 types
+  (`%__jmp_buf_tag`, `%__sigset_t`) — the ordinary "widening the declare set"
+  cost recorded in `context/conventions.md`. 234 struct types, against
+  `MAX-STRUCTS` 1024.
+
+### 11.5 One caveat, recorded rather than fixed
+
+The Windows boot IRs are cross-emitted on this Linux host, and `clang -E` cannot
+find a Windows sysroot here, so they are built from the **host's** headers — a
+warning `make windows-boot` already printed five times and now prints six. Until
+now that was inert: every host-header type in the compiler's IR (`%__FILE`,
+`%__locale_struct`, …) is only ever used behind a pointer. `repl-protect`'s
+`alloca [1 x %__jmp_buf_tag]` is the first host-header **layout** the compiler's
+own code depends on, and glibc's 200 bytes is smaller than mingw-w64's `jmp_buf`.
+
+The exposure is one binary deep and does not reach a real Windows build:
+`build.ps1` uses the committed boot IR only to link the *first* `bin\nucleusc.exe`,
+which it then drives in **batch** mode (`--emit-llvm`) to produce
+`build\nucleusc.exe` — and that self-hosted emission preprocesses `setjmp.h` with
+the real Windows headers, so the compiler anyone actually uses has the right
+size. The undersized `alloca` exists only in a boot binary whose `-i` flag is
+never used. Passing `--sysroot` to `make windows-boot` closes it outright.
+
+### 11.6 Where it landed
+
+| file | what |
+|---|---|
+| `src/repl.nuc` — new header block | `(import-use "setjmp.h")`, `REPL-MAX-PROTECT`, `g-repl-jmpbufs`, `g-repl-depth`, `repl-protect`, `repl-throw`, `repl-print-float-buf`, `repl-print-f64`, `repl-print-f32` |
+| `src/repl.nuc` — `repl-eval-form`, `repl-preload-prelude`, `repl-main` | the five call sites, plus the two `(fn f64)()` / `(fn f32)()` casts |
+| `src/nucleusc.nuc` | the four `(declare …)` lines deleted; three `repl-throw` call sites |
+| `src/reader.nuc` — `die-at` | the fourth `repl-throw` call site |
+| `src/repl_shim.c` | **deleted** |
+| `Makefile`, `build.ps1` | every shim reference, the compile rule, and `CFLAGS` |
+| `docs/structs-unions.md` — libc attributes | the second worked example, and the `(array Tag N)`-in-a-`defvar` boundary |

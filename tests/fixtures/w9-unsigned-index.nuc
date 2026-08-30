@@ -9,7 +9,7 @@
 ; instruction instead, in run-tests.sh.
 (import-use "stdio.h")
 (import-use "stdlib.h")
-(import "prelude")
+(import prelude)
 
 (defn main ():i32
   ; --- ui8 index, 200: sext reads it as -56 ---------------------------------

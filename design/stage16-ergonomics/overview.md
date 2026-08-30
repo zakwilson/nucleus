@@ -1,5 +1,10 @@
 # Ergonomic enhancements
 
+Every open item raised across this stage's documents — things still needing a
+decision, things still needing work, and things deliberately left as-is — is
+indexed in one place: [deferred.md](deferred.md). Check there before starting
+new Stage 16 work rather than re-deriving "is this still open?" from scratch.
+
 ## macrolet
 
 `let`, but for macros, similar to Common Lisp. A macro with variable capture is a reliable way to turn any repeated pattern into an abstraction, but it's messy to combine variable capture with global scope.
@@ -30,6 +35,8 @@ Flipping the switch will touch hundreds of sites in the compiler and libraries, 
 
 Design: [keyword-markers.md](keyword-markers.md). **Done** — all four markers, not the two named: `&optional` and `&repr` were also live, and leaving either would have kept `&` reserved, which is the motive.
 
+Its two recorded follow-ups are **closed 2026-08-29** ([keyword-markers.md](keyword-markers.md) §9-§10). The `has-rest`-by-count bug was not the stale flag §7 filed it as: `finalize-generics` binds the prescan's Type for a solitary name, so a call *above* an `:optional` defn took the `:rest` path, and three widening tiers gate on `(= (m has-rest) 0)`, so an overloaded `:optional` method never resolved. Fixing it exposed that `has-rest` was one of **three** fields on which the prescan's Type and `emit-defn`'s disagreed — `nopt`/`opt-defaults` were the others. And a never-instantiated parametric union's `:repr` turned out **not** to need the general "when is a template body checked" question opened: the mode is decidable with no stamp, so `register-union-template` runs the real `defunion-strip-repr` for its diagnostics — which also restores this item's own `&repr` retirement chokepoint, silently true only of *concrete* unions until now.
+
 Two halves of the framing needed correcting first. **There is nothing in the reader to simplify** — `&` is already an ordinary symbol character (`is-sym-char` is a deny-list and 38 is not on it), there is no `&` prefix dispatch and no reader-macro entry, so each marker was a plain interned `NODE-SYM` matched positionally by a string compare. The change buys nothing there and everything in *conventions*: keywords already carry markers through `parse-decl-attrs` (`(defvar :const …)`, `(:volatile status:i32)`, `(ptr :volatile ui8)`), so the language had two spellings for one idea. And **`&` is not freed outright** — `.&` (field-address) is a live special form with ~200 uses, and `&` is illegal in any definition name regardless (`ir-name-illegal-char`). What is freed is `&` as a *prefix sigil*.
 
 The mechanical part was smaller than "hundreds of sites" suggests: **fourteen recognition sites, seventeen comparisons**, collapsed into three helpers that take the marker's *bare* name (`"rest"`) — which is what stops the roster being re-spelled at each site, and removed every `"&rest"` string literal from the recognition path in one step. Nothing in the compiler *constructs* a marker, so conventions.md's `intern-symbol` sweep trap does not apply. Three sites needed thought rather than substitution: `macro-parse-params`' name-collection test is **negated** (it does not read like a detection site) and sits below a "param must be a symbol" check that rejects a keyword outright; `declare-param-type` sits directly above the arm that reads a keyword operand as a *type*, so without the marker check first `:rest` reports `unknown type: rest`; and `defunion-strip-repr` was the one site using `strcmp` rather than `=`.
@@ -39,6 +46,42 @@ The mechanical part was smaller than "hundreds of sites" suggests: **fourteen re
 Two discoveries. **`&repr` had no test coverage at all** — documented in `docs/structs-unions.md`, used by nothing. And **`run_stdlib_table` had been dying silently**, hiding a real regression: `out="$(… --check)"` is the exact `set -e` trap its neighbour `run_headers_generated` documents at length, so the unit died before its FAIL line and only the exit code carried it — `make test` had been exiting 1 while showing zero FAILs. Behind it, the prelude split above had removed **165 libc functions** (`printf`, `malloc`, `exit`, `fopen`, …) from the no-import set while `docs/stdlib.md` went on claiming all 220. Both fixed. The general lesson: a harness that decides pass/fail by scanning output must *name* an empty result, or "N tests, zero FAIL" is only as good as the guarantee that every unit spoke.
 
 760 tests (was 755), `make test` exits 0 for the first time, `make bootstrap` converges after each refresh, abi/layout/check-headers/avr green.
+
+## The `&` type sigil, and the `&` address-of operator
+
+The character the item above freed. Design: [ref-sigil.md](ref-sigil.md).
+**Done** (2026-08-30) — `&T` is sugar for `ref:T` in every type position, with
+`x:&(Vector T)` and `):&T` falling out of the existing colon-paren fuse for
+free; and `&x` is sugar for `(addr-of x)` in every value position (§6), the
+~854-site form that is the most verbose thing in ordinary Nucleus code.
+
+The two meanings are split by position **within the token**: a `&` that begins
+a token is the address-of reader macro (matched in `next-tok`, before
+`lex-atom`), and a `&` inside one is the type sigil. Neither rule consults
+context. They meet only at a standalone `&T` in a type slot, which the reader
+has already written as `(addr-of T)` — so `parse-type-from-node` and
+`node-is-ptr-wrapper` read that head as `ref`, which is the whole cost of
+having both.
+
+The decision that made it small is **where** it expands: in the lexer, at the
+one point an atom's text is finalized, rather than in the type parser beside the
+`?`/`!` prefixes. A type spelling is read by more than the type parser — `x:&T`
+goes through `split-colon-segments`, and `(Vector &T)` is walked by
+`collect-pattern-tyvars`, which collects any unresolvable symbol as a **tyvar**,
+so a parser-side sigil would have registered `&T` as a type variable instead of
+failing. Expanding to `ref:` before the parser exists hands every consumer the
+canonical spelling, and the change touched no other pass.
+
+Two atoms neither rule may claim, and neither does: `.&` (interior `&`, so the
+sigil keys on segment-start position and the reader macro never sees it) and
+the four retired `&x` markers — left unexpanded by the sigil, and skipped by
+the reader macro via `at-legacy-marker`, so they still name their keyword
+replacement rather than failing later as `unknown type: rest`. Their roster is
+one function (`legacy-marker-tail`) both consult rather than a second copy.
+
+Deliberately **not** adopted in `src/`/`lib/`: that needs `make
+update-bootstrap` first, so leaving the sources alone keeps this a pure
+addition and `make bootstrap` converges byte-identically with no boot refresh.
 
 ## Replace .set! with variadic set!
 
@@ -278,7 +321,9 @@ compiles, which always get the auto-prelude — which is why a total failure of 
 REPL's library surface never showed up in `make test`.
 
 R1 shipped the shim reshape (`repl_protect(body, ctx)`, plus a depth counter so
-an unprotected `die-at` exits instead of jumping into a returned frame), a
+an unprotected `die-at` exits instead of jumping into a returned frame — both
+properties carried across unchanged when the shim was rewritten in Nucleus on
+2026-08-30, see c-header-layout.md §11), a
 `ReplState` snapshot/restore spelling the roster once and truncating every
 append-only registry to a per-form watermark, and the `g-prescan-sigs` ordering
 fix. That last one could not be the literal "move the push" the plan called for:
@@ -369,6 +414,49 @@ open deliberately: **D9** above, and the `(import-use node)` duplicate-symbol
 item (§6 of the design), which is a JIT symbol-resolution question rather than
 an import one. See [repl-libraries.md](repl-libraries.md) §3.5, "R5 as built".
 
+**D9 is now closed too, in two steps.** D9 proper (2026-08-25) made the general
+statement the epoch permits — *a type is recoverable across modules only if it is
+queued or absorbed* — and ruled that a `defstruct` inside `(compile-time …)`
+defines a **program** type, which fixed a batch defect that exited 0 on invalid
+IR. It left the *name's visibility* open: the type was usable in a body but not
+in a **signature**, because `prescan-struct-names` never descended into a
+`compile-time` body. **D9a** (2026-08-29) closed that with a descent rather than
+the "much wider blast radius" the note predicted — the body's `cdr` is already
+the chain the walk consumes, so the two type prescans recurse into themselves
+with an `in-ct` flag, filtered to `defstruct` by a predicate `emit-compile-time`
+itself calls. The value prescans deliberately do not descend, because a CT
+`defvar`/`defn` writes into the CT module alone. 908 PASS / 0 FAIL, 187+96
+outputs byte-identical, boot refreshed and the new fixed point confirmed. See
+[repl-libraries.md](repl-libraries.md) §3.3, "D9 as built" and "D9a as built".
+
+**The last item §6 filed as out of scope is closed too (2026-08-29), and its
+diagnosis was wrong** — see
+[repl-jit-symbol-precedence.md](repl-jit-symbol-precedence.md). `(import-use
+node)` did not fail because `-rdynamic` makes ORC prefer the host's copies:
+LLJIT already links its own `<Process Symbols>` JITDylib **last in the default
+link order**, so a module's own definitions win, and five probes against the real
+LLVM 19 C API pin every step. The compiler was attaching a *second, redundant*
+process generator to the **main** JITDylib — and a definition generator does not
+merely resolve a name, it **defines** it where it is attached. So the first macro
+module that referenced `alloc-node` claimed that name in main permanently, and
+every later module defining it was a redefinition. The fix is the deletion of
+those two calls. `-rdynamic` is untouched and stays load-bearing
+([compile-time-imports.md](compile-time-imports.md) §9), measured both ways.
+All **34** `lib/` modules now import in a fresh session, where R2 recorded 33 of
+34. The `LLVMOrcSymbolPredicate` filter the item's first candidate would have
+needed does exist and is consulted per lookup — it simply was not necessary.
+
+It exposes one residual, pinned rather than papered over by
+`tests/repl/host-runtime.in`: after `(import-use node)` the session defines its
+own `intern-symbol`, so a macro **first expanded after** the import mints its
+symbols from a second intern table, and `emit-node` dispatches special forms by
+**pointer** identity — `(mc 9)` answers `unknown: cond`. It is loud, confined to
+special-form heads (a function head resolves by spelling), and absent for a macro
+already expanded before the import, since ORC materialisation is lazy and
+one-shot. Its root cause is symbol *identity*, not symbol *precedence*, and §5 of
+the new document names three routes with a recommendation. 913 PASS / 0 FAIL,
+187+96 outputs byte-identical, boot refreshed and the new fixed point confirmed.
+
 ## Container type literals should take more element types
 
 Container literals can only contain int, float, or string. They should at least be able to take keyword and symbol.
@@ -432,6 +520,52 @@ condition was a tautology and was deleted instead.
 773 tests (was 760), byte-identical IR across all 30 literal-using examples and
 fixtures, `make bootstrap` converges.
 
+## Same kind is not same type (the template-ref equality hole)
+
+The hole the item above deferred: `(ref (Vector i32))` binds to a
+`(ref (Vector i64))` slot, passes as that parameter, and stores into that field,
+with no error anywhere.
+
+Design: [template-ref-equality.md](template-ref-equality.md). **Done** (2026-08-29).
+
+It is **D3's chokepoint**, one arm lower. `coerce-int-val`'s `(when (= sk dk)
+(return v))` is where FP-1 inserted the function-pointer answer, and its own
+sentence — "two function pointers are the same KIND and are not thereby the same
+type" — is true with *pointer* substituted throughout. `fn-slot-type-compat` was
+never fn-specific (it recurses through pointers and ends at `type-eq`), so the
+rule is that function renamed `slot-type-compat` and *called* at the line FP-1
+wrote around. Two corrections to the shared-cause story: there is a **third**
+site, `defvar-addr-of-ir`, the constant renderer — conventions.md's second
+typed-slot path, on its sixth bite — and the pointer kinds were the only *silent*
+ones, since a struct, array or union mismatch was already caught by the LLVM
+verifier, at a line in a file the user did not write.
+
+**The rule was the easy half.** Measured blast radius, by installing the
+predicate as a report-and-accept probe and compiling the tree: **61 sites — 60 in
+`src/`, 0 in `lib/`, 1 in `examples/`**. The one in `examples/` was a real
+mistake the laxness hid (a lambda declared `:ptr:(ptr i32)` returning a
+`(ptr i32)`). All 60 in `src/` are one call, `vector-new-in`, and one *second*
+defect: a generic whose type variable appears only in its **return type** is
+memoized and mangled on its parameter types alone, so the compiler contained
+exactly one `vector-new-in` — stamped `(Vector i32)` by whichever site got there
+first — and the other 59 silently took it. `type-eq`'s key stopped being a key.
+It was benign only by layout accident (`(Vector T)` has no `T`-typed field); the
+by-value sibling `vector-new-capacity` reserves `n × sizeof T` from the wrong `T`
+and is caught only by LLVM.
+
+Two smaller findings fell out of fixing that. **A computation with no reader is
+not "advisory", it is unverified**: the full A1 determination fixpoint was
+computed at template registration and never read, while the question's one
+consumer used a params-only approximation of it — which, the moment a symbol
+depended on the answer, called `reduce`'s constraint-recovered `S` return-only
+and renamed every `reduce` stamp in the corpus. And `pattern-determines-tyvar`,
+which documents itself as mirroring `unify-tpat`, was the one of the three copies
+of the §3.7 alias expansion that did not expand parametric type aliases.
+
+912 tests (was 908), boot refreshed, **185 of 187 modules byte-identical** in the
+IR sweep — the two that move are `.$r.<ret>` renames of return-only-tyvar
+constructor stamps and nothing else — and all 374 header-mode outputs unchanged.
+
 ## Broad auto-cast to bool
 
 It's a convenience in some languages, including lisps that most values can be used as booleans. Right now, Nucleus just uses i1 - neither broad acceptance nor a dedicated boolean type. I would like to add a dedicated `bool` type to represent truth, and automatic casts when something wants `bool` even though that's obviously lossy.
@@ -468,6 +602,22 @@ fails on the body. Zero-is-false is the larger prize (a further 522 sites, and i
 matches this codebase's `(!= flag 0)` idiom — C semantics fit here where Lisp's
 do not) and stays available later.
 
+**Part 1 done (2026-08-22)**, `db895b2` — the type divorce
+([bool-type-plan.md](bool-type-plan.md)). **Part 2 done (2026-08-29)** — nil
+punning, the narrowing arm, and the non-null diagnostic
+([bool-truthiness.md](bool-truthiness.md) §"As built"). One shared rule,
+`condition-bool`, replaces the six sites' five inline `(!= kind TY-BOOL)` tests;
+`raw`/`CStr`/`?T` lower to `icmp ne ptr … null`, a value-`Maybe` to a tag
+compare, a non-null `ptr` and a `!T` each to their own diagnostic, everything
+else to "condition must be bool, not `<type>`". 888 tests (was 883), bootstrap
+converges with **no** boot refresh (nothing in `src/` uses the sugar yet). The
+plan's one wrong prediction: `test-false-nonnull` needs **no** mirror arm — a
+bare symbol being *false* proves the binding null, and the inverted guard
+`(when (not m) …)` narrows through the existing `not` delegation instead.
+Deliberately still refused: "all numbers are true" and zero-is-false (both by
+the design's own ruling), and `TY-FN` in condition position (not on the list,
+and `is-ptr-like` excludes it by design).
+
 Fixed out of that evaluation, on its own and ahead of any `bool` work:
 [varargs-promotion.md](varargs-promotion.md). Arguments past a variadic callee's
 fixed prefix took no default argument promotions, so `(printf "%d %f" n:i16
@@ -489,8 +639,8 @@ case that was already right by luck). 777 tests, bootstrap converges.
 Nucleus is a drop-in replacement for C, so it must be usable anywhere C is
 usable — which means any required libc detail (a layout, a size, a calling
 convention, an attribute a call depends on) has to be obtainable from a pure
-Nucleus program. The REPL's `src/repl_shim.c` exists partly because it is not:
-its own header comment says *"jmp_buf is an opaque, platform-specific type that
+Nucleus program. The REPL's `src/repl_shim.c` existed partly because it was not:
+its own header comment said *"jmp_buf is an opaque, platform-specific type that
 Nucleus cannot express directly."* Cost constraint: it may add size to the
 compiler, but must add none to compiled programs that do not use it.
 
@@ -498,6 +648,13 @@ Design: [c-header-layout.md](c-header-layout.md). **Done (2026-08-26)** — all
 five staged items (L1–L5) landed, in the staged order (L1 → L2 → L3 → L5 →
 L4). `setjmp` is the symptom; the defect is general to C header import, and
 the survey is the argument.
+
+**The motivating instance was then collected (2026-08-30).** `src/repl_shim.c`
+is deleted — the last C source file in the tree — and the compiler is pure
+Nucleus: `repl-protect`/`repl-throw` on `_setjmp`/`longjmp` through the header,
+and `repl-print-f64`/`repl-print-f32` calling a JIT'd `(fn f64)()` thunk directly
+now that FP-2 gave the indirect call the direct call's ABI rules. Neither
+`Makefile` nor `build.ps1` compiles C any more. c-header-layout.md §11.
 
 **The cost story is already paid.** Two programs, one with `(import-use
 "setjmp.h")` and one without, link to **15848 bytes, byte-identical**. LLVM type
@@ -621,13 +778,21 @@ same by-name list.
 
 **Follow-ups, deferred and recorded in [c-header-layout.md](c-header-layout.md)
 §6**, none of which regress anything L1–L5 touched: an inline function-pointer
-struct member still abandons the struct (blocks `sigaction`/`sigevent_t`); a
-*with-body* aggregate array typedef (`typedef struct T {…} Name[N];`) still
-discards its extent (zero occurrences surveyed); `__attribute__((packed))`
-is still ignored (`epoll_event` 16 vs 12, silently); `--emit-cheader` renders
-a C typedef bare, with no `#include` of the header it came from; and
+struct member still abandons the struct (blocks `sigaction`/`sigevent_t` —
+*closed later as FP-4*); a *with-body* aggregate array typedef
+(`typedef struct T {…} Name[N];`) still discards its extent (zero occurrences
+surveyed — *closed 2026-08-29 as CD-3, with the multi-declarator field line and
+the typedef declarator list, in [c-header-layout.md](c-header-layout.md) §8*);
+`__attribute__((packed))` is still ignored (`epoll_event` 16 vs 12, silently —
+*closed later as PK-1…PK-3*); `--emit-cheader` renders
+a C typedef bare, with no `#include` of the header it came from (*closed
+2026-08-29 — the header did not compile at all without it, which the recorded
+counter-argument had not measured; [c-header-layout.md](c-header-layout.md)
+§9.2*); and
 `Sym.returns-twice` is write-only by design (no Nucleus-side consumer, unlike
-`noreturn`). The survey's own oracle needed a correction too: a `sizeof`-only
+`noreturn`) — *still true of the READER, but it gained a third writer on
+2026-08-29 when `returns_twice` became user-declarable on a `defn`;
+[c-header-layout.md](c-header-layout.md) §10*. The survey's own oracle needed a correction too: a `sizeof`-only
 comparison missed that `SDL_HapticConstant` matched on size (40 bytes, both
 sides) while every field after the first was at the wrong offset and the
 struct's alignment was wrong — offsets and alignment are the right oracle,
@@ -675,6 +840,20 @@ its own item since it reaches `defstruct`), C4 (pass `--target`/`-isysroot` into
 the `clang -E` line at `src/cheader.nuc:977`, which today reads *host* headers
 when cross-compiling — a prerequisite for the AVR/RISC-V tracks under either
 front end). The document also states the triggers that would flip the answer.
+
+**C4 landed 2026-08-29** ([cheader-parser-vs-libclang.md](cheader-parser-vs-libclang.md)
+§9). The retrofit §4.3 priced as one of libclang's three outright wins came to
+one `snprintf` argument — but the item was two things, and the second is one no
+front end supplies: `clang -E` does not fold `sizeof`, so the array-extent
+evaluator computes sizes itself and had to be made target-correct alongside
+(`int` is 16 bits on AVR, `long` is 4, `size_t` is pointer-sized). Measured on
+AVR: `declare i64 @strlen(ptr)` → `declare i16 @strlen(ptr)`, and 59 glibc
+declarations → 42 avr-libc ones. The host path is untouched by construction (the
+flags are empty unless the target triple differs from the host's) and measured
+byte-identical over 187 modules. A target whose headers are not installed falls
+back to the host's **with a warning** rather than refusing, since refusing would
+retire every cross lane in the suite; a header on no search path at all is now a
+located error instead of a silent empty import.
 
 ### The §4 frictions, re-read as language defects
 

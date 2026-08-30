@@ -1,5 +1,6 @@
+# The shared-library target's link driver. Nothing else compiles C: the compiler
+# is pure Nucleus since Stage 16 retired src/repl_shim.c.
 CC           := clang
-CFLAGS       := -std=c11 -Wall -Wextra -Wpedantic -O0 -g
 
 # Native link flags for the compiler binary itself.
 #
@@ -56,9 +57,6 @@ BIN          := $(BUILD)/nucleusc
 # Auto-rebuilt from boot/nucleusc.ll if it can't execute (e.g. LLVM version mismatch).
 BOOT         := bin/nucleusc
 
-# REPL shim (setjmp/longjmp wrapper)
-REPL_SHIM_O  := $(BUILD)/repl_shim.o
-
 # Source-inlined dependencies of the compiler. `src/nucleusc.nuc` `(import)`s
 # these as `.nuc` files, which the importer inlines into the same translation
 # unit — so editing any of them changes the compiler's emitted IR and must
@@ -82,9 +80,9 @@ COMPILER_DEPS := src/nucleusc.nuc src/compiler-types.nuc src/type-utils.nuc src/
                  lib/list.nuc lib/iterator.nuc lib/allocator.nuc lib/coll.nuc \
                  lib/seq.nuc
 
-$(BIN): $(COMPILER_DEPS) $(REPL_SHIM_O) $(BUILD)/llvm-stamp | $(BUILD) ensure-boot
+$(BIN): $(COMPILER_DEPS) $(BUILD)/llvm-stamp | $(BUILD) ensure-boot
 	$(BOOT) --emit-llvm src/nucleusc.nuc > $(BUILD)/nucleusc.ll
-	clang $(BUILD)/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic $(NATIVE_OPT) -o $@
+	clang $(BUILD)/nucleusc.ll $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic $(NATIVE_OPT) -o $@
 
 # Content stamp of the linked LLVM version. A build/nucleusc carried across an
 # LLVM switch (e.g. a build dir shared between host and container) is linked
@@ -96,24 +94,21 @@ $(BUILD)/llvm-stamp: FORCE | $(BUILD)
 	@echo "$(LLVM_VERSION)" | cmp -s - $@ 2>/dev/null || echo "$(LLVM_VERSION)" > $@
 FORCE:
 
-$(REPL_SHIM_O): src/repl_shim.c | $(BUILD)
-	$(CC) $(CFLAGS) -c $< -o $@
-
 $(BUILD) $(BUILD)/out:
 	mkdir -p $@
 
 # Auto-rebuild boot binary if it can't run (wrong LLVM shared lib, etc.)
 # Check exec/loader failure only (exit 126/127), not arbitrary compiler errors.
-ensure-boot: $(REPL_SHIM_O) | $(BUILD)
+ensure-boot: | $(BUILD)
 	@$(BOOT) --help >/dev/null 2>&1; ec=$$?; \
 	if [ $$ec -eq 126 ] || [ $$ec -eq 127 ]; then \
 		echo "bin/nucleusc: cannot execute (exit $$ec), rebuilding from boot/nucleusc.ll ..."; \
-		clang boot/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic $(NATIVE_OPT) -o $(BOOT); \
+		clang boot/nucleusc.ll $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic $(NATIVE_OPT) -o $(BOOT); \
 	fi
 
 # Force-rebuild the bootstrap binary from the committed IR (boot/nucleusc.ll).
-boot-binary: $(REPL_SHIM_O) | $(BUILD)
-	clang boot/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic $(NATIVE_OPT) -o bin/nucleusc
+boot-binary: | $(BUILD)
+	clang boot/nucleusc.ll $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic $(NATIVE_OPT) -o bin/nucleusc
 
 test: $(BIN)
 	@rm -rf $(BUILD)/out
@@ -167,7 +162,7 @@ gen-stdlib-table: $(BIN)
 bootstrap: $(BIN) | $(BUILD)/out
 	@echo "=== Stage 2: self-hosted compiler -> nucleusc.nuc ==="
 	$(BIN) --emit-llvm src/nucleusc.nuc > $(BUILD)/stage2.ll
-	clang $(BUILD)/stage2.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic $(NATIVE_OPT) -o $(BUILD)/nucleusc-stage2
+	clang $(BUILD)/stage2.ll $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic $(NATIVE_OPT) -o $(BUILD)/nucleusc-stage2
 	@echo "=== Fixed-point test ==="
 	diff $(BUILD)/nucleusc.ll $(BUILD)/stage2.ll
 	@echo "PASS: stage1.ll == stage2.ll"

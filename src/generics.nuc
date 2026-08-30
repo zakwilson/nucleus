@@ -408,13 +408,35 @@
           (inc! n))))
     (return n)))
 
+; Stage 16 SE-2: the REFERENCE side, and it must not answer with a want-stamped
+; instance — `(name, param-types)` does not identify one, so the first stamp of a
+; return-only-tyvar template would be handed to every later call with a different
+; want. Skipping sends the caller to tier 1, which re-binds from the want and
+; reaches the discriminated memo. template-ref-equality.md §5.
 (defn generic-find-method-exact (g:raw:Generic param-types:ptr nparams:i32):?ptr:Method
   (let (gg:raw:Generic g)
     (dotimes (i (unsafe/cast i32 (count (gg methods))))
       (let (m:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
         (when (and (= (m kind) METHOD-USER)
                    (= (m num-params) nparams)
-                   (!= (params-type-eq (m param-types) param-types nparams) 0))
+                   (!= (params-type-eq (m param-types) param-types nparams) 0)
+                   (= (method-is-want-stamped (as raw:Method m)) 0))
+          (return (as ptr m)))))
+    (return null)))
+
+; The other half of that split: the want-stamped instance whose RETURN type is
+; `ret` as well. Asked by the monomorphizer's memo probe and by `defn-ir-name`,
+; both of which are naming a definition and therefore hold the whole key.
+(defn generic-find-want-stamp (g:raw:Generic param-types:ptr nparams:i32 ret:raw:Type):?ptr:Method
+  (when (= ret null) (return null))
+  (let (gg:raw:Generic g)
+    (dotimes (i (unsafe/cast i32 (count (gg methods))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
+        (when (and (= (m kind) METHOD-USER)
+                   (= (m num-params) nparams)
+                   (!= (params-type-eq (m param-types) param-types nparams) 0)
+                   (!= (method-is-want-stamped (as raw:Method m)) 0)
+                   (!= (type-eq (m ret-type) ret) 0))
           (return (as ptr m)))))
     (return null)))
 
@@ -437,7 +459,8 @@
         (when (and (= (m kind) METHOD-USER)
                    (= (m num-params) nparams)
                    (!= (method-in-ns m ns) 0)
-                   (!= (params-type-eq (m param-types) param-types nparams) 0))
+                   (!= (params-type-eq (m param-types) param-types nparams) 0)
+                   (= (method-is-want-stamped (as raw:Method m)) 0))
           (return (as ptr m)))))
     ; No method of this namespace has that signature: fall back to the unfiltered
     ; answer, which is what every caller got before. The fallback cannot
@@ -490,6 +513,46 @@
         (when (!= (marker-named sp "rest") 0) (set! n (- n 1)))
         (when (!= (marker-named sp "optional") 0) (set! n (- n 1)))))
     (return n)))
+
+; Does a defn param list carry a `:rest` marker? The two registration sites used
+; to infer this from `(< (defn-params-count …) (node-len …))`, which is equally
+; true of an `:optional` list — so every `:optional` defn registered has-rest = 1
+; and its Method was skipped by the widening tiers (keyword-markers.md §7).
+(defn defn-params-has-rest (params-node:raw:Node):i32
+  (let (found:i32 0)
+    (dotimes (i (node-len params-node))
+      ; W5f: see defn-params-count — a NULL (empty-list) parameter is not a
+      ; marker and must not be dereferenced during the prescan.
+      (let (sp:(raw Node) (as raw:Node (node-at params-node i)))
+        (when (!= (marker-named sp "rest") 0) (set! found 1))))
+    (return found)))
+
+; The `:optional` count and default-expression array of a defn param list —
+; the other two fields `emit-defn` puts on the function Type. The signature
+; prescan registers a Type of its own, and `finalize-generics` binds it for a
+; SOLITARY name, so a call emitted before the defn is checked and filled
+; against it: without these an omitted optional was rejected `expected N args,
+; got N-1` from anywhere above the definition. Conservative on a malformed
+; `:optional` spec — emit-defn owns that located diagnostic.
+(defn defn-params-set-opt (params-node:raw:Node ft:ptr:Type):void
+  (let (raw:i32 (node-len params-node)
+        opt-idx:i32 -1)
+    (dotimes (si raw)
+      (let (sp:(raw Node) (as raw:Node (node-at params-node si)))
+        (when (!= (marker-named sp "optional") 0) (set! opt-idx si))))
+    (when (= opt-idx -1) (return))
+    (let (nopt:i32 (- (- raw 1) opt-idx))
+      (when (<= nopt 0) (return))
+      (let (defaults:ptr (arena-alloc (* nopt (ptr-bytes)))
+            ok:i32 1)
+        (dotimes (k nopt)
+          (let (p:ptr (node-at params-node (+ (+ opt-idx 1) k)))
+            (if (and (!= p null) (node-is-list (as raw:Node p)) (= (node-len p) 2))
+              (aset! (as ptr:ptr defaults) k (node-at p 1))
+              (set! ok 0))))
+        (when (!= ok 0)
+          (.set! ft nopt nopt)
+          (.set! ft opt-defaults defaults))))))
 
 ; The fixed parameter types of a defn param list as a ptr-array (:rest-aware:
 ; the :rest marker is skipped and the rest parameter is typed ptr). Shared by
@@ -884,9 +947,14 @@
         found:?ptr:Method null)
     (dotimes (i (unsafe/cast i32 (count (gg methods))))
       (let (m:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
+        ; SE-2: tier 0 is `generic-find-method-exact` written out, and it needs
+        ; that function's skip for the same reason — a want-stamped instance is
+        ; not identified by the argument tuple. Falling through to tier 1 re-binds
+        ; it from the want. template-ref-equality.md §5.
         (when (and (= (m kind) METHOD-USER)
                    (= (m num-params) nargs)
-                   (!= (params-type-eq (m param-types) argtypes nargs) 0))
+                   (!= (params-type-eq (m param-types) argtypes nargs) 0)
+                   (= (method-is-want-stamped (as raw:Method m)) 0))
           ; Stage 15 W9 item 35: two tier-0 matches that emit into DIFFERENT
           ; symbol spaces are two different functions, and this reference names
           ; both equally well. Reporting it here is the other half of allowing
@@ -1002,10 +1070,16 @@
 ; happens to own. `g-current-ns` is the authority and is correct for a stamped
 ; template body too, because `drain-mono-worklist` restores the template's
 ; environment (item 43).
-(defn defn-ir-name (fname:CStr param-types:ptr nparams:i32):ptr
+; SE-2: `ret` is the rest of the key. A want-stamped instance shares its
+; parameter types with every sibling stamp, so the definition in front of the
+; emitter is the one whose return type matches too; null (a caller with no
+; return type to offer) keeps the historical two-part answer.
+(defn defn-ir-name (fname:CStr param-types:ptr nparams:i32 ret:raw:Type):ptr
   (let (g:ptr (generic-lookup fname))
     (when (!= g null)
       (let (m:ptr (generic-find-method-exact-in-ns g param-types nparams g-current-ns:CStr))
+        (when (= m null)
+          (set! m (generic-find-want-stamp g param-types nparams ret)))
         (when (and (!= m null) (!= (-> m (unsafe/cast ptr:Method _) (_ ir-name)) null))
           (return (-> m (unsafe/cast ptr:Method _) (_ ir-name)))))))
   ; Stage 12 N4: a solitary (non-overloaded) defn keeps `@name` but, in a
@@ -1195,7 +1269,10 @@
     (when (!= (n kind) NODE-CELL) (return 0))
     (let (head:raw:Node (n car))
       (when (or (= head null) (!= (head kind) NODE-SYM)) (return 0))
-      (when (or (= (head s) "ptr") (= (head s) "raw") (= (head s) "ref"))
+      ; `addr-of`: a standalone `&T` in a type slot, which the reader macro wrote
+      ; as the value form before position was known (ref-sigil.md §6).
+      (when (or (= (head s) "ptr") (= (head s) "raw") (= (head s) "ref")
+                (= (head s) "addr-of"))
         (return 1))
       (return 0))))
 
@@ -1438,6 +1515,18 @@
         (if (and (= (strchr (n s) 58) null) (= (n s) tvname)) (return 1) (return 0))
       NODE-CELL
         (do
+          ; §3.7, the third copy of this expansion (collect-pattern-tyvars and
+          ; unify-tpat are the other two, and this function claims to mirror the
+          ; second): `(Vec T)` is an alias application, matches no template, and
+          ; without expanding it `T` reads as undetermined.
+          (let (ex:raw:Node (type-alias-apply pat (node-line (as ptr pat) 0)))
+            (when (!= ex null)
+              (when (>= g-type-alias-depth MAX-TYPE-ALIAS-DEPTH)
+                (die-at (node-line (as ptr pat) 0) "type alias expands into a cycle"))
+              (set! g-type-alias-depth (+ g-type-alias-depth 1))
+              (let (r:i32 (pattern-determines-tyvar ex tvname))
+                (set! g-type-alias-depth (- g-type-alias-depth 1))
+                (return r))))
           (when (!= (node-is-ptr-wrapper pat) 0)
             (return (pattern-determines-tyvar (wrapper-inner-pattern pat) tvname)))
           (let (st:?ptr:StructTemplate (node-template-of pat))
@@ -1450,26 +1539,71 @@
       0)
     (return 0)))
 
-; TC-1: the interned name of the first declared tyvar that NO parameter pattern
-; determines (a return-only / otherwise under-determined tyvar), or null when
-; every tyvar is parameter-determined. Such a tyvar can only be filled by the
-; call site's want channel; a call that cannot resolve and has one of these gets
-; the dedicated "cannot infer type variable" diagnostic instead of the misleading
-; "no matching method". Re-derives the registration-time determination signal at
-; resolution time (the `determined` array is not retained on the Method).
+; Which of a template's declared tyvars the CALL determines, written into the
+; i32 array `out` (assoc-types A1 §3.4). Seed: a tyvar some parameter pattern
+; binds under the structural unifier. Step: for each constraint `((Proto Arg…) V)`
+; whose conforming variable V is determined, every tyvar mentioned in an Arg is
+; determined too — it is recovered from V's conformance at dispatch (A2). Repeat
+; to a fixpoint. A plain `(Proto V)` constraint carries no Arg nodes and adds
+; nothing, so a constraint-free template gets the single seed pass exactly.
+;
+; This lived inline in the template registration, where its result was computed
+; and never read; SE-2 gave the question a consumer, and the params-only
+; approximation `method-undetermined-tyvar` used to make would have called
+; `reduce`'s `S` (recovered from `((Iterator S) I)`) return-only.
+(defn tyvars-determined (params-node:raw:Node nparams:i32 tyvars:ptr ntv:i32
+                             constraints:raw:ConstraintVec nc:i32 out:ptr):void
+  (dotimes (ti ntv)
+    (let (tvname:ptr (aref (as ptr:ptr tyvars) ti)
+          bnd:i32 0)
+      (dotimes (j nparams)
+        (when (!= (pattern-determines-tyvar (binding-type-node (node-at params-node j)) tvname) 0)
+          (set! bnd 1)))
+      (aset! (as ptr:i32 out) ti bnd)))
+  (let (changed:i32 1)
+    (while (!= changed 0)
+      (set! changed 0)
+      (dotimes (ck nc)
+        (let (crec:ref:Constraint (constraints-at constraints ck)
+              vidx:i32 (tyvar-index-of (crec var) tyvars ntv)
+              na:i32 (crec nargs))
+          (when (and (>= vidx 0) (!= (aref (as ptr:i32 out) vidx) 0) (> na 0))
+            (let (argv:ptr (crec args))
+              (dotimes (ai na)
+                (let (argn:ptr (aref (as ptr:ptr argv) ai))
+                  (dotimes (ti2 ntv)
+                    (when (and (= (aref (as ptr:i32 out) ti2) 0)
+                               (!= (node-mentions-tyvar-named argn (aref (as ptr:ptr tyvars) ti2)) 0))
+                      (aset! (as ptr:i32 out) ti2 1)
+                      (set! changed 1))))))))))))
+
+; TC-1: the interned name of the first declared tyvar the call does not
+; determine (a return-only tyvar), or null when every tyvar is determined. Such a
+; tyvar can only be filled by the call site's want channel; a call that cannot
+; resolve and has one of these gets the dedicated "cannot infer type variable"
+; diagnostic instead of the misleading "no matching method". Since SE-2 it also
+; decides whether a stamped instance needs a return-type discriminator, so it
+; asks the whole fixpoint rather than the parameter seed alone.
 (defn method-undetermined-tyvar (m:raw:Method):ptr
   (let (mm:raw:Method m
-        nparams:i32 (mm num-params)
         ntv:i32 (mm num-tyvars)
-        params-node:ptr (node-at (mm body) 2))
+        det:ptr (arena-alloc (* (as i64 (if (> ntv 0) ntv 1)) 4)))
+    (tyvars-determined (as raw:Node (node-at (mm body) 2)) (mm num-params)
+                       (mm tyvars) ntv (mm constraints) (mm num-constraints) det)
     (dotimes (ti ntv)
-      (let (tvname:ptr (aref (as ptr:ptr (mm tyvars)) ti)
-            bnd:i32 0)
-        (dotimes (j nparams)
-          (when (!= (pattern-determines-tyvar (binding-type-node (node-at params-node j)) tvname) 0)
-            (set! bnd 1)))
-        (when (= bnd 0) (return tvname))))
+      (when (= (aref (as ptr:i32 det) ti) 0)
+        (return (aref (as ptr:ptr (mm tyvars)) ti))))
     (return null)))
+
+; Stage 16 SE-2: is `m` a stamped instance that its own parameter types do not
+; identify? Its template has a tyvar only the call site's want channel can fill,
+; so two instances share one `(name, param-types)` key and the first stamped one
+; answered for all of them. template-ref-equality.md §5.
+(defn method-is-want-stamped (m:raw:Method):i32
+  (let (mm:raw:Method m
+        tm:ptr (mm origin-template))
+    (when (= tm null) (return 0))
+    (if (!= (method-undetermined-tyvar (as raw:Method tm)) null) (return 1) (return 0))))
 
 ; Does the colon-free symbol `tvname` appear anywhere as a leaf of `node`? Used
 ; by the assoc-types (A1) determination fixpoint to test whether a constraint
@@ -1635,60 +1769,10 @@
                                     tyvars (as ptr:i32 (addr-of ntv))))
           (collect-pattern-tyvars (defn-ret-node form)
                                   tyvars (as ptr:i32 (addr-of ntv)))
-          ; Every declared tyvar must be determined (return-only tyvars need dyn,
-          ; deferred). Determination is a fixpoint (assoc-types A1 §3.4):
-          ;   seed: a tyvar bound by some parameter pattern under the structural
-          ;         unifier is determined;
-          ;   step: for each constraint `((Proto Arg…) V)` whose conforming
-          ;         variable V is already determined, every tyvar that appears in
-          ;         an Arg position becomes determined (it is recovered from V's
-          ;         conformance at dispatch — A2);
-          ;   repeat until no change.
-          ; A plain `(Proto V)` constraint has no Arg nodes, so it adds nothing —
-          ; identical to the pre-A1 single-pass behaviour.
-          (let (determined:ptr (arena-alloc (* (if (> ntv 0) ntv 1) 4)))
-            (dotimes (ti ntv)
-              (let (tvname:CStr (aref (as ptr:ptr tyvars) ti)
-                    bnd:i32 0)
-                (dotimes (j nparams)
-                  (when (!= (pattern-determines-tyvar (binding-type-node (node-at params-node j))
-                                                      tvname) 0)
-                    (set! bnd 1)))
-                (aset! (as ptr:i32 determined) ti bnd)))
-            ; Propagate through constraints to a fixpoint.
-            (let (changed:i32 1)
-              (while (!= changed 0)
-                (set! changed 0)
-                (let (ck:i32 0)
-                  (while (< ck nc)
-                    (let (crec:ref:Constraint (invoke constraints ck:usize)
-                          vidx:i32 (tyvar-index-of (crec var) tyvars ntv)
-                          na:i32 (crec nargs))
-                      ; Constraint's conforming variable determined and it carries
-                      ; recoverable args → each arg-mentioned tyvar is determined.
-                      (when (and (>= vidx 0)
-                                 (and (!= (aref (as ptr:i32 determined) vidx) 0) (> na 0)))
-                        (let (argv:ptr (crec args)
-                              ai:i32 0)
-                          (while (< ai na)
-                            (let (argn:ptr (aref (as ptr:ptr argv) ai)
-                                  ti2:i32 0)
-                              (while (< ti2 ntv)
-                                (when (and (= (aref (as ptr:i32 determined) ti2) 0)
-                                           (!= (node-mentions-tyvar-named argn (aref (as ptr:ptr tyvars) ti2)) 0))
-                                  (aset! (as ptr:i32 determined) ti2 1)
-                                  (set! changed 1))
-                                (inc! ti2)))
-                            (inc! ai)))))
-                    (inc! ck)))))
-            ; TC-1: a tyvar not determined by any parameter (a return-only tyvar)
-            ; is no longer a def-time error — it registers as METHOD-GENERIC and
-            ; its determination is deferred to the call site's want channel
-            ; (generic-resolve / generic-method-bind unify the return pattern
-            ; against the expected type). `determined` is retained as advisory
-            ; detection; resolution re-derives the signal via
-            ; method-undetermined-tyvar for the dedicated diagnostic.
-            )
+          ; TC-1: a tyvar the call does not determine (a return-only tyvar) is
+          ; not a def-time error — it registers as METHOD-GENERIC and is filled
+          ; from the call site's want channel. `tyvars-determined` computes the
+          ; A1 fixpoint; `method-undetermined-tyvar` asks it at resolution time.
           ; Constraint protocols are validated in the A2 pass (check-generic-
           ; template), which runs after all imports — so a :where may name a
           ; protocol that an `import` provides, while a genuine typo is still
@@ -2258,8 +2342,16 @@
 
 (defn generic-instantiate-in (g:raw:Generic m:raw:Method bound:ptr argtypes:ptr nargs:i32 line:i32):ref:Method
   (let (gg:raw:Generic g
-        mm:raw:Method m)
-    (let (existing:?ptr:Method (generic-find-method-exact g argtypes nargs))
+        mm:raw:Method m
+        ; SE-2: what this instance's parameter types do not carry. Null for every
+        ; template whose tyvars the parameters determine — the ordinary case, in
+        ; which the memo, the symbol and the reference lookup are all unchanged.
+        disc:ptr (if (!= (method-undetermined-tyvar m) null)
+                   (method-bound-ret-type m bound line)
+                   null))
+    (let (existing:?ptr:Method (if (= disc null)
+                                 (generic-find-method-exact g argtypes nargs)
+                                 (generic-find-want-stamp g argtypes nargs (as raw:Type disc))))
       (when (!= existing null)
         (return existing)))
     ; Concrete spelling for each bound type variable, used to stamp the body.
@@ -2310,8 +2402,15 @@
               ; the bare-keyed generic first, which is the template's only when
               ; no other namespace defines the same name. Same source of truth as
               ; the `(mm src-ns)` re-ownership four lines below.
-              mangled:ptr (mangle-fn-name (method-ir-prefix gg (as raw:Method mm))
-                                          (gg name) ptypes nargs)
+              ; SE-2: … plus, when the parameter tokens do not identify the
+              ; instance, the bound return type. `$` is legal in an LLVM symbol
+              ; and `type-mangle-token` never emits one, so `.$r.` cannot be read
+              ; as a parameter token. template-ref-equality.md §5.
+              mangled:ptr (let (base:ptr (mangle-fn-name (method-ir-prefix gg (as raw:Method mm))
+                                                         (gg name) ptypes nargs))
+                            (if (= disc null)
+                              base
+                              (fmt-2s "%s.$r.%s" base (type-mangle-token (as raw:Type disc)))))
               job:ptr:MonoJob (mono-job-here stamped
                                 (fmt-2s-i "while instantiating %s (requested at %s:%d)"
                                           mangled g-source-path line)))
@@ -2319,6 +2418,12 @@
           ; Stage 14 LW-1: mark this as a stamped instance of the template `mm` so
           ; tier-2 widening resolution treats the two as one overload.
           (.set! newm origin-template mm)
+          ; SE-2: `ir-fixed` says "this symbol is already decided", which is now
+          ; true of a discriminated stamp for the same reason it is true of an
+          ; imported method — `finalize-generics` would re-mangle it from the
+          ; parameter types alone and drop the `.$r.`, and would read its siblings
+          ; as duplicate definitions of one signature.
+          (when (!= disc null) (.set! newm ir-fixed 1))
           ; Stage 15 B4: a stamp is owned by the TEMPLATE's namespace, not by the
           ; call site's — the same distinction `(gg ir-prefix)` above already
           ; makes for mangling. `generic-register-method` wrote `g-current-ns`,

@@ -15,13 +15,14 @@ By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` un
 | `-ffast-math` | Emit `fast` flags on floating-point arithmetic (`fadd`/`fsub`/`fmul`/`fdiv`/`frem`), permitting reassociation, contraction, and no-signed-zero/no-NaN assumptions. This is what lets the optimizer vectorize FP **reductions** (e.g. `pi += …`); without it an FP reduction stays scalar even at `-O3` because reordering would change results. Comparisons are left unflagged. Changes numerical results — opt-in only. |
 | `-march=native` | Target the host CPU and its full feature set (via `LLVMGetHostCPUName` / `LLVMGetHostCPUFeatures`) instead of the generic baseline, so vectorized loops use the widest available registers (e.g. 256-bit AVX rather than 128-bit SSE2). Host-only — do not combine with `--target=`. Produces non-portable objects. |
 | `--emit-nuch` | Output a `.nuch` header instead of compiling. Extracts function signatures, struct definitions, constants, enums, and macros. The prelude and the file's own imports are prescanned first (types only — nothing is emitted), so an exported signature may name an imported type: `Node`, `StrView`, `String`, `(Maybe T)`, the `!T` sugar. Declarations are validated before anything is written (see [What a header mode checks](#what-a-header-mode-checks)). |
-| `--emit-cheader` | Output a C header (`.h`) instead of compiling. Emits `#pragma once`, `#include <stdint.h>` / `<stdbool.h>` / `<stddef.h>`, tagged typedefs for structs and unions (`typedef struct Pt { … } Pt;`, so both `Pt` and `struct Pt` work), extern function declarations, `extern` declarations for public `defvar` globals (see [Reaching a library's globals from C](#reaching-a-librarys-globals-from-c)), `#define` constants, and enums. For a namespaced library, function declarations use the C-legal mangled link name (`geom__area`, not the Nucleus name `geom/area`), so a C consumer links against the same symbol the library emits — and a struct's typedef name is mangled the same way (`} gt__Pt;`, not `} Pt;`), since two namespaces may each define a `Pt` and an unprefixed typedef would collide if both headers were included together. A `user`-namespace library's header is unaffected. An **overloaded** or **operator-named** function is declared under the per-signature symbol it really links as, each method with its own C name (see [Overloaded and operator-named functions in a C header](#overloaded-and-operator-named-functions-in-a-c-header)). A name that is a **word C or C++ reserves** (`union`, `signed`, `class`, `delete`) is renamed with a trailing `_` and re-bound with an `asm` label, so only its C spelling moves (see [Names C reserves](#names-c-reserves)). A name beginning with a **digit** takes a leading `_` — C identifiers may not start with one — and needs no label, because the emitted symbol takes the same escape (see [Hyphenated names in a C header](#hyphenated-names-in-a-c-header)). A type defined in **another** unit gets an `#include` of that unit's generated header, so a by-value use of it compiles (see [Types a header borrows from another unit](#types-a-header-borrows-from-another-unit)). A signature naming a **C typedef** (e.g. `off_t`, see [A C typedef is a Nucleus type name](structs-unions.md#a-c-typedef-is-a-nucleus-type-name)) gets no such `#include`: the rendered name is written bare, and a consumer must `#include` the same C header itself. A signature mentioning an **error-union or option type over a non-pointer payload** (`:!i32`, `?Char`) is not declared at all — the value is niche-encoded, not a struct — and a comment says so in its place; the pointer niches `!ptr:T` / `!ref:T` are bare pointers and stay declared (see [Error-union and option types in a C header](#error-union-and-option-types-in-a-c-header)). Header emission resolves the whole unit's signatures and validates its **declarations**, so a source whose declarations do not compile produces the compiler's ordinary error — the same message at the same line an ordinary compile gives — rather than a header (see [What a header mode checks](#what-a-header-mode-checks)). See [Namespaced type names](types.md#namespaced-type-names). |
+| `--emit-cheader` | Output a C header (`.h`) instead of compiling. Emits `#pragma once`, `#include <stdint.h>` / `<stdbool.h>` / `<stddef.h>`, tagged typedefs for structs and unions (`typedef struct Pt { … } Pt;`, so both `Pt` and `struct Pt` work), extern function declarations, `extern` declarations for public `defvar` globals (see [Reaching a library's globals from C](#reaching-a-librarys-globals-from-c)), `#define` constants, and enums. For a namespaced library, function declarations use the C-legal mangled link name (`geom__area`, not the Nucleus name `geom/area`), so a C consumer links against the same symbol the library emits — and a struct's typedef name is mangled the same way (`} gt__Pt;`, not `} Pt;`), since two namespaces may each define a `Pt` and an unprefixed typedef would collide if both headers were included together. A `user`-namespace library's header is unaffected. An **overloaded** or **operator-named** function is declared under the per-signature symbol it really links as, each method with its own C name (see [Overloaded and operator-named functions in a C header](#overloaded-and-operator-named-functions-in-a-c-header)). A name that is a **word C or C++ reserves** (`union`, `signed`, `class`, `delete`) is renamed with a trailing `_` and re-bound with an `asm` label, so only its C spelling moves (see [Names C reserves](#names-c-reserves)). A name beginning with a **digit** takes a leading `_` — C identifiers may not start with one — and needs no label, because the emitted symbol takes the same escape (see [Hyphenated names in a C header](#hyphenated-names-in-a-c-header)). A type defined in **another** unit gets an `#include` of that unit's generated header, so a by-value use of it compiles (see [Types a header borrows from another unit](#types-a-header-borrows-from-another-unit)). A signature naming a **C typedef** (e.g. `off_t`, see [A C typedef is a Nucleus type name](structs-unions.md#a-c-typedef-is-a-nucleus-type-name)) renders the name bare — `struct off_t` names nothing — and gets an `#include` of the C header the source imported to reach it (`#include <unistd.h>`), so the generated header still compiles on its own (see [C typedefs a header borrows](#c-typedefs-a-header-borrows)). A signature mentioning an **error-union or option type over a non-pointer payload** (`:!i32`, `?Char`) is not declared at all — the value is niche-encoded, not a struct — and a comment says so in its place; the pointer niches `!ptr:T` / `!ref:T` are bare pointers and stay declared (see [Error-union and option types in a C header](#error-union-and-option-types-in-a-c-header)). Header emission resolves the whole unit's signatures and validates its **declarations**, so a source whose declarations do not compile produces the compiler's ordinary error — the same message at the same line an ordinary compile gives — rather than a header (see [What a header mode checks](#what-a-header-mode-checks)). See [Namespaced type names](types.md#namespaced-type-names). |
 | `-i` / `--interactive` | Start the REPL (interactive Read-Eval-Print Loop). |
 | `-I<path>` / `-I <path>` | Add a directory to the import search path. Searched after the source file's directory and `lib/`. |
 | `--repl-format=text\|json` | Format for REPL error output. Default `text` (legacy `  error: <msg>` lines). With `json`, each error is emitted as a single-line JSON object: `{"file":..,"line":..,"message":..}`. Suitable for agent-driven REPL sessions. |
-| `--target=<triple>` | Cross-compile: set the output module's target triple and datalayout (sourced from LLVM) instead of the host's. In-process JIT modules (compile-time bodies, `defmacro`, REPL) always stay on the host. Registered backends: X86 (`x86_64`/`i386`), AArch64 (`aarch64`), ARM (`arm`), AVR (`avr`), RISCV (`riscv64`); Linux, Darwin, and Windows (msvc/gnu) triples all resolve. Pointer size, `size_t`, and struct layout follow the selected target. The reloc model is chosen per target (static for `avr`, PIC otherwise). A `riscv64` triple additionally defaults CPU/features/ABI to `generic-rv64` / `+m,+a,+f,+d,+c` / `lp64d` (RV64GC, the glibc-compatible baseline) — LLVM's own empty-features default is bare RV64I with a soft-float ABI, silently incompatible with a real riscv64 Linux target, so a correct default (not a user-supplied flag) is load-bearing here. When the resolved ABI is non-empty, `--emit-llvm` output carries a `!llvm.module.flags` block pinning `target-abi` (e.g. `!"lp64d"`); every other target emits no module-flags block at all. On `riscv64`, struct-by-value follows the lp64d **hard-float** calling convention: an aggregate is first flattened (nested structs and arrays expand into their scalar members; a union never flattens), and a flattened list of exactly one FP real, two FP reals, or one FP real plus one integer — in either order — travels in FP registers (`float`, `{double,double}`, `{i32,float}`, `{float,i32}`) as long as the registers it needs are still free at that argument position. Anything else — three or more members, a union, an over-wide member, a **variadic** argument, or exhausted registers (fa0-fa7 / a0-a7, with a hidden `sret` pointer spending one of the latter) — takes the integer convention, coercing a struct ≤ 16 bytes to `i64`/`{i64,i64}`; a struct over 16 bytes passes as a plain pointer / returns via `sret` (no `byval`). A return is classified against a0/a1/fa0/fa1, which are always available, so a return never falls back for want of registers — see [Passing and returning structs by value](structs-unions.md#passing-and-returning-structs-by-value). On `avr`, every struct/union passed or returned by value (any size) uses the aarch64-style plain-pointer `ABI-MEMORY` convention — no `byval`, since the SysV eightbyte register-chunk model that other targets use doesn't fit an 8-bit target with no such registers (see [Passing and returning structs by value](structs-unions.md#passing-and-returning-structs-by-value)) — and `f64`/`double` is a compile-time error (no hardware double), both as an explicit annotation and as a bare float literal's default type; `f32` and `i64` remain fully supported (see [Built-in Types](types.md#built-in-types)). |
+| `--target=<triple>` | Cross-compile: set the output module's target triple and datalayout (sourced from LLVM) instead of the host's. In-process JIT modules (compile-time bodies, `defmacro`, REPL) always stay on the host. Registered backends: X86 (`x86_64`/`i386`), AArch64 (`aarch64`), ARM (`arm`), AVR (`avr`), RISCV (`riscv64`); Linux, Darwin, and Windows (msvc/gnu) triples all resolve. Pointer size, `size_t`, and struct layout follow the selected target — and so do the C headers an `(import-use "…")` reads, since the `clang -E` that reads them is given the same triple (see [C headers under `--target=`](#c-headers-under---target)). The reloc model is chosen per target (static for `avr`, PIC otherwise). A `riscv64` triple additionally defaults CPU/features/ABI to `generic-rv64` / `+m,+a,+f,+d,+c` / `lp64d` (RV64GC, the glibc-compatible baseline) — LLVM's own empty-features default is bare RV64I with a soft-float ABI, silently incompatible with a real riscv64 Linux target, so a correct default (not a user-supplied flag) is load-bearing here. When the resolved ABI is non-empty, `--emit-llvm` output carries a `!llvm.module.flags` block pinning `target-abi` (e.g. `!"lp64d"`); every other target emits no module-flags block at all. On `riscv64`, struct-by-value follows the lp64d **hard-float** calling convention: an aggregate is first flattened (nested structs and arrays expand into their scalar members; a union never flattens), and a flattened list of exactly one FP real, two FP reals, or one FP real plus one integer — in either order — travels in FP registers (`float`, `{double,double}`, `{i32,float}`, `{float,i32}`) as long as the registers it needs are still free at that argument position. Anything else — three or more members, a union, an over-wide member, a **variadic** argument, or exhausted registers (fa0-fa7 / a0-a7, with a hidden `sret` pointer spending one of the latter) — takes the integer convention, coercing a struct ≤ 16 bytes to `i64`/`{i64,i64}`; a struct over 16 bytes passes as a plain pointer / returns via `sret` (no `byval`). A return is classified against a0/a1/fa0/fa1, which are always available, so a return never falls back for want of registers — see [Passing and returning structs by value](structs-unions.md#passing-and-returning-structs-by-value). On `avr`, every struct/union passed or returned by value (any size) uses the aarch64-style plain-pointer `ABI-MEMORY` convention — no `byval`, since the SysV eightbyte register-chunk model that other targets use doesn't fit an 8-bit target with no such registers (see [Passing and returning structs by value](structs-unions.md#passing-and-returning-structs-by-value)) — and `f64`/`double` is a compile-time error (no hardware double), both as an explicit annotation and as a bare float literal's default type; `f32` and `i64` remain fully supported (see [Built-in Types](types.md#built-in-types)). |
 | `--mcpu=<cpu>` | The target CPU/device passed to LLVM's `TargetMachine` (e.g. `--target=avr --mcpu=attiny1634`). Only meaningful with `--target=`; the host target always uses the empty (generic) CPU. For AVR, use the device name when LLVM lists it (`attiny1634`) or the family core for a device LLVM doesn't know (`avrxmega3` covers the AVR-Dx parts). Currently the datalayout for a given triple is CPU-independent, so `--mcpu` selects the codegen ISA, not the ABI. For `riscv64`, `--mcpu` overrides only the CPU (default `generic-rv64`); the `+m,+a,+f,+d,+c` features and `lp64d` ABI module flag are fixed per-triple defaults, unaffected by `--mcpu`. |
 | `--mmcu=<device>` | The AVR device name passed to the link driver as `-mmcu=<device>` (e.g. `--target=avr --mcpu=avrxmega3 --mmcu=avr32dd20`). Only consulted on an AVR triple; ignored otherwise. Distinct from `--mcpu`: `--mcpu` picks the LLVM codegen ISA/family (`avrxmega3` covers a whole AVR-Dx family core), while `--mmcu` picks the exact device for avr-gcc's device-specific linker script and startup code. When `--mmcu` is not given, the link step falls back to the `--mcpu` value — sufficient when `--mcpu` already names an exact device (e.g. `attiny1634`), but a bare family core like `avrxmega3` still links (a generic family layout) rather than erroring, so pass `--mmcu=<device>` explicitly whenever the target is a specific chip. |
+| `--sysroot=<path>` | The sysroot passed to the `clang -E` that reads a C header import (`--sysroot=<path>`), so a cross-compile reads the **target's** headers rather than the host's. Only the preprocessor consults it — pass `--link-arg=--sysroot=<path>` to give the link step the same root. Independent of `--target=`: with no `--target=` it overrides the host's own header search. See [C headers under `--target=`](#c-headers-under---target). |
 | `--linker=<cmd>` | Override the link-driver command/path used for the final link step. Wins over the triple-based default (`clang` for hosted targets, `avr-gcc` for an AVR `--target=`, `riscv64-linux-gnu-gcc` for a `riscv64` `--target=` **when cross-compiling**) regardless of triple. On a riscv64 *host* the sysroot is `/`, so a `riscv64` target keeps the plain `clang` default rather than reaching for the triplet-prefixed cross driver — the latter is a Debian-family naming convention that other riscv64 distros do not ship. Pass `--linker=cc` (or `--linker=gcc`) if the native host has no `clang`. |
 | `--link-arg=<arg>` | Pass one verbatim argument to the link driver, appended after the object file — and after the compiler's own `-Wl,--gc-sections` (see [Separate compilation and symbol linkage](#separate-compilation-and-symbol-linkage)), so `--link-arg=-Wl,--no-gc-sections` turns that off. Generalizes `-l<lib>`/`-L<dir>` (which route through the same mechanism) to arbitrary linker flags. |
 
@@ -171,6 +172,16 @@ whichever of the two definitions is **emitted first**, naming the other one's
 kind. Same-kind reuse stays legal: an overloaded `defn`, a re-imported
 `defstruct`, a redefined macro.
 
+The three [pointer kinds](types.md#pointer-kinds-ptr-t-raw-t-and-t) are
+reserved here too — `'ref' already names a pointer kind` — even though `ref`
+and `raw` are constructors that name no type on their own.
+
+The rule governs **top-level definers only**. A `let`/`with` binding or a
+parameter may still take any name, including a type name: `(let (i32:i32 5) …)`
+and `(let (ref:i32 5) …)` are both legal, and shadow nothing that a local can
+refer to. That is deliberate — a local shadowing a global is ordinary — but it
+means "reserved" above means *undefinable*, not *unbindable*.
+
 ### Call arity
 
 A call must supply an admissible number of arguments, and the rule depends on
@@ -205,7 +216,7 @@ variadic flag, so the fixed prefix is checked exactly and the tail is free.
 
 **Arguments past the fixed prefix take C's default argument promotions.** An
 integer narrower than C's `int` is widened to `int` (`zext` for an unsigned
-source — `bool`/`i1` included — `sext` for a signed one) and an `f32` is widened
+source — `bool` included — `sext` for a signed one) and an `f32` is widened
 to `f64`, exactly as a C compiler does at the same call, because that is what
 `va_arg` on the other side reads. `Char` is `ui32` and so is already `int`-wide;
 `usize`/`ssize` are pointer-width; neither moves. The promotion target follows
@@ -290,6 +301,8 @@ Result printing is type-aware: integer kinds print as decimal, string literals p
 Functions defined in the REPL persist across inputs and can call each other. All libc functions (stdio, stdlib, string, ctype, unistd) are pre-loaded — no `(import-use ...)` needed.
 
 Imported libraries work, in every spelling a source file may use: `(import-use mathlib)` makes `square`, `cube`, etc. available; `(import nsgeom)` and `(import-prefixed nsgeom g)` bind `nsgeom/area` and `g/area`; `(import-ct lib)` registers a library's compile-time surface only, so a reference to one of its functions is refused as compile-time-only; `(unsafe/import-private lib p)` also reaches the library's private symbols. Each import prints what it did — `  imported mathlib`, or `  mathlib already imported` when the form was a no-op, so a retry that is deduplicated away is distinguishable from one that loaded. The REPL boots by importing the standard prelude, exactly as a batch compile does, so `Node`, the `NODE-*` constants, `StrView`, `(Maybe T)`/`?T`, `(Result T E)`/`!T`, `Clone` and the standard macros (`if`, `when`, `unless`, `for`, `dotimes`, `->`) are all in scope without an explicit import, and mean the same thing they mean in a batch compile.
+
+Every library in `lib/` imports at the prompt, including `node`, and a library the compiler itself links is no exception: the session compiles and uses **its own** copy, which is why a REPL-defined function may shadow a name the compiler happens to export. One consequence is worth knowing. `lib/node.nuc` carries the symbol intern table, and the compiler compares symbols by pointer, so after `(import-use node)` a macro **first expanded after** that import mints its symbols from the session's table and a special-form head in its expansion is not recognized — `(mc 9)` reports `unknown: cond`. It always fails loudly, never silently; it does not affect a macro whose expansion has a function head; and a macro already expanded *before* the import keeps working. Expand the macros you need before importing `node`.
 
 Errors in the REPL are caught and recovered; the REPL continues after an error (including source syntax errors, IR parse errors, and JIT errors). Source syntax errors recover as an ordinary value path: the reader returns a `!T` (Stage 10 E4) rather than aborting, so an unbalanced `)` or an unterminated form reports its diagnostic and the session keeps going. Every other error unwinds to the top of the current form, prints `  error: error (recovered)` after the diagnostic, and **rolls the session back to the state it had before that form** — so a failed `import` restores the source path used to attribute later diagnostics, leaves nothing half-registered from the library it could not load, and can be retried. With `--repl-format=json`, each REPL-level error (missing form arg, JIT lookup failure, recovered error) is emitted as a single-line JSON object on stderr.
 
@@ -496,14 +509,14 @@ own identifier and its own label:
 (defstruct Pt x:i32 y:i32)
 (defn scale (p:(ref Pt) k:i32):i32 …)     ; overloaded…
 (defn scale (a:i32 k:i32):i32 …)          ; …two methods, one name
-(defn = (a:Pt b:Pt):i1 …)                 ; operator
+(defn = (a:Pt b:Pt):bool …)                ; operator
 (defn solo (n:i32):i32 …)                 ; solitary, non-operator
 ```
 
 ```c
 int32_t scale_pPt_i32(void* p, int32_t k) asm("scale.pPt.i32");
 int32_t scale_i32_i32(int32_t a, int32_t k) asm("scale.i32.i32");
-_Bool eq_Pt_Pt(struct Pt a, struct Pt b) asm("eq.Pt.Pt");
+bool eq_Pt_Pt(struct Pt a, struct Pt b) asm("eq.Pt.Pt");
 int32_t solo(int32_t n);
 ```
 
@@ -574,6 +587,43 @@ part by part, so a `defenum`'s members keep the spelling their prefix already
 makes legal: `(defenum Kind auto static default)` exports `Kind_default`, not
 `Kind_default_`.
 
+## C headers under `--target=`
+
+`(import-use "string.h")` is read by shelling out to
+`clang -E -x c -include <header> /dev/null`. Under `--target=<triple>` that
+command carries the **emission target's** triple, so it reads the target's own
+headers — and `--sysroot=<path>` is passed too when given:
+
+```
+$ nucleusc --target=avr --mcpu=atmega328p prog.nuc -o prog.elf
+```
+
+reads avr-libc's `<string.h>`, where `size_t` is 16 bits, and declares
+`i16 @strlen(ptr)`. Without the target the compiler read the *host's* glibc and
+declared `i64 @strlen(ptr)` for an 8-bit machine, along with symbols
+(`__memcmpeq`) that avr-libc does not have. A build with no `--target=` — or one
+whose triple is the host's — passes no flags at all and is unchanged.
+
+The C type names follow the emission target with it. `int` is 16 bits on AVR and
+32 elsewhere; `long` is 4 bytes wherever a pointer is 4 bytes or smaller, or on
+Windows, and 8 otherwise; `size_t` / `ssize_t` are pointer-sized. Array extents
+are folded with the target's own `sizeof`, so `char buf[sizeof(void*) * 4]` is
+8 bytes on AVR and 32 on x86-64.
+
+**When the target's headers are not installed** — cross-compiling to a triple
+whose libc headers this machine does not carry — the compiler falls back to the
+host's headers and says so:
+
+```
+warning: C header 'string.h' could not be preprocessed for target 'i386-pc-linux-gnu'; using the HOST's headers, whose type widths may differ
+  note: pass --sysroot=<path> naming a sysroot that carries the target's own headers
+```
+
+That is the pre-existing behaviour, now announced rather than silent; the
+declarations it produces have the host's widths and are only as correct as the
+two data models happen to agree. A header that exists on **no** search path is a
+hard, located error at the import, with clang's own diagnosis beneath it.
+
 ## Types a header borrows from another unit
 
 A reference to a user type is spelled `struct NAME` in the generated header, and
@@ -618,9 +668,42 @@ list. A type used only inside a function body, or only by a form the header does
 not export — a generic template, a parametric `defstruct`, a `defn-` — is not a
 dependency of the header and produces no include.
 
-One limit remains: a type this unit defines but that comes from a **C** header
-(`(import-use "SDL.h")`) is not included, because the C declaration is already
-reachable through whatever the consumer includes for it.
+A **C struct or union tag** — a type reached through `(import-use "SDL.h")` and
+rendered `struct SDL_Rect` — produces no include. An incomplete tag is legal
+behind a pointer, which is how a C API is overwhelmingly used, and the consumer
+already includes that header for everything else it needs from it. A *by-value*
+use of one is the exception and is a known gap
+(`design/stage16-ergonomics/c-header-layout.md` §9.3).
+
+## C typedefs a header borrows
+
+A **C typedef** is different, and gets an include. `off_t` is rendered as the
+bare name — `struct off_t` names nothing — so a header that names one does not
+compile at all without the declaration:
+
+```nucleus
+; seekable.nuc
+(import-use "unistd.h")
+(defn seek (fd:i32 off:off_t):off_t (return off))
+```
+```c
+/* seekable.h */
+#pragma once
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <unistd.h>
+
+off_t seek(int32_t fd, off_t off);
+```
+
+The `#include` uses the spelling the **source imported**, in angle brackets
+(`<unistd.h>`), not the `/usr/include/...` file the typedef physically lives in:
+only the imported spelling is portable, and re-including it is exactly what
+reproduces the typedef the compiler read. A path-shaped import
+(`(import-use "./vendor/api.h")`) is emitted quoted. As with a borrowed Nucleus
+unit, the includes are the typedefs the header **actually names** — importing a
+C header a signature never mentions adds nothing.
 
 ## Error-union and option types in a C header
 

@@ -102,9 +102,37 @@ then nothing in the language would mean "this conversion is exact".
 
 Stage15 added some capabilities, and a later stage should examine expanding them.
 
-## Symbols for struct filed access
+## Symbols for struct field access
 
-Bare symbols as arguments *may* be struct field names or *may* be variables. The ambiguity is undesirable.
+Bare symbols as arguments *may* be struct field names or *may* be variables. The
+ambiguity is undesirable. **Being addressed** in Stage 16 — see
+[stage16-ergonomics/dot-forms.md](stage16-ergonomics/dot-forms.md): the quoted
+selector (`(get p 'x)`) becomes the only literal spelling, so a bare symbol in
+selector position goes back to being an ordinary variable reference and
+`(get p sel)` needs no annotation.
+
+### What survives that fix: field iteration over a heterogeneous struct
+
+Making the *spelling* regular does not make the operation total. A computed
+selector lowers to a `select` chain over the field indices
+(`emit-computed-field`), and that chain has one result type — so it is gated on
+the struct being **homogeneous**:
+
+```
+get: computed field access requires a homogeneous struct, but 'Node' has fields of differing types
+```
+
+That gate is not a spelling problem and no selector syntax removes it: iterating
+`Node`'s fields by symbol has no type to return. The options, none taken:
+
+- a sum-typed result (`(get p sel)` returning a union over the field types),
+  which makes every computed read a `match`;
+- generated per-struct accessors, i.e. reflection over a struct's field table
+  as compile-time data;
+- restricting computed access to a declared homogeneous *subset* of fields.
+
+Until one is chosen, computed field access stays what it is today: correct, and
+available only where every field has the same type.
 
 ## Struct packing
  

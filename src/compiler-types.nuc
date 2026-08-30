@@ -609,7 +609,7 @@
   ndepth:i32        ; g-loop-depth at which the current narrow was established
   kstamp:i32        ; bumped on each kill (reassignment); stale undo entries skip
   ; Stage 10 Phase F1 (nullability.md §9 finding 1): the callee never returns
-  ; (die-at, repl_throw, libc exit/abort). A statement-position call to it
+  ; (die-at, repl-throw, libc exit/abort). A statement-position call to it
   ; emits `unreachable` and terminates the block, so the (when (= x null)
   ; (die-at …)) guard idiom narrows past the guard via emit-cond's g-block-term
   ; accumulation — no narrowing-engine change needed.
