@@ -29,10 +29,10 @@
 ; "A by-value struct parameter needs (addr-of v) before field access").
 (defn dump (label:CStr s:StrView):void
   (let (p:ptr:StrView (addr-of s)
-        n:i32 (unsafe/cast i32 (p len)))
+        n:i32 (unsafe/cast i32 (p 'len)))
     (printf "%s len=%d bytes=" label n)
     (dotimes (i:i32 n)
-      (printf " %02x" (as i32 (aref (p data) (as i64 i)))))
+      (printf " %02x" (as i32 (aref (p 'data) (as i64 i)))))
     (printf "\n")))
 
 (defn main ():i32

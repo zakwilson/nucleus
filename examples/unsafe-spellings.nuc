@@ -36,12 +36,12 @@
 
   ; `unsafe/ptr+` — pointer arithmetic (D2 Class 2).
   (let (p:ptr:Pair (as ptr:Pair (malloc (* (as i64 2) (sizeof Pair)))))
-    (.set! p a 10)
-    (.set! p b 20)
+    (.set! p 'a 10)
+    (.set! p 'b 20)
     (let (r:ptr:Pair (unsafe/ptr+ p 1))
-      (.set! r a 30)
-      (.set! r b 40)
-      (printf "unsafe/ptr+     = a=%d b=%d\n" (r a) (r b))))
+      (.set! r 'a 30)
+      (.set! r 'b 40)
+      (printf "unsafe/ptr+     = a=%d b=%d\n" (r 'a) (r 'b))))
 
   ; `unsafe/funcall-ptr-i32` — an indirect call through a function-pointer
   ; value (D2 Class 2).

@@ -6,7 +6,7 @@
 ;   "'q:(ref ...)' reads as a call here"
 (defstruct Rec (k i32))
 
-(defn use-ref (r:(ref Rec)):i32 (return (r k)))
+(defn use-ref (r:(ref Rec)):i32 (return (r 'k)))
 
 (defn main ():i32
   (let (q:(ref Rec) (alloca Rec))

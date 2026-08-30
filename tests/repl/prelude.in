@@ -27,7 +27,7 @@ NODE-CHAR
 (defn r2-half (n:i32):?i32 (when (= (% n 2) 0) (return (some (/ n 2)))) (return (none)))
 (match (r2-half 8) ((some v) (printf "half %d\n" v)) ((none) (printf "odd\n")))
 (match (r2-half 7) ((some v) (printf "half %d\n" v)) ((none) (printf "odd\n")))
-(defn r2-view-len (s:(ref StrView)):usize (return (s len)))
+(defn r2-view-len (s:(ref StrView)):usize (return (s 'len)))
 ; 6. Stage 16 R4 (§3.3, D6): a `?T` whose union type NO earlier entry stamped.
 ;    Its `%Maybe.i16` line goes into this form's own module, and pre-R4 the
 ;    process-wide `emitted` latch meant the next entry never saw it again —
@@ -41,7 +41,7 @@ NODE-CHAR
 ;    element of getelementptr must be sized`. D9 ruled it a program type, so the
 ;    line goes to the module's type buffer and the preamble carries it.
 (compile-time (defstruct D9Pt x:i32 y:i32))
-(defn d9-sum (a:i32 b:i32):i32 (let (q:ptr:D9Pt (as ptr:D9Pt (alloca D9Pt))) (.set! q x a) (.set! q y b) (return (+ (q x) (q y)))))
+(defn d9-sum (a:i32 b:i32):i32 (let (q:ptr:D9Pt (as ptr:D9Pt (alloca D9Pt))) (.set! q 'x a) (.set! q 'y b) (return (+ (q 'x) (q 'y)))))
 (d9-sum 3 4)
 ; 8. D9 residue (§3.3): the same type named in a SIGNATURE, which failed EARLIER
 ;    than the body case — `prescan-struct-names` never descended into a
@@ -49,7 +49,7 @@ NODE-CHAR
 ;    Both REPL shapes: one entry whose CT body defines the type AND a `defn`
 ;    naming it (emit-compile-time's own prescan ordering), and a later entry's
 ;    signature over a type an earlier entry's CT block defined.
-(compile-time (defstruct D9Sig a:i32 b:i32) (defn d9-ct-sig (p:(ref D9Sig)):i32 (return (+ (p a) (p b)))) (let (q:ptr:D9Sig (as ptr:D9Sig (alloca D9Sig))) (.set! q a 5) (.set! q b 6) (printf "d9 ct sig %d\n" (d9-ct-sig (as ref:D9Sig q)))))
-(defn d9-prog-sig (p:(ref D9Sig)):i32 (return (* (p a) (p b))))
-(defn d9-prog-call (x:i32 y:i32):i32 (let (q:ptr:D9Sig (as ptr:D9Sig (alloca D9Sig))) (.set! q a x) (.set! q b y) (return (d9-prog-sig (as ref:D9Sig q)))))
+(compile-time (defstruct D9Sig a:i32 b:i32) (defn d9-ct-sig (p:(ref D9Sig)):i32 (return (+ (p 'a) (p 'b)))) (let (q:ptr:D9Sig (as ptr:D9Sig (alloca D9Sig))) (.set! q 'a 5) (.set! q 'b 6) (printf "d9 ct sig %d\n" (d9-ct-sig (as ref:D9Sig q)))))
+(defn d9-prog-sig (p:(ref D9Sig)):i32 (return (* (p 'a) (p 'b))))
+(defn d9-prog-call (x:i32 y:i32):i32 (let (q:ptr:D9Sig (as ptr:D9Sig (alloca D9Sig))) (.set! q 'a x) (.set! q 'b y) (return (d9-prog-sig (as ref:D9Sig q)))))
 (d9-prog-call 3 4)

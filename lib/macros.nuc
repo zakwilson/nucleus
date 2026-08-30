@@ -11,48 +11,48 @@
 (defmacro + (:rest args)
   (cond (= args null)
     `0
-    (= (args cdr) null)
-    (args car)
+    (= (args 'cdr) null)
+    (args 'car)
     true
-    `(_+ ~(args car)
-           (+ ~@(args cdr)))))
+    `(_+ ~(args 'car)
+           (+ ~@(args 'cdr)))))
 
 (defmacro * (:rest args)
   (cond (= args null)
           `1
-        (= (args cdr) null)
-          (args car)
+        (= (args 'cdr) null)
+          (args 'car)
         true
-          `(_* ~(args car)
-                (* ~@(args cdr)))))
+          `(_* ~(args 'car)
+                (* ~@(args 'cdr)))))
 
 ; Subtraction: unary negates; n-ary left-folds (matches Common Lisp).
 (defmacro - (:rest args)
   (cond (= args null)
           `0
-        (= (args cdr) null)
-          `(_- 0 ~(args car))
-        (= ((args cdr) cdr) null)
-          `(_- ~(args car)
-                ~((args cdr) car))
+        (= (args 'cdr) null)
+          `(_- 0 ~(args 'car))
+        (= ((args 'cdr) 'cdr) null)
+          `(_- ~(args 'car)
+                ~((args 'cdr) 'car))
         true
-          `(- (_- ~(args car)
-                   ~((args cdr) car))
-              ~@((args cdr) cdr))))
+          `(- (_- ~(args 'car)
+                   ~((args 'cdr) 'car))
+              ~@((args 'cdr) 'cdr))))
 
 ; Division: unary is reciprocal (integer: 1/x); n-ary left-folds.
 (defmacro / (:rest args)
   (cond (= args null)
           `1
-        (= (args cdr) null)
-          `(_/ 1 ~(args car))
-        (= ((args cdr) cdr) null)
-          `(_/ ~(args car)
-                ~((args cdr) car))
+        (= (args 'cdr) null)
+          `(_/ 1 ~(args 'car))
+        (= ((args 'cdr) 'cdr) null)
+          `(_/ ~(args 'car)
+                ~((args 'cdr) 'car))
         true
-          `(/ (_/ ~(args car)
-                   ~((args cdr) car))
-              ~@((args cdr) cdr))))
+          `(/ (_/ ~(args 'car)
+                   ~((args 'cdr) 'car))
+              ~@((args 'cdr) 'cdr))))
 
 ; variadic logic
 ;   (and)         => true
@@ -61,20 +61,20 @@
 (defmacro and (:rest args)
   (cond (= args null)
           `true
-        (= (args cdr) null)
-          (args car)
+        (= (args 'cdr) null)
+          (args 'car)
         true
-          `(_and ~(args car)
-                 (and ~@(args cdr)))))
+          `(_and ~(args 'car)
+                 (and ~@(args 'cdr)))))
 
 (defmacro or (:rest args)
   (cond (= args null)
           `false
-        (= (args cdr) null)
-          (args car)
+        (= (args 'cdr) null)
+          (args 'car)
         true
-          `(_or ~(args car)
-                (or ~@(args cdr)))))
+          `(_or ~(args 'car)
+                (or ~@(args 'cdr)))))
 
 (defmacro bit-not (x)
   `(bit-xor ~x -1))
@@ -95,17 +95,17 @@
   (let ((acc (raw Node)) null
         (cur (raw Node)) clauses)
     (while (!= cur null)
-      (let ((rest (raw Node)) (cur cdr))
+      (let ((rest (raw Node)) (cur 'cdr))
         (if (= rest null)
           ; Lone trailing element: the default arm.
           (do
-            (set! acc `(~@acc true ~(cur car)))
+            (set! acc `(~@acc true ~(cur 'car)))
             (set! cur null))
           ; A value/result pair.
           (do
-            (set! acc `(~@acc (= ~form ~(cur car))
-                              ~(rest car)))
-            (set! cur (rest cdr))))))
+            (set! acc `(~@acc (= ~form ~(cur 'car))
+                              ~(rest 'car)))
+            (set! cur (rest 'cdr))))))
     `(cond ~@acc)))
 
 ; (when condition body) — one-armed conditional; body only if condition is true.
@@ -144,8 +144,8 @@
 ; Uses struct field access to extract elements from spec so this macro works
 ; even in programs that have not yet included stdlib (no node-at dependency).
 (defmacro dotimes (spec :rest body)
-  (let ((var-node (raw Node)) (spec car)
-        (n-node (raw Node)) ((spec cdr) car))
+  (let ((var-node (raw Node)) (spec 'car)
+        (n-node (raw Node)) ((spec 'cdr) 'car))
     `(let (~var-node (* ~n-node 0)) ; adopt the count's type for the index
        (while (< ~var-node ~n-node)
          (do ~@body)
@@ -184,9 +184,9 @@
   ; The (sym type) list-binding form lets the done-flag gensym skip a colon type.
   (let (done-sym:ptr  (gensym)
         it-sym:ptr    (gensym)
-        var-sym:ptr   (binding car)
-        coll-expr:ptr ((binding cdr) car)
-        it-type:ptr   (((binding cdr) cdr) car))
+        var-sym:ptr   (binding 'car)
+        coll-expr:ptr ((binding 'cdr) 'car)
+        it-type:ptr   (((binding 'cdr) 'cdr) 'car))
     `(let ((~it-sym ~it-type) (iter ~coll-expr))
        (let ((~done-sym i32) 0)
          (while (= ~done-sym 0)
@@ -207,8 +207,8 @@
 ;     (doseq-iter (x r) (printf "%d\n" x)))
 (defmacro doseq-iter (binding :rest body)
   (let (done-sym:ptr  (gensym)
-        var-sym:ptr   (binding car)
-        iter-ref:ptr  ((binding cdr) car))
+        var-sym:ptr   (binding 'car)
+        iter-ref:ptr  ((binding 'cdr) 'car))
     `(let ((~done-sym i32) 0)
        (while (= ~done-sym 0)
          (match (next ~iter-ref)
@@ -266,8 +266,8 @@
   (let ((result (raw Node)) x
         (current (raw Node)) forms)
     (while (!= current null)
-      (let ((form (raw Node)) (current car))
-        (if (= (form kind) NODE-CELL)
+      (let ((form (raw Node)) (current 'car))
+        (if (= (form 'kind) NODE-CELL)
           (do
             ; Scan the whole form (head + args) for the _ placeholder. Scanning
             ; the head lets a threaded value land in call position, e.g.
@@ -275,34 +275,34 @@
             (let (has-placeholder:i32 0
                   (scan (raw Node)) form)
               (while (!= scan null)
-                (let ((child (raw Node)) (scan car))
-                  (when (= (child kind) NODE-SYM)
-                    (when (= (strcmp (child s) "_") 0)
+                (let ((child (raw Node)) (scan 'car))
+                  (when (= (child 'kind) NODE-SYM)
+                    (when (= (strcmp (child 's) "_") 0)
                       (set! has-placeholder 1))))
-                (set! scan (scan cdr)))
+                (set! scan (scan 'cdr)))
               (if (!= has-placeholder 0)
                 ; Has _: rebuild list, substituting result for each _.
                 ; Pass 1: build reversed list with substitutions.
                 (let ((rev (raw Node)) null
                       (src (raw Node)) form)
                   (while (!= src null)
-                    (let ((elem (raw Node)) (src car)
+                    (let ((elem (raw Node)) (src 'car)
                           replacement:ptr elem)
-                      (when (= (elem kind) NODE-SYM)
-                        (when (= (strcmp (elem s) "_") 0)
+                      (when (= (elem 'kind) NODE-SYM)
+                        (when (= (strcmp (elem 's) "_") 0)
                           (set! replacement result)))
                       (set! rev `(~replacement ~@rev)))
-                    (set! src (src cdr)))
+                    (set! src (src 'cdr)))
                   ; Pass 2: reverse to restore order.
                   (let (final:ptr null)
                     (while (!= rev null)
-                      (set! final `(~(rev car) ~@final))
-                      (set! rev (rev cdr)))
+                      (set! final `(~(rev 'car) ~@final))
+                      (set! rev (rev 'cdr)))
                     (set! result final)))
                 ; No _: thread-first (insert after head).
-                (let (head:ptr (form car)
-                      tail:ptr (form cdr))
+                (let (head:ptr (form 'car)
+                      tail:ptr (form 'cdr))
                   (set! result `(~head ~result ~@tail))))))
           (set! result `(~form ~result))))
-      (set! current (current cdr)))
+      (set! current (current 'cdr)))
     result))

@@ -10802,17 +10802,20 @@ run_s16_strict_selectors() {
   (.set! p 'y 2)
   (ptr-set! (.& p x) 3)
   (ptr-set! (.& p 'y) 4)
-  (return (+ (. p x) (. p 'y) (p x) (get p 'y))))
+  (return (+ (. p x) (. p 'y) (p x) (get p 'y) (unsafe/cast i32 (strlen "z")))))
 EOF
   # The prelude is not migrated yet and reports too, so score only this file.
   ./build/nucleusc --strict-selectors --emit-llvm "$d/sel.nuc" >/dev/null 2>"$d/all.err" || true
   grep "^$d/sel.nuc:" "$d/all.err" > "$d/err" || true
+  # The receiver is part of the report because line+selector is not a unique key.
   for form in ".set!" ".&" "_get" "get"; do
-    n="$(grep -c "strict-selectors: $form selector 'x' is a bare symbol" "$d/err" || true)"
+    n="$(grep -c "strict-selectors: form=$form recv=p sel=x" "$d/err" || true)"
     [ "$n" = 1 ] || { echo "    $form: expected 1 report, got $n"; bad=1; }
   done
   # Every quoted spelling above names `y`, and none of them may be reported.
-  qgrep "selector 'y'" "$d/err" && { echo "    a quoted selector was reported"; bad=1; }
+  qgrep "sel=y" "$d/err" && { echo "    a quoted selector was reported"; bad=1; }
+  # A real call sharing the line must not be reported, whatever it is named.
+  qgrep "recv=strlen" "$d/err" && { echo "    a function call was reported"; bad=1; }
   if [ "$bad" = 0 ]; then
     echo "PASS  s16-strict-selectors-reports-bare-only"
   else

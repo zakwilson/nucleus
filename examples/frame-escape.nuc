@@ -24,7 +24,7 @@
 ; A pointer derived from a (ref ...) parameter escapes legally: the pointee
 ; lives in the caller, so returning its interior address is sound.
 (defn point-x-addr ((p (ref Point))):ref:i32
-  (return (.& p x)))
+  (return (.& p 'x)))
 
 ; Downward borrow: a pointer into THIS frame's local is passed into a callee.
 ; The callee only reads through it; nothing escapes upward.
@@ -41,8 +41,8 @@
 ; deref clears the frame taint, so the returned value carries nothing dangling.
 (defn make-point (x:i32 y:i32):Point
   (let ((p (ref Point)) (alloca Point))
-    (.set! p x x)
-    (.set! p y y)
+    (.set! p 'x x)
+    (.set! p 'y y)
     (return (deref p))))
 
 (defn main ():i32
@@ -51,5 +51,5 @@
     ; caller-owned pointee from point-x-addr's perspective.
     (printf "x=%d\n" (deref (point-x-addr (addr-of pt))))
     (printf "sum=%d\n" (sum-locals 10 20))
-    (printf "y=%d\n" ((addr-of pt) y)))
+    (printf "y=%d\n" ((addr-of pt) 'y)))
   (return 0))

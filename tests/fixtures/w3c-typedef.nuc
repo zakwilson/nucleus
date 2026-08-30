@@ -7,10 +7,10 @@
 ; `Uint8` field failed a return-type mismatch while the plain `int` beside it
 ; worked.
 (defn w3c-read-vol (p:ptr:w3c_fields):ui8
-  (return (p vol)))
+  (return (p 'vol)))
 
 (defn w3c-read-pos (p:ptr:w3c_fields):i64
-  (return (p pos)))
+  (return (p 'pos)))
 
 (defn main ():i32
   (return 0))

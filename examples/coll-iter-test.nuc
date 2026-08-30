@@ -55,7 +55,7 @@
     (let (vsum:i32 0
           n:i32 0)
       (doseq (e m (HashMapEntryIter CStr i32))
-        (set! vsum (+ vsum ((addr-of e) val)))
+        (set! vsum (+ vsum ((addr-of e) 'val)))
         (set! n (+ n 1)))
       (printf "map count=%d valsum=%d\n" n vsum)))  ; map count=3 valsum=600
 

@@ -37,8 +37,8 @@
   ; One shared iterator slot. `reduce` advances it to exhaustion, so reset
   ; start/end before each fold.
   (let ((r (ref IntRangeIter)) (alloca IntRangeIter))
-    (.set! r start 1)
-    (.set! r end 6)
+    (.set! r 'start 1)
+    (.set! r 'end 6)
 
     ; ------------------------------------------------------------------
     ; 1. fn — anonymous function (no runtime capture).
@@ -46,14 +46,14 @@
     ; (a) A top-level defn passed by name: a bare function pointer.
     ;     sum of squares over 1..5 = 1+4+9+16+25 = 55.
     ; ------------------------------------------------------------------
-    (.set! r start 1) (.set! r end 6)
+    (.set! r 'start 1) (.set! r 'end 6)
     (printf "fn   defn-fnptr   sumsq(1..5)        = %d\n"
             (reduce sumsq 0 r))
 
     ; (b) An fn literal whose body references only its parameters and the
     ;     top-level defconst SHIFT (which folds to an immediate — no capture).
     ;     sum of (x * 10) over 1..5 = 10*15 = 150.
-    (.set! r start 1) (.set! r end 6)
+    (.set! r 'start 1) (.set! r 'end 6)
     (printf "fn   literal      sum (x*SHIFT=10)   = %d\n"
             (reduce (fn (acc:i32 x:i32):i32 (return (+ acc (* x SHIFT)))) 0 r))
 
@@ -65,7 +65,7 @@
     ; the vfn owns nothing. The source is untouched: factor is still 7 afterward.
     ; sum of (x * 7) over 1..5 = 7*15 = 105.
     ; ------------------------------------------------------------------
-    (.set! r start 1) (.set! r end 6)
+    (.set! r 'start 1) (.set! r 'end 6)
     (let (factor:i32 7)
       (printf "vfn  clone        sum (x*factor=7)  = %d   [factor after = %d]\n"
               (reduce (vfn (acc:i32 x:i32):i32 (return (+ acc (* x factor)))) 0 r)
@@ -87,7 +87,7 @@
     ; a return; (2) `with`-drop arming only recognizes TY-PTR bindings, not
     ; struct-value bindings. See design/stage13/lambda-prompt.md "out of scope".
     ; ------------------------------------------------------------------
-    (.set! r start 1) (.set! r end 6)
+    (.set! r 'start 1) (.set! r 'end 6)
     (let (base:i32 100)
       (printf "mfn  move         sum (x*base=100)  = %d   [base consumed]\n"
               (reduce (mfn (acc:i32 x:i32):i32 (return (+ acc (* x base)))) 0 r)))
@@ -102,7 +102,7 @@
     ; captured variables themselves are borrowed, not owned.
     ; sum of (x * 3) over 1..5 = 3*15 = 45; mult is still 3 afterward.
     ; ------------------------------------------------------------------
-    (.set! r start 1) (.set! r end 6)
+    (.set! r 'start 1) (.set! r 'end 6)
     (let (mult:i32 3
           h:ref:AllocHandle (default-allocator))
       (printf "cfn  ref          sum (x*mult=3)   = %d   [mult after = %d]\n"

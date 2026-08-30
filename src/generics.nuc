@@ -23,7 +23,7 @@
 ; private key.
 (defn generic-lookup-exact (name:CStr):?ptr:Generic
   (doseq (g g-generics (VecIter (ref Generic)))
-     (when (= (g name) name)
+     (when (= (g 'name) name)
            (return (as ptr g))))
   (return null))
 
@@ -42,7 +42,7 @@
 ; intrinsic operator seed (`build-generics`), which belongs to no file; `user` is
 ; the unqualified space, so that is what it answers to.
 (defn method-in-ns (m:ptr:Method ns:CStr):i32
-  (let (s:CStr (m src-ns))
+  (let (s:CStr (m 'src-ns))
     (when (= (as ptr s) null) (set! s "user"))
     (when (= (strcmp s ns) 0) (return 1))
     (return 0)))
@@ -56,11 +56,11 @@
 ; came from somewhere else.
 (defn mono-job-here (form:raw:Node context:CStr):ptr:MonoJob
   (let (job:ptr:MonoJob (new MonoJob))
-    (.set! job form form)
-    (.set! job context context)
-    (.set! job ns g-current-ns)
-    (.set! job path g-source-path)
-    (.set! job imports g-file-imports)
+    (.set! job 'form form)
+    (.set! job 'context context)
+    (.set! job 'ns g-current-ns)
+    (.set! job 'path g-source-path)
+    (.set! job 'imports g-file-imports)
     (return job)))
 
 ; Stage 15 W9 item 43 — the namespaces this file may name WITHOUT a qualifier.
@@ -81,7 +81,7 @@
 ; namespace a QUALIFIED spelling denotes; null asks the bare question.
 (defn method-visible-as (m:ptr:Method ns:CStr):i32
   (when (!= ns null) (return (method-in-ns m ns)))
-  (let (s:CStr (m src-ns))
+  (let (s:CStr (m 'src-ns))
     ; An intrinsic operator seed belongs to no file, so no import can put it out
     ; of reach — `+` must work in a namespaced file that imports nothing.
     (when (= s null) (return 1))
@@ -101,20 +101,20 @@
 ; generic (`generic-add-method` exists precisely because that happens).
 (defn generic-filter-by-ns (g:ptr:Generic ns:CStr):?ptr:Generic
   (let (gg:ptr:Generic g
-        n:i32 (unsafe/cast i32 (count (gg methods)))
+        n:i32 (unsafe/cast i32 (count (gg 'methods)))
         keep:i32 0)
     (dotimes (i n)
-      (when (!= (method-visible-as (as ptr:Method (invoke (gg methods) i:usize)) ns) 0)
+      (when (!= (method-visible-as (as ptr:Method (invoke (gg 'methods) i:usize)) ns) 0)
         (inc! keep)))
     (when (= keep 0) (return null))
     (when (= keep n) (return (as ptr gg)))
-    (let (f:ref:Generic (generic-alloc (gg name)))
-      (.set! f finalized (gg finalized))
-      (.set! f mangled (gg mangled))
-      (.set! f ir-prefix (gg ir-prefix))
+    (let (f:ref:Generic (generic-alloc (gg 'name)))
+      (.set! f 'finalized (gg 'finalized))
+      (.set! f 'mangled (gg 'mangled))
+      (.set! f 'ir-prefix (gg 'ir-prefix))
       (dotimes (i n)
-        (let (m:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
-          (when (!= (method-visible-as m ns) 0) (conj (f methods) (as ref:Method m)))))
+        (let (m:ptr:Method (as ptr:Method (invoke (gg 'methods) i:usize)))
+          (when (!= (method-visible-as m ns) 0) (conj (f 'methods) (as ref:Method m)))))
       (return (as ptr f)))))
 
 ; Stage 15 B4 — resolve a generic REFERENCE (a source spelling) through the
@@ -156,10 +156,10 @@
   (let (r:ref:NameRef (resolve-spelling (as ptr spelling)))
     ; A qualifier this file did not bind names nothing (R3) — the same answer the
     ; global, protocol and type resolvers give, so the diagnostic tiers agree.
-    (when (= (r status) NR-UNBOUND) (return null))
-    (let (g:?ptr:Generic (generic-lookup-exact (as CStr (r bare))))
+    (when (= (r 'status) NR-UNBOUND) (return null))
+    (let (g:?ptr:Generic (generic-lookup-exact (as CStr (r 'bare))))
       (when (= g null) (return null))
-      (return (generic-filter-by-ns (unsafe/cast ptr:Generic g) (as CStr (r ns)))))))
+      (return (generic-filter-by-ns (unsafe/cast ptr:Generic g) (as CStr (r 'ns)))))))
 
 ; Allocate + initialise a Generic WITHOUT registering it. Split out in Stage 15
 ; W8 G-5 because `build-generics` — which is `g-generics`' own initializer —
@@ -169,10 +169,10 @@
   ; Each Generic is individually arena-allocated (pointer-stable for the whole
   ; compilation).
   (let (g:ptr:Generic (new Generic))
-    (.set! g name name)
-    (.set! g methods (unsafe/cast (ref (Vector (ref Method))) (vector-new-in (addr-of g-arena-alloc))))
-    (.set! g finalized 0)
-    (.set! g mangled 0)
+    (.set! g 'name name)
+    (.set! g 'methods (unsafe/cast (ref (Vector (ref Method))) (vector-new-in (addr-of g-arena-alloc))))
+    (.set! g 'finalized 0)
+    (.set! g 'mangled 0)
     ; Stage 12 N4: snapshot the defining namespace's ir-prefix now, so a finalize
     ; or monomorphization that runs in a later import's namespace still mangles
     ; under this generic's own namespace.
@@ -182,8 +182,8 @@
     ; (which is `user`, the empty prefix, for exactly these definitions).
     (let (pq:CStr (priv-qualifier-of name))
       (if (= pq null)
-        (.set! g ir-prefix (ns-ir-prefix g-current-ns))
-        (.set! g ir-prefix (ns-ir-prefix pq))))
+        (.set! g 'ir-prefix (ns-ir-prefix g-current-ns))
+        (.set! g 'ir-prefix (ns-ir-prefix pq))))
     (return (as ref:Generic g))))
 
 ; …and its pointer appended to g-generics in registration order.
@@ -193,7 +193,7 @@
     (return g)))
 
 (defn generic-add-method (g:ptr:Generic m:ptr:Method):void
-  (conj (g methods) (as ref:Method m))
+  (conj (g 'methods) (as ref:Method m))
     ; A generic finalized by an earlier unit's prescan (its methods given their
     ; mangling) can gain more methods when a later `import` (processed in the
     ; dispatch loop, after this unit's signature prescan already finalized the
@@ -206,7 +206,7 @@
     ; affected methods' bodies are emitted, so no already-emitted reference uses a
     ; stale ir-name.
 
-  (.set! g finalized 0))
+  (.set! g 'finalized 0))
 
 ; Remove the first METHOD-USER from generic `g` whose param count and types
 ; match `param-types`/`nparams`. No-op if not found. Called by the REPL to
@@ -214,12 +214,12 @@
 ; finalize-generics does not see a duplicate-signature pair.
 (defn generic-remove-matching-user-method (g:raw:Generic param-types:ptr nparams:i32):void
   (let (gg:raw:Generic g)
-    (dotimes (i (unsafe/cast i32 (count (gg methods))))
-      (let (mi:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
-        (when (and (= (mi kind) METHOD-USER)
-                   (= (mi num-params) nparams)
-                   (!= (params-type-eq (mi param-types) param-types nparams) 0))
-          (remove-at (gg methods) i:usize)
+    (dotimes (i (unsafe/cast i32 (count (gg 'methods))))
+      (let (mi:ptr:Method (as ptr:Method (invoke (gg 'methods) i:usize)))
+        (when (and (= (mi 'kind) METHOD-USER)
+                   (= (mi 'num-params) nparams)
+                   (!= (params-type-eq (mi 'param-types) param-types nparams) 0))
+          (remove-at (gg 'methods) i:usize)
           (return))))))
 
 ; Seed the operator family as intrinsic generics. Each intrinsic method defers
@@ -235,18 +235,18 @@
 (defn build-generics ():(ref (Vector (ref Generic)))
   (let (v:(ref (Vector (ref Generic))) (vector-new-in (addr-of g-arena-alloc)))
     (doseq (bop g-binops (VecIter ref:BinOp))
-           (let (g:ptr (generic-alloc (bop name))
+           (let (g:ptr (generic-alloc (bop 'name))
                  m:ptr:Method (new Method))
-      (.set! m param-types null)
-      (.set! m num-params 2)
-      (.set! m ret-type null)
-      (.set! m has-rest 0)
-      (.set! m variadic 0)
-      (.set! m kind METHOD-INTRINSIC)
-      (.set! m ir-name null)
-      (.set! m fn-type null)
-      (.set! m binop (as ptr bop))
-      (.set! m body null)
+      (.set! m 'param-types null)
+      (.set! m 'num-params 2)
+      (.set! m 'ret-type null)
+      (.set! m 'has-rest 0)
+      (.set! m 'variadic 0)
+      (.set! m 'kind METHOD-INTRINSIC)
+      (.set! m 'ir-name null)
+      (.set! m 'fn-type null)
+      (.set! m 'binop (as ptr bop))
+      (.set! m 'body null)
       (generic-add-method g m)
       (conj v (as ref:Generic g))))
     (return v)))
@@ -293,7 +293,7 @@
 (defn type-join (result-type:raw:Type bty:raw:Type result-lit:i32 bty-lit:i32):raw:Type
   ; Equal types: meet pointer kinds (identity when they already agree).
   (when (!= (type-eq result-type bty) 0)
-    (when (= (result-type kind) TY-PTR)
+    (when (= (result-type 'kind) TY-PTR)
       (return (type-as-pkind result-type
                 (pkind-meet (ptr-pkind result-type) (ptr-pkind bty)))))
     (return result-type))
@@ -307,19 +307,19 @@
         (return bty))))
   ; Absorption: an elem-less bare ptr on exactly one side meets a typed ptr at
   ; (raw E), E = the typed side's elem.
-  (when (and (= (result-type kind) TY-PTR)
-             (= (bty kind) TY-PTR))
-    (let (relem:ptr (result-type elem)
-          belem:ptr (bty elem))
+  (when (and (= (result-type 'kind) TY-PTR)
+             (= (bty 'kind) TY-PTR))
+    (let (relem:ptr (result-type 'elem)
+          belem:ptr (bty 'elem))
       (when (and (= relem null) (!= belem null))
         (let (jt:ref:Type (make-type TY-PTR))
-          (.set! jt elem belem)
-          (.set! jt pkind PTR-RAW)
+          (.set! jt 'elem belem)
+          (.set! jt 'pkind PTR-RAW)
           (return jt)))
       (when (and (!= relem null) (= belem null))
         (let (jt:ref:Type (make-type TY-PTR))
-          (.set! jt elem relem)
-          (.set! jt pkind PTR-RAW)
+          (.set! jt 'elem relem)
+          (.set! jt 'pkind PTR-RAW)
           (return jt)))))
   ; Genuinely different types (or a void branch): collapse to void.
   (return ty-void))
@@ -386,12 +386,12 @@
 (defn method-ir-prefix (g:raw:Generic m:raw:Method):CStr
   (let (gg:raw:Generic g
         mm:raw:Method m
-        pq:CStr (priv-qualifier-of (gg name)))
-    (when (!= (as ptr pq) null) (return (gg ir-prefix)))
-    (let (ns:CStr (mm src-ns))
+        pq:CStr (priv-qualifier-of (gg 'name)))
+    (when (!= (as ptr pq) null) (return (gg 'ir-prefix)))
+    (let (ns:CStr (mm 'src-ns))
       ; No src-ns is an intrinsic operator seed, which belongs to no file — the
       ; same convention method-in-ns states. Those are never mangled here.
-      (when (= ns null) (return (gg ir-prefix)))
+      (when (= ns null) (return (gg 'ir-prefix)))
       (return (as CStr (ns-ir-prefix (as ptr ns)))))))
 
 ; How many METHOD-USER methods of `g` would emit under `prefix`? Grouping by the
@@ -401,9 +401,9 @@
 (defn generic-user-methods-with-prefix (g:raw:Generic prefix:CStr):i32
   (let (gg:raw:Generic g
         n:i32 0)
-    (dotimes (i (unsafe/cast i32 (count (gg methods))))
-      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
-        (when (and (= (m kind) METHOD-USER)
+    (dotimes (i (unsafe/cast i32 (count (gg 'methods))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg 'methods) i:usize)))
+        (when (and (= (m 'kind) METHOD-USER)
                    (= (strcmp (method-ir-prefix g (as raw:Method m)) prefix) 0))
           (inc! n))))
     (return n)))
@@ -415,11 +415,11 @@
 ; reaches the discriminated memo. template-ref-equality.md §5.
 (defn generic-find-method-exact (g:raw:Generic param-types:ptr nparams:i32):?ptr:Method
   (let (gg:raw:Generic g)
-    (dotimes (i (unsafe/cast i32 (count (gg methods))))
-      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
-        (when (and (= (m kind) METHOD-USER)
-                   (= (m num-params) nparams)
-                   (!= (params-type-eq (m param-types) param-types nparams) 0)
+    (dotimes (i (unsafe/cast i32 (count (gg 'methods))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg 'methods) i:usize)))
+        (when (and (= (m 'kind) METHOD-USER)
+                   (= (m 'num-params) nparams)
+                   (!= (params-type-eq (m 'param-types) param-types nparams) 0)
                    (= (method-is-want-stamped (as raw:Method m)) 0))
           (return (as ptr m)))))
     (return null)))
@@ -430,13 +430,13 @@
 (defn generic-find-want-stamp (g:raw:Generic param-types:ptr nparams:i32 ret:raw:Type):?ptr:Method
   (when (= ret null) (return null))
   (let (gg:raw:Generic g)
-    (dotimes (i (unsafe/cast i32 (count (gg methods))))
-      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
-        (when (and (= (m kind) METHOD-USER)
-                   (= (m num-params) nparams)
-                   (!= (params-type-eq (m param-types) param-types nparams) 0)
+    (dotimes (i (unsafe/cast i32 (count (gg 'methods))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg 'methods) i:usize)))
+        (when (and (= (m 'kind) METHOD-USER)
+                   (= (m 'num-params) nparams)
+                   (!= (params-type-eq (m 'param-types) param-types nparams) 0)
                    (!= (method-is-want-stamped (as raw:Method m)) 0)
-                   (!= (type-eq (m ret-type) ret) 0))
+                   (!= (type-eq (m 'ret-type) ret) 0))
           (return (as ptr m)))))
     (return null)))
 
@@ -454,12 +454,12 @@
 ; ordinary overload resolution.
 (defn generic-find-method-exact-in-ns (g:raw:Generic param-types:ptr nparams:i32 ns:CStr):?ptr:Method
   (let (gg:raw:Generic g)
-    (dotimes (i (unsafe/cast i32 (count (gg methods))))
-      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
-        (when (and (= (m kind) METHOD-USER)
-                   (= (m num-params) nparams)
+    (dotimes (i (unsafe/cast i32 (count (gg 'methods))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg 'methods) i:usize)))
+        (when (and (= (m 'kind) METHOD-USER)
+                   (= (m 'num-params) nparams)
                    (!= (method-in-ns m ns) 0)
-                   (!= (params-type-eq (m param-types) param-types nparams) 0)
+                   (!= (params-type-eq (m 'param-types) param-types nparams) 0)
                    (= (method-is-want-stamped (as raw:Method m)) 0))
           (return (as ptr m)))))
     ; No method of this namespace has that signature: fall back to the unfiltered
@@ -484,11 +484,11 @@
 ; node-type-call's probe below dies on a widened call before emission ever runs).
 (defn generic-binds-for (g:raw:Generic param-types:ptr nparams:i32 out-ret:ptr:ptr line:i32 arg-nodes:ptr):i32
   (let (gg:raw:Generic g)
-    (dotimes (j (unsafe/cast i32 (count (gg methods))))
-      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) j:usize)))
-        (when (= (m kind) METHOD-GENERIC)
-          (let (bound:ptr (arena-alloc (* (+ (m num-tyvars) 1) (ptr-bytes))))
-            (when (and (= (m num-params) nparams)
+    (dotimes (j (unsafe/cast i32 (count (gg 'methods))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg 'methods) j:usize)))
+        (when (= (m 'kind) METHOD-GENERIC)
+          (let (bound:ptr (arena-alloc (* (+ (m 'num-tyvars) 1) (ptr-bytes))))
+            (when (and (= (m 'num-params) nparams)
                        (!= (generic-method-bind (as ptr m) param-types nparams bound null arg-nodes) 0))
               (when (!= (generic-constraints-ok (as ptr m) bound line) 0)
                 ; Resolve the bound return type from the method's return spelling
@@ -551,8 +551,8 @@
               (aset! (as ptr:ptr defaults) k (node-at p 1))
               (set! ok 0))))
         (when (!= ok 0)
-          (.set! ft nopt nopt)
-          (.set! ft opt-defaults defaults))))))
+          (.set! ft 'nopt nopt)
+          (.set! ft 'opt-defaults defaults))))))
 
 ; The fixed parameter types of a defn param list as a ptr-array (:rest-aware:
 ; the :rest marker is skipped and the rest parameter is typed ptr). Shared by
@@ -617,29 +617,29 @@
         g:ptr (generic-lookup-exact key))
     (when (= g null) (set! g (generic-new key)))
     (let (ft:ptr:Type (as ptr:Type (make-type TY-FN)))
-      (.set! ft ret ret)
+      (.set! ft 'ret ret)
       (type-set-params ft param-types nparams)
-      (.set! ft variadic variadic)
-      (.set! ft has-rest has-rest)
+      (.set! ft 'variadic variadic)
+      (.set! ft 'has-rest has-rest)
       (let (m:ref:Method (new Method))
-        (.set! m param-types param-types)
-        (.set! m num-params nparams)
-        (.set! m ret-type ret)
-        (.set! m has-rest has-rest)
-        (.set! m variadic variadic)
-        (.set! m kind METHOD-USER)
-        (.set! m ir-name null)
-        (.set! m fn-type (as ptr ft))
-        (.set! m binop null)
-        (.set! m body body)
+        (.set! m 'param-types param-types)
+        (.set! m 'num-params nparams)
+        (.set! m 'ret-type ret)
+        (.set! m 'has-rest has-rest)
+        (.set! m 'variadic variadic)
+        (.set! m 'kind METHOD-USER)
+        (.set! m 'ir-name null)
+        (.set! m 'fn-type (as ptr ft))
+        (.set! m 'binop null)
+        (.set! m 'body body)
         ; W5e: provenance for the duplicate-signature diagnostic, which must name
         ; the OTHER definition's file — a Method.body Node carries a line but no
         ; file — and phrase the namespace rule according to whether the pair is
         ; public or private.
-        (.set! m src-file g-source-path)
-        (.set! m src-ns g-current-ns)
-        (.set! m src-imports g-file-imports)
-        (.set! m priv g-defining-private)
+        (.set! m 'src-file g-source-path)
+        (.set! m 'src-ns g-current-ns)
+        (.set! m 'src-imports g-file-imports)
+        (.set! m 'priv g-defining-private)
         (generic-add-method g m)
         (return m)))))
 
@@ -658,20 +658,20 @@
   (let (gg:raw:Generic g
         a:raw:Method later
         b:raw:Method earlier
-        bare:CStr (strip-priv-qualifier (gg name))
-        bnode:(raw Node) (b body)
+        bare:CStr (strip-priv-qualifier (gg 'name))
+        bnode:(raw Node) (b 'body)
         bline:i32 0
-        afile:CStr (a src-file)
-        bfile:CStr (b src-file)
-        ansname:CStr (a src-ns))
-    (when (!= bnode null) (set! bline ((unsafe/cast ptr:Node bnode) line)))
+        afile:CStr (a 'src-file)
+        bfile:CStr (b 'src-file)
+        ansname:CStr (a 'src-ns))
+    (when (!= bnode null) (set! bline ((unsafe/cast ptr:Node bnode) 'line)))
     (when (= afile null) (set! afile "<unknown file>"))
     (when (= bfile null) (set! bfile "<unknown file>"))
     (when (= ansname null) (set! ansname "user"))
     (let (head:CStr (fmt-2s "duplicate definition of '%s' — the same parameter types are already defined at %s"
                             bare (fmt-sd "%s:%d" bfile bline))
           note:CStr null)
-      (if (and (!= (a priv) 0) (!= (b priv) 0))
+      (if (and (!= (a 'priv) 0) (!= (b 'priv) 0))
         (set! note (fmt-s "`defn-` makes a name private to its NAMESPACE, not to its file, and both definitions are in namespace '%s'. Rename one, or give one file an (ns ...) of its own."
                           ansname))
         (set! note (fmt-s "'%s' is public, and a public name must be unique across the whole compilation unit. Declare one with `defn-` — in the default `user` namespace a private name is scoped to its own file, so the two files may each have their own — or rename one."
@@ -700,19 +700,19 @@
 (defn method-pair-line (later:raw:Method earlier:raw:Method):i32
   (let (a:raw:Method later
         b:raw:Method earlier)
-    (when (!= (a body) null)
-      (return (-> a (_ body) (unsafe/cast ptr:Node _) (_ line))))
-    (when (!= (b body) null)
-      (return (-> b (_ body) (unsafe/cast ptr:Node _) (_ line))))
+    (when (!= (a 'body) null)
+      (return (-> a (_ 'body) (unsafe/cast ptr:Node _) (_ 'line))))
+    (when (!= (b 'body) null)
+      (return (-> b (_ 'body) (unsafe/cast ptr:Node _) (_ 'line))))
     (return 0)))
 
 ; `file:line` of the definition `m` came from, for a two-candidate diagnostic.
 (defn method-def-site (m:ptr:Method):CStr
-  (let (f:CStr (m src-file)
-        node:(raw Node) (m body)
+  (let (f:CStr (m 'src-file)
+        node:(raw Node) (m 'body)
         line:i32 0)
     (when (= f null) (set! f "<unknown file>"))
-    (when (!= node null) (set! line ((unsafe/cast ptr:Node node) line)))
+    (when (!= node null) (set! line ((unsafe/cast ptr:Node node) 'line)))
     (return (fmt-sd "%s:%d" f line))))
 
 ; Stage 15 W9 item 35: the message for a bare reference that two namespaces
@@ -726,9 +726,9 @@
 ; `user`, which `resolve-spelling` binds in every file.
 (defn ambiguous-method-message (g:raw:Generic a:ptr:Method b:ptr:Method):CStr
   (let (gg:raw:Generic g
-        bare:CStr (strip-priv-qualifier (gg name))
-        ans:CStr (a src-ns)
-        bns:CStr (b src-ns))
+        bare:CStr (strip-priv-qualifier (gg 'name))
+        ans:CStr (a 'src-ns)
+        bns:CStr (b 'src-ns))
     (when (= ans null) (set! ans "user"))
     (when (= bns null) (set! bns "user"))
     (let (acand:CStr (fmt-2s "'%s' (defined at %s)"
@@ -748,7 +748,7 @@
   (let (gi:i32 0)
     (while (< gi (unsafe/cast i32 (count g-generics)))
       (let (gg:ptr:Generic (as ptr:Generic (invoke g-generics (as usize gi))))
-        (when (and (= (gg finalized) 0) (> (unsafe/cast i32 (count (gg methods))) 0))
+        (when (and (= (gg 'finalized) 0) (> (unsafe/cast i32 (count (gg 'methods))) 0))
           ; Tally the method kinds. An operator name carries an intrinsic seed
           ; method (§9.2); a user overload of that operator adds METHOD-USER
           ; methods alongside it (§10.3 operators-as-functions).
@@ -756,9 +756,9 @@
                 has-intrinsic:i32 0
                 n-user:i32 0
                 gk:i32 0)
-            (while (< gk (unsafe/cast i32 (count (gg methods))))
-              (let (mk:ptr:Method (as ptr:Method (invoke (gg methods) (as usize gk))))
-                (case (mk kind)
+            (while (< gk (unsafe/cast i32 (count (gg 'methods))))
+              (let (mk:ptr:Method (as ptr:Method (invoke (gg 'methods) (as usize gk))))
+                (case (mk 'kind)
                   METHOD-GENERIC   (set! has-generic 1)
                   METHOD-INTRINSIC (set! has-intrinsic 1)
                   (inc! n-user)))
@@ -770,8 +770,8 @@
             (when (or (> n-user 0) (!= has-generic 0))
               (if (and (= has-intrinsic 0)
                        (= has-generic 0) (= n-user 1))
-                (let (m0:ptr:Method (as ptr:Method (invoke (gg methods) 0)))
-                  (.set! gg mangled 0)
+                (let (m0:ptr:Method (as ptr:Method (invoke (gg 'methods) 0)))
+                  (.set! gg 'mangled 0)
                   ; Stage 12 N4: a solitary (unmangled, C-callable) generic keeps
                   ; `@name`, namespace-prefixed in a non-`user` namespace. The
                   ; scope key (gg name) stays the bare/qualified storage key
@@ -785,19 +785,19 @@
                   ; by the unit that DEFINED it, and its `g-globals` binding was
                   ; made by the declare with flags this rebind would drop
                   ; (extern-decl, noreturn). Nothing here is ours to decide.
-                  (when (= (m0 ir-fixed) 0)
-                    (.set! m0 ir-name (fmt-s "@%s" (ns-compose (method-ir-prefix gg (as raw:Method m0))
-                                                     (ir-name-token (strip-priv-qualifier (gg name))))))
-                    (scope-define g-globals (gg name) (m0 fn-type) (m0 ir-name) 0)))
+                  (when (= (m0 'ir-fixed) 0)
+                    (.set! m0 'ir-name (fmt-s "@%s" (ns-compose (method-ir-prefix gg (as raw:Method m0))
+                                                     (ir-name-token (strip-priv-qualifier (gg 'name))))))
+                    (scope-define g-globals (gg 'name) (m0 'fn-type) (m0 'ir-name) 0)))
                 (do
-                  (.set! gg mangled 1)
+                  (.set! gg 'mangled 1)
                   (let (i:i32 0)
-                    (while (< i (unsafe/cast i32 (count (gg methods))))
-                      (let (mi:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
-                        (when (= (mi kind) METHOD-USER)
+                    (while (< i (unsafe/cast i32 (count (gg 'methods))))
+                      (let (mi:ptr:Method (as ptr:Method (invoke (gg 'methods) i:usize)))
+                        (when (= (mi 'kind) METHOD-USER)
                           (let (j:i32 0)
                             (while (< j i)
-                              (let (mj:ptr:Method (as ptr:Method (invoke (gg methods) j:usize)))
+                              (let (mj:ptr:Method (as ptr:Method (invoke (gg 'methods) j:usize)))
                                 ; Stage 15 W9 item 24: two DEFINITIONS in this
                                 ; unit is the question; an imported method is a
                                 ; reference to one somewhere else. Two headers
@@ -820,13 +820,13 @@
                                 ; (item 43), and `generic-resolve` reports the
                                 ; pair that survives at the use. R2 §8.2's own
                                 ; first recommendation, which R4 overrode.
-                                (when (and (= (mj kind) METHOD-USER)
+                                (when (and (= (mj 'kind) METHOD-USER)
                                            (= (methods-share-symbol-space gg mi mj) 1)
-                                           (= (mi ir-fixed) 0) (= (mj ir-fixed) 0)
-                                           (= (mi num-params) (mj num-params))
-                                           (!= (params-type-eq (mi param-types)
-                                                               (mj param-types)
-                                                               (mi num-params)) 0))
+                                           (= (mi 'ir-fixed) 0) (= (mj 'ir-fixed) 0)
+                                           (= (mi 'num-params) (mj 'num-params))
+                                           (!= (params-type-eq (mi 'param-types)
+                                                               (mj 'param-types)
+                                                               (mi 'num-params)) 0))
                                   (die-at (method-pair-line (as raw:Method mi) (as raw:Method mj))
                                     (duplicate-signature-message gg mi mj))))
                               (inc! j)))
@@ -852,18 +852,18 @@
                           ; above — a local overload sharing its prefix really
                           ; does share the name and must be mangled — so only
                           ; the rename is skipped, not the tally.
-                          (when (= (mi ir-fixed) 0)
+                          (when (= (mi 'ir-fixed) 0)
                             (let (pfx:CStr (method-ir-prefix gg (as raw:Method mi)))
                               (if (and (= has-intrinsic 0) (= has-generic 0)
                                        (= (generic-user-methods-with-prefix gg pfx) 1))
-                                (.set! mi ir-name
+                                (.set! mi 'ir-name
                                   (fmt-s "@%s" (ns-compose pfx
-                                                 (ir-name-token (strip-priv-qualifier (gg name))))))
-                                (.set! mi ir-name
-                                  (mangle-fn-name pfx (strip-priv-qualifier (gg name))
-                                                  (mi param-types) (mi num-params))))))))
+                                                 (ir-name-token (strip-priv-qualifier (gg 'name))))))
+                                (.set! mi 'ir-name
+                                  (mangle-fn-name pfx (strip-priv-qualifier (gg 'name))
+                                                  (mi 'param-types) (mi 'num-params))))))))
                       (inc! i)))))
-              (.set! gg finalized 1)))))
+              (.set! gg 'finalized 1)))))
       (inc! gi))))
 
 ; Can an argument of type `at` (an untyped int literal when is-lit≠0, an untyped
@@ -888,7 +888,7 @@
   ; bound `elem` param is CStr — this rule adapts the StrView literal to it. The
   ; compiler declares no StrView-parameter overload, so this cannot be ambiguous.
   (when (and (!= (type-is-strview at) 0)
-             (= (pt kind) TY-CSTR))
+             (= (pt 'kind) TY-CSTR))
     (return 1))
   (let (a-int:i32 (is-int-type at)   a-flt:i32 (is-float-type at)
         p-int:i32 (is-int-type pt)   p-flt:i32 (is-float-type pt))
@@ -945,15 +945,15 @@
 (defn generic-resolve (g:raw:Generic argtypes:ptr arg-nodes:ptr nargs:i32 line:i32 want:raw:Type):ref:Method
   (let (gg:raw:Generic g
         found:?ptr:Method null)
-    (dotimes (i (unsafe/cast i32 (count (gg methods))))
-      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
+    (dotimes (i (unsafe/cast i32 (count (gg 'methods))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg 'methods) i:usize)))
         ; SE-2: tier 0 is `generic-find-method-exact` written out, and it needs
         ; that function's skip for the same reason — a want-stamped instance is
         ; not identified by the argument tuple. Falling through to tier 1 re-binds
         ; it from the want. template-ref-equality.md §5.
-        (when (and (= (m kind) METHOD-USER)
-                   (= (m num-params) nargs)
-                   (!= (params-type-eq (m param-types) argtypes nargs) 0)
+        (when (and (= (m 'kind) METHOD-USER)
+                   (= (m 'num-params) nargs)
+                   (!= (params-type-eq (m 'param-types) argtypes nargs) 0)
                    (= (method-is-want-stamped (as raw:Method m)) 0))
           ; Stage 15 W9 item 35: two tier-0 matches that emit into DIFFERENT
           ; symbol spaces are two different functions, and this reference names
@@ -981,10 +981,10 @@
           ; did not unify) — report the dedicated "cannot infer" diagnostic
           ; instead of the misleading "no matching method".
           infer-tyvar:ptr null)
-      (dotimes (j (unsafe/cast i32 (count (gg methods))))
-        (let (m:ptr:Method (as ptr:Method (invoke (gg methods) j:usize)))
-          (when (= (m kind) METHOD-GENERIC)
-            (let (bound:ptr (arena-alloc (* (+ (m num-tyvars) 1) (ptr-bytes))))
+      (dotimes (j (unsafe/cast i32 (count (gg 'methods))))
+        (let (m:ptr:Method (as ptr:Method (invoke (gg 'methods) j:usize)))
+          (when (= (m 'kind) METHOD-GENERIC)
+            (let (bound:ptr (arena-alloc (* (+ (m 'num-tyvars) 1) (ptr-bytes))))
               (if (!= (generic-method-bind (as ptr m) argtypes nargs bound want arg-nodes) 0)
                 (if (!= (generic-constraints-ok (as ptr m) bound line) 0)
                   (do (set! cand (as ptr m)) (set! cand-bound bound) (inc! ncand))
@@ -995,7 +995,7 @@
                   (when (and (!= ut null) (= infer-tyvar null))
                     (set! infer-tyvar ut))))))))
       (when (> ncand 1)
-        (die-at line (fmt-s "ambiguous generic match for '%s'" (gg name))))
+        (die-at line (fmt-s "ambiguous generic match for '%s'" (gg 'name))))
       (when (= ncand 1)
         (return (generic-instantiate g cand cand-bound argtypes nargs line)))
       ; tier 2: widen / untyped-int-literal adaptation (§10.3). Concrete
@@ -1007,7 +1007,7 @@
             r:i32 (generic-resolve-adapt-tier g argtypes arg-nodes nargs line
                     (as ptr:ptr (addr-of wmethod)) (as ptr:ptr (addr-of wbound)) want))
         (when (= r 3)
-          (die-at line (fmt-s "ambiguous overload for '%s' under argument widening" (gg name))))
+          (die-at line (fmt-s "ambiguous overload for '%s' under argument widening" (gg 'name))))
         (when (= r 1) (return (as ref:Method wmethod)))
         (when (= r 2)
           (return (generic-instantiate g wmethod wbound
@@ -1015,13 +1015,13 @@
       (when (!= infer-tyvar null)
         (die-at line
           (fmt-2s "cannot infer type variable '%s' for '%s': no expected type at this position — annotate the binding"
-                  infer-tyvar (gg name))))
+                  infer-tyvar (gg 'name))))
       (when (!= constraint-fail 0)
         (die-at line
           (fmt-s "no matching method for '%s': arguments do not satisfy the required protocol constraint"
-                 (gg name))))
+                 (gg 'name))))
       (die-at line (fmt-2s "no matching method for overloaded '%s' with argument types (%s)"
-                           (gg name)
+                           (gg 'name)
                            (arg-type-spellings argtypes nargs))))))
 
 ; Resolve an operator call to a USER overload (exact, then a unique widen/literal
@@ -1031,18 +1031,18 @@
 ; (the overload's return type vs the intrinsic's) so the two cannot drift.
 (defn operator-user-resolve (g:raw:Generic argtypes:ptr arg-nodes:ptr nargs:i32):?ptr:Method
   (let (gg:raw:Generic g)
-    (dotimes (i (unsafe/cast i32 (count (gg methods))))
-      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
-        (when (and (= (m kind) METHOD-USER)
-                   (= (m num-params) nargs)
-                   (!= (params-type-eq (m param-types) argtypes nargs) 0))
+    (dotimes (i (unsafe/cast i32 (count (gg 'methods))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg 'methods) i:usize)))
+        (when (and (= (m 'kind) METHOD-USER)
+                   (= (m 'num-params) nargs)
+                   (!= (params-type-eq (m 'param-types) argtypes nargs) 0))
           (return (as ptr m)))))
     (let (wcand:ptr null
           wn:i32 0)
-      (dotimes (k (unsafe/cast i32 (count (gg methods))))
-        (let (m:ptr:Method (as ptr:Method (invoke (gg methods) k:usize)))
-          (when (and (= (m kind) METHOD-USER)
-                     (= (m has-rest) 0) (= (m num-params) nargs))
+      (dotimes (k (unsafe/cast i32 (count (gg 'methods))))
+        (let (m:ptr:Method (as ptr:Method (invoke (gg 'methods) k:usize)))
+          (when (and (= (m 'kind) METHOD-USER)
+                     (= (m 'has-rest) 0) (= (m 'num-params) nargs))
             (let (ok:i32 1)
               (dotimes (a nargs)
                 (let (is-lit:i32 0
@@ -1055,7 +1055,7 @@
                     (when (= is-lit 0)
                       (set! is-flit (node-is-float-literal (aref (as ptr:ptr arg-nodes) a)))))
                   (when (= (arg-adapts (aref (as ptr:ptr argtypes) a)
-                                       (aref (as ptr:ptr (m param-types)) a) is-lit is-flit) 0)
+                                       (aref (as ptr:ptr (m 'param-types)) a) is-lit is-flit) 0)
                     (set! ok 0))))
               (when (!= ok 0) (set! wcand (as ptr m)) (inc! wn))))))
       (when (= wn 1) (return wcand)))
@@ -1080,8 +1080,8 @@
       (let (m:ptr (generic-find-method-exact-in-ns g param-types nparams g-current-ns:CStr))
         (when (= m null)
           (set! m (generic-find-want-stamp g param-types nparams ret)))
-        (when (and (!= m null) (!= (-> m (unsafe/cast ptr:Method _) (_ ir-name)) null))
-          (return (-> m (unsafe/cast ptr:Method _) (_ ir-name)))))))
+        (when (and (!= m null) (!= (-> m (unsafe/cast ptr:Method _) (_ 'ir-name)) null))
+          (return (-> m (unsafe/cast ptr:Method _) (_ 'ir-name)))))))
   ; Stage 12 N4: a solitary (non-overloaded) defn keeps `@name` but, in a
   ; non-`user` namespace, prefixes the base with the namespace ir-prefix
   ; (`@foo__name`). ns-ir-base is the identity under `user` (empty prefix), so the
@@ -1093,7 +1093,7 @@
 (defn defn-is-mangled (fname:CStr):i32
   (let (g:ptr (generic-lookup fname))
     (when (!= g null)
-      (return (-> g (as ptr:Generic _) (_ mangled)))))
+      (return (-> g (as ptr:Generic _) (_ 'mangled)))))
   (return 0))
 
 ; If a defn form's name is overloaded, return that method's mangled @-symbol;
@@ -1106,7 +1106,7 @@
     (when (= fname null) (return null))
     (let (g:ptr (generic-lookup fname))
       (when (= g null) (return null))
-      (when (= (-> g (as ptr:Generic _) (_ mangled)) 0) (return null))
+      (when (= (-> g (as ptr:Generic _) (_ 'mangled)) 0) (return null))
       (let (params-node:ptr (node-at form 2)
             ; W9 item 35: the exported symbol is this namespace's, for the same
             ; reason `defn-ir-name` above asks the three-part question.
@@ -1114,7 +1114,7 @@
                                                    (defn-params-count params-node)
                                                    g-current-ns:CStr))
         (when (= m null) (return null))
-        (return (-> m (unsafe/cast ptr:Method _) (_ ir-name)))))))
+        (return (-> m (unsafe/cast ptr:Method _) (_ 'ir-name)))))))
 
 ; ============================================================
 ; Bounded generic defn (Stage 9 rung 4)
@@ -1145,14 +1145,14 @@
 (defn defn-name-only (name-node:raw:Node):ptr
   (when (= name-node null) (return null))
   (let (n:raw:Node name-node)
-    (case (n kind)
+    (case (n 'kind)
       NODE-SYM
         (let (nm:ptr null tn:ptr null)
-          (split-typed (n s) (as ptr:ptr (addr-of nm)) (as ptr:ptr (addr-of tn)))
+          (split-typed (n 's) (as ptr:ptr (addr-of nm)) (as ptr:ptr (addr-of tn)))
           (return nm))
       NODE-CELL
-        (let (c:raw:Node (n car))
-          (when (= (node-kind (as ptr c)) NODE-SYM) (return (c s))))
+        (let (c:raw:Node (n 'car))
+          (when (= (node-kind (as ptr c)) NODE-SYM) (return (c 's))))
       0)
     (return null)))
 
@@ -1162,20 +1162,20 @@
   ; type node, and must not be dereferenced.
   (when (= bind-node null) (return null))
   (let (n:raw:Node bind-node)
-    (when (= (n kind) NODE-CELL) (return (node-at bind-node 1)))
+    (when (= (n 'kind) NODE-CELL) (return (node-at bind-node 1)))
     (return null)))
 
 ; Does any symbol anywhere in this node name a declared type variable?
 (defn node-mentions-tyvar (node:raw:Node tyvars:ptr ntv:i32):i32
   (when (= node null) (return 0))
   (let (n:raw:Node node)
-    (case (n kind)
+    (case (n 'kind)
       NODE-SYM
-        (if (>= (tyvar-index-of (n s) tyvars ntv) 0) (return 1) (return 0))
+        (if (>= (tyvar-index-of (n 's) tyvars ntv) 0) (return 1) (return 0))
       NODE-CELL
         (do
-          (when (!= (node-mentions-tyvar (n car) tyvars ntv) 0) (return 1))
-          (return (node-mentions-tyvar (n cdr) tyvars ntv)))
+          (when (!= (node-mentions-tyvar (n 'car) tyvars ntv) 0) (return 1))
+          (return (node-mentions-tyvar (n 'cdr) tyvars ntv)))
       0)
     (return 0)))
 
@@ -1184,7 +1184,7 @@
   (when (<= n 0) (return null))
   (when (= list null) (return null))
   (let (l:raw:Node list)
-    (return (make-cell (l car) (take-first-n (l cdr) (- n 1) line) line))))
+    (return (make-cell (l 'car) (take-first-n (l 'cdr) (- n 1) line) line))))
 
 ; ============================================================
 ; Stage 11 T2: tyvar-from-receiver inference + structural unification
@@ -1245,10 +1245,10 @@
 ; `(Vector T)`. Returns null for a wrapper with no operand.
 (defn wrapper-inner-pattern (node:raw:Node):raw:Node
   (let (n:raw:Node node
-        rest:raw:Node (n cdr))
+        rest:raw:Node (n 'cdr))
     (when (= rest null) (return null))
-    (if (= (rest cdr) null)
-      (return (rest car))
+    (if (= (rest 'cdr) null)
+      (return (rest 'car))
       (return rest))))
 
 ; If `node` is a list whose head names a registered struct template, return that
@@ -1257,22 +1257,22 @@
 (defn node-template-of (node:raw:Node):?ptr:StructTemplate
   (when (= node null) (return null))
   (let (n:raw:Node node)
-    (when (!= (n kind) NODE-CELL) (return null))
-    (let (head:raw:Node (n car))
-      (when (or (= head null) (!= (head kind) NODE-SYM)) (return null))
-      (return (struct-template-lookup-ref (head s))))))
+    (when (!= (n 'kind) NODE-CELL) (return null))
+    (let (head:raw:Node (n 'car))
+      (when (or (= head null) (!= (head 'kind) NODE-SYM)) (return null))
+      (return (struct-template-lookup-ref (head 's))))))
 
 ; True if `node` is a pointer-wrapper list head: (ptr ...) / (raw ...) / (ref ...).
 (defn node-is-ptr-wrapper (node:raw:Node):i32
   (when (= node null) (return 0))
   (let (n:raw:Node node)
-    (when (!= (n kind) NODE-CELL) (return 0))
-    (let (head:raw:Node (n car))
-      (when (or (= head null) (!= (head kind) NODE-SYM)) (return 0))
+    (when (!= (n 'kind) NODE-CELL) (return 0))
+    (let (head:raw:Node (n 'car))
+      (when (or (= head null) (!= (head 'kind) NODE-SYM)) (return 0))
       ; `addr-of`: a standalone `&T` in a type slot, which the reader macro wrote
       ; as the value form before position was known (ref-sigil.md §6).
-      (when (or (= (head s) "ptr") (= (head s) "raw") (= (head s) "ref")
-                (= (head s) "addr-of"))
+      (when (or (= (head 's) "ptr") (= (head 's) "raw") (= (head 's) "ref")
+                (= (head 's) "addr-of"))
         (return 1))
       (return 0))))
 
@@ -1296,8 +1296,8 @@
 (defn count-pattern-nodes (node:raw:Node):i32
   (when (= node null) (return 0))
   (let (n:raw:Node node)
-    (when (= (n kind) NODE-CELL)
-      (return (+ 1 (+ (count-pattern-nodes (n car)) (count-pattern-nodes (n cdr))))))
+    (when (= (n 'kind) NODE-CELL)
+      (return (+ 1 (+ (count-pattern-nodes (n 'car)) (count-pattern-nodes (n 'cdr))))))
     (return 1)))
 
 ; Walk a parameter/return type pattern node, collecting free symbols that appear
@@ -1307,7 +1307,7 @@
 (defn collect-pattern-tyvars (node:raw:Node out-tyvars:ptr io-ntv:ptr):void
   (when (= node null) (return))
   (let (n:raw:Node node)
-    (case (n kind)
+    (case (n 'kind)
       ; A bare symbol in receiver position is collected only via a template-arg
       ; below; a top-level bare symbol that is a concrete type or a known name is
       ; not a tyvar here (return-only/standalone `T` is out of scope — bound only
@@ -1336,25 +1336,25 @@
             ; uninstantiable template (container-type-sugar.md §1.2).
             (let (stt:raw:StructTemplate st
                   nargs:i32 (- (node-len (as ptr node)) 1))
-              (let (it:ListIter (list-iter (n cdr)))
+              (let (it:ListIter (list-iter (n 'cdr)))
                 (doseq-iter (cur (addr-of it))
                   (let (arg:ptr cur
                         an:ptr:Node (unsafe/cast ptr:Node arg))
-                    (if (= (an kind) NODE-SYM)
+                    (if (= (an 'kind) NODE-SYM)
                       (do
                         ; Bare `ptr`/`raw` are types, so they reach the arity check
                         ; below; bare `ref` is not, and would be collected instead.
-                        (when (= (an s) "ref")
+                        (when (= (an 's) "ref")
                           (die-at (node-line (as ptr an) (node-line (as ptr node) 0))
                             (fmt-2s "%s: 'ref' is a pointer kind, not a type argument -- a colon chain cannot nest, so parenthesize the inner type: ref:(%s (ref X))"
-                                    (stt name) (stt name))))
-                        (when (= (tyname-resolvable (an s)) 0)
-                          (tyvars-add (an s) out-tyvars io-ntv)))
+                                    (stt 'name) (stt 'name))))
+                        (when (= (tyname-resolvable (an 's)) 0)
+                          (tyvars-add (an 's) out-tyvars io-ntv)))
                       (collect-pattern-tyvars arg out-tyvars io-ntv)))))
-              (when (!= nargs (stt ntv))
+              (when (!= nargs (stt 'ntv))
                 (die-at (node-line (as ptr node) 0)
                   (fmt-sd "%s: wrong number of type arguments for defstruct template (%d given)"
-                          (stt name) nargs))))
+                          (stt 'name) nargs))))
             (return))
           ; Pointer wrapper: descend into the inner pattern.
           (when (!= (node-is-ptr-wrapper node) 0)
@@ -1373,11 +1373,11 @@
 (defn collect-constraint-arg-tyvars (node:raw:Node out-tyvars:ptr io-ntv:ptr):void
   (when (= node null) (return))
   (let (n:raw:Node node)
-    (when (= (n kind) NODE-SYM)
+    (when (= (n 'kind) NODE-SYM)
       ; A colon-sugared symbol (`ptr:Foo`) is a concrete type, never a tyvar.
-      (when (= (strchr (n s) 58) null)
-        (when (= (tyname-resolvable (n s)) 0)
-          (tyvars-add (n s) out-tyvars io-ntv)))
+      (when (= (strchr (n 's) 58) null)
+        (when (= (tyname-resolvable (n 's)) 0)
+          (tyvars-add (n 's) out-tyvars io-ntv)))
       (return))
     (collect-pattern-tyvars node out-tyvars io-ntv)))
 
@@ -1403,12 +1403,12 @@
         (set! g-type-alias-depth (- g-type-alias-depth 1))
         (return r))))
   (let (pn:raw:Node pat)
-    (case (pn kind)
+    (case (pn 'kind)
       NODE-SYM
         (do
           ; A single bare symbol that is a declared tyvar binds directly.
-          (when (= (strchr (pn s) 58) null)
-            (let (idx:i32 (tyvar-index-of (pn s) tyvars ntv))
+          (when (= (strchr (pn 's) 58) null)
+            (let (idx:i32 (tyvar-index-of (pn 's) tyvars ntv))
               (when (>= idx 0)
                 (let (cur:ptr (aref (as ptr:ptr out-bound) idx))
                   (if (= cur null)
@@ -1425,23 +1425,23 @@
             ; body's `(ref G)` becomes `(ref <fn>)`, and the by-value fn pointer
             ; passed at the call site lands in the param slot as that storage. A
             ; TY-FN has no `elem`, so unify the inner pattern directly against `at`.
-            (when (= (at kind) TY-FN)
+            (when (= (at 'kind) TY-FN)
               (return (unify-tpat (wrapper-inner-pattern pat) at tyvars ntv out-bound line)))
-            (when (!= (at kind) TY-PTR) (return 0))
+            (when (!= (at 'kind) TY-PTR) (return 0))
             (return (unify-tpat (wrapper-inner-pattern pat)
-                                (at elem)
+                                (at 'elem)
                                 tyvars ntv out-bound line)))
           ; Template application vs a stamped instance of the same template.
           (let (st:?ptr:StructTemplate (node-template-of pat))
             (when (!= st null)
-              (when (!= (at kind) TY-STRUCT) (return 0))
-              (let (sd:raw:StructDef (at sdef))
-                (when (!= (sd origin-template) st) (return 0))
+              (when (!= (at 'kind) TY-STRUCT) (return 0))
+              (let (sd:raw:StructDef (at 'sdef))
+                (when (!= (sd 'origin-template) st) (return 0))
                 (let (nargs:i32 (- (node-len pat) 1))
-                  (when (!= nargs (sd origin-nargs)) (return 0))
+                  (when (!= nargs (sd 'origin-nargs)) (return 0))
                   (dotimes (i nargs)
                     (when (= (unify-tpat (node-at pat (+ i 1))
-                                         (aref (as ptr:ptr (sd origin-args)) i)
+                                         (aref (as ptr:ptr (sd 'origin-args)) i)
                                          tyvars ntv out-bound line) 0)
                       (return 0)))
                   (return 1)))))
@@ -1510,9 +1510,9 @@
 (defn pattern-determines-tyvar (pat:raw:Node tvname:ptr):i32
   (when (= pat null) (return 0))
   (let (n:raw:Node pat)
-    (case (n kind)
+    (case (n 'kind)
       NODE-SYM
-        (if (and (= (strchr (n s) 58) null) (= (n s) tvname)) (return 1) (return 0))
+        (if (and (= (strchr (n 's) 58) null) (= (n 's) tvname)) (return 1) (return 0))
       NODE-CELL
         (do
           ; §3.7, the third copy of this expansion (collect-pattern-tyvars and
@@ -1531,7 +1531,7 @@
             (return (pattern-determines-tyvar (wrapper-inner-pattern pat) tvname)))
           (let (st:?ptr:StructTemplate (node-template-of pat))
             (when (!= st null)
-              (let (it:ListIter (list-iter (n cdr)))
+              (let (it:ListIter (list-iter (n 'cdr)))
                 (doseq-iter (cur (addr-of it))
                   (when (!= (pattern-determines-tyvar cur tvname) 0)
                     (return 1))))
@@ -1565,10 +1565,10 @@
       (set! changed 0)
       (dotimes (ck nc)
         (let (crec:ref:Constraint (constraints-at constraints ck)
-              vidx:i32 (tyvar-index-of (crec var) tyvars ntv)
-              na:i32 (crec nargs))
+              vidx:i32 (tyvar-index-of (crec 'var) tyvars ntv)
+              na:i32 (crec 'nargs))
           (when (and (>= vidx 0) (!= (aref (as ptr:i32 out) vidx) 0) (> na 0))
-            (let (argv:ptr (crec args))
+            (let (argv:ptr (crec 'args))
               (dotimes (ai na)
                 (let (argn:ptr (aref (as ptr:ptr argv) ai))
                   (dotimes (ti2 ntv)
@@ -1586,13 +1586,13 @@
 ; asks the whole fixpoint rather than the parameter seed alone.
 (defn method-undetermined-tyvar (m:raw:Method):ptr
   (let (mm:raw:Method m
-        ntv:i32 (mm num-tyvars)
+        ntv:i32 (mm 'num-tyvars)
         det:ptr (arena-alloc (* (as i64 (if (> ntv 0) ntv 1)) 4)))
-    (tyvars-determined (as raw:Node (node-at (mm body) 2)) (mm num-params)
-                       (mm tyvars) ntv (mm constraints) (mm num-constraints) det)
+    (tyvars-determined (as raw:Node (node-at (mm 'body) 2)) (mm 'num-params)
+                       (mm 'tyvars) ntv (mm 'constraints) (mm 'num-constraints) det)
     (dotimes (ti ntv)
       (when (= (aref (as ptr:i32 det) ti) 0)
-        (return (aref (as ptr:ptr (mm tyvars)) ti))))
+        (return (aref (as ptr:ptr (mm 'tyvars)) ti))))
     (return null)))
 
 ; Stage 16 SE-2: is `m` a stamped instance that its own parameter types do not
@@ -1601,7 +1601,7 @@
 ; answered for all of them. template-ref-equality.md §5.
 (defn method-is-want-stamped (m:raw:Method):i32
   (let (mm:raw:Method m
-        tm:ptr (mm origin-template))
+        tm:ptr (mm 'origin-template))
     (when (= tm null) (return 0))
     (if (!= (method-undetermined-tyvar (as raw:Method tm)) null) (return 1) (return 0))))
 
@@ -1615,13 +1615,13 @@
 (defn node-mentions-tyvar-named (node:raw:Node tvname:ptr):i32
   (when (= node null) (return 0))
   (let (n:raw:Node node)
-    (case (n kind)
+    (case (n 'kind)
       NODE-SYM
-        (if (and (= (strchr (n s) 58) null) (= (n s) tvname)) (return 1) (return 0))
+        (if (and (= (strchr (n 's) 58) null) (= (n 's) tvname)) (return 1) (return 0))
       NODE-CELL
         (do
-          (when (!= (node-mentions-tyvar-named (n car) tvname) 0) (return 1))
-          (return (node-mentions-tyvar-named (n cdr) tvname)))
+          (when (!= (node-mentions-tyvar-named (n 'car) tvname) 0) (return 1))
+          (return (node-mentions-tyvar-named (n 'cdr) tvname)))
       0)
     (return 0)))
 
@@ -1651,13 +1651,13 @@
       (let (c0:ptr:Node (unsafe/cast ptr:Node (node-at cnode 0))
             vn:ptr:Node (unsafe/cast ptr:Node (node-at cnode 1))
             rec:ref:Constraint (new Constraint))
-        (.set! rec args null)
-        (.set! rec nargs 0)
-        (when (!= (vn kind) NODE-SYM)
+        (.set! rec 'args null)
+        (.set! rec 'nargs 0)
+        (when (!= (vn 'kind) NODE-SYM)
           (die-at line "defn: :where constraint must name a protocol and a variable"))
         ; Element 0 may be null when written as the empty list `()` in the
         ; protocol slot; guard the kind read before classifying.
-        (if (and (!= (as ptr c0) null) (= (c0 kind) NODE-SYM))
+        (if (and (!= (as ptr c0) null) (= (c0 'kind) NODE-SYM))
           ; Plain protocol `(Proto V)`: no associated args.
           ; Stage 15 W9 defect 21: canonicalize the protocol reference HERE, where
           ; it is written, not at each later lookup. A constraint is checked
@@ -1668,7 +1668,7 @@
           ; file's signature prescan, so its own protocols are registered. A
           ; blanket name (`Any`/`Struct`/`Clone`), `Valid`, or a protocol not yet
           ; registered passes through unchanged and re-canonicalizes at lookup.
-          (.set! rec proto (protocol-canon-name (as CStr (c0 s))))
+          (.set! rec 'proto (protocol-canon-name (as CStr (c0 's))))
           ; Protocol application `((Proto Arg…) V)`: element 0 is a list
           ; whose head names the protocol and whose tail are the argument
           ; patterns. Each Arg is a type-spelling node; any tyvar in it is
@@ -1677,7 +1677,7 @@
             (when (or (not (node-is-list (as ptr c0))) (< (node-len (as ptr c0)) 1))
               (die-at line "defn: :where constraint protocol application must be (Protocol Arg...)"))
             (let (hn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr c0) 0)))
-              (when (!= (hn kind) NODE-SYM)
+              (when (!= (hn 'kind) NODE-SYM)
                 (die-at line "defn: :where constraint protocol application head must be a protocol name"))
               (let (na:i32 (- (node-len (as ptr c0)) 1)
                     argv:ptr (if (> na 0) (arena-alloc (* na (ptr-bytes))) null))
@@ -1685,13 +1685,13 @@
                   (let (argn:ptr (node-at (as ptr c0) (+ ai 1)))
                     (aset! (as ptr:ptr argv) ai argn)
                     (collect-constraint-arg-tyvars argn tyvars io-ntv)))
-                (.set! rec proto (protocol-canon-name (as CStr (hn s))))
-                (.set! rec args argv)
-                (.set! rec nargs na)))))
-        (.set! rec var (as CStr (vn s)))
+                (.set! rec 'proto (protocol-canon-name (as CStr (hn 's))))
+                (.set! rec 'args argv)
+                (.set! rec 'nargs na)))))
+        (.set! rec 'var (as CStr (vn 's)))
         (conj constraints rec)
-        (when (< (tyvar-index-of (vn s) tyvars (aref (as ptr:i32 io-ntv) 0)) 0)
-          (aset! (as ptr:ptr tyvars) (aref (as ptr:i32 io-ntv) 0) (vn s))
+        (when (< (tyvar-index-of (vn 's) tyvars (aref (as ptr:i32 io-ntv) 0)) 0)
+          (aset! (as ptr:ptr tyvars) (aref (as ptr:i32 io-ntv) 0) (vn 's))
           (aset! (as ptr:i32 io-ntv) 0 (+ (aref (as ptr:i32 io-ntv) 0) 1)))))))
 
 ; Register a bounded-generic defn as a METHOD-GENERIC template (Stage 9 rung 4).
@@ -1710,12 +1710,12 @@
         fname:ptr (defn-name-only name-node)
         wi:i32 (params-where-index params-node)
         has-where:i32 (if (>= (params-where-index params-node) 0) 1 0))
-    (when (= fname null) (die-at (ff line) "defn: malformed generic name"))
+    (when (= fname null) (die-at (ff 'line) "defn: malformed generic name"))
     ; S4: bounded-generic templates bypass defn-parse-sig (the prescan routes them
     ; here and emit-defn returns early for templates), so hard-error a legacy
     ; `name:ret` / list-head `(name ret)` name here too, with the same diagnostic.
     (when (= (sig-name-is-bare name-node) 0)
-      (die-at (ff line)
+      (die-at (ff 'line)
         (fmt-2s "defn '%s': legacy 'name:ret' syntax is no longer supported — write (defn %s (params):ret …)"
                 fname fname)))
     (let (raw:i32 (node-len params-node)
@@ -1723,10 +1723,10 @@
       (dotimes (i nparams)
         (let (p:ptr:Node (unsafe/cast ptr:Node (node-at params-node i)))
           (when (!= (marker-named (as raw:Node p) "rest") 0)
-            (die-at (node-line (as ptr p) (ff line)) "defn: :rest combined with a generic method is not supported yet"))))
+            (die-at (node-line (as ptr p) (ff 'line)) "defn: :rest combined with a generic method is not supported yet"))))
       (let (nc:i32 (if (>= wi 0) (- raw (+ wi 1)) 0))
         (when (and (!= has-where 0) (< nc 1))
-          (die-at (ff line) "defn: :where requires at least one (Protocol Var) constraint"))
+          (die-at (ff 'line) "defn: :where requires at least one (Protocol Var) constraint"))
         ; Capacity: constraint vars + a conservative upper bound on receiver-
         ; inferred tyvars across every parameter and the return type. A single
         ; parameter applying a struct template `(Two I F S E)` contributes one
@@ -1759,7 +1759,7 @@
           ; emit-extend (A4) via parse-where-constraints.
           (parse-where-constraints params-node (+ wi 1) nc
                                    constraints
-                                   tyvars (as ptr:i32 (addr-of ntv)) (ff line))
+                                   tyvars (as ptr:i32 (addr-of ntv)) (ff 'line))
           ; Merge in receiver-inferred tyvars from each parameter and the return
           ; type. These are bound structurally by the unifier (a tyvar nested in a
           ; ptr/ref wrapper or a template application), so the old flat-only
@@ -1781,22 +1781,22 @@
           (let (g:ptr (generic-lookup fname))
             (when (= g null) (set! g (generic-new fname)))
             (let (m:ptr:Method (new Method))
-              (.set! m param-types null)
-              (.set! m num-params nparams)
-              (.set! m ret-type null)
-              (.set! m has-rest 0)
-              (.set! m variadic 0)
-              (.set! m kind METHOD-GENERIC)
-              (.set! m ir-name null)
-              (.set! m fn-type null)
-              (.set! m binop null)
-              (.set! m body form)
-              (.set! m tyvars tyvars)
-              (.set! m num-tyvars ntv)
-              (.set! m constraints constraints)
-              (.set! m num-constraints nc)
+              (.set! m 'param-types null)
+              (.set! m 'num-params nparams)
+              (.set! m 'ret-type null)
+              (.set! m 'has-rest 0)
+              (.set! m 'variadic 0)
+              (.set! m 'kind METHOD-GENERIC)
+              (.set! m 'ir-name null)
+              (.set! m 'fn-type null)
+              (.set! m 'binop null)
+              (.set! m 'body form)
+              (.set! m 'tyvars tyvars)
+              (.set! m 'num-tyvars ntv)
+              (.set! m 'constraints constraints)
+              (.set! m 'num-constraints nc)
               ; Imported templates were checked by the exporting unit; skip A2.
-              (.set! m checked trusted)
+              (.set! m 'checked trusted)
               ; Stage 15 B4: provenance, which this site never recorded because
               ; it does not go through `generic-register-method`. A generic is
               ; keyed BARE (R2), so `Method.src-ns` is the only thing that says
@@ -1804,13 +1804,13 @@
               ; reached as `p/name` filtered to nothing and the name did not
               ; resolve at all. Runs in `prescan-defn-signatures`, so
               ; `g-current-ns`/`g-source-path` are the defining file's.
-              (.set! m src-ns g-current-ns)
-              (.set! m src-file g-source-path)
+              (.set! m 'src-ns g-current-ns)
+              (.set! m 'src-file g-source-path)
               ; W9 item 43: and its import environment, because a TEMPLATE is the
               ; one method whose body is emitted somewhere else — `prescan-file-
               ; imports` has already filled this file's, which is why the value
               ; here is the defining file's and not its importer's.
-              (.set! m src-imports g-file-imports)
+              (.set! m 'src-imports g-file-imports)
               (generic-add-method g m)))))))))
 
 ; Try to bind a generic template's type variables from a concrete argument
@@ -1827,9 +1827,9 @@
 (defn conf-arg-to-type (spelling:CStr line:i32):ref:Type
   (let (n:ptr:Node (as ptr:Node (alloc-node))
         saved:i32 g-type-key-ok)
-    (.set! n kind NODE-SYM)
-    (.set! n line line)
-    (.set! n s spelling)
+    (.set! n 'kind NODE-SYM)
+    (.set! n 'line line)
+    (.set! n 's spelling)
     ; Stage 15 B3′: a retained conformance arg is a stored canonical spelling —
     ; a key, read back in a file that may not be the one that wrote it.
     (set! g-type-key-ok 1)
@@ -1880,11 +1880,11 @@
                                   constraints:raw:ConstraintVec
                                   ci:i32 out-bound:ptr io-changed:ptr line:i32):i32
   (let (crec:ref:Constraint (constraints-at constraints ci)
-        na:i32 (crec nargs))
+        na:i32 (crec 'nargs))
     (when (= na 0) (return 1))
     (let (ntv:i32 num-tyvars
-          proto:CStr (crec proto)
-          vidx:i32 (tyvar-index-of (crec var) tyvar-names ntv)
+          proto:CStr (crec 'proto)
+          vidx:i32 (tyvar-index-of (crec 'var) tyvar-names ntv)
           cv:ptr (if (>= vidx 0) (aref (as ptr:ptr out-bound) vidx) null))
       ; V not yet bound → defer to a later fixpoint iteration.
       (when (= cv null) (return 1))
@@ -1912,7 +1912,7 @@
             (die-at line
               (fmt-2s "constraint '%s' supplies the wrong number of arguments for the conformance of '%s'"
                       proto cvspell)))
-          (let (argv:ptr (crec args)
+          (let (argv:ptr (crec 'args)
                 cargsv:(ref (Vector CStr)) (unsafe/cast (ref (Vector CStr)) cargs))
             (dotimes (j na)
               (let (argn:ptr (aref (as ptr:ptr argv) j)
@@ -1921,8 +1921,8 @@
                     tidx:i32 -1)
                 ; A bare colon-free symbol naming a declared tyvar may be
                 ; recovered or constrained; anything else is a concrete pattern.
-                (when (and (= (an kind) NODE-SYM) (= (strchr (an s) 58) null))
-                  (set! tidx (tyvar-index-of (an s) tyvar-names ntv)))
+                (when (and (= (an 'kind) NODE-SYM) (= (strchr (an 's) 58) null))
+                  (set! tidx (tyvar-index-of (an 's) tyvar-names ntv)))
                 (if (>= tidx 0)
                   (let (cur:ptr (aref (as ptr:ptr out-bound) tidx))
                     (if (= cur null)
@@ -1977,9 +1977,9 @@
 
 (defn generic-method-bind (m:raw:Method argtypes:ptr nargs:i32 out-bound:ptr want:raw:Type arg-nodes:ptr):i32
   (let (mm:raw:Method m)
-    (when (!= (mm num-params) nargs) (return 0))
-    (let (params-node:ptr (node-at (mm body) 2)
-          ntv:i32 (mm num-tyvars)
+    (when (!= (mm 'num-params) nargs) (return 0))
+    (let (params-node:ptr (node-at (mm 'body) 2)
+          ntv:i32 (mm 'num-tyvars)
           ; LW-6 (int-widening.md follow-up, found while wrapping up the LW-5
           ; sweep): a literal argument whose param is a bare, still-unbound
           ; tyvar is deferred past assoc-recovery below, so a :where
@@ -2003,9 +2003,9 @@
                 tvidx:i32 -1)
             (when (!= arg-nodes null)
               (set! is-lit (node-is-int-literal (aref (as ptr:ptr arg-nodes) i))))
-            (when (= ((unsafe/cast ptr:Node ptn) kind) NODE-SYM)
-              (when (= (strchr ((unsafe/cast ptr:Node ptn) s) 58) null)
-                (set! tvidx (tyvar-index-of ((unsafe/cast ptr:Node ptn) s) (mm tyvars) ntv))))
+            (when (= ((unsafe/cast ptr:Node ptn) 'kind) NODE-SYM)
+              (when (= (strchr ((unsafe/cast ptr:Node ptn) 's) 58) null)
+                (set! tvidx (tyvar-index-of ((unsafe/cast ptr:Node ptn) 's) (mm 'tyvars) ntv))))
             ; Only defer if the tyvar is still unbound at this point in the
             ; pass — an earlier, non-deferred arg (e.g. conj's receiver
             ; binding T before the elem literal is considered) may have
@@ -2019,17 +2019,17 @@
                 (aset! (as ptr:ptr deferred-ptn) ndeferred ptn)
                 (aset! (as ptr:ptr deferred-at) ndeferred at)
                 (set! ndeferred (+ ndeferred 1)))
-              (when (= (unify-tpat ptn at (mm tyvars) ntv out-bound
-                                   ((unsafe/cast ptr:Node ptn) line)) 0)
+              (when (= (unify-tpat ptn at (mm 'tyvars) ntv out-bound
+                                   ((unsafe/cast ptr:Node ptn) 'line)) 0)
                 (return 0))))))
       ; Recover/check associated tyvars from the parametric :where constraints
       ; (assoc-types A2). A soft 0 here means a constraint's conforming variable
       ; does not conform — reject this candidate before the all-bound check.
       ; recover-assoc-into runs the shared fixpoint over the Method's fields.
-      (when (= (recover-assoc-into (mm tyvars) out-bound (mm num-tyvars)
-                                    (mm constraints)
-                                    (mm num-constraints)
-                                    ((mm body) line)) 0)
+      (when (= (recover-assoc-into (mm 'tyvars) out-bound (mm 'num-tyvars)
+                                    (mm 'constraints)
+                                    (mm 'num-constraints)
+                                    ((mm 'body) 'line)) 0)
         (return 0))
       ; LW-6: resolve deferred literal-arg tyvars that assoc-recovery left
       ; unbound (no conformance recovered them) — the pre-LW-6 fallback
@@ -2037,10 +2037,10 @@
       (dotimes (di ndeferred)
         (let (ptn:ptr (aref (as ptr:ptr deferred-ptn) di)
               at:ptr (aref (as ptr:ptr deferred-at) di)
-              idx:i32 (tyvar-index-of ((unsafe/cast ptr:Node ptn) s) (mm tyvars) ntv))
+              idx:i32 (tyvar-index-of ((unsafe/cast ptr:Node ptn) 's) (mm 'tyvars) ntv))
           (when (= (aref (as ptr:ptr out-bound) idx) null)
-            (when (= (unify-tpat ptn at (mm tyvars) ntv out-bound
-                                 ((unsafe/cast ptr:Node ptn) line)) 0)
+            (when (= (unify-tpat ptn at (mm 'tyvars) ntv out-bound
+                                 ((unsafe/cast ptr:Node ptn) 'line)) 0)
               (return 0)))))
       ; TC-1: if tyvars remain unbound after args+assoc, fill them from the
       ; expected type (want) by unifying the method's return pattern against it.
@@ -2055,10 +2055,10 @@
           (dotimes (k ntv)
             (when (= (aref (as ptr:ptr out-bound) k) null) (set! incomplete 1)))
           (when (!= incomplete 0)
-            (let (rnode:ptr (defn-ret-node (mm body)))
+            (let (rnode:ptr (defn-ret-node (mm 'body)))
               (when (!= rnode null)
-                (unify-tpat rnode want (mm tyvars) ntv out-bound
-                            ((unsafe/cast ptr:Node rnode) line)))))))
+                (unify-tpat rnode want (mm 'tyvars) ntv out-bound
+                            ((unsafe/cast ptr:Node rnode) 'line)))))))
       (dotimes (k ntv)
         (when (= (aref (as ptr:ptr out-bound) k) null) (return 0)))
       (return 1))))
@@ -2067,12 +2067,12 @@
 ; must conform (nominally, via `extend`) to the named protocol.
 (defn generic-constraints-ok (m:raw:Method bound:ptr line:i32):i32
   (let (mm:raw:Method m
-        nc:i32 (mm num-constraints))
+        nc:i32 (mm 'num-constraints))
     (dotimes (i nc)
-      (let (crec:ref:Constraint (constraints-at (mm constraints) i)
-            proto:CStr (crec proto)
-            var:CStr   (crec var)
-            idx:i32 (tyvar-index-of var (mm tyvars) (mm num-tyvars))
+      (let (crec:ref:Constraint (constraints-at (mm 'constraints) i)
+            proto:CStr (crec 'proto)
+            var:CStr   (crec 'var)
+            idx:i32 (tyvar-index-of var (mm 'tyvars) (mm 'num-tyvars))
             bt:ptr (aref (as ptr:ptr bound) idx))
         ; Blanket protocols (§10.1) conform automatically; Valid (§10.2) matches
         ; here and is checked structurally at the call site; otherwise require a
@@ -2119,9 +2119,9 @@
 
 (defn resolve-param-type-bound-in (ptn:raw:Node tyvars:ptr bound:ptr ntv:i32 line:i32):?ptr:Type
   (let (pn:raw:Node ptn)
-    (when (= (pn kind) NODE-SYM)
-      (when (= (strchr (pn s) 58) null)
-        (let (idx:i32 (tyvar-index-of (pn s) tyvars ntv))
+    (when (= (pn 'kind) NODE-SYM)
+      (when (= (strchr (pn 's) 58) null)
+        (let (idx:i32 (tyvar-index-of (pn 's) tyvars ntv))
           (when (>= idx 0) (return (aref (as ptr:ptr bound) idx))))))
     (let (spellings:ptr (arena-alloc (* (+ ntv 1) (ptr-bytes))))
       (dotimes (si ntv)
@@ -2135,15 +2135,15 @@
 ; paths compute the return type identically (the node-type↔emit lockstep).
 (defn method-bound-ret-type (m:raw:Method bound:ptr line:i32):?ptr:Type
   (let (mm:raw:Method m
-        rnode:ptr (defn-ret-node (mm body)))
+        rnode:ptr (defn-ret-node (mm 'body)))
     (when (= rnode null) (return ty-void))
     (let (rt:ptr null)
-      (when (= (-> rnode (unsafe/cast ptr:Node _) (_ kind)) NODE-SYM)
-        (let (ridx:i32 (tyvar-index-of (-> rnode (unsafe/cast ptr:Node _) (_ s))
-                                        (mm tyvars) (mm num-tyvars)))
+      (when (= (-> rnode (unsafe/cast ptr:Node _) (_ 'kind)) NODE-SYM)
+        (let (ridx:i32 (tyvar-index-of (-> rnode (unsafe/cast ptr:Node _) (_ 's))
+                                        (mm 'tyvars) (mm 'num-tyvars)))
           (when (>= ridx 0) (set! rt (aref (as ptr:ptr bound) ridx)))))
       (when (= rt null)
-        (set! rt (resolve-param-type-bound rnode (mm tyvars) bound (mm num-tyvars) line)))
+        (set! rt (resolve-param-type-bound rnode (mm 'tyvars) bound (mm 'num-tyvars) line)))
       (return rt))))
 
 ; The concrete parameter types of a generic template method under a tyvar binding,
@@ -2153,14 +2153,14 @@
 ; derives from the stamped form.
 (defn subst-param-types-bound (m:raw:Method bound:ptr line:i32):ptr
   (let (mm:raw:Method m
-        params-node:ptr (node-at (mm body) 2)
-        nargs:i32 (mm num-params)
-        ntv:i32 (mm num-tyvars)
+        params-node:ptr (node-at (mm 'body) 2)
+        nargs:i32 (mm 'num-params)
+        ntv:i32 (mm 'num-tyvars)
         ptypes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes))))
     (dotimes (i nargs)
       (aset! (as ptr:ptr ptypes) i
              (resolve-param-type-bound (binding-type-node (node-at params-node i))
-                                       (mm tyvars) bound ntv line)))
+                                       (mm 'tyvars) bound ntv line)))
     (return ptypes)))
 
 ; Like generic-method-bind, but admits widen/literal adaptation on the parameters
@@ -2174,9 +2174,9 @@
 (defn generic-method-bind-adapt (m:raw:Method argtypes:ptr arg-nodes:ptr nargs:i32
                                      out-bound:ptr line:i32 want:raw:Type):i32
   (let (mm:raw:Method m)
-    (when (!= (mm num-params) nargs) (return 0))
-    (let (params-node:ptr (node-at (mm body) 2)
-          ntv:i32 (mm num-tyvars)
+    (when (!= (mm 'num-params) nargs) (return 0))
+    (let (params-node:ptr (node-at (mm 'body) 2)
+          ntv:i32 (mm 'num-tyvars)
           matched:ptr (arena-alloc (* (+ nargs 1) 4))
           saved:ptr (arena-alloc (* (+ ntv 1) (ptr-bytes)))
           any-remaining:i32 0)
@@ -2190,7 +2190,7 @@
               at:ptr (aref (as ptr:ptr argtypes) i))
           (when (or (= ptn null) (= at null)) (return 0))
           (dotimes (k ntv) (aset! (as ptr:ptr saved) k (aref (as ptr:ptr out-bound) k)))
-          (if (!= (unify-tpat ptn at (mm tyvars) ntv out-bound ((unsafe/cast ptr:Node ptn) line)) 0)
+          (if (!= (unify-tpat ptn at (mm 'tyvars) ntv out-bound ((unsafe/cast ptr:Node ptn) 'line)) 0)
             (aset! (as ptr:i32 matched) i 1)
             (do (aset! (as ptr:i32 matched) i 0)
                 (set! any-remaining 1)
@@ -2211,10 +2211,10 @@
       ; Recover associated tyvars from parametric :where constraints, then require
       ; every tyvar bound by the exactly-matched parameters (adaptation never binds
       ; a tyvar, so a tyvar reachable only through a deferred parameter stays null).
-      (when (= (recover-assoc-into (mm tyvars) out-bound ntv
-                                    (mm constraints)
-                                    (mm num-constraints)
-                                    ((mm body) line)) 0)
+      (when (= (recover-assoc-into (mm 'tyvars) out-bound ntv
+                                    (mm 'constraints)
+                                    (mm 'num-constraints)
+                                    ((mm 'body) 'line)) 0)
         (return 0))
       ; TC-1: fill any tyvars still unbound after exact-args+assoc from the
       ; expected type (want), BEFORE the all-bound check and before pass-2
@@ -2228,10 +2228,10 @@
           (dotimes (k ntv)
             (when (= (aref (as ptr:ptr out-bound) k) null) (set! incomplete 1)))
           (when (!= incomplete 0)
-            (let (rnode:ptr (defn-ret-node (mm body)))
+            (let (rnode:ptr (defn-ret-node (mm 'body)))
               (when (!= rnode null)
-                (unify-tpat rnode want (mm tyvars) ntv out-bound
-                            ((unsafe/cast ptr:Node rnode) line)))))))
+                (unify-tpat rnode want (mm 'tyvars) ntv out-bound
+                            ((unsafe/cast ptr:Node rnode) 'line)))))))
       (dotimes (k ntv)
         (when (= (aref (as ptr:ptr out-bound) k) null) (return 0)))
       ; Pass 2: every deferred parameter's argument must adapt (same rule as the
@@ -2241,7 +2241,7 @@
         (when (= (aref (as ptr:i32 matched) i) 0)
           (let (ptn:ptr (binding-type-node (node-at params-node i))
                 at:ptr (aref (as ptr:ptr argtypes) i)
-                pt:ptr (resolve-param-type-bound ptn (mm tyvars) out-bound ntv line)
+                pt:ptr (resolve-param-type-bound ptn (mm 'tyvars) out-bound ntv line)
                 is-lit:i32 0
                 is-flit:i32 0)
             (when (= pt null) (return 0))
@@ -2271,11 +2271,11 @@
     ; stamped template instance (origin-template ≠ null) is skipped: it is a cache
     ; of its template, which competes below, so counting both would spuriously read
     ; as an ambiguous overload after the first widened call instantiates it.
-    (dotimes (k (unsafe/cast i32 (count (gg methods))))
-      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) k:usize)))
-        (when (and (= (m kind) METHOD-USER)
-                   (= (m origin-template) null)
-                   (= (m has-rest) 0) (= (m num-params) nargs))
+    (dotimes (k (unsafe/cast i32 (count (gg 'methods))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg 'methods) k:usize)))
+        (when (and (= (m 'kind) METHOD-USER)
+                   (= (m 'origin-template) null)
+                   (= (m 'has-rest) 0) (= (m 'num-params) nargs))
           (let (ok:i32 1)
             (dotimes (a nargs)
               (let (is-lit:i32 0
@@ -2285,15 +2285,15 @@
                   (when (= is-lit 0)
                     (set! is-flit (node-is-float-literal (aref (as ptr:ptr arg-nodes) a)))))
                 (when (= (arg-adapts (aref (as ptr:ptr argtypes) a)
-                                     (aref (as ptr:ptr (m param-types)) a) is-lit is-flit) 0)
+                                     (aref (as ptr:ptr (m 'param-types)) a) is-lit is-flit) 0)
                   (set! ok 0))))
             (when (!= ok 0)
               (set! wmethod (as ptr m)) (set! wbound null) (inc! wn))))))
     ; METHOD-GENERIC (template) candidates reachable by receiver-bind + adaptation.
-    (dotimes (k (unsafe/cast i32 (count (gg methods))))
-      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) k:usize)))
-        (when (= (m kind) METHOD-GENERIC)
-          (let (bound:ptr (arena-alloc (* (+ (m num-tyvars) 1) (ptr-bytes))))
+    (dotimes (k (unsafe/cast i32 (count (gg 'methods))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg 'methods) k:usize)))
+        (when (= (m 'kind) METHOD-GENERIC)
+          (let (bound:ptr (arena-alloc (* (+ (m 'num-tyvars) 1) (ptr-bytes))))
             (when (!= (generic-method-bind-adapt (as ptr m) argtypes arg-nodes nargs bound line want) 0)
               (when (!= (generic-constraints-ok (as ptr m) bound line) 0)
                 (set! wmethod (as ptr m)) (set! wbound bound) (inc! wn)))))))
@@ -2309,13 +2309,13 @@
 ; substitute the variables throughout, then drop the :where clause.
 (defn monomorphize-form (form:raw:Node tyvars:ptr spellings:ptr ntv:i32 nparams:i32):raw:Node
   (let (ff:raw:Node form
-        line:i32 (ff line)
+        line:i32 (ff 'line)
         defn-sym:ptr (node-at form 0)
         name-node:ptr (subst-tyvars-node (node-at form 1) tyvars spellings ntv)
         params-src:ptr (subst-tyvars-node (node-at form 2) tyvars spellings ntv)
         new-params:ptr null
         body-src:ptr (subst-tyvars-node
-                       (((ff cdr) cdr) cdr)
+                       (((ff 'cdr) 'cdr) 'cdr)
                        tyvars spellings ntv))
     (set! new-params (take-first-n params-src nparams line))
     (return (make-cell defn-sym
@@ -2355,12 +2355,12 @@
       (when (!= existing null)
         (return existing)))
     ; Concrete spelling for each bound type variable, used to stamp the body.
-    (let (ntv:i32 (mm num-tyvars)
+    (let (ntv:i32 (mm 'num-tyvars)
           spellings:ptr (arena-alloc (* (+ ntv 1) (ptr-bytes))))
       (dotimes (si ntv)
         (aset! (as ptr:ptr spellings) si (type-spelling (aref (as ptr:ptr bound) si))))
-    (let (stamped:ptr (monomorphize-form (mm body) (mm tyvars) spellings
-                                         (mm num-tyvars) (mm num-params))
+    (let (stamped:ptr (monomorphize-form (mm 'body) (mm 'tyvars) spellings
+                                         (mm 'num-tyvars) (mm 'num-params))
           sname:ptr null
           ; S1: a new-style template stamps its return type into the index-3 keyword
           ; (substituted by subst-tyvars-node's NODE-KEYWORD branch inside
@@ -2376,9 +2376,9 @@
           sret:ptr (if (!= s-style 0)
                      (fn-parse-ret-type s-ret-node line)
                      (extract-name-and-type (node-at stamped 1) (as ptr:ptr (addr-of sname))
-                                            ((unsafe/cast ptr:Node (node-at stamped 1)) line))))
+                                            ((unsafe/cast ptr:Node (node-at stamped 1)) 'line))))
       (when (= sret null)
-        (die-at line (fmt-s "generic '%s': cannot resolve instantiated return type" (gg name))))
+        (die-at line (fmt-s "generic '%s': cannot resolve instantiated return type" (gg 'name))))
       ; Valid bound (§10.2): dry-run the concrete body before committing it, so an
       ; operation C can't support is reported at this call site, not at stamp time.
       (when (!= (method-has-valid m) 0)
@@ -2394,7 +2394,7 @@
         (let (stamped-params:ptr (node-at stamped 2))
           (set! ptypes (defn-params-to-types stamped-params))
           (set! nargs (defn-params-count stamped-params)))
-        (let (newm:ref:Method (generic-register-method (gg name) sret ptypes nargs 0 0 stamped)
+        (let (newm:ref:Method (generic-register-method (gg 'name) sret ptypes nargs 0 0 stamped)
               ; Stage 12 N4: mangle the stamped concrete method under the
               ; template's *defining* namespace, not the call site's current one.
               ; Stage 15 W9 item 23: that is the TEMPLATE method's namespace, not
@@ -2407,23 +2407,23 @@
               ; and `type-mangle-token` never emits one, so `.$r.` cannot be read
               ; as a parameter token. template-ref-equality.md §5.
               mangled:ptr (let (base:ptr (mangle-fn-name (method-ir-prefix gg (as raw:Method mm))
-                                                         (gg name) ptypes nargs))
+                                                         (gg 'name) ptypes nargs))
                             (if (= disc null)
                               base
                               (fmt-2s "%s.$r.%s" base (type-mangle-token (as raw:Type disc)))))
               job:ptr:MonoJob (mono-job-here stamped
                                 (fmt-2s-i "while instantiating %s (requested at %s:%d)"
                                           mangled g-source-path line)))
-          (.set! newm ir-name mangled)
+          (.set! newm 'ir-name mangled)
           ; Stage 14 LW-1: mark this as a stamped instance of the template `mm` so
           ; tier-2 widening resolution treats the two as one overload.
-          (.set! newm origin-template mm)
+          (.set! newm 'origin-template mm)
           ; SE-2: `ir-fixed` says "this symbol is already decided", which is now
           ; true of a discriminated stamp for the same reason it is true of an
           ; imported method — `finalize-generics` would re-mangle it from the
           ; parameter types alone and drop the `.$r.`, and would read its siblings
           ; as duplicate definitions of one signature.
-          (when (!= disc null) (.set! newm ir-fixed 1))
+          (when (!= disc null) (.set! newm 'ir-fixed 1))
           ; Stage 15 B4: a stamp is owned by the TEMPLATE's namespace, not by the
           ; call site's — the same distinction `(gg ir-prefix)` above already
           ; makes for mangling. `generic-register-method` wrote `g-current-ns`,
@@ -2431,8 +2431,8 @@
           ; `p/tmpl` call in another namespace filters the first stamp out of the
           ; method set, `generic-find-method-exact`'s memo probe misses, and the
           ; instance is stamped (and emitted) twice under one symbol.
-          (.set! newm src-ns (mm src-ns))
-          (.set! newm src-imports (mm src-imports))
+          (.set! newm 'src-ns (mm 'src-ns))
+          (.set! newm 'src-imports (mm 'src-imports))
           ; Stage 15 W9 item 43: and the body resolves its names as the TEMPLATE's
           ; file, not as this one. `mono-job-here` captured the call site's
           ; environment, which is the right default for a body the compiler
@@ -2442,9 +2442,9 @@
           ; a merged bare-keyed generic (R2) resolved from any namespace, while a
           ; solitary name or a global went through the environment and reported
           ; `unknown: <name>` against the CALLER's file at the LIBRARY's line.
-          (.set! job ns (mm src-ns))
-          (.set! job path (mm src-file))
-          (.set! job imports (mm src-imports))
+          (.set! job 'ns (mm 'src-ns))
+          (.set! job 'path (mm 'src-file))
+          (.set! job 'imports (mm 'src-imports))
           (conj g-mono-worklist job)
           (return newm)))))))
 
@@ -2461,8 +2461,8 @@
 
 (defn make-tyvar-type (m:ptr idx:i32):ref:Type
   (let (t:ref:Type (make-type TY-TYVAR))
-    (.set! t sdef m)         ; owning template Method*
-    (.set! t num-params idx) ; tyvar index within that template
+    (.set! t 'sdef m)         ; owning template Method*
+    (.set! t 'num-params idx) ; tyvar index within that template
     (return t)))
 
 ; t is genuinely a Type* (TY-TYVAR-flavored); only its `sdef` slot is a
@@ -2470,13 +2470,13 @@
 ; and is never read except through the explicit cast below) — confined to
 ; this A2 checker, never reaching codegen.
 (defn tyvar-type-name (t:raw:Type):ptr
-  (let (m:ptr:Method (unsafe/cast ptr:Method (t sdef))
-        idx:i32 (t num-params))
-    (return (aref (as ptr:ptr (m tyvars)) idx))))
+  (let (m:ptr:Method (unsafe/cast ptr:Method (t 'sdef))
+        idx:i32 (t 'num-params))
+    (return (aref (as ptr:ptr (m 'tyvars)) idx))))
 
 (defn is-tyvar-type (t:raw:Type):i32
   (when (= t null) (return 0))
-  (if (= (t kind) TY-TYVAR) (return 1) (return 0)))
+  (if (= (t 'kind) TY-TYVAR) (return 1) (return 0)))
 
 ; The type-spelling tail of a colon symbol ("a:Self" → "Self"), or null.
 (defn colon-tail (s:CStr):CStr
@@ -2495,16 +2495,16 @@
   (let (segs:ptr (split-colon-segments s 0))
     (let (it:ListIter (list-iter segs))
       (doseq-iter (cur (addr-of it))
-        (when (= ((unsafe/cast ptr:Node cur) s) "Self")
+        (when (= ((unsafe/cast ptr:Node cur) 's) "Self")
           (return 1)))))
   (return 0))
 
 (defn caller-has-constraint (m:raw:Method tyvar-name:CStr proto:CStr):i32
   (let (mm:raw:Method m)
-    (dotimes (i (mm num-constraints))
-      (let (crec:ref:Constraint (constraints-at (mm constraints) i))
-        (when (and (= (crec var) tyvar-name)
-                   (= (crec proto) proto))
+    (dotimes (i (mm 'num-constraints))
+      (let (crec:ref:Constraint (constraints-at (mm 'constraints) i))
+        (when (and (= (crec 'var) tyvar-name)
+                   (= (crec 'proto) proto))
           (return 1)))))
   (return 0))
 
@@ -2520,24 +2520,24 @@
       ; return's colon-spelling ("Self", "i32", "ptr:Node"); a list-form return
       ; leaves it null (→ ty-void here), matching the legacy list-head limitation.
       (do
-        (set! nm (-> name-node (unsafe/cast ptr:Node _) (_ s)))
+        (set! nm (-> name-node (unsafe/cast ptr:Node _) (_ 's)))
         (when (>= (node-len sig) 3)
           (let (rn:ptr:Node (unsafe/cast ptr:Node (node-at sig 2)))
-            (when (or (= (rn kind) NODE-KEYWORD) (= (rn kind) NODE-SYM))
-              (set! rettail (rn s))))))
-      (split-typed (-> name-node (unsafe/cast ptr:Node _) (_ s))
+            (when (or (= (rn 'kind) NODE-KEYWORD) (= (rn 'kind) NODE-SYM))
+              (set! rettail (rn 's))))))
+      (split-typed (-> name-node (unsafe/cast ptr:Node _) (_ 's))
                    (as ptr:ptr (addr-of nm)) (as ptr:ptr (addr-of rettail))))
     (when (= nm head)
       (when (= (node-len params) nargs)
         (let (ok:i32 1)
           (dotimes (i nargs)
             (let (pn:ptr:Node (unsafe/cast ptr:Node (node-at params i))
-                  pspell:ptr (colon-tail (pn s))
+                  pspell:ptr (colon-tail (pn 's))
                   at:ptr (aref (as ptr:ptr argtypes) i))
               (if (and (!= pspell null) (= pspell "Self"))
                 (when (or (= (is-tyvar-type at) 0)
-                          (!= (-> at (unsafe/cast ptr:Type _) (_ num-params)) ti)
-                          (!= (-> at (unsafe/cast ptr:Type _) (_ sdef)) m))
+                          (!= (-> at (unsafe/cast ptr:Type _) (_ 'num-params)) ti)
+                          (!= (-> at (unsafe/cast ptr:Type _) (_ 'sdef)) m))
                   (set! ok 0))
                 (if (or (= pspell null) (!= (spelling-nests-self pspell) 0))
                   (set! ok 0)
@@ -2554,18 +2554,18 @@
 ; provided by the constraints on the call's tyvar arguments. Result type or null.
 (defn abstract-call-via-protocol (head:CStr argtypes:ptr nargs:i32 m:raw:Method line:i32):ptr
   (let (mm:raw:Method m)
-    (dotimes (ti (mm num-tyvars))
-      (let (tvname:CStr (aref (as ptr:ptr (mm tyvars)) ti))
-        (dotimes (ci (mm num-constraints))
-          (let (crec:ref:Constraint (constraints-at (mm constraints) ci))
-           (when (= (crec var) tvname)
+    (dotimes (ti (mm 'num-tyvars))
+      (let (tvname:CStr (aref (as ptr:ptr (mm 'tyvars)) ti))
+        (dotimes (ci (mm 'num-constraints))
+          (let (crec:ref:Constraint (constraints-at (mm 'constraints) ci))
+           (when (= (crec 'var) tvname)
             ; B2a: `Constraint.proto` was canonicalized where it was WRITTEN
             ; (parse-where-constraints), so this is a key, not a reference.
-            (let (proto:ptr (protocol-lookup-ns (crec proto)))
+            (let (proto:ptr (protocol-lookup-ns (crec 'proto)))
               (when (!= proto null)
                 (let (pp:ptr:Protocol (as ptr:Protocol proto))
-                  (dotimes (si (pp num-sigs))
-                    (let (rt:ptr (sig-provides-call (aref (as ptr:ptr (pp sigs)) si)
+                  (dotimes (si (pp 'num-sigs))
+                    (let (rt:ptr (sig-provides-call (aref (as ptr:ptr (pp 'sigs)) si)
                                                     head ti m argtypes nargs line))
                       (when (!= rt null) (return rt)))))))))))))
   (return null))
@@ -2576,17 +2576,17 @@
   (let (g:ptr (generic-lookup head))
     (when (= g null) (return null))
     (let (gg:ptr:Generic (as ptr:Generic g))
-      (dotimes (gi (unsafe/cast i32 (count (gg methods))))
-        (let (m2:ptr:Method (as ptr:Method (invoke (gg methods) gi:usize)))
-          (when (= (m2 kind) METHOD-GENERIC)
-            (let (bound:ptr (arena-alloc (* (+ (m2 num-tyvars) 1) (ptr-bytes))))
+      (dotimes (gi (unsafe/cast i32 (count (gg 'methods))))
+        (let (m2:ptr:Method (as ptr:Method (invoke (gg 'methods) gi:usize)))
+          (when (= (m2 'kind) METHOD-GENERIC)
+            (let (bound:ptr (arena-alloc (* (+ (m2 'num-tyvars) 1) (ptr-bytes))))
               (when (!= (generic-method-bind (as ptr m2) argtypes nargs bound null null) 0)
                 (let (ok:i32 1)
-                  (dotimes (ci (m2 num-constraints))
-                    (let (crec:ref:Constraint (constraints-at (m2 constraints) ci)
-                          uidx:i32 (tyvar-index-of (crec var)
-                                                   (m2 tyvars) (m2 num-tyvars))
-                          proto:CStr (crec proto)
+                  (dotimes (ci (m2 'num-constraints))
+                    (let (crec:ref:Constraint (constraints-at (m2 'constraints) ci)
+                          uidx:i32 (tyvar-index-of (crec 'var)
+                                                   (m2 'tyvars) (m2 'num-tyvars))
+                          proto:CStr (crec 'proto)
                           bt:ptr (aref (as ptr:ptr bound) uidx))
                       (if (!= (is-tyvar-type bt) 0)
                         (when (= (caller-has-constraint m (tyvar-type-name bt) proto) 0)
@@ -2595,25 +2595,25 @@
                           (set! ok 0)))))
                   (when (!= ok 0)
                     ; result = m2's return spelling, its tyvars substituted by `bound`
-                    (let (rnode:ptr (defn-ret-node (m2 body)))
+                    (let (rnode:ptr (defn-ret-node (m2 'body)))
                       (when (= rnode null) (return ty-void))
-                      (when (= (-> rnode (unsafe/cast ptr:Node _) (_ kind)) NODE-SYM)
-                        (let (ridx:i32 (tyvar-index-of (-> rnode (unsafe/cast ptr:Node _) (_ s))
-                                                       (m2 tyvars) (m2 num-tyvars)))
+                      (when (= (-> rnode (unsafe/cast ptr:Node _) (_ 'kind)) NODE-SYM)
+                        (let (ridx:i32 (tyvar-index-of (-> rnode (unsafe/cast ptr:Node _) (_ 's))
+                                                       (m2 'tyvars) (m2 'num-tyvars)))
                           (when (>= ridx 0) (return (aref (as ptr:ptr bound) ridx)))))
                       ; A parametric return type — e.g. (Maybe T) — is a NODE-CELL
                       ; that still mentions the method's tyvars. Substitute each
                       ; tyvar with its bound concrete spelling before parsing, so
                       ; `(Maybe T)` with T:=ptr parses as `(Maybe ptr)` rather than
                       ; failing with "unknown type: T".
-                      (let (ntv:i32 (m2 num-tyvars)
+                      (let (ntv:i32 (m2 'num-tyvars)
                             spellings:ptr (arena-alloc
                                             (* (+ ntv 1) (ptr-bytes))))
                         (dotimes (si ntv)
                           (aset! (as ptr:ptr spellings) si
                                  (type-spelling (aref (as ptr:ptr bound) si))))
                         (return (parse-type-from-node
-                                  (subst-tyvars-node rnode (m2 tyvars) spellings ntv)
+                                  (subst-tyvars-node rnode (m2 'tyvars) spellings ntv)
                                   line))))))))))))
     (return null)))
 
@@ -2645,19 +2645,19 @@
 ; null for an untyped binding (caller infers from the value).
 (defn gbind-decl-type (bind-node:raw:Node m:raw:Method line:i32):ptr
   (let (n:raw:Node bind-node)
-    (case (n kind)
+    (case (n 'kind)
       NODE-SYM
-        (let (tail:ptr (colon-tail (n s)))
+        (let (tail:ptr (colon-tail (n 's)))
           (when (= tail null) (return null))
-          (let (idx:i32 (tyvar-index-of tail (m tyvars) (m num-tyvars)))
+          (let (idx:i32 (tyvar-index-of tail (m 'tyvars) (m 'num-tyvars)))
             (when (>= idx 0) (return (make-tyvar-type m idx)))
             (return (parse-type-spelling-str tail line))))
       NODE-CELL
         (let (tnode:ptr (node-at bind-node 1))
           (when (= tnode null) (return null))
-          (when (= (-> tnode (unsafe/cast ptr:Node _) (_ kind)) NODE-SYM)
-            (let (idx:i32 (tyvar-index-of (-> tnode (unsafe/cast ptr:Node _) (_ s))
-                                          (m tyvars) (m num-tyvars)))
+          (when (= (-> tnode (unsafe/cast ptr:Node _) (_ 'kind)) NODE-SYM)
+            (let (idx:i32 (tyvar-index-of (-> tnode (unsafe/cast ptr:Node _) (_ 's))
+                                          (m 'tyvars) (m 'num-tyvars)))
               (when (>= idx 0) (return (make-tyvar-type m idx)))))
           (return (parse-type-from-node tnode line)))
       0)
@@ -2665,12 +2665,12 @@
 
 (defn gbind-name (bind-node:raw:Node):ptr
   (let (n:raw:Node bind-node)
-    (case (n kind)
+    (case (n 'kind)
       NODE-SYM
         (let (nm:ptr null tail:ptr null)
-          (split-typed (n s) (as ptr:ptr (addr-of nm)) (as ptr:ptr (addr-of tail)))
+          (split-typed (n 's) (as ptr:ptr (addr-of nm)) (as ptr:ptr (addr-of tail)))
           (return nm))
-      NODE-CELL (return ((n car) s))
+      NODE-CELL (return ((n 'car) 's))
       0)
     (return null)))
 
@@ -2680,7 +2680,7 @@
 (defn gcheck (n:raw:Node scope:ref:Scope m:raw:Method):ptr
   (when (= n null) (return ty-void))
   (let (nn:raw:Node n)
-    (case (nn kind)
+    (case (nn 'kind)
       NODE-INT   (return ty-i32)
       NODE-FLOAT (return ty-f64)
       ; Stage 14 NS-3: string literals are StrView (was CStr). Lockstep with
@@ -2688,18 +2688,18 @@
       NODE-STR
         ; NS-4: an explicit c"…" literal (reader set Node.i=1) types as CStr, not
         ; the StrView default — lockstep with emit-string's NS-4 short-circuit.
-        (if (!= (nn i) 0) (return ty-cstr) (return (strview-type)))
+        (if (!= (nn 'i) 0) (return ty-cstr) (return (strview-type)))
       NODE-CHAR  (return ty-char)
       NODE-SYM   (return (node-type-sym n scope))
       0)
-    (when (!= (nn kind) NODE-CELL) (return ty-void))
+    (when (!= (nn 'kind) NODE-CELL) (return ty-void))
     (when (= (node-len n) 0) (return null))
     (let (head:ptr:Node (unsafe/cast ptr:Node (node-at n 0)))
-      (when (!= (head kind) NODE-SYM)
+      (when (!= (head 'kind) NODE-SYM)
         ; non-symbol head: just walk compound children for nested calls.
         (gcheck-walk-children n scope m)
         (return null))
-      (let (h:CStr (head s)
+      (let (h:CStr (head 's)
             hp:raw:Node head)
         ; TC-4: a cell whose head names a REGISTERED STRUCT TEMPLATE is a TYPE
         ; operand (e.g. (Box T), (Vector i32)), never a function call — struct
@@ -2735,7 +2735,7 @@
               (let (bname:ptr (node-at binds i)
                     bval:ptr (node-at binds (+ i 1))
                     vty:ptr (gcheck bval inner m)
-                    dty:ptr (gbind-decl-type bname m (nn line))
+                    dty:ptr (gbind-decl-type bname m (nn 'line))
                     nm:ptr (gbind-name bname))
                 (when (= dty null) (set! dty vty))
                 (when (and (!= nm null) (!= dty null))
@@ -2757,7 +2757,7 @@
                 cnp:i32 (node-len cparams))
             (dotimes (cpi cnp)
               (let (cpnode:ptr (node-at cparams cpi)
-                    cpty:ptr (gbind-decl-type cpnode m (nn line))
+                    cpty:ptr (gbind-decl-type cpnode m (nn 'line))
                     cpnm:ptr (gbind-name cpnode))
                 (when (and (!= cpnm null) (!= cpty null))
                   (scope-define cinner cpnm cpty cpnm 1))))
@@ -2794,22 +2794,22 @@
           ; Protocol-method resolution (Self → tyvar) takes priority — a required
           ; method need not have a concrete impl in this unit to be a valid call.
           (when (!= any-abstract 0)
-            (let (rt:ptr (abstract-call-via-protocol h argtypes nargs m (nn line)))
+            (let (rt:ptr (abstract-call-via-protocol h argtypes nargs m (nn 'line)))
               (when (!= rt null) (return rt))
-              (set! rt (abstract-call-via-generic h argtypes nargs m (nn line)))
+              (set! rt (abstract-call-via-generic h argtypes nargs m (nn 'line)))
               (when (!= rt null) (return rt))))
           (let (g:ptr (generic-lookup h))
             ; Intrinsic operator: best-effort type (bool for comparisons, else the
             ; first operand's type — possibly the abstract tyvar). Deferred, no error.
             (when (!= g null)
-              (let (m0:ptr:Method (as ptr:Method (invoke (-> g (as ptr:Generic _) (_ methods)) 0)))
-                (when (= (m0 kind) METHOD-INTRINSIC)
-                  (when (!= ((m0 binop) is-cmp) 0) (return ty-bool))
+              (let (m0:ptr:Method (as ptr:Method (invoke (-> g (as ptr:Generic _) (_ 'methods)) 0)))
+                (when (= (m0 'kind) METHOD-INTRINSIC)
+                  (when (!= ((m0 'binop) 'is-cmp) 0) (return ty-bool))
                   (return (gcheck (node-at n 1) scope m)))))
             ; A name that is neither a generic nor scope-bound is a typo — error
             ; whether or not an argument is abstract.
             (when (and (= g null) (= (scope-lookup scope h) null))
-              (die-at (nn line) (fmt-s "in generic body: unknown function '%s'" h)))
+              (die-at (nn 'line) (fmt-s "in generic body: unknown function '%s'" h)))
             ; Known name, unresolved here: defer to stamp-time. Concrete calls get
             ; a best-effort type; abstract ones stay unknown (null).
             (when (!= any-abstract 0) (return null))
@@ -2821,7 +2821,7 @@
   (let (cl:i32 (node-len n) i:i32 1)
     (while (< i cl)
       (let (c:raw:Node (node-at n i))
-        (when (and (!= c null) (= (c kind) NODE-CELL))
+        (when (and (!= c null) (= (c 'kind) NODE-CELL))
           (gcheck c scope m)))
       (inc! i))))
 
@@ -2829,21 +2829,21 @@
 ; (or concrete) types, then check each body form.
 (defn check-generic-template (m:raw:Method):void
   (let (mm:raw:Method m
-        form:raw:Node (mm body)
+        form:raw:Node (mm 'body)
         params-node:ptr (node-at form 2)
         scope:ref:Scope (scope-new g-globals)
-        nparams:i32 (mm num-params))
+        nparams:i32 (mm 'num-params))
     ; Every :where constraint must name a known protocol/blanket/Valid — checked
     ; here (not at prescan) so an imported protocol is already registered.
-    (dotimes (ci (mm num-constraints))
-      (let (crec:ref:Constraint (constraints-at (mm constraints) ci)
-            pnm:CStr (crec proto))
+    (dotimes (ci (mm 'num-constraints))
+      (let (crec:ref:Constraint (constraints-at (mm 'constraints) ci)
+            pnm:CStr (crec 'proto))
         (when (= (constraint-proto-known pnm) 0)
-          (die-at (form line)
+          (die-at (form 'line)
             (fmt-s "defn: :where names unknown protocol '%s'" pnm)))))
     (dotimes (i nparams)
       (let (pnode:ptr (node-at params-node i)
-            pty:ptr (gbind-decl-type pnode m (form line))
+            pty:ptr (gbind-decl-type pnode m (form 'line))
             pnm:ptr (gbind-name pnode))
         (when (and (!= pnm null) (!= pty null))
           (scope-define scope pnm pty pnm 1))))
@@ -2867,13 +2867,13 @@
 ; and is A2-checked exactly as before (byte-identical).
 (defn method-has-nested-tyvar (m:raw:Method):i32
   (let (mm:raw:Method m
-        params-node:ptr (node-at (mm body) 2)
-        np:i32 (mm num-params))
+        params-node:ptr (node-at (mm 'body) 2)
+        np:i32 (mm 'num-params))
     (dotimes (i np)
       (let (ptn:raw:Node (binding-type-node (node-at params-node i)))
         (when (and (!= ptn null)
-                   (and (= (ptn kind) NODE-CELL)
-                        (!= (node-mentions-tyvar ptn (mm tyvars) (mm num-tyvars)) 0)))
+                   (and (= (ptn 'kind) NODE-CELL)
+                        (!= (node-mentions-tyvar ptn (mm 'tyvars) (mm 'num-tyvars)) 0)))
           (return 1))))
     (return 0)))
 
@@ -2884,10 +2884,10 @@
 (defn check-generic-templates ():void
   (dotimes (gi (unsafe/cast i32 (count g-generics)))
     (let (gg:ptr:Generic (as ptr:Generic (invoke g-generics gi:usize)))
-      (dotimes (mi (unsafe/cast i32 (count (gg methods))))
-        (let (m:ptr:Method (as ptr:Method (invoke (gg methods) mi:usize)))
-          (when (and (= (m kind) METHOD-GENERIC) (= (m checked) 0))
-            (.set! m checked 1)
+      (dotimes (mi (unsafe/cast i32 (count (gg 'methods))))
+        (let (m:ptr:Method (as ptr:Method (invoke (gg 'methods) mi:usize)))
+          (when (and (= (m 'kind) METHOD-GENERIC) (= (m 'checked) 0))
+            (.set! m 'checked 1)
             ; Receiver-inferred methods (nested tyvar receivers) defer body
             ; checking to stamp time; the abstract interface check only models
             ; flat tyvar parameters.
@@ -2909,19 +2909,19 @@
 ; Does this template carry a Valid constraint?
 (defn method-has-valid (m:raw:Method):i32
   (let (mm:raw:Method m)
-    (dotimes (i (mm num-constraints))
-      (let (crec:ref:Constraint (constraints-at (mm constraints) i))
-        (when (= (crec proto) "Valid") (return 1)))))
+    (dotimes (i (mm 'num-constraints))
+      (let (crec:ref:Constraint (constraints-at (mm 'constraints) i))
+        (when (= (crec 'proto) "Valid") (return 1)))))
   (return 0))
 
 ; The concrete declared type of a binding in a stamped (substituted) body, or
 ; null when untyped (the caller infers it from the value).
 (defn valid-decl-type (bind-node:raw:Node line:i32):ptr
   (let (n:raw:Node bind-node)
-    (case (n kind)
+    (case (n 'kind)
       NODE-SYM
         (let (nm:ptr null tail:ptr null)
-          (split-typed (n s) (as ptr:ptr (addr-of nm)) (as ptr:ptr (addr-of tail)))
+          (split-typed (n 's) (as ptr:ptr (addr-of nm)) (as ptr:ptr (addr-of tail)))
           (when (= tail null) (return null))
           (return (parse-type-spelling-str tail line)))
       NODE-CELL
@@ -2935,11 +2935,11 @@
 ; a bare-tyvar return is the bound type; anything else is parsed concretely.
 (defn template-result-type (m2:raw:Method bound:ptr line:i32):ptr
   (let (mm:raw:Method m2
-        rnode:ptr (defn-ret-node (mm body)))
+        rnode:ptr (defn-ret-node (mm 'body)))
     (when (= rnode null) (return ty-void))
-    (when (= (-> rnode (unsafe/cast ptr:Node _) (_ kind)) NODE-SYM)
-      (let (ridx:i32 (tyvar-index-of (-> rnode (unsafe/cast ptr:Node _) (_ s))
-                                     (mm tyvars) (mm num-tyvars)))
+    (when (= (-> rnode (unsafe/cast ptr:Node _) (_ 'kind)) NODE-SYM)
+      (let (ridx:i32 (tyvar-index-of (-> rnode (unsafe/cast ptr:Node _) (_ 's))
+                                     (mm 'tyvars) (mm 'num-tyvars)))
         (when (>= ridx 0) (return (aref (as ptr:ptr bound) ridx)))))
     (return (parse-type-from-node rnode line))))
 
@@ -2950,17 +2950,17 @@
 (defn valid-resolve-type (g:raw:Generic argtypes:ptr arg-nodes:ptr nargs:i32 line:i32):ptr
   (let (gg:raw:Generic g)
     (let (m:ptr (generic-find-method-exact g argtypes nargs))
-      (when (!= m null) (return (-> m (unsafe/cast ptr:Method _) (_ ret-type)))))
+      (when (!= m null) (return (-> m (unsafe/cast ptr:Method _) (_ 'ret-type)))))
     (let (rt:ptr (builtin-op-result-type g argtypes nargs))
       (when (!= rt null) (return rt)))
     (let (m:ptr (operator-user-resolve g argtypes arg-nodes nargs))
-      (when (!= m null) (return (-> m (unsafe/cast ptr:Method _) (_ ret-type)))))
+      (when (!= m null) (return (-> m (unsafe/cast ptr:Method _) (_ 'ret-type)))))
     ; widen on a concrete user method
     (let (wcand:ptr null wn:i32 0)
-      (dotimes (i (unsafe/cast i32 (count (gg methods))))
-        (let (m:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
-          (when (and (= (m kind) METHOD-USER)
-                     (and (= (m has-rest) 0) (= (m num-params) nargs)))
+      (dotimes (i (unsafe/cast i32 (count (gg 'methods))))
+        (let (m:ptr:Method (as ptr:Method (invoke (gg 'methods) i:usize)))
+          (when (and (= (m 'kind) METHOD-USER)
+                     (and (= (m 'has-rest) 0) (= (m 'num-params) nargs)))
             (let (ok:i32 1)
               (dotimes (a nargs)
                 (let (is-lit:i32 0
@@ -2973,15 +2973,15 @@
                     (when (= is-lit 0)
                       (set! is-flit (node-is-float-literal (aref (as ptr:ptr arg-nodes) a)))))
                   (when (= (arg-adapts (aref (as ptr:ptr argtypes) a)
-                                       (aref (as ptr:ptr (m param-types)) a) is-lit is-flit) 0)
+                                       (aref (as ptr:ptr (m 'param-types)) a) is-lit is-flit) 0)
                     (set! ok 0))))
               (when (!= ok 0) (set! wcand (as ptr m)) (inc! wn))))))
-      (when (= wn 1) (return (-> wcand (unsafe/cast ptr:Method _) (_ ret-type)))))
+      (when (= wn 1) (return (-> wcand (unsafe/cast ptr:Method _) (_ 'ret-type)))))
     ; bounded-generic template
-    (dotimes (j (unsafe/cast i32 (count (gg methods))))
-      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) j:usize)))
-        (when (= (m kind) METHOD-GENERIC)
-          (let (bound:ptr (arena-alloc (* (+ (m num-tyvars) 1) (ptr-bytes))))
+    (dotimes (j (unsafe/cast i32 (count (gg 'methods))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg 'methods) j:usize)))
+        (when (= (m 'kind) METHOD-GENERIC)
+          (let (bound:ptr (arena-alloc (* (+ (m 'num-tyvars) 1) (ptr-bytes))))
             (when (and (!= (generic-method-bind (as ptr m) argtypes nargs bound null arg-nodes) 0)
                        (!= (generic-constraints-ok (as ptr m) bound line) 0))
               (return (template-result-type (as ptr m) bound line)))))))
@@ -2991,7 +2991,7 @@
   (let (cl:i32 (node-len n) i:i32 1)
     (while (< i cl)
       (let (c:raw:Node (node-at n i))
-        (when (and (!= c null) (= (c kind) NODE-CELL))
+        (when (and (!= c null) (= (c 'kind) NODE-CELL))
           (valid-walk c scope gname cty line)))
       (inc! i))))
 
@@ -3002,7 +3002,7 @@
 (defn valid-walk (n:raw:Node scope:ref:Scope gname:CStr cty:CStr line:i32):ptr
   (when (= n null) (return ty-void))
   (let (nn:raw:Node n)
-    (case (nn kind)
+    (case (nn 'kind)
       NODE-INT   (return ty-i32)
       NODE-FLOAT (return ty-f64)
       ; Stage 14 NS-3: string literals are StrView (was CStr). Lockstep with
@@ -3010,17 +3010,17 @@
       NODE-STR
         ; NS-4: an explicit c"…" literal (reader set Node.i=1) types as CStr, not
         ; the StrView default — lockstep with emit-string's NS-4 short-circuit.
-        (if (!= (nn i) 0) (return ty-cstr) (return (strview-type)))
+        (if (!= (nn 'i) 0) (return ty-cstr) (return (strview-type)))
       NODE-CHAR  (return ty-char)
       NODE-SYM   (return (node-type-sym n scope))
       0)
-    (when (!= (nn kind) NODE-CELL) (return ty-void))
+    (when (!= (nn 'kind) NODE-CELL) (return ty-void))
     (when (= (node-len n) 0) (return null))
     (let (head:ptr:Node (unsafe/cast ptr:Node (node-at n 0)))
-      (when (!= (head kind) NODE-SYM)
+      (when (!= (head 'kind) NODE-SYM)
         (valid-walk-children n scope gname cty line)
         (return null))
-      (let (h:CStr (head s)
+      (let (h:CStr (head 's)
             hp:raw:Node head)
         (when (!= (find-macro h) null)
           (let (ex:ptr (macroexpand-form n 1))
@@ -3035,7 +3035,7 @@
               (let (bname:ptr (node-at binds i)
                     bval:ptr (node-at binds (+ i 1))
                     vty:ptr (valid-walk bval inner gname cty line)
-                    dty:ptr (valid-decl-type bname (nn line))
+                    dty:ptr (valid-decl-type bname (nn 'line))
                     nm:ptr (gbind-name bname))
                 (when (= dty null) (set! dty vty))
                 (when (and (!= nm null) (!= dty null))
@@ -3092,8 +3092,8 @@
         scope:ref:Scope (scope-new g-globals)
         gname:CStr (defn-name-only (node-at stamped 1))
         cty:CStr "?"
-        nparams:i32 (mm num-params))
-    (when (> (mm num-tyvars) 0)
+        nparams:i32 (mm 'num-params))
+    (when (> (mm 'num-tyvars) 0)
       (set! cty (type-spelling (aref (as ptr:ptr bound) 0))))
     (dotimes (i nparams)
       (let (pnode:ptr (node-at params-node i)
@@ -3132,7 +3132,7 @@
       ; sink, and a stamp belongs to no file — the program may be what calls it.
       (set! g-out g-def-stream-program)
       ; Attach the instantiation context to any error raised while emitting.
-      (set! g-mono-context (job context))
+      (set! g-mono-context (job 'context))
       ; Stage 15 W9 item 2: a stamp belongs to no file. It is derived from the
       ; template and the concrete argument tuple, so any unit that instantiates
       ; it produces the same body under the same symbol — including two library
@@ -3151,10 +3151,10 @@
             save-path:ptr g-source-path
             save-imports:raw:ImportVec g-file-imports)
         (set! g-emitting-copy 1)
-        (when (!= (as ptr (job ns)) null) (set! g-current-ns (as ptr (job ns))))
-        (when (!= (as ptr (job path)) null) (set! g-source-path (as ptr (job path))))
-        (set! g-file-imports (job imports))
-        (emit-defn (job form))
+        (when (!= (as ptr (job 'ns)) null) (set! g-current-ns (as ptr (job 'ns))))
+        (when (!= (as ptr (job 'path)) null) (set! g-source-path (as ptr (job 'path))))
+        (set! g-file-imports (job 'imports))
+        (emit-defn (job 'form))
         (set! g-file-imports save-imports)
         (set! g-source-path save-path)
         (set! g-current-ns save-ns)
@@ -3221,7 +3221,7 @@
 (defn protocol-lookup-exact (key:CStr):?ptr:Protocol
   (dotimes (i (unsafe/cast i32 (count g-protocols)))
     (let (p:ptr:Protocol (as ptr:Protocol (invoke g-protocols i:usize)))
-      (when (= (p name) key) (return (as ptr p)))))
+      (when (= (p 'name) key) (return (as ptr p)))))
   (return null))
 
 ; Resolve a protocol KEY by namespace alone — the pre-B2a `protocol-lookup`.
@@ -3255,7 +3255,7 @@
   (when (= p null) (return null))
   (when (= g-priv-bindings 0) (return p))
   (let (pp:ptr:Protocol (unsafe/cast ptr:Protocol p))
-    (when (= (binding-visible (pp priv) (pp src-ns)) 0) (return null)))
+    (when (= (binding-visible (pp 'priv) (pp 'src-ns)) 0) (return null)))
   (return p))
 
 ; Stage 15 B2a — resolve a protocol *reference* (a source spelling) through the
@@ -3281,23 +3281,23 @@
 ; `Describe` resolves to neither and the caller must qualify.
 (defn protocol-lookup (name:CStr):?ptr:Protocol
   (let (r:ref:NameRef (resolve-spelling (as ptr name)))
-    (when (= (r status) NR-UNBOUND) (return null))
+    (when (= (r 'status) NR-UNBOUND) (return null))
     ; Stage 15 B5: `defprotocol-`'s privacy is enforced HERE, in the reference
     ; resolver, and not in `protocol-lookup-exact` — that one is the KEY lookup
     ; registration itself uses, and a define must always find its own entry.
-    (let (hit:?ptr:Protocol (protocol-visible (protocol-lookup-exact (as CStr (r canonical)))))
+    (let (hit:?ptr:Protocol (protocol-visible (protocol-lookup-exact (as CStr (r 'canonical)))))
       (when (!= hit null) (return hit))
       ; A qualified reference names exactly one namespace: no fallback.
-      (when (= (r status) NR-QUALIFIED) (return null))
-      (when (!= (r canonical) (r bare))
-        (let (h2:?ptr:Protocol (protocol-visible (protocol-lookup-exact (as CStr (r bare)))))
+      (when (= (r 'status) NR-QUALIFIED) (return null))
+      (when (!= (r 'canonical) (r 'bare))
+        (let (h2:?ptr:Protocol (protocol-visible (protocol-lookup-exact (as CStr (r 'bare)))))
           (when (!= h2 null) (return h2))))
       (when (!= g-ns-declared 0)
         (dotimes (i (file-imports-count))
           (let (fns:ptr (file-flattened-ns-at i))
             (when (!= fns null)
-              (let (k:ptr (ns-qualify-in fns (r bare)))
-                (when (and (!= k (r canonical)) (!= k (r bare)))
+              (let (k:ptr (ns-qualify-in fns (r 'bare)))
+                (when (and (!= k (r 'canonical)) (!= k (r 'bare)))
                   (let (h3:?ptr:Protocol (protocol-visible (protocol-lookup-exact k:CStr)))
                     (when (!= h3 null) (return h3)))))))))
       (return null))))
@@ -3320,17 +3320,17 @@
     ; namespace (identity under `user`). Everything downstream — the conformance
     ; registry, the super-protocol edges, `(dyn P)`'s box type — keys off this
     ; canonical name via `protocol-canon-name`.
-    (.set! p name (protocol-key name))
-    (.set! p sigs sigs)
-    (.set! p num-sigs num-sigs)
-    (.set! p params null)
-    (.set! p num-params 0)
+    (.set! p 'name (protocol-key name))
+    (.set! p 'sigs sigs)
+    (.set! p 'num-sigs num-sigs)
+    (.set! p 'params null)
+    (.set! p 'num-params 0)
     ; Stage 15 B5: `defprotocol-`'s privacy. `prescan-protocols` arms
     ; g-defining-private for the private spelling; before B5 the flag was set
     ; and then dropped on the floor, which is the second of §13.2's two
     ; independently-found instances of one failure mode.
-    (.set! p priv g-defining-private)
-    (.set! p src-ns g-current-ns)
+    (.set! p 'priv g-defining-private)
+    (.set! p 'src-ns g-current-ns)
     (when (!= g-defining-private 0) (set! g-priv-bindings 1))
     (conj g-protocols p)
     (return p)))
@@ -3366,11 +3366,11 @@
 ; non-aggregate kind is never Drop.
 (defn type-conforms-drop (ty:raw:Type):i32
   (let (tt:raw:Type ty
-        k:i32 (tt kind))
+        k:i32 (tt 'kind))
     (when (or (= k TY-STRUCT) (= k TY-UNION))
-      (let (sd:raw:StructDef (tt sdef))
+      (let (sd:raw:StructDef (tt 'sdef))
         (when (= sd null) (return 0))
-        (when (!= (conformance-lookup (sd name) "Drop") 0) (return 1))))
+        (when (!= (conformance-lookup (sd 'name) "Drop") 0) (return 1))))
     (return 0)))
 
 ; Stage 13 L2: is `ty` trivially (bitwise) copyable, hence automatically `Clone`?
@@ -3384,7 +3384,7 @@
 ; from its own `:where` bound), so it returns 0.
 (defn type-trivially-copyable (ty:raw:Type):i32
   (let (tt:raw:Type ty
-        k:i32 (tt kind))
+        k:i32 (tt 'kind))
     (when (= k TY-TYVAR) (return 0))
     (when (or (= k TY-STRUCT) (= k TY-UNION))
       (when (!= (type-conforms-drop ty) 0) (return 0)))
@@ -3402,11 +3402,11 @@
 (defn blanket-conforms (ty:raw:Type proto-name:CStr):i32
   (when (= proto-name "Any") (return 1))
   (when (= proto-name "Struct")
-    (let (k:i32 (ty kind))
+    (let (k:i32 (ty 'kind))
       (when (= k TY-STRUCT) (return 1))
       (when (and (= k TY-PTR)
-                 (and (!= (ty elem) null)
-                      (= ((ty elem) kind) TY-STRUCT)))
+                 (and (!= (ty 'elem) null)
+                      (= ((ty 'elem) 'kind) TY-STRUCT)))
         (return 1))
       (return 0)))
   (when (= proto-name "Clone")
@@ -3437,8 +3437,8 @@
   (set! proto-name (protocol-canon-name proto-name))
   (dotimes (i (unsafe/cast i32 (count g-conformances)))
     (let (c:ptr:Conformance (invoke g-conformances i:usize))
-      (when (and (= (c type-name) type-name)
-                 (= (c proto-name) proto-name))
+      (when (and (= (c 'type-name) type-name)
+                 (= (c 'proto-name) proto-name))
         (return 1))))
   (return 0))
 
@@ -3461,10 +3461,10 @@
   (set! proto-name (protocol-canon-name proto-name))
   (dotimes (i (unsafe/cast i32 (count g-conformances)))
     (let (c:ptr:Conformance (invoke g-conformances i:usize))
-      (when (and (= (c type-name) type-name)
-                 (= (c proto-name) proto-name))
-        (aset! (as ptr:i32 out-nargs) 0 (conf-args-count (c args)))
-        (return (c args)))))
+      (when (and (= (c 'type-name) type-name)
+                 (= (c 'proto-name) proto-name))
+        (aset! (as ptr:i32 out-nargs) 0 (conf-args-count (c 'args)))
+        (return (c 'args)))))
   (aset! (as ptr:i32 out-nargs) 0 0)
   (return null))
 
@@ -3509,23 +3509,23 @@
         (set! av (as (raw (Vector CStr)) v))))
     (dotimes (i (unsafe/cast i32 (count g-conformances)))
       (let (c:ptr:Conformance (invoke g-conformances i:usize))
-        (when (and (= (c type-name) type-name) (= (c proto-name) proto-name))
+        (when (and (= (c 'type-name) type-name) (= (c 'proto-name) proto-name))
           ; Incoming call supplies no args → nothing to add or check; keep as-is.
           (when (= nargs 0) (return))
           ; Existing record has no retained args → upgrade it in place.
-          (when (= (c args) null)
-            (.set! c args av)
+          (when (= (c 'args) null)
+            (.set! c 'args av)
             (return))
           ; Both sides carry args: they must agree, else it is a coherence error.
-          (when (= (conformance-args-eq (c args) av) 0)
+          (when (= (conformance-args-eq (c 'args) av) 0)
             (die-at line
               (fmt-2s "type '%s' re-extends protocol '%s' with different associated arguments"
                       type-name proto-name)))
           (return))))
     (let (c:ptr:Conformance (as ptr:Conformance (arena-alloc (sizeof Conformance))))
-      (.set! c type-name type-name)
-      (.set! c proto-name proto-name)
-      (.set! c args av)
+      (.set! c 'type-name type-name)
+      (.set! c 'proto-name proto-name)
+      (.set! c 'args av)
       (conj g-conformances c))))
 
 ; Has a synthesized closure-conformance forwarder with this exact ir-name
@@ -3538,10 +3538,10 @@
   (let (g:ptr (generic-lookup gen-name))
     (when (= g null) (return 0))
     (let (gg:ptr:Generic (as ptr:Generic g))
-      (dotimes (i (unsafe/cast i32 (count (gg methods))))
-        (let (m:ptr:Method (as ptr:Method (invoke (gg methods) i:usize)))
-          (when (and (!= (m ir-name) null)
-                     (= (strcmp (m ir-name) mangled) 0))
+      (dotimes (i (unsafe/cast i32 (count (gg 'methods))))
+        (let (m:ptr:Method (as ptr:Method (invoke (gg 'methods) i:usize)))
+          (when (and (!= (m 'ir-name) null)
+                     (= (strcmp (m 'ir-name) mangled) 0))
             (return 1))))
       (return 0))))
 
@@ -3579,20 +3579,20 @@
     ; synthesis below with im=null.
     (when (!= ig null)
       (let (igg:ptr:Generic (as ptr:Generic ig))
-        (dotimes (mi (unsafe/cast i32 (count (igg methods))))
-          (let (mm:ptr:Method (as ptr:Method (invoke (igg methods) mi:usize)))
-            (when (= (mm kind) METHOD-USER)
-              (let (self-ty:ptr (aref (as ptr:ptr (mm param-types)) 0))
+        (dotimes (mi (unsafe/cast i32 (count (igg 'methods))))
+          (let (mm:ptr:Method (as ptr:Method (invoke (igg 'methods) mi:usize)))
+            (when (= (mm 'kind) METHOD-USER)
+              (let (self-ty:ptr (aref (as ptr:ptr (mm 'param-types)) 0))
                 (when (!= self-ty null)
                   (let (st:ptr:Type (as ptr:Type self-ty))
-                    (when (and (= (st kind) TY-PTR)
-                               (and (!= (st elem) null)
-                                    (= (st pkind) PTR-REF)))
-                      (let (et:ptr:Type (unsafe/cast ptr:Type (st elem)))
-                        (when (= (et kind) TY-STRUCT)
-                          (let (sd:ptr:StructDef (unsafe/cast ptr:StructDef (et sdef)))
+                    (when (and (= (st 'kind) TY-PTR)
+                               (and (!= (st 'elem) null)
+                                    (= (st 'pkind) PTR-REF)))
+                      (let (et:ptr:Type (unsafe/cast ptr:Type (st 'elem)))
+                        (when (= (et 'kind) TY-STRUCT)
+                          (let (sd:ptr:StructDef (unsafe/cast ptr:StructDef (et 'sdef)))
                             (when (and (!= (as ptr sd) null)
-                                       (= (sd name) cvspell))
+                                       (= (sd 'name) cvspell))
                               (set! im (as ptr mm)))))))))))))))
       ; Resolve the source method whose signature drives derivation. For a
       ; capturing closure that is the `invoke` method found above (call-style 0,
@@ -3605,24 +3605,24 @@
             call-style:i32 0)
         (if (!= im null)
           (set! imp-src (unsafe/cast ptr:Method im))
-          (when (= (cv kind) TY-FN)
-            (let (fn-np:i32 (cv num-params)
+          (when (= (cv 'kind) TY-FN)
+            (let (fn-np:i32 (cv 'num-params)
                   total:i32 (+ fn-np 1)
                   ptypes:ptr (arena-alloc (* total (ptr-bytes)))
                   self-ty:ptr:Type (as ptr:Type (make-type TY-PTR)))
-              (.set! self-ty elem cvtype)
-              (.set! self-ty pkind PTR-REF)
+              (.set! self-ty 'elem cvtype)
+              (.set! self-ty 'pkind PTR-REF)
               (aset! (as ptr:ptr ptypes) 0 (as ptr self-ty))
               (dotimes (fpi fn-np)
                 (aset! (as ptr:ptr ptypes) (+ fpi 1)
-                       (as ptr ((field-at (cv params) fpi) type))))
+                       (as ptr ((field-at (cv 'params) fpi) 'type))))
               (let (syn:ref:Method (new Method))
-                (.set! syn param-types ptypes)
-                (.set! syn num-params total)
-                (.set! syn ret-type (cv ret))
-                (.set! syn kind METHOD-USER)
-                (.set! syn has-rest 0)
-                (.set! syn variadic 0)
+                (.set! syn 'param-types ptypes)
+                (.set! syn 'num-params total)
+                (.set! syn 'ret-type (cv 'ret))
+                (.set! syn 'kind METHOD-USER)
+                (.set! syn 'has-rest 0)
+                (.set! syn 'variadic 0)
                 (set! imp-src (as ptr syn))
                 (set! call-style 1)))))
         (when (= imp-src null) (return 0))
@@ -3633,8 +3633,8 @@
               ; box-construction scope gate — see `protocol-resolve-any`.
               pp:ptr:Protocol (unsafe/cast ptr:Protocol (protocol-resolve-any proto)))
           (when (= pp null) (return 0))
-          (when (!= (pp num-sigs) 1) (return 0))
-        (let (sig:ptr (aref (as ptr:ptr (pp sigs)) 0)
+          (when (!= (pp 'num-sigs) 1) (return 0))
+        (let (sig:ptr (aref (as ptr:ptr (pp 'sigs)) 0)
               ; S1: route the method name / return / params through the accessor so
               ; a new-style single-method protocol sig `(m (params) Ret)` works. For
               ; the legacy list-head `((m Ret) (params))` this reproduces the former
@@ -3646,11 +3646,11 @@
                               (as ptr:ptr (addr-of ret-node))
                               (as ptr:ptr (addr-of params-node)))
               k:i32 (- (node-len params-node) 1)
-              npp:i32 (pp num-params)
+              npp:i32 (pp 'num-params)
               args:ptr (arena-alloc (* (as i64 npp) (ptr-bytes)))
               j:i32 0)
             ; Step 6: arity check — non-self param count must match imp's.
-            (when (!= k (- (imp num-params) 1)) (return 0))
+            (when (!= k (- (imp 'num-params) 1)) (return 0))
           ; Step 8: bind each protocol extra-param to an invoke type spelling.
           ; For each extra-param name pj, scan the sig's ret node and non-self
           ; param type nodes for a NODE-SYM matching pj; the corresponding invoke
@@ -3659,22 +3659,22 @@
           ; param[0], Ret←invoke ret. FoldFn: Acc←invoke ret/param[0], Elem←
           ; invoke param[1].)
           (while (< j npp)
-            (let (pj:ptr (aref (as ptr:ptr (pp params)) j)
+            (let (pj:ptr (aref (as ptr:ptr (pp 'params)) j)
                   cand:ptr null
                   ncand:i32 0
                   pi2:i32 0)
               (when (and (!= ret-node null)
-                         (and (= ((as ptr:Node ret-node) kind) NODE-SYM)
-                              (= ((as ptr:Node ret-node) s) pj)))
-                (set! cand (type-spelling (imp ret-type)))
+                         (and (= ((as ptr:Node ret-node) 'kind) NODE-SYM)
+                              (= ((as ptr:Node ret-node) 's) pj)))
+                (set! cand (type-spelling (imp 'ret-type)))
                 (inc! ncand))
               (while (< pi2 k)
                 (let (ptn:ptr (binding-type-node (node-at params-node (+ pi2 1))))
                   (when (and (!= ptn null)
-                             (and (= ((unsafe/cast ptr:Node ptn) kind) NODE-SYM)
-                                  (= ((unsafe/cast ptr:Node ptn) s) pj)))
+                             (and (= ((unsafe/cast ptr:Node ptn) 'kind) NODE-SYM)
+                                  (= ((unsafe/cast ptr:Node ptn) 's) pj)))
                     (let (this-cand:ptr
-                           (type-spelling (aref (as ptr:ptr (imp param-types)) (+ pi2 1))))
+                           (type-spelling (aref (as ptr:ptr (imp 'param-types)) (+ pi2 1))))
                       (inc! ncand)
                       (when (= cand null) (set! cand this-cand))
                       (when (!= (strcmp cand this-cand) 0)
@@ -3687,8 +3687,8 @@
             ; call-style 0 (closure): (invoke self __a0…) routes to the env's invoke.
             ; call-style 1 (bare fn): ((deref self) __a0…) loads the fn pointer from
             ; the self slot and calls it directly (a TY-FN indirect call).
-            (let (ret-spelling:ptr (type-spelling (imp ret-type))
-                  total:i32 (imp num-params)
+            (let (ret-spelling:ptr (type-spelling (imp 'ret-type))
+                  total:i32 (imp 'num-params)
                   name-sym:ptr (as ptr (intern-symbol method-name))
                   ret-node:ptr (as ptr (intern-symbol ret-spelling))
                   self-sym:ptr (as ptr (intern-symbol "self"))
@@ -3705,7 +3705,7 @@
                       ty-sym:ptr
                         (as ptr (intern-symbol
                                     (type-spelling
-                                      (aref (as ptr:ptr (imp param-types)) (+ pi3 1)))))
+                                      (aref (as ptr:ptr (imp 'param-types)) (+ pi3 1)))))
                       spec-i:ptr (make-cell a-sym (make-cell ty-sym null line) line))
                   (set! params-spine (make-cell spec-i params-spine line))
                   (dec! pi3)))
@@ -3739,7 +3739,7 @@
                       mtypes:ptr (arena-alloc (* (as i64 total) (ptr-bytes))))
                 (dotimes (ci total)
                   (aset! (as ptr:ptr mtypes) ci
-                    (aref (as ptr:ptr (imp param-types)) ci)))
+                    (aref (as ptr:ptr (imp 'param-types)) ci)))
                 (let (mangled:ptr (mangle-fn-name "" method-name mtypes total))
                   ; A bare `fn` (call-style 1) erases its signature to the lossy
                   ; "pfn" token under mangle-fn-name, so every same-signature bare
@@ -3756,10 +3756,10 @@
                   ; this: each has a distinct env-struct spelling, so their
                   ; forwarder names are already unique.)
                   (let (newm:ref:Method
-                         (generic-register-method method-name (imp ret-type)
+                         (generic-register-method method-name (imp 'ret-type)
                            mtypes total 0 0 defn-form)
                         already:i32 (derived-fwd-already-emitted method-name mangled))
-                    (.set! newm ir-name mangled)
+                    (.set! newm 'ir-name mangled)
                     (fn-force-generic-mangled method-name)
                     (when (= already 0)
                       (conj g-mono-worklist
@@ -3781,11 +3781,11 @@
   (set! super (protocol-canon-name super))
   (dotimes (i (unsafe/cast i32 (count g-proto-supers)))
     (let (e:ptr:Conformance (invoke g-proto-supers i:usize))
-      (when (and (= (e type-name) sub) (= (e proto-name) super))
+      (when (and (= (e 'type-name) sub) (= (e 'proto-name) super))
         (return))))
   (let (e:ptr:Conformance (as ptr:Conformance (arena-alloc (sizeof Conformance))))
-    (.set! e type-name sub)
-    (.set! e proto-name super)
+    (.set! e 'type-name sub)
+    (.set! e 'proto-name super)
     (conj g-proto-supers e)))
 
 ; Substitute the type variable `Self` in a colon-typed symbol spelling: split
@@ -3796,7 +3796,7 @@
         acc:ptr null)
     (let (it:ListIter (list-iter segs))
       (doseq-iter (cur (addr-of it))
-        (let (seg:ptr ((unsafe/cast ptr:Node cur) s)
+        (let (seg:ptr ((unsafe/cast ptr:Node cur) 's)
               piece:ptr seg)
           (when (= seg "Self") (set! piece typename))
           (if (= acc null)
@@ -3810,17 +3810,17 @@
 (defn subst-self-node (node:raw:Node typename:CStr):raw:Node
   (when (= node null) (return null))
   (let (n:raw:Node node)
-    (case (n kind)
+    (case (n 'kind)
       NODE-SYM
         (let (ns:ptr:Node (as ptr:Node (alloc-node)))
-          (.set! ns kind NODE-SYM)
-          (.set! ns line (n line))
-          (.set! ns s (subst-self-sym (n s) typename (n line)))
+          (.set! ns 'kind NODE-SYM)
+          (.set! ns 'line (n 'line))
+          (.set! ns 's (subst-self-sym (n 's) typename (n 'line)))
           (return (as ptr ns)))
       NODE-CELL
-        (return (make-cell (subst-self-node (n car) typename)
-                           (subst-self-node (n cdr) typename)
-                           (n line)))
+        (return (make-cell (subst-self-node (n 'car) typename)
+                           (subst-self-node (n 'cdr) typename)
+                           (n 'line)))
       0)
     (return node)))
 
@@ -3849,7 +3849,7 @@
 (defn protocol-register-form (form:raw:Node):void
   (let (ff:raw:Node form)
     (when (< (node-len form) 2)
-      (die-at (ff line) "defprotocol: expected (defprotocol Name (sig...) ...)"))
+      (die-at (ff 'line) "defprotocol: expected (defprotocol Name (sig...) ...)"))
     (let (name-node:ptr:Node (unsafe/cast ptr:Node (node-at form 1))
           pname:ptr null
           params:ptr null
@@ -3860,19 +3860,19 @@
       ; unlookupable key — the same defconst-shaped bug (an `extend Foo P`
       ; then failed as an unrelated "unknown protocol 'P'", with no
       ; diagnostic at the definition).
-      (reject-colon-in-def-name (as raw:Node name-node) "defprotocol" (ff line))
+      (reject-colon-in-def-name (as raw:Node name-node) "defprotocol" (ff 'line))
       ; Parametric protocol: name position is a list `(Seq E ...)` — head is the
       ; protocol name, the rest are the extra parameter names (beyond Self).
-      (if (= (name-node kind) NODE-CELL)
+      (if (= (name-node 'kind) NODE-CELL)
         (let (head:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr name-node) 0)))
           ; W9 item 45: `node-kind`, so a head spelled `(())` reaches this
           ; message rather than dereferencing the NULL node `()` reads as.
           (when (!= (node-kind (as ptr head)) NODE-SYM)
-            (die-at (name-node line) "defprotocol: protocol name must be a symbol"))
-          (set! pname (head s))
+            (die-at (name-node 'line) "defprotocol: protocol name must be a symbol"))
+          (set! pname (head 's))
           (set! nparams (- (node-len (as ptr name-node)) 1))
           (when (< nparams 1)
-            (die-at (name-node line)
+            (die-at (name-node 'line)
               "defprotocol: parametric protocol needs at least one parameter — use a plain defprotocol"))
           ; W4b: a single parameter that is itself a CELL (not a bare tyvar
           ; symbol) can only be the colon-paren-fused shape ("P:(i32)" ->
@@ -3882,19 +3882,19 @@
           ; "protocol parameter must be a symbol" below.
           (when (and (= nparams 1)
                      (= (node-kind (node-at (as ptr name-node) 1)) NODE-CELL))
-            (die-at (name-node line)
-              (fmt-s "defprotocol: takes no type annotation; write (defprotocol %s ...)" (head s))))
+            (die-at (name-node 'line)
+              (fmt-s "defprotocol: takes no type annotation; write (defprotocol %s ...)" (head 's))))
           (set! params (arena-alloc (* nparams (ptr-bytes))))
           (dotimes (pi nparams)
             (let (pv:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr name-node) (+ pi 1))))
               (when (!= (node-kind (as ptr pv)) NODE-SYM)
-                (die-at (node-line (as ptr pv) (name-node line))
+                (die-at (node-line (as ptr pv) (name-node 'line))
                   "defprotocol: protocol parameter must be a symbol"))
-              (aset! (as ptr:ptr params) pi (pv s)))))
+              (aset! (as ptr:ptr params) pi (pv 's)))))
         (do
-          (when (!= (name-node kind) NODE-SYM)
-            (die-at (name-node line) "defprotocol: name must be a symbol"))
-          (set! pname (name-node s))))
+          (when (!= (name-node 'kind) NODE-SYM)
+            (die-at (name-node 'line) "defprotocol: name must be a symbol"))
+          (set! pname (name-node 's))))
       ; Idempotence probe on the EXACT key this registration will use. Routing it
       ; through `protocol-lookup` would consult that resolver's bare fallback and
       ; silently treat an unrelated `user` protocol of the same bare name as
@@ -3907,12 +3907,12 @@
       ; silent no-op keeping the first.
       (if-some (prev (protocol-lookup-exact (protocol-key pname)))
         (do
-          (when (!= (same-definition-site (prev src-file) (prev src-line) (ff line)) 0)
+          (when (!= (same-definition-site (prev 'src-file) (prev 'src-line) (ff 'line)) 0)
             (return))
-          (die-redefinition pname:CStr (ff line) BK-PROTOCOL
-                            (prev src-file) (prev src-line)))
+          (die-redefinition pname:CStr (ff 'line) BK-PROTOCOL
+                            (prev 'src-file) (prev 'src-line)))
         0)
-      (guard-name-kind pname (ff line) NK-PROTOCOL)
+      (guard-name-kind pname (ff 'line) NK-PROTOCOL)
       (let (nsigs:i32 (- (node-len form) 2)
             sigs:ptr null)
         (when (> nsigs 0)
@@ -3926,7 +3926,7 @@
               ; stored non-sig would have failed much later, at the `extend` that
               ; tried to satisfy it.
               (when (!= (node-kind sig) NODE-CELL)
-                (die-at (node-line sig (ff line))
+                (die-at (node-line sig (ff 'line))
                   "defprotocol: method signature must be a list, e.g. (name (params):ret)"))
               ; S4: reject a legacy `name:ret` / list-head `(name ret)` method sig
               ; at registration (protocol sigs are stored verbatim and parsed
@@ -3934,27 +3934,27 @@
               ; the return after the param list. The guard on defn-name-only keeps a
               ; genuinely malformed sig on its existing lazy-parse error path.
               (when (and (= (sig-name-is-bare snn) 0) (!= (defn-name-only snn) null))
-                (die-at (ff line)
+                (die-at (ff 'line)
                   (fmt-2s "protocol method '%s': legacy 'name:ret' syntax is no longer supported — write (%s (params):ret)"
                           (defn-name-only snn) (defn-name-only snn))))
               (aset! (as ptr:ptr sigs) i sig))))
         (let (p:ref:Protocol (protocol-new pname sigs nsigs))
           ; Stage 15 B4 (R4): the defining site, which is both the redefinition
           ; blame and the "same form, registered again" discriminator.
-          (.set! p src-file g-source-path)
-          (.set! p src-line (ff line))
+          (.set! p 'src-file g-source-path)
+          (.set! p 'src-line (ff 'line))
           (when (> nparams 0)
-            (.set! p params params)
-            (.set! p num-params nparams)))))))
+            (.set! p 'params params)
+            (.set! p 'num-params nparams)))))))
 
 (defn prescan-protocols (forms:raw:Node):void
   (let (fc:raw:Node forms)
     (while (!= fc null)
-      (let (f:raw:Node (fc car))
-        (when (and (and (!= f null) (= (f kind) NODE-CELL))
+      (let (f:raw:Node (fc 'car))
+        (when (and (and (!= f null) (= (f 'kind) NODE-CELL))
                    (and (>= (node-len (as ptr f)) 2)
-                        (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ kind) (= _ NODE-SYM))))
-          (let (hh:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ s)))
+                        (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 'kind) (= _ NODE-SYM))))
+          (let (hh:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 's)))
             ; Stage 12 N3: also handle defprotocol- (private protocol).
             ; Stage 15 B5: arm g-defining-private around the registration, the
             ; same shape prescan-defn-signatures uses for `defn-`. Registration
@@ -3966,7 +3966,7 @@
                 (set! g-defining-private (if (= hh "defprotocol-") 1 0))
                 (protocol-register-form f)
                 (set! g-defining-private save-priv))))))
-      (set! fc (fc cdr)))))
+      (set! fc (fc 'cdr)))))
 
 ; Built-in result type of an operator generic `g` applied to a same-typed pair
 ; of operands, or null if the operator does not apply. Comparisons yield bool;
@@ -3974,25 +3974,25 @@
 ; satisfy operator protocol requirements (Num/Eq/Ord) with no user method (§10.3).
 (defn builtin-op-result-type (g:raw:Generic ptypes:ptr nparams:i32):ptr
   (let (gg:raw:Generic g)
-    (when (= (unsafe/cast i32 (count (gg methods))) 0) (return null))
-    (let (m0:ptr:Method (as ptr:Method (invoke (gg methods) 0)))
-      (when (!= (m0 kind) METHOD-INTRINSIC) (return null))
+    (when (= (unsafe/cast i32 (count (gg 'methods))) 0) (return null))
+    (let (m0:ptr:Method (as ptr:Method (invoke (gg 'methods) 0)))
+      (when (!= (m0 'kind) METHOD-INTRINSIC) (return null))
       (when (!= nparams 2) (return null))
       (let (at:ptr (aref (as ptr:ptr ptypes) 0)
             bt:ptr (aref (as ptr:ptr ptypes) 1)
-            bop:raw:BinOp (m0 binop))
+            bop:raw:BinOp (m0 'binop))
         (when (= (type-eq at bt) 0) (return null))
-        (if (!= (bop is-cmp) 0)
+        (if (!= (bop 'is-cmp) 0)
           (do
            ; bool keeps all six comparisons after the Stage 16 divorce, so it
            ; still satisfies Eq/Ord with no user method (§10.3).
            (when (or (!= (is-int-or-bool at) 0) (!= (is-float-type at) 0)
-                     (= (-> at (unsafe/cast ptr:Type _) (_ kind)) TY-PTR))
+                     (= (-> at (unsafe/cast ptr:Type _) (_ 'kind)) TY-PTR))
               (return ty-bool))
             ; CStr satisfies Eq (= / !=) only — content comparison via strcmp.
-            (when (and (= (-> at (unsafe/cast ptr:Type _) (_ kind)) TY-CSTR)
-                       (or (= (bop name) "=")
-                           (= (bop name) "!=")))
+            (when (and (= (-> at (unsafe/cast ptr:Type _) (_ 'kind)) TY-CSTR)
+                       (or (= (bop 'name) "=")
+                           (= (bop 'name) "!=")))
               (return ty-bool))
             (return null))
           (do
@@ -4020,8 +4020,8 @@
       (when (!= um null)
         (when (= check-ret 0) (return 1))
         (when (or (= ret null)
-                  (and (!= (-> um (unsafe/cast ptr:Method _) (_ ret-type)) null)
-                       (!= (type-eq (-> um (unsafe/cast ptr:Method _) (_ ret-type)) ret) 0)))
+                  (and (!= (-> um (unsafe/cast ptr:Method _) (_ 'ret-type)) null)
+                       (!= (type-eq (-> um (unsafe/cast ptr:Method _) (_ 'ret-type)) ret) 0)))
           (return 1))))
     (let (grt:ptr null)
       (when (!= (generic-binds-for g ptypes nparams (as ptr:ptr (addr-of grt)) line null) 0)
@@ -4052,9 +4052,9 @@
 (defn proto-sigs-resolve-in (proto:raw:Protocol typename:CStr pspellings:ptr line:i32 notes:ptr:ptr):i32
   (let (pp:raw:Protocol proto
         missing:i32 0)
-    (dotimes (i (pp num-sigs))
-      (let (sig:ptr (aref (as ptr:ptr (pp sigs)) i)
-            csig:ptr (subst-proto-sig-node sig typename (pp params) pspellings (pp num-params))
+    (dotimes (i (pp 'num-sigs))
+      (let (sig:ptr (aref (as ptr:ptr (pp 'sigs)) i)
+            csig:ptr (subst-proto-sig-node sig typename (pp 'params) pspellings (pp 'num-params))
             name-node:ptr (node-at csig 0)
             params-node:ptr (node-at csig 1)
             mname:ptr null
@@ -4062,22 +4062,22 @@
         ; S1: a new-style sig carries the (Self-substituted) return at index 2;
         ; legacy sigs keep the exact extract-name-and-type parse (byte-identical).
         (if (!= (sig-name-is-bare name-node) 0)
-          (do (set! mname (-> name-node (unsafe/cast ptr:Node _) (_ s)))
+          (do (set! mname (-> name-node (unsafe/cast ptr:Node _) (_ 's)))
               (set! ret (fn-parse-ret-type (node-at csig 2) line)))
           (set! ret (extract-name-and-type name-node (as ptr:ptr (addr-of mname))
-                                           ((as ptr:Node name-node) line))))
+                                           ((as ptr:Node name-node) 'line))))
         (let (nparams:i32 (defn-params-count params-node)
               ptypes:ptr (defn-params-to-types params-node)
               ; Enforce the return type only for a parametric protocol, where the
               ; return may carry a bound element (`get:E`). Plain protocols keep the
               ; historical param-only match (byte-identical).
-              check-ret:i32 (if (> (pp num-params) 0) 1 0))
+              check-ret:i32 (if (> (pp 'num-params) 0) 1 0))
           (when (= (method-satisfies-sig mname ptypes nparams ret check-ret line) 0)
             (set! missing 1)
             (aset! notes 0
               (fmt-2s "%s\n  note: %s" (as CStr (aref notes 0))
                 (as CStr (fmt-3s "%s does not implement %s.%s"
-                                 typename (pp name) mname))))))))
+                                 typename (pp 'name) mname))))))))
     (when (!= missing 0) (return 0))
     (return 1)))
 
@@ -4128,8 +4128,8 @@
     ; supers are plain (Self-only) protocols here, so they carry no extra params.
     (dotimes (si (unsafe/cast i32 (count g-proto-supers)))
       (let (e:ptr:Conformance (invoke g-proto-supers si:usize))
-        (when (= (e type-name) proto-name)
-          (verify-conformance-params typename (e proto-name) null 0 line check))))))
+        (when (= (e 'type-name) proto-name)
+          (verify-conformance-params typename (e 'proto-name) null 0 line check))))))
 
 ; Self-only conformance (the historical signature): plain protocols carry no
 ; extra parameters, so the bindings array is null.
@@ -4150,16 +4150,16 @@
                                  constraints:raw:ConstraintVec
                                  num-constraints:i32):void
   (doseq (c g-tmpl-conformances (VecIter ref:TmplConformance))
-    (when (and (= (c template) template) (= (c proto) proto)) (return)))
+    (when (and (= (c 'template) template) (= (c 'proto) proto)) (return)))
   (let (c:ptr:TmplConformance (new TmplConformance))
-    (.set! c template template)
-    (.set! c proto proto)
-    (.set! c bindings bindings)
-    (.set! c nbindings nbindings)
-    (.set! c tyvars tyvars)
-    (.set! c num-tyvars num-tyvars)
-    (.set! c constraints constraints)
-    (.set! c num-constraints num-constraints)
+    (.set! c 'template template)
+    (.set! c 'proto proto)
+    (.set! c 'bindings bindings)
+    (.set! c 'nbindings nbindings)
+    (.set! c 'tyvars tyvars)
+    (.set! c 'num-tyvars num-tyvars)
+    (.set! c 'constraints constraints)
+    (.set! c 'num-constraints num-constraints)
     (conj g-tmpl-conformances c)))
 
 ; Check (and record) that the concrete instance named `iname`, stamped from
@@ -4203,20 +4203,20 @@
 (defn tmpl-conformance-check-one-in (c:raw:TmplConformance st:raw:StructTemplate iname:CStr arg-spellings:ptr nargs:i32 line:i32):void
   (let (cc:raw:TmplConformance c
         stt:raw:StructTemplate st
-        proto:raw:Protocol (cc proto)
-        nb:i32 (cc nbindings)
+        proto:raw:Protocol (cc 'proto)
+        nb:i32 (cc 'nbindings)
         pspellings:ptr null
         ; The tyvar-name array and the concrete spellings used to substitute the
         ; protocol binding nodes. For a :where-free extend these are the template's
         ; own tyvars and the instance's stamp arg spellings (the unchanged T4 path).
         ; For a :where-bearing extend (set below) they are the conformance's full
         ; tyvar set (template + associated) and the recovered spellings.
-        subst-tyvars:ptr (stt tyvars)
+        subst-tyvars:ptr (stt 'tyvars)
         subst-spellings:ptr arg-spellings
         subst-ntv:i32 nargs)
     ; Stage 11 assoc-types (A4.2): recover the associated tyvars at stamp time.
-    (when (> (cc num-constraints) 0)
-      (let (ntv:i32 (cc num-tyvars)
+    (when (> (cc 'num-constraints) 0)
+      (let (ntv:i32 (cc 'num-tyvars)
             ; out-bound[tyvar-index] = Type* (or null), the same representation
             ; recover-assoc-into / generic-method-bind use at dispatch time.
             out-bound:ptr (arena-alloc (* (if (> ntv 0) ntv 1) (ptr-bytes)))
@@ -4231,9 +4231,9 @@
         ; Run the A2 fixpoint over the conformance's :where clause. A soft 0 means
         ; a conforming variable's conformance is not yet recorded for this instance
         ; — defer (a later pass / recheck-stamped will catch it), do not error.
-        (when (= (recover-assoc-into (cc tyvars) out-bound ntv
-                                     (cc constraints)
-                                     (cc num-constraints) line) 0)
+        (when (= (recover-assoc-into (cc 'tyvars) out-bound ntv
+                                     (cc 'constraints)
+                                     (cc 'num-constraints) line) 0)
           (return))
         ; recover-assoc-into fills the associated tyvars; the full map must now be
         ; total over the conformance's tyvars (the determination fixpoint in
@@ -4242,13 +4242,13 @@
         (dotimes (bk ntv)
           (when (= (aref (as ptr:ptr out-bound) bk) null) (return))
           (aset! (as ptr:ptr spellings) bk (type-spelling (aref (as ptr:ptr out-bound) bk))))
-        (set! subst-tyvars (cc tyvars))
+        (set! subst-tyvars (cc 'tyvars))
         (set! subst-spellings spellings)
         (set! subst-ntv ntv)))
     (when (> nb 0)
       (set! pspellings (arena-alloc (* nb (ptr-bytes))))
       (dotimes (i nb)
-        (let (bnode:ptr (aref (as ptr:ptr (cc bindings)) i)
+        (let (bnode:ptr (aref (as ptr:ptr (cc 'bindings)) i)
               ; Substitute the conformance's tyvars with the concrete spellings
               ; (template args for T4, recovered args for A4.2) in this binding
               ; node, then parse + canonicalize.
@@ -4258,7 +4258,7 @@
     ; A0: `pspellings` holds the *substituted concrete* protocol args for this
     ; instance (`T` → i32, or a recovered `E` → i32), so the per-instance
     ; conformance retains them.
-    (verify-conformance-params iname (proto name)
+    (verify-conformance-params iname (proto 'name)
                                pspellings nb line 1)))
 
 ; Stamp-time hook: a concrete instance `iname` was just stamped from template
@@ -4269,7 +4269,7 @@
   (dotimes (i (unsafe/cast i32 (count g-tmpl-conformances)))
     (let (c:ptr:TmplConformance (as ptr:TmplConformance
                                   (invoke g-tmpl-conformances i:usize)))
-      (when (= (c template) st)
+      (when (= (c 'template) st)
         (tmpl-conformance-check-one c st iname arg-spellings nargs line)))))
 
 ; Retroactively check a newly-recorded template conformance against every
@@ -4280,15 +4280,15 @@
 (defn tmpl-conformance-recheck-stamped (c:raw:TmplConformance st:raw:StructTemplate line:i32):void
   (dotimes (i (unsafe/cast i32 (count g-structs)))
     (let (sd:ptr:StructDef (as ptr:StructDef (invoke g-structs i:usize)))
-      (when (= (sd origin-template) st)
-        (let (na:i32 (sd origin-nargs)
+      (when (= (sd 'origin-template) st)
+        (let (na:i32 (sd 'origin-nargs)
               spell:ptr null)
           (when (> na 0)
             (set! spell (arena-alloc (* na (ptr-bytes))))
             (dotimes (k na)
               (aset! (as ptr:ptr spell) k
-                     (type-spelling (aref (as ptr:ptr (sd origin-args)) k)))))
-          (tmpl-conformance-check-one c st (sd name) spell na line))))))
+                     (type-spelling (aref (as ptr:ptr (sd 'origin-args)) k)))))
+          (tmpl-conformance-check-one c st (sd 'name) spell na line))))))
 
 ; (extend Subject Protocol): post-prescan conformance check (§9.2/§10.3). When
 ; Subject is a *protocol*, this declares protocol inheritance (Subject requires
@@ -4304,16 +4304,16 @@
   ; header validation shares.
   (require-extend-protocol proto-node line)
   (let (pn:raw:Node proto-node)
-    (case (pn kind)
+    (case (pn 'kind)
       NODE-SYM
         (do
           (ptr-set! out-args null)
           (aset! (as ptr:i32 out-nargs) 0 0)
-          (return (pn s)))
+          (return (pn 's)))
       NODE-CELL
         (let (head:ptr:Node (unsafe/cast ptr:Node (node-at pn 0)))
           (when (!= (node-kind (as ptr head)) NODE-SYM)
-            (die-at (pn line) "extend: protocol name must be a symbol"))
+            (die-at (pn 'line) "extend: protocol name must be a symbol"))
           (let (na:i32 (- (node-len pn) 1)
                 args:ptr null)
             (when (> na 0)
@@ -4322,9 +4322,9 @@
                 (aset! (as ptr:ptr args) i (node-at pn (+ i 1)))))
             (ptr-set! out-args args)
             (aset! (as ptr:i32 out-nargs) 0 na)
-            (return (head s))))
+            (return (head 's))))
       0)
-    (die-at (pn line) "extend: protocol must be a symbol or (Protocol args...)")
+    (die-at (pn 'line) "extend: protocol must be a symbol or (Protocol args...)")
     (return null)))
 
 (defn emit-extend (form:raw:Node):void
@@ -4346,13 +4346,13 @@
           proto-spelling:CStr (extend-proto-name proto-node
                                                  (as ptr:ptr (addr-of proto-args))
                                                  (as ptr:i32 (addr-of proto-nargs))
-                                                 (node-line (as ptr proto-node) (ff line)))
+                                                 (node-line (as ptr proto-node) (ff 'line)))
           proto-rec:?ptr:Protocol (protocol-lookup proto-spelling)
           ; Unresolved names pass through as written: a blanket protocol
           ; (`Any`/`Struct`), `Valid`, and the spelling a diagnostic must quote.
           proto-name:CStr (if (= proto-rec null)
                             proto-spelling
-                            (-> proto-rec (as ptr:Protocol _) (_ name))))
+                            (-> proto-rec (as ptr:Protocol _) (_ 'name))))
       ; Stage 11 T4: the subject is a struct *template* `(extend (Vector T) (Seq T))`.
       ; Record a template-level conformance; the per-instance check fires at stamp
       ; time, and any already-stamped instance is rechecked now.
@@ -4363,23 +4363,23 @@
         NODE-CELL
         (let (thead:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr type-node) 0)))
           (when (!= (node-kind (as ptr thead)) NODE-SYM)
-            (die-at (node-line (as ptr type-node) (ff line)) "extend: template subject name must be a symbol"))
+            (die-at (node-line (as ptr type-node) (ff 'line)) "extend: template subject name must be a symbol"))
           ; Stage 12 N4: a qualified template head (`coll/Vector`) resolves to the
           ; bare-keyed template registry. Identity under `user`.
-          (let (st:?ptr:StructTemplate (struct-template-lookup-ref (thead s)))
+          (let (st:?ptr:StructTemplate (struct-template-lookup-ref (thead 's)))
             (when (= st null)
-              (die-at (node-line (as ptr type-node) (ff line))
-                (fmt-s "extend: '%s' is not a struct template" (thead s))))
+              (die-at (node-line (as ptr type-node) (ff 'line))
+                (fmt-s "extend: '%s' is not a struct template" (thead 's))))
             (let (proto:?ptr:Protocol proto-rec)
               (when (= proto null)
-                (die-at (node-line (as ptr proto-node) (ff line))
+                (die-at (node-line (as ptr proto-node) (ff 'line))
                   (with-qualifier-note
                     (fmt-s "extend: unknown protocol '%s'" proto-spelling)
                     (as ptr proto-spelling))))
               ; The protocol application must supply exactly the protocol's extra
               ; params, each bound positionally to one of the template's tyvars.
-              (when (!= proto-nargs (-> proto (unsafe/cast ptr:Protocol _) (_ num-params)))
-                (die-at (node-line (as ptr proto-node) (ff line))
+              (when (!= proto-nargs (-> proto (unsafe/cast ptr:Protocol _) (_ 'num-params)))
+                (die-at (node-line (as ptr proto-node) (ff 'line))
                   (fmt-s "extend: protocol '%s' expects a different number of parameters" proto-name)))
               ; Stage 11 assoc-types (A4.1): parse a trailing `:where` clause, if
               ; present, into the conformance's constraint arrays and run the
@@ -4390,23 +4390,23 @@
               ; 3 = `:where` marker, 4… = constraints. A :where-free extend
               ; (node-len <= 3) keeps num-constraints = 0 and behaves exactly as T4.
               (let (stt:ptr:StructTemplate (unsafe/cast ptr:StructTemplate st)
-                    base-ntv:i32 (stt ntv)
+                    base-ntv:i32 (stt 'ntv)
                     nc:i32 0
                     where-i:i32 -1)
                 ; Detect the trailing :where marker at node 3.
                 (when (> (node-len form) 3)
                   (let (m:ptr:Node (unsafe/cast ptr:Node (node-at form 3)))
                     ; An extend form is not desugared — its own chokepoint.
-                    (reject-legacy-marker (as raw:Node m) (ff line))
+                    (reject-legacy-marker (as raw:Node m) (ff 'line))
                     (when (!= (marker-named (as raw:Node m) "where") 0)
                       (set! where-i 3)
                       (set! nc (- (node-len form) 4)))))
                 (when (and (>= where-i 0) (< nc 1))
-                  (die-at (ff line) "extend: :where requires at least one (Protocol Var) constraint"))
+                  (die-at (ff 'line) "extend: :where requires at least one (Protocol Var) constraint"))
                 (if (= nc 0)
                   ; --- :where-free extend: the unchanged T4 path ---
                   (tmpl-conformance-add (as ptr st) (as ptr proto) proto-args proto-nargs
-                                        (stt tyvars) base-ntv null 0)
+                                        (stt 'tyvars) base-ntv null 0)
                   ; --- :where-bearing extend: parse + determine (A4.1) ---
                   (do
                     ; Capacity: the template's own tyvars seed the array; each
@@ -4433,13 +4433,13 @@
                         ; Seed the tyvars array with the template's own tyvars; they
                         ; are the instance's stamp arguments, hence always determined.
                         (dotimes (si base-ntv)
-                          (aset! (as ptr:ptr tyvars) si (aref (as ptr:ptr (stt tyvars)) si)))
+                          (aset! (as ptr:ptr tyvars) si (aref (as ptr:ptr (stt 'tyvars)) si)))
                         (set! ntv base-ntv)
                         ; Parse the :where constraints (constraints start at node 4),
                         ; collecting constraint vars + Arg tyvars after the seeds.
                         (parse-where-constraints form 4 nc
                                                  constraints
-                                                 tyvars (as ptr:i32 (addr-of ntv)) (ff line))
+                                                 tyvars (as ptr:i32 (addr-of ntv)) (ff 'line))
                         ; Collect tyvars appearing in the protocol application
                         ; `(Iterator E)` too, so the §3 determination check can see
                         ; an E that no :where constraint introduces. A concrete arg
@@ -4462,11 +4462,11 @@
                               (let (ck:i32 0)
                                 (while (< ck nc)
                                   (let (crec:ref:Constraint (invoke constraints ck:usize)
-                                        vidx:i32 (tyvar-index-of (crec var) tyvars ntv)
-                                        na:i32 (crec nargs))
+                                        vidx:i32 (tyvar-index-of (crec 'var) tyvars ntv)
+                                        na:i32 (crec 'nargs))
                                     (when (and (>= vidx 0)
                                                (and (!= (aref (as ptr:i32 determined) vidx) 0) (> na 0)))
-                                      (let (argv:ptr (crec args)
+                                      (let (argv:ptr (crec 'args)
                                             ai:i32 0)
                                         (while (< ai na)
                                           (let (argn:ptr (aref (as ptr:ptr argv) ai)
@@ -4486,7 +4486,7 @@
                               (dotimes (ti ntv)
                                 (when (and (= (aref (as ptr:i32 determined) ti) 0)
                                            (!= (node-mentions-tyvar-named argn (aref (as ptr:ptr tyvars) ti)) 0))
-                                  (die-at (node-line (as ptr proto-node) (ff line))
+                                  (die-at (node-line (as ptr proto-node) (ff 'line))
                                     (fmt-s "extend: protocol parameter '%s' is not determined by the subject or any :where constraint"
                                            (aref (as ptr:ptr tyvars) ti))))))))
                         (tmpl-conformance-add (as ptr st) (as ptr proto) proto-args proto-nargs
@@ -4496,41 +4496,41 @@
               (let (ntc:i32 (unsafe/cast i32 (count g-tmpl-conformances))
                     c:ptr:TmplConformance (as ptr:TmplConformance
                                             (invoke g-tmpl-conformances (as usize (- ntc 1)))))
-                (tmpl-conformance-recheck-stamped (as ptr c) (as ptr st) (ff line)))
+                (tmpl-conformance-recheck-stamped (as ptr c) (as ptr st) (ff 'line)))
               (return))))
       0)
       ; --- subject is a concrete type (symbol) ---
-      (require-extend-subject (as raw:Node type-node) (ff line))
+      (require-extend-subject (as raw:Node type-node) (ff 'line))
       ; The subject may be written qualified (`coll/Vector`) from another
       ; namespace; canonicalize it to the bare TYPE identity so every lookup
       ; below — and the recorded conformance — matches the dispatch site.
       ; `proto-name` was already canonicalized as a PROTOCOL above; the two
       ; canonicalizers are deliberately different (Stage 15 W9 defect 21).
       ; Identity under `user` (no slash).
-      (let (typename:CStr (type-canon-name (type-node s))
+      (let (typename:CStr (type-canon-name (type-node 's))
             ; The subject of a protocol-INHERITANCE extend is itself a protocol
             ; name, so it resolves through the protocol registry (namespaced),
             ; not through `typename` (the type canonicalization). Resolving the
             ; raw spelling is what makes `(extend dp/Describe dp/Show)` — and
             ; the bare-inside-`(ns dp)` spelling of the same edge — work.
-            subj-proto:?ptr:Protocol (protocol-lookup (type-node s)))
+            subj-proto:?ptr:Protocol (protocol-lookup (type-node 's)))
         ; Protocol-on-protocol: declare inheritance, no per-type check. Only the
         ; bare-symbol protocol form participates in inheritance.
         (when (and (!= subj-proto null) (= proto-nargs 0))
           (when (= proto-rec null)
-            (die-at (node-line (as ptr proto-node) (ff line))
+            (die-at (node-line (as ptr proto-node) (ff 'line))
               (with-qualifier-note
                 (fmt-2s "extend: '%s' is a protocol, so its supertype '%s' must be a protocol too"
-                        (-> subj-proto (as ptr:Protocol _) (_ name)) proto-spelling)
+                        (-> subj-proto (as ptr:Protocol _) (_ 'name)) proto-spelling)
                 (as ptr proto-spelling))))
-          (proto-super-add (-> subj-proto (as ptr:Protocol _) (_ name)) proto-name)
+          (proto-super-add (-> subj-proto (as ptr:Protocol _) (_ 'name)) proto-name)
           (return))
         ; Extending to a blanket protocol (Any/Struct) is redundant — conformance
         ; is automatic and structural — so accept it as a no-op.
         (when (and (!= (blanket-lookup proto-name) 0) (= proto-nargs 0)) (return))
         (let (proto:?ptr:Protocol proto-rec)
           (when (= proto null)
-            (die-at (node-line (as ptr proto-node) (ff line))
+            (die-at (node-line (as ptr proto-node) (ff 'line))
               (with-qualifier-note
                 (fmt-s "extend: unknown protocol '%s'" proto-spelling)
                 (as ptr proto-spelling))))
@@ -4541,10 +4541,10 @@
           ; usually cannot name the defining namespace (§9.2's "resolve once, at the
           ; reference, then carry the record"). `(extend gx/Pt P)` canonicalizes to
           ; `gg/Pt` and was then refused as an unknown type.
-          (when (= (strchr (type-node s) 58) null)
-            (parse-type-name (type-node s) (node-line (as ptr type-node) (ff line))))
-          (when (!= proto-nargs (-> proto (unsafe/cast ptr:Protocol _) (_ num-params)))
-            (die-at (node-line (as ptr proto-node) (ff line))
+          (when (= (strchr (type-node 's) 58) null)
+            (parse-type-name (type-node 's) (node-line (as ptr type-node) (ff 'line))))
+          (when (!= proto-nargs (-> proto (unsafe/cast ptr:Protocol _) (_ 'num-params)))
+            (die-at (node-line (as ptr proto-node) (ff 'line))
               (fmt-s "extend: protocol '%s' expects a different number of parameters" proto-name)))
           ; Concrete protocol params (`(Seq i32)`): canonicalize each arg's spelling.
           (let (pspellings:ptr null)
@@ -4554,8 +4554,8 @@
                 (aset! (as ptr:ptr pspellings) i
                        (type-spelling (parse-type-from-node
                                         (aref (as ptr:ptr proto-args) i)
-                                        (node-line (as ptr proto-node) (ff line)))))))
-            (verify-conformance-params typename proto-name pspellings proto-nargs (ff line) 1)))))))
+                                        (node-line (as ptr proto-node) (ff 'line)))))))
+            (verify-conformance-params typename proto-name pspellings proto-nargs (ff 'line) 1)))))))
 
 ; Import side: trust the exporting unit's check; record the fact (and recurse
 ; supers), or re-register a protocol-inheritance edge.
@@ -4583,7 +4583,7 @@
           proto-node:ptr:Node (unsafe/cast ptr:Node (node-at form 2)))
       ; Template subject: delegate to emit-extend (registers the
       ; TmplConformance + :where clause; recovery fires at stamp time here).
-      (case (type-node kind)
+      (case (type-node 'kind)
         NODE-CELL
           (do (emit-extend form) (return))
         NODE-SYM
@@ -4592,12 +4592,12 @@
                 proto-name:CStr (extend-proto-name proto-node
                                                   (as ptr:ptr (addr-of proto-args))
                                                   (as ptr:i32 (addr-of proto-nargs))
-                                                  (form line)))
+                                                  (form 'line)))
             ; A protocol-on-protocol inheritance edge keeps its plain-symbol shape.
             ; B2a: a `.nuch` replay carries canonical names written by the
             ; exporting unit, not spellings this file could name — key lookup.
-            (if (and (!= (protocol-lookup-ns (type-node s)) null) (= proto-nargs 0))
-              (proto-super-add (type-node s) proto-name)
+            (if (and (!= (protocol-lookup-ns (type-node 's)) null) (= proto-nargs 0))
+              (proto-super-add (type-node 's) proto-name)
               (let (pspellings:ptr null)
                 (when (> proto-nargs 0)
                   (set! pspellings (arena-alloc (* proto-nargs (ptr-bytes))))
@@ -4605,9 +4605,9 @@
                     (aset! (as ptr:ptr pspellings) i
                            (type-spelling (parse-type-from-node
                                             (aref (as ptr:ptr proto-args) i)
-                                            (form line))))))
-                (verify-conformance-params (type-node s) proto-name pspellings proto-nargs
-                                           (form line) 0))))
+                                            (form 'line))))))
+                (verify-conformance-params (type-node 's) proto-name pspellings proto-nargs
+                                           (form 'line) 0))))
         0))))
 
 ; ############################################################
@@ -4656,7 +4656,7 @@
   (when (= n 'none)  (return ty-maybe-ptr))
   (let (lookup-name:ptr null
         annot:ptr null)
-    (split-typed (n s)
+    (split-typed (n 's)
                  (as ptr:ptr (addr-of lookup-name)) (as ptr:ptr (addr-of annot)))
     (let (sym:?ptr:Sym (scope-lookup scope lookup-name))
       (when (= sym null) (return null))
@@ -4709,9 +4709,9 @@
 (defn array-lit-binding-type (ty:(raw Type) init:(raw Node)):?ptr:Type
   (when (or (= ty null) (= init null)) (return ty))
   (let (tt:(raw Type) ty)
-    (when (or (!= (tt kind) TY-PTR) (!= (tt elem) null)) (return ty))
+    (when (or (!= (tt 'kind) TY-PTR) (!= (tt 'elem) null)) (return ty))
     (let (n:(raw Node) init)
-      (when (!= (n kind) NODE-CELL) (return ty))
+      (when (!= (n 'kind) NODE-CELL) (return ty))
       ; `(array T …)` is at least a head and an element type.
       (when (< (node-len (as ptr n)) 2) (return ty))
       (let (head:ptr (node-at (as ptr n) 0))
@@ -4726,9 +4726,9 @@
                                       (node-line (as ptr n) 0)))))
             (when (= etype null) (return ty))
             (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR)))
-              (.set! rt elem etype)
-              (.set! rt pkind (tt pkind))
-              (.set! rt is-volatile (tt is-volatile))
+              (.set! rt 'elem etype)
+              (.set! rt 'pkind (tt 'pkind))
+              (.set! rt 'is-volatile (tt 'is-volatile))
               (return (as ptr rt)))))))))
 
 ; let / with: the type of the last body expression, evaluated in a child scope
@@ -4740,9 +4740,9 @@
   ; slots. Attribute-free lists pass through unchanged.
   (let (binds:ptr:Node (unsafe/cast ptr:Node
                          (attrs-normalize-bindings (as ptr (node-at n 1))
-                           ((unsafe/cast ptr:Node n) line))))
+                           ((unsafe/cast ptr:Node n) 'line))))
     (when (or (= binds null)
-              (!= (binds kind) NODE-CELL))
+              (!= (binds 'kind) NODE-CELL))
       (return null))
     (let (inner:ref:Scope (scope-new scope)
           i:i32 0
@@ -4752,7 +4752,7 @@
               name:ptr null
               ty:ptr (extract-name-and-type bname
                                             (as ptr:ptr (addr-of name))
-                                            ((unsafe/cast ptr:Node bname) line)))
+                                            ((unsafe/cast ptr:Node bname) 'line)))
           ; W5d (§3.10) lockstep with emit-let/emit-with: an `(array T …)` init
           ; refines an elem-less declared pointer to `ptr:T`, so a probe over the
           ; body types `(aref a i)` exactly as emission does.
@@ -4770,7 +4770,7 @@
 
 (defn node-type-cast (n:raw:Node):ref:Type
   (let (tn:ptr:Node (unsafe/cast ptr:Node (node-at n 1)))
-    (return (parse-type-from-node (as ptr tn) (tn line)))))
+    (return (parse-type-from-node (as ptr tn) (tn 'line)))))
 
 ; Stage 14 UN-1: `(as TYPE expr)` type mirror (node-type<->emit-node lockstep,
 ; conventions.md). emit-as (src/nucleusc.nuc) returns a Val typed EXACTLY the
@@ -4781,7 +4781,7 @@
 ; type that actually flows to a parent.
 (defn node-type-as (n:raw:Node):ref:Type
   (let (tn:ptr:Node (unsafe/cast ptr:Node (node-at n 1)))
-    (return (parse-type-from-node (as ptr tn) (tn line)))))
+    (return (parse-type-from-node (as ptr tn) (tn 'line)))))
 
 (defn node-type-alloca (n:raw:Node):ref:Type
   (let (tn:ptr:Node (unsafe/cast ptr:Node (node-at n 1)))
@@ -4791,40 +4791,40 @@
     ; `(alloca (array i32 4))` types as an error in the non-emitting pass while
     ; codegen accepts it, which is the divergence the lockstep exists to stop.
     (set! g-array-ok 1)
-    (let (ty:ptr (parse-type-from-node (as ptr tn) (tn line))
+    (let (ty:ptr (parse-type-from-node (as ptr tn) (tn 'line))
           pt:ref:Type (make-type TY-PTR))
-      (if (= ((unsafe/cast ptr:Type ty) kind) TY-ARRAY)
-        (.set! pt elem ((unsafe/cast ptr:Type ty) elem))
-        (.set! pt elem ty))
+      (if (= ((unsafe/cast ptr:Type ty) 'kind) TY-ARRAY)
+        (.set! pt 'elem ((unsafe/cast ptr:Type ty) 'elem))
+        (.set! pt 'elem ty))
       ; alloca always yields a valid, non-null stack address (ref T).
-      (.set! pt pkind PTR-REF)
+      (.set! pt 'pkind PTR-REF)
       (return pt))))
 
 (defn node-type-addr-of (n:raw:Node scope:ref:Scope):?ptr:Type
   (let (target:ptr:Node (unsafe/cast ptr:Node (node-at n 1)))
-    (when (!= (target kind) NODE-SYM) (return null))
-    (let (sym:?ptr:Sym (scope-lookup scope (target s)))
+    (when (!= (target 'kind) NODE-SYM) (return null))
+    (let (sym:?ptr:Sym (scope-lookup scope (target 's)))
       (when (= sym null) (return null))
       (let (pt:ptr:Type (as ptr:Type (make-type TY-PTR)))
-        (.set! pt elem (sym type))
+        (.set! pt 'elem (sym 'type))
         ; Mirror emit-addr-of: a binding's address is non-null (ref T).
-        (.set! pt pkind PTR-REF)
+        (.set! pt 'pkind PTR-REF)
         (return (as ptr pt))))))
 
 (defn node-type-funcall (n:raw:Node scope:ref:Scope):?ptr:Type
   (let (t:ptr (node-type (node-at n 1) scope))
     (when (= t null) (return null))
     (let (tt:ptr:Type (as ptr:Type t))
-      (when (!= (tt kind) TY-FN) (return null))
-      (return (tt ret)))))
+      (when (!= (tt 'kind) TY-FN) (return null))
+      (return (tt 'ret)))))
 
 ; deref / aref: the pointee type of the first operand's pointer.
 (defn node-type-deref-elem (n:raw:Node scope:ref:Scope):?ptr:Type
   (let (t:ptr (node-type (node-at n 1) scope))
     (when (= t null) (return null))
     (let (tt:ptr:Type (as ptr:Type t))
-      (when (or (!= (tt kind) TY-PTR) (= (tt elem) null)) (return null))
-      (return (tt elem)))))
+      (when (or (!= (tt 'kind) TY-PTR) (= (tt 'elem) null)) (return null))
+      (return (tt 'elem)))))
 
 ; Stage 16 SV-1 lockstep (design/stage16-ergonomics/c-boundary-defects.md §3):
 ; the struct a member access reads through, whether the receiver is a POINTER to
@@ -4834,11 +4834,11 @@
 (defn access-receiver-sdef (t:raw:Type):?ptr:StructDef
   (when (= t null) (return null))
   (let (tt:ptr:Type (unsafe/cast ptr:Type t))
-    (when (= (tt kind) TY-STRUCT) (return (as ptr (tt sdef))))
-    (when (and (= (tt kind) TY-PTR)
-               (!= (tt elem) null)
-               (-> tt (_ elem) (unsafe/cast ptr:Type _) (_ kind) (= _ TY-STRUCT)))
-      (return (as ptr (-> tt (_ elem) (unsafe/cast ptr:Type _) (_ sdef)))))
+    (when (= (tt 'kind) TY-STRUCT) (return (as ptr (tt 'sdef))))
+    (when (and (= (tt 'kind) TY-PTR)
+               (!= (tt 'elem) null)
+               (-> tt (_ 'elem) (unsafe/cast ptr:Type _) (_ 'kind) (= _ TY-STRUCT)))
+      (return (as ptr (-> tt (_ 'elem) (unsafe/cast ptr:Type _) (_ 'sdef)))))
     (return null)))
 
 (defn node-type-field (n:raw:Node scope:ref:Scope):?ptr:Type
@@ -4852,10 +4852,10 @@
         (when (= fn-node null) (return null))
         ; FR-1: the same resolver the emit side uses, so a path that reaches
         ; through an anonymous member cannot answer differently in the two.
-        (let (fr:?ptr:FieldRef (struct-field-ref (as ptr sd) (fn-node s)))
+        (let (fr:?ptr:FieldRef (struct-field-ref (as ptr sd) (fn-node 's)))
           (when (= fr null) (return null))
           ; G-2 lockstep with emit-field-load: an array field decays.
-          (return (array-decay (fr type))))))))
+          (return (array-decay (fr 'type))))))))
 
 ; Result type of `(get callee selector)` for callee type `ct` — mirrors
 ; emit-get-with-callee / emit-get-intrinsic so the type pass cannot drift from
@@ -4869,7 +4869,7 @@
         (aset! (as ptr:ptr argtypes) 0 ct)
         (aset! (as ptr:ptr argtypes) 1 ty-ptr)
         (let (m:?ptr:Method (generic-find-method-exact g argtypes 2))
-          (when (!= m null) (return (m ret-type))))))
+          (when (!= m null) (return (m 'ret-type))))))
     ; SV-1: same unwrap as node-type-field — a struct VALUE in head position is
     ; a member access too.
     (let (sd:?ptr:StructDef (access-receiver-sdef ct))
@@ -4877,10 +4877,10 @@
       (let (lit:ptr (selector-literal-sym sel-node))
         (when (= lit null) (return null))
         (let (fr:?ptr:FieldRef (struct-field-ref (as ptr sd)
-                                 (-> lit (unsafe/cast ptr:Node _) (_ s))))
+                                 (-> lit (unsafe/cast ptr:Node _) (_ 's))))
           (when (= fr null) (return null))
           ; G-2 lockstep with emit-get-intrinsic -> emit-field-load: array decay.
-          (return (array-decay (fr type))))))))
+          (return (array-decay (fr 'type))))))))
 
 ; Result type of `(invoke callee arg…)` for callee type `ct` — the tier-0 `invoke`
 ; method's return, else null (mirrors emit-invoke-with-callee at the exact tier).
@@ -4898,7 +4898,7 @@
       (when (= ok 0) (return null))
       (let (m:?ptr:Method (generic-find-method-exact g argtypes total))
         (when (= m null) (return null))
-        (return (m ret-type))))))
+        (return (m 'ret-type))))))
 
 ; Type of a non-function head value `ct` applied in `(callee arg…)` — mirrors
 ; emit-callable-value's `invoke → get → _get` routing so the type pass cannot
@@ -4932,12 +4932,12 @@
 ; every other row is a name emit REFUSES in head position, for which returning
 ; null is the standing escape hatch (emit's own diagnostic stands).
 (defn node-type-binding (hit:ref:BindingHit n:raw:Node scope:ref:Scope):?ptr:Type
-  (when (!= (hit kind) BK-GLOBAL) (return null))
-  (let (sym:ptr:Sym (as ptr:Sym (hit payload))
-        ft:ptr:Type (unsafe/cast ptr:Type (sym type)))
+  (when (!= (hit 'kind) BK-GLOBAL) (return null))
+  (let (sym:ptr:Sym (as ptr:Sym (hit 'payload))
+        ft:ptr:Type (unsafe/cast ptr:Type (sym 'type)))
     ; A non-function value head is a callable value: mirror the get/invoke desugar.
-    (when (!= (ft kind) TY-FN) (return (callable-value-type ft n scope)))
-    (return (ft ret))))
+    (when (!= (ft 'kind) TY-FN) (return (callable-value-type ft n scope)))
+    (return (ft 'ret))))
 
 ; A call head (not a special form): mirror emit-dispatch. Operator → a matching
 ; user overload's return type, else bool for comparisons / the first operand's type
@@ -4954,14 +4954,14 @@
 (defn node-type-call (n:raw:Node scope:ref:Scope h:CStr want:raw:Type):?ptr:Type
   (let (ghit:?ref:BindingHit (binding-find h scope BK-DISPATCH-FIRST (+ BK-GLOBAL 1) 0 NK-NONE))
     (when (= ghit null) (return null))
-    (when (!= ((unsafe/cast ptr:BindingHit ghit) kind) BK-GENERIC)
+    (when (!= ((unsafe/cast ptr:BindingHit ghit) 'kind) BK-GENERIC)
       (return (node-type-binding (unsafe/cast ref:BindingHit ghit) n scope)))
-  (let (g:?ptr:Generic (as ptr:Generic ((unsafe/cast ptr:BindingHit ghit) payload)))
+  (let (g:?ptr:Generic (as ptr:Generic ((unsafe/cast ptr:BindingHit ghit) 'payload)))
     (when (!= g null)
-      (let (m0:ptr:Method (as ptr:Method (invoke (g methods) 0)))
-        (when (= (m0 kind) METHOD-INTRINSIC)
+      (let (m0:ptr:Method (as ptr:Method (invoke (g 'methods) 0)))
+        (when (= (m0 'kind) METHOD-INTRINSIC)
           ; A user overload of this operator, if any, wins (mirror emit).
-          (when (!= (g mangled) 0)
+          (when (!= (g 'mangled) 0)
             (let (nargs:i32 (- (node-len n) 1)
                   argtypes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
                   arg-nodes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
@@ -4974,9 +4974,9 @@
                   (aset! (as ptr:ptr arg-nodes) i anode)))
               (when (!= ok 0)
                 (let (um:?ptr:Method (operator-user-resolve g argtypes arg-nodes nargs))
-                  (when (!= um null) (return (um ret-type)))))))
-          (let (bop:ptr:BinOp (unsafe/cast ptr:BinOp (m0 binop)))
-            (when (!= (bop is-cmp) 0) (return ty-bool))
+                  (when (!= um null) (return (um 'ret-type)))))))
+          (let (bop:ptr:BinOp (unsafe/cast ptr:BinOp (m0 'binop)))
+            (when (!= (bop 'is-cmp) 0) (return ty-bool))
             ; Stage 15 W2a: a binop's result type is the type its operands
             ; *unify* to, from the one shared rule emit's binop-coerce uses
             ; (binop-result-type, src/nucleusc.nuc) — not operand 1's type
@@ -4995,7 +4995,7 @@
               (return (binop-result-type (node-type a-node scope)
                                          (node-type b-node scope)
                                          a-node b-node scope)))))
-        (when (!= (g mangled) 0)
+        (when (!= (g 'mangled) 0)
           (let (nargs:i32 (- (node-len n) 1)
                 argtypes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
                 arg-nodes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
@@ -5009,7 +5009,7 @@
             (when (= ok 0) (return null))
             ; First try METHOD-USER (exact match).
             (let (m:?ptr:Method (generic-find-method-exact g argtypes nargs))
-              (when (!= m null) (return (m ret-type))))
+              (when (!= m null) (return (m 'ret-type))))
             ; Then try METHOD-GENERIC (parametric match with tyvar substitution).
             (let (out-ret:ptr (arena-alloc (ptr-bytes)))
               (when (!= (generic-binds-for g argtypes nargs (as ptr:ptr out-ret) 0 arg-nodes) 0)
@@ -5032,7 +5032,7 @@
                   r:i32 (generic-resolve-adapt-tier g argtypes arg-nodes nargs 0
                           (as ptr:ptr (addr-of wmethod)) (as ptr:ptr (addr-of wbound))
                           (if (!= want null) want g-want-type)))
-              (when (= r 1) (return (-> wmethod (unsafe/cast ptr:Method _) (_ ret-type))))
+              (when (= r 1) (return (-> wmethod (unsafe/cast ptr:Method _) (_ 'ret-type))))
               (when (= r 2) (return (method-bound-ret-type wmethod wbound 0)))))))))
     ; A solitary (unmangled, non-intrinsic) generic — or a mangled one whose
     ; resolution did not settle — falls through to the next table row, exactly
@@ -5044,13 +5044,13 @@
 (defn node-type (n:raw:Node scope:ref:Scope):?ptr:Type
   (when (= n null) (return ty-void))
   (let (nn:raw:Node n)
-    (case (nn kind)
+    (case (nn 'kind)
       ; LW-4 lockstep with emit-int: an out-of-i32-range literal types (and emits)
       ; as i64, everything else as i32. Keeps codegen and the type pass in sync so
       ; the widened width is not clobbered by emit-node's Rung-3 cross-check.
       ; W2b turned that shared width choice into one function (int-literal-type,
       ; src/nucleusc.nuc) rather than a copy here and a copy in emit-int.
-      NODE-INT   (return (int-literal-type (nn i)))
+      NODE-INT   (return (int-literal-type (nn 'i)))
       NODE-FLOAT (return ty-f64)
       ; Stage 14 NS-3: a string literal now types as StrView (was CStr) — the flip.
       ; Lockstep with emit-string (nucleusc.nuc) and the gcheck / valid-walk mirrors
@@ -5061,7 +5061,7 @@
       NODE-STR
         ; NS-4: an explicit c"…" literal (reader set Node.i=1) types as CStr, not
         ; the StrView default — lockstep with emit-string's NS-4 short-circuit.
-        (if (!= (nn i) 0) (return ty-cstr) (return (strview-type)))
+        (if (!= (nn 'i) 0) (return ty-cstr) (return (strview-type)))
       NODE-CHAR  (return ty-char)
       NODE-SYM   (return (node-type-sym n scope))
       ; Keyword literal (Stage 11 cleanup §2): its static type is the `Keyword`
@@ -5075,11 +5075,11 @@
           (when (!= sd null) (return (type-for-sdef sd)))
           (return null))
       0)
-    (when (!= (nn kind) NODE-CELL) (return ty-void))
+    (when (!= (nn 'kind) NODE-CELL) (return ty-void))
     (when (= (node-len n) 0) (return null))
     (let (head:ptr:Node (unsafe/cast ptr:Node (node-at n 0)))
-      (when (!= (head kind) NODE-SYM) (return null))
-      (let (h:CStr (head s)
+      (when (!= (head 'kind) NODE-SYM) (return null))
+      (let (h:CStr (head 's)
             hp:raw:Node head)
         (when (!= (find-macro h) null) (return null))
         ; Stage 14 MC-2: gensym yields a Node* — type it (raw Node) so it stays
@@ -5129,10 +5129,10 @@
         (when (= hp 'set!)
           (let (tgt:ptr:Node (unsafe/cast ptr:Node (node-at n 1))
                 nm:ptr null  ti:ptr null)
-            (split-typed (tgt s) (as ptr:ptr (addr-of nm)) (as ptr:ptr (addr-of ti)))
+            (split-typed (tgt 's) (as ptr:ptr (addr-of nm)) (as ptr:ptr (addr-of ti)))
             (let (sym:?ptr:Sym (scope-lookup scope nm))
               (when (= sym null) (return ty-void))
-              (return (sym type)))))
+              (return (sym 'type)))))
         (when (= hp 'inc!) (return ty-void))
         (when (= hp 'not) (return ty-bool))
         (when (= hp '_and) (return ty-bool))
@@ -5168,7 +5168,7 @@
         (when (or (= hp 'some) (= hp 'as-ref))
           (let (t:ptr (node-type (node-at n 1) scope))
             (when (= t null) (return null))
-            (when (!= ((as ptr:Type t) kind) TY-PTR) (return null))
+            (when (!= ((as ptr:Type t) 'kind) TY-PTR) (return null))
             (return (type-as-pkind t PTR-MAYBE))))
         (when (or (= hp 'unwrap) (= hp 'unwrap-or))
           (let (t:ptr (node-type (node-at n 1) scope))
@@ -5188,8 +5188,8 @@
         (when (= hp 'signal)
           (when (< (node-len n) 3) (return null))
           (return (funcall (unsafe/cast ((fn (ref Type)) (ptr i32)) g-stamp-maybe-type-hook)
-                           (parse-type-from-node (node-at n 2) (n line))
-                           (n line))))
+                           (parse-type-from-node (node-at n 2) (n 'line))
+                           (n 'line))))
         (when (= hp 'defer) (return ty-void))
         (when (= hp 'move) (return (node-type (node-at n 1) scope)))
         ; TC-2/TC-3: node-type-call is passed a null explicit want here, but its

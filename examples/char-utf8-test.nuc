@@ -27,11 +27,11 @@
             label
             (as ui64 expected-bytes)
             (as ui64 written)
-            ((addr-of dr) ok)
-            (as ui32 ((addr-of dr) ch))
-            (if (and (= ((addr-of dr) ok) 1)
+            ((addr-of dr) 'ok)
+            (as ui32 ((addr-of dr) 'ch))
+            (if (and (= ((addr-of dr) 'ok) 1)
                      (and (= written expected-bytes)
-                          (= ((addr-of dr) nbytes) expected-bytes)))
+                          (= ((addr-of dr) 'nbytes) expected-bytes)))
               1 0))))
 
 ; --- Check that decoding invalid/truncated bytes returns ok=0 ---
@@ -42,7 +42,7 @@
     (aset! p 1 b1)
     (aset! p 2 b2)
     (let (dr:DecodeResult (char-decode-utf8 p len))
-      (printf "%s: ok=%d\n" label ((addr-of dr) ok)))))
+      (printf "%s: ok=%d\n" label ((addr-of dr) 'ok)))))
 
 (defn main ():i32
   ; --- UTF-8 round-trips ---

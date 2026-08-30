@@ -10,6 +10,6 @@
   (return (Point a b)))
 (defn sum (p:Point):i16
   (let (pp:ptr:Point (addr-of p))
-    (return (_+ (pp x) (pp y)))))
+    (return (_+ (pp 'x) (pp 'y)))))
 (defn main ():i16
   (return (sum (mk 3 4))))

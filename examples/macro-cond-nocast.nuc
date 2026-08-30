@@ -12,16 +12,16 @@
 (defmacro sum (:rest args)
   (cond (= args null)
           `0
-        (= (args cdr) null)
-          (args car)
+        (= (args 'cdr) null)
+          (args 'car)
         true
-          `(_+ ~(args car) (sum ~@(args cdr)))))
+          `(_+ ~(args 'car) (sum ~@(args 'cdr)))))
 
 ; 2. Castless (if … (n cdr) null) slot init: bind `tail` to the argument form's
 ;    cdr when it is a cell, else null. (raw Node) ⊔ null absorbs to (raw Node)
 ;    (MC-1), so the local needs no cast. Dispatch on whether the tail is empty.
 (defmacro tail-tag (form)
-  (let ((tail (raw Node)) (if (= (form kind) NODE-CELL) (form cdr) null))
+  (let ((tail (raw Node)) (if (= (form 'kind) NODE-CELL) (form 'cdr) null))
     (if (= tail null)
       `(printf "no-tail\n")
       `(printf "has-tail\n"))))
@@ -30,9 +30,9 @@
 ;    KIND of the argument. `(x kind)` needs no (cast ptr:Node …); the quasiquote
 ;    branches all join as (raw Node).
 (defmacro describe (x)
-  (cond (= (x kind) NODE-INT)   `(printf "int %d\n" ~x)
-        (= (x kind) NODE-STR)   `(printf "str %s\n" ~x)
-        (= (x kind) NODE-FLOAT) `(printf "float %f\n" ~x)
+  (cond (= (x 'kind) NODE-INT)   `(printf "int %d\n" ~x)
+        (= (x 'kind) NODE-STR)   `(printf "str %s\n" ~x)
+        (= (x 'kind) NODE-FLOAT) `(printf "float %f\n" ~x)
         true                    `(printf "other\n")))
 
 (defn main ():int

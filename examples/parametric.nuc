@@ -26,16 +26,16 @@
 ;    because the colon form p:(...) does not tokenise for a parenthesised RHS.
 ; ----------------------------------------------------------------
 (defn pair-first ((p (ref (Pair A B)))):A
-  (return (p fst)))
+  (return (p 'fst)))
 
 (defn pair-second ((p (ref (Pair A B)))):B
-  (return (p snd)))
+  (return (p 'snd)))
 
 (defn box-val ((b (ref (Box T)))):T
-  (return (b val)))
+  (return (b 'val)))
 
 (defn box-len ((b (ref (Box T)))):usize
-  (return (b len)))
+  (return (b 'len)))
 
 ; ----------------------------------------------------------------
 ; 5. Parametric protocol — element type E is a protocol parameter.
@@ -47,7 +47,7 @@
 
 ; Concrete implementation for Box T: return the stored value.
 (defn get-elem ((self (ref (Box T))) i:usize):T
-  (return (self val)))
+  (return (self 'val)))
 
 ; Extend the template: every Box T conforms to (Container T).
 ; This binds the protocol's extra parameter E := T.

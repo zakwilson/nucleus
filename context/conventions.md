@@ -5705,3 +5705,21 @@ are easy to get wrong, and both were measured on Stage 16's
 The same asymmetry applies to any "how many places do X" question answered from
 inside the compiler: it answers about emitted code, and a grep answers about
 source text. Neither is the other's sanity check.
+
+## The compiler SYNTHESIZES member accesses — a source migration cannot reach them
+
+`fn-rewrite-captures` builds `(. self field)` for every captured variable, and
+the env-drop / `__alloc` paths build more; there are twelve such construction
+sites. They carry a bare symbol selector that no grep, and no rewrite driven by
+source text, will ever see — the cell is built, not read.
+
+This is why Stage 16's selector migration built `--strict-selectors` before
+touching any source: the flag reports what is *emitted*, so it found these,
+and a spelling change that had only rewritten source would have broken every
+closure in the language the moment the rule flipped. They now go through
+`quoted-selector` (`src/nucleusc.nuc`).
+
+The general rule: before changing what a **spelling** means, ask the compiler
+which of its own emissions use that spelling. A macro's quasiquote template is
+the same hazard one layer up — the template is data, so a form inside it is
+reported at the macro's USE site with a gensym receiver, never at the template.

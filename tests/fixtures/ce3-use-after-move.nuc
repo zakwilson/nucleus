@@ -12,7 +12,7 @@
 (defstruct Res id:i32 buf:ptr)
 
 (defn drop (self:ptr:Res):void
-  (free (self buf)))
+  (free (self 'buf)))
 
 (extend Res Drop)
 

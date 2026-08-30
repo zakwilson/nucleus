@@ -14,7 +14,7 @@
 ; get a "p" prefix on their pointee so ptr:Circle and Circle stay distinct.
 (defn type-mangle-token (t:raw:Type):CStr
   (let (tt:raw:Type t
-        k:i32 (tt kind))
+        k:i32 (tt 'kind))
     (case k
       TY-VOID (return "void")
       TY-BOOL (return "bool")
@@ -32,9 +32,9 @@
       TY-F80  (return "f80")
       TY-F128 (return "f128")
       TY-PTR
-        (if (= (tt elem) null)
+        (if (= (tt 'elem) null)
           (return "ptr")
-          (return (fmt-s "p%s" (type-mangle-token (tt elem)))))
+          (return (fmt-s "p%s" (type-mangle-token (tt 'elem)))))
       ; Stage 15 B3′ (name-resolution.md §8.1 step 2): the type's `ir-name`, not
       ; its `name`. Since B3′ a namespaced type's registry key carries a `/`
       ; (`dp/Fox`), which is illegal in an LLVM symbol; `ir-name` is the same
@@ -42,9 +42,9 @@
       ; computed once at registration. `ir-name == name` for every `user` type,
       ; so every mangled symbol in this compiler and in `lib/` is unchanged.
       TY-STRUCT
-        (return (-> tt (_ sdef) (unsafe/cast ptr:StructDef _) (_ ir-name)))
+        (return (-> tt (_ 'sdef) (unsafe/cast ptr:StructDef _) (_ 'ir-name)))
       TY-UNION
-        (return (-> tt (_ sdef) (unsafe/cast ptr:StructDef _) (_ ir-name)))
+        (return (-> tt (_ 'sdef) (unsafe/cast ptr:StructDef _) (_ 'ir-name)))
       TY-FN (return "fn")
       TY-CSTR (return "cstr")
       TY-CHAR (return "Char")
@@ -56,8 +56,8 @@
       ; today (an array cannot be a parameter or a generic argument), but the
       ; fall-through "x" would have collided with every other unmodelled kind.
       TY-ARRAY (return (fmt-2s "a%s_%s"
-                         (fmt-i32 "%d" (tt arr-len))
-                         (type-mangle-token (tt elem))))
+                         (fmt-i32 "%d" (tt 'arr-len))
+                         (type-mangle-token (tt 'elem))))
       (return "x"))))
 
 ; ============================================================
@@ -84,9 +84,9 @@
 
 (defn fnty-intern (t:ref:Type):CStr
   (doseq (entry g-fnty (HashMapEntryIter CStr ref:Type))
-         (when (= ((addr-of entry) val)
+         (when (= ((addr-of entry) 'val)
                   t)
-               (return ((addr-of entry) key))))
+               (return ((addr-of entry) 'key))))
   (let (name:CStr (intern-str (fmt-i32 "__fnty_%d" g-fnty-id)))
     (inc! g-fnty-id)
     (assoc g-fnty name t)
@@ -106,7 +106,7 @@
 ; spells to its interned "__fnty_N" name (above), not "ptr".
 (defn type-spelling (t:raw:Type):CStr
   (let (tt:raw:Type t
-        k:i32 (tt kind))
+        k:i32 (tt 'kind))
     (case k
       TY-VOID (return "void")
       TY-BOOL (return "bool")
@@ -123,8 +123,8 @@
       TY-F16  (return "f16")
       TY-F80  (return "f80")
       TY-F128 (return "f128")
-      TY-STRUCT (return (-> tt (_ sdef) (unsafe/cast ptr:StructDef _) (_ name)))
-      TY-UNION  (return (-> tt (_ sdef) (unsafe/cast ptr:StructDef _) (_ name)))
+      TY-STRUCT (return (-> tt (_ 'sdef) (unsafe/cast ptr:StructDef _) (_ 'name)))
+      TY-UNION  (return (-> tt (_ 'sdef) (unsafe/cast ptr:StructDef _) (_ 'name)))
       TY-CSTR  (return "CStr")
       TY-CHAR  (return "Char")
       TY-ERR   (return "Err")
@@ -135,9 +135,9 @@
       TY-FN
         (return (fnty-intern (unsafe/cast ref:Type t)))
       TY-PTR
-        (if (= (tt elem) null)
+        (if (= (tt 'elem) null)
           (return "ptr")
-          (return (fmt-s "ptr:%s" (type-spelling (tt elem)))))
+          (return (fmt-s "ptr:%s" (type-spelling (tt 'elem)))))
       ; Stage 15 W8 G-2. This spelling is DIAGNOSTIC-ONLY and deliberately not
       ; round-trippable through parse-type-name: type-spelling's round-trip
       ; contract exists for conformance keys and generic substitution, and an
@@ -146,8 +146,8 @@
       ; the old fall-through, which called every array "ptr".
       TY-ARRAY
         (return (fmt-2s "(array %s %s)"
-                  (type-spelling (tt elem))
-                  (fmt-i32 "%d" (tt arr-len))))
+                  (type-spelling (tt 'elem))
+                  (fmt-i32 "%d" (tt 'arr-len))))
       (return "ptr"))))
 
 (defn tyvar-index-of (name:CStr tyvars:ptr ntv:i32):i32
@@ -169,7 +169,7 @@
         acc:ptr null)
     (let (it:ListIter (list-iter segs))
       (doseq-iter (e (addr-of it))
-        (let (seg:ptr ((as ptr:Node e) s)
+        (let (seg:ptr ((as ptr:Node e) 's)
               idx:i32 (tyvar-index-of seg tyvars ntv)
               piece:ptr (if (>= idx 0) (aref (as ptr:ptr spellings) idx) seg))
           (if (= acc null) (set! acc piece) (set! acc (fmt-2s "%s:%s" acc piece))))))
@@ -181,14 +181,14 @@
 (defn subst-tyvars-node (node:raw:Node tyvars:ptr spellings:ptr ntv:i32):raw:Node
   (when (= node null) (return null))
   (let (n:raw:Node node)
-    (case (n kind)
+    (case (n 'kind)
       NODE-SYM
-        (let (ns:ptr (subst-tyvars-sym (n s) tyvars spellings ntv (n line)))
-          (when (= ns (n s)) (return node))
+        (let (ns:ptr (subst-tyvars-sym (n 's) tyvars spellings ntv (n 'line)))
+          (when (= ns (n 's)) (return node))
           (let (new:ptr:Node (as ptr:Node (alloc-node)))
-            (.set! new kind NODE-SYM)
-            (.set! new line (n line))
-            (.set! new s ns)
+            (.set! new 'kind NODE-SYM)
+            (.set! new 'line (n 'line))
+            (.set! new 's ns)
             (return new)))
       ; Stage 14 defn-signature.md S1: a new-style return type rides in a
       ; NODE-KEYWORD (`:T`, `:ptr:T`) at the head of the stamped body tail. Substitute
@@ -197,15 +197,15 @@
       ; tyvar is returned unchanged (subst-tyvars-sym is identity), so legacy bodies
       ; are unaffected.
       NODE-KEYWORD
-        (let (ns:ptr (subst-tyvars-sym (n s) tyvars spellings ntv (n line)))
-          (when (= ns (n s)) (return node))
+        (let (ns:ptr (subst-tyvars-sym (n 's) tyvars spellings ntv (n 'line)))
+          (when (= ns (n 's)) (return node))
           (let (new:ptr:Node (as ptr:Node (alloc-node)))
-            (.set! new kind NODE-KEYWORD)
-            (.set! new line (n line))
-            (.set! new s ns)
+            (.set! new 'kind NODE-KEYWORD)
+            (.set! new 'line (n 'line))
+            (.set! new 's ns)
             (return new)))
       NODE-CELL
-        (return (make-cell (subst-tyvars-node (n car) tyvars spellings ntv)
-                           (subst-tyvars-node (n cdr) tyvars spellings ntv)
-                           (n line)))
+        (return (make-cell (subst-tyvars-node (n 'car) tyvars spellings ntv)
+                           (subst-tyvars-node (n 'cdr) tyvars spellings ntv)
+                           (n 'line)))
       (return node))))

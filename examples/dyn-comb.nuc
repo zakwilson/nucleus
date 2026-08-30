@@ -18,17 +18,17 @@
 (defstruct Circle r:i32)
 (extend Circle Render)
 (defn render ((self (ref Circle))):i32
-  (return (* 3 (self r))))
+  (return (* 3 (self 'r))))
 
 (defstruct Square s:i32)
 (extend Square Render)
 (defn render ((self (ref Square))):i32
-  (return (* (self s) (self s))))
+  (return (* (self 's) (self 's))))
 
 (defstruct Label text:i32)
 (extend Label Render)
 (defn render ((self (ref Label))):i32
-  (return (+ 1000 (self text))))
+  (return (+ 1000 (self 'text))))
 
 (defn main ():i32
   (with ((v (ref (Vector (dyn Render)))) (alloca (Vector (dyn Render))))

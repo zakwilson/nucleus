@@ -13,10 +13,10 @@
   (describe (self:ptr:Self):ptr))
 
 ; Concrete implementations are ordinary overloaded defns (Option 1 substrate).
-(defn area (s:ptr:Circle):i32 (return (* (* (s rad) (s rad)) 3)))
+(defn area (s:ptr:Circle):i32 (return (* (* (s 'rad) (s 'rad)) 3)))
 (defn describe (s:ptr:Circle):ptr (return "circle"))
 
-(defn area (s:ptr:Square):i32 (return (* (s side) (s side))))
+(defn area (s:ptr:Square):i32 (return (* (s 'side) (s 'side))))
 (defn describe (s:ptr:Square):ptr (return "square"))
 
 ; Code-free conformance assertions; fail to compile if a method is missing.
@@ -26,8 +26,8 @@
 (defn main ():int
   (let (c:ptr:Circle (alloca Circle)
         sq:ptr:Square (alloca Square))
-    (.set! c rad 5)
-    (.set! sq side 4)
+    (.set! c 'rad 5)
+    (.set! sq 'side 4)
     (printf "%s area=%d\n" (describe c) (area c))
     (printf "%s area=%d\n" (describe sq) (area sq)))
   (return 0))

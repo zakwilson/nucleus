@@ -29,15 +29,15 @@
   (let (loc:(fn i32)(i32) null                ; let init
         h:ptr:Hooks (alloca Hooks)
         total:i32 0)
-    (.set! h before null)                     ; field store
-    (.set! h after twice)
+    (.set! h 'before null)                     ; field store
+    (.set! h 'after twice)
 
     ; each unset slot answers the question item 18 made askable
     (when (= loc null)        (set! total (+ total 1)))
     (when (= g-hook null)     (set! total (+ total 2)))
-    (when (= (h before) null) (set! total (+ total 4)))
+    (when (= (h 'before) null) (set! total (+ total 4)))
     (when (= (no-hook) null)  (set! total (+ total 8)))
-    (when (!= (h after) null) (set! total (+ total 16)))
+    (when (!= (h 'after) null) (set! total (+ total 16)))
 
     ; and round-trip: set from the literal, then to a real function and back
     (set! loc twice)                          ; set! to a function

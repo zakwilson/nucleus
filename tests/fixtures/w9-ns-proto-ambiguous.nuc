@@ -13,7 +13,7 @@
 (import-prefixed nsdescribe2 dpx2)
 
 (defstruct Cat n:i32)
-(defn describe ((self (ref Cat))):i32 (return (+ 100 (self n))))
+(defn describe ((self (ref Cat))):i32 (return (+ 100 (self 'n))))
 (extend Cat Describe)
 
 (defn main ():i32 (return 0))
