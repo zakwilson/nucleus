@@ -13,7 +13,7 @@ Examples:
 - `(defstruct Outer (pt (struct x:i32 y:i32)) tag:i32)` — nested by value
 - `(defn take ((p (ptr (struct x:i32)))):i32  ...)` — parameter typed as anonymous struct pointer
 
-Use `(.& obj 'field)` to obtain a pointer to a field without loading it. Result is typed `(ptr field-type)`, so it composes with `.set!`, `deref`, and further `.&` calls — e.g. `(.set! (.& o 'point) 'x 10)` writes through a value-typed nested struct field.
+Use `(addr-of obj 'field)` to obtain a pointer to a field without loading it. Result is typed `(ptr field-type)`, so it composes with `.set!`, `deref`, and further `addr-of` calls — e.g. `(.set! (addr-of o 'point) 'x 10)` writes through a value-typed nested struct field.
 
 ## Packed structs — `(defstruct :packed …)`
 
@@ -35,7 +35,7 @@ Three things change together, and only the first is visible in a `sizeof`:
   would be a false promise — a fault on a strict-alignment target and a
   miscompile under vectorization on x86.
 
-`(.& p 'field)` on a packed struct hands back an ordinary `(ref T)`, which carries
+`(addr-of p 'field)` on a packed struct hands back an ordinary `(ref T)`, which carries
 no alignment record — a load through *that* pointer claims the type's natural
 alignment again. This is the same hole C has (`&packed.x` is why GCC has
 `-Waddress-of-packed-member`); take the field by value instead.
@@ -113,8 +113,8 @@ to start at the next boundary of its declared type.
 (defstruct C (:bits 1 x:ui32) (:bits 0 z:ui32) (:bits 1 y:ui32))   ; sizeof 8
 ```
 
-Reads and writes look like any other field — `(. p 'ver)`, `(.set! p 'ver 4)` —
-and a signed bit-field sign-extends on read, as in C. **`(.& p 'ver)` is refused**:
+Reads and writes look like any other field — `(get p 'ver)`, `(.set! p 'ver 4)` —
+and a signed bit-field sign-extends on read, as in C. **`(addr-of p 'ver)` is refused**:
 a bit-field shares its bytes with its neighbours and has no address. That is C's
 own rule (`&s.bits` is ill-formed there too), not a Nucleus limitation.
 
@@ -140,7 +140,7 @@ type:
 (defstruct Outer tag:i32 (:anon Inner) z:i32)
 (defstruct Inline tag:i32 (:anon (struct a:i32 b:i32)))   ; C's own spelling
 
-(defn read (p:ptr:Outer):i32 (return (. p 'a)))     ; reaches through the member
+(defn read (p:ptr:Outer):i32 (return (get p 'a)))     ; reaches through the member
 ```
 
 The member is an ordinary nested member — it occupies its own space and has its
@@ -192,7 +192,7 @@ via the field GEP with no load — so it is directly indexable:
 
 Consequently an array field cannot be assigned as a whole (`(.set! r 'cells …)`
 is refused, as `s.xs = …` is in C); write through the decayed pointer with
-`aset!`, or copy with `memcpy`. `(.& r 'cells)` gives the same address as
+`aset!`, or copy with `memcpy`. `(addr-of r 'cells)` gives the same address as
 `(r 'cells)`.
 
 A `defvar` of a struct with an array field can be given a constant initializer
@@ -210,7 +210,7 @@ rules, including where it is refused.
 
 ## Passing and returning structs by value
 
-A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or return type is passed/returned per the **platform C ABI**, so it interoperates correctly with C functions compiled by the system `cc`. On x86_64 System V this means small structs are coerced into registers (e.g. `{i32,i32}` → one `i64`; a struct with a `float` field whose eightbyte also holds an integer → `i64`), and structs larger than 16 bytes are passed `byval` / returned via a hidden `sret` pointer. aarch64, `avr`, and `riscv64` instead pass every `ABI-MEMORY`-classified struct as a plain pointer (no `byval` — none of those targets' ABIs has that attribute); on `avr` this applies to **every** struct/union regardless of size, not just those over 16 bytes, because the SysV eightbyte classifier's register-sized-chunk model has no counterpart on an 8-bit target — `abi-classify` bypasses eightbyte classification for `avr` entirely rather than adapting it. On `riscv64` (lp64d), struct-by-value follows the psABI's **hard-float** rules. An aggregate is first *flattened*: nested structs and arrays expand recursively into their scalar members, and a union never flattens. If the flattened list is exactly one FP real, two FP reals, or one FP real plus one integer ≤ XLEN **in either order**, the value travels in FP registers with its members' own IR types and offsets — `struct {float f;}` → `float`, `struct {double a,b;}` → `{double,double}`, `struct {float v[2];}` → `{float,float}` (two separate FPRs, where x86_64 SysV packs the same struct into one `<2 x float>` eightbyte), `struct {i32 i; f32 f;}` → `{i32,float}`, `struct {f32 f; i32 i;}` → `{float,i32}`. This applies only while the registers the rule needs are still free at that argument position: the budget is fa0-fa7 and a0-a7, an `ABI-MEMORY` return spends one of the latter on its hidden `sret` pointer, and every argument in a call or parameter list is charged in declaration order. Anything that does not qualify — three or more flattened members, a union, an over-wide member, a **variadic** argument (the `...` tail always uses the integer convention, with no flattening and no FP registers), or exhausted registers — falls back to the integer convention, coercing a struct ≤ 16 bytes into integer registers (`i64` / `{i64,i64}`). Returns are classified against a0/a1/fa0/fa1, which are always available, so a return never falls back for want of registers. A struct value is produced by dereferencing a pointer (`@p`) and consumed by storing the call result (`(ptr-set! q (make ...))`). Reading a field needs no pointer: `(. p 'f)`, `(p 'f)` and `(_get p 'f)` all accept a struct **value** — a by-value parameter, a `let`-bound struct local, or a call result read in place (`(. (mk 3) 'f)`). Writing one does: `.set!` and `.&` need the receiver's storage, so they take the same receivers `addr-of` does — a binding, not a temporary (`(.set! (mk 3) 'f 1)` is an error; bind it first). A function may take or return a struct defined anywhere in the same compilation unit or an import — struct definitions are registered before function signatures are resolved.
+A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or return type is passed/returned per the **platform C ABI**, so it interoperates correctly with C functions compiled by the system `cc`. On x86_64 System V this means small structs are coerced into registers (e.g. `{i32,i32}` → one `i64`; a struct with a `float` field whose eightbyte also holds an integer → `i64`), and structs larger than 16 bytes are passed `byval` / returned via a hidden `sret` pointer. aarch64, `avr`, and `riscv64` instead pass every `ABI-MEMORY`-classified struct as a plain pointer (no `byval` — none of those targets' ABIs has that attribute); on `avr` this applies to **every** struct/union regardless of size, not just those over 16 bytes, because the SysV eightbyte classifier's register-sized-chunk model has no counterpart on an 8-bit target — `abi-classify` bypasses eightbyte classification for `avr` entirely rather than adapting it. On `riscv64` (lp64d), struct-by-value follows the psABI's **hard-float** rules. An aggregate is first *flattened*: nested structs and arrays expand recursively into their scalar members, and a union never flattens. If the flattened list is exactly one FP real, two FP reals, or one FP real plus one integer ≤ XLEN **in either order**, the value travels in FP registers with its members' own IR types and offsets — `struct {float f;}` → `float`, `struct {double a,b;}` → `{double,double}`, `struct {float v[2];}` → `{float,float}` (two separate FPRs, where x86_64 SysV packs the same struct into one `<2 x float>` eightbyte), `struct {i32 i; f32 f;}` → `{i32,float}`, `struct {f32 f; i32 i;}` → `{float,i32}`. This applies only while the registers the rule needs are still free at that argument position: the budget is fa0-fa7 and a0-a7, an `ABI-MEMORY` return spends one of the latter on its hidden `sret` pointer, and every argument in a call or parameter list is charged in declaration order. Anything that does not qualify — three or more flattened members, a union, an over-wide member, a **variadic** argument (the `...` tail always uses the integer convention, with no flattening and no FP registers), or exhausted registers — falls back to the integer convention, coercing a struct ≤ 16 bytes into integer registers (`i64` / `{i64,i64}`). Returns are classified against a0/a1/fa0/fa1, which are always available, so a return never falls back for want of registers. A struct value is produced by dereferencing a pointer (`@p`) and consumed by storing the call result (`(ptr-set! q (make ...))`). Reading a field needs no pointer: `(get p 'f)`, `(p 'f)` and `(_get p 'f)` all accept a struct **value** — a by-value parameter, a `let`-bound struct local, or a call result read in place (`(get (mk 3) 'f)`). Writing one does: `.set!` and the 2-argument `addr-of` need the receiver's storage, so they take the same receivers 1-argument `addr-of` does — a binding, not a temporary (`(.set! (mk 3) 'f 1)` is an error; bind it first). A function may take or return a struct defined anywhere in the same compilation unit or an import — struct definitions are registered before function signatures are resolved.
 
 ### Compound literals in by-value struct positions
 
@@ -757,7 +757,7 @@ reinterpretation, exactly `unsafe/cast`'s contract (no checking; the raw frontie
 ```lisp
 (defstruct Scalar kind:i32 (data (union as-int:i64 as-float:f64)))
 (let (s:ptr:Scalar (alloca Scalar)
-      (d (ptr (union as-int:i64 as-float:f64))) (.& s 'data))
+      (d (ptr (union as-int:i64 as-float:f64))) (addr-of s 'data))
   (.set! d 'as-int 42)
   (d 'as-int))
 ```
@@ -781,7 +781,7 @@ parameter-list group must be *adjacent* to `(fn ret)` (see
                  n:i32)))                 ; ... sharing the slot with a scalar
 
 (let (r:ptr:Row (alloca Row)
-      (slot (ptr (union acv:(fn void)() ac1:(fn i32)(ptr) n:i32))) (.& r 'action))
+      (slot (ptr (union acv:(fn void)() ac1:(fn i32)(ptr) n:i32))) (addr-of r 'action))
   (.set! slot 'acv some-void-fn)
   (funcall (slot acv)))
 ```

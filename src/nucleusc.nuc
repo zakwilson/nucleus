@@ -993,7 +993,7 @@
   ; is copied BY VALUE into each Vector at construction, so a Vector built before
   ; the constant took effect would stay libc-backed for its whole lifetime even
   ; with the global reading ALLOC-ARENA now.
-  (let (a:ptr:AllocHandle (as ptr:AllocHandle (.& g-structs 'alloc)))
+  (let (a:ptr:AllocHandle (as ptr:AllocHandle (addr-of g-structs 'alloc)))
     (when (!= (a 'kind) ALLOC-ARENA)
       (fprintf stderr "internal error: g-structs is not arena-backed (kind=%d)\n" (a 'kind))
       (exit 1))))
@@ -3189,7 +3189,19 @@
                                        verb name q:CStr))
                       note:CStr)))))
 
+; Stage 16 (dot-forms.md §3): `.` and `.&` are gone, but they stay RESERVED, so
+; the spelling can never be shadowed and this exact answer always reaches the
+; user — the shape Stage 14 gave retired `cast` / `ptr+`.
+(defn retired-dot-form-message (name:CStr):ptr
+  (when (= (strcmp name ".") 0)
+    (return "'.' was retired in Stage 16: use 'get' -- (get p 'field), or head position (p 'field)"))
+  (when (= (strcmp name ".&") 0)
+    (return "'.&' was retired in Stage 16: use the 2-argument 'addr-of' -- (addr-of p 'field)"))
+  (return null))
+
 (defn unresolved-name-message (verb:CStr name:CStr):ptr
+  (let (dot-note:ptr (retired-dot-form-message name))
+    (when (!= dot-note null) (return dot-note)))
   ; Stage 15 B2b: the retired bare `unsafe/` spellings first — the roster names
   ; are reserved, so this cannot shadow a user name, and its answer is exact
   ; where every tier below is a guess.
@@ -5657,7 +5669,7 @@
       (return (alloc-val ftype val)))))
 
 ; Stage 16 SV-1 (design/stage16-ergonomics/c-boundary-defects.md §3): a struct
-; VALUE is a legal member-access receiver — `(. v x)` on a by-value parameter or
+; VALUE is a legal member-access receiver — `(v 'x)` on a by-value parameter or
 ; a call result is the ordinary C spelling, and refusing it is why every libclang
 ; cursor needed laundering through an alloca. The four access sites keep their
 ; single pointer-to-struct path; the copy into addressable storage happens here.
@@ -6342,7 +6354,12 @@
 
 (defn emit-addr-of (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:(raw Node) call)
-    (when (!= (node-len cc) 2) (die-at (cc 'line) "addr-of expects 1 arg"))
+    ; An arity overload, not a new dispatch: 1-arg is a binding's address, 2-arg
+    ; is a field's. The two cannot collide -- a binding address takes a bare
+    ; symbol and a field address takes a receiver plus a selector
+    ; (dot-forms.md §3). `node-type-addr-of` splits on the same arity.
+    (when (= (node-len cc) 3) (return (emit-field-addr call scope)))
+    (when (!= (node-len cc) 2) (die-at (cc 'line) "addr-of expects 1 or 2 args"))
     (let (target:(raw Node) (node-at cc 1))
       (when (!= (target 'kind) NODE-SYM)
         (die-at (node-line (as ptr target) (cc 'line)) "addr-of: target must be symbol"))
@@ -7377,9 +7394,7 @@
         (when (or (= (strcmp h "quote") 0) (= (strcmp h "quasiquote") 0))
           (return))
         ; Field access: index-2 operand is a literal field name, not a value.
-        (when (or (= (strcmp h ".") 0)
-                  (= (strcmp h "_get") 0)
-                  (= (strcmp h ".&") 0))
+        (when (= (strcmp h "_get") 0)
           (fn-capture-walk (node-at node 1) scope bound cap-box line)
           (return))
         (when (= (strcmp h ".set!") 0)
@@ -7592,7 +7607,7 @@
     (return (as ptr n))))
 
 ; Rewrite the lambda body so every reference to a captured enclosing-local
-; `name` becomes a field access `(. self name)` on the closure environment.
+; `name` becomes a field access `(_get self 'name)` on the closure environment.
 ; Mirrors fn-capture-walk's position discipline exactly: a name in `bound`
 ; (the lambda's own params / a nested let/with/lambda binding) is left alone, a
 ; field-name operand of `.`/`_get`/`.&`/`.set!` is not a value reference, and
@@ -7609,7 +7624,7 @@
 (defn fn-rewrite-captures (node:(raw Node) caps:(raw Node) bound:(raw Node) self-sym:(raw Node) line:i32 mode:i32):ptr
   (when (= node null) (return null))
   (let (nn:(raw Node) node)
-    ; A bare symbol: rewrite to (. self name) iff it is a (non-shadowed) capture.
+    ; A bare symbol: rewrite to (_get self 'name) iff it is a (non-shadowed) capture.
     (when (= (nn 'kind) NODE-SYM)
       (let (name:ptr null
             ti:ptr null)
@@ -7619,11 +7634,11 @@
         (when (and (= ti null) (!= (fn-bound-has caps name) 0))
           ; A capture reference rewrites to a field access on `self`. mode 2
           ; (cfn): the env field holds a POINTER into the captured local, so a
-          ; value use reads through it — (deref (. self name)). mode 0/1
-          ; (vfn/mfn): the field holds the value — (. self name).
+          ; value use reads through it — (deref (_get self 'name)). mode 0/1
+          ; (vfn/mfn): the field holds the value — (_get self 'name).
           (if (= mode 2)
             (let (field-access:ptr
-                    (make-cell (intern-symbol ".")
+                    (make-cell (intern-symbol "_get")
                       (make-cell self-sym
                         (make-cell (quoted-selector (as ptr (intern-symbol name)) line) null line)
                         line)
@@ -7631,7 +7646,7 @@
               (return (make-cell (intern-symbol "deref")
                         (make-cell field-access null line)
                         line)))
-            (return (make-cell (intern-symbol ".")
+            (return (make-cell (intern-symbol "_get")
                       (make-cell self-sym
                         (make-cell (quoted-selector (as ptr (intern-symbol name)) line) null line)
                         line)
@@ -7648,10 +7663,10 @@
           (return node))
         ; addr-of a capture: `(addr-of cap)` takes the address of the by-value
         ; local. Inside the closure that local lives as an env field. mode 0/1
-        ; (vfn/mfn): the address is `(.& self cap)` (the field's address) —
+        ; (vfn/mfn): the address is `(addr-of self 'cap)` (the field's address) —
         ; addr-of's target must be a binding name, and a field load is an rvalue.
         ; mode 2 (cfn): the field ALREADY holds the captured local's address, so
-        ; `(addr-of cap)` == `(. self cap)` (no extra indirection). A non-capture
+        ; `(addr-of cap)` == `(_get self 'cap)` (no extra indirection). A non-capture
         ; / shadowed operand keeps the ordinary addr-of.
         (when (and (= (strcmp h "addr-of") 0) (= (node-len node) 2))
           (let (opnode:ptr:Node (unsafe/cast ptr:Node (node-at node 1)))
@@ -7663,20 +7678,19 @@
                            (= (fn-bound-has bound oname) 0)
                            (!= (fn-bound-has caps oname) 0))
                   (if (= mode 2)
-                    (return (make-cell (intern-symbol ".")
+                    (return (make-cell (intern-symbol "_get")
                               (make-cell self-sym
                                 (make-cell (quoted-selector (as ptr (intern-symbol oname)) line) null line)
                                 line)
                               line))
-                    (return (make-cell (intern-symbol ".&")
+                    (return (make-cell (intern-symbol "addr-of")
                               (make-cell self-sym
                                 (make-cell (quoted-selector (as ptr (intern-symbol oname)) line) null line)
                                 line)
                               line))))))))
         ; Field access: index-2 operand is a literal field name; rewrite only the
         ; subject (index 1) and rebuild around the verbatim field name.
-        (when (or (= (strcmp h ".") 0)
-                  (= (strcmp h "_get") 0) (= (strcmp h ".&") 0))
+        (when (= (strcmp h "_get") 0)
           (let (subj:ptr (fn-rewrite-captures (node-at node 1) caps bound self-sym line mode))
             (return (make-cell hd
                       (make-cell subj
@@ -7701,7 +7715,7 @@
         ; of the capture persist across invoke calls (mode 0/1) or write back
         ; through the captured pointer (mode 2 cfn).
         ; (set! c v) -> mode 0/1: (.set! self c (rewrite v))
-        ;           -> mode 2:   (ptr-set! (. self c) (rewrite v))
+        ;           -> mode 2:   (ptr-set! (_get self 'c) (rewrite v))
         ; A set! whose target is NOT a capture falls through to the generic
         ; rewrite, which leaves the target symbol verbatim (correct).
         (when (and (= (strcmp h "set!") 0) (= (node-len node) 3))
@@ -7718,7 +7732,7 @@
                   (let (val-rw:ptr (fn-rewrite-captures (node-at node 2) caps bound self-sym line mode)
                         cname-sym:ptr (as ptr (intern-symbol cname))
                         field-access:ptr
-                          (make-cell (intern-symbol ".")
+                          (make-cell (intern-symbol "_get")
                             (make-cell self-sym
                               (make-cell (quoted-selector cname-sym line) null line)
                               line)
@@ -7737,8 +7751,8 @@
                                   line)
                                 line)))))))))
         ; inc!/dec! on a captured name: read-modify-write through the env field.
-        ; (inc! c) -> mode 0/1: (.set! self c (+ (. self c) 1))
-        ;         -> mode 2:   (ptr-set! (. self c) (+ (deref (. self c)) 1))
+        ; (inc! c) -> mode 0/1: (.set! self 'c (+ (_get self 'c) 1))
+        ;         -> mode 2:   (ptr-set! (_get self 'c) (+ (deref (_get self 'c)) 1))
         ; (dec! uses - instead of +). A non-captured target falls through.
         (when (and (or (= (strcmp h "inc!") 0) (= (strcmp h "dec!") 0))
                    (= (node-len node) 2))
@@ -7758,13 +7772,13 @@
                         cname-sym:ptr (as ptr (intern-symbol cname)))
                     (if (= mode 2)
                       (let (fa1:ptr
-                              (make-cell (intern-symbol ".")
+                              (make-cell (intern-symbol "_get")
                                 (make-cell self-sym
                                   (make-cell (quoted-selector cname-sym line) null line)
                                   line)
                                 line)
                             fa2:ptr
-                              (make-cell (intern-symbol ".")
+                              (make-cell (intern-symbol "_get")
                                 (make-cell self-sym
                                   (make-cell (quoted-selector cname-sym line) null line)
                                   line)
@@ -7785,7 +7799,7 @@
                                     line)
                                   line)))
                       (let (read-field:ptr
-                              (make-cell (intern-symbol ".")
+                              (make-cell (intern-symbol "_get")
                                 (make-cell self-sym
                                   (make-cell (quoted-selector cname-sym line) null line)
                                   line)
@@ -8011,8 +8025,8 @@
 
 ; Synthesize, register, and queue the closure's `drop` method for an OWNING env.
 ; mode 0/1 (vfn/mfn — at least one field is a Drop type):
-;   (defn drop:void ((self (ptr <Env>))) (drop (.& self fK)) … reverse order)
-; Each owned field is dropped via `(drop (.& self f))` — `.&` yields a (ref
+;   (defn drop:void ((self (ptr <Env>))) (drop (addr-of self 'fK)) … reverse order)
+; Each owned field is dropped via `(drop (addr-of self 'f))` — it yields a (ref
 ; FieldType) whose nominal Drop method resolves through the `drop` generic,
 ; exactly like a collection's hand-written drop (e.g. String drops its `bytes`).
 ; Fields are dropped in REVERSE declaration order (innermost-first, mirroring
@@ -8026,7 +8040,7 @@
 ; via the stored handle (the leading __alloc field), mirroring how a collection's
 ; drop frees its buffer through its stored AllocHandle (lib/vector.nuc):
 ;   (defn drop:void ((self (ptr <Env>)))
-;     (alloc-handle-free (. self __alloc) (unsafe/cast (raw ui8) self) (sizeof Env) 8))
+;     (alloc-handle-free (_get self '__alloc) (unsafe/cast (raw ui8) self) (sizeof Env) 8))
 ; The (Env, Drop) conformance is recorded unconditionally (a cfn always owns its
 ; env storage), so a with-bound cfn arms the cleanup.
 (defn fn-make-drop-method (env-sd:(raw StructDef) line:i32 mode:i32):void
@@ -8037,8 +8051,8 @@
     (if (= mode 2)
       ; cfn: free the env block through the stored allocator handle.
       (let (alloc-sym:ptr (as ptr (intern-symbol "__alloc"))
-            ; (. self __alloc) → the stored (ref AllocHandle).
-            handle-access:ptr (make-cell (intern-symbol ".")
+            ; (_get self '__alloc) → the stored (ref AllocHandle).
+            handle-access:ptr (make-cell (intern-symbol "_get")
                                   (make-cell self-sym
                                     (make-cell (quoted-selector alloc-sym line) null line)
                                     line)
@@ -8076,13 +8090,13 @@
                               line)
                             line))
         (set! body (make-cell freecall null line)))
-      ; vfn/mfn: reverse-order (drop (.& self fK)) over the Drop fields. Built
+      ; vfn/mfn: reverse-order (drop (addr-of self 'fK)) over the Drop fields. Built
       ; head-first by prepending in forward order → final spine is reverse order.
       (dotimes (k nf)
         (let (fty:ptr ((field-at (sd 'fields) k) 'type))
           (when (!= (type-conforms-drop fty) 0)
                 (let (fname:ptr ((field-at (sd 'fields) k) 'name)
-                                addr:ptr (make-cell (intern-symbol ".&")
+                                addr:ptr (make-cell (intern-symbol "addr-of")
                                                     (make-cell self-sym
                                                                (make-cell (quoted-selector (as ptr (intern-symbol fname)) line) null line)
                                                                line)
@@ -10592,42 +10606,42 @@
         (return i)))
     (return -1)))
 
-; (.& p field) -> pointer to the field within struct *p.
+; (addr-of p 'field) -> pointer to the field within struct *p (dot-forms.md §3).
 (defn emit-field-addr (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
-    (when (!= (node-len cc) 3) (die-at (cc 'line) ".& expects 2 args"))
-    (let (p:ref:Val (emit-lvalue-receiver (node-at cc 1) scope ".&" (cc 'line))
+    (when (!= (node-len cc) 3) (die-at (cc 'line) "addr-of: field address expects a receiver and a quoted selector"))
+    (let (p:ref:Val (emit-lvalue-receiver (node-at cc 1) scope "addr-of" (cc 'line))
           pt:ptr:Type (unsafe/cast ptr:Type (p 'type))
           ek:i32 (if (and (= (pt 'kind) TY-PTR) (!= (pt 'elem) null))
                    (-> pt (_ 'elem) (unsafe/cast ptr:Type _) (_ 'kind))
                    TY-VOID))
       (when (and (!= ek TY-STRUCT) (!= ek TY-UNION))
-        (die-at (cc 'line) ".&: operand must be a struct or union, or a pointer to one"))
-      (require-derefable pt (cc 'line) ".&")
+        (die-at (cc 'line) "addr-of: operand must be a struct or union, or a pointer to one"))
+      (require-derefable pt (cc 'line) "addr-of")
       (let (fn-node:(raw Node) (selector-literal-sym (node-at cc 2)))
         (when (= fn-node null)
-          (die-nonliteral-selector (node-at cc 2) (node-line (node-at cc 2) (cc 'line)) ".&"))
+          (die-nonliteral-selector (node-at cc 2) (node-line (node-at cc 2) (cc 'line)) "addr-of"))
         (let (sd:ptr:StructDef (unsafe/cast ptr:StructDef ((pt 'elem) 'sdef))
               idx:i32 (struct-field-idx (as ptr sd) (fn-node 's))
               afr:?ptr:FieldRef null)
           (reject-cycle-pending-sdef (as ptr sd)
                                      (node-line (as ptr fn-node) (cc 'line))
                                      "field address")
-          (union-field-guard (as ptr sd) (cc 'line) ".&")
+          (union-field-guard (as ptr sd) (cc 'line) "addr-of")
           (when (< idx 0)
             ; AN-2: an anonymous member's own field has an address like any other.
             (set! afr (struct-field-ref (as ptr sd) (fn-node 's)))
             (when (= afr null)
               (die-at (node-line (as ptr fn-node) (cc 'line))
-                (fmt-2s ".&: no field '%s' on struct '%s'" (fn-node 's) (sd 'name))))
+                (fmt-2s "addr-of: no field '%s' on struct '%s'" (fn-node 's) (sd 'name))))
             (reject-anon-ambiguous (fn-node 's) (sd 'name)
-                                   (node-line (as ptr fn-node) (cc 'line)) ".&"))
+                                   (node-line (as ptr fn-node) (cc 'line)) "addr-of"))
           ; BF-2: a bit-field has no address — it shares its bytes with its
           ; neighbours. This is C's own rule (`&s.bits` is ill-formed there too),
           ; so it is a faithful diagnostic rather than a Nucleus limitation.
           (when (!= (if (!= afr null) (afr 'bit-width) ((field-at (sd 'fields) idx) 'bit-width)) 0)
             (die-at (node-line (as ptr fn-node) (cc 'line))
-              (fmt-2s ".&: '%s' is a bit-field of '%s', and a bit-field has no address -- read it by value"
+              (fmt-2s "addr-of: '%s' is a bit-field of '%s', and a bit-field has no address -- read it by value"
                       (fn-node 's) (sd 'name))))
           (let (ftype:ptr (if (!= afr null) (afr 'type) ((field-at (sd 'fields) idx) 'type))
                 gep:ptr (p 'val))
@@ -10650,7 +10664,7 @@
               (.set! rt 'pkind PTR-REF)
               ; Interior address into the resource: keep the escape taint
               ; (lifecycle.md §2.2) and, Stage 13 L1, the frame-region flag —
-              ; so `(.& (addr-of p) f)` over a by-value struct param p stays
+              ; so `(addr-of (addr-of p) 'f)` over a by-value struct param p stays
               ; frame-tainted and is rejected if returned.
               (let (rv:ref:Val (alloc-val (as ptr rt) gep))
                 (val-copy-taint (as ptr rv) (as ptr p))
@@ -11889,8 +11903,6 @@
         (when (= hp 'ptr-set!) (return (emit-ptr-set n scope)))
         (when (= hp 'unsafe/ptr+) (return (emit-ptr-add n scope)))
         (when (= hp '_get) (return (emit-field-get n scope)))
-        (when (= hp '.) (return (emit-field-get n scope)))
-        (when (= hp '.&) (return (emit-field-addr n scope)))
         (when (= hp '.set!) (return (emit-field-set n scope)))
         (when (= hp 'get) (return (emit-get n scope)))
         (when (= hp 'invoke) (return (emit-invoke n scope)))

@@ -154,7 +154,7 @@
 (defn next ((self (ref SplitIter))) (Maybe ptr)
   (when (self 'done) (return none))
   (.set! self 'cur (split-iter-next self))
-  (return (some (.& self 'cur))))
+  (return (some (addr-of self 'cur))))
 
 ; ---------------------------------------------------------------------------
 ; LineIter — split a StrView on '\n', stripping trailing '\r' from each line.
@@ -231,7 +231,7 @@
 (defn next ((self (ref LineIter))) (Maybe ptr)
   (when (self 'done) (return none))
   (.set! self 'cur (lines-iter-next self))
-  (return (some (.& self 'cur))))
+  (return (some (addr-of self 'cur))))
 
 ; ---------------------------------------------------------------------------
 ; doseq-split — iterate a SplitIter / LineIter (a bare Iterator), binding `var`

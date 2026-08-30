@@ -22,5 +22,5 @@
 
 (defn use-after-move ():i32
   (with (r (make-res 7))
-    (with (f (mfn ():i32 (return (. (addr-of r) id))))   ; mfn moves r in
-      (return (. (addr-of r) id)))))                     ; use after move -> error
+    (with (f (mfn ():i32 (return (get (addr-of r) id))))   ; mfn moves r in
+      (return (get (addr-of r) id)))))                     ; use after move -> error

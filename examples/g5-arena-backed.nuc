@@ -34,7 +34,7 @@
   ; the vector copied at construction. A vector built before the handle took
   ; effect stays libc-backed for its whole lifetime even once the global reads
   ; ALLOC-ARENA.
-  (let (a:ptr:AllocHandle (as ptr:AllocHandle (.& g5-vec 'alloc)))
+  (let (a:ptr:AllocHandle (as ptr:AllocHandle (addr-of g5-vec 'alloc)))
     (printf "vector handle kind = %d\n" (a 'kind)))
   (conj g5-vec 7)
   (conj g5-vec 35)

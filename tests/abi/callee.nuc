@@ -9,8 +9,8 @@
 (defn nuc_pair_make (a:int b:int):Pair
   (let (q:ptr:Pair (alloca Pair)) (.set! q 'a a) (.set! q 'b b) @q))
 (defn nuc_pair_sum (p:Pair):int
-  (let (q:ptr:Pair (alloca Pair)) (ptr-set! q p) (+ (. q 'a) (. q 'b))))
+  (let (q:ptr:Pair (alloca Pair)) (ptr-set! q p) (+ (get q 'a) (get q 'b))))
 (defn nuc_big_make (x:i64 y:i64 z:i64):Big
   (let (q:ptr:Big (alloca Big)) (.set! q 'x x) (.set! q 'y y) (.set! q 'z z) @q))
 (defn nuc_big_sum (b:Big):i64
-  (let (q:ptr:Big (alloca Big)) (ptr-set! q b) (+ (+ (. q 'x) (. q 'y)) (. q 'z))))
+  (let (q:ptr:Big (alloca Big)) (ptr-set! q b) (+ (+ (get q 'x) (get q 'y)) (get q 'z))))

@@ -4800,7 +4800,32 @@
       (.set! pt 'pkind PTR-REF)
       (return pt))))
 
+; Lockstep with emit-addr-of's arity overload. Without this the 2-arg form would
+; fall into the 1-arg path and type `(addr-of p 'f)` as `ptr:ptr:Point` -- the
+; address of the BINDING, not of the field (dot-forms.md §3).
+(defn node-type-field-addr (n:raw:Node scope:ref:Scope):?ptr:Type
+  (let (t:ptr (node-type (node-at n 1) scope))
+    (when (= t null) (return null))
+    (let (sd:?ptr:StructDef (access-receiver-sdef (as raw:Type t)))
+      (when (= sd null) (return null))
+      (let (fn-node:(raw Node) (selector-literal-sym (node-at n 2)))
+        (when (= fn-node null) (return null))
+        (let (fr:?ptr:FieldRef (struct-field-ref (as ptr sd) (fn-node 's)))
+          (when (= fr null) (return null))
+          (let (ftype:ptr (fr 'type))
+            ; G-2 lockstep with emit-field-addr: an array field's address is the
+            ; DECAYED `ptr:elem`, so wrapping node-type-field's already-decayed
+            ; answer would give `ptr:ptr:elem`.
+            (when (= ((as ptr:Type ftype) 'kind) TY-ARRAY)
+              (set! ftype (as ptr ((array-decay ftype) 'elem))))
+            (let (pt:ptr:Type (as ptr:Type (make-type TY-PTR)))
+              (.set! pt 'elem ftype)
+              ; A field's address inside a non-null struct is non-null (ref T).
+              (.set! pt 'pkind PTR-REF)
+              (return (as ptr pt)))))))))
+
 (defn node-type-addr-of (n:raw:Node scope:ref:Scope):?ptr:Type
+  (when (= (node-len n) 3) (return (node-type-field-addr n scope)))
   (let (target:ptr:Node (unsafe/cast ptr:Node (node-at n 1)))
     (when (!= (target 'kind) NODE-SYM) (return null))
     (let (sym:?ptr:Sym (scope-lookup scope (target 's)))

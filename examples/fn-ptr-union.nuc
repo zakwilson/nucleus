@@ -44,7 +44,7 @@
 
 (defn main ():i32
   (let (r:ptr:Row (alloca Row)
-        (slot (ptr (union acv:(fn void)() ac1:(fn i32)(ptr) n:i32))) (.& r 'action)
+        (slot (ptr (union acv:(fn void)() ac1:(fn i32)(ptr) n:i32))) (addr-of r 'action)
         v:i32 41)
     (.set! r 'tics 3)
     (printf "tics %d\n" (r 'tics))

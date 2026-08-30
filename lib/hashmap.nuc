@@ -78,8 +78,8 @@
   (let (init-cap:usize 8
         ksz:usize (* init-cap (as usize (sizeof K)))
         vsz:usize (* init-cap (as usize (sizeof V))))
-    (libc-allocator (.& m 'alloc))
-    (let (ah:ref:AllocHandle (.& m 'alloc))
+    (libc-allocator (addr-of m 'alloc))
+    (let (ah:ref:AllocHandle (addr-of m 'alloc))
       (let ((kbuf (raw ui8)) (alloc-handle-alloc ah ksz 8))
         (when (= (as ptr kbuf) null) (hashmap-oom))
         (let ((vbuf (raw ui8)) (alloc-handle-alloc ah vsz 8))
@@ -102,7 +102,7 @@
         ksz:usize (* init-cap (as usize (sizeof K)))
         vsz:usize (* init-cap (as usize (sizeof V))))
     (.set! m 'alloc (deref a))
-    (let (ah:ref:AllocHandle (.& m 'alloc))
+    (let (ah:ref:AllocHandle (addr-of m 'alloc))
       (let ((kbuf (raw ui8)) (alloc-handle-alloc ah ksz 8))
         (when (= (as ptr kbuf) null) (hashmap-oom))
         (let ((vbuf (raw ui8)) (alloc-handle-alloc ah vsz 8))
@@ -144,7 +144,7 @@
 ; old-cap is captured at the top of the outer let so it's visible for frees.
 ; ---------------------------------------------------------------------------
 (defn hashmap-resize ((m (ref (HashMap K V))) new-cap:usize):void
-  (let (ah:ref:AllocHandle (.& m 'alloc)
+  (let (ah:ref:AllocHandle (addr-of m 'alloc)
         old-cap:usize (m 'cap)
         ksz-new:usize (* new-cap (as usize (sizeof K)))
         vsz-new:usize (* new-cap (as usize (sizeof V))))
@@ -336,7 +336,7 @@
 ; ---------------------------------------------------------------------------
 (defn drop ((self (ptr (HashMap K V)))):void
   (when (!= (as ptr (self 'keys)) null)
-    (let (ah:ref:AllocHandle (.& self 'alloc)
+    (let (ah:ref:AllocHandle (addr-of self 'alloc)
           cap:usize (self 'cap))
       (alloc-handle-free ah (self 'keys)   (* cap (as usize (sizeof K))) 8)
       (alloc-handle-free ah (self 'vals)   (* cap (as usize (sizeof V))) 8)

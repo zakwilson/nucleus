@@ -1,11 +1,12 @@
 # Retiring the `.` forms, and the selector rule underneath them
 
-**Status: in progress** (2026-08-30). **Steps 0-3 done** — the selector rule has
-flipped: a quoted `'x` is the field, and a bare symbol in selector position is
-an ordinary variable reference like a symbol anywhere else. Getting there took a
-migration aid (`--strict-selectors`, now retired) and 7254 rewritten sites. What
-remains is the `.`-form retirement the rule change was blocking: steps 4-6.
-See §5.
+**Status: in progress** (2026-08-30). **Steps 0-4 done.** The selector rule has
+flipped — a quoted `'x` is the field, and a bare symbol in selector position is
+an ordinary variable reference like a symbol anywhere else — and two of the
+three punctuation-named forms are gone: `.` is `get` and `.&` is a 2-argument
+`addr-of`. Getting there took a migration aid (`--strict-selectors`, now
+retired) and 7254 rewritten sites. What remains is `.set!`, which is not a
+rename but the place form: steps 5-6. See §5.
 
 Three special forms are spelled with a leading dot — `.` (member read), `.&`
 (member address) and `.set!` (member write). They are the last forms whose name
@@ -134,10 +135,13 @@ transcripts another 31. **7254 tree-wide.**
 
 ## 3. Retiring the forms
 
-- **`.` → `get`.** Already equivalent; delete the form and rename 53 sites.
-- **`.&` → `(addr-of p f)`.** An arity overload: 1-arg is today's `(addr-of x)`
-  (which already requires a bare symbol), 2-arg is the member address. No
-  ambiguity, no new dispatch.
+- **`.` → `get`.** (Done — §5 step 4.) Equivalent *for a plain struct*: `.`
+  lowered to `_get`, which bypasses a user `get` override, so the rename is
+  proved by IR diff rather than assumed. 77 sites.
+- **`.&` → `(addr-of p 'f)`.** (Done — §5 step 4.) An arity overload: 1-arg is
+  today's `(addr-of x)` (which already requires a bare symbol), 2-arg is the
+  member address. No ambiguity, no new dispatch — but `node-type` has to split
+  on the same arity or the 2-arg form types as the binding's address. 154 sites.
 - **`.set!` → `set!`**, as a **place form**, not an arity overload:
 
 ```lisp
@@ -288,7 +292,46 @@ syntax removes it.
    `w7-local-not-a-field` now pins the *opposite* refusal: `(p k)` with an `i32`
    local reaches the computed path and is refused for the selector's type, not
    for the field's absence.
-4. `.` → `get`, `.&` → `(addr-of p f)`.
+4. **`.` → `get`, `.&` → the 2-argument `addr-of`. (done 2026-08-30.)**
+   Both forms are deleted from the emit dispatch but stay **reserved**, so the
+   spelling cannot be shadowed and a retired-form message reaches the user with
+   the replacement in it — the shape Stage 14 gave `cast` / `ptr+`.
+
+   - **`.&` → `(addr-of p 'f)`** is an arity overload, and the arity is the
+     whole dispatch: 1-arg takes a bare binding name, 2-arg a receiver plus a
+     quoted selector. `emit-addr-of` forwards a 3-cell call to
+     `emit-field-addr` unchanged, so every shape `.&` covered — plain field,
+     nested field, array field (which decays to `ptr:elem`), union member,
+     by-value struct receiver — emits **byte-identical** IR, verified by
+     diffing the two spellings of one program.
+   - **`node-type` needed the same split, and this is the trap.** Without it
+     the 2-arg form falls into `node-type-addr-of`'s 1-arg path and types
+     `(addr-of p 'f)` as the address of the *binding* — `ptr:ptr:Point` rather
+     than `ptr:i32`. It is invisible in the value itself and only surfaces
+     where the type is load-bearing (an argument position, an annotated
+     binding), which is exactly how the `node-type`↔`emit-node` lockstep bites.
+     `node-type-field-addr` mirrors `emit-field-addr` including the array decay
+     — reusing `node-type-field`'s already-decayed answer would have produced
+     `ptr:ptr:elem`.
+   - **`.` → `get`.** `.` *was* `_get` verbatim, and `_get` bypasses a user
+     `get` override while `get` respects one, so "already equivalent" holds
+     only for a plain struct. The migration is therefore proved rather than
+     assumed: rewrite every site to `get`, diff the IR, and demote to `_get`
+     wherever it moved. Nothing moved — 43 `.&` sites in `src`+`lib` and 63
+     `.`/`.&` sites across `examples`/`tests` are byte-identical, 152 of 154
+     examples unchanged.
+   - **The compiler synthesizes both forms**, the same hazard step 2 found:
+     eight `(intern-symbol ".")` and two `(intern-symbol ".&")` construction
+     sites in the closure-capture and env-drop paths. They became `_get` and
+     `addr-of` — `_get`, not `get`, because a synthesized read of a
+     compiler-generated env struct means *raw field load*, which is what the
+     bypass primitive is for. These are the only intended IR differences in
+     the whole step (ten string constants), and the one legitimate example
+     diff is `macrolet.nuc`, whose quasiquote template holds a `.` as **data**.
+
+   Two things deliberately kept: `_get` (the documented override bypass, still
+   needed by a user `get` method reading its own fields) and `.set!`, which
+   step 5 turns into the place form rather than renaming twice.
 5. `set!` as a place form; fold in `ptr-set!` and `aset!`.
 6. The `set` generic.
 

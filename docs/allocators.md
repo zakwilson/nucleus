@@ -47,7 +47,7 @@ protocol system is static-only (no vtables) and `unsafe/funcall-ptr-*` cannot ca
 | `libc-allocator` | `((h (ref AllocHandle))) -> (ref AllocHandle)` | initialise a caller-owned slot as a libc handle |
 | `arena-allocator` | `((h (ref AllocHandle))) -> (ref AllocHandle)` | initialise a caller-owned slot as an arena handle (state lives in `lib/arena.nuc`'s globals) |
 
-A collection stores the `AllocHandle` by value; use `(.& coll 'alloc-field)` to get
+A collection stores the `AllocHandle` by value; use `(addr-of coll 'alloc-field)` to get
 a `(ref AllocHandle)` into it for the helpers. Example: `examples/allocator-test.nuc`.
 
 **Why no static `(extend MyAlloc Allocator)` in the library.** A generic method

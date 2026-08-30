@@ -48,13 +48,14 @@ failure.
 | `cast` | **Retired in Stage 14** — bare `cast` is now a targeted hard error: `'cast' was split in Stage 14: use 'as' (safe) or 'unsafe/cast' (unchecked)`. Use `as` (below) for statically-safe conversions, `unsafe/cast` (below) for anything lossy or contract-manufacturing. | — |
 | `as` | **Statically-safe** conversion — `(as TYPE expr)`, same shape as `unsafe/cast`. Accepts the *non-lossy* part of what the implicit-coercion machinery accepts in an assignment position (identity, int widening, same-width sign reinterpret, `f32`→`f64`, user `defcast` rules, `CStr`↔pointer, the elem-less-`ptr` `void*` hatch) **plus** pure pointer-contract weakening (`(ref T)`→`(raw T)`; a typed pointer → elem-less bare `ptr`) **plus** a narrowing whose operand is a *literal* the target can hold exactly — an integer that fits (`(as i8 5)`, `(as ui8 200)`, and the same through a `defconst` name) or a float that round-trips (`(as f32 1.5)`, `(as f32 -0.25)`) — which is lossless and so lowers to exactly what the implicit spelling `(let (a:i8 5) …)` / `(let (a:f32 1.5) …)` emits. Refuses everything lossy or contract-manufacturing — narrowing/truncation of a **value** (integer *and* `f64`→`f32`), a literal that does *not* fit (`(as i8 300)`, `(as ui8 -1)`) or does *not* round-trip (`(as f32 3.14)`), `float`→`int`, `ptr`↔`int`, `fn`↔`ptr`, element-retyping `ptr`↔`ptr` (each routed to `unsafe/cast`) — note that an implicit coercion at a typed slot narrows a *value* silently (integers and floats alike) and rounds a float *literal* silently, so `as` stays deliberately stricter than assignment there — and, unlike `unsafe/cast`, **honors the nullability flow check**: a `raw`/nullable pointer into a non-null `(ref T)`/`(ptr T)` slot is rejected (routed to `as-ref` for a runtime-checked launder, or `unsafe/cast` for an unchecked assertion). Use `as` for conversions you can prove correct; reach for `unsafe/cast` only when the compiler refuses. **`as` also names a type for inference**: its target type is supplied as the expected type of its operand, exactly as a `let`/`with` binding annotation, a `set!` target, a `return` or a `.set!` field does — so a generic whose type variable appears only in its return type resolves against it (`(as (ref (Vector i32)) (vector-new-in a))`). | `static_cast`-ish |
 | `unsafe/cast` | **Unchecked** type reinterpretation — `(unsafe/cast TYPE expr)`. Today's (pre-Stage-14) `cast`, verbatim: same-kind reinterpret, `ptr`↔`ptr` (any/all element retyping, including `raw`→`ref` laundering with **no** nullability check), `CStr`↔`ptr`, `fn`↔`ptr`, int narrowing/widening, same-width sign reinterpret, `float`↔`float` (`fpext`/`fptrunc`), `int`↔`float` (`sitofp`/`uitofp`/`fptosi`/`fptoui`). Its only "check" is that the kind pair appears in the conversion ladder — no range check, no null check. A strict superset of `as`'s accepted set, so it never blocks a migration; reach for it only when `as` refuses. | `(type)x` |
-| `addr-of` | Take address of a variable (reader sugar: `&x` → `(addr-of x)`, when the `&` starts a token — a `&` inside one is the [`&T` type sigil](types.md#pointer-kinds-ptr-t-raw-t-and-t)). The address of **frame-local storage** (a `let`/`with` value binding or a by-value parameter) is escape-tracked, but only at the two actual escape sinks: `return` and a store into longer-lived memory. **Passing it as a call argument is allowed** — downward flow into a callee is a borrow, so the ordinary C out-parameter idiom works with no cast or workaround: `(defn set-both (out-a:ptr:i32):void (ptr-set! out-a 41)) (let (a:i32 0) (set-both (addr-of a)) ...)` compiles and, after the call, `a` holds the written value. See [Pointer lifecycle](#pointer-lifecycle-escape-analysis) for the full escape-sink list; the address of a global or of a reference/pointer binding is never tainted. | `&x` |
+| `addr-of` | Take address of a variable (reader sugar: `&x` → `(addr-of x)`, when the `&` starts a token — a `&` inside one is the [`&T` type sigil](types.md#pointer-kinds-ptr-t-raw-t-and-t)). The address of **frame-local storage** (a `let`/`with` value binding or a by-value parameter) is escape-tracked, but only at the two actual escape sinks: `return` and a store into longer-lived memory. **Passing it as a call argument is allowed** — downward flow into a callee is a borrow, so the ordinary C out-parameter idiom works with no cast or workaround: `(defn set-both (out-a:ptr:i32):void (ptr-set! out-a 41)) (let (a:i32 0) (set-both (addr-of a)) ...)` compiles and, after the call, `a` holds the written value. See [Pointer lifecycle](#pointer-lifecycle-escape-analysis) for the full escape-sink list; the address of a global or of a reference/pointer binding is never tainted. **Two arities.** `(addr-of x)` is a binding's address, above; `(addr-of s 'field)` is a field's — the spelling that replaced `.&` in Stage 16 ([dot-forms.md](../design/stage16-ergonomics/dot-forms.md) §3). They cannot collide, since a binding address takes a bare symbol and a field address a receiver plus a **quoted** selector; a bare symbol in that second slot is refused, not read as a variable. An `(array T N)` field's address **decays** to `ptr:T` — a pointer-to-array is only usable where an array type is refused. A bit-field has no address (C's own rule), and the receiver needs storage, so a temporary struct value is refused. | `&x` / `&s.field` |
 | `deref` | Dereference a pointer (reader sugar: `@p` → `(deref p)`) | `*p` |
 | `ptr-set!` | Write through a pointer; yields the stored value | `*p = val` |
 | `ptr+` | **Retired in Stage 14** — bare `ptr+` is now a targeted hard error: `'ptr+' was split in Stage 14: use 'unsafe/ptr+'`. | — |
 | `unsafe/ptr+` | Pointer arithmetic on a **typed** pointer; manufactures a new pointer at an unchecked offset (no bounds check). | `p + n` |
-| `.` | Struct field access; equivalent to head position `(s 'field)` and lowers to the `_get` primitive for a plain struct. The field name is **quoted** — `(. s 'field)` — at every member form (`.`, `_get`, `.&`, `.set!`, `get`, head position); a bare symbol there is an ordinary variable reference, i.e. a [computed selector](#callable-values-non-function-call-position). See [dot-forms.md](../design/stage16-ergonomics/dot-forms.md). | `s.field` |
-| `_get` | Low-level struct field read (compiler-internal primitive; bypasses any user `get` override). Prefer head position `(s 'field)` in ordinary code; use `_get` only where head position would dispatch wrongly (a user `get` method reading its own field, or a struct held in a special-form-named variable). | `s.field` |
+| `.` | **Retired in Stage 16** — a targeted hard error: `'.' was retired in Stage 16: use 'get'`. Write `(get s 'field)`, or head position `(s 'field)`. The spelling stays reserved so the message cannot be shadowed. | — |
+| `.&` | **Retired in Stage 16** — a targeted hard error: `'.&' was retired in Stage 16: use the 2-argument 'addr-of'`. Write `(addr-of s 'field)`. | — |
+| `_get` | Low-level struct field read (compiler-internal primitive; bypasses any user `get` override). Prefer head position `(s 'field)` in ordinary code; use `_get` only where head position would dispatch wrongly (a user `get` method reading its own field, or a struct held in a special-form-named variable). The field name is **quoted** at every member form (`_get`, `.set!`, `addr-of`, `get`, head position); a bare symbol there is an ordinary variable reference, i.e. a [computed selector](#computed-selector-get-only). | `s.field` |
 | `.set!` | Struct field assignment; yields the stored value | `s.field = val` |
 | `get` | Member access / field read: `(get s 'field)` ≡ `(s 'field)`; for a plain struct this lowers to the `_get` primitive (zero-overhead), overridable per type. See [Callable values](#callable-values-non-function-call-position) | `s.field` |
 | `invoke` | General call on a value: `(invoke s 3)` ≡ `(s 3)`; user-defined (`Seq`/`Call`) | `s(3)` / `s[3]` |
@@ -89,7 +90,7 @@ failure.
 | `fn` | `(fn (params):ret body…)` — an **anonymous function**. The body may reference its own parameters and top-level names (`defconst` / global `defvar` / another `defn`), but **not** any enclosing runtime local (a `let`/`with` binding or a by-value parameter); doing so is a compile error directing the author to `vfn`/`mfn`/`cfn`. The form is lambda-lifted to a fresh top-level function and its value is that function's pointer, so a non-capturing `fn` is a true function pointer with no environment and no runtime overhead — usable inline, storable in a variable, passable as an argument, and C-callable (e.g. a `qsort` comparator). The trailing `:ret` is the return type, matching the `(x:i32):i32` convention; a parenthesised return type (`(ref T)`) uses the space-separated list form. A local binding named `fn` shadows this keyword. (Stage 13 — see [lambda.md](../design/stage13/lambda.md).) | function pointer / non-capturing lambda |
 | `vfn` | `(vfn (params):ret body…)` — a **clone-capture closure**. Like `fn` but it *captures* the enclosing runtime locals its body references, by **clone** (the source survives untouched). Each capture must conform to `Clone` (see [generics.md](generics.md)): a POD / `Drop`-free capture is a bitwise value copy (no allocation; the closure owns nothing and is not `Drop`); an owning (`Drop`) capture is deep-cloned via its hand-written `clone`, and the closure then owns the copy and conforms to `Drop` with a synthesized field-wise cleanup. A `Drop` capture with no `Clone` is rejected, directing the author to `mfn`. The closure lowers to an anonymous by-value struct (one field per capture) plus a synthesized `invoke` method of the lambda's arity, so it is **callable with ordinary call syntax** — `(c arg…)` routes to `invoke` via the callable-values rule, no new call form needed. A non-capturing `vfn` folds to a bare `fn` pointer (zero overhead). The trailing `:ret` and parenthesised-return-type rule match `fn`; a local named `vfn` shadows this keyword. (Stage 13 — see [lambda.md](../design/stage13/lambda.md).) | clone-capture closure (by-value, owning iff a capture is `Drop`) |
 | `mfn` | `(mfn (params):ret body…)` — a **move-capture closure**. Like `fn` but it *captures* the enclosing runtime locals its body references, by **move** (the source is consumed). An owned capture (a `with`-owned binding) is routed through the `move` sink: its scope-exit cleanup is disarmed, the value is yielded with escape taint cleared, and the binding is marked consumed (later uses are "use after move"); the closure owns the moved resource and conforms to `Drop` with a synthesized field-wise cleanup (same synthesis as `vfn`). A POD capture (a `let` binding or by-value parameter) is a bitwise copy — move == copy when there is no cleanup to disarm. Because the move transfers ownership and clears taint, an `mfn` created inside a `with` may be **returned/moved out** of that scope: the disarmed source no longer frees the resource, so the return is sound (this is the form that exports an owned value out of a `with` scope). No allocator; travels by value. The closure lowers to an anonymous by-value struct (one field per capture) plus a synthesized `invoke` method, callable with ordinary call syntax; a non-capturing `mfn` folds to a bare `fn` pointer. The trailing `:ret` and parenthesised-return-type rule match `fn`; a local named `mfn` shadows this keyword. (Stage 13 — see [lambda.md](../design/stage13/lambda.md).) | move-capture closure (by-value, owning; consumes `with`-owned sources) |
-| `cfn` | `(cfn alloc (params):ret body…)` — a **reference-capture closure**. Like `fn` but it *captures* the enclosing runtime locals its body references, by **reference** (the referents are borrowed, not owned). The bare first operand `alloc` is a `(ref AllocHandle)` (see [allocators.md](allocators.md)) — an argument, not part of the params/return group; when it is itself a call (`(default-allocator)`) the parentheses are call parentheses. The environment is an anonymous struct of **pointers** into the captured storage (one `(ptr T)` field per capture), preceded by a stored `AllocHandle`; the env's own storage is allocated through `alloc` (a heap block), and the closure conforms to `Drop` with a synthesized `drop` that frees the env block via the stored handle (mirroring how a collection frees its buffer). The closure lowers to that env struct plus a synthesized `invoke` method, callable with ordinary call syntax; in the body a value use of a capture reads through the stored pointer (`(deref (. self 'cap)`) and `(addr-of cap)` is the stored pointer itself (`(. self 'cap)`). The closure value **inherits the region of each captured reference** (see [Pointer lifecycle](#pointer-lifecycle-escape-analysis)): returning (or otherwise escaping) it past a captured `with`-owned or frame-local referent's scope is rejected at the existing escape sinks, while a `cfn` capturing only caller-owned `(ref …)` parameters or globals may be returned freely. To export a *value* computed from a captured reference, copy or `deref` it in the body so the result is a value, not a tainted reference. A non-capturing `cfn` folds to a bare `fn` pointer (the `alloc` operand is dropped). The trailing `:ret` and parenthesised-return-type rule match `fn`; a local named `cfn` shadows this keyword. (Stage 13 — see [lambda.md](../design/stage13/lambda.md).) | reference-capture closure (struct of pointers + stored `AllocHandle`, escape-checked) |
+| `cfn` | `(cfn alloc (params):ret body…)` — a **reference-capture closure**. Like `fn` but it *captures* the enclosing runtime locals its body references, by **reference** (the referents are borrowed, not owned). The bare first operand `alloc` is a `(ref AllocHandle)` (see [allocators.md](allocators.md)) — an argument, not part of the params/return group; when it is itself a call (`(default-allocator)`) the parentheses are call parentheses. The environment is an anonymous struct of **pointers** into the captured storage (one `(ptr T)` field per capture), preceded by a stored `AllocHandle`; the env's own storage is allocated through `alloc` (a heap block), and the closure conforms to `Drop` with a synthesized `drop` that frees the env block via the stored handle (mirroring how a collection frees its buffer). The closure lowers to that env struct plus a synthesized `invoke` method, callable with ordinary call syntax; in the body a value use of a capture reads through the stored pointer (`(deref (_get self 'cap)`) and `(addr-of cap)` is the stored pointer itself (`(_get self 'cap)`). The closure value **inherits the region of each captured reference** (see [Pointer lifecycle](#pointer-lifecycle-escape-analysis)): returning (or otherwise escaping) it past a captured `with`-owned or frame-local referent's scope is rejected at the existing escape sinks, while a `cfn` capturing only caller-owned `(ref …)` parameters or globals may be returned freely. To export a *value* computed from a captured reference, copy or `deref` it in the body so the result is a value, not a tainted reference. A non-capturing `cfn` folds to a bare `fn` pointer (the `alloc` operand is dropped). The trailing `:ret` and parenthesised-return-type rule match `fn`; a local named `cfn` shadows this keyword. (Stage 13 — see [lambda.md](../design/stage13/lambda.md).) | reference-capture closure (struct of pointers + stored `AllocHandle`, escape-checked) |
 
 **Closures and `invoke` lowering.** Each capturing closure (`vfn`/`mfn`/`cfn`)
 lowers to an anonymous struct holding its captured state plus a synthesized
@@ -141,16 +142,16 @@ depends on the closure's capture mode:
 
 - **`vfn`/`mfn` (by-value capture):** the env field holds the value. `(set! c v)`
   rewrites to `(.set! self 'c v)` (field store); `(inc! c)` / `(dec! c)` expand to
-  the read-modify-write equivalent `(.set! self 'c (op (. self 'c) 1))`. The mutation
+  the read-modify-write equivalent `(.set! self 'c (op (_get self 'c) 1))`. The mutation
   lands in the env field and **persists across successive calls** to the same
   closure instance (since `invoke` receives `self` as a `(ref Env)` — a mutable
   reference). The outer binding is unaffected (it was copied/moved into the env at
   closure creation).
 
 - **`cfn` (by-reference capture):** the env field holds a *pointer* into the outer
-  binding's storage. `(set! c v)` rewrites to `(ptr-set! (. self 'c) v)` — a store
-  through the captured pointer. `(inc! c)` / `(dec! c)` become `(ptr-set! (. self 'c)
-  (op (deref (. self 'c)) 1))`. The **outer binding sees the mutation** after each
+  binding's storage. `(set! c v)` rewrites to `(ptr-set! (_get self 'c) v)` — a store
+  through the captured pointer. `(inc! c)` / `(dec! c)` become `(ptr-set! (_get self 'c)
+  (op (deref (_get self 'c)) 1))`. The **outer binding sees the mutation** after each
   call, as with any by-reference write-back. The existing L1 store-sink safety
   checks are preserved.
 
@@ -256,17 +257,17 @@ analysis"):
 Both share one mechanism:
 
 - Taint follows pointer **identity**: binding a tainted value (`let`/`with`/
-  `set!`), `as`/`unsafe/cast`, `unsafe/ptr+`, `.&`, `addr-of`, and control-flow
+  `set!`), `as`/`unsafe/cast`, `unsafe/ptr+`, `addr-of`, and control-flow
   joins keep it.
   Copying the pointee **value** out (`deref`, field loads) clears it — so
   `(return (deref p))` and `(return (p count))` are fine.
-- `addr-of` (and `.&` through it) is the **frame-local taint source**. It does
+- `addr-of` is the **frame-local taint source** — in both arities. It does
   **not** taint:
   - the address of a **global** (`defvar`/`defconst`) — it outlives any frame;
   - the address of a **reference/pointer parameter** or any pointer-typed local
     — the slot holds a pointer whose pointee is caller-owned, so a value
     *loaded out of* it may legitimately be returned (the existing untracked
-    imprecision boundary). So `(.& v 'field)` through a `(ref T)` parameter
+    imprecision boundary). So `(addr-of v 'field)` through a `(ref T)` parameter
     still returns fine.
 - **Escape sinks** (compile errors on tainted operands):
   - **`return`** rejects *any* tainted value — both a `with`-owned alias and a
@@ -292,7 +293,7 @@ Both share one mechanism:
     (return (addr-of x))))        ; ERROR: address of frame-local 'x' escapes via return
 
 (defn point-x ((p (ref Point))):ref:i32
-  (return (.& p 'x)))              ; OK: pointee is caller-owned (ref parameter)
+  (return (addr-of p 'x)))              ; OK: pointee is caller-owned (ref parameter)
 ```
 
 The `Drop` protocol is an ordinary Stage 9 protocol; conforming makes a type
@@ -389,8 +390,9 @@ globals as well as locals, which the old demotion could not — every function
 lives in the global scope, so a rule that consulted the scope would have
 re-interpreted `(sd name)` the moment any global named `name` existed.
 
-The three fixed-position member forms — `.`, `.&`, `.set!` — instead require a
-**literal** selector, since they are the spellings that name a field statically.
+The three fixed-position member forms — `_get`, `.set!` and the 2-argument
+`addr-of` — instead require a **literal** selector, since they are the
+spellings that name a field statically.
 A bare symbol there is refused outright rather than read as a variable:
 
 ```
@@ -420,7 +422,7 @@ uses `_get` for its own fields to avoid recursing into itself).
 
 ```lisp
 (defstruct Point x:i32 y:i32)
-(p 'x)         ; ≡ (. p 'x) — a plain field load
+(p 'x)         ; ≡ (get p 'x) — a plain field load
 ```
 
 The intrinsic is **overridable**: a concrete user `get` method for a type sits at
@@ -429,7 +431,7 @@ type. A user `get` takes the selector as an interned symbol (`ptr`):
 
 ```lisp
 (defn get (self:ptr:Temp sel:ptr):i32
-  (if (= sel 'f) (return …) (return (. self 'c))))   ; (t 'f) and (t 'c) both route here
+  (if (= sel 'f) (return …) (return (_get self 'c))))  ; (t 'f) and (t 'c) both route here
 ```
 
 **Value-keyed `get` (computed selectors).** Dispatch splits on the selector kind.

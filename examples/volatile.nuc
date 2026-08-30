@@ -16,7 +16,7 @@
   (let (r:ptr:Reg (alloca Reg))
     (.set! r 'flags 7)
     (.set! r 'status 42)
-    (printf "flags=%d status=%d\n" (. r 'flags) (. r 'status)))
+    (printf "flags=%d status=%d\n" (get r 'flags) (get r 'status)))
 
   (let (slot:i32 0)
     (bump-counter (addr-of slot))

@@ -266,9 +266,9 @@ When the bound names a **parametric protocol**, the constraint head is a protoco
 (defn next ((self (ref (MapIter I F)))
                         :where ((Iterator S) I)      ; recover S := I's element
                                ((UnaryFn S E) F)) (Maybe E)    ; check S, recover E := F's result
-  (let ((res (Maybe S)) (next (.& self 'source)))
+  (let ((res (Maybe S)) (next (addr-of self 'source)))
     (match res
-      ((some v) (return (some (apply (.& self 'f) v))))
+      ((some v) (return (some (apply (addr-of self 'f) v))))
       (none (return none)))))
 ```
 
@@ -618,7 +618,7 @@ env's `invoke` non-self signature must match the box's `(params…) ret`
 
 ; heterogeneous collection
 (let (v (Vector (BoxedFn (i32) i32))) [])
-(vector-push v (vfn (x:i32):i32 (return (* x (. self 'factor)))))   ; captured factor
+(vector-push v (vfn (x:i32):i32 (return (* x (get self 'factor)))))   ; captured factor
 (vector-push v (fn  (x:i32):i32 (return (+ x 1))))                  ; bare fn
 
 ; struct field
@@ -684,8 +684,8 @@ Note the surface difference: a `BoxedFn` is dispatched as a **callable value**
 (defstruct Cat name:ptr)
 (defstruct Dog name:ptr)
 
-(defn describe (self:(ref Cat)):void (printf "Cat: %s\n" (. self 'name)))
-(defn describe (self:(ref Dog)):void (printf "Dog: %s\n" (. self 'name)))
+(defn describe (self:(ref Cat)):void (printf "Cat: %s\n" (get self 'name)))
+(defn describe (self:(ref Dog)):void (printf "Dog: %s\n" (get self 'name)))
 
 (extend Cat Describe)
 (extend Dog Describe)

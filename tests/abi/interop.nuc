@@ -56,21 +56,21 @@
 (defn nuc_pair_make (a:int b:int):Pair
   (let (q:ptr:Pair (alloca Pair)) (.set! q 'a a) (.set! q 'b b) @q))
 (defn nuc_pair_sum (p:Pair):int
-  (let (q:ptr:Pair (alloca Pair)) (ptr-set! q p) (+ (. q 'a) (. q 'b))))
+  (let (q:ptr:Pair (alloca Pair)) (ptr-set! q p) (+ (get q 'a) (get q 'b))))
 (defn nuc_big_make (x:i64 y:i64 z:i64):Big
   (let (q:ptr:Big (alloca Big)) (.set! q 'x x) (.set! q 'y y) (.set! q 'z z) @q))
 (defn nuc_big_sum (b:Big):i64
-  (let (q:ptr:Big (alloca Big)) (ptr-set! q b) (+ (+ (. q 'x) (. q 'y)) (. q 'z))))
+  (let (q:ptr:Big (alloca Big)) (ptr-set! q b) (+ (+ (get q 'x) (get q 'y)) (get q 'z))))
 
 (defn main ():int
   ; Nucleus -> C
   (let (p:ptr:Pair (alloca Pair))
     (ptr-set! p (pair_make 3 4))
-    (printf "pair_make=%d,%d\n" (. p 'a) (. p 'b))
+    (printf "pair_make=%d,%d\n" (get p 'a) (get p 'b))
     (printf "pair_sum=%d\n" (pair_sum @p)))
   (let (b:ptr:Big (alloca Big))
     (ptr-set! b (big_make 100 200 300))
-    (printf "big_make=%lld,%lld,%lld\n" (. b 'x) (. b 'y) (. b 'z))
+    (printf "big_make=%lld,%lld,%lld\n" (get b 'x) (get b 'y) (get b 'z))
     (printf "big_sum=%lld\n" (big_sum @b)))
   (let (m:ptr:Mixed (alloca Mixed))
     (.set! m 'i 7)
@@ -79,14 +79,14 @@
   ; Nucleus -> Nucleus
   (let (p:ptr:Pair (alloca Pair))
     (ptr-set! p (nuc_pair_make 3 4))
-    (printf "n2n pair=%d,%d sum=%d\n" (. p 'a) (. p 'b) (nuc_pair_sum @p)))
+    (printf "n2n pair=%d,%d sum=%d\n" (get p 'a) (get p 'b) (nuc_pair_sum @p)))
   (let (b:ptr:Big (alloca Big))
     (ptr-set! b (nuc_big_make 100 200 300))
-    (printf "n2n big=%lld,%lld,%lld sum=%lld\n" (. b 'x) (. b 'y) (. b 'z) (nuc_big_sum @b)))
+    (printf "n2n big=%lld,%lld,%lld sum=%lld\n" (get b 'x) (get b 'y) (get b 'z) (nuc_big_sum @b)))
   ; Parametric struct: (P2 i32 i32) passed and returned by value across C boundary.
   (let ((q (ptr (P2 i32 i32))) (alloca (P2 i32 i32)))
     (ptr-set! q (p2_make 3 4))
-    (printf "p2_make=%d,%d\n" (. q 'a) (. q 'b))
+    (printf "p2_make=%d,%d\n" (get q 'a) (get q 'b))
     (printf "p2_sum=%d\n" (p2_sum @q)))
   ; G-2: array-field structs across the C boundary, both directions.
   (let (a:ptr:IArr2 (alloca IArr2))

@@ -46,7 +46,7 @@
     ; Initialise the stored handle in place: take the address of the struct's
     ; AllocHandle field with `(.& s alloc)` (a (ref AllocHandle) into the struct)
     ; and configure it as a libc handle.
-    (let (sa:ref:AllocHandle (.& s 'alloc))
+    (let (sa:ref:AllocHandle (addr-of s 'alloc))
       (libc-allocator sa)
       ; Allocate 4 i32 (16 bytes) through the stored handle.
       (let ((raw (raw ui8)) (alloc-handle-alloc sa 16 4))
