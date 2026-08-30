@@ -53,7 +53,7 @@ failure.
 | `ptr-set!` | Write through a pointer; yields the stored value | `*p = val` |
 | `ptr+` | **Retired in Stage 14** — bare `ptr+` is now a targeted hard error: `'ptr+' was split in Stage 14: use 'unsafe/ptr+'`. | — |
 | `unsafe/ptr+` | Pointer arithmetic on a **typed** pointer; manufactures a new pointer at an unchecked offset (no bounds check). | `p + n` |
-| `.` | Struct field access; equivalent to head position `(s field)` and lowers to the `_get` primitive for a plain struct. | `s.field` |
+| `.` | Struct field access; equivalent to head position `(s field)` and lowers to the `_get` primitive for a plain struct. The field name may be written bare or **quoted** — `(. s 'field)` — and the two are one form, emitting identical IR. The quoted spelling is accepted at every member form (`.`, `_get`, `.&`, `.set!`, `get`, head position); see [dot-forms.md](../design/stage16-ergonomics/dot-forms.md) for why it exists and where the selector rule is going. | `s.field` |
 | `_get` | Low-level struct field read (compiler-internal primitive; bypasses any user `get` override). Prefer head position `(s field)` in ordinary code; use `_get` only where head position would dispatch wrongly (a user `get` method reading its own field, or a struct held in a special-form-named variable). | `s.field` |
 | `.set!` | Struct field assignment; yields the stored value | `s.field = val` |
 | `get` | Member access / field read: `(get s 'field)` ≡ `(s field)`; for a plain struct this lowers to the `_get` primitive (zero-overhead), overridable per type. See [Callable values](#callable-values-non-function-call-position) | `s.field` |

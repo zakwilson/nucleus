@@ -10742,6 +10742,97 @@ EOF
 }
 spawn run_s16_pointer_kind_names
 
+# dot-forms.md §5 phase 0: `selector-literal-sym` accepts a bare symbol OR a
+# quoted one, but only the READ paths went through it — `.set!` and `.&` demanded
+# a raw NODE-SYM, so `(.set! p 'x v)` was "field name must be symbol". All member
+# forms take the same rule now, which is what lets a migration spell the quoted
+# selector under the CURRENT compiler. The two spellings must be one form, not
+# two: same IR, and the node-type mirror (node-type-field) resolves the selector
+# the same way or the type pass and codegen disagree about what the field is.
+run_s16_quoted_selector() {
+  local d ok
+  d="$(mktemp -d)"
+  ok=1
+  cat > "$d/sel.nuc" <<'EOF'
+(import-use "stdio.h")
+(defstruct Pt x:i32 y:i32)
+(defn bump (p:&Pt):i32
+  (.set! p 'x (+ (. p 'x) 1))
+  (ptr-set! (.& p 'y) (+ (deref (.& p 'y)) 2))
+  (return (+ (p 'x) (get p 'y))))
+EOF
+  ./build/nucleusc --emit-llvm "$d/sel.nuc" > "$d/quoted.ll" 2>"$d/sel.err" || true
+  sed "s/'//g" "$d/sel.nuc" > "$d/bare.nuc" && mv "$d/bare.nuc" "$d/sel.nuc"
+  ./build/nucleusc --emit-llvm "$d/sel.nuc" > "$d/bare.ll" 2>>"$d/sel.err" || true
+  if [ -s "$d/quoted.ll" ] && diff -q "$d/quoted.ll" "$d/bare.ll" >/dev/null; then
+    echo "PASS  s16-quoted-selector-ir-identical"
+  else
+    echo "FAIL  s16-quoted-selector-ir-identical (a quoted field name is not the bare one)"
+    sed 's/^/    /' "$d/sel.err" | head -3
+  fi
+  # A selector that is neither spelling is still refused, at both forms.
+  for form in "(.set! p 3 9)" "(deref (.& p 3))"; do
+    printf '(defstruct Pt x:i32)\n(defn f (p:&Pt):i32 %s (return 0))\n' "$form" > "$d/bad.nuc"
+    ./build/nucleusc --emit-llvm "$d/bad.nuc" >/dev/null 2>"$d/bad.err" || true
+    qgrep -F "field name must be symbol" "$d/bad.err" || ok=0
+  done
+  if [ "$ok" = 1 ]; then
+    echo "PASS  s16-quoted-selector-nonsymbol-refused"
+  else
+    echo "FAIL  s16-quoted-selector-nonsymbol-refused"
+    sed 's/^/    /' "$d/bad.err" | head -3
+  fi
+  rm -rf "$d"
+}
+spawn run_s16_quoted_selector
+
+# dot-forms.md §5 step 1: `--strict-selectors` is the migration driver. It has to
+# report rather than die, because the point is to enumerate a whole tree in one
+# compile, and it has to reach ALL FOUR member forms — head-position `(p x)` is
+# the population no regex can find, and it is 80% of the sites. Off by default,
+# so every other test in this file (and `make`) is unaffected.
+run_s16_strict_selectors() {
+  local d bad n
+  d="$(mktemp -d)"
+  bad=0
+  cat > "$d/sel.nuc" <<'EOF'
+(defstruct Pt x:i32 y:i32)
+(defn bump (p:&Pt):i32
+  (.set! p x 1)
+  (.set! p 'y 2)
+  (ptr-set! (.& p x) 3)
+  (ptr-set! (.& p 'y) 4)
+  (return (+ (. p x) (. p 'y) (p x) (get p 'y))))
+EOF
+  # The prelude is not migrated yet and reports too, so score only this file.
+  ./build/nucleusc --strict-selectors --emit-llvm "$d/sel.nuc" >/dev/null 2>"$d/all.err" || true
+  grep "^$d/sel.nuc:" "$d/all.err" > "$d/err" || true
+  for form in ".set!" ".&" "_get" "get"; do
+    n="$(grep -c "strict-selectors: $form selector 'x' is a bare symbol" "$d/err" || true)"
+    [ "$n" = 1 ] || { echo "    $form: expected 1 report, got $n"; bad=1; }
+  done
+  # Every quoted spelling above names `y`, and none of them may be reported.
+  qgrep "selector 'y'" "$d/err" && { echo "    a quoted selector was reported"; bad=1; }
+  if [ "$bad" = 0 ]; then
+    echo "PASS  s16-strict-selectors-reports-bare-only"
+  else
+    echo "FAIL  s16-strict-selectors-reports-bare-only"
+    sed 's/^/    /' "$d/err" | head -6
+  fi
+  # A reported compile writes no output and fails, but only under the flag.
+  if [ -s "$d/all.err" ] && ! ./build/nucleusc --strict-selectors --emit-llvm "$d/sel.nuc" >"$d/strict.ll" 2>/dev/null \
+     && [ ! -s "$d/strict.ll" ] \
+     && ./build/nucleusc --emit-llvm "$d/sel.nuc" >"$d/plain.ll" 2>"$d/plain.err" \
+     && [ -s "$d/plain.ll" ] && ! qgrep "strict-selectors" "$d/plain.err"; then
+    echo "PASS  s16-strict-selectors-off-by-default"
+  else
+    echo "FAIL  s16-strict-selectors-off-by-default"
+    sed 's/^/    /' "$d/plain.err" | head -3
+  fi
+  rm -rf "$d"
+}
+spawn run_s16_strict_selectors
+
 # keyword-markers.md §7, follow-up 1: the two signature-registration sites
 # inferred `has-rest` from `(< (defn-params-count …) (node-len …))`, which is
 # equally true of an `:optional` list — so every `:optional` defn registered
