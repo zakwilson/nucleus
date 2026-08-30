@@ -1632,59 +1632,64 @@ regression — most commonly a both-`ptr` comparison that lost its strcmp (a
 (stage1==stage2) does **not** catch this (both stages share the change); the
 before/after IR diff does.
 
-## Member access is head position `(s field)`; `_get` is the bypass primitive
+## Member access is head position `(s 'field)`; `_get` is the bypass primitive
 
 The `.` field-access special form was renamed **`_get`** (compiler-internal
-primitive; `emit-field-get`) and ordinary code uses **head position `(s field)`**
+primitive; `emit-field-get`) and ordinary code uses **head position `(s 'field)`**
 instead (the callable-values `get` path: Struct-blanket intrinsic, byte-identical
-GEP+load). `.set!` is unchanged (writes stay `(.set! s f v)`). Two non-obvious
+GEP+load). The selector is **quoted** — see the next section. Two non-obvious
 hazards — both bit the `.`→head-position migration and are why `_get` still exists:
 
 - **A user `get` method must read its own fields with `_get`, not head position.**
-  `(self field)` inside a `(defn get … (self:ptr:T sel))` dispatches back into that
-  same `get` method → infinite recursion → segfault. Use `(_get self field)` (direct,
+  `(self 'field)` inside a `(defn get … (self:ptr:T sel))` dispatches back into that
+  same `get` method → infinite recursion → segfault. Use `(_get self 'field)` (direct,
   bypasses the override). Head position respects user `get` overrides; `_get` skips them.
 - **A struct held in a variable named like a special form or macro collides.**
-  `(cond field)` parses as the `cond` special form (special forms/macros are
+  `(cond 'field)` parses as the `cond` special form (special forms/macros are
   dispatched before scope lookup). Fix by renaming the variable (preferred) or using
-  `(_get cond field)`. **Functions don't collide** — a local shadows them in scope
-  lookup, so `(localvar field)` is member access even if a function shares the name.
+  `(_get cond 'field)`. **Functions don't collide** — a local shadows them in scope
+  lookup, so `(localvar 'field)` is member access even if a function shares the name.
   The migration script special-cases reserved-named *direct* heads (`(. cond f)` →
   `(_get cond f)`); a reserved-named **`->` base** (`(-> cond … (. type))`) is not
   caught and must be renamed.
 
-**A bare selector falls back to a value when the callee has no such field (W7).**
-`(s field)` still names a field whenever `s`'s type *has* that field — that rule
-is unchanged and is why the two hazards above still bite. But when the callee
-provably has no such field and the symbol is a **local** binding, the selector is
-demoted to a value, so `(m k)` on a `(HashMap CStr i32)` looks up by `k` instead
-of dying with "no field 'k'". Two things this does **not** do, both deliberate:
-a **field name wins** over a same-named local (`(m count)` is `HashMap`'s `count`
-field), and **globals never demote** (every function is in the global scope, so
-demoting on globals would re-interpret `(sd name)` the moment a global `name`
-existed). For both, `(invoke m count)` is the always-a-value escape hatch —
-`invoke` now falls back to `get` when no `invoke` method accepts the receiver.
-The demotion cannot change code that compiled before: any such site resolves its
-field, so the gate is false there (verified by A/B-diffing emitted IR for every
-example against the pre-change compiler — 135 byte-identical, 0 differing).
+**A field name is QUOTED; a bare symbol in selector position is a variable.**
+`selector-literal-sym` (src/nucleusc.nuc) accepts `(quote sym)` and nothing else;
+everything else is a computed selector. Selector position used to be the one
+place in the language where a symbol was not a variable reference, and Stage 15's
+W7 demotion (`callee-has-field` + `selector-shadowed-by-local`) and Stage 16's
+`k:CStr` annotation hatch both existed to claw the value reading back; the flip
+(`design/stage16-ergonomics/dot-forms.md` §5 step 3) deleted all three. Three
+things that fall out of it, each of which had to be built:
 
-**Selector position is not value position, and a new value spelling will miss it.**
-`selector-literal-sym` (src/nucleusc.nuc) classifies a bare `NODE-SYM` as a field
-name *before* anything emits it, so a selector never reaches `emit-symbol-ref` —
-the "one place a name becomes a value" that a value-position feature is naturally
-built in. Stage 16's `as` sugar landed there and `(m k:CStr)` still died with
-`no field 'k:CStr'` (as-sugar.md §11). When adding a spelling that makes a symbol
-mean something new, check this classifier as a second site. Its saving grace is
-that it is *shared*: emit (`emit-get-with-callee`) and node-type
+- **`.`, `.&` and `.set!` require a literal** and refuse a bare symbol rather
+  than reading it as a variable — they name a field statically, so there is
+  nothing for a computed selector to mean there (`die-nonliteral-selector`).
+- **Head position and `get` route on the RECEIVER, not on the argument's shape.**
+  `emit-callable-value` used to reach the member path only for a single
+  literal-symbol argument; with the literal gone, `(p sel)` fell through to
+  `emit-invoke-with-callee`. The gate is `is-member-access-receiver`
+  (src/generics.nuc): a struct/union value or a pointer to one — the question
+  `emit-get-intrinsic` actually asks. **Do not reuse `access-receiver-sdef`
+  here**: it answers with a `StructDef` and so cannot speak for a `TY-UNION`.
+- **An unbound bare symbol naming a real field is a missed quote**, not an
+  undefined variable, and `emit-computed-field` says so with the spelling. That
+  message is the whole migration story for a downstream tree.
+
+**Selector position is no longer special, but the classifier still is.**
+`selector-literal-sym` runs *before* anything emits, so a selector never reaches
+`emit-symbol-ref` — the "one place a name becomes a value" that a value-position
+feature is naturally built in. That is how Stage 16's `as` sugar landed and
+`(m k:CStr)` still died with `no field 'k:CStr'` (as-sugar.md §11). Its saving
+grace is that it is *shared*: emit (`emit-get-with-callee`) and node-type
 (`callable-get-type`, generics.nuc) both call it, so the `node-type`↔`emit-node`
-lockstep holds by construction — fix it once, not twice. The rule that resolved
-it needs no scope lookup, which is what makes it safe at a classifier: **a field
-name can never carry a colon**, so an annotated symbol is unambiguously a value
-in any program. Quoted `'k:T` stays always-a-name.
+lockstep holds by construction. `is-member-access-receiver` is the same shape and
+is called from both `emit-callable-value` and `callable-value-type` for the same
+reason.
 
 The `->` macro (`lib/macros.nuc`) was extended to substitute `_` in **head**
 position (it scans the whole form, not just args), so a threaded value can land in
-call position: `(-> s (_ field))` ⇒ `(s field)`. The migration rewrites a 1-arg
+call position: `(-> s (_ 'field))` ⇒ `(s 'field)`. The migration rewrites a 1-arg
 `->`-step `(. field)` to `(_ field)` and a normal `(. s field)` to `(s field)`.
 
 ## Reading a struct value's field is direct; writing one needs a binding

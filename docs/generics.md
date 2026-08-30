@@ -8,8 +8,8 @@ A `defn` whose name already exists but whose **parameter types differ** does not
 (defstruct Circle rad:i32)
 (defstruct Rect w:i32 h:i32)
 
-(defn area (c:ptr:Circle):i32 (return (* (* (c rad) (c rad)) 3)))
-(defn area (s:ptr:Rect):i32   (return (* (s w) (s h))))
+(defn area (c:ptr:Circle):i32 (return (* (* (c 'rad) (c 'rad)) 3)))
+(defn area (s:ptr:Rect):i32   (return (* (s 'w) (s 'h))))
 
 (defn kind (x:i32):i32 (return 1))   ; overload on primitive type
 (defn kind (x:f64):i32 (return 2))
@@ -51,7 +51,7 @@ A **protocol** names a capability — a set of required method signatures — an
 `extend Type Protocol` is a **checked, code-free conformance assertion**. It runs after the whole-file prescan: for each required signature it substitutes `Self → Type` and requires that a concrete method already resolves at the exact tier (the implementations are ordinary overloaded `defn`s). It records the `(Type, Protocol)` fact and emits nothing.
 
 ```lisp
-(defn area (s:ptr:Circle):i32 (return (* (* (s rad) (s rad)) 3)))
+(defn area (s:ptr:Circle):i32 (return (* (* (s 'rad) (s 'rad)) 3)))
 (defn label (s:ptr:Circle):ptr (return "circle"))
 
 (extend Circle Shape)   ; OK — both methods exist for Circle
@@ -84,7 +84,7 @@ A protocol belongs to the namespace of the file that declares it, exactly as a `
 (import-prefixed shapes sh)
 
 (defstruct Circle rad:i32)
-(defn area ((self (ref Circle))):i32 (return (* (self rad) 3)))
+(defn area ((self (ref Circle))):i32 (return (* (self 'rad) 3)))
 
 (extend Circle sh/Shape)          ; the protocol, through the prefix THIS file bound
 (defn boxed ():(dyn sh/Shape) …)  ; likewise in a `dyn` position
@@ -266,9 +266,9 @@ When the bound names a **parametric protocol**, the constraint head is a protoco
 (defn next ((self (ref (MapIter I F)))
                         :where ((Iterator S) I)      ; recover S := I's element
                                ((UnaryFn S E) F)) (Maybe E)    ; check S, recover E := F's result
-  (let ((res (Maybe S)) (next (.& self source)))
+  (let ((res (Maybe S)) (next (.& self 'source)))
     (match res
-      ((some v) (return (some (apply (.& self f) v))))
+      ((some v) (return (some (apply (.& self 'f) v))))
       (none (return none)))))
 ```
 
@@ -618,7 +618,7 @@ env's `invoke` non-self signature must match the box's `(params…) ret`
 
 ; heterogeneous collection
 (let (v (Vector (BoxedFn (i32) i32))) [])
-(vector-push v (vfn (x:i32):i32 (return (* x (. self factor)))))   ; captured factor
+(vector-push v (vfn (x:i32):i32 (return (* x (. self 'factor)))))   ; captured factor
 (vector-push v (fn  (x:i32):i32 (return (+ x 1))))                  ; bare fn
 
 ; struct field
@@ -684,8 +684,8 @@ Note the surface difference: a `BoxedFn` is dispatched as a **callable value**
 (defstruct Cat name:ptr)
 (defstruct Dog name:ptr)
 
-(defn describe (self:(ref Cat)):void (printf "Cat: %s\n" (. self name)))
-(defn describe (self:(ref Dog)):void (printf "Dog: %s\n" (. self name)))
+(defn describe (self:(ref Cat)):void (printf "Cat: %s\n" (. self 'name)))
+(defn describe (self:(ref Dog)):void (printf "Dog: %s\n" (. self 'name)))
 
 (extend Cat Describe)
 (extend Dog Describe)

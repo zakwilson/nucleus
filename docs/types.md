@@ -36,7 +36,7 @@ Three limits follow from the spelling rather than the rule:
 
 An annotation whose type does not exist is an error (`unknown type 'Foo' in the annotation 'x:Foo'`); it is not ignored.
 
-The one position where the annotation carries extra weight is a **selector**: `(m k)` reads a *field* named `k`, but `(m k:CStr)` looks the value of `k` up as a key, because a field name can never contain a colon. See [callable values](special-forms.md#callable-values-non-function-call-position).
+Selector position used to be a special case here — `(m k)` named a *field* and `(m k:CStr)` was the annotation hatch that forced the value reading. Stage 16 retired both: a **quoted** `(m 'k)` is the field and a bare `(m k)` is the ordinary variable, so the annotation means in selector position exactly what it means anywhere else. See [callable values](special-forms.md#callable-values-non-function-call-position).
 
 **Colon-paren binding sugar.** A binding's type may also be a parenthesised form written directly after the colon, with no space: `name:(ref (Vector T))`, `v:(ptr u8)`, `f:(fn i32)(i32 i32)`. In list (binding) context the reader fuses a trailing-colon atom that is *immediately* followed by `(` into the canonical list node `(name <paren-form>)`. So `v:(ref (Vector i32))` is exactly `(v (ref (Vector i32)))`, in both parameter lists and `let` bindings. The fusion only fires when the colon is the last character of the atom and the very next character is `(` (no whitespace); a mid-colon symbol such as `foo:i32` is unaffected.
 
@@ -94,7 +94,7 @@ A qualifier that names no namespace in scope is refused rather than silently res
 
 ```lisp
 (defstruct Cat n:i32)
-(defn take ((c (ref nope/Cat))):i32 (return (_get c n)))
+(defn take ((c (ref nope/Cat))):i32 (return (_get c 'n)))
 ```
 
 ```
@@ -289,7 +289,7 @@ assertion; see [Implicit Type Coercion](#implicit-type-coercion)). An elem-less
 bare `ptr` (`void*`) slot carries
 no contract and is exempt. Widening (non-null→raw, non-null→`?T`, raw↔`?T`) is
 always allowed. `none` is the null `?T` literal. Stack addresses are non-null by
-construction: `(addr-of x)`, `(.& p f)`, `(alloca T)`, `(array T …)`, and a
+construction: `(addr-of x)`, `(.& p 'f)`, `(alloca T)`, `(array T …)`, and a
 `(S …)` compound literal all yield `(ref T)`.
 
 **A global declared non-null must be initialized.** `(defvar g:ptr:T)` with no
@@ -497,7 +497,7 @@ by construction and carries the full significand at every width:
 does this: `0x1.8` is not a float literal (nor an integer — it is an error), and
 `0x18` is an integer.
 
-**A float literal is untyped: it adapts to whatever float width the position wants**, and only falls back to `f64` when nothing asks for anything else. That covers both a binop operand — with `alpha:f32`, `(* alpha 2.0)` and `(* 2.0 alpha)` are both `f32`, in either order — and every *typed target* position: `(let (a:f32 0.1) …)`, `with`, `(set! a 0.1)`, `(.set! p x 0.1)`, `(return 0.1)` from an `f32` function (explicit or implicit), an `f32` field in a struct literal, an `f32` element in an `(array f32 …)`, an `f32` argument at a call, and an `f32` `defvar` initializer. None of these need an `(unsafe/cast f32 …)` wrapper, and the literal is rounded to single precision at compile time — no conversion instruction is emitted.
+**A float literal is untyped: it adapts to whatever float width the position wants**, and only falls back to `f64` when nothing asks for anything else. That covers both a binop operand — with `alpha:f32`, `(* alpha 2.0)` and `(* 2.0 alpha)` are both `f32`, in either order — and every *typed target* position: `(let (a:f32 0.1) …)`, `with`, `(set! a 0.1)`, `(.set! p 'x 0.1)`, `(return 0.1)` from an `f32` function (explicit or implicit), an `f32` field in a struct literal, an `f32` element in an `(array f32 …)`, an `f32` argument at a call, and an `f32` `defvar` initializer. None of these need an `(unsafe/cast f32 …)` wrapper, and the literal is rounded to single precision at compile time — no conversion instruction is emitted.
 
 A bare float literal with no target is `f64`, so `(let (b 0.1) …)` and `(let (b:f64 0.1) …)` are both `f64`; adaptation never makes an unrequested `f32`. Two *typed* float operands of different width widen to the wider (`f32 * f64` is `f64`). Mixing float and integer operands without an explicit `unsafe/cast` is a compile error — a float literal adapts only to a *float* target, never to an integer one (`(let (a:i32 1.5) …)` is rejected).
 
@@ -528,7 +528,7 @@ array-typed global, field, or `alloca` is the address of element 0, typed
 (defstruct Row tag:i8 (cells (array i32 4)) mark:i8)   ; C: struct { int8_t tag; int32_t cells[4]; int8_t mark; }
 
 (defn row-first ((r (ref Row))):i32
-  (aref (r cells) 0))          ; (r cells) is ptr:i32 — a GEP, no load
+  (aref (r 'cells) 0))         ; (r 'cells) is ptr:i32 — a GEP, no load
 
 (defn scratch ():i32
   (let (buf:ptr:i32 (alloca (array i32 64)))   ; 64 slots of frame storage
@@ -691,7 +691,7 @@ initializer.
 (defn main ():i32
   (let (loc:(fn i32)(i32) null
         h:ptr:Hooks (alloca Hooks))
-    (.set! h before null)
+    (.set! h 'before null)
     (set! loc add1)
     (set! loc null)                  ; and back again
     (return 0)))
@@ -785,7 +785,7 @@ The following conversions are applied automatically in assignment contexts (`let
     no instruction at all — the literal is re-rendered as a single-precision
     constant at compile time. So `(let (a:f32 0.1) …)`, `(set! a 0.1)`,
     `(return 0.1)` from an `f32` function, `(P 0.1 0.2)` into `f32` fields,
-    `(array f32 0.1)`, `(.set! p x 0.1)` and `(take 0.1)` against
+    `(array f32 0.1)`, `(.set! p 'x 0.1)` and `(take 0.1)` against
     `(defn take (x:f32) …)` all work with the bare literal — no
     `(unsafe/cast f32 0.1)` wrapper. The narrowing of a *value* is silent, the
     same way a narrowing integer assignment is silent (see the `trunc` bullet
@@ -1100,4 +1100,4 @@ The interning is global to the process. The reader interns at lex time, and `quo
 
 `gensym` deliberately bypasses the intern table — `(gensym)` always returns a fresh unique `Node*` whose spelling (e.g. `__gs_0`) does not collide with anything else, so it is safe in hygienic macros.
 
-Symbol identity replaces `strcmp` for matching known spellings. Prefer `(= h 'defn)` over `(= (strcmp (. h s) "defn") 0)`.
+Symbol identity replaces `strcmp` for matching known spellings. Prefer `(= h 'defn)` over `(= (strcmp (. h 's) "defn") 0)`.

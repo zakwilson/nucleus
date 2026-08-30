@@ -115,7 +115,7 @@ Importing a `.nuch` with `defmethod` forms registers the methods for dispatch in
 | `unsafe-import-private` | Prefix-qualified import that also reaches a library's private symbols: `(unsafe-import-private lib prefix sym...)`. | — |
 | `declare` | Declare an external function signature `(declare name (params...) :rettype)`. Used in `.nuch` header files and at the top level. A parameter may be written named (`fd:i32`) or unnamed, as its bare type (`i32`) — both carry the type, and a list may mix them. See [Top-level forms](toplevel.md) for the full parameter grammar. | function prototype |
 | `extern` | Declare a foreign global variable `(extern name:type)`. The compiler emits `@name = external global T`, leaving storage and initialization to the linker. Works for both C-defined and Nucleus-defined producers; the matching `defvar` may live in another `.o` file. | `extern` declaration |
-| `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)`. Supports `:rest` for variadic macros: `(defmacro name (a b :rest rest) ...)` — `rest` receives a cons list of remaining args. Parameters (and the `:rest` list) are typed `(raw Node)` inside the body, so `(p car)`, `(p cdr)`, chains like `((p cdr) car)`, `(p kind)`, and `(p s)` work directly with no `(cast ptr:Node ...)`. The macro can splice a parameter into a quasiquote regardless of the value type the user-supplied expression evaluates to at the call site — see [Macros and pass-through arguments](#macros-and-pass-through-arguments) below (note the `cond`/`if` branch-unification sharp edge). | macro |
+| `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)`. Supports `:rest` for variadic macros: `(defmacro name (a b :rest rest) ...)` — `rest` receives a cons list of remaining args. Parameters (and the `:rest` list) are typed `(raw Node)` inside the body, so `(p 'car)`, `(p 'cdr)`, chains like `((p 'cdr) 'car)`, `(p 'kind)`, and `(p 's)` work directly with no `(cast ptr:Node ...)`. The macro can splice a parameter into a quasiquote regardless of the value type the user-supplied expression evaluates to at the call site — see [Macros and pass-through arguments](#macros-and-pass-through-arguments) below (note the `cond`/`if` branch-unification sharp edge). | macro |
 | `defcast` | Register an implicit conversion `(defcast From To conv-fn)`. `conv-fn` must be a unary function with signature `To (From)` already in scope; the compiler emits a call to it whenever an arg of `From` is supplied where `To` is expected. Pairs already covered by built-in coercion (identity, int↔int, `f32`→`f64`) are rejected at registration. Rules are unidirectional and non-transitive — declare each direction explicitly, and chain through an intermediate type by writing the chain yourself. Exported in `.nuch` headers. | implicit conversion |
 | `def-rmacro` | Define a reader macro `(def-rmacro "prefix" symbol)`. When `prefix` appears at the start of a token, the reader wraps the next form: `(symbol form)`. Built-in reader macros: `'` (quote), `` ` `` (quasiquote), `~` (unquote), `~@` (unquote-splice), `@` (deref), `&` (addr-of). | — |
 | `exclude-prelude` | Suppress the implicit `(import-use prelude)` for this source file. Must be the first top-level form; takes no arguments. Use when a file should compile against the bare language without the standard macros, `Node` struct, or `(import-use "string.h")` declarations. The directive applies to the **compilation unit's entry file only** — the prelude is a property of the unit, not of a file — so a copy of it in a file that is *imported* is ignored rather than being an error. | — |
@@ -157,7 +157,7 @@ store, argument, return) — narrow first, or assert with `(cast ref:T x)` (the
 audited C-boundary escape hatch). An elem-less bare `ptr` (`void*`) slot carries
 no contract and is exempt. Widening (non-null→raw, non-null→`?T`, raw↔`?T`) is
 always allowed. `none` is the null `?T` literal. Stack addresses are non-null by
-construction: `(addr-of x)`, `(.& p f)`, `(alloca T)`, `(array T …)`, and a
+construction: `(addr-of x)`, `(.& p 'f)`, `(alloca T)`, `(array T …)`, and a
 `(S …)` compound literal all yield `(ref T)`.
 
 **Uniform `?` (Maybe)** (Stage 10 Phase F): `?T` ≡ `(Maybe T)` with no
@@ -176,7 +176,7 @@ sugar (a fallible result that may be absent).
 **Flow narrowing**: inside a region dominated by a successful non-null test, a
 local `?ptr:T` binding reads as `(ref T)`. The compiler's own guard idioms are
 the mechanism — `(when (= m null) (return …))`, `(if (!= m null) … …)`,
-`(and (!= m null) (m field))` all narrow, as do `if-some`/`when-some`/`unwrap`.
+`(and (!= m null) (m 'field))` all narrow, as do `if-some`/`when-some`/`unwrap`.
 A reassignment kills the narrow (sticky across joins); loop bodies drop narrows
 established outside the loop for any binding the body assigns; `label` kills
 all narrows (unknown predecessors). Kind mismatches at a `cond`/`if` join meet
@@ -221,11 +221,11 @@ Examples:
 - `(defstruct Outer (pt (struct x:i32 y:i32)) tag:i32)` — nested by value
 - `(defn take ((p (ptr (struct x:i32)))):i32  ...)` — parameter typed as anonymous struct pointer
 
-Use `(.& obj field)` to obtain a pointer to a field without loading it. Result is typed `(ptr field-type)`, so it composes with `.set!`, `deref`, and further `.&` calls — e.g. `(.set! (.& o point) x 10)` writes through a value-typed nested struct field.
+Use `(.& obj 'field)` to obtain a pointer to a field without loading it. Result is typed `(ptr field-type)`, so it composes with `.set!`, `deref`, and further `.&` calls — e.g. `(.set! (.& o 'point) 'x 10)` writes through a value-typed nested struct field.
 
 ### Passing and returning structs by value
 
-A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or return type is passed/returned per the **platform C ABI**, so it interoperates correctly with C functions compiled by the system `cc`. On x86_64 System V this means small structs are coerced into registers (e.g. `{i32,i32}` → one `i64`; a struct with a `float` field whose eightbyte also holds an integer → `i64`), and structs larger than 16 bytes are passed `byval` / returned via a hidden `sret` pointer. Other targets' ABIs are not yet implemented (see `design/stage8/platform.md`). A struct value is produced by dereferencing a pointer (`@p`) and consumed by storing the call result (`(ptr-set! q (make ...))`). Reading a field needs no pointer: `(. p f)`, `(p f)` and `(_get p f)` all accept a struct **value** — a by-value parameter, a `let`-bound struct local, or a call result read in place (`(. (mk 3) f)`). Writing one does: `.set!` and `.&` need the receiver's storage, so they take the same receivers `addr-of` does — a binding, not a temporary (`(.set! (mk 3) f 1)` is an error; bind it first). A function may take or return a struct defined anywhere in the same compilation unit or an import — struct definitions are registered before function signatures are resolved.
+A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or return type is passed/returned per the **platform C ABI**, so it interoperates correctly with C functions compiled by the system `cc`. On x86_64 System V this means small structs are coerced into registers (e.g. `{i32,i32}` → one `i64`; a struct with a `float` field whose eightbyte also holds an integer → `i64`), and structs larger than 16 bytes are passed `byval` / returned via a hidden `sret` pointer. Other targets' ABIs are not yet implemented (see `design/stage8/platform.md`). A struct value is produced by dereferencing a pointer (`@p`) and consumed by storing the call result (`(ptr-set! q (make ...))`). Reading a field needs no pointer: `(. p 'f)`, `(p 'f)` and `(_get p 'f)` all accept a struct **value** — a by-value parameter, a `let`-bound struct local, or a call result read in place (`(. (mk 3) 'f)`). Writing one does: `.set!` and `.&` need the receiver's storage, so they take the same receivers `addr-of` does — a binding, not a temporary (`(.set! (mk 3) 'f 1)` is an error; bind it first). A function may take or return a struct defined anywhere in the same compilation unit or an import — struct definitions are registered before function signatures are resolved.
 
 ### C header struct ingestion
 
@@ -259,9 +259,9 @@ reinterpretation, exactly `cast`'s contract (no checking; the raw frontier):
 ```lisp
 (defstruct Scalar kind:i32 (data (union as-int:i64 as-float:f64)))
 (let (s:ptr:Scalar (alloca Scalar)
-      (d (ptr (union as-int:i64 as-float:f64))) (.& s data))
-  (.set! d as-int (cast i64 42))
-  (d as-int))
+      (d (ptr (union as-int:i64 as-float:f64))) (.& s 'data))
+  (.set! d 'as-int (cast i64 42))
+  (d 'as-int))
 ```
 
 `abi-classify` extends to unions (every member classified at offset 0, classes
@@ -290,7 +290,7 @@ spelling for template instances, below). The arm names themselves are not
 bound (one-symbol-one-kind); only the prefixed constructors are.
 
 **No raw access outside `match`**: the tag and payload are not readable as
-fields (`(s tag)` is an error directing you to `match`); the escape hatch is
+fields (`(s 'tag)` is an error directing you to `match`); the escape hatch is
 an explicit `cast` to the representation struct.
 
 ### `match`
@@ -425,9 +425,9 @@ applies.
 
 (defn main ():i32
   (let (pt:ptr:Pt (cast ptr:Pt (malloc (sizeof Pt))))
-    (.set! pt x 42)
+    (.set! pt 'x 42)
     (match (lookup pt 1)
-      ((ok q)  (printf "ok x=%d\n" (q x)))
+      ((ok q)  (printf "ok x=%d\n" (q 'x)))
       ((err e) (printf "err: %s\n" (err-name e))))
     (free pt))
   0)
@@ -473,7 +473,7 @@ types, `defn` parameter and return types, `cast` targets, `sizeof` operands, and
 
 ```lisp
 (defn count (self:(ref (Vector T))):usize
-  (return (self len)))
+  (return (self 'len)))
 
 (defstruct Tree
   val:i32
@@ -515,7 +515,7 @@ once per distinct concrete receiver type, reusing the rung-4 monomorphizer.
 
 ```lisp
 (defn count (self:(ref (Vector T))):usize
-  (return (self len)))
+  (return (self 'len)))
 
 (defn push ((self (ref (Vector T))) x:T):void
   ; ... grow if needed, store x, increment len
@@ -523,7 +523,7 @@ once per distinct concrete receiver type, reusing the rung-4 monomorphizer.
 ```
 
 The method call `(count v)` with `v:(ref Vector.i32)` resolves to a direct
-`call` (inlinable, zero dispatch overhead). Field access `(v len)` on a stamped
+`call` (inlinable, zero dispatch overhead). Field access `(v 'len)` on a stamped
 instance is a static GEP+load — byte-identical to any hand-written struct.
 
 `:where` remains available for **extra bounds** on the type variable:
@@ -851,8 +851,8 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 
 Macro parameters are typed `(raw Node)` — the macro sees AST. Because the
 parameter is a typed pointer to `Node`, a macro walks the argument's structure
-with member access **without casting**: `(p car)`, `(p cdr)`, chains like
-`((p cdr) car)`, and `(p kind)`/`(p s)` all type-check directly (`car`/`cdr`
+with member access **without casting**: `(p 'car)`, `(p 'cdr)`, chains like
+`((p 'cdr) 'car)`, and `(p 'kind)`/`(p 's)` all type-check directly (`car`/`cdr`
 are themselves `(raw Node)`). When the macro splices a parameter into its
 expansion via `~param`, the resulting form is compiled as if the user had
 written that expression directly at the call site, so the *value* type the
@@ -865,12 +865,12 @@ only the AST representation is uniform.
 
 ```
 ; Pick a printf format from the literal kind, then splice the original
-; expression in. The macro inspects (. x kind) at expansion time; the
+; expression in. The macro inspects (. x 'kind) at expansion time; the
 ; spliced ~x is compiled at the call site with whatever type it has.
 (defmacro tprint (x)
-  (cond (= (. x kind) NODE-INT) `(printf "%d\n" ~x)
-        (= (. x kind) NODE-STR) `(printf "%s\n" ~x)
-        (= (. x kind) NODE-FLOAT) `(printf "%f\n" ~x)
+  (cond (= (. x 'kind) NODE-INT) `(printf "%d\n" ~x)
+        (= (. x 'kind) NODE-STR) `(printf "%s\n" ~x)
+        (= (. x 'kind) NODE-FLOAT) `(printf "%f\n" ~x)
         true                    `(printf "%p\n" ~x)))
 
 (tprint 42)        ; → (printf "%d\n" 42)        — i32 at the call site
@@ -948,10 +948,10 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `deref` | Dereference a pointer (reader sugar: `@p` → `(deref p)`) | `*p` |
 | `ptr-set!` | Write through a pointer; yields the stored value | `*p = val` |
 | `ptr+` | Pointer arithmetic | `p + n` |
-| `.` | Struct field access; equivalent to head position `(s field)` and lowers to the `_get` primitive for a plain struct. | `s.field` |
-| `_get` | Low-level struct field read (compiler-internal primitive; bypasses any user `get` override). Prefer head position `(s field)` in ordinary code; use `_get` only where head position would dispatch wrongly (a user `get` method reading its own field, or a struct held in a special-form-named variable). | `s.field` |
+| `.` | Struct field access; equivalent to head position `(s 'field)` and lowers to the `_get` primitive for a plain struct. | `s.field` |
+| `_get` | Low-level struct field read (compiler-internal primitive; bypasses any user `get` override). Prefer head position `(s 'field)` in ordinary code; use `_get` only where head position would dispatch wrongly (a user `get` method reading its own field, or a struct held in a special-form-named variable). | `s.field` |
 | `.set!` | Struct field assignment; yields the stored value | `s.field = val` |
-| `get` | Member access / field read: `(get s 'field)` ≡ `(s field)`; for a plain struct this lowers to the `_get` primitive (zero-overhead), overridable per type. See [Callable values](#callable-values-non-function-call-position) | `s.field` |
+| `get` | Member access / field read: `(get s 'field)` ≡ `(s 'field)`; for a plain struct this lowers to the `_get` primitive (zero-overhead), overridable per type. See [Callable values](#callable-values-non-function-call-position) | `s.field` |
 | `invoke` | General call on a value: `(invoke s 3)` ≡ `(s 3)`; user-defined (`Seq`/`Call`) | `s(3)` / `s[3]` |
 | `sizeof` | Size of a type | `sizeof(T)` |
 | `alloca` | Stack-allocate memory | `alloca()` / VLA |
@@ -1103,8 +1103,8 @@ A `defn` whose name already exists but whose **parameter types differ** does not
 (defstruct Circle rad:i32)
 (defstruct Rect w:i32 h:i32)
 
-(defn area (c:ptr:Circle):i32 (return (* (* (. c rad) (. c rad)) 3)))
-(defn area (s:ptr:Rect):i32   (return (* (. s w) (. s h))))
+(defn area (c:ptr:Circle):i32 (return (* (* (. c 'rad) (. c 'rad)) 3)))
+(defn area (s:ptr:Rect):i32   (return (* (. s 'w) (. s 'h))))
 
 (defn kind (x:i32):i32 (return 1))   ; overload on primitive type
 (defn kind (x:f64):i32 (return 2))
@@ -1138,7 +1138,7 @@ A **protocol** names a capability — a set of required method signatures — an
 `extend Type Protocol` is a **checked, code-free conformance assertion**. It runs after the whole-file prescan: for each required signature it substitutes `Self → Type` and requires that a concrete method already resolves at the exact tier (the implementations are ordinary overloaded `defn`s). It records the `(Type, Protocol)` fact and emits nothing.
 
 ```lisp
-(defn area (s:ptr:Circle):i32 (return (* (* (. s rad) (. s rad)) 3)))
+(defn area (s:ptr:Circle):i32 (return (* (* (. s 'rad) (. s 'rad)) 3)))
 (defn label (s:ptr:Circle):ptr (return "circle"))
 
 (extend Circle Shape)   ; OK — both methods exist for Circle
@@ -1285,27 +1285,29 @@ routes **`invoke → get → _get`** by the callee's *type*:
 |---|---|---|---|
 | 1 | has an `invoke` method | `(invoke s arg…)` | indexing / general call (arg is a **value**) |
 | 2 | has a custom `get` method | `(get s arg)` | value-keyed or symbol member access |
-| 3 | otherwise (plain struct) | `(get s 'field)` → `_get` | raw field access (single literal symbol) |
+| 3 | otherwise (plain struct) | `(get s 'field)` → `_get` | raw field access (**quoted** symbol; any other selector is computed) |
 
 Because **`invoke` takes precedence**, a type that defines `invoke` indexes/applies
 its argument as a *value* — so `(v idx)` evaluates the local `idx` and indexes,
 rather than reading a field named `idx`. Such a type therefore cannot use the
 callable form for field access: read its fields with `_get`/`.field`. A **plain
-struct** (no `invoke`, no custom `get`) still treats a single literal-symbol
-argument as a field selector via the raw `_get` intrinsic, so `(p x)` ≡ `(_get p x)`
-is unchanged and zero-overhead.
+struct** (no `invoke`, no custom `get`) takes a quoted-symbol argument as a field
+selector via the raw `_get` intrinsic, so `(p 'x)` ≡ `(_get p 'x)` and is
+zero-overhead. A **bare** symbol there is an ordinary variable reference, and so
+a computed selector — see
+[Special forms](special-forms.md#callable-values-non-function-call-position).
 
 **`get` — member access (the `Struct` default).** Every struct conforms to the
 built-in `Struct` blanket protocol, whose `get` is supplied by an **intrinsic**: a
 literal selector const-folds to a static `getelementptr`+`load`, **identical to the
-`_get` primitive and zero-overhead**. So `(c rad)` ≡ `(get c 'rad)` ≡ `(_get c rad)`.
-Head position `(c rad)` is the idiomatic spelling; `_get` is the escape hatch (it
+`_get` primitive and zero-overhead**. So `(c 'rad)` ≡ `(get c 'rad)` ≡ `(_get c 'rad)`.
+Head position `(c 'rad)` is the idiomatic spelling; `_get` is the escape hatch (it
 reads the field directly, skipping any user `get` override — so a user `get` method
 uses `_get` for its own fields to avoid recursing into itself).
 
 ```lisp
 (defstruct Point x:i32 y:i32)
-(p x)          ; ≡ (. p x) — a plain field load
+(p 'x)         ; ≡ (. p 'x) — a plain field load
 ```
 
 The intrinsic is **overridable**: a concrete user `get` method for a type sits at
@@ -1314,12 +1316,14 @@ type. A user `get` takes the selector as an interned symbol (`ptr`):
 
 ```lisp
 (defn get (self:ptr:Temp sel:ptr):i32
-  (if (= sel 'f) (return …) (return (. self c))))   ; (t f) and (t c) both route here
+  (if (= sel 'f) (return …) (return (. self 'c))))   ; (t 'f) and (t 'c) both route here
 ```
 
 **Value-keyed `get` (computed selectors).** Dispatch splits on the selector kind.
-A literal-symbol selector takes the member-access path above (the selector value
-is always an interned symbol `ptr`). A **computed/value selector** — an `i32`, a
+A **quoted-symbol** selector takes the member-access path above (the selector
+value is always an interned symbol `ptr`). Anything else is an expression —
+including a bare symbol, which is an ordinary variable reference. A
+**computed/value selector** — an `i32`, a
 `CStr`, or any non-symbol value — instead resolves the `get` generic on the
 selector's *actual* type, so a parametric `get` override can index by a real key:
 
@@ -1347,10 +1351,10 @@ tuple:
 
 ```lisp
 (defstruct Vec data:ptr:i32 len:i32)
-(defn invoke (self:ptr:Vec i:i32):i32 (return (aref (_get self data) i)))
+(defn invoke (self:ptr:Vec i:i32):i32 (return (aref (_get self 'data) i)))
 (v 3)          ; ⇒ (invoke v 3) → element access (literal index)
 (let (idx:i32 1) (v idx))   ; ⇒ (invoke v idx) → indexes; NOT a field named idx
-(_get v len)   ; field access — `(v len)` would mis-route to invoke
+(_get v 'len)   ; field access — `(v 'len)` would mis-route to invoke
 ```
 
 For parametric function-object conformance, use `(UnaryFn Arg Ret)` and
@@ -1361,7 +1365,7 @@ For parametric function-object conformance, use `(UnaryFn Arg Ret)` and
 (defstruct Adder delta:i32)
 (extend Adder (UnaryFn i32 i32))
 (defn apply ((self (ref Adder)) (x i32)) i32
-  (return (+ x (self delta))))
+  (return (+ x (self 'delta))))
 ; (apply adder 37) → 42  when delta=5
 ```
 
@@ -1407,7 +1411,7 @@ The interning is global to the process. The reader interns at lex time, and `quo
 
 `gensym` deliberately bypasses the intern table — `(gensym)` always returns a fresh unique `Node*` whose spelling (e.g. `__gs_0`) does not collide with anything else, so it is safe in hygienic macros.
 
-Symbol identity replaces `strcmp` for matching known spellings. Prefer `(= h 'defn)` over `(= (strcmp (. h s) "defn") 0)`.
+Symbol identity replaces `strcmp` for matching known spellings. Prefer `(= h 'defn)` over `(= (strcmp (. h 's) "defn") 0)`.
 
 ## Built-in Types
 
@@ -1594,7 +1598,7 @@ protocol system is static-only (no vtables) and `funcall-ptr-*` cannot call a
 | `libc-allocator` | `((h (ref AllocHandle))) -> (ref AllocHandle)` | initialise a caller-owned slot as a libc handle |
 | `arena-allocator` | `((h (ref AllocHandle))) -> (ref AllocHandle)` | initialise a caller-owned slot as an arena handle (state lives in `lib/arena.nuc`'s globals) |
 
-A collection stores the `AllocHandle` by value; use `(.& coll alloc-field)` to get
+A collection stores the `AllocHandle` by value; use `(.& coll 'alloc-field)` to get
 a `(ref AllocHandle)` into it for the helpers. Example: `examples/allocator-test.nuc`.
 
 **Why no static `(extend MyAlloc Allocator)` in the library.** A generic method

@@ -45,7 +45,7 @@ Source files contain top-level forms (`defn`, `defvar`, `defstruct`, etc.). A `m
 ```lisp
 (defstruct Point x:i32 y:i32)
 (let (p:ptr:Point (Point (x 10) (y 20)))
-  (printf "%d %d\n" (p x) (p y)))
+  (printf "%d %d\n" (p 'x) (p 'y)))
 ```
 
 **Pointers** — non-null by default, with explicit nullable variants:

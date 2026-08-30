@@ -1,18 +1,14 @@
-; Stage 15 W7 — a bare symbol in selector position may be a *value*.
+; Member access, both readings — the matrix.
 ;
-; design/stage15-stress-test/selector-ambiguity.md
+; design/stage16-ergonomics/dot-forms.md
 ;
-; A bare symbol after a callee has always named a *field*, which makes selector
-; position the only place in Nucleus where a bare symbol is not a variable
-; reference. That is fine for a plain struct, but it made `(m k)` on a
-; `(HashMap CStr i32)` fail with "no field 'k'" while `(m "foo")` worked — the
-; value reading was unreachable once the selector was classified as a symbol.
-;
-; The rule now: a bare symbol still names a field whenever the callee *has* that
-; field; it falls back to the value reading only when the callee provably does
-; not and the name is a local binding. So plain field access is untouched, and
-; the collision case (a local whose name IS a field) still resolves to the field
-; — with `invoke` as the explicit always-a-value escape hatch.
+; A field name is QUOTED; a bare symbol in selector position is an ordinary
+; variable reference, like a symbol anywhere else. Stage 15's W7 rule tried to
+; get the value reading back by demoting a bare symbol only when the callee
+; provably had no such field, which left the collision case unreachable and
+; needed a `count:CStr` annotation hatch to force it. Stage 16 dropped the
+; special case instead: quoting says "field", not quoting says "variable", and
+; neither reading can be foreclosed by what the callee happens to contain.
 
 (import-use "stdio.h")
 (import-use allocator)
@@ -56,12 +52,12 @@
       ((some v) (printf "missing=%d\n" v))
       (none     (printf "missing=absent\n"))))                    ; absent
 
-  ; --- the collision: a local named after a real HashMap field. The FIELD
-  ;     wins (unchanged behaviour); `invoke` is the escape hatch. ---
+  ; --- the collision: a local named after a real HashMap field. Quoting
+  ;     decides it, so both readings are spellable with no escape hatch. ---
   (with ((c (ref (HashMap CStr i32))) {"count" 5}
          count:CStr "count")
     (printf "count-field=%llu\n" (as ui64 (c 'count)))             ; 1 — the field
-    (match (invoke c count)
+    (match (c count)
       ((some v) (printf "count-key=%d\n" v))                      ; 5 — the value
       (none     (printf "count-key=absent\n"))))
 

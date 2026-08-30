@@ -1,8 +1,13 @@
 # W7 — The bare-symbol selector always means "field name"
 
-**Status: B + D + E implemented** (see "As built" at the end). F — marked
-selectors — remains the recommended end state and is deferred to its own stage;
-C is superseded by F and should not be built.
+**Status: superseded 2026-08-30** by option **F**, which landed as
+[stage16-ergonomics/dot-forms.md](../stage16-ergonomics/dot-forms.md) §5 step 3:
+the quoted selector is the only literal spelling, and a bare symbol in selector
+position is an ordinary variable reference. The B + D + E demotion described
+below (`callee-has-field` + `selector-shadowed-by-local`) is gone — with the
+value reading unconditional there is nothing left to demote, and the collision
+case B could not express is just the quote. Kept as the record of why F was the
+answer.
 
 **Provenance.** Unlike W1–W6 this item is *not* from the Doom port's
 `NUCLEUS-FINDINGS.md`. It came out of the author's own stress testing of the
