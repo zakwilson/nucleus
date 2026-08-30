@@ -4,6 +4,6 @@
 
 (defn peek (h:ptr:CHOpaque):i32
   (return
-    (h x)))
+    (h 'x)))
 
 (defn main ():i32 (return 0))

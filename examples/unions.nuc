@@ -60,11 +60,11 @@
 (defn main ():i32
   ; Untagged: write one member, read it back; .& gives the field pointer.
   (let (s:ptr:Scalar (alloca Scalar)
-        (d (ptr (union as-int:i64 as-float:f64))) (.& s data))
-    (.set! s kind 1)
-    (.set! d as-int 42)
+        (d (ptr (union as-int:i64 as-float:f64))) (.& s 'data))
+    (.set! s 'kind 1)
+    (.set! d 'as-int 42)
     (printf "scalar kind %d as-int %lld (sizeof %lld)\n"
-      (s kind) (d as-int) (as i64 (sizeof Scalar))))
+      (s 'kind) (d 'as-int) (as i64 (sizeof Scalar))))
 
   ; Tagged: constructors, make, match, in-place mutation.
   (let (c:Shape (Shape-circle 1.5)

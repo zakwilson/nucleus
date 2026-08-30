@@ -17,9 +17,9 @@
 (defn main ():i32
   ; ---- 1. Entry round-trip -----------------------------------------------
   (let ((e (ref (Entry i32 i32))) (alloca (Entry i32 i32)))
-    (.set! e key 7)
-    (.set! e val 42)
-    (printf "entry key=%d val=%d\n" (e key) (e val)))   ; entry key=7 val=42
+    (.set! e 'key 7)
+    (.set! e 'val 42)
+    (printf "entry key=%d val=%d\n" (e 'key) (e 'val)))   ; entry key=7 val=42
 
   ; ---- 2. iter yields Entry values; drive next manually ------------------
   (with ((m (ref (HashMap i32 i32))) (alloca (HashMap i32 i32)))
@@ -33,8 +33,8 @@
           vsum:i32 0
           n:i32 0)
       (doseq-iter (e (addr-of it))
-        (set! ksum (+ ksum ((addr-of e) key)))
-        (set! vsum (+ vsum ((addr-of e) val)))
+        (set! ksum (+ ksum ((addr-of e) 'key)))
+        (set! vsum (+ vsum ((addr-of e) 'val)))
         (set! n (+ n 1)))
       (printf "iter n=%d ksum=%d vsum=%d\n" n ksum vsum)))  ; iter n=3 ksum=6 vsum=60
 
@@ -42,12 +42,12 @@
   (with ((m (ref (HashMap i32 i32))) (alloca (HashMap i32 i32)))
     (hashmap-init m)
     (let ((e (ref (Entry i32 i32))) (alloca (Entry i32 i32)))
-      (.set! e key 5)
-      (.set! e val 500)
+      (.set! e 'key 5)
+      (.set! e 'val 500)
       (conj m (deref e)))
     (let ((e (ref (Entry i32 i32))) (alloca (Entry i32 i32)))
-      (.set! e key 6)
-      (.set! e val 600)
+      (.set! e 'key 6)
+      (.set! e 'val 600)
       (conj m (deref e)))
     (printf "conj count=%llu\n" (as ui64 (count m)))      ; conj count=2
     (match (get m 5)

@@ -63,8 +63,8 @@
 
 (defstruct Cat n:i32)
 
-(defn describe ((self (ref Cat))):i32 (return (+ 100 (self n))))
-(defn tag-of ((self (ref Cat))):i32 (return (+ 200 (self n))))
+(defn describe ((self (ref Cat))):i32 (return (+ 100 (self 'n))))
+(defn tag-of ((self (ref Cat))):i32 (return (+ 200 (self 'n))))
 
 ; Same bare protocol name, two namespaces, one conforming type.
 (extend Cat dpx/Describe)

@@ -19,7 +19,7 @@
 (defprotocol Adder (add-k ((self (ref Self)) k:i32):i32))
 
 (defstruct Acc n:i32)
-(defn add-k ((self (ref Acc)) k:i32):i32 (return (+ (self n) k)))
+(defn add-k ((self (ref Acc)) k:i32):i32 (return (+ (self 'n) k)))
 (extend Acc Adder)
 
 ; One conformer: `add-k` is a solitary defn, so this is the item's path.
@@ -29,7 +29,7 @@
 ; the right answer by luck, kept so the fix is exercised on both.
 (defprotocol Namer (name-of ((self (ref Self))):i32))
 (defstruct Tag t:i32)
-(defn name-of ((self (ref Tag))):i32 (return (* 3 (self t))))
+(defn name-of ((self (ref Tag))):i32 (return (* 3 (self 't))))
 (extend Tag Namer)
 (defn via-box2 ((b (dyn Namer))):i32 (return (name-of b)))
 
@@ -38,8 +38,8 @@
 (defprotocol Speaker (speak ((self (ref Self))):i32))
 (defstruct Cow c:i32)
 (defstruct Hen h:i32)
-(defn speak ((self (ref Cow))):i32 (return (+ 10 (self c))))
-(defn speak ((self (ref Hen))):i32 (return (+ 20 (self h))))
+(defn speak ((self (ref Cow))):i32 (return (+ 10 (self 'c))))
+(defn speak ((self (ref Hen))):i32 (return (+ 20 (self 'h))))
 (extend Cow Speaker)
 (extend Hen Speaker)
 (defn via-box3 ((b (dyn Speaker))):i32 (return (speak b)))

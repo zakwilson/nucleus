@@ -35,22 +35,22 @@
   ; CHLater was forward-declared before its definition; the definition upgraded
   ; the opaque entry in place, so its fields are usable.
   (let (l:ptr:CHLater (alloca CHLater))
-    (.set! l a 40)
-    (.set! l b 2)
-    (printf "later=%d\n" (+ (l a) (l b))))
+    (.set! l 'a 40)
+    (.set! l 'b 2)
+    (printf "later=%d\n" (+ (l 'a) (l 'b))))
   ; The upgrade propagated to a typedef alias registered while the tag was
   ; still opaque.
   (let (al:ptr:CHAliasedLater (alloca CHAliasedLater))
-    (.set! al v 7)
-    (printf "aliased=%d\n" (al v)))
+    (.set! al 'v 7)
+    (printf "aliased=%d\n" (al 'v)))
   ; ... including when the alias is a DISTINCT name, so it really is a second
   ; registry entry linked to the tag (the `typedef struct _IO_FILE FILE;` shape).
   (let (r:ptr:CHRef (alloca CHRef))
-    (.set! r q 9)
-    (printf "aliased-name=%d\n" (r q)))
+    (.set! r 'q 9)
+    (printf "aliased-name=%d\n" (r 'q)))
   ; And to a tag whose definition arrived via `typedef struct Tag { … } Name;`,
   ; whose body the parser handles anonymously.
   (let (t:ptr:CHTypedefLater (alloca CHTypedefLater))
-    (.set! t w 5)
-    (printf "typedef-later=%d\n" (t w)))
+    (.set! t 'w 5)
+    (printf "typedef-later=%d\n" (t 'w)))
   (return 0))

@@ -6,7 +6,7 @@
   val:T)
 
 (defn box-get ((b (ptr (Box T)))):T
-  (return (b val)))
+  (return (b 'val)))
 
 (defn box-set ((b (ptr (Box T))) v:T):void
-  (.set! b val v))
+  (.set! b 'val v))

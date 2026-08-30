@@ -58,8 +58,8 @@
 
 (defn make-pt (x:i32 y:i32):ptr:Pt
   (let (p:ptr:Pt (as ptr:Pt (malloc (sizeof Pt))))
-    (.set! p x x)
-    (.set! p y y)
+    (.set! p 'x x)
+    (.set! p 'y y)
     (return p)))
 
 (defn make-pt-val (x:i32 y:i32):Pt
@@ -76,8 +76,8 @@
 (defn main ():i32
   (printf "g-n       = %d\n" g-n)
   (printf "g-after   = %d\n" g-after)
-  (printf "g-pt      = %d,%d\n" (g-pt x) (g-pt y))
-  (printf "g-origin  = %d,%d\n" ((addr-of g-origin) x) ((addr-of g-origin) y))
+  (printf "g-pt      = %d,%d\n" (g-pt 'x) (g-pt 'y))
+  (printf "g-origin  = %d,%d\n" ((addr-of g-origin) 'x) ((addr-of g-origin) 'y))
   (printf "g-label   = %s\n" g-label)
   (printf "g-hook()  = %d\n" (g-hook))
   (printf "g-const   = %d\n" g-const)

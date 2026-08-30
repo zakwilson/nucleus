@@ -10,7 +10,7 @@
 
 (defn make-type (k:i32):ref:Type
   (let (t:ref:Type (alloc-type))
-    (.set! t kind k)
+    (.set! t 'kind k)
     (return t)))
 
 ; Stage 15 W8 G-5: the three pointer-kind singletons are the only `ty-*` that
@@ -21,7 +21,7 @@
 ; declaration honestly.
 (defn make-ptr-type (pk:i32):ref:Type
   (let (t:ref:Type (make-type TY-PTR))
-    (.set! t pkind pk)
+    (.set! t 'pkind pk)
     (return t)))
 
 ; ============================================================
@@ -50,10 +50,10 @@
 (defn opaque-sdef-of (t:raw:Type):(raw StructDef)
   (when (= t null) (return null))
   (let (tt:raw:Type t)
-    (when (and (!= (tt kind) TY-STRUCT) (!= (tt kind) TY-UNION)) (return null))
-    (when (= (tt sdef) null) (return null))
-    (let (sd:(raw StructDef) (tt sdef))
-      (when (= (sd opaque) 0) (return null))
+    (when (and (!= (tt 'kind) TY-STRUCT) (!= (tt 'kind) TY-UNION)) (return null))
+    (when (= (tt 'sdef) null) (return null))
+    (let (sd:(raw StructDef) (tt 'sdef))
+      (when (= (sd 'opaque) 0) (return null))
       (return sd))))
 
 ; Reject a by-value use of an opaque type. `what` names the construct doing the
@@ -63,10 +63,10 @@
 (defn reject-opaque-type (t:raw:Type line:i32 what:CStr):void
   (let (sd:(raw StructDef) (opaque-sdef-of t))
     (when (!= sd null)
-      (let (loc:ptr (fmt-sd "%s:%d" (sd src-file) (sd src-line)))
+      (let (loc:ptr (fmt-sd "%s:%d" (sd 'src-file) (sd 'src-line)))
         (die-at line
           (fmt-3s "%s: '%s' is an opaque type declared at %s; only pointers to it are valid"
-                  what (sd name) loc))))))
+                  what (sd 'name) loc))))))
 
 ; ============================================================
 ; Stage 15 W3c: the C typedef table (stage15-stress-test/cheader.md §1.4)
@@ -135,8 +135,8 @@
   (let (cur:ptr g-cheader-typedefs)
     (while (!= cur null)
       (let (e:ptr:CTypedef (as ptr:CTypedef cur))
-        (when (= (as CStr (e name)) name) (return e))
-        (set! cur (e next)))))
+        (when (= (as CStr (e 'name)) name) (return e))
+        (set! cur (e 'next)))))
   (return null))
 
 ; Record `name` as resolving to `ty` (null = known but not representable).
@@ -151,23 +151,23 @@
 (defn c-typedef-record (name:ptr ty:ptr file:ptr line:i32):void
   (if-some (prev (c-typedef-find name:CStr))
     (do
-      (when (or (= (prev provisional) 0) (!= g-cheader-typedef-provisional 0))
+      (when (or (= (prev 'provisional) 0) (!= g-cheader-typedef-provisional 0))
         (return))
-      (.set! prev ty (as raw:Type ty))
-      (.set! prev file file)
-      (.set! prev line line)
-      (.set! prev hdr g-cheader-import-header)
-      (.set! prev provisional 0)
+      (.set! prev 'ty (as raw:Type ty))
+      (.set! prev 'file file)
+      (.set! prev 'line line)
+      (.set! prev 'hdr g-cheader-import-header)
+      (.set! prev 'provisional 0)
       (return))
     0)
   (let (e:ptr:CTypedef (new CTypedef))
-    (.set! e name (intern-str name))
-    (.set! e ty (as raw:Type ty))
-    (.set! e file file)
-    (.set! e line line)
-    (.set! e hdr g-cheader-import-header)
-    (.set! e provisional g-cheader-typedef-provisional)
-    (.set! e next g-cheader-typedefs)
+    (.set! e 'name (intern-str name))
+    (.set! e 'ty (as raw:Type ty))
+    (.set! e 'file file)
+    (.set! e 'line line)
+    (.set! e 'hdr g-cheader-import-header)
+    (.set! e 'provisional g-cheader-typedef-provisional)
+    (.set! e 'next g-cheader-typedefs)
     (set! g-cheader-typedefs (as raw:CTypedef e))))
 
 ; ---- Stage 15 W1d: a layout that has not been emitted yet ------------------
@@ -194,8 +194,8 @@
 (defn sdef-layout-pending (sd:(raw StructDef)):i32
   (when (= g-import-cycles null) (return 0))
   (when (= sd null) (return 0))
-  (when (!= (sd opaque) 0) (return 0))
-  (when (!= (sd laid-out) 0) (return 0))
+  (when (!= (sd 'opaque) 0) (return 0))
+  (when (!= (sd 'laid-out) 0) (return 0))
   (return 1))
 
 ; ---- Stage 16 R4: which buffer holds a type's `%Name = type {…}` line -------
@@ -207,25 +207,25 @@
 ; the REPL there is one epoch and no preamble, so this is exactly `emitted`.
 (defn sdef-in-module (sd:(raw StructDef)):i32
   (when (= sd null) (return 0))
-  (when (!= (sd in-preamble) 0) (return 1))
-  (when (= (sd emit-epoch) g-module-epoch) (return 1))
+  (when (!= (sd 'in-preamble) 0) (return 1))
+  (when (= (sd 'emit-epoch) g-module-epoch) (return 1))
   (return 0))
 
 ; Record that `sd`'s definition line was just written into `out`.
 (defn sdef-note-emitted (sd:(raw StructDef) out:ptr):void
-  (.set! sd emitted 1)
-  (.set! sd emit-epoch g-module-epoch)
+  (.set! sd 'emitted 1)
+  (.set! sd 'emit-epoch g-module-epoch)
   ; Only the type buffer is carried into the REPL preamble at module close; a
   ; line in a def or compile-time buffer dies with its module.
-  (.set! sd in-type-buf (if (= out g-type-stream) 1 0)))
+  (.set! sd 'in-type-buf (if (= out g-type-stream) 1 0)))
 
 (defn cycle-pending-sdef (t:raw:Type):(raw StructDef)
   (when (= g-import-cycles null) (return null))
   (when (= t null) (return null))
   (let (tt:raw:Type t)
-    (when (and (!= (tt kind) TY-STRUCT) (!= (tt kind) TY-UNION)) (return null))
-    (when (= (tt sdef) null) (return null))
-    (let (sd:(raw StructDef) (tt sdef))
+    (when (and (!= (tt 'kind) TY-STRUCT) (!= (tt 'kind) TY-UNION)) (return null))
+    (when (= (tt 'sdef) null) (return null))
+    (let (sd:(raw StructDef) (tt 'sdef))
       (when (= (sdef-layout-pending sd) 0) (return null))
       (return sd))))
 
@@ -235,13 +235,13 @@
 (defn reject-cycle-pending-layout (t:raw:Type line:i32 what:CStr):void
   (let (sd:(raw StructDef) (cycle-pending-sdef t))
     (when (!= sd null)
-      (die-at line (cycle-layout-message (sd name) what)))))
+      (die-at line (cycle-layout-message (sd 'name) what)))))
 
 ; The same rejection where the caller already holds the StructDef (field access
 ; and struct-literal sites, which resolve the struct before they resolve a type).
 (defn reject-cycle-pending-sdef (sd:(raw StructDef) line:i32 what:CStr):void
   (when (!= (sdef-layout-pending sd) 0)
-    (die-at line (cycle-layout-message (sd name) what))))
+    (die-at line (cycle-layout-message (sd 'name) what))))
 
 (defn type-to-ir (t:raw:Type):CStr
   ; W3a backstop: an opaque type has no LLVM definition, so printing `%Foo` here
@@ -252,7 +252,7 @@
   ; binding, a store, a .nuch declare — using the ambient innermost-form line.
   (reject-opaque-type t g-form-line "type")
   (let (tt:raw:Type t)
-    (case (tt kind)
+    (case (tt 'kind)
       TY-VOID   (return "void")
       ; bool still lowers to i1: the Stage 16 divorce is source-level, so no
       ; emitted IR, ABI or generated header moves.
@@ -281,8 +281,8 @@
       TY-F128   (return "fp128")
       TY-USIZE  (return (ptr-int-ir))
       TY-SSIZE  (return (ptr-int-ir))
-      TY-STRUCT (return (fmt-s "%%%s" ((tt sdef) ir-name)))
-      TY-UNION  (return (fmt-s "%%%s" ((tt sdef) ir-name)))
+      TY-STRUCT (return (fmt-s "%%%s" ((tt 'sdef) 'ir-name)))
+      TY-UNION  (return (fmt-s "%%%s" ((tt 'sdef) 'ir-name)))
       ; Stage 15 W8 G-2: `[N x T]`. Two-step format because the widest helper
       ; taking (int, string) in that order does not exist — fmt-sd is (string,
       ; int). Composing two fixed-arity calls is the documented alternative to
@@ -294,15 +294,15 @@
                   ; a prescan type escaped into codegen — fail loudly instead of
                   ; emitting a plausible `[0 x i32]` (legal LLVM: a flexible
                   ; array member).
-                  (when (= (tt arr-len) 0)
+                  (when (= (tt 'arr-len) 0)
                     (die-at g-form-line "internal: a provisional (prescan) array type reached code generation"))
                   ; C1a: -1 is C99's flexible array member, which HAS no extent
                   ; — `[0 x T]`, distinct from the 0 above.
-                  (when (< (tt arr-len) 0)
-                    (return (fmt-s "[0 x %s]" (type-to-ir (tt elem)))))
+                  (when (< (tt 'arr-len) 0)
+                    (return (fmt-s "[0 x %s]" (type-to-ir (tt 'elem)))))
                   (return (fmt-2s "[%s x %s]"
-                            (fmt-i32 "%d" (tt arr-len))
-                            (type-to-ir (tt elem)))))
+                            (fmt-i32 "%d" (tt 'arr-len))
+                            (type-to-ir (tt 'elem)))))
       (return "?"))))
 
 ; ============================================================
@@ -313,8 +313,8 @@
 ; be left at 0 by a caller that forgot it.
 (defn array-type (elem:(raw Type) n:i32):ref:Type
   (let (t:ref:Type (make-type TY-ARRAY))
-    (.set! t elem elem)
-    (.set! t arr-len n)
+    (.set! t 'elem elem)
+    (.set! t 'arr-len n)
     (return t)))
 
 ; THE decay rule, in one function that both codegen and the non-emitting type
@@ -332,10 +332,10 @@
 (defn array-decay (t:(raw Type)):(raw Type)
   (when (= t null) (return t))
   (let (tt:(raw Type) t)
-    (when (!= (tt kind) TY-ARRAY) (return t))
+    (when (!= (tt 'kind) TY-ARRAY) (return t))
     (let (pt:ref:Type (make-type TY-PTR))
-      (.set! pt elem (tt elem))
-      (.set! pt pkind PTR-REF)
+      (.set! pt 'elem (tt 'elem))
+      (.set! pt 'pkind PTR-REF)
       (return (as raw:Type pt)))))
 
 ; The zero-value constant text for a global initializer slot of type `ty`.
@@ -716,7 +716,7 @@
 
 (defn type-zero-const-ir (ty:(raw Type)):CStr
   (let (tt:(raw Type) ty
-        tk:i32 (tt kind))
+        tk:i32 (tt 'kind))
     (when (!= (is-ptr-repr ty) 0) (return "null"))
     ; f32/f64 take the decimal spelling LLVM accepts for them; the three wide
     ; widths do not have one (FL-2), so they route through their renderers.
@@ -735,7 +735,7 @@
 (defn reject-array-type (t:(raw Type) line:i32 what:CStr):void
   (when (= t null) (return))
   (let (tt:(raw Type) t)
-  (when (= (tt kind) TY-ARRAY)
+  (when (= (tt 'kind) TY-ARRAY)
     (die-at line
       (fmt-s "%s: an (array T N) is storage, not a value -- it decays to a pointer when read, so pass or store ptr:T (or (ref T)) instead"
         what)))))
@@ -754,11 +754,11 @@
 (defn type-is-strview (t:raw:Type):i32
   (when (= t null) (return 0))
   (let (tt:raw:Type t)
-    (when (!= (tt kind) TY-STRUCT) (return 0))
-    (let (sd:raw:StructDef (tt sdef))
+    (when (!= (tt 'kind) TY-STRUCT) (return 0))
+    (let (sd:raw:StructDef (tt 'sdef))
       (when (= sd null) (return 0))
-      (when (= (sd name)
-               ((as ptr:Node (intern-symbol "StrView")) s))
+      (when (= (sd 'name)
+               ((as ptr:Node (intern-symbol "StrView")) 's))
         (return 1))
       (return 0))))
 
@@ -774,8 +774,8 @@
 ; untouched. Returns 1 if it collapsed the Val, else 0.
 (defn collapse-strlit-cstr (v:raw:Val):i32
   (let (vv:raw:Val v)
-    (when (and (!= (vv is-lit) 0) (!= (type-is-strview (vv type)) 0))
-      (.set! vv type ty-cstr)
+    (when (and (!= (vv 'is-lit) 0) (!= (type-is-strview (vv 'type)) 0))
+      (.set! vv 'type ty-cstr)
       (return 1))
     (return 0)))
 
@@ -785,7 +785,7 @@
 ; separately in emit-cheader-declare where we have the param names.
 (defn type-to-c (t:raw:Type):CStr
   (let (tt:raw:Type t)
-    (case (tt kind)
+    (case (tt 'kind)
       TY-VOID   (return "void")
       ; `bool`, not `_Bool`: the generated preamble already includes
       ; <stdbool.h>, and it is the spelling a C23 reader expects.
@@ -814,13 +814,13 @@
       TY-F128   (return "_Float128")
       TY-USIZE  (return "size_t")
       TY-SSIZE  (return "ssize_t")
-      TY-STRUCT (return (fmt-s "struct %s" ((tt sdef) name)))
-      TY-UNION  (return (fmt-s "union %s" ((tt sdef) name)))
+      TY-STRUCT (return (fmt-s "struct %s" ((tt 'sdef) 'name)))
+      TY-UNION  (return (fmt-s "union %s" ((tt 'sdef) 'name)))
       ; Stage 15 W8 G-2: C's array declarator is POSTFIX (`int xs[4];`), so the
       ; element type alone belongs here and the `[N]` is appended by the
       ; declarator site (emit-cheader-defstruct). A prefix rendering would be
       ; syntactically wrong C wherever it were pasted.
-      TY-ARRAY  (return (type-to-c (tt elem)))
+      TY-ARRAY  (return (type-to-c (tt 'elem)))
       (return "/* unknown */"))))
 
 ; The IR type of a pointer-sized integer (size_t / intptr_t) for the target.
@@ -859,7 +859,7 @@
 (defn type-size (t:raw:Type):i32
   (let (tt:raw:Type t)
     (when (!= (is-ptr-repr tt) 0) (return g-target-ptr-bytes))
-    (case (tt kind)
+    (case (tt 'kind)
       TY-BOOL (return 1)
       TY-I8   (return 1)
       TY-I16  (return 2)
@@ -891,7 +891,7 @@
       ; an `align N` operand needs a power of two, and `N * sizeof(T)` is not
       ; one (`alloca [3 x i32], align 12` is invalid IR). The real size lives in
       ; abi-sizeof, which is what `sizeof` and the layout walk read.
-      TY-ARRAY  (return (type-size (tt elem)))
+      TY-ARRAY  (return (type-size (tt 'elem)))
       (return 1))))
 
 ; The SEMANTIC "is this an integer" question. TY-BOOL is deliberately absent
@@ -899,7 +899,7 @@
 ; arithmetic and no implicit conversion. Ask `is-int-or-bool` below for the
 ; representation question instead.
 (defn is-int-type (t:raw:Type):i32
-  (let (k:i32 (t kind))
+  (let (k:i32 (t 'kind))
     (case k
       TY-I8 (return 1)
       TY-I16 (return 1)
@@ -921,7 +921,7 @@
       (return 0))))
 
 (defn is-float-type (t:raw:Type):i32
-  (let (k:i32 (t kind))
+  (let (k:i32 (t 'kind))
     (case k
       TY-F16 (return 1)
       TY-F32 (return 1)
@@ -936,7 +936,7 @@
 ; over `type-size` would pick `fptrunc` where `fpext` is meant. Zero for a
 ; non-float, so a caller must have asked `is-float-type` first.
 (defn float-rank (t:raw:Type):i32
-  (case (t kind)
+  (case (t 'kind)
     TY-F16  (return 11)
     TY-F32  (return 24)
     TY-F64  (return 53)
@@ -945,7 +945,7 @@
     (return 0)))
 
 (defn is-bool-type (t:raw:Type):i32
-  (when (= (t kind) TY-BOOL) (return 1))
+  (when (= (t 'kind) TY-BOOL) (return 1))
   (return 0))
 
 ; A type whose *representation* is an integer register: the integers plus bool.
@@ -963,7 +963,7 @@
 ; no IR and zero-initialise to `null`. (TY-FN is deliberately excluded — its
 ; existing call-position handling is unchanged by CStr.)
 (defn is-ptr-like (t:raw:Type):i32
-  (let (k:i32 (t kind))
+  (let (k:i32 (t 'kind))
     (case k
       TY-PTR (return 1)
       TY-CSTR (return 1)
@@ -984,11 +984,11 @@
 ; simply missing it — the shape W9 item 15 found for the GEP index width.
 (defn is-ptr-repr (t:raw:Type):i32
   (when (!= (is-ptr-like t) 0) (return 1))
-  (when (= (t kind) TY-FN) (return 1))
+  (when (= (t 'kind) TY-FN) (return 1))
   (return 0))
 
 (defn int-width (t:raw:Type):i32
-  (let (k:i32 (t kind))
+  (let (k:i32 (t 'kind))
     (case k
       TY-BOOL (return 1)
       TY-I8 (return 8)
@@ -1010,7 +1010,7 @@
 ; `false < true`. Reading it as signed (Stage 15 W9 item 31) made `(as i32 true)`
 ; -1 and `(< false true)` and `(> true false)` both false.
 (defn is-unsigned (t:raw:Type):i32
-  (let (k:i32 (t kind))
+  (let (k:i32 (t 'kind))
     (case k
       TY-BOOL  (return 1)
       TY-UI8   (return 1)
@@ -1066,7 +1066,7 @@
 ; `-ffast-math`: FTZ/DAZ would flush a denormal single to zero and this would
 ; then call the conversion exact.
 (defn float-literal-fits (d:f64 t:raw:Type):i32
-  (let (k:i32 (t kind))
+  (let (k:i32 (t 'kind))
     (when (= k TY-F64) (return 1))
     ; Stage 16 FL-1: f80 and f128 carry every f64 exactly — the widening is what
     ; makes FL-2's renderers integer arithmetic — so a literal always fits.
@@ -1139,27 +1139,27 @@
 (defn ptr-pkind (t:raw:Type):i32
   (when (= t null) (return PTR-RAW))
   (let (tt:raw:Type t)
-    (when (!= (tt kind) TY-PTR) (return PTR-RAW))
-    (return (tt pkind))))
+    (when (!= (tt 'kind) TY-PTR) (return PTR-RAW))
+    (return (tt 'pkind))))
 
 ; Clone `t` with pkind=k. Typed-pointer Types may be shared (and bare ptr is a
 ; singleton), so relabeling/narrowing never mutates. Identity when k matches.
 (defn type-as-pkind (t:raw:Type k:i32):raw:Type
   (let (src:raw:Type t)
-    (when (= (src pkind) k) (return t))
+    (when (= (src 'pkind) k) (return t))
     (let (dst:ref:Type (alloc-type))
-      (.set! dst kind        (src kind))
-      (.set! dst ret         (src ret))
-      (.set! dst params      (src params))
-      (.set! dst num-params  (src num-params))
-      (.set! dst variadic    (src variadic))
-      (.set! dst has-rest    (src has-rest))
-      (.set! dst nopt        (src nopt))
-      (.set! dst opt-defaults (src opt-defaults))
-      (.set! dst elem        (src elem))
-      (.set! dst sdef        (src sdef))
-      (.set! dst is-volatile (src is-volatile))
-      (.set! dst pkind       k)
+      (.set! dst 'kind        (src 'kind))
+      (.set! dst 'ret         (src 'ret))
+      (.set! dst 'params      (src 'params))
+      (.set! dst 'num-params  (src 'num-params))
+      (.set! dst 'variadic    (src 'variadic))
+      (.set! dst 'has-rest    (src 'has-rest))
+      (.set! dst 'nopt        (src 'nopt))
+      (.set! dst 'opt-defaults (src 'opt-defaults))
+      (.set! dst 'elem        (src 'elem))
+      (.set! dst 'sdef        (src 'sdef))
+      (.set! dst 'is-volatile (src 'is-volatile))
+      (.set! dst 'pkind       k)
       (return dst))))
 
 ; The conservative meet of two pointer kinds for a control-flow join (cond /
@@ -1201,7 +1201,7 @@
   ; Untyped (void*) destination carries no non-null contract: an elem-less bare
   ; `ptr` slot names no pointee and cannot be deref'd, so a non-null obligation
   ; on it protects nothing. The flip's teeth stay on typed (ref T)/(ptr T) slots.
-  (when (= (dst elem) null) (return))
+  (when (= (dst 'elem) null) (return))
   ; Stage 15 W9 item 7: every POINTER-LIKE source, not `TY-PTR` alone. A `CStr`
   ; is `TY-CSTR`, so `ptr-pkind` answers PTR-RAW for it and it used to fall out
   ; of this check entirely — `(defvar g:ptr:T (as CStr null))`, and the identical
@@ -1215,7 +1215,7 @@
   ; dereferenced, so a non-null obligation on it protects nothing, whereas the
   ; destination here is typed and fully dereferenceable. See design/stage10/
   ; nullability.md §9.1 and the W9 item 7 note in the stress-test progress doc.
-  (let (sk:i32 (src kind))
+  (let (sk:i32 (src 'kind))
     (when (!= (is-ptr-like src) 0)
       (if (= (ptr-pkind src) PTR-MAYBE)
         (die-at line (fmt-s "%s: value may be null where non-null (ref ...) is required — narrow with if-some/when-some, unwrap, or a null guard" ctx))

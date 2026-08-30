@@ -33,9 +33,9 @@
 (extend CountIter (Iterator i32))
 
 (defn next ((self (ref CountIter))) (Maybe i32)
-  (when (>= (self cur) (self stop)) (return none))
-  (let (v:i32 (self cur))
-    (.set! self cur (+ v 1))
+  (when (>= (self 'cur) (self 'stop)) (return none))
+  (let (v:i32 (self 'cur))
+    (.set! self 'cur (+ v 1))
     (return (some v))))
 
 ; ---------------------------------------------------------------------------
@@ -57,8 +57,8 @@
 
 (defn mk-iter ((self (ref Span))):CountIter
   (let ((it (ref CountIter)) (alloca CountIter))
-    (.set! it cur  (self base))
-    (.set! it stop (+ (self base) (self len)))
+    (.set! it 'cur  (self 'base))
+    (.set! it 'stop (+ (self 'base) (self 'len)))
     (return (deref it))))
 
 ; ---------------------------------------------------------------------------
@@ -76,8 +76,8 @@
 
 (defn main ():i32
   (let ((s (ref Span)) (alloca Span))
-    (.set! s base 10)
-    (.set! s len 5)
+    (.set! s 'base 10)
+    (.set! s 'len 5)
     ; Span [10,15) has 5 elements.
     (printf "count=%d\n" (count-coll s)))
   (return 0))

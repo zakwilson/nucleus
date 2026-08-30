@@ -45,10 +45,10 @@
 (extend IntRangeIter (Iterator i32))
 
 (defn next ((self (ref IntRangeIter))) (Maybe i32)
-  (when (>= (self start) (self end))
+  (when (>= (self 'start) (self 'end))
     (return none))
-  (let (v:i32 (self start))
-    (.set! self start (+ v 1))
+  (let (v:i32 (self 'start))
+    (.set! self 'start (+ v 1))
     (return (some v))))
 
 ; ---------------------------------------------------------------------------
@@ -64,10 +64,10 @@
 (extend I64ArrayIter (Iterator i64))
 
 (defn next ((self (ref I64ArrayIter))) (Maybe i64)
-  (when (>= (self pos) (self len))
+  (when (>= (self 'pos) (self 'len))
     (return none))
-  (let (v:i64 (aref (self data) (as i64 (self pos))))
-    (.set! self pos (+ (self pos) 1))
+  (let (v:i64 (aref (self 'data) (as i64 (self 'pos))))
+    (.set! self 'pos (+ (self 'pos) 1))
     (return (some v))))
 
 ; ---------------------------------------------------------------------------
@@ -93,9 +93,9 @@
 (defn next ((self (ref (MapIter I F)))
                         :where ((Iterator S) I)
                                ((UnaryFn S E) F)) (Maybe E)
-  (let ((res (Maybe S)) (next (.& self source)))
+  (let ((res (Maybe S)) (next (.& self 'source)))
     (match res
-      ((some v) (return (some (apply (.& self f) v))))
+      ((some v) (return (some (apply (.& self 'f) v))))
       (none (return none)))))
 
 (extend (MapIter I F) (Iterator E)
@@ -115,10 +115,10 @@
                                ((UnaryFn S i32) F)) (Maybe S)
   (let (done:i32 0)
     (while (= done 0)
-      (let ((item (Maybe S)) (next (.& self source)))
+      (let ((item (Maybe S)) (next (.& self 'source)))
         (match item
           ((some v)
-           (when (!= (apply (.& self pred) v) 0)
+           (when (!= (apply (.& self 'pred) v) 0)
              (return (some v))))
           (none (return none)))))
     (return none)))

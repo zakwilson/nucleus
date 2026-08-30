@@ -29,12 +29,12 @@
 (defstruct Cat n:i32)
 (extend Cat Describe)
 (defn describe ((self (ref Cat))):i32
-  (return (+ 100 (self n))))
+  (return (+ 100 (self 'n))))
 
 (defstruct Dog tag:i32)
 (extend Dog Describe)
 (defn describe ((self (ref Dog))):i32
-  (return (* 10 (self tag))))
+  (return (* 10 (self 'tag))))
 
 ; (B2) A defn whose return type is the unbound-abstract `(dyn Describe)`. Each
 ;      concrete value is boxed at the return site; the returned box owns its heap

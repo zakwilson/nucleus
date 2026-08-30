@@ -29,7 +29,7 @@
 
 (defn take-ptr (p:ptr):i64 (return (unsafe/cast i64 p)))
 (defn take-cstr (s:CStr):i64 (return (as i64 (strlen s))))
-(defn take-rec (r:ptr:FSRec):i32 (return (r a)))
+(defn take-rec (r:ptr:FSRec):i32 (return (r 'a)))
 
 (defn main ():i32
   ; A function value reaches a fn parameter, and the callee calls it.

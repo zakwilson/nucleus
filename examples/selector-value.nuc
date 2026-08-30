@@ -28,9 +28,9 @@
   ;     of the same name is in scope (the field wins) ---
   (let (p:ptr:Point (alloca Point)
         x:i32 99)
-    (.set! p x 3)
-    (.set! p y 4)
-    (printf "field=%d local=%d quoted=%d\n" (p x) x (get p 'x)))  ; 3 99 3
+    (.set! p 'x 3)
+    (.set! p 'y 4)
+    (printf "field=%d local=%d quoted=%d\n" (p 'x) x (get p 'x)))  ; 3 99 3
 
   (with ((m (ref (HashMap CStr i32))) {"foo" 42 "bar" 7}
          k:CStr "foo"
@@ -60,7 +60,7 @@
   ;     wins (unchanged behaviour); `invoke` is the escape hatch. ---
   (with ((c (ref (HashMap CStr i32))) {"count" 5}
          count:CStr "count")
-    (printf "count-field=%llu\n" (as ui64 (c count)))             ; 1 — the field
+    (printf "count-field=%llu\n" (as ui64 (c 'count)))             ; 1 — the field
     (match (invoke c count)
       ((some v) (printf "count-key=%d\n" v))                      ; 5 — the value
       (none     (printf "count-key=absent\n"))))

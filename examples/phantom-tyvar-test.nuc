@@ -28,16 +28,16 @@
 ; 1. Generic method returning a FIELD type (I). All four tyvars I F S E are
 ;    inferred from the receiver; S and E must still bind so the signature parses.
 (defn two-a ((self (ref (Two I F S E)))):I
-  (return (self a)))
+  (return (self 'a)))
 
 ; 2. Generic method whose RETURN type is a phantom param (S), recovered
 ;    positionally from the third receiver type-argument.
 (defn two-s ((self (ref (Two I F S E)))):S
-  (return (as S (self a))))
+  (return (as S (self 'a))))
 
 ; 3. Generic method whose return type is the fourth (phantom) param (E).
 (defn two-e ((self (ref (Two I F S E)))):E
-  (return (as E (self a))))
+  (return (as E (self 'a))))
 
 ; LEGACY PATTERN (superseded by associated types, A0–A4): a verbose MapIter-style
 ; combinator with explicit phantom params for source/result element types.
@@ -49,10 +49,10 @@
   f:F)
 
 (defn miv-e ((self (ref (MapIterVerbose I F S E)))):E
-  (return (as E (self f))))
+  (return (as E (self 'f))))
 
 (defn miv-s ((self (ref (MapIterVerbose I F S E)))):S
-  (return (as S (self f))))
+  (return (as S (self 'f))))
 
 (defn main ():i32
   ; Concrete instance: I=i32, F=f64, S=i32, E=i64.

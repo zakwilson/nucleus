@@ -69,9 +69,9 @@
 ; Precondition: sv.len > 0 (callers check this before calling).
 ; ---------------------------------------------------------------------------
 (defn parse-nul-copy ((sv (ref StrView))):ptr:ui8
-  (let (n:usize (sv len)
+  (let (n:usize (sv 'len)
         buf:ptr:ui8 (as ptr:ui8 (malloc (as i64 (+ n 1)))))
-    (memcpy (as ptr buf) (as ptr (sv data)) (as i64 n))
+    (memcpy (as ptr buf) (as ptr (sv 'data)) (as i64 n))
     (aset! buf (as i64 n) 0)
     (return buf)))
 
@@ -87,12 +87,12 @@
 (extend i32 (FromStr !i32))
 
 (defn from-str ((self i32) (sv (ref StrView))):!i32
-  (let (n:usize (sv len))
+  (let (n:usize (sv 'len))
     ; Empty input.
     (when (= n 0)
       (return (err! parse-int-error)))
     ; Reject leading whitespace (strtol skips it, we don't).
-    (let (first:ui8 (aref (sv data) 0))
+    (let (first:ui8 (aref (sv 'data) 0))
       (when (or (= (as ui32 first) 32)
                 (or (= (as ui32 first) 9)
                     (or (= (as ui32 first) 10)
@@ -125,11 +125,11 @@
 (extend i64 (FromStr !i64))
 
 (defn from-str ((self i64) (sv (ref StrView))):!i64
-  (let (n:usize (sv len))
+  (let (n:usize (sv 'len))
     (when (= n 0)
       (return (err! parse-int-error)))
     ; Reject leading whitespace.
-    (let (first:ui8 (aref (sv data) 0))
+    (let (first:ui8 (aref (sv 'data) 0))
       (when (or (= (as ui32 first) 32)
                 (or (= (as ui32 first) 9)
                     (or (= (as ui32 first) 10)
@@ -156,7 +156,7 @@
 (extend f64 (FromStr !f64))
 
 (defn from-str ((self f64) (sv (ref StrView))):!f64
-  (let (n:usize (sv len))
+  (let (n:usize (sv 'len))
     (when (= n 0)
       (return (err! parse-float-error)))
     (let (buf:ptr:ui8 (parse-nul-copy sv)

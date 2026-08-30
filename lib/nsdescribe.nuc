@@ -20,7 +20,7 @@
 
 (defstruct Fox n:i32)
 
-(defn describe ((self (ref Fox))):i32 (return (+ 300 (_get self n))))
+(defn describe ((self (ref Fox))):i32 (return (+ 300 (_get self 'n))))
 
 ; Bare reference to this namespace's OWN protocol.
 (extend Fox Describe)

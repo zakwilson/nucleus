@@ -100,14 +100,14 @@
 ; (alloc-handle-alloc h size align) -> (raw ui8). Returns null on libc OOM (the
 ; caller checks); the arena arm aborts internally rather than returning null.
 (defn alloc-handle-alloc ((h (ref AllocHandle)) size:usize align:usize) (raw ui8)
-  (when (= (h kind) ALLOC-ARENA)
+  (when (= (h 'kind) ALLOC-ARENA)
     (return (as (raw ui8) (arena-alloc (as i64 size)))))
   (return (as (raw ui8) (malloc (as i64 size)))))
 
 ; (alloc-handle-realloc h p old new align) -> (raw ui8).
 (defn alloc-handle-realloc
     ((h (ref AllocHandle)) (p (raw ui8)) old:usize new:usize align:usize) (raw ui8)
-  (when (= (h kind) ALLOC-ARENA)
+  (when (= (h 'kind) ALLOC-ARENA)
     ; The arena cannot grow a prior allocation in place, so allocate fresh and
     ; copy the smaller of old/new bytes. The old block is abandoned (released
     ; wholesale when the arena is reset).
@@ -123,7 +123,7 @@
 (defn alloc-handle-free
     ((h (ref AllocHandle)) (p (raw ui8)) size:usize align:usize):void
   ; The arena frees nothing per-allocation; the whole arena is released at once.
-  (when (= (h kind) ALLOC-ARENA)
+  (when (= (h 'kind) ALLOC-ARENA)
     (return))
   ; free(NULL) is a safe no-op in C, so no null guard.
   (free (as ptr p)))
@@ -151,13 +151,13 @@
 
 ; Initialise a caller-owned slot as a libc handle and return it.
 (defn libc-allocator ((h (ref AllocHandle))):ref:AllocHandle
-  (.set! h kind ALLOC-LIBC)
-  (.set! h data null)
+  (.set! h 'kind ALLOC-LIBC)
+  (.set! h 'data null)
   (return h))
 
 ; Initialise a caller-owned slot as the arena handle and return it. The arena's
 ; state lives in lib/arena.nuc's module globals, so `data` stays null.
 (defn arena-allocator ((h (ref AllocHandle))):ref:AllocHandle
-  (.set! h kind ALLOC-ARENA)
-  (.set! h data null)
+  (.set! h 'kind ALLOC-ARENA)
+  (.set! h 'data null)
   (return h))

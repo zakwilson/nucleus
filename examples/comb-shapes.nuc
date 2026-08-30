@@ -20,8 +20,8 @@
 
 (defn int-node (val:i64):ptr
   (let (c:ptr:Node (as ptr:Node (malloc (sizeof Node))))
-    (.set! c kind 0) (.set! c line 0) (.set! c i val)
-    (.set! c s null) (.set! c car null) (.set! c cdr null)
+    (.set! c 'kind 0) (.set! c 'line 0) (.set! c 'i val)
+    (.set! c 's null) (.set! c 'car null) (.set! c 'cdr null)
     (return (as ptr c))))
 
 (defn main ():i32

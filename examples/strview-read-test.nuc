@@ -31,8 +31,8 @@
     (aset! buf 4 108)   ; 'l'
     (aset! buf 5 111)   ; 'o'
     (aset! buf 6 0)     ; NUL terminator
-    (.set! sv data buf)
-    (.set! sv len  6)
+    (.set! sv 'data buf)
+    (.set! sv 'len  6)
     (return sv)))
 
 (defn main ():i32
@@ -69,7 +69,7 @@
     ; --- sub-bytes [0,1) → "h" (1 byte) ---
     (let (r3:!ptr:StrView (sub-bytes sv 0 1))
       (match r3
-        ((ok s) (printf "sub-bytes-len=%llu\n" (as ui64 (s len))))   ; 1
+        ((ok s) (printf "sub-bytes-len=%llu\n" (as ui64 (s 'len))))   ; 1
         ((err e) (printf "sub-bytes=err\n"))))
 
     ; --- starts-with? prefix "h" ---
@@ -90,7 +90,7 @@
   ; --- strview-trim ---
   (with (wsv:ptr:StrView (strview-from-cstr "  hello  ")
         t:StrView (strview-trim wsv))
-    (printf "trim-len=%llu\n" (as ui64 ((addr-of t) len))))  ; 5
+    (printf "trim-len=%llu\n" (as ui64 ((addr-of t) 'len))))  ; 5
 
   ; --- str-empty? on an empty view ---
   (with (esv:ptr:StrView (strview-from-cstr ""))

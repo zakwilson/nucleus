@@ -87,7 +87,7 @@
                                (none (printf "lit-map height=?\n"))))
 
   (with ((vm (ref (HashMap i32 (ref Node)))) {1 'first 2 'second})
-    (match (invoke vm 2) ((some v) (printf "lit-map val-is-sym=%d\n" (if (= (v kind) NODE-SYM) 1 0)))
+    (match (invoke vm 2) ((some v) (printf "lit-map val-is-sym=%d\n" (if (= (v 'kind) NODE-SYM) 1 0)))
                          (none (printf "lit-map val=?\n"))))
 
   (printf "done\n")

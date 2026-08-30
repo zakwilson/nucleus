@@ -394,6 +394,14 @@ whatever fields the callee has. Unlike the demotion above it does not consult th
 scope, so it works for a global key too. A quoted `'name` keeps the opposite,
 always-a-field reading.
 
+**Prefer the quoted selector in new code.** Both spellings are legal and emit
+identical IR, but `src/`, `lib/`, `examples/` and the tests now write `'field`
+throughout, and the bare form is being retired: a bare symbol in selector
+position is to become an ordinary variable reference, which is what makes a
+field name held in a variable spell as `(get p sel)` rather than needing the
+annotation hatch above. `nucleusc --strict-selectors` reports every bare
+selector in a unit; see [dot-forms.md](../design/stage16-ergonomics/dot-forms.md).
+
 **`get` — member access (the `Struct` default).** Every struct conforms to the
 built-in `Struct` blanket protocol, whose `get` is supplied by an **intrinsic**: a
 literal selector const-folds to a static `getelementptr`+`load`, **identical to the

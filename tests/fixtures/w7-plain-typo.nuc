@@ -4,5 +4,5 @@
 (defstruct Point x:i32 y:i32)
 (defn main ():i32
   (let (p:ptr:Point (alloca Point))
-    (printf "%d\n" (p zz))
+    (printf "%d\n" (p 'zz))
     (return 0)))

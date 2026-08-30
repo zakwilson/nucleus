@@ -31,7 +31,7 @@
 
 ; defn return-name (colon-paren) AND defn param (colon-paren).
 (defn with-value (l:(ptr Link) v:i32) (ptr Link)
-  (.set! l value v)
+  (.set! l 'value v)
   (return l))
 
 ; defn param (colon-paren); scalar return; walks the chain summing values. Takes
@@ -39,17 +39,17 @@
 (defn chain-sum (l:(raw Link)):i32
   (if (= l null)
     (return 0)
-    (return (+ (l value) (chain-sum (l next))))))
+    (return (+ (l 'value) (chain-sum (l 'next))))))
 
 (defn main ():i32
   ; let bindings — colon-paren types for two stack-allocated links.
   (let (a:(ptr Link) (alloca Link)
         b:(ptr Link) (alloca Link))
-    (.set! a value 10)
-    (.set! b value 20)
+    (.set! a 'value 10)
+    (.set! b 'value 20)
     ; build the chain a -> b -> empty(null).
-    (.set! a next b)
-    (.set! b next empty)
+    (.set! a 'next b)
+    (.set! b 'next empty)
 
     ; with binding — colon-paren type; malloc'd i32 is freed at scope exit.
     (with (g:(ptr i32) (malloc 4))

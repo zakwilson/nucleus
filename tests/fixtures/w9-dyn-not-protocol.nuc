@@ -30,7 +30,7 @@
 
 (defstruct Cat n:i32)
 (extend Cat dp/Describe)
-(defn describe ((self (ref Cat))):i32 (return (+ 100 (self n))))
+(defn describe ((self (ref Cat))):i32 (return (+ 100 (self 'n))))
 
 (defn boxed ():(dyn dp/Missing)
   (return (Cat 5)))

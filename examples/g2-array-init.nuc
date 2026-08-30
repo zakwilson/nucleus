@@ -88,8 +88,8 @@
   ; --- shape 5: constant struct literals ------------------------------------
   (let (o:ptr:Pt (addr-of g-origin)
         u:ptr:Pt (addr-of g-unit))
-    (printf "origin %d %d\n" (o x) (o y))
-    (printf "unit %d %d\n" (u x) (u y)))
+    (printf "origin %d %d\n" (o 'x) (o 'y))
+    (printf "unit %d %d\n" (u 'x) (u 'y)))
 
   ; --- arrays of structs, structs of arrays ---------------------------------
   (let (c0:Pt (aref g-corners 0)
@@ -99,21 +99,21 @@
           p1:ptr:Pt (addr-of c1)
           p2:ptr:Pt (addr-of c2))
       (printf "corners %d %d %d %d %d %d\n"
-        (p0 x) (p0 y) (p1 x) (p1 y) (p2 x) (p2 y))))
+        (p0 'x) (p0 'y) (p1 'x) (p1 'y) (p2 'x) (p2 'y))))
 
   (let (r:ptr:Row (addr-of g-row))
     ; Reading the array FIELD decays to `ptr:i32` — the GEP, no load.
     (printf "row %d %d %d %d %d %d\n"
-      (as i32 (r tag))
-      (aref (r cells) 0) (aref (r cells) 1) (aref (r cells) 2) (aref (r cells) 3)
-      (as i32 (r mark))))
+      (as i32 (r 'tag))
+      (aref (r 'cells) 0) (aref (r 'cells) 1) (aref (r 'cells) 2) (aref (r 'cells) 3)
+      (as i32 (r 'mark))))
 
   (let (g:ptr:Grid (addr-of g-grid))
-    (let (q0:Pt (aref (g pts) 0)
-          q1:Pt (aref (g pts) 1))
+    (let (q0:Pt (aref (g 'pts) 0)
+          q1:Pt (aref (g 'pts) 1))
       (let (z0:ptr:Pt (addr-of q0)
             z1:ptr:Pt (addr-of q1))
-        (printf "grid %d %d %d %d %d\n" (z0 x) (z0 y) (z1 x) (z1 y) (g n)))))
+        (printf "grid %d %d %d %d %d\n" (z0 'x) (z0 'y) (z1 'x) (z1 'y) (g 'n)))))
 
   ; --- a local fixed-size table ---------------------------------------------
   ; `(alloca (array T N))` reserves N slots and hands back the decayed `ptr:T`.
@@ -132,9 +132,9 @@
     (printf "row-layout %d %s %s\n"
       (unsafe/cast i32 (sizeof Row))
       ; cells starts at offset 4 (i8 + 3 pad), mark at 20, total 24.
-      (agree (off (unsafe/cast ptr r) (unsafe/cast ptr (.& r cells))) 4)
-      (agree (off (unsafe/cast ptr r) (unsafe/cast ptr (.& r mark))) 20))
+      (agree (off (unsafe/cast ptr r) (unsafe/cast ptr (.& r 'cells))) 4)
+      (agree (off (unsafe/cast ptr r) (unsafe/cast ptr (.& r 'mark))) 20))
     (printf "grid-layout %d %s\n"
       (unsafe/cast i32 (sizeof Grid))
-      (agree (off (unsafe/cast ptr g) (unsafe/cast ptr (.& g n))) 16)))
+      (agree (off (unsafe/cast ptr g) (unsafe/cast ptr (.& g 'n))) 16)))
   (return 0))

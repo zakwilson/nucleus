@@ -11,10 +11,10 @@
 
 (defn make-cell (car:raw:Node cdr:raw:Node line:i32):ref:Node
   (let (c:ref:Node (alloc-node))
-    (.set! c kind NODE-CELL)
-    (.set! c line line)
-    (.set! c car car)
-    (.set! c cdr cdr)
+    (.set! c 'kind NODE-CELL)
+    (.set! c 'line line)
+    (.set! c 'car car)
+    (.set! c 'cdr cdr)
     (return c)))
 
 ; ============================================================
@@ -54,9 +54,9 @@
     (while (!= 0 1)
       (let (e:ptr:InternEntry (as ptr:InternEntry
                                     (unsafe/ptr+ (as ptr:InternEntry table) (unsafe/cast i32 j))))
-        (when (= (e spelling) null)
-          (.set! e spelling sp)
-          (.set! e node nd)
+        (when (= (e 'spelling) null)
+          (.set! e 'spelling sp)
+          (.set! e 'node nd)
           (return)))
       (set! j (bit-and (+ j 1) mask)))))
 
@@ -72,8 +72,8 @@
       (while (< i old-cap)
         (let (e:ptr:InternEntry (as ptr:InternEntry
                                       (unsafe/ptr+ (as ptr:InternEntry old-table) i)))
-          (when (!= (e spelling) null)
-            (intern-raw-insert new-table new-cap (e spelling) (e node))))
+          (when (!= (e 'spelling) null)
+            (intern-raw-insert new-table new-cap (e 'spelling) (e 'node))))
         (inc! i)))))
 
 (defn intern-symbol (s:CStr):ref:Node
@@ -88,40 +88,40 @@
     (while (!= 0 1)
       (let (e:ptr:InternEntry (as ptr:InternEntry
                                     (unsafe/ptr+ (as ptr:InternEntry g-intern-table) (unsafe/cast i32 j))))
-        (when (= (e spelling) null)
+        (when (= (e 'spelling) null)
           (let (canon:ptr (arena-strdup s)
                 nd:ref:Node (alloc-node))
-            (.set! nd kind NODE-SYM)
-            (.set! nd line 0)
-            (.set! nd s canon)
-            (.set! e spelling canon)
-            (.set! e node nd)
+            (.set! nd 'kind NODE-SYM)
+            (.set! nd 'line 0)
+            (.set! nd 's canon)
+            (.set! e 'spelling canon)
+            (.set! e 'node nd)
             (inc! g-intern-len)
             (return nd)))
-        (when (= (strcmp (e spelling) s) 0)
-          (return (e node))))
+        (when (= (strcmp (e 'spelling) s) 0)
+          (return (e 'node))))
       (set! j (bit-and (+ j 1) mask)))))
 
 (defn node-at (n:raw:Node i:i32):?ptr:Node
   (match (as-ref n)
     ((some nn)
-     (while (and (= (nn kind) NODE-CELL) (> i 0))
-       (match (as-ref (nn cdr))
+     (while (and (= (nn 'kind) NODE-CELL) (> i 0))
+       (match (as-ref (nn 'cdr))
          ((some nnn)
           (set! n nnn)
           (set! nn nnn))
          (none (return none)))
        (set! i (- i 1)))
-     (when (= (nn kind) NODE-CELL)
-       (return (as-ref (nn car)))))
+     (when (= (nn 'kind) NODE-CELL)
+       (return (as-ref (nn 'car)))))
     (none (return none))))
 
 (defn node-len (n:raw:Node):i32
   (let (k:i32 0
         nn:raw:Node n)
-    (while (and (!= n null) (= (nn kind) NODE-CELL))
+    (while (and (!= n null) (= (nn 'kind) NODE-CELL))
       (set! k (+ k 1))
-      (set! n (nn cdr))
+      (set! n (nn 'cdr))
       (set! nn n))
     (return k)))
 
@@ -140,13 +140,13 @@
 ; of the same spelling anywhere in the program.
 (defn node-line (n:raw:Node encl:i32):i32
   (when (= n null) (return encl))
-  (let (ln:i32 (n line))
+  (let (ln:i32 (n 'line))
     (when (= ln 0) (return encl))
     (return ln)))
 
 (defn node-is-list (n:raw:Node):bool
   (when (= n null) (return true))
-  (when (= (n kind) NODE-CELL) (return true))
+  (when (= (n 'kind) NODE-CELL) (return true))
   (return false))
 
 ; The kind of a NULL node. Deliberately outside NodeKind's 0..n range, so a
@@ -162,4 +162,4 @@
 ; `node-at`, whose return type is `?ptr:Node` and says so.
 (defn node-kind (n:raw:Node):i32
   (when (= n null) (return NODE-NIL))
-  (return (n kind)))
+  (return (n 'kind)))

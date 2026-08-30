@@ -32,11 +32,11 @@
 
 ; defn param (`p:&Point`) and defn return type after ')' (`):&Point`).
 (defn shift (p:&Point d:i32):&Point
-  (.set! p x (+ (p x) d))
+  (.set! p 'x (+ (p 'x) d))
   (return p))
 
 (defn sum-xy (p:&Point):i32
-  (return (+ (p x) (p y))))
+  (return (+ (p 'x) (p 'y))))
 
 ; `&` through a chain: a pointer to a non-null pointer.
 (defn deref-sum (pp:&&Point):i32
@@ -70,7 +70,7 @@
     (printf "sum-xy=%d\n" (sum-xy &a))
     (printf "shift=%d\n" (sum-xy (shift ap 4)))
     (printf "deref-sum=%d\n" (deref-sum pp))
-    (printf "holder=%d tag=%d\n" (sum-xy (h link)) (h tag))
+    (printf "holder=%d tag=%d\n" (sum-xy (h 'link)) (h 'tag))
     (printf "total=%d\n" (total v))
     (printf "only=%d\n" (total (only bp))))
   (return 0))

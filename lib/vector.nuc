@@ -69,17 +69,17 @@
 
 ; Initialise an empty Vector with the default (libc) allocator.
 (defn vector-init ((v (ref (Vector T)))):void
-  (.set! v data null)
-  (.set! v len 0)
-  (.set! v cap 0)
-  (libc-allocator (.& v alloc)))
+  (.set! v 'data null)
+  (.set! v 'len 0)
+  (.set! v 'cap 0)
+  (libc-allocator (.& v 'alloc)))
 
 ; Initialise an empty Vector with an explicit allocator handle (copied in).
 (defn vector-init-alloc ((v (ref (Vector T))) (a (ref AllocHandle))):void
-  (.set! v data null)
-  (.set! v len 0)
-  (.set! v cap 0)
-  (.set! v alloc (deref a)))
+  (.set! v 'data null)
+  (.set! v 'len 0)
+  (.set! v 'cap 0)
+  (.set! v 'alloc (deref a)))
 
 ; ---------------------------------------------------------------------------
 ; Value/heap constructors (target-typed — design/stage14/target-typed-
@@ -115,18 +115,18 @@
 ; reallocating through the stored allocator. Aborts on OOM.
 ; ---------------------------------------------------------------------------
 (defn vector-grow ((v (ref (Vector T)))):void
-  (let (new-cap:usize (if (= (_get v cap) 0)
+  (let (new-cap:usize (if (= (_get v 'cap) 0)
                         4
-                        (* (_get v cap) 2))
+                        (* (_get v 'cap) 2))
         elem-size:usize (as usize (sizeof T)))
-    (let (old-bytes:usize (* (_get v cap) elem-size)
+    (let (old-bytes:usize (* (_get v 'cap) elem-size)
           new-bytes:usize (* new-cap elem-size)
-          ah:ref:AllocHandle (.& v alloc))
+          ah:ref:AllocHandle (.& v 'alloc))
       (let ((new-data (raw ui8))
-            (alloc-handle-realloc ah (_get v data) old-bytes new-bytes 8))
+            (alloc-handle-realloc ah (_get v 'data) old-bytes new-bytes 8))
         (when (= (as ptr new-data) null) (vector-oom))
-        (.set! v data new-data)
-        (.set! v cap new-cap)))))
+        (.set! v 'data new-data)
+        (.set! v 'cap new-cap)))))
 
 ; ---------------------------------------------------------------------------
 ; Coll T conformance: count, conj, empty?.
@@ -134,17 +134,17 @@
 
 ; count -> number of live elements.
 (defn count ((self (ref (Vector T)))):usize
-  (return (_get self len)))
+  (return (_get self 'len)))
 
 ; conj: append an element at the back, growing if needed.
 (defn conj ((self (ref (Vector T))) elem:T):void
-  (when (>= (_get self len) (_get self cap)) (vector-grow self))
-  (aset! (as ptr:T (as ptr (_get self data))) (as i64 (_get self len)) elem)
-  (.set! self len (+ (_get self len) 1)))
+  (when (>= (_get self 'len) (_get self 'cap)) (vector-grow self))
+  (aset! (as ptr:T (as ptr (_get self 'data))) (as i64 (_get self 'len)) elem)
+  (.set! self 'len (+ (_get self 'len) 1)))
 
 ; empty? -> true when len = 0.
 (defn empty? ((self (ref (Vector T)))):bool
-  (return (= (_get self len) 0)))
+  (return (= (_get self 'len) 0)))
 
 ; ---------------------------------------------------------------------------
 ; Seq T conformance: invoke (index), append, contains?, insert.
@@ -152,8 +152,8 @@
 
 ; invoke: index access `(v i)` -> element. Panics on out-of-bounds.
 (defn invoke ((self (ref (Vector T))) i:usize):T
-  (when (>= i (_get self len)) (vector-bounds "get" i (_get self len)))
-  (return (aref (as ptr:T (as ptr (_get self data))) (as i64 i))))
+  (when (>= i (_get self 'len)) (vector-bounds "get" i (_get self 'len)))
+  (return (aref (as ptr:T (as ptr (_get self 'data))) (as i64 i))))
 
 ; append: add at the back (same as conj for a vector).
 (defn append ((self (ref (Vector T))) elem:T):void
@@ -162,8 +162,8 @@
 ; contains?: linear scan with =. (Scalar element types.)
 (defn contains? ((self (ref (Vector T))) elem:T):bool
   (let (i:usize 0)
-    (while (< i (_get self len))
-      (when (= (aref (as ptr:T (as ptr (_get self data))) (as i64 i)) elem)
+    (while (< i (_get self 'len))
+      (when (= (aref (as ptr:T (as ptr (_get self 'data))) (as i64 i)) elem)
         (return true))
       (set! i (+ i 1)))
     (return false)))
@@ -171,26 +171,26 @@
 ; insert: place elem at index i, shifting [i,len) right by one. Grows if full.
 ; i may equal len (append). i > len is out of bounds.
 (defn insert ((self (ref (Vector T))) i:usize elem:T):void
-  (when (> i (_get self len)) (vector-bounds "insert" i (_get self len)))
-  (when (>= (_get self len) (_get self cap)) (vector-grow self))
-  (let (buf:ptr:T (as ptr:T (as ptr (_get self data)))
-        j:usize (_get self len))
+  (when (> i (_get self 'len)) (vector-bounds "insert" i (_get self 'len)))
+  (when (>= (_get self 'len) (_get self 'cap)) (vector-grow self))
+  (let (buf:ptr:T (as ptr:T (as ptr (_get self 'data)))
+        j:usize (_get self 'len))
     (while (> j i)
       (aset! buf (as i64 j) (aref buf (as i64 (- j 1))))
       (set! j (- j 1)))
     (aset! buf (as i64 i) elem))
-  (.set! self len (+ (_get self len) 1)))
+  (.set! self 'len (+ (_get self 'len) 1)))
 
 ; remove-at: delete the element at index i, shifting (i,len) left by one.
 ; i must be < len (i = len-1 removes the last element). Panics out-of-bounds.
 (defn remove-at ((self (ref (Vector T))) i:usize):void
-  (when (>= i (_get self len)) (vector-bounds "remove-at" i (_get self len)))
-  (let (buf:ptr:T (as ptr:T (as ptr (_get self data)))
+  (when (>= i (_get self 'len)) (vector-bounds "remove-at" i (_get self 'len)))
+  (let (buf:ptr:T (as ptr:T (as ptr (_get self 'data)))
         j:usize i)
-    (while (< (+ j 1) (_get self len))
+    (while (< (+ j 1) (_get self 'len))
       (aset! buf (as i64 j) (aref buf (as i64 (+ j 1))))
       (set! j (+ j 1))))
-  (.set! self len (- (_get self len) 1)))
+  (.set! self 'len (- (_get self 'len) 1)))
 
 ; ---------------------------------------------------------------------------
 ; Capacity operations (STL-like opt-in surface; design §Vector recommends
@@ -199,11 +199,11 @@
 
 ; capacity -> current allocated slot count.
 (defn capacity ((self (ref (Vector T)))):usize
-  (return (_get self cap)))
+  (return (_get self 'cap)))
 
 ; reserve: ensure at least n total slots (grows by doubling until cap >= n).
 (defn reserve ((self (ref (Vector T))) n:usize):void
-  (while (< (_get self cap) n) (vector-grow self)))
+  (while (< (_get self 'cap) n) (vector-grow self)))
 
 ; vector-init-capacity: initialise empty (default allocator) with >= n slots
 ; reserved. The with-capacity constructor for known-size builds.
@@ -219,14 +219,14 @@
 (extend (Vector T) Drop)
 
 (defn drop ((self (ptr (Vector T)))):void
-  (when (!= (as ptr (_get self data)) null)
-    (alloc-handle-free (.& self alloc)
-                       (_get self data)
-                       (* (_get self cap) (as usize (sizeof T)))
+  (when (!= (as ptr (_get self 'data)) null)
+    (alloc-handle-free (.& self 'alloc)
+                       (_get self 'data)
+                       (* (_get self 'cap) (as usize (sizeof T)))
                        8))
-  (.set! self data null)
-  (.set! self len 0)
-  (.set! self cap 0))
+  (.set! self 'data null)
+  (.set! self 'len 0)
+  (.set! self 'cap 0))
 
 ; ---------------------------------------------------------------------------
 ; VecIter T — a forward cursor over a Vector's elements. Iterator T conformance
@@ -254,17 +254,17 @@
 (extend (VecIter T) (Iterator T))
 
 (defn next ((self (ref (VecIter T)))) (Maybe T)
-  (when (>= (self pos) (self len)) (return none))
-  (let (v:T (aref (as ptr:T (self data)) (as i64 (self pos))))
-    (.set! self pos (+ (self pos) 1))
+  (when (>= (self 'pos) (self 'len)) (return none))
+  (let (v:T (aref (as ptr:T (self 'data)) (as i64 (self 'pos))))
+    (.set! self 'pos (+ (self 'pos) 1))
     (return (some v))))
 
 ; iter-init: configure `it` to scan `v` from the start (borrowing its buffer).
 ; Internal helper: the value-returning `iter` (Coll conformance) wraps it.
 (defn iter-init ((it (ref (VecIter T))) (v (ref (Vector T)))):void
-  (.set! it data (as ptr (_get v data)))
-  (.set! it pos 0)
-  (.set! it len (_get v len)))
+  (.set! it 'data (as ptr (_get v 'data)))
+  (.set! it 'pos 0)
+  (.set! it 'len (_get v 'len)))
 
 ; ---------------------------------------------------------------------------
 ; Coll T (VecIter T) conformance. `iter` returns a fresh VecIter BY VALUE

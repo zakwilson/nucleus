@@ -13,7 +13,7 @@
 (extend ExpandFn (UnaryFn i32 (Vector i32)))
 (defn apply ((self (ref ExpandFn)) (x i32)) (Vector i32)
   (let ((r (ref (Vector i32))) (alloca (Vector i32)))
-    (vector-init r) (conj r x) (conj r (+ x (self k)))
+    (vector-init r) (conj r x) (conj r (+ x (self 'k)))
     (return (deref r))))
 
 (defn show (label:CStr (v (ref (Vector i32)))):void
@@ -78,12 +78,12 @@
       ; UnaryFn conformer (ExpandFn) — the same pattern cstr-fold's FoldFn
       ; conformers use. Two distinct instances prove the dispatch is type-keyed.
       (let ((ef (ref ExpandFn)) (alloca ExpandFn))
-        (.set! ef k k)
+        (.set! ef 'k k)
         (let ((it (VecIter i32)) (iter v))
           (let ((fm (Vector i32)) (flat-map ef (addr-of it)))
             (show "fmap-named1" (addr-of fm)) (drop (addr-of fm)))))
       (let ((ef2 (ref ExpandFn)) (alloca ExpandFn))
-        (.set! ef2 k 100)
+        (.set! ef2 'k 100)
         (let ((it (VecIter i32)) (iter v))
           (let ((fm (Vector i32)) (flat-map ef2 (addr-of it)))
             (show "fmap-named2" (addr-of fm)) (drop (addr-of fm)))))))

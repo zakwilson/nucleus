@@ -49,7 +49,7 @@
 ; contract to a nullable raw, then reads a field through it (raw is derefable).
 (defn peek-kind (r:ref:Rec):i32
   (let (rr:raw:Rec (as raw:Rec r))
-    (return (rr kind))))
+    (return (rr 'kind))))
 
 (defn main ():i32
   ; identity / same type
@@ -73,9 +73,9 @@
   (with (p:ptr (malloc (as i64 (sizeof Rec))))
     (when (!= p null)
       (let (r:ptr:Rec (as ptr:Rec p))
-        (.set! r kind 7)
-        (.set! r x 99)
-        (printf "void-hatch      = kind=%d x=%d\n" (r kind) (r x))
+        (.set! r 'kind 7)
+        (.set! r 'x 99)
+        (printf "void-hatch      = kind=%d x=%d\n" (r 'kind) (r 'x))
         (printf "weaken-ref->raw = %d\n" (peek-kind r))
         (printf "weaken->void*   = %d\n" (= (as ptr r) null)))))
   (return 0))
