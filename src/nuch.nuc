@@ -228,13 +228,13 @@
               "defcast"      (emit-nuch-defcast (as ptr f))
               "defvar"       (emit-nuch-extern (as ptr f))
               "defconst"     (emit-nuch-defconst (as ptr f))
-              ; deferror exports verbatim; the importer re-registers it, getting
-              ; a fresh id in its own dense order (ids are per-build).
-              "deferror"     (do (print-node (as ptr f)) (printf "\n"))
-              ; Stage 16: a type alias exports verbatim. It has to be carried —
-              ; a `defn` exported below may name it in its signature, and the
-              ; importer resolves that spelling in its own unit.
-              "deftype"      (do (print-node (as ptr f)) (printf "\n"))
+              ; Both export verbatim. `deferror`: the importer re-registers it,
+              ; getting a fresh id in its own dense order (ids are per-build).
+              ; `deftype` (Stage 16): a type alias has to be carried — a `defn`
+              ; exported below may name it in its signature, and the importer
+              ; resolves that spelling in its own unit.
+              (:or "deferror" "deftype")
+                             (do (print-node (as ptr f)) (printf "\n"))
               "defenum"      (emit-nuch-defenum (as ptr f))
               "defmacro"     (emit-nuch-defmacro (as ptr f))
               0)))))))

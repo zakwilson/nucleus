@@ -646,6 +646,20 @@ case that was already right by luck). 777 tests, bootstrap converges.
 
 `lisp (case foo :bar 1 (:baz :qux) 2 3)` - expands to individual comparisons at compile time
 
+Design: [case-alternatives.md](case-alternatives.md). **Done (2026-08-31)** —
+spelled `(:or :baz :qux)`, not a bare list. The filed question (is the list the
+value, or the values inside it?) has no answer that reads the elements: 17 of
+the tree's 19 collapsible arm-runs are bare enum constants, which is exactly
+what a call's head looks like. A keyword head decides it instead, so a plain
+parenthesised value stays a call and Stage 15's W4d `case-clause-hint` — the
+diagnostic that defends that reading — stands verbatim. Ten lines in
+`lib/macros.nuc`, no compiler change. **Adopted in `src/`** at 19 sites across 5
+files (-32 lines), which the committed boot binary compiles unchanged — the
+prelude is read from source, so a new prelude macro needs no boot refresh to be
+used by the compiler itself. Five arm-runs were deliberately left uncollapsed:
+the rule is *share a reason, not merely a value*, and a per-arm comment is a
+reason (case-alternatives.md §5).
+
 ## Any libc detail must be reachable from pure Nucleus
 
 Nucleus is a drop-in replacement for C, so it must be usable anywhere C is

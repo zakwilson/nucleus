@@ -265,12 +265,9 @@
       TY-UI16   (return "i16")
       TY-UI32   (return "i32")
       TY-UI64   (return "i64")
-      TY-PTR    (return "ptr")
-      TY-FN     (return "ptr")
-      TY-CSTR   (return "ptr")
+      (:or TY-PTR TY-FN TY-CSTR) (return "ptr")
       ; Char lowers to i32 (same width as ui32); distinct only at the type level.
-      TY-CHAR   (return "i32")
-      TY-ERR    (return "i32")
+      (:or TY-CHAR TY-ERR)       (return "i32")
       TY-F32    (return "float")
       TY-F64    (return "double")
       ; Stage 16 FL-1: the remaining C float widths. `f80` is x86's 80-bit
@@ -279,10 +276,8 @@
       TY-F16    (return "half")
       TY-F80    (return "x86_fp80")
       TY-F128   (return "fp128")
-      TY-USIZE  (return (ptr-int-ir))
-      TY-SSIZE  (return (ptr-int-ir))
-      TY-STRUCT (return (fmt-s "%%%s" ((tt 'sdef) 'ir-name)))
-      TY-UNION  (return (fmt-s "%%%s" ((tt 'sdef) 'ir-name)))
+      (:or TY-USIZE TY-SSIZE)    (return (ptr-int-ir))
+      (:or TY-STRUCT TY-UNION)   (return (fmt-s "%%%s" ((tt 'sdef) 'ir-name)))
       ; Stage 15 W8 G-2: `[N x T]`. Two-step format because the widest helper
       ; taking (int, string) in that order does not exist — fmt-sd is (string,
       ; int). Composing two fixed-arity calls is the documented alternative to
@@ -798,8 +793,7 @@
       TY-UI16   (return "uint16_t")
       TY-UI32   (return "uint32_t")
       TY-UI64   (return "uint64_t")
-      TY-PTR    (return "void*")
-      TY-FN     (return "void*")
+      (:or TY-PTR TY-FN) (return "void*")
       TY-CSTR   (return "char*")
       ; Char is a Unicode scalar value; uint32_t at the C boundary.
       TY-CHAR   (return "uint32_t")
@@ -869,8 +863,7 @@
       TY-UI16 (return 2)
       TY-UI32 (return 4)
       TY-UI64 (return 8)
-      TY-CHAR  (return 4)
-      TY-ERR   (return 4)
+      (:or TY-CHAR TY-ERR) (return 4)
       TY-F32   (return 4)
       TY-F64   (return 8)
       ; FL-1: `half` is 2; `fp128` is 16 everywhere. `x86_fp80` holds 80 bits
@@ -880,12 +873,10 @@
       TY-F16   (return 2)
       TY-F80   (return (if (= g-target-ptr-bytes 4) 12 16))
       TY-F128  (return 16)
-      TY-USIZE (return g-target-ptr-bytes)
-      TY-SSIZE (return g-target-ptr-bytes)
+      (:or TY-USIZE TY-SSIZE) (return g-target-ptr-bytes)
       ; A struct value is laid out by LLVM; we use the pointer alignment as a
       ; conservative slot size/alignment for it (structs are handled by-reference).
-      TY-STRUCT (return g-target-ptr-bytes)
-      TY-UNION  (return g-target-ptr-bytes)
+      (:or TY-STRUCT TY-UNION) (return g-target-ptr-bytes)
       ; Stage 15 W8 G-2: like the struct case above, this is the conservative
       ; slot ALIGNMENT, not the aggregate's size — every caller of type-size in
       ; an `align N` operand needs a power of two, and `N * sizeof(T)` is not
@@ -901,19 +892,12 @@
 (defn is-int-type (t:raw:Type):i32
   (let (k:i32 (t 'kind))
     (case k
-      TY-I8 (return 1)
-      TY-I16 (return 1)
-      TY-I32 (return 1)
-      TY-I64 (return 1)
-      TY-UI8 (return 1)
-      TY-UI16 (return 1)
-      TY-UI32 (return 1)
-      TY-UI64 (return 1)
+      (:or TY-I8 TY-I16 TY-I32 TY-I64
+           TY-UI8 TY-UI16 TY-UI32 TY-UI64) (return 1)
       ; Err is an i32-repr scalar: integer for comparison/coercion/arithmetic,
       ; distinguished from i32 only by type-eq / mangling (errors.md §8).
       TY-ERR   (return 1)
-      TY-USIZE (return 1)
-      TY-SSIZE (return 1)
+      (:or TY-USIZE TY-SSIZE) (return 1)
       ; Char is an i32-repr distinct scalar: integer for comparison/coercion/cast
       ; (a same-width `cast` Char<->ui32 is a no-IR reinterpret), distinguished from
       ; ui32 only by type-eq / mangling so `=`/`!=` dispatch and literals keep meaning.
@@ -923,11 +907,7 @@
 (defn is-float-type (t:raw:Type):i32
   (let (k:i32 (t 'kind))
     (case k
-      TY-F16 (return 1)
-      TY-F32 (return 1)
-      TY-F64 (return 1)
-      TY-F80 (return 1)
-      TY-F128 (return 1)
+      (:or TY-F16 TY-F32 TY-F64 TY-F80 TY-F128) (return 1)
       (return 0))))
 
 ; FL-1: significand bits, which is what orders the float widths for a
@@ -965,8 +945,7 @@
 (defn is-ptr-like (t:raw:Type):i32
   (let (k:i32 (t 'kind))
     (case k
-      TY-PTR (return 1)
-      TY-CSTR (return 1)
+      (:or TY-PTR TY-CSTR) (return 1)
       (return 0))))
 
 ; A type whose IR *representation* is one `ptr` register: `is-ptr-like` plus
@@ -1000,8 +979,7 @@
       TY-UI32 (return 32)
       TY-UI64 (return 64)
       TY-ERR   (return 32)
-      TY-USIZE (return (* g-target-ptr-bytes 8))
-      TY-SSIZE (return (* g-target-ptr-bytes 8))
+      (:or TY-USIZE TY-SSIZE) (return (* g-target-ptr-bytes 8))
       TY-CHAR  (return 32)
       (return 0))))
 
@@ -1012,12 +990,7 @@
 (defn is-unsigned (t:raw:Type):i32
   (let (k:i32 (t 'kind))
     (case k
-      TY-BOOL  (return 1)
-      TY-UI8   (return 1)
-      TY-UI16  (return 1)
-      TY-UI32  (return 1)
-      TY-UI64  (return 1)
-      TY-USIZE (return 1)
+      (:or TY-BOOL TY-UI8 TY-UI16 TY-UI32 TY-UI64 TY-USIZE) (return 1)
       ; Char is over ui32, so it is unsigned for the trunc/zext-vs-sext choice.
       TY-CHAR  (return 1)
       (return 0))))

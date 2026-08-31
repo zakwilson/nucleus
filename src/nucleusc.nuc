@@ -1077,9 +1077,7 @@
     (case (nn 'kind)
       NODE-INT
         (fprintf out "%ld" (nn 'i))
-      NODE-FLOAT
-        (fputs (nn 's) out)
-      NODE-SYM
+      (:or NODE-FLOAT NODE-SYM)
         (fputs (nn 's) out)
       NODE-KEYWORD
         (do (fputc 58 out) (fputs (nn 's) out))
