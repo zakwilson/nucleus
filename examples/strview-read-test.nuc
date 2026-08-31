@@ -24,15 +24,15 @@
   (let (buf:ptr:ui8 (as ptr:ui8 (malloc 7))  ; 6 bytes + NUL
         sv:ptr:StrView (as ptr:StrView (malloc (as i64 (sizeof StrView)))))
     ; h é(high) é(low) l l o NUL
-    (aset! buf 0 104)   ; 'h'
-    (aset! buf 1 195)   ; 0xC3 (lead byte of é)
-    (aset! buf 2 169)   ; 0xA9 (continuation byte of é)
-    (aset! buf 3 108)   ; 'l'
-    (aset! buf 4 108)   ; 'l'
-    (aset! buf 5 111)   ; 'o'
-    (aset! buf 6 0)     ; NUL terminator
-    (.set! sv 'data buf)
-    (.set! sv 'len  6)
+    (set! (aref buf 0) 104)   ; 'h'
+    (set! (aref buf 1) 195)   ; 0xC3 (lead byte of é)
+    (set! (aref buf 2) 169)   ; 0xA9 (continuation byte of é)
+    (set! (aref buf 3) 108)   ; 'l'
+    (set! (aref buf 4) 108)   ; 'l'
+    (set! (aref buf 5) 111)   ; 'o'
+    (set! (aref buf 6) 0)     ; NUL terminator
+    (set! (sv 'data) buf)
+    (set! (sv 'len) 6)
     (return sv)))
 
 (defn main ():i32

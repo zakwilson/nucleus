@@ -46,30 +46,30 @@
   (let (r:ptr:Row (alloca Row)
         (slot (ptr (union acv:(fn void)() ac1:(fn i32)(ptr) n:i32))) (addr-of r 'action)
         v:i32 41)
-    (.set! r 'tics 3)
+    (set! (r 'tics) 3)
     (printf "tics %d\n" (r 'tics))
 
     ; 1. round-trip a zero-arg function pointer through the union member
-    (.set! slot 'acv tick)
+    (set! (slot 'acv) tick)
     (funcall (slot 'acv))
 
     ; 2. round-trip a one-arg function pointer through the *same* slot
-    (.set! slot 'ac1 think)
+    (set! (slot 'ac1) think)
     (printf "ret %d\n" (funcall (slot 'ac1) (unsafe/cast ptr (addr-of v))))
 
     ; 3. the scalar member shares the slot (an untagged reinterpretation)
-    (.set! slot 'n 99)
+    (set! (slot 'n) 99)
     (printf "n %d\n" (slot 'n))
 
     ; 4a. the standalone global union
     (let (gp:(ptr (union acv:(fn void)() ac1:(fn i32)(ptr) n:i32)) (addr-of g-slot))
-      (.set! gp 'acv tick)
+      (set! (gp 'acv) tick)
       (funcall (gp 'acv)))
 
     ; 4b. a standalone local union — never a struct field
     (let (lp:(ptr (union acv:(fn void)() ac1:(fn i32)(ptr) n:i32))
               (alloca (union acv:(fn void)() ac1:(fn i32)(ptr) n:i32)))
-      (.set! lp 'ac1 think)
+      (set! (lp 'ac1) think)
       (printf "ret %d\n" (funcall (lp 'ac1) (unsafe/cast ptr (addr-of v)))))
 
     ; The union is one pointer wide — same as the plain-`ptr`-plus-cast idiom

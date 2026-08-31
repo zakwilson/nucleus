@@ -2,8 +2,8 @@
 
 (defn main ():int
   (let (arr:ptr:int (alloca int 3))
-    (aset! arr 0 10)
-    (aset! arr 1 20)
-    (aset! arr 2 30)
+    (set! (aref arr 0) 10)
+    (set! (aref arr 1) 20)
+    (set! (aref arr 2) 30)
     (printf "%d %d %d\n" (aref arr 0) (aref arr 1) (aref arr 2)))
   (return 0))

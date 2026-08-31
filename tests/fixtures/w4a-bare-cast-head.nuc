@@ -5,5 +5,5 @@
 
 (defn main ():i32
   (let (q (cast ptr:P null))
-    (.set! q x 3))
+    (set! (q x) 3))
   (return 0))

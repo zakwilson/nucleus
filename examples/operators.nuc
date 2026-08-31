@@ -14,7 +14,7 @@
 
 (defn mk (n:i32):ptr:Cents
   (let (r:ptr:Cents (as ptr:Cents (malloc (as i64 (sizeof Cents)))))
-    (.set! r 'v n)
+    (set! (r 'v) n)
     (return r)))
 
 ; Operator overloads. (+ a b) folds to (_+ a b), so the arithmetic primitive is

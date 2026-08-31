@@ -225,7 +225,7 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
   case binds every variable from the arguments, but a constructor like
   `(defn vector-new-in ((a (ref AllocHandle))) (ref (Vector T)) …)` mentions `T`
   only in its return type, and takes it from whatever the position names — a
-  `let`/`with` annotation, a `set!` target, a `return`, a `.set!` field, or an
+  `let`/`with` annotation, a `set!` place, a `return`, or an
   `as`. With nothing to take it from, the call is refused by name:
   ```
   error: cannot infer type variable 'T' for 'vector-new-in': no expected type

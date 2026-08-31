@@ -82,10 +82,10 @@
             is-safe:bool  (or (= c 95) (= c 46))
             ok:bool       (or is-digit is-lower is-upper is-safe))
         (if ok
-          (aset! (as ptr:i8 s) i (unsafe/cast i8 c))
-          (aset! (as ptr:i8 s) i 95)))
+          (set! (aref (as ptr:i8 s) i) (unsafe/cast i8 c))
+          (set! (aref (as ptr:i8 s) i) 95)))
       (set! i (+ i 1)))
-    (aset! (as ptr:i8 s) n 0)
+    (set! (aref (as ptr:i8 s) n) 0)
     (return s)))
 
 ; Replace chars invalid in C identifiers with underscores.
@@ -118,10 +118,10 @@
             is-upper:bool (and (>= c 65) (<= c 90))
             ok:bool       (or is-digit is-lower is-upper (= c 95)))
         (if ok
-          (aset! (as ptr:i8 s) i (unsafe/cast i8 c))
-          (aset! (as ptr:i8 s) i 95)))
+          (set! (aref (as ptr:i8 s) i) (unsafe/cast i8 c))
+          (set! (aref (as ptr:i8 s) i) 95)))
       (set! i (+ i 1)))
-    (aset! (as ptr:i8 s) n 0)
+    (set! (aref (as ptr:i8 s) n) 0)
     (return s)))
 
 ; Copy the NUL-terminated C-string `lit` into `dst` at byte offset `off`;
@@ -130,7 +130,7 @@
   (let (m:i64 (strlen lit)
         i:i64 0)
     (while (< i m)
-      (aset! (as ptr:i8 dst) (+ off i) (aref (as ptr:i8 lit) i))
+      (set! (aref (as ptr:i8 dst) (+ off i)) (aref (as ptr:i8 lit) i))
       (set! i (+ i 1)))
     (return (+ off m))))
 
@@ -193,16 +193,16 @@
             si:i64 0
             k:i64 0)
         (when (!= lead 0)
-          (aset! (as ptr:i8 s) 0 95)
+          (set! (aref (as ptr:i8 s) 0) 95)
           (set! si 1))
         (while (< k n)
           (let (c:i32 (bit-and (as i32 (aref (as ptr:i8 name) k)) 255))
             (cond (= c 63) (set! si (ir-name-append s si "_QMARK"))
                   (= c 33) (set! si (ir-name-append s si "_BANG"))
-                  true     (do (aset! (as ptr:i8 s) si (unsafe/cast i8 c))
+                  true     (do (set! (aref (as ptr:i8 s) si) (unsafe/cast i8 c))
                                (set! si (+ si 1)))))
           (set! k (+ k 1)))
-        (aset! (as ptr:i8 s) si 0)
+        (set! (aref (as ptr:i8 s) si) 0)
         (return s)))))
 
 ; SM-5 (design/stage14/symbol-mangling.md): a small reusable validity check for

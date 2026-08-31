@@ -41,8 +41,8 @@
 ; deref clears the frame taint, so the returned value carries nothing dangling.
 (defn make-point (x:i32 y:i32):Point
   (let ((p (ref Point)) (alloca Point))
-    (.set! p 'x x)
-    (.set! p 'y y)
+    (set! (p 'x) x)
+    (set! (p 'y) y)
     (return (deref p))))
 
 (defn main ():i32

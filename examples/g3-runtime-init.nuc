@@ -58,8 +58,8 @@
 
 (defn make-pt (x:i32 y:i32):ptr:Pt
   (let (p:ptr:Pt (as ptr:Pt (malloc (sizeof Pt))))
-    (.set! p 'x x)
-    (.set! p 'y y)
+    (set! (p 'x) x)
+    (set! (p 'y) y)
     (return p)))
 
 (defn make-pt-val (x:i32 y:i32):Pt

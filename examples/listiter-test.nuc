@@ -25,12 +25,12 @@
 ; int-node — a fresh INT node carrying value v.
 (defn int-node (v:i64):ptr
   (let (c:ptr:Node (as ptr:Node (malloc (sizeof Node))))
-    (.set! c 'kind 0)
-    (.set! c 'line 0)
-    (.set! c 'i v)
-    (.set! c 's null)
-    (.set! c 'car null)
-    (.set! c 'cdr null)
+    (set! (c 'kind) 0)
+    (set! (c 'line) 0)
+    (set! (c 'i) v)
+    (set! (c 's) null)
+    (set! (c 'car) null)
+    (set! (c 'cdr) null)
     (return (as ptr c))))
 
 (defn main ():i32
@@ -45,6 +45,6 @@
     ; 2. reduce: sum the .i fields.
     (let ((sm (ref SumNodeI)) (alloca SumNodeI)
           (it (ref ListIter)) (alloca ListIter))
-      (.set! it 'cur lst)
+      (set! (it 'cur) lst)
       (printf "sum=%lld\n" (reduce sm 0 it))))
   (return 0))

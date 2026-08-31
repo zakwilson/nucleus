@@ -26,8 +26,8 @@
 (defn main ():int
   (let (c:ptr:Circle (alloca Circle)
         sq:ptr:Square (alloca Square))
-    (.set! c 'rad 5)
-    (.set! sq 'side 4)
+    (set! (c 'rad) 5)
+    (set! (sq 'side) 4)
     (printf "%s area=%d\n" (describe c) (area c))
     (printf "%s area=%d\n" (describe sq) (area sq)))
   (return 0))

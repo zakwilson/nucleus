@@ -302,7 +302,7 @@
 (defn declare-param-types (params-node:ptr line:i32 io-n:ptr:i32):ptr
   (let (nparams:i32 0)
     (when (!= params-node null) (set! nparams (node-len params-node)))
-    (aset! io-n 0 nparams)
+    (set! (aref io-n 0) nparams)
     (when (<= nparams 0) (return null))
     (let (ptypes:ptr (arena-alloc (* nparams (ptr-bytes))))
       (dotimes (j nparams)
@@ -316,7 +316,7 @@
               pty:ptr (extract-name-and-type p (as ptr:ptr (addr-of pn)) pline))
           (when (= pty null)
             (set! pty (declare-param-type (as raw:Node p) pline)))
-          (aset! (as ptr:ptr ptypes) j pty)))
+          (set! (aref (as ptr:ptr ptypes) j) pty)))
       (return ptypes))))
 
 ; A function type's parameter Types as the flat array `fn-sig-spelling` takes —
@@ -325,7 +325,7 @@
   (when (<= (ft 'num-params) 0) (return null))
   (let (a:ptr (arena-alloc (* (ft 'num-params) (ptr-bytes))))
     (dotimes (j (ft 'num-params))
-      (aset! (as ptr:ptr a) j (unsafe/cast ptr ((field-at (ft 'params) j) 'type))))
+      (set! (aref (as ptr:ptr a) j) (unsafe/cast ptr ((field-at (ft 'params) j) 'type))))
     (return a)))
 
 ; `(i32):i32` — a signature in SOURCE spellings, for a diagnostic. Deliberately
@@ -502,15 +502,15 @@
                 (let (msig:ptr (c-fn-sig-render (as raw:Type ret) ptypes nparams 0)
                       shadow:ptr (as ptr (cdecl-site-find g-cheader-shadowed
                                                           fname:CStr)))
-                  (.set! (as ptr:CDeclSite site) 'sig msig)
+                  (set! ((as ptr:CDeclSite site) 'sig) msig)
                   (when (and (!= shadow null)
                              (!= (as CStr ((as ptr:CDeclSite shadow) 'sig)) msig:CStr))
                     (cheader-warn-decl-conflict (as raw:CDeclSite site)
                                                 (as raw:CDeclSite shadow))))))
             (let (ft:ptr:Type (as ptr:Type (make-type TY-FN)))
-              (.set! ft 'ret ret)
+              (set! (ft 'ret) ret)
               (type-set-params ft ptypes nparams)
-              (.set! ft 'variadic 0)
+              (set! (ft 'variadic) 0)
               (let (dsym:ref:Sym (scope-define g-globals fname (as ptr ft)
                                   link-ir 0))
                 ; Stage 15 W9 defect 12: mark this as a DECLARED (prototype-only)
@@ -518,10 +518,10 @@
                 ; arguments a C variadic call needs — the idiom this very file's
                 ; `:rest`-in-a-declaration diagnostic points users at, and which
                 ; `docs/toplevel.md` documents. Too few arguments is still refused.
-                (.set! (as ptr:Sym dsym) 'extern-decl 1)
-                (when (!= is-noreturn 0) (.set! (as ptr:Sym dsym) 'noreturn 1))
+                (set! ((as ptr:Sym dsym) 'extern-decl) 1)
+                (when (!= is-noreturn 0) (set! ((as ptr:Sym dsym) 'noreturn) 1))
                 (when (!= is-returns-twice 0)
-                  (.set! (as ptr:Sym dsym) 'returns-twice 1))))
+                  (set! ((as ptr:Sym dsym) 'returns-twice) 1))))
             ; Stage 15 W9 item 24: and in the generic registry, which is where
             ; every OTHER producer of a callable name puts it — `emit-defn`
             ; registers even a solitary function, and that is why a protocol
@@ -535,8 +535,8 @@
             ; defined and linkable). `ir-fixed` because the producing unit
             ; already chose this symbol — see finalize-generics.
             (let (dm:ptr (generic-register-method fname ret ptypes nparams 0 0 null))
-              (.set! (as ptr:Method dm) 'ir-name link-ir)
-              (.set! (as ptr:Method dm) 'ir-fixed 1))
+              (set! ((as ptr:Method dm) 'ir-name) link-ir)
+              (set! ((as ptr:Method dm) 'ir-fixed) 1))
             (when (= m NUCH-REG)
               (set! g-nuch-registered
                     (import-list-push g-nuch-registered
@@ -607,16 +607,16 @@
             (let (m:ptr (generic-register-method fname ret ptypes nparams has-rest 0 null))
               (defn-params-set-opt (as raw:Node params-node)
                 (unsafe/cast ptr:Type ((as ptr:Method m) 'fn-type)))
-              (.set! (as ptr:Method m) 'ir-name mangled)
+              (set! ((as ptr:Method m) 'ir-name) mangled)
               ; Stage 15 W9 item 24: the producing unit emitted this symbol, so
               ; finalize-generics may not rename it. Until now that held only by
               ; coincidence — a re-mangle recomputed the same string — and stopped
               ; holding the moment a local overload joined the set and shifted the
               ; per-prefix count.
-              (.set! (as ptr:Method m) 'ir-fixed 1))
+              (set! ((as ptr:Method m) 'ir-fixed) 1))
             (let (g:ptr (generic-lookup fname))
-              (.set! (as ptr:Generic g) 'mangled 1)
-              (.set! (as ptr:Generic g) 'finalized 1)))
+              (set! ((as ptr:Generic g) 'mangled) 1)
+              (set! ((as ptr:Generic g) 'finalized) 1)))
           (when (!= mode NUCH-REG)
           ; Lower struct-by-value params/return to the platform C ABI exactly as
           ; emit-nuch-declare-import (above) and emit-defn do. Emitting raw
@@ -696,7 +696,7 @@
                               (ff 'line))
                             (ff 'line))
                           (ff 'line))))))
-                (.set! ud 'ctors-emitted 1)
+                (set! (ud 'ctors-emitted) 1)
                 (set! g-out saved-out))))
         (die-at (name-node 'line) "defunion: name must be a symbol")))))
 

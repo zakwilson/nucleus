@@ -186,9 +186,9 @@
         (let (ns:ptr (subst-tyvars-sym (n 's) tyvars spellings ntv (n 'line)))
           (when (= ns (n 's)) (return node))
           (let (new:ptr:Node (as ptr:Node (alloc-node)))
-            (.set! new 'kind NODE-SYM)
-            (.set! new 'line (n 'line))
-            (.set! new 's ns)
+            (set! (new 'kind) NODE-SYM)
+            (set! (new 'line) (n 'line))
+            (set! (new 's) ns)
             (return new)))
       ; Stage 14 defn-signature.md S1: a new-style return type rides in a
       ; NODE-KEYWORD (`:T`, `:ptr:T`) at the head of the stamped body tail. Substitute
@@ -200,9 +200,9 @@
         (let (ns:ptr (subst-tyvars-sym (n 's) tyvars spellings ntv (n 'line)))
           (when (= ns (n 's)) (return node))
           (let (new:ptr:Node (as ptr:Node (alloc-node)))
-            (.set! new 'kind NODE-KEYWORD)
-            (.set! new 'line (n 'line))
-            (.set! new 's ns)
+            (set! (new 'kind) NODE-KEYWORD)
+            (set! (new 'line) (n 'line))
+            (set! (new 's) ns)
             (return new)))
       NODE-CELL
         (return (make-cell (subst-tyvars-node (n 'car) tyvars spellings ntv)

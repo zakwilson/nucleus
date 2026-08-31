@@ -25,9 +25,9 @@
 (defn main ():int
   (let (c:ptr:Circle (alloca Circle)
         s:ptr:Rect (alloca Rect))
-    (.set! c 'rad 5)
-    (.set! s 'w 4)
-    (.set! s 'h 6)
+    (set! (c 'rad) 5)
+    (set! (s 'w) 4)
+    (set! (s 'h) 6)
     (printf "circle area=%d\n" (area c))
     (printf "rect area=%d\n" (area s))
     (printf "kind i32=%d\n" (kind 7))

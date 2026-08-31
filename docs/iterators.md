@@ -27,13 +27,13 @@ with `match`.
 
 Both conform to `(Iterator i32)` / `(Iterator i64)` respectively.
 
-**Constructing an iterator:** use `alloca` and `.set!` the fields, then pass a
+**Constructing an iterator:** use `alloca` and `set!` the fields, then pass a
 `(ref IterType)` to `next` or to `doseq-iter`.
 
 ```lisp
 (let ((r (ref IntRangeIter)) (alloca IntRangeIter))
-  (.set! r 'start 1)
-  (.set! r 'end 6)
+  (set! (r 'start) 1)
+  (set! (r 'end) 6)
   (doseq-iter (x r)
     (printf "%d\n" x)))   ; prints 1 2 3 4 5
 ```
@@ -207,14 +207,14 @@ Chain `[1,2,3,4,5]` → square → keep even → sum (= 4 + 16 = 20):
 
 (defn main ():i32
   (let (arr:ptr:i64 (alloca i64 5))
-    (aset! arr 0 1) (aset! arr 1 2)
-    (aset! arr 2 3) (aset! arr 3 4)
-    (aset! arr 4 5)
+    (set! (aref arr 0) 1) (set! (aref arr 1) 2)
+    (set! (aref arr 2) 3) (set! (aref arr 3) 4)
+    (set! (aref arr 4) 5)
     (let ((sq  (ref SquareI64)) (alloca SquareI64))
     (let ((ev  (ref IsEvenI64)) (alloca IsEvenI64))
     (let ((sm  (ref SumI64))    (alloca SumI64))
     (let ((src (ref I64ArrayIter)) (alloca I64ArrayIter))
-      (.set! src 'data arr) (.set! src 'pos 0) (.set! src 'len 5)
+      (set! (src 'data) arr) (set! (src 'pos) 0) (set! (src 'len) 5)
       (let ((mi (ref (MapIter I64ArrayIter SquareI64)))
             (alloca (MapIter I64ArrayIter SquareI64)))
         (memcpy (as ptr (addr-of mi 'source)) (as ptr src) (sizeof I64ArrayIter))

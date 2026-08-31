@@ -20,7 +20,7 @@
     ;    The closure returns `seen` (the env field) each call.
     ;    After 5 calls over 1..5, reduce result = final env count = 5.
     ; ---------------------------------------------------------------
-    (.set! r 'start 1) (.set! r 'end 6)
+    (set! (r 'start) 1) (set! (r 'end) 6)
     (let (seen:i32 0)
       (let (result:i32
               (reduce (mfn (acc:i32 x:i32):i32
@@ -33,7 +33,7 @@
     ; 2. cfn set! write-back: total accumulated through captured reference.
     ;    reduce over 1..5: total = 15 written into outer scope via cfn.
     ; ---------------------------------------------------------------
-    (.set! r 'start 1) (.set! r 'end 6)
+    (set! (r 'start) 1) (set! (r 'end) 6)
     (let (total:i32 0
           h:ref:AllocHandle (default-allocator))
       (reduce (cfn h (acc:i32 x:i32):i32
@@ -58,7 +58,7 @@
     ;    reduce over 1..3: each x doubled via set! on y (a let-local, NOT a capture).
     ;    result = 2+4+6 = 12.
     ; ---------------------------------------------------------------
-    (.set! r 'start 1) (.set! r 'end 4)
+    (set! (r 'start) 1) (set! (r 'end) 4)
     (let (result2:i32
             (reduce (mfn (acc:i32 x:i32):i32
                       (let (y:i32 0)
@@ -72,7 +72,7 @@
     ;    countdown starts at 5; cfn decrements it each of 3 calls.
     ;    After reduce over 3 elements: countdown = 5 - 3 = 2.
     ; ---------------------------------------------------------------
-    (.set! r 'start 1) (.set! r 'end 4)
+    (set! (r 'start) 1) (set! (r 'end) 4)
     (let (countdown:i32 5
           h2:ref:AllocHandle (default-allocator))
       (reduce (cfn h2 (acc:i32 x:i32):i32

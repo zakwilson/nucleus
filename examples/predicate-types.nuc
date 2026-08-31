@@ -67,8 +67,8 @@
   ; `?`-struct embedded by value in another struct; build via alloca + field
   ; sets, then read the nested (%Full_QMARK) field and the scalar field back.
   (let (gz:(ref Gauge) (alloca Gauge))
-    (.set! (addr-of gz 'inner) 'level 200)
-    (.set! gz 'spare 9)
+    (set! ((addr-of gz 'inner) 'level) 200)
+    (set! (gz 'spare) 9)
     (printf "gauge inner level = %d\n" (gauge-inner-level gz))  ; 200
     (printf "gauge spare = %d\n" (gauge-spare gz)))             ; 9
 

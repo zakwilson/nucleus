@@ -20,7 +20,7 @@
 ; colon-chain keyword ret :ptr:Box
 (defstruct Box v:i32)
 (defvar the-box:Box)
-(defn box-ptr (x:i32):ptr:Box (.set! (addr-of the-box) 'v x) (addr-of the-box))
+(defn box-ptr (x:i32):ptr:Box (set! ((addr-of the-box) 'v) x) (addr-of the-box))
 
 ; space-separated list-form ret (Maybe i32)
 (defn maybe-pos (x:i32) (Maybe i32)

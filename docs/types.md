@@ -11,7 +11,7 @@ Types are attached to names with `:` syntax: `name:type` (e.g., `x:i32`, `main:i
 
 Pointers to a typed element use the `ptr` constructor: `(ptr T)` is a **non-null** pointer to `T`, and `(ptr ptr T)` chains. Bare `ptr` (with no element) is the opaque `void*` pointer — it carries no element contract, so non-null obligations do not apply to it.
 
-Because bare `ptr` erases the element type, operations that need one (`aref`, `aset!`, `deref`, `unsafe/ptr+`, field access) reject it. The one place the element type is recovered automatically is an **`(array T …)` initializer**: `(let (a:ptr (array i32 1 2 3)) (aref a 1))` binds `a` as `ptr:i32`, because the element type is spelled in the initializer itself. This is deliberately limited to that syntactic form — a bare `:ptr` bound from anything else (a function result, `alloca`, `addr-of`) stays elem-less, since erasing the element type is exactly what a `void*` annotation is for. Where you want the element type from any other initializer, either spell it (`a:ptr:i32`) or omit the annotation entirely (a bare binding name adopts the initializer's full type).
+Because bare `ptr` erases the element type, operations that need one (`aref`, `deref`, `unsafe/ptr+`, a `set!` place, field access) reject it. The one place the element type is recovered automatically is an **`(array T …)` initializer**: `(let (a:ptr (array i32 1 2 3)) (aref a 1))` binds `a` as `ptr:i32`, because the element type is spelled in the initializer itself. This is deliberately limited to that syntactic form — a bare `:ptr` bound from anything else (a function result, `alloca`, `addr-of`) stays elem-less, since erasing the element type is exactly what a `void*` annotation is for. Where you want the element type from any other initializer, either spell it (`a:ptr:i32`) or omit the annotation entirely (a bare binding name adopts the initializer's full type).
 
 In inline type positions (the type argument of `as`/`unsafe/cast`, `sizeof`, `alloca`), either the canonical list form or the colon sugar works: `(unsafe/cast (ptr Node) x)` and `(unsafe/cast ptr:Node x)` are equivalent.
 
@@ -21,7 +21,7 @@ In inline type positions (the type argument of `as`/`unsafe/cast`, `sizeof`, `al
 (let (a:i32 0                  ; declaration — a is an i32
       b:i64 x:i64)             ; declaration of b; x:i64 is a cast of x
   (take-cstr s:CStr)           ; cast — (as CStr s)
-  (aset! p (as i64 i) v))      ; ptr:… inside `as` is a TYPE, not a cast
+  (set! (aref p (as i64 i)) v))      ; ptr:… inside `as` is a TYPE, not a cast
 ```
 
 In a binding list the two readings alternate, as above: the name slot declares, the initializer slot casts.
@@ -376,7 +376,7 @@ will not elide, reorder, or coalesce them. Examples:
 - `(defvar :volatile trap-zero:i32 0)` — volatile global
 - `(let (:volatile x:i32 0) ...)` — volatile local (binds to the immediately following name only)
 - `(defstruct R flags:i32 (:volatile status:i32))` — volatile field (parenthesized, keyword head)
-- `(defn bump-counter ((p (ptr :volatile i32))):void ...)` — pointer to volatile `i32`; deref and `ptr-set!` through `p` are volatile
+- `(defn bump-counter ((p (ptr :volatile i32))):void ...)` — pointer to volatile `i32`; deref and a `(deref p)` place store through `p` are volatile
 
 Volatility lives on the storage site, not the value: `volatile T` and `T` are assignment-compatible, and the qualifier is dropped/added at the access. Bare `ptr` (no element) cannot be made volatile — volatility attaches to the pointee, not to opaque pointers. Attributes never participate in type identity, overload resolution, dispatch, monomorphization, or name mangling — see [stage14/attributes.md](../design/stage14/attributes.md) for the full attribute-slot design.
 
@@ -425,7 +425,7 @@ answer:i32 42) ... (set! answer 10)` dies with `set!: cannot assign to
 read-only storage. Reads of a `:const` global (`(return answer)`) are
 unaffected — they go through the normal load path. This check covers the
 direct `set!` mutation syntax only; it is not an aliasing analysis (e.g. a
-raw pointer obtained via `addr-of` and written through `ptr-set!` is not
+raw pointer obtained via `addr-of` and written through a `(deref p)` place is not
 tracked).
 
 ## Built-in Types
@@ -497,7 +497,7 @@ by construction and carries the full significand at every width:
 does this: `0x1.8` is not a float literal (nor an integer — it is an error), and
 `0x18` is an integer.
 
-**A float literal is untyped: it adapts to whatever float width the position wants**, and only falls back to `f64` when nothing asks for anything else. That covers both a binop operand — with `alpha:f32`, `(* alpha 2.0)` and `(* 2.0 alpha)` are both `f32`, in either order — and every *typed target* position: `(let (a:f32 0.1) …)`, `with`, `(set! a 0.1)`, `(.set! p 'x 0.1)`, `(return 0.1)` from an `f32` function (explicit or implicit), an `f32` field in a struct literal, an `f32` element in an `(array f32 …)`, an `f32` argument at a call, and an `f32` `defvar` initializer. None of these need an `(unsafe/cast f32 …)` wrapper, and the literal is rounded to single precision at compile time — no conversion instruction is emitted.
+**A float literal is untyped: it adapts to whatever float width the position wants**, and only falls back to `f64` when nothing asks for anything else. That covers both a binop operand — with `alpha:f32`, `(* alpha 2.0)` and `(* 2.0 alpha)` are both `f32`, in either order — and every *typed target* position: `(let (a:f32 0.1) …)`, `with`, `(set! a 0.1)`, `(set! (p 'x) 0.1)`, `(return 0.1)` from an `f32` function (explicit or implicit), an `f32` field in a struct literal, an `f32` element in an `(array f32 …)`, an `f32` argument at a call, and an `f32` `defvar` initializer. None of these need an `(unsafe/cast f32 …)` wrapper, and the literal is rounded to single precision at compile time — no conversion instruction is emitted.
 
 A bare float literal with no target is `f64`, so `(let (b 0.1) …)` and `(let (b:f64 0.1) …)` are both `f64`; adaptation never makes an unrequested `f32`. Two *typed* float operands of different width widen to the wider (`f32 * f64` is `f64`). Mixing float and integer operands without an explicit `unsafe/cast` is a compile error — a float literal adapts only to a *float* target, never to an integer one (`(let (a:i32 1.5) …)` is rejected).
 
@@ -532,14 +532,14 @@ array-typed global, field, or `alloca` is the address of element 0, typed
 
 (defn scratch ():i32
   (let (buf:ptr:i32 (alloca (array i32 64)))   ; 64 slots of frame storage
-    (aset! buf 0 1)
+    (set! (aref buf 0) 1)
     (aref buf 0)))
 ```
 
 Because it decays, an array is **refused** wherever a whole-array *value* would
 have to exist — a by-value parameter or return, a `let` / `with` binding type, a
 pointer element (`ptr:(array T N)`), a generic type argument, a nested array
-(`(array (array T M) N)`), and as the target of `set!` or `.set!`. Each is a
+(`(array (array T M) N)`), and as the target of a `set!` place. Each is a
 compile-time error naming the `ptr:T` spelling that works. C has the same
 restrictions for the same reason.
 
@@ -606,7 +606,7 @@ A `defn` function name used in value position decays to a function pointer, matc
 ### Signatures are checked, in both directions
 
 **Every typed function-pointer slot compares signatures**, not just kinds — a
-`let`/`with` init, a `set!`, a `.set!` field store, a `return`, and a call
+`let`/`with` init, a `set!` place, a `return`, and a call
 argument all refuse a function whose parameter list or return type does not
 match, and the diagnostic prints both signatures as written:
 
@@ -682,7 +682,7 @@ function pointer, are non-null like any other typed pointer, and reject a `null`
 initializer.
 
 `null` initializes or assigns a function-pointer slot in **every** position — a
-`defvar`, a `let`/`with` binding, a `set!`, a `.set!` field store and an explicit
+`defvar`, a `let`/`with` binding, a `set!` place and an explicit
 `return` — and costs no instruction, since both sides are one `ptr` register:
 
 ```lisp
@@ -691,7 +691,7 @@ initializer.
 (defn main ():i32
   (let (loc:(fn i32)(i32) null
         h:ptr:Hooks (alloca Hooks))
-    (.set! h 'before null)
+    (set! (h 'before) null)
     (set! loc add1)
     (set! loc null)                  ; and back again
     (return 0)))
@@ -736,7 +736,7 @@ alignment (`align 8` on x86-64, `align 4` on a 32-bit target), and it is the
 
 ## Implicit Type Coercion
 
-The following conversions are applied automatically in assignment contexts (`let`, `set!`, `.set!`, `aset!`, `ptr-set!`, implicit and explicit `return`) **and at function call sites** (both direct calls and `funcall`). This is exactly the safe set `as` (see [Special Forms](special-forms.md#special-forms)) also accepts when written explicitly, plus `as`'s own pointer-contract-weakening allowance; `unsafe/cast` accepts this same set **and** everything lossy or contract-manufacturing besides (narrowing, `float`↔`int`, `ptr`↔`int`, `fn`↔`ptr`, element-retyping pointers, and laundering a `raw`/nullable pointer into a non-null slot):
+The following conversions are applied automatically in assignment contexts (`let`, every `set!` place, implicit and explicit `return`) **and at function call sites** (both direct calls and `funcall`). This is exactly the safe set `as` (see [Special Forms](special-forms.md#special-forms)) also accepts when written explicitly, plus `as`'s own pointer-contract-weakening allowance; `unsafe/cast` accepts this same set **and** everything lossy or contract-manufacturing besides (narrowing, `float`↔`int`, `ptr`↔`int`, `fn`↔`ptr`, element-retyping pointers, and laundering a `raw`/nullable pointer into a non-null slot):
 
 - **Pointer ↔ pointer, when the pointees agree**: identity, no IR. Two things are *not* part of the question and so never block it — the pointer **kind** — `ptr:Node`, `(ref Node)`, `(raw Node)` and `?Node` are one type to *this* question, and nullability is judged separately by the non-null contract, which still refuses a `raw`/`?` source into a `(ref T)` slot (see [Pointer kinds](#pointer-kinds-ptr-t-raw-t-and-t)) — and an **elem-less bare `ptr`**, which is `void *` and matches any pointer in either direction. Everything else must match: `ptr:i32` into a `ptr:Node` slot, or `(ref (Vector i32))` into a `(ref (Vector i64))` slot, is a compile-time error naming both types.
 
@@ -745,9 +745,9 @@ The following conversions are applied automatically in assignment contexts (`let
   takes: argument 1 has type ptr:SA, which does not match parameter type ptr:SB
   ```
 
-  This is the same rule at every typed slot — `let`/`with` init, `set!`, a `.set!` field store, an `aset!`/`ptr-set!` element store, `return`, a call argument, and a `defvar`'s `(addr-of g)` initializer. Retyping a pointer's element is what `unsafe/cast` is for.
+  This is the same rule at every typed slot — `let`/`with` init, every `set!` place, `return`, a call argument, and a `defvar`'s `(addr-of g)` initializer. Retyping a pointer's element is what `unsafe/cast` is for.
 - **`StrView` → `CStr` / `ptr`**: takes the view's `data` field — no IR for an unmaterialized string literal (whose value already *is* `data`), one `extractvalue` for a general `StrView` value. Trusts that the buffer is NUL-terminated at `data[len]`, always true for a literal but not guaranteed for an arbitrary sub-slice (see [Strings — Gotchas and constraints](strings.md)).
-- **`ptr:S` → by-value `S`** (`S` a struct): one `load` of the pointee — the implicit form of `(deref p)`. This is what lets a `(S …)` compound literal, which is alloca-backed and evaluates to `(ref S)`, be written directly wherever a by-value `S` is expected: an element of an `(array S …)`, a struct-typed field in another struct literal, a `let`/`with` binding declared `:S`, an `aset!`/`ptr-set!` element store, and an implicit or explicit `return` from an `S`-returning function. Argument positions have always accepted it. The element type must match exactly (a compound literal of a *different* struct is still a type mismatch), and because the conversion is a `deref` it carries `deref`'s obligation: a `?T` source must be narrowed first. The explicit `(deref (S …))` spelling remains valid and emits byte-identical IR.
+- **`ptr:S` → by-value `S`** (`S` a struct): one `load` of the pointee — the implicit form of `(deref p)`. This is what lets a `(S …)` compound literal, which is alloca-backed and evaluates to `(ref S)`, be written directly wherever a by-value `S` is expected: an element of an `(array S …)`, a struct-typed field in another struct literal, a `let`/`with` binding declared `:S`, an element or pointee place store, and an implicit or explicit `return` from an `S`-returning function. Argument positions have always accepted it. The element type must match exactly (a compound literal of a *different* struct is still a type mismatch), and because the conversion is a `deref` it carries `deref`'s obligation: a `?T` source must be narrowed first. The explicit `(deref (S …))` spelling remains valid and emits byte-identical IR.
 - **Integer ↔ integer**:
   - Same width, different sign (e.g. `i32` ↔ `ui32`): reinterpret, no IR.
   - Widening: `sext` for signed source, `zext` for unsigned source.
@@ -785,7 +785,7 @@ The following conversions are applied automatically in assignment contexts (`let
     no instruction at all — the literal is re-rendered as a single-precision
     constant at compile time. So `(let (a:f32 0.1) …)`, `(set! a 0.1)`,
     `(return 0.1)` from an `f32` function, `(P 0.1 0.2)` into `f32` fields,
-    `(array f32 0.1)`, `(.set! p 'x 0.1)` and `(take 0.1)` against
+    `(array f32 0.1)`, `(set! (p 'x) 0.1)` and `(take 0.1)` against
     `(defn take (x:f32) …)` all work with the bare literal — no
     `(unsafe/cast f32 0.1)` wrapper. The narrowing of a *value* is silent, the
     same way a narrowing integer assignment is silent (see the `trunc` bullet
@@ -801,7 +801,7 @@ The following conversions are applied automatically in assignment contexts (`let
     the explicit `(unsafe/cast f32 3.14)` spelling has always done. In practice
     this agrees with C's `3.14f` for essentially every constant, and `f32`
     arithmetic is otherwise bit-exact with C `float`.
-- **User-registered**: any pair declared with `(defcast From To conv-fn)` (see [Top-level forms](toplevel.md)). The compiler emits a call to `conv-fn`. A rule applies at **every** implicit position — call argument, `let`/`with` init, explicit and implicit `return`, `set!`/`.set!`, `aset!`, struct-literal field, union payload, and `as` — not just at call sites. Built-in coercion always wins; `defcast` cannot shadow `sext`/`zext`/`fpext`, and registering a rule for a pair the compiler already converts is rejected outright.
+- **User-registered**: any pair declared with `(defcast From To conv-fn)` (see [Top-level forms](toplevel.md)). The compiler emits a call to `conv-fn`. A rule applies at **every** implicit position — call argument, `let`/`with` init, explicit and implicit `return`, every `set!` place, struct-literal field, union payload, and `as` — not just at call sites. Built-in coercion always wins; `defcast` cannot shadow `sext`/`zext`/`fpext`, and registering a rule for a pair the compiler already converts is rejected outright.
 
   A rule is looked up on the **exact** pair, and **implicit conversions do not compose** — one conversion, built-in or user, never both. A bare integer literal is `i32`, so a rule registered `i64 → ptr` is not reached by `(take 0)`; write `(take (as i64 0))`, or register the rule from `i32` instead. When a conversion fails and a rule reaches that same target from another type, the compiler names it:
 

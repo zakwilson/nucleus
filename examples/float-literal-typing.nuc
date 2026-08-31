@@ -83,7 +83,7 @@
   (let (p:ptr:P (P 0.1 0.2 0.1))
     (printf "struct-pos  %s %.9g %.9g | %s %.17g\n"
       (tkind (p 'x)) (as f64 (p 'x)) (as f64 (p 'y)) (tkind (p 'w)) (p 'w))
-    (.set! p 'x 0.3)
+    (set! (p 'x) 0.3)
     (printf "field-set   %.9g\n" (as f64 (p 'x))))
   (let (q:ptr:P (P (y 0.1) (x 0.2)))
     (printf "struct-desg %.9g %.9g\n" (as f64 (q 'x)) (as f64 (q 'y))))

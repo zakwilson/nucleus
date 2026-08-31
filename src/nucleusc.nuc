@@ -1023,8 +1023,8 @@
           n:ptr:Node (as ptr:Node (malloc (sizeof Node))))
       (snprintf buf 32 "__gs_%d" id)
       (memset (as ptr n) 0 (sizeof Node))
-      (.set! n 'kind NODE-SYM:i32)
-      (.set! n 's buf)
+      (set! (n 'kind) NODE-SYM:i32)
+      (set! (n 's) buf)
       (return (as ptr n)))))
 
 (defn alloc-type ():ref:Type
@@ -1032,8 +1032,8 @@
 
 (defn alloc-val (ty:(raw Type) v:ptr):ref:Val
   (let (r:ref:Val (as ref:Val (arena-alloc (sizeof Val))))
-    (.set! r 'type ty)
-    (.set! r 'val v)
+    (set! (r 'type) ty)
+    (set! (r 'val) v)
     (return r)))
 
 ; ============================================================
@@ -1227,8 +1227,8 @@
 ; disagree about where a body begins.
 (defn defn-scan-attrs (form:(raw Node) start:i32 out-noreturn:ptr:i32
                        out-returns-twice:ptr:i32 encl:i32):i32
-  (ptr-set! out-noreturn 0)
-  (ptr-set! out-returns-twice 0)
+  (set! (deref out-noreturn) 0)
+  (set! (deref out-returns-twice) 0)
   (let (bs:i32 start
         scanning:i32 1)
     ; `(> (node-len form) (+ bs 1))`: a LONE trailing form is the body, whatever
@@ -1239,8 +1239,8 @@
         (if (= k 0)
           (do (reject-legacy-fn-attr b0 (node-line (as ptr form) encl))
               (set! scanning 0))
-          (do (when (= k 1) (ptr-set! out-noreturn 1))
-              (when (= k 2) (ptr-set! out-returns-twice 1))
+          (do (when (= k 1) (set! (deref out-noreturn) 1))
+              (when (= k 2) (set! (deref out-returns-twice) 1))
               (set! bs (+ bs 1))))))
     (return bs)))
 
@@ -1253,8 +1253,8 @@
 ; both keywords.
 (defn declare-scan-attrs (form:(raw Node) len:i32 min-len:i32 out-noreturn:ptr:i32
                           out-returns-twice:ptr:i32 encl:i32):i32
-  (ptr-set! out-noreturn 0)
-  (ptr-set! out-returns-twice 0)
+  (set! (deref out-noreturn) 0)
+  (set! (deref out-returns-twice) 0)
   (let (n:i32 len
         scanning:i32 1)
     (while (and (!= scanning 0) (> n min-len))
@@ -1263,8 +1263,8 @@
         (if (= k 0)
           (do (reject-legacy-fn-attr last (node-line (as ptr form) encl))
               (set! scanning 0))
-          (do (when (= k 1) (ptr-set! out-noreturn 1))
-              (when (= k 2) (ptr-set! out-returns-twice 1))
+          (do (when (= k 1) (set! (deref out-noreturn) 1))
+              (when (= k 2) (set! (deref out-returns-twice) 1))
               (set! n (- n 1))))))
     (return n)))
 
@@ -1397,11 +1397,11 @@
   (let (colon:ptr (strchr sym 58))
     (if (= colon null)
       (do
-        (ptr-set! out-name (arena-strdup sym))
-        (ptr-set! out-type-name null))
+        (set! (deref out-name) (arena-strdup sym))
+        (set! (deref out-type-name) null))
       (let (name-len:i64 (- (unsafe/cast i64 colon) (unsafe/cast i64 sym)))
-        (ptr-set! out-name (arena-strndup sym name-len))
-        (ptr-set! out-type-name (arena-strdup (unsafe/ptr+ (as ptr:i8 colon) 1)))))))
+        (set! (deref out-name) (arena-strndup sym name-len))
+        (set! (deref out-type-name) (arena-strdup (unsafe/ptr+ (as ptr:i8 colon) 1)))))))
 
 ; W4b sibling sweep (design/stage15-stress-test/diagnostics.md): the defconst
 ; bug generalizes -- none of defenum/defprotocol/defmacro/defunion/deferror's
@@ -1440,8 +1440,8 @@
   ; as "untyped, unnamed" and let the caller's own diagnostic fire, rather than
   ; dereferencing it. (The fatal counterpart lives in extract-name-and-type.)
   (when (= node null)
-    (ptr-set! out-name null)
-    (ptr-set! out-type-name null)
+    (set! (deref out-name) null)
+    (set! (deref out-type-name) null)
     (return))
   (let (n:(raw Node) node)
     ; AT-1: skip leading attribute keywords on a wrapped declaration
@@ -1457,8 +1457,8 @@
                     (= (-> rest (_ 'car) (unsafe/cast ptr:Node _) (_ 'kind)) NODE-KEYWORD))
           (set! rest (as raw:Node ((unsafe/cast ptr:Node rest) 'cdr))))
         (when (= rest null)
-          (ptr-set! out-name null)
-          (ptr-set! out-type-name null)
+          (set! (deref out-name) null)
+          (set! (deref out-type-name) null)
           (return))
         (let (inner:(raw Node) (if (= ((unsafe/cast ptr:Node rest) 'cdr) null)
                                  (as raw:Node ((unsafe/cast ptr:Node rest) 'car))
@@ -1471,18 +1471,18 @@
     (when (= (n 'kind) NODE-CELL)
       (let (car-node:(raw Node) (n 'car))
         (when (and (!= car-node null) (= (car-node 'kind) NODE-SYM))
-          (ptr-set! out-name (car-node 's))
+          (set! (deref out-name) (car-node 's))
           (let (rest:(raw Node) (n 'cdr))
             (if (!= rest null)
                 (let (type-node:(raw Node) (rest 'car))
                   (when (and (!= type-node null) (= (type-node 'kind) NODE-SYM))
-                    (ptr-set! out-type-name (type-node 's)))
+                    (set! (deref out-type-name) (type-node 's)))
                   (return))
-              (do (ptr-set! out-type-name null)
+              (do (set! (deref out-type-name) null)
                   (return)))))))
     ; Fallback: treat as untyped
-    (ptr-set! out-name null)
-    (ptr-set! out-type-name null)))
+    (set! (deref out-name) null)
+    (set! (deref out-type-name) null)))
 
 ; Extract name and parsed Type* from a node. Handles function pointer types.
 ; Returns the Type* or null if untyped. Sets out-name.
@@ -1538,7 +1538,7 @@
   ; this shared chokepoint, and each would otherwise dereference the null here.
   ; Diagnose with the enclosing form's line instead of faulting.
   (when (= node null)
-    (ptr-set! out-name null)
+    (set! (deref out-name) null)
     (die-empty-decl line))
   (let (n:(raw Node) node)
     ; AT-1 (design/stage14/attributes.md): an attribute-annotated declaration is a
@@ -1604,7 +1604,7 @@
                 cslen:i64 (as i64 (strlen (car-node 's))))
             (when (and (> cslen 0) (= (char-at cs (- cslen 1)) 58))
               (die-at line (fmt-s "binding name ends in ':' (%s) -- write name:(Type) with no space, or (name Type)" cs))))
-         (ptr-set! out-name (car-node 's))
+         (set! (deref out-name) (car-node 's))
          (let (rest:(raw Node) (n 'cdr))
            (when (= rest null) (return null))
            (let (type-node:(raw Node) (rest 'car))
@@ -1628,7 +1628,7 @@
                     (return (parse-type-from-node rest line))
                     (return (parse-type-from-node type-node line)))))
               (return null))))))
-    (ptr-set! out-name null)
+    (set! (deref out-name) null)
     (return null)))
 
 ; ============================================================
@@ -1684,18 +1684,18 @@
     ; legacy signature — the S4 message below would quote it as '(null)' — it is
     ; no name at all, so it gets the wording every other definer uses for that.
     (when (= name-node null) (die-at (ff 'line) "defn: missing name"))
-    (ptr-set! out-params (node-at form 2))
+    (set! (deref out-params) (node-at form 2))
     (if (!= (sig-name-is-bare name-node) 0)
       ; New style: bare name, ret at index 3, body at 4.
       (do
-        (ptr-set! out-name (name-node 's))
+        (set! (deref out-name) (name-node 's))
         (when (< (node-len form) 4)
           (die-at (ff 'line)
             (fmt-2s "defn '%s': expected return type after the parameter list, e.g. (defn %s (params):i32 …)"
                     (name-node 's)
                     (name-node 's))))
-        (ptr-set! out-ret-node (node-at form 3))
-        (ptr-set! out-body-start 4)
+        (set! (deref out-ret-node) (node-at form 3))
+        (set! (deref out-body-start) 4)
         (return 1))
       ; S4: the legacy `name:ret` / list-head `(name ret)` signature is retired.
       ; The dual-detection machinery (sig-name-is-bare / legacy-ret-node /
@@ -1828,9 +1828,9 @@
   (let (rnn:(raw Node) rn)
     (when (= (rnn 'kind) NODE-KEYWORD)
       (let (new:ref:Node (alloc-node))
-        (.set! new 'kind NODE-SYM)
-        (.set! new 'line (rnn 'line))
-        (.set! new 's (rnn 's))
+        (set! (new 'kind) NODE-SYM)
+        (set! (new 'line) (rnn 'line))
+        (set! (new 's) (rnn 's))
         (return new)))
     (return rn)))
 
@@ -1852,13 +1852,13 @@
 ; legacy shapes.
 (defn proto-sig-parse (sig:(raw Node) out-name:ptr:ptr out-ret-node:ptr:ptr out-params:ptr:ptr):i32
   (let (name-node:(raw Node) (node-at sig 0))
-    (ptr-set! out-params (node-at sig 1))
+    (set! (deref out-params) (node-at sig 1))
     (if (!= (sig-name-is-bare name-node) 0)
       (do
-        (ptr-set! out-name (name-node 's))
+        (set! (deref out-name) (name-node 's))
         (if (>= (node-len sig) 3)
-          (ptr-set! out-ret-node (normalize-ret-node (node-at sig 2)))
-          (ptr-set! out-ret-node null))
+          (set! (deref out-ret-node) (normalize-ret-node (node-at sig 2)))
+          (set! (deref out-ret-node) null))
         (return 1))
       ; S4: legacy `(name:ret params)` / `((name ret) params)` protocol sigs are
       ; retired; detection stays so the diagnostic can quote the method name.
@@ -1929,7 +1929,7 @@
     ; a mismatch corrupts the next bootstrap and is caught at once. node-type
     ; returns null for the forms it does not model; those keep emit's own type.
     (let (t:ptr (node-type n scope))
-      (when (!= t null) (.set! v 'type t)))
+      (when (!= t null) (set! (v 'type) t)))
     ; Restore last: node-type raises its own diagnostics (the retired-spelling
     ; checks in node-type-call) and must see this node's line too.
     (set! g-form-line saved-form-line)
@@ -1958,8 +1958,8 @@
   (let (v:i64 (n 'i)
         ty:ptr (as ptr (int-literal-type v))
         rv:ref:Val (alloc-val ty (fmt-i64 "%ld" v)))
-    (.set! rv 'is-lit 1)
-    (.set! rv 'lit-i64 v)
+    (set! (rv 'is-lit) 1)
+    (set! (rv 'lit-i64) v)
     (return rv)))
 
 ; Stage 11 M6 (S0): a `\a` / `\newline` / `\u{1F600}` char literal. The reader
@@ -1993,45 +1993,45 @@
     (when (and (> len 0)
                (or (= (char-at lex 0) 43)
                    (= (char-at lex 0) 45)))
-          (aset! (as ptr:i8 buf) out (unsafe/cast i8 (char-at lex 0)))
+          (set! (aref (as ptr:i8 buf) out) (unsafe/cast i8 (char-at lex 0)))
       (set! out (+ out 1))
       (set! in 1))
     ; Integer part: insert leading 0 if absent.
     (let (had-int-digit:i32 0)
       (while (and (< in len)
                   (!= (isdigit (char-at lex in)) 0))
-        (aset! (as ptr:i8 buf) out (unsafe/cast i8 (char-at lex in)))
+        (set! (aref (as ptr:i8 buf) out) (unsafe/cast i8 (char-at lex in)))
         (inc! out)
         (inc! in)
         (set! had-int-digit 1))
       (when (= had-int-digit 0)
-            (aset! (as ptr:i8 buf) out (unsafe/cast i8 (as i64 48)))
+            (set! (aref (as ptr:i8 buf) out) (unsafe/cast i8 (as i64 48)))
         (inc! out)))
     ; Decimal point + fraction. Synthesize a `.0` if missing.
     (cond (and (< in len) (= (char-at lex in) 46))
-            (do (aset! (as ptr:i8 buf) out 46)
+            (do (set! (aref (as ptr:i8 buf) out) 46)
                 (set! out (+ out 1))
                 (set! in (+ in 1))
                 (let (had-frac-digit:i32 0)
                   (while (and (< in len)
                               (!= (isdigit (char-at lex in)) 0))
-                    (aset! (as ptr:i8 buf) out (unsafe/cast i8 (char-at lex in)))
+                    (set! (aref (as ptr:i8 buf) out) (unsafe/cast i8 (char-at lex in)))
                     (inc! out)
                     (inc! in)
                     (set! had-frac-digit 1))
                   (when (= had-frac-digit 0)
-                    (aset! (as ptr:i8 buf) out 48)
+                    (set! (aref (as ptr:i8 buf) out) 48)
                     (set! out (+ out 1)))))
           true
-            (do (aset! (as ptr:i8 buf) out 46)
-                (aset! (as ptr:i8 buf) (+ out 1) 48)
+            (do (set! (aref (as ptr:i8 buf) out) 46)
+                (set! (aref (as ptr:i8 buf) (+ out 1)) 48)
                 (set! out (+ out 2))))
     ; Exponent (verbatim).
     (while (< in len)
-      (aset! (as ptr:i8 buf) out (unsafe/cast i8 (char-at lex in)))
+      (set! (aref (as ptr:i8 buf) out) (unsafe/cast i8 (char-at lex in)))
       (inc! out)
       (inc! in))
-    (aset! (as ptr:i8 buf) out 0)
+    (set! (aref (as ptr:i8 buf) out) 0)
     (return buf)))
 
 ; Stage 15 W2d (design/stage15-stress-test/literal-typing.md §3.6): the VALUE a
@@ -2104,9 +2104,9 @@
     ; literal's OWN type stays f64 — adaptation is the consumer's decision, made
     ; where the target type is known, exactly as for an integer literal.
     (let (rv:ref:Val (alloc-val ty-f64 (float-literal-ir (nn 's))))
-      (.set! rv 'is-flit 1)
-      (.set! rv 'lit-f64 (float-literal-value (nn 's)))
-      (.set! rv 'lit-lex (nn 's))
+      (set! (rv 'is-flit) 1)
+      (set! (rv 'lit-f64) (float-literal-value (nn 's)))
+      (set! (rv 'lit-lex) (nn 's))
       (return rv))))
 
 (defn emit-string (n:(raw Node) target:(raw Type)):ref:Val
@@ -2158,8 +2158,8 @@
     (let (svty:(raw Type) (strview-type))
       (when (= svty null) (return (alloc-val ty-cstr tmp)))
       (let (rv:ref:Val (alloc-val svty tmp))
-        (.set! rv 'is-lit 1)
-        (.set! rv 'lit-i64 slen:i64)
+        (set! (rv 'is-lit) 1)
+        (set! (rv 'lit-i64) slen:i64)
         (return (as ptr rv))))))
 
 ; Keyword literal (Stage 11 cleanup §2). `:foo` self-evaluates to the one
@@ -2175,9 +2175,9 @@
         line:i32 (nn 'line)
         ; Synthetic NODE-STR carrying the keyword name.
         strnode:ref:Node (alloc-node))
-    (.set! strnode 'kind NODE-STR)
-    (.set! strnode 'line line)
-    (.set! strnode 's (nn 's))
+    (set! (strnode 'kind) NODE-STR)
+    (set! (strnode 'line) line)
+    (set! (strnode 's) (nn 's))
     ; (keyword-intern "name")
     (let (call:ptr (make-cell 'keyword-intern
                      (make-cell strnode null line)
@@ -2339,8 +2339,8 @@
     (let (sd:(raw StructDef) (struct-lookup-ref "Node"))
       (when (!= sd null)
         (let (t:ref:Type (make-type TY-PTR))
-          (.set! t 'elem (parse-type-name "Node" 0))
-          (.set! t 'pkind PTR-RAW)
+          (set! (t 'elem) (parse-type-name "Node" 0))
+          (set! (t 'pkind) PTR-RAW)
           (set! g-ty-raw-node (as ptr t))))))
   (if (= g-ty-raw-node null) ty-ptr g-ty-raw-node))
 
@@ -2353,8 +2353,8 @@
     (let (sd:(raw StructDef) (struct-lookup-ref "Node"))
       (when (!= sd null)
         (let (t:ref:Type (make-type TY-PTR))
-          (.set! t 'elem (parse-type-name "Node" 0))
-          (.set! t 'pkind PTR-REF)
+          (set! (t 'elem) (parse-type-name "Node" 0))
+          (set! (t 'pkind) PTR-REF)
           (set! g-ty-ref-node (as ptr t))))))
   (if (= g-ty-ref-node null) ty-ptr g-ty-ref-node))
 
@@ -2462,14 +2462,14 @@
     (let (eff:ptr (sym-effective-type sym))
       (when (!= (ptr-pkind eff) PTR-MAYBE) (return))
       (let (u:ref:NarrowUndo (new NarrowUndo))
-        (.set! u 'name name)
-        (.set! u 'scope scope)
-        (.set! u 'old-ntype (sym 'ntype))
-        (.set! u 'old-ndepth (sym 'ndepth))
-        (.set! u 'stamp (sym 'kstamp))
+        (set! (u 'name) name)
+        (set! (u 'scope) scope)
+        (set! (u 'old-ntype) (sym 'ntype))
+        (set! (u 'old-ndepth) (sym 'ndepth))
+        (set! (u 'stamp) (sym 'kstamp))
         (conj g-nundo u))
-      (.set! sym 'ntype (type-as-pkind eff PTR-REF))
-      (.set! sym 'ndepth g-loop-depth))))
+      (set! (sym 'ntype) (type-as-pkind eff PTR-REF))
+      (set! (sym 'ndepth) g-loop-depth))))
 
 ; Undo narrows back to `mark` (a branch/region boundary). Entries whose
 ; binding was killed after the push are skipped.
@@ -2483,15 +2483,15 @@
       (let (sym:?ptr:Sym (scope-lookup (u 'scope) (u 'name)))
         (when (!= sym null)
           (when (= (u 'stamp) (sym 'kstamp))
-            (.set! sym 'ntype (u 'old-ntype))
-            (.set! sym 'ndepth (u 'old-ndepth)))))
-      (.set! g-nundo 'len (- (_get g-nundo 'len) 1)))))
+            (set! (sym 'ntype) (u 'old-ntype))
+            (set! (sym 'ndepth) (u 'old-ndepth)))))
+      (set! (g-nundo 'len) (- (_get g-nundo 'len) 1)))))
 
 ; Kill a binding's narrow: reassignment invalidates the dominating test.
 (defn narrow-kill (sym:(raw Sym)):void
   (let (ss:(raw Sym) sym)
-    (.set! ss 'ntype null)
-    (.set! ss 'kstamp (+ (ss 'kstamp) 1))))
+    (set! (ss 'ntype) null)
+    (set! (ss 'kstamp) (+ (ss 'kstamp) 1))))
 
 ; Kill every live narrow (label join points — a backward goto re-enters).
 (defn narrow-kill-all ():void
@@ -2643,13 +2643,13 @@
 
 ; Stage 13 L1: copy both escape-taint fields (the with/frame Scope* and the
 ; frame-region flag) from src to dst. Every identity-preserving op that today
-; does `(.set! dst taint (src taint))` should call this instead so the
-; frame-region distinction survives casts, ptr+, .&, and symbol reads.
+; does `(set! (dst 'taint) (src 'taint))` should call this instead so the
+; frame-region distinction survives casts, ptr+, addr-of, and symbol reads.
 (defn val-copy-taint (dst:(raw Val) src:(raw Val)):void
-  (.set! dst 'taint (src 'taint))
-  (.set! dst 'taint-frame (src 'taint-frame)))
+  (set! (dst 'taint) (src 'taint))
+  (set! (dst 'taint-frame) (src 'taint-frame)))
 
-; Escape sink for a store through a pointer (aset! / .set!, lifecycle.md §2.3):
+; Escape sink for a store through a pointer (a `set!` place, lifecycle.md §2.3):
 ; a tainted value may only be stored into memory that provably dies no later
 ; than the resource — memory owned by the same or an inner with-scope (its
 ; taint scope descends from the value's). Untainted targets (outer locals,
@@ -2703,9 +2703,9 @@
     (let (row-bytes:i64 (as i64 (* 4 (+ lb 1)))
           prev:ptr:i32 (as ptr:i32 (malloc row-bytes))
           cur:ptr:i32 (as ptr:i32 (malloc row-bytes)))
-      (dotimes (j (+ lb 1)) (aset! prev j j))
+      (dotimes (j (+ lb 1)) (set! (aref prev j) j))
       (dotimes (i0 la)
-        (aset! cur 0 (+ i0 1))
+        (set! (aref cur 0) (+ i0 1))
         (dotimes (j0 lb)
           (let (cost:i32 (if (= (char-at a i0:i64) (char-at b j0:i64)) 0 1)
                 d:i32 (+ (aref prev j0) cost)
@@ -2713,8 +2713,8 @@
                 del:i32 (+ (aref prev (+ j0 1)) 1))
             (when (< ins d) (set! d ins))
             (when (< del d) (set! d del))
-            (aset! cur (+ j0 1) d)))
-        (dotimes (j (+ lb 1)) (aset! prev j (aref cur j))))
+            (set! (aref cur (+ j0 1)) d)))
+        (dotimes (j (+ lb 1)) (set! (aref prev j) (aref cur j))))
       (set! result (aref prev lb))
       (free (as ptr prev))
       (free (as ptr cur)))
@@ -2740,8 +2740,8 @@
     (let (sp:ptr (binding-usable-spelling kind payload bare))
       (when (= sp null) (return))
       (when (= (strcmp sp:CStr name) 0) (return))
-      (aset! bestd 0 d)
-      (aset! best 0 sp))))
+      (set! (aref bestd 0) d)
+      (set! (aref best 0) sp))))
 
 ; The closest registered spelling to `name`, or null when nothing is close
 ; enough (see name-suggest-limit). Searched over the same four registries
@@ -2952,7 +2952,7 @@
       (let (buf:ptr (malloc (+ sz 1)))
         (when (= buf null) (fclose f) (return 0))
         (let (nr:i64 (fread buf (as i64 1) sz f))
-          (aset! (as ptr:i8 buf) nr 0)
+          (set! (aref (as ptr:i8 buf) nr) 0)
           (fclose f)
           (let (hit:i32 (text-defines-name buf:CStr nr name want-type))
             (free buf)
@@ -3189,18 +3189,24 @@
                                        verb name q:CStr))
                       note:CStr)))))
 
-; Stage 16 (dot-forms.md §3): `.` and `.&` are gone, but they stay RESERVED, so
+; Stage 16 (dot-forms.md §3): the punctuation-named forms are gone, but they stay RESERVED, so
 ; the spelling can never be shadowed and this exact answer always reaches the
 ; user — the shape Stage 14 gave retired `cast` / `ptr+`.
-(defn retired-dot-form-message (name:CStr):ptr
+(defn retired-form-message (name:CStr):ptr
   (when (= (strcmp name ".") 0)
     (return "'.' was retired in Stage 16: use 'get' -- (get p 'field), or head position (p 'field)"))
   (when (= (strcmp name ".&") 0)
     (return "'.&' was retired in Stage 16: use the 2-argument 'addr-of' -- (addr-of p 'field)"))
+  (when (= (strcmp name ".set!") 0)
+    (return "'.set!' was retired in Stage 16: set! takes a place -- (set! (p 'field) v)"))
+  (when (= (strcmp name "ptr-set!") 0)
+    (return "'ptr-set!' was retired in Stage 16: set! takes a place -- (set! (deref p) v)"))
+  (when (= (strcmp name "aset!") 0)
+    (return "'aset!' was retired in Stage 16: set! takes a place -- (set! (aref a i) v)"))
   (return null))
 
 (defn unresolved-name-message (verb:CStr name:CStr):ptr
-  (let (dot-note:ptr (retired-dot-form-message name))
+  (let (dot-note:ptr (retired-form-message name))
     (when (!= dot-note null) (return dot-note)))
   ; Stage 15 B2b: the retired bare `unsafe/` spellings first — the roster names
   ; are reserved, so this cannot shadow a user name, and its answer is exact
@@ -3434,8 +3440,8 @@
             ; does not survive rather than wrapping it silently. `deferror`
             ; constants leave const-lit at 0 — an `Err` is not an int literal.
             (when (!= (sym 'const-lit) 0)
-              (.set! cv 'is-lit 1)
-              (.set! cv 'lit-i64 (sym 'const-lit-i64)))
+              (set! (cv 'is-lit) 1)
+              (set! (cv 'lit-i64) (sym 'const-lit-i64)))
             (return cv)))
         ; After the is-const branch on purpose: a ct-imported `defconst` is a
         ; compile-time SUBSTITUTION with no storage, so it survives the import
@@ -3473,8 +3479,8 @@
           ; Stage 10: the read uses the flow-narrowed view of the binding's
           ; type and carries the binding's escape taint.
           (let (rv:ref:Val (alloc-val (sym-effective-type sym) tmp))
-            (.set! rv 'taint (sym 'taint))
-            (.set! rv 'taint-frame (sym 'taint-frame))
+            (set! (rv 'taint) (sym 'taint))
+            (set! (rv 'taint-frame) (sym 'taint-frame))
             (return rv))))
       (die-at (node-line n line) (undefined-name-message (as CStr (nn 's)))))))
 
@@ -3496,7 +3502,7 @@
     ; loaded `raw` pointer — both carry the ty-raw singleton. See Val.is-nlit.
     (when (= n 'null)
       (let (nv:ref:Val (alloc-val ty-raw "null"))
-        (.set! nv 'is-nlit 1)
+        (set! (nv 'is-nlit) 1)
         (return nv)))
     (when (= n 'true)  (return (alloc-val ty-bool "1")))
     (when (= n 'false) (return (alloc-val ty-bool "0")))
@@ -3522,10 +3528,10 @@
 ; `build-generics` below; a builder may never name the global it initializes.
 (defn add-binop (v:(ref (Vector (ref BinOp))) name:CStr instr:CStr instr-u:CStr is-cmp:i32):void
   (let (op:ptr:BinOp (as ptr:BinOp (arena-alloc (sizeof BinOp))))
-    (.set! op 'name name)
-    (.set! op 'instr instr)
-    (.set! op 'instr-u instr-u)
-    (.set! op 'is-cmp is-cmp)
+    (set! (op 'name) name)
+    (set! (op 'instr) instr)
+    (set! (op 'instr-u) instr-u)
+    (set! (op 'is-cmp) is-cmp)
     (conj v (as ref:BinOp op))))
 
 (defn build-binops ():(ref (Vector (ref BinOp)))
@@ -3668,9 +3674,9 @@
   (when (>= (unsafe/cast i32 (count g-cast-rules)) MAX-CAST-RULES)
     (fprintf stderr "nucleusc: too many defcast rules\n") (exit 1))
   (let (cr:ptr:CastRule (as ptr:CastRule (arena-alloc (sizeof CastRule))))
-    (.set! cr 'from from)
-    (.set! cr 'to to)
-    (.set! cr 'ir-name ir-name)
+    (set! (cr 'from) from)
+    (set! (cr 'to) to)
+    (set! (cr 'ir-name) ir-name)
     (conj g-cast-rules cr)))
 
 (defn lookup-cast-rule (from:(raw Type) to:(raw Type)):?ptr:CastRule
@@ -3909,8 +3915,8 @@
             nb:ptr (coerce-num-val b target line))
         (when (or (= na null) (= nb null)) (return null))
         (let (pair:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
-          (aset! (as ptr:ptr pair) 0 na)
-          (aset! (as ptr:ptr pair) 1 nb)
+          (set! (aref (as ptr:ptr pair) 0) na)
+          (set! (aref (as ptr:ptr pair) 1) nb)
           (return pair))))))
 
 ; Stage 14 NS-2 (design/stage14/native-strings.md): the `ptr` (char*) operand
@@ -4389,7 +4395,7 @@
     (let (type-node:(raw Node) (node-at cc 1))
       (let (dst:(raw Type) (parse-type-from-node type-node (type-node 'line))
             ; TC-2 want channel: `as` NAMES a type at this position, exactly as a
-            ; let/with binding, a `set!` target, a `return` or a `.set!` field
+            ; let/with binding, a `set!` target or place, a `return` or a field
             ; does — so it must arm `g-want-type` for its operand. It was the one
             ; declared-type position missing from that list, and the omission is
             ; not academic: a return-only-tyvar generic in operand position
@@ -4590,12 +4596,12 @@
           ; the prescan records the bind with it OFF and emission arrives later
           ; with it ON. Upgrade rather than ignore, or a private prefixed import
           ; loses its permission to the earlier record.
-          (when (!= g-import-include-private 0) (.set! e 'private 1))
+          (when (!= g-import-include-private 0) (set! (e 'private) 1))
           (return))))
     (let (rec:ref:ImportBind (new ImportBind))
-      (.set! rec 'prefix prefix)
-      (.set! rec 'path path)
-      (.set! rec 'private g-import-include-private)
+      (set! (rec 'prefix) prefix)
+      (set! (rec 'path) path)
+      (set! (rec 'private) g-import-include-private)
       (conj tbl rec))))
 
 ; The prefixes bound in this file, comma-separated, or null when it binds none.
@@ -4666,16 +4672,16 @@
     (while (!= cur null)
       (let (e:ptr:Node (unsafe/cast ptr:Node cur))
         (when (= (strcmp (e 's) path) 0)
-          (.set! e 'car ns)
+          (set! (e 'car) ns)
           (return))
         (set! cur (e 'cdr)))))
   (let (n:ref:Node (new Node))
-    (.set! n 'kind NODE-STR)
-    (.set! n 'line 0)
-    (.set! n 'i 0)
-    (.set! n 's path)
-    (.set! n 'car ns)
-    (.set! n 'cdr g-file-ns)
+    (set! (n 'kind) NODE-STR)
+    (set! (n 'line) 0)
+    (set! (n 'i) 0)
+    (set! (n 's) path)
+    (set! (n 'car) ns)
+    (set! (n 'cdr) g-file-ns)
     (set! g-file-ns (as ptr n))))
 
 ; The registry key for `bare` in namespace `ns` — the composition `qualify-name`
@@ -4769,29 +4775,29 @@
 ; THE canonicaliser. See the section header for the rules.
 (defn resolve-spelling (spelling:ptr):ref:NameRef
   (let (r:ref:NameRef (new NameRef))
-    (.set! r 'spelling spelling)
-    (.set! r 'qual null)
-    (.set! r 'bare spelling)
-    (.set! r 'ns null)
-    (.set! r 'canonical null)
-    (.set! r 'status NR-BARE)
+    (set! (r 'spelling) spelling)
+    (set! (r 'qual) null)
+    (set! (r 'bare) spelling)
+    (set! (r 'ns) null)
+    (set! (r 'canonical) null)
+    (set! (r 'status) NR-BARE)
     (let (n:i64 (qualifier-len spelling))
       ; Unqualified: the current namespace's key. The caller walks the flattened
       ; set itself, because the *probe* is per-registry and this is not.
       (when (<= n 0)
-        (.set! r 'canonical (qualify-name spelling))
+        (set! (r 'canonical) (qualify-name spelling))
         (return r))
-      (.set! r 'qual (arena-strndup spelling n))
-      (.set! r 'bare (intern-str (arena-strdup (unsafe/ptr+ (as ptr:i8 spelling) (+ n 1)))))
-      (.set! r 'status NR-UNBOUND)
+      (set! (r 'qual) (arena-strndup spelling n))
+      (set! (r 'bare) (intern-str (arena-strdup (unsafe/ptr+ (as ptr:i8 spelling) (+ n 1)))))
+      (set! (r 'status) NR-UNBOUND)
       (cond
         ; A file may always name its own namespace, qualified or not.
         (= (strcmp (r 'qual) g-current-ns) 0)
-          (.set! r 'ns g-current-ns)
+          (set! (r 'ns) g-current-ns)
         ; `user` is the unqualified space and the prelude's namespace; it is
         ; flattened into every file by construction.
         (= (strcmp (r 'qual) "user") 0)
-          (.set! r 'ns (intern-str "user"))
+          (set! (r 'ns) (intern-str "user"))
         ; Stage 15 B2b (§8.3's last row): `unsafe` is a BUILT-IN namespace, bound
         ; as an implicit prefix in every file's environment. Bound *prefixed*, so
         ; it is never flattened — which is what makes bare `cast`/`ptr+`/
@@ -4799,16 +4805,16 @@
         ; as seven hard-coded refusals (UN-5's intent). `(ns unsafe)` stays
         ; rejected because this binding pre-owns the name.
         (= (strcmp (r 'qual) "unsafe") 0)
-          (.set! r 'ns (intern-str "unsafe"))
+          (set! (r 'ns) (intern-str "unsafe"))
         true
           (let (p:ptr (file-prefix-path spelling n))
             (if (!= p null)
-              (.set! r 'ns (import-path-ns p))
+              (set! (r 'ns) (import-path-ns p))
               (when (!= (file-flattens-ns spelling n) 0)
-                (.set! r 'ns (intern-str (r 'qual)))))))
+                (set! (r 'ns) (intern-str (r 'qual)))))))
       (when (= (r 'ns) null) (return r))
-      (.set! r 'status NR-QUALIFIED)
-      (.set! r 'canonical (ns-qualify-in (r 'ns) (r 'bare)))
+      (set! (r 'status) NR-QUALIFIED)
+      (set! (r 'canonical) (ns-qualify-in (r 'ns) (r 'bare)))
       (return r))))
 
 ; ------------------------------------------------------------
@@ -5131,14 +5137,14 @@
         (cond
           ; The namespace divider lowers to the `__` separator.
           (= c 47)
-            (do (aset! (as ptr:i8 s) o 95)
-                (aset! (as ptr:i8 s) (+ o 1) 95)
+            (do (set! (aref (as ptr:i8 s) o) 95)
+                (set! (aref (as ptr:i8 s) (+ o 1)) 95)
                 (set! o (+ o 2)))
           ok
-            (do (aset! (as ptr:i8 s) o (unsafe/cast i8 c)) (set! o (+ o 1)))
+            (do (set! (aref (as ptr:i8 s) o) (unsafe/cast i8 c)) (set! o (+ o 1)))
           true
-            (do (aset! (as ptr:i8 s) o 95) (set! o (+ o 1))))))
-    (aset! (as ptr:i8 s) o 0)
+            (do (set! (aref (as ptr:i8 s) o) 95) (set! o (+ o 1))))))
+    (set! (aref (as ptr:i8 s) o) 0)
     (return s)))
 
 ; Record `prefix` (already sanitized + interned) as the ir-prefix for the
@@ -5151,11 +5157,11 @@
     (dotimes (i (unsafe/cast i32 (count tbl)))
       (let (e:ref:NsPrefixEntry (invoke tbl i:usize))
         (when (= (e 'ns) ns)
-          (.set! e 'prefix prefix)
+          (set! (e 'prefix) prefix)
           (return))))
     (let (rec:ref:NsPrefixEntry (new NsPrefixEntry))
-      (.set! rec 'ns ns)
-      (.set! rec 'prefix prefix)
+      (set! (rec 'ns) ns)
+      (set! (rec 'prefix) prefix)
       (conj tbl rec))))
 
 ; The recorded ir-prefix for (interned) namespace `ns`, or null if none was set.
@@ -5179,8 +5185,8 @@
     (set! g-fn-attr-table (vector-new-in (addr-of g-arena-alloc))))
   (let (tbl:(ref (Vector (ref FnAttrEntry))) (unsafe/cast (ref (Vector (ref FnAttrEntry))) g-fn-attr-table))
     (let (rec:ref:FnAttrEntry (new FnAttrEntry))
-      (.set! rec 'name name)
-      (.set! rec 'attr attr)
+      (set! (rec 'name) name)
+      (set! (rec 'attr) attr)
       (conj tbl rec))))
 
 ; Stage 14 AVR-5: append every recorded string attribute for the (interned) source
@@ -5297,10 +5303,10 @@
     (let (n:i32 (+ (unsafe/cast i32 (count tbl)) 1)
           base:ptr (path-basename-token path)
           pf:ref:PrivFile (new PrivFile))
-      (.set! pf 'path (intern-str path))
-      (.set! pf 'ns (intern-str (fmt-i32 "#p%d" n)))
-      (.set! pf 'prefix (intern-str (fmt-sd "%s_p%d" base n)))
-      (.set! pf 'names (vector-new-in (addr-of g-arena-alloc)))
+      (set! (pf 'path) (intern-str path))
+      (set! (pf 'ns) (intern-str (fmt-i32 "#p%d" n)))
+      (set! (pf 'prefix) (intern-str (fmt-sd "%s_p%d" base n)))
+      (set! (pf 'names) (vector-new-in (addr-of g-arena-alloc)))
       (ns-ir-prefix-set (pf 'ns) (pf 'prefix))
       (conj tbl pf)
       ; A path that previously answered "owns no private names" now owns some.
@@ -5387,8 +5393,8 @@
         (let (pn:ref:PrivName (invoke (p 'names) i:usize))
           (when (= (pn 'bare) name) (return (pn 'key)))))
       (let (pn:ref:PrivName (new PrivName))
-        (.set! pn 'bare (intern-str name))
-        (.set! pn 'key (intern-str (fmt-2s "%s/%s" (p 'ns) name)))
+        (set! (pn 'bare) (intern-str name))
+        (set! (pn 'key) (intern-str (fmt-2s "%s/%s" (p 'ns) name)))
         (conj (p 'names) pn)
         (return (pn 'key))))))
 
@@ -5442,19 +5448,19 @@
         w:i32 (f 'bit-width)
         psd:ptr (arena-alloc (ptr-bytes))
         pidx:ptr (arena-alloc 4))
-    (aset! (as ptr:ptr psd) 0 (as ptr sd))
-    (aset! (as ptr:i32 pidx) 0 (field-ir-index sd idx))
-    (.set! fr 'owner sd)
-    (.set! fr 'index idx)
-    (.set! fr 'type (f 'type))
-    (.set! fr 'psd psd)
-    (.set! fr 'pidx pidx)
+    (set! (aref (as ptr:ptr psd) 0) (as ptr sd))
+    (set! (aref (as ptr:i32 pidx) 0) (field-ir-index sd idx))
+    (set! (fr 'owner) sd)
+    (set! (fr 'index) idx)
+    (set! (fr 'type) (f 'type))
+    (set! (fr 'psd) psd)
+    (set! (fr 'pidx) pidx)
     ; BF-2: a bit-field's own step is a byte offset, not a member index, so it
     ; contributes no level to the chain.
-    (.set! fr 'depth (if (> w 0) 0 1))
-    (.set! fr 'bit-width w)
-    (.set! fr 'bf-signed (f 'bf-signed))
-    (.set! fr 'bit-offset (if (!= w 0) (field-bit-offset sd idx) 0))
+    (set! (fr 'depth) (if (> w 0) 0 1))
+    (set! (fr 'bit-width) w)
+    (set! (fr 'bf-signed) (f 'bf-signed))
+    (set! (fr 'bit-offset) (if (!= w 0) (field-bit-offset sd idx) 0))
     (return (as ptr:FieldRef fr))))
 
 ; ============================================================
@@ -5478,7 +5484,7 @@
 ; A union's members all sit at offset 0, so that level contributes no GEP.
 (defn member-field-ref (sd:(raw StructDef) j:i32):ptr:FieldRef
   (let (fr:ptr:FieldRef (make-field-ref sd j))
-    (when (!= (sd 'is-union) 0) (.set! fr 'depth 0))
+    (when (!= (sd 'is-union) 0) (set! (fr 'depth) 0))
     (return fr)))
 
 ; Prepend the step through anonymous member `i` of `sd` to `sub`'s GEP chain.
@@ -5488,22 +5494,22 @@
         d:i32 (+ (sub 'depth) 1)
         psd:ptr (arena-alloc (* (ptr-bytes) (as i64 d)))
         pidx:ptr (arena-alloc (as i64 (* 4 d))))
-    (aset! (as ptr:ptr psd) 0 (as ptr sd))
-    (aset! (as ptr:i32 pidx) 0 (field-ir-index sd i))
+    (set! (aref (as ptr:ptr psd) 0) (as ptr sd))
+    (set! (aref (as ptr:i32 pidx) 0) (field-ir-index sd i))
     (dotimes (j (sub 'depth))
-      (aset! (as ptr:ptr psd) (+ j 1) (aref (as ptr:ptr (sub 'psd)) j))
-      (aset! (as ptr:i32 pidx) (+ j 1) (aref (as ptr:i32 (sub 'pidx)) j)))
+      (set! (aref (as ptr:ptr psd) (+ j 1)) (aref (as ptr:ptr (sub 'psd)) j))
+      (set! (aref (as ptr:i32 pidx) (+ j 1)) (aref (as ptr:i32 (sub 'pidx)) j)))
     ; `owner` is read for one question — is the load packed — so a packed level
     ; anywhere in the chain has to win it.
-    (.set! fr 'owner (if (!= (sd 'packed) 0) sd (sub 'owner)))
-    (.set! fr 'index (sub 'index))
-    (.set! fr 'type (sub 'type))
-    (.set! fr 'psd psd)
-    (.set! fr 'pidx pidx)
-    (.set! fr 'depth d)
-    (.set! fr 'bit-width (sub 'bit-width))
-    (.set! fr 'bf-signed (sub 'bf-signed))
-    (.set! fr 'bit-offset (sub 'bit-offset))
+    (set! (fr 'owner) (if (!= (sd 'packed) 0) sd (sub 'owner)))
+    (set! (fr 'index) (sub 'index))
+    (set! (fr 'type) (sub 'type))
+    (set! (fr 'psd) psd)
+    (set! (fr 'pidx) pidx)
+    (set! (fr 'depth) d)
+    (set! (fr 'bit-width) (sub 'bit-width))
+    (set! (fr 'bf-signed) (sub 'bf-signed))
+    (set! (fr 'bit-offset) (sub 'bit-offset))
     (return (as ptr:FieldRef fr))))
 
 ; Depth-first search for `fname` through `sd`'s anonymous members, counting
@@ -5520,7 +5526,7 @@
                     j:i32 (struct-field-index (as raw:StructDef (it 'sdef)) fname))
                 (if (>= j 0)
                   (do
-                    (aset! out-n 0 (+ (aref out-n 0) 1))
+                    (set! (aref out-n 0) (+ (aref out-n 0) 1))
                     (when (= found null)
                       (set! found (field-ref-outer sdd i (member-field-ref inner j)))))
                   (let (sub:?ptr:FieldRef (anon-field-ref inner fname out-n))
@@ -5680,18 +5686,18 @@
     (let (k:i32 ((as ptr:Type pt) 'kind))
       (when (and (!= k TY-STRUCT) (!= k TY-UNION)) (return p))
       (let (rt:ref:Type (make-type TY-PTR))
-        (.set! rt 'elem pt)
-        (.set! rt 'pkind PTR-REF)
+        (set! (rt 'elem) pt)
+        (set! (rt 'pkind) PTR-REF)
         (let (mv:ptr:Val (as ptr:Val (tc3-materialize (as raw:Val p) (as raw:Type rt)
                                                       (as raw:Type pt) line)))
           ; The copy is frame storage, so a pointer into it must not outlive the
           ; frame — the rule emit-addr-of applies to any alloca it hands out.
           (when (= (mv 'taint) null)
-            (.set! mv 'taint (as raw:Scope scope))
-            (.set! mv 'taint-frame 1))
+            (set! (mv 'taint) (as raw:Scope scope))
+            (set! (mv 'taint-frame) 1))
           (return (as ref:Val mv)))))))
 
-; SV-1's other half. `.set!` and `.&` need the receiver's own STORAGE, not a
+; SV-1's other half. A member place and `addr-of` need the receiver's own STORAGE, not a
 ; copy, so they take exactly what `addr-of` takes — a binding, whose slot is
 ; used directly. A temporary stays an error: the store would land in something
 ; about to be discarded.
@@ -5704,14 +5710,14 @@
             (when (!= (sym 'moved) 0)
               (die-at (node-line rnode line) (fmt-s "use after move: '%s'" (rn 's))))
             (let (rt:ref:Type (make-type TY-PTR))
-              (.set! rt 'elem (sym 'type))
-              (.set! rt 'pkind PTR-REF)
+              (set! (rt 'elem) (sym 'type))
+              (set! (rt 'pkind) PTR-REF)
               (let (rv:ptr:Val (as ptr:Val (alloc-val rt (sym 'ir-name))))
-                (.set! rv 'taint (sym 'taint))
-                (.set! rv 'taint-frame (sym 'taint-frame))
+                (set! (rv 'taint) (sym 'taint))
+                (set! (rv 'taint-frame) (sym 'taint-frame))
                 (when (and (= (sym 'taint) null) (!= (sym 'home) g-globals))
-                  (.set! rv 'taint (sym 'home))
-                  (.set! rv 'taint-frame 1))
+                  (set! (rv 'taint) (sym 'home))
+                  (set! (rv 'taint-frame) 1))
                 (return (as ref:Val rv))))))
         0))
     (let (p:ref:Val (emit-node rnode scope)
@@ -5861,9 +5867,9 @@
               k:i32 (- nf 1))
           (while (>= k 0)
             (let (fsym-node:ref:Node (alloc-node))
-              (.set! fsym-node 'kind NODE-SYM)
-              (.set! fsym-node 'line line)
-              (.set! fsym-node 's ((field-at (sdd 'fields) k) 'name))
+              (set! (fsym-node 'kind) NODE-SYM)
+              (set! (fsym-node 'line) line)
+              (set! (fsym-node 's) ((field-at (sdd 'fields) k) 'name))
               (let (fsym:CStr (emit-quote-tree fsym-node)
                     cmp:ptr (new-tmp))
                 (fprintf g-body-stream "  %s = icmp eq ptr %s, %s\n" cmp (sel 'val) fsym)
@@ -6001,7 +6007,7 @@
                   bound:ptr (arena-alloc (* (+ ntv 1) (ptr-bytes)))
                   ptn:(raw Node) (binding-type-node (node-at params-node 0)))
               (when (!= ptn null)
-                (dotimes (k ntv) (aset! (as ptr:ptr bound) k null))
+                (dotimes (k ntv) (set! (aref (as ptr:ptr bound) k) null))
                 (when (!= (unify-tpat ptn ct (m 'tyvars) ntv bound
                                       ((m 'body) 'line)) 0)
                   (return 1))))))))
@@ -6031,8 +6037,8 @@
       ; --- Branch A: literal-symbol selector (unchanged field-access path) ---
       (when (!= g null)
         (let (argtypes:ptr (arena-alloc (* 2 (ptr-bytes))))
-          (aset! (as ptr:ptr argtypes) 0 ct)
-          (aset! (as ptr:ptr argtypes) 1 ty-ptr)
+          (set! (aref (as ptr:ptr argtypes) 0) ct)
+          (set! (aref (as ptr:ptr argtypes) 1) ty-ptr)
           (let (m:?ptr:Method (generic-find-method-exact g argtypes 2))
             (when (!= m null)
               (let (sel-val:ref:Val (emit-selector-value sel-node scope)
@@ -6045,8 +6051,8 @@
         (let (sel-val:ref:Val (emit-node sel-node scope)
               kt:(raw Type) (sel-val 'type)
               argtypes:ptr (arena-alloc (* 2 (ptr-bytes))))
-          (aset! (as ptr:ptr argtypes) 0 ct)
-          (aset! (as ptr:ptr argtypes) 1 kt)
+          (set! (aref (as ptr:ptr argtypes) 0) ct)
+          (set! (aref (as ptr:ptr argtypes) 1) kt)
           (let (m:?ptr:Method (generic-resolve-nullable g argtypes 2 line))
             ; Stage 14 NS-3 (design/stage14/native-strings.md): a string-literal key
             ; is an unmaterialized StrView. `generic-resolve-nullable` matches keys
@@ -6060,8 +6066,8 @@
             (when (and (= m null)
                        (!= (sel-val 'is-lit) 0)
                        (!= (type-is-strview kt) 0))
-              (.set! sel-val 'type ty-cstr)
-              (aset! (as ptr:ptr argtypes) 1 ty-cstr)
+              (set! (sel-val 'type) ty-cstr)
+              (set! (aref (as ptr:ptr argtypes) 1) ty-cstr)
               (set! m (generic-resolve-nullable g argtypes 2 line)))
             (when (!= m null)
               (let (args:ptr (arena-alloc (* 2 (sizeof Val))))
@@ -6106,14 +6112,14 @@
     (when (!= (boxedfn-canonical (cv 'type)) null)
       (return (emit-box-invoke n scope callee-val arg-start nargs)))
     (memcpy (unsafe/ptr+ (as ptr:Val args) 0) cv (sizeof Val))
-    (aset! (as ptr:ptr argtypes) 0 (cv 'type))
-    (aset! (as ptr:ptr arg-nodes) 0 null)
+    (set! (aref (as ptr:ptr argtypes) 0) (cv 'type))
+    (set! (aref (as ptr:ptr arg-nodes) 0) null)
     (dotimes (i nargs)
       (let (anode:(raw Node) (node-at n (+ arg-start i))
                       v:ref:Val (emit-node anode scope))
         (memcpy (unsafe/ptr+ (as ptr:Val args) (+ i 1)) v (sizeof Val))
-        (aset! (as ptr:ptr argtypes) (+ i 1) (v 'type))
-        (aset! (as ptr:ptr arg-nodes) (+ i 1) anode)))
+        (set! (aref (as ptr:ptr argtypes) (+ i 1)) (v 'type))
+        (set! (aref (as ptr:ptr arg-nodes) (+ i 1)) anode)))
     (let (g:(raw Generic) (generic-lookup "invoke"))
       ; Stage 15 W7: no `invoke` method accepts this receiver, but the callee may
       ; still answer through `get` — a `HashMap` exposes its lookup as `get` and
@@ -6255,10 +6261,10 @@
         ; the same decay a read of an array-typed slot performs, so the result
         ; is directly `aref`-able. The alloca's own IR type stays `[N x T]`.
         (if (= ((unsafe/cast ptr:Type ty) 'kind) TY-ARRAY)
-          (.set! pt 'elem ((unsafe/cast ptr:Type ty) 'elem))
-          (.set! pt 'elem ty))
+          (set! (pt 'elem) ((unsafe/cast ptr:Type ty) 'elem))
+          (set! (pt 'elem) ty))
         ; alloca always yields a valid, non-null stack address (ref T).
-        (.set! pt 'pkind PTR-REF)
+        (set! (pt 'pkind) PTR-REF)
         (if (= (node-len cc) 3)
           (let (nv:ref:Val (emit-node (node-at cc 2) scope))
             (fprintf g-body-stream "  %s = alloca %s, i32 %s, align %d\n"
@@ -6314,22 +6320,22 @@
 
 (defn emit-aset (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:(raw Node) call)
-    (when (!= (node-len cc) 4) (die-at (cc 'line) "aset! expects 3 args"))
+    (when (!= (node-len cc) 4) (die-at (cc 'line) "set!: (aref a i) place expects an index and a value"))
     (let (p:ref:Val (emit-node (node-at cc 1) scope))
       (when (or (!= ((p 'type) 'kind) TY-PTR)
               (= ((p 'type) 'elem) null))
-        (die-at (cc 'line) "aset!: operand must be typed pointer"))
-      (require-derefable (p 'type) (cc 'line) "aset!")
+        (die-at (cc 'line) "set!: (aref a i) place: operand must be typed pointer"))
+      (require-derefable (p 'type) (cc 'line) "set!")
       (let (idx:ref:Val (emit-node (node-at cc 2) scope))
         (when (= (is-int-type (idx 'type)) 0)
-          (die-at (cc 'line) "aset!: index must be integer"))
+          (die-at (cc 'line) "set!: (aref a i) place: index must be integer"))
         (let (idxp:ptr (gep-index-ir idx))
           (let (elem:(raw Type) ((p 'type) 'elem)
                 v:ref:Val (emit-node (node-at cc 3) scope)
                 coerced:ptr (coerce-int-val v elem (cc 'line)))
             (when (= coerced null)
-              (die-at (cc 'line) "aset!: value type mismatch"))
-            (taint-store-check p v (cc 'line) "aset!")
+              (die-at (cc 'line) "set!: (aref a i) place: value type mismatch"))
+            (taint-store-check p v (cc 'line) "set!")
             (let (cv:ptr:Val (unsafe/cast ptr:Val coerced)
                   gep:ptr (new-tmp))
               (fprintf g-body-stream
@@ -6377,17 +6383,17 @@
         (when (= ((sym 'type) 'kind) TY-FN)
           (die-at (node-line (as ptr target) (cc 'line)) (fmt-s "addr-of: cannot take address of function '%s'" (target 's))))
         (let (pt:ref:Type (make-type TY-PTR))
-          (.set! pt 'elem (sym 'type))
+          (set! (pt 'elem) (sym 'type))
           ; The address of a binding's slot is always a valid, non-null address,
           ; so (addr-of x) is a (ref T) — it flows into ref/ptr slots directly.
-          (.set! pt 'pkind PTR-REF)
+          (set! (pt 'pkind) PTR-REF)
           ; The slot address reaches the same resource the binding does, so it
           ; carries the binding's escape taint (lifecycle.md §2.2).
           (let (rv:ref:Val (alloc-val pt (sym 'ir-name))
                 sym-kind:i32 ((sym 'type) 'kind))
             ; The slot address reaches the same resource the binding does, so it
             ; inherits the binding's existing (with-owned) escape taint, if any.
-            (.set! rv 'taint (sym 'taint))
+            (set! (rv 'taint) (sym 'taint))
             ; Stage 13 L1 (lambda.md §"Lifetime and escape analysis"):
             ; taking the address of *frame-local storage* taints the resulting
             ; pointer with the region (Scope*) the storage lives in, so it
@@ -6410,8 +6416,8 @@
             (when (and (= (sym 'taint) null)
                        (!= (sym 'home) g-globals)
                        (!= sym-kind TY-PTR) (!= sym-kind TY-FN))
-              (.set! rv 'taint (sym 'home))
-              (.set! rv 'taint-frame 1))
+              (set! (rv 'taint) (sym 'home))
+              (set! (rv 'taint-frame) 1))
             (return rv)))))))
 
 (defn emit-funcall-void (call:(raw Node) scope:ref:Scope):ref:Val
@@ -6569,7 +6575,7 @@
       (let (arglist:ptr (alloca i8 2048)
             apos:i64 0
             ret-info:raw:AbiInfo (abi-classify ret-type))
-        (aset! (as ptr:i8 arglist) 0 0)
+        (set! (aref (as ptr:i8 arglist) 0) 0)
         (abi-args-begin ret-info)
         (set! i 0)
         (while (< i nargs)
@@ -6584,8 +6590,8 @@
                 (let (d:ptr (new-tmp))
                   (fprintf g-body-stream "  %s = extractvalue %s %s, 0\n"
                     d (type-to-ir (av 'type)) (av 'val))
-                  (.set! av 'type ty-ptr)
-                  (.set! av 'val d)))
+                  (set! (av 'type) ty-ptr)
+                  (set! (av 'val) d)))
               (vararg-promote (as ptr av) (cc 'line)))
             (let (w:i32 (snprintf (unsafe/ptr+ (as ptr:i8 arglist) apos)
                                   (- 2048 apos)
@@ -6655,18 +6661,18 @@
 
 (defn emit-ptr-set (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:(raw Node) call)
-    (when (!= (node-len cc) 3) (die-at (cc 'line) "ptr-set! expects 2 args"))
+    (when (!= (node-len cc) 3) (die-at (cc 'line) "set!: (deref p) place expects a value"))
     (let (p:ref:Val (emit-node (node-at cc 1) scope))
       (when (or (!= ((p 'type) 'kind) TY-PTR)
               (= ((p 'type) 'elem) null))
-        (die-at (cc 'line) "ptr-set!: operand must be typed pointer"))
-      (require-derefable (p 'type) (cc 'line) "ptr-set!")
+        (die-at (cc 'line) "set!: (deref p) place: operand must be typed pointer"))
+      (require-derefable (p 'type) (cc 'line) "set!")
       (let (elem:(raw Type) ((p 'type) 'elem)
             v:ref:Val (emit-node (node-at cc 2) scope)
             coerced:ptr (coerce-int-val v elem (cc 'line)))
         (when (= coerced null)
-          (die-at (cc 'line) "ptr-set!: value type mismatch"))
-        (taint-store-check p v (cc 'line) "ptr-set!")
+          (die-at (cc 'line) "set!: (deref p) place: value type mismatch"))
+        (taint-store-check p v (cc 'line) "set!")
         (let (cv:ptr:Val (unsafe/cast ptr:Val coerced))
           (emit-store (type-to-ir elem) (cv 'val) (p 'val) elem)
           (return (alloc-val ty-void null)))))))
@@ -6682,8 +6688,8 @@
 
 ; TC-5 part 2 (int-widening.md LW-6 follow-up): emit-field-set lives here, after
 ; the union-emit import, specifically so its value expression can go through
-; union-target-rewrite — a bare union-construction shorthand in `.set!`'s value
-; position (`(.set! s f (some 5))`) needs the same target-typing let/with/return/
+; union-target-rewrite — a bare union-construction shorthand in a member place's
+; value position (`(set! (s 'f) (some 5))`) needs the same target-typing let/with/return/
 ; if/cond/match value tails already get. Moved out of its original position
 ; (just after emit-field-load, above) because nucleusc.nuc's own whole-unit
 ; prescan makes a same-file forward call work regardless of order, but a
@@ -6700,7 +6706,7 @@
                    ((pt 'elem) 'kind)
                    TY-VOID))
       (when (and (!= ek TY-STRUCT) (!= ek TY-UNION))
-        (die-at (cc 'line) ".set!: operand must be a struct or union, or a pointer to one"))
+        (die-at (cc 'line) "set!: operand must be a struct or union, or a pointer to one"))
       (require-derefable pt (cc 'line) ".set!")
       ; The read paths' selector rule, so a bare and a quoted field name mean the
       ; same thing at every member form (dot-forms.md §5 phase 0).
@@ -6719,7 +6725,7 @@
             (set! afr (struct-field-ref sd (fn-node 's)))
             (when (= afr null)
               (die-at (node-line (as ptr fn-node) (cc 'line))
-                (fmt-2s ".set!: no field '%s' on struct '%s'" (fn-node 's) (sd 'name))))
+                (fmt-2s "set!: no field '%s' on struct '%s'" (fn-node 's) (sd 'name))))
             (reject-anon-ambiguous (fn-node 's) (sd 'name)
                                    (node-line (as ptr fn-node) (cc 'line)) ".set!"))
           ; Stage 15 W8 G-2: an array field is not assignable as a whole, exactly
@@ -6728,7 +6734,7 @@
           ; with a generic "type mismatch" that does not say why.
           (reject-array-type (if (!= afr null) (afr 'type) ((field-at (sd 'fields) idx) 'type))
             (node-line (as ptr fn-node) (cc 'line))
-            (fmt-s ".set!: field '%s'" (fn-node 's)))
+            (fmt-s "set!: field '%s'" (fn-node 's)))
           (let (ftype:ptr (if (!= afr null) (afr 'type) ((field-at (sd 'fields) idx) 'type))
                 ; TC-2: arm the want channel with the field's type so a generic
                 ; constructor stored into a field infers a return-only tyvar.
@@ -6743,7 +6749,7 @@
                 coerced:ptr (coerce-int-val v ftype (cc 'line)))
             (when (= coerced null)
               (die-at (cc 'line)
-                (fmt-3s ".set!: type mismatch for field '%s': value is %s, field is %s"
+                (fmt-3s "set!: type mismatch for field '%s': value is %s, field is %s"
                   (fn-node 's) (type-display (v 'type)) (type-display ftype))))
             (taint-store-check p v (cc 'line) ".set!")
             (let (cv:ptr:Val (unsafe/cast ptr:Val coerced))
@@ -6914,8 +6920,8 @@
                (!= (type-eq ((slot 'type) 'elem) ptype) 0))
       (let (fc:ptr (new-tmp))
         (emit-load fc (type-to-ir ptype) (slot 'val) ptype)
-        (.set! slot 'type ptype)
-        (.set! slot 'val fc)))
+        (set! (slot 'type) ptype)
+        (set! (slot 'val) fc)))
     ; Stage 10: pointer-kind contract on arguments — raw/Maybe may
     ; not flow into a (ref T) parameter. Checked independently of the
     ; coercion below, which answers about type identity, not contract.
@@ -7024,8 +7030,8 @@
                   (set! prev-name cell))))
             ; Place list ptr as the trailing arg slot at index `fixed`.
             (let (slot:ptr:Val (as ptr:Val (unsafe/ptr+ (as ptr:Val args) fixed)))
-              (.set! slot 'type ty-ptr)
-              (.set! slot 'val prev-name))
+              (set! (slot 'type) ty-ptr)
+              (set! (slot 'val) prev-name))
             (set! eff-nargs (+ fixed 1)))))
       ; Stage 8 implicit casts: coerce each fixed argument whose IR type differs
       ; from its parameter's via safe-coerce-val (int widen, f32→f64, defcast).
@@ -7048,7 +7054,7 @@
             ; Reused verbatim by the non-variadic call path further down, so
             ; the return is still classified exactly once.
             call-ret-info:raw:AbiInfo (abi-classify (ft0 'ret)))
-        (aset! (as ptr:i8 arglist) 0 0)
+        (set! (aref (as ptr:i8 arglist) 0) 0)
         ; RV-6c: one walk over this call's arguments, in order — reset the
         ; riscv64 register budget before it (design/stage14/riscv-fp-abi.md §4).
         (abi-args-begin call-ret-info)
@@ -7081,8 +7087,8 @@
             (let (d:ptr (new-tmp))
               (fprintf g-body-stream "  %s = extractvalue %s %s, 0\n"
                 d (type-to-ir (av 'type)) (av 'val))
-              (.set! av 'type ty-ptr)
-              (.set! av 'val d)))
+              (set! (av 'type) ty-ptr)
+              (set! (av 'val) d)))
           (when (and (!= (ft0 'variadic) 0) (>= i (ft0 'num-params)))
             (vararg-promote (as ptr av) (cc 'line)))
           ; abi-arg-frag returns "<ty> <val>" for scalars/pointers (unchanged),
@@ -7206,10 +7212,10 @@
   (let (bdt:ptr (boxedfn-drop-target ty))
     (when (!= bdt null)
       (let (m:ref:Method (new Method))
-        (.set! m 'ir-name "@__boxedfn_drop")
-        (.set! m 'ret-type ty-void)
-        (.set! m 'kind METHOD-USER)
-        (.set! m 'num-params 1)
+        (set! (m 'ir-name) "@__boxedfn_drop")
+        (set! (m 'ret-type) ty-void)
+        (set! (m 'kind) METHOD-USER)
+        (set! (m 'num-params) 1)
         (return m))))
   (let (tt:(raw Type) ty
         sd:(raw StructDef) null
@@ -7224,8 +7230,8 @@
             (set! qty ty)))
       (= (tt 'kind) TY-STRUCT)
         (let (pt:ref:Type (make-type TY-PTR))
-          (.set! pt 'elem tt)
-          (.set! pt 'pkind PTR-REF)
+          (set! (pt 'elem) tt)
+          (set! (pt 'pkind) PTR-REF)
           (set! sd (tt 'sdef))
           (set! qty pt))
       true (return null))
@@ -7234,7 +7240,7 @@
     (let (g:(raw Generic) (generic-lookup "drop"))
       (when (= g null) (return null))
       (let (argtypes:ptr (arena-alloc (ptr-bytes)))
-        (aset! (as ptr:ptr argtypes) 0 qty)
+        (set! (aref (as ptr:ptr argtypes) 0) qty)
         (let (exact:?ptr:Method (generic-find-method-exact g argtypes 1))
           (when (!= exact null) (return exact))
           ; Parametric drop (METHOD-GENERIC): resolve+instantiate for this
@@ -7272,7 +7278,7 @@
   (let (cc:(raw Node) call)
     (when (!= (node-len cc) 2) (die-at (cc 'line) "defer expects 1 expression"))
     (let (cl:ref:Cleanup (new Cleanup))
-      (ptr-set! cl (Cleanup-defer (node-at cc 1) scope))
+      (set! (deref cl) (Cleanup-defer (node-at cc 1) scope))
       (scope-push-cleanup scope cl)
       (return (alloc-val ty-void null)))))
 
@@ -7379,7 +7385,7 @@
               ; COLLECT mode (`vfn`/`mfn`/`cfn`): record the capture once.
               (let (head:ptr (deref cap-box))
                 (when (= (fn-bound-has head name) 0)
-                  (ptr-set! cap-box (import-list-push head name))))))
+                  (set! (deref cap-box) (import-list-push head name))))))
           0))
       (return))
     (when (!= (nn 'kind) NODE-CELL) (return))
@@ -7396,10 +7402,6 @@
         ; Field access: index-2 operand is a literal field name, not a value.
         (when (= (strcmp h "_get") 0)
           (fn-capture-walk (node-at node 1) scope bound cap-box line)
-          (return))
-        (when (= (strcmp h ".set!") 0)
-          (fn-capture-walk (node-at node 1) scope bound cap-box line)
-          (fn-capture-walk (node-at node 3) scope bound cap-box line)
           (return))
         ; let / with: init expressions evaluate in the pre-binding scope (a
         ; capture there is still a capture); the body sees the extended set.
@@ -7430,9 +7432,9 @@
                   (fn-capture-walk (node-at node j) scope inner-bound cap-box line)
                   (inc! j)))))
           (return))
-        ; Ordinary form: the head symbol is a call/special-form name, not a value
-        ; reference, so skip it; walk every argument.
-        (let (i:i32 1)
+        ; Ordinary form. Walk the head too: head position is a value position now
+        ; (member-access receiver, callable value), and `is-local` keeps globals out.
+        (let (i:i32 0)
           (while (< i (node-len node))
             (fn-capture-walk (node-at node i) scope bound cap-box line)
             (inc! i)))))))
@@ -7498,8 +7500,8 @@
                                                          (node-line (node-at params-node pi) line)))
             (when (= pty null)
                   (die-at line (fmt-s "fn: missing :type on param '%s'" pname)))
-            (aset! (as ptr:ptr param-types) pi pty)
-            (aset! (as ptr:ptr param-names) pi pname)))
+            (set! (aref (as ptr:ptr param-types) pi) pty)
+            (set! (aref (as ptr:ptr param-names) pi) pname)))
         ; Fresh IR-legal lifted name (no `!`/`?`; routed through sanitize-for-ir
         ; for safety). Deterministic counter rather than runtime gensym so the
         ; name is stable across the analysis.
@@ -7512,12 +7514,12 @@
           ; the identical ir-name (`@<lifted>` — defn-ir-name's solitary form, the
           ; identity under the user namespace), so the value matches the define.
           (let (ft:ptr:Type (as ptr:Type (make-type TY-FN)))
-            (.set! ft 'ret ret)
+            (set! (ft 'ret) ret)
             (type-set-params ft param-types nparams)
-            (.set! ft 'variadic 0)
-            (.set! ft 'has-rest 0)
-            (.set! ft 'nopt 0)
-            (.set! ft 'opt-defaults null)
+            (set! (ft 'variadic) 0)
+            (set! (ft 'has-rest) 0)
+            (set! (ft 'nopt) 0)
+            (set! (ft 'opt-defaults) null)
             (let (irn:ptr (defn-ir-name lifted param-types nparams ret))
               ; Synthesize the new-style (defn <lifted> (params) <ret> body…) by
               ; consing the defn keyword, the bare lifted name, the params node,
@@ -7571,8 +7573,8 @@
   (let (g:ptr (generic-lookup gname))
     (when (!= g null)
       (let (gg:ptr:Generic (as ptr:Generic g))
-        (.set! gg 'mangled 1)
-        (.set! gg 'finalized 1)))))
+        (set! (gg 'mangled) 1)
+        (set! (gg 'finalized) 1)))))
 
 ; The number of captures collected into the NODE-STR list `caps`.
 (defn fn-caps-count (caps:(raw Node)):i32
@@ -7602,16 +7604,16 @@
 ; integer literal for the allocator align argument in the cfn env drop body.
 (defn fn-make-int-node (v:i64):ptr
   (let (n:ref:Node (alloc-node))
-    (.set! n 'kind NODE-INT)
-    (.set! n 'i v)
+    (set! (n 'kind) NODE-INT)
+    (set! (n 'i) v)
     (return (as ptr n))))
 
 ; Rewrite the lambda body so every reference to a captured enclosing-local
 ; `name` becomes a field access `(_get self 'name)` on the closure environment.
 ; Mirrors fn-capture-walk's position discipline exactly: a name in `bound`
 ; (the lambda's own params / a nested let/with/lambda binding) is left alone, a
-; field-name operand of `.`/`_get`/`.&`/`.set!` is not a value reference, and
-; quoted data is opaque. `caps` is the collected capture-name list; a symbol is
+; field-name operand of `_get` is not a value reference, and quoted data is
+; opaque. `caps` is the collected capture-name list; a symbol is
 ; rewritten iff it is in `caps` and not shadowed by `bound`. Returns a new Node
 ; tree (structure-sharing where nothing was rewritten).
 ; A member access the compiler SYNTHESIZES spells its selector `(quote f)`: a
@@ -7620,6 +7622,16 @@
 (defn quoted-selector (sym:ptr line:i32):ptr
   (return (make-cell (as ptr (intern-symbol "quote"))
                      (make-cell sym null line) line)))
+
+; `(set! <place> <v>)`. A synthesized write goes back through emit-node, so it
+; has to be spelled the way source is now that the three writers are retired.
+(defn set-place-cell (place:ptr v:ptr line:i32):ptr
+  (return (make-cell (as ptr (intern-symbol "set!"))
+                     (make-cell place (make-cell v null line) line) line)))
+
+; `(recv 'f)` — head position, the member place `.set!` used to take apart.
+(defn member-place-cell (recv:ptr sel:ptr line:i32):ptr
+  (return (make-cell recv (make-cell sel null line) line)))
 
 (defn fn-rewrite-captures (node:(raw Node) caps:(raw Node) bound:(raw Node) self-sym:(raw Node) line:i32 mode:i32):ptr
   (when (= node null) (return null))
@@ -7697,25 +7709,11 @@
                         (make-cell (node-at node 2) null line)
                         line)
                       line))))
-        (when (= (strcmp h ".set!") 0)
-          (let (subj:ptr (fn-rewrite-captures (node-at node 1) caps bound self-sym line mode)
-                val:ptr (fn-rewrite-captures (node-at node 3) caps bound self-sym line mode))
-            ; Stage 15 W9 defect 12 (found by the new arity check): the OUTER
-            ; make-cell was missing its `line` argument, so the rewritten
-            ; `.set!` cell of a closure capture took an uninitialized register
-            ; as its line. Every sibling cell here passes `line`.
-            (return (make-cell hd
-                      (make-cell subj
-                        (make-cell (node-at node 2)
-                          (make-cell val null line)
-                          line)
-                        line)
-                      line))))
         ; set! on a captured name: rewrite to a field store so that mutations
         ; of the capture persist across invoke calls (mode 0/1) or write back
         ; through the captured pointer (mode 2 cfn).
-        ; (set! c v) -> mode 0/1: (.set! self c (rewrite v))
-        ;           -> mode 2:   (ptr-set! (_get self 'c) (rewrite v))
+        ; (set! c v) -> mode 0/1: (set! (self 'c) (rewrite v))
+        ;           -> mode 2:   (set! (deref (_get self 'c)) (rewrite v))
         ; A set! whose target is NOT a capture falls through to the generic
         ; rewrite, which leaves the target symbol verbatim (correct).
         (when (and (= (strcmp h "set!") 0) (= (node-len node) 3))
@@ -7738,21 +7736,17 @@
                               line)
                             line))
                     (if (= mode 2)
-                      (return (make-cell (intern-symbol "ptr-set!")
-                                (make-cell field-access
-                                  (make-cell val-rw null line)
-                                  line)
-                                line))
-                      (return (make-cell (intern-symbol ".set!")
-                                (make-cell self-sym
-                                  (make-cell (quoted-selector cname-sym line)
-                                    (make-cell val-rw null line)
-                                    line)
-                                  line)
-                                line)))))))))
+                      (return (set-place-cell
+                                (make-cell (intern-symbol "deref")
+                                  (make-cell field-access null line) line)
+                                val-rw line))
+                      (return (set-place-cell
+                                (member-place-cell self-sym
+                                  (quoted-selector cname-sym line) line)
+                                val-rw line)))))))))
         ; inc!/dec! on a captured name: read-modify-write through the env field.
-        ; (inc! c) -> mode 0/1: (.set! self 'c (+ (_get self 'c) 1))
-        ;         -> mode 2:   (ptr-set! (_get self 'c) (+ (deref (_get self 'c)) 1))
+        ; (inc! c) -> mode 0/1: (set! (self 'c) (+ (_get self 'c) 1))
+        ;         -> mode 2:   (set! (deref (_get self 'c)) (+ (deref (_get self 'c)) 1))
         ; (dec! uses - instead of +). A non-captured target falls through.
         (when (and (or (= (strcmp h "inc!") 0) (= (strcmp h "dec!") 0))
                    (= (node-len node) 2))
@@ -7793,11 +7787,10 @@
                                   (make-cell (fn-make-int-node 1) null line)
                                   line)
                                 line))
-                        (return (make-cell (intern-symbol "ptr-set!")
-                                  (make-cell fa1
-                                    (make-cell arith null line)
-                                    line)
-                                  line)))
+                        (return (set-place-cell
+                                  (make-cell (intern-symbol "deref")
+                                    (make-cell fa1 null line) line)
+                                  arith line)))
                       (let (read-field:ptr
                               (make-cell (intern-symbol "_get")
                                 (make-cell self-sym
@@ -7810,13 +7803,10 @@
                                   (make-cell (fn-make-int-node 1) null line)
                                   line)
                                 line))
-                        (return (make-cell (intern-symbol ".set!")
-                                  (make-cell self-sym
-                                    (make-cell (quoted-selector cname-sym line)
-                                      (make-cell arith null line)
-                                      line)
-                                    line)
-                                  line))))))))))
+                        (return (set-place-cell
+                                  (member-place-cell self-sym
+                                    (quoted-selector cname-sym line) line)
+                                  arith line))))))))))
         ; let / with: init exprs see the outer set; the body sees `bound`
         ; extended by the new binding names (a shadowing binding stops rewrite).
         (when (or (= (strcmp h "let") 0) (= (strcmp h "with") 0))
@@ -7842,10 +7832,10 @@
                           (make-cell params new-body line)
                           line))))
             (return node)))
-        ; Ordinary form: keep the head verbatim, rewrite every argument.
-        (return (make-cell hd
-                  (fn-rewrite-list-rest node caps bound self-sym line mode)
-                  line))))))
+        ; Ordinary form. The head is rewritten too, for the reason fn-capture-walk
+        ; walks it: head position is a value position (member-access receiver,
+        ; callable value). A call to a global is never in `caps`, so it is untouched.
+        (return (fn-rewrite-list node 0 caps bound self-sym line mode))))))
 
 ; Rewrite a Node list (cons spine) element-by-element starting at index `start`,
 ; returning a fresh spine. Used for non-symbol-head forms.
@@ -7857,14 +7847,10 @@
     (while (< i n)
       (let (e:ptr (fn-rewrite-captures (node-at node i) caps bound self-sym line mode)
             cell:ptr (make-cell e null line))
-        (if (= head null) (set! head cell) (.set! (unsafe/cast ptr:Node tail) 'cdr cell))
+        (if (= head null) (set! head cell) (set! ((unsafe/cast ptr:Node tail) 'cdr) cell))
         (set! tail cell))
       (inc! i))
     (return head)))
-
-; The tail spine (args) of a symbol-headed form: indices 1..end, fresh spine.
-(defn fn-rewrite-list-rest (node:(raw Node) caps:(raw Node) bound:(raw Node) self-sym:(raw Node) line:i32 mode:i32):ptr
-  (return (fn-rewrite-list node 1 caps bound self-sym line mode)))
 
 ; A fresh body spine from index `start` (used for let/with/nested-lambda bodies).
 (defn fn-rewrite-list-from (node:(raw Node) start:i32 caps:(raw Node) bound:(raw Node) self-sym:(raw Node) line:i32 mode:i32):ptr
@@ -7882,7 +7868,7 @@
                     (unsafe/cast ptr (node-at binds i))
                     (fn-rewrite-captures (node-at binds i) caps bound self-sym line mode))
             cell:ptr (as ptr (make-cell e null line)))
-        (if (= head null) (set! head cell) (.set! (unsafe/cast ptr:Node tail) 'cdr cell))
+        (if (= head null) (set! head cell) (set! ((unsafe/cast ptr:Node tail) 'cdr) cell))
         (set! tail cell)))
     (return head)))
 
@@ -7890,9 +7876,9 @@
 (defn fn-env-ref-type (sd:(raw StructDef)):ptr
   (let (st:ptr:Type (as ptr:Type (make-type TY-STRUCT))
         pt:ptr:Type (as ptr:Type (make-type TY-PTR)))
-    (.set! st 'sdef sd)
-    (.set! pt 'elem (as ptr st))
-    (.set! pt 'pkind PTR-REF)
+    (set! (st 'sdef) sd)
+    (set! (pt 'elem) (as ptr st))
+    (set! (pt 'pkind) PTR-REF)
     (return (as ptr pt))))
 
 ; Build a `(ptr <Env>)` Type (the synthesized drop's self param mirrors the
@@ -7900,8 +7886,8 @@
 (defn fn-env-ptr-type (sd:(raw StructDef)):ptr
   (let (st:ptr:Type (as ptr:Type (make-type TY-STRUCT))
         pt:ptr:Type (as ptr:Type (make-type TY-PTR)))
-    (.set! st 'sdef sd)
-    (.set! pt 'elem (as ptr st))
+    (set! (st 'sdef) sd)
+    (set! (pt 'elem) (as ptr st))
     (return (as ptr pt))))
 
 ; Register and emit the anonymous closure-environment struct: one field per
@@ -7926,11 +7912,11 @@
     (let (sd:ref:StructDef (register-struct ename)
           fnm:ptr (arena-alloc (* nf (ptr-bytes)))
           ftp:ptr (arena-alloc (* nf (ptr-bytes))))
-      (.set! sd 'src-file g-source-path)
-      (.set! sd 'src-line line)
+      (set! (sd 'src-file) g-source-path)
+      (set! (sd 'src-line) line)
       (when (!= has-alloc 0)
-        (aset! (as ptr:ptr fnm) 0 (intern-str "__alloc"))
-        (aset! (as ptr:ptr ftp) 0 alloc-field-ty))
+        (set! (aref (as ptr:ptr fnm) 0) (intern-str "__alloc"))
+        (set! (aref (as ptr:ptr ftp) 0) alloc-field-ty))
       (let (i:i32 0
             cur:(raw Node) caps)
         (while (!= cur null)
@@ -7943,11 +7929,11 @@
                   ; what (addr-of cap) yields). mode 0/1: the value type as-is.
                   (when (= mode 2)
                     (let (pt:ptr:Type (as ptr:Type (make-type TY-PTR)))
-                      (.set! pt 'elem fty)
-                      (.set! pt 'pkind PTR-REF)
+                      (set! (pt 'elem) fty)
+                      (set! (pt 'pkind) PTR-REF)
                       (set! fty (as ptr pt))))
-                  (aset! (as ptr:ptr fnm) (+ off i) (intern-str cname))
-                  (aset! (as ptr:ptr ftp) (+ off i) fty)))
+                  (set! (aref (as ptr:ptr fnm) (+ off i)) (intern-str cname))
+                  (set! (aref (as ptr:ptr ftp) (+ off i)) fty)))
               (die-at line (fmt-s "vfn: internal — capture '%s' not in scope" cname)))
             (inc! i)
             (set! cur (cur 'cdr)))))
@@ -7979,9 +7965,9 @@
   (let (self-ty:ptr (fn-env-ref-type env-sd)
         total:i32 (+ nparams 1)
         mtypes:ptr (arena-alloc (* total (ptr-bytes))))
-    (aset! (as ptr:ptr mtypes) 0 self-ty)
+    (set! (aref (as ptr:ptr mtypes) 0) self-ty)
     (dotimes (i nparams)
-      (aset! (as ptr:ptr mtypes) (+ i 1) (aref (as ptr:ptr param-types) i)))
+      (set! (aref (as ptr:ptr mtypes) (+ i 1)) (aref (as ptr:ptr param-types) i)))
     ; The lambda's own params + `self` shadow the captures inside the body.
     (let (self-sym:ptr (as ptr (intern-symbol "self"))
           inner-bound:ptr (fn-bind-param-names params-node
@@ -8014,7 +8000,7 @@
         ; time and returns the same name, so the define and the call agree.
         (let (newm:ref:Method (generic-register-method "invoke" ret mtypes total 0 0 defn-form)
               mangled:ptr (mangle-fn-name "" "invoke" mtypes total))
-          (.set! newm 'ir-name mangled)
+          (set! (newm 'ir-name) mangled)
           ; Route `invoke` by argument type so the closure's `invoke` doesn't
           ; hijack (or get hijacked by) any solitary user `invoke`.
           (fn-force-generic-mangled "invoke")
@@ -8123,12 +8109,12 @@
           defn-form:ptr (make-cell defn-sym after-name line)
           self-ptr-ty:ptr (fn-env-ptr-type env-sd)
           mtypes:ptr (arena-alloc (ptr-bytes)))
-      (aset! (as ptr:ptr mtypes) 0 self-ptr-ty)
+      (set! (aref (as ptr:ptr mtypes) 0) self-ptr-ty)
       ; Record the conformance so with-drop-method finds (Env, Drop).
       (conformance-add (sd 'name) "Drop" null 0 line)
       (let (newm:ref:Method (generic-register-method "drop" ty-void mtypes 1 0 0 defn-form)
             mangled:ptr (mangle-fn-name "" "drop" mtypes 1))
-        (.set! newm 'ir-name mangled)
+        (set! (newm 'ir-name) mangled)
         ; Route `drop` by argument type so the env's drop and each field type's
         ; own drop (e.g. a solitary `@drop`) coexist without one re-binding the
         ; other's bare `@drop` symbol.
@@ -8173,8 +8159,8 @@
 ; Record (key → vtable-symbol) (mirrors fnty-intern).
 (defn vtable-memo-put (key:ptr name:ptr):void
   (let (rec:ref:VtableEntry (new VtableEntry))
-    (.set! rec 'key key)
-    (.set! rec 'name name)
+    (set! (rec 'key) key)
+    (set! (rec 'name) name)
     (conj g-vtable-table rec)))
 
 ; The emitted `@invoke.p<Env>.<argtoks>` symbol for a concrete env type: scan the
@@ -8315,11 +8301,11 @@
     (dyn-annot-check spelling line)
     (return))
   (let (j:ref:DynAnnot (new DynAnnot))
-    (.set! j 'spelling (as ptr spelling))
-    (.set! j 'path g-source-path)
-    (.set! j 'line line)
-    (.set! j 'ns g-current-ns)
-    (.set! j 'imports g-file-imports)
+    (set! (j 'spelling) (as ptr spelling))
+    (set! (j 'path) g-source-path)
+    (set! (j 'line) line)
+    (set! (j 'ns) g-current-ns)
+    (set! (j 'imports) g-file-imports)
     (conj g-dyn-annots j)))
 
 ; Ask every recorded question as the file that asked it. The three globals
@@ -8836,11 +8822,11 @@
       (when (= (conformance-lookup sd-name "Drop") 0)
         (let (recv:ptr:Type (as ptr:Type (make-type TY-PTR))
               mtypes:ptr (arena-alloc (ptr-bytes)))
-          (.set! recv 'elem canon)
-          (.set! recv 'pkind PTR-REF)
-          (aset! (as ptr:ptr mtypes) 0 (as ptr recv))
+          (set! (recv 'elem) canon)
+          (set! (recv 'pkind) PTR-REF)
+          (set! (aref (as ptr:ptr mtypes) 0) (as ptr recv))
           (let (m:ref:Method (generic-register-method "drop" ty-void mtypes 1 0 0 (as ptr null)))
-            (.set! m 'ir-name "@__boxedfn_drop"))
+            (set! (m 'ir-name) "@__boxedfn_drop"))
           ; Route `drop` by argument type so the box drop and every other type's
           ; drop coexist without one re-binding the other's bare @drop symbol.
           (fn-force-generic-mangled "drop")
@@ -8931,7 +8917,7 @@
                 apos:i64 0
                 ret-info:raw:AbiInfo (abi-classify ret-ty)
                 envv:ref:Val (alloc-val ty-ptr data))
-            (aset! (as ptr:i8 arglist) 0 0)
+            (set! (aref (as ptr:i8 arglist) 0) 0)
             (abi-args-begin ret-info)
             ; The environment pointer is argument zero and spends a GPR, so it
             ; goes through abi-arg-frag like any other — printing it by hand
@@ -9042,7 +9028,7 @@
               (when (= coerced null)
                 (die-at line (fmt-2s "(dyn %s) call: argument type does not match %s's signature"
                                      proto mname)))
-              (aset! (as ptr:ptr arg-vals) i coerced))
+              (set! (aref (as ptr:ptr arg-vals) i) coerced))
             (inc! i))
           (let (ret-ir:ptr (type-to-ir ret-ty))
             (if (= (-> ret-ty (unsafe/cast ptr:Type _) (_ 'kind)) TY-VOID)
@@ -9172,12 +9158,12 @@
             ; scope is rejected at the existing escape sinks.
             (let (pt:ptr:Type (as ptr:Type (make-type TY-PTR))
                   st:ptr:Type (as ptr:Type (make-type TY-STRUCT)))
-              (.set! st 'sdef env-sd)
-              (.set! pt 'elem (as ptr st))
-              (.set! pt 'pkind PTR-REF)
+              (set! (st 'sdef) env-sd)
+              (set! (pt 'elem) (as ptr st))
+              (set! (pt 'pkind) PTR-REF)
               (let (rv:ref:Val (alloc-val (as ptr pt) blk))
-                (.set! rv 'taint join-taint)
-                (.set! rv 'taint-frame join-frame)
+                (set! (rv 'taint) join-taint)
+                (set! (rv 'taint-frame) join-frame)
                 (return rv))))))
       ; vfn/mfn: stack alloca + per-field clone/move.
       (do
@@ -9210,7 +9196,7 @@
                       (die-at line
                         (fmt-2s "vfn cannot clone-capture '%s' (type %s is Drop with no Clone); use mfn to move it instead"
                                 cname (type-spelling fty))))
-                    (ptr-set! out-owns-drop 1)
+                    (set! (deref out-owns-drop) 1)
                     (let (clone-node:ptr (make-cell (intern-symbol "clone")
                                            (make-cell (make-cell (intern-symbol "addr-of")
                                                         (make-cell (intern-symbol cname) null line)
@@ -9232,7 +9218,7 @@
                 ; to disarm, so moving it == copying it: a bare-symbol bitwise copy.
                 (do
                   (when (!= (type-conforms-drop fty) 0)
-                    (ptr-set! out-owns-drop 1))
+                    (set! (deref out-owns-drop) 1))
                   (if-some (csym (scope-lookup scope cname))
                     (if (= (csym 'owns) 0)
                       (let (init-node:ptr (as ptr (intern-symbol cname))
@@ -9257,9 +9243,9 @@
         ; A stack compound literal is a valid, non-null (ref Env) address.
         (let (pt:ptr:Type (as ptr:Type (make-type TY-PTR))
               st:ptr:Type (as ptr:Type (make-type TY-STRUCT)))
-          (.set! st 'sdef env-sd)
-          (.set! pt 'elem (as ptr st))
-          (.set! pt 'pkind PTR-REF)
+          (set! (st 'sdef) env-sd)
+          (set! (pt 'elem) (as ptr st))
+          (set! (pt 'pkind) PTR-REF)
           (return (alloc-val (as ptr pt) slot)))))))
 
 (defn emit-vfn (call:(raw Node) scope:ref:Scope):ref:Val
@@ -9298,8 +9284,8 @@
                                                            (node-line (node-at params-node pi) line)))
               (when (= pty null)
                     (die-at line (fmt-s "vfn: missing :type on param '%s'" pname)))
-              (aset! (as ptr:ptr param-types) pi pty)
-              (aset! (as ptr:ptr param-names) pi pname)))
+              (set! (aref (as ptr:ptr param-types) pi) pty)
+              (set! (aref (as ptr:ptr param-names) pi) pname)))
           ; --- Env struct + invoke method ---
           (let (env-sd:ptr (fn-make-env-struct caps-head scope line 0 (as ptr null))
                 body-list:ptr (-> cc (_ 'cdr) (unsafe/cast ptr:Node _) (_ 'cdr)
@@ -9379,8 +9365,8 @@
                                                            (node-line (node-at params-node pi) line)))
               (when (= pty null)
                     (die-at line (fmt-s "mfn: missing :type on param '%s'" pname)))
-              (aset! (as ptr:ptr param-types) pi pty)
-              (aset! (as ptr:ptr param-names) pi pname)))
+              (set! (aref (as ptr:ptr param-types) pi) pty)
+              (set! (aref (as ptr:ptr param-names) pi) pname)))
           ; --- Env struct + invoke method (reused from L4 as-is) ---
           (let (env-sd:ptr (fn-make-env-struct caps-head scope line 1 (as ptr null))
                 body-list:ptr (-> cc (_ 'cdr) (unsafe/cast ptr:Node _) (_ 'cdr)
@@ -9481,8 +9467,8 @@
                                                              (node-line (node-at params-node pi) line)))
                 (when (= pty null)
                       (die-at line (fmt-s "cfn: missing :type on param '%s'" pname)))
-                (aset! (as ptr:ptr param-types) pi pty)
-                (aset! (as ptr:ptr param-names) pi pname)))
+                (set! (aref (as ptr:ptr param-types) pi) pty)
+                (set! (aref (as ptr:ptr param-names) pi) pname)))
             ; --- Env struct (mode 2: __alloc + ptr fields) + invoke (mode 2) ---
             (let (env-sd:ptr (fn-make-env-struct caps-head scope line 2 (alloc-val 'type))
                   body-list:ptr (-> cc (_ 'cdr) (unsafe/cast ptr:Node _) (_ 'cdr)
@@ -9520,7 +9506,7 @@
           (let (tmp:ptr (new-tmp))
             (emit-load tmp (type-to-ir (sym 'type)) (sym 'ir-name) (sym 'type))
             (fprintf g-body-stream "  store ptr null, ptr %s, align 8\n" (sym 'cslot))
-            (.set! sym 'moved 1)
+            (set! (sym 'moved) 1)
             (return (alloc-val (sym-effective-type sym) tmp))))
         (die-at (cc 'line) (fmt-s "move: undefined '%s'" tname))))))
 
@@ -9734,8 +9720,8 @@
     (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
       (type-to-ir pointee) (vv 'val) slot (type-size pointee))
     (let (rv:ptr:Val (as ptr:Val (alloc-val ty slot)))
-      (.set! rv 'taint (vv 'taint))
-      (.set! rv 'taint-frame (vv 'taint-frame))
+      (set! (rv 'taint) (vv 'taint))
+      (set! (rv 'taint-frame) (vv 'taint-frame))
       (return (as ref:Val rv)))))
 
 ; TC-3: emit a let/with binding init with target-typed materialization. For a
@@ -9891,8 +9877,8 @@
                       ; Stage 10 escape analysis: a binding initialized from a
                       ; tainted value aliases the same resource (§2.2). Stage 13
                       ; L1: also inherit the frame-region flag.
-                      (.set! sym 'taint ((as ptr:Val v) 'taint))
-                      (.set! sym 'taint-frame ((as ptr:Val v) 'taint-frame))
+                      (set! (sym 'taint) ((as ptr:Val v) 'taint))
+                      (set! (sym 'taint-frame) ((as ptr:Val v) 'taint-frame))
                       ; Narrowing: a ?T binding initialized with a known
                       ; non-null value starts narrowed (parity with set!).
                       (when (and (= (ptr-pkind ty) PTR-MAYBE)
@@ -10009,11 +9995,11 @@
                           ; exits (lifecycle.md §2.1).
                         (= autofree 1)
                           (let (cl:ref:Cleanup (new Cleanup))
-                            (ptr-set! cl (Cleanup-libc-free slot))
+                            (set! (deref cl) (Cleanup-libc-free slot))
                             (scope-push-cleanup inner (as ptr cl))
-                            (.set! sym 'owns 1)
-                            (.set! sym 'cslot slot)
-                            (.set! sym 'taint inner))
+                            (set! (sym 'owns) 1)
+                            (set! (sym 'cslot) slot)
+                            (set! (sym 'taint) inner))
                           ; Owning binding, Drop shape: statically dispatched
                           ; (drop binding) at scope exit (lifecycle.md §5).
                           ; CE-3 fix (c): a struct-VALUE binding (TY-STRUCT — an
@@ -10036,17 +10022,17 @@
                               (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" slot cslot))
                             (let (cl:ref:Cleanup (new Cleanup))
                                 ; drop-ty was write-only in the old struct — omitted.
-                              (ptr-set! cl (Cleanup-drop cslot (dm 'ir-name) (dm 'ret-type)))
+                              (set! (deref cl) (Cleanup-drop cslot (dm 'ir-name) (dm 'ret-type)))
                               (scope-push-cleanup inner (as ptr cl))
-                              (.set! sym 'owns 1)
-                              (.set! sym 'cslot cslot)
-                              (.set! sym 'taint inner)))
+                              (set! (sym 'owns) 1)
+                              (set! (sym 'cslot) cslot)
+                              (set! (sym 'taint) inner)))
                           ; Non-owning with-binding: behaves like let (adopts
                           ; the init value's taint and frame-region flag).
                         true
                           (do
-                            (.set! sym 'taint ((as ptr:Val v) 'taint))
-                            (.set! sym 'taint-frame ((as ptr:Val v) 'taint-frame)))))
+                            (set! (sym 'taint) ((as ptr:Val v) 'taint))
+                            (set! (sym 'taint-frame) ((as ptr:Val v) 'taint-frame)))))
                     (when (and (= (ptr-pkind ty) PTR-MAYBE)
                                (= (ptr-pkind ((as ptr:Val v) 'type)) PTR-REF))
                       (narrow-apply inner name)))))))
@@ -10207,7 +10193,7 @@
             (fprintf g-body-stream ", [ undef, %%%s ]" fall-lbl))
           (fprintf g-body-stream "\n")
           (let (rv:ref:Val (alloc-val result-type tmp))
-            (.set! rv 'taint result-taint)
+            (set! (rv 'taint) result-taint)
             (return rv)))))))
 
 (defn emit-while (call:(raw Node) scope:ref:Scope):ref:Val
@@ -10253,12 +10239,69 @@
       (set! g-block-term 0)
       (return (alloc-val ty-void null)))))
 
+; The cell the three member-access places delegate on. Its head is only ever a
+; diagnostic label: emit-field-set is called directly, never through dispatch.
+(defn field-set-cell (recv:(raw Node) sel:(raw Node) v:(raw Node) line:i32):ptr
+  (return (make-cell (intern-symbol ".set!")
+            (make-cell recv (make-cell sel (make-cell v null line) line) line)
+            line)))
+
+; `set!`'s first operand is a PLACE, not only a name (dot-forms.md §3). Each
+; place rebuilds the call the writer it replaces would have been given — same
+; children, same line — so the spelling change emits identical IR and inherits
+; that writer's diagnostics rather than growing a parallel set.
+(defn emit-set-place (call:(raw Node) place:(raw Node) scope:ref:Scope):ref:Val
+  (let (cc:ptr:Node (unsafe/cast ptr:Node call)
+        pc:ptr:Node (unsafe/cast ptr:Node place)
+        line:i32 (cc 'line)
+        v:(raw Node) (node-at cc 2))
+    ; `()` reads as a null node, so the place judgement has to precede any deref.
+    (when (= place null) (die-nonplace place line))
+    (when (!= (pc 'kind) NODE-CELL) (die-nonplace place line))
+    (let (plen:i32 (node-len place)
+          hd:(raw Node) (node-at place 0))
+      (when (and (!= hd null) (= ((unsafe/cast ptr:Node hd) 'kind) NODE-SYM))
+        (let (h:ptr ((unsafe/cast ptr:Node hd) 's))
+          (when (and (= (strcmp h "deref") 0) (= plen 2))
+            (return (emit-ptr-set
+                      (make-cell (intern-symbol "ptr-set!")
+                        (make-cell (node-at place 1) (make-cell v null line) line)
+                        line)
+                      scope)))
+          (when (and (= (strcmp h "aref") 0) (= plen 3))
+            (return (emit-aset
+                      (make-cell (intern-symbol "aset!")
+                        (make-cell (node-at place 1)
+                          (make-cell (node-at place 2) (make-cell v null line) line)
+                          line)
+                        line)
+                      scope)))
+          (when (and (or (= (strcmp h "_get") 0) (= (strcmp h "get") 0)) (= plen 3))
+            (return (emit-field-set
+                      (field-set-cell (node-at place 1) (node-at place 2) v line)
+                      scope)))))
+      ; Head position `(recv 'f)` is the idiomatic member READ, so it is the
+      ; idiomatic member write. Anything else two-long lands here too and is
+      ; refused by emit-field-set, which owns that judgement.
+      (when (= plen 2)
+        (return (emit-field-set
+                  (field-set-cell (node-at place 0) (node-at place 1) v line)
+                  scope)))
+      (die-nonplace place line))))
+
+(defn die-nonplace (place:(raw Node) line:i32):void
+  :noreturn
+  (die-at (node-line place line)
+    "set!: not an assignable place -- write a name, (deref p), (aref a i), or a member access (r 'field)"))
+
 (defn emit-set (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
     (when (!= (node-len cc) 3) (die-at (cc 'line) "set! expects 2 args"))
-    (let (target:ptr:Node (unsafe/cast ptr:Node (node-at cc 1)))
+    (let (tn:(raw Node) (node-at cc 1))
+      (when (= tn null) (return (emit-set-place call tn scope)))
+      (let (target:ptr:Node (unsafe/cast ptr:Node tn))
       (when (!= (target 'kind) NODE-SYM)
-        (die-at (node-line (as ptr target) (cc 'line)) "set!: target must be symbol"))
+        (return (emit-set-place call (as raw:Node target) scope)))
       ; Strip any :type annotation so typed names from macro expansions resolve.
       (let (set-name:ptr null
             set-type-ignored:ptr null)
@@ -10314,9 +10357,9 @@
                 ; taint and frame-region flag. Either way a reassignment revives
                 ; a moved-out binding.
                 (when (= (sym 'owns) 0)
-                  (.set! sym 'taint vtaint)
-                  (.set! sym 'taint-frame (v 'taint-frame)))
-                (.set! sym 'moved 0)
+                  (set! (sym 'taint) vtaint)
+                  (set! (sym 'taint-frame) (v 'taint-frame)))
+                (set! (sym 'moved) 0)
                 ; Narrowing: reassignment kills the dominating test's fact.
                 ; Inside a loop, a narrow established outside the loop has
                 ; already licensed earlier uses in this body — reject the
@@ -10331,9 +10374,9 @@
                     (narrow-apply scope set-name)))
                 ; set! yields the assigned value (so the REPL echoes it).
                 (let (rv:ref:Val (alloc-val (sym 'type) (cv 'val)))
-                  (.set! rv 'taint vtaint)
+                  (set! (rv 'taint) vtaint)
                   (return rv))))))
-          (die-at (node-line (as ptr target) (cc 'line)) (fmt-s "set!: undefined local '%s'" (target 's))))))))
+          (die-at (node-line (as ptr target) (cc 'line)) (fmt-s "set!: undefined local '%s'" (target 's)))))))))
 
 ; ============================================================
 ; Stage 8: scalar load/store helpers (volatile-aware)
@@ -10408,21 +10451,21 @@
   (let (src:ptr:Type (as ptr:Type t))
     (when (!= (src 'is-volatile) 0) (return t))
     (let (dst:ref:Type (alloc-type))
-      (.set! dst 'kind        (src 'kind))
-      (.set! dst 'ret         (src 'ret))
-      (.set! dst 'params      (src 'params))
-      (.set! dst 'num-params  (src 'num-params))
-      (.set! dst 'variadic    (src 'variadic))
-      (.set! dst 'has-rest    (src 'has-rest))
-      (.set! dst 'nopt        (src 'nopt))
-      (.set! dst 'opt-defaults (src 'opt-defaults))
-      (.set! dst 'elem        (src 'elem))
-      (.set! dst 'sdef        (src 'sdef))
-      (.set! dst 'is-volatile 1)
-      (.set! dst 'pkind       (src 'pkind))
+      (set! (dst 'kind) (src 'kind))
+      (set! (dst 'ret) (src 'ret))
+      (set! (dst 'params) (src 'params))
+      (set! (dst 'num-params) (src 'num-params))
+      (set! (dst 'variadic) (src 'variadic))
+      (set! (dst 'has-rest) (src 'has-rest))
+      (set! (dst 'nopt) (src 'nopt))
+      (set! (dst 'opt-defaults) (src 'opt-defaults))
+      (set! (dst 'elem) (src 'elem))
+      (set! (dst 'sdef) (src 'sdef))
+      (set! (dst 'is-volatile) 1)
+      (set! (dst 'pkind) (src 'pkind))
       ; Stage 15 W8 G-2: the array length is part of the type; a clone that
       ; dropped it would silently become a zero-length array.
-      (.set! dst 'arr-len     (src 'arr-len))
+      (set! (dst 'arr-len) (src 'arr-len))
       (return dst))))
 
 ; ============================================================
@@ -10475,12 +10518,12 @@
   (let (e:ptr:LabelEntry (unsafe/cast ptr:LabelEntry (lbl-find name)))
     (when (= (as ptr e) null)
       (let (ne:ref:LabelEntry (as ref:LabelEntry (arena-alloc (sizeof LabelEntry))))
-        (.set! ne 'name name)
-        (.set! ne 'total 0)
-        (.set! ne 'seen 0)
+        (set! (ne 'name) name)
+        (set! (ne 'total) 0)
+        (set! (ne 'seen) 0)
         (conj g-lbl-tbl ne)
         (set! e ne)))
-    (.set! e 'total (+ (e 'total) 1))))
+    (set! (e 'total) (+ (e 'total) 1))))
 
 ; Pre-scan a function body form for (label NAME) declarations so forward gotos
 ; and last-decl-wins resolution work. Skips inside quote/quasiquote.
@@ -10519,7 +10562,7 @@
           ; single decl; computed gotos may miss it in the indirectbr dest list.
           (lbl-add-occurrence (nm 's))
           (set! e (unsafe/cast ptr:LabelEntry (lbl-find (nm 's)))))
-        (.set! e 'seen (+ (e 'seen) 1))
+        (set! (e 'seen) (+ (e 'seen) 1))
         ; W9 item 39: the `lbl.` prefix already saves a digit-leading label from
         ; LLVM's first-position rule, but not a `?`/`!` in the body, so the label
         ; name takes the same transform as every other name that becomes an LLVM
@@ -10659,9 +10702,9 @@
             (when (= ((as ptr:Type ftype) 'kind) TY-ARRAY)
               (set! ftype (as ptr ((array-decay ftype) 'elem))))
             (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR)))
-              (.set! rt 'elem ftype)
+              (set! (rt 'elem) ftype)
               ; A field's address inside a (non-null) struct is non-null (ref T).
-              (.set! rt 'pkind PTR-REF)
+              (set! (rt 'pkind) PTR-REF)
               ; Interior address into the resource: keep the escape taint
               ; (lifecycle.md §2.2) and, Stage 13 L1, the frame-region flag —
               ; so `(addr-of (addr-of p) 'f)` over a by-value struct param p stays
@@ -10695,9 +10738,9 @@
                 (when (< k 0)
                   (die-at (node-line (as ptr arg) (cc 'line)) "array: designated index must be non-negative"))
                 (when (> (unsafe/cast i32 k) max-idx) (set! max-idx (unsafe/cast i32 k)))
-                (aset! (as ptr:i32 keys) i (unsafe/cast i32 k)))
+                (set! (aref (as ptr:i32 keys) i) (unsafe/cast i32 k)))
               (do
-                (aset! (as ptr:i32 keys) i -1)
+                (set! (aref (as ptr:i32 keys) i) -1)
                 (inc! pos-count)))))
         (let (length:i32 pos-count)
           (when (> (+ max-idx 1) length) (set! length (+ max-idx 1)))
@@ -10707,8 +10750,8 @@
                 pos-cursor:i32 0
                 j:i32 0)
             (while (< j length)
-              (aset! (as ptr:ptr vals) j null)
-              (aset! (as ptr:i32 seen) j 0)
+              (set! (aref (as ptr:ptr vals) j) null)
+              (set! (aref (as ptr:i32 seen) j) 0)
               (inc! j))
             ; Place designated inits.
             (set! j 0)
@@ -10718,13 +10761,13 @@
                   (when (!= (aref (as ptr:i32 seen) k) 0)
                     (die-at ((unsafe/cast ptr:Node (node-at cc (+ 2 j))) 'line)
                       (fmt-i32 "array: index %d specified twice" k)))
-                  (aset! (as ptr:i32 seen) k 1)
+                  (set! (aref (as ptr:i32 seen) k) 1)
                   (let (vexpr:ptr (node-at (unsafe/cast ptr:Node (node-at cc (+ 2 j))) 1)
                         v:ref:Val (emit-node vexpr scope)
                         coerced:ptr (coerce-int-val v etype (cc 'line)))
                     (when (= coerced null)
                       (die-at (cc 'line) "array: type mismatch in designated initializer"))
-                    (aset! (as ptr:ptr vals) k coerced))))
+                    (set! (aref (as ptr:ptr vals) k) coerced))))
               (inc! j))
             ; Positional inits fill the next unspecified slots.
             (set! j 0)
@@ -10741,8 +10784,8 @@
                         coerced:ptr (coerce-int-val v etype (cc 'line)))
                     (when (= coerced null)
                       (die-at (cc 'line) "array: type mismatch in positional initializer"))
-                    (aset! (as ptr:i32 seen) pos-cursor 1)
-                    (aset! (as ptr:ptr vals) pos-cursor coerced)
+                    (set! (aref (as ptr:i32 seen) pos-cursor) 1)
+                    (set! (aref (as ptr:ptr vals) pos-cursor) coerced)
                     (inc! pos-cursor))))
               (inc! j))
             ; Emit alloca in entry stream, then fill slots.
@@ -10761,9 +10804,9 @@
                           (fprintf g-body-stream "  store %s %s, ptr %s\n"
                                    etype-ir (cv 'val) gep))))))
               (let (pt:ptr:Type (as ptr:Type (make-type TY-PTR)))
-                (.set! pt 'elem etype)
+                (set! (pt 'elem) etype)
                 ; A stack array literal is a valid, non-null address (ref T).
-                (.set! pt 'pkind PTR-REF)
+                (set! (pt 'pkind) PTR-REF)
                 (return (alloc-val (as ptr pt) slot))))))))))
 
 ; (S e0 e1 ... | (field v) ...) -> ptr:S compound literal (struct-name head).
@@ -10782,8 +10825,8 @@
           pos-idx:i32 0
           i:i32 0)
       (while (< i nfields)
-        (aset! (as ptr:ptr vals) i null)
-        (aset! (as ptr:i32 seen) i 0)
+        (set! (aref (as ptr:ptr vals) i) null)
+        (set! (aref (as ptr:i32 seen) i) 0)
         (inc! i))
       (set! i 0)
       (while (< i nargs)
@@ -10803,14 +10846,14 @@
               (when (!= (aref (as ptr:i32 seen) fidx) 0)
                 (die-at (node-line (as ptr fname-node) (cc 'line))
                   (fmt-s "struct literal: field '%s' specified twice" (fname-node 's))))
-              (aset! (as ptr:i32 seen) fidx 1)
+              (set! (aref (as ptr:i32 seen) fidx) 1)
               (let (ftype:ptr ((field-at (sdef 'fields) fidx) 'type)
                     v:ref:Val (emit-node vexpr scope)
                     coerced:ptr (coerce-int-val v ftype (cc 'line)))
                 (when (= coerced null)
                   (die-at (cc 'line)
                     (fmt-s "struct literal: type mismatch for field '%s'" (fname-node 's))))
-                (aset! (as ptr:ptr vals) fidx coerced)))
+                (set! (aref (as ptr:ptr vals) fidx) coerced)))
             (do
               (while (and (< pos-idx nfields)
                           (!= (aref (as ptr:i32 seen) pos-idx) 0))
@@ -10822,8 +10865,8 @@
                     coerced:ptr (coerce-int-val v ftype (cc 'line)))
                 (when (= coerced null)
                   (die-at (cc 'line) "struct literal: type mismatch for positional initializer"))
-                (aset! (as ptr:i32 seen) pos-idx 1)
-                (aset! (as ptr:ptr vals) pos-idx coerced)
+                (set! (aref (as ptr:i32 seen) pos-idx) 1)
+                (set! (aref (as ptr:ptr vals) pos-idx) coerced)
                 (inc! pos-idx)))))
         (inc! i))
       (let (slot:ptr (new-tmp)
@@ -10861,10 +10904,10 @@
                                (packed-align-suffix (as raw:StructDef sdef)))))))))
         (let (pt:ptr:Type (as ptr:Type (make-type TY-PTR))
               st:ptr:Type (as ptr:Type (make-type TY-STRUCT)))
-          (.set! st 'sdef sd)
-          (.set! pt 'elem (as ptr st))
+          (set! (st 'sdef) sd)
+          (set! (pt 'elem) (as ptr st))
           ; A stack compound literal is a valid, non-null address (ref T).
-          (.set! pt 'pkind PTR-REF)
+          (set! (pt 'pkind) PTR-REF)
           (return (alloc-val (as ptr pt) slot)))))))
 
 ; ============================================================
@@ -10949,7 +10992,7 @@
     ; skipping them costs no traversal.)
     (when (= (n 'kind) NODE-SYM) (return))
     (when (!= (n 'line) 0) (return))
-    (.set! n 'line ln)
+    (set! (n 'line) ln)
     (when (= (n 'kind) NODE-CELL)
       (stamp-macro-lines (n 'car) ln)
       (stamp-macro-lines (n 'cdr) ln))))
@@ -10978,14 +11021,14 @@
       (when (!= (mdef 'variadic) 0)
         (set! regular-params (- (mdef 'num-params) 1)))
       (dotimes (i regular-params)
-        (aset! (as ptr:ptr args-arr) i (node-at (unsafe/cast ptr:Node call) (+ i 1))))
+        (set! (aref (as ptr:ptr args-arr) i) (node-at (unsafe/cast ptr:Node call) (+ i 1))))
       (when (!= (mdef 'variadic) 0)
         (let (rest-list:ptr null
               rj:i32 nargs)
           (while (> rj regular-params)
             (set! rj (- rj 1))
             (set! rest-list (make-cell (node-at (unsafe/cast ptr:Node call) (+ rj 1)) rest-list 0)))
-          (aset! (as ptr:ptr args-arr) regular-params rest-list)))
+          (set! (aref (as ptr:ptr args-arr) regular-params) rest-list)))
       (let (addr:i64 0
             err:ptr (LLVMOrcLLJITLookup g-jit (addr-of addr) (mdef 'jit-name)))
         (when (!= err null)
@@ -11050,7 +11093,7 @@
               new:ptr (make-cell child null (it 'line)))
           (if (= out null)
             (do (set! out new) (set! tail new))
-            (do (.set! (unsafe/cast ptr:Node tail) 'cdr new)
+            (do (set! ((unsafe/cast ptr:Node tail) 'cdr) new)
                 (set! tail new))))
         (set! it (unsafe/cast ptr:Node (it 'cdr))))
       (return out))))
@@ -11103,12 +11146,12 @@
                     (let (tmp:ptr (new-tmp))
                       (fprintf g-body-stream "  %s = alloca ptr, align 8\n" tmp)
                       (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" (av 'val) tmp)
-                      (.set! av 'type pt)
-                      (.set! av 'val tmp))))))
-    (.set! ss 'name gname)
-    (.set! ss 'type (m 'fn-type))
-    (.set! ss 'ir-name (m 'ir-name))
-    (.set! ss 'is-local 0)
+                      (set! (av 'type) pt)
+                      (set! (av 'val) tmp))))))
+    (set! (ss 'name) gname)
+    (set! (ss 'type) (m 'fn-type))
+    (set! (ss 'ir-name) (m 'ir-name))
+    (set! (ss 'is-local) 0)
     (return (emit-call-with-args n scope ss args nargs))))
 
 ; Emit a call to an overloaded generic: emit the arguments, resolve the method
@@ -11133,8 +11176,8 @@
         (let (anode:ptr (node-at nn (+ i 1))
               v:ref:Val (emit-node anode scope))
           (memcpy (unsafe/ptr+ (as ptr:Val args) i) v (sizeof Val))
-          (aset! (as ptr:ptr argtypes) i ((as ptr:Val v) 'type))
-          (aset! (as ptr:ptr arg-nodes) i anode)))
+          (set! (aref (as ptr:ptr argtypes) i) ((as ptr:Val v) 'type))
+          (set! (aref (as ptr:ptr arg-nodes) i) anode)))
       ; Stage 13 TE-6: `(dyn P)` method dispatch. When the first argument is a
       ; `(dyn P)` box and this generic names one of P's methods, the box has no
       ; concrete receiver method to resolve — forward through the vtable slot instead
@@ -11165,8 +11208,8 @@
       (let (anode:ptr (node-at nn (+ i 1))
             v:ref:Val (emit-node anode scope))
         (memcpy (unsafe/ptr+ (as ptr:Val args) i) v (sizeof Val))
-        (aset! (as ptr:ptr argtypes) i ((as ptr:Val v) 'type))
-        (aset! (as ptr:ptr arg-nodes) i anode)))
+        (set! (aref (as ptr:ptr argtypes) i) ((as ptr:Val v) 'type))
+        (set! (aref (as ptr:ptr arg-nodes) i) anode)))
     (let (m:?ptr:Method (operator-user-resolve g argtypes arg-nodes nargs))
       (when (!= m null)
         (return (emit-resolved-call n scope (g 'name) m
@@ -11213,12 +11256,12 @@
                         kind:i32 noun:CStr nk:i32
                         collides:i32 name-keyed:i32 reregisterable:i32):void
   (let (r:ref:BindingKind (new BindingKind))
-    (.set! r 'kind kind)
-    (.set! r 'noun noun)
-    (.set! r 'nk nk)
-    (.set! r 'collides collides)
-    (.set! r 'name-keyed name-keyed)
-    (.set! r 'reregisterable reregisterable)
+    (set! (r 'kind) kind)
+    (set! (r 'noun) noun)
+    (set! (r 'nk) nk)
+    (set! (r 'collides) collides)
+    (set! (r 'name-keyed) name-keyed)
+    (set! (r 'reregisterable) reregisterable)
     (conj v r)))
 
 ; The table. Row i has `kind` == i, so `binding-row` is an index.
@@ -11453,8 +11496,8 @@
             (when (and (!= p null)
                        (or (= skip-nk NK-NONE) (!= (binding-nk i p) skip-nk)))
               (let (hit:ref:BindingHit (new BindingHit))
-                (.set! hit 'kind i)
-                (.set! hit 'payload p)
+                (set! (hit 'kind) i)
+                (set! (hit 'payload) p)
                 (return hit))))))
       (inc! i)))
   (return null))
@@ -11503,9 +11546,9 @@
         ; facade) must not stack entries.
         (when (and (= (e 'kind) kind) (= (strcmp (e 'key) key) 0)) (return))))
     (let (rec:ref:BindingAlias (new BindingAlias))
-      (.set! rec 'key (as CStr (intern-str key)))
-      (.set! rec 'kind kind)
-      (.set! rec 'payload payload)
+      (set! (rec 'key) (as CStr (intern-str key)))
+      (set! (rec 'kind) kind)
+      (set! (rec 'payload) payload)
       (conj tbl rec))))
 
 ; The payload `spelling` names through a re-export, or null. `spelling` is a
@@ -11710,7 +11753,7 @@
             okj:i32 (if (= lit-kind 1) (is-int-type ft) (is-float-type ft)))
         (when (= okj 0)
           (die-at line (fmt-2s "%s literal: mixed %s types" what noun)))))
-    (aset! kind-out 0 lit-kind)
+    (set! (aref kind-out 0) lit-kind)
     (return fixed)))
 
 ; The wanted collection type when the declared type at this position is an
@@ -11795,11 +11838,11 @@
                   (set! cur (as ptr ((as ptr:Node cur) 'cdr)))))
             (let (cell:ptr (make-cell form null line))
               (when (= ctail null) (set! chead cell))
-              (when (!= ctail null) (.set! (as ptr:Node ctail) 'cdr cell))
+              (when (!= ctail null) (set! ((as ptr:Node ctail) 'cdr) cell))
               (set! ctail cell))))
         (let (gscell:ptr (make-cell gs null line))
           (when (= ctail null) (set! chead gscell))
-          (when (!= ctail null) (.set! (as ptr:Node ctail) 'cdr gscell))
+          (when (!= ctail null) (set! ((as ptr:Node ctail) 'cdr) gscell))
           (let (decl:ptr (lit-list2 gs (lit-ref coll1 line) line)
                 bindings:ptr (lit-list2 decl (lit-alloca coll2 line) line)
                 init-form:ptr (lit-list2 (lit-sym init-fn) gs line)
@@ -11900,17 +11943,14 @@
         (when (= hp 'funcall-void) (return (emit-funcall-void n scope)))
         (when (= hp 'funcall) (return (emit-funcall n scope)))
         (when (= hp 'deref) (return (emit-deref n scope)))
-        (when (= hp 'ptr-set!) (return (emit-ptr-set n scope)))
         (when (= hp 'unsafe/ptr+) (return (emit-ptr-add n scope)))
         (when (= hp '_get) (return (emit-field-get n scope)))
-        (when (= hp '.set!) (return (emit-field-set n scope)))
         (when (= hp 'get) (return (emit-get n scope)))
         (when (= hp 'invoke) (return (emit-invoke n scope)))
         (when (= hp 'sizeof) (return (emit-sizeof n scope)))
         (when (= hp 'alloca) (return (emit-alloca-form n scope)))
         (when (= hp 'char) (return (emit-char n scope)))
         (when (= hp 'aref) (return (emit-aref n scope)))
-        (when (= hp 'aset!) (return (emit-aset n scope)))
         ; Stage 10: Maybe transition forms (nullability.md §3)
         (when (= hp 'some) (return (emit-some n scope)))
         (when (= hp 'as-ref) (return (emit-as-ref n scope)))
@@ -12173,8 +12213,8 @@
 (defn sym-set-src-loc (sym:(raw Sym) line:i32):void
   (when (= sym null) (return))
   (let (s:ptr:Sym (unsafe/cast ptr:Sym sym))
-    (.set! s 'src-file g-source-path)
-    (.set! s 'src-line line)))
+    (set! (s 'src-file) g-source-path)
+    (set! (s 'src-line) line)))
 
 ; ============================================================
 ; Stage 15 W8 G-1 — constant expressions in a global initializer
@@ -12341,7 +12381,7 @@
           nl:i32 (node-line e encl))
       ; a) an integer literal
       (when (= (ee 'kind) NODE-INT)
-        (aset! out 0 (ee 'i))
+        (set! (aref out 0) (ee 'i))
         (return 1))
       ; b) a name bound by `defconst` / `defenum`. The provenance read here is
       ; W2b's (`const-lit` + `const-lit-i64`), which G-0 additionally arms at
@@ -12355,7 +12395,7 @@
           (split-typed (ee 's) (as ptr:ptr (addr-of nm)) (as ptr:ptr (addr-of ignored)))
           (let (sym:?ptr:Sym (scope-lookup g-globals nm))
             (when (and (!= sym null) (!= (sym 'is-const) 0) (!= (sym 'const-lit) 0))
-              (aset! out 0 (sym 'const-lit-i64))
+              (set! (aref out 0) (sym 'const-lit-i64))
               (return 1))))
         (return 0))
       (when (!= (ee 'kind) NODE-CELL) (return 0))
@@ -12365,7 +12405,7 @@
         (when (!= ((unsafe/cast ptr:Node hd) 'kind) NODE-SYM) (return 0))
         ; (sizeof T)
         (when (and (= hd 'sizeof) (= nargs 1))
-          (aset! out 0 (cfold-sizeof (node-at (as ptr ee) 1) nl))
+          (set! (aref out 0) (cfold-sizeof (node-at (as ptr ee) 1) nl))
           (return 1))
         ; (char "x") — the same one-byte literal defvar-init-ir renders directly,
         ; repeated here so it composes: `(+ (char "a") 1)`.
@@ -12375,7 +12415,7 @@
                       (!= (arg 'kind) NODE-STR)
                       (!= (strlen (arg 's)) 1))
               (die-at nl "defvar: (char ...) requires a single-char string"))
-            (aset! out 0 (char-at (arg 's) 0))
+            (set! (aref out 0) (char-at (arg 's) 0))
             (return 1)))
         ; (as T x) at an INTEGER T. The narrowing rule is `as-int-narrowing`
         ; (src/type-utils.nuc), the same call `emit-as` step 5 makes, so the two
@@ -12397,7 +12437,7 @@
                   (die-at nl
                     (fmt-2s "as: lossy conversion from %s to %s -- use unsafe/cast"
                       (type-spelling src) (type-spelling dst)))))
-              (aset! out 0 v)
+              (set! (aref out 0) v)
               (return 1))))
         ; arithmetic / bit operators. The operator is identified BEFORE the
         ; operands are folded, so a non-constant call whose arguments happen to
@@ -12414,7 +12454,7 @@
                 (when (= (const-fold-int (node-at (as ptr ee) 2)
                                          (as ptr:i64 (addr-of b)) nl) 0)
                   (return 0))
-                (aset! out 0 (cfold-apply op a b nl))
+                (set! (aref out 0) (cfold-apply op a b nl))
                 (return 1)))))
         (return 0)))))
 
@@ -12456,8 +12496,8 @@
       ; `null` branch below makes with `ty-raw`, so the two spellings move
       ; together if the flow rule ever changes.
       (let (pt:ref:Type (make-type TY-PTR))
-        (.set! pt 'elem (sym 'type))
-        (.set! pt 'pkind PTR-REF)
+        (set! (pt 'elem) (sym 'type))
+        (set! (pt 'pkind) PTR-REF)
         (pkind-flow-check (as ptr pt) ty line "defvar")
         ; SE-1: the constant renderer is the second typed-slot path, and it had
         ; the identity hole too — `(defvar p:(ref B) (addr-of a))` on an `A`
@@ -12532,7 +12572,7 @@
             (when (!= (aref (as ptr:ptr slots) (unsafe/cast i32 k)) null)
               (die-at aline
                 (fmt-i32 "defvar: array initializer: index %d specified twice" (unsafe/cast i32 k))))
-            (aset! (as ptr:ptr slots) (unsafe/cast i32 k) (as ptr arg))))))
+            (set! (aref (as ptr:ptr slots) (unsafe/cast i32 k)) (as ptr arg))))))
     ; Pass 2: positional initializers fill the next unclaimed slot.
     (dotimes (i ninits)
       (let (arg:(raw Node) (node-at (as ptr cc) (+ 2 i))
@@ -12549,7 +12589,7 @@
           (when (>= pos-cursor n)
             (die-at aline
               (fmt-i32 "defvar: array initializer: too many initializers for a %d-element array" n)))
-          (aset! (as ptr:ptr slots) pos-cursor (as ptr arg))
+          (set! (aref (as ptr:ptr slots) pos-cursor) (as ptr arg))
           (inc! pos-cursor))))))
 
 ; The element type an `(array T …)` literal declares, plus (through `out-len`)
@@ -12579,7 +12619,7 @@
         (when (<= n 0)
           (die-at (node-line init encl)
             "defvar: (array T …): at least one initializer is required to size the table"))
-        (ptr-set! out-len n))
+        (set! (deref out-len) n))
       (return ety))))
 
 ; Write the LLVM constant for a value of type `ty` initialized by `init`.
@@ -12605,7 +12645,7 @@
               (type-spelling lit-ety) (type-spelling ety))))
         (let (slots:ptr (arena-alloc (* n (ptr-bytes)))
               ety-ir:CStr (type-to-ir ety))
-          (dotimes (i n) (aset! (as ptr:ptr slots) i null))
+          (dotimes (i n) (set! (aref (as ptr:ptr slots) i) null))
           (const-array-place init slots n encl)
           (fprintf g-out "[")
           (dotimes (i n)
@@ -12641,7 +12681,7 @@
           (when (> nargs nfields)
             (die-at (node-line init encl)
               (fmt-s "defvar: too many initializers for struct '%s'" (sd 'name))))
-          (dotimes (i nfields) (aset! (as ptr:ptr slots) i null))
+          (dotimes (i nfields) (set! (aref (as ptr:ptr slots) i) null))
           ; Designated `(field value)` first, so positional fills skip them —
           ; the same order emit-struct-lit uses in value position.
           (dotimes (i nargs)
@@ -12656,7 +12696,7 @@
                     (die-at aline (fmt-2s "defvar: no field '%s' on struct '%s'" (fnn 's) (sd 'name))))
                   (when (!= (aref (as ptr:ptr slots) fidx) null)
                     (die-at aline (fmt-s "defvar: field '%s' specified twice" (fnn 's))))
-                  (aset! (as ptr:ptr slots) fidx (as ptr arg))))))
+                  (set! (aref (as ptr:ptr slots) fidx) (as ptr arg))))))
           (dotimes (i nargs)
             (let (arg:(raw Node) (node-at (as ptr init) (+ 1 i))
                   aline:i32 (node-line (as ptr arg) encl)
@@ -12672,7 +12712,7 @@
                 (when (>= pos-idx nfields)
                   (die-at aline
                     (fmt-s "defvar: too many positional initializers for struct '%s'" (sd 'name))))
-                (aset! (as ptr:ptr slots) pos-idx (as ptr arg))
+                (set! (aref (as ptr:ptr slots) pos-idx) (as ptr arg))
                 (inc! pos-idx))))
           (fprintf g-out "{")
           (dotimes (i nfields)
@@ -12724,8 +12764,8 @@
       ; Same call the `(addr-of g)` branch makes, with the same PTR-REF source:
       ; the flow rule lives in one predicate, never re-derived here.
       (let (pt:ref:Type (make-type TY-PTR))
-        (.set! pt 'elem ety)
-        (.set! pt 'pkind PTR-REF)
+        (set! (pt 'elem) ety)
+        (set! (pt 'pkind) PTR-REF)
         (pkind-flow-check (as ptr pt) ty (node-line init encl) "defvar"))
       (return data-name))))
 
@@ -13019,7 +13059,7 @@
 ; raising its existing diagnostic, which names the `ptr:T` + `(array T lit…)`
 ; spelling that does work.
 (defn defvar-const-init-ir (init:(raw Node) ty:(raw Type) encl:i32 out-ir:ptr):i32
-  (aset! (as ptr:ptr out-ir) 0 null)
+  (set! (aref (as ptr:ptr out-ir) 0) null)
   (let (tt:(raw Type) ty
         tk:i32 (tt 'kind))
     (when (= tk TY-ARRAY) (return 1))
@@ -13048,7 +13088,7 @@
       (set! rendered (defvar-init-ir init ty encl))
       (set! g-defvar-soft saved)
       (when (= rendered null) (return 0))
-      (aset! (as ptr:ptr out-ir) 0 rendered)
+      (set! (aref (as ptr:ptr out-ir) 0) rendered)
       (return 1))))
 
 ; Append a runtime initializer to the queue, in reach order.
@@ -13070,11 +13110,11 @@
                                     line))
         form:ptr (as ptr (make-cell (intern-symbol "set!") args line))
         job:ptr:InitJob (new InitJob))
-    (.set! job 'form (as raw:Node form))
-    (.set! job 'ns g-current-ns)
-    (.set! job 'path g-source-path)
-    (.set! job 'line line)
-    (.set! job 'name name)
+    (set! (job 'form) (as raw:Node form))
+    (set! (job 'ns) g-current-ns)
+    (set! (job 'path) g-source-path)
+    (set! (job 'line) line)
+    (set! (job 'name) name)
     (conj g-init-worklist job)))
 
 ; ============================================================
@@ -13375,17 +13415,17 @@
                   ir-name))
               (fprintf g-out ", align %d\n\n" align))
             (let (vsym:ref:Sym (scope-define g-globals name ty ir-name 1))
-              (when (!= g-ct-emitting 0) (.set! (unsafe/cast ptr:Sym vsym) 'ct-only 1))
-              (when (!= g-defining-private 0) (.set! (unsafe/cast ptr:Sym vsym) 'sym-private 1))
+              (when (!= g-ct-emitting 0) (set! ((unsafe/cast ptr:Sym vsym) 'ct-only) 1))
+              (when (!= g-defining-private 0) (set! ((unsafe/cast ptr:Sym vsym) 'sym-private) 1))
               ; AVR-6 gap fix: mark the Sym so `set!` can reject writes to
               ; this `constant`-storage global at compile time (emit-set).
               (when (!= (bit-and attr-flags DECL-ATTR-CONST) 0)
-                (.set! (unsafe/cast ptr:Sym vsym) 'readonly-global 1))
+                (set! ((unsafe/cast ptr:Sym vsym) 'readonly-global) 1))
               ; G-4: the `@g = global` line is out, so this global's `defvar` has
               ; now been REACHED — every initializer emitted after this point may
               ; read its value. A later `scope-lookup` finds this Sym rather than
               ; the prescan's (backwards scan), which is the whole mechanism.
-              (.set! (unsafe/cast ptr:Sym vsym) 'defvar-state DEFVAR-REACHED)
+              (set! ((unsafe/cast ptr:Sym vsym) 'defvar-state) DEFVAR-REACHED)
               (sym-set-src-loc (as ptr vsym) (cc 'line)))))))))
 
 (defn emit-defconst (call:(raw Node)):void
@@ -13438,15 +13478,15 @@
       ; constants "are stored i64 today" was wrong; measured.)
       (let (sym:ref:Sym (scope-define g-globals (name 's)
                           (as ptr (int-literal-type (val 'i))) null 0))
-        (.set! sym 'is-const 1)
-        (.set! sym 'const-val (fmt-i64 "%ld" (val 'i)))
+        (set! (sym 'is-const) 1)
+        (set! (sym 'const-val) (fmt-i64 "%ld" (val 'i)))
         ; W2b: the name stands for the literal — carry the VALUE, not just a
         ; flag, so a reference adapts at a use site (binop-result-type) and an
         ; out-of-range narrowing is caught (coerce-int-val) rather than wrapped.
-        (.set! sym 'const-lit 1)
-        (.set! sym 'const-lit-i64 (val 'i))
+        (set! (sym 'const-lit) 1)
+        (set! (sym 'const-lit-i64) (val 'i))
         ; Stage 12 N3: mark private when defined via `defconst-`.
-        (when (!= g-defining-private 0) (.set! sym 'sym-private 1))
+        (when (!= g-defining-private 0) (set! (sym 'sym-private) 1))
         ; Stage 15 B4 (R4): the defining site, which `guard-const-redefinition`
         ; reads to tell this form's own prescan Sym from a second `defconst`.
         (sym-set-src-loc (as ptr sym) (cc 'line))))))
@@ -13512,8 +13552,8 @@
         (conj g-deferror-name-sids name-sid)
         (conj g-deferror-msg-sids msg-sid)
         (let (sym:ref:Sym (scope-define g-globals (name-node 's) (as ptr ty-err) null 0))
-          (.set! sym 'is-const 1)
-          (.set! sym 'const-val (fmt-i32 "%d" id)))
+          (set! (sym 'is-const) 1)
+          (set! (sym 'const-val) (fmt-i32 "%d" id)))
         (return (ok 0))))))
 
 ; (err-name e) / (err-message e) — descriptor-table accessors over an Err value.
@@ -13598,8 +13638,8 @@
           ; silently winning at every use site.
           (guard-const-redefinition (name 's) (cc 'line))
           (let (sym:ref:Sym (scope-define g-globals (name 's) ty-i32 null 0))
-            (.set! sym 'is-const 1)
-            (.set! sym 'const-val (fmt-i32 "%d" (- i 2)))
+            (set! (sym 'is-const) 1)
+            (set! (sym 'const-val) (fmt-i32 "%d" (- i 2)))
             ; Stage 15 W2b: an enum member is a named integer literal too — it
             ; carries no distinct nominal type (its Sym type is plain i32, and
             ; `match` exhaustiveness keys off the EnumDef, not the type), so
@@ -13607,10 +13647,10 @@
             ; W2b removes one level over: `(= c:ui32 RED)` rejected while
             ; `(= c:ui32 0)` compiles. The ordinal always fits i32, so no
             ; int-literal-type call is needed (unlike defconst).
-            (.set! sym 'const-lit 1)
-            (.set! sym 'const-lit-i64 (as i64 (- i 2)))
+            (set! (sym 'const-lit) 1)
+            (set! (sym 'const-lit-i64) (as i64 (- i 2)))
             ; Stage 12 N3: mark private when defined via `defenum-`.
-            (when (!= g-defining-private 0) (.set! sym 'sym-private 1))
+            (when (!= g-defining-private 0) (set! (sym 'sym-private) 1))
             ; Stage 15 B4 (R4): the defining site — see `guard-const-redefinition`.
             (sym-set-src-loc (as ptr sym) (cc 'line))))
         (inc! i)))
@@ -13627,18 +13667,17 @@
               members:ptr (arena-alloc (* n (ptr-bytes)))
               ed:ptr:EnumDef (as ptr:EnumDef (arena-alloc (sizeof EnumDef))))
           (dotimes (j n)
-            (aset! (as ptr:ptr members) j
-                   (intern-str ((unsafe/cast ptr:Node (node-at cc (+ j 2))) 's))))
-          (.set! ed 'name (as CStr (qualify-name (en 's))))
-          (.set! ed 'members members)
-          (.set! ed 'num-members n)
+            (set! (aref (as ptr:ptr members) j) (intern-str ((unsafe/cast ptr:Node (node-at cc (+ j 2))) 's))))
+          (set! (ed 'name) (as CStr (qualify-name (en 's))))
+          (set! (ed 'members) members)
+          (set! (ed 'num-members) n)
           ; Stage 15 B5: the enum NAME's own provenance. Its members already
           ; carry `sym-private` on their Syms (the g-globals row).
-          (.set! ed 'priv g-defining-private)
-          (.set! ed 'src-ns g-current-ns)
+          (set! (ed 'priv) g-defining-private)
+          (set! (ed 'src-ns) g-current-ns)
           ; Stage 15 B4 (R4): the defining site — see `same-definition-site`.
-          (.set! ed 'src-file g-source-path)
-          (.set! ed 'src-line (cc 'line))
+          (set! (ed 'src-file) g-source-path)
+          (set! (ed 'src-line) (cc 'line))
           (conj g-enumdefs ed))))))
 
 (defn enumdef-lookup (name:CStr):?ptr:EnumDef
@@ -13681,8 +13720,8 @@
 ; reported as -1, since 0 already means "not a bitfield".
 (defn field-peel-attrs (field:ptr out-align:ptr:i32 out-bits:ptr:i32
                         strict:i32 line:i32):ptr
-  (aset! out-align 0 0)
-  (aset! out-bits 0 0)
+  (set! (aref out-align 0) 0)
+  (set! (aref out-bits 0) 0)
   (let (cur:ptr field
         more:i32 1)
     (while (!= more 0)
@@ -13713,14 +13752,14 @@
                       (when (and (!= strict 0) (= (align-attr-valid v) 0))
                         (die-at line
                           (fmt-i32 "':align %d' must be a power of two between 1 and 4096" v)))
-                      (aset! out-align 0 v))
+                      (set! (aref out-align 0) v))
                     (do
                       (when (and (!= strict 0) (or (< v 0) (> v 64)))
                         (die-at line
                           (fmt-i32 "':bits %d' must be between 0 and 64" v)))
                       ; 0 means "not a bitfield" in the Field slot, so C's
                       ; zero-width boundary member is carried as -1.
-                      (aset! out-bits 0 (if (= v 0) -1 v)))))
+                      (set! (aref out-bits 0) (if (= v 0) -1 v)))))
                 (let (tail:ptr ((unsafe/cast ptr:Node rest) 'cdr))
                   (when (= tail null)
                     (when (!= strict 0)
@@ -13822,10 +13861,10 @@
                 (node-line (as ptr field) (cc 'line)) "defstruct field")))
           (when (!= fbits 0)
             (reject-bitfield-type fty (node-line field (cc 'line)) fbits strict))
-          (aset! (as ptr:ptr fnm) i (intern-str fname))
-          (aset! (as ptr:ptr ftp) i fty)
-          (aset! (as ptr:i32 fal) i falign)
-          (aset! (as ptr:i32 fbw) i fbits)))
+          (set! (aref (as ptr:ptr fnm) i) (intern-str fname))
+          (set! (aref (as ptr:ptr ftp) i) fty)
+          (set! (aref (as ptr:i32 fal) i) falign)
+          (set! (aref (as ptr:i32 fbw) i) fbits)))
       (struct-set-fields sd fnm ftp nfields)
       (struct-set-field-aligns sd fal nfields)
       (struct-set-field-bits sd fbw nfields)
@@ -13863,8 +13902,8 @@
           (let (base:(raw Node) (name-node 'car))
             (when (and (!= base null) (= ((unsafe/cast ptr:Node base) 'kind) NODE-SYM))
               (if-some (st (struct-template-lookup (qualify-name ((unsafe/cast ptr:Node base) 's))))
-                (do (.set! st 'priv 1)
-                    (.set! st 'src-ns g-current-ns)
+                (do (set! (st 'priv) 1)
+                    (set! (st 'src-ns) g-current-ns)
                     (set! g-priv-bindings 1))
                 0))))
         (return))
@@ -13896,21 +13935,21 @@
             nfields:i32 (- (- (node-len cc) 2) nattrs))
         ; PK-1: before defstruct-fill-layout, since struct-set-fields is what
         ; makes the layout final and abi-field-align reads this on the way.
-        (when (!= (bit-and aflags STRUCT-ATTR-PACKED) 0) (.set! sd 'packed 1))
-        (when (!= aalign 0) (.set! sd 'align-attr aalign))
+        (when (!= (bit-and aflags STRUCT-ATTR-PACKED) 0) (set! (sd 'packed) 1))
+        (when (!= aalign 0) (set! (sd 'align-attr) aalign))
         ; Stage 15 B5: `defstruct-`'s privacy. Set here as well as in
         ; prescan-struct-names because the prescan may have created the entry
         ; and `register-struct` deliberately does not read g-defining-private
         ; (it is also the anon/closure/cheader StructDef allocator).
         (when (!= g-defining-private 0)
-          (.set! sd 'priv 1)
-          (.set! sd 'src-ns g-current-ns)
+          (set! (sd 'priv) 1)
+          (set! (sd 'src-ns) g-current-ns)
           (set! g-priv-bindings 1))
         ; Stage 15 B4: `register-struct` mints anon/closure/dyn-box/C-header
         ; StructDefs too, so the SOURCE definition's location is recorded here,
         ; where there is one. It is what the redefinition diagnostic blames.
-        (.set! sd 'src-file g-source-path)
-        (.set! sd 'src-line (cc 'line))
+        (set! (sd 'src-file) g-source-path)
+        (set! (sd 'src-line) (cc 'line))
         (check-ir-name-legal (name-node 'line) (name-node 's) (sd 'ir-name))
         (let (ftp:ptr (defstruct-fill-layout (as raw:StructDef sd) (as raw:Node cc) 1))
           (emit-struct-type-line g-out (as raw:StructDef sd))
@@ -13939,7 +13978,7 @@
                              (as ptr:ptr (addr-of fname)) (as ptr:ptr (addr-of tname)))
           (let (cell:ptr (make-cell (intern-symbol fname) null line))
             (when (= make-args null) (set! make-args cell))
-            (when (!= make-tail null) (.set! (unsafe/cast ptr:Node make-tail) 'cdr cell))
+            (when (!= make-tail null) (set! ((unsafe/cast ptr:Node make-tail) 'cdr) cell))
             (set! make-tail cell)))
         (set! fcur ((unsafe/cast ptr:Node fcur) 'cdr)))
       (let (body:ptr (make-cell 'make
@@ -13954,7 +13993,7 @@
         (while (!= fcur null)
           (let (cell:ptr (make-cell ((unsafe/cast ptr:Node fcur) 'car) null line))
             (when (= params null) (set! params cell))
-            (when (!= ptail null) (.set! (unsafe/cast ptr:Node ptail) 'cdr cell))
+            (when (!= ptail null) (set! ((unsafe/cast ptr:Node ptail) 'cdr) cell))
             (set! ptail cell))
           (set! fcur ((unsafe/cast ptr:Node fcur) 'cdr)))
         ; An empty params list is null — node-is-list treats null as a list.
@@ -13991,8 +14030,8 @@
           (let (base:(raw Node) (name-node 'car))
             (when (and (!= base null) (= ((unsafe/cast ptr:Node base) 'kind) NODE-SYM))
               (if-some (ut (union-template-lookup (qualify-name ((unsafe/cast ptr:Node base) 's))))
-                (do (.set! ut 'priv 1)
-                    (.set! ut 'src-ns g-current-ns)
+                (do (set! (ut 'priv) 1)
+                    (set! (ut 'src-ns) g-current-ns)
                     (set! g-priv-bindings 1))
                 0))))
         (return))
@@ -14035,7 +14074,7 @@
           (while (!= cur null)
             (emit-defn (union-ctor-form (name-node 's) ((unsafe/cast ptr:Node cur) 'car) (cc 'line)))
             (set! cur ((unsafe/cast ptr:Node cur) 'cdr))))
-        (.set! ud 'ctors-emitted 1)
+        (set! (ud 'ctors-emitted) 1)
         (set! g-out saved-out)))))
 
 (defn emit-extern (call:(raw Node)):void
@@ -14325,20 +14364,20 @@
                           ; the actual param is always ptr.
                           (when (and (!= has-rest 0) (= di (- nparams 1)))
                             (set! pty ty-ptr))
-                          (aset! (as ptr:ptr param-types) di pty)
-                          (aset! (as ptr:ptr param-names) di pname)
+                          (set! (aref (as ptr:ptr param-types) di) pty)
+                          (set! (aref (as ptr:ptr param-names) di) pname)
                           (when (!= is-opt 0)
-                            (aset! (as ptr:ptr opt-defaults) (- di required) default-node))))
+                            (set! (aref (as ptr:ptr opt-defaults) (- di required)) default-node))))
                       (inc! di)))
                   (inc! i)))
           ; Register function in globals
           (let (ft:ptr:Type (as ptr:Type (make-type TY-FN)))
-            (.set! ft 'ret ret)
+            (set! (ft 'ret) ret)
             (type-set-params ft param-types nparams)
-            (.set! ft 'variadic 0)
-            (.set! ft 'has-rest has-rest)
-            (.set! ft 'nopt nopt)
-            (.set! ft 'opt-defaults opt-defaults)
+            (set! (ft 'variadic) 0)
+            (set! (ft 'has-rest) has-rest)
+            (set! (ft 'nopt) nopt)
+            (set! (ft 'opt-defaults) opt-defaults)
             ; Solitary names (and fallback defns with no registered generic) keep
             ; their scope binding under @name. Overloaded methods dispatch through
             ; the generic registry, so no bare-name binding is installed.
@@ -14350,12 +14389,12 @@
                 ; registered and undefined. Marked HERE rather than in
                 ; `scope-define` because that is what ct-only means — a C header's
                 ; or a `.nuch`'s names still have real definitions to link against.
-                (when (!= g-ct-emitting 0) (.set! (unsafe/cast ptr:Sym fsym) 'ct-only 1))
-                (when (!= is-noreturn 0) (.set! (unsafe/cast ptr:Sym fsym) 'noreturn 1))
+                (when (!= g-ct-emitting 0) (set! ((unsafe/cast ptr:Sym fsym) 'ct-only) 1))
+                (when (!= is-noreturn 0) (set! ((unsafe/cast ptr:Sym fsym) 'noreturn) 1))
                 (when (!= is-returns-twice 0)
-                  (.set! (unsafe/cast ptr:Sym fsym) 'returns-twice 1))
+                  (set! ((unsafe/cast ptr:Sym fsym) 'returns-twice) 1))
                 ; Stage 12 N3: mark private when defined via `defn-`.
-                (when (!= g-defining-private 0) (.set! (unsafe/cast ptr:Sym fsym) 'sym-private 1)))))
+                (when (!= g-defining-private 0) (set! ((unsafe/cast ptr:Sym fsym) 'sym-private) 1)))))
           ; Codegen
           (reset-function-state)
           ; g-cur-fname is the @-less IR symbol of this function (for blockaddress
@@ -14667,11 +14706,11 @@
                                     pty:ptr (extract-name-and-type p (as ptr:ptr (addr-of pn))
                                                                     ((unsafe/cast ptr:Node p) 'line)))
                                 (if (!= pty null)
-                                  (aset! (as ptr:ptr ptypes) j pty)
-                                  (aset! (as ptr:ptr ptypes) j ty-i32)))
+                                  (set! (aref (as ptr:ptr ptypes) j) pty)
+                                  (set! (aref (as ptr:ptr ptypes) j) ty-i32)))
                               (inc! j)))
                           (let (ft:ptr:Type (as ptr:Type (make-type TY-FN)))
-                            (.set! ft 'ret ret)
+                            (set! (ft 'ret) ret)
                             (type-set-params ft ptypes nparams)
                             (scope-define g-globals fname (as ptr ft)
                                           (fmt-s "@%s" fname) 0)))))))))
@@ -14704,7 +14743,7 @@
                   (when (= bh "defn")
                      (set! is-tl 1) (set! g-out ct-def) (emit-defn (as ptr bf)))))
               (when (and (= is-tl 0) (< nexpr 256))
-                 (aset! (as ptr:ptr expr-forms) nexpr (as ptr bf))
+                 (set! (aref (as ptr:ptr expr-forms) nexpr) (as ptr bf))
                     (inc! nexpr)))
             (inc! bi))
 
@@ -14873,11 +14912,11 @@
             (when (!= (p 'kind) NODE-SYM)
               (die-at (node-line (as ptr p) encl)
                       (fmt-s "%s: param must be a symbol" what)))
-            (aset! (as ptr:ptr pnames) ai (p 's))
+            (set! (aref (as ptr:ptr pnames) ai) (p 's))
             (inc! ai)))
         (inc! pi))
-      (ptr-set! out-names pnames)
-      (ptr-set! out-variadic variadic)
+      (set! (deref out-names) pnames)
+      (set! (deref out-variadic) variadic)
       (return pcount))))
 
 (defn emit-defmacro (form:(raw Node)):void
@@ -14933,18 +14972,18 @@
           (when (>= (unsafe/cast i32 (count g-macros)) 256)
             (die-at (ff 'line) "defmacro: macro table full"))
           (let (mdef:ptr:MacroDef (as ptr:MacroDef (arena-alloc (sizeof MacroDef))))
-            (.set! mdef 'name (as ptr macro-key))
-            (.set! mdef 'jit-name jit-name)
-            (.set! mdef 'num-params pcount)
-            (.set! mdef 'variadic variadic)
+            (set! (mdef 'name) (as ptr macro-key))
+            (set! (mdef 'jit-name) jit-name)
+            (set! (mdef 'num-params) pcount)
+            (set! (mdef 'variadic) variadic)
             ; Stage 15 B5: `defmacro-`'s privacy (§13.2 — nothing enforced it
             ; before, because a macro has no Sym and Sym is where privacy lived).
-            (.set! mdef 'priv g-defining-private)
-            (.set! mdef 'src-ns g-current-ns)
+            (set! (mdef 'priv) g-defining-private)
+            (set! (mdef 'src-ns) g-current-ns)
             ; Stage 15 B4 (R4): the fields existed and nothing wrote them — see
             ; `same-definition-site`.
-            (.set! mdef 'src-file g-source-path)
-            (.set! mdef 'src-line (ff 'line))
+            (set! (mdef 'src-file) g-source-path)
+            (set! (mdef 'src-line) (ff 'line))
             (when (!= g-defining-private 0) (set! g-priv-bindings 1))
             (conj g-macros mdef))
 
@@ -14999,8 +15038,8 @@
                 ; keeps them null-tolerant and deref-allowed; the IR is still
                 ; `ptr`, so codegen is unchanged.
                 (let (raw-node-ty:ref:Type (make-type TY-PTR))
-                  (.set! raw-node-ty 'elem (parse-type-name "Node" 0))
-                  (.set! raw-node-ty 'pkind PTR-RAW)
+                  (set! (raw-node-ty 'elem) (parse-type-name "Node" 0))
+                  (set! (raw-node-ty 'pkind) PTR-RAW)
                   (dotimes (ei pcount)
                     (let (pname:ptr (aref (as ptr:ptr pnames) ei)
                           ; W9 item 39: the macro's own parameter slots are LLVM
@@ -15187,18 +15226,18 @@
                 mdef:ptr:MacroDef (as ptr:MacroDef (arena-alloc (sizeof MacroDef))))
             (inc! g-macrolet-id)
             ; The BARE spelling is the key — find-macrolet matches on it alone.
-            (.set! mdef 'name (as ptr mname))
-            (.set! mdef 'jit-name jit-name)
-            (.set! mdef 'num-params pcount)
-            (.set! mdef 'variadic variadic)
+            (set! (mdef 'name) (as ptr mname))
+            (set! (mdef 'jit-name) jit-name)
+            (set! (mdef 'num-params) pcount)
+            (set! (mdef 'variadic) variadic)
             ; No privacy: a macrolet binding has no name reachable outside its
             ; body, so `g-defining-private` — still 1 throughout a `defn-` body,
             ; since the top-level dispatcher brackets the whole emit-defn call —
             ; must not leak in here.
-            (.set! mdef 'priv 0)
-            (.set! mdef 'src-ns g-current-ns)
-            (.set! mdef 'src-file g-source-path)
-            (.set! mdef 'src-line bline)
+            (set! (mdef 'priv) 0)
+            (set! (mdef 'src-ns) g-current-ns)
+            (set! (mdef 'src-file) g-source-path)
+            (set! (mdef 'src-line) bline)
             (conj g-macrolet-stack mdef)
             ; The push/pop bracket is what makes compiling a macro *mid-function*
             ; safe; compile-macro-body calls reset-function-state, which would
@@ -15311,7 +15350,7 @@
       (let (buf:ptr (malloc (+ sz 1)))
         (when (= buf null) (perror "malloc") (exit 1))
         (let (nr:i64 (fread buf (as i64 1) sz f))
-          (aset! (as ptr:i8 buf) nr 0)
+          (set! (aref (as ptr:i8 buf) nr) 0)
           (fclose f)
           (return buf))))))
 
@@ -15339,7 +15378,7 @@
                   n:ptr (intern-symbol seg))
               (let (cell:ptr (make-cell n null line))
                 (when (= tail null) (set! result cell))
-                (when (!= tail null) (.set! (unsafe/cast ptr:Node tail) 'cdr cell))
+                (when (!= tail null) (set! ((unsafe/cast ptr:Node tail) 'cdr) cell))
                 (set! tail cell)))
             (set! start (+ i 1)))
       (set! i (+ i 1)))
@@ -15357,7 +15396,7 @@
       (let (rest:ptr ((unsafe/cast ptr:Node result) 'cdr))
         (when (and (!= rest null) (!= ((unsafe/cast ptr:Node rest) 'cdr) null))
           (let (wrap:ptr (make-cell rest null line))
-            (.set! (unsafe/cast ptr:Node result) 'cdr wrap)))))
+            (set! ((unsafe/cast ptr:Node result) 'cdr) wrap)))))
     (return result)))
 
 ; Desugar a single typed-name node (symbol with :).
@@ -15392,10 +15431,10 @@
       (when (and (= new-car (n 'car)) (= new-cdr (n 'cdr)))
         (return params))
       (let (c:ptr:Node (as ptr:Node (alloc-node)))
-        (.set! c 'kind NODE-CELL)
-        (.set! c 'line (n 'line))
-        (.set! c 'car new-car)
-        (.set! c 'cdr new-cdr)
+        (set! (c 'kind) NODE-CELL)
+        (set! (c 'line) (n 'line))
+        (set! (c 'car) new-car)
+        (set! (c 'cdr) new-cdr)
         (return (as ptr c))))))
 
 ; Desugar a let binding list: pairs of (name val) where name may be typed.
@@ -15418,7 +15457,7 @@
           (when (!= new-elem elem) (set! changed 1))
           (let (cell:ptr (make-cell new-elem null (cn 'line)))
             (when (= tail null) (set! result cell))
-            (when (!= tail null) (.set! (unsafe/cast ptr:Node tail) 'cdr cell))
+            (when (!= tail null) (set! ((unsafe/cast ptr:Node tail) 'cdr) cell))
             (set! tail cell)))
         (set! cur ((unsafe/cast ptr:Node cur) 'cdr))
         (inc! idx))
@@ -15438,10 +15477,10 @@
       (when (and (= new-car (n 'car)) (= new-cdr (n 'cdr)))
         (return forms))
       (let (c:ptr:Node (as ptr:Node (alloc-node)))
-        (.set! c 'kind NODE-CELL)
-        (.set! c 'line (n 'line))
-        (.set! c 'car new-car)
-        (.set! c 'cdr new-cdr)
+        (set! (c 'kind) NODE-CELL)
+        (set! (c 'line) (n 'line))
+        (set! (c 'car) new-car)
+        (set! (c 'cdr) new-cdr)
         (return (as ptr c))))))
 
 ; Desugar a single form.  Only touches binding positions of known forms.
@@ -16001,8 +16040,8 @@
                 (if (= (node-kind (as ptr nn)) NODE-SYM)
                   (when (= (as ptr (lookup-struct (as CStr (qualify-name (nn 's))))) null)
                     (let (sd:ref:StructDef (register-struct (as CStr (qualify-name (nn 's)))))
-                      (.set! sd 'src-file g-source-path)
-                      (.set! sd 'src-line (f 'line))))
+                      (set! (sd 'src-file) g-source-path)
+                      (set! (sd 'src-line) (f 'line))))
                   ; Stage 11: a parameterized head — (defstruct (Vector T) ...) —
                   ; registers a template here so defn signatures naming
                   ; (Vector i32) resolve in the signature prescan that follows.
@@ -16022,8 +16061,8 @@
                 (if (= (node-kind (as ptr nn)) NODE-SYM)
                   (when (= (as ptr (lookup-struct (as CStr (qualify-name (nn 's))))) null)
                     (let (sd:ref:StructDef (register-struct (as CStr (qualify-name (nn 's)))))
-                      (.set! sd 'src-file g-source-path)
-                      (.set! sd 'src-line (f 'line))))
+                      (set! (sd 'src-file) g-source-path)
+                      (set! (sd 'src-line) (f 'line))))
                   (when (= (node-kind (as ptr nn)) NODE-CELL)
                     (register-union-template (as ptr f))))))
             ; The descent. A CT body defines PROGRAM types (D9's ruling), so its
@@ -16206,7 +16245,7 @@
                                                             (as ptr:ptr (addr-of fname))
                                                             (ff 'line)))
                         (when (= fty null) (set! fty (as ptr ty-i32)))
-                        (aset! (as ptr:ptr ptypes) fi fty))
+                        (set! (aref (as ptr:ptr ptypes) fi) fty))
                       (inc! fi)
                       (set! fcur ((unsafe/cast ptr:Node fcur) 'cdr)))))
                 (generic-register-method (fmt-2s "%s-%s" (name-node 's) aname)
@@ -16351,18 +16390,18 @@
           (set! ty (as ptr (type-with-volatile (unsafe/cast ref:Type ty)))))
         (let (vsym:ref:Sym (scope-define g-globals name ty
                              (fmt-s "@%s" (def-ir-base name)) 1))
-          (when (!= g-ct-emitting 0) (.set! (unsafe/cast ptr:Sym vsym) 'ct-only 1))
+          (when (!= g-ct-emitting 0) (set! ((unsafe/cast ptr:Sym vsym) 'ct-only) 1))
           (when (!= g-defining-private 0)
-            (.set! (unsafe/cast ptr:Sym vsym) 'sym-private 1))
+            (set! ((unsafe/cast ptr:Sym vsym) 'sym-private) 1))
           ; AVR-6: a `:const` global is not assignable; emit-set reads this flag,
           ; and a `set!` emitted before the defvar's own file must see it too.
           (when (!= (bit-and attr-flags DECL-ATTR-CONST) 0)
-            (.set! (unsafe/cast ptr:Sym vsym) 'readonly-global 1))
+            (set! ((unsafe/cast ptr:Sym vsym) 'readonly-global) 1))
           ; G-4: this Sym is the "declared, not yet reached" half of the pair.
           ; `emit-defvar` appends a second Sym for the same key with
           ; DEFVAR-REACHED, and scope-lookup's backwards scan is what makes the
           ; state a reference sees flip at exactly the right moment.
-          (.set! (unsafe/cast ptr:Sym vsym) 'defvar-state DEFVAR-DECLARED)
+          (set! ((unsafe/cast ptr:Sym vsym) 'defvar-state) DEFVAR-DECLARED)
           (sym-set-src-loc (as ptr vsym) (cc 'line)))))))
 
 ; The `defconst`/`defconst-` half. The value is an integer literal and is
@@ -16382,11 +16421,11 @@
       (when (!= (strchr (name 's) 58) null) (return))
       (let (sym:ref:Sym (scope-define g-globals (name 's)
                           (as ptr (int-literal-type (val 'i))) null 0))
-        (.set! sym 'is-const 1)
-        (.set! sym 'const-val (fmt-i64 "%ld" (val 'i)))
-        (.set! sym 'const-lit 1)
-        (.set! sym 'const-lit-i64 (val 'i))
-        (when (!= g-defining-private 0) (.set! sym 'sym-private 1))
+        (set! (sym 'is-const) 1)
+        (set! (sym 'const-val) (fmt-i64 "%ld" (val 'i)))
+        (set! (sym 'const-lit) 1)
+        (set! (sym 'const-lit-i64) (val 'i))
+        (when (!= g-defining-private 0) (set! (sym 'sym-private) 1))
         ; Stage 15 B4 (R4): the site, so the emitter's own check can recognise
         ; this prescan Sym as the same definition rather than an earlier one.
         (sym-set-src-loc (as ptr sym) (cc 'line))))))
@@ -16404,11 +16443,11 @@
         (let (name:ptr:Node (unsafe/cast ptr:Node (node-at cc i)))
           (when (and (!= (as ptr name) null) (= (name 'kind) NODE-SYM))
             (let (sym:ref:Sym (scope-define g-globals (name 's) ty-i32 null 0))
-              (.set! sym 'is-const 1)
-              (.set! sym 'const-val (fmt-i32 "%d" (- i 2)))
-              (.set! sym 'const-lit 1)
-              (.set! sym 'const-lit-i64 (as i64 (- i 2)))
-              (when (!= g-defining-private 0) (.set! sym 'sym-private 1))
+              (set! (sym 'is-const) 1)
+              (set! (sym 'const-val) (fmt-i32 "%d" (- i 2)))
+              (set! (sym 'const-lit) 1)
+              (set! (sym 'const-lit-i64) (as i64 (- i 2)))
+              (when (!= g-defining-private 0) (set! (sym 'sym-private) 1))
               ; Stage 15 B4 (R4): the site — see `guard-const-redefinition`.
               (sym-set-src-loc (as ptr sym) (cc 'line)))))
         (inc! i)))))
@@ -17273,12 +17312,12 @@
 ; design/stage10/nullability.md N2 friction notes.)
 (defn import-list-push (list:(raw Node) path:CStr):ptr
   (let (n:ref:Node (new Node))
-    (.set! n 'kind NODE-STR)
-    (.set! n 'line 0)
-    (.set! n 'i 0)
-    (.set! n 's path)
-    (.set! n 'car null)
-    (.set! n 'cdr list)
+    (set! (n 'kind) NODE-STR)
+    (set! (n 'line) 0)
+    (set! (n 'i) 0)
+    (set! (n 's) path)
+    (set! (n 'car) null)
+    (set! (n 'cdr) list)
     (return n)))
 
 ; Stage 12: push a loaded-file record that also carries the [start, end) slice of
@@ -17287,12 +17326,12 @@
 ; re-processing — and re-emitting — the file's definitions.
 (defn import-list-push-slice (list:(raw Node) path:CStr start:i32 end:i32):ptr
   (let (n:ref:Node (new Node))
-    (.set! n 'kind NODE-STR)
-    (.set! n 'line end)
-    (.set! n 'i (as i64 start))
-    (.set! n 's path)
-    (.set! n 'car null)
-    (.set! n 'cdr list)
+    (set! (n 'kind) NODE-STR)
+    (set! (n 'line) end)
+    (set! (n 'i) (as i64 start))
+    (set! (n 's) path)
+    (set! (n 'car) null)
+    (set! (n 'cdr) list)
     (return n)))
 
 ; Remove the head of a Node-based string list, return new head.
@@ -17314,12 +17353,12 @@
 ; costs nothing on a compiling program and cannot perturb emitted IR.
 (defn note-import-cycle (path:CStr line:i32):void
   (let (n:ref:Node (new Node))
-    (.set! n 'kind NODE-STR)
-    (.set! n 'line line)
-    (.set! n 'i 0)
-    (.set! n 's path)
-    (.set! n 'car (unsafe/cast ptr:Node g-source-path))
-    (.set! n 'cdr g-import-cycles)
+    (set! (n 'kind) NODE-STR)
+    (set! (n 'line) line)
+    (set! (n 'i) 0)
+    (set! (n 's) path)
+    (set! (n 'car) (unsafe/cast ptr:Node g-source-path))
+    (set! (n 'cdr) g-import-cycles)
     (set! g-import-cycles (as ptr n))))
 
 ; Stage 15 W9 item 1. `path` is already on `g-importing`, so it is a cycle
@@ -17631,12 +17670,12 @@
                   (set! g-import-aliased
                         (import-list-push g-import-aliased (import-key path prefix)))
                   (let (pn:ref:Node (new Node))
-                    (.set! pn 'kind NODE-STR)
-                    (.set! pn 'line 0)
-                    (.set! pn 'i 0)
-                    (.set! pn 's prefix)
-                    (.set! pn 'car path)
-                    (.set! pn 'cdr g-import-prefixes)
+                    (set! (pn 'kind) NODE-STR)
+                    (set! (pn 'line) 0)
+                    (set! (pn 'i) 0)
+                    (set! (pn 's) prefix)
+                    (set! (pn 'car) path)
+                    (set! (pn 'cdr) g-import-prefixes)
                     (set! g-import-prefixes (as ptr pn))))))
             (return)))
         ; Not a Nucleus file — treat as C header.
@@ -17771,12 +17810,12 @@
             (set! g-import-aliased
                   (import-list-push g-import-aliased (import-key path prefix)))
             (let (pn:ref:Node (new Node))
-              (.set! pn 'kind NODE-STR)
-              (.set! pn 'line 0)
-              (.set! pn 'i 0)
-              (.set! pn 's prefix)
-              (.set! pn 'car path)
-              (.set! pn 'cdr g-import-prefixes)
+              (set! (pn 'kind) NODE-STR)
+              (set! (pn 'line) 0)
+              (set! (pn 'i) 0)
+              (set! (pn 's) prefix)
+              (set! (pn 'car) path)
+              (set! (pn 'cdr) g-import-prefixes)
               (set! g-import-prefixes (as ptr pn)))))))))
 
 ; `import-use` — the flatten-everything import (design decision 5). The old
@@ -17972,18 +18011,18 @@
 
 (defn register-rmacro (prefix:ptr wrap-sym:ptr):void
   (let (rm:ptr:RMacro (as ptr:RMacro (arena-alloc (sizeof RMacro))))
-    (.set! rm 'prefix prefix)
-    (.set! rm 'prefix-len (unsafe/cast i32 (strlen prefix)))
-    (.set! rm 'wrap-sym wrap-sym)
+    (set! (rm 'prefix) prefix)
+    (set! (rm 'prefix-len) (unsafe/cast i32 (strlen prefix)))
+    (set! (rm 'wrap-sym) wrap-sym)
     (conj g-rmacros rm)))
 
 ; G-5: appends to the vector it is handed — see add-binop's note.
 (defn register-rmacro (v:(ref (Vector (ref RMacro))) prefix:StrView wrap-sym:CStr):void
   (let (rm:ptr:RMacro (as ptr:RMacro (arena-alloc (sizeof RMacro)))
         pp:ptr:StrView (addr-of prefix))
-    (.set! rm 'prefix (as ptr (pp 'data)))
-    (.set! rm 'prefix-len (unsafe/cast i32 (pp 'len)))
-    (.set! rm 'wrap-sym wrap-sym)
+    (set! (rm 'prefix) (as ptr (pp 'data)))
+    (set! (rm 'prefix-len) (unsafe/cast i32 (pp 'len)))
+    (set! (rm 'wrap-sym) wrap-sym)
     (conj v (as ref:RMacro rm))))
 
 (defn build-rmacros ():(ref (Vector (ref RMacro)))
@@ -18160,16 +18199,16 @@
               psize:i32 (LLVMPointerSize td)
               ptr-ty:ptr (LLVMPointerType (LLVMInt8Type) 0)
               palign:i32 (LLVMABIAlignmentOfType td ptr-ty))
-          (.set! tgt 'triple triple)
-          (.set! tgt 'datalayout dl-str)
-          (.set! tgt 'ptr-size psize)
-          (.set! tgt 'ptr-align palign)
-          (.set! tgt 'cpu eff-cpu)
-          (.set! tgt 'features eff-features)
-          (.set! tgt 'abi eff-abi)
+          (set! (tgt 'triple) triple)
+          (set! (tgt 'datalayout) dl-str)
+          (set! (tgt 'ptr-size) psize)
+          (set! (tgt 'ptr-align) palign)
+          (set! (tgt 'cpu) eff-cpu)
+          (set! (tgt 'features) eff-features)
+          (set! (tgt 'abi) eff-abi)
           ; AVR-6: program address space from the datalayout `P<n>` token (1 on
           ; AVR, 0 everywhere else). Gates the function-value diagnostic.
-          (.set! tgt 'prog-as (datalayout-prog-as dl-str)))
+          (set! (tgt 'prog-as) (datalayout-prog-as dl-str)))
         (LLVMDisposeTargetData td)
         (LLVMDisposeTargetMachine tm)
         (return (as ref:Target tgt)))))))
@@ -18429,7 +18468,7 @@
     (free g-type-bufp)
     (free g-decl-bufp)
     (free g-def-bufp)
-    (aset! (as ptr:i64 len-out) 0 ir-sizep)
+    (set! (aref (as ptr:i64 len-out) 0) ir-sizep)
     (return ir-bufp)))
 
 ; Parse the in-memory IR, emit an object file, and (unless -c) invoke clang
@@ -18608,7 +18647,7 @@
       ; forms = (ns ...) . rest ; result = (ns ...) . (import-use prelude) . rest
       (let (ns-cell:ptr forms
             rest:ptr ((unsafe/cast ptr:Node forms) 'cdr))
-        (.set! (unsafe/cast ptr:Node ns-cell) 'cdr (make-cell import-form rest 0))
+        (set! ((unsafe/cast ptr:Node ns-cell) 'cdr) (make-cell import-form rest 0))
         (return ns-cell)))
     (return (make-cell import-form forms 0))))
 

@@ -18,8 +18,8 @@
 ;   ;; expands to: (filter pred (map transform items))
 ;
 ;   ; Arbitrary position via _:
-;   (-> val (aset! buf idx _))
-;   ;; expands to: (aset! buf idx val)
+;   (-> val (set! (aref buf idx) _))
+;   ;; expands to: (set! (aref buf idx) val)
 ;
 ;   ; Bare symbols:
 ;   (-> x f g)

@@ -25,10 +25,10 @@
   (return (aref p i)))
 
 (defn store-usize (p:ptr:ui8 i:usize v:ui8):void
-  (aset! p i v))
+  (set! (aref p i) v))
 
 (defn store-i32 (p:ptr:ui8 i:i32 v:ui8):void
-  (aset! p i v))
+  (set! (aref p i) v))
 
 ; `unsafe/ptr+` shares the same rule via gep-index-ir; it had its own copy.
 (defn bump-i32 (p:ptr:ui8 i:i32):ptr:ui8

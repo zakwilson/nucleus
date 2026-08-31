@@ -83,10 +83,10 @@
             (alloc-handle-alloc (addr-of s 'alloc) init-cap 1))
         (when (= (as ptr sbuf) null) (hashset-oom))
         (memset (as ptr sbuf) 0 (as i64 init-cap))
-        (.set! s 'keys kbuf)
-        (.set! s 'states sbuf)
-        (.set! s 'count 0)
-        (.set! s 'cap init-cap)))))
+        (set! (s 'keys) kbuf)
+        (set! (s 'states) sbuf)
+        (set! (s 'count) 0)
+        (set! (s 'cap) init-cap)))))
 
 ; hashset-init-alloc: initialise an empty HashSet with an explicit allocator
 ; handle (copied in), mirroring vector-init-alloc. The buffers are allocated
@@ -95,7 +95,7 @@
 (defn hashset-init-alloc ((s (ref (HashSet T))) (a (ref AllocHandle))):void
   (let (init-cap:usize 8
         elem-size:usize (as usize (sizeof T)))
-    (.set! s 'alloc (deref a))
+    (set! (s 'alloc) (deref a))
     (let ((kbuf (raw ui8))
           (alloc-handle-alloc (addr-of s 'alloc)
                               (* init-cap elem-size)
@@ -105,10 +105,10 @@
             (alloc-handle-alloc (addr-of s 'alloc) init-cap 1))
         (when (= (as ptr sbuf) null) (hashset-oom))
         (memset (as ptr sbuf) 0 (as i64 init-cap))
-        (.set! s 'keys kbuf)
-        (.set! s 'states sbuf)
-        (.set! s 'count 0)
-        (.set! s 'cap init-cap)))))
+        (set! (s 'keys) kbuf)
+        (set! (s 'states) sbuf)
+        (set! (s 'count) 0)
+        (set! (s 'cap) init-cap)))))
 
 ; ---------------------------------------------------------------------------
 ; Value/heap constructors (target-typed — design/stage14/target-typed-
@@ -167,8 +167,8 @@
                   (let (st:i32 (as i32 (aref new-sbuf (as i64 idx))))
                     (if (= st 0)
                       (do
-                        (aset! new-kbuf (as i64 idx) elem)
-                        (aset! new-sbuf (as i64 idx) 1)
+                        (set! (aref new-kbuf (as i64 idx)) elem)
+                        (set! (aref new-sbuf (as i64 idx)) 1)
                         (set! done 1))
                       (set! idx (bit-and (+ idx 1) new-mask)))))))
             (set! i (+ i 1)))
@@ -181,9 +181,9 @@
                              (s 'states)
                              old-cap
                              1)
-          (.set! s 'keys new-keys)
-          (.set! s 'states new-states)
-          (.set! s 'cap new-cap))))))
+          (set! (s 'keys) new-keys)
+          (set! (s 'states) new-states)
+          (set! (s 'cap) new-cap))))))
 
 ; ---------------------------------------------------------------------------
 ; insert: add elem to the set. No-op if already present. Grows by doubling
@@ -207,9 +207,9 @@
           ; Empty slot: insert here (or reuse first tombstone if we saw one).
           (do
             (let (ins-idx:usize (if (!= has-tomb 0) first-tomb idx))
-              (aset! kbuf (as i64 ins-idx) elem)
-              (aset! sbuf (as i64 ins-idx) 1)
-              (.set! self 'count (+ (self 'count) 1))
+              (set! (aref kbuf (as i64 ins-idx)) elem)
+              (set! (aref sbuf (as i64 ins-idx)) 1)
+              (set! (self 'count) (+ (self 'count) 1))
               (set! done 1)))
           (if (= st 2)
             ; Tombstone: remember first one, keep probing to check for dup.
@@ -270,8 +270,8 @@
             (if (= (aref kbuf (as i64 idx)) elem)
               ; Found: tombstone it.
               (do
-                (aset! sbuf (as i64 idx) 2)
-                (.set! self 'count (- (self 'count) 1))
+                (set! (aref sbuf (as i64 idx)) 2)
+                (set! (self 'count) (- (self 'count) 1))
                 (set! done 1))
               (set! idx (bit-and (+ idx 1) mask)))
             ; Tombstone: keep probing.
@@ -318,8 +318,8 @@
     (while (< i cap)
       (when (= (as i32 (aref sbuf (as i64 i))) 1)
         (when (contains? other (aref kbuf (as i64 i)))
-          (aset! sbuf (as i64 i) 2)
-          (.set! self 'count (- (self 'count) 1))))
+          (set! (aref sbuf (as i64 i)) 2)
+          (set! (self 'count) (- (self 'count) 1))))
       (set! i (+ i 1)))))
 
 ; intersection: keep in self only members also in other.
@@ -331,8 +331,8 @@
     (while (< i cap)
       (when (= (as i32 (aref sbuf (as i64 i))) 1)
         (when (not (contains? other (aref kbuf (as i64 i))))
-          (aset! sbuf (as i64 i) 2)
-          (.set! self 'count (- (self 'count) 1))))
+          (set! (aref sbuf (as i64 i)) 2)
+          (set! (self 'count) (- (self 'count) 1))))
       (set! i (+ i 1)))))
 
 ; ---------------------------------------------------------------------------
@@ -356,10 +356,10 @@
                        (self 'states)
                        (self 'cap)
                        1))
-  (.set! self 'keys null)
-  (.set! self 'states null)
-  (.set! self 'count 0)
-  (.set! self 'cap 0))
+  (set! (self 'keys) null)
+  (set! (self 'states) null)
+  (set! (self 'count) 0)
+  (set! (self 'cap) 0))
 
 ; ---------------------------------------------------------------------------
 ; HashSetIter T — a forward cursor over the occupied members of a HashSet.
@@ -393,18 +393,18 @@
         (if (= st 1)
           (do
             (let (v:T (aref kptr (as i64 (self 'pos))))
-              (.set! self 'pos (+ (self 'pos) 1))
+              (set! (self 'pos) (+ (self 'pos) 1))
               (return (some v))))
-          (.set! self 'pos (+ (self 'pos) 1)))))
+          (set! (self 'pos) (+ (self 'pos) 1)))))
     (return none)))
 
 ; hashset-iter: configure `it` to scan `s` from the start (borrowing buffers).
 ; Internal helper: the value-returning `iter` (Coll conformance) wraps it.
 (defn hashset-iter ((it (ref (HashSetIter T))) (s (ref (HashSet T)))):void
-  (.set! it 'kbuf (as ptr (s 'keys)))
-  (.set! it 'sbuf (as ptr (s 'states)))
-  (.set! it 'pos 0)
-  (.set! it 'cap (s 'cap)))
+  (set! (it 'kbuf) (as ptr (s 'keys)))
+  (set! (it 'sbuf) (as ptr (s 'states)))
+  (set! (it 'pos) 0)
+  (set! (it 'cap) (s 'cap)))
 
 ; ---------------------------------------------------------------------------
 ; Coll T (HashSetIter T) conformance. `iter` returns a fresh HashSetIter BY

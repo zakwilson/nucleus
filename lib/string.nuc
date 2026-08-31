@@ -56,8 +56,8 @@
         len:usize (_get v 'len)
         data:ptr:ui8 (as ptr:ui8 (as ptr (_get v 'data))))
     (let ((sv (ref StrView)) (alloca StrView))
-      (.set! sv 'data data)
-      (.set! sv 'len  len)
+      (set! (sv 'data) data)
+      (set! (sv 'len) len)
       (return (deref sv)))))
 
 ; ---------------------------------------------------------------------------
@@ -106,7 +106,7 @@
     (let (dst:ptr:ui8 (unsafe/ptr+ (as ptr:ui8 (as ptr (_get v 'data))) (as i64 (_get v 'len))))
       (char-encode-utf8 c dst)
       ; Bump len by clen.
-      (.set! v 'len (+ (_get v 'len) clen)))))
+      (set! (v 'len) (+ (_get v 'len) clen)))))
 
 ; string-push-str — append a StrView's bytes, validating UTF-8 first.
 ; Returns !i32 (0 on success): err invalid-utf8 if the StrView contains invalid UTF-8.
@@ -143,7 +143,7 @@
       (let (rem:usize (- len i)
             dr:DecodeResult (char-decode-utf8 (unsafe/ptr+ p (as i64 i)) rem))
         ; Truncate the Vector to i bytes.
-        (.set! v 'len i)
+        (set! (v 'len) i)
         (when (= ((addr-of dr) 'ok) 1)
           (return (some ((addr-of dr) 'ch))))
         ; Invalid byte — return replacement char U+FFFD.
@@ -151,7 +151,7 @@
 
 ; string-clear — set len to 0 (keep capacity).
 (defn string-clear ((self (ref String))):void
-  (.set! (addr-of self 'bytes) 'len 0))
+  (set! ((addr-of self 'bytes) 'len) 0))
 
 ; string-truncate — truncate to byte_len bytes.
 ; Returns !i32 (0 on success).
@@ -168,7 +168,7 @@
       (let (b:ui8 (aref (as ptr:ui8 (as ptr (_get v 'data))) (as i64 byte-len)))
         (when (= (bit-and (as ui32 b) 192) 128)
           (return (err! invalid-char-boundary)))))
-    (.set! v 'len byte-len)
+    (set! (v 'len) byte-len)
     (return (ok 0))))
 
 ; string-reserve — ensure at least `extra` additional bytes of capacity beyond
@@ -186,8 +186,8 @@
     (when (= cur-len 0)
       ; Free the buffer entirely.
       (alloc-handle-free (addr-of v 'alloc) (_get v 'data) (* (_get v 'cap) 1) 8)
-      (.set! v 'data null)
-      (.set! v 'cap 0)
+      (set! (v 'data) null)
+      (set! (v 'cap) 0)
       (return))
     ; Reallocate to exactly cur-len bytes.
     (let ((new-data (raw ui8))
@@ -195,8 +195,8 @@
       (when (= (as ptr new-data) null)
         (fprintf stderr "string: out of memory in shrink-to-fit\n")
         (exit 1))
-      (.set! v 'data new-data)
-      (.set! v 'cap cur-len))))
+      (set! (v 'data) new-data)
+      (set! (v 'cap) cur-len))))
 
 ; ---------------------------------------------------------------------------
 ; Validating constructors — copy bytes, check UTF-8.

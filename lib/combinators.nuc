@@ -309,9 +309,9 @@
         (let (key:T (aref buf (as i64 i))
               j:i64 (- (as i64 i) 1))
           (while (and (>= j 0) (!= (apply2 cmp key (aref buf j)) 0))
-            (aset! buf (+ j 1) (aref buf j))
+            (set! (aref buf (+ j 1)) (aref buf j))
             (set! j (- j 1)))
-          (aset! buf (+ j 1) key))
+          (set! (aref buf (+ j 1)) key))
         (set! i (+ i 1))))))
 
 ; sort-by — in-place ascending insertion sort keyed by a projection. keyf maps
@@ -326,9 +326,9 @@
               kk:K  (apply keyf (aref buf (as i64 i)))
               j:i64 (- (as i64 i) 1))
           (while (and (>= j 0) (< kk (apply keyf (aref buf j))))
-            (aset! buf (+ j 1) (aref buf j))
+            (set! (aref buf (+ j 1)) (aref buf j))
             (set! j (- j 1)))
-          (aset! buf (+ j 1) key))
+          (set! (aref buf (+ j 1)) key))
         (set! i (+ i 1))))))
 
 ; ===========================================================================

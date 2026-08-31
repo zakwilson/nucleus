@@ -131,7 +131,7 @@ example — behaviorally verified under `simavr`.
   `ui64`, and `usize`/`ssize` (the target pointer-int width — 16-bit on
   AVR, so `sizeof`/`usize` arithmetic is genuinely 16-bit, not silently
   widened).
-- Pointer indexing — `aref`, `aset!` and `unsafe/ptr+` — at the target pointer
+- Pointer indexing — `aref`, the `(aref a i)` place and `unsafe/ptr+` — at the target pointer
   width. The index may be any integer type: one narrower than a pointer is
   widened to 16 bits, one wider (`i32`, `i64`) is narrowed to 16, and `usize`
   is already the right width. The widening follows the index type's signedness
@@ -148,7 +148,7 @@ example — behaviorally verified under `simavr`.
   byte-for-byte identical to avr-gcc's own register-packing struct-by-value
   ABI (C struct-by-value interop is explicitly deferred — see below).
 - `:volatile` MMIO — `(ptr :volatile T)` loads/stores through `deref`/
-  `ptr-set!` compile to `load volatile`/`store volatile`; see
+  a `(deref p)` place store compile to `load volatile`/`store volatile`; see
   [Volatile qualifier](types.md#volatile-qualifier). This is what `lib/avr.nuc`'s
   register helpers are built on.
 - ISRs, via the generic `fn-attr` top-level directive (see
@@ -287,7 +287,7 @@ declarations, so `--emit-cheader`/`import-use "<header>.h"` sees nothing to
 extract. Two address conventions appear, and the files note which applies to
 each register: classic I/O-space SFRs (`_SFR_IO8`) need avr-libc's
 `__SFR_OFFSET` (`+0x20`) added to get the real data-space address Nucleus's
-`deref`/`ptr-set!` reads and writes, while memory-mapped SFRs (`_SFR_MEM`,
+`deref` reads and `(deref p)` place writes, while memory-mapped SFRs (`_SFR_MEM`,
 all of the AVR32DD20's `PORT_t` struct fields and the ATmega328P's USART0)
 are already absolute addresses and need no offset.
 

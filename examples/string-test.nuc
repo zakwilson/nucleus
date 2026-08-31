@@ -51,8 +51,8 @@
 
     ; ---- 3. string-push-str: append " World" ----------------------------------
     (let ((needle (ref StrView)) (alloca StrView))
-      (.set! needle 'data (as ptr:ui8 (as ptr " World")))
-      (.set! needle 'len  6)
+      (set! (needle 'data) (as ptr:ui8 (as ptr " World")))
+      (set! (needle 'len) 6)
       (let (r:!i32 (string-push-str s needle))
         (match r
           ((ok _) (printf "push-str=ok\n"))
@@ -71,8 +71,8 @@
 
     ; ---- 5a. string-from-view: success path ------------------------------------
     (let ((sv2 (ref StrView)) (alloca StrView))
-      (.set! sv2 'data (as ptr:ui8 (as ptr "hi")))
-      (.set! sv2 'len  2)
+      (set! (sv2 'data) (as ptr:ui8 (as ptr "hi")))
+      (set! (sv2 'len) 2)
       (let (r2:!String (string-from-view sv2))
         (match r2
           ((ok s2)
@@ -86,10 +86,10 @@
     ; ---- 5b. string-from-view: invalid UTF-8 → error --------------------------
     ; 0xFF is not a valid UTF-8 lead byte.
     (let (bad-buf:ptr:ui8 (as ptr:ui8 (malloc 1)))
-      (aset! bad-buf 0 255)
+      (set! (aref bad-buf 0) 255)
       (let ((bad-sv (ref StrView)) (alloca StrView))
-        (.set! bad-sv 'data bad-buf)
-        (.set! bad-sv 'len  1)
+        (set! (bad-sv 'data) bad-buf)
+        (set! (bad-sv 'len) 1)
         (let (r3:!String (string-from-view bad-sv))
           (match r3
             ((ok s3)

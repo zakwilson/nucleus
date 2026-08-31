@@ -6,12 +6,12 @@
 
 (defn main ():i32
   (let ((src (ref IntRangeIter)) (alloca IntRangeIter))
-    (.set! src 'start 1)
-    (.set! src 'end 5)
+    (set! (src 'start) 1)
+    (set! (src 'end) 5)
     (let ((mi (ref (MapIter IntRangeIter ((fn i32) (i32)))))
           (alloca (MapIter IntRangeIter ((fn i32) (i32)))))
-      (.set! (addr-of mi 'source) 'start 1)
-      (.set! (addr-of mi 'source) 'end 5)
-      (.set! mi 'f sq-fn)
+      (set! ((addr-of mi 'source) 'start) 1)
+      (set! ((addr-of mi 'source) 'end) 5)
+      (set! (mi 'f) sq-fn)
       (printf "sum of squares = %d\n" (reduce sum-fn 0 mi))))
   (return 0))

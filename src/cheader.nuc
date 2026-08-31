@@ -178,13 +178,13 @@
 (defn cdecl-site-push (list:(raw CDeclSite) fname:ptr file:ptr line:i32
                        sig:ptr form:(raw Node)):(raw CDeclSite)
   (let (e:ptr:CDeclSite (new CDeclSite))
-    (.set! e 'name (intern-str fname))
-    (.set! e 'file file)
-    (.set! e 'line line)
-    (.set! e 'sig sig)
-    (.set! e 'warned 0)
-    (.set! e 'form form)
-    (.set! e 'next list)
+    (set! (e 'name) (intern-str fname))
+    (set! (e 'file) file)
+    (set! (e 'line) line)
+    (set! (e 'sig) sig)
+    (set! (e 'warned) 0)
+    (set! (e 'form) form)
+    (set! (e 'next) list)
     (return (as raw:CDeclSite e))))
 
 ; `<nuc file>:<line>: warning: …` — blamed on the *explicit* declaration, which
@@ -196,7 +196,7 @@
   (let (s:ptr:CDeclSite (unsafe/cast ptr:CDeclSite site)
         h:ptr:CDeclSite (unsafe/cast ptr:CDeclSite hdr))
     (when (!= (s 'warned) 0) (return))
-    (.set! s 'warned 1)
+    (set! (s 'warned) 1)
     (let (hloc:ptr (fmt-sd "%s:%d" (h 'file) (h 'line))
           lead:ptr (fmt-3s "declaration of '%s' as %s conflicts with %s"
                            (s 'name) (s 'sig) hloc)
@@ -280,7 +280,7 @@
                                  (<= (as i32 (char-at buf pos)) 122))
                             (= (as i32 (char-at buf pos)) 95)))))
       (set! pos (+ pos 1)))
-    (ptr-set! out-end pos)
+    (set! (deref out-end) pos)
     (return (arena-strndup (unsafe/ptr+ (as ptr:i8 buf) start) (- pos start)))))
 
 ; Map a C type name to a Nucleus type.
@@ -509,8 +509,8 @@
               (set! p close)))
           (set! p (c-skip-ws buf p len))
           (set! more 1))))
-    (ptr-set! out-end p)
-    (aset! out-align 0 align)
+    (set! (deref out-end) p)
+    (set! (aref out-align 0) align)
     (return found)))
 
 (defn c-skip-attributes (buf:ptr pos:i64 len:i64):i64
@@ -684,7 +684,7 @@
     (while (and (< pos len) (= (char-at buf pos) 42))
       (inc! ptr-depth)
       (set! pos (c-skip-type-quals buf (+ pos 1) len)))
-    (ptr-set! out-end pos)
+    (set! (deref out-end) pos)
     ; W3c: enum base. The specifier loop has already taken an optional tag into
     ; `base-name`; what may remain is an inline `{ … }` enumerator list (for
     ; `enum { A, B } x` the loop stopped at the `{` without consuming anything,
@@ -697,7 +697,7 @@
           (while (and (< look len) (= (char-at buf look) 42))
             (inc! ptr-depth)
             (set! look (c-skip-type-quals buf (+ look 1) len)))
-          (ptr-set! out-end look)))
+          (set! (deref out-end) look)))
       (when (> ptr-depth 0) (return ty-ptr))
       (return (as ptr (c-int-type 0))))
     ; Struct/union base. struct {...} / struct Tag {...} parse the body to a
@@ -716,7 +716,7 @@
                                         tag is-union
                                         (if (!= spec-packed 0) 1 tail-packed)
                                         (if (!= spec-align 0) spec-align tail-align)))
-            (ptr-set! out-end sd-end)
+            (set! (deref out-end) sd-end)
             (when (!= sd null)
               (return (as ptr (type-for-sdef sd))))
             ; W3b: a BY-VALUE aggregate whose body we could not parse. `ptr` is
@@ -868,11 +868,11 @@
   (when (!= (cheader-skip-note fname) null) (return))
   (let (note:ptr (fmt-2s "%s: %s" (fmt-sd "%s:%d" g-cheader-file dline) why)
         n:ref:Node (new Node))
-    (.set! n 'kind NODE-STR)
-    (.set! n 'line 0)
-    (.set! n 's (intern-str (as ptr fname)))
-    (.set! n 'car note)
-    (.set! n 'cdr g-cheader-skipped)
+    (set! (n 'kind) NODE-STR)
+    (set! (n 'line) 0)
+    (set! (n 's) (intern-str (as ptr fname)))
+    (set! (n 'car) note)
+    (set! (n 'cdr) g-cheader-skipped)
     (set! g-cheader-skipped (as raw:Node n))
     (when (!= loud 0)
       (fprintf stderr "%s:%d: warning: skipping C declaration '%s': %s\n"
@@ -974,7 +974,7 @@
         (when (!= g-cheader-unrep 0) (set! bad 1) (set! done 1)))
       (when (and (= done 0) (>= np C-MAX-PARAMS)) (set! bad 1) (set! done 1))
       (when (= done 0)
-        (aset! (as ptr:ptr ptypes) np pt)
+        (set! (aref (as ptr:ptr ptypes) np) pt)
         (inc! np)
         (set! pos (c-skip-ws buf pos len))
         (if (and (< pos len) (= (char-at buf pos) 44))
@@ -986,9 +986,9 @@
     (when (!= bad 0) (return null))
     ; The same four lines the function's own signature is built from, below.
     (let (ft:ptr:Type (as ptr:Type (make-type TY-FN)))
-      (.set! ft 'ret rett)
+      (set! (ft 'ret) rett)
       (type-set-params ft ptypes np)
-      (.set! ft 'variadic variadic)
+      (set! (ft 'variadic) variadic)
       (return (as ptr ft)))))
 
 ; The `(*name)(args)` half of the same declarator, with `pos` at the first `(`.
@@ -998,7 +998,7 @@
 ; name the struct-member site used to drop.
 (defn c-parse-fnptr-decl (buf:ptr pos:i64 len:i64 rett:ptr
                           out-end:ptr:i64 out-name:ptr:ptr):ptr
-  (ptr-set! out-name null)
+  (set! (deref out-name) null)
   (let (q:i64 (c-skip-ws buf (+ pos 1) len)
         stars:i32 0
         dname:ptr null)
@@ -1014,8 +1014,8 @@
       (when (and (< after1 len) (= (char-at buf after1) 40))
         (set! has2 1)
         (set! after2 (c-skip-parens buf after1 len)))
-      (ptr-set! out-end (if (!= has2 0) after2 after1))
-      (ptr-set! out-name dname)
+      (set! (deref out-end) (if (!= has2 0) after2 after1))
+      (set! (deref out-name) dname)
       ; No `*`, or no argument list: a parenthesized declarator, not a function
       ; pointer.
       (when (or (= stars 0) (= has2 0)) (return null))
@@ -1051,7 +1051,7 @@
 ; Skip semicolon
 (when (and (< pos len) (= (char-at buf pos) 59))
   (set! pos (+ pos 1)))
-(ptr-set! out-end pos)
+(set! (deref out-end) pos)
 ; W3b validity gate (cheader.md §1.5). The declaration is consumed either
 ; way — `out-end` is already past its semicolon, so returning 1 keeps the
 ; caller from rescanning it — but a declaration the importer cannot
@@ -1085,9 +1085,9 @@
   (return 1))
 ; Register the function
 (let (ft:ptr:Type (as ptr:Type (make-type TY-FN)))
-  (.set! ft 'ret ret-type)
+  (set! (ft 'ret) ret-type)
   (type-set-params ft param-types num-params)
-  (.set! ft 'variadic is-variadic)
+  (set! (ft 'variadic) is-variadic)
   ; Only register if not already defined. B2b: a KEY question, paired
   ; with the `scope-define` it guards.
   (when (= (scope-lookup-key g-globals fname) null)
@@ -1095,9 +1095,9 @@
                           (fmt-s "@%s" fname) 0))
         ; Stage 10 Phase F1: mark known-noreturn libc functions.
         (when (c-fn-noreturn fname)
-          (.set! (as ptr:Sym csym) 'noreturn 1))
+          (set! ((as ptr:Sym csym) 'noreturn) 1))
         (when (c-fn-returns-twice fname)
-          (.set! (as ptr:Sym csym) 'returns-twice 1)))
+          (set! ((as ptr:Sym csym) 'returns-twice) 1)))
       (when (= fname "malloc")
         (set! g-malloc-decl-done 1))
       ; Emit LLVM declare, lowering a struct-by-value parameter or return
@@ -1183,8 +1183,7 @@
             (let (st:ptr:Type (as ptr:Type sigt)
                   ptypes:ptr (arena-alloc (* C-MAX-PARAMS 8)))
               (dotimes (j (st 'num-params))
-                (aset! (as ptr:ptr ptypes) j
-                       (as ptr ((field-at (st 'params) j) 'type))))
+                (set! (aref (as ptr:ptr ptypes) j) (as ptr ((field-at (st 'params) j) 'type))))
               (return (c-finish-fn-decl buf after2 len out-end fname retfn
                                         ptypes (st 'num-params) (st 'variadic)
                                         null 0 decl-start)))))))))
@@ -1257,12 +1256,12 @@
     (let (name-end:i64 0
           fname:ptr (c-read-ident buf pos len (as ptr:i64 (addr-of name-end))))
       (when (= (as i64 (strlen fname)) 0)
-         (ptr-set! out-end pos) (return 0))
+         (set! (deref out-end) pos) (return 0))
       (set! pos name-end)
       (set! pos (c-skip-ws buf pos len))
       ; Expect '('
       (when (or (>= pos len) (!= (char-at buf pos) 40))
-         (ptr-set! out-end pos) (return 0))
+         (set! (deref out-end) pos) (return 0))
       (set! pos (+ pos 1))
       ; Parse parameters
       (let (param-types:ptr (arena-alloc (* C-MAX-PARAMS 8))
@@ -1365,7 +1364,7 @@
                     ; so the gate below sees the real arity and skips the
                     ; declaration instead of emitting a truncated one.
                     (when (< num-params C-MAX-PARAMS)
-                      (aset! (as ptr:ptr param-types) num-params ptype))
+                      (set! (aref (as ptr:ptr param-types) num-params) ptype))
                     (inc! num-params)
                     (set! pos (c-skip-ws buf pos len))
                     ; Expect ',' or ')'
@@ -1430,7 +1429,7 @@
     (while (!= cur null)
       (let (e:ptr:Node (unsafe/cast ptr:Node cur))
         (when (= (as CStr (e 's)) header-path:CStr)
-          (ptr-set! out-len (e 'i))
+          (set! (deref out-len) (e 'i))
           (return (as ptr (e 'car))))
         (set! cur (e 'cdr)))))
   (let (flags:ptr (cheader-cc-target-flags)
@@ -1462,25 +1461,25 @@
       (cheader-preprocess-failed header-path flags)
       (set! buf null)
       (set! buf-len 0))
-    (when (= buf null) (ptr-set! out-len 0))
+    (when (= buf null) (set! (deref out-len) 0))
     (let (n:ref:Node (new Node))
-      (.set! n 'kind NODE-STR)
-      (.set! n 'line 0)
-      (.set! n 'i buf-len)
-      (.set! n 's (intern-str header-path))
-      (.set! n 'car buf)
-      (.set! n 'cdr g-cheader-cache)
+      (set! (n 'kind) NODE-STR)
+      (set! (n 'line) 0)
+      (set! (n 'i) buf-len)
+      (set! (n 's) (intern-str header-path))
+      (set! (n 'car) buf)
+      (set! (n 'cdr) g-cheader-cache)
       (set! g-cheader-cache (as raw:Node n)))
-    (ptr-set! out-len buf-len)
+    (set! (deref out-len) buf-len)
     (return buf)))
 
 ; Read all output from a popen'd command into a malloc'd buffer.
 ; Returns the buffer (null-terminated). Sets out-len to the length, and
 ; out-status to `pclose`'s wait status (0 = the command succeeded).
 (defn read-pipe-output (cmd:ptr out-len:ptr:i64 out-status:ptr:i32):ptr
-  (ptr-set! out-status 0)
+  (set! (deref out-status) 0)
   (let (fp:ptr (popen cmd "r"))
-    (when (= fp null) (ptr-set! out-len 0) (ptr-set! out-status -1) (return null))
+    (when (= fp null) (set! (deref out-len) 0) (set! (deref out-status) -1) (return null))
     (let (bufsz:i64 65536
           buf:ptr (malloc bufsz)
           total:i64 0)
@@ -1492,9 +1491,9 @@
              (set! buf (realloc buf bufsz)))
           (set! chunk (fread (unsafe/ptr+ (as ptr:i8 buf) total) 1 (- (- bufsz total) 1) fp))
           (set! total (+ total chunk))))
-      (ptr-set! (as ptr:i8 (unsafe/ptr+ (as ptr:i8 buf) total)) 0)
-      (ptr-set! out-status (pclose fp))
-      (ptr-set! out-len total)
+      (set! (deref (as ptr:i8 (unsafe/ptr+ (as ptr:i8 buf) total))) 0)
+      (set! (deref out-status) (pclose fp))
+      (set! (deref out-len) total)
       (return buf))))
 
 ; Process a C header file: run clang -E, parse function declarations.
@@ -1525,8 +1524,8 @@
                              align:i32):void
   ; PK-2: before struct-set-fields, because that is what makes the layout final
   ; and the type line below already spells `<{ … }>` from this bit.
-  (.set! sd 'packed packed)
-  (.set! sd 'align-attr align)
+  (set! (sd 'packed) packed)
+  (set! (sd 'align-attr) align)
   ; struct-set-fields also clears `opaque` (abi.nuc) — the layout is now known.
   (struct-set-fields sd fnames ftypes nfields)
   (struct-set-field-aligns (as raw:StructDef sd) faligns nfields)
@@ -1535,7 +1534,7 @@
     ; Named union: members at offset 0; the IR type definition is deferred
     ; until member layouts are final (drain-pending-union-irs).
     (do
-      (.set! sd 'is-union 1)
+      (set! (sd 'is-union) 1)
       (conj g-pending-unions sd))
     (do
       (emit-struct-type-line g-type-stream (as raw:StructDef sd))
@@ -1552,17 +1551,17 @@
 ; an entry that was registered opaque before its definition was reached. The
 ; `fields` Vector is immutable after build, so sharing the handle is sound.
 (defn cheader-adopt-shape (dst:ptr:StructDef src:ptr:StructDef):void
-  (.set! dst 'fields (src 'fields))
-  (.set! dst 'num-fields (src 'num-fields))
+  (set! (dst 'fields) (src 'fields))
+  (set! (dst 'num-fields) (src 'num-fields))
   ; PK-2: sharing the field table is not sharing the LAYOUT — an alias that
   ; dropped this printed `{ … }` for a `<{ … }>` type and sized it as unpacked.
-  (.set! dst 'packed (src 'packed))
-  (.set! dst 'align-attr (src 'align-attr))
-  (.set! dst 'opaque 0)
+  (set! (dst 'packed) (src 'packed))
+  (set! (dst 'align-attr) (src 'align-attr))
+  (set! (dst 'opaque) 0)
   (if (!= (src 'is-union) 0)
     ; Union: same deferred-definition path as the tag (drain-pending-union-irs).
     (do
-      (.set! dst 'is-union 1)
+      (set! (dst 'is-union) 1)
       (conj g-pending-unions dst))
     (do
       (emit-struct-type-line g-type-stream (as raw:StructDef dst))
@@ -1591,11 +1590,11 @@
   (let (existing:ptr (lookup-struct name))
     (when (!= existing null) (return existing)))
   (let (sd:ptr:StructDef (register-struct (intern-str name)))
-    (.set! sd 'opaque 1)
-    (.set! sd 'is-union is-union)
-    (.set! sd 'alias-of (as raw:StructDef alias-of-sd))
-    (.set! sd 'src-file g-cheader-file)
-    (.set! sd 'src-line line)
+    (set! (sd 'opaque) 1)
+    (set! (sd 'is-union) is-union)
+    (set! (sd 'alias-of) (as raw:StructDef alias-of-sd))
+    (set! (sd 'src-file) g-cheader-file)
+    (set! (sd 'src-line) line)
     (return (as ptr sd))))
 
 ; ============================================================
@@ -1654,7 +1653,7 @@
               (set! v (+ (* v base) (as i64 d)))
               (set! p (+ p 1))
               (set! more 1)))))
-      (when (= p start) (ptr-set! ok 0)))
+      (when (= p start) (set! (deref ok) 0)))
     (let (more:i32 1)
       (while (!= more 0)
         (set! more 0)
@@ -1663,7 +1662,7 @@
             (when (or (or (= c 117) (= c 85)) (or (= c 108) (= c 76)))
               (set! p (+ p 1))
               (set! more 1))))))
-    (ptr-set! out-end p)
+    (set! (deref out-end) p)
     (return v)))
 
 ; `sizeof (<type>)`, with `pos` just past the `(`.
@@ -1678,21 +1677,21 @@
     (set! ty (c-parse-type buf pos len (as ptr:i64 (addr-of te))))
     ; An unresolvable name comes back as `ptr` with the flag raised, so folding
     ; its size here would be exactly the silent wrong answer L1/L2 remove.
-    (when (or (= ty null) (!= g-cheader-unrep 0)) (ptr-set! ok 0) (set! ty null))
+    (when (or (= ty null) (!= g-cheader-unrep 0)) (set! (deref ok) 0) (set! ty null))
     (set! g-cheader-unrep save-unrep)
     (set! g-cheader-unrep-why save-why)
     (set! g-cheader-unrep-quiet save-quiet)
     (set! te (c-skip-body-ws buf te len))
     (if (and (< te len) (= (char-at buf te) 41))
       (set! te (+ te 1))
-      (ptr-set! ok 0))
-    (ptr-set! out-end te)
+      (set! (deref ok) 0))
+    (set! (deref out-end) te)
     (when (!= ty null) (set! n (as i64 (abi-sizeof ty))))
     (return n)))
 
 (defn c-cexpr-primary (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
   (let (p:i64 (c-skip-body-ws buf pos len))
-    (when (>= p len) (ptr-set! ok 0) (ptr-set! out-end p) (return 0))
+    (when (>= p len) (set! (deref ok) 0) (set! (deref out-end) p) (return 0))
     (let (c:i32 (char-at buf p))
       (when (!= (isdigit c) 0)
         (return (c-cexpr-number buf p len out-end ok)))
@@ -1706,8 +1705,8 @@
           (set! e (c-skip-body-ws buf e len))
           (if (and (< e len) (= (char-at buf e) 41))
             (set! e (+ e 1))
-            (ptr-set! ok 0))
-          (ptr-set! out-end e)
+            (set! (deref ok) 0))
+          (set! (deref out-end) e)
           (return v)))
       (let (e:i64 0
             tok:ptr (c-read-ident buf p len (as ptr:i64 (addr-of e))))
@@ -1715,13 +1714,13 @@
           (let (q:i64 (c-skip-body-ws buf e len))
             (when (and (< q len) (= (char-at buf q) 40))
               (return (c-cexpr-sizeof buf (+ q 1) len out-end ok))))))
-      (ptr-set! ok 0)
-      (ptr-set! out-end p)
+      (set! (deref ok) 0)
+      (set! (deref out-end) p)
       (return 0))))
 
 (defn c-cexpr-unary (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
   (let (p:i64 (c-skip-body-ws buf pos len))
-    (when (>= p len) (ptr-set! ok 0) (ptr-set! out-end p) (return 0))
+    (when (>= p len) (set! (deref ok) 0) (set! (deref out-end) p) (return 0))
     (let (c:i32 (char-at buf p))
       (when (= c 43) (return (c-cexpr-unary buf (+ p 1) len out-end ok)))
       (when (= c 45)
@@ -1741,14 +1740,14 @@
               (let (e2:i64 0
                     r:i64 (c-cexpr-unary buf (+ p 1) len (as ptr:i64 (addr-of e2)) ok))
                 ; Executing the division would SIGFPE the compiler itself.
-                (when (and (!= c 42) (= r 0)) (ptr-set! ok 0) (set! r 1))
+                (when (and (!= c 42) (= r 0)) (set! (deref ok) 0) (set! r 1))
                 (cond
                   (= c 42) (set! v (* v r))
                   (= c 47) (set! v (/ v r))
                   true     (set! v (% v r)))
                 (set! e e2)
                 (set! more 1)))))))
-    (ptr-set! out-end e)
+    (set! (deref out-end) e)
     (return v)))
 
 (defn c-cexpr-add (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
@@ -1766,7 +1765,7 @@
                 (if (= c 43) (set! v (+ v r)) (set! v (- v r)))
                 (set! e e2)
                 (set! more 1)))))))
-    (ptr-set! out-end e)
+    (set! (deref out-end) e)
     (return v)))
 
 (defn c-cexpr-shift (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
@@ -1782,11 +1781,11 @@
               (let (e2:i64 0
                     r:i64 (c-cexpr-add buf (+ p 2) len (as ptr:i64 (addr-of e2)) ok))
                 ; A count outside [0,64) is poison, not a value.
-                (when (or (< r 0) (>= r 64)) (ptr-set! ok 0) (set! r 0))
+                (when (or (< r 0) (>= r 64)) (set! (deref ok) 0) (set! r 0))
                 (if (= c 60) (set! v (bit-shl v r)) (set! v (bit-shr v r)))
                 (set! e e2)
                 (set! more 1)))))))
-    (ptr-set! out-end e)
+    (set! (deref out-end) e)
     (return v)))
 
 ; One `[ … ]` extent, `pos` at the `[`. Sets out-end past the `]`; clears `ok`
@@ -1797,10 +1796,10 @@
     (set! e (c-skip-body-ws buf e len))
     (if (and (< e len) (= (char-at buf e) 93))
       (set! e (+ e 1))
-      (ptr-set! ok 0))
-    (ptr-set! out-end e)
+      (set! (deref ok) 0))
+    (set! (deref out-end) e)
     ; The clamp above is what makes the narrowing exact.
-    (when (or (< v 1) (> v 2147483647)) (ptr-set! ok 0) (set! v 1))
+    (when (or (< v 1) (> v 2147483647)) (set! (deref ok) 0) (set! v 1))
     (return (unsafe/cast i32 v))))
 
 ; C1a: `[]` with no extent. In member position that is C99's flexible array
@@ -1810,7 +1809,7 @@
   (let (p:i64 (c-skip-body-ws buf (+ pos 1) len))
     (when (>= p len) (return 0))
     (when (!= (char-at buf p) 93) (return 0))
-    (ptr-set! out-end (+ p 1))
+    (set! (deref out-end) (+ p 1))
     (return 1)))
 
 ; Wrap `elem` in the `[…]` extents at `pos`, or return `elem` unchanged when
@@ -1835,10 +1834,10 @@
                                   (as ptr:i32 (addr-of ok)))))
         (when (>= nd 8) (set! ok 0))
         (when (!= ok 0)
-          (aset! (as ptr:i32 dims) nd n)
+          (set! (aref (as ptr:i32 dims) nd) n)
           (inc! nd))
         (set! p (c-skip-body-ws buf ee len))))
-    (ptr-set! out-end p)
+    (set! (deref out-end) p)
     (when (= ok 0) (return null))
     (let (t:ptr elem
           k:i32 (- nd 1))
@@ -1867,7 +1866,7 @@
   (let (decl-line:i32 (cheader-line-at buf pos))
   ; Expect '{' at pos.
   (when (or (>= pos len) (!= (char-at buf pos) 123))
-    (ptr-set! out-end pos) (return null))
+    (set! (deref out-end) pos) (return null))
   ; Pre-scan: locate the matching '}' so out-end is set ONCE here.
   ; All failure paths can simply `return null` and the caller's pos is
   ; correctly positioned past the body.
@@ -1879,7 +1878,7 @@
       (when (> depth 0)
         (set! body-end (+ body-end 1))))
     (when (< body-end len) (set! body-end (+ body-end 1)))
-    (ptr-set! out-end body-end))
+    (set! (deref out-end) body-end))
   (set! pos (+ pos 1))
   (let (max-fields:i32 64
         fnames:ptr (arena-alloc (* 64 8))
@@ -2038,10 +2037,10 @@
       (when (= done 0)
         (when (>= nfields max-fields) (set! bad 1) (set! done 1)))
       (when (= done 0)
-        (aset! (as ptr:ptr fnames) nfields (intern-str fname))
-        (aset! (as ptr:ptr ftypes) nfields fty)
-        (aset! (as ptr:i32 faligns) nfields falign)
-        (aset! (as ptr:i32 fbits) nfields fbit)
+        (set! (aref (as ptr:ptr fnames) nfields) (intern-str fname))
+        (set! (aref (as ptr:ptr ftypes) nfields) fty)
+        (set! (aref (as ptr:i32 faligns) nfields) falign)
+        (set! (aref (as ptr:i32 fbits) nfields) fbit)
         (inc! nfields)
         (set! pos (+ pos 1))))
     ; Every exit below this point is covered: nothing after the loop parses a
@@ -2078,8 +2077,8 @@
           (struct-upgrade-aliases esd)
           (return existing))))
     (let (sd:ptr:StructDef (register-struct (arena-strdup tag-name)))
-      (.set! sd 'src-file g-cheader-file)
-      (.set! sd 'src-line decl-line)
+      (set! (sd 'src-file) g-cheader-file)
+      (set! (sd 'src-line) decl-line)
       (cheader-struct-define sd fnames ftypes faligns fbits nfields is-union packed align)
       (return sd)))))
 
@@ -2140,9 +2139,9 @@
       (let (prior:ptr (lookup-struct dn))
         (if (= prior null)
           (let (alias:ptr:StructDef (register-struct (arena-strdup dn)))
-            (.set! alias 'alias-of (as raw:StructDef sd))
-            (.set! alias 'src-file g-cheader-file)
-            (.set! alias 'src-line tag-line)
+            (set! (alias 'alias-of) (as raw:StructDef sd))
+            (set! (alias 'src-file) g-cheader-file)
+            (set! (alias 'src-line) tag-line)
             (cheader-adopt-shape alias (as ptr:StructDef sd)))
           (let (psd:ptr:StructDef (as ptr:StructDef prior))
             (when (!= (psd 'opaque) 0)
@@ -2165,7 +2164,7 @@
       (= tok "union")
         (do (set! is-union 1) (set! pos te))
       true
-        (do (ptr-set! out-end pos) (return 0)))
+        (do (set! (deref out-end) pos) (return 0)))
     (when (!= is-typedef 0)
       (set! pos (c-skip-ws buf pos len))
       (let (te2:i64 0
@@ -2173,7 +2172,7 @@
         (cond
           (= t2 "struct") 0
           (= t2 "union" ) (set! is-union 1)
-          true (do (ptr-set! out-end pos) (return 0)))
+          true (do (set! (deref out-end) pos) (return 0)))
         (set! pos te2)))
     ; After 'struct': an optional attribute run, then optional tag, then body.
     ; PK-2: the run is read here rather than skipped — it is one of the three
@@ -2201,10 +2200,10 @@
       ; `ptr:Foo` resolves; a by-value use is refused later with this header:line.
       (when (or (>= pos len) (!= (char-at buf pos) 123))
         (when (= tag null)
-          (ptr-set! out-end pos) (return 0))
+          (set! (deref out-end) pos) (return 0))
         (let (tag-sd:ptr (cheader-register-opaque tag tag-line is-union null))
           (when (>= pos len)
-            (ptr-set! out-end pos) (return 0))
+            (set! (deref out-end) pos) (return 0))
           (if (!= is-typedef 0)
             ; `typedef struct Foo Bar;` — Bar is a second opaque entry sharing
             ; Foo's (future) layout through alias-of. When Bar spells the same
@@ -2217,7 +2216,7 @@
                 ; Not a plain identifier — `*Bar`, `(*fp)(…)`, an array
                 ; declarator. The tag is registered; the declaration itself is
                 ; a shape we do not model, so fall back to the caller's skip.
-                (ptr-set! out-end pos) (return 0))
+                (set! (deref out-end) pos) (return 0))
               (set! pos ne)
               (let (ab:i64 (c-skip-ws buf ne len)
                     tsd:ptr:StructDef (as ptr:StructDef tag-sd))
@@ -2239,11 +2238,11 @@
             ; Plain `struct Foo;`. Anything else after the tag (a `*` declarator,
             ; a variable name, a function declarator) is not a forward declaration.
             (when (!= (char-at buf pos) 59)
-              (ptr-set! out-end pos) (return 0)))
+              (set! (deref out-end) pos) (return 0)))
           (set! pos (c-skip-ws buf pos len))
           (when (and (< pos len) (= (char-at buf pos) 59))
             (set! pos (+ pos 1)))
-          (ptr-set! out-end pos)
+          (set! (deref out-end) pos)
           (return 1)))
       (let (body-end:i64 0
             tail-align:i32 0
@@ -2299,7 +2298,7 @@
         ; Consume trailing semicolon.
         (when (and (< pos len) (= (char-at buf pos) 59))
           (set! pos (+ pos 1)))
-        (ptr-set! out-end pos)
+        (set! (deref out-end) pos)
         (return 1))))))
 
 ; Stage 15 W3c (cheader.md §1.4): record a NON-aggregate top-level typedef —
@@ -2319,7 +2318,7 @@
 (defn c-parse-typedef-decl (buf:ptr pos:i64 len:i64 out-end:ptr:i64):i32
   (let (te:i64 0
         tok:ptr (c-read-ident buf pos len (as ptr:i64 (addr-of te))))
-    (when (!= tok "typedef") (ptr-set! out-end pos) (return 0))
+    (when (!= tok "typedef") (set! (deref out-end) pos) (return 0))
     (let (dline:i32 (cheader-line-at buf pos)
           save-unrep:i32 g-cheader-unrep
           save-why:ptr g-cheader-unrep-why
@@ -2369,7 +2368,7 @@
             ; No declarator identifier — a shape not modelled at all. Decline, so
             ; nothing is recorded under a name that is not the declarator's.
             (when (= (strlen dn) 0)
-              (ptr-set! out-end pos) (return 0))
+              (set! (deref out-end) pos) (return 0))
             (set! name dn)
             (set! p ne)))
         (set! p (c-skip-ws buf p len))
@@ -2415,7 +2414,7 @@
                       (set! dty at2))))
                 (c-typedef-record dn2 (if (!= dbad 0) null dty) g-cheader-file dline)
                 (set! p (c-skip-ws buf p len))))))
-        (ptr-set! out-end (cheader-skip-to-semi buf p len))
+        (set! (deref out-end) (cheader-skip-to-semi buf p len))
         (return 1)))))
 
 ; ============================================================
@@ -2920,9 +2919,9 @@
     (let (s:ptr (arena-alloc n)
           i:i64 1)
       (while (< i n)
-        (aset! (as ptr:i8 s) (- i 1) (aref (as ptr:i8 irname) i))
+        (set! (aref (as ptr:i8 s) (- i 1)) (aref (as ptr:i8 irname) i))
         (set! i (+ i 1)))
-      (aset! (as ptr:i8 s) (- n 1) 0)
+      (set! (aref (as ptr:i8 s) (- n 1)) 0)
       (return s))))
 
 ; Stage 15 W9 item 37. A type this unit does not define needs the defining unit's
@@ -3018,7 +3017,7 @@
       (set! cur g-cheader-c-includes)
       (while (!= cur null)
         (set! i (- i 1))
-        (aset! (as ptr:ptr arr) i ((unsafe/cast ptr:Node cur) 's))
+        (set! (aref (as ptr:ptr arr) i) ((unsafe/cast ptr:Node cur) 's))
         (set! cur ((unsafe/cast ptr:Node cur) 'cdr)))
       (dotimes (j n)
         (printf "%s\n"
@@ -3036,7 +3035,7 @@
       (set! cur g-cheader-includes)
       (while (!= cur null)
         (set! i (- i 1))
-        (aset! (as ptr:ptr arr) i ((unsafe/cast ptr:Node cur) 's))
+        (set! (aref (as ptr:ptr arr) i) ((unsafe/cast ptr:Node cur) 's))
         (set! cur ((unsafe/cast ptr:Node cur) 'cdr)))
       (dotimes (j n)
         (printf "#include \"%s\"\n"
@@ -3187,9 +3186,9 @@
           (split-typed (n 's) (as ptr:ptr (addr-of bname)) (as ptr:ptr (addr-of tname)))
           (when (= tname null) (return null))
           (let (tn:ptr:Node (as ptr:Node (alloc-node)))
-            (.set! tn 'kind NODE-SYM)
-            (.set! tn 'line line)
-            (.set! tn 's tname)
+            (set! (tn 'kind) NODE-SYM)
+            (set! (tn 'line) line)
+            (set! (tn 's) tname)
             (return (as ptr tn))))
       NODE-CELL
         (let (rest:ptr (n 'cdr))

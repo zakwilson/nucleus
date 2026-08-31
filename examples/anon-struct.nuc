@@ -3,8 +3,8 @@
 ; Anonymous struct as a let-binding type (list form for the name+type).
 (defn local-anon ():i32
   (let ((p (ptr (struct x:i32 y:i32))) (alloca (struct x:i32 y:i32)))
-    (.set! p 'x 3)
-    (.set! p 'y 4)
+    (set! (p 'x) 3)
+    (set! (p 'y) 4)
     (return (+ (get p 'x) (get p 'y)))))
 
 ; Nested anonymous struct as a value-typed defstruct field. Use .&
@@ -15,9 +15,9 @@
 
 (defn nested-field ():i32
   (let (o:ptr:Outer (alloca Outer))
-    (.set! (addr-of o 'point) 'x 10)
-    (.set! (addr-of o 'point) 'y 20)
-    (.set! o 'tag 7)
+    (set! ((addr-of o 'point) 'x) 10)
+    (set! ((addr-of o 'point) 'y) 20)
+    (set! (o 'tag) 7)
     (return (+ (get (addr-of o 'point) 'x) (+ (get (addr-of o 'point) 'y) (get o 'tag))))))
 
 ; Anonymous struct via pointer as function parameter type. Two call
@@ -28,13 +28,13 @@
 (defn pass-twice ():i32
   (let ((a (ptr (struct x:i32 y:i32))) (alloca (struct x:i32 y:i32))
         (b (ptr (struct x:i32 y:i32))) (alloca (struct x:i32 y:i32)))
-    (.set! a 'x 100) (.set! a 'y 1)
-    (.set! b 'x 50)  (.set! b 'y 5)
+    (set! (a 'x) 100) (set! (a 'y) 1)
+    (set! (b 'x) 50)  (set! (b 'y) 5)
     (return (+ (take-anon a) (take-anon b)))))
 
 ; (ptr (struct ...)) round-trip.
 (defn write-via-ptr ((p (ptr (struct v:i32)))):void
-  (.set! p 'v 99))
+  (set! (p 'v) 99))
 
 (defn ptr-round-trip ():i32
   (let ((s (ptr (struct v:i32))) (alloca (struct v:i32)))

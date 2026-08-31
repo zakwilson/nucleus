@@ -78,11 +78,11 @@
     ; tokenizes a colon-typed gensym binding as one symbol and the type is lost
     ; (context/macros-jit.md). The body uses ~h only in value position.
     `(let ((~h (ptr Handler)) (alloca Handler))
-       (.set! ~h 'what ~(node-at spec 0))
-       (.set! ~h 'rty (type-token ~(node-at spec 1)))
-       (.set! ~h 'hfn (unsafe/cast ptr ~(node-at spec 2)))
-       (.set! ~h 'ctx ~(node-at spec 3))
-       (.set! ~h 'prev g-handler-top)
+       (set! (~h 'what) ~(node-at spec 0))
+       (set! (~h 'rty) (type-token ~(node-at spec 1)))
+       (set! (~h 'hfn) (unsafe/cast ptr ~(node-at spec 2)))
+       (set! (~h 'ctx) ~(node-at spec 3))
+       (set! (~h 'prev) g-handler-top)
        (set! g-handler-top (as ptr ~h))
        (defer (set! g-handler-top (~h 'prev)))
        ~@body)))

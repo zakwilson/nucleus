@@ -52,19 +52,19 @@
 (defn main ():i32
   ; Member access by call — the Struct default. (p x) == (_get p x).
   (let (p:ptr:Point (as ptr:Point (malloc (as i64 (sizeof Point)))))
-    (.set! p 'x 3)
-    (.set! p 'y 4)
+    (set! (p 'x) 3)
+    (set! (p 'y) 4)
     (printf "point: x=%d y=%d\n" (p 'x) (p 'y)))
 
   ; invoke takes precedence: (v i) indexes (literal OR a local index symbol);
   ; the field `len` is read with `_get` since Vec has an `invoke` method.
   (let (v:ptr:Vec (as ptr:Vec (malloc (as i64 (sizeof Vec))))
         arr:ptr:i32 (as ptr:i32 (malloc 12)))
-    (aset! arr 0 10)
-    (aset! arr 1 20)
-    (aset! arr 2 30)
-    (.set! v 'data arr)
-    (.set! v 'len 3)
+    (set! (aref arr 0) 10)
+    (set! (aref arr 1) 20)
+    (set! (aref arr 2) 30)
+    (set! (v 'data) arr)
+    (set! (v 'len) 3)
     ; idx is a local symbol holding an index — (v idx) routes to invoke (indexes),
     ; it is NOT a field named "idx". This is the behaviour Step C fixes.
     (let (idx:i32 1)
@@ -72,16 +72,16 @@
 
   ; UnaryFn: a function object invoked with an i32 argument via apply.
   (let ((add5 (ref Adder)) (alloca Adder))
-    (.set! add5 'delta 5)
+    (set! (add5 'delta) 5)
     (printf "call: 37+5=%d\n" (apply add5 37)))
 
   ; FoldFn: reduce [2,3,4] by multiplication starting from 1 via fold.
   (let ((mul (ref Multiplier)) (alloca Multiplier))
-    (.set! mul 'dummy 0)
+    (set! (mul 'dummy) 0)
     (printf "fold: 1*2*3*4=%d\n" (fold mul (fold mul (fold mul 1 2) 3) 4)))
 
   ; User get override beats the intrinsic; 'f is synthetic, 'c delegates to the field.
   (let (t:ptr:Temp (as ptr:Temp (malloc (as i64 (sizeof Temp)))))
-    (.set! t 'c 20)
+    (set! (t 'c) 20)
     (printf "temp: c=%d f=%d\n" (t 'c) (t 'f)))
   (return 0))
