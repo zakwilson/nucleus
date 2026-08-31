@@ -1,12 +1,12 @@
 # Retiring the `.` forms, and the selector rule underneath them
 
-**Status: in progress** (2026-08-30). **Steps 0-4 done.** The selector rule has
+**Status: in progress** (2026-08-31). **Steps 0-5 done.** The selector rule has
 flipped — a quoted `'x` is the field, and a bare symbol in selector position is
-an ordinary variable reference like a symbol anywhere else — and two of the
-three punctuation-named forms are gone: `.` is `get` and `.&` is a 2-argument
-`addr-of`. Getting there took a migration aid (`--strict-selectors`, now
-retired) and 7254 rewritten sites. What remains is `.set!`, which is not a
-rename but the place form: steps 5-6. See §5.
+an ordinary variable reference like a symbol anywhere else — and every
+punctuation-named form is gone: `.` is `get`, `.&` is a 2-argument `addr-of`,
+and `.set!`/`ptr-set!`/`aset!` are all `set!` over a **place**. Getting there
+took a migration aid (`--strict-selectors`, now retired) and ~9300 rewritten
+sites. What remains is step 6, the `set` generic. See §5.
 
 Three special forms are spelled with a leading dot — `.` (member read), `.&`
 (member address) and `.set!` (member write). They are the last forms whose name
@@ -332,7 +332,53 @@ syntax removes it.
    Two things deliberately kept: `_get` (the documented override bypass, still
    needed by a user `get` method reading its own fields) and `.set!`, which
    step 5 turns into the place form rather than renaming twice.
-5. `set!` as a place form; fold in `ptr-set!` and `aset!`.
+5. **`set!` as a place form; fold in `ptr-set!` and `aset!`. (done 2026-08-31.)**
+   `set!`'s first operand is a place, and `.set!`, `ptr-set!` and `aset!` are
+   retired — reserved, with a message naming the place that replaced them.
+   **2068 sites**: 1982 in `src`+`lib`, 63 in `tests/run-tests.sh`, 23 in the
+   docs' fenced blocks.
+
+   - **Each place rebuilds the call its writer would have been given** — same
+     children, same line — and hands it straight to that writer's emitter.
+     That is what makes the spelling change provable by IR identity, and it is
+     also why the places inherit one set of diagnostics rather than growing a
+     parallel set. The three emitters' own messages were renamed to `set!`,
+     the only spelling left.
+   - **The return-value asymmetry is preserved exactly.** `set!` on a name
+     yields the assigned value (the REPL echoes it); `ptr-set!`, `aset!` and
+     `.set!` all yielded `void`, so the corresponding places do too. Unifying
+     them would change `cond`/`do` branch typing, and preserving them is what
+     keeps the migration a no-op.
+   - **The capture hazard, a third time.** `.set!` walked its *receiver*
+     explicitly (index 1); the place form puts that receiver in **head
+     position**, which `fn-capture-walk` skipped as "a call/special-form name,
+     not a value reference" and `fn-rewrite-captures` kept verbatim. Both now
+     walk index 0 — `is-local` (walk) and membership in `caps` (rewrite) are
+     what keep a call to a global from being mistaken for a capture. This also
+     closes the same hole for head-position member *reads*, which steps 3-4
+     made idiomatic without noticing: `(get p 'x)` captured `p` and `(p 'x)`
+     did not.
+   - **`()` reads as a null node**, so the place judgement has to precede any
+     deref. `emit-set` read `(target 'kind)` unconditionally, so `(set! () 3)`
+     segfaulted — before this step as well; `emit-ptr-set` reached `emit-node`
+     and got the real diagnostic.
+   - **`node-type` needs the mirror split**, as in step 4: a non-`NODE-SYM`
+     place yields `ty-void`. Guarding on the kind is also what keeps
+     `split-typed` off a cell's null `s`.
+   - **The rewriter needed a real s-expression parser again**, and two things
+     about spans: the parser consumes a sigil (`'` `` ` `` `~` `@` `&`) *before*
+     the atom it belongs to, so a naive span turns `'x` into `x`; and the
+     backwards scan for those sigils must be floored by the previous sibling's
+     end, or `v:&(Vector T)` claims the `&` twice. Every file was reassembled
+     with rewriting *off* and asserted byte-identical first — 434 of 434.
+   - **Verification is IR identity.** The same compiler compiling pre- and
+     post-migration `src/` differs by **five string constants**, all inside the
+     `with-handler` quasiquote template in `lib/error.nuc` — the same macro-
+     template exception step 2 documented, since a template's selector is data.
+     29 of 154 examples differ by exactly those five constants and nothing else.
+
+   `inc!`/`dec!` stay symbol-only, which §3 already settled: a place form for
+   them would either evaluate subforms twice or need `setf` expanders.
 6. The `set` generic.
 
 Selectors before places: `(set! (p 'x) v)` and `(set! (p x) v)` are different

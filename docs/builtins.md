@@ -197,7 +197,7 @@ will not elide, reorder, or coalesce them. Examples:
 - `(defvar :volatile trap-zero:i32 0)` — volatile global
 - `(let (:volatile x:i32 0) ...)` — volatile local (binds to the immediately following name only)
 - `(defstruct R flags:i32 (:volatile status:i32))` — volatile field (parenthesized, keyword head)
-- `(defn bump-counter ((p (ptr :volatile i32))):void ...)` — pointer to volatile `i32`; deref and `ptr-set!` through `p` are volatile
+- `(defn bump-counter ((p (ptr :volatile i32))):void ...)` — pointer to volatile `i32`; deref and a `(deref p)` place store through `p` are volatile
 
 Volatility lives on the storage site, not the value: `volatile T` and `T` are assignment-compatible, and the qualifier is dropped/added at the access. Bare `ptr` (no element) cannot be made volatile — volatility attaches to the pointee, not to opaque pointers. Attributes never participate in type identity, overload resolution, dispatch, monomorphization, or name mangling — see [stage14/attributes.md](../design/stage14/attributes.md) for the full attribute-slot design.
 
@@ -221,11 +221,11 @@ Examples:
 - `(defstruct Outer (pt (struct x:i32 y:i32)) tag:i32)` — nested by value
 - `(defn take ((p (ptr (struct x:i32)))):i32  ...)` — parameter typed as anonymous struct pointer
 
-Use `(addr-of obj 'field)` to obtain a pointer to a field without loading it. Result is typed `(ptr field-type)`, so it composes with `.set!`, `deref`, and further `addr-of` calls — e.g. `(.set! (addr-of o 'point) 'x 10)` writes through a value-typed nested struct field.
+Use `(addr-of obj 'field)` to obtain a pointer to a field without loading it. Result is typed `(ptr field-type)`, so it composes with a `set!` place, `deref`, and further `addr-of` calls — e.g. `(set! ((addr-of o 'point) 'x) 10)` writes through a value-typed nested struct field.
 
 ### Passing and returning structs by value
 
-A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or return type is passed/returned per the **platform C ABI**, so it interoperates correctly with C functions compiled by the system `cc`. On x86_64 System V this means small structs are coerced into registers (e.g. `{i32,i32}` → one `i64`; a struct with a `float` field whose eightbyte also holds an integer → `i64`), and structs larger than 16 bytes are passed `byval` / returned via a hidden `sret` pointer. Other targets' ABIs are not yet implemented (see `design/stage8/platform.md`). A struct value is produced by dereferencing a pointer (`@p`) and consumed by storing the call result (`(ptr-set! q (make ...))`). Reading a field needs no pointer: `(get p 'f)`, `(p 'f)` and `(_get p 'f)` all accept a struct **value** — a by-value parameter, a `let`-bound struct local, or a call result read in place (`(get (mk 3) 'f)`). Writing one does: `.set!` and the 2-argument `addr-of` need the receiver's storage, so they take the same receivers 1-argument `addr-of` does — a binding, not a temporary (`(.set! (mk 3) 'f 1)` is an error; bind it first). A function may take or return a struct defined anywhere in the same compilation unit or an import — struct definitions are registered before function signatures are resolved.
+A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or return type is passed/returned per the **platform C ABI**, so it interoperates correctly with C functions compiled by the system `cc`. On x86_64 System V this means small structs are coerced into registers (e.g. `{i32,i32}` → one `i64`; a struct with a `float` field whose eightbyte also holds an integer → `i64`), and structs larger than 16 bytes are passed `byval` / returned via a hidden `sret` pointer. Other targets' ABIs are not yet implemented (see `design/stage8/platform.md`). A struct value is produced by dereferencing a pointer (`@p`) and consumed by storing the call result (`(set! (deref q) (make ...))`). Reading a field needs no pointer: `(get p 'f)`, `(p 'f)` and `(_get p 'f)` all accept a struct **value** — a by-value parameter, a `let`-bound struct local, or a call result read in place (`(get (mk 3) 'f)`). Writing one does: a member place and the 2-argument `addr-of` need the receiver's storage, so they take the same receivers 1-argument `addr-of` does — a binding, not a temporary (`(set! ((mk 3) 'f) 1)` is an error; bind it first). A function may take or return a struct defined anywhere in the same compilation unit or an import — struct definitions are registered before function signatures are resolved.
 
 ### C header struct ingestion
 
@@ -260,7 +260,7 @@ reinterpretation, exactly `cast`'s contract (no checking; the raw frontier):
 (defstruct Scalar kind:i32 (data (union as-int:i64 as-float:f64)))
 (let (s:ptr:Scalar (alloca Scalar)
       (d (ptr (union as-int:i64 as-float:f64))) (addr-of s 'data))
-  (.set! d 'as-int (cast i64 42))
+  (set! (d 'as-int) (cast i64 42))
   (d 'as-int))
 ```
 
@@ -306,7 +306,7 @@ an explicit `cast` to the representation struct.
   arms, or `_` as a default arm. Binders are positional; `_` ignores a field.
 - A plain binder binds the payload field **by value**. A `(ref x)` binder
   binds `x:(ref field-type)` aliasing the field in place for mutation
-  (requires a pointer scrutinee): `((circle (ref r)) (ptr-set! r (* @r 2.0)))`.
+  (requires a pointer scrutinee): `((circle (ref r)) (set! (deref r) (* @r 2.0)))`.
 - **Exhaustiveness**: without `_`, covering every arm is required; a missing
   arm is a compile error naming it. Adding an arm breaks every defaultless
   `match` loudly.
@@ -425,7 +425,7 @@ applies.
 
 (defn main ():i32
   (let (pt:ptr:Pt (cast ptr:Pt (malloc (sizeof Pt))))
-    (.set! pt 'x 42)
+    (set! (pt 'x) 42)
     (match (lookup pt 1)
       ((ok q)  (printf "ok x=%d\n" (q 'x)))
       ((err e) (printf "err: %s\n" (err-name e))))
@@ -932,7 +932,7 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `match` | Eliminate a `defunion` value (or a `defenum` integer) by arm, with exhaustiveness checking. See [Unions and tagged sums](#unions-and-tagged-sums). | `switch` on the tag |
 | `make` | Construct a `defunion` value by arm: `(make Type arm args...)` — the explicit-instance spelling required for template instances, e.g. `(make (Result i64 i32) ok v)`. | designated initializer |
 | `while` | Loop; yields `void` | `while` |
-| `set!` | Assign to a variable; yields the assigned value | `x = val` |
+| `set!` | Assign to a **place**: `(set! x v)` a name, `(set! (p 'field) v)` a member, `(set! (deref p) v)` a pointee, `(set! (aref a i) v)` an element. The name place yields the assigned value; every other place yields `void` (it is a statement, as in C). The three punctuation writers it replaced — `.set!`, `ptr-set!`, `aset!` — were retired in Stage 16 ([dot-forms.md](../design/stage16-ergonomics/dot-forms.md) §3). | `x = val` / `s.f = val` / `*p = val` / `a[i] = val` |
 | `inc!` | Increment a variable by 1 (or by an optional delta). Yields the new value. | `x++` / `x += n` |
 | `dec!` | Decrement a variable by 1 (or by an optional delta). Yields the new value. | `x--` / `x -= n` |
 | `label` | Declare a function-scoped label. Forward and backward gotos both resolve. Duplicate declarations of the same name are allowed — the last one in textual order is the canonical target. | label: |
@@ -946,19 +946,19 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `cast` | Type cast | `(type)x` |
 | `addr-of` | Take the address of a **variable** (`(addr-of x)`, reader sugar `&x`) or of a **field** (`(addr-of s 'field)`, the 2-argument arity that replaced `.&`). The two cannot collide: a variable address takes a bare symbol, a field address a receiver plus a quoted selector. | `&x` / `&s.field` |
 | `deref` | Dereference a pointer (reader sugar: `@p` → `(deref p)`) | `*p` |
-| `ptr-set!` | Write through a pointer; yields the stored value | `*p = val` |
+| `ptr-set!` | **Retired in Stage 16** — a targeted hard error: `'ptr-set!' was retired in Stage 16: set! takes a place`. Write `(set! (deref p) v)`. | — |
 | `ptr+` | Pointer arithmetic | `p + n` |
 | `.` | **Retired in Stage 16** — a targeted hard error: `'.' was retired in Stage 16: use 'get'`. Write `(get s 'field)`, or head position `(s 'field)`. | — |
 | `.&` | **Retired in Stage 16** — a targeted hard error naming the 2-argument `addr-of`: `(addr-of s 'field)`. | — |
 | `_get` | Low-level struct field read (compiler-internal primitive; bypasses any user `get` override). Prefer head position `(s 'field)` in ordinary code; use `_get` only where head position would dispatch wrongly (a user `get` method reading its own field, or a struct held in a special-form-named variable). | `s.field` |
-| `.set!` | Struct field assignment; yields the stored value | `s.field = val` |
+| `.set!` | **Retired in Stage 16** — a targeted hard error: `'.set!' was retired in Stage 16: set! takes a place`. Write `(set! (s 'field) v)`. | — |
 | `get` | Member access / field read: `(get s 'field)` ≡ `(s 'field)`; for a plain struct this lowers to the `_get` primitive (zero-overhead), overridable per type. See [Callable values](#callable-values-non-function-call-position) | `s.field` |
 | `invoke` | General call on a value: `(invoke s 3)` ≡ `(s 3)`; user-defined (`Seq`/`Call`) | `s(3)` / `s[3]` |
 | `sizeof` | Size of a type | `sizeof(T)` |
 | `alloca` | Stack-allocate memory | `alloca()` / VLA |
 | `char` | `(char "x")` — a `Char` value (codepoint) from a single-byte string; sugar for the `\x` char literal. See [Char literals](types.md#char-literals--a). | `(Char)'c'` |
 | `aref` | Array element access. The index may be any integer type; it is converted to the target's pointer-int width (`usize`) for the address computation, so no cast is needed on a 16- or 32-bit target. The conversion follows the index type's own signedness — `zext` for an unsigned index, `sext` for a signed one — so a `ui8` at 200 or a `ui32` at 2^31 indexes forward, and a negative signed index still reaches backwards. | `arr[i]` |
-| `aset!` | Array element assignment; yields the stored value. Same index rule as `aref`. | `arr[i] = val` |
+| `aset!` | **Retired in Stage 16** — a targeted hard error: `'aset!' was retired in Stage 16: set! takes a place`. Write `(set! (aref a i) v)`; the index rule is `aref`'s. | — |
 | `(StructName init...)` | Compound struct literal. Each `init` is either `(field val)` for a designated initializer or a bare value for a positional one (positional inits fill the next field that has not been designated). Unspecified fields are zero-initialized. Yields `ptr:StructName`, alloca-backed (stack lifetime is the enclosing function). Defining a function with the same name as a struct is a compile-time error (the function would shadow the constructor). | `(struct S){.f = v, ...}` |
 | `array` | `(array ElemType init...)` — array compound literal. Each `init` is either `(index val)` (designated) or a bare value (positional). Length is implicit: `max(positional-count, max-designated-index + 1)`. Unspecified slots are zero-initialized (including struct and `CStr` element types). Yields `ptr:ElemType`, alloca-backed. When `ElemType` is a struct, an element may be written as a bare `(ElemType …)` compound literal — it is loaded into the slot, so the older `(deref (ElemType …))` spelling is no longer required (both are accepted and emit the same IR). A binding annotated with the bare, elem-less `:ptr` takes `ptr:ElemType` from the literal, so `(aref a i)` works without a cast. | `(T[]){1, 2, [3] = 99}` |
 | `quote` | Yields its argument as a `Node*` (reader sugar: `'x` → `(quote x)`). Quoted symbols are interned — see [Symbols](#symbols). | — |
@@ -994,7 +994,7 @@ escapes (see `design/stage10/lifecycle.md`):
   `(return (deref p))` and `(return (p count))` are fine.
 - **Escape sinks** (compile errors on tainted operands): `return` (explicit or
   implicit), and stores into longer-lived memory (`set!` to an outer binding;
-  `aset!`/`.set!`/`ptr-set!` into memory not owned by the same or an inner
+  a `set!` place (member, element, or pointee) into memory not owned by the same or an inner
   `with`). Manually calling `free`/`drop` on an owning binding is a
   double-free error.
 - **`(move b)`** is the sanctioned way out: it disarms the cleanup, clears the
@@ -1443,7 +1443,7 @@ Pointer size and the target are not hardcoded as `i64`/`8` throughout codegen: a
 
 Float literals: `1.5`, `-0.25`, `1e10`, `1.5e-3`, `.5`. Special values use Scheme syntax: `+inf.0`, `-inf.0`, `+nan.0`. Float arithmetic uses `+ - * / %` and comparisons use `= != < <= > >=` (LLVM `fadd`/`fcmp`).
 
-**A float literal is untyped and adapts to whatever float width the position wants**, falling back to `f64` only when nothing asks: as a binop operand (`(* alpha:f32 2.0)` is `f32`, in either order) and at every typed target — `let`/`with` init, `set!`, `.set!`, explicit and implicit `return`, struct-literal and `(array f32 …)` initializers, call arguments, and a `defvar` initializer. No `(unsafe/cast f32 …)` wrapper is needed, and the literal is rounded to single precision at compile time (no conversion instruction). A `f64` *value* narrows into an `f32` target silently via `fptrunc`, exactly as an `i64` value narrows into an `i32` slot. Two typed float operands of different width widen to the wider. Mixing float and integer operands without an explicit `unsafe/cast` is a compile error — a float literal adapts only to a *float* target, never an integer one. See [Types](types.md#built-in-types) for the authoritative statement.
+**A float literal is untyped and adapts to whatever float width the position wants**, falling back to `f64` only when nothing asks: as a binop operand (`(* alpha:f32 2.0)` is `f32`, in either order) and at every typed target — `let`/`with` init, every `set!` place, explicit and implicit `return`, struct-literal and `(array f32 …)` initializers, call arguments, and a `defvar` initializer. No `(unsafe/cast f32 …)` wrapper is needed, and the literal is rounded to single precision at compile time (no conversion instruction). A `f64` *value* narrows into an `f32` target silently via `fptrunc`, exactly as an `i64` value narrows into an `i32` slot. Two typed float operands of different width widen to the wider. Mixing float and integer operands without an explicit `unsafe/cast` is a compile error — a float literal adapts only to a *float* target, never an integer one. See [Types](types.md#built-in-types) for the authoritative statement.
 
 ### Function Pointer Types
 
@@ -1472,10 +1472,10 @@ A `defn` function name used in value position decays to a function pointer, matc
 
 ### Implicit Type Coercion
 
-The following conversions are applied automatically in assignment contexts (`let`, `set!`, `.set!`, `aset!`, `ptr-set!`, implicit and explicit `return`) **and at function call sites** (both direct calls and `funcall`):
+The following conversions are applied automatically in assignment contexts (`let`, every `set!` place, implicit and explicit `return`) **and at function call sites** (both direct calls and `funcall`):
 
 - **Pointer ↔ pointer, when the pointees agree**: identity, no IR. The pointer *kind* is not part of the question (`ptr:Node`, `(ref Node)`, `(raw Node)` and `?Node` are one type here — nullability is a separate contract), and an elem-less bare `ptr` is `void *` and matches any pointer in either direction. Everything else must match: `ptr:i32` into a `ptr:Node` slot, or `(ref (Vector i32))` into a `(ref (Vector i64))` slot, is a compile-time error naming both types. Retyping a pointer's element is `unsafe/cast`'s job. See [types.md](types.md#implicit-type-coercion).
-- **`ptr:S` → by-value `S`** (`S` a struct): one `load` — the implicit form of `(deref p)`, which is what lets an alloca-backed `(S …)` compound literal be written wherever a by-value `S` is expected (an `(array S …)` element, a struct-typed field of another struct literal, a `:S` binding, an `aset!` store, a `return`). Exact element type required; a `?T` source must be narrowed first. See [Types — Implicit Type Coercion](types.md#implicit-type-coercion).
+- **`ptr:S` → by-value `S`** (`S` a struct): one `load` — the implicit form of `(deref p)`, which is what lets an alloca-backed `(S …)` compound literal be written wherever a by-value `S` is expected (an `(array S …)` element, a struct-typed field of another struct literal, a `:S` binding, an element place store, a `return`). Exact element type required; a `?T` source must be narrowed first. See [Types — Implicit Type Coercion](types.md#implicit-type-coercion).
 - **Integer ↔ integer**:
   - Same width, different sign (e.g. `i32` ↔ `ui32`): reinterpret, no IR.
   - Widening: `sext` for signed source, `zext` for unsigned source.

@@ -10,7 +10,7 @@
 
 (defn make-type (k:i32):ref:Type
   (let (t:ref:Type (alloc-type))
-    (.set! t 'kind k)
+    (set! (t 'kind) k)
     (return t)))
 
 ; Stage 15 W8 G-5: the three pointer-kind singletons are the only `ty-*` that
@@ -21,7 +21,7 @@
 ; declaration honestly.
 (defn make-ptr-type (pk:i32):ref:Type
   (let (t:ref:Type (make-type TY-PTR))
-    (.set! t 'pkind pk)
+    (set! (t 'pkind) pk)
     (return t)))
 
 ; ============================================================
@@ -153,21 +153,21 @@
     (do
       (when (or (= (prev 'provisional) 0) (!= g-cheader-typedef-provisional 0))
         (return))
-      (.set! prev 'ty (as raw:Type ty))
-      (.set! prev 'file file)
-      (.set! prev 'line line)
-      (.set! prev 'hdr g-cheader-import-header)
-      (.set! prev 'provisional 0)
+      (set! (prev 'ty) (as raw:Type ty))
+      (set! (prev 'file) file)
+      (set! (prev 'line) line)
+      (set! (prev 'hdr) g-cheader-import-header)
+      (set! (prev 'provisional) 0)
       (return))
     0)
   (let (e:ptr:CTypedef (new CTypedef))
-    (.set! e 'name (intern-str name))
-    (.set! e 'ty (as raw:Type ty))
-    (.set! e 'file file)
-    (.set! e 'line line)
-    (.set! e 'hdr g-cheader-import-header)
-    (.set! e 'provisional g-cheader-typedef-provisional)
-    (.set! e 'next g-cheader-typedefs)
+    (set! (e 'name) (intern-str name))
+    (set! (e 'ty) (as raw:Type ty))
+    (set! (e 'file) file)
+    (set! (e 'line) line)
+    (set! (e 'hdr) g-cheader-import-header)
+    (set! (e 'provisional) g-cheader-typedef-provisional)
+    (set! (e 'next) g-cheader-typedefs)
     (set! g-cheader-typedefs (as raw:CTypedef e))))
 
 ; ---- Stage 15 W1d: a layout that has not been emitted yet ------------------
@@ -213,11 +213,11 @@
 
 ; Record that `sd`'s definition line was just written into `out`.
 (defn sdef-note-emitted (sd:(raw StructDef) out:ptr):void
-  (.set! sd 'emitted 1)
-  (.set! sd 'emit-epoch g-module-epoch)
+  (set! (sd 'emitted) 1)
+  (set! (sd 'emit-epoch) g-module-epoch)
   ; Only the type buffer is carried into the REPL preamble at module close; a
   ; line in a def or compile-time buffer dies with its module.
-  (.set! sd 'in-type-buf (if (= out g-type-stream) 1 0)))
+  (set! (sd 'in-type-buf) (if (= out g-type-stream) 1 0)))
 
 (defn cycle-pending-sdef (t:raw:Type):(raw StructDef)
   (when (= g-import-cycles null) (return null))
@@ -313,8 +313,8 @@
 ; be left at 0 by a caller that forgot it.
 (defn array-type (elem:(raw Type) n:i32):ref:Type
   (let (t:ref:Type (make-type TY-ARRAY))
-    (.set! t 'elem elem)
-    (.set! t 'arr-len n)
+    (set! (t 'elem) elem)
+    (set! (t 'arr-len) n)
     (return t)))
 
 ; THE decay rule, in one function that both codegen and the non-emitting type
@@ -334,8 +334,8 @@
   (let (tt:(raw Type) t)
     (when (!= (tt 'kind) TY-ARRAY) (return t))
     (let (pt:ref:Type (make-type TY-PTR))
-      (.set! pt 'elem (tt 'elem))
-      (.set! pt 'pkind PTR-REF)
+      (set! (pt 'elem) (tt 'elem))
+      (set! (pt 'pkind) PTR-REF)
       (return (as raw:Type pt)))))
 
 ; The zero-value constant text for a global initializer slot of type `ty`.
@@ -516,11 +516,11 @@
   (if (!= (bit-and hi (u64-mask (- n 64))) 0) (return 1) (return 0)))
 
 (defn u128-set-bit (n:i64 out-hi:ptr:i64 out-lo:ptr:i64):void
-  (aset! out-hi 0 0)
-  (aset! out-lo 0 0)
+  (set! (aref out-hi 0) 0)
+  (set! (aref out-lo 0) 0)
   (if (>= n 64)
-    (aset! out-hi 0 (bit-shl (as i64 1) (- n 64)))
-    (aset! out-lo 0 (bit-shl (as i64 1) n))))
+    (set! (aref out-hi 0) (bit-shl (as i64 1) (- n 64)))
+    (set! (aref out-lo 0) (bit-shl (as i64 1) n))))
 
 ; A C hex-float lexeme -> sign, the significand normalized so bit 127 is set
 ; (both limbs zero for a zero), the unbiased exponent OF THAT BIT, and whether
@@ -590,19 +590,19 @@
         (when (= edig 0) (return 0))
         (when (!= i len) (return 0))
         (set! pexp (* pexp esign))
-        (aset! out-sign 0 sign)
-        (aset! out-sticky 0 sticky)
+        (set! (aref out-sign 0) sign)
+        (set! (aref out-sticky 0) sticky)
         (when (and (= hi 0) (= lo 0))
-          (do (aset! out-hi 0 0) (aset! out-lo 0 0) (aset! out-exp 0 0)
+          (do (set! (aref out-hi 0) 0) (set! (aref out-lo 0) 0) (set! (aref out-exp 0) 0)
               (return 1)))
         (let (n:i64 0)
           (while (= (bit-and hi (bit-shl (as i64 1) 63)) 0)
             (set! hi (bit-or (bit-shl hi 1) (u64-shr lo 63)))
             (set! lo (bit-shl lo 1))
             (set! n (+ n 1)))
-          (aset! out-hi 0 hi)
-          (aset! out-lo 0 lo)
-          (aset! out-exp 0 (+ (- (+ (* 4 (- drop frac)) pexp) n) 127))
+          (set! (aref out-hi 0) hi)
+          (set! (aref out-lo 0) lo)
+          (set! (aref out-exp 0) (+ (- (+ (* 4 (- drop frac)) pexp) n) 127))
           (return 1))))))
 
 ; Round the normalized significand to `p` bits, round-to-nearest-ties-to-even,
@@ -612,8 +612,8 @@
 (defn hexfloat-fit (hi:i64 lo:i64 sticky:i64 ue:i64
                     p:i64 emin:i64 emax:i64 bias:i64
                     out-hi:ptr:i64 out-lo:ptr:i64):i64
-  (aset! out-hi 0 0)
-  (aset! out-lo 0 0)
+  (set! (aref out-hi 0) 0)
+  (set! (aref out-lo 0) 0)
   (when (and (= hi 0) (= lo 0)) (return 0))
   (when (> ue emax) (return (+ (* 2 bias) 1)))
   (let (keep:i64 p
@@ -625,7 +625,7 @@
       ; The leading bit sits exactly at the guard position: a tie rounds to
       ; even, which here is zero; anything above it, to the least subnormal.
       (do (when (or (!= (u128-low-any hi lo 127) 0) (!= sticky 0))
-            (aset! out-lo 0 1))
+            (set! (aref out-lo 0) 1))
           (return 0)))
     (let (s:i64 (- 128 keep)
           rhi:i64 0
@@ -641,7 +641,7 @@
         (do (set! rlo (+ rlo 1))
             (when (= rlo 0) (set! rhi (+ rhi 1)))))
       (when (= (u128-bit rhi rlo keep) 0)
-        (do (aset! out-hi 0 rhi) (aset! out-lo 0 rlo)
+        (do (set! (aref out-hi 0) rhi) (set! (aref out-lo 0) rlo)
             (if (!= sub 0) (return 0) (return (+ ue bias)))))
       ; The rounding carried into a new leading bit.
       (when (= sub 0)
@@ -775,7 +775,7 @@
 (defn collapse-strlit-cstr (v:raw:Val):i32
   (let (vv:raw:Val v)
     (when (and (!= (vv 'is-lit) 0) (!= (type-is-strview (vv 'type)) 0))
-      (.set! vv 'type ty-cstr)
+      (set! (vv 'type) ty-cstr)
       (return 1))
     (return 0)))
 
@@ -1148,18 +1148,18 @@
   (let (src:raw:Type t)
     (when (= (src 'pkind) k) (return t))
     (let (dst:ref:Type (alloc-type))
-      (.set! dst 'kind        (src 'kind))
-      (.set! dst 'ret         (src 'ret))
-      (.set! dst 'params      (src 'params))
-      (.set! dst 'num-params  (src 'num-params))
-      (.set! dst 'variadic    (src 'variadic))
-      (.set! dst 'has-rest    (src 'has-rest))
-      (.set! dst 'nopt        (src 'nopt))
-      (.set! dst 'opt-defaults (src 'opt-defaults))
-      (.set! dst 'elem        (src 'elem))
-      (.set! dst 'sdef        (src 'sdef))
-      (.set! dst 'is-volatile (src 'is-volatile))
-      (.set! dst 'pkind       k)
+      (set! (dst 'kind) (src 'kind))
+      (set! (dst 'ret) (src 'ret))
+      (set! (dst 'params) (src 'params))
+      (set! (dst 'num-params) (src 'num-params))
+      (set! (dst 'variadic) (src 'variadic))
+      (set! (dst 'has-rest) (src 'has-rest))
+      (set! (dst 'nopt) (src 'nopt))
+      (set! (dst 'opt-defaults) (src 'opt-defaults))
+      (set! (dst 'elem) (src 'elem))
+      (set! (dst 'sdef) (src 'sdef))
+      (set! (dst 'is-volatile) (src 'is-volatile))
+      (set! (dst 'pkind) k)
       (return dst))))
 
 ; The conservative meet of two pointer kinds for a control-flow join (cond /

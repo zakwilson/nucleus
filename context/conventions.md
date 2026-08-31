@@ -122,7 +122,7 @@ Two follow-on lessons from W2b, which extended that same rule to make a
 `emit-node` ends with
 
 ```lisp
-(let (t (node-type n scope)) (when (!= t null) (.set! v type t)))
+(let (t (node-type n scope)) (when (!= t null) (set! (v 'type) t)))
 ```
 
 so a non-null `node-type` answer **replaces** the type codegen just computed. It
@@ -1262,7 +1262,7 @@ Two consequences, both load-bearing:
   ~110 raise sites to this shape. The guard that keeps it that way is
   `run_no_line_zero` in `tests/run-tests.sh` (compiles every fixture, fails on
   any `:0:`) plus a `:0:` check inside `run_reject` itself.
-- **Never `(.set! sym line …)`.** The write is observed by every *other*
+- **Never `(set! (sym 'line) …)`.** The write is observed by every *other*
   occurrence of that spelling in the program. `stamp-macro-lines`
   (`src/nucleusc.nuc`) used to do exactly this while attributing macro
   expansions, so after the first expansion mentioning `x`, every later
@@ -1638,9 +1638,10 @@ The `.` field-access special form was renamed **`_get`** (compiler-internal
 primitive; `emit-field-get`) and ordinary code uses **head position `(s 'field)`**
 instead (the callable-values `get` path: Struct-blanket intrinsic, byte-identical
 GEP+load). The selector is **quoted** — see the next section. Stage 16 finished
-the job: `.` and `.&` are gone (`get` and the 2-argument `addr-of` replace them),
-but both stay **reserved** so a retired-form message carrying the replacement
-always reaches the user. Two non-obvious hazards — both bit the `.`→head-position migration and are why `_get` still exists:
+the job: `.`, `.&`, `.set!`, `ptr-set!` and `aset!` are all gone (`get`, the
+2-argument `addr-of`, and `set!` over a **place** replace them), but every one
+stays **reserved** so a retired-form message carrying the replacement always
+reaches the user. Two non-obvious hazards — both bit the `.`→head-position migration and are why `_get` still exists:
 
 - **A user `get` method must read its own fields with `_get`, not head position.**
   `(self 'field)` inside a `(defn get … (self:ptr:T sel))` dispatches back into that
@@ -1722,6 +1723,21 @@ The `->` macro (`lib/macros.nuc`) was extended to substitute `_` in **head**
 position (it scans the whole form, not just args), so a threaded value can land in
 call position: `(-> s (_ 'field))` ⇒ `(s 'field)`.
 
+## Head position is a VALUE position — a capture walk that skips it loses the receiver
+
+`fn-capture-walk` and `fn-rewrite-captures` (`src/nucleusc.nuc`) used to skip a
+form's head symbol, on the reasoning that it names a call or a special form. That
+stopped being true when Stage 16 made `(s 'field)` the idiomatic member access:
+the head is now the **receiver**, and the same holds for a callable value. Both
+walk index 0 now — `is-local` (walk) and membership in `caps` (rewrite) are what
+keep a call to a global from being read as a capture, so nothing else was needed.
+
+The bug this closes is invisible to a grep: `(get p 'x)` inside a closure captured
+`p` and `(p 'x)` did not, and `.set!` hid its half by walking its receiver
+explicitly at index 1 — which the `set!` place form no longer does, because the
+receiver moved into head position. Every member form the compiler *synthesizes*
+has the same hazard; see the `quoted-selector` / `set-place-cell` helpers.
+
 ## Reading a struct value's field is direct; writing one needs a binding
 
 Since Stage 16 SV-1 a struct **value** is a legal member-access receiver, so
@@ -1731,15 +1747,15 @@ emitter copies the value into a fresh slot (`materialize-struct-value`,
 `src/nucleusc.nuc`) and `access-receiver-sdef` (`src/generics.nuc`) unwraps the
 same receivers in the type pass — the cross-file lockstep this file opens with.
 
-`.set!` and the 2-argument `addr-of` are the exception: they need the receiver's own **storage**, so
-they take exactly what `addr-of` takes — a binding, whose slot they use directly.
-A temporary is an error ("the receiver is a temporary struct value, so it has no
-address"), which is also what stops a pointer into a compiler-made copy from
-being returned.
+A member **place** (`(set! (v 'f) …)`) and the 2-argument `addr-of` are the
+exception: they need the receiver's own **storage**, so they take exactly what
+`addr-of` takes — a binding, whose slot they use directly. A temporary is an
+error ("the receiver is a temporary struct value, so it has no address"), which
+is also what stops a pointer into a compiler-made copy from being returned.
 
 The older `(addr-of v)`-then-access shape (`lib/strview.nuc`,
-`examples/comb-order.nuc:30`) is still correct and is what `.set!` on a by-value
-parameter is spelled as when the receiver is not already a name.
+`examples/comb-order.nuc:30`) is still correct and is how a member place on a
+by-value parameter is spelled when the receiver is not already a name.
 
 ## Every `declare` emitter must ABI-lower exactly like the `define` — there are SIX, and three had silently drifted
 

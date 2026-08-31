@@ -9,7 +9,7 @@
 
 (defn box-empty () (Box T)
   (let (r (alloca (Box T)))
-    (.set! r val 0)
+    (set! (r val) 0)
     (return (deref r))))
 
 (defn main ():i32

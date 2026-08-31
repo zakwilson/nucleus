@@ -203,7 +203,7 @@
 ;
 ; Example:
 ;   (let ((r (ref IntRangeIter)) (alloca IntRangeIter))
-;     (.set! r start 0) (.set! r end 5)
+;     (set! (r 'start) 0) (set! (r 'end) 5)
 ;     (doseq-iter (x r) (printf "%d\n" x)))
 (defmacro doseq-iter (binding :rest body)
   (let (done-sym:ptr  (gensym)

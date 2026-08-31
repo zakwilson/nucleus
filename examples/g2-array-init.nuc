@@ -118,8 +118,8 @@
   ; --- a local fixed-size table ---------------------------------------------
   ; `(alloca (array T N))` reserves N slots and hands back the decayed `ptr:T`.
   (let (buf:ptr:i32 (alloca (array i32 4)))
-    (aset! buf 0 41)
-    (aset! buf 3 44)
+    (set! (aref buf 0) 41)
+    (set! (aref buf 3) 44)
     (printf "alloca %d %d\n" (aref buf 0) (aref buf 3)))
 
   ; --- layout: the folded sizes against LLVM's own -------------------------

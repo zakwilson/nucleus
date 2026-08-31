@@ -19,15 +19,6 @@ Grouped by what a reader needs to do next:
 
 ## Needs a decision
 
-- **Variadic `set!` replacing `.set!`.** Filed in
-  [overview.md](overview.md#replace-set-with-variadic-set) as a two-line stub,
-  never evaluated. The user's own framing names the fork: "a simple variadic
-  `set!` with an extra quoted symbol or variable resolving to symbol for
-  struct field assignment, or a more generic mechanism allowing its extension
-  to arbitrary scenarios." No design document exists because the two branches
-  produce different surfaces — closing it means picking one before anything
-  gets written down, let alone built.
-
 - **Making a `(compile-time …)`-defined `defvar`/`defn` visible to the
   program module.** [repl-libraries.md](repl-libraries.md) (the D9a section):
   the two type prescans now descend into a `compile-time` body so a CT-defined
@@ -187,6 +178,17 @@ Grouped by what a reader needs to do next:
   desugar pass, which is a field on `Node` for one near-miss message.
 
 ## Deliberately closed
+
+- **Variadic `set!` replacing `.set!` — decided 2026-08-31.** Filed in
+  [overview.md](overview.md#replace-set-with-variadic-set) as a two-line stub
+  naming a fork: "a simple variadic `set!` with an extra quoted symbol ... or a
+  more generic mechanism allowing its extension to arbitrary scenarios."
+  [dot-forms.md](dot-forms.md) §3 took the second branch — a **place form**,
+  which subsumes `.set!`, `ptr-set!` and `aset!` at once and extends through a
+  `set` generic paired with the existing `get` rather than a second extension
+  protocol. The variadic 3-arg spelling was rejected explicitly: it is a pure
+  rename of `.set!` that leaves the other two standing, and it is not a
+  stepping stone, because the migration differs. Built as §5 step 5.
 
 - **AVR enums follow clang, not avr-gcc.**
   [cheader-parser-vs-libclang.md](cheader-parser-vs-libclang.md) §9.2/§9.5: a

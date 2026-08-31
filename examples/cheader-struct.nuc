@@ -4,24 +4,24 @@
 ; Use the named C struct (struct CHPoint) by value.
 (defn use-chpoint ():i32
   (let (p:ptr:CHPoint (alloca CHPoint))
-    (.set! p 'x 3)
-    (.set! p 'y 4)
+    (set! (p 'x) 3)
+    (set! (p 'y) 4)
     (return (+ (get p 'x) (get p 'y)))))
 
 ; Use the typedef'd struct CHStatus.
 (defn use-chstatus ():i32
   (let (s:ptr:CHStatus (alloca CHStatus))
-    (.set! s 'code 10)
-    (.set! s 'detail 20)
+    (set! (s 'code) 10)
+    (set! (s 'detail) 20)
     (return (+ (get s 'code) (get s 'detail)))))
 
 ; Use a struct with a nested-by-value field. CHBoxed.p is a (value)
 ; struct CHPoint; write through it with the .& field-address operator.
 (defn use-chboxed ():i32
   (let (b:ptr:CHBoxed (alloca CHBoxed))
-    (.set! b 'tag 99)
-    (.set! (addr-of b 'p) 'x 7)
-    (.set! (addr-of b 'p) 'y 8)
+    (set! (b 'tag) 99)
+    (set! ((addr-of b 'p) 'x) 7)
+    (set! ((addr-of b 'p) 'y) 8)
     (return (+ (get b 'tag) (+ (get (addr-of b 'p) 'x) (get (addr-of b 'p) 'y))))))
 
 ; CHWithAnon's `point` field is an anonymous inline struct `{ int a; int b; }`
@@ -29,9 +29,9 @@
 ; struct and uses .& to write through the nested-by-value field.
 (defn use-chwithanon ():i32
   (let (w:ptr:CHWithAnon (alloca CHWithAnon))
-    (.set! w 'kind 5)
-    (.set! (addr-of w 'point) 'a 100)
-    (.set! (addr-of w 'point) 'b 200)
+    (set! (w 'kind) 5)
+    (set! ((addr-of w 'point) 'a) 100)
+    (set! ((addr-of w 'point) 'b) 200)
     (return (+ (get w 'kind) (+ (get (addr-of w 'point) 'a) (get (addr-of w 'point) 'b))))))
 
 (defn main ():int

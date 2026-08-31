@@ -20,8 +20,8 @@
 
 (defn int-node (val:i64):ptr
   (let (c:ptr:Node (as ptr:Node (malloc (sizeof Node))))
-    (.set! c 'kind 0) (.set! c 'line 0) (.set! c 'i val)
-    (.set! c 's null) (.set! c 'car null) (.set! c 'cdr null)
+    (set! (c 'kind) 0) (set! (c 'line) 0) (set! (c 'i) val)
+    (set! (c 's) null) (set! (c 'car) null) (set! (c 'cdr) null)
     (return (as ptr c))))
 
 (defn main ():i32
@@ -49,7 +49,7 @@
                                   (cons (int-node 40) null)))))
     ; map: Node* -> its .i field, into a (Vector i64)
     (let ((it (ref ListIter)) (alloca ListIter))
-      (.set! it 'cur lst)
+      (set! (it 'cur) lst)
       (let ((m (Vector i64))
             (map (vfn (e:ptr):i64 (return ((as ptr:Node e) 'i))) it))
         (printf "lst map count=%d m0=%lld\n"
@@ -57,24 +57,24 @@
         (drop (addr-of m))))
     ; filter: keep nodes with .i > 25 (the Node* survives as ptr)
     (let ((it (ref ListIter)) (alloca ListIter))
-      (.set! it 'cur lst)
+      (set! (it 'cur) lst)
       (let ((f (Vector ptr))
             (filter (vfn (e:ptr):bool (return (> ((as ptr:Node e) 'i) 25))) it))
         (printf "lst filter-count=%d\n" (count (addr-of f)))
         (drop (addr-of f))))
     ; find: first node with .i > 25
     (let ((it (ref ListIter)) (alloca ListIter))
-      (.set! it 'cur lst)
+      (set! (it 'cur) lst)
       (match (find (vfn (e:ptr):bool (return (> ((as ptr:Node e) 'i) 25))) it)
         ((some e) (printf "lst find=%lld\n" ((as ptr:Node e) 'i)))
         (none (printf "lst find=none\n"))))
     ; any / every over .i
     (let ((it (ref ListIter)) (alloca ListIter))
-      (.set! it 'cur lst)
+      (set! (it 'cur) lst)
       (printf "lst any=%d\n"
         (any? (vfn (e:ptr):bool (return (> ((as ptr:Node e) 'i) 35))) it)))
     (let ((it (ref ListIter)) (alloca ListIter))
-      (.set! it 'cur lst)
+      (set! (it 'cur) lst)
       (printf "lst every=%d\n"
         (every? (vfn (e:ptr):bool (return (> ((as ptr:Node e) 'i) 5))) it))))
 

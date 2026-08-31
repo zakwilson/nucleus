@@ -11,10 +11,10 @@
 
 (defn make-cell (car:raw:Node cdr:raw:Node line:i32):ref:Node
   (let (c:ref:Node (alloc-node))
-    (.set! c 'kind NODE-CELL)
-    (.set! c 'line line)
-    (.set! c 'car car)
-    (.set! c 'cdr cdr)
+    (set! (c 'kind) NODE-CELL)
+    (set! (c 'line) line)
+    (set! (c 'car) car)
+    (set! (c 'cdr) cdr)
     (return c)))
 
 ; ============================================================
@@ -55,8 +55,8 @@
       (let (e:ptr:InternEntry (as ptr:InternEntry
                                     (unsafe/ptr+ (as ptr:InternEntry table) (unsafe/cast i32 j))))
         (when (= (e 'spelling) null)
-          (.set! e 'spelling sp)
-          (.set! e 'node nd)
+          (set! (e 'spelling) sp)
+          (set! (e 'node) nd)
           (return)))
       (set! j (bit-and (+ j 1) mask)))))
 
@@ -91,11 +91,11 @@
         (when (= (e 'spelling) null)
           (let (canon:ptr (arena-strdup s)
                 nd:ref:Node (alloc-node))
-            (.set! nd 'kind NODE-SYM)
-            (.set! nd 'line 0)
-            (.set! nd 's canon)
-            (.set! e 'spelling canon)
-            (.set! e 'node nd)
+            (set! (nd 'kind) NODE-SYM)
+            (set! (nd 'line) 0)
+            (set! (nd 's) canon)
+            (set! (e 'spelling) canon)
+            (set! (e 'node) nd)
             (inc! g-intern-len)
             (return nd)))
         (when (= (strcmp (e 'spelling) s) 0)

@@ -15,12 +15,12 @@
 
 (defn cons (car:ptr cdr:ptr):ptr
   (let (c:ptr:Node (as ptr:Node (malloc (sizeof Node))))
-    (.set! c 'kind 3)
-    (.set! c 'line 0)
-    (.set! c 'i 0)
-    (.set! c 's null)
-    (.set! c 'car car)
-    (.set! c 'cdr cdr)
+    (set! (c 'kind) 3)
+    (set! (c 'line) 0)
+    (set! (c 'i) 0)
+    (set! (c 's) null)
+    (set! (c 'car) car)
+    (set! (c 'cdr) cdr)
     (return (as ptr c))))
 
 (defn first (n:ptr):ptr
@@ -40,12 +40,12 @@
 (defn next ((self (ref ListIter))) (Maybe ptr)
   (let (c:ptr (self 'cur))
     (when (= c null) (return none))
-    (.set! self 'cur (rest c))
+    (set! (self 'cur) (rest c))
     (return (some (first c)))))
 
 (defn print-list (n:ptr):void
   (let ((lit (ref ListIter)) (alloca ListIter))
-    (.set! lit 'cur n)
+    (set! (lit 'cur) n)
     (let (first-item:i32 1)
       (printf "(")
       (doseq-iter (elem lit)

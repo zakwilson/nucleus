@@ -59,7 +59,7 @@
 (defn arena-strndup (s:ptr n:i64):ptr
   (let (p:ptr (arena-alloc (+ n 1)))
     (memcpy p s n)
-    (aset! (as ptr:i8 p) n 0)
+    (set! (aref (as ptr:i8 p) n) 0)
     (return p)))
 
 (defn arena-strdup (s:ptr):ptr

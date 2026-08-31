@@ -27,7 +27,7 @@
   (return (deref (unsafe/cast (ptr :volatile ui8) addr))))
 
 (defn reg8-write (addr:usize val:ui8):void
-  (ptr-set! (unsafe/cast (ptr :volatile ui8) addr) val))
+  (set! (deref (unsafe/cast (ptr :volatile ui8) addr)) val))
 
 ; --- 16-bit register access (little-endian pair, e.g. UBRR0/timer counts) ---
 
@@ -35,7 +35,7 @@
   (return (deref (unsafe/cast (ptr :volatile ui16) addr))))
 
 (defn reg16-write (addr:usize val:ui16):void
-  (ptr-set! (unsafe/cast (ptr :volatile ui16) addr) val))
+  (set! (deref (unsafe/cast (ptr :volatile ui16) addr)) val))
 
 ; --- bit helpers ---
 

@@ -33,9 +33,9 @@
 (defn main ():i32
   ; --- CStr key: value selector -> generic get ---
   (let ((sbag (ref (Bag CStr i32))) (alloca (Bag CStr i32)))
-    (.set! sbag 'key "hello")
-    (.set! sbag 'val 7)
-    (.set! sbag 'has 1)
+    (set! (sbag 'key) "hello")
+    (set! (sbag 'val) 7)
+    (set! (sbag 'has) 1)
     (match (get sbag "hello")
       ((some v) (printf "sbag[hello]=%d\n" v))
       (none (printf "sbag[hello]=miss\n")))
@@ -45,9 +45,9 @@
 
   ; --- i32 key: value selector -> generic get ---
   (let ((ibag (ref (Bag i32 i32))) (alloca (Bag i32 i32)))
-    (.set! ibag 'key 42)
-    (.set! ibag 'val 99)
-    (.set! ibag 'has 1)
+    (set! (ibag 'key) 42)
+    (set! (ibag 'val) 99)
+    (set! (ibag 'has) 1)
     (match (get ibag 42)
       ((some v) (printf "ibag[42]=%d\n" v))
       (none (printf "ibag[42]=miss\n")))

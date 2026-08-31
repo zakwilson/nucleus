@@ -23,7 +23,7 @@
   (with (n:usize (sv 'len)
          buf:ptr:ui8 (as ptr:ui8 (malloc (as i64 (+ n 1)))))
     (memcpy (as ptr buf) (as ptr (sv 'data)) (as i64 n))
-    (aset! buf (as i64 n) 0)
+    (set! (aref buf (as i64 n)) 0)
     (printf "%s" (as CStr (as ptr buf)))))
 
 (defn main ():i32

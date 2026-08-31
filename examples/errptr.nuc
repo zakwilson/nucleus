@@ -37,7 +37,7 @@
 
 (defn main ():i32
   (with (p:ptr:Pt (as ptr:Pt (malloc 8)))
-    (.set! p 'x 7)
+    (set! (p 'x) 7)
 
     ; match on a niche Result value, both arms.
     (show (lookup p 0))

@@ -38,9 +38,9 @@
 (defn test-decode-invalid ((label CStr) (b0 ui8) (b1 ui8) (b2 ui8) (len usize)):void
   (with (buf:ptr (malloc 4)
          p:ptr:ui8 (as ptr:ui8 buf))
-    (aset! p 0 b0)
-    (aset! p 1 b1)
-    (aset! p 2 b2)
+    (set! (aref p 0) b0)
+    (set! (aref p 1) b1)
+    (set! (aref p 2) b2)
     (let (dr:DecodeResult (char-decode-utf8 p len))
       (printf "%s: ok=%d\n" label ((addr-of dr) 'ok)))))
 

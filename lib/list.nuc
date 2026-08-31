@@ -25,12 +25,12 @@
 
 (defn cons (car:ptr cdr:ptr):ptr
   (let (c:ptr:Node (as ptr:Node (malloc (sizeof Node))))
-    (.set! c 'kind 3)
-    (.set! c 'line 0)
-    (.set! c 'i 0)
-    (.set! c 's null)
-    (.set! c 'car car)
-    (.set! c 'cdr cdr)
+    (set! (c 'kind) 3)
+    (set! (c 'line) 0)
+    (set! (c 'i) 0)
+    (set! (c 's) null)
+    (set! (c 'car) car)
+    (set! (c 'cdr) cdr)
     (return (as ptr c))))
 
 (defn first (n:ptr):ptr
@@ -67,7 +67,7 @@
 (defn next ((self (ref ListIter))) (Maybe ptr)
   (let (c:ptr (self 'cur))
     (when (= c null) (return none))
-    (.set! self 'cur (rest c))
+    (set! (self 'cur) (rest c))
     (return (some (first c)))))
 
 ; list-iter — a ListIter positioned at the head of `lst` (null = empty list).
@@ -75,5 +75,5 @@
 ; other iterators use; drive with (addr-of it) + next, or via doseq-iter.
 (defn list-iter (lst:ptr):ListIter
   (let ((it (ref ListIter)) (alloca ListIter))
-    (.set! it 'cur lst)
+    (set! (it 'cur) lst)
     (return (deref it))))

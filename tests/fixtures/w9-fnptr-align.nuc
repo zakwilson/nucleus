@@ -38,9 +38,9 @@
         hp:ptr:Hooks (addr-of hooks)
         total:i32 0)
     (set! fn-global thrice)
-    (.set! hp 'before twice)
-    (.set! hp 'after thrice)
-    (.set! hp 'count 2)
+    (set! (hp 'before) twice)
+    (set! (hp 'after) thrice)
+    (set! (hp 'count) 2)
 
     (set! total (+ total (loc 1)))                        ; 2
     (set! total (+ total (fn-global 1)))                  ; 3

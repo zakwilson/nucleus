@@ -35,10 +35,10 @@
 (defn main ():i32
   ; Stamp (MapIter IntRangeIter SqFn) over squares of [1,5) -> 1+4+9+16 = 30.
   (let ((mi (ref (MapIter IntRangeIter SqFn))) (alloca (MapIter IntRangeIter SqFn)))
-    (.set! (addr-of mi 'source) 'start 1)
-    (.set! (addr-of mi 'source) 'end 5)
-    (.set! (addr-of mi 'f) 'dummy 0)
+    (set! ((addr-of mi 'source) 'start) 1)
+    (set! ((addr-of mi 'source) 'end) 5)
+    (set! ((addr-of mi 'f) 'dummy) 0)
     (let ((sum (ref SumFn)) (alloca SumFn))
-      (.set! sum 'dummy 0)
+      (set! (sum 'dummy) 0)
       (printf "reduce(map sq [1,5)) = %d\n" (reduce sum 0 mi))))
   (return 0))

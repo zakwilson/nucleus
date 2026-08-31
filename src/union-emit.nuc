@@ -241,10 +241,10 @@
       (fprintf g-body-stream "%s:\n" ok-lbl)
       (set! g-block-term 0)
       (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR)))
-        (.set! rt 'elem elem)
-        (.set! rt 'pkind PTR-REF)
+        (set! (rt 'elem) elem)
+        (set! (rt 'pkind) PTR-REF)
         (let (rv:ref:Val (alloc-val (as ptr rt) rval))
-          (.set! rv 'taint (vv 'taint))
+          (set! (rv 'taint) (vv 'taint))
           (return rv))))))
 
 (defn emit-unwrap (call:ptr scope:ref:Scope):ref:Val
@@ -274,7 +274,7 @@
         (fprintf g-body-stream "%s:\n" ok-lbl)
         (set! g-block-term 0)
         (let (rv:ref:Val (alloc-val (type-as-pkind (v 'type) PTR-REF) (v 'val)))
-          (.set! rv 'taint (v 'taint))
+          (set! (rv 'taint) (v 'taint))
           (return rv))))))
 
 ; (unwrap-or r default) over a niche-ERRPTR `!T`: the ok (ref T) pointer, or
@@ -290,8 +290,8 @@
         err-lbl:ptr (fmt-i32 "unwrapor.err%d" id)
         join-lbl:ptr (fmt-i32 "unwrapor.join%d" id)
         end-lbl:ptr (fmt-i32 "unwrapor.end%d" id))
-    (.set! ref-ty 'elem elem)
-    (.set! ref-ty 'pkind PTR-REF)
+    (set! (ref-ty 'elem) elem)
+    (set! (ref-ty 'pkind) PTR-REF)
     (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n" iserr err-lbl ok-lbl)
     (fprintf g-body-stream "%s:\n" ok-lbl)
     (fprintf g-body-stream "  br label %%%s\n" end-lbl)
@@ -318,7 +318,7 @@
             tmp rval ok-lbl dval join-lbl)
           (fprintf g-body-stream "  %s = phi ptr [ %s, %%%s ]\n" tmp rval ok-lbl))
         (let (rv:ref:Val (alloc-val (as ptr ref-ty) tmp))
-          (.set! rv 'taint (taint-merge (vv 'taint) dtaint))
+          (set! (rv 'taint) (taint-merge (vv 'taint) dtaint))
           (return rv))))))
 
 ; (unwrap-or m default) — the narrowed value, or `default` (evaluated only on
@@ -371,7 +371,7 @@
                 (fprintf g-body-stream "  %s = phi ptr [ %s, %%%s ]\n"
                   tmp (v 'val) some-lbl))
               (let (rv:ref:Val (alloc-val ref-ty tmp))
-                (.set! rv 'taint (taint-merge (v 'taint) dtaint))
+                (set! (rv 'taint) (taint-merge (v 'taint) dtaint))
                 (return rv)))))))))
 
 ; (if-some (x m) then [else]) / (when-some (x m) body…) — bind x to the Maybe
@@ -406,7 +406,7 @@
             (let (inner:ref:Scope (scope-new scope)
                   sym:ref:Sym (scope-define inner (xnode 's) (mv 'type) slot 1)
                   ln:i32 (cc 'line))
-              (.set! sym 'taint (mv 'taint))
+              (set! (sym 'taint) (mv 'taint))
               (let (test:ptr (make-cell '!=
                                (make-cell xnode
                                  (make-cell 'null null ln) ln) ln)
@@ -485,7 +485,7 @@
       (let (v:ptr (new-tmp))
         (fprintf g-body-stream "  %s = load %%%s, ptr %s\n" v (sd 'ir-name) base)
         (let (rv:ref:Val (alloc-val (type-for-sdef sd) v))
-          (.set! rv 'taint taint)
+          (set! (rv 'taint) taint)
           (return rv))))))
 
 ; (make Type arm args...) — explicit-instance construction (unions.md §5a).
@@ -524,7 +524,7 @@
                       (= (ptr-pkind (v 'type)) PTR-MAYBE))
               (die-at line "make: some expects a non-null (ref T) value"))
             (let (rv:ref:Val (alloc-val (type-as-pkind ty PTR-MAYBE) (v 'val)))
-              (.set! rv 'taint (v 'taint))
+              (set! (rv 'taint) (v 'taint))
               (return rv))))
         (if (= (strcmp arm "none") 0)
           (do
@@ -543,7 +543,7 @@
             ; p is stored directly; the flip guarantees it is non-null and never
             ; in the reserved top page, so it can't collide with an error.
             (let (rv:ref:Val (alloc-val (type-as-pkind ty PTR-ERRPTR) (v 'val)))
-              (.set! rv 'taint (v 'taint))
+              (set! (rv 'taint) (v 'taint))
               (return rv))))
         (if (= (strcmp arm "err") 0)
           (do
@@ -833,7 +833,7 @@
     (when (= ut null)
       (die-at line (missing-template-message "err handler" "Maybe")))
     (let (argts:ptr (arena-alloc (ptr-bytes)))
-      (aset! (as ptr:ptr argts) 0 t)
+      (set! (aref (as ptr:ptr argts) 0) t)
       (return (union-template-stamp-types ut argts 1 line)))))
 
 ; The error library (lib/error.nuc) is in scope: g-handler-top and
@@ -1008,10 +1008,10 @@
                     (fprintf g-entry-stream "  %s = alloca ptr, align 8\n" slot)
                     (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" fa slot)
                     (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR)))
-                      (.set! rt 'elem ftype)
-                      (.set! rt 'pkind PTR-REF)
+                      (set! (rt 'elem) ftype)
+                      (set! (rt 'pkind) PTR-REF)
                       (let (sym:ref:Sym (scope-define inner (xn 's) (as ptr rt) slot 1))
-                        (.set! sym 'taint staint))))))))))
+                        (set! (sym 'taint) staint))))))))))
       (inc! fi)
       (set! bcur ((unsafe/cast ptr:Node bcur) 'cdr)))))
 
@@ -1131,7 +1131,7 @@
           (set! k (+ k 1)))
         (fprintf g-body-stream "\n")
         (let (rv:ref:Val (alloc-val result-type tmp))
-          (.set! rv 'taint result-taint)
+          (set! (rv 'taint) result-taint)
           (return rv))))))
 
 ; match over a defenum scrutinee (the §4 freebie): bare member names as
@@ -1158,7 +1158,7 @@
               (when (!= ci (- nclauses 1))
                 (die-at (node-line (as ptr pat) (clause 'line)) "match: _ default must be the last clause"))
               (set! ndefault 1)
-              (aset! (as ptr:i32 clause-val) ci -1))
+              (set! (aref (as ptr:i32 clause-val) ci) -1))
             (do
               (when (= ed null)
                 (set! ed (as ptr (enumdef-lookup-member (pat 's))))
@@ -1175,7 +1175,7 @@
                     (when (= (aref (as ptr:i32 clause-val) cj) mi)
                       (die-at (node-line (as ptr pat) (clause 'line)) (fmt-s "match: duplicate arm '%s'" (pat 's))))
                     (inc! cj)))
-                (aset! (as ptr:i32 clause-val) ci mi))))))
+                (set! (aref (as ptr:i32 clause-val) ci) mi))))))
       (inc! ci))
     (when (= ed null)
       (die-at (cc 'line) "match: enum match needs at least one member pattern"))
@@ -1267,9 +1267,9 @@
           rtbox:ptr (arena-alloc (ptr-bytes))
           ttbox:ptr (arena-alloc (ptr-bytes))
           ltbox:ptr (arena-alloc 4))
-      (aset! (as ptr:ptr rtbox) 0 null)
-      (aset! (as ptr:ptr ttbox) 0 null)
-      (aset! (as ptr:i32 ltbox) 0 0)
+      (set! (aref (as ptr:ptr rtbox) 0) null)
+      (set! (aref (as ptr:ptr ttbox) 0) null)
+      (set! (aref (as ptr:i32 ltbox) 0) 0)
       (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n" iserr err-lbl ok-lbl)
       ; --- err arm: bind e = extracted id, run the err (or default) body ---
       (fprintf g-body-stream "%s:\n" err-lbl)
@@ -1302,12 +1302,12 @@
               (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR))
                     slot:ptr (fmt-sd "%%%s.addr.%d" (ir-name-token (b 's)) g-tmp))
                 (inc! g-tmp)
-                (.set! rt 'elem elem)
-                (.set! rt 'pkind PTR-REF)
+                (set! (rt 'elem) elem)
+                (set! (rt 'pkind) PTR-REF)
                 (fprintf g-entry-stream "  %s = alloca ptr, align 8\n" slot)
                 (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" rval slot)
                 (let (sym:ref:Sym (scope-define inner (b 's) (as ptr rt) slot 1))
-                  (.set! sym 'taint staint))))))
+                  (set! (sym 'taint) staint))))))
         (emit-niche-match-arm (if (!= ok-body null) ok-body def-body) inner
           vals preds rtbox ttbox ltbox end-lbl id 1))
       ; --- join ---
@@ -1330,7 +1330,7 @@
               (set! k (+ k 1)))
             (fprintf g-body-stream "\n")
             (let (rv:ref:Val (alloc-val result-type tmp))
-              (.set! rv 'taint result-taint)
+              (set! (rv 'taint) result-taint)
               (return rv))))))))
 
 ; (match m ((some p) …) (none …)) over a niche-MAYBE value (unions.md §6
@@ -1386,9 +1386,9 @@
           rtbox:ptr (arena-alloc (ptr-bytes))
           ttbox:ptr (arena-alloc (ptr-bytes))
           ltbox:ptr (arena-alloc 4))
-      (aset! (as ptr:ptr rtbox) 0 null)
-      (aset! (as ptr:ptr ttbox) 0 null)
-      (aset! (as ptr:i32 ltbox) 0 0)
+      (set! (aref (as ptr:ptr rtbox) 0) null)
+      (set! (aref (as ptr:ptr ttbox) 0) null)
+      (set! (aref (as ptr:i32 ltbox) 0) 0)
       ; Discriminant: null = none, non-null = some.
       (fprintf g-body-stream "  %s = icmp eq ptr %s, null\n" cmp rval)
       (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n" cmp none-lbl some-lbl)
@@ -1408,12 +1408,12 @@
               (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR))
                     slot:ptr (fmt-sd "%%%s.addr.%d" (ir-name-token (b 's)) g-tmp))
                 (inc! g-tmp)
-                (.set! rt 'elem elem)
-                (.set! rt 'pkind PTR-REF)
+                (set! (rt 'elem) elem)
+                (set! (rt 'pkind) PTR-REF)
                 (fprintf g-entry-stream "  %s = alloca ptr, align 8\n" slot)
                 (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" rval slot)
                 (let (sym:ref:Sym (scope-define inner (b 's) (as ptr rt) slot 1))
-                  (.set! sym 'taint staint))))))
+                  (set! (sym 'taint) staint))))))
         (emit-niche-match-arm (if (!= some-body null) some-body def-body) inner
           vals preds rtbox ttbox ltbox end-lbl id 1))
       ; --- join ---
@@ -1436,7 +1436,7 @@
               (set! k (+ k 1)))
             (fprintf g-body-stream "\n")
             (let (rv:ref:Val (alloc-val result-type tmp))
-              (.set! rv 'taint result-taint)
+              (set! (rv 'taint) result-taint)
               (return rv))))))))
 
 ; One arm body of a niche-ERRPTR match: run the forms (implicit do), apply
@@ -1462,14 +1462,14 @@
             rt:ptr (aref (as ptr:ptr rtbox) 0)
             rlit:i32 (aref (as ptr:i32 ltbox) 0))
         (if (= rt null)
-          (do (aset! (as ptr:ptr rtbox) 0 bty) (aset! (as ptr:i32 ltbox) 0 (bv 'is-lit)))
+          (do (set! (aref (as ptr:ptr rtbox) 0) bty) (set! (aref (as ptr:i32 ltbox) 0) (bv 'is-lit)))
           ; MC-1: shared join (absorbs bare-vs-typed ptr to (raw E));
           ; LW-6: literal branches widen to a typed int sibling.
           (do
-            (aset! (as ptr:ptr rtbox) 0 (type-join rt bty rlit (bv 'is-lit)))
-            (aset! (as ptr:i32 ltbox) 0 (if (and (!= rlit 0) (!= (bv 'is-lit) 0)) 1 0))))
-        (when (= ((as ptr:Type bty) 'kind) TY-VOID) (aset! (as ptr:ptr rtbox) 0 (as ptr ty-void)))
-        (aset! (as ptr:ptr ttbox) 0 (taint-merge (aref (as ptr:ptr ttbox) 0) (bv 'taint)))
+            (set! (aref (as ptr:ptr rtbox) 0) (type-join rt bty rlit (bv 'is-lit)))
+            (set! (aref (as ptr:i32 ltbox) 0) (if (and (!= rlit 0) (!= (bv 'is-lit) 0)) 1 0))))
+        (when (= ((as ptr:Type bty) 'kind) TY-VOID) (set! (aref (as ptr:ptr rtbox) 0) (as ptr ty-void)))
+        (set! (aref (as ptr:ptr ttbox) 0) (taint-merge (aref (as ptr:ptr ttbox) 0) (bv 'taint)))
         (fprintf g-body-stream "  br label %%%s\n" join-lbl)
         (fprintf g-body-stream "%s:\n" join-lbl)
         (fprintf g-body-stream "  br label %%%s\n" end-lbl)
@@ -1533,7 +1533,7 @@
             (let (clause:ptr:Node (unsafe/cast ptr:Node (node-at cc (+ ci 2))))
               (when (or (!= (clause 'kind) NODE-CELL) (< (node-len (as ptr clause)) 2))
                 (die-at (clause 'line) "match: clause must be (pattern body...)"))
-              (aset! (as ptr:ptr clause-binders) ci null)
+              (set! (aref (as ptr:ptr clause-binders) ci) null)
               (let (pat:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr clause) 0)))
                 (if (= (pat 'kind) NODE-SYM)
                   (if (= (pat 's) "_")
@@ -1541,7 +1541,7 @@
                       (when (!= ci (- nclauses 1))
                         (die-at (node-line (as ptr pat) (clause 'line)) "match: _ default must be the last clause"))
                       (set! ndefault 1)
-                      (aset! (as ptr:i32 clause-val) ci -1))
+                      (set! (aref (as ptr:i32 clause-val) ci) -1))
                     (let (ai:i32 (union-arm-index (as ptr udd) (pat 's)))
                       (when (< ai 0)
                         (die-at (node-line (as ptr pat) (clause 'line))
@@ -1549,7 +1549,7 @@
                       (when (!= ((invoke (udd 'arms) ai:usize) 'nfields) 0)
                         (die-at (node-line (as ptr pat) (clause 'line))
                           (fmt-s "match: arm '%s' carries a payload — bind its fields with (arm f...)" (pat 's))))
-                      (aset! (as ptr:i32 clause-val) ci ai)))
+                      (set! (aref (as ptr:i32 clause-val) ci) ai)))
                   (do
                     (when (or (!= (pat 'kind) NODE-CELL) (= (node-len (as ptr pat)) 0))
                       (die-at (clause 'line) "match: pattern must be `arm`, `(arm binders...)`, or _"))
@@ -1564,8 +1564,8 @@
                                   ((invoke (udd 'arms) ai:usize) 'nfields))
                           (die-at (node-line (as ptr pat) (clause 'line))
                             (fmt-s "match: arm '%s' binder count does not match its field count (use _ to ignore a field)" (an 's))))
-                        (aset! (as ptr:i32 clause-val) ci ai)
-                        (aset! (as ptr:ptr clause-binders) ci ((unsafe/cast ptr:Node pat) 'cdr))))))
+                        (set! (aref (as ptr:i32 clause-val) ci) ai)
+                        (set! (aref (as ptr:ptr clause-binders) ci) ((unsafe/cast ptr:Node pat) 'cdr))))))
                 ; Duplicate-arm check (defaults are -1 and can't collide).
                 (when (>= (aref (as ptr:i32 clause-val) ci) 0)
                   (let (cj:i32 0)

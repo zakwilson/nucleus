@@ -32,7 +32,7 @@
 
 ; defn param (`p:&Point`) and defn return type after ')' (`):&Point`).
 (defn shift (p:&Point d:i32):&Point
-  (.set! p 'x (+ (p 'x) d))
+  (set! (p 'x) (+ (p 'x) d))
   (return p))
 
 (defn sum-xy (p:&Point):i32

@@ -9,6 +9,6 @@
     (cond (= (strcmp s "hello") 0)
       (printf "match\n")))
   (with (p:ptr:i32 (malloc 16))
-    (ptr-set! p 42)
+    (set! (deref p) 42)
     (printf "val = %d\n" (deref p)))
   (return 0))

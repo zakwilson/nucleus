@@ -31,8 +31,8 @@
 ; (ref x) binders need a pointer scrutinee; they alias the field in place.
 (defn scale-by (s:ptr:Shape k:f64):void
   (match s
-    ((circle (ref r))       (ptr-set! r (* @r k)))
-    ((rect (ref w) (ref h)) (do (ptr-set! w (* @w k)) (ptr-set! h (* @h k))))
+    ((circle (ref r))       (set! (deref r) (* @r k)))
+    ((rect (ref w) (ref h)) (do (set! (deref w) (* @w k)) (set! (deref h) (* @h k))))
     (point 0)))
 
 ; A parameterized defunion declares a template; (Result i64 i32) stamps and
@@ -61,8 +61,8 @@
   ; Untagged: write one member, read it back; .& gives the field pointer.
   (let (s:ptr:Scalar (alloca Scalar)
         (d (ptr (union as-int:i64 as-float:f64))) (addr-of s 'data))
-    (.set! s 'kind 1)
-    (.set! d 'as-int 42)
+    (set! (s 'kind) 1)
+    (set! (d 'as-int) 42)
     (printf "scalar kind %d as-int %lld (sizeof %lld)\n"
       (s 'kind) (d 'as-int) (as i64 (sizeof Scalar))))
 

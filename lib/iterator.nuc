@@ -48,7 +48,7 @@
   (when (>= (self 'start) (self 'end))
     (return none))
   (let (v:i32 (self 'start))
-    (.set! self 'start (+ v 1))
+    (set! (self 'start) (+ v 1))
     (return (some v))))
 
 ; ---------------------------------------------------------------------------
@@ -67,7 +67,7 @@
   (when (>= (self 'pos) (self 'len))
     (return none))
   (let (v:i64 (aref (self 'data) (as i64 (self 'pos))))
-    (.set! self 'pos (+ (self 'pos) 1))
+    (set! (self 'pos) (+ (self 'pos) 1))
     (return (some v))))
 
 ; ---------------------------------------------------------------------------

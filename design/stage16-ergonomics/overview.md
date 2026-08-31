@@ -87,6 +87,15 @@ addition and `make bootstrap` converges byte-identically with no boot refresh.
 
 I'm split between a simple variadic set! with an extra quoted symbol or variable resolving to symbol for struct field assignment, or a more generic mechanism allowing its extension to arbitrary scenarios.
 
+Evaluation: [dot-forms.md](dot-forms.md). **Done** (2026-08-31, §5 step 5) — the
+second branch. `set!`'s first operand is a **place**, not an extra argument:
+`(set! x v)`, `(set! (p 'field) v)`, `(set! (deref p) v)`, `(set! (aref a i) v)`.
+That subsumes `.set!`, `ptr-set!` and `aset!` in one form (all three retired and
+reserved) and extends through a `set` generic paired with the existing `get`
+rather than a second extension protocol. The variadic 3-arg spelling was
+rejected on the record: it is a pure rename of `.set!`, it leaves the other two
+writers standing, and it is not a stepping stone because the migration differs.
+
 ## `as` sugar
 
 It would be nice if something like `(contains #{"foo" "bar"} (as CStr baz))` could be written as `(contains #{"foo" "bar"} baz:CStr)`. I don't want to make the reader work too hard though.

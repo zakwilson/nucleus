@@ -74,9 +74,9 @@
   ;                    F = Double       ((UnaryFn i32 i32) -> checks S=i32, E=i32).
   (let ((mi (ref (MapIter IntRangeIter Double)))
         (alloca (MapIter IntRangeIter Double)))
-    (.set! (addr-of mi 'source) 'start 1)
-    (.set! (addr-of mi 'source) 'end 4)
-    (.set! (addr-of mi 'f) 'dummy 0)
+    (set! ((addr-of mi 'source) 'start) 1)
+    (set! ((addr-of mi 'source) 'end) 4)
+    (set! ((addr-of mi 'f) 'dummy) 0)
     ; Drive the mapped iterator: 2 4 6 then none.
     (for-each (vfn (v:i32):i32 (printf "%d\n" v) (return 0)) mi))
 
@@ -84,16 +84,16 @@
   (with ((v (ref (Vector i32))) (alloca (Vector i32)))
     (vector-init v)
     (let ((it (ref IntRangeIter)) (alloca IntRangeIter))
-      (.set! it 'start 10)
-      (.set! it 'end 13)
+      (set! (it 'start) 10)
+      (set! (it 'end) 13)
       (collect-all it v))
     (let ((it (VecIter i32)) (iter v))
       (for-each (vfn (x:i32):i32 (printf "%d\n" x) (return 0)) (addr-of it))))
 
   ; sum-i32-iter: constrain case — only accepts (Iterator i32).
   (let ((it2 (ref IntRangeIter)) (alloca IntRangeIter))
-    (.set! it2 'start 1)
-    (.set! it2 'end 5)
+    (set! (it2 'start) 1)
+    (set! (it2 'end) 5)
     (printf "sum=%d\n" (sum-i32-iter it2)))
 
   (return 0))

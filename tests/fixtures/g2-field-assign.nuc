@@ -2,5 +2,5 @@
 (defstruct S (xs (array i32 2)))
 (defvar s:S)
 (defn main ():i32
-  (.set! (addr-of s) 'xs 0)
+  (set! ((addr-of s) 'xs) 0)
   (return 0))

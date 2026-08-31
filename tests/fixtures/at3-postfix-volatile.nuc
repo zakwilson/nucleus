@@ -4,7 +4,7 @@
 ; attributes.md §3, §7 AT-3). Compiling this must FAIL with:
 ;   "postfix 'volatile' is retired: use the ':volatile' attribute"
 (defn bump-counter ((p (ptr (i32 volatile)))):void
-  (ptr-set! p (+ (deref p) 1)))
+  (set! (deref p) (+ (deref p) 1)))
 
 (defn main ():i32
   (return 0))

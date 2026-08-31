@@ -69,17 +69,17 @@
 
 ; Initialise an empty Vector with the default (libc) allocator.
 (defn vector-init ((v (ref (Vector T)))):void
-  (.set! v 'data null)
-  (.set! v 'len 0)
-  (.set! v 'cap 0)
+  (set! (v 'data) null)
+  (set! (v 'len) 0)
+  (set! (v 'cap) 0)
   (libc-allocator (addr-of v 'alloc)))
 
 ; Initialise an empty Vector with an explicit allocator handle (copied in).
 (defn vector-init-alloc ((v (ref (Vector T))) (a (ref AllocHandle))):void
-  (.set! v 'data null)
-  (.set! v 'len 0)
-  (.set! v 'cap 0)
-  (.set! v 'alloc (deref a)))
+  (set! (v 'data) null)
+  (set! (v 'len) 0)
+  (set! (v 'cap) 0)
+  (set! (v 'alloc) (deref a)))
 
 ; ---------------------------------------------------------------------------
 ; Value/heap constructors (target-typed — design/stage14/target-typed-
@@ -125,8 +125,8 @@
       (let ((new-data (raw ui8))
             (alloc-handle-realloc ah (_get v 'data) old-bytes new-bytes 8))
         (when (= (as ptr new-data) null) (vector-oom))
-        (.set! v 'data new-data)
-        (.set! v 'cap new-cap)))))
+        (set! (v 'data) new-data)
+        (set! (v 'cap) new-cap)))))
 
 ; ---------------------------------------------------------------------------
 ; Coll T conformance: count, conj, empty?.
@@ -139,8 +139,8 @@
 ; conj: append an element at the back, growing if needed.
 (defn conj ((self (ref (Vector T))) elem:T):void
   (when (>= (_get self 'len) (_get self 'cap)) (vector-grow self))
-  (aset! (as ptr:T (as ptr (_get self 'data))) (as i64 (_get self 'len)) elem)
-  (.set! self 'len (+ (_get self 'len) 1)))
+  (set! (aref (as ptr:T (as ptr (_get self 'data))) (as i64 (_get self 'len))) elem)
+  (set! (self 'len) (+ (_get self 'len) 1)))
 
 ; empty? -> true when len = 0.
 (defn empty? ((self (ref (Vector T)))):bool
@@ -176,10 +176,10 @@
   (let (buf:ptr:T (as ptr:T (as ptr (_get self 'data)))
         j:usize (_get self 'len))
     (while (> j i)
-      (aset! buf (as i64 j) (aref buf (as i64 (- j 1))))
+      (set! (aref buf (as i64 j)) (aref buf (as i64 (- j 1))))
       (set! j (- j 1)))
-    (aset! buf (as i64 i) elem))
-  (.set! self 'len (+ (_get self 'len) 1)))
+    (set! (aref buf (as i64 i)) elem))
+  (set! (self 'len) (+ (_get self 'len) 1)))
 
 ; remove-at: delete the element at index i, shifting (i,len) left by one.
 ; i must be < len (i = len-1 removes the last element). Panics out-of-bounds.
@@ -188,9 +188,9 @@
   (let (buf:ptr:T (as ptr:T (as ptr (_get self 'data)))
         j:usize i)
     (while (< (+ j 1) (_get self 'len))
-      (aset! buf (as i64 j) (aref buf (as i64 (+ j 1))))
+      (set! (aref buf (as i64 j)) (aref buf (as i64 (+ j 1))))
       (set! j (+ j 1))))
-  (.set! self 'len (- (_get self 'len) 1)))
+  (set! (self 'len) (- (_get self 'len) 1)))
 
 ; ---------------------------------------------------------------------------
 ; Capacity operations (STL-like opt-in surface; design §Vector recommends
@@ -224,9 +224,9 @@
                        (_get self 'data)
                        (* (_get self 'cap) (as usize (sizeof T)))
                        8))
-  (.set! self 'data null)
-  (.set! self 'len 0)
-  (.set! self 'cap 0))
+  (set! (self 'data) null)
+  (set! (self 'len) 0)
+  (set! (self 'cap) 0))
 
 ; ---------------------------------------------------------------------------
 ; VecIter T — a forward cursor over a Vector's elements. Iterator T conformance
@@ -256,15 +256,15 @@
 (defn next ((self (ref (VecIter T)))) (Maybe T)
   (when (>= (self 'pos) (self 'len)) (return none))
   (let (v:T (aref (as ptr:T (self 'data)) (as i64 (self 'pos))))
-    (.set! self 'pos (+ (self 'pos) 1))
+    (set! (self 'pos) (+ (self 'pos) 1))
     (return (some v))))
 
 ; iter-init: configure `it` to scan `v` from the start (borrowing its buffer).
 ; Internal helper: the value-returning `iter` (Coll conformance) wraps it.
 (defn iter-init ((it (ref (VecIter T))) (v (ref (Vector T)))):void
-  (.set! it 'data (as ptr (_get v 'data)))
-  (.set! it 'pos 0)
-  (.set! it 'len (_get v 'len)))
+  (set! (it 'data) (as ptr (_get v 'data)))
+  (set! (it 'pos) 0)
+  (set! (it 'len) (_get v 'len)))
 
 ; ---------------------------------------------------------------------------
 ; Coll T (VecIter T) conformance. `iter` returns a fresh VecIter BY VALUE

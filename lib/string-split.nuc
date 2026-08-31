@@ -87,36 +87,36 @@
     (when (> slen 0)
       ; Build a temporary StrView over the remaining buffer for strview-byte-find.
       (let ((haystack (ref StrView)) (alloca StrView))
-        (.set! haystack 'data buf)
-        (.set! haystack 'len  rem)
+        (set! (haystack 'data) buf)
+        (set! (haystack 'len) rem)
         (let ((needle (ref StrView)) (alloca StrView))
-          (.set! needle 'data (it 'sep-data))
-          (.set! needle 'len  slen)
+          (set! (needle 'data) (it 'sep-data))
+          (set! (needle 'len) slen)
           (let ((found (Maybe usize)) (strview-byte-find haystack needle))
             (match found
               ((some k)
                ; Found at offset k: yield buf[0..k].
                (let ((seg (ref StrView)) (alloca StrView))
-                 (.set! seg 'data buf)
-                 (.set! seg 'len  k)
+                 (set! (seg 'data) buf)
+                 (set! (seg 'len) k)
                  ; Advance past this segment and the separator.
-                 (.set! it 'buf (unsafe/ptr+ buf (as i64 (+ k slen))))
-                 (.set! it 'rem (- rem (+ k slen)))
+                 (set! (it 'buf) (unsafe/ptr+ buf (as i64 (+ k slen))))
+                 (set! (it 'rem) (- rem (+ k slen)))
                  (return (deref seg))))
               (none
                ; Not found: yield the entire tail, mark done.
                (let ((seg (ref StrView)) (alloca StrView))
-                 (.set! seg 'data buf)
-                 (.set! seg 'len  rem)
-                 (.set! it 'done true)
+                 (set! (seg 'data) buf)
+                 (set! (seg 'len) rem)
+                 (set! (it 'done) true)
                  (return (deref seg)))))))))
     ; Sep-len == 0 edge case: yield one-byte segments (or mark done immediately
     ; on empty). For simplicity and to match common expectations when sep is
     ; empty, treat the entire remaining buffer as a single segment and mark done.
     (let ((seg (ref StrView)) (alloca StrView))
-      (.set! seg 'data buf)
-      (.set! seg 'len  rem)
-      (.set! it 'done true)
+      (set! (seg 'data) buf)
+      (set! (seg 'len) rem)
+      (set! (it 'done) true)
       (return (deref seg)))))
 
 ; strview-split — construct a SplitIter over sv splitting on sep.
@@ -124,14 +124,14 @@
 ; iterator's lifetime (the iterator holds raw pointers into their buffers).
 (defn strview-split ((sv (ref StrView)) (sep (ref StrView))):SplitIter
   (let ((it (ref SplitIter)) (alloca SplitIter))
-    (.set! it 'buf       (sv 'data))
-    (.set! it 'rem       (sv 'len))
-    (.set! it 'sep-data  (sep 'data))
-    (.set! it 'sep-len   (sep 'len))
+    (set! (it 'buf) (sv 'data))
+    (set! (it 'rem) (sv 'len))
+    (set! (it 'sep-data) (sep 'data))
+    (set! (it 'sep-len) (sep 'len))
     ; done=false unless source is empty AND sep is non-empty: in that case the
     ; first call will yield an empty segment and then set done=true, so start
     ; with false always (one empty segment for empty input matches Python/Rust).
-    (.set! it 'done false)
+    (set! (it 'done) false)
     (return (deref it))))
 
 ; ---------------------------------------------------------------------------
@@ -153,7 +153,7 @@
 
 (defn next ((self (ref SplitIter))) (Maybe ptr)
   (when (self 'done) (return none))
-  (.set! self 'cur (split-iter-next self))
+  (set! (self 'cur) (split-iter-next self))
   (return (some (addr-of self 'cur))))
 
 ; ---------------------------------------------------------------------------
@@ -199,27 +199,27 @@
                      (= (as ui32 (aref buf (as i64 (- line-end 1)))) 13))
             (set! line-end (- line-end 1)))
           (let ((seg (ref StrView)) (alloca StrView))
-            (.set! seg 'data buf)
-            (.set! seg 'len  line-end)
+            (set! (seg 'data) buf)
+            (set! (seg 'len) line-end)
             ; Advance past the '\n'.
-            (.set! it 'buf (unsafe/ptr+ buf (as i64 (+ nl-pos 1))))
-            (.set! it 'rem (- rem (+ nl-pos 1)))
+            (set! (it 'buf) (unsafe/ptr+ buf (as i64 (+ nl-pos 1))))
+            (set! (it 'rem) (- rem (+ nl-pos 1)))
             (return (deref seg)))))
       (do
         ; No '\n' found: yield the remaining bytes as the last line.
         (let ((seg (ref StrView)) (alloca StrView))
-          (.set! seg 'data buf)
-          (.set! seg 'len  rem)
-          (.set! it 'done true)
+          (set! (seg 'data) buf)
+          (set! (seg 'len) rem)
+          (set! (it 'done) true)
           (return (deref seg)))))))
 
 ; strview-lines — construct a LineIter over sv.
 ; Borrowed: caller must keep sv alive for the iterator's lifetime.
 (defn strview-lines ((sv (ref StrView))):LineIter
   (let ((it (ref LineIter)) (alloca LineIter))
-    (.set! it 'buf  (sv 'data))
-    (.set! it 'rem  (sv 'len))
-    (.set! it 'done false)
+    (set! (it 'buf) (sv 'data))
+    (set! (it 'rem) (sv 'len))
+    (set! (it 'done) false)
     (return (deref it))))
 
 ; ---------------------------------------------------------------------------
@@ -230,7 +230,7 @@
 
 (defn next ((self (ref LineIter))) (Maybe ptr)
   (when (self 'done) (return none))
-  (.set! self 'cur (lines-iter-next self))
+  (set! (self 'cur) (lines-iter-next self))
   (return (some (addr-of self 'cur))))
 
 ; ---------------------------------------------------------------------------

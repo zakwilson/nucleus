@@ -28,7 +28,7 @@
 
 (defn main ():i32
   (let (port:(ptr :volatile ui8) (unsafe/cast (ptr :volatile ui8) 37))
-    (ptr-set! port 255)
+    (set! (deref port) 255)
     (while true
-      (ptr-set! port (next-pattern (deref port)))))
+      (set! (deref port) (next-pattern (deref port)))))
   (return 0))
