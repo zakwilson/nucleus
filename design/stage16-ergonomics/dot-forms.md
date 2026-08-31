@@ -1,12 +1,12 @@
 # Retiring the `.` forms, and the selector rule underneath them
 
-**Status: in progress** (2026-08-31). **Steps 0-5 done.** The selector rule has
+**Status: DONE** (2026-08-31). **All six steps done.** The selector rule has
 flipped — a quoted `'x` is the field, and a bare symbol in selector position is
 an ordinary variable reference like a symbol anywhere else — and every
 punctuation-named form is gone: `.` is `get`, `.&` is a 2-argument `addr-of`,
-and `.set!`/`ptr-set!`/`aset!` are all `set!` over a **place**. Getting there
-took a migration aid (`--strict-selectors`, now retired) and ~9300 rewritten
-sites. What remains is step 6, the `set` generic. See §5.
+and `.set!`/`ptr-set!`/`aset!` are all `set!` over a **place**, which a `set`
+generic extends to writable collections. Getting there took a migration aid
+(`--strict-selectors`, now retired) and ~9300 rewritten sites. See §5.
 
 Three special forms are spelled with a leading dot — `.` (member read), `.&`
 (member address) and `.set!` (member write). They are the last forms whose name
@@ -165,7 +165,9 @@ That is CL's `setf` tradeoff, taken deliberately.
 A `set` generic paired with the existing `get` generic, not `setf` expanders:
 `(set! (get m k) v)` dispatches to a user `set` method on `(m, k, v)` exactly as
 `(get m k)` dispatches today, reusing the multimethod machinery rather than
-introducing a second extension protocol.
+introducing a second extension protocol. (Built — §5 step 6. The place *becomes*
+the call `(set m k v)`, and the split is the one `get` already makes: a literal
+selector is the field, a computed key is the generic.)
 
 What that gives up is single evaluation of subforms — `setf` expanders exist so
 that `(incf (aref a (f i)))` calls `(f i)` once. `inc!`/`dec!` over a place
@@ -379,7 +381,42 @@ syntax removes it.
 
    `inc!`/`dec!` stay symbol-only, which §3 already settled: a place form for
    them would either evaluate subforms twice or need `setf` expanders.
-6. The `set` generic.
+6. **The `set` generic. (done 2026-08-31.)** A member place whose key is
+   **computed** — `(set! (m k) v)` or `(set! (get m k) v)` — is the ordinary
+   call `(set m k v)` when the receiver's type has a `set` method. There is no
+   new dispatch machinery: the place *becomes* a call and the multimethod
+   resolver does the rest, which is the whole point of pairing it with `get`
+   rather than adding `setf` expanders.
+
+   - **A literal selector is always the field**, and this is not a detail — it
+     is what keeps a collection able to write its own fields. The first probe
+     defined `set` on `(ref (Vector T))` and broke `Vector`'s own `drop`:
+     `(set! (self 'data) null)` dispatched back into that method. It is the
+     write side of the `_get` recursion trap, and the fix is the split
+     `emit-get-with-callee` already makes — Branch A (literal symbol) is member
+     access, Branch B (computed key) is value-keyed generic dispatch — applied
+     to `set`. A symbol-keyed `set` is therefore reached through a variable,
+     `(set! (m sym) v)`, exactly as a symbol-keyed `get` is; the literal case
+     belongs to the field, which is the collision §4 and
+     `stage16-ergonomics/overview.md` already record for reads.
+   - **The route is decided from `node-type`, not from an emitted Val.** The
+     read path can emit the receiver first because it has one consumer; a write
+     has two (the generic call takes a value, the field write takes storage), so
+     emitting to decide would emit twice.
+   - **One function is the whole route.** `set-place-call` answers "which
+     `(set recv key v)` call, if any" and is called by `emit-set-place` *and* by
+     `node-type`'s `set!` branch — which then types the place as `node-type` of
+     the very cell emit builds. The lockstep cannot drift because there is only
+     one answer, and a `set` method with a return type is usable as a value.
+   - **`_get` never dispatches** — it is the documented override bypass — and
+     neither do the storage places.
+   - A computed key on a **readable** collection with no `set` method says so;
+     the field path would otherwise answer with a missing-quote note about
+     something that is not a field name.
+
+   `Vector` and `HashMap` both define `set`: the vector's is new (bounds-checked
+   like `invoke`, and refusing to grow, so a typo cannot silently extend it), the
+   map's is `assoc` under the name the place form dispatches on.
 
 Selectors before places: `(set! (p 'x) v)` and `(set! (p x) v)` are different
 migrations over the same 1428 sites, and places-first rewrites them twice.

@@ -248,6 +248,11 @@
                     (set! has-tomb 1))
                   (set! idx (bit-and (+ idx 1) mask)))))))))))
 
+; set: `(set! (m k) v)` — the write side of `get`, and `assoc` under the name the
+; place form dispatches on (dot-forms.md §3).
+(defn set ((self (ref (HashMap K V))) key:K val:V):void
+  (assoc self key val))
+
 ; dissoc: remove the entry for key (sets state to tombstone). No-op if absent.
 (defn dissoc ((self (ref (HashMap K V))) key:K):void
   (let (mask:usize (- (self 'cap) 1)

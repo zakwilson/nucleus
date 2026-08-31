@@ -18,6 +18,7 @@ void vector_bounds(const char* what, size_t i, size_t n) asm("vector-bounds");
 /* conj: generic template; not exported */
 /* empty?: generic template; not exported */
 /* invoke: generic template; not exported */
+/* set: generic template; not exported */
 /* append: generic template; not exported */
 /* contains?: generic template; not exported */
 /* insert: generic template; not exported */

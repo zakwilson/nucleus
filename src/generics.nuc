@@ -5160,11 +5160,16 @@
         (when (= hp 'set!)
           (let (tgt:ptr:Node (unsafe/cast ptr:Node (node-at n 1))
                 nm:ptr null  ti:ptr null)
-            ; A PLACE assigns through ptr-set!/aset!/.set!, every one of which is
-            ; void here; only the name place yields the assigned value. Guarding
-            ; on the kind is also what keeps `split-typed` off a cell's null `s`.
+            ; A PLACE assigns through a storage writer, every one of which is void
+            ; here; only the name place yields the assigned value. Guarding on the
+            ; kind is also what keeps `split-typed` off a cell's null `s`.
             (when (= (as ptr tgt) null) (return ty-void))
-            (when (!= (tgt 'kind) NODE-SYM) (return ty-void))
+            (when (!= (tgt 'kind) NODE-SYM)
+              ; Lockstep with emit-set-place: a member place on a receiver with a
+              ; user `set` method is that call, so it is that call's type.
+              (let (sc:ptr (set-place-call tgt (node-at n 2) (n 'line) scope))
+                (when (!= sc null) (return (node-type sc scope))))
+              (return ty-void))
             (split-typed (tgt 's) (as ptr:ptr (addr-of nm)) (as ptr:ptr (addr-of ti)))
             (let (sym:?ptr:Sym (scope-lookup scope nm))
               (when (= sym null) (return ty-void))

@@ -10246,6 +10246,51 @@
             (make-cell recv (make-cell sel (make-cell v null line) line) line)
             line)))
 
+; `(set recv key v)` — an ordinary call, so a writable collection extends `set!`
+; through the multimethod machinery rather than a second protocol (dot-forms.md §3).
+(defn set-call-cell (recv:(raw Node) key:(raw Node) v:(raw Node) line:i32):ptr
+  (return (make-cell (intern-symbol "set")
+            (make-cell recv (make-cell key (make-cell v null line) line) line)
+            line)))
+
+; The `(set recv key v)` call a member place becomes, or null when the place is a
+; storage place, or `_get` (the override bypass, which must stay a raw field
+; write), or its receiver has no user `set` method. `emit-set-place` and
+; `node-type`'s `set!` branch both route on this one answer, so they cannot drift
+; — and it is asked of `node-type` rather than of an emitted Val, because a
+; receiver emitted to decide the route would then be emitted twice.
+(defn set-place-call (place:(raw Node) v:(raw Node) line:i32 scope:ref:Scope):ptr
+  (when (= place null) (return null))
+  (let (pc:ptr:Node (unsafe/cast ptr:Node place))
+    (when (!= (pc 'kind) NODE-CELL) (return null))
+    (let (plen:i32 (node-len place)
+          hd:(raw Node) (node-at place 0)
+          recv:ptr null
+          key:ptr null)
+      (when (and (!= hd null) (= ((unsafe/cast ptr:Node hd) 'kind) NODE-SYM))
+        (let (h:ptr ((unsafe/cast ptr:Node hd) 's))
+          (when (and (= (strcmp h "deref") 0) (= plen 2)) (return null))
+          (when (and (= (strcmp h "aref") 0) (= plen 3)) (return null))
+          (when (and (= (strcmp h "_get") 0) (= plen 3)) (return null))
+          (when (and (= (strcmp h "get") 0) (= plen 3))
+            (set! recv (node-at place 1))
+            (set! key (node-at place 2)))))
+      (when (and (= recv null) (= plen 2))
+        (set! recv (node-at place 0))
+        (set! key (node-at place 1)))
+      (when (= recv null) (return null))
+      ; emit-get-with-callee's split, with `set` in place of `get`: a LITERAL
+      ; selector is the field, and only a computed key is value-keyed dispatch.
+      ; Without this a collection that defines `set` could no longer write its own
+      ; fields — `(set! (self 'data) null)` would dispatch back into that method,
+      ; the write-side of the `_get` recursion trap.
+      (when (!= (selector-literal-sym key) null) (return null))
+      (let (rt:?ptr:Type (node-type recv scope))
+        (when (= rt null) (return null))
+        (when (= (generic-has-receiver-method (generic-lookup "set") (as raw:Type rt)) 0)
+          (return null))
+        (return (set-call-cell recv key v line))))))
+
 ; `set!`'s first operand is a PLACE, not only a name (dot-forms.md §3). Each
 ; place rebuilds the call the writer it replaces would have been given — same
 ; children, same line — so the spelling change emits identical IR and inherits
@@ -10258,6 +10303,10 @@
     ; `()` reads as a null node, so the place judgement has to precede any deref.
     (when (= place null) (die-nonplace place line))
     (when (!= (pc 'kind) NODE-CELL) (die-nonplace place line))
+    ; A writable collection takes precedence over the field write, which is the
+    ; read path's rule with `set` in place of `get`/`invoke`.
+    (let (sc:ptr (set-place-call place v line scope))
+      (when (!= sc null) (return (emit-node sc scope))))
     (let (plen:i32 (node-len place)
           hd:(raw Node) (node-at place 0))
       (when (and (!= hd null) (= ((unsafe/cast ptr:Node hd) 'kind) NODE-SYM))
@@ -10277,17 +10326,28 @@
                         line)
                       scope)))
           (when (and (or (= (strcmp h "_get") 0) (= (strcmp h "get") 0)) (= plen 3))
-            (return (emit-field-set
-                      (field-set-cell (node-at place 1) (node-at place 2) v line)
-                      scope)))))
+            (return (emit-member-place (node-at place 1) (node-at place 2) v line scope)))))
       ; Head position `(recv 'f)` is the idiomatic member READ, so it is the
       ; idiomatic member write. Anything else two-long lands here too and is
       ; refused by emit-field-set, which owns that judgement.
       (when (= plen 2)
-        (return (emit-field-set
-                  (field-set-cell (node-at place 0) (node-at place 1) v line)
-                  scope)))
+        (return (emit-member-place (node-at place 0) (node-at place 1) v line scope)))
       (die-nonplace place line))))
+
+; A member place that `set-place-call` declined: the field write. It is reached
+; with a computed key only when the receiver has no `set` method, and for a
+; READABLE collection that is the whole story — the field path would otherwise
+; answer with a missing-quote note about something that is not a field name.
+(defn emit-member-place (recv:(raw Node) key:(raw Node) v:(raw Node) line:i32 scope:ref:Scope):ref:Val
+  (when (= (selector-literal-sym key) null)
+    (let (rt:?ptr:Type (node-type recv scope))
+      (when (!= rt null)
+        (when (or (!= (generic-has-receiver-method (generic-lookup "invoke") (as raw:Type rt)) 0)
+                  (!= (generic-has-receiver-method (generic-lookup "get") (as raw:Type rt)) 0))
+          (die-at line
+            (fmt-s "set!: %s has no `set` method -- a computed key writes through the `set` generic"
+              (type-display (as raw:Type rt))))))))
+  (return (emit-field-set (field-set-cell recv key v line) scope)))
 
 (defn die-nonplace (place:(raw Node) line:i32):void
   :noreturn
