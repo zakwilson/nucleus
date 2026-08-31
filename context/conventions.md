@@ -1738,6 +1738,32 @@ explicitly at index 1 — which the `set!` place form no longer does, because th
 receiver moved into head position. Every member form the compiler *synthesizes*
 has the same hazard; see the `quoted-selector` / `set-place-cell` helpers.
 
+## A member place with a COMPUTED key is the `set` generic; a literal selector is always the field
+
+`(set! (m k) v)` and `(set! (get m k) v)` become the ordinary call `(set m k v)`
+when `k` is not a literal selector and the receiver's type has a `set` method
+(`set-place-call`, `src/nucleusc.nuc`). A **literal** selector never dispatches,
+and that is load-bearing, not a simplification: without it a collection that
+defines `set` can no longer write its own fields — `(set! (self 'data) null)`
+inside `Vector`'s `drop` dispatches back into the `set` method. It is the write
+side of the `_get` recursion trap two sections up, and the rule is the split
+`emit-get-with-callee` already makes (Branch A literal = member access, Branch B
+computed = value-keyed dispatch).
+
+Two consequences worth knowing:
+
+- **The route is decided from `node-type`, not from an emitted Val.** The read
+  path emits the receiver first because it has one consumer; a write has two (the
+  generic call takes a value, the field write takes storage), so emitting to
+  decide would emit the receiver twice.
+- **`set-place-call` is the single route**, called by `emit-set-place` *and* by
+  `node-type`'s `set!` branch, which types the place as `node-type` of the very
+  cell emit builds. That is the lockstep this file opens with, discharged by
+  having one answer rather than two that must agree.
+
+`_get` never dispatches (it is the override bypass), and neither do the storage
+places `(deref p)` / `(aref a i)`.
+
 ## Reading a struct value's field is direct; writing one needs a binding
 
 Since Stage 16 SV-1 a struct **value** is a legal member-access receiver, so

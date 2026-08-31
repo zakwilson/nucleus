@@ -45,6 +45,7 @@ In practice, `doseq` handles this automatically — see [Macros](macros.md) for 
 | Method | Description |
 |--------|-------------|
 | `invoke` | Index access: `(s i)` routes to `invoke` and returns the element at index `i`. Panics on out-of-bounds. |
+| `set` | Index assignment: `(set! (s i) x)` routes to `set`. The write side of `invoke`; panics on out-of-bounds rather than growing, so a typo cannot silently extend the collection. Not a `Seq` member — `Vector` defines it directly. |
 | `append` | Add at the back, mutating in place. |
 | `contains?` | Linear membership test using `=` on `E`. Returns `1` if found, `0` otherwise. |
 | `insert` | Insert at index `i`, shifting `[i, len)` right by one, mutating in place. |
@@ -65,6 +66,7 @@ In practice, `doseq` handles this automatically — see [Macros](macros.md) for 
 | Method | Description |
 |--------|-------------|
 | `assoc` | Insert or overwrite the value for `key`, mutating in place. |
+| `set` | The same write, under the name the place form dispatches on: `(set! (m k) v)` and `(set! (get m k) v)` both call it. Not an `Assoc` member — `HashMap` defines it directly, as `assoc`. |
 | `dissoc` | Remove the entry for `key`, mutating in place. No-op if absent. |
 | `get` | Look up `key`; returns `(some v)` on a hit, `none` on a miss. |
 | `keys` | Returns a fresh key iterator by value. The return type is the associated iterator type `Ki`, which must conform to `(Iterator K)`. |
@@ -237,6 +239,7 @@ collection still may not escape by `return` without `move`, so the in-place
 
 ; Seq T
 (invoke:T       ((self (ref (Vector T))) i:usize))   ; called as (v i)
+(set:void       ((self (ref (Vector T))) i:usize elem:T)) ; (set! (v i) x)
 (append:void    ((self (ref (Vector T))) elem:T))
 (contains?:i32  ((self (ref (Vector T))) elem:T))
 (insert:void    ((self (ref (Vector T))) i:usize elem:T))
@@ -320,6 +323,7 @@ See [Iterators](iterators.md) for `doseq` / `doseq-iter` and the `Iterator` prot
 ```lisp
 ; Assoc K V (HashMapKeyIter K V) (HashMapValIter K V)
 (assoc:void        ((self (ref (HashMap K V))) key:K val:V))
+(set:void          ((self (ref (HashMap K V))) key:K val:V))  ; (set! (m k) v)
 (dissoc:void       ((self (ref (HashMap K V))) key:K))
 ((get (Maybe V))   ((self (ref (HashMap K V))) key:K))
 (keys:(HashMapKeyIter K V)  ((self (ref (HashMap K V)))))

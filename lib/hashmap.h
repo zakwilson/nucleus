@@ -13,6 +13,7 @@ void hashmap_oom(void) asm("hashmap-oom");
 /* hashmap-new-in: generic template; not exported */
 /* hashmap-resize: generic template; not exported */
 /* assoc: generic template; not exported */
+/* set: generic template; not exported */
 /* dissoc: generic template; not exported */
 /* get: generic template; not exported */
 /* count: generic template; not exported */

@@ -11004,6 +11004,94 @@ EOF
 }
 spawn run_s16_set_places
 
+# The `set` generic (dot-forms.md §3 "Extensibility", §5 step 6): a member place
+# whose key is COMPUTED dispatches to a user `set` method on (recv, key, value),
+# reusing the multimethod machinery rather than a second extension protocol.
+run_s16_set_generic() {
+  local d ok out
+  d="$(mktemp -d)"
+  ok=1
+  # 1. Vector and HashMap are writable through the place form, in both spellings.
+  cat > "$d/w.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use vector)
+(import-use hashmap)
+(defn main ():i32
+  (with ((v (ref (Vector i32))) (alloca (Vector i32)))
+    (vector-init v) (conj v 10) (conj v 20) (conj v 30)
+    (let (i:usize (as usize 1))
+      (set! (v i) 99)
+      (printf "%d %d %d\n" (v (as usize 0)) (v i) (v (as usize 2)))))
+  (with ((m (ref (HashMap CStr i32))) (alloca (HashMap CStr i32)))
+    (hashmap-init m)
+    (let (k:CStr "a")
+      (set! (m k) 1)
+      (set! (get m k) 7)
+      (match (get m k) ((some x) (printf "%d %lld\n" x (count m)))
+                       (none (printf "none\n")))))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/w.nuc" -o "$d/w.bin" 2>"$d/w.err" || ok=0
+  out="$("$d/w.bin" 2>/dev/null || true)"
+  [ "$out" = "10 99 30
+7 1" ] || ok=0
+  if [ "$ok" = 1 ]; then
+    echo "PASS  s16-set-generic-collections"
+  else
+    echo "FAIL  s16-set-generic-collections (got '$out')"
+    sed 's/^/    /' "$d/w.err" | head -3
+  fi
+  # 2. A LITERAL selector is always the field, even on a receiver that has a `set`
+  #    method -- otherwise a collection could no longer write its own fields, the
+  #    write side of the `_get` recursion trap. And the method's return type is
+  #    the place's type, which is the node-type mirror.
+  ok=1
+  cat > "$d/lit.nuc" <<'EOF'
+(import-use "stdio.h")
+(defstruct Box n:i32 hits:i32)
+(defn set ((self (ref Box)) (k i32) (x i32)):i32
+  (set! (self 'hits) (+ (_get self 'hits) 1))   ; literal selector: a field write
+  (set! (self 'n) (+ (_get self 'n) x))
+  (return (_get self 'n)))
+(defn main ():i32
+  (let (b:ptr:Box (alloca Box) k:i32 0)
+    (set! (b 'n) 1) (set! (b 'hits) 0)
+    (let (r:i32 (set! (b k) 10))                ; computed key: the set generic
+      (printf "%d %d %d\n" r (_get b 'n) (_get b 'hits))))
+  (return 0))
+EOF
+  ./build/nucleusc "$d/lit.nuc" -o "$d/lit.bin" 2>"$d/lit.err" || ok=0
+  out="$("$d/lit.bin" 2>/dev/null || true)"
+  [ "$out" = "11 11 1" ] || ok=0
+  if [ "$ok" = 1 ]; then
+    echo "PASS  s16-set-generic-literal-is-the-field"
+  else
+    echo "FAIL  s16-set-generic-literal-is-the-field (got '$out')"
+    sed 's/^/    /' "$d/lit.err" | head -3
+  fi
+  # 3. A computed key on a READABLE collection with no `set` method says so; the
+  #    field path would answer with a missing-quote note about a non-field.
+  ok=1
+  cat > "$d/no.nuc" <<'EOF'
+(defstruct Ro n:i32)
+(defn invoke ((self (ref Ro)) i:i32):i32 (return (+ (_get self 'n) i)))
+(defn main ():i32
+  (let (r:ref:Ro (alloca Ro) k:i32 0)
+    (set! (r k) 5))
+  (return 0))
+EOF
+  ./build/nucleusc --emit-llvm "$d/no.nuc" >/dev/null 2>"$d/no.err" || true
+  qgrep -F "has no \`set\` method" "$d/no.err" || ok=0
+  if [ "$ok" = 1 ]; then
+    echo "PASS  s16-set-generic-missing-method"
+  else
+    echo "FAIL  s16-set-generic-missing-method"
+    sed 's/^/    /' "$d/no.err" | head -3
+  fi
+  rm -rf "$d"
+}
+spawn run_s16_set_generic
+
 # `tyname-resolvable` (src/generics.nuc) decides whether a symbol in a stamped
 # method's type pattern names a CONCRETE type or a free type variable. Read as a
 # tyvar, a concrete arg makes the stamp look like an unmonomorphized template,

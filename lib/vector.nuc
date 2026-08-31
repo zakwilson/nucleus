@@ -147,13 +147,21 @@
   (return (= (_get self 'len) 0)))
 
 ; ---------------------------------------------------------------------------
-; Seq T conformance: invoke (index), append, contains?, insert.
+; Seq T conformance: invoke (index), set (index assignment), append,
+; contains?, insert.
 ; ---------------------------------------------------------------------------
 
 ; invoke: index access `(v i)` -> element. Panics on out-of-bounds.
 (defn invoke ((self (ref (Vector T))) i:usize):T
   (when (>= i (_get self 'len)) (vector-bounds "get" i (_get self 'len)))
   (return (aref (as ptr:T (as ptr (_get self 'data))) (as i64 i))))
+
+; set: index assignment `(set! (v i) x)` — the write side of `invoke`
+; (dot-forms.md §3). Panics out-of-bounds exactly as `invoke` does; growing on a
+; write would make a typo silently extend the vector.
+(defn set ((self (ref (Vector T))) i:usize elem:T):void
+  (when (>= i (_get self 'len)) (vector-bounds "set" i (_get self 'len)))
+  (set! (aref (as ptr:T (as ptr (_get self 'data))) (as i64 i)) elem))
 
 ; append: add at the back (same as conj for a vector).
 (defn append ((self (ref (Vector T))) elem:T):void
