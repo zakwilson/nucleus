@@ -177,8 +177,7 @@
       (return (type-eq (aa 'elem) b)))
     (when (!= (aa 'kind) (bb 'kind)) (return 0))
     (case (aa 'kind)
-      TY-STRUCT (if (= (aa 'sdef) (bb 'sdef)) (return 1) (return 0))
-      TY-UNION (if (= (aa 'sdef) (bb 'sdef)) (return 1) (return 0))
+      (:or TY-STRUCT TY-UNION) (if (= (aa 'sdef) (bb 'sdef)) (return 1) (return 0))
       TY-PTR (return (type-eq (aa 'elem) (bb 'elem)))
       ; Stage 15 W8 G-2: same element type AND same length. Reached from the
       ; constant-aggregate renderer, which checks the element type an

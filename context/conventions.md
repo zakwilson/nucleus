@@ -5803,3 +5803,19 @@ The general rule: before changing what a **spelling** means, ask the compiler
 which of its own emissions use that spelling. A macro's quasiquote template is
 the same hazard one layer up — the template is data, so a form inside it is
 reported at the macro's USE site with a gensym receiver, never at the template.
+
+## A macro BODY sees only what precedes it — `lib/macros.nuc` is order-dependent
+
+A macro body is ordinary user-scope code compiled at **definition** time, so it
+can only call macros already defined above it in the file. `case` sits above
+`when`, and `(when …)` inside its body fails with `unknown: when` — from
+`lib/macros.nuc`'s own line number, which reads like a defect in the prelude
+rather than in the macro being written. Use `cond` (a special form, always
+available) and whatever is defined earlier; do not reorder the file to get a
+macro into scope, because the same edit moves every other body's horizon.
+
+This is the same rule that keeps `die-at`/`report-at` out of macro bodies
+(`case-clause-hint`, `src/nucleusc.nuc`) — a body is compiled in the user's
+scope, not the compiler's, so a *located* error is not available to it. A
+variadic marker's degenerate case therefore has to have a defensible value
+rather than a diagnostic: `(:or)` in `case` is `false`, like `(or)`.

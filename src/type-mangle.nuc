@@ -41,9 +41,7 @@
       ; string composed through the defining namespace's ir-prefix (`dp__Fox`),
       ; computed once at registration. `ir-name == name` for every `user` type,
       ; so every mangled symbol in this compiler and in `lib/` is unchanged.
-      TY-STRUCT
-        (return (-> tt (_ 'sdef) (unsafe/cast ptr:StructDef _) (_ 'ir-name)))
-      TY-UNION
+      (:or TY-STRUCT TY-UNION)
         (return (-> tt (_ 'sdef) (unsafe/cast ptr:StructDef _) (_ 'ir-name)))
       TY-FN (return "fn")
       TY-CSTR (return "cstr")
@@ -123,8 +121,8 @@
       TY-F16  (return "f16")
       TY-F80  (return "f80")
       TY-F128 (return "f128")
-      TY-STRUCT (return (-> tt (_ 'sdef) (unsafe/cast ptr:StructDef _) (_ 'name)))
-      TY-UNION  (return (-> tt (_ 'sdef) (unsafe/cast ptr:StructDef _) (_ 'name)))
+      (:or TY-STRUCT TY-UNION)
+                (return (-> tt (_ 'sdef) (unsafe/cast ptr:StructDef _) (_ 'name)))
       TY-CSTR  (return "CStr")
       TY-CHAR  (return "Char")
       TY-ERR   (return "Err")

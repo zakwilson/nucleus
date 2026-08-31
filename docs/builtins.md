@@ -832,7 +832,7 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 | Name | Signature | Expands To |
 |------|-----------|------------|
 | `if` | `(if test then else)` | `(cond test then true else)` |
-| `case` | `(case form v1 r1 v2 r2 ... default)` | `(cond (= form v1) r1 (= form v2) r2 ... true default)` |
+| `case` | `(case form v1 r1 v2 r2 ... default)` | `(cond (= form v1) r1 (= form v2) r2 ... true default)`. A value may be `(:or v ...)`, matching any one of the listed values. |
 | `when` | `(when condition body...)` | `(cond condition (do body...))` |
 | `unless` | `(unless condition body...)` | `(cond (not condition) (do body...))` |
 | `zero?` | `(zero? x)` | `(= x 0)` |

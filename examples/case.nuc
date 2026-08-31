@@ -1,7 +1,8 @@
 ; The `case` macro — multi-way equality dispatch (lib/macros.nuc).
 ;
 ; (case form v1 r1 v2 r2 ... default) compares `form` against each value with
-; `=`, yielding the first matching result. The final unpaired argument is the
+; `=`, yielding the first matching result. A value may also be (:or v ...),
+; which matches any one of the listed values. The final unpaired argument is the
 ; required default. It expands to a let-free cond, so `form` is re-evaluated per
 ; comparison and should be side-effect free.
 
@@ -16,15 +17,23 @@
     3 "three"
     "many"))
 
-; case works over any type with an `=`.
+; A value may be (:or v ...), matching any one of the listed values. The
+; keyword head is what marks the list, so an ordinary parenthesised value stays
+; an expression to compare against — see (classify) below.
 (defn is-vowel (c:i32):i32
   (case c
-    97  1     ; a
-    101 1     ; e
-    105 1     ; i
-    111 1     ; o
-    117 1     ; u
+    (:or 97 101 105 111 117) 1    ; a e i o u
     0))
+
+; case works over any type with an `=`, and (:or ...) mixes freely with plain
+; values. Here the value slot of the third arm is an ordinary call, evaluated
+; and compared like any other expression.
+(defn classify (n:i32):ptr
+  (case n
+    (:or 2 3 5 7) "small prime"
+    (:or 0 1)     "unit"
+    (* 3 3)       "nine"
+    "other"))
 
 (defn main ():i32
   (printf "%s\n" (name-digit 0))
@@ -32,4 +41,8 @@
   (printf "%s\n" (name-digit 9))
   (printf "a vowel? %d\n" (is-vowel 97))
   (printf "z vowel? %d\n" (is-vowel 122))
+  (printf "%s\n" (classify 5))
+  (printf "%s\n" (classify 1))
+  (printf "%s\n" (classify 9))
+  (printf "%s\n" (classify 4))
   (return 0))

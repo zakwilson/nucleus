@@ -31,7 +31,7 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 | Name | Signature | Expands To |
 |------|-----------|------------|
 | `if` | `(if test then else)` | `(cond test then true else)` |
-| `case` | `(case form v1 r1 v2 r2 ... default)` | `(cond (= form v1) r1 (= form v2) r2 ... true default)` |
+| `case` | `(case form v1 r1 v2 r2 ... default)` | `(cond (= form v1) r1 (= form v2) r2 ... true default)`. A value may be `(:or v ...)`, matching any one of the listed values: `(case x (:or a b) r d)` → `(cond (or (= x a) (= x b)) r true d)`. |
 | `when` | `(when condition body...)` | `(cond condition (do body...))` |
 | `unless` | `(unless condition body...)` | `(cond (not condition) (do body...))` |
 | `zero?` | `(zero? x)` | `(= x 0)` |
@@ -56,6 +56,17 @@ matching the bare symbol `_`, so an annotated hole (`_:ptr:Node`) is not
 recognised as one — cast the threaded value in a form of its own instead.
 
 `case` is multi-way equality dispatch: it compares `form` against each value `vi` with `=` and yields the first matching result `ri`. The final unpaired argument is the **required** default. Because `=` is overloadable, `case` works over any type with an equality (integers, enum constants, symbols, C strings). `form` is re-evaluated per comparison, so it should be side-effect free.
+
+A value may be written `(:or v ...)`, which matches any one of the listed values and so lets arms that share a result collapse into one:
+
+```lisp
+(case (tt 'kind)
+  (:or TY-PTR TY-FN TY-CSTR) "ptr"
+  (:or TY-CHAR TY-ERR)       "i32"
+  (type-ir-name tt))
+```
+
+The **keyword head is what marks the list** — a plain parenthesised value stays an ordinary expression, evaluated and compared like any other, so `(case x (f y) r d)` still calls `f`. That is why the marker exists at all: the values people group are overwhelmingly bare enum constants (`TY-STRUCT`, `NODE-SYM`), which are indistinguishable from a call's head, so nothing about the elements themselves can decide it ([case-alternatives.md](../design/stage16-ergonomics/case-alternatives.md)). Alternatives are ordinary expressions, each compared with the same `=`; `form` is re-evaluated once per alternative, and an empty `(:or)` is false, matching no value.
 
 `(import-use arena)` additionally provides `(new T)` — allocate one zeroed `T` from the arena, typed `(ref T)` (non-null: `arena-alloc` aborts on exhaustion rather than returning null). It expands to `(as (ref T) (arena-alloc (sizeof T)))`, collapsing the `as` + `sizeof` boilerplate for the common "allocate a single struct" case (`arena-alloc` returns bare `ptr`; retyping it to a non-null `(ref T)` is exactly the elem-less-`ptr` `void*` hatch `as` accepts). It is **not** in the prelude (it depends on `arena-alloc`), so it requires an explicit `(import-use arena)`.
 

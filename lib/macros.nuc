@@ -88,6 +88,11 @@
 ; ri of the first match. A final unpaired argument is the required default, used
 ; when nothing matches. Expands to a cond:
 ;   (case x a ra b rb d) => (cond (= x a) ra (= x b) rb true d)
+; A value may instead be (:or v ...), matching any one of the listed values:
+;   (case x (:or a b) r d) => (cond (or (= x a) (= x b)) r true d)
+; The keyword head is what marks the list, so an ordinary parenthesised value
+; stays a call — see design/stage16-ergonomics/case-alternatives.md. An empty
+; (:or) is false, matching the file's other variadics.
 ; Because = is overloadable, case works over any type with an equality (ints,
 ; enum constants, symbols, C strings). `form` is re-evaluated per comparison, so
 ; it should be a pure, side-effect-free expression.
@@ -103,8 +108,28 @@
             (set! cur null))
           ; A value/result pair.
           (do
-            (set! acc `(~@acc (= ~form ~(cur 'car))
-                              ~(rest 'car)))
+            (let ((val (raw Node)) (cur 'car)
+                  alt-list:i32 0)
+              ; `when` is defined below this macro, so it is not yet callable
+              ; from this body; `cond` is a special form and always is.
+              (let ((head (raw Node)) (val 'car))
+                (cond (and (= (val 'kind) NODE-CELL)
+                           (!= head null)
+                           (= (head 'kind) NODE-KEYWORD)
+                           ; NODE-KEYWORD carries its name in `s`, colon
+                           ; stripped — the marker is only ever a string here.
+                           (= (head 's) "or"))
+                        (set! alt-list 1)))
+              (let ((test (raw Node)) null)
+                (if (!= alt-list 0)
+                  (let ((tests (raw Node)) null
+                        (alt (raw Node)) (val 'cdr))
+                    (while (!= alt null)
+                      (set! tests `(~@tests (= ~form ~(alt 'car))))
+                      (set! alt (alt 'cdr)))
+                    (set! test `(or ~@tests)))
+                  (set! test `(= ~form ~val)))
+                (set! acc `(~@acc ~test ~(rest 'car)))))
             (set! cur (rest 'cdr))))))
     `(cond ~@acc)))
 
@@ -277,7 +302,7 @@
               (while (!= scan null)
                 (let ((child (raw Node)) (scan 'car))
                   (when (= (child 'kind) NODE-SYM)
-                    (when (= (strcmp (child 's) "_") 0)
+                    (when (= (child 's) "_" )
                       (set! has-placeholder 1))))
                 (set! scan (scan 'cdr)))
               (if (!= has-placeholder 0)
@@ -289,7 +314,7 @@
                     (let ((elem (raw Node)) (src 'car)
                           replacement:ptr elem)
                       (when (= (elem 'kind) NODE-SYM)
-                        (when (= (strcmp (elem 's) "_") 0)
+                        (when (= (elem 's) "_")
                           (set! replacement result)))
                       (set! rev `(~replacement ~@rev)))
                     (set! src (src 'cdr)))
