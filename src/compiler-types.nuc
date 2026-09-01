@@ -1137,12 +1137,11 @@
   fn-ret-type:ptr
   loop-depth:i32
   (nundo (ref (Vector (ref NarrowUndo))))
-  entry-stream:ptr
-  entry-bufp:ptr
-  entry-sizep:i64
-  body-stream:ptr
-  body-bufp:ptr
-  body-sizep:i64
+  ; Pointers, not `String` values: this file is imported before `lib/string.nuc`,
+  ; so a `%String`-typed field names a type the compile-time module's own type
+  ; section does not carry. A pointer field is `ptr` in IR and carries nothing.
+  entry-stream:raw:String
+  body-stream:raw:String
   ; Ambient argument-register budget (conventions.md, "Argument-register state
   ; is AMBIENT"): a macrolet in argument position sits mid-walk.
   abi-gpr-left:i32

@@ -272,7 +272,7 @@
               ; Stage 15 W8 G-3 (design/global-init.md §4.5): a non-constant
               ; initializer runs immediately — see repl-emit-init-fn above.
               (do (open-module-streams)
-                  (set! g-out g-decl-stream)
+                  (set! g-out (addr-of g-decl-stream))
                   (emit-defvar (as ptr f))
                   (let (init-sym:ptr (repl-emit-init-fn))
                     (repl-flush-mono (f 'line))
@@ -311,19 +311,18 @@
                   (emit stderr "  defined\n"))
             (and (!= h null) (= h "defstruct"))
               (do (open-module-streams)
-                  (set! g-out g-type-stream)
+                  (set! g-out (addr-of g-type-stream))
                   (emit-defstruct (as ptr f))
                   (drain-pending-union-irs)
-                  (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
                   (repl-absorb-type-buf)
-                  (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
+                  (clear-module-buffers)
                   (emit stderr "  defined\n"))
             (and (!= h null) (= h "defunion"))
               ; Tagged sum: register the type (or template), JIT the arm
               ; constructors, then push the type defs + constructor declares
               ; into the preamble for future modules.
               (do (open-module-streams)
-                  (set! g-out g-type-stream)
+                  (set! g-out (addr-of g-type-stream))
                   ; Stage 15 B3′: the definition side holds a KEY. `emit-defunion`
                   ; below registers under `qualify-name`'s key, so pre-registering
                   ; the bare name would mint a second StructDef the moment a REPL
@@ -347,13 +346,11 @@
             (and (!= h null) (= h "extern"))
               (let (pre-len:i32 ((as ptr:Scope g-globals) 'len))
                   (open-module-streams)
-                  (set! g-out g-decl-stream)
+                  (set! g-out (addr-of g-decl-stream))
                   (emit-extern (as ptr f))
-                  (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
                   (repl-absorb-type-buf)
-                  (when (and (!= g-decl-bufp null) (!= (cstr-byte-at g-decl-bufp 0) 0))
-                    (emit g-repl-preamble g-decl-bufp))
-                  (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
+                  (emit-all g-repl-preamble g-decl-stream)
+                  (clear-module-buffers)
                   (repl-note-globals-decls pre-len))
             (and (!= h null) (= h "defn"))
               ; Redefinition strategy: each defn produces a stable thunk
@@ -387,9 +384,8 @@
                         (set! g-out g-def-stream)
                         (emit-defn (as ptr f))
                         (drain-pending-union-irs)
-                        (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
                         (repl-absorb-type-buf)
-                        (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
+                        (clear-module-buffers)
                         (emit stderr "  defined\n"))
                   true
                     ; Derive fname-ir the same way batch does for a solitary
@@ -451,7 +447,7 @@
                         (set! g-out g-def-stream)
                         (emit-defn (as ptr f))
                         (when (!= g-qq-used 0)
-                          (emit-qq-helpers g-decl-stream g-def-stream))
+                          (emit-qq-helpers (addr-of g-decl-stream) g-def-stream))
                         (jit-ensure-init (f 'line))
                         ; First definition: JIT the thunk module and add a
                         ; declare for @fname-ir to the preamble so subsequent
@@ -518,9 +514,8 @@
               ; this entry's own buffers after it and carry their types forward.
               (do (open-module-streams)
                   (emit-compile-time (as ptr f))
-                  (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
                   (repl-absorb-type-buf)
-                  (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp))
+                  (clear-module-buffers))
             (and (!= h null) (= h "defmacro"))
               ; open-module-streams first, exactly as the `compile-time` arm
               ; above does and for the same reason: compile-macro-body starts by
@@ -532,9 +527,8 @@
               ; through repl-preload-prelude, not this arm.
               (do (open-module-streams)
                   (emit-defmacro (as ptr f))
-                  (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
                   (repl-absorb-type-buf)
-                  (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
+                  (clear-module-buffers)
                   (emit stderr "  defined\n"))
             (and (!= h null) (= h "def-rmacro"))
               (do (emit-def-rmacro (as ptr f))
@@ -621,7 +615,6 @@
                     ; anything an import queues after that tail drain.
                     (repl-flush-mono (f 'line))
                     (drain-pending-union-irs)
-                    (fflush g-type-stream)
                     ; G-3 (§4.5): an imported file's `defvar` with a run-time
                     ; initializer queues exactly as a directly typed one does,
                     ; and `drain-init-worklist` deliberately leaves it alone
@@ -747,8 +740,6 @@
                               true
                                 (emit g-body-stream "  ret void\n")))
                       ; Build function definition
-                      (fclose g-entry-stream)
-                      (fclose g-body-stream)
                       (let (ret-ir:ptr "void")
                         (when (or (= result-kind TY-I32)
                                   (= result-kind TY-BOOL)
@@ -764,18 +755,14 @@
                           (set! ret-ir (as ptr (type-to-ir (result 'type)))))
                         (emit g-def-stream "define " ret-ir " @" eval-sym "() {\n")
                         (emit g-def-stream "entry:\n")
-                        (when (and (!= g-entry-bufp null) (!= (cstr-byte-at g-entry-bufp 0) 0))
-                          (emit g-def-stream g-entry-bufp))
-                        (when (and (!= g-body-bufp null) (!= (cstr-byte-at g-body-bufp 0) 0))
-                          (emit g-def-stream g-body-bufp))
+                        (emit-all g-def-stream g-entry-stream)
+                        (emit-all g-def-stream g-body-stream)
                         (emit g-def-stream "}\n\n")
-                        (free g-entry-bufp)
-                        (free g-body-bufp)
-                        (set! g-entry-bufp null)
-                        (set! g-body-bufp null)
+                        (string-clear g-entry-stream)
+                        (string-clear g-body-stream)
                         ; Build and JIT module
                         (when (!= g-qq-used 0)
-                          (emit-qq-helpers g-decl-stream g-def-stream))
+                          (emit-qq-helpers (addr-of g-decl-stream) g-def-stream))
                         ; R3: the expression may have stamped a generic, lifted
                         ; a lambda or built a closure — their bodies and the
                         ; preamble `declare`s this module needs come from here.
@@ -873,8 +860,8 @@
         ret-ir:ptr (abi-ret-ir ret-info (ftt 'ret)))
     ; Global pointer holding the address of the current implementation.
     (emit out "@" fname ".tgt = global ptr null\n")
-    (let (obuf:ptr null  osz:i64 0
-          os:ptr (open_memstream (addr-of obuf) (as ptr (addr-of osz))))
+    (let ((ob String) (string-new)
+          (os (ref String)) (addr-of ob))
       (let (need-comma:i32 0)
         (when (= ((as ptr:AbiInfo ret-info) 'kind) ABI-MEMORY)
           (emit os "ptr sret(" (type-to-ir (ftt 'ret)) ") align "
@@ -889,16 +876,16 @@
             ((field-at (ftt 'params) i) 'type)
             (fstr "a" i))
           (set! need-comma 1)))
-      (fclose os)
-      (when (= obuf null) (set! obuf ""))
-      (emit out "define " ret-ir " @" fname "(" obuf ") {\nentry:\n")
-      (emit out "  %fp = load ptr, ptr @" fname ".tgt, align 8\n")
-      ; A MEMORY return lowers to `void` + the sret operand, so it takes the
-      ; same no-result path a genuinely void function does.
-      (if (or (= ((ftt 'ret) 'kind) TY-VOID)
-              (= ((as ptr:AbiInfo ret-info) 'kind) ABI-MEMORY))
-        (emit out "  call void %fp(" obuf ")\n  ret void\n}\n\n")
-        (emit out "  %r = call " ret-ir " %fp(" obuf ")\n  ret " ret-ir " %r\n}\n\n")))))
+      (let (obuf:StrView (string-as-view ob))
+        (emit out "define " ret-ir " @" fname "(" obuf ") {\nentry:\n")
+        (emit out "  %fp = load ptr, ptr @" fname ".tgt, align 8\n")
+        ; A MEMORY return lowers to `void` + the sret operand, so it takes the
+        ; same no-result path a genuinely void function does.
+        (if (or (= ((ftt 'ret) 'kind) TY-VOID)
+                (= ((as ptr:AbiInfo ret-info) 'kind) ABI-MEMORY))
+          (emit out "  call void %fp(" obuf ")\n  ret void\n}\n\n")
+          (emit out "  %r = call " ret-ir " %fp(" obuf ")\n  ret " ret-ir " %r\n}\n\n"))
+        (drop (addr-of ob))))))
 
 ; Build a tiny module containing the @fname thunk + @fname.tgt global, and add
 ; it to the JIT permanently (no resource tracker). This is the stable public
@@ -956,8 +943,8 @@
   (if-some (ud (uniondef-lookup uname))
     (let (ret:ptr (type-for-sdef (ud 'sdef))
           ret-info:ptr (abi-classify (type-for-sdef (ud 'sdef)))
-          saved-out:ptr g-out)
-      (set! g-out g-repl-preamble)
+          saved-out:raw:String g-out)
+      (set! g-out (addr-of g-repl-preamble))
       (dotimes (i (ud 'num-arms))
         (let (arm:ref:Arm (invoke (ud 'arms) i:usize)
               aname:ptr (arm 'name)
@@ -1002,12 +989,6 @@
   ; Union type definitions are emitted lazily — land any pending ones in this
   ; module's type buffer before it is captured.
   (drain-pending-union-irs)
-  (fflush g-type-stream)
-  (fflush g-decl-stream)
-  (fflush g-def-stream)
-  (fclose g-type-stream)
-  (fclose g-decl-stream)
-  (fclose g-def-stream)
   (repl-absorb-type-buf)
   (let ((irs String) (string-new))
     (emit irs "; ModuleID = '<repl>'\n")
@@ -1018,20 +999,18 @@
     (repl-put-preamble irs (if (= fname null) null (fstr "@" fname)))
     (emit-string-table irs 0)
     ; This module's declarations
-    (when (and (!= g-decl-bufp null) (!= (cstr-byte-at g-decl-bufp 0) 0))
-      (emit irs g-decl-bufp))
+    (emit-all irs g-decl-stream)
     ; This module's definitions — optionally renaming the first "@<fname>("
     ; to "@<impl-name>(" so the def is JIT'd under a unique impl symbol.
-    (when (and (!= g-def-bufp null) (!= (cstr-byte-at g-def-bufp 0) 0))
-      (if (and (!= fname null) (!= impl-name null))
-        (rewrite-first-fname g-def-bufp fname impl-name irs)
-        (emit irs g-def-bufp)))
+    (if (and (!= fname null) (!= impl-name null))
+      (rewrite-first-fname (as ptr (string-as-cstr g-def-buf)) fname impl-name irs)
+      (emit-all irs g-def-buf))
     (let (v:StrView (string-as-view irs))
       (when (> (v 'len) 0)
         (when (!= (getenv "NUC_REPL_DUMP_IR") null)
           (emit stderr "----- IR -----\n" v "----- END -----\n"))
         (jit-add-module-rt v line rt)))
-    (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
+    (clear-module-buffers)
     (drop (addr-of irs))))
 
 ; ============================================================
@@ -1087,8 +1066,7 @@
 ; type section of every module the session assembles
 ; (design/stage16-ergonomics/repl-libraries.md §3.3). Type stream already closed.
 (defn repl-absorb-type-buf ():void
-  (when (and (!= g-type-bufp null) (!= (cstr-byte-at g-type-bufp 0) 0))
-    (emit g-repl-preamble g-type-bufp))
+  (emit-all g-repl-preamble g-type-stream)
   (dotimes (i (unsafe/cast i32 (count g-structs)))
     (let (sd:ref:StructDef (invoke g-structs i:usize))
       (when (and (!= (sd 'in-type-buf) 0) (= (sd 'emit-epoch) g-module-epoch))
@@ -1098,13 +1076,9 @@
 ; module assembled INSIDE this one (the mono drain) can name them without the
 ; entry's own module then defining them twice.
 (defn repl-cycle-type-buf ():void
-  (fflush g-type-stream)
-  (fclose g-type-stream)
   (repl-absorb-type-buf)
-  (free g-type-bufp)
-  (set! g-type-bufp null)
-  (inc! g-module-epoch)
-  (set! g-type-stream (open_memstream (addr-of g-type-bufp) (as ptr (addr-of g-type-sizep)))))
+  (string-clear g-type-stream)
+  (inc! g-module-epoch))
 
 ; Copy the preamble into a module being assembled, minus any `declare` for a
 ; function that module defines itself — one name cannot be both in one module
@@ -1112,15 +1086,15 @@
 ; modules, which still need the declare, so this filters the copy rather than
 ; the source. Stage 16 R3 / D8, repl-libraries.md §3.2.
 (defn repl-put-preamble ((out (ref String)) keep:ptr):void
-  (fflush g-repl-preamble)
-  (when (= g-repl-preamble-bufp null) (return))
-  (when (= (cstr-byte-at g-repl-preamble-bufp 0) 0) (return))
+  (let (pv0:StrView (string-as-view g-repl-preamble))
+    (when (= (pv0 'len) 0) (return)))
   ; An expression module defines nothing, which is most prompt entries.
   (when (= (count g-program-defns) 0)
-    (emit out g-repl-preamble-bufp)
+    (emit-all out g-repl-preamble)
     (return))
-  (let (buf:ptr g-repl-preamble-bufp
-        n:i64 (strlen g-repl-preamble-bufp)
+  (let (pv:StrView (string-as-view g-repl-preamble)
+        buf:ptr (as ptr (pv 'data))
+        n:i64 (as i64 (pv 'len))
         i:i64 0)
     (while (< i n)
       (let (e:i64 i)
@@ -1178,15 +1152,22 @@
   (repl-cycle-type-buf)
   ; The caller's module streams are mid-assembly; open-module-streams rebinds
   ; all of them plus the two per-module registries.
-  (let (s-type:ptr g-type-stream
+  ; The three module buffers are MOVED out, not aliased: `open-module-streams`
+  ; clears them in place, and a copy left behind would carry a stale length over
+  ; a buffer the nested module then reallocates.
+  (let ((s-type String) g-type-stream
         s-epoch:i32 g-module-epoch
-        s-decl:ptr g-decl-stream
-        s-def:ptr g-def-stream
-        s-def-prog:ptr g-def-stream-program
-        s-decl-out:ptr g-decl-out
-        s-out:ptr g-out
+        (s-decl String) g-decl-stream
+        (s-def-buf String) g-def-buf
+        s-def:raw:String g-def-stream
+        s-def-prog:raw:String g-def-stream-program
+        s-decl-out:raw:String g-decl-out
+        s-out:raw:String g-out
         s-macro-decls:(ref (Vector CStr)) g-macro-decls
         s-prog-defns:(ref (Vector (ref ProgDefn))) g-program-defns)
+    (set! g-type-stream (string-new))
+    (set! g-decl-stream (string-new))
+    (set! g-def-buf (string-new))
     (open-module-streams)
     ; Before drain-pending-union-irs (repl-jit-module's first step): a drained
     ; body can stamp new parametric instances that then need their type lines.
@@ -1201,18 +1182,19 @@
     (set! g-out s-out)
     (set! g-decl-out s-decl-out)
     (set! g-def-stream-program s-def-prog)
-    (set! g-def-stream s-def)
-    (set! g-decl-stream s-decl)
+    (drop (addr-of g-type-stream))
+    (drop (addr-of g-decl-stream))
+    (drop (addr-of g-def-buf))
     (set! g-type-stream s-type)
-    (set! g-module-epoch s-epoch)
-    ; The nested module's fclose left its own (now freed) buffers in the three
-    ; globals; the caller's streams rewrite them on their own flush.
-    (set! g-type-bufp null) (set! g-decl-bufp null) (set! g-def-bufp null)))
+    (set! g-decl-stream s-decl)
+    (set! g-def-buf s-def-buf)
+    (set! g-def-stream s-def)
+    (set! g-module-epoch s-epoch)))
 
 ; Pre-include standard libc headers into the REPL preamble and global scope.
 (defn repl-include-all-libc ():void
   (open-module-streams)
-  (set! g-out g-decl-stream)
+  (set! g-out (addr-of g-decl-stream))
   (emit-c-include "stdio.h" 0)
   (emit-c-include "stdlib.h" 0)
   (emit-c-include "string.h" 0)
@@ -1223,11 +1205,9 @@
   ; (leaving them pending would make them surface inside a later module that
   ; already sees them via the preamble — a redefinition error).
   (drain-pending-union-irs)
-  (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
   (repl-absorb-type-buf)
-  (when (and (!= g-decl-bufp null) (!= (cstr-byte-at g-decl-bufp 0) 0))
-    (emit g-repl-preamble g-decl-bufp))
-  (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
+  (emit-all g-repl-preamble g-decl-stream)
+  (clear-module-buffers)
   ; The whole declaration buffer went in verbatim, so tell the D8 latch which
   ; names it just carried (`@malloc` is the one a macro body re-declares).
   (repl-note-globals-decls 0)
@@ -1533,8 +1513,7 @@
   (target-init)
   (assert-compiler-arena-backed)
   ; Initialize preamble stream
-  (set! g-repl-preamble (open_memstream (addr-of g-repl-preamble-bufp)
-                                         (as ptr (addr-of g-repl-preamble-sizep))))
+  (ensure-emit-buffers)
   ; Pre-include all libc functions (so they're available without explicit include)
   (repl-include-all-libc)
   ; Tolerates failure so a session still starts without lib/prelude.nuc; the

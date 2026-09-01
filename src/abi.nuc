@@ -53,7 +53,7 @@
 ; conventions.md records for the `declare` emitters, three of which had drifted.
 ; Every caller already ran `struct-set-fields`, which is what makes the field
 ; table (rather than the caller's own array) the source here.
-(defn emit-struct-type-line (stream:ptr sd:raw:StructDef):void
+(defn emit-struct-type-line ((stream (raw String)) sd:raw:StructDef):void
   (let (sdd:raw:StructDef sd
         packed:i32 (sdd 'packed)
         nemit:i32 0
@@ -1074,7 +1074,7 @@
 ; only, name is null) — a CStr retype would turn that guard into
 ; `strcmp(name, null)`, which crashes (the batch-1 null-check-on-parameter
 ; trap, conventions.md).
-(defn abi-print-param-to (out:ptr info:raw:AbiInfo ptype:raw:Type name:ptr):void
+(defn abi-print-param-to ((out (raw String)) info:raw:AbiInfo ptype:raw:Type name:ptr):void
   (let (ii:raw:AbiInfo info
         k:i32 (info 'kind)
         ; W9 item 39: a parameter name becomes an LLVM local identifier, so it

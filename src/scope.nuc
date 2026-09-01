@@ -190,6 +190,35 @@
     (inc! g-label)
     (return r)))
 
+; The emission buffers are process-wide and initialised once, lazily: the header
+; modes never open a module, so `open-module-streams` is not a point every path
+; passes through.
+(defvar g-emit-buffers-ready:i32 0)
+
+; Park a `String` in the arena so a `FnState` can hold it — see the field
+; comment in compiler-types.nuc for why the field cannot be the value itself.
+(defn string-box ((v (ref String))):ref:String
+  (let (p:ref:String (as ref:String (arena-alloc (sizeof String))))
+    (set! (p 'bytes) (v 'bytes))
+    (return p)))
+
+; The three module buffers, emptied together. Was three `free`s of the
+; memstream `bufp`s, which is why it reads as one step at seven call sites.
+(defn clear-module-buffers ():void
+  (string-clear g-type-stream)
+  (string-clear g-decl-stream)
+  (string-clear g-def-buf))
+
+(defn ensure-emit-buffers ():void
+  (when (= g-emit-buffers-ready 0)
+    (set! g-entry-stream (string-new))
+    (set! g-body-stream (string-new))
+    (set! g-type-stream (string-new))
+    (set! g-decl-stream (string-new))
+    (set! g-def-buf (string-new))
+    (set! g-repl-preamble (string-new))
+    (set! g-emit-buffers-ready 1)))
+
 (defn reset-function-state ():void
   (set! g-tmp 0)
   (set! g-label 0)
@@ -201,10 +230,9 @@
   (set! g-fn-ret-type null)
   (set! g-loop-depth 0)
   (set! g-nundo (vector-new-in (addr-of g-arena-alloc)))
-  (set! g-entry-stream (open_memstream (addr-of g-entry-bufp)
-                                       (as ptr (addr-of g-entry-sizep))))
-  (set! g-body-stream (open_memstream (addr-of g-body-bufp)
-                                      (as ptr (addr-of g-body-sizep)))))
+  (ensure-emit-buffers)
+  (string-clear g-entry-stream)
+  (string-clear g-body-stream))
 
 ; Stage 16 (design/stage16-ergonomics/macrolet.md §5.2). Snapshot the state a
 ; nested emission is about to destroy. `macrolet` compiles a macro body while a
@@ -214,7 +242,7 @@
 ;
 ; Snapshot only — it does NOT call `reset-function-state`. The nested emission
 ; does that itself (compile-macro-body opens its own entry/body streams), and
-; resetting here as well would open a memstream pair that nothing ever closes.
+; resetting here as well would clear the buffer the outer function is using.
 ;
 ; Kept adjacent to `reset-function-state` deliberately — a global added there
 ; and not here is the drift this placement exists to make obvious.
@@ -230,12 +258,12 @@
     (set! (s 'fn-ret-type) g-fn-ret-type)
     (set! (s 'loop-depth) g-loop-depth)
     (set! (s 'nundo) g-nundo)
-    (set! (s 'entry-stream) g-entry-stream)
-    (set! (s 'entry-bufp) g-entry-bufp)
-    (set! (s 'entry-sizep) g-entry-sizep)
-    (set! (s 'body-stream) g-body-stream)
-    (set! (s 'body-bufp) g-body-bufp)
-    (set! (s 'body-sizep) g-body-sizep)
+    ; A MOVE, not a copy: the nested emission calls `reset-function-state`,
+    ; which would clear the outer function's buffer if it were still installed.
+    (set! (s 'entry-stream) (string-box g-entry-stream))
+    (set! (s 'body-stream) (string-box g-body-stream))
+    (set! g-entry-stream (string-new))
+    (set! g-body-stream (string-new))
     (set! (s 'abi-gpr-left) g-abi-gpr-left)
     (set! (s 'abi-fpr-left) g-abi-fpr-left)
     (set! (s 'abi-varargs) g-abi-varargs)
@@ -258,12 +286,10 @@
   (set! g-fn-ret-type (s 'fn-ret-type))
   (set! g-loop-depth (s 'loop-depth))
   (set! g-nundo (s 'nundo))
-  (set! g-entry-stream (s 'entry-stream))
-  (set! g-entry-bufp (s 'entry-bufp))
-  (set! g-entry-sizep (s 'entry-sizep))
-  (set! g-body-stream (s 'body-stream))
-  (set! g-body-bufp (s 'body-bufp))
-  (set! g-body-sizep (s 'body-sizep))
+  (drop (addr-of g-entry-stream))
+  (drop (addr-of g-body-stream))
+  (set! g-entry-stream (deref (unsafe/cast ref:String (s 'entry-stream))))
+  (set! g-body-stream (deref (unsafe/cast ref:String (s 'body-stream))))
   (set! g-abi-gpr-left (s 'abi-gpr-left))
   (set! g-abi-fpr-left (s 'abi-fpr-left))
   (set! g-abi-varargs (s 'abi-varargs))
@@ -273,7 +299,7 @@
 ; True while codegen is redirected into a macro/compile-time JIT module rather
 ; than the main program module (g-decl-out is swapped away from g-decl-stream).
 (defn in-jit-module ():i32
-  (return (if (!= g-decl-out g-decl-stream) 1 0)))
+  (return (if (!= (as ptr g-decl-out) (as ptr (addr-of g-decl-stream))) 1 0)))
 
 ; The captured ProgDefn for an emitted @symbol, or null. Membership is by
 ; content (ir-names are freshly formatted, not interned).

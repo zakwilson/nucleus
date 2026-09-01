@@ -227,12 +227,8 @@
 ; Per-function codegen state
 (defvar g-tmp:i32 0)
 (defvar g-label:i32 0)
-(defvar g-entry-stream:ptr)
-(defvar g-entry-bufp:ptr)
-(defvar g-entry-sizep:i64 0)
-(defvar g-body-stream:ptr)
-(defvar g-body-bufp:ptr)
-(defvar g-body-sizep:i64 0)
+(defvar g-entry-stream:String)
+(defvar g-body-stream:String)
 (defvar g-block-term:i32 0)
 
 ; defcast registry (Stage 8). g-cast-rules is a pre-allocated array of CastRule
@@ -272,9 +268,11 @@
 (defvar (g-nundo (ref (Vector (ref NarrowUndo)))) (vector-new-in (addr-of g-arena-alloc)))
 (defvar g-trap-declared:i32 0)
 
-; Current output stream for top-level emission
-(defvar g-out:ptr)
-(defvar g-decl-out:ptr)
+; Current output buffer for top-level emission. An ALIAS — it is re-pointed at
+; whichever of the module buffers the form being emitted belongs to — so it is a
+; nullable pointer, null until a module opens, exactly as the `FILE*` was.
+(defvar g-out:raw:String)
+(defvar g-decl-out:raw:String)
 ; "This body built a list with the __cons/__append helpers." Gates emitting
 ; those helper definitions (emit-qq-helpers into the program module,
 ; `define private` into a CT/macro JIT module). Set by emit-qq-list only.
@@ -289,28 +287,30 @@
 (defvar g-node-ctor-used:i32 0)
 
 ; Main module streams (global so emit-compile-time can access them mid-compilation)
-(defvar g-type-stream:ptr)
-(defvar g-decl-stream:ptr)
-(defvar g-def-stream:ptr)
+(defvar g-type-stream:String)
+(defvar g-decl-stream:String)
+; The definition buffer proper, and the alias every emission site writes
+; through. Two names because `import-ct` stands a discard sink in front of the
+; buffer (`emit-import-forms`), which a value cannot express.
+(defvar g-def-buf:String)
+(defvar g-def-stream:raw:String)
 ; The module's own definition stream, which `g-def-stream` may be standing in
 ; front of while an `import-ct` discards a library's definitions. A template
 ; stamp belongs to no file — every unit that instantiates it re-derives the same
 ; body — so it must land here even when the instantiating form is one whose own
 ; definitions are being thrown away, or the memo says "emitted" for a body that
 ; went to the sink.
-(defvar g-def-stream-program:ptr)
-(defvar g-type-bufp:ptr)
-(defvar g-decl-bufp:ptr)
-(defvar g-def-bufp:ptr)
+(defvar g-def-stream-program:raw:String)
 ; Stage 16 R4: identity of the module whose buffers are open, bumped by
 ; open-module-streams. `StructDef.emit-epoch` records it, so "already emitted"
 ; can mean "in THIS module" rather than "once in this process"
 ; (design/stage16-ergonomics/repl-libraries.md §3.3). Starts at 1 so the header
 ; modes, which open no module, still differ from a StructDef's default 0.
 (defvar g-module-epoch:i32 1)
-(defvar g-type-sizep:i64 0)
-(defvar g-decl-sizep:i64 0)
-(defvar g-def-sizep:i64 0)
+; "A module is open." Was the null-ness of `g-type-stream`, which a `String`
+; value cannot express; the header-emit modes prescan without opening one and
+; must record nothing as written (union-registry.nuc).
+(defvar g-module-open:i32 0)
 
 ; JIT state
 (defvar g-jit:ptr)
@@ -579,7 +579,7 @@
 
 ; Program-defined `defn`s (the `define`s emitted into the main module). Only
 ; these need a fresh `declare` in a macro/CT JIT module — externs and
-; C-header import declarations already live in g-decl-bufp, which the JIT module
+; C-header import declarations already live in g-decl-stream, which the JIT module
 ; copies in. Populated by emit-defn as it writes each `define`; the captured
 ; signature (ret + param Types + ABI) reproduces the declare losslessly (the
 ; g-globals Sym for an overloaded/generic name carries no usable param array).
@@ -609,9 +609,7 @@
 
 ; REPL declarations preamble — accumulated declarations and type defs
 ; that get prepended to each JIT module.
-(defvar g-repl-preamble:ptr)
-(defvar g-repl-preamble-bufp:ptr)
-(defvar g-repl-preamble-sizep:i64 0)
+(defvar g-repl-preamble:String)
 ; Stage 16 R3 (D8): the @symbols the preamble already `declare`s. Every REPL
 ; module is assembled as preamble + its own buffers, so a latch scoped to the
 ; fresh buffers is a claim about only half of it — repl-libraries.md §3.2.
@@ -890,7 +888,7 @@
 (defvar (g-include-paths (ref (Vector CStr))) (vector-new-in (addr-of g-arena-alloc)))
 
 ; stdlib (malloc/free/exit) is included here — after defmacro and defvar —
-; so that g-decl-bufp is free of malloc when macro JIT modules are assembled.
+; so that g-decl-stream is free of malloc when macro JIT modules are assembled.
 (import-use "stdlib.h")
 
 ; ============================================================
@@ -1323,7 +1321,7 @@
 ; Ensure a `declare` for an ordinary global function `ss` exists in the current
 ; macro/CT JIT module. No-op in the main module (the function is `define`d
 ; there) and for anything not a program-defined defn (externs/includes are
-; already in g-decl-bufp, copied into the JIT module verbatim; locals/fn-pointer
+; already in g-decl-stream, copied into the JIT module verbatim; locals/fn-pointer
 ; values/intrinsics are not @-named program defns). Deduplicated per module via
 ; g-macro-decls. The declare reproduces emit-defn's ABI-lowered signature from
 ; the captured ProgDefn (the Sym's type may carry no usable param array); the
@@ -1347,7 +1345,7 @@
 ; node constructors by name cannot emit two `declare`s for the one symbol —
 ; LLVM rejects the redefinition, and the collision is otherwise invisible until
 ; someone writes that macro.
-(defn macro-jit-declare-raw (out:ptr irn:CStr proto:CStr):void
+(defn macro-jit-declare-raw ((out (raw String)) irn:CStr proto:CStr):void
   (when (!= (repl-preamble-has-decl irn) 0) (return))
   (doseq (m g-macro-decls (VecIter CStr))
     (when (= (strcmp m irn) 0) (return)))
@@ -2222,7 +2220,7 @@
 ; sigil. The name must be the symbol's, not a shared one: two same-named
 ; sections in one module are merged by MC, and a merged section is collected
 ; only when every definition in it is dead.
-(defn write-ir-section (out:ptr prefix:CStr sym:ptr):void
+(defn write-ir-section ((out (raw String)) prefix:CStr sym:ptr):void
   (when (= sym null) (return))
   (let (n:ptr sym)
     (when (= (cstr-byte-at n 0) 64) (set! n (unsafe/ptr+ (as ptr:i8 n) 1)))
@@ -7974,7 +7972,7 @@
       ; and the `invoke` body naming this env is drained into a LATER module
       ; (design/stage16-ergonomics/repl-libraries.md §3.3). Batch keeps g-out, so
       ; its IR is unmoved.
-      (let (ts:ptr (if (!= g-interactive 0) g-type-stream g-out))
+      (let (ts:raw:String (if (!= g-interactive 0) (addr-of g-type-stream) g-out))
         (emit-struct-type-line ts (as raw:StructDef sd))
         (sdef-note-emitted (as raw:StructDef sd) ts))
       (return (as ptr sd)))))
@@ -14166,7 +14164,7 @@
             ; not an arm (defunion-register strips it for layout independently).
             arms:ptr (defunion-strip-repr (-> cc (_ 'cdr) (unsafe/cast ptr:Node _) (_ 'cdr))
                        (as ptr:i32 (addr-of repr-box)) (cc 'line))
-            saved-out:ptr g-out)
+            saved-out:raw:String g-out)
         ; Constructors are ordinary functions; their signatures were
         ; pre-registered by the prescan so earlier defns can call them.
         ; A niche layout (rules 2/3) still gets constructors — they build the
@@ -14589,9 +14587,7 @@
                                 ": implicit return type mismatch — last expression does not match declared return type")))
                       (let (cv:ptr:Val (unsafe/cast ptr:Val coerced))
                         (emit g-body-stream "  ret " (type-to-ir ret) " " (cv 'val) "\n"))))))))
-            ; Close streams and emit function
-            (fclose g-entry-stream)
-            (fclose g-body-stream)
+            ; Emit the function
             ; Stage 12 N3 (`internal` for a private defn) and W9 item 2
             ; (`weak_odr` for a definition this unit only carries a copy of)
             ; are the same decision, taken once in `def-linkage`.
@@ -14637,15 +14633,11 @@
                 (defn-ir-name fname param-types nparams ret)))
             (emit g-out " {\n")
             (emit g-out "entry:\n")
-            (when (and (!= g-entry-bufp null) (!= (cstr-byte-at g-entry-bufp 0) 0))
-              (emit g-out g-entry-bufp))
-            (when (and (!= g-body-bufp null) (!= (cstr-byte-at g-body-bufp 0) 0))
-              (emit g-out g-body-bufp))
+            (emit-all g-out g-entry-stream)
+            (emit-all g-out g-body-stream)
             (emit g-out "}\n\n")
-            (free g-entry-bufp)
-            (free g-body-bufp)
-            (set! g-entry-bufp null)
-            (set! g-body-bufp null))))))))))
+            (string-clear g-entry-stream)
+            (string-clear g-body-stream))))))))))
 
 ; ============================================================
 ; Compile-time JIT helpers
@@ -14739,30 +14731,21 @@
     (when (< nforms 2)
       (die-at (ff 'line) "compile-time: expected at least one body form"))
 
-    ; Flush the main streams so g-type-bufp / g-decl-bufp are current.
     (drain-pending-union-irs)
-    (fflush g-type-stream)
-    (fflush g-decl-stream)
 
-    ; Open fresh CT streams.
-    (let (ct-type-bufp:ptr null
-          ct-type-sizep:i64 0
-          ct-decl-bufp:ptr null
-          ct-decl-sizep:i64 0
-          ct-def-bufp:ptr null
-          ct-def-sizep:i64 0
-          ct-type:ptr (open_memstream (addr-of ct-type-bufp) (as ptr (addr-of ct-type-sizep)))
-          ct-decl:ptr (open_memstream (addr-of ct-decl-bufp) (as ptr (addr-of ct-decl-sizep)))
-          ct-def:ptr  (open_memstream (addr-of ct-def-bufp)  (as ptr (addr-of ct-def-sizep))))
+    ; Fresh CT buffers.
+    (let ((ct-type String) (string-new)
+          (ct-decl String) (string-new)
+          (ct-def String)  (string-new))
 
       ; Redirect global state to CT streams.
-      (let (saved-g-out:ptr g-out
-            saved-decl-out:ptr g-decl-out
+      (let (saved-g-out:raw:String g-out
+            saved-decl-out:raw:String g-decl-out
             saved-qq-used:i32 g-qq-used
             saved-node-ctor:i32 g-node-ctor-used)
         (set! g-qq-used 0)
         (set! g-node-ctor-used 0)
-        (set! g-decl-out ct-decl)
+        (set! g-decl-out (addr-of ct-decl))
         ; Fresh per-module declare set (see emit-defmacro / macro-jit-ensure-decl).
         (set! g-macro-decls (unsafe/cast (ref (Vector CStr)) (vector-new-in (addr-of g-arena-alloc))))
 
@@ -14834,17 +14817,17 @@
                   (when (!= (ct-emits-defstruct bh) 0)
                      ; D9 ruling: a CT `defstruct` defines a PROGRAM type, so its
                      ; line belongs in the module's own buffer, not ct-type.
-                     (set! is-tl 1) (set! g-out g-type-stream) (emit-defstruct (as ptr bf)))
+                     (set! is-tl 1) (set! g-out (addr-of g-type-stream)) (emit-defstruct (as ptr bf)))
                   (when (= bh "defconst")
                      (set! is-tl 1) (emit-defconst (as ptr bf)))
                   (when (= bh "defenum")
                      (set! is-tl 1) (emit-defenum (as ptr bf)))
                   (when (= bh "defvar")
-                     (set! is-tl 1) (set! g-out ct-decl) (emit-defvar (as ptr bf)))
+                     (set! is-tl 1) (set! g-out (addr-of ct-decl)) (emit-defvar (as ptr bf)))
                   (when (= bh "extern")
-                     (set! is-tl 1) (set! g-out ct-decl) (emit-extern (as ptr bf)))
+                     (set! is-tl 1) (set! g-out (addr-of ct-decl)) (emit-extern (as ptr bf)))
                   (when (= bh "defn")
-                     (set! is-tl 1) (set! g-out ct-def) (emit-defn (as ptr bf)))))
+                     (set! is-tl 1) (set! g-out (addr-of ct-def)) (emit-defn (as ptr bf)))))
               (when (and (= is-tl 0) (< nexpr 256))
                  (set! (aref (as ptr:ptr expr-forms) nexpr) (as ptr bf))
                     (inc! nexpr)))
@@ -14853,27 +14836,20 @@
           ; Emit unique @__compile_time_main_N wrapping the expression forms.
           (let (ct-sym:ptr (fstr "__compile_time_main_" (as i64 g-ct-id)))
           (inc! g-ct-id)
-          (set! g-out ct-def)
+          (set! g-out (addr-of ct-def))
           (reset-function-state)
           (let (fn-scope:ref:Scope (scope-new g-globals))
             (dotimes (ei nexpr)
               (emit-node (aref (as ptr:ptr expr-forms) ei) fn-scope)))
           (when (= g-block-term 0)
             (emit g-body-stream "  ret void\n"))
-          ; Flush streams so bufp pointers are populated
-          (fclose g-entry-stream)
-          (fclose g-body-stream)
           (emit ct-def "define void @" ct-sym "() {\n")
           (emit ct-def "entry:\n")
-          (when (and (!= g-entry-bufp null) (!= (cstr-byte-at g-entry-bufp 0) 0))
-            (emit ct-def g-entry-bufp))
-          (when (and (!= g-body-bufp null) (!= (cstr-byte-at g-body-bufp 0) 0))
-            (emit ct-def g-body-bufp))
+          (emit-all ct-def g-entry-stream)
+          (emit-all ct-def g-body-stream)
           (emit ct-def "}\n\n")
-          (free g-entry-bufp)
-          (free g-body-bufp)
-          (set! g-entry-bufp null)
-          (set! g-body-bufp null)
+          (string-clear g-entry-stream)
+          (string-clear g-body-stream)
 
           (let (ct-qq:i32 g-qq-used
                 ct-nodes:i32 g-node-ctor-used)
@@ -14925,15 +14901,10 @@
                   (emit ct-def "  ret ptr %c\n")
                   (emit ct-def "}\n\n"))
 
-            (fclose ct-type)
-            (fclose ct-decl)
-            (fclose ct-def)
 
             ; D9: the flush at the top of this function is stale by now — the CT
             ; body itself stamps types — so re-drain and re-flush before
-            ; g-type-bufp is copied below, exactly as compile-macro-body does.
             (drain-pending-union-irs)
-            (fflush g-type-stream)
 
             ; Assemble the full CT module IR in memory.
             (let ((irs String) (string-new))
@@ -14941,32 +14912,24 @@
               (emit irs "target triple = \"" ((as ptr:Target g-host-target) 'triple) "\"\n\n")
               ; In REPL mode, include the accumulated preamble
               (when (!= g-interactive 0)
-                 (fflush g-repl-preamble)
-                    (when (and (!= g-repl-preamble-bufp null)
-                               (!= (cstr-byte-at g-repl-preamble-bufp 0) 0))
-                      (emit irs g-repl-preamble-bufp)))
+                (emit-all irs g-repl-preamble))
               ; Type defs: main-so-far + CT-specific
-              (when (and (!= g-type-bufp null) (!= (cstr-byte-at g-type-bufp 0) 0))
-                (emit irs g-type-bufp))
-              (when (and (!= ct-type-bufp null) (!= (cstr-byte-at ct-type-bufp 0) 0))
-                (emit irs ct-type-bufp))
+              (emit-all irs g-type-stream)
+              (emit-all irs ct-type)
               ; String constants (shared)
               (emit-string-table irs 0)
               ; Declarations: main-so-far + CT-specific
-              (when (and (!= g-decl-bufp null) (!= (cstr-byte-at g-decl-bufp 0) 0))
-                (emit irs g-decl-bufp))
-              (when (and (!= ct-decl-bufp null) (!= (cstr-byte-at ct-decl-bufp 0) 0))
-                (emit irs ct-decl-bufp))
+              (emit-all irs g-decl-stream)
+              (emit-all irs ct-decl)
               ; Definitions from CT body + @__compile_time_main
-              (when (and (!= ct-def-bufp null) (!= (cstr-byte-at ct-def-bufp 0) 0))
-                (emit irs ct-def-bufp))
+              (emit-all irs ct-def)
 
               (jit-add-module (string-as-view irs) (ff 'line))
               (jit-call-ct-main-sym (ff 'line) ct-sym)
 
-              (free ct-type-bufp)
-              (free ct-decl-bufp)
-              (free ct-def-bufp)
+              (drop (addr-of ct-type))
+              (drop (addr-of ct-decl))
+              (drop (addr-of ct-def))
               (drop (addr-of irs))))))))))
 
 ; ============================================================
@@ -15111,24 +15074,20 @@
                           form:(raw Node) body-start:i32):void
   (let (ff:ptr:Node (unsafe/cast ptr:Node form))
           ; Flush main streams
-          (fflush g-type-stream)
-          (fflush g-decl-stream)
 
           ; Open fresh CT streams
-          (let (ct-decl-bufp:ptr null  ct-decl-sizep:i64 0
-                ct-def-bufp:ptr null   ct-def-sizep:i64  0
-                ct-decl:ptr (open_memstream (addr-of ct-decl-bufp) (as ptr (addr-of ct-decl-sizep)))
-                ct-def:ptr  (open_memstream (addr-of ct-def-bufp)  (as ptr (addr-of ct-def-sizep))))
+          (let ((ct-decl String) (string-new)
+                (ct-def String)  (string-new))
 
             ; Redirect global state
-            (let (saved-g-out:ptr g-out
-                  saved-decl-out:ptr g-decl-out
+            (let (saved-g-out:raw:String g-out
+                  saved-decl-out:raw:String g-decl-out
                   saved-qq-used:i32 g-qq-used
                   saved-node-ctor:i32 g-node-ctor-used)
               (set! g-qq-used 0)
               (set! g-node-ctor-used 0)
-              (set! g-decl-out ct-decl)
-              (set! g-out ct-def)
+              (set! g-decl-out (addr-of ct-decl))
+              (set! g-out (addr-of ct-def))
               ; Fresh per-module declare set: macro bodies that call ordinary
               ; defns (node-at, intern-symbol, ...) get those declared here.
               (set! g-macro-decls (unsafe/cast (ref (Vector CStr)) (vector-new-in (addr-of g-arena-alloc))))
@@ -15187,19 +15146,13 @@
                   (set! g-node-ctor-used saved-node-ctor)
 
                   ; Finalize the function
-                  (fclose g-entry-stream)
-                  (fclose g-body-stream)
                   (emit ct-def "define ptr @" jit-name "(ptr %__args.arg) {\n")
                   (emit ct-def "entry:\n")
-                  (when (and (!= g-entry-bufp null) (!= (cstr-byte-at g-entry-bufp 0) 0))
-                    (emit ct-def g-entry-bufp))
-                  (when (and (!= g-body-bufp null) (!= (cstr-byte-at g-body-bufp 0) 0))
-                    (emit ct-def g-body-bufp))
+                  (emit-all ct-def g-entry-stream)
+                  (emit-all ct-def g-body-stream)
                   (emit ct-def "}\n\n")
-                  (free g-entry-bufp)
-                  (free g-body-bufp)
-                  (set! g-entry-bufp null)
-                  (set! g-body-bufp null)
+                  (string-clear g-entry-stream)
+                  (string-clear g-body-stream)
 
                   ; Declare the host-defined node constructors if the body built
                   ; any node. Keyed on macro-nodes, NOT macro-qq: a body whose
@@ -15211,7 +15164,7 @@
                     (macro-jit-declare-raw ct-decl "@make-cell" "declare ptr @make-cell(ptr, ptr, i32)\n")
                     (macro-jit-declare-raw ct-decl "@intern-symbol" "declare ptr @intern-symbol(ptr)\n"))
                   ; Add QQ list helpers if needed. Only these need @malloc, and
-                  ; only if it is not already in g-decl-bufp (e.g. from an
+                  ; only if it is not already in g-decl-stream (e.g. from an
                   ; earlier (import-use "stdlib.h")).
                   (when (!= macro-qq 0)
                      (when (= g-malloc-decl-done 0)
@@ -15259,13 +15212,10 @@
                   ; Always declare nucleus_gensym
                   (emit ct-decl "declare ptr @nucleus_gensym()\n")
 
-                  (fclose ct-decl)
-                  (fclose ct-def)
 
                   ; Union type defs are emitted lazily; make sure any pending
-                  ; ones land in g-type-bufp before it is copied into the module.
+                  ; ones land in g-type-stream before it is copied into the module.
                   (drain-pending-union-irs)
-                  (fflush g-type-stream)
 
                   ; Assemble the macro JIT module IR
                   (let ((irs String) (string-new))
@@ -15274,22 +15224,15 @@
                           "\"\n\n")
                     ; In REPL mode, include the accumulated preamble
                     (when (!= g-interactive 0)
-                       (fflush g-repl-preamble)
-                          (when (and (!= g-repl-preamble-bufp null)
-                                     (!= (cstr-byte-at g-repl-preamble-bufp 0) 0))
-                            (emit irs g-repl-preamble-bufp)))
-                    (when (and (!= g-type-bufp null) (!= (cstr-byte-at g-type-bufp 0) 0))
-                      (emit irs g-type-bufp))
+                         (emit-all irs g-repl-preamble))
+                    (emit-all irs g-type-stream)
                     (emit-string-table irs 0)
-                    (when (and (!= g-decl-bufp null) (!= (cstr-byte-at g-decl-bufp 0) 0))
-                      (emit irs g-decl-bufp))
-                    (when (and (!= ct-decl-bufp null) (!= (cstr-byte-at ct-decl-bufp 0) 0))
-                      (emit irs ct-decl-bufp))
-                    (when (and (!= ct-def-bufp null) (!= (cstr-byte-at ct-def-bufp 0) 0))
-                      (emit irs ct-def-bufp))
+                    (emit-all irs g-decl-stream)
+                    (emit-all irs ct-decl)
+                    (emit-all irs ct-def)
                     (jit-add-module (string-as-view irs) (ff 'line))
-                    (free ct-decl-bufp)
-                    (free ct-def-bufp)
+                    (drop (addr-of ct-decl))
+                    (drop (addr-of ct-def))
                     (drop (addr-of irs)))))))))
 
 ; ============================================================
@@ -17002,21 +16945,15 @@
     (set! g-form-line save-line))
   (when (= g-block-term 0)
     (emit g-body-stream "  ret void\n"))
-  (fclose g-entry-stream)
-  (fclose g-body-stream)
   (if (!= internal 0)
     (emit g-out "define internal void @" sym "() {\n")
     (emit g-out "define void @" sym "() {\n"))
   (emit g-out "entry:\n")
-  (when (and (!= g-entry-bufp null) (!= (cstr-byte-at g-entry-bufp 0) 0))
-    (emit g-out g-entry-bufp))
-  (when (and (!= g-body-bufp null) (!= (cstr-byte-at g-body-bufp 0) 0))
-    (emit g-out g-body-bufp))
+  (emit-all g-out g-entry-stream)
+  (emit-all g-out g-body-stream)
   (emit g-out "}\n\n")
-  (free g-entry-bufp)
-  (free g-body-bufp)
-  (set! g-entry-bufp null)
-  (set! g-body-bufp null)
+  (string-clear g-entry-stream)
+  (string-clear g-body-stream)
   (return 1))
 
 ; Stage 15 W9 item 2 follow-up. A `defvar` whose initializer cannot be folded to
@@ -17267,15 +17204,15 @@
             'defvar
               ; Globals go to the def-stream rather than the decl-stream
               ; so they appear only in the main module IR. CT and macro
-              ; JIT modules pull in g-decl-bufp but not g-def-bufp, and
+              ; JIT modules pull in g-decl-stream but not g-def-buf, and
               ; resolve global references back to the host process via
               ; the dylib generator. Otherwise prelude globals (from node
               ; / arena / intern table) would duplicate across modules.
               (do (set! g-out g-def-stream) (emit-defvar (as ptr f)))
             'defstruct
-              (do (set! g-out g-type-stream) (emit-defstruct (as ptr f)))
+              (do (set! g-out (addr-of g-type-stream)) (emit-defstruct (as ptr f)))
             'defunion
-              (do (set! g-out g-type-stream) (emit-defunion (as ptr f)))
+              (do (set! g-out (addr-of g-type-stream)) (emit-defunion (as ptr f)))
             ; Stage 16: registered in prescan-struct-names; emits no IR. Re-run
             ; here only so the emit pass, the one point where privacy is armed,
             ; reaches the registration (container-type-sugar.md §3.4).
@@ -17284,7 +17221,7 @@
             'defcast
               (emit-defcast (as ptr f))
             'extern
-              (do (set! g-out g-decl-stream) (emit-extern (as ptr f)))
+              (do (set! g-out (addr-of g-decl-stream)) (emit-extern (as ptr f)))
             'defn
               (do (set! g-out g-def-stream) (emit-defn (as ptr f)))
             'defprotocol
@@ -17319,12 +17256,12 @@
                   (set! g-defining-private 0))
             'defstruct-
               (do (set! g-defining-private 1)
-                  (set! g-out g-type-stream)
+                  (set! g-out (addr-of g-type-stream))
                   (emit-defstruct (as ptr f))
                   (set! g-defining-private 0))
             'defunion-
               (do (set! g-defining-private 1)
-                  (set! g-out g-type-stream)
+                  (set! g-out (addr-of g-type-stream))
                   (emit-defunion (as ptr f))
                   (set! g-defining-private 0))
             'deftype-
@@ -17361,7 +17298,7 @@
             'unsafe/import-private
               (emit-unsafe-import-private (as ptr f))
             'declare
-              (do (set! g-out g-decl-stream) (emit-nuch-declare-import (as ptr f)))
+              (do (set! g-out (addr-of g-decl-stream)) (emit-nuch-declare-import (as ptr f)))
             (die-at (f 'line) (fstr "unknown top-level form: " h)))))
       (set! fc ((unsafe/cast ptr:Node fc) 'cdr))
       ; Stage 15 W9 item 1. Two things, both only for the unit's root frame:
@@ -17622,15 +17559,13 @@
 ; does use. (Measured: `lib/vector.nuc`, imported for real by the program and also
 ; by a ct-imported library, had every definition marked ct-only.)
 (defn emit-import-forms (forms:(raw Node) is-nuch:i32 ct:i32):void
-  (let (saved-def:ptr g-def-stream
-        saved-out:ptr g-out
+  (let (saved-def:raw:String g-def-stream
+        saved-out:raw:String g-out
         saved-ct:i32 g-ct-emitting
-        sink-bufp:ptr null  sink-sizep:i64 0
-        sink:ptr null)
+        (sink String) (string-new))
     (if (!= ct 0)
-      (do (set! sink (open_memstream (addr-of sink-bufp) (as ptr (addr-of sink-sizep))))
-          (set! g-def-stream sink)
-          (set! g-out sink)
+      (do (set! g-def-stream (addr-of sink))
+          (set! g-out (addr-of sink))
           (set! g-ct-emitting 1))
       (do (set! g-def-stream g-def-stream-program)
           (set! g-out g-def-stream-program)
@@ -17639,9 +17574,7 @@
     (set! g-ct-emitting saved-ct)
     (set! g-def-stream saved-def)
     (set! g-out saved-out)
-    (when (!= sink null)
-      (fclose sink)
-      (free sink-bufp))))
+    (drop (addr-of sink))))
 
 ; Stage 12 (design/stage12/namespaces.md §"Import"): import dedup is keyed on
 ; (file, prefix), not file alone — the same library may be imported under two
@@ -17816,7 +17749,7 @@
         ; `(import-prefixed "stdio.h" c)` makes `c/` legal in *this* file only.
         ; There is no imported-file body here, so no environment to save.
         (file-import-record prefix spath)
-        (set! g-out g-decl-stream)
+        (set! g-out (addr-of g-decl-stream))
         (emit-c-include spath line))
       (return))
     (let (name:ptr (nn 's)
@@ -18495,7 +18428,7 @@
 ; field offsets (0,4,8, then 16, 16+ptr-size, 16+2*ptr-size). Hosted output is
 ; byte-identical (malloc 40, align 8/4/8/8/8/8); this closes the long-standing
 ; 32-bit/16-bit target blocker (stage9/cleanup.md).
-(defn emit-qq-helpers (decl:ptr def:ptr):void
+(defn emit-qq-helpers ((decl (raw String)) (def (raw String))):void
   (when (= g-malloc-decl-done 0)
     (emit decl "declare ptr @malloc(i64)\n"))
   (let (psize:i32 ((as ptr:Target g-target) 'ptr-size)
@@ -18548,16 +18481,17 @@
     (emit def "}\n\n")))
 
 ; ============================================================
-; Open fresh memstreams for a compilation unit
+; Start a fresh compilation unit
 ; ============================================================
 
 (defn open-module-streams ():void
   (inc! g-module-epoch)
-  (set! g-type-stream (open_memstream (addr-of g-type-bufp) (as ptr (addr-of g-type-sizep))))
-  (set! g-decl-stream (open_memstream (addr-of g-decl-bufp) (as ptr (addr-of g-decl-sizep))))
-  (set! g-def-stream  (open_memstream (addr-of g-def-bufp)  (as ptr (addr-of g-def-sizep))))
+  (set! g-module-open 1)
+  (ensure-emit-buffers)
+  (clear-module-buffers)
+  (set! g-def-stream (addr-of g-def-buf))
   (set! g-def-stream-program g-def-stream)
-  (set! g-decl-out g-decl-stream)
+  (set! g-decl-out (addr-of g-decl-stream))
   (set! g-macro-decls (unsafe/cast (ref (Vector CStr)) (vector-new-in (addr-of g-arena-alloc))))
   (set! g-program-defns (vector-new-in (addr-of g-arena-alloc))))
 
@@ -18566,7 +18500,7 @@
 ; ============================================================
 
 ; Assemble the full module IR. The caller owns the returned String and must
-; drop it (g-type-bufp/g-decl-bufp/g-def-bufp are freed here).
+; drop it (the module buffers are cleared here).
 (defn assemble-module-ir (source-file:ptr):String
   (let ((irs String) (string-with-capacity 262144))
     (emit irs "; ModuleID = '" source-file "'\n")
@@ -18583,17 +18517,14 @@
         (emit irs "!llvm.module.flags = !{!0}\n")
         (emit irs "!0 = !{i32 1, !\"target-abi\", !\"" target-abi "\"}\n")))
     (emit irs "\n")
-    (when (and (!= g-type-bufp null) (!= (cstr-byte-at g-type-bufp 0) 0))
-      (emit irs g-type-bufp))
+    (emit-all irs g-type-stream)
     (emit-string-table irs g-elf-sections)
     (emit-deferror-table irs)
-    (when (and (!= g-decl-bufp null) (!= (cstr-byte-at g-decl-bufp 0) 0))
-      (emit irs g-decl-bufp))
-    (when (and (!= g-def-bufp null) (!= (cstr-byte-at g-def-bufp 0) 0))
-      (emit irs g-def-bufp))
-    (free g-type-bufp)
-    (free g-decl-bufp)
-    (free g-def-bufp)
+    (emit-all irs g-decl-stream)
+    (emit-all irs g-def-buf)
+    (string-clear g-type-stream)
+    (string-clear g-decl-stream)
+    (string-clear g-def-buf)
     (return irs)))
 
 ; Parse the in-memory IR, emit an object file, and (unless -c) invoke clang
@@ -18676,8 +18607,7 @@
                 (set! driver "riscv64-linux-gnu-gcc"))
               (when (!= g-linker-override null)
                 (set! driver g-linker-override))
-              (let (cmd-bufp:ptr null  cmd-sizep:i64 0
-                    cmds:ptr (open_memstream (addr-of cmd-bufp) (as ptr (addr-of cmd-sizep))))
+              (let ((cmds String) (string-new))
                 (emit cmds driver)
                 (when (!= is-avr 0)
                   (let (device:ptr g-mmcu-override)
@@ -18693,9 +18623,8 @@
                   (emit cmds " -Wl,--gc-sections"))
                 (dotimes (j (unsafe/cast i32 (count g-link-args)))
                   (emit cmds " " (invoke g-link-args j:usize)))
-                (fclose cmds)
-                (let (rc2:i32 (system cmd-bufp))
-                  (free cmd-bufp)
+                (let (rc2:i32 (system (string-as-cstr cmds)))
+                  (drop (addr-of cmds))
                   (when (!= rc2 0)
                     (eprint "nucleusc: link step failed (" driver " exit " rc2 ")\n")
                     (exit 1)))))
@@ -18704,11 +18633,8 @@
 ; Close module streams; emit either textual IR (--emit-llvm) or an object/binary.
 (defn flush-module-ir (source-file:ptr):void
   (when (!= g-qq-used 0)
-    (emit-qq-helpers g-decl-stream g-def-stream))
+    (emit-qq-helpers (addr-of g-decl-stream) g-def-stream))
   (drain-pending-union-irs)
-  (fclose g-type-stream)
-  (fclose g-decl-stream)
-  (fclose g-def-stream)
   (let ((ir String) (assemble-module-ir source-file)
         v:StrView (string-as-view ir))
     (if (!= g-emit-llvm 0)

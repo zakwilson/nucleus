@@ -91,12 +91,33 @@
 ; `open_memstream` (overview.md phase C3 — and with it a glibc-only function).
 ; An overload rather than a `(dyn Writer)` sink: the sink type is always known
 ; at the call site, so this dispatches statically and boxes nothing.
-(defn emit-flush ((f (ref String)) (b (ref String)) mark:usize):void
+;
+; `(raw String)` and not `(ref String)` because the emission aliases — `g-out`,
+; `g-decl-out`, `g-def-stream` — are null before a module opens, exactly as the
+; `FILE*`s they replace were. An owning buffer reaches it by the non-null-to-
+; nullable coercion, so a call site never spells the difference.
+(defn emit-flush ((f (raw String)) (b (ref String)) mark:usize):void
+  (when (= f null) (return))
   (let (v:StrView (string-as-view b)
         n:usize (v 'len))
     (when (> n mark)
-      (string-push-bytes-raw f (unsafe/ptr+ (v 'data) (as i64 mark)) (- n mark)))
+      (string-push-bytes-raw (unsafe/cast ref:String f)
+                             (unsafe/ptr+ (v 'data) (as i64 mark)) (- n mark)))
     (string-truncate-unchecked b mark)))
+
+; Append a whole buffer, bypassing `emit`'s staging. The function-body buffers
+; are appended wholesale once per emitted function, so staging them would copy
+; every byte of the module a second time.
+(defn emit-all (f:ptr (src (ref String))):void
+  (let (v:StrView (string-as-view src))
+    (when (> (v 'len) 0)
+      (fwrite (as ptr (v 'data)) 1 (as i64 (v 'len)) f))))
+
+(defn emit-all ((f (raw String)) (src (ref String))):void
+  (when (= f null) (return))
+  (let (v:StrView (string-as-view src))
+    (when (> (v 'len) 0)
+      (string-push-bytes-raw (unsafe/cast ref:String f) (v 'data) (v 'len)))))
 
 (defmacro emit (sink :rest parts)
   (let (b:ptr (gensym) m:ptr (gensym))

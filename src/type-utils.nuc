@@ -212,12 +212,12 @@
   (return 0))
 
 ; Record that `sd`'s definition line was just written into `out`.
-(defn sdef-note-emitted (sd:(raw StructDef) out:ptr):void
+(defn sdef-note-emitted (sd:(raw StructDef) (out (raw String))):void
   (set! (sd 'emitted) 1)
   (set! (sd 'emit-epoch) g-module-epoch)
   ; Only the type buffer is carried into the REPL preamble at module close; a
   ; line in a def or compile-time buffer dies with its module.
-  (set! (sd 'in-type-buf) (if (= out g-type-stream) 1 0)))
+  (set! (sd 'in-type-buf) (if (= (as ptr out) (as ptr (addr-of g-type-stream))) 1 0)))
 
 (defn cycle-pending-sdef (t:raw:Type):(raw StructDef)
   (when (= g-import-cycles null) (return null))

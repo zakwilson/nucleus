@@ -677,8 +677,8 @@
                   ud:ref:UnionDef (defunion-register (as CStr (qualify-name (name-node 's)))
                                     arms (ff 'line)))
               ; Constructor declares: (declare Name-arm:Name (fields...)).
-              (let (saved-out:ptr g-out)
-                (set! g-out g-decl-stream)
+              (let (saved-out:raw:String g-out)
+                (set! g-out (addr-of g-decl-stream))
                 (let (it:ListIter (list-iter arms))
                   (doseq-iter (cur (addr-of it))
                     (let (ctor:ptr:Node (as ptr:Node
@@ -729,13 +729,13 @@
               "set-ir-prefix"
                 (emit-set-ir-prefix (as ptr f))
               "defstruct"
-                (do (set! g-out g-type-stream) (emit-defstruct (as ptr f)))
+                (do (set! g-out (addr-of g-type-stream)) (emit-defstruct (as ptr f)))
               "defunion"
-                (do (set! g-out g-type-stream) (emit-defunion-import (as ptr f)))
+                (do (set! g-out (addr-of g-type-stream)) (emit-defunion-import (as ptr f)))
               "declare"
-                (do (set! g-out g-decl-stream) (nuch-declare-import (as ptr f) mode))
+                (do (set! g-out (addr-of g-decl-stream)) (nuch-declare-import (as ptr f) mode))
               "defmethod"
-                (do (set! g-out g-decl-stream) (nuch-defmethod-import (as ptr f) mode))
+                (do (set! g-out (addr-of g-decl-stream)) (nuch-defmethod-import (as ptr f) mode))
               "defn"
                 ; Only bounded-generic templates are exported as whole defns;
                 ; register (exporter-verified, so trusted) so calls in this
@@ -748,7 +748,7 @@
               "defcast"
                 (emit-defcast (as ptr f))
               "extern"
-                (do (set! g-out g-decl-stream) (emit-extern-mode (as ptr f) mode))
+                (do (set! g-out (addr-of g-decl-stream)) (emit-extern-mode (as ptr f) mode))
               "defconst"
                 (emit-defconst (as ptr f))
               "defenum"

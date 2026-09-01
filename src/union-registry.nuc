@@ -98,9 +98,9 @@
         ; is codegen'd in those modes, so there is nothing to write — and
         ; nothing may be recorded as written. Same guard the `!T` payload path at
         ; the bottom of this file already uses.
-        (when (!= g-type-stream null)
-          (sdef-note-emitted (as raw:StructDef sd2) g-type-stream)
-          (emit-struct-type-line g-type-stream (as raw:StructDef sd2))
+        (when (!= g-module-open 0)
+          (sdef-note-emitted (as raw:StructDef sd2) (addr-of g-type-stream))
+          (emit-struct-type-line (addr-of g-type-stream) (as raw:StructDef sd2))
           ; R4: queue it too, so this eager write is replayable into a later
           ; module like every other type. Inert wherever the eager write already
           ; landed — the drain re-checks `sdef-in-module` — so the IR is unmoved.
@@ -163,8 +163,8 @@
 (defn emit-pending-struct-ir-type (sd:raw:StructDef):void
   (let (sdd:raw:StructDef sd)
     (when (!= (sdef-in-module sdd) 0) (return))
-    (sdef-note-emitted sdd g-type-stream)
-    (emit-struct-type-line g-type-stream sdd)))
+    (sdef-note-emitted sdd (addr-of g-type-stream))
+    (emit-struct-type-line (addr-of g-type-stream) sdd)))
 
 ; Write the deferred `%name = type { repr [, pad] }` definition for one union.
 (defn emit-union-ir-type (sd:raw:StructDef):void
@@ -175,7 +175,7 @@
     (when (= (sdd 'is-union) 0)
       (emit-pending-struct-ir-type sd)
       (return))
-    (sdef-note-emitted sdd g-type-stream)
+    (sdef-note-emitted sdd (addr-of g-type-stream))
     (let (ri:i32 (union-repr-member sd)
           rt:ptr ((field-at (sdd 'fields) ri) 'type)
           total:i32 (abi-union-size sd)
@@ -1123,20 +1123,20 @@
               ; fprintf below. The condition is exactly "would dangle", so every
               ; scalar/pointer payload (`!i32`, `!ptr`, `!raw:Node` — all the
               ; compiler's own) keeps the eager write and its IR position.
-              (if (and (!= g-type-stream null)
+              (if (and (!= g-module-open 0)
                        (!= layout LAYOUT-NICHE-MAYBE) (!= layout LAYOUT-NICHE-ERRPTR)
                        (!= union-sd null)
                        (= (sdef-in-module (as raw:StructDef union-sd)) 0)
                        (= (pending-union-deps-ready union-sd) 0))
                 (conj g-pending-unions sd)
                 (do
-                  (when (and (!= g-type-stream null)
+                  (when (and (!= g-module-open 0)
                              (!= layout LAYOUT-NICHE-MAYBE) (!= layout LAYOUT-NICHE-ERRPTR))
                     (if (!= union-sd null)
                       (emit g-type-stream "%" (sd 'ir-name) " = type { i32, %"
                             ((as ptr:StructDef union-sd) 'ir-name) " }\n\n")
                       (emit g-type-stream "%" (sd 'ir-name) " = type { i32 }\n\n")))
-                  (sdef-note-emitted (as raw:StructDef sd) g-type-stream))))
+                  (sdef-note-emitted (as raw:StructDef sd) (addr-of g-type-stream)))))
             (let (ud:ptr:UnionDef (new UnionDef))
               (conj g-uniondefs ud)
               (set! (ud 'ctors-emitted) 0)
