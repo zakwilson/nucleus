@@ -221,7 +221,7 @@
             ftmp:ptr (new-tmp))
         (emit g-body-stream "  " pineg " = ptrtoint ptr " rval " to " (ptr-int-ir) "\n")
         (emit g-body-stream "  " eid " = sub " (ptr-int-ir) " 0, " pineg "\n")
-        (if (= (strcmp (ptr-int-ir) "i32") 0)
+        (if (= (ptr-int-ir) "i32")
           (set! idtr eid)
           (emit g-body-stream "  " idtr " = trunc " (ptr-int-ir) " " eid " to i32\n"))
         (emit g-body-stream "  " eid64 " = sext i32 " idtr " to i64\n")
@@ -1016,7 +1016,7 @@
 ; the join. With no `_` clause the default block is `unreachable` (the match
 ; is exhaustive by construction; a corrupted tag is UB, the C contract).
 ; `ud`/`clause-binders`/`base` are null for the defenum variant.
-(defn emit-match-clauses (call:ptr scope:ref:Scope disc:ptr disc-ty:ptr
+(defn emit-match-clauses (call:ptr scope:ref:Scope disc:ptr disc-ty:StrView
                                   clause-val:ptr clause-binders:ptr ndefault:i32
                                   ud:raw:UnionDef is-ptr:i32 base:ptr staint:raw:Scope):ref:Val
   (let (cc:ptr:Node (unsafe/cast ptr:Node call)
@@ -1282,7 +1282,7 @@
                 (emit g-body-stream "  " pineg " = ptrtoint ptr " rval " to " (ptr-int-ir) "\n")
                 (emit g-body-stream "  " eid " = sub " (ptr-int-ir) " 0, " pineg "\n")
                 ; Truncate to Err's i32 on a 64-bit target (no-op on 32-bit).
-                (when (!= (strcmp (ptr-int-ir) "i32") 0)
+                (when (!= (ptr-int-ir) "i32")
                   (set! idtr (new-tmp))
                   (emit g-body-stream "  " idtr " = trunc " (ptr-int-ir) " " eid " to i32\n"))
                 (emit g-entry-stream "  " slot " = alloca i32, align 4\n")

@@ -766,7 +766,7 @@
 ; Coercion IR type for one eightbyte: class `cls` holding `n` bytes (1..8).
 ; INTEGER → i(8·n) for n ≤ 4 (i8/i16/i24/i32), else i64. SSE/double → double.
 ; SSE/float → <2 x float> when the eightbyte is full, else float.
-(defn abi-eightbyte-ir (cls:i32 n:i32):CStr
+(defn abi-eightbyte-ir (cls:i32 n:i32):StrView
   ; FL-4: an fp128 is one value across both eightbytes, so its second half is
   ; never rendered — abi-classify collapses the pair before reaching here.
   (when (= cls ABI-CLS-SSEUP) (return "fp128"))
@@ -774,12 +774,12 @@
   (when (= cls 1)
     (if (= n 8) (return "<2 x float>") (return "float")))
   (if (<= n 4)
-    (return (fcstr "i" (* n 8)))
+    (return (fstr "i" (* n 8)))
     (return "i64")))
 
 ; Record one flattened scalar member. Past two members the aggregate is
 ; ineligible, so we only keep counting (the count is the eligibility test).
-(defn rv-flat-add (f:ptr:RvFlat isfp:i32 ir:ptr off:i32 sz:i32):void
+(defn rv-flat-add (f:ptr:RvFlat isfp:i32 ir:StrView off:i32 sz:i32):void
   (let (n:i32 (f 'cnt))
     (when (= n 0)
       (set! (f 'fp0) isfp) (set! (f 'ir0) ir) (set! (f 'pos0) off) (set! (f 'sz0) sz))
@@ -892,8 +892,8 @@
 (defn abi-classify-avail (t:raw:Type gpr:i32 fpr:i32 is-arg:i32):raw:AbiInfo
   (let (info:ptr:AbiInfo (as ptr:AbiInfo (arena-alloc (sizeof AbiInfo))))
     (set! (info 'kind) ABI-DIRECT)
-    (set! (info 'reg0) null)
-    (set! (info 'reg1) null)
+    (set! (info 'reg0) "")
+    (set! (info 'reg1) "")
     (set! (info 'size) 0)
     (set! (info 'align) 0)
     (set! (info 'off1) 8)   ; SysV: reg1 is the second eightbyte (riscv-fp-abi.md §3)
@@ -1056,12 +1056,12 @@
 ; Return type string for a function signature given its return AbiInfo: void for
 ; MEMORY (the value goes through the sret pointer), the coercion reg(s) for
 ; COERCE, or the plain type for DIRECT.
-(defn abi-ret-ir (info:raw:AbiInfo ret:raw:Type):CStr
+(defn abi-ret-ir (info:raw:AbiInfo ret:raw:Type):StrView
   (let (k:i32 (info 'kind))
     (when (= k ABI-MEMORY)  (return "void"))
     (when (= k ABI-COERCE1) (return (info 'reg0)))
     (when (= k ABI-COERCE2)
-      (return (fcstr "{ " (info 'reg0) ", " (info 'reg1) " }")))
+      (return (fstr "{ " (info 'reg0) ", " (info 'reg1) " }")))
     (return (type-to-ir ret))))
 
 ; Print one lowered parameter to g-out. `name` is the param name for a `define`
@@ -1185,7 +1185,17 @@
     ; By-pointer return (struct literal `(ref S)` / closure `(ref Env)`): the
     ; struct bytes live at `(vv val)`. Load eightbyte(s) / the whole aggregate
     ; straight from that address — never `store` the pointer itself.
+    ;
+    ; Stage 17 C6: and it must really BE that pointer. `return`'s aggregate path
+    ; runs no coercion (only the DIRECT branch does), so any pointer at all used
+    ; to reach here and be read as the address of the return struct — a wild
+    ; 16-byte load off an IR type-name string, with nothing to reject it.
     (when (= ((vv 'type) 'kind) TY-PTR)
+      (let (e:(raw Type) ((vv 'type) 'elem))
+        (when (and (!= e null) (= (type-eq e g-fn-ret-type) 0))
+          (die-at g-form-line
+            (fstr "internal: aggregate return of a " (type-spelling (vv 'type))
+                  " where the declared return type is " (type-spelling g-fn-ret-type)))))
       (let (ty:StrView (type-to-ir g-fn-ret-type)
             src:ptr (vv 'val))
         (when (= k ABI-MEMORY)
@@ -1519,13 +1529,12 @@
     ; CStr/ptr for free by taking its `data` field — a literal's backing rodata is
     ; NUL-terminated at data[len], so `data` is a valid char*. Mirrors the
     ; CStr<->ptr no-op above (the coexistence hinge that keeps every libc/format
-    ; site working once literals are views). DORMANT: nothing in src/ produces a
-    ; StrView value yet (NODE-STR is CStr until NS-3), so `type-is-strview` is 0
-    ; here throughout self-compilation and no extractvalue is emitted →
-    ; byte-identical bootstrap. A general StrView value is one extractvalue; NS-3
-    ; can collapse a *literal* StrView back to its bare GEP.
+    ; site working once literals are views). Stage 17 C6: no longer dormant, and
+    ; the NUL guarantee holds only for a literal — a view `fstr` built ends at
+    ; `len` with nothing after it, so `--strict-cstr` counts every one of these.
     (when (and (!= (type-is-strview src) 0)
                (!= (strview-borrow-target target) 0))
+      (strict-cstr-check-borrow line)
       (let (d:ptr (new-tmp))
         (emit g-body-stream "  " d " = extractvalue " (type-to-ir src) " " (vv 'val) ", 0\n")
         (return (alloc-val target d))))

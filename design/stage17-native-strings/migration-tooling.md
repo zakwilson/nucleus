@@ -206,6 +206,16 @@ yield is much lower, the script is wrong and fixing it is cheaper than convertin
 > importer's `char *` as `CStr` would be the real fix and is not this stage's —
 > it moves every C-header signature in the tree.
 >
+> **The borrow is a fifth class, added at C6 step 4 and the only one that is not
+> a call.** A materialized `StrView` flowing into a `ptr`/`CStr` slot is accepted
+> by the language — `coerce-int-val` takes its `data` field — so no type error
+> fires, no name is involved, and grep has nothing to match. It is sound for a
+> literal and unsound for every view built at runtime, whose bytes end at `len`.
+> C6 opened 32 of these with a single producer retype and the whole gate set
+> stayed green (library-gaps.md §33). Hooked at the one coercion branch that
+> emits the `extractvalue`; the count belongs beside `string-as-cstr` as a C7
+> precondition, not just a C8 one.
+>
 > **What it still cannot see, stated so C8's claim is honest:** a `ptr` that is a
 > string but is neither produced by a listed `strptr` function nor passed to a
 > `CStr` parameter — `Node.s` read and handed around — is invisible to any pass

@@ -570,3 +570,39 @@ Fixed in `emit-return`, with `tests/fixtures/s17-strview-literal-return.nuc`.
 The general shape: every typed slot that coerces has to be enumerated, and
 `return` has *two* paths through it — a fix applied to one of them looks
 complete and is half a fix.
+
+### 33. A materialized `StrView` borrows to `ptr`/`CStr` silently, and an `fstr` view has no NUL — **fixed 2026-09-01 (C6): 32 live sites, and `--strict-cstr` now counts the class**
+
+`coerce-int-val` lets a `StrView` **value** flow into any `ptr`/`CStr` slot by
+taking its `data` field (docs/strings.md, "Coercing a `StrView` to `CStr`/`ptr`
+… always takes just `data`, unconditionally"). That is sound for a string
+literal, whose backing rodata is NUL-terminated at `data[len]`. It is not sound
+for anything `fstr` built: a `String`'s bytes end at `len` and the byte after is
+whatever the `Vector`'s spare capacity holds.
+
+So the moment C6 made `type-to-ir` return `StrView`, **32 sites in the compiler
+began handing a non-NUL-terminated pointer to a consumer that would `strlen` it**
+— `emit-load`/`emit-store` and their `-at` forms, `abi-ret-ir`, `abi-eightbyte-ir`,
+`rv-flat-add`, `emit-match-clauses`, two REPL `ret-ir` locals, and three
+`(strcmp (ptr-int-ir) "i32")` calls. Every one compiled without a diagnostic, and
+the 2,596-artifact snapshot stayed byte-identical — the arena's fresh pages are
+zeroed, so `strlen` stopped in the right place *by luck*. Nothing in the gate set
+could have caught it.
+
+**Fixed** by converting all 32 consumers (`AbiInfo.reg0`/`reg1` and
+`RvFlat.ir0`/`ir1` are `StrView` fields now — an IR type string's honest type),
+and the three `strcmp`s became `StrView` `=`, which is content comparison and
+needs no NUL at all.
+
+**The lasting change is the detection.** `--strict-cstr` now reports the borrow
+itself (`strict-cstr-check-borrow`, hooked at the one coercion branch that emits
+it), because it is the one residual class no *type* marks: the borrow is what the
+language accepts, so a type error never fires and grep has nothing to match. The
+count is a C6/C7 progress number beside `string-as-cstr` — it must be 0 at C8,
+and holding it at 0 is what makes the rest of the substrate conversion safe to
+attempt.
+
+Deliberately **not** fixed by making `fstr` NUL-terminate its buffer. That would
+have made all 32 sites correct and left the rule "a `StrView` is a C string"
+silently false for every view a user builds — hiding the class instead of
+retiring it.

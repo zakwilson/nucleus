@@ -10458,24 +10458,24 @@
 ; Stage 16 PK-1: the `-at` forms take the alignment explicitly, because a packed
 ; field's is a property of where it sits and not of its type; the plain forms
 ; keep the natural answer and so keep every existing site byte-identical.
-(defn emit-load-at (dst-tmp:ptr ir-type:ptr ptr-name:ptr ty:(raw Type) align:i32):void
+(defn emit-load-at (dst-tmp:ptr ir-type:StrView ptr-name:ptr ty:(raw Type) align:i32):void
   (let (vol:ptr "")
     (when (and (!= ty null) (!= ((unsafe/cast ptr:Type ty) 'is-volatile) 0))
       (set! vol "volatile "))
     (emit g-body-stream "  " dst-tmp " = load " vol ir-type ", ptr " ptr-name ", align " align
           "\n")))
 
-(defn emit-load (dst-tmp:ptr ir-type:ptr ptr-name:ptr ty:(raw Type)):void
+(defn emit-load (dst-tmp:ptr ir-type:StrView ptr-name:ptr ty:(raw Type)):void
   (emit-load-at dst-tmp ir-type ptr-name ty (type-size ty)))
 
 ; Emit a scalar store of `val`. When `ty` is volatile, emits `store volatile`.
-(defn emit-store-at (ir-type:ptr val:ptr ptr-name:ptr ty:(raw Type) align:i32):void
+(defn emit-store-at (ir-type:StrView val:ptr ptr-name:ptr ty:(raw Type) align:i32):void
   (let (vol:ptr "")
     (when (and (!= ty null) (!= ((unsafe/cast ptr:Type ty) 'is-volatile) 0))
       (set! vol "volatile "))
     (emit g-body-stream "  store " vol ir-type " " val ", ptr " ptr-name ", align " align "\n")))
 
-(defn emit-store (ir-type:ptr val:ptr ptr-name:ptr ty:(raw Type)):void
+(defn emit-store (ir-type:StrView val:ptr ptr-name:ptr ty:(raw Type)):void
   (emit-store-at ir-type val ptr-name ty (type-size ty)))
 
 ; Store a zero/null of `field-type` into the slot at `gep` (struct/array fill).
