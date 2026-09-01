@@ -533,8 +533,78 @@ All string-related error codes (defined in `lib/string-errors.nuc` and `lib/pars
 | `invalid-codepoint` | `"value is not a Unicode scalar value"` | `char-from-u32` |
 | `parse-int-error` | `"invalid integer"` | `(parse i32 …)`, `(parse i64 …)` |
 | `parse-float-error` | `"invalid float"` | `(parse f64 …)` |
+| `io-write-failed` | `"write failed"` | `write-str` on a `CFile` |
 
 All of these conform to the `Err` type and are usable with `(err-name e)`, `try`, `with-handler`, and `match`. See [Error handling](errors.md).
+
+---
+
+## §9 — Formatting (`lib/fmt.nuc`, Stage 17)
+
+`(import-use fmt)`. Two protocols and three macros; there is **no format
+string**. Arity and argument types are settled at macro expansion, so a
+mismatch is a compile error rather than a runtime misread.
+
+### `Writer` — an output sink
+
+```lisp
+(defprotocol Writer
+  (write-str ((self (ref Self)) s:StrView):!void))
+```
+
+Single-method, so it can be erased as `(dyn Writer)` and stored in a global.
+`s` is by value — it is not `Self`, so the `(ref StrView)` convention of
+[§4](#4--bytestr-and-str-protocols) does not reach it, and a literal or a
+producer's result can be the argument directly.
+
+| Conformer | Behaviour |
+|-----------|-----------|
+| `String` | appends (unchecked — the bytes came from a `ToStr` or a literal) |
+| `CFile` | `fwrite` to a C `FILE*`; `(err io-write-failed)` on a short write |
+
+`(cfile f)` wraps a `FILE*`. It exists so a stream global can become a
+`(dyn Writer)` before its `fprintf` call sites convert; new code should not
+target it.
+
+### `ToStr` — a value's text
+
+```lisp
+(defprotocol ToStr
+  (to-str ((self Self) (out (ref String))):!void))
+```
+
+The receiver is **by value**, which is what lets a literal be an argument:
+`(to-str 42 out)` works, where a `(ref Self)` receiver would make the literal
+an rvalue with no address to take. Conformers: `i64`, `i32`, `usize`, `ui64`,
+`StrView`, `CStr`, `Char`, `bool`, `f64`, `f32`.
+
+`String` deliberately does **not** conform — by value would be a move. Write it
+through `(string-as-view s)`, which is O(1).
+
+Integers are formatted natively (`string-push-i64` / `string-push-u64`, also
+public). Floats delegate to `snprintf` — `%.17g` for `f64`, `%.9g` for `f32` —
+permanently and deliberately; shortest-round-trip float printing is a separate
+algorithm and the interface is native either way.
+
+### `str-into`, `str`, `str-alloc`
+
+```lisp
+(str-into out "expected " n " args, got " m)   ; append into an existing String
+(str      "expected " n " args, got " m)       ; build a new String
+(str-alloc h "expected " n " args, got " m)    ; …over an explicit AllocHandle
+```
+
+Each argument is expanded to a `(to-str <arg> out)` call, so any `ToStr`
+conformer may appear in any position and the pieces are heterogeneous by
+construction. `out` is evaluated once per piece, so it must be a plain binding.
+Zero arguments and one argument both expand.
+
+```lisp
+(let (s:String (str "x=" 42 " y=" 1.5 " ok=" true))
+  (printf "%s\n" (string-as-cstr &s)))          ; x=42 y=1.5 ok=true
+```
+
+See `examples/fmt-test.nuc`.
 
 ---
 

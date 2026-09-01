@@ -3,3 +3,4 @@
 (deferror invalid-char-boundary "byte offset is not a UTF-8 codepoint boundary")
 (deferror invalid-utf8 "bytes are not valid UTF-8")
 (deferror invalid-codepoint "value is not a Unicode scalar value")
+(deferror io-write-failed "write failed")

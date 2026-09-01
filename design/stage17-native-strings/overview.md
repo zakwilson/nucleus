@@ -352,13 +352,39 @@ cover them. Two rulings changed on contact:
 
 Remaining, non-blocking: #14–#17 (String editing, `split-once`/`splitn`/`rsplit`,
 number-formatting adverbs, case operations) land with the surfaces that need
-them; #18/#24 (the receiver convention) is still open and is a decision, not a
-gap.
+them; #18/#24 (the receiver convention) is settled — see
+[borrow-conventions.md](borrow-conventions.md).
 
-**B1 — `lib/fmt.nuc`.** `Writer` (single-method `write-str`), `Fmt`, `ToStr`,
-conformances for the integer family, `f32`/`f64` (§2.6), `Char`, `StrView`,
-`String`, `Symbol`, `CStr`, `Keyword`, and the `str` / `str-alloc` macros.
-`String` and `CFile` as the first two `Writer` conformers.
+**B1 — `lib/fmt.nuc` — done 2026-09-01.** `Writer` (single-method `write-str`),
+`ToStr`, conformances for `i64`/`i32`/`usize`/`ui64`, `f32`/`f64` (§2.6),
+`Char`, `bool`, `StrView`, `CStr`, and the `str-into` / `str` / `str-alloc`
+macros. `String` and `CFile` as the two `Writer` conformers.
+
+Three deviations from the plan above, each recorded in the file header:
+
+- **`Fmt` is not built.** A formatter holding an erased writer would box through
+  `(dyn Writer)` once per formatted piece, and neither shape that actually
+  occurs wants it: a diagnostic builds a `String` with `str` and writes it once,
+  and IR emission writes literal chunks straight to the sink with `write-str`.
+  Add it when a call site asks.
+- **`String` does not conform to `ToStr`, and `Symbol`/`Keyword` cannot yet.**
+  `ToStr`'s receiver is `Self` **by value**, which is what lets `(to-str 42 out)`
+  work — a `(ref Self)` receiver makes a literal an rvalue with no address to
+  take, and every other conformer is small and POD. `String` has `Drop`, so by
+  value would be a *move*; it is written through `(string-as-view s)`, which is
+  O(1). `Symbol` and `Keyword` land with B4, which is where `Symbol` is defined.
+- **`Writer`'s byte argument is by value**, not `(ref StrView)`. It is not
+  `Self`, so the cross-conformer constraint of borrow-conventions.md §2 does not
+  reach it, and two words in two registers lets a literal or a producer's result
+  be the argument with no binding to take the address of.
+
+`str-into` recurses one piece at a time (the shape `+` and `-` in
+`lib/macros.nuc` use) rather than building the call list with `make-cell`: each
+piece needs *wrapping* in a `(to-str … out)` call, which `~@` cannot do, and a
+`defn` helper cannot be called from a macro body — `node` is `import-ct`'d, so
+`make-cell`/`intern-symbol` exist only inside the JIT'd expander.
+
+`examples/fmt-test.nuc`. 941 tests, `make bootstrap` byte-identical.
 
 **B2 — `lib/io.nuc`.** `StdOut`/`StdErr` over fds 1/2, `print`/`println`/
 `eprint`/`eprintln`, `read-line`. Not `FILE*`-backed: no hidden C buffer to

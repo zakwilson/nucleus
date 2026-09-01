@@ -1,0 +1,8 @@
+-9223372036854775808,0,18446744073709551615,true,1.5,view,cstr
+expected 3 args, got 7
+x=42 y=1.5 ok=true
+empty=1
+solo
+arena 99
+to a String
+to a CFile
