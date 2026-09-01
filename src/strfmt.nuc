@@ -36,6 +36,7 @@
 (import-use strview)
 (import-use fmt)
 (import-use io)
+(import-use file)
 
 ; The arena's own handle. A separate `defvar` from nucleusc.nuc's
 ; `g-arena-alloc` only because a module cannot see its importer's globals; the

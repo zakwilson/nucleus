@@ -113,44 +113,32 @@
 ; Read lines from stdin until parens are balanced, return the accumulated buffer.
 ; Returns null on EOF.
 (defn repl-read-input ():ptr
-  (let (buf:ptr (malloc 4096)
-        buf-len:i64 0
-        buf-cap:i64 4096
+  (let ((buf String) (string-new)
         depth:i32 0
         got-input:i32 0
         in-string:i32 0
         in-comment:i32 0
-        first-line:i32 1)
-    (when (= buf null) (perror "malloc") (exit 1))
-    (set! (aref (as ptr:i8 buf) 0) 0)
-    (let (done:i32 0)
-      (while (= done 0)
-        ; Print prompt
-        (if (!= first-line 0)
-          (emit stderr "nuc> ")
-          (emit stderr "...> "))
-        (fflush stderr)
-        ; Read a line
-        (let (line-buf:ptr (malloc 4096))
-          (when (= line-buf null) (perror "malloc") (exit 1))
-          (when (= (fgets line-buf 4096 (as ptr stdin)) null)
-             (free line-buf)
-                (if (= got-input 0)
-                  (do (free buf) (return null))
-                  (set! done 1)))
-          (when (= done 0)
-            (let (line-len:i64 (strlen line-buf))
-              ; Grow buffer if needed
-              (when (> (+ buf-len line-len) (- buf-cap 1))
-                (let (new-cap:i64 (* buf-cap 2))
-                  (while (> (+ buf-len line-len) (- new-cap 1))
-                    (set! new-cap (* new-cap 2)))
-                  (set! buf (realloc buf new-cap))
-                  (when (= buf null) (perror "realloc") (exit 1))
-                  (set! buf-cap new-cap)))
-              (memcpy (unsafe/ptr+ (as ptr:i8 buf) buf-len) line-buf line-len)
-              (set! buf-len (+ buf-len line-len))
-              (set! (aref (as ptr:i8 buf) buf-len) 0)
+        first-line:i32 1
+        done:i32 0)
+    (while (= done 0)
+      (if (!= first-line 0)
+        (emit stderr "nuc> ")
+        (emit stderr "...> "))
+      (match (read-line)
+        (none
+          (if (= got-input 0)
+            (do (drop (addr-of buf)) (return null))
+            (set! done 1)))
+        ((some line)
+          (let ((ln String) line)
+            ; `read-line` strips the terminator; the accumulated text is source,
+            ; so the newline goes back — it ends a `;` comment and it is what
+            ; every reported line number counts.
+            (string-push-char (addr-of ln) \newline)
+            (let (lv:StrView (string-as-view ln)
+                  line-len:i64 (as i64 (lv 'len))
+                  line-buf:ptr (as ptr (lv 'data)))
+              (string-push-str-unchecked (addr-of buf) &lv)
               (set! got-input 1)
               (set! first-line 0)
               ; Scan the line for paren balance, respecting strings and comments
@@ -175,11 +163,12 @@
                             (set! depth (- depth 1))
                           true (do)))
                   (set! li (+ li 1))))
-              (free line-buf)
               ; Done when parens are balanced and we have input
               (when (and (<= depth 0) (!= got-input 0))
-                (set! done 1)))))))
-    (return buf)))
+                (set! done 1))
+              (drop (addr-of ln)))))))
+    ; The reader keeps `Node.s` pointers into this text for the session.
+    (return (as ptr (string-as-cstr buf)))))
 
 ; Stage 15 W8 G-3, the REPL half (design/global-init.md §4.5). There is no queue
 ; to accumulate across a session, because each form is its own unit: a `defvar`
