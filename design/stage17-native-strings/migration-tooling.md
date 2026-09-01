@@ -192,6 +192,20 @@ dataflow, the design is wrong.
 
 ## 4. The `CFile` dual-path shim
 
+> **Not used, and C2/C3 are done without it.** The shim exists (`lib/fmt.nuc`)
+> and stays for library users, but the compiler never needed it, because the
+> premise below is wrong in a useful way: the call-site conversion and the sink
+> retype are **separable**, and separating them is strictly cheaper than a
+> shim. C2 converted 848 sites with the sinks still `FILE*` — one `emit-flush`
+> doing `fwrite` — and C3 then retyped the sinks by adding one overload. A dual
+> path would have touched every site twice: once to `(write …)`, once more to
+> unwrap the `CFile`.
+>
+> The general lesson, since a shim will be proposed again: a shim is for when
+> two representations must coexist *at one call site*. Here they never did —
+> every site had exactly one sink type, known statically — so what looked like a
+> migration problem was an overload.
+
 ```lisp
 (defstruct CFile fp:ptr)          ; wraps a FILE*
 (extend CFile Writer)             ; write-str → fwrite on fp
