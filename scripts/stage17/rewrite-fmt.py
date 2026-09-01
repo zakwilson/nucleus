@@ -60,7 +60,7 @@ FPUTC_LIT = {
 
 # specifier -> how to spell the argument as a piece.
 DIRECT = {"%s", "%d", "%ld", "%c"}
-SPEC_RE = re.compile(r"%(?:%|016lX|04lX|016lx|02X|ld|[sdc])")
+SPEC_RE = re.compile(r"%(?:%|016lX|04lX|016lx|02X|04x|ld|[sdc])")
 
 
 def render_arg(spec, arg):
@@ -74,6 +74,8 @@ def render_arg(spec, arg):
         return "(hexu %s 2)" % arg
     if spec == "%016lx":
         return "(hex %s 16)" % arg
+    if spec == "%04x":
+        return "(hex %s 4)" % arg
     return arg
 
 

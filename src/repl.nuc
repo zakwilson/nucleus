@@ -25,8 +25,7 @@
   ; `d` is read after the jump, and a longjmp does not restore registers.
   (let (:volatile d:i32 g-repl-depth)
     (when (>= d REPL-MAX-PROTECT)
-      (fprintf stderr "nucleus: repl-protect nested deeper than %d\n"
-               REPL-MAX-PROTECT)
+      (emit stderr "nucleus: repl-protect nested deeper than " REPL-MAX-PROTECT "\n")
       (exit 1))
     ; `_setjmp`, not `setjmp`: the latter is an unconditional glibc macro, and
     ; Nucleus consumes C functions but not C macros (docs/structs-unions.md).
@@ -44,7 +43,7 @@
 (defn repl-throw ():void
   (when (= g-repl-depth 0)
     ; Exiting is what batch does, and beats jumping into a dead frame.
-    (fprintf stderr "nucleus: fatal error outside the REPL's protected region\n")
+    (emit stderr "nucleus: fatal error outside the REPL's protected region\n")
     (exit 1))
   (longjmp (aref g-repl-jmpbufs (- g-repl-depth 1)) 1))
 
@@ -63,8 +62,8 @@
           (set! marked 1)))
       (set! i (+ i 1)))
     (if (!= marked 0)
-      (fprintf stderr "  %s\n" buf)
-      (fprintf stderr "  %s.0\n" buf))))
+      (emit stderr "  " (as ptr buf) "\n")
+      (emit stderr "  " (as ptr buf) ".0\n"))))
 
 ; Call a JIT'd nullary thunk and print its result. `%.17g` / `%.9g` are the
 ; shortest round-trip widths for binary64 / binary32.
@@ -83,13 +82,13 @@
 
 ; Print a single character to stderr, JSON-escaping if needed.
 (defn repl-error-json-putc (c:i32):void
-  (cond (= c 34)  (fprintf stderr "\\\"")        ; "
-        (= c 92)  (fprintf stderr "\\\\")        ; \
-        (= c 10)  (fprintf stderr "\\n")
-        (= c 13)  (fprintf stderr "\\r")
-        (= c 9)   (fprintf stderr "\\t")
-        (< c 32)  (fprintf stderr "\\u%04x" c)
-        true      (fprintf stderr "%c" c)))
+  (cond (= c 34)  (emit stderr "\\\"")        ; "
+        (= c 92)  (emit stderr "\\\\")        ; \
+        (= c 10)  (emit stderr "\\n")
+        (= c 13)  (emit stderr "\\r")
+        (= c 9)   (emit stderr "\\t")
+        (< c 32)  (emit stderr "\\u" (hex c 4))
+        true      (emit stderr (as Char (as ui32 c)))))
 
 (defn repl-error-json-puts (s:ptr):void
   (when (= s null) (return))
@@ -103,13 +102,13 @@
 ; one line: {"file":..,"line":..,"message":..}. line of 0 is omitted.
 (defn repl-error (line:i32 msg:CStr):void
   (cond (= g-repl-format 1)
-          (do (fprintf stderr "{\"file\":\"")
+          (do (emit stderr "{\"file\":\"")
               (repl-error-json-puts g-source-path)
-              (fprintf stderr "\",\"line\":%d,\"message\":\"" line)
+              (emit stderr "\",\"line\":" line ",\"message\":\"")
               (repl-error-json-puts msg)
-              (fprintf stderr "\"}\n"))
+              (emit stderr "\"}\n"))
         true
-          (fprintf stderr "  error: %s\n" msg)))
+          (emit stderr "  error: " msg "\n")))
 
 ; Read lines from stdin until parens are balanced, return the accumulated buffer.
 ; Returns null on EOF.
@@ -128,8 +127,8 @@
       (while (= done 0)
         ; Print prompt
         (if (!= first-line 0)
-          (fprintf stderr "nuc> ")
-          (fprintf stderr "...> "))
+          (emit stderr "nuc> ")
+          (emit stderr "...> "))
         (fflush stderr)
         ; Read a line
         (let (line-buf:ptr (malloc 4096))
@@ -230,8 +229,8 @@
     (when (and (!= k NODE-SYM) (!= k NODE-STR)) (return))
     (let (name:ptr ((unsafe/cast ptr:Node nn) 's))
       (if (!= fresh 0)
-        (fprintf stderr "  imported %s\n" name)
-        (fprintf stderr "  %s already imported\n" name)))))
+        (emit stderr "  imported " name "\n")
+        (emit stderr "  " name " already imported\n")))))
 
 ; Process a single REPL form: parse, compile to IR, JIT, and call.
 ; Returns the result type kind (TY-VOID, TY-I32, etc.) or -1 on error.
@@ -240,18 +239,18 @@
     (when (= (as ptr f) null) (return))
     ; Short-circuit: a bare string literal prints as itself.
     (when (= (f 'kind) NODE-STR)
-      (fprintf stderr "  ")
+      (emit stderr "  ")
       (fprint-node stderr form)
-      (fprintf stderr "\n")
+      (emit stderr "\n")
       (return))
     ; Short-circuit: '(form) — print the quoted AST without JIT.
     (when (and (= (f 'kind) NODE-CELL)
                 (!= (node-len form) 0)
                 (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 'kind) (= _ NODE-SYM))
                 (= (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 's)) "quote"))
-      (fprintf stderr "  ")
+      (emit stderr "  ")
       (fprint-node stderr (node-at form 1))
-      (fprintf stderr "\n")
+      (emit stderr "\n")
       (return))
     ; Check if it's a list starting with a known keyword
     (let (h:ptr null
@@ -299,17 +298,17 @@
                           ; sanitize-for-ir would drop hyphens (arena-alloc →
                           ; arena_alloc) and mis-map `?`/`!` (full? → full_ vs
                           ; batch full_QMARK).
-                          (fprintf g-repl-preamble "@%s = external global %s\n"
-                            (ns-ir-base vname) (type-to-ir vty))
+                          (emit g-repl-preamble "@" (ns-ir-base vname) " = external global "
+                                (type-to-ir vty) "\n")
                           (repl-preamble-note-decl
                             (as CStr (fstr "@" (ns-ir-base vname))))))))
-                  (fprintf stderr "  defined\n"))
+                  (emit stderr "  defined\n"))
             ; Stage 16: an alias emits no IR and defines no layout, so unlike
             ; defstruct it has no module to open and no preamble to push —
             ; registering it is the whole job (container-type-sugar.md §3.2).
             (and (!= h null) (or (= h "deftype") (= h "deftype-")))
               (do (register-type-alias (as ptr f) (if (= h "deftype-") 1 0))
-                  (fprintf stderr "  defined\n"))
+                  (emit stderr "  defined\n"))
             (and (!= h null) (= h "defstruct"))
               (do (open-module-streams)
                   (set! g-out g-type-stream)
@@ -318,7 +317,7 @@
                   (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
                   (repl-absorb-type-buf)
                   (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
-                  (fprintf stderr "  defined\n"))
+                  (emit stderr "  defined\n"))
             (and (!= h null) (= h "defunion"))
               ; Tagged sum: register the type (or template), JIT the arm
               ; constructors, then push the type defs + constructor declares
@@ -344,7 +343,7 @@
                   (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at form 1)))
                     (when (= (nn 'kind) NODE-SYM)
                       (repl-declare-union-ctors (nn 's))))
-                  (fprintf stderr "  defined\n"))
+                  (emit stderr "  defined\n"))
             (and (!= h null) (= h "extern"))
               (let (pre-len:i32 ((as ptr:Scope g-globals) 'len))
                   (open-module-streams)
@@ -353,7 +352,7 @@
                   (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
                   (repl-absorb-type-buf)
                   (when (and (!= g-decl-bufp null) (!= (cstr-byte-at g-decl-bufp 0) 0))
-                    (fputs g-decl-bufp g-repl-preamble))
+                    (emit g-repl-preamble g-decl-bufp))
                   (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
                   (repl-note-globals-decls pre-len))
             (and (!= h null) (= h "defn"))
@@ -391,7 +390,7 @@
                         (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
                         (repl-absorb-type-buf)
                         (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
-                        (fprintf stderr "  defined\n"))
+                        (emit stderr "  defined\n"))
                   true
                     ; Derive fname-ir the same way batch does for a solitary
                     ; defn: ns-ir-base composes the current namespace's prefix
@@ -471,22 +470,22 @@
                                   ; param/return, on every target.
                                   (let (rinfo:ptr:AbiInfo
                                           (unsafe/cast ptr:AbiInfo (abi-classify (ft 'ret))))
-                                    (fprintf g-repl-preamble "declare %s @%s("
-                                                  (abi-ret-ir rinfo (ft 'ret)) fname-ir)
+                                    (emit g-repl-preamble "declare "
+                                          (abi-ret-ir rinfo (ft 'ret)) " @" fname-ir "(")
                                     (let (need-comma:i32 0)
                                       (when (= ((as ptr:AbiInfo rinfo) 'kind) ABI-MEMORY)
-                                        (fprintf g-repl-preamble "ptr sret(%s) align %d"
-                                          (type-to-ir (ft 'ret)) ((as ptr:AbiInfo rinfo) 'align))
+                                        (emit g-repl-preamble "ptr sret(" (type-to-ir (ft 'ret))
+                                              ") align " ((as ptr:AbiInfo rinfo) 'align))
                                         (set! need-comma 1))
                                       (abi-args-begin rinfo)
                                       (dotimes (pi (ft 'num-params))
-                                        (when (!= need-comma 0) (fprintf g-repl-preamble ", "))
+                                        (when (!= need-comma 0) (emit g-repl-preamble ", "))
                                         (abi-print-param-to g-repl-preamble
                                           (abi-classify-arg ((field-at (ft 'params) pi) 'type))
                                           ((field-at (ft 'params) pi) 'type)
                                           null)
                                         (set! need-comma 1)))
-                                    (fprintf g-repl-preamble ")\n")
+                                    (emit g-repl-preamble ")\n")
                                     ; R3/D8: a later macro JIT module is
                                     ; assembled with this preamble, so its own
                                     ; declare latch has to know this line exists.
@@ -512,8 +511,8 @@
                               (when (!= sym null)
                                 (set! (sym 'tracker) rt))))))
                       (if (!= is-redef 0)
-                        (fprintf stderr "  redefined\n")
-                        (fprintf stderr "  defined\n")))))
+                        (emit stderr "  redefined\n")
+                        (emit stderr "  defined\n")))))
             (and (!= h null) (= h "compile-time"))
               ; R4: the CT module is assembled inside emit-compile-time; close
               ; this entry's own buffers after it and carry their types forward.
@@ -536,10 +535,10 @@
                   (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
                   (repl-absorb-type-buf)
                   (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
-                  (fprintf stderr "  defined\n"))
+                  (emit stderr "  defined\n"))
             (and (!= h null) (= h "def-rmacro"))
               (do (emit-def-rmacro (as ptr f))
-                  (fprintf stderr "  defined\n"))
+                  (emit stderr "  defined\n"))
             (and (!= h null)
                  (or (= h "macroexpand")
                      (= h "macroexpand-1")
@@ -586,15 +585,15 @@
                         (if (and (not is-all)
                                  (or (= head-name null)
                                      (= (find-macro head-name) null)))
-                          (do (fprintf stderr "  not a macro call: ")
+                          (do (emit stderr "  not a macro call: ")
                               (fprint-node stderr arg)
-                              (fprintf stderr "\n"))
+                              (emit stderr "\n"))
                           (let (expanded:ptr (if is-all
                                                (macroexpand-all-form arg)
                                                (macroexpand-form arg depth)))
-                            (fprintf stderr "  ")
+                            (emit stderr "  ")
                             (fprint-node stderr expanded)
-                            (fprintf stderr "\n")))))))
+                            (emit stderr "\n")))))))
             ; All six import spellings. Stage 15 B2b retired the alias `Sym`s a
             ; prefixed import injected, so the backfill below sees what a flat one gives.
             (and (!= h null)
@@ -670,17 +669,16 @@
                                 ; first operand slot even at zero parameters.
                                 (let (rinfo:ptr:AbiInfo
                                         (unsafe/cast ptr:AbiInfo (abi-classify (ft 'ret))))
-                                  (fprintf g-repl-preamble "declare %s %s("
-                                                (abi-ret-ir rinfo (ft 'ret))
-                                                (sym 'ir-name))
+                                  (emit g-repl-preamble "declare " (abi-ret-ir rinfo (ft 'ret))
+                                        " " (sym 'ir-name) "(")
                                   (let (need-comma:i32 0)
                                     (when (= ((as ptr:AbiInfo rinfo) 'kind) ABI-MEMORY)
-                                      (fprintf g-repl-preamble "ptr sret(%s) align %d"
-                                        (type-to-ir (ft 'ret)) ((as ptr:AbiInfo rinfo) 'align))
+                                      (emit g-repl-preamble "ptr sret(" (type-to-ir (ft 'ret))
+                                            ") align " ((as ptr:AbiInfo rinfo) 'align))
                                       (set! need-comma 1))
                                     (abi-args-begin rinfo)
                                     (dotimes (pi (ft 'num-params))
-                                      (when (!= need-comma 0) (fprintf g-repl-preamble ", "))
+                                      (when (!= need-comma 0) (emit g-repl-preamble ", "))
                                       (abi-print-param-to g-repl-preamble
                                         (abi-classify-arg ((field-at (ft 'params) pi) 'type))
                                         ((field-at (ft 'params) pi) 'type)
@@ -689,8 +687,8 @@
                                     (when (!= (ft 'variadic) 0)
                                       (let (sep:ptr "")
                                         (when (!= need-comma 0) (set! sep ", "))
-                                        (fprintf g-repl-preamble "%s..." sep))))
-                                  (fprintf g-repl-preamble ")\n"))))))
+                                        (emit g-repl-preamble sep "..."))))
+                                  (emit g-repl-preamble ")\n"))))))
                         (inc! si)))
                     ; Nothing new on any of the four registries an import can
                     ; grow means `do-import` returned on a dedup gate.
@@ -713,7 +711,7 @@
                       ; Generate the return based on result type
                       (when (= g-block-term 0)
                         (cond (= result-kind TY-VOID)
-                                (fprintf g-body-stream "  ret void\n")
+                                (emit g-body-stream "  ret void\n")
                               (or (= result-kind TY-I32)
                                   (= result-kind TY-BOOL)
                                   (= result-kind TY-I8) (= result-kind TY-I16))
@@ -721,33 +719,33 @@
                                       (when (!= result-kind TY-I32)
                                         (let (ext-tmp:ptr (new-tmp))
                                           (cond (= result-kind TY-BOOL)
-                                                  (fprintf g-body-stream "  %s = zext i1 %s to i32\n"
-                                                           ext-tmp (result 'val))
+                                                  (emit g-body-stream "  " ext-tmp " = zext i1 "
+                                                        (result 'val) " to i32\n")
                                                 (= result-kind TY-I8)
-                                                  (fprintf g-body-stream "  %s = sext i8 %s to i32\n"
-                                                           ext-tmp (result 'val))
+                                                  (emit g-body-stream "  " ext-tmp " = sext i8 "
+                                                        (result 'val) " to i32\n")
                                                 (= result-kind TY-I16)
-                                                  (fprintf g-body-stream "  %s = sext i16 %s to i32\n"
-                                                           ext-tmp (result 'val))
+                                                  (emit g-body-stream "  " ext-tmp
+                                                        " = sext i16 " (result 'val) " to i32\n")
                                                 true (do))
                                           (set! ret-val ext-tmp)))
-                                      (fprintf g-body-stream "  ret i32 %s\n" ret-val)))
+                                      (emit g-body-stream "  ret i32 " ret-val "\n")))
                               (= result-kind TY-I64)
-                                (fprintf g-body-stream "  ret i64 %s\n" (result 'val))
+                                (emit g-body-stream "  ret i64 " (result 'val) "\n")
                               (= result-kind TY-PTR)
-                                (fprintf g-body-stream "  ret ptr %s\n" (result 'val))
+                                (emit g-body-stream "  ret ptr " (result 'val) "\n")
                               (= result-kind TY-F32)
-                                (fprintf g-body-stream "  ret float %s\n" (result 'val))
+                                (emit g-body-stream "  ret float " (result 'val) "\n")
                               (= result-kind TY-F64)
-                                (fprintf g-body-stream "  ret double %s\n" (result 'val))
+                                (emit g-body-stream "  ret double " (result 'val) "\n")
                               ; FL-1: the wide widths return through the JIT the
                               ; same way; only the PRINTING side below has no
                               ; helper for them yet, so they show as <value>.
                               (!= (is-float-type (result 'type)) 0)
-                                (fprintf g-body-stream "  ret %s %s\n"
-                                  (type-to-ir (result 'type)) (result 'val))
+                                (emit g-body-stream "  ret " (type-to-ir (result 'type)) " "
+                                      (result 'val) "\n")
                               true
-                                (fprintf g-body-stream "  ret void\n")))
+                                (emit g-body-stream "  ret void\n")))
                       ; Build function definition
                       (fclose g-entry-stream)
                       (fclose g-body-stream)
@@ -764,13 +762,13 @@
                         (when (or (= result-kind TY-F16)
                                   (or (= result-kind TY-F80) (= result-kind TY-F128)))
                           (set! ret-ir (as ptr (type-to-ir (result 'type)))))
-                        (fprintf g-def-stream "define %s @%s() {\n" ret-ir eval-sym)
-                        (fprintf g-def-stream "entry:\n")
+                        (emit g-def-stream "define " ret-ir " @" eval-sym "() {\n")
+                        (emit g-def-stream "entry:\n")
                         (when (and (!= g-entry-bufp null) (!= (cstr-byte-at g-entry-bufp 0) 0))
-                          (fputs g-entry-bufp g-def-stream))
+                          (emit g-def-stream g-entry-bufp))
                         (when (and (!= g-body-bufp null) (!= (cstr-byte-at g-body-bufp 0) 0))
-                          (fputs g-body-bufp g-def-stream))
-                        (fprintf g-def-stream "}\n\n")
+                          (emit g-def-stream g-body-bufp))
+                        (emit g-def-stream "}\n\n")
                         (free g-entry-bufp)
                         (free g-body-bufp)
                         (set! g-entry-bufp null)
@@ -803,17 +801,20 @@
                                             (= result-kind TY-I16))
                                       (let (fn:ptr (unsafe/cast ptr addr)
                                             rv:i32 (unsafe/funcall-ptr-i32 fn))
-                                        (fprintf stderr "  %d\n" rv))
+                                        (emit stderr "  " rv "\n"))
                                     (= result-kind TY-I64)
                                       (let (fn:ptr (unsafe/cast ptr addr)
                                             rv:i64 (unsafe/funcall-ptr-i64 fn))
-                                        (fprintf stderr "  %ld\n" rv))
+                                        (emit stderr "  " rv "\n"))
                                     (= result-kind TY-PTR)
                                       (let (fn:ptr (unsafe/cast ptr addr)
                                             rv:ptr (unsafe/funcall-ptr-ptr fn))
                                         (if (!= rv null)
-                                          (fprintf stderr "  #<ptr %p>\n" rv)
-                                          (fprintf stderr "  null\n")))
+                                          ; glibc's `%p` is "0x" then minimal
+                                          ; lowercase hex, which is `hex … 0`.
+                                          (emit stderr "  #<ptr 0x"
+                                                (hex (unsafe/cast i64 rv) 0) ">\n")
+                                          (emit stderr "  null\n")))
                                     (= result-kind TY-F64)
                                       (repl-print-f64
                                         (unsafe/cast ((fn f64)()) (unsafe/cast ptr addr)))
@@ -831,7 +832,7 @@
 ; `define <ret> @<impl-name>(...) { ... }`. Subsequent occurrences of
 ; `@<fname>(` (self-recursion call sites in the body) are left intact so they
 ; go through the thunk.
-(defn rewrite-first-fname (buf:ptr fname:ptr impl-name:ptr out:ptr):void
+(defn rewrite-first-fname (buf:ptr fname:ptr impl-name:ptr (out (ref String))):void
   (when (= buf null) (return))
   (let (pat:ptr (fstr "@" fname "(")
         rep:ptr (fstr "@" impl-name "(")
@@ -841,15 +842,14 @@
     (let (pat-len:i64 (strlen pat))
       (while (and (= done 0) (<= (+ i pat-len) n))
         (when (= (memcmp (unsafe/ptr+ (as ptr:i8 buf) i) pat pat-len) 0)
-          (fwrite buf 1 i out)
-          (fputs rep out)
+          (emit out (strview (unsafe/cast ptr:ui8 buf) (as usize i)) rep)
           (let (rest-start:i64 (+ i pat-len))
-            (fwrite (unsafe/ptr+ (as ptr:i8 buf) rest-start) 1
-                    (- n rest-start) out))
+            (emit out (strview (unsafe/cast ptr:ui8 (unsafe/ptr+ (as ptr:i8 buf) rest-start))
+                               (as usize (- n rest-start)))))
           (set! done 1))
         (set! i (+ i 1)))
       (when (= done 0)
-        (fwrite buf 1 n out)))))
+        (emit out (strview (unsafe/cast ptr:ui8 buf) (as usize n)))))))
 
 ; Emit a "thunk" function `@<fname>` that loads the current implementation
 ; pointer from `@<fname>.tgt` and calls it. The thunk is what callers (and
@@ -866,24 +866,24 @@
 ; same in the signature and in the forwarded call — so it is built ONCE and
 ; printed twice. byval/sret attributes are legal on a call operand, which is
 ; what makes the verbatim reuse correct for the MEMORY cases too.
-(defn emit-fn-thunk (out:ptr fname:ptr ft:(raw Type)):void
+(defn emit-fn-thunk ((out (ref String)) fname:ptr ft:(raw Type)):void
   (let (ftt:(raw Type) ft
         nparams:i32 (ftt 'num-params)
         ret-info:ptr:AbiInfo (unsafe/cast ptr:AbiInfo (abi-classify (ftt 'ret)))
         ret-ir:ptr (abi-ret-ir ret-info (ftt 'ret)))
     ; Global pointer holding the address of the current implementation.
-    (fprintf out "@%s.tgt = global ptr null\n" fname)
+    (emit out "@" fname ".tgt = global ptr null\n")
     (let (obuf:ptr null  osz:i64 0
           os:ptr (open_memstream (addr-of obuf) (as ptr (addr-of osz))))
       (let (need-comma:i32 0)
         (when (= ((as ptr:AbiInfo ret-info) 'kind) ABI-MEMORY)
-          (fprintf os "ptr sret(%s) align %d %%sret.arg"
-            (type-to-ir (ftt 'ret)) ((as ptr:AbiInfo ret-info) 'align))
+          (emit os "ptr sret(" (type-to-ir (ftt 'ret)) ") align "
+                ((as ptr:AbiInfo ret-info) 'align) " %sret.arg")
           (set! need-comma 1))
         ; RV-6c: one walk over this signature's parameters.
         (abi-args-begin ret-info)
         (dotimes (i nparams)
-          (when (!= need-comma 0) (fprintf os ", "))
+          (when (!= need-comma 0) (emit os ", "))
           (abi-print-param-to os
             (abi-classify-arg ((field-at (ftt 'params) i) 'type))
             ((field-at (ftt 'params) i) 'type)
@@ -891,24 +891,22 @@
           (set! need-comma 1)))
       (fclose os)
       (when (= obuf null) (set! obuf ""))
-      (fprintf out "define %s @%s(%s) {\nentry:\n" ret-ir fname obuf)
-      (fprintf out "  %%fp = load ptr, ptr @%s.tgt, align 8\n" fname)
+      (emit out "define " ret-ir " @" fname "(" obuf ") {\nentry:\n")
+      (emit out "  %fp = load ptr, ptr @" fname ".tgt, align 8\n")
       ; A MEMORY return lowers to `void` + the sret operand, so it takes the
       ; same no-result path a genuinely void function does.
       (if (or (= ((ftt 'ret) 'kind) TY-VOID)
               (= ((as ptr:AbiInfo ret-info) 'kind) ABI-MEMORY))
-        (fprintf out "  call void %%fp(%s)\n  ret void\n}\n\n" obuf)
-        (fprintf out "  %%r = call %s %%fp(%s)\n  ret %s %%r\n}\n\n"
-                 ret-ir obuf ret-ir)))))
+        (emit out "  call void %fp(" obuf ")\n  ret void\n}\n\n")
+        (emit out "  %r = call " ret-ir " %fp(" obuf ")\n  ret " ret-ir " %r\n}\n\n")))))
 
 ; Build a tiny module containing the @fname thunk + @fname.tgt global, and add
 ; it to the JIT permanently (no resource tracker). This is the stable public
 ; symbol callers see; on each redefinition, only @fname.tgt is updated.
 (defn jit-thunk-module (line:i32 fname-ir:ptr ft:(raw Type)):void
-  (let (buf:ptr null  szp:i64 0
-        s:ptr (open_memstream (addr-of buf) (as ptr (addr-of szp))))
-    (fprintf s "; ModuleID = '<repl-thunk>'\n")
-    (fprintf s "target triple = \"%s\"\n\n" ((as ptr:Target g-host-target) 'triple))
+  (let ((s String) (string-new))
+    (emit s "; ModuleID = '<repl-thunk>'\n")
+    (emit s "target triple = \"" ((as ptr:Target g-host-target) 'triple) "\"\n\n")
     ; The accumulated preamble carries the `%Name = type {…}` lines for every
     ; struct defined so far in the session. A thunk whose lowered signature
     ; names one (an sret/byval aggregate) is otherwise emitted into a module
@@ -917,12 +915,12 @@
     ; cannot collide with the two symbols this module defines.
     (repl-put-preamble s null)
     (emit-fn-thunk s fname-ir ft)
-    (fclose s)
-    (when (and (!= buf null) (!= (cstr-byte-at buf 0) 0))
-      (when (!= (getenv "NUC_REPL_DUMP_IR") null)
-        (fprintf stderr "----- THUNK IR -----\n%s----- END -----\n" buf))
-      (jit-add-module-rt buf line null))
-    (free buf)))
+    (let (v:StrView (string-as-view s))
+      (when (> (v 'len) 0)
+        (when (!= (getenv "NUC_REPL_DUMP_IR") null)
+          (emit stderr "----- THUNK IR -----\n" v "----- END -----\n"))
+        (jit-add-module-rt v line null)))
+    (drop (addr-of s))))
 
 ; After JIT'ing an impl module, look up @<impl-name> and @<fname-ir>.tgt and
 ; store impl-addr into (ptr tgt-addr) so subsequent calls through @<fname-ir>
@@ -965,21 +963,21 @@
               aname:ptr (arm 'name)
               nf:i32 (arm 'nfields)
               ftypes:ptr (arm 'ftypes))
-          (fprintf g-out "declare %s @%s-%s(" (abi-ret-ir ret-info ret) uname aname)
+          (emit g-out "declare " (abi-ret-ir ret-info ret) " @" uname "-" aname "(")
           (let (need-comma:i32 0)
             (when (= ((as ptr:AbiInfo ret-info) 'kind) ABI-MEMORY)
-              (fprintf g-out "ptr sret(%s) align %d"
-                (type-to-ir ret) ((as ptr:AbiInfo ret-info) 'align))
+              (emit g-out "ptr sret(" (type-to-ir ret) ") align "
+                    ((as ptr:AbiInfo ret-info) 'align))
               (set! need-comma 1))
             ; RV-6c: one walk over this constructor's parameters — reset the
             ; riscv64 register budget (design/stage14/riscv-fp-abi.md §4).
             (abi-args-begin (unsafe/cast raw:AbiInfo ret-info))
             (dotimes (j nf)
-              (when (!= need-comma 0) (fprintf g-out ", "))
+              (when (!= need-comma 0) (emit g-out ", "))
               (abi-print-param (abi-classify-arg (aref (as ptr:ptr ftypes) j))
                                (aref (as ptr:ptr ftypes) j) null)
               (set! need-comma 1)))
-          (fprintf g-out ")\n")
+          (emit g-out ")\n")
           (repl-preamble-note-decl (as CStr (fstr "@" uname "-" aname)))))
       (set! g-out saved-out))
     0))
@@ -1011,10 +1009,9 @@
   (fclose g-decl-stream)
   (fclose g-def-stream)
   (repl-absorb-type-buf)
-  (let (ir-bufp:ptr null  ir-sizep:i64 0
-        irs:ptr (open_memstream (addr-of ir-bufp) (as ptr (addr-of ir-sizep))))
-    (fprintf irs "; ModuleID = '<repl>'\n")
-    (fprintf irs "target triple = \"%s\"\n\n" ((as ptr:Target g-host-target) 'triple))
+  (let ((irs String) (string-new))
+    (emit irs "; ModuleID = '<repl>'\n")
+    (emit irs "target triple = \"" ((as ptr:Target g-host-target) 'triple) "\"\n\n")
     ; Preamble (accumulated types + declarations from includes), minus any
     ; declare this module defines — see repl-put-preamble. R4: this module's own
     ; types were just absorbed into it, so it is the whole type section.
@@ -1022,20 +1019,20 @@
     (emit-string-table irs 0)
     ; This module's declarations
     (when (and (!= g-decl-bufp null) (!= (cstr-byte-at g-decl-bufp 0) 0))
-      (fputs g-decl-bufp irs))
+      (emit irs g-decl-bufp))
     ; This module's definitions — optionally renaming the first "@<fname>("
     ; to "@<impl-name>(" so the def is JIT'd under a unique impl symbol.
     (when (and (!= g-def-bufp null) (!= (cstr-byte-at g-def-bufp 0) 0))
       (if (and (!= fname null) (!= impl-name null))
         (rewrite-first-fname g-def-bufp fname impl-name irs)
-        (fputs g-def-bufp irs)))
-    (fclose irs)
-    (when (and (!= ir-bufp null) (!= (cstr-byte-at ir-bufp 0) 0))
-      (when (!= (getenv "NUC_REPL_DUMP_IR") null)
-        (fprintf stderr "----- IR -----\n%s----- END -----\n" ir-bufp))
-      (jit-add-module-rt ir-bufp line rt))
+        (emit irs g-def-bufp)))
+    (let (v:StrView (string-as-view irs))
+      (when (> (v 'len) 0)
+        (when (!= (getenv "NUC_REPL_DUMP_IR") null)
+          (emit stderr "----- IR -----\n" v "----- END -----\n"))
+        (jit-add-module-rt v line rt)))
     (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
-    (free ir-bufp)))
+    (drop (addr-of irs))))
 
 ; ============================================================
 ; Monomorphization drain + declare backfill (Stage 16 R3)
@@ -1051,25 +1048,25 @@
   (when (!= (repl-preamble-has-decl (pd 'ir-name)) 0) (return))
   (repl-preamble-note-decl (pd 'ir-name))
   (when (!= (pd 'variadic) 0)
-    (fprintf g-repl-preamble "declare %s %s(...)\n" (type-to-ir (pd 'ret)) (pd 'ir-name))
+    (emit g-repl-preamble "declare " (type-to-ir (pd 'ret)) " " (pd 'ir-name) "(...)\n")
     (return))
   (let (rinfo:ptr:AbiInfo (unsafe/cast ptr:AbiInfo (abi-classify (pd 'ret))))
-    (fprintf g-repl-preamble "declare %s %s(" (abi-ret-ir rinfo (pd 'ret)) (pd 'ir-name))
+    (emit g-repl-preamble "declare " (abi-ret-ir rinfo (pd 'ret)) " " (pd 'ir-name) "(")
     (let (need-comma:i32 0)
       ; An sret prefix occupies the first operand slot even at zero parameters.
       (when (= ((as ptr:AbiInfo rinfo) 'kind) ABI-MEMORY)
-        (fprintf g-repl-preamble "ptr sret(%s) align %d"
-          (type-to-ir (pd 'ret)) ((as ptr:AbiInfo rinfo) 'align))
+        (emit g-repl-preamble "ptr sret(" (type-to-ir (pd 'ret)) ") align "
+              ((as ptr:AbiInfo rinfo) 'align))
         (set! need-comma 1))
       (abi-args-begin rinfo)
       (dotimes (j (pd 'nparams))
-        (when (!= need-comma 0) (fprintf g-repl-preamble ", "))
+        (when (!= need-comma 0) (emit g-repl-preamble ", "))
         (abi-print-param-to g-repl-preamble
           (abi-classify-arg (aref (as ptr:ptr (pd 'ptypes)) j))
           (aref (as ptr:ptr (pd 'ptypes)) j)
           null)
         (set! need-comma 1)))
-    (fprintf g-repl-preamble ")\n")))
+    (emit g-repl-preamble ")\n")))
 
 ; Does the `@symbol` starting at `buf[a]` name a function THIS module defines?
 ; `keep` (an `@`-prefixed name, or null) is the one exception: a defn's impl
@@ -1091,7 +1088,7 @@
 ; (design/stage16-ergonomics/repl-libraries.md §3.3). Type stream already closed.
 (defn repl-absorb-type-buf ():void
   (when (and (!= g-type-bufp null) (!= (cstr-byte-at g-type-bufp 0) 0))
-    (fputs g-type-bufp g-repl-preamble))
+    (emit g-repl-preamble g-type-bufp))
   (dotimes (i (unsafe/cast i32 (count g-structs)))
     (let (sd:ref:StructDef (invoke g-structs i:usize))
       (when (and (!= (sd 'in-type-buf) 0) (= (sd 'emit-epoch) g-module-epoch))
@@ -1114,13 +1111,13 @@
 ; (LLVM: "invalid redefinition of function"). The preamble is written for OTHER
 ; modules, which still need the declare, so this filters the copy rather than
 ; the source. Stage 16 R3 / D8, repl-libraries.md §3.2.
-(defn repl-put-preamble (out:ptr keep:ptr):void
+(defn repl-put-preamble ((out (ref String)) keep:ptr):void
   (fflush g-repl-preamble)
   (when (= g-repl-preamble-bufp null) (return))
   (when (= (cstr-byte-at g-repl-preamble-bufp 0) 0) (return))
   ; An expression module defines nothing, which is most prompt entries.
   (when (= (count g-program-defns) 0)
-    (fputs g-repl-preamble-bufp out)
+    (emit out g-repl-preamble-bufp)
     (return))
   (let (buf:ptr g-repl-preamble-bufp
         n:i64 (strlen g-repl-preamble-bufp)
@@ -1137,7 +1134,8 @@
               (when (< a e)
                 (set! drop (repl-preamble-line-defines-here buf a keep)))))
           (when (= drop 0)
-            (fwrite (unsafe/ptr+ (as ptr:i8 buf) i) 1 (- e i) out)))
+            (emit out (strview (unsafe/cast ptr:ui8 (unsafe/ptr+ (as ptr:i8 buf) i))
+                               (as usize (- e i))))))
         (set! i e)))))
 
 ; Record — without emitting — that every function Sym from `from` onward is
@@ -1228,12 +1226,12 @@
   (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
   (repl-absorb-type-buf)
   (when (and (!= g-decl-bufp null) (!= (cstr-byte-at g-decl-bufp 0) 0))
-    (fputs g-decl-bufp g-repl-preamble))
+    (emit g-repl-preamble g-decl-bufp))
   (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
   ; The whole declaration buffer went in verbatim, so tell the D8 latch which
   ; names it just carried (`@malloc` is the one a macro body re-declares).
   (repl-note-globals-decls 0)
-  (fprintf g-repl-preamble "\n"))
+  (emit g-repl-preamble "\n"))
 
 ; ============================================================
 ; Session state snapshot / restore (Stage 16 R1)
@@ -1523,7 +1521,7 @@
 
 ; REPL main loop
 (defn repl-main ():void
-  (fprintf stderr "Nucleus REPL (type Ctrl-D to exit)\n")
+  (emit stderr "Nucleus REPL (type Ctrl-D to exit)\n")
   ; Line-buffer stdout so JIT'd printf output is visible immediately even when
   ; the REPL is driven by a pipe (stdin not a tty makes stdout block-buffered
   ; by default). _IOLBF == 1 on glibc.
@@ -1546,7 +1544,7 @@
     (while (!= running 0)
       (let (input:ptr (repl-read-input))
         (when (= input null)
-              (fprintf stderr "\n") (set! running 0))
+              (emit stderr "\n") (set! running 0))
         (when (!= input null)
               (when (!= running 0)
               ; Parse the input
