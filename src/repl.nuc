@@ -188,7 +188,7 @@
 ; would be invisible.
 (defn repl-emit-init-fn ():ptr
   (when (>= g-init-drained (count g-init-worklist)) (return null))
-  (let (sym:ptr (fstr "__nucleus_init_" g-repl-id))
+  (let (sym:ptr (fcstr "__nucleus_init_" g-repl-id))
     (inc! g-repl-id)
     (set! g-out g-def-stream)
     (when (= (init-emit-function sym 0) 0) (return null))
@@ -290,7 +290,7 @@
                           (emit g-repl-preamble "@" (ns-ir-base vname) " = external global "
                                 (type-to-ir vty) "\n")
                           (repl-preamble-note-decl
-                            (as CStr (fstr "@" (ns-ir-base vname))))))))
+                            (as CStr (fcstr "@" (ns-ir-base vname))))))))
                   (emit stderr "  defined\n"))
             ; Stage 16: an alias emits no IR and defines no layout, so unlike
             ; defstruct it has no module to open and no preamble to push —
@@ -410,7 +410,7 @@
                       (let (impl-id:i32 (unsafe/cast i32 g-defn-impl-counter)
                             impl-name:ptr null)
                         (set! g-defn-impl-counter (+ g-defn-impl-counter 1))
-                        (set! impl-name (fstr fname-ir ".impl." impl-id))
+                        (set! impl-name (fcstr fname-ir ".impl." impl-id))
                         ; When redefining, remove the old method from the
                         ; generic before prescan adds the new one.
                         ; Otherwise finalize-generics sees a duplicate signature.
@@ -475,7 +475,7 @@
                                     ; assembled with this preamble, so its own
                                     ; declare latch has to know this line exists.
                                     (repl-preamble-note-decl
-                                      (as CStr (fstr "@" fname-ir)))))))))
+                                      (as CStr (fcstr "@" fname-ir)))))))))
                         ; R3 constraint 4: after the thunk (a lifted lambda can
                         ; call @fname-ir recursively, so its declare must be in
                         ; the preamble first) and into a module of its own — the
@@ -683,7 +683,7 @@
             true
               ; Expression — wrap in __repl_eval_N and JIT
               (do (open-module-streams)
-                  (let (eval-sym:ptr (fstr "__repl_eval_" g-repl-id))
+                  (let (eval-sym:ptr (fcstr "__repl_eval_" g-repl-id))
                     (inc! g-repl-id)
                     (set! g-out g-def-stream)
                     (reset-function-state)
@@ -810,8 +810,8 @@
 ; go through the thunk.
 (defn rewrite-first-fname (buf:ptr fname:ptr impl-name:ptr (out (ref String))):void
   (when (= buf null) (return))
-  (let (pat:ptr (fstr "@" fname "(")
-        rep:ptr (fstr "@" impl-name "(")
+  (let (pat:ptr (fcstr "@" fname "(")
+        rep:ptr (fcstr "@" impl-name "(")
         n:i64 (strlen buf)
         i:i64 0
         done:i32 0)
@@ -863,7 +863,7 @@
           (abi-print-param-to os
             (abi-classify-arg ((field-at (ftt 'params) i) 'type))
             ((field-at (ftt 'params) i) 'type)
-            (fstr "a" i))
+            (fcstr "a" i))
           (set! need-comma 1)))
       (let (obuf:StrView (string-as-view ob))
         (emit out "define " ret-ir " @" fname "(" obuf ") {\nentry:\n")
@@ -913,7 +913,7 @@
         (repl-error line msg)
         (free msg))
       (return -1))
-    (let (tgt-name:ptr (fstr fname-ir ".tgt")
+    (let (tgt-name:ptr (fcstr fname-ir ".tgt")
           err2:ptr (LLVMOrcLLJITLookup g-jit (as ptr (addr-of tgt-addr)) tgt-name))
       (when (!= err2 null)
         (let (msg:ptr (malloc 256))
@@ -954,7 +954,7 @@
                                (aref (as ptr:ptr ftypes) j) null)
               (set! need-comma 1)))
           (emit g-out ")\n")
-          (repl-preamble-note-decl (as CStr (fstr "@" uname "-" aname)))))
+          (repl-preamble-note-decl (as CStr (fcstr "@" uname "-" aname)))))
       (set! g-out saved-out))
     0))
 
@@ -985,7 +985,7 @@
     ; Preamble (accumulated types + declarations from includes), minus any
     ; declare this module defines — see repl-put-preamble. R4: this module's own
     ; types were just absorbed into it, so it is the whole type section.
-    (repl-put-preamble irs (if (= fname null) null (fstr "@" fname)))
+    (repl-put-preamble irs (if (= fname null) null (fcstr "@" fname)))
     (emit-string-table irs 0)
     ; This module's declarations
     (emit-all irs g-decl-stream)

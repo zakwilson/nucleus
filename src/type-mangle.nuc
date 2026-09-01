@@ -34,7 +34,7 @@
       TY-PTR
         (if (= (tt 'elem) null)
           (return "ptr")
-          (return (fstr "p" (type-mangle-token (tt 'elem)))))
+          (return (fcstr "p" (type-mangle-token (tt 'elem)))))
       ; Stage 15 B3′ (name-resolution.md §8.1 step 2): the type's `ir-name`, not
       ; its `name`. Since B3′ a namespaced type's registry key carries a `/`
       ; (`dp/Fox`), which is illegal in an LLVM symbol; `ir-name` is the same
@@ -53,7 +53,7 @@
       ; distinct per length, so two array shapes can never collide. Unreachable
       ; today (an array cannot be a parameter or a generic argument), but the
       ; fall-through "x" would have collided with every other unmodelled kind.
-      TY-ARRAY (return (fstr "a" (fstr (tt 'arr-len)) "_" (type-mangle-token (tt 'elem))))
+      TY-ARRAY (return (fcstr "a" (fcstr (tt 'arr-len)) "_" (type-mangle-token (tt 'elem))))
       (return "x"))))
 
 ; ============================================================
@@ -83,7 +83,7 @@
          (when (= ((addr-of entry) 'val)
                   t)
                (return ((addr-of entry) 'key))))
-  (let (name:CStr (intern-str (fstr "__fnty_" g-fnty-id)))
+  (let (name:CStr (intern-str (fcstr "__fnty_" g-fnty-id)))
     (inc! g-fnty-id)
     (assoc g-fnty name t)
     (return name)))
@@ -133,7 +133,7 @@
       TY-PTR
         (if (= (tt 'elem) null)
           (return "ptr")
-          (return (fstr "ptr:" (type-spelling (tt 'elem)))))
+          (return (fcstr "ptr:" (type-spelling (tt 'elem)))))
       ; Stage 15 W8 G-2. This spelling is DIAGNOSTIC-ONLY and deliberately not
       ; round-trippable through parse-type-name: type-spelling's round-trip
       ; contract exists for conformance keys and generic substitution, and an
@@ -141,7 +141,7 @@
       ; `extend` subject can occupy). Rendering the honest source spelling beats
       ; the old fall-through, which called every array "ptr".
       TY-ARRAY
-        (return (fstr "(array " (type-spelling (tt 'elem)) " " (fstr (tt 'arr-len)) ")"))
+        (return (fcstr "(array " (type-spelling (tt 'elem)) " " (fcstr (tt 'arr-len)) ")"))
       (return "ptr"))))
 
 (defn tyvar-index-of (name:CStr tyvars:ptr ntv:i32):i32
@@ -166,7 +166,7 @@
         (let (seg:ptr ((as ptr:Node e) 's)
               idx:i32 (tyvar-index-of seg tyvars ntv)
               piece:ptr (if (>= idx 0) (aref (as ptr:ptr spellings) idx) seg))
-          (if (= acc null) (set! acc piece) (set! acc (fstr acc ":" piece))))))
+          (if (= acc null) (set! acc piece) (set! acc (fcstr acc ":" piece))))))
     (when (= acc null) (return s))
     (return acc)))
 

@@ -126,7 +126,7 @@
       (set! i (+ i 1)))
     (return res)))
 
-(defn sc-report (line:i32 msg:ptr):void
+(defn sc-report (line:i32 msg:StrView):void
   (set! g-strict-cstr-hits (+ g-strict-cstr-hits 1))
   (let (fnm:ptr "<toplevel>")
     (when (!= g-cur-fname null) (set! fnm g-cur-fname))
@@ -134,7 +134,7 @@
 
 ; Walk a TY-FN signature and report every CStr in it. `what` names the callee
 ; for the report and has already been cleared against the seam list.
-(defn sc-check-sig ((ft (raw Type)) what:ptr line:i32):void
+(defn sc-check-sig ((ft (raw Type)) what:StrView line:i32):void
   (when (= ft null) (return))
   (when (!= (ft 'kind) TY-FN) (return))
   (let (r:(raw Type) (ft 'ret))
@@ -170,10 +170,10 @@
 ; A libc string call the compiler writes into the IR as text, so it never
 ; reaches the call funnel. Counted under the same `cfn` entry as a written one —
 ; it is the same site to C6, and it is the class no source sweep finds.
-(defn strict-cstr-check-synth (name:ptr line:i32):void
+(defn strict-cstr-check-synth (name:StrView line:i32):void
   (when (= g-strict-cstr 0) (return))
   (sc-load)
-  (when (= (sc-classify (strview-from-cstr (as CStr name))) SC-SEAM) (return))
+  (when (= (sc-classify name) SC-SEAM) (return))
   (sc-report line (fstr "C string function '" name "' (compiler-synthesized)")))
 
 ; A call through a function pointer or a BoxedFn. No name, so the seam list
