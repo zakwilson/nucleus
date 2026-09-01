@@ -95,7 +95,7 @@ compile-time error naming their replacement.
 | [Macros](macros.md) | Standard macros (`if`, `when`, `for`, `dotimes`, `->`), variadic arithmetic, writing macros |
 | [Generics](generics.md) | Multimethods, `defprotocol`/`extend`, parametric protocols, bounded `:where` generics |
 | [Error handling](errors.md) | `deferror`, `!T`, `try`/`unwrap`, `with-handler`, `signal` |
-| [Standard library](stdlib.md) | Pre-declared libc bindings (stdio, stdlib, string, ctype, unistd); `StrView` byte-slice substrate (`lib/strview.nuc`); `Keyword` interned names (`lib/keyword.nuc`) |
+| [Standard library](stdlib.md) | Pre-declared libc bindings (stdio, stdlib, string, ctype, unistd); `StrView` byte-slice substrate (`lib/strview.nuc`); `Symbol` interned identity (`lib/intern.nuc`); `Keyword` interned names (`lib/keyword.nuc`) |
 | [Allocators](allocators.md) | `Allocator` protocol, `AllocHandle`, libc/arena backends (`lib/allocator.nuc`) |
 | [Iterators](iterators.md) | `Iterator` protocol, concrete iterators, lazy combinators, reduce (`lib/iterator.nuc`) |
 | [Collections](collections.md) | Core collection protocols (`Coll`/`Seq`/`Assoc`/`Set`/`Drop`), `Hash`, `Vector`, `HashMap`, `HashSet` (`lib/coll.nuc`, `lib/hash.nuc`, `lib/vector.nuc`, `lib/hashmap.nuc`, `lib/hashset.nuc`) |

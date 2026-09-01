@@ -437,10 +437,30 @@ Two findings, both registered:
   `generic-resolve`'s tier-0 second pass. The `node-type`↔`emit-node` lockstep
   charging for a one-sided change.
 
-**B4 — `lib/intern.nuc`.** `Symbol` (§2.4), the open-addressed intern table,
-conformances, and the `Keyword` rebase. Ships with a benchmark against the
-compiler's current `intern-symbol`/`intern-str` cost — this type is on the
-hottest path in the compiler and a regression here is a stage-level failure.
+**B4 — `lib/intern.nuc` — done 2026-09-01.** `Symbol` (§2.4), the
+open-addressed intern table, conformances, and the `Keyword` rebase, with the
+benchmark the plan asked for.
+
+The layout is as designed — `[hash][len][bytes][NUL]` with the `Symbol` holding
+the address of the first *byte* — and it delivers all four properties: `=` emits
+one `icmp eq ptr` (verified in the IR), `symbol-len`/`hash` are loads behind the
+pointer, `symbol-as-view` allocates nothing, and `symbol-as-cstr` is free.
+Conformances: `Eq`, `Hash`, `ToStr`, `ByteStr`, `Str`. No name collision with
+the compiler's `Sym` — the `Name` fallback was not needed.
+
+`Keyword` is now **one `Symbol` and nothing else**: one word instead of three,
+no `id` counter, and `lib/keyword.nuc`'s 256-entry fixed array with a `strcmp`
+per probe is gone (#4).
+
+**The benchmark earned its place.** `tests/fixtures/s17-intern-bench.nuc` timed
+`symbol-intern` at **8x slower** than the compiler's own `intern-symbol` over
+the same corpus — a stage-level failure by the plan's own standard. The table
+was not the cause: `strview-hash` folded through `reduce` over a `ByteIter`, so
+every byte cost an indirect call through a closure plus a `(Maybe ui8)`
+construction and match (#30). With a direct byte loop, and at -O3 (how the
+compiler is actually built), `symbol-intern` is ~1.5x **faster** than
+`intern-symbol`. The finding generalizes: an `Iterator` fold is a fine default
+and the wrong tool inside a primitive everything else calls.
 
 ### Track C — the conversion, surface by surface
 

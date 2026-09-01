@@ -1,0 +1,74 @@
+; Stage 17 B4 — lib/intern.nuc: `Symbol`, interned identity with the length and
+; hash behind the pointer.
+;
+; The point of the layout is that all four properties hold at once: `=` is one
+; `icmp eq ptr`, `symbol-len` is a load, `symbol-as-view` allocates nothing, and
+; `symbol-as-cstr` is free because the bytes are still NUL-terminated.
+;
+; design/stage17-native-strings/overview.md §2.4.
+
+(import-use "string.h")
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use hashmap)
+(import-use strview)
+(import-use strview-str)
+(import-use string)
+(import-use fmt)
+(import-use io)
+(import-use intern)
+
+(defn main ():i32
+
+  ; ---- identity ---------------------------------------------------------------
+  (let (a:Symbol (symbol-from-cstr c"hello")
+        b:Symbol (symbol-from-cstr c"hello")
+        c:Symbol (symbol-from-cstr c"world"))
+    (println "same=" (= a b) " different=" (= a c))
+
+    ; ---- the header, and the two free bridges ---------------------------------
+    (println "len=" (symbol-len a) " view=[" (symbol-as-view a) "]")
+    ; `strlen` reading it back proves the NUL is there and that C needs no copy.
+    ; Printed through `println`, not `printf`: stdio buffers and lib/io writes
+    ; straight to the descriptor, so mixing the two reorders the output.
+    (println "cstr=[" (symbol-as-cstr a)
+             "] strlen=" (as usize (strlen (as ptr (symbol-as-cstr a)))))
+    (println "hash-stable=" (= (hash a) (hash b)))
+
+    ; ---- ByteStr / Str, reached through the view -------------------------------
+    (let (he:StrView (strview-from-cstr "he")
+          lo:StrView (strview-from-cstr "lo"))
+      (println "byte-len=" (byte-len a)
+               " chars=" (char-count a)
+               " starts=" (starts-with? a he)
+               " ends=" (ends-with? a lo)))
+
+    ; ---- a Symbol is a HashMap key ---------------------------------------------
+    (with ((m (ref (HashMap Symbol i32))) (hashmap-new))
+      (assoc m a 1)
+      (assoc m c 2)
+      (match (m b) ((some v) (println "map hello=" v)) (none (println "map hello=?")))
+      (match (m c) ((some v) (println "map world=" v)) (none (println "map world=?")))
+      (println "map n=" (count m))))
+
+  ; ---- growth: identity must survive a rehash ---------------------------------
+  ; 3000 distinct names forces several doublings past the 1024 initial capacity.
+  (let (first:Symbol (symbol-from-cstr c"n0")
+        stable:bool true
+        before:usize (symbol-count))
+    (dotimes (i 3000)
+      (let (nm:String (str "n" i)
+            v:StrView (string-as-view nm))
+        (symbol-intern v)
+        (drop (addr-of nm))))
+    (let (again:Symbol (symbol-from-cstr c"n0"))
+      (set! stable (= first again)))
+    (println "grew=" (> (symbol-count) before) " identity-survives-rehash=" stable))
+
+  ; Re-interning an existing name adds nothing.
+  (let (n:usize (symbol-count))
+    (symbol-from-cstr c"hello")
+    (println "reintern-adds=" (- (symbol-count) n)))
+
+  0)

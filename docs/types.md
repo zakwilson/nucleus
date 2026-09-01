@@ -1084,7 +1084,7 @@ keyword's name, which is what makes the keyword-led return spelling `):&T` work
 (the body `&T` expands to `ref:T` exactly as the bare symbol would). The
 consequence to know: a keyword **value** written `:&x` reads as `:ref:x`.
 
-**Intern pool limit.** The intern pool holds up to 256 distinct keywords per process. Exceeding this limit aborts with a diagnostic. 256 is ample for a typical program's keyword vocabulary.
+**No intern pool limit.** Since Stage 17 a keyword is one interned `Symbol` (`lib/intern.nuc`), whose table is open-addressed and grows. The old fixed 256-entry pool, and the abort past it, are gone.
 
 ## Symbols
 

@@ -1,7 +1,7 @@
-; Stage 11 cleanup §2 — Keyword: an interned, immutable, self-evaluating name,
-; built on the shared StrView substrate (lib/strview.nuc).
+; Keyword: an interned, immutable, self-evaluating name.
 ;
-; Design: design/stage11/cleanup.md §2.
+; Design: design/stage11/cleanup.md §2; rebased onto `Symbol` in Stage 17 B4
+; (design/stage17-native-strings/overview.md §2.4, library-gaps.md #4).
 ;
 ; ---------------------------------------------------------------------------
 ; WHAT A KEYWORD IS
@@ -9,128 +9,52 @@
 ; `:foo` is a keyword literal. The reader recognises a leading-colon atom and
 ; emits a NODE-KEYWORD; the compiler lowers that to a runtime call to
 ; `keyword-intern("foo")`, which returns the one canonical `Keyword` value for
-; that name. Two `:foo` therefore share an `id`, so equality is an integer
-; compare (no byte walk) and hashing is a cached load — the whole point being
-; ergonomic, cheap `HashMap` keys.
+; that name. Two `:foo` therefore share a `Symbol`, so equality is a pointer
+; compare and hashing is a cached load — the whole point being ergonomic, cheap
+; `HashMap` keys.
 ;
-; Representation (design §"Keyword representation"):
-;   name         : (ptr StrView) into the intern arena (borrowed, process-lived)
-;   id           : sequential intern id — identity for Eq
-;   cached-hash  : StrView byte-hash computed once at intern time — for Hash
-;
-; The intern pool is KEYWORD-SPECIFIC (not shared with StrView) and uses a plain
-; linear scan over a fixed-size global array — NOT a HashMap, which would be
-; circular (HashMap keys want to be keywords). 256 entries is ample for a
-; program's distinct keyword set; overflow aborts with a diagnostic.
-;
-; Name bytes are stored NUL-terminated in their own malloc'd block, so the
-; StrView's `strview-to-cstr` bridge is sound for any interned keyword name.
+; A Keyword is now exactly one interned `Symbol` and nothing else: one word
+; instead of three, and the intern table is `lib/intern.nuc`'s open-addressed
+; one. Before Stage 17 this file carried its own 256-entry fixed array with a
+; linear scan and a `strcmp` per probe, which capped a program's distinct
+; keyword set and aborted past it. Both are gone.
 ; ---------------------------------------------------------------------------
 
-(import-use "stdio.h")
-(import-use "stdlib.h")
-(import-use "string.h")
-
-(extern stderr:ptr)
-
-(import-use strview)
-(import-use hash)
 (import-use numeric)   ; the Eq protocol (= / !=)
+(import-use hash)
+(import-use strview)
+(import-use string)
+(import-use fmt)
+(import-use intern)
 
-; ---------------------------------------------------------------------------
-; The interned keyword. A value type: copying a Keyword copies these three
-; words; identity lives in `id`, so a copy is still `=` to its original.
-; ---------------------------------------------------------------------------
-(defstruct Keyword
-  name:(ptr StrView)
-  id:usize
-  cached-hash:usize)
+(defstruct Keyword sym:Symbol)
 
-; ---------------------------------------------------------------------------
-; Intern table: a fixed-size global array of Keyword entries plus a live count.
-; Lazily malloc'd on first intern (zero startup cost for programs with no
-; keywords). An entry is occupied iff its index < g-keyword-count.
-; ---------------------------------------------------------------------------
-(defconst KEYWORD-MAX 256)
-
-(defvar g-keyword-table:ptr null)
-(defvar g-keyword-count:usize 0)
-
-; Abort on intern-table overflow. Non-generic so its libc references resolve
-; against this file's includes.
-(defn keyword-overflow ():void
-  (fprintf stderr "keyword: intern table full (max %d)\n" KEYWORD-MAX)
-  (exit 1))
-
-; ---------------------------------------------------------------------------
-; keyword-intern — return the canonical Keyword for the name in `cs`.
-;
-; Linear scan: compare `cs` byte-for-byte (strcmp) against each existing entry's
-; name. On a hit, return that entry's Keyword value (identity preserved via id).
-; On a miss, append a fresh entry: copy the name bytes (NUL-terminated) into a
-; malloc'd block, wrap them in a heap StrView, compute the byte hash once, assign
-; the next sequential id, and return the new value.
-; ---------------------------------------------------------------------------
+; The canonical Keyword for the name in `cs`.
 (defn keyword-intern ((cs CStr)):Keyword
-  ; Lazy table init.
-  (when (= g-keyword-table null)
-    (set! g-keyword-table (malloc (* (as i64 KEYWORD-MAX) (sizeof Keyword)))))
-  (let (tbl:ptr:Keyword (as ptr:Keyword g-keyword-table)
-        n:usize g-keyword-count
-        i:usize 0)
-    ; Look for an existing entry with the same name bytes.
-    (while (< i n)
-      (let (e:ptr:Keyword (as ptr:Keyword (unsafe/ptr+ tbl (unsafe/cast i32 i)))
-            sv:ptr:StrView (as ptr:StrView (e 'name)))
-        (when (= (strcmp (strview-to-cstr sv) (as ptr cs)) 0)
-          (return (deref e))))
-      (set! i (+ i 1)))
-    ; Miss: append a new entry.
-    (when (>= n (as usize KEYWORD-MAX))
-      (keyword-overflow))
-    (let (slen:i64 (strlen (as ptr cs))
-          ; Copy the name bytes NUL-terminated so strview-to-cstr stays sound.
-          buf:ptr (malloc (+ slen 1)))
-      (memcpy buf (as ptr cs) (+ slen 1))
-      (let (sv:ptr:StrView (as ptr:StrView (malloc (as i64 (sizeof StrView)))))
-        (set! (sv 'data) (as ptr:ui8 buf))
-        (set! (sv 'len) (as usize slen))
-        (let (e:ptr:Keyword (as ptr:Keyword (unsafe/ptr+ tbl (unsafe/cast i32 n)))
-              h:usize (strview-hash sv))
-          (set! (e 'name) sv)
-          (set! (e 'id) n)
-          (set! (e 'cached-hash) h)
-          (set! g-keyword-count (+ n 1))
-          (return (deref e)))))))
+  (let (k:&Keyword (alloca Keyword))
+    (set! (k 'sym) (symbol-from-cstr cs))
+    (return (deref k))))
+
+; The keyword's name. Borrowed and process-lived, like every interned view.
+(defn keyword-name (self:Keyword):StrView
+  (return (symbol-as-view (self 'sym))))
+
+(defn keyword-symbol (self:Keyword):Symbol
+  (return (self 'sym)))
 
 ; ---------------------------------------------------------------------------
-; keyword-name — the keyword's name as a (ref StrView) (borrowed; process-lived).
-; Lets callers print or further-inspect a keyword without touching the layout.
-; ---------------------------------------------------------------------------
-(defn keyword-name ((self (ref Keyword))):ref:StrView
-  (return (as ref:StrView (as ptr (self 'name)))))
-
-; ---------------------------------------------------------------------------
-; Conformances.
-;
-; Eq is identity: two keywords are equal iff they share an intern id. By value
-; (matching the Eq protocol and the collection key path `(= k1 k2)`).
-;
-; Hash returns the hash cached at intern time (no byte walk), by (ref Self) per
-; the Hash protocol. Because equal keywords share a name they share a cached
-; hash, so Eq/Hash agree.
+; Conformances. Eq is identity and Hash is the hash cached at intern time, both
+; inherited from `Symbol` — so equal keywords still share a hash by construction.
 ; ---------------------------------------------------------------------------
 
 (extend Keyword Eq)
-(defn = (a:Keyword b:Keyword):bool
-  (let (la:Keyword a
-        lb:Keyword b)
-    (return (if (= ((addr-of la) 'id) ((addr-of lb) 'id)) true false))))
-(defn != (a:Keyword b:Keyword):bool
-  (let (la:Keyword a
-        lb:Keyword b)
-    (return (if (= ((addr-of la) 'id) ((addr-of lb) 'id)) false true))))
+(defn = (a:Keyword b:Keyword):bool (return (= (a 'sym) (b 'sym))))
+(defn != (a:Keyword b:Keyword):bool (return (!= (a 'sym) (b 'sym))))
 
 (extend Keyword Hash)
 (defn hash ((self (ref Keyword))):usize
-  (return (self 'cached-hash)))
+  (return (hash (addr-of self 'sym))))
+
+(extend Keyword ToStr)
+(defn to-str (self:Keyword (out (ref String))):!void
+  (return (to-str (self 'sym) out)))
