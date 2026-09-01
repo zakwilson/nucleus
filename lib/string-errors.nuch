@@ -4,3 +4,5 @@
 (deferror invalid-utf8 "bytes are not valid UTF-8")
 (deferror invalid-codepoint "value is not a Unicode scalar value")
 (deferror io-write-failed "write failed")
+(deferror io-open-failed "cannot open file")
+(deferror io-read-failed "read failed")

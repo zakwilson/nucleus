@@ -1,7 +1,8 @@
-# I/O (`lib/io.nuc`, Stage 17)
+# I/O (`lib/io.nuc`, `lib/file.nuc`, Stage 17)
 
-`(import-use io)`. The standard streams as [`Writer`](strings.md#writer--an-output-sink)
-conformers over raw file descriptors.
+`(import-use io)` for the standard streams, `(import-use file)` for files. Both
+expose their sinks as [`Writer`](strings.md#writer--an-output-sink) conformers
+over raw file descriptors.
 
 Nothing here is `FILE*`-backed. A `FILE` carries a hidden libc buffer, so its
 output can reorder against writes issued any other way; a descriptor has no
@@ -91,6 +92,84 @@ per byte. The input buffer is stdin's alone and is never shared with `print`'s.
 
 ---
 
+## §4 — `File` (`lib/file.nuc`)
+
+```lisp
+(defstruct File fd:i32)
+```
+
+An **owning** descriptor: `Drop` closes it, so a `with`-bound `File` needs no
+explicit close. Every constructor returns `!File`.
+
+| Function | Signature |
+|----------|-----------|
+| `file-open-read` | `((path (ref StrView))):!File` |
+| `file-create` | `((path (ref StrView))):!File` — `O_WRONLY\|O_CREAT\|O_TRUNC`, mode 0644 |
+| `file-open-append` | `((path (ref StrView))):!File` — `O_WRONLY\|O_CREAT\|O_APPEND`, mode 0644 |
+| `file-open-flags` | `((path (ref StrView)) flags:i32 mode:i32):!File` |
+| `file-close` | `((self (ref File))):!void` |
+| `file-write-bytes` | `((self (ref File)) (p (ptr ui8)) n:usize):!void` |
+| `file-read-to-string` | `((self (ref File))):!String` |
+
+`File` conforms to `Writer`.
+
+A failed `open` is `(err io-open-failed)`; a failed `read` is
+`(err io-read-failed)`. A `read` returning 0 is end of file, not an error.
+
+`file-read-to-string` reads **bytes** and does not validate UTF-8 — the compiler
+reads source files whose encoding is the program's problem to diagnose, not the
+reader's to refuse.
+
+The path is copied, because `open(2)` wants a NUL-terminated string and a
+`StrView` is not one. The copy is unchecked: a path is bytes, not necessarily
+UTF-8.
+
+`file-close` exists beside the `Drop` path because `close` can fail late (a
+deferred write error on NFS) and `Drop` returns `void`. It sets the descriptor to
+-1, so a later `Drop` does not close a number some other `open` has since been
+handed.
+
+```lisp
+(defn slurp ((path (ref StrView))):!String
+  (with (f (try (file-open-read path)))
+    (return (file-read-to-string f))))
+```
+
+---
+
+## §5 — `BufWriter` (`lib/file.nuc`)
+
+```lisp
+(defstruct BufWriter out:File buf:String)
+```
+
+A `File` plus a 64 KiB staging buffer. This is what makes bulk output viable
+without a `FILE`: IR emission is millions of small writes, and a `FILE`'s buffer
+was the only thing `fprintf` had that a bare descriptor does not.
+
+| Function | Signature |
+|----------|-----------|
+| `buf-writer` | `(f:File):BufWriter` — takes ownership of the `File` |
+| `flush` | `((self (ref BufWriter))):!void` |
+| `buf-writer-close` | `((self (ref BufWriter))):!void` — flush, then close |
+
+`BufWriter` conforms to `Writer` and to `Drop` (flush + close). A `write-str` of
+at least a bufferful goes straight to the descriptor rather than being staged —
+the memcpy would buy no syscall.
+
+```lisp
+(with (bw (buf-writer (try (file-create path))))
+  (dotimes (i n)
+    (let (line:String (str "line " i \newline))
+      (try (write-str bw (string-as-view line)))
+      (drop (addr-of line))))
+  (return (buf-writer-close bw)))
+```
+
+See `examples/file-test.nuc`.
+
+---
+
 ## Gotchas and constraints
 
 - **`print`/`println`/`eprint`/`eprintln` are not reentrant.** They share one
@@ -105,3 +184,9 @@ per byte. The input buffer is stdin's alone and is never shared with `print`'s.
   `BufWriter` there.
 - **A read error is reported as end of input.** `read-line` does not distinguish
   a failed `read` from EOF.
+- **`lib/file.nuc` is Linux-only as written.** `open(2)`'s flags are C
+  preprocessor macros, which Nucleus deliberately does not import, so they are
+  spelled out with Linux/glibc values. Darwin's differ.
+- **`Drop` cannot report a failed final write.** Letting a `BufWriter` fall out
+  of scope still flushes, but the result is unobservable. Call
+  `buf-writer-close` where it matters.

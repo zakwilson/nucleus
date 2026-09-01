@@ -533,7 +533,9 @@ All string-related error codes (defined in `lib/string-errors.nuc` and `lib/pars
 | `invalid-codepoint` | `"value is not a Unicode scalar value"` | `char-from-u32` |
 | `parse-int-error` | `"invalid integer"` | `(parse i32 …)`, `(parse i64 …)` |
 | `parse-float-error` | `"invalid float"` | `(parse f64 …)` |
-| `io-write-failed` | `"write failed"` | `write-str` on a `CFile` |
+| `io-write-failed` | `"write failed"` | `write-str` on a `CFile`/`FdOut`/`File`, `file-close` |
+| `io-open-failed` | `"cannot open file"` | `file-open-read`, `file-create`, `file-open-append` |
+| `io-read-failed` | `"read failed"` | `file-read-to-string` |
 
 All of these conform to the `Err` type and are usable with `(err-name e)`, `try`, `with-handler`, and `match`. See [Error handling](errors.md).
 

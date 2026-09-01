@@ -5908,3 +5908,12 @@ The rule: put an **exact** adjustment (one that loses no information and cannot
 be lossy) in tier 0, as a second pass after the strict one finds nothing — so an
 exact overload still wins and no resolving call can become ambiguous. Tier 2 is
 only for genuine widening, where every other argument is free to widen too.
+
+**And a third half: `node-type-call` runs its own tier 0.** `generics.nuc` has
+two exact-match resolvers — `generic-resolve` (emit) and
+`generic-find-method-exact` (via `node-type-call`) — so a dispatch relaxation
+added to one leaves the other answering "unknown type" for calls emit resolves
+fine. That is invisible until something *reads* the type: `emit-try` sizes its
+`ok` arm from `(node-type operand)`, so a `(try (write-str f sv))` on a struct-
+value receiver built a one-binder match against `!void`'s payload-less arm. Add
+the pass to both; keep the definition-side lookup exact.

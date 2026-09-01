@@ -449,6 +449,22 @@
           (return (as ptr m)))))
     (return null)))
 
+; The CALL-side companion, and only that: a second pass that also accepts an
+; lvalue struct argument at a pointer-to-that-struct parameter, mirroring
+; generic-resolve's tier-0 second pass so node-type answers with the method emit
+; will pick. Never used on the definition side, where `(name, param-types)` must
+; stay an exact key.
+(defn generic-find-method-accepting (g:raw:Generic param-types:ptr nparams:i32):?ptr:Method
+  (let (gg:raw:Generic g)
+    (dotimes (i (unsafe/cast i32 (count (gg 'methods))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg 'methods) i:usize)))
+        (when (and (= (m 'kind) METHOD-USER)
+                   (= (m 'num-params) nparams)
+                   (!= (params-accept-args (m 'param-types) param-types nparams) 0)
+                   (= (method-is-want-stamped (as raw:Method m)) 0))
+          (return (as ptr m)))))
+    (return null)))
+
 ; The other half of that split: the want-stamped instance whose RETURN type is
 ; `ret` as well. Asked by the monomorphizer's memo probe and by `defn-ir-name`,
 ; both of which are naming a definition and therefore hold the whole key.
@@ -5070,8 +5086,13 @@
                 (set! (aref (as ptr:ptr argtypes) i) at)
                 (set! (aref (as ptr:ptr arg-nodes) i) anode)))
             (when (= ok 0) (return null))
-            ; First try METHOD-USER (exact match).
+            ; First try METHOD-USER (exact match), then the same tier-0 second
+            ; pass generic-resolve runs — without it a call whose receiver is a
+            ; struct VALUE meeting a `(ref T)` parameter types as unknown here
+            ; while emit resolves it, which mis-sized `try`'s ok arm.
             (let (m:?ptr:Method (generic-find-method-exact g argtypes nargs))
+              (when (!= m null) (return (m 'ret-type))))
+            (let (m:?ptr:Method (generic-find-method-accepting g argtypes nargs))
               (when (!= m null) (return (m 'ret-type))))
             ; Then try METHOD-GENERIC (parametric match with tyvar substitution).
             (let (out-ret:ptr (arena-alloc (ptr-bytes)))

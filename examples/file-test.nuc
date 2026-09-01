@@ -1,0 +1,77 @@
+; Stage 17 B3 — lib/file.nuc: an owning descriptor and a buffered Writer.
+;
+; `BufWriter` is the load-bearing half: IR emission is millions of small writes,
+; and a `FILE`'s buffer is the only thing `fprintf` had that a bare descriptor
+; does not. Here it is explicit and flushable.
+;
+; design/stage17-native-strings/overview.md §2.1.
+
+(import-use strview)
+(import-use strview-str)
+(import-use string-split)
+(import-use string)
+(import-use fmt)
+(import-use io)
+(import-use file)
+
+(defn write-lines ((path (ref StrView)) n:i64):!void
+  (with (bw (buf-writer (try (file-create path))))
+    (dotimes (i n)
+      (let (line:String (str "line " i \newline))
+        (try (write-str bw (string-as-view line)))
+        (drop (addr-of line))))
+    (return (buf-writer-close bw))))
+
+(defn slurp ((path (ref StrView))):!String
+  (with (f (try (file-open-read path)))
+    (return (file-read-to-string f))))
+
+(defn main ():i32
+  (let (path:StrView (strview-from-cstr "/tmp/nucleus-file-test.txt"))
+
+    ; ---- create + buffered write, then read the whole thing back -------------
+    (match (write-lines path 3)
+      ((ok) 0)
+      ((err e) (println "write failed: " (err-name e)) (return 1)))
+
+    (match (slurp path)
+      ((ok txt) (print (string-as-view txt))
+                (println "bytes=" (byte-len txt)))
+      ((err e) (println "read failed: " (err-name e)) (return 1)))
+
+    ; ---- append, and confirm the earlier bytes survived ----------------------
+    (match (file-open-append path)
+      ((ok f) (with (g f)
+                (match (write-str g (strview-from-cstr "appended\n"))
+                  ((ok) 0)
+                  ((err e) (println "append failed: " (err-name e))))))
+      ((err e) (println "append open failed: " (err-name e)) (return 1)))
+
+    (match (slurp path)
+      ((ok txt) (println "after append bytes=" (byte-len txt))
+                ; `(string-as-view txt)` is an rvalue, and only a BINDING takes
+                ; the implicit address-of, so the view is named first.
+                (let (v:StrView (string-as-view txt))
+                  (match (last-line v)
+                    ((some ln) (println "last=[" ln "]"))
+                    ((none) (println "last=<none>")))))
+      ((err e) (println "read failed: " (err-name e)) (return 1)))
+
+    ; ---- a missing path is an error, not a crash ----------------------------
+    (let (missing:StrView (strview-from-cstr "/tmp/nucleus-file-test.missing"))
+      (match (file-open-read missing)
+        ((ok f) (with (g f) (println "unexpectedly opened")))
+        ((err e) (println "missing: " (err-name e))))))
+
+  0)
+
+; The last non-empty line of `txt`, for the append check.
+(defn last-line ((txt (ref StrView))):(Maybe StrView)
+  (let (found:(Maybe StrView) (none)
+        it:LineIter (strview-lines txt))
+    ; `it` is a binding, so `next` inside doseq-iter takes its address
+    ; implicitly — the iterator must be named, never an rvalue.
+    (doseq-iter (ln it)
+      (when (> (byte-len ln) 0)
+        (set! found (some ln))))
+    (return found)))
