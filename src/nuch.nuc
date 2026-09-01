@@ -19,15 +19,15 @@
 
 (defn emit-nuch-list (form:ptr):void
   (dotimes (i (node-len form))
-    (when (!= i 0) (fputc 32 (as ptr stdout)))
+    (when (!= i 0) (emit (as ptr stdout) " "))
     (print-node (node-at form i))))
 
 (defn emit-nuch-defstruct (form:ptr):void
-  (printf "(defstruct ")
+  (emit (as ptr stdout) "(defstruct ")
   (dotimes (i (- (node-len form) 1))
-    (when (!= i 0) (fputc 32 (as ptr stdout)))
+    (when (!= i 0) (emit (as ptr stdout) " "))
     (print-node (node-at form (+ i 1))))
-  (printf ")\n"))
+  (emit (as ptr stdout) ")\n"))
 
 ; Emit a new-style return operand for a .nuch declare/defmethod entry: ` :spell`
 ; for a scalar / colon-chain type (a NODE-SYM after defn-ret-node normalization,
@@ -40,8 +40,8 @@
     (when (= rn null) (return))
     (let (rnn:ptr:Node (as ptr:Node rn))
       (if (= (rnn 'kind) NODE-CELL)
-        (do (fputc 32 (as ptr stdout)) (print-node rn))
-        (printf " :%s" (rnn 's))))))
+        (do (emit (as ptr stdout) " ") (print-node rn))
+        (emit (as ptr stdout) " :" (rnn 's))))))
 
 ; A `defn`'s declaration attributes ride the exported entry, after the return
 ; operand — they are a property of the signature, so the importing unit's
@@ -61,55 +61,55 @@
         body:i32 (defn-scan-attrs (as raw:Node form) bstart
                    (as ptr:i32 (addr-of nr)) (as ptr:i32 (addr-of rt))
                    (node-line (as raw:Node form) 0)))
-    (when (!= nr 0) (printf " :noreturn"))
-    (when (!= rt 0) (printf " :returns-twice"))))
+    (when (!= nr 0) (emit (as ptr stdout) " :noreturn"))
+    (when (!= rt 0) (emit (as ptr stdout) " :returns-twice"))))
 
 ; S3: a .nuch header names functions in the new signature style — `NAME (params)
 ; :ret` — matching every rewritten source form. Both signature styles funnel
 ; through the bare name (defn-name-only) + normalized return (emit-nuch-ret), so a
 ; still-legacy source (e.g. an unmigrated import) exports the same new-style entry.
 (defn emit-nuch-declare (form:ptr):void
-  (printf "(declare %s (" (defn-name-only (node-at form 1)))
+  (emit (as ptr stdout) "(declare " (defn-name-only (node-at form 1)) " (")
   (let (params:ptr (node-at form 2))
     (dotimes (i (node-len params))
-      (when (!= i 0) (fputc 32 (as ptr stdout)))
+      (when (!= i 0) (emit (as ptr stdout) " "))
       (print-node (node-at params i))))
-  (printf ")")
+  (emit (as ptr stdout) ")")
   (emit-nuch-ret form)
   (emit-nuch-fn-attrs form)
-  (printf ")\n"))
+  (emit (as ptr stdout) ")\n"))
 
 (defn emit-nuch-defconst (form:ptr):void
-  (printf "(defconst ")
+  (emit (as ptr stdout) "(defconst ")
   (print-node (node-at form 1))
-  (printf " ")
+  (emit (as ptr stdout) " ")
   (print-node (node-at form 2))
-  (printf ")\n"))
+  (emit (as ptr stdout) ")\n"))
 
 (defn emit-nuch-defenum (form:ptr):void
-  (printf "(defenum")
+  (emit (as ptr stdout) "(defenum")
   (dotimes (i (- (node-len form) 1))
-    (fputc 32 (as ptr stdout))
+    (emit (as ptr stdout) " ")
     (print-node (node-at form (+ i 1))))
-  (printf ")\n"))
+  (emit (as ptr stdout) ")\n"))
 
 (defn emit-nuch-defmacro (form:ptr):void
   (print-node form)
-  (printf "\n"))
+  (emit (as ptr stdout) "\n"))
 
 ; Export one overloaded method, carrying its mangled symbol explicitly so the
 ; importer can declare it and register it for dispatch (new-style signature):
 ;   (defmethod "@area.pCircle" area ((c (ptr Circle))) :i32)
 (defn emit-nuch-defmethod (form:ptr mangled:ptr):void
-  (printf "(defmethod \"%s\" %s (" mangled (defn-name-only (node-at form 1)))
+  (emit (as ptr stdout) "(defmethod \"" mangled "\" " (defn-name-only (node-at form 1)) " (")
   (let (params:ptr (node-at form 2))
     (dotimes (i (node-len params))
-      (when (!= i 0) (fputc 32 (as ptr stdout)))
+      (when (!= i 0) (emit (as ptr stdout) " "))
       (print-node (node-at params i))))
-  (printf ")")
+  (emit (as ptr stdout) ")")
   (emit-nuch-ret form)
   (emit-nuch-fn-attrs form)
-  (printf ")\n"))
+  (emit (as ptr stdout) ")\n"))
 
 ; A solitary function exports as a plain (declare ...); an overloaded one
 ; exports a (defmethod ...) per method so each keeps its distinct symbol. A
@@ -122,7 +122,7 @@
 (defn emit-nuch-defn (form:ptr):void
   (when (!= (defn-is-generic-template form) 0)
     (print-node form)
-    (printf "\n")
+    (emit (as ptr stdout) "\n")
     (return))
   (let (mangled:ptr (defn-form-mangled-name form))
     (if (!= mangled null)
@@ -133,7 +133,7 @@
 ; (and trusts the recorded conformance rather than re-checking).
 (defn emit-nuch-defprotocol (form:ptr):void
   (print-node form)
-  (printf "\n"))
+  (emit (as ptr stdout) "\n"))
 
 ; Export every node of the form, not just the subject (1) and protocol (2). A
 ; template-subject extend may carry a trailing `:where` clause (assoc-types-
@@ -144,25 +144,25 @@
 ; extend (node-len == 3) this prints `(extend Subject Protocol)`, byte-identical
 ; to the previous subject+protocol-only emission.
 (defn emit-nuch-extend (form:ptr):void
-  (printf "(extend")
+  (emit (as ptr stdout) "(extend")
   (dotimes (i (- (node-len form) 1))
-    (fputc 32 (as ptr stdout))
+    (emit (as ptr stdout) " ")
     (print-node (node-at form (+ i 1))))
-  (printf ")\n"))
+  (emit (as ptr stdout) ")\n"))
 
 ; Cast rules export verbatim (the conv-fn is exported separately as a declare,
 ; which must precede this form in the header). The importer re-runs emit-defcast.
 (defn emit-nuch-defcast (form:ptr):void
   (print-node form)
-  (printf "\n"))
+  (emit (as ptr stdout) "\n"))
 
 ; A module's top-level globals export as `extern` so importers see the symbol
 ; without its initializer (the producing module owns the definition). Index 1 is
 ; the desugared name:type node; any initializer is intentionally dropped.
 (defn emit-nuch-extern (form:ptr):void
-  (printf "(extern ")
+  (emit (as ptr stdout) "(extern ")
   (print-node (node-at form 1))
-  (printf ")\n"))
+  (emit (as ptr stdout) ")\n"))
 
 (defn emit-nuch-header (forms:ptr source-file:ptr):void
   ; Stage 12 N6: a leading `(ns NAME)` / `set-ir-prefix` must take effect BEFORE
@@ -196,7 +196,7 @@
   ; exported `(declare foo ((x i32)))` — a declaration with no return type — for
   ; a program that does not compile, and a consumer would link against it.
   (validate-header-forms forms)
-  (printf "; .nuch header for %s\n" source-file)
+  (emit (as ptr stdout) "; .nuch header for " source-file "\n")
   ; Stage 12 N6: a namespaced library carries its namespace into the header so an
   ; importer's do-import re-runs the SAME ns-ir-base computation when it
   ; re-resolves the symbols — a solitary `(declare area:i32 ...)` then rebinds to
@@ -205,10 +205,10 @@
   ; prefix (so the importer mangles identically). Under `user` neither is emitted,
   ; so existing libraries' headers stay byte-identical.
   (when (!= (strcmp g-current-ns "user") 0)
-    (printf "(ns %s)\n" g-current-ns)
+    (emit (as ptr stdout) "(ns " g-current-ns ")\n")
     (let (override:ptr (ns-ir-prefix-get g-current-ns))
       (when (!= override null)
-        (printf "(set-ir-prefix \"%s\")\n" override))))
+        (emit (as ptr stdout) "(set-ir-prefix \"" override "\")\n"))))
   (let (it:ListIter (list-iter forms))
     (doseq-iter (fc (addr-of it))
       (let (f:ptr:Node (unsafe/cast ptr:Node fc))
@@ -221,7 +221,7 @@
               "defstruct"    (emit-nuch-defstruct (as ptr f))
               ; defunion exports verbatim (template or monomorphic); the
               ; importer registers the type and declares the constructors.
-              "defunion"     (do (print-node (as ptr f)) (printf "\n"))
+              "defunion"     (do (print-node (as ptr f)) (emit (as ptr stdout) "\n"))
               "defn"         (emit-nuch-defn (as ptr f))
               "defprotocol"  (emit-nuch-defprotocol (as ptr f))
               "extend"       (emit-nuch-extend (as ptr f))
@@ -234,7 +234,7 @@
               ; exported below may name it in its signature, and the importer
               ; resolves that spelling in its own unit.
               (:or "deferror" "deftype")
-                             (do (print-node (as ptr f)) (printf "\n"))
+                             (do (print-node (as ptr f)) (emit (as ptr stdout) "\n"))
               "defenum"      (emit-nuch-defenum (as ptr f))
               "defmacro"     (emit-nuch-defmacro (as ptr f))
               0)))))))
@@ -544,17 +544,17 @@
             ; Emit LLVM declare, lowering struct-by-value params/return to the
             ; platform C ABI (sret / byval / register coercion) just like a defn.
             (let (ret-info:ptr:AbiInfo (unsafe/cast ptr:AbiInfo (abi-classify ret)))
-              (fprintf g-out "declare %s %s(" (abi-ret-ir ret-info ret) link-ir)
+              (emit g-out "declare " (abi-ret-ir ret-info ret) " " link-ir "(")
               (let (need-comma:i32 0)
                 (when (= ((as ptr:AbiInfo ret-info) 'kind) ABI-MEMORY)
-                  (fprintf g-out "ptr sret(%s) align %d"
-                    (type-to-ir ret) ((as ptr:AbiInfo ret-info) 'align))
+                  (emit g-out "ptr sret(" (type-to-ir ret) ") align "
+                        ((as ptr:AbiInfo ret-info) 'align))
                   (set! need-comma 1))
                 ; RV-6c: one walk over this declare's parameters — reset the
                 ; riscv64 register budget (design/stage14/riscv-fp-abi.md §4).
                 (abi-args-begin ret-info)
                 (dotimes (j nparams)
-                  (when (!= need-comma 0) (fprintf g-out ", "))
+                  (when (!= need-comma 0) (emit g-out ", "))
                   (abi-print-param
                    (abi-classify-arg (aref (as ptr:ptr ptypes) j))
                    (aref (as ptr:ptr ptypes) j)
@@ -562,10 +562,10 @@
                   (set! need-comma 1)))
               ; Trailing LLVM function attributes, additive so a `declare` and the
               ; `define` it names carry the same set (emit-defn does the same).
-              (fprintf g-out ")")
-              (when (!= is-noreturn 0) (fprintf g-out " noreturn"))
-              (when (!= is-returns-twice 0) (fprintf g-out " returns_twice"))
-              (fprintf g-out "\n"))))))))))
+              (emit g-out ")")
+              (when (!= is-noreturn 0) (emit g-out " noreturn"))
+              (when (!= is-returns-twice 0) (emit g-out " returns_twice"))
+              (emit g-out "\n"))))))))))
 
 ; Import one exported overloaded method: register it (with its mangled symbol)
 ; in the generic registry so calls in the importing unit dispatch to it, and
@@ -624,26 +624,26 @@
           ; register coercion), so the two disagreed on EVERY target — an
           ; imported overloaded method taking or returning a struct by value.
           (let (ret-info:ptr:AbiInfo (unsafe/cast ptr:AbiInfo (abi-classify ret)))
-            (fprintf g-out "declare %s %s(" (abi-ret-ir ret-info ret) mangled)
+            (emit g-out "declare " (abi-ret-ir ret-info ret) " " mangled "(")
             (let (need-comma:i32 0)
               (when (= ((as ptr:AbiInfo ret-info) 'kind) ABI-MEMORY)
-                (fprintf g-out "ptr sret(%s) align %d"
-                  (type-to-ir ret) ((as ptr:AbiInfo ret-info) 'align))
+                (emit g-out "ptr sret(" (type-to-ir ret) ") align "
+                      ((as ptr:AbiInfo ret-info) 'align))
                 (set! need-comma 1))
               ; RV-6c: one walk over this declare's parameters — reset the
               ; riscv64 register budget (design/stage14/riscv-fp-abi.md §4).
               (abi-args-begin ret-info)
               (dotimes (j nparams)
-                (when (!= need-comma 0) (fprintf g-out ", "))
+                (when (!= need-comma 0) (emit g-out ", "))
                 (abi-print-param
                   (abi-classify-arg (aref (as ptr:ptr ptypes) j))
                   (aref (as ptr:ptr ptypes) j)
                   null)
                 (set! need-comma 1)))
-            (fprintf g-out ")")
-            (when (!= is-noreturn 0) (fprintf g-out " noreturn"))
-            (when (!= is-returns-twice 0) (fprintf g-out " returns_twice"))
-            (fprintf g-out "\n")))))))))
+            (emit g-out ")")
+            (when (!= is-noreturn 0) (emit g-out " noreturn"))
+            (when (!= is-returns-twice 0) (emit g-out " returns_twice"))
+            (emit g-out "\n")))))))))
 
 ; A defunion arriving via .nuch: register the type (or template) exactly as
 ; the defining unit did, but emit `declare`s for the arm constructors — their
