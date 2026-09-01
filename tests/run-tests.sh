@@ -14104,6 +14104,27 @@ eof" ]; then
 }
 spawn run_s17_read_line
 
+# Stage 17 C6: a bare string literal returned from a `StrView` function. The
+# struct-return path skipped the coercion that materializes the chameleon
+# literal, so LLVM rejected `store %StrView <bare ptr>` with no source location.
+run_s17_strview_literal_return() {
+  local bin actual
+  bin="./build/out/s17-strview-literal-return"
+  rm -f "$bin"
+  if ! ./build/nucleusc tests/fixtures/s17-strview-literal-return.nuc -o "$bin" 2>&1; then
+    echo "FAIL  s17-strview-literal-return (compile error)"
+    return 0
+  fi
+  actual="$("$bin" 2>&1 || true)"
+  if [ "$actual" = "$(cat tests/expected/s17-strview-literal-return.out)" ]; then
+    echo "PASS  s17-strview-literal-return"
+  else
+    echo "FAIL  s17-strview-literal-return"
+    printf '%s\n' "$actual" | sed 's/^/    got: /'
+  fi
+}
+spawn run_s17_strview_literal_return
+
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided
 # by scanning buffered output, since `set -e` does not propagate across `&`).

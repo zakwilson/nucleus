@@ -865,7 +865,7 @@
 ; error, which is strictly more precise than a warning thousands of lines
 ; earlier that nothing connects to the call.
 (defn cheader-record-skip (fname:CStr why:ptr dline:i32 loud:i32):void
-  (when (!= (cheader-skip-note fname) null) (return))
+  (match (cheader-skip-note fname) (none 0) ((some _seen) (return)))
   (let (note:ptr (fcstr (fcstr g-cheader-file ":" dline) ": " why)
         n:ref:Node (new Node))
     (set! (n 'kind) NODE-STR)
@@ -2664,7 +2664,7 @@
   (let (buf-len:i64 0)
     (let (buf:ptr (cheader-preprocess header-path (as ptr:i64 (addr-of buf-len))))
       (when (= buf null)
-        (die-at line (fcstr "c-include: failed to preprocess '" header-path "'")))
+        (die-at line (fstr "c-include: failed to preprocess '" header-path "'")))
       ; Parse declarations
       (let (pos:i64 0
             prev-pos:i64 -1)

@@ -406,10 +406,10 @@
       ; of free tyvars and fail as `unknown type: T`, naming the wrong thing.
       (when (!= (ta 'ntv) 0)
         (die-at line
-          (fcstr "type alias '" name "' takes " (ta 'ntv)
+          (fstr "type alias '" name "' takes " (ta 'ntv)
                 " type arguments — apply it as (Name Arg...)")))
       (when (>= g-type-alias-depth MAX-TYPE-ALIAS-DEPTH)
-        (die-at line (fcstr "type alias '" name "' expands into a cycle")))
+        (die-at line (fstr "type alias '" name "' expands into a cycle")))
       (set! g-type-alias-depth (+ g-type-alias-depth 1))
       ; The alias body is this same type node under another spelling, so it
       ; inherits the array permission — `(deftype Buf (array i32 4))` must name
@@ -1019,7 +1019,7 @@
                                                           (node-line field line)))
                       (when (= fty null)
                         (die-at (node-line field line)
-                          (fcstr "defunion: field '" fname "' missing :type")))
+                          (fstr "defunion: field '" fname "' missing :type")))
                       ; A `void` field carries no value, so it contributes none:
                       ; this is what makes `!void` — (Result void Err) — stamp an
                       ; `ok` arm that is payload-less rather than zero-width.
@@ -1034,7 +1034,7 @@
                     (set! fnames null)
                     (set! ftypes null))))))
           (when (>= (union-arm-index-in aname arms-vec) 0)
-            (die-at (node-line (as ptr arm) line) (fcstr "defunion: duplicate arm '" aname "'")))
+            (die-at (node-line (as ptr arm) line) (fstr "defunion: duplicate arm '" aname "'")))
           ; Arm payload: nothing (payload-less), the single field's type, or a
           ; memoized anonymous struct of the fields.
           (let (rec:ref:Arm (new Arm)
@@ -1087,7 +1087,7 @@
           (let (sd:ref:StructDef (if-some (e (lookup-struct name)) e (register-struct name)))
             (check-ir-name-legal line name (sd 'ir-name))
             (when (!= (sd 'emitted) 0)
-              (die-at line (fcstr "defunion: '" name "' already names a struct")))
+              (die-at line (fstr "defunion: '" name "' already names a struct")))
             (let (bnf:i32 (if (!= union-sd null) 2 1)
                   bfn:ptr (arena-alloc (* 2 (ptr-bytes)))
                   bft:ptr (arena-alloc (* 2 (ptr-bytes))))
@@ -1198,7 +1198,7 @@
       (when (and (= ntv 1)
                  (= (node-kind (node-at (as ptr head) 1)) NODE-CELL))
         (die-at (node-line (as ptr head) (ff 'line))
-          (fcstr "defunion: takes no type annotation; write (defunion " name " ...)")))
+          (fstr "defunion: takes no type annotation; write (defunion " name " ...)")))
       ; Stage 16: a template's arms are only parsed when it is stamped, so a
       ; never-instantiated template accepted `:repr bogus`, a mode-less `:repr`
       ; and the retired `&repr` in silence (keyword-markers.md §7). None of that
@@ -1270,7 +1270,7 @@
       (when (and (= ntv 1)
                  (= (node-kind (node-at (as ptr head) 1)) NODE-CELL))
         (die-at (node-line (as ptr head) (ff 'line))
-          (fcstr "defstruct: takes no type annotation; write (defstruct " name " ...)")))
+          (fstr "defstruct: takes no type annotation; write (defstruct " name " ...)")))
       ; Re-import of the same template (e.g. via .nuch, or the idempotent prescan
       ; pass) is a no-op. Stage 15 B4 (R4): a hit from a DIFFERENT defining site
       ; is a second template of the name, which used to be the same silent no-op.
@@ -1356,7 +1356,7 @@
                 (do (set! hit 1)
                     (let (a:ptr (aref (as ptr:ptr args) si))
                       (when (!= (node-kind a) NODE-SYM)
-                        (die-at line (fcstr "deftype: parameter '" seg
+                        (die-at line (fstr "deftype: parameter '" seg
                                            "' is spelled in a colon chain, so its argument must be a single token — write the alias body in list form")))
                       (set! piece ((unsafe/cast ptr:Node a) 's)))))
               (if (= acc null) (set! acc piece) (set! acc (fcstr acc ":" piece))))))
@@ -1383,7 +1383,7 @@
           (let (nargs:i32 (- (node-len (as ptr n)) 1))
             (when (!= nargs (ta 'ntv))
               (die-at line
-                (fcstr (ta 'name) ": wrong number of type arguments for type alias (" nargs
+                (fstr (ta 'name) ": wrong number of type arguments for type alias (" nargs
                       " given)")))
             (let (args:ptr (arena-alloc (* nargs (ptr-bytes))))
               (dotimes (i nargs)
@@ -1440,7 +1440,7 @@
         (let (clash:CStr (type-name-collision name:CStr))
           (when (!= clash null)
             (die-at (ff 'line)
-              (fcstr "deftype: '" name "' already names " clash
+              (fstr "deftype: '" name "' already names " clash
                     " — an alias of an existing type name would never resolve"))))
         (if-some (prev (type-alias-lookup key))
           (do
@@ -1523,7 +1523,7 @@
   (let (utt:raw:UnionTemplate ut)
     (when (!= nargs (utt 'ntv))
       (die-at line
-        (fcstr (utt 'name) ": wrong number of type arguments for defunion template")))
+        (fstr (utt 'name) ": wrong number of type arguments for defunion template")))
     (let (spellings:ptr (arena-alloc (* nargs (ptr-bytes)))
           iname:ptr (utt 'name))
       (dotimes (i nargs)
@@ -1560,7 +1560,7 @@
   (let (stt:raw:StructTemplate st)
     (when (!= nargs (stt 'ntv))
       (die-at line
-        (fcstr (stt 'name) ": wrong number of type arguments for defstruct template")))
+        (fstr (stt 'name) ": wrong number of type arguments for defstruct template")))
     (let (spellings:ptr (arena-alloc (* nargs (ptr-bytes)))
           iname:ptr (stt 'name))
       (dotimes (i nargs)
@@ -1607,7 +1607,7 @@
                                                    ((unsafe/cast ptr:Node field) 'line)))
                 (when (= fty null)
                   (die-at ((unsafe/cast ptr:Node field) 'line)
-                    (fcstr "defstruct template " (stt 'name) ": field '" fname "' missing :type")))
+                    (fstr "defstruct template " (stt 'name) ": field '" fname "' missing :type")))
                 (set! (aref (as ptr:ptr fnm) fi) (intern-str fname))
                 (set! (aref (as ptr:ptr ftp) fi) fty))
               (inc! fi)
@@ -1691,12 +1691,12 @@
                         (set! align (unsafe/cast i32 ((unsafe/cast ptr:Node av) 'i)))
                         (when (and (!= strict 0) (= (align-attr-valid align) 0))
                           (die-at line
-                            (fcstr "':align " align "' must be a power of two between 1 and 4096")))
+                            (fstr "':align " align "' must be a power of two between 1 and 4096")))
                         (set! i (+ i 1)))))
                 true
                   (when (!= strict 0)
                     (die-at line
-                      (fcstr "unknown defstruct attribute ':" nm "' (known: :packed, :align)")))))
+                      (fstr "unknown defstruct attribute ':" nm "' (known: :packed, :align)")))))
             (set! i (+ i 1))))))
     (set! (aref out-flags 0) flags)
     (set! (aref out-align 0) align)
@@ -1729,7 +1729,7 @@
           (= nm "thread-local")
             (die-at line "thread-local storage requires the threading stage -- see design/stage14/attributes.md §5")
           true
-            (die-at line (fcstr "unknown declaration attribute ':" nm
+            (die-at line (fstr "unknown declaration attribute ':" nm
                                "' (known attributes: :volatile, :const, :thread-local)"))))
       (set! cur ((unsafe/cast ptr:Node cur) 'cdr)))
     (set! (aref (as ptr:i32 out-flags) 0) flags)
@@ -1744,7 +1744,7 @@
 ; (nucleusc.nuc). No-op when the CONST bit is clear, so existing sites are inert.
 (defn reject-decl-attr-const (flags:i32 line:i32 where:ptr):void
   (when (!= (bit-and flags DECL-ATTR-CONST) 0)
-    (die-at line (fcstr "':const' applies only to a defvar global, not " where))))
+    (die-at line (fstr "':const' applies only to a defvar global, not " where))))
 
 ; AT-1: normalize a let/with binding list so a prefix attribute keyword becomes a
 ; wrapped binding-name cell `(:kw... name)`, restoring strict (name value) pairs.
@@ -1936,14 +1936,14 @@
               (die-at lline "(array T N): length must be a compile-time integer constant"))
             (when (<= len 0)
               (die-at lline
-                (fcstr "(array T N): length must be positive, got " len)))
+                (fstr "(array T N): length must be positive, got " len)))
             ; Sizes are computed in i32 throughout the layout walk (abi-sizeof),
             ; so refuse an array whose total byte size would not fit rather than
             ; wrapping into a plausible-looking small number.
             (let (total:i64 (* len (as i64 (abi-sizeof et))))
               (when (> total 2147483647)
                 (die-at lline
-                  (fcstr "(array T N): total size " total
+                  (fstr "(array T N): total size " total
                         " bytes exceeds the 2147483647-byte limit"))))
             (return (array-type et (unsafe/cast i32 len))))))
       ; Anonymous struct: (struct field:type ...) — memoized by content hash so
@@ -1969,7 +1969,7 @@
                       ; may — one rule for "a field of an aggregate", not two.
                       fty:ptr (extract-decl-name-and-type field (as ptr:ptr (addr-of fname)) line))
                   (when (= fty null)
-                    (die-at line (fcstr "struct: field '" fname "' missing :type")))
+                    (die-at line (fstr "struct: field '" fname "' missing :type")))
                   ; Intern so field-name pointer-equality works at access sites.
                   (set! (aref (as ptr:ptr fnames) i) (intern-str fname))
                   (set! (aref (as ptr:ptr ftypes) i) fty))
@@ -2004,7 +2004,7 @@
                       ; `union { char b[4]; int w; }`).
                       fty:ptr (extract-decl-name-and-type field (as ptr:ptr (addr-of fname)) line))
                   (when (= fty null)
-                    (die-at line (fcstr "union: member '" fname "' missing :type")))
+                    (die-at line (fstr "union: member '" fname "' missing :type")))
                   (set! (aref (as ptr:ptr fnames) i) (intern-str fname))
                   (set! (aref (as ptr:ptr ftypes) i) fty))
                 (inc! i)
@@ -2267,7 +2267,7 @@
             (when (or (!= (builtin-type-name hs) null)
                       (!= (struct-lookup-ref hs) null))
               (die-at line
-                (fcstr "'" hs "' is a type, not a type constructor -- (" hs
+                (fstr "'" hs "' is a type, not a type constructor -- (" hs
                       " ...) is not a type; a doubled annotation like x:T:T desugars to exactly this")))
             (die-at line (unknown-type-message hs))))
         (die-at line "unable to parse type expression")))

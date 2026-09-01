@@ -288,7 +288,7 @@
     ; `:rest` as a type spelling and report `unknown type: rest`.
     (when (or (!= (marker-named n "rest") 0) (!= (marker-named n "optional") 0))
       (die-at line
-        (fcstr "declare: '" (marker-spelling n)
+        (fstr "declare: '" (marker-spelling n)
               "' is not supported in a declaration -- declare the fixed parameters only (extra arguments are passed positionally at the call site)")))
     ; A keyword operand (`:i64`) carries the spelling without the colon, exactly
     ; as a return operand does (fn-parse-ret-type).
@@ -366,7 +366,7 @@
 ; exports then key as `lib/helper` and link as `@lib__helper`, and the two coexist
 ; (the skip never fires, because the keys differ).
 (defn nuch-declare-conflict-message (fname:ptr site:ptr params-node:ptr
-                                     ret:ptr line:i32):CStr
+                                     ret:ptr line:i32):StrView
   (let (nparams:i32 0
         ptypes:ptr (declare-param-types params-node line (as ptr:i32 (addr-of nparams)))
         prev:ptr (as ptr (scope-lookup-key g-globals fname))
@@ -379,13 +379,13 @@
               (set! theirs (fcstr fname:CStr
                                  (as CStr (fn-sig-spelling (unsafe/cast ptr (ft 'ret))
                                         (fn-type-param-array ft) (ft 'num-params))))))))))
-    (return (as CStr
-      (fcstr (fcstr "declare '" fname:CStr "': this compilation unit already defines '" fname:CStr
+    (return
+      (fstr (fstr "declare '" fname:CStr "': this compilation unit already defines '" fname:CStr
                   "', at " site:CStr)
             "\n  note: "
-            (fcstr "the header declares " fname:CStr
+            (fstr "the header declares " fname:CStr
                   (as CStr (fn-sig-spelling ret ptypes nparams)) ", the unit has " theirs:CStr
-                  ". One name is one key here, so nothing — not even a qualified call — would reach the header's. Rename one, or give the library an (ns ...) so its exports key and link under it."))))))
+                  ". One name is one key here, so nothing — not even a qualified call — would reach the header's. Rename one, or give the library an (ns ...) so its exports key and link under it.")))))
 
 (defn emit-nuch-declare-import (form:(raw Node)):void
   (nuch-declare-import form NUCH-BOTH))
@@ -426,7 +426,7 @@
               (die-at (ff 'line) "declare: expected (declare name (params) :rettype)"))
             (set! params-node (node-at form 2)))
           (die-at (ff 'line)
-            (fcstr "declare '" (defn-name-only name-node)
+            (fstr "declare '" (defn-name-only name-node)
                   "': legacy 'name:ret' syntax is no longer supported — write (declare "
                   (defn-name-only name-node) " (params) :ret)")))
         (let (fname:ptr null
@@ -436,7 +436,7 @@
                                                ((as ptr:Node name-node) 'line))))
           (when (!= ndi-new 0) (set! fname (-> name-node (unsafe/cast ptr:Node _) (_ 's))))
           (when (= ret null)
-            (die-at ((as ptr:Node name-node) 'line) (fcstr "declare: missing :type on '" fname
+            (die-at ((as ptr:Node name-node) 'line) (fstr "declare: missing :type on '" fname
                                                           "'")))
           ; W9 item 29: emit-only is a promise the prescan registered THIS name
           ; from THIS header. It registers nothing the skip below already

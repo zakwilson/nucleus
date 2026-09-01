@@ -500,3 +500,51 @@ uninitialised bytes.
 The general shape, since it will recur: a `String` used as a reusable buffer
 wants the O(1), non-failing halves of the mutation API — `string-clear` and this
 — and the validating ones are for a `String` being built as a value.
+
+## I. Raised by the C6 conversion (2026-09-01)
+
+### 32. There is no nullable string — **fixed 2026-09-01 (C6): `(Maybe StrView)`, and the Stage 11 note that said it would not work is stale**
+`die-at`/`report-at` now take a `StrView` (C6 step 2), and 293 of their 688 call
+sites moved to `fstr` for free. 26 did not: they pass the result of a *message
+builder* — `unknown-type-message`, `with-qualifier-note`,
+`qualifier-scope-message`, `cycle-layout-message` and their kin — and those
+builders return **null** to mean "no note applies":
+
+```lisp
+(defn with-qualifier-note (head:ptr spelling:ptr):ptr
+  (let (note:ptr (qualifier-scope-note spelling))
+    (when (= note null) (return head))
+    …))
+```
+
+A `StrView` is a struct and has no null, and `?StrView` does not spell anything —
+`?T` is a *nullable pointer*. The honest type is `(Maybe StrView)`, which exists,
+but which [stage11](../stage11) recorded as failing in a JIT module, and `die-at`
+runs inside the macro/CT JIT.
+
+**Measured, then fixed.** `(Maybe StrView)` was re-tested in both a
+`compile-time` body and a `defmacro` body: both construct, `match` and print
+correctly, so the Stage 11 caveat no longer holds — record that, because it is
+the second Stage 11 string limitation §1.4 found stale and the list should not
+keep being cited as current.
+
+The eight nullable builders (`retired-form-message`, `unsafe-bare-message`,
+`qualifier-scope-message`, `qualifier-scope-note`, `cheader-skip-note`,
+`cycle-definer-message`, `generic-in-other-namespace-message`,
+`type-in-other-namespace-message`, plus `case-clause-hint`) now return
+`(Maybe StrView)`; the ten that always produce a message return `StrView`; and
+the staging wrappers are gone.
+
+**Two things that cost time and generalize.** `if-some` is the *nullable-pointer*
+form and refuses a `(Maybe T)` over a struct — "value must be (Maybe (ref ...))
+— launder a raw pointer with (as-ref ...)". The general form is `match`. Worth a
+docs line, because the name reads as if it covered both.
+
+And `(return "literal")` from a `StrView` function emitted
+`store %StrView <bare ptr>`, which LLVM rejects with **no source location at
+all**. `emit-return` runs the coercion that materializes the chameleon literal
+into `{ptr,len}` only on the ABI-DIRECT branch; a struct return skipped it.
+Fixed in `emit-return`, with `tests/fixtures/s17-strview-literal-return.nuc`.
+The general shape: every typed slot that coerces has to be enumerated, and
+`return` has *two* paths through it — a fix applied to one of them looks
+complete and is half a fix.
