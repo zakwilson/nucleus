@@ -1,0 +1,160 @@
+; Stage 17 B2 — standard streams as Writers, over raw file descriptors.
+;
+; Design: design/stage17-native-strings/overview.md §2.1 (the sink column) and
+; §2.2 (the library lands complete and used by nothing).
+;
+; NOT `FILE*`-backed. A `FILE` carries a hidden libc buffer, and while the
+; compiler is mid-conversion its output would interleave with whatever `fprintf`
+; sites have not flipped yet — the ordering bug would look like a codegen bug.
+; A descriptor has no buffer to disagree about. The buffering that emission
+; actually needs is `BufWriter` in B3, where it is explicit and flushable.
+
+(import-use "unistd.h")
+(import-use "stdlib.h")
+(import-use "string.h")
+
+(import-use error)
+(import-use string-errors)
+(import-use char)
+(import-use strview)
+(import-use vector)
+(import-use string)
+(import-use fmt)
+
+; ---------------------------------------------------------------------------
+; FdOut — a borrowed descriptor as a Writer.
+;
+; One type with an `fd` field rather than the plan's separate `StdOut`/`StdErr`:
+; the two would have identical conformances differing only in a constant, and
+; `(dyn Writer)` erases them to the same thing anyway. Borrowed, never closed —
+; the owning, `Drop`-closed descriptor is B3's `File`.
+; ---------------------------------------------------------------------------
+(defstruct FdOut fd:i32)
+
+(defn fd-out (fd:i32):FdOut
+  (let (o:&FdOut (alloca FdOut))
+    (set! (o 'fd) fd)
+    (return (deref o))))
+
+(defn std-out ():FdOut (return (fd-out 1)))
+(defn std-err ():FdOut (return (fd-out 2)))
+
+; Write every byte, or fail. A short write is ordinary on a pipe, so the loop is
+; required rather than defensive. A negative return is not retried: EINTR is
+; only reachable behind a handler installed without SA_RESTART, and retrying an
+; unclassified error would spin forever.
+(defn fd-write-all (fd:i32 (p (ptr ui8)) n:usize):!void
+  (let (off:usize 0)
+    (while (< off n)
+      (let (w:i64 (as i64 (write fd
+                            (as ptr (unsafe/ptr+ p (as i64 off)))
+                            (as i64 (- n off)))))
+        (when (<= w 0) (return (err! io-write-failed)))
+        (set! off (+ off (as usize w))))))
+  (return (ok)))
+
+(extend FdOut Writer)
+
+(defn write-str ((self (ref FdOut)) s:StrView):!void
+  (when (= (s 'len) 0) (return (ok)))
+  (return (fd-write-all (self 'fd) (s 'data) (s 'len))))
+
+; ---------------------------------------------------------------------------
+; print / println / eprint / eprintln
+;
+; Each formats into ONE shared buffer and issues ONE `write`, so a line reaches
+; the descriptor whole rather than a syscall per piece. The buffer is a module
+; global, which is what keeps the convenient spelling allocation-free after the
+; first growth — the tradeoff is that these are **not reentrant**: a `ToStr`
+; conformance that itself prints would clobber the caller's buffer. No
+; conformance in `lib/` does.
+;
+; Each expands to the `!void` of its write, so a caller may `try` it; discarding
+; is the default, as with C's universally-ignored `printf` return.
+; ---------------------------------------------------------------------------
+(defvar g-io-buf:String)
+(defvar g-io-buf-ready:i32 0)
+
+; Clear and hand back the shared buffer. Lazily constructed: a `defvar` with a
+; runtime initializer would build a String in every program that links this
+; module, including one that never prints.
+(defn io-buf-begin ():ref:String
+  (when (= g-io-buf-ready 0)
+    (set! g-io-buf (string-new))
+    (set! g-io-buf-ready 1))
+  (string-clear (addr-of g-io-buf))
+  (return (addr-of g-io-buf)))
+
+(defn io-buf-end (fd:i32):!void
+  (let (o:FdOut (fd-out fd))
+    (return (write-str o (string-as-view (addr-of g-io-buf))))))
+
+; `~b` is bound once because `str-into` evaluates its sink once per piece and
+; `io-buf-begin` clears.
+(defmacro print (:rest parts)
+  (let (b:ptr (gensym))
+    `(let ((~b (ref String)) (io-buf-begin))
+       (str-into ~b ~@parts)
+       (io-buf-end 1))))
+
+(defmacro println (:rest parts)
+  (let (b:ptr (gensym))
+    `(let ((~b (ref String)) (io-buf-begin))
+       (str-into ~b ~@parts \newline)
+       (io-buf-end 1))))
+
+(defmacro eprint (:rest parts)
+  (let (b:ptr (gensym))
+    `(let ((~b (ref String)) (io-buf-begin))
+       (str-into ~b ~@parts)
+       (io-buf-end 2))))
+
+(defmacro eprintln (:rest parts)
+  (let (b:ptr (gensym))
+    `(let ((~b (ref String)) (io-buf-begin))
+       (str-into ~b ~@parts \newline)
+       (io-buf-end 2))))
+
+; ---------------------------------------------------------------------------
+; read-line
+;
+; Buffered, because the unbuffered spelling is a `read` syscall per byte. The
+; buffer is stdin's alone and is never shared with `print`'s.
+; ---------------------------------------------------------------------------
+(defconst IO-IN-CAP 8192)
+
+(defvar g-in-buf:ptr null)
+(defvar g-in-len:usize 0)
+(defvar g-in-pos:usize 0)
+(defvar g-in-eof:i32 0)
+
+; Refill from fd 0. Returns 0 at EOF or on error — a read error is reported as
+; end of input, which is what every caller of a line reader does with it anyway.
+(defn io-in-fill ():i32
+  (when (= g-in-buf null)
+    (set! g-in-buf (malloc IO-IN-CAP)))
+  (let (n:i64 (as i64 (read 0 g-in-buf IO-IN-CAP)))
+    (when (<= n 0)
+      (set! g-in-eof 1)
+      (return 0))
+    (set! g-in-len (as usize n))
+    (set! g-in-pos 0)
+    (return 1)))
+
+; The next line from standard input, without its terminator, or `none` at end of
+; input. A final line with no newline is still returned.
+(defn read-line ():(Maybe String)
+  (let (out:String (string-new)
+        any:i32 0)
+    (while true
+      (when (>= g-in-pos g-in-len)
+        (when (= (io-in-fill) 0)
+          (when (= any 0) (return (none)))
+          (return (some out))))
+      (let (c:Char (as Char (as ui32 (aref (as ptr:ui8 g-in-buf)
+                                           (as i64 g-in-pos)))))
+        (set! g-in-pos (+ g-in-pos 1))
+        (set! any 1)
+        (when (= c \newline) (return (some out)))
+        (string-push-char (addr-of out) c)))
+    (return (none))))

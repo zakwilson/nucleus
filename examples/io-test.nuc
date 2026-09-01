@@ -1,0 +1,36 @@
+; Stage 17 B2 — lib/io.nuc: the standard streams as Writers over descriptors.
+;
+; No `FILE*` anywhere: `print`/`println` format into one shared buffer and issue
+; one `write`. `read-line` is covered separately (tests/fixtures/s17-read-line.nuc),
+; because an example runs with the harness's stdin and must not read it.
+;
+; design/stage17-native-strings/overview.md §2.1, §2.2.
+
+(import-use strview)
+(import-use strview-str)
+(import-use string)
+(import-use fmt)
+(import-use io)
+
+(defn main ():i32
+
+  ; ---- print / println, with any mix of ToStr conformers ---------------------
+  (println "hello " 42 " " 1.5 " " true)
+  (print "no")
+  (print "-")
+  (println "newline-between-these")
+  (println)                                ; a bare line
+
+  ; ---- stderr, which the harness folds into the same stream ------------------
+  (eprintln "to stderr: " (as usize 7))
+
+  ; ---- FdOut is an ordinary Writer -------------------------------------------
+  (let (o:FdOut (std-out))
+    (write-str o (strview-from-cstr "through write-str\n")))
+
+  ; A String is a Writer too, so the same code fills a buffer instead.
+  (let (s:String (string-new))
+    (write-str s (strview-from-cstr "through a String"))
+    (println (string-as-view s) " len=" (byte-len s)))
+
+  0)

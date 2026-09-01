@@ -1,0 +1,6 @@
+hello 42 1.5 true
+no-newline-between-these
+
+to stderr: 7
+through write-str
+through a String len=16

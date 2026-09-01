@@ -386,9 +386,30 @@ piece needs *wrapping* in a `(to-str … out)` call, which `~@` cannot do, and a
 
 `examples/fmt-test.nuc`. 941 tests, `make bootstrap` byte-identical.
 
-**B2 — `lib/io.nuc`.** `StdOut`/`StdErr` over fds 1/2, `print`/`println`/
-`eprint`/`eprintln`, `read-line`. Not `FILE*`-backed: no hidden C buffer to
-interleave with the compiler's own output.
+**B2 — `lib/io.nuc` — done 2026-09-01.** The standard streams as `Writer`s over
+raw descriptors, `print`/`println`/`eprint`/`eprintln`, `read-line`. Not
+`FILE*`-backed: no hidden C buffer to interleave with the compiler's own output.
+
+Two deviations from the plan above:
+
+- **One `FdOut` type with an `fd` field**, not separate `StdOut`/`StdErr`. The
+  two would have identical conformances differing only in a constant, and
+  `(dyn Writer)` erases them to the same thing. `(std-out)` / `(std-err)` are
+  constructors. `FdOut` is *borrowed* and never closed — the owning,
+  `Drop`-closed descriptor is B3's `File`.
+- **`print` and friends share one module-global format buffer**, cleared per
+  call, so a line is one `write` and the spelling is allocation-free after the
+  first growth. The cost is that they are **not reentrant**; nothing in `lib/`
+  formats by printing. Each expands to the `!void` of its write, so a caller may
+  `try` it and discarding is the default.
+
+`EINTR` is not retried: it is only reachable behind a handler installed without
+`SA_RESTART`, and retrying an unclassified error would spin. Short writes *are*
+looped over, which is not defensive — that is ordinary on a pipe.
+
+`read-line` is tested by `tests/fixtures/s17-read-line.nuc` with piped input
+rather than by an example: an example inherits the harness's stdin and would
+block on a terminal. `examples/io-test.nuc` covers everything else.
 
 **B3 — `lib/file.nuc`.** `File` (fd, `Drop`-closed), `file-open-read`/
 `file-create`/`file-open-append`, `file-read-to-string`, `file-write-bytes`,
