@@ -1271,7 +1271,7 @@
 ; args, CE-3 fix (b)) before reaching here, since classification on the arg type
 ; alone cannot distinguish a by-value-struct arg from an ordinary pointer arg.
 ; On aarch64, ABI-MEMORY passes a plain pointer (no byval attribute).
-(defn abi-arg-frag (av:raw:Val):CStr
+(defn abi-arg-frag (av:raw:Val):StrView
   (let (a:raw:Val av)
     ; Stage 14 NS-3 (design/stage14/native-strings.md): an *unmaterialized* StrView
     ; string literal (chameleon: is-lit=1, `val` is the bare data GEP) reaching
@@ -1293,7 +1293,7 @@
       ; convention is COERCE2). Discarding the AbiInfo is the point; the call is
       ; made for its register debit.
       (abi-classify-arg ty-ptr)
-      (return (fcstr "ptr " (a 'val))))
+      (return (fstr "ptr " (a 'val))))
     ; RV-6c: classified ONCE (it used to classify twice, for `info` and `kind`),
     ; via abi-classify-arg — this is the argument position, so it consults and
     ; debits the live register budget. emit-call-with-args owns the
@@ -1301,7 +1301,7 @@
     (let (info:raw:AbiInfo (abi-classify-arg (a 'type))
           k:i32 (info 'kind))
     (when (= k ABI-DIRECT)
-      (return (fcstr (type-to-ir (a 'type)) " " (a 'val))))
+      (return (fstr (type-to-ir (a 'type)) " " (a 'val))))
     (let (ty:StrView (type-to-ir (a 'type))
           addr:ptr (new-tmp))
       (emit g-entry-stream "  " addr " = alloca " ty "\n")
@@ -1312,13 +1312,13 @@
         ; aarch64, AVR, or riscv64.
         (if (and (= (abi-is-aarch64) 0) (= (abi-is-avr) 0) (= (abi-is-riscv) 0))
           ; x86_64: byval attribute
-          (return (fcstr (fcstr "ptr byval(" ty ") align " (info 'align)) " " addr))
+          (return (fstr "ptr byval(" ty ") align " (info 'align) " " addr))
           ; aarch64 / AVR / riscv64: plain pointer
-          (return (fcstr "ptr " addr))))
+          (return (fstr "ptr " addr))))
       (when (= k ABI-COERCE1)
         (let (r:ptr (new-tmp))
           (emit g-body-stream "  " r " = load " (info 'reg0) ", ptr " addr "\n")
-          (return (fcstr (info 'reg0) " " r))))
+          (return (fstr (info 'reg0) " " r))))
       ; COERCE2
       (let (r0:ptr (new-tmp)
             gp:ptr null
@@ -1328,13 +1328,13 @@
         (emit g-body-stream "  " gp " = getelementptr i8, ptr " addr ", i64 " (info 'off1) "\n")
         (set! r1 (new-tmp))
         (emit g-body-stream "  " r1 " = load " (info 'reg1) ", ptr " gp "\n")
-        (return (fcstr (fcstr (info 'reg0) " " r0) ", " (fcstr (info 'reg1) " " r1))))))))
+        (return (fstr (info 'reg0) " " r0 ", " (info 'reg1) " " r1)))))))
 
 ; Emit a direct call whose return is a struct lowered per `info`, reconstruct
 ; the first-class struct value, and return its Val. `arglist` is the already
 ; built scalar/coerced argument string; `nargs` is the count it holds (so a
 ; MEMORY sret prefix knows whether it needs a separating comma).
-(defn abi-emit-struct-call (info:raw:AbiInfo ret:raw:Type ir-name:CStr arglist:CStr nargs:i32):ref:Val
+(defn abi-emit-struct-call (info:raw:AbiInfo ret:raw:Type ir-name:CStr arglist:StrView nargs:i32):ref:Val
   (let (ii:raw:AbiInfo info
         k:i32 (info 'kind)
         ty:StrView (type-to-ir ret))

@@ -6597,10 +6597,8 @@
             (coerce-call-argument slot ((field-at (fn-type 'params) i) 'type)
                                   scope "call" (+ i 1) (cc 'line))))
         (inc! i))
-      (let (arglist:ptr (alloca i8 2048)
-            apos:i64 0
+      (let ((argbuf String) (str-alloc (strfmt-alloc) "")
             ret-info:raw:AbiInfo (abi-classify ret-type))
-        (set! (aref (as ptr:i8 arglist) 0) 0)
         (abi-args-begin ret-info)
         (set! i 0)
         (while (< i nargs)
@@ -6618,10 +6616,7 @@
                   (set! (av 'type) ty-ptr)
                   (set! (av 'val) d)))
               (vararg-promote (as ptr av) (cc 'line)))
-            (let (w:i32 (snprintf (unsafe/ptr+ (as ptr:i8 arglist) apos)
-                                  (- 2048 apos)
-                                  "%s%s" sep (abi-arg-frag (as ptr av))))
-              (set! apos (+ apos w:i64))))
+            (str-into argbuf sep (abi-arg-frag (as ptr av))))
           (inc! i))
         ; A variadic callee needs its signature spelled at the call site so the
         ; `...` boundary is visible; a fixed one takes the bare return type.
@@ -6641,15 +6636,16 @@
           ; call — abi-emit-struct-call prints its `ir-name` operand verbatim,
           ; so the callee register works where a `@name` does. Never reached for
           ; a variadic fn type: `abi-classify` of a non-struct return is DIRECT.
-          (when (!= (ret-info 'kind) ABI-DIRECT)
-            (return (abi-emit-struct-call ret-info ret-type (as CStr (fv 'val))
-                                          (as CStr arglist) nargs)))
-          (when (= (ret-type 'kind) TY-VOID)
-            (emit g-body-stream "  call " callee-sig " " (fv 'val) "(" arglist ")\n")
-            (return (alloc-val ty-void null)))
-          (let (tmp:ptr (new-tmp))
-            (emit g-body-stream "  " tmp " = call " callee-sig " " (fv 'val) "(" arglist ")\n")
-            (return (alloc-val ret-type tmp))))))))
+          (let (arglist:StrView (string-as-view argbuf))
+            (when (!= (ret-info 'kind) ABI-DIRECT)
+              (return (abi-emit-struct-call ret-info ret-type (as CStr (fv 'val))
+                                            arglist nargs)))
+            (when (= (ret-type 'kind) TY-VOID)
+              (emit g-body-stream "  call " callee-sig " " (fv 'val) "(" arglist ")\n")
+              (return (alloc-val ty-void null)))
+            (let (tmp:ptr (new-tmp))
+              (emit g-body-stream "  " tmp " = call " callee-sig " " (fv 'val) "(" arglist ")\n")
+              (return (alloc-val ret-type tmp)))))))))
 
 ; (funcall fn-ptr args...) — general typed function pointer call.
 ; fn-ptr must have TY-FN type. Emits call with proper LLVM IR signature.
@@ -7079,15 +7075,13 @@
           (coerce-call-argument (as ptr:Val (unsafe/ptr+ (as ptr:Val args) ci))
                                 ((field-at (ft0 'params) ci) 'type)
                                 scope (ss 'name) (+ ci 1) (cc 'line))))
-      (let (arglist:ptr (alloca i8 2048)
-            apos:i64 0
+      (let ((argbuf String) (str-alloc (strfmt-alloc) "")
             ; RV-6c: the callee's return lowering, needed HERE rather than only
             ; at the call emission below because an ABI-MEMORY return passes a
             ; hidden sret pointer in a0 — a register the arguments do not get.
             ; Reused verbatim by the non-variadic call path further down, so
             ; the return is still classified exactly once.
             call-ret-info:raw:AbiInfo (abi-classify (ft0 'ret)))
-        (set! (aref (as ptr:i8 arglist) 0) 0)
         ; RV-6c: one walk over this call's arguments, in order — reset the
         ; riscv64 register budget before it (design/stage14/riscv-fp-abi.md §4).
         (abi-args-begin call-ret-info)
@@ -7127,13 +7121,10 @@
           ; abi-arg-frag returns "<ty> <val>" for scalars/pointers (unchanged),
           ; or the byval / register-coerced fragment for a struct-by-value arg
           ; (emitting the materialization instructions as a side effect).
-          (let (w:i32 (snprintf (unsafe/ptr+ (as ptr:i8 arglist) apos)
-                                (- 2048 apos)
-                                "%s%s" sep
-                                (abi-arg-frag (as ptr av))))
-            (set! apos (+ apos w:i64))))
+          (str-into argbuf sep (abi-arg-frag (as ptr av))))
         (inc! i))
-      (let (ft:ptr:Type (unsafe/cast ptr:Type (ss 'type)))
+      (let (ft:ptr:Type (unsafe/cast ptr:Type (ss 'type))
+            arglist:StrView (string-as-view argbuf))
         (when (!= (ft 'kind) TY-FN)
           (die-at (cc 'line) (fstr "not a function: " (ss 'name))))
         ; In a macro/CT JIT module, a call to an ordinary program-module defn
@@ -7165,7 +7156,7 @@
               (if (!= ((as ptr:AbiInfo ret-info) 'kind) ABI-DIRECT)
                 ; Struct return: emit the lowered call + reconstruction.
                 (return (abi-emit-struct-call ret-info (ft 'ret) (ss 'ir-name)
-                                              (as ptr arglist) eff-nargs))
+                                              arglist eff-nargs))
                 (if (-> ft (_ 'ret) (unsafe/cast ptr:Type _) (_ 'kind) (= _ TY-VOID))
                   (do
                     (emit g-body-stream "  call " (type-to-ir (ft 'ret)) " " (ss 'ir-name) "("
@@ -8936,35 +8927,30 @@
               (coerce-call-argument slot ((field-at (bt 'params) i) 'type)
                                     scope "BoxedFn call" (+ i 1) line))
             (inc! i))
-          (let (arglist:ptr (alloca i8 2048)
-                apos:i64 0
+          (let ((argbuf String) (str-alloc (strfmt-alloc) "")
                 ret-info:raw:AbiInfo (abi-classify ret-ty)
                 envv:ref:Val (alloc-val ty-ptr data))
-            (set! (aref (as ptr:i8 arglist) 0) 0)
             (abi-args-begin ret-info)
             ; The environment pointer is argument zero and spends a GPR, so it
             ; goes through abi-arg-frag like any other — printing it by hand
             ; would leave the register budget one short for everything after it.
-            (let (w:i32 (snprintf arglist 2048 "%s" (abi-arg-frag (as ptr envv))))
-              (set! apos w:i64))
+            (str-into argbuf (abi-arg-frag (as ptr envv)))
             (set! i 0)
             (while (< i nargs)
-              (let (av:ptr:Val (as ptr:Val (unsafe/ptr+ (as ptr:Val args) i))
-                    w:i32 (snprintf (unsafe/ptr+ (as ptr:i8 arglist) apos)
-                                    (- 2048 apos)
-                                    ", %s" (abi-arg-frag (as ptr av))))
-                (set! apos (+ apos w:i64)))
+              (let (av:ptr:Val (as ptr:Val (unsafe/ptr+ (as ptr:Val args) i)))
+                (str-into argbuf ", " (abi-arg-frag (as ptr av))))
               (inc! i))
-            (when (!= (ret-info 'kind) ABI-DIRECT)
-              (return (abi-emit-struct-call ret-info ret-ty (as CStr invfn)
-                                            (as CStr arglist) (+ nargs 1))))
-            (when (= (-> ret-ty (unsafe/cast ptr:Type _) (_ 'kind)) TY-VOID)
-              (emit g-body-stream "  call void " invfn "(" arglist ")\n")
-              (return (alloc-val ty-void null)))
-            (let (tmp:ptr (new-tmp))
-              (emit g-body-stream "  " tmp " = call " (type-to-ir ret-ty) " " invfn "(" arglist
-                    ")\n")
-              (return (alloc-val ret-ty tmp)))))))))
+            (let (arglist:StrView (string-as-view argbuf))
+              (when (!= (ret-info 'kind) ABI-DIRECT)
+                (return (abi-emit-struct-call ret-info ret-ty (as CStr invfn)
+                                              arglist (+ nargs 1))))
+              (when (= (-> ret-ty (unsafe/cast ptr:Type _) (_ 'kind)) TY-VOID)
+                (emit g-body-stream "  call void " invfn "(" arglist ")\n")
+                (return (alloc-val ty-void null)))
+              (let (tmp:ptr (new-tmp))
+                (emit g-body-stream "  " tmp " = call " (type-to-ir ret-ty) " " invfn "(" arglist
+                      ")\n")
+                (return (alloc-val ret-ty tmp))))))))))
 
 ; TE-6: the vtable slot index of protocol method `gname` on the `(dyn P)` box
 ; `box-ty`, or -1 if P declares no such method (so a generic call whose first
