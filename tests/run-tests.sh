@@ -14125,6 +14125,27 @@ run_s17_strview_literal_return() {
 }
 spawn run_s17_strview_literal_return
 
+# Stage 17 C6: string literals meeting at a cond/if/match phi in a StrView slot.
+# The unconditional collapse to CStr made the phi carry bare data pointers, and
+# the aggregate return then read a length off the end of a pointer-sized slot.
+run_s17_strview_literal_join() {
+  local bin actual
+  bin="./build/out/s17-strview-literal-join"
+  rm -f "$bin"
+  if ! ./build/nucleusc tests/fixtures/s17-strview-literal-join.nuc -o "$bin" 2>&1; then
+    echo "FAIL  s17-strview-literal-join (compile error)"
+    return 0
+  fi
+  actual="$("$bin" 2>&1 || true)"
+  if [ "$actual" = "$(cat tests/expected/s17-strview-literal-join.out)" ]; then
+    echo "PASS  s17-strview-literal-join"
+  else
+    echo "FAIL  s17-strview-literal-join"
+    printf '%s\n' "$actual" | sed 's/^/    got: /'
+  fi
+}
+spawn run_s17_strview_literal_join
+
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided
 # by scanning buffered output, since `set -e` does not propagate across `&`).

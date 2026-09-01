@@ -1074,13 +1074,13 @@
                   (set! form (union-target-rewrite form my-want)))
                 (set! bv (emit-node form inner)))
               (set! bcur ((unsafe/cast ptr:Node bcur) 'cdr)))
-            ; Stage 14 NS-3: a match arm ending in a string literal collapses to
-            ; CStr (no IR) so the join/phi stays a plain pointer. See
-            ; collapse-strlit-cstr.
-            (collapse-strlit-cstr (as ptr bv))
             (emit-scope-cleanups inner)
             (let (bterm:i32 g-block-term)
               (when (= bterm 0)
+                ; Stage 14 NS-3: a match arm ending in a string literal collapses
+                ; to CStr (no IR) so the join/phi stays a plain pointer — unless
+                ; the join is known to want a view. See join-strlit-branch.
+                (set! bv (join-strlit-branch bv my-want (cc 'line)))
                 (let (join-lbl:ptr (fcstr "match.join" id "." ci)
                       bty:ptr (bv 'type))
                   ; cond's strict cross-branch typing: same type everywhere or
@@ -1115,7 +1115,7 @@
             (= ((as ptr:Type result-type) 'kind) TY-VOID))
       (return (alloc-val ty-void null))
       (let (tmp:ptr (new-tmp)
-            ty-ir:ptr (type-to-ir result-type)
+            ty-ir:StrView (type-to-ir result-type)
             k:usize 0)
         (emit g-body-stream "  " tmp " = phi " ty-ir " ")
         (while (< k (count vals))
@@ -1214,6 +1214,9 @@
 ; try/unwrap/unwrap-or route through here, so they need no niche-specific surface.
 (defn emit-match-niche-errptr (call:ptr scope:ref:Scope sv:raw:Val elem:raw:Type):ref:Val
   (let (cc:ptr:Node (unsafe/cast ptr:Node call)
+        ; TC-5 part 2: emit-match re-arms the want just before dispatching here,
+        ; so the arm emitters get it from the channel rather than the signature.
+        my-want:ptr g-want-type
         rval:ptr (sv 'val)
         staint:ptr (sv 'taint)
         nclauses:i32 (- (node-len cc) 2)
@@ -1286,7 +1289,7 @@
                 (emit g-body-stream "  store i32 " idtr ", ptr " slot ", align 4\n")
                 (scope-define inner (b 's) (as ptr ty-err) slot 1)))))
         (emit-niche-match-arm (if (!= err-body null) err-body def-body) inner
-          vals preds rtbox ttbox ltbox end-lbl id 0))
+          vals preds rtbox ttbox ltbox end-lbl id 0 my-want))
       ; --- ok arm: bind p = r typed (ref T), run the ok (or default) body ---
       (emit g-body-stream ok-lbl ":\n")
       (set! g-block-term 0)
@@ -1304,7 +1307,7 @@
                 (let (sym:ref:Sym (scope-define inner (b 's) (as ptr rt) slot 1))
                   (set! (sym 'taint) staint))))))
         (emit-niche-match-arm (if (!= ok-body null) ok-body def-body) inner
-          vals preds rtbox ttbox ltbox end-lbl id 1))
+          vals preds rtbox ttbox ltbox end-lbl id 1 my-want))
       ; --- join ---
       (emit g-body-stream end-lbl ":\n")
       (set! g-block-term 0)
@@ -1315,7 +1318,7 @@
           (set! g-block-term 1))
         (if (or (= result-type null) (= ((as ptr:Type result-type) 'kind) TY-VOID))
           (return (alloc-val ty-void null))
-          (let (tmp:ptr (new-tmp) ty-ir:ptr (type-to-ir result-type)
+          (let (tmp:ptr (new-tmp) ty-ir:StrView (type-to-ir result-type)
                 k:usize 0)
             (emit g-body-stream "  " tmp " = phi " ty-ir " ")
             (while (< k (count vals))
@@ -1334,6 +1337,9 @@
 ; null pointer as the discriminant.
 (defn emit-match-niche-maybe (call:ptr scope:ref:Scope sv:raw:Val elem:raw:Type):ref:Val
   (let (cc:ptr:Node (unsafe/cast ptr:Node call)
+        ; TC-5 part 2: emit-match re-arms the want just before dispatching here,
+        ; so the arm emitters get it from the channel rather than the signature.
+        my-want:ptr g-want-type
         rval:ptr (sv 'val)
         staint:ptr (sv 'taint)
         nclauses:i32 (- (node-len cc) 2)
@@ -1392,7 +1398,7 @@
       (set! g-block-term 0)
       (let (inner:ref:Scope (scope-new scope))
         (emit-niche-match-arm (if (!= none-body null) none-body def-body) inner
-          vals preds rtbox ttbox ltbox end-lbl id 0))
+          vals preds rtbox ttbox ltbox end-lbl id 0 my-want))
       ; --- some arm: bind p = r typed (ref T), run the some (or default) body ---
       (emit g-body-stream some-lbl ":\n")
       (set! g-block-term 0)
@@ -1410,7 +1416,7 @@
                 (let (sym:ref:Sym (scope-define inner (b 's) (as ptr rt) slot 1))
                   (set! (sym 'taint) staint))))))
         (emit-niche-match-arm (if (!= some-body null) some-body def-body) inner
-          vals preds rtbox ttbox ltbox end-lbl id 1))
+          vals preds rtbox ttbox ltbox end-lbl id 1 my-want))
       ; --- join ---
       (emit g-body-stream end-lbl ":\n")
       (set! g-block-term 0)
@@ -1421,7 +1427,7 @@
           (set! g-block-term 1))
         (if (or (= result-type null) (= ((as ptr:Type result-type) 'kind) TY-VOID))
           (return (alloc-val ty-void null))
-          (let (tmp:ptr (new-tmp) ty-ir:ptr (type-to-ir result-type)
+          (let (tmp:ptr (new-tmp) ty-ir:StrView (type-to-ir result-type)
                 k:usize 0)
             (emit g-body-stream "  " tmp " = phi " ty-ir " ")
             (while (< k (count vals))
@@ -1440,17 +1446,19 @@
 ; deferral makes the parametric type safe in this signature (see make-vec).
 (defn emit-niche-match-arm (body:ptr inner:ref:Scope
                                  (vals (ref (Vector ptr))) (preds (ref (Vector ptr)))
-                                 rtbox:ptr ttbox:ptr ltbox:ptr end-lbl:ptr id:i32 which:i32):void
+                                 rtbox:ptr ttbox:ptr ltbox:ptr end-lbl:ptr id:i32 which:i32
+                                 want:ptr):void
   (let (bv:ref:Val (alloc-val ty-void null)
         bcur:ptr body)
     (while (!= bcur null)
       (set! bv (emit-node ((unsafe/cast ptr:Node bcur) 'car) inner))
       (set! bcur ((unsafe/cast ptr:Node bcur) 'cdr)))
-    ; Stage 14 NS-3: a niche/Result match arm ending in a string literal collapses
-    ; to CStr (no IR) so the join/phi stays a plain pointer. See collapse-strlit-cstr.
-    (collapse-strlit-cstr (as ptr bv))
     (emit-scope-cleanups inner)
     (when (= g-block-term 0)
+      ; Stage 14 NS-3: a niche/Result match arm ending in a string literal
+      ; collapses to CStr (no IR) so the join/phi stays a plain pointer — unless
+      ; the join is known to want a view. See join-strlit-branch.
+      (set! bv (join-strlit-branch bv want g-form-line))
       (let (join-lbl:ptr (fcstr "match.join" id "." which)
             bty:ptr (bv 'type)
             rt:ptr (aref (as ptr:ptr rtbox) 0)
