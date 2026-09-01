@@ -1077,11 +1077,18 @@ one eager writer among the anonymous-type constructors — its sibling
 was written until W9 item 26 (which is also how `--emit-cheader` acquired the
 crash: it started prescanning).
 
-Guard on the stream, not on a mode flag: the `!T` payload path at the bottom of
-`union-registry.nuc` already reads `(!= g-type-stream null)` and that is the honest
-condition. Leave `emitted` **0** when you skip the write — the flag means "already
-in the type buffer", and setting it while writing nothing would suppress the real
-emission if one ever followed.
+Guard on `g-module-open`, and leave `emitted` **0** when you skip the write — the
+flag means "already in the type buffer", and setting it while writing nothing
+would suppress the real emission if one ever followed.
+
+The guard used to read `(!= g-type-stream null)`, which was the honest condition
+while the buffers were `FILE*`s. Stage 17 C3 made them `String` **values**, which
+have no null, so the condition became a separate flag set by
+`open-module-streams`. The lesson generalizes past this one guard: **a
+representation change silently deletes every invariant that was riding on the old
+representation's sentinel.** Grep for the sentinel test before changing the type,
+not after — the compiler will not report a guard that has quietly become
+`true`.
 
 The other way out of this is to make the prescan *have* nothing to write:
 `prescan-nuch-signatures` (W9 item 29) registers a header's names and emits no IR
@@ -5946,3 +5953,41 @@ fails with "no matching method". Rename the compiler's helper rather than the
 library's — the suffixed-name convention `src/` already follows for
 `defn-params-count` and friends. Stage 17 C1 renamed exactly one: `char-at` →
 `cstr-byte-at`.
+
+
+## An emission sink is either an OWNER or an ALIAS — and only owners are values
+
+Stage 17 C3. `g-type-stream`, `g-decl-stream`, `g-def-buf`, `g-entry-stream`,
+`g-body-stream` and `g-repl-preamble` own their bytes and are `String` values.
+`g-out`, `g-decl-out`, `g-def-stream` and `g-def-stream-program` are re-pointed
+at whichever buffer the form being emitted belongs to, so they are `(raw String)`
+— null before a module opens, exactly as the `FILE*`s they replaced were.
+
+Three consequences that are not obvious from a call site:
+
+- `(set! g-out g-type-stream)` is now `(set! g-out (addr-of g-type-stream))`.
+  Assigning the value would copy the struct and the writes would go nowhere the
+  owner can see.
+- **Saving an owner around a nested emission is a MOVE.** `push-function-state`
+  and the REPL's module-stream snapshot both install fresh buffers, because the
+  nested emission calls `reset-function-state` / `open-module-streams`, which
+  clear in place. A copy left behind carries a stale length over a buffer the
+  nested emission then reallocates.
+- **A `String` may not be a `defstruct` field in `src/compiler-types.nuc`.** That
+  file is imported before `lib/string.nuc`, so a `%String`-typed field names a
+  type the compile-time module's own type section does not carry, and the JIT
+  dies with "use of undefined type named 'String'" on the first `compile-time`
+  form. A pointer field is `ptr` in IR and carries nothing — park the value in
+  the arena (`string-box`) and hold the pointer.
+
+## `emit` stages into ONE shared buffer — use `emit-all` for a whole buffer
+
+`(emit SINK pieces…)` formats into a process-wide `String` and issues one write.
+It takes a **mark** (`byte-len` before the pieces are appended) and writes only
+the bytes above it before rewinding, so a nested `emit` reached from an
+argument's own side effect still works: the inner text goes out first and the
+buffer is left as it was found, which is the order `fprintf` gave.
+
+Appending a whole buffer through `emit` would stage every byte a second time, so
+the function-body and module buffers go through `emit-all SINK SRC` instead. The
+rule: `emit` for formatted pieces, `emit-all` for a buffer you already have.
