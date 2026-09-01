@@ -729,7 +729,7 @@
                               true
                                 (emit g-body-stream "  ret void\n")))
                       ; Build function definition
-                      (let (ret-ir:ptr "void")
+                      (let (ret-ir:StrView "void")
                         (when (or (= result-kind TY-I32)
                                   (= result-kind TY-BOOL)
                                   (= result-kind TY-I8)
@@ -741,7 +741,7 @@
                         (when (= result-kind TY-F64) (set! ret-ir "double"))
                         (when (or (= result-kind TY-F16)
                                   (or (= result-kind TY-F80) (= result-kind TY-F128)))
-                          (set! ret-ir (as ptr (type-to-ir (result 'type)))))
+                          (set! ret-ir (type-to-ir (result 'type))))
                         (emit g-def-stream "define " ret-ir " @" eval-sym "() {\n")
                         (emit g-def-stream "entry:\n")
                         (emit-all g-def-stream g-entry-stream)
@@ -846,7 +846,7 @@
   (let (ftt:(raw Type) ft
         nparams:i32 (ftt 'num-params)
         ret-info:ptr:AbiInfo (unsafe/cast ptr:AbiInfo (abi-classify (ftt 'ret)))
-        ret-ir:ptr (abi-ret-ir ret-info (ftt 'ret)))
+        ret-ir:StrView (abi-ret-ir ret-info (ftt 'ret)))
     ; Global pointer holding the address of the current implementation.
     (emit out "@" fname ".tgt = global ptr null\n")
     (let ((ob String) (string-new)

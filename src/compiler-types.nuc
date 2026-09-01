@@ -808,8 +808,8 @@
 
 (defstruct AbiInfo
   kind:i32     ; AbiKind
-  reg0:ptr     ; IR type string for eightbyte 0 (COERCE1/COERCE2), else null
-  reg1:ptr     ; IR type string for eightbyte 1 (COERCE2), else null
+  reg0:StrView ; IR type string for eightbyte 0 (COERCE1/COERCE2), else empty
+  reg1:StrView ; IR type string for eightbyte 1 (COERCE2), else empty
   size:i32     ; struct ABI size in bytes (MEMORY/COERCE)
   align:i32    ; struct ABI alignment in bytes (MEMORY/COERCE)
   ; Byte offset of reg1's data within the struct (COERCE2 only). 8 on the SysV
@@ -836,11 +836,11 @@
 (defstruct RvFlat
   cnt:i32      ; flattened scalar count; > 2 means ineligible
   fp0:i32      ; member 0 is a floating-point real
-  ir0:ptr      ; member 0 IR type string
+  ir0:StrView  ; member 0 IR type string
   pos0:i32     ; member 0 byte offset
   sz0:i32      ; member 0 size
   fp1:i32
-  ir1:ptr
+  ir1:StrView
   pos1:i32
   sz1:i32)
 

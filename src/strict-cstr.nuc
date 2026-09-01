@@ -176,6 +176,16 @@
   (when (= (sc-classify name) SC-SEAM) (return))
   (sc-report line (fstr "C string function '" name "' (compiler-synthesized)")))
 
+; A materialized `StrView` coerced to `ptr`/`CStr` by taking its `data` field.
+; The one residual class no *type* marks: the borrow is accepted silently, and
+; the borrowed pointer is only a valid C string if the view's buffer happens to
+; be NUL-terminated at `data[len]` — true of a literal, false of anything `fstr`
+; built. So every hit is either a seam to declare or a consumer left to convert.
+(defn strict-cstr-check-borrow (line:i32):void
+  (when (= g-strict-cstr 0) (return))
+  (sc-load)
+  (sc-report line "StrView borrowed as a C string (its .data may not be NUL-terminated)"))
+
 ; A call through a function pointer or a BoxedFn. No name, so the seam list
 ; cannot exempt one — which is the intent: by C8 there must be no CStr-typed
 ; indirect call left, and this is the only thing that would notice one.

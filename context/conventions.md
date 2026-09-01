@@ -6038,3 +6038,42 @@ handles it. `(return "lit")` from a `StrView` function has worked since C6 step
 2; the `if`-join shape works only in compilers built after C6 step 3. Prove the
 new shape in `tests/fixtures/`, and move `src/` to it after the next
 `make update-bootstrap`, not before.
+
+## A `StrView` borrows to `ptr` SILENTLY — retyping a producer moves 30 consumers with it
+
+`coerce-int-val` lets a materialized `StrView` flow into any `ptr`/`CStr` slot by
+taking its `data` field. That is the rule (docs/strings.md), and it is what keeps
+literals working at every libc seam — a literal's rodata is NUL-terminated at
+`data[len]`. **A view built at runtime is not.** A `String`'s bytes end at `len`
+and the next byte is spare `Vector` capacity.
+
+So retyping one producer to `StrView` silently converts every consumer that still
+declares `ptr`: no type error fires, and the pointer they get is only accidentally
+a C string. Stage 17 C6 opened 32 of these with one change (`type-to-ir`), and the
+2,596-artifact snapshot stayed byte-identical because fresh arena pages are zeroed
+and `strlen` happened to stop in the right place.
+
+Nothing in the gate set catches this. `--strict-cstr` reports the borrow itself
+(`strict-cstr-check-borrow`); check that the count is still 0 after retyping any
+producer. And prefer `=` on two `StrView`s to `strcmp` — content comparison needs
+no NUL at all.
+
+## The aggregate return path runs NO coercion — both its branches need the check
+
+`emit-return` splits: ABI-DIRECT coerces the value against the declared return
+type, non-DIRECT calls `emit-struct-ret` and coerces nothing. Inside
+`emit-struct-ret` the split happens again, and both halves used to trust the
+value they were handed:
+
+- **first-class value** — spilled through an `alloca` sized by the *value's* type,
+  then read back at the *return* type's width. Under opaque pointers a narrower
+  store is well-typed, so this read past the slot silently.
+- **by-pointer** (a struct literal / closure env arrives as a pointer) — read
+  `(vv 'val)` as the ADDRESS of the return struct. Any pointer at all satisfied
+  that, so `(return (info 'reg0))` on an IR type-name string became a wild
+  16-byte load.
+
+Both now refuse a value that is not the declared return type. The generalization,
+which has now cost time twice: **`return` has two paths through the coercer, and
+the aggregate one is the path that has none.** A fix applied to the DIRECT branch
+looks complete and is half a fix.
