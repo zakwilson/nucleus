@@ -524,26 +524,58 @@ Self-compile time is unchanged (1.29s before and after). 945 tests,
 reorder against a block-buffered `stdout`) and the REPL's 44 `fprintf stderr`
 sites (C5).
 
-**C2 — IR emission.** `g-out`, `g-entry-stream`, `g-body-stream`, `g-decl-stream`,
-`g-type-stream`, `g-def-stream`, `g-def-stream-program`, `g-repl-preamble` become
-`(dyn Writer)`. 928 write sites converted in per-file batches (nucleusc 492 splits
-further by region). Dual-path via `CFile` throughout (§2.3). The `%%`→`%`
-unescaping is mechanical and is the single highest-value thing for the script to
-get exactly right. *Gate:* emitted-output identity, per batch, no exceptions.
+**C2 — IR emission. Done 2026-09-01.** All **848** sites, in five gated batches.
+The sinks did **not** become `(dyn Writer)` and there was no `CFile` dual path:
+the call-site conversion and the sink retype are separable, and doing them
+separately meant one change to `emit-flush` instead of touching every site twice.
 
-**C3 — memstream sinks.** The 20 `open_memstream` sites → `String` writers,
-deleting the `bufp`/`sizep` out-parameter dance and its manual `free`s. Depends on
-C2 having made the sinks polymorphic.
+The output shape is `(emit S …)`, not the `(write S (str …))` the tooling doc
+sketched — `str` allocates and drops a `String`, and this is the compiler's
+hottest output path. `emit` formats into one process-wide buffer and issues one
+`fwrite`; `emit-flush` takes a **mark** (`byte-len` before the pieces are
+appended) and writes only the bytes above it before rewinding, which makes one
+shared buffer safe when an argument's own side effect emits — the inner text
+goes out first and the buffer is left as found, the order `fprintf` gave.
 
-**C4 — source loading.** The `fopen`/`fseek`/`ftell`/`fread`/`fclose` ladder →
-`file-read-to-string`. The reader then indexes a `StrView` it was handed rather
-than re-deriving a length. Touches `src/reader.nuc`, `src/nucleusc.nuc`,
-`src/cheader.nuc`.
+Zero refusals from the script. The four hand conversions are the shapes a format
+string can express and it cannot reach: `src/cheader.nuc`'s skip-reason
+`macrolet`, which takes the *format string itself* as a macro argument so the
+literal to split is not at the call site; two `fwrite`s of a byte range, now
+`strview` pieces; and the REPL's `#<ptr %p>`, which is `"0x"` plus `hex … 0`
+because glibc's `%p` is minimal-width lowercase hex.
 
-**C5 — the REPL.** `fgets` → `read-line`, its memstreams → `String`, its `printf`
-→ `println`, `setvbuf`/`fflush` → explicit `BufWriter` discipline. Isolated to
-`src/repl.nuc` (102 write sites). The `#<ptr %p>` printer is the one place a
-pointer is formatted for humans.
+**C3 — memstream sinks. Done 2026-09-01.** All twelve, and `open_memstream` — a
+glibc/musl-only function — is gone from `src/`, with every `bufp`/`sizep` pair,
+35 `free`s, 35 `fclose`s and 14 `fflush`es. Owning buffers are `String` values;
+the aliases (`g-out`, `g-decl-out`, `g-def-stream`, `g-def-stream-program`) stay
+pointers, `(raw String)`, null before a module opens exactly as the `FILE*`s
+were. `emit-flush` overloads on the sink rather than erasing it, so the dispatch
+is static and boxes nothing, and `emit-all` appends a whole buffer without
+staging it a second time.
+
+Four defects the types surfaced, each in progress.md: a `String` cannot be a
+`FnState` field (compiler-types.nuc is imported before lib/string.nuc, so the CT
+module's type section lacks `%String`); `push-function-state` was always a move;
+the REPL's stream snapshot was aliasing a buffer `open-module-streams` clears in
+place; and "is a module open" was the null-ness of `g-type-stream`.
+
+**C4 — source loading. Done 2026-09-01.** `read-file`, `file-defines-name` and
+`file-exists` → `file-open-read` + `file-read-to-string`; no `fopen` remains in
+`src/`. `lib/file.nuc`'s Linux-only `defconst` block does not reach here —
+`O_RDONLY` is 0 everywhere and only the create/append flags differ. The reader
+still takes a NUL-terminated `ptr`; handing it a `StrView` is C6's job, since it
+is the substrate question, not the file question.
+
+**C5 — the REPL. Done 2026-09-01.** Its 101 write sites went with C2 (they had to:
+`emit-string-table` cannot take a `(ref String)` sink while one of its callers
+still writes `fprintf` into a memstream), its memstreams with C3, and
+`repl-read-input` now reads with `read-line` into a `String` — the hand-grown
+`malloc`/`realloc` buffer and the per-line 4 KB scratch allocation are gone.
+`read-line` strips the terminator, so the newline is pushed back: the accumulated
+text is source, and the newline both ends a `;` comment and is what every
+reported line number counts. `setvbuf`/`fflush` on `stdout` **stay** — they order
+the JIT'd program's stdio, not the compiler's, so no `BufWriter` discipline
+replaces them.
 
 **C6 — comparison and scanning.** 201 `strcmp` → `=` on `StrView`/`Symbol`; 42
 `strncmp` → `starts-with?`; 37 `strchr` + 14 `strstr` → `find-byte`/`byte-find`;
