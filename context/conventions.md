@@ -5991,3 +5991,50 @@ buffer is left as it was found, which is the order `fprintf` gave.
 Appending a whole buffer through `emit` would stage every byte a second time, so
 the function-body and module buffers go through `emit-all SINK SRC` instead. The
 rule: `emit` for formatted pieces, `emit-all` for a buffer you already have.
+
+## A chameleon literal at a phi is a DESTINATION question, not a join question
+
+`emit-string` leaves a string literal unmaterialized: `is-lit=1`, `StrView` type,
+`val` is the bare data GEP. `collapse-strlit-cstr` used to retype **every** such
+branch to `CStr` before a cond/if/match phi, so the phi stayed a plain pointer.
+That is right only when nothing downstream wants a view, and it made
+`(if c "i16" "i64")` unable to fill a `StrView` slot.
+
+The fix is not a smarter type join. A join sees only the arms; whether a view is
+wanted is a property of the **destination**. `join-strlit-branch` (src/abi.nuc)
+takes the same decision against the armed want (`g-want-type`, which `return` and
+the implicit tail already set from the return type): collapse when nothing wants
+a view, materialize `{ptr,len}` otherwise.
+
+Materialization has to happen **in the branch's own block**, before its `br` —
+that is the only block a phi operand may be defined in. Deferring it to the
+join's consumer is not an option, which is why this is a hook in each arm
+emitter (`emit-cond`, `emit-union-match-arms`, `emit-niche-match-arm`) rather
+than one at the phi.
+
+## An aggregate return sized from the VALUE reads past the slot, silently
+
+`emit-struct-ret`'s first-class path spilled `(v 'val)` through an
+`alloca (type-to-ir (v 'type))` and then loaded the return type's eightbytes back
+out. Hand it a pointer-sized value for a 16-byte return type and it stores 8
+bytes and reads 16 — and under **opaque pointers that is not a verifier error**,
+because `store ptr %x, ptr %slot` is well-typed whatever `%slot` was allocated
+as. The length came from whatever followed on the stack.
+
+Two consequences worth generalizing. The alloca's type is the only remaining
+record of a slot's size, so any path that writes and re-reads one must size it
+from the **declared** type and refuse a mismatch — `emit-struct-ret` now does
+both. And a garbage `usize` is not a crash: it became a `Vector` reserve request,
+so the compiler aborted with `vector: out of memory` on *every* input, nowhere
+near the defect. Suspect the most recently retyped struct return, not the
+allocator.
+
+## A `StrView`-returning function must bootstrap through a compiler that predates the fix
+
+`src/type-utils.nuc`'s `ptr-int-ir` is written with explicit `return`s where its
+neighbour `ptr-int-type` uses a nested `if`. That is not style: the boot binary
+compiles `src/`, so a source shape is only usable once a *released* boot compiler
+handles it. `(return "lit")` from a `StrView` function has worked since C6 step
+2; the `if`-join shape works only in compilers built after C6 step 3. Prove the
+new shape in `tests/fixtures/`, and move `src/` to it after the next
+`make update-bootstrap`, not before.

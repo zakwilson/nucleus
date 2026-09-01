@@ -1174,11 +1174,19 @@
   (let (vv:raw:Val v
         info:ptr:AbiInfo (as ptr:AbiInfo g-fn-ret-abi)
         k:i32 ((as ptr:AbiInfo g-fn-ret-abi) 'kind))
+    ; Stage 17 C6: a string literal returned into a `StrView` slot. Neither return
+    ; path (explicit or implicit) runs the coercer before reaching here, and the
+    ; chameleon's `val` is still the bare data pointer, so the aggregate below
+    ; would be assembled out of a pointer-sized slot. Materialize {ptr,len} first.
+    (when (and (!= (vv 'is-lit) 0) (!= (type-is-strview (vv 'type)) 0)
+               (!= (type-is-strview g-fn-ret-type) 0))
+      (let (mv:?ptr:Val (coerce-int-val vv (as raw:Type g-fn-ret-type) g-form-line))
+        (when (!= mv null) (set! vv (as raw:Val mv)))))
     ; By-pointer return (struct literal `(ref S)` / closure `(ref Env)`): the
     ; struct bytes live at `(vv val)`. Load eightbyte(s) / the whole aggregate
     ; straight from that address — never `store` the pointer itself.
     (when (= ((vv 'type) 'kind) TY-PTR)
-      (let (ty:ptr (type-to-ir g-fn-ret-type)
+      (let (ty:StrView (type-to-ir g-fn-ret-type)
             src:ptr (vv 'val))
         (when (= k ABI-MEMORY)
           (let (agg:ptr (new-tmp))
@@ -1212,7 +1220,15 @@
         (return)))
     ; First-class struct value — the original (byte-identical) path: `.val`
     ; holds the aggregate, so store it / round it through memory directly.
-    (let (ty:ptr (type-to-ir (v 'type)))
+    (let (ty:StrView (type-to-ir (vv 'type)))
+      ; Stage 17 C6: the eightbyte loads below read the RETURN type's bytes back
+      ; out of a slot sized by `ty`. Under opaque pointers a narrower value stores
+      ; without complaint and the loads then run off the end of the alloca —
+      ; garbage, not a verifier error. Refuse instead.
+      (when (!= ty (type-to-ir g-fn-ret-type))
+        (die-at g-form-line
+          (fstr "internal: aggregate return of a " ty " where the declared return type is "
+                (type-to-ir g-fn-ret-type))))
       (when (= k ABI-MEMORY)
         (emit g-body-stream "  store " ty " " (vv 'val) ", ptr " g-fn-sret-name "\n")
         (emit g-body-stream "  ret void\n")
@@ -1286,7 +1302,7 @@
           k:i32 (info 'kind))
     (when (= k ABI-DIRECT)
       (return (fcstr (type-to-ir (a 'type)) " " (a 'val))))
-    (let (ty:ptr (type-to-ir (a 'type))
+    (let (ty:StrView (type-to-ir (a 'type))
           addr:ptr (new-tmp))
       (emit g-entry-stream "  " addr " = alloca " ty "\n")
       (emit g-body-stream "  store " ty " " (a 'val) ", ptr " addr "\n")
@@ -1321,7 +1337,7 @@
 (defn abi-emit-struct-call (info:raw:AbiInfo ret:raw:Type ir-name:CStr arglist:CStr nargs:i32):ref:Val
   (let (ii:raw:AbiInfo info
         k:i32 (info 'kind)
-        ty:ptr (type-to-ir ret))
+        ty:StrView (type-to-ir ret))
     (when (= k ABI-MEMORY)
       (let (slot:ptr (new-tmp)
             sep:ptr "")
@@ -1397,7 +1413,7 @@
       (when (!= (type-is-strview target) 0)
         (let (v0:ptr (new-tmp)
               v1:ptr (new-tmp)
-              svir:ptr (type-to-ir target))
+              svir:StrView (type-to-ir target))
           (emit g-body-stream "  " v0 " = insertvalue " svir " undef, ptr " (vv 'val) ", 0\n")
           (emit g-body-stream "  " v1 " = insertvalue " svir " " v0 ", " (ptr-int-ir) " "
                 (vv 'lit-i64) ", 1\n")
@@ -1600,6 +1616,20 @@
     ; it — the earlier `(return null)`s above are deliberate refusals of a
     ; specific pair, not "no built-in applies".
     (return (coerce-via-cast-rule v target))))
+
+; Stage 17 C6: `collapse-strlit-cstr` for a branch that feeds a phi, target-typed.
+; Collapsing is right only when nothing downstream wants a view; when the join is
+; known to feed a `StrView` slot the literal has to materialize HERE, in its own
+; branch block, because that is the only place a phi operand may be defined. Left
+; to the join's consumer, `(if c "i16" "i64")` in a StrView-returning function
+; phis bare pointers and the aggregate return then reads past them.
+(defn join-strlit-branch (v:ref:Val want:ptr line:i32):ref:Val
+  (when (and (!= want null) (!= (type-is-strview want) 0)
+             (!= (v 'is-lit) 0) (!= (type-is-strview (v 'type)) 0))
+    (let (mv:?ptr:Val (coerce-int-val (as raw:Val v) (as raw:Type want) line))
+      (when (!= mv null) (return (as ref:Val mv)))))
+  (collapse-strlit-cstr (as ptr v))
+  (return v))
 
 ; THE bool -> integer widening, in one function its two explicit askers CALL
 ; (`emit-as` step 5 and `vararg-promote`). It is deliberately NOT reachable from

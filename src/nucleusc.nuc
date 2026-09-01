@@ -2151,7 +2151,7 @@
     (when (!= (type-is-strview target) 0)
       (let (v0:ptr (new-tmp)
             v1:ptr (new-tmp)
-            svir:CStr (type-to-ir target))
+            svir:StrView (type-to-ir target))
         (emit g-body-stream "  " v0 " = insertvalue " svir " undef, ptr " tmp ", 0\n")
         (emit g-body-stream "  " v1 " = insertvalue " svir " " v0 ", " (ptr-int-ir) " " slen
               ", 1\n")
@@ -3123,12 +3123,8 @@
 
 ; The shared closing advice. Kept in one place so the macro/const/enum, layout
 ; and prefix messages cannot drift apart on what the user should actually do.
-; Bootstrap shim: the committed `bin/nucleusc` cannot compile `(return "…")`
-; from a `StrView` function — the fix is in `emit-return` in this file, so it
-; takes effect only from the next boot binary. Drop the binding then.
 (defn import-cycle-advice ():StrView
-  (let (s:StrView "break the cycle -- a cross-file reference does not require an import, so a common parent can import both files instead")
-    (return s)))
+  (return "break the cycle -- a cross-file reference does not require an import, so a common parent can import both files instead"))
 
 ; Tier 2b: the name IS defined in this unit, by a file the unit imports
 ; circularly, but by a definer whose effect is emission-time.
@@ -5618,7 +5614,7 @@
         sh:i32 (% (fr 'bit-offset) 8)
         m:i32 (bf-window-bits (fr 'bit-offset) w)
         wb:i32 (* 8 (type-size (as raw:Type ftype)))
-        ir:ptr (type-to-ir ftype)
+        ir:StrView (type-to-ir ftype)
         u:ptr (new-tmp)
         sv:ptr null mk:ptr null av:ptr null tv:ptr null)
     (emit g-body-stream "  " u " = load i" m ", ptr " addr ", align 1\n")
@@ -5651,7 +5647,7 @@
         sh:i32 (% (fr 'bit-offset) 8)
         m:i32 (bf-window-bits (fr 'bit-offset) w)
         wb:i32 (* 8 (type-size (as raw:Type ftype)))
-        ir:ptr (type-to-ir ftype)
+        ir:StrView (type-to-ir ftype)
         u:ptr (new-tmp)
         vt:ptr v
         mk:ptr null vm:ptr null vs:ptr null ms:ptr null
@@ -6629,26 +6625,18 @@
           (inc! i))
         ; A variadic callee needs its signature spelled at the call site so the
         ; `...` boundary is visible; a fixed one takes the bare return type.
-        (let (callee-sig:ptr (type-to-ir ret-type))
+        (let (callee-sig:StrView (type-to-ir ret-type))
           (when (!= (fn-type 'variadic) 0)
-            (let (sig:ptr (alloca i8 512)
-                  sp:i64 0
-                  w:i32 (snprintf sig 512 "%s (" (type-to-ir ret-type)))
-              (set! sp w)
+            (let ((sig String) (str-alloc (strfmt-alloc) (type-to-ir ret-type) " ("))
               (set! i 0)
               (while (< i nfixed)
-                (let (pt:ptr ((field-at (fn-type 'params) i) 'type)
-                      sep:ptr "")
-                  (when (!= i 0) (set! sep ", "))
-                  (set! w (snprintf (unsafe/ptr+ (as ptr:i8 sig) sp) (- 512 sp)
-                                    "%s%s" sep (type-to-ir pt)))
-                  (set! sp (+ sp w)))
+                (let (pt:ptr ((field-at (fn-type 'params) i) 'type))
+                  (when (!= i 0) (str-into sig ", "))
+                  (str-into sig (type-to-ir pt)))
                 (inc! i))
-              (let (va-sep:ptr "")
-                (when (!= nfixed 0) (set! va-sep ", "))
-                (snprintf (unsafe/ptr+ (as ptr:i8 sig) sp) (- 512 sp)
-                          "%s...)" va-sep))
-              (set! callee-sig (arena-strdup sig))))
+              (when (!= nfixed 0) (str-into sig ", "))
+              (str-into sig "...)")
+              (set! callee-sig (string-as-view sig))))
           ; A struct return is `sret`/register-coerced exactly as for a direct
           ; call — abi-emit-struct-call prints its `ir-name` operand verbatim,
           ; so the callee register works where a `@name` does. Never reached for
@@ -7153,32 +7141,25 @@
         (macro-jit-ensure-decl ss)
         (if (!= (ft 'variadic) 0)
           (do
-            (let (sig:ptr (alloca i8 512)
-                  sp:i64 0
-                  w:i32 (snprintf sig 512 "%s (" (type-to-ir (ft 'ret))))
-              (set! sp w)
+            (let ((sigs String) (str-alloc (strfmt-alloc) (type-to-ir (ft 'ret)) " ("))
               (set! i 0)
               (while (< i (ft 'num-params))
-                (let (pt:ptr ((field-at (ft 'params) i) 'type)
-                      sep:ptr "")
-                  (when (!= i 0) (set! sep ", "))
-                  (set! w (snprintf (unsafe/ptr+ (as ptr:i8 sig) sp) (- 512 sp)
-                                    "%s%s" sep (type-to-ir pt)))
-                  (set! sp (+ sp w)))
+                (let (pt:ptr ((field-at (ft 'params) i) 'type))
+                  (when (!= i 0) (str-into sigs ", "))
+                  (str-into sigs (type-to-ir pt)))
                 (inc! i))
-              (let (va-sep:ptr "")
-                (when (!= (ft 'num-params) 0) (set! va-sep ", "))
-                (snprintf (unsafe/ptr+ (as ptr:i8 sig) sp) (- 512 sp)
-                          "%s...)" va-sep))
-              (if (-> ft (_ 'ret) (unsafe/cast ptr:Type _) (_ 'kind) (= _ TY-VOID))
-                (do
-                  (emit g-body-stream "  call " sig " " (ss 'ir-name) "(" arglist ")\n")
-                  ; Stage 10 Phase F1: noreturn callee — close the block.
-                  (when (!= (ss 'noreturn) 0) (terminate-after-noreturn)))
-                (let (tmp:ptr (new-tmp))
-                  (emit g-body-stream "  " tmp " = call " sig " " (ss 'ir-name) "(" arglist
-                        ")\n")
-                  (return (alloc-val (ft 'ret) tmp))))))
+              (when (!= (ft 'num-params) 0) (str-into sigs ", "))
+              (str-into sigs "...)")
+              (let (sig:StrView (string-as-view sigs))
+                (if (-> ft (_ 'ret) (unsafe/cast ptr:Type _) (_ 'kind) (= _ TY-VOID))
+                  (do
+                    (emit g-body-stream "  call " sig " " (ss 'ir-name) "(" arglist ")\n")
+                    ; Stage 10 Phase F1: noreturn callee — close the block.
+                    (when (!= (ss 'noreturn) 0) (terminate-after-noreturn)))
+                  (let (tmp:ptr (new-tmp))
+                    (emit g-body-stream "  " tmp " = call " sig " " (ss 'ir-name) "(" arglist
+                          ")\n")
+                    (return (alloc-val (ft 'ret) tmp)))))))
           (do
             (let (ret-info:ptr:AbiInfo (unsafe/cast ptr:AbiInfo call-ret-info))
               (if (!= ((as ptr:AbiInfo ret-info) 'kind) ABI-DIRECT)
@@ -8561,7 +8542,7 @@
 ; `box-ty`: alloca the box, store the two pointers, load the aggregate. Shared by
 ; the closure-box and bare-fn-box paths.
 (defn build-fatptr-val (blk:ptr vname:ptr box-ty:(raw Type)):ref:Val
-  (let (box-ir:ptr (type-to-ir box-ty)
+  (let (box-ir:StrView (type-to-ir box-ty)
         fpslot:ptr (new-tmp))
     (emit g-entry-stream "  " fpslot " = alloca " box-ir ", align 8\n")
     (let (g0:ptr (new-tmp))
@@ -8595,7 +8576,7 @@
     (ensure-fatptr-sdef)
     (let (fwd:ptr (intern-str (fcstr "@" (sanitize-for-ir (fcstr "__fnfwd." sigtok))))
           vtname:ptr (intern-str (fcstr "@" (sanitize-for-ir (fcstr "__vtfn." sigtok))))
-          ret-ir:ptr (type-to-ir ret))
+          ret-ir:StrView (type-to-ir ret))
       (emit g-out "define internal " ret-ir " " fwd "(ptr %data")
       (dotimes (i np)
         (emit g-out ", " (type-to-ir ((field-at (bt 'params) i) 'type)) " %a" i))
@@ -8929,7 +8910,7 @@
         bt:ptr:Type (unsafe/cast ptr:Type box-ty)
         line:i32 (-> n (unsafe/cast ptr:Node _) (_ 'line))
         ret-ty:ptr (bt 'ret)
-        box-ir:ptr (type-to-ir box-ty))
+        box-ir:StrView (type-to-ir box-ty))
     (check-call-arity "BoxedFn call" null box-ty nargs 0 line)
     (strict-cstr-check-indirect (unsafe/cast (raw Type) box-ty) line)
     (let (data:ptr (new-tmp)
@@ -9035,7 +9016,7 @@
         ret-ty:ptr null
         np:i32 (- (node-len params-node) 1)
         box-val:ptr:Val (as ptr:Val (unsafe/ptr+ (as ptr:Val args) 0))
-        box-ir:ptr (type-to-ir box-ty))
+        box-ir:StrView (type-to-ir box-ty))
     ; S1: a new-style protocol sig `(m (params) :ret)` carries the return at index
     ; 2; legacy `(m:ret (params))` keeps the exact extract-name-and-type parse
     ; (byte-identical). Object-safe (v1) methods have no `Self` in the return, so
@@ -9072,7 +9053,7 @@
                                    "'s signature")))
               (set! (aref (as ptr:ptr arg-vals) i) coerced))
             (inc! i))
-          (let (ret-ir:ptr (type-to-ir ret-ty))
+          (let (ret-ir:StrView (type-to-ir ret-ty))
             (if (= (-> ret-ty (unsafe/cast ptr:Type _) (_ 'kind)) TY-VOID)
               (do
                 (emit g-body-stream "  call void " mfn "(ptr " data)
@@ -9215,7 +9196,7 @@
           (while (!= cur null)
             (let (cname:ptr ((unsafe/cast ptr:Node cur) 's)
                   fty:ptr ((field-at (sd 'fields) k) 'type)
-                  fty-ir:ptr (type-to-ir fty)
+                  fty-ir:StrView (type-to-ir fty)
                   gep:ptr (new-tmp))
               (emit g-body-stream "  " gep " = getelementptr inbounds %" (sd 'ir-name) ", ptr "
                     slot ", i32 0, i32 " k "\n")
@@ -9652,14 +9633,6 @@
       (when (!= g-fn-ret-type null)
         (pkind-flow-check (v 'type) g-fn-ret-type (cc 'line) "return"))
       (emit-walk-cleanups scope)
-      ; Stage 17 C6: a string literal returned into a `StrView` slot. The
-      ; struct-return path stores `v` as a `%StrView` and the chameleon's `val`
-      ; is still the bare data pointer, so LLVM rejected the store; only the
-      ; DIRECT branch below ran the coercer that materializes {ptr,len}.
-      (when (and (!= (v 'is-lit) 0) (!= (type-is-strview (v 'type)) 0)
-                 (!= (type-is-strview g-fn-ret-type) 0))
-        (let (mv:?ptr:Val (coerce-int-val (as raw:Val v) (as raw:Type g-fn-ret-type) (cc 'line)))
-          (when (!= mv null) (set! v (as ref:Val mv)))))
       (if (and (!= g-fn-ret-abi null)
                (!= ((unsafe/cast ptr:AbiInfo g-fn-ret-abi) 'kind) ABI-DIRECT))
         (emit-struct-ret (as ptr v))
@@ -10179,11 +10152,11 @@
           (set! body-node (union-target-rewrite body-node my-want))
           (let (bv:ref:Val (emit-node body-node scope)
                 bterm:i32 g-block-term)
-            ; Stage 14 NS-3: a string-literal cond/if branch collapses to CStr (no
-            ; IR) so the branch join and phi stay a plain pointer, exactly as a
-            ; CStr-literal branch did before the flip. See collapse-strlit-cstr.
-            (collapse-strlit-cstr (as ptr bv))
             (when (= bterm 0)
+              ; Stage 14 NS-3: a string-literal cond/if branch collapses to CStr
+              ; (no IR) so the branch join and phi stay a plain pointer — unless
+              ; the join is known to want a view, when it materializes instead.
+              (set! bv (join-strlit-branch bv my-want (cc 'line)))
               (let (join-lbl:ptr (fcstr "cond.join" id "." i)
                     bty:ptr (bv 'type))
                 (if (= result-type null)
@@ -10232,7 +10205,7 @@
               (= ((as ptr:Type result-type) 'kind) TY-VOID))
         (return (alloc-val ty-void null))
         (let (tmp:ptr (new-tmp)
-              ty-ir:ptr (type-to-ir result-type))
+              ty-ir:StrView (type-to-ir result-type))
           (emit g-body-stream "  " tmp " = phi " ty-ir " ")
           (dotimes (k (count vals))
             (when (> k 0) (emit g-body-stream ", "))
@@ -10522,7 +10495,7 @@
 ; Store a zero/null of `field-type` into the slot at `gep` (struct/array fill).
 (defn emit-zero-store (field-type:(raw Type) gep:ptr sd:(raw StructDef)):void
   (let (ft:ptr:Type (unsafe/cast ptr:Type field-type)
-        ir:ptr (type-to-ir field-type)
+        ir:StrView (type-to-ir field-type)
         zero:ptr "0")
     ; Stage 15 W5d: the pointer test is a representation test, not a bare TY-PTR
     ; kind — a `CStr` (and a `TY-FN` function pointer) lowers to `ptr` in IR, and
@@ -10600,7 +10573,7 @@
             (die-at (node-line (as ptr target) (cc 'line)) (fstr op-name ": undefined local")))
           (when (= (is-int-type (sym 'type)) 0)
             (die-at (cc 'line) (fstr op-name ": must be integer")))
-          (let (ir:ptr (type-to-ir (sym 'type))
+          (let (ir:StrView (type-to-ir (sym 'type))
                 t1:ptr (new-tmp))
             (emit-load t1 ir (sym 'ir-name) (sym 'type))
             (let (t2:ptr (new-tmp))
@@ -10902,7 +10875,7 @@
               (inc! j))
             ; Emit alloca in entry stream, then fill slots.
             (let (slot:ptr (new-tmp)
-                  etype-ir:ptr (type-to-ir etype))
+                  etype-ir:StrView (type-to-ir etype))
               (emit g-entry-stream "  " slot " = alloca " etype-ir ", i32 " length "\n")
               (dotimes (k length)
                 (let (gep:ptr (new-tmp))
@@ -11003,7 +10976,7 @@
                   (emit-bitfield-store (emit-field-gep slot fr) fr
                                        ((unsafe/cast ptr:Val vp) 'val))))
               (let (ftype:ptr (f 'type)
-                    ftype-ir:ptr (type-to-ir ftype)
+                    ftype-ir:StrView (type-to-ir ftype)
                     gep:ptr (new-tmp))
                 (emit g-body-stream "  " gep " = getelementptr inbounds %" sname ", ptr " slot
                       ", i32 0, i32 " (field-ir-index (as raw:StructDef sdef) k) "\n")
@@ -12758,7 +12731,7 @@
             (fstr "defvar: array initializer element type " (type-spelling lit-ety)
                   " does not match the declared element type " (type-spelling ety))))
         (let (slots:ptr (arena-alloc (* n (ptr-bytes)))
-              ety-ir:CStr (type-to-ir ety))
+              ety-ir:StrView (type-to-ir ety))
           (dotimes (i n) (set! (aref (as ptr:ptr slots) i) null))
           (const-array-place init slots n encl)
           (emit g-out "[")

@@ -401,18 +401,40 @@ are interned, so the check is a pointer scan over the names already stored, and
 it runs only in the strict pass (the layout prescan abandons rather than dies).
 Fixture: `tests/fixtures/s17-dup-struct-field.nuc`.
 
-### 27. A join of two string literals collapses to `CStr` — **found**
-`(let (sv:StrView (if c "one" "two")) …)` fails with *"init type mismatch for
+### 27. A join of two string literals collapses to `CStr` — **fixed (C6)**
+`(let (sv:StrView (if c "one" "two")) …)` failed with *"init type mismatch for
 'sv': value is CStr, slot is StrView"*. Each arm is an unmaterialized StrView
-chameleon; the branch join picks their common type and lands on `CStr` rather
-than `StrView`, so a conditional literal cannot fill a `StrView` slot that
-either literal alone fills fine.
+chameleon; `collapse-strlit-cstr` retyped every literal branch to `CStr`
+unconditionally so the phi would stay a plain pointer, and a conditional literal
+therefore could not fill a `StrView` slot that either literal alone fills fine.
 
-**Fix:** the join should keep `StrView` when both arms are string literals — the
-chameleon already adapts to a `CStr`/`ptr` consumer downstream, so nothing is
-lost by joining at the wider type. Belongs with the type-join work
-`macro-conditional-casts.md` MC-2 already schedules (join absorption); do it
-there rather than adding a second join special case.
+The severity was worse than the diagnostic suggested. In a `StrView`-**returning**
+function the same collapse compiled silently and miscompiled: the phi carried a
+bare data pointer, and the aggregate-return path then spilled it through an
+`alloca ptr` and read two eightbytes back out. Under opaque pointers that is not
+a verifier error — the length came from whatever eight bytes followed on the
+stack. `(defn ptr-int-ir ():StrView (if (= b 2) "i16" (if (= b 4) "i32" "i64")))`
+produced a view with a garbage length, which reached `str-into` as a reserve
+request and aborted the compiler with `vector: out of memory` on every input.
+
+**Fixed** by `join-strlit-branch` (src/abi.nuc), which takes the same decision
+target-typed: collapse when nothing downstream wants a view, materialize
+`{ptr,len}` in the branch's own block when the join is known to feed a `StrView`
+slot. The armed want (`g-want-type`, which `return` and the implicit tail already
+set from the return type) is the signal; `emit-cond`, the defunion match arms and
+the niche match arms all route through it. Materialization has to happen in the
+branch, not at the join's consumer, because that is the only block a phi operand
+may be defined in.
+
+Two backstops landed with it, because the miscompile needed both the collapse and
+a silent mis-size to become garbage: `emit-struct-ret` now materializes a
+chameleon itself (so neither return path can reach the aggregate ABI with one),
+and it refuses outright when the value it is handed is not the declared return
+type. Regression test: `tests/fixtures/s17-strview-literal-join.nuc`.
+
+This did **not** need the `macro-conditional-casts.md` MC-2 join absorption it was
+originally filed against: the type join is not where the information is. A join
+sees only the arms; whether a view is wanted is a property of the destination.
 ### 28. Nucleus cannot see a C preprocessor macro, so `open(2)`'s flags are hardcoded — **deferred to [future/platform-constants.md](../future/platform-constants.md)**
 `(import-use "fcntl.h")` brings in C *declarations*, deliberately not C macros
 (design/overview.md), so `O_RDONLY`/`O_CREAT`/`O_TRUNC`/`O_APPEND` do not

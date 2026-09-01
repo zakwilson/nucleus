@@ -243,7 +243,7 @@
   (when (!= (sdef-layout-pending sd) 0)
     (die-at line (cycle-layout-message (sd 'name) what))))
 
-(defn type-to-ir (t:raw:Type):CStr
+(defn type-to-ir (t:raw:Type):StrView
   ; W3a backstop: an opaque type has no LLVM definition, so printing `%Foo` here
   ; would produce IR the LLVM parser rejects with no source location at all.
   ; Every site that can reasonably name a by-value opaque type checks first with
@@ -277,7 +277,7 @@
       TY-F80    (return "x86_fp80")
       TY-F128   (return "fp128")
       (:or TY-USIZE TY-SSIZE)    (return (ptr-int-ir))
-      (:or TY-STRUCT TY-UNION)   (return (fcstr "%" ((tt 'sdef) 'ir-name)))
+      (:or TY-STRUCT TY-UNION)   (return (fstr "%" ((tt 'sdef) 'ir-name)))
       ; Stage 15 W8 G-2: `[N x T]`. Two-step format because the widest helper
       ; taking (int, string) in that order does not exist — fmt-sd is (string,
       ; int). Composing two fixed-arity calls is the documented alternative to
@@ -294,9 +294,8 @@
                   ; C1a: -1 is C99's flexible array member, which HAS no extent
                   ; — `[0 x T]`, distinct from the 0 above.
                   (when (< (tt 'arr-len) 0)
-                    (return (fcstr "[0 x " (type-to-ir (tt 'elem)) "]")))
-                  (return (fcstr "[" (fcstr (tt 'arr-len)) " x " (type-to-ir (tt 'elem))
-                                "]")))
+                    (return (fstr "[0 x " (type-to-ir (tt 'elem)) "]")))
+                  (return (fstr "[" (tt 'arr-len) " x " (type-to-ir (tt 'elem)) "]")))
       (return "?"))))
 
 ; ============================================================
@@ -816,9 +815,12 @@
 ; Ternary over the target pointer width (Stage 14 AVR-2): 2→i16 (AVR), 4→i32
 ; (ILP32), else i64 (LP64/LLP64 hosts). Byte-identical on every hosted target,
 ; where g-target-ptr-bytes is 8 → "i64", exactly as the prior binary form.
-(defn ptr-int-ir ():ptr
-  (if (= g-target-ptr-bytes 2) "i16"
-    (if (= g-target-ptr-bytes 4) "i32" "i64")))
+; Explicit returns, not the nested `if` the sibling below still uses: this is the
+; one shape a pre-C6 compiler can also build, and it has to bootstrap.
+(defn ptr-int-ir ():StrView
+  (when (= g-target-ptr-bytes 2) (return "i16"))
+  (when (= g-target-ptr-bytes 4) (return "i32"))
+  (return "i64"))
 
 ; The registered singleton type for a pointer-sized integer on the target.
 ; Same 2/4/else-8 selection as ptr-int-ir; ty-i16 is a registered singleton
