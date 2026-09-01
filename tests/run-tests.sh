@@ -14078,6 +14078,32 @@ run_cheader_c_include() {
 }
 spawn run_cheader_c_include
 
+# Stage 17 B2: `read-line` over a buffered fd 0. Not an example — an example
+# inherits the harness's stdin and would block on a terminal — so the input is
+# piped here. The last line deliberately has no terminator, and the blank line
+# must come back as a zero-length String rather than being skipped.
+run_s17_read_line() {
+  local bin actual
+  bin="./build/out/s17-read-line"
+  rm -f "$bin"
+  if ! ./build/nucleusc tests/fixtures/s17-read-line.nuc -o "$bin" 2>&1; then
+    echo "FAIL  s17-read-line (compile error)"
+    return 0
+  fi
+  actual="$(printf 'alpha\nbeta\n\nno-newline' | "$bin" 2>&1 || true)"
+  if [ "$actual" = "1: [alpha] len=5
+2: [beta] len=4
+3: [] len=0
+4: [no-newline] len=10
+eof" ]; then
+    echo "PASS  s17-read-line"
+  else
+    echo "FAIL  s17-read-line"
+    printf '%s\n' "$actual" | sed 's/^/    got: /'
+  fi
+}
+spawn run_s17_read_line
+
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided
 # by scanning buffered output, since `set -e` does not propagate across `&`).
