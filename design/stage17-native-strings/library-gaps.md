@@ -413,7 +413,7 @@ chameleon already adapts to a `CStr`/`ptr` consumer downstream, so nothing is
 lost by joining at the wider type. Belongs with the type-join work
 `macro-conditional-casts.md` MC-2 already schedules (join absorption); do it
 there rather than adding a second join special case.
-### 28. Nucleus cannot see a C preprocessor macro, so `open(2)`'s flags are hardcoded — **found (B3), platform-limited**
+### 28. Nucleus cannot see a C preprocessor macro, so `open(2)`'s flags are hardcoded — **deferred to [future/platform-constants.md](../future/platform-constants.md)**
 `(import-use "fcntl.h")` brings in C *declarations*, deliberately not C macros
 (design/overview.md), so `O_RDONLY`/`O_CREAT`/`O_TRUNC`/`O_APPEND` do not
 resolve. `lib/file.nuc` spells them out as `defconst`s — the **Linux/glibc**
@@ -422,10 +422,25 @@ values. Darwin's differ (`O_CREAT` is 0x200 there, `O_TRUNC` 0x400, `O_APPEND`
 already had the same hardcoded block for the same reason.
 
 Not fixable in the library: the value is a property of the target platform, and
-Nucleus has no platform conditional and no per-target constant table. Two real
-fixes, both out of scope for B3: a `--target`-keyed constants module, or teaching
-the C header import to evaluate simple object-like `#define`s. Record and move
-on — the compiler this stage converts builds on Linux.
+Nucleus has no platform conditional and no per-target constant table.
+
+**A Linux-only file library is not an acceptable end state**, so this is
+deferred with a named fix rather than merely recorded: teach the C header import
+to admit object-like `#define`s whose replacement list is an integer constant
+expression. Both halves already exist — `cheader-run-cpp` already shells out to
+`clang -E` with the emission target's `--target=`/`--sysroot=` flags, so `-dM`
+yields the *target's* values; and `c-cexpr-*` (built for array extents) already
+folds C constant expressions and already fails closed on anything it cannot
+fold, which is exactly the admission test. Full design, including the volume and
+name-mangling decisions, in
+[future/platform-constants.md](../future/platform-constants.md).
+
+Out of scope for Stage 17: it is a change to the C header importer, not to the
+string stack, and the compiler this stage converts builds on Linux. Until it
+lands, `lib/file.nuc` states the limitation in its header, in `docs/io.md`, and
+here. The same wall has already been hit by `EINTR` (`lib/io.nuc`, which
+therefore does not retry) and `CLOCKS_PER_SEC` (the B4 benchmark), so this is a
+recurring tax, not one library's problem.
 
 ### 29. `node-type` did not mirror the new tier-0 dispatch pass — **fixed 2026-09-01 (B3)**
 `(try (write-str f sv))` failed with *"match: arm 'ok' binder count does not

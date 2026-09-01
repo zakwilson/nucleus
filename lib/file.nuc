@@ -19,10 +19,10 @@
 (import-use string)
 (import-use fmt)
 
-; open(2)'s flags are preprocessor macros, and Nucleus imports C declarations
-; but deliberately not C macros, so they are spelled out. These are the
-; **Linux/glibc** values; Darwin's differ (design/stage17-native-strings/
-; library-gaps.md #28).
+; open(2)'s flags are preprocessor macros, which Nucleus does not yet import, so
+; they are spelled out. These are the **Linux/glibc** values and Darwin's differ,
+; which makes this module Linux-only — a known defect with a designed fix
+; (design/future/platform-constants.md), not a platform limitation.
 (defconst O-RDONLY 0)
 (defconst O-WRONLY 1)
 (defconst O-CREAT 64)      ; 0100
