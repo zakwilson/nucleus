@@ -12060,6 +12060,10 @@
           (return (emit-cfn n scope)))
         ; Stage 10 tagged sums (unions.md §3–§4)
         (when (= hp 'match) (return (emit-match n scope)))
+        ; Stage 17 A1: `try` lowers to the match its former library macro built,
+        ; but picks the ok arm's binder count from the operand's type (`!void`'s
+        ; ok arm is payload-less) — which is why it is not a macro.
+        (when (= hp 'try) (return (emit-try n scope)))
         (when (= hp 'make) (return (emit-make n scope)))
         ; Internal: niche construction in return position (unions.md §6 rules
         ; 2/3), produced only by union-target-rewrite for a niche return type.
@@ -13920,6 +13924,17 @@
           (when (!= fbits 0)
             (reject-bitfield-type fty (node-line field (cc 'line)) fbits strict))
           (set! (aref (as ptr:ptr fnm) i) (intern-str fname))
+          ; A repeated field is unreachable by name and silently inflates the
+          ; layout; --emit-cheader duly emitted it twice, producing a header no
+          ; C compiler accepts (library-gaps.md #26).
+          (when (!= strict 0)
+            (let (nm:ptr (aref (as ptr:ptr fnm) i)
+                  j:i32 0)
+              (while (< j i)
+                (when (= (aref (as ptr:ptr fnm) j) nm)
+                  (die-at (node-line field (cc 'line))
+                    (fmt-s "defstruct: duplicate field '%s'" fname)))
+                (set! j (+ j 1)))))
           (set! (aref (as ptr:ptr ftp) i) fty)
           (set! (aref (as ptr:i32 fal) i) falign)
           (set! (aref (as ptr:i32 fbw) i) fbits)))
@@ -18348,7 +18363,7 @@
        ; ownership / control
        "move" "defer" "match" "make"
        ; error handling
-       "defunion" "deferror" "err!" "err-name" "err-message"
+       "defunion" "deferror" "err!" "err-name" "err-message" "try"
        "type-token" "__err-handled" "signal"
        ; top-level definers
        "defn" "defvar" "defconst" "defenum" "defstruct"

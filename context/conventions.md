@@ -5819,3 +5819,53 @@ This is the same rule that keeps `die-at`/`report-at` out of macro bodies
 scope, not the compiler's, so a *located* error is not available to it. A
 variadic marker's degenerate case therefore has to have a defensible value
 rather than a diagnostic: `(:or)` in `case` is `false`, like `(or)`.
+
+## A form whose SHAPE depends on its operand's type cannot be a macro
+
+`try` was a macro in `lib/error.nuc` expanding to a fixed
+`(match r ((ok v) v) ((err e) (return (err! e))))`. Stage 17 A1 made `!void`
+work — `(Result void Err)` stamps a **payload-less** `ok` arm, because
+`defunion-register` now drops a `void` field — and that fixed expansion became an
+arity error on every `!void` operand: the arm must be `((ok) (do))` there and
+`((ok v) v)` everywhere else. A macro sees `Node`s, never types, so no macro can
+choose between them. `try` is now a special form (`emit-try`,
+`src/union-emit.nuc`), synthesizing the same match with the arm shape read from
+`result-ok-type`.
+
+The general rule: a macro may *contain* type-dependent code, but it may not
+**branch on a type** to decide what it expands to. When a form's expansion shape
+(not its contents) varies with an operand's type, it belongs beside `match` /
+`unwrap` / `make` in the emitter, with the mandatory `node-type` lockstep arm.
+
+**Two mechanics this cost.** (1) A `defmacro` may not shadow a special form
+(`'X' already names a special form — a symbol may name only one kind of thing`),
+so the library macro and the special form cannot coexist for even one commit.
+(2) The compiler's own sources must compile under the **previous** boot, which
+has neither the new special form nor the renamed macro. With `src/reader.nuc`
+holding 19 `try` sites, the migration is therefore three states, not two: rename
+the macro (`try-boot`) and repoint `src/` at it; land the special form and drop
+the old macro name; `make update-bootstrap`; then flip `src/` back and delete the
+shim. Budget a boot generation for any macro→special-form promotion whose name
+`src/` already uses.
+
+## A coercion keyed on the destination KIND fires at typed pointers too
+
+`(ref StrView)` is `TY-PTR`. So the NS-2/NS-3 rule "a `StrView` borrows to a
+`char*` by taking `data`", written as `(or (= dk TY-PTR) (= dk TY-CSTR))`, also
+fired when the destination was a pointer *to a struct* — including to `StrView`
+itself. Passing a `StrView` value (or a string literal) to a `(ref StrView)`
+parameter compiled clean, passed the data pointer where a `%StrView*` was
+expected, and the callee read `len` out of the string's bytes. A plain
+`(defstruct P x:i64 y:i64)` in the same position was correctly rejected — the
+lattice rule was punching the hole, not the argument path.
+
+Two things to carry forward when adding a rule to `coerce-int-val`:
+
+- **Test the pointee, not just the kind.** `TY-PTR` covers `ptr`, `raw`, `?ptr`,
+  `CStr`-adjacent pointers, *and* every `(ref S)`. A rule that means "byte
+  pointer" must say so: `strview-borrow-target` (`src/type-utils.nuc`) admits
+  `CStr`, a pointer with no `elem`, or a pointer to an 8-bit integer.
+- **Write the negative test with a non-string struct.** The reason this survived
+  from Stage 14 to Stage 17 is that nothing in `src/` produced a `StrView` value,
+  so the rule was dormant through every bootstrap. Byte-identical bootstrap
+  proves a rule is *unreached*, never that it is *right*.

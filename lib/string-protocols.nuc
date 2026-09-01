@@ -66,7 +66,7 @@
   (byte-at     ((self (ref Self)) i:usize):!ui8)
   (bytes      ((self (ref Self))):ByteI)
   (as-view  ((self (ref Self))):StrView)
-  (sub-bytes ((self (ref Self)) start:usize end:usize):!ptr:StrView)
+  (sub-bytes ((self (ref Self)) start:usize end:usize):!StrView)
   (byte-find ((self (ref Self)) (needle (ref StrView))) (Maybe usize)))
 
 ; ---------------------------------------------------------------------------

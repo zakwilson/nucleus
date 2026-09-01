@@ -1855,16 +1855,19 @@ EOF
     sed 's/^/    /' "$d/err" | head -8
   fi
 
-  # The reported artifact itself. `lib/string-split.h` declares `struct StrView
-  # cur;` — a real user struct defined in lib/prelude.nuc — and was the one
-  # committed header that would not compile at all. Uses the COMMITTED copies,
-  # so this also fails if they are regenerated wrong.
+  # The reported artifact itself: a committed header that names an imported
+  # user struct BY VALUE, which only compiles if the generated include chain
+  # made that struct complete. Stage 17 A3 removed the `SplitIter.cur` field
+  # this used to read, so it now uses lib/string.h's by-value return and
+  # by-value parameters. Uses the COMMITTED copies, so this also fails if they
+  # are regenerated wrong.
   cat > "$d/libmain.c" <<'EOF'
-#include "lib/string-split.h"
+#include "lib/string.h"
 int main(void) {
-    SplitIter it;
-    struct StrView cur = it.cur;   /* by-value field of an imported struct */
-    (void)cur;
+    String s = string_new();
+    struct StrView v = string_as_view(&s);   /* imported struct, by value */
+    (void)eq_String_String(s, s);            /* and by-value parameters */
+    (void)v;
     return 0;
 }
 EOF
@@ -6217,6 +6220,9 @@ spawn run_reject s4-legacy-proto-rejected tests/fixtures/s4-legacy-proto.nuc \
   "protocol method 'area': legacy 'name:ret' syntax is no longer supported"
 spawn run_reject s4-legacy-template-rejected tests/fixtures/s4-legacy-template.nuc \
   "defn 'gmax': legacy 'name:ret' syntax is no longer supported"
+
+spawn run_reject s17-dup-struct-field-rejected tests/fixtures/s17-dup-struct-field.nuc \
+  "defstruct: duplicate field 'x'"
 
 # Stage 14 unsafe-namespace.md UN-1 — the `(as TYPE expr)` statically-safe
 # conversion form. Its three rejection categories each route to the right tool:

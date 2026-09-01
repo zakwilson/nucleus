@@ -84,6 +84,7 @@ failure.
 | `as-ref` | `(as-ref p)` — launder a raw pointer into `?T` (null stays none). Pure relabel, no IR; narrow before use. | — |
 | `unwrap` | `(unwrap m)` — the `(ref T)` inside a `?T`, or trap (`llvm.trap`) if none. The one runtime branch nullability costs, paid only where written. | `assert(p); p` |
 | `unwrap-or` | `(unwrap-or m default)` — the `(ref T)` inside, or `default` (evaluated only on the none path; must itself be `(ref ...)`-compatible). | `p ? p : d` |
+| `try` | `(try r)` — propagate a `!T`: yields the `ok` payload, or re-returns the error via `err!` from the enclosing `!T` function. Lowers to that `match`. A special form, not a macro, because the `ok` arm's binder count depends on the operand's type — a `!void` operand's `ok` arm is payload-less and `try` then yields nothing. See [Error handling](errors.md#void--a-result-with-no-ok-payload). | `?` operator |
 | `if-some` | `(if-some (x m) then else)` — if `m` is non-null, bind `x:(ref T)` in `then`; else evaluate `else`. Desugars to `cond`, so its value/typing rules match `if`. | `if ((x = m)) … else …` |
 | `when-some` | `(when-some (x m) body…)` — one-armed `if-some`. | `if ((x = m)) { … }` |
 | `move` | `(move b)` — transfer ownership of a `with`-owned binding out: disarms its scope-exit cleanup, yields the value with its escape taint cleared, and marks `b` consumed (later uses are "use after move"; reassignment revives it). | — |
@@ -202,7 +203,7 @@ At those six sites a **nullable** value is accepted directly and eliminated to
 | `(Maybe T)`, `T` a non-pointer | the `some` arm | tag compare |
 
 ```lisp
-(when m (m kind))          ; same as (when (!= m null) (m kind))
+(when m (m 'kind))         ; same as (when (!= m null) (m 'kind))
 (while cur (walk cur))
 (when (not p) (return -1))
 (and m (> (m 'x) 0))       ; the rhs still narrows under the lhs

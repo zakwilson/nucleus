@@ -741,8 +741,8 @@ error. The type key is the type's mangled-name string (pointer-compare with
 
 **Gating.** The handler machinery lives in `lib/error.nuc`. Without
 `(import-use error)`, `(err E)` behaves like `(err! E)` — the check is never
-emitted. `try`, `with-handler`, `Handler`, and `err-find-handler` all require
-the import.
+emitted. `with-handler`, `Handler`, and `err-find-handler` require the import;
+`try` does not (it is a special form, not a library macro).
 
 **v1 limitation.** Handler repair types must be value types. A repair type that
 is a `(ref X)` (i.e. a `(Maybe (ref X))`-shaped return from the handler fn) is
@@ -992,7 +992,7 @@ escapes (see `design/stage10/lifecycle.md`):
 - Taint follows pointer **identity**: binding a tainted value (`let`/`with`/
   `set!`), `cast`, `ptr+`, `addr-of`, and control-flow joins keep it.
   Copying the pointee **value** out (`deref`, field loads) clears it — so
-  `(return (deref p))` and `(return (p count))` are fine.
+  `(return (deref p))` and `(return (p 'count))` are fine.
 - **Escape sinks** (compile errors on tainted operands): `return` (explicit or
   implicit), and stores into longer-lived memory (`set!` to an outer binding;
   a `set!` place (member, element, or pointee) into memory not owned by the same or an inner

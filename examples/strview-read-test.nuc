@@ -67,33 +67,38 @@
         ((err e) (printf "char-at-1=err\n"))))
 
     ; --- sub-bytes [0,1) → "h" (1 byte) ---
-    (let (r3:!ptr:StrView (sub-bytes sv 0 1))
+    (let (r3:!StrView (sub-bytes sv 0 1))
       (match r3
         ((ok s) (printf "sub-bytes-len=%llu\n" (as ui64 (s 'len))))   ; 1
         ((err e) (printf "sub-bytes=err\n"))))
 
     ; --- starts-with? prefix "h" ---
-    (with (prefix:ptr:StrView (strview-from-cstr "h"))
+    (let (prefix__v:StrView (strview-from-cstr "h")
+          prefix:ptr:StrView (addr-of prefix__v))
       (printf "starts-with-h=%d\n" (starts-with? sv prefix)))    ; 1
 
     ; --- ends-with? suffix "llo" ---
-    (with (suffix:ptr:StrView (strview-from-cstr "llo"))
+    (let (suffix__v:StrView (strview-from-cstr "llo")
+          suffix:ptr:StrView (addr-of suffix__v))
       (printf "ends-with-llo=%d\n" (ends-with? sv suffix))) ; 1
 
     ; --- contains-str? "ll" ---
-    (with (needle:ptr:StrView (strview-from-cstr "ll"))
+    (let (needle__v:StrView (strview-from-cstr "ll")
+          needle:ptr:StrView (addr-of needle__v))
       (printf "contains-ll=%d\n" (contains-str? sv needle))) ; 1
 
     ; --- str-empty? ---
     (printf "empty-hello=%d\n" (str-empty? sv)))  ; 0
 
   ; --- strview-trim ---
-  (with (wsv:ptr:StrView (strview-from-cstr "  hello  ")
+  (let (wsv__v:StrView (strview-from-cstr "  hello  ")
+        wsv:ptr:StrView (addr-of wsv__v)
         t:StrView (strview-trim wsv))
     (printf "trim-len=%llu\n" (as ui64 ((addr-of t) 'len))))  ; 5
 
   ; --- str-empty? on an empty view ---
-  (with (esv:ptr:StrView (strview-from-cstr ""))
+  (let (esv__v:StrView (strview-from-cstr "")
+        esv:ptr:StrView (addr-of esv__v))
     (printf "empty-empty=%d\n" (str-empty? esv))) ; 1
 
   (printf "done\n")

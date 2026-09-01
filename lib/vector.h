@@ -26,6 +26,8 @@ void vector_bounds(const char* what, size_t i, size_t n) asm("vector-bounds");
 /* capacity: generic template; not exported */
 /* reserve: generic template; not exported */
 /* vector-init-capacity: generic template; not exported */
+/* vector-extend-raw: generic template; not exported */
+/* vector-extend: generic template; not exported */
 /* drop: generic template; not exported */
 /* next: generic template; not exported */
 /* iter-init: generic template; not exported */

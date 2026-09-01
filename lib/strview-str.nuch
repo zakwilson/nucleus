@@ -4,7 +4,7 @@
 (declare byte-at ((self (ref StrView)) (i usize)) :!ui8)
 (declare bytes ((self (ref StrView))) :ByteIter)
 (declare as-view ((self (ref StrView))) :StrView)
-(declare sub-bytes ((self (ref StrView)) (start usize) (end usize)) :!ptr:StrView)
+(declare sub-bytes ((self (ref StrView)) (start usize) (end usize)) :!StrView)
 (declare byte-find ((self (ref StrView)) (needle (ref StrView))) (Maybe usize))
 (extend StrView (Str CharIter))
 (declare char-count ((self (ref StrView))) :usize)

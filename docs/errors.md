@@ -65,7 +65,7 @@ machinery.
 | Form | Meaning |
 |---|---|
 | `match` | the eliminator — `((ok v) …)` / `((err e) …)` arms |
-| `(try r)` | propagation macro (`lib/error.nuc`, needs `(import-use error)`): yields the `ok` value, or re-returns the error via `err!` from the enclosing `!T` function |
+| `(try r)` | propagation **special form**: yields the `ok` value, or re-returns the error via `err!` from the enclosing `!T` function. Needs no import. On a `!void` operand the `ok` arm carries no payload, so `try` yields nothing — see [`!void`](#void--a-result-with-no-ok-payload). |
 | `(unwrap r)` | the `ok` payload, or — on `err` — print `err-name`/`err-message` and abort (needs `printf` in scope for the message) |
 | `(unwrap-or r d)` | the `ok` payload, or `d` (evaluated only on the `err` arm) |
 | `(err-name e)` / `(err-message e)` | the descriptor strings for an `Err` value |
@@ -87,6 +87,36 @@ machinery.
   ((ok v)  ...)
   ((err e) (printf "%s: %s\n" (err-name e) (err-message e))))
 ```
+
+## `!void` — a Result with no `ok` payload
+
+A fallible operation with nothing to return on success is spelled `!void`:
+
+```lisp
+(defn check (n:i32):!void
+  (when (> n 100) (return (err! too-big)))
+  (return (ok)))                       ; no payload
+
+(defn use (n:i32):!i32
+  (try (check n))                      ; propagates; yields nothing
+  (return (ok (* n 2))))
+
+(match (check 7)
+  ((ok)    (printf "ok\n"))            ; no binder
+  ((err e) (printf "%s\n" (err-name e))))
+```
+
+`!void` is `(Result void Err)` like any other `!T`, and needs no special
+handling: a `void` field in a `defunion` arm carries no value, so it
+contributes none, and the stamped `ok` arm is payload-less exactly like
+`Maybe`'s `none`. So it is constructed `(ok)`, matched `((ok) …)`, and `try`d
+with the value discarded. The backing layout is the ordinary tagged struct
+`{i32 tag, Err}`.
+
+This is why `try` is a special form rather than a library macro: the `ok` arm's
+binder count depends on the operand's *type*, and a macro cannot see one.
+
+See `examples/result-void.nuc`.
 
 ## C layout of `!T`
 
@@ -172,8 +202,8 @@ error. The type key is the type's mangled-name string (pointer-compare with
 
 **Gating.** The handler machinery lives in `lib/error.nuc`. Without
 `(import-use error)`, `(err E)` behaves like `(err! E)` — the check is never
-emitted. `try`, `with-handler`, `Handler`, and `err-find-handler` all require
-the import.
+emitted. `with-handler`, `Handler`, and `err-find-handler` require the import;
+`try` does not (it is a special form, not a library macro).
 
 **v1 limitation.** Handler repair types must be value types. A repair type that
 is a `(ref X)` (i.e. a `(Maybe (ref X))`-shaped return from the handler fn) is

@@ -2633,7 +2633,7 @@
                         'unsafe/funcall-ptr-i32 'unsafe/funcall-ptr-i64
                         'unsafe/funcall-ptr-ptr 'some 'as-ref 'unwrap
                         'unwrap-or 'if-some 'when-some 'move 'defer 'err-name 'err-message
-                        'match 'make 'err! 'type-token 'signal}
+                        'match 'make 'err! 'try 'type-token 'signal}
                        head)
            false))
 
@@ -5216,6 +5216,16 @@
               (when (!= okt null) (return okt)))
             (when (!= (ptr-pkind t) PTR-MAYBE) (return null))
             (return (type-as-pkind t PTR-REF))))
+        ; Stage 17 A1: `(try R)` yields what `unwrap` would — the ok-arm payload,
+        ; or void when that arm is payload-less (`!void`). Lockstep partner of
+        ; emit-try (src/union-emit.nuc), which lowers to a match on the same arm.
+        (when (= hp 'try)
+          (let (t:ptr (node-type (node-at n 1) scope))
+            (when (= t null) (return null))
+            (let (okt:?ptr:Type (result-ok-type t))
+              (when (!= okt null) (return okt)))
+            (when (!= (as ptr (result-union-of (as raw:Type t))) null) (return ty-void))
+            (return null)))
         (when (or (= hp 'if-some) (= hp 'when-some)) (return null))
         (when (or (= hp 'err-name) (= hp 'err-message)) (return ty-cstr))
         (when (= hp 'type-token) (return ty-cstr))

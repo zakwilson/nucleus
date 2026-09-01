@@ -116,9 +116,10 @@ The bare struct type is registered in the prelude and so is available everywhere
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `strview-from-cstr` | `((cs CStr)) -> (ptr StrView)` | Heap-allocate a `StrView` that borrows `cs`'s bytes. `len` is `strlen(cs)`. The caller owns the returned pointer (free with libc `free`). The C string must outlive the view. |
+| `strview` | `((data (ptr ui8)) len:usize) -> StrView` | The value constructor: a view over `len` bytes at `data`, borrowed. |
+| `strview-from-cstr` | `((cs CStr)) -> StrView` | A `StrView` borrowing `cs`'s bytes, returned **by value** — nothing is allocated and nothing needs freeing. `len` is `strlen(cs)`. The C string must outlive the view. |
 | `strview-to-cstr` | `((sv (ref StrView))) -> CStr` | Reinterpret the view's bytes as a `CStr`. **Only sound when the underlying buffer is NUL-terminated at `data[len]`** — guaranteed for views built from C strings and for keyword names, but not for arbitrary sub-slices. |
-| `strview-len` | `((sv (ref StrView))) -> usize` | Byte length of the view. |
+| `strview-byte-len` | `((sv (ref StrView))) -> usize` | Byte length of the view. |
 | `strview-eq` | `((a (ref StrView)) (b (ref StrView))) -> i32` | Returns `1` if both views have equal length and identical bytes (`memcmp`), `0` otherwise. |
 | `strview-hash` | `((sv (ref StrView))) -> usize` | FNV-1a fold over exactly `len` bytes (same algorithm and offset basis as `lib/hash.nuc`'s scalar/`CStr` conformances). Handles embedded NULs. |
 
@@ -135,14 +136,18 @@ The bare struct type is registered in the prelude and so is available everywhere
 (import-use hash)
 
 (defn main ():i32
-  (let (a:ptr:StrView (strview-from-cstr "hello")
-        b:ptr:StrView (strview-from-cstr "hello")
-        c:ptr:StrView (strview-from-cstr "world"))
-    (printf "len=%llu\n"  (as ui64 (strview-len a)))  ; 5
+  ; strview-from-cstr returns by value and allocates nothing; the
+  ; (ref StrView)-taking helpers are reached through addr-of.
+  (let (av:StrView (strview-from-cstr "hello")
+        bv:StrView (strview-from-cstr "hello")
+        cv:StrView (strview-from-cstr "world")
+        a:ptr:StrView (addr-of av)
+        b:ptr:StrView (addr-of bv)
+        c:ptr:StrView (addr-of cv))
+    (printf "len=%llu\n"  (as ui64 (strview-byte-len a)))  ; 5
     (printf "a=b? %d\n"   (strview-eq a b))              ; 1
     (printf "a=c? %d\n"   (strview-eq a c))              ; 0
-    (printf "cstr=%s\n"   (strview-to-cstr a))           ; hello
-    (free (as ptr a)) (free (as ptr b)) (free (as ptr c)))
+    (printf "cstr=%s\n"   (strview-to-cstr a)))          ; hello
   (return 0))
 ```
 

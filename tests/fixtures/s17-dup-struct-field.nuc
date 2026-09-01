@@ -1,0 +1,6 @@
+; Stage 17 B0 (library-gaps.md #26): a repeated defstruct field name is an error.
+; It is unreachable by name, silently inflates the layout, and --emit-cheader
+; emitted it twice into a header no C compiler accepts.
+(defstruct P x:i64 y:i64 x:i32)
+
+(defn main ():i32 0)

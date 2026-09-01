@@ -12,7 +12,6 @@ typedef struct SplitIter {
     uint8_t* sep_data;
     size_t sep_len;
     bool done;
-    struct StrView cur;
 } SplitIter;
 
 bool split_iter_done(void* it) asm("split-iter-done");
@@ -23,7 +22,6 @@ typedef struct LineIter {
     uint8_t* buf;
     size_t rem;
     bool done;
-    struct StrView cur;
 } LineIter;
 
 bool lines_iter_done(void* it) asm("lines-iter-done");

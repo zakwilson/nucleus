@@ -11,13 +11,20 @@
 
 (defn main ():i32
   ; Build three views: two with identical content, one different.
-  (with (a:ptr:StrView (strview-from-cstr "hello")
-         b:ptr:StrView (strview-from-cstr "hello")
-         c:ptr:StrView (strview-from-cstr "world")
-         d:ptr:StrView (strview-from-cstr "hell"))
+  ; strview-from-cstr returns the view BY VALUE and allocates nothing (Stage 17
+  ; A2), so these are plain `let` bindings — nothing to free — and the
+  ; (ref StrView)-taking helpers below are reached through `addr-of`.
+  (let (av:StrView (strview-from-cstr "hello")
+        bv:StrView (strview-from-cstr "hello")
+        cv:StrView (strview-from-cstr "world")
+        dv:StrView (strview-from-cstr "hell")
+        a:ptr:StrView (addr-of av)
+        b:ptr:StrView (addr-of bv)
+        c:ptr:StrView (addr-of cv)
+        d:ptr:StrView (addr-of dv))
     ; Length.
-    (printf "len-a=%llu\n" (as ui64 (strview-len a)))      ; len-a=5
-    (printf "len-d=%llu\n" (as ui64 (strview-len d)))      ; len-d=4
+    (printf "len-a=%llu\n" (as ui64 (strview-byte-len a)))      ; len-a=5
+    (printf "len-d=%llu\n" (as ui64 (strview-byte-len d)))      ; len-d=4
 
     ; Byte equality: same content equal, different content / length not.
     (printf "a=b? %d\n" (strview-eq a b))                    ; a=b? 1

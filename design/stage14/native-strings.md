@@ -332,6 +332,14 @@ is to bind `(p:ptr:StrView (addr-of sv))` once, then head-position `(p data)` /
 `(ref StrView)` access pattern; a `(ref StrView)` param is already a pointer and
 needs no `addr-of`.
 
+**Correction (Stage 17, 2026-08-31): this gotcha is stale.** Head-position
+`(sv 'len)` works directly on a by-value `StrView` parameter *and* local —
+verified against `bin/nucleusc`. Stage 16's dot-forms step 3 replaced the old
+literal-symbol routing gate with a receiver-shaped one
+(`is-member-access-receiver`), which closed it. Note also that the selector is
+now **quoted**: `(p data)` as written above is a variable reference and must be
+`(p 'data)`.
+
 **Gotcha — a signature retype breaks ptr callers that the survey missed.**
 `register-rmacro`'s task brief named "all 5 callers" (`init-rmacros`), but a 6th
 caller exists: the `def-rmacro` handler (`src/nucleusc.nuc:8548`) passes

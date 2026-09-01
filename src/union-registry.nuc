@@ -1010,7 +1010,8 @@
               (when (> nf 0)
                 (set! fnames (arena-alloc (* (as i64 nf) (ptr-bytes))))
                 (set! ftypes (arena-alloc (* (as i64 nf) (ptr-bytes))))
-                (let (fi:i32 0)
+                (let (fi:i32 0
+                      kept:i32 0)
                   (while (< fi nf)
                     (let (field:ptr (node-at (as ptr arm) (+ fi 1))
                           fname:ptr null
@@ -1019,9 +1020,19 @@
                       (when (= fty null)
                         (die-at (node-line field line)
                           (fmt-s "defunion: field '%s' missing :type" fname)))
-                      (set! (aref (as ptr:ptr fnames) fi) (intern-str fname))
-                      (set! (aref (as ptr:ptr ftypes) fi) fty))
-                    (inc! fi))))))
+                      ; A `void` field carries no value, so it contributes none:
+                      ; this is what makes `!void` — (Result void Err) — stamp an
+                      ; `ok` arm that is payload-less rather than zero-width.
+                      ; design/stage17-native-strings/overview.md phase A1.
+                      (when (!= ((as ptr:Type fty) 'kind) TY-VOID)
+                        (set! (aref (as ptr:ptr fnames) kept) (intern-str fname))
+                        (set! (aref (as ptr:ptr ftypes) kept) fty)
+                        (inc! kept)))
+                    (inc! fi))
+                  (set! nf kept)
+                  (when (= nf 0)
+                    (set! fnames null)
+                    (set! ftypes null))))))
           (when (>= (union-arm-index-in aname arms-vec) 0)
             (die-at (node-line (as ptr arm) line) (fmt-s "defunion: duplicate arm '%s'" aname)))
           ; Arm payload: nothing (payload-less), the single field's type, or a

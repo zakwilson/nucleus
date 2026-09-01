@@ -6,7 +6,6 @@
 
 /* Generated from lib/strview.nuc by nucleusc --emit-cheader */
 
-size_t strview_len(void* sv) asm("strview-len");
 bool strview_eq(void* a, void* b) asm("strview-eq");
 typedef struct ByteIter {
     uint8_t* buf;
@@ -16,7 +15,8 @@ typedef struct ByteIter {
 
 /* next: uses a defunion-template instance type; not exported */
 size_t strview_hash(void* sv) asm("strview-hash");
-struct StrView* strview_from_cstr(const char* cs) asm("strview-from-cstr");
+struct StrView strview(uint8_t* data, size_t len);
+struct StrView strview_from_cstr(const char* cs) asm("strview-from-cstr");
 const char* strview_to_cstr(void* sv) asm("strview-to-cstr");
 size_t hash_pStrView(void* self) asm("hash.pStrView");
 bool eq_StrView_StrView(struct StrView a, struct StrView b) asm("eq.StrView.StrView");
@@ -34,8 +34,13 @@ struct ByteIter strview_bytes(void* sv) asm("strview-bytes");
 struct StrView strview_as_view(void* sv) asm("strview-as-view");
 struct ByteIter cstr_bytes(const char* cs) asm("cstr-bytes");
 struct CharIter cstr_chars(const char* cs) asm("cstr-chars");
-void* strview_sub_bytes(void* sv, size_t start, size_t end) asm("strview-sub-bytes");
-/* strview-byte-find: uses a defunion-template instance type; not exported */
+/* strview-sub-bytes: uses an error-union or option type; not exported */
+/* strview-find: uses a defunion-template instance type; not exported */
+/* strview-find-byte: uses a defunion-template instance type; not exported */
+/* strview-rfind-byte: uses a defunion-template instance type; not exported */
+/* strview-rfind: uses a defunion-template instance type; not exported */
+/* strview-find-char: uses a defunion-template instance type; not exported */
+/* strview-rfind-char: uses a defunion-template instance type; not exported */
 size_t strview_char_count(void* sv) asm("strview-char-count");
 /* strview-char-at: uses an error-union or option type; not exported */
 struct CharIter strview_chars(void* sv) asm("strview-chars");

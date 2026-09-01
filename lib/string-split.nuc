@@ -6,22 +6,6 @@
 ; Design: design/stage11/string.md §"S5 split/lines/trim + FromStr/parse".
 ;
 ; ---------------------------------------------------------------------------
-; WHY NO (Iterator StrView) CONFORMANCE:
-;
-; (Maybe StrView) where StrView is a struct hits a JIT compilation issue:
-; the JIT module for macro expansion (macros.nuc +/when/doseq-iter) references
-; the anonymous Maybe union type which embeds %StrView — but %StrView is not
-; defined in the JIT module, only in the main output module. This causes an
-; LLVM IR parse error at compile time.
-;
-; Instead, each iterator carries a `done:bool` field. Callers drive iteration
-; with a while loop checking `(split-iter-done it)` and calling
-; `(split-iter-next it)` to get each StrView by value.
-;
-; For convenience, a `doseq-split` macro wraps this pattern (similar to
-; `doseq-iter` in macros.nuc).
-;
-; ---------------------------------------------------------------------------
 ; TOKENIZER NOTES (carried from strview.nuc):
 ;   - `?` and `!` must NOT appear in plain defn names (LLVM IR rejects them).
 ;   - Parameters whose type is a parenthesised form use list binding:
@@ -61,12 +45,7 @@
   rem:usize
   sep-data:(ptr ui8)
   sep-len:usize
-  done:bool
-  ; cur: scratch slot holding the most recently yielded segment, so the
-  ; Iterator `next` can hand back a (ref StrView) into the iterator itself
-  ; (see the Iterator conformance below). Filled by `next`; unused by the
-  ; done-flag `split-iter-next` API.
-  cur:StrView)
+  done:bool)
 
 ; split-iter-done — true if the iterator is exhausted (no more segments).
 (defn split-iter-done ((it (ref SplitIter))):bool
@@ -85,14 +64,14 @@
         buf:ptr:ui8 (it 'buf))
     ; Search for separator in buf[0..rem).
     (when (> slen 0)
-      ; Build a temporary StrView over the remaining buffer for strview-byte-find.
+      ; Build a temporary StrView over the remaining buffer for strview-find.
       (let ((haystack (ref StrView)) (alloca StrView))
         (set! (haystack 'data) buf)
         (set! (haystack 'len) rem)
         (let ((needle (ref StrView)) (alloca StrView))
           (set! (needle 'data) (it 'sep-data))
           (set! (needle 'len) slen)
-          (let ((found (Maybe usize)) (strview-byte-find haystack needle))
+          (let ((found (Maybe usize)) (strview-find haystack needle))
             (match found
               ((some k)
                ; Found at offset k: yield buf[0..k].
@@ -134,27 +113,13 @@
     (set! (it 'done) false)
     (return (deref it))))
 
-; ---------------------------------------------------------------------------
-; SplitIter as an Iterator (replaces the deferred done-flag-only API).
-;
-; `next` yields each segment as a (ref StrView) pointing into the iterator's own
-; `cur` slot, encoded as ptr so the (Maybe ptr) is a NICHE-encoded, matchable
-; Maybe — `reduce` / `doseq-iter` / `match` accept it. (Conforming to
-; (Iterator StrView) directly is impossible: (Maybe StrView) embeds %StrView in
-; an anonymous union that the macro-expansion JIT module cannot resolve. The
-; ptr encoding sidesteps this — see lib/iterator.nuc and context/build.md.)
-;
-; Behavior is identical to the done-flag loop: one segment per `next`, the same
-; segments in the same order; iteration ends (none) on the call after the final
-; segment set done=true. Recover each segment with (cast ptr:StrView e);
-; the returned pointer aliases `cur` and is valid until the next `next` call.
-; ---------------------------------------------------------------------------
-(extend SplitIter (Iterator ptr))
+; Yields each segment as a StrView BY VALUE. Was (Iterator ptr) with a `cur`
+; scratch slot until Stage 17 A3: design/stage17-native-strings/overview.md.
+(extend SplitIter (Iterator StrView))
 
-(defn next ((self (ref SplitIter))) (Maybe ptr)
+(defn next ((self (ref SplitIter))) (Maybe StrView)
   (when (self 'done) (return none))
-  (set! (self 'cur) (split-iter-next self))
-  (return (some (addr-of self 'cur))))
+  (return (some (split-iter-next self))))
 
 ; ---------------------------------------------------------------------------
 ; LineIter — split a StrView on '\n', stripping trailing '\r' from each line.
@@ -164,9 +129,7 @@
 (defstruct LineIter
   buf:(ptr ui8)
   rem:usize
-  done:bool
-  ; cur: scratch slot for the most recently yielded line (see SplitIter.cur).
-  cur:StrView)
+  done:bool)
 
 ; lines-iter-done — true if the iterator is exhausted.
 (defn lines-iter-done ((it (ref LineIter))):bool
@@ -223,30 +186,12 @@
     (return (deref it))))
 
 ; ---------------------------------------------------------------------------
-; LineIter as an Iterator. Same ptr encoding and identical behavior as
-; the SplitIter conformance above; yields each line (trailing newline stripped).
+; LineIter as an Iterator. Identical to the SplitIter conformance above; yields
+; each line (trailing newline stripped) as a StrView by value.
 ; ---------------------------------------------------------------------------
-(extend LineIter (Iterator ptr))
+(extend LineIter (Iterator StrView))
 
-(defn next ((self (ref LineIter))) (Maybe ptr)
+(defn next ((self (ref LineIter))) (Maybe StrView)
   (when (self 'done) (return none))
-  (set! (self 'cur) (lines-iter-next self))
-  (return (some (addr-of self 'cur))))
+  (return (some (lines-iter-next self))))
 
-; ---------------------------------------------------------------------------
-; doseq-split — iterate a SplitIter / LineIter (a bare Iterator), binding `var`
-; to each segment as a (ref StrView). Sugar over `doseq-iter` that hides the
-; ptr decode the Iterator conformance uses.
-;
-;   (doseq-split (seg (addr-of it)) (print-sv seg))
-;
-; `var` is bound to a (ref StrView) borrowing the iterator's `cur` slot (valid
-; until the next step). iter-ref is a (ref SplitIter)/(ref LineIter).
-; ---------------------------------------------------------------------------
-(defmacro doseq-split (binding :rest body)
-  (let (var-sym:ptr  ((unsafe/cast ptr:Node binding) 'car)
-        iter-ref:ptr ((unsafe/cast ptr:Node ((unsafe/cast ptr:Node binding) 'cdr)) 'car)
-        raw-sym:ptr  (gensym))
-    `(doseq-iter (~raw-sym ~iter-ref)
-       (let ((~var-sym (ref StrView)) (as ptr:StrView ~raw-sym))
-         ~@body))))

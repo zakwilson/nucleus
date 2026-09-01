@@ -192,12 +192,14 @@ See [The node runtime is a library](toplevel.md#the-node-runtime-is-a-library).
 
 Macro parameters are typed `(raw Node)` — the macro sees AST. Because the
 parameter is a typed (nullable, unchecked) pointer to `Node`, a macro can walk
-the argument's structure with member access **without casting**: `(p car)`,
-`(p cdr)`, and chains such as `((p cdr) car)` type-check directly — `car`/`cdr`
-are themselves `(raw Node)`, so they chain. Use `(p kind)` / `(p s)` / `(p i)`
-/ `(p line)` for the other `Node` fields. (Historically these required
+the argument's structure with member access **without casting**: `(p 'car)`,
+`(p 'cdr)`, and chains such as `((p 'cdr) 'car)` type-check directly — `car`/`cdr`
+are themselves `(raw Node)`, so they chain. Use `(p 'kind)` / `(p 's)` / `(p 'i)`
+/ `(p 'line)` for the other `Node` fields. The selector is **quoted**: a bare
+symbol in that position is an ordinary variable reference (see
+[Member access](special-forms.md#member-access)). (Historically these required
 `((cast ptr:Node p) car)` because `car`/`cdr` were untyped `ptr`; that cast is
-now redundant. If written today it would be `((as ptr:Node p) car)` — bare
+now redundant. If written today it would be `((as ptr:Node p) 'car)` — bare
 `cast` is a Stage 14 hard error — but there's no need to write it at all:
 `ptr`↔`(raw Node)` is a no-op reinterpret the compiler already performs.)
 
@@ -254,18 +256,18 @@ or a macro parameter:
 
 ```lisp
 ; joins to (raw Node) automatically — no cast needed
-(let (rest (if (= (n kind) NODE-CELL) (n cdr) null)) ...)
+(let (rest (if (= (n 'kind) NODE-CELL) (n 'cdr) null)) ...)
 
 ; A variadic-operator macro: the single-arg branch returns the element node,
 ; the others are quasiquoted forms — both join to (raw Node).
 (defmacro * (:rest args)
   (cond (= args null)
           `1
-        (= (args cdr) null)
-          (args car)
+        (= (args 'cdr) null)
+          (args 'car)
         true
-          `(_* ~(args car)
-                (* ~@(args cdr)))))
+          `(_* ~(args 'car)
+                (* ~@(args 'cdr)))))
 ```
 
 Pointer *kind* (`raw` vs. `ref`) is never itself a source of collapse —

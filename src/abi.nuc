@@ -1393,7 +1393,7 @@
     ; Must precede the `sk == dk` identity return below, or a StrView target would
     ; pass the chameleon through unmaterialized (a bare ptr typed as %StrView).
     (when (and (!= (vv 'is-lit) 0) (!= (type-is-strview src) 0))
-      (when (or (= dk TY-PTR) (= dk TY-CSTR))
+      (when (!= (strview-borrow-target target) 0)
         (let (rv:ptr:Val (as ptr:Val (alloc-val target (vv 'val))))
           (set! (rv 'taint) (vv 'taint))
           (set! (rv 'taint-frame) (vv 'taint-frame))
@@ -1514,7 +1514,7 @@
     ; byte-identical bootstrap. A general StrView value is one extractvalue; NS-3
     ; can collapse a *literal* StrView back to its bare GEP.
     (when (and (!= (type-is-strview src) 0)
-               (or (= dk TY-PTR) (= dk TY-CSTR)))
+               (!= (strview-borrow-target target) 0))
       (let (d:ptr (new-tmp))
         (fprintf g-body-stream "  %s = extractvalue %s %s, 0\n"
           d (type-to-ir src) (vv 'val))
