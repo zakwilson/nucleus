@@ -34,21 +34,17 @@
 
 (defn main ():i32
   ; ---- 1. doseq-iter over SplitIter: "a,b,c" on "," -------------------------
-  (let (sv__v:StrView (strview-from-cstr "a,b,c")
-        sv:ptr:StrView (addr-of sv__v)
-         sep__v:StrView (strview-from-cstr ",")
-         sep:ptr:StrView (addr-of sep__v)
+  (let (sv:StrView (strview-from-cstr "a,b,c")
+         sep:StrView (strview-from-cstr ",")
          it:SplitIter (strview-split sv sep))
     (doseq-iter (seg (addr-of it))
-      (print-sv (addr-of seg))
+      (print-sv seg)
       (printf "\n")))
 
   ; ---- 2. reduce over SplitIter: count segments + total length --------------
   ;        "a--b--c" on "--" → 3 segments, total length 3.
-  (let (sv__v:StrView (strview-from-cstr "a--b--c")
-        sv:ptr:StrView (addr-of sv__v)
-         sep__v:StrView (strview-from-cstr "--")
-         sep:ptr:StrView (addr-of sep__v)
+  (let (sv:StrView (strview-from-cstr "a--b--c")
+         sep:StrView (strview-from-cstr "--")
          (cs (ref CountSeg)) (alloca CountSeg)
          (ls (ref SegLenSum)) (alloca SegLenSum)
          it1:SplitIter (strview-split sv sep)
@@ -57,18 +53,15 @@
     (printf "split-len-total=%lld\n" (reduce ls 0 (addr-of it2))))
 
   ; ---- 3. doseq-iter over LineIter: 3 lines ---------------------------------
-  (let (sv__v:StrView (strview-from-cstr "line1\nline2\nline3")
-        sv:ptr:StrView (addr-of sv__v)
+  (let (sv:StrView (strview-from-cstr "line1\nline2\nline3")
          it:LineIter (strview-lines sv))
     (doseq-iter (ln (addr-of it))
-                 (print-sv (addr-of ln))
+                 (print-sv ln)
                  (printf "\n")))
 
   ; ---- 4. parity: Iterator-driven == done-flag-driven, same segments --------
-  (let (sv__v:StrView (strview-from-cstr "x,y,z,w")
-        sv:ptr:StrView (addr-of sv__v)
-         sep__v:StrView (strview-from-cstr ",")
-         sep:ptr:StrView (addr-of sep__v)
+  (let (sv:StrView (strview-from-cstr "x,y,z,w")
+         sep:StrView (strview-from-cstr ",")
          iter-acc:i32 0
          it:SplitIter (strview-split sv sep))
     (doseq-iter (seg (addr-of it))

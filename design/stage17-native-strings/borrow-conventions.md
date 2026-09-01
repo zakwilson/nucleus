@@ -1,6 +1,7 @@
 # Borrow conventions: by-value producers, by-reference consumers
 
-Status: **open decision**, raised by Stage 17 A2/A3, wanted before B1.
+Status: §3.4 **implemented 2026-09-01**; §4 (`(ref T)` split) **deferred**.
+Raised by Stage 17 A2/A3.
 Register entries: [library-gaps.md](library-gaps.md) #18, #24, #25.
 
 ---
@@ -126,10 +127,10 @@ materialize a temporary `String`, append into it, and drop it — a write that
 silently goes nowhere. That is the same class of defect as #25, which this stage
 has just finished closing.
 
-### 3.4 The safe subset: lvalue-only
+### 3.4 The safe subset: lvalue-only — IMPLEMENTED
 
-Implicit address-of **when the argument is an addressable local**, never when it
-is a call result or a literal. This covers the whole of #24's observed friction
+Implicit address-of **when the argument is an addressable binding**, never when
+it is a call result or a literal. This covers the whole of #24's observed friction
 — every instance is `(f local)` — and leaves the temporary-materializing case an
 error, where the `(addr-of …)` the author must write is honest about what is
 happening. It also keeps TC-3 the only place a temporary is materialized, which
@@ -137,7 +138,54 @@ is a far smaller thing to reason about than "any argument position might".
 
 No type-system change. No `.nuch` churn. No bootstrap shim.
 
-## 4. The other option: split `(ref T)`
+**As built.** Three pieces:
+
+1. `Val.lvalue-sym` (`src/compiler-types.nuc`) — the binding a value was loaded
+   from, or null. Set at exactly one place: `emit-symbol-ref-bound`'s load arm.
+   A call result, a literal, or any derived Val has it null by arena zero-init,
+   so lvalue-ness cannot leak. This is the same shape as `is-lit`/`is-flit`/
+   `is-nlit`: a fact only the emitter knows, recorded for the coercion
+   chokepoint, which cannot see the source Node.
+2. `binding-address-val` (`src/nucleusc.nuc`) — the `(ref T)` Val for a
+   binding's storage, factored out of `emit-addr-of` so the explicit `&x` and
+   the implicit form share one owner for the escape-taint rule.
+   `coerce-call-argument` calls it when the argument is an lvalue struct and the
+   parameter is a pointer to exactly that struct.
+3. `params-accept-args` (`src/generics.nuc`) — the dispatch half. Overload
+   resolution runs before coercion, so without this a protocol method
+   (`byte-len`, `sub-bytes`, every `ByteStr`/`Str` method — most of #24's real
+   friction) was rejected as "no matching method" before the coercion could act.
+
+**Where the dispatch rule goes is load-bearing.** It was first written into the
+tier-2 widening pass, which already receives the argument nodes. That broke
+`parse-test`: `from-str` selects its overload by a *phantom first argument*
+(`(from-str (unsafe/cast i32 0) sv)`), and at tier 2 that selector is free to
+integer-widen, so `i32` also matched the `i64` and `f64` overloads —
+"ambiguous overload for 'from-str' under argument widening". The adjustment is
+**exact**, not a widening, so it belongs at tier 0. It runs there as a *second
+pass* after the strict one finds nothing, which keeps an exact overload always
+winning and cannot make a previously-resolving call ambiguous.
+
+**Cost.** The implicit and explicit forms emit the identical call — the slot
+address is already an SSA name, so the address-of itself is free. The load that
+was emitted before the coercion decided is left dead in the IR and removed by
+the optimizer; avoiding it would mean knowing the parameter type before the
+argument is emitted, which is a much larger restructure for no runtime gain.
+
+**Not covered.** Only a *binding* is an lvalue: a field (`(s 'f)`), an array
+element, and a deref are not, though C++ counts all three. If the conversion
+sweep wants them, the extension is to record the address the same way at those
+emitters, not to relax the rule at the coercion site.
+
+## 4. The other option: split `(ref T)` — DEFERRED
+
+**Deferred 2026-09-01.** §3.4 removes the friction that raised this, so the
+split now stands or falls on its own merits (below), which are real but are
+about `src/`-wide readability rather than about Stage 17. It is a type-system
+change touching every protocol signature in `lib/` and every `.nuch`, and it
+wants its own stage. Revisit before a stage that adds protocol surface; the
+argument for doing it *before* B1 was that B1–B4 add four libraries of
+signatures, and that cost is now accepted rather than avoided.
 
 Distinguish a read-only borrow from a mutable one. This is what makes the *full*
 option (c) safe, but it is worth arguing on its own merits, because the
@@ -190,18 +238,15 @@ protocol signature in `lib/` is re-stated. Pre-release, so allowed.
 
 The options **compose** rather than compete.
 
-1. **Lvalue-only implicit address-of, now.** Bridges the seam for every instance
-   of #24 that actually occurs, costs no type-system change, and leaves the
-   unsafe case an error.
-2. **The `(ref T)` split, before B1 if at all.** Justified by §4 independent of
-   this problem. B1–B4 add four libraries of protocol signatures; retrofitting
-   them later doubles the sweep.
+1. **Lvalue-only implicit address-of** — **done** (§3.4).
+2. **The `(ref T)` split** — **deferred** (§4). Justified independent of this
+   problem, but no longer blocking anything in Stage 17.
 3. **Full option (c)** falls out of 2 for free, once mutation is something the
-   type can refuse.
+   type can refuse. Not reachable until 2 lands.
 
-Doing 1 alone is coherent and cheap, and does not foreclose 2. Doing 2 for the
-ergonomics alone is not worth it; doing it for signatures-as-documentation
-across `src/` may well be.
+1 does not foreclose 2. Doing 2 for the ergonomics alone was never worth it;
+doing it for signatures-as-documentation across `src/` may well be, on its own
+schedule.
 
 Uniform by-value and uniform by-reference (§2.1) are **not** on this list. They
 are not achievable, and the effort of attempting either is better spent on 1.

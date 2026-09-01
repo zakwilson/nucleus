@@ -29,30 +29,24 @@
 (defn main ():i32
 
   ; ---- 1. Split "a,b,c" on "," -----------------------------------------------
-  (let (sv__v:StrView (strview-from-cstr "a,b,c")
-        sv:ptr:StrView (addr-of sv__v)
-        sep__v:StrView (strview-from-cstr ",")
-        sep:ptr:StrView (addr-of sep__v)
+  (let (sv:StrView (strview-from-cstr "a,b,c")
+        sep:StrView (strview-from-cstr ",")
         it:SplitIter (strview-split sv sep))
     (doseq-iter (seg (addr-of it))
-                 (print-sv (addr-of seg))
+                 (print-sv seg)
                  (printf "\n")))
 
   ; ---- 2. Split "hello" on "x" (not found) ------------------------------------
-  (let (sv__v:StrView (strview-from-cstr "hello")
-        sv:ptr:StrView (addr-of sv__v)
-        sep__v:StrView (strview-from-cstr "x")
-        sep:ptr:StrView (addr-of sep__v)
+  (let (sv:StrView (strview-from-cstr "hello")
+        sep:StrView (strview-from-cstr "x")
         it:SplitIter (strview-split sv sep))
     (doseq-iter (seg (addr-of it))
-                 (print-sv (addr-of seg))
+                 (print-sv seg)
                  (printf "\n")))
 
   ; ---- 3. Split "" on "," → one empty segment ---------------------------------
-  (let (sv__v:StrView (strview-from-cstr "")
-        sv:ptr:StrView (addr-of sv__v)
-         sep__v:StrView (strview-from-cstr ",")
-         sep:ptr:StrView (addr-of sep__v)
+  (let (sv:StrView (strview-from-cstr "")
+         sep:StrView (strview-from-cstr ",")
          it:SplitIter (strview-split sv sep)
          count:i32 0)
     (doseq-iter (seg (addr-of it))
@@ -61,49 +55,42 @@
                  (printf "empty-count=%d\n" count)))
 
   ; ---- 4. Split "a--b--c" on "--" --------------------------------------------
-  (let (sv__v:StrView (strview-from-cstr "a--b--c")
-        sv:ptr:StrView (addr-of sv__v)
-         sep__v:StrView (strview-from-cstr "--")
-         sep:ptr:StrView (addr-of sep__v)
+  (let (sv:StrView (strview-from-cstr "a--b--c")
+         sep:StrView (strview-from-cstr "--")
          it:SplitIter (strview-split sv sep))
     (doseq-iter (seg (addr-of it))
-                 (print-sv (addr-of seg))
+                 (print-sv seg)
                  (printf "\n")))
 
   ; ---- 5. strview-lines "line1\nline2\nline3" ---------------------------------
-  (let (sv__v:StrView (strview-from-cstr "line1\nline2\nline3")
-        sv:ptr:StrView (addr-of sv__v)
+  (let (sv:StrView (strview-from-cstr "line1\nline2\nline3")
          it:LineIter (strview-lines sv))
     (doseq-iter (seg (addr-of it))
-                 (print-sv (addr-of seg))
+                 (print-sv seg)
                  (printf "\n")))
 
   ; ---- 6. strview-lines with CRLF and trailing newline -----------------------
-  (let (sv__v:StrView (strview-from-cstr "line1\r\nline2\r\n")
-        sv:ptr:StrView (addr-of sv__v)
+  (let (sv:StrView (strview-from-cstr "line1\r\nline2\r\n")
         it:LineIter (strview-lines sv)
         count:i32 0)
     (doseq-iter (seg (addr-of it))
                  (set! count (+ count 1))
                  (printf "crlf%d=" count)
-                 (print-sv (addr-of seg))
+                 (print-sv seg)
                  (printf "\n")))
 
   ; ---- 7. strview-trim "  hello  " → len=5 -----------------------------------
-  (let (sv__v:StrView (strview-from-cstr "  hello  ")
-        sv:ptr:StrView (addr-of sv__v)
+  (let (sv:StrView (strview-from-cstr "  hello  ")
         trimmed:StrView (strview-trim sv))
     (printf "trim-len=%llu\n" (as ui64 ((addr-of trimmed) 'len))))
 
   ; ---- 8. strview-trim-start "  hello" → len=5 --------------------------------
-  (let (sv__v:StrView (strview-from-cstr "  hello")
-        sv:ptr:StrView (addr-of sv__v)
+  (let (sv:StrView (strview-from-cstr "  hello")
         trimmed:StrView (strview-trim-start sv))
     (printf "trim-start-len=%llu\n" (as ui64 ((addr-of trimmed) 'len))))
 
   ; ---- 9. strview-trim-end "hello  " → len=5 ----------------------------------
-  (let (sv__v:StrView (strview-from-cstr "hello  ")
-        sv:ptr:StrView (addr-of sv__v)
+  (let (sv:StrView (strview-from-cstr "hello  ")
         trimmed:StrView (strview-trim-end sv))
     (printf "trim-end-len=%llu\n" (as ui64 ((addr-of trimmed) 'len))))
 

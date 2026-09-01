@@ -35,8 +35,7 @@
 (defn main ():i32
   ; ---- 1. CStr byte fold vs strview-hash over the same bytes ----------------
   (let (cs:CStr "hello, world"
-         sv__v:StrView (strview-from-cstr cs)
-         sv:ptr:StrView (addr-of sv__v)
+         sv:StrView (strview-from-cstr cs)
          it:ByteIter (cstr-bytes cs)
          reduced:usize (fnv-via-reduce (addr-of it))
          direct:usize  (strview-hash sv))

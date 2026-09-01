@@ -6224,6 +6224,9 @@ spawn run_reject s4-legacy-template-rejected tests/fixtures/s4-legacy-template.n
 spawn run_reject s17-dup-struct-field-rejected tests/fixtures/s17-dup-struct-field.nuc \
   "defstruct: duplicate field 'x'"
 
+spawn run_reject s17-rvalue-addr-of-rejected tests/fixtures/s17-rvalue-addr-of.nuc \
+  "show: argument 1 has type StrView, which does not match parameter type ptr:StrView"
+
 # Stage 14 unsafe-namespace.md UN-1 — the `(as TYPE expr)` statically-safe
 # conversion form. Its three rejection categories each route to the right tool:
 #   lossy/narrowing  -> "use unsafe/cast"

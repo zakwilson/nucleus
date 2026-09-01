@@ -284,7 +284,7 @@ for FFI users.
 Converting the six `strview-from-cstr` examples produced one finding worth
 recording, because the conversion is a preview of the whole stage:
 
-### 24. Every by-value producer meets a by-reference consumer — **open decision, see [borrow-conventions.md](borrow-conventions.md)**
+### 24. Every by-value producer meets a by-reference consumer — **fixed 2026-09-01 (lvalue-only implicit address-of)**
 `strview-from-cstr`, `strview-sub-bytes` and `strview-trim*` return `StrView`
 **by value**, while `strview-len`, `strview-eq`, `strview-hash`, `starts-with?`,
 `str-empty?` and every `ByteStr`/`Str` method take `(ref StrView)`. So the
@@ -335,7 +335,17 @@ entry:
   instance of this entry that actually occurs and needs no type-system change.
 - Splitting `(ref T)` into read-only and mutable borrows makes full (c) safe and
   is independently justified — mostly by signatures-as-documentation across
-  `src/`, not by these `addr-of`s. Cheaper before B1 than after.
+  `src/`, not by these `addr-of`s. **Deferred**: §3.4 removes the friction that
+  raised it, so it no longer blocks Stage 17 and wants its own stage.
+
+**Fixed (2026-09-01)** by the lvalue-only subset. `Val.lvalue-sym` records the
+binding a value was loaded from; `coerce-call-argument` passes that binding's
+address; `params-accept-args` is the tier-0 dispatch half, without which every
+protocol method (`byte-len`, `sub-bytes`, the whole `ByteStr`/`Str` surface —
+most of this entry's real friction) was rejected before coercion could act. The
+45 two-line `X__v` / `X` bindings A2's migration created across five examples
+collapsed back to one line each, and the four `(print-sv (addr-of seg))` sites
+A3 forced are `(print-sv seg)` again.
 
 ---
 
