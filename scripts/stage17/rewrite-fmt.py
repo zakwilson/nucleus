@@ -218,10 +218,11 @@ def writes_pieces(head, args, stats):
 
 
 def rewrite(src, path, stats, refusals, dry_run, stderr_mode=False,
-            writes_mode=False):
+            writes_mode=False, line_range=None):
     out = []
     i = 0
     changed = 0
+    lo, hi = line_range or (0, 1 << 30)
     head_re = WRITES_RE if writes_mode else STDERR_RE if stderr_mode else HEAD_RE
     call = "emit" if writes_mode else "eprint" if stderr_mode else "fstr"
     while True:
@@ -237,6 +238,10 @@ def rewrite(src, path, stats, refusals, dry_run, stderr_mode=False,
             i = start + 1
             continue
         head, args, end = parts
+        if not lo <= line_of(src, start) <= hi:
+            out.append(src[i:end])
+            i = end
+            continue
         if stderr_mode:
             args = args[1:]          # drop the `stderr` operand
         out.append(src[i:start])
@@ -286,7 +291,11 @@ def main():
                     help="rewrite (fprintf stderr …) into (eprint …) instead")
     ap.add_argument("--writes", action="store_true",
                     help="C2: rewrite fprintf/printf/fputs/fputc into (emit …)")
+    ap.add_argument("--range", metavar="A:B",
+                    help="only sites whose head is on lines A..B (inclusive), "
+                         "so a 400-site file converts as reviewable regions")
     a = ap.parse_args()
+    rng = tuple(int(x) for x in a.range.split(":")) if a.range else None
 
     stats = Counter()
     refusals = []
@@ -294,7 +303,7 @@ def main():
     for path in a.files:
         src = open(path).read()
         new, changed = rewrite(src, path, stats, refusals, a.dry_run, a.stderr,
-                               a.writes)
+                               a.writes, rng)
         total += changed
         if not a.dry_run and new != src:
             open(path, "w").write(new)
