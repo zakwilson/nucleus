@@ -22,6 +22,7 @@ void string_push_str_unchecked(void* self, void* s) asm("string-push-str-uncheck
 /* string-pop-char: uses a defunion-template instance type; not exported */
 void string_clear(void* self) asm("string-clear");
 /* string-truncate: uses an error-union or option type; not exported */
+void string_truncate_unchecked(void* self, size_t byte_len) asm("string-truncate-unchecked");
 void string_reserve(void* self, size_t extra) asm("string-reserve");
 const char* string_as_cstr(void* self) asm("string-as-cstr");
 void string_shrink_to_fit(void* self) asm("string-shrink-to-fit");

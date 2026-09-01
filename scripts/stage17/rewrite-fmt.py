@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
-"""Stage 17 C1 — rewrite src/format.nuc's `fmt-*` calls into `fstr`.
+"""Stage 17 — rewrite the compiler's formatted-output calls.
 
-    (fmt-2s "macro '%s': %s" name why)
-        ->  (fstr "macro '" name "': " why)
+Three modes, one scanner, because each phase needs the same paren-aware split
+and the same format-string decomposition:
+
+    (default)   C1: (fmt-2s "macro '%s': %s" name why)
+                     ->  (fstr "macro '" name "': " why)
+    --stderr    C1: (fprintf stderr "bad %s\\n" n)  ->  (eprint "bad " n "\\n")
+    --writes    C2: (fprintf g-out "  %%v%d = %s\\n" n ty)
+                     ->  (emit g-out "  %v" n " = " ty "\\n")
+                    plus (printf …), (fputs X S) and (fputc C S).
 
 Paren-aware, not line-oriented: arguments contain nested calls, nested string
 literals and escaped quotes.  See design/stage17-native-strings/
-migration-tooling.md §2, which specifies the same shape for C2's `fprintf`.
+migration-tooling.md §2.
 
 It REFUSES rather than guesses.  A site whose format string is not a literal,
 whose specifiers the table below does not model, or whose conversion count does
@@ -18,7 +25,9 @@ Usage:
     rewrite-fmt.py --dry-run [FILE ...]     # histogram + refusals, no writes
     rewrite-fmt.py FILE ...                 # rewrite in place
 
-Idempotent: it only matches `fmt-*` heads, which the rewrite removes.
+Idempotent in every mode: it only matches heads the rewrite removes.  Not
+transitive in one pass, though — a call nested in another's argument list is
+consumed as source text, so run it to a fixed point.
 """
 
 import argparse
@@ -37,9 +46,21 @@ HEAD_RE = re.compile(r"\((" + "|".join(HELPERS) + r")\s")
 # the literal "\n" as a piece means one less transformation to get wrong.
 STDERR_RE = re.compile(r"\(fprintf\s+stderr\s")
 
-# specifier -> how to spell the argument as a `fstr` piece.
+# C2: the emission surface. `fwrite` is not here — its four sites are all in
+# src/repl.nuc and already pass a length, so they are hand-converted with C5.
+WRITES_RE = re.compile(r"\((fprintf|printf|fputs|fputc)\s")
+
+# `fputc` takes a byte, `emit` takes text. Spelling the common ones as literal
+# pieces keeps the converted site readable; anything else goes through `Char`.
+FPUTC_LIT = {
+    "10": r'"\n"', "32": '" "', "34": r'"\""', "40": '"("', "41": '")"',
+    "48": '"0"', "58": '":"', "92": r'"\\"', "110": '"n"', "114": '"r"',
+    "116": '"t"',
+}
+
+# specifier -> how to spell the argument as a piece.
 DIRECT = {"%s", "%d", "%ld", "%c"}
-SPEC_RE = re.compile(r"%(?:%|016lX|04lX|016lx|ld|[sdc])")
+SPEC_RE = re.compile(r"%(?:%|016lX|04lX|016lx|02X|ld|[sdc])")
 
 
 def render_arg(spec, arg):
@@ -49,6 +70,8 @@ def render_arg(spec, arg):
         return "(hexu %s 16)" % arg
     if spec == "%04lX":
         return "(hexu %s 4)" % arg
+    if spec == "%02X":
+        return "(hexu %s 2)" % arg
     if spec == "%016lx":
         return "(hex %s 16)" % arg
     return arg
@@ -169,12 +192,38 @@ def build(fmt_literal, args):
     return ['"%s"' % t if k == "lit" else t for k, t in pieces]
 
 
-def rewrite(src, path, stats, refusals, dry_run, stderr_mode=False):
+def writes_pieces(head, args, stats):
+    """`emit` operands (sink first), or a string explaining the refusal."""
+    if head == "fputs":
+        if len(args) != 2:
+            return "fputs arity"
+        return [args[1], args[0]]
+    if head == "fputc":
+        if len(args) != 2:
+            return "fputc arity"
+        c = FPUTC_LIT.get(args[0]) or "(as Char (as ui32 %s))" % args[0]
+        return [args[1], c]
+    fi = 1 if head == "fprintf" else 0
+    # `printf` writes the C header and .nuch emissions; the sink is the same
+    # FILE*, so buffering and therefore interleaving are unchanged.
+    sink = args[0] if head == "fprintf" else "(as ptr stdout)"
+    if len(args) <= fi or not args[fi].startswith('"'):
+        return "non-literal format"
+    for sp in SPEC_RE.finditer(args[fi]):
+        stats[sp.group(0)] += 1
+    res = build(args[fi], args[fi + 1:])
+    if isinstance(res, str):
+        return res
+    return [sink] + res
+
+
+def rewrite(src, path, stats, refusals, dry_run, stderr_mode=False,
+            writes_mode=False):
     out = []
     i = 0
     changed = 0
-    head_re = STDERR_RE if stderr_mode else HEAD_RE
-    call = "eprint" if stderr_mode else "fstr"
+    head_re = WRITES_RE if writes_mode else STDERR_RE if stderr_mode else HEAD_RE
+    call = "emit" if writes_mode else "eprint" if stderr_mode else "fstr"
     while True:
         m = head_re.search(src, i)
         if not m:
@@ -192,13 +241,14 @@ def rewrite(src, path, stats, refusals, dry_run, stderr_mode=False):
             args = args[1:]          # drop the `stderr` operand
         out.append(src[i:start])
         i = end
-        if not args or not args[0].startswith('"'):
-            refusals.append((path, line_of(src, start), "non-literal format"))
-            out.append(src[start:end])
-            continue
-        for sp in SPEC_RE.finditer(args[0]):
-            stats[sp.group(0)] += 1
-        res = build(args[0], args[1:])
+        if writes_mode:
+            res = writes_pieces(head, args, stats)
+        elif not args or not args[0].startswith('"'):
+            res = "non-literal format"
+        else:
+            for sp in SPEC_RE.finditer(args[0]):
+                stats[sp.group(0)] += 1
+            res = build(args[0], args[1:])
         if isinstance(res, str):
             refusals.append((path, line_of(src, start), res))
             out.append(src[start:end])
@@ -234,6 +284,8 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--stderr", action="store_true",
                     help="rewrite (fprintf stderr …) into (eprint …) instead")
+    ap.add_argument("--writes", action="store_true",
+                    help="C2: rewrite fprintf/printf/fputs/fputc into (emit …)")
     a = ap.parse_args()
 
     stats = Counter()
@@ -241,7 +293,8 @@ def main():
     total = 0
     for path in a.files:
         src = open(path).read()
-        new, changed = rewrite(src, path, stats, refusals, a.dry_run, a.stderr)
+        new, changed = rewrite(src, path, stats, refusals, a.dry_run, a.stderr,
+                               a.writes)
         total += changed
         if not a.dry_run and new != src:
             open(path, "w").write(new)

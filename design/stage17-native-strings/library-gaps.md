@@ -485,3 +485,18 @@ The general finding, worth keeping: a fold over an `Iterator` is a fine default
 and the wrong tool inside a primitive that everything else calls. Check the
 others (`strview-eq`, the `ByteStr` defaults) before the C-track conversion puts
 them under compiler-scale load.
+
+### 31. No unchecked truncate for a scratch buffer — **fixed 2026-09-01 (C2)**
+`emit`'s buffer is process-wide and rewinds on every use, to a mark the caller
+took from `byte-len` before appending. `string-truncate` is the wrong tool for
+that: it validates that the offset is not mid-codepoint and returns `!void`,
+and the caller can act on neither — the mark is a boundary by construction, and
+the rewind happens in a `:void` function on the hottest path in the compiler.
+
+**Fixed** with `string-truncate-unchecked`, which is what `string-clear` already
+was for the mark-zero case. It only ever shrinks, so it cannot expose
+uninitialised bytes.
+
+The general shape, since it will recur: a `String` used as a reusable buffer
+wants the O(1), non-failing halves of the mutation API — `string-clear` and this
+— and the validating ones are for a `String` being built as a value.

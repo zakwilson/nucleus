@@ -142,7 +142,7 @@
 ; once a terminator (return/goto/trap) has already been emitted into the block.
 (defn terminate-after-noreturn ():void
   (when (= g-block-term 0)
-    (fprintf g-body-stream "  unreachable\n")
+    (emit g-body-stream "  unreachable\n")
     (set! g-block-term 1)))
 
 ; Record an armed Cleanup* on a scope, fired at scope exit (and on each early

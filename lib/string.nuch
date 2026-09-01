@@ -11,6 +11,7 @@
 (declare string-pop-char ((self (ref String))) (Maybe Char))
 (declare string-clear ((self (ref String))) :void)
 (declare string-truncate ((self (ref String)) (byte-len usize)) :!void)
+(declare string-truncate-unchecked ((self (ref String)) (byte-len usize)) :void)
 (declare string-reserve ((self (ref String)) (extra usize)) :void)
 (declare string-as-cstr ((self (ref String))) :CStr)
 (declare string-shrink-to-fit ((self (ref String))) :void)

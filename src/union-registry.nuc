@@ -185,10 +185,9 @@
           op:CStr (if (!= (sdd 'packed) 0) "<{" "{")
           cl:CStr (if (!= (sdd 'packed) 0) "}>" "}"))
       (if (> pad 0)
-        (fprintf g-type-stream "%%%s = type %s %s, [%d x i8] %s\n\n"
-          (sdd 'ir-name) op (type-to-ir rt) pad cl)
-        (fprintf g-type-stream "%%%s = type %s %s %s\n\n"
-          (sdd 'ir-name) op (type-to-ir rt) cl)))))
+        (emit g-type-stream "%" (sdd 'ir-name) " = type " op " " (type-to-ir rt) ", [" pad
+              " x i8] " cl "\n\n")
+        (emit g-type-stream "%" (sdd 'ir-name) " = type " op " " (type-to-ir rt) " " cl "\n\n")))))
 
 ; Is every by-value named-type field dependency of `sd` present in the module
 ; currently being assembled? A field lowers to a `%Name` reference only when its
@@ -1134,9 +1133,9 @@
                   (when (and (!= g-type-stream null)
                              (!= layout LAYOUT-NICHE-MAYBE) (!= layout LAYOUT-NICHE-ERRPTR))
                     (if (!= union-sd null)
-                      (fprintf g-type-stream "%%%s = type { i32, %%%s }\n\n"
-                        (sd 'ir-name) ((as ptr:StructDef union-sd) 'ir-name))
-                      (fprintf g-type-stream "%%%s = type { i32 }\n\n" (sd 'ir-name))))
+                      (emit g-type-stream "%" (sd 'ir-name) " = type { i32, %"
+                            ((as ptr:StructDef union-sd) 'ir-name) " }\n\n")
+                      (emit g-type-stream "%" (sd 'ir-name) " = type { i32 }\n\n")))
                   (sdef-note-emitted (as raw:StructDef sd) g-type-stream))))
             (let (ud:ptr:UnionDef (new UnionDef))
               (conj g-uniondefs ud)

@@ -59,7 +59,7 @@
         nemit:i32 0
         el:i32 0 bt:i32 0 pad:i32 0 blob:i32 0 rs:i32 0
         ne:i32 0 sz:i32 0 tp:i32 0)
-    (fprintf stream "%%%s = type %s" (sdd 'ir-name) (if (!= packed 0) "<{ " "{ "))
+    (emit stream "%" (sdd 'ir-name) " = type " (if (!= packed 0) "<{ " "{ "))
     (dotimes (i (sdd 'num-fields))
       (struct-walk sd i (as ptr:i32 (addr-of el)) (as ptr:i32 (addr-of bt))
                    (as ptr:i32 (addr-of pad)) (as ptr:i32 (addr-of blob))
@@ -68,26 +68,26 @@
       ; PK-3: an `aligned(N)` gap is an element of its own, so the separator
       ; counts EMITTED elements rather than fields.
       (when (> pad 0)
-        (when (!= nemit 0) (fprintf stream ", "))
-        (fprintf stream "[%d x i8]" pad)
+        (when (!= nemit 0) (emit stream ", "))
+        (emit stream "[" pad " x i8]")
         (inc! nemit))
       ; BF-1: a run of bitfields is ONE opaque `[k x i8]` storage element,
       ; written by the field that opens the run; the rest of the run adds
       ; nothing to the list. A zero-width member opens no run and emits nothing.
       (if (!= ((field-at (sdd 'fields) i) 'bit-width) 0)
         (when (!= rs 0)
-          (when (!= nemit 0) (fprintf stream ", "))
-          (fprintf stream "[%d x i8]" blob)
+          (when (!= nemit 0) (emit stream ", "))
+          (emit stream "[" blob " x i8]")
           (inc! nemit))
         (do
-          (when (!= nemit 0) (fprintf stream ", "))
-          (fprintf stream "%s" (type-to-ir ((field-at (sdd 'fields) i) 'type)))
+          (when (!= nemit 0) (emit stream ", "))
+          (emit stream (type-to-ir ((field-at (sdd 'fields) i) 'type)))
           (inc! nemit))))
     (let (tail:i32 (struct-tail-pad sd))
       (when (> tail 0)
-        (when (!= nemit 0) (fprintf stream ", "))
-        (fprintf stream "[%d x i8]" tail)))
-    (fprintf stream "%s" (if (!= packed 0) " }>\n\n" " }\n\n"))))
+        (when (!= nemit 0) (emit stream ", "))
+        (emit stream "[" tail " x i8]")))
+    (emit stream (if (!= packed 0) " }>\n\n" " }\n\n"))))
 
 ; ============================================================
 ; Structural type equality. Moved here from generics.nuc (Stage 16 FP-1): the
@@ -1085,8 +1085,8 @@
     (when (!= name null) (set! nm (ir-name-token name)))
     (when (= k ABI-DIRECT)
       (if (= name null)
-        (fprintf out "%s" (type-to-ir ptype))
-        (fprintf out "%s %%%s.arg" (type-to-ir ptype) nm))
+        (emit out (type-to-ir ptype))
+        (emit out (type-to-ir ptype) " %" nm ".arg"))
       (return))
     (when (= k ABI-MEMORY)
       ; x86_64 uses a `byval` attribute; aarch64, AVR (Stage 14 AVR-7) AND
@@ -1096,22 +1096,22 @@
       (if (and (= (abi-is-aarch64) 0) (= (abi-is-avr) 0) (= (abi-is-riscv) 0))
         ; x86_64: byval attribute
         (if (= name null)
-          (fprintf out "ptr byval(%s) align %d" (type-to-ir ptype) (ii 'align))
-          (fprintf out "ptr byval(%s) align %d %%%s.arg" (type-to-ir ptype) (ii 'align) nm))
+          (emit out "ptr byval(" (type-to-ir ptype) ") align " (ii 'align))
+          (emit out "ptr byval(" (type-to-ir ptype) ") align " (ii 'align) " %" nm ".arg"))
         ; aarch64 / AVR / riscv64: plain pointer
         (if (= name null)
-          (fprintf out "ptr")
-          (fprintf out "ptr %%%s.arg" nm)))
+          (emit out "ptr")
+          (emit out "ptr %" nm ".arg")))
       (return))
     (when (= k ABI-COERCE1)
       (if (= name null)
-        (fprintf out "%s" (ii 'reg0))
-        (fprintf out "%s %%%s.arg" (ii 'reg0) nm))
+        (emit out (ii 'reg0))
+        (emit out (ii 'reg0) " %" nm ".arg"))
       (return))
     ; COERCE2
     (if (= name null)
-      (fprintf out "%s, %s" (ii 'reg0) (ii 'reg1))
-      (fprintf out "%s %%%s.arg.0, %s %%%s.arg.1" (ii 'reg0) nm (ii 'reg1) nm))))
+      (emit out (ii 'reg0) ", " (ii 'reg1))
+      (emit out (ii 'reg0) " %" nm ".arg.0, " (ii 'reg1) " %" nm ".arg.1"))))
 
 ; The g-out spelling, which is every batch-emission caller. The REPL's preamble
 ; declares go to g-repl-preamble instead and call abi-print-param-to directly.
@@ -1136,25 +1136,23 @@
         arg:ptr (fstr "%" mn ".arg"))
     (when (= k ABI-DIRECT)
       (let (palign:i32 (type-size ptype))
-        (fprintf g-entry-stream "  %s = alloca %s, align %d\n" slot (type-to-ir ptype) palign)
-        (fprintf g-entry-stream "  store %s %s, ptr %s, align %d\n"
-          (type-to-ir ptype) arg slot palign)
+        (emit g-entry-stream "  " slot " = alloca " (type-to-ir ptype) ", align " palign "\n")
+        (emit g-entry-stream "  store " (type-to-ir ptype) " " arg ", ptr " slot ", align "
+              palign "\n")
         (scope-define fn-scope pname ptype slot 1))
       (return))
     (when (= k ABI-MEMORY)
       (scope-define fn-scope pname ptype arg 1)
       (return))
     ; COERCE1 / COERCE2: materialize the register arg(s) back into a struct slot.
-    (fprintf g-entry-stream "  %s = alloca %s\n" slot (type-to-ir ptype))
+    (emit g-entry-stream "  " slot " = alloca " (type-to-ir ptype) "\n")
     (if (= k ABI-COERCE1)
-      (fprintf g-entry-stream "  store %s %s, ptr %s\n" (info 'reg0) arg slot)
+      (emit g-entry-stream "  store " (info 'reg0) " " arg ", ptr " slot "\n")
       (let (gp:ptr null)
-        (fprintf g-entry-stream "  store %s %%%s.arg.0, ptr %s\n"
-          (info 'reg0) mn slot)
+        (emit g-entry-stream "  store " (info 'reg0) " %" mn ".arg.0, ptr " slot "\n")
         (set! gp (new-tmp))
-        (fprintf g-entry-stream "  %s = getelementptr i8, ptr %s, i64 %d\n" gp slot (info 'off1))
-        (fprintf g-entry-stream "  store %s %%%s.arg.1, ptr %s\n"
-          (info 'reg1) mn gp)))
+        (emit g-entry-stream "  " gp " = getelementptr i8, ptr " slot ", i64 " (info 'off1) "\n")
+        (emit g-entry-stream "  store " (info 'reg1) " %" mn ".arg.1, ptr " gp "\n")))
     (scope-define fn-scope pname ptype slot 1)))
 
 ; Emit a struct return for the current function per g-fn-ret-abi. `v` is the
@@ -1184,65 +1182,67 @@
             src:ptr (vv 'val))
         (when (= k ABI-MEMORY)
           (let (agg:ptr (new-tmp))
-            (fprintf g-body-stream "  %s = load %s, ptr %s\n" agg ty src)
-            (fprintf g-body-stream "  store %s %s, ptr %s\n" ty agg g-fn-sret-name))
-          (fprintf g-body-stream "  ret void\n")
+            (emit g-body-stream "  " agg " = load " ty ", ptr " src "\n")
+            (emit g-body-stream "  store " ty " " agg ", ptr " g-fn-sret-name "\n"))
+          (emit g-body-stream "  ret void\n")
           (return))
         (if (= k ABI-COERCE1)
           (let (r:ptr (new-tmp))
-            (fprintf g-body-stream "  %s = load %s, ptr %s\n" r (info 'reg0) src)
-            (fprintf g-body-stream "  ret %s %s\n" (info 'reg0) r))
+            (emit g-body-stream "  " r " = load " (info 'reg0) ", ptr " src "\n")
+            (emit g-body-stream "  ret " (info 'reg0) " " r "\n"))
           ; COERCE2: load both eightbytes from the struct address directly.
           (let (r0:ptr (new-tmp)
                 gp:ptr null
                 r1:ptr null
                 a0:ptr null
                 a1:ptr null)
-            (fprintf g-body-stream "  %s = load %s, ptr %s\n" r0 (info 'reg0) src)
+            (emit g-body-stream "  " r0 " = load " (info 'reg0) ", ptr " src "\n")
             (set! gp (new-tmp))
-            (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 %d\n" gp src (info 'off1))
+            (emit g-body-stream "  " gp " = getelementptr i8, ptr " src ", i64 " (info 'off1)
+                  "\n")
             (set! r1 (new-tmp))
-            (fprintf g-body-stream "  %s = load %s, ptr %s\n" r1 (info 'reg1) gp)
+            (emit g-body-stream "  " r1 " = load " (info 'reg1) ", ptr " gp "\n")
             (set! a0 (new-tmp))
-            (fprintf g-body-stream "  %s = insertvalue { %s, %s } undef, %s %s, 0\n"
-              a0 (info 'reg0) (info 'reg1) (info 'reg0) r0)
+            (emit g-body-stream "  " a0 " = insertvalue { " (info 'reg0) ", " (info 'reg1)
+                  " } undef, " (info 'reg0) " " r0 ", 0\n")
             (set! a1 (new-tmp))
-            (fprintf g-body-stream "  %s = insertvalue { %s, %s } %s, %s %s, 1\n"
-              a1 (info 'reg0) (info 'reg1) a0 (info 'reg1) r1)
-            (fprintf g-body-stream "  ret { %s, %s } %s\n" (info 'reg0) (info 'reg1) a1)))
+            (emit g-body-stream "  " a1 " = insertvalue { " (info 'reg0) ", " (info 'reg1) " } "
+                  a0 ", " (info 'reg1) " " r1 ", 1\n")
+            (emit g-body-stream "  ret { " (info 'reg0) ", " (info 'reg1) " } " a1 "\n")))
         (return)))
     ; First-class struct value — the original (byte-identical) path: `.val`
     ; holds the aggregate, so store it / round it through memory directly.
     (let (ty:ptr (type-to-ir (v 'type)))
       (when (= k ABI-MEMORY)
-        (fprintf g-body-stream "  store %s %s, ptr %s\n" ty (vv 'val) g-fn-sret-name)
-        (fprintf g-body-stream "  ret void\n")
+        (emit g-body-stream "  store " ty " " (vv 'val) ", ptr " g-fn-sret-name "\n")
+        (emit g-body-stream "  ret void\n")
         (return))
       (let (tmp:ptr (new-tmp))
-        (fprintf g-entry-stream "  %s = alloca %s\n" tmp ty)
-        (fprintf g-body-stream "  store %s %s, ptr %s\n" ty (vv 'val) tmp)
+        (emit g-entry-stream "  " tmp " = alloca " ty "\n")
+        (emit g-body-stream "  store " ty " " (vv 'val) ", ptr " tmp "\n")
         (if (= k ABI-COERCE1)
           (let (r:ptr (new-tmp))
-            (fprintf g-body-stream "  %s = load %s, ptr %s\n" r (info 'reg0) tmp)
-            (fprintf g-body-stream "  ret %s %s\n" (info 'reg0) r))
+            (emit g-body-stream "  " r " = load " (info 'reg0) ", ptr " tmp "\n")
+            (emit g-body-stream "  ret " (info 'reg0) " " r "\n"))
           ; COERCE2: load both eightbytes, build the {reg0,reg1} return aggregate.
           (let (r0:ptr (new-tmp)
                 gp:ptr null
                 r1:ptr null
                 a0:ptr null
                 a1:ptr null)
-            (fprintf g-body-stream "  %s = load %s, ptr %s\n" r0 (info 'reg0) tmp)
+            (emit g-body-stream "  " r0 " = load " (info 'reg0) ", ptr " tmp "\n")
             (set! gp (new-tmp))
-            (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 %d\n" gp tmp (info 'off1))
+            (emit g-body-stream "  " gp " = getelementptr i8, ptr " tmp ", i64 " (info 'off1)
+                  "\n")
             (set! r1 (new-tmp))
-            (fprintf g-body-stream "  %s = load %s, ptr %s\n" r1 (info 'reg1) gp)
+            (emit g-body-stream "  " r1 " = load " (info 'reg1) ", ptr " gp "\n")
             (set! a0 (new-tmp))
-            (fprintf g-body-stream "  %s = insertvalue { %s, %s } undef, %s %s, 0\n"
-              a0 (info 'reg0) (info 'reg1) (info 'reg0) r0)
+            (emit g-body-stream "  " a0 " = insertvalue { " (info 'reg0) ", " (info 'reg1)
+                  " } undef, " (info 'reg0) " " r0 ", 0\n")
             (set! a1 (new-tmp))
-            (fprintf g-body-stream "  %s = insertvalue { %s, %s } %s, %s %s, 1\n"
-              a1 (info 'reg0) (info 'reg1) a0 (info 'reg1) r1)
-            (fprintf g-body-stream "  ret { %s, %s } %s\n" (info 'reg0) (info 'reg1) a1)))))))
+            (emit g-body-stream "  " a1 " = insertvalue { " (info 'reg0) ", " (info 'reg1) " } "
+                  a0 ", " (info 'reg1) " " r1 ", 1\n")
+            (emit g-body-stream "  ret { " (info 'reg0) ", " (info 'reg1) " } " a1 "\n")))))))
 
 ; Build the LLVM call-argument fragment for one already-emitted argument Val,
 ; emitting any materialization/coercion instructions as a side effect. Scalars
@@ -1288,8 +1288,8 @@
       (return (fstr (type-to-ir (a 'type)) " " (a 'val))))
     (let (ty:ptr (type-to-ir (a 'type))
           addr:ptr (new-tmp))
-      (fprintf g-entry-stream "  %s = alloca %s\n" addr ty)
-      (fprintf g-body-stream "  store %s %s, ptr %s\n" ty (a 'val) addr)
+      (emit g-entry-stream "  " addr " = alloca " ty "\n")
+      (emit g-body-stream "  store " ty " " (a 'val) ", ptr " addr "\n")
       (when (= k ABI-MEMORY)
         ; x86_64: byval attribute; aarch64, AVR (Stage 14 AVR-7) AND riscv64
         ; (Stage 14 RV-3): plain pointer. byval only when the target is none of
@@ -1301,17 +1301,17 @@
           (return (fstr "ptr " addr))))
       (when (= k ABI-COERCE1)
         (let (r:ptr (new-tmp))
-          (fprintf g-body-stream "  %s = load %s, ptr %s\n" r (info 'reg0) addr)
+          (emit g-body-stream "  " r " = load " (info 'reg0) ", ptr " addr "\n")
           (return (fstr (info 'reg0) " " r))))
       ; COERCE2
       (let (r0:ptr (new-tmp)
             gp:ptr null
             r1:ptr null)
-        (fprintf g-body-stream "  %s = load %s, ptr %s\n" r0 (info 'reg0) addr)
+        (emit g-body-stream "  " r0 " = load " (info 'reg0) ", ptr " addr "\n")
         (set! gp (new-tmp))
-        (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 %d\n" gp addr (info 'off1))
+        (emit g-body-stream "  " gp " = getelementptr i8, ptr " addr ", i64 " (info 'off1) "\n")
         (set! r1 (new-tmp))
-        (fprintf g-body-stream "  %s = load %s, ptr %s\n" r1 (info 'reg1) gp)
+        (emit g-body-stream "  " r1 " = load " (info 'reg1) ", ptr " gp "\n")
         (return (fstr (fstr (info 'reg0) " " r0) ", " (fstr (info 'reg1) " " r1))))))))
 
 ; Emit a direct call whose return is a struct lowered per `info`, reconstruct
@@ -1325,42 +1325,42 @@
     (when (= k ABI-MEMORY)
       (let (slot:ptr (new-tmp)
             sep:ptr "")
-        (fprintf g-entry-stream "  %s = alloca %s\n" slot ty)
+        (emit g-entry-stream "  " slot " = alloca " ty "\n")
         (when (> nargs 0) (set! sep ", "))
-        (fprintf g-body-stream "  call void %s(ptr sret(%s) align %d %s%s%s)\n"
-          ir-name ty (ii 'align) slot sep arglist)
+        (emit g-body-stream "  call void " ir-name "(ptr sret(" ty ") align " (ii 'align) " "
+              slot sep arglist ")\n")
         (let (v:ptr (new-tmp))
-          (fprintf g-body-stream "  %s = load %s, ptr %s\n" v ty slot)
+          (emit g-body-stream "  " v " = load " ty ", ptr " slot "\n")
           (return (alloc-val ret v)))))
     (when (= k ABI-COERCE1)
       (let (tmp:ptr (new-tmp))
-        (fprintf g-body-stream "  %s = call %s %s(%s)\n" tmp (ii 'reg0) ir-name arglist)
+        (emit g-body-stream "  " tmp " = call " (ii 'reg0) " " ir-name "(" arglist ")\n")
         (let (slot:ptr (new-tmp))
-          (fprintf g-entry-stream "  %s = alloca %s\n" slot ty)
-          (fprintf g-body-stream "  store %s %s, ptr %s\n" (ii 'reg0) tmp slot)
+          (emit g-entry-stream "  " slot " = alloca " ty "\n")
+          (emit g-body-stream "  store " (ii 'reg0) " " tmp ", ptr " slot "\n")
           (let (v:ptr (new-tmp))
-            (fprintf g-body-stream "  %s = load %s, ptr %s\n" v ty slot)
+            (emit g-body-stream "  " v " = load " ty ", ptr " slot "\n")
             (return (alloc-val ret v))))))
     ; COERCE2: call returns {reg0,reg1}; split it back into the struct slot.
     (let (rty:ptr (fstr "{ " (ii 'reg0) ", " (ii 'reg1) " }")
           tmp:ptr (new-tmp))
-      (fprintf g-body-stream "  %s = call %s %s(%s)\n" tmp rty ir-name arglist)
+      (emit g-body-stream "  " tmp " = call " rty " " ir-name "(" arglist ")\n")
       (let (slot:ptr (new-tmp)
             e0:ptr null
             gp:ptr null
             e1:ptr null
             v:ptr null)
-        (fprintf g-entry-stream "  %s = alloca %s\n" slot ty)
+        (emit g-entry-stream "  " slot " = alloca " ty "\n")
         (set! e0 (new-tmp))
-        (fprintf g-body-stream "  %s = extractvalue %s %s, 0\n" e0 rty tmp)
-        (fprintf g-body-stream "  store %s %s, ptr %s\n" (ii 'reg0) e0 slot)
+        (emit g-body-stream "  " e0 " = extractvalue " rty " " tmp ", 0\n")
+        (emit g-body-stream "  store " (ii 'reg0) " " e0 ", ptr " slot "\n")
         (set! gp (new-tmp))
-        (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 %d\n" gp slot (ii 'off1))
+        (emit g-body-stream "  " gp " = getelementptr i8, ptr " slot ", i64 " (ii 'off1) "\n")
         (set! e1 (new-tmp))
-        (fprintf g-body-stream "  %s = extractvalue %s %s, 1\n" e1 rty tmp)
-        (fprintf g-body-stream "  store %s %s, ptr %s\n" (ii 'reg1) e1 gp)
+        (emit g-body-stream "  " e1 " = extractvalue " rty " " tmp ", 1\n")
+        (emit g-body-stream "  store " (ii 'reg1) " " e1 ", ptr " gp "\n")
         (set! v (new-tmp))
-        (fprintf g-body-stream "  %s = load %s, ptr %s\n" v ty slot)
+        (emit g-body-stream "  " v " = load " ty ", ptr " slot "\n")
         (return (alloc-val ret v))))))
 
 ; Try to coerce a value to a target type. Returns a Val* or null on failure.
@@ -1398,10 +1398,9 @@
         (let (v0:ptr (new-tmp)
               v1:ptr (new-tmp)
               svir:ptr (type-to-ir target))
-          (fprintf g-body-stream "  %s = insertvalue %s undef, ptr %s, 0\n"
-            v0 svir (vv 'val))
-          (fprintf g-body-stream "  %s = insertvalue %s %s, %s %ld, 1\n"
-            v1 svir v0 (ptr-int-ir) (vv 'lit-i64))
+          (emit g-body-stream "  " v0 " = insertvalue " svir " undef, ptr " (vv 'val) ", 0\n")
+          (emit g-body-stream "  " v1 " = insertvalue " svir " " v0 ", " (ptr-int-ir) " "
+                (vv 'lit-i64) ", 1\n")
           (return (alloc-val target v1)))))
     ; Stage 14 NS-3 (design/stage14/native-strings.md): a StrView source (chameleon
     ; literal or materialized value) whose target is a *different* by-value struct
@@ -1512,8 +1511,7 @@
     (when (and (!= (type-is-strview src) 0)
                (!= (strview-borrow-target target) 0))
       (let (d:ptr (new-tmp))
-        (fprintf g-body-stream "  %s = extractvalue %s %s, 0\n"
-          d (type-to-ir src) (vv 'val))
+        (emit g-body-stream "  " d " = extractvalue " (type-to-ir src) " " (vv 'val) ", 0\n")
         (return (alloc-val target d))))
     ; Both integers — emit cast if needed
     (when (and (!= (is-int-type src) 0) (!= (is-int-type target) 0))
@@ -1541,8 +1539,8 @@
             (if (!= (is-unsigned src) 0)
               (set! instr "zext")
               (set! instr "sext")))
-          (fprintf g-body-stream "  %s = %s %s %s to %s\n"
-            tmp instr (type-to-ir src) (vv 'val) (type-to-ir target))
+          (emit g-body-stream "  " tmp " = " instr " " (type-to-ir src) " " (vv 'val) " to "
+                (type-to-ir target) "\n")
           (return (alloc-val target tmp)))))
     ; Stage 15 W2d (design/stage15-stress-test/literal-typing.md §3.6): both
     ; floats. Before this, `coerce-int-val` had NO float case at all, and the two
@@ -1590,8 +1588,8 @@
       (let (tmp:ptr (new-tmp)
             instr:ptr "fpext")
         (when (< (float-width target) (float-width src)) (set! instr "fptrunc"))
-        (fprintf g-body-stream "  %s = %s %s %s to %s\n"
-          tmp instr (type-to-ir src) (vv 'val) (type-to-ir target))
+        (emit g-body-stream "  " tmp " = " instr " " (type-to-ir src) " " (vv 'val) " to "
+              (type-to-ir target) "\n")
         (return (alloc-val target tmp))))
     ; Nothing built-in applies. Last resort is the user's own `defcast` registry
     ; (W9 item 47) — reached by an up-call because `lookup-cast-rule` needs
@@ -1611,8 +1609,8 @@
 (defn widen-bool-to-int (v:raw:Val target:raw:Type):ref:Val
   (let (vv:raw:Val v
         tmp:ptr (new-tmp))
-    (fprintf g-body-stream "  %s = zext %s %s to %s\n"
-      tmp (type-to-ir (vv 'type)) (vv 'val) (type-to-ir target))
+    (emit g-body-stream "  " tmp " = zext " (type-to-ir (vv 'type)) " " (vv 'val) " to "
+          (type-to-ir target) "\n")
     (return (alloc-val target tmp))))
 
 ; SM-5 diagnostic backstop (design/stage14/symbol-mangling.md): validate a

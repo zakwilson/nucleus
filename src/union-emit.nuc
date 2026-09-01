@@ -60,7 +60,7 @@
       (die-at line "unwrap on a Result needs printf in scope — add (import-use \"stdio.h\")"))
     (set! g-err-table-used 1)
     (when (= g-trap-declared 0)
-      (fprintf g-decl-stream "declare void @llvm.trap()\n")
+      (emit g-decl-stream "declare void @llvm.trap()\n")
       (set! g-trap-declared 1))
     (let (base:ptr (new-tmp)
           id:i32 (new-label-id)
@@ -69,16 +69,16 @@
           tgep:ptr (new-tmp)
           tag:ptr (new-tmp)
           isok:ptr (new-tmp))
-      (fprintf g-entry-stream "  %s = alloca %%%s, align %d\n"
-        base (sd 'ir-name) (abi-struct-align sd))
-      (fprintf g-body-stream "  store %%%s %s, ptr %s\n" (sd 'ir-name) (vv 'val) base)
-      (fprintf g-body-stream
-        "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 0\n" tgep (sd 'ir-name) base)
-      (fprintf g-body-stream "  %s = load i32, ptr %s, align 4\n" tag tgep)
-      (fprintf g-body-stream "  %s = icmp eq i32 %s, %d\n" isok tag oi)
-      (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n" isok ok-lbl err-lbl)
+      (emit g-entry-stream "  " base " = alloca %" (sd 'ir-name) ", align "
+            (abi-struct-align sd) "\n")
+      (emit g-body-stream "  store %" (sd 'ir-name) " " (vv 'val) ", ptr " base "\n")
+      (emit g-body-stream "  " tgep " = getelementptr inbounds %" (sd 'ir-name) ", ptr " base
+            ", i32 0, i32 0\n")
+      (emit g-body-stream "  " tag " = load i32, ptr " tgep ", align 4\n")
+      (emit g-body-stream "  " isok " = icmp eq i32 " tag ", " oi "\n")
+      (emit g-body-stream "  br i1 " isok ", label %" ok-lbl ", label %" err-lbl "\n")
       ; error path: load the err id, look up name/message, print, trap.
-      (fprintf g-body-stream "%s:\n" err-lbl)
+      (emit g-body-stream err-lbl ":\n")
       (set! g-block-term 0)
       (let (fmt:CStr "nucleus: unwrap on error %s: %s\n"
             fmt-id:i32 (intern-string "nucleus: unwrap on error %s: %s\n")
@@ -86,13 +86,16 @@
             ngep:ptr (new-tmp) nm:ptr (new-tmp)
             mgep:ptr (new-tmp) msg:ptr (new-tmp)
             ftmp:ptr (new-tmp))
-        (fprintf g-body-stream "  %s = getelementptr inbounds i8, ptr %s, i64 %d\n" epp base poff)
-        (fprintf g-body-stream "  %s = load i32, ptr %s, align 4\n" eid epp)
-        (fprintf g-body-stream "  %s = sext i32 %s to i64\n" eid64 eid)
-        (fprintf g-body-stream "  %s = getelementptr ptr, ptr @nuc_err_names, i64 %s\n" ngep eid64)
-        (fprintf g-body-stream "  %s = load ptr, ptr %s, align 8\n" nm ngep)
-        (fprintf g-body-stream "  %s = getelementptr ptr, ptr @nuc_err_messages, i64 %s\n" mgep eid64)
-        (fprintf g-body-stream "  %s = load ptr, ptr %s, align 8\n" msg mgep)
+        (emit g-body-stream "  " epp " = getelementptr inbounds i8, ptr " base ", i64 " poff
+              "\n")
+        (emit g-body-stream "  " eid " = load i32, ptr " epp ", align 4\n")
+        (emit g-body-stream "  " eid64 " = sext i32 " eid " to i64\n")
+        (emit g-body-stream "  " ngep " = getelementptr ptr, ptr @nuc_err_names, i64 " eid64
+              "\n")
+        (emit g-body-stream "  " nm " = load ptr, ptr " ngep ", align 8\n")
+        (emit g-body-stream "  " mgep " = getelementptr ptr, ptr @nuc_err_messages, i64 " eid64
+              "\n")
+        (emit g-body-stream "  " msg " = load ptr, ptr " mgep ", align 8\n")
         ; Stage 10 C3 panic-tier hook (errors.md §4): consult the unhandled-error
         ; handler chain before aborting, mirroring die-at (lib/reader.nuc). The
         ; library-fn refactor (move the abort into lib/error.nuc) is infeasible:
@@ -112,21 +115,23 @@
                        (!= ((unsafe/cast ptr:Sym uesym) 'is-const) 0))
               (emit-handler-call ((unsafe/cast ptr:Sym uesym) 'const-val)
                                  (as ptr ty-i32) msg scope line))))
-        (fprintf g-body-stream
-          "  %s = getelementptr inbounds [%d x i8], ptr @.str.%d, i64 0, i64 0\n"
-          ftmp (+ (unsafe/cast i32 (strlen fmt)) 1) fmt-id)
-        (fprintf g-body-stream "  call i32 (ptr, ...) @printf(ptr %s, ptr %s, ptr %s)\n" ftmp nm msg)
+        (emit g-body-stream "  " ftmp " = getelementptr inbounds ["
+              (+ (unsafe/cast i32 (strlen fmt)) 1) " x i8], ptr @.str." fmt-id
+              ", i64 0, i64 0\n")
+        (emit g-body-stream "  call i32 (ptr, ...) @printf(ptr " ftmp ", ptr " nm ", ptr " msg
+              ")\n")
         ; Flush before the trap (which raises immediately, bypassing buffers) so
         ; the panic message is not lost. fflush(NULL) flushes all open streams.
         (when (!= (scope-lookup g-globals "fflush") null)
-          (fprintf g-body-stream "  call i32 @fflush(ptr null)\n"))
-        (fprintf g-body-stream "  call void @llvm.trap()\n")
-        (fprintf g-body-stream "  unreachable\n"))
+          (emit g-body-stream "  call i32 @fflush(ptr null)\n"))
+        (emit g-body-stream "  call void @llvm.trap()\n")
+        (emit g-body-stream "  unreachable\n"))
       ; ok path becomes the continuation; load and yield the payload.
-      (fprintf g-body-stream "%s:\n" ok-lbl)
+      (emit g-body-stream ok-lbl ":\n")
       (set! g-block-term 0)
       (let (opp:ptr (new-tmp) res:ptr (new-tmp))
-        (fprintf g-body-stream "  %s = getelementptr inbounds i8, ptr %s, i64 %d\n" opp base poff)
+        (emit g-body-stream "  " opp " = getelementptr inbounds i8, ptr " base ", i64 " poff
+              "\n")
         (emit-load res (type-to-ir ok-ty) opp ok-ty)
         (return (alloc-val ok-ty res))))))
 
@@ -146,23 +151,23 @@
         join-lbl:ptr (fstr "unwrapor.join" id)
         end-lbl:ptr (fstr "unwrapor.end" id)
         tgep:ptr (new-tmp) tag:ptr (new-tmp) isok:ptr (new-tmp))
-    (fprintf g-entry-stream "  %s = alloca %%%s, align %d\n"
-      base (sd 'ir-name) (abi-struct-align sd))
-    (fprintf g-body-stream "  store %%%s %s, ptr %s\n" (sd 'ir-name) (vv 'val) base)
-    (fprintf g-body-stream
-      "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 0\n" tgep (sd 'ir-name) base)
-    (fprintf g-body-stream "  %s = load i32, ptr %s, align 4\n" tag tgep)
-    (fprintf g-body-stream "  %s = icmp eq i32 %s, %d\n" isok tag oi)
-    (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n" isok ok-lbl err-lbl)
+    (emit g-entry-stream "  " base " = alloca %" (sd 'ir-name) ", align " (abi-struct-align sd)
+          "\n")
+    (emit g-body-stream "  store %" (sd 'ir-name) " " (vv 'val) ", ptr " base "\n")
+    (emit g-body-stream "  " tgep " = getelementptr inbounds %" (sd 'ir-name) ", ptr " base
+          ", i32 0, i32 0\n")
+    (emit g-body-stream "  " tag " = load i32, ptr " tgep ", align 4\n")
+    (emit g-body-stream "  " isok " = icmp eq i32 " tag ", " oi "\n")
+    (emit g-body-stream "  br i1 " isok ", label %" ok-lbl ", label %" err-lbl "\n")
     ; ok path: load the payload.
-    (fprintf g-body-stream "%s:\n" ok-lbl)
+    (emit g-body-stream ok-lbl ":\n")
     (set! g-block-term 0)
     (let (opp:ptr (new-tmp) okv:ptr (new-tmp))
-      (fprintf g-body-stream "  %s = getelementptr inbounds i8, ptr %s, i64 %d\n" opp base poff)
+      (emit g-body-stream "  " opp " = getelementptr inbounds i8, ptr " base ", i64 " poff "\n")
       (emit-load okv (type-to-ir ok-ty) opp ok-ty)
-      (fprintf g-body-stream "  br label %%%s\n" end-lbl)
+      (emit g-body-stream "  br label %" end-lbl "\n")
       ; err path: evaluate the default.
-      (fprintf g-body-stream "%s:\n" err-lbl)
+      (emit g-body-stream err-lbl ":\n")
       (set! g-block-term 0)
       (let (dv:ref:Val (emit-node default-node scope)
             dval:ptr null
@@ -172,17 +177,17 @@
             (when (= coerced null)
               (die-at line "unwrap-or: default type mismatch"))
             (set! dval ((as ptr:Val coerced) 'val)))
-          (fprintf g-body-stream "  br label %%%s\n" join-lbl)
-          (fprintf g-body-stream "%s:\n" join-lbl)
-          (fprintf g-body-stream "  br label %%%s\n" end-lbl))
-        (fprintf g-body-stream "%s:\n" end-lbl)
+          (emit g-body-stream "  br label %" join-lbl "\n")
+          (emit g-body-stream join-lbl ":\n")
+          (emit g-body-stream "  br label %" end-lbl "\n"))
+        (emit g-body-stream end-lbl ":\n")
         (set! g-block-term 0)
         (let (tmp:ptr (new-tmp))
           (if (= dterm 0)
-            (fprintf g-body-stream "  %s = phi %s [ %s, %%%s ], [ %s, %%%s ]\n"
-              tmp (type-to-ir ok-ty) okv ok-lbl dval join-lbl)
-            (fprintf g-body-stream "  %s = phi %s [ %s, %%%s ]\n"
-              tmp (type-to-ir ok-ty) okv ok-lbl))
+            (emit g-body-stream "  " tmp " = phi " (type-to-ir ok-ty) " [ " okv ", %" ok-lbl
+                  " ], [ " dval ", %" join-lbl " ]\n")
+            (emit g-body-stream "  " tmp " = phi " (type-to-ir ok-ty) " [ " okv ", %" ok-lbl
+                  " ]\n"))
           (return (alloc-val ok-ty tmp)))))))
 
 ; (unwrap m) — the (ref T) inside, or trap. The one runtime branch nullability
@@ -198,47 +203,50 @@
       (die-at line "unwrap on a Result needs printf in scope — add (import-use \"stdio.h\")"))
     (set! g-err-table-used 1)
     (when (= g-trap-declared 0)
-      (fprintf g-decl-stream "declare void @llvm.trap()\n")
+      (emit g-decl-stream "declare void @llvm.trap()\n")
       (set! g-trap-declared 1))
     (let (iserr:ptr (emit-errptr-is-err rval)
           id:i32 (new-label-id)
           err-lbl:ptr (fstr "unwrap.err" id)
           ok-lbl:ptr (fstr "unwrap.ok" id))
-      (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n" iserr err-lbl ok-lbl)
+      (emit g-body-stream "  br i1 " iserr ", label %" err-lbl ", label %" ok-lbl "\n")
       ; error path: recover the id, look up name/message, signal the panic hook,
       ; print, trap. Mirrors emit-unwrap-result's err block exactly.
-      (fprintf g-body-stream "%s:\n" err-lbl)
+      (emit g-body-stream err-lbl ":\n")
       (set! g-block-term 0)
       (let (fmt:CStr "nucleus: unwrap on error %s: %s\n"
             fmt-id:i32 (intern-string "nucleus: unwrap on error %s: %s\n")
             pineg:ptr (new-tmp) eid:ptr (new-tmp) idtr:ptr (new-tmp) eid64:ptr (new-tmp)
             ngep:ptr (new-tmp) nm:ptr (new-tmp) mgep:ptr (new-tmp) msg:ptr (new-tmp)
             ftmp:ptr (new-tmp))
-        (fprintf g-body-stream "  %s = ptrtoint ptr %s to %s\n" pineg rval (ptr-int-ir))
-        (fprintf g-body-stream "  %s = sub %s 0, %s\n" eid (ptr-int-ir) pineg)
+        (emit g-body-stream "  " pineg " = ptrtoint ptr " rval " to " (ptr-int-ir) "\n")
+        (emit g-body-stream "  " eid " = sub " (ptr-int-ir) " 0, " pineg "\n")
         (if (= (strcmp (ptr-int-ir) "i32") 0)
           (set! idtr eid)
-          (fprintf g-body-stream "  %s = trunc %s %s to i32\n" idtr (ptr-int-ir) eid))
-        (fprintf g-body-stream "  %s = sext i32 %s to i64\n" eid64 idtr)
-        (fprintf g-body-stream "  %s = getelementptr ptr, ptr @nuc_err_names, i64 %s\n" ngep eid64)
-        (fprintf g-body-stream "  %s = load ptr, ptr %s, align 8\n" nm ngep)
-        (fprintf g-body-stream "  %s = getelementptr ptr, ptr @nuc_err_messages, i64 %s\n" mgep eid64)
-        (fprintf g-body-stream "  %s = load ptr, ptr %s, align 8\n" msg mgep)
+          (emit g-body-stream "  " idtr " = trunc " (ptr-int-ir) " " eid " to i32\n"))
+        (emit g-body-stream "  " eid64 " = sext i32 " idtr " to i64\n")
+        (emit g-body-stream "  " ngep " = getelementptr ptr, ptr @nuc_err_names, i64 " eid64
+              "\n")
+        (emit g-body-stream "  " nm " = load ptr, ptr " ngep ", align 8\n")
+        (emit g-body-stream "  " mgep " = getelementptr ptr, ptr @nuc_err_messages, i64 " eid64
+              "\n")
+        (emit g-body-stream "  " msg " = load ptr, ptr " mgep ", align 8\n")
         (when (!= (error-lib-in-scope) 0)
           (let (uesym:?ptr:Sym (scope-lookup g-globals "unhandled-error"))
             (when (and (!= uesym null) (!= ((unsafe/cast ptr:Sym uesym) 'is-const) 0))
               (emit-handler-call ((unsafe/cast ptr:Sym uesym) 'const-val)
                                  (as ptr ty-i32) msg scope line))))
-        (fprintf g-body-stream
-          "  %s = getelementptr inbounds [%d x i8], ptr @.str.%d, i64 0, i64 0\n"
-          ftmp (+ (unsafe/cast i32 (strlen fmt)) 1) fmt-id)
-        (fprintf g-body-stream "  call i32 (ptr, ...) @printf(ptr %s, ptr %s, ptr %s)\n" ftmp nm msg)
+        (emit g-body-stream "  " ftmp " = getelementptr inbounds ["
+              (+ (unsafe/cast i32 (strlen fmt)) 1) " x i8], ptr @.str." fmt-id
+              ", i64 0, i64 0\n")
+        (emit g-body-stream "  call i32 (ptr, ...) @printf(ptr " ftmp ", ptr " nm ", ptr " msg
+              ")\n")
         (when (!= (scope-lookup g-globals "fflush") null)
-          (fprintf g-body-stream "  call i32 @fflush(ptr null)\n"))
-        (fprintf g-body-stream "  call void @llvm.trap()\n")
-        (fprintf g-body-stream "  unreachable\n"))
+          (emit g-body-stream "  call i32 @fflush(ptr null)\n"))
+        (emit g-body-stream "  call void @llvm.trap()\n")
+        (emit g-body-stream "  unreachable\n"))
       ; ok path: r is the (ref T) pointer (non-null, never top-page).
-      (fprintf g-body-stream "%s:\n" ok-lbl)
+      (emit g-body-stream ok-lbl ":\n")
       (set! g-block-term 0)
       (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR)))
         (set! (rt 'elem) elem)
@@ -260,18 +268,18 @@
       (when (!= (ptr-pkind (v 'type)) PTR-MAYBE)
         (die-at (cc 'line) "unwrap: value must be (Maybe (ref ...)) — launder a raw pointer with (as-ref ...)"))
       (when (= g-trap-declared 0)
-        (fprintf g-decl-stream "declare void @llvm.trap()\n")
+        (emit g-decl-stream "declare void @llvm.trap()\n")
         (set! g-trap-declared 1))
       (let (isn:ptr (new-tmp)
             id:i32 (new-label-id)
             trap-lbl:ptr (fstr "unwrap.none" id)
             ok-lbl:ptr (fstr "unwrap.some" id))
-        (fprintf g-body-stream "  %s = icmp eq ptr %s, null\n" isn (v 'val))
-        (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n" isn trap-lbl ok-lbl)
-        (fprintf g-body-stream "%s:\n" trap-lbl)
-        (fprintf g-body-stream "  call void @llvm.trap()\n")
-        (fprintf g-body-stream "  unreachable\n")
-        (fprintf g-body-stream "%s:\n" ok-lbl)
+        (emit g-body-stream "  " isn " = icmp eq ptr " (v 'val) ", null\n")
+        (emit g-body-stream "  br i1 " isn ", label %" trap-lbl ", label %" ok-lbl "\n")
+        (emit g-body-stream trap-lbl ":\n")
+        (emit g-body-stream "  call void @llvm.trap()\n")
+        (emit g-body-stream "  unreachable\n")
+        (emit g-body-stream ok-lbl ":\n")
         (set! g-block-term 0)
         (let (rv:ref:Val (alloc-val (type-as-pkind (v 'type) PTR-REF) (v 'val)))
           (set! (rv 'taint) (v 'taint))
@@ -292,10 +300,10 @@
         end-lbl:ptr (fstr "unwrapor.end" id))
     (set! (ref-ty 'elem) elem)
     (set! (ref-ty 'pkind) PTR-REF)
-    (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n" iserr err-lbl ok-lbl)
-    (fprintf g-body-stream "%s:\n" ok-lbl)
-    (fprintf g-body-stream "  br label %%%s\n" end-lbl)
-    (fprintf g-body-stream "%s:\n" err-lbl)
+    (emit g-body-stream "  br i1 " iserr ", label %" err-lbl ", label %" ok-lbl "\n")
+    (emit g-body-stream ok-lbl ":\n")
+    (emit g-body-stream "  br label %" end-lbl "\n")
+    (emit g-body-stream err-lbl ":\n")
     (set! g-block-term 0)
     (let (dv:ref:Val (emit-node default-node scope)
           dval:ptr null
@@ -307,16 +315,16 @@
             (die-at line "unwrap-or: default type mismatch"))
           (set! dval ((as ptr:Val coerced) 'val))
           (set! dtaint (dv 'taint)))
-        (fprintf g-body-stream "  br label %%%s\n" join-lbl)
-        (fprintf g-body-stream "%s:\n" join-lbl)
-        (fprintf g-body-stream "  br label %%%s\n" end-lbl))
-      (fprintf g-body-stream "%s:\n" end-lbl)
+        (emit g-body-stream "  br label %" join-lbl "\n")
+        (emit g-body-stream join-lbl ":\n")
+        (emit g-body-stream "  br label %" end-lbl "\n"))
+      (emit g-body-stream end-lbl ":\n")
       (set! g-block-term 0)
       (let (tmp:ptr (new-tmp))
         (if (= dterm 0)
-          (fprintf g-body-stream "  %s = phi ptr [ %s, %%%s ], [ %s, %%%s ]\n"
-            tmp rval ok-lbl dval join-lbl)
-          (fprintf g-body-stream "  %s = phi ptr [ %s, %%%s ]\n" tmp rval ok-lbl))
+          (emit g-body-stream "  " tmp " = phi ptr [ " rval ", %" ok-lbl " ], [ " dval ", %"
+                join-lbl " ]\n")
+          (emit g-body-stream "  " tmp " = phi ptr [ " rval ", %" ok-lbl " ]\n"))
         (let (rv:ref:Val (alloc-val (as ptr ref-ty) tmp))
           (set! (rv 'taint) (taint-merge (vv 'taint) dtaint))
           (return rv))))))
@@ -343,11 +351,11 @@
             none-lbl:ptr (fstr "unwrapor.none" id)
             join-lbl:ptr (fstr "unwrapor.join" id)
             end-lbl:ptr (fstr "unwrapor.end" id))
-        (fprintf g-body-stream "  %s = icmp eq ptr %s, null\n" isn (v 'val))
-        (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n" isn none-lbl some-lbl)
-        (fprintf g-body-stream "%s:\n" some-lbl)
-        (fprintf g-body-stream "  br label %%%s\n" end-lbl)
-        (fprintf g-body-stream "%s:\n" none-lbl)
+        (emit g-body-stream "  " isn " = icmp eq ptr " (v 'val) ", null\n")
+        (emit g-body-stream "  br i1 " isn ", label %" none-lbl ", label %" some-lbl "\n")
+        (emit g-body-stream some-lbl ":\n")
+        (emit g-body-stream "  br label %" end-lbl "\n")
+        (emit g-body-stream none-lbl ":\n")
         (set! g-block-term 0)
         (let (dv:ref:Val (emit-node (node-at cc 2) scope)
               dval:ptr null
@@ -359,17 +367,16 @@
                   (die-at (cc 'line) "unwrap-or: default type mismatch"))
                 (set! dval ((as ptr:Val coerced) 'val))
                 (set! dtaint (dv 'taint)))
-              (fprintf g-body-stream "  br label %%%s\n" join-lbl)
-              (fprintf g-body-stream "%s:\n" join-lbl)
-              (fprintf g-body-stream "  br label %%%s\n" end-lbl))
-            (fprintf g-body-stream "%s:\n" end-lbl)
+              (emit g-body-stream "  br label %" join-lbl "\n")
+              (emit g-body-stream join-lbl ":\n")
+              (emit g-body-stream "  br label %" end-lbl "\n"))
+            (emit g-body-stream end-lbl ":\n")
             (set! g-block-term 0)
             (let (tmp:ptr (new-tmp))
               (if (= dterm 0)
-                (fprintf g-body-stream "  %s = phi ptr [ %s, %%%s ], [ %s, %%%s ]\n"
-                  tmp (v 'val) some-lbl dval join-lbl)
-                (fprintf g-body-stream "  %s = phi ptr [ %s, %%%s ]\n"
-                  tmp (v 'val) some-lbl))
+                (emit g-body-stream "  " tmp " = phi ptr [ " (v 'val) ", %" some-lbl " ], [ "
+                      dval ", %" join-lbl " ]\n")
+                (emit g-body-stream "  " tmp " = phi ptr [ " (v 'val) ", %" some-lbl " ]\n"))
               (let (rv:ref:Val (alloc-val ref-ty tmp))
                 (set! (rv 'taint) (taint-merge (v 'taint) dtaint))
                 (return rv)))))))))
@@ -402,8 +409,8 @@
           ; in this file applies it; `scope-define` still keys on the source name.
           (let (slot:ptr (fstr "%" (ir-name-token (xnode 's)) ".addr." g-tmp))
             (inc! g-tmp)
-            (fprintf g-entry-stream "  %s = alloca ptr, align 8\n" slot)
-            (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" (mv 'val) slot)
+            (emit g-entry-stream "  " slot " = alloca ptr, align 8\n")
+            (emit g-body-stream "  store ptr " (mv 'val) ", ptr " slot ", align 8\n")
             (let (inner:ref:Scope (scope-new scope)
                   sym:ref:Sym (scope-define inner (xnode 's) (mv 'type) slot 1)
                   ln:i32 (cc 'line))
@@ -449,20 +456,18 @@
       (die-at (cc 'line)
         (fstr (udd 'name) ": arm '" (arm-rec 'name) "' takes a different number of fields")))
     (let (base:ptr (new-tmp))
-      (fprintf g-entry-stream "  %s = alloca %%%s, align %d\n"
-        base (sd 'ir-name) (abi-struct-align sd))
+      (emit g-entry-stream "  " base " = alloca %" (sd 'ir-name) ", align "
+            (abi-struct-align sd) "\n")
       (let (tgep:ptr (new-tmp))
-        (fprintf g-body-stream
-          "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 0\n"
-          tgep (sd 'ir-name) base)
-        (fprintf g-body-stream "  store i32 %d, ptr %s, align 4\n" arm tgep))
+        (emit g-body-stream "  " tgep " = getelementptr inbounds %" (sd 'ir-name) ", ptr " base
+              ", i32 0, i32 0\n")
+        (emit g-body-stream "  store i32 " arm ", ptr " tgep ", align 4\n"))
       (when (> nf 0)
         (let (pp:ptr (new-tmp)
               ftypes:ptr (arm-rec 'ftypes)
               ptype:ptr:Type (unsafe/cast ptr:Type (arm-rec 'ptype)))
-          (fprintf g-body-stream
-            "  %s = getelementptr inbounds i8, ptr %s, i64 %d\n"
-            pp base (union-payload-off ud))
+          (emit g-body-stream "  " pp " = getelementptr inbounds i8, ptr " base ", i64 "
+                (union-payload-off ud) "\n")
           (dotimes (fi:i32 nf)
             (let (ftype:ptr (aref (as ptr:ptr ftypes) fi)
                   v:ref:Val (emit-node (node-at cc (+ argi fi)) scope)
@@ -477,12 +482,12 @@
                 ; one field → the payload IS the field, at offset 0.
                 (when (> nf 1)
                   (set! fgep (new-tmp))
-                  (fprintf g-body-stream
-                    "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
-                    fgep ((unsafe/cast ptr:StructDef (ptype 'sdef)) 'name) pp fi))
+                  (emit g-body-stream "  " fgep " = getelementptr inbounds %"
+                        ((unsafe/cast ptr:StructDef (ptype 'sdef)) 'name) ", ptr " pp
+                        ", i32 0, i32 " fi "\n"))
                 (emit-store (type-to-ir ftype) (cv 'val) fgep ftype))))))
       (let (v:ptr (new-tmp))
-        (fprintf g-body-stream "  %s = load %%%s, ptr %s\n" v (sd 'ir-name) base)
+        (emit g-body-stream "  " v " = load %" (sd 'ir-name) ", ptr " base "\n")
         (let (rv:ref:Val (alloc-val (type-for-sdef sd) v))
           (set! (rv 'taint) taint)
           (return rv))))))
@@ -556,10 +561,9 @@
               (let (eid64:ptr (new-tmp)
                     neg:ptr (new-tmp)
                     pres:ptr (new-tmp))
-                (fprintf g-body-stream "  %s = zext i32 %s to %s\n"
-                  eid64 (ev 'val) (ptr-int-ir))
-                (fprintf g-body-stream "  %s = sub %s 0, %s\n" neg (ptr-int-ir) eid64)
-                (fprintf g-body-stream "  %s = inttoptr %s %s to ptr\n" pres (ptr-int-ir) neg)
+                (emit g-body-stream "  " eid64 " = zext i32 " (ev 'val) " to " (ptr-int-ir) "\n")
+                (emit g-body-stream "  " neg " = sub " (ptr-int-ir) " 0, " eid64 "\n")
+                (emit g-body-stream "  " pres " = inttoptr " (ptr-int-ir) " " neg " to ptr\n")
                 (return (alloc-val (type-as-pkind ty PTR-ERRPTR) pres)))))
           (die-at line (fstr "make: niche (Result (ref T) Err) has arms `ok`/`err`, not '" arm
                              "'")))))))
@@ -631,18 +635,17 @@
         none-place:ptr (make-cell 'none null line)
         none-val:ref:Val (emit-union-construct (as ptr mudd) noneai none-place 1 scope))
     ; Result slot, defaulted to `none`.
-    (fprintf g-entry-stream "  %s = alloca %%%s, align %d\n"
-      mslot (msd 'ir-name) (abi-struct-align (as ptr msd)))
-    (fprintf g-body-stream "  store %%%s %s, ptr %s\n"
-      (msd 'ir-name) ((as ptr:Val none-val) 'val) mslot)
+    (emit g-entry-stream "  " mslot " = alloca %" (msd 'ir-name) ", align "
+          (abi-struct-align (as ptr msd)) "\n")
+    (emit g-body-stream "  store %" (msd 'ir-name) " " ((as ptr:Val none-val) 'val) ", ptr "
+          mslot "\n")
     ; Token for repair-ty (its mangled name as a CStr), as with-handler's
     ; type-token emits, so the two agree (errors.md §11.2).
     (let (token:ptr (type-mangle-token repair-ty)
           tsid:i32 (intern-string token (unsafe/cast i32 (strlen token)))
           tok:ptr (new-tmp))
-      (fprintf g-body-stream
-        "  %s = getelementptr inbounds [%d x i8], ptr @.str.%d, i64 0, i64 0\n"
-        tok (+ (unsafe/cast i32 (strlen token)) 1) tsid)
+      (emit g-body-stream "  " tok " = getelementptr inbounds ["
+            (+ (unsafe/cast i32 (strlen token)) 1) " x i8], ptr @.str." tsid ", i64 0, i64 0\n")
       ; Find a willing handler. These three are non-null by the
       ; error-lib-in-scope precondition the callers check before reaching here;
       ; with no natural null-guard at the use sites, the cast-to-(ref) is the
@@ -652,17 +655,15 @@
             ght:ptr:Sym (unsafe/cast ptr:Sym (scope-lookup g-globals "g-handler-top"))
             hsd:ptr:StructDef (unsafe/cast ptr:StructDef (struct-lookup-ref (intern-str "Handler")))
             id:i32 (new-label-id))
-        (fprintf g-body-stream "  %s = call ptr %s(i32 %s, ptr %s)\n"
-          h (efh 'ir-name) eid tok)
+        (emit g-body-stream "  " h " = call ptr " (efh 'ir-name) "(i32 " eid ", ptr " tok ")\n")
         (let (hnull:ptr (new-tmp)
               have-lbl:ptr (fstr "hcall.have" id)
               join-lbl:ptr (fstr "hcall.join" id))
-          (fprintf g-body-stream "  %s = icmp eq ptr %s, null\n" hnull h)
-          (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n"
-            hnull join-lbl have-lbl)
+          (emit g-body-stream "  " hnull " = icmp eq ptr " h ", null\n")
+          (emit g-body-stream "  br i1 " hnull ", label %" join-lbl ", label %" have-lbl "\n")
           ; Handler found: unbind it (CL rule §11.4), invoke, restore, store the
           ; (Maybe T) result into the slot.
-          (fprintf g-body-stream "%s:\n" have-lbl)
+          (emit g-body-stream have-lbl ":\n")
           (set! g-block-term 0)
           (let (saved:ptr (new-tmp)
                 prevgep:ptr (new-tmp)
@@ -671,36 +672,35 @@
                 hfn:ptr (new-tmp)
                 ctxgep:ptr (new-tmp)
                 ctx:ptr (new-tmp))
-            (fprintf g-body-stream "  %s = load ptr, ptr %s\n" saved (ght 'ir-name))
-            (fprintf g-body-stream
-              "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
-              prevgep (hsd 'ir-name) h (struct-field-index (as ptr hsd) (intern-str "prev")))
-            (fprintf g-body-stream "  %s = load ptr, ptr %s\n" prev prevgep)
-            (fprintf g-body-stream "  store ptr %s, ptr %s\n" prev (ght 'ir-name))
-            (fprintf g-body-stream
-              "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
-              hfngep (hsd 'ir-name) h (struct-field-index (as ptr hsd) (intern-str "hfn")))
-            (fprintf g-body-stream "  %s = load ptr, ptr %s\n" hfn hfngep)
-            (fprintf g-body-stream
-              "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
-              ctxgep (hsd 'ir-name) h (struct-field-index (as ptr hsd) (intern-str "ctx")))
-            (fprintf g-body-stream "  %s = load ptr, ptr %s\n" ctx ctxgep)
+            (emit g-body-stream "  " saved " = load ptr, ptr " (ght 'ir-name) "\n")
+            (emit g-body-stream "  " prevgep " = getelementptr inbounds %" (hsd 'ir-name)
+                  ", ptr " h ", i32 0, i32 "
+                  (struct-field-index (as ptr hsd) (intern-str "prev")) "\n")
+            (emit g-body-stream "  " prev " = load ptr, ptr " prevgep "\n")
+            (emit g-body-stream "  store ptr " prev ", ptr " (ght 'ir-name) "\n")
+            (emit g-body-stream "  " hfngep " = getelementptr inbounds %" (hsd 'ir-name)
+                  ", ptr " h ", i32 0, i32 "
+                  (struct-field-index (as ptr hsd) (intern-str "hfn")) "\n")
+            (emit g-body-stream "  " hfn " = load ptr, ptr " hfngep "\n")
+            (emit g-body-stream "  " ctxgep " = getelementptr inbounds %" (hsd 'ir-name)
+                  ", ptr " h ", i32 0, i32 "
+                  (struct-field-index (as ptr hsd) (intern-str "ctx")) "\n")
+            (emit g-body-stream "  " ctx " = load ptr, ptr " ctxgep "\n")
             ; m:(Maybe T) = hfn(ctx, detail) through the struct-return ABI.
             ; Emitted here rather than via emit-funcall-value: there is no AST
             ; for this call, so the ABI lowering has to be spelled out.
             (let (arglist:ptr (fstr "ptr " ctx ", ptr " detail-val)
                   mres:ref:Val (abi-emit-struct-call (abi-classify maybe-ty)
                                                      maybe-ty hfn arglist 2))
-              (fprintf g-body-stream "  store ptr %s, ptr %s\n" saved (ght 'ir-name))
-              (fprintf g-body-stream "  store %%%s %s, ptr %s\n"
-                (msd 'ir-name) ((as ptr:Val mres) 'val) mslot)
-              (fprintf g-body-stream "  br label %%%s\n" join-lbl)))
+              (emit g-body-stream "  store ptr " saved ", ptr " (ght 'ir-name) "\n")
+              (emit g-body-stream "  store %" (msd 'ir-name) " " ((as ptr:Val mres) 'val)
+                    ", ptr " mslot "\n")
+              (emit g-body-stream "  br label %" join-lbl "\n")))
           ; Join: load the (Maybe T).
-          (fprintf g-body-stream "%s:\n" join-lbl)
+          (emit g-body-stream join-lbl ":\n")
           (set! g-block-term 0)
           (let (mres-tmp:ptr (new-tmp))
-            (fprintf g-body-stream "  %s = load %%%s, ptr %s\n"
-              mres-tmp (msd 'ir-name) mslot)
+            (emit g-body-stream "  " mres-tmp " = load %" (msd 'ir-name) ", ptr " mslot "\n")
             (return (alloc-val maybe-ty mres-tmp))))))))
 
 ; (signal E RepairType [detail]) — standalone handler negotiation (errors.md §4,
@@ -766,10 +766,10 @@
               err-place:ptr (make-cell 'err
                               (make-cell enode null ln) ln)
               err-val:ref:Val (emit-union-construct (as ptr udd) errai err-place 1 scope))
-          (fprintf g-entry-stream "  %s = alloca %%%s, align %d\n"
-            rslot (rsd 'ir-name) (abi-struct-align (as ptr rsd)))
-          (fprintf g-body-stream "  store %%%s %s, ptr %s\n"
-            (rsd 'ir-name) ((as ptr:Val err-val) 'val) rslot)
+          (emit g-entry-stream "  " rslot " = alloca %" (rsd 'ir-name) ", align "
+                (abi-struct-align (as ptr rsd)) "\n")
+          (emit g-body-stream "  store %" (rsd 'ir-name) " " ((as ptr:Val err-val) 'val)
+                ", ptr " rslot "\n")
           ; Negotiate with bound handlers: the shared chain walk yields (Maybe T)
           ; (none if no handler matched or it declined).
           (let (m-val:ref:Val (emit-handler-call eid okty detail-val scope ln)
@@ -785,44 +785,40 @@
                 some-lbl:ptr (fstr "errh.some" id)
                 join-lbl:ptr (fstr "errh.join" id))
             ; match m: read its tag; some -> overwrite the slot with (ok v).
-            (fprintf g-entry-stream "  %s = alloca %%%s, align %d\n"
-              mslot (msd 'ir-name) (abi-struct-align (as ptr msd)))
-            (fprintf g-body-stream "  store %%%s %s, ptr %s\n"
-              (msd 'ir-name) ((as ptr:Val m-val) 'val) mslot)
-            (fprintf g-body-stream
-              "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 0\n"
-              tgep (msd 'ir-name) mslot)
-            (fprintf g-body-stream "  %s = load i32, ptr %s, align 4\n" tag tgep)
-            (fprintf g-body-stream "  %s = icmp eq i32 %s, %d\n" issome tag someai)
-            (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n"
-              issome some-lbl join-lbl)
-            (fprintf g-body-stream "%s:\n" some-lbl)
+            (emit g-entry-stream "  " mslot " = alloca %" (msd 'ir-name) ", align "
+                  (abi-struct-align (as ptr msd)) "\n")
+            (emit g-body-stream "  store %" (msd 'ir-name) " " ((as ptr:Val m-val) 'val)
+                  ", ptr " mslot "\n")
+            (emit g-body-stream "  " tgep " = getelementptr inbounds %" (msd 'ir-name) ", ptr "
+                  mslot ", i32 0, i32 0\n")
+            (emit g-body-stream "  " tag " = load i32, ptr " tgep ", align 4\n")
+            (emit g-body-stream "  " issome " = icmp eq i32 " tag ", " someai "\n")
+            (emit g-body-stream "  br i1 " issome ", label %" some-lbl ", label %" join-lbl "\n")
+            (emit g-body-stream some-lbl ":\n")
             (set! g-block-term 0)
             ; Load the repaired v from m's `some` payload (one field at the
             ; payload offset), then build (ok v) into the slot.
             (let (mpp:ptr (new-tmp)
                   vtmp:ptr (new-tmp)
                   vslot:ptr (fstr "%errh.v" id))
-              (fprintf g-body-stream
-                "  %s = getelementptr inbounds i8, ptr %s, i64 %d\n"
-                mpp mslot (union-payload-off (as ptr mudd)))
+              (emit g-body-stream "  " mpp " = getelementptr inbounds i8, ptr " mslot ", i64 "
+                    (union-payload-off (as ptr mudd)) "\n")
               (emit-load vtmp (type-to-ir okty) mpp okty)
-              (fprintf g-entry-stream "  %s = alloca %s, align %d\n"
-                vslot (type-to-ir okty) (type-size okty))
+              (emit g-entry-stream "  " vslot " = alloca " (type-to-ir okty) ", align "
+                    (type-size okty) "\n")
               (emit-store (type-to-ir okty) vtmp vslot okty)
               (scope-define scope "__errh_v" okty vslot 1)
               (let (ok-place:ptr (make-cell 'ok
                                    (make-cell '__errh_v null ln) ln)
                     ok-val:ref:Val (emit-union-construct (as ptr udd) okai ok-place 1 scope))
-                (fprintf g-body-stream "  store %%%s %s, ptr %s\n"
-                  (rsd 'ir-name) ((as ptr:Val ok-val) 'val) rslot)
-                (fprintf g-body-stream "  br label %%%s\n" join-lbl)))
+                (emit g-body-stream "  store %" (rsd 'ir-name) " " ((as ptr:Val ok-val) 'val)
+                      ", ptr " rslot "\n")
+                (emit g-body-stream "  br label %" join-lbl "\n")))
             ; Join: load the (Result T Err) value.
-            (fprintf g-body-stream "%s:\n" join-lbl)
+            (emit g-body-stream join-lbl ":\n")
             (set! g-block-term 0)
             (let (rv-tmp:ptr (new-tmp))
-              (fprintf g-body-stream "  %s = load %%%s, ptr %s\n"
-                rv-tmp (rsd 'ir-name) rslot)
+              (emit g-body-stream "  " rv-tmp " = load %" (rsd 'ir-name) ", ptr " rslot "\n")
               (return (alloc-val rty rv-tmp)))))))))
 
 ; Stamp the value-Maybe template instance (Maybe T) for the handler-call return
@@ -979,17 +975,17 @@
           (let (fa:ptr pp)
             (when (> nf 1)
               (set! fa (new-tmp))
-              (fprintf g-body-stream
-                "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
-                fa ((unsafe/cast ptr:StructDef (ptype 'sdef)) 'ir-name) pp fi))
+              (emit g-body-stream "  " fa " = getelementptr inbounds %"
+                    ((unsafe/cast ptr:StructDef (ptype 'sdef)) 'ir-name) ", ptr " pp
+                    ", i32 0, i32 " fi "\n"))
             (if (= (b 'kind) NODE-SYM)
               ; By value: load the field into an ordinary local slot.
               (let (tmp:ptr (new-tmp)
                     slot:ptr (fstr "%" (ir-name-token (b 's)) ".addr." g-tmp))
                 (inc! g-tmp)
                 (emit-load tmp (type-to-ir ftype) fa ftype)
-                (fprintf g-entry-stream "  %s = alloca %s, align %d\n"
-                  slot (type-to-ir ftype) (type-size ftype))
+                (emit g-entry-stream "  " slot " = alloca " (type-to-ir ftype) ", align "
+                      (type-size ftype) "\n")
                 (emit-store (type-to-ir ftype) tmp slot ftype)
                 (scope-define inner (b 's) ftype slot 1))
               ; (ref x): alias the field in place for mutation.
@@ -1005,8 +1001,8 @@
                     (die-at (b 'line) "match: (ref name) needs a symbol"))
                   (let (slot:ptr (fstr "%" (ir-name-token (xn 's)) ".addr." g-tmp))
                     (inc! g-tmp)
-                    (fprintf g-entry-stream "  %s = alloca ptr, align 8\n" slot)
-                    (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" fa slot)
+                    (emit g-entry-stream "  " slot " = alloca ptr, align 8\n")
+                    (emit g-body-stream "  store ptr " fa ", ptr " slot ", align 8\n")
                     (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR)))
                       (set! (rt 'elem) ftype)
                       (set! (rt 'pkind) PTR-REF)
@@ -1038,14 +1034,14 @@
         result-taint:ptr null
         ci:i32 0)
     ; The dispatch: every non-default clause is a case on its arm/member value.
-    (fprintf g-body-stream "  switch %s %s, label %%%s [" disc-ty disc def-lbl)
+    (emit g-body-stream "  switch " disc-ty " " disc ", label %" def-lbl " [")
     (set! ci 0)
     (while (< ci nclauses)
       (when (>= (aref (as ptr:i32 clause-val) ci) 0)
-        (fprintf g-body-stream " %s %d, label %%match.c%d.%d"
-          disc-ty (aref (as ptr:i32 clause-val) ci) id ci))
+        (emit g-body-stream " " disc-ty " " (aref (as ptr:i32 clause-val) ci) ", label %match.c"
+              id "." ci))
       (inc! ci))
-    (fprintf g-body-stream " ]\n")
+    (emit g-body-stream " ]\n")
     (set! g-block-term 1)
     ; Clause bodies (the `_` default's body is emitted under def-lbl).
     (set! ci 0)
@@ -1053,8 +1049,8 @@
       (let (clause:ptr:Node (unsafe/cast ptr:Node (node-at cc (+ ci 2)))
             is-def:i32 (if (< (aref (as ptr:i32 clause-val) ci) 0) 1 0))
         (if (!= is-def 0)
-          (fprintf g-body-stream "%s:\n" def-lbl)
-          (fprintf g-body-stream "match.c%d.%d:\n" id ci))
+          (emit g-body-stream def-lbl ":\n")
+          (emit g-body-stream "match.c" id "." ci ":\n"))
         (set! g-block-term 0)
         (let (inner:ref:Scope (scope-new scope)
               tmark:i32 (narrow-mark))
@@ -1064,9 +1060,8 @@
                   binders:ptr (aref (as ptr:ptr clause-binders) ci))
               (when (!= binders null)
                 (let (pp:ptr (new-tmp))
-                  (fprintf g-body-stream
-                    "  %s = getelementptr inbounds i8, ptr %s, i64 %d\n"
-                    pp base (union-payload-off ud))
+                  (emit g-body-stream "  " pp " = getelementptr inbounds i8, ptr " base ", i64 "
+                        (union-payload-off ud) "\n")
                   (emit-match-binders ud ai binders pp inner is-ptr staint (cc 'line))))))
           ; Body: one or more forms, implicit do.
           (let (bv:ref:Val (alloc-val ty-void null)
@@ -1100,21 +1095,21 @@
                   (when (= ((as ptr:Type bty) 'kind) TY-VOID)
                     (set! result-type ty-void))
                   (set! result-taint (taint-merge result-taint (bv 'taint)))
-                  (fprintf g-body-stream "  br label %%%s\n" join-lbl)
-                  (fprintf g-body-stream "%s:\n" join-lbl)
-                  (fprintf g-body-stream "  br label %%%s\n" end-lbl)
+                  (emit g-body-stream "  br label %" join-lbl "\n")
+                  (emit g-body-stream join-lbl ":\n")
+                  (emit g-body-stream "  br label %" end-lbl "\n")
                   (conj vals (bv 'val))
                   (conj preds join-lbl)))))
           (narrow-restore tmark)))
       (inc! ci))
     ; No `_` clause: the default is unreachable (exhaustiveness was verified).
     (when (= ndefault 0)
-      (fprintf g-body-stream "%s:\n" def-lbl)
-      (fprintf g-body-stream "  unreachable\n"))
-    (fprintf g-body-stream "%s:\n" end-lbl)
+      (emit g-body-stream def-lbl ":\n")
+      (emit g-body-stream "  unreachable\n"))
+    (emit g-body-stream end-lbl ":\n")
     (set! g-block-term 0)
     (when (= (count vals) 0)
-      (fprintf g-body-stream "  unreachable\n")
+      (emit g-body-stream "  unreachable\n")
       (set! g-block-term 1))
     (if (or (= result-type null)
             (= ((as ptr:Type result-type) 'kind) TY-VOID))
@@ -1122,14 +1117,12 @@
       (let (tmp:ptr (new-tmp)
             ty-ir:ptr (type-to-ir result-type)
             k:usize 0)
-        (fprintf g-body-stream "  %s = phi %s " tmp ty-ir)
+        (emit g-body-stream "  " tmp " = phi " ty-ir " ")
         (while (< k (count vals))
-          (when (> k 0) (fprintf g-body-stream ", "))
-          (fprintf g-body-stream "[ %s, %%%s ]"
-            (invoke vals k)
-            (invoke preds k))
+          (when (> k 0) (emit g-body-stream ", "))
+          (emit g-body-stream "[ " (invoke vals k) ", %" (invoke preds k) " ]")
           (set! k (+ k 1)))
-        (fprintf g-body-stream "\n")
+        (emit g-body-stream "\n")
         (let (rv:ref:Val (alloc-val result-type tmp))
           (set! (rv 'taint) result-taint)
           (return rv))))))
@@ -1207,10 +1200,10 @@
   (let (pi:ptr (new-tmp)
         thresh:ptr (new-tmp)
         cmp:ptr (new-tmp))
-    (fprintf g-body-stream "  %s = ptrtoint ptr %s to %s\n" pi rval (ptr-int-ir))
+    (emit g-body-stream "  " pi " = ptrtoint ptr " rval " to " (ptr-int-ir) "\n")
     ; threshold = 0 - 4096, computed in iptr width (target-portable, no literal).
-    (fprintf g-body-stream "  %s = sub %s 0, 4096\n" thresh (ptr-int-ir))
-    (fprintf g-body-stream "  %s = icmp uge %s %s, %s\n" cmp (ptr-int-ir) pi thresh)
+    (emit g-body-stream "  " thresh " = sub " (ptr-int-ir) " 0, 4096\n")
+    (emit g-body-stream "  " cmp " = icmp uge " (ptr-int-ir) " " pi ", " thresh "\n")
     (return cmp)))
 
 ; (match r ((ok p) …) ((err e) …)) over a niche-ERRPTR value (unions.md §6
@@ -1272,9 +1265,9 @@
       (set! (aref (as ptr:ptr rtbox) 0) null)
       (set! (aref (as ptr:ptr ttbox) 0) null)
       (set! (aref (as ptr:i32 ltbox) 0) 0)
-      (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n" iserr err-lbl ok-lbl)
+      (emit g-body-stream "  br i1 " iserr ", label %" err-lbl ", label %" ok-lbl "\n")
       ; --- err arm: bind e = extracted id, run the err (or default) body ---
-      (fprintf g-body-stream "%s:\n" err-lbl)
+      (emit g-body-stream err-lbl ":\n")
       (set! g-block-term 0)
       (let (inner:ref:Scope (scope-new scope))
         (when (and (!= err-bind null) (!= (-> (unsafe/cast ptr:Node err-bind) (_ 'car)) null))
@@ -1283,19 +1276,19 @@
               (let (pineg:ptr (new-tmp) eid:ptr (new-tmp) idtr:ptr eid
                     slot:ptr (fstr "%" (ir-name-token (b 's)) ".addr." g-tmp))
                 (inc! g-tmp)
-                (fprintf g-body-stream "  %s = ptrtoint ptr %s to %s\n" pineg rval (ptr-int-ir))
-                (fprintf g-body-stream "  %s = sub %s 0, %s\n" eid (ptr-int-ir) pineg)
+                (emit g-body-stream "  " pineg " = ptrtoint ptr " rval " to " (ptr-int-ir) "\n")
+                (emit g-body-stream "  " eid " = sub " (ptr-int-ir) " 0, " pineg "\n")
                 ; Truncate to Err's i32 on a 64-bit target (no-op on 32-bit).
                 (when (!= (strcmp (ptr-int-ir) "i32") 0)
                   (set! idtr (new-tmp))
-                  (fprintf g-body-stream "  %s = trunc %s %s to i32\n" idtr (ptr-int-ir) eid))
-                (fprintf g-entry-stream "  %s = alloca i32, align 4\n" slot)
-                (fprintf g-body-stream "  store i32 %s, ptr %s, align 4\n" idtr slot)
+                  (emit g-body-stream "  " idtr " = trunc " (ptr-int-ir) " " eid " to i32\n"))
+                (emit g-entry-stream "  " slot " = alloca i32, align 4\n")
+                (emit g-body-stream "  store i32 " idtr ", ptr " slot ", align 4\n")
                 (scope-define inner (b 's) (as ptr ty-err) slot 1)))))
         (emit-niche-match-arm (if (!= err-body null) err-body def-body) inner
           vals preds rtbox ttbox ltbox end-lbl id 0))
       ; --- ok arm: bind p = r typed (ref T), run the ok (or default) body ---
-      (fprintf g-body-stream "%s:\n" ok-lbl)
+      (emit g-body-stream ok-lbl ":\n")
       (set! g-block-term 0)
       (let (inner:ref:Scope (scope-new scope))
         (when (and (!= ok-bind null) (!= (-> (unsafe/cast ptr:Node ok-bind) (_ 'car)) null))
@@ -1306,31 +1299,30 @@
                 (inc! g-tmp)
                 (set! (rt 'elem) elem)
                 (set! (rt 'pkind) PTR-REF)
-                (fprintf g-entry-stream "  %s = alloca ptr, align 8\n" slot)
-                (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" rval slot)
+                (emit g-entry-stream "  " slot " = alloca ptr, align 8\n")
+                (emit g-body-stream "  store ptr " rval ", ptr " slot ", align 8\n")
                 (let (sym:ref:Sym (scope-define inner (b 's) (as ptr rt) slot 1))
                   (set! (sym 'taint) staint))))))
         (emit-niche-match-arm (if (!= ok-body null) ok-body def-body) inner
           vals preds rtbox ttbox ltbox end-lbl id 1))
       ; --- join ---
-      (fprintf g-body-stream "%s:\n" end-lbl)
+      (emit g-body-stream end-lbl ":\n")
       (set! g-block-term 0)
       (let (result-type:ptr (aref (as ptr:ptr rtbox) 0)
             result-taint:ptr (aref (as ptr:ptr ttbox) 0))
         (when (= (count vals) 0)
-          (fprintf g-body-stream "  unreachable\n")
+          (emit g-body-stream "  unreachable\n")
           (set! g-block-term 1))
         (if (or (= result-type null) (= ((as ptr:Type result-type) 'kind) TY-VOID))
           (return (alloc-val ty-void null))
           (let (tmp:ptr (new-tmp) ty-ir:ptr (type-to-ir result-type)
                 k:usize 0)
-            (fprintf g-body-stream "  %s = phi %s " tmp ty-ir)
+            (emit g-body-stream "  " tmp " = phi " ty-ir " ")
             (while (< k (count vals))
-              (when (> k 0) (fprintf g-body-stream ", "))
-              (fprintf g-body-stream "[ %s, %%%s ]"
-                (invoke vals k) (invoke preds k))
+              (when (> k 0) (emit g-body-stream ", "))
+              (emit g-body-stream "[ " (invoke vals k) ", %" (invoke preds k) " ]")
               (set! k (+ k 1)))
-            (fprintf g-body-stream "\n")
+            (emit g-body-stream "\n")
             (let (rv:ref:Val (alloc-val result-type tmp))
               (set! (rv 'taint) result-taint)
               (return rv))))))))
@@ -1393,16 +1385,16 @@
       (set! (aref (as ptr:ptr ttbox) 0) null)
       (set! (aref (as ptr:i32 ltbox) 0) 0)
       ; Discriminant: null = none, non-null = some.
-      (fprintf g-body-stream "  %s = icmp eq ptr %s, null\n" cmp rval)
-      (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n" cmp none-lbl some-lbl)
+      (emit g-body-stream "  " cmp " = icmp eq ptr " rval ", null\n")
+      (emit g-body-stream "  br i1 " cmp ", label %" none-lbl ", label %" some-lbl "\n")
       ; --- none arm: no binder, run the none (or default) body ---
-      (fprintf g-body-stream "%s:\n" none-lbl)
+      (emit g-body-stream none-lbl ":\n")
       (set! g-block-term 0)
       (let (inner:ref:Scope (scope-new scope))
         (emit-niche-match-arm (if (!= none-body null) none-body def-body) inner
           vals preds rtbox ttbox ltbox end-lbl id 0))
       ; --- some arm: bind p = r typed (ref T), run the some (or default) body ---
-      (fprintf g-body-stream "%s:\n" some-lbl)
+      (emit g-body-stream some-lbl ":\n")
       (set! g-block-term 0)
       (let (inner:ref:Scope (scope-new scope))
         (when (and (!= some-bind null) (!= (-> (unsafe/cast ptr:Node some-bind) (_ 'car)) null))
@@ -1413,31 +1405,30 @@
                 (inc! g-tmp)
                 (set! (rt 'elem) elem)
                 (set! (rt 'pkind) PTR-REF)
-                (fprintf g-entry-stream "  %s = alloca ptr, align 8\n" slot)
-                (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" rval slot)
+                (emit g-entry-stream "  " slot " = alloca ptr, align 8\n")
+                (emit g-body-stream "  store ptr " rval ", ptr " slot ", align 8\n")
                 (let (sym:ref:Sym (scope-define inner (b 's) (as ptr rt) slot 1))
                   (set! (sym 'taint) staint))))))
         (emit-niche-match-arm (if (!= some-body null) some-body def-body) inner
           vals preds rtbox ttbox ltbox end-lbl id 1))
       ; --- join ---
-      (fprintf g-body-stream "%s:\n" end-lbl)
+      (emit g-body-stream end-lbl ":\n")
       (set! g-block-term 0)
       (let (result-type:ptr (aref (as ptr:ptr rtbox) 0)
             result-taint:ptr (aref (as ptr:ptr ttbox) 0))
         (when (= (count vals) 0)
-          (fprintf g-body-stream "  unreachable\n")
+          (emit g-body-stream "  unreachable\n")
           (set! g-block-term 1))
         (if (or (= result-type null) (= ((as ptr:Type result-type) 'kind) TY-VOID))
           (return (alloc-val ty-void null))
           (let (tmp:ptr (new-tmp) ty-ir:ptr (type-to-ir result-type)
                 k:usize 0)
-            (fprintf g-body-stream "  %s = phi %s " tmp ty-ir)
+            (emit g-body-stream "  " tmp " = phi " ty-ir " ")
             (while (< k (count vals))
-              (when (> k 0) (fprintf g-body-stream ", "))
-              (fprintf g-body-stream "[ %s, %%%s ]"
-                (invoke vals k) (invoke preds k))
+              (when (> k 0) (emit g-body-stream ", "))
+              (emit g-body-stream "[ " (invoke vals k) ", %" (invoke preds k) " ]")
               (set! k (+ k 1)))
-            (fprintf g-body-stream "\n")
+            (emit g-body-stream "\n")
             (let (rv:ref:Val (alloc-val result-type tmp))
               (set! (rv 'taint) result-taint)
               (return rv))))))))
@@ -1473,9 +1464,9 @@
             (set! (aref (as ptr:i32 ltbox) 0) (if (and (!= rlit 0) (!= (bv 'is-lit) 0)) 1 0))))
         (when (= ((as ptr:Type bty) 'kind) TY-VOID) (set! (aref (as ptr:ptr rtbox) 0) (as ptr ty-void)))
         (set! (aref (as ptr:ptr ttbox) 0) (taint-merge (aref (as ptr:ptr ttbox) 0) (bv 'taint)))
-        (fprintf g-body-stream "  br label %%%s\n" join-lbl)
-        (fprintf g-body-stream "%s:\n" join-lbl)
-        (fprintf g-body-stream "  br label %%%s\n" end-lbl)
+        (emit g-body-stream "  br label %" join-lbl "\n")
+        (emit g-body-stream join-lbl ":\n")
+        (emit g-body-stream "  br label %" end-lbl "\n")
         (conj vals (bv 'val))
         (conj preds join-lbl)))))
 
@@ -1512,10 +1503,9 @@
             ; Spill the by-value scrutinee so the tag and payload are addressable.
             (set! base (new-tmp))
             (let (sd:ptr:StructDef (unsafe/cast ptr:StructDef ((unsafe/cast ptr:UnionDef ud) 'sdef)))
-              (fprintf g-entry-stream "  %s = alloca %%%s, align %d\n"
-                base (sd 'ir-name) (abi-struct-align (as ptr sd)))
-              (fprintf g-body-stream "  store %%%s %s, ptr %s\n"
-                (sd 'ir-name) (sv 'val) base))))
+              (emit g-entry-stream "  " base " = alloca %" (sd 'ir-name) ", align "
+                    (abi-struct-align (as ptr sd)) "\n")
+              (emit g-body-stream "  store %" (sd 'ir-name) " " (sv 'val) ", ptr " base "\n"))))
         (when (and (= (st 'kind) TY-PTR) (!= (st 'elem) null))
           (set! ud (as ptr (uniondef-for-type (st 'elem))))
           (when (!= ud null)
@@ -1598,10 +1588,9 @@
           (let (sd:ptr:StructDef (unsafe/cast ptr:StructDef (udd 'sdef))
                 tgep:ptr (new-tmp)
                 tag:ptr (new-tmp))
-            (fprintf g-body-stream
-              "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 0\n"
-              tgep (sd 'ir-name) base)
-            (fprintf g-body-stream "  %s = load i32, ptr %s, align 4\n" tag tgep)
+            (emit g-body-stream "  " tgep " = getelementptr inbounds %" (sd 'ir-name) ", ptr "
+                  base ", i32 0, i32 0\n")
+            (emit g-body-stream "  " tag " = load i32, ptr " tgep ", align 4\n")
             (return (emit-match-clauses call scope tag "i32"
                                         (as ptr clause-val) (as ptr clause-binders)
                                         ndefault (as ptr udd) is-ptr base
@@ -1623,9 +1612,8 @@
         (let (idx:ptr (gep-index-ir nv))
           (let (elem:ptr (-> p (_ 'type) (unsafe/cast ptr:Type _) (_ 'elem))
                 tmp:ptr (new-tmp))
-            (fprintf g-body-stream
-              "  %s = getelementptr inbounds %s, ptr %s, %s %s\n"
-              tmp (type-to-ir elem) (p 'val) (ptr-int-ir) idx)
+            (emit g-body-stream "  " tmp " = getelementptr inbounds " (type-to-ir elem) ", ptr "
+                  (p 'val) ", " (ptr-int-ir) " " idx "\n")
             ; An interior pointer aliases the resource: keep the taint
             ; (lifecycle.md §2.2) and, Stage 13 L1, the frame-region flag.
             (let (rv:ref:Val (alloc-val (p 'type) tmp))
@@ -1646,7 +1634,7 @@
       (when (and (!= (is-ptr-like t) 0)
                  (or (= (ptr-pkind t) PTR-RAW) (= (ptr-pkind t) PTR-MAYBE)))
         (let (tmp:ptr (new-tmp))
-          (fprintf g-body-stream "  %s = icmp ne ptr %s, null\n" tmp (v 'val))
+          (emit g-body-stream "  " tmp " = icmp ne ptr " (v 'val) ", null\n")
           (return (alloc-val ty-bool tmp))))
       (when (and (= (tt 'kind) TY-PTR) (= (tt 'pkind) PTR-ERRPTR))
         (die-at line
@@ -1662,9 +1650,8 @@
                 sd:ptr:StructDef (unsafe/cast ptr:StructDef (ud 'sdef))
                 tag:ptr (new-tmp)
                 tmp:ptr (new-tmp))
-            (fprintf g-body-stream "  %s = extractvalue %%%s %s, 0\n"
-              tag (sd 'ir-name) (v 'val))
-            (fprintf g-body-stream "  %s = icmp eq i32 %s, %d\n" tmp tag si)
+            (emit g-body-stream "  " tag " = extractvalue %" (sd 'ir-name) " " (v 'val) ", 0\n")
+            (emit g-body-stream "  " tmp " = icmp eq i32 " tag ", " si "\n")
             (return (alloc-val ty-bool tmp)))))
       (die-at line
         (fstr ctx ": condition must be bool, not " (type-spelling t) " -- compare explicitly"))
@@ -1675,7 +1662,7 @@
     (when (!= (node-len cc) 2) (die-at (cc 'line) "not expects 1 arg"))
     (let (a:ref:Val (condition-bool (emit-node (node-at cc 1) scope) (cc 'line) "not")
           tmp:ptr (new-tmp))
-      (fprintf g-body-stream "  %s = xor i1 %s, 1\n" tmp (a 'val))
+      (emit g-body-stream "  " tmp " = xor i1 " (a 'val) ", 1\n")
       (return (alloc-val ty-bool tmp)))))
 
 (defn emit-short-circuit (call:ptr scope:ref:Scope is-and:i32):ref:Val
@@ -1688,17 +1675,14 @@
           rhs-lbl:ptr (fstr tag ".rhs" id)
           end-lbl:ptr (fstr tag ".end" id)
           slot:ptr (fstr "%" tag ".val" id))
-      (fprintf g-entry-stream "  %s = alloca i1, align 1\n" slot)
+      (emit g-entry-stream "  " slot " = alloca i1, align 1\n")
       (let (lhs:ref:Val (condition-bool (emit-node (node-at cc 1) scope)
                           (node-line (node-at cc 1) (cc 'line)) tag))
-        (fprintf g-body-stream "  store i1 %s, ptr %s, align 1\n"
-          (lhs 'val) slot)
+        (emit g-body-stream "  store i1 " (lhs 'val) ", ptr " slot ", align 1\n")
         (if (!= is-and 0)
-          (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n"
-            (lhs 'val) rhs-lbl end-lbl)
-          (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n"
-            (lhs 'val) end-lbl rhs-lbl))
-        (fprintf g-body-stream "%s:\n" rhs-lbl)
+          (emit g-body-stream "  br i1 " (lhs 'val) ", label %" rhs-lbl ", label %" end-lbl "\n")
+          (emit g-body-stream "  br i1 " (lhs 'val) ", label %" end-lbl ", label %" rhs-lbl "\n"))
+        (emit g-body-stream rhs-lbl ":\n")
         (set! g-block-term 0)
         ; Stage 10 narrowing: the rhs only runs when the lhs was true (and)
         ; or false (or) — so the lhs's facts hold while it is emitted. This
@@ -1712,13 +1696,12 @@
         (let (rhs:ref:Val (condition-bool (emit-node (node-at cc 2) scope)
                             (node-line (node-at cc 2) (cc 'line)) tag))
           (narrow-restore scmark)
-          (fprintf g-body-stream "  store i1 %s, ptr %s, align 1\n"
-            (rhs 'val) slot)
-          (fprintf g-body-stream "  br label %%%s\n" end-lbl)
-          (fprintf g-body-stream "%s:\n" end-lbl)
+          (emit g-body-stream "  store i1 " (rhs 'val) ", ptr " slot ", align 1\n")
+          (emit g-body-stream "  br label %" end-lbl "\n")
+          (emit g-body-stream end-lbl ":\n")
           (set! g-block-term 0)
           (let (tmp:ptr (new-tmp))
-            (fprintf g-body-stream "  %s = load i1, ptr %s, align 1\n" tmp slot)
+            (emit g-body-stream "  " tmp " = load i1, ptr " slot ", align 1\n")
             (return (alloc-val ty-bool tmp)))))))))
 
 ; ============================================================
