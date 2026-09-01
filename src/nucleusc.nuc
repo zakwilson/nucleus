@@ -1293,6 +1293,10 @@
 
 (import-use abi)
 
+; Stage 17 D3, temporary — deleted at C8 along with `--strict-cstr` itself.
+; Imported here because it reads `field-at` (abi.nuc) off a callee's TY-FN type.
+(import-use strict-cstr)
+
 (import-use union-registry)
 
 ; generics.nuc (the polymorphism registry: generic-lookup, finalize-generics,
@@ -4029,6 +4033,11 @@
           (let (a-ptr:ptr (strview-data-ir a)
                 b-ptr:ptr (strview-data-ir b)
                 c:ptr (new-tmp))
+            ; Stage 17 D3, temporary. `=` on a C string emits the call as text
+            ; rather than routing through emit-call-with-args, so this is the
+            ; only place that sees it — and it is three quarters of the compiler's
+            ; strcmps, the exact class a grep for `(strcmp ` misses.
+            (strict-cstr-check-synth "strcmp" line)
             (emit g-body-stream "  " c " = call i32 @strcmp(ptr " a-ptr ", ptr " b-ptr ")\n")
             (let (r:ptr (new-tmp)
                   icmp-op:ptr "eq")
@@ -6570,6 +6579,7 @@
         ret-type:(raw Type) (fn-type 'ret)
         nargs:i32 (- (node-len cc) arg-start))
     (check-call-arity "call" null fn-type nargs 0 (cc 'line))
+    (strict-cstr-check-indirect fn-type (cc 'line))
     ; Stage 16 FP-2 (c-boundary-defects.md §2.4): everything below the arity
     ; check used to be absent. Each argument was printed as its own
     ; `type-to-ir`, so an indirect call performed NO coercion, NO type check, NO
@@ -6996,6 +7006,9 @@
     ; Every direct and multimethod call funnels through here, so one check covers
     ; both. A ct-only callee has no @name to call — diagnose it, don't emit it.
     (reject-ct-only (as (raw Sym) sym) (cc 'line))
+    ; Stage 17 D3, temporary. Here rather than at the `defn`s because a signature
+    ; is greppable and a post-expansion call is not.
+    (strict-cstr-check-call (ss 'name) (ss 'type) (cc 'line))
     ; If the callee has :rest, fold trailing args into a runtime Node cons
     ; list and replace them with a single ptr arg pointing at the list.
     (let (eff-nargs:i32 nargs
@@ -8918,6 +8931,7 @@
         ret-ty:ptr (bt 'ret)
         box-ir:ptr (type-to-ir box-ty))
     (check-call-arity "BoxedFn call" null box-ty nargs 0 line)
+    (strict-cstr-check-indirect (unsafe/cast (raw Type) box-ty) line)
     (let (data:ptr (new-tmp)
           vt:ptr (new-tmp))
       (emit g-body-stream "  " data " = extractvalue " box-ir " " (cv 'val) ", 0\n")
@@ -18761,6 +18775,13 @@
                 (set! g-sysroot-override (unsafe/ptr+ (as ptr:i8 arg) 10))
               (= (strncmp arg "--link-arg=" 11) 0)
                 (add-link-arg (unsafe/ptr+ (as ptr:i8 arg) 11))
+              ; Stage 17 D3, temporary — see src/strict-cstr.nuc.
+              (= arg "--strict-cstr")
+                (set! g-strict-cstr 1)
+              (= arg "--strict-cstr=error")
+                (set! g-strict-cstr 2)
+              (= (strncmp arg "--cstr-seams=" 13) 0)
+                (set! g-cstr-seams-path (unsafe/ptr+ (as ptr:i8 arg) 13))
               (= (strncmp arg "-I" 2) 0)
                 (if (> (strlen arg) 2)
                   ; -I/path/to/dir (no space)
@@ -18852,4 +18873,4 @@
                   " (dyn P) annotation checks were never drained\n")
           (exit 1))
         (flush-module-ir source-file))))
-    (return 0)))
+    (return (strict-cstr-exit-code))))
