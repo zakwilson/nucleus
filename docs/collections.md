@@ -250,6 +250,15 @@ collection still may not escape by `return` without `move`, so the in-place
 (reserve:void   ((self (ref (Vector T))) n:usize))
 ```
 
+Bulk append (free functions, not protocol methods):
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `vector-extend-raw` | `((self (ref (Vector T))) (p (ptr T)) n:usize) -> void` | Append `n` elements read from `p`: reserve once, `memcpy` once. `p` must not point into this vector's own buffer — the reserve may reallocate it. |
+| `vector-extend` | `((self (ref (Vector T))) (other (ref (Vector T)))) -> void` | Append every element of `other`, which is left unchanged. |
+
+Both are a single bulk copy rather than `conj` in a loop, which costs a bounds test, a capacity test and a call per element. The copy is bitwise — exactly what `conj`'s element store already is — so there is no narrower requirement on `T`. They are not spelled `extend`: that is the protocol-conformance form, and a symbol may name only one kind of thing.
+
 `conj` and `append` are equivalent for `Vector` (both append at the back). `insert` with `i == len` is equivalent to `append`; `i > len` panics. `remove-at` deletes the element at index `i`, shifting `(i, len)` left by one; `i >= len` panics.
 
 **Integer literals widen automatically.** A bare integer literal passed as an element, index, or key argument adapts to the method's concrete type without a cast — `(conj v 3)` and `(v 0)` on a `(Vector i64)` widen `3`/`0` to `i64`/`usize` respectively, exactly as plain functions already do. Some examples below still spell the explicit `(as usize 1)` form; both compile identically. (An untyped literal only *widens* — an already-typed value of a wider or wrong-sign type still needs an explicit `as`/`unsafe/cast`, and a call ambiguous between two integer overloads is an error.)

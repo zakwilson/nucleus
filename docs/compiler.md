@@ -412,7 +412,7 @@ empty.nuc:2: error: ns: namespace must be a symbol
 empty.nuc:3: error: defenum: value must be symbol
 ```
 
-Each message is the one that position gives for any unusable name, which is the point: `()` is refused the same way `5` is, in every top-level form and in all three of `--emit-llvm`, `--emit-cheader` and `--emit-nuch`. If you work on the compiler, this is why `node-kind` (`lib/node.nuc`) exists — it answers `NODE-NIL` for a null node, so a `(= (node-kind x) NODE-SYM)` test survives an `()` that a bare `(x kind)` would fault on.
+Each message is the one that position gives for any unusable name, which is the point: `()` is refused the same way `5` is, in every top-level form and in all three of `--emit-llvm`, `--emit-cheader` and `--emit-nuch`. If you work on the compiler, this is why `node-kind` (`lib/node.nuc`) exists — it answers `NODE-NIL` for a null node, so a `(= (node-kind x) NODE-SYM)` test survives an `()` that a bare `(x 'kind)` would fault on.
 
 ## Regenerating committed headers
 

@@ -84,11 +84,11 @@
 
 ; ---------------------------------------------------------------------------
 ; Internal helper: append raw bytes (no UTF-8 check — caller ensures validity).
+; Was one `conj` per byte — a capacity test, a bounds test and a call each — on
+; the path that appends every byte of the compiler's output (library-gaps.md #5).
 ; ---------------------------------------------------------------------------
 (defn string-push-bytes-raw ((self (ref String)) (p (ptr ui8)) n:usize):void
-  (let (v:(ref (Vector ui8)) (addr-of self 'bytes))
-    (dotimes (i:usize n)
-      (conj v (aref p (as i64 i))))))
+  (vector-extend-raw (addr-of self 'bytes) p n))
 
 ; ---------------------------------------------------------------------------
 ; Mutation methods.
@@ -108,10 +108,18 @@
       ; Bump len by clen.
       (set! (v 'len) (+ (_get v 'len) clen)))))
 
+; string-push-str-unchecked — append a StrView's bytes with no UTF-8 check.
+; The caller asserts validity, exactly as `string-from-cstr-unchecked` does.
+; This is the appending path for bytes the producer already knows are valid.
+(defn string-push-str-unchecked ((self (ref String)) (s (ref StrView))):void
+  (string-push-bytes-raw self (s 'data) (s 'len)))
+
 ; string-push-str — append a StrView's bytes, validating UTF-8 first.
-; Returns !i32 (0 on success): err invalid-utf8 if the StrView contains invalid UTF-8.
-(defn string-push-str ((self (ref String)) (s (ref StrView))):!i32
-  ; Validate UTF-8 of the incoming bytes.
+;
+; The validation stays: `String` is the UTF-8-guaranteed type and `StrView` is a
+; byte slice (`string-from-view` validates for the same reason). What went was
+; the per-byte `conj` underneath it — see `string-push-bytes-raw`.
+(defn string-push-str ((self (ref String)) (s (ref StrView))):!void
   (let (p:ptr:ui8 (s 'data)
         n:usize (s 'len)
         pos:usize 0)
@@ -121,9 +129,8 @@
         (when (= ((addr-of dr) 'ok) 0)
           (return (err! invalid-utf8)))
         (set! pos (+ pos ((addr-of dr) 'nbytes)))))
-    ; Valid — append raw bytes.
     (string-push-bytes-raw self p n)
-    (return (ok 0))))
+    (return (ok))))
 
 ; string-pop-char — remove and return the last codepoint, or none if empty.
 (defn string-pop-char ((self (ref String))) (Maybe Char)
@@ -154,10 +161,9 @@
   (set! ((addr-of self 'bytes) 'len) 0))
 
 ; string-truncate — truncate to byte_len bytes.
-; Returns !i32 (0 on success).
 ; Errors: str-index-out-of-bounds if byte_len > current len;
 ;         invalid-char-boundary if byte_len falls mid-codepoint.
-(defn string-truncate ((self (ref String)) byte-len:usize):!i32
+(defn string-truncate ((self (ref String)) byte-len:usize):!void
   (let (v:(ref (Vector ui8)) (addr-of self 'bytes)
         cur-len:usize (_get v 'len))
     (when (> byte-len cur-len)
@@ -169,13 +175,26 @@
         (when (= (bit-and (as ui32 b) 192) 128)
           (return (err! invalid-char-boundary)))))
     (set! (v 'len) byte-len)
-    (return (ok 0))))
+    (return (ok))))
 
 ; string-reserve — ensure at least `extra` additional bytes of capacity beyond
 ; the current length.
 (defn string-reserve ((self (ref String)) extra:usize):void
   (let (v:(ref (Vector ui8)) (addr-of self 'bytes))
     (reserve v (+ (_get v 'len) extra))))
+
+; string-as-cstr — a NUL-terminated view of the bytes, for an FFI seam.
+;
+; Writes the NUL PAST `len` and does not count it, so the String is unchanged as
+; far as every other operation is concerned and a second call is free. The
+; pointer is invalidated by any subsequent append (library-gaps.md #9).
+(defn string-as-cstr ((self (ref String))):CStr
+  (let (v:(ref (Vector ui8)) (addr-of self 'bytes)
+        len:usize (_get v 'len))
+    (reserve v (+ len 1))
+    (let (p:ptr:ui8 (as ptr:ui8 (as ptr (_get v 'data))))
+      (set! (aref p (as i64 len)) 0)
+      (return (as CStr (as ptr p))))))
 
 ; string-shrink-to-fit — shrink capacity to match len.
 ; Reallocates the buffer to exactly len bytes (or frees if len = 0).
@@ -281,13 +300,13 @@
 (defn as-view ((self (ref String))):StrView
   (string-as-view self))
 
-(defn sub-bytes ((self (ref String)) start:usize end:usize):!ptr:StrView
+(defn sub-bytes ((self (ref String)) start:usize end:usize):!StrView
   (let (sv:StrView (string-as-view self))
     (strview-sub-bytes (addr-of sv) start end)))
 
 (defn byte-find ((self (ref String)) (needle (ref StrView))) (Maybe usize)
   (let (sv:StrView (string-as-view self))
-    (strview-byte-find (addr-of sv) needle)))
+    (strview-find (addr-of sv) needle)))
 
 ; ---------------------------------------------------------------------------
 ; Str conformance — delegate through string-as-view.

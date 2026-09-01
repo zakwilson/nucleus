@@ -983,6 +983,20 @@
       TY-CHAR  (return 32)
       (return 0))))
 
+; May a StrView decay to `target` by taking its `data` field? Only a *byte*
+; pointer: a typed `ptr:S` target used to take the borrow too, so a `(ref
+; StrView)` parameter silently received `.data` (design/stage17-native-strings/
+; library-gaps.md #25).
+(defn strview-borrow-target (target:raw:Type):i32
+  (when (= target null) (return 0))
+  (let (tt:raw:Type target)
+    (when (= (tt 'kind) TY-CSTR) (return 1))
+    (when (!= (tt 'kind) TY-PTR) (return 0))
+    (let (e:raw:Type (tt 'elem))
+      (when (= e null) (return 1))
+      (when (and (!= (is-int-type e) 0) (= (int-width e) 8)) (return 1))
+      (return 0))))
+
 ; bool is not an integer, but its REPRESENTATION is a 1-bit unsigned value, and
 ; that is what picks the instruction: `zext`/`icmp u*` so `true` widens to 1 and
 ; `false < true`. Reading it as signed (Stage 15 W9 item 31) made `(as i32 true)`

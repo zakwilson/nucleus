@@ -136,10 +136,15 @@ See `examples/cstr-lit-test.nuc` for the full contract, including that a plain `
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `strview-from-cstr` | `(cs:CStr) → ptr:StrView` | Heap-allocate a `StrView` that borrows the CStr's bytes (no copy). Caller owns the `ptr:StrView` wrapper and must free it; the bytes are borrowed from `cs`. |
+| `strview` | `(data:(ptr ui8) len:usize) → StrView` | The value constructor — a view over `len` bytes at `data`, borrowed. |
+| `strview-from-cstr` | `(cs:CStr) → StrView` | A `StrView` borrowing the CStr's bytes (no copy), returned **by value** — nothing is allocated and nothing needs freeing. The bytes are borrowed from `cs`, which must outlive the view. |
 | `strview-to-cstr` | `(sv:(ref StrView)) → CStr` | Reinterpret `data` as a CStr. Only sound when the buffer is NUL-terminated at `data[len]` (i.e., built from a CStr or the keyword intern arena). |
 
-Manual construction via a struct literal is also valid:
+```lisp
+(let (sv:StrView (strview some-ptr some-len)) ...)
+```
+
+Manual construction via a struct literal is still valid, and was the only way before Stage 17 B0:
 ```lisp
 (let ((sv (ref StrView)) (alloca StrView))
   (set! (sv 'data) some-ptr)
@@ -176,9 +181,7 @@ Both iterators are returned **by value** and alias the StrView's buffer. They mu
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `strview-sub-bytes` | `(sv:(ref StrView) start:usize end:usize) → !ptr:StrView` | O(1) sub-slice `[start, end)`. Returns a heap-allocated `ptr:StrView` whose `data` borrows the parent's buffer. Caller must free the wrapper (not the data). |
-
-**v1 limitation.** `sub-bytes` returns `!ptr:StrView` rather than `!StrView` because the compiler cannot return a struct payload through `!T`/`Result` (the struct fields arrive as zero when unwrapped via `match`). The heap-allocated wrapper is the workaround.
+| `strview-sub-bytes` | `(sv:(ref StrView) start:usize end:usize) → !StrView` | O(1) sub-slice `[start, end)`, returned **by value**. Its `data` borrows the parent's buffer; nothing is allocated. |
 
 Errors:
 - `str-index-out-of-bounds` — `start > end` or `end > len`
@@ -188,12 +191,21 @@ Errors:
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `strview-byte-find` | `(sv:(ref StrView) needle:(ref StrView)) → (Maybe usize)` | First byte index of `needle` in `sv`, or `none`. Empty needle returns `(some 0)`. |
+| `strview-find` | `(sv:(ref StrView) needle:(ref StrView)) → (Maybe usize)` | First byte index of `needle` in `sv`, or `none`. Empty needle returns `(some 0)`. |
+| `strview-rfind` | `(sv:(ref StrView) needle:(ref StrView)) → (Maybe usize)` | Last byte index of `needle`, or `none`. Empty needle returns `(some len)`. |
+| `strview-find-byte` | `(sv:(ref StrView) b:ui8) → (Maybe usize)` | First index of byte `b`, or `none`. |
+| `strview-rfind-byte` | `(sv:(ref StrView) b:ui8) → (Maybe usize)` | Last index of byte `b`, or `none`. |
+| `strview-find-char` | `(sv:(ref StrView) c:Char) → (Maybe usize)` | First byte index at which `c` is encoded, or `none`. |
+| `strview-rfind-char` | `(sv:(ref StrView) c:Char) → (Maybe usize)` | Last byte index at which `c` is encoded, or `none`. |
 | `strview-starts-with` | `(sv:(ref StrView) prefix:(ref StrView)) → i32` | 1 if `sv` begins with `prefix` (byte-level), else 0. |
 | `strview-ends-with` | `(sv:(ref StrView) suffix:(ref StrView)) → i32` | 1 if `sv` ends with `suffix` (byte-level), else 0. |
 | `strview-contains-str` | `(sv:(ref StrView) needle:(ref StrView)) → i32` | 1 if `needle` appears anywhere in `sv`, else 0. |
 
-`byte-find` returning `(Maybe usize)` is not an error — "not found" is a legitimate result, not a failure.
+Returning `(Maybe usize)` is not an error — "not found" is a legitimate result, not a failure.
+
+The codepoint searches work byte-wise: UTF-8 is self-synchronizing, so a byte-level search for a character's encoding can never match inside another character and needs no boundary check.
+
+`strview-find` was named `strview-byte-find` before Stage 17 B0; it was renamed so it could not be misread as the single-byte `strview-find-byte` beside it.
 
 ### Trim
 
@@ -233,7 +245,7 @@ Two read-only protocol layers define the public string surface.
   (byte-at:!ui8          ((self (ref Self)) i:usize))
   (bytes:ByteI           ((self (ref Self))))
   (as-view:StrView       ((self (ref Self))))
-  (sub-bytes:!ptr:StrView ((self (ref Self)) start:usize end:usize))
+  (sub-bytes:!StrView ((self (ref Self)) start:usize end:usize))
   ((byte-find (Maybe usize)) ((self (ref Self)) (needle (ref StrView)))))
 ```
 
@@ -243,7 +255,7 @@ Two read-only protocol layers define the public string surface.
 | `byte-at` | i-th byte, O(1). Errors `str-index-out-of-bounds` when `i ≥ byte-len`. |
 | `bytes` | Fresh byte iterator by value (associated type `ByteI`). Drive with `(addr-of it)` + `next`. |
 | `as-view` | Borrow entire content as a `StrView` (two-word value, no copy). The bridge to all StrView helpers. |
-| `sub-bytes` | Sub-slice `[start, end)` as a borrowed `!ptr:StrView`. See §3 for error conditions and the v1 limitation. |
+| `sub-bytes` | Sub-slice `[start, end)` as a borrowed `!StrView` (by value). See §3 for error conditions. |
 | `byte-find` | First byte index of a substring, or `none`. |
 
 ### `(Str CharI)` — codepoint layer
@@ -313,20 +325,22 @@ Two read-only protocol layers define the public string surface.
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `string-as-view` | `(self:(ref String)) → StrView` | Zero-copy `StrView` over the current contents. The view borrows the `String`'s buffer and must not outlive it. |
+| `string-as-cstr` | `(self:(ref String)) → CStr` | NUL-terminated view for an FFI seam. Writes the NUL *past* `len` without counting it, so the `String` is otherwise unchanged and repeated calls are free. Invalidated by any later append. |
 
 ### Mutation
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `string-push-char` | `(self:(ref String) c:Char) → void` | Append a single `Char`. Always valid UTF-8 by construction. |
-| `string-push-str` | `(self:(ref String) s:(ref StrView)) → !i32` | Append a `StrView`'s bytes, validating UTF-8 first. Returns `(ok 0)` on success. Errors `invalid-utf8`. |
+| `string-push-str` | `(self:(ref String) s:(ref StrView)) → !void` | Append a `StrView`'s bytes, validating UTF-8 first. Errors `invalid-utf8`. |
+| `string-push-str-unchecked` | `(self:(ref String) s:(ref StrView)) → void` | Append a `StrView`'s bytes with no UTF-8 check. The caller asserts validity. |
 | `string-pop-char` | `(self:(ref String)) → (Maybe Char)` | Remove and return the last codepoint, or `none` if empty. |
 | `string-clear` | `(self:(ref String)) → void` | Set `len` to 0 (retain capacity). |
-| `string-truncate` | `(self:(ref String) byte-len:usize) → !i32` | Truncate to `byte-len` bytes. Returns `(ok 0)` on success. Errors `str-index-out-of-bounds` if `byte-len > len`; errors `invalid-char-boundary` if `byte-len` falls mid-codepoint. |
+| `string-truncate` | `(self:(ref String) byte-len:usize) → !void` | Truncate to `byte-len` bytes. Errors `str-index-out-of-bounds` if `byte-len > len`; errors `invalid-char-boundary` if `byte-len` falls mid-codepoint. |
 | `string-reserve` | `(self:(ref String) extra:usize) → void` | Ensure at least `extra` additional bytes of capacity beyond current length. |
 | `string-shrink-to-fit` | `(self:(ref String)) → void` | Shrink capacity to match `len`. Reallocates or frees if `len = 0`. |
 
-**v1 limitation.** `string-push-str` and `string-truncate` return `!i32` rather than `!void` — the compiler does not yet support `!void` as a result type. `0` means success.
+`string-push-str` validates because `String` is the UTF-8-guaranteed type and `StrView` is a byte slice; `string-push-str-unchecked` is the path for bytes whose producer already knows they are valid, mirroring `string-from-cstr-unchecked`. Both append with a single `memcpy`.
 
 ### Conformances
 
@@ -352,7 +366,7 @@ Two read-only protocol layers define the public string surface.
     (string-push-char (addr-of s) \H)
     (string-push-char (addr-of s) \i)
     (let (sv:StrView (string-as-view (addr-of s)))
-      (printf "%.*s\n" (unsafe/cast i32 (sv len)) (sv data))))
+      (printf "%.*s\n" (unsafe/cast i32 (sv 'len)) (sv 'data))))
   0)
 ```
 
@@ -403,26 +417,26 @@ Constructs a `LineIter` that splits `sv` on `\n`, stripping any trailing `\r` fr
   (let (it:SplitIter (strview-split sv (addr-of sep)))
     (while (not (split-iter-done (addr-of it)))
       (let (seg:StrView (split-iter-next (addr-of it)))
-        (printf "%.*s\n" (unsafe/cast i32 ((addr-of seg) len)) ((addr-of seg) data))))))
+        (printf "%.*s\n" (unsafe/cast i32 (seg 'len)) (seg 'data))))))
 ```
 
-### `Iterator` conformance and `doseq-split` (Stage 13 R1)
+### `Iterator` conformance (Stage 13 R1, Stage 17 A3)
 
-`SplitIter` and `LineIter` also conform to `(Iterator ptr)`, so `reduce` /
-`doseq-iter` can drive them. They cannot conform to `(Iterator StrView)`
-directly — `(Maybe StrView)` embeds a struct in the anonymous union, which the
-macro-expansion JIT module cannot resolve. Instead `next` stores each segment
-in the iterator's `cur` slot and yields a `(ref StrView)` into it as a
-niche-encoded, matchable `(Maybe ptr)` (bare pointer). The
-`(doseq-split (var iter-ref) body)` macro hides the decode (recovering the
-concrete pointer type with a single `as`), binding `var` to a `(ref StrView)`
-borrowing `cur` (valid until the next step):
+`SplitIter` and `LineIter` conform to `(Iterator StrView)`, so `reduce` /
+`doseq-iter` / `match` drive them directly and `next` yields
+`(Maybe StrView)` — each segment by value:
 
 ```lisp
 (let (it:SplitIter (strview-split sv sep))
-  (doseq-split (seg (addr-of it))
-    (printf "%.*s\n" (unsafe/cast i32 (seg len)) (seg data))))
+  (doseq-iter (seg (addr-of it))
+    (printf "%.*s\n" (unsafe/cast i32 (seg 'len)) (seg 'data))))
 ```
+
+Before Stage 17 A3 they conformed to `(Iterator ptr)`, yielding a pointer into
+a `cur` scratch field, because `(Maybe StrView)` was believed uncompilable in
+the macro-expansion JIT module. It compiles; the scratch field, the niche
+encoding and the `doseq-split` macro that decoded it are all gone. `seg` is now
+a value, so a function taking `(ref StrView)` needs `(addr-of seg)`.
 
 The done-flag API (`split-iter-done`/`split-iter-next`, `lines-iter-done`/
 `lines-iter-next`) is retained and yields identical segments. See
@@ -527,9 +541,9 @@ All of these conform to the `Err` type and are usable with `(err-name e)`, `try`
 ## Gotchas and constraints
 
 - **`?` in function names.** Classification functions use `char-is-ascii` etc. without a `?` suffix. This is a convention of this library only — `?` and `!` are legal in every name position and are mangled to `_QMARK`/`_BANG` in the emitted symbol (see [`?`/`!` in names](generics.md#polymorphism-overloaded-defn-multimethods)).
-- **`string-push-str` and `string-truncate` return `!i32`.** The compiler does not yet support `!void`. Check for `(ok 0)` / `(err e)` or use `try` to propagate.
-- **`sub-bytes` returns `!ptr:StrView`.** The caller owns the `ptr:StrView` wrapper and must `free` it. The bytes are borrowed from the source StrView; do not free `data`.
-- **`SplitIter`/`LineIter` are not `Iterator StrView`.** The `(Maybe StrView)` union type cannot be compiled in JIT macro modules. They instead conform to `(Iterator ptr)`, yielding each segment as a `(ref StrView)` niche-encoded as a bare `ptr`; the `doseq-split` macro decodes it. The `*-iter-done`/`*-iter-next` pair is still available.
+- **`string-as-cstr` writes into the String.** It appends a NUL *past* `len` (reserving if needed) without counting it, so the String is unchanged for every other operation and repeated calls are free — but the returned `CStr` is invalidated by any subsequent append.
+- **`sub-bytes` and `strview-from-cstr` return by value.** Both returned heap-allocated `ptr:StrView` wrappers before Stage 17 A2, when returning a struct payload through `!T` was believed impossible; it is not. Neither allocates now, and neither needs freeing. Their `data` still borrows the source buffer, which must outlive the view.
+- **`SplitIter`/`LineIter` yield segments by value.** They conform to `(Iterator StrView)` since Stage 17 A3, so `doseq-iter` binds each segment as a `StrView` value — pass `(addr-of seg)` to anything taking `(ref StrView)`. The `*-iter-done`/`*-iter-next` pair is still available.
 - **`string-new-alloc` takes `(ref AllocHandle)`.** It copies the handle in; the caller retains ownership of the original.
 - **`CharIter` is lossless but substitutes U+FFFD.** Invalid UTF-8 bytes are never skipped silently — iteration always advances by at least one byte. Invalid bytes produce U+FFFD (the Unicode replacement character) as the yield value rather than an error, so iterating over a `CharIter` always terminates without an error path.
 - **Borrow lifetimes are unchecked.** `ByteIter`, `CharIter`, `SplitIter`, `LineIter`, and sub-views returned by `strview-sub-bytes` all hold raw pointers into their source buffer. There is no compile-time lifetime enforcement — the caller is responsible for keeping the source alive.

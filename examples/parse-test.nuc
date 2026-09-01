@@ -22,84 +22,96 @@
 (defn main ():i32
 
   ; ---- 1. i32 success: "42" ---------------------------------------------------
-  (with (sv:ptr:StrView (strview-from-cstr "42")
+  (let (sv__v:StrView (strview-from-cstr "42")
+        sv:ptr:StrView (addr-of sv__v)
          r:!i32 (parse i32 sv))
     (match r
       ((ok v) (printf "i32-42=%d\n" v))
       ((err e) (printf "i32-42=err\n"))))
 
   ; ---- 2. i32 success: "-7" ---------------------------------------------------
-  (with (sv:ptr:StrView (strview-from-cstr "-7")
+  (let (sv__v:StrView (strview-from-cstr "-7")
+        sv:ptr:StrView (addr-of sv__v)
          r:!i32 (parse i32 sv))
     (match r
       ((ok v) (printf "i32-neg7=%d\n" v))
       ((err e) (printf "i32-neg7=err\n"))))
 
   ; ---- 3. i32 error: "abc" ----------------------------------------------------
-  (with (sv:ptr:StrView (strview-from-cstr "abc")
+  (let (sv__v:StrView (strview-from-cstr "abc")
+        sv:ptr:StrView (addr-of sv__v)
          r:!i32 (parse i32 sv))
     (match r
       ((ok v) (printf "i32-abc=ok\n"))
       ((err e) (printf "i32-abc=err\n"))))
 
   ; ---- 4. i32 max: "2147483647" -----------------------------------------------
-  (with (sv:ptr:StrView (strview-from-cstr "2147483647")
+  (let (sv__v:StrView (strview-from-cstr "2147483647")
+        sv:ptr:StrView (addr-of sv__v)
          r:!i32 (parse i32 sv))
     (match r
       ((ok v) (printf "i32-max=%d\n" v))
       ((err e) (printf "i32-max=err\n"))))
 
   ; ---- 5. i32 overflow: "2147483648" ------------------------------------------
-  (with (sv:ptr:StrView (strview-from-cstr "2147483648")
+  (let (sv__v:StrView (strview-from-cstr "2147483648")
+        sv:ptr:StrView (addr-of sv__v)
          r:!i32 (parse i32 sv))
     (match r
       ((ok v) (printf "i32-overflow=ok\n"))
       ((err e) (printf "i32-overflow=err\n"))))
 
   ; ---- 6. i64 success: "1000000000000" ----------------------------------------
-  (with (sv:ptr:StrView (strview-from-cstr "1000000000000")
+  (let (sv__v:StrView (strview-from-cstr "1000000000000")
+        sv:ptr:StrView (addr-of sv__v)
          r:!i64 (parse i64 sv))
     (match r
       ((ok v) (printf "i64-big=%lld\n" v))
       ((err e) (printf "i64-big=err\n"))))
 
   ; ---- 7. i64 min: "-9223372036854775808" -------------------------------------
-  (with (sv:ptr:StrView (strview-from-cstr "-9223372036854775808")
+  (let (sv__v:StrView (strview-from-cstr "-9223372036854775808")
+        sv:ptr:StrView (addr-of sv__v)
          r:!i64 (parse i64 sv))
     (match r
       ((ok v) (printf "i64-min=%lld\n" v))
       ((err e) (printf "i64-min=err\n"))))
 
   ; ---- 8. f64 success: "3.14" -------------------------------------------------
-  (with (sv:ptr:StrView (strview-from-cstr "3.14")
+  (let (sv__v:StrView (strview-from-cstr "3.14")
+        sv:ptr:StrView (addr-of sv__v)
          r:!f64 (parse f64 sv))
     (match r
       ((ok v) (printf "f64-pi=%.2f\n" v))
       ((err e) (printf "f64-pi=err\n"))))
 
   ; ---- 9. f64 error: "notanumber" ---------------------------------------------
-  (with (sv:ptr:StrView (strview-from-cstr "notanumber")
+  (let (sv__v:StrView (strview-from-cstr "notanumber")
+        sv:ptr:StrView (addr-of sv__v)
          r:!f64 (parse f64 sv))
     (match r
       ((ok v) (printf "f64-nan=ok\n"))
       ((err e) (printf "f64-nan=err\n"))))
 
   ; ---- 10. i32 error: " 42" (leading whitespace) ------------------------------
-  (with (sv:ptr:StrView (strview-from-cstr " 42")
+  (let (sv__v:StrView (strview-from-cstr " 42")
+        sv:ptr:StrView (addr-of sv__v)
          r:!i32 (parse i32 sv))
     (match r
       ((ok v) (printf "i32-ws=ok\n"))
       ((err e) (printf "i32-ws=err\n"))))
 
   ; ---- 11. i32 error: "42 " (trailing whitespace) -----------------------------
-  (with (sv:ptr:StrView (strview-from-cstr "42 ")
+  (let (sv__v:StrView (strview-from-cstr "42 ")
+        sv:ptr:StrView (addr-of sv__v)
          r:!i32 (parse i32 sv))
     (match r
       ((ok v) (printf "i32-trail=ok\n"))
       ((err e) (printf "i32-trail=err\n"))))
 
   ; ---- 12. i32 error: "" (empty) ----------------------------------------------
-  (with (sv:ptr:StrView (strview-from-cstr "")
+  (let (sv__v:StrView (strview-from-cstr "")
+        sv:ptr:StrView (addr-of sv__v)
          r:!i32 (parse i32 sv))
     (match r
       ((ok v) (printf "i32-empty=ok\n"))

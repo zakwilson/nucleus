@@ -53,9 +53,9 @@
     (let ((needle (ref StrView)) (alloca StrView))
       (set! (needle 'data) (as ptr:ui8 (as ptr " World")))
       (set! (needle 'len) 6)
-      (let (r:!i32 (string-push-str s needle))
+      (let (r:!void (string-push-str s needle))
         (match r
-          ((ok _) (printf "push-str=ok\n"))
+          ((ok) (printf "push-str=ok\n"))
           ((err e) (printf "push-str=err\n"))))
       (printf "byte-len-after=%llu\n" (as ui64 (byte-len s))) ; 11
       ; Print as CStr using strview-to-cstr on as-view.

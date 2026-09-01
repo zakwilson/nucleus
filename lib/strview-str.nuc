@@ -27,10 +27,10 @@
   (strview-bytes self))
 (defn as-view ((self (ref StrView))):StrView
   (strview-as-view self))
-(defn sub-bytes ((self (ref StrView)) start:usize end:usize):!ptr:StrView
+(defn sub-bytes ((self (ref StrView)) start:usize end:usize):!StrView
   (strview-sub-bytes self start end))
 (defn byte-find ((self (ref StrView)) (needle (ref StrView))) (Maybe usize)
-  (strview-byte-find self needle))
+  (strview-find self needle))
 
 ; ---------------------------------------------------------------------------
 ; Str conformance for StrView.

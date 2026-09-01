@@ -24,7 +24,7 @@
 ;   - The byte element type is `ui8` (= C `unsigned char`); `u8` is not a Nucleus
 ;     type name (the design doc's `u8` reads as `ui8` here).
 ;   - A plain-symbol return type in colon position DOES tokenise, so
-;     `strview-len:usize` is fine. The colon-paren binding sugar is also live
+;     `strview-byte-len:usize` is fine. The colon-paren binding sugar is also live
 ;     (design §1), so `data:(ptr ui8)` tokenises in a defstruct field.
 ;   - `?` suffix is fine in generic method names (sanitize-for-ir strips it), but
 ;     must NOT appear in plain `defn` names (LLVM IR rejects them).
@@ -52,13 +52,6 @@
 ; registered in every compilation unit, including the reader/macros/bootstrap,
 ; not just files that `(import-use strview)`. This file keeps every method.
 ; ---------------------------------------------------------------------------
-
-; ---------------------------------------------------------------------------
-; strview-len — the byte length. Trivial accessor; present so callers depend on
-; the operation, not the field layout.
-; ---------------------------------------------------------------------------
-(defn strview-len ((sv (ref StrView))):usize
-  (return (sv 'len)))
 
 ; ---------------------------------------------------------------------------
 ; strview-eq — byte equality. Equal length AND identical bytes. The length test
@@ -108,18 +101,29 @@
               (addr-of it))))))
 
 ; ---------------------------------------------------------------------------
+; strview — the value constructor. Building a view was an `alloca` plus two
+; `set!`s, spelled out at every site (library-gaps.md #8).
+; ---------------------------------------------------------------------------
+(defn strview ((data (ptr ui8)) len:usize):StrView
+  (let ((sv (ref StrView)) (alloca StrView))
+    (set! (sv 'data) data)
+    (set! (sv 'len) len)
+    (return (deref sv))))
+
+; ---------------------------------------------------------------------------
 ; CStr bridge.
 ;
-; strview-from-cstr — heap-allocate a StrView whose `data` aliases the C string's
-; own bytes and whose `len` is strlen(cs). The view BORROWS the C string's bytes
-; (no copy), so the caller must keep the C string alive for the view's lifetime.
-; Returns a heap pointer the caller owns (free with libc free).
+; strview-from-cstr — a StrView whose `data` aliases the C string's own bytes
+; and whose `len` is strlen(cs). The view BORROWS the C string's bytes (no
+; copy), so the caller must keep the C string alive for the view's lifetime.
+;
+; Returned BY VALUE, and allocates nothing. It returned a heap `(ptr StrView)`
+; until Stage 17 A2 because struct-by-value returns were once unavailable; they
+; are not, and crossing an FFI seam is the commonest thing a converted compiler
+; does — it must not malloc. design/stage17-native-strings/library-gaps.md #7.
 ; ---------------------------------------------------------------------------
-(defn strview-from-cstr ((cs CStr)) (ptr StrView)
-  (let (sv:ptr:StrView (as ptr:StrView (malloc (as i64 (sizeof StrView)))))
-    (set! (sv 'data) (as ptr:ui8 (as ptr cs)))
-    (set! (sv 'len) (as usize (strlen (as ptr cs))))
-    (return sv)))
+(defn strview-from-cstr ((cs CStr)):StrView
+  (return (strview (as ptr:ui8 (as ptr cs)) (as usize (strlen (as ptr cs))))))
 
 ; ---------------------------------------------------------------------------
 ; strview-to-cstr — reinterpret the view's bytes as a C string. Only sound when
@@ -253,17 +257,15 @@
 ;   invalid-char-boundary   — start or end falls on a UTF-8 continuation byte
 ;                             (bit pattern 10xxxxxx: (b & 0xC0) == 0x80)
 ;
-; Returns a heap-allocated ptr:StrView (owned by the caller, free with libc
-; free) whose data/len describe the sub-slice. The data field BORROWS the
-; parent StrView's buffer; do not free the data — only free the StrView
-; wrapper itself. Returns !ptr:StrView to report errors.
+; Returns the sub-slice BY VALUE. Its `data` borrows the parent StrView's
+; buffer, so the parent must outlive it; nothing is allocated and nothing needs
+; freeing.
 ;
-; NOTE: returns ptr:StrView rather than StrView by value because returning a
-; struct payload through !T (Result T Err) is not yet supported by the compiler
-; (the struct fields arrive as zero when unwrapped via match). This matches the
-; strview-from-cstr idiom: the two-word wrapper is heap-allocated, but the
-; bytes are borrowed.
-(defn strview-sub-bytes ((sv (ref StrView)) start:usize end:usize):!ptr:StrView
+; It returned a heap `!ptr:StrView` until Stage 17 A2, on the belief that a
+; struct payload could not travel through `!T`. It can (verified 2026-08-31);
+; the wrapper was a workaround for a limitation that had already been fixed.
+; design/stage17-native-strings/library-gaps.md #11.
+(defn strview-sub-bytes ((sv (ref StrView)) start:usize end:usize):!StrView
   ; Range check first.
   (when (> start end)
     (return (err! str-index-out-of-bounds)))
@@ -279,17 +281,20 @@
     (let (eb:ui8 (aref (sv 'data) (as i64 end)))
       (when (= (bit-and (as ui32 eb) 192) 128)
         (return (err! invalid-char-boundary)))))
-  ; Build the sub-view — heap-allocate the StrView wrapper, borrow the bytes.
-  (let (result:ptr:StrView (as ptr:StrView (malloc (as i64 (sizeof StrView)))))
+  ; Build the sub-view — borrow the bytes, return the two words by value.
+  (let ((result (ref StrView)) (alloca StrView))
     (set! (result 'data) (unsafe/ptr+ (sv 'data) (as i64 start)))
     (set! (result 'len) (- end start))
-    (return (ok result))))
+    (return (ok (deref result)))))
 
-; strview-byte-find — first byte index of needle in sv, or none.
+; strview-find — first byte index of needle in sv, or none.
 ;
 ; Empty needle: returns (some 0) — same convention as Rust/C memmem for empty
 ; pattern.  Needle longer than haystack: returns none.
-(defn strview-byte-find ((sv (ref StrView)) (needle (ref StrView))) (Maybe usize)
+;
+; Was `strview-byte-find`, renamed in Stage 17 B0 so it cannot be misread as the
+; single-byte search that now sits beside it (library-gaps.md #10).
+(defn strview-find ((sv (ref StrView)) (needle (ref StrView))) (Maybe usize)
   (let (nlen:usize (needle 'len)
         slen:usize (sv 'len))
     ; Empty needle found at index 0.
@@ -314,6 +319,64 @@
       (if (= found 1)
         (return (some result))
         (return none)))))
+
+; ---------------------------------------------------------------------------
+; Single-byte, backward, and codepoint search. The compiler reaches for `strchr`
+; 37 times and `strstr` 14; none of those should have to materialize a one-byte
+; needle view to run a `memcmp` loop (library-gaps.md #10).
+; ---------------------------------------------------------------------------
+
+; strview-find-byte — first index of byte b, or none.
+(defn strview-find-byte ((sv (ref StrView)) b:ui8) (Maybe usize)
+  (let (p:ptr:ui8 (sv 'data)
+        n:usize (sv 'len)
+        i:usize 0)
+    (while (< i n)
+      (when (= (aref p (as i64 i)) b) (return (some i)))
+      (set! i (+ i 1)))
+    (return none)))
+
+; strview-rfind-byte — last index of byte b, or none.
+(defn strview-rfind-byte ((sv (ref StrView)) b:ui8) (Maybe usize)
+  (let (p:ptr:ui8 (sv 'data)
+        i:usize (sv 'len))
+    (while (> i 0)
+      (set! i (- i 1))
+      (when (= (aref p (as i64 i)) b) (return (some i))))
+    (return none)))
+
+; strview-rfind — last byte index at which needle occurs, or none.
+; Empty needle returns (some len), the mirror of strview-find's (some 0).
+(defn strview-rfind ((sv (ref StrView)) (needle (ref StrView))) (Maybe usize)
+  (let (nlen:usize (needle 'len)
+        slen:usize (sv 'len))
+    (when (= nlen 0) (return (some slen)))
+    (when (> nlen slen) (return none))
+    (let (i:usize (+ (- slen nlen) 1))
+      (while (> i 0)
+        (set! i (- i 1))
+        (when (= (memcmp (as ptr (unsafe/ptr+ (sv 'data) (as i64 i)))
+                         (as ptr (needle 'data))
+                         (as i64 nlen)) 0)
+          (return (some i))))
+      (return none))))
+
+; strview-find-char / strview-rfind-char — first/last byte index at which c is
+; encoded. UTF-8 is self-synchronizing, so a byte-level search for the encoding
+; cannot match inside another codepoint and needs no boundary check.
+(defn strview-find-char ((sv (ref StrView)) c:Char) (Maybe usize)
+  (let (buf:ptr:ui8 (as ptr:ui8 (alloca ui8 4)))
+    (let (n:usize (char-encode-utf8 c buf))
+      (when (= n 1) (return (strview-find-byte sv (aref buf 0))))
+      (let (nv:StrView (strview buf n))
+        (return (strview-find sv (addr-of nv)))))))
+
+(defn strview-rfind-char ((sv (ref StrView)) c:Char) (Maybe usize)
+  (let (buf:ptr:ui8 (as ptr:ui8 (alloca ui8 4)))
+    (let (n:usize (char-encode-utf8 c buf))
+      (when (= n 1) (return (strview-rfind-byte sv (aref buf 0))))
+      (let (nv:StrView (strview buf n))
+        (return (strview-rfind sv (addr-of nv)))))))
 
 ; strview-char-count — O(n): count lead bytes (non-continuation bytes).
 ; A UTF-8 continuation byte has bit pattern 10xxxxxx: (b & 0xC0) == 0x80.
@@ -383,7 +446,7 @@
 
 ; strview-contains-str — true if sv contains needle as a substring.
 (defn strview-contains-str ((sv (ref StrView)) (needle (ref StrView))):bool
-  (let ((found (Maybe usize)) (strview-byte-find sv needle))
+  (let ((found (Maybe usize)) (strview-find sv needle))
     (match found
       ((some i) true)
       (none false))))

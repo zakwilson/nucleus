@@ -1,0 +1,46 @@
+; `!void` — a Result whose ok arm carries no payload (Stage 17 A1).
+;
+; `(Result void E)` stamps an `ok` arm with no fields, so it is constructed
+; `(ok)`, matched `((ok) …)`, and `try`d like any other `!T`. See
+; design/stage17-native-strings/overview.md phase A1.
+
+(import-use "stdio.h")
+(import-use error)
+
+(deferror too-big "value out of range")
+
+; A fallible operation with nothing to return on success.
+(defn check (n:i32):!void
+  (when (> n 100) (return (err! too-big)))
+  (printf "checked %d\n" n)
+  (return (ok)))
+
+; `try` on a !void inside another !void: propagates, yields nothing.
+(defn check-both (a:i32 b:i32):!void
+  (try (check a))
+  (try (check b))
+  (return (ok)))
+
+; `try` on a !void inside a !T: the ok arm binds no name, and the enclosing
+; function still returns its own payload.
+(defn scaled (n:i32):!i32
+  (try (check n))
+  (return (ok (* n 2))))
+
+(defn report-void (r:!void name:CStr):void
+  (match r
+    ((ok)    (printf "%s: ok\n" name))
+    ((err e) (printf "%s: err %s\n" name (err-name e)))))
+
+(defn main ():i32
+  (report-void (check 7) "check(7)")
+  (report-void (check 200) "check(200)")
+  (report-void (check-both 1 2) "both(1,2)")
+  (report-void (check-both 1 200) "both(1,200)")
+  (match (scaled 5)
+    ((ok v) (printf "scaled(5): ok %d\n" v))
+    ((err e) (printf "scaled(5): err %s\n" (err-name e))))
+  (match (scaled 300)
+    ((ok v) (printf "scaled(300): ok %d\n" v))
+    ((err e) (printf "scaled(300): err %s\n" (err-name e))))
+  0)

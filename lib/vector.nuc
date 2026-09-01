@@ -220,6 +220,32 @@
   (reserve v n))
 
 ; ---------------------------------------------------------------------------
+; Bulk append. `conj` in a loop costs a bounds test, a capacity test and a call
+; per element; these reserve once and copy once (design/stage17-native-strings/
+; library-gaps.md #6). The copy is bitwise, which is exactly what `conj`'s
+; element store already is — no narrower contract on T.
+; ---------------------------------------------------------------------------
+
+; vector-extend-raw: append n elements read from `p`. `p` must not point into
+; this vector's own buffer — the reserve may reallocate it.
+(defn vector-extend-raw ((self (ref (Vector T))) (p (ptr T)) n:usize):void
+  (when (= n 0) (return))
+  (let (len:usize (_get self 'len)
+        esz:usize (as usize (sizeof T)))
+    (reserve self (+ len n))
+    (memcpy (as ptr (unsafe/ptr+ (as ptr:ui8 (as ptr (_get self 'data)))
+                                 (as i64 (* len esz))))
+            (as ptr p)
+            (as i64 (* n esz)))
+    (set! (self 'len) (+ len n))))
+
+; vector-extend: append every element of `other`, which is left unchanged.
+(defn vector-extend ((self (ref (Vector T))) (other (ref (Vector T)))):void
+  (vector-extend-raw self
+                     (as ptr:T (as ptr (_get other 'data)))
+                     (_get other 'len)))
+
+; ---------------------------------------------------------------------------
 ; Drop conformance: free the buffer through the stored allocator. Null-safe and
 ; idempotent (data is nulled so a double drop / post-move is a no-op).
 ; ---------------------------------------------------------------------------

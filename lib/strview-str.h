@@ -11,7 +11,7 @@ size_t byte_len(void* self) asm("byte-len");
 /* byte-at: uses an error-union or option type; not exported */
 struct ByteIter bytes(void* self);
 struct StrView as_view(void* self) asm("as-view");
-void* sub_bytes(void* self, size_t start, size_t end) asm("sub-bytes");
+/* sub-bytes: uses an error-union or option type; not exported */
 /* byte-find: uses a defunion-template instance type; not exported */
 size_t char_count(void* self) asm("char-count");
 bool str_empty_QMARK(void* self) asm("str-empty_QMARK");

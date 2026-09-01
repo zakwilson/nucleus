@@ -78,14 +78,14 @@ This lets the FNV byte hash be written as a `reduce` over the byte iterator that
 matches `strview-hash` exactly. See `examples/cstr-fold-test.nuc`.
 
 **Lazy string splitting — `SplitIter` / `LineIter`.** These conform to
-`(Iterator ptr)` (previously a done-flag-only API). The `(doseq-split (var iter-ref) body)`
-macro (`lib/string-split.nuc`) hides the decode, binding `var` to a
-`(ref StrView)` borrowing the iterator's `cur` slot (valid until the next step):
+`(Iterator StrView)` (`lib/string-split.nuc`), so `next` yields
+`(Maybe StrView)` and `doseq-iter` binds each segment by value. Pass
+`(addr-of seg)` to anything taking `(ref StrView)`:
 
 ```lisp
 (let (it:SplitIter (strview-split sv sep))
-  (doseq-split (seg (addr-of it))
-    (print-sv seg)))
+  (doseq-iter (seg (addr-of it))
+    (print-sv (addr-of seg))))
 ```
 
 The done-flag API (`split-iter-done`/`split-iter-next`, `lines-iter-done`/

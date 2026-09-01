@@ -1,0 +1,11 @@
+checked 7
+check(7): ok
+check(200): err too-big
+checked 1
+checked 2
+both(1,2): ok
+checked 1
+both(1,200): err too-big
+checked 5
+scaled(5): ok 10
+scaled(300): err too-big

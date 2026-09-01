@@ -1714,3 +1714,54 @@
           (let (tmp:ptr (new-tmp))
             (fprintf g-body-stream "  %s = load i1, ptr %s, align 1\n" tmp slot)
             (return (alloc-val ty-bool tmp)))))))))
+
+; ============================================================
+; Stage 17 A1: `(try R)` — propagate an error out of the enclosing function.
+; On `ok`, yield the payload; on `err`, `(return (err! e))`.
+;
+; A special form rather than a library macro because the `ok` arm's binder
+; count depends on the operand's TYPE, which a macro cannot see: `!void`'s ok
+; arm is payload-less (union-registry drops a `void` field), so `((ok v) v)` is
+; an arity error there and `((ok) (do))` is an arity error everywhere else.
+; See design/stage17-native-strings/overview.md phase A1.
+; ============================================================
+
+; Field count of the `ok` arm of `t`, or 1 when `t` is not a recognizable
+; Result (the shape every pre-Stage-17 `!T` has, so an unknown type keeps the
+; historical expansion and its diagnostics).
+(defn try-ok-nfields (t:ptr):i32
+  (when (= t null) (return 1))
+  (let (ud:?ptr:UnionDef (result-union-of (as raw:Type t)))
+    (when (= ud null) (return 1))
+    (let (oi:i32 (union-arm-index (as ptr ud) "ok"))
+      (when (< oi 0) (return 1))
+      (return ((invoke (ud 'arms) (as usize oi)) 'nfields)))))
+
+(defn emit-try (call:ptr scope:ref:Scope):ref:Val
+  (let (cc:ptr:Node (unsafe/cast ptr:Node call))
+    (when (!= (node-len cc) 2)
+      (die-at (cc 'line) "try: expects exactly one operand — (try expr)"))
+    (let (ln:i32 (cc 'line)
+          rnode:ptr (node-at cc 1)
+          nf:i32 (try-ok-nfields (as ptr (node-type (as raw:Node rnode) scope)))
+          ev:ptr (as ptr (nucleus_gensym)))
+      ; ((err E) (return (err! E)))
+      (let (err-pat:ptr (make-cell 'err (make-cell ev null ln) ln)
+            err-body:ptr (make-cell 'return
+                           (make-cell (make-cell 'err! (make-cell ev null ln) ln)
+                                      null ln) ln)
+            ok-pat:ptr null
+            ok-body:ptr null)
+        (if (= nf 0)
+          (do (set! ok-pat (make-cell 'ok null ln))
+              (set! ok-body (make-cell 'do null ln)))
+          (let (vv:ptr (as ptr (nucleus_gensym)))
+            (set! ok-pat (make-cell 'ok (make-cell vv null ln) ln))
+            (set! ok-body vv)))
+        (let (ok-arm:ptr (make-cell ok-pat (make-cell ok-body null ln) ln)
+              err-arm:ptr (make-cell err-pat (make-cell err-body null ln) ln))
+          (return (emit-match
+                    (make-cell 'match
+                      (make-cell rnode
+                        (make-cell ok-arm (make-cell err-arm null ln) ln) ln) ln)
+                    scope)))))))
