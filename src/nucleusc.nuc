@@ -14670,21 +14670,21 @@
   ; to MAIN would claim each reflected name there — repl-jit-symbol-precedence.md.
   (set! g-jit-dylib (LLVMOrcLLJITGetMainJITDylib g-jit)))
 
-(defn jit-add-module (ir:ptr line:i32):void
+(defn jit-add-module (ir:StrView line:i32):void
   (jit-add-module-rt ir line null))
 
 ; Add a module to the JIT, optionally under a resource tracker. Pass rt=null to
 ; add to the main JITDylib without a tracker (used by compile-time and macro JIT).
 ; Pass a tracker to add under it so the module's symbols can be removed later
 ; via LLVMOrcResourceTrackerRemove (used by the REPL for redefinition).
-(defn jit-add-module-rt (ir:ptr line:i32 rt:ptr):void
+(defn jit-add-module-rt (ir:StrView line:i32 rt:ptr):void
   (jit-ensure-init line)
   ; LLVMOrcThreadSafeContextGetContext was removed in LLVM 20+. Create the
   ; parsing context directly. tsctx is only used for ThreadSafeModule locking
   ; which is irrelevant in single-threaded compilation. ctx leaks (fine).
   (let (ctx:ptr (LLVMContextCreate)
-        ir-len:i64 (strlen ir)
-        mb:ptr (LLVMCreateMemoryBufferWithMemoryRangeCopy ir ir-len "<compile-time>")
+        ir-len:i64 (as i64 (ir 'len))
+        mb:ptr (LLVMCreateMemoryBufferWithMemoryRangeCopy (as ptr (ir 'data)) ir-len "<compile-time>")
         mod:ptr null
         errmsg:ptr null
         parse-err:i32 (LLVMParseIRInContext ctx mb (addr-of mod) (addr-of errmsg)))
@@ -14935,9 +14935,8 @@
             (drain-pending-union-irs)
             (fflush g-type-stream)
 
-            ; Assemble full CT module IR in a memstream.
-            (let (ir-bufp:ptr null  ir-sizep:i64 0
-                  irs:ptr (open_memstream (addr-of ir-bufp) (as ptr (addr-of ir-sizep))))
+            ; Assemble the full CT module IR in memory.
+            (let ((irs String) (string-new))
               (emit irs "; ModuleID = '<compile-time>'\n")
               (emit irs "target triple = \"" ((as ptr:Target g-host-target) 'triple) "\"\n\n")
               ; In REPL mode, include the accumulated preamble
@@ -14961,15 +14960,14 @@
               ; Definitions from CT body + @__compile_time_main
               (when (and (!= ct-def-bufp null) (!= (cstr-byte-at ct-def-bufp 0) 0))
                 (emit irs ct-def-bufp))
-              (fclose irs)
 
-              (jit-add-module ir-bufp (ff 'line))
+              (jit-add-module (string-as-view irs) (ff 'line))
               (jit-call-ct-main-sym (ff 'line) ct-sym)
 
               (free ct-type-bufp)
               (free ct-decl-bufp)
               (free ct-def-bufp)
-              (free ir-bufp)))))))))
+              (drop (addr-of irs))))))))))
 
 ; ============================================================
 ; defmacro top-level form
@@ -15270,8 +15268,7 @@
                   (fflush g-type-stream)
 
                   ; Assemble the macro JIT module IR
-                  (let (ir-bufp:ptr null  ir-sizep:i64 0
-                        irs:ptr (open_memstream (addr-of ir-bufp) (as ptr (addr-of ir-sizep))))
+                  (let ((irs String) (string-new))
                     (emit irs "; ModuleID = '<defmacro " macro-name ">'\n")
                     (emit irs "target triple = \"" ((as ptr:Target g-host-target) 'triple)
                           "\"\n\n")
@@ -15290,11 +15287,10 @@
                       (emit irs ct-decl-bufp))
                     (when (and (!= ct-def-bufp null) (!= (cstr-byte-at ct-def-bufp 0) 0))
                       (emit irs ct-def-bufp))
-                    (fclose irs)
-                    (jit-add-module ir-bufp (ff 'line))
+                    (jit-add-module (string-as-view irs) (ff 'line))
                     (free ct-decl-bufp)
                     (free ct-def-bufp)
-                    (free ir-bufp))))))))
+                    (drop (addr-of irs)))))))))
 
 ; ============================================================
 ; macrolet (Stage 16, design/stage16-ergonomics/macrolet.md)
@@ -15405,7 +15401,7 @@
 ; `sections` is passed rather than read from `ir-sections-on` because the table
 ; is written at module-assembly time, after the stream swaps that predicate reads
 ; have been undone — a CT/macro module would look like the program module here.
-(defn emit-string-table (out:ptr sections:i32):void
+(defn emit-string-table ((out (ref String)) sections:i32):void
   (doseq (sl g-strs (VecIter ref:StrLit))
     (let (ir-len:i32 (+ (sl 'len) 1))
       (emit out "@.str." (sl 'id) " = private unnamed_addr constant [" ir-len " x i8] c\"")
@@ -15434,7 +15430,7 @@
 ; two library objects collided on it. Every reference is a GEP emitted into the
 ; same module (union-emit.nuc, emit-err-field), so nothing outside needs the
 ; symbol. Cross-unit id agreement is a separate, pre-existing hole.
-(defn emit-deferror-table (out:ptr):void
+(defn emit-deferror-table ((out (ref String))):void
   ; count == 1 means only the reserved placeholder (no real deferrors).
   (when (and (= (count g-deferror-name-sids) 1) (= g-err-table-used 0)) (return))
   (let (n:i32 (unsafe/cast i32 (count g-deferror-name-sids)))
@@ -18569,12 +18565,10 @@
 ; Close module streams, output IR to stdout (batch mode)
 ; ============================================================
 
-; Assemble the full module IR into a heap-allocated buffer. Caller must free
-; the returned pointer (g-type-bufp/g-decl-bufp/g-def-bufp are also freed).
-; Stores the buffer length through `len-out` (pointer to i64).
-(defn assemble-module-ir (source-file:ptr len-out:ptr):ptr
-  (let (ir-bufp:ptr null  ir-sizep:i64 0
-        irs:ptr (open_memstream (addr-of ir-bufp) (as ptr (addr-of ir-sizep))))
+; Assemble the full module IR. The caller owns the returned String and must
+; drop it (g-type-bufp/g-decl-bufp/g-def-bufp are freed here).
+(defn assemble-module-ir (source-file:ptr):String
+  (let ((irs String) (string-with-capacity 262144))
     (emit irs "; ModuleID = '" source-file "'\n")
     (emit irs "source_filename = \"" source-file "\"\n")
     (emit irs "target datalayout = \"" ((as ptr:Target g-target) 'datalayout) "\"\n")
@@ -18597,12 +18591,10 @@
       (emit irs g-decl-bufp))
     (when (and (!= g-def-bufp null) (!= (cstr-byte-at g-def-bufp 0) 0))
       (emit irs g-def-bufp))
-    (fclose irs)
     (free g-type-bufp)
     (free g-decl-bufp)
     (free g-def-bufp)
-    (set! (aref (as ptr:i64 len-out) 0) ir-sizep)
-    (return ir-bufp)))
+    (return irs)))
 
 ; Parse the in-memory IR, emit an object file, and (unless -c) invoke clang
 ; to link a final binary. Exits with a non-zero status on failure.
@@ -18717,15 +18709,12 @@
   (fclose g-type-stream)
   (fclose g-decl-stream)
   (fclose g-def-stream)
-  (let (ir-len:i64 0
-        ir:ptr (assemble-module-ir source-file (as ptr (addr-of ir-len))))
+  (let ((ir String) (assemble-module-ir source-file)
+        v:StrView (string-as-view ir))
     (if (!= g-emit-llvm 0)
-      (do
-        (emit (as ptr stdout) ir)
-        (free ir))
-      (do
-        (compile-and-link ir ir-len source-file)
-        (free ir)))))
+      (emit (as ptr stdout) v)
+      (compile-and-link (as ptr (v 'data)) (as i64 (v 'len)) source-file))
+    (drop (addr-of ir))))
 
 
 ; ============================================================

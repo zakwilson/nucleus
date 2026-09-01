@@ -87,6 +87,17 @@
               (as i64 (- n mark)) f))
     (string-truncate-unchecked b mark)))
 
+; The same `emit` against an in-memory sink, which is what retires
+; `open_memstream` (overview.md phase C3 — and with it a glibc-only function).
+; An overload rather than a `(dyn Writer)` sink: the sink type is always known
+; at the call site, so this dispatches statically and boxes nothing.
+(defn emit-flush ((f (ref String)) (b (ref String)) mark:usize):void
+  (let (v:StrView (string-as-view b)
+        n:usize (v 'len))
+    (when (> n mark)
+      (string-push-bytes-raw f (unsafe/ptr+ (v 'data) (as i64 mark)) (- n mark)))
+    (string-truncate-unchecked b mark)))
+
 (defmacro emit (sink :rest parts)
   (let (b:ptr (gensym) m:ptr (gensym))
     `(let ((~b (ref String)) (emit-buf))
