@@ -410,3 +410,37 @@ chameleon already adapts to a `CStr`/`ptr` consumer downstream, so nothing is
 lost by joining at the wider type. Belongs with the type-join work
 `macro-conditional-casts.md` MC-2 already schedules (join absorption); do it
 there rather than adding a second join special case.
+### 28. Nucleus cannot see a C preprocessor macro, so `open(2)`'s flags are hardcoded — **found (B3), platform-limited**
+`(import-use "fcntl.h")` brings in C *declarations*, deliberately not C macros
+(design/overview.md), so `O_RDONLY`/`O_CREAT`/`O_TRUNC`/`O_APPEND` do not
+resolve. `lib/file.nuc` spells them out as `defconst`s — the **Linux/glibc**
+values. Darwin's differ (`O_CREAT` is 0x200 there, `O_TRUNC` 0x400, `O_APPEND`
+0x8), so `lib/file.nuc` is Linux-only as written. `examples/cheader-posix.nuc`
+already had the same hardcoded block for the same reason.
+
+Not fixable in the library: the value is a property of the target platform, and
+Nucleus has no platform conditional and no per-target constant table. Two real
+fixes, both out of scope for B3: a `--target`-keyed constants module, or teaching
+the C header import to evaluate simple object-like `#define`s. Record and move
+on — the compiler this stage converts builds on Linux.
+
+### 29. `node-type` did not mirror the new tier-0 dispatch pass — **fixed 2026-09-01 (B3)**
+`(try (write-str f sv))` failed with *"match: arm 'ok' binder count does not
+match its field count"* whenever `f` was a struct **value** binding rather than
+an already-`(ref T)` parameter. `emit-try` sizes its `ok` arm from
+`(node-type operand)`, and `node-type-call`'s tier 0 was still
+`generic-find-method-exact` — `params-type-eq` only — so the lvalue implicit
+address-of that `generic-resolve` gained in
+[borrow-conventions.md](borrow-conventions.md) §3.4 was invisible to it. The
+call typed as unknown, `try-ok-nfields` fell back to its 1-field default, and the
+generated `match` was one binder wide against `!void`'s payload-less arm.
+
+**Fixed** with `generic-find-method-accepting` (`src/generics.nuc`), the
+call-side companion to `generic-find-method-exact`, run as node-type-call's
+tier-0 second pass exactly as `generic-resolve` runs `params-accept-args`. Kept
+separate from `generic-find-method-exact` because that one also answers the
+*definition*-side question, where `(name, param-types)` must stay an exact key.
+
+This is the `node-type`↔`emit-node` lockstep (context/conventions.md) charging
+for a change made on one side only. Bootstrap stayed byte-identical: nothing in
+`src/` yet calls a method with a struct-value receiver.

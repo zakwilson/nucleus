@@ -411,11 +411,31 @@ looped over, which is not defensive — that is ordinary on a pipe.
 rather than by an example: an example inherits the harness's stdin and would
 block on a terminal. `examples/io-test.nuc` covers everything else.
 
-**B3 — `lib/file.nuc`.** `File` (fd, `Drop`-closed), `file-open-read`/
-`file-create`/`file-open-append`, `file-read-to-string`, `file-write-bytes`,
-`BufWriter` (owns a `File`, `Drop` = flush + close). `BufWriter` is load-bearing:
-IR emission is millions of small writes and `fprintf`'s only real advantage is
-its `FILE` buffer.
+**B3 — `lib/file.nuc` — done 2026-09-01.** `File` (fd, `Drop`-closed),
+`file-open-read`/`file-create`/`file-open-append`, `file-read-to-string`,
+`file-write-bytes`, `BufWriter` (owns a `File`, `Drop` = flush + close).
+`BufWriter` is load-bearing: IR emission is millions of small writes and
+`fprintf`'s only real advantage is its `FILE` buffer.
+
+`File` and `BufWriter` both conform to `Writer`. `BufWriter` sends anything at
+least a bufferful straight to the descriptor — staging it would be a memcpy that
+buys no syscall. `file-close` / `buf-writer-close` exist beside the `Drop` path
+because `close` can fail late and `Drop` returns `void`, so a program that must
+know the bytes reached disk needs a form that reports.
+
+Two findings, both registered:
+
+- **#28, not fixable here.** `open(2)`'s flags are C preprocessor macros, which
+  Nucleus deliberately does not import, so `O_RDONLY`/`O_CREAT`/`O_TRUNC`/
+  `O_APPEND` are spelled out as Linux/glibc `defconst`s and `lib/file.nuc` is
+  Linux-only as written. The real fix is a target-keyed constants module or
+  object-like `#define` evaluation in the header import; neither is B3's job.
+- **#29, fixed.** `(try (write-str f sv))` mis-sized its `ok` arm whenever `f`
+  was a struct *value* binding: `node-type-call`'s tier 0 was still exact-match
+  only, so the lvalue implicit address-of was invisible to the type side while
+  emit resolved it fine. `generic-find-method-accepting` mirrors
+  `generic-resolve`'s tier-0 second pass. The `node-type`↔`emit-node` lockstep
+  charging for a one-sided change.
 
 **B4 — `lib/intern.nuc`.** `Symbol` (§2.4), the open-addressed intern table,
 conformances, and the `Keyword` rebase. Ships with a benchmark against the

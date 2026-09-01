@@ -1,0 +1,7 @@
+line 0
+line 1
+line 2
+bytes=21
+after append bytes=30
+last=[appended]
+missing: io-open-failed

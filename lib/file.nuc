@@ -1,0 +1,167 @@
+; Stage 17 B3 — files: an owning descriptor, and the buffered Writer emission
+; needs.
+;
+; Design: design/stage17-native-strings/overview.md §2.1 (the sink column).
+;
+; `BufWriter` is the load-bearing half. IR emission is millions of small writes
+; and `fprintf`'s one real advantage over a bare descriptor is its `FILE` buffer;
+; this is that buffer, made explicit and flushable, so B2 can keep the standard
+; streams unbuffered without costing the conversion its throughput.
+
+(import-use "fcntl.h")
+(import-use "unistd.h")
+
+(import-use error)
+(import-use string-errors)
+(import-use char)
+(import-use strview)
+(import-use vector)
+(import-use string)
+(import-use fmt)
+
+; open(2)'s flags are preprocessor macros, and Nucleus imports C declarations
+; but deliberately not C macros, so they are spelled out. These are the
+; **Linux/glibc** values; Darwin's differ (design/stage17-native-strings/
+; library-gaps.md #28).
+(defconst O-RDONLY 0)
+(defconst O-WRONLY 1)
+(defconst O-CREAT 64)      ; 0100
+(defconst O-TRUNC 512)     ; 01000
+(defconst O-APPEND 1024)   ; 02000
+(defconst MODE-644 420)    ; 0644
+
+(defconst FILE-CHUNK 65536)
+
+; ---------------------------------------------------------------------------
+; File — an owning descriptor, closed by Drop.
+; ---------------------------------------------------------------------------
+(defstruct File fd:i32)
+
+(defn file (fd:i32):File
+  (let (f:&File (alloca File))
+    (set! (f 'fd) fd)
+    (return (deref f))))
+
+; NOTE: Drop's receiver is `(ptr Self)`, not `(ref Self)`.
+(extend File Drop)
+(defn drop ((self (ptr File))):void
+  (when (>= (self 'fd) 0)
+    (close (self 'fd))
+    ; -1 so a `with` scope that already closed explicitly does not close a
+    ; descriptor some later `open` has since handed to someone else.
+    (set! (self 'fd) -1)))
+
+; Close now and observe the result. `close` can fail late (a deferred write
+; error on NFS), which the `Drop` path has no way to report.
+(defn file-close ((self (ref File))):!void
+  (let (fd:i32 (self 'fd))
+    (set! (self 'fd) -1)
+    (when (< fd 0) (return (ok)))
+    (when (!= (close fd) 0) (return (err! io-write-failed))))
+  (return (ok)))
+
+; open(2) wants a NUL-terminated path and a StrView is not one, so the path is
+; copied. Unchecked: a path is bytes, not necessarily UTF-8.
+(defn file-open-flags ((path (ref StrView)) flags:i32 mode:i32):!File
+  (let (buf:String (string-new))
+    (string-push-str-unchecked buf path)
+    (let (fd:i32 (open (string-as-cstr buf) flags mode))
+      (drop (addr-of buf))
+      (when (< fd 0) (return (err! io-open-failed)))
+      (return (ok (file fd))))))
+
+(defn file-open-read ((path (ref StrView))):!File
+  (return (file-open-flags path O-RDONLY 0)))
+
+(defn file-create ((path (ref StrView))):!File
+  (return (file-open-flags path (bit-or O-WRONLY (bit-or O-CREAT O-TRUNC))
+                           MODE-644)))
+
+(defn file-open-append ((path (ref StrView))):!File
+  (return (file-open-flags path (bit-or O-WRONLY (bit-or O-CREAT O-APPEND))
+                           MODE-644)))
+
+; ---------------------------------------------------------------------------
+; Reading and writing
+; ---------------------------------------------------------------------------
+(defn file-write-bytes ((self (ref File)) (p (ptr ui8)) n:usize):!void
+  (let (off:usize 0)
+    (while (< off n)
+      (let (w:i64 (as i64 (write (self 'fd)
+                            (as ptr (unsafe/ptr+ p (as i64 off)))
+                            (as i64 (- n off)))))
+        (when (<= w 0) (return (err! io-write-failed)))
+        (set! off (+ off (as usize w))))))
+  (return (ok)))
+
+(extend File Writer)
+
+(defn write-str ((self (ref File)) s:StrView):!void
+  (when (= (s 'len) 0) (return (ok)))
+  (return (file-write-bytes self (s 'data) (s 'len))))
+
+; The whole file, from the current offset. Bytes, not text: no UTF-8 validation,
+; because the compiler reads source files whose encoding is the *program's*
+; problem to diagnose, not the reader's to refuse.
+(defn file-read-to-string ((self (ref File))):!String
+  (let (out:String (string-new)
+        buf:ptr:ui8 (as ptr:ui8 (alloca ui8 FILE-CHUNK))
+        go:bool true)
+    (while go
+      (let (n:i64 (as i64 (read (self 'fd) (as ptr buf) FILE-CHUNK)))
+        (when (< n 0)
+          (drop (addr-of out))
+          (return (err! io-read-failed)))
+        (when (= n 0) (set! go false))
+        (when go (string-push-bytes-raw out buf (as usize n)))))
+    (return (ok out))))
+
+; ---------------------------------------------------------------------------
+; BufWriter — a File plus a staging buffer.
+; ---------------------------------------------------------------------------
+(defconst BUF-WRITER-CAP 65536)
+
+(defstruct BufWriter
+  out:File
+  buf:String)
+
+(defn buf-writer (f:File):BufWriter
+  (let (b:&BufWriter (alloca BufWriter))
+    (set! (b 'out) f)
+    (set! (b 'buf) (string-with-capacity BUF-WRITER-CAP))
+    (return (deref b))))
+
+(defn flush ((self (ref BufWriter))):!void
+  (let (v:StrView (string-as-view (addr-of self 'buf)))
+    (when (> (v 'len) 0)
+      (try (file-write-bytes (addr-of self 'out) (v 'data) (v 'len)))
+      (string-clear (addr-of self 'buf))))
+  (return (ok)))
+
+(extend BufWriter Writer)
+
+; Anything at least a bufferful goes straight to the descriptor: staging it
+; would be a memcpy that buys no syscall.
+(defn write-str ((self (ref BufWriter)) s:StrView):!void
+  (when (= (s 'len) 0) (return (ok)))
+  (when (>= (s 'len) BUF-WRITER-CAP)
+    (try (flush self))
+    (return (file-write-bytes (addr-of self 'out) (s 'data) (s 'len))))
+  (when (> (+ (byte-len (addr-of self 'buf)) (s 'len)) BUF-WRITER-CAP)
+    (try (flush self)))
+  (string-push-str-unchecked (addr-of self 'buf) &s)
+  (return (ok)))
+
+; Flush, then close. A `Drop`-only path cannot report a failed final write, so
+; call this when the bytes reaching disk is something the program must know.
+(defn buf-writer-close ((self (ref BufWriter))):!void
+  (try (flush self))
+  (return (file-close (addr-of self 'out))))
+
+(extend BufWriter Drop)
+(defn drop ((self (ptr BufWriter))):void
+  ; The flush result is unobservable here — that is what `buf-writer-close` is
+  ; for. Dropping without it still writes the bytes on the ordinary path.
+  (flush self)
+  (drop (addr-of self 'out))
+  (drop (addr-of self 'buf)))

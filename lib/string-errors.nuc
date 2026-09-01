@@ -23,3 +23,8 @@
 
 ; Stage 17 B1: a Writer sink refused the bytes (a short write, a closed fd).
 (deferror io-write-failed "write failed")
+
+; Stage 17 B3: open(2) refused the path, and a read(2) failed mid-file. A read
+; that returns 0 is end of file, not this.
+(deferror io-open-failed "cannot open file")
+(deferror io-read-failed "read failed")
