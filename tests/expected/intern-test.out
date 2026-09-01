@@ -1,0 +1,10 @@
+same=true different=false
+len=5 view=[hello]
+cstr=[hello] strlen=5
+hash-stable=true
+byte-len=5 chars=5 starts=true ends=true
+map hello=1
+map world=2
+map n=2
+grew=true identity-survives-rehash=true
+reintern-adds=0

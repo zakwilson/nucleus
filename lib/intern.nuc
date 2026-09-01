@@ -1,0 +1,226 @@
+; Stage 17 B4 — `Symbol`: interned identity, with the header behind the pointer.
+;
+; Design: design/stage17-native-strings/overview.md §2.4.
+;
+; The stage's third overturned ruling. Stage 14 exempted the compiler's interned
+; substrate — `Node.s`, scope keys, struct-field names — from native strings
+; because identity comparison must stay one `icmp eq ptr` and a `{data,len}`
+; view cannot be identity-compared. The requirement is real; the conclusion
+; ("so keep it a raw `char*`") was the work-around-the-weakness move. The
+; weakness is that the native stack had no interned-identity type. This is it.
+;
+; LAYOUT. The interner allocates
+;
+;     [hash:usize][len:usize][bytes…][NUL]
+;                             ^ Symbol.p
+;
+; and the Symbol holds the address of the first BYTE, not of the header. That
+; one choice buys all four properties at once: `=` is `icmp eq ptr`; `len` and
+; `hash` are O(1) loads behind the pointer; `as-view` is `{p, len}` with no
+; allocation; and `as-cstr` is free, because the bytes are still NUL-terminated,
+; so every remaining FFI seam takes a Symbol with no copy.
+
+(import-use "stdlib.h")
+(import-use "string.h")
+(import-use "stdio.h")
+
+(extern stderr:ptr)
+
+(import-use error)
+(import-use numeric)
+(import-use char)
+(import-use hash)
+(import-use strview)
+(import-use strview-str)
+(import-use vector)
+(import-use string)
+(import-use fmt)
+
+(defstruct Symbol p:(ptr ui8))
+
+; Byte offsets behind `p`. Both words are `usize`, and malloc's alignment is at
+; least that, so `p` (base + 2 words) is aligned for both loads. Reading them
+; needs `unsafe/cast`: `p` is deliberately a BYTE pointer, and reinterpreting it
+; at the header word is the one thing this layout cannot express in the type.
+(defconst SYM-LEN-OFF -8)
+(defconst SYM-HASH-OFF -16)
+(defconst SYM-HEADER 16)
+
+(defn symbol-len (self:Symbol):usize
+  (return (deref (unsafe/cast ptr:usize (unsafe/ptr+ (self 'p) SYM-LEN-OFF)))))
+
+(defn symbol-cached-hash (self:Symbol):usize
+  (return (deref (unsafe/cast ptr:usize (unsafe/ptr+ (self 'p) SYM-HASH-OFF)))))
+
+(defn symbol-as-view (self:Symbol):StrView
+  (return (strview (self 'p) (symbol-len self))))
+
+; Free, not a conversion: the interner NUL-terminates, so the bytes already are
+; a C string. This is what keeps every surviving FFI seam copy-free.
+(defn symbol-as-cstr (self:Symbol):CStr
+  (return (as CStr (as ptr (self 'p)))))
+
+; ---------------------------------------------------------------------------
+; The table — open-addressed, power-of-two, linear probing.
+;
+; Not lib/keyword.nuc's 256-entry linear scan with a `strcmp` per probe: the
+; compiler interns tens of thousands of distinct names, and that shape is O(n)
+; per intern and capped besides. Not a HashMap either — a HashMap's keys want to
+; be interned, so building the interner on it is circular.
+; ---------------------------------------------------------------------------
+(defconst INTERN-INIT-CAP 1024)
+
+(defvar g-sym-table:ptr null)      ; (ptr ui8)[] — the Symbol bytes, or null
+(defvar g-sym-cap:usize 0)         ; always a power of two
+(defvar g-sym-count:usize 0)
+
+(defn intern-oom ():void
+  (fprintf stderr "intern: out of memory\n")
+  (exit 1))
+
+; The interned block for `sv`, NUL-terminated, with its header filled in.
+(defn intern-alloc-bytes ((sv (ref StrView)) h:usize):(ptr ui8)
+  (let (n:usize (sv 'len)
+        base:?ptr (malloc (as i64 (+ (as usize SYM-HEADER) (+ n 1)))))
+    (when (= base null) (intern-oom))
+    (let (p:(ptr ui8) (as ptr:ui8 (unsafe/ptr+ (as ptr:ui8 base) SYM-HEADER)))
+      (set! (deref (unsafe/cast ptr:usize (unsafe/ptr+ p SYM-HASH-OFF))) h)
+      (set! (deref (unsafe/cast ptr:usize (unsafe/ptr+ p SYM-LEN-OFF))) n)
+      (when (> n 0) (memcpy (as ptr p) (as ptr (sv 'data)) (as i64 n)))
+      (set! (aref p (as i64 n)) 0)
+      (return p))))
+
+; Place an already-interned pointer into `tbl`. Only ever called with a key not
+; present, so it stops at the first empty slot without comparing.
+(defn intern-place (tbl:ptr cap:usize p:(ptr ui8) h:usize):void
+  (let (mask:usize (- cap 1)
+        i:usize (bit-and h mask))
+    (while (!= (aref (as ptr:ptr tbl) (as i64 i)) null)
+      (set! i (bit-and (+ i 1) mask)))
+    (set! (aref (as ptr:ptr tbl) (as i64 i)) (as ptr p))))
+
+(defn intern-grow (newcap:usize):void
+  (let (nt:?ptr (calloc (as i64 newcap) (sizeof ptr)))
+    (when (= nt null) (intern-oom))
+    (when (!= g-sym-table null)
+      (let (i:usize 0)
+        (while (< i g-sym-cap)
+          (let (e:?ptr (aref (as ptr:ptr g-sym-table) (as i64 i)))
+            (when (!= e null)
+              (let (ep:(ptr ui8) (as ptr:ui8 e))
+                (intern-place nt newcap ep
+                  (deref (unsafe/cast ptr:usize (unsafe/ptr+ ep SYM-HASH-OFF))))))
+            (set! i (+ i 1)))))
+      (free g-sym-table))
+    (set! g-sym-table nt)
+    (set! g-sym-cap newcap)))
+
+; The canonical Symbol for these bytes. Two calls with equal bytes return the
+; same pointer, which is the whole contract.
+(defn symbol-intern ((sv (ref StrView))):Symbol
+  (when (= g-sym-table null) (intern-grow (as usize INTERN-INIT-CAP)))
+  ; Grow at 3/4 load: linear probing degrades sharply past that.
+  (when (>= (* (+ g-sym-count 1) 4) (* g-sym-cap 3))
+    (intern-grow (* g-sym-cap 2)))
+  (let (h:usize (strview-hash sv)
+        mask:usize (- g-sym-cap 1)
+        i:usize (bit-and h mask)
+        n:usize (sv 'len)
+        s:&Symbol (alloca Symbol))
+    (while true
+      (let (e:?ptr (aref (as ptr:ptr g-sym-table) (as i64 i)))
+        (when (= e null)
+          (let (p:(ptr ui8) (intern-alloc-bytes sv h))
+            (intern-place g-sym-table g-sym-cap p h)
+            (set! g-sym-count (+ g-sym-count 1))
+            (set! (s 'p) p)
+            (return (deref s))))
+        (let (ep:(ptr ui8) (as ptr:ui8 e))
+          (when (and (= (deref (unsafe/cast ptr:usize (unsafe/ptr+ ep SYM-LEN-OFF))) n)
+                     (or (= n 0)
+                         (= (memcmp (as ptr ep) (as ptr (sv 'data)) (as i64 n)) 0)))
+            (set! (s 'p) ep)
+            (return (deref s)))))
+      (set! i (bit-and (+ i 1) mask)))
+    (return (deref s))))
+
+(defn symbol-from-cstr ((cs CStr)):Symbol
+  (let (v:StrView (strview-from-cstr cs))
+    (return (symbol-intern v))))
+
+; How many distinct names are interned. For diagnostics and the B4 benchmark.
+(defn symbol-count ():usize (return g-sym-count))
+
+; ---------------------------------------------------------------------------
+; Conformances
+; ---------------------------------------------------------------------------
+
+; Eq is pointer identity — the property the whole layout exists to preserve.
+(extend Symbol Eq)
+(defn = (a:Symbol b:Symbol):bool (return (= (as ptr (a 'p)) (as ptr (b 'p)))))
+(defn != (a:Symbol b:Symbol):bool (return (!= (as ptr (a 'p)) (as ptr (b 'p)))))
+
+; The hash cached at intern time: a load, never a byte walk.
+(extend Symbol Hash)
+(defn hash ((self (ref Symbol))):usize
+  (return (symbol-cached-hash (deref self))))
+
+(extend Symbol ToStr)
+(defn to-str (self:Symbol (out (ref String))):!void
+  (let (v:StrView (symbol-as-view self))
+    (string-push-str-unchecked out &v))
+  (return (ok)))
+
+; ByteStr/Str come free through the view: every method is the StrView method on
+; `as-view`, which is two words and no allocation.
+(extend Symbol (ByteStr ByteIter))
+
+(defn byte-len ((self (ref Symbol))):usize (return (symbol-len (deref self))))
+
+(defn byte-at ((self (ref Symbol)) i:usize):!ui8
+  (let (v:StrView (symbol-as-view (deref self)))
+    (return (byte-at v i))))
+
+(defn bytes ((self (ref Symbol))):ByteIter
+  (let (v:StrView (symbol-as-view (deref self)))
+    (return (bytes v))))
+
+(defn as-view ((self (ref Symbol))):StrView
+  (return (symbol-as-view (deref self))))
+
+(defn sub-bytes ((self (ref Symbol)) start:usize end:usize):!StrView
+  (let (v:StrView (symbol-as-view (deref self)))
+    (return (sub-bytes v start end))))
+
+(defn byte-find ((self (ref Symbol)) (needle (ref StrView))) (Maybe usize)
+  (let (v:StrView (symbol-as-view (deref self)))
+    (return (byte-find v needle))))
+
+(extend Symbol (Str CharIter))
+
+(defn char-count ((self (ref Symbol))):usize
+  (let (v:StrView (symbol-as-view (deref self)))
+    (return (char-count v))))
+
+(defn str-empty? ((self (ref Symbol))):bool
+  (return (= (symbol-len (deref self)) 0)))
+
+(defn char-at ((self (ref Symbol)) i:usize):!Char
+  (let (v:StrView (symbol-as-view (deref self)))
+    (return (char-at v i))))
+
+(defn chars ((self (ref Symbol))):CharIter
+  (let (v:StrView (symbol-as-view (deref self)))
+    (return (chars v))))
+
+(defn starts-with? ((self (ref Symbol)) (prefix (ref StrView))):bool
+  (let (v:StrView (symbol-as-view (deref self)))
+    (return (starts-with? v prefix))))
+
+(defn ends-with? ((self (ref Symbol)) (suffix (ref StrView))):bool
+  (let (v:StrView (symbol-as-view (deref self)))
+    (return (ends-with? v suffix))))
+
+(defn contains-str? ((self (ref Symbol)) (needle (ref StrView))):bool
+  (let (v:StrView (symbol-as-view (deref self)))
+    (return (contains-str? v needle))))

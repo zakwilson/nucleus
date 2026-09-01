@@ -46,6 +46,9 @@ sole justification for the standing "the interned substrate stays raw `ptr`"
 ruling (overview.md §1.3 item 3).
 **Fix:** `Symbol` + an open-addressed intern table (`lib/intern.nuc`, B4);
 rebase `Keyword` onto it, retiring the 256 cap and the linear scan.
+**Fixed 2026-09-01 (B4).** `Keyword` is now one `Symbol` and nothing else — one
+word instead of three, no `id` counter, no cap. `=` on both is `icmp eq ptr`,
+verified in the emitted IR.
 
 ---
 
@@ -444,3 +447,26 @@ separate from `generic-find-method-exact` because that one also answers the
 This is the `node-type`↔`emit-node` lockstep (context/conventions.md) charging
 for a change made on one side only. Bootstrap stayed byte-identical: nothing in
 `src/` yet calls a method with a struct-value receiver.
+
+### 30. `strview-hash` folded through a closure, one indirect call per byte — **fixed 2026-09-01 (B4)**
+Found by B4's benchmark, which is why the benchmark was in the plan. `Symbol`
+interning ran **8x slower** than the compiler's own `intern-symbol` over the
+same corpus. The cost was not the table: `strview-hash` was
+
+```lisp
+(reduce (vfn (h:i64 b:ui8):i64 (fnv1a-byte h (as i64 b))) SEED (addr-of it))
+```
+
+— a `reduce` over a `ByteIter`, so every byte cost an indirect call through the
+closure and a `(Maybe ui8)` construction and match. Hashing is on the hot path of
+every interned name, every `HashMap` probe and every `StrView` key compare, so
+the fold spelling was being paid across the whole library.
+
+**Fixed** with a direct byte loop in `lib/strview.nuc` — same FNV-1a, same
+results, no iterator. 8x → 1.4x at -O0, and at -O3 (how the compiler is actually
+built) `symbol-intern` is ~1.5x **faster** than `intern-symbol`.
+
+The general finding, worth keeping: a fold over an `Iterator` is a fine default
+and the wrong tool inside a primitive that everything else calls. Check the
+others (`strview-eq`, the `ByteStr` defaults) before the C-track conversion puts
+them under compiler-scale load.

@@ -155,31 +155,72 @@ See `examples/strview-test.nuc` for a complete runnable example.
 
 ---
 
-## `Keyword` (`lib/keyword.nuc`, Stage 11)
+## `Symbol` (`lib/intern.nuc`, Stage 17)
 
-`(import-use keyword)` provides interned, self-evaluating keyword values. Requires `(import-use strview)`, `(import-use hash)`, and `(import-use numeric)`.
+`(import-use intern)` provides an interned name whose identity is a pointer.
 
 ```lisp
-(defstruct Keyword
-  name:(ptr StrView)
-  id:usize
-  cached-hash:usize)
+(defstruct Symbol p:(ptr ui8))
 ```
 
-Keywords are constructed exclusively by the compiler from `:foo` reader literals, which lower to `(keyword-intern "foo")`. Two keywords with the same spelling share an `id`; equality is an integer compare and hashing is a single cached load — no byte walk at either operation.
+One word. The interner allocates `[hash:usize][len:usize][bytes…][NUL]` and the
+`Symbol` holds the address of the first **byte**, not of the header — which is
+what buys all four properties at once:
 
-The intern pool is a fixed-size global array (capacity 256). It is lazily initialised on first use. Overflow aborts with a diagnostic message and `exit(1)`.
+- `=` is one `icmp eq ptr`.
+- `symbol-len` and `hash` are O(1) loads behind the pointer.
+- `symbol-as-view` is `{p, len}` — no allocation.
+- `symbol-as-cstr` is free: the bytes are still NUL-terminated, so an FFI seam
+  takes a `Symbol` with no copy.
+
+The intern table is open-addressed with linear probing, grows at 3/4 load, and
+has no cap. It is not a `HashMap` — a `HashMap`'s keys want to be interned, so
+building the interner on one would be circular.
 
 ### Functions
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `keyword-intern` | `((cs CStr)) -> Keyword` | Look up or insert `cs` in the intern pool and return the canonical `Keyword`. Called implicitly by the compiler for each `:foo` literal; direct calls are valid but unusual. |
-| `keyword-name` | `((self (ref Keyword))) -> ref:StrView` | Return the keyword's name as a borrowed `StrView` (process-lived; do not free). |
+| `symbol-intern` | `((sv (ref StrView))) -> Symbol` | The canonical `Symbol` for these bytes. |
+| `symbol-from-cstr` | `((cs CStr)) -> Symbol` | Same, from a C string. |
+| `symbol-len` | `(self:Symbol) -> usize` | Byte length, from the header. |
+| `symbol-cached-hash` | `(self:Symbol) -> usize` | The hash computed once at intern time. |
+| `symbol-as-view` | `(self:Symbol) -> StrView` | Borrowed view; process-lived. |
+| `symbol-as-cstr` | `(self:Symbol) -> CStr` | Borrowed C string; no copy. |
+| `symbol-count` | `() -> usize` | How many distinct names are interned. |
+
+`Symbol` conforms to `Eq` (pointer identity), `Hash` (the cached hash), `ToStr`,
+`ByteStr`, and `Str` — the last two through `as-view`, so every string method
+works on a `Symbol` at no allocation.
+
+See `examples/intern-test.nuc`, and `tests/fixtures/s17-intern-bench.nuc` for the
+benchmark against the compiler's own interner.
+
+---
+
+## `Keyword` (`lib/keyword.nuc`, Stage 11; rebased Stage 17)
+
+`(import-use keyword)` provides interned, self-evaluating keyword values. Requires `(import-use strview)`, `(import-use hash)`, `(import-use numeric)`, and `(import-use intern)`.
+
+```lisp
+(defstruct Keyword sym:Symbol)
+```
+
+A keyword is exactly one interned `Symbol`. Keywords are constructed exclusively by the compiler from `:foo` reader literals, which lower to `(keyword-intern "foo")`. Two keywords with the same spelling share a `Symbol`, so equality is a pointer compare and hashing is a single cached load — no byte walk at either operation.
+
+Before Stage 17 this file carried its own intern pool: a fixed 256-entry array with a linear scan and a `strcmp` per probe, which capped a program's distinct keyword set and aborted past it. Both the cap and the scan are gone.
+
+### Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `keyword-intern` | `((cs CStr)) -> Keyword` | Look up or insert `cs` and return the canonical `Keyword`. Called implicitly by the compiler for each `:foo` literal; direct calls are valid but unusual. |
+| `keyword-name` | `(self:Keyword) -> StrView` | The keyword's name, borrowed (process-lived; do not free). |
+| `keyword-symbol` | `(self:Keyword) -> Symbol` | The underlying interned `Symbol`. |
 
 ### Protocol conformances
 
-`Keyword` conforms to `Eq` (by value, identity — compares `id`) and `Hash` (by `(ref Self)`, returns `cached-hash`). These conformances satisfy the `K: Hash + Eq` requirement for `HashMap` and `HashSet`.
+`Keyword` conforms to `Eq` (by value, identity — compares the `Symbol` pointer), `Hash` (by `(ref Self)`, the `Symbol`'s cached hash), and `ToStr`. The first two satisfy the `K: Hash + Eq` requirement for `HashMap` and `HashSet`.
 
 ### Usage
 
@@ -198,8 +239,9 @@ Keywords are written as `:identifier` in source. The compiler requires `(import-
   (printf "foo!=bar? %d\n" (if (!= :foo :bar) 1 0)) ; 1
 
   ; Inspect the keyword name.
-  (let (k:Keyword :hello)
-    (printf "name=%s\n" (strview-to-cstr (keyword-name (addr-of k))))) ; hello
+  (let (k:Keyword :hello
+        nm:StrView (keyword-name k))
+    (printf "name=%s\n" (strview-to-cstr (addr-of nm)))) ; hello
   (return 0))
 ```
 

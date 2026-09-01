@@ -1,0 +1,81 @@
+; Stage 17 B4 benchmark — `symbol-intern` (lib/intern.nuc) against the
+; compiler's own `intern-symbol` (lib/node.nuc), over the same corpus.
+;
+; `Symbol` is destined for the hottest path in the compiler, so a regression
+; here is a stage-level failure. Not an example: the output is timings, which no
+; expected-output file can pin. Run it directly.
+;
+;   ./build/nucleusc -O3 tests/fixtures/s17-intern-bench.nuc -o /tmp/ib && /tmp/ib
+;
+; `-O3`, because that is how the compiler itself is built and because both
+; interners decompose into small functions whose cost is inlining-dependent. At
+; -O0 this measures call overhead rather than the two tables, and reports a
+; ~1.4x loss that -O3 turns into a ~1.5x win.
+;
+; design/stage17-native-strings/overview.md §2.4.
+
+(import-use "time.h")
+(import-use "string.h")
+
+(import-use node)
+(import-use strview)
+(import-use string)
+(import-use fmt)
+(import-use io)
+(import-use vector)
+(import-use allocator)
+(import-use intern)
+
+(defconst N-NAMES 20000)
+(defconst N-LOOKUPS 20)
+
+; `CLOCKS_PER_SEC` is a C macro, which Nucleus does not import (library-gaps.md
+; #28). POSIX fixes it at 1000000 for `clock()`.
+(defconst CLOCKS-PER-SEC 1000000)
+
+; i64→f64 is lossy past 2^53 and these counts are nowhere near it.
+(defn ms-since (t0:i64):f64
+  (return (/ (* (unsafe/cast f64 (- (as i64 (clock)) t0)) 1000.0)
+             (unsafe/cast f64 CLOCKS-PER-SEC))))
+
+(defn main ():i32
+  ; A corpus of distinct names, built once so no timed loop pays for it. The
+  ; bytes are NUL-terminated because `intern-symbol` takes a CStr, and the
+  ; Strings are deliberately never dropped — the corpus outlives every loop.
+  ; Both shapes are kept: the CStr the compiler passes today, and the StrView it
+  ; will pass after the conversion, where the length is already carried.
+  (let (cstrs:(ref (Vector ptr)) (vector-new-in (default-allocator))
+        views:(ref (Vector StrView)) (vector-new-in (default-allocator)))
+    (dotimes (i N-NAMES)
+      (let (s:String (str "nucleus-symbol-name-" i)
+            cs:CStr (string-as-cstr s))
+        (conj cstrs (as ptr cs))
+        (conj views (strview-from-cstr cs))))
+
+    ; --- the compiler's current interner, over a CStr -------------------------
+    (let (t0:i64 (as i64 (clock)))
+      (dotimes (r N-LOOKUPS)
+        (dotimes (i N-NAMES)
+          (intern-symbol (as CStr (invoke cstrs (as usize i))))))
+      (println "intern-symbol  (CStr)     " (ms-since t0) " ms"))
+
+    ; --- Symbol, over a carried StrView: the shape after the conversion -------
+    (let (t1:i64 (as i64 (clock)))
+      (dotimes (r N-LOOKUPS)
+        (dotimes (i N-NAMES)
+          (let (v:StrView (invoke views (as usize i)))
+            (symbol-intern v))))
+      (println "symbol-intern  (StrView) " (ms-since t1) " ms"))
+
+    ; --- Symbol, over a CStr: the same input shape, so it pays a strlen -------
+    (let (t2:i64 (as i64 (clock)))
+      (dotimes (r N-LOOKUPS)
+        (dotimes (i N-NAMES)
+          (let (v:StrView (strview-from-cstr
+                            (as CStr (invoke cstrs (as usize i)))))
+            (symbol-intern v))))
+      (println "symbol-intern  (CStr)    " (ms-since t2) " ms"))
+
+    (println (* N-NAMES N-LOOKUPS) " interns each; distinct symbols="
+             (symbol-count)))
+  0)
