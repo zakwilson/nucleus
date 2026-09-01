@@ -1533,13 +1533,13 @@
       (set! (sd 'is-union) 1)
       (conj g-pending-unions sd))
     (do
-      (emit-struct-type-line g-type-stream (as raw:StructDef sd))
+      (emit-struct-type-line (addr-of g-type-stream) (as raw:StructDef sd))
       ; W3c: pending-union-deps-ready consults this before writing a queued union
       ; whose field names this struct, and the cheader path writes its
       ; `%X = type {…}` line directly rather than through emit-struct-ir-type —
       ; so it has to record the write itself. Without it a C union with a struct
       ; member (SDL's `SDL_WindowShapeParams`) deferred on every drain.
-      (sdef-note-emitted (as raw:StructDef sd) g-type-stream))))
+      (sdef-note-emitted (as raw:StructDef sd) (addr-of g-type-stream)))))
 
 ; Stage 15 W3a: make `dst` share `src`'s layout and write `dst`'s own LLVM type
 ; definition. Used for a `typedef struct Tag Name;` alias entry (which is a
@@ -1560,10 +1560,10 @@
       (set! (dst 'is-union) 1)
       (conj g-pending-unions dst))
     (do
-      (emit-struct-type-line g-type-stream (as raw:StructDef dst))
+      (emit-struct-type-line (addr-of g-type-stream) (as raw:StructDef dst))
       ; W3c: see cheader-struct-define — the alias's definition is now in this
       ; module's type buffer, so a queued union naming it must count it as ready.
-      (sdef-note-emitted (as raw:StructDef dst) g-type-stream))))
+      (sdef-note-emitted (as raw:StructDef dst) (addr-of g-type-stream)))))
 
 ; Stage 15 W3a: propagate a just-upgraded tag's layout to every
 ; `typedef struct Tag Name;` alias that was registered while Tag was still
