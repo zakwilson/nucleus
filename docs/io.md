@@ -184,9 +184,12 @@ See `examples/file-test.nuc`.
   `BufWriter` there.
 - **A read error is reported as end of input.** `read-line` does not distinguish
   a failed `read` from EOF.
-- **`lib/file.nuc` is Linux-only as written.** `open(2)`'s flags are C
-  preprocessor macros, which Nucleus deliberately does not import, so they are
-  spelled out with Linux/glibc values. Darwin's differ.
+- **`lib/file.nuc` is Linux-only as written, and that is a known defect.**
+  `open(2)`'s flags are C preprocessor macros, which Nucleus does not yet
+  import, so they are spelled out with Linux/glibc values; Darwin's differ, so
+  the wrong descriptor is opened there with no diagnostic. The fix is to admit
+  object-like `#define`s from the C header import, which gets the *target's*
+  values — designed in `design/future/platform-constants.md`, not yet built.
 - **`Drop` cannot report a failed final write.** Letting a `BufWriter` fall out
   of scope still flushes, but the result is unobservable. Call
   `buf-writer-close` where it matters.
