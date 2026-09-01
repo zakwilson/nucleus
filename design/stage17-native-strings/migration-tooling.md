@@ -157,6 +157,63 @@ yield is much lower, the script is wrong and fixing it is cheaper than convertin
 
 ## 3. `--strict-cstr` — the enumerator (temporary compiler modification)
 
+> **Built (2026-09-01): `src/strict-cstr.nuc`, `scripts/stage17/cstr-seams.txt`,
+> `make strict-cstr`.** Baseline over the compiler's own compilation: **4,568
+> sites**. Five things came out differently from the sketch below.
+>
+> **The seam test is an allowlist of callee names, not "is it a declared C
+> function".** The obvious criterion fails on the first case that matters:
+> `strcmp` *is* a declared C function and is exactly what C6 deletes. What
+> separates a seam from residue is not how the callee was declared but whether
+> the other side of the call is C — a judgement, so it is written down. One
+> `seam-prefix LLVM` line covers the whole LLVM C API, which is what would
+> otherwise have made an allowlist unmaintainable.
+>
+> **The hook is the call funnel, not the declarations.** `emit-call-with-args`
+> is where every direct and multimethod call arrives, after macro expansion and
+> after monomorphization, with the callee's `TY-FN` type in hand — so the count
+> is a fact about the emitted program. Declarations are deliberately *not*
+> checked: `grep -n CStr src/*.nuc` already answers that question, and the point
+> of the pass is the question grep cannot answer. The per-instantiation
+> attribution is the visible proof it works — a `CStr` bound inside
+> `invoke.pVector.StrView.usize` appears in no source file.
+>
+> **`=` on a C string does not reach the call funnel.** The compiler writes
+> `call i32 @strcmp(…)` into the IR as *text* (`emit-binop-vals`), so the funnel
+> hook never sees it — and that is three quarters of the compiler's strcmps: 618
+> emitted against 143 spelled `(strcmp `. This is the predicted class arriving
+> exactly on schedule, the same shape as Stage 16's compiler-synthesized member
+> access, and it is worth stating plainly: **the first version of the enumerator
+> was wrong in precisely the way the enumerator exists to catch.** The check now
+> also hooks that emission point, so a synthesized call counts under the same
+> `cfn` entry as a written one — it is the same site to C6. Rule for anything
+> added later: a libc string call the compiler *prints* needs its own hook; only
+> calls that go through `emit-call-with-args` are covered for free.
+>
+> **Indirect calls are checked too**, at `emit-funcall-value` and
+> `emit-box-invoke`, and cannot be exempted — the seam list is name-keyed and
+> those have no name. That is the intent: by C8 there must be no `CStr`-typed
+> call through a function pointer, and nothing else would notice one. There are
+> none today, so the check costs nothing and closes the hole before it opens.
+>
+> **A `CStr` in the signature is not enough, because the C-header importer does
+> not produce one.** `(import-use "string.h")` lowers `char *` to bare `ptr` —
+> `declare i32 @strcmp(ptr, ptr)` — so the 152 `strcmp`s, 83 `strlen`s, 41
+> `strncmp`s and 37 `strchr`s that *are* C6's work list carry nothing for a
+> signature walk to find. They are named instead, under a third keyword (`cfn`),
+> for the same reason `strptr` exists: where the types cannot see a string, the
+> list says so out loud rather than the count quietly omitting it. Retyping the
+> importer's `char *` as `CStr` would be the real fix and is not this stage's —
+> it moves every C-header signature in the tree.
+>
+> **What it still cannot see, stated so C8's claim is honest:** a `ptr` that is a
+> string but is neither produced by a listed `strptr` function nor passed to a
+> `CStr` parameter — `Node.s` read and handed around — is invisible to any pass
+> short of real dataflow, which §3's last paragraph forbids. `strptr` names the
+> four producers (`intern-str`, `intern-strn`, `arena-strdup`, `arena-strndup`)
+> that every such pointer traces back to, so the *substrate* is counted even
+> where its aliases are not.
+
 A compiler flag that exists only for this stage and is removed at C8. It reports
 every site where a `CStr`- or `ptr`-as-string value is produced or consumed
 outside a declared C-interop seam:

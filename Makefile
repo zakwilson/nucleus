@@ -72,7 +72,7 @@ BOOT         := bin/nucleusc
 # `(import-use list/hashmap)`) were the same class of gap, found during
 # LW-5 batch 2 (stage14): editing any of them changed `build/nucleusc.ll`
 # but incremental `make` didn't detect it, silently reusing a stale binary.
-COMPILER_DEPS := src/nucleusc.nuc src/compiler-types.nuc src/type-utils.nuc src/type-mangle.nuc src/scope.nuc src/abi.nuc src/union-registry.nuc src/generics.nuc src/union-emit.nuc src/repl.nuc src/cheader.nuc src/nuch.nuc \
+COMPILER_DEPS := src/nucleusc.nuc src/compiler-types.nuc src/type-utils.nuc src/type-mangle.nuc src/scope.nuc src/abi.nuc src/strict-cstr.nuc src/union-registry.nuc src/generics.nuc src/union-emit.nuc src/repl.nuc src/cheader.nuc src/nuch.nuc \
                  src/format.nuc \
                  lib/prelude.nuc lib/macros.nuc lib/node.nuc lib/arena.nuc \
                  lib/error.nuc src/reader.nuc \
@@ -113,6 +113,15 @@ boot-binary: | $(BUILD)
 test: $(BIN)
 	@rm -rf $(BUILD)/out
 	./tests/run-tests.sh
+
+# Stage 17 D3, temporary: the residual-C-string census over the compiler's own
+# compilation. Deleted at C8 with the flag. The COUNT is the artifact — it must
+# fall every phase — and the histogram is how the next batch gets chosen.
+strict-cstr: $(BIN)
+	@$(BIN) --strict-cstr --emit-llvm src/nucleusc.nuc >/dev/null 2>$(BUILD)/strict-cstr.txt || true
+	@tail -1 $(BUILD)/strict-cstr.txt
+	@grep -o "to '[^']*'\|by '[^']*'" $(BUILD)/strict-cstr.txt | sort | uniq -c | sort -rn | head -25
+	@echo "full report: $(BUILD)/strict-cstr.txt"
 
 # Struct-ABI interop acceptance test (Phase C gate). Not part of `make test`
 # until aggregate ABI lowering lands; see design/stage8/platform.md.
@@ -283,4 +292,4 @@ uninstall:
 	rm -f $(BINDIR)/nucleusc
 	rm -rf $(DESTDIR)$(PREFIX)/share/nucleus
 
-.PHONY: test abi-test layout-test avr-test riscv-test riscv-abi-test gen-stdlib-table clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders check-headers lib-objs lib-so lib install uninstall
+.PHONY: test strict-cstr abi-test layout-test avr-test riscv-test riscv-abi-test gen-stdlib-table clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders check-headers lib-objs lib-so lib install uninstall

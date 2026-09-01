@@ -617,7 +617,10 @@ built before C1 starts:
    turned an unregexable migration into a compiler-guided one — and found a class
    of site (compiler-synthesized member access) that no source sweep could reach.
    Expect the same here: the compiler *synthesizes* strings, and grep cannot see
-   an `(intern-symbol "…")`.
+   an `(intern-symbol "…")`. **Done** — `src/strict-cstr.nuc`, the seam list at
+   `scripts/stage17/cstr-seams.txt`, `make strict-cstr`; baseline 4,568 sites,
+   and the same expectation held (a `CStr` inside `invoke.pVector.StrView.usize`
+   is in no source file). Deleted at C8.
 4. **`make bench-selfcompile`** — wall-time and allocation counters for the
    throughput gate.
 
