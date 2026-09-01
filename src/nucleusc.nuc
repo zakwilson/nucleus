@@ -2951,20 +2951,21 @@
 ; `read-file`, which exits): this is a hint, so an unreadable or absurdly large
 ; file is simply not a match.
 (defn file-defines-name (path:CStr name:CStr want-type:i32):i32
-  (let (f:ptr (fopen path "rb"))
-    (when (= f null) (return 0))
-    (when (!= (fseek f 0 2) 0) (fclose f) (return 0))
-    (let (sz:i64 (ftell f))
-      (when (or (< sz 0) (> sz 4194304)) (fclose f) (return 0))
-      (rewind f)
-      (let (buf:ptr (malloc (+ sz 1)))
-        (when (= buf null) (fclose f) (return 0))
-        (let (nr:i64 (fread buf (as i64 1) sz f))
-          (set! (aref (as ptr:i8 buf) nr) 0)
-          (fclose f)
-          (let (hit:i32 (text-defines-name buf:CStr nr name want-type))
-            (free buf)
-            (return hit)))))))
+  (let (pv:StrView (strview-from-cstr path))
+    (match (file-open-read pv)
+      ((err e) (return 0))
+      ((ok f)
+        (let ((fh File) f)
+          (match (file-read-to-string fh)
+            ((err e2) (do (file-close fh) (return 0)))
+            ((ok text)
+              (let ((src String) text)
+                (file-close fh)
+                (let (n:i64 (as i64 (byte-len src)))
+                  (when (> n 4194304) (return 0))
+                  (let (hit:i32 (text-defines-name (string-as-cstr src) n name want-type))
+                    (drop (addr-of src))
+                    (return hit)))))))))))
 
 ; Is this resolved path already part of the compilation unit? A file in the unit
 ; cannot be the answer — if it were, the name would have resolved. The three
@@ -15402,19 +15403,20 @@
 ; Driver
 ; ============================================================
 
+; The text is process-lifetime and deliberately never freed: the reader hands
+; out `Node.s` pointers into it. That is what the `malloc` this replaces did too.
 (defn read-file (path:CStr):ptr
-  (let (f:ptr (fopen path "rb"))
-    (when (= f null) (perror path) (exit 1))
-    (when (!= (fseek f 0 2) 0) (perror "fseek") (exit 1))
-    (let (sz:i64 (ftell f))
-      (when (< sz 0) (perror "ftell") (exit 1))
-      (rewind f)
-      (let (buf:ptr (malloc (+ sz 1)))
-        (when (= buf null) (perror "malloc") (exit 1))
-        (let (nr:i64 (fread buf (as i64 1) sz f))
-          (set! (aref (as ptr:i8 buf) nr) 0)
-          (fclose f)
-          (return buf))))))
+  (let (pv:StrView (strview-from-cstr path))
+    (match (file-open-read pv)
+      ((err e) (do (perror path) (exit 1)))
+      ((ok f)
+        (let ((fh File) f)
+          (match (file-read-to-string fh)
+            ((err e2) (do (perror path) (exit 1)))
+            ((ok text)
+              (let ((src String) text)
+                (file-close fh)
+                (return (as ptr (string-as-cstr src)))))))))))
 
 ; ============================================================
 ; Desugar pass — split colon-typed symbols into lists
@@ -17482,10 +17484,13 @@
 
 ; Test whether a file exists by attempting to open it.
 (defn file-exists (path:CStr):i32
-  (let (f:ptr (fopen path "r"))
-    (when (= f null) (return 0))
-    (fclose f)
-    (return 1)))
+  (let (pv:StrView (strview-from-cstr path))
+    (match (file-open-read pv)
+      ((err e) (return 0))
+      ((ok f)
+        (let ((fh File) f)
+          (file-close fh)
+          (return 1))))))
 
 ; Try to find a file by name in the import search path.
 ; Search order: directory of current source file; lib/ relative to cwd;
