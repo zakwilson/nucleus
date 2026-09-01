@@ -181,7 +181,7 @@
 ; ============================================================
 
 (defn new-tmp ():CStr
-  (let (r:CStr (fmt-i32 "%%t%d" g-tmp))
+  (let (r:CStr (fstr "%t" g-tmp))
     (inc! g-tmp)
     (return r)))
 

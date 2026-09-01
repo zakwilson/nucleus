@@ -1,0 +1,112 @@
+; Stage 17 C1 — `fstr`, the replacement for src/format.nuc's fixed-arity
+; `fmt-*` helpers.
+;
+;   (fstr "macro '" name "': expects " want " args, got " got)
+;
+; Design: design/stage17-native-strings/overview.md §2.5, phase C1.
+;
+; What this deletes is not typing effort but a hazard. Each `fmt-*` helper took
+; exactly as many conversions as its name said, and a format string with one
+; more made `snprintf` read a garbage vararg and typically segfaulted the
+; compiler (context/conventions.md, "format-helper arity"). Here arity is a
+; macro-expansion fact: an argument that does not conform to `ToStr` is a
+; compile error at the call site, and there is no format string to miscount, no
+; `%` to drop, and no fixed buffer to overrun.
+;
+; IT RETURNS A BARE `ptr`, deliberately and temporarily. That is the type the
+; compiler's own strings still have, so the bridge is invisible to every
+; consumer — `die-at`, `report-at`, `intern-str`, the emission streams — and the
+; ~640 producer sites convert without moving the consumers in the same batch.
+; `CStr` would be the honest type and is the wrong one here: a branch join of a
+; `CStr` arm and a `ptr` arm collapses to void, so `(if c base (fstr …))` — a
+; shape that occurs — would stop compiling for a reason unrelated to the change.
+; When the consumers take `StrView` the cast and the `string-as-cstr` both come
+; off and this becomes a plain `str-alloc`.
+;
+; The bytes live in the compiler's arena, so nothing is freed and the returned
+; `CStr` is valid for the process. That is the same lifetime `fmt-*` had
+; (`arena-strndup`), which is why no call site needs to change how it stores the
+; result.
+
+(import-use arena)
+(import-use allocator)
+(import-use vector)
+(import-use string)
+(import-use strview)
+(import-use fmt)
+(import-use io)
+
+; The arena's own handle. A separate `defvar` from nucleusc.nuc's
+; `g-arena-alloc` only because a module cannot see its importer's globals; the
+; arena itself is `lib/arena.nuc`'s single process-wide one, so both handles
+; allocate from the same bump pointer and neither ever frees.
+(defvar g-strfmt-alloc:AllocHandle (AllocHandle ALLOC-ARENA null))
+
+(defn strfmt-alloc ():ref:AllocHandle
+  (return (addr-of g-strfmt-alloc)))
+
+(defmacro fstr (:rest parts)
+  (let (s:ptr (gensym))
+    `(let ((~s String) (str-alloc (strfmt-alloc) ~@parts))
+       (as ptr (string-as-cstr ~s)))))
+
+; ---------------------------------------------------------------------------
+; The two conformances that exist only for the duration of the conversion.
+; ---------------------------------------------------------------------------
+
+; The compiler's own strings are still bare `ptr` (881 `CStr` mentions and a
+; ~237-reference interned `ptr` substrate, overview.md §1.1), so a `%s` argument
+; reaching `fstr` is a `ptr` far more often than a `CStr`. This conformance reads
+; one as NUL-terminated, exactly as the `snprintf` it replaces did.
+;
+; It is deliberately in `src/`, not `lib/`: a bare `ptr` is not a string, and
+; shipping "every pointer prints as text" in the standard library would turn a
+; type error into silent garbage. Here the only producers are the converted
+; `fmt-*` sites, whose `%s` arguments were C strings by construction — the
+; specifier census over all 636 sites found no `%p` at all. **Delete this when
+; the substrate becomes `StrView`/`Symbol` (phases C6–C7).**
+(extend ptr ToStr)
+(defn to-str (self:ptr (out (ref String))):!void
+  (let (v:StrView (strview-from-cstr (as CStr self)))
+    (string-push-str-unchecked out &v))
+  (return (ok)))
+
+; Zero-padded hex, the one numeric shape `%d`/`%ld` do not cover: the compiler
+; prints float bit patterns as `%016lX` / `%04lX` / `%016lx` so LLVM reads them
+; back exactly. A value type rather than a formatting adverb on `to-str`, since
+; `ToStr` takes no options by design.
+(defstruct Hex v:i64 width:i32 upper:i32)
+
+(defn hex (v:i64 width:i32):Hex
+  (let (h:&Hex (alloca Hex))
+    (set! (h 'v) v) (set! (h 'width) width) (set! (h 'upper) 0)
+    (return (deref h))))
+
+(defn hexu (v:i64 width:i32):Hex
+  (let (h:&Hex (alloca Hex))
+    (set! (h 'v) v) (set! (h 'width) width) (set! (h 'upper) 1)
+    (return (deref h))))
+
+(extend Hex ToStr)
+(defn to-str (self:Hex (out (ref String))):!void
+  (let (buf:ptr:ui8 (as ptr:ui8 (alloca ui8 16))
+        x:ui64 (as ui64 (self 'v))
+        n:usize 0
+        w:usize (as usize (self 'width)))
+    ; Digits LSB-first, then the zero padding, then the digits reversed — the
+    ; padding has to be emitted before them, which is why it is not one loop.
+    (while (or (> x 0) (= n 0))
+      (let (d:ui64 (bit-and x 15))
+        (set! (aref buf (as i64 n))
+          (unsafe/cast ui8 (if (< d 10) (+ (as ui64 48) d)
+                             (+ (as ui64 (if (!= (self 'upper) 0) 55 87)) d))))
+        (set! x (bit-shr x 4))
+        (set! n (+ n 1))))
+    (let (pad:usize (if (> w n) (- w n) 0))
+      (while (> pad 0)
+        (string-push-char out \0)
+        (set! pad (- pad 1))))
+    (while (> n 0)
+      (set! n (- n 1))
+      (string-push-char out (as Char (as ui32 (aref buf (as i64 n)))))))
+  (return (ok)))

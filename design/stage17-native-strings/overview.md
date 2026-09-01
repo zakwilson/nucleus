@@ -468,16 +468,61 @@ Each phase: convert, gate on emitted-output identity + tests + bootstrap, land,
 then the next. Ordering is by mechanical-ness (safest first) and by how much each
 phase de-risks the next.
 
-**C1 — diagnostics and the death of `src/format.nuc`.** ~650 `fmt-*` call sites →
-`str` / `str-alloc` (arena handle, process-lifetime, no-op drop — the established
-allocator idiom). ~88 `printf` and the `fprintf stderr` sites → `println`/
-`eprintln`. Delete `format.nuc`'s helper zoo; `sanitize-for-ir`/`sanitize-for-c`/
-`ir-name-token`/`ir-name-append`/`ir-name-illegal-char`/`ir-name-leading-digit`
-move to a `String`-building implementation and stay where they are.
-*Why first:* diagnostics are not in the IR output, so the output-identity gate is
-free here, while the `str` macro gets exercised across 650 real call sites before
-anything load-bearing depends on it. Watch: `ir-name-token`'s pointer-unchanged
-fast path is an identity contract, not an optimization.
+**C1 — diagnostics and the death of `src/format.nuc` — done 2026-09-01.**
+All **636** `fmt-*` call sites → `fstr`; the nine helpers and `fmt-take` are
+deleted (`format.nuc` 258 → 198 lines, now only the identifier layer). The
+**39** non-REPL `fprintf stderr` sites → `eprint`. *Why first:* diagnostics are
+not in the IR output, so the output-identity gate is free here, while the `str`
+machinery gets exercised across 636 real call sites before anything
+load-bearing depends on it.
+
+**`fstr`, not `str-alloc` directly** (`src/strfmt.nuc`). It is `str-alloc` on
+the compiler's arena handed back as a bare `ptr`, and both halves of that are
+deliberate. The arena gives the process lifetime `arena-strndup` gave, so no
+call site changes how it stores the result. The bare `ptr` — rather than the
+honest `CStr` — is because a branch join of a `CStr` arm and a `ptr` arm
+collapses to void, and `(if c base (fstr …))` is a shape that occurs. Two
+compiler-local conformances go with it and are scheduled for deletion in C6–C7:
+`ToStr` on bare `ptr` (the compiler's strings still are one; the specifier
+census over all 636 sites found no `%p`, so a `%s` argument was a C string by
+construction), and a `Hex` value type for the `%016lX`/`%04lX`/`%016lx` float
+bit patterns.
+
+**The rewriter is `scripts/stage17/rewrite-fmt.py`**, paren-aware as
+[migration-tooling.md](migration-tooling.md) §2 requires, with a `--stderr` mode
+for the `fprintf` half. It refused **zero** sites: the specifier census came
+back `%s`=781, `%d`=141, `%ld`=18, `%%`=17, `%016lX`=9, `%04lX`=4, `%016lx`=2,
+`%c`=1, all of which the table models. It is not fully transitive in one pass —
+a `fmt-*` nested inside another's argument list is consumed as source text — so
+it is run to a fixed point (three passes here).
+
+Three findings:
+
+- **The boot compiler gates the source.** `fstr` needs the lvalue implicit
+  address-of, so `src/` could not use it until `make update-bootstrap` refreshed
+  `boot/nucleusc.ll` and `bin/nucleusc`. One shim generation, exactly as
+  `try-boot` needed.
+- **One name collision, and only one.** Importing the string stack early brings
+  `char-at` into scope, which the reader had defined for `(ptr, i64)`. Renamed
+  to `cstr-byte-at` (284 uses) — the suffixed-name convention `src/` already
+  follows for `defn-params-count` and friends.
+- **Two `%s` arguments were typed `ptr:Node`** — `Node.car` holding a path
+  string. `%s` read them as bytes without complaint; `to-str` will not, so both
+  now carry an explicit `(as ptr …)`. The type system found a place the format
+  string was lying.
+
+`sanitize-for-ir`/`sanitize-for-c`/`ir-name-token`/`ir-name-append`/
+`ir-name-illegal-char`/`ir-name-leading-digit` stay as they are, on
+`arena-alloc` and byte loops. They never used `snprintf`, so none of C1's hazard
+applies to them, and `ir-name-token`'s pointer-unchanged fast path is an
+identity contract that a rewrite to `String` would have to preserve
+deliberately. That belongs with the substrate conversion (C6–C7), not here.
+
+Self-compile time is unchanged (1.29s before and after). 945 tests,
+`make bootstrap` byte-identical. Deferred to their own phases as planned: the 69
+`printf`-to-stdout sites (C2 — converting them before the IR stream would
+reorder against a block-buffered `stdout`) and the REPL's 44 `fprintf stderr`
+sites (C5).
 
 **C2 — IR emission.** `g-out`, `g-entry-stream`, `g-body-stream`, `g-decl-stream`,
 `g-type-stream`, `g-def-stream`, `g-def-stream-program`, `g-repl-preamble` become

@@ -94,8 +94,8 @@
 (defn repl-error-json-puts (s:ptr):void
   (when (= s null) (return))
   (let (i:i64 0)
-    (while (!= (char-at s i) 0)
-      (repl-error-json-putc (bit-and (as i32 (char-at s i)) 255))
+    (while (!= (cstr-byte-at s i) 0)
+      (repl-error-json-putc (bit-and (as i32 (cstr-byte-at s i)) 255))
       (set! i (+ i 1)))))
 
 ; Emit a structured REPL error. In text mode, prints the legacy
@@ -200,7 +200,7 @@
 ; would be invisible.
 (defn repl-emit-init-fn ():ptr
   (when (>= g-init-drained (count g-init-worklist)) (return null))
-  (let (sym:ptr (fmt-i64 "__nucleus_init_%ld" g-repl-id))
+  (let (sym:ptr (fstr "__nucleus_init_" g-repl-id))
     (inc! g-repl-id)
     (set! g-out g-def-stream)
     (when (= (init-emit-function sym 0) 0) (return null))
@@ -302,7 +302,7 @@
                           (fprintf g-repl-preamble "@%s = external global %s\n"
                             (ns-ir-base vname) (type-to-ir vty))
                           (repl-preamble-note-decl
-                            (as CStr (fmt-s "@%s" (ns-ir-base vname))))))))
+                            (as CStr (fstr "@" (ns-ir-base vname))))))))
                   (fprintf stderr "  defined\n"))
             ; Stage 16: an alias emits no IR and defines no layout, so unlike
             ; defstruct it has no module to open and no preamble to push —
@@ -352,7 +352,7 @@
                   (emit-extern (as ptr f))
                   (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
                   (repl-absorb-type-buf)
-                  (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp 0) 0))
+                  (when (and (!= g-decl-bufp null) (!= (cstr-byte-at g-decl-bufp 0) 0))
                     (fputs g-decl-bufp g-repl-preamble))
                   (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
                   (repl-note-globals-decls pre-len))
@@ -426,7 +426,7 @@
                       (let (impl-id:i32 (unsafe/cast i32 g-defn-impl-counter)
                             impl-name:ptr null)
                         (set! g-defn-impl-counter (+ g-defn-impl-counter 1))
-                        (set! impl-name (fmt-sd "%s.impl.%d" fname-ir impl-id))
+                        (set! impl-name (fstr fname-ir ".impl." impl-id))
                         ; When redefining, remove the old method from the
                         ; generic before prescan adds the new one.
                         ; Otherwise finalize-generics sees a duplicate signature.
@@ -491,7 +491,7 @@
                                     ; assembled with this preamble, so its own
                                     ; declare latch has to know this line exists.
                                     (repl-preamble-note-decl
-                                      (as CStr (fmt-s "@%s" fname-ir)))))))))
+                                      (as CStr (fstr "@" fname-ir)))))))))
                         ; R3 constraint 4: after the thunk (a lifted lambda can
                         ; call @fname-ir recursively, so its declare must be in
                         ; the preamble first) and into a module of its own — the
@@ -703,7 +703,7 @@
             true
               ; Expression — wrap in __repl_eval_N and JIT
               (do (open-module-streams)
-                  (let (eval-sym:ptr (fmt-i64 "__repl_eval_%ld" g-repl-id))
+                  (let (eval-sym:ptr (fstr "__repl_eval_" g-repl-id))
                     (inc! g-repl-id)
                     (set! g-out g-def-stream)
                     (reset-function-state)
@@ -766,9 +766,9 @@
                           (set! ret-ir (as ptr (type-to-ir (result 'type)))))
                         (fprintf g-def-stream "define %s @%s() {\n" ret-ir eval-sym)
                         (fprintf g-def-stream "entry:\n")
-                        (when (and (!= g-entry-bufp null) (!= (char-at g-entry-bufp 0) 0))
+                        (when (and (!= g-entry-bufp null) (!= (cstr-byte-at g-entry-bufp 0) 0))
                           (fputs g-entry-bufp g-def-stream))
-                        (when (and (!= g-body-bufp null) (!= (char-at g-body-bufp 0) 0))
+                        (when (and (!= g-body-bufp null) (!= (cstr-byte-at g-body-bufp 0) 0))
                           (fputs g-body-bufp g-def-stream))
                         (fprintf g-def-stream "}\n\n")
                         (free g-entry-bufp)
@@ -833,8 +833,8 @@
 ; go through the thunk.
 (defn rewrite-first-fname (buf:ptr fname:ptr impl-name:ptr out:ptr):void
   (when (= buf null) (return))
-  (let (pat:ptr (fmt-s "@%s(" fname)
-        rep:ptr (fmt-s "@%s(" impl-name)
+  (let (pat:ptr (fstr "@" fname "(")
+        rep:ptr (fstr "@" impl-name "(")
         n:i64 (strlen buf)
         i:i64 0
         done:i32 0)
@@ -887,7 +887,7 @@
           (abi-print-param-to os
             (abi-classify-arg ((field-at (ftt 'params) i) 'type))
             ((field-at (ftt 'params) i) 'type)
-            (fmt-i32 "a%d" i))
+            (fstr "a" i))
           (set! need-comma 1)))
       (fclose os)
       (when (= obuf null) (set! obuf ""))
@@ -918,7 +918,7 @@
     (repl-put-preamble s null)
     (emit-fn-thunk s fname-ir ft)
     (fclose s)
-    (when (and (!= buf null) (!= (char-at buf 0) 0))
+    (when (and (!= buf null) (!= (cstr-byte-at buf 0) 0))
       (when (!= (getenv "NUC_REPL_DUMP_IR") null)
         (fprintf stderr "----- THUNK IR -----\n%s----- END -----\n" buf))
       (jit-add-module-rt buf line null))
@@ -939,7 +939,7 @@
         (repl-error line msg)
         (free msg))
       (return -1))
-    (let (tgt-name:ptr (fmt-s "%s.tgt" fname-ir)
+    (let (tgt-name:ptr (fstr fname-ir ".tgt")
           err2:ptr (LLVMOrcLLJITLookup g-jit (as ptr (addr-of tgt-addr)) tgt-name))
       (when (!= err2 null)
         (let (msg:ptr (malloc 256))
@@ -980,7 +980,7 @@
                                (aref (as ptr:ptr ftypes) j) null)
               (set! need-comma 1)))
           (fprintf g-out ")\n")
-          (repl-preamble-note-decl (as CStr (fmt-2s "@%s-%s" uname aname)))))
+          (repl-preamble-note-decl (as CStr (fstr "@" uname "-" aname)))))
       (set! g-out saved-out))
     0))
 
@@ -1018,19 +1018,19 @@
     ; Preamble (accumulated types + declarations from includes), minus any
     ; declare this module defines — see repl-put-preamble. R4: this module's own
     ; types were just absorbed into it, so it is the whole type section.
-    (repl-put-preamble irs (if (= fname null) null (fmt-s "@%s" fname)))
+    (repl-put-preamble irs (if (= fname null) null (fstr "@" fname)))
     (emit-string-table irs 0)
     ; This module's declarations
-    (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp 0) 0))
+    (when (and (!= g-decl-bufp null) (!= (cstr-byte-at g-decl-bufp 0) 0))
       (fputs g-decl-bufp irs))
     ; This module's definitions — optionally renaming the first "@<fname>("
     ; to "@<impl-name>(" so the def is JIT'd under a unique impl symbol.
-    (when (and (!= g-def-bufp null) (!= (char-at g-def-bufp 0) 0))
+    (when (and (!= g-def-bufp null) (!= (cstr-byte-at g-def-bufp 0) 0))
       (if (and (!= fname null) (!= impl-name null))
         (rewrite-first-fname g-def-bufp fname impl-name irs)
         (fputs g-def-bufp irs)))
     (fclose irs)
-    (when (and (!= ir-bufp null) (!= (char-at ir-bufp 0) 0))
+    (when (and (!= ir-bufp null) (!= (cstr-byte-at ir-bufp 0) 0))
       (when (!= (getenv "NUC_REPL_DUMP_IR") null)
         (fprintf stderr "----- IR -----\n%s----- END -----\n" ir-bufp))
       (jit-add-module-rt ir-bufp line rt))
@@ -1081,7 +1081,7 @@
           irn:ptr (pd 'ir-name)
           l:i64 (strlen (pd 'ir-name)))
       (when (and (= (memcmp (unsafe/ptr+ (as ptr:i8 buf) a) irn l) 0)
-                 (= (char-at buf (+ a l)) 40))
+                 (= (cstr-byte-at buf (+ a l)) 40))
         (when (or (= keep null) (!= (strcmp (as CStr irn) (as CStr keep)) 0))
           (return 1)))))
   (return 0))
@@ -1090,7 +1090,7 @@
 ; type section of every module the session assembles
 ; (design/stage16-ergonomics/repl-libraries.md §3.3). Type stream already closed.
 (defn repl-absorb-type-buf ():void
-  (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp 0) 0))
+  (when (and (!= g-type-bufp null) (!= (cstr-byte-at g-type-bufp 0) 0))
     (fputs g-type-bufp g-repl-preamble))
   (dotimes (i (unsafe/cast i32 (count g-structs)))
     (let (sd:ref:StructDef (invoke g-structs i:usize))
@@ -1117,7 +1117,7 @@
 (defn repl-put-preamble (out:ptr keep:ptr):void
   (fflush g-repl-preamble)
   (when (= g-repl-preamble-bufp null) (return))
-  (when (= (char-at g-repl-preamble-bufp 0) 0) (return))
+  (when (= (cstr-byte-at g-repl-preamble-bufp 0) 0) (return))
   ; An expression module defines nothing, which is most prompt entries.
   (when (= (count g-program-defns) 0)
     (fputs g-repl-preamble-bufp out)
@@ -1127,13 +1127,13 @@
         i:i64 0)
     (while (< i n)
       (let (e:i64 i)
-        (while (and (< e n) (!= (char-at buf e) 10)) (set! e (+ e 1)))
+        (while (and (< e n) (!= (cstr-byte-at buf e) 10)) (set! e (+ e 1)))
         (when (< e n) (set! e (+ e 1)))
         (let (drop:i32 0)
           (when (and (>= (- e i) 8)
                      (= (memcmp (unsafe/ptr+ (as ptr:i8 buf) i) "declare " 8) 0))
             (let (a:i64 i)
-              (while (and (< a e) (!= (char-at buf a) 64)) (set! a (+ a 1)))
+              (while (and (< a e) (!= (cstr-byte-at buf a) 64)) (set! a (+ a 1)))
               (when (< a e)
                 (set! drop (repl-preamble-line-defines-here buf a keep)))))
           (when (= drop 0)
@@ -1227,7 +1227,7 @@
   (drain-pending-union-irs)
   (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
   (repl-absorb-type-buf)
-  (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp 0) 0))
+  (when (and (!= g-decl-bufp null) (!= (cstr-byte-at g-decl-bufp 0) 0))
     (fputs g-decl-bufp g-repl-preamble))
   (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
   ; The whole declaration buffer went in verbatim, so tell the D8 latch which

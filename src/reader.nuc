@@ -25,7 +25,7 @@
 ; from the compiler's global (import-use "stdlib.h").
 (declare __errno_location ():ptr)
 
-(defn char-at (s:ptr pos:i64):i32
+(defn cstr-byte-at (s:ptr pos:i64):i32
   (return (bit-and (as i32 (aref (as ptr:i8 s) pos)) 255)))
 
 ; ============================================================
@@ -39,16 +39,16 @@
   ; returns none and falls straight through to today's abort; a bound handler
   ; may log/record `msg` first. The repair value is ignored (we abort anyway).
   (signal unhandled-error i32 msg)
-  (fprintf stderr "%s:%d: error: %s\n" g-source-path line msg)
+  (eprint g-source-path ":" line ": error: " msg "\n")
   ; If a generic instantiation is being emitted, point back to it (and its call
   ; site). g-mono-context is null except during the monomorphization drain.
   (when (!= g-mono-context null)
-    (fprintf stderr "  note: %s\n" g-mono-context))
+    (eprint "  note: " g-mono-context "\n"))
   ; W9 item 42: a note the diagnosing site staged before calling. Cleared here so
   ; an interactive session, where repl-throw unwinds instead of exiting, cannot
   ; carry it onto an unrelated later error.
   (when (!= g-diag-note null)
-    (fprintf stderr "  note: %s\n" g-diag-note)
+    (eprint "  note: " g-diag-note "\n")
     (set! g-diag-note null))
   (when (!= g-interactive 0)
     (repl-throw))
@@ -58,11 +58,11 @@
 ; same diagnostic `die-at` does (path:line: error: msg, plus the mono-context
 ; note), but returns to the caller, which then propagates `(err! parse-error)`.
 (defn report-at (line:i32 msg:ptr):void
-  (fprintf stderr "%s:%d: error: %s\n" g-source-path line msg)
+  (eprint g-source-path ":" line ": error: " msg "\n")
   (when (!= g-mono-context null)
-    (fprintf stderr "  note: %s\n" g-mono-context))
+    (eprint "  note: " g-mono-context "\n"))
   (when (!= g-diag-note null)
-    (fprintf stderr "  note: %s\n" g-diag-note)
+    (eprint "  note: " g-diag-note "\n")
     (set! g-diag-note null)))
 
 ; ============================================================
@@ -93,7 +93,7 @@
   (when (= g-paren-depth 0)
     (set! g-form-open-line line))
   (when (and (!= is-paren 0) (> g-paren-depth 0) (= g-col0-open-line 0)
-             (or (= g-pos 0) (= (char-at g-src (- g-pos 1)) 10)))
+             (or (= g-pos 0) (= (cstr-byte-at g-src (- g-pos 1)) 10)))
     (set! g-col0-open-line line)
     (set! g-col0-open-depth g-paren-depth))
   (set! g-paren-depth (+ g-paren-depth 1)))
@@ -112,17 +112,17 @@
 (defn report-unterminated (open-line:i32 msg:ptr closer:ptr):void
   (report-at open-line msg)
   (if (and (!= g-col0-open-line 0) (!= g-col0-open-line open-line))
-    (fprintf stderr "  note: line %d starts a new form in column 0 while %d form(s) are still open -- a '%s' is probably missing before line %d\n"
-      g-col0-open-line g-col0-open-depth closer g-col0-open-line)
-    (fprintf stderr "  note: end of file reached with %d form(s) still open\n"
-      g-paren-depth)))
+    (eprint "  note: line " g-col0-open-line " starts a new form in column 0 while "
+            g-col0-open-depth " form(s) are still open -- a '" closer
+            "' is probably missing before line " g-col0-open-line "\n")
+    (eprint "  note: end of file reached with " g-paren-depth " form(s) still open\n")))
 
 ; ============================================================
 ; Lexer
 ; ============================================================
 
 (defn peek-char ():i32
-  (return (char-at g-src g-pos)))
+  (return (cstr-byte-at g-src g-pos)))
 
 (defn next-char ():i32
   (let (c:i32 (peek-char))
@@ -200,7 +200,7 @@
                             (set! c (+ (* c 16) h2)))))
                     (set! handled 1)))
                 (when (= handled 0)
-                  (do (report-at g-line (fmt-i32 "unknown escape \\%c" e))
+                  (do (report-at g-line (fstr "unknown escape \\" (as Char (as ui32 e))))
                       (return (err! parse-error))))))
             (when (>= n 4095)
               (do (report-at open-line "string literal too long")
@@ -249,7 +249,7 @@
           (return (err! parse-error))))
     ; `\u{XXXX}` hex form — only when 'u' is immediately followed by '{'. A bare
     ; `\u` (no brace) is the ordinary printable literal for the letter 'u'.
-    (when (and (= c0 117) (= (char-at g-src (+ g-pos 1)) 123))
+    (when (and (= c0 117) (= (cstr-byte-at g-src (+ g-pos 1)) 123))
       (next-char) (next-char)   ; consume 'u' and '{'
       (let (cp:i32 0 ndigits:i32 0 done:i32 0)
         (while (= done 0)
@@ -296,7 +296,7 @@
       (let (len:i64 (- g-pos start)
             text:ptr (unsafe/ptr+ (as ptr:i8 g-src) start))
         (when (= len 1)
-          (return (ok (make-char-tok (char-at text 0) open-line))))
+          (return (ok (make-char-tok (cstr-byte-at text 0) open-line))))
         ; Named control codes (string.md §"Char types").
         (when (= (strncmp text "newline" len) 0)   (when (= len 7) (return (ok (make-char-tok 10 open-line)))))
         (when (= (strncmp text "return" len) 0)     (when (= len 6) (return (ok (make-char-tok 13 open-line)))))
@@ -306,7 +306,8 @@
         (when (= (strncmp text "escape" len) 0)     (when (= len 6) (return (ok (make-char-tok 27 open-line)))))
         (when (= (strncmp text "backspace" len) 0)  (when (= len 9) (return (ok (make-char-tok 8 open-line)))))
         (when (= (strncmp text "delete" len) 0)     (when (= len 6) (return (ok (make-char-tok 127 open-line)))))
-        (do (report-at open-line (fmt-s "unknown named char literal '\\%s'" (arena-strndup text len)))
+        (do (report-at open-line (fstr "unknown named char literal '\\" (arena-strndup text len)
+                                       "'"))
             (return (err! parse-error)))))))
 
 ; Returns 1 if `text` (length `len`) is a float literal in the syntactic
@@ -323,7 +324,7 @@
                      (= (strncmp text "+nan.0" 6) 0))))
     (return 1))
   (let (i:i64 0
-        c0:i32 (char-at text 0))
+        c0:i32 (cstr-byte-at text 0))
     (when (or (= c0 43) (= c0 45)) (set! i 1))
     (let (start:i64 i
           digits-before:i32 0
@@ -332,25 +333,25 @@
           saw-dot:i32 0
           saw-e:i32 0)
       (while (and (< i len)
-                  (!= (isdigit (char-at text i)) 0))
+                  (!= (isdigit (cstr-byte-at text i)) 0))
         (set! digits-before 1)
         (set! i (+ i 1)))
-      (when (and (< i len) (= (char-at text i) 46))
+      (when (and (< i len) (= (cstr-byte-at text i) 46))
         (set! saw-dot 1)
         (set! i (+ i 1))
         (while (and (< i len)
-                    (!= (isdigit (char-at text i)) 0))
+                    (!= (isdigit (cstr-byte-at text i)) 0))
           (set! digits-after 1)
           (set! i (+ i 1))))
       (when (and (< i len)
-                 (or (= (char-at text i) 101) (= (char-at text i) 69)))
+                 (or (= (cstr-byte-at text i) 101) (= (cstr-byte-at text i) 69)))
         (set! saw-e 1)
         (set! i (+ i 1))
         (when (and (< i len)
-                   (or (= (char-at text i) 43) (= (char-at text i) 45)))
+                   (or (= (cstr-byte-at text i) 43) (= (cstr-byte-at text i) 45)))
           (set! i (+ i 1)))
         (while (and (< i len)
-                    (!= (isdigit (char-at text i)) 0))
+                    (!= (isdigit (cstr-byte-at text i)) 0))
           (set! digits-exp 1)
           (set! i (+ i 1))))
       (when (!= i len) (return 0))
@@ -369,33 +370,33 @@
 (defn hex-atom-kind (text:ptr len:i64):i32
   (let (i:i64 0)
     (when (< len 3) (return 0))
-    (when (or (= (char-at text 0) 43) (= (char-at text 0) 45)) (set! i 1))
+    (when (or (= (cstr-byte-at text 0) 43) (= (cstr-byte-at text 0) 45)) (set! i 1))
     (when (> (+ i 3) len) (return 0))
-    (when (!= (char-at text i) 48) (return 0))
-    (when (and (!= (char-at text (+ i 1)) 120) (!= (char-at text (+ i 1)) 88))
+    (when (!= (cstr-byte-at text i) 48) (return 0))
+    (when (and (!= (cstr-byte-at text (+ i 1)) 120) (!= (cstr-byte-at text (+ i 1)) 88))
       (return 0))
     (set! i (+ i 2))
     (let (digits:i32 0
           seen-dot:i32 0)
-      (while (and (< i len) (>= (hex-digit-val (char-at text i)) 0))
+      (while (and (< i len) (>= (hex-digit-val (cstr-byte-at text i)) 0))
         (set! digits 1)
         (set! i (+ i 1)))
-      (when (and (< i len) (= (char-at text i) 46))
+      (when (and (< i len) (= (cstr-byte-at text i) 46))
         (do (set! seen-dot 1)
             (set! i (+ i 1))
-            (while (and (< i len) (>= (hex-digit-val (char-at text i)) 0))
+            (while (and (< i len) (>= (hex-digit-val (cstr-byte-at text i)) 0))
               (set! digits 1)
               (set! i (+ i 1)))))
       (when (= digits 0) (return 0))
       (when (= i len)
         (if (= seen-dot 0) (return 1) (return 0)))
-      (when (and (!= (char-at text i) 112) (!= (char-at text i) 80)) (return 0))
+      (when (and (!= (cstr-byte-at text i) 112) (!= (cstr-byte-at text i) 80)) (return 0))
       (set! i (+ i 1))
       (when (and (< i len)
-                 (or (= (char-at text i) 43) (= (char-at text i) 45)))
+                 (or (= (cstr-byte-at text i) 43) (= (cstr-byte-at text i) 45)))
         (set! i (+ i 1)))
       (let (edig:i32 0)
-        (while (and (< i len) (!= (isdigit (char-at text i)) 0))
+        (while (and (< i len) (!= (isdigit (cstr-byte-at text i)) 0))
           (set! edig 1)
           (set! i (+ i 1)))
         (when (= edig 0) (return 0))
@@ -418,7 +419,7 @@
         i:i64 0
         seg:i32 1)
     (while (< i len)
-      (let (c:i32 (char-at text i))
+      (let (c:i32 (cstr-byte-at text i))
         (when (and (= c 38) (!= seg 0)) (set! n (+ n 1)))
         (set! seg (ref-sigil-seg-next c seg)))
       (set! i (+ i 1)))
@@ -432,7 +433,7 @@
             j:i64 0
             seg2:i32 1)
         (while (< j len)
-          (let (c:i32 (char-at text j))
+          (let (c:i32 (cstr-byte-at text j))
             (if (and (= c 38) (!= seg2 0))
               (do (set! (aref (as ptr:i8 out) o) (unsafe/cast i8 114))          ; 'r'
                   (set! (aref (as ptr:i8 out) (+ o 1)) (unsafe/cast i8 101))    ; 'e'
@@ -450,7 +451,7 @@
 ; replacement, instead of being consumed by the `&` reader macro (ref-sigil.md §6).
 (defn at-legacy-marker ():i32
   (let (end:i64 g-pos)
-    (while (!= (is-sym-char (char-at g-src end)) 0)
+    (while (!= (is-sym-char (cstr-byte-at g-src end)) 0)
       (set! end (+ end 1)))
     (when (<= (- end g-pos) 1) (return 0))
     (let (tok:ptr (arena-strndup (unsafe/ptr+ (as ptr:i8 g-src) g-pos) (- end g-pos)))
@@ -467,13 +468,13 @@
           i0:i64 0)
       (when (= len 0) (set! is-int 0))
       (when (and (> len 0)
-               (or (= (char-at text 0) 45)
-                   (= (char-at text 0) 43)))
+               (or (= (cstr-byte-at text 0) 45)
+                   (= (cstr-byte-at text 0) 43)))
         (set! i0 1))
       (when (= i0 len) (set! is-int 0))
       (let (i:i64 i0)
         (while (< i len)
-          (if (= (isdigit (char-at text i)) 0)
+          (if (= (isdigit (cstr-byte-at text i)) 0)
             (do (set! is-int 0) (set! i len))
             (set! i (+ i 1)))))
       (when (!= is-int 0)
@@ -485,7 +486,7 @@
           (set! (aref (as ptr:i8 buf) len) 0)
           (let (t:ptr:Tok (as ptr:Tok (alloc-tok))
                 errp:ptr:i32 (as ptr:i32 (__errno_location))
-                neg:bool (= (char-at text 0) 45)
+                neg:bool (= (cstr-byte-at text 0) 45)
                 val:i64 0)
             (set! (t 'kind) TOK-INT)
             (set! (t 'line) start-line)
@@ -530,7 +531,7 @@
             (set! (aref (as ptr:i8 buf) len) 0)
             (let (t:ptr:Tok (as ptr:Tok (alloc-tok))
                   errp:ptr:i32 (as ptr:i32 (__errno_location))
-                  neg:bool (= (char-at text 0) 45)
+                  neg:bool (= (cstr-byte-at text 0) 45)
                   val:i64 0)
               (set! (t 'kind) TOK-INT)
               (set! (t 'line) start-line)
@@ -565,7 +566,7 @@
       ; this is additive (the compiler's own source stays a bootstrap fixed
       ; point). Colon-CHAIN spellings like `ptr:i8` or trailing-colon sugar
       ; `name:` do not begin with ':' and are unaffected.
-      (when (and (> len 1) (= (char-at text 0) 58))
+      (when (and (> len 1) (= (cstr-byte-at text 0) 58))
         (let (tk:ptr:Tok (as ptr:Tok (alloc-tok)))
           (set! (tk 'kind) TOK-KEYWORD)
           (set! (tk 'line) start-line)
@@ -620,7 +621,7 @@
           (set! (trb 'kind) TOK-RBRACK)
           (set! (trb 'line) line)
           (return (ok (as ptr trb))))))
-    (when (and (= c 35) (= (char-at g-src (+ g-pos 1)) 123))
+    (when (and (= c 35) (= (cstr-byte-at g-src (+ g-pos 1)) 123))
       (do (reader-open-bracket line 0)
           (next-char) (next-char)
         (let (thb:ptr:Tok (as ptr:Tok (alloc-tok)))
@@ -654,8 +655,8 @@
               match:i32 1
               j:i32 0)
           (while (< j plen)
-            (when (!= (char-at g-src (+ g-pos j))
-                      (char-at (rm 'prefix) j))
+            (when (!= (cstr-byte-at g-src (+ g-pos j))
+                      (cstr-byte-at (rm 'prefix) j))
               (do (set! match 0)
                   (set! j plen)))
             (set! j (+ j 1)))
@@ -684,7 +685,7 @@
     ; it. Consume the `c` and the quote, lex the body exactly as a plain literal,
     ; and flag the token CStr via `i=1`, carried into NODE-STR.i and read by
     ; emit-string / node-type. A plain `"…"` leaves `i=0` → StrView (NS-3).
-    (when (and (= c 99) (= (char-at g-src (+ g-pos 1)) 34))
+    (when (and (= c 99) (= (cstr-byte-at g-src (+ g-pos 1)) 34))
       (do (next-char)
           (next-char)
           (let (cst:ptr (try (lex-string line)))
@@ -831,7 +832,7 @@
     (while (!= 0 1)
       (let (t:ptr:Tok (as ptr:Tok (try (peek-tok))))
         (when (= (t 'kind) TOK-EOF)
-          (do (report-unterminated open-line (fmt-s "unterminated %s literal" what)
+          (do (report-unterminated open-line (fstr "unterminated " what " literal")
                 (if (= close-kind TOK-RBRACK) "]" "}"))
               (return (err! parse-error))))
         (when (= (t 'kind) close-kind)
@@ -889,8 +890,9 @@
           ; line and here. This is the shape an extra `)` in a `let` binding list
           ; produces once the file no longer balances.
           (when (and (< g-paren-depth 0) (!= g-form-open-line 0))
-            (fprintf stderr "  note: the form opened at line %d is already closed -- look for an extra ')' between lines %d and %d\n"
-              g-form-open-line g-form-open-line (t 'line)))
+            (eprint "  note: the form opened at line " g-form-open-line
+                    " is already closed -- look for an extra ')' between lines "
+                    g-form-open-line " and " (t 'line) "\n"))
           (return (err! parse-error))))
     (when (= (t 'kind) TOK-RMACRO)
       (let (quoted:ptr (try (read-form))
@@ -1008,7 +1010,7 @@
           len:i64 (strlen (cn 's)))
       ; Must end in ':' and the next raw stream char must be '(' (no whitespace).
       (when (or (= len 0)
-                (!= (char-at s (- len 1)) 58))
+                (!= (cstr-byte-at s (- len 1)) 58))
         (return (ok child)))
       (when (!= (peek-char) 40) (return (ok child)))
       ; Read the following parenthesised form once, plus (for a `(fn …)` head)
@@ -1035,7 +1037,8 @@
                   (set! seg-len (- (unsafe/cast i64 colon) (unsafe/cast i64 cur))))
                 ; An empty segment (e.g. body "a:" from atom "a::") is a reader error.
                 (when (= seg-len 0)
-                  (do (report-at line (fmt-s "empty segment in colon-chain '%s' -- write name:k1:(Type) with no '::'" s))
+                  (do (report-at line (fstr "empty segment in colon-chain '" s
+                                            "' -- write name:k1:(Type) with no '::'"))
                       (return (err! parse-error))))
                 (let (seg-node:ptr (as ptr (intern-symbol (arena-strndup cur seg-len)))
                       cell:ptr (make-cell seg-node null line))

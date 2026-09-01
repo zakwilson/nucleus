@@ -66,6 +66,17 @@ silent event.
 
 ## 2. The `fprintf` rewriter
 
+> **Built and used, 2026-09-01, as `scripts/stage17/rewrite-fmt.py`.** C1 needed
+> the same machine for the `fmt-*` family first, so the script does that by
+> default and the `fprintf stderr` → `eprint` half under `--stderr`; C2's
+> `g-out` sites extend it rather than starting over. Measured on C1: **zero
+> refusals** across 636 sites — every specifier the compiler actually uses is in
+> the table (`%s`, `%d`, `%ld`, `%%`, `%c`, and the three zero-padded hex forms
+> for float bit patterns; no `%p`, no `%*`, no `%.*s`). One rule the spec below
+> does not state and should: the rewrite is **not transitive in one pass**, since
+> a call nested inside another's argument list is consumed as source text. Run it
+> to a fixed point.
+
 A script (`scripts/stage17/rewrite-writes.py`) that converts
 
 ```lisp

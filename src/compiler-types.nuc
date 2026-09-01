@@ -1100,7 +1100,7 @@
   src-ns:CStr)
 
 (defstruct RMacro
-  ; Both content-only: `prefix` is only ever byte-indexed (char-at) during the
+  ; Both content-only: `prefix` is only ever byte-indexed (cstr-byte-at) during the
   ; reader's longest-prefix-match scan (lib/reader.nuc); `wrap-sym` (despite the
   ; name) is a plain string handed to intern-symbol, which canonicalizes it by
   ; content — it is never itself a Node/Sym pointer or identity-compared.
