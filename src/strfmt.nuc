@@ -47,7 +47,17 @@
 (defn strfmt-alloc ():ref:AllocHandle
   (return (addr-of g-strfmt-alloc)))
 
+; The honest form: the length the formatting already knew, carried out with the
+; bytes instead of thrown away and re-derived by a `strlen`.
 (defmacro fstr (:rest parts)
+  (let (s:ptr (gensym))
+    `(let ((~s String) (str-alloc (strfmt-alloc) ~@parts))
+       (string-as-view ~s))))
+
+; …and the bridge, for a consumer that still wants a NUL-terminated `ptr`. Its
+; call count is the C6/C7 progress number (`make strict-cstr` counts the
+; `string-as-cstr` this expands to); it is deleted when that reaches zero.
+(defmacro fcstr (:rest parts)
   (let (s:ptr (gensym))
     `(let ((~s String) (str-alloc (strfmt-alloc) ~@parts))
        (as ptr (string-as-cstr ~s)))))

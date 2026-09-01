@@ -200,7 +200,7 @@
                             (set! c (+ (* c 16) h2)))))
                     (set! handled 1)))
                 (when (= handled 0)
-                  (do (report-at g-line (fstr "unknown escape \\" (as Char (as ui32 e))))
+                  (do (report-at g-line (fcstr "unknown escape \\" (as Char (as ui32 e))))
                       (return (err! parse-error))))))
             (when (>= n 4095)
               (do (report-at open-line "string literal too long")
@@ -306,7 +306,7 @@
         (when (= (strncmp text "escape" len) 0)     (when (= len 6) (return (ok (make-char-tok 27 open-line)))))
         (when (= (strncmp text "backspace" len) 0)  (when (= len 9) (return (ok (make-char-tok 8 open-line)))))
         (when (= (strncmp text "delete" len) 0)     (when (= len 6) (return (ok (make-char-tok 127 open-line)))))
-        (do (report-at open-line (fstr "unknown named char literal '\\" (arena-strndup text len)
+        (do (report-at open-line (fcstr "unknown named char literal '\\" (arena-strndup text len)
                                        "'"))
             (return (err! parse-error)))))))
 
@@ -832,7 +832,7 @@
     (while (!= 0 1)
       (let (t:ptr:Tok (as ptr:Tok (try (peek-tok))))
         (when (= (t 'kind) TOK-EOF)
-          (do (report-unterminated open-line (fstr "unterminated " what " literal")
+          (do (report-unterminated open-line (fcstr "unterminated " what " literal")
                 (if (= close-kind TOK-RBRACK) "]" "}"))
               (return (err! parse-error))))
         (when (= (t 'kind) close-kind)
@@ -1037,7 +1037,7 @@
                   (set! seg-len (- (unsafe/cast i64 colon) (unsafe/cast i64 cur))))
                 ; An empty segment (e.g. body "a:" from atom "a::") is a reader error.
                 (when (= seg-len 0)
-                  (do (report-at line (fstr "empty segment in colon-chain '" s
+                  (do (report-at line (fcstr "empty segment in colon-chain '" s
                                             "' -- write name:k1:(Type) with no '::'"))
                       (return (err! parse-error))))
                 (let (seg-node:ptr (as ptr (intern-symbol (arena-strndup cur seg-len)))

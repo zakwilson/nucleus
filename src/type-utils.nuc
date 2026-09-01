@@ -63,9 +63,9 @@
 (defn reject-opaque-type (t:raw:Type line:i32 what:CStr):void
   (let (sd:(raw StructDef) (opaque-sdef-of t))
     (when (!= sd null)
-      (let (loc:ptr (fstr (sd 'src-file) ":" (sd 'src-line)))
+      (let (loc:ptr (fcstr (sd 'src-file) ":" (sd 'src-line)))
         (die-at line
-          (fstr what ": '" (sd 'name) "' is an opaque type declared at " loc
+          (fcstr what ": '" (sd 'name) "' is an opaque type declared at " loc
                 "; only pointers to it are valid"))))))
 
 ; ============================================================
@@ -277,7 +277,7 @@
       TY-F80    (return "x86_fp80")
       TY-F128   (return "fp128")
       (:or TY-USIZE TY-SSIZE)    (return (ptr-int-ir))
-      (:or TY-STRUCT TY-UNION)   (return (fstr "%" ((tt 'sdef) 'ir-name)))
+      (:or TY-STRUCT TY-UNION)   (return (fcstr "%" ((tt 'sdef) 'ir-name)))
       ; Stage 15 W8 G-2: `[N x T]`. Two-step format because the widest helper
       ; taking (int, string) in that order does not exist — fmt-sd is (string,
       ; int). Composing two fixed-arity calls is the documented alternative to
@@ -294,8 +294,8 @@
                   ; C1a: -1 is C99's flexible array member, which HAS no extent
                   ; — `[0 x T]`, distinct from the 0 above.
                   (when (< (tt 'arr-len) 0)
-                    (return (fstr "[0 x " (type-to-ir (tt 'elem)) "]")))
-                  (return (fstr "[" (fstr (tt 'arr-len)) " x " (type-to-ir (tt 'elem))
+                    (return (fcstr "[0 x " (type-to-ir (tt 'elem)) "]")))
+                  (return (fcstr "[" (fcstr (tt 'arr-len)) " x " (type-to-ir (tt 'elem))
                                 "]")))
       (return "?"))))
 
@@ -383,8 +383,8 @@
       true
         (do (set! se (+ (- exp 1023) 16383))
             (set! sig (bit-or (bit-shl (as i64 1) 63) (bit-shl mant 11)))))
-    (return (as CStr (fstr "0xK" (fstr (hexu (bit-or (bit-shl sign 15) se) 4))
-                           (fstr (hexu sig 16)))))))
+    (return (as CStr (fcstr "0xK" (fcstr (hexu (bit-or (bit-shl sign 15) se) 4))
+                           (fcstr (hexu sig 16)))))))
 
 ; `0xL` is the LOW 64 bits first, then the high 64 — the opposite order from
 ; `0xK`. An f64 widens exactly: rebias the exponent and shift the significand
@@ -421,8 +421,8 @@
         (do (set! e128 (+ (- exp 1023) 16383))
             (set! hi-mant (bit-shr mant 4))
             (set! lo (bit-shl mant 60))))
-    (return (as CStr (fstr "0xL" (fstr (hexu lo 16))
-                           (fstr (hexu (bit-or (bit-shl sign 63) (bit-or (bit-shl e128 48) hi-mant)) 16)))))))
+    (return (as CStr (fcstr "0xL" (fcstr (hexu lo 16))
+                           (fcstr (hexu (bit-or (bit-shl sign 63) (bit-or (bit-shl e128 48) hi-mant)) 16)))))))
 
 ; f64→f16 is a NARROWING, so unlike the two above it rounds — round-to-nearest,
 ; ties-to-even, written out rather than delegated to a host cast because Nucleus
@@ -470,7 +470,7 @@
                 (set! out m))
             true
               (set! out 0))))
-    (return (as CStr (fstr "0xH" (hexu (bit-or (bit-shl sign 15) out) 4))))))
+    (return (as CStr (fcstr "0xH" (hexu (bit-or (bit-shl sign 15) out) 4))))))
 
 ; ---------------------------------------------------------------------------
 ; Stage 16 FL-3 (design/stage16-ergonomics/c-boundary-defects.md §6.3): C's
@@ -680,26 +680,26 @@
           rlp:ptr:i64 (as ptr:i64 (addr-of rlo)))
       (when (= tk TY-F16)
         (let (be:i64 (hexfloat-fit hi lo sticky ue 11 -14 15 15 rhp rlp))
-          (return (as CStr (fstr "0xH"
+          (return (as CStr (fcstr "0xH"
                                  (hexu (bit-or (bit-shl sign 15)
                     (bit-or (bit-shl be 10) (bit-and rlo 1023))) 4))))))
       (when (= tk TY-F32)
         (let (be:i64 (hexfloat-fit hi lo sticky ue 24 -126 127 127 rhp rlp))
-          (return (as CStr (fstr "0x" (hexu (f32-parts-as-f64-bits sign be rlo) 16))))))
+          (return (as CStr (fcstr "0x" (hexu (f32-parts-as-f64-bits sign be rlo) 16))))))
       (when (= tk TY-F80)
         (let (be:i64 (hexfloat-fit hi lo sticky ue 64 -16382 16383 16383 rhp rlp))
           ; x87 carries the leading bit explicitly, and an infinity has it set.
           (when (= be 32767) (set! rlo (bit-shl (as i64 1) 63)))
-          (return (as CStr (fstr "0xK" (fstr (hexu (bit-or (bit-shl sign 15) be) 4))
-                                 (fstr (hexu rlo 16)))))))
+          (return (as CStr (fcstr "0xK" (fcstr (hexu (bit-or (bit-shl sign 15) be) 4))
+                                 (fcstr (hexu rlo 16)))))))
       (when (= tk TY-F128)
         (let (be:i64 (hexfloat-fit hi lo sticky ue 113 -16382 16383 16383 rhp rlp))
-          (return (as CStr (fstr "0xL" (fstr (hexu rlo 16))
-                                 (fstr (hexu (bit-or (bit-shl sign 63)
+          (return (as CStr (fcstr "0xL" (fcstr (hexu rlo 16))
+                                 (fcstr (hexu (bit-or (bit-shl sign 63)
                                       (bit-or (bit-shl be 48)
                                               (bit-and rhi 281474976710655))) 16)))))))
       (let (be:i64 (hexfloat-fit hi lo sticky ue 53 -1022 1023 1023 rhp rlp))
-        (return (as CStr (fstr "0x"
+        (return (as CStr (fcstr "0x"
                                (hexu (bit-or (bit-shl sign 63)
                   (bit-or (bit-shl be 52) (bit-and rlo 4503599627370495))) 16))))))))
 
@@ -726,7 +726,7 @@
   (let (tt:(raw Type) t)
   (when (= (tt 'kind) TY-ARRAY)
     (die-at line
-      (fstr what
+      (fcstr what
             ": an (array T N) is storage, not a value -- it decays to a pointer when read, so pass or store ptr:T (or (ref T)) instead")))))
 
 ; Stage 14 NS-2 (design/stage14/native-strings.md): is Type `t` the prelude
@@ -802,8 +802,8 @@
       TY-F128   (return "_Float128")
       TY-USIZE  (return "size_t")
       TY-SSIZE  (return "ssize_t")
-      TY-STRUCT (return (fstr "struct " ((tt 'sdef) 'name)))
-      TY-UNION  (return (fstr "union " ((tt 'sdef) 'name)))
+      TY-STRUCT (return (fcstr "struct " ((tt 'sdef) 'name)))
+      TY-UNION  (return (fcstr "union " ((tt 'sdef) 'name)))
       ; Stage 15 W8 G-2: C's array declarator is POSTFIX (`int xs[4];`), so the
       ; element type alone belongs here and the `[N]` is appended by the
       ; declarator site (emit-cheader-defstruct). A prefix rendering would be
@@ -1199,14 +1199,14 @@
   (let (sk:i32 (src 'kind))
     (when (!= (is-ptr-like src) 0)
       (if (= (ptr-pkind src) PTR-MAYBE)
-        (die-at line (fstr ctx
+        (die-at line (fcstr ctx
                            ": value may be null where non-null (ref ...) is required — narrow with if-some/when-some, unwrap, or a null guard"))
-        (die-at line (fstr ctx
+        (die-at line (fcstr ctx
                            ": raw pointer where non-null (ref ...) is required — launder with (as-ref ...) + narrowing, or assert with (unsafe/cast (ref T) ...)"))))))
 
 ; Deref/field/index gate: a (Maybe (ref T)) value cannot be accessed until
 ; narrowed. Raw stays unchecked (the signed waiver); ref is always safe.
 (defn require-derefable (t:raw:Type line:i32 op:CStr):void
   (when (= (ptr-pkind t) PTR-MAYBE)
-    (die-at line (fstr op
+    (die-at line (fcstr op
                        ": value may be null — narrow with if-some/when-some, unwrap, or a (when (= x null) ...) guard before use"))))

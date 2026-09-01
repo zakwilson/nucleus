@@ -288,7 +288,7 @@
     ; `:rest` as a type spelling and report `unknown type: rest`.
     (when (or (!= (marker-named n "rest") 0) (!= (marker-named n "optional") 0))
       (die-at line
-        (fstr "declare: '" (marker-spelling n)
+        (fcstr "declare: '" (marker-spelling n)
               "' is not supported in a declaration -- declare the fixed parameters only (extra arguments are passed positionally at the call site)")))
     ; A keyword operand (`:i64`) carries the spelling without the colon, exactly
     ; as a return operand does (fn-parse-ret-type).
@@ -335,9 +335,9 @@
 (defn fn-sig-spelling (ret:ptr ptypes:ptr nparams:i32):ptr
   (let (acc:ptr "(")
     (dotimes (j nparams)
-      (when (!= j 0) (set! acc (fstr acc ", ")))
-      (set! acc (fstr acc (type-spelling (unsafe/cast raw:Type (aref (as ptr:ptr ptypes) j))))))
-    (return (fstr acc "):" (type-spelling (unsafe/cast raw:Type ret))))))
+      (when (!= j 0) (set! acc (fcstr acc ", ")))
+      (set! acc (fcstr acc (type-spelling (unsafe/cast raw:Type (aref (as ptr:ptr ptypes) j))))))
+    (return (fcstr acc "):" (type-spelling (unsafe/cast raw:Type ret))))))
 
 ; `file:line` of a DEFINITION of `fname` in this unit, or null if it has none —
 ; the second of the two questions the skip below asks (Stage 15 W9 item 36). Only
@@ -354,7 +354,7 @@
           (when (and (= (mi 'kind) METHOD-USER) (!= (as ptr (mi 'body)) null))
             (let (f:ptr (mi 'src-file))
               (when (= f null) (set! f "<unknown file>"))
-              (return (fstr f:CStr ":" (-> mi (_ 'body) (unsafe/cast ptr:Node _) (_ 'line)))))))
+              (return (fcstr f:CStr ":" (-> mi (_ 'body) (unsafe/cast ptr:Node _) (_ 'line)))))))
         (inc! i))
       (return null))))
 
@@ -376,14 +376,14 @@
         (when (!= pt null)
           (let (ft:ptr:Type (unsafe/cast ptr:Type pt))
             (when (= (ft 'kind) TY-FN)
-              (set! theirs (fstr fname:CStr
+              (set! theirs (fcstr fname:CStr
                                  (as CStr (fn-sig-spelling (unsafe/cast ptr (ft 'ret))
                                         (fn-type-param-array ft) (ft 'num-params))))))))))
     (return (as CStr
-      (fstr (fstr "declare '" fname:CStr "': this compilation unit already defines '" fname:CStr
+      (fcstr (fcstr "declare '" fname:CStr "': this compilation unit already defines '" fname:CStr
                   "', at " site:CStr)
             "\n  note: "
-            (fstr "the header declares " fname:CStr
+            (fcstr "the header declares " fname:CStr
                   (as CStr (fn-sig-spelling ret ptypes nparams)) ", the unit has " theirs:CStr
                   ". One name is one key here, so nothing — not even a qualified call — would reach the header's. Rename one, or give the library an (ns ...) so its exports key and link under it."))))))
 
@@ -426,7 +426,7 @@
               (die-at (ff 'line) "declare: expected (declare name (params) :rettype)"))
             (set! params-node (node-at form 2)))
           (die-at (ff 'line)
-            (fstr "declare '" (defn-name-only name-node)
+            (fcstr "declare '" (defn-name-only name-node)
                   "': legacy 'name:ret' syntax is no longer supported — write (declare "
                   (defn-name-only name-node) " (params) :ret)")))
         (let (fname:ptr null
@@ -436,7 +436,7 @@
                                                ((as ptr:Node name-node) 'line))))
           (when (!= ndi-new 0) (set! fname (-> name-node (unsafe/cast ptr:Node _) (_ 's))))
           (when (= ret null)
-            (die-at ((as ptr:Node name-node) 'line) (fstr "declare: missing :type on '" fname
+            (die-at ((as ptr:Node name-node) 'line) (fcstr "declare: missing :type on '" fname
                                                           "'")))
           ; W9 item 29: emit-only is a promise the prescan registered THIS name
           ; from THIS header. It registers nothing the skip below already
@@ -487,7 +487,7 @@
             ; `user`, so non-namespaced headers stay byte-identical.
             ; W9 item 29: computed for both halves — the emit-only pass needs the
             ; symbol, and it is a pure function of the name and the namespace.
-          (let (link-ir:ptr (fstr "@" (ns-ir-base fname)))
+          (let (link-ir:ptr (fcstr "@" (ns-ir-base fname)))
           (when (!= m NUCH-AFTER)
             ; Stage 15 W3c declaration precedence (cheader.md §1.4). Record this
             ; declaration's rendered signature on its prescanned site, so a C
