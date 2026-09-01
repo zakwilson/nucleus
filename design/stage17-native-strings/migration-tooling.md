@@ -18,11 +18,30 @@ sweep must also grep for `intern-symbol "…"` synthesis, not just literal text.
 
 ## 1. `make ir-snapshot` / `make ir-verify` — the emitted-output identity gate
 
+> **Built, 2026-09-01, as `scripts/stage17/ir-snapshot.sh {snapshot|verify}`** —
+> a script rather than Make targets, because re-baselining has to be a separate
+> word (`snapshot` over an existing directory refuses without `--force`) and a
+> phony target cannot refuse. 420 inputs, 2,596 artifacts, ~2 min per run.
+> Two corrections to what is specified below, both found by running it:
+> **`src/nucleusc.nuc` is not in the corpus** (see below), and the reporting
+> branch needs `|| true` around its `cmp`/`diff` — they exit non-zero on a
+> difference, which under `set -e` + `pipefail` killed the run at the first real
+> diff *before it printed anything*, so a failure was indistinguishable from a
+> pass with lost output.
+
 The primary gate (overview.md §5.1). Byte-identical bootstrap cannot work for
 this stage; **byte-identical compiler output** can, and is stronger.
 
 **Corpus.** Everything the tree can compile: `tests/fixtures/*.nuc` (230),
-`examples/*.nuc` (154), `lib/*.nuc`, and `src/nucleusc.nuc` itself.
+`examples/*.nuc` (154) and `lib/*.nuc`.
+
+`src/nucleusc.nuc` is deliberately **not** an input, though the first draft of
+this section listed it. It is the source being converted, so its emitted IR
+moves with every batch by construction and could only be re-baselined, never
+verified — which is the opposite of a gate. `make bootstrap` covers exactly that
+ground and covers it better, as a fixed point (stage1.ll == stage2.ll) rather
+than against a baseline. The Windows cross-emissions moved to `lib/*.nuc` for
+the same reason.
 
 **Artifacts per input.** Three emissions, since all three are text the compiler
 writes and all three are being converted:
@@ -33,16 +52,16 @@ writes and all three are being converted:
 | `--emit-cheader` | C header | `src/cheader.nuc`'s writers |
 | `--emit-nuch` | `.nuch` | `src/nuch.nuc`'s writers |
 
-Plus the two cross-emitted Windows IRs (`make windows-boot` targets) — cheap, and
-a cross-target emission difference is a real class of bug that a host-only
+Plus both Windows cross-emissions of every `lib/*.nuc` — cheap, and a
+cross-target emission difference is a real class of bug that a host-only
 snapshot cannot see.
 
 **Protocol.**
 
 ```
-make ir-snapshot        # once, from the pre-conversion compiler → build/snapshot/
+scripts/stage17/ir-snapshot.sh snapshot   # once → build/snapshot/
 … convert a batch …
-make && make ir-verify  # byte-diff every artifact against build/snapshot/
+make && scripts/stage17/ir-snapshot.sh verify
 ```
 
 `ir-verify` fails on the first differing byte and names the input file, the
@@ -76,6 +95,17 @@ silent event.
 > does not state and should: the rewrite is **not transitive in one pass**, since
 > a call nested inside another's argument list is consumed as source text. Run it
 > to a fixed point.
+
+> **Built and used for C2, 2026-09-01, as the same script's `--writes` mode.**
+> One new specifier (`%02X`); `fputs` and `fputc` have their two operands
+> swapped, and `fputc`'s byte is spelled as a literal piece where it is a known
+> printable. Zero refusals on the first 284 sites.
+>
+> **The output shape is `(emit S …)`, not the `(write S (str …))` below.** `str`
+> allocates and drops a `String`, and this is the compiler's hottest output
+> path; `emit` formats into one process-wide buffer and issues one `fwrite`,
+> allocating nothing. See `src/strfmt.nuc` for the mark that keeps one shared
+> buffer safe.
 
 A script (`scripts/stage17/rewrite-writes.py`) that converts
 

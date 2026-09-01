@@ -177,6 +177,15 @@
     (set! (v 'len) byte-len)
     (return (ok))))
 
+; string-truncate-unchecked — O(1) rewind to a length the caller already knows
+; is a boundary, typically a mark it took from `byte-len` before appending. The
+; checked form validates and returns `!void`, neither of which a scratch buffer
+; that rewinds on every use can act on (library-gaps.md #31).
+(defn string-truncate-unchecked ((self (ref String)) byte-len:usize):void
+  (let (v:(ref (Vector ui8)) (addr-of self 'bytes))
+    (when (< byte-len (_get v 'len))
+      (set! (v 'len) byte-len))))
+
 ; string-reserve — ensure at least `extra` additional bytes of capacity beyond
 ; the current length.
 (defn string-reserve ((self (ref String)) extra:usize):void

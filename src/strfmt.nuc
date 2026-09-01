@@ -28,6 +28,7 @@
 ; (`arena-strndup`), which is why no call site needs to change how it stores the
 ; result.
 
+(import-use "stdio.h")
 (import-use arena)
 (import-use allocator)
 (import-use vector)
@@ -49,6 +50,49 @@
   (let (s:ptr (gensym))
     `(let ((~s String) (str-alloc (strfmt-alloc) ~@parts))
        (as ptr (string-as-cstr ~s)))))
+
+; ---------------------------------------------------------------------------
+; `emit` — Stage 17 C2's replacement for `fprintf`/`fputs`/`fputc` on the
+; emission streams.
+;
+;   (emit g-out "  %v" n " = load " ty ", ptr %p" n ", align " al "\n")
+;
+; Formats into ONE process-wide buffer and issues ONE `fwrite`, so a converted
+; site costs no allocation — the shape migration-tooling.md §2 sketched as
+; `(write S (str …))` would have allocated and dropped a `String` at every one
+; of ~945 sites on the compiler's hottest output path.
+;
+; The sink is still a `FILE*`: converting the call sites and flipping the stream
+; globals to `(dyn Writer)` are separate steps, and this way the flip is a change
+; to `emit-flush` alone rather than to every site a second time.
+
+(defvar g-emit-buf:String)
+(defvar g-emit-buf-ready:i32 0)
+
+(defn emit-buf ():ref:String
+  (when (= g-emit-buf-ready 0)
+    (set! g-emit-buf (string-with-capacity 1024))
+    (set! g-emit-buf-ready 1))
+  (return (addr-of g-emit-buf)))
+
+; Writes the bytes appended since `mark` and rewinds to it. The mark is what
+; makes one shared buffer safe when an argument's own side effect emits: the
+; inner text goes out first and the buffer is left as it was found, which is the
+; order `fprintf` gave when an argument emitted.
+(defn emit-flush (f:ptr (b (ref String)) mark:usize):void
+  (let (v:StrView (string-as-view b)
+        n:usize (v 'len))
+    (when (> n mark)
+      (fwrite (as ptr (unsafe/ptr+ (v 'data) (as i64 mark))) 1
+              (as i64 (- n mark)) f))
+    (string-truncate-unchecked b mark)))
+
+(defmacro emit (sink :rest parts)
+  (let (b:ptr (gensym) m:ptr (gensym))
+    `(let ((~b (ref String)) (emit-buf))
+       (let (~m (byte-len ~b))
+         (str-into ~b ~@parts)
+         (emit-flush ~sink ~b ~m)))))
 
 ; ---------------------------------------------------------------------------
 ; The two conformances that exist only for the duration of the conversion.
