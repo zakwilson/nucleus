@@ -1,0 +1,47 @@
+; Stage 17 — lvalue-only implicit address-of.
+;
+; A struct VALUE read out of a binding, meeting a parameter that wants a pointer
+; to exactly that struct, passes the binding's own address. `&x` stays available
+; and lowers identically. An rvalue is still refused — see
+; tests/fixtures/s17-rvalue-addr-of.nuc.
+;
+; design/stage17-native-strings/borrow-conventions.md §3.4.
+
+(import-use "stdio.h")
+(import-use strview)
+(import-use strview-str)
+
+(defstruct P x:i64 y:i64)
+
+(defn show (p:&P):void (printf "P %lld %lld\n" (p 'x) (p 'y)))
+
+; A by-value struct PARAMETER is frame storage too, so it is an lvalue.
+(defn forward (p:P):void (show p))
+
+(defvar gp:P)
+
+(defn main ():i32
+
+  ; ---- a local binding -------------------------------------------------------
+  (let (w:&P (alloca P))
+    (set! (w 'x) 3) (set! (w 'y) 4)
+    (show w))                              ; already a pointer: unchanged
+
+  (let (a:P (deref (let (t:&P (alloca P))
+                     (set! (t 'x) 5) (set! (t 'y) 6)
+                     t)))
+    (show a)                               ; implicit &a
+    (show &a)                              ; explicit, identical lowering
+    (forward a))                           ; through a by-value parameter
+
+  ; ---- a global --------------------------------------------------------------
+  (set! (gp 'x) 7) (set! (gp 'y) 8)
+  (show gp)                                ; addressable, and never frame-tainted
+
+  ; ---- protocol methods, which dispatch before coercion ----------------------
+  (let (sv:StrView (strview-from-cstr "hello"))
+    (printf "byte-len=%llu\n" (as ui64 (byte-len sv)))
+    (printf "empty=%d\n" (as i32 (str-empty? sv)))
+    (printf "plain=%llu\n" (as ui64 (strview-byte-len sv))))
+
+  0)

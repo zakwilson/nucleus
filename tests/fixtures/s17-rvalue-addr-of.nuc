@@ -1,0 +1,11 @@
+; Stage 17 (borrow-conventions.md §3.4): implicit address-of is LVALUE-ONLY.
+; A call result has no storage the caller can see, and `(ref T)` does not
+; distinguish a read borrow from a write one, so materializing a temporary here
+; would let a mutating callee write somewhere the caller can never observe.
+(import-use strview)
+
+(defn show (sv:&StrView):void)
+
+(defn main ():i32
+  (show (strview-from-cstr "rvalue"))
+  0)

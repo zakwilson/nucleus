@@ -3479,6 +3479,9 @@
           (let (rv:ref:Val (alloc-val (sym-effective-type sym) tmp))
             (set! (rv 'taint) (sym 'taint))
             (set! (rv 'taint-frame) (sym 'taint-frame))
+            ; The one place a Val becomes an lvalue: this load came from the
+            ; binding's own storage, so its address is recoverable.
+            (set! (rv 'lvalue-sym) (as (raw Sym) sym))
             (return rv))))
       (die-at (node-line n line) (undefined-name-message (as CStr (nn 's)))))))
 
@@ -6380,43 +6383,47 @@
           (die-at (node-line (as ptr target) (cc 'line)) (fmt-s "use after move: '%s'" (target 's))))
         (when (= ((sym 'type) 'kind) TY-FN)
           (die-at (node-line (as ptr target) (cc 'line)) (fmt-s "addr-of: cannot take address of function '%s'" (target 's))))
-        (let (pt:ref:Type (make-type TY-PTR))
-          (set! (pt 'elem) (sym 'type))
-          ; The address of a binding's slot is always a valid, non-null address,
-          ; so (addr-of x) is a (ref T) — it flows into ref/ptr slots directly.
-          (set! (pt 'pkind) PTR-REF)
-          ; The slot address reaches the same resource the binding does, so it
-          ; carries the binding's escape taint (lifecycle.md §2.2).
-          (let (rv:ref:Val (alloc-val pt (sym 'ir-name))
-                sym-kind:i32 ((sym 'type) 'kind))
-            ; The slot address reaches the same resource the binding does, so it
-            ; inherits the binding's existing (with-owned) escape taint, if any.
-            (set! (rv 'taint) (sym 'taint))
-            ; Stage 13 L1 (lambda.md §"Lifetime and escape analysis"):
-            ; taking the address of *frame-local storage* taints the resulting
-            ; pointer with the region (Scope*) the storage lives in, so it
-            ; cannot escape the frame (rejected at `return`). This generalizes
-            ; the with-only taint to every let/with value binding and by-value
-            ; parameter (all of which live in a frame alloca). The frame-region
-            ; IS the binding's home scope; a binding whose home is the unique
-            ; global scope (g-globals) is NOT frame-local (its address outlives
-            ; any frame), which excludes globals — note defvar globals carry
-            ; is-local=1, so `home != g-globals` is the authoritative test, not
-            ; is-local. Also EXCLUDED:
-            ;   * reference/pointer parameters and pointer locals (TY-PTR) —
-            ;     their slot holds a pointer whose pointee is caller-owned, so a
-            ;     pointer *loaded out of* the slot may legitimately be returned;
-            ;     that load is the existing untracked imprecision boundary.
-            ; taint-frame=1 distinguishes this from a with-resource so the store
-            ; sinks (intra-frame borrows) skip it; only `return` (the function-
-            ; frame boundary) rejects it. A binding already carrying with-taint
-            ; keeps that with-taint (taint-frame stays 0).
-            (when (and (= (sym 'taint) null)
-                       (!= (sym 'home) g-globals)
-                       (!= sym-kind TY-PTR) (!= sym-kind TY-FN))
-              (set! (rv 'taint) (sym 'home))
-              (set! (rv 'taint-frame) 1))
-            (return rv)))))))
+        (return (binding-address-val sym))))))
+
+; The address of a binding's own storage, as a `(ref T)` Val. Shared by the
+; explicit `&x` / `(addr-of x)` and by the implicit lvalue address-of at an
+; argument position, so the escape-taint rule below has one owner.
+(defn binding-address-val (sym:ref:Sym):ref:Val
+  (let (pt:ref:Type (make-type TY-PTR))
+    (set! (pt 'elem) (sym 'type))
+    ; The address of a binding's slot is always a valid, non-null address,
+    ; so it is a (ref T) — it flows into ref/ptr slots directly.
+    (set! (pt 'pkind) PTR-REF)
+    (let (rv:ref:Val (alloc-val pt (sym 'ir-name))
+          sym-kind:i32 ((sym 'type) 'kind))
+      ; The slot address reaches the same resource the binding does, so it
+      ; inherits the binding's existing (with-owned) escape taint, if any.
+      (set! (rv 'taint) (sym 'taint))
+      ; Stage 13 L1 (lambda.md §"Lifetime and escape analysis"):
+      ; taking the address of *frame-local storage* taints the resulting
+      ; pointer with the region (Scope*) the storage lives in, so it
+      ; cannot escape the frame (rejected at `return`). This generalizes
+      ; the with-only taint to every let/with value binding and by-value
+      ; parameter (all of which live in a frame alloca). The frame-region
+      ; IS the binding's home scope; a binding whose home is the unique
+      ; global scope (g-globals) is NOT frame-local (its address outlives
+      ; any frame), which excludes globals — note defvar globals carry
+      ; is-local=1, so `home != g-globals` is the authoritative test, not
+      ; is-local. Also EXCLUDED:
+      ;   * reference/pointer parameters and pointer locals (TY-PTR) —
+      ;     their slot holds a pointer whose pointee is caller-owned, so a
+      ;     pointer *loaded out of* the slot may legitimately be returned;
+      ;     that load is the existing untracked imprecision boundary.
+      ; taint-frame=1 distinguishes this from a with-resource so the store
+      ; sinks (intra-frame borrows) skip it; only `return` (the function-
+      ; frame boundary) rejects it. A binding already carrying with-taint
+      ; keeps that with-taint (taint-frame stays 0).
+      (when (and (= (sym 'taint) null)
+                 (!= (sym 'home) g-globals)
+                 (!= sym-kind TY-PTR) (!= sym-kind TY-FN))
+        (set! (rv 'taint) (sym 'home))
+        (set! (rv 'taint-frame) 1))
+      (return rv))))
 
 (defn emit-funcall-void (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:(raw Node) call)
@@ -6920,6 +6927,21 @@
         (emit-load fc (type-to-ir ptype) (slot 'val) ptype)
         (set! (slot 'type) ptype)
         (set! (slot 'val) fc)))
+    ; Stage 17: lvalue-only implicit address-of — a struct VALUE read out of a
+    ; binding, meeting a parameter that wants a pointer to exactly that struct,
+    ; passes the binding's own address. No IR: the slot address is already an
+    ; SSA name. Restricted to an lvalue (`lvalue-sym`, set only by
+    ; emit-symbol-ref-bound's load) because `(ref T)` does not distinguish a
+    ; read borrow from a write one, so materializing a temporary here would let
+    ; a mutating callee write into storage the caller cannot see.
+    ; design/stage17-native-strings/borrow-conventions.md §3.4.
+    (when-some (lsym (as-ref (slot 'lvalue-sym)))
+      (when (and (= ((slot 'type) 'kind) TY-STRUCT)
+                 (= ((as ptr:Type ptype) 'kind) TY-PTR)
+                 (!= ((as ptr:Type ptype) 'elem) null)
+                 (!= (type-eq ((as ptr:Type ptype) 'elem) (slot 'type)) 0))
+        (let (av:ref:Val (binding-address-val lsym))
+          (memcpy slot (as ptr av) (sizeof Val)))))
     ; Stage 10: pointer-kind contract on arguments — raw/Maybe may
     ; not flow into a (ref T) parameter. Checked independently of the
     ; coercion below, which answers about type identity, not contract.

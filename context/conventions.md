@@ -5869,3 +5869,42 @@ Two things to carry forward when adding a rule to `coerce-int-val`:
   from Stage 14 to Stage 17 is that nothing in `src/` produced a `StrView` value,
   so the rule was dormant through every bootstrap. Byte-identical bootstrap
   proves a rule is *unreached*, never that it is *right*.
+
+## Prefer the `&` spellings
+
+Since Stage 16, `&` is both the reference-type sigil and the address-of reader
+macro, and **the short spellings are preferred in new code**:
+
+| Write | Not |
+|---|---|
+| `p:&Point` | `p:ptr:Point`, `(p (ref Point))` |
+| `):&T` | `):ref:T` |
+| `&x` | `(addr-of x)` |
+
+`&` inside an atom is the type sigil (`&T` → `ref:T`, chaining as `&&T`, `?&T`,
+`&raw:T`); `&` starting a token is `(addr-of x)`. A field address stays
+`(addr-of s 'field)` — there is no `&s.field`. `(ref T)` list form is still
+required where a parameter's type is parenthesised, e.g. `(v (ref (Vector T)))`.
+
+Since Stage 17, a struct **value** in a binding also reaches a `&T` parameter
+with no `&` at all (lvalue-only implicit address-of, borrow-conventions.md
+§3.4), so `(strview-byte-len sv)` needs neither a cast nor an address.
+
+## Dispatch happens before coercion, and the tier decides what else moves
+
+An argument rule that only touches `coerce-call-argument` reaches plain
+functions and *not* overloaded or protocol methods: `generic-resolve` picks the
+method from argument TYPES first and reports "no matching method" before any
+coercion runs. Both halves are needed, and they must agree.
+
+Which tier the dispatch half goes in is load-bearing. Stage 17's implicit
+address-of was first written into the **tier-2** widen/adapt pass — the one that
+already receives argument nodes, so it looked like the natural home. That broke
+`parse-test`: `from-str` selects its overload by a phantom first argument
+(`(from-str (unsafe/cast i32 0) sv)`), and tier 2 lets *every* argument widen, so
+`i32` also matched the `i64` and `f64` overloads and the call became ambiguous.
+
+The rule: put an **exact** adjustment (one that loses no information and cannot
+be lossy) in tier 0, as a second pass after the strict one finds nothing — so an
+exact overload still wins and no resolving call can become ambiguous. Tier 2 is
+only for genuine widening, where every other argument is free to widen too.

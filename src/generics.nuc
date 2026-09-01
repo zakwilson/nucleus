@@ -330,6 +330,31 @@
       (return 0)))
   (return 1))
 
+; Stage 17: `params-type-eq` for a CALL's argument tuple, additionally allowing a
+; by-value struct argument to reach a parameter that is a pointer to exactly that
+; struct — the implicit address-of. Separate from `params-type-eq`, which also
+; answers "is this the same method?" at registration, where `(f x:P)` and
+; `(f x:&P)` must stay two different methods.
+;
+; It runs as a SECOND tier-0 pass, after the strict one finds nothing, so an
+; exact overload always wins and no existing call is re-routed. Tier 0 rather
+; than the widening tier because this adjustment is exact: at tier 2 every other
+; argument would also be free to widen, and `from-str`'s phantom selector — the
+; whole mechanism that picks its overload — stops being unique.
+; design/stage17-native-strings/borrow-conventions.md §3.4.
+(defn params-accept-args (pa:ptr pb:ptr n:i32):i32
+  (dotimes (i n)
+    (let (pt:raw:Type (aref (as ptr:ptr pa) i)
+          at:raw:Type (aref (as ptr:ptr pb) i))
+      (when (= (type-eq pt at) 0)
+        (when (= at null) (return 0))
+        (when (or (!= (at 'kind) TY-STRUCT)
+                  (!= (pt 'kind) TY-PTR)
+                  (= (pt 'elem) null)
+                  (= (type-eq (pt 'elem) at) 0))
+          (return 0)))))
+  (return 1))
+
 ; A safe, distinct IR token for a generic name. Operators (whose source symbols
 ; — `=`, `<`, `_+`, … — are not valid LLVM identifier characters and would
 ; collide under blanket underscore-sanitizing) map to readable mnemonics; a `?`/`!`
@@ -943,15 +968,22 @@
 (defn generic-resolve (g:raw:Generic argtypes:ptr arg-nodes:ptr nargs:i32 line:i32 want:raw:Type):ref:Method
   (let (gg:raw:Generic g
         found:?ptr:Method null)
-    (dotimes (i (unsafe/cast i32 (count (gg 'methods))))
-      (let (m:ptr:Method (as ptr:Method (invoke (gg 'methods) i:usize)))
+    ; Pass 0 is strict type-eq; pass 1 additionally lets a struct value reach a
+    ; pointer-to-that-struct parameter (params-accept-args). Two passes, not one
+    ; loosened test, so an exact overload always beats the address adjustment.
+    (dotimes (pass 2)
+     (when (= found null)
+      (dotimes (i (unsafe/cast i32 (count (gg 'methods))))
+       (let (m:ptr:Method (as ptr:Method (invoke (gg 'methods) i:usize)))
         ; SE-2: tier 0 is `generic-find-method-exact` written out, and it needs
         ; that function's skip for the same reason — a want-stamped instance is
         ; not identified by the argument tuple. Falling through to tier 1 re-binds
         ; it from the want. template-ref-equality.md §5.
         (when (and (= (m 'kind) METHOD-USER)
                    (= (m 'num-params) nargs)
-                   (!= (params-type-eq (m 'param-types) argtypes nargs) 0)
+                   (!= (if (= pass 0)
+                         (params-type-eq (m 'param-types) argtypes nargs)
+                         (params-accept-args (m 'param-types) argtypes nargs)) 0)
                    (= (method-is-want-stamped (as raw:Method m)) 0))
           ; Stage 15 W9 item 35: two tier-0 matches that emit into DIFFERENT
           ; symbol spaces are two different functions, and this reference names
@@ -966,7 +998,7 @@
                      (= (methods-share-symbol-space gg (unsafe/cast ptr:Method found)
                                                     (as ptr m)) 0))
             (die-at line (ambiguous-method-message gg (unsafe/cast ptr:Method found) (as ptr m))))
-          (set! found (as ptr m)))))
+          (set! found (as ptr m)))))))
     (when (!= found null) (return found))
     ; tier 1: bounded-generic templates.
     (let (cand:ptr null
