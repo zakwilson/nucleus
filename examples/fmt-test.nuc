@@ -1,0 +1,70 @@
+; Stage 17 B1 — lib/fmt.nuc: Writer, ToStr, and the `str` family.
+;
+; The replacement for a printf format string: arity and types are settled at
+; macro expansion, so there is no format string to get wrong.
+;
+; design/stage17-native-strings/overview.md §2.5, §2.6.
+
+(import-use "stdio.h")
+(import-use allocator)
+(import-use arena)
+(import-use strview)
+(import-use strview-str)
+(import-use string)
+(import-use fmt)
+
+(extern stdout:ptr)
+
+(defn show ((s (ref String))):void
+  (printf "%s\n" (string-as-cstr s)))
+
+(defn main ():i32
+
+  ; ---- ToStr, one conformance per line ---------------------------------------
+  (let (s:String (string-new))
+    (to-str -9223372036854775808 s)         ; i64's minimum: negated unsigned
+    (to-str \, s)
+    (to-str 0 s)
+    (to-str \, s)
+    (to-str (as usize 18446744073709551615) s)
+    (to-str \, s)
+    (to-str true s)
+    (to-str \, s)
+    (to-str 1.5 s)
+    (to-str \, s)
+    (to-str (strview-from-cstr "view") s)
+    (to-str \, s)
+    (to-str c"cstr" s)
+    (show s))
+
+  ; ---- str-into: append into an existing String -------------------------------
+  (let (n:i64 3 m:i64 7
+        s:String (string-new))
+    (str-into s "expected " n " args, got " m)
+    (show s))
+
+  ; ---- str: build a fresh one -------------------------------------------------
+  (let (t:String (str "x=" 42 " y=" 1.5 " ok=" true))
+    (show t))
+
+  ; Degenerate arities still expand.
+  (let (e:String (str))
+    (printf "empty=%d\n" (as i32 (str-empty? e))))
+  (let (one:String (str "solo"))
+    (show one))
+
+  ; ---- str-alloc: same, over a caller-chosen allocator ------------------------
+  (let (ah:&AllocHandle (alloca AllocHandle))
+    (arena-allocator ah)
+    (let (a:String (str-alloc ah "arena " 99))
+      (show a)))
+
+  ; ---- Writer: a String and a FILE* take the same bytes -----------------------
+  (let (w:String (string-new))
+    (write-str w (strview-from-cstr "to a String"))
+    (show w))
+
+  (let (out:CFile (cfile stdout))
+    (write-str out (strview-from-cstr "to a CFile\n")))
+
+  0)

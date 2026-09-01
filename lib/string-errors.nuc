@@ -20,3 +20,6 @@
 ; A ui32 value is not a valid Unicode scalar value (surrogate pair range
 ; 0xD800–0xDFFF, or > 0x10FFFF). Used by char-from-u32 (S1).
 (deferror invalid-codepoint "value is not a Unicode scalar value")
+
+; Stage 17 B1: a Writer sink refused the bytes (a short write, a closed fd).
+(deferror io-write-failed "write failed")

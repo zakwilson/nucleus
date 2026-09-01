@@ -1,0 +1,221 @@
+; Stage 17 B1 — Writer and ToStr: value → text, and text → sink.
+;
+; Design: design/stage17-native-strings/overview.md §2.5 (no format-string DSL)
+; and §2.6 (floats delegate to snprintf, permanently).
+;
+; TWO protocols, deliberately not three:
+;
+;   Writer  — an output SINK. Single-method (`write-str`) so it can be erased as
+;             `(dyn Writer)`: a global like the compiler's `g-out` is boxed once,
+;             at assignment, and every write after that is a plain vtable call.
+;             Adding a second method before `(dyn P)` supports multi-method
+;             protocols would make an erased writer unconstructible.
+;
+;   ToStr   — a value's text, appended to a `(ref String)`.
+;
+; The plan's third protocol, `Fmt` (a formatter holding an erased writer), is
+; NOT here: routing `to-str` through `(dyn Writer)` boxes once per formatted
+; piece, and the two shapes that actually occur need no such thing — a
+; diagnostic builds a `String` with `str` and writes it once, and IR emission
+; writes literal chunks straight to the sink with `write-str`. Add it when a
+; call site wants it.
+
+(import-use "stdio.h")
+(import-use "string.h")
+
+(import-use error)
+(import-use string-errors)
+(import-use numeric)
+(import-use char)
+(import-use strview)
+(import-use vector)
+(import-use string)
+(import-use allocator)
+
+; ---------------------------------------------------------------------------
+; Writer — an output sink that accepts bytes.
+; ---------------------------------------------------------------------------
+; `s` is BY VALUE, unlike every `(ref StrView)` in lib/string-protocols.nuc.
+; Those are by-reference only because they are `Self` and `String` conforms too
+; (design/stage17-native-strings/borrow-conventions.md §2). `s` is not `Self`, so
+; the constraint does not reach it, and two words in two registers lets a literal
+; or a producer's result be the argument without a binding to take the address of.
+(defprotocol Writer
+  (write-str ((self (ref Self)) s:StrView):!void))
+
+; A String is a Writer: writing appends. Bytes that reach a Writer have already
+; been produced by a ToStr conformance or are a literal, so this is the
+; unchecked append — the validity is the producer's, not re-derived here.
+(extend String Writer)
+
+(defn write-str ((self (ref String)) s:StrView):!void
+  (string-push-str-unchecked self &s)
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; CFile — a Writer over a C `FILE*`.
+;
+; The dual-path shim of overview.md §2.3: it lets a stream global become a
+; `(dyn Writer)` BEFORE any of its call sites convert, so the emission flip is
+; incremental and each batch is gated on byte-identical output. It is scheduled
+; for deletion once the last `fprintf` site is gone (migration-tooling.md §4) —
+; nothing new should be written against it.
+; ---------------------------------------------------------------------------
+(defstruct CFile f:ptr)
+
+(defn cfile (f:ptr):CFile
+  (let (c:&CFile (alloca CFile))
+    (set! (c 'f) f)
+    (return (deref c))))
+
+(extend CFile Writer)
+
+(defn write-str ((self (ref CFile)) s:StrView):!void
+  (let (n:usize (s 'len))
+    (when (= n 0) (return (ok)))
+    (when (!= (as usize (fwrite (as ptr (s 'data)) 1 (as i64 n) (self 'f))) n)
+      (return (err! io-write-failed))))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; ToStr — a value's text, appended to a String.
+; ---------------------------------------------------------------------------
+; The receiver is BY VALUE. Every conformer is small and POD — integers,
+; floats, Char, bool, and the two-word StrView — so a copy is a register move,
+; and it is what lets a literal be an argument: `(to-str 42 out)` works, where a
+; `(ref Self)` receiver would make the literal an rvalue with no address to take.
+; `String` deliberately does not conform: by-value would be a MOVE. It is
+; written through its view, which costs nothing (`string-as-view` is O(1)).
+(defprotocol ToStr
+  (to-str ((self Self) (out (ref String))):!void))
+
+; --- integers --------------------------------------------------------------
+;
+; Hand-rolled rather than routed through snprintf: the whole point of the stage
+; is that the stdio dependency goes to zero, and only floats (§2.6) have a
+; reason to stay. Digits are produced least-significant first into a stack
+; buffer and reversed on the way out; 20 digits covers every 64-bit value.
+
+(defn string-push-u64 ((out (ref String)) v:ui64):void
+  (let (buf:ptr:ui8 (as ptr:ui8 (alloca ui8 20))
+        n:usize 0
+        x:ui64 v)
+    (when (= x 0)
+      (string-push-char out \0)
+      (return))
+    (while (> x 0)
+      ; `% 10` is 0..9, so the narrowing is provably exact; `as` cannot know it.
+      (set! (aref buf (as i64 n)) (unsafe/cast ui8 (+ 48 (% x 10))))
+      (set! x (/ x 10))
+      (set! n (+ n 1)))
+    (while (> n 0)
+      (set! n (- n 1))
+      (string-push-char out (as Char (as ui32 (aref buf (as i64 n))))))))
+
+(defn string-push-i64 ((out (ref String)) v:i64):void
+  (when (< v 0)
+    (string-push-char out \-)
+    ; Negate in UNSIGNED space: -(-2^63) is not representable in i64, so
+    ; negating first would wrap and print the wrong number for i64's minimum.
+    (string-push-u64 out (- 0 (as ui64 v)))
+    (return))
+  (string-push-u64 out (as ui64 v)))
+
+(extend i64 ToStr)
+(defn to-str (self:i64 (out (ref String))):!void
+  (string-push-i64 out self) (return (ok)))
+
+(extend i32 ToStr)
+(defn to-str (self:i32 (out (ref String))):!void
+  (string-push-i64 out (as i64 self)) (return (ok)))
+
+(extend usize ToStr)
+(defn to-str (self:usize (out (ref String))):!void
+  (string-push-u64 out (as ui64 self)) (return (ok)))
+
+(extend ui64 ToStr)
+(defn to-str (self:ui64 (out (ref String))):!void
+  (string-push-u64 out self) (return (ok)))
+
+; --- text ------------------------------------------------------------------
+
+(extend StrView ToStr)
+(defn to-str (self:StrView (out (ref String))):!void
+  (string-push-str-unchecked out &self) (return (ok)))
+
+(extend CStr ToStr)
+(defn to-str (self:CStr (out (ref String))):!void
+  (let (v:StrView (strview-from-cstr self))
+    (string-push-str-unchecked out &v))
+  (return (ok)))
+
+(extend Char ToStr)
+(defn to-str (self:Char (out (ref String))):!void
+  (string-push-char out self) (return (ok)))
+
+(extend bool ToStr)
+(defn to-str (self:bool (out (ref String))):!void
+  (let (v:StrView (strview-from-cstr (if self c"true" c"false")))
+    (string-push-str-unchecked out &v))
+  (return (ok)))
+
+; --- floats ----------------------------------------------------------------
+;
+; §2.6: snprintf, permanently and deliberately. Shortest-round-trip float
+; printing is a real algorithm and is not this stage's problem; the interface is
+; native, and swapping in a native printer later is invisible.
+
+(defn string-push-f64 ((out (ref String)) v:f64 prec:CStr):void
+  (let (buf:ptr:i8 (alloca i8 64))
+    (let (n:i32 (snprintf buf 64 prec v))
+      (when (> n 0)
+        (string-push-bytes-raw out (as ptr:ui8 (as ptr buf)) (as usize n))))))
+
+(extend f64 ToStr)
+(defn to-str (self:f64 (out (ref String))):!void
+  (string-push-f64 out self c"%.17g") (return (ok)))
+
+(extend f32 ToStr)
+(defn to-str (self:f32 (out (ref String))):!void
+  (string-push-f64 out (as f64 self) c"%.9g") (return (ok)))
+
+; ---------------------------------------------------------------------------
+; `str-into` / `str` — the replacement for a format string (§2.5).
+;
+;   (str-into out "expected " n " args, got " m)
+;   (str "expected " n " args, got " m)          ; builds a new String
+;
+; Arity is a macro-expansion fact rather than a varargs-boundary hope, which is
+; what retires src/format.nuc's fixed-arity helper zoo AND the format-helper
+; arity trap in context/conventions.md — a mismatch there segfaults the
+; compiler. There is no format-string DSL and no `%` escaping to get wrong.
+;
+; Each piece needs WRAPPING in a `(to-str … out)` call, which `~@` cannot do —
+; it splices a rest list unchanged — so the expansion recurses one piece at a
+; time, the shape `+` and `-` in lib/macros.nuc already use.
+; ---------------------------------------------------------------------------
+
+(defmacro str-into (out :rest parts)
+  (cond (= parts null)
+          `(do)
+        (= (parts 'cdr) null)
+          `(to-str ~(parts 'car) ~out)
+        true
+          `(do (to-str ~(parts 'car) ~out)
+               (str-into ~out ~@(parts 'cdr)))))
+
+; `out` is evaluated once per piece by the recursion above, so it must be a
+; plain binding — which it is at every site, since the argument is a `(ref
+; String)` and the caller has to name the String anyway.
+(defmacro str (:rest parts)
+  (let (s:ptr (gensym))
+    `(let ((~s String) (string-new))
+       (str-into ~s ~@parts)
+       ~s)))
+
+; Same, over an explicit allocator handle — an arena's String costs no free.
+(defmacro str-alloc (a :rest parts)
+  (let (s:ptr (gensym))
+    `(let ((~s String) (string-new-alloc ~a))
+       (str-into ~s ~@parts)
+       ~s)))
