@@ -695,7 +695,7 @@
 ;     for a private pair is precisely "privacy is per namespace, not per file".
 ;   * anything else is a public collision, which stays an error by design: a
 ;     public name must be unique across the whole unit.
-(defn duplicate-signature-message (g:raw:Generic later:raw:Method earlier:raw:Method):CStr
+(defn duplicate-signature-message (g:raw:Generic later:raw:Method earlier:raw:Method):StrView
   (let (gg:raw:Generic g
         a:raw:Method later
         b:raw:Method earlier
@@ -709,16 +709,16 @@
     (when (= afile null) (set! afile "<unknown file>"))
     (when (= bfile null) (set! bfile "<unknown file>"))
     (when (= ansname null) (set! ansname "user"))
-    (let (head:CStr (fcstr "duplicate definition of '" bare
+    (let (head:StrView (fstr "duplicate definition of '" bare
                           "' — the same parameter types are already defined at "
-                          (fcstr bfile ":" bline))
-          note:CStr null)
+                          (fstr bfile ":" bline))
+          note:StrView "")
       (if (and (!= (a 'priv) 0) (!= (b 'priv) 0))
-        (set! note (fcstr "`defn-` makes a name private to its NAMESPACE, not to its file, and both definitions are in namespace '"
+        (set! note (fstr "`defn-` makes a name private to its NAMESPACE, not to its file, and both definitions are in namespace '"
                          ansname "'. Rename one, or give one file an (ns ...) of its own."))
-        (set! note (fcstr "'" bare
+        (set! note (fstr "'" bare
                          "' is public, and a public name must be unique across the whole compilation unit. Declare one with `defn-` — in the default `user` namespace a private name is scoped to its own file, so the two files may each have their own — or rename one.")))
-      (return (fcstr head "\n  note: " note)))))
+      (return (fstr head "\n  note: " note)))))
 
 ; Stage 15 W9 item 35: would these two methods of `g` emit into the SAME symbol
 ; space? Two same-signature definitions are a duplicate exactly when they are,
@@ -766,21 +766,21 @@
 ; filter (item 43), so its namespace is this file's own, one it flattened — for
 ; which `<ns>/name` resolves as well as the bare name does (§8.3 row 1) — or
 ; `user`, which `resolve-spelling` binds in every file.
-(defn ambiguous-method-message (g:raw:Generic a:ptr:Method b:ptr:Method):CStr
+(defn ambiguous-method-message (g:raw:Generic a:ptr:Method b:ptr:Method):StrView
   (let (gg:raw:Generic g
         bare:CStr (strip-priv-qualifier (gg 'name))
         ans:CStr (a 'src-ns)
         bns:CStr (b 'src-ns))
     (when (= ans null) (set! ans "user"))
     (when (= bns null) (set! bns "user"))
-    (let (acand:CStr (fcstr "'" (fcstr ans "/" bare) "' (defined at " (method-def-site a)
+    (let (acand:StrView (fstr "'" (fstr ans "/" bare) "' (defined at " (method-def-site a)
                            ")")
-          bcand:CStr (fcstr "'" (fcstr bns "/" bare) "' (defined at " (method-def-site b)
+          bcand:StrView (fstr "'" (fstr bns "/" bare) "' (defined at " (method-def-site b)
                            ")"))
-      (return (fcstr (fcstr "ambiguous call to '" bare
+      (return (fstr (fstr "ambiguous call to '" bare
                           "' — two namespaces define it for these argument types")
                     "\n  note: "
-                    (fcstr acand " and " bcand " both match; qualify the call to choose one"))))))
+                    (fstr acand " and " bcand " both match; qualify the call to choose one"))))))
 
 ; Decide mangling for every not-yet-finalized user generic. A solitary concrete
 ; name keeps its unmangled @name and is bound in g-globals (so forward references
@@ -1045,7 +1045,7 @@
                   (when (and (!= ut null) (= infer-tyvar null))
                     (set! infer-tyvar ut))))))))
       (when (> ncand 1)
-        (die-at line (fcstr "ambiguous generic match for '" (gg 'name) "'")))
+        (die-at line (fstr "ambiguous generic match for '" (gg 'name) "'")))
       (when (= ncand 1)
         (return (generic-instantiate g cand cand-bound argtypes nargs line)))
       ; tier 2: widen / untyped-int-literal adaptation (§10.3). Concrete
@@ -1057,20 +1057,20 @@
             r:i32 (generic-resolve-adapt-tier g argtypes arg-nodes nargs line
                     (as ptr:ptr (addr-of wmethod)) (as ptr:ptr (addr-of wbound)) want))
         (when (= r 3)
-          (die-at line (fcstr "ambiguous overload for '" (gg 'name) "' under argument widening")))
+          (die-at line (fstr "ambiguous overload for '" (gg 'name) "' under argument widening")))
         (when (= r 1) (return (as ref:Method wmethod)))
         (when (= r 2)
           (return (generic-instantiate g wmethod wbound
                     (subst-param-types-bound wmethod wbound line) nargs line))))
       (when (!= infer-tyvar null)
         (die-at line
-          (fcstr "cannot infer type variable '" infer-tyvar "' for '" (gg 'name)
+          (fstr "cannot infer type variable '" infer-tyvar "' for '" (gg 'name)
                 "': no expected type at this position — annotate the binding")))
       (when (!= constraint-fail 0)
         (die-at line
-          (fcstr "no matching method for '" (gg 'name)
+          (fstr "no matching method for '" (gg 'name)
                 "': arguments do not satisfy the required protocol constraint")))
-      (die-at line (fcstr "no matching method for overloaded '" (gg 'name)
+      (die-at line (fstr "no matching method for overloaded '" (gg 'name)
                          "' with argument types (" (arg-type-spellings argtypes nargs) ")")))))
 
 ; Resolve an operator call to a USER overload (exact, then a unique widen/literal
@@ -1397,7 +1397,7 @@
                         ; below; bare `ref` is not, and would be collected instead.
                         (when (= (an 's) "ref")
                           (die-at (node-line (as ptr an) (node-line (as ptr node) 0))
-                            (fcstr (stt 'name)
+                            (fstr (stt 'name)
                                   ": 'ref' is a pointer kind, not a type argument -- a colon chain cannot nest, so parenthesize the inner type: ref:("
                                   (stt 'name) " (ref X))")))
                         (when (= (tyname-resolvable (an 's)) 0)
@@ -1405,7 +1405,7 @@
                       (collect-pattern-tyvars arg out-tyvars io-ntv)))))
               (when (!= nargs (stt 'ntv))
                 (die-at (node-line (as ptr node) 0)
-                  (fcstr (stt 'name) ": wrong number of type arguments for defstruct template ("
+                  (fstr (stt 'name) ": wrong number of type arguments for defstruct template ("
                         nargs " given)"))))
             (return))
           ; Pointer wrapper: descend into the inner pattern.
@@ -1768,7 +1768,7 @@
     ; `name:ret` / list-head `(name ret)` name here too, with the same diagnostic.
     (when (= (sig-name-is-bare name-node) 0)
       (die-at (ff 'line)
-        (fcstr "defn '" fname "': legacy 'name:ret' syntax is no longer supported — write (defn "
+        (fstr "defn '" fname "': legacy 'name:ret' syntax is no longer supported — write (defn "
               fname " (params):ret …)")))
     (let (raw:i32 (node-len params-node)
           nparams:i32 (if (>= wi 0) wi (defn-params-count params-node)))
@@ -1956,13 +1956,13 @@
           ; (stale .nuch) — a hard, fix-by-recompile error.
           (when (or (= cargs null) (= cn 0))
             (die-at line
-              (fcstr "conformance for protocol '" proto "' (type '" cvspell
+              (fstr "conformance for protocol '" proto "' (type '" cvspell
                     "') was recorded without parameter bindings; recompile")))
           ; The constraint's arg count must match the protocol's parameter count;
           ; a mismatch would read past the stored args and is a hard error.
           (when (!= na cn)
             (die-at line
-              (fcstr "constraint '" proto
+              (fstr "constraint '" proto
                     "' supplies the wrong number of arguments for the conformance of '" cvspell
                     "'")))
           (let (argv:ptr (crec 'args)
@@ -1985,13 +1985,13 @@
                       ; CONSTRAIN: an already-bound tyvar must agree.
                       (when (!= (strcmp (type-spelling cur) conspell) 0)
                         (die-at (node-line (as ptr an) line)
-                          (fcstr "constraint '" proto "' parameter mismatch: expected "
+                          (fstr "constraint '" proto "' parameter mismatch: expected "
                                 (type-spelling cur) ", found " conspell)))))
                   ; CONSTRAIN: a concrete arg pattern must equal the stored arg.
                   (let (cty:ptr (parse-type-from-node argn (node-line (as ptr an) line)))
                     (when (!= (strcmp (type-spelling cty) conspell) 0)
                       (die-at (node-line (as ptr an) line)
-                        (fcstr "constraint '" proto "' parameter mismatch: expected "
+                        (fstr "constraint '" proto "' parameter mismatch: expected "
                               (type-spelling cty) ", found " conspell)))))))
             (return 1)))))))
 
@@ -2429,7 +2429,7 @@
                      (extract-name-and-type (node-at stamped 1) (as ptr:ptr (addr-of sname))
                                             ((unsafe/cast ptr:Node (node-at stamped 1)) 'line))))
       (when (= sret null)
-        (die-at line (fcstr "generic '" (gg 'name) "': cannot resolve instantiated return type")))
+        (die-at line (fstr "generic '" (gg 'name) "': cannot resolve instantiated return type")))
       ; Valid bound (§10.2): dry-run the concrete body before committing it, so an
       ; operation C can't support is reported at this call site, not at stamp time.
       (when (!= (method-has-valid m) 0)
@@ -2859,7 +2859,7 @@
             ; A name that is neither a generic nor scope-bound is a typo — error
             ; whether or not an argument is abstract.
             (when (and (= g null) (= (scope-lookup scope h) null))
-              (die-at (nn 'line) (fcstr "in generic body: unknown function '" h "'")))
+              (die-at (nn 'line) (fstr "in generic body: unknown function '" h "'")))
             ; Known name, unresolved here: defer to stamp-time. Concrete calls get
             ; a best-effort type; abstract ones stay unknown (null).
             (when (!= any-abstract 0) (return null))
@@ -2890,7 +2890,7 @@
             pnm:CStr (crec 'proto))
         (when (= (constraint-proto-known pnm) 0)
           (die-at (form 'line)
-            (fcstr "defn: :where names unknown protocol '" pnm "'")))))
+            (fstr "defn: :where names unknown protocol '" pnm "'")))))
     (dotimes (i nparams)
       (let (pnode:ptr (node-at params-node i)
             pty:ptr (gbind-decl-type pnode m (form 'line))
@@ -3123,13 +3123,13 @@
                 (let (rt:ptr (valid-resolve-type g argtypes arg-nodes nargs line))
                   (when (!= rt null) (return rt))
                   (die-at line
-                    (fcstr "type '" cty "' does not satisfy the Valid bound of '" gname "'"))))
+                    (fstr "type '" cty "' does not satisfy the Valid bound of '" gname "'"))))
               (return null))
             ; A non-generic name: it must at least be in scope (catches a typo);
             ; its own arg typing is deferred to that function's own emission.
             (when (= (scope-lookup scope h) null)
               (die-at line
-                (fcstr "type '" cty "' does not satisfy the Valid bound of '" gname "'")))
+                (fstr "type '" cty "' does not satisfy the Valid bound of '" gname "'")))
             (return (node-type-call n scope h null))))))))
 
 ; Run the per-call-site Valid check on a stamped instantiation `stamped` whose
@@ -3568,7 +3568,7 @@
           ; Both sides carry args: they must agree, else it is a coherence error.
           (when (= (conformance-args-eq (c 'args) av) 0)
             (die-at line
-              (fcstr "type '" type-name "' re-extends protocol '" proto-name
+              (fstr "type '" type-name "' re-extends protocol '" proto-name
                     "' with different associated arguments")))
           (return))))
     (let (c:ptr:Conformance (as ptr:Conformance (arena-alloc (sizeof Conformance))))
@@ -3930,7 +3930,7 @@
           (when (and (= nparams 1)
                      (= (node-kind (node-at (as ptr name-node) 1)) NODE-CELL))
             (die-at (name-node 'line)
-              (fcstr "defprotocol: takes no type annotation; write (defprotocol " (head 's)
+              (fstr "defprotocol: takes no type annotation; write (defprotocol " (head 's)
                     " ...)")))
           (set! params (arena-alloc (* nparams (ptr-bytes))))
           (dotimes (pi nparams)
@@ -3983,7 +3983,7 @@
               ; genuinely malformed sig on its existing lazy-parse error path.
               (when (and (= (sig-name-is-bare snn) 0) (!= (defn-name-only snn) null))
                 (die-at (ff 'line)
-                  (fcstr "protocol method '" (defn-name-only snn)
+                  (fstr "protocol method '" (defn-name-only snn)
                         "': legacy 'name:ret' syntax is no longer supported — write ("
                         (defn-name-only snn) " (params):ret)")))
               (set! (aref (as ptr:ptr sigs) i) sig))))
@@ -4162,14 +4162,14 @@
   (let (proto:ptr (protocol-lookup-ns proto-name))
     (when (= proto null)
       (when (!= check 0)
-        (die-at line (fcstr "extend: unknown protocol '" proto-name "'")))
+        (die-at line (fstr "extend: unknown protocol '" proto-name "'")))
       (return))
     (when (!= check 0)
       (let (notes:ptr "")
         (when (= (proto-sigs-resolve proto typename pspellings line
                                      (as ptr:ptr (addr-of notes))) 0)
           (die-at line
-            (fcstr "type '" typename "' does not conform to protocol '" proto-name "'"
+            (fstr "type '" typename "' does not conform to protocol '" proto-name "'"
                   (as CStr notes))))))
     (conformance-add typename proto-name pspellings npspellings line)
     ; Conforming to `proto-name` requires conforming to each declared super. The
@@ -4415,18 +4415,18 @@
           (let (st:?ptr:StructTemplate (struct-template-lookup-ref (thead 's)))
             (when (= st null)
               (die-at (node-line (as ptr type-node) (ff 'line))
-                (fcstr "extend: '" (thead 's) "' is not a struct template")))
+                (fstr "extend: '" (thead 's) "' is not a struct template")))
             (let (proto:?ptr:Protocol proto-rec)
               (when (= proto null)
                 (die-at (node-line (as ptr proto-node) (ff 'line))
                   (with-qualifier-note
-                    (fcstr "extend: unknown protocol '" proto-spelling "'")
+                    (fstr "extend: unknown protocol '" proto-spelling "'")
                     (as ptr proto-spelling))))
               ; The protocol application must supply exactly the protocol's extra
               ; params, each bound positionally to one of the template's tyvars.
               (when (!= proto-nargs (-> proto (unsafe/cast ptr:Protocol _) (_ 'num-params)))
                 (die-at (node-line (as ptr proto-node) (ff 'line))
-                  (fcstr "extend: protocol '" proto-name
+                  (fstr "extend: protocol '" proto-name
                         "' expects a different number of parameters")))
               ; Stage 11 assoc-types (A4.1): parse a trailing `:where` clause, if
               ; present, into the conformance's constraint arrays and run the
@@ -4534,7 +4534,7 @@
                                 (when (and (= (aref (as ptr:i32 determined) ti) 0)
                                            (!= (node-mentions-tyvar-named argn (aref (as ptr:ptr tyvars) ti)) 0))
                                   (die-at (node-line (as ptr proto-node) (ff 'line))
-                                    (fcstr "extend: protocol parameter '"
+                                    (fstr "extend: protocol parameter '"
                                           (aref (as ptr:ptr tyvars) ti)
                                           "' is not determined by the subject or any :where constraint")))))))
                         (tmpl-conformance-add (as ptr st) (as ptr proto) proto-args proto-nargs
@@ -4568,7 +4568,7 @@
           (when (= proto-rec null)
             (die-at (node-line (as ptr proto-node) (ff 'line))
               (with-qualifier-note
-                (fcstr "extend: '" (-> subj-proto (as ptr:Protocol _) (_ 'name))
+                (fstr "extend: '" (-> subj-proto (as ptr:Protocol _) (_ 'name))
                       "' is a protocol, so its supertype '" proto-spelling
                       "' must be a protocol too")
                 (as ptr proto-spelling))))
@@ -4581,7 +4581,7 @@
           (when (= proto null)
             (die-at (node-line (as ptr proto-node) (ff 'line))
               (with-qualifier-note
-                (fcstr "extend: unknown protocol '" proto-spelling "'")
+                (fstr "extend: unknown protocol '" proto-spelling "'")
                 (as ptr proto-spelling))))
           ; Validate single-token subject types eagerly for a clean diagnostic.
           ; Stage 15 B3′a: on the SPELLING the author wrote, never on `typename` —
@@ -4594,7 +4594,7 @@
             (parse-type-name (type-node 's) (node-line (as ptr type-node) (ff 'line))))
           (when (!= proto-nargs (-> proto (unsafe/cast ptr:Protocol _) (_ 'num-params)))
             (die-at (node-line (as ptr proto-node) (ff 'line))
-              (fcstr "extend: protocol '" proto-name "' expects a different number of parameters")))
+              (fstr "extend: protocol '" proto-name "' expects a different number of parameters")))
           ; Concrete protocol params (`(Seq i32)`): canonicalize each arg's spelling.
           (let (pspellings:ptr null)
             (when (> proto-nargs 0)

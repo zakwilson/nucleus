@@ -280,10 +280,10 @@
   (when (= strict 0) (return))
   (when (= (is-int-type t) 0)
     (die-at line
-      (fcstr "a ':bits' member must have an integer type, not " (type-display t))))
+      (fstr "a ':bits' member must have an integer type, not " (type-display t))))
   (when (> w (* 8 (type-size t)))
     (die-at line
-      (fcstr "':bits " w "' exceeds the " (* 8 (type-size t)) " bits of its declared type"))))
+      (fstr "':bits " w "' exceeds the " (* 8 (type-size t)) " bits of its declared type"))))
 
 ; ============================================================
 ; Stage 14 §14.4: a TY-FN Type's parameter list is one `(Vector (ref Field))`
@@ -368,12 +368,12 @@
   (when (!= (in-jit-module) 0) (return))
   (when (!= (abi-is-avr) 0)
     (die-at line
-      (fcstr name " is not supported on AVR (8-bit target: f32 is the only float format)")))
+      (fstr name " is not supported on AVR (8-bit target: f32 is the only float format)")))
   (when (and (= name "f80")
              (and (= (strstr g-target-triple "x86_64") null)
                   (= (strstr g-target-triple "i386") null)))
     (die-at line
-      (fcstr "f80 is the x87 80-bit format and exists only on x86 -- this target is "
+      (fstr "f80 is the x87 80-bit format and exists only on x86 -- this target is "
             g-target-triple "; spell it `long double` in a C header, or use f128"))))
 
 ; Round x up to a multiple of a (a is a power of two in practice, but the
@@ -1526,7 +1526,7 @@
       (when (and (!= (vv 'is-lit) 0)
                  (= (int-literal-fits (vv 'lit-i64) target) 0))
         (die-at line
-          (fcstr "integer literal " (fcstr (vv 'lit-i64)) " does not fit "
+          (fstr "integer literal " (fcstr (vv 'lit-i64)) " does not fit "
                 (type-spelling target))))
       (let (sw:i32 (int-width src) dw:i32 (int-width target))
         (when (= sw dw)
@@ -1637,7 +1637,7 @@
         (set! (aref (as ptr:i8 cbuf) 0) (unsafe/cast i8 bad))
         (set! (aref (as ptr:i8 cbuf) 1) 0)
         (die-at line
-          (fcstr "illegal character '" cbuf "' in generated symbol for '" orig-name
+          (fstr "illegal character '" cbuf "' in generated symbol for '" orig-name
                 "' (ir-name '" ir-name "') — LLVM identifiers allow only [A-Za-z0-9$._-]")))))
   ; W9 item 39: the position half of the same rule. ir-name-token escapes a
   ; leading digit, so reaching here means an ir-name was produced on a path that
@@ -1645,7 +1645,7 @@
   ; report it against the generated IR.
   (when (!= (ir-name-leading-digit (as ptr ir-name)) 0)
     (die-at line
-      (fcstr "generated symbol for '" orig-name "' (ir-name '" ir-name
+      (fstr "generated symbol for '" orig-name "' (ir-name '" ir-name
             "') begins with a digit — an LLVM identifier may not"))))
 
 (defn register-struct (name:CStr):ref:StructDef
