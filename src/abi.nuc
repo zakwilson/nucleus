@@ -209,11 +209,11 @@
   (let (f:raw:Type ft
         acc:ptr "(")
     (dotimes (j (f 'num-params))
-      (when (!= j 0) (set! acc (fmt-s "%s, " acc)))
-      (set! acc (fmt-2s "%s%s" acc (type-display ((field-at (f 'params) j) 'type)))))
+      (when (!= j 0) (set! acc (fstr acc ", ")))
+      (set! acc (fstr acc (type-display ((field-at (f 'params) j) 'type)))))
     (when (!= (f 'variadic) 0)
-      (set! acc (fmt-2s "%s%s" acc (if (= (f 'num-params) 0) "..." ", ..."))))
-    (return (as CStr (fmt-2s "%s):%s" acc (type-display (f 'ret)))))))
+      (set! acc (fstr acc (if (= (f 'num-params) 0) "..." ", ..."))))
+    (return (as CStr (fstr acc "):" (type-display (f 'ret)))))))
 
 (defn type-display (t:raw:Type):CStr
   (when (= t null) (return "<none>"))
@@ -280,11 +280,10 @@
   (when (= strict 0) (return))
   (when (= (is-int-type t) 0)
     (die-at line
-      (fmt-s "a ':bits' member must have an integer type, not %s" (type-display t))))
+      (fstr "a ':bits' member must have an integer type, not " (type-display t))))
   (when (> w (* 8 (type-size t)))
     (die-at line
-      (fmt-i32-i32 "':bits %d' exceeds the %d bits of its declared type"
-                   w (* 8 (type-size t))))))
+      (fstr "':bits " w "' exceeds the " (* 8 (type-size t)) " bits of its declared type"))))
 
 ; ============================================================
 ; Stage 14 §14.4: a TY-FN Type's parameter list is one `(Vector (ref Field))`
@@ -369,13 +368,13 @@
   (when (!= (in-jit-module) 0) (return))
   (when (!= (abi-is-avr) 0)
     (die-at line
-      (fmt-s "%s is not supported on AVR (8-bit target: f32 is the only float format)" name)))
+      (fstr name " is not supported on AVR (8-bit target: f32 is the only float format)")))
   (when (and (= name "f80")
              (and (= (strstr g-target-triple "x86_64") null)
                   (= (strstr g-target-triple "i386") null)))
     (die-at line
-      (fmt-s "f80 is the x87 80-bit format and exists only on x86 -- this target is %s; spell it `long double` in a C header, or use f128"
-        g-target-triple))))
+      (fstr "f80 is the x87 80-bit format and exists only on x86 -- this target is "
+            g-target-triple "; spell it `long double` in a C header, or use f128"))))
 
 ; Round x up to a multiple of a (a is a power of two in practice, but the
 ; arithmetic form works for any positive a).
@@ -672,7 +671,7 @@
         (let (fa:i32 (abi-field-ir-align sd i))
           (when (> fa ira) (set! ira fa)))))
     (when (<= a ira) (return ""))
-    (return (fmt-i32 ", align %d" a))))
+    (return (fstr ", align " a))))
 
 ; ABI size of a struct — one line, because struct-walk is the layout.
 (defn abi-struct-size (sd:raw:StructDef):i32
@@ -775,7 +774,7 @@
   (when (= cls 1)
     (if (= n 8) (return "<2 x float>") (return "float")))
   (if (<= n 4)
-    (return (fmt-i32 "i%d" (* n 8)))
+    (return (fstr "i" (* n 8)))
     (return "i64")))
 
 ; Record one flattened scalar member. Past two members the aggregate is
@@ -1062,8 +1061,7 @@
     (when (= k ABI-MEMORY)  (return "void"))
     (when (= k ABI-COERCE1) (return (info 'reg0)))
     (when (= k ABI-COERCE2)
-      (return (fmt-2s "{ %s, %s }"
-                (info 'reg0) (info 'reg1))))
+      (return (fstr "{ " (info 'reg0) ", " (info 'reg1) " }")))
     (return (type-to-ir ret))))
 
 ; Print one lowered parameter to g-out. `name` is the param name for a `define`
@@ -1134,8 +1132,8 @@
         k:i32 (info 'kind)
         ; W9 item 39: must spell the parameter exactly as abi-print-param-to did.
         mn:ptr (ir-name-token (as ptr pname))
-        slot:ptr (fmt-s "%%%s.addr" mn)
-        arg:ptr (fmt-s "%%%s.arg" mn))
+        slot:ptr (fstr "%" mn ".addr")
+        arg:ptr (fstr "%" mn ".arg"))
     (when (= k ABI-DIRECT)
       (let (palign:i32 (type-size ptype))
         (fprintf g-entry-stream "  %s = alloca %s, align %d\n" slot (type-to-ir ptype) palign)
@@ -1279,7 +1277,7 @@
       ; convention is COERCE2). Discarding the AbiInfo is the point; the call is
       ; made for its register debit.
       (abi-classify-arg ty-ptr)
-      (return (fmt-s "ptr %s" (a 'val))))
+      (return (fstr "ptr " (a 'val))))
     ; RV-6c: classified ONCE (it used to classify twice, for `info` and `kind`),
     ; via abi-classify-arg — this is the argument position, so it consults and
     ; debits the live register budget. emit-call-with-args owns the
@@ -1287,7 +1285,7 @@
     (let (info:raw:AbiInfo (abi-classify-arg (a 'type))
           k:i32 (info 'kind))
     (when (= k ABI-DIRECT)
-      (return (fmt-2s "%s %s" (type-to-ir (a 'type)) (a 'val))))
+      (return (fstr (type-to-ir (a 'type)) " " (a 'val))))
     (let (ty:ptr (type-to-ir (a 'type))
           addr:ptr (new-tmp))
       (fprintf g-entry-stream "  %s = alloca %s\n" addr ty)
@@ -1298,13 +1296,13 @@
         ; aarch64, AVR, or riscv64.
         (if (and (= (abi-is-aarch64) 0) (= (abi-is-avr) 0) (= (abi-is-riscv) 0))
           ; x86_64: byval attribute
-          (return (fmt-2s "%s %s" (fmt-sd "ptr byval(%s) align %d" ty (info 'align)) addr))
+          (return (fstr (fstr "ptr byval(" ty ") align " (info 'align)) " " addr))
           ; aarch64 / AVR / riscv64: plain pointer
-          (return (fmt-s "ptr %s" addr))))
+          (return (fstr "ptr " addr))))
       (when (= k ABI-COERCE1)
         (let (r:ptr (new-tmp))
           (fprintf g-body-stream "  %s = load %s, ptr %s\n" r (info 'reg0) addr)
-          (return (fmt-2s "%s %s" (info 'reg0) r))))
+          (return (fstr (info 'reg0) " " r))))
       ; COERCE2
       (let (r0:ptr (new-tmp)
             gp:ptr null
@@ -1314,9 +1312,7 @@
         (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 %d\n" gp addr (info 'off1))
         (set! r1 (new-tmp))
         (fprintf g-body-stream "  %s = load %s, ptr %s\n" r1 (info 'reg1) gp)
-        (return (fmt-2s "%s, %s"
-                  (fmt-2s "%s %s" (info 'reg0) r0)
-                  (fmt-2s "%s %s" (info 'reg1) r1))))))))
+        (return (fstr (fstr (info 'reg0) " " r0) ", " (fstr (info 'reg1) " " r1))))))))
 
 ; Emit a direct call whose return is a struct lowered per `info`, reconstruct
 ; the first-class struct value, and return its Val. `arglist` is the already
@@ -1346,7 +1342,7 @@
             (fprintf g-body-stream "  %s = load %s, ptr %s\n" v ty slot)
             (return (alloc-val ret v))))))
     ; COERCE2: call returns {reg0,reg1}; split it back into the struct slot.
-    (let (rty:ptr (fmt-2s "{ %s, %s }" (ii 'reg0) (ii 'reg1))
+    (let (rty:ptr (fstr "{ " (ii 'reg0) ", " (ii 'reg1) " }")
           tmp:ptr (new-tmp))
       (fprintf g-body-stream "  %s = call %s %s(%s)\n" tmp rty ir-name arglist)
       (let (slot:ptr (new-tmp)
@@ -1532,8 +1528,8 @@
       (when (and (!= (vv 'is-lit) 0)
                  (= (int-literal-fits (vv 'lit-i64) target) 0))
         (die-at line
-          (fmt-2s "integer literal %s does not fit %s"
-            (fmt-i64 "%ld" (vv 'lit-i64)) (type-spelling target))))
+          (fstr "integer literal " (fstr (vv 'lit-i64)) " does not fit "
+                (type-spelling target))))
       (let (sw:i32 (int-width src) dw:i32 (int-width target))
         (when (= sw dw)
           ; Same width, different signedness — reinterpret (no IR needed)
@@ -1643,20 +1639,20 @@
         (set! (aref (as ptr:i8 cbuf) 0) (unsafe/cast i8 bad))
         (set! (aref (as ptr:i8 cbuf) 1) 0)
         (die-at line
-          (fmt-3s "illegal character '%s' in generated symbol for '%s' (ir-name '%s') — LLVM identifiers allow only [A-Za-z0-9$._-]"
-                  cbuf orig-name ir-name)))))
+          (fstr "illegal character '" cbuf "' in generated symbol for '" orig-name
+                "' (ir-name '" ir-name "') — LLVM identifiers allow only [A-Za-z0-9$._-]")))))
   ; W9 item 39: the position half of the same rule. ir-name-token escapes a
   ; leading digit, so reaching here means an ir-name was produced on a path that
   ; skipped it — report it against the definition rather than letting LLVM
   ; report it against the generated IR.
   (when (!= (ir-name-leading-digit (as ptr ir-name)) 0)
     (die-at line
-      (fmt-2s "generated symbol for '%s' (ir-name '%s') begins with a digit — an LLVM identifier may not"
-              orig-name ir-name))))
+      (fstr "generated symbol for '" orig-name "' (ir-name '" ir-name
+            "') begins with a digit — an LLVM identifier may not"))))
 
 (defn register-struct (name:CStr):ref:StructDef
   (when (>= (unsafe/cast i32 (count g-structs)) MAX-STRUCTS)
-    (fprintf stderr "nucleusc: too many structs\n") (exit 1))
+    (eprint "nucleusc: too many structs\n") (exit 1))
   (let (sd:ptr:StructDef (new StructDef))
     (set! (sd 'name) name)
     ; SM-4 + Stage 15 B3′: precompute the LLVM-safe type name once. `name` is

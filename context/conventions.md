@@ -5917,3 +5917,32 @@ fine. That is invisible until something *reads* the type: `emit-try` sizes its
 `ok` arm from `(node-type operand)`, so a `(try (write-str f sv))` on a struct-
 value receiver built a one-binder match against `!void`'s payload-less arm. Add
 the pass to both; keep the definition-side lookup exact.
+
+## The boot compiler gates what `src/` may use
+
+`make` compiles `src/nucleusc.nuc` with `bin/nucleusc`, the **committed boot
+binary** — not with the compiler you just built. So a feature added to the
+compiler is unusable in the compiler's own source until `make update-bootstrap`
+refreshes `boot/nucleusc.ll` and `bin/nucleusc` from a build that has it.
+
+The failure looks like a type or dispatch error in perfectly good code, and the
+same code compiles fine as a standalone program with `./build/nucleusc`. That
+divergence — works with `build/nucleusc`, fails under `make` — is the signature.
+
+The sequence is: land the feature (src/ still not using it) → `make` green →
+`make update-bootstrap` → now use it. Stage 17's `fstr` needed exactly this, as
+`try-boot` did before it.
+
+## Importing the string stack into `src/` collides on protocol method names
+
+`lib/strview-str.nuc` / `lib/string.nuc` bring `char-at`, `byte-at`, `bytes`,
+`as-view`, `chars`, `count`, `sub-bytes` into scope as protocol methods. The
+compiler has always been free to use those spellings for its own helpers, and
+one of them had: `src/reader.nuc`'s `char-at (s:ptr pos:i64)`.
+
+Once the name is a generic with several methods, a call that previously adapted
+(`CStr` argument at a `ptr` parameter) is resolved by exact dispatch instead and
+fails with "no matching method". Rename the compiler's helper rather than the
+library's — the suffixed-name convention `src/` already follows for
+`defn-params-count` and friends. Stage 17 C1 renamed exactly one: `char-at` →
+`cstr-byte-at`.
