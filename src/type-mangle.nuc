@@ -163,7 +163,7 @@
         acc:ptr null)
     (let (it:ListIter (list-iter segs))
       (doseq-iter (e (addr-of it))
-        (let (seg:ptr ((as ptr:Node e) 's)
+        (let (seg:ptr (sym-ptr ((as ptr:Node e) 's))
               idx:i32 (tyvar-index-of seg tyvars ntv)
               piece:ptr (if (>= idx 0) (aref (as ptr:ptr spellings) idx) seg))
           (if (= acc null) (set! acc piece) (set! acc (fcstr acc ":" piece))))))
@@ -177,12 +177,12 @@
   (let (n:raw:Node node)
     (case (n 'kind)
       NODE-SYM
-        (let (ns:ptr (subst-tyvars-sym (n 's) tyvars spellings ntv (n 'line)))
-          (when (= ns (n 's)) (return node))
+        (let (ns:ptr (subst-tyvars-sym (symbol-as-cstr (n 's)) tyvars spellings ntv (n 'line)))
+          (when (= ns (sym-ptr (n 's))) (return node))
           (let (new:ptr:Node (as ptr:Node (alloc-node)))
             (set! (new 'kind) NODE-SYM)
             (set! (new 'line) (n 'line))
-            (set! (new 's) ns)
+            (set! (new 's) (sym-of ns))
             (return new)))
       ; Stage 14 defn-signature.md S1: a new-style return type rides in a
       ; NODE-KEYWORD (`:T`, `:ptr:T`) at the head of the stamped body tail. Substitute
@@ -191,12 +191,12 @@
       ; tyvar is returned unchanged (subst-tyvars-sym is identity), so legacy bodies
       ; are unaffected.
       NODE-KEYWORD
-        (let (ns:ptr (subst-tyvars-sym (n 's) tyvars spellings ntv (n 'line)))
-          (when (= ns (n 's)) (return node))
+        (let (ns:ptr (subst-tyvars-sym (symbol-as-cstr (n 's)) tyvars spellings ntv (n 'line)))
+          (when (= ns (sym-ptr (n 's))) (return node))
           (let (new:ptr:Node (as ptr:Node (alloc-node)))
             (set! (new 'kind) NODE-KEYWORD)
             (set! (new 'line) (n 'line))
-            (set! (new 's) ns)
+            (set! (new 's) (sym-of ns))
             (return new)))
       NODE-CELL
         (return (make-cell (subst-tyvars-node (n 'car) tyvars spellings ntv)

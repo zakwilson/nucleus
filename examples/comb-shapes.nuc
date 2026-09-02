@@ -18,10 +18,12 @@
 ; explicit path: a bare (import-use list) resolves to examples/list.nuc.
 (import-use "lib/list.nuc")
 
+; calloc, not malloc: `s` is a Symbol, which has no null value to assign — a
+; node with no name is simply a zeroed one.
 (defn int-node (val:i64):ptr
-  (let (c:ptr:Node (as ptr:Node (malloc (sizeof Node))))
+  (let (c:ptr:Node (as ptr:Node (calloc 1 (sizeof Node))))
     (set! (c 'kind) 0) (set! (c 'line) 0) (set! (c 'i) val)
-    (set! (c 's) null) (set! (c 'car) null) (set! (c 'cdr) null)
+    (set! (c 'car) null) (set! (c 'cdr) null)
     (return (as ptr c))))
 
 (defn main ():i32

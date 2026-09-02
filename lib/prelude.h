@@ -5,11 +5,15 @@
 
 /* Generated from lib/prelude.nuc by nucleusc --emit-cheader */
 
+typedef struct Symbol {
+    uint8_t* p;
+} Symbol;
+
 typedef struct Node {
     int32_t kind;
     int32_t line;
     int64_t i;
-    void* s;
+    struct Symbol s;
     void* car;
     void* cdr;
 } Node;
@@ -28,8 +32,4 @@ typedef struct StrView {
     uint8_t* data;
     size_t len;
 } StrView;
-
-typedef struct Symbol {
-    uint8_t* p;
-} Symbol;
 

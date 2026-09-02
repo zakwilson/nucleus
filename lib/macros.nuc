@@ -116,9 +116,13 @@
                 (cond (and (= (val 'kind) NODE-CELL)
                            (!= head null)
                            (= (head 'kind) NODE-KEYWORD)
-                           ; NODE-KEYWORD carries its name in `s`, colon
-                           ; stripped — the marker is only ever a string here.
-                           (= (head 's) "or"))
+                           ; The prelude cannot call `symbol-is` — it lives in a
+                           ; library — so this compares the interned bytes, which
+                           ; are still NUL-terminated. BOOTSTRAP SHIM (C7-3): with
+                           ; a reader that interns, `(head 's)` and `'or`'s `s`
+                           ; are one pointer; the boot compiler's is not, so the
+                           ; identity compare must wait for the refresh.
+                           (= (as ptr ((head 's) 'p)) "or"))
                         (set! alt-list 1)))
               (let ((test (raw Node)) null)
                 (if (!= alt-list 0)
@@ -301,9 +305,10 @@
                   (scan (raw Node)) form)
               (while (!= scan null)
                 (let ((child (raw Node)) (scan 'car))
-                  (when (= (child 'kind) NODE-SYM)
-                    (when (= (child 's) "_" )
-                      (set! has-placeholder 1))))
+                  ; `_` is reader-interned, so identity IS the spelling test —
+                  ; and the prelude cannot call `symbol-is`, which is a library.
+                  (when (= child '_)
+                    (set! has-placeholder 1)))
                 (set! scan (scan 'cdr)))
               (if (!= has-placeholder 0)
                 ; Has _: rebuild list, substituting result for each _.
@@ -313,9 +318,8 @@
                   (while (!= src null)
                     (let ((elem (raw Node)) (src 'car)
                           replacement:ptr elem)
-                      (when (= (elem 'kind) NODE-SYM)
-                        (when (= (elem 's) "_")
-                          (set! replacement result)))
+                      (when (= elem '_)
+                        (set! replacement result))
                       (set! rev `(~replacement ~@rev)))
                     (set! src (src 'cdr)))
                   ; Pass 2: reverse to restore order.

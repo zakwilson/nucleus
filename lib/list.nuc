@@ -24,11 +24,12 @@
 (import-use iterator)
 
 (defn cons (car:ptr cdr:ptr):ptr
-  (let (c:ptr:Node (as ptr:Node (malloc (sizeof Node))))
+  ; calloc, not malloc: `s` is a Symbol, which has no null value to assign —
+  ; a cell simply has no name, and zeroed is what the arena's nodes are too.
+  (let (c:ptr:Node (as ptr:Node (calloc 1 (sizeof Node))))
     (set! (c 'kind) 3)
     (set! (c 'line) 0)
     (set! (c 'i) 0)
-    (set! (c 's) null)
     (set! (c 'car) car)
     (set! (c 'cdr) cdr)
     (return (as ptr c))))

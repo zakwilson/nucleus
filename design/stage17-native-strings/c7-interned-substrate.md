@@ -181,6 +181,27 @@ The bulk. 574 read sites, of which the mechanical majority are one of:
 correctness improvement in passing, since a gensym symbol is currently the one
 `Node` whose `s` is not interned at all.
 
+**Done, in two commits.** C7-3a landed `symbol-is` and the `=`/`!=` overloads
+over `(Symbol, StrView)` as a library addition; C7-3b flipped the field. The
+table above is what the step *would* have cost with `symbol-is` spelled out —
+the operator overload is why row 1 needed no edit at any of its 326 sites, and
+`ToStr` is why row 4 needed none at any of its. What was actually written is
+rows 5 and 6, and those are **bridges, not conversions**: 178 `(sym-ptr …)` and
+18 `(sym-of …)` calls, both one-liners in `src/strfmt.nuc`, deleted by C7-4 and
+C7-5 when the registries stop being `ptr`-keyed. They exist because the field
+moved before its consumers did; converting the consumers in the same commit is
+what the phase split exists to avoid.
+
+Three findings the step produced. **`emit-quote-tree` had to start interning** —
+it wrote a bare `@.str.N` pointer into `Node.s`, which has no `[hash][len]`
+behind it, so the first `symbol-len` on a quoted literal SIGBUS'd the
+self-compile; it now emits a `@symbol-intern-bytes` call. **A cell has no name
+rather than a null one** — `Symbol.p` is non-null by type, so `cons` allocates
+with `calloc` and asks `symbol-none?`. And **string literals now carry embedded
+NULs**, because the length `lex-string` always computed finally has somewhere to
+live; `examples/hex-escape-test.nuc` had pinned the old truncation precisely so
+that this would be a visible change.
+
 ### C7-4 — the registries
 
 `Sym.ir-name`, `Method.ir-name`, scope keys, struct-field names, `type-spelling`,

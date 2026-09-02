@@ -487,6 +487,12 @@
 (defn strview-drop-bytes (sv:StrView start:usize):StrView
   (return (strview (unsafe/ptr+ (sv 'data) (as i64 start)) (- (sv 'len) start))))
 
+; Its counterpart: the first `n` bytes. Same contract — the caller already knows
+; the split point, typically a delimiter index a scan just returned, which is a
+; char boundary by construction (library-gaps.md #36).
+(defn strview-take-bytes (sv:StrView n:usize):StrView
+  (return (strview (sv 'data) n)))
+
 ; By-VALUE prefix/suffix tests. The `(ref StrView)` forms above force a named
 ; local at every call site, and the overwhelmingly common prefix — a literal —
 ; is not an lvalue, so it cannot be passed to them at all.

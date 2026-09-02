@@ -37,6 +37,7 @@
 (declare strview-parse-magnitude ((sv StrView) (radix i32) (limit ui64)) :!ui64)
 (declare strview-parse-sign ((sv StrView) (out-start (ptr usize))) :i32)
 (declare strview-drop-bytes ((sv StrView) (start usize)) :StrView)
+(declare strview-take-bytes ((sv StrView) (n usize)) :StrView)
 (declare strview-has-prefix ((sv StrView) (prefix StrView)) :bool)
 (declare strview-has-suffix ((sv StrView) (suffix StrView)) :bool)
 (declare strview-contains ((sv StrView) (needle StrView)) :bool)

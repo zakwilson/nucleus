@@ -5,6 +5,7 @@
 (declare symbol-cached-hash ((self Symbol)) :usize)
 (declare symbol-as-view ((self Symbol)) :StrView)
 (declare symbol-as-cstr ((self Symbol)) :CStr)
+(declare symbol-none? ((self Symbol)) :bool)
 (declare symbol-is ((self Symbol) (other StrView)) :bool)
 (defmethod "@eq.Symbol.StrView" = ((a Symbol) (b StrView)) :bool)
 (defmethod "@ne.Symbol.StrView" != ((a Symbol) (b StrView)) :bool)

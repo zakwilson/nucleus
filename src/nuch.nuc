@@ -204,7 +204,7 @@
   ; namespace, and `(set-ir-prefix "...")` when the library overrode the default
   ; prefix (so the importer mangles identically). Under `user` neither is emitted,
   ; so existing libraries' headers stay byte-identical.
-  (when (!= (strcmp g-current-ns "user") 0)
+  (when (!= g-current-ns "user")
     (emit (as ptr stdout) "(ns " g-current-ns ")\n")
     (let (override:ptr (ns-ir-prefix-get g-current-ns))
       (when (!= override null)
@@ -216,7 +216,7 @@
                    (= (f 'kind) NODE-CELL)
                    (> (node-len (as ptr f)) 0)
                    (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 'kind) (= _ NODE-SYM)))
-          (let (h:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 's)))
+          (let (h:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 's) (sym-ptr _)))
             (case h
               "defstruct"    (emit-nuch-defstruct (as ptr f))
               ; defunion exports verbatim (template or monomorphic); the
@@ -290,7 +290,7 @@
               "' is not supported in a declaration -- declare the fixed parameters only (extra arguments are passed positionally at the call site)")))
     ; A keyword operand (`:i64`) carries the spelling without the colon, exactly
     ; as a return operand does (fn-parse-ret-type).
-    (when (= (n 'kind) NODE-KEYWORD) (return (parse-type-name (n 's) line)))
+    (when (= (n 'kind) NODE-KEYWORD) (return (parse-type-name (symbol-as-cstr (n 's)) line)))
     (return (parse-type-from-node (as ptr node) line))))
 
 ; A `declare`'s parameter list as a flat Type array, with the count written back
@@ -432,7 +432,7 @@
                         (fn-parse-ret-type (node-at form 3) (ff 'line))
                         (extract-name-and-type name-node (as ptr:ptr (addr-of fname))
                                                ((as ptr:Node name-node) 'line))))
-          (when (!= ndi-new 0) (set! fname (-> name-node (unsafe/cast ptr:Node _) (_ 's))))
+          (when (!= ndi-new 0) (set! fname (-> name-node (unsafe/cast ptr:Node _) (_ 's) (symbol-as-cstr _))))
           (when (= ret null)
             (die-at ((as ptr:Node name-node) 'line) (fstr "declare: missing :type on '" fname
                                                           "'")))
@@ -592,8 +592,8 @@
           params-node:ptr (node-at form 3))
       (when (!= (sym-node 'kind) NODE-STR)
         (die-at (sym-node 'line) "defmethod: first element must be the mangled symbol string"))
-      (let (mangled:ptr (sym-node 's)
-            fname:ptr (name-node 's)
+      (let (mangled:ptr (sym-ptr (sym-node 's))
+            fname:ptr (sym-ptr (name-node 's))
             ret:ptr (fn-parse-ret-type (node-at form 4) (ff 'line)))
         (when (= ret null)
           (die-at (ff 'line) "defmethod: missing return type"))
@@ -601,7 +601,7 @@
               ptypes:ptr (defn-params-to-types params-node)
               has-rest:i32 (defn-params-has-rest params-node))
           (when (!= mode NUCH-AFTER)
-            (let (m:ptr (generic-register-method fname ret ptypes nparams has-rest 0 null))
+            (let (m:ptr (generic-register-method (as CStr fname) ret ptypes nparams has-rest 0 null))
               (defn-params-set-opt (as raw:Node params-node)
                 (unsafe/cast ptr:Type ((as ptr:Method m) 'fn-type)))
               (set! ((as ptr:Method m) 'ir-name) mangled)
@@ -667,12 +667,12 @@
             ; same form: the discriminator is `ctors-emitted`, which here means
             ; the arm `declare`s below are already in the stream. Keying the
             ; skip on existence would drop them and link against nothing.
-            (if-some (prev (uniondef-lookup (as CStr (qualify-name (name-node 's)))))
+            (if-some (prev (uniondef-lookup (as CStr (qualify-name (sym-ptr (name-node 's))))))
               (when (!= (prev 'ctors-emitted) 0) (return))
               0)
-            (guard-name-kind (name-node 's) (ff 'line) NK-TYPE)
+            (guard-name-kind (symbol-as-cstr (name-node 's)) (ff 'line) NK-TYPE)
             (let (arms:ptr (-> ff (_ 'cdr) (unsafe/cast ptr:Node _) (_ 'cdr))
-                  ud:ref:UnionDef (defunion-register (as CStr (qualify-name (name-node 's)))
+                  ud:ref:UnionDef (defunion-register (as CStr (qualify-name (sym-ptr (name-node 's))))
                                     arms (ff 'line)))
               ; Constructor declares: (declare Name-arm:Name (fields...)).
               (let (saved-out:raw:String g-out)
@@ -680,7 +680,7 @@
                 (let (it:ListIter (list-iter arms))
                   (doseq-iter (cur (addr-of it))
                     (let (ctor:ptr:Node (as ptr:Node
-                                           (union-ctor-form (name-node 's)
+                                           (union-ctor-form (symbol-as-cstr (name-node 's))
                                                             cur (ff 'line))))
                       ; Reshape the synthesized new-style defn into a new-style declare:
                       ; same bare name (1), same params (2), same return operand (3), no
@@ -713,7 +713,7 @@
         (when (and (!= (as ptr f) null) (= (f 'kind) NODE-CELL)
                    (> (node-len (as ptr f)) 0)
                    (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 'kind) (= _ NODE-SYM)))
-          (let (h:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 's)))
+          (let (h:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 's) (sym-ptr _)))
             (case h
               ; Stage 12 N6: a namespaced library's header opens with `(ns NAME)`
               ; (and optionally `(set-ir-prefix ...)`). Honor them so the importer
@@ -787,7 +787,7 @@
         (when (and (!= (as ptr f) null) (= (f 'kind) NODE-CELL)
                    (> (node-len (as ptr f)) 0)
                    (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 'kind) (= _ NODE-SYM)))
-          (let (h:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 's)))
+          (let (h:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 's) (sym-ptr _)))
             (case h
               "declare"
                 (nuch-declare-import (as ptr f) NUCH-REG)

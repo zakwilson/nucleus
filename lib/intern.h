@@ -16,6 +16,7 @@ size_t symbol_len(struct Symbol self) asm("symbol-len");
 size_t symbol_cached_hash(struct Symbol self) asm("symbol-cached-hash");
 struct StrView symbol_as_view(struct Symbol self) asm("symbol-as-view");
 const char* symbol_as_cstr(struct Symbol self) asm("symbol-as-cstr");
+bool symbol_none_QMARK(struct Symbol self) asm("symbol-none_QMARK");
 bool symbol_is(struct Symbol self, struct StrView other) asm("symbol-is");
 bool eq_Symbol_StrView(struct Symbol a, struct StrView b) asm("eq.Symbol.StrView");
 bool ne_Symbol_StrView(struct Symbol a, struct StrView b) asm("ne.Symbol.StrView");

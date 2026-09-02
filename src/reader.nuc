@@ -206,7 +206,7 @@
     (let (t:ptr:Tok (as ptr:Tok (alloc-tok)))
       (set! (t 'kind) TOK-STRING)
       (set! (t 'line) open-line)
-      (set! (t 's) (arena-strndup buf n))
+      (set! (t 's) (symbol-intern-bytes (as ptr:ui8 buf) (as usize n)))
       (return (ok (as ptr t))))))
 
 ; Stage 11 M6 (S0): char literals (design/stage11/string.md §"Char types",
@@ -527,7 +527,7 @@
           (let (tf:ptr:Tok (as ptr:Tok (alloc-tok)))
             (set! (tf 'kind) TOK-FLOAT)
             (set! (tf 'line) start-line)
-            (set! (tf 's) (arena-strndup text len))
+            (set! (tf 's) (symbol-intern-bytes (as ptr:ui8 text) (as usize len)))
             (return (ok (as ptr tf)))))
         (when (= hk 1)
           (let (t:ptr:Tok (as ptr:Tok (alloc-tok))
@@ -546,7 +546,7 @@
         (let (tf:ptr:Tok (as ptr:Tok (alloc-tok)))
           (set! (tf 'kind) TOK-FLOAT)
           (set! (tf 'line) start-line)
-          (set! (tf 's) (arena-strndup text len))
+          (set! (tf 's) (symbol-intern-bytes (as ptr:ui8 text) (as usize len)))
           (return (ok (as ptr tf)))))
       ; Keyword literal (Stage 11 cleanup §2): an atom that begins with ':' and
       ; has a non-empty remainder is a keyword. The token carries the NAME only
@@ -560,12 +560,12 @@
         (let (tk:ptr:Tok (as ptr:Tok (alloc-tok)))
           (set! (tk 'kind) TOK-KEYWORD)
           (set! (tk 'line) start-line)
-          (set! (tk 's) (expand-ref-sigil (unsafe/ptr+ (as ptr:i8 text) 1) (- len 1)))
+          (set! (tk 's) (sym-of (expand-ref-sigil (unsafe/ptr+ (as ptr:i8 text) 1) (- len 1))))
           (return (ok (as ptr tk)))))
       (let (ts:ptr:Tok (as ptr:Tok (alloc-tok)))
         (set! (ts 'kind) TOK-SYMBOL)
         (set! (ts 'line) start-line)
-        (set! (ts 's) (expand-ref-sigil text len))
+        (set! (ts 's) (sym-of (expand-ref-sigil text len)))
         (return (ok (as ptr ts)))))))
 
 (defn next-tok ():!ptr
@@ -664,7 +664,7 @@
           (let (tq:ptr:Tok (as ptr:Tok (alloc-tok)))
             (set! (tq 'kind) TOK-RMACRO)
             (set! (tq 'line) line)
-            (set! (tq 's) (rm 'wrap-sym))
+            (set! (tq 's) (sym-of (rm 'wrap-sym)))
             (return (ok (as ptr tq)))))))
     ; Stage 14 NS-4 (design/stage14/native-strings.md): `c"…"` — a `c` glued
     ; directly to an opening quote with no whitespace — is an explicit CStr
@@ -886,7 +886,7 @@
           (return (err! parse-error))))
     (when (= (t 'kind) TOK-RMACRO)
       (let (quoted:ptr (try (read-form))
-            sym:ptr (intern-symbol (t 's)))
+            sym:ptr (intern-node (t 's)))
         (return (ok (make-cell sym
                                (make-cell quoted null (t 'line))
                                (t 'line))))))
@@ -922,7 +922,7 @@
         (set! (n 's) (t 's))
         (return (ok (as ptr n)))))
     (when (= (t 'kind) TOK-SYMBOL)
-      (return (ok (intern-symbol (t 's)))))
+      (return (ok (intern-node (t 's)))))
     ; Keyword literal (Stage 11 cleanup §2): build a NODE-KEYWORD carrying the
     ; name (colon already stripped by the lexer). Self-evaluating; the compiler
     ; lowers it to a keyword-intern call.
@@ -963,7 +963,7 @@
     (let (h:(raw Node) (as raw:Node (f 'car)))
       (when (= h null) (return 0))
       (when (!= (h 'kind) NODE-SYM) (return 0))
-      (return (if (= (strcmp (h 's) "fn") 0) 1 0)))))
+      (return (if (= (h 's) "fn") 1 0)))))
 
 ; W5f: a function-pointer type is TWO parenthesised groups — `(fn ret)` followed
 ; by the parameter list — so the single-group colon-paren fuse above cannot
@@ -996,17 +996,15 @@
   (when (or (= child null) (!= g-peek-valid 0)) (return (ok child)))
   (let (cn:ptr:Node (as ptr:Node child))
     (when (and (!= (cn 'kind) NODE-SYM) (!= (cn 'kind) NODE-KEYWORD)) (return (ok child)))
-    (let (s:ptr (cn 's)
-          len:i64 (strlen (cn 's)))
+    (let (sv:StrView (symbol-as-view (cn 's))
+          len:usize (symbol-len (cn 's)))
       ; Must end in ':' and the next raw stream char must be '(' (no whitespace).
-      (when (or (= len 0)
-                (!= (cstr-byte-at s (- len 1)) 58))
-        (return (ok child)))
+      (when (= (strview-has-suffix sv ":") false) (return (ok child)))
       (when (!= (peek-char) 40) (return (ok child)))
       ; Read the following parenthesised form once, plus (for a `(fn …)` head)
       ; the immediately-adjacent parameter-list group.
       (let (paren-form:ptr (try (fuse-fn-params (try (read-form)) line))
-            body:ptr (arena-strndup s (- len 1)))
+            body:StrView (strview-take-bytes sv (- len 1)))
         ; CP-2a: a bare ':' (NODE-SYM, empty body) fuses to the paren form
         ; directly, so (fn (x:i32):(ref T) ...) reads as (fn (x:i32) (ref T) ...).
         (when (and (= (cn 'kind) NODE-SYM) (= len 1))
@@ -1015,29 +1013,30 @@
         ; the binding name for NODE-SYM (empty for NODE-KEYWORD, whose leading
         ; ':' the lexer already stripped); remaining segments wrap the paren
         ; form right-to-left as unary constructors.
-        (let (cur:ptr body
+        (let (cur:StrView body
               done:i32 0
               head:ptr null
               tail:ptr null)
           (while (= done 0)
-            (let (colon:ptr (strchr cur 58))
-              (let (seg-len:i64 0)
-                (if (= colon null)
-                  (set! seg-len (strlen cur))
-                  (set! seg-len (- (unsafe/cast i64 colon) (unsafe/cast i64 cur))))
-                ; An empty segment (e.g. body "a:" from atom "a::") is a reader error.
-                (when (= seg-len 0)
-                  (do (report-at line (fstr "empty segment in colon-chain '" s
-                                            "' -- write name:k1:(Type) with no '::'"))
-                      (return (err! parse-error))))
-                (let (seg-node:ptr (as ptr (intern-symbol (arena-strndup cur seg-len)))
-                      cell:ptr (make-cell seg-node null line))
-                  (when (= tail null) (set! head cell))
-                  (when (!= tail null) (set! ((as ptr:Node tail) 'cdr) cell))
-                  (set! tail cell)))
-              (if (= colon null)
+            (let (seg-len:usize (cur 'len)
+                  more:i32 0)
+              (match (strview-find-byte cur 58)
+                ((some at) (do (set! seg-len at) (set! more 1)))
+                (none 0))
+              ; An empty segment (e.g. body "a:" from atom "a::") is a reader error.
+              (when (= seg-len 0)
+                (do (report-at line (fstr "empty segment in colon-chain '" (cn 's)
+                                          "' -- write name:k1:(Type) with no '::'"))
+                    (return (err! parse-error))))
+              (let (seg:StrView (strview-take-bytes cur seg-len)
+                    seg-node:ptr (as ptr (intern-node (symbol-intern seg)))
+                    cell:ptr (make-cell seg-node null line))
+                (when (= tail null) (set! head cell))
+                (when (!= tail null) (set! ((as ptr:Node tail) 'cdr) cell))
+                (set! tail cell))
+              (if (= more 0)
                 (set! done 1)
-                (set! cur (unsafe/ptr+ (as ptr:i8 colon) 1)))))
+                (set! cur (strview-drop-bytes cur (+ seg-len 1))))))
           ; Name part: first segment for NODE-SYM, empty for NODE-KEYWORD.
           (let (name-node:ptr null
                 ctor-list:ptr head)

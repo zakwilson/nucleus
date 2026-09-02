@@ -183,7 +183,6 @@ Both iterators are returned **by value** and alias the StrView's buffer. They mu
 |----------|-----------|-------------|
 | `strview-parse-magnitude` | `(sv:StrView radix:i32 limit:ui64) → !ui64` | All of `sv` as an unsigned value in `radix` (2–36, digits `0-9a-zA-Z`, case-insensitive). `parse-int-error` on empty, on a byte that is not a digit of that radix, or on a magnitude above `limit`. |
 | `strview-parse-sign` | `(sv:StrView out-start:ptr:usize) → i32` | 1 when `sv` begins with `-`, else 0; stores the index of the first digit (1 after a `+` or `-`, else 0). |
-| `strview-drop-bytes` | `(sv:StrView start:usize) → StrView` | The bytes from `start` on, unchecked. |
 
 These are the primitives under `(parse T …)` (§7), public because two things
 `FromStr` cannot express are sometimes needed: a **radix** (the protocol is keyed
@@ -196,10 +195,17 @@ before each multiply, so no wraparound is involved.
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `strview-sub-bytes` | `(sv:(ref StrView) start:usize end:usize) → !StrView` | O(1) sub-slice `[start, end)`, returned **by value**. Its `data` borrows the parent's buffer; nothing is allocated. |
+| `strview-take-bytes` | `(sv:StrView n:usize) → StrView` | The first `n` bytes, **unchecked**. |
+| `strview-drop-bytes` | `(sv:StrView start:usize) → StrView` | The bytes from `start` on, **unchecked**. |
 
 Errors:
 - `str-index-out-of-bounds` — `start > end` or `end > len`
 - `invalid-char-boundary` — `start` or `end` falls on a UTF-8 continuation byte (pattern `10xxxxxx`)
+
+The unchecked pair carries the contract in its name: `-bytes` means the caller
+already knows the index is a character boundary, which is what a scan that just
+returned a delimiter position gives you. `strview-sub-bytes` is the one to reach
+for otherwise; it validates both ends and returns a `!StrView`.
 
 ### Search and pattern matching
 
