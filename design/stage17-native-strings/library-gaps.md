@@ -606,3 +606,57 @@ Deliberately **not** fixed by making `fstr` NUL-terminate its buffer. That would
 have made all 32 sites correct and left the rule "a `StrView` is a C string"
 silently false for every view a user builds — hiding the class instead of
 retiring it.
+
+---
+
+### 34. `strview-starts-with` / `-ends-with` cannot take a literal prefix — **fixed 2026-09-02 (C6)**
+
+Both take `(ref StrView)`. Address-of is lvalue-only, and a string literal is
+not an lvalue, so `(strview-starts-with (addr-of sv) "avr")` does not compile
+and the prefix has to be a named local at every call site. That is the whole of
+what these predicates are for: of the 44 `strncmp` sites C6 converted, the
+prefix was a literal in 42.
+
+The fix is `strview-has-prefix` / `strview-has-suffix`, by value, delegating to
+the by-reference forms. Deliberately additive rather than a change of the
+existing signatures: a `(ref StrView)` receiver is right when the caller already
+holds one, and the by-reference form is what the by-value one calls.
+
+This is the same receiver-convention question §2.3 of
+[borrow-conventions.md](borrow-conventions.md) records, arriving at a concrete
+site: the answer is not "pick one convention", it is that a by-value convenience
+belongs beside a by-reference primitive whenever a *literal* is a plausible
+argument.
+
+---
+
+### 35. `(parse i64 …)` reported overflow as success — **fixed 2026-09-02 (C6)**
+
+`(parse i64 "99999999999999999999")` returned `(ok 9223372036854775807)`. The
+conformance delegated to `strtoll` and checked only that the end pointer had
+consumed every byte — which it had. `strtoll` clamps to `LLONG_MAX` and reports
+the overflow *only* through `errno`, which nothing here read. The source comment
+asserted the opposite ("Detects overflow by checking that strtoll consumed all
+bytes"), so the defect was documented as a feature.
+
+`i32` was accidentally safe: its explicit range check rejected the clamped
+`LLONG_MAX`.
+
+The fix replaces the libc delegation with `strview-parse-magnitude`, a digit
+walk that tests the limit *before* each multiply, and it lives in
+`lib/strview.nuc` rather than `lib/parse.nuc` because it is a view operation —
+`FromStr` is the protocol layer above it, and the compiler's reader needs the
+primitive without the protocol. `parse-int-error` moved to `lib/string-errors.nuc`
+with it. This also deletes a `malloc`/`memcpy`/`free` per parse and the
+leading-whitespace special case (a space is simply not a digit).
+
+Three things came with it. `(parse ui64 …)` now exists — the range above `i64`
+had no conformance at all. `strview-parse-magnitude` takes a **radix**, which
+`FromStr` cannot express (the protocol is keyed only on the target type), and
+that is what let the compiler's reader adopt it for `0x` literals. And the
+reader's `__errno_location` declaration — the one glibc/musl-specific `declare`
+in `src/` — is gone with the errno dance, along with two `alloca i8` token
+buffers and their "integer literal too long" limits.
+
+`examples/parse-test.nuc` gained five cases (i64 overflow, i64 one past max,
+ui64 max, ui64 overflow, ui64 negative) so the defect cannot return silently.

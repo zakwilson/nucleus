@@ -450,6 +450,57 @@
                         (as i64 slen)))
       (= c 0))))
 
+; ---------------------------------------------------------------------------
+; strview-parse-magnitude — the whole of `sv` as an unsigned value in `radix`,
+; or parse-int-error on empty, on any byte that is not a digit of that radix,
+; or on a magnitude above `limit`.
+;
+; `lib/parse.nuc`'s integer conformances are this with radix 10 and their own limit.
+; It is public because the limit and the radix are both things `FromStr` cannot
+; express: the protocol is keyed only on the target TYPE, and a hex literal or
+; a signed/unsigned retry at the same width needs to say more than that.
+;
+; No libc: `strtol` reports overflow only through `errno`, so the delegating
+; version silently returned `(ok LLONG_MAX)` for `"99999999999999999999"` —
+; a clamp presented as a success. The limit is tested BEFORE the multiply, so
+; nothing here relies on wraparound.
+; ---------------------------------------------------------------------------
+(defn strview-parse-magnitude (sv:StrView radix:i32 limit:ui64):!ui64
+  (let (n:usize (sv 'len)
+        i:usize 0
+        acc:ui64 0
+        r:ui64 (as ui64 radix))
+    (when (= n 0) (return (err! parse-int-error)))
+    (while (< i n)
+      (let (b:ui32 (as ui32 (aref (sv 'data) (as i64 i)))
+            d:i32 -1)
+        (when (and (>= b 48) (<= b 57))  (set! d (unsafe/cast i32 (- b 48))))
+        (when (and (>= b 97) (<= b 122)) (set! d (unsafe/cast i32 (- b 87))))
+        (when (and (>= b 65) (<= b 90))  (set! d (unsafe/cast i32 (- b 55))))
+        (when (or (< d 0) (>= d radix)) (return (err! parse-int-error)))
+        (let (dv:ui64 (as ui64 (unsafe/cast ui32 d)))
+          (when (> acc (/ (- limit dv) r)) (return (err! parse-int-error)))
+          (set! acc (+ (* acc r) dv))))
+      (set! i (+ i 1)))
+    (return (ok acc))))
+
+; The sign, and the offset of the first digit. Split out because every signed
+; conformance needs both halves and the magnitude limit differs between them:
+; two's complement admits -2^63 but not +2^63.
+(defn strview-parse-sign (sv:StrView out-start:ptr:usize):i32
+  (set! (aref out-start 0) 0)
+  (when (= (sv 'len) 0) (return 0))
+  (let (b:ui32 (as ui32 (aref (sv 'data) 0)))
+    (when (or (= b 45) (= b 43)) (set! (aref out-start 0) 1))
+    (when (= b 45) (return 1)))
+  (return 0))
+
+; The bytes of `sv` from `start` on. Used to hand the magnitude parser the
+; digits without the sign; `strview-sub-bytes` returns a Result this does not
+; need, since `start` is 0 or 1 and the length was already checked.
+(defn strview-drop-bytes (sv:StrView start:usize):StrView
+  (return (strview (unsafe/ptr+ (sv 'data) (as i64 start)) (- (sv 'len) start))))
+
 ; By-VALUE prefix/suffix tests. The `(ref StrView)` forms above force a named
 ; local at every call site, and the overwhelmingly common prefix — a literal —
 ; is not an lvalue, so it cannot be passed to them at all.

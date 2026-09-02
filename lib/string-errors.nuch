@@ -6,3 +6,4 @@
 (deferror io-write-failed "write failed")
 (deferror io-open-failed "cannot open file")
 (deferror io-read-failed "read failed")
+(deferror parse-int-error "invalid integer")

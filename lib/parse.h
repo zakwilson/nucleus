@@ -9,3 +9,4 @@ uint8_t* parse_nul_copy(void* sv) asm("parse-nul-copy");
 /* from-str: uses an error-union or option type; not exported */
 /* from-str: uses an error-union or option type; not exported */
 /* from-str: uses an error-union or option type; not exported */
+/* from-str: uses an error-union or option type; not exported */

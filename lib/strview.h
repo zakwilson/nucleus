@@ -47,6 +47,9 @@ struct CharIter strview_chars(void* sv) asm("strview-chars");
 bool strview_empty(void* sv) asm("strview-empty");
 bool strview_starts_with(void* sv, void* prefix) asm("strview-starts-with");
 bool strview_ends_with(void* sv, void* suffix) asm("strview-ends-with");
+/* strview-parse-magnitude: uses an error-union or option type; not exported */
+int32_t strview_parse_sign(struct StrView sv, size_t* out_start) asm("strview-parse-sign");
+struct StrView strview_drop_bytes(struct StrView sv, size_t start) asm("strview-drop-bytes");
 bool strview_has_prefix(struct StrView sv, struct StrView prefix) asm("strview-has-prefix");
 bool strview_has_suffix(struct StrView sv, struct StrView suffix) asm("strview-has-suffix");
 bool strview_contains_str(void* sv, void* needle) asm("strview-contains-str");

@@ -4,8 +4,8 @@
 ; arena (arena-strndup, alloc-tok via arena-alloc), node utilities
 ; (alloc-node, make-cell), and reader globals (g-src, g-pos, g-line,
 ; g-source-path, g-peek, g-peek-valid).
-; Also needs libc: isspace, isdigit, strtol, memcpy, fprintf, exit,
-; and the stderr extern.
+; Also needs libc: isspace, isdigit, memcpy, fprintf, exit, and the stderr
+; extern.
 ;
 ; Stage 10 E4: the reader's recoverable syntax errors are returned as `!ptr`
 ; values (a `(Result ptr Err)`) rather than aborting via `die-at`/`repl-throw`.
@@ -17,13 +17,6 @@
 (import-use error)
 
 (deferror parse-error "parse error")
-
-; glibc/musl expose the thread-local `errno` as `*__errno_location()`. lex-atom
-; reads it to detect strtol/strtoull overflow (LW-4). Declared here (not via an
-; errno.h C-header import) because the header exposes `errno` only as a macro,
-; which the clang-based header reader does not surface. `strtol`/`strtoull` come
-; from the compiler's global (import-use "stdlib.h").
-(declare __errno_location ():ptr)
 
 (defn cstr-byte-at (s:ptr pos:i64):i32
   (return (bit-and (as i32 (aref (as ptr:i8 s) pos)) 255)))
@@ -461,6 +454,34 @@
     (let (tok:ptr (arena-strndup (unsafe/ptr+ (as ptr:i8 g-src) g-pos) (- end g-pos)))
       (return (if (= (legacy-marker-tail tok) null) 0 1)))))
 
+; LW-4's two-step, as one place. `lib/parse.nuc`'s `FromStr` is keyed only on
+; the target TYPE, so it cannot say "signed at this width, and if that overflows
+; try unsigned at the same width" — nor take a radix, which the `0x` literal
+; needs; `strview-parse-magnitude` is the primitive underneath it that can.
+;
+; The u64 bits land in the signed i64 field, where `%ld` emission plus LLVM's
+; two's-complement wrap reproduce the value the source wrote. A NEGATIVE literal
+; gets no second chance: below -2^63 there is nothing wider to widen to.
+(defn lex-int-value (tv:StrView radix:i32):!i64
+  (let (start:usize 0
+        neg:i32 (strview-parse-sign tv (addr-of start))
+        digits:StrView (strview-drop-bytes tv start)
+        smax:ui64 (if (!= neg 0) 9223372036854775808 9223372036854775807))
+    ; `strtol` skipped the `0x` itself in base 16; the magnitude parser reads
+    ; digits only, so the sigil comes off here. `hex-atom-kind` has already
+    ; established that it is present and followed by at least one hex digit.
+    (when (and (= radix 16)
+               (or (strview-has-prefix digits "0x") (strview-has-prefix digits "0X")))
+      (set! digits (strview-drop-bytes digits 2)))
+    (match (strview-parse-magnitude digits radix smax)
+      ((ok m) (if (!= neg 0)
+                (return (ok (- 0 (unsafe/cast i64 m))))
+                (return (ok (unsafe/cast i64 m)))))
+      ((err e) 0))
+    (when (!= neg 0) (return (err! parse-error)))
+    (return (ok (unsafe/cast i64
+                  (try (strview-parse-magnitude digits radix 18446744073709551615)))))))
+
 (defn lex-atom ():!ptr
   (let (start-line:i32 g-line
         start:i64 g-pos)
@@ -482,40 +503,22 @@
             (do (set! is-int 0) (set! i len))
             (set! i (+ i 1)))))
       (when (!= is-int 0)
-        (let (buf:ptr (alloca i8 64))
-          (when (>= len 64)
-            (do (report-at start-line "integer literal too long")
-                (return (err! parse-error))))
-          (memcpy buf text len)
-          (set! (aref (as ptr:i8 buf) len) 0)
-          (let (t:ptr:Tok (as ptr:Tok (alloc-tok))
-                errp:ptr:i32 (as ptr:i32 (__errno_location))
-                neg:bool (= (cstr-byte-at text 0) 45)
-                val:i64 0)
-            (set! (t 'kind) TOK-INT)
-            (set! (t 'line) start-line)
-            ; LW-4: parse with overflow detection. strtol silently clamps at
-            ; ±LONG_MAX and sets errno=ERANGE (34 on Linux). A non-negative
-            ; literal that overflows signed i64 may still fit unsigned 64
-            ; (ui64/usize scale), so retry via strtoull; the u64 bits are stored
-            ; into the signed i64 field where `%ld` emission plus LLVM's
-            ; two's-complement wrap reproduce the intended value. A negative
-            ; overflow, or a value above u64, is a positioned reader error.
-            (set! (aref errp 0) 0)
-            (set! val (strtol buf null 10))
-            (if (!= (aref errp 0) 34)
-              (set! (t 'i) val)
-              (do
-                (when neg
-                  (do (report-at start-line "integer literal out of range")
-                      (return (err! parse-error))))
-                (set! (aref errp 0) 0)
-                (set! val (strtoull buf null 10))
-                (when (= (aref errp 0) 34)
-                  (do (report-at start-line "integer literal out of range")
-                      (return (err! parse-error))))
-                (set! (t 'i) val)))
-            (return (ok (as ptr t))))))
+        (let (t:ptr:Tok (as ptr:Tok (alloc-tok))
+              tv:StrView (strview (unsafe/cast ptr:ui8 text) (unsafe/cast usize len)))
+          (set! (t 'kind) TOK-INT)
+          (set! (t 'line) start-line)
+          ; LW-4: a non-negative literal that overflows signed i64 may still fit
+          ; unsigned 64 (ui64/usize scale), so it is retried at the wider limit;
+          ; the u64 bits are stored into the signed i64 field where `%ld`
+          ; emission plus LLVM's two's-complement wrap reproduce the intended
+          ; value. A negative overflow, or a value above u64, is a positioned
+          ; reader error.
+          (match (lex-int-value tv 10)
+            ((ok v) (set! (t 'i) v))
+            ((err e)
+              (do (report-at start-line "integer literal out of range")
+                  (return (err! parse-error)))))
+          (return (ok (as ptr t)))))
       ; Stage 16 FL-3: C's hex literals. Both spellings were plain symbols
       ; before — and so an "undefined" error at every use — which is why this
       ; is purely additive to every existing program.
@@ -527,35 +530,18 @@
             (set! (tf 's) (arena-strndup text len))
             (return (ok (as ptr tf)))))
         (when (= hk 1)
-          (let (buf:ptr (alloca i8 96))
-            (when (>= len 96)
-              (do (report-at start-line "integer literal too long")
-                  (return (err! parse-error))))
-            (memcpy buf text len)
-            (set! (aref (as ptr:i8 buf) len) 0)
-            (let (t:ptr:Tok (as ptr:Tok (alloc-tok))
-                  errp:ptr:i32 (as ptr:i32 (__errno_location))
-                  neg:bool (= (cstr-byte-at text 0) 45)
-                  val:i64 0)
+          (let (t:ptr:Tok (as ptr:Tok (alloc-tok))
+                tv:StrView (strview (unsafe/cast ptr:ui8 text) (unsafe/cast usize len)))
               (set! (t 'kind) TOK-INT)
               (set! (t 'line) start-line)
               ; Same two-step as the decimal path (LW-4): a positive literal
               ; that overflows signed i64 may still be a ui64/usize value.
-              (set! (aref errp 0) 0)
-              (set! val (strtol buf null 16))
-              (if (!= (aref errp 0) 34)
-                (set! (t 'i) val)
-                (do
-                  (when neg
-                    (do (report-at start-line "integer literal out of range")
-                        (return (err! parse-error))))
-                  (set! (aref errp 0) 0)
-                  (set! val (strtoull buf null 16))
-                  (when (= (aref errp 0) 34)
-                    (do (report-at start-line "integer literal out of range")
-                        (return (err! parse-error))))
-                  (set! (t 'i) val)))
-              (return (ok (as ptr t)))))))
+              (match (lex-int-value tv 16)
+                ((ok v) (set! (t 'i) v))
+                ((err e)
+                  (do (report-at start-line "integer literal out of range")
+                      (return (err! parse-error)))))
+              (return (ok (as ptr t))))))
       (when (!= (is-float-literal text len) 0)
         (let (tf:ptr:Tok (as ptr:Tok (alloc-tok)))
           (set! (tf 'kind) TOK-FLOAT)
