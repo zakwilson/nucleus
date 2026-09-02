@@ -84,27 +84,13 @@
     (set! (self 'pos) (+ (self 'pos) 1))
     (return (some b))))
 
-; ---------------------------------------------------------------------------
-; strview-hash — fold every byte of the view through FNV-1a (lib/hash.nuc's
-; `fnv1a-byte`, seeded with the same offset basis the scalar/CStr conformances
-; use). The fold runs in i64 and the result is cast to usize, matching the Hash
-; protocol's return type. This is the length-counted analogue of the CStr Hash
-; conformance: it folds exactly `len` bytes instead of stopping at a NUL, so a
-; StrView over a buffer with embedded NULs still hashes all of its bytes.
-; ---------------------------------------------------------------------------
-; A direct byte loop, not `reduce` over a `ByteIter`: the fold spelling cost an
-; indirect call and a `(Maybe ui8)` per byte, which made hashing ~8x the work of
-; the compiler's own `intern-hash` over the same bytes
-; (design/stage17-native-strings/library-gaps.md #30). Same FNV-1a, same result.
+; The length-counted analogue of the CStr Hash conformance: it folds exactly
+; `len` bytes instead of stopping at a NUL, so a view over a buffer with
+; embedded NULs still hashes all of them. `fnv1a-bytes`, not `reduce` over a
+; `ByteIter`: the fold spelling cost an indirect call and a `(Maybe ui8)` per
+; byte (design/stage17-native-strings/library-gaps.md #30).
 (defn strview-hash ((sv (ref StrView))):usize
-  (let (p:(ptr ui8) (sv 'data)
-        n:usize (sv 'len)
-        h:i64 -3750763034362895579
-        i:usize 0)
-    (while (< i n)
-      (set! h (fnv1a-byte h (as i64 (aref p (as i64 i)))))
-      (set! i (+ i 1)))
-    (return (as usize h))))
+  (return (fnv1a-bytes (sv 'data) (sv 'len))))
 
 ; ---------------------------------------------------------------------------
 ; strview — the value constructor. Building a view was an `alloca` plus two

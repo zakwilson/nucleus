@@ -19,6 +19,15 @@
 (import-use fmt)
 (import-use intern)
 
+; The conformance RECORDS for the two protocols lib/intern.nuc cannot import.
+; `=`/`!=` are already defined there; `hash` is a load of the value cached at
+; intern time, never a byte walk.
+(extend Symbol Eq)
+
+(extend Symbol Hash)
+(defn hash ((self (ref Symbol))):usize
+  (return (symbol-cached-hash (deref self))))
+
 (extend Symbol ToStr)
 (defn to-str (self:Symbol (out (ref String))):!void
   (let (v:StrView (symbol-as-view self))

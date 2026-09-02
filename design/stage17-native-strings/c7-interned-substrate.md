@@ -104,6 +104,31 @@ uses `:rest` or a macro pull the entire string stack is not acceptable.
 `lib/strview.nuc` / `lib/strview-str.nuc` is the same split for the same reason,
 so this introduces no new pattern.
 
+**Amended at C7-2 (2026-09-02): the cut above is not deep enough.** The AVR
+16-bit gate failed the moment `lib/node.nuc` imported `intern`, because
+`avr-reject-f64` (src/abi.nuc) refuses an `f64` *annotation* anywhere in the
+translation unit, and `lib/numeric.nuc:39` and `lib/hash.nuc`'s `f64`
+conformance are both reached from `strview`. "Not acceptable" in the paragraph
+above turned out to be literal: those imports do not merely bloat a macro-using
+program, they make it un-compilable for an 8-bit target.
+
+So `lib/intern.nuc` imports **libc and `lib/fnv.nuc`, and nothing else**:
+
+- `lib/fnv.nuc` (new) — `fnv1a-byte`, `fnv1a-int`, `fnv1a-bytes`, lifted out of
+  `lib/hash.nuc`. `strview-hash` and `symbol-intern-bytes` now share one fold
+  instead of two copies of the loop.
+- `lib/intern.nuc` — the table, `symbol-intern-bytes` (the primitive; `src`+`n`
+  rather than a `(ref StrView)`, so it needs no constructor), `symbol-intern`,
+  `symbol-from-cstr`, the header accessors, and the bare `=`/`!=` overloads.
+  `StrView` is a prelude type, so taking and returning one costs no import; the
+  view is built with `alloca` + `set!` because `strview` itself is a method.
+- `lib/intern-str.nuc` — the `Eq` and `Hash` conformance *records* as well as
+  the text conformances. The `=`/`!=` overloads resolve on their own; only the
+  registry rows need `numeric` and `hash`.
+
+The header offsets moved with it: `-8`/`-16`/`16` were 64-bit literals, and
+`usize` is two bytes on AVR. They are now a `SymHeader` struct and `sizeof`.
+
 ---
 
 ## 3. Steps
@@ -124,13 +149,19 @@ bytes it stores in `Node.s` come from `symbol-intern` instead of `arena-strdup`.
 `Node.s` stays typed `ptr` for this step.
 
 The observable change is that the bytes now carry the `[hash][len]` header, which
-nothing yet reads — and that `InternEntry`, `intern-hash`, `intern-grow` and
-`intern-raw-insert` are deleted, along with the `strcmp` per probe.
+nothing yet reads — and that `intern-hash` and the `strcmp` per probe are gone.
 
-Gate note: identity is preserved by construction (one table), and the bytes stay
-NUL-terminated, so every `(n 's)`-as-`CStr` read is unaffected. This step is
-where a mistake would show up as a *wrong* program rather than a type error, so
-it lands alone.
+`InternEntry` survives, unlike the sketch above: `lib/node.nuc` still owns a
+canonical-`Node`-per-spelling map, which is what `(= hd0 'as)` compares, and the
+bytes it keys on are now the interner's, so the probe is a pointer compare. Its
+helpers were renamed `sym-node-place` / `sym-node-hash` / `sym-node-grow` —
+`intern-grow` collided with `lib/intern.nuc`'s, and the collision was resolving
+by overload mangling (`@intern_grow.usize`) in every module that imported both.
+
+Gate note: identity is preserved by construction (one table of bytes), and the
+bytes stay NUL-terminated, so every `(n 's)`-as-`CStr` read is unaffected. This
+step is where a mistake would show up as a *wrong* program rather than a type
+error, so it lands alone.
 
 ### C7-3 — `Node.s : Symbol`
 
@@ -179,6 +210,10 @@ producers that feed a name (rather than a buffer) go with them.
   a second set of globals. If it does not, the identity invariant breaks across
   the macro boundary and the failure is a quoted symbol that is `!=` to a
   reader-produced one of the same spelling.
+  *Resolved at C7-2:* it does. The JIT resolves `g-sym-table` against the
+  compiler process like any other program global, and the whole macro/quasiquote
+  half of the suite (`examples/symbol-identity.nuc` included) passes with one
+  table. No shim was needed.
 - **`Symbol` is a struct, so `(n 's)` in a variadic position contributes its
   word rather than decaying.** The `%s`/`printf` seams are gone (C1/C2), so this
   should be unreachable — but `--strict-cstr`'s borrow check does not cover it,

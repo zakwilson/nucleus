@@ -7,6 +7,7 @@
 
 /* Generated from lib/intern-str.nuc by nucleusc --emit-cheader */
 
+size_t hash_pSymbol(void* self) asm("hash.pSymbol");
 /* to-str: uses an error-union or option type; not exported */
 size_t byte_len_pSymbol(void* self) asm("byte_len.pSymbol");
 /* byte-at: uses an error-union or option type; not exported */

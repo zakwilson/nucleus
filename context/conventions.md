@@ -6116,3 +6116,31 @@ used, and the guarded call sites downstream never were. Give such a producer its
 own view-returning wrapper (`cheader-c-ident-view`) instead of bridging at each
 call site: the null contract is then stated once, and cannot be missed at the
 next site added.
+
+## What `lib/node.nuc` imports, every AVR program imports — and `f64` is fatal there
+
+`avr-reject-f64` (`src/abi.nuc`) refuses an `f64` **annotation** anywhere in the
+translation unit, live or not. `lib/numeric.nuc:39` (`(extend f64 Ord)`) and
+`lib/hash.nuc`'s `f64` conformance are both reached from `strview`, so importing
+any of `numeric`/`hash`/`strview` into `lib/node.nuc` — or into anything
+`lib/node.nuc` imports — makes every macro-using program un-compilable for AVR.
+That is why `lib/intern.nuc` imports libc and `lib/fnv.nuc` and nothing else,
+and why the fold lives in `fnv` rather than in `hash`. `tests/fixtures/avr2-16bit.nuc`
+is the gate; it fails at the *import*, not at a use.
+
+## Two `defn`s of one name in one TU resolve by overload mangling, silently
+
+`lib/node.nuc` and `lib/intern.nuc` each had an `intern-grow`. Different arities,
+so nothing errored: every module importing both emitted `@intern_grow.usize` for
+one of them, and the generated C header declared `void intern_grow(void);` with
+no `asm` alias — unlinkable. Library-internal helpers get a module-specific
+prefix (`sym-node-place`, not `intern-raw-insert`); a mangled `@name.type` in
+emitted IR for a function you did not overload on purpose is the tell.
+
+## A header laid out behind a pointer must be sized by `sizeof`, not by a literal
+
+`usize` is two bytes on AVR and eight on a host, so `Symbol`'s `[hash][len]`
+header cannot be reached with `-8`/`-16`. Declare the header as a struct and
+derive the offset from `(sizeof SymHeader)` — the same target-pointer-size
+discipline `ptr-int-ir` follows. Narrowing an `i64` fold result to `usize` needs
+`unsafe/cast` for the same reason: `as` refuses it where `usize` is 16-bit.

@@ -182,6 +182,7 @@ building the interner on one would be circular.
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `symbol-intern` | `((sv (ref StrView))) -> Symbol` | The canonical `Symbol` for these bytes. |
+| `symbol-intern-bytes` | `(src:(ptr ui8) n:usize) -> Symbol` | Same, from a pointer and a length. |
 | `symbol-from-cstr` | `((cs CStr)) -> Symbol` | Same, from a C string. |
 | `symbol-len` | `(self:Symbol) -> usize` | Byte length, from the header. |
 | `symbol-cached-hash` | `(self:Symbol) -> usize` | The hash computed once at intern time. |
@@ -191,7 +192,15 @@ building the interner on one would be circular.
 
 `Symbol` conforms to `Eq` (pointer identity), `Hash` (the cached hash), `ToStr`,
 `ByteStr`, and `Str` — the last two through `as-view`, so every string method
-works on a `Symbol` at no allocation.
+works on a `Symbol` at no allocation. The conformance *records* and every text
+method live in `lib/intern-str.nuc`; `(import-use intern-str)` is what a program
+that formats or slices a `Symbol` needs.
+
+`lib/intern.nuc` itself imports nothing but `lib/fnv.nuc` and libc, on purpose:
+`lib/node.nuc` delegates the compiler's symbol table to it, and `node` is what
+every macro-using program imports. `hash`, `numeric` and `strview` all reach an
+`f64` annotation, which AVR rejects outright — importing any of them here would
+make every macro-using program un-compilable for an 8-bit target.
 
 See `examples/intern-test.nuc`, and `tests/fixtures/s17-intern-bench.nuc` for the
 benchmark against the compiler's own interner.

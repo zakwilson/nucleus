@@ -1,4 +1,7 @@
 ; .nuch header for lib/intern-str.nuc
+(extend Symbol Eq)
+(extend Symbol Hash)
+(declare hash ((self (ref Symbol))) :usize)
 (extend Symbol ToStr)
 (declare to-str ((self Symbol) (out (ref String))) :!void)
 (extend Symbol (ByteStr ByteIter))
