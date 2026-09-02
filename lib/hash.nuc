@@ -102,6 +102,13 @@
   (let (h:i64 -3750763034362895579)
     (return (as usize (fnv1a-int h (unsafe/cast i64 (as ptr (deref self))) 8)))))
 
+; Beside CStr's below rather than in lib/strview.nuc: `"…"` is the element type
+; of a string collection literal, so the conformance has to reach every unit that
+; imports a hash container, exactly as CStr's does.
+(extend StrView Hash)
+(defn hash ((self (ref StrView))):usize
+  (return (fnv1a-bytes (self 'data) (self 'len))))
+
 (defn hash-null-cstr ():void
   (fprintf stderr "hash: null CStr\n")
   (exit 1))

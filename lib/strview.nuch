@@ -7,8 +7,6 @@
 (declare strview ((data (ptr ui8)) (len usize)) :StrView)
 (declare strview-from-cstr ((cs CStr)) :StrView)
 (declare strview-to-cstr ((sv (ref StrView))) :CStr)
-(extend StrView Hash)
-(declare hash ((self (ref StrView))) :usize)
 (extend StrView Eq)
 (defmethod "@eq.StrView.StrView" = ((a StrView) (b StrView)) :bool)
 (defmethod "@ne.StrView.StrView" != ((a StrView) (b StrView)) :bool)

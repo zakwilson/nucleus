@@ -22,6 +22,7 @@ bool symbol_is(struct Symbol self, struct StrView other) asm("symbol-is");
 bool eq_Symbol_StrView(struct Symbol a, struct StrView b) asm("eq.Symbol.StrView");
 bool ne_Symbol_StrView(struct Symbol a, struct StrView b) asm("ne.Symbol.StrView");
 bool symbol_contains_byte(struct Symbol self, int32_t b) asm("symbol-contains-byte");
+int32_t symbol_byte_at(struct Symbol self, size_t i) asm("symbol-byte-at");
 #define INTERN_INIT_CAP 1024
 extern void* g_sym_table asm("g-sym-table");
 extern size_t g_sym_cap asm("g-sym-cap");

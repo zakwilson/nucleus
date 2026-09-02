@@ -18,7 +18,6 @@ size_t strview_hash(void* sv) asm("strview-hash");
 struct StrView strview(uint8_t* data, size_t len);
 struct StrView strview_from_cstr(const char* cs) asm("strview-from-cstr");
 const char* strview_to_cstr(void* sv) asm("strview-to-cstr");
-size_t hash_pStrView(void* self) asm("hash.pStrView");
 bool eq_StrView_StrView(struct StrView a, struct StrView b) asm("eq.StrView.StrView");
 bool ne_StrView_StrView(struct StrView a, struct StrView b) asm("ne.StrView.StrView");
 typedef struct CharIter {

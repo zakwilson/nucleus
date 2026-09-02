@@ -149,7 +149,7 @@ Every owning collection conforms to `Drop` so a `with`-bound value frees its buf
 | `f32` | `lib/hash.nuc` | Folds the 4-byte bit pattern, with `-0.0` normalised to `+0.0`. |
 | `(ref Node)` | `lib/hash.nuc` | A symbol. Folds the canonical node pointer — `intern-symbol` gives one node per spelling, so pointer identity is symbol identity. |
 | `CStr` | `lib/hash.nuc` | Folds each character byte up to (not including) the NUL terminator. |
-| `StrView` | `lib/strview.nuc` | FNV-1a fold over exactly `len` bytes (handles embedded NULs). |
+| `StrView` | `lib/hash.nuc` | FNV-1a fold over exactly `len` bytes (handles embedded NULs). Beside `CStr`'s rather than in `lib/strview.nuc`, so a string-literal collection works on the collection import alone. |
 | `Keyword` | `lib/keyword.nuc` | Returns the hash cached at intern time — O(1), no byte walk. |
 | `Symbol` | `lib/intern-str.nuc` | Returns the hash cached at intern time — O(1), no byte walk. |
 
@@ -573,12 +573,12 @@ outer `with` fires `Drop` at scope exit because every collection conforms to
 (with ((v (ref (Vector i32))) [1 2 3])
   (printf "%d\n" (v (as usize 0))))            ; 1
 
-(with ((m (ref (HashMap CStr i32))) {"foo" 42 "bar" 7})
+(with ((m (ref (HashMap StrView i32))) {"foo" 42 "bar" 7})
   (match (get m "foo")
     ((some x) (printf "%d\n" x))                  ; 42
     (none     (printf "absent\n"))))
 
-(with ((s (ref (HashSet CStr))) #{"a" "b" "c"})
+(with ((s (ref (HashSet StrView))) #{"a" "b" "c"})
   (printf "%d\n" (contains? s "a")))             ; 1
 ```
 
@@ -616,8 +616,9 @@ when there is one, and from the elements otherwise:
 Inferring from the elements has two tiers. An **integer or float literal
 adapts** to whatever the other elements settle on — `[1 n]` at `n:i64` is a
 `(Vector i64)`, exactly as `(conj v 1)` on a `(Vector i64)` is already accepted.
-Everything else is **fixed and must agree**: a string literal is `CStr`, a
-keyword literal `Keyword`, a quoted symbol `(ref Node)`, and any other
+Everything else is **fixed and must agree**: a string literal is `StrView`
+(the type `"…"` has everywhere else), a keyword literal `Keyword`, a quoted
+symbol `(ref Node)`, and any other
 expression contributes its own type. A value is never narrowed to suit the
 collection, so `[n 1]` at a declared `(Vector i32)` with `n:i64` is refused
 rather than truncated. With nothing but adaptable literals the defaults are
@@ -629,7 +630,7 @@ not reached transitively from the collection imports — so `#{:a :b}` is the on
 bracket literal that can fail with `unknown type: Keyword` despite the collection
 itself being imported. The diagnostic names the file to import. Keywords are the
 idiomatic key type when keys are known names: equality is an interned-id compare
-and hashing is a cached load, both cheaper than `CStr`.
+and hashing is a cached load, both cheaper than a byte walk.
 
 ```lisp
 (with ((m (ref (HashMap Keyword i32))) {:width 640 :height 480})

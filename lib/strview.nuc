@@ -140,10 +140,10 @@
 ; by-reference strview-eq does the actual byte compare without a second copy.
 ; ---------------------------------------------------------------------------
 
-(extend StrView Hash)
-(defn hash ((self (ref StrView))):usize
-  (return (strview-hash self)))
-
+; The Hash conformance lives beside CStr's in hash.nuc, so a `#{"a" "b"}` works
+; on the collection import alone, as a CStr set always did. Eq cannot follow it:
+; a struct type satisfies a protocol only through real methods, and these need
+; `strview-eq`.
 (extend StrView Eq)
 (defn = (a:StrView b:StrView):bool
   (let (la:StrView a

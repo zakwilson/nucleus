@@ -364,7 +364,7 @@
   ; Unlike `num-fields != 0` it distinguishes a legitimate `(defstruct Empty)`
   ; from a name-only pre-registration.
   laid-out:i32
-  src-file:CStr     ; source file where defined (cheader/anon struct provenance)
+  src-file:Symbol     ; source file where defined (cheader/anon struct provenance)
   src-line:i32
   ; --- Stage 15 W3a: opaque (forward-declared) C types ---
   ; 1 = the type's NAME is known but its LAYOUT is not: a C header forward
@@ -446,7 +446,7 @@
   src-line:i32
   priv:i32          ; Stage 15 B5 — see StructDef.priv
   src-ns:Symbol
-  src-file:CStr     ; Stage 15 B4 — see StructDef.src-file (redefinition blame)
+  src-file:Symbol     ; Stage 15 B4 — see StructDef.src-file (redefinition blame)
   ; Stage 15 W9 item 40: the arm CONSTRUCTORS have been emitted. A UnionDef used
   ; to be created only by `emit-defunion`, so its mere existence meant both "this
   ; type is registered" and "its constructors are compiled"; the layout prescan
@@ -466,7 +466,7 @@
   ; Stage 15 B4 (R4): where this name was defined, so a redefinition names the
   ; definition it collides with. Zero/null when the record was minted by
   ; something other than a source definer, which `die-redefinition` handles.
-  src-file:CStr
+  src-file:Symbol
   src-line:i32)
 
 ; A parameterized defstruct template: `(defstruct (Vector T) ...)`. Defines no
@@ -480,7 +480,7 @@
   (form (raw Node)) ; retained (defstruct (Name T ...) field-specs...) Node*
   priv:i32          ; Stage 15 B5 — see StructDef.priv
   src-ns:Symbol
-  src-file:CStr     ; Stage 15 B4 — see UnionTemplate.src-file
+  src-file:Symbol     ; Stage 15 B4 — see UnionTemplate.src-file
   src-line:i32)
 
 ; Stage 16: `(deftype Name Type)` — a second spelling for one type, not a new
@@ -497,7 +497,7 @@
   ntv:i32           ; 0 for a plain alias
   priv:i32          ; Stage 15 B5 — see StructDef.priv
   src-ns:Symbol
-  src-file:CStr     ; Stage 15 B4 — see UnionTemplate.src-file
+  src-file:Symbol     ; Stage 15 B4 — see UnionTemplate.src-file
   src-line:i32)
 
 ; A defenum's member table, recorded so `match` can check exhaustiveness over
@@ -508,7 +508,7 @@
   num-members:i32
   priv:i32          ; Stage 15 B5 — see StructDef.priv
   src-ns:Symbol
-  src-file:CStr     ; Stage 15 B4 — see UnionTemplate.src-file
+  src-file:Symbol     ; Stage 15 B4 — see UnionTemplate.src-file
   src-line:i32)
 
 (defstruct Type
@@ -590,7 +590,7 @@
   const-lit-i64:i64
   tracker:ptr
   ; --- Stage 8 / REPL introspection additions ---
-  src-file:CStr     ; source file where defined (null if unknown)
+  src-file:Symbol     ; source file where defined (null if unknown)
   src-line:i32      ; source line where defined (0 if unknown)
   trace-tracker:ptr ; resource tracker for a REPL-installed trace wrapper (LLVM opaque)
   ; Holds a saved copy of `ir-name` and is assigned back into it on untrace, so
@@ -927,7 +927,7 @@
   ; it came from a *private* definer. `finalize-generics` needs both to name the
   ; OTHER definition's file and to phrase the namespace rule correctly — the
   ; `Method.body` Node carries a line but no file.
-  src-file:CStr
+  src-file:Symbol
   src-ns:Symbol
   ; Stage 15 W9 item 43: `g-file-imports` at registration — the third of the
   ; three globals that define a file's name environment, recorded for the same
@@ -986,7 +986,7 @@
   ; every row the same question and a stored answer costs one word.
   priv:i32
   src-ns:Symbol
-  src-file:CStr     ; Stage 15 B4 — see UnionTemplate.src-file
+  src-file:Symbol     ; Stage 15 B4 — see UnionTemplate.src-file
   src-line:i32)
 
 ; A recorded (Type, Protocol) conformance fact. No code; consulted by the
@@ -1051,7 +1051,7 @@
   (form (raw Node))
   context:CStr
   ns:Symbol
-  path:CStr
+  path:Symbol
   imports:raw:ImportVec)
 
 ; Stage 15 W8 G-3 (design/global-init.md §5): a queued *runtime* global
@@ -1066,7 +1066,7 @@
 (defstruct InitJob
   (form (raw Node))
   ns:Symbol
-  path:CStr
+  path:Symbol
   line:i32
   name:Symbol)
 
@@ -1076,7 +1076,7 @@
   num-params:i32
   variadic:i32
   ; --- Stage 8 / REPL introspection additions ---
-  src-file:CStr
+  src-file:Symbol
   src-line:i32
   ; Docstring captured from a defmacro whose body's first form is a string
   ; literal (with at least one form following it). null otherwise.
@@ -1088,13 +1088,12 @@
   src-ns:Symbol)
 
 (defstruct RMacro
-  ; Both content-only: `prefix` is only ever byte-indexed (cstr-byte-at) during the
-  ; reader's longest-prefix-match scan (lib/reader.nuc); `wrap-sym` (despite the
-  ; name) is a plain string handed to intern-symbol, which canonicalizes it by
-  ; content — it is never itself a Node/Sym pointer or identity-compared.
+  ; `prefix` is only ever byte-indexed (cstr-byte-at) during the reader's
+  ; longest-prefix-match scan (lib/reader.nuc), so it stays a C string; the
+  ; wrapper it expands to is a name, hence a `Symbol` (C7-5).
   prefix:CStr
   prefix-len:i32
-  wrap-sym:CStr)
+  wrap-sym:Symbol)
 
 ; A label declaration within the current function (Stage 8 goto support).
 ; `total` is the number of (label NAME) occurrences seen in the pre-scan;
@@ -1179,8 +1178,8 @@
 ; always looked up by pointer identity (never strcmp'd), so it stays `ptr`,
 ; not `CStr`.
 (defstruct VtableEntry
-  key:ptr    ; interned "(spelling)/(proto)" or "fnfwd.<sig>" memo key
-  name:ptr)  ; interned emitted vtable symbol ("@__vt..."/"@__vtfn...")
+  key:Symbol    ; "(spelling)/(proto)" or "fnfwd.<sig>" memo key
+  name:Symbol)  ; emitted vtable symbol ("@__vt..."/"@__vtfn...")
 
 ; Stage 14 §14.5 batch 2 — per-namespace ir-prefix table entry: replaces the
 ; parallel g-ns-prefix-keys/g-ns-prefix-vals arrays (nucleusc.nuc) with one
@@ -1199,12 +1198,6 @@
 ; path (or the header spelling for a C include), which is what B2 will map to the
 ; imported file's namespace.
 ;
-; Both compare by CONTENT, not pointer identity: a default prefix derived from a
-; dotted module path (`import-default-prefix`) or from a string path
-; (`path-import-default-prefix`) is arena-duplicated rather than interned, so an
-; identity scan would silently miss it. Stored as `ptr` for the same reason
-; NsPrefixEntry does — these are raw spellings, not owned strings.
-;
 ; Stage 15 B2b: `private` is 1 only for `unsafe/import-private`, the one form
 ; that asks to reach the imported file's *file-private* key space (`#pN/name`,
 ; the W5e synthetic namespace) as well as its public one. Before B2b that
@@ -1213,8 +1206,8 @@
 ; the filter has to be a property of the binding, because resolution happens long
 ; after the flag has been restored.
 (defstruct ImportBind
-  prefix:ptr    ; bound qualifier, or null for a flattening import
-  path:ptr      ; resolved path of the imported file / header spelling
+  prefix:Symbol ; bound qualifier, or `symbol-none` for a flattening import
+  path:Symbol   ; resolved path of the imported file / header spelling
   private:i32)  ; 1 iff this import asked for the file's private names too
 
 ; Pointer kind left outside, as for ConstraintVec: `g-file-imports` and the
@@ -1227,7 +1220,7 @@
 ; `(raw Node)` slot — for the namespace, which stopped typechecking the moment
 ; the namespace became a `Symbol` and was never honest before that.
 (defstruct FileNs
-  path:ptr    ; source path as `resolve-import` handed it back; compared by CONTENT
+  path:Symbol ; source path, interned by `resolve-import` — compared by identity
   ns:Symbol)
 
 (deftype FileNsVec (Vector (ref FileNs)))
@@ -1285,7 +1278,7 @@
 ; cannot begin a user namespace name (rejected in `emit-ns`), so `#pN` can never
 ; collide with one.
 (defstruct PrivFile
-  path:CStr     ; interned source path that owns these names
+  path:Symbol   ; interned source path that owns these names
   ns:Symbol     ; the synthetic namespace ("#pN")
   prefix:Symbol ; IR prefix for that namespace
   (names (ref (Vector (ref PrivName)))))
@@ -1297,11 +1290,11 @@
 ; emit-defn time, collecting every entry whose `name` matches the function being
 ; emitted — so a function may carry several attributes (one `fn-attr` call with
 ; several strings, or several `fn-attr` calls on the same name). `name` is looked
-; up by identity, which is what a `Symbol` is; `attr` is only ever printed into
-; the IR stream, so it stays `ptr`.
+; up by identity, which is what a `Symbol` is; `attr` arrives already interned as
+; the string literal's own spelling, so it costs nothing to keep one.
 (defstruct FnAttrEntry
   name:Symbol ; source function name (fn-attr's target defn)
-  attr:ptr)  ; interned LLVM string attribute (e.g. "signal", "interrupt")
+  attr:Symbol)  ; LLVM string attribute (e.g. "signal", "interrupt")
 
 ; Stage 14 §14.5 batch 3 — BoxedFn-instance memo entry: replaces the parallel
 ; g-boxedfn-keys/g-boxedfn-types arrays (union-registry.nuc) with one
@@ -1310,7 +1303,7 @@
 ; `CStr`; `ty` is a memoised box Type* looked up by `sdef` pointer identity
 ; (boxedfn-canonical), typed `(raw Type)` per the field-typing idiom.
 (defstruct BoxedFnEntry
-  key:ptr        ; interned "BoxedFn.<sig>" memo key
+  key:Symbol     ; "BoxedFn.<sig>" memo key
   ty:(raw Type)) ; the memoised box Type* (carries the Fn signature)
 
 ; Stage 14 §14.5 batch 3 — `(dyn P)`-instance memo entry: replaces the
@@ -1331,9 +1324,9 @@
 ; file* — the spelling, its location, and the two globals that define the file's
 ; name environment — and asked by `drain-dyn-annots` once the whole graph is in.
 (defstruct DynAnnot
-  spelling:ptr                              ; the protocol name the author wrote
-  path:ptr                                  ; source file of the annotation
+  spelling:Symbol   ; the protocol name the author wrote
+  path:Symbol       ; source file of the annotation
   line:i32
-  ns:ptr                                    ; g-current-ns at the annotation
+  ns:Symbol         ; g-current-ns at the annotation
   imports:raw:ImportVec)  ; g-file-imports at the annotation
 

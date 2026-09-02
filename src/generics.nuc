@@ -361,25 +361,26 @@
 ; sanitize handles any remaining stragglers. Used when a name carrying an
 ; operator method is overloaded and its methods must take mangled symbols (§10.3).
 (defn op-name-token (name:Symbol):StrView
-  (match (invoke {"_+" "add"
-                  "_-" "sub"
-                  "_*" "mul"
-                  "_/" "div"
-                  "%" "rem"
-                  "=" "eq"
-                  "!=" "ne"
-                  "<" "lt"
-                  "<=" "le"
-                  ">" "gt"
-                  ">=" "ge"
-                  "bit-and" "band"
-                  "bit-or" "bor"
-                  "bit-xor" "bxor"
-                  "bit-shl" "bshl"
-                  "bit-shr" "bshr"}
-                 (symbol-as-cstr name))
-    ((some res) (return (strview-from-cstr res)))
-    (none (return (sanitize-for-ir (ir-name-token (symbol-as-view name)))))))
+  (let ((mnemonic (ref (HashMap StrView StrView)))
+        {"_+" "add"
+         "_-" "sub"
+         "_*" "mul"
+         "_/" "div"
+         "%" "rem"
+         "=" "eq"
+         "!=" "ne"
+         "<" "lt"
+         "<=" "le"
+         ">" "gt"
+         ">=" "ge"
+         "bit-and" "band"
+         "bit-or" "bor"
+         "bit-xor" "bxor"
+         "bit-shl" "bshl"
+         "bit-shr" "bshr"})
+    (match (invoke mnemonic (symbol-as-view name))
+      ((some res) (return res))
+      (none (return (sanitize-for-ir (ir-name-token (symbol-as-view name))))))))
 
 ; "@prefix__name.tok1.tok2..." for an overloaded method. Stage 12 N4: the base
 ; token is the operator mnemonic of `fname` (so `=` → `eq`); the defining
@@ -702,12 +703,12 @@
         bare:Symbol (strip-priv-qualifier (gg 'name))
         bnode:(raw Node) (b 'body)
         bline:i32 0
-        afile:CStr (a 'src-file)
-        bfile:CStr (b 'src-file)
+        afile:Symbol (a 'src-file)
+        bfile:Symbol (b 'src-file)
         ansname:Symbol (a 'src-ns))
     (when (!= bnode null) (set! bline ((unsafe/cast ptr:Node bnode) 'line)))
-    (when (= afile null) (set! afile "<unknown file>"))
-    (when (= bfile null) (set! bfile "<unknown file>"))
+    (when (symbol-none? afile) (set! afile (symbol-intern "<unknown file>")))
+    (when (symbol-none? bfile) (set! bfile (symbol-intern "<unknown file>")))
     (when (symbol-none? ansname) (set! ansname (symbol-intern "user")))
     (let (head:StrView (fstr "duplicate definition of '" bare
                           "' — the same parameter types are already defined at "
@@ -750,10 +751,10 @@
 
 ; `file:line` of the definition `m` came from, for a two-candidate diagnostic.
 (defn method-def-site (m:ptr:Method):CStr
-  (let (f:CStr (m 'src-file)
+  (let (f:Symbol (m 'src-file)
         node:(raw Node) (m 'body)
         line:i32 0)
-    (when (= f null) (set! f "<unknown file>"))
+    (when (symbol-none? f) (set! f (symbol-intern "<unknown file>")))
     (when (!= node null) (set! line ((unsafe/cast ptr:Node node) 'line)))
     (return (fcstr f ":" line))))
 
@@ -2046,7 +2047,7 @@
             (when (!= arg-nodes null)
               (set! is-lit (node-is-int-literal (aref (as ptr:ptr arg-nodes) i))))
             (when (= ((unsafe/cast ptr:Node ptn) 'kind) NODE-SYM)
-              (when (= (strchr (sym-ptr ((unsafe/cast ptr:Node ptn) 's)) 58) null)
+              (when (not (symbol-contains-byte ((unsafe/cast ptr:Node ptn) 's) 58))
                 (set! tvidx (tyvar-index-of ((unsafe/cast ptr:Node ptn) 's) (mm 'tyvars) ntv))))
             ; Only defer if the tyvar is still unbound at this point in the
             ; pass — an earlier, non-deferred arg (e.g. conj's receiver
@@ -2528,7 +2529,7 @@
 
 ; Parse a concrete type from a colon spelling string (no Self/tyvars).
 (defn parse-type-spelling-str (s:Symbol line:i32):ptr
-  (when (= (strchr (sym-ptr s) 58) null) (return (parse-type-name s line)))
+  (when (not (symbol-contains-byte s 58)) (return (parse-type-name s line)))
   (return (parse-type-from-node (split-colon-segments s line) line)))
 
 ; Does a colon spelling mention "Self" as a segment other than being exactly Self?
@@ -2780,7 +2781,7 @@
                     nm:Symbol (gbind-name bname))
                 (when (= dty null) (set! dty vty))
                 (when (and (not (symbol-none? nm)) (!= dty null))
-                  (scope-define inner nm dty (strview-from-cstr (as CStr (sym-ptr nm))) 1)))
+                  (scope-define inner nm dty (symbol-as-view nm) 1)))
               (set! i (+ i 2)))
             (let (last:ptr null j:i32 2 cl:i32 (node-len n))
               (while (< j cl) (set! last (gcheck (node-at n j) inner m)) (inc! j))
@@ -2801,7 +2802,7 @@
                     cpty:ptr (gbind-decl-type cpnode m (nn 'line))
                     cpnm:Symbol (gbind-name cpnode))
                 (when (and (not (symbol-none? cpnm)) (!= cpty null))
-                  (scope-define cinner cpnm cpty (strview-from-cstr (as CStr (sym-ptr cpnm))) 1))))
+                  (scope-define cinner cpnm cpty (symbol-as-view cpnm) 1))))
             (let (clast:ptr null cj:i32 3 ccl:i32 (node-len n))
               (while (< cj ccl) (set! clast (gcheck (node-at n cj) cinner m)) (inc! cj))
               (return clast))))
@@ -2887,7 +2888,7 @@
             pty:ptr (gbind-decl-type pnode m (form 'line))
             pnm:Symbol (gbind-name pnode))
         (when (and (not (symbol-none? pnm)) (!= pty null))
-          (scope-define scope pnm pty (strview-from-cstr (as CStr (sym-ptr pnm))) 1))))
+          (scope-define scope pnm pty (symbol-as-view pnm) 1))))
     ; S1/S3: the body starts after the return operand — index 4 for a new-style
     ; template (bare name, ret at 3), index 3 for a legacy one. Walking from 3
     ; unconditionally would gcheck a new-style CELL return (e.g. `(BoxedFn (V) V)`)
@@ -3028,7 +3029,7 @@
               (return (template-result-type (as ptr m) bound line)))))))
     (return null)))
 
-(defn valid-walk-children (n:raw:Node scope:ref:Scope gname:Symbol cty:CStr line:i32):void
+(defn valid-walk-children (n:raw:Node scope:ref:Scope gname:Symbol cty:Symbol line:i32):void
   (let (cl:i32 (node-len n) i:i32 1)
     (while (< i cl)
       (let (c:raw:Node (node-at n i))
@@ -3040,7 +3041,7 @@
 ; aborting at any direct generic/operator call the concrete type can't satisfy.
 ; gname is the generic being instantiated and cty its concrete spelling, used
 ; only in the diagnostic. line is the requesting call site.
-(defn valid-walk (n:raw:Node scope:ref:Scope gname:Symbol cty:CStr line:i32):ptr
+(defn valid-walk (n:raw:Node scope:ref:Scope gname:Symbol cty:Symbol line:i32):ptr
   (when (= n null) (return ty-void))
   (let (nn:raw:Node n)
     (case (nn 'kind)
@@ -3080,7 +3081,7 @@
                     nm:Symbol (gbind-name bname))
                 (when (= dty null) (set! dty vty))
                 (when (and (not (symbol-none? nm)) (!= dty null))
-                  (scope-define inner nm dty (strview-from-cstr (as CStr (sym-ptr nm))) 1)))
+                  (scope-define inner nm dty (symbol-as-view nm) 1)))
               (set! i (+ i 2)))
             (let (last:ptr null j:i32 2 cl:i32 (node-len n))
               (while (< j cl) (set! last (valid-walk (node-at n j) inner gname cty line)) (inc! j))
@@ -3131,16 +3132,16 @@
         params-node:ptr (node-at stamped 2)
         scope:ref:Scope (scope-new g-globals)
         gname:Symbol (defn-name-only (node-at stamped 1))
-        cty:CStr "?"
+        cty:Symbol (symbol-intern "?")
         nparams:i32 (mm 'num-params))
     (when (> (mm 'num-tyvars) 0)
-      (set! cty (sym-ptr (type-spelling (aref (as ptr:ptr bound) 0)))))
+      (set! cty (type-spelling (aref (as ptr:ptr bound) 0))))
     (dotimes (i nparams)
       (let (pnode:ptr (node-at params-node i)
             pty:ptr (valid-decl-type pnode line)
             pnm:Symbol (gbind-name pnode))
         (when (and (not (symbol-none? pnm)) (!= pty null))
-          (scope-define scope pnm pty (strview-from-cstr (as CStr (sym-ptr pnm))) 1))))
+          (scope-define scope pnm pty (symbol-as-view pnm) 1))))
     ; S1/S3: skip the return operand — index 4 for a new-style stamped form,
     ; index 3 for a legacy one (see check-generic-template).
     (let (cl:i32 (node-len stamped)
@@ -3188,11 +3189,11 @@
       ; `job context` still says which call site asked for the instantiation.
       (let (saved-copy:i32 g-emitting-copy
             save-ns:Symbol g-current-ns
-            save-path:ptr g-source-path
+            save-path:Symbol g-source-path
             save-imports:raw:ImportVec g-file-imports)
         (set! g-emitting-copy 1)
         (when (not (symbol-none? (job 'ns))) (set! g-current-ns (job 'ns)))
-        (when (!= (as ptr (job 'path)) null) (set! g-source-path (as ptr (job 'path))))
+        (when (not (symbol-none? (job 'path))) (set! g-source-path (job 'path)))
         (set! g-file-imports (job 'imports))
         (emit-defn (job 'form))
         (set! g-file-imports save-imports)
@@ -3574,14 +3575,14 @@
 ; same-signature bare `fn` operands would each synthesize (see
 ; derive-closure-conformance). The freshly-registered method whose emission is
 ; being decided has a null ir-name at the call site, so it is never self-counted.
-(defn derived-fwd-already-emitted (gen-name:Symbol mangled:CStr):i32
+(defn derived-fwd-already-emitted (gen-name:Symbol mangled:Symbol):i32
   (let (g:ptr (generic-lookup gen-name))
     (when (= g null) (return 0))
     (let (gg:ptr:Generic (as ptr:Generic g))
       (dotimes (i (unsafe/cast i32 (count (gg 'methods))))
         (let (m:ptr:Method (as ptr:Method (invoke (gg 'methods) i:usize)))
           (when (and (not (symbol-none? (m 'ir-name)))
-                     (= (strcmp (sym-ptr (m 'ir-name)) mangled) 0))
+                     (= (m 'ir-name) mangled))
             (return 1))))
       (return 0))))
 
@@ -3720,7 +3721,7 @@
                         (return 0)))))
                 (inc! pi2))
               (when (= ncand 0) (return 0))
-              (set! (aref (as ptr:ptr args) j) (sym-ptr cand)))
+              (set! (aref (as ptr:Symbol args) j) cand))
             (inc! j))
             ; Step 9: synthesize the forwarding method (mirrors fn-make-invoke-method).
             ; call-style 0 (closure): (invoke self __a0…) routes to the env's invoke.
@@ -3796,7 +3797,7 @@
                   (let (newm:ref:Method
                          (generic-register-method method-name (imp 'ret-type)
                            mtypes total 0 0 defn-form)
-                        already:i32 (derived-fwd-already-emitted method-name (sym-ptr mangled)))
+                        already:i32 (derived-fwd-already-emitted method-name mangled))
                     (set! (newm 'ir-name) mangled)
                     (fn-force-generic-mangled method-name)
                     (when (= already 0)
@@ -4794,7 +4795,7 @@
           ; refines an elem-less declared pointer to `ptr:T`, so a probe over the
           ; body types `(aref a i)` exactly as emission does.
           (set! ty (array-lit-binding-type ty (node-at (as ptr binds) (+ i 1))))
-          (when (!= ty null) (scope-define inner name ty (strview-from-cstr (as CStr (sym-ptr name))) 1)))
+          (when (!= ty null) (scope-define inner name ty (symbol-as-view name) 1)))
         (set! i (+ i 2)))
       (let (last:ptr null
             j:i32 2

@@ -284,14 +284,43 @@ own lowering rather than at a `CStr` parameter. It is a type error now
 REPL test failed on it and nothing else did, which is the argument for `make
 test` being in the gate set beside the bootstrap and the snapshot.
 
-The snapshot gate needed **no re-baseline**: all 2,624 artifacts stayed
-byte-identical, which is the evidence that the substrate retype changed no
-emitted spelling.
+The snapshot gate needed **no re-baseline** for C7-4b itself: all 2,624
+artifacts stayed byte-identical, which is the evidence that the substrate retype
+changed no emitted spelling. It was re-taken once at the end of C7-5, for the
+library additions C7-4b/C7-5 made — see design/progress.md for the attribution.
 
-### C7-5 — `intern-str`, `arena-strndup` and the last producers
+### C7-5 — `intern-str`, `arena-strndup` and the last producers — DONE
 
-`intern-str` becomes `symbol-intern` at its 88 sites; the `arena-strndup`
-producers that feed a name (rather than a buffer) go with them.
+`sym-of`, `sym-ptr` and `intern-str` are all deleted. The producers went with
+them rather than being converted one call at a time: `c-read-ident` (38 sites in
+`src/cheader.nuc`) and `expand-ref-sigil` now return a `Symbol` instead of an
+`arena-strndup` buffer, so the header parser's identifiers, the reader's
+sigil-expanded token, the anonymous struct/union synth names, the vtable and
+`BoxedFn` memo keys and the `RMacro` wrapper are interned at birth.
+
+Choosing `Symbol` over `StrView` for `c-read-ident` was the whole reason the
+conversion was mechanical: a `StrView` **borrows silently** to the `ptr` and
+`CStr` those 38 sites were feeding, so `strlen(view)` would have compiled and
+mis-run. `Symbol` is a struct with no such borrow — every misuse was a type
+error the build named, one at a time.
+
+Two things the retype exposed and fixed rather than worked around:
+
+- `lit-type-node` gave a string literal inside a collection literal the element
+  type `CStr` (its own comment recorded the deferral). So `#{"const" …}` was a
+  `HashSet CStr`, and the `(symbol-as-view tok)` this batch introduced was
+  silently borrowed back to a C string — the same trap, again inside an operator
+  the census cannot see. Kind 3 is `StrView` now (library-gaps.md §40).
+- `StrView`'s `Hash` conformance lived in `lib/strview.nuc`, so a string-keyed
+  container needed an import a `CStr`-keyed one did not. It sits beside `CStr`'s
+  in `lib/hash.nuc` now (library-gaps.md §41).
+
+The five `#{…}`/`{…}` literals in the compiler bind through an explicitly typed
+local (`(let ((s (ref (HashSet StrView)))) #{…})`), which is what a `want` arms:
+the same source then compiles under the pre-change boot compiler and the new
+one, so the element-type flip needed no bootstrap shim.
+
+Census: 1,351 → 678 residual C-string sites; borrow count 0.
 
 ---
 

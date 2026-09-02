@@ -103,7 +103,7 @@
 (defn repl-error (line:i32 msg:CStr):void
   (cond (= g-repl-format 1)
           (do (emit stderr "{\"file\":\"")
-              (repl-error-json-puts g-source-path)
+              (repl-error-json-puts (symbol-as-cstr g-source-path))
               (emit stderr "\",\"line\":" line ",\"message\":\"")
               (repl-error-json-puts msg)
               (emit stderr "\"}\n"))
@@ -216,7 +216,7 @@
   (let (nn:ptr (node-at form 1)
         k:i32 (node-kind nn))
     (when (and (!= k NODE-SYM) (!= k NODE-STR)) (return))
-    (let (name:ptr (sym-ptr ((unsafe/cast ptr:Node nn) 's)))
+    (let (name:Symbol ((unsafe/cast ptr:Node nn) 's))
       (if (!= fresh 0)
         (emit stderr "  imported " name "\n")
         (emit stderr "  " name " already imported\n")))))
@@ -242,22 +242,22 @@
       (emit stderr "\n")
       (return))
     ; Check if it's a list starting with a known keyword
-    (let (h:ptr null
+    (let (h:Symbol (symbol-none)
           is-expr:i32 1)
       (when (and (= (f 'kind) NODE-CELL)
                  (!= (node-len (as ptr f)) 0)
                  (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 'kind) (= _ NODE-SYM)))
-        (set! h (sym-ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 's)))))
+        (set! h (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 's))))
       ; Top-level defining forms
-      (cond (and (!= h null) (= h "ns"))
+      (cond (and (not (symbol-none? h)) (= h "ns"))
               ; Stage 12: set the current namespace. emit-ns is silent on a
               ; second `ns` under the REPL flag (g-interactive), as designed.
               (do (emit-ns (as ptr f)) (set! is-expr 0))
-            (and (!= h null) (= h "defconst"))
+            (and (not (symbol-none? h)) (= h "defconst"))
               (do (emit-defconst (as ptr f)) (set! is-expr 0))
-            (and (!= h null) (= h "defenum"))
+            (and (not (symbol-none? h)) (= h "defenum"))
               (do (emit-defenum (as ptr f)) (set! is-expr 0))
-            (and (!= h null) (= h "defvar"))
+            (and (not (symbol-none? h)) (= h "defvar"))
               ; Stage 15 W8 G-3 (design/global-init.md §4.5): a non-constant
               ; initializer runs immediately — see repl-emit-init-fn above.
               (do (open-module-streams)
@@ -295,10 +295,10 @@
             ; Stage 16: an alias emits no IR and defines no layout, so unlike
             ; defstruct it has no module to open and no preamble to push —
             ; registering it is the whole job (container-type-sugar.md §3.2).
-            (and (!= h null) (or (= h "deftype") (= h "deftype-")))
+            (and (not (symbol-none? h)) (or (= h "deftype") (= h "deftype-")))
               (do (register-type-alias (as ptr f) (if (= h "deftype-") 1 0))
                   (emit stderr "  defined\n"))
-            (and (!= h null) (= h "defstruct"))
+            (and (not (symbol-none? h)) (= h "defstruct"))
               (do (open-module-streams)
                   (set! g-out (addr-of g-type-stream))
                   (emit-defstruct (as ptr f))
@@ -306,7 +306,7 @@
                   (repl-absorb-type-buf)
                   (clear-module-buffers)
                   (emit stderr "  defined\n"))
-            (and (!= h null) (= h "defunion"))
+            (and (not (symbol-none? h)) (= h "defunion"))
               ; Tagged sum: register the type (or template), JIT the arm
               ; constructors, then push the type defs + constructor declares
               ; into the preamble for future modules.
@@ -332,7 +332,7 @@
                     (when (= (nn 'kind) NODE-SYM)
                       (repl-declare-union-ctors (nn 's))))
                   (emit stderr "  defined\n"))
-            (and (!= h null) (= h "extern"))
+            (and (not (symbol-none? h)) (= h "extern"))
               (let (pre-len:i32 ((as ptr:Scope g-globals) 'len))
                   (open-module-streams)
                   (set! g-out (addr-of g-decl-stream))
@@ -341,7 +341,7 @@
                   (emit-all g-repl-preamble g-decl-stream)
                   (clear-module-buffers)
                   (repl-note-globals-decls pre-len))
-            (and (!= h null) (= h "defn"))
+            (and (not (symbol-none? h)) (= h "defn"))
               ; Redefinition strategy: each defn produces a stable thunk
               ; @<fname> (defined once on first sight) that loads its current
               ; impl from @<fname>.tgt and dispatches. The function body is
@@ -448,7 +448,7 @@
                             (when (!= sym null)
                               (let (ft:ptr:Type (unsafe/cast ptr:Type (sym 'type)))
                                 (when (= (ft 'kind) TY-FN)
-                                  (jit-thunk-module (f 'line) (sym-ptr fname-ir) (as ptr ft))
+                                  (jit-thunk-module (f 'line) fname-ir (as ptr ft))
                                   ; ABI-lower the preamble declare the same way
                                   ; emit-defn lowered the define it names — raw
                                   ; type-to-ir disagreed on any by-value struct
@@ -468,7 +468,7 @@
                                         (abi-print-param-to g-repl-preamble
                                           (abi-classify-arg ((field-at (ft 'params) pi) 'type))
                                           ((field-at (ft 'params) pi) 'type)
-                                          null)
+                                          (symbol-none))
                                         (set! need-comma 1)))
                                     (emit g-repl-preamble ")\n")
                                     ; R3/D8: a later macro JIT module is
@@ -486,26 +486,26 @@
                         ; JIT the impl module under a fresh tracker, renaming
                         ; the captured "@fname-ir(" to "@impl-name(".
                         (let (rt:ptr (LLVMOrcJITDylibCreateResourceTracker g-jit-dylib))
-                          (repl-jit-module-rt-rewrite (f 'line) rt (sym-ptr fname-ir) impl-name)
+                          (repl-jit-module-rt-rewrite (f 'line) rt fname-ir impl-name)
                           (set! g-qq-used 0)
                           ; Patch @fname-ir.tgt to point at @impl-name. Stash
                           ; the tracker on the latest Sym for the next
                           ; redefinition to remove.
-                          (when (= (update-fn-tgt (f 'line) (sym-ptr fname-ir) impl-name) 0)
+                          (when (= (update-fn-tgt (f 'line) fname-ir impl-name) 0)
                             (let (sym:?ptr:Sym (scope-lookup-key g-globals fname))
                               (when (!= sym null)
                                 (set! (sym 'tracker) rt))))))
                       (if (!= is-redef 0)
                         (emit stderr "  redefined\n")
                         (emit stderr "  defined\n")))))
-            (and (!= h null) (= h "compile-time"))
+            (and (not (symbol-none? h)) (= h "compile-time"))
               ; R4: the CT module is assembled inside emit-compile-time; close
               ; this entry's own buffers after it and carry their types forward.
               (do (open-module-streams)
                   (emit-compile-time (as ptr f))
                   (repl-absorb-type-buf)
                   (clear-module-buffers))
-            (and (!= h null) (= h "defmacro"))
+            (and (not (symbol-none? h)) (= h "defmacro"))
               ; open-module-streams first, exactly as the `compile-time` arm
               ; above does and for the same reason: compile-macro-body starts by
               ; flushing g-type-stream/g-decl-stream, and between REPL forms
@@ -519,10 +519,10 @@
                   (repl-absorb-type-buf)
                   (clear-module-buffers)
                   (emit stderr "  defined\n"))
-            (and (!= h null) (= h "def-rmacro"))
+            (and (not (symbol-none? h)) (= h "def-rmacro"))
               (do (emit-def-rmacro (as ptr f))
                   (emit stderr "  defined\n"))
-            (and (!= h null)
+            (and (not (symbol-none? h))
                  (or (= h "macroexpand")
                      (= h "macroexpand-1")
                      (= h "macroexpand-all")))
@@ -579,7 +579,7 @@
                             (emit stderr "\n")))))))
             ; All six import spellings. Stage 15 B2b retired the alias `Sym`s a
             ; prefixed import injected, so the backfill below sees what a flat one gives.
-            (and (!= h null)
+            (and (not (symbol-none? h))
                  (or (or (= h "import-use") (= h "import-only"))
                      (or (or (= h "import") (= h "import-prefixed"))
                          (or (= h "import-ct") (= h "unsafe/import-private")))))
@@ -664,7 +664,7 @@
                                       (abi-print-param-to g-repl-preamble
                                         (abi-classify-arg ((field-at (ft 'params) pi) 'type))
                                         ((field-at (ft 'params) pi) 'type)
-                                        null)
+                                        (symbol-none))
                                       (set! need-comma 1))
                                     (when (!= (ft 'variadic) 0)
                                       (let (sep:ptr "")
@@ -808,7 +808,7 @@
 ; `define <ret> @<impl-name>(...) { ... }`. Subsequent occurrences of
 ; `@<fname>(` (self-recursion call sites in the body) are left intact so they
 ; go through the thunk.
-(defn rewrite-first-fname (buf:ptr fname:ptr impl-name:ptr (out (ref String))):void
+(defn rewrite-first-fname (buf:ptr fname:Symbol impl-name:ptr (out (ref String))):void
   (when (= buf null) (return))
   (let (pat:ptr (fcstr "@" fname "(")
         rep:ptr (fcstr "@" impl-name "(")
@@ -842,7 +842,7 @@
 ; same in the signature and in the forwarded call — so it is built ONCE and
 ; printed twice. byval/sret attributes are legal on a call operand, which is
 ; what makes the verbatim reuse correct for the MEMORY cases too.
-(defn emit-fn-thunk ((out (ref String)) fname:ptr ft:(raw Type)):void
+(defn emit-fn-thunk ((out (ref String)) fname:Symbol ft:(raw Type)):void
   (let (ftt:(raw Type) ft
         nparams:i32 (ftt 'num-params)
         ret-info:ptr:AbiInfo (unsafe/cast ptr:AbiInfo (abi-classify (ftt 'ret)))
@@ -863,7 +863,7 @@
           (abi-print-param-to os
             (abi-classify-arg ((field-at (ftt 'params) i) 'type))
             ((field-at (ftt 'params) i) 'type)
-            (fcstr "a" i))
+            (symbol-intern (fstr "a" i)))
           (set! need-comma 1)))
       (let (obuf:StrView (string-as-view ob))
         (emit out "define " ret-ir " @" fname "(" obuf ") {\nentry:\n")
@@ -879,7 +879,7 @@
 ; Build a tiny module containing the @fname thunk + @fname.tgt global, and add
 ; it to the JIT permanently (no resource tracker). This is the stable public
 ; symbol callers see; on each redefinition, only @fname.tgt is updated.
-(defn jit-thunk-module (line:i32 fname-ir:ptr ft:(raw Type)):void
+(defn jit-thunk-module (line:i32 fname-ir:Symbol ft:(raw Type)):void
   (let ((s String) (string-new))
     (emit s "; ModuleID = '<repl-thunk>'\n")
     (emit s "target triple = \"" ((as ptr:Target g-host-target) 'triple) "\"\n\n")
@@ -901,7 +901,7 @@
 ; After JIT'ing an impl module, look up @<impl-name> and @<fname-ir>.tgt and
 ; store impl-addr into (ptr tgt-addr) so subsequent calls through @<fname-ir>
 ; dispatch to this impl. Returns 0 on success, -1 on error.
-(defn update-fn-tgt (line:i32 fname-ir:ptr impl-name:ptr):i32
+(defn update-fn-tgt (line:i32 fname-ir:Symbol impl-name:ptr):i32
   (let (impl-addr:i64 0
         tgt-addr:i64 0
         err1:ptr (LLVMOrcLLJITLookup g-jit (as ptr (addr-of impl-addr)) impl-name))
@@ -951,7 +951,7 @@
             (dotimes (j nf)
               (when (!= need-comma 0) (emit g-out ", "))
               (abi-print-param (abi-classify-arg (aref (as ptr:ptr ftypes) j))
-                               (aref (as ptr:ptr ftypes) j) null)
+                               (aref (as ptr:ptr ftypes) j) (symbol-none))
               (set! need-comma 1)))
           (emit g-out ")\n")
           (repl-preamble-note-decl (symbol-intern (fstr "@" uname "-" aname)))))
@@ -961,20 +961,20 @@
 ; Build a JIT module from the current module streams and add it to the JIT.
 ; Includes the REPL preamble (accumulated declarations/types) in the module.
 (defn repl-jit-module (line:i32):void
-  (repl-jit-module-rt-rewrite line null null null))
+  (repl-jit-module-rt-rewrite line null (symbol-none) null))
 
 ; Same as repl-jit-module but adds the module under the given resource tracker
 ; so its symbols can later be removed via LLVMOrcResourceTrackerRemove.
 ; Pass rt=null to use the main JITDylib without a tracker.
 (defn repl-jit-module-rt (line:i32 rt:ptr):void
-  (repl-jit-module-rt-rewrite line rt null null))
+  (repl-jit-module-rt-rewrite line rt (symbol-none) null))
 
 ; Like repl-jit-module-rt but additionally rewrites the first occurrence of
 ; "@<fname>(" in the captured def buffer to "@<impl-name>(". Used by the defn
 ; redefinition path: the user's "(defn foo ...)" is captured as
 ; "define ... @foo(...) { ... }" but JIT'd as "@foo.impl.N" so the stable
 ; @foo thunk symbol can dispatch to the latest impl on each redefinition.
-(defn repl-jit-module-rt-rewrite (line:i32 rt:ptr fname:ptr impl-name:ptr):void
+(defn repl-jit-module-rt-rewrite (line:i32 rt:ptr fname:Symbol impl-name:ptr):void
   ; Union type definitions are emitted lazily — land any pending ones in this
   ; module's type buffer before it is captured.
   (drain-pending-union-irs)
@@ -985,13 +985,13 @@
     ; Preamble (accumulated types + declarations from includes), minus any
     ; declare this module defines — see repl-put-preamble. R4: this module's own
     ; types were just absorbed into it, so it is the whole type section.
-    (repl-put-preamble irs (if (= fname null) null (fcstr "@" fname)))
+    (repl-put-preamble irs (if (symbol-none? fname) null (fcstr "@" fname)))
     (emit-string-table irs 0)
     ; This module's declarations
     (emit-all irs g-decl-stream)
     ; This module's definitions — optionally renaming the first "@<fname>("
     ; to "@<impl-name>(" so the def is JIT'd under a unique impl symbol.
-    (if (and (!= fname null) (!= impl-name null))
+    (if (and (not (symbol-none? fname)) (!= impl-name null))
       (rewrite-first-fname (as ptr (string-as-cstr g-def-buf)) fname impl-name irs)
       (emit-all irs g-def-buf))
     (let (v:StrView (string-as-view irs))
@@ -1032,7 +1032,7 @@
         (abi-print-param-to g-repl-preamble
           (abi-classify-arg (aref (as ptr:ptr (pd 'ptypes)) j))
           (aref (as ptr:ptr (pd 'ptypes)) j)
-          null)
+          (symbol-none))
         (set! need-comma 1)))
     (emit g-repl-preamble ")\n")))
 
@@ -1185,11 +1185,11 @@
 (defn repl-include-all-libc ():void
   (open-module-streams)
   (set! g-out (addr-of g-decl-stream))
-  (emit-c-include "stdio.h" 0)
-  (emit-c-include "stdlib.h" 0)
-  (emit-c-include "string.h" 0)
-  (emit-c-include "ctype.h" 0)
-  (emit-c-include "unistd.h" 0)
+  (emit-c-include (symbol-intern "stdio.h") 0)
+  (emit-c-include (symbol-intern "stdlib.h") 0)
+  (emit-c-include (symbol-intern "string.h") 0)
+  (emit-c-include (symbol-intern "ctype.h") 0)
+  (emit-c-include (symbol-intern "unistd.h") 0)
   ; Header unions register with lazily-emitted IR type defs; land them in this
   ; throwaway module's type buffer so the preamble gets them exactly once
   ; (leaving them pending would make them surface inside a later module that
@@ -1212,7 +1212,7 @@
 ; See design/stage16-ergonomics/repl-libraries.md §3.4 (D4) for what is left out.
 (defstruct ReplState
   ; --- reader ---
-  source-path:ptr
+  source-path:Symbol
   src:ptr
   pos:i64
   line:i32
@@ -1237,9 +1237,9 @@
   (cheader-typedefs (raw CTypedef))
   ; --- unit / namespace / privacy ---
   toplevel-depth:i32
-  unit-entry-path:ptr
+  unit-entry-path:Symbol
   root-hoist-ok:i32
-  current-ns:ptr
+  current-ns:Symbol
   ns-seen:i32
   (file-imports (raw ImportVec))
   import-ct:i32
@@ -1318,7 +1318,7 @@
   (set! (st 'toplevel-depth) g-toplevel-depth)
   (set! (st 'unit-entry-path) g-unit-entry-path)
   (set! (st 'root-hoist-ok) g-root-hoist-ok)
-  (set! (st 'current-ns) (sym-ptr g-current-ns))
+  (set! (st 'current-ns) g-current-ns)
   (set! (st 'ns-seen) g-ns-seen)
   (set! (st 'file-imports) g-file-imports)
   (set! (st 'import-ct) g-import-ct)
@@ -1421,7 +1421,7 @@
   (set! g-import-ct (st 'import-ct))
   (set! g-file-imports (st 'file-imports))
   (set! g-ns-seen (st 'ns-seen))
-  (set! g-current-ns (sym-of (st 'current-ns)))
+  (set! g-current-ns (st 'current-ns))
   (set! g-root-hoist-ok (st 'root-hoist-ok))
   (set! g-unit-entry-path (st 'unit-entry-path))
   (set! g-toplevel-depth (st 'toplevel-depth))
@@ -1496,7 +1496,7 @@
   ; the REPL is driven by a pipe (stdin not a tty makes stdout block-buffered
   ; by default). _IOLBF == 1 on glibc.
   (setvbuf stdout null 1 0)
-  (set! g-source-path "<repl>")
+  (set! g-source-path (symbol-intern "<repl>"))
   ; G-5: see main. `target-init` is the residue of `compiler-init`; the REPL has
   ; no argv overrides of its own but still needs the host Target resolved before
   ; the first JIT module is built.

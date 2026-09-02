@@ -1078,7 +1078,7 @@
 ; only, name is null) — a CStr retype would turn that guard into
 ; `strcmp(name, null)`, which crashes (the batch-1 null-check-on-parameter
 ; trap, conventions.md).
-(defn abi-print-param-to ((out (raw String)) info:raw:AbiInfo ptype:raw:Type name:ptr):void
+(defn abi-print-param-to ((out (raw String)) info:raw:AbiInfo ptype:raw:Type name:Symbol):void
   (let (ii:raw:AbiInfo info
         k:i32 (info 'kind)
         ; W9 item 39: a parameter name becomes an LLVM local identifier, so it
@@ -1086,9 +1086,9 @@
         ; abi-emit-param-prologue, the only two producers of `%<param>.arg`, and
         ; nowhere else — `scope-define` still keys on the SOURCE name.
         nm:StrView "")
-    (when (!= name null) (set! nm (ir-name-token (strview-from-cstr (as CStr name)))))
+    (when (not (symbol-none? name)) (set! nm (ir-name-token (symbol-as-view name))))
     (when (= k ABI-DIRECT)
-      (if (= name null)
+      (if (symbol-none? name)
         (emit out (type-to-ir ptype))
         (emit out (type-to-ir ptype) " %" nm ".arg"))
       (return))
@@ -1099,27 +1099,27 @@
       ; byval only when the target is none of those three.
       (if (and (= (abi-is-aarch64) 0) (= (abi-is-avr) 0) (= (abi-is-riscv) 0))
         ; x86_64: byval attribute
-        (if (= name null)
+        (if (symbol-none? name)
           (emit out "ptr byval(" (type-to-ir ptype) ") align " (ii 'align))
           (emit out "ptr byval(" (type-to-ir ptype) ") align " (ii 'align) " %" nm ".arg"))
         ; aarch64 / AVR / riscv64: plain pointer
-        (if (= name null)
+        (if (symbol-none? name)
           (emit out "ptr")
           (emit out "ptr %" nm ".arg")))
       (return))
     (when (= k ABI-COERCE1)
-      (if (= name null)
+      (if (symbol-none? name)
         (emit out (ii 'reg0))
         (emit out (ii 'reg0) " %" nm ".arg"))
       (return))
     ; COERCE2
-    (if (= name null)
+    (if (symbol-none? name)
       (emit out (ii 'reg0) ", " (ii 'reg1))
       (emit out (ii 'reg0) " %" nm ".arg.0, " (ii 'reg1) " %" nm ".arg.1"))))
 
 ; The g-out spelling, which is every batch-emission caller. The REPL's preamble
 ; declares go to g-repl-preamble instead and call abi-print-param-to directly.
-(defn abi-print-param (info:raw:AbiInfo ptype:raw:Type name:ptr):void
+(defn abi-print-param (info:raw:AbiInfo ptype:raw:Type name:Symbol):void
   (abi-print-param-to g-out info ptype name))
 
 ; Emit the entry-block reconstruction for one parameter into its `.addr` slot,

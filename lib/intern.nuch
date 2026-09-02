@@ -11,6 +11,7 @@
 (defmethod "@eq.Symbol.StrView" = ((a Symbol) (b StrView)) :bool)
 (defmethod "@ne.Symbol.StrView" != ((a Symbol) (b StrView)) :bool)
 (declare symbol-contains-byte ((self Symbol) (b i32)) :bool)
+(declare symbol-byte-at ((self Symbol) (i usize)) :i32)
 (defconst INTERN-INIT-CAP 1024)
 (extern (g-sym-table ptr))
 (extern (g-sym-cap usize))

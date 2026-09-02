@@ -653,7 +653,7 @@
       (let (h:StrView (new-tmp)
             efh:ptr:Sym (unsafe/cast ptr:Sym (scope-lookup g-globals (symbol-intern "err-find-handler")))
             ght:ptr:Sym (unsafe/cast ptr:Sym (scope-lookup g-globals (symbol-intern "g-handler-top")))
-            hsd:ptr:StructDef (unsafe/cast ptr:StructDef (struct-lookup-ref (sym-of (intern-str "Handler"))))
+            hsd:ptr:StructDef (unsafe/cast ptr:StructDef (struct-lookup-ref (symbol-intern "Handler")))
             id:i32 (new-label-id))
         (emit g-body-stream "  " h " = call ptr " (efh 'ir-name) "(i32 " eid ", ptr " tok ")\n")
         (let (hnull:StrView (new-tmp)
@@ -675,16 +675,16 @@
             (emit g-body-stream "  " saved " = load ptr, ptr " (ght 'ir-name) "\n")
             (emit g-body-stream "  " prevgep " = getelementptr inbounds %" (hsd 'ir-name)
                   ", ptr " h ", i32 0, i32 "
-                  (struct-field-index (as ptr hsd) (sym-of (intern-str "prev"))) "\n")
+                  (struct-field-index (as ptr hsd) (symbol-intern "prev")) "\n")
             (emit g-body-stream "  " prev " = load ptr, ptr " prevgep "\n")
             (emit g-body-stream "  store ptr " prev ", ptr " (ght 'ir-name) "\n")
             (emit g-body-stream "  " hfngep " = getelementptr inbounds %" (hsd 'ir-name)
                   ", ptr " h ", i32 0, i32 "
-                  (struct-field-index (as ptr hsd) (sym-of (intern-str "hfn"))) "\n")
+                  (struct-field-index (as ptr hsd) (symbol-intern "hfn")) "\n")
             (emit g-body-stream "  " hfn " = load ptr, ptr " hfngep "\n")
             (emit g-body-stream "  " ctxgep " = getelementptr inbounds %" (hsd 'ir-name)
                   ", ptr " h ", i32 0, i32 "
-                  (struct-field-index (as ptr hsd) (sym-of (intern-str "ctx"))) "\n")
+                  (struct-field-index (as ptr hsd) (symbol-intern "ctx")) "\n")
             (emit g-body-stream "  " ctx " = load ptr, ptr " ctxgep "\n")
             ; m:(Maybe T) = hfn(ctx, detail) through the struct-return ABI.
             ; Emitted here rather than via emit-funcall-value: there is no AST
@@ -840,7 +840,7 @@
 (defn error-lib-in-scope ():i32
   (when (= (scope-lookup g-globals (symbol-intern "g-handler-top")) null) (return 0))
   (when (= (scope-lookup g-globals (symbol-intern "err-find-handler")) null) (return 0))
-  (when (= (as ptr (struct-lookup-ref (sym-of (intern-str "Handler")))) null) (return 0))
+  (when (= (as ptr (struct-lookup-ref (symbol-intern "Handler"))) null) (return 0))
   (return 1))
 
 ; True iff `ud`'s `err` arm is the `!T` shape: a single payload field of type

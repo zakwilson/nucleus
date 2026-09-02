@@ -1581,6 +1581,17 @@ not at a `CStr` parameter). A view is never null, so the comparison is now
 rejected outright; when you retype a field, the guard you must rewrite is
 `(str-empty? &v)`.
 
+**Corollary, stage17 C7-5: a string literal inside `[…]`/`#{…}`/`{…}` is a
+`StrView`.** It was `CStr` until C7-5 — the one place `"…"` was not a view — so
+a `(symbol-as-view x)` handed to a literal-built set was silently borrowed back
+to a C string *inside* the container's monomorphized `hash`/`=`, where
+`--strict-cstr` cannot see it. Two consequences when you write one: the element
+type reaches the whole container (`{"a" 1}` is a `(HashMap StrView i32)`), and a
+retype like this needs no bootstrap shim if every literal binds through an
+explicitly typed local — `(let ((s (ref (HashSet StrView)))) #{…})` is the shape
+a `want` arms, so the old and new compilers agree on it. A container *declared*
+`(HashSet CStr)` is unaffected: the literal still free-coerces at the call.
+
 **Correction (stage14 14.3, 2026-07-12): `scope-define`/`scope-lookup` keys
 are NOT identity-compared** (an earlier version of this note listed them
 alongside `Node.s` as identity-substrate — stale). `Sym.name` has been `CStr`
