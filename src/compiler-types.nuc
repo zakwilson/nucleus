@@ -711,16 +711,9 @@
 
 (defstruct Val
   (type (raw Type))
-  ; val stays `ptr` (NOT CStr): no site compares it for identity, but several
-  ; match/cond-join phi accumulators (union-emit.nuc/nucleusc.nuc `(conj vals
-  ; (bv val))`) collect it into a `(Vector ptr)`. `conj`'s generic dispatch
-  ; binds that Vector's tyvar to `ptr` and a CStr argument does not adapt to a
-  ; bare `ptr` parameter (by design — see the string-lattice note in
-  ; conventions.md), so a CStr retype breaks those call sites outright rather
-  ; than staying inert. Plain formatting call sites (fprintf %s, alloc-val's
-  ; plain-function v:ptr param) would have been fine either way; the Vector
-  ; sink is the blocker.
-  val:ptr
+  ; The value's IR text — `%t42`, `@name`, `zeroinitializer`, a constant. Empty
+  ; (arena zero-init) for a void Val, which is the only thing the old null meant.
+  val:StrView
   ; Stage 10 escape analysis: owning with-Scope* this value aliases (null =
   ; clean). Propagated through identity-preserving ops (cast, ptr+, .&, phi);
   ; dropped by value-copying ops (deref, field load, calls).

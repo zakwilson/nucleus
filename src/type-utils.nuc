@@ -354,7 +354,7 @@
 
 ; `0xK` is 4 hex digits of sign|exponent followed by 16 of the significand —
 ; which, unlike `0xL` below, is high half first.
-(defn f80-const-ir (d:f64):CStr
+(defn f80-const-ir (d:f64):StrView
   (let (bits:i64 (f64-bits d)
         sign:i64 (unsafe/cast i64 (bit-shr (unsafe/cast ui64 bits) 63))
         exp:i64 (bit-and (bit-shr bits 52) 2047)
@@ -382,13 +382,12 @@
       true
         (do (set! se (+ (- exp 1023) 16383))
             (set! sig (bit-or (bit-shl (as i64 1) 63) (bit-shl mant 11)))))
-    (return (as CStr (fcstr "0xK" (fcstr (hexu (bit-or (bit-shl sign 15) se) 4))
-                           (fcstr (hexu sig 16)))))))
+    (return (fstr "0xK" (hexu (bit-or (bit-shl sign 15) se) 4) (hexu sig 16)))))
 
 ; `0xL` is the LOW 64 bits first, then the high 64 — the opposite order from
 ; `0xK`. An f64 widens exactly: rebias the exponent and shift the significand
 ; from 52 bits to 112, which leaves the low half all zero for every finite f64.
-(defn f128-const-ir (d:f64):CStr
+(defn f128-const-ir (d:f64):StrView
   (let (bits:i64 (f64-bits d)
         sign:i64 (unsafe/cast i64 (bit-shr (unsafe/cast ui64 bits) 63))
         exp:i64 (bit-and (bit-shr bits 52) 2047)
@@ -420,13 +419,13 @@
         (do (set! e128 (+ (- exp 1023) 16383))
             (set! hi-mant (bit-shr mant 4))
             (set! lo (bit-shl mant 60))))
-    (return (as CStr (fcstr "0xL" (fcstr (hexu lo 16))
-                           (fcstr (hexu (bit-or (bit-shl sign 63) (bit-or (bit-shl e128 48) hi-mant)) 16)))))))
+    (return (fstr "0xL" (hexu lo 16)
+                  (hexu (bit-or (bit-shl sign 63) (bit-or (bit-shl e128 48) hi-mant)) 16)))))
 
 ; f64→f16 is a NARROWING, so unlike the two above it rounds — round-to-nearest,
 ; ties-to-even, written out rather than delegated to a host cast because Nucleus
 ; has no f16 to cast through. `0xH` is the 16 bits, zero-extended.
-(defn f16-const-ir (d:f64):CStr
+(defn f16-const-ir (d:f64):StrView
   (let (bits:i64 (f64-bits d)
         sign:i64 (unsafe/cast i64 (bit-shr (unsafe/cast ui64 bits) 63))
         exp:i64 (bit-and (bit-shr bits 52) 2047)
@@ -469,7 +468,7 @@
                 (set! out m))
             true
               (set! out 0))))
-    (return (as CStr (fcstr "0xH" (hexu (bit-or (bit-shl sign 15) out) 4))))))
+    (return (fstr "0xH" (hexu (bit-or (bit-shl sign 15) out) 4)))))
 
 ; ---------------------------------------------------------------------------
 ; Stage 16 FL-3 (design/stage16-ergonomics/c-boundary-defects.md §6.3): C's
@@ -666,7 +665,7 @@
 ; The LLVM constant text for hex-float lexeme `lex` at type kind `tk`, or null
 ; when `lex` is not a hex float. Assembling f80 and f128 from the 128-bit
 ; significand directly is the whole reason this path exists.
-(defn hexfloat-const-ir (lex:CStr tk:i32):CStr
+(defn hexfloat-const-ir (lex:CStr tk:i32):(Maybe StrView)
   (let (sign:i64 0 hi:i64 0 lo:i64 0 ue:i64 0 sticky:i64 0
         rhi:i64 0 rlo:i64 0)
     (when (= (hexfloat-parse lex (as ptr:i64 (addr-of sign))
@@ -674,35 +673,34 @@
                                  (as ptr:i64 (addr-of lo))
                                  (as ptr:i64 (addr-of ue))
                                  (as ptr:i64 (addr-of sticky))) 0)
-      (return null))
+      (return (none)))
     (let (rhp:ptr:i64 (as ptr:i64 (addr-of rhi))
           rlp:ptr:i64 (as ptr:i64 (addr-of rlo)))
       (when (= tk TY-F16)
         (let (be:i64 (hexfloat-fit hi lo sticky ue 11 -14 15 15 rhp rlp))
-          (return (as CStr (fcstr "0xH"
-                                 (hexu (bit-or (bit-shl sign 15)
+          (return (some (fstr "0xH"
+                          (hexu (bit-or (bit-shl sign 15)
                     (bit-or (bit-shl be 10) (bit-and rlo 1023))) 4))))))
       (when (= tk TY-F32)
         (let (be:i64 (hexfloat-fit hi lo sticky ue 24 -126 127 127 rhp rlp))
-          (return (as CStr (fcstr "0x" (hexu (f32-parts-as-f64-bits sign be rlo) 16))))))
+          (return (some (fstr "0x" (hexu (f32-parts-as-f64-bits sign be rlo) 16))))))
       (when (= tk TY-F80)
         (let (be:i64 (hexfloat-fit hi lo sticky ue 64 -16382 16383 16383 rhp rlp))
           ; x87 carries the leading bit explicitly, and an infinity has it set.
           (when (= be 32767) (set! rlo (bit-shl (as i64 1) 63)))
-          (return (as CStr (fcstr "0xK" (fcstr (hexu (bit-or (bit-shl sign 15) be) 4))
-                                 (fcstr (hexu rlo 16)))))))
+          (return (some (fstr "0xK" (hexu (bit-or (bit-shl sign 15) be) 4) (hexu rlo 16))))))
       (when (= tk TY-F128)
         (let (be:i64 (hexfloat-fit hi lo sticky ue 113 -16382 16383 16383 rhp rlp))
-          (return (as CStr (fcstr "0xL" (fcstr (hexu rlo 16))
-                                 (fcstr (hexu (bit-or (bit-shl sign 63)
-                                      (bit-or (bit-shl be 48)
-                                              (bit-and rhi 281474976710655))) 16)))))))
+          (return (some (fstr "0xL" (hexu rlo 16)
+                          (hexu (bit-or (bit-shl sign 63)
+                                (bit-or (bit-shl be 48)
+                                        (bit-and rhi 281474976710655))) 16))))))
       (let (be:i64 (hexfloat-fit hi lo sticky ue 53 -1022 1023 1023 rhp rlp))
-        (return (as CStr (fcstr "0x"
-                               (hexu (bit-or (bit-shl sign 63)
+        (return (some (fstr "0x"
+                        (hexu (bit-or (bit-shl sign 63)
                   (bit-or (bit-shl be 52) (bit-and rlo 4503599627370495))) 16))))))))
 
-(defn type-zero-const-ir (ty:(raw Type)):CStr
+(defn type-zero-const-ir (ty:(raw Type)):StrView
   (let (tt:(raw Type) ty
         tk:i32 (tt 'kind))
     (when (!= (is-ptr-repr ty) 0) (return "null"))

@@ -180,8 +180,8 @@
 ; Codegen helpers
 ; ============================================================
 
-(defn new-tmp ():CStr
-  (let (r:CStr (fcstr "%t" g-tmp))
+(defn new-tmp ():StrView
+  (let (r:StrView (fstr "%t" g-tmp))
     (inc! g-tmp)
     (return r)))
 

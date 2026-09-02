@@ -42,7 +42,7 @@
 ; (a struct-literal field and a zero fill): empty leaves LLVM assuming the
 ; type's ABI alignment, which IS the answer for an unpacked struct, so every
 ; existing program's IR stays byte-identical.
-(defn packed-align-suffix (sd:(raw StructDef)):CStr
+(defn packed-align-suffix (sd:(raw StructDef)):StrView
   (when (= sd null) (return ""))
   (when (= ((unsafe/cast ptr:StructDef sd) 'packed) 0) (return ""))
   (return ", align 1"))
@@ -660,7 +660,7 @@
 ; there the baseline is what LLVM derives from the element list, which knows
 ; nothing about `aligned(N)`. Empty whenever the two agree, which is every
 ; struct without one.
-(defn struct-align-suffix (sd:raw:StructDef):CStr
+(defn struct-align-suffix (sd:raw:StructDef):StrView
   (let (sdd:raw:StructDef sd
         n:i32 (sdd 'num-fields)
         ira:i32 1
@@ -671,7 +671,7 @@
         (let (fa:i32 (abi-field-ir-align sd i))
           (when (> fa ira) (set! ira fa)))))
     (when (<= a ira) (return ""))
-    (return (fcstr ", align " a))))
+    (return (fstr ", align " a))))
 
 ; ABI size of a struct — one line, because struct-walk is the layout.
 (defn abi-struct-size (sd:raw:StructDef):i32
@@ -1148,7 +1148,7 @@
     (emit g-entry-stream "  " slot " = alloca " (type-to-ir ptype) "\n")
     (if (= k ABI-COERCE1)
       (emit g-entry-stream "  store " (info 'reg0) " " arg ", ptr " slot "\n")
-      (let (gp:ptr null)
+      (let (gp:StrView "")
         (emit g-entry-stream "  store " (info 'reg0) " %" mn ".arg.0, ptr " slot "\n")
         (set! gp (new-tmp))
         (emit g-entry-stream "  " gp " = getelementptr i8, ptr " slot ", i64 " (info 'off1) "\n")
@@ -1192,28 +1192,28 @@
     ; 16-byte load off an IR type-name string, with nothing to reject it.
     (when (= ((vv 'type) 'kind) TY-PTR)
       (let (e:(raw Type) ((vv 'type) 'elem))
-        (when (and (!= e null) (= (type-eq e g-fn-ret-type) 0))
+        (when (or (= e null) (= (type-eq e g-fn-ret-type) 0))
           (die-at g-form-line
             (fstr "internal: aggregate return of a " (type-spelling (vv 'type))
                   " where the declared return type is " (type-spelling g-fn-ret-type)))))
       (let (ty:StrView (type-to-ir g-fn-ret-type)
-            src:ptr (vv 'val))
+            src:StrView (vv 'val))
         (when (= k ABI-MEMORY)
-          (let (agg:ptr (new-tmp))
+          (let (agg:StrView (new-tmp))
             (emit g-body-stream "  " agg " = load " ty ", ptr " src "\n")
             (emit g-body-stream "  store " ty " " agg ", ptr " g-fn-sret-name "\n"))
           (emit g-body-stream "  ret void\n")
           (return))
         (if (= k ABI-COERCE1)
-          (let (r:ptr (new-tmp))
+          (let (r:StrView (new-tmp))
             (emit g-body-stream "  " r " = load " (info 'reg0) ", ptr " src "\n")
             (emit g-body-stream "  ret " (info 'reg0) " " r "\n"))
           ; COERCE2: load both eightbytes from the struct address directly.
-          (let (r0:ptr (new-tmp)
-                gp:ptr null
-                r1:ptr null
-                a0:ptr null
-                a1:ptr null)
+          (let (r0:StrView (new-tmp)
+                gp:StrView ""
+                r1:StrView ""
+                a0:StrView ""
+                a1:StrView "")
             (emit g-body-stream "  " r0 " = load " (info 'reg0) ", ptr " src "\n")
             (set! gp (new-tmp))
             (emit g-body-stream "  " gp " = getelementptr i8, ptr " src ", i64 " (info 'off1)
@@ -1243,19 +1243,19 @@
         (emit g-body-stream "  store " ty " " (vv 'val) ", ptr " g-fn-sret-name "\n")
         (emit g-body-stream "  ret void\n")
         (return))
-      (let (tmp:ptr (new-tmp))
+      (let (tmp:StrView (new-tmp))
         (emit g-entry-stream "  " tmp " = alloca " ty "\n")
         (emit g-body-stream "  store " ty " " (vv 'val) ", ptr " tmp "\n")
         (if (= k ABI-COERCE1)
-          (let (r:ptr (new-tmp))
+          (let (r:StrView (new-tmp))
             (emit g-body-stream "  " r " = load " (info 'reg0) ", ptr " tmp "\n")
             (emit g-body-stream "  ret " (info 'reg0) " " r "\n"))
           ; COERCE2: load both eightbytes, build the {reg0,reg1} return aggregate.
-          (let (r0:ptr (new-tmp)
-                gp:ptr null
-                r1:ptr null
-                a0:ptr null
-                a1:ptr null)
+          (let (r0:StrView (new-tmp)
+                gp:StrView ""
+                r1:StrView ""
+                a0:StrView ""
+                a1:StrView "")
             (emit g-body-stream "  " r0 " = load " (info 'reg0) ", ptr " tmp "\n")
             (set! gp (new-tmp))
             (emit g-body-stream "  " gp " = getelementptr i8, ptr " tmp ", i64 " (info 'off1)
@@ -1313,7 +1313,7 @@
     (when (= k ABI-DIRECT)
       (return (fstr (type-to-ir (a 'type)) " " (a 'val))))
     (let (ty:StrView (type-to-ir (a 'type))
-          addr:ptr (new-tmp))
+          addr:StrView (new-tmp))
       (emit g-entry-stream "  " addr " = alloca " ty "\n")
       (emit g-body-stream "  store " ty " " (a 'val) ", ptr " addr "\n")
       (when (= k ABI-MEMORY)
@@ -1326,13 +1326,13 @@
           ; aarch64 / AVR / riscv64: plain pointer
           (return (fstr "ptr " addr))))
       (when (= k ABI-COERCE1)
-        (let (r:ptr (new-tmp))
+        (let (r:StrView (new-tmp))
           (emit g-body-stream "  " r " = load " (info 'reg0) ", ptr " addr "\n")
           (return (fstr (info 'reg0) " " r))))
       ; COERCE2
-      (let (r0:ptr (new-tmp)
-            gp:ptr null
-            r1:ptr null)
+      (let (r0:StrView (new-tmp)
+            gp:StrView ""
+            r1:StrView "")
         (emit g-body-stream "  " r0 " = load " (info 'reg0) ", ptr " addr "\n")
         (set! gp (new-tmp))
         (emit g-body-stream "  " gp " = getelementptr i8, ptr " addr ", i64 " (info 'off1) "\n")
@@ -1344,38 +1344,38 @@
 ; the first-class struct value, and return its Val. `arglist` is the already
 ; built scalar/coerced argument string; `nargs` is the count it holds (so a
 ; MEMORY sret prefix knows whether it needs a separating comma).
-(defn abi-emit-struct-call (info:raw:AbiInfo ret:raw:Type ir-name:CStr arglist:StrView nargs:i32):ref:Val
+(defn abi-emit-struct-call (info:raw:AbiInfo ret:raw:Type ir-name:StrView arglist:StrView nargs:i32):ref:Val
   (let (ii:raw:AbiInfo info
         k:i32 (info 'kind)
         ty:StrView (type-to-ir ret))
     (when (= k ABI-MEMORY)
-      (let (slot:ptr (new-tmp)
+      (let (slot:StrView (new-tmp)
             sep:ptr "")
         (emit g-entry-stream "  " slot " = alloca " ty "\n")
         (when (> nargs 0) (set! sep ", "))
         (emit g-body-stream "  call void " ir-name "(ptr sret(" ty ") align " (ii 'align) " "
               slot sep arglist ")\n")
-        (let (v:ptr (new-tmp))
+        (let (v:StrView (new-tmp))
           (emit g-body-stream "  " v " = load " ty ", ptr " slot "\n")
           (return (alloc-val ret v)))))
     (when (= k ABI-COERCE1)
-      (let (tmp:ptr (new-tmp))
+      (let (tmp:StrView (new-tmp))
         (emit g-body-stream "  " tmp " = call " (ii 'reg0) " " ir-name "(" arglist ")\n")
-        (let (slot:ptr (new-tmp))
+        (let (slot:StrView (new-tmp))
           (emit g-entry-stream "  " slot " = alloca " ty "\n")
           (emit g-body-stream "  store " (ii 'reg0) " " tmp ", ptr " slot "\n")
-          (let (v:ptr (new-tmp))
+          (let (v:StrView (new-tmp))
             (emit g-body-stream "  " v " = load " ty ", ptr " slot "\n")
             (return (alloc-val ret v))))))
     ; COERCE2: call returns {reg0,reg1}; split it back into the struct slot.
     (let (rty:ptr (fcstr "{ " (ii 'reg0) ", " (ii 'reg1) " }")
-          tmp:ptr (new-tmp))
+          tmp:StrView (new-tmp))
       (emit g-body-stream "  " tmp " = call " rty " " ir-name "(" arglist ")\n")
-      (let (slot:ptr (new-tmp)
-            e0:ptr null
-            gp:ptr null
-            e1:ptr null
-            v:ptr null)
+      (let (slot:StrView (new-tmp)
+            e0:StrView ""
+            gp:StrView ""
+            e1:StrView ""
+            v:StrView "")
         (emit g-entry-stream "  " slot " = alloca " ty "\n")
         (set! e0 (new-tmp))
         (emit g-body-stream "  " e0 " = extractvalue " rty " " tmp ", 0\n")
@@ -1421,8 +1421,8 @@
           (set! (rv 'taint-frame) (vv 'taint-frame))
           (return (as ptr rv))))
       (when (!= (type-is-strview target) 0)
-        (let (v0:ptr (new-tmp)
-              v1:ptr (new-tmp)
+        (let (v0:StrView (new-tmp)
+              v1:StrView (new-tmp)
               svir:StrView (type-to-ir target))
           (emit g-body-stream "  " v0 " = insertvalue " svir " undef, ptr " (vv 'val) ", 0\n")
           (emit g-body-stream "  " v1 " = insertvalue " svir " " v0 ", " (ptr-int-ir) " "
@@ -1499,7 +1499,7 @@
           ; Stage 10: loading through a `?T` needs the same narrowing `deref`
           ; demands. A compound literal is `(ref S)` and passes untouched.
           (require-derefable src line "assignment")
-          (let (tmp:ptr (new-tmp))
+          (let (tmp:StrView (new-tmp))
             (emit-load tmp (type-to-ir target) (vv 'val) target)
             (return (alloc-val target tmp))))))
     ; Stage 15 W9 item 20: the literal `null` adapts to a function-pointer slot,
@@ -1535,7 +1535,7 @@
     (when (and (!= (type-is-strview src) 0)
                (!= (strview-borrow-target target) 0))
       (strict-cstr-check-borrow line)
-      (let (d:ptr (new-tmp))
+      (let (d:StrView (new-tmp))
         (emit g-body-stream "  " d " = extractvalue " (type-to-ir src) " " (vv 'val) ", 0\n")
         (return (alloc-val target d))))
     ; Both integers — emit cast if needed
@@ -1557,7 +1557,7 @@
         (when (= sw dw)
           ; Same width, different signedness — reinterpret (no IR needed)
           (return (alloc-val target (vv 'val))))
-        (let (tmp:ptr (new-tmp)
+        (let (tmp:StrView (new-tmp)
               instr:ptr null)
           (if (< dw sw)
             (set! instr "trunc")
@@ -1604,13 +1604,14 @@
           ; Stage 16 FL-3: a hex lexeme re-renders from its own bits, since the
           ; f64 beside it is only as precise as f64.
           (when (!= (vv 'lit-lex) null)
-            (let (h:CStr (hexfloat-const-ir (vv 'lit-lex) tk))
-              (when (!= h null) (return (alloc-val target h)))))
+            (match (hexfloat-const-ir (vv 'lit-lex) tk)
+              (none 0)
+              ((some h) (return (alloc-val target h)))))
           (when (= tk TY-F32)  (return (alloc-val target (f32-const-ir (vv 'lit-f64)))))
           (when (= tk TY-F16)  (return (alloc-val target (f16-const-ir (vv 'lit-f64)))))
           (when (= tk TY-F80)  (return (alloc-val target (f80-const-ir (vv 'lit-f64)))))
           (when (= tk TY-F128) (return (alloc-val target (f128-const-ir (vv 'lit-f64)))))))
-      (let (tmp:ptr (new-tmp)
+      (let (tmp:StrView (new-tmp)
             instr:ptr "fpext")
         (when (< (float-width target) (float-width src)) (set! instr "fptrunc"))
         (emit g-body-stream "  " tmp " = " instr " " (type-to-ir src) " " (vv 'val) " to "
@@ -1647,7 +1648,7 @@
 ; (design/stage16-ergonomics/bool-type-plan.md).
 (defn widen-bool-to-int (v:raw:Val target:raw:Type):ref:Val
   (let (vv:raw:Val v
-        tmp:ptr (new-tmp))
+        tmp:StrView (new-tmp))
     (emit g-body-stream "  " tmp " = zext " (type-to-ir (vv 'type)) " " (vv 'val) " to "
           (type-to-ir target) "\n")
     (return (alloc-val target tmp))))
