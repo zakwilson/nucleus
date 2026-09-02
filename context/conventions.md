@@ -6105,3 +6105,14 @@ neither a void value nor a global initializer can legitimately be the empty
 string, so the encoding is unambiguous. Test it with `strview-byte-len`, not by
 comparing against `null` (which will not compile) or against `""` (which works
 but reads as a content check).
+
+## `strview-from-cstr` is STRICT where `(as CStr …)` was lazy
+
+Retyping a producer to `StrView` turns each bridge into a real call. A
+null-tolerant producer — `cheader-c-ident` passes null through, because a
+marker parameter (`&optional`, `&rest`) has no name — then reaches `strlen(null)`
+at the *binding*, where the old cast only crashed if the value was actually
+used, and the guarded call sites downstream never were. Give such a producer its
+own view-returning wrapper (`cheader-c-ident-view`) instead of bridging at each
+call site: the null contract is then stated once, and cannot be missed at the
+next site added.
