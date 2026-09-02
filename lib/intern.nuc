@@ -76,6 +76,24 @@
 (defn symbol-as-cstr (self:Symbol):CStr
   (return (as CStr (as ptr (self 'p)))))
 
+; A spelling test against a written literal — the overwhelmingly common
+; comparison, and the one thing pointer identity cannot answer, since interning
+; the literal to get a pointer would cost a hash to save a `memcmp` of four
+; bytes (c7-interned-substrate.md §2.1).
+(defn symbol-is (self:Symbol other:StrView):bool
+  (let (n:usize (symbol-len self))
+    (when (!= n (other 'len)) (return false))
+    (when (= n 0) (return true))
+    (return (= (memcmp (as ptr (self 'p)) (as ptr (other 'data)) (as i64 n)) 0))))
+
+; `=` on two Symbols is identity; against a view it is `symbol-is`. Both mean
+; "same bytes" — interning is what makes those one predicate.
+(defn = (a:Symbol b:StrView):bool (return (symbol-is a b)))
+(defn != (a:Symbol b:StrView):bool (return (= (symbol-is a b) false)))
+
+(defn symbol-contains-byte (self:Symbol b:i32):bool
+  (return (!= (memchr (as ptr (self 'p)) b (as i64 (symbol-len self))) null)))
+
 ; ---------------------------------------------------------------------------
 ; The table — open-addressed, power-of-two, linear probing.
 ;

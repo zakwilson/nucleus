@@ -8,3 +8,5 @@ map world=2
 map n=2
 grew=true identity-survives-rehash=true
 reintern-adds=0
+is=true eq=true ne=true prefix=false longer=false
+colon=true no-slash=false empty=true empty-colon=false
