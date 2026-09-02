@@ -2976,7 +2976,10 @@
       (dotimes (i m)
         (when (= (cstr-byte-at (as ptr g-source-path) i) 47) (set! selfbase (+ i 1)))))
     (when (or (!= selfbase base)
-              (and (> base 0) (!= (strncmp src g-source-path:CStr base) 0)))
+              (and (> base 0)
+                   (!= (strview (unsafe/cast ptr:ui8 (as ptr src)) (unsafe/cast usize base))
+                       (strview (unsafe/cast ptr:ui8 (as ptr g-source-path))
+                                (unsafe/cast usize base)))))
       (set! base 0))
     (return (fstr (strview (unsafe/cast ptr:ui8 (unsafe/ptr+ (as raw:i8 src) base))
                            (unsafe/cast usize (- end base))) ".h"))))
@@ -3098,10 +3101,10 @@
     (when (and (!= c0 33) (!= c0 63)) (return (none)))   ; not ! or ?
     ; The payload must be a pointer spelling: !ptr:T / ?ptr:T / !ref:T / ?ref:T.
     (let (rest:ptr (unsafe/ptr+ (as ptr:i8 s) 1))
-      (when (= (strncmp rest "ptr:" 4) 0)
+      (when (strview-has-prefix (strview-from-cstr (as CStr rest)) "ptr:")
         (let (elem:StrView (type-name-to-c (unsafe/ptr+ (as ptr:i8 rest) 4)))
           (return (some (fstr elem "* /* niche: reserved top page = error/none */")))))
-      (when (= (strncmp rest "ref:" 4) 0)
+      (when (strview-has-prefix (strview-from-cstr (as CStr rest)) "ref:")
         (let (elem:StrView (type-name-to-c (unsafe/ptr+ (as ptr:i8 rest) 4)))
           (return (some (fstr elem "* /* niche: reserved top page = error/none */")))))
       (return (none)))))
@@ -3421,7 +3424,7 @@
         (case (n 'kind)
           NODE-SYM
             (do
-              (when (= (strncmp (n 's) "__vfn_env_" 10) 0) (return 1))
+              (when (strview-has-prefix (strview-from-cstr (as CStr (n 's))) "__vfn_env_") (return 1))
               (return 0))
           NODE-CELL
             (let (head:ptr:Node (unsafe/cast ptr:Node (n 'car)))

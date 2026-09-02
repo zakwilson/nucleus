@@ -450,6 +450,15 @@
                         (as i64 slen)))
       (= c 0))))
 
+; By-VALUE prefix/suffix tests. The `(ref StrView)` forms above force a named
+; local at every call site, and the overwhelmingly common prefix — a literal —
+; is not an lvalue, so it cannot be passed to them at all.
+(defn strview-has-prefix (sv:StrView prefix:StrView):bool
+  (return (strview-starts-with (addr-of sv) (addr-of prefix))))
+
+(defn strview-has-suffix (sv:StrView suffix:StrView):bool
+  (return (strview-ends-with (addr-of sv) (addr-of suffix))))
+
 ; strview-contains-str — true if sv contains needle as a substring.
 (defn strview-contains-str ((sv (ref StrView)) (needle (ref StrView))):bool
   (let ((found (Maybe usize)) (strview-find sv needle))
