@@ -739,3 +739,55 @@ all of them) without knowing one operand was a view.
 The fix is a type error, not a lowering: comparing a `StrView` with `null` names
 `str-empty?` in its diagnostic. A view cannot be null, so no correct program can
 ask the question, and the empty view is what every site meant.
+
+### 40. A string literal inside a collection literal was a `CStr` — **fixed 2026-09-02 (C7-5)**
+
+`"…"` is a `StrView` everywhere in the language except one place: inside `[…]`,
+`#{…}` and `{…}`, where `lit-type-node` gave kind 3 the element type `CStr`.
+The comment there recorded the deferral honestly — "`node-type` types a NODE-STR
+as StrView (NS-3), so asking it here would silently retype every existing
+`["a" "b"]`" — and Stage 17 is where that retype belongs.
+
+The cost of leaving it was not cosmetic. C7-5 turned the C header parser's
+identifiers into `Symbol`s, and the natural membership test became
+`(contains? #{"const" …} (symbol-as-view tok))` — a `StrView` argument to a
+`HashSet CStr`, which is a **silent borrow** (§33), inside the collection's own
+monomorphized `=`/`hash` where the census cannot see it. Three of them landed in
+`src/cheader.nuc` before `--strict-cstr` caught them at the call boundary.
+
+Kind 3 is `StrView` now. Two consequences fell out of the flip:
+
+- The element type of `#{…}` reaches the *whole* set/map, so a `(HashMap CStr V)`
+  built from a literal is now a `(HashMap StrView V)`. Every such literal in the
+  compiler is a fixed table (operator mnemonics, LLVM float opcodes, the C
+  specifier keywords, the special-form and primitive-type name sets), and each
+  now binds through an explicitly typed local — the shape a `want` arms, which
+  means the same source compiles under the old boot compiler and the new one.
+  That is what let a language-level element-type change land with no bootstrap
+  shim at all.
+- `examples/as-sugar.nuc` demonstrates the `x:Type` cast in argument position on
+  a set membership test; it keeps the cast and adds the view conversion the set
+  now wants.
+
+### 41. `StrView`'s `Hash` conformance was not where `CStr`'s is — **fixed 2026-09-02 (C7-5)**
+
+`(extend CStr Hash)` lives in `lib/hash.nuc`, which every hash container imports,
+so a `CStr`-keyed `#{…}` works on the collection import alone. `StrView`'s lived
+in `lib/strview.nuc`, so the moment §40 made `#{"a" "b"}` a `HashSet StrView` the
+same session failed with *no matching method for overloaded 'hash'* — a REPL
+session that had imported `hashset` and nothing else.
+
+The conformance moved to `lib/hash.nuc`, beside `CStr`'s and directly on
+`fnv1a-bytes` (which `hash.nuc` already imports); `strview-hash` stays in
+`lib/strview.nuc` as the public helper. Giving the collections an
+`(import-use strview)` instead would also have worked and was rejected: it drags
+`char` and `error` into every unit with a container, which reorders the import
+bookkeeping a REPL test asserts on.
+
+`Eq` could **not** follow it. `(extend CStr Eq)` is code-free — the builtin `=`
+on two `CStr` lowers to `strcmp` and satisfies the protocol — but a struct type
+conforms only through real methods, and `StrView`'s need `strview-eq`, which
+lives in `lib/strview.nuc` (which imports `numeric`, so the dependency cannot
+run the other way). `(extend StrView Eq)` therefore stays put. It is not needed
+for a container: the monomorphized key compare resolves `=` through the
+compiler's own `StrView` lowering, the same way it does for `CStr`.

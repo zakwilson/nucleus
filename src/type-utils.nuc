@@ -100,17 +100,17 @@
 ; ============================================================
 (defstruct CTypedef
   ; `name` is the identity the table is keyed by — a `Symbol`, so the probe is
-  ; an `icmp`. `file`/`hdr` stay `ptr`: they are null-checked and printed.
+  ; an `icmp`. `file`/`hdr` are Symbols too — both are source paths (C7-5).
   name:Symbol
   ; The resolved type, or null = "known C type name, no Nucleus representation".
   (ty (raw Type))
   ; Where the typedef was declared, for the L5 diagnostics.
-  file:ptr
+  file:Symbol
   line:i32
   ; Stage 16: the header spelling the SOURCE imported to reach it — `"stdio.h"`,
   ; not the `/usr/include/…` file a linemarker names. `--emit-cheader` writes an
   ; `#include` of it, and only the imported spelling is portable.
-  hdr:ptr
+  hdr:Symbol
   ; 1 = written by the signature prescan, which resolves types with every C
   ; struct still opaque. A real import overwrites it; see c-typedef-record.
   provisional:i32
@@ -128,7 +128,7 @@
 ; <stdio.h> is spelled `#include <stdio.h>` by a consumer whatever glibc header
 ; it physically lives in. Lives here for the same cross-import reason as the
 ; table itself.
-(defvar g-cheader-import-header:ptr)
+(defvar g-cheader-import-header:Symbol)
 
 (defn c-typedef-find (name:Symbol):?ptr:CTypedef
   (let (cur:ptr g-cheader-typedefs)
@@ -147,7 +147,7 @@
 ; struct still opaque, so `typedef __sigset_t sigset_t;` is unrepresentable there
 ; and representable at the import; first-wins would freeze the prescan's verdict
 ; and silently skip every declaration using it. Provisional never overwrites.
-(defn c-typedef-record (name:Symbol ty:ptr file:ptr line:i32):void
+(defn c-typedef-record (name:Symbol ty:ptr file:Symbol line:i32):void
   (if-some (prev (c-typedef-find name))
     (do
       (when (or (= (prev 'provisional) 0) (!= g-cheader-typedef-provisional 0))

@@ -411,7 +411,7 @@
   (when (or (= c 63) (= c 33)) (return seg))
   (return (if (= c 58) 1 0)))
 
-(defn expand-ref-sigil (text:ptr len:i64):ptr
+(defn expand-ref-sigil (text:ptr len:i64):Symbol
   (let (n:i64 0
         i:i64 0
         seg:i32 1)
@@ -420,11 +420,12 @@
         (when (and (= c 38) (!= seg 0)) (set! n (+ n 1)))
         (set! seg (ref-sigil-seg-next c seg)))
       (set! i (+ i 1)))
-    (let (s:ptr (arena-strndup text len))
+    (let (s:Symbol (symbol-intern (strview (unsafe/cast (ptr ui8) text) (as usize len))))
       (when (= n 0) (return s))
       ; Left unexpanded so a retired marker still reaches reject-legacy-marker,
       ; which names its replacement instead of failing as `unknown type: rest`.
-      (when (!= (legacy-marker-tail s) null) (return s))
+      (let (mk:StrView (legacy-marker-tail (symbol-as-view s)))
+        (when (not (str-empty? (addr-of mk))) (return s)))
       (let (out:ptr (arena-alloc (+ (+ len (* 3 n)) 1))
             o:i64 0
             j:i64 0
@@ -441,8 +442,7 @@
                   (set! o (+ o 1))))
             (set! seg2 (ref-sigil-seg-next c seg2)))
           (set! j (+ j 1)))
-        (set! (aref (as ptr:i8 out) o) (unsafe/cast i8 0))
-        (return out)))))
+        (return (symbol-intern (strview (unsafe/cast (ptr ui8) out) (as usize o))))))))
 
 ; A retired `&x` marker must reach reject-legacy-marker, which names its keyword
 ; replacement, instead of being consumed by the `&` reader macro (ref-sigil.md §6).
@@ -451,8 +451,10 @@
     (while (!= (is-sym-char (cstr-byte-at g-src end)) 0)
       (set! end (+ end 1)))
     (when (<= (- end g-pos) 1) (return 0))
-    (let (tok:ptr (arena-strndup (unsafe/ptr+ (as ptr:i8 g-src) g-pos) (- end g-pos)))
-      (return (if (= (legacy-marker-tail tok) null) 0 1)))))
+    (let (tok:StrView (strview (unsafe/cast (ptr ui8) (unsafe/ptr+ (as ptr:i8 g-src) g-pos))
+                               (as usize (- end g-pos))))
+      (let (mk:StrView (legacy-marker-tail tok))
+        (return (if (str-empty? (addr-of mk)) 0 1))))))
 
 ; LW-4's two-step, as one place. `lib/parse.nuc`'s `FromStr` is keyed only on
 ; the target TYPE, so it cannot say "signed at this width, and if that overflows
@@ -560,12 +562,12 @@
         (let (tk:ptr:Tok (as ptr:Tok (alloc-tok)))
           (set! (tk 'kind) TOK-KEYWORD)
           (set! (tk 'line) start-line)
-          (set! (tk 's) (sym-of (expand-ref-sigil (unsafe/ptr+ (as ptr:i8 text) 1) (- len 1))))
+          (set! (tk 's) (expand-ref-sigil (unsafe/ptr+ (as ptr:i8 text) 1) (- len 1)))
           (return (ok (as ptr tk)))))
       (let (ts:ptr:Tok (as ptr:Tok (alloc-tok)))
         (set! (ts 'kind) TOK-SYMBOL)
         (set! (ts 'line) start-line)
-        (set! (ts 's) (sym-of (expand-ref-sigil text len)))
+        (set! (ts 's) (expand-ref-sigil text len))
         (return (ok (as ptr ts)))))))
 
 (defn next-tok ():!ptr
@@ -664,7 +666,7 @@
           (let (tq:ptr:Tok (as ptr:Tok (alloc-tok)))
             (set! (tq 'kind) TOK-RMACRO)
             (set! (tq 'line) line)
-            (set! (tq 's) (sym-of (rm 'wrap-sym)))
+            (set! (tq 's) (rm 'wrap-sym))
             (return (ok (as ptr tq)))))))
     ; Stage 14 NS-4 (design/stage14/native-strings.md): `c"…"` — a `c` glued
     ; directly to an opening quote with no whitespace — is an explicit CStr
@@ -728,10 +730,13 @@
 ; emitted IR — is unchanged from when the reader built the whole expansion.
 ; ============================================================
 
-; Build a single-symbol Node from a C string (interned: identical spellings
-; share identity, matching reader-produced symbols elsewhere).
-(defn lit-sym (s:ptr):ptr
-  (return (as ptr (intern-symbol s))))
+; Build a single-symbol Node from a name (interned: identical spellings share
+; identity, matching reader-produced symbols elsewhere).
+(defn lit-sym (s:Symbol):ptr
+  (return (as ptr (intern-node s))))
+
+(defn lit-sym (s:StrView):ptr
+  (return (as ptr (intern-node (symbol-intern s)))))
 
 ; Build the node list `( <a> <b> )`.
 (defn lit-list2 (a:ptr b:ptr line:i32):ptr
@@ -774,9 +779,7 @@
 ;
 ; Kinds 1 and 2 are *adaptable* — an integer literal alongside an `i64` value
 ; makes the collection `i64`, exactly as `(conj v 1)` on a `(Vector i64)` is
-; already accepted. Kinds 3-5 are fixed, and deliberately keep the spelling the
-; reader always gave them: `node-type` types a NODE-STR as StrView (NS-3), so
-; asking it here would silently retype every existing `["a" "b"]`.
+; already accepted. Kinds 3-5 are fixed.
 (defn lit-elem-kind (n:ptr):i32
   (when (= n null) (return 0))
   (let (nn:ptr:Node (as ptr:Node n))
@@ -801,7 +804,7 @@
 (defn lit-type-node (kind:i32 line:i32):ptr
   (when (= kind 1) (return (lit-sym "i32")))
   (when (= kind 2) (return (lit-sym "f64")))
-  (when (= kind 3) (return (lit-sym "CStr")))
+  (when (= kind 3) (return (lit-sym "StrView")))
   (when (= kind 4) (return (lit-sym "Keyword")))
   ; A quoted symbol lowers to intern-symbol, whose result is non-null — see
   ; quoted-datum-type in src/nucleusc.nuc.

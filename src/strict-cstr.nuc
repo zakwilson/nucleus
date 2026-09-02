@@ -152,20 +152,20 @@
 
 ; The hook on the named-call funnel. `ft` is the callee's TY-FN type as
 ; `emit-call-with-args` has it.
-(defn strict-cstr-check-call (name:CStr (ft (raw Type)) line:i32):void
+(defn strict-cstr-check-call (name:Symbol (ft (raw Type)) line:i32):void
   (when (= g-strict-cstr 0) (return))
-  (when (= (as ptr name) null) (return))
+  (when (symbol-none? name) (return))
   (sc-load)
-  (let (nv:StrView (strview-from-cstr name)
+  (let (nv:StrView (symbol-as-view name)
         cls:i32 (sc-classify nv))
     (when (= cls SC-SEAM) (return))
     (when (= cls SC-STRPTR)
-      (sc-report line (fstr "ptr-as-string returned by '" (as ptr name) "'"))
+      (sc-report line (fstr "ptr-as-string returned by '" name "'"))
       (return))
     (when (= cls SC-CFN)
-      (sc-report line (fstr "C string function '" (as ptr name) "'"))
+      (sc-report line (fstr "C string function '" name "'"))
       (return))
-    (sc-check-sig ft (fstr "'" (as ptr name) "'") line)))
+    (sc-check-sig ft (fstr "'" name "'") line)))
 
 ; A libc string call the compiler writes into the IR as text, so it never
 ; reaches the call funnel. Counted under the same `cfn` entry as a written one —

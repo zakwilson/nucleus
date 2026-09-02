@@ -110,6 +110,12 @@
 (defn symbol-contains-byte (self:Symbol b:i32):bool
   (return (!= (memchr (as ptr (self 'p)) b (as i64 (symbol-len self))) null)))
 
+; The `i`th byte. Unchecked, deliberately: every caller is a one-character test
+; on a name whose length it has already established, and index `len` reads the
+; interner's own NUL rather than running off the end.
+(defn symbol-byte-at (self:Symbol i:usize):i32
+  (return (as i32 (aref (self 'p) (as i64 i)))))
+
 ; ---------------------------------------------------------------------------
 ; The table — open-addressed, power-of-two, linear probing.
 ;

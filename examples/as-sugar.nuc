@@ -7,6 +7,7 @@
 
 (import-use "stdio.h")
 (import-use hashset)
+(import-use strview)
 (import-use hashmap)
 
 (defstruct Rec (k i32))
@@ -17,7 +18,7 @@
 
 ; The motivating shape: a cast in argument position, without the extra parens.
 (defn lookup (baz:ptr:i8):void
-  (if (contains? #{"foo" "bar"} baz:CStr)
+  (if (contains? #{"foo" "bar"} (strview-from-cstr baz:CStr))
     (printf "hit\n")
     (printf "miss\n")))
 

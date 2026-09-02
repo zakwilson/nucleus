@@ -100,7 +100,7 @@
 ; Export one overloaded method, carrying its mangled symbol explicitly so the
 ; importer can declare it and register it for dispatch (new-style signature):
 ;   (defmethod "@area.pCircle" area ((c (ptr Circle))) :i32)
-(defn emit-nuch-defmethod (form:ptr mangled:ptr):void
+(defn emit-nuch-defmethod (form:ptr mangled:Symbol):void
   (emit (as ptr stdout) "(defmethod \"" mangled "\" " (defn-name-only (node-at form 1)) " (")
   (let (params:ptr (node-at form 2))
     (dotimes (i (node-len params))
@@ -126,7 +126,7 @@
     (return))
   (let (mangled:Symbol (defn-form-mangled-name form))
     (if (not (symbol-none? mangled))
-      (emit-nuch-defmethod form (sym-ptr mangled))
+      (emit-nuch-defmethod form mangled)
       (emit-nuch-declare form))))
 
 ; Protocols and conformances export verbatim — the importer re-registers them
@@ -250,6 +250,12 @@
     (when (strview-ends-with (addr-of sv) (addr-of suffix)) (return 1))
     (return 0)))
 
+; The `Symbol` overload beside it — a name's bytes are the view, with no `strlen`.
+(defn str-ends-with (s:Symbol suffix:StrView):i32
+  (let (sv:StrView (symbol-as-view s))
+    (when (strview-ends-with (addr-of sv) (addr-of suffix)) (return 1))
+    (return 0)))
+
 ; Stage 15 W3c fallout (cheader.md, "Unnamed `declare` parameters carry types"):
 ; a `declare` parameter list admits an UNNAMED parameter written as its bare type
 ; — `(declare lseek (i32 i64 i32):i64)` — alongside the named `name:type` form
@@ -350,9 +356,9 @@
       (while (< i (unsafe/cast i32 (count (gg 'methods))))
         (let (mi:ptr:Method (as ptr:Method (invoke (gg 'methods) i:usize)))
           (when (and (= (mi 'kind) METHOD-USER) (!= (as ptr (mi 'body)) null))
-            (let (f:ptr (mi 'src-file))
-              (when (= f null) (set! f "<unknown file>"))
-              (return (fcstr f:CStr ":" (-> mi (_ 'body) (unsafe/cast ptr:Node _) (_ 'line)))))))
+            (let (f:Symbol (mi 'src-file))
+              (when (symbol-none? f) (set! f (symbol-intern "<unknown file>")))
+              (return (fcstr f ":" (-> mi (_ 'body) (unsafe/cast ptr:Node _) (_ 'line)))))))
         (inc! i))
       (return null))))
 
@@ -442,7 +448,7 @@
           ; register-and-emit.
           (when (= m NUCH-AFTER)
             (when (= (import-list-has g-nuch-registered
-                       (nuch-reg-key g-source-path fname)) 0)
+                       (symbol-from-cstr (nuch-reg-key (symbol-as-cstr g-source-path) fname))) 0)
               (set! m NUCH-BOTH)))
           ; Skip if already defined (e.g. from include or c-include).
           ; B2b: a KEY question — this is the definition side of the `scope-define`
@@ -466,8 +472,8 @@
           ; both naming `strlen`) answers no, which is every occurrence in this repo.
           (when (and (!= m NUCH-AFTER)
                      (!= (scope-lookup-key g-globals fname) null))
-            (when (and (!= g-source-path null)
-                       (!= (str-ends-with g-source-path:CStr ".nuch") 0))
+            (when (and (not (symbol-none? g-source-path))
+                       (!= (str-ends-with g-source-path ".nuch") 0))
               (let (site:ptr (nuch-definition-site fname))
                 (when (!= site null)
                   (die-at (ff 'line)
@@ -537,7 +543,7 @@
             (when (= m NUCH-REG)
               (set! g-nuch-registered
                     (import-list-push g-nuch-registered
-                      (nuch-reg-key g-source-path fname)))))
+                      (symbol-from-cstr (nuch-reg-key (symbol-as-cstr g-source-path) fname))))))
           (when (!= m NUCH-REG)
             ; Emit LLVM declare, lowering struct-by-value params/return to the
             ; platform C ABI (sret / byval / register coercion) just like a defn.
@@ -556,7 +562,7 @@
                   (abi-print-param
                    (abi-classify-arg (aref (as ptr:ptr ptypes) j))
                    (aref (as ptr:ptr ptypes) j)
-                   null)
+                   (symbol-none))
                   (set! need-comma 1)))
               ; Trailing LLVM function attributes, additive so a `declare` and the
               ; `define` it names carry the same set (emit-defn does the same).
@@ -592,7 +598,7 @@
           params-node:ptr (node-at form 3))
       (when (!= (sym-node 'kind) NODE-STR)
         (die-at (sym-node 'line) "defmethod: first element must be the mangled symbol string"))
-      (let (mangled:ptr (sym-ptr (sym-node 's))
+      (let (mangled:Symbol (sym-node 's)
             fname:Symbol (name-node 's)
             ret:ptr (fn-parse-ret-type (node-at form 4) (ff 'line)))
         (when (= ret null)
@@ -604,7 +610,7 @@
             (let (m:ptr (generic-register-method fname ret ptypes nparams has-rest 0 null))
               (defn-params-set-opt (as raw:Node params-node)
                 (unsafe/cast ptr:Type ((as ptr:Method m) 'fn-type)))
-              (set! ((as ptr:Method m) 'ir-name) (sym-of mangled))
+              (set! ((as ptr:Method m) 'ir-name) mangled)
               ; Stage 15 W9 item 24: the producing unit emitted this symbol, so
               ; finalize-generics may not rename it. Until now that held only by
               ; coincidence — a re-mangle recomputed the same string — and stopped
@@ -636,7 +642,7 @@
                 (abi-print-param
                   (abi-classify-arg (aref (as ptr:ptr ptypes) j))
                   (aref (as ptr:ptr ptypes) j)
-                  null)
+                  (symbol-none))
                 (set! need-comma 1)))
             (emit g-out ")")
             (when (!= is-noreturn 0) (emit g-out " noreturn"))
@@ -704,8 +710,8 @@
   ; did, the three registering arms below emit only — re-registering would append
   ; a second Method for every `defmethod`, which `finalize-generics` then reports
   ; as a duplicate overload.
-  (let (mode:i32 (if (and (!= g-source-path null)
-                          (!= (import-list-has g-prescan-sigs g-source-path:CStr) 0))
+  (let (mode:i32 (if (and (not (symbol-none? g-source-path))
+                          (!= (import-list-has g-prescan-sigs g-source-path) 0))
                    NUCH-AFTER NUCH-BOTH))
   (let (it:ListIter (list-iter forms))
     (doseq-iter (fc (addr-of it))

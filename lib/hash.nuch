@@ -11,6 +11,8 @@
 (extend f32 Hash)
 (defmethod "@hash.pf32" hash ((self (ref f32))) :usize)
 (defmethod "@hash.ppNode" hash ((self (ref (ref Node)))) :usize)
+(extend StrView Hash)
+(defmethod "@hash.pStrView" hash ((self (ref StrView))) :usize)
 (declare hash-null-cstr () :void)
 (extend CStr Hash)
 (defmethod "@hash.pcstr" hash ((self (ref CStr))) :usize)

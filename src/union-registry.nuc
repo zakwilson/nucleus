@@ -42,9 +42,9 @@
       (set! h (fnv-byte h (tt 'arr-len)))
       (set! h (hash-type h (tt 'elem))))
     (when (= k TY-STRUCT)
-      (set! h (fnv-str h (sym-ptr ((tt 'sdef) 'name)))))
+      (set! h (fnv-str h (symbol-as-cstr ((tt 'sdef) 'name)))))
     (when (= k TY-UNION)
-      (set! h (fnv-str h (sym-ptr ((tt 'sdef) 'name)))))
+      (set! h (fnv-str h (symbol-as-cstr ((tt 'sdef) 'name)))))
     (when (= k TY-FN)
       (set! h (hash-type h (tt 'ret)))
       (set! h (fnv-byte h (tt 'num-params)))
@@ -79,10 +79,10 @@
                                   align:i32):ref:StructDef
   (let (hash:i64 (+ (hash-struct-shape field-names field-types faligns fbits nfields)
                     (+ packed (* (as i64 align) 65599)))
-        synth:ptr (fcstr "__anon_struct_h" (hex hash 16))
-        sd:ptr (lookup-struct (sym-of synth)))
+        synth:Symbol (symbol-intern (fstr "__anon_struct_h" (hex hash 16)))
+        sd:ptr (lookup-struct synth))
     (when (= sd null)
-      (set! sd (register-struct (sym-of synth)))
+      (set! sd (register-struct synth))
       (let (sd2:ptr:StructDef (as ptr:StructDef sd))
         (set! (sd2 'packed) packed)
         (set! (sd2 'align-attr) align)
@@ -126,10 +126,10 @@
                                  align:i32):ref:StructDef
   (let (hash:i64 (+ (hash-struct-shape field-names field-types faligns fbits nfields)
                     (+ packed (* (as i64 align) 65599)))
-        synth:ptr (fcstr "__anon_union_h" (hex hash 16))
-        sd:ptr (lookup-struct (sym-of synth)))
+        synth:Symbol (symbol-intern (fstr "__anon_union_h" (hex hash 16)))
+        sd:ptr (lookup-struct synth))
     (when (= sd null)
-      (set! sd (register-struct (sym-of synth)))
+      (set! sd (register-struct synth))
       (let (sd2:ptr:StructDef (as ptr:StructDef sd))
         (set! (sd2 'packed) packed)
         (set! (sd2 'align-attr) align)
@@ -541,13 +541,13 @@
 ; g-vtable-table) — never explicitly reset, so `ref` not `raw`.
 (defvar (g-boxedfn-table (ref (Vector (ref BoxedFnEntry)))) (vector-new-in (addr-of g-arena-alloc)))
 
-(defn boxedfn-memo-lookup (key:ptr):ptr
+(defn boxedfn-memo-lookup (key:Symbol):ptr
   (dotimes (i (unsafe/cast i32 (count g-boxedfn-table)))
     (let (e:ref:BoxedFnEntry (invoke g-boxedfn-table i:usize))
       (when (= (e 'key) key) (return (as ptr (e 'ty))))))
   (return null))
 
-(defn boxedfn-memo-put (key:ptr ty:ptr):void
+(defn boxedfn-memo-put (key:Symbol ty:ptr):void
   (let (rec:ref:BoxedFnEntry (new BoxedFnEntry))
     (set! (rec 'key) key)
     (set! (rec 'ty) (as raw:Type ty))
@@ -571,7 +571,7 @@
 (defn boxedfn-type (param-arr:ptr num-p:i32 ret:ptr line:i32):ptr
   (let ((pvec (ref (Vector (ref Field)))) (make-param-vec param-arr num-p)
         tok:StrView (boxedfn-sig-token pvec num-p ret)
-        key:ptr (intern-str (fcstr "BoxedFn." tok))
+        key:Symbol (symbol-intern (fstr "BoxedFn." tok))
         hit:ptr (boxedfn-memo-lookup key))
     (when (!= hit null) (return hit))
     (let (nm:Symbol (symbol-intern (sanitize-for-ir (fstr "__boxedfn." tok)))
@@ -998,19 +998,19 @@
       (set! cur arms)
       (while (!= cur null)
         (let (arm:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node cur) 'car))
-              aname:ptr null
+              aname:Symbol (symbol-none)
               fnames:ptr null
               ftypes:ptr null
               nf:i32 0)
           (if (= (arm 'kind) NODE-SYM)
-            (set! aname (sym-ptr (arm 's)))
+            (set! aname (arm 's))
             (do
               (when (or (!= (arm 'kind) NODE-CELL) (= (node-len (as ptr arm)) 0))
                 (die-at (node-line (as ptr arm) line) "defunion: arm must be `name` or `(name field:type ...)`"))
               (let (an:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr arm) 0)))
                 (when (!= (an 'kind) NODE-SYM)
                   (die-at (node-line (as ptr an) line) "defunion: arm name must be a symbol"))
-                (set! aname (sym-ptr (an 's))))
+                (set! aname (an 's)))
               (set! nf (- (node-len (as ptr arm)) 1))
               (when (> nf 0)
                 (set! fnames (arena-alloc (* (as i64 nf) (ptr-bytes))))
@@ -1038,7 +1038,7 @@
                   (when (= nf 0)
                     (set! fnames null)
                     (set! ftypes null))))))
-          (when (>= (union-arm-index-in (sym-of aname) arms-vec) 0)
+          (when (>= (union-arm-index-in aname arms-vec) 0)
             (die-at (node-line (as ptr arm) line) (fstr "defunion: duplicate arm '" aname "'")))
           ; Arm payload: nothing (payload-less), the single field's type, or a
           ; memoized anonymous struct of the fields.
@@ -1049,7 +1049,7 @@
                                  (as raw:Type (aref (as ptr:ptr ftypes) 0))
                                  (as raw:Type
                                    (type-for-sdef (lookup-or-make-anon-struct fnames ftypes null null nf 0 0))))))
-            (set! (rec 'name) (sym-of aname))
+            (set! (rec 'name) aname)
             (set! (rec 'ptype) pty)
             (set! (rec 'fnames) fnames)
             (set! (rec 'ftypes) ftypes)
@@ -1083,7 +1083,7 @@
               (while (< i narms)
                 (let (arm-rec:ref:Arm (invoke arms-vec i:usize))
                   (when (!= (arm-rec 'ptype) null)
-                    (set! (aref (as ptr:ptr mnames) mi) (sym-ptr (arm-rec 'name)))
+                    (set! (aref (as ptr:Symbol mnames) mi) (arm-rec 'name))
                     (set! (aref (as ptr:ptr mtypes) mi) (arm-rec 'ptype))
                     (inc! mi)))
                 (inc! i))
@@ -1189,7 +1189,7 @@
     ; `key` is the canonical registry key the template is stored and stamped under,
     ; so a stamped instance inherits the template's namespace rather than the
     ; stamping site's. Identity under `user`.
-    (let (name:ptr (sym-ptr (name-node 's))
+    (let (name:Symbol (name-node 's)
           key:Symbol (qualify-name (name-node 's))
           ntv:i32 (- (node-len (as ptr head)) 1))
       (when (< ntv 1)
@@ -1220,10 +1220,10 @@
         (do
           (when (!= (same-definition-site (prevt 'src-file) (prevt 'src-line) (ff 'line)) 0)
             (return))
-          (die-redefinition (sym-of name) (ff 'line) BK-UNION-TEMPLATE
+          (die-redefinition name (ff 'line) BK-UNION-TEMPLATE
                             (prevt 'src-file) (prevt 'src-line)))
         0)
-      (guard-name-kind (sym-of name) (ff 'line) NK-TYPE)
+      (guard-name-kind name (ff 'line) NK-TYPE)
       (when (>= (unsafe/cast i32 (count g-union-templates)) MAX-UNION-TEMPLATES)
         (die-at (ff 'line) "too many defunion templates"))
       (let (tyvars:ptr (arena-alloc (* ntv (ptr-bytes))))
@@ -1261,7 +1261,7 @@
     ; instead of dereferencing the NULL node `()` reads as.
     (when (!= (node-kind (as ptr name-node)) NODE-SYM)
       (die-at (node-line (as ptr head) (ff 'line)) "defstruct: template name must be a symbol"))
-    (let (name:ptr (sym-ptr (name-node 's))
+    (let (name:Symbol (name-node 's)
           key:Symbol (qualify-name (name-node 's))
           ntv:i32 (- (node-len (as ptr head)) 1))
       (when (< ntv 1)
@@ -1283,10 +1283,10 @@
         (do
           (when (!= (same-definition-site (prevt 'src-file) (prevt 'src-line) (ff 'line)) 0)
             (return))
-          (die-redefinition (sym-of name) (ff 'line) BK-STRUCT-TEMPLATE
+          (die-redefinition name (ff 'line) BK-STRUCT-TEMPLATE
                             (prevt 'src-file) (prevt 'src-line)))
         0)
-      (guard-name-kind (sym-of name) (ff 'line) NK-TYPE)
+      (guard-name-kind name (ff 'line) NK-TYPE)
       (when (>= (unsafe/cast i32 (count g-struct-templates)) MAX-STRUCT-TEMPLATES)
         (die-at (ff 'line) "too many defstruct templates"))
       (let (tyvars:ptr (arena-alloc (* ntv (ptr-bytes))))
@@ -1350,26 +1350,27 @@
     ; argument has to be one token — a segment has nowhere to put a paren form.
     (when (symbol-contains-byte (n 's) 58)
       (let (segs:ptr (split-colon-segments (n 's) line)
-            acc:ptr null
+            acc:StrView ""
             hit:i32 0)
         (let (it:ListIter (list-iter segs))
           (doseq-iter (e (addr-of it))
-            (let (seg:ptr (sym-ptr ((as ptr:Node e) 's))
-                  si:i32 (tyvar-index-of (sym-of seg) tyvars ntv)
-                  piece:ptr seg)
+            (let (seg:Symbol ((as ptr:Node e) 's)
+                  si:i32 (tyvar-index-of seg tyvars ntv)
+                  piece:Symbol seg)
               (when (>= si 0)
                 (do (set! hit 1)
                     (let (a:ptr (aref (as ptr:ptr args) si))
                       (when (!= (node-kind a) NODE-SYM)
                         (die-at line (fstr "deftype: parameter '" seg
                                            "' is spelled in a colon chain, so its argument must be a single token — write the alias body in list form")))
-                      (set! piece (sym-ptr ((unsafe/cast ptr:Node a) 's))))))
-              (if (= acc null) (set! acc piece) (set! acc (fcstr acc ":" piece))))))
-        (when (and (!= hit 0) (!= acc null))
+                      (set! piece ((unsafe/cast ptr:Node a) 's)))))
+              (if (str-empty? (addr-of acc)) (set! acc (symbol-as-view piece))
+                (set! acc (fstr acc ":" piece))))))
+        (when (and (!= hit 0) (not (str-empty? (addr-of acc))))
           (let (new:ptr:Node (as ptr:Node (alloc-node)))
             (set! (new 'kind) NODE-SYM)
             (set! (new 'line) (n 'line))
-            (set! (new 's) (sym-of acc))
+            (set! (new 's) (symbol-intern acc))
             (return (as raw:Node (as ptr new)))))))
     (return node)))
 
@@ -1433,7 +1434,7 @@
         (die-at (ff 'line) "deftype: alias name must be a symbol"))
       (reject-colon-in-def-name (as raw:Node spec) "deftype" (ff 'line))
       (let (name-node:ptr:Node (unsafe/cast ptr:Node spec)
-            name:ptr (sym-ptr ((unsafe/cast ptr:Node spec) 's))
+            name:Symbol ((unsafe/cast ptr:Node spec) 's)
             key:Symbol (qualify-name ((unsafe/cast ptr:Node spec) 's))
             body:ptr (node-at form 2))
         (when (= body null)
@@ -1442,7 +1443,7 @@
         ; calls: the prescan pass catches a type name defined ABOVE the alias,
         ; the emit pass one defined BELOW it (by then the whole unit is
         ; registered). One check, both directions, no other definer touched.
-        (let (clash:CStr (type-name-collision (sym-of name)))
+        (let (clash:CStr (type-name-collision name))
           (when (!= clash null)
             (die-at (ff 'line)
               (fstr "deftype: '" name "' already names " clash
@@ -1455,10 +1456,10 @@
                     (do (set! (prev 'src-ns) g-current-ns)
                         (set! g-priv-bindings 1)))
                   (return)))
-            (die-redefinition (sym-of name) (ff 'line) BK-TYPE-ALIAS
+            (die-redefinition name (ff 'line) BK-TYPE-ALIAS
                               (prev 'src-file) (prev 'src-line)))
           0)
-        (guard-name-kind (sym-of name) (ff 'line) NK-TYPE)
+        (guard-name-kind name (ff 'line) NK-TYPE)
         (when (>= (unsafe/cast i32 (count g-type-aliases)) MAX-TYPE-ALIASES)
           (die-at (ff 'line) "too many type aliases"))
         (let (ta:ptr:TypeAlias (as ptr:TypeAlias (arena-alloc (sizeof TypeAlias))))
@@ -1677,7 +1678,7 @@
         (if (!= (node-kind nd) NODE-KEYWORD)
           (set! done 1)
           (do
-            (let (nm:ptr (sym-ptr ((unsafe/cast ptr:Node nd) 's)))
+            (let (nm:Symbol ((unsafe/cast ptr:Node nd) 's))
               (cond
                 (= nm "packed")
                   (set! flags (bit-or flags STRUCT-ATTR-PACKED))
