@@ -177,6 +177,20 @@ Both iterators are returned **by value** and alias the StrView's buffer. They mu
     (printf "%d\n" b)))
 ```
 
+### Number scanning
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `strview-parse-magnitude` | `(sv:StrView radix:i32 limit:ui64) → !ui64` | All of `sv` as an unsigned value in `radix` (2–36, digits `0-9a-zA-Z`, case-insensitive). `parse-int-error` on empty, on a byte that is not a digit of that radix, or on a magnitude above `limit`. |
+| `strview-parse-sign` | `(sv:StrView out-start:ptr:usize) → i32` | 1 when `sv` begins with `-`, else 0; stores the index of the first digit (1 after a `+` or `-`, else 0). |
+| `strview-drop-bytes` | `(sv:StrView start:usize) → StrView` | The bytes from `start` on, unchecked. |
+
+These are the primitives under `(parse T …)` (§7), public because two things
+`FromStr` cannot express are sometimes needed: a **radix** (the protocol is keyed
+only on the target type) and an explicit **limit** — which is what lets a caller
+try a signed width and then retry the same digits unsigned. The limit is tested
+before each multiply, so no wraparound is involved.
+
 ### Sub-slice
 
 | Function | Signature | Description |
@@ -197,9 +211,19 @@ Errors:
 | `strview-rfind-byte` | `(sv:(ref StrView) b:ui8) → (Maybe usize)` | Last index of byte `b`, or `none`. |
 | `strview-find-char` | `(sv:(ref StrView) c:Char) → (Maybe usize)` | First byte index at which `c` is encoded, or `none`. |
 | `strview-rfind-char` | `(sv:(ref StrView) c:Char) → (Maybe usize)` | Last byte index at which `c` is encoded, or `none`. |
-| `strview-starts-with` | `(sv:(ref StrView) prefix:(ref StrView)) → i32` | 1 if `sv` begins with `prefix` (byte-level), else 0. |
-| `strview-ends-with` | `(sv:(ref StrView) suffix:(ref StrView)) → i32` | 1 if `sv` ends with `suffix` (byte-level), else 0. |
-| `strview-contains-str` | `(sv:(ref StrView) needle:(ref StrView)) → i32` | 1 if `needle` appears anywhere in `sv`, else 0. |
+| `strview-starts-with` | `(sv:(ref StrView) prefix:(ref StrView)) → bool` | True if `sv` begins with `prefix` (byte-level). |
+| `strview-ends-with` | `(sv:(ref StrView) suffix:(ref StrView)) → bool` | True if `sv` ends with `suffix` (byte-level). |
+| `strview-contains-str` | `(sv:(ref StrView) needle:(ref StrView)) → bool` | True if `needle` appears anywhere in `sv`. |
+| `strview-has-prefix` | `(sv:StrView prefix:StrView) → bool` | By-value `strview-starts-with`. |
+| `strview-has-suffix` | `(sv:StrView suffix:StrView) → bool` | By-value `strview-ends-with`. |
+| `strview-contains` | `(sv:StrView needle:StrView) → bool` | By-value `strview-contains-str`. |
+
+**Use the by-value forms with a literal.** Address-of is lvalue-only and a string
+literal is not an lvalue, so `(strview-starts-with (addr-of sv) "avr")` does not
+compile — the three by-reference predicates require the pattern to be a named
+local. `(strview-has-prefix sv "avr")` is the same test with the literal written
+where it reads. The by-reference forms remain the right choice when the caller
+already holds a `(ref StrView)`; the by-value ones delegate to them.
 
 Returning `(Maybe usize)` is not an error — "not found" is a legitimate result, not a failure.
 
@@ -480,6 +504,7 @@ All three return a `StrView` by value that borrows the same underlying bytes. No
 |-----------|-----|--------|
 | `i32` | `!i32` | `(import-use parse)` |
 | `i64` | `!i64` | `(import-use parse)` |
+| `ui64` | `!ui64` | `(import-use parse)` |
 | `f64` | `!f64` | `(import-use parse)` |
 
 ### `parse` macro
@@ -494,18 +519,30 @@ All three return a `StrView` by value that borrows the same underlying bytes. No
 ```lisp
 (parse i32 sv)   ; → !i32
 (parse i64 sv)   ; → !i64
+(parse ui64 sv)  ; → !ui64
 (parse f64 sv)   ; → !f64
 ```
 
 ### Parsing semantics
 
-All three conformances are **strict**:
-- Empty input → error
-- Leading whitespace → error (unlike libc `strtol`, which skips whitespace)
+All four conformances are **strict**:
+- Empty input, or a sign with no digits → error
+- Leading whitespace → error (unlike libc `strtol`, which skips it). No special
+  case is needed for this: a space is not a digit.
 - All bytes must be consumed; trailing non-numeric characters → error
-- `i32` overflow → `parse-int-error` (range checked against `[-2147483648, 2147483647]`)
-- `i64` overflow → `parse-int-error` (detected by `strtoll` + consumed-bytes check)
-- `f64`: delegates to `strtod`; zero bytes consumed → `parse-float-error`; trailing garbage → `parse-float-error`
+- Overflow → `parse-int-error`, at every width. The integer conformances walk the
+  digits through `strview-parse-magnitude` (§3) rather than delegating to libc,
+  and the range that admits `-9223372036854775808` correctly rejects
+  `+9223372036854775808`.
+- `ui64` refuses a leading `-` rather than wrapping it: the point of the unsigned
+  conformance is the range above `i64`, where a negative is a user error and not
+  a bit pattern.
+- `f64`: delegates to `strtod`; zero bytes consumed → `parse-float-error`;
+  trailing garbage → `parse-float-error`
+
+Before Stage 17, `(parse i64 "99999999999999999999")` returned
+`(ok 9223372036854775807)`: `strtoll` clamps and reports the overflow only
+through `errno`, which the consumed-bytes check cannot see.
 
 ```lisp
 (import-use parse)
@@ -524,7 +561,8 @@ All three conformances are **strict**:
 
 ## §8 — Error codes
 
-All string-related error codes (defined in `lib/string-errors.nuc` and `lib/parse.nuc`):
+All string-related error codes (defined in `lib/string-errors.nuc`, except
+`parse-float-error` in `lib/parse.nuc`):
 
 | Error code | Message | Raised by |
 |------------|---------|-----------|
@@ -532,7 +570,7 @@ All string-related error codes (defined in `lib/string-errors.nuc` and `lib/pars
 | `invalid-char-boundary` | `"byte offset is not a UTF-8 codepoint boundary"` | `sub-bytes`, `string-truncate` |
 | `invalid-utf8` | `"bytes are not valid UTF-8"` | `string-from-cstr`, `string-from-view`, `string-push-str` |
 | `invalid-codepoint` | `"value is not a Unicode scalar value"` | `char-from-u32` |
-| `parse-int-error` | `"invalid integer"` | `(parse i32 …)`, `(parse i64 …)` |
+| `parse-int-error` | `"invalid integer"` | `strview-parse-magnitude`, and so `(parse i32 …)` / `(parse i64 …)` / `(parse ui64 …)` |
 | `parse-float-error` | `"invalid float"` | `(parse f64 …)` |
 | `io-write-failed` | `"write failed"` | `write-str` on a `CFile`/`FdOut`/`File`, `file-close` |
 | `io-open-failed` | `"cannot open file"` | `file-open-read`, `file-create`, `file-open-append` |
