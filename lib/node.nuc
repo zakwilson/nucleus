@@ -149,15 +149,14 @@
                             (sym-node-hash (e 'spelling)))))
         (inc! i)))))
 
-(defn intern-symbol (s:CStr):ref:Node
+(defn intern-node (sym:Symbol):ref:Node
   (when (= g-intern-cap 0)
     (set! g-intern-cap 1024)
     (set! g-intern-table (arena-alloc (* (as i64 g-intern-cap)
                                          (sizeof InternEntry)))))
   (when (>= (* g-intern-len 2) g-intern-cap)
     (sym-node-grow))
-  (let (sym:Symbol (symbol-from-cstr s)
-        canon:ptr (as ptr (sym 'p))
+  (let (canon:ptr (as ptr (sym 'p))
         mask:i64 (as i64 (- g-intern-cap 1))
         j:i64 (bit-and (unsafe/cast i64 (symbol-cached-hash sym)) mask))
     (while (!= 0 1)
@@ -167,7 +166,7 @@
           (let (nd:ref:Node (alloc-node))
             (set! (nd 'kind) NODE-SYM)
             (set! (nd 'line) 0)
-            (set! (nd 's) canon)
+            (set! (nd 's) sym)
             (set! (e 'spelling) canon)
             (set! (e 'node) nd)
             (inc! g-intern-len)
@@ -175,3 +174,7 @@
         (when (= (e 'spelling) canon)
           (return (e 'node))))
       (set! j (bit-and (+ j 1) mask)))))
+
+; The `'foo` lowering calls this with a literal, so the CStr entry point stays.
+(defn intern-symbol (s:CStr):ref:Node
+  (return (intern-node (symbol-from-cstr s))))

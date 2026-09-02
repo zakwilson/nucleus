@@ -16,11 +16,19 @@
 
 (import-use "string.h")
 
+; Stage 17 C7-1 (design/stage17-native-strings/c7-interned-substrate.md §2.2):
+; Symbol — one word pointing at interned bytes, with `[hash][len]` behind the
+; pointer. Promoted here for the same reason StrView was: `Node.s` is a Symbol,
+; so the reader, the macro JIT module and the bootstrap all need the type
+; registered without importing anything. `lib/intern.nuc` provides the table
+; and every method; this is only the bare data definition.
+(defstruct Symbol p:(ptr ui8))
+
 (defstruct Node
   kind:i32
   line:i32
   i:i64
-  s:ptr
+  s:Symbol
   (car (raw Node))
   (cdr (raw Node)))
 
@@ -43,14 +51,6 @@
 (defstruct StrView
   data:(ptr ui8)
   len:usize)
-
-; Stage 17 C7-1 (design/stage17-native-strings/c7-interned-substrate.md §2.2):
-; Symbol — one word pointing at interned bytes, with `[hash][len]` behind the
-; pointer. Promoted here for the same reason StrView was: `Node.s` is a Symbol,
-; so the reader, the macro JIT module and the bootstrap all need the type
-; registered without importing anything. `lib/intern.nuc` provides the table
-; and every method; this is only the bare data definition.
-(defstruct Symbol p:(ptr ui8))
 
 (import-use macros)
 

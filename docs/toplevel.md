@@ -404,10 +404,17 @@ wasteful; the arena calls `malloc`/`perror`, which avr-libc does not have, so th
 only way to build for AVR was `(exclude-prelude)` — giving up `if`, `when`,
 `unless`, `->` and the variadic operators as well.
 
-The prelude now holds only forms that emit no IR: the `Node` and `StrView`
-**types**, the `NODE-*` enum, the standard macros, `Clone`, and the `Result` /
-`Maybe` templates. The runtime is `lib/node.nuc`, imported like any other
-library. A prelude-only program emits **one** definition, its own `main`.
+The prelude now holds only forms that emit no IR: the `Node`, `StrView` and
+`Symbol` **types**, the `NODE-*` enum, the standard macros, `Clone`, and the
+`Result` / `Maybe` templates. The runtime is `lib/node.nuc`, imported like any
+other library. A prelude-only program emits **one** definition, its own `main`.
+
+`Node.s` is a [`Symbol`](stdlib.md#symbol-libinternnuc-stage-17) — one word pointing at interned
+bytes. `lib/node.nuc` keeps the canonical-`Node`-per-spelling map on top of it:
+`intern-node` takes the `Symbol`, `intern-symbol` is the `CStr` wrapper `'foo`
+lowers to. `lib/intern.nuc` owns the byte table itself and imports nothing but
+libc and `lib/fnv.nuc`, so a macro-using program does not drag the string stack
+— and, on AVR, does not become uncompilable for it.
 
 Three things lower to calls on that runtime, so a program using any of them needs
 `(import-use node)`:

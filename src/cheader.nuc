@@ -219,9 +219,9 @@
             ; and this prescan skips it exactly as it skips any other name kind
             ; it cannot use. `emit-declare` diagnoses the form.
             (when (and (= (node-kind (as ptr nn)) NODE-SYM)
-                       (= (as ptr (cheader-explicit-declare-site (as CStr (nn 's)))) null))
+                       (= (as ptr (cheader-explicit-declare-site (symbol-as-cstr (nn 's)))) null))
               (set! g-explicit-declares
-                    (cdecl-site-push g-explicit-declares (nn 's)
+                    (cdecl-site-push g-explicit-declares (sym-ptr (nn 's))
                                      g-source-path (f 'line) ""
                                      (as raw:Node f)))))))
       (set! fc ((unsafe/cast ptr:Node fc) 'cdr)))))
@@ -866,7 +866,7 @@
         n:ref:Node (new Node))
     (set! (n 'kind) NODE-STR)
     (set! (n 'line) 0)
-    (set! (n 's) (intern-str (as ptr fname)))
+    (set! (n 's) (sym-of (intern-str (as ptr fname))))
     (set! (n 'car) note)
     (set! (n 'cdr) g-cheader-skipped)
     (set! g-cheader-skipped (as raw:Node n))
@@ -1422,7 +1422,7 @@
   (let (cur:ptr g-cheader-cache)
     (while (!= cur null)
       (let (e:ptr:Node (unsafe/cast ptr:Node cur))
-        (when (= (as CStr (e 's)) header-path:CStr)
+        (when (= (symbol-as-cstr (e 's)) header-path:CStr)
           (set! (deref out-len) (e 'i))
           (return (as ptr (e 'car))))
         (set! cur (e 'cdr)))))
@@ -1458,7 +1458,7 @@
       (set! (n 'kind) NODE-STR)
       (set! (n 'line) 0)
       (set! (n 'i) buf-len)
-      (set! (n 's) (intern-str header-path))
+      (set! (n 's) (sym-of (intern-str header-path)))
       (set! (n 'car) buf)
       (set! (n 'cdr) g-cheader-cache)
       (set! g-cheader-cache (as raw:Node n)))
@@ -3023,7 +3023,7 @@
       (set! cur g-cheader-c-includes)
       (while (!= cur null)
         (set! i (- i 1))
-        (set! (aref (as ptr:ptr arr) i) ((unsafe/cast ptr:Node cur) 's))
+        (set! (aref (as ptr:ptr arr) i) (sym-ptr ((unsafe/cast ptr:Node cur) 's)))
         (set! cur ((unsafe/cast ptr:Node cur) 'cdr)))
       (dotimes (j n)
         (emit (as ptr stdout) (cheader-c-include-spelling (as CStr (aref (as ptr:ptr arr) j)))
@@ -3041,7 +3041,7 @@
       (set! cur g-cheader-includes)
       (while (!= cur null)
         (set! i (- i 1))
-        (set! (aref (as ptr:ptr arr) i) ((unsafe/cast ptr:Node cur) 's))
+        (set! (aref (as ptr:ptr arr) i) (sym-ptr ((unsafe/cast ptr:Node cur) 's)))
         (set! cur ((unsafe/cast ptr:Node cur) 'cdr)))
       (dotimes (j n)
         (emit (as ptr stdout) "#include \""
@@ -3114,29 +3114,29 @@
     (case (n 'kind)
       NODE-SYM
         (do
-          (match (niche-sym-to-c (n 's))
+          (match (niche-sym-to-c (sym-ptr (n 's)))
             ((some nc) (return nc))
             (none 0))
           ; Stage 16: an alias has no C spelling of its own — it is a second
           ; spelling for its body (container-type-sugar.md §3.2), so the header
           ; must show the body's C type. Without this the alias name leaked out
           ; as `struct Count`, naming nothing the header defines.
-          (if-some (ta (type-alias-lookup-ref (n 's)))
+          (if-some (ta (type-alias-lookup-ref (symbol-as-cstr (n 's))))
             (do
               (when (>= g-type-alias-depth MAX-TYPE-ALIAS-DEPTH) (return "void"))
               (let (bn:ptr (as ptr (ta 'body)))
                 ; A colon-chain body (`ref:Pt`) needs the same split the return
                 ; and parameter positions do before it is a type NODE.
                 (when (and (= (node-kind bn) NODE-SYM)
-                           (!= (strchr (-> bn (unsafe/cast ptr:Node _) (_ 's)) 58) null))
+                           (!= (strchr (-> bn (unsafe/cast ptr:Node _) (_ 's) (symbol-as-cstr _)) 58) null))
                   (set! bn (split-colon-segments
-                             (-> bn (unsafe/cast ptr:Node _) (_ 's)) (n 'line))))
+                             (-> bn (unsafe/cast ptr:Node _) (_ 's) (symbol-as-cstr _)) (n 'line))))
                 (set! g-type-alias-depth (+ g-type-alias-depth 1))
                 (let (c:StrView (type-node-to-c bn))
                   (set! g-type-alias-depth (- g-type-alias-depth 1))
                   (return c))))
             0)
-          (return (type-name-to-c (n 's))))
+          (return (type-name-to-c (sym-ptr (n 's)))))
       NODE-CELL
         (let (head:ptr (n 'car)
               rest:ptr (n 'cdr))
@@ -3192,12 +3192,12 @@
     (case (n 'kind)
       NODE-SYM
         (let (tname:ptr null  bname:ptr null)
-          (split-typed (n 's) (as ptr:ptr (addr-of bname)) (as ptr:ptr (addr-of tname)))
+          (split-typed (symbol-as-cstr (n 's)) (as ptr:ptr (addr-of bname)) (as ptr:ptr (addr-of tname)))
           (when (= tname null) (return null))
           (let (tn:ptr:Node (as ptr:Node (alloc-node)))
             (set! (tn 'kind) NODE-SYM)
             (set! (tn 'line) line)
-            (set! (tn 's) tname)
+            (set! (tn 's) (sym-of tname))
             (return (as ptr tn))))
       NODE-CELL
         (let (rest:ptr (n 'cdr))
@@ -3251,7 +3251,7 @@
     ; constant would otherwise give `int32_t xs[MY-LEN];` against `#define MY_LEN`.
     (let (ln:ptr:Node (unsafe/cast ptr:Node lnn))
       (when (= (ln 'kind) NODE-SYM)
-        (return (strview-from-cstr (as CStr (cheader-c-ident (as raw:i8 (ln 's))))))))
+        (return (strview-from-cstr (as CStr (cheader-c-ident (as raw:i8 (sym-ptr (ln 's)))))))))
     (die-at lline "--emit-cheader: (array T N): length must be a literal, a named constant, or a constant expression over them")
     (return "")))
 
@@ -3341,7 +3341,7 @@
   ; W9 item 28: `cheader-c-ident` — the tag and typedef of a struct named `union`
   ; must be escaped, in lockstep with every reference to it (type-name-to-c).
   (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at form (+ 1 nattrs)))
-        name:ptr (cheader-c-ident (as raw:i8 (ns-ir-base (nn 's))))
+        name:ptr (cheader-c-ident (as raw:i8 (ns-ir-base (sym-ptr (nn 's)))))
         nfields:i32 (- (- (node-len form) 2) nattrs)
         ; PK-2: the attribute goes after the closing brace, which is the one
         ; position of the three C honours that needs no tag to attach to.
@@ -3353,7 +3353,7 @@
         aligned:CStr (if (!= aalign 0)
                        (as CStr (fcstr " __attribute__((aligned(" aalign ")))"))
                        (as CStr "")))
-    (check-ir-name-legal (nn 'line) (nn 's) name)
+    (check-ir-name-legal (nn 'line) (symbol-as-cstr (nn 's)) name)
     ; Stage 15 W9 item 25: TAG the struct. `type-name-to-c` spells every reference
     ; to a user type `struct NAME`, so an anonymous typedef leaves `struct NAME` a
     ; never-completed tag and every BY-VALUE use of the type fails — a field
@@ -3404,7 +3404,7 @@
     (let (head:ptr:Node (unsafe/cast ptr:Node (n 'car)))
       (when (= (as ptr head) null) (return 0))
       (when (!= (head 'kind) NODE-SYM) (return 0))
-      (when (!= (union-template-lookup-ref (head 's)) null) (return 1))
+      (when (!= (union-template-lookup-ref (symbol-as-cstr (head 's))) null) (return 1))
       (return 0))))
 
 ; L8: detect a capturing-closure environment type OR a type-erased box type in a
@@ -3423,12 +3423,12 @@
         (case (n 'kind)
           NODE-SYM
             (do
-              (when (strview-has-prefix (strview-from-cstr (as CStr (n 's))) "__vfn_env_") (return 1))
+              (when (strview-has-prefix (strview-from-cstr (symbol-as-cstr (n 's))) "__vfn_env_") (return 1))
               (return 0))
           NODE-CELL
             (let (head:ptr:Node (unsafe/cast ptr:Node (n 'car)))
               (when (or (= (as ptr head) null) (!= (head 'kind) NODE-SYM)) (return 0))
-              (let (hs:ptr (head 's))
+              (let (hs:Symbol (head 's))
                 ; Type-erased box types: (BoxedFn …) and (dyn P) carry fat-pointer
                 ; Nucleus semantics with no faithful C spelling.
                 (when (or (= hs "BoxedFn") (= hs "dyn")) (return 1))
@@ -3472,15 +3472,15 @@
         (case (n 'kind)
           NODE-SYM
             (do
-              (when (and (!= (cstr-byte-at (n 's) 0) 33) (!= (cstr-byte-at (n 's) 0) 63)) (return 0))
-              (match (niche-sym-to-c (n 's))
+              (when (and (!= (cstr-byte-at (sym-ptr (n 's)) 0) 33) (!= (cstr-byte-at (sym-ptr (n 's)) 0) 63)) (return 0))
+              (match (niche-sym-to-c (sym-ptr (n 's)))
                 ((some _) (return 0))
                 (none 0))
               (return 1))
           NODE-CELL
             (let (head:ptr:Node (unsafe/cast ptr:Node (n 'car)))
               (when (or (= (as ptr head) null) (!= (head 'kind) NODE-SYM)) (return 0))
-              (let (hs:ptr (head 's))
+              (let (hs:Symbol (head 's))
                 ; A `!ptr`/`!ref` HEAD is the pointer niche in list form; it lands
                 ; on `void*`, which is size- and ABI-correct. Only ptr/ref wrappers
                 ; are unwrapped to look further in.
@@ -3513,8 +3513,8 @@
     (let (rn:ptr:Node (unsafe/cast ptr:Node (node-at form 3)))
       (when (or (= (node-kind (as ptr rn)) NODE-KEYWORD)
                 (= (node-kind (as ptr rn)) NODE-SYM))
-        (when (!= (strchr (rn 's) 58) null)
-          (return (split-colon-segments (rn 's) (rn 'line))))
+        (when (symbol-contains-byte (rn 's) 58)
+          (return (split-colon-segments (symbol-as-cstr (rn 's)) (rn 'line))))
         (return (normalize-ret-node (as ptr rn))))
       (return (as ptr rn)))))
 
@@ -3650,7 +3650,7 @@
     (let (head:ptr (n 'car))
       (when (= head null) (return 1))
       (when (!= ((unsafe/cast ptr:Node head) 'kind) NODE-SYM) (return 1))
-      (let (h:ptr ((unsafe/cast ptr:Node head) 's))
+      (let (h:ptr (sym-ptr ((unsafe/cast ptr:Node head) 's)))
         (when (= h "ptr") (return 0))
         (when (= h "raw") (return 0))
         (when (= h "ref") (return 0))
@@ -3751,7 +3751,7 @@
   ; W9 item 45: a name spelled `()` is a NULL node (W5f) and defines no macro;
   ; `validate-header-forms` refuses the form before this emitter is reached.
   (when (!= (node-kind (node-at form 1)) NODE-SYM) (return))
-  (let (name:ptr (cheader-c-ident (as raw:i8 ((unsafe/cast ptr:Node (node-at form 1)) 's)))
+  (let (name:ptr (cheader-c-ident (as raw:i8 (sym-ptr ((unsafe/cast ptr:Node (node-at form 1)) 's))))
         val-node:ptr:Node (unsafe/cast ptr:Node (node-at form 2)))
     (case (node-kind (as ptr val-node))
       NODE-INT (emit (as ptr stdout) "#define " name " " (val-node 'i) "\n")
@@ -3769,11 +3769,11 @@
   (when (!= (node-kind (node-at form 1)) NODE-SYM) (return))
   (dotimes (mi (- (node-len form) 2))
     (when (!= (node-kind (node-at form (+ mi 2))) NODE-SYM) (return)))
-  (let (name:ptr (cheader-c-ident (as raw:i8 ((unsafe/cast ptr:Node (node-at form 1)) 's)))
+  (let (name:ptr (cheader-c-ident (as raw:i8 (sym-ptr ((unsafe/cast ptr:Node (node-at form 1)) 's))))
         n:i32 (- (node-len form) 2))
     (emit (as ptr stdout) "enum " name " {\n")
     (dotimes (i n)
-      (let (variant:ptr (cheader-c-ident-join name (as raw:i8 ((unsafe/cast ptr:Node (node-at form (+ i 2))) 's))))
+      (let (variant:ptr (cheader-c-ident-join name (as raw:i8 (sym-ptr ((unsafe/cast ptr:Node (node-at form (+ i 2))) 's)))))
         (emit (as ptr stdout) "    " variant " = " i)
         (when (< i (- n 1)) (emit (as ptr stdout) ","))
         (emit (as ptr stdout) "\n")))
@@ -3794,10 +3794,10 @@
     ; namespaced union's definition and every reference to it spelled different C
     ; identifiers. Identity under `user`.
     ; W9 item 28: `cheader-c-ident`, as emit-cheader-defstruct — see there.
-    (let (name:ptr (cheader-c-ident (as raw:i8 (ns-ir-base (name-node 's))))
+    (let (name:ptr (cheader-c-ident (as raw:i8 (ns-ir-base (sym-ptr (name-node 's)))))
           narms:i32 (- (node-len form) 2)
           npay:i32 0)
-      (check-ir-name-legal (name-node 'line) (name-node 's) name)
+      (check-ir-name-legal (name-node 'line) (symbol-as-cstr (name-node 's)) name)
       ; Any payload-bearing arm?
       (dotimes (i narms)
         (when (= ((unsafe/cast ptr:Node (node-at form (+ i 2))) 'kind) NODE-CELL)
@@ -3810,7 +3810,7 @@
         (dotimes (i narms)
           (let (arm:ptr:Node (unsafe/cast ptr:Node (node-at form (+ i 2))))
             (when (= (arm 'kind) NODE-CELL)
-              (let (aname:ptr (cheader-c-ident (as raw:i8 ((unsafe/cast ptr:Node (node-at (as ptr arm) 0)) 's)))
+              (let (aname:ptr (cheader-c-ident (as raw:i8 (sym-ptr ((unsafe/cast ptr:Node (node-at (as ptr arm) 0)) 's))))
                     nf:i32 (- (node-len (as ptr arm)) 1))
                 (if (= nf 1)
                   ; One field → the payload is just that field, named by the arm.
@@ -3836,8 +3836,8 @@
       (dotimes (i narms)
         (let (arm:ptr:Node (unsafe/cast ptr:Node (node-at form (+ i 2)))
               aname:ptr (cheader-c-ident-join name (as raw:i8
-                          (if (= (arm 'kind) NODE-SYM) (arm 's)
-                            ((unsafe/cast ptr:Node (node-at (as ptr arm) 0)) 's)))))
+                          (if (= (arm 'kind) NODE-SYM) (sym-ptr (arm 's))
+                            (sym-ptr ((unsafe/cast ptr:Node (node-at (as ptr arm) 0)) 's))))))
           (emit (as ptr stdout) "    " aname " = " i)
           (when (< i (- narms 1)) (emit (as ptr stdout) ","))
           (emit (as ptr stdout) "\n")))
@@ -3881,7 +3881,7 @@
     (when (or (!= (f 'kind) NODE-CELL) (< (node-len form) 2)) (return))
     (let (h0:ptr:Node (unsafe/cast ptr:Node (node-at form 0)))
       (when (!= (h0 'kind) NODE-SYM) (return))
-      (let (h:ptr (h0 's))
+      (let (h:Symbol (h0 's))
         (when (= h "defn")
           ; A declaration the emitter refuses names no dependency of this header,
           ; and it refuses the WHOLE declaration on any one of its signature
@@ -4024,7 +4024,7 @@
         (when (and (and (!= (as ptr f) null) (= (f 'kind) NODE-CELL))
                    (and (> (node-len (as ptr f)) 0)
                         (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 'kind) (= _ NODE-SYM))))
-          (let (h:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 's)))
+          (let (h:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 's) (sym-ptr _)))
             (case h
                   "defstruct" (emit-cheader-defstruct (as ptr f))
                   "defunion"  (emit-cheader-defunion (as ptr f))

@@ -23,12 +23,13 @@
     (return (+ acc (n 'i)))))
 
 ; int-node — a fresh INT node carrying value v.
+; calloc, not malloc: `s` is a Symbol, which has no null value to assign — a
+; node with no name is simply a zeroed one.
 (defn int-node (v:i64):ptr
-  (let (c:ptr:Node (as ptr:Node (malloc (sizeof Node))))
+  (let (c:ptr:Node (as ptr:Node (calloc 1 (sizeof Node))))
     (set! (c 'kind) 0)
     (set! (c 'line) 0)
     (set! (c 'i) v)
-    (set! (c 's) null)
     (set! (c 'car) null)
     (set! (c 'cdr) null)
     (return (as ptr c))))

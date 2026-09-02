@@ -555,7 +555,7 @@
   kind:i32
   line:i32
   i:i64
-  s:ptr)
+  s:Symbol)   ; the lexer interns; `(n 's)` is a copy of this word
 
 ; Node struct comes from lib/prelude.nuc (imported below).
 

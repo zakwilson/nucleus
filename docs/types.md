@@ -1007,12 +1007,11 @@ inside a string, `"\x41"` is the escape for byte 0x41, while the standalone
 *char literal* `\x` is the single printable character `x` (codepoint 120) — char
 literals use `\u{…}` for a hex codepoint, as described in the next section.
 
-**A string literal cannot carry an embedded NUL.** The reader decodes escapes
-into a counted buffer, but the token stores the result as a NUL-terminated
-`char*` and the count is dropped, so the literal's length is recovered
-downstream with `strlen`. Both `"x\0y"` and `"x\x00y"` are therefore length 1,
-truncated at the NUL. Build byte strings containing a zero byte at runtime
-instead (see [Strings](strings.md)).
+**A string literal may carry an embedded NUL.** The reader decodes escapes into
+a counted buffer and the token keeps the count, so both `"x\0y"` and `"x\x00y"`
+are length 3. The bytes are also NUL-terminated, so a literal passed to a `CStr`
+seam still reads as a C string — it just stops at the embedded NUL there, which
+is C's rule, not the literal's.
 
 ## Char literals — `\a`
 
@@ -1096,7 +1095,7 @@ A symbol is a `Node*` with `kind = NODE-SYM` and `s` pointing to its spelling. S
   (= h 'defn))             ; true iff the head symbol of `form` spells "defn"
 ```
 
-The interning is global to the process. The reader interns at lex time, and `quote` of a symbol calls `intern-symbol` at runtime so a quoted symbol and a reader-produced symbol with the same spelling are bit-identical pointers. The intern table lives in `lib/node.nuc`, which a program that writes a quote imports with `(import-use node)` — the prelude registers the `Node` *type* but no longer emits the runtime (see [The node runtime is a library](toplevel.md#the-node-runtime-is-a-library)). Beyond the import, user code never has to touch the table directly.
+The interning is global to the process. The reader interns at lex time, and `quote` of a symbol calls `intern-symbol` at runtime so a quoted symbol and a reader-produced symbol with the same spelling are bit-identical pointers. The canonical-node table lives in `lib/node.nuc` (the interned bytes themselves in `lib/intern.nuc`), which a program that writes a quote imports with `(import-use node)` — the prelude registers the `Node` *type* but no longer emits the runtime (see [The node runtime is a library](toplevel.md#the-node-runtime-is-a-library)). Beyond the import, user code never has to touch the table directly.
 
 `gensym` deliberately bypasses the intern table — `(gensym)` always returns a fresh unique `Node*` whose spelling (e.g. `__gs_0`) does not collide with anything else, so it is safe in hygienic macros.
 

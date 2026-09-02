@@ -2,6 +2,6 @@ mus len=4 bytes= 4d 55 53 1a
 one len=1 bytes= 0a
 capped len=3 bytes= 41 42 43
 hexcase len=4 bytes= ff ff ab ab
-nul-hex len=1 bytes= 61
-nul-oct len=1 bytes= 61
+nul-hex len=3 bytes= 61 00 62
+nul-oct len=3 bytes= 61 00 62
 mixed len=6 bytes= 09 1b 5b 30 6d 0a

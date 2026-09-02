@@ -76,6 +76,12 @@
 (defn symbol-as-cstr (self:Symbol):CStr
   (return (as CStr (as ptr (self 'p)))))
 
+; "This node has no name." A `Symbol` is never CONSTRUCTED null — `p` is a
+; non-null pointer type — but a zeroed struct (an arena `Node` that is an INT or
+; a CELL) reads back as one, and reaching the bytes then segfaults.
+(defn symbol-none? (self:Symbol):bool
+  (return (= (as ptr (self 'p)) null)))
+
 ; A spelling test against a written literal — the overwhelmingly common
 ; comparison, and the one thing pointer identity cannot answer, since interning
 ; the literal to get a pointer would cost a hash to save a `memcmp` of four

@@ -13,12 +13,13 @@
 (import-use iterator)
 (import-use node)   ; '(a b c) below builds cells at run time
 
+; calloc, not malloc: `s` is a Symbol, which has no null value to assign — a
+; cell simply has no name, and zeroed is what the arena's nodes are too.
 (defn cons (car:ptr cdr:ptr):ptr
-  (let (c:ptr:Node (as ptr:Node (malloc (sizeof Node))))
+  (let (c:ptr:Node (as ptr:Node (calloc 1 (sizeof Node))))
     (set! (c 'kind) 3)
     (set! (c 'line) 0)
     (set! (c 'i) 0)
-    (set! (c 's) null)
     (set! (c 'car) car)
     (set! (c 'cdr) cdr)
     (return (as ptr c))))
@@ -52,7 +53,7 @@
         (let (node:ptr:Node (as ptr:Node elem))
           (when (= first-item 0) (printf " "))
           (cond (= (node 'kind) 0) (printf "%ld" (node 'i))
-                (= (node 'kind) 2) (printf "%s" (node 's))
+                (= (node 'kind) 2) (printf "%s" (as ptr (symbol-as-cstr (node 's))))
                 true                 (printf "?"))
           (set! first-item 0)))
       (printf ")\n"))))

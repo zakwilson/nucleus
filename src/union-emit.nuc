@@ -407,12 +407,12 @@
           ; W9 item 39: a binder name becomes an LLVM local identifier, so it takes
           ; the same transform a defn name does. Every `%<binder>.addr.N` producer
           ; in this file applies it; `scope-define` still keys on the source name.
-          (let (slot:ptr (fcstr "%" (ir-name-token (xnode 's)) ".addr." g-tmp))
+          (let (slot:ptr (fcstr "%" (ir-name-token (sym-ptr (xnode 's))) ".addr." g-tmp))
             (inc! g-tmp)
             (emit g-entry-stream "  " slot " = alloca ptr, align 8\n")
             (emit g-body-stream "  store ptr " (mv 'val) ", ptr " slot ", align 8\n")
             (let (inner:ref:Scope (scope-new scope)
-                  sym:ref:Sym (scope-define inner (xnode 's) (mv 'type) slot 1)
+                  sym:ref:Sym (scope-define inner (symbol-as-cstr (xnode 's)) (mv 'type) slot 1)
                   ln:i32 (cc 'line))
               (set! (sym 'taint) (mv 'taint))
               (let (test:ptr (make-cell '!=
@@ -519,7 +519,7 @@
         elem:ptr (ty 'elem))
     (if (= layout LAYOUT-NICHE-MAYBE)
       ; --- rule 2: nullable pointer, null = none ---
-      (if (= (strcmp arm "some") 0)
+      (if (= arm "some")
         (do
           (when (!= (node-len cc) (+ argi 1))
             (die-at line "make: some takes one (ref T) field"))
@@ -530,14 +530,14 @@
             (let (rv:ref:Val (alloc-val (type-as-pkind ty PTR-MAYBE) (v 'val)))
               (set! (rv 'taint) (v 'taint))
               (return rv))))
-        (if (= (strcmp arm "none") 0)
+        (if (= arm "none")
           (do
             (when (!= (node-len cc) argi)
               (die-at line "make: none takes no fields"))
             (return (alloc-val (type-as-pkind ty PTR-MAYBE) "null")))
           (die-at line (fstr "make: niche (Maybe (ref T)) has arms `some`/`none`, not '" arm "'"))))
       ; --- rule 3: ERR_PTR-encoded pointer ---
-      (if (= (strcmp arm "ok") 0)
+      (if (= arm "ok")
         (do
           (when (!= (node-len cc) (+ argi 1))
             (die-at line "make: ok takes one (ref T) field"))
@@ -549,7 +549,7 @@
             (let (rv:ref:Val (alloc-val (type-as-pkind ty PTR-ERRPTR) (v 'val)))
               (set! (rv 'taint) (v 'taint))
               (return rv))))
-        (if (= (strcmp arm "err") 0)
+        (if (= arm "err")
           (do
             (when (!= (node-len cc) (+ argi 1))
               (die-at line "make: err takes one Err field"))
@@ -580,7 +580,7 @@
         arm-node:ptr:Node (unsafe/cast ptr:Node (node-at cc 1)))
     (when (= layout LAYOUT-TAGGED)
       (die-at ln "__niche-ctor: enclosing return type is not a niche"))
-    (return (emit-niche-construct ty layout (arm-node 's) call 2 scope ln))))
+    (return (emit-niche-construct ty layout (symbol-as-cstr (arm-node 's)) call 2 scope ln))))
 
 ; Works for any defunion type, including stamped template instances, which
 ; have no constructor functions of their own.
@@ -596,7 +596,7 @@
         (let (arm-node:ptr:Node (unsafe/cast ptr:Node (node-at cc 2)))
           (when (!= (arm-node 'kind) NODE-SYM)
             (die-at (node-line (as ptr arm-node) (cc 'line)) "make: arm must be a symbol"))
-          (return (emit-niche-construct ty layout (arm-node 's) call 3 scope (cc 'line)))))
+          (return (emit-niche-construct ty layout (symbol-as-cstr (arm-node 's)) call 3 scope (cc 'line)))))
       (let (ud:?ptr:UnionDef (uniondef-for-type ty))
         (when (= ud null)
           (die-at (cc 'line) "make: type is not a defunion"))
@@ -604,7 +604,7 @@
           (when (!= (arm-node 'kind) NODE-SYM)
             (die-at (node-line (as ptr arm-node) (cc 'line)) "make: arm must be a symbol"))
           (let (udd:ptr:UnionDef (unsafe/cast ptr:UnionDef ud)
-                ai:i32 (union-arm-index (as ptr udd) (arm-node 's)))
+                ai:i32 (union-arm-index (as ptr udd) (symbol-as-cstr (arm-node 's))))
             (when (< ai 0)
               (die-at (node-line (as ptr arm-node) (cc 'line))
                 (fstr "make: no arm '" (arm-node 's) "' on '" (udd 'name) "'")))
@@ -880,10 +880,10 @@
       (let (head:ptr:Node (unsafe/cast ptr:Node (node-at form 0))
             ln:i32 (-> (unsafe/cast ptr:Node form) (_ 'line)))
         (when (= (head 'kind) NODE-SYM)
-          (let (hs:ptr (head 's)
+          (let (hs:Symbol (head 's)
                 arm:ptr null)
-            (when (= (strcmp hs "ok") 0) (set! arm "ok"))
-            (when (or (= (strcmp hs "err") 0) (= (strcmp hs "err!") 0)) (set! arm "err"))
+            (when (= hs "ok") (set! arm "ok"))
+            (when (or (= hs "err") (= hs "err!")) (set! arm "err"))
             (when (!= arm null)
               (return (make-cell '__niche-ctor
                         (make-cell (intern-symbol arm)
@@ -929,7 +929,7 @@
                    (= (result-err-arm-is-err (as ptr udd)) 1)
                    (= (error-lib-in-scope) 1))
           (return (make-cell '__err-handled (n 'cdr) ln)))
-        (when (< (union-arm-index (as ptr udd) (head 's)) 0) (return form))
+        (when (< (union-arm-index (as ptr udd) (symbol-as-cstr (head 's))) 0) (return form))
         (return (make-cell 'make
                   (make-cell (intern-symbol (udd 'name)) (as ptr n) ln)
                   ln))))))
@@ -983,13 +983,13 @@
             (if (= (b 'kind) NODE-SYM)
               ; By value: load the field into an ordinary local slot.
               (let (tmp:StrView (new-tmp)
-                    slot:ptr (fcstr "%" (ir-name-token (b 's)) ".addr." g-tmp))
+                    slot:ptr (fcstr "%" (ir-name-token (sym-ptr (b 's))) ".addr." g-tmp))
                 (inc! g-tmp)
                 (emit-load tmp (type-to-ir ftype) fa ftype)
                 (emit g-entry-stream "  " slot " = alloca " (type-to-ir ftype) ", align "
                       (type-size ftype) "\n")
                 (emit-store (type-to-ir ftype) tmp (strview-from-cstr (as CStr slot)) ftype)
-                (scope-define inner (b 's) ftype slot 1))
+                (scope-define inner (symbol-as-cstr (b 's)) ftype slot 1))
               ; (ref x): alias the field in place for mutation.
               (do
                (when (or (!= (b 'kind) NODE-CELL) (!= (node-len (as ptr b)) 2)
@@ -1001,14 +1001,14 @@
                 (let (xn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr b) 1)))
                   (when (!= (xn 'kind) NODE-SYM)
                     (die-at (b 'line) "match: (ref name) needs a symbol"))
-                  (let (slot:ptr (fcstr "%" (ir-name-token (xn 's)) ".addr." g-tmp))
+                  (let (slot:ptr (fcstr "%" (ir-name-token (sym-ptr (xn 's))) ".addr." g-tmp))
                     (inc! g-tmp)
                     (emit g-entry-stream "  " slot " = alloca ptr, align 8\n")
                     (emit g-body-stream "  store ptr " fa ", ptr " slot ", align 8\n")
                     (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR)))
                       (set! (rt 'elem) ftype)
                       (set! (rt 'pkind) PTR-REF)
-                      (let (sym:ref:Sym (scope-define inner (xn 's) (as ptr rt) slot 1))
+                      (let (sym:ref:Sym (scope-define inner (symbol-as-cstr (xn 's)) (as ptr rt) slot 1))
                         (set! (sym 'taint) staint))))))))))
       (inc! fi)
       (set! bcur ((unsafe/cast ptr:Node bcur) 'cdr)))))
@@ -1156,11 +1156,11 @@
               (set! (aref (as ptr:i32 clause-val) ci) -1))
             (do
               (when (= ed null)
-                (set! ed (as ptr (enumdef-lookup-member (pat 's))))
+                (set! ed (as ptr (enumdef-lookup-member (symbol-as-cstr (pat 's)))))
                 (when (= ed null)
                   (die-at (node-line (as ptr pat) (clause 'line))
                     (fstr "match: '" (pat 's) "' is not a defenum member"))))
-              (let (mi:i32 (enum-member-index ed (pat 's)))
+              (let (mi:i32 (enum-member-index ed (symbol-as-cstr (pat 's))))
                 (when (< mi 0)
                   (die-at (node-line (as ptr pat) (clause 'line))
                     (fstr "match: '" (pat 's) "' is not a member of enum '"
@@ -1239,9 +1239,9 @@
               (when (!= (an 'kind) NODE-SYM)
                 (die-at (node-line (as ptr an) (clause 'line)) "match: arm name must be a symbol"))
               (let (binders:ptr (if (= (pat 'kind) NODE-CELL) (as ptr ((unsafe/cast ptr:Node pat) 'cdr)) null))
-                (if (= (strcmp (an 's) "ok") 0)
+                (if (= (an 's) "ok")
                   (do (set! ok-body ((unsafe/cast ptr:Node clause) 'cdr)) (set! ok-bind binders))
-                  (if (= (strcmp (an 's) "err") 0)
+                  (if (= (an 's) "err")
                     (do (set! err-body ((unsafe/cast ptr:Node clause) 'cdr)) (set! err-bind binders))
                     (die-at (node-line (as ptr an) (clause 'line))
                       (fstr "match: niche (Result (ref T) Err) has arms `ok`/`err`, not '"
@@ -1279,7 +1279,7 @@
           (let (b:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node err-bind) 'car)))
             (when (and (= (b 'kind) NODE-SYM) (!= (b 's) "_"))
               (let (pineg:StrView (new-tmp) eid:StrView (new-tmp) idtr:StrView eid
-                    slot:ptr (fcstr "%" (ir-name-token (b 's)) ".addr." g-tmp))
+                    slot:ptr (fcstr "%" (ir-name-token (sym-ptr (b 's))) ".addr." g-tmp))
                 (inc! g-tmp)
                 (emit g-body-stream "  " pineg " = ptrtoint ptr " rval " to " (ptr-int-ir) "\n")
                 (emit g-body-stream "  " eid " = sub " (ptr-int-ir) " 0, " pineg "\n")
@@ -1289,7 +1289,7 @@
                   (emit g-body-stream "  " idtr " = trunc " (ptr-int-ir) " " eid " to i32\n"))
                 (emit g-entry-stream "  " slot " = alloca i32, align 4\n")
                 (emit g-body-stream "  store i32 " idtr ", ptr " slot ", align 4\n")
-                (scope-define inner (b 's) (as ptr ty-err) slot 1)))))
+                (scope-define inner (symbol-as-cstr (b 's)) (as ptr ty-err) slot 1)))))
         (emit-niche-match-arm (if (!= err-body null) err-body def-body) inner
           vals preds rtbox ttbox ltbox end-lbl id 0 my-want))
       ; --- ok arm: bind p = r typed (ref T), run the ok (or default) body ---
@@ -1300,13 +1300,13 @@
           (let (b:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node ok-bind) 'car)))
             (when (and (= (b 'kind) NODE-SYM) (!= (b 's) "_"))
               (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR))
-                    slot:ptr (fcstr "%" (ir-name-token (b 's)) ".addr." g-tmp))
+                    slot:ptr (fcstr "%" (ir-name-token (sym-ptr (b 's))) ".addr." g-tmp))
                 (inc! g-tmp)
                 (set! (rt 'elem) elem)
                 (set! (rt 'pkind) PTR-REF)
                 (emit g-entry-stream "  " slot " = alloca ptr, align 8\n")
                 (emit g-body-stream "  store ptr " rval ", ptr " slot ", align 8\n")
-                (let (sym:ref:Sym (scope-define inner (b 's) (as ptr rt) slot 1))
+                (let (sym:ref:Sym (scope-define inner (symbol-as-cstr (b 's)) (as ptr rt) slot 1))
                   (set! (sym 'taint) staint))))))
         (emit-niche-match-arm (if (!= ok-body null) ok-body def-body) inner
           vals preds rtbox ttbox ltbox end-lbl id 1 my-want))
@@ -1362,9 +1362,9 @@
               (when (!= (an 'kind) NODE-SYM)
                 (die-at (node-line (as ptr an) (clause 'line)) "match: arm name must be a symbol"))
               (let (binders:ptr (if (= (pat 'kind) NODE-CELL) (as ptr ((unsafe/cast ptr:Node pat) 'cdr)) null))
-                (if (= (strcmp (an 's) "some") 0)
+                (if (= (an 's) "some")
                   (do (set! some-body ((unsafe/cast ptr:Node clause) 'cdr)) (set! some-bind binders))
-                  (if (= (strcmp (an 's) "none") 0)
+                  (if (= (an 's) "none")
                     (do
                       (when (and (!= binders null) (!= (-> (unsafe/cast ptr:Node binders) (_ 'car)) null))
                         (die-at (node-line (as ptr an) (clause 'line)) "match: arm 'none' carries no payload — remove its binders"))
@@ -1409,13 +1409,13 @@
           (let (b:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node some-bind) 'car)))
             (when (and (= (b 'kind) NODE-SYM) (!= (b 's) "_"))
               (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR))
-                    slot:ptr (fcstr "%" (ir-name-token (b 's)) ".addr." g-tmp))
+                    slot:ptr (fcstr "%" (ir-name-token (sym-ptr (b 's))) ".addr." g-tmp))
                 (inc! g-tmp)
                 (set! (rt 'elem) elem)
                 (set! (rt 'pkind) PTR-REF)
                 (emit g-entry-stream "  " slot " = alloca ptr, align 8\n")
                 (emit g-body-stream "  store ptr " rval ", ptr " slot ", align 8\n")
-                (let (sym:ref:Sym (scope-define inner (b 's) (as ptr rt) slot 1))
+                (let (sym:ref:Sym (scope-define inner (symbol-as-cstr (b 's)) (as ptr rt) slot 1))
                   (set! (sym 'taint) staint))))))
         (emit-niche-match-arm (if (!= some-body null) some-body def-body) inner
           vals preds rtbox ttbox ltbox end-lbl id 1 my-want))
@@ -1545,7 +1545,7 @@
                         (die-at (node-line (as ptr pat) (clause 'line)) "match: _ default must be the last clause"))
                       (set! ndefault 1)
                       (set! (aref (as ptr:i32 clause-val) ci) -1))
-                    (let (ai:i32 (union-arm-index (as ptr udd) (pat 's)))
+                    (let (ai:i32 (union-arm-index (as ptr udd) (symbol-as-cstr (pat 's))))
                       (when (< ai 0)
                         (die-at (node-line (as ptr pat) (clause 'line))
                           (fstr "match: no arm '" (pat 's) "' on '" (udd 'name) "'")))
@@ -1560,7 +1560,7 @@
                     (let (an:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr pat) 0)))
                       (when (!= (an 'kind) NODE-SYM)
                         (die-at (node-line (as ptr an) (clause 'line)) "match: arm name must be a symbol"))
-                      (let (ai:i32 (union-arm-index (as ptr udd) (an 's)))
+                      (let (ai:i32 (union-arm-index (as ptr udd) (symbol-as-cstr (an 's))))
                         (when (< ai 0)
                           (die-at (node-line (as ptr an) (clause 'line))
                             (fstr "match: no arm '" (an 's) "' on '" (udd 'name) "'")))

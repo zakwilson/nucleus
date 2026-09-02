@@ -37,6 +37,19 @@
 (import-use fmt)
 (import-use io)
 (import-use file)
+(import-use intern-str)   ; Symbol's ToStr, so a name can flow into `fstr`/`emit`
+
+; A compiler-minted name, still a bare `ptr` until C7-5 converts the producers,
+; as the `Symbol` a `Node.s` (or a registry key) now wants. Every call is a site
+; C7-5 deletes, so keep them greppable rather than inlining `symbol-from-cstr`.
+(defn sym-of (name:ptr):Symbol
+  (return (symbol-from-cstr (as CStr name))))
+
+; The other direction, at a seam that still wants the bare `ptr` the compiler's
+; names are until C7-4/C7-5 retype the registries. Same bytes and no copy — the
+; interner NUL-terminates — so pointer identity survives the bridge.
+(defn sym-ptr (s:Symbol):ptr
+  (return (as ptr (symbol-as-cstr s))))
 
 ; The arena's own handle. A separate `defvar` from nucleusc.nuc's
 ; `g-arena-alloc` only because a module cannot see its importer's globals; the

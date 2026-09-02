@@ -6144,3 +6144,22 @@ header cannot be reached with `-8`/`-16`. Declare the header as a struct and
 derive the offset from `(sizeof SymHeader)` — the same target-pointer-size
 discipline `ptr-int-ir` follows. Narrowing an `i64` fold result to `usize` needs
 `unsafe/cast` for the same reason: `as` refuses it where `usize` is 16-bit.
+
+## A non-null-typed field has no "unset" value — zero the struct instead
+
+`Symbol.p` is `(ptr ui8)`, so `(set! (c 's) null)` does not compile: there is no
+null `Symbol` to assign. A `Node` that is an `INT` or a `CELL` still has no name,
+and the answer is `calloc` plus `symbol-none?`, not a nullable field — the arena
+already hands out zeroed nodes, so the invariant was true before it was typed.
+Every hand-rolled `cons` in `lib/` and `examples/` had to move from `malloc`.
+
+## Anything stored into `Node.s` must come from the INTERNER
+
+A `Symbol` is a pointer to the first byte of `[hash][len][bytes…]`, so a pointer
+to anything else — an `@.str.N` constant, an `arena-strndup` result — reads 16
+bytes of whatever precedes it and typically SIGBUSes rather than returning
+garbage. `emit-quote-tree` is the trap: it *emits IR that constructs a Node*, so
+the check is not "does this compile" but "does the emitted call intern". It
+calls `@symbol-intern-bytes`, which needs a `macro-jit-declare-raw` at **both**
+JIT declare sites (a JIT module only gets `declare`s for functions registered in
+the unit being compiled).

@@ -660,3 +660,22 @@ buffers and their "integer literal too long" limits.
 
 `examples/parse-test.nuc` gained five cases (i64 overflow, i64 one past max,
 ui64 max, ui64 overflow, ui64 negative) so the defect cannot return silently.
+
+---
+
+### 36. No `strview-take-bytes` beside `strview-drop-bytes` — **fixed 2026-09-02 (C7-3)**
+
+`strview-drop-bytes` existed; its counterpart did not, so a caller that had
+already found a split point had to spell the prefix as `(strview (sv 'data) n)`
+— reaching for the raw constructor and the `data` field to express a slice the
+library was one function short of.
+
+The site was `fuse-colon-paren` in `src/reader.nuc`, converted in C7-3 from a
+`memcpy` into a stack buffer to a native scan over the token's bytes. It splits
+a symbol at a colon index a `strview-find-byte` just returned, and needs both
+halves.
+
+`strview-take-bytes` carries the same contract as `strview-drop-bytes`: the
+caller already knows the split point is a character boundary, typically because
+a scan for a delimiter returned it. That is why neither is spelled `take`/`drop`
+without the `-bytes` suffix — the char-indexed forms would have to decode.

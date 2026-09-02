@@ -50,6 +50,7 @@ bool strview_ends_with(void* sv, void* suffix) asm("strview-ends-with");
 /* strview-parse-magnitude: uses an error-union or option type; not exported */
 int32_t strview_parse_sign(struct StrView sv, size_t* out_start) asm("strview-parse-sign");
 struct StrView strview_drop_bytes(struct StrView sv, size_t start) asm("strview-drop-bytes");
+struct StrView strview_take_bytes(struct StrView sv, size_t n) asm("strview-take-bytes");
 bool strview_has_prefix(struct StrView sv, struct StrView prefix) asm("strview-has-prefix");
 bool strview_has_suffix(struct StrView sv, struct StrView suffix) asm("strview-has-suffix");
 bool strview_contains(struct StrView sv, struct StrView needle) asm("strview-contains");

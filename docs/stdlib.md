@@ -190,7 +190,13 @@ building the interner on one would be circular.
 | `symbol-as-cstr` | `(self:Symbol) -> CStr` | Borrowed C string; no copy. |
 | `symbol-is` | `(self:Symbol other:StrView) -> bool` | Same bytes as the view? Cached length, then `memcmp`. |
 | `symbol-contains-byte` | `(self:Symbol b:i32) -> bool` | Does the name contain this byte (`:`, `/`)? |
+| `symbol-none?` | `(self:Symbol) -> bool` | Is this the zero `Symbol` — "no name"? |
 | `symbol-count` | `() -> usize` | How many distinct names are interned. |
+
+A `Symbol` is never *constructed* null: `p` is a non-null pointer type, so there
+is no `symbol-none` to assign. A zeroed struct reads back as one, though — an
+arena `Node` that is an `INT` or a `CELL` has no name — so a cell is allocated
+with `calloc` and tested with `symbol-none?` rather than assigned a null.
 
 `=` and `!=` are overloaded for `(Symbol, Symbol)` — pointer identity — and for
 `(Symbol, StrView)`, which is `symbol-is`. Interning is what makes those one

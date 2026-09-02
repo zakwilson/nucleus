@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "prelude.h"
 
 /* Generated from lib/node.nuc by nucleusc --emit-cheader */
 
@@ -24,4 +25,5 @@ extern int32_t g_intern_len asm("g-intern-len");
 void sym_node_place(void* table, int32_t cap, void* sp, void* nd, int64_t h) asm("sym-node-place");
 int64_t sym_node_hash(void* sp) asm("sym-node-hash");
 void sym_node_grow(void) asm("sym-node-grow");
+void* intern_node(struct Symbol sym) asm("intern-node");
 void* intern_symbol(const char* s) asm("intern-symbol");
