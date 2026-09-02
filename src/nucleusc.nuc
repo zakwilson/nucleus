@@ -14268,7 +14268,7 @@
 ; author's signature, and leaves the later `(declare …)` form an idempotent
 ; no-op — `emit-nuch-declare-import` already returns early for an
 ; already-registered name.
-(defn cheader-yield-to-explicit-declare (fname:CStr hsig:ptr hline:i32):void
+(defn cheader-yield-to-explicit-declare (fname:CStr hsig:StrView hline:i32):void
   (when (= (as ptr (cdecl-site-find g-cheader-shadowed fname)) null)
     (set! g-cheader-shadowed
           (cdecl-site-push g-cheader-shadowed (as ptr fname) g-cheader-file
@@ -14282,10 +14282,10 @@
       (emit-nuch-declare-import ((as ptr:CDeclSite site) 'form))
       ; Already emitted (it precedes this import), so its signature is on the
       ; site; compare here instead.
-      (when (and (!= ((as ptr:CDeclSite site) 'sig) null)
-                 (!= (as CStr ((as ptr:CDeclSite site) 'sig)) hsig:CStr))
+      (let (ssig:StrView ((as ptr:CDeclSite site) 'sig))
+       (when (and (!= (strview-byte-len ssig) 0) (!= ssig hsig))
         (cheader-warn-decl-conflict (as raw:CDeclSite site)
-                                    (cdecl-site-find g-cheader-shadowed fname))))))
+                                    (cdecl-site-find g-cheader-shadowed fname)))))))
 
 (import-use repl)
 
