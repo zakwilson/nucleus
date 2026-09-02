@@ -679,3 +679,36 @@ halves.
 caller already knows the split point is a character boundary, typically because
 a scan for a delimiter returned it. That is why neither is spelled `take`/`drop`
 without the `-bytes` suffix — the char-indexed forms would have to decode.
+
+---
+
+### 37. `symbol-intern` could not take a literal — **fixed 2026-09-02 (C7-4a)**
+
+The primitive is `((sv (ref StrView)))`, and `addr-of` is lvalue-only, so
+`(symbol-intern "Any")` and `(symbol-intern (fstr ns "/" bare))` did not compile
+at all. C7-4a mints a name from a literal or a freshly formatted view at dozens
+of sites, so every one of them would have had to bind a `let` first.
+
+The fix is the by-value overload beside the by-reference primitive — the same
+shape, for the same reason, as gap #34's `strview-has-prefix`.
+
+The deeper answer is a **string-literal → `Symbol` coercion**, which would let
+`(symbol-intern "Any")` be written `"Any"` wherever a `Symbol` is expected and
+delete every explicit intern this step introduced. It wants the literal interned
+at *compile* time, into the emitted module's data rather than at first use, so it
+is a code-generation change and not a library one. Deferred; noted here because
+C7-4a is the evidence that the site count justifies it.
+
+---
+
+### 38. The zero `Symbol` could be recognised but not written — **fixed 2026-09-02 (C7-4a)**
+
+C7-3b added `symbol-none?` for "this node has no name" and left the writing side
+to `calloc` — which works for a cell allocated all at once, and not at all for
+the two shapes C7-4a is full of: an out-parameter a parser leaves unset when the
+name carries no `:type`, and a `let` binding initialised before the parse that
+fills it. `Symbol.p` is a non-null pointer type, so there is no null to assign.
+
+`symbol-none` mints it with `memset`. Its bytes may never be read; recognising it
+with `symbol-none?` is the only thing it is good for, which is why the two ship
+as a pair.

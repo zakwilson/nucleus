@@ -76,23 +76,23 @@
 ; (no TY-FN flows through a generic in the compiler's own source: `make
 ; bootstrap` re-converges with this change).
 (defvar g-fnty-id:i32 0)
-(defvar (g-fnty (ref (HashMap CStr ref:Type))) (hashmap-new-in (addr-of g-arena-alloc)))
+(defvar (g-fnty (ref (HashMap Symbol ref:Type))) (hashmap-new-in (addr-of g-arena-alloc)))
 
-(defn fnty-intern (t:ref:Type):CStr
-  (doseq (entry g-fnty (HashMapEntryIter CStr ref:Type))
+(defn fnty-intern (t:ref:Type):Symbol
+  (doseq (entry g-fnty (HashMapEntryIter Symbol ref:Type))
          (when (= ((addr-of entry) 'val)
                   t)
                (return ((addr-of entry) 'key))))
-  (let (name:CStr (intern-str (fcstr "__fnty_" g-fnty-id)))
+  (let (name:Symbol (symbol-intern (fstr "__fnty_" g-fnty-id)))
     (inc! g-fnty-id)
     (assoc g-fnty name t)
     (return name)))
 
 ; Resolve a "__fnty_<id>" name back to its Type*, so a stamped generic body's
-; `(ref __fnty_3)` re-parses to the original TY-FN. String compare (the name
-; reaching here may be a fresh fmt copy, not the cached interned pointer).
-(defn fnty-resolve (name:CStr):?ref:Type
-  (get g-fnty name:CStr))
+; `(ref __fnty_3)` re-parses to the original TY-FN. Identity, not a string
+; compare: the name reaching here is interned, as every registry key now is.
+(defn fnty-resolve (name:Symbol):?ref:Type
+  (get g-fnty name))
 
 ; A type's source spelling as a colon-joined string: the inverse of the type
 ; parser. Serves two roles — the key into the conformance registry (matching the
@@ -100,40 +100,40 @@
 ; concrete type for a type variable's occurrences in a retained generic body.
 ; Pointers nest as ptr:elem; structs/primitives are their bare names. A TY-FN
 ; spells to its interned "__fnty_N" name (above), not "ptr".
-(defn type-spelling (t:raw:Type):CStr
+(defn type-spelling (t:raw:Type):Symbol
   (let (tt:raw:Type t
         k:i32 (tt 'kind))
     (case k
-      TY-VOID (return "void")
-      TY-BOOL (return "bool")
-      TY-I8   (return "i8")
-      TY-I16  (return "i16")
-      TY-I32  (return "i32")
-      TY-I64  (return "i64")
-      TY-UI8  (return "ui8")
-      TY-UI16 (return "ui16")
-      TY-UI32 (return "ui32")
-      TY-UI64 (return "ui64")
-      TY-F32  (return "f32")
-      TY-F64  (return "f64")
-      TY-F16  (return "f16")
-      TY-F80  (return "f80")
-      TY-F128 (return "f128")
+      TY-VOID (return (symbol-intern "void"))
+      TY-BOOL (return (symbol-intern "bool"))
+      TY-I8   (return (symbol-intern "i8"))
+      TY-I16  (return (symbol-intern "i16"))
+      TY-I32  (return (symbol-intern "i32"))
+      TY-I64  (return (symbol-intern "i64"))
+      TY-UI8  (return (symbol-intern "ui8"))
+      TY-UI16 (return (symbol-intern "ui16"))
+      TY-UI32 (return (symbol-intern "ui32"))
+      TY-UI64 (return (symbol-intern "ui64"))
+      TY-F32  (return (symbol-intern "f32"))
+      TY-F64  (return (symbol-intern "f64"))
+      TY-F16  (return (symbol-intern "f16"))
+      TY-F80  (return (symbol-intern "f80"))
+      TY-F128 (return (symbol-intern "f128"))
       (:or TY-STRUCT TY-UNION)
                 (return (-> tt (_ 'sdef) (unsafe/cast ptr:StructDef _) (_ 'name)))
-      TY-CSTR  (return "CStr")
-      TY-CHAR  (return "Char")
-      TY-ERR   (return "Err")
-      TY-USIZE (return "usize")
-      TY-SSIZE (return "ssize")
+      TY-CSTR  (return (symbol-intern "CStr"))
+      TY-CHAR  (return (symbol-intern "Char"))
+      TY-ERR   (return (symbol-intern "Err"))
+      TY-USIZE (return (symbol-intern "usize"))
+      TY-SSIZE (return (symbol-intern "ssize"))
       ; t is provably non-null here (its `kind` was already read above), so
       ; asserting ref is sound — fnty-intern keys its HashMap by Type* identity.
       TY-FN
         (return (fnty-intern (unsafe/cast ref:Type t)))
       TY-PTR
         (if (= (tt 'elem) null)
-          (return "ptr")
-          (return (fcstr "ptr:" (type-spelling (tt 'elem)))))
+          (return (symbol-intern "ptr"))
+          (return (symbol-intern (fstr "ptr:" (type-spelling (tt 'elem))))))
       ; Stage 15 W8 G-2. This spelling is DIAGNOSTIC-ONLY and deliberately not
       ; round-trippable through parse-type-name: type-spelling's round-trip
       ; contract exists for conformance keys and generic substitution, and an
@@ -141,12 +141,12 @@
       ; `extend` subject can occupy). Rendering the honest source spelling beats
       ; the old fall-through, which called every array "ptr".
       TY-ARRAY
-        (return (fcstr "(array " (type-spelling (tt 'elem)) " " (fcstr (tt 'arr-len)) ")"))
-      (return "ptr"))))
+        (return (symbol-intern (fstr "(array " (type-spelling (tt 'elem)) " " (tt 'arr-len) ")")))
+      (return (symbol-intern "ptr")))))
 
-(defn tyvar-index-of (name:CStr tyvars:ptr ntv:i32):i32
+(defn tyvar-index-of (name:Symbol tyvars:ptr ntv:i32):i32
   (dotimes (i ntv)
-    (when (= (aref (as ptr:ptr tyvars) i) name) (return i)))
+    (when (= (aref (as ptr:Symbol tyvars) i) name) (return i)))
   (return -1))
 
 ; Substitute type variables inside one symbol's colon spelling: split on ':',
@@ -154,21 +154,24 @@
 ; rejoin. Handles both desugared standalone type symbols ("T" → "i32") and the
 ; colon-typed symbols left in un-desugared bodies ("r:T" → "r:i32",
 ; "x:ptr:T" → "x:ptr:Circle").
-(defn subst-tyvars-sym (s:CStr tyvars:ptr spellings:ptr ntv:i32 line:i32):CStr
-  (when (= (strchr s 58) null)
+(defn subst-tyvars-sym (s:Symbol tyvars:ptr spellings:ptr ntv:i32 line:i32):Symbol
+  (when (= (symbol-contains-byte s 58) false)
     (let (idx:i32 (tyvar-index-of s tyvars ntv))
-      (when (>= idx 0) (return (aref (as ptr:ptr spellings) idx)))
+      (when (>= idx 0) (return (aref (as ptr:Symbol spellings) idx)))
       (return s)))
   (let (segs:ptr (split-colon-segments s line)
-        acc:ptr null)
+        acc:String (string-new)
+        any:i32 0)
     (let (it:ListIter (list-iter segs))
       (doseq-iter (e (addr-of it))
-        (let (seg:ptr (sym-ptr ((as ptr:Node e) 's))
+        (let (seg:Symbol ((as ptr:Node e) 's)
               idx:i32 (tyvar-index-of seg tyvars ntv)
-              piece:ptr (if (>= idx 0) (aref (as ptr:ptr spellings) idx) seg))
-          (if (= acc null) (set! acc piece) (set! acc (fcstr acc ":" piece))))))
-    (when (= acc null) (return s))
-    (return acc)))
+              piece:Symbol (if (>= idx 0) (aref (as ptr:Symbol spellings) idx) seg))
+          (when (!= any 0) (str-into (addr-of acc) ":"))
+          (str-into (addr-of acc) piece)
+          (set! any 1))))
+    (when (= any 0) (return s))
+    (return (symbol-intern (string-as-view (addr-of acc))))))
 
 ; Deep-copy a node, substituting type variables (by colon-spelling) in every
 ; symbol. Used to stamp a concrete instance from a generic template.
@@ -177,12 +180,12 @@
   (let (n:raw:Node node)
     (case (n 'kind)
       NODE-SYM
-        (let (ns:ptr (subst-tyvars-sym (symbol-as-cstr (n 's)) tyvars spellings ntv (n 'line)))
-          (when (= ns (sym-ptr (n 's))) (return node))
+        (let (ns:Symbol (subst-tyvars-sym (n 's) tyvars spellings ntv (n 'line)))
+          (when (= ns (n 's)) (return node))
           (let (new:ptr:Node (as ptr:Node (alloc-node)))
             (set! (new 'kind) NODE-SYM)
             (set! (new 'line) (n 'line))
-            (set! (new 's) (sym-of ns))
+            (set! (new 's) ns)
             (return new)))
       ; Stage 14 defn-signature.md S1: a new-style return type rides in a
       ; NODE-KEYWORD (`:T`, `:ptr:T`) at the head of the stamped body tail. Substitute
@@ -191,12 +194,12 @@
       ; tyvar is returned unchanged (subst-tyvars-sym is identity), so legacy bodies
       ; are unaffected.
       NODE-KEYWORD
-        (let (ns:ptr (subst-tyvars-sym (symbol-as-cstr (n 's)) tyvars spellings ntv (n 'line)))
-          (when (= ns (sym-ptr (n 's))) (return node))
+        (let (ns:Symbol (subst-tyvars-sym (n 's) tyvars spellings ntv (n 'line)))
+          (when (= ns (n 's)) (return node))
           (let (new:ptr:Node (as ptr:Node (alloc-node)))
             (set! (new 'kind) NODE-KEYWORD)
             (set! (new 'line) (n 'line))
-            (set! (new 's) (sym-of ns))
+            (set! (new 's) ns)
             (return new)))
       NODE-CELL
         (return (make-cell (subst-tyvars-node (n 'car) tyvars spellings ntv)

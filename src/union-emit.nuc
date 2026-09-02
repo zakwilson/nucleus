@@ -53,10 +53,10 @@
   (let (vv:raw:Val v
         udd:raw:UnionDef ud
         sd:raw:StructDef (udd 'sdef)
-        oi:i32 (union-arm-index ud "ok")
+        oi:i32 (union-arm-index ud (symbol-intern "ok"))
         ok-ty:ptr ((invoke (udd 'arms) oi:usize) 'ptype)
         poff:i32 (union-payload-off ud))
-    (when (= (scope-lookup g-globals "printf") null)
+    (when (= (scope-lookup g-globals (symbol-intern "printf")) null)
       (die-at line "unwrap on a Result needs printf in scope — add (import-use \"stdio.h\")"))
     (set! g-err-table-used 1)
     (when (= g-trap-declared 0)
@@ -110,7 +110,7 @@
         ; falls straight through to the abort below. The (Maybe i32) repair is
         ; discarded — the panic path traps regardless.
         (when (!= (error-lib-in-scope) 0)
-          (let (uesym:?ptr:Sym (scope-lookup g-globals "unhandled-error"))
+          (let (uesym:?ptr:Sym (scope-lookup g-globals (symbol-intern "unhandled-error")))
             (when (and (!= uesym null)
                        (!= ((unsafe/cast ptr:Sym uesym) 'is-const) 0))
               (emit-handler-call (strview-from-cstr ((unsafe/cast ptr:Sym uesym) 'const-val))
@@ -122,7 +122,7 @@
               ")\n")
         ; Flush before the trap (which raises immediately, bypassing buffers) so
         ; the panic message is not lost. fflush(NULL) flushes all open streams.
-        (when (!= (scope-lookup g-globals "fflush") null)
+        (when (!= (scope-lookup g-globals (symbol-intern "fflush")) null)
           (emit g-body-stream "  call i32 @fflush(ptr null)\n"))
         (emit g-body-stream "  call void @llvm.trap()\n")
         (emit g-body-stream "  unreachable\n"))
@@ -141,7 +141,7 @@
   (let (vv:raw:Val v
         udd:raw:UnionDef ud
         sd:raw:StructDef (udd 'sdef)
-        oi:i32 (union-arm-index ud "ok")
+        oi:i32 (union-arm-index ud (symbol-intern "ok"))
         ok-ty:ptr ((invoke (udd 'arms) oi:usize) 'ptype)
         poff:i32 (union-payload-off ud)
         base:StrView (new-tmp)
@@ -199,7 +199,7 @@
 (defn emit-unwrap-niche-errptr (v:raw:Val elem:raw:Type scope:ref:Scope line:i32):ref:Val
   (let (vv:raw:Val v
         rval:StrView (vv 'val))
-    (when (= (scope-lookup g-globals "printf") null)
+    (when (= (scope-lookup g-globals (symbol-intern "printf")) null)
       (die-at line "unwrap on a Result needs printf in scope — add (import-use \"stdio.h\")"))
     (set! g-err-table-used 1)
     (when (= g-trap-declared 0)
@@ -232,7 +232,7 @@
               "\n")
         (emit g-body-stream "  " msg " = load ptr, ptr " mgep ", align 8\n")
         (when (!= (error-lib-in-scope) 0)
-          (let (uesym:?ptr:Sym (scope-lookup g-globals "unhandled-error"))
+          (let (uesym:?ptr:Sym (scope-lookup g-globals (symbol-intern "unhandled-error")))
             (when (and (!= uesym null) (!= ((unsafe/cast ptr:Sym uesym) 'is-const) 0))
               (emit-handler-call (strview-from-cstr ((unsafe/cast ptr:Sym uesym) 'const-val))
                                  (as ptr ty-i32) msg scope line))))
@@ -241,7 +241,7 @@
               ", i64 0, i64 0\n")
         (emit g-body-stream "  call i32 (ptr, ...) @printf(ptr " ftmp ", ptr " nm ", ptr " msg
               ")\n")
-        (when (!= (scope-lookup g-globals "fflush") null)
+        (when (!= (scope-lookup g-globals (symbol-intern "fflush")) null)
           (emit g-body-stream "  call i32 @fflush(ptr null)\n"))
         (emit g-body-stream "  call void @llvm.trap()\n")
         (emit g-body-stream "  unreachable\n"))
@@ -407,12 +407,12 @@
           ; W9 item 39: a binder name becomes an LLVM local identifier, so it takes
           ; the same transform a defn name does. Every `%<binder>.addr.N` producer
           ; in this file applies it; `scope-define` still keys on the source name.
-          (let (slot:ptr (fcstr "%" (ir-name-token (sym-ptr (xnode 's))) ".addr." g-tmp))
+          (let (slot:ptr (fcstr "%" (ir-name-token (strview-from-cstr (as CStr (sym-ptr (xnode 's))))) ".addr." g-tmp))
             (inc! g-tmp)
             (emit g-entry-stream "  " slot " = alloca ptr, align 8\n")
             (emit g-body-stream "  store ptr " (mv 'val) ", ptr " slot ", align 8\n")
             (let (inner:ref:Scope (scope-new scope)
-                  sym:ref:Sym (scope-define inner (symbol-as-cstr (xnode 's)) (mv 'type) slot 1)
+                  sym:ref:Sym (scope-define inner (xnode 's) (mv 'type) slot 1)
                   ln:i32 (cc 'line))
               (set! (sym 'taint) (mv 'taint))
               (let (test:ptr (make-cell '!=
@@ -604,7 +604,7 @@
           (when (!= (arm-node 'kind) NODE-SYM)
             (die-at (node-line (as ptr arm-node) (cc 'line)) "make: arm must be a symbol"))
           (let (udd:ptr:UnionDef (unsafe/cast ptr:UnionDef ud)
-                ai:i32 (union-arm-index (as ptr udd) (symbol-as-cstr (arm-node 's))))
+                ai:i32 (union-arm-index (as ptr udd) (arm-node 's)))
             (when (< ai 0)
               (die-at (node-line (as ptr arm-node) (cc 'line))
                 (fstr "make: no arm '" (arm-node 's) "' on '" (udd 'name) "'")))
@@ -630,7 +630,7 @@
   (let (maybe-ty:ptr (stamp-maybe-type repair-ty line)
         mudd:ptr:UnionDef (unsafe/cast ptr:UnionDef (uniondef-for-type maybe-ty))
         msd:ptr:StructDef (unsafe/cast ptr:StructDef (mudd 'sdef))
-        noneai:i32 (union-arm-index (as ptr mudd) "none")
+        noneai:i32 (union-arm-index (as ptr mudd) (symbol-intern "none"))
         mslot:StrView (new-tmp)
         none-place:ptr (make-cell 'none null line)
         none-val:ref:Val (emit-union-construct (as ptr mudd) noneai none-place 1 scope))
@@ -651,9 +651,9 @@
       ; with no natural null-guard at the use sites, the cast-to-(ref) is the
       ; audited "known valid" assertion (nullability.md §5).
       (let (h:StrView (new-tmp)
-            efh:ptr:Sym (unsafe/cast ptr:Sym (scope-lookup g-globals "err-find-handler"))
-            ght:ptr:Sym (unsafe/cast ptr:Sym (scope-lookup g-globals "g-handler-top"))
-            hsd:ptr:StructDef (unsafe/cast ptr:StructDef (struct-lookup-ref (intern-str "Handler")))
+            efh:ptr:Sym (unsafe/cast ptr:Sym (scope-lookup g-globals (symbol-intern "err-find-handler")))
+            ght:ptr:Sym (unsafe/cast ptr:Sym (scope-lookup g-globals (symbol-intern "g-handler-top")))
+            hsd:ptr:StructDef (unsafe/cast ptr:StructDef (struct-lookup-ref (sym-of (intern-str "Handler"))))
             id:i32 (new-label-id))
         (emit g-body-stream "  " h " = call ptr " (efh 'ir-name) "(i32 " eid ", ptr " tok ")\n")
         (let (hnull:StrView (new-tmp)
@@ -675,16 +675,16 @@
             (emit g-body-stream "  " saved " = load ptr, ptr " (ght 'ir-name) "\n")
             (emit g-body-stream "  " prevgep " = getelementptr inbounds %" (hsd 'ir-name)
                   ", ptr " h ", i32 0, i32 "
-                  (struct-field-index (as ptr hsd) (intern-str "prev")) "\n")
+                  (struct-field-index (as ptr hsd) (sym-of (intern-str "prev"))) "\n")
             (emit g-body-stream "  " prev " = load ptr, ptr " prevgep "\n")
             (emit g-body-stream "  store ptr " prev ", ptr " (ght 'ir-name) "\n")
             (emit g-body-stream "  " hfngep " = getelementptr inbounds %" (hsd 'ir-name)
                   ", ptr " h ", i32 0, i32 "
-                  (struct-field-index (as ptr hsd) (intern-str "hfn")) "\n")
+                  (struct-field-index (as ptr hsd) (sym-of (intern-str "hfn"))) "\n")
             (emit g-body-stream "  " hfn " = load ptr, ptr " hfngep "\n")
             (emit g-body-stream "  " ctxgep " = getelementptr inbounds %" (hsd 'ir-name)
                   ", ptr " h ", i32 0, i32 "
-                  (struct-field-index (as ptr hsd) (intern-str "ctx")) "\n")
+                  (struct-field-index (as ptr hsd) (sym-of (intern-str "ctx"))) "\n")
             (emit g-body-stream "  " ctx " = load ptr, ptr " ctxgep "\n")
             ; m:(Maybe T) = hfn(ctx, detail) through the struct-return ABI.
             ; Emitted here rather than via emit-funcall-value: there is no AST
@@ -746,8 +746,8 @@
     (when (= ud null)
       (die-at ln "__err-handled: enclosing return type is not a Result"))
     (let (udd:ptr:UnionDef (unsafe/cast ptr:UnionDef ud)
-          okai:i32 (union-arm-index (as ptr udd) "ok")
-          errai:i32 (union-arm-index (as ptr udd) "err")
+          okai:i32 (union-arm-index (as ptr udd) (symbol-intern "ok"))
+          errai:i32 (union-arm-index (as ptr udd) (symbol-intern "err"))
           okty:ptr (result-ok-type g-fn-ret-type)
           rsd:ptr:StructDef (unsafe/cast ptr:StructDef (udd 'sdef))
           rty:ptr (type-for-sdef (udd 'sdef)))
@@ -778,7 +778,7 @@
                 mudd:ptr:UnionDef (unsafe/cast ptr:UnionDef (uniondef-for-type maybe-ty))
                 msd:ptr:StructDef (unsafe/cast ptr:StructDef (mudd 'sdef))
                 mslot:StrView (new-tmp)
-                someai:i32 (union-arm-index (as ptr mudd) "some")
+                someai:i32 (union-arm-index (as ptr mudd) (symbol-intern "some"))
                 tgep:StrView (new-tmp)
                 tag:StrView (new-tmp)
                 issome:StrView (new-tmp)
@@ -809,7 +809,7 @@
               (emit g-entry-stream "  " vslot " = alloca " (type-to-ir okty) ", align "
                     (type-size okty) "\n")
               (emit-store (type-to-ir okty) vtmp (strview-from-cstr (as CStr vslot)) okty)
-              (scope-define scope "__errh_v" okty vslot 1)
+              (scope-define scope (symbol-intern "__errh_v") okty vslot 1)
               (let (ok-place:ptr (make-cell 'ok
                                    (make-cell '__errh_v null ln) ln)
                     ok-val:ref:Val (emit-union-construct (as ptr udd) okai ok-place 1 scope))
@@ -827,9 +827,9 @@
 ; type at an err site (errors.md §11.2). T is the !T's ok payload (a value type
 ; in v1; a (ref X) repair type — niche-encoded Maybe — is unsupported here).
 (defn stamp-maybe-type (t:raw:Type line:i32):ref:Type
-  (let (ut:?ptr:UnionTemplate (union-template-lookup-ref "Maybe"))
+  (let (ut:?ptr:UnionTemplate (union-template-lookup-ref (symbol-intern "Maybe")))
     (when (= ut null)
-      (die-at line (missing-template-message "err handler" "Maybe")))
+      (die-at line (missing-template-message "err handler" (symbol-intern "Maybe"))))
     (let (argts:ptr (arena-alloc (ptr-bytes)))
       (set! (aref (as ptr:ptr argts) 0) t)
       (return (union-template-stamp-types ut argts 1 line)))))
@@ -840,16 +840,16 @@
 ; (import error) has no chain to consult, so plain err == err! and the compiler
 ; (which imports no error) self-compiles byte-identically.
 (defn error-lib-in-scope ():i32
-  (when (= (scope-lookup g-globals "g-handler-top") null) (return 0))
-  (when (= (scope-lookup g-globals "err-find-handler") null) (return 0))
-  (when (= (as ptr (struct-lookup-ref (intern-str "Handler"))) null) (return 0))
+  (when (= (scope-lookup g-globals (symbol-intern "g-handler-top")) null) (return 0))
+  (when (= (scope-lookup g-globals (symbol-intern "err-find-handler")) null) (return 0))
+  (when (= (as ptr (struct-lookup-ref (sym-of (intern-str "Handler")))) null) (return 0))
   (return 1))
 
 ; True iff `ud`'s `err` arm is the `!T` shape: a single payload field of type
 ; Err (TY-ERR). Only then does errors.md §11.1 emit the handler check; a custom
 ; (Result T NonErr) is a plain union with no implicit machinery.
 (defn result-err-arm-is-err (ud:raw:UnionDef):i32
-  (let (ai:i32 (union-arm-index ud "err"))
+  (let (ai:i32 (union-arm-index ud (symbol-intern "err")))
     (when (< ai 0) (return 0))
     (let (udd:raw:UnionDef ud
           arm:ref:Arm (invoke (udd 'arms) ai:usize))
@@ -899,10 +899,10 @@
       ; uniondef-for-type returned null above and `none` stays the relabel.
       (when (and (= (n 'kind) NODE-SYM)
                  (= (n 's) "none")
-                 (>= (union-arm-index (as ptr udd) "none") 0))
+                 (>= (union-arm-index (as ptr udd) (symbol-intern "none")) 0))
         (let (ln:i32 (n 'line))
           (return (make-cell 'make
-                    (make-cell (intern-symbol (udd 'name))
+                    (make-cell (intern-node (udd 'name))
                       (make-cell 'none null ln) ln)
                     ln))))
       (when (!= (n 'kind) NODE-CELL) (return form))
@@ -913,9 +913,9 @@
         ; err! : construct the `err` arm unconditionally (the E3 opt-out that
         ; never consults handlers). It is the err arm with its `!` stripped.
         (when (= (head 's) "err!")
-          (when (< (union-arm-index (as ptr udd) "err") 0) (return form))
+          (when (< (union-arm-index (as ptr udd) (symbol-intern "err")) 0) (return form))
           (return (make-cell 'make
-                    (make-cell (intern-symbol (udd 'name))
+                    (make-cell (intern-node (udd 'name))
                       (make-cell 'err (n 'cdr) ln)
                       ln)
                     ln)))
@@ -929,25 +929,25 @@
                    (= (result-err-arm-is-err (as ptr udd)) 1)
                    (= (error-lib-in-scope) 1))
           (return (make-cell '__err-handled (n 'cdr) ln)))
-        (when (< (union-arm-index (as ptr udd) (symbol-as-cstr (head 's))) 0) (return form))
+        (when (< (union-arm-index (as ptr udd) (head 's)) 0) (return form))
         (return (make-cell 'make
-                  (make-cell (intern-symbol (udd 'name)) (as ptr n) ln)
+                  (make-cell (intern-node (udd 'name)) (as ptr n) ln)
                   ln))))))
 
 ; The EnumDef that owns `member`, or null. Member names are searched across
 ; every registered defenum; the first hit wins (defenum members are global
 ; constants, so a collision already means same-kind reuse).
-(defn enumdef-lookup-member (member:CStr):?ptr:EnumDef
+(defn enumdef-lookup-member (member:Symbol):?ptr:EnumDef
   (dotimes (i (count g-enumdefs))
     (let (ed:ptr:EnumDef (as ptr:EnumDef (invoke g-enumdefs i)))
       (when (>= (enum-member-index ed member) 0)
         (return (as ptr ed)))))
   (return null))
 
-(defn enum-member-index (ed:raw:EnumDef member:CStr):i32
+(defn enum-member-index (ed:raw:EnumDef member:Symbol):i32
   (let (edd:raw:EnumDef ed)
     (dotimes (i (edd 'num-members))
-      (when (= (strcmp (aref (as ptr:ptr (edd 'members)) i) member) 0)
+      (when (= (aref (as ptr:Symbol (edd 'members)) i) member)
         (return i)))
     (return -1)))
 
@@ -983,13 +983,13 @@
             (if (= (b 'kind) NODE-SYM)
               ; By value: load the field into an ordinary local slot.
               (let (tmp:StrView (new-tmp)
-                    slot:ptr (fcstr "%" (ir-name-token (sym-ptr (b 's))) ".addr." g-tmp))
+                    slot:ptr (fcstr "%" (ir-name-token (strview-from-cstr (as CStr (sym-ptr (b 's))))) ".addr." g-tmp))
                 (inc! g-tmp)
                 (emit-load tmp (type-to-ir ftype) fa ftype)
                 (emit g-entry-stream "  " slot " = alloca " (type-to-ir ftype) ", align "
                       (type-size ftype) "\n")
                 (emit-store (type-to-ir ftype) tmp (strview-from-cstr (as CStr slot)) ftype)
-                (scope-define inner (symbol-as-cstr (b 's)) ftype slot 1))
+                (scope-define inner (b 's) ftype slot 1))
               ; (ref x): alias the field in place for mutation.
               (do
                (when (or (!= (b 'kind) NODE-CELL) (!= (node-len (as ptr b)) 2)
@@ -1001,14 +1001,14 @@
                 (let (xn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr b) 1)))
                   (when (!= (xn 'kind) NODE-SYM)
                     (die-at (b 'line) "match: (ref name) needs a symbol"))
-                  (let (slot:ptr (fcstr "%" (ir-name-token (sym-ptr (xn 's))) ".addr." g-tmp))
+                  (let (slot:ptr (fcstr "%" (ir-name-token (strview-from-cstr (as CStr (sym-ptr (xn 's))))) ".addr." g-tmp))
                     (inc! g-tmp)
                     (emit g-entry-stream "  " slot " = alloca ptr, align 8\n")
                     (emit g-body-stream "  store ptr " fa ", ptr " slot ", align 8\n")
                     (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR)))
                       (set! (rt 'elem) ftype)
                       (set! (rt 'pkind) PTR-REF)
-                      (let (sym:ref:Sym (scope-define inner (symbol-as-cstr (xn 's)) (as ptr rt) slot 1))
+                      (let (sym:ref:Sym (scope-define inner (xn 's) (as ptr rt) slot 1))
                         (set! (sym 'taint) staint))))))))))
       (inc! fi)
       (set! bcur ((unsafe/cast ptr:Node bcur) 'cdr)))))
@@ -1156,11 +1156,11 @@
               (set! (aref (as ptr:i32 clause-val) ci) -1))
             (do
               (when (= ed null)
-                (set! ed (as ptr (enumdef-lookup-member (symbol-as-cstr (pat 's)))))
+                (set! ed (as ptr (enumdef-lookup-member (pat 's))))
                 (when (= ed null)
                   (die-at (node-line (as ptr pat) (clause 'line))
                     (fstr "match: '" (pat 's) "' is not a defenum member"))))
-              (let (mi:i32 (enum-member-index ed (symbol-as-cstr (pat 's))))
+              (let (mi:i32 (enum-member-index ed (pat 's)))
                 (when (< mi 0)
                   (die-at (node-line (as ptr pat) (clause 'line))
                     (fstr "match: '" (pat 's) "' is not a member of enum '"
@@ -1188,7 +1188,7 @@
             (when (= hit 0)
               (die-at (cc 'line)
                 (fstr "match: non-exhaustive — missing member '"
-                      (aref (as ptr:ptr (edd 'members)) mi) "' (add it or a _ default)"))))
+                      (aref (as ptr:Symbol (edd 'members)) mi) "' (add it or a _ default)"))))
           (inc! mi))))
     (return (emit-match-clauses call scope (svv 'val) (type-to-ir (svv 'type))
                                 (as ptr clause-val) null ndefault
@@ -1279,7 +1279,7 @@
           (let (b:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node err-bind) 'car)))
             (when (and (= (b 'kind) NODE-SYM) (!= (b 's) "_"))
               (let (pineg:StrView (new-tmp) eid:StrView (new-tmp) idtr:StrView eid
-                    slot:ptr (fcstr "%" (ir-name-token (sym-ptr (b 's))) ".addr." g-tmp))
+                    slot:ptr (fcstr "%" (ir-name-token (strview-from-cstr (as CStr (sym-ptr (b 's))))) ".addr." g-tmp))
                 (inc! g-tmp)
                 (emit g-body-stream "  " pineg " = ptrtoint ptr " rval " to " (ptr-int-ir) "\n")
                 (emit g-body-stream "  " eid " = sub " (ptr-int-ir) " 0, " pineg "\n")
@@ -1289,7 +1289,7 @@
                   (emit g-body-stream "  " idtr " = trunc " (ptr-int-ir) " " eid " to i32\n"))
                 (emit g-entry-stream "  " slot " = alloca i32, align 4\n")
                 (emit g-body-stream "  store i32 " idtr ", ptr " slot ", align 4\n")
-                (scope-define inner (symbol-as-cstr (b 's)) (as ptr ty-err) slot 1)))))
+                (scope-define inner (b 's) (as ptr ty-err) slot 1)))))
         (emit-niche-match-arm (if (!= err-body null) err-body def-body) inner
           vals preds rtbox ttbox ltbox end-lbl id 0 my-want))
       ; --- ok arm: bind p = r typed (ref T), run the ok (or default) body ---
@@ -1300,13 +1300,13 @@
           (let (b:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node ok-bind) 'car)))
             (when (and (= (b 'kind) NODE-SYM) (!= (b 's) "_"))
               (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR))
-                    slot:ptr (fcstr "%" (ir-name-token (sym-ptr (b 's))) ".addr." g-tmp))
+                    slot:ptr (fcstr "%" (ir-name-token (strview-from-cstr (as CStr (sym-ptr (b 's))))) ".addr." g-tmp))
                 (inc! g-tmp)
                 (set! (rt 'elem) elem)
                 (set! (rt 'pkind) PTR-REF)
                 (emit g-entry-stream "  " slot " = alloca ptr, align 8\n")
                 (emit g-body-stream "  store ptr " rval ", ptr " slot ", align 8\n")
-                (let (sym:ref:Sym (scope-define inner (symbol-as-cstr (b 's)) (as ptr rt) slot 1))
+                (let (sym:ref:Sym (scope-define inner (b 's) (as ptr rt) slot 1))
                   (set! (sym 'taint) staint))))))
         (emit-niche-match-arm (if (!= ok-body null) ok-body def-body) inner
           vals preds rtbox ttbox ltbox end-lbl id 1 my-want))
@@ -1409,13 +1409,13 @@
           (let (b:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node some-bind) 'car)))
             (when (and (= (b 'kind) NODE-SYM) (!= (b 's) "_"))
               (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR))
-                    slot:ptr (fcstr "%" (ir-name-token (sym-ptr (b 's))) ".addr." g-tmp))
+                    slot:ptr (fcstr "%" (ir-name-token (strview-from-cstr (as CStr (sym-ptr (b 's))))) ".addr." g-tmp))
                 (inc! g-tmp)
                 (set! (rt 'elem) elem)
                 (set! (rt 'pkind) PTR-REF)
                 (emit g-entry-stream "  " slot " = alloca ptr, align 8\n")
                 (emit g-body-stream "  store ptr " rval ", ptr " slot ", align 8\n")
-                (let (sym:ref:Sym (scope-define inner (symbol-as-cstr (b 's)) (as ptr rt) slot 1))
+                (let (sym:ref:Sym (scope-define inner (b 's) (as ptr rt) slot 1))
                   (set! (sym 'taint) staint))))))
         (emit-niche-match-arm (if (!= some-body null) some-body def-body) inner
           vals preds rtbox ttbox ltbox end-lbl id 1 my-want))
@@ -1545,7 +1545,7 @@
                         (die-at (node-line (as ptr pat) (clause 'line)) "match: _ default must be the last clause"))
                       (set! ndefault 1)
                       (set! (aref (as ptr:i32 clause-val) ci) -1))
-                    (let (ai:i32 (union-arm-index (as ptr udd) (symbol-as-cstr (pat 's))))
+                    (let (ai:i32 (union-arm-index (as ptr udd) (pat 's)))
                       (when (< ai 0)
                         (die-at (node-line (as ptr pat) (clause 'line))
                           (fstr "match: no arm '" (pat 's) "' on '" (udd 'name) "'")))
@@ -1560,7 +1560,7 @@
                     (let (an:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr pat) 0)))
                       (when (!= (an 'kind) NODE-SYM)
                         (die-at (node-line (as ptr an) (clause 'line)) "match: arm name must be a symbol"))
-                      (let (ai:i32 (union-arm-index (as ptr udd) (symbol-as-cstr (an 's))))
+                      (let (ai:i32 (union-arm-index (as ptr udd) (an 's)))
                         (when (< ai 0)
                           (die-at (node-line (as ptr an) (clause 'line))
                             (fstr "match: no arm '" (an 's) "' on '" (udd 'name) "'")))
@@ -1656,7 +1656,7 @@
                 " is non-null, so this test is always true -- spell the value (raw T) or ?T if it can be null")))
       (let (ud:?ptr:UnionDef (value-maybe-union-of t))
         (when (!= ud null)
-          (let (si:i32 (union-arm-index (as ptr ud) "some")
+          (let (si:i32 (union-arm-index (as ptr ud) (symbol-intern "some"))
                 sd:ptr:StructDef (unsafe/cast ptr:StructDef (ud 'sdef))
                 tag:StrView (new-tmp)
                 tmp:StrView (new-tmp))
@@ -1698,7 +1698,7 @@
         ; or false (or) — so the lhs's facts hold while it is emitted. This
         ; is what makes (and (!= m null) (m kind)) check.
         (let (scmark:i32 (narrow-mark)
-              (scfacts (ref (Vector ptr))) (vector-new-in (addr-of g-arena-alloc)))
+              (scfacts (ref (Vector Symbol))) (vector-new-in (addr-of g-arena-alloc)))
           (if (!= is-and 0)
             (test-true-nonnull (node-at cc 1) scfacts)
             (test-false-nonnull (node-at cc 1) scfacts))
@@ -1732,7 +1732,7 @@
   (when (= t null) (return 1))
   (let (ud:?ptr:UnionDef (result-union-of (as raw:Type t)))
     (when (= ud null) (return 1))
-    (let (oi:i32 (union-arm-index (as ptr ud) "ok"))
+    (let (oi:i32 (union-arm-index (as ptr ud) (symbol-intern "ok")))
       (when (< oi 0) (return 1))
       (return ((invoke (ud 'arms) (as usize oi)) 'nfields)))))
 

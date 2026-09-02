@@ -99,10 +99,9 @@
 ; `(import-use cheader)` — the cross-import wall the W3a block above records.
 ; ============================================================
 (defstruct CTypedef
-  ; `name`/`file` are `ptr`, not `CStr`, for the reason CDeclSite records: they
-  ; are compared and null-checked as identities, and a `CStr` operand lowers
-  ; `=`/`!=` to `strcmp`.
-  name:ptr
+  ; `name` is the identity the table is keyed by — a `Symbol`, so the probe is
+  ; an `icmp`. `file`/`hdr` stay `ptr`: they are null-checked and printed.
+  name:Symbol
   ; The resolved type, or null = "known C type name, no Nucleus representation".
   (ty (raw Type))
   ; Where the typedef was declared, for the L5 diagnostics.
@@ -131,11 +130,11 @@
 ; table itself.
 (defvar g-cheader-import-header:ptr)
 
-(defn c-typedef-find (name:CStr):?ptr:CTypedef
+(defn c-typedef-find (name:Symbol):?ptr:CTypedef
   (let (cur:ptr g-cheader-typedefs)
     (while (!= cur null)
       (let (e:ptr:CTypedef (as ptr:CTypedef cur))
-        (when (= (as CStr (e 'name)) name) (return e))
+        (when (= (e 'name) name) (return e))
         (set! cur (e 'next)))))
   (return null))
 
@@ -148,8 +147,8 @@
 ; struct still opaque, so `typedef __sigset_t sigset_t;` is unrepresentable there
 ; and representable at the import; first-wins would freeze the prescan's verdict
 ; and silently skip every declaration using it. Provisional never overwrites.
-(defn c-typedef-record (name:ptr ty:ptr file:ptr line:i32):void
-  (if-some (prev (c-typedef-find name:CStr))
+(defn c-typedef-record (name:Symbol ty:ptr file:ptr line:i32):void
+  (if-some (prev (c-typedef-find name))
     (do
       (when (or (= (prev 'provisional) 0) (!= g-cheader-typedef-provisional 0))
         (return))
@@ -161,7 +160,7 @@
       (return))
     0)
   (let (e:ptr:CTypedef (new CTypedef))
-    (set! (e 'name) (intern-str name))
+    (set! (e 'name) name)
     (set! (e 'ty) (as raw:Type ty))
     (set! (e 'file) file)
     (set! (e 'line) line)
@@ -743,8 +742,7 @@
     (when (!= (tt 'kind) TY-STRUCT) (return 0))
     (let (sd:raw:StructDef (tt 'sdef))
       (when (= sd null) (return 0))
-      (when (= (sd 'name)
-               (symbol-as-cstr ((as ptr:Node (intern-symbol "StrView")) 's)))
+      (when (= (sd 'name) "StrView")
         (return 1))
       (return 0))))
 

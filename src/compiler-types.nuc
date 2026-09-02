@@ -133,7 +133,7 @@
 ; `g-binding-aliases == null` — which it is for every program in the tree except
 ; the one facade in `lib/`.
 (defstruct BindingAlias
-  key:CStr        ; the facade-namespace key, e.g. `gfacade/Pt`
+  key:Symbol        ; the facade-namespace key, e.g. `gfacade/Pt`
   kind:i32        ; the BK-* row this payload belongs to
   payload:ptr)
 
@@ -277,7 +277,7 @@
 ; field's declared Type* (never null in practice; `(raw Type)` to match the
 ; stage-14 Type-pointer idiom and every consumer's `t:raw:Type` parameter).
 (defstruct Field
-  name:ptr           ; interned field-name string (identity-compared — stays ptr)
+  name:Symbol        ; the field name; identity-compared, so a Symbol says so
   (type (raw Type))  ; field Type*
   ; Stage 16 PK-3: member `__attribute__((aligned(N)))` / `(:align N x:T)`, 0 =
   ; none. Raises the offset this field is placed at (and so the struct's own
@@ -328,7 +328,7 @@
   ; hand it a key `qualify-name`/`ns-qualify-in` produced (or a compiler-minted
   ; name, which is `user` by construction). A source *spelling* resolves to a key
   ; through `struct-lookup-ref`; the two are different questions (§9.2).
-  name:CStr
+  name:Symbol
   ; The LLVM-safe spelling of `name` for IR emission: the defining namespace's
   ; ir-prefix composed onto the bare name with `?`→`_QMARK`, `!`→`_BANG`
   ; (ir-name-token) — `dp/Fox` prints `%dp__Fox`. Every other char (hyphens
@@ -415,7 +415,7 @@
   ; deliberate split: a type name is bare-keyed and globally identified
   ; (Stage 12 decision 9), so file-scoping it is a separate, larger question.
   priv:i32
-  src-ns:CStr)
+  src-ns:Symbol)
 
 ; One arm of a defunion (Stage 14 §14.4). Replaces UnionDef's five parallel
 ; arm arrays (arm-names/arm-ptypes/arm-fnames/arm-ftypes/arm-nfields, formerly
@@ -425,7 +425,7 @@
 ; `fnames`/`ftypes` are the per-arm ragged field-name/field-type C arrays (a
 ; later 14.4 sub-step folds these into a `Field{name,type}` element).
 (defstruct Arm
-  name:CStr           ; interned arm name
+  name:Symbol           ; interned arm name
   (ptype (raw Type))  ; payload Type*, or null for a payload-less arm
   fnames:ptr          ; per-arm ptr array of interned field-name strings, or null
   ftypes:ptr          ; per-arm ptr array of field Type*s, or null
@@ -435,7 +435,7 @@
 ; representation is an ordinary struct {tag:i32, payload:(union ...)} held in
 ; `sdef`; this record carries the arm table `match` and `make` need.
 (defstruct UnionDef
-  name:CStr
+  name:Symbol
   (sdef (raw StructDef))      ; backing StructDef (tag [+ payload])
   (union-sd (raw StructDef))  ; payload union's StructDef (one member per payload arm), or null
   num-arms:i32                ; == (count arms); cached length for i32 loops
@@ -445,7 +445,7 @@
   (niche-elem (raw Type)) ; for NICHE-MAYBE/ERRPTR: the (ref T) payload's element Type*
   src-line:i32
   priv:i32          ; Stage 15 B5 — see StructDef.priv
-  src-ns:CStr
+  src-ns:Symbol
   src-file:CStr     ; Stage 15 B4 — see StructDef.src-file (redefinition blame)
   ; Stage 15 W9 item 40: the arm CONSTRUCTORS have been emitted. A UnionDef used
   ; to be created only by `emit-defunion`, so its mere existence meant both "this
@@ -457,12 +457,12 @@
 ; A parameterized defunion template: `(defunion (Result T E) ...)`. Defines no
 ; type itself; a fully-applied use `(Result A B)` stamps a concrete instance.
 (defstruct UnionTemplate
-  name:CStr
-  tyvars:ptr        ; ptr array of tyvar name strings
+  name:Symbol
+  tyvars:ptr        ; ptr array of tyvar-name Symbols
   ntv:i32
   (form (raw Node)) ; retained (defunion (Name T ...) arms...) Node*
   priv:i32          ; Stage 15 B5 — see StructDef.priv
-  src-ns:CStr
+  src-ns:Symbol
   ; Stage 15 B4 (R4): where this name was defined, so a redefinition names the
   ; definition it collides with. Zero/null when the record was minted by
   ; something other than a source definer, which `die-redefinition` handles.
@@ -474,12 +474,12 @@
 ; concrete monomorphic StructDef (struct-template-stamp-types). Exact analogue
 ; of UnionTemplate (design/stage11/parametric-structs.md §1).
 (defstruct StructTemplate
-  name:CStr
-  tyvars:ptr        ; ptr array of tyvar name strings
+  name:Symbol
+  tyvars:ptr        ; ptr array of tyvar-name Symbols
   ntv:i32
   (form (raw Node)) ; retained (defstruct (Name T ...) field-specs...) Node*
   priv:i32          ; Stage 15 B5 — see StructDef.priv
-  src-ns:CStr
+  src-ns:Symbol
   src-file:CStr     ; Stage 15 B4 — see UnionTemplate.src-file
   src-line:i32)
 
@@ -487,27 +487,27 @@
 ; one (container-type-sugar.md §3.2). `body` is the retained type expression,
 ; re-parsed on each use, so declaration order inside a file does not matter.
 (defstruct TypeAlias
-  name:CStr
+  name:Symbol
   (body (raw Node))
   ; §3.7 phase 2: `(deftype (Table V) …)` — the declared parameter names, whose
   ; occurrences in `body` are replaced by the argument NODES at each use. Node
   ; substitution, not spelling substitution as StructTemplate does, because an
   ; argument may still be a free tyvar in a method receiver pattern.
-  tyvars:ptr        ; ptr array of tyvar name strings; null when ntv is 0
+  tyvars:ptr        ; ptr array of tyvar-name Symbols; null when ntv is 0
   ntv:i32           ; 0 for a plain alias
   priv:i32          ; Stage 15 B5 — see StructDef.priv
-  src-ns:CStr
+  src-ns:Symbol
   src-file:CStr     ; Stage 15 B4 — see UnionTemplate.src-file
   src-line:i32)
 
 ; A defenum's member table, recorded so `match` can check exhaustiveness over
 ; enum constants (the §4 freebie). Member i's value is i.
 (defstruct EnumDef
-  name:CStr
-  members:ptr       ; ptr array of interned member name strings
+  name:Symbol
+  members:ptr       ; ptr array of member-name Symbols
   num-members:i32
   priv:i32          ; Stage 15 B5 — see StructDef.priv
-  src-ns:CStr
+  src-ns:Symbol
   src-file:CStr     ; Stage 15 B4 — see UnionTemplate.src-file
   src-line:i32)
 
@@ -560,7 +560,10 @@
 ; Node struct comes from lib/prelude.nuc (imported below).
 
 (defstruct Sym
-  name:CStr
+  ; The scope KEY, fully qualified for a global. A `Symbol`, so `scope-frame-find`'s
+  ; per-probe `strcmp` is an `icmp` — the keys were always interned, and until
+  ; C7-4 the type did not say so.
+  name:Symbol
   (type (raw Type))
   ; ir-name stays `ptr` (NOT CStr): it is compared by pointer identity
   ; (import-alias-one's collision check — ir-names are freshly formatted, not
@@ -686,7 +689,7 @@
 ; A narrowing undo entry (Stage 10 nullability §4). Restores are skipped when
 ; the binding's kstamp moved past `stamp` — a kill (reassignment) is sticky.
 (defstruct NarrowUndo
-  name:CStr
+  name:Symbol
   scope:ref:Scope
   (old-ntype (raw Type))
   old-ndepth:i32
@@ -856,7 +859,7 @@
   ; string literals ("=", "!=" in builtin-op-result-type) or formatted into
   ; diagnostics; `instr`/`instr-u` are LLVM instruction mnemonics formatted
   ; straight into the IR stream. None are identity-compared.
-  name:CStr
+  name:Symbol
   instr:CStr
   instr-u:CStr
   is-cmp:i32)
@@ -878,8 +881,8 @@
 ; count; null/0 for a plain `(Proto V)` constraint (a ragged sub-array, like
 ; Arm.fnames/ftypes).
 (defstruct Constraint
-  proto:CStr        ; protocol name
-  var:CStr          ; conforming type-variable name
+  proto:Symbol      ; protocol name
+  var:Symbol        ; conforming type-variable name
   args:ptr          ; ptr array of Node* (proto-application Args), or null
   nargs:i32)        ; count of Arg nodes (0 for a plain constraint)
 
@@ -933,7 +936,7 @@
   ; OTHER definition's file and to phrase the namespace rule correctly — the
   ; `Method.body` Node carries a line but no file.
   src-file:CStr
-  src-ns:CStr
+  src-ns:Symbol
   ; Stage 15 W9 item 43: `g-file-imports` at registration — the third of the
   ; three globals that define a file's name environment, recorded for the same
   ; reason `DynAnnot` records all three. Only a TEMPLATE needs it (its body is
@@ -951,7 +954,7 @@
   ir-fixed:i32)
 
 (defstruct Generic
-  name:CStr
+  name:Symbol
   ; Stage 14 §14.5 batch 4: was a hand-rolled ptr[]/num-methods/cap triple with
   ; a manual cap-doubling grow thunk (generic-add-method); now a Vector. `ref`,
   ; not `raw`: never explicitly reset to null (each Generic is individually
@@ -976,21 +979,21 @@
 ; substitutes Self→Type (and each extra param→its binding) in each signature and
 ; verifies a matching concrete method exists (see emit-extend).
 (defstruct Protocol
-  name:CStr
+  name:Symbol
   sigs:ptr          ; ptr to array of ptr:Node, each a (name:ret (params...)) form
   num-sigs:i32
   ; --- Stage 11 parametric protocols (T4) ---
   ; Extra type parameters beyond the implicit `Self`: for `(defprotocol (Seq E)
   ; ...)` this is the one-element array {"E"}. Empty (null/0) for a plain
   ; `(defprotocol Name ...)`, which behaves exactly as before (Self-only).
-  params:ptr        ; ptr array of extra-param name strings (beyond Self), or null
+  params:ptr        ; ptr array of extra-param name Symbols (beyond Self), or null
   num-params:i32
   ; --- Stage 15 B5 ---
   ; `defprotocol-`'s privacy carrier. `name` is already namespace-qualified
   ; (protocol-key), so `src-ns` is derivable from it — but the interface asks
   ; every row the same question and a stored answer costs one word.
   priv:i32
-  src-ns:CStr
+  src-ns:Symbol
   src-file:CStr     ; Stage 15 B4 — see UnionTemplate.src-file
   src-line:i32)
 
@@ -1004,12 +1007,12 @@
 ; keeps one record per (type, proto), so these args are functionally determined
 ; by the conforming type — that is the associated-type recovery rule.
 (defstruct Conformance
-  type-name:CStr
-  proto-name:CStr
-  ; Stage 14 §14.4: the retained associated-type arguments as a (Vector CStr) of
-  ; canonical type-spelling strings (value-compared by conformance-args-eq); null
+  type-name:Symbol
+  proto-name:Symbol
+  ; Stage 14 §14.4: the retained associated-type arguments as a (Vector Symbol) of
+  ; canonical type-spellings (value-compared by conformance-args-eq); null
   ; for a plain (non-parametric) protocol. The count is `(count args)`.
-  (args (raw (Vector CStr))))
+  (args (raw (Vector Symbol))))
 
 ; Stage 11 parametric structs (T4): a recorded template-level conformance from
 ; `(extend (Vector T) (Seq T))`. `template` is the extended struct template;
@@ -1034,7 +1037,7 @@
   bindings:ptr      ; ptr array of Node* (the proto-app args), or null if none
   nbindings:i32
   ; --- Stage 11 assoc-types (A4): trailing :where clause, or empty ---
-  tyvars:ptr        ; ptr array of tyvar name strings (template tyvars + assoc), or null
+  tyvars:ptr        ; ptr array of tyvar-name Symbols (template tyvars + assoc), or null
   num-tyvars:i32    ; count of tyvars above (template ntv for a :where-free extend)
   ; Stage 14 §14.4: the parsed :where clause as a (Vector (ref Constraint)),
   ; mirroring Method; null for a :where-free extend (num-constraints = 0).
@@ -1055,7 +1058,7 @@
 (defstruct MonoJob
   (form (raw Node))
   context:CStr
-  ns:CStr
+  ns:Symbol
   path:CStr
   imports:raw:ImportVec)
 
@@ -1070,13 +1073,13 @@
 ; carried only so the no-mechanism diagnostic (§4.6) can name it.
 (defstruct InitJob
   (form (raw Node))
-  ns:CStr
+  ns:Symbol
   path:CStr
   line:i32
-  name:CStr)
+  name:Symbol)
 
 (defstruct MacroDef
-  name:CStr
+  name:Symbol
   jit-name:CStr
   num-params:i32
   variadic:i32
@@ -1090,7 +1093,7 @@
   ; :rest/:optional keywords) for tooling. null if not captured.
   param-names:ptr
   priv:i32          ; Stage 15 B5 — see StructDef.priv (`defmacro-`)
-  src-ns:CStr)
+  src-ns:Symbol)
 
 (defstruct RMacro
   ; Both content-only: `prefix` is only ever byte-indexed (cstr-byte-at) during the
@@ -1107,7 +1110,7 @@
 ; `name` is content-compared: lbl-find matches it via explicit strcmp, not
 ; identity.
 (defstruct LabelEntry
-  name:CStr
+  name:Symbol
   total:i32
   seen:i32)
 
@@ -1191,7 +1194,7 @@
 ; `(Vector (ref NsPrefixEntry))`. Keys compare by interned-pointer identity
 ; (ns-ir-prefix-set/-get) — kept `ptr`, not `CStr`.
 (defstruct NsPrefixEntry
-  ns:ptr      ; interned namespace name
+  ns:Symbol   ; the namespace name
   prefix:ptr) ; interned ir-prefix string for that namespace
 
 ; Stage 15 B1 (design/stage15-stress-test/name-resolution.md §5.2 B1, §8.3) — one
@@ -1226,6 +1229,16 @@
 ; index the table are `ref:`.
 (deftype ImportVec (Vector (ref ImportBind)))
 
+; The namespace one source file declared. Stage 17 C7-4a gave this its own
+; record: it was a `Node` cell abusing `s` for the path and `car` — a
+; `(raw Node)` slot — for the namespace, which stopped typechecking the moment
+; the namespace became a `Symbol` and was never honest before that.
+(defstruct FileNs
+  path:ptr    ; source path as `resolve-import` handed it back; compared by CONTENT
+  ns:Symbol)
+
+(deftype FileNsVec (Vector (ref FileNs)))
+
 ; Stage 15 B2a (design/stage15-stress-test/name-resolution.md §5.2 B2, §8.3) —
 ; the result of `resolve-spelling`, the ONE canonicaliser on the *reference*
 ; side. It replaces the ad-hoc splitting each registry used to do inline
@@ -1247,12 +1260,17 @@
 (defconst NR-QUALIFIED 1)
 (defconst NR-UNBOUND 2)
 
+; `qual` is a StrView because it is a SLICE of `spelling`, never a key: the
+; qualifier is compared and printed, never looked up, so interning it would cost
+; a hash per resolution to buy nothing. The three `Symbol`s are keys. A zeroed
+; `NameRef` (`new` zeroes) reads as "unset" on all of them — `symbol-none?` for
+; the keys, an empty view for `qual`.
 (defstruct NameRef
-  spelling:ptr   ; the source spelling, as written
-  qual:ptr       ; the qualifier text, or null when unqualified
-  bare:ptr       ; the name part (== spelling when unqualified)
-  ns:ptr         ; the namespace the qualifier resolved to, or null
-  canonical:ptr  ; the registry key, or null when NR-UNBOUND
+  spelling:Symbol   ; the source spelling, as written
+  qual:StrView      ; the qualifier text, empty when unqualified
+  bare:Symbol       ; the name part (== spelling when unqualified)
+  ns:Symbol         ; the namespace the qualifier resolved to, or none
+  canonical:Symbol  ; the registry key, or none when NR-UNBOUND
   status:i32)
 
 ; Stage 15 W5e (design/stage15-stress-test/ergonomics.md §W5e) — one name a file
@@ -1263,8 +1281,8 @@
 ; synthetic per-file one — so `qualify-name` is idempotent on it and every
 ; existing keying rule applies unchanged). Both are interned.
 (defstruct PrivName
-  bare:CStr
-  key:CStr)
+  bare:Symbol
+  key:Symbol)
 
 ; The set of file-private names owned by one source file, plus the synthetic
 ; namespace that keys them. `ns` is `#pN` (N = 1-based creation order); `prefix`
@@ -1274,9 +1292,9 @@
 ; cannot begin a user namespace name (rejected in `emit-ns`), so `#pN` can never
 ; collide with one.
 (defstruct PrivFile
-  path:CStr   ; interned source path that owns these names
-  ns:CStr     ; interned synthetic namespace ("#pN")
-  prefix:CStr ; interned IR prefix for that namespace
+  path:CStr     ; interned source path that owns these names
+  ns:Symbol     ; the synthetic namespace ("#pN")
+  prefix:Symbol ; IR prefix for that namespace
   (names (ref (Vector (ref PrivName)))))
 
 ; Stage 14 AVR-5 (design/stage14/avr-targets.md §5 AVR-5) — function-attribute
@@ -1285,12 +1303,11 @@
 ; (the §14.5 batch-2 small-table idiom, mirroring NsPrefixEntry) and scanned at
 ; emit-defn time, collecting every entry whose `name` matches the function being
 ; emitted — so a function may carry several attributes (one `fn-attr` call with
-; several strings, or several `fn-attr` calls on the same name). `name` is always
-; looked up by interned-pointer identity (both sides are interned symbol
-; spellings, never strcmp'd), so it stays `ptr`, not `CStr`; `attr` is only ever
-; printed into the IR stream, so it too stays `ptr`.
+; several strings, or several `fn-attr` calls on the same name). `name` is looked
+; up by identity, which is what a `Symbol` is; `attr` is only ever printed into
+; the IR stream, so it stays `ptr`.
 (defstruct FnAttrEntry
-  name:ptr   ; interned source function name (fn-attr's target defn)
+  name:Symbol ; source function name (fn-attr's target defn)
   attr:ptr)  ; interned LLVM string attribute (e.g. "signal", "interrupt")
 
 ; Stage 14 §14.5 batch 3 — BoxedFn-instance memo entry: replaces the parallel
@@ -1309,9 +1326,9 @@
 ; (never strcmp'd — every key/value is already interned): `key`/`proto` stay
 ; `ptr`, `ty` is `(raw Type)` matching BoxedFnEntry.
 (defstruct DynEntry
-  key:ptr        ; interned "dyn.<P>" memo key
+  key:Symbol     ; the "dyn.<P>" memo key
   ty:(raw Type)  ; the memoised box Type*
-  proto:ptr)     ; interned protocol-name string
+  proto:Symbol)  ; the protocol name
 
 ; Stage 15 B6 (name-resolution.md §9.5) — one deferred `(dyn P)` ANNOTATION-site
 ; admission job. `dyn-type` mints the box's identity from the spelling but cannot

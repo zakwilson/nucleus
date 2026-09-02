@@ -17,6 +17,7 @@ size_t symbol_cached_hash(struct Symbol self) asm("symbol-cached-hash");
 struct StrView symbol_as_view(struct Symbol self) asm("symbol-as-view");
 const char* symbol_as_cstr(struct Symbol self) asm("symbol-as-cstr");
 bool symbol_none_QMARK(struct Symbol self) asm("symbol-none_QMARK");
+struct Symbol symbol_none(void) asm("symbol-none");
 bool symbol_is(struct Symbol self, struct StrView other) asm("symbol-is");
 bool eq_Symbol_StrView(struct Symbol a, struct StrView b) asm("eq.Symbol.StrView");
 bool ne_Symbol_StrView(struct Symbol a, struct StrView b) asm("ne.Symbol.StrView");
@@ -30,7 +31,8 @@ uint8_t* intern_alloc_bytes(uint8_t* src, size_t n, size_t h) asm("intern-alloc-
 void intern_place(void* tbl, size_t cap, uint8_t* p, size_t h) asm("intern-place");
 void intern_grow(size_t newcap) asm("intern-grow");
 struct Symbol symbol_intern_bytes(uint8_t* src, size_t n) asm("symbol-intern-bytes");
-struct Symbol symbol_intern(void* sv) asm("symbol-intern");
+struct Symbol symbol_intern_pStrView(void* sv) asm("symbol_intern.pStrView");
+struct Symbol symbol_intern_StrView(struct StrView sv) asm("symbol_intern.StrView");
 struct Symbol symbol_from_cstr(const char* cs) asm("symbol-from-cstr");
 size_t symbol_count(void) asm("symbol-count");
 bool eq_Symbol_Symbol(struct Symbol a, struct Symbol b) asm("eq.Symbol.Symbol");
