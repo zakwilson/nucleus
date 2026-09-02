@@ -1276,11 +1276,11 @@
   ; emit-defn skips its define while the call site still references its
   ; ir-name (undefined symbol at parse). Same failure mode as the __fnty_N
   ; case above (Stage 13 L7); recurses so ptr:ptr:Foo resolves.
-  (when (and (= (strncmp name "ptr:" 4) 0)
+  (when (and (strview-has-prefix (strview-from-cstr (as CStr name)) "ptr:")
              (!= (tyname-resolvable (unsafe/ptr+ (as raw:i8 name) 4)) 0))
     (return 1))
-  (when (and (or (= (strncmp name "ref:" 4) 0)
-                 (= (strncmp name "raw:" 4) 0))
+  (when (and (or (strview-has-prefix (strview-from-cstr (as CStr name)) "ref:")
+                 (strview-has-prefix (strview-from-cstr (as CStr name)) "raw:"))
              (!= (tyname-resolvable (unsafe/ptr+ (as raw:i8 name) 4)) 0))
     (return 1))
   (return 0))

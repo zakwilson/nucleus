@@ -328,7 +328,7 @@
 ; (reloc-for-triple / the datalayout is-avr check); AVR triples always begin
 ; `avr`. Inert on every hosted/RISC-V target (returns 0) → byte-identical.
 (defn abi-is-avr ():i32
-  (return (if (= (strncmp g-target-triple "avr" 3) 0) 1 0)))
+  (return (if (strview-has-prefix (strview-from-cstr (as CStr g-target-triple)) "avr") 1 0)))
 
 ; Check if target is riscv64 (Stage 14 RV-3). riscv64's lp64d psABI passes and
 ; returns small aggregates via the INTEGER convention only in this v1 scope —
@@ -341,7 +341,7 @@
 ; idiom as abi-is-avr / cpu-for-triple; riscv64 triples always begin `riscv64`.
 ; Inert on every hosted/x86_64/aarch64/AVR target (returns 0) → byte-identical.
 (defn abi-is-riscv ():i32
-  (return (if (= (strncmp g-target-triple "riscv64" 7) 0) 1 0)))
+  (return (if (strview-has-prefix (strview-from-cstr (as CStr g-target-triple)) "riscv64") 1 0)))
 
 ; Stage 14 AVR-7 numerics policy: f64 is unsupported on AVR (8-bit target, no
 ; hardware double). Rejected at the two entry points where an f64-typed value is
@@ -467,7 +467,7 @@
       (return (if (!= (sdd 'packed) 0) 1 a)))
     (when (< (f 'bit-width) 0) (return 1))
     ; C's unnamed bit-fields are minted `__bf.N` on import (cheader.nuc).
-    (when (= (strncmp (f 'name) "__bf." 5) 0) (return 1))
+    (when (strview-has-prefix (strview-from-cstr (as CStr (f 'name))) "__bf.") (return 1))
     (return (if (!= (sdd 'packed) 0) 1 a))))
 
 (defn abi-field-align (sd:raw:StructDef i:i32):i32

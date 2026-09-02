@@ -47,6 +47,8 @@ struct CharIter strview_chars(void* sv) asm("strview-chars");
 bool strview_empty(void* sv) asm("strview-empty");
 bool strview_starts_with(void* sv, void* prefix) asm("strview-starts-with");
 bool strview_ends_with(void* sv, void* suffix) asm("strview-ends-with");
+bool strview_has_prefix(struct StrView sv, struct StrView prefix) asm("strview-has-prefix");
+bool strview_has_suffix(struct StrView sv, struct StrView suffix) asm("strview-has-suffix");
 bool strview_contains_str(void* sv, void* needle) asm("strview-contains-str");
 bool strview_is_ascii_ws(uint8_t b) asm("strview-is-ascii-ws");
 struct StrView strview_trim_start(void* sv) asm("strview-trim-start");
