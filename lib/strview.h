@@ -52,6 +52,7 @@ int32_t strview_parse_sign(struct StrView sv, size_t* out_start) asm("strview-pa
 struct StrView strview_drop_bytes(struct StrView sv, size_t start) asm("strview-drop-bytes");
 bool strview_has_prefix(struct StrView sv, struct StrView prefix) asm("strview-has-prefix");
 bool strview_has_suffix(struct StrView sv, struct StrView suffix) asm("strview-has-suffix");
+bool strview_contains(struct StrView sv, struct StrView needle) asm("strview-contains");
 bool strview_contains_str(void* sv, void* needle) asm("strview-contains-str");
 bool strview_is_ascii_ws(uint8_t b) asm("strview-is-ascii-ws");
 struct StrView strview_trim_start(void* sv) asm("strview-trim-start");
