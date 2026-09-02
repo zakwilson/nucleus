@@ -498,12 +498,12 @@
             ; unaffected.
             (let (site:ptr (as ptr (cheader-explicit-declare-site fname:CStr)))
               (when (!= site null)
-                (let (msig:ptr (c-fn-sig-render (as raw:Type ret) ptypes nparams 0)
+                (let (msig:StrView (c-fn-sig-render (as raw:Type ret) ptypes nparams 0)
                       shadow:ptr (as ptr (cdecl-site-find g-cheader-shadowed
                                                           fname:CStr)))
                   (set! ((as ptr:CDeclSite site) 'sig) msig)
                   (when (and (!= shadow null)
-                             (!= (as CStr ((as ptr:CDeclSite shadow) 'sig)) msig:CStr))
+                             (!= ((as ptr:CDeclSite shadow) 'sig) msig))
                     (cheader-warn-decl-conflict (as raw:CDeclSite site)
                                                 (as raw:CDeclSite shadow))))))
             (let (ft:ptr:Type (as ptr:Type (make-type TY-FN)))
