@@ -204,15 +204,44 @@ that this would be a visible change.
 
 ### C7-4 — the registries
 
-`Sym.ir-name`, `Method.ir-name`, scope keys, struct-field names, `type-spelling`,
-`fnty-intern`'s `__fnty_N`. Each is a `Symbol`-keyed lookup afterwards, so the
-per-probe `strcmp` becomes an `icmp` and `tyvar-index-of`'s
+Scope keys, struct-field names, `type-spelling`, `fnty-intern`'s `__fnty_N`,
+`Sym.ir-name`, `Method.ir-name`. Each is a `Symbol`-keyed lookup afterwards, so
+the per-probe `strcmp` becomes an `icmp` and `tyvar-index-of`'s
 already-identity-based scan becomes honestly typed rather than accidentally
 correct.
 
 `type-spelling` is the interesting one: it is *both* a conformance-registry key
 and generic-substitution replacement text, which is why C6 left it alone. As a
 `Symbol` it is honestly the first and `symbol-as-view` gives it the second.
+
+**Split in two.** C7-4a converts every registry **key** — what a lookup is keyed
+*by*. C7-4b converts the ir-name substrate — `Sym.ir-name`, `Method.ir-name`,
+`ProgDefn.ir-name`, `StructDef.ir-name`/`ir-prefix`, `trace-saved` — which is not
+a key but an *emitted spelling*, produced by `ir-name-token`/`sanitize-for-ir`
+and compared by identity only as an optimization. Keeping them `ptr` through
+C7-4a is what lets the key conversion be a single typechecker-driven sweep: an
+`ir-name` retyped in the same pass would have dragged `src/format.nuc`'s return
+types with it, and those feed the byte-identical bootstrap.
+
+**C7-4a done (2026-09-02).** 45 struct fields, ~200 signatures. Three defects it
+exposed, all of them the same shape — a *name-shaped* thing that was not a name:
+
+- `binding-probe` returns a registry **payload record**, not a spelling. Two of
+  its fourteen rows (`BK-SPECIAL`, `BK-PRIMITIVE`) have no record and return the
+  spelling itself as the payload-free "yes", which is what made the whole return
+  look like a name. Interning a `MacroDef*` as a C string segfaults on the first
+  trivial program.
+- `op-name-token` composes `ir-name-token` *then* `sanitize-for-ir`; dropping the
+  inner call silently downgraded `?`→`_QMARK` to the blanket `?`→`_`, which the
+  bootstrap caught as `@contains_.pHashSet` against `@contains_QMARK.pHashSet`.
+  This is exactly the SM-3 ordering `src/format.nuc`'s header comment pins.
+- `NameRef.qual` is a **slice** of the spelling, so it is a `StrView` and not a
+  `Symbol`; `(as CStr view)` compiles (it takes the `data` word) and then prints
+  to the NUL — `'dp/Describe' is not in scope` for a qualifier that is `dp`.
+
+The first is why a payload pointer must never be bridged with `sym-of`, and the
+other two are why the gate set is three gates: neither the segfault nor the
+mangling regression is visible to `make test` alone.
 
 ### C7-5 — `intern-str`, `arena-strndup` and the last producers
 

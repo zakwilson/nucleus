@@ -221,7 +221,7 @@
   (when (= (t 'kind) TY-FN) (return (fn-type-spelling t)))
   ; C6/C7 seam: `type-spelling` is a conformance-registry KEY, compared by
   ; identity, so it stays a C string until the substrate moves.
-  (return (strview-from-cstr (type-spelling t))))
+  (return (strview-from-cstr (sym-ptr (type-spelling t)))))
 
 ; Populate a StructDef's `fields` Vector from parallel name/type arrays and set
 ; the cached `num-fields` count. Names are already interned by the caller (the
@@ -232,7 +232,7 @@
   (let ((fields-vec (ref (Vector (ref Field)))) (vector-new-in (addr-of g-arena-alloc)))
     (dotimes (i:i32 nfields)
       (let (rec:ref:Field (new Field))
-        (set! (rec 'name) (aref (as ptr:ptr fnames) i))
+        (set! (rec 'name) (aref (as ptr:Symbol fnames) i))
         (set! (rec 'type) (as raw:Type (aref (as ptr:ptr ftypes) i)))
         (conj fields-vec rec)))
     (set! (sd 'fields) fields-vec)
@@ -302,7 +302,7 @@
   (let ((pv (ref (Vector (ref Field)))) (vector-new-in (addr-of g-arena-alloc)))
     (dotimes (i:i32 np)
       (let (rec:ref:Field (new Field))
-        (set! (rec 'name) null)
+        (set! (rec 'name) (symbol-none))
         (set! (rec 'type) (as raw:Type (aref (as ptr:ptr ptypes) i)))
         (conj pv rec)))
     (return pv)))
@@ -367,7 +367,7 @@
 ; (design/stage16-ergonomics/c-boundary-defects.md §10, limit 3). C's own
 ; `long double` stays portable — the importer maps it per target — which is why
 ; only the representation SPELLING is refused here.
-(defn reject-unavailable-float (name:CStr line:i32):void
+(defn reject-unavailable-float (name:Symbol line:i32):void
   (when (!= (in-jit-module) 0) (return))
   (when (!= (abi-is-avr) 0)
     (die-at line
@@ -468,7 +468,7 @@
       (return (if (!= (sdd 'packed) 0) 1 a)))
     (when (< (f 'bit-width) 0) (return 1))
     ; C's unnamed bit-fields are minted `__bf.N` on import (cheader.nuc).
-    (when (strview-has-prefix (strview-from-cstr (as CStr (f 'name))) "__bf.") (return 1))
+    (when (strview-has-prefix (strview-from-cstr (sym-ptr (f 'name))) "__bf.") (return 1))
     (return (if (!= (sdd 'packed) 0) 1 a))))
 
 (defn abi-field-align (sd:raw:StructDef i:i32):i32
@@ -1086,7 +1086,7 @@
         ; abi-emit-param-prologue, the only two producers of `%<param>.arg`, and
         ; nowhere else — `scope-define` still keys on the SOURCE name.
         nm:ptr name)
-    (when (!= name null) (set! nm (ir-name-token name)))
+    (when (!= name null) (set! nm (ir-name-token (strview-from-cstr (as CStr name)))))
     (when (= k ABI-DIRECT)
       (if (= name null)
         (emit out (type-to-ir ptype))
@@ -1131,11 +1131,11 @@
 ; under a consuming one), through `abi-classify-arg` — the prologue is the
 ; second of the two walks over a `define`'s parameter list, so the caller loop
 ; owns the `abi-args-begin` reset.
-(defn abi-emit-param-prologue (fn-scope:ref:Scope pname:CStr ptype:raw:Type):void
+(defn abi-emit-param-prologue (fn-scope:ref:Scope pname:Symbol ptype:raw:Type):void
   (let (info:raw:AbiInfo (abi-classify-arg ptype)
         k:i32 (info 'kind)
         ; W9 item 39: must spell the parameter exactly as abi-print-param-to did.
-        mn:ptr (ir-name-token (as ptr pname))
+        mn:ptr (ir-name-token (symbol-as-view pname))
         slot:ptr (fcstr "%" mn ".addr")
         arg:ptr (fcstr "%" mn ".arg"))
     (when (= k ABI-DIRECT)
@@ -1674,8 +1674,8 @@
 ; (union-registry.nuc 584, generics.nuc 604, cheader.nuc 6921, and
 ; nucleusc.nuc's own emit-defvar/emit-extern/emit-defn/emit-defstruct further
 ; down that same file), so it is the earliest available home.
-(defn check-ir-name-legal (line:i32 orig-name:CStr ir-name:CStr):void
-  (let (bad:i32 (ir-name-illegal-char ir-name))
+(defn check-ir-name-legal (line:i32 orig-name:Symbol ir-name:CStr):void
+  (let (bad:i32 (ir-name-illegal-char (strview-from-cstr ir-name)))
     (when (>= bad 0)
       (let (cbuf:ptr (arena-alloc 2))
         (set! (aref (as ptr:i8 cbuf) 0) (unsafe/cast i8 bad))
@@ -1687,12 +1687,12 @@
   ; leading digit, so reaching here means an ir-name was produced on a path that
   ; skipped it — report it against the definition rather than letting LLVM
   ; report it against the generated IR.
-  (when (!= (ir-name-leading-digit (as ptr ir-name)) 0)
+  (when (!= (ir-name-leading-digit (strview-from-cstr ir-name)) 0)
     (die-at line
       (fstr "generated symbol for '" orig-name "' (ir-name '" ir-name
             "') begins with a digit — an LLVM identifier may not"))))
 
-(defn register-struct (name:CStr):ref:StructDef
+(defn register-struct (name:Symbol):ref:StructDef
   (when (>= (unsafe/cast i32 (count g-structs)) MAX-STRUCTS)
     (eprint "nucleusc: too many structs\n") (exit 1))
   (let (sd:ptr:StructDef (new StructDef))
@@ -1704,10 +1704,10 @@
     ; `user` for a bare key, `ns-ir-prefix` answers "" for `user`, and
     ; `ns-compose` is the identity on an empty prefix, so for every existing
     ; struct/union this is exactly `ir-name-token name` — byte-identical.
-    (let (pre:CStr (as CStr (ns-ir-prefix (as ptr (key-namespace name)))))
+    (let (pre:CStr (as CStr (ns-ir-prefix (sym-of (key-namespace name)))))
       (set! (sd 'ir-prefix) pre)
       (set! (sd 'ir-name) (as CStr (ns-compose (as ptr pre)
-                             (ir-name-token (strip-ns-qualifier (as ptr name)))))))
+                             (ir-name-token (symbol-as-view (strip-ns-qualifier name)))))))
     (set! (sd 'num-fields) 0)
     (set! (sd 'emitted) 0)
     (set! (sd 'emit-epoch) 0)

@@ -24,7 +24,7 @@
     (set! (s 'cleanup-slots) cs)
     (return s)))
 
-(defn scope-define (s:raw:Scope name:CStr type:raw:Type ir-name:ptr is-local:i32):ref:Sym
+(defn scope-define (s:raw:Scope name:Symbol type:raw:Type ir-name:ptr is-local:i32):ref:Sym
   (let (sc:raw:Scope s)
     ; Stage 12: globals are keyed by their fully-qualified name. The global scope
     ; is the unique null-parent scope; local scopes (params, let bindings) always
@@ -62,7 +62,7 @@
 ; no environment, no privacy rule. Extracted in Stage 15 B2b so the *policy*
 ; (which keys to try, and whether a private symbol counts) lives in one place
 ; and the *scan* in another.
-(defn scope-frame-find (sc:raw:Scope key:CStr):?ptr:Sym
+(defn scope-frame-find (sc:raw:Scope key:Symbol):?ptr:Sym
   (let (i:i32 (- (sc 'len) 1))
     (while (>= i 0)
       (let (sym:ptr:Sym (as ptr:Sym (unsafe/ptr+ (as ptr:Sym (sc 'syms)) i)))
@@ -76,7 +76,7 @@
 ; another file's namespace — a bound prefix, or a namespace this file flattened —
 ; must not see that file's private definitions; a name reached through the
 ; file's OWN namespace must.
-(defn scope-frame-find-public (sc:raw:Scope key:CStr):?ptr:Sym
+(defn scope-frame-find-public (sc:raw:Scope key:Symbol):?ptr:Sym
   (let (i:i32 (- (sc 'len) 1))
     (while (>= i 0)
       (let (sym:ptr:Sym (as ptr:Sym (unsafe/ptr+ (as ptr:Sym (sc 'syms)) i)))
@@ -96,7 +96,7 @@
 ; route an already-canonical `g-globals` key through here — the file that reads
 ; such a key is routinely not the file that wrote it, and a reference resolver
 ; would refuse it.
-(defn scope-lookup (s:raw:Scope name:CStr):?ptr:Sym
+(defn scope-lookup (s:raw:Scope name:Symbol):?ptr:Sym
   (let (cur:raw:Scope s)
     (while (!= cur null)
       (let (sc:raw:Scope cur)
@@ -118,7 +118,7 @@
 ; This is the pre-B1 `scope-lookup` body verbatim: `qualify-name(priv-key-use …)`
 ; on the global frame, the raw name on every inner one. Identity under `user`,
 ; which is why the bootstrap does not move.
-(defn scope-lookup-key (s:raw:Scope name:CStr):?ptr:Sym
+(defn scope-lookup-key (s:raw:Scope name:Symbol):?ptr:Sym
   (let (cur:raw:Scope s)
     (while (!= cur null)
       (let (sc:raw:Scope cur
@@ -126,7 +126,7 @@
             ; symbols by fully-qualified name. Stage 15 W5e: a name this file
             ; declared with a private definer keys under the file's own implicit
             ; namespace, and `priv-key-use` is the identity when it owns none.
-            key:CStr name)
+            key:Symbol name)
         (when (= (sc 'parent) null)
           (set! key (qualify-name (priv-key-use name))))
         (let (hit:?ptr:Sym (scope-frame-find sc key))

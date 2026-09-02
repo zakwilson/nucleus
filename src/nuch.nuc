@@ -49,11 +49,11 @@
 ; does. `defn-scan-attrs` is the same reader emit-defn uses, so the exported and
 ; consumed spellings cannot drift.
 (defn emit-nuch-fn-attrs (form:ptr):void
-  (let (fname:ptr null
+  (let (fname:Symbol (symbol-none)
         rn:ptr null
         ps:ptr null
         bstart:i32 3
-        style:i32 (defn-parse-sig (as raw:Node form) (as ptr:ptr (addr-of fname))
+        style:i32 (defn-parse-sig (as raw:Node form) (as ptr:Symbol (addr-of fname))
                     (as ptr:ptr (addr-of rn)) (as ptr:ptr (addr-of ps))
                     (as ptr:i32 (addr-of bstart)))
         nr:i32 0
@@ -216,7 +216,7 @@
                    (= (f 'kind) NODE-CELL)
                    (> (node-len (as ptr f)) 0)
                    (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 'kind) (= _ NODE-SYM)))
-          (let (h:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 's) (sym-ptr _)))
+          (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 's)))
             (case h
               "defstruct"    (emit-nuch-defstruct (as ptr f))
               ; defunion exports verbatim (template or monomorphic); the
@@ -290,7 +290,7 @@
               "' is not supported in a declaration -- declare the fixed parameters only (extra arguments are passed positionally at the call site)")))
     ; A keyword operand (`:i64`) carries the spelling without the colon, exactly
     ; as a return operand does (fn-parse-ret-type).
-    (when (= (n 'kind) NODE-KEYWORD) (return (parse-type-name (symbol-as-cstr (n 's)) line)))
+    (when (= (n 'kind) NODE-KEYWORD) (return (parse-type-name (n 's) line)))
     (return (parse-type-from-node (as ptr node) line))))
 
 ; A `declare`'s parameter list as a flat Type array, with the count written back
@@ -309,9 +309,9 @@
         ; must be borrowed from the enclosing form: an unannotated parameter is an
         ; interned NODE-SYM, whose own line is always 0 (W4a).
         (let (p:ptr (node-at params-node j)
-              pn:ptr null
+              pn:Symbol (symbol-none)
               pline:i32 (node-line p line)
-              pty:ptr (extract-name-and-type p (as ptr:ptr (addr-of pn)) pline))
+              pty:ptr (extract-name-and-type p (as ptr:Symbol (addr-of pn)) pline))
           (when (= pty null)
             (set! pty (declare-param-type (as raw:Node p) pline)))
           (set! (aref (as ptr:ptr ptypes) j) pty)))
@@ -342,8 +342,8 @@
 ; a `defn` carries a body, so only a definition is located here: a C-header import
 ; and an imported `declare` both answer null, which is the case the skip is FOR.
 ; Same provenance `duplicate-signature-message` uses.
-(defn nuch-definition-site (fname:ptr):ptr
-  (let (g:?ptr:Generic (generic-lookup fname:CStr))
+(defn nuch-definition-site (fname:Symbol):ptr
+  (let (g:?ptr:Generic (generic-lookup fname))
     (when (= g null) (return null))
     (let (gg:ptr:Generic (as ptr:Generic g)
           i:i32 0)
@@ -363,7 +363,7 @@
 ; one. Giving the library an `(ns …)` is a real fix rather than advice: its
 ; exports then key as `lib/helper` and link as `@lib__helper`, and the two coexist
 ; (the skip never fires, because the keys differ).
-(defn nuch-declare-conflict-message (fname:ptr site:ptr params-node:ptr
+(defn nuch-declare-conflict-message (fname:Symbol site:ptr params-node:ptr
                                      ret:ptr line:i32):StrView
   (let (nparams:i32 0
         ptypes:ptr (declare-param-types params-node line (as ptr:i32 (addr-of nparams)))
@@ -374,14 +374,14 @@
         (when (!= pt null)
           (let (ft:ptr:Type (unsafe/cast ptr:Type pt))
             (when (= (ft 'kind) TY-FN)
-              (set! theirs (fcstr fname:CStr
+              (set! theirs (fcstr fname
                                  (as CStr (fn-sig-spelling (unsafe/cast ptr (ft 'ret))
                                         (fn-type-param-array ft) (ft 'num-params))))))))))
     (return
-      (fstr (fstr "declare '" fname:CStr "': this compilation unit already defines '" fname:CStr
+      (fstr (fstr "declare '" fname "': this compilation unit already defines '" fname
                   "', at " site:CStr)
             "\n  note: "
-            (fstr "the header declares " fname:CStr
+            (fstr "the header declares " fname
                   (as CStr (fn-sig-spelling ret ptypes nparams)) ", the unit has " theirs:CStr
                   ". One name is one key here, so nothing — not even a qualified call — would reach the header's. Rename one, or give the library an (ns ...) so its exports key and link under it.")))))
 
@@ -427,12 +427,12 @@
             (fstr "declare '" (defn-name-only name-node)
                   "': legacy 'name:ret' syntax is no longer supported — write (declare "
                   (defn-name-only name-node) " (params) :ret)")))
-        (let (fname:ptr null
+        (let (fname:Symbol (symbol-none)
               ret:ptr (if (!= ndi-new 0)
                         (fn-parse-ret-type (node-at form 3) (ff 'line))
-                        (extract-name-and-type name-node (as ptr:ptr (addr-of fname))
+                        (extract-name-and-type name-node (as ptr:Symbol (addr-of fname))
                                                ((as ptr:Node name-node) 'line))))
-          (when (!= ndi-new 0) (set! fname (-> name-node (unsafe/cast ptr:Node _) (_ 's) (symbol-as-cstr _))))
+          (when (!= ndi-new 0) (set! fname (-> name-node (unsafe/cast ptr:Node _) (_ 's))))
           (when (= ret null)
             (die-at ((as ptr:Node name-node) 'line) (fstr "declare: missing :type on '" fname
                                                           "'")))
@@ -442,7 +442,7 @@
           ; register-and-emit.
           (when (= m NUCH-AFTER)
             (when (= (import-list-has g-nuch-registered
-                       (nuch-reg-key g-source-path:CStr fname:CStr)) 0)
+                       (nuch-reg-key g-source-path fname)) 0)
               (set! m NUCH-BOTH)))
           ; Skip if already defined (e.g. from include or c-include).
           ; B2b: a KEY question — this is the definition side of the `scope-define`
@@ -494,11 +494,11 @@
             ; and warn. Only a top-level `(declare …)` in a .nuc unit has a site
             ; (prescan-explicit-declares); a .nuch-borne declare has none and is
             ; unaffected.
-            (let (site:ptr (as ptr (cheader-explicit-declare-site fname:CStr)))
+            (let (site:ptr (as ptr (cheader-explicit-declare-site fname)))
               (when (!= site null)
                 (let (msig:StrView (c-fn-sig-render (as raw:Type ret) ptypes nparams 0)
                       shadow:ptr (as ptr (cdecl-site-find g-cheader-shadowed
-                                                          fname:CStr)))
+                                                          fname)))
                   (set! ((as ptr:CDeclSite site) 'sig) msig)
                   (when (and (!= shadow null)
                              (!= ((as ptr:CDeclSite shadow) 'sig) msig))
@@ -537,7 +537,7 @@
             (when (= m NUCH-REG)
               (set! g-nuch-registered
                     (import-list-push g-nuch-registered
-                      (nuch-reg-key g-source-path:CStr fname:CStr)))))
+                      (nuch-reg-key g-source-path fname)))))
           (when (!= m NUCH-REG)
             ; Emit LLVM declare, lowering struct-by-value params/return to the
             ; platform C ABI (sret / byval / register coercion) just like a defn.
@@ -593,7 +593,7 @@
       (when (!= (sym-node 'kind) NODE-STR)
         (die-at (sym-node 'line) "defmethod: first element must be the mangled symbol string"))
       (let (mangled:ptr (sym-ptr (sym-node 's))
-            fname:ptr (sym-ptr (name-node 's))
+            fname:Symbol (name-node 's)
             ret:ptr (fn-parse-ret-type (node-at form 4) (ff 'line)))
         (when (= ret null)
           (die-at (ff 'line) "defmethod: missing return type"))
@@ -601,7 +601,7 @@
               ptypes:ptr (defn-params-to-types params-node)
               has-rest:i32 (defn-params-has-rest params-node))
           (when (!= mode NUCH-AFTER)
-            (let (m:ptr (generic-register-method (as CStr fname) ret ptypes nparams has-rest 0 null))
+            (let (m:ptr (generic-register-method fname ret ptypes nparams has-rest 0 null))
               (defn-params-set-opt (as raw:Node params-node)
                 (unsafe/cast ptr:Type ((as ptr:Method m) 'fn-type)))
               (set! ((as ptr:Method m) 'ir-name) mangled)
@@ -667,12 +667,12 @@
             ; same form: the discriminator is `ctors-emitted`, which here means
             ; the arm `declare`s below are already in the stream. Keying the
             ; skip on existence would drop them and link against nothing.
-            (if-some (prev (uniondef-lookup (as CStr (qualify-name (sym-ptr (name-node 's))))))
+            (if-some (prev (uniondef-lookup (qualify-name (name-node 's))))
               (when (!= (prev 'ctors-emitted) 0) (return))
               0)
-            (guard-name-kind (symbol-as-cstr (name-node 's)) (ff 'line) NK-TYPE)
+            (guard-name-kind (name-node 's) (ff 'line) NK-TYPE)
             (let (arms:ptr (-> ff (_ 'cdr) (unsafe/cast ptr:Node _) (_ 'cdr))
-                  ud:ref:UnionDef (defunion-register (as CStr (qualify-name (sym-ptr (name-node 's))))
+                  ud:ref:UnionDef (defunion-register (qualify-name (name-node 's))
                                     arms (ff 'line)))
               ; Constructor declares: (declare Name-arm:Name (fields...)).
               (let (saved-out:raw:String g-out)
@@ -680,7 +680,7 @@
                 (let (it:ListIter (list-iter arms))
                   (doseq-iter (cur (addr-of it))
                     (let (ctor:ptr:Node (as ptr:Node
-                                           (union-ctor-form (symbol-as-cstr (name-node 's))
+                                           (union-ctor-form (name-node 's)
                                                             cur (ff 'line))))
                       ; Reshape the synthesized new-style defn into a new-style declare:
                       ; same bare name (1), same params (2), same return operand (3), no
@@ -713,7 +713,7 @@
         (when (and (!= (as ptr f) null) (= (f 'kind) NODE-CELL)
                    (> (node-len (as ptr f)) 0)
                    (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 'kind) (= _ NODE-SYM)))
-          (let (h:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 's) (sym-ptr _)))
+          (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 's)))
             (case h
               ; Stage 12 N6: a namespaced library's header opens with `(ns NAME)`
               ; (and optionally `(set-ir-prefix ...)`). Honor them so the importer
@@ -787,7 +787,7 @@
         (when (and (!= (as ptr f) null) (= (f 'kind) NODE-CELL)
                    (> (node-len (as ptr f)) 0)
                    (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 'kind) (= _ NODE-SYM)))
-          (let (h:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 's) (sym-ptr _)))
+          (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 's)))
             (case h
               "declare"
                 (nuch-declare-import (as ptr f) NUCH-REG)

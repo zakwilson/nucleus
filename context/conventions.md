@@ -6153,6 +6153,31 @@ and the answer is `calloc` plus `symbol-none?`, not a nullable field — the are
 already hands out zeroed nodes, so the invariant was true before it was typed.
 Every hand-rolled `cons` in `lib/` and `examples/` had to move from `malloc`.
 
+Where the absent case must be *written* rather than only recognised — a
+`ptr:Symbol` out-parameter a parser leaves unset, a `let` initialised before the
+parse that fills it — `symbol-none` mints it. `symbol-none?` is the only thing
+its bytes are good for; the two ship as a pair.
+
+## A registry PAYLOAD is not a name, however name-shaped the function looks
+
+`binding-probe` takes a spelling and returns a **record** — `MacroDef*`,
+`Protocol*`, `Sym*`. Two of its fourteen rows have no record and return the
+spelling itself as a payload-free "yes", which makes the whole return read like a
+name. It is not one: bridging it with `sym-of` interns a record pointer as a C
+string, and the first trivial program segfaults. The tell is that the *caller*
+stores the result in `BindingHit.payload` and hands it to `binding-nk`, which
+casts it to `ptr:Sym`. Before retyping any `ptr`-returning lookup to `Symbol`,
+read what its callers do with the result.
+
+## `?`/`!` mangling is a COMPOSITION — `ir-name-token` first, then the blanket sanitize
+
+`op-name-token`'s fallback is `(sanitize-for-ir (ir-name-token name))`, and the
+three cheader paths spell the same order. Drop the inner call and `?`→`_QMARK`
+silently degrades to `?`→`_`: every name still emits, every test still passes,
+and the only witness is `make bootstrap` reporting `@contains_.pHashSet` against
+`@contains_QMARK.pHashSet`. `sanitize-for-ir` cannot do it itself — it is a
+blanket map that would rename every hyphenated symbol the compiler defines.
+
 ## Anything stored into `Node.s` must come from the INTERNER
 
 A `Symbol` is a pointer to the first byte of `[hash][len][bytes…]`, so a pointer

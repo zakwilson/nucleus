@@ -7,15 +7,22 @@
 ; `fstr` (src/strfmt.nuc), where arity is a macro-expansion fact, and deleted
 ; them. What is left is the identifier layer, which was never about formatting.
 ;
-; Requires: arena (arena-alloc), strlen, isdigit.
+; Requires: arena (arena-alloc), isdigit.
+;
+; Every one of these READS a `StrView` (Stage 17 C7-4): the input is a name, and
+; a name now arrives as a `Symbol` (`symbol-as-view`), an already-composed
+; `fstr` result, or — at a shrinking number of sites — a `ptr`
+; (`strview-from-cstr`). They still RETURN a `ptr`, which is what the ir-name
+; substrate still is until C7-4b.
 
 ; Replace chars invalid in LLVM IR identifiers with underscores.
-(defn sanitize-for-ir (name:ptr):ptr
-  (let (n:i64 (strlen name)
+(defn sanitize-for-ir (name:StrView):ptr
+  (let (v:ptr:StrView (addr-of name)
+        n:i64 (as i64 (v 'len))
         s:ptr (arena-alloc (+ n 1))
         i:i64 0)
     (while (< i n)
-      (let (c:i32 (bit-and (as i32 (aref (as ptr:i8 name) i)) 255)
+      (let (c:i32 (as i32 (aref (v 'data) i))
             is-digit:bool (!= (isdigit c) 0)
             is-lower:bool (and (>= c 97) (<= c 122))
             is-upper:bool (and (>= c 65) (<= c 90))
@@ -47,12 +54,13 @@
 ; cheader.nuc for the reason cheader-c-ident-join already gives for the reserved
 ; escape — it belongs on a complete identifier, and a fragment about to be joined
 ; after a prefix is never at position 0. W9 item 39.
-(defn sanitize-for-c (name:ptr):ptr
-  (let (n:i64 (strlen name)
+(defn sanitize-for-c (name:StrView):ptr
+  (let (v:ptr:StrView (addr-of name)
+        n:i64 (as i64 (v 'len))
         s:ptr (arena-alloc (+ n 1))
         i:i64 0)
     (while (< i n)
-      (let (c:i32 (bit-and (as i32 (aref (as ptr:i8 name) i)) 255)
+      (let (c:i32 (as i32 (aref (v 'data) i))
             is-digit:bool (!= (isdigit c) 0)
             is-lower:bool (and (>= c 97) (<= c 122))
             is-upper:bool (and (>= c 65) (<= c 90))
@@ -89,8 +97,9 @@
 ; unresolved forward reference at emit time (the SM-3 import-order wall). Routing a
 ; non-`?`/`!` char through it — or ever calling sanitize-for-ir here — would rename
 ; the compiler's own hyphenated symbols and break the byte-identical bootstrap
-; (§1.3). Fast path: a name with neither character is returned pointer-unchanged,
-; so non-`?`/`!` names are a strict no-op.
+; (§1.3). A name with neither character comes back byte-for-byte, but as a fresh
+; NUL-terminated copy: the input is a view now, and a view's bytes end where its
+; length says, not at a NUL.
 ;
 ; Stage 15 W9 item 39: LLVM's unquoted identifier is
 ; `[%@][-a-zA-Z$._][-a-zA-Z$._0-9]*` — a body character class, which the `?`/`!`
@@ -106,25 +115,29 @@
 ; this name. That is the accepted cost of a targeted map — the blanket
 ; alternative renames every hyphenated symbol the compiler defines and breaks the
 ; byte-identical bootstrap (§1.3).
-(defn ir-name-token (name:ptr):ptr
-  (let (n:i64 (strlen name)
+(defn ir-name-token (name:StrView):ptr
+  (let (v:ptr:StrView (addr-of name)
+        n:i64 (as i64 (v 'len))
         special:i32 0
         lead:i32 0
         i:i64 0)
     (when (> n 0)
-      (when (!= (isdigit (bit-and (as i32 (aref (as ptr:i8 name) 0)) 255)) 0)
+      (when (!= (isdigit (as i32 (aref (v 'data) 0))) 0)
         (set! lead 1)))
     (while (< i n)
-      (let (c:i32 (bit-and (as i32 (aref (as ptr:i8 name) i)) 255))
+      (let (c:i32 (as i32 (aref (v 'data) i)))
         (when (or (= c 63) (= c 33)) (set! special 1)))
       (set! i (+ i 1)))
-    (when (and (= special 0) (= lead 0)) (return name))
+    ; The no-op fast path still allocates one NUL-terminated copy: the caller
+    ; wants a C string and a view's bytes are only NUL-terminated by accident.
+    (when (and (= special 0) (= lead 0))
+      (return (arena-strndup (as ptr (v 'data)) n)))
     ; Sizing pass: `?`→6 bytes (_QMARK), `!`→5 bytes (_BANG), else 1.
     (let (outn:i64 0
           j:i64 0)
       (when (!= lead 0) (set! outn 1))
       (while (< j n)
-        (let (c:i32 (bit-and (as i32 (aref (as ptr:i8 name) j)) 255))
+        (let (c:i32 (as i32 (aref (v 'data) j)))
           (cond (= c 63) (set! outn (+ outn 6))
                 (= c 33) (set! outn (+ outn 5))
                 true     (set! outn (+ outn 1))))
@@ -136,7 +149,7 @@
           (set! (aref (as ptr:i8 s) 0) 95)
           (set! si 1))
         (while (< k n)
-          (let (c:i32 (bit-and (as i32 (aref (as ptr:i8 name) k)) 255))
+          (let (c:i32 (as i32 (aref (v 'data) k)))
             (cond (= c 63) (set! si (ir-name-append s si "_QMARK"))
                   (= c 33) (set! si (ir-name-append s si "_BANG"))
                   true     (do (set! (aref (as ptr:i8 s) si) (unsafe/cast i8 c))
@@ -160,14 +173,15 @@
 ; flagged — it isn't part of the identifier body being validated.
 ; Returns the first illegal character code found (scanning after any leading
 ; sigil), or -1 if `name` is entirely legal.
-(defn ir-name-illegal-char (name:ptr):i32
-  (let (n:i64 (strlen name)
+(defn ir-name-illegal-char (name:StrView):i32
+  (let (v:ptr:StrView (addr-of name)
+        n:i64 (as i64 (v 'len))
         i:i64 0)
     (when (> n 0)
-      (let (c0:i32 (bit-and (as i32 (aref (as ptr:i8 name) 0)) 255))
+      (let (c0:i32 (as i32 (aref (v 'data) 0)))
         (when (or (= c0 64) (= c0 37)) (set! i 1))))   ; skip @ or %
     (while (< i n)
-      (let (c:i32 (bit-and (as i32 (aref (as ptr:i8 name) i)) 255)
+      (let (c:i32 (as i32 (aref (v 'data) i))
             is-digit:bool (!= (isdigit c) 0)
             is-lower:bool (and (>= c 97) (<= c 122))
             is-upper:bool (and (>= c 65) (<= c 90))
@@ -187,12 +201,13 @@
 ; name a character that the same message's list of legal characters contains.
 ; ir-name-token now escapes this before it reaches emission, so this is purely
 ; the backstop for a future path that skips that transform.
-(defn ir-name-leading-digit (name:ptr):i32
-  (let (n:i64 (strlen name)
+(defn ir-name-leading-digit (name:StrView):i32
+  (let (v:ptr:StrView (addr-of name)
+        n:i64 (as i64 (v 'len))
         i:i64 0)
     (when (= n 0) (return 0))
-    (let (c0:i32 (bit-and (as i32 (aref (as ptr:i8 name) 0)) 255))
+    (let (c0:i32 (as i32 (aref (v 'data) 0)))
       (when (or (= c0 64) (= c0 37)) (set! i 1)))
     (when (>= i n) (return 0))
-    (when (!= (isdigit (bit-and (as i32 (aref (as ptr:i8 name) i)) 255)) 0) (return 1))
+    (when (!= (isdigit (as i32 (aref (v 'data) i))) 0) (return 1))
     (return 0)))

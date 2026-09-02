@@ -182,6 +182,7 @@ building the interner on one would be circular.
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `symbol-intern` | `((sv (ref StrView))) -> Symbol` | The canonical `Symbol` for these bytes. |
+| `symbol-intern` | `(sv:StrView) -> Symbol` | The by-value overload, for a literal or an `fstr` result. |
 | `symbol-intern-bytes` | `(src:(ptr ui8) n:usize) -> Symbol` | Same, from a pointer and a length. |
 | `symbol-from-cstr` | `((cs CStr)) -> Symbol` | Same, from a C string. |
 | `symbol-len` | `(self:Symbol) -> usize` | Byte length, from the header. |
@@ -191,12 +192,15 @@ building the interner on one would be circular.
 | `symbol-is` | `(self:Symbol other:StrView) -> bool` | Same bytes as the view? Cached length, then `memcmp`. |
 | `symbol-contains-byte` | `(self:Symbol b:i32) -> bool` | Does the name contain this byte (`:`, `/`)? |
 | `symbol-none?` | `(self:Symbol) -> bool` | Is this the zero `Symbol` — "no name"? |
+| `symbol-none` | `() -> Symbol` | The zero `Symbol` itself, for writing "no name". |
 | `symbol-count` | `() -> usize` | How many distinct names are interned. |
 
 A `Symbol` is never *constructed* null: `p` is a non-null pointer type, so there
-is no `symbol-none` to assign. A zeroed struct reads back as one, though — an
-arena `Node` that is an `INT` or a `CELL` has no name — so a cell is allocated
-with `calloc` and tested with `symbol-none?` rather than assigned a null.
+is no null to assign. A zeroed struct reads back as one, though — an arena `Node`
+that is an `INT` or a `CELL` has no name — so a cell is allocated with `calloc`
+and tested with `symbol-none?`. Where the absent case has to be *written* rather
+than only recognised — an out-parameter a parser leaves unset, a struct field
+that means "no annotation" — `symbol-none` mints it.
 
 `=` and `!=` are overloaded for `(Symbol, Symbol)` — pointer identity — and for
 `(Symbol, StrView)`, which is `symbol-is`. Interning is what makes those one

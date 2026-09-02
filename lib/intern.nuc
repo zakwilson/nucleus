@@ -82,6 +82,16 @@
 (defn symbol-none? (self:Symbol):bool
   (return (= (as ptr (self 'p)) null)))
 
+; …and the value it tests for, so "this has no name" can be WRITTEN and not only
+; recognised. `memset` because `p` is a non-null pointer type: there is no null
+; to assign, which is the whole reason the zero Symbol has to be minted rather
+; than constructed. Its bytes may never be read — `symbol-none?` is the only
+; thing it is good for.
+(defn symbol-none ():Symbol
+  (let (s:&Symbol (alloca Symbol))
+    (memset (as ptr s) 0 (as i64 (sizeof Symbol)))
+    (return (deref s))))
+
 ; A spelling test against a written literal — the overwhelmingly common
 ; comparison, and the one thing pointer identity cannot answer, since interning
 ; the literal to get a pointer would cost a hash to save a `memcmp` of four
@@ -186,6 +196,13 @@
 
 (defn symbol-intern ((sv (ref StrView))):Symbol
   (return (symbol-intern-bytes (sv 'data) (sv 'len))))
+
+; The by-value convenience beside the by-reference primitive, for the same
+; reason `strview-has-prefix` sits beside `strview-starts-with` (library-gaps.md
+; #34): address-of is lvalue-only, so a literal and a freshly formatted `fstr`
+; result cannot reach the `(ref StrView)` form at all.
+(defn symbol-intern (sv:StrView):Symbol
+  (return (symbol-intern (addr-of sv))))
 
 (defn symbol-from-cstr ((cs CStr)):Symbol
   (return (symbol-intern-bytes (as ptr:ui8 (as ptr cs))
