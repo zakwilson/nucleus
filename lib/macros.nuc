@@ -116,13 +116,11 @@
                 (cond (and (= (val 'kind) NODE-CELL)
                            (!= head null)
                            (= (head 'kind) NODE-KEYWORD)
-                           ; The prelude cannot call `symbol-is` — it lives in a
-                           ; library — so this compares the interned bytes, which
-                           ; are still NUL-terminated. BOOTSTRAP SHIM (C7-3): with
-                           ; a reader that interns, `(head 's)` and `'or`'s `s`
-                           ; are one pointer; the boot compiler's is not, so the
-                           ; identity compare must wait for the refresh.
-                           (= (as ptr ((head 's) 'p)) "or"))
+                           ; Reaching through `Symbol.p` because the prelude
+                           ; cannot import `lib/intern.nuc`, where `=` on two
+                           ; `Symbol`s lives. One byte table, so this is the
+                           ; identity compare that overload would do.
+                           (= (as ptr ((head 's) 'p)) (as ptr (('or 's) 'p))))
                         (set! alt-list 1)))
               (let ((test (raw Node)) null)
                 (if (!= alt-list 0)
