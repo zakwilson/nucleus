@@ -62,13 +62,13 @@
     (when (= g-trap-declared 0)
       (emit g-decl-stream "declare void @llvm.trap()\n")
       (set! g-trap-declared 1))
-    (let (base:ptr (new-tmp)
+    (let (base:StrView (new-tmp)
           id:i32 (new-label-id)
-          ok-lbl:ptr (fcstr "unwrap.ok" id)
-          err-lbl:ptr (fcstr "unwrap.err" id)
-          tgep:ptr (new-tmp)
-          tag:ptr (new-tmp)
-          isok:ptr (new-tmp))
+          ok-lbl:StrView (fstr "unwrap.ok" id)
+          err-lbl:StrView (fstr "unwrap.err" id)
+          tgep:StrView (new-tmp)
+          tag:StrView (new-tmp)
+          isok:StrView (new-tmp))
       (emit g-entry-stream "  " base " = alloca %" (sd 'ir-name) ", align "
             (abi-struct-align sd) "\n")
       (emit g-body-stream "  store %" (sd 'ir-name) " " (vv 'val) ", ptr " base "\n")
@@ -82,10 +82,10 @@
       (set! g-block-term 0)
       (let (fmt:CStr "nucleus: unwrap on error %s: %s\n"
             fmt-id:i32 (intern-string "nucleus: unwrap on error %s: %s\n")
-            epp:ptr (new-tmp) eid:ptr (new-tmp) eid64:ptr (new-tmp)
-            ngep:ptr (new-tmp) nm:ptr (new-tmp)
-            mgep:ptr (new-tmp) msg:ptr (new-tmp)
-            ftmp:ptr (new-tmp))
+            epp:StrView (new-tmp) eid:StrView (new-tmp) eid64:StrView (new-tmp)
+            ngep:StrView (new-tmp) nm:StrView (new-tmp)
+            mgep:StrView (new-tmp) msg:StrView (new-tmp)
+            ftmp:StrView (new-tmp))
         (emit g-body-stream "  " epp " = getelementptr inbounds i8, ptr " base ", i64 " poff
               "\n")
         (emit g-body-stream "  " eid " = load i32, ptr " epp ", align 4\n")
@@ -113,7 +113,7 @@
           (let (uesym:?ptr:Sym (scope-lookup g-globals "unhandled-error"))
             (when (and (!= uesym null)
                        (!= ((unsafe/cast ptr:Sym uesym) 'is-const) 0))
-              (emit-handler-call ((unsafe/cast ptr:Sym uesym) 'const-val)
+              (emit-handler-call (strview-from-cstr ((unsafe/cast ptr:Sym uesym) 'const-val))
                                  (as ptr ty-i32) msg scope line))))
         (emit g-body-stream "  " ftmp " = getelementptr inbounds ["
               (+ (unsafe/cast i32 (strlen fmt)) 1) " x i8], ptr @.str." fmt-id
@@ -129,7 +129,7 @@
       ; ok path becomes the continuation; load and yield the payload.
       (emit g-body-stream ok-lbl ":\n")
       (set! g-block-term 0)
-      (let (opp:ptr (new-tmp) res:ptr (new-tmp))
+      (let (opp:StrView (new-tmp) res:StrView (new-tmp))
         (emit g-body-stream "  " opp " = getelementptr inbounds i8, ptr " base ", i64 " poff
               "\n")
         (emit-load res (type-to-ir ok-ty) opp ok-ty)
@@ -144,13 +144,13 @@
         oi:i32 (union-arm-index ud "ok")
         ok-ty:ptr ((invoke (udd 'arms) oi:usize) 'ptype)
         poff:i32 (union-payload-off ud)
-        base:ptr (new-tmp)
+        base:StrView (new-tmp)
         id:i32 (new-label-id)
-        ok-lbl:ptr (fcstr "unwrapor.ok" id)
-        err-lbl:ptr (fcstr "unwrapor.err" id)
-        join-lbl:ptr (fcstr "unwrapor.join" id)
-        end-lbl:ptr (fcstr "unwrapor.end" id)
-        tgep:ptr (new-tmp) tag:ptr (new-tmp) isok:ptr (new-tmp))
+        ok-lbl:StrView (fstr "unwrapor.ok" id)
+        err-lbl:StrView (fstr "unwrapor.err" id)
+        join-lbl:StrView (fstr "unwrapor.join" id)
+        end-lbl:StrView (fstr "unwrapor.end" id)
+        tgep:StrView (new-tmp) tag:StrView (new-tmp) isok:StrView (new-tmp))
     (emit g-entry-stream "  " base " = alloca %" (sd 'ir-name) ", align " (abi-struct-align sd)
           "\n")
     (emit g-body-stream "  store %" (sd 'ir-name) " " (vv 'val) ", ptr " base "\n")
@@ -162,7 +162,7 @@
     ; ok path: load the payload.
     (emit g-body-stream ok-lbl ":\n")
     (set! g-block-term 0)
-    (let (opp:ptr (new-tmp) okv:ptr (new-tmp))
+    (let (opp:StrView (new-tmp) okv:StrView (new-tmp))
       (emit g-body-stream "  " opp " = getelementptr inbounds i8, ptr " base ", i64 " poff "\n")
       (emit-load okv (type-to-ir ok-ty) opp ok-ty)
       (emit g-body-stream "  br label %" end-lbl "\n")
@@ -170,7 +170,7 @@
       (emit g-body-stream err-lbl ":\n")
       (set! g-block-term 0)
       (let (dv:ref:Val (emit-node default-node scope)
-            dval:ptr null
+            dval:StrView ""
             dterm:i32 g-block-term)
         (when (= dterm 0)
           (let (coerced:ptr (coerce-int-val (as ptr dv) ok-ty line))
@@ -182,7 +182,7 @@
           (emit g-body-stream "  br label %" end-lbl "\n"))
         (emit g-body-stream end-lbl ":\n")
         (set! g-block-term 0)
-        (let (tmp:ptr (new-tmp))
+        (let (tmp:StrView (new-tmp))
           (if (= dterm 0)
             (emit g-body-stream "  " tmp " = phi " (type-to-ir ok-ty) " [ " okv ", %" ok-lbl
                   " ], [ " dval ", %" join-lbl " ]\n")
@@ -198,17 +198,17 @@
 ; the id recovered from the sentinel pointer (0 - ptrtoint r) rather than a tag.
 (defn emit-unwrap-niche-errptr (v:raw:Val elem:raw:Type scope:ref:Scope line:i32):ref:Val
   (let (vv:raw:Val v
-        rval:ptr (vv 'val))
+        rval:StrView (vv 'val))
     (when (= (scope-lookup g-globals "printf") null)
       (die-at line "unwrap on a Result needs printf in scope — add (import-use \"stdio.h\")"))
     (set! g-err-table-used 1)
     (when (= g-trap-declared 0)
       (emit g-decl-stream "declare void @llvm.trap()\n")
       (set! g-trap-declared 1))
-    (let (iserr:ptr (emit-errptr-is-err rval)
+    (let (iserr:StrView (emit-errptr-is-err rval)
           id:i32 (new-label-id)
-          err-lbl:ptr (fcstr "unwrap.err" id)
-          ok-lbl:ptr (fcstr "unwrap.ok" id))
+          err-lbl:StrView (fstr "unwrap.err" id)
+          ok-lbl:StrView (fstr "unwrap.ok" id))
       (emit g-body-stream "  br i1 " iserr ", label %" err-lbl ", label %" ok-lbl "\n")
       ; error path: recover the id, look up name/message, signal the panic hook,
       ; print, trap. Mirrors emit-unwrap-result's err block exactly.
@@ -216,9 +216,9 @@
       (set! g-block-term 0)
       (let (fmt:CStr "nucleus: unwrap on error %s: %s\n"
             fmt-id:i32 (intern-string "nucleus: unwrap on error %s: %s\n")
-            pineg:ptr (new-tmp) eid:ptr (new-tmp) idtr:ptr (new-tmp) eid64:ptr (new-tmp)
-            ngep:ptr (new-tmp) nm:ptr (new-tmp) mgep:ptr (new-tmp) msg:ptr (new-tmp)
-            ftmp:ptr (new-tmp))
+            pineg:StrView (new-tmp) eid:StrView (new-tmp) idtr:StrView (new-tmp) eid64:StrView (new-tmp)
+            ngep:StrView (new-tmp) nm:StrView (new-tmp) mgep:StrView (new-tmp) msg:StrView (new-tmp)
+            ftmp:StrView (new-tmp))
         (emit g-body-stream "  " pineg " = ptrtoint ptr " rval " to " (ptr-int-ir) "\n")
         (emit g-body-stream "  " eid " = sub " (ptr-int-ir) " 0, " pineg "\n")
         (if (= (ptr-int-ir) "i32")
@@ -234,7 +234,7 @@
         (when (!= (error-lib-in-scope) 0)
           (let (uesym:?ptr:Sym (scope-lookup g-globals "unhandled-error"))
             (when (and (!= uesym null) (!= ((unsafe/cast ptr:Sym uesym) 'is-const) 0))
-              (emit-handler-call ((unsafe/cast ptr:Sym uesym) 'const-val)
+              (emit-handler-call (strview-from-cstr ((unsafe/cast ptr:Sym uesym) 'const-val))
                                  (as ptr ty-i32) msg scope line))))
         (emit g-body-stream "  " ftmp " = getelementptr inbounds ["
               (+ (unsafe/cast i32 (strlen fmt)) 1) " x i8], ptr @.str." fmt-id
@@ -270,10 +270,10 @@
       (when (= g-trap-declared 0)
         (emit g-decl-stream "declare void @llvm.trap()\n")
         (set! g-trap-declared 1))
-      (let (isn:ptr (new-tmp)
+      (let (isn:StrView (new-tmp)
             id:i32 (new-label-id)
-            trap-lbl:ptr (fcstr "unwrap.none" id)
-            ok-lbl:ptr (fcstr "unwrap.some" id))
+            trap-lbl:StrView (fstr "unwrap.none" id)
+            ok-lbl:StrView (fstr "unwrap.some" id))
         (emit g-body-stream "  " isn " = icmp eq ptr " (v 'val) ", null\n")
         (emit g-body-stream "  br i1 " isn ", label %" trap-lbl ", label %" ok-lbl "\n")
         (emit g-body-stream trap-lbl ":\n")
@@ -290,14 +290,14 @@
 (defn emit-unwrap-or-niche-errptr (v:raw:Val elem:raw:Type default-node:ptr
                                            scope:ref:Scope line:i32):ref:Val
   (let (vv:raw:Val v
-        rval:ptr (vv 'val)
+        rval:StrView (vv 'val)
         ref-ty:ptr:Type (as ptr:Type (make-type TY-PTR))
-        iserr:ptr (emit-errptr-is-err rval)
+        iserr:StrView (emit-errptr-is-err rval)
         id:i32 (new-label-id)
-        ok-lbl:ptr (fcstr "unwrapor.ok" id)
-        err-lbl:ptr (fcstr "unwrapor.err" id)
-        join-lbl:ptr (fcstr "unwrapor.join" id)
-        end-lbl:ptr (fcstr "unwrapor.end" id))
+        ok-lbl:StrView (fstr "unwrapor.ok" id)
+        err-lbl:StrView (fstr "unwrapor.err" id)
+        join-lbl:StrView (fstr "unwrapor.join" id)
+        end-lbl:StrView (fstr "unwrapor.end" id))
     (set! (ref-ty 'elem) elem)
     (set! (ref-ty 'pkind) PTR-REF)
     (emit g-body-stream "  br i1 " iserr ", label %" err-lbl ", label %" ok-lbl "\n")
@@ -306,7 +306,7 @@
     (emit g-body-stream err-lbl ":\n")
     (set! g-block-term 0)
     (let (dv:ref:Val (emit-node default-node scope)
-          dval:ptr null
+          dval:StrView ""
           dtaint:ptr null
           dterm:i32 g-block-term)
       (when (= dterm 0)
@@ -320,7 +320,7 @@
         (emit g-body-stream "  br label %" end-lbl "\n"))
       (emit g-body-stream end-lbl ":\n")
       (set! g-block-term 0)
-      (let (tmp:ptr (new-tmp))
+      (let (tmp:StrView (new-tmp))
         (if (= dterm 0)
           (emit g-body-stream "  " tmp " = phi ptr [ " rval ", %" ok-lbl " ], [ " dval ", %"
                 join-lbl " ]\n")
@@ -345,12 +345,12 @@
       (when (!= (ptr-pkind (v 'type)) PTR-MAYBE)
         (die-at (cc 'line) "unwrap-or: value must be (Maybe (ref ...)) — launder a raw pointer with (as-ref ...)"))
       (let (ref-ty:ptr (type-as-pkind (v 'type) PTR-REF)
-            isn:ptr (new-tmp)
+            isn:StrView (new-tmp)
             id:i32 (new-label-id)
-            some-lbl:ptr (fcstr "unwrapor.some" id)
-            none-lbl:ptr (fcstr "unwrapor.none" id)
-            join-lbl:ptr (fcstr "unwrapor.join" id)
-            end-lbl:ptr (fcstr "unwrapor.end" id))
+            some-lbl:StrView (fstr "unwrapor.some" id)
+            none-lbl:StrView (fstr "unwrapor.none" id)
+            join-lbl:StrView (fstr "unwrapor.join" id)
+            end-lbl:StrView (fstr "unwrapor.end" id))
         (emit g-body-stream "  " isn " = icmp eq ptr " (v 'val) ", null\n")
         (emit g-body-stream "  br i1 " isn ", label %" none-lbl ", label %" some-lbl "\n")
         (emit g-body-stream some-lbl ":\n")
@@ -358,7 +358,7 @@
         (emit g-body-stream none-lbl ":\n")
         (set! g-block-term 0)
         (let (dv:ref:Val (emit-node (node-at cc 2) scope)
-              dval:ptr null
+              dval:StrView ""
               dtaint:ptr null)
           (let (dterm:i32 g-block-term)
             (when (= dterm 0)
@@ -372,7 +372,7 @@
               (emit g-body-stream "  br label %" end-lbl "\n"))
             (emit g-body-stream end-lbl ":\n")
             (set! g-block-term 0)
-            (let (tmp:ptr (new-tmp))
+            (let (tmp:StrView (new-tmp))
               (if (= dterm 0)
                 (emit g-body-stream "  " tmp " = phi ptr [ " (v 'val) ", %" some-lbl " ], [ "
                       dval ", %" join-lbl " ]\n")
@@ -455,15 +455,15 @@
     (when (!= nargs nf)
       (die-at (cc 'line)
         (fstr (udd 'name) ": arm '" (arm-rec 'name) "' takes a different number of fields")))
-    (let (base:ptr (new-tmp))
+    (let (base:StrView (new-tmp))
       (emit g-entry-stream "  " base " = alloca %" (sd 'ir-name) ", align "
             (abi-struct-align sd) "\n")
-      (let (tgep:ptr (new-tmp))
+      (let (tgep:StrView (new-tmp))
         (emit g-body-stream "  " tgep " = getelementptr inbounds %" (sd 'ir-name) ", ptr " base
               ", i32 0, i32 0\n")
         (emit g-body-stream "  store i32 " arm ", ptr " tgep ", align 4\n"))
       (when (> nf 0)
-        (let (pp:ptr (new-tmp)
+        (let (pp:StrView (new-tmp)
               ftypes:ptr (arm-rec 'ftypes)
               ptype:ptr:Type (unsafe/cast ptr:Type (arm-rec 'ptype)))
           (emit g-body-stream "  " pp " = getelementptr inbounds i8, ptr " base ", i64 "
@@ -477,7 +477,7 @@
                   (fstr (udd 'name) ": type mismatch for a field of arm '" (arm-rec 'name) "'")))
               (set! taint (taint-merge taint (v 'taint)))
               (let (cv:ptr:Val (as ptr:Val coerced)
-                    fgep:ptr pp)
+                    fgep:StrView pp)
                 ; Several fields → the payload is the memoized anon struct;
                 ; one field → the payload IS the field, at offset 0.
                 (when (> nf 1)
@@ -486,7 +486,7 @@
                         ((unsafe/cast ptr:StructDef (ptype 'sdef)) 'name) ", ptr " pp
                         ", i32 0, i32 " fi "\n"))
                 (emit-store (type-to-ir ftype) (cv 'val) fgep ftype))))))
-      (let (v:ptr (new-tmp))
+      (let (v:StrView (new-tmp))
         (emit g-body-stream "  " v " = load %" (sd 'ir-name) ", ptr " base "\n")
         (let (rv:ref:Val (alloc-val (type-for-sdef sd) v))
           (set! (rv 'taint) taint)
@@ -558,9 +558,9 @@
                 (die-at line "make: err expects an Err (i32) value"))
               ; (err E) = inttoptr(0 - zext(E to iptr)). Id 0 ("no error") maps to
               ; null, which is never a valid (ok) either, so it is a safe sentinel.
-              (let (eid64:ptr (new-tmp)
-                    neg:ptr (new-tmp)
-                    pres:ptr (new-tmp))
+              (let (eid64:StrView (new-tmp)
+                    neg:StrView (new-tmp)
+                    pres:StrView (new-tmp))
                 (emit g-body-stream "  " eid64 " = zext i32 " (ev 'val) " to " (ptr-int-ir) "\n")
                 (emit g-body-stream "  " neg " = sub " (ptr-int-ir) " 0, " eid64 "\n")
                 (emit g-body-stream "  " pres " = inttoptr " (ptr-int-ir) " " neg " to ptr\n")
@@ -626,12 +626,12 @@
 ;
 ; Yields a (Maybe repair-ty) Val, built into a slot defaulted to `none` and
 ; overwritten by the handler's result on a match (avoids a struct phi).
-(defn emit-handler-call (eid:ptr repair-ty:raw:Type detail-val:ptr scope:ref:Scope line:i32):ref:Val
+(defn emit-handler-call (eid:StrView repair-ty:raw:Type detail-val:StrView scope:ref:Scope line:i32):ref:Val
   (let (maybe-ty:ptr (stamp-maybe-type repair-ty line)
         mudd:ptr:UnionDef (unsafe/cast ptr:UnionDef (uniondef-for-type maybe-ty))
         msd:ptr:StructDef (unsafe/cast ptr:StructDef (mudd 'sdef))
         noneai:i32 (union-arm-index (as ptr mudd) "none")
-        mslot:ptr (new-tmp)
+        mslot:StrView (new-tmp)
         none-place:ptr (make-cell 'none null line)
         none-val:ref:Val (emit-union-construct (as ptr mudd) noneai none-place 1 scope))
     ; Result slot, defaulted to `none`.
@@ -643,35 +643,35 @@
     ; type-token emits, so the two agree (errors.md §11.2).
     (let (token:ptr (type-mangle-token repair-ty)
           tsid:i32 (intern-string token (unsafe/cast i32 (strlen token)))
-          tok:ptr (new-tmp))
+          tok:StrView (new-tmp))
       (emit g-body-stream "  " tok " = getelementptr inbounds ["
             (+ (unsafe/cast i32 (strlen token)) 1) " x i8], ptr @.str." tsid ", i64 0, i64 0\n")
       ; Find a willing handler. These three are non-null by the
       ; error-lib-in-scope precondition the callers check before reaching here;
       ; with no natural null-guard at the use sites, the cast-to-(ref) is the
       ; audited "known valid" assertion (nullability.md §5).
-      (let (h:ptr (new-tmp)
+      (let (h:StrView (new-tmp)
             efh:ptr:Sym (unsafe/cast ptr:Sym (scope-lookup g-globals "err-find-handler"))
             ght:ptr:Sym (unsafe/cast ptr:Sym (scope-lookup g-globals "g-handler-top"))
             hsd:ptr:StructDef (unsafe/cast ptr:StructDef (struct-lookup-ref (intern-str "Handler")))
             id:i32 (new-label-id))
         (emit g-body-stream "  " h " = call ptr " (efh 'ir-name) "(i32 " eid ", ptr " tok ")\n")
-        (let (hnull:ptr (new-tmp)
-              have-lbl:ptr (fcstr "hcall.have" id)
-              join-lbl:ptr (fcstr "hcall.join" id))
+        (let (hnull:StrView (new-tmp)
+              have-lbl:StrView (fstr "hcall.have" id)
+              join-lbl:StrView (fstr "hcall.join" id))
           (emit g-body-stream "  " hnull " = icmp eq ptr " h ", null\n")
           (emit g-body-stream "  br i1 " hnull ", label %" join-lbl ", label %" have-lbl "\n")
           ; Handler found: unbind it (CL rule §11.4), invoke, restore, store the
           ; (Maybe T) result into the slot.
           (emit g-body-stream have-lbl ":\n")
           (set! g-block-term 0)
-          (let (saved:ptr (new-tmp)
-                prevgep:ptr (new-tmp)
-                prev:ptr (new-tmp)
-                hfngep:ptr (new-tmp)
-                hfn:ptr (new-tmp)
-                ctxgep:ptr (new-tmp)
-                ctx:ptr (new-tmp))
+          (let (saved:StrView (new-tmp)
+                prevgep:StrView (new-tmp)
+                prev:StrView (new-tmp)
+                hfngep:StrView (new-tmp)
+                hfn:StrView (new-tmp)
+                ctxgep:StrView (new-tmp)
+                ctx:StrView (new-tmp))
             (emit g-body-stream "  " saved " = load ptr, ptr " (ght 'ir-name) "\n")
             (emit g-body-stream "  " prevgep " = getelementptr inbounds %" (hsd 'ir-name)
                   ", ptr " h ", i32 0, i32 "
@@ -699,7 +699,7 @@
           ; Join: load the (Maybe T).
           (emit g-body-stream join-lbl ":\n")
           (set! g-block-term 0)
-          (let (mres-tmp:ptr (new-tmp))
+          (let (mres-tmp:StrView (new-tmp))
             (emit g-body-stream "  " mres-tmp " = load %" (msd 'ir-name) ", ptr " mslot "\n")
             (return (alloc-val maybe-ty mres-tmp))))))))
 
@@ -717,9 +717,9 @@
     (when (= (error-lib-in-scope) 0)
       (die-at ln "signal: requires (import error) — it walks the handler chain"))
     (let (ev:ref:Val (emit-node (node-at cc 1) scope)
-          eid:ptr ((as ptr:Val ev) 'val)
+          eid:StrView ((as ptr:Val ev) 'val)
           repair-ty:ptr (parse-type-from-node (node-at cc 2) ln)
-          detail-val:ptr "null")
+          detail-val:StrView "null")
       (when (>= (node-len cc) 4)
         (let (dv:ref:Val (emit-node (node-at cc 3) scope))
           (set! detail-val (dv 'val))))
@@ -756,13 +756,13 @@
         (die-at ln "err: expects (err E) or (err E detail)"))
       (let (enode:ptr (node-at cc 1)
             ev:ref:Val (emit-node enode scope)
-            eid:ptr ((as ptr:Val ev) 'val)
-            detail-val:ptr "null")
+            eid:StrView ((as ptr:Val ev) 'val)
+            detail-val:StrView "null")
         (when (>= (node-len cc) 3)
           (let (dv:ref:Val (emit-node (node-at cc 2) scope))
             (set! detail-val (dv 'val))))
         ; Result slot, defaulted to (err E).
-        (let (rslot:ptr (new-tmp)
+        (let (rslot:StrView (new-tmp)
               err-place:ptr (make-cell 'err
                               (make-cell enode null ln) ln)
               err-val:ref:Val (emit-union-construct (as ptr udd) errai err-place 1 scope))
@@ -777,13 +777,13 @@
                 id:i32 (new-label-id)
                 mudd:ptr:UnionDef (unsafe/cast ptr:UnionDef (uniondef-for-type maybe-ty))
                 msd:ptr:StructDef (unsafe/cast ptr:StructDef (mudd 'sdef))
-                mslot:ptr (new-tmp)
+                mslot:StrView (new-tmp)
                 someai:i32 (union-arm-index (as ptr mudd) "some")
-                tgep:ptr (new-tmp)
-                tag:ptr (new-tmp)
-                issome:ptr (new-tmp)
-                some-lbl:ptr (fcstr "errh.some" id)
-                join-lbl:ptr (fcstr "errh.join" id))
+                tgep:StrView (new-tmp)
+                tag:StrView (new-tmp)
+                issome:StrView (new-tmp)
+                some-lbl:StrView (fstr "errh.some" id)
+                join-lbl:StrView (fstr "errh.join" id))
             ; match m: read its tag; some -> overwrite the slot with (ok v).
             (emit g-entry-stream "  " mslot " = alloca %" (msd 'ir-name) ", align "
                   (abi-struct-align (as ptr msd)) "\n")
@@ -798,15 +798,17 @@
             (set! g-block-term 0)
             ; Load the repaired v from m's `some` payload (one field at the
             ; payload offset), then build (ok v) into the slot.
-            (let (mpp:ptr (new-tmp)
-                  vtmp:ptr (new-tmp)
+            (let (mpp:StrView (new-tmp)
+                  vtmp:StrView (new-tmp)
+                  ; `vslot` lands in `Sym.ir-name`, which is still a C string
+                  ; (the C7 boundary), so it is built NUL-terminated and viewed.
                   vslot:ptr (fcstr "%errh.v" id))
               (emit g-body-stream "  " mpp " = getelementptr inbounds i8, ptr " mslot ", i64 "
                     (union-payload-off (as ptr mudd)) "\n")
               (emit-load vtmp (type-to-ir okty) mpp okty)
               (emit g-entry-stream "  " vslot " = alloca " (type-to-ir okty) ", align "
                     (type-size okty) "\n")
-              (emit-store (type-to-ir okty) vtmp vslot okty)
+              (emit-store (type-to-ir okty) vtmp (strview-from-cstr (as CStr vslot)) okty)
               (scope-define scope "__errh_v" okty vslot 1)
               (let (ok-place:ptr (make-cell 'ok
                                    (make-cell '__errh_v null ln) ln)
@@ -817,7 +819,7 @@
             ; Join: load the (Result T Err) value.
             (emit g-body-stream join-lbl ":\n")
             (set! g-block-term 0)
-            (let (rv-tmp:ptr (new-tmp))
+            (let (rv-tmp:StrView (new-tmp))
               (emit g-body-stream "  " rv-tmp " = load %" (rsd 'ir-name) ", ptr " rslot "\n")
               (return (alloc-val rty rv-tmp)))))))))
 
@@ -954,7 +956,7 @@
 ; field by value (a typed copy, like any field load — taint drops), `_`
 ; ignores it, and (ref x) binds a (ref FieldType) aliasing the field in place
 ; (pointer scrutinee only; the alias keeps the scrutinee's escape taint).
-(defn emit-match-binders (ud:raw:UnionDef ai:i32 binders:ptr pp:ptr inner:ref:Scope
+(defn emit-match-binders (ud:raw:UnionDef ai:i32 binders:ptr pp:StrView inner:ref:Scope
                                is-ptr:i32 staint:raw:Scope line:i32):void
   (let (udd:raw:UnionDef ud
         arm:ref:Arm (invoke (udd 'arms) ai:usize)
@@ -972,7 +974,7 @@
         (when (= skip 0)
           ; Field address: the anon payload struct's member, or — single-field
           ; arm — the payload itself.
-          (let (fa:ptr pp)
+          (let (fa:StrView pp)
             (when (> nf 1)
               (set! fa (new-tmp))
               (emit g-body-stream "  " fa " = getelementptr inbounds %"
@@ -980,13 +982,13 @@
                     ", i32 0, i32 " fi "\n"))
             (if (= (b 'kind) NODE-SYM)
               ; By value: load the field into an ordinary local slot.
-              (let (tmp:ptr (new-tmp)
+              (let (tmp:StrView (new-tmp)
                     slot:ptr (fcstr "%" (ir-name-token (b 's)) ".addr." g-tmp))
                 (inc! g-tmp)
                 (emit-load tmp (type-to-ir ftype) fa ftype)
                 (emit g-entry-stream "  " slot " = alloca " (type-to-ir ftype) ", align "
                       (type-size ftype) "\n")
-                (emit-store (type-to-ir ftype) tmp slot ftype)
+                (emit-store (type-to-ir ftype) tmp (strview-from-cstr (as CStr slot)) ftype)
                 (scope-define inner (b 's) ftype slot 1))
               ; (ref x): alias the field in place for mutation.
               (do
@@ -1015,20 +1017,20 @@
 ; block per clause, cond's strict cross-branch typing and phi/void-collapse at
 ; the join. With no `_` clause the default block is `unreachable` (the match
 ; is exhaustive by construction; a corrupted tag is UB, the C contract).
-; `ud`/`clause-binders`/`base` are null for the defenum variant.
-(defn emit-match-clauses (call:ptr scope:ref:Scope disc:ptr disc-ty:StrView
+; `ud`/`clause-binders` are null (and `base` empty) for the defenum variant.
+(defn emit-match-clauses (call:ptr scope:ref:Scope disc:StrView disc-ty:StrView
                                   clause-val:ptr clause-binders:ptr ndefault:i32
-                                  ud:raw:UnionDef is-ptr:i32 base:ptr staint:raw:Scope):ref:Val
+                                  ud:raw:UnionDef is-ptr:i32 base:StrView staint:raw:Scope):ref:Val
   (let (cc:ptr:Node (unsafe/cast ptr:Node call)
         nclauses:i32 (- (node-len cc) 2)
         ; TC-5 part 2: re-arm the want for each arm's value tail (a prior arm
         ; body or the dispatch may have consumed it).
         my-want:ptr g-want-type
         id:i32 (new-label-id)
-        def-lbl:ptr (fcstr "match.def" id)
-        end-lbl:ptr (fcstr "match.end" id)
-        (vals (ref (Vector ptr))) (vector-new-in (addr-of g-arena-alloc))
-        (preds (ref (Vector ptr))) (vector-new-in (addr-of g-arena-alloc))
+        def-lbl:StrView (fstr "match.def" id)
+        end-lbl:StrView (fstr "match.end" id)
+        (vals (ref (Vector StrView))) (vector-new-in (addr-of g-arena-alloc))
+        (preds (ref (Vector StrView))) (vector-new-in (addr-of g-arena-alloc))
         result-type:ptr null
         result-lit:i32 0
         result-taint:ptr null
@@ -1059,12 +1061,12 @@
             (let (ai:i32 (aref (as ptr:i32 clause-val) ci)
                   binders:ptr (aref (as ptr:ptr clause-binders) ci))
               (when (!= binders null)
-                (let (pp:ptr (new-tmp))
+                (let (pp:StrView (new-tmp))
                   (emit g-body-stream "  " pp " = getelementptr inbounds i8, ptr " base ", i64 "
                         (union-payload-off ud) "\n")
                   (emit-match-binders ud ai binders pp inner is-ptr staint (cc 'line))))))
           ; Body: one or more forms, implicit do.
-          (let (bv:ref:Val (alloc-val ty-void null)
+          (let (bv:ref:Val (alloc-val ty-void "")
                 bcur:ptr ((unsafe/cast ptr:Node clause) 'cdr))
             (while (!= bcur null)
               (let (form:ptr ((unsafe/cast ptr:Node bcur) 'car))
@@ -1081,7 +1083,7 @@
                 ; to CStr (no IR) so the join/phi stays a plain pointer — unless
                 ; the join is known to want a view. See join-strlit-branch.
                 (set! bv (join-strlit-branch bv my-want (cc 'line)))
-                (let (join-lbl:ptr (fcstr "match.join" id "." ci)
+                (let (join-lbl:StrView (fstr "match.join" id "." ci)
                       bty:ptr (bv 'type))
                   ; cond's strict cross-branch typing: same type everywhere or
                   ; the whole form collapses to void; pointer kinds meet. MC-1's
@@ -1113,8 +1115,8 @@
       (set! g-block-term 1))
     (if (or (= result-type null)
             (= ((as ptr:Type result-type) 'kind) TY-VOID))
-      (return (alloc-val ty-void null))
-      (let (tmp:ptr (new-tmp)
+      (return (alloc-val ty-void ""))
+      (let (tmp:StrView (new-tmp)
             ty-ir:StrView (type-to-ir result-type)
             k:usize 0)
         (emit g-body-stream "  " tmp " = phi " ty-ir " ")
@@ -1190,16 +1192,16 @@
           (inc! mi))))
     (return (emit-match-clauses call scope (svv 'val) (type-to-ir (svv 'type))
                                 (as ptr clause-val) null ndefault
-                                null 0 null null))))
+                                null 0 "" null))))
 
 ; is-err discriminant for a niche-ERRPTR value (errors.md §2/§8): one unsigned
 ; compare against -4096 (0xFFFF…F000). A valid object address is never ≥ that,
 ; so this cleanly separates the err sentinels (the top page) from real (ok)
 ; pointers with no discriminant word. Returns the SSA name of the i1 (bool) result.
-(defn emit-errptr-is-err (rval:ptr):ptr
-  (let (pi:ptr (new-tmp)
-        thresh:ptr (new-tmp)
-        cmp:ptr (new-tmp))
+(defn emit-errptr-is-err (rval:StrView):StrView
+  (let (pi:StrView (new-tmp)
+        thresh:StrView (new-tmp)
+        cmp:StrView (new-tmp))
     (emit g-body-stream "  " pi " = ptrtoint ptr " rval " to " (ptr-int-ir) "\n")
     ; threshold = 0 - 4096, computed in iptr width (target-portable, no literal).
     (emit g-body-stream "  " thresh " = sub " (ptr-int-ir) " 0, 4096\n")
@@ -1217,7 +1219,7 @@
         ; TC-5 part 2: emit-match re-arms the want just before dispatching here,
         ; so the arm emitters get it from the channel rather than the signature.
         my-want:ptr g-want-type
-        rval:ptr (sv 'val)
+        rval:StrView (sv 'val)
         staint:ptr (sv 'taint)
         nclauses:i32 (- (node-len cc) 2)
         ok-body:ptr null   ok-bind:ptr null
@@ -1251,13 +1253,13 @@
       (when (= err-body null) (die-at (cc 'line) "match: non-exhaustive — missing arm 'err' (add it or a _ default)")))
     ; A two-block diamond joined by a phi — cond's cross-branch typing applied
     ; across the ok/err arms (the §4 join logic, inlined for the two arms).
-    (let (iserr:ptr (emit-errptr-is-err rval)
+    (let (iserr:StrView (emit-errptr-is-err rval)
           id:i32 (new-label-id)
-          err-lbl:ptr (fcstr "match.err" id)
-          ok-lbl:ptr (fcstr "match.ok" id)
-          end-lbl:ptr (fcstr "match.end" id)
-          (vals (ref (Vector ptr))) (vector-new-in (addr-of g-arena-alloc))
-          (preds (ref (Vector ptr))) (vector-new-in (addr-of g-arena-alloc))
+          err-lbl:StrView (fstr "match.err" id)
+          ok-lbl:StrView (fstr "match.ok" id)
+          end-lbl:StrView (fstr "match.end" id)
+          (vals (ref (Vector StrView))) (vector-new-in (addr-of g-arena-alloc))
+          (preds (ref (Vector StrView))) (vector-new-in (addr-of g-arena-alloc))
           ; result-type/result-taint are threaded through both arms; a single-
           ; element i32/ptr array stands in for a by-reference local. ltbox
           ; (LW-6) tracks whether every arm folded into rtbox so far was a
@@ -1276,7 +1278,7 @@
         (when (and (!= err-bind null) (!= (-> (unsafe/cast ptr:Node err-bind) (_ 'car)) null))
           (let (b:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node err-bind) 'car)))
             (when (and (= (b 'kind) NODE-SYM) (!= (b 's) "_"))
-              (let (pineg:ptr (new-tmp) eid:ptr (new-tmp) idtr:ptr eid
+              (let (pineg:StrView (new-tmp) eid:StrView (new-tmp) idtr:StrView eid
                     slot:ptr (fcstr "%" (ir-name-token (b 's)) ".addr." g-tmp))
                 (inc! g-tmp)
                 (emit g-body-stream "  " pineg " = ptrtoint ptr " rval " to " (ptr-int-ir) "\n")
@@ -1317,8 +1319,8 @@
           (emit g-body-stream "  unreachable\n")
           (set! g-block-term 1))
         (if (or (= result-type null) (= ((as ptr:Type result-type) 'kind) TY-VOID))
-          (return (alloc-val ty-void null))
-          (let (tmp:ptr (new-tmp) ty-ir:StrView (type-to-ir result-type)
+          (return (alloc-val ty-void ""))
+          (let (tmp:StrView (new-tmp) ty-ir:StrView (type-to-ir result-type)
                 k:usize 0)
             (emit g-body-stream "  " tmp " = phi " ty-ir " ")
             (while (< k (count vals))
@@ -1340,7 +1342,7 @@
         ; TC-5 part 2: emit-match re-arms the want just before dispatching here,
         ; so the arm emitters get it from the channel rather than the signature.
         my-want:ptr g-want-type
-        rval:ptr (sv 'val)
+        rval:StrView (sv 'val)
         staint:ptr (sv 'taint)
         nclauses:i32 (- (node-len cc) 2)
         some-body:ptr null   some-bind:ptr null
@@ -1377,13 +1379,13 @@
       (when (= none-body null) (die-at (cc 'line) "match: non-exhaustive — missing arm 'none' (add it or a _ default)")))
     ; A two-block diamond joined by a phi — cond's cross-branch typing applied
     ; across the some/none arms.
-    (let (cmp:ptr (new-tmp)
+    (let (cmp:StrView (new-tmp)
           id:i32 (new-label-id)
-          none-lbl:ptr (fcstr "match.none" id)
-          some-lbl:ptr (fcstr "match.some" id)
-          end-lbl:ptr (fcstr "match.end" id)
-          (vals (ref (Vector ptr))) (vector-new-in (addr-of g-arena-alloc))
-          (preds (ref (Vector ptr))) (vector-new-in (addr-of g-arena-alloc))
+          none-lbl:StrView (fstr "match.none" id)
+          some-lbl:StrView (fstr "match.some" id)
+          end-lbl:StrView (fstr "match.end" id)
+          (vals (ref (Vector StrView))) (vector-new-in (addr-of g-arena-alloc))
+          (preds (ref (Vector StrView))) (vector-new-in (addr-of g-arena-alloc))
           rtbox:ptr (arena-alloc (ptr-bytes))
           ttbox:ptr (arena-alloc (ptr-bytes))
           ltbox:ptr (arena-alloc 4))
@@ -1426,8 +1428,8 @@
           (emit g-body-stream "  unreachable\n")
           (set! g-block-term 1))
         (if (or (= result-type null) (= ((as ptr:Type result-type) 'kind) TY-VOID))
-          (return (alloc-val ty-void null))
-          (let (tmp:ptr (new-tmp) ty-ir:StrView (type-to-ir result-type)
+          (return (alloc-val ty-void ""))
+          (let (tmp:StrView (new-tmp) ty-ir:StrView (type-to-ir result-type)
                 k:usize 0)
             (emit g-body-stream "  " tmp " = phi " ty-ir " ")
             (while (< k (count vals))
@@ -1445,10 +1447,10 @@
 ; `vals`/`preds` are the (ref (Vector ptr)) phi-incoming tables; the drain
 ; deferral makes the parametric type safe in this signature (see make-vec).
 (defn emit-niche-match-arm (body:ptr inner:ref:Scope
-                                 (vals (ref (Vector ptr))) (preds (ref (Vector ptr)))
-                                 rtbox:ptr ttbox:ptr ltbox:ptr end-lbl:ptr id:i32 which:i32
+                                 (vals (ref (Vector StrView))) (preds (ref (Vector StrView)))
+                                 rtbox:ptr ttbox:ptr ltbox:ptr end-lbl:StrView id:i32 which:i32
                                  want:ptr):void
-  (let (bv:ref:Val (alloc-val ty-void null)
+  (let (bv:ref:Val (alloc-val ty-void "")
         bcur:ptr body)
     (while (!= bcur null)
       (set! bv (emit-node ((unsafe/cast ptr:Node bcur) 'car) inner))
@@ -1459,7 +1461,7 @@
       ; collapses to CStr (no IR) so the join/phi stays a plain pointer — unless
       ; the join is known to want a view. See join-strlit-branch.
       (set! bv (join-strlit-branch bv want g-form-line))
-      (let (join-lbl:ptr (fcstr "match.join" id "." which)
+      (let (join-lbl:StrView (fstr "match.join" id "." which)
             bty:ptr (bv 'type)
             rt:ptr (aref (as ptr:ptr rtbox) 0)
             rlit:i32 (aref (as ptr:i32 ltbox) 0))
@@ -1503,7 +1505,7 @@
       (when (!= (is-int-type (sv 'type)) 0)
         (return (emit-match-enum call scope sv)))
       (let (ud:ptr null
-            base:ptr null
+            base:StrView ""
             is-ptr:i32 0)
         (when (= (st 'kind) TY-STRUCT)
           (set! ud (as ptr (uniondef-for-type (sv 'type))))
@@ -1594,8 +1596,8 @@
                 (inc! ai))))
           ; Read the tag and hand off to the shared switch/join emitter.
           (let (sd:ptr:StructDef (unsafe/cast ptr:StructDef (udd 'sdef))
-                tgep:ptr (new-tmp)
-                tag:ptr (new-tmp))
+                tgep:StrView (new-tmp)
+                tag:StrView (new-tmp))
             (emit g-body-stream "  " tgep " = getelementptr inbounds %" (sd 'ir-name) ", ptr "
                   base ", i32 0, i32 0\n")
             (emit g-body-stream "  " tag " = load i32, ptr " tgep ", align 4\n")
@@ -1617,9 +1619,9 @@
         ; The GEP index must be a pointer-sized integer and the register must
         ; match that annotation — `gep-index-ir` is that rule, shared with aref
         ; and aset! (Stage 15 W9 item 15).
-        (let (idx:ptr (gep-index-ir nv))
+        (let (idx:StrView (gep-index-ir nv))
           (let (elem:ptr (-> p (_ 'type) (unsafe/cast ptr:Type _) (_ 'elem))
-                tmp:ptr (new-tmp))
+                tmp:StrView (new-tmp))
             (emit g-body-stream "  " tmp " = getelementptr inbounds " (type-to-ir elem) ", ptr "
                   (p 'val) ", " (ptr-int-ir) " " idx "\n")
             ; An interior pointer aliases the resource: keep the taint
@@ -1641,7 +1643,7 @@
       ; is what admits it without a kind arm of its own.
       (when (and (!= (is-ptr-like t) 0)
                  (or (= (ptr-pkind t) PTR-RAW) (= (ptr-pkind t) PTR-MAYBE)))
-        (let (tmp:ptr (new-tmp))
+        (let (tmp:StrView (new-tmp))
           (emit g-body-stream "  " tmp " = icmp ne ptr " (v 'val) ", null\n")
           (return (alloc-val ty-bool tmp))))
       (when (and (= (tt 'kind) TY-PTR) (= (tt 'pkind) PTR-ERRPTR))
@@ -1656,8 +1658,8 @@
         (when (!= ud null)
           (let (si:i32 (union-arm-index (as ptr ud) "some")
                 sd:ptr:StructDef (unsafe/cast ptr:StructDef (ud 'sdef))
-                tag:ptr (new-tmp)
-                tmp:ptr (new-tmp))
+                tag:StrView (new-tmp)
+                tmp:StrView (new-tmp))
             (emit g-body-stream "  " tag " = extractvalue %" (sd 'ir-name) " " (v 'val) ", 0\n")
             (emit g-body-stream "  " tmp " = icmp eq i32 " tag ", " si "\n")
             (return (alloc-val ty-bool tmp)))))
@@ -1669,7 +1671,7 @@
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc 'line) "not expects 1 arg"))
     (let (a:ref:Val (condition-bool (emit-node (node-at cc 1) scope) (cc 'line) "not")
-          tmp:ptr (new-tmp))
+          tmp:StrView (new-tmp))
       (emit g-body-stream "  " tmp " = xor i1 " (a 'val) ", 1\n")
       (return (alloc-val ty-bool tmp)))))
 
@@ -1680,8 +1682,8 @@
     (when (!= (node-len cc) 3)
       (die-at (cc 'line) (fstr tag " expects 2 args")))
     (let (id:i32 (new-label-id)
-          rhs-lbl:ptr (fcstr tag ".rhs" id)
-          end-lbl:ptr (fcstr tag ".end" id)
+          rhs-lbl:StrView (fstr tag ".rhs" id)
+          end-lbl:StrView (fstr tag ".end" id)
           slot:ptr (fcstr "%" tag ".val" id))
       (emit g-entry-stream "  " slot " = alloca i1, align 1\n")
       (let (lhs:ref:Val (condition-bool (emit-node (node-at cc 1) scope)
@@ -1708,7 +1710,7 @@
           (emit g-body-stream "  br label %" end-lbl "\n")
           (emit g-body-stream end-lbl ":\n")
           (set! g-block-term 0)
-          (let (tmp:ptr (new-tmp))
+          (let (tmp:StrView (new-tmp))
             (emit g-body-stream "  " tmp " = load i1, ptr " slot ", align 1\n")
             (return (alloc-val ty-bool tmp)))))))))
 

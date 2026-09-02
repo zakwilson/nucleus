@@ -697,9 +697,9 @@
                               (or (= result-kind TY-I32)
                                   (= result-kind TY-BOOL)
                                   (= result-kind TY-I8) (= result-kind TY-I16))
-                                (do (let (ret-val:ptr (result 'val))
+                                (do (let (ret-val:StrView (result 'val))
                                       (when (!= result-kind TY-I32)
-                                        (let (ext-tmp:ptr (new-tmp))
+                                        (let (ext-tmp:StrView (new-tmp))
                                           (cond (= result-kind TY-BOOL)
                                                   (emit g-body-stream "  " ext-tmp " = zext i1 "
                                                         (result 'val) " to i32\n")

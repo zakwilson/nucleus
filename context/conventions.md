@@ -6077,3 +6077,31 @@ Both now refuse a value that is not the declared return type. The generalization
 which has now cost time twice: **`return` has two paths through the coercer, and
 the aggregate one is the path that has none.** A fix applied to the DIRECT branch
 looks complete and is half a fix.
+
+## IR *text* is a `StrView`; an IR *name* is not — the boundary is identity
+
+Two kinds of string flow through the emitter and they look identical in source:
+
+- **operand text** — `%t42`, `match.end7`, `zeroinitializer`, a rendered
+  constant. Written once into a stream and never compared. This is `StrView`
+  (`Val.val`, `new-tmp`, every `-lbl`, `type-to-ir`, `gep-index-ir`).
+- **a name** — what lands in `Sym.ir-name` or `Method.ir-name`. Interned,
+  compared by **pointer identity**, and null-checked for "this has no name".
+  `StrView` supports none of the three, so these stay `CStr`/`ptr` until they
+  move to `Symbol`.
+
+Crossings must be an explicit `strview-from-cstr`, never `(as CStr …)` — that
+cast is the silent borrow, and a name built by `fstr` is not NUL-terminated.
+When a value is destined for `scope-define`, build it with `fcstr` and view it
+for the IR text, not the other way round. Two sweeps past this line failed in
+ways nothing typed catches: a stray `^D` in the emitted module, and a segfault
+before any output.
+
+## `Val.val` empty means void; `defvar-init-ir` empty means "no constant"
+
+Both fields used to be `null` for those cases. An arena hands back zeroed pages,
+so an empty `StrView` arrives for free and needs no separate sentinel — and
+neither a void value nor a global initializer can legitimately be the empty
+string, so the encoding is unambiguous. Test it with `strview-byte-len`, not by
+comparing against `null` (which will not compile) or against `""` (which works
+but reads as a content check).
