@@ -188,7 +188,16 @@ building the interner on one would be circular.
 | `symbol-cached-hash` | `(self:Symbol) -> usize` | The hash computed once at intern time. |
 | `symbol-as-view` | `(self:Symbol) -> StrView` | Borrowed view; process-lived. |
 | `symbol-as-cstr` | `(self:Symbol) -> CStr` | Borrowed C string; no copy. |
+| `symbol-is` | `(self:Symbol other:StrView) -> bool` | Same bytes as the view? Cached length, then `memcmp`. |
+| `symbol-contains-byte` | `(self:Symbol b:i32) -> bool` | Does the name contain this byte (`:`, `/`)? |
 | `symbol-count` | `() -> usize` | How many distinct names are interned. |
+
+`=` and `!=` are overloaded for `(Symbol, Symbol)` — pointer identity — and for
+`(Symbol, StrView)`, which is `symbol-is`. Interning is what makes those one
+predicate. A spelling test is almost always against a **literal**, which has no
+interned pointer to compare with, so `(= (n 's) "defstruct")` is the idiom;
+interning the literal to get a pointer would cost a hash to save a four-byte
+`memcmp`.
 
 `Symbol` conforms to `Eq` (pointer identity), `Hash` (the cached hash), `ToStr`,
 `ByteStr`, and `Str` — the last two through `as-view`, so every string method

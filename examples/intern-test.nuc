@@ -72,4 +72,20 @@
     (symbol-from-cstr c"hello")
     (println "reintern-adds=" (- (symbol-count) n)))
 
+  ; ---- spelling tests against a literal --------------------------------------
+  ; What a name is compared against is almost always a literal, which has no
+  ; interned pointer to compare with; `symbol-is` (and `=` over a view) answers
+  ; from the cached length plus a memcmp.
+  (let (q:Symbol (symbol-from-cstr c"geom:Point")
+        e:Symbol (symbol-from-cstr c""))
+    (println "is=" (symbol-is q "geom:Point")
+             " eq=" (= q "geom:Point")
+             " ne=" (!= q "geom:Poin")
+             " prefix=" (= q "geom")
+             " longer=" (= q "geom:Points"))
+    (println "colon=" (symbol-contains-byte q 58)
+             " no-slash=" (symbol-contains-byte q 47)
+             " empty=" (= e "")
+             " empty-colon=" (symbol-contains-byte e 58)))
+
   0)

@@ -61,24 +61,15 @@ BOOT         := bin/nucleusc
 # these as `.nuc` files, which the importer inlines into the same translation
 # unit — so editing any of them changes the compiler's emitted IR and must
 # trigger a rebuild. (Header `.nuch` imports like src/llvm.nuch only emit
-# `declare`s, resolved at link time.) The prelude chain (prelude -> macros,
-# node -> arena) is auto-prepended into every batch compile, including the
-# compiler's own. src/reader.nuc was the gap that previously let reader edits
-# go unrebuilt; lib/vector.nuc, lib/hash.nuc, lib/hashset.nuc,
-# lib/hashmap.nuc, lib/list.nuc, lib/iterator.nuc, lib/allocator.nuc,
-# lib/coll.nuc, and lib/seq.nuc (the full transitive closure pulled in via
-# src/generics.nuc's `(import-use vector)`, src/nucleusc.nuc's `(import-use
-# vector/hash/hashset)`, and src/type-mangle.nuc / src/nuch.nuc's
-# `(import-use list/hashmap)`) were the same class of gap, found during
-# LW-5 batch 2 (stage14): editing any of them changed `build/nucleusc.ll`
-# but incremental `make` didn't detect it, silently reusing a stale binary.
-COMPILER_DEPS := src/nucleusc.nuc src/compiler-types.nuc src/type-utils.nuc src/type-mangle.nuc src/scope.nuc src/abi.nuc src/strict-cstr.nuc src/union-registry.nuc src/generics.nuc src/union-emit.nuc src/repl.nuc src/cheader.nuc src/nuch.nuc \
-                 src/format.nuc \
-                 lib/prelude.nuc lib/macros.nuc lib/node.nuc lib/arena.nuc \
-                 lib/error.nuc src/reader.nuc \
-                 lib/vector.nuc lib/hash.nuc lib/hashset.nuc lib/hashmap.nuc \
-                 lib/list.nuc lib/iterator.nuc lib/allocator.nuc lib/coll.nuc \
-                 lib/seq.nuc
+# `declare`s, resolved at link time.)
+#
+# The whole of src/ and lib/, not the transitive closure spelled out. That list
+# was wrong three times — src/reader.nuc, then the eight-module collections
+# closure at stage14 LW-5, then the string stack at stage17 C1/C7 — and each
+# time the symptom was a silently stale binary, or a `make bootstrap` that
+# diffed a stale stage1 against a fresh stage2. Over-approximating costs a
+# rebuild that takes seconds; under-approximating costs a debugging session.
+COMPILER_DEPS := $(wildcard src/*.nuc) $(wildcard lib/*.nuc)
 
 $(BIN): $(COMPILER_DEPS) $(BUILD)/llvm-stamp | $(BUILD) ensure-boot
 	$(BOOT) --emit-llvm src/nucleusc.nuc > $(BUILD)/nucleusc.ll
