@@ -290,7 +290,7 @@
                           (emit g-repl-preamble "@" (ns-ir-base vname) " = external global "
                                 (type-to-ir vty) "\n")
                           (repl-preamble-note-decl
-                            (as CStr (fcstr "@" (ns-ir-base vname))))))))
+                            (symbol-intern (fstr "@" (ns-ir-base vname))))))))
                   (emit stderr "  defined\n"))
             ; Stage 16: an alias emits no IR and defines no layout, so unlike
             ; defstruct it has no module to open and no preamble to push —
@@ -388,7 +388,7 @@
                     ; full? → full_) and broke redefinition of any such name.
                     ; The REPL only handles the solitary (non-overloaded) case,
                     ; which is precisely defn-ir-name's ns-ir-base fallback.
-                    (let (fname-ir:ptr (ns-ir-base fname)
+                    (let (fname-ir:Symbol (ns-ir-base fname)
                           is-redef:i32 0
                           ; B2b: definition-side (is this a redefinition?), so
                           ; the KEY lookup — same question `scope-define` answers.
@@ -448,7 +448,7 @@
                             (when (!= sym null)
                               (let (ft:ptr:Type (unsafe/cast ptr:Type (sym 'type)))
                                 (when (= (ft 'kind) TY-FN)
-                                  (jit-thunk-module (f 'line) fname-ir (as ptr ft))
+                                  (jit-thunk-module (f 'line) (sym-ptr fname-ir) (as ptr ft))
                                   ; ABI-lower the preamble declare the same way
                                   ; emit-defn lowered the define it names — raw
                                   ; type-to-ir disagreed on any by-value struct
@@ -475,7 +475,7 @@
                                     ; assembled with this preamble, so its own
                                     ; declare latch has to know this line exists.
                                     (repl-preamble-note-decl
-                                      (as CStr (fcstr "@" fname-ir)))))))))
+                                      (symbol-intern (fstr "@" fname-ir)))))))))
                         ; R3 constraint 4: after the thunk (a lifted lambda can
                         ; call @fname-ir recursively, so its declare must be in
                         ; the preamble first) and into a module of its own — the
@@ -486,12 +486,12 @@
                         ; JIT the impl module under a fresh tracker, renaming
                         ; the captured "@fname-ir(" to "@impl-name(".
                         (let (rt:ptr (LLVMOrcJITDylibCreateResourceTracker g-jit-dylib))
-                          (repl-jit-module-rt-rewrite (f 'line) rt fname-ir impl-name)
+                          (repl-jit-module-rt-rewrite (f 'line) rt (sym-ptr fname-ir) impl-name)
                           (set! g-qq-used 0)
                           ; Patch @fname-ir.tgt to point at @impl-name. Stash
                           ; the tracker on the latest Sym for the next
                           ; redefinition to remove.
-                          (when (= (update-fn-tgt (f 'line) fname-ir impl-name) 0)
+                          (when (= (update-fn-tgt (f 'line) (sym-ptr fname-ir) impl-name) 0)
                             (let (sym:?ptr:Sym (scope-lookup-key g-globals fname))
                               (when (!= sym null)
                                 (set! (sym 'tracker) rt))))))
@@ -640,10 +640,10 @@
                               ; R3/D8: the preamble is a module buffer of its
                               ; own, and a second `declare` of one name in one
                               ; module is an LLVM parse error.
-                              (when (!= (repl-preamble-has-decl (as CStr (sym 'ir-name))) 0)
+                              (when (!= (repl-preamble-has-decl (symbol-intern (sym 'ir-name))) 0)
                                 (set! is-dup 1))
                               (when (= is-dup 0)
-                                (repl-preamble-note-decl (as CStr (sym 'ir-name)))
+                                (repl-preamble-note-decl (symbol-intern (sym 'ir-name)))
                                 ; ABI-lower exactly as the define does (see the
                                 ; first-definition declare above). need-comma
                                 ; rather than `pi != 0` / `num-params != 0`
@@ -954,7 +954,7 @@
                                (aref (as ptr:ptr ftypes) j) null)
               (set! need-comma 1)))
           (emit g-out ")\n")
-          (repl-preamble-note-decl (as CStr (fcstr "@" uname "-" aname)))))
+          (repl-preamble-note-decl (symbol-intern (fstr "@" uname "-" aname)))))
       (set! g-out saved-out))
     0))
 
@@ -1043,11 +1043,11 @@
 (defn repl-preamble-line-defines-here (buf:ptr a:i64 keep:ptr):i32
   (dotimes (k (unsafe/cast i32 (count g-program-defns)))
     (let (pd:ref:ProgDefn (invoke g-program-defns k:usize)
-          irn:ptr (pd 'ir-name)
-          l:i64 (strlen (pd 'ir-name)))
-      (when (and (= (memcmp (unsafe/ptr+ (as ptr:i8 buf) a) irn l) 0)
+          irn:Symbol (pd 'ir-name)
+          l:i64 (as i64 (symbol-len irn)))
+      (when (and (= (memcmp (unsafe/ptr+ (as ptr:i8 buf) a) (as ptr (symbol-as-cstr irn)) l) 0)
                  (= (cstr-byte-at buf (+ a l)) 40))
-        (when (or (= keep null) (!= (strcmp (as CStr irn) (as CStr keep)) 0))
+        (when (or (= keep null) (!= irn (strview-from-cstr (as CStr keep))))
           (return 1)))))
   (return 0))
 
@@ -1110,8 +1110,9 @@
     (while (< si ((as ptr:Scope g-globals) 'len))
       (let (sym:ptr:Sym (as ptr:Sym (unsafe/ptr+ (as ptr:Sym ((as ptr:Scope g-globals) 'syms)) si))
             ft:ptr:Type (unsafe/cast ptr:Type (sym 'type)))
-        (when (and (= (ft 'kind) TY-FN) (!= (sym 'ir-name) null))
-          (repl-preamble-note-decl (as CStr (sym 'ir-name)))))
+        (let (irv:StrView (sym 'ir-name))
+          (when (and (= (ft 'kind) TY-FN) (not (str-empty? (addr-of irv))))
+            (repl-preamble-note-decl (symbol-intern irv)))))
       (inc! si))))
 
 ; Publish every function the module just JIT'd defines. `g-program-defns` is
@@ -1152,7 +1153,7 @@
         s-def-prog:raw:String g-def-stream-program
         s-decl-out:raw:String g-decl-out
         s-out:raw:String g-out
-        s-macro-decls:(ref (Vector CStr)) g-macro-decls
+        s-macro-decls:(ref (Vector Symbol)) g-macro-decls
         s-prog-defns:(ref (Vector (ref ProgDefn))) g-program-defns)
     (set! g-type-stream (string-new))
     (set! g-decl-stream (string-new))

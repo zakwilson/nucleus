@@ -9,14 +9,14 @@
 ;
 ; Requires: arena (arena-alloc), isdigit.
 ;
-; Every one of these READS a `StrView` (Stage 17 C7-4): the input is a name, and
-; a name now arrives as a `Symbol` (`symbol-as-view`), an already-composed
-; `fstr` result, or — at a shrinking number of sites — a `ptr`
-; (`strview-from-cstr`). They still RETURN a `ptr`, which is what the ir-name
-; substrate still is until C7-4b.
+; Every one of these reads AND returns a `StrView` (Stage 17 C7-4b): the input is
+; a name, and a name arrives as a `Symbol` (`symbol-as-view`) or an
+; already-composed `fstr` result. Returning a view is what lets `ir-name-token`'s
+; no-op path return its argument untouched — the overwhelmingly common case, and
+; one copy per emitted name.
 
 ; Replace chars invalid in LLVM IR identifiers with underscores.
-(defn sanitize-for-ir (name:StrView):ptr
+(defn sanitize-for-ir (name:StrView):StrView
   (let (v:ptr:StrView (addr-of name)
         n:i64 (as i64 (v 'len))
         s:ptr (arena-alloc (+ n 1))
@@ -33,7 +33,7 @@
           (set! (aref (as ptr:i8 s) i) 95)))
       (set! i (+ i 1)))
     (set! (aref (as ptr:i8 s) n) 0)
-    (return s)))
+    (return (strview (as ptr:ui8 s) (as usize n)))))
 
 ; Replace chars invalid in C identifiers with underscores.
 ; Like sanitize-for-ir but dots (.) are also replaced — C identifiers are
@@ -54,7 +54,7 @@
 ; cheader.nuc for the reason cheader-c-ident-join already gives for the reserved
 ; escape — it belongs on a complete identifier, and a fragment about to be joined
 ; after a prefix is never at position 0. W9 item 39.
-(defn sanitize-for-c (name:StrView):ptr
+(defn sanitize-for-c (name:StrView):StrView
   (let (v:ptr:StrView (addr-of name)
         n:i64 (as i64 (v 'len))
         s:ptr (arena-alloc (+ n 1))
@@ -70,7 +70,7 @@
           (set! (aref (as ptr:i8 s) i) 95)))
       (set! i (+ i 1)))
     (set! (aref (as ptr:i8 s) n) 0)
-    (return s)))
+    (return (strview (as ptr:ui8 s) (as usize n)))))
 
 ; Copy the NUL-terminated C-string `lit` into `dst` at byte offset `off`;
 ; return the offset just past the copied bytes (excludes the terminator).
@@ -115,7 +115,7 @@
 ; this name. That is the accepted cost of a targeted map — the blanket
 ; alternative renames every hyphenated symbol the compiler defines and breaks the
 ; byte-identical bootstrap (§1.3).
-(defn ir-name-token (name:StrView):ptr
+(defn ir-name-token (name:StrView):StrView
   (let (v:ptr:StrView (addr-of name)
         n:i64 (as i64 (v 'len))
         special:i32 0
@@ -128,10 +128,8 @@
       (let (c:i32 (as i32 (aref (v 'data) i)))
         (when (or (= c 63) (= c 33)) (set! special 1)))
       (set! i (+ i 1)))
-    ; The no-op fast path still allocates one NUL-terminated copy: the caller
-    ; wants a C string and a view's bytes are only NUL-terminated by accident.
-    (when (and (= special 0) (= lead 0))
-      (return (arena-strndup (as ptr (v 'data)) n)))
+    ; The overwhelmingly common case: nothing to escape, so nothing is copied.
+    (when (and (= special 0) (= lead 0)) (return name))
     ; Sizing pass: `?`→6 bytes (_QMARK), `!`→5 bytes (_BANG), else 1.
     (let (outn:i64 0
           j:i64 0)
@@ -156,7 +154,7 @@
                                (set! si (+ si 1)))))
           (set! k (+ k 1)))
         (set! (aref (as ptr:i8 s) si) 0)
-        (return s)))))
+        (return (strview (as ptr:ui8 s) (as usize si)))))))
 
 ; SM-5 (design/stage14/symbol-mangling.md): a small reusable validity check for
 ; a FINAL ir-name — the diagnostic backstop that catches any LLVM-illegal

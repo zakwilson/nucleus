@@ -573,9 +573,9 @@
 ; needs a `declare` for each so it links the symbol from the -rdynamic host
 ; binary. Reset at the start of each macro/CT module; emit-call-with-args adds an
 ; entry (and emits the declare to g-decl-out) on first reference while redirected.
-; (Vector CStr) of macro/CT-module declare-name strings (dedup set, compared by
-; content via strcmp — never by identity).
-(defvar (g-macro-decls (ref (Vector CStr))) (vector-new-in (addr-of g-arena-alloc)))
+; (Vector Symbol) of macro/CT-module declare names — a dedup set, and since
+; C7-4b interned the ir-name substrate its membership test is one `icmp`.
+(defvar (g-macro-decls (ref (Vector Symbol))) (vector-new-in (addr-of g-arena-alloc)))
 
 ; Program-defined `defn`s (the `define`s emitted into the main module). Only
 ; these need a fresh `declare` in a macro/CT JIT module — externs and
@@ -613,7 +613,7 @@
 ; Stage 16 R3 (D8): the @symbols the preamble already `declare`s. Every REPL
 ; module is assembled as preamble + its own buffers, so a latch scoped to the
 ; fresh buffers is a claim about only half of it — repl-libraries.md §3.2.
-(defvar (g-repl-preamble-decls (ref (Vector CStr))) (vector-new-in (addr-of g-arena-alloc)))
+(defvar (g-repl-preamble-decls (ref (Vector Symbol))) (vector-new-in (addr-of g-arena-alloc)))
 
 ; Import tracking — duplicate guard and cycle detection.
 ; Each is a linked list of (path-string . next) pairs using Node cells.
@@ -1331,15 +1331,15 @@
 ; Stage 16 R3 (D8, repl-libraries.md §3.2): a REPL CT/macro module is assembled
 ; as preamble + this module's buffers, so every per-module declare latch must
 ; also ask the preamble. Batch has no preamble and answers 0.
-(defn repl-preamble-has-decl (irn:CStr):i32
+(defn repl-preamble-has-decl (irn:Symbol):i32
   (when (= g-interactive 0) (return 0))
-  (doseq (m g-repl-preamble-decls (VecIter CStr))
-    (when (= (strcmp m irn) 0) (return 1)))
+  (doseq (m g-repl-preamble-decls (VecIter Symbol))
+    (when (= m irn) (return 1)))
   (return 0))
 
-(defn repl-preamble-note-decl (irn:CStr):void
+(defn repl-preamble-note-decl (irn:Symbol):void
   (when (!= (repl-preamble-has-decl irn) 0) (return))
-  (conj g-repl-preamble-decls (as CStr (intern-str irn))))
+  (conj g-repl-preamble-decls irn))
 
 ; Write a hand-written `declare` line into a macro/CT JIT module's decl stream
 ; unless `irn` is already declared there. Shares `g-macro-decls` with
@@ -1347,27 +1347,28 @@
 ; node constructors by name cannot emit two `declare`s for the one symbol —
 ; LLVM rejects the redefinition, and the collision is otherwise invisible until
 ; someone writes that macro.
-(defn macro-jit-declare-raw ((out (raw String)) irn:CStr proto:Symbol):void
+(defn macro-jit-declare-raw ((out (raw String)) irn:Symbol proto:Symbol):void
   (when (!= (repl-preamble-has-decl irn) 0) (return))
-  (doseq (m g-macro-decls (VecIter CStr))
-    (when (= (strcmp m irn) 0) (return)))
-  (conj g-macro-decls (as CStr (intern-str irn)))
+  (doseq (m g-macro-decls (VecIter Symbol))
+    (when (= m irn) (return)))
+  (conj g-macro-decls irn)
   (emit out proto))
 
 (defn macro-jit-ensure-decl (ss:(raw Sym)):void
   (when (= (in-jit-module) 0) (return))
   (let (s:(raw Sym) ss
-        irn:ptr (s 'ir-name))
-    (when (= irn null) (return))
-    (when (!= (repl-preamble-has-decl (as CStr irn)) 0) (return))
+        irv:StrView (s 'ir-name))
+    (when (str-empty? (addr-of irv)) (return))
+    ; The one boundary where a local's IR text becomes a link NAME: both consumers
+    ; below are keyed by identity, and only a global reaches them.
+    (let (irn:Symbol (symbol-intern irv))
+    (when (!= (repl-preamble-has-decl irn) 0) (return))
     (let (pd:?ptr:ProgDefn (program-defn-lookup irn))
       (when (= pd null) (return))
       ; Dedup within this module.
-      (doseq (m g-macro-decls (VecIter CStr))
-               (when (= (strcmp m irn)
-                        0)
-                     (return)))
-      (conj g-macro-decls (as CStr (intern-str irn)))
+      (doseq (m g-macro-decls (VecIter Symbol))
+        (when (= m irn) (return)))
+      (conj g-macro-decls irn)
       ; Variadic prototypes lower trivially (no struct args reach a macro body).
       (when (!= (pd 'variadic) 0)
         (emit g-decl-out "declare " (type-to-ir (pd 'ret)) " " irn "(...)\n")
@@ -1400,7 +1401,7 @@
                       true
                         (emit g-decl-out (type-to-ir pty))))
               (set! need-comma 1)))
-        (emit g-decl-out ")\n")))))
+        (emit g-decl-out ")\n"))))))
 
 ; "No type annotation" is the ZERO Symbol, not null: `Symbol.p` is a non-null
 ; pointer type, so the absent case has to be minted (`symbol-none`) and tested
@@ -2906,7 +2907,7 @@
 ; a `note:` and keeps the primary error text true on its own.
 (defn text-defines-name (text:CStr len:i64 name:Symbol want-type:i32):i32
   ; Viewed once, not per token: the scan below compares it at every candidate.
-  (let (namev:StrView (strview-from-cstr (sym-ptr name))
+  (let (namev:StrView (symbol-as-view name)
         i:i64 0)
     (while (< i len)
       (let (c:i32 (cstr-byte-at text i))
@@ -3483,7 +3484,7 @@
                       "' as a value on this target: functions live in program memory (address space "
                       ((as ptr:Target g-target) 'prog-as)
                       ") and cannot be materialized as a data pointer -- call it directly instead")))
-            (return (alloc-val (sym 'type) (strview-from-cstr (as CStr (sym 'ir-name))))))
+            (return (alloc-val (sym 'type) (sym 'ir-name))))
           (die-at (node-line n line) (fstr "cannot use '" (nn 's) "' as value")))
         ; Stage 15 W8 G-2: an `(array T N)`-typed binding DECAYS — reading it
         ; yields the address of element 0, not a loaded aggregate. The Sym's
@@ -3492,9 +3493,9 @@
         ; instruction. `array-decay` (src/type-utils.nuc) is the shared rule
         ; node-type-sym calls too, so the two passes cannot drift.
         (when (= (-> sym (_ 'type) (unsafe/cast ptr:Type _) (_ 'kind)) TY-ARRAY)
-          (return (alloc-val (array-decay (sym 'type)) (strview-from-cstr (as CStr (sym 'ir-name))))))
+          (return (alloc-val (array-decay (sym 'type)) (sym 'ir-name))))
         (let (tmp:StrView (new-tmp))
-          (emit-load tmp (type-to-ir (sym 'type)) (strview-from-cstr (as CStr (sym 'ir-name))) (sym 'type))
+          (emit-load tmp (type-to-ir (sym 'type)) (sym 'ir-name) (sym 'type))
           ; Stage 10: the read uses the flow-narrowed view of the binding's
           ; type and carries the binding's escape taint.
           (let (rv:ref:Val (alloc-val (sym-effective-type sym) tmp))
@@ -3692,7 +3693,7 @@
 ; Stage 8: defcast registry + implicit safe coercion at call sites
 ; ============================================================
 
-(defn register-cast-rule (from:(raw Type) to:(raw Type) ir-name:CStr):void
+(defn register-cast-rule (from:(raw Type) to:(raw Type) ir-name:StrView):void
   (when (>= (unsafe/cast i32 (count g-cast-rules)) MAX-CAST-RULES)
     (eprint "nucleusc: too many defcast rules\n") (exit 1))
   (let (cr:ptr:CastRule (as ptr:CastRule (arena-alloc (sizeof CastRule))))
@@ -4027,6 +4028,14 @@
           bv-sv:i32 (type-is-strview (bv 'type))
           av-cstr:bool (= ((av 'type) 'kind) TY-CSTR)
           bv-cstr:bool (= ((bv 'type) 'kind) TY-CSTR))
+      ; Stage 17 C7-4b: the null-check trap one level down. A `StrView` is never
+      ; null, so this reached the strcmp below and compared its `.data` against
+      ; NULL; rejected rather than lowered, because the question meant is
+      ; `str-empty?` (design/stage17-native-strings/library-gaps.md §39).
+      (when (or (and (!= a-null 0) (!= bv-sv 0))
+                (and (!= b-null 0) (!= av-sv 0)))
+        (die-at line (fstr (bop 'name)
+                           ": a StrView is never null — use (str-empty? &v) to test for the empty view")))
       (when (and (= null-cmp 0)
                  (or av-cstr bv-cstr (!= av-sv 0) (!= bv-sv 0)))
         ; Each operand must be a comparable string kind: ptr-like (ptr/CStr) or a
@@ -5151,13 +5160,14 @@
 ; separator (`lib/string` → `lib__string`), and any other illegal char follows the
 ; ordinary sanitize-for-ir mapping. The result composes *before* the existing
 ; method/instance mangling, so an overloaded `foo/bar` becomes `foo__bar.tok.tok`.
-(defn ns-prefix-sanitize (prefix:ptr):ptr
-  (let (n:i64 (strlen prefix)
+(defn ns-prefix-sanitize (prefix:StrView):Symbol
+  (let (v:ptr:StrView (addr-of prefix)
+        n:i64 (as i64 (v 'len))
         ; Worst case every char becomes `__` (2 bytes), plus the NUL.
         s:ptr (arena-alloc (+ (* n 2) 1))
         o:i64 0)
     (dotimes (i n)
-      (let (c:i32 (bit-and (as i32 (aref (as ptr:i8 prefix) i)) 255)
+      (let (c:i32 (as i32 (aref (v 'data) i))
             is-digit:bool (!= (isdigit c) 0)
             is-lower:bool (and (>= c 97) (<= c 122))
             is-upper:bool (and (>= c 65) (<= c 90))
@@ -5174,12 +5184,12 @@
           true
             (do (set! (aref (as ptr:i8 s) o) 95) (set! o (+ o 1))))))
     (set! (aref (as ptr:i8 s) o) 0)
-    (return s)))
+    (return (symbol-intern (strview (as ptr:ui8 s) (as usize o))))))
 
-; Record `prefix` (already sanitized + interned) as the ir-prefix for the
-; (interned) namespace `ns`. Set by `set-ir-prefix`. Keys compare by pointer
-; identity; a re-set overwrites the prior value (REPL re-entry, second directive).
-(defn ns-ir-prefix-set (ns:Symbol prefix:ptr):void
+; Record `prefix` (already sanitized) as the ir-prefix for the namespace `ns`.
+; Set by `set-ir-prefix`. Both columns are Symbols, so both compare by identity;
+; a re-set overwrites the prior value (REPL re-entry, second directive).
+(defn ns-ir-prefix-set (ns:Symbol prefix:Symbol):void
   (when (= g-ns-prefix-table null)
     (set! g-ns-prefix-table (vector-new-in (addr-of g-arena-alloc))))
   (let (tbl:(ref (Vector (ref NsPrefixEntry))) (unsafe/cast (ref (Vector (ref NsPrefixEntry))) g-ns-prefix-table))
@@ -5193,14 +5203,15 @@
       (set! (rec 'prefix) prefix)
       (conj tbl rec))))
 
-; The recorded ir-prefix for (interned) namespace `ns`, or null if none was set.
-(defn ns-ir-prefix-get (ns:Symbol):ptr
-  (when (= g-ns-prefix-table null) (return null))
+; The recorded ir-prefix for (interned) namespace `ns`, or the zero Symbol if
+; none was set — which is NOT the empty prefix a `(set-ir-prefix null)` records.
+(defn ns-ir-prefix-get (ns:Symbol):Symbol
+  (when (= g-ns-prefix-table null) (return (symbol-none)))
   (let (tbl:(ref (Vector (ref NsPrefixEntry))) (unsafe/cast (ref (Vector (ref NsPrefixEntry))) g-ns-prefix-table))
     (dotimes (i (unsafe/cast i32 (count tbl)))
       (let (e:ref:NsPrefixEntry (invoke tbl i:usize))
         (when (= (e 'ns) ns) (return (e 'prefix))))))
-  (return null))
+  (return (symbol-none)))
 
 ; Stage 14 AVR-5 (design/stage14/avr-targets.md §5 AVR-5): record LLVM string
 ; function attribute `attr` for the (interned) source function name `name`, as set
@@ -5242,11 +5253,11 @@
 ;   - otherwise          → the namespace name itself, sanitized to a C-legal prefix.
 ; Returns "" (empty) for the bare cases so a single empty-test gates the whole
 ; mangling at the production sites.
-(defn ns-ir-prefix (ns:Symbol):ptr
-  (when (= ns "user") (return ""))
-  (let (p:ptr (ns-ir-prefix-get ns))
-    (when (!= p null) (return p))
-    (return (ns-prefix-sanitize (sym-ptr ns)))))
+(defn ns-ir-prefix (ns:Symbol):Symbol
+  (when (= ns "user") (return (symbol-intern "")))
+  (let (p:Symbol (ns-ir-prefix-get ns))
+    (when (not (symbol-none? p)) (return p))
+    (return (ns-prefix-sanitize (symbol-as-view ns)))))
 
 ; Compose an explicit ir-prefix string onto a (bare, already-tokenized) base —
 ; `<prefix>__<base>`, or bare `base` when the prefix is empty. The atomic
@@ -5255,9 +5266,9 @@
 ; prefix explicitly (rather than reading g-current-ns) lets a generic carry the
 ; prefix of its *defining* namespace, so a monomorphization stamped while another
 ; namespace is current still mangles correctly.
-(defn ns-compose (prefix:ptr base:ptr):ptr
-  (when (= (cstr-byte-at prefix 0) 0) (return base))
-  (return (fcstr prefix "__" base)))
+(defn ns-compose (prefix:Symbol base:StrView):Symbol
+  (when (or (symbol-none? prefix) (= (symbol-len prefix) 0)) (return (symbol-intern base)))
+  (return (symbol-intern (fstr prefix "__" base))))
 
 ; Compose the *current* namespace's ir-prefix onto a bare source name. Used at the
 ; solitary-defn / defvar production sites (and the symmetric `.nuch` import /
@@ -5267,8 +5278,9 @@
 ; re-resolves, and solitary `.nuch` imports the same IR-legal symbol the defn
 ; emits. Identity under `user` (empty prefix) and for any name without `?`/`!`
 ; (ir-name-token returns it unchanged) → byte-identical bootstrap.
-(defn ns-ir-base (name:Symbol):ptr
-  (return (ns-compose (ns-ir-prefix g-current-ns) (ir-name-token (symbol-as-view name)))))
+(defn ns-ir-base (name:Symbol):Symbol
+  (return (ns-compose (ns-ir-prefix g-current-ns)
+                      (ir-name-token (symbol-as-view name)))))
 
 ; ============================================================
 ; Stage 15 W5e — file-scoped private names
@@ -5329,13 +5341,13 @@
       (let (pf:ref:PrivFile (invoke tbl i:usize))
         (when (= (strcmp (pf 'path) path) 0) (return pf))))
     (let (n:i32 (+ (unsafe/cast i32 (count tbl)) 1)
-          base:ptr (path-basename-token path)
+          base:Symbol (path-basename-token path)
           pf:ref:PrivFile (new PrivFile))
       (set! (pf 'path) (intern-str path))
       (set! (pf 'ns) (symbol-intern (fstr "#p" n)))
       (set! (pf 'prefix) (symbol-intern (fstr base "_p" n)))
       (set! (pf 'names) (vector-new-in (addr-of g-arena-alloc)))
-      (ns-ir-prefix-set (pf 'ns) (sym-ptr (pf 'prefix)))
+      (ns-ir-prefix-set (pf 'ns) (pf 'prefix))
       (conj tbl pf)
       ; A path that previously answered "owns no private names" now owns some.
       (set! g-priv-cache-path null)
@@ -5357,7 +5369,7 @@
 
 ; The file component of `path`, without directories or extension, sanitized to a
 ; C-legal identifier fragment. Only ever used to make an emitted symbol readable.
-(defn path-basename-token (path:CStr):CStr
+(defn path-basename-token (path:CStr):Symbol
   (let (n:i64 (as i64 (strlen path))
         start:i64 0
         end:i64 n
@@ -5377,8 +5389,8 @@
     ; A dotfile or an empty basename leaves nothing to name it with; fall back to
     ; the whole path (sanitizing makes the separators legal).
     (when (<= end start) (set! start 0) (set! end n))
-    (return (ns-prefix-sanitize (arena-strndup (unsafe/ptr+ (as raw:i8 path) start)
-                                               (- end start))))))
+    (return (ns-prefix-sanitize (strview (unsafe/cast ptr:ui8 (unsafe/ptr+ (as raw:i8 path) start))
+                                          (as usize (- end start)))))))
 
 ; The PrivFile of the file currently being processed, or null. Memoized on the
 ; `g-source-path` pointer: paths are arena-allocated once per file and never
@@ -5443,10 +5455,10 @@
 ; private definer in `user` composes its file's synthetic prefix instead, so
 ; `helper` in `a.nuc` emits `@a_p1__helper`. Identity (and therefore
 ; byte-identical) whenever no private definer is active.
-(defn def-ir-base (name:Symbol):ptr
+(defn def-ir-base (name:Symbol):Symbol
   (let (pf:?ptr:PrivFile (priv-owner-file))
     (when (= pf null) (return (ns-ir-base name)))
-    (return (ns-compose (sym-ptr ((unsafe/cast ptr:PrivFile pf) 'prefix)) (ir-name-token (symbol-as-view name))))))
+    (return (ns-compose ((unsafe/cast ptr:PrivFile pf) 'prefix) (ir-name-token (symbol-as-view name))))))
 
 ; Index of field `fname` in struct `sd`, or -1. Shared by `.`, the `get`
 ; intrinsic, and the non-emitting type pass so the three cannot drift. `fname`
@@ -5502,7 +5514,7 @@
 ; mistaken for a member the compiler minted (cheader.nuc AN-1, `:anon` below).
 (defn field-name-anon (name:Symbol):i32
   (when (symbol-none? name) (return 0))
-  (return (if (strview-has-prefix (strview-from-cstr (sym-ptr name)) "__anon.") 1 0)))
+  (return (if (strview-has-prefix (symbol-as-view name) "__anon.") 1 0)))
 
 ; Set by struct-field-ref when a name was reachable through two different
 ; anonymous members — C's own ambiguity rule, reported by the emit sites, which
@@ -5738,7 +5750,7 @@
             (let (rt:ref:Type (make-type TY-PTR))
               (set! (rt 'elem) (sym 'type))
               (set! (rt 'pkind) PTR-REF)
-              (let (rv:ptr:Val (as ptr:Val (alloc-val rt (strview-from-cstr (as CStr (sym 'ir-name))))))
+              (let (rv:ptr:Val (as ptr:Val (alloc-val rt (sym 'ir-name))))
                 (set! (rv 'taint) (sym 'taint))
                 (set! (rv 'taint-frame) (sym 'taint-frame))
                 (when (and (= (sym 'taint) null) (!= (sym 'home) g-globals))
@@ -6418,7 +6430,7 @@
     ; The address of a binding's slot is always a valid, non-null address,
     ; so it is a (ref T) — it flows into ref/ptr slots directly.
     (set! (pt 'pkind) PTR-REF)
-    (let (rv:ref:Val (alloc-val pt (strview-from-cstr (as CStr (sym 'ir-name))))
+    (let (rv:ref:Val (alloc-val pt (sym 'ir-name))
           sym-kind:i32 ((sym 'type) 'kind))
       ; The slot address reaches the same resource the binding does, so it
       ; inherits the binding's existing (with-owned) escape taint, if any.
@@ -7158,7 +7170,7 @@
             (let (ret-info:ptr:AbiInfo (unsafe/cast ptr:AbiInfo call-ret-info))
               (if (!= ((as ptr:AbiInfo ret-info) 'kind) ABI-DIRECT)
                 ; Struct return: emit the lowered call + reconstruction.
-                (return (abi-emit-struct-call ret-info (ft 'ret) (strview-from-cstr (as CStr (ss 'ir-name)))
+                (return (abi-emit-struct-call ret-info (ft 'ret) (ss 'ir-name)
                                               arglist eff-nargs))
                 (if (-> ft (_ 'ret) (unsafe/cast ptr:Type _) (_ 'kind) (= _ TY-VOID))
                   (do
@@ -7231,7 +7243,7 @@
   (let (bdt:ptr (boxedfn-drop-target ty))
     (when (!= bdt null)
       (let (m:ref:Method (new Method))
-        (set! (m 'ir-name) "@__boxedfn_drop")
+        (set! (m 'ir-name) (symbol-intern "@__boxedfn_drop"))
         (set! (m 'ret-type) ty-void)
         (set! (m 'kind) METHOD-USER)
         (set! (m 'num-params) 1)
@@ -7321,7 +7333,7 @@
   (let (cur:(raw Node) list)
     (while (!= cur null)
       (let (entry:(raw Node) cur)
-        (when (= (entry 's) (strview-from-cstr (sym-ptr name))) (return 1))
+        (when (= (entry 's) (symbol-as-view name)) (return 1))
         (set! cur (entry 'cdr))))
     (return 0)))
 
@@ -7524,7 +7536,7 @@
         ; Fresh IR-legal lifted name (no `!`/`?`; routed through sanitize-for-ir
         ; for safety). Deterministic counter rather than runtime gensym so the
         ; name is stable across the analysis.
-        (let (lifted:Symbol (symbol-from-cstr (as CStr (sanitize-for-ir (fstr "__fn_lift_" g-fn-lift-id)))))
+        (let (lifted:Symbol (symbol-intern (sanitize-for-ir (fstr "__fn_lift_" g-fn-lift-id))))
           (inc! g-fn-lift-id)
           ; The expression's value is the lifted function's pointer, built
           ; directly: a TY-FN global decays in emit-symbol-ref to
@@ -7539,7 +7551,7 @@
             (set! (ft 'has-rest) 0)
             (set! (ft 'nopt) 0)
             (set! (ft 'opt-defaults) null)
-            (let (irn:ptr (defn-ir-name lifted param-types nparams ret))
+            (let (irn:Symbol (defn-ir-name lifted param-types nparams ret))
               ; Synthesize the new-style (defn <lifted> (params) <ret> body…) by
               ; consing the defn keyword, the bare lifted name, the params node,
               ; and the return operand onto the fn form's body tail. The return
@@ -7558,7 +7570,7 @@
                         (fcstr "while emitting lambda " lifted " (defined at " g-source-path ":"
                               line ")")))
                 ; The expression's value: the lifted function pointer.
-                (return (alloc-val (as ptr ft) (strview-from-cstr (as CStr irn))))))))))))
+                (return (alloc-val ft (symbol-as-view irn)))))))))))
 
 ; ============================================================
 ; Stage 13 L4 — closure environment + `invoke`, and `vfn`
@@ -7926,7 +7938,7 @@
         has-alloc:i32 (if (= mode 2) 1 0)
         off:i32 has-alloc
         nf:i32 (+ ncaps has-alloc)
-        ename:Symbol (symbol-from-cstr (as CStr (sanitize-for-ir (fstr "__vfn_env_" g-vfn-env-id)))))
+        ename:Symbol (symbol-intern (sanitize-for-ir (fstr "__vfn_env_" g-vfn-env-id))))
     (inc! g-vfn-env-id)
     (let (sd:ref:StructDef (register-struct ename)
           fnm:ptr (arena-alloc (* nf (ptr-bytes)))
@@ -8018,7 +8030,7 @@
         ; deterministic mangled ir-name. defn-ir-name finds this method at emit
         ; time and returns the same name, so the define and the call agree.
         (let (newm:ref:Method (generic-register-method (symbol-intern "invoke") ret mtypes total 0 0 defn-form)
-              mangled:ptr (mangle-fn-name "" (symbol-intern "invoke") mtypes total))
+              mangled:Symbol (mangle-fn-name (symbol-intern "") (symbol-intern "invoke") mtypes total))
           (set! (newm 'ir-name) mangled)
           ; Route `invoke` by argument type so the closure's `invoke` doesn't
           ; hijack (or get hijacked by) any solitary user `invoke`.
@@ -8132,7 +8144,7 @@
       ; Record the conformance so with-drop-method finds (Env, Drop).
       (conformance-add (sd 'name) (symbol-intern "Drop") null 0 line)
       (let (newm:ref:Method (generic-register-method (symbol-intern "drop") ty-void mtypes 1 0 0 defn-form)
-            mangled:ptr (mangle-fn-name "" (symbol-intern "drop") mtypes 1))
+            mangled:Symbol (mangle-fn-name (symbol-intern "") (symbol-intern "drop") mtypes 1))
         (set! (newm 'ir-name) mangled)
         ; Route `drop` by argument type so the env's drop and each field type's
         ; own drop (e.g. a solitary `@drop`) coexist without one re-binding the
@@ -8188,12 +8200,12 @@
 ; derive-closure-conformance uses to locate a closure's invoke. Names compare by
 ; pointer identity (interned struct name). Returns the method's pre-mangled
 ; ir-name (already including the leading `@`), or null if none is registered.
-(defn vtable-invoke-irname (env-ty:(raw Type)):ptr
+(defn vtable-invoke-irname (env-ty:(raw Type)):Symbol
   (let (ev:(raw Type) env-ty)
-    (when (!= (ev 'kind) TY-STRUCT) (return null))
+    (when (!= (ev 'kind) TY-STRUCT) (return (symbol-none)))
     (let (envname:Symbol (-> ev (_ 'sdef) (unsafe/cast ptr:StructDef _) (_ 'name))
           ig:ptr (generic-lookup (symbol-intern "invoke")))
-      (when (= ig null) (return null))
+      (when (= ig null) (return (symbol-none)))
       (let (igg:ptr:Generic (as ptr:Generic ig))
         (dotimes (mi (unsafe/cast i32 (count (igg 'methods))))
           (let (mm:ptr:Method (as ptr:Method (invoke (igg 'methods) mi:usize)))
@@ -8208,13 +8220,13 @@
                           (let (sd:ptr:StructDef (unsafe/cast ptr:StructDef (et 'sdef)))
                             (when (and (!= (as ptr sd) null) (= (sd 'name) envname))
                               (return (mm 'ir-name))))))))))))))
-      (return null))))
+      (return (symbol-none)))))
 
 ; The emitted `@drop.p<Env>` symbol for a concrete type that conforms to Drop, or
 ; null for a non-owning / POD type (the vtable's drop slot is then `null`).
 ; Delegates to with-drop-method (handles the TY-STRUCT→(ref T) self shape and
 ; resolves exact or parametric drop) and reads the resolved method's ir-name.
-(defn vtable-drop-irname (concrete-ty:(raw Type)):ptr
+(defn vtable-drop-irname (concrete-ty:(raw Type)):Symbol
   ; TE-4: a cfn env (mode 2 — a leading `__alloc` field) captures by REFERENCE, so
   ; it owns no Drop fields; its synthesized drop merely FREES the env block through
   ; the stored handle. When such an env is boxed the box owns (and frees) its heap
@@ -8228,9 +8240,9 @@
       (let (sd:ptr:StructDef (unsafe/cast ptr:StructDef (ct 'sdef)))
         (when (and (!= (as ptr sd) null) (> (sd 'num-fields) 0)
                    (= (strcmp (sym-ptr ((field-at (sd 'fields) 0) 'name)) "__alloc") 0))
-          (return null)))))
+          (return (symbol-none))))))
   (let (m:?ptr:Method (with-drop-method concrete-ty))
-    (when (= m null) (return null))
+    (when (= m null) (return (symbol-none)))
     (let (mm:ptr:Method (as ptr:Method m))
       (return (mm 'ir-name)))))
 
@@ -8355,18 +8367,18 @@
 ; protocol so the vtable is the 2-slot `{ method0, drop }` layout (drop at index 1)
 ; that the shared @__boxedfn_drop thunk reads verbatim. Dies on a missing protocol,
 ; a multi/parametric protocol (deferred), or a missing concrete impl.
-(defn dyn-vtable-method-irname (concrete-ty:(raw Type) proto:Symbol line:i32):ptr
+(defn dyn-vtable-method-irname (concrete-ty:(raw Type) proto:Symbol line:i32):Symbol
   ; Stage 15 B3′: a synthesis region. It substitutes `Self` in the protocol's
   ; signature with `(type-spelling concrete-ty)`, which since B3′ is the type's
   ; CANONICAL name (`dp/Fox`) — a key, not a spelling this file can necessarily
   ; write. `examples/w9-dyn-ns.nuc` boxes exactly that case.
   (let (saved:i32 g-type-key-ok)
     (set! g-type-key-ok 1)
-    (let (r:ptr (dyn-vtable-method-irname-in concrete-ty proto line))
+    (let (r:Symbol (dyn-vtable-method-irname-in concrete-ty proto line))
       (set! g-type-key-ok saved)
       (return r))))
 
-(defn dyn-vtable-method-irname-in (concrete-ty:(raw Type) proto:Symbol line:i32):ptr
+(defn dyn-vtable-method-irname-in (concrete-ty:(raw Type) proto:Symbol line:i32):Symbol
   (let (pp:ptr:Protocol (dyn-resolve-protocol proto line))
     (let (ppp:ptr:Protocol (as ptr:Protocol pp))
       (when (!= (ppp 'num-sigs) 1)
@@ -8428,16 +8440,16 @@
     (when (!= hit null) (return hit))
     ; The box that will reference this vtable is a fat pointer of the TE-1 type.
     (ensure-fatptr-sdef)
-    (let (inv:ptr (if (= proto "Fn")
+    (let (inv:Symbol (if (= proto "Fn")
                     (vtable-invoke-irname concrete-ty)
                     (dyn-vtable-method-irname concrete-ty proto line))
-          drp:ptr (vtable-drop-irname concrete-ty))
-      (when (= inv null)
+          drp:Symbol (vtable-drop-irname concrete-ty))
+      (when (symbol-none? inv)
         (die-at line (fstr "type-erasure: no invoke thunk for boxed type "
                            (type-spelling concrete-ty))))
-      (let (vbare:ptr (sanitize-for-ir (strview-from-cstr (as CStr (fcstr "__vt." (type-mangle-token concrete-ty) "." proto))))
+      (let (vbare:StrView (sanitize-for-ir (strview-from-cstr (as CStr (fcstr "__vt." (type-mangle-token concrete-ty) "." proto))))
             vname:ptr (intern-str (fcstr "@" vbare)))
-        (if (= drp null)
+        (if (symbol-none? drp)
           (emit g-out vname " = internal constant { ptr, ptr } { ptr " inv ", ptr null }")
           (emit g-out vname " = internal constant { ptr, ptr } { ptr " inv ", ptr " drp " }"))
         (when (!= (ir-sections-on) 0)
@@ -8563,7 +8575,7 @@
         bt:ptr:Type (as ptr:Type canon)
         np:i32 (bt 'num-params)
         ret:ptr (bt 'ret)
-        sigtok:ptr (boxedfn-sig-token (bt 'params) np ret)
+        sigtok:StrView (boxedfn-sig-token (bt 'params) np ret)
         key:ptr (intern-str (fcstr "fnfwd." sigtok))
         hit:ptr (vtable-memo-lookup key))
     (when (!= hit null) (return hit))
@@ -8696,7 +8708,7 @@
 (defn emit-box-struct-move (v:(raw Val) sd:(raw StructDef) box-ty:(raw Type) vname:ptr scope:ref:Scope line:i32):ref:Val
   (let (vv:(raw Val) v
         struct-name:Symbol (sd 'name)
-        irn:CStr (sd 'ir-name))
+        irn:Symbol (sd 'ir-name))
     (when (= (scope-lookup scope (symbol-intern "default-allocator")) null)
       (die-at line "type-erasure: boxing a value requires (import-use allocator)"))
     (let (ahsym:?ptr:Sym (scope-lookup scope (symbol-intern "alloc-handle-alloc")))
@@ -8842,7 +8854,7 @@
           (set! (recv 'pkind) PTR-REF)
           (set! (aref (as ptr:ptr mtypes) 0) (as ptr recv))
           (let (m:ref:Method (generic-register-method (symbol-intern "drop") ty-void mtypes 1 0 0 (as ptr null)))
-            (set! (m 'ir-name) "@__boxedfn_drop"))
+            (set! (m 'ir-name) (symbol-intern "@__boxedfn_drop")))
           ; Route `drop` by argument type so the box drop and every other type's
           ; drop coexist without one re-binding the other's bare @drop symbol.
           (fn-force-generic-mangled (symbol-intern "drop"))
@@ -9111,7 +9123,7 @@
       (let (ahsym:?ptr:Sym (scope-lookup scope (symbol-intern "alloc-handle-alloc")))
         (when (= ahsym null)
           (die-at line "cfn: 'alloc-handle-alloc' not in scope — (import-use allocator) is required to use cfn"))
-        (let (ah-ir:ptr (ahsym 'ir-name)
+        (let (ah-ir:StrView (ahsym 'ir-name)
               ; sizeof Env as a runtime usize (mirrors emit-sizeof).
               sz-node:ptr (make-cell (intern-symbol "sizeof")
                               (make-cell (intern-node (sd 'name)) null line)
@@ -9515,7 +9527,7 @@
           (when (= (sym 'owns) 0)
             (die-at (cc 'line) (fstr "move: '" tname "' does not own a with-bound resource")))
           (let (tmp:StrView (new-tmp))
-            (emit-load tmp (type-to-ir (sym 'type)) (strview-from-cstr (as CStr (sym 'ir-name))) (sym 'type))
+            (emit-load tmp (type-to-ir (sym 'type)) (sym 'ir-name) (sym 'type))
             (emit g-body-stream "  store ptr null, ptr " (sym 'cslot) ", align 8\n")
             (set! (sym 'moved) 1)
             (return (alloc-val (sym-effective-type sym) tmp))))
@@ -9525,7 +9537,7 @@
 ; when non-null, statically dispatch to the resolved drop method. The null
 ; guard mirrors free(NULL)-is-a-no-op so `move` / (set! name null) disarm
 ; Drop resources exactly like libc ones.
-(defn emit-drop-cleanup (slot:ptr dropfn:ptr dropret:(raw Type)):void
+(defn emit-drop-cleanup (slot:StrView dropfn:Symbol dropret:(raw Type)):void
   (let (tmp:StrView (new-tmp)
         isn:StrView (new-tmp)
         id:i32 (new-label-id)
@@ -9854,7 +9866,7 @@
               ; takes the same transform a defn name does — the rule is about
               ; becoming an LLVM name, not about being a global one. `scope-define`
               ; below still keys on the SOURCE name; only the slot string changes.
-              (let (slot:ptr (fcstr "%" (ir-name-token (symbol-as-view name)) ".addr." g-tmp)
+              (let (slot:StrView (fstr "%" (ir-name-token (symbol-as-view name)) ".addr." g-tmp)
                     align:i32 (abi-slot-align ty))
                 (inc! g-tmp)
                 (emit g-entry-stream "  " slot " = alloca " (type-to-ir ty) ", align " align
@@ -9954,7 +9966,7 @@
               ; refines an elem-less declared pointer to `ptr:T`.
 
             (set! ty (array-lit-binding-type ty bval-node))
-            (let (slot:ptr (fcstr "%" (ir-name-token (symbol-as-view name)) ".addr." g-tmp)
+            (let (slot:StrView (fstr "%" (ir-name-token (symbol-as-view name)) ".addr." g-tmp)
                   align:i32 (abi-slot-align ty)
                   autofree:i32 (is-libc-alloc bval-node))
               (inc! g-tmp)
@@ -10025,9 +10037,9 @@
                           ; binding. This is the `owns=1` that lets emit-move
                           ; consume a struct-value Drop capture into an `mfn`.
                         (!= (as ptr dm) null)
-                          (let (cslot:ptr slot)
+                          (let (cslot:StrView slot)
                             (when (= (-> ty (unsafe/cast ptr:Type _) (_ 'kind)) TY-STRUCT)
-                              (set! cslot (fcstr "%" (ir-name-token (symbol-as-view name)) ".drophandle." g-tmp))
+                              (set! cslot (fstr "%" (ir-name-token (symbol-as-view name)) ".drophandle." g-tmp))
                               (inc! g-tmp)
                               (emit g-entry-stream "  " cslot " = alloca ptr, align 8\n")
                               (emit g-body-stream "  store ptr " slot ", ptr " cslot
@@ -10424,7 +10436,7 @@
                     (fstr "resource bound by `with` escapes via assignment to longer-lived '"
                           (target 's) "' — use (move ...) to transfer ownership"))))
               (let (cv:ptr:Val (unsafe/cast ptr:Val coerced))
-                (emit-store (type-to-ir (sym 'type)) (cv 'val) (strview-from-cstr (as CStr (sym 'ir-name))) (sym 'type))
+                (emit-store (type-to-ir (sym 'type)) (cv 'val) (sym 'ir-name) (sym 'type))
                 ; An owning binding's slot stays armed whatever is stored, so
                 ; it keeps its taint; an ordinary binding adopts the value's
                 ; taint and frame-region flag. Either way a reassignment revives
@@ -10564,10 +10576,10 @@
             (die-at (cc 'line) (fstr op-name ": must be integer")))
           (let (ir:StrView (type-to-ir (sym 'type))
                 t1:StrView (new-tmp))
-            (emit-load t1 ir (strview-from-cstr (as CStr (sym 'ir-name))) (sym 'type))
+            (emit-load t1 ir (sym 'ir-name) (sym 'type))
             (let (t2:StrView (new-tmp))
               (emit g-body-stream "  " t2 " = " op-instr " nsw " ir " " t1 ", 1\n")
-              (emit-store ir t2 (strview-from-cstr (as CStr (sym 'ir-name))) (sym 'type))
+              (emit-store ir t2 (sym 'ir-name) (sym 'type))
               (return (alloc-val ty-void "")))))))))
 
 (defn emit-inc (call:(raw Node) scope:ref:Scope):ref:Val
@@ -10644,8 +10656,8 @@
         ; must spell it identically or the branch targets a block that is not there.
         (let (bb-name:ptr null)
           (if (= (e 'seen) (e 'total))
-            (set! bb-name (fcstr "lbl." (ir-name-token (strview-from-cstr (as CStr (sym-ptr (nm 's)))))))
-            (set! bb-name (fcstr "lbl." (ir-name-token (strview-from-cstr (as CStr (sym-ptr (nm 's))))) ".dead" (e 'seen))))
+            (set! bb-name (fcstr "lbl." (ir-name-token (symbol-as-view (nm 's)))))
+            (set! bb-name (fcstr "lbl." (ir-name-token (symbol-as-view (nm 's))) ".dead" (e 'seen))))
           (when (= g-block-term 0)
             (emit g-body-stream "  br label %" bb-name "\n"))
           (emit g-body-stream bb-name ":\n")
@@ -10662,7 +10674,7 @@
         (when (= (as ptr e) null)
           (die-at (node-line (as ptr nm) (cc 'line)) (fstr "goto: no such label '" (nm 's)
                                                            "' in function")))
-        (emit g-body-stream "  br label %lbl." (ir-name-token (strview-from-cstr (as CStr (sym-ptr (nm 's))))) "\n")
+        (emit g-body-stream "  br label %lbl." (ir-name-token (symbol-as-view (nm 's))) "\n")
         ; Start a fresh dead BB so subsequent forms in a do/let body have a valid
         ; insertion point. LLVM eliminates it (no predecessors).
         (let (dead:ptr (fcstr "goto.dead" (new-label-id)))
@@ -10685,7 +10697,7 @@
       (let (tmp:StrView (new-tmp))
         ; getelementptr offset 0 is a no-op binding the blockaddress to an SSA name.
         (emit g-body-stream "  " tmp " = getelementptr i8, ptr blockaddress(@" g-cur-fname
-              ", %lbl." (ir-name-token (strview-from-cstr (as CStr (sym-ptr (nm 's))))) "), i64 0\n")
+              ", %lbl." (ir-name-token (symbol-as-view (nm 's))) "), i64 0\n")
         (return (alloc-val ty-ptr tmp))))))
 
 (defn emit-goto-ptr (call:(raw Node) scope:ref:Scope):ref:Val
@@ -10944,7 +10956,7 @@
                 (inc! pos-idx)))))
         (inc! i))
       (let (slot:StrView (new-tmp)
-            sname:ptr (sdef 'ir-name))
+            sname:Symbol (sdef 'ir-name))
         (emit g-entry-stream "  " slot " = alloca %" sname
               (struct-align-suffix (as raw:StructDef sdef)) "\n")
         ; BF-2: bit-fields share storage, so a per-field zero fill would have to
@@ -11220,7 +11232,7 @@
                       (set! (av 'val) tmp))))))
     (set! (ss 'name) gname)
     (set! (ss 'type) (m 'fn-type))
-    (set! (ss 'ir-name) (m 'ir-name))
+    (set! (ss 'ir-name) (symbol-as-view (m 'ir-name)))
     (set! (ss 'is-local) 0)
     (return (emit-call-with-args n scope ss args nargs))))
 
@@ -11419,10 +11431,10 @@
 ; type registries key this way. INTERNED, because `ns-ir-prefix-get` matches its
 ; namespace column by pointer identity — B3′'s `register-struct` derives a type's
 ; ir-prefix from its key through exactly that path.
-(defn key-namespace (key:Symbol):CStr
-  (let (n:i64 (qualifier-len key))
-    (when (<= n 0) (return (as CStr (intern-str "user"))))
-    (return (as CStr (intern-str (arena-strndup (sym-ptr key) n))))))
+(defn key-namespace (key:Symbol):Symbol
+  (let (n:usize (qualifier-len key))
+    (when (= n 0) (return (symbol-intern "user")))
+    (return (symbol-intern (strview-take-bytes (symbol-as-view key) n)))))
 
 (defn binding-is-private (kind:i32 payload:ptr):i32
   (when (= payload null) (return 0))
@@ -11447,7 +11459,7 @@
 (defn binding-src-ns (kind:i32 payload:ptr):Symbol
   (when (= payload null) (return (symbol-none)))
   (case kind
-    BK-GLOBAL          (return (sym-of (key-namespace ((as ptr:Sym payload) 'name))))
+    BK-GLOBAL          (return (key-namespace ((as ptr:Sym payload) 'name)))
     BK-GENERIC
       (let (g:ptr:Generic (as ptr:Generic payload))
         (when (= (unsafe/cast i32 (count (g 'methods))) 0) (return (symbol-none)))
@@ -12561,7 +12573,7 @@
         (die-at line (fstr "defvar: addr-of: undefined '" (tn 's) "'")))
       ; A `defconst` / `defenum` member / `deferror` id is a compile-time value
       ; with no storage, so there is no address to take.
-      (when (or (!= (sym 'is-const) 0) (= (sym 'ir-name) null))
+      (when (or (!= (sym 'is-const) 0) (symbol-none? (symbol-intern (sym 'ir-name))))
         (die-at line
           (fstr "defvar: addr-of: '" (tn 's) "' is a compile-time constant and has no address")))
       (when (= ((sym 'type) 'kind) TY-FN)
@@ -12588,7 +12600,7 @@
             (fstr "defvar: addr-of: '" (tn 's) "' has type " (type-display (as raw:Type pt))
                   ", which does not match " (type-display ty))))
         ; C6/C7 seam: `Sym.ir-name` is still the interned C string.
-        (return (strview-from-cstr (as CStr (sym 'ir-name))))))))
+        (return (sym 'ir-name))))))
 
 ; ============================================================
 ; Stage 15 W8 G-2 — constant aggregates (design/global-init.md §5)
@@ -12821,7 +12833,7 @@
 ; a `ptr:T` / `(ref T)` global. Emits the backing global (g-out is already the
 ; def stream at this point, and this runs before the `@g` line is written, so
 ; the two land in dependency order) and returns the symbol to point at.
-(defn defvar-emit-array-backing (ir-name:ptr init:(raw Node) ty:(raw Type) encl:i32):StrView
+(defn defvar-emit-array-backing (ir-name:StrView init:(raw Node) ty:(raw Type) encl:i32):StrView
   (let (n:i32 0
         ety:(raw Type) (const-array-lit-etype init (as ptr:i32 (addr-of n)) encl))
     ; An elem-less destination (bare `ptr`, `CStr`) claims nothing about the
@@ -12833,7 +12845,7 @@
           (fstr "defvar: array initializer element type " (type-spelling ety)
                 " does not match the declared pointer element type " (type-spelling dst-elem)))))
     (let (at:(raw Type) (as raw:Type (array-type ety n))
-          data-name:StrView (fstr (as CStr ir-name) ".data"))
+          data-name:StrView (fstr ir-name ".data"))
       (emit g-out data-name " = internal global " (type-to-ir at) " ")
       (defvar-write-const init at encl)
       ; `.data`, never `.bss`: the elements are streamed, so nothing here has
@@ -13402,7 +13414,7 @@
           ; namespace — so two files' private `g-counter`s emit two distinct
           ; `internal` globals instead of two `@g-counter` definitions (which
           ; LLVM rejected with an unlocated parse error).
-          (let (ir-name:ptr (fcstr "@" (def-ir-base name))
+          (let (ir-name:StrView (fstr "@" (def-ir-base name))
                 align:i32 (abi-slot-align ty)
                 init-ir:StrView ""
                 init-node:(raw Node) null
@@ -13491,7 +13503,7 @@
                 (write-ir-section g-out
                   (global-section-prefix (bit-and attr-flags DECL-ATTR-CONST)
                                          init-ir (as raw:Type ty))
-                  (strview-from-cstr (as CStr ir-name))))
+                  ir-name))
               (emit g-out ", align " align "\n\n"))
             (let (vsym:ref:Sym (scope-define g-globals name ty ir-name 1))
               (when (!= g-ct-emitting 0) (set! ((unsafe/cast ptr:Sym vsym) 'ct-only) 1))
@@ -13556,7 +13568,7 @@
       ; already fixed for inline literals. (The spec doc's premise that such
       ; constants "are stored i64 today" was wrong; measured.)
       (let (sym:ref:Sym (scope-define g-globals (name 's)
-                          (as ptr (int-literal-type (val 'i))) null 0))
+                          (as ptr (int-literal-type (val 'i))) "" 0))
         (set! (sym 'is-const) 1)
         (set! (sym 'const-val) (fcstr (val 'i)))
         ; W2b: the name stands for the literal — carry the VALUE, not just a
@@ -13631,7 +13643,7 @@
             msg-sid:i32 (intern-string (sym-ptr (msg-node 's)) (unsafe/cast i32 (symbol-len (msg-node 's)))))
         (conj g-deferror-name-sids name-sid)
         (conj g-deferror-msg-sids msg-sid)
-        (let (sym:ref:Sym (scope-define g-globals (name-node 's) (as ptr ty-err) null 0))
+        (let (sym:ref:Sym (scope-define g-globals (name-node 's) (as ptr ty-err) "" 0))
           (set! (sym 'is-const) 1)
           (set! (sym 'const-val) (fcstr id)))
         (return (ok 0))))))
@@ -13665,11 +13677,11 @@
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc 'line) "type-token expects 1 type arg"))
     (let (ty:ptr (parse-type-from-node (node-at cc 1) (cc 'line))
-          token:ptr (type-mangle-token ty)
-          sid:i32 (intern-string token (unsafe/cast i32 (strlen token)))
+          token:StrView (type-mangle-token ty)
+          sid:i32 (intern-string token)
           tmp:StrView (new-tmp))
       (emit g-body-stream "  " tmp " = getelementptr inbounds ["
-            (+ (unsafe/cast i32 (strlen token)) 1) " x i8], ptr @.str." sid ", i64 0, i64 0\n")
+            (+ (unsafe/cast i32 (token 'len)) 1) " x i8], ptr @.str." sid ", i64 0, i64 0\n")
       (return (alloc-val ty-cstr tmp)))))
 
 (defn emit-defenum (call:(raw Node)):void
@@ -13716,7 +13728,7 @@
           ; the member, which used to define it twice with the second's ordinal
           ; silently winning at every use site.
           (guard-const-redefinition (name 's) (cc 'line))
-          (let (sym:ref:Sym (scope-define g-globals (name 's) ty-i32 null 0))
+          (let (sym:ref:Sym (scope-define g-globals (name 's) ty-i32 "" 0))
             (set! (sym 'is-const) 1)
             (set! (sym 'const-val) (fcstr (- i 2)))
             ; Stage 15 W2b: an enum member is a named integer literal too — it
@@ -14042,7 +14054,7 @@
         ; where there is one. It is what the redefinition diagnostic blames.
         (set! (sd 'src-file) g-source-path)
         (set! (sd 'src-line) (cc 'line))
-        (check-ir-name-legal (name-node 'line) (name-node 's) (sd 'ir-name))
+        (check-ir-name-legal (name-node 'line) (name-node 's) (symbol-as-view (sd 'ir-name)))
         (let (ftp:ptr (defstruct-fill-layout (as raw:StructDef sd) (as raw:Node cc) 1))
           (emit-struct-type-line g-out (as raw:StructDef sd))
           (sdef-note-emitted (as raw:StructDef sd) g-out)
@@ -14219,7 +14231,7 @@
       ; set g-current-ns, ns-ir-base composes the prefix (`g` → `geom__g`) — the
       ; same name emit-defvar produced. Identity under `user`, so a hand-written
       ; `(extern stderr)` and the bootstrap stay byte-identical.
-      (let (ir-name:ptr (fcstr "@" (ns-ir-base name)))
+      (let (ir-name:StrView (fstr "@" (ns-ir-base name)))
         (check-ir-name-legal (cc 'line) name ir-name)
         (when (!= m NUCH-REG)
           ; Stage 16 R3: the dedup above is process-wide, which is right for a
@@ -14229,8 +14241,8 @@
           ; module including the one being assembled now, so it is the buffer
           ; this belongs in. repl-libraries.md §3.2.
           (if (!= g-interactive 0)
-            (when (= (repl-preamble-has-decl (as CStr ir-name)) 0)
-              (repl-preamble-note-decl (as CStr ir-name))
+            (when (= (repl-preamble-has-decl (symbol-intern ir-name)) 0)
+              (repl-preamble-note-decl (symbol-intern ir-name))
               (emit g-repl-preamble ir-name " = external global " (type-to-ir ty) "\n\n"))
             (emit g-out ir-name " = external global " (type-to-ir ty) "\n\n")))
         (when (!= m NUCH-AFTER)
@@ -14478,9 +14490,9 @@
             ; their scope binding under @name. Overloaded methods dispatch through
             ; the generic registry, so no bare-name binding is installed.
             (when (= (defn-is-mangled fname) 0)
-              (check-ir-name-legal (cc 'line) fname (defn-ir-name fname param-types nparams ret))
+              (check-ir-name-legal (cc 'line) fname (symbol-as-view (defn-ir-name fname param-types nparams ret)))
               (let (fsym:ref:Sym (scope-define g-globals fname (as ptr ft)
-                                  (defn-ir-name fname param-types nparams ret) 0))
+                                  (symbol-as-view (defn-ir-name fname param-types nparams ret)) 0))
                 ; Stage 16: the `define` below is going to a sink, so this name is
                 ; registered and undefined. Marked HERE rather than in
                 ; `scope-define` because that is what ct-only means — a C header's
@@ -14495,7 +14507,8 @@
           (reset-function-state)
           ; g-cur-fname is the @-less IR symbol of this function (for blockaddress
           ; in label-addr). defn-ir-name returns "@sym"; skip the leading '@'.
-          (set! g-cur-fname (unsafe/ptr+ (as ptr:i8 (defn-ir-name fname param-types nparams ret))
+          (set! g-cur-fname (unsafe/ptr+ (as raw:i8 (symbol-as-cstr
+                                    (defn-ir-name fname param-types nparams ret)))
                                   1))
           ; Aggregate return ABI (Stage 8 Phase C): drives the signature, the
           ; sret hidden param, and how `return` lowers a struct value.
@@ -14622,7 +14635,7 @@
             (emit-fn-attrs-for fname)
             (when (!= (ir-sections-on) 0)
               (write-ir-section g-out ".text"
-                (strview-from-cstr (as CStr (defn-ir-name fname param-types nparams ret)))))
+                (symbol-as-view (defn-ir-name fname param-types nparams ret))))
             (emit g-out " {\n")
             (emit g-out "entry:\n")
             (emit-all g-out g-entry-stream)
@@ -14739,7 +14752,7 @@
         (set! g-node-ctor-used 0)
         (set! g-decl-out (addr-of ct-decl))
         ; Fresh per-module declare set (see emit-defmacro / macro-jit-ensure-decl).
-        (set! g-macro-decls (unsafe/cast (ref (Vector CStr)) (vector-new-in (addr-of g-arena-alloc))))
+        (set! g-macro-decls (unsafe/cast (ref (Vector Symbol)) (vector-new-in (addr-of g-arena-alloc))))
 
         ; Stage 16 D9 residue: the signature loop below RESOLVES type names, so
         ; this body's own `defstruct`s must be registered first. Idempotent under
@@ -14791,7 +14804,7 @@
                             (set! (ft 'ret) ret)
                             (type-set-params ft ptypes nparams)
                             (scope-define g-globals fname (as ptr ft)
-                                          (fcstr "@" fname) 0)))))))))
+                                          (strview-from-cstr (as CStr (fcstr "@" fname))) 0)))))))))
             (inc! bi)))
 
         ; Collect expression forms (non-top-level) for __compile_time_main.
@@ -14855,15 +14868,15 @@
             ; node at all — a plain `'x` or a quasiquoted atom reaches
             ; emit-quote-tree without ever setting ct-qq.
             (when (!= ct-nodes 0)
-              (macro-jit-declare-raw ct-decl "@alloc-node" (symbol-intern "declare ptr @alloc-node()\n"))
-              (macro-jit-declare-raw ct-decl "@make-cell" (symbol-intern "declare ptr @make-cell(ptr, ptr, i32)\n"))
-              (macro-jit-declare-raw ct-decl "@intern-symbol" (symbol-intern "declare ptr @intern-symbol(ptr)\n"))
-              (macro-jit-declare-raw ct-decl "@symbol-intern-bytes"
+              (macro-jit-declare-raw ct-decl (symbol-intern "@alloc-node") (symbol-intern "declare ptr @alloc-node()\n"))
+              (macro-jit-declare-raw ct-decl (symbol-intern "@make-cell") (symbol-intern "declare ptr @make-cell(ptr, ptr, i32)\n"))
+              (macro-jit-declare-raw ct-decl (symbol-intern "@intern-symbol") (symbol-intern "declare ptr @intern-symbol(ptr)\n"))
+              (macro-jit-declare-raw ct-decl (symbol-intern "@symbol-intern-bytes")
                                      (symbol-intern "declare i64 @symbol-intern-bytes(ptr, i64)\n")))
             ; If CT used quasiquote LISTS, add the private __cons/__append
             ; helpers; only they need @malloc.
             (when (!= ct-qq 0)
-               (macro-jit-declare-raw ct-decl "@malloc" (symbol-intern "declare ptr @malloc(i64)\n"))
+               (macro-jit-declare-raw ct-decl (symbol-intern "@malloc") (symbol-intern "declare ptr @malloc(i64)\n"))
                   (emit ct-def "define private ptr @__cons(ptr %a, ptr %b) {\n")
                   (emit ct-def "  %c = call ptr @malloc(i64 40)\n")
                   (emit ct-def
@@ -15084,7 +15097,7 @@
               (set! g-out (addr-of ct-def))
               ; Fresh per-module declare set: macro bodies that call ordinary
               ; defns (node-at, intern-symbol, ...) get those declared here.
-              (set! g-macro-decls (unsafe/cast (ref (Vector CStr)) (vector-new-in (addr-of g-arena-alloc))))
+              (set! g-macro-decls (unsafe/cast (ref (Vector Symbol)) (vector-new-in (addr-of g-arena-alloc))))
 
               ; Set up function codegen state
               (reset-function-state)
@@ -15104,7 +15117,7 @@
                     (let (pname:Symbol (aref (as ptr:Symbol pnames) ei)
                           ; W9 item 39: the macro's own parameter slots are LLVM
                           ; locals too. scope-define still keys on `pname`.
-                          mn:ptr (ir-name-token (symbol-as-view (aref (as ptr:Symbol pnames) ei))))
+                          mn:StrView (ir-name-token (symbol-as-view (aref (as ptr:Symbol pnames) ei))))
                       (emit g-entry-stream "  %" mn ".addr = alloca ptr, align 8\n")
                       (emit g-entry-stream "  %__ap" ei
                             " = load ptr, ptr %__args.addr, align 8\n")
@@ -15117,7 +15130,7 @@
                       (scope-define fn-scope
                                     pname
                                     (as ptr raw-node-ty)
-                                    (fcstr "%" mn ".addr") 1))))
+                                    (strview-from-cstr (as CStr (fcstr "%" mn ".addr"))) 1))))
 
                 ; Compile body forms; last result is return value
                 (let (last-val:StrView "null"
@@ -15155,17 +15168,17 @@
                   ; through emit-quote-tree and never sets macro-qq, and used to
                   ; emit `call @alloc-node` into a module that declared nothing.
                   (when (!= macro-nodes 0)
-                    (macro-jit-declare-raw ct-decl "@alloc-node" (symbol-intern "declare ptr @alloc-node()\n"))
-                    (macro-jit-declare-raw ct-decl "@make-cell" (symbol-intern "declare ptr @make-cell(ptr, ptr, i32)\n"))
-                    (macro-jit-declare-raw ct-decl "@intern-symbol" (symbol-intern "declare ptr @intern-symbol(ptr)\n"))
-              (macro-jit-declare-raw ct-decl "@symbol-intern-bytes"
+                    (macro-jit-declare-raw ct-decl (symbol-intern "@alloc-node") (symbol-intern "declare ptr @alloc-node()\n"))
+                    (macro-jit-declare-raw ct-decl (symbol-intern "@make-cell") (symbol-intern "declare ptr @make-cell(ptr, ptr, i32)\n"))
+                    (macro-jit-declare-raw ct-decl (symbol-intern "@intern-symbol") (symbol-intern "declare ptr @intern-symbol(ptr)\n"))
+              (macro-jit-declare-raw ct-decl (symbol-intern "@symbol-intern-bytes")
                                      (symbol-intern "declare i64 @symbol-intern-bytes(ptr, i64)\n")))
                   ; Add QQ list helpers if needed. Only these need @malloc, and
                   ; only if it is not already in g-decl-stream (e.g. from an
                   ; earlier (import-use "stdlib.h")).
                   (when (!= macro-qq 0)
                      (when (= g-malloc-decl-done 0)
-                          (macro-jit-declare-raw ct-decl "@malloc" (symbol-intern "declare ptr @malloc(i64)\n")))
+                          (macro-jit-declare-raw ct-decl (symbol-intern "@malloc") (symbol-intern "declare ptr @malloc(i64)\n")))
                         (emit ct-def "define private ptr @__cons(ptr %a, ptr %b) {\n")
                         (emit ct-def "  %c = call ptr @malloc(i64 40)\n")
                         (emit ct-def
@@ -16450,7 +16463,7 @@
         (when (!= (bit-and attr-flags DECL-ATTR-VOLATILE) 0)
           (set! ty (as ptr (type-with-volatile (unsafe/cast ref:Type ty)))))
         (let (vsym:ref:Sym (scope-define g-globals name ty
-                             (fcstr "@" (def-ir-base name)) 1))
+                             (fstr "@" (def-ir-base name)) 1))
           (when (!= g-ct-emitting 0) (set! ((unsafe/cast ptr:Sym vsym) 'ct-only) 1))
           (when (!= g-defining-private 0)
             (set! ((unsafe/cast ptr:Sym vsym) 'sym-private) 1))
@@ -16481,7 +16494,7 @@
       ; emit-defconst, which explains it.
       (when (symbol-contains-byte (name 's) 58) (return))
       (let (sym:ref:Sym (scope-define g-globals (name 's)
-                          (as ptr (int-literal-type (val 'i))) null 0))
+                          (as ptr (int-literal-type (val 'i))) "" 0))
         (set! (sym 'is-const) 1)
         (set! (sym 'const-val) (fcstr (val 'i)))
         (set! (sym 'const-lit) 1)
@@ -16503,7 +16516,7 @@
       (while (< i (node-len cc))
         (let (name:ptr:Node (unsafe/cast ptr:Node (node-at cc i)))
           (when (and (!= (as ptr name) null) (= (name 'kind) NODE-SYM))
-            (let (sym:ref:Sym (scope-define g-globals (name 's) ty-i32 null 0))
+            (let (sym:ref:Sym (scope-define g-globals (name 's) ty-i32 "" 0))
               (set! (sym 'is-const) 1)
               (set! (sym 'const-val) (fcstr (- i 2)))
               (set! (sym 'const-lit) 1)
@@ -16765,8 +16778,8 @@
       ; Empty → bare; otherwise sanitize the override to a C-legal prefix. Both are
       ; interned so the table key/value compare by pointer identity downstream.
       (if (= (cstr-byte-at prefix 0) 0)
-        (ns-ir-prefix-set g-current-ns (intern-str ""))
-        (ns-ir-prefix-set g-current-ns (intern-str (ns-prefix-sanitize prefix)))))))
+        (ns-ir-prefix-set g-current-ns (symbol-intern ""))
+        (ns-ir-prefix-set g-current-ns (ns-prefix-sanitize (strview-from-cstr (as CStr prefix))))))))
 
 ; Stage 14 AVR-5 (design/stage14/avr-targets.md §5 AVR-5): `(fn-attr <name>
 ; "<attr>" …)` attaches one or more LLVM string function attributes to the `defn`
@@ -18489,7 +18502,7 @@
   (set! g-def-stream (addr-of g-def-buf))
   (set! g-def-stream-program g-def-stream)
   (set! g-decl-out (addr-of g-decl-stream))
-  (set! g-macro-decls (unsafe/cast (ref (Vector CStr)) (vector-new-in (addr-of g-arena-alloc))))
+  (set! g-macro-decls (unsafe/cast (ref (Vector Symbol)) (vector-new-in (addr-of g-arena-alloc))))
   (set! g-program-defns (vector-new-in (addr-of g-arena-alloc))))
 
 ; ============================================================

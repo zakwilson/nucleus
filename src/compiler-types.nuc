@@ -337,12 +337,12 @@
   ; definition prints, and (B3′) what `type-mangle-token` returns, so a mangled
   ; symbol never carries a `/`. Computed once in register-struct — the single
   ; StructDef allocator (SM-4).
-  ir-name:CStr
+  ir-name:Symbol
   ; The ir-prefix snapshot taken at REGISTRATION, exactly as `Generic.ir-prefix`
   ; is and for the same reason: a stamp or a finalize may run while another
   ; namespace is current, so the prefix must come from the key rather than from
-  ; `g-current-ns` at the point of use. Empty string for `user`.
-  ir-prefix:CStr
+  ; `g-current-ns` at the point of use. The empty Symbol for `user`.
+  ir-prefix:Symbol
   ; The field table (was field-names + field-types parallel arrays). `(raw …)`
   ; because a name-only pre-registered struct (register-struct) has no fields
   ; yet — null until struct-set-fields populates it. All reads are guarded by the
@@ -565,12 +565,14 @@
   ; C7-4 the type did not say so.
   name:Symbol
   (type (raw Type))
-  ; ir-name stays `ptr` (NOT CStr): it is compared by pointer identity
-  ; (import-alias-one's collision check — ir-names are freshly formatted, not
-  ; interned) and null-checked (inject-import-aliases). A CStr retype would lower
-  ; both to strcmp (the null case crashing on strcmp(x, null)); content
-  ; comparison via strcmp is explicit where wanted (program-defn-lookup).
-  ir-name:ptr
+  ; The IR text that refers to this symbol: `@name` for a global, `%x.addr.7`
+  ; for a local. A `StrView` and not a `Symbol` because the local population
+  ; dominates by orders of magnitude and carries a per-binding counter, so
+  ; interning it would buy an identity nothing asks about (C7-4b). The two
+  ; callers that DO need identity are global-only and intern at their own
+  ; boundary — `program-defn-record` and the macro-JIT declare set. Empty means
+  ; "no ir-name", the `Val.val` convention.
+  ir-name:StrView
   is-local:i32
   is-const:i32
   const-val:CStr
@@ -591,13 +593,9 @@
   src-file:CStr     ; source file where defined (null if unknown)
   src-line:i32      ; source line where defined (0 if unknown)
   trace-tracker:ptr ; resource tracker for a REPL-installed trace wrapper (LLVM opaque)
-  ; trace-saved stays `ptr` (NOT CStr): it holds a saved copy of `ir-name` and is
-  ; assigned back into `ir-name` on untrace, so it must carry exactly `ir-name`'s
-  ; type — and `ir-name` is `ptr` (pointer-identity, freshly formatted / not
-  ; interned; a CStr retype would strcmp its comparisons). Currently unused (the
-  ; REPL trace feature is dormant), so this is inert either way; ptr is the honest
-  ; resting type for when it revives.
-  trace-saved:ptr   ; saved original ir-name while traced
+  ; Holds a saved copy of `ir-name` and is assigned back into it on untrace, so
+  ; it carries exactly `ir-name`'s type and moves with it.
+  trace-saved:StrView   ; saved original ir-name while traced
   ; Docstring captured from a defn whose body's first form is a string literal
   ; (with at least one form following it). null otherwise. Used by REPL doc/apropos.
   docstring:CStr
@@ -607,7 +605,7 @@
   taint-frame:i32   ; Stage 13 L1: 1 = `taint` is a frame-region (addr-of of a plain local), not a with-resource
   owns:i32          ; 1 = this binding armed a `with` cleanup (owning binding)
   moved:i32         ; 1 = consumed by (move ...); any further use is an error
-  cslot:CStr        ; cleanup slot IR name when owns=1 (move disarms by storing null)
+  cslot:StrView     ; cleanup slot IR name when owns=1 (move disarms by storing null)
   (ntype (raw Type)) ; flow-narrowed type override (?T read as (ref T)); null = none
   ndepth:i32        ; g-loop-depth at which the current narrow was established
   kstamp:i32        ; bumped on each kill (reassignment); stale undo entries skip
@@ -682,8 +680,8 @@
 ; type only (never appears in emitted user/JIT IR), so the (Maybe <struct>) JIT
 ; gotcha does not apply — its dispatch is on the emit path exclusively.
 (defunion Cleanup
-  (libc-free (slot ptr))
-  (drop (slot ptr) (dropfn ptr) (dropret (raw Type)))
+  (libc-free (slot StrView))
+  (drop (slot StrView) (dropfn Symbol) (dropret (raw Type)))
   (defer (node (raw Node)) (scope (ref Scope))))
 
 ; A narrowing undo entry (Stage 10 nullability §4). Restores are skipped when
@@ -844,11 +842,9 @@
 ; reproduce its `declare`. ir-name is the emitted @symbol; ret + param Types
 ; drive the ABI-lowered declare exactly as emit-defn lowered the `define`.
 (defstruct ProgDefn
-  ; ir-name is content-compared: program-defn-lookup matches it via explicit
-  ; strcmp (membership is "by content", not identity — the comment there
-  ; predates this retype), and it is never null-checked before that strcmp.
-  ; Unlike Sym.ir-name/Method.ir-name, safe as CStr.
-  ir-name:CStr
+  ; Content-compared by program-defn-lookup — which as a `Symbol` is one `icmp`,
+  ; interning having made content and identity the same question.
+  ir-name:Symbol
   (ret (raw Type))
   ptypes:ptr   ; ptr array of param Type*
   nparams:i32
@@ -898,14 +894,10 @@
   has-rest:i32
   variadic:i32
   kind:i32          ; one of MethodKind
-  ; ir-name stays `ptr` (NOT CStr): null-checked at generics.nuc's
-  ; defn-ir-name/defn-form-mangled-name (`(!= (-> m ... ir-name) null)`) and at
-  ; generic-method-bind-adapt's mangled-name cache probe (`(!= (m ir-name)
-  ; null)` before a strcmp) — both null-check first for METHOD-INTRINSIC/not-
-  ; yet-mangled methods, whose ir-name is a genuine null (generics.nuc:98/338/
-  ; 1175). A CStr retype turns that null-check into a crashing
-  ; strcmp(x, null). Same class as Sym.ir-name (batch 1).
-  ir-name:ptr       ; emitted symbol "@name..." (user methods); null otherwise
+  ; A METHOD-INTRINSIC or not-yet-mangled method has no ir-name, which is the
+  ; zero `Symbol` (`symbol-none?`) rather than a null — `Symbol.p` is non-null by
+  ; type, so the absent case is minted, not assigned.
+  ir-name:Symbol    ; emitted symbol "@name..." (user methods); none otherwise
   (fn-type (raw Type))  ; TY-FN for user methods; null otherwise
   (binop (raw BinOp))   ; intrinsic operators; null otherwise
   (body (raw Node))     ; retained defn form (generic methods); null otherwise
@@ -970,7 +962,7 @@
   ; namespace so finalize/monomorphization — which may run while a later import's
   ; namespace is current — still mangle under the right prefix. The empty prefix
   ; (`user`) composes to the bare name, keeping the bootstrap byte-identical.
-  ir-prefix:CStr)
+  ir-prefix:Symbol)
 
 ; A Protocol names a capability: a set of required method signatures whose
 ; parameter/return types may mention `Self` and, for a parametric protocol
@@ -1152,8 +1144,9 @@
   (from (raw Type))
   (to (raw Type))
   ; ir-name is content-only: safe-coerce-val formats it straight into the
-  ; emitted `call` instruction (never null-checked or identity-compared).
-  ir-name:CStr)
+  ; emitted `call` instruction (never null-checked or identity-compared), so it
+  ; is IR text and stays a view.
+  ir-name:StrView)
 
 ; A resolved compilation target (Stage 8 cross-compilation). datalayout and
 ; ptr-size come from LLVM for `triple`, so emitted IR matches the target ABI.
@@ -1191,11 +1184,11 @@
 
 ; Stage 14 §14.5 batch 2 — per-namespace ir-prefix table entry: replaces the
 ; parallel g-ns-prefix-keys/g-ns-prefix-vals arrays (nucleusc.nuc) with one
-; `(Vector (ref NsPrefixEntry))`. Keys compare by interned-pointer identity
-; (ns-ir-prefix-set/-get) — kept `ptr`, not `CStr`.
+; `(Vector (ref NsPrefixEntry))`. Both columns are `Symbol`, so both compare by
+; identity (ns-ir-prefix-set/-get).
 (defstruct NsPrefixEntry
-  ns:Symbol   ; the namespace name
-  prefix:ptr) ; interned ir-prefix string for that namespace
+  ns:Symbol      ; the namespace name
+  prefix:Symbol) ; its ir-prefix
 
 ; Stage 15 B1 (design/stage15-stress-test/name-resolution.md §5.2 B1, §8.3) — one
 ; entry in the FILE-scoped import environment: what a single import form bound in

@@ -12,7 +12,11 @@
 
 ; A short, dot-free token naming a type for use in mangled symbols. Pointers
 ; get a "p" prefix on their pointee so ptr:Circle and Circle stay distinct.
-(defn type-mangle-token (t:raw:Type):CStr
+;
+; A `StrView`: a mangled symbol is composed from several of these and interned
+; once, at the end — interning each fragment would pay a hash per token for an
+; identity nothing asks about.
+(defn type-mangle-token (t:raw:Type):StrView
   (let (tt:raw:Type t
         k:i32 (tt 'kind))
     (case k
@@ -34,7 +38,7 @@
       TY-PTR
         (if (= (tt 'elem) null)
           (return "ptr")
-          (return (fcstr "p" (type-mangle-token (tt 'elem)))))
+          (return (fstr "p" (type-mangle-token (tt 'elem)))))
       ; Stage 15 B3′ (name-resolution.md §8.1 step 2): the type's `ir-name`, not
       ; its `name`. Since B3′ a namespaced type's registry key carries a `/`
       ; (`dp/Fox`), which is illegal in an LLVM symbol; `ir-name` is the same
@@ -42,7 +46,7 @@
       ; computed once at registration. `ir-name == name` for every `user` type,
       ; so every mangled symbol in this compiler and in `lib/` is unchanged.
       (:or TY-STRUCT TY-UNION)
-        (return (-> tt (_ 'sdef) (unsafe/cast ptr:StructDef _) (_ 'ir-name)))
+        (return (symbol-as-view (-> tt (_ 'sdef) (unsafe/cast ptr:StructDef _) (_ 'ir-name))))
       TY-FN (return "fn")
       TY-CSTR (return "cstr")
       TY-CHAR (return "Char")
@@ -53,7 +57,7 @@
       ; distinct per length, so two array shapes can never collide. Unreachable
       ; today (an array cannot be a parameter or a generic argument), but the
       ; fall-through "x" would have collided with every other unmodelled kind.
-      TY-ARRAY (return (fcstr "a" (fcstr (tt 'arr-len)) "_" (type-mangle-token (tt 'elem))))
+      TY-ARRAY (return (fstr "a" (tt 'arr-len) "_" (type-mangle-token (tt 'elem))))
       (return "x"))))
 
 ; ============================================================

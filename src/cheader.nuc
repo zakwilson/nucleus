@@ -1090,7 +1090,7 @@
   ; with the `scope-define` it guards.
   (when (= (scope-lookup-key g-globals fname) null)
       (let (csym:ref:Sym (scope-define g-globals fname (as ptr ft)
-                          (fcstr "@" fname) 0))
+                          (fstr "@" fname) 0))
         ; Stage 10 Phase F1: mark known-noreturn libc functions.
         (when (c-fn-noreturn fname)
           (set! ((as ptr:Sym csym) 'noreturn) 1))
@@ -1209,7 +1209,7 @@
           (let (e:i64 0
                 id:ptr (c-read-ident buf p stop (as ptr:i64 (addr-of e))))
             ; A keyword is a specifier, never the declared name.
-            (when (= (cheader-reserved-word id) 0)
+            (when (= (cheader-reserved-word (strview-from-cstr (as CStr id))) 0)
               (set! name id)
               (set! name-end e))
             (set! p e))
@@ -2820,10 +2820,9 @@
 ; One space-delimited string per family searched with `strstr`, rather than an
 ; array of literals: the padded needle makes the membership test exact, and each
 ; family stays one greppable line.
-(defn cheader-reserved-word (s:ptr):i32
-  (when (= s null) (return 0))
-  (when (= (strlen s) 0) (return 0))
-  (let (needle:StrView (fstr " " (as CStr s) " "))
+(defn cheader-reserved-word (s:StrView):i32
+  (when (= (s 'len) 0) (return 0))
+  (let (needle:StrView (fstr " " s " "))
     (when (strview-contains " alignas alignof auto bool break case char const constexpr continue default do double else enum extern false float for goto if inline int long nullptr register restrict return short signed sizeof static static_assert struct switch thread_local true typedef typeof typeof_unqual union unsigned void volatile while _Alignas _Alignof _Atomic _BitInt _Bool _Complex _Generic _Imaginary _Noreturn _Static_assert _Thread_local " needle)
       (return 1))
     (when (strview-contains " and and_eq asm bitand bitor catch char8_t char16_t char32_t class compl concept consteval constinit const_cast co_await co_return co_yield decltype delete dynamic_cast explicit export friend mutable namespace new noexcept not not_eq operator or or_eq private protected public reinterpret_cast requires static_cast template this throw try typeid typename using virtual wchar_t xor xor_eq " needle)
@@ -2835,9 +2834,9 @@
 ; collision with a real `union_` in the same header is possible in principle and
 ; would be a duplicate declaration, which the C compiler reports; silently
 ; emitting the keyword is the failure this avoids.
-(defn cheader-escape-reserved (s:ptr):ptr
+(defn cheader-escape-reserved (s:StrView):StrView
   (when (= (cheader-reserved-word s) 0) (return s))
-  (return (fcstr s "_")))
+  (return (fstr s "_")))
 
 ; `s` with one leading `_` when it begins with a digit. Stage 15 W9 item 39: a C
 ; identifier is `[A-Za-z_][A-Za-z0-9_]*` — the same first-POSITION rule LLVM has,
@@ -2854,9 +2853,9 @@
 ; `_2Shape__2circle` where `_2Shape_2circle` is already legal (and `__` is
 ; reserved to the implementation in C++, which these headers target through
 ; `extern "C"`).
-(defn cheader-escape-leading-digit (s:ptr):ptr
-  (when (= (ir-name-leading-digit (strview-from-cstr (as CStr s))) 0) (return s))
-  (return (fcstr "_" s)))
+(defn cheader-escape-leading-digit (s:StrView):StrView
+  (when (= (ir-name-leading-digit s) 0) (return s))
+  (return (fstr "_" s)))
 
 ; Stage 15 W9 item 4: the C spelling of a Nucleus name. `sanitize-for-c` maps
 ; every character C does not allow in an identifier to `_`, so `a-field` becomes
@@ -2877,17 +2876,19 @@
 ; design/stage15-stress-test/progress.md.
 (defn cheader-c-ident (name:(raw i8)):ptr
   (when (= name null) (return (as ptr name)))
+  ; The one `fcstr`: the view form is the real computation, and the remaining
+  ; `ptr`-typed callers need the NUL the view does not carry.
+  (return (fcstr (cheader-c-ident-view name))))
+
+; `cheader-c-ident` as a view — and the primary spelling. Separate rather than
+; inlined at each call site because the null it is documented to pass through
+; cannot reach `strlen`: a marker parameter (`&optional`, `&rest`) has no name,
+; and the header renders it as nothing at all.
+(defn cheader-c-ident-view (name:(raw i8)):StrView
+  (when (= name null) (return ""))
   (return (cheader-escape-reserved
             (cheader-escape-leading-digit
               (sanitize-for-c (strview-from-cstr (as CStr (as ptr name))))))))
-
-; `cheader-c-ident` as a view. Separate rather than inlined at each call site
-; because the null it is documented to pass through cannot reach `strlen`: a
-; marker parameter (`&optional`, `&rest`) has no name, and the header renders it
-; as nothing at all.
-(defn cheader-c-ident-view (name:(raw i8)):StrView
-  (when (= name null) (return ""))
-  (return (strview-from-cstr (as CStr (cheader-c-ident name)))))
 
 ; The C spelling of a name that is emitted as one identifier JOINED from two
 ; parts — `enum Color { Color_red }`, and a defunion's `Foo_arm` tag constants.
@@ -2896,8 +2897,9 @@
 ; reason. The join can still land on a keyword (`and` + `eq`), so it is tested.
 (defn cheader-c-ident-join (prefix:ptr member:(raw i8)):ptr
   (when (= member null) (return prefix))
-  (return (cheader-escape-reserved
-            (fcstr prefix "_" (sanitize-for-c (strview-from-cstr (as CStr (as ptr member))))))))
+  (return (fcstr (cheader-escape-reserved
+                   (fstr prefix "_"
+                         (sanitize-for-c (strview-from-cstr (as CStr (as ptr member)))))))))
 
 ; The `asm("…")` suffix that re-binds a sanitized C declaration to the symbol the
 ; object actually defines, or "" when the sanitized spelling IS the symbol.
@@ -2912,26 +2914,19 @@
 ; Deliberately empty when no mangling was needed, so a library whose names are
 ; already C-legal gets a fully portable header and the extension appears exactly
 ; where it is load-bearing.
-(defn cheader-asm-label (link:ptr cname:ptr):ptr
-  (when (= (strcmp cname link) 0) (return ""))
+(defn cheader-asm-label (link:Symbol cname:ptr):ptr
+  (when (= link (strview-from-cstr (as CStr cname))) (return ""))
   (return (fcstr " asm(\"" link "\")")))
 
 ; The linker symbol behind an ir-name: the same string without its leading `@`
 ; sigil. Stage 15 W9 item 26 — the generic registry stores ir-names (`@eq.String
 ; .String`), the C `asm` label wants the bare symbol, and no caller may hand a
 ; sigil through to a declaration.
-(defn cheader-strip-sigil (irname:ptr):ptr
-  (when (= irname null) (return null))
-  (let (n:i64 (strlen irname))
-    (when (or (= n 0) (!= (bit-and (as i32 (aref (as ptr:i8 irname) 0)) 255) 64))
-      (return irname))
-    (let (s:ptr (arena-alloc n)
-          i:i64 1)
-      (while (< i n)
-        (set! (aref (as ptr:i8 s) (- i 1)) (aref (as ptr:i8 irname) i))
-        (set! i (+ i 1)))
-      (set! (aref (as ptr:i8 s) (- n 1)) 0)
-      (return s))))
+(defn cheader-strip-sigil (irname:Symbol):Symbol
+  (when (symbol-none? irname) (return irname))
+  (let (sv:StrView (symbol-as-view irname))
+    (when (or (= (sv 'len) 0) (!= (aref (sv 'data) 0) 64)) (return irname))
+    (return (symbol-intern (strview-drop-bytes sv 1)))))
 
 ; Stage 15 W9 item 37. A type this unit does not define needs the defining unit's
 ; generated header included, or the reference is to a tag C never completes:
@@ -3093,7 +3088,7 @@
                  (return (symbol-as-view name)))
              0))
          (cheader-note-type-file name)
-         (return (fstr "struct " (as CStr (cheader-c-ident (as raw:i8 (ns-ir-base name)))))))))))
+         (return (fstr "struct " (as CStr (cheader-c-ident (as raw:i8 (as ptr (symbol-as-cstr (ns-ir-base name)))))))))))))
 
 ; Convert a type AST node to a C type string. Handles SYM types and
 ; (ptr T) / (ptr ptr T) ... lists.
@@ -3347,7 +3342,7 @@
   ; W9 item 28: `cheader-c-ident` — the tag and typedef of a struct named `union`
   ; must be escaped, in lockstep with every reference to it (type-name-to-c).
   (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at form (+ 1 nattrs)))
-        name:ptr (cheader-c-ident (as raw:i8 (ns-ir-base (nn 's))))
+        name:ptr (cheader-c-ident (as raw:i8 (as ptr (symbol-as-cstr (ns-ir-base (nn 's))))))
         nfields:i32 (- (- (node-len form) 2) nattrs)
         ; PK-2: the attribute goes after the closing brace, which is the one
         ; position of the three C honours that needs no tag to attach to.
@@ -3359,7 +3354,7 @@
         aligned:CStr (if (!= aalign 0)
                        (as CStr (fcstr " __attribute__((aligned(" aalign ")))"))
                        (as CStr "")))
-    (check-ir-name-legal (nn 'line) (nn 's) name)
+    (check-ir-name-legal (nn 'line) (nn 's) (strview-from-cstr (as CStr name)))
     ; Stage 15 W9 item 25: TAG the struct. `type-name-to-c` spells every reference
     ; to a user type `struct NAME`, so an anonymous typedef leaves `struct NAME` a
     ; never-completed tag and every BY-VALUE use of the type fails — a field
@@ -3610,10 +3605,10 @@
     ; second answer here is how the header came to declare symbols no object
     ; defines. `defn-form-mangled-name` answers null for a solitary name, which is
     ; exactly when `ns-ir-base` is right.
-    (let (link:ptr (cheader-strip-sigil (defn-form-mangled-name (as raw:Node form)))
+    (let (link:Symbol (cheader-strip-sigil (defn-form-mangled-name (as raw:Node form)))
           cname:ptr null)
-      (when (= link null) (set! link (ns-ir-base fname)))
-      (set! cname (cheader-c-ident (as raw:i8 link)))
+      (when (symbol-none? link) (set! link (ns-ir-base fname)))
+      (set! cname (cheader-c-ident (as raw:i8 (as ptr (symbol-as-cstr link)))))
       ; FP-5: the parameter list is built BEFORE the return type is rendered.
       ; A function returning a function pointer wraps its own declarator —
       ; `int32_t (*getf(void))(int32_t, int32_t);` — so the name and its
@@ -3744,9 +3739,9 @@
             (return))
           ; AVR-6: `:const` selects LLVM `constant` storage, which is C's `const`.
           (let (cst:ptr (if (!= (bit-and attr-flags DECL-ATTR-CONST) 0) "const " "")
-                link:ptr (ns-ir-base vname)
+                link:Symbol (ns-ir-base vname)
                 ctype:StrView (type-node-to-c tnode))
-            (let (cname:ptr (cheader-c-ident (as raw:i8 link)))
+            (let (cname (cheader-c-ident (as raw:i8 (as ptr (symbol-as-cstr link)))))
               (emit (as ptr stdout) "extern " cst ctype " " cname (cheader-asm-label link cname)
                     ";\n"))))))))
 
@@ -3800,10 +3795,10 @@
     ; namespaced union's definition and every reference to it spelled different C
     ; identifiers. Identity under `user`.
     ; W9 item 28: `cheader-c-ident`, as emit-cheader-defstruct — see there.
-    (let (name:ptr (cheader-c-ident (as raw:i8 (ns-ir-base (name-node 's))))
+    (let (name:ptr (cheader-c-ident (as raw:i8 (as ptr (symbol-as-cstr (ns-ir-base (name-node 's))))))
           narms:i32 (- (node-len form) 2)
           npay:i32 0)
-      (check-ir-name-legal (name-node 'line) (name-node 's) name)
+      (check-ir-name-legal (name-node 'line) (name-node 's) (strview-from-cstr (as CStr name)))
       ; Any payload-bearing arm?
       (dotimes (i narms)
         (when (= ((unsafe/cast ptr:Node (node-at form (+ i 2))) 'kind) NODE-CELL)

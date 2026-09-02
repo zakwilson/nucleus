@@ -1573,6 +1573,14 @@ struct-field names. This is the NS-5 exclusion list: identity-substrate
 `strlen`/re-scan and identity is not at stake. `strncmp` (prefix) has no
 operator; leave those as calls.
 
+**Corollary, stage17 C7-4b: `(= sv null)` is a compile error.** Retyping a
+`ptr`/`CStr` field to `StrView` leaves its null guards *compiling* and turns them
+into `strcmp(%data, null)` — the W5c null-check trap, one level down, and
+invisible to `--strict-cstr` (the borrow is inside the operator's own lowering,
+not at a `CStr` parameter). A view is never null, so the comparison is now
+rejected outright; when you retype a field, the guard you must rewrite is
+`(str-empty? &v)`.
+
 **Correction (stage14 14.3, 2026-07-12): `scope-define`/`scope-lookup` keys
 are NOT identity-compared** (an earlier version of this note listed them
 alongside `Node.s` as identity-substrate — stale). `Sym.name` has been `CStr`

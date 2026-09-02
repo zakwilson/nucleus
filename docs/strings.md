@@ -251,7 +251,7 @@ All three return a `StrView` by value that borrows the same underlying bytes. No
 
 | Protocol | Notes |
 |----------|-------|
-| `Eq` | Byte equality: same length and identical bytes. Takes `StrView` by value. |
+| `Eq` | Byte equality: same length and identical bytes. Takes `StrView` by value. Comparing a view with `null` is a compile error — a view is never null; test the empty view with `str-empty?`. |
 | `Ord` | Byte-lexicographic: `memcmp` on `min(a.len, b.len)` bytes; shorter is less-than on tie. |
 | `Hash` | FNV-1a over exactly `len` bytes (handles embedded NULs). Receiver `(ref StrView)`. |
 | `ByteStr ByteIter` | Via `(import-use strview-str)` (separate import to avoid circular dependency). |

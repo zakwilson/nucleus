@@ -14146,6 +14146,25 @@ run_s17_strview_literal_join() {
 }
 spawn run_s17_strview_literal_join
 
+# Stage 17 C7-4b: the null-check trap one level down. A `StrView` is a 16-byte
+# struct that is never null, so `(= sv null)` fell into the CStr strcmp lowering
+# and compared its `.data` against NULL — a SIGSEGV, silently. It is a type
+# error now, and the diagnostic names the predicate the author meant.
+run_s17_strview_null_compare_rejected() {
+  local d out
+  d="$(mktemp -d)"
+  printf '(defn main ():i32\n  (let (sv:StrView "abc")\n    (when (!= sv null) (return 1))\n    (return 0)))\n' > "$d/s17nsv.nuc"
+  out="$(./build/nucleusc --emit-llvm "$d/s17nsv.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$out" | qgrep -F 's17nsv.nuc:3: error: !=: a StrView is never null'; then
+    echo "PASS  s17-strview-null-compare-rejected"
+  else
+    echo "FAIL  s17-strview-null-compare-rejected"
+    echo "    got: ${out:-<none>}"
+  fi
+  rm -rf "$d"
+}
+spawn run_s17_strview_null_compare_rejected
+
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided
 # by scanning buffered output, since `set -e` does not propagate across `&`).

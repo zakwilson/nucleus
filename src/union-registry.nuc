@@ -498,8 +498,7 @@
 ; drain. Idempotent — subsequent calls return the cached def.
 (defn ensure-fatptr-sdef ():ptr
   (when (!= g-fatptr-sdef null) (return g-fatptr-sdef))
-  (let (nm:ptr (intern-str (sanitize-for-ir "__fatptr"))
-        sd:ref:StructDef (register-struct (sym-of nm)))
+  (let (sd:ref:StructDef (register-struct (symbol-intern (sanitize-for-ir "__fatptr"))))
     (let (fnm:ptr (arena-alloc (* 2 (ptr-bytes)))
           fty:ptr (arena-alloc (* 2 (ptr-bytes))))
       (set! (aref (as ptr:Symbol fnm) 0) (symbol-intern "data"))
@@ -559,10 +558,10 @@
 ; §14.4: `params` is a TY-FN Type's parameter Vector `(Vector (ref Field))`;
 ; each param type is read via `field-at`. Both callers (boxedfn-type below and
 ; ensure-fnfwd-vtable in nucleusc.nuc) pass a Vector handle.
-(defn boxedfn-sig-token (params:(raw (Vector (ref Field))) num-p:i32 ret:ptr):ptr
-  (let (s:ptr (type-mangle-token ret))
+(defn boxedfn-sig-token (params:(raw (Vector (ref Field))) num-p:i32 ret:ptr):StrView
+  (let (s:StrView (type-mangle-token ret))
     (dotimes (i num-p)
-      (set! s (fcstr s "_" (type-mangle-token ((field-at params i) 'type)))))
+      (set! s (fstr s "_" (type-mangle-token ((field-at params i) 'type)))))
     (return s)))
 
 ; The (memoised) BoxedFn instance Type for a signature. On a miss it registers a
@@ -571,12 +570,12 @@
 ; TY-STRUCT Type, stamps the Fn signature onto ret/params/num-params, and memoises.
 (defn boxedfn-type (param-arr:ptr num-p:i32 ret:ptr line:i32):ptr
   (let ((pvec (ref (Vector (ref Field)))) (make-param-vec param-arr num-p)
-        tok:ptr (boxedfn-sig-token pvec num-p ret)
+        tok:StrView (boxedfn-sig-token pvec num-p ret)
         key:ptr (intern-str (fcstr "BoxedFn." tok))
         hit:ptr (boxedfn-memo-lookup key))
     (when (!= hit null) (return hit))
-    (let (nm:ptr (intern-str (sanitize-for-ir (strview-from-cstr (as CStr (fcstr "__boxedfn." tok)))))
-          sd:ref:StructDef (register-struct (sym-of nm)))
+    (let (nm:Symbol (symbol-intern (sanitize-for-ir (fstr "__boxedfn." tok)))
+          sd:ref:StructDef (register-struct nm))
       (let (fnm:ptr (arena-alloc (* 2 (ptr-bytes)))
             fty:ptr (arena-alloc (* 2 (ptr-bytes))))
         (set! (aref (as ptr:Symbol fnm) 0) (symbol-intern "data"))
@@ -675,8 +674,8 @@
   (let (key:Symbol (symbol-intern (fstr "dyn." proto))
         hit:ptr (dyn-memo-lookup key))
     (when (!= hit null) (return hit))
-    (let (nm:ptr (sanitize-for-ir (fstr "__dyn." proto))
-          sd:ref:StructDef (register-struct (symbol-from-cstr (as CStr nm))))
+    (let (sd:ref:StructDef (register-struct
+                             (symbol-intern (sanitize-for-ir (fstr "__dyn." proto)))))
       (let (fnm:ptr (arena-alloc (* (as i64 2) (ptr-bytes)))
             fty:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
         (set! (aref (as ptr:Symbol fnm) 0) (symbol-intern "data"))
@@ -1091,7 +1090,7 @@
               (set! union-sd (as ptr (lookup-or-make-anon-union mnames mtypes null null npay 0 0)))))
           ; Backing struct: {tag:i32 [, payload:(union ...)]}.
           (let (sd:ref:StructDef (if-some (e (lookup-struct name)) e (register-struct name)))
-            (check-ir-name-legal line name (sd 'ir-name))
+            (check-ir-name-legal line name (symbol-as-view (sd 'ir-name)))
             (when (!= (sd 'emitted) 0)
               (die-at line (fstr "defunion: '" name "' already names a struct")))
             (let (bnf:i32 (if (!= union-sd null) 2 1)

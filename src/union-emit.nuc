@@ -407,7 +407,7 @@
           ; W9 item 39: a binder name becomes an LLVM local identifier, so it takes
           ; the same transform a defn name does. Every `%<binder>.addr.N` producer
           ; in this file applies it; `scope-define` still keys on the source name.
-          (let (slot:ptr (fcstr "%" (ir-name-token (strview-from-cstr (as CStr (sym-ptr (xnode 's))))) ".addr." g-tmp))
+          (let (slot:StrView (fstr "%" (ir-name-token (symbol-as-view (xnode 's))) ".addr." g-tmp))
             (inc! g-tmp)
             (emit g-entry-stream "  " slot " = alloca ptr, align 8\n")
             (emit g-body-stream "  store ptr " (mv 'val) ", ptr " slot ", align 8\n")
@@ -641,11 +641,11 @@
           mslot "\n")
     ; Token for repair-ty (its mangled name as a CStr), as with-handler's
     ; type-token emits, so the two agree (errors.md §11.2).
-    (let (token:ptr (type-mangle-token repair-ty)
-          tsid:i32 (intern-string token (unsafe/cast i32 (strlen token)))
+    (let (token:StrView (type-mangle-token repair-ty)
+          tsid:i32 (intern-string token)
           tok:StrView (new-tmp))
       (emit g-body-stream "  " tok " = getelementptr inbounds ["
-            (+ (unsafe/cast i32 (strlen token)) 1) " x i8], ptr @.str." tsid ", i64 0, i64 0\n")
+            (+ (unsafe/cast i32 (token 'len)) 1) " x i8], ptr @.str." tsid ", i64 0, i64 0\n")
       ; Find a willing handler. These three are non-null by the
       ; error-lib-in-scope precondition the callers check before reaching here;
       ; with no natural null-guard at the use sites, the cast-to-(ref) is the
@@ -800,15 +800,13 @@
             ; payload offset), then build (ok v) into the slot.
             (let (mpp:StrView (new-tmp)
                   vtmp:StrView (new-tmp)
-                  ; `vslot` lands in `Sym.ir-name`, which is still a C string
-                  ; (the C7 boundary), so it is built NUL-terminated and viewed.
-                  vslot:ptr (fcstr "%errh.v" id))
+                  vslot:StrView (fstr "%errh.v" id))
               (emit g-body-stream "  " mpp " = getelementptr inbounds i8, ptr " mslot ", i64 "
                     (union-payload-off (as ptr mudd)) "\n")
               (emit-load vtmp (type-to-ir okty) mpp okty)
               (emit g-entry-stream "  " vslot " = alloca " (type-to-ir okty) ", align "
                     (type-size okty) "\n")
-              (emit-store (type-to-ir okty) vtmp (strview-from-cstr (as CStr vslot)) okty)
+              (emit-store (type-to-ir okty) vtmp vslot okty)
               (scope-define scope (symbol-intern "__errh_v") okty vslot 1)
               (let (ok-place:ptr (make-cell 'ok
                                    (make-cell '__errh_v null ln) ln)
@@ -983,12 +981,12 @@
             (if (= (b 'kind) NODE-SYM)
               ; By value: load the field into an ordinary local slot.
               (let (tmp:StrView (new-tmp)
-                    slot:ptr (fcstr "%" (ir-name-token (strview-from-cstr (as CStr (sym-ptr (b 's))))) ".addr." g-tmp))
+                    slot:StrView (fstr "%" (ir-name-token (symbol-as-view (b 's))) ".addr." g-tmp))
                 (inc! g-tmp)
                 (emit-load tmp (type-to-ir ftype) fa ftype)
                 (emit g-entry-stream "  " slot " = alloca " (type-to-ir ftype) ", align "
                       (type-size ftype) "\n")
-                (emit-store (type-to-ir ftype) tmp (strview-from-cstr (as CStr slot)) ftype)
+                (emit-store (type-to-ir ftype) tmp slot ftype)
                 (scope-define inner (b 's) ftype slot 1))
               ; (ref x): alias the field in place for mutation.
               (do
@@ -1001,7 +999,7 @@
                 (let (xn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr b) 1)))
                   (when (!= (xn 'kind) NODE-SYM)
                     (die-at (b 'line) "match: (ref name) needs a symbol"))
-                  (let (slot:ptr (fcstr "%" (ir-name-token (strview-from-cstr (as CStr (sym-ptr (xn 's))))) ".addr." g-tmp))
+                  (let (slot:StrView (fstr "%" (ir-name-token (symbol-as-view (xn 's))) ".addr." g-tmp))
                     (inc! g-tmp)
                     (emit g-entry-stream "  " slot " = alloca ptr, align 8\n")
                     (emit g-body-stream "  store ptr " fa ", ptr " slot ", align 8\n")
@@ -1279,7 +1277,7 @@
           (let (b:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node err-bind) 'car)))
             (when (and (= (b 'kind) NODE-SYM) (!= (b 's) "_"))
               (let (pineg:StrView (new-tmp) eid:StrView (new-tmp) idtr:StrView eid
-                    slot:ptr (fcstr "%" (ir-name-token (strview-from-cstr (as CStr (sym-ptr (b 's))))) ".addr." g-tmp))
+                    slot:StrView (fstr "%" (ir-name-token (symbol-as-view (b 's))) ".addr." g-tmp))
                 (inc! g-tmp)
                 (emit g-body-stream "  " pineg " = ptrtoint ptr " rval " to " (ptr-int-ir) "\n")
                 (emit g-body-stream "  " eid " = sub " (ptr-int-ir) " 0, " pineg "\n")
@@ -1300,7 +1298,7 @@
           (let (b:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node ok-bind) 'car)))
             (when (and (= (b 'kind) NODE-SYM) (!= (b 's) "_"))
               (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR))
-                    slot:ptr (fcstr "%" (ir-name-token (strview-from-cstr (as CStr (sym-ptr (b 's))))) ".addr." g-tmp))
+                    slot:StrView (fstr "%" (ir-name-token (symbol-as-view (b 's))) ".addr." g-tmp))
                 (inc! g-tmp)
                 (set! (rt 'elem) elem)
                 (set! (rt 'pkind) PTR-REF)
@@ -1409,7 +1407,7 @@
           (let (b:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node some-bind) 'car)))
             (when (and (= (b 'kind) NODE-SYM) (!= (b 's) "_"))
               (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR))
-                    slot:ptr (fcstr "%" (ir-name-token (strview-from-cstr (as CStr (sym-ptr (b 's))))) ".addr." g-tmp))
+                    slot:StrView (fstr "%" (ir-name-token (symbol-as-view (b 's))) ".addr." g-tmp))
                 (inc! g-tmp)
                 (set! (rt 'elem) elem)
                 (set! (rt 'pkind) PTR-REF)
@@ -1684,7 +1682,7 @@
     (let (id:i32 (new-label-id)
           rhs-lbl:StrView (fstr tag ".rhs" id)
           end-lbl:StrView (fstr tag ".end" id)
-          slot:ptr (fcstr "%" tag ".val" id))
+          slot:StrView (fstr "%" tag ".val" id))
       (emit g-entry-stream "  " slot " = alloca i1, align 1\n")
       (let (lhs:ref:Val (condition-bool (emit-node (node-at cc 1) scope)
                           (node-line (node-at cc 1) (cc 'line)) tag))
