@@ -1,6 +1,6 @@
 ; .nuch header for lib/vector.nuc
 (declare vector-oom () :void)
-(declare vector-bounds ((what CStr) (i usize) (n usize)) :void)
+(declare vector-bounds ((what StrView) (i usize) (n usize)) :void)
 (defstruct (Vector T) (data (raw ui8)) (len usize) (cap usize) (alloc AllocHandle))
 (defn vector-init ((v (ref (Vector T)))) :void (set! (v (quote data)) null) (set! (v (quote len)) 0) (set! (v (quote cap)) 0) (libc-allocator (addr-of v (quote alloc))))
 (defn vector-init-alloc ((v (ref (Vector T))) (a (ref AllocHandle))) :void (set! (v (quote data)) null) (set! (v (quote len)) 0) (set! (v (quote cap)) 0) (set! (v (quote alloc)) (deref a)))

@@ -962,19 +962,14 @@
 
 ; Build a comma-separated string of type spellings for a diagnostic, e.g.
 ; "StrView, ptr". argtypes is the parallel array of Type* used by generic-resolve.
-(defn arg-type-spellings (argtypes:ptr nargs:i32):CStr
-  (let (buf:ptr (alloca i8 512)
-        pos:i32 0)
+(defn arg-type-spellings (argtypes:ptr nargs:i32):StrView
+  (let ((acc String) (str-alloc (strfmt-alloc) ""))
     (dotimes (i nargs)
-      (when (!= i 0)
-        (set! pos (+ pos (snprintf (unsafe/ptr+ (as ptr:i8 buf) pos)
-                                   (- 512 pos) ", "))))
+      (when (!= i 0) (str-into acc ", "))
       ; FP-3: a *message*, so type-display — a fn-pointer argument printed as
       ; the `__fnty_N` registry key named nothing the caller wrote.
-      (let (ts:ptr (type-display (aref (as ptr:ptr argtypes) i)))
-        (set! pos (+ pos (snprintf (unsafe/ptr+ (as ptr:i8 buf) pos)
-                                   (- 512 pos) "%s" ts)))))
-    (return (arena-strndup buf pos))))
+      (str-into acc (type-display (aref (as ptr:ptr argtypes) i))))
+    (return (string-as-view acc))))
 
 ; Select the method of a generic for a concrete argument-type tuple.
 ; Tier 0: an exact concrete method (type-eq on every param) — concrete beats
