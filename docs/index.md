@@ -127,6 +127,9 @@ Additional libraries available via `import-use`:
 - `(import-use strview)` — `StrView` immutable byte-slice substrate (`Hash`+`Eq` conformances)
 - `(import-use strview-str)` — `ByteStr`/`Str` protocol conformances for `StrView` (separate to avoid circular imports)
 - `(import-use keyword)` — `Keyword` interned self-evaluating names, usable as `HashMap`/`HashSet` keys
+- `(import-use intern)` — `Symbol` interned identity and its table (libc + `fnv` only, so `node` can depend on it)
+- `(import-use intern-str)` — `Eq`/`Hash`/`ToStr`/`ByteStr`/`Str` conformances for `Symbol`
+- `(import-use fnv)` — the FNV-1a fold (`fnv1a-byte`, `fnv1a-int`, `fnv1a-bytes`)
 - `(import-use hash)` — `Hash` protocol with `i32`/`i64`/`usize`/`CStr` conformances (FNV-1a)
 - `(import-use vector)` — `Vector T` dynamic array and `VecIter T`
 - `(import-use hashmap)` — `HashMap K V` and `HashMapKeyIter K V`

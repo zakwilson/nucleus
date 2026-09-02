@@ -1,0 +1,39 @@
+; FNV-1a, the byte fold shared by `lib/hash.nuc`'s conformances,
+; `strview-hash` and the `Symbol` interner.
+;
+; Its own module because `lib/intern.nuc` needs the fold and nothing else: it is
+; imported by `lib/node.nuc`, so every macro-using program — AVR included —
+; carries whatever it depends on, and `lib/hash.nuc` cannot be that (its `f64`
+; conformance is rejected outright on an 8-bit target).
+;
+; h := FNV_OFFSET_BASIS (0xcbf29ce484222325); for each byte b: h := (h ^ b) * prime.
+; The basis is written as its two's-complement decimal because the unsigned hex
+; overflows the signed-literal range; the prime is 0x100000001b3.
+
+; Fold one byte `b` (0..255, passed as i64) into the running hash `h`.
+(defn fnv1a-byte (h:i64 b:i64):i64
+  (set! h (bit-xor h b))
+  (set! h (* h 1099511628211))
+  (return h))
+
+; Fold the `n` low bytes of integer value `v` (little-endian byte order) into
+; `h`. Byte order is internal to this hash (never observed), so little-endian is
+; an arbitrary, consistent choice — equal values always fold identically.
+(defn fnv1a-int (h:i64 v:i64 n:i32):i64
+  (let (i:i32 0)
+    (while (< i n)
+      (let (b:i64 (bit-and (bit-shr v (as i64 (* i 8))) 255))
+        (set! h (fnv1a-byte h b)))
+      (set! i (+ i 1)))
+    (return h)))
+
+; Fold `n` bytes at `p`, seeded with the offset basis, narrowed to usize.
+; `unsafe/cast`, not `as`: the fold is i64 on every target and usize is 16-bit
+; on AVR, where `as` would refuse the narrowing.
+(defn fnv1a-bytes (p:(ptr ui8) n:usize):usize
+  (let (h:i64 -3750763034362895579
+        i:usize 0)
+    (while (< i n)
+      (set! h (fnv1a-byte h (as i64 (aref p (as i64 i)))))
+      (set! i (+ i 1)))
+    (return (unsafe/cast usize h))))

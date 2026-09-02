@@ -1,6 +1,4 @@
 ; .nuch header for lib/hash.nuc
-(declare fnv1a-byte ((h i64) (b i64)) :i64)
-(declare fnv1a-int ((h i64) (v i64) (n i32)) :i64)
 (defprotocol Hash (hash ((self (ref Self))) :usize))
 (extend i32 Hash)
 (defmethod "@hash.pi32" hash ((self (ref i32))) :usize)

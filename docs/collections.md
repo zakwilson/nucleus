@@ -151,8 +151,11 @@ Every owning collection conforms to `Drop` so a `with`-bound value frees its buf
 | `CStr` | `lib/hash.nuc` | Folds each character byte up to (not including) the NUL terminator. |
 | `StrView` | `lib/strview.nuc` | FNV-1a fold over exactly `len` bytes (handles embedded NULs). |
 | `Keyword` | `lib/keyword.nuc` | Returns the hash cached at intern time — O(1), no byte walk. |
+| `Symbol` | `lib/intern-str.nuc` | Returns the hash cached at intern time — O(1), no byte walk. |
 
 Unlike `numeric.nuc`'s code-free operator conformances, these are real method bodies because there is no built-in `hash` operator.
+
+The fold itself lives in `lib/fnv.nuc` (`fnv1a-byte`, `fnv1a-int`, `fnv1a-bytes`), which `lib/hash.nuc` imports. It is a separate module so that `lib/intern.nuc` can use the fold without importing `hash` — whose `f64` conformance is rejected on AVR, and which the compiler's symbol table therefore cannot depend on.
 
 ### Symbols as keys
 

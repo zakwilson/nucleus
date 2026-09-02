@@ -26,36 +26,50 @@
 
 (extern stderr:ptr)
 
-; Deliberately light: `lib/node.nuc` delegates its symbol table to this file
-; (C7-2), and `node` is what every macro-using program imports. The `ToStr` /
-; `ByteStr` / `Str` conformances need `fmt`, `string`, `vector` and
-; `strview-str`, so they live in `lib/intern-str.nuc` — the same split, for the
-; same reason, as `strview` / `strview-str`.
+; `fnv` is the ONLY Nucleus import, and that is the point: `lib/node.nuc`
+; delegates its symbol table here (C7-2), and `node` is what every macro-using
+; program imports. `hash`, `numeric` and `strview` all reach an `f64`
+; annotation, which AVR rejects outright, so importing any of them would make
+; every macro-using program un-compilable for an 8-bit target. The `Eq`/`Hash`
+; conformance records and the `ToStr`/`ByteStr`/`Str` methods live in
+; `lib/intern-str.nuc` — the same split, for the same reason, as `strview` /
+; `strview-str`.
 ;
 ; `Symbol` itself is declared in `lib/prelude.nuc`, beside `StrView` and for the
 ; same reason (design/stage17-native-strings/c7-interned-substrate.md §2.2):
 ; `Node.s` is one, so the reader, the macro JIT module and the bootstrap all
 ; need the type registered without importing anything.
-(import-use numeric)
-(import-use hash)
-(import-use strview)
+(import-use fnv)
 
-; Byte offsets behind `p`. Both words are `usize`, and malloc's alignment is at
-; least that, so `p` (base + 2 words) is aligned for both loads. Reading them
-; needs `unsafe/cast`: `p` is deliberately a BYTE pointer, and reinterpreting it
-; at the header word is the one thing this layout cannot express in the type.
-(defconst SYM-LEN-OFF -8)
-(defconst SYM-HASH-OFF -16)
-(defconst SYM-HEADER 16)
+; The header behind `p`, as a type rather than as byte offsets: `usize` is two
+; bytes on AVR and eight on a host, so hand-written `-8`/`-16` would silently
+; read the wrong words there.
+(defstruct SymHeader
+  hash:usize
+  len:usize)
+
+; Reinterpreting a byte pointer at the header is the one thing this layout
+; cannot express in the type, hence `unsafe/cast`. malloc's alignment is at
+; least usize's, and the header is a whole number of words, so `p` is aligned.
+(defn symbol-header (self:Symbol):ptr:SymHeader
+  (return (unsafe/cast ptr:SymHeader
+            (unsafe/ptr+ (self 'p) (- 0 (as i64 (sizeof SymHeader)))))))
 
 (defn symbol-len (self:Symbol):usize
-  (return (deref (unsafe/cast ptr:usize (unsafe/ptr+ (self 'p) SYM-LEN-OFF)))))
+  (let (h:ptr:SymHeader (symbol-header self))
+    (return (h 'len))))
 
 (defn symbol-cached-hash (self:Symbol):usize
-  (return (deref (unsafe/cast ptr:usize (unsafe/ptr+ (self 'p) SYM-HASH-OFF)))))
+  (let (h:ptr:SymHeader (symbol-header self))
+    (return (h 'hash))))
 
+; Spelled out rather than `(strview …)`: the constructor lives in lib/strview.nuc,
+; which this file cannot import.
 (defn symbol-as-view (self:Symbol):StrView
-  (return (strview (self 'p) (symbol-len self))))
+  (let (sv:&StrView (alloca StrView))
+    (set! (sv 'data) (self 'p))
+    (set! (sv 'len) (symbol-len self))
+    (return (deref sv))))
 
 ; Free, not a conversion: the interner NUL-terminates, so the bytes already are
 ; a C string. This is what keeps every surviving FFI seam copy-free.
@@ -80,15 +94,16 @@
   (fprintf stderr "intern: out of memory\n")
   (exit 1))
 
-; The interned block for `sv`, NUL-terminated, with its header filled in.
-(defn intern-alloc-bytes ((sv (ref StrView)) h:usize):(ptr ui8)
-  (let (n:usize (sv 'len)
-        base:?ptr (malloc (as i64 (+ (as usize SYM-HEADER) (+ n 1)))))
+; The interned block for `src`/`n`, NUL-terminated, with its header filled in.
+(defn intern-alloc-bytes (src:(ptr ui8) n:usize h:usize):(ptr ui8)
+  (let (hdrsz:i64 (as i64 (sizeof SymHeader))
+        base:?ptr (malloc (+ hdrsz (as i64 (+ n 1)))))
     (when (= base null) (intern-oom))
-    (let (p:(ptr ui8) (as ptr:ui8 (unsafe/ptr+ (as ptr:ui8 base) SYM-HEADER)))
-      (set! (deref (unsafe/cast ptr:usize (unsafe/ptr+ p SYM-HASH-OFF))) h)
-      (set! (deref (unsafe/cast ptr:usize (unsafe/ptr+ p SYM-LEN-OFF))) n)
-      (when (> n 0) (memcpy (as ptr p) (as ptr (sv 'data)) (as i64 n)))
+    (let (p:(ptr ui8) (as ptr:ui8 (unsafe/ptr+ (as ptr:ui8 base) hdrsz))
+          hdr:ptr:SymHeader (unsafe/cast ptr:SymHeader base))
+      (set! (hdr 'hash) h)
+      (set! (hdr 'len) n)
+      (when (> n 0) (memcpy (as ptr p) (as ptr src) (as i64 n)))
       (set! (aref p (as i64 n)) 0)
       (return p))))
 
@@ -109,9 +124,10 @@
         (while (< i g-sym-cap)
           (let (e:?ptr (aref (as ptr:ptr g-sym-table) (as i64 i)))
             (when (!= e null)
-              (let (ep:(ptr ui8) (as ptr:ui8 e))
-                (intern-place nt newcap ep
-                  (deref (unsafe/cast ptr:usize (unsafe/ptr+ ep SYM-HASH-OFF))))))
+              (let (ep:(ptr ui8) (as ptr:ui8 e)
+                    es:&Symbol (alloca Symbol))
+                (set! (es 'p) ep)
+                (intern-place nt newcap ep (symbol-cached-hash (deref es)))))
             (set! i (+ i 1)))))
       (free g-sym-table))
     (set! g-sym-table nt)
@@ -119,50 +135,43 @@
 
 ; The canonical Symbol for these bytes. Two calls with equal bytes return the
 ; same pointer, which is the whole contract.
-(defn symbol-intern ((sv (ref StrView))):Symbol
+(defn symbol-intern-bytes (src:(ptr ui8) n:usize):Symbol
   (when (= g-sym-table null) (intern-grow (as usize INTERN-INIT-CAP)))
   ; Grow at 3/4 load: linear probing degrades sharply past that.
   (when (>= (* (+ g-sym-count 1) 4) (* g-sym-cap 3))
     (intern-grow (* g-sym-cap 2)))
-  (let (h:usize (strview-hash sv)
+  (let (h:usize (fnv1a-bytes src n)
         mask:usize (- g-sym-cap 1)
         i:usize (bit-and h mask)
-        n:usize (sv 'len)
         s:&Symbol (alloca Symbol))
     (while true
       (let (e:?ptr (aref (as ptr:ptr g-sym-table) (as i64 i)))
         (when (= e null)
-          (let (p:(ptr ui8) (intern-alloc-bytes sv h))
+          (let (p:(ptr ui8) (intern-alloc-bytes src n h))
             (intern-place g-sym-table g-sym-cap p h)
             (set! g-sym-count (+ g-sym-count 1))
             (set! (s 'p) p)
             (return (deref s))))
-        (let (ep:(ptr ui8) (as ptr:ui8 e))
-          (when (and (= (deref (unsafe/cast ptr:usize (unsafe/ptr+ ep SYM-LEN-OFF))) n)
-                     (or (= n 0)
-                         (= (memcmp (as ptr ep) (as ptr (sv 'data)) (as i64 n)) 0)))
-            (set! (s 'p) ep)
-            (return (deref s)))))
+        (set! (s 'p) (as ptr:ui8 e))
+        (when (and (= (symbol-len (deref s)) n)
+                   (or (= n 0)
+                       (= (memcmp (as ptr (s 'p)) (as ptr src) (as i64 n)) 0)))
+          (return (deref s))))
       (set! i (bit-and (+ i 1) mask)))
     (return (deref s))))
 
+(defn symbol-intern ((sv (ref StrView))):Symbol
+  (return (symbol-intern-bytes (sv 'data) (sv 'len))))
+
 (defn symbol-from-cstr ((cs CStr)):Symbol
-  (let (v:StrView (strview-from-cstr cs))
-    (return (symbol-intern v))))
+  (return (symbol-intern-bytes (as ptr:ui8 (as ptr cs))
+                               (as usize (strlen (as ptr cs))))))
 
 ; How many distinct names are interned. For diagnostics and the B4 benchmark.
 (defn symbol-count ():usize (return g-sym-count))
 
-; ---------------------------------------------------------------------------
-; Conformances
-; ---------------------------------------------------------------------------
-
 ; Eq is pointer identity — the property the whole layout exists to preserve.
-(extend Symbol Eq)
+; The bare overloads resolve on their own; the `Eq`/`Hash` conformance RECORDS
+; need `numeric`/`hash`, so they are registered in lib/intern-str.nuc.
 (defn = (a:Symbol b:Symbol):bool (return (= (as ptr (a 'p)) (as ptr (b 'p)))))
 (defn != (a:Symbol b:Symbol):bool (return (!= (as ptr (a 'p)) (as ptr (b 'p)))))
-
-; The hash cached at intern time: a load, never a byte walk.
-(extend Symbol Hash)
-(defn hash ((self (ref Symbol))):usize
-  (return (symbol-cached-hash (deref self))))

@@ -22,20 +22,9 @@
 ; ---------------------------------------------------------------------------
 ; THE HASH FUNCTION: FNV-1a (64-bit), the same algorithm the compiler itself
 ; uses to hash interned strings / struct shapes (src/nucleusc.nuc fnv-byte /
-; fnv-str). FNV-1a folds the input one byte at a time:
-;
-;   h := FNV_OFFSET_BASIS                 ; 0xcbf29ce484222325
-;   for each byte b:  h := (h XOR b) * FNV_PRIME      ; prime = 0x100000001b3
-;
-; We fold every byte of an integer scalar (so equal values hash equal), and the
-; bytes of a CStr up to its terminator. The fold runs in i64 (the natural width
-; for the constants and the multiply) and the result is cast to usize at the
-; end — usize is the protocol's return type and the table indexes with it.
-;
-; FNV_OFFSET_BASIS 0xcbf29ce484222325 as a *signed* i64 is the negative literal
-; below (the high bit is set); writing the unsigned hex directly would overflow
-; the signed-literal range, so we use the two's-complement decimal form exactly
-; as the compiler's hash-struct-shape seed does (-3750763034362895579).
+; fnv-str). The fold itself lives in lib/fnv.nuc; each conformance below seeds
+; it with the offset basis (-3750763034362895579, the two's-complement decimal
+; for 0xcbf29ce484222325) and folds the bytes that make the value equal.
 ; ---------------------------------------------------------------------------
 
 (import-use "stdio.h")
@@ -46,23 +35,7 @@
 ; only, so it must be declared explicitly (the same line lib/vector.nuc carries).
 (extern stderr:ptr)
 
-; Fold one byte `b` (0..255, passed as i64) into the running hash `h`.
-; The * is the FNV prime 0x100000001b3 = 1099511628211.
-(defn fnv1a-byte (h:i64 b:i64):i64
-  (set! h (bit-xor h b))
-  (set! h (* h 1099511628211))
-  (return h))
-
-; Fold the `n` low bytes of integer value `v` (little-endian byte order) into
-; `h`. Byte order is internal to this hash (never observed), so little-endian is
-; an arbitrary, consistent choice — equal values always fold identically.
-(defn fnv1a-int (h:i64 v:i64 n:i32):i64
-  (let (i:i32 0)
-    (while (< i n)
-      (let (b:i64 (bit-and (bit-shr v (as i64 (* i 8))) 255))
-        (set! h (fnv1a-byte h b)))
-      (set! i (+ i 1)))
-    (return h)))
+(import-use fnv)
 
 ; ---------------------------------------------------------------------------
 ; The Hash protocol.
