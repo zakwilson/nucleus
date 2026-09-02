@@ -18,6 +18,7 @@
 (import-use fmt)
 (import-use io)
 (import-use intern)
+(import-use intern-str)
 
 (defn main ():i32
 

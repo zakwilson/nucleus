@@ -26,6 +26,7 @@
 (import-use string)
 (import-use fmt)
 (import-use intern)
+(import-use intern-str)
 
 (defstruct Keyword sym:Symbol)
 

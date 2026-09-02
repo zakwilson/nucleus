@@ -25,6 +25,7 @@
 (import-use vector)
 (import-use allocator)
 (import-use intern)
+(import-use intern-str)
 
 (defconst N-NAMES 20000)
 (defconst N-LOOKUPS 20)

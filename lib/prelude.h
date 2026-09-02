@@ -29,3 +29,7 @@ typedef struct StrView {
     size_t len;
 } StrView;
 
+typedef struct Symbol {
+    uint8_t* p;
+} Symbol;
+
