@@ -105,4 +105,38 @@
       ((ok v) (printf "i32-empty=ok\n"))
       ((err e) (printf "i32-empty=err\n"))))
 
+  ; ---- 13. i64 overflow: "99999999999999999999" ------------------------------
+  ; Before the digit-walking rewrite this printed `ok 9223372036854775807`:
+  ; `strtoll` clamps and reports the overflow only through `errno`, which the
+  ; consumed-bytes check cannot see.
+  (let (sv:StrView (strview-from-cstr "99999999999999999999")
+         r:!i64 (parse i64 sv))
+    (match r
+      ((ok v) (printf "i64-overflow=ok %lld\n" v))
+      ((err e) (printf "i64-overflow=err\n"))))
+
+  ; ---- 14. i64 just past max: "9223372036854775808" ---------------------------
+  (let (sv:StrView (strview-from-cstr "9223372036854775808")
+         r:!i64 (parse i64 sv))
+    (match r
+      ((ok v) (printf "i64-past-max=ok %lld\n" v))
+      ((err e) (printf "i64-past-max=err\n"))))
+
+  ; ---- 15. ui64 max, and one past it ------------------------------------------
+  (let (sv:StrView (strview-from-cstr "18446744073709551615")
+         r:!ui64 (parse ui64 sv))
+    (match r
+      ((ok v) (printf "u64-max=%llu\n" v))
+      ((err e) (printf "u64-max=err\n"))))
+  (let (sv:StrView (strview-from-cstr "18446744073709551616")
+         r:!ui64 (parse ui64 sv))
+    (match r
+      ((ok v) (printf "u64-overflow=ok\n"))
+      ((err e) (printf "u64-overflow=err\n"))))
+  (let (sv:StrView (strview-from-cstr "-1")
+         r:!ui64 (parse ui64 sv))
+    (match r
+      ((ok v) (printf "u64-neg=ok\n"))
+      ((err e) (printf "u64-neg=err\n"))))
+
   (return 0))

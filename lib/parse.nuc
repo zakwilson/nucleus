@@ -34,8 +34,9 @@
 
 (import-use strview)
 
-; Parse error codes.
-(deferror parse-int-error   "invalid integer")
+; Parse error codes. `parse-int-error` lives in `string-errors` with
+; `strview-parse-magnitude`, the primitive every integer conformance calls.
+(import-use string-errors)
 (deferror parse-float-error "invalid float")
 
 ; ---------------------------------------------------------------------------
@@ -78,73 +79,51 @@
 ; ---------------------------------------------------------------------------
 ; i32 FromStr — parse a signed decimal integer from a StrView.
 ;
-; Delegates to libc strtol (base 10). Creates a NUL-terminated copy of sv.
-; Validates: non-empty, no leading whitespace (strtol accepts it, we reject),
-; all bytes consumed (endptr must equal buf+n after the call).
-;
-; Errors parse-int-error on: empty, leading whitespace, non-digit, overflow.
+; Errors parse-int-error on: empty, a sign with no digits, leading whitespace,
+; any non-digit, and overflow — which now really is detected.
 ; ---------------------------------------------------------------------------
 (extend i32 (FromStr !i32))
 
 (defn from-str ((self i32) (sv (ref StrView))):!i32
-  (let (n:usize (sv 'len))
-    ; Empty input.
-    (when (= n 0)
-      (return (err! parse-int-error)))
-    ; Reject leading whitespace (strtol skips it, we don't).
-    (let (first:ui8 (aref (sv 'data) 0))
-      (when (or (= (as ui32 first) 32)
-                (or (= (as ui32 first) 9)
-                    (or (= (as ui32 first) 10)
-                        (or (= (as ui32 first) 13)
-                            (or (= (as ui32 first) 11)
-                                (= (as ui32 first) 12))))))
-        (return (err! parse-int-error))))
-    ; NUL-terminate for strtol.
-    (let (buf:ptr:ui8 (parse-nul-copy sv)
-          ep:ptr null
-          val:i64 (strtol (as CStr (as ptr buf)) (addr-of ep) 10)
-          consumed:i64 (- (unsafe/cast i64 ep) (unsafe/cast i64 (as ptr buf))))
-      (free (as ptr buf))
-      ; Not all bytes consumed → non-digit trailing chars.
-      (when (!= consumed (as i64 n))
-        (return (err! parse-int-error)))
-      ; Range check for i32: [-2147483648, 2147483647].
-      (when (or (> val 2147483647)
-                (< val -2147483648))
-        (return (err! parse-int-error)))
-      (return (ok (unsafe/cast i32 val))))))
+  (let (svv:StrView (strview-as-view sv)
+        start:usize 0
+        neg:i32 (strview-parse-sign svv (addr-of start))
+        limit:ui64 (if (!= neg 0) 2147483648 2147483647)
+        mag:ui64 (try (strview-parse-magnitude (strview-drop-bytes svv start) 10 limit)))
+    (when (!= neg 0) (return (ok (- 0 (unsafe/cast i32 mag)))))
+    (return (ok (unsafe/cast i32 mag)))))
 
 ; ---------------------------------------------------------------------------
 ; i64 FromStr — parse a signed 64-bit integer from a StrView.
 ;
-; Same strategy as i32 but uses strtoll and no range check (strtoll already
-; clamps to i64 limits). Detects overflow by checking that strtoll consumed
-; all bytes. The consumed-bytes check handles the non-digit case uniformly.
+; The limit is asymmetric because two's complement is: -9223372036854775808 is
+; representable and +9223372036854775808 is not.
 ; ---------------------------------------------------------------------------
 (extend i64 (FromStr !i64))
 
 (defn from-str ((self i64) (sv (ref StrView))):!i64
-  (let (n:usize (sv 'len))
-    (when (= n 0)
-      (return (err! parse-int-error)))
-    ; Reject leading whitespace.
-    (let (first:ui8 (aref (sv 'data) 0))
-      (when (or (= (as ui32 first) 32)
-                (or (= (as ui32 first) 9)
-                    (or (= (as ui32 first) 10)
-                        (or (= (as ui32 first) 13)
-                            (or (= (as ui32 first) 11)
-                                (= (as ui32 first) 12))))))
-        (return (err! parse-int-error))))
-    (let (buf:ptr:ui8 (parse-nul-copy sv)
-          ep:ptr null
-          val:i64 (strtoll (as CStr (as ptr buf)) (addr-of ep) 10)
-          consumed:i64 (- (unsafe/cast i64 ep) (unsafe/cast i64 (as ptr buf))))
-      (free (as ptr buf))
-      (when (!= consumed (as i64 n))
-        (return (err! parse-int-error)))
-      (return (ok val)))))
+  (let (svv:StrView (strview-as-view sv)
+        start:usize 0
+        neg:i32 (strview-parse-sign svv (addr-of start))
+        limit:ui64 (if (!= neg 0) 9223372036854775808 9223372036854775807)
+        mag:ui64 (try (strview-parse-magnitude (strview-drop-bytes svv start) 10 limit)))
+    (when (!= neg 0) (return (ok (- 0 (unsafe/cast i64 mag)))))
+    (return (ok (unsafe/cast i64 mag)))))
+
+; ---------------------------------------------------------------------------
+; ui64 FromStr — an unsigned decimal integer. A leading `-` is refused rather
+; than wrapped: the whole point of the unsigned conformance is the range above
+; i64, and a negative there is a user error, not a bit pattern.
+; ---------------------------------------------------------------------------
+(extend ui64 (FromStr !ui64))
+
+(defn from-str ((self ui64) (sv (ref StrView))):!ui64
+  (let (svv:StrView (strview-as-view sv)
+        start:usize 0
+        neg:i32 (strview-parse-sign svv (addr-of start)))
+    (when (!= neg 0) (return (err! parse-int-error)))
+    (return (ok (try (strview-parse-magnitude (strview-drop-bytes svv start)
+                                              10 18446744073709551615))))))
 
 ; ---------------------------------------------------------------------------
 ; f64 FromStr — parse a double-precision float from a StrView.

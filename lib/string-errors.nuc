@@ -28,3 +28,8 @@
 ; that returns 0 is end of file, not this.
 (deferror io-open-failed "cannot open file")
 (deferror io-read-failed "read failed")
+
+; A digit run that is empty, holds a byte that is not a digit of its radix, or
+; names a magnitude the target width cannot hold. Raised by
+; `strview-parse-magnitude` and by every `FromStr` integer conformance over it.
+(deferror parse-int-error "invalid integer")
