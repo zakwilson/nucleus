@@ -2,7 +2,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include "intern.h"
 #include "prelude.h"
 
 /* Generated from lib/keyword.nuc by nucleusc --emit-cheader */

@@ -1,0 +1,80 @@
+; Stage 17 B4 — `Symbol`'s text conformances.
+;
+; Split from `lib/intern.nuc` at C7-1 exactly as `lib/strview-str.nuc` is split
+; from `lib/strview.nuc`, and for the same reason: `ToStr` needs `fmt` and
+; `String`, and `ByteStr`/`Str` need `strview-str`, while the interner itself
+; must stay importable by `lib/node.nuc` without dragging the whole string stack
+; into every program that uses a macro.
+;
+; Every method here is the `StrView` method on `symbol-as-view`, which is two
+; words and no allocation.
+
+(import-use error)
+(import-use numeric)
+(import-use char)
+(import-use strview)
+(import-use strview-str)
+(import-use vector)
+(import-use string)
+(import-use fmt)
+(import-use intern)
+
+(extend Symbol ToStr)
+(defn to-str (self:Symbol (out (ref String))):!void
+  (let (v:StrView (symbol-as-view self))
+    (string-push-str-unchecked out &v))
+  (return (ok)))
+
+; ByteStr/Str come free through the view: every method is the StrView method on
+; `as-view`, which is two words and no allocation.
+(extend Symbol (ByteStr ByteIter))
+
+(defn byte-len ((self (ref Symbol))):usize (return (symbol-len (deref self))))
+
+(defn byte-at ((self (ref Symbol)) i:usize):!ui8
+  (let (v:StrView (symbol-as-view (deref self)))
+    (return (byte-at v i))))
+
+(defn bytes ((self (ref Symbol))):ByteIter
+  (let (v:StrView (symbol-as-view (deref self)))
+    (return (bytes v))))
+
+(defn as-view ((self (ref Symbol))):StrView
+  (return (symbol-as-view (deref self))))
+
+(defn sub-bytes ((self (ref Symbol)) start:usize end:usize):!StrView
+  (let (v:StrView (symbol-as-view (deref self)))
+    (return (sub-bytes v start end))))
+
+(defn byte-find ((self (ref Symbol)) (needle (ref StrView))) (Maybe usize)
+  (let (v:StrView (symbol-as-view (deref self)))
+    (return (byte-find v needle))))
+
+(extend Symbol (Str CharIter))
+
+(defn char-count ((self (ref Symbol))):usize
+  (let (v:StrView (symbol-as-view (deref self)))
+    (return (char-count v))))
+
+(defn str-empty? ((self (ref Symbol))):bool
+  (return (= (symbol-len (deref self)) 0)))
+
+(defn char-at ((self (ref Symbol)) i:usize):!Char
+  (let (v:StrView (symbol-as-view (deref self)))
+    (return (char-at v i))))
+
+(defn chars ((self (ref Symbol))):CharIter
+  (let (v:StrView (symbol-as-view (deref self)))
+    (return (chars v))))
+
+(defn starts-with? ((self (ref Symbol)) (prefix (ref StrView))):bool
+  (let (v:StrView (symbol-as-view (deref self)))
+    (return (starts-with? v prefix))))
+
+(defn ends-with? ((self (ref Symbol)) (suffix (ref StrView))):bool
+  (let (v:StrView (symbol-as-view (deref self)))
+    (return (ends-with? v suffix))))
+
+(defn contains-str? ((self (ref Symbol)) (needle (ref StrView))):bool
+  (let (v:StrView (symbol-as-view (deref self)))
+    (return (contains-str? v needle))))
