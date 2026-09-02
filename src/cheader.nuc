@@ -291,14 +291,11 @@
   (when (!= (abi-is-avr) 0) (return ty-f64))
   (when (!= (abi-is-riscv) 0) (return ty-f128))
   ; Measured: MSVC makes it `double` even on x86_64, so this must precede x86.
-  (when (!= (strstr ((as ptr:Target g-target) 'triple) "msvc") null)
-    (return ty-f64))
-  (when (!= (strstr ((as ptr:Target g-target) 'triple) "aarch64") null)
-    (return ty-f128))
-  (when (!= (strstr ((as ptr:Target g-target) 'triple) "x86_64") null)
-    (return ty-f80))
-  (when (!= (strstr ((as ptr:Target g-target) 'triple) "i386") null)
-    (return ty-f80))
+  (let (tv:StrView (strview-from-cstr (as CStr ((as ptr:Target g-target) 'triple))))
+    (when (strview-contains tv "msvc")    (return ty-f64))
+    (when (strview-contains tv "aarch64") (return ty-f128))
+    (when (strview-contains tv "x86_64")  (return ty-f80))
+    (when (strview-contains tv "i386")    (return ty-f80)))
   (return ty-f64))
 
 (defn c-type-to-nucleus (name:CStr is-unsigned:i32 is-long:i32 is-short:i32):(raw Type)
@@ -1498,7 +1495,9 @@
 ; C4: `<= 4`, not `= 4` — AVR is a 2-byte-pointer target whose `long` is 4.
 (defn target-long-size ():i32
   (when (<= ((as ptr:Target g-target) 'ptr-size) 4) (return 4))
-  (when (!= (strstr ((as ptr:Target g-target) 'triple) "windows") null) (return 4))
+  (when (strview-contains (strview-from-cstr (as CStr ((as ptr:Target g-target) 'triple)))
+                          "windows")
+    (return 4))
   (return 8))
 
 ; Stage 16 C4: the target's C `int`. 16-bit on AVR, 32-bit on every other
@@ -2818,10 +2817,10 @@
 (defn cheader-reserved-word (s:ptr):i32
   (when (= s null) (return 0))
   (when (= (strlen s) 0) (return 0))
-  (let (needle:ptr (fcstr " " s " "))
-    (when (!= (strstr " alignas alignof auto bool break case char const constexpr continue default do double else enum extern false float for goto if inline int long nullptr register restrict return short signed sizeof static static_assert struct switch thread_local true typedef typeof typeof_unqual union unsigned void volatile while _Alignas _Alignof _Atomic _BitInt _Bool _Complex _Generic _Imaginary _Noreturn _Static_assert _Thread_local " needle) null)
+  (let (needle:StrView (fstr " " (as CStr s) " "))
+    (when (strview-contains " alignas alignof auto bool break case char const constexpr continue default do double else enum extern false float for goto if inline int long nullptr register restrict return short signed sizeof static static_assert struct switch thread_local true typedef typeof typeof_unqual union unsigned void volatile while _Alignas _Alignof _Atomic _BitInt _Bool _Complex _Generic _Imaginary _Noreturn _Static_assert _Thread_local " needle)
       (return 1))
-    (when (!= (strstr " and and_eq asm bitand bitor catch char8_t char16_t char32_t class compl concept consteval constinit const_cast co_await co_return co_yield decltype delete dynamic_cast explicit export friend mutable namespace new noexcept not not_eq operator or or_eq private protected public reinterpret_cast requires static_cast template this throw try typeid typename using virtual wchar_t xor xor_eq " needle) null)
+    (when (strview-contains " and and_eq asm bitand bitor catch char8_t char16_t char32_t class compl concept consteval constinit const_cast co_await co_return co_yield decltype delete dynamic_cast explicit export friend mutable namespace new noexcept not not_eq operator or or_eq private protected public reinterpret_cast requires static_cast template this throw try typeid typename using virtual wchar_t xor xor_eq " needle)
       (return 1))
     (return 0)))
 

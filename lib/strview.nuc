@@ -510,6 +510,9 @@
 (defn strview-has-suffix (sv:StrView suffix:StrView):bool
   (return (strview-ends-with (addr-of sv) (addr-of suffix))))
 
+(defn strview-contains (sv:StrView needle:StrView):bool
+  (return (strview-contains-str (addr-of sv) (addr-of needle))))
+
 ; strview-contains-str — true if sv contains needle as a substring.
 (defn strview-contains-str ((sv (ref StrView)) (needle (ref StrView))):bool
   (let ((found (Maybe usize)) (strview-find sv needle))

@@ -317,7 +317,7 @@
 ; Check if target is aarch64 (AAPCS64 ABI uses plain pointers for large structs,
 ; not byval attributes).
 (defn abi-is-aarch64 ():i32
-  (return (if (!= (strstr g-target-triple "aarch64") null) 1 0)))
+  (return (if (strview-contains (strview-from-cstr (as CStr g-target-triple)) "aarch64") 1 0)))
 
 ; Check if target is AVR (Stage 14 AVR-7). AVR is an 8-bit target: the SysV
 ; eightbyte model (8-byte-register chunks) does not fit, so `abi-classify`
@@ -373,8 +373,9 @@
     (die-at line
       (fstr name " is not supported on AVR (8-bit target: f32 is the only float format)")))
   (when (and (= name "f80")
-             (and (= (strstr g-target-triple "x86_64") null)
-                  (= (strstr g-target-triple "i386") null)))
+             (let (tv:StrView (strview-from-cstr (as CStr g-target-triple)))
+               (and (= (strview-contains tv "x86_64") false)
+                    (= (strview-contains tv "i386") false))))
     (die-at line
       (fstr "f80 is the x87 80-bit format and exists only on x86 -- this target is "
             g-target-triple "; spell it `long double` in a C header, or use f128"))))

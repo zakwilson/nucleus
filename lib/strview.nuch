@@ -39,6 +39,7 @@
 (declare strview-drop-bytes ((sv StrView) (start usize)) :StrView)
 (declare strview-has-prefix ((sv StrView) (prefix StrView)) :bool)
 (declare strview-has-suffix ((sv StrView) (suffix StrView)) :bool)
+(declare strview-contains ((sv StrView) (needle StrView)) :bool)
 (declare strview-contains-str ((sv (ref StrView)) (needle (ref StrView))) :bool)
 (declare strview-is-ascii-ws ((b ui8)) :bool)
 (declare strview-trim-start ((sv (ref StrView))) :StrView)

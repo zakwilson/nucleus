@@ -18140,9 +18140,10 @@
 ; Mach-O specifier is "SEGMENT,section" and LLVM rejects anything else, and COFF
 ; garbage collection is /OPT:REF rather than --gc-sections.
 (defn elf-object-format (triple:ptr):i32
-  (when (!= (strstr triple "windows") null) (return 0))
-  (when (!= (strstr triple "apple") null) (return 0))
-  (when (!= (strstr triple "darwin") null) (return 0))
+  (let (tv:StrView (strview-from-cstr (as CStr triple)))
+    (when (strview-contains tv "windows") (return 0))
+    (when (strview-contains tv "apple")   (return 0))
+    (when (strview-contains tv "darwin")  (return 0)))
   (return 1))
 
 ; The three triple-keyed target descriptor defaults for the "features cliff"
