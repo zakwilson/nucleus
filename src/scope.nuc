@@ -24,7 +24,7 @@
     (set! (s 'cleanup-slots) cs)
     (return s)))
 
-(defn scope-define (s:raw:Scope name:Symbol type:raw:Type ir-name:ptr is-local:i32):ref:Sym
+(defn scope-define (s:raw:Scope name:Symbol type:raw:Type ir-name:StrView is-local:i32):ref:Sym
   (let (sc:raw:Scope s)
     ; Stage 12: globals are keyed by their fully-qualified name. The global scope
     ; is the unique null-parent scope; local scopes (params, let bindings) always
@@ -301,22 +301,13 @@
 (defn in-jit-module ():i32
   (return (if (!= (as ptr g-decl-out) (as ptr (addr-of g-decl-stream))) 1 0)))
 
-; The captured ProgDefn for an emitted @symbol, or null. Membership is by
-; content (ir-names are freshly formatted, not interned).
-;
-; `irn` stays `ptr` (NOT CStr), matching the Sym.ir-name/Method.ir-name
-; precedent (conventions.md / 14.2 census): this value flows straight from
-; Sym.ir-name (itself `ptr`, since IT is null-checked elsewhere) and
-; program-defn-record below null-checks its own `irn` parameter of the same
-; provenance with `=` — a CStr retype would turn that guard into a crashing
-; `strcmp(x, null)`. The content comparison this function performs is done
-; with an explicit `strcmp` call, which works identically regardless of the
-; static ptr/CStr tag, so there is no benefit to retyping here and it would
-; only invite the same trap the next time a null-guard is added.
-(defn program-defn-lookup (irn:ptr):?ptr:ProgDefn
+; The captured ProgDefn for an emitted @symbol, or null. Membership was by
+; content and is now one `icmp`: C7-4b interned the ir-name substrate, which is
+; what made content and identity the same question.
+(defn program-defn-lookup (irn:Symbol):?ptr:ProgDefn
   (dotimes (i (unsafe/cast i32 (count g-program-defns)))
     (let (pd:ref:ProgDefn (invoke g-program-defns i:usize))
-      (when (= (strcmp (pd 'ir-name) irn) 0)
+      (when (= (pd 'ir-name) irn)
         (return pd))))
   (return null))
 
@@ -325,16 +316,12 @@
 ; recorded — a defn emitted *inside* a CT/macro JIT module already lives in that
 ; module, so re-declaring it there is a redefinition error.
 ;
-; `irn` stays `ptr` (NOT CStr): null-checked with `=` immediately below. A
-; CStr retype turns that guard into `strcmp(irn, null)`, which crashes on
-; every call (found empirically — this was the one non-inert retype in this
-; batch; see context/conventions.md's ir-name null-check note).
-(defn program-defn-record (irn:ptr ret:raw:Type ptypes:ptr nparams:i32 variadic:i32):void
+(defn program-defn-record (irn:Symbol ret:raw:Type ptypes:ptr nparams:i32 variadic:i32):void
   (when (!= (in-jit-module) 0) (return))
-  (when (= irn null) (return))
+  (when (symbol-none? irn) (return))
   (when (!= (as ptr (program-defn-lookup irn)) null) (return))
   (let (pd:ref:ProgDefn (as ref:ProgDefn (arena-alloc (sizeof ProgDefn))))
-    (set! (pd 'ir-name) (intern-str irn))
+    (set! (pd 'ir-name) irn)
     (set! (pd 'ret) ret)
     (set! (pd 'ptypes) ptypes)
     (set! (pd 'nparams) nparams)

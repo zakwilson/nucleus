@@ -712,3 +712,30 @@ fills it. `Symbol.p` is a non-null pointer type, so there is no null to assign.
 `symbol-none` mints it with `memset`. Its bytes may never be read; recognising it
 with `symbol-none?` is the only thing it is good for, which is why the two ship
 as a pair.
+
+---
+
+### 39. `(= sv null)` silently strcmp'd a view's `data` — **fixed 2026-09-02 (C7-4b)**
+
+The `=`/`!=` lowering admits a `StrView` operand and content-compares it with
+`strcmp` on the extracted `data` word. W5c had already closed the same trap for
+`CStr` — comparing against the `null` literal is an identity test and must not
+reach `strcmp`, which segfaults under glibc — but it deliberately restricted the
+escape to a partner that is one `ptr` register, on the reasoning that "a
+`StrView` is a 16-byte struct and can never be null, so `(= sv null)` is left
+exactly as it was."
+
+That reasoning was right about the type and wrong about the consequence. Being
+unable to *be* null did not stop `(= sv null)` from being *written* — C7-4b
+retyped `Sym.ir-name` from `CStr` to `StrView` and one surviving null guard,
+`(!= (sym 'ir-name) null)` in `repl-note-globals-decls`, kept compiling and
+started emitting `strcmp(%data, null)`. Every REPL test failed; nothing else did.
+
+`--strict-cstr` did not see it. Its borrow check fires where a `StrView` reaches
+a `CStr` parameter, and this borrow happens inside the operator's own lowering,
+which synthesises the call as text. The census counted the `strcmp` (as it counts
+all of them) without knowing one operand was a view.
+
+The fix is a type error, not a lowering: comparing a `StrView` with `null` names
+`str-empty?` in its diagnostic. A view cannot be null, so no correct program can
+ask the question, and the empty view is what every site meant.

@@ -242,7 +242,7 @@
       (set! (m 'has-rest) 0)
       (set! (m 'variadic) 0)
       (set! (m 'kind) METHOD-INTRINSIC)
-      (set! (m 'ir-name) null)
+      (set! (m 'ir-name) (symbol-none))
       (set! (m 'fn-type) null)
       (set! (m 'binop) (as ptr bop))
       (set! (m 'body) null)
@@ -360,7 +360,7 @@
 ; in the name is mapped to `_QMARK`/`_BANG` by ir-name-token before the blanket
 ; sanitize handles any remaining stragglers. Used when a name carrying an
 ; operator method is overloaded and its methods must take mangled symbols (§10.3).
-(defn op-name-token (name:Symbol):CStr
+(defn op-name-token (name:Symbol):StrView
   (match (invoke {"_+" "add"
                   "_-" "sub"
                   "_*" "mul"
@@ -378,9 +378,8 @@
                   "bit-shl" "bshl"
                   "bit-shr" "bshr"}
                  (symbol-as-cstr name))
-    ((some res) (return res))
-    (none (return (sanitize-for-ir
-                    (strview-from-cstr (as CStr (ir-name-token (symbol-as-view name)))))))))
+    ((some res) (return (strview-from-cstr res)))
+    (none (return (sanitize-for-ir (ir-name-token (symbol-as-view name)))))))
 
 ; "@prefix__name.tok1.tok2..." for an overloaded method. Stage 12 N4: the base
 ; token is the operator mnemonic of `fname` (so `=` → `eq`); the defining
@@ -389,11 +388,11 @@
 ; per-parameter `.tok` mangling, giving `@foo__eq.i32.i32` in namespace `foo`. The
 ; prefix is applied to the *mnemonic*, not the raw operator spelling. An empty
 ; prefix (the `user` namespace) is the identity → byte-identical bootstrap.
-(defn mangle-fn-name (ir-prefix:CStr fname:Symbol param-types:ptr nparams:i32):CStr
-  (let (acc:ptr (fcstr "@" (ns-compose ir-prefix (op-name-token fname))))
+(defn mangle-fn-name (ir-prefix:Symbol fname:Symbol param-types:ptr nparams:i32):Symbol
+  (let (acc:StrView (fstr "@" (ns-compose ir-prefix (op-name-token fname))))
     (dotimes (i nparams)
-      (set! acc (fcstr acc "." (type-mangle-token (aref (as ptr:ptr param-types) i)))))
-    (return acc)))
+      (set! acc (fstr acc "." (type-mangle-token (aref (as ptr:ptr param-types) i)))))
+    (return (symbol-intern acc))))
 
 ; Stage 15 W9 item 23: the ir-prefix `m`'s symbol must carry. `Generic.ir-prefix`
 ; is snapshotted when the generic is CREATED, and R2 (name-resolution.md §8.2)
@@ -408,7 +407,7 @@
 ; records the enclosing real namespace (`user`, for precisely these). Every
 ; method of such a generic comes from one file by construction, so the one
 ; snapshot is right for all of them.
-(defn method-ir-prefix (g:raw:Generic m:raw:Method):CStr
+(defn method-ir-prefix (g:raw:Generic m:raw:Method):Symbol
   (let (gg:raw:Generic g
         mm:raw:Method m)
     (match (priv-qualifier-of (gg 'name))
@@ -418,19 +417,19 @@
       ; No src-ns is an intrinsic operator seed, which belongs to no file — the
       ; same convention method-in-ns states. Those are never mangled here.
       (when (symbol-none? ns) (return (gg 'ir-prefix)))
-      (return (as CStr (ns-ir-prefix ns))))))
+      (return (ns-ir-prefix ns)))))
 
 ; How many METHOD-USER methods of `g` would emit under `prefix`? Grouping by the
 ; emitted PREFIX rather than by the namespace name is deliberate: two namespaces
 ; that `set-ir-prefix` to the same string genuinely share one symbol space, and
 ; that is exactly when their same-named methods must take mangled names.
-(defn generic-user-methods-with-prefix (g:raw:Generic prefix:CStr):i32
+(defn generic-user-methods-with-prefix (g:raw:Generic prefix:Symbol):i32
   (let (gg:raw:Generic g
         n:i32 0)
     (dotimes (i (unsafe/cast i32 (count (gg 'methods))))
       (let (m:ptr:Method (as ptr:Method (invoke (gg 'methods) i:usize)))
         (when (and (= (m 'kind) METHOD-USER)
-                   (= (strcmp (method-ir-prefix g (as raw:Method m)) prefix) 0))
+                   (= (method-ir-prefix g (as raw:Method m)) prefix))
           (inc! n))))
     (return n)))
 
@@ -670,7 +669,7 @@
         (set! (m 'has-rest) has-rest)
         (set! (m 'variadic) variadic)
         (set! (m 'kind) METHOD-USER)
-        (set! (m 'ir-name) null)
+        (set! (m 'ir-name) (symbol-none))
         (set! (m 'fn-type) (as ptr ft))
         (set! (m 'binop) null)
         (set! (m 'body) body)
@@ -729,11 +728,11 @@
 ; really would emit one `define` twice — which is the concrete harm R4's rule
 ; existed to prevent, stated as itself instead of as a proxy for itself.
 (defn methods-share-symbol-space (g:raw:Generic a:ptr:Method b:ptr:Method):i32
-  (let (ap:CStr (method-ir-prefix g (as raw:Method a))
-        bp:CStr (method-ir-prefix g (as raw:Method b)))
-    (when (= ap null) (return 1))
-    (when (= bp null) (return 1))
-    (when (= (strcmp ap bp) 0) (return 1))
+  (let (ap:Symbol (method-ir-prefix g (as raw:Method a))
+        bp:Symbol (method-ir-prefix g (as raw:Method b)))
+    (when (symbol-none? ap) (return 1))
+    (when (symbol-none? bp) (return 1))
+    (when (= ap bp) (return 1))
     (return 0)))
 
 ; Stage 15 W9 item 24: where to point a two-definition diagnostic. A method
@@ -830,10 +829,10 @@
                   ; made by the declare with flags this rebind would drop
                   ; (extern-decl, noreturn). Nothing here is ours to decide.
                   (when (= (m0 'ir-fixed) 0)
-                    (set! (m0 'ir-name) (fcstr "@"
+                    (set! (m0 'ir-name) (symbol-intern (fstr "@"
                                               (ns-compose (method-ir-prefix gg (as raw:Method m0))
-                                                     (ir-name-token (symbol-as-view (strip-priv-qualifier (gg 'name)))))))
-                    (scope-define g-globals (gg 'name) (m0 'fn-type) (m0 'ir-name) 0)))
+                                                     (ir-name-token (symbol-as-view (strip-priv-qualifier (gg 'name))))))))
+                    (scope-define g-globals (gg 'name) (m0 'fn-type) (symbol-as-view (m0 'ir-name)) 0)))
                 (do
                   (set! (gg 'mangled) 1)
                   (let (i:i32 0)
@@ -898,12 +897,13 @@
                           ; does share the name and must be mangled — so only
                           ; the rename is skipped, not the tally.
                           (when (= (mi 'ir-fixed) 0)
-                            (let (pfx:CStr (method-ir-prefix gg (as raw:Method mi)))
+                            (let (pfx:Symbol (method-ir-prefix gg (as raw:Method mi)))
                               (if (and (= has-intrinsic 0) (= has-generic 0)
                                        (= (generic-user-methods-with-prefix gg pfx) 1))
-                                (set! (mi 'ir-name) (fcstr "@"
+                                (set! (mi 'ir-name) (symbol-intern (fstr "@"
                                                           (ns-compose pfx
-                                                 (ir-name-token (symbol-as-view (strip-priv-qualifier (gg 'name)))))))
+                                                 (ir-name-token (symbol-as-view (strip-priv-qualifier (gg 'name))))))))
+
                                 (set! (mi 'ir-name) (mangle-fn-name pfx (strip-priv-qualifier (gg 'name))
                                                   (mi 'param-types) (mi 'num-params))))))))
                       (inc! i)))))
@@ -1119,13 +1119,14 @@
 ; parameter types with every sibling stamp, so the definition in front of the
 ; emitter is the one whose return type matches too; null (a caller with no
 ; return type to offer) keeps the historical two-part answer.
-(defn defn-ir-name (fname:Symbol param-types:ptr nparams:i32 ret:raw:Type):ptr
+(defn defn-ir-name (fname:Symbol param-types:ptr nparams:i32 ret:raw:Type):Symbol
   (let (g:ptr (generic-lookup fname))
     (when (!= g null)
       (let (m:ptr (generic-find-method-exact-in-ns g param-types nparams g-current-ns))
         (when (= m null)
           (set! m (generic-find-want-stamp g param-types nparams ret)))
-        (when (and (!= m null) (!= (-> m (unsafe/cast ptr:Method _) (_ 'ir-name)) null))
+        (when (and (!= m null)
+                   (not (symbol-none? (-> m (unsafe/cast ptr:Method _) (_ 'ir-name)))))
           (return (-> m (unsafe/cast ptr:Method _) (_ 'ir-name)))))))
   ; Stage 12 N4: a solitary (non-overloaded) defn keeps `@name` but, in a
   ; non-`user` namespace, prefixes the base with the namespace ir-prefix
@@ -1133,7 +1134,7 @@
   ; bootstrap stays byte-identical. Stage 15 W5e: def-ir-base additionally applies
   ; the owning file's private prefix when a private definer is being processed, so
   ; this fallback cannot hand two files' private `helper`s the same `@helper`.
-  (return (fcstr "@" (def-ir-base fname))))
+  (return (symbol-intern (fstr "@" (def-ir-base fname)))))
 
 (defn defn-is-mangled (fname:Symbol):i32
   (let (g:ptr (generic-lookup fname))
@@ -1142,23 +1143,24 @@
   (return 0))
 
 ; If a defn form's name is overloaded, return that method's mangled @-symbol;
-; else null. Used by .nuch export to declare overloads under their real symbols.
-(defn defn-form-mangled-name (form:raw:Node):ptr
+; else the zero Symbol. Used by .nuch export to declare overloads under their
+; real symbols.
+(defn defn-form-mangled-name (form:raw:Node):Symbol
   ; S1: the bare name is all this needs — the former ret extraction served only as
   ; a malformed-name guard, which defn-name-only's null return now covers. Works
   ; for both signature styles.
   (let (fname:Symbol (defn-name-only (node-at form 1)))
-    (when (symbol-none? fname) (return null))
+    (when (symbol-none? fname) (return (symbol-none)))
     (let (g:ptr (generic-lookup fname))
-      (when (= g null) (return null))
-      (when (= (-> g (as ptr:Generic _) (_ 'mangled)) 0) (return null))
+      (when (= g null) (return (symbol-none)))
+      (when (= (-> g (as ptr:Generic _) (_ 'mangled)) 0) (return (symbol-none)))
       (let (params-node:ptr (node-at form 2)
             ; W9 item 35: the exported symbol is this namespace's, for the same
             ; reason `defn-ir-name` above asks the three-part question.
             m:ptr (generic-find-method-exact-in-ns g (defn-params-to-types params-node)
                                                    (defn-params-count params-node)
                                                    g-current-ns))
-        (when (= m null) (return null))
+        (when (= m null) (return (symbol-none)))
         (return (-> m (unsafe/cast ptr:Method _) (_ 'ir-name)))))))
 
 ; ============================================================
@@ -1827,7 +1829,7 @@
               (set! (m 'has-rest) 0)
               (set! (m 'variadic) 0)
               (set! (m 'kind) METHOD-GENERIC)
-              (set! (m 'ir-name) null)
+              (set! (m 'ir-name) (symbol-none))
               (set! (m 'fn-type) null)
               (set! (m 'binop) null)
               (set! (m 'body) form)
@@ -2445,11 +2447,11 @@
               ; instance, the bound return type. `$` is legal in an LLVM symbol
               ; and `type-mangle-token` never emits one, so `.$r.` cannot be read
               ; as a parameter token. template-ref-equality.md §5.
-              mangled:ptr (let (base:ptr (mangle-fn-name (method-ir-prefix gg (as raw:Method mm))
+              mangled:Symbol (let (base:Symbol (mangle-fn-name (method-ir-prefix gg (as raw:Method mm))
                                                          (gg 'name) ptypes nargs))
                             (if (= disc null)
                               base
-                              (fcstr base ".$r." (type-mangle-token (as raw:Type disc)))))
+                              (symbol-intern (fstr base ".$r." (type-mangle-token (as raw:Type disc))))))
               job:ptr:MonoJob (mono-job-here stamped
                                 (fcstr "while instantiating " mangled " (requested at "
                                       g-source-path ":" line ")")))
@@ -2778,7 +2780,7 @@
                     nm:Symbol (gbind-name bname))
                 (when (= dty null) (set! dty vty))
                 (when (and (not (symbol-none? nm)) (!= dty null))
-                  (scope-define inner nm dty (sym-ptr nm) 1)))
+                  (scope-define inner nm dty (strview-from-cstr (as CStr (sym-ptr nm))) 1)))
               (set! i (+ i 2)))
             (let (last:ptr null j:i32 2 cl:i32 (node-len n))
               (while (< j cl) (set! last (gcheck (node-at n j) inner m)) (inc! j))
@@ -2799,7 +2801,7 @@
                     cpty:ptr (gbind-decl-type cpnode m (nn 'line))
                     cpnm:Symbol (gbind-name cpnode))
                 (when (and (not (symbol-none? cpnm)) (!= cpty null))
-                  (scope-define cinner cpnm cpty (sym-ptr cpnm) 1))))
+                  (scope-define cinner cpnm cpty (strview-from-cstr (as CStr (sym-ptr cpnm))) 1))))
             (let (clast:ptr null cj:i32 3 ccl:i32 (node-len n))
               (while (< cj ccl) (set! clast (gcheck (node-at n cj) cinner m)) (inc! cj))
               (return clast))))
@@ -2885,7 +2887,7 @@
             pty:ptr (gbind-decl-type pnode m (form 'line))
             pnm:Symbol (gbind-name pnode))
         (when (and (not (symbol-none? pnm)) (!= pty null))
-          (scope-define scope pnm pty (sym-ptr pnm) 1))))
+          (scope-define scope pnm pty (strview-from-cstr (as CStr (sym-ptr pnm))) 1))))
     ; S1/S3: the body starts after the return operand — index 4 for a new-style
     ; template (bare name, ret at 3), index 3 for a legacy one. Walking from 3
     ; unconditionally would gcheck a new-style CELL return (e.g. `(BoxedFn (V) V)`)
@@ -3078,7 +3080,7 @@
                     nm:Symbol (gbind-name bname))
                 (when (= dty null) (set! dty vty))
                 (when (and (not (symbol-none? nm)) (!= dty null))
-                  (scope-define inner nm dty (sym-ptr nm) 1)))
+                  (scope-define inner nm dty (strview-from-cstr (as CStr (sym-ptr nm))) 1)))
               (set! i (+ i 2)))
             (let (last:ptr null j:i32 2 cl:i32 (node-len n))
               (while (< j cl) (set! last (valid-walk (node-at n j) inner gname cty line)) (inc! j))
@@ -3138,7 +3140,7 @@
             pty:ptr (valid-decl-type pnode line)
             pnm:Symbol (gbind-name pnode))
         (when (and (not (symbol-none? pnm)) (!= pty null))
-          (scope-define scope pnm pty (sym-ptr pnm) 1))))
+          (scope-define scope pnm pty (strview-from-cstr (as CStr (sym-ptr pnm))) 1))))
     ; S1/S3: skip the return operand — index 4 for a new-style stamped form,
     ; index 3 for a legacy one (see check-generic-template).
     (let (cl:i32 (node-len stamped)
@@ -3578,8 +3580,8 @@
     (let (gg:ptr:Generic (as ptr:Generic g))
       (dotimes (i (unsafe/cast i32 (count (gg 'methods))))
         (let (m:ptr:Method (as ptr:Method (invoke (gg 'methods) i:usize)))
-          (when (and (!= (m 'ir-name) null)
-                     (= (strcmp (m 'ir-name) mangled) 0))
+          (when (and (not (symbol-none? (m 'ir-name)))
+                     (= (strcmp (sym-ptr (m 'ir-name)) mangled) 0))
             (return 1))))
       (return 0))))
 
@@ -3776,7 +3778,7 @@
                       mtypes:ptr (arena-alloc (* (as i64 total) (ptr-bytes))))
                 (dotimes (ci total)
                   (set! (aref (as ptr:ptr mtypes) ci) (aref (as ptr:ptr (imp 'param-types)) ci)))
-                (let (mangled:ptr (mangle-fn-name "" method-name mtypes total))
+                (let (mangled:Symbol (mangle-fn-name (symbol-intern "") method-name mtypes total))
                   ; A bare `fn` (call-style 1) erases its signature to the lossy
                   ; "pfn" token under mangle-fn-name, so every same-signature bare
                   ; fn forwards through an IDENTICAL synthesized method named e.g.
@@ -3794,7 +3796,7 @@
                   (let (newm:ref:Method
                          (generic-register-method method-name (imp 'ret-type)
                            mtypes total 0 0 defn-form)
-                        already:i32 (derived-fwd-already-emitted method-name mangled))
+                        already:i32 (derived-fwd-already-emitted method-name (sym-ptr mangled)))
                     (set! (newm 'ir-name) mangled)
                     (fn-force-generic-mangled method-name)
                     (when (= already 0)
@@ -4792,7 +4794,7 @@
           ; refines an elem-less declared pointer to `ptr:T`, so a probe over the
           ; body types `(aref a i)` exactly as emission does.
           (set! ty (array-lit-binding-type ty (node-at (as ptr binds) (+ i 1))))
-          (when (!= ty null) (scope-define inner name ty (sym-ptr name) 1)))
+          (when (!= ty null) (scope-define inner name ty (strview-from-cstr (as CStr (sym-ptr name))) 1)))
         (set! i (+ i 2)))
       (let (last:ptr null
             j:i32 2

@@ -243,6 +243,51 @@ The first is why a payload pointer must never be bridged with `sym-of`, and the
 other two are why the gate set is three gates: neither the segfault nor the
 mangling regression is visible to `make test` alone.
 
+**C7-4b done (2026-09-02).** The substrate splits again, and the split is the
+step's one real judgement:
+
+- **`StrView`, not `Symbol`** — `Sym.ir-name`, `Sym.cslot`, `Sym.trace-saved`,
+  `CastRule.ir-name`, `Cleanup`'s `slot`, and the `type-mangle-token` /
+  `sanitize-for-ir` / `sanitize-for-c` / `ir-name-token` return types. This is IR
+  *operand* text — `%x.addr.7`, with a per-binding counter — and the local
+  population dominates by orders of magnitude, so interning it would pay a hash
+  per binding to buy an identity nothing asks about. `ir-name-token`'s fast path
+  now returns its argument with no copy at all, which the `ptr` return could not
+  do.
+- **`Symbol`** — `Method.ir-name`, `StructDef.ir-name`/`ir-prefix`,
+  `ProgDefn.ir-name`, `Generic.ir-prefix`, `NsPrefixEntry.prefix`,
+  `PrivFile.prefix`, `Cleanup`'s `dropfn`. These are link names and prefixes,
+  and every one of them is identity-compared.
+
+The two consumers that need identity over a *local's* ir-name —
+`program-defn-lookup` and the macro-JIT declare set — are global-only, so they
+intern at their own boundary (`macro-jit-ensure-decl`, `program-defn-record`).
+`program-defn-lookup`'s membership test was a `strcmp` and is now one `icmp`.
+
+Three defects, all of them the silent borrow rather than the wrong type:
+
+- Five `(strview-from-cstr (as CStr null))` sites the driver produced from
+  declarations it had just retyped: `strview-from-cstr` is **strict** where
+  `(as CStr …)` was lazy, so `strlen(null)` crashed on `prescan-defenum-names`
+  over the prelude's `(defenum NodeKind …)`.
+- `%unbound.addr.49%` in `stage2.ll`: `(strview-from-cstr (as CStr slot))` where
+  `slot` had become an `fstr` result. An `fstr` buffer is **not** NUL-terminated,
+  so `strlen` ran into the next arena allocation.
+- `(!= (sym 'ir-name) null)` in `repl-note-globals-decls` — see below.
+
+The last one is the reason C7-4b also changes the language. A `StrView` operand
+against the `null` literal fell into the `CStr` `strcmp` lowering and compared
+its `.data` word against `NULL`: the documented null-check trap, one level down,
+and invisible to `--strict-cstr` because the borrow happens inside the operator's
+own lowering rather than at a `CStr` parameter. It is a type error now
+(`a StrView is never null — use (str-empty? &v)`), with a regression test. Every
+REPL test failed on it and nothing else did, which is the argument for `make
+test` being in the gate set beside the bootstrap and the snapshot.
+
+The snapshot gate needed **no re-baseline**: all 2,624 artifacts stayed
+byte-identical, which is the evidence that the substrate retype changed no
+emitted spelling.
+
 ### C7-5 — `intern-str`, `arena-strndup` and the last producers
 
 `intern-str` becomes `symbol-intern` at its 88 sites; the `arena-strndup`

@@ -124,9 +124,9 @@
     (print-node form)
     (emit (as ptr stdout) "\n")
     (return))
-  (let (mangled:ptr (defn-form-mangled-name form))
-    (if (!= mangled null)
-      (emit-nuch-defmethod form mangled)
+  (let (mangled:Symbol (defn-form-mangled-name form))
+    (if (not (symbol-none? mangled))
+      (emit-nuch-defmethod form (sym-ptr mangled))
       (emit-nuch-declare form))))
 
 ; Protocols and conformances export verbatim — the importer re-registers them
@@ -206,8 +206,8 @@
   ; so existing libraries' headers stay byte-identical.
   (when (!= g-current-ns "user")
     (emit (as ptr stdout) "(ns " g-current-ns ")\n")
-    (let (override:ptr (ns-ir-prefix-get g-current-ns))
-      (when (!= override null)
+    (let (override:Symbol (ns-ir-prefix-get g-current-ns))
+      (when (not (symbol-none? override))
         (emit (as ptr stdout) "(set-ir-prefix \"" override "\")\n"))))
   (let (it:ListIter (list-iter forms))
     (doseq-iter (fc (addr-of it))
@@ -485,7 +485,7 @@
             ; `user`, so non-namespaced headers stay byte-identical.
             ; W9 item 29: computed for both halves — the emit-only pass needs the
             ; symbol, and it is a pure function of the name and the namespace.
-          (let (link-ir:ptr (fcstr "@" (ns-ir-base fname)))
+          (let (link-ir:Symbol (symbol-intern (fstr "@" (ns-ir-base fname))))
           (when (!= m NUCH-AFTER)
             ; Stage 15 W3c declaration precedence (cheader.md §1.4). Record this
             ; declaration's rendered signature on its prescanned site, so a C
@@ -509,7 +509,7 @@
               (type-set-params ft ptypes nparams)
               (set! (ft 'variadic) 0)
               (let (dsym:ref:Sym (scope-define g-globals fname (as ptr ft)
-                                  link-ir 0))
+                                  (symbol-as-view link-ir) 0))
                 ; Stage 15 W9 defect 12: mark this as a DECLARED (prototype-only)
                 ; signature, so the new call-arity check admits the extra trailing
                 ; arguments a C variadic call needs — the idiom this very file's
@@ -604,7 +604,7 @@
             (let (m:ptr (generic-register-method fname ret ptypes nparams has-rest 0 null))
               (defn-params-set-opt (as raw:Node params-node)
                 (unsafe/cast ptr:Type ((as ptr:Method m) 'fn-type)))
-              (set! ((as ptr:Method m) 'ir-name) mangled)
+              (set! ((as ptr:Method m) 'ir-name) (sym-of mangled))
               ; Stage 15 W9 item 24: the producing unit emitted this symbol, so
               ; finalize-generics may not rename it. Until now that held only by
               ; coincidence — a re-mangle recomputed the same string — and stopped
