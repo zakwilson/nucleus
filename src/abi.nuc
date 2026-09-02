@@ -205,20 +205,23 @@
 ;
 ; The signature format matches `fn-sig-spelling` (src/nuch.nuc), which renders
 ; the same shape from a flat param array for the `declare`-conflict message.
-(defn fn-type-spelling (ft:raw:Type):CStr
+(defn fn-type-spelling (ft:raw:Type):StrView
   (let (f:raw:Type ft
-        acc:ptr "(")
+        (acc String) (str-alloc (strfmt-alloc) "("))
     (dotimes (j (f 'num-params))
-      (when (!= j 0) (set! acc (fcstr acc ", ")))
-      (set! acc (fcstr acc (type-display ((field-at (f 'params) j) 'type)))))
+      (when (!= j 0) (str-into acc ", "))
+      (str-into acc (type-display ((field-at (f 'params) j) 'type))))
     (when (!= (f 'variadic) 0)
-      (set! acc (fcstr acc (if (= (f 'num-params) 0) "..." ", ..."))))
-    (return (as CStr (fcstr acc "):" (type-display (f 'ret)))))))
+      (str-into acc (if (= (f 'num-params) 0) "..." ", ...")))
+    (str-into acc "):" (type-display (f 'ret)))
+    (return (string-as-view acc))))
 
-(defn type-display (t:raw:Type):CStr
+(defn type-display (t:raw:Type):StrView
   (when (= t null) (return "<none>"))
   (when (= (t 'kind) TY-FN) (return (fn-type-spelling t)))
-  (return (type-spelling t)))
+  ; C6/C7 seam: `type-spelling` is a conformance-registry KEY, compared by
+  ; identity, so it stays a C string until the substrate moves.
+  (return (strview-from-cstr (type-spelling t))))
 
 ; Populate a StructDef's `fields` Vector from parallel name/type arrays and set
 ; the cached `num-fields` count. Names are already interned by the caller (the

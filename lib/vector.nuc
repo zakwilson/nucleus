@@ -45,9 +45,12 @@
   (fprintf stderr "vector: out of memory\n")
   (exit 1))
 
-(defn vector-bounds (what:CStr i:usize n:usize):void
-  (fprintf stderr "vector: %s index %llu out of bounds (len %llu)\n"
-    what (as ui64 i) (as ui64 n))
+; `what` is a view, so it prints by LENGTH — a `%s` would run off the end of
+; any label that is not a rodata literal. `StrView` is a prelude type, so this
+; needs no import (which would cycle: `io` and `fmt` both import `vector`).
+(defn vector-bounds (what:StrView i:usize n:usize):void
+  (fprintf stderr "vector: %.*s index %llu out of bounds (len %llu)\n"
+    (unsafe/cast i32 (what 'len)) (as ptr (what 'data)) (as ui64 i) (as ui64 n))
   (exit 1))
 
 ; Vector T: dynamically-sized heap array.

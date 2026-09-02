@@ -2,11 +2,12 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "prelude.h"
 
 /* Generated from lib/vector.nuc by nucleusc --emit-cheader */
 
 void vector_oom(void) asm("vector-oom");
-void vector_bounds(const char* what, size_t i, size_t n) asm("vector-bounds");
+void vector_bounds(struct StrView what, size_t i, size_t n) asm("vector-bounds");
 /* vector-init: generic template; not exported */
 /* vector-init-alloc: generic template; not exported */
 /* vector-new: generic template; not exported */
