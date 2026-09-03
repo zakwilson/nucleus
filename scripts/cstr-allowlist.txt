@@ -1,0 +1,8 @@
+# Stage 17 C8 — the enumerated C-string boundary in src/.
+# `<file> <token> <count>`, verified by scripts/check-cstr.py (the
+# `cstr-residue` unit of `make test`). Regenerate with --update, and only
+# ever alongside the change that moved a count.
+
+nucleusc.nuc CStr 17
+nucleusc.nuc strdup 1
+repl.nuc CStr 4

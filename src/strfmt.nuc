@@ -13,20 +13,13 @@
 ; compile error at the call site, and there is no format string to miscount, no
 ; `%` to drop, and no fixed buffer to overrun.
 ;
-; IT RETURNS A BARE `ptr`, deliberately and temporarily. That is the type the
-; compiler's own strings still have, so the bridge is invisible to every
-; consumer — `die-at`, `report-at`, the emission streams — and the ~640 producer
-; sites convert without moving the consumers in the same batch.
-; `CStr` would be the honest type and is the wrong one here: a branch join of a
-; `CStr` arm and a `ptr` arm collapses to void, so `(if c base (fstr …))` — a
-; shape that occurs — would stop compiling for a reason unrelated to the change.
-; When the consumers take `StrView` the cast and the `string-as-cstr` both come
-; off and this becomes a plain `str-alloc`.
+; IT RETURNS A `StrView`, AND THAT VIEW IS NOT NUL-TERMINATED. A consumer that
+; needs a C string must intern it (`symbol-intern`, then `symbol-as-cstr`) —
+; borrowing the view's `data` reads past the end.
 ;
-; The bytes live in the compiler's arena, so nothing is freed and the returned
-; `CStr` is valid for the process. That is the same lifetime `fmt-*` had
-; (`arena-strndup`), which is why no call site needs to change how it stores the
-; result.
+; The bytes live in the compiler's arena, so nothing is freed and the view is
+; valid for the process. That is the same lifetime `fmt-*` had (`arena-strndup`),
+; which is why no call site needed to change how it stores the result.
 
 (import-use "stdio.h")
 (import-use arena)
@@ -54,14 +47,6 @@
   (let (s:ptr (gensym))
     `(let ((~s String) (str-alloc (strfmt-alloc) ~@parts))
        (string-as-view ~s))))
-
-; …and the bridge, for a consumer that still wants a NUL-terminated `ptr`. Its
-; call count is the C6/C7 progress number (`make strict-cstr` counts the
-; `string-as-cstr` this expands to); it is deleted when that reaches zero.
-(defmacro fcstr (:rest parts)
-  (let (s:ptr (gensym))
-    `(let ((~s String) (str-alloc (strfmt-alloc) ~@parts))
-       (as ptr (string-as-cstr ~s)))))
 
 ; ---------------------------------------------------------------------------
 ; `emit` — Stage 17 C2's replacement for `fprintf`/`fputs`/`fputc` on the
@@ -137,10 +122,6 @@
        (let (~m (byte-len ~b))
          (str-into ~b ~@parts)
          (emit-flush ~sink ~b ~m)))))
-
-; ---------------------------------------------------------------------------
-; The two conformances that exist only for the duration of the conversion.
-; ---------------------------------------------------------------------------
 
 ; Zero-padded hex, the one numeric shape `%d`/`%ld` do not cover: the compiler
 ; prints float bit patterns as `%016lX` / `%04lX` / `%016lx` so LLVM reads them

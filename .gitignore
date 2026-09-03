@@ -6,5 +6,5 @@ build/
 build/out/
 *.o
 bin/nucleusc
-.stfolderscripts/stage17/__pycache__/
 .stfolder/
+__pycache__/

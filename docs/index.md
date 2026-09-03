@@ -99,7 +99,7 @@ compile-time error naming their replacement.
 | [Allocators](allocators.md) | `Allocator` protocol, `AllocHandle`, libc/arena backends (`lib/allocator.nuc`) |
 | [Iterators](iterators.md) | `Iterator` protocol, concrete iterators, lazy combinators, reduce (`lib/iterator.nuc`) |
 | [Collections](collections.md) | Core collection protocols (`Coll`/`Seq`/`Assoc`/`Set`/`Drop`), `Hash`, `Vector`, `HashMap`, `HashSet` (`lib/coll.nuc`, `lib/hash.nuc`, `lib/vector.nuc`, `lib/hashmap.nuc`, `lib/hashset.nuc`) |
-| [Strings](strings.md) | `Char` scalar, `StrView` borrowed slice, `String` owning type, UTF-8 encode/decode, `ByteStr`/`Str` protocols, split, lines, trim, `FromStr`/`parse`, `Writer`/`ToStr`/`str` formatting (`lib/char.nuc`, `lib/strview.nuc`, `lib/string.nuc`, `lib/parse.nuc`, `lib/string-split.nuc`, `lib/fmt.nuc`) |
+| [Strings](strings.md) | `Char` scalar, `StrView` borrowed slice, `String` owning type, UTF-8 encode/decode, `ByteStr`/`Str` protocols, split, lines, trim, `FromStr`/`parse`, `Writer`/`ToStr`/`str` formatting, and which of `StrView`/`String`/`Symbol`/`CStr` to reach for (`lib/char.nuc`, `lib/strview.nuc`, `lib/string.nuc`, `lib/parse.nuc`, `lib/string-split.nuc`, `lib/fmt.nuc`) |
 | [I/O](io.md) | Standard streams and files as `Writer`s over raw descriptors: `FdOut`, `print`/`println`/`eprint`/`eprintln`, `read-line`, `File`, `BufWriter` (`lib/io.nuc`, `lib/file.nuc`) |
 | [AVR targets](avr.md) | Cross-compiling to 8-bit AVR microcontrollers: flags, a two-device walkthrough, the v1 profile and its exclusions, MMIO/ISR idioms (`lib/avr.nuc`, `lib/avr/*.nuc`) |
 

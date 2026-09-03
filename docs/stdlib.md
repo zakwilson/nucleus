@@ -185,12 +185,14 @@ building the interner on one would be circular.
 | `symbol-intern` | `(sv:StrView) -> Symbol` | The by-value overload, for a literal or an `fstr` result. |
 | `symbol-intern-bytes` | `(src:(ptr ui8) n:usize) -> Symbol` | Same, from a pointer and a length. |
 | `symbol-from-cstr` | `((cs CStr)) -> Symbol` | Same, from a C string. |
+| `symbol-from-cstr-unchecked` | `((cs CStr)) -> Symbol` | The inverse of `symbol-as-cstr`, for a `Symbol` parked in a pointer-shaped slot. Unchecked: nothing in the type says the pointer came from the interner. |
 | `symbol-len` | `(self:Symbol) -> usize` | Byte length, from the header. |
 | `symbol-cached-hash` | `(self:Symbol) -> usize` | The hash computed once at intern time. |
 | `symbol-as-view` | `(self:Symbol) -> StrView` | Borrowed view; process-lived. |
 | `symbol-as-cstr` | `(self:Symbol) -> CStr` | Borrowed C string; no copy. |
 | `symbol-is` | `(self:Symbol other:StrView) -> bool` | Same bytes as the view? Cached length, then `memcmp`. |
 | `symbol-contains-byte` | `(self:Symbol b:i32) -> bool` | Does the name contain this byte (`:`, `/`)? |
+| `symbol-byte-at` | `(self:Symbol i:usize) -> i32` | The `i`th byte, unchecked. Index `len` reads the interner's own NUL. |
 | `symbol-none?` | `(self:Symbol) -> bool` | Is this the zero `Symbol` — "no name"? |
 | `symbol-none` | `() -> Symbol` | The zero `Symbol` itself, for writing "no name". |
 | `symbol-count` | `() -> usize` | How many distinct names are interned. |

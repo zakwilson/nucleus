@@ -791,3 +791,38 @@ lives in `lib/strview.nuc` (which imports `numeric`, so the dependency cannot
 run the other way). `(extend StrView Eq)` therefore stays put. It is not needed
 for a container: the monomorphized key compare resolves `=` through the
 compiler's own `StrView` lowering, the same way it does for `CStr`.
+
+---
+
+## J. Raised by the C8 close-out (2026-09-02)
+
+### 42. String literals meeting at a branch collapsed to `CStr` — **fixed 2026-09-02 (C8)**
+
+`join-strlit-branch` (src/abi.nuc) materialized a literal arm into `{data,len}`
+only when the join's `want` was an *armed* `StrView` target. Everywhere else both
+arms collapsed to bare pointers so the phi stayed pointer-shaped, which meant
+
+```lisp
+(die-at line (if verbose (long-message n) "bad type"))   ; arg position — CStr
+(let (kind (if signed "sext" "zext")) …)                 ; untyped let — CStr
+```
+
+produced a `CStr` in a compiler whose strings are `StrView`. The collapse was
+invisible: a literal's rodata *is* NUL-terminated, so every consumer worked, and
+the damage was to the idiom rather than to the output — a `ptr`-typed local
+became the natural spelling for a two-literal `cond`, and each one is a site a
+later `fstr` arm would silently break (§33's borrow, with no diagnostic).
+
+**Fixed** by defaulting the target: when `want` is null or is not a `StrView`,
+the join materializes to `StrView` anyway. `collapse-strlit-cstr` still runs for
+an arm that is not a `StrView` literal — an explicit `c"…"`, or a computed value
+— so the explicit `CStr` spelling is never overridden.
+
+**Blast radius, measured before re-baselining:** 4 of 2,624 snapshot artifacts
+changed, and every changed line was accounted for — an `insertvalue %StrView`
+pair per arm, the arm's `phi ptr` becoming `phi %StrView`, one `extractvalue` at
+each ptr-consuming use, and register renumbering downstream. 948 tests green
+across the change. This is the second gap in the stage (with §32's `emit-return`)
+where a coercion had *two* paths through it and only one had been armed; the
+general lesson is the same one, and this is why the tripwire counts sites rather
+than trusting that a typed slot exists.

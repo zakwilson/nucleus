@@ -1441,15 +1441,32 @@ better rule available — the reader has no type context, and a single-symbol
 parameter list `(i32)` is structurally identical to a single-symbol call
 `(choose)`.
 
-## The string-type lattice: `ptr` / `CStr` / `StrView` — gate pointer ABI on `is-ptr-like`, not `TY-PTR`
+## The string-type lattice: `StrView` / `String` / `Symbol` / `CStr` — gate pointer ABI on `is-ptr-like`, not `TY-PTR`
 
-There are three string-carrying types. `TY-PTR` (bare pointer, identity `=`) and
-`TY-CSTR` (C-string, content `=`) are both single-word, ABI-identical to `ptr`.
-`StrView` (the `"…"` literal type since NS-3, Stage 14) is a 16-byte
-`{data:(ptr ui8), len:usize}` borrowed-view struct — **not** pointer-ABI. A plain
-string literal is `StrView`, not `CStr`; the `c"…"` literal (NS-4) and any
-`:CStr`-typed FFI parameter/return are `CStr`. The interned-symbol substrate
-(`Node.s`, scope keys, struct-field names) stays `ptr` — never retype it (below).
+Four string-carrying types, and after Stage 17 the compiler's own strings are the
+first three. **Pick by what you need to do with it:**
+
+| type | is | pick it for |
+|---|---|---|
+| `StrView` | 16-byte `{data:(ptr ui8), len:usize}` borrowed view; the `"…"` literal type | text you write out or scan: IR operands, diagnostic fragments, an `fstr` result |
+| `String` | owning, growable | a buffer you append to (the emission streams, `str-alloc`) |
+| `Symbol` | one word at interned bytes, with a `[hash][len]` header *behind* the pointer | a NAME: `=` is pointer identity, `hash` is free, and it is NUL-terminated so `symbol-as-cstr` is a no-op |
+| `CStr` | `char*`, content `=` | the FFI boundary, and nothing else |
+
+**`Symbol` is the answer whenever a string is compared, hashed, stored in a
+table, or eventually handed to C.** `Node.s`, scope keys, struct-field names,
+`Sym.ir-name`, every path and triple, the `-I`/`-l` lists: all `Symbol`.
+
+**A `StrView` is not NUL-terminated.** A literal's backing rodata happens to be,
+which is why `strview-borrow-target` lets a view collapse to `ptr`/`CStr` with no
+IR — but an `fstr` result ends at `len` with nothing after it. To reach a C
+function, intern it: `(symbol-as-cstr (symbol-intern (fstr …)))`. The borrow is
+silent and nothing typed catches it; `scripts/check-cstr.py` enumerates the whole
+remaining boundary in `src/` instead, and `make test` fails on any change to it.
+
+`(if c "a" "b")` is a `StrView`, materialized at the join (`join-strlit-branch`).
+It collapsed to `CStr` before Stage 17 C8, which is what made a `ptr`-typed local
+the accidental idiom for a two-literal `cond`; the local should be `StrView`.
 
 `TY-CSTR` lowers to `ptr` in IR and is a plain `char*` at the ABI. It is a
 *distinct kind* only so `=` / `!=` dispatch to a `strcmp` content comparison
@@ -1576,8 +1593,8 @@ operator; leave those as calls.
 **Corollary, stage17 C7-4b: `(= sv null)` is a compile error.** Retyping a
 `ptr`/`CStr` field to `StrView` leaves its null guards *compiling* and turns them
 into `strcmp(%data, null)` — the W5c null-check trap, one level down, and
-invisible to `--strict-cstr` (the borrow is inside the operator's own lowering,
-not at a `CStr` parameter). A view is never null, so the comparison is now
+invisible to any residue count (the borrow is inside the operator's own
+lowering, not at a `CStr` parameter). A view is never null, so the comparison is now
 rejected outright; when you retype a field, the guard you must rewrite is
 `(str-empty? &v)`.
 
@@ -1585,7 +1602,7 @@ rejected outright; when you retype a field, the guard you must rewrite is
 `StrView`.** It was `CStr` until C7-5 — the one place `"…"` was not a view — so
 a `(symbol-as-view x)` handed to a literal-built set was silently borrowed back
 to a C string *inside* the container's monomorphized `hash`/`=`, where
-`--strict-cstr` cannot see it. Two consequences when you write one: the element
+no source file shows it. Two consequences when you write one: the element
 type reaches the whole container (`{"a" 1}` is a `(HashMap StrView i32)`), and a
 retype like this needs no bootstrap shim if every literal binds through an
 explicitly typed local — `(let ((s (ref (HashSet StrView)))) #{…})` is the shape
@@ -1610,7 +1627,7 @@ not as current behavior.
 
 **The null-check trap generalizes beyond struct fields to any
 null-checked parameter in the value's call chain.** `Sym.ir-name`/
-`Method.ir-name` stay `ptr` because *they* are null-checked; the same danger
+`Method.ir-name` were kept `ptr` because *they* were null-checked; the same danger
 recurs one hop away wherever a value **derived** from such a field flows
 through a function that null-checks its own parameter with `=`/`!=` before
 using it — the parameter's declared type governs that specific comparison's
@@ -1638,12 +1655,15 @@ a null-check alone is no longer a reason to keep a value `ptr`. This was found
 while making a `CStr`-typed `defvar` spellable — `(defvar g:CStr null)` would
 otherwise have compiled into a global whose only natural use crashed.
 
-**What remains a trap is the identity-vs-content half**, which is unchanged:
-retyping a value `ptr`→`CStr` still turns every `=`/`!=` against *another
-string* into a content comparison, so an identity-substrate value (`Node.s`,
-struct-field names, any interned pointer compared for sameness) must still stay
-`ptr`. Audit for `(= a b)` where both sides are strings and sameness — not
-equal text — is the question.
+**Superseded by Stage 17 C7 (2026-08).** The identity substrate is no longer a
+`ptr` you must not retype — it is `Symbol`, and `Symbol`'s `=` *is* pointer
+identity, by definition rather than by everyone remembering. `Node.s`,
+struct-field names, scope keys, `Sym.ir-name`/`Method.ir-name` and every path,
+triple and JIT symbol are `Symbol` now. Read the paragraphs above historically:
+they describe why the `ptr` substrate had to be left alone, and the answer the
+stage reached was to give it a type that says what it is. What survives is the
+narrower rule that a `StrView` is not NUL-terminated (see the lattice table at
+the top of this section).
 
 **Verifying a behavior-neutral type migration:** retyping `ptr`→`CStr` and
 rewriting `(= (strcmp a b) 0)`→`(= a b)` is **byte-identical at the IR level**
@@ -6072,10 +6092,12 @@ a C string. Stage 17 C6 opened 32 of these with one change (`type-to-ir`), and t
 2,596-artifact snapshot stayed byte-identical because fresh arena pages are zeroed
 and `strlen` happened to stop in the right place.
 
-Nothing in the gate set catches this. `--strict-cstr` reports the borrow itself
-(`strict-cstr-check-borrow`); check that the count is still 0 after retyping any
-producer. And prefer `=` on two `StrView`s to `strcmp` — content comparison needs
-no NUL at all.
+Nothing in the gate set catches this, and no type marks it. What is left of the
+boundary is enumerated instead: `scripts/check-cstr.py` (the `cstr-residue` unit
+of `make test`) counts `CStr` and the libc string calls per file in `src/` against
+`scripts/cstr-allowlist.txt` and fails on any difference either way, so a new one
+must be justified deliberately. And prefer `=` on two `StrView`s to `strcmp` —
+content comparison needs no NUL at all.
 
 ## The aggregate return path runs NO coercion — both its branches need the check
 
@@ -6106,15 +6128,14 @@ Two kinds of string flow through the emitter and they look identical in source:
   (`Val.val`, `new-tmp`, every `-lbl`, `type-to-ir`, `gep-index-ir`).
 - **a name** — what lands in `Sym.ir-name` or `Method.ir-name`. Interned,
   compared by **pointer identity**, and null-checked for "this has no name".
-  `StrView` supports none of the three, so these stay `CStr`/`ptr` until they
-  move to `Symbol`.
+  `StrView` supports none of the three, which is why these are `Symbol`
+  (Stage 17 C7).
 
 Crossings must be an explicit `strview-from-cstr`, never `(as CStr …)` — that
 cast is the silent borrow, and a name built by `fstr` is not NUL-terminated.
-When a value is destined for `scope-define`, build it with `fcstr` and view it
-for the IR text, not the other way round. Two sweeps past this line failed in
-ways nothing typed catches: a stray `^D` in the emitted module, and a segfault
-before any output.
+A name destined for `scope-define` is a `Symbol` — intern the `fstr` result;
+do not view the C string. Two sweeps past this line failed in ways nothing typed
+catches: a stray `^D` in the emitted module, and a segfault before any output.
 
 ## `Val.val` empty means void; `defvar-init-ir` empty means "no constant"
 

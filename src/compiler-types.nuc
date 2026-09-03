@@ -596,9 +596,10 @@
   ; Holds a saved copy of `ir-name` and is assigned back into it on untrace, so
   ; it carries exactly `ir-name`'s type and moves with it.
   trace-saved:StrView   ; saved original ir-name while traced
-  ; Docstring captured from a defn whose body's first form is a string literal
-  ; (with at least one form following it). null otherwise. Used by REPL doc/apropos.
-  docstring:CStr
+  ; Docstring slot for a defn whose body's first form is a string literal, per
+  ; docs/toplevel.md. Nothing writes it yet — `doc`/`apropos` are documented but
+  ; unimplemented — so it reads `symbol-none` for every Sym.
+  docstring:Symbol
   ; --- Stage 10 safety (lifecycle + nullability) ---
   (home (raw Scope))  ; defining Scope* (escape analysis compares scope nesting)
   (taint (raw Scope)) ; owning with-Scope* (or, Stage 13 L1, frame-region Scope*) this value aliases (null = clean)
@@ -706,7 +707,9 @@
   (cleanup-slots (ref (Vector (ref Cleanup)))))
 
 (defstruct StrLit
-  bytes:ptr
+  ; The bytes are copied into the arena because the source buffer they were read
+  ; from may be a `String` the caller drops (the REPL's per-entry input).
+  bytes:StrView
   len:i32
   id:i32)
 
@@ -1078,9 +1081,8 @@
   ; --- Stage 8 / REPL introspection additions ---
   src-file:Symbol
   src-line:i32
-  ; Docstring captured from a defmacro whose body's first form is a string
-  ; literal (with at least one form following it). null otherwise.
-  docstring:CStr
+  ; The `defmacro` half of Sym.docstring above, and unwritten for the same reason.
+  docstring:Symbol
   ; Parameter names array (parallel to the user-declared param list, minus
   ; :rest/:optional keywords) for tooling. null if not captured.
   param-names:ptr
