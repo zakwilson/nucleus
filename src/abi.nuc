@@ -317,7 +317,7 @@
 ; Check if target is aarch64 (AAPCS64 ABI uses plain pointers for large structs,
 ; not byval attributes).
 (defn abi-is-aarch64 ():i32
-  (return (if (strview-contains (strview-from-cstr (as CStr g-target-triple)) "aarch64") 1 0)))
+  (return (if (strview-contains (symbol-as-view g-target-triple) "aarch64") 1 0)))
 
 ; Check if target is AVR (Stage 14 AVR-7). AVR is an 8-bit target: the SysV
 ; eightbyte model (8-byte-register chunks) does not fit, so `abi-classify`
@@ -328,7 +328,7 @@
 ; (reloc-for-triple / the datalayout is-avr check); AVR triples always begin
 ; `avr`. Inert on every hosted/RISC-V target (returns 0) → byte-identical.
 (defn abi-is-avr ():i32
-  (return (if (strview-has-prefix (strview-from-cstr (as CStr g-target-triple)) "avr") 1 0)))
+  (return (if (strview-has-prefix (symbol-as-view g-target-triple) "avr") 1 0)))
 
 ; Check if target is riscv64 (Stage 14 RV-3). riscv64's lp64d psABI passes and
 ; returns small aggregates via the INTEGER convention only in this v1 scope —
@@ -341,7 +341,7 @@
 ; idiom as abi-is-avr / cpu-for-triple; riscv64 triples always begin `riscv64`.
 ; Inert on every hosted/x86_64/aarch64/AVR target (returns 0) → byte-identical.
 (defn abi-is-riscv ():i32
-  (return (if (strview-has-prefix (strview-from-cstr (as CStr g-target-triple)) "riscv64") 1 0)))
+  (return (if (strview-has-prefix (symbol-as-view g-target-triple) "riscv64") 1 0)))
 
 ; Stage 14 AVR-7 numerics policy: f64 is unsupported on AVR (8-bit target, no
 ; hardware double). Rejected at the two entry points where an f64-typed value is
@@ -373,7 +373,7 @@
     (die-at line
       (fstr name " is not supported on AVR (8-bit target: f32 is the only float format)")))
   (when (and (= name "f80")
-             (let (tv:StrView (strview-from-cstr (as CStr g-target-triple)))
+             (let (tv:StrView (symbol-as-view g-target-triple))
                (and (= (strview-contains tv "x86_64") false)
                     (= (strview-contains tv "i386") false))))
     (die-at line
@@ -1372,7 +1372,7 @@
             (emit g-body-stream "  " v " = load " ty ", ptr " slot "\n")
             (return (alloc-val ret v))))))
     ; COERCE2: call returns {reg0,reg1}; split it back into the struct slot.
-    (let (rty:ptr (fcstr "{ " (ii 'reg0) ", " (ii 'reg1) " }")
+    (let (rty:StrView (fstr "{ " (ii 'reg0) ", " (ii 'reg1) " }")
           tmp:StrView (new-tmp))
       (emit g-body-stream "  " tmp " = call " rty " " ir-name "(" arglist ")\n")
       (let (slot:StrView (new-tmp)
@@ -1555,7 +1555,7 @@
       (when (and (!= (vv 'is-lit) 0)
                  (= (int-literal-fits (vv 'lit-i64) target) 0))
         (die-at line
-          (fstr "integer literal " (fcstr (vv 'lit-i64)) " does not fit "
+          (fstr "integer literal " (fstr (vv 'lit-i64)) " does not fit "
                 (type-spelling target))))
       (let (sw:i32 (int-width src) dw:i32 (int-width target))
         (when (= sw dw)
@@ -1607,8 +1607,8 @@
         (let (tk:i32 (target 'kind))
           ; Stage 16 FL-3: a hex lexeme re-renders from its own bits, since the
           ; f64 beside it is only as precise as f64.
-          (when (!= (vv 'lit-lex) null)
-            (match (hexfloat-const-ir (vv 'lit-lex) tk)
+          (when (not (symbol-none? (vv 'lit-lex)))
+            (match (hexfloat-const-ir (symbol-as-view (vv 'lit-lex)) tk)
               (none 0)
               ((some h) (return (alloc-val target h)))))
           (when (= tk TY-F32)  (return (alloc-val target (f32-const-ir (vv 'lit-f64)))))
@@ -1638,10 +1638,11 @@
 ; to the join's consumer, `(if c "i16" "i64")` in a StrView-returning function
 ; phis bare pointers and the aggregate return then reads past them.
 (defn join-strlit-branch (v:ref:Val want:ptr line:i32):ref:Val
-  (when (and (!= want null) (!= (type-is-strview want) 0)
-             (!= (v 'is-lit) 0) (!= (type-is-strview (v 'type)) 0))
-    (let (mv:?ptr:Val (coerce-int-val (as raw:Val v) (as raw:Type want) line))
-      (when (!= mv null) (return (as ref:Val mv)))))
+  (let (tgt:ptr want)
+    (when (or (= tgt null) (= (type-is-strview tgt) 0)) (set! tgt (strview-type)))
+    (when (and (!= tgt null) (!= (v 'is-lit) 0) (!= (type-is-strview (v 'type)) 0))
+      (let (mv:?ptr:Val (coerce-int-val (as raw:Val v) (as raw:Type tgt) line))
+        (when (!= mv null) (return (as ref:Val mv))))))
   (collapse-strlit-cstr (as ptr v))
   (return v))
 

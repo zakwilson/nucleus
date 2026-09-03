@@ -60,10 +60,10 @@
 ; use ("sizeof", "alloca", "field access", "defn parameter", …) so the message
 ; says which rule was broken as well as which type broke it. No-op for every
 ; non-opaque type, so this is free to call from any type-consuming site.
-(defn reject-opaque-type (t:raw:Type line:i32 what:CStr):void
+(defn reject-opaque-type (t:raw:Type line:i32 what:StrView):void
   (let (sd:(raw StructDef) (opaque-sdef-of t))
     (when (!= sd null)
-      (let (loc:ptr (fcstr (sd 'src-file) ":" (sd 'src-line)))
+      (let (loc:StrView (fstr (sd 'src-file) ":" (sd 'src-line)))
         (die-at line
           (fstr what ": '" (sd 'name) "' is an opaque type declared at " loc
                 "; only pointers to it are valid"))))))
@@ -231,14 +231,14 @@
 ; Reject a by-value use of a type whose layout the cycle has not produced yet.
 ; Mirrors reject-opaque-type exactly — same `what` vocabulary, same no-op-for-
 ; everything-else contract — so the two can sit side by side at each site.
-(defn reject-cycle-pending-layout (t:raw:Type line:i32 what:CStr):void
+(defn reject-cycle-pending-layout (t:raw:Type line:i32 what:StrView):void
   (let (sd:(raw StructDef) (cycle-pending-sdef t))
     (when (!= sd null)
       (die-at line (cycle-layout-message (sd 'name) what)))))
 
 ; The same rejection where the caller already holds the StructDef (field access
 ; and struct-literal sites, which resolve the struct before they resolve a type).
-(defn reject-cycle-pending-sdef (sd:(raw StructDef) line:i32 what:CStr):void
+(defn reject-cycle-pending-sdef (sd:(raw StructDef) line:i32 what:StrView):void
   (when (!= (sdef-layout-pending sd) 0)
     (die-at line (cycle-layout-message (sd 'name) what))))
 
@@ -514,17 +514,17 @@
 ; A C hex-float lexeme -> sign, the significand normalized so bit 127 is set
 ; (both limbs zero for a zero), the unbiased exponent OF THAT BIT, and whether
 ; a nonzero digit fell off the low end. Returns 0 when `lex` is not one.
-(defn hexfloat-parse (lex:CStr out-sign:ptr:i64 out-hi:ptr:i64 out-lo:ptr:i64
+(defn hexfloat-parse (lex:StrView out-sign:ptr:i64 out-hi:ptr:i64 out-lo:ptr:i64
                       out-exp:ptr:i64 out-sticky:ptr:i64):i32
-  (let (len:i64 (strlen lex)
+  (let (len:i64 (as i64 (lex 'len))
         i:i64 0
         sign:i64 0)
     (when (< len 3) (return 0))
-    (when (= (cstr-byte-at lex 0) 43) (set! i 1))
-    (when (= (cstr-byte-at lex 0) 45) (do (set! sign 1) (set! i 1)))
+    (when (= (text-byte-at lex 0) 43) (set! i 1))
+    (when (= (text-byte-at lex 0) 45) (do (set! sign 1) (set! i 1)))
     (when (> (+ i 3) len) (return 0))
-    (when (!= (cstr-byte-at lex i) 48) (return 0))
-    (when (and (!= (cstr-byte-at lex (+ i 1)) 120) (!= (cstr-byte-at lex (+ i 1)) 88))
+    (when (!= (text-byte-at lex i) 48) (return 0))
+    (when (and (!= (text-byte-at lex (+ i 1)) 120) (!= (text-byte-at lex (+ i 1)) 88))
       (return 0))
     (set! i (+ i 2))
     (let (hi:i64 0
@@ -539,7 +539,7 @@
       ; Once the accumulator is full the remaining digits only move the
       ; exponent, and whether any of them was nonzero is the sticky bit.
       (while (and (= done 0) (< i len))
-        (let (c:i32 (cstr-byte-at lex i))
+        (let (c:i32 (text-byte-at lex i))
           (cond
             (= c 46)
               (if (!= seen-dot 0)
@@ -561,16 +561,16 @@
       ; C makes the binary exponent mandatory, which is also what keeps a hex
       ; float distinguishable from a hex integer at the lexer.
       (when (>= i len) (return 0))
-      (when (and (!= (cstr-byte-at lex i) 112) (!= (cstr-byte-at lex i) 80)) (return 0))
+      (when (and (!= (text-byte-at lex i) 112) (!= (text-byte-at lex i) 80)) (return 0))
       (set! i (+ i 1))
       (let (esign:i64 1
             pexp:i64 0
             edig:i32 0)
-        (when (and (< i len) (= (cstr-byte-at lex i) 43)) (set! i (+ i 1)))
-        (when (and (< i len) (= (cstr-byte-at lex i) 45))
+        (when (and (< i len) (= (text-byte-at lex i) 43)) (set! i (+ i 1)))
+        (when (and (< i len) (= (text-byte-at lex i) 45))
           (do (set! esign -1) (set! i (+ i 1))))
-        (while (and (< i len) (!= (isdigit (cstr-byte-at lex i)) 0))
-          (set! pexp (+ (* pexp 10) (- (as i64 (cstr-byte-at lex i)) 48)))
+        (while (and (< i len) (!= (isdigit (text-byte-at lex i)) 0))
+          (set! pexp (+ (* pexp 10) (- (as i64 (text-byte-at lex i)) 48)))
           ; Clamp rather than overflow: past this every format saturates to
           ; infinity or zero anyway.
           (when (> pexp 1000000) (set! pexp 1000000))
@@ -664,7 +664,7 @@
 ; The LLVM constant text for hex-float lexeme `lex` at type kind `tk`, or null
 ; when `lex` is not a hex float. Assembling f80 and f128 from the 128-bit
 ; significand directly is the whole reason this path exists.
-(defn hexfloat-const-ir (lex:CStr tk:i32):(Maybe StrView)
+(defn hexfloat-const-ir (lex:StrView tk:i32):(Maybe StrView)
   (let (sign:i64 0 hi:i64 0 lo:i64 0 ue:i64 0 sticky:i64 0
         rhi:i64 0 rlo:i64 0)
     (when (= (hexfloat-parse lex (as ptr:i64 (addr-of sign))
@@ -717,7 +717,7 @@
 ; Refuse an `(array T N)` where only a first-class value type is meaningful.
 ; Backstop for the positions parse-type-from-node's g-array-ok gate cannot see
 ; because the Type arrives already parsed (the ABI classifier, a `set!` target).
-(defn reject-array-type (t:(raw Type) line:i32 what:CStr):void
+(defn reject-array-type (t:(raw Type) line:i32 what:StrView):void
   (when (= t null) (return))
   (let (tt:(raw Type) t)
   (when (= (tt 'kind) TY-ARRAY)
@@ -767,7 +767,7 @@
 ; For function pointer types, returns a simplified "void*" — the full
 ; C function pointer syntax (with return type and params) is handled
 ; separately in emit-cheader-declare where we have the param names.
-(defn type-to-c (t:raw:Type):CStr
+(defn type-to-c (t:raw:Type):StrView
   (let (tt:raw:Type t)
     (case (tt 'kind)
       TY-VOID   (return "void")
@@ -797,8 +797,8 @@
       TY-F128   (return "_Float128")
       TY-USIZE  (return "size_t")
       TY-SSIZE  (return "ssize_t")
-      TY-STRUCT (return (fcstr "struct " ((tt 'sdef) 'name)))
-      TY-UNION  (return (fcstr "union " ((tt 'sdef) 'name)))
+      TY-STRUCT (return (fstr "struct " ((tt 'sdef) 'name)))
+      TY-UNION  (return (fstr "union " ((tt 'sdef) 'name)))
       ; Stage 15 W8 G-2: C's array declarator is POSTFIX (`int xs[4];`), so the
       ; element type alone belongs here and the `[N]` is appended by the
       ; declarator site (emit-cheader-defstruct). A prefix rendering would be
@@ -1173,7 +1173,7 @@
 ; and a typed raw/Maybe source into a typed ref slot is still checked. Direct
 ; analogue of the CStr refinement above; deref safety is enforced separately by
 ; `require-derefable`.
-(defn pkind-flow-check (src:raw:Type dst:raw:Type line:i32 ctx:CStr):void
+(defn pkind-flow-check (src:raw:Type dst:raw:Type line:i32 ctx:StrView):void
   (when (or (= src null) (= dst null)) (return))
   (when (!= (ptr-pkind dst) PTR-REF) (return))
   (when (= (ptr-pkind src) PTR-REF) (return))
@@ -1204,7 +1204,7 @@
 
 ; Deref/field/index gate: a (Maybe (ref T)) value cannot be accessed until
 ; narrowed. Raw stays unchecked (the signed waiver); ref is always safe.
-(defn require-derefable (t:raw:Type line:i32 op:CStr):void
+(defn require-derefable (t:raw:Type line:i32 op:StrView):void
   (when (= (ptr-pkind t) PTR-MAYBE)
     (die-at line (fstr op
                        ": value may be null — narrow with if-some/when-some, unwrap, or a (when (= x null) ...) guard before use"))))

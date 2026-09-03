@@ -54,7 +54,7 @@
 ; the file being compiled, so `here` is theirs; `generic-instantiate-in` then
 ; overrides all three with the template's, which is the only case where the body
 ; came from somewhere else.
-(defn mono-job-here (form:raw:Node context:CStr):ptr:MonoJob
+(defn mono-job-here (form:raw:Node context:StrView):ptr:MonoJob
   (let (job:ptr:MonoJob (new MonoJob))
     (set! (job 'form) form)
     (set! (job 'context) context)
@@ -750,13 +750,13 @@
     (return 0)))
 
 ; `file:line` of the definition `m` came from, for a two-candidate diagnostic.
-(defn method-def-site (m:ptr:Method):CStr
+(defn method-def-site (m:ptr:Method):StrView
   (let (f:Symbol (m 'src-file)
         node:(raw Node) (m 'body)
         line:i32 0)
     (when (symbol-none? f) (set! f (symbol-intern "<unknown file>")))
     (when (!= node null) (set! line ((unsafe/cast ptr:Node node) 'line)))
-    (return (fcstr f ":" line))))
+    (return (fstr f ":" line))))
 
 ; Stage 15 W9 item 35: the message for a bare reference that two namespaces
 ; answer equally well — the diagnostic that replaces R4's refusal of the pair at
@@ -2454,7 +2454,7 @@
                               base
                               (symbol-intern (fstr base ".$r." (type-mangle-token (as raw:Type disc))))))
               job:ptr:MonoJob (mono-job-here stamped
-                                (fcstr "while instantiating " mangled " (requested at "
+                                (fstr "while instantiating " mangled " (requested at "
                                       g-source-path ":" line ")")))
           (set! (newm 'ir-name) mangled)
           ; Stage 14 LW-1: mark this as a stamped instance of the template `mm` so
@@ -3200,7 +3200,7 @@
         (set! g-source-path save-path)
         (set! g-current-ns save-ns)
         (set! g-emitting-copy saved-copy))
-      (set! g-mono-context null))))
+      (set! g-mono-context ""))))
 
 
 ; ############################################################
@@ -3741,7 +3741,7 @@
                   params-spine:ptr null
                   pi3:i32 (- k 1))
               (while (>= pi3 0)
-                (let (a-sym:ptr (as ptr (intern-symbol (fcstr "__a" pi3)))
+                (let (a-sym:ptr (as ptr (intern-node (symbol-intern (fstr "__a" pi3))))
                       ty-sym:ptr
                         (as ptr (intern-node
                                     (type-spelling
@@ -3754,7 +3754,7 @@
                     pi4:i32 (- k 1))
                 (while (>= pi4 0)
                   (set! fwd-args
-                    (make-cell (as ptr (intern-symbol (fcstr "__a" pi4)))
+                    (make-cell (as ptr (intern-node (symbol-intern (fstr "__a" pi4))))
                       fwd-args line))
                   (dec! pi4))
                 (let (call-head:ptr
@@ -3803,7 +3803,7 @@
                     (when (= already 0)
                       (conj g-mono-worklist
                             (mono-job-here defn-form
-                              (fcstr "while deriving closure conformance to " proto " (at "
+                              (fstr "while deriving closure conformance to " proto " (at "
                                     g-source-path ":" line ")"))))
                     ; Step 10: record the conformance with the recovered args.
                     (conformance-add cvspell proto args npp line)
@@ -4114,9 +4114,10 @@
               check-ret:i32 (if (> (pp 'num-params) 0) 1 0))
           (when (= (method-satisfies-sig mname ptypes nparams ret check-ret line) 0)
             (set! missing 1)
-            (set! (aref notes 0) (fcstr (as CStr (aref notes 0)) "\n  note: "
-                                       (as CStr (fcstr typename " does not implement " (pp 'name)
-                                                      "." mname))))))))
+            (set! (aref notes 0) (as ptr (string-as-cstr
+                                    (str-alloc (strfmt-alloc)
+                                      (as CStr (aref notes 0)) "\n  note: "
+                                      typename " does not implement " (pp 'name) "." mname))))))))
     (when (!= missing 0) (return 0))
     (return 1)))
 

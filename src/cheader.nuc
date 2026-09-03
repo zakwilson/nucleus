@@ -67,7 +67,7 @@
 ; same breath (cheader-mark-unrep), and the accumulating caller
 ; (c-parse-func-decl) copies the FIRST reason it sees into a local, so a later
 ; parameter whose flag is subsequently cleared cannot rewrite the message.
-(defvar g-cheader-unrep-why:ptr)
+(defvar g-cheader-unrep-why:StrView)
 ; W3c: 1 when the reason is "Nucleus has no type this wide/shaped" rather than
 ; "the importer could not read the header" — see cheader-record-skip for why the
 ; two are reported differently.
@@ -87,7 +87,7 @@
 ; imported, in angle brackets, with no `.h` derivation.
 (defvar g-cheader-c-includes:ptr)
 
-(defn cheader-mark-unrep (why:ptr quiet:i32):void
+(defn cheader-mark-unrep (why:StrView quiet:i32):void
   (set! g-cheader-unrep 1)
   (set! g-cheader-unrep-why why)
   (set! g-cheader-unrep-quiet quiet))
@@ -295,7 +295,7 @@
   (when (!= (abi-is-avr) 0) (return ty-f64))
   (when (!= (abi-is-riscv) 0) (return ty-f128))
   ; Measured: MSVC makes it `double` even on x86_64, so this must precede x86.
-  (let (tv:StrView (strview-from-cstr (as CStr ((as ptr:Target g-target) 'triple))))
+  (let (tv:StrView (symbol-as-view ((as ptr:Target g-target) 'triple)))
     (when (strview-contains tv "msvc")    (return ty-f64))
     (when (strview-contains tv "aarch64") (return ty-f128))
     (when (strview-contains tv "x86_64")  (return ty-f80))
@@ -448,7 +448,7 @@
                   ; c-parse-type owns the unrep channel; an unreadable type name
                   ; here must answer 0, not condemn the enclosing declaration.
                   save-unrep:i32 g-cheader-unrep
-                  save-why:ptr g-cheader-unrep-why
+                  save-why:StrView g-cheader-unrep-why
                   save-quiet:i32 g-cheader-unrep-quiet
                   ty:ptr null)
               (set! g-cheader-unrep 0)
@@ -751,7 +751,7 @@
         (let (tn:Symbol tag)
           (when (symbol-none? tn) (set! tn (symbol-intern "struct")))
           (cheader-mark-unrep
-            (fcstr "a by-value '" tn "' with no known layout") 0))
+            (fstr "a by-value '" tn "' with no known layout") 0))
         (return ty-ptr)))
     ; Resolve base type
     (when (symbol-none? base-name)
@@ -797,11 +797,11 @@
               "a by-value 'long double' with no representation on this target" 1)
           (!= td null)
             (cheader-mark-unrep
-              (fcstr "a by-value '" base-name
+              (fstr "a by-value '" base-name
                     "' (a typedef of a type with no Nucleus representation)") 1)
           true
             (cheader-mark-unrep
-              (fcstr "a by-value parameter or return of unknown type '" base-name "'") 1))
+              (fstr "a by-value parameter or return of unknown type '" base-name "'") 1))
         (return ty-ptr))
       (return base-type))))
 
@@ -867,35 +867,30 @@
 ; Neither tier is silent: a quiet skip that matters always becomes a located
 ; error, which is strictly more precise than a warning thousands of lines
 ; earlier that nothing connects to the call.
-(defn cheader-record-skip (fname:Symbol why:ptr dline:i32 loud:i32):void
+(defn cheader-record-skip (fname:Symbol why:StrView dline:i32 loud:i32):void
   (match (cheader-skip-note fname) (none 0) ((some _seen) (return)))
-  (let (note:ptr (fcstr (fcstr g-cheader-file ":" dline) ": " why)
-        n:ref:Node (new Node))
-    (set! (n 'kind) NODE-STR)
-    (set! (n 'line) 0)
-    (set! (n 's) fname)
-    (set! (n 'car) note)
-    (set! (n 'cdr) g-cheader-skipped)
-    (set! g-cheader-skipped (as raw:Node n))
+  (when (= g-cheader-skipped null)
+    (set! g-cheader-skipped (vector-new-in (addr-of g-arena-alloc))))
+  (let (tbl:(ref (Vector (ref CheaderSkip))) (unsafe/cast (ref (Vector (ref CheaderSkip))) g-cheader-skipped)
+        e:ref:CheaderSkip (new CheaderSkip))
+    (set! (e 'name) fname)
+    (set! (e 'note) (symbol-intern (fstr g-cheader-file ":" dline ": " why)))
+    (conj tbl e)
     (when (!= loud 0)
       (eprint g-cheader-file ":" dline ": warning: skipping C declaration '" fname "': " why
               "\n"))))
 
 ; The reason this declaration cannot be emitted, or null if it can.
 ;
-; The result is `ptr`, deliberately NOT `CStr`: the caller null-checks it, and a
-; `CStr`-typed operand makes `=`/`!=` lower to `strcmp` — `strcmp(why, NULL)`
-; segfaults the compiler with empty output (conventions.md, the string-type
-; lattice). Only the message *content* matters here, never its identity.
 ; W3c: `unrep-why` replaces W3b's boolean — the accumulated first reason
-; c-parse-type could not describe some type in this declaration, or null when it
-; described them all. Carrying the message instead of a flag is what lets one arm
-; cover both W3b's layout-less aggregates and W3c's unresolvable type names while
-; still naming the offending type in the warning.
-(defn c-decl-skip-reason (unrep-why:ptr ret-type:raw:Type ptypes:ptr np:i32):ptr
-  (when (!= unrep-why null) (return unrep-why))
+; c-parse-type could not describe some type in this declaration, or the empty
+; view when it described them all. Carrying the message instead of a flag is what
+; lets one arm cover both W3b's layout-less aggregates and W3c's unresolvable
+; type names while still naming the offending type in the warning.
+(defn c-decl-skip-reason (unrep-why:StrView ret-type:raw:Type ptypes:ptr np:i32):StrView
+  (when (not (str-empty? (addr-of unrep-why))) (return unrep-why))
   (when (> np C-MAX-PARAMS)
-    (return (fcstr "more than " C-MAX-PARAMS " parameters")))
+    (return (fstr "more than " C-MAX-PARAMS " parameters")))
   (when (= ret-type null) (return "an unparsed return type"))
   (when (!= (opaque-sdef-of ret-type) null) (return "an opaque return type"))
   (dotimes (i:i32 np)
@@ -906,7 +901,7 @@
       ; a mis-parse, and `declare void @f(void, ptr)` is the IR LLVM rejects.
       (when (= (pt 'kind) TY-VOID) (return "a 'void' parameter"))
       (when (!= (opaque-sdef-of pt) null) (return "an opaque parameter type"))))
-  (return null))
+  (return ""))
 
 ; Stage 16 FP-4 (design/stage16-ergonomics/c-boundary-defects.md §3): build a
 ; real TY-FN for a C function-pointer declarator instead of collapsing it to
@@ -927,7 +922,7 @@
         ; happens inside one, so save the caller's verdict and answer for the
         ; inner types through `bad` instead.
         save-unrep:i32 g-cheader-unrep
-        save-why:ptr g-cheader-unrep-why
+        save-why:StrView g-cheader-unrep-why
         save-quiet:i32 g-cheader-unrep-quiet)
     (while (= done 0)
       (set! pos (c-skip-ws buf pos len))
@@ -1030,7 +1025,7 @@
 ; `pos` is just past the parameter list's `)`.
 (defn c-finish-fn-decl (buf:ptr pos:i64 len:i64 out-end:ptr:i64
                         fname:Symbol ret-type:ptr param-types:ptr num-params:i32
-                        is-variadic:i32 unrep-why:ptr unrep-quiet:i32
+                        is-variadic:i32 unrep-why:StrView unrep-quiet:i32
                         decl-start:i64):i32
 ; Skip any __attribute__ after closing paren
 (set! pos (c-skip-ws buf pos len))
@@ -1061,9 +1056,9 @@
 ; describe is dropped with a located warning instead of registered. Before
 ; the collect-mode push: aliasing a name that was never registered would
 ; produce a dangling `prefix/name`.
-(let (why:ptr (c-decl-skip-reason unrep-why (as raw:Type ret-type)
-                                  param-types num-params))
-  (when (!= why null)
+(let (why:StrView (c-decl-skip-reason unrep-why (as raw:Type ret-type)
+                                      param-types num-params))
+  (when (not (str-empty? (addr-of why)))
     ; W3c: only a reason that came through the unrep channel can be
     ; quiet; every other arm (void parameter, opaque type, arity cap,
     ; unparsed type) is a parse-side limitation and stays loud, exactly
@@ -1187,7 +1182,7 @@
                 (set! (aref (as ptr:ptr ptypes) j) (as ptr ((field-at (st 'params) j) 'type))))
               (return (c-finish-fn-decl buf after2 len out-end fname retfn
                                         ptypes (st 'num-params) (st 'variadic)
-                                        null 0 decl-start)))))))))
+                                        "" 0 decl-start)))))))))
 
 ; Stage 16 C2 (design/stage16-ergonomics/cheader-parser-vs-libclang.md §3): a
 ; declaration the parser DECLINED to read as a function is dropped, and the use
@@ -1204,7 +1199,7 @@
         name:Symbol (symbol-none)
         name-end:i64 0
         saw-paren:i32 0
-        why:ptr "a declaration shape the C header parser does not recognize")
+        why:StrView "a declaration shape the C header parser does not recognize")
     (while (< p stop)
       (when (= (cstr-byte-at buf p) 123) (return))
       (let (c:i32 (as i32 (cstr-byte-at buf p)))
@@ -1278,7 +1273,7 @@
             ; parameter can raise the global and then have it cleared by the
             ; function-pointer / array override, which would otherwise leave a
             ; stale message attached to an earlier parameter's verdict.
-            unrep-why:ptr (if (!= g-cheader-unrep 0) g-cheader-unrep-why null)
+            unrep-why:StrView (if (!= g-cheader-unrep 0) g-cheader-unrep-why "")
             unrep-quiet:i32 (if (!= g-cheader-unrep 0) g-cheader-unrep-quiet 0))
         (while (= pdone 0)
           (set! pos (c-skip-ws buf pos len))
@@ -1358,7 +1353,7 @@
                     (set! ptype (as ptr (array-decay ptype)))
                     ; W3b: this parameter's contribution to the gate, taken after
                     ; every override above.
-                    (when (and (!= g-cheader-unrep 0) (= unrep-why null))
+                    (when (and (!= g-cheader-unrep 0) (str-empty? (addr-of unrep-why)))
                       (set! unrep-why g-cheader-unrep-why)
                       (set! unrep-quiet g-cheader-unrep-quiet))
                     ; Store parameter type. Over capacity the count still grows,
@@ -1397,33 +1392,30 @@
 ; read the EMISSION target's headers rather than the host's. Empty unless
 ; `--target=` names a triple the host is not, so a host build's command line —
 ; and every byte of IR downstream of it — is unchanged.
-(defn cheader-cc-target-flags ():ptr
-  (let (out:ptr null)
-    (set! out "")
-    (when (and (!= g-target-triple-override null)
-               (!= (strcmp g-target-triple ((as ptr:Target g-host-target) 'triple)) 0))
-      (set! out (fcstr out " --target=" g-target-triple)))
-    (when (!= g-sysroot-override null)
-      (set! out (fcstr out " --sysroot=" g-sysroot-override)))
+(defn cheader-cc-target-flags ():StrView
+  (let (out:StrView "")
+    (when (and (not (symbol-none? g-target-triple-override))
+               (!= g-target-triple ((as ptr:Target g-host-target) 'triple)))
+      (set! out (fstr out " --target=" g-target-triple)))
+    (when (not (symbol-none? g-sysroot-override))
+      (set! out (fstr out " --sysroot=" g-sysroot-override)))
     (return out)))
 
 ; C4: one `clang -E` run. `flags` is "" for a host read.
-(defn cheader-run-cpp (header-path:Symbol flags:ptr out-len:ptr:i64
+(defn cheader-run-cpp (header-path:Symbol flags:StrView out-len:ptr:i64
                        out-status:ptr:i32):ptr
-  (let (cmd:ptr (alloca i8 1024))
-    (snprintf cmd 1024 "clang -E%s -x c -include %s /dev/null 2>/dev/null"
-              flags (symbol-as-cstr header-path))
-    (return (read-pipe-output cmd out-len out-status))))
+  (let (cmd:Symbol (symbol-intern (fstr "clang -E" flags " -x c -include " header-path
+                                        " /dev/null 2>/dev/null")))
+    (return (read-pipe-output (as ptr (symbol-as-cstr cmd)) out-len out-status))))
 
 ; C4: clang could not read the header at all. Re-run the failing command with
 ; stderr attached — clang's own "'x.h' file not found" is the whole diagnosis,
 ; and this path is already fatal.
-(defn cheader-preprocess-failed (header-path:Symbol flags:ptr):void
-  (let (cmd:ptr (alloca i8 1024))
-    (snprintf cmd 1024 "clang -E%s -x c -include %s /dev/null >/dev/null"
-              flags (symbol-as-cstr header-path))
+(defn cheader-preprocess-failed (header-path:Symbol flags:StrView):void
+  (let (cmd:Symbol (symbol-intern (fstr "clang -E" flags " -x c -include " header-path
+                                        " /dev/null >/dev/null")))
     (eprint "  note: " cmd "\n")
-    (system cmd)))
+    (system (symbol-as-cstr cmd))))
 
 (defn cheader-preprocess (header-path:Symbol out-len:ptr:i64):ptr
   (let (cur:ptr g-cheader-cache)
@@ -1433,7 +1425,7 @@
           (set! (deref out-len) (e 'i))
           (return (as ptr (e 'car))))
         (set! cur (e 'cdr)))))
-  (let (flags:ptr (cheader-cc-target-flags)
+  (let (flags:StrView (cheader-cc-target-flags)
         buf-len:i64 0
         status:i32 0
         buf:ptr null)
@@ -1446,7 +1438,7 @@
     ; headers are not installed — which is how every target lane in the suite
     ; runs. Fall back to the host text, which is exactly the pre-C4 behaviour,
     ; but say so: the widths in it are the host's.
-    (when (and (!= status 0) (!= (strlen flags) 0))
+    (when (and (!= status 0) (not (str-empty? (addr-of flags))))
       (set! buf (cheader-run-cpp header-path "" (as ptr:i64 (addr-of buf-len))
                                  (as ptr:i32 (addr-of status))))
       (when (= status 0)
@@ -1502,7 +1494,7 @@
 ; C4: `<= 4`, not `= 4` — AVR is a 2-byte-pointer target whose `long` is 4.
 (defn target-long-size ():i32
   (when (<= ((as ptr:Target g-target) 'ptr-size) 4) (return 4))
-  (when (strview-contains (strview-from-cstr (as CStr ((as ptr:Target g-target) 'triple)))
+  (when (strview-contains (symbol-as-view ((as ptr:Target g-target) 'triple))
                           "windows")
     (return 4))
   (return 8))
@@ -1669,7 +1661,7 @@
 ; `sizeof (<type>)`, with `pos` just past the `(`.
 (defn c-cexpr-sizeof (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
   (let (save-unrep:i32 g-cheader-unrep
-        save-why:ptr g-cheader-unrep-why
+        save-why:StrView g-cheader-unrep-why
         save-quiet:i32 g-cheader-unrep-quiet
         te:i64 0
         ty:ptr null
@@ -1917,7 +1909,7 @@
         ; and this body may be a nested anonymous member of one — so save the
         ; caller's verdict rather than let a per-field clear erase it.
         save-unrep:i32 g-cheader-unrep
-        save-why:ptr g-cheader-unrep-why
+        save-why:StrView g-cheader-unrep-why
         save-quiet:i32 g-cheader-unrep-quiet)
     ; Per-field loop. On any anomaly we set bad=1 done=1 and abandon
     ; the struct (out-end is already past `}`, so the caller is fine).
@@ -2322,7 +2314,7 @@
     (when (!= tok "typedef") (set! (deref out-end) pos) (return 0))
     (let (dline:i32 (cheader-line-at buf pos)
           save-unrep:i32 g-cheader-unrep
-          save-why:ptr g-cheader-unrep-why
+          save-why:StrView g-cheader-unrep-why
           save-quiet:i32 g-cheader-unrep-quiet
           tend:i64 0
           bad:i32 0
@@ -2875,17 +2867,8 @@
 ; escaped spelling differs from the symbol, so the label appears exactly when it
 ; must). See the W9 item 4 and 28 notes in
 ; design/stage15-stress-test/progress.md.
-(defn cheader-c-ident (name:Symbol):ptr
-  ; The absent name passes straight through: `symbol-as-cstr` of the zero Symbol
-  ; IS the null the callers already handle. The one `fcstr`: the view form is the
-  ; real computation, and the `ptr`-typed callers need the NUL it does not carry.
-  (when (symbol-none? name) (return (as ptr (symbol-as-cstr name))))
-  (return (fcstr (cheader-c-ident-view name))))
-
-; `cheader-c-ident` as a view — and the primary spelling. Separate rather than
-; inlined at each call site because the null it is documented to pass through
-; cannot reach `strlen`: a marker parameter (`&optional`, `&rest`) has no name,
-; and the header renders it as nothing at all.
+; The absent name renders as nothing at all — a marker parameter (`&optional`,
+; `&rest`) has no name — which is the empty view, not a null the callers guard.
 (defn cheader-c-ident-view (name:Symbol):StrView
   (when (symbol-none? name) (return ""))
   (return (cheader-escape-reserved
@@ -2897,10 +2880,10 @@
 ; The escape belongs on the join, not on either part: `Color_default` is a
 ; perfectly good identifier, and escaping the fragment would rename it for no
 ; reason. The join can still land on a keyword (`and` + `eq`), so it is tested.
-(defn cheader-c-ident-join (prefix:ptr member:Symbol):ptr
+(defn cheader-c-ident-join (prefix:StrView member:Symbol):StrView
   (when (symbol-none? member) (return prefix))
-  (return (fcstr (cheader-escape-reserved
-                   (fstr prefix "_" (sanitize-for-c (symbol-as-view member)))))))
+  (return (cheader-escape-reserved
+            (fstr prefix "_" (sanitize-for-c (symbol-as-view member))))))
 
 ; The `asm("…")` suffix that re-binds a sanitized C declaration to the symbol the
 ; object actually defines, or "" when the sanitized spelling IS the symbol.
@@ -2915,9 +2898,9 @@
 ; Deliberately empty when no mangling was needed, so a library whose names are
 ; already C-legal gets a fully portable header and the extension appears exactly
 ; where it is load-bearing.
-(defn cheader-asm-label (link:Symbol cname:ptr):ptr
-  (when (= link (strview-from-cstr (as CStr cname))) (return ""))
-  (return (fcstr " asm(\"" link "\")")))
+(defn cheader-asm-label (link:Symbol cname:StrView):StrView
+  (when (= (symbol-as-view link) cname) (return ""))
+  (return (fstr " asm(\"" link "\")")))
 
 ; The linker symbol behind an ir-name: the same string without its leading `@`
 ; sigil. Stage 15 W9 item 26 — the generic registry stores ir-names (`@eq.String
@@ -3089,7 +3072,7 @@
                  (return (symbol-as-view name)))
              0))
          (cheader-note-type-file name)
-         (return (fstr "struct " (as CStr (cheader-c-ident (ns-ir-base name))))))))))
+         (return (fstr "struct " (cheader-c-ident-view (ns-ir-base name)))))))))
 
 ; Convert a type AST node to a C type string. Handles SYM types and
 ; (ptr T) / (ptr ptr T) ... lists.
@@ -3176,7 +3159,7 @@
                     ; rather than by emit-cheader-defstruct, so they need the same
                     ; sanitize its named fields get.
                     (str-into acc (type-node-to-c mtnode) " "
-                              (as CStr (cheader-c-ident mname)) "; ")))
+                              (cheader-c-ident-view mname) "; ")))
                 (set! cur ((unsafe/cast ptr:Node cur) 'cdr)))
               (str-into acc "}")
               (return (string-as-view acc)))))
@@ -3253,7 +3236,7 @@
     ; constant would otherwise give `int32_t xs[MY-LEN];` against `#define MY_LEN`.
     (let (ln:ptr:Node (unsafe/cast ptr:Node lnn))
       (when (= (ln 'kind) NODE-SYM)
-        (return (strview-from-cstr (as CStr (cheader-c-ident (ln 's)))))))
+        (return (cheader-c-ident-view (ln 's)))))
     (die-at lline "--emit-cheader: (array T N): length must be a literal, a named constant, or a constant expression over them")
     (return "")))
 
@@ -3343,19 +3326,19 @@
   ; W9 item 28: `cheader-c-ident` — the tag and typedef of a struct named `union`
   ; must be escaped, in lockstep with every reference to it (type-name-to-c).
   (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at form (+ 1 nattrs)))
-        name:ptr (cheader-c-ident (ns-ir-base (nn 's)))
+        name:StrView (cheader-c-ident-view (ns-ir-base (nn 's)))
         nfields:i32 (- (- (node-len form) 2) nattrs)
         ; PK-2: the attribute goes after the closing brace, which is the one
         ; position of the three C honours that needs no tag to attach to.
-        packed:CStr (if (!= (bit-and aflags STRUCT-ATTR-PACKED) 0)
-                      " __attribute__((packed))" "")
+        packed:StrView (if (!= (bit-and aflags STRUCT-ATTR-PACKED) 0)
+                         " __attribute__((packed))" "")
         ; PK-3: `aligned` sits in the same after-brace run; both attributes go
         ; into one `__attribute__((…))` only if both are present, which C spells
         ; as two runs just as happily.
-        aligned:CStr (if (!= aalign 0)
-                       (as CStr (fcstr " __attribute__((aligned(" aalign ")))"))
-                       (as CStr "")))
-    (check-ir-name-legal (nn 'line) (nn 's) (strview-from-cstr (as CStr name)))
+        aligned:StrView "")
+    (when (!= aalign 0)
+      (set! aligned (fstr " __attribute__((aligned(" aalign ")))")))
+    (check-ir-name-legal (nn 'line) (nn 's) name)
     ; Stage 15 W9 item 25: TAG the struct. `type-name-to-c` spells every reference
     ; to a user type `struct NAME`, so an anonymous typedef leaves `struct NAME` a
     ; never-completed tag and every BY-VALUE use of the type fails — a field
@@ -3381,18 +3364,17 @@
         (extract-name-type field (as ptr:Symbol (addr-of fname)) (as ptr:Symbol (addr-of tname)))
         (let (tnode:ptr (extract-type-node field ((unsafe/cast ptr:Node field) 'line)))
           (when (!= tnode null)
-            ; FP-5: array and function-pointer members are both postfix
-            ; declarators; type-node-to-c-decl is the single renderer for them.
-            (emit (as ptr stdout) "    "
-                  (type-node-to-c-decl tnode (cheader-c-ident-view fname)
-                                   ((unsafe/cast ptr:Node field) 'line))
-                  (if (!= fbits 0)
-                (as CStr (fcstr " : " (if (< fbits 0) 0 fbits)))
-                (as CStr ""))
-                  (if (!= falign 0)
-                (as CStr (fcstr " __attribute__((aligned(" falign ")))"))
-                (as CStr ""))
-                  ";\n")))))
+            (let (bits:StrView ""
+                  fal:StrView "")
+              (when (!= fbits 0) (set! bits (fstr " : " (if (< fbits 0) 0 fbits))))
+              (when (!= falign 0)
+                (set! fal (fstr " __attribute__((aligned(" falign ")))")))
+              ; FP-5: array and function-pointer members are both postfix
+              ; declarators; type-node-to-c-decl is the single renderer for them.
+              (emit (as ptr stdout) "    "
+                    (type-node-to-c-decl tnode (cheader-c-ident-view fname)
+                                     ((unsafe/cast ptr:Node field) 'line))
+                    bits fal ";\n"))))))
     (emit (as ptr stdout) "}" packed aligned " " name ";\n\n"))))
 
 ; A defunion-template instance type ((Result i64 i32)) has no C spelling yet —
@@ -3607,9 +3589,9 @@
     ; defines. `defn-form-mangled-name` answers null for a solitary name, which is
     ; exactly when `ns-ir-base` is right.
     (let (link:Symbol (cheader-strip-sigil (defn-form-mangled-name (as raw:Node form)))
-          cname:ptr null)
+          cname:StrView "")
       (when (symbol-none? link) (set! link (ns-ir-base fname)))
-      (set! cname (cheader-c-ident link))
+      (set! cname (cheader-c-ident-view link))
       ; FP-5: the parameter list is built BEFORE the return type is rendered.
       ; A function returning a function pointer wraps its own declarator —
       ; `int32_t (*getf(void))(int32_t, int32_t);` — so the name and its
@@ -3635,7 +3617,7 @@
         (let (rtnode:ptr (cheader-defn-ret-node form))
           (emit (as ptr stdout)
                 (type-node-to-c-decl rtnode
-                  (fstr (as CStr cname) "(" (string-as-view acc) ")")
+                  (fstr cname "(" (string-as-view acc) ")")
                   (node-line (as raw:Node form) 0))
                 (cheader-asm-label link cname) ";\n"))))))
 
@@ -3739,10 +3721,10 @@
             (emit (as ptr stdout) "/* " vname ": type has no C spelling here; not exported */\n")
             (return))
           ; AVR-6: `:const` selects LLVM `constant` storage, which is C's `const`.
-          (let (cst:ptr (if (!= (bit-and attr-flags DECL-ATTR-CONST) 0) "const " "")
+          (let (cst:StrView (if (!= (bit-and attr-flags DECL-ATTR-CONST) 0) "const " "")
                 link:Symbol (ns-ir-base vname)
                 ctype:StrView (type-node-to-c tnode))
-            (let (cname (cheader-c-ident link))
+            (let (cname (cheader-c-ident-view link))
               (emit (as ptr stdout) "extern " cst ctype " " cname (cheader-asm-label link cname)
                     ";\n"))))))))
 
@@ -3753,7 +3735,7 @@
   ; W9 item 45: a name spelled `()` is a NULL node (W5f) and defines no macro;
   ; `validate-header-forms` refuses the form before this emitter is reached.
   (when (!= (node-kind (node-at form 1)) NODE-SYM) (return))
-  (let (name:ptr (cheader-c-ident ((unsafe/cast ptr:Node (node-at form 1)) 's))
+  (let (name:StrView (cheader-c-ident-view ((unsafe/cast ptr:Node (node-at form 1)) 's))
         val-node:ptr:Node (unsafe/cast ptr:Node (node-at form 2)))
     (case (node-kind (as ptr val-node))
       NODE-INT (emit (as ptr stdout) "#define " name " " (val-node 'i) "\n")
@@ -3771,11 +3753,11 @@
   (when (!= (node-kind (node-at form 1)) NODE-SYM) (return))
   (dotimes (mi (- (node-len form) 2))
     (when (!= (node-kind (node-at form (+ mi 2))) NODE-SYM) (return)))
-  (let (name:ptr (cheader-c-ident ((unsafe/cast ptr:Node (node-at form 1)) 's))
+  (let (name:StrView (cheader-c-ident-view ((unsafe/cast ptr:Node (node-at form 1)) 's))
         n:i32 (- (node-len form) 2))
     (emit (as ptr stdout) "enum " name " {\n")
     (dotimes (i n)
-      (let (variant:ptr (cheader-c-ident-join name ((unsafe/cast ptr:Node (node-at form (+ i 2))) 's)))
+      (let (variant:StrView (cheader-c-ident-join name ((unsafe/cast ptr:Node (node-at form (+ i 2))) 's)))
         (emit (as ptr stdout) "    " variant " = " i)
         (when (< i (- n 1)) (emit (as ptr stdout) ","))
         (emit (as ptr stdout) "\n")))
@@ -3796,10 +3778,10 @@
     ; namespaced union's definition and every reference to it spelled different C
     ; identifiers. Identity under `user`.
     ; W9 item 28: `cheader-c-ident`, as emit-cheader-defstruct — see there.
-    (let (name:ptr (cheader-c-ident (ns-ir-base (name-node 's)))
+    (let (name:StrView (cheader-c-ident-view (ns-ir-base (name-node 's)))
           narms:i32 (- (node-len form) 2)
           npay:i32 0)
-      (check-ir-name-legal (name-node 'line) (name-node 's) (strview-from-cstr (as CStr name)))
+      (check-ir-name-legal (name-node 'line) (name-node 's) name)
       ; Any payload-bearing arm?
       (dotimes (i narms)
         (when (= ((unsafe/cast ptr:Node (node-at form (+ i 2))) 'kind) NODE-CELL)
@@ -3812,7 +3794,7 @@
         (dotimes (i narms)
           (let (arm:ptr:Node (unsafe/cast ptr:Node (node-at form (+ i 2))))
             (when (= (arm 'kind) NODE-CELL)
-              (let (aname:ptr (cheader-c-ident ((unsafe/cast ptr:Node (node-at (as ptr arm) 0)) 's))
+              (let (aname:StrView (cheader-c-ident-view ((unsafe/cast ptr:Node (node-at (as ptr arm) 0)) 's))
                     nf:i32 (- (node-len (as ptr arm)) 1))
                 (if (= nf 1)
                   ; One field → the payload is just that field, named by the arm.
@@ -3829,7 +3811,7 @@
                                                   (as ptr:Symbol (addr-of ftname)))
                         (let (tnode:ptr (extract-type-node field ((unsafe/cast ptr:Node field) 'line)))
                           (emit (as ptr stdout) (type-node-to-c tnode) " "
-                                (cheader-c-ident fname) "; "))))
+                                (cheader-c-ident-view fname) "; "))))
                     (emit (as ptr stdout) "} " aname ";\n")))))))
         (emit (as ptr stdout) "    } payload;\n"))
       (emit (as ptr stdout) "} " name ";\n\n")
@@ -3837,7 +3819,7 @@
       (emit (as ptr stdout) "enum " name "_tag {\n")
       (dotimes (i narms)
         (let (arm:ptr:Node (unsafe/cast ptr:Node (node-at form (+ i 2)))
-              aname:ptr (cheader-c-ident-join name
+              aname:StrView (cheader-c-ident-join name
                           (if (= (arm 'kind) NODE-SYM) (arm 's)
                             ((unsafe/cast ptr:Node (node-at (as ptr arm) 0)) 's))))
           (emit (as ptr stdout) "    " aname " = " i)
