@@ -277,10 +277,29 @@ measurements taken against the tree on 2026-09-03; §T4 sets out six options
 against those measurements; §T5 recommends one and says why the other five lose.
 A decision turns §T5 into phases.
 
-**Goal, stated as a question.** Testing Nucleus is 15,895 lines of shell and
-Python. The compiler is self-hosted and the language now has strings,
-collections, iterators, error handling and namespaces — so how much of that
-15,895 should be Nucleus, and what is the honest cost of moving it?
+**Why this is worth doing.** Not to delete shell for its own sake. 14,337 lines
+that work are not, by themselves, a problem worth a stage. Two reasons that are:
+
+1. **It is the dogfooding that finds what the language is missing.** Stage 17
+   swept the compiler's C strings into native ones, and the deliverable was never
+   the sweep — it was the string library that had to become good enough to
+   survive it. A test framework is the same exercise aimed at a different gap:
+   process control, the filesystem, text matching. §T3 lists what is absent, and
+   the right reading of that list is not *blockers*. It is **the specification
+   for the next three library modules**, each of which the language owes its
+   users whether or not a single test ever moves. A systems language that cannot
+   start a process and wait for it is missing a capability, not a convenience.
+2. **A language shipping in 2026 is expected to have a testing story, and "write
+   a shell script" is not one.** The compiler's 955 tests are the proving ground,
+   not the product. The product is something a person writing a Nucleus program
+   can reach for: a way to declare a test, a vocabulary of assertions, discovery,
+   a runner that reports. That reframes the target — not an internal harness that
+   happens to be written in Nucleus, but a **public, documented facility whose
+   first and hardest consumer is the compiler's own suite.**
+
+Line count is therefore a proxy, not the objective. §T1 measures it anyway,
+because it is what separates the options that are real from the one that only
+looks like progress.
 
 ## T1. Ground truth (verified 2026-09-03 against the tree)
 
@@ -387,15 +406,18 @@ Seven properties, in descending order of how easy they are to lose by accident.
    `nm` and `objdump` *are* the assertion. A framework that cannot invoke them
    cannot express those tests at any price.
 
-## T3. What the runtime is missing today
+## T3. What the runtime is missing — which is the other half of the deliverable
 
-Verified by grep across `lib/` (40 modules) and `src/`:
+Verified by grep across `lib/` (40 modules) and `src/`. Read this as a work list
+the language wants anyway, not as an obstacle course between here and a runner:
 
 - **No process API anywhere in `lib/`.** `popen`/`pclose` exist only as raw
   declares in `src/cheader.nuc:15-16`, feeding `read-pipe-output`; `system` is
   called at two sites. There is no `fork`, `execv`, `posix_spawn` or `waitpid`
-  in the tree. **This is the blocking gap** — everything in §T4 except option E
-  needs it.
+  in the tree. Everything in §T4 except option E needs it — but the sharper point
+  is that **a self-hosted systems language with no way to run a program is
+  incomplete on its own terms.** The compiler itself reaches around the gap with
+  raw declares; every user program would have to do the same.
 - **No filesystem beyond open/read/write/close.** `lib/file.nuc` exposes 15
   entry points and none of them is `mkdir`, `mkdtemp`, `unlink`, `rmdir` or
   `stat`. Directory enumeration exists exactly once, as raw `opendir`/`readdir`/
@@ -416,6 +438,15 @@ headers on the host. A `lib/process.nuc` and `lib/fs.nuc` written today need no
 hardcoded per-OS constant table — which was the ugliest part of the cost a week
 ago, and is now zero.
 
+**And the list is shorter than a general-purpose runtime would need**, because
+the test suite is a demanding but narrow consumer: spawn/wait/capture,
+mkdtemp/mkdir/unlink/rmdir/readdir, and a glob matcher. That is the useful
+property of picking this as the dogfooding target — it is large enough to put a
+new module under real load (955 tests, 5.4× concurrent, 168 scratch directories)
+and small enough that the module's shape is decided by evidence rather than by
+guessing at what users might want. The stage-17 rule applies unchanged: when the
+port hits a weakness, **fix the library, do not work around it in the caller.**
+
 ## T4. The options
 
 ### A. Leave it in shell
@@ -423,7 +454,12 @@ ago, and is now zero.
 **Costs:** the status quo — 14,337 lines nobody wants to edit, a `qgrep` whose
 header comment documents a 186-in-200 SIGPIPE race that had to be discovered
 empirically, and no dogfooding of the language on its own largest tool.
-**Verdict:** the baseline every other option must beat, not a straw man.
+**Cannot:** deliver either thing this stage is for. The language stays unable to
+start a process, and a user asking "how do I test Nucleus code?" is still told to
+write bash.
+**Verdict:** rejected on the goal, not on the measurement. It remains the
+baseline every option's *output* is diffed against (§T5.1) — that is a different
+job from being a candidate.
 
 ### B. Extract the declarative tests to manifests, keep bash
 Move the reject/accept/example/repl tables into data files; keep the shell.
@@ -431,21 +467,29 @@ Move the reject/accept/example/repl tables into data files; keep the shell.
 **Buys:** essentially nothing. §T1.1 measured it: those ~350 tests already cost
 under 200 lines. Removing them removes ~1.4% of the file and leaves all 10,400
 lines of bespoke unit exactly where they are.
-**Verdict:** rejected on measurement. This is the option that *looks* like
-progress.
+**Cannot:** exercise one line of Nucleus. It adds no library, forces no
+capability into existence, and ships no facility a user could call. It is a data
+re-spelling.
+**Verdict:** rejected twice over — on measurement, and on being the one option
+that scores zero against both reasons in the preamble. This is the option that
+*looks* like progress.
 
 ### C. Full native runner
 `lib/process.nuc` + `lib/fs.nuc` + `lib/test.nuc` + `tests/runner.nuc`, with all
 176 units ported to Nucleus.
-**Buys:** the whole 14,337 lines become Nucleus. Assertions operate on typed
-values instead of on the text of someone else's stdout. It is by a wide margin
-the largest Nucleus program that is not the compiler, so it exercises the
-library the way the stage-17 sweep exercised strings.
+**Buys:** both goals in full. Three library modules the language is missing
+anyway (§T3), a documented `lib/test.nuc` a user can call, and the whole 14,337
+lines become Nucleus — assertions on typed values instead of on the text of
+someone else's stdout. It is by a wide margin the largest Nucleus program that is
+not the compiler, so it exercises the library the way the stage-17 sweep
+exercised strings.
 **Costs:** three new lib modules (~600–900 lines), a runner (~400), and a
 port of 10,632 lines of body logic — the last being the real number, and it is
 not mechanical.
 **Cannot:** satisfy T2.1 alone.
-**Verdict:** the right destination, the wrong first step.
+**Verdict:** the destination. Its first two-thirds — the modules and the
+facility — are worth building even if the port stalls halfway, which is what
+makes the staging in §T5 safe rather than merely optimistic.
 
 ### D. Declarative s-expression manifest + a small native driver
 Tests become data the compiler's own reader parses.
@@ -474,8 +518,12 @@ independence across 955 tests. A test that mutates a global outside the
 watermark set silently contaminates every test after it, and the failure
 presents as order-dependent flakiness — the worst bug class a test suite can
 have.
+It also scores worst on the stage's own terms: it is the one option that reaches
+its speed by **routing around** the capabilities §T3 says the language needs. No
+process API is exercised because no process is started.
 **Verdict:** a genuinely attractive *separate track* for the emit-and-inspect
-units, viable only once something else can cross-check it. Not a replacement.
+units, viable only once something else can cross-check it. Not a replacement, and
+not a first step.
 
 ### F. Staged hybrid — replace the harness, keep the bodies
 A native runner owns dispatch, the job pool, scratch directories, output
@@ -483,12 +531,15 @@ buffering, ordered replay and the summary. Each unit body stays a shell snippet,
 invoked through one `sh -c`. Bodies then migrate to Nucleus by category,
 independently.
 **Buys:** needs only process-spawn and wait — not the filesystem surface, not the
-matcher — so it lands on the smallest possible slice of §T3. Every subsequent
-migration is incremental and separately verifiable, and the runner is exercised
-by the full suite from day one.
+matcher — so it lands on the smallest possible slice of §T3, and it lands on the
+part the language most needs. `lib/process.nuc` exists on day one and is
+immediately carrying 955 units at 16-way concurrency, which is a far harder test
+of a process API than any unit test written for it would be. Every subsequent
+migration is then incremental and separately verifiable.
 **Costs:** the shell doesn't shrink until phase two; for a while there are two
 things to understand instead of one.
-**Verdict:** the first step option C needs.
+**Verdict:** the first step option C needs — and, on its own, the step that
+delivers the most missing capability per line written.
 
 ## T5. Recommendation
 
@@ -503,14 +554,20 @@ Ordered so that each step is gated by the step before it:
 2. **F2 — `lib/fs.nuc`.** `mkdtemp`, `mkdir`, `unlink`, `rmdir`, `readdir`.
    Per §T3 this needs no constant table now. Retires the 168 `mktemp` calls and
    lets the runner own scratch-directory lifetime instead of each unit.
-3. **C1 — `lib/test.nuc`.** The six predicates of §T1.2 and nothing else, with
-   the matcher a wildcard glob rather than a regex engine (§T1.2's 76 patterns
-   need `*`, anchors and alternation). Failure rendering lives here, so §T2.4 is
-   one implementation instead of 599.
+3. **C1 — `lib/test.nuc`, designed as the public facility.** The six predicates
+   of §T1.2 and nothing else, with the matcher a wildcard glob rather than a
+   regex engine (§T1.2's 76 patterns need `*`, anchors and alternation). Failure
+   rendering lives here, so §T2.4 is one implementation instead of 599.
+   *This is the step that answers reason 2*, so it is finished only when it is
+   documented in `docs/` and there is an `examples/` program that declares and
+   runs its own tests without touching the compiler's harness. A module the
+   compiler suite alone can use is a private harness with a public name.
 4. **C2 — migrate bodies by category, highest reuse first:** the 172
    reject/accept spawns (option D's manifest is right *here*), then the 177
    example and REPL units, then the bespoke units in descending size — the seven
-   largest are over 200 lines each.
+   largest are over 200 lines each. Every weakness the port hits is a library
+   defect to fix, not a body to contort around it — the same rule that made the
+   stage-17 sweep produce a string library rather than a pile of workarounds.
 5. **E — separate track, after F1.** Convert only the pure
    emit-and-inspect-IR units, and only while the C2 versions still exist to
    cross-check against. The order matters: E's contamination hazard is invisible
@@ -525,6 +582,14 @@ Ordered so that each step is gated by the step before it:
 The dependency worth stating plainly: **steps 1–4 are all downstream of
 `lib/process.nuc`.** Nothing about a native test framework is possible until
 Nucleus can start a process and wait for it, and today it cannot.
+
+Read forward rather than backward, that ordering is the argument for the stage
+rather than an objection to it. Step 1 is not a tax the test framework levies
+before it can begin; it is a capability the language is missing, scheduled first
+because the framework is the thing that will prove it works. The same holds for
+step 2. **If the migration stopped after F2, the language would still have
+gained a process API and a filesystem API, both hardened by 955 tests** — and
+that is already a better outcome than option B reaches at its own completion.
 
 ## T6. What stays outside the framework regardless
 
@@ -543,17 +608,28 @@ Nucleus can start a process and wait for it, and today it cannot.
 
 1. **Where does the runner live?** Its own `build/` binary, or a `nucleusc
    --test` mode? A separate binary keeps the compiler's surface clean and makes
-   the T2.1 dependency explicit; a mode shares the reader for free.
-2. **Fixtures: embed or file?** Nucleus string literals span raw newlines
+   the T2.1 dependency explicit; a mode shares the reader for free. The
+   public-facility requirement (§T5.3) tilts this: a user with a `tests/`
+   directory should not have to build a runner before running a test, which
+   argues for `nucleusc --test` — or for shipping the runner binary alongside
+   the compiler, which is the same answer with a worse install story.
+2. **How does a user declare a test?** A `deftest` macro registering into a
+   table the runner walks, or plain functions found by name convention? The
+   macro is more typed and gives failure messages the source location for free;
+   the convention costs no language surface and works with `defn` as it is. This
+   decision is invisible to the compiler's own suite — which is exactly why it
+   needs deciding deliberately rather than falling out of whatever C2 finds
+   convenient.
+3. **Fixtures: embed or file?** Nucleus string literals span raw newlines
    (verified), so embedding works — except that 93 of the 292 heredocs contain a
    `"` and would need escaping, and escaped Nucleus inside Nucleus is unreadable.
    Recommend moving the 588 inline fixtures onto disk beside the existing 223.
-3. **Glob or regex for `matches`?** §T1.2 says glob suffices for all 76 sites.
+4. **Glob or regex for `matches`?** §T1.2 says glob suffices for all 76 sites.
    Regex is more general and is a much larger thing to own.
-4. **Is order-independence a stated property or a hope?** If E is ever adopted
+5. **Is order-independence a stated property or a hope?** If E is ever adopted
    the answer must be "stated", which means the runner shuffles dispatch order
    under a flag and the suite still passes. Cheap to build in at F1; expensive to
    retrofit.
-5. **Does `make test` become the native runner, or gain it alongside?** Running
+6. **Does `make test` become the native runner, or gain it alongside?** Running
    both until C2 completes doubles the 59s. Running only the native one loses the
    cross-check that makes the migration safe.
