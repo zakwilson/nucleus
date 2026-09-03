@@ -65,7 +65,7 @@ so error lines are clickable and `M-g M-n` / `M-g M-p` walks them.
 | `C-c C-k`              | `nucleus-load-buffer`         | Send the entire buffer.                                                      |
 | `C-c C-z`              | `nucleus-switch-to-repl`      | Pop to `*nucleus-repl*` (starting it if needed).                             |
 | `C-c C-d`              | `nucleus-describe-symbol`     | Render `kind-of` + `type-of` + `locate` into `*nucleus-doc*`.                |
-| `M-.`                  | `nucleus-find-definition`     | `(locate 'sym)`, parse `file:line`, `find-file` + `goto-line`.               |
+| `M-.`                  | `nucleus-find-definition`     | `(locate sym)`, parse `file:line`, `find-file` + `goto-line`.                |
 | `M-,`                  | `xref-pop-marker-stack`       | Standard xref behavior.                                                      |
 | `C-c C-m`              | `nucleus-macroexpand`         | `(expansion-of FORM)` for the sexp at point into `*nucleus-macroexpand*`.    |
 | `C-c C-t`              | `nucleus-type-of`             | `(type-of FORM)`, echoed in the minibuffer.                                  |

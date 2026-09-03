@@ -593,12 +593,12 @@
   src-file:Symbol     ; source file where defined (null if unknown)
   src-line:i32      ; source line where defined (0 if unknown)
   trace-tracker:ptr ; resource tracker for a REPL-installed trace wrapper (LLVM opaque)
-  ; Holds a saved copy of `ir-name` and is assigned back into it on untrace, so
-  ; it carries exactly `ir-name`'s type and moves with it.
-  trace-saved:StrView   ; saved original ir-name while traced
-  ; Docstring slot for a defn whose body's first form is a string literal, per
-  ; docs/toplevel.md. Nothing writes it yet — `doc`/`apropos` are documented but
-  ; unimplemented — so it reads `symbol-none` for every Sym.
+  ; The impl address `@<name>.tgt` held before `trace` repointed it, restored by
+  ; `untrace`. A JIT'd code address, so `ptr` — the Stage 14 retype to `StrView`
+  ; described a field nothing read (design/stage18-repl-introspection §1.1).
+  trace-saved:ptr
+  ; The docstring of a `defn` whose body's first form is a string literal, per
+  ; docs/toplevel.md. Read by `doc` and `apropos`.
   docstring:Symbol
   ; --- Stage 10 safety (lifecycle + nullability) ---
   (home (raw Scope))  ; defining Scope* (escape analysis compares scope nesting)

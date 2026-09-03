@@ -313,9 +313,10 @@ For tooling and interactive use, the REPL recognizes these forms in addition to 
 | Form | Description |
 |------|-------------|
 | `(defined? sym)` | Print `1` if the symbol is bound (fn / var / const / macro / struct), else `0`. |
-| `(kind-of sym)` | Print one of `fn`, `macro`, `rmacro`, `var`, `const`, `struct`, or `<unbound>`. |
+| `(kind-of sym)` | Print one of `fn`, `macro`, `rmacro`, `var`, `const`, `struct`, or `<unbound>`. The argument may be a **string** as well as a symbol, which is how the `rmacro` answer is reached: a reader macro is keyed by its prefix, and `'` cannot be written bare (the reader would consume it) — ask `(kind-of "'")`. `defined?` takes the same two argument forms. |
 | `(type-of expr)` | Print the static type of an expression in Nucleus syntax (e.g. `i32`, `ptr:Node`). For functions defined via `defn`, prints the full signature `(fn ret name0:t0 name1:t1 ... :rest :optional ...)` with the original parameter names; for function-pointer types and other sources that don't preserve names, positional `pN` is used. Routes through the type-checker without committing IR to the JIT. |
 | `(dir)` | List every known name (globals, macros, structs) with a one-line summary. Functions show signatures with parameter names; consts show values. |
+| `(doc sym)` | Print `kind: <kind>`, then the same one-line summary `dir` gives, then the docstring indented under it. `<unbound>` if the name is not bound; a reader macro has only the `kind:` line. |
 | `(apropos "needle")` | Substring search across known names AND docstrings; prints summaries (and the docstring) for matches. The arg may be a string or symbol. |
 | `(complete "prefix")` | Prefix search; prints just the matching names — useful for editor completion. |
 | `(imports)` | Print resolved paths of all `import`/`import-use` entries, one per line. |

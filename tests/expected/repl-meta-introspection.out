@@ -1,0 +1,51 @@
+Nucleus REPL (type Ctrl-D to exit)
+nuc>   defined
+nuc>   defined
+nuc>   defined
+nuc> nuc>   1
+nuc>   1
+nuc>   1
+nuc>   1
+nuc>   0
+nuc>   fn
+nuc>   macro
+nuc>   struct
+nuc>   const
+nuc>   <unbound>
+nuc>   rmacro
+nuc>   i32
+nuc>   f64
+nuc>   StrView
+nuc>   i32
+nuc>   (fn i32 w:i32 h:i32)
+nuc>   <repl>:1
+nuc>   <repl>:1
+nuc>   <repl>:1
+nuc>   (no source recorded)
+nuc>   <unbound>
+nuc>   kind: fn
+  (area (w:i32 h:i32):i32)
+    Area of a rectangle.
+nuc>   kind: macro
+  (twice (x)) : macro
+    Double the form.
+nuc>   <unbound>
+nuc>   (area (w:i32 h:i32):i32)
+    Area of a rectangle.
+nuc>   area
+nuc>   (none)
+nuc>   (_+ 4 4)
+nuc>   (none)
+nuc>   error: kind-of: missing symbol argument
+nuc>   line 1: kind-of: missing symbol argument
+nuc>   traced
+nuc> [trace] enter area
+[trace] exit area
+  20
+nuc>   untraced
+nuc>   42
+nuc>   forgotten (function thunk persists; signature is locked for this session)
+nuc>   0
+nuc>   forgotten
+nuc>   0
+nuc> 

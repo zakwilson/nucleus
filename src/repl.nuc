@@ -91,10 +91,18 @@
       ((err e) 0)
       ((ok b) (repl-error-json-putc (bit-and (as i32 b) 255))))))
 
+; The most recent recovered error, for `(last-error)`. Interned rather than
+; copied: an error message repeats across a session far more often than it is
+; distinct, and the interner is what makes storing it free the second time.
+(defvar g-last-error-msg:Symbol)
+(defvar g-last-error-line:i32 0)
+
 ; Emit a structured REPL error. In text mode, prints the legacy
 ; "  error: <msg>\n" form. In JSON mode, prints a single JSON object on
 ; one line: {"file":..,"line":..,"message":..}. line of 0 is omitted.
 (defn repl-error (line:i32 msg:StrView):void
+  (set! g-last-error-msg (symbol-intern msg))
+  (set! g-last-error-line line)
   (cond (= g-repl-format 1)
           (do (emit stderr "{\"file\":\"")
               (repl-error-json-puts (symbol-as-view g-source-path))
@@ -103,6 +111,411 @@
               (emit stderr "\"}\n"))
         true
           (emit stderr "  error: " msg "\n")))
+
+; `clock()` for `(time form)`. Declared rather than imported from <time.h>,
+; which would bring a dozen struct types the compiler has no other use for —
+; and `CLOCKS_PER_SEC` would not come with it either (library-gaps.md #28).
+; POSIX fixes it at 1000000 for `clock`, which is what makes the difference
+; already microseconds.
+(declare clock ():i64)
+
+; ---------------------------------------------------------------------------
+; REPL meta forms — design/stage18-repl-introspection/overview.md.
+;
+; These were built in 2026-05, lost to a rebase a month later, and documented
+; continuously throughout (docs/compiler.md "REPL meta forms"). Every one is
+; restored here against the registries as they now are.
+; ---------------------------------------------------------------------------
+
+; The type printer `type-of` and `dir` need. `type-spelling` is the general
+; answer for every kind but TY-FN, which it spells as the interned `__fnty_N`
+; conformance key — correct there, useless to a reader.
+(defn repl-type-to-nuc (t:(raw Type)):StrView
+  (when (= t null) (return "?"))
+  (when (!= (t 'kind) TY-FN) (return (symbol-as-view (type-spelling t))))
+  (let ((out String) (string-new-alloc (strfmt-alloc))
+        np:i32 (t 'num-params))
+    (str-into (addr-of out) "(fn " (repl-type-to-nuc (t 'ret)))
+    (dotimes (i np)
+      (let (fld:ref:Field (field-at (t 'params) i))
+        (str-into (addr-of out) " ")
+        ; A name only exists where one was captured (R2). A function-pointer
+        ; type, an extern and a C import never had one, so they print `pN`.
+        (if (symbol-none? (fld 'name))
+          (str-into (addr-of out) "p" i)
+          (str-into (addr-of out) (fld 'name)))
+        (str-into (addr-of out) ":" (repl-type-to-nuc (fld 'type)))))
+    (when (!= (t 'has-rest) 0) (str-into (addr-of out) " :rest"))
+    (when (!= (t 'nopt) 0) (str-into (addr-of out) " :optional"))
+    (when (!= (t 'variadic) 0)
+      (when (!= np 0) (str-into (addr-of out) " "))
+      (str-into (addr-of out) "..."))
+    (str-into (addr-of out) ")")
+    (return (string-as-view (addr-of out)))))
+
+; Classify a bound name: "fn", "macro", "rmacro", "var", "const", "struct", or
+; "" for unbound. Searched macro > rmacro > struct > scope, which is the order
+; a head position resolves in. Reader macros are keyed by their PREFIX, not by
+; a name, so `(kind-of "'")` is the way to ask about one.
+(defn repl-classify (name:Symbol):StrView
+  (when (!= (find-macro name) null) (return "macro"))
+  (dotimes (i (unsafe/cast i32 (count g-rmacros)))
+    (let (rm:ref:RMacro (invoke g-rmacros (as usize i)))
+      (when (= name (rm 'prefix)) (return "rmacro"))))
+  (when (!= (lookup-struct name) null) (return "struct"))
+  (let (sym:?ptr:Sym (scope-lookup g-globals name))
+    (when (!= sym null)
+      (when (!= (sym 'is-const) 0) (return "const"))
+      (let (ty:(raw Type) (sym 'type))
+        (when (and (!= ty null) (= (ty 'kind) TY-FN)) (return "fn")))
+      (return "var")))
+  (return ""))
+
+; The name argument of a meta form, or `symbol-none` after reporting why not.
+; A string is accepted beside a symbol because a reader-macro prefix is not a
+; symbol — `(kind-of "'")` is the only way to reach the documented `rmacro`
+; answer, and the quote would be consumed by the reader if written bare.
+(defn repl-meta-sym-arg (form:(raw Node) cmd:StrView):Symbol
+  (let (f:ptr:Node (unsafe/cast ptr:Node form))
+    (when (< (node-len f) 2)
+      (repl-error (f 'line) (fstr cmd ": missing symbol argument"))
+      (return (symbol-none)))
+    (let (a:ptr:Node (unsafe/cast ptr:Node (node-at f 1)))
+      (when (and (!= (a 'kind) NODE-SYM) (!= (a 'kind) NODE-STR))
+        (repl-error (f 'line) (fstr cmd ": argument must be a symbol or string"))
+        (return (symbol-none)))
+      (return (a 's)))))
+
+; One line describing a bound name, for `dir`. Functions print the signature in
+; the spelling a `defn` would take; everything else prints kind and type.
+(defn repl-print-name-info (name:Symbol):void
+  (let (mdef:?ptr:MacroDef (find-macro name))
+    (when (!= mdef null)
+      (emit stderr "  (" name " (")
+      (let (np:i32 (mdef 'num-params)
+            pn:ptr (mdef 'param-names))
+        (dotimes (i np)
+          (when (!= i 0) (emit stderr " "))
+          (if (= pn null)
+            (emit stderr "p" i)
+            (emit stderr (aref (as ptr:Symbol pn) i))))
+        (when (!= (mdef 'variadic) 0)
+          (when (!= np 0) (emit stderr " "))
+          (emit stderr ":rest")))
+      (emit stderr ")) : macro\n")
+      (return)))
+  (let (sym:?ptr:Sym (scope-lookup g-globals name))
+    (when (!= sym null)
+      (let (ty:(raw Type) (sym 'type))
+        (cond (and (!= ty null) (= (ty 'kind) TY-FN))
+                (do (emit stderr "  (" name " (")
+                    (dotimes (i (ty 'num-params))
+                      (when (!= i 0) (emit stderr " "))
+                      (let (fld:ref:Field (field-at (ty 'params) i))
+                        (if (symbol-none? (fld 'name))
+                          (emit stderr "p" i)
+                          (emit stderr (fld 'name)))
+                        (emit stderr ":" (repl-type-to-nuc (fld 'type)))))
+                    (when (!= (ty 'has-rest) 0) (emit stderr " :rest"))
+                    (when (!= (ty 'nopt) 0) (emit stderr " :optional"))
+                    (when (!= (ty 'variadic) 0) (emit stderr " ..."))
+                    (emit stderr "):" (repl-type-to-nuc (ty 'ret)) ")\n"))
+              (!= (sym 'is-const) 0)
+                (emit stderr "  " name " : const = " (sym 'const-val) "\n")
+              true
+                (emit stderr "  " name " : " (repl-type-to-nuc ty) "\n")))
+      (return)))
+  (let (sd:?ptr:StructDef (lookup-struct name))
+    (when (!= sd null) (emit stderr "  " name " : struct\n"))))
+
+; A name's docstring, or `symbol-none`. Macros win, matching `repl-classify`.
+(defn repl-docstring-of (name:Symbol):Symbol
+  (let (mdef:?ptr:MacroDef (find-macro name))
+    (when (!= mdef null) (return (mdef 'docstring))))
+  (let (sym:?ptr:Sym (scope-lookup g-globals name))
+    (when (!= sym null) (return (sym 'docstring))))
+  (return (symbol-none)))
+
+; Indented to line up under the `  …` the rest of the meta output uses, so an
+; editor parsing the response sees one shape.
+(defn repl-print-docstring (ds:Symbol):void
+  (when (symbol-none? ds) (return))
+  (let (v:StrView (symbol-as-view ds)
+        n:i32 (unsafe/cast i32 (v 'len)))
+    (when (> n 0)
+      (emit stderr "    ")
+      (dotimes (i n)
+        (let (b:i32 (text-byte-at v (as i64 i)))
+          (emit stderr (as Char (as ui32 b)))
+          (when (and (= b 10) (< i (- n 1))) (emit stderr "    "))))
+      (when (!= (text-byte-at v (as i64 (- n 1))) 10) (emit stderr "\n")))))
+
+; The needle for the search modes, a module global because `repl-visit-name` is
+; called per name and threading it through would be the same global by hand.
+(defvar g-repl-needle:StrView)
+
+; mode 0 = dir (info), 1 = apropos (substring over name AND docstring, then
+; info + docstring), 2 = complete (prefix match, name only).
+(defn repl-visit-name (name:Symbol mode:i32):void
+  (when (symbol-none? name) (return))
+  (cond (= mode 0)
+          (repl-print-name-info name)
+        (= mode 1)
+          (let (nv:StrView (symbol-as-view name)
+                ds:Symbol (repl-docstring-of name)
+                hit:i32 0)
+            (when (contains-str? (addr-of nv) (addr-of g-repl-needle)) (set! hit 1))
+            (when (and (= hit 0) (not (symbol-none? ds)))
+              (let (dv:StrView (symbol-as-view ds))
+                (when (contains-str? (addr-of dv) (addr-of g-repl-needle)) (set! hit 1))))
+            (when (!= hit 0)
+              (repl-print-name-info name)
+              (repl-print-docstring ds)))
+        (= mode 2)
+          (let (nv:StrView (symbol-as-view name))
+            (when (starts-with? (addr-of nv) (addr-of g-repl-needle))
+              (emit stderr "  " name "\n")))
+        true (do)))
+
+; Every name the session knows: globals, macros, structs. Reader macros are
+; deliberately absent — they are keyed by prefix, not by name, so they have
+; nothing to list under.
+(defn repl-walk-names (mode:i32):void
+  (let (sc:ptr:Scope (as ptr:Scope g-globals))
+    (dotimes (i (sc 'len))
+      (let (sym:ptr:Sym (as ptr:Sym (unsafe/ptr+ (as ptr:Sym (sc 'syms)) i)))
+        ; A name can hold several frame entries — prescan and emit-defn both
+        ; register a `defn`, and a redefinition appends. `scope-frame-find`
+        ; scans backwards, so the entry it returns is the live one and every
+        ; other copy is a duplicate to skip.
+        (when (= (as ptr (scope-frame-find sc (sym 'name))) (as ptr sym))
+          (repl-visit-name (sym 'name) mode)))))
+  (dotimes (i (unsafe/cast i32 (count g-macros)))
+    (let (md:ref:MacroDef (invoke g-macros (as usize i)))
+      ; Some definers register in both tables; listing the macro again would
+      ; double the entry.
+      (when (= (scope-lookup g-globals (md 'name)) null)
+        (repl-visit-name (md 'name) mode))))
+  (dotimes (i (unsafe/cast i32 (count g-structs)))
+    (let (sd:ref:StructDef (invoke g-structs (as usize i)))
+      (when (= (scope-lookup g-globals (sd 'name)) null)
+        (repl-visit-name (sd 'name) mode)))))
+
+; The static type of an expression, printed without committing any IR. The
+; module streams are opened only to satisfy `emit-node`'s writers and are
+; cleared unparsed, so `(type-of (launch-missiles))` types the call and runs
+; nothing.
+(defn repl-type-of (arg:(raw Node)):void
+  (open-module-streams)
+  (set! g-out g-def-stream)
+  (reset-function-state)
+  ; `emit-node` sets g-qq-used on a quasiquoting form. Left set, the next real
+  ; module emits quasiquote helpers it never uses.
+  (let (saved-qq:i32 g-qq-used
+        fn-scope:ref:Scope (scope-new g-globals)
+        result:?ptr:Val (as ?ptr:Val (emit-node (unsafe/cast ptr:Node arg) fn-scope)))
+    (when (!= result null)
+      (emit stderr "  " (repl-type-to-nuc (result 'type)) "\n"))
+    (set! g-qq-used saved-qq))
+  (reset-function-state)
+  (clear-module-buffers))
+
+; Try `form` as a meta form. 1 = handled (including handled-and-errored).
+(defn repl-handle-builtin (form:(raw Node)):i32
+  (let (f:ptr:Node (unsafe/cast ptr:Node form))
+    (when (or (!= (f 'kind) NODE-CELL) (= (node-len f) 0)) (return 0))
+    (let (h0:ptr:Node (unsafe/cast ptr:Node (node-at f 0)))
+      (when (!= (h0 'kind) NODE-SYM) (return 0))
+      (let (h:Symbol (h0 's))
+        (when (= h "defined?")
+          (let (n:Symbol (repl-meta-sym-arg form "defined?"))
+            (when (not (symbol-none? n))
+              (let (k:StrView (repl-classify n))
+                (emit stderr "  " (if (str-empty? (addr-of k)) 0 1) "\n"))))
+          (return 1))
+        (when (= h "kind-of")
+          (let (n:Symbol (repl-meta-sym-arg form "kind-of"))
+            (when (not (symbol-none? n))
+              (let (k:StrView (repl-classify n))
+                (emit stderr "  " (if (str-empty? (addr-of k)) "<unbound>" k) "\n"))))
+          (return 1))
+        (when (= h "type-of")
+          (when (< (node-len f) 2)
+            (repl-error (f 'line) "type-of: missing expression argument")
+            (return 1))
+          (repl-type-of (node-at f 1))
+          (return 1))
+        (when (= h "dir")
+          (repl-walk-names 0)
+          (return 1))
+        (when (= h "doc")
+          (let (n:Symbol (repl-meta-sym-arg form "doc"))
+            (when (not (symbol-none? n))
+              (let (k:StrView (repl-classify n))
+                (if (str-empty? (addr-of k))
+                  (emit stderr "  <unbound>\n")
+                  ; A reader macro has no name-info line — the kind is the
+                  ; whole answer for one.
+                  (do (emit stderr "  kind: " k "\n")
+                      (repl-print-name-info n)
+                      (repl-print-docstring (repl-docstring-of n)))))))
+          (return 1))
+        (when (= h "apropos")
+          (let (n:Symbol (repl-meta-sym-arg form "apropos"))
+            (when (not (symbol-none? n))
+              (set! g-repl-needle (symbol-as-view n))
+              (repl-walk-names 1)))
+          (return 1))
+        (when (= h "complete")
+          (let (n:Symbol (repl-meta-sym-arg form "complete"))
+            (when (not (symbol-none? n))
+              (set! g-repl-needle (symbol-as-view n))
+              (repl-walk-names 2)))
+          (return 1))
+        (when (= h "locate")
+          (let (n:Symbol (repl-meta-sym-arg form "locate"))
+            (when (not (symbol-none? n))
+              (let (file:Symbol (symbol-none) ln:i32 0 found:i32 0)
+                (let (sym:?ptr:Sym (scope-lookup g-globals n))
+                  (when (!= sym null)
+                    (set! file (sym 'src-file)) (set! ln (sym 'src-line))
+                    (set! found 1)))
+                (when (= found 0)
+                  (let (md:?ptr:MacroDef (find-macro n))
+                    (when (!= md null)
+                      (set! file (md 'src-file)) (set! ln (md 'src-line))
+                      (set! found 1))))
+                (when (= found 0)
+                  (let (sd:?ptr:StructDef (lookup-struct n))
+                    (when (!= sd null)
+                      (set! file (sd 'src-file)) (set! ln (sd 'src-line))
+                      (set! found 1))))
+                (cond (= found 0)       (emit stderr "  <unbound>\n")
+                      (symbol-none? file) (emit stderr "  (no source recorded)\n")
+                      true              (emit stderr "  " file ":" ln "\n")))))
+          (return 1))
+        (when (= h "trace")
+          (let (n:Symbol (repl-meta-sym-arg form "trace"))
+            (when (not (symbol-none? n))
+              (let (sym:?ptr:Sym (scope-lookup g-globals n))
+                (cond (= sym null)
+                        (emit stderr "  trace: <unbound>\n")
+                      (or (= (sym 'type) null) (!= ((sym 'type) 'kind) TY-FN))
+                        (emit stderr "  trace: " n " is not a function\n")
+                      (!= (sym 'trace-tracker) null)
+                        (emit stderr "  trace: " n " already traced\n")
+                      true
+                        (let (rt:ptr (jit-trace-module (f 'line) n (sym 'type))
+                              trace-fn:i64 0 trace-impl:i64 0 tgt:i64 0)
+                          (jit-lookup-addr (fstr n ".trace") (as ptr (addr-of trace-fn)))
+                          (jit-lookup-addr (fstr n ".trace.impl") (as ptr (addr-of trace-impl)))
+                          (jit-lookup-addr (fstr n ".tgt") (as ptr (addr-of tgt)))
+                          (if (or (= trace-fn 0) (or (= trace-impl 0) (= tgt 0)))
+                            (emit stderr "  trace: JIT lookup failed\n")
+                            (let (cur:ptr (aref (unsafe/cast ptr:ptr tgt) 0))
+                              (set! (aref (unsafe/cast ptr:ptr trace-impl) 0) cur)
+                              (set! (aref (unsafe/cast ptr:ptr tgt) 0)
+                                    (unsafe/cast ptr trace-fn))
+                              (set! (sym 'trace-tracker) rt)
+                              (set! (sym 'trace-saved) cur)
+                              (emit stderr "  traced\n"))))))))
+          (return 1))
+        (when (= h "untrace")
+          (let (n:Symbol (repl-meta-sym-arg form "untrace"))
+            (when (not (symbol-none? n))
+              (let (sym:?ptr:Sym (scope-lookup g-globals n))
+                (cond (= sym null)
+                        (emit stderr "  untrace: <unbound>\n")
+                      (= (sym 'trace-tracker) null)
+                        (emit stderr "  untrace: " n " is not traced\n")
+                      true
+                        (let (tgt:i64 0)
+                          (jit-lookup-addr (fstr n ".tgt") (as ptr (addr-of tgt)))
+                          (when (!= tgt 0)
+                            (set! (aref (unsafe/cast ptr:ptr tgt) 0) (sym 'trace-saved)))
+                          (let (rt:ptr (sym 'trace-tracker))
+                            (let (rerr:ptr (LLVMOrcResourceTrackerRemove rt))
+                              (when (!= rerr null) (LLVMConsumeError rerr)))
+                            (LLVMOrcReleaseResourceTracker rt))
+                          (set! (sym 'trace-tracker) null)
+                          (set! (sym 'trace-saved) null)
+                          (emit stderr "  untraced\n"))))))
+          (return 1))
+        (when (or (= h "forget") (= h "reset!"))
+          (let (n:Symbol (repl-meta-sym-arg form (if (= h "forget") "forget" "reset!")))
+            (when (not (symbol-none? n))
+              (let (handled:i32 0 warn-thunk:i32 0)
+                ; Every frame entry, not just the live one: prescan and emit-defn
+                ; both register, so unnaming only the latest leaves an earlier
+                ; copy findable.
+                (let (sc:ptr:Scope (as ptr:Scope g-globals))
+                  (dotimes (i (sc 'len))
+                    (let (sym:ptr:Sym (as ptr:Sym (unsafe/ptr+ (as ptr:Sym (sc 'syms)) i)))
+                      (when (= (sym 'name) n)
+                        (set! handled 1)
+                        (let (ty:(raw Type) (sym 'type))
+                          (when (and (!= ty null) (= (ty 'kind) TY-FN))
+                            (let (rt:ptr (sym 'tracker))
+                              (when (!= rt null)
+                                (let (rerr:ptr (LLVMOrcResourceTrackerRemove rt))
+                                  (when (!= rerr null) (LLVMConsumeError rerr)))
+                                (LLVMOrcReleaseResourceTracker rt)
+                                (set! (sym 'tracker) null)))
+                            (set! warn-thunk 1)))
+                        (set! (sym 'name) (symbol-none))))))
+                (when (= handled 0)
+                  (let (md:?ptr:MacroDef (find-macro n))
+                    (when (!= md null)
+                      (set! (md 'name) (symbol-none))
+                      (set! handled 1))))
+                (when (= handled 0)
+                  (let (sd:?ptr:StructDef (lookup-struct n))
+                    (when (!= sd null)
+                      (set! (sd 'name) (symbol-none))
+                      (set! handled 1))))
+                (cond (= handled 0)  (emit stderr "  <unbound>\n")
+                      (!= warn-thunk 0)
+                        ; The thunk module was added without a tracker, so the
+                        ; name's ABI outlives the definition it forgot.
+                        (emit stderr "  forgotten (function thunk persists; signature is locked for this session)\n")
+                      true (emit stderr "  forgotten\n")))))
+          (return 1))
+        (when (= h "last-error")
+          (cond (symbol-none? g-last-error-msg)
+                  (emit stderr "  (none)\n")
+                (= g-repl-format 1)
+                  (do (emit stderr "  {\"line\":" g-last-error-line ",\"message\":\"")
+                      (repl-error-json-puts (symbol-as-view g-last-error-msg))
+                      (emit stderr "\"}\n"))
+                true
+                  (emit stderr "  line " g-last-error-line ": " g-last-error-msg "\n"))
+          (return 1))
+        (when (= h "imports")
+          (let (cur:ptr g-imported any:i32 0)
+            (while (!= cur null)
+              (let (e:ptr:Node (unsafe/cast ptr:Node cur))
+                (emit stderr "  " (e 's) "\n")
+                (set! any 1)
+                (set! cur (e 'cdr))))
+            (when (= any 0) (emit stderr "  (none)\n")))
+          (return 1))
+        (when (= h "casts")
+          (when (= (count g-cast-rules) 0) (emit stderr "  (none)\n"))
+          (dotimes (i (unsafe/cast i32 (count g-cast-rules)))
+            (let (cr:ref:CastRule (invoke g-cast-rules (as usize i)))
+              (emit stderr "  " (repl-type-to-nuc (cr 'from))
+                    " -> " (repl-type-to-nuc (cr 'to))
+                    " via " (cr 'ir-name) "\n")))
+          (return 1))
+        (when (= h "expansion-of")
+          (when (< (node-len f) 2)
+            (repl-error (f 'line) "expansion-of: missing form argument")
+            (return 1))
+          (emit stderr "  ")
+          (fprint-node stderr (macroexpand-all-form (node-at f 1)))
+          (emit stderr "\n")
+          (return 1))
+        (return 0)))))
 
 ; Read lines from stdin until parens are balanced, return the accumulated buffer.
 ; Returns null on EOF.
@@ -242,6 +655,9 @@
                  (!= (node-len (as ptr f)) 0)
                  (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 'kind) (= _ NODE-SYM)))
         (set! h (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 's))))
+      ; The meta forms, before the defining chain: they are REPL-only spellings
+      ; and `repl-handle-builtin` answers for no other head.
+      (when (!= (repl-handle-builtin form) 0) (return))
       ; Top-level defining forms
       (cond (and (not (symbol-none? h)) (= h "ns"))
               ; Stage 12: set the current namespace. emit-ns is silent on a
@@ -667,6 +1083,15 @@
                       (when (!= g-import-aliased pre-aliased) (set! fresh 1))
                       (when (> ((as ptr:Scope g-globals) 'len) pre-len) (set! fresh 1))
                       (repl-report-import form fresh))))
+            (and (not (symbol-none? h)) (= h "time"))
+              ; Not in `repl-handle-builtin`: it re-enters the evaluator, and
+              ; same-function recursion needs no forward declaration.
+              (do (set! is-expr 0)
+                  (if (< (node-len f) 2)
+                    (repl-error (f 'line) "time: missing form argument")
+                    (let (t0:i64 (clock))
+                      (repl-eval-form (node-at form 1))
+                      (emit stderr "  ; elapsed: " (- (clock) t0) " us\n"))))
             true
               ; Expression — wrap in __repl_eval_N and JIT
               (do (open-module-streams)
@@ -856,6 +1281,83 @@
           (emit out "  call void %fp(" obuf ")\n  ret void\n}\n\n")
           (emit out "  %r = call " ret-ir " %fp(" obuf ")\n  ret " ret-ir " %r\n}\n\n"))
         (drop (addr-of ob))))))
+
+; `@<fname>.trace`: the same ABI-lowered signature as the thunk, wrapped in an
+; enter/exit `printf` pair, calling the real impl through `@<fname>.trace.impl`.
+;
+; The parameter list is built exactly as `emit-fn-thunk` builds it, and for the
+; same reason — a per-param `type-to-ir` (which is what the 2026-05 original did)
+; gets an aggregate's lowering wrong and names a `%Struct` this module never
+; defined.
+(defn emit-fn-trace-shim ((out (ref String)) fname:Symbol ft:(raw Type)):void
+  (let (ftt:(raw Type) ft
+        nparams:i32 (ftt 'num-params)
+        ret-info:ptr:AbiInfo (unsafe/cast ptr:AbiInfo (abi-classify (ftt 'ret)))
+        ret-ir:StrView (abi-ret-ir ret-info (ftt 'ret))
+        nlen:i32 (unsafe/cast i32 (symbol-len fname)))
+    (emit out "@" fname ".trace.impl = global ptr null\n")
+    (emit out "@" fname ".trace.enter = private constant [" (+ nlen 16)
+          " x i8] c\"[trace] enter " fname "\\0A\\00\"\n")
+    (emit out "@" fname ".trace.exit = private constant [" (+ nlen 15)
+          " x i8] c\"[trace] exit " fname "\\0A\\00\"\n")
+    ; The preamble carries the session's `declare`s; emitting a second identical
+    ; one is a redefinition error, not a merge.
+    (let (pv:StrView (string-as-view g-repl-preamble))
+      (when (= (strview-contains pv "declare i32 @printf") false)
+        (emit out "declare i32 @printf(ptr, ...)\n")))
+    (let ((ob String) (string-new)
+          (os (ref String)) (addr-of ob))
+      (let (need-comma:i32 0)
+        (when (= ((as ptr:AbiInfo ret-info) 'kind) ABI-MEMORY)
+          (emit os "ptr sret(" (type-to-ir (ftt 'ret)) ") align "
+                ((as ptr:AbiInfo ret-info) 'align) " %sret.arg")
+          (set! need-comma 1))
+        (abi-args-begin ret-info)
+        (dotimes (i nparams)
+          (when (!= need-comma 0) (emit os ", "))
+          (abi-print-param-to os
+            (abi-classify-arg ((field-at (ftt 'params) i) 'type))
+            ((field-at (ftt 'params) i) 'type)
+            (symbol-intern (fstr "a" i)))
+          (set! need-comma 1)))
+      (let (obuf:StrView (string-as-view ob))
+        (emit out "define " ret-ir " @" fname ".trace(" obuf ") {\nentry:\n")
+        (emit out "  call i32 (ptr, ...) @printf(ptr @" fname ".trace.enter)\n")
+        (emit out "  %fp = load ptr, ptr @" fname ".trace.impl, align 8\n")
+        (if (or (= ((ftt 'ret) 'kind) TY-VOID)
+                (= ((as ptr:AbiInfo ret-info) 'kind) ABI-MEMORY))
+          (do (emit out "  call void %fp(" obuf ")\n")
+              (emit out "  call i32 (ptr, ...) @printf(ptr @" fname ".trace.exit)\n")
+              (emit out "  ret void\n}\n\n"))
+          (do (emit out "  %r = call " ret-ir " %fp(" obuf ")\n")
+              (emit out "  call i32 (ptr, ...) @printf(ptr @" fname ".trace.exit)\n")
+              (emit out "  ret " ret-ir " %r\n}\n\n")))
+        (drop (addr-of ob))))))
+
+; A JIT'd symbol's address, or 0. The error is consumed rather than reported —
+; each caller tests the address and names what it was looking for.
+(defn jit-lookup-addr (name:StrView out:ptr):void
+  (set! (aref (as ptr:i64 out) 0) 0)
+  (let (err:ptr (LLVMOrcLLJITLookup g-jit out (symbol-as-cstr (symbol-intern name))))
+    (when (!= err null)
+      (LLVMConsumeError err)
+      (set! (aref (as ptr:i64 out) 0) 0))))
+
+; The shim under its own resource tracker, returned so `untrace` can remove it.
+(defn jit-trace-module (line:i32 fname-ir:Symbol ft:(raw Type)):ptr
+  (let (rt:ptr (LLVMOrcJITDylibCreateResourceTracker g-jit-dylib)
+        (s String) (string-new))
+    (emit s "; ModuleID = '<repl-trace>'\n")
+    (emit s "target triple = \"" ((as ptr:Target g-host-target) 'triple) "\"\n\n")
+    (repl-put-preamble s (symbol-none))
+    (emit-fn-trace-shim s fname-ir ft)
+    (let (v:StrView (string-as-view s))
+      (when (> (v 'len) 0)
+        (when (!= (getenv "NUC_REPL_DUMP_IR") null)
+          (emit stderr "----- TRACE IR -----\n" v "----- END -----\n"))
+        (jit-add-module-rt v line rt)))
+    (drop (addr-of s))
+    (return rt)))
 
 ; Build a tiny module containing the @fname thunk + @fname.tgt global, and add
 ; it to the JIT permanently (no resource tracker). This is the stable public
