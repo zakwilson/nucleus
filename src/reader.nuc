@@ -310,8 +310,7 @@
         (when (= tv "escape")    (return (ok (make-char-tok 27 open-line))))
         (when (= tv "backspace") (return (ok (make-char-tok 8 open-line))))
         (when (= tv "delete")    (return (ok (make-char-tok 127 open-line))))
-        (do (report-at open-line (fstr "unknown named char literal '\\" (arena-strndup text len)
-                                       "'"))
+        (do (report-at open-line (fstr "unknown named char literal '\\" tv "'"))
             (return (err! parse-error)))))))
 
 ; Returns 1 if `text` (length `len`) is a float literal in the syntactic
@@ -653,7 +652,7 @@
               j:i32 0)
           (while (< j plen)
             (when (!= (cstr-byte-at g-src (+ g-pos j))
-                      (cstr-byte-at (rm 'prefix) j))
+                      (text-byte-at (rm 'prefix) (as i64 j)))
               (do (set! match 0)
                   (set! j plen)))
             (set! j (+ j 1)))
@@ -824,7 +823,7 @@
 ;   close-kind : TOK-RBRACK or TOK-RBRACE
 ;   open-line  : line of the opening delimiter
 ; Returns the head of the element cell-list (null when empty).
-(defn read-lit-elems (what:ptr close-kind:i32 open-line:i32):!ptr
+(defn read-lit-elems (what:StrView close-kind:i32 open-line:i32):!ptr
   (let (head:ptr null
         tail:ptr null)
     (while (!= 0 1)

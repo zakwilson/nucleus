@@ -214,6 +214,15 @@
   (return (symbol-intern-bytes (as ptr:ui8 (as ptr cs))
                                (as usize (strlen (as ptr cs))))))
 
+; The exact inverse of `symbol-as-cstr`, for a `Symbol` parked in a
+; pointer-shaped slot. Unchecked because nothing in the type says the pointer
+; came from the interner — hashing it back through `symbol-from-cstr` would only
+; re-find the entry it already is.
+(defn symbol-from-cstr-unchecked ((cs CStr)):Symbol
+  (let (s:&Symbol (alloca Symbol))
+    (set! (s 'p) (unsafe/cast (ptr ui8) (as ptr cs)))
+    (return (deref s))))
+
 ; How many distinct names are interned. For diagnostics and the B4 benchmark.
 (defn symbol-count ():usize (return g-sym-count))
 

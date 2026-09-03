@@ -164,7 +164,7 @@
   (print-node (node-at form 1))
   (emit (as ptr stdout) ")\n"))
 
-(defn emit-nuch-header (forms:ptr source-file:ptr):void
+(defn emit-nuch-header (forms:ptr source-file:Symbol):void
   ; Stage 12 N6: a leading `(ns NAME)` / `set-ir-prefix` must take effect BEFORE
   ; the prescans, exactly as emit-toplevel-forms does it, so finalize-generics
   ; (called at the end of prescan-defn-signatures) bakes the namespace-mangled
@@ -244,13 +244,7 @@
 ; ============================================================
 
 ; do-import's extension dispatch (.nuc/.nuch). The comparison is the library's;
-; this only views the path, which stays a C string until the substrate moves.
-(defn str-ends-with (s:CStr suffix:StrView):i32
-  (let (sv:StrView (strview-from-cstr s))
-    (when (strview-ends-with (addr-of sv) (addr-of suffix)) (return 1))
-    (return 0)))
-
-; The `Symbol` overload beside it — a name's bytes are the view, with no `strlen`.
+; this only views the name's bytes, with no `strlen`.
 (defn str-ends-with (s:Symbol suffix:StrView):i32
   (let (sv:StrView (symbol-as-view s))
     (when (strview-ends-with (addr-of sv) (addr-of suffix)) (return 1))

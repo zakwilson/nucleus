@@ -35,6 +35,7 @@ struct Symbol symbol_intern_bytes(uint8_t* src, size_t n) asm("symbol-intern-byt
 struct Symbol symbol_intern_pStrView(void* sv) asm("symbol_intern.pStrView");
 struct Symbol symbol_intern_StrView(struct StrView sv) asm("symbol_intern.StrView");
 struct Symbol symbol_from_cstr(const char* cs) asm("symbol-from-cstr");
+struct Symbol symbol_from_cstr_unchecked(const char* cs) asm("symbol-from-cstr-unchecked");
 size_t symbol_count(void) asm("symbol-count");
 bool eq_Symbol_Symbol(struct Symbol a, struct Symbol b) asm("eq.Symbol.Symbol");
 bool ne_Symbol_Symbol(struct Symbol a, struct Symbol b) asm("ne.Symbol.Symbol");

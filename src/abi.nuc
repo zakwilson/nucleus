@@ -1354,7 +1354,7 @@
         ty:StrView (type-to-ir ret))
     (when (= k ABI-MEMORY)
       (let (slot:StrView (new-tmp)
-            sep:ptr "")
+            sep:StrView "")
         (emit g-entry-stream "  " slot " = alloca " ty "\n")
         (when (> nargs 0) (set! sep ", "))
         (emit g-body-stream "  call void " ir-name "(ptr sret(" ty ") align " (ii 'align) " "
@@ -1562,7 +1562,7 @@
           ; Same width, different signedness — reinterpret (no IR needed)
           (return (alloc-val target (vv 'val))))
         (let (tmp:StrView (new-tmp)
-              instr:ptr null)
+              instr:StrView "")
           (if (< dw sw)
             (set! instr "trunc")
             (if (!= (is-unsigned src) 0)
@@ -1616,7 +1616,7 @@
           (when (= tk TY-F80)  (return (alloc-val target (f80-const-ir (vv 'lit-f64)))))
           (when (= tk TY-F128) (return (alloc-val target (f128-const-ir (vv 'lit-f64)))))))
       (let (tmp:StrView (new-tmp)
-            instr:ptr "fpext")
+            instr:StrView "fpext")
         (when (< (float-width target) (float-width src)) (set! instr "fptrunc"))
         (emit g-body-stream "  " tmp " = " instr " " (type-to-ir src) " " (vv 'val) " to "
               (type-to-ir target) "\n")
@@ -1678,12 +1678,9 @@
 (defn check-ir-name-legal (line:i32 orig-name:Symbol ir-name:StrView):void
   (let (bad:i32 (ir-name-illegal-char ir-name))
     (when (>= bad 0)
-      (let (cbuf:ptr (arena-alloc 2))
-        (set! (aref (as ptr:i8 cbuf) 0) (unsafe/cast i8 bad))
-        (set! (aref (as ptr:i8 cbuf) 1) 0)
-        (die-at line
-          (fstr "illegal character '" cbuf "' in generated symbol for '" orig-name
-                "' (ir-name '" ir-name "') — LLVM identifiers allow only [A-Za-z0-9$._-]")))))
+      (die-at line
+        (fstr "illegal character '" (as Char (as ui32 bad)) "' in generated symbol for '"
+              orig-name "' (ir-name '" ir-name "') — LLVM identifiers allow only [A-Za-z0-9$._-]"))))
   ; W9 item 39: the position half of the same rule. ir-name-token escapes a
   ; leading digit, so reaching here means an ir-name was produced on a path that
   ; skipped it — report it against the definition rather than letting LLVM

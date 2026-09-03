@@ -142,23 +142,6 @@
 ; The two conformances that exist only for the duration of the conversion.
 ; ---------------------------------------------------------------------------
 
-; The compiler's own strings are still bare `ptr` (881 `CStr` mentions and a
-; ~237-reference interned `ptr` substrate, overview.md §1.1), so a `%s` argument
-; reaching `fstr` is a `ptr` far more often than a `CStr`. This conformance reads
-; one as NUL-terminated, exactly as the `snprintf` it replaces did.
-;
-; It is deliberately in `src/`, not `lib/`: a bare `ptr` is not a string, and
-; shipping "every pointer prints as text" in the standard library would turn a
-; type error into silent garbage. Here the only producers are the converted
-; `fmt-*` sites, whose `%s` arguments were C strings by construction — the
-; specifier census over all 636 sites found no `%p` at all. **Delete this when
-; the substrate becomes `StrView`/`Symbol` (phases C6–C7).**
-(extend ptr ToStr)
-(defn to-str (self:ptr (out (ref String))):!void
-  (let (v:StrView (strview-from-cstr (as CStr self)))
-    (string-push-str-unchecked out &v))
-  (return (ok)))
-
 ; Zero-padded hex, the one numeric shape `%d`/`%ld` do not cover: the compiler
 ; prints float bit patterns as `%016lX` / `%04lX` / `%016lx` so LLVM reads them
 ; back exactly. A value type rather than a formatting adverb on `to-str`, since

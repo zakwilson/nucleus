@@ -155,17 +155,8 @@
 ; String literal table
 ; ============================================================
 
-(defn intern-string (bytes:ptr len:i32):i32
-  ; The id is the element's position in g-strs; each StrLit is individually
-  ; arena-allocated and its pointer appended in order.
-  (let (id:i32 (unsafe/cast i32 (count g-strs))
-        sl:ref:StrLit (as ref:StrLit (arena-alloc (sizeof StrLit))))
-    (set! (sl 'bytes) (arena-strndup bytes len))
-    (set! (sl 'len) len)
-    (set! (sl 'id) id)
-    (conj g-strs sl)
-    (return id)))
-
+; The id is the element's position in g-strs; each StrLit is individually
+; arena-allocated and its pointer appended in order.
 (defn intern-string (sv:StrView):i32
   (let (p:ptr:StrView (addr-of sv)
         id:i32 (unsafe/cast i32 (count g-strs))
@@ -224,9 +215,9 @@
   (set! g-label 0)
   (set! g-block-term 0)
   (set! g-lbl-tbl (unsafe/cast (ref (Vector (ref LabelEntry))) (vector-new-in (addr-of g-arena-alloc))))
-  (set! g-cur-fname null)
+  (set! g-cur-fname "")
   (set! g-fn-ret-abi null)
-  (set! g-fn-sret-name null)
+  (set! g-fn-sret-name "")
   (set! g-fn-ret-type null)
   (set! g-loop-depth 0)
   (set! g-nundo (vector-new-in (addr-of g-arena-alloc)))

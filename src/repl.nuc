@@ -49,11 +49,12 @@
 
 ; Print a rendered float on stderr as a Nucleus literal: `.0` is appended unless
 ; the rendering already carries a decimal point, an exponent, or is nan/inf.
-(defn repl-print-float-buf (buf:ptr:i8):void
+(defn repl-print-float (rendered:StrView):void
   (let (i:i64 0
+        n:i64 (as i64 (rendered 'len))
         marked:i32 0)
-    (while (and (= marked 0) (!= (aref buf i) 0))
-      (let (c:i32 (as i32 (aref buf i)))
+    (while (and (= marked 0) (< i n))
+      (let (c:i32 (text-byte-at rendered i))
         (when (or (= c 46)     ; .
                   (= c 101)    ; e
                   (= c 69)     ; E
@@ -62,23 +63,17 @@
           (set! marked 1)))
       (set! i (+ i 1)))
     (if (!= marked 0)
-      (emit stderr "  " (as ptr buf) "\n")
-      (emit stderr "  " (as ptr buf) ".0\n"))))
+      (emit stderr "  " rendered "\n")
+      (emit stderr "  " rendered ".0\n"))))
 
-; Call a JIT'd nullary thunk and print its result. `%.17g` / `%.9g` are the
-; shortest round-trip widths for binary64 / binary32.
+; Call a JIT'd nullary thunk and print its result. `ToStr` renders f64 at
+; `%.17g` and f32 at `%.9g` — the shortest round-trip widths, which is exactly
+; what a REPL echo wants, so there is no format string here at all.
 (defn repl-print-f64 (fp:(fn f64)()):void
-  (let (v:f64 (fp)
-        buf:ptr:i8 (alloca (array i8 64)))
-    (snprintf buf 64 "%.17g" v)
-    (repl-print-float-buf buf)))
+  (repl-print-float (fstr (fp))))
 
 (defn repl-print-f32 (fp:(fn f32)()):void
-  (let (v:f32 (fp)
-        buf:ptr:i8 (alloca (array i8 64)))
-    ; C promotes a `float` variadic argument to `double`; so must this one.
-    (snprintf buf 64 "%.9g" (as f64 v))
-    (repl-print-float-buf buf)))
+  (repl-print-float (fstr (fp))))
 
 ; Print a single character to stderr, JSON-escaping if needed.
 (defn repl-error-json-putc (c:i32):void
@@ -659,7 +654,7 @@
                                         (symbol-none))
                                       (set! need-comma 1))
                                     (when (!= (ft 'variadic) 0)
-                                      (let (sep:ptr "")
+                                      (let (sep:StrView "")
                                         (when (!= need-comma 0) (set! sep ", "))
                                         (emit g-repl-preamble sep "..."))))
                                   (emit g-repl-preamble ")\n"))))))
@@ -797,24 +792,21 @@
 ; `define <ret> @<impl-name>(...) { ... }`. Subsequent occurrences of
 ; `@<fname>(` (self-recursion call sites in the body) are left intact so they
 ; go through the thunk.
-(defn rewrite-first-fname (buf:ptr fname:Symbol impl-name:Symbol (out (ref String))):void
-  (when (= buf null) (return))
+(defn rewrite-first-fname (body:StrView fname:Symbol impl-name:Symbol (out (ref String))):void
   (let (pat:StrView (fstr "@" fname "(")
         rep:StrView (fstr "@" impl-name "(")
-        n:i64 (strlen buf)
+        n:i64 (as i64 (body 'len))
         i:i64 0
         done:i32 0)
     (let (pat-len:i64 (as i64 (pat 'len)))
       (while (and (= done 0) (<= (+ i pat-len) n))
-        (when (= (memcmp (unsafe/ptr+ (as ptr:i8 buf) i) (as ptr (pat 'data)) pat-len) 0)
-          (emit out (strview (unsafe/cast ptr:ui8 buf) (as usize i)) rep)
-          (let (rest-start:i64 (+ i pat-len))
-            (emit out (strview (unsafe/cast ptr:ui8 (unsafe/ptr+ (as ptr:i8 buf) rest-start))
-                               (as usize (- n rest-start)))))
+        (when (= (memcmp (as ptr (unsafe/ptr+ (body 'data) i)) (as ptr (pat 'data)) pat-len) 0)
+          (emit out (strview-take-bytes body (as usize i)) rep)
+          (emit out (strview-drop-bytes body (as usize (+ i pat-len))))
           (set! done 1))
         (set! i (+ i 1)))
       (when (= done 0)
-        (emit out (strview (unsafe/cast ptr:ui8 buf) (as usize n)))))))
+        (emit out body)))))
 
 ; Emit a "thunk" function `@<fname>` that loads the current implementation
 ; pointer from `@<fname>.tgt` and calls it. The thunk is what callers (and
@@ -973,7 +965,7 @@
     ; This module's definitions — optionally renaming the first "@<fname>("
     ; to "@<impl-name>(" so the def is JIT'd under a unique impl symbol.
     (if (and (not (symbol-none? fname)) (not (symbol-none? impl-name)))
-      (rewrite-first-fname (as ptr (string-as-cstr g-def-buf)) fname impl-name irs)
+      (rewrite-first-fname (string-as-view g-def-buf) fname impl-name irs)
       (emit-all irs g-def-buf))
     (let (v:StrView (string-as-view irs))
       (when (> (v 'len) 0)
@@ -1021,13 +1013,13 @@
 ; `keep` (an `@`-prefixed name, or null) is the one exception: a defn's impl
 ; module renamed its own `define` to `@name.impl.N` and calls back through the
 ; thunk, so it declares `@name` without defining it.
-(defn repl-preamble-line-defines-here (buf:ptr a:i64 keep:Symbol):i32
+(defn repl-preamble-line-defines-here (buf:StrView a:i64 keep:Symbol):i32
   (dotimes (k (unsafe/cast i32 (count g-program-defns)))
     (let (pd:ref:ProgDefn (invoke g-program-defns k:usize)
           irn:Symbol (pd 'ir-name)
           l:i64 (as i64 (symbol-len irn)))
-      (when (and (= (memcmp (unsafe/ptr+ (as ptr:i8 buf) a) (as ptr (symbol-as-cstr irn)) l) 0)
-                 (= (cstr-byte-at buf (+ a l)) 40))
+      (when (and (= (memcmp (as ptr (unsafe/ptr+ (buf 'data) a)) (as ptr (irn 'p)) l) 0)
+                 (= (text-byte-at buf (+ a l)) 40))
         (when (or (symbol-none? keep) (!= irn keep))
           (return 1)))))
   (return 0))
@@ -1062,24 +1054,23 @@
   (when (= (count g-program-defns) 0)
     (emit-all out g-repl-preamble)
     (return))
-  (let (pv:StrView (string-as-view g-repl-preamble)
-        buf:ptr (as ptr (pv 'data))
-        n:i64 (as i64 (pv 'len))
+  (let (buf:StrView (string-as-view g-repl-preamble)
+        n:i64 (as i64 (byte-len g-repl-preamble))
         i:i64 0)
     (while (< i n)
       (let (e:i64 i)
-        (while (and (< e n) (!= (cstr-byte-at buf e) 10)) (set! e (+ e 1)))
+        (while (and (< e n) (!= (text-byte-at buf e) 10)) (set! e (+ e 1)))
         (when (< e n) (set! e (+ e 1)))
         (let (drop:i32 0)
           (when (and (>= (- e i) 8)
-                     (= (memcmp (unsafe/ptr+ (as ptr:i8 buf) i) "declare " 8) 0))
+                     (strview-has-prefix (strview-drop-bytes buf (as usize i)) "declare "))
             (let (a:i64 i)
-              (while (and (< a e) (!= (cstr-byte-at buf a) 64)) (set! a (+ a 1)))
+              (while (and (< a e) (!= (text-byte-at buf a) 64)) (set! a (+ a 1)))
               (when (< a e)
                 (set! drop (repl-preamble-line-defines-here buf a keep)))))
           (when (= drop 0)
-            (emit out (strview (unsafe/cast ptr:ui8 (unsafe/ptr+ (as ptr:i8 buf) i))
-                               (as usize (- e i))))))
+            (emit out (strview-take-bytes (strview-drop-bytes buf (as usize i))
+                                          (as usize (- e i))))))
         (set! i e)))))
 
 ; Record — without emitting — that every function Sym from `from` onward is

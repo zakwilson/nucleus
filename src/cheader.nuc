@@ -136,7 +136,7 @@
 ; lower that guard to `strcmp(sig, null)` — the crash conventions.md records.
 (defstruct CDeclSite
   name:Symbol
-  file:ptr
+  file:Symbol
   line:i32
   sig:StrView
   warned:i32
@@ -178,7 +178,7 @@
     (str-into acc ")")
     (return (string-as-view acc))))
 
-(defn cdecl-site-push (list:(raw CDeclSite) fname:Symbol file:ptr line:i32
+(defn cdecl-site-push (list:(raw CDeclSite) fname:Symbol file:Symbol line:i32
                        sig:StrView form:(raw Node)):(raw CDeclSite)
   (let (e:ptr:CDeclSite (new CDeclSite))
     (set! (e 'name) fname)
@@ -224,7 +224,7 @@
                        (= (as ptr (cheader-explicit-declare-site (nn 's))) null))
               (set! g-explicit-declares
                     (cdecl-site-push g-explicit-declares (nn 's)
-                                     (symbol-as-cstr g-source-path) (f 'line) ""
+                                     g-source-path (f 'line) ""
                                      (as raw:Node f)))))))
       (set! fc ((unsafe/cast ptr:Node fc) 'cdr)))))
 
@@ -1135,7 +1135,7 @@
               (set! need-comma 1)
               (inc! j)))
           (when (!= is-variadic 0)
-            (let (sep:ptr "")
+            (let (sep:StrView "")
               (when (!= need-comma 0) (set! sep ", "))
               (emit g-out sep "...")))))
       ; Stage 10 Phase F1: trailing LLVM `noreturn` function attribute.
@@ -2986,11 +2986,10 @@
       (return (fstr "#include \"" h "\"")))
     (return (fstr "#include <" h ">"))))
 
-(defn cheader-note-c-include (h:ptr):void
-  (when (= h null) (return))
-  (let (k:Symbol (symbol-from-cstr (as CStr h)))
-    (when (= (import-list-has g-cheader-c-includes k) 0)
-      (set! g-cheader-c-includes (import-list-push g-cheader-c-includes k)))))
+(defn cheader-note-c-include (h:Symbol):void
+  (when (symbol-none? h) (return))
+  (when (= (import-list-has g-cheader-c-includes h) 0)
+    (set! g-cheader-c-includes (import-list-push g-cheader-c-includes h))))
 
 ; The recorded includes, in DISCOVERY order (import-list-push prepends, so the
 ; list is walked into an array and replayed). Discovery order is emission order,
@@ -3036,7 +3035,7 @@
 ; Every builtin scalar MUST have a row here. A missing row does not fail loudly:
 ; it falls through to the "assume struct" branch below.
 (defn type-name-to-c (name:Symbol):StrView
-  (let ((mapping (ref (HashMap CStr StrView)))
+  (let ((mapping (ref (HashMap StrView StrView)))
         {"void" "void"
          "i8" "int8_t"
          "i16" "int16_t"
@@ -3059,7 +3058,7 @@
          "Err" "int32_t"
          "CStr" "const char*"
          "ptr" "void*"})
-    (match (mapping (symbol-as-cstr name))
+    (match (mapping (symbol-as-view name))
       ((some n) (return n))
       (none
        (do
@@ -3068,7 +3067,7 @@
          ; struct registry, the order parse-type-name uses.
          (when (= (as ptr (struct-lookup-ref name)) null)
            (if-some (td (c-typedef-find name))
-             (do (cheader-note-c-include (symbol-as-cstr (td 'hdr)))
+             (do (cheader-note-c-include (td 'hdr))
                  (return (symbol-as-view name)))
              0))
          (cheader-note-type-file name)
@@ -3407,7 +3406,7 @@
         (case (n 'kind)
           NODE-SYM
             (do
-              (when (strview-has-prefix (strview-from-cstr (symbol-as-cstr (n 's))) "__vfn_env_") (return 1))
+              (when (strview-has-prefix (symbol-as-view (n 's)) "__vfn_env_") (return 1))
               (return 0))
           NODE-CELL
             (let (head:ptr:Node (unsafe/cast ptr:Node (n 'car)))
@@ -3920,7 +3919,7 @@
               (cheader-scan-type-node
                 (extract-type-node (as raw:Node op) (node-line (as ptr op) (f 'line)))))))))))
 
-(defn emit-cheader-header (forms:ptr source-file:ptr):void
+(defn emit-cheader-header (forms:ptr source-file:Symbol):void
   ; Stage 12 N6: a namespaced library's public symbols carry a mangled link name
   ; (`@geom__area`), so the C declarations must use that C-legal spelling — never
   ; the Nucleus source name `geom/area` (not a C identifier). Apply a leading
