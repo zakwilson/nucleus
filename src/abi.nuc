@@ -1533,12 +1533,11 @@
     ; CStr/ptr for free by taking its `data` field — a literal's backing rodata is
     ; NUL-terminated at data[len], so `data` is a valid char*. Mirrors the
     ; CStr<->ptr no-op above (the coexistence hinge that keeps every libc/format
-    ; site working once literals are views). Stage 17 C6: no longer dormant, and
-    ; the NUL guarantee holds only for a literal — a view `fstr` built ends at
-    ; `len` with nothing after it, so `--strict-cstr` counts every one of these.
+    ; site working once literals are views). The NUL guarantee holds only for a
+    ; LITERAL — a view `fstr` built ends at `len` with nothing after it — which is
+    ; why the compiler's own remaining C-string seams take a `Symbol` and not this.
     (when (and (!= (type-is-strview src) 0)
                (!= (strview-borrow-target target) 0))
-      (strict-cstr-check-borrow line)
       (let (d:StrView (new-tmp))
         (emit g-body-stream "  " d " = extractvalue " (type-to-ir src) " " (vv 'val) ", 0\n")
         (return (alloc-val target d))))
@@ -1631,12 +1630,8 @@
     ; specific pair, not "no built-in applies".
     (return (coerce-via-cast-rule v target))))
 
-; Stage 17 C6: `collapse-strlit-cstr` for a branch that feeds a phi, target-typed.
-; Collapsing is right only when nothing downstream wants a view; when the join is
-; known to feed a `StrView` slot the literal has to materialize HERE, in its own
-; branch block, because that is the only place a phi operand may be defined. Left
-; to the join's consumer, `(if c "i16" "i64")` in a StrView-returning function
-; phis bare pointers and the aggregate return then reads past them.
+; A string literal feeding a phi materializes HERE — the only place a phi operand
+; may be defined — unconditionally since C8, so `(if c "a" "b")` is a `StrView`.
 (defn join-strlit-branch (v:ref:Val want:ptr line:i32):ref:Val
   (let (tgt:ptr want)
     (when (or (= tgt null) (= (type-is-strview tgt) 0)) (set! tgt (strview-type)))

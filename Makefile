@@ -105,15 +105,6 @@ test: $(BIN)
 	@rm -rf $(BUILD)/out
 	./tests/run-tests.sh
 
-# Stage 17 D3, temporary: the residual-C-string census over the compiler's own
-# compilation. Deleted at C8 with the flag. The COUNT is the artifact — it must
-# fall every phase — and the histogram is how the next batch gets chosen.
-strict-cstr: $(BIN)
-	@$(BIN) --strict-cstr --emit-llvm src/nucleusc.nuc >/dev/null 2>$(BUILD)/strict-cstr.txt || true
-	@tail -1 $(BUILD)/strict-cstr.txt
-	@grep -o "to '[^']*'\|by '[^']*'" $(BUILD)/strict-cstr.txt | sort | uniq -c | sort -rn | head -25
-	@echo "full report: $(BUILD)/strict-cstr.txt"
-
 # Struct-ABI interop acceptance test (Phase C gate). Not part of `make test`
 # until aggregate ABI lowering lands; see design/stage8/platform.md.
 abi-test: $(BIN)
@@ -283,4 +274,4 @@ uninstall:
 	rm -f $(BINDIR)/nucleusc
 	rm -rf $(DESTDIR)$(PREFIX)/share/nucleus
 
-.PHONY: test strict-cstr abi-test layout-test avr-test riscv-test riscv-abi-test gen-stdlib-table clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders check-headers lib-objs lib-so lib install uninstall
+.PHONY: test abi-test layout-test avr-test riscv-test riscv-abi-test gen-stdlib-table clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders check-headers lib-objs lib-so lib install uninstall

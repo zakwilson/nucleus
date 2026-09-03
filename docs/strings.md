@@ -2,6 +2,27 @@
 
 `(import-use string)` provides the full string stack: the `Char` scalar, the `StrView` borrowed slice, the `String` owning type, UTF-8 encode/decode, split, lines, trim, and `parse`. Individual sub-libraries may be imported when only part of the stack is needed; see the import list at the end of each section.
 
+## Which string type?
+
+Four types, picked by what the value is *for*, not by which is cheapest:
+
+| Need | Type | Where |
+|------|------|-------|
+| Look at bytes you do not own — a slice, a literal, a parameter | `StrView` | [§3](#3--strview--borrowed-bytechar-substrate) |
+| Build or grow text | `String` | [§5](#5--string--owning-type) |
+| A **name**, compared for sameness and used as a key | `Symbol` | [§10](#10--symbol--interned-identity) |
+| Hand a `char*` to C | `CStr` | [Types](types.md#built-in-types) |
+
+`"…"` literals are `StrView`. `Symbol` is the identity type: `=` on two of them
+is one pointer compare, and it is what a compiler-shaped program should use for
+identifiers, field names, paths and scope keys — not a `StrView` it re-compares
+byte by byte, and not a raw `ptr` whose type says nothing. `CStr` is for the FFI
+boundary and nothing else.
+
+**A `StrView` is not NUL-terminated.** A literal's rodata happens to be, and a
+view built from a `CStr` is, but a sub-slice or a formatted result is not — see
+the [gotchas](#gotchas-and-constraints) for what that costs at a C call.
+
 ---
 
 ## §1 — The `Char` scalar
@@ -655,9 +676,70 @@ See `examples/fmt-test.nuc`.
 
 ---
 
+## §10 — `Symbol` — interned identity
+
+`(import-use intern)` for the type and the table; `(import-use intern-str)` for
+its text methods. Full reference: [Standard library — `Symbol`](stdlib.md#symbol-libinternnuc-stage-17).
+
+```lisp
+(defstruct Symbol p:(ptr ui8))
+```
+
+One word, pointing at the first **byte** of an interner allocation laid out
+`[hash:usize][len:usize][bytes…][NUL]`. That is the whole design: `=` is one
+pointer compare, `symbol-len` and the cached hash are loads behind the pointer,
+`symbol-as-view` is `{p, len}` with no allocation, and `symbol-as-cstr` is free
+because the interned bytes are still NUL-terminated.
+
+```lisp
+(let (name:Symbol (symbol-intern "defstruct"))
+  (when (= name (n 's)) …)              ; identity — one icmp
+  (when (= name "defstruct") …)         ; spelling — cached len, then memcmp
+  (println "saw " name))                ; ToStr, through the view
+```
+
+Reach for it when a string is a **name**: something compared for sameness, used
+as a map key, or stored for the life of the process. `Symbol` conforms to `Eq`,
+`Hash`, `ToStr`, `ByteStr` and `Str`, so every method in
+[§4](#4--bytestr-and-str-protocols) works on one at no allocation — but a
+`Symbol` is never freed, so text that is merely *long-lived* wants a `String`
+and text that is transient wants a `StrView`.
+
+`symbol-none?` tests the zero `Symbol` ("no name"), and `symbol-none` mints it,
+for a field or out-parameter that has to *write* the absent case. A `Symbol` is
+never constructed null — `p` is a non-null pointer type — so the zero value is
+only ever read back out of zeroed memory.
+
+## §11 — Writing strings out
+
+`(import-use io)` and `(import-use file)`. Full reference: [I/O](io.md).
+
+Every sink in the library is a [`Writer`](#writer--an-output-sink), so the same
+`write-str` reaches a descriptor, a file, a buffered file or a `String`:
+
+| Sink | Type | Import |
+|------|------|--------|
+| stdout / stderr | `FdOut` (`std-out`, `std-err`) | `io` |
+| a file | `File` | `file` |
+| a file, buffered 64 KiB | `BufWriter` | `file` |
+| memory | `String` | `string` |
+
+```lisp
+(println "expected " want " args, got " got)          ; format + one write
+(let (s:String (str "x=" 42))                         ; …the same pieces, to memory
+  (try (write-str (std-err) (string-as-view s))))
+```
+
+`print`/`println`/`eprint`/`eprintln` take exactly the arguments `str` takes and
+issue one `write` per call. Reading is `read-line` (`(Maybe String)`, terminator
+stripped) and `file-read-to-string` (`!String`, bytes, no UTF-8 validation).
+
+---
+
 ## Gotchas and constraints
 
 - **`?` in function names.** Classification functions use `char-is-ascii` etc. without a `?` suffix. This is a convention of this library only — `?` and `!` are legal in every name position and are mangled to `_QMARK`/`_BANG` in the emitted symbol (see [`?`/`!` in names](generics.md#polymorphism-overloaded-defn-multimethods)).
+- **A `Symbol` is never freed, and interning costs a hash.** The table has no eviction, so a `Symbol` per line of input is a leak with a nice type. Intern names; view or copy everything else. A spelling test needs no intern at all — `(= sym "defstruct")` compares against the literal directly.
 - **`string-as-cstr` writes into the String.** It appends a NUL *past* `len` (reserving if needed) without counting it, so the String is unchanged for every other operation and repeated calls are free — but the returned `CStr` is invalidated by any subsequent append.
 - **`sub-bytes` and `strview-from-cstr` return by value.** Both returned heap-allocated `ptr:StrView` wrappers before Stage 17 A2, when returning a struct payload through `!T` was believed impossible; it is not. Neither allocates now, and neither needs freeing. Their `data` still borrows the source buffer, which must outlive the view.
 - **`SplitIter`/`LineIter` yield segments by value.** They conform to `(Iterator StrView)` since Stage 17 A3, so `doseq-iter` binds each segment as a `StrView` value — pass `(addr-of seg)` to anything taking `(ref StrView)`. The `*-iter-done`/`*-iter-next` pair is still available.
@@ -666,6 +748,6 @@ See `examples/fmt-test.nuc`.
 - **Borrow lifetimes are unchecked.** `ByteIter`, `CharIter`, `SplitIter`, `LineIter`, and sub-views returned by `strview-sub-bytes` all hold raw pointers into their source buffer. There is no compile-time lifetime enforcement — the caller is responsible for keeping the source alive.
 - **A materialized `StrView` at a C variadic call site contributes only its `data` pointer.** Passing a `StrView` value (not a fixed parameter) to a variadic function such as `printf` (`%s`) passes just the `char*`, never the `{data,len}` pair as two variadic slots — otherwise the carried length would occupy an extra vararg slot and shift every later argument's conversion. A *fixed* (non-variadic) `StrView` by-value parameter is unaffected and still receives the full two-eightbyte struct per the platform ABI. See `examples/strview-vararg-test.nuc`.
 - **Coercing a `StrView` to `CStr`/`ptr` (implicitly, or via `as`/`unsafe/cast`) always takes just `data`, unconditionally** — the same trust `strview-to-cstr` above requires: sound only when the view's buffer is actually NUL-terminated at `data[len]`. A string literal and a view built from a `CStr` satisfy this; an arbitrary sub-slice from `strview-sub-bytes` may not.
-- **String literals meeting at a branch decide by their destination, not by each other.** `(if c "one" "two")` yields `CStr` — the two literals collapse to bare pointers so the phi stays pointer-shaped — *unless* the branch is known to feed a `StrView` slot (an explicit or implicit `return` from a `StrView` function, or any position whose target type is armed), in which case each arm materializes its own `{data,len}` and the phi carries the view. The same rule covers `cond` and `match` arms. Where no target type is in view — a `let` with no declared type, say — the result is still `CStr`; spell the binding `sv:StrView` to get a view.
+- **String literals meeting at a branch yield a `StrView`.** `(if c "one" "two")` is a `StrView`, and so are the corresponding `cond` and `match` joins — each arm materializes its own `{data,len}` in its own block, which is the only place a phi operand may be defined. This holds with no target type in view: a `let` with no declared type binds a view, and an argument position binds one too. (Before Stage 17 C8 it depended on the destination, and an unarmed join collapsed to `CStr`.) An explicit `c"…"` in an arm is still a `CStr` — the explicit spelling is never overridden.
 - **A string literal inside a collection literal is a `StrView`.** `#{"a" "b"}` is a `(HashSet StrView)` and `{"foo" 42}` a `(HashMap StrView i32)` — the same type `"…"` has everywhere else. A container declared `(HashSet CStr)` is unaffected: the literal still free-coerces at `insert`/`contains?`, so only the *inferred* element type changed. `StrView`'s `Hash` conformance is in `lib/hash.nuc` beside `CStr`'s, so a string-keyed container needs no import beyond the collection's.
 - **A quoted `c"…"` inside a macro `quasiquote` does not carry its `CStr` marker.** Quoting deliberately does not preserve the flag through expansion, so a quoted `c"…"` reads back as a plain `StrView` literal at the macro's output site. Write the `c"…"` literal directly in code (outside a quasiquote) when the explicit `CStr` spelling matters.

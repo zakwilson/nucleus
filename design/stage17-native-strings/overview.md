@@ -577,7 +577,7 @@ reported line number counts. `setvbuf`/`fflush` on `stdout` **stay** — they or
 the JIT'd program's stdio, not the compiler's, so no `BufWriter` discipline
 replaces them.
 
-**C6 — comparison and scanning.** 201 `strcmp` → `=` on `StrView`/`Symbol`; 42
+**C6 — comparison and scanning. Done 2026-09-01.** 201 `strcmp` → `=` on `StrView`/`Symbol`; 42
 `strncmp` → `starts-with?`; 37 `strchr` + 14 `strstr` → `find-byte`/`byte-find`;
 86 `strlen` deleted against carried lengths; 12 `strdup` → `String`; 6 `strtol` →
 `(parse i64 …)`. This phase is where the `ptr`→`StrView` retypes actually land,
@@ -585,7 +585,7 @@ and where `context/conventions.md`'s identity-vs-content trap is live at every
 site: **the decision procedure is §2.1's first row.** A value that is compared for
 sameness goes to `Symbol`, never to `StrView`.
 
-**C7 — the interned substrate.** `Node.s`, `intern-str`/`intern-symbol`,
+**C7 — the interned substrate. Done 2026-09-02, in five steps.** `Node.s`, `intern-str`/`intern-symbol`,
 scope keys, struct-field names, `Sym.ir-name`, `Method.ir-name` → `Symbol`.
 Highest-risk phase and deliberately last: it changes a type that `lib/node.nuc`
 exports, that the prelude registers, and that the macro JIT resolves against the
@@ -593,12 +593,43 @@ compiler process — so the macro ABI moves with it. The header-behind-the-point
 representation (§2.4) keeps every identity comparison emitting the same
 instruction, which is what makes the IR diff reviewable at all.
 
-**C8 — close-out.** The residual-`CStr` tripwire (§5.5) goes from advisory to
-hard. Remaining `CStr` mentions in `src/` are audited one by one against §2.7's
-list; anything not on it is a bug or an addition to the list, decided explicitly.
-`context/conventions.md`'s string-type-lattice section is rewritten for four
-types, and its `Node.s`-must-stay-`ptr` rule is replaced by the `Symbol` rule.
-`docs/strings.md` gains the `fmt`/`io`/`file`/`intern` sections.
+**C8 — close-out. Done 2026-09-02.** `--strict-cstr`'s census went **678 → 63**
+emitted sites before the tool itself was deleted, and the tripwire that replaces
+it is hard: `scripts/check-cstr.py` counts `CStr` plus 27 libc string/stdio
+entry points per file in `src/` and fails on any difference from
+`scripts/cstr-allowlist.txt` **in either direction**, so a new libc call cannot
+appear silently and a conversion cannot leave the list describing a compiler that
+no longer exists. It runs as the `cstr-residue` unit of `make test`. The
+allowlist is **3 entries / 22 sites**, every one audited against §2.7: `opendir`'s
+path and `readdir`'s `d_name`, `getenv`, `argv`, five LLVM-C message strings, two
+`symbol-from-cstr-unchecked` casts, and one `(= hp 'strdup)` that matches a *name*
+rather than calling the function.
+
+Deleted with the phase: `--strict-cstr` and `src/strict-cstr.nuc` (a scaffold the
+allowlist supersedes — it counted a synthesized `CStr` the source could not show,
+which is what it was for, and that job is over), `scripts/stage17/cstr-seams.txt`,
+the `make strict-cstr` target, `fcstr` and the `ptr` `ToStr` conformance (the last
+two together forced every remaining `ptr`-as-string local to declare itself, which
+is how the tail of the census was found rather than grepped for).
+
+Two changes fell out of the audit: `symbol-from-cstr-unchecked` — the inverse of
+`symbol-as-cstr`, for a `Symbol` parked in a pointer-shaped slot, needed because
+`unsafe/cast` cannot make a struct from a pointer — and the literal-join fix in
+`join-strlit-branch`
+([library-gaps.md §42](library-gaps.md#42-string-literals-meeting-at-a-branch-collapsed-to-cstr--fixed-2026-09-02-c8)).
+
+Docs: `context/conventions.md`'s lattice section is rewritten for four types with
+a pick-by-need table, and its `Node.s`-must-stay-`ptr` rule is marked superseded
+by the `Symbol` rule. `docs/strings.md` gains the pick-by-need table, §10
+(`Symbol`) and §11 (writing strings out); `fmt` is §9 from C1, and `io`/`file`
+are [docs/io.md](../../docs/io.md), cross-referenced rather than duplicated.
+
+**Found, not fixed:** `doc`, `apropos` and `kind-of` are documented
+(`docs/toplevel.md`, `docs/compiler.md`, `docs/builtins.md`, `docs/emacs.md`) and
+exist nowhere in the tree; the `docstring` fields on `Sym` and `MacroDef` are
+dead storage. They were retyped to `Symbol` with honest comments rather than
+deleted — deciding between building the feature and cutting the docs is outside
+this stage.
 
 ### Track D — tooling
 
@@ -678,6 +709,15 @@ A test that greps `src/` for `CStr`, the libc string functions and the stdio
 functions, and fails on any occurrence outside the §2.7 allowlist. Advisory from
 C1 (so the count is visibly monotonic downward), hard at C8. The allowlist is
 per-file-and-symbol, so a new libc call cannot be added silently.
+
+**Built at C8** as `scripts/check-cstr.py` + `scripts/cstr-allowlist.txt`, run by
+the `cstr-residue` unit of `make test`. It compares counts in **both** directions,
+which the spec above did not say and which is the half that matters over time: a
+one-directional check lets the allowlist keep asserting a seam that no longer
+exists, and the next reader trusts it. `;` comments, `"…"` literals and `\c` char
+literals are stripped first — nearly every remaining textual mention of `strcmp`
+or `fprintf` in `src/` is prose about what replaced it, and an emitted `@printf(`
+is IR the compiler *writes*, not a call it makes.
 
 ---
 

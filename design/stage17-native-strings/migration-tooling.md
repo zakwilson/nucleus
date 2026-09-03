@@ -158,7 +158,12 @@ yield is much lower, the script is wrong and fixing it is cheaper than convertin
 ## 3. `--strict-cstr` — the enumerator (temporary compiler modification)
 
 > **Built (2026-09-01): `src/strict-cstr.nuc`, `scripts/stage17/cstr-seams.txt`,
-> `make strict-cstr`.** Baseline over the compiler's own compilation: **4,568
+> `make strict-cstr`. Deleted at C8 (2026-09-02)** — read this section
+> historically. It did the job it was built for and the job ended: the residue is
+> now small enough to *enumerate* rather than count, so `scripts/check-cstr.py`
+> and `scripts/cstr-allowlist.txt` (3 entries / 22 sites, checked in both
+> directions by `make test`) hold the line permanently, at no cost to the
+> compiler. Baseline over the compiler's own compilation: **4,568
 > sites**. Five things came out differently from the sketch below.
 >
 > **The seam test is an allowlist of callee names, not "is it a declared C

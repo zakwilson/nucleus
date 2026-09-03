@@ -5716,6 +5716,22 @@ run_headers_generated() {
   fi
 }
 
+# Stage 17 C8: the compiler's strings are StrView/String/Symbol, and what is left
+# of CStr and libc's str* family in src/ is the FFI boundary itself -- enumerated
+# per file and per token in scripts/cstr-allowlist.txt. Fails in BOTH directions:
+# a new C-string site cannot appear silently, and a conversion that removes one
+# cannot leave the list describing a compiler that no longer exists.
+run_cstr_residue() {
+  local out ec=0
+  out="$(python3 scripts/check-cstr.py 2>&1)" || ec=$?
+  if [ "$ec" -eq 0 ]; then
+    echo "PASS  cstr-residue"
+  else
+    echo "FAIL  cstr-residue"
+    printf '%s\n' "$out" | sed 's/^/    /'
+  fi
+}
+
 # Stage 15 W2a: `(* 2 cl)` and `(* cl 2)` must be indistinguishable. The two
 # fixtures differ only in the operands of a `*` whose right-hand side is a ui32
 # global; before W2a the literal-first spelling typed the product i32 (operand
@@ -7709,6 +7725,7 @@ spawn run_reject_at w3c-declare-rest tests/fixtures/w3c-declare-rest.nuc \
 # --- Stage 15 W4e: docs/stdlib.md's availability table is generated ---------
 spawn run_stdlib_table
 spawn run_headers_generated
+spawn run_cstr_residue
 
 # --- Stage 15 W5c: a `defvar` global may be typed CStr ----------------------
 # design/stage15-stress-test/ergonomics.md §W5c (findings §3.7). The positive
