@@ -595,7 +595,7 @@
   trace-tracker:ptr ; resource tracker for a REPL-installed trace wrapper (LLVM opaque)
   ; The impl address `@<name>.tgt` held before `trace` repointed it, restored by
   ; `untrace`. A JIT'd code address, so `ptr` — the Stage 14 retype to `StrView`
-  ; described a field nothing read (design/stage18-repl-introspection §1.1).
+  ; described a field nothing read (design/stage18-tooling §1.1).
   trace-saved:ptr
   ; The docstring of a `defn` whose body's first form is a string literal, per
   ; docs/toplevel.md. Read by `doc` and `apropos`.

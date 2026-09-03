@@ -697,7 +697,7 @@ None of them is a *user* of the compiler's interactive surface.
 So when the REPL introspection layer — sixteen documented meta forms, 542 lines —
 was dropped by a rebase in 2026-06, all three gates stayed green for fifteen
 months, and it surfaced only when someone typed `(type-of "foo")` at a prompt
-(design/stage18-repl-introspection/overview.md §1.1). There was no removing
+(design/stage18-tooling/overview.md §1.1). There was no removing
 commit to find, either: `git log -S` shows only the additions, because the branch
 that reached HEAD never had them.
 
