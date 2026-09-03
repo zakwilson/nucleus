@@ -216,6 +216,20 @@ Spec: [stage18-repl-introspection/overview.md](stage18-repl-introspection/overvi
 
 ---
 
+## Stage 17 addendum — the `lib/` C-string sweep (2026-09-03)
+
+Register: [stage17-native-strings/overview.md](stage17-native-strings/overview.md) §2.7a, which this sweep wrote. The §5.5 tripwire counts `src/` only, so `lib/` was never enumerated and kept C-shaped spellings the stage had already retired everywhere it looked.
+
+  **Five conversions.** (1) `lib/combinators.nuc`'s `join` took `sep:CStr` and a `(UnaryFn S CStr)` renderer — so every renderer had to produce a NUL-terminated buffer, which for a computed name means building a `String` and parking it. Both are `StrView` now, and the internal `join-push-cstr` (a `strlen` + raw byte push) is `string-push-str-unchecked`. `emit-joined`'s separator likewise; it still prints through `printf`, now `%.*s`, because the caller's `emitf` writes wherever it likes and stdio is the only stream a separator can join without importing a Writer that would buffer independently of it. (2) `keyword-intern` took a `CStr`; a keyword name is a `StrView` and now says so. (3) `bool`'s `ToStr` built its view with `(strview-from-cstr (if self c"true" c"false"))` — a `strlen` per formatted bool, and a workaround for the pre-Stage-17 join rule under which two `StrView` literals meeting at an `if` collapsed to `CStr`. That rule was fixed in C8; the workaround was not removed with it. (4) `lib/node.nuc`'s `InternEntry.spelling` was a bare `ptr` holding an interned `Symbol`'s bytes, so `intern-node` unwrapped the Symbol to store it and `sym-node-hash` built an `alloca Symbol` to wrap it back just to read the cached hash. The field is a `Symbol`; `sym-node-hash` is gone. (5) `arena-strdup` — a `strlen` over an untyped pointer — had **no callers**, and `arena-strndup`'s NUL byte was read by none of its one caller's consumers (`emit-string-table` writes its own `\00` and reads `len` bytes). Both are one `arena-bytes (src:ptr n:i64)`, which is what the function always was.
+
+  **What stays, and why it is not vigilance.** §2.7a closes the `lib/` list at four kinds: the lattice's own `*-from-cstr`/`*-to-cstr` doors (each named for what it is), `strtod` and `snprintf` (no native implementation, decided permanent in §2.6), the three `CStr` conformances (`ToStr`/`Hash`/`Eq` — for a `char*` that arrived from C), and compiler-emitted ABI. That last one is the interesting category: `intern-symbol` and `err-find-handler`'s repair-type token are called from **hand-written IR** in `src/`, so a `StrView` parameter would mean hand-lowering a by-value struct argument per target. Not done, and now said at both sites rather than left to be rediscovered.
+
+  **The library was also teaching the wrong idiom.** `lib/hashmap.nuc` and `lib/hashset.nuc` open with `(HashMap CStr i32)` / `(HashSet CStr)` as *the* usage example. `StrView` now. Nine `examples/` still key collections by `CStr` and ~55 open a view with `(strview-from-cstr "literal")` — a round trip through `strlen` that a literal has not needed since the NS-3 flip. Left alone (the brief was `lib/`), recorded in §2.7a.
+
+  **Snapshot re-baselined (2026-09-03).** Reason: 142 artifacts, every one accounted for by three deltas — `@arena-strdup` removed and `@arena-strndup` renamed with its NUL store dropped (arena is imported almost everywhere, so this reaches 130+ artifacts as an identical hunk), `%InternEntry = type { ptr, ptr }` → `{ %Symbol, ptr }` (layout-identical: `%Symbol` is a one-field `{ ptr }`), and the four converted signatures. 955 tests, bootstrap fixed point, `check-headers` after regenerating the four `lib/*.h`/`.nuch` the signatures moved.
+
+---
+
 ## Stage 17 addendum — platform constants from a C header (2026-09-03)
 
 Spec: [stage17-native-strings/platform-constants.md](stage17-native-strings/platform-constants.md). Closes B3's #28, the one Stage 17 item that was deferred rather than accepted. User rulings: **names verbatim** (no `O_CREAT`→`O-CREAT` translation), and **a leading `_` means private** — skipped unless the import is `unsafe/import-private`.

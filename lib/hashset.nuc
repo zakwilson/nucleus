@@ -9,7 +9,7 @@
 ; ---------------------------------------------------------------------------
 ; USAGE (the working construction pattern):
 ;
-;   (with ((s (ref (HashSet CStr))) (alloca (HashSet CStr)))
+;   (with ((s (ref (HashSet StrView))) (alloca (HashSet StrView)))
 ;     (hashset-init s)                          ; empty, default allocator
 ;     (insert s "dog") (insert s "cat")
 ;     (printf "%d\n" (contains? s "dog"))       ; 1

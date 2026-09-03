@@ -170,7 +170,7 @@
         id:i32 (unsafe/cast i32 (count g-strs))
         sl:ref:StrLit (as ref:StrLit (arena-alloc (sizeof StrLit))))
     (set! (sl 'bytes) (strview (unsafe/cast (ptr ui8)
-                                 (arena-strndup (as ptr (p 'data)) (p 'len)))
+                                 (arena-bytes (as ptr (p 'data)) (p 'len)))
                                (p 'len)))
     (set! (sl 'len) (unsafe/cast i32 (p 'len)))
     (set! (sl 'id) id)

@@ -7,5 +7,4 @@
 (declare arena-grow ((min-size i64)) :void)
 (declare arena-alloc ((n i64)) :ptr)
 (defmacro new (T) (quasiquote (as (ref (unquote T)) (arena-alloc (sizeof (unquote T))))))
-(declare arena-strndup ((s ptr) (n i64)) :ptr)
-(declare arena-strdup ((s ptr)) :ptr)
+(declare arena-bytes ((src ptr) (n i64)) :ptr)

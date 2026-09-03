@@ -10,7 +10,7 @@ typedef struct Keyword {
     struct Symbol sym;
 } Keyword;
 
-struct Keyword keyword_intern(const char* cs) asm("keyword-intern");
+struct Keyword keyword_intern(struct StrView sv) asm("keyword-intern");
 struct StrView keyword_name(struct Keyword self) asm("keyword-name");
 struct Symbol keyword_symbol(struct Keyword self) asm("keyword-symbol");
 bool eq_Keyword_Keyword(struct Keyword a, struct Keyword b) asm("eq.Keyword.Keyword");

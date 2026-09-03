@@ -232,6 +232,36 @@ vigilance:
   C source text — produced as a native `String`, written natively; only the
   `char*`s it names are C).
 
+#### 2.7a The same list for `lib/` (swept 2026-09-03)
+
+§5.5's tripwire covers `src/` only, so `lib/` was never enumerated and drifted:
+`join`'s separator, `keyword-intern`'s argument, `bool`'s `ToStr`, the node
+interner's table key and a dead `arena-strdup` were all still C-shaped after the
+stage closed. What is left is closed and is one of four kinds:
+
+1. **The lattice's own doors.** `symbol-as-cstr` / `symbol-from-cstr[-unchecked]`,
+   `string-as-cstr` / `string-from-cstr[-unchecked]`, `strview-from-cstr` /
+   `strview-to-cstr`, and `cstr-bytes` / `cstr-chars`. Every one names `cstr` in
+   its own name; that is the point of them.
+2. **Calls with no native implementation.** `strtod` (`lib/parse.nuc`) and
+   `snprintf` (`lib/fmt.nuc`'s float printer, §2.6) — both with native
+   interfaces, both permanent by decision.
+3. **The `CStr` conformances** — `ToStr` (`fmt`), `Hash` (`hash`), `Eq`
+   (`numeric`). They exist so a `char*` that arrived *from C* can be formatted,
+   hashed and compared. A Nucleus program should reach for `StrView`, which the
+   library's own usage examples now show.
+4. **Compiler-emitted ABI, which is not a source-level API.** `intern-symbol`
+   (the `'foo` lowering) and `err-find-handler`'s repair-type `token` (with its
+   `strcmp` fallback for separate compilation). Both are called from hand-written
+   IR in `src/`, so making either take a `StrView` means hand-lowering a
+   by-value struct argument per target — a real change, deliberately not made
+   here, and now said so at both sites.
+
+Not in the list, because it is not `lib/`: `examples/` still opens ~55 views with
+`(strview-from-cstr "literal")`, a round trip through `strlen` that a literal has
+not needed since the Stage 14 NS-3 flip made it a `StrView`. Some of those sites
+are deliberate coverage of the conversion API; most are habit.
+
 ---
 
 ## 3. Phases

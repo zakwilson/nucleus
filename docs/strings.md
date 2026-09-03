@@ -158,7 +158,7 @@ See `examples/cstr-lit-test.nuc` for the full contract, including that a plain `
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `strview` | `(data:(ptr ui8) len:usize) → StrView` | The value constructor — a view over `len` bytes at `data`, borrowed. |
-| `strview-from-cstr` | `(cs:CStr) → StrView` | A `StrView` borrowing the CStr's bytes (no copy), returned **by value** — nothing is allocated and nothing needs freeing. The bytes are borrowed from `cs`, which must outlive the view. |
+| `strview-from-cstr` | `(cs:CStr) → StrView` | A `StrView` borrowing the CStr's bytes (no copy), returned **by value** — nothing is allocated and nothing needs freeing. The bytes are borrowed from `cs`, which must outlive the view. **Not for a literal:** `"…"` is already a `StrView`, so `(strview-from-cstr "hi")` is a `strlen` that recomputes a length the compiler emitted. Write `(let (sv:StrView "hi") …)`. |
 | `strview-to-cstr` | `(sv:(ref StrView)) → CStr` | Reinterpret `data` as a CStr. Only sound when the buffer is NUL-terminated at `data[len]` (i.e., built from a CStr or the keyword intern arena). |
 
 ```lisp

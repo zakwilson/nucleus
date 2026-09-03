@@ -155,7 +155,7 @@
 
 (extend bool ToStr)
 (defn to-str (self:bool (out (ref String))):!void
-  (let (v:StrView (strview-from-cstr (if self c"true" c"false")))
+  (let (v:StrView (if self "true" "false"))
     (string-push-str-unchecked out &v))
   (return (ok)))
 

@@ -715,6 +715,29 @@ Two consequences when you work here:
   cautionary case — it was emptied *because* its only reader was already gone,
   and the comment justifying that cited the absence as the argument.
 
+## A workaround outlives the bug it was written against, and a gate that names a directory does not cover the tree
+
+Two halves of one 2026-09-03 finding, both in `lib/`.
+
+Stage 17 C8 fixed the join rule so that `(if c "a" "b")` is a `StrView` (it used
+to collapse to `CStr` unless the destination armed the want channel). `lib/fmt.nuc`'s
+`bool` conformance had been written *around* that rule — `(strview-from-cstr (if
+self c"true" c"false"))`, an explicit pair of C literals and a `strlen` per
+formatted bool — and stayed that way after the rule changed, because nothing
+fails when a workaround merely becomes unnecessary. **Fixing a rule is the moment
+to grep for what was written against it**; the search term is the workaround's
+shape (`strview-from-cstr` on a literal), not the rule's name.
+
+The reason it survived a whole stage is the second half: `scripts/check-cstr.py`
+walks `src/*.nuc`. That is the right scope for what it was built for, and it
+reads as a tree-wide guarantee — so `lib/` kept `join`'s `sep:CStr`, a
+`(UnaryFn S CStr)` renderer, `keyword-intern (cs CStr)`, an interner table keyed
+by a bare `ptr` it cast back into a `Symbol` to hash, and a dead `arena-strdup`,
+all of them the exact spellings the stage existed to remove. When a tripwire's
+scope is narrower than the invariant's, say so where the invariant is stated —
+`design/stage17-native-strings/overview.md` §2.7a is now the `lib/` half of the
+list, since a second script counting a second directory would only move the line.
+
 ## A template function nothing instantiates has never been compiled
 
 `lib/hashset.nuc`'s `hashset-new-in` spelled its allocation
