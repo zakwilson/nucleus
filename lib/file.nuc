@@ -19,15 +19,9 @@
 (import-use string)
 (import-use fmt)
 
-; open(2)'s flags are preprocessor macros, which Nucleus does not yet import, so
-; they are spelled out. These are the **Linux/glibc** values and Darwin's differ,
-; which makes this module Linux-only — a known defect with a designed fix
-; (design/future/platform-constants.md), not a platform limitation.
-(defconst O-RDONLY 0)
-(defconst O-WRONLY 1)
-(defconst O-CREAT 64)      ; 0100
-(defconst O-TRUNC 512)     ; 01000
-(defconst O-APPEND 1024)   ; 02000
+; `O_*` come from the target's own <fcntl.h>, so the values are the emission
+; target's (design/stage17-native-strings/platform-constants.md). `0644` is a
+; literal in every libc, not a macro.
 (defconst MODE-644 420)    ; 0644
 
 (defconst FILE-CHUNK 65536)
@@ -71,14 +65,14 @@
       (return (ok (file fd))))))
 
 (defn file-open-read ((path (ref StrView))):!File
-  (return (file-open-flags path O-RDONLY 0)))
+  (return (file-open-flags path O_RDONLY 0)))
 
 (defn file-create ((path (ref StrView))):!File
-  (return (file-open-flags path (bit-or O-WRONLY (bit-or O-CREAT O-TRUNC))
+  (return (file-open-flags path (bit-or O_WRONLY (bit-or O_CREAT O_TRUNC))
                            MODE-644)))
 
 (defn file-open-append ((path (ref StrView))):!File
-  (return (file-open-flags path (bit-or O-WRONLY (bit-or O-CREAT O-APPEND))
+  (return (file-open-flags path (bit-or O_WRONLY (bit-or O_CREAT O_APPEND))
                            MODE-644)))
 
 ; ---------------------------------------------------------------------------

@@ -14128,6 +14128,110 @@ run_cheader_c_include() {
 }
 spawn run_cheader_c_include
 
+# Stage 17: object-like `#define`s imported as untyped integer constants
+# (design/stage17-native-strings/platform-constants.md). tests/layout/macros.h
+# is the admission table; the POSIX half asserts the values are the ones the C
+# compiler itself sees, which is the property the deleted hardcoded table in
+# lib/file.nuc could not have.
+run_platform_constants() {
+  local d bad want got pre
+  d="$(mktemp -d)"
+
+  bad=0
+  printf '(import-use "tests/layout/macros.h")\n(import-use io)\n(defn main ():i32 (print MP_PUB " " MP_SHIFT " " MP_XOR " " MP_AND " " MP_NEG " " MP_MAX "\\n") (return 0))\n' \
+    > "$d/adm.nuc"
+  if ! ./build/nucleusc "$d/adm.nuc" -o "$d/adm" 2>"$d/adm.err"; then
+    echo "FAIL  s17-cmacro-admitted (compile error)"
+    sed 's/^/    /' "$d/adm.err" | head -4
+    bad=1
+  else
+    got="$("$d/adm")"
+    # MP_PUB folds THROUGH the private _MP_BASE: 010 | 0x20.
+    want="40 16 255 60 -3 9223372036854775807"
+    if [ "$got" != "$want" ]; then
+      echo "FAIL  s17-cmacro-admitted (wrong values)"
+      echo "    expected: $want"
+      echo "    got:      $got"
+      bad=1
+    fi
+  fi
+  [ "$bad" = 0 ] && echo "PASS  s17-cmacro-admitted"
+
+  # Everything that is not an integer constant expression, plus the reserved
+  # name, stays out. `MP_OVER` is the decimal-overflow guard.
+  bad=0
+  for n in _MP_BASE MP_FN MP_STR MP_FLOAT MP_LOGIC MP_OVER; do
+    printf '(import-use "tests/layout/macros.h")\n(import-use io)\n(defn main ():i32 (print %s "\\n") (return 0))\n' \
+      "$n" > "$d/rej.nuc"
+    if ./build/nucleusc "$d/rej.nuc" -o "$d/rej" 2>/dev/null; then
+      echo "FAIL  s17-cmacro-refused ($n was registered)"
+      bad=1
+    fi
+  done
+  # A clang predefine is not the header's macro and must not be registered.
+  pre="$(clang -E -dM -x c /dev/null 2>/dev/null \
+         | sed -n 's/^#define \([A-Za-z][A-Za-z0-9_]*\) .*/\1/p' | head -1)"
+  if [ -n "$pre" ]; then
+    printf '(import-use "tests/layout/macros.h")\n(import-use io)\n(defn main ():i32 (print %s "\\n") (return 0))\n' \
+      "$pre" > "$d/pre.nuc"
+    if ./build/nucleusc "$d/pre.nuc" -o "$d/pre" 2>/dev/null; then
+      echo "FAIL  s17-cmacro-refused (clang predefine '$pre' was registered)"
+      bad=1
+    fi
+  fi
+  [ "$bad" = 0 ] && echo "PASS  s17-cmacro-refused"
+
+  # `unsafe/import-private` is the documented way past the leading-underscore rule.
+  bad=0
+  printf '(unsafe/import-private "tests/layout/macros.h" m)\n(import-use io)\n(defn main ():i32 (print _MP_BASE "\\n") (return 0))\n' \
+    > "$d/priv.nuc"
+  if ! ./build/nucleusc "$d/priv.nuc" -o "$d/priv" 2>"$d/priv.err"; then
+    echo "FAIL  s17-cmacro-private (compile error)"
+    sed 's/^/    /' "$d/priv.err" | head -4
+    bad=1
+  elif [ "$("$d/priv")" != "8" ]; then
+    echo "FAIL  s17-cmacro-private (expected 8, got $("$d/priv"))"
+    bad=1
+  fi
+  [ "$bad" = 0 ] && echo "PASS  s17-cmacro-private"
+
+  # The portability property: the values are whatever THIS platform's headers
+  # say, so the reference is the C compiler, never a table written here.
+  bad=0
+  cat > "$d/ref.c" <<'REFEOF'
+#include <fcntl.h>
+#include <stdio.h>
+#include <time.h>
+int main(void) {
+  printf("%d %d %d %d %d %d %ld\n", O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC,
+         O_APPEND, SEEK_SET, (long)CLOCKS_PER_SEC);
+  return 0;
+}
+REFEOF
+  printf '(import-use "fcntl.h")\n(import-use "stdio.h")\n(import-use "time.h")\n(import-use io)\n(defn main ():i32 (print O_RDONLY " " O_WRONLY " " O_CREAT " " O_TRUNC " " O_APPEND " " SEEK_SET " " CLOCKS_PER_SEC "\\n") (return 0))\n' \
+    > "$d/posix.nuc"
+  if ! clang "$d/ref.c" -o "$d/ref" 2>/dev/null; then
+    echo "PASS  s17-cmacro-posix (SKIP: no clang to produce a reference)"
+  elif ! ./build/nucleusc "$d/posix.nuc" -o "$d/posix" 2>"$d/posix.err"; then
+    echo "FAIL  s17-cmacro-posix (compile error)"
+    sed 's/^/    /' "$d/posix.err" | head -4
+    bad=1
+  else
+    want="$("$d/ref")"
+    got="$("$d/posix")"
+    if [ "$got" != "$want" ]; then
+      echo "FAIL  s17-cmacro-posix (does not match the C compiler)"
+      echo "    cc:  $want"
+      echo "    nuc: $got"
+      bad=1
+    fi
+    [ "$bad" = 0 ] && echo "PASS  s17-cmacro-posix"
+  fi
+
+  rm -rf "$d"
+}
+spawn run_platform_constants
+
 # Stage 17 B2: `read-line` over a buffered fd 0. Not an example — an example
 # inherits the harness's stdin and would block on a terminal — so the input is
 # piped here. The last line deliberately has no terminator, and the blank line

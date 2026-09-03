@@ -6,11 +6,6 @@
 
 /* Generated from lib/file.nuc by nucleusc --emit-cheader */
 
-#define O_RDONLY 0
-#define O_WRONLY 1
-#define O_CREAT 64
-#define O_TRUNC 512
-#define O_APPEND 1024
 #define MODE_644 420
 #define FILE_CHUNK 65536
 typedef struct File {

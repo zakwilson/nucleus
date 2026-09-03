@@ -282,9 +282,11 @@ Register **addresses** live in per-device files — `lib/avr/attiny1634.nuc`,
 each cross-referenced in a comment against the real avr-libc 2.2.1 header it
 came from (`iotn1634.h`, `ioavr32dd20.h`, `iom328p.h`), not hand-derived from
 datasheets. C header import cannot produce these automatically: avr-libc
-declares special function registers (SFRs) as preprocessor macros, not C
-declarations, so `--emit-cheader`/`import-use "<header>.h"` sees nothing to
-extract. Two address conventions appear, and the files note which applies to
+declares special function registers (SFRs) as preprocessor macros — and not the
+kind the importer admits, since `#define PORTB _SFR_IO8(0x05)` expands to a
+volatile *lvalue* rather than to an integer constant expression
+([Integer constants from a C header](compiler.md#integer-constants-from-a-c-header)).
+Two address conventions appear, and the files note which applies to
 each register: classic I/O-space SFRs (`_SFR_IO8`) need avr-libc's
 `__SFR_OFFSET` (`+0x20`) added to get the real data-space address Nucleus's
 `deref` reads and `(deref p)` place writes, while memory-mapped SFRs (`_SFR_MEM`,

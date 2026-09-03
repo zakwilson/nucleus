@@ -625,6 +625,54 @@ declarations it produces have the host's widths and are only as correct as the
 two data models happen to agree. A header that exists on **no** search path is a
 hard, located error at the import, with clang's own diagnosis beneath it.
 
+## Integer constants from a C header
+
+A C header's **object-like `#define`s whose replacement list is an integer
+constant expression** are imported alongside its declarations, under their C
+names, spelled exactly as C spells them:
+
+```lisp
+(import-use "fcntl.h")
+(open path (bit-or O_WRONLY (bit-or O_CREAT O_TRUNC)) 420)
+```
+
+There is no `O_CREAT` → `O-CREAT` translation; that would make one constant have
+two spellings. The values come from the same `clang -E` run the declarations do,
+so under `--target=` they are the **emission target's** — which is the whole
+point: a program that names `O_CREAT` gets `0100` on Linux and `0x200` on Darwin
+without a table anywhere in Nucleus.
+
+An imported constant behaves exactly as a
+[`defconst`](toplevel.md#defconst): an **untyped integer literal** that adapts to
+its use site, so `O_CREAT` meeting an `i32` parameter and `INT64_MAX` meeting an
+`i64` one both work, and an out-of-range narrowing is a compile-time error rather
+than a silent wrap.
+
+**What is imported.** Only what folds. The evaluator handles literals (decimal,
+octal, `0x`, with `u`/`U`/`l`/`L` suffixes), unary `+`/`-`, `* / %`, `+ -`,
+`<< >>`, `& ^ |`, parentheses, casts, `sizeof`, and references to other macros
+from the same header — so `S_IRWXU`, written `(__S_IREAD|__S_IWRITE|__S_IEXEC)`,
+folds even though none of its three parts is importable. Anything else is
+skipped silently: function-like macros (`#define MAX(a,b) …`), string bodies,
+floating-point bodies, `&&`/`||`, and a body that references a macro that did not
+itself fold.
+
+**What is skipped.**
+
+- **Names beginning with `_`** — the identifier space C reserves for the
+  implementation. `__F_GETOWN` is not defined, though `F_GETOWN`, which is
+  written in terms of it, is. Reach them with
+  `(unsafe/import-private "fcntl.h" f)`, which lifts the rule for that import.
+- **The compiler's own predefined macros.** `-dM` reports `linux`, `unix` and
+  `__GNUC__` for every header; importing any header would otherwise define
+  `linux` as a global constant. They are still available for *folding* a
+  header's own macros.
+- **Any name the compilation unit already defines.** A header's macro never
+  displaces a `defn`, `defconst`, or type of yours.
+
+Reading a header therefore costs two `clang` runs (`-E` and `-E -dM`), both
+cached per header path for the whole compilation.
+
 ## Types a header borrows from another unit
 
 A reference to a user type is spelled `struct NAME` in the generated header, and

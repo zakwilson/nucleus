@@ -1,9 +1,4 @@
 ; .nuch header for lib/file.nuc
-(defconst O-RDONLY 0)
-(defconst O-WRONLY 1)
-(defconst O-CREAT 64)
-(defconst O-TRUNC 512)
-(defconst O-APPEND 1024)
 (defconst MODE-644 420)
 (defconst FILE-CHUNK 65536)
 (defstruct File (fd i32))
