@@ -8,7 +8,7 @@
 ; ---------------------------------------------------------------------------
 ; USAGE (the working construction pattern):
 ;
-;   (with ((m (ref (HashMap CStr i32))) (alloca (HashMap CStr i32)))
+;   (with ((m (ref (HashMap StrView i32))) (alloca (HashMap StrView i32)))
 ;     (hashmap-init m)
 ;     (assoc m "one" 1)
 ;     (assoc m "two" 2)

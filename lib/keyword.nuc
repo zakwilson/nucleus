@@ -30,10 +30,10 @@
 
 (defstruct Keyword sym:Symbol)
 
-; The canonical Keyword for the name in `cs`.
-(defn keyword-intern ((cs CStr)):Keyword
+; The canonical Keyword for the name in `sv`.
+(defn keyword-intern (sv:StrView):Keyword
   (let (k:&Keyword (alloca Keyword))
-    (set! (k 'sym) (symbol-from-cstr cs))
+    (set! (k 'sym) (symbol-intern sv))
     (return (deref k))))
 
 ; The keyword's name. Borrowed and process-lived, like every interned view.

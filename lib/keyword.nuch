@@ -1,6 +1,6 @@
 ; .nuch header for lib/keyword.nuc
 (defstruct Keyword (sym Symbol))
-(declare keyword-intern ((cs CStr)) :Keyword)
+(declare keyword-intern ((sv StrView)) :Keyword)
 (declare keyword-name ((self Keyword)) :StrView)
 (declare keyword-symbol ((self Keyword)) :Symbol)
 (extend Keyword Eq)

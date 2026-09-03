@@ -244,7 +244,7 @@ Before Stage 17 this file carried its own intern pool: a fixed 256-entry array w
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `keyword-intern` | `((cs CStr)) -> Keyword` | Look up or insert `cs` and return the canonical `Keyword`. Called implicitly by the compiler for each `:foo` literal; direct calls are valid but unusual. |
+| `keyword-intern` | `(sv:StrView) -> Keyword` | Look up or insert `sv` and return the canonical `Keyword`. Called implicitly by the compiler for each `:foo` literal; direct calls are valid but unusual. |
 | `keyword-name` | `(self:Keyword) -> StrView` | The keyword's name, borrowed (process-lived; do not free). |
 | `keyword-symbol` | `(self:Keyword) -> Symbol` | The underlying interned `Symbol`. |
 

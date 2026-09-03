@@ -104,33 +104,28 @@
 ; bytes rather than a `strcmp`, and the hash is the one the interner cached.
 ; Two tables over the same names would defeat both identities at once.
 
+; The key is the `Symbol` itself, not its bytes pointer: one word either way,
+; but the interner's identity, `=`, cached hash and `symbol-none?` all come with
+; it, where the bare pointer had to be cast back into a Symbol to be hashed.
 (defstruct InternEntry
-  spelling:ptr
-  node:ref:Node)  ; valid whenever spelling is non-null (occupied entry)
+  spelling:Symbol
+  node:ref:Node)  ; valid whenever spelling is not symbol-none (occupied entry)
 
 (defvar g-intern-table:ptr)
 (defvar g-intern-cap:i32 0)
 (defvar g-intern-len:i32 0)
 
-(defn sym-node-place (table:ptr cap:i32 sp:ptr nd:ref:Node h:i64):void
+(defn sym-node-place (table:ptr cap:i32 sp:Symbol nd:ref:Node h:i64):void
   (let (mask:i64 (as i64 (- cap 1))
         j:i64 (bit-and h mask))
     (while (!= 0 1)
       (let (e:ptr:InternEntry (as ptr:InternEntry
                                     (unsafe/ptr+ (as ptr:InternEntry table) (unsafe/cast i32 j))))
-        (when (= (e 'spelling) null)
+        (when (symbol-none? (e 'spelling))
           (set! (e 'spelling) sp)
           (set! (e 'node) nd)
           (return)))
       (set! j (bit-and (+ j 1) mask)))))
-
-; The cached hash of an already-interned pointer. `Symbol` is one word, so this
-; only re-wraps it; there is no constructor because nothing outside the interner
-; may mint one.
-(defn sym-node-hash (sp:ptr):i64
-  (let (sym:&Symbol (alloca Symbol))
-    (set! (sym 'p) (unsafe/cast ptr:ui8 sp))
-    (return (unsafe/cast i64 (symbol-cached-hash (deref sym))))))
 
 (defn sym-node-grow ():void
   (let (old-cap:i32 g-intern-cap
@@ -144,9 +139,9 @@
       (while (< i old-cap)
         (let (e:ptr:InternEntry (as ptr:InternEntry
                                       (unsafe/ptr+ (as ptr:InternEntry old-table) i)))
-          (when (!= (e 'spelling) null)
+          (when (not (symbol-none? (e 'spelling)))
             (sym-node-place new-table new-cap (e 'spelling) (e 'node)
-                            (sym-node-hash (e 'spelling)))))
+                            (unsafe/cast i64 (symbol-cached-hash (e 'spelling))))))
         (inc! i)))))
 
 (defn intern-node (sym:Symbol):ref:Node
@@ -156,22 +151,21 @@
                                          (sizeof InternEntry)))))
   (when (>= (* g-intern-len 2) g-intern-cap)
     (sym-node-grow))
-  (let (canon:ptr (as ptr (sym 'p))
-        mask:i64 (as i64 (- g-intern-cap 1))
+  (let (mask:i64 (as i64 (- g-intern-cap 1))
         j:i64 (bit-and (unsafe/cast i64 (symbol-cached-hash sym)) mask))
     (while (!= 0 1)
       (let (e:ptr:InternEntry (as ptr:InternEntry
                                     (unsafe/ptr+ (as ptr:InternEntry g-intern-table) (unsafe/cast i32 j))))
-        (when (= (e 'spelling) null)
+        (when (symbol-none? (e 'spelling))
           (let (nd:ref:Node (alloc-node))
             (set! (nd 'kind) NODE-SYM)
             (set! (nd 'line) 0)
             (set! (nd 's) sym)
-            (set! (e 'spelling) canon)
+            (set! (e 'spelling) sym)
             (set! (e 'node) nd)
             (inc! g-intern-len)
             (return nd)))
-        (when (= (e 'spelling) canon)
+        (when (= (e 'spelling) sym)
           (return (e 'node))))
       (set! j (bit-and (+ j 1) mask)))))
 

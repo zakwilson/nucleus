@@ -336,10 +336,13 @@
 ; ===========================================================================
 
 ; emit-joined — drive `emitf` once per element (for its side effects, e.g.
-; printing), emitting the `sep` C string between consecutive elements. This is
-; the print-with-separator workhorse the IR-printing loops use. emitf : (UnaryFn
-; S R) for any R (its result is discarded).
-(defn emit-joined ((emitf (ref EF)) sep:CStr (it (ref I))
+; printing), writing `sep` between consecutive elements. emitf : (UnaryFn S R)
+; for any R (its result is discarded).
+;
+; `printf`, not `write-str`: the caller's `emitf` writes wherever it likes, and
+; stdio is the only stream a separator can join without importing a Writer that
+; would buffer independently of it. `%.*s` because a StrView is not NUL-terminated.
+(defn emit-joined ((emitf (ref EF)) sep:StrView (it (ref I))
                         :where ((Iterator S) I)
                                ((UnaryFn S R) EF)):void
   (let (first:i32 1
@@ -347,33 +350,29 @@
     (while (= done 0)
       (match (next it)
         ((some v)
-         (when (= first 0) (printf "%s" sep))
+         (when (= first 0)
+           (printf "%.*s" (unsafe/cast i32 (sep 'len)) (as ptr (sep 'data))))
          (set! first 0)
          (apply emitf v))
         (none (set! done 1))))))
 
-; Internal: append a NUL-terminated C string's bytes to a String.
-(defn join-push-cstr ((s (ref String)) cs:CStr):void
-  (string-push-bytes-raw s
-                         (as (ptr ui8) (as ptr cs))
-                         (as usize (strlen (as ptr cs)))))
-
-; join — build a String by rendering each element to a C string with `renderf`
-; and concatenating the renderings, separated by `sep`. renderf : (UnaryFn S
-; CStr) (its result is borrowed only for the duration of the append). Returns the
-; new String by value (caller drops it).
-(defn join ((renderf (ref RF)) sep:CStr (it (ref I))
+; join — build a String by rendering each element with `renderf` and
+; concatenating the renderings, separated by `sep`. renderf : (UnaryFn S StrView)
+; (its result is borrowed only for the duration of the append). Returns the new
+; String by value (caller drops it).
+(defn join ((renderf (ref RF)) sep:StrView (it (ref I))
                    :where ((Iterator S) I)
-                          ((UnaryFn S CStr) RF)):String
+                          ((UnaryFn S StrView) RF)):String
   (let (out:String (string-new)
         first:i32 1
         done:i32 0)
     (while (= done 0)
       (match (next it)
         ((some v)
-         (when (= first 0) (join-push-cstr (addr-of out) sep))
+         (when (= first 0) (string-push-str-unchecked (addr-of out) (addr-of sep)))
          (set! first 0)
-         (join-push-cstr (addr-of out) (apply renderf v)))
+         (let (r:StrView (apply renderf v))
+           (string-push-str-unchecked (addr-of out) (addr-of r))))
         (none (set! done 1))))
     (return out)))
 
