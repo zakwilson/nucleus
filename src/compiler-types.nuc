@@ -102,7 +102,7 @@
 ; definers were both *silent* omissions).
 (defstruct BindingKind
   kind:i32
-  noun:CStr
+  noun:StrView
   nk:i32
   ; 1 = a binding of this kind participates in the one-symbol-one-kind rule
   ; (`guard-name-kind` probes it). See `build-binding-kinds` for the rows
@@ -575,7 +575,7 @@
   ir-name:StrView
   is-local:i32
   is-const:i32
-  const-val:CStr
+  const-val:StrView
   ; Stage 15 W2b (design/stage15-stress-test/literal-typing.md): this `is-const`
   ; symbol stands for a bare INTEGER LITERAL, so a reference to it adapts at a
   ; use site exactly as the literal it names would (`(<= ans:ui32 K)` compiles
@@ -756,9 +756,9 @@
   lit-f64:f64
   ; Stage 16 FL-3: the literal's own LEXEME, kept beside the f64 value because
   ; a hex float carries more precision than the value does — re-rendering an
-  ; f80/f128 slot from `lit-f64` would silently drop it. Null for every other
-  ; Val (arena zero-init), which is what selects the f64 path below.
-  lit-lex:CStr
+  ; f80/f128 slot from `lit-f64` would silently drop it. `symbol-none` for
+  ; every other Val (arena zero-init), which is what selects the f64 path below.
+  lit-lex:Symbol
   ; Stage 15 W9 item 20: 1 when this Val is the literal `null` (set only by
   ; emit-symbol-ref's `null` arm). Same shape and same reason as is-lit/is-flit
   ; above — the coercion chokepoint needs a fact only the emitter knows, and
@@ -856,8 +856,8 @@
   ; diagnostics; `instr`/`instr-u` are LLVM instruction mnemonics formatted
   ; straight into the IR stream. None are identity-compared.
   name:Symbol
-  instr:CStr
-  instr-u:CStr
+  instr:StrView
+  instr-u:StrView
   is-cmp:i32)
 
 ; ---- Polymorphism (Stage 9) ----
@@ -1049,7 +1049,7 @@
 ; carried one layer further into where its names are looked up.
 (defstruct MonoJob
   (form (raw Node))
-  context:CStr
+  context:StrView
   ns:Symbol
   path:Symbol
   imports:raw:ImportVec)
@@ -1072,7 +1072,7 @@
 
 (defstruct MacroDef
   name:Symbol
-  jit-name:CStr
+  jit-name:Symbol
   num-params:i32
   variadic:i32
   ; --- Stage 8 / REPL introspection additions ---
@@ -1163,13 +1163,13 @@
 ; other target (no `P` token). It gates the AVR-6 function-value diagnostic in
 ; emit-symbol-ref — see design/stage14/avr-targets.md §5 (AVR-6).
 (defstruct Target
-  triple:ptr
-  datalayout:ptr
+  triple:Symbol
+  datalayout:Symbol
   ptr-size:i32
   ptr-align:i32
-  cpu:ptr
-  features:ptr
-  abi:ptr
+  cpu:Symbol
+  features:Symbol
+  abi:Symbol
   prog-as:i32)
 
 ; Stage 14 §14.5 batch 2 — vtable memo entry: replaces the parallel
@@ -1292,6 +1292,13 @@
 ; several strings, or several `fn-attr` calls on the same name). `name` is looked
 ; up by identity, which is what a `Symbol` is; `attr` arrives already interned as
 ; the string literal's own spelling, so it costs nothing to keep one.
+; Stage 15 W3b/W3c, retabled at stage17 C8: a C-header declaration the importer
+; recognized but could not describe. Was a Node cell whose `car` carried the
+; note as a bare pointer, which made the read-back a `strlen` on a view.
+(defstruct CheaderSkip
+  name:Symbol   ; the skipped function's name
+  note:Symbol)  ; "<header>:<line>: <reason>"
+
 (defstruct FnAttrEntry
   name:Symbol ; source function name (fn-attr's target defn)
   attr:Symbol)  ; LLVM string attribute (e.g. "signal", "interrupt")

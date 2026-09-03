@@ -113,7 +113,7 @@
           (let (uesym:?ptr:Sym (scope-lookup g-globals (symbol-intern "unhandled-error")))
             (when (and (!= uesym null)
                        (!= ((unsafe/cast ptr:Sym uesym) 'is-const) 0))
-              (emit-handler-call (strview-from-cstr ((unsafe/cast ptr:Sym uesym) 'const-val))
+              (emit-handler-call ((unsafe/cast ptr:Sym uesym) 'const-val)
                                  (as ptr ty-i32) msg scope line))))
         (emit g-body-stream "  " ftmp " = getelementptr inbounds ["
               (+ (unsafe/cast i32 (strlen fmt)) 1) " x i8], ptr @.str." fmt-id
@@ -234,7 +234,7 @@
         (when (!= (error-lib-in-scope) 0)
           (let (uesym:?ptr:Sym (scope-lookup g-globals (symbol-intern "unhandled-error")))
             (when (and (!= uesym null) (!= ((unsafe/cast ptr:Sym uesym) 'is-const) 0))
-              (emit-handler-call (strview-from-cstr ((unsafe/cast ptr:Sym uesym) 'const-val))
+              (emit-handler-call ((unsafe/cast ptr:Sym uesym) 'const-val)
                                  (as ptr ty-i32) msg scope line))))
         (emit g-body-stream "  " ftmp " = getelementptr inbounds ["
               (+ (unsafe/cast i32 (strlen fmt)) 1) " x i8], ptr @.str." fmt-id

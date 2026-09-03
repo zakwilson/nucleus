@@ -21,6 +21,11 @@
 (defn cstr-byte-at (s:ptr pos:i64):i32
   (return (bit-and (as i32 (aref (as ptr:i8 s) pos)) 255)))
 
+; Its `StrView` peer, for the scanners that bound `i` themselves — the library's
+; `strview-byte-at` returns `!ui8`, a `try` per byte on a per-character loop.
+(defn text-byte-at (text:StrView i:i64):i32
+  (return (bit-and (as i32 (aref (text 'data) i)) 255)))
+
 ; ============================================================
 ; Error reporting
 ; ============================================================
@@ -38,14 +43,14 @@
   (eprint g-source-path ":" line ": error: " msg "\n")
   ; If a generic instantiation is being emitted, point back to it (and its call
   ; site). g-mono-context is null except during the monomorphization drain.
-  (when (!= g-mono-context null)
+  (when (not (str-empty? (addr-of g-mono-context)))
     (eprint "  note: " g-mono-context "\n"))
   ; W9 item 42: a note the diagnosing site staged before calling. Cleared here so
   ; an interactive session, where repl-throw unwinds instead of exiting, cannot
   ; carry it onto an unrelated later error.
-  (when (!= g-diag-note null)
+  (when (not (str-empty? (addr-of g-diag-note)))
     (eprint "  note: " g-diag-note "\n")
-    (set! g-diag-note null))
+    (set! g-diag-note ""))
   (when (!= g-interactive 0)
     (repl-throw))
   (exit 1))
@@ -55,11 +60,11 @@
 ; note), but returns to the caller, which then propagates `(err! parse-error)`.
 (defn report-at (line:i32 msg:StrView):void
   (eprint g-source-path ":" line ": error: " msg "\n")
-  (when (!= g-mono-context null)
+  (when (not (str-empty? (addr-of g-mono-context)))
     (eprint "  note: " g-mono-context "\n"))
-  (when (!= g-diag-note null)
+  (when (not (str-empty? (addr-of g-diag-note)))
     (eprint "  note: " g-diag-note "\n")
-    (set! g-diag-note null)))
+    (set! g-diag-note "")))
 
 ; ============================================================
 ; Bracket-balance tracking (Stage 15 W4c)
@@ -105,7 +110,7 @@
 ; advice is right for a vector/map/set literal too. When there is no column-0
 ; candidate the imbalance is inside the file's last top-level form, and we say
 ; only how many forms were left open — never a bogus second number.
-(defn report-unterminated (open-line:i32 msg:StrView closer:ptr):void
+(defn report-unterminated (open-line:i32 msg:StrView closer:StrView):void
   (report-at open-line msg)
   (if (and (!= g-col0-open-line 0) (!= g-col0-open-line open-line))
     (eprint "  note: line " g-col0-open-line " starts a new form in column 0 while "
@@ -825,9 +830,10 @@
     (while (!= 0 1)
       (let (t:ptr:Tok (as ptr:Tok (try (peek-tok))))
         (when (= (t 'kind) TOK-EOF)
-          (do (report-unterminated open-line (fstr "unterminated " what " literal")
-                (if (= close-kind TOK-RBRACK) "]" "}"))
-              (return (err! parse-error))))
+          (let (closer:StrView "}")
+            (when (= close-kind TOK-RBRACK) (set! closer "]"))
+            (report-unterminated open-line (fstr "unterminated " what " literal") closer)
+            (return (err! parse-error))))
         (when (= (t 'kind) close-kind)
           (do (try (eat-tok)) (return (ok head))))
         (let (child:ptr (try (read-form))

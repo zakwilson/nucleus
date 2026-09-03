@@ -336,21 +336,21 @@
 ; not `c-fn-sig-render`, which lowers through `type-to-ir`: every pointer flavour
 ; would print `ptr` (W9 item 34), and a declaration conflict is precisely a
 ; question about the types, not about what they lower to.
-(defn fn-sig-spelling (ret:ptr ptypes:ptr nparams:i32):ptr
-  (let (acc:ptr "(")
+(defn fn-sig-spelling (ret:ptr ptypes:ptr nparams:i32):StrView
+  (let (acc:StrView "(")
     (dotimes (j nparams)
-      (when (!= j 0) (set! acc (fcstr acc ", ")))
-      (set! acc (fcstr acc (type-spelling (unsafe/cast raw:Type (aref (as ptr:ptr ptypes) j))))))
-    (return (fcstr acc "):" (type-spelling (unsafe/cast raw:Type ret))))))
+      (when (!= j 0) (set! acc (fstr acc ", ")))
+      (set! acc (fstr acc (type-spelling (unsafe/cast raw:Type (aref (as ptr:ptr ptypes) j))))))
+    (return (fstr acc "):" (type-spelling (unsafe/cast raw:Type ret))))))
 
 ; `file:line` of a DEFINITION of `fname` in this unit, or null if it has none —
 ; the second of the two questions the skip below asks (Stage 15 W9 item 36). Only
 ; a `defn` carries a body, so only a definition is located here: a C-header import
 ; and an imported `declare` both answer null, which is the case the skip is FOR.
 ; Same provenance `duplicate-signature-message` uses.
-(defn nuch-definition-site (fname:Symbol):ptr
+(defn nuch-definition-site (fname:Symbol):StrView
   (let (g:?ptr:Generic (generic-lookup fname))
-    (when (= g null) (return null))
+    (when (= g null) (return ""))
     (let (gg:ptr:Generic (as ptr:Generic g)
           i:i32 0)
       (while (< i (unsafe/cast i32 (count (gg 'methods))))
@@ -358,9 +358,9 @@
           (when (and (= (mi 'kind) METHOD-USER) (!= (as ptr (mi 'body)) null))
             (let (f:Symbol (mi 'src-file))
               (when (symbol-none? f) (set! f (symbol-intern "<unknown file>")))
-              (return (fcstr f ":" (-> mi (_ 'body) (unsafe/cast ptr:Node _) (_ 'line)))))))
+              (return (fstr f ":" (-> mi (_ 'body) (unsafe/cast ptr:Node _) (_ 'line)))))))
         (inc! i))
-      (return null))))
+      (return ""))))
 
 ; Item 36's message. Both signatures are printed — they are usually different
 ; types as well as different functions, and seeing both is what makes the clash
@@ -369,26 +369,26 @@
 ; one. Giving the library an `(ns …)` is a real fix rather than advice: its
 ; exports then key as `lib/helper` and link as `@lib__helper`, and the two coexist
 ; (the skip never fires, because the keys differ).
-(defn nuch-declare-conflict-message (fname:Symbol site:ptr params-node:ptr
+(defn nuch-declare-conflict-message (fname:Symbol site:StrView params-node:ptr
                                      ret:ptr line:i32):StrView
   (let (nparams:i32 0
         ptypes:ptr (declare-param-types params-node line (as ptr:i32 (addr-of nparams)))
         prev:ptr (as ptr (scope-lookup-key g-globals fname))
-        theirs:ptr "a value of another kind")
+        theirs:StrView "a value of another kind")
     (when (!= prev null)
       (let (pt:raw:Type ((as ptr:Sym prev) 'type))
         (when (!= pt null)
           (let (ft:ptr:Type (unsafe/cast ptr:Type pt))
             (when (= (ft 'kind) TY-FN)
-              (set! theirs (fcstr fname
-                                 (as CStr (fn-sig-spelling (unsafe/cast ptr (ft 'ret))
-                                        (fn-type-param-array ft) (ft 'num-params))))))))))
+              (set! theirs (fstr fname
+                                 (fn-sig-spelling (unsafe/cast ptr (ft 'ret))
+                                        (fn-type-param-array ft) (ft 'num-params)))))))))
     (return
       (fstr (fstr "declare '" fname "': this compilation unit already defines '" fname
-                  "', at " site:CStr)
+                  "', at " site)
             "\n  note: "
             (fstr "the header declares " fname
-                  (as CStr (fn-sig-spelling ret ptypes nparams)) ", the unit has " theirs:CStr
+                  (fn-sig-spelling ret ptypes nparams) ", the unit has " theirs
                   ". One name is one key here, so nothing — not even a qualified call — would reach the header's. Rename one, or give the library an (ns ...) so its exports key and link under it.")))))
 
 (defn emit-nuch-declare-import (form:(raw Node)):void
@@ -448,7 +448,7 @@
           ; register-and-emit.
           (when (= m NUCH-AFTER)
             (when (= (import-list-has g-nuch-registered
-                       (symbol-from-cstr (nuch-reg-key (symbol-as-cstr g-source-path) fname))) 0)
+                       (nuch-reg-key g-source-path fname)) 0)
               (set! m NUCH-BOTH)))
           ; Skip if already defined (e.g. from include or c-include).
           ; B2b: a KEY question — this is the definition side of the `scope-define`
@@ -474,8 +474,8 @@
                      (!= (scope-lookup-key g-globals fname) null))
             (when (and (not (symbol-none? g-source-path))
                        (!= (str-ends-with g-source-path ".nuch") 0))
-              (let (site:ptr (nuch-definition-site fname))
-                (when (!= site null)
+              (let (site:StrView (nuch-definition-site fname))
+                (when (not (str-empty? (addr-of site)))
                   (die-at (ff 'line)
                     (nuch-declare-conflict-message fname site params-node ret (ff 'line))))))
             (return))
@@ -543,7 +543,7 @@
             (when (= m NUCH-REG)
               (set! g-nuch-registered
                     (import-list-push g-nuch-registered
-                      (symbol-from-cstr (nuch-reg-key (symbol-as-cstr g-source-path) fname))))))
+                      (nuch-reg-key g-source-path fname)))))
           (when (!= m NUCH-REG)
             ; Emit LLVM declare, lowering struct-by-value params/return to the
             ; platform C ABI (sret / byval / register coercion) just like a defn.
