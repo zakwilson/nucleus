@@ -29,8 +29,8 @@
   (printf "ok %d\n" n))
 
 (defn main ():i32
-  ; `setjmp` and `sigsetjmp` are unconditional #defines on glibc, and Nucleus
-  ; consumes C functions but deliberately not C macros - so C source spelling
+  ; `setjmp` and `sigsetjmp` are unconditional FUNCTION-LIKE #defines on glibc,
+  ; which a header import never admits - so C source spelling
   ; `setjmp(e)` reaches `_setjmp`, while a Nucleus `(setjmp e)` would reach the
   ; *function* `setjmp`, i.e. `__sigsetjmp(e, 1)`, which also saves the signal
   ; mask. Spell `_setjmp` to get C's behaviour. (c-header-layout.md §7)

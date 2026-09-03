@@ -701,8 +701,10 @@ Three details are properties of **glibc's headers**, not of the compiler, and
 matter to any program that calls into this family:
 
 * **`setjmp` is a macro on glibc**, unconditionally: `#define setjmp(env)
-  _setjmp (env)`. Nucleus consumes C functions and data structures but not C
-  macros, so a Nucleus `(setjmp env)` reaches the *function* `setjmp` — which is
+  _setjmp (env)`. A C header import admits object-like integer-constant macros
+  ([Integer constants from a C header](compiler.md#integer-constants-from-a-c-header))
+  but never a **function-like** one, so a Nucleus `(setjmp env)` reaches the
+  *function* `setjmp` — which is
   `__sigsetjmp(env, 1)` and additionally saves the signal mask — where C source
   spelling `setjmp(e)` reaches `_setjmp`, which does not. **Spell `_setjmp`
   explicitly to get C's behaviour.**

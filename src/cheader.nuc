@@ -1418,18 +1418,27 @@
     (system (symbol-as-cstr cmd))))
 
 (defn cheader-preprocess (header-path:Symbol out-len:ptr:i64):ptr
+  (return (cheader-preprocess-mode header-path 0 out-len)))
+
+; Stage 17 (platform-constants.md §4): `dump-macros` adds `-dM`, which replaces
+; the preprocessed text with the macro table. Two different answers for one
+; header path, so the cache record's otherwise-unused `line` field keeps them
+; apart.
+(defn cheader-preprocess-mode (header-path:Symbol dump-macros:i32 out-len:ptr:i64):ptr
   (let (cur:ptr g-cheader-cache)
     (while (!= cur null)
       (let (e:ptr:Node (unsafe/cast ptr:Node cur))
-        (when (= (e 's) header-path)
+        (when (and (= (e 's) header-path) (= (e 'line) dump-macros))
           (set! (deref out-len) (e 'i))
           (return (as ptr (e 'car))))
         (set! cur (e 'cdr)))))
-  (let (flags:StrView (cheader-cc-target-flags)
+  (let (mode:StrView ""
+        flags:StrView (cheader-cc-target-flags)
         buf-len:i64 0
         status:i32 0
         buf:ptr null)
-    (set! buf (cheader-run-cpp header-path flags (as ptr:i64 (addr-of buf-len))
+    (when (!= dump-macros 0) (set! mode " -dM"))
+    (set! buf (cheader-run-cpp header-path (fstr flags mode) (as ptr:i64 (addr-of buf-len))
                                (as ptr:i32 (addr-of status))))
     ; C4: a non-zero exit means clang produced only its built-in preamble, so
     ; every name the header declares would go missing with no explanation.
@@ -1439,9 +1448,11 @@
     ; runs. Fall back to the host text, which is exactly the pre-C4 behaviour,
     ; but say so: the widths in it are the host's.
     (when (and (!= status 0) (not (str-empty? (addr-of flags))))
-      (set! buf (cheader-run-cpp header-path "" (as ptr:i64 (addr-of buf-len))
+      (set! buf (cheader-run-cpp header-path mode (as ptr:i64 (addr-of buf-len))
                                  (as ptr:i32 (addr-of status))))
-      (when (= status 0)
+      ; The macro run follows the declaration run for the same header, which has
+      ; already said this.
+      (when (and (= status 0) (= dump-macros 0))
         (eprint "warning: C header '" header-path "' could not be preprocessed for target '"
                 g-target-triple "'; using the HOST's headers, whose type widths may differ\n")
         (eprint "  note: pass --sysroot=<path> naming a sysroot that carries the target's own headers\n"))
@@ -1449,13 +1460,13 @@
     ; Cached as a null buffer like any other answer — the pre-scan and the real
     ; import both ask, and the diagnosis should be printed once.
     (when (!= status 0)
-      (cheader-preprocess-failed header-path flags)
+      (when (= dump-macros 0) (cheader-preprocess-failed header-path flags))
       (set! buf null)
       (set! buf-len 0))
     (when (= buf null) (set! (deref out-len) 0))
     (let (n:ref:Node (new Node))
       (set! (n 'kind) NODE-STR)
-      (set! (n 'line) 0)
+      (set! (n 'line) dump-macros)
       (set! (n 'i) buf-len)
       (set! (n 's) header-path)
       (set! (n 'car) buf)
@@ -1633,7 +1644,8 @@
         (when (or (= c1 120) (= c1 88)) (set! base 16) (set! p (+ p 2)))
         (when (and (= base 10) (!= (isdigit c1) 0)) (set! base 8) (set! p (+ p 1)))))
     (let (start:i64 p
-          more:i32 1)
+          more:i32 1
+          over:i32 0)
       (while (!= more 0)
         (set! more 0)
         (when (< p len)
@@ -1643,10 +1655,16 @@
             (when (and (= base 16) (and (>= c 97) (<= c 102))) (set! d (- c 87)))
             (when (and (= base 16) (and (>= c 65) (<= c 70))) (set! d (- c 55)))
             (when (and (>= d 0) (< (as i64 d) base))
+              (when (or (> v 922337203685477580)
+                        (and (= v 922337203685477580) (> d 7)))
+                (set! over 1))
               (set! v (+ (* v base) (as i64 d)))
               (set! p (+ p 1))
               (set! more 1)))))
-      (when (= p start) (set! (deref ok) 0)))
+      (when (= p start) (set! (deref ok) 0))
+      ; A decimal literal that does not fit i64 is not a value. Hex and octal are
+      ; bit patterns, so `0xffffffffffffffff` keeps wrapping to -1.
+      (when (and (!= over 0) (= base 10)) (set! (deref ok) 0)))
     (let (more:i32 1)
       (while (!= more 0)
         (set! more 0)
@@ -1694,7 +1712,7 @@
         (when (!= (c-cexpr-type-ahead buf (+ p 1) len) 0)
           (return (c-cexpr-unary buf (c-skip-parens buf p len) len out-end ok)))
         (let (e:i64 0
-              v:i64 (c-cexpr-shift buf (+ p 1) len (as ptr:i64 (addr-of e)) ok))
+              v:i64 (c-cexpr-top buf (+ p 1) len (as ptr:i64 (addr-of e)) ok))
           (set! e (c-skip-body-ws buf e len))
           (if (and (< e len) (= (cstr-byte-at buf e) 41))
             (set! e (+ e 1))
@@ -1706,7 +1724,16 @@
         (when (= tok "sizeof")
           (let (q:i64 (c-skip-body-ws buf e len))
             (when (and (< q len) (= (cstr-byte-at buf q) 40))
-              (return (c-cexpr-sizeof buf (+ q 1) len out-end ok))))))
+              (return (c-cexpr-sizeof buf (+ q 1) len out-end ok)))))
+        ; Only while folding macros: `-E` output has every macro already
+        ; expanded, so an identifier in an array extent is an enum member or a
+        ; const object, and resolving it against a same-named macro would be a
+        ; wrong answer rather than a better one.
+        (when (!= g-cmacro-folding 0)
+          (let (mv:i64 0)
+            (when (!= (cmacro-value tok (as ptr:i64 (addr-of mv))) 0)
+              (set! (deref out-end) e)
+              (return mv)))))
       (set! (deref ok) 0)
       (set! (deref out-end) p)
       (return 0))))
@@ -1780,6 +1807,66 @@
                 (set! more 1)))))))
     (set! (deref out-end) e)
     (return v)))
+
+; C's three bitwise levels, `&` tightest. Added for the macro fold
+; (platform-constants.md §4) — `S_IRWXU` is `(__S_IREAD|__S_IWRITE|__S_IEXEC)`.
+; Each refuses the doubled form, or `a && b` would fold as `a & (&b)`.
+(defn c-cexpr-bitand (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
+  (let (e:i64 0
+        v:i64 (c-cexpr-shift buf pos len (as ptr:i64 (addr-of e)) ok)
+        more:i32 1)
+    (while (!= more 0)
+      (set! more 0)
+      (let (p:i64 (c-skip-body-ws buf e len))
+        (when (and (< p len) (= (cstr-byte-at buf p) 38))
+          (when (or (>= (+ p 1) len) (!= (cstr-byte-at buf (+ p 1)) 38))
+            (let (e2:i64 0
+                  r:i64 (c-cexpr-shift buf (+ p 1) len (as ptr:i64 (addr-of e2)) ok))
+              (set! v (bit-and v r))
+              (set! e e2)
+              (set! more 1))))))
+    (set! (deref out-end) e)
+    (return v)))
+
+(defn c-cexpr-bitxor (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
+  (let (e:i64 0
+        v:i64 (c-cexpr-bitand buf pos len (as ptr:i64 (addr-of e)) ok)
+        more:i32 1)
+    (while (!= more 0)
+      (set! more 0)
+      (let (p:i64 (c-skip-body-ws buf e len))
+        (when (and (< p len) (= (cstr-byte-at buf p) 94))
+          (let (e2:i64 0
+                r:i64 (c-cexpr-bitand buf (+ p 1) len (as ptr:i64 (addr-of e2)) ok))
+            (set! v (bit-xor v r))
+            (set! e e2)
+            (set! more 1)))))
+    (set! (deref out-end) e)
+    (return v)))
+
+(defn c-cexpr-bitor (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
+  (let (e:i64 0
+        v:i64 (c-cexpr-bitxor buf pos len (as ptr:i64 (addr-of e)) ok)
+        more:i32 1)
+    (while (!= more 0)
+      (set! more 0)
+      (let (p:i64 (c-skip-body-ws buf e len))
+        (when (and (< p len) (= (cstr-byte-at buf p) 124))
+          (when (or (>= (+ p 1) len) (!= (cstr-byte-at buf (+ p 1)) 124))
+            (let (e2:i64 0
+                  r:i64 (c-cexpr-bitxor buf (+ p 1) len (as ptr:i64 (addr-of e2)) ok))
+              (set! v (bit-or v r))
+              (set! e e2)
+              (set! more 1))))))
+    (set! (deref out-end) e)
+    (return v)))
+
+; The evaluator's entry point. Only the macro fold takes the bitwise levels:
+; `c-array-extent` still enters at `c-cexpr-shift`, so no struct that was opaque
+; before suddenly lays out and no emitted byte moves.
+(defn c-cexpr-top (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
+  (when (= g-cmacro-folding 0) (return (c-cexpr-shift buf pos len out-end ok)))
+  (return (c-cexpr-bitor buf pos len out-end ok)))
 
 ; One `[ … ]` extent, `pos` at the `[`. Sets out-end past the `]`; clears `ok`
 ; for anything that does not fold to a positive i32 count.
@@ -2647,6 +2734,165 @@
         (when (<= pos prev) (set! pos (+ prev 1)))))
     (set! g-cheader-typedef-provisional 0)))
 
+; ============================================================
+; Stage 17: platform constants (platform-constants.md).
+; `#define O_CREAT 0100` is a named integer constant that C had no other way to
+; spell. A `-dM` run gives the emission target's own table; the c-cexpr
+; evaluator above is the admission test, since it fails closed on everything
+; that is not an integer constant expression.
+; ============================================================
+
+; One `#define NAME body` line of a `-dM` dump; `val`/`folded` are filled by the
+; fixed-point pass.
+(defstruct CMacro
+  name:Symbol
+  body-start:i64
+  body-end:i64
+  val:i64
+  folded:i32)
+
+(defvar (g-cmacros (ref (Vector (ref CMacro)))) (vector-new-in (addr-of g-arena-alloc)))
+(defvar (g-cmacro-index (ref (HashMap Symbol (ref CMacro))))
+  (hashmap-new-in (addr-of g-arena-alloc)))
+; clang's own predefines, subtracted before registration: `-include fcntl.h`
+; dumps 739 names of which 398 are `linux`, `unix`, `__GNUC__` and friends.
+; They stay in the fold table, since a header's macros are written in terms of
+; them.
+(defvar (g-cmacro-baseline (ref (HashSet Symbol))) (hashset-new-in (addr-of g-arena-alloc)))
+(defvar g-cmacro-baseline-ready:i32 0)
+(defvar g-cmacro-folding:i32 0)
+(defvar g-cmacro-buf:ptr null)
+
+(defn cheader-macro-reset ():void
+  (let (v:(ref (Vector (ref CMacro))) (vector-new-in (addr-of g-arena-alloc))
+        m:(ref (HashMap Symbol (ref CMacro))) (hashmap-new-in (addr-of g-arena-alloc)))
+    (set! g-cmacros v)
+    (set! g-cmacro-index m)))
+
+; The value of an already-folded macro, for c-cexpr-primary's identifier case.
+(defn cmacro-value (name:Symbol out:ptr:i64):i32
+  (when-some (m (get g-cmacro-index name))
+    (when (!= (m 'folded) 0)
+      (set! (deref out) (m 'val))
+      (return 1)))
+  (return 0))
+
+(defn cmacro-private-name? (name:Symbol):i32
+  (let (sv:StrView (symbol-as-view name)
+        pfx:StrView "_")
+    (when (strview-starts-with (addr-of sv) (addr-of pfx)) (return 1))
+    (return 0)))
+
+; `#define NAME body` on [start,line-end). A `(` immediately after NAME makes it
+; function-like, which stays out (§3.2).
+(defn cheader-macro-line (buf:ptr start:i64 line-end:i64):void
+  (let (p:i64 (c-skip-ws buf start line-end))
+    (when (or (>= p line-end) (!= (cstr-byte-at buf p) 35)) (return))
+    (let (de:i64 0
+          d:Symbol (c-read-ident buf (+ p 1) line-end (as ptr:i64 (addr-of de))))
+      (when (!= d "define") (return))
+      (let (ne:i64 0
+            name:Symbol (c-read-ident buf (c-skip-ws buf de line-end) line-end
+                                      (as ptr:i64 (addr-of ne))))
+        (when (= (symbol-len name) 0) (return))
+        (when (and (< ne line-end) (= (cstr-byte-at buf ne) 40)) (return))
+        (let (m:ref:CMacro (new CMacro))
+          (set! (m 'name) name)
+          (set! (m 'body-start) (c-skip-ws buf ne line-end))
+          (set! (m 'body-end) line-end)
+          (conj g-cmacros m)
+          (assoc g-cmacro-index name m))))))
+
+(defn cheader-macro-scan (buf:ptr len:i64):void
+  (let (p:i64 0)
+    (while (< p len)
+      (let (le:i64 p)
+        (while (and (< le len) (!= (cstr-byte-at buf le) 10)) (set! le (+ le 1)))
+        (cheader-macro-line buf p le)
+        (set! p (+ le 1))))))
+
+; `-dM` replacement lists are UNEXPANDED — `F_GETLK` is the token `F_GETLK64` —
+; so folding is a fixed point, not one pass.
+(defn cheader-macro-fold ():void
+  (let (save-quiet:i32 g-cheader-unrep-quiet
+        more:i32 1)
+    ; A `sizeof` in a macro body may name a type this header never resolved; that
+    ; abandons the macro, and is not a diagnosis the user asked for.
+    (set! g-cheader-unrep-quiet 1)
+    (set! g-cmacro-folding 1)
+    (while (!= more 0)
+      (set! more 0)
+      (dotimes (i (unsafe/cast i32 (count g-cmacros)))
+        (let (m:ref:CMacro (invoke g-cmacros i:usize))
+          (when (= (m 'folded) 0)
+            (let (ok:i32 1
+                  e:i64 0
+                  v:i64 (c-cexpr-top g-cmacro-buf (m 'body-start) (m 'body-end)
+                                     (as ptr:i64 (addr-of e)) (as ptr:i32 (addr-of ok))))
+              ; The body must consume itself: `3.14159` folds its leading `3` and
+              ; stops at the `.`, which would register M_PI as 3.
+              (set! e (c-skip-ws g-cmacro-buf e (m 'body-end)))
+              (when (and (!= ok 0) (= e (m 'body-end)))
+                (set! (m 'val) v)
+                (set! (m 'folded) 1)
+                (set! more 1)))))))
+    (set! g-cmacro-folding 0)
+    (set! g-cheader-unrep-quiet save-quiet)))
+
+; §3.1: names verbatim, predefines out, `_`-prefixed names out unless the import
+; is `unsafe/import-private`, and never over a name that already resolves — a
+; header's macro must not displace what this unit defined. The Sym is a
+; `defconst`'s: an untyped integer literal, so it widens at a use site.
+(defn cheader-macro-register ():void
+  (dotimes (i (unsafe/cast i32 (count g-cmacros)))
+    (let (m:ref:CMacro (invoke g-cmacros i:usize))
+      (when (!= (m 'folded) 0)
+        (let (name:Symbol (m 'name)
+              priv:i32 (cmacro-private-name? name))
+          (when (and (not (contains? g-cmacro-baseline name))
+                     (or (= priv 0) (!= g-import-include-private 0)))
+            (when (= (scope-lookup-key g-globals name) null)
+              (let (sym:ref:Sym (scope-define g-globals name
+                                  (as ptr (int-literal-type (m 'val))) "" 0))
+                (set! (sym 'is-const) 1)
+                (set! (sym 'const-val) (fstr (m 'val)))
+                (set! (sym 'const-lit) 1)
+                (set! (sym 'const-lit-i64) (m 'val))
+                (when (!= priv 0) (set! (sym 'sym-private) 1))))))))))
+
+(defn cheader-macro-baseline-load ():void
+  (when (!= g-cmacro-baseline-ready 0) (return))
+  (set! g-cmacro-baseline-ready 1)
+  (let (cmd:Symbol (symbol-intern (fstr "clang -E -dM" (cheader-cc-target-flags)
+                                        " -x c /dev/null 2>/dev/null"))
+        buf-len:i64 0
+        status:i32 0
+        buf:ptr (read-pipe-output (as ptr (symbol-as-cstr cmd))
+                                  (as ptr:i64 (addr-of buf-len))
+                                  (as ptr:i32 (addr-of status))))
+    (when (or (= buf null) (!= status 0)) (return))
+    (cheader-macro-reset)
+    (cheader-macro-scan buf buf-len)
+    (dotimes (i (unsafe/cast i32 (count g-cmacros)))
+      (let (m:ref:CMacro (invoke g-cmacros i:usize))
+        (insert g-cmacro-baseline (m 'name))))
+    (cheader-macro-reset)))
+
+; Called at the END of an import: a body may cast through a typedef
+; (`CLOCKS_PER_SEC` is `((__clock_t) 1000000)`) that only the declaration pass
+; records.
+(defn cheader-import-macros (header-path:Symbol):void
+  (cheader-macro-baseline-load)
+  (let (buf-len:i64 0
+        buf:ptr (cheader-preprocess-mode header-path 1 (as ptr:i64 (addr-of buf-len))))
+    (when (= buf null) (return))
+    (cheader-macro-reset)
+    (set! g-cmacro-buf buf)
+    (cheader-macro-scan buf buf-len)
+    (cheader-macro-fold)
+    (cheader-macro-register)
+    (cheader-macro-reset)))
+
 (defn emit-c-include (header-path:Symbol line:i32):void
   ; W3a: reset the linemarker provenance for this header. Until the first
   ; `# N "file"` marker is seen, attribute declarations to the header we were
@@ -2792,7 +3038,8 @@
       ; must NOT be freed here (the former `(free buf)` left every later reader
       ; walking freed memory).
       )                                         ; let(pos) close, in let(buf)
-    (emit g-out "\n")))                      ; let(buf-len), defn
+    (emit g-out "\n"))
+  (cheader-import-macros header-path))                      ; let(buf-len), defn
 
 ; ============================================================
 ; C header emission (--emit-cheader)

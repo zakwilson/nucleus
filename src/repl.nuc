@@ -27,8 +27,8 @@
     (when (>= d REPL-MAX-PROTECT)
       (emit stderr "nucleus: repl-protect nested deeper than " REPL-MAX-PROTECT "\n")
       (exit 1))
-    ; `_setjmp`, not `setjmp`: the latter is an unconditional glibc macro, and
-    ; Nucleus consumes C functions but not C macros (docs/structs-unions.md).
+    ; `_setjmp`, not `setjmp`: the latter is an unconditional glibc *function-like*
+    ; macro, which a header import never admits (docs/structs-unions.md).
     (let (env:ptr (alloca (array __jmp_buf_tag 1)))
       (set! (aref g-repl-jmpbufs d) env)
       (set! g-repl-depth (+ d 1))
@@ -113,10 +113,9 @@
           (emit stderr "  error: " msg "\n")))
 
 ; `clock()` for `(time form)`. Declared rather than imported from <time.h>,
-; which would bring a dozen struct types the compiler has no other use for —
-; and `CLOCKS_PER_SEC` would not come with it either (library-gaps.md #28).
-; POSIX fixes it at 1000000 for `clock`, which is what makes the difference
-; already microseconds.
+; which would bring a dozen struct types the compiler has no other use for.
+; POSIX fixes CLOCKS_PER_SEC at 1000000 for `clock`, which is what makes the
+; difference already microseconds.
 (declare clock ():i64)
 
 ; ---------------------------------------------------------------------------

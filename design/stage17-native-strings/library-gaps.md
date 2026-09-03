@@ -435,7 +435,7 @@ type. Regression test: `tests/fixtures/s17-strview-literal-join.nuc`.
 This did **not** need the `macro-conditional-casts.md` MC-2 join absorption it was
 originally filed against: the type join is not where the information is. A join
 sees only the arms; whether a view is wanted is a property of the destination.
-### 28. Nucleus cannot see a C preprocessor macro, so `open(2)`'s flags are hardcoded — **deferred to [future/platform-constants.md](../future/platform-constants.md)**
+### 28. Nucleus cannot see a C preprocessor macro, so `open(2)`'s flags are hardcoded — **fixed, [platform-constants.md](platform-constants.md)**
 `(import-use "fcntl.h")` brings in C *declarations*, deliberately not C macros
 (design/overview.md), so `O_RDONLY`/`O_CREAT`/`O_TRUNC`/`O_APPEND` do not
 resolve. `lib/file.nuc` spells them out as `defconst`s — the **Linux/glibc**
@@ -455,14 +455,19 @@ yields the *target's* values; and `c-cexpr-*` (built for array extents) already
 folds C constant expressions and already fails closed on anything it cannot
 fold, which is exactly the admission test. Full design, including the volume and
 name-mangling decisions, in
-[future/platform-constants.md](../future/platform-constants.md).
+[platform-constants.md](platform-constants.md).
 
-Out of scope for Stage 17: it is a change to the C header importer, not to the
-string stack, and the compiler this stage converts builds on Linux. Until it
-lands, `lib/file.nuc` states the limitation in its header, in `docs/io.md`, and
-here. The same wall has already been hit by `EINTR` (`lib/io.nuc`, which
-therefore does not retry) and `CLOCKS_PER_SEC` (the B4 benchmark), so this is a
-recurring tax, not one library's problem.
+**Built** (2026-09-03), and the deferral is closed. `emit-c-include` now runs a
+second, cached `clang -E -dM` and folds every object-like body through the
+`c-cexpr-*` evaluator to a fixed point, registering what folds as a `defconst`
+would. `lib/file.nuc`'s `O-*` block is gone; so is
+`examples/cheader-posix.nuc`'s, and `CLOCKS_PER_SEC` in the B4 benchmark. The
+whole 2,624-artifact IR snapshot is byte-identical across the change — the
+imported values equal the deleted table's on this host, which is the strongest
+statement available that nothing moved but the source of the numbers.
+
+`EINTR` now resolves too, but `lib/io.nuc` still does not retry: adding the loop
+is a behaviour change, not a portability one, and belongs to whoever needs it.
 
 ### 29. `node-type` did not mirror the new tier-0 dispatch pass — **fixed 2026-09-01 (B3)**
 `(try (write-str f sv))` failed with *"match: arm 'ok' binder count does not

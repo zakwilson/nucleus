@@ -30,14 +30,11 @@
 (defconst N-NAMES 20000)
 (defconst N-LOOKUPS 20)
 
-; `CLOCKS_PER_SEC` is a C macro, which Nucleus does not import (library-gaps.md
-; #28). POSIX fixes it at 1000000 for `clock()`.
-(defconst CLOCKS-PER-SEC 1000000)
 
 ; i64→f64 is lossy past 2^53 and these counts are nowhere near it.
 (defn ms-since (t0:i64):f64
   (return (/ (* (unsafe/cast f64 (- (as i64 (clock)) t0)) 1000.0)
-             (unsafe/cast f64 CLOCKS-PER-SEC))))
+             (unsafe/cast f64 CLOCKS_PER_SEC))))
 
 (defn main ():i32
   ; A corpus of distinct names, built once so no timed loop pays for it. The

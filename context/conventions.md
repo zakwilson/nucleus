@@ -715,6 +715,21 @@ Two consequences when you work here:
   cautionary case — it was emptied *because* its only reader was already gone,
   and the comment justifying that cited the absence as the argument.
 
+## A template function nothing instantiates has never been compiled
+
+`lib/hashset.nuc`'s `hashset-new-in` spelled its allocation
+`(as (ref (HashSet T)) (alloc-handle-alloc …))`, which `as` refuses — the handle
+returns `ptr:ui8`, and reinterpreting it needs `unsafe/cast` (which
+`hashmap-new-in`, three files over, already used). It shipped that way because
+every `(HashSet …)` in the tree comes from a by-value `#{…}` literal, so the
+function's body had never been type-checked, let alone emitted. The first caller
+in two stages found it instantly.
+
+A generic body is source until something stamps it. `make test` passing says
+nothing about a template arm no fixture reaches, and the IR snapshot cannot see
+it either — there is no IR. When you add a template function, add the call, or
+accept that you have written untested text.
+
 ## A wrong value that only reaches a truthiness test is invisible to every gate
 
 The bootstrap fixed point proves the compiler is *self-consistent*, not that it is
@@ -2069,6 +2084,13 @@ niche-encodes `(Maybe ptr:T)` as a nullable pointer (no tag word, null = none).
 branches on a null test and binds `p` as `(ref T)` in the `some` arm. The
 alternatives `if-some`/`when-some`/`unwrap`/`unwrap-or` also work and may be
 more concise for simple cases.
+
+They work **only** there. `emit-if-some` requires `PTR-MAYBE` and says so
+(*"value must be `(Maybe (ref ...))` — launder a raw pointer with `(as-ref ...)`"*),
+so a *value* `Maybe` over a non-pointer `T` — what `(get m k)` returns for a
+`(HashMap Symbol i64)` — has `match` as its only eliminator. The cheap way out is
+usually to make the map's value type a `(ref …)`: `(HashMap Symbol (ref CMacro))`
+keeps `when-some` and hands back the whole record instead of one field.
 
 ## `macros.nuc` is auto-imported — adding macros shifts the string pool
 

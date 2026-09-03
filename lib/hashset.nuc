@@ -125,7 +125,9 @@
     (hashset-init-alloc r a)
     (return (deref r))))
 (defn hashset-new-in ((a (ref AllocHandle))) (ref (HashSet T))
-  (let (v (as (ref (HashSet T))
+  ; `unsafe/cast`, as hashmap-new-in: `as` refuses to reinterpret the handle's
+  ; `ptr:ui8`, so this never instantiated.
+  (let (v (unsafe/cast (ref (HashSet T))
              (alloc-handle-alloc a (sizeof (HashSet T)) 8)))
     (hashset-init-alloc v a)
     (return v)))
