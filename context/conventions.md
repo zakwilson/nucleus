@@ -687,6 +687,34 @@ result is every anonymous C type in the program renamed (42 lines of bootstrap
 diff, Stage 16 PK-3). "Absent" and "zero" are the same shape — the key must say
 so.
 
+## A REPL feature can vanish from a self-hosted compiler without moving one byte of its output
+
+Every gate this project has looks at the **emitted program**: the IR snapshot
+diffs `--emit-llvm`/`--emit-cheader`/`--emit-nuch` text, `make bootstrap` asks
+only that the compiler reproduce itself, and `make test` runs compiled programs.
+None of them is a *user* of the compiler's interactive surface.
+
+So when the REPL introspection layer — sixteen documented meta forms, 542 lines —
+was dropped by a rebase in 2026-06, all three gates stayed green for fifteen
+months, and it surfaced only when someone typed `(type-of "foo")` at a prompt
+(design/stage18-repl-introspection/overview.md §1.1). There was no removing
+commit to find, either: `git log -S` shows only the additions, because the branch
+that reached HEAD never had them.
+
+Two consequences when you work here:
+
+- **A feature with no test is a feature that can silently disappear**, and the
+  snapshot's byte-identity will report success while it does. `tests/repl/*.in`
+  + `tests/expected/repl-*.out` is the harness for anything interactive; use the
+  substring form (`run_repl_meta_loose`) only for output a golden cannot hold —
+  a measured duration, or a listing of every library name.
+- **A dead field is evidence, not litter.** `Sym.docstring` and `Sym.trace-saved`
+  had zero readers because their readers had been deleted out from under them.
+  Before retyping or removing an unread field, `git log -S` its name: if it was
+  once read, the question is what happened to the reader. `Field.name` is the
+  cautionary case — it was emptied *because* its only reader was already gone,
+  and the comment justifying that cited the absence as the argument.
+
 ## A wrong value that only reaches a truthiness test is invisible to every gate
 
 The bootstrap fixed point proves the compiler is *self-consistent*, not that it is

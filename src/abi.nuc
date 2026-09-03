@@ -314,6 +314,16 @@
   (set! (t 'params) (make-param-vec ptypes np))
   (set! (t 'num-params) np))
 
+; Attach source parameter names to an already-built params Vector, for the REPL's
+; `type-of` and `dir`. Separate from `type-set-params` because most fn-type
+; builders have no names to give — a function-pointer type, an `extern` and a C
+; import never had them, and positional `pN` is the honest answer there.
+; Inert to the type system: `fn-sig-eq` compares only each Field's `type`.
+(defn type-set-param-names (t:(raw Type) pnames:ptr np:i32):void
+  (when (= pnames null) (return))
+  (dotimes (i:i32 np)
+    (set! ((field-at (t 'params) i) 'name) (aref (as ptr:Symbol pnames) i))))
+
 ; Check if target is aarch64 (AAPCS64 ABI uses plain pointers for large structs,
 ; not byval attributes).
 (defn abi-is-aarch64 ():i32

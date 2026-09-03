@@ -121,6 +121,18 @@ Prefer the REPL when iteration speed matters more than reproducibility:
 - Every import form answers, since R5. A heredoc that imports N libraries now
   produces N extra lines on stderr; a failed import prints its diagnostic
   instead of a confirmation.
+- **The meta forms are the fast way to interrogate compiler state** (Stage 18;
+  full table in [docs/compiler.md](../docs/compiler.md#repl-meta-forms)). For
+  agent work the three that pay are `(type-of expr)` — the static type of any
+  expression, type-checked but **not** run and not committed to the JIT, so
+  `(type-of (launch-missiles))` is safe; `(locate sym)` — `file:line` of a
+  definition, faster than grepping for a definer whose spelling you would have
+  to guess; and `(kind-of sym)` — `fn`/`macro`/`rmacro`/`var`/`const`/`struct`,
+  which answers "is this name a macro or a function" without reading source.
+  `(doc sym)` and `(apropos needle)` search docstrings. Arguments are **bare**
+  symbols: `(locate 'foo)` is rejected, because the parsed argument is a cell.
+  `kind-of`/`defined?` also take a string, which is the only way to ask about a
+  reader macro — `(kind-of "'")`.
 
 ## Importing a library the compiler itself links
 

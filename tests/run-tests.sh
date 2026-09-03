@@ -104,6 +104,37 @@ run_repl() {  # <src>
   rm -f "$actual_file"
 }
 
+# The three meta forms a golden diff cannot hold: `dir` lists every library name
+# (so any lib change rewrites it), `imports` names the prelude's own import set,
+# and `time` prints a measured duration. Asserted by substring instead — the
+# other thirteen are pinned exactly by tests/repl/meta-introspection.in.
+#
+# Together these are design/stage18-repl-introspection §5.3: the layer they
+# cover was documented, implemented, and silently lost to a rebase in 2026-06
+# because no test named any of it.
+run_repl_meta_loose() {
+  local out fails=""
+  out="$(printf '%s\n' \
+    '(defn zzq (n:i32):i32 (return n))' \
+    '(dir)' \
+    '(imports)' \
+    '(time (zzq 1))' \
+    | ./build/nucleusc -i 2>&1)" || true
+  # dir renders a defn as its signature, in defn spelling.
+  case "$out" in *"(zzq (n:i32):i32)"*) ;; *) fails="$fails dir" ;; esac
+  # imports lists resolved paths, one per line.
+  case "$out" in *"lib/prelude.nuc"*) ;; *) fails="$fails imports" ;; esac
+  # time evaluates the form AND reports a duration.
+  case "$out" in *"; elapsed: "*) ;; *) fails="$fails time-elapsed" ;; esac
+  case "$out" in *"  1"*) ;; *) fails="$fails time-value" ;; esac
+  if [ -z "$fails" ]; then
+    echo "PASS  repl-meta-loose"
+  else
+    echo "FAIL  repl-meta-loose ($fails)"
+    printf '%s\n' "$out" | sed 's/^/    /'
+  fi
+}
+
 # Cross-target emission: each triple in the Phase-B matrix must produce IR
 # carrying the matching `target triple` line. Guards against a backend not
 # being registered (which makes --emit-llvm reject the triple).
@@ -6080,6 +6111,8 @@ for src in tests/repl/*.in; do
   [ -f "tests/expected/repl-$(basename "$src" .in).out" ] || continue
   spawn run_repl "$src"
 done
+
+spawn run_repl_meta_loose
 
 for triple in \
     x86_64-pc-linux-gnu \

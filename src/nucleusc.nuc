@@ -13480,6 +13480,7 @@
                   ir-name))
               (emit g-out ", align " align "\n\n"))
             (let (vsym:ref:Sym (scope-define g-globals name ty ir-name 1))
+              (sym-record-src vsym (cc 'line))
               (when (!= g-ct-emitting 0) (set! ((unsafe/cast ptr:Sym vsym) 'ct-only) 1))
               (when (!= g-defining-private 0) (set! ((unsafe/cast ptr:Sym vsym) 'sym-private) 1))
               ; AVR-6 gap fix: mark the Sym so `set!` can reject writes to
@@ -13543,6 +13544,7 @@
       ; constants "are stored i64 today" was wrong; measured.)
       (let (sym:ref:Sym (scope-define g-globals (name 's)
                           (as ptr (int-literal-type (val 'i))) "" 0))
+        (sym-record-src sym (cc 'line))
         (set! (sym 'is-const) 1)
         (set! (sym 'const-val) (fstr (val 'i)))
         ; W2b: the name stands for the literal — carry the VALUE, not just a
@@ -13618,6 +13620,7 @@
         (conj g-deferror-name-sids name-sid)
         (conj g-deferror-msg-sids msg-sid)
         (let (sym:ref:Sym (scope-define g-globals (name-node 's) (as ptr ty-err) "" 0))
+          (sym-record-src sym (cc 'line))
           (set! (sym 'is-const) 1)
           (set! (sym 'const-val) (fstr id)))
         (return (ok 0))))))
@@ -13703,6 +13706,7 @@
           ; silently winning at every use site.
           (guard-const-redefinition (name 's) (cc 'line))
           (let (sym:ref:Sym (scope-define g-globals (name 's) ty-i32 "" 0))
+            (sym-record-src sym (cc 'line))
             (set! (sym 'is-const) 1)
             (set! (sym 'const-val) (fstr (- i 2)))
             ; Stage 15 W2b: an enum member is a named integer literal too — it
@@ -14280,6 +14284,17 @@
 ; defn
 ; ============================================================
 
+; The docstring of a body whose first form is a string literal (docs/toplevel.md).
+; A body that is ONLY the string is a function returning it, not a documented
+; empty one, so a further form must follow. The literal is left in the body: it
+; is already an inert first statement, and removing it would move emitted IR.
+(defn body-docstring (cc:(raw Node) body-start:i32):Symbol
+  (when (<= (node-len cc) (+ body-start 1)) (return (symbol-none)))
+  (let (first:ptr:Node (unsafe/cast ptr:Node (node-at cc body-start)))
+    (when (and (!= (as ptr first) null) (= (first 'kind) NODE-STR))
+      (return (first 's))))
+  (return (symbol-none)))
+
 (defn emit-defn (call:(raw Node)):void
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
       ; S1: a bare-name (new-style) defn that stops before its return operand gets
@@ -14456,6 +14471,7 @@
           (let (ft:ptr:Type (as ptr:Type (make-type TY-FN)))
             (set! (ft 'ret) ret)
             (type-set-params ft param-types nparams)
+            (type-set-param-names ft param-names nparams)
             (set! (ft 'variadic) 0)
             (set! (ft 'has-rest) has-rest)
             (set! (ft 'nopt) nopt)
@@ -14467,6 +14483,8 @@
               (check-ir-name-legal (cc 'line) fname (symbol-as-view (defn-ir-name fname param-types nparams ret)))
               (let (fsym:ref:Sym (scope-define g-globals fname (as ptr ft)
                                   (symbol-as-view (defn-ir-name fname param-types nparams ret)) 0))
+                (sym-record-src fsym (cc 'line))
+                (set! ((unsafe/cast ptr:Sym fsym) 'docstring) (body-docstring cc body-start))
                 ; Stage 16: the `define` below is going to a sink, so this name is
                 ; registered and undefined. Marked HERE rather than in
                 ; `scope-define` because that is what ct-only means — a C header's
@@ -15035,6 +15053,10 @@
             ; `same-definition-site`.
             (set! (mdef 'src-file) g-source-path)
             (set! (mdef 'src-line) (ff 'line))
+            ; The declared parameter names, for `dir`/`doc` — a `Symbol[]`, the
+            ; same array `compile-macro-body` binds the body against.
+            (set! (mdef 'param-names) pnames)
+            (set! (mdef 'docstring) (body-docstring ff 3))
             (when (!= g-defining-private 0) (set! g-priv-bindings 1))
             (conj g-macros mdef))
 

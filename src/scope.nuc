@@ -56,6 +56,14 @@
       (set! (sc 'len) (+ (sc 'len) 1))
       (return (as ref:Sym sym)))))
 
+; Where a global was defined, for the REPL's `locate`. Called only by the
+; Nucleus definers: an `extern`, a C-header import and a prelude registration
+; genuinely have no source line here, and `locate` says so rather than blaming
+; whichever file was being compiled when they were registered.
+(defn sym-record-src (sym:ref:Sym line:i32):void
+  (set! (sym 'src-file) g-source-path)
+  (set! (sym 'src-line) line))
+
 ; One frame of the chain, scanned newest-first (`scope-define` appends, so the
 ; backwards scan is what makes a redefinition shadow its predecessor — see the
 ; DEFVAR-REACHED note in nucleusc.nuc). `key` is already final: no qualification,
