@@ -119,7 +119,7 @@
 (declare clock ():i64)
 
 ; ---------------------------------------------------------------------------
-; REPL meta forms — design/stage18-repl-introspection/overview.md.
+; REPL meta forms — design/stage18-tooling/overview.md.
 ;
 ; These were built in 2026-05, lost to a rebase a month later, and documented
 ; continuously throughout (docs/compiler.md "REPL meta forms"). Every one is

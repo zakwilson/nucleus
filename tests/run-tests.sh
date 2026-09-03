@@ -2,6 +2,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Bring the compiler up to date BEFORE dispatch. run_example shells out to
+# build.sh, which runs `make` — harmless when the tree is already built, but if
+# any src/*.nuc is newer then 161 parallel jobs relink build/nucleusc while the
+# other jobs are executing it, and every unit dies with "Text file busy".
+make -s
+
 # --- Parallel dispatch ----------------------------------------------------------
 # Test groups run concurrently as independent background jobs, bounded by
 # NUCLEUS_TEST_JOBS (default $(nproc)). Each job buffers its PASS/FAIL line(s)
@@ -109,7 +115,7 @@ run_repl() {  # <src>
 # and `time` prints a measured duration. Asserted by substring instead — the
 # other thirteen are pinned exactly by tests/repl/meta-introspection.in.
 #
-# Together these are design/stage18-repl-introspection §5.3: the layer they
+# Together these are design/stage18-tooling §5.3: the layer they
 # cover was documented, implemented, and silently lost to a rebase in 2026-06
 # because no test named any of it.
 run_repl_meta_loose() {
