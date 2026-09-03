@@ -6,7 +6,7 @@ than on what it compiles.
 | Piece | Sections | State |
 | --- | --- | --- |
 | Restoring the REPL introspection layer | §1–§5 | **Done 2026-09-03** (R0–R7) |
-| A native test framework | §T1–§T7 | **Options only — undecided** |
+| A native test framework | §T1–§T8 | **Options only — undecided** |
 
 ---
 
@@ -273,9 +273,10 @@ three forms have a consumer that composes them.
 # Part two — a native test framework
 
 **Status: options, not a plan.** Nothing here is decided. §T1–§T3 are
-measurements taken against the tree on 2026-09-03; §T4 sets out six options
-against those measurements; §T5 recommends one and says why the other five lose.
-A decision turns §T5 into phases.
+measurements taken against the tree on 2026-09-03; §T4 asks what typed values would
+actually buy over text; §T5 sets out seven options against those measurements;
+§T6 recommends and says why the rest lose.
+A decision turns §T6 into phases.
 
 **Why this is worth doing.** Not to delete shell for its own sake. 14,337 lines
 that work are not, by themselves, a problem worth a stage. Two reasons that are:
@@ -320,7 +321,7 @@ The testing surface is ten scripts, 15,268 lines of shell plus 627 of Python:
 
 Only the first is worth attacking. **`run-tests.sh` is 90% of the problem and
 every other script is either a generator, an audit, or gated on a toolchain the
-runner cannot assume exists.** §T6 argues those 1,558 lines should stay shell
+runner cannot assume exists.** §T7 argues those 1,558 lines should stay shell
 permanently, which makes the addressable target 14,337 — not 15,895.
 
 ### T1.1 What `run-tests.sh` is actually made of
@@ -370,7 +371,7 @@ That is FileCheck's job description, not a regex engine's. A matcher with `*`
 
 - **588 fixtures are written inline** — 292 `<<'EOF'` heredocs and 296
   `printf … >` — against 223 that live on disk in `tests/fixtures/`. 93 of the
-  292 heredocs (32%) contain a `"`, which matters for §T7's embed-or-file
+  292 heredocs (32%) contain a `"`, which matters for §T8's embed-or-file
   question.
 - 168 `mktemp` calls: each unit owns a scratch directory.
 - External tools invoked as part of assertions: `clang` 102, `nm` 21,
@@ -388,7 +389,7 @@ Seven properties, in descending order of how easy they are to lose by accident.
    `bash`; a native runner is *compiled by the compiler under test*. When that
    compiler miscompiles, the runner's verdict is worth nothing — and when it
    fails to compile at all, there is no verdict. This is the one property no
-   amount of engineering recovers, and it caps how much may move. §T5 answers it
+   amount of engineering recovers, and it caps how much may move. §T6 answers it
    with a permanent shell trust anchor rather than pretending it away.
 2. **Concurrency**, per §T1.3's 5.4×.
 3. **Deterministic output.** The current harness buffers each unit's output and
@@ -414,7 +415,7 @@ the language wants anyway, not as an obstacle course between here and a runner:
 - **No process API anywhere in `lib/`.** `popen`/`pclose` exist only as raw
   declares in `src/cheader.nuc:15-16`, feeding `read-pipe-output`; `system` is
   called at two sites. There is no `fork`, `execv`, `posix_spawn` or `waitpid`
-  in the tree. Everything in §T4 except option E needs it — but the sharper point
+  in the tree. Everything in §T5 except option E needs it — but the sharper point
   is that **a self-hosted systems language with no way to run a program is
   incomplete on its own terms.** The compiler itself reaches around the gap with
   raw declares; every user program would have to do the same.
@@ -431,6 +432,13 @@ the language wants anyway, not as an obstacle course between here and a runner:
   `strview-contains`, `strview-starts-with`, `strview-ends-with`,
   `strview-lines`, `strview-split`, `strview-trim` and `strview-eq` already
   cover the 475 `-F`/`-xF`/bare sites outright.
+- **No s-expression reader outside the compiler.** `Node`/`NodeKind` live in
+  `lib/prelude.nuc` and are auto-imported into every program; `lib/node.nuc`
+  operates on them. The only text→`Node` parser is `src/reader.nuc`. The
+  language hands every program the AST type and no way to build one from text —
+  see §T4.6, where this is what blocks the structured-boundary option.
+- **No structured diagnostic.** `die-at` renders and exits (§T4.2, 662 call
+  sites). Wanted by the REPL and by any future LSP independently of testing.
 
 **One thing got cheaper this stage.** Stage 17's C-macro constant import
 (`80d0f61`) means `O_*`, `S_*`, `WNOHANG` and friends now come from the real
@@ -447,7 +455,161 @@ and small enough that the module's shape is decided by evidence rather than by
 guessing at what users might want. The stage-17 rule applies unchanged: when the
 port hits a weakness, **fix the library, do not work around it in the caller.**
 
-## T4. The options
+## T4. Typed values versus text — what the assertions are actually about
+
+A shell test can only see text, so every assertion in `run-tests.sh` is a
+substring probe against a rendered artifact. A native test could see typed
+values. The question is how much of the suite that would actually improve, and
+the answer is not uniform: **for some artifacts text is an accident of the
+process boundary, and for others text is the contract.** Census of all 843
+assertion sites, by what the assertion is *about* rather than by which predicate
+it uses:
+
+| Subject | Sites | Share | Is text the contract? |
+| --- | ---: | ---: | --- |
+| Compiler diagnostics | 250 | 29.7% | **No** — rendered from structure the compiler had and threw away |
+| Emitted IR text | 209 | 24.8% | **Yes** — LLVM consumes the text |
+| Program stdout / exit status | 138 | 16.4% | **Yes** — the program prints bytes |
+| Harness bookkeeping (`$ok`/`$bad`) | 111 | 13.2% | **Not an assertion at all** |
+| Generated C header | 90 | 10.7% | **No** — and the compiler can already parse it back |
+| Generated `.nuch` interface | 28 | 3.3% | **No** — it is Nucleus source |
+| External tool output (`nm`/`objdump`/`file`) | 17 | 2.0% | **Yes** — a foreign tool's text |
+
+### T4.1 The shape of the weakness: 89% of comparisons are substring probes
+
+562 substring probes against 72 whole-value comparisons (21 `diff`/`cmp`, 51
+string equalities). A substring probe cannot say *and nothing else*, and it
+cannot say *in this function*. Two consequences are measurable rather than
+theoretical:
+
+- **63 IR probes are module-scoped.** `qgrep -F 'call i32 @even_QMARK.i32'
+  "$d/main.ll"` asserts the call exists *somewhere in the module*. If it is
+  emitted in the wrong function the test still passes. Nothing in the suite
+  scopes an assertion to a function — the idiom does not exist in the file, and
+  the one unit that needed it (`run-tests.sh:486`) hand-rolled an `awk` range.
+- **105 negative assertions (`! qgrep`) are vacuous-on-drift.** "This symbol must
+  not appear" passes the moment the pattern stops matching for an unrelated
+  reason — a mangling change, a spacing change, a renamed helper. A negative
+  substring probe over rendered text has no way to distinguish *absent* from
+  *spelled differently*, and 105 sites carry that risk today.
+
+### T4.2 Diagnostics: the clearest win, and it needs a compiler change
+
+`die-at` (`src/reader.nuc:33`, **662 call sites**) and `report-at` (`:61`, 26
+sites) take a line and a message, render `path:line: error: msg` plus optional
+`note:` lines to stderr, and — in the fatal case — `exit 1`. **The compiler has
+the structure at the call site and destroys it on the way out.** There is no
+diagnostic record type anywhere in `src/`.
+
+The cost of that shows up in the suite's own driver. `run_reject_at`, the single
+most-used unit in the file at 118 uses, is:
+
+```sh
+err="$(./build/nucleusc --emit-llvm "$fixture" 2>&1 >/dev/null || true)"
+if printf '%s' "$err" | qgrep -F "$loc" && printf '%s' "$err" | qgrep -F "$pattern"; then
+```
+
+Two independent greps over one blob. **Nothing checks that the location and the
+message belong to the same diagnostic** — and this is not a hypothetical, because
+notes carry locations too (`note: 'g4-xbase' is declared at …/g4xa.nuc:2`), so a
+note supplying the expected location while the error says something else at a
+different place satisfies both probes. A `Diagnostic` record with `severity`,
+`path`, `line`, `message` and `notes` makes the assertion one field comparison
+against one value, and the hole closes by construction.
+
+That record is worth building for reasons that have nothing to do with tests: it
+is what the REPL wants instead of catching `repl-throw` after the text has
+already been printed, and it is the precondition for ever speaking LSP. **It is a
+compiler improvement the test framework happens to force** — the same shape as
+the §T3 argument about `lib/process.nuc`.
+
+### T4.3 IR: text is the contract, but the *matcher* should be structured
+
+24.8% of assertions read emitted IR, and the tempting conclusion — assert against
+an IR data structure instead — is wrong on inspection. `emit` is a macro
+(`src/strfmt.nuc:119`) that formats directly into a `String` buffer and flushes
+it to a sink; **there is no IR instruction or module type in the compiler**, and
+there should not be one built for the benefit of tests. The artifact under test
+is a text file that `clang` consumes. Text is the contract.
+
+But they are not all the same thing. Split the 195 of them made with `qgrep`
+(the rest are emptiness and equality checks) by the decision each encodes:
+
+| What the IR probe is really asserting | Sites |
+| --- | ---: |
+| Signature — ABI class, linkage, mangled name (`^define …`) | 76 |
+| Instruction body — a codegen decision | 44 |
+| Global linkage / section / alignment | 16 |
+| Struct layout (`%T = type <{ … }>`) | 14 |
+| Literal contract (`target triple`, `datalayout`) | 7 |
+| Other IR text | 38 |
+
+Only the 7 literal-contract probes are asserting about the text *as text*. The
+other 202 are asserting about a decision — which register class, which linkage,
+which field order — that happens to be observable only in the rendering. For
+those, the useful native structure is not an IR AST but **a scoped matcher**: a
+`lib/test.nuc` that splits a `.ll` module into its `define` blocks and lets an
+assertion name the function it applies to. That is a hundred lines, it retires
+the 63 module-scoped probes of §T4.1, and it does not require the compiler to
+grow a data structure it has no other use for.
+
+### T4.4 Generated interfaces: parse them back with the compiler's own readers
+
+118 sites (90 C header + 28 `.nuch`) grep text the compiler just wrote —
+`qgrep -F '} gt__Pt;' "$d/tylib.h"`, `qgrep -F '(defstruct Pt ' "$d/tylib.nuch"`.
+Both artifacts have a parser in this tree already:
+
+- `.nuch` is **Nucleus source**, read by `src/reader.nuc` and consumed by
+  `src/nuch.nuc` on import.
+- `.h` is C, read by `src/cheader.nuc`'s `c-parse-func-decl` /
+  `c-parse-struct-decl` / `c-parse-typedef-decl`.
+
+So the strongest available assertion for an emitted interface is a round trip:
+*emit it, read it back with the reader that consumes it, and assert on the
+declarations that registered.* That tests the property the artifact actually has
+to satisfy — a consumer can parse it and gets the right decls — where the grep
+tests only that a byte sequence appears somewhere in the file.
+
+### T4.5 The 111 that are not assertions
+
+`$ok`/`$bad`/`$pass` accumulators: 111 of the 172 string equalities exist purely
+because bash has no result type and no exception. Every multi-step unit hand-rolls
+`ok=1 … || ok=0 … if [ "$ok" = 1 ]`. Nucleus has `!T`, `try` and `err!` — this
+category does not get rewritten, it **disappears**, and with it a class of bug the
+shell makes easy and invisible (forgetting one `|| ok=0` makes a step
+unconditionally pass).
+
+### T4.6 The gap this exposes: `Node` is public, but nothing outside the compiler can build one from text
+
+`Node` and `NodeKind` are defined in `lib/prelude.nuc` — auto-imported into every
+Nucleus program — and `lib/node.nuc` gives 11 list operations over them. But the
+only text→`Node` reader in the tree is `src/reader.nuc`, which is compiler
+internals. **The language ships the AST type universally and ships no way to
+parse one**, so any structured-data-across-the-process-boundary scheme (§T5
+option G) and the `.nuch` half of §T4.4 both need a `lib/read.nuc` that does not
+exist. It belongs on the §T3 list, and like the others it is a capability the
+language wants for its own sake: it is the same module a config reader, a
+serializer, or a user's own macro tooling would call.
+
+### T4.7 Verdict
+
+The 843 sites divide three ways, and the split is lopsided enough to be a
+finding rather than a summary:
+
+- **368 become typed comparisons** — 250 diagnostics (needs a `Diagnostic`
+  record, §T4.2) and 118 generated interfaces (needs no new machinery at all,
+  §T4.4). Every one of them is a substring probe today.
+- **111 disappear** — the bookkeeping of §T4.5, replaced by `!T` propagation.
+- **364 stay text** — 209 IR, 138 program output, 17 external tool. Here the
+  upgrade is §T4.3's scoped matcher, not a type.
+
+So a native suite is meaningfully better on 57% of its assertions and no better
+on the rest. The distinguishing question is not "could this be typed?" but
+**"who consumes this artifact?"** When the consumer is `clang`, a shell, or a
+human reading stdout, text is the contract, and the honest gain is a matcher that
+can scope and a runner that can propagate — not a type.
+
+## T5. The options
 
 ### A. Leave it in shell
 **Buys:** nothing new; keeps property T2.1 for free.
@@ -458,7 +620,7 @@ empirically, and no dogfooding of the language on its own largest tool.
 start a process, and a user asking "how do I test Nucleus code?" is still told to
 write bash.
 **Verdict:** rejected on the goal, not on the measurement. It remains the
-baseline every option's *output* is diffed against (§T5.1) — that is a different
+baseline every option's *output* is diffed against (§T6.1) — that is a different
 job from being a candidate.
 
 ### B. Extract the declarative tests to manifests, keep bash
@@ -489,7 +651,7 @@ not mechanical.
 **Cannot:** satisfy T2.1 alone.
 **Verdict:** the destination. Its first two-thirds — the modules and the
 facility — are worth building even if the port stalls halfway, which is what
-makes the staging in §T5 safe rather than merely optimistic.
+makes the staging in §T6 safe rather than merely optimistic.
 
 ### D. Declarative s-expression manifest + a small native driver
 Tests become data the compiler's own reader parses.
@@ -541,10 +703,30 @@ things to understand instead of one.
 **Verdict:** the first step option C needs — and, on its own, the step that
 delivers the most missing capability per line written.
 
-## T5. Recommendation
+### G. Structured output across the process boundary
+The subprocess boundary is what flattens everything to text, so move structure
+*across* it rather than giving it up: the compiler gains a machine-readable
+diagnostic mode emitting one s-expression per diagnostic, the runner reads it
+back with `lib/read.nuc` into `Node`s (§T4.6), and assertions compare fields.
+Generated `.nuch` and `.h` get the same treatment for free via §T4.4's round
+trip.
+**Buys:** §T4.7's 368 typed comparisons — 44% of all assertions — while keeping
+every property of §T2: still a subprocess, still isolated, still concurrent,
+still able to report on a compiler that crashed. It is option E's evidence
+quality without option E's isolation hazard.
+**Costs:** a `Diagnostic` record and an emitter in the compiler; `lib/read.nuc`;
+and a second output format to keep working, which is a real maintenance surface
+rather than a free win.
+**Cannot:** help the 364 sites where text is the contract (§T4.3).
+**Verdict:** not a standalone option — it is the assertion-quality half of C,
+and the reason C is worth more than "the same tests, in Nucleus". Its two
+prerequisites are both capabilities the language wants anyway, which is the
+pattern this whole stage keeps running into.
 
-**F, then C, with E as a separate track and a permanent shell trust anchor.**
-Ordered so that each step is gated by the step before it:
+## T6. Recommendation
+
+**F, then C with G folded in, with E as a separate track and a permanent shell
+trust anchor.** Ordered so that each step is gated by the step before it:
 
 1. **F1 — `lib/process.nuc` and a native dispatcher.** Spawn, wait, capture
    stdout/stderr; a bounded job pool; per-unit result buffering; replay in
@@ -557,29 +739,41 @@ Ordered so that each step is gated by the step before it:
 3. **C1 — `lib/test.nuc`, designed as the public facility.** The six predicates
    of §T1.2 and nothing else, with the matcher a wildcard glob rather than a
    regex engine (§T1.2's 76 patterns need `*`, anchors and alternation). Failure
-   rendering lives here, so §T2.4 is one implementation instead of 599.
+   rendering lives here, so §T2.4 is one implementation instead of 599. Add
+   §T4.3's one structural affordance — split a `.ll` module into its `define`
+   blocks so an assertion can name the function it applies to — which is the only
+   thing the 209 text-by-contract IR sites actually want, and which retires the
+   63 module-scoped probes.
    *This is the step that answers reason 2*, so it is finished only when it is
    documented in `docs/` and there is an `examples/` program that declares and
    runs its own tests without touching the compiler's harness. A module the
    compiler suite alone can use is a private harness with a public name.
-4. **C2 — migrate bodies by category, highest reuse first:** the 172
+4. **G — structured diagnostics, before the first migration and not after it.**
+   A `Diagnostic` record behind `die-at`/`report-at`, a machine-readable emission
+   mode, and `lib/read.nuc` to read it back. The scheduling is forced: C2's first
+   and largest category is the 172 reject/accept spawns, and those are precisely
+   the §T4.2 diagnostic assertions. Migrate them before G exists and the suite
+   bakes 250 substring probes into its native form — then pays to port them a
+   second time. Both prerequisites are owed to the REPL and to `Node`'s users
+   anyway (§T3).
+5. **C2 — migrate bodies by category, highest reuse first:** the 172
    reject/accept spawns (option D's manifest is right *here*), then the 177
    example and REPL units, then the bespoke units in descending size — the seven
    largest are over 200 lines each. Every weakness the port hits is a library
    defect to fix, not a body to contort around it — the same rule that made the
    stage-17 sweep produce a string library rather than a pile of workarounds.
-5. **E — separate track, after F1.** Convert only the pure
+6. **E — separate track, after F1.** Convert only the pure
    emit-and-inspect-IR units, and only while the C2 versions still exist to
    cross-check against. The order matters: E's contamination hazard is invisible
    without a second implementation to disagree with it.
-6. **Permanent — the trust anchor.** A short shell script that compiles one
+7. **Permanent — the trust anchor.** A short shell script that compiles one
    program, runs it, and diffs the output, run *before* the native runner. It is
    the answer to §T2.1: when the compiler is broken badly enough that the native
    runner will not build, something that does not depend on the compiler has
    already said so. Keeping it is not a hedge; it is the reason the rest is
    allowed to move.
 
-The dependency worth stating plainly: **steps 1–4 are all downstream of
+The dependency worth stating plainly: **steps 1–5 are all downstream of
 `lib/process.nuc`.** Nothing about a native test framework is possible until
 Nucleus can start a process and wait for it, and today it cannot.
 
@@ -591,11 +785,11 @@ step 2. **If the migration stopped after F2, the language would still have
 gained a process API and a filesystem API, both hardened by 955 tests** — and
 that is already a better outcome than option B reaches at its own completion.
 
-## T6. What stays outside the framework regardless
+## T7. What stays outside the framework regardless
 
 1,558 lines of shell and Python, for reasons that are not inertia:
 
-- **The trust anchor** (§T5.6) — by construction.
+- **The trust anchor** (§T6.7) — by construction.
 - **`run-avr-test.sh`, `run-riscv-test.sh`, `run-riscv-abi-test.sh`,
   `run-abi-test.sh`, `run-layout-test.sh`** — they gate on external toolchains,
   run outside `make test`, and their assertion *is* an external tool's output.
@@ -604,12 +798,12 @@ that is already a better outcome than option B reaches at its own completion.
 - **`check-headers.sh`, `check-cstr.py`, `gen-stdlib-table.py`** — source-tree
   audits and a generator. Not tests, and not this stage's problem.
 
-## T7. Open decisions
+## T8. Open decisions
 
 1. **Where does the runner live?** Its own `build/` binary, or a `nucleusc
    --test` mode? A separate binary keeps the compiler's surface clean and makes
    the T2.1 dependency explicit; a mode shares the reader for free. The
-   public-facility requirement (§T5.3) tilts this: a user with a `tests/`
+   public-facility requirement (§T6.3) tilts this: a user with a `tests/`
    directory should not have to build a runner before running a test, which
    argues for `nucleusc --test` — or for shipping the runner binary alongside
    the compiler, which is the same answer with a worse install story.
@@ -625,11 +819,19 @@ that is already a better outcome than option B reaches at its own completion.
    `"` and would need escaping, and escaped Nucleus inside Nucleus is unreadable.
    Recommend moving the 588 inline fixtures onto disk beside the existing 223.
 4. **Glob or regex for `matches`?** §T1.2 says glob suffices for all 76 sites.
-   Regex is more general and is a much larger thing to own.
-5. **Is order-independence a stated property or a hope?** If E is ever adopted
+   Regex is more general and is a much larger thing to own. Note that §T4.3's
+   function scoping is the larger win of the two and is independent of this
+   choice.
+5. **What carries a structured diagnostic across the boundary?** S-expressions
+   read by `lib/read.nuc` reuse the language's own syntax and cost no new format;
+   JSON is more conventional and readable by tools that are not this compiler.
+   Related and sharper: does the `Diagnostic` record *replace* `die-at`'s
+   rendering — one formatter with two back-ends — or sit beside it? Two renderers
+   for one diagnostic is how the text and the structure drift apart.
+6. **Is order-independence a stated property or a hope?** If E is ever adopted
    the answer must be "stated", which means the runner shuffles dispatch order
    under a flag and the suite still passes. Cheap to build in at F1; expensive to
    retrofit.
-6. **Does `make test` become the native runner, or gain it alongside?** Running
+7. **Does `make test` become the native runner, or gain it alongside?** Running
    both until C2 completes doubles the 59s. Running only the native one loses the
    cross-check that makes the migration safe.
