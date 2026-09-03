@@ -21,7 +21,7 @@
 
 ; 0 = off, 1 = report, 2 = report and fail the compile (C8).
 (defvar g-strict-cstr:i32 0)
-(defvar g-cstr-seams-path:ptr "scripts/stage17/cstr-seams.txt")
+(defvar g-cstr-seams-path:Symbol (symbol-intern "scripts/stage17/cstr-seams.txt"))
 (defvar g-strict-cstr-hits:i64 0)
 
 ; Own arena handle, for the same reason strfmt.nuc has one: a module cannot see
@@ -93,7 +93,7 @@
   (set! g-sc-loaded 1)
   (set! g-sc-names (unsafe/cast (raw (Vector StrView)) (vector-new-in (addr-of g-sc-alloc))))
   (set! g-sc-kinds (unsafe/cast (raw (Vector i32)) (vector-new-in (addr-of g-sc-alloc))))
-  (let (pv:StrView (strview-from-cstr (as CStr g-cstr-seams-path)))
+  (let (pv:StrView (symbol-as-view g-cstr-seams-path))
     (match (file-open-read pv)
       ((err e)
         (eprint "strict-cstr: cannot open seam list '" g-cstr-seams-path
@@ -128,8 +128,8 @@
 
 (defn sc-report (line:i32 msg:StrView):void
   (set! g-strict-cstr-hits (+ g-strict-cstr-hits 1))
-  (let (fnm:ptr "<toplevel>")
-    (when (!= g-cur-fname null) (set! fnm g-cur-fname))
+  (let (fnm:StrView "<toplevel>")
+    (when (not (str-empty? (addr-of g-cur-fname))) (set! fnm g-cur-fname))
     (eprint g-source-path ":" line ": strict-cstr: " msg " [in " fnm "]\n")))
 
 ; Walk a TY-FN signature and report every CStr in it. `what` names the callee

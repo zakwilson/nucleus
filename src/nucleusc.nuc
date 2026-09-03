@@ -161,7 +161,7 @@
 ; That dependency is laundered through two calls, so G-4's syntactic
 ; forward-reference check cannot see it — the second of the two source reorders
 ; this migration needs (§2.10 predicted only the g-arena-alloc one).
-(defvar g-current-ns:Symbol (symbol-from-cstr (as CStr "user")))
+(defvar g-current-ns:Symbol (symbol-intern "user"))
 
 ; Struct registry. (Vector ptr) of StructDef* (each individually arena-allocated,
 ; registration order). count = number of structs; invoke = indexed access.
@@ -241,14 +241,14 @@
 ; reset-function-state. g-cur-fname is the @-less IR symbol of the function
 ; currently being emitted (for blockaddress in label-addr).
 (defvar (g-lbl-tbl (ref (Vector (ref LabelEntry)))) (vector-new-in (addr-of g-arena-alloc)))
-(defvar g-cur-fname:ptr)
+(defvar g-cur-fname:StrView)
 
 ; Aggregate return ABI of the function currently being emitted (Stage 8 Phase C).
 ; g-fn-ret-abi is its AbiInfo* (ABI-DIRECT for scalar/pointer returns); when the
 ; return is ABI-MEMORY, g-fn-sret-name is the IR name of the hidden sret pointer
 ; param. Both reset by reset-function-state and set in emit-defn.
 (defvar g-fn-ret-abi:ptr)
-(defvar g-fn-sret-name:ptr)
+(defvar g-fn-sret-name:StrView)
 
 ; --- Stage 10 safety: per-function checking state ---
 ; Declared return Type* of the function being emitted (pointer-kind check on
@@ -595,7 +595,7 @@
 ; -l/-L flag is parsed. G-5: built by @__nucleus_init before main, from the
 ; load-time-constant arena handle, so it is arena-backed like everything else
 ; (it used to be lazily malloc-backed — see add-link-arg).
-(defvar (g-link-args (ref (Vector CStr))) (vector-new-in (addr-of g-arena-alloc)))
+(defvar (g-link-args (ref (Vector Symbol))) (vector-new-in (addr-of g-arena-alloc)))
 (defvar g-interactive:i32 0)  ; when 1, run in REPL mode (-i / --interactive)
 (defvar g-repl-format:i32 0)  ; 0 = text (default), 1 = json (one JSON object per error)
 (defvar g-opt-level:i32 0)    ; -O0..-O3; LLVMCodeGenOptLevel: None=0, Less=1, Default=2, Aggressive=3
@@ -883,7 +883,7 @@
 
 ; Include path list for -I flag. Null until the first -I flag is parsed (see
 ; add-include-path).
-(defvar (g-include-paths (ref (Vector CStr))) (vector-new-in (addr-of g-arena-alloc)))
+(defvar (g-include-paths (ref (Vector Symbol))) (vector-new-in (addr-of g-arena-alloc)))
 
 ; stdlib (malloc/free/exit) is included here — after defmacro and defvar —
 ; so that g-decl-stream is free of malloc when macro JIT modules are assembled.
@@ -2833,13 +2833,11 @@
 
 ; Does `fname` name a Nucleus source file? The length bound is what keeps a
 ; wrong DIRENT-D-NAME-OFFSET harmless (see above) and bounds the path we build.
-(defn nuc-source-name (fname:CStr):i32
-  (let (n:i64 (strlen (as ptr fname)))
+(defn nuc-source-name (fname:StrView):i32
+  (let (n:usize (fname 'len))
     (when (or (< n 5) (> n 250)) (return 0))
-    (when (= (as CStr (unsafe/ptr+ (as raw:i8 (as ptr fname)) (- n 4))) ".nuc") (return 1))
-    (when (and (> n 5)
-               (= (as CStr (unsafe/ptr+ (as raw:i8 (as ptr fname)) (- n 5))) ".nuch"))
-      (return 1))
+    (when (strview-has-suffix fname ".nuc") (return 1))
+    (when (strview-has-suffix fname ".nuch") (return 1))
     (return 0)))
 
 ; Is the byte range [start, end) of `text` exactly the spelling `s`?
@@ -3040,7 +3038,8 @@
         (when (= e null)
           (closedir d)
           (return (symbol-none)))
-        (let (fname:CStr (as CStr (unsafe/ptr+ (as ptr:i8 e) DIRENT-D-NAME-OFFSET)))
+        (let (fname:StrView (strview-from-cstr
+                              (as CStr (unsafe/ptr+ (as ptr:i8 e) DIRENT-D-NAME-OFFSET))))
           (when (!= (nuc-source-name fname) 0)
             (let (path:Symbol (symbol-intern (fstr dir "/" fname)))
               (when (= (path-in-unit path) 0)
@@ -3082,7 +3081,7 @@
         (when (not (symbol-none? hit)) (return hit))))
     (do
       (dotimes (j (unsafe/cast i32 (count g-include-paths)))
-        (let (dir:Symbol (symbol-from-cstr (invoke g-include-paths j:usize)))
+        (let (dir:Symbol (invoke g-include-paths j:usize))
           (when (= (import-list-has scanned dir) 0)
             (set! scanned (import-list-push scanned dir))
             (let (hit:Symbol (scan-dir-for-definer dir name want-type))
@@ -3676,7 +3675,7 @@
       (return (coerce-int-val v target line)))
     (when (and (!= (is-int-type src) 0) (!= (is-float-type target) 0))
       (let (tmp:StrView (new-tmp)
-            instr:ptr "sitofp")
+            instr:StrView "sitofp")
         (when (!= (is-unsigned src) 0) (set! instr "uitofp"))
         (emit g-body-stream "  " tmp " = " instr " " (type-to-ir src) " " (vv 'val) " to "
               (type-to-ir target) "\n")
@@ -4057,7 +4056,7 @@
             (strict-cstr-check-synth "strcmp" line)
             (emit g-body-stream "  " c " = call i32 @strcmp(ptr " a-ptr ", ptr " b-ptr ")\n")
             (let (r:StrView (new-tmp)
-                  icmp-op:ptr "eq")
+                  icmp-op:StrView "eq")
               (when (= op-name "!=") (set! icmp-op "ne"))
               (emit g-body-stream "  " r " = icmp " icmp-op " i32 " c ", 0\n")
               (return (alloc-val ty-bool r))))))))
@@ -4220,7 +4219,7 @@
         ; unsafe/cast"), so a gate that excluded bool would advertise an escape
         ; hatch that does not exist. `is-unsigned` answers 1 for bool, so the
         ; selections are zext / uitofp — never sext.
-        (let (instr:ptr null)
+        (let (instr:StrView "")
           (when (and (!= (is-int-or-bool src) 0) (!= (is-int-or-bool dst) 0))
             (let (sw:i32 (int-width src) dw:i32 (int-width dst))
               (when (= sw dw)
@@ -4258,7 +4257,7 @@
             (if (!= (is-unsigned dst) 0)
               (set! instr "fptoui")
               (set! instr "fptosi")))
-          (when (= instr null)
+          (when (str-empty? (addr-of instr))
             (die-at (cc 'line) "cast: unsupported conversion"))
           (let (tmp:StrView (new-tmp))
             (emit g-body-stream "  " tmp " = " instr " " (type-to-ir src) " " (v 'val) " to "
@@ -4578,14 +4577,14 @@
 ; The file some import in this UNIT bound this qualifier to as a prefix, or null
 ; if no import anywhere bound it. `g-import-prefixes` is the existing prefix →
 ; file list (`s` = prefix, `car` = path).
-(defn unit-prefix-path (spelling:Symbol n:usize):ptr
+(defn unit-prefix-path (spelling:Symbol n:usize):Symbol
   (let (cur:ptr g-import-prefixes)
     (while (!= cur null)
       (let (e:ptr:Node (unsafe/cast ptr:Node cur))
         (when (!= (qualifier-eq spelling (symbol-as-view (e 's)) n) 0)
-          (return (as ptr (e 'car))))
+          (return (cell-aux e)))
         (set! cur (e 'cdr)))))
-  (return null))
+  (return (symbol-none)))
 
 ; Record what one import form bound in the file that wrote it. `prefix` is null
 ; for a flattening `import-use`/`import-only`. Idempotent on (prefix, path) — a
@@ -5014,11 +5013,11 @@
         ; unit binds this qualifier as an import prefix. Cannot collide with
         ; W1d's cycle tier — that one fires for a prefix the file DID declare,
         ; for which `resolve-spelling` returns NR-QUALIFIED and this returns null.
-        (let (path:ptr (unit-prefix-path spelling n))
-          (when (!= path null)
+        (let (path:Symbol (unit-prefix-path spelling n))
+          (when (not (symbol-none? path))
             (return (some
               (fstr "  note: an import prefix is file-scoped: another file in this unit binds '"
-                    (r 'qual) "' to " path:CStr
+                    (r 'qual) "' to " path
                     ", but a prefix reaches only the file whose own import declares it. "
                     tail)))))
         ; Tier 2: the general rule.
@@ -5328,7 +5327,7 @@
       (let (pf:ref:PrivFile (invoke tbl i:usize))
         (when (= (pf 'path) path) (return pf))))
     (let (n:i32 (+ (unsafe/cast i32 (count tbl)) 1)
-          base:Symbol (path-basename-token (symbol-as-cstr path))
+          base:Symbol (path-basename-token (symbol-as-view path))
           pf:ref:PrivFile (new PrivFile))
       (set! (pf 'path) path)
       (set! (pf 'ns) (symbol-intern (fstr "#p" n)))
@@ -5356,28 +5355,29 @@
 
 ; The file component of `path`, without directories or extension, sanitized to a
 ; C-legal identifier fragment. Only ever used to make an emitted symbol readable.
-(defn path-basename-token (path:CStr):Symbol
-  (let (n:i64 (as i64 (strlen path))
+(defn path-basename-token (path:StrView):Symbol
+  (let (n:i64 (as i64 (path 'len))
         start:i64 0
         end:i64 n
         i:i64 0)
     ; Last '/' → start of the basename.
     (while (< i n)
-      (when (= (cstr-byte-at path i) 47) (set! start (+ i 1)))
+      (when (= (text-byte-at path i) 47) (set! start (+ i 1)))
       (inc! i))
     ; Last '.' at or after that → start of the extension. Scanning backwards and
     ; clamping j to `start` on the first hit ends the loop at the LAST dot.
     (let (j:i64 n)
       (while (> j start)
         (set! j (- j 1))
-        (when (= (cstr-byte-at path j) 46)
+        (when (= (text-byte-at path j) 46)
           (set! end j)
           (set! j start))))
     ; A dotfile or an empty basename leaves nothing to name it with; fall back to
     ; the whole path (sanitizing makes the separators legal).
     (when (<= end start) (set! start 0) (set! end n))
-    (return (ns-prefix-sanitize (strview (unsafe/cast ptr:ui8 (unsafe/ptr+ (as raw:i8 path) start))
-                                          (as usize (- end start)))))))
+    (return (ns-prefix-sanitize
+              (strview-take-bytes (strview-drop-bytes path (as usize start))
+                                  (as usize (- end start)))))))
 
 ; The PrivFile of the file currently being processed, or null. Memoized on the
 ; `g-source-path` pointer: paths are arena-allocated once per file and never
@@ -5726,7 +5726,7 @@
 ; copy, so they take exactly what `addr-of` takes — a binding, whose slot is
 ; used directly. A temporary stays an error: the store would land in something
 ; about to be discarded.
-(defn emit-lvalue-receiver (rnode:(raw Node) scope:ref:Scope what:ptr line:i32):ref:Val
+(defn emit-lvalue-receiver (rnode:(raw Node) scope:ref:Scope what:StrView line:i32):ref:Val
   (let (rn:(raw Node) rnode)
     (when (and (!= rn null) (= (rn 'kind) NODE-SYM))
       (if-some (sym (scope-lookup scope (rn 's)))
@@ -6605,7 +6605,7 @@
         (set! i 0)
         (while (< i nargs)
           (let (av:ptr:Val (as ptr:Val (unsafe/ptr+ (as ptr:Val args) i))
-                sep:ptr "")
+                sep:StrView "")
             (when (!= i 0) (set! sep ", "))
             (when (and (!= (fn-type 'variadic) 0) (>= i nfixed))
               (abi-args-varargs)
@@ -7090,7 +7090,7 @@
         (set! i 0)
         (while (< i eff-nargs)
         (let (av:ptr:Val (as ptr:Val (unsafe/ptr+ (as ptr:Val args) i))
-              sep:ptr "")
+              sep:StrView "")
           (when (!= i 0) (set! sep ", "))
           ; Stage 14 NS-3 (design/stage14/native-strings.md): a *materialized*
           ; StrView value flowing into a C variadic slot (index beyond a variadic
@@ -7638,13 +7638,13 @@
 ; bare symbol there is what dot-forms.md is retiring, and no source migration
 ; can reach a cell that is built rather than read.
 (defn quoted-selector (sym:ptr line:i32):ptr
-  (return (make-cell (as ptr (intern-symbol "quote"))
+  (return (make-cell (as ptr (intern-node (symbol-intern "quote")))
                      (make-cell sym null line) line)))
 
 ; `(set! <place> <v>)`. A synthesized write goes back through emit-node, so it
 ; has to be spelled the way source is now that the three writers are retired.
 (defn set-place-cell (place:ptr v:ptr line:i32):ptr
-  (return (make-cell (as ptr (intern-symbol "set!"))
+  (return (make-cell (as ptr (intern-node (symbol-intern "set!")))
                      (make-cell place (make-cell v null line) line) line)))
 
 ; `(recv 'f)` — head position, the member place `.set!` used to take apart.
@@ -7668,15 +7668,15 @@
           ; (vfn/mfn): the field holds the value — (_get self 'name).
           (if (= mode 2)
             (let (field-access:ptr
-                    (make-cell (intern-symbol "_get")
+                    (make-cell (intern-node (symbol-intern "_get"))
                       (make-cell self-sym
                         (make-cell (quoted-selector (as ptr (intern-node name)) line) null line)
                         line)
                       line))
-              (return (make-cell (intern-symbol "deref")
+              (return (make-cell (intern-node (symbol-intern "deref"))
                         (make-cell field-access null line)
                         line)))
-            (return (make-cell (intern-symbol "_get")
+            (return (make-cell (intern-node (symbol-intern "_get"))
                       (make-cell self-sym
                         (make-cell (quoted-selector (as ptr (intern-node name)) line) null line)
                         line)
@@ -7708,12 +7708,12 @@
                            (= (fn-bound-has bound oname) 0)
                            (!= (fn-bound-has caps oname) 0))
                   (if (= mode 2)
-                    (return (make-cell (intern-symbol "_get")
+                    (return (make-cell (intern-node (symbol-intern "_get"))
                               (make-cell self-sym
                                 (make-cell (quoted-selector (as ptr (intern-node oname)) line) null line)
                                 line)
                               line))
-                    (return (make-cell (intern-symbol "addr-of")
+                    (return (make-cell (intern-node (symbol-intern "addr-of"))
                               (make-cell self-sym
                                 (make-cell (quoted-selector (as ptr (intern-node oname)) line) null line)
                                 line)
@@ -7748,14 +7748,14 @@
                   (let (val-rw:ptr (fn-rewrite-captures (node-at node 2) caps bound self-sym line mode)
                         cname-sym:ptr (as ptr (intern-node cname))
                         field-access:ptr
-                          (make-cell (intern-symbol "_get")
+                          (make-cell (intern-node (symbol-intern "_get"))
                             (make-cell self-sym
                               (make-cell (quoted-selector cname-sym line) null line)
                               line)
                             line))
                     (if (= mode 2)
                       (return (set-place-cell
-                                (make-cell (intern-symbol "deref")
+                                (make-cell (intern-node (symbol-intern "deref"))
                                   (make-cell field-access null line) line)
                                 val-rw line))
                       (return (set-place-cell
@@ -7779,24 +7779,24 @@
                            (= (fn-bound-has bound cname) 0)
                            (!= (fn-bound-has caps cname) 0))
                   (let (op-sym:ptr (if (= h "inc!")
-                                     (as ptr (intern-symbol "+"))
-                                     (as ptr (intern-symbol "-")))
+                                     (as ptr (intern-node (symbol-intern "+")))
+                                     (as ptr (intern-node (symbol-intern "-"))))
                         cname-sym:ptr (as ptr (intern-node cname)))
                     (if (= mode 2)
                       (let (fa1:ptr
-                              (make-cell (intern-symbol "_get")
+                              (make-cell (intern-node (symbol-intern "_get"))
                                 (make-cell self-sym
                                   (make-cell (quoted-selector cname-sym line) null line)
                                   line)
                                 line)
                             fa2:ptr
-                              (make-cell (intern-symbol "_get")
+                              (make-cell (intern-node (symbol-intern "_get"))
                                 (make-cell self-sym
                                   (make-cell (quoted-selector cname-sym line) null line)
                                   line)
                                 line)
                             deref-node:ptr
-                              (make-cell (intern-symbol "deref")
+                              (make-cell (intern-node (symbol-intern "deref"))
                                 (make-cell fa2 null line)
                                 line)
                             arith:ptr
@@ -7806,11 +7806,11 @@
                                   line)
                                 line))
                         (return (set-place-cell
-                                  (make-cell (intern-symbol "deref")
+                                  (make-cell (intern-node (symbol-intern "deref"))
                                     (make-cell fa1 null line) line)
                                   arith line)))
                       (let (read-field:ptr
-                              (make-cell (intern-symbol "_get")
+                              (make-cell (intern-node (symbol-intern "_get"))
                                 (make-cell self-sym
                                   (make-cell (quoted-selector cname-sym line) null line)
                                   line)
@@ -7987,14 +7987,14 @@
     (dotimes (i nparams)
       (set! (aref (as ptr:ptr mtypes) (+ i 1)) (aref (as ptr:ptr param-types) i)))
     ; The lambda's own params + `self` shadow the captures inside the body.
-    (let (self-sym:ptr (as ptr (intern-symbol "self"))
+    (let (self-sym:ptr (as ptr (intern-node (symbol-intern "self")))
           inner-bound:ptr (fn-bind-param-names params-node
                             (import-list-push null (symbol-intern "self")))
           body2:ptr (fn-rewrite-list body-list 0 caps inner-bound self-sym line mode))
       ; Synthesized params: (self (ref Env)) prepended to the original param
       ; specs. The receiver uses the list form so the env name (which never
       ; contains a colon) is parsed as a type node, not colon-sugar.
-      (let (env-ref-node:ptr (make-cell (intern-symbol "ref")
+      (let (env-ref-node:ptr (make-cell (intern-node (symbol-intern "ref"))
                                (make-cell (intern-node (env-sd 'name))
                                  null line)
                                line)
@@ -8005,9 +8005,9 @@
             ; synthesized params are ((self (ref Env)) p0 p1 …). params-node is a
             ; NODE-CELL whose own spine is the original params; cons self in front.
             new-params:ptr (make-cell self-spec params-node line)
-            name-sym:ptr (as ptr (intern-symbol "invoke"))
+            name-sym:ptr (as ptr (intern-node (symbol-intern "invoke")))
             ret-node:ptr (as ptr (intern-node (type-spelling ret)))
-            defn-sym:ptr (as ptr (intern-symbol "defn"))
+            defn-sym:ptr (as ptr (intern-node (symbol-intern "defn")))
             ; New-style: (defn invoke (params) <ret> body…).
             after-ret:ptr (make-cell ret-node body2 line)
             after-params:ptr (make-cell new-params after-ret line)
@@ -8050,41 +8050,41 @@
 (defn fn-make-drop-method (env-sd:(raw StructDef) line:i32 mode:i32):void
   (let (sd:(raw StructDef) env-sd
         nf:i32 (sd 'num-fields)
-        self-sym:ptr (as ptr (intern-symbol "self"))
+        self-sym:ptr (as ptr (intern-node (symbol-intern "self")))
         body:ptr null)
     (if (= mode 2)
       ; cfn: free the env block through the stored allocator handle.
-      (let (alloc-sym:ptr (as ptr (intern-symbol "__alloc"))
+      (let (alloc-sym:ptr (as ptr (intern-node (symbol-intern "__alloc")))
             ; (_get self '__alloc) → the stored (ref AllocHandle).
-            handle-access:ptr (make-cell (intern-symbol "_get")
+            handle-access:ptr (make-cell (intern-node (symbol-intern "_get"))
                                   (make-cell self-sym
                                     (make-cell (quoted-selector alloc-sym line) null line)
                                     line)
                                   line)
             ; (unsafe/cast (raw ui8) self) — self is (ptr Env); reinterpret as
             ; (raw ui8) (both lower to ptr; unsafe/cast is a no-IR reinterpret).
-            raw-ty:ptr (make-cell (intern-symbol "raw")
-                          (make-cell (intern-symbol "ui8") null line)
+            raw-ty:ptr (make-cell (intern-node (symbol-intern "raw"))
+                          (make-cell (intern-node (symbol-intern "ui8")) null line)
                           line)
             ; Stage 14 UN-5: bare "cast" is retired — synthesize the
             ; `unsafe/cast` spelling instead (D2 Class 1: identical emitter).
-            raw-self:ptr (make-cell (intern-symbol "unsafe/cast")
+            raw-self:ptr (make-cell (intern-node (symbol-intern "unsafe/cast"))
                             (make-cell raw-ty
                               (make-cell self-sym null line)
                               line)
                             line)
             ; (sizeof Env) — the block size, matching the alloc-handle-alloc call.
-            sizeof-node:ptr (make-cell (intern-symbol "sizeof")
+            sizeof-node:ptr (make-cell (intern-node (symbol-intern "sizeof"))
                               (make-cell (intern-node (sd 'name)) null line)
                               line)
             ; 8 — pointer alignment of the env block. Stage 14 UN-5: bare "cast"
             ; is retired — synthesize `unsafe/cast` (same emitter as before).
-            align-node:ptr (make-cell (intern-symbol "unsafe/cast")
-                            (make-cell (intern-symbol "usize")
+            align-node:ptr (make-cell (intern-node (symbol-intern "unsafe/cast"))
+                            (make-cell (intern-node (symbol-intern "usize"))
                               (make-cell (fn-make-int-node 8) null line)
                               line)
                             line)
-            freecall:ptr (make-cell (intern-symbol "alloc-handle-free")
+            freecall:ptr (make-cell (intern-node (symbol-intern "alloc-handle-free"))
                             (make-cell handle-access
                               (make-cell raw-self
                                 (make-cell sizeof-node
@@ -8100,26 +8100,26 @@
         (let (fty:ptr ((field-at (sd 'fields) k) 'type))
           (when (!= (type-conforms-drop fty) 0)
                 (let (fname:Symbol ((field-at (sd 'fields) k) 'name)
-                                addr:ptr (make-cell (intern-symbol "addr-of")
+                                addr:ptr (make-cell (intern-node (symbol-intern "addr-of"))
                                                     (make-cell self-sym
                                                                (make-cell (quoted-selector (as ptr (intern-node fname)) line) null line)
                                                                line)
                                                     line)
-                                dropcall:ptr (make-cell (intern-symbol "drop")
+                                dropcall:ptr (make-cell (intern-node (symbol-intern "drop"))
                                                         (make-cell addr null line)
                                                         line))
                   (set! body (make-cell dropcall body line)))))))
     ; Synthesize (defn drop:void ((self (ptr Env))) body…).
-    (let (env-ptr-node:ptr (make-cell (intern-symbol "ptr")
+    (let (env-ptr-node:ptr (make-cell (intern-node (symbol-intern "ptr"))
                              (make-cell (intern-node (sd 'name)) null line)
                              line)
           self-spec:ptr (make-cell self-sym
                            (make-cell env-ptr-node null line)
                            line)
           new-params:ptr (make-cell self-spec null line)
-          name-sym:ptr (as ptr (intern-symbol "drop"))
-          ret-node:ptr (as ptr (intern-symbol "void"))
-          defn-sym:ptr (as ptr (intern-symbol "defn"))
+          name-sym:ptr (as ptr (intern-node (symbol-intern "drop")))
+          ret-node:ptr (as ptr (intern-node (symbol-intern "void")))
+          defn-sym:ptr (as ptr (intern-node (symbol-intern "defn")))
           ; New-style: (defn drop (params) void body…).
           after-ret:ptr (make-cell ret-node body line)
           after-params:ptr (make-cell new-params after-ret line)
@@ -8412,7 +8412,7 @@
 ; values are out of scope for AVR v1 (design/stage14/avr-targets.md §3, §5 AVR-6);
 ; the full addrspace(1)-carrying fix is deferred. Inert on hosted targets
 ; (prog-as == 0), so the compiler's own dyn/BoxedFn self-compile is byte-identical.
-(defn avr-reject-fn-value (line:i32 what:ptr):void
+(defn avr-reject-fn-value (line:i32 what:StrView):void
   (when (!= ((as ptr:Target g-target) 'prog-as) 0)
     (die-at line
       (fstr what
@@ -8625,7 +8625,7 @@
       (let (ahsym:?ptr:Sym (scope-lookup scope (symbol-intern "alloc-handle-alloc")))
         (when (= ahsym null)
           (die-at line "BoxedFn: boxing a function requires (import-use allocator)"))
-        (let (da-node:ptr (make-cell (intern-symbol "default-allocator") null line)
+        (let (da-node:ptr (make-cell (intern-node (symbol-intern "default-allocator")) null line)
               hv:ref:Val (emit-node da-node scope)
               blk:StrView (new-tmp))
           (emit g-body-stream "  " blk " = call ptr " ((unsafe/cast ptr:Sym ahsym) 'ir-name)
@@ -8701,9 +8701,9 @@
     (let (ahsym:?ptr:Sym (scope-lookup scope (symbol-intern "alloc-handle-alloc")))
       (when (= ahsym null)
         (die-at line "type-erasure: boxing a value requires (import-use allocator)"))
-      (let (da-node:ptr (make-cell (intern-symbol "default-allocator") null line)
+      (let (da-node:ptr (make-cell (intern-node (symbol-intern "default-allocator")) null line)
             hv:ref:Val (emit-node da-node scope)
-            sz-node:ptr (make-cell (intern-symbol "sizeof")
+            sz-node:ptr (make-cell (intern-node (symbol-intern "sizeof"))
                           (make-cell (intern-node struct-name) null line)
                           line)
             saved-key-ok:i32 g-type-key-ok
@@ -9112,7 +9112,7 @@
           (die-at line "cfn: 'alloc-handle-alloc' not in scope — (import-use allocator) is required to use cfn"))
         (let (ah-ir:StrView (ahsym 'ir-name)
               ; sizeof Env as a runtime usize (mirrors emit-sizeof).
-              sz-node:ptr (make-cell (intern-symbol "sizeof")
+              sz-node:ptr (make-cell (intern-node (symbol-intern "sizeof"))
                               (make-cell (intern-node (sd 'name)) null line)
                               line)
               sz-val:ref:Val (emit-node sz-node scope)
@@ -9140,7 +9140,7 @@
                       gep:StrView (new-tmp))
                   (emit g-body-stream "  " gep " = getelementptr inbounds %" (sd 'ir-name)
                         ", ptr " blk ", i32 0, i32 " (+ k 1) "\n")
-                  (let (addr-node:ptr (make-cell (intern-symbol "addr-of")
+                  (let (addr-node:ptr (make-cell (intern-node (symbol-intern "addr-of"))
                                           (make-cell (as ptr (intern-node cname)) null line)
                                           line)
                         av:ref:Val (emit-node addr-node scope))
@@ -9207,8 +9207,8 @@
                         (fstr "vfn cannot clone-capture '" cname "' (type " (type-spelling fty)
                               " is Drop with no Clone); use mfn to move it instead")))
                     (set! (deref out-owns-drop) 1)
-                    (let (clone-node:ptr (make-cell (intern-symbol "clone")
-                                           (make-cell (make-cell (intern-symbol "addr-of")
+                    (let (clone-node:ptr (make-cell (intern-node (symbol-intern "clone"))
+                                           (make-cell (make-cell (intern-node (symbol-intern "addr-of"))
                                                         (make-cell (intern-node cname) null line)
                                                         line)
                                                      null line)
@@ -9238,7 +9238,7 @@
                           (die-at line (fstr "mfn: capture '" cname "' value type mismatch")))
                         (emit g-body-stream "  store " fty-ir " "
                               (-> coerced (as ptr:Val _) (_ 'val)) ", ptr " gep "\n"))
-                      (let (move-node:ptr (make-cell (intern-symbol "move")
+                      (let (move-node:ptr (make-cell (intern-node (symbol-intern "move"))
                                               (make-cell (intern-node cname) null line)
                                               line)
                             v:ref:Val (emit-move move-node scope)
@@ -9445,7 +9445,7 @@
         ; overhead. The cfn shape (alloc at index 1) differs from `fn`'s, so
         ; rebuild an fn-shaped node (fn params ret body…) and delegate to emit-fn.
         (when (= caps-head null)
-          (let (fn-sym:ptr (as ptr (intern-symbol "fn"))
+          (let (fn-sym:ptr (as ptr (intern-node (symbol-intern "fn")))
                 body-list:ptr (-> cc (_ 'cdr) (unsafe/cast ptr:Node _) (_ 'cdr)
                                      (unsafe/cast ptr:Node _) (_ 'cdr) (unsafe/cast ptr:Node _) (_ 'cdr)))
             (return (emit-fn
@@ -9698,7 +9698,7 @@
 ; symptom. Diagnosed here, before the body is emitted, so the message names the
 ; cause. Gated on the spelling not resolving in scope, so it can only ever
 ; replace a diagnostic that was already fatal — never pre-empt a working program.
-(defn check-stray-typed-body (cc:(raw Node) scope:ref:Scope kw:CStr):void
+(defn check-stray-typed-body (cc:(raw Node) scope:ref:Scope kw:StrView):void
   (let (n:i32 (node-len (as ptr cc))
         j:i32 2)
     (while (< j n)
@@ -10250,14 +10250,14 @@
 ; The cell the three member-access places delegate on. Its head is only ever a
 ; diagnostic label: emit-field-set is called directly, never through dispatch.
 (defn field-set-cell (recv:(raw Node) sel:(raw Node) v:(raw Node) line:i32):ptr
-  (return (make-cell (intern-symbol ".set!")
+  (return (make-cell (intern-node (symbol-intern ".set!"))
             (make-cell recv (make-cell sel (make-cell v null line) line) line)
             line)))
 
 ; `(set recv key v)` — an ordinary call, so a writable collection extends `set!`
 ; through the multimethod machinery rather than a second protocol (dot-forms.md §3).
 (defn set-call-cell (recv:(raw Node) key:(raw Node) v:(raw Node) line:i32):ptr
-  (return (make-cell (intern-symbol "set")
+  (return (make-cell (intern-node (symbol-intern "set"))
             (make-cell recv (make-cell key (make-cell v null line) line) line)
             line)))
 
@@ -10321,13 +10321,13 @@
         (let (h:Symbol ((unsafe/cast ptr:Node hd) 's))
           (when (and (= h "deref") (= plen 2))
             (return (emit-ptr-set
-                      (make-cell (intern-symbol "ptr-set!")
+                      (make-cell (intern-node (symbol-intern "ptr-set!"))
                         (make-cell (node-at place 1) (make-cell v null line) line)
                         line)
                       scope)))
           (when (and (= h "aref") (= plen 3))
             (return (emit-aset
-                      (make-cell (intern-symbol "aset!")
+                      (make-cell (intern-node (symbol-intern "aset!"))
                         (make-cell (node-at place 1)
                           (make-cell (node-at place 2) (make-cell v null line) line)
                           line)
@@ -10461,7 +10461,7 @@
 ; field's is a property of where it sits and not of its type; the plain forms
 ; keep the natural answer and so keep every existing site byte-identical.
 (defn emit-load-at (dst-tmp:StrView ir-type:StrView ptr-name:StrView ty:(raw Type) align:i32):void
-  (let (vol:ptr "")
+  (let (vol:StrView "")
     (when (and (!= ty null) (!= ((unsafe/cast ptr:Type ty) 'is-volatile) 0))
       (set! vol "volatile "))
     (emit g-body-stream "  " dst-tmp " = load " vol ir-type ", ptr " ptr-name ", align " align
@@ -10472,7 +10472,7 @@
 
 ; Emit a scalar store of `val`. When `ty` is volatile, emits `store volatile`.
 (defn emit-store-at (ir-type:StrView val:StrView ptr-name:StrView ty:(raw Type) align:i32):void
-  (let (vol:ptr "")
+  (let (vol:StrView "")
     (when (and (!= ty null) (!= ((unsafe/cast ptr:Type ty) 'is-volatile) 0))
       (set! vol "volatile "))
     (emit g-body-stream "  store " vol ir-type " " val ", ptr " ptr-name ", align " align "\n")))
@@ -10544,7 +10544,7 @@
 ; Stage 8: inc! / dec!
 ; ============================================================
 
-(defn emit-inc-dec (call:(raw Node) scope:ref:Scope op-instr:ptr op-name:Symbol):ref:Val
+(defn emit-inc-dec (call:(raw Node) scope:ref:Scope op-instr:StrView op-name:Symbol):ref:Val
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc 'line) (fstr op-name " expects 1 arg")))
     (let (target:ptr:Node (unsafe/cast ptr:Node (node-at cc 1)))
@@ -10679,7 +10679,7 @@
         (when (= (as ptr e) null)
           (die-at (node-line (as ptr nm) (cc 'line)) (fstr "label-addr: no such label '" (nm 's)
                                                            "' in function"))))
-      (when (= g-cur-fname null)
+      (when (str-empty? (addr-of g-cur-fname))
         (die-at (cc 'line) "label-addr: not inside a function"))
       (let (tmp:StrView (new-tmp))
         ; getelementptr offset 0 is a no-op binding the blockaddress to an SSA name.
@@ -11507,10 +11507,10 @@
     ; The two sets have no payload record; the spelling itself is the non-null
     ; "yes". §13.2's payload-free binding, which is what B could not house.
     BK-SPECIAL    (if (!= (special-form-named name) 0)
-                    (return (as ptr (symbol-as-cstr name))) (return null))
+                    (return (as ptr (name 'p))) (return null))
     BK-PRIMITIVE  (if (or (!= (primitive-type-named name) 0)
                           (!= (pointer-kind-named name) 0))
-                    (return (as ptr (symbol-as-cstr name))) (return null))
+                    (return (as ptr (name 'p))) (return null))
     ; Stage 15 B4: a REFERENCE resolver, like the rows below it — but one that
     ; recovers the qualified spelling from `Method.src-ns` rather than from a
     ; namespaced key, because R2 keeps a generic's methods merged across every
@@ -12170,7 +12170,8 @@
   (when (= kind BK-GLOBAL) (return (kind-noun (binding-nk kind payload))))
   ; BK-PRIMITIVE's payload IS the spelling, so the row's noun can be refined for
   ; the two pointer kinds riding it, which are constructors and not types (§15).
-  (when (and (= kind BK-PRIMITIVE) (!= (pointer-kind-named (symbol-from-cstr (as CStr payload))) 0))
+  (when (and (= kind BK-PRIMITIVE)
+             (!= (pointer-kind-named (symbol-from-cstr-unchecked (as CStr payload))) 0))
     (return "a pointer kind"))
   (return ((binding-row kind) 'noun)))
 
@@ -12272,7 +12273,7 @@
       ; emitted — which would report the pair at the first definition's line. A
       ; hit below this form in the same file is therefore skipped; the later form
       ; finds the earlier one's emitted Sym when it reaches its own check.
-      (when (and (= (strcmp (symbol-as-cstr (prev 'src-file)) (symbol-as-cstr g-source-path)) 0)
+      (when (and (= (prev 'src-file) g-source-path)
                  (> (prev 'src-line) line))
         (return))
       (die-redefinition name line BK-GLOBAL (prev 'src-file) (prev 'src-line)))
@@ -13189,7 +13190,7 @@
   (let (args:ptr (as ptr (make-cell (intern-node name)
                                     (as ptr (make-cell init null line))
                                     line))
-        form:ptr (as ptr (make-cell (intern-symbol "set!") args line))
+        form:ptr (as ptr (make-cell (intern-node (symbol-intern "set!")) args line))
         job:ptr:InitJob (new InitJob))
     (set! (job 'form) (as raw:Node form))
     (set! (job 'ns) g-current-ns)
@@ -14271,7 +14272,7 @@
 (defn cheader-yield-to-explicit-declare (fname:Symbol hsig:StrView hline:i32):void
   (when (= (as ptr (cdecl-site-find g-cheader-shadowed fname)) null)
     (set! g-cheader-shadowed
-          (cdecl-site-push g-cheader-shadowed fname (symbol-as-cstr g-cheader-file)
+          (cdecl-site-push g-cheader-shadowed fname g-cheader-file
                            hline hsig null)))
   (let (site:ptr (as ptr (cheader-explicit-declare-site fname)))
     (when (= site null) (return))
@@ -14494,9 +14495,8 @@
           (reset-function-state)
           ; g-cur-fname is the @-less IR symbol of this function (for blockaddress
           ; in label-addr). defn-ir-name returns "@sym"; skip the leading '@'.
-          (set! g-cur-fname (unsafe/ptr+ (as raw:i8 (symbol-as-cstr
-                                    (defn-ir-name fname param-types nparams ret)))
-                                  1))
+          (set! g-cur-fname
+            (strview-drop-bytes (symbol-as-view (defn-ir-name fname param-types nparams ret)) 1))
           ; Aggregate return ABI (Stage 8 Phase C): drives the signature, the
           ; sret hidden param, and how `return` lowers a struct value.
           (set! g-fn-ret-abi (abi-classify ret))
@@ -14569,7 +14569,7 @@
                   ; to a zero/null return so the function has a well-typed
                   ; terminator.
                   (if (= ((unsafe/cast ptr:Type ((as ptr:Val last-val) 'type)) 'kind) TY-VOID)
-                    (let (zero:ptr "0")
+                    (let (zero:StrView "0")
                       (when (!= (is-ptr-like ret) 0) (set! zero "null"))
                       (emit g-body-stream "  ret " (type-to-ir ret) " " zero "\n"))
                     (let (coerced:ptr (coerce-int-val last-val ret (cc 'line)))
@@ -14646,7 +14646,7 @@
         err:ptr (LLVMOrcCreateLLJIT (addr-of jit-ref) null))
     (when (!= err null)
        (eprint g-source-path ":" line ": JIT error in LLVMOrcCreateLLJIT: "
-               (LLVMGetErrorMessage err) "\n")
+               (as CStr (LLVMGetErrorMessage err)) "\n")
           (when (!= g-interactive 0) (repl-throw))
           (exit 1))
     (set! g-jit jit-ref))
@@ -14673,7 +14673,7 @@
         errmsg:ptr null
         parse-err:i32 (LLVMParseIRInContext ctx mb (addr-of mod) (addr-of errmsg)))
     (when (!= parse-err 0)
-       (eprint g-source-path ":" line ": compile-time: IR parse error: " errmsg "\n")
+       (eprint g-source-path ":" line ": compile-time: IR parse error: " (as CStr errmsg) "\n")
           (when (!= g-interactive 0) (repl-throw))
           (exit 1))
     (let (tsctx:ptr (LLVMOrcCreateNewThreadSafeContext)
@@ -14685,7 +14685,7 @@
         (set! err (LLVMOrcLLJITAddLLVMIRModuleWithRT g-jit rt tsmod)))
       (when (!= err null)
          (eprint g-source-path ":" line ": JIT error in AddLLVMIRModule: "
-                 (LLVMGetErrorMessage err) "\n")
+                 (as CStr (LLVMGetErrorMessage err)) "\n")
             (when (!= g-interactive 0) (repl-throw))
             (exit 1)))))
 
@@ -14937,7 +14937,7 @@
 ;
 ; Stage 16: shared by `defmacro` and `macrolet` so the `:rest` rule has one
 ; home (design/stage16-ergonomics/macrolet.md §5.1).
-(defn macro-parse-params (params-node:ptr what:CStr encl:i32
+(defn macro-parse-params (params-node:ptr what:StrView encl:i32
                           out-names:ptr:ptr out-variadic:ptr:i32):i32
   (let (num-params:i32 (node-len params-node)
         variadic:i32 0
@@ -15749,8 +15749,8 @@
     ; function's existing "null" answer for a name it cannot read.
     (when (= (node-kind (as ptr nn)) NODE-SYM) (return (resolve-import (nn 's) line)))
     (when (and (= (node-kind (as ptr nn)) NODE-STR)
-               (or (!= (str-ends-with (symbol-as-cstr (nn 's)) ".nuc") 0)
-                   (!= (str-ends-with (symbol-as-cstr (nn 's)) ".nuch") 0))
+               (or (!= (str-ends-with (nn 's) ".nuc") 0)
+                   (!= (str-ends-with (nn 's) ".nuch") 0))
                (!= (file-exists (symbol-as-view (nn 's))) 0))
       (return (nn 's)))
     (return (symbol-none))))
@@ -15997,8 +15997,8 @@
               ; branch and `import-form-path` below answer "nothing to walk", and
               ; the form is diagnosed by its own emitter.
               (when (and (= (node-kind (as ptr nn)) NODE-STR)
-                         (= (str-ends-with (symbol-as-cstr (nn 's)) ".nuc") 0)
-                         (= (str-ends-with (symbol-as-cstr (nn 's)) ".nuch") 0)
+                         (= (str-ends-with (nn 's) ".nuc") 0)
+                         (= (str-ends-with (nn 's) ".nuch") 0)
                          (= (import-list-has g-prescan-visited (nn 's)) 0))
                 (set! g-prescan-visited (import-list-push g-prescan-visited (nn 's)))
                 (cheader-prescan-opaque (nn 's)))
@@ -16644,7 +16644,7 @@
                         (set! g-file-imports null)
                         (let (ifs:ptr (apply-leading-ns (desugar (read-program-or-die))))
                           (apply-early-set-ir-prefix ifs)
-                          (if (!= (str-ends-with (symbol-as-cstr path) ".nuch") 0)
+                          (if (!= (str-ends-with path ".nuch") 0)
                             ; W9 item 29: a header's own registrars, in
                             ; register-only mode. See prescan-nuch-signatures.
                             (prescan-nuch-signatures ifs)
@@ -17441,11 +17441,11 @@
 ; Both halves of that reinterpretation live here so no caller repeats it — the
 ; `g-import-cycles` and `g-import-prefixes` lists are the only two users.
 (defn cell-aux-set (n:ref:Node p:Symbol):void
-  (set! (n 'car) (unsafe/cast ptr:Node (as ptr (symbol-as-cstr p)))))
+  (set! (n 'car) (unsafe/cast ptr:Node (as ptr (p 'p)))))
 
 (defn cell-aux (e:ptr:Node):Symbol
   (when (= (as ptr (e 'car)) null) (return (symbol-none)))
-  (return (symbol-from-cstr (as CStr (as ptr (e 'car))))))
+  (return (symbol-from-cstr-unchecked (as CStr (as ptr (e 'car))))))
 
 ; Is `path` a member of some import cycle this unit skipped? (Either end of the
 ; edge counts — a cycle is symmetric, and the diagnostics want to know "is this
@@ -18069,7 +18069,7 @@
 
 (defn register-rmacro (prefix:Symbol wrap-sym:Symbol):void
   (let (rm:ptr:RMacro (as ptr:RMacro (arena-alloc (sizeof RMacro))))
-    (set! (rm 'prefix) (symbol-as-cstr prefix))
+    (set! (rm 'prefix) (symbol-as-view prefix))
     (set! (rm 'prefix-len) (unsafe/cast i32 (symbol-len prefix)))
     (set! (rm 'wrap-sym) wrap-sym)
     (conj g-rmacros rm)))
@@ -18078,7 +18078,7 @@
 (defn register-rmacro (v:(ref (Vector (ref RMacro))) prefix:StrView wrap-sym:StrView):void
   (let (rm:ptr:RMacro (as ptr:RMacro (arena-alloc (sizeof RMacro)))
         pp:ptr:StrView (addr-of prefix))
-    (set! (rm 'prefix) (as ptr (pp 'data)))
+    (set! (rm 'prefix) prefix)
     (set! (rm 'prefix-len) (unsafe/cast i32 (pp 'len)))
     (set! (rm 'wrap-sym) (symbol-intern wrap-sym))
     (conj v (as ref:RMacro rm))))
@@ -18245,7 +18245,7 @@
         tres:i32 (LLVMGetTargetFromTriple (symbol-as-cstr triple)
                                           (addr-of target) (addr-of terr)))
     (when (!= tres 0)
-      (eprint "nucleusc: target lookup failed for '" triple "': " terr "\n")
+      (eprint "nucleusc: target lookup failed for '" triple "': " (as CStr terr) "\n")
       (LLVMDisposeMessage terr)
       (exit 1))
     (let (eff-cpu:Symbol (cpu-for-triple triple cpu)
@@ -18509,7 +18509,7 @@
 
 ; Assemble the full module IR. The caller owns the returned String and must
 ; drop it (the module buffers are cleared here).
-(defn assemble-module-ir (source-file:ptr):String
+(defn assemble-module-ir (source-file:Symbol):String
   (let ((irs String) (string-with-capacity 262144))
     (emit irs "; ModuleID = '" source-file "'\n")
     (emit irs "source_filename = \"" source-file "\"\n")
@@ -18537,17 +18537,17 @@
 
 ; Parse the in-memory IR, emit an object file, and (unless -c) invoke clang
 ; to link a final binary. Exits with a non-zero status on failure.
-(defn compile-and-link (ir:ptr ir-len:i64 source-file:ptr):void
+(defn compile-and-link (ir:ptr ir-len:i64 source-file:Symbol):void
   ; Backends are already registered process-wide by targets-init-all (called from
   ; target-init, which runs before this on every batch code path),
   ; so no per-call target init is needed here.
   (let (ctx:ptr (LLVMContextCreate)
-        mb:ptr  (LLVMCreateMemoryBufferWithMemoryRangeCopy ir ir-len source-file)
+        mb:ptr  (LLVMCreateMemoryBufferWithMemoryRangeCopy ir ir-len (symbol-as-cstr source-file))
         mod:ptr null
         parse-err:ptr null
         rc:i32 (LLVMParseIRInContext ctx mb (addr-of mod) (addr-of parse-err)))
     (when (!= rc 0)
-      (eprint "nucleusc: failed to parse generated IR: " parse-err "\n")
+      (eprint "nucleusc: failed to parse generated IR: " (as CStr parse-err) "\n")
       (LLVMDisposeMessage parse-err)
       (exit 1))
 
@@ -18556,7 +18556,7 @@
           tres:i32 (LLVMGetTargetFromTriple (symbol-as-cstr g-target-triple)
                                           (addr-of target) (addr-of terr)))
       (when (!= tres 0)
-        (eprint "nucleusc: target lookup failed: " terr "\n")
+        (eprint "nucleusc: target lookup failed: " (as CStr terr) "\n")
         (LLVMDisposeMessage terr)
         (exit 1))
       ; CodeGenLevel = g-opt-level, Reloc keyed on triple (Static(0) for AVR,
@@ -18580,7 +18580,7 @@
           (let (emit-err:ptr null
                 eres:i32 (LLVMTargetMachineEmitToFile tm mod (symbol-as-cstr obj-path) 1 (addr-of emit-err)))
             (when (!= eres 0)
-              (eprint "nucleusc: failed to emit object file '" obj-path "': " emit-err "\n")
+              (eprint "nucleusc: failed to emit object file '" obj-path "': " (as CStr emit-err) "\n")
               (LLVMDisposeMessage emit-err)
               (exit 1)))
           (LLVMDisposeTargetMachine tm)
@@ -18638,7 +18638,7 @@
             (unlink (symbol-as-cstr obj-path))))))))
 
 ; Close module streams; emit either textual IR (--emit-llvm) or an object/binary.
-(defn flush-module-ir (source-file:ptr):void
+(defn flush-module-ir (source-file:Symbol):void
   (when (!= g-qq-used 0)
     (emit-qq-helpers (addr-of g-decl-stream) g-def-stream))
   (drain-pending-union-irs)
@@ -18693,8 +18693,8 @@
 ; a leading `(ns NAME)`, the prelude import is spliced in just after it,
 ; preserving `ns` as the first form so apply-leading-ns sees it.
 (defn prepend-prelude-import (forms:(raw Node)):ptr
-  (let (import-sym:ptr (intern-symbol "import-use")
-        name-sym:ptr   (intern-symbol "prelude")
+  (let (import-sym:ptr (intern-node (symbol-intern "import-use"))
+        name-sym:ptr   (intern-node (symbol-intern "prelude"))
         name-cell:ptr  (make-cell name-sym null 0)
         import-form:ptr (make-cell import-sym name-cell 0))
     (when (!= (is-leading-ns forms) 0)
@@ -18713,47 +18713,46 @@
 ; constant, and these vectors are built by `@__nucleus_init`, which the loader
 ; runs before `main` is entered. So the lazy guard is gone and the backing is
 ; uniform.
-(defn add-include-path (path:ptr):void
-  (conj g-include-paths path:CStr))
+(defn add-include-path (path:Symbol):void
+  (conj g-include-paths path))
 
-(defn add-link-arg (arg:ptr):void
-  (conj g-link-args arg:CStr))
+(defn add-link-arg (arg:Symbol):void
+  (conj g-link-args arg))
 
 (defn main (argc:i32 argv:ptr):int
-  (let (source-file:ptr null
+  (let (source-file:Symbol (symbol-none)
         i:i32 1)
     (while (< i argc)
       ; `argv` stays a C string (overview.md §2.7), but the flag scanning below
       ; is the compiler reading it, so it reads a view.
-      (let (arg:ptr (aref (as ptr:ptr argv) i)
-            argview:StrView (strview-from-cstr (as CStr (aref (as ptr:ptr argv) i))))
-        (cond (= arg "--emit-nuch")
+      (let (argview:StrView (strview-from-cstr (as CStr (aref (as ptr:ptr argv) i))))
+        (cond (= argview "--emit-nuch")
                 (set! g-emit-nuch 1)
-              (= arg "--emit-cheader")
+              (= argview "--emit-cheader")
                 (set! g-emit-cheader 1)
-              (or (= arg "--emit-llvm") (= arg "-S"))
+              (or (= argview "--emit-llvm") (= argview "-S"))
                 (set! g-emit-llvm 1)
-              (= arg "-c")
+              (= argview "-c")
                 (set! g-emit-obj 1)
-              (= arg "-o")
+              (= argview "-o")
                 (do (inc! i)
                     (when (>= i argc)
                       (do (eprint "-o requires an argument\n") (return 2)))
                     (set! g-output-path
                       (symbol-from-cstr (as CStr (aref (as ptr:ptr argv) i)))))
-              (or (= arg "-i") (= arg "--interactive"))
+              (or (= argview "-i") (= argview "--interactive"))
                 (set! g-interactive 1)
-              (= arg "--repl-format=text")
+              (= argview "--repl-format=text")
                 (set! g-repl-format 0)
-              (= arg "--repl-format=json")
+              (= argview "--repl-format=json")
                 (set! g-repl-format 1)
-              (= arg "-O0")
+              (= argview "-O0")
                 (set! g-opt-level 0)
-              (= arg "-O1")
+              (= argview "-O1")
                 (set! g-opt-level 1)
-              (or (= arg "-O") (= arg "-O2"))
+              (or (= argview "-O") (= argview "-O2"))
                 (set! g-opt-level 2)
-              (= arg "-O3")
+              (= argview "-O3")
                 (set! g-opt-level 3)
               (strview-has-prefix argview "--target=")
                 (set! g-target-triple-override (symbol-intern (strview-drop-bytes argview 9)))
@@ -18766,32 +18765,33 @@
               (strview-has-prefix argview "--sysroot=")
                 (set! g-sysroot-override (symbol-intern (strview-drop-bytes argview 10)))
               (strview-has-prefix argview "--link-arg=")
-                (add-link-arg (unsafe/ptr+ (as ptr:i8 arg) 11))
+                (add-link-arg (symbol-intern (strview-drop-bytes argview 11)))
               ; Stage 17 D3, temporary — see src/strict-cstr.nuc.
-              (= arg "--strict-cstr")
+              (= argview "--strict-cstr")
                 (set! g-strict-cstr 1)
-              (= arg "--strict-cstr=error")
+              (= argview "--strict-cstr=error")
                 (set! g-strict-cstr 2)
               (strview-has-prefix argview "--cstr-seams=")
-                (set! g-cstr-seams-path (unsafe/ptr+ (as ptr:i8 arg) 13))
+                (set! g-cstr-seams-path (symbol-intern (strview-drop-bytes argview 13)))
               (strview-has-prefix argview "-I")
-                (if (> (strlen arg) 2)
+                (if (> (byte-len (addr-of argview)) 2)
                   ; -I/path/to/dir (no space)
-                  (add-include-path (unsafe/ptr+ (as ptr:i8 arg) 2))
+                  (add-include-path (symbol-intern (strview-drop-bytes argview 2)))
                   ; -I /path/to/dir (next arg)
                   (do (inc! i)
                       (when (>= i argc)
                         (do (eprint "-I requires an argument\n") (return 2)))
-                      (add-include-path (aref (as ptr:ptr argv) i))))
+                      (add-include-path
+                        (symbol-from-cstr (as CStr (aref (as ptr:ptr argv) i))))))
               (or (strview-has-prefix argview "-l")
                   (strview-has-prefix argview "-L"))
-                (add-link-arg arg)
-              (= (cstr-byte-at arg 0) 45)
-                (do (eprint "unknown flag: " arg "\n") (return 2))
+                (add-link-arg (symbol-intern argview))
+              (= (text-byte-at argview 0) 45)
+                (do (eprint "unknown flag: " argview "\n") (return 2))
               true
-                (if (= source-file null)
-                  (set! source-file arg)
-                  (do (eprint "unexpected argument: " arg "\n") (return 2)))))
+                (if (symbol-none? source-file)
+                  (set! source-file (symbol-intern argview))
+                  (do (eprint "unexpected argument: " argview "\n") (return 2)))))
       (inc! i))
 
     ; REPL mode
@@ -18799,9 +18799,9 @@
        (repl-main) (return 0))
 
     ; Batch mode — require source file
-    (when (= source-file null)
+    (when (symbol-none? source-file)
        (eprint "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [--mmcu=<device>] [--sysroot=<path>] [--linker=<cmd>] [--link-arg=<arg>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
-    (set! g-source-path (symbol-from-cstr (as CStr source-file)))
+    (set! g-source-path source-file)
     (let (src:ptr (read-file g-source-path))
       ; G-5: `compiler-init` is gone. Every global it used to build is now built
       ; by its own `defvar` initializer — the constants by the loader, the rest

@@ -24,6 +24,7 @@
 (defmethod "@symbol_intern.pStrView" symbol-intern ((sv (ref StrView))) :Symbol)
 (defmethod "@symbol_intern.StrView" symbol-intern ((sv StrView)) :Symbol)
 (declare symbol-from-cstr ((cs CStr)) :Symbol)
+(declare symbol-from-cstr-unchecked ((cs CStr)) :Symbol)
 (declare symbol-count () :usize)
 (defmethod "@eq.Symbol.Symbol" = ((a Symbol) (b Symbol)) :bool)
 (defmethod "@ne.Symbol.Symbol" != ((a Symbol) (b Symbol)) :bool)

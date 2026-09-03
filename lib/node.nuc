@@ -175,6 +175,8 @@
           (return (e 'node))))
       (set! j (bit-and (+ j 1) mask)))))
 
-; The `'foo` lowering calls this with a literal, so the CStr entry point stays.
+; The ONLY caller is the `'foo` lowering, which emits `call ptr @intern-symbol`
+; with a C string constant — this is that lowering's ABI, not a source-level API.
+; Nucleus source interns through `(intern-node (symbol-intern …))`.
 (defn intern-symbol (s:CStr):ref:Node
   (return (intern-node (symbol-from-cstr s))))

@@ -19,13 +19,12 @@
 ; unchecked waiver and emits the identical IR. All three callers pass a registry
 ; name that is non-null by construction, which is why no guard is added here —
 ; unlike lib/hash.nuc's `Hash` conformance, whose key comes from the caller.
-(defn fnv-str (h:i64 s:CStr):i64
-  (let (i:i64 0
-        c:i32 (bit-and (as i32 (aref (as raw:i8 s) 0)) 255))
-    (while (!= c 0)
-      (set! h (fnv-byte h (as i64 c)))
-      (set! i (+ i 1))
-      (set! c (bit-and (as i32 (aref (as raw:i8 s) i)) 255)))
+(defn fnv-str (h:i64 s:Symbol):i64
+  (let (n:i64 (as i64 (symbol-len s))
+        i:i64 0)
+    (while (< i n)
+      (set! h (fnv-byte h (as i64 (symbol-byte-at s (as usize i)))))
+      (set! i (+ i 1)))
     (return h)))
 
 (defn hash-type (h:i64 t:raw:Type):i64
@@ -42,9 +41,9 @@
       (set! h (fnv-byte h (tt 'arr-len)))
       (set! h (hash-type h (tt 'elem))))
     (when (= k TY-STRUCT)
-      (set! h (fnv-str h (symbol-as-cstr ((tt 'sdef) 'name)))))
+      (set! h (fnv-str h ((tt 'sdef) 'name))))
     (when (= k TY-UNION)
-      (set! h (fnv-str h (symbol-as-cstr ((tt 'sdef) 'name)))))
+      (set! h (fnv-str h ((tt 'sdef) 'name))))
     (when (= k TY-FN)
       (set! h (hash-type h (tt 'ret)))
       (set! h (fnv-byte h (tt 'num-params)))
@@ -56,7 +55,7 @@
                          nfields:i32):i64
   (let (h:i64 -3750763034362895579)
     (dotimes (i nfields)
-      (set! h (fnv-str h (symbol-as-cstr (aref (as ptr:Symbol field-names) i))))
+      (set! h (fnv-str h (aref (as ptr:Symbol field-names) i)))
       (set! h (fnv-byte h 0))
       (set! h (hash-type h (aref (as ptr:ptr field-types) i)))
       ; PK-3: a member alignment moves offsets, so it is part of the SHAPE.
@@ -462,7 +461,7 @@
 ; two StrView Types compare equal. Identity of "StrView" is the interned symbol
 ; name, exactly how lookup-struct keys the registry (and type-is-strview matches).
 (defn strview-type ():?ptr:Type
-  (let (sd:ptr (struct-lookup-ref ((as ptr:Node (intern-symbol "StrView")) 's)))
+  (let (sd:ptr (struct-lookup-ref ((as ptr:Node (intern-node (symbol-intern "StrView"))) 's)))
     (when (= sd null) (return null))
     (return (as ptr (type-for-sdef sd)))))
 
@@ -1745,7 +1744,7 @@
 ; the offending declaration site for the diagnostic. Defined in union-registry so
 ; it is visible at both the pointer-target sites below and extract-name-and-type
 ; (nucleusc.nuc). No-op when the CONST bit is clear, so existing sites are inert.
-(defn reject-decl-attr-const (flags:i32 line:i32 where:ptr):void
+(defn reject-decl-attr-const (flags:i32 line:i32 where:StrView):void
   (when (!= (bit-and flags DECL-ATTR-CONST) 0)
     (die-at line (fstr "':const' applies only to a defvar global, not " where))))
 

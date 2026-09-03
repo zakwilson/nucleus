@@ -80,7 +80,7 @@
       ; error path: load the err id, look up name/message, print, trap.
       (emit g-body-stream err-lbl ":\n")
       (set! g-block-term 0)
-      (let (fmt:CStr "nucleus: unwrap on error %s: %s\n"
+      (let (fmt:StrView "nucleus: unwrap on error %s: %s\n"
             fmt-id:i32 (intern-string "nucleus: unwrap on error %s: %s\n")
             epp:StrView (new-tmp) eid:StrView (new-tmp) eid64:StrView (new-tmp)
             ngep:StrView (new-tmp) nm:StrView (new-tmp)
@@ -116,7 +116,7 @@
               (emit-handler-call ((unsafe/cast ptr:Sym uesym) 'const-val)
                                  (as ptr ty-i32) msg scope line))))
         (emit g-body-stream "  " ftmp " = getelementptr inbounds ["
-              (+ (unsafe/cast i32 (strlen fmt)) 1) " x i8], ptr @.str." fmt-id
+              (+ (unsafe/cast i32 (byte-len (addr-of fmt))) 1) " x i8], ptr @.str." fmt-id
               ", i64 0, i64 0\n")
         (emit g-body-stream "  call i32 (ptr, ...) @printf(ptr " ftmp ", ptr " nm ", ptr " msg
               ")\n")
@@ -214,7 +214,7 @@
       ; print, trap. Mirrors emit-unwrap-result's err block exactly.
       (emit g-body-stream err-lbl ":\n")
       (set! g-block-term 0)
-      (let (fmt:CStr "nucleus: unwrap on error %s: %s\n"
+      (let (fmt:StrView "nucleus: unwrap on error %s: %s\n"
             fmt-id:i32 (intern-string "nucleus: unwrap on error %s: %s\n")
             pineg:StrView (new-tmp) eid:StrView (new-tmp) idtr:StrView (new-tmp) eid64:StrView (new-tmp)
             ngep:StrView (new-tmp) nm:StrView (new-tmp) mgep:StrView (new-tmp) msg:StrView (new-tmp)
@@ -237,7 +237,7 @@
               (emit-handler-call ((unsafe/cast ptr:Sym uesym) 'const-val)
                                  (as ptr ty-i32) msg scope line))))
         (emit g-body-stream "  " ftmp " = getelementptr inbounds ["
-              (+ (unsafe/cast i32 (strlen fmt)) 1) " x i8], ptr @.str." fmt-id
+              (+ (unsafe/cast i32 (byte-len (addr-of fmt))) 1) " x i8], ptr @.str." fmt-id
               ", i64 0, i64 0\n")
         (emit g-body-stream "  call i32 (ptr, ...) @printf(ptr " ftmp ", ptr " nm ", ptr " msg
               ")\n")
@@ -388,7 +388,7 @@
 ; after-the-form narrowing rules wholesale.
 (defn emit-if-some (call:ptr scope:ref:Scope is-when:i32):ref:Val
   (let (cc:ptr:Node (unsafe/cast ptr:Node call)
-        tag:ptr "if-some")
+        tag:StrView "if-some")
     (when (!= is-when 0) (set! tag "when-some"))
     (when (< (node-len cc) 3)
       (die-at (cc 'line) (fstr tag ": expects (name maybe-expr) and a body")))
@@ -513,7 +513,7 @@
 ;   NICHE-ERRPTR: (ok p)   → p relabeled PTR-ERRPTR (non-null, never top-page)
 ;                 (err E)  → inttoptr(0 - zext(E)) — a top-page sentinel
 ; The eliminators (match/unwrap/null-guard/is-err) read the same encoding back.
-(defn emit-niche-construct (ty:raw:Type layout:i32 arm:CStr call:ptr argi:i32
+(defn emit-niche-construct (ty:raw:Type layout:i32 arm:Symbol call:ptr argi:i32
                                     scope:ref:Scope line:i32):ref:Val
   (let (cc:ptr:Node (unsafe/cast ptr:Node call)
         elem:ptr (ty 'elem))
@@ -580,7 +580,7 @@
         arm-node:ptr:Node (unsafe/cast ptr:Node (node-at cc 1)))
     (when (= layout LAYOUT-TAGGED)
       (die-at ln "__niche-ctor: enclosing return type is not a niche"))
-    (return (emit-niche-construct ty layout (symbol-as-cstr (arm-node 's)) call 2 scope ln))))
+    (return (emit-niche-construct ty layout (arm-node 's) call 2 scope ln))))
 
 ; Works for any defunion type, including stamped template instances, which
 ; have no constructor functions of their own.
@@ -596,7 +596,7 @@
         (let (arm-node:ptr:Node (unsafe/cast ptr:Node (node-at cc 2)))
           (when (!= (arm-node 'kind) NODE-SYM)
             (die-at (node-line (as ptr arm-node) (cc 'line)) "make: arm must be a symbol"))
-          (return (emit-niche-construct ty layout (symbol-as-cstr (arm-node 's)) call 3 scope (cc 'line)))))
+          (return (emit-niche-construct ty layout (arm-node 's) call 3 scope (cc 'line)))))
       (let (ud:?ptr:UnionDef (uniondef-for-type ty))
         (when (= ud null)
           (die-at (cc 'line) "make: type is not a defunion"))
@@ -879,12 +879,12 @@
             ln:i32 (-> (unsafe/cast ptr:Node form) (_ 'line)))
         (when (= (head 'kind) NODE-SYM)
           (let (hs:Symbol (head 's)
-                arm:ptr null)
-            (when (= hs "ok") (set! arm "ok"))
-            (when (or (= hs "err") (= hs "err!")) (set! arm "err"))
-            (when (!= arm null)
+                arm:Symbol (symbol-none))
+            (when (= hs "ok") (set! arm (symbol-intern "ok")))
+            (when (or (= hs "err") (= hs "err!")) (set! arm (symbol-intern "err")))
+            (when (not (symbol-none? arm))
               (return (make-cell '__niche-ctor
-                        (make-cell (intern-symbol arm)
+                        (make-cell (intern-node arm)
                           (-> (unsafe/cast ptr:Node form) (_ 'cdr)) ln)
                         ln))))))))
   (let (ud:?ptr:UnionDef (uniondef-for-type target))
@@ -1631,7 +1631,7 @@
 ; Eliminate a condition to bool, for the six condition sites. An ELIMINATION,
 ; not a coercion — kept out of `coerce-int-val` so a `bool` slot does not become
 ; a universal sink. design/stage16-ergonomics/bool-truthiness.md
-(defn condition-bool (v:ref:Val line:i32 ctx:ptr):ref:Val
+(defn condition-bool (v:ref:Val line:i32 ctx:StrView):ref:Val
   (let (t:ptr (v 'type))
     (when (= t null)
       (die-at line (fstr ctx ": condition has no type")))
@@ -1675,7 +1675,7 @@
 
 (defn emit-short-circuit (call:ptr scope:ref:Scope is-and:i32):ref:Val
   (let (cc:ptr:Node (unsafe/cast ptr:Node call)
-        tag:ptr "or")
+        tag:StrView "or")
     (when (!= is-and 0) (set! tag "and"))
     (when (!= (node-len cc) 3)
       (die-at (cc 'line) (fstr tag " expects 2 args")))

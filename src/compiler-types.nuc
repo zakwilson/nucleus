@@ -1088,10 +1088,9 @@
   src-ns:Symbol)
 
 (defstruct RMacro
-  ; `prefix` is only ever byte-indexed (cstr-byte-at) during the reader's
-  ; longest-prefix-match scan (lib/reader.nuc), so it stays a C string; the
-  ; wrapper it expands to is a name, hence a `Symbol` (C7-5).
-  prefix:CStr
+  ; `prefix-len` is kept beside the view because the reader's
+  ; longest-prefix-match scan compares lengths before bytes.
+  prefix:StrView
   prefix-len:i32
   wrap-sym:Symbol)
 
@@ -1118,9 +1117,9 @@
   label:i32
   block-term:i32
   (lbl-tbl (ref (Vector (ref LabelEntry))))
-  cur-fname:ptr
+  cur-fname:StrView
   fn-ret-abi:ptr
-  fn-sret-name:ptr
+  fn-sret-name:StrView
   fn-ret-type:ptr
   loop-depth:i32
   (nundo (ref (Vector (ref NarrowUndo))))
