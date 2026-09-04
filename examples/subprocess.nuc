@@ -1,0 +1,69 @@
+; Running another program: lib/process.nuc.
+;
+; A Command is an argv, not a command line — there is no shell between this
+; program and the one it starts, so an argument containing spaces or quotes is
+; one argument and nobody has to escape it.
+
+(import-use process)
+(import-use io)
+(import-use string)
+(import-use strview)
+
+; One-shot: run it, capture both streams, wait.
+(defn show (label:StrView (c (ref Command))):void
+  (match (run c)
+    ((ok o)
+     (print label " exit=" (exit-code (addr-of o 'status))
+            " out=" (string-as-view (addr-of o 'out)))
+     (drop (addr-of o)))
+    ((err e) (print label " could not run\n"))))
+
+(defn main ():i32
+  (let (hello:Command (command "echo"))
+    (command-arg (addr-of hello) "hello from a child")
+    (show "echo:" (addr-of hello))
+    (drop (addr-of hello)))
+
+  ; An argument the shell would have mangled: quotes, a space, and a $.
+  (let (raw:Command (command "sh"))
+    (command-arg (addr-of raw) "-c")
+    (command-arg (addr-of raw) "printf '%s\n' \"$1\"")
+    (command-arg (addr-of raw) "sh")
+    (command-arg (addr-of raw) "a \"quoted\" $ARG")
+    (show "argv:" (addr-of raw))
+    (drop (addr-of raw)))
+
+  ; Failure is a value, not a message on stderr.
+  (let (bad:Command (command "sh"))
+    (command-arg (addr-of bad) "-c")
+    (command-arg (addr-of bad) "echo problem >&2; exit 2")
+    (match (run (addr-of bad))
+      ((ok o)
+       (print "failing: exit=" (exit-code (addr-of o 'status))
+              " ok=" (if (success? (addr-of o 'status)) "yes" "no")
+              " stderr=" (string-as-view (addr-of o 'err)))
+       (drop (addr-of o)))
+      ((err e) (print "failing: could not run\n")))
+    (drop (addr-of bad)))
+
+  ; The pieces underneath, for when one-shot is not enough: start two children,
+  ; then take them in the order they finish rather than the order they started.
+  (let (slow:Command (command "sh"))
+    (command-arg (addr-of slow) "-c")
+    (command-arg (addr-of slow) "sleep 0.3; exit 4")
+    (let (quick:Command (command "sh"))
+      (command-arg (addr-of quick) "-c")
+      (command-arg (addr-of quick) "exit 5")
+      (let (a:Process (unwrap (spawn (addr-of slow)))
+            b:Process (unwrap (spawn (addr-of quick))))
+        (let (i:i32 0)
+          (while (< i 2)
+            (match (wait-any)
+              ((ok ce) (print "finished: exit=" (exit-code (addr-of ce 'status)) "\n"))
+              ((err e) (print "finished: wait failed\n")))
+            (set! i (+ i 1))))
+        (process-detach (addr-of a))
+        (process-detach (addr-of b)))
+      (drop (addr-of quick)))
+    (drop (addr-of slow)))
+  (return 0))

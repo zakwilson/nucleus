@@ -2115,6 +2115,47 @@ so a *value* `Maybe` over a non-pointer `T` — what `(get m k)` returns for a
 usually to make the map's value type a `(ref …)`: `(HashMap Symbol (ref CMacro))`
 keeps `when-some` and hands back the whole record instead of one field.
 
+## `(import-use X)` in a file named `X.nuc` silently imports nothing
+
+The compilation unit's ROOT file is on none of the import lists (see the rule of
+that name above), so an `(import-use process)` inside a file called
+`process.nuc` resolves to the file itself and the real `lib/process.nuc` is never
+loaded. Every name from the module then goes missing, and the diagnostic is
+accurate but reads like a bug in the module:
+
+    error: unknown type: Command — not defined anywhere in this compilation unit
+      note: 'Command' is defined in lib/process.nuc, which no import in this unit reaches
+
+Found writing `examples/process.nuc` for Stage 19; the example is
+`examples/subprocess.nuc` for this reason alone. **Never name a file after a
+module it imports** — and when a "no import reaches it" note names a module you
+demonstrably imported, check the root file's basename first.
+
+## `Vector`'s `drop` frees the array and does NOT drop the elements
+
+`(defn drop ((self (ptr (Vector T)))))` in `lib/vector.nuc` frees the element
+buffer through the allocator handle and zeroes the header. It never calls `drop`
+on an element, so a `(Vector String)`, `(Vector File)` or any other vector of
+owning values leaks one heap buffer per element unless the owner walks it first.
+
+Stage 19's `Command` sidesteps it rather than paying it: arguments accumulate
+NUL-terminated into one `String` with a `(Vector usize)` of offsets, which is one
+allocation, needs no element walk, and keeps the argv pointers stable.
+
+## `(Result (Maybe T) Err)` does not compile for a struct `T`
+
+Both spellings fail. The `:!(Maybe ExitStatus)` sugar does not parse — *"unknown
+type: "* against an empty name — and the explicit list form
+`(defn f (…) (Result (Maybe ExitStatus) Err)` compiles the body but rejects the
+construction: `(ok m)` where `m:(Maybe ExitStatus)` gives *"type mismatch for a
+field of arm 'ok'"*, and an unannotated `(ok (some st))` resolves `some` to the
+pointer-niche variant instead (*"value must be non-null (ref …)"*) because the
+`ok` wrapper carries no want channel inward.
+
+Return something flatter until this is fixed. Stage 19's `process-try-wait`
+returns `!bool` with the status parked on the receiver
+(`design/stage19-process/overview.md` §8.1).
+
 ## `macros.nuc` is auto-imported — adding macros shifts the string pool
 
 `lib/macros.nuc` is transitively auto-imported into **every** compilation

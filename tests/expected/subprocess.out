@@ -1,0 +1,5 @@
+echo: exit=0 out=hello from a child
+argv: exit=0 out=a "quoted" $ARG
+failing: exit=2 ok=no stderr=problem
+finished: exit=5
+finished: exit=4

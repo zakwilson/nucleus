@@ -1,0 +1,415 @@
+; Stage 19 — process control: start a program, wait for it, read its status.
+;
+; Design: design/stage19-process/overview.md.
+;
+; `fork`+`exec`, not `system`/`popen`: a shell command line makes quoting the
+; caller's correctness problem, and an argv vector has none (§2.1).
+
+(import-use "unistd.h")
+(import-use "sys/wait.h")
+(import-use "signal.h")
+(import-use "poll.h")
+
+(import-use error)
+(import-use strview)
+(import-use vector)
+(import-use string)
+
+; The parent's environment, for the merge `command-env` does. Declared rather
+; than imported: the C header reader takes function declarations and object-like
+; macros, not `extern` variables.
+(extern environ:ptr:ptr)
+
+(deferror process-spawn-failed "cannot start process")
+(deferror process-wait-failed "cannot wait for process")
+(deferror process-pipe-failed "cannot create pipe")
+(deferror process-read-failed "cannot read from process")
+(deferror process-signal-failed "cannot signal process")
+
+; Exit code a shell uses for "command not found or not executable"; the child
+; reports a failed `exec` with it because it has no other channel back.
+(defconst EXEC-FAILED-STATUS 127)
+
+(defconst PROC-CHUNK 65536)
+
+; ---------------------------------------------------------------------------
+; ExitStatus — how a child ended.
+; ---------------------------------------------------------------------------
+(defunion ExitStatus
+  (exited code:i32)
+  (signaled sig:i32))
+
+; WIFEXITED and friends are function-like macros, which the C header importer
+; does not admit (§1.3), so the wait-status layout is written out here — the one
+; piece of hardcoded platform knowledge in the module, and the reason nothing
+; outside it sees a raw status.
+(defn wait-status-decode (raw:i32):ExitStatus
+  (let (sig:i32 (bit-and raw 127))
+    (when (= sig 0)
+      (return (ExitStatus-exited (bit-and (bit-shr raw 8) 255))))
+    (return (ExitStatus-signaled sig))))
+
+(defn success? ((self (ref ExitStatus))):bool
+  (match self
+    ((exited code) (return (= code 0)))
+    ((signaled _) (return false))))
+
+; A signalled child has no exit code; 128+signal is the shell's spelling for one
+; and is what a caller comparing against a number expects.
+(defn exit-code ((self (ref ExitStatus))):i32
+  (match self
+    ((exited code) (return code))
+    ((signaled sig) (return (+ 128 sig)))))
+
+; ---------------------------------------------------------------------------
+; Command — everything the child needs, materialised before the fork.
+;
+; The window between `fork` and `exec` is async-signal-safe only, so the argv
+; array cannot be built there (§2.2). Arguments accumulate NUL-terminated into
+; one buffer and `offs` records where each begins; `command-argv` turns that
+; into the pointer array, which is the last thing the parent does before
+; forking. One buffer rather than a (Vector String) because `Vector`'s `drop`
+; frees its array without dropping elements — N owning strings would leak.
+; ---------------------------------------------------------------------------
+(defstruct Command
+  buf:String
+  offs:(Vector usize)
+  envs:(Vector usize)  ; offsets of "K=V" overrides; empty = inherit unchanged
+  cwd-off:i64          ; -1 = inherit the parent's directory
+  search:bool          ; PATH lookup (execvp) vs. an exact path (execv)
+  capture:bool)        ; pipe the child's stdout/stderr back, vs. inherit
+
+; The terminator is a real byte of the buffer, not `string-as-cstr`'s
+; past-the-end NUL: every element but the last has more bytes after it.
+(defn command-push-cstr ((self (ref Command)) s:StrView):usize
+  (let (off:usize (byte-len (addr-of self 'buf))
+        z:ptr:ui8 (as ptr:ui8 (alloca ui8 1)))
+    (string-push-str-unchecked (addr-of self 'buf) &s)
+    (set! (aref z 0) 0)
+    (string-push-bytes-raw (addr-of self 'buf) z 1)
+    (return off)))
+
+(defn command (prog:StrView):Command
+  (let (c:&Command (alloca Command))
+    (set! (c 'buf) (string-new))
+    (vector-init (addr-of c 'offs))
+    (vector-init (addr-of c 'envs))
+    (set! (c 'cwd-off) -1)
+    (set! (c 'search) true)
+    (set! (c 'capture) false)
+    (let (off:usize (command-push-cstr c prog))
+      (conj (addr-of c 'offs) off))
+    (return (deref c))))
+
+(defn command-arg ((self (ref Command)) a:StrView):void
+  (let (off:usize (command-push-cstr self a))
+    (conj (addr-of self 'offs) off)))
+
+(defn command-cwd ((self (ref Command)) dir:StrView):void
+  (set! (self 'cwd-off) (as i64 (command-push-cstr self dir))))
+
+; Look the program up on PATH (the default), or treat it as an exact path.
+(defn command-search ((self (ref Command)) on:bool):void
+  (set! (self 'search) on))
+
+; Set one variable in the child. The child otherwise inherits the parent's
+; environment unchanged; an override replaces the inherited entry rather than
+; shadowing it, because `getenv` returns the FIRST match and a merely-appended
+; entry would never be seen. Resolves §7 open decision 4.
+(defn command-env ((self (ref Command)) k:StrView v:StrView):void
+  (let (off:usize (byte-len (addr-of self 'buf))
+        eq:StrView "="
+        z:ptr:ui8 (as ptr:ui8 (alloca ui8 1)))
+    (string-push-str-unchecked (addr-of self 'buf) &k)
+    (string-push-str-unchecked (addr-of self 'buf) &eq)
+    (string-push-str-unchecked (addr-of self 'buf) &v)
+    (set! (aref z 0) 0)
+    (string-push-bytes-raw (addr-of self 'buf) z 1)
+    (conj (addr-of self 'envs) off)))
+
+; Pipe the child's stdout and stderr back instead of letting it inherit the
+; parent's. `run` sets this; a caller driving `spawn` itself sets it by hand.
+(defn command-capture ((self (ref Command)) on:bool):void
+  (set! (self 'capture) on))
+
+(extend Command Drop)
+(defn drop ((self (ptr Command))):void
+  (drop (addr-of self 'buf))
+  (drop (addr-of self 'offs))
+  (drop (addr-of self 'envs)))
+
+; The argv pointer array, NULL-terminated. Valid only while the Command's buffer
+; is unmodified, which is why the single caller builds it immediately before
+; forking and never adds an argument afterwards.
+(defn command-argv ((self (ref Command)) (out (ref (Vector ptr)))):void
+  (let (v:StrView (string-as-view (addr-of self 'buf))
+        base:ptr:ui8 (v 'data)
+        n:usize (count (addr-of self 'offs))
+        i:usize 0)
+    (while (< i n)
+      (conj out (as ptr (unsafe/ptr+ base (as i64 (invoke (addr-of self 'offs) i)))))
+      (set! i (+ i 1)))
+    (conj out null)))
+
+; Key of a "K=V" entry, as a view over the entry itself.
+(defn env-key (e:ptr:ui8):StrView
+  (let (n:i64 0)
+    (while (and (!= (aref e n) 0) (!= (aref e n) 61))
+      (set! n (+ n 1)))
+    (return (strview e (as usize n)))))
+
+; The child's environment, NULL-terminated: every inherited entry whose key is
+; not overridden, then the overrides. Built before the fork like the argv, for
+; the same reason (§2.2).
+(defn command-envp ((self (ref Command)) (out (ref (Vector ptr)))):void
+  (let (v:StrView (string-as-view (addr-of self 'buf))
+        base:ptr:ui8 (v 'data)
+        n:usize (count (addr-of self 'envs))
+        e:ptr:ptr (as ptr:ptr environ)
+        i:i64 0)
+    (while (!= (aref e i) null)
+      (let (entry:ptr:ui8 (as ptr:ui8 (aref e i))
+            ek:StrView (env-key entry)
+            shadowed:bool false
+            j:usize 0)
+        (while (< j n)
+          (let (ov:ptr:ui8 (unsafe/ptr+ base (as i64 (invoke (addr-of self 'envs) j)))
+                ok2:StrView (env-key ov))
+            (when (strview-eq (addr-of ek) (addr-of ok2)) (set! shadowed true)))
+          (set! j (+ j 1)))
+        (when (not shadowed) (conj out (as ptr entry))))
+      (set! i (+ i 1)))
+    (let (j:usize 0)
+      (while (< j n)
+        (conj out (as ptr (unsafe/ptr+ base (as i64 (invoke (addr-of self 'envs) j)))))
+        (set! j (+ j 1))))
+    (conj out null)))
+
+; ---------------------------------------------------------------------------
+; Process — an owning handle on a live child.
+; ---------------------------------------------------------------------------
+(defstruct Process
+  pid:i32              ; -1 once reaped or detached
+  out-fd:i32           ; read end of the child's stdout, or -1
+  err-fd:i32           ; read end of the child's stderr, or -1
+  status:ExitStatus)
+
+(defn process-pid ((self (ref Process))):i32
+  (return (self 'pid)))
+
+(defn spawn ((self (ref Command))):!Process
+  (let (argv:(Vector ptr) (vector-new)
+        envp:(Vector ptr) (vector-new)
+        has-env:bool (> (count (addr-of self 'envs)) 0)
+        prog:ptr null
+        cwd:ptr null
+        cap:bool (self 'capture)
+        op:ptr:i32 (as ptr:i32 (alloca i32 2))
+        ep:ptr:i32 (as ptr:i32 (alloca i32 2)))
+    (command-argv self (addr-of argv))
+    (when has-env (command-envp self (addr-of envp)))
+    (set! prog (invoke (addr-of argv) 0))
+    (let (v:StrView (string-as-view (addr-of self 'buf)))
+      (when (>= (self 'cwd-off) 0)
+        (set! cwd (as ptr (unsafe/ptr+ (v 'data) (self 'cwd-off))))))
+    (when cap
+      (when (!= (pipe op) 0)
+        (drop (addr-of argv))
+        (drop (addr-of envp))
+        (return (err! process-pipe-failed)))
+      (when (!= (pipe ep) 0)
+        (close (aref op 0)) (close (aref op 1))
+        (drop (addr-of argv))
+        (drop (addr-of envp))
+        (return (err! process-pipe-failed))))
+    (let (search:bool (self 'search)
+          pid:i32 (fork))
+      (when (< pid 0)
+        (when cap
+          (close (aref op 0)) (close (aref op 1))
+          (close (aref ep 0)) (close (aref ep 1)))
+        (drop (addr-of argv))
+        (drop (addr-of envp))
+        (return (err! process-spawn-failed)))
+      (when (= pid 0)
+        ; Child. Async-signal-safe calls only — everything else was done above.
+        (when cap
+          (dup2 (aref op 1) 1)
+          (dup2 (aref ep 1) 2)
+          (close (aref op 0)) (close (aref op 1))
+          (close (aref ep 0)) (close (aref ep 1)))
+        (when (!= cwd null)
+          (when (!= (chdir (as CStr cwd)) 0) (_exit EXEC-FAILED-STATUS)))
+        ; A pointer store, so it is safe in this window — unlike `setenv`, which
+        ; would allocate. `execvp` reads `environ` for the child it starts.
+        (when has-env
+          (set! environ (unsafe/cast ptr:ptr (as ptr (_get (addr-of envp) 'data)))))
+        (if search
+          (execvp (as CStr prog) (as ptr (_get (addr-of argv) 'data)))
+          (execv (as CStr prog) (as ptr (_get (addr-of argv) 'data))))
+        (_exit EXEC-FAILED-STATUS))
+      ; Parent. Closing the write ends is what makes the reader see EOF.
+      (when cap (close (aref op 1)) (close (aref ep 1)))
+      (drop (addr-of argv))
+      (drop (addr-of envp))
+      (let (p:&Process (alloca Process))
+        (set! (p 'pid) pid)
+        (set! (p 'out-fd) (if cap (aref op 0) -1))
+        (set! (p 'err-fd) (if cap (aref ep 0) -1))
+        (set! (p 'status) (ExitStatus-exited 0))
+        (return (ok (deref p)))))))
+
+; ---------------------------------------------------------------------------
+; Capture — both pipes drained together.
+;
+; Draining them in sequence deadlocks: a pipe holds a bounded amount (64 KiB on
+; Linux), so a child that writes more than that to stderr while the parent reads
+; stdout to EOF blocks forever and never closes stdout. `poll` over both, taking
+; whichever is ready, is the fix (§2.3). A negative `fd` is ignored by `poll`,
+; which is how a finished stream drops out of the set.
+; ---------------------------------------------------------------------------
+(defn process-drain-one ((p (ref pollfd)) (into (ref String)) (buf (ptr ui8))):!void
+  (when (< (p 'fd) 0) (return (ok)))
+  (when (= (bit-and (p 'revents) (bit-or POLLIN (bit-or POLLHUP POLLERR))) 0)
+    (return (ok)))
+  (let (n:i64 (as i64 (read (p 'fd) (as ptr buf) PROC-CHUNK)))
+    (when (<= n 0)
+      (close (p 'fd))
+      (set! (p 'fd) -1)
+      (when (< n 0) (return (err! process-read-failed)))
+      (return (ok)))
+    (string-push-bytes-raw into buf (as usize n))
+    (return (ok))))
+
+(defn process-capture ((self (ref Process)) (out (ref String)) (errs (ref String))):!void
+  (let (pf:ptr:pollfd (as ptr:pollfd (alloca pollfd 2))
+        buf:ptr:ui8 (as ptr:ui8 (alloca ui8 PROC-CHUNK))
+        a:ptr:pollfd pf
+        b:ptr:pollfd (unsafe/ptr+ pf 1))
+    (set! (a 'fd) (self 'out-fd))
+    (set! (a 'events) POLLIN)
+    (set! (a 'revents) 0)
+    (set! (b 'fd) (self 'err-fd))
+    (set! (b 'events) POLLIN)
+    (set! (b 'revents) 0)
+    (while (or (>= (a 'fd) 0) (>= (b 'fd) 0))
+      (when (< (poll pf 2 -1) 0)
+        (set! (self 'out-fd) (a 'fd))
+        (set! (self 'err-fd) (b 'fd))
+        (return (err! process-read-failed)))
+      (try (process-drain-one a out buf))
+      (try (process-drain-one b errs buf)))
+    (set! (self 'out-fd) -1)
+    (set! (self 'err-fd) -1)
+    (return (ok))))
+
+(defn process-wait ((self (ref Process))):!ExitStatus
+  (when (< (self 'pid) 0) (return (ok (self 'status))))
+  ; No retry loop: this module installs no signal handlers (§6), so a `waitpid`
+  ; that fails has lost the child rather than been interrupted.
+  (let (raw:i32 0
+        rc:i32 (waitpid (self 'pid) (as ptr:i32 (addr-of raw)) 0))
+    (when (< rc 0) (return (err! process-wait-failed)))
+    (set! (self 'status) (wait-status-decode raw))
+    (set! (self 'pid) -1)
+    (return (ok (self 'status)))))
+
+; Reap only if the child has already finished: `true` means it has, and
+; `process-status` now holds its result. The job-pool primitive for polling one
+; known child.
+;
+; Returns a bool rather than a `(Maybe ExitStatus)` because `(Result (Maybe T)
+; Err)` does not currently compile for a struct T — the nested template stamps a
+; `(Maybe ExitStatus)` the `ok` arm's field type does not match. Recorded in
+; design/stage19-process/overview.md §8; the status lives on the Process either
+; way, so the bool costs the caller nothing.
+(defn process-try-wait ((self (ref Process))):!bool
+  (when (< (self 'pid) 0) (return (ok true)))
+  (let (raw:i32 0
+        rc:i32 (waitpid (self 'pid) (as ptr:i32 (addr-of raw)) WNOHANG))
+    (when (< rc 0) (return (err! process-wait-failed)))
+    (when (= rc 0) (return (ok false)))
+    (set! (self 'status) (wait-status-decode raw))
+    (set! (self 'pid) -1)
+    (return (ok true))))
+
+; Valid once `process-wait` has returned or `process-try-wait` has said `true`.
+(defn process-status ((self (ref Process))):ExitStatus
+  (return (self 'status)))
+
+(defn process-kill ((self (ref Process)) sig:i32):!void
+  (when (< (self 'pid) 0) (return (ok)))
+  (when (!= (kill (self 'pid) sig) 0) (return (err! process-signal-failed)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; wait-any — whichever child finishes first.
+;
+; This is the primitive a bounded job pool is built on, and the reason `run` is
+; not the whole module: servicing the first of N children to exit is a question
+; about the set, which no per-child call can answer (§2.6).
+;
+; "No children left" is not reported here — a pool knows how many it started, so
+; it calls this exactly that many times, and a failure really is one.
+; ---------------------------------------------------------------------------
+(defstruct ChildExit
+  pid:i32
+  status:ExitStatus)
+
+(defn wait-any ():!ChildExit
+  (let (raw:i32 0
+        rc:i32 (waitpid -1 (as ptr:i32 (addr-of raw)) 0))
+    (when (< rc 0) (return (err! process-wait-failed)))
+    (let (c:&ChildExit (alloca ChildExit))
+      (set! (c 'pid) rc)
+      (set! (c 'status) (wait-status-decode raw))
+      (return (ok (deref c))))))
+
+; Give up ownership without waiting. The child becomes the caller's problem (or
+; init's); use it when a zombie is genuinely not wanted to be reaped here.
+(defn process-detach ((self (ref Process))):void
+  (set! (self 'pid) -1))
+
+; Drop reaps, because a runner that spawns hundreds of children would otherwise
+; leak a process-table slot for each. It BLOCKS on a child that is still
+; running: the intended path is an explicit `process-wait`, and this is the
+; error path's safety net (§2.5).
+(extend Process Drop)
+(defn drop ((self (ptr Process))):void
+  (when (>= (self 'out-fd) 0) (close (self 'out-fd)) (set! (self 'out-fd) -1))
+  (when (>= (self 'err-fd) 0) (close (self 'err-fd)) (set! (self 'err-fd) -1))
+  (when (>= (self 'pid) 0)
+    (process-wait self)))
+
+; ---------------------------------------------------------------------------
+; run — the one-shot: spawn, capture both streams, wait.
+;
+; The pieces above stay public because this cannot express a job pool: servicing
+; whichever of N children finishes first is `waitpid(-1)`, a fact about the set
+; rather than about any one child (§2.6).
+; ---------------------------------------------------------------------------
+(defstruct Output
+  status:ExitStatus
+  out:String
+  err:String)
+
+(extend Output Drop)
+(defn drop ((self (ptr Output))):void
+  (drop (addr-of self 'out))
+  (drop (addr-of self 'err)))
+
+(defn run ((self (ref Command))):!Output
+  (command-capture self true)
+  (let (o:&Output (alloca Output)
+        p:Process (try (spawn self)))
+    (set! (o 'status) (ExitStatus-exited 0))
+    (set! (o 'out) (string-new))
+    (set! (o 'err) (string-new))
+    (match (process-capture (addr-of p) (addr-of o 'out) (addr-of o 'err))
+      (ok
+       (match (process-wait (addr-of p))
+         ((ok st)
+          (set! (o 'status) st)
+          (return (ok (deref o))))
+         ((err e) (drop o) (return (err e)))))
+      ((err e) (drop o) (return (err e))))))

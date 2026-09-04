@@ -8,13 +8,6 @@
 ;
 ; Source-imported by src/nucleusc.nuc.
 
-; ============================================================
-; popen/pclose FFI (used by read-pipe-output)
-; ============================================================
-
-(declare popen (cmd:ptr mode:ptr):ptr)
-(declare pclose (stream:ptr):i32)
-
 ; Stage 10 Phase F1: well-known libc functions that never return. A C header
 ; carries no nullability/noreturn metadata we trust (the parser even discards
 ; __attribute__((noreturn))), so recognize the standard noreturn libc functions
@@ -1392,30 +1385,105 @@
 ; read the EMISSION target's headers rather than the host's. Empty unless
 ; `--target=` names a triple the host is not, so a host build's command line —
 ; and every byte of IR downstream of it — is unchanged.
-(defn cheader-cc-target-flags ():StrView
-  (let (out:StrView "")
-    (when (and (not (symbol-none? g-target-triple-override))
-               (!= g-target-triple ((as ptr:Target g-host-target) 'triple)))
-      (set! out (fstr out " --target=" g-target-triple)))
-    (when (not (symbol-none? g-sysroot-override))
-      (set! out (fstr out " --sysroot=" g-sysroot-override)))
-    (return out)))
+; Does this compile need clang pointed at a target other than the host? Two
+; flags at most, which is why they go on an argv rather than into a string.
+(defn cheader-cc-target? ():bool
+  (return (or (and (not (symbol-none? g-target-triple-override))
+                   (!= g-target-triple ((as ptr:Target g-host-target) 'triple)))
+              (not (symbol-none? g-sysroot-override)))))
 
-; C4: one `clang -E` run. `flags` is "" for a host read.
-(defn cheader-run-cpp (header-path:Symbol flags:StrView out-len:ptr:i64
-                       out-status:ptr:i32):ptr
-  (let (cmd:Symbol (symbol-intern (fstr "clang -E" flags " -x c -include " header-path
-                                        " /dev/null 2>/dev/null")))
-    (return (read-pipe-output (as ptr (symbol-as-cstr cmd)) out-len out-status))))
+; The `clang -E` invocation, as an argv. A `--sysroot` naming a directory with a
+; space in it was a quoting bug in the command-string version; here it is one
+; argument.
+(defn cheader-cpp-command (header-path:Symbol with-target:bool dump-macros:i32):Command
+  (let (c:Command (command "clang"))
+    (command-arg (addr-of c) "-E")
+    (when (!= dump-macros 0) (command-arg (addr-of c) "-dM"))
+    (when with-target
+      (when (and (not (symbol-none? g-target-triple-override))
+                 (!= g-target-triple ((as ptr:Target g-host-target) 'triple)))
+        (command-arg (addr-of c) (fstr "--target=" g-target-triple)))
+      (when (not (symbol-none? g-sysroot-override))
+        (command-arg (addr-of c) (fstr "--sysroot=" g-sysroot-override))))
+    (command-arg (addr-of c) "-x")
+    (command-arg (addr-of c) "c")
+    (when (not (symbol-none? header-path))
+      (command-arg (addr-of c) "-include")
+      (command-arg (addr-of c) (symbol-as-view header-path)))
+    (command-arg (addr-of c) "/dev/null")
+    (return c)))
+
+; The same invocation as text, for a diagnostic that has to show the user what
+; was run. Display only — nothing executes this spelling.
+(defn cheader-cpp-display (header-path:Symbol with-target:bool dump-macros:i32):StrView
+  (let (out:StrView "clang -E")
+    (when (!= dump-macros 0) (set! out (fstr out " -dM")))
+    (when with-target
+      (when (and (not (symbol-none? g-target-triple-override))
+                 (!= g-target-triple ((as ptr:Target g-host-target) 'triple)))
+        (set! out (fstr out " --target=" g-target-triple)))
+      (when (not (symbol-none? g-sysroot-override))
+        (set! out (fstr out " --sysroot=" g-sysroot-override))))
+    (set! out (fstr out " -x c"))
+    (when (not (symbol-none? header-path))
+      (set! out (fstr out " -include " header-path)))
+    (return (fstr out " /dev/null"))))
+
+; Run it and hand back stdout as a NUL-terminated buffer. The `String` is parked
+; in a process-lifetime vector: the cheader cache hands these bytes out as a bare
+; pointer and nothing ever frees them, so the owner has to outlive every reader.
+; The child's stderr is captured and dropped, which is what the old command
+; string's `2>/dev/null` did.
+(defn cheader-capture ((c (ref Command)) out-len:ptr:i64 out-status:ptr:i32):ptr
+  (command-capture c true)
+  (set! (deref out-len) 0)
+  (set! (deref out-status) -1)
+  (let (out:String (string-new)
+        errs:String (string-new))
+    (match (spawn c)
+      ((ok p)
+       (match (process-capture (addr-of p) (addr-of out) (addr-of errs))
+         (ok
+          (match (process-wait (addr-of p))
+            ((ok st) (set! (deref out-status) (exit-code (addr-of st))))
+            ((err e) (set! (deref out-status) -1))))
+         ((err e) (set! (deref out-status) -1))))
+      ((err e)
+       (drop (addr-of out))
+       (drop (addr-of errs))
+       (return null)))
+    (drop (addr-of errs))
+    (when (!= (deref out-status) 0)
+      (drop (addr-of out))
+      (return null))
+    ; `string-as-cstr` before the length: it reserves one byte for the NUL and
+    ; may reallocate, so the pointer has to be taken after it, not before.
+    (let (p:ptr (as ptr (string-as-cstr (addr-of out))))
+      (set! (deref out-len) (as i64 (byte-len (addr-of out))))
+      (conj g-cheader-bufs out)
+      (return p))))
+
+; C4: one `clang -E` run. `with-target` is false for a host read.
+(defn cheader-run-cpp (header-path:Symbol with-target:bool dump-macros:i32
+                       out-len:ptr:i64 out-status:ptr:i32):ptr
+  (let (c:Command (cheader-cpp-command header-path with-target dump-macros)
+        buf:ptr (cheader-capture (addr-of c) out-len out-status))
+    (drop (addr-of c))
+    (return buf)))
 
 ; C4: clang could not read the header at all. Re-run the failing command with
 ; stderr attached — clang's own "'x.h' file not found" is the whole diagnosis,
 ; and this path is already fatal.
-(defn cheader-preprocess-failed (header-path:Symbol flags:StrView):void
-  (let (cmd:Symbol (symbol-intern (fstr "clang -E" flags " -x c -include " header-path
-                                        " /dev/null >/dev/null")))
-    (eprint "  note: " cmd "\n")
-    (system (symbol-as-cstr cmd))))
+(defn cheader-preprocess-failed (header-path:Symbol with-target:bool):void
+  (eprint "  note: " (cheader-cpp-display header-path with-target 0) "\n")
+  (let (c:Command (cheader-cpp-command header-path with-target 0))
+    ; stdout would be the preprocessed text; only the diagnosis is wanted.
+    (command-arg (addr-of c) "-o")
+    (command-arg (addr-of c) "/dev/null")
+    (match (spawn (addr-of c))
+      ((ok p) (process-wait (addr-of p)) 0)
+      ((err e) 0))
+    (drop (addr-of c))))
 
 (defn cheader-preprocess (header-path:Symbol out-len:ptr:i64):ptr
   (return (cheader-preprocess-mode header-path 0 out-len)))
@@ -1432,13 +1500,12 @@
           (set! (deref out-len) (e 'i))
           (return (as ptr (e 'car))))
         (set! cur (e 'cdr)))))
-  (let (mode:StrView ""
-        flags:StrView (cheader-cc-target-flags)
+  (let (with-target:bool (cheader-cc-target?)
         buf-len:i64 0
         status:i32 0
         buf:ptr null)
-    (when (!= dump-macros 0) (set! mode " -dM"))
-    (set! buf (cheader-run-cpp header-path (fstr flags mode) (as ptr:i64 (addr-of buf-len))
+    (set! buf (cheader-run-cpp header-path with-target dump-macros
+                               (as ptr:i64 (addr-of buf-len))
                                (as ptr:i32 (addr-of status))))
     ; C4: a non-zero exit means clang produced only its built-in preamble, so
     ; every name the header declares would go missing with no explanation.
@@ -1447,8 +1514,9 @@
     ; headers are not installed — which is how every target lane in the suite
     ; runs. Fall back to the host text, which is exactly the pre-C4 behaviour,
     ; but say so: the widths in it are the host's.
-    (when (and (!= status 0) (not (str-empty? (addr-of flags))))
-      (set! buf (cheader-run-cpp header-path mode (as ptr:i64 (addr-of buf-len))
+    (when (and (!= status 0) with-target)
+      (set! buf (cheader-run-cpp header-path false dump-macros
+                                 (as ptr:i64 (addr-of buf-len))
                                  (as ptr:i32 (addr-of status))))
       ; The macro run follows the declaration run for the same header, which has
       ; already said this.
@@ -1456,11 +1524,11 @@
         (eprint "warning: C header '" header-path "' could not be preprocessed for target '"
                 g-target-triple "'; using the HOST's headers, whose type widths may differ\n")
         (eprint "  note: pass --sysroot=<path> naming a sysroot that carries the target's own headers\n"))
-      (set! flags ""))
+      (set! with-target false))
     ; Cached as a null buffer like any other answer — the pre-scan and the real
     ; import both ask, and the diagnosis should be printed once.
     (when (!= status 0)
-      (when (= dump-macros 0) (cheader-preprocess-failed header-path flags))
+      (when (= dump-macros 0) (cheader-preprocess-failed header-path with-target))
       (set! buf null)
       (set! buf-len 0))
     (when (= buf null) (set! (deref out-len) 0))
@@ -1474,29 +1542,6 @@
       (set! g-cheader-cache (as raw:Node n)))
     (set! (deref out-len) buf-len)
     (return buf)))
-
-; Read all output from a popen'd command into a malloc'd buffer.
-; Returns the buffer (null-terminated). Sets out-len to the length, and
-; out-status to `pclose`'s wait status (0 = the command succeeded).
-(defn read-pipe-output (cmd:ptr out-len:ptr:i64 out-status:ptr:i32):ptr
-  (set! (deref out-status) 0)
-  (let (fp:ptr (popen cmd "r"))
-    (when (= fp null) (set! (deref out-len) 0) (set! (deref out-status) -1) (return null))
-    (let (bufsz:i64 65536
-          buf:ptr (malloc bufsz)
-          total:i64 0)
-      (let (chunk:i64 (fread (unsafe/ptr+ (as ptr:i8 buf) total) 1 (- (- bufsz total) 1) fp))
-        (set! total (+ total chunk))
-        (while (> chunk 0)
-          (when (>= (+ total 1) bufsz)
-             (set! bufsz (* bufsz 2))
-             (set! buf (realloc buf bufsz)))
-          (set! chunk (fread (unsafe/ptr+ (as ptr:i8 buf) total) 1 (- (- bufsz total) 1) fp))
-          (set! total (+ total chunk))))
-      (set! (deref (as ptr:i8 (unsafe/ptr+ (as ptr:i8 buf) total))) 0)
-      (set! (deref out-status) (pclose fp))
-      (set! (deref out-len) total)
-      (return buf))))
 
 ; Process a C header file: run clang -E, parse function declarations.
 ; header-path is e.g. "stdio.h" or "/usr/include/mylib.h".
@@ -2863,13 +2908,11 @@
 (defn cheader-macro-baseline-load ():void
   (when (!= g-cmacro-baseline-ready 0) (return))
   (set! g-cmacro-baseline-ready 1)
-  (let (cmd:Symbol (symbol-intern (fstr "clang -E -dM" (cheader-cc-target-flags)
-                                        " -x c /dev/null 2>/dev/null"))
-        buf-len:i64 0
+  (let (buf-len:i64 0
         status:i32 0
-        buf:ptr (read-pipe-output (as ptr (symbol-as-cstr cmd))
-                                  (as ptr:i64 (addr-of buf-len))
-                                  (as ptr:i32 (addr-of status))))
+        buf:ptr (cheader-run-cpp (symbol-none) (cheader-cc-target?) 1
+                                 (as ptr:i64 (addr-of buf-len))
+                                 (as ptr:i32 (addr-of status))))
     (when (or (= buf null) (!= status 0)) (return))
     (cheader-macro-reset)
     (cheader-macro-scan buf buf-len)
