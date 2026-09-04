@@ -1,0 +1,68 @@
+; Reading s-expressions at runtime (lib/read.nuc).
+;
+; The compiler hands every program `Node` and no way to build one from text.
+; `read-all` is that way: configuration, a saved value, a wire protocol.
+
+(import-use error)
+(import-use strview)
+(import-use string)
+(import-use io)
+(import-use node)
+(import-use read)
+
+; `defconst` takes integer literals only, so the text is a function.
+(defn config ():StrView (return "
+; a little configuration file
+(server
+  (host \"localhost\")
+  (port 8080)
+  (tags :fast :verbose)
+  (ratio 0.75))
+"))
+
+; The first element of `(key value)` whose key is `name`, searched under `form`.
+(defn field (form:raw:Node name:StrView):raw:Node
+  (let (cur:raw:Node form)
+    (while (!= cur null)
+      (let (entry:raw:Node (cur 'car))
+        (when (and (!= entry null) (= (entry 'kind) NODE-CELL))
+          (let (head:raw:Node (entry 'car))
+            (when (and (!= head null)
+                       (= (head 'kind) NODE-SYM)
+                       (= (symbol-as-view (head 's)) name))
+              (return ((entry 'cdr) 'car))))))
+      (set! cur (cur 'cdr)))
+    (return null)))
+
+(defn show (label:StrView n:raw:Node):void
+  (let (s:String (node-str n))
+    (print label "=" (string-as-view (addr-of s)) "\n")
+    (drop (addr-of s))))
+
+(defn main ():i32
+  (match (read-all (config))
+    ((err e)
+      (eprint "read failed: " (err-message e) "\n")
+      (return 1))
+    ((ok forms)
+      ; One top-level form, `(server …)`; its body is everything after the head.
+      (let (server:raw:Node (forms 'car))
+        (print "kind=" (node-kind server) " len=" (node-len server) "\n")
+        (let (body:raw:Node (server 'cdr))
+          (show "host"  (field body "host"))
+          (show "port"  (field body "port"))
+          (show "tags"  (field body "tags"))
+          (show "ratio" (field body "ratio"))
+          (show "missing" (field body "nope"))))
+      ; A tree read twice is equal; symbols are interned, so this is not a
+      ; string comparison.
+      (match (read-all (config))
+        ((ok again) (print "reread-equal=" (node-eq forms again) "\n"))
+        ((err e2) (print "reread-failed\n")))
+      ; Reading what we printed gives the same tree back.
+      (let (text:String (node-str (forms 'car)))
+        (match (read-all (string-as-view (addr-of text)))
+          ((ok round) (print "roundtrip-equal=" (node-eq (forms 'car) (round 'car)) "\n"))
+          ((err e3) (print "roundtrip-failed\n")))
+        (drop (addr-of text)))
+      (return 0))))

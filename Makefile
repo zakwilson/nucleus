@@ -101,7 +101,16 @@ ensure-boot: | $(BUILD)
 boot-binary: | $(BUILD)
 	clang boot/nucleusc.ll $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic $(NATIVE_OPT) -o bin/nucleusc
 
-test: $(BIN)
+# Programs the suite itself runs. `readdump` is Stage 18 TF-3's half of the
+# reader-parity gate; `run-tests.sh` builds this target before dispatch.
+READDUMP := $(BUILD)/readdump
+
+$(READDUMP): tests/readdump.nuc $(wildcard lib/*.nuc) $(BIN) | $(BUILD)
+	$(BIN) tests/readdump.nuc -o $@
+
+test-tools: $(BIN) $(READDUMP)
+
+test: test-tools
 	@rm -rf $(BUILD)/out
 	./tests/run-tests.sh
 
@@ -114,7 +123,7 @@ NUCTEST := $(BUILD)/nuctest
 $(NUCTEST): tests/nuctest.nuc $(wildcard lib/*.nuc) $(BIN) | $(BUILD)
 	$(BIN) tests/nuctest.nuc -o $@
 
-nuctest: $(NUCTEST)
+nuctest: $(NUCTEST) test-tools
 	@rm -rf $(BUILD)/out
 	./$(NUCTEST)
 
@@ -287,4 +296,4 @@ uninstall:
 	rm -f $(BINDIR)/nucleusc
 	rm -rf $(DESTDIR)$(PREFIX)/share/nucleus
 
-.PHONY: test nuctest abi-test layout-test avr-test riscv-test riscv-abi-test gen-stdlib-table clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders check-headers lib-objs lib-so lib install uninstall
+.PHONY: test test-tools nuctest abi-test layout-test avr-test riscv-test riscv-abi-test gen-stdlib-table clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders check-headers lib-objs lib-so lib install uninstall
