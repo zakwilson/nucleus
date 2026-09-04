@@ -596,6 +596,10 @@
 ; load-time-constant arena handle, so it is arena-backed like everything else
 ; (it used to be lazily malloc-backed — see add-link-arg).
 (defvar (g-link-args (ref (Vector Symbol))) (vector-new-in (addr-of g-arena-alloc)))
+; Owns the preprocessed-header text `cheader-capture` hands out as bare pointers:
+; the cheader cache never frees an entry, so the Strings must outlive every
+; reader. Arena-backed, so the vector itself is a no-op to drop.
+(defvar (g-cheader-bufs (ref (Vector String))) (vector-new-in (addr-of g-arena-alloc)))
 (defvar g-interactive:i32 0)  ; when 1, run in REPL mode (-i / --interactive)
 (defvar g-repl-format:i32 0)  ; 0 = text (default), 1 = json (one JSON object per error)
 (defvar g-opt-level:i32 0)    ; -O0..-O3; LLVMCodeGenOptLevel: None=0, Less=1, Default=2, Aggressive=3
@@ -926,6 +930,7 @@
 ; ============================================================
 
 (import-use vector)
+(import-use process)
 (import-use hash)
 (import-use hashset)
 
@@ -2810,8 +2815,8 @@
 ; <dirent.h>: the C-header reader registers `struct dirent` as *opaque* (its
 ; `char d_name[256]` member is a shape the declaration parser declines), so a
 ; field access on it is refused — and the scan needs only the name. The
-; compiler already depends on POSIX process/pipe calls (`popen`/`pclose`,
-; src/cheader.nuc) to run `clang -E`, so this adds no new platform class.
+; compiler already depends on POSIX process control (lib/process.nuc) to run
+; `clang -E`, so this adds no new platform class.
 (declare opendir (path:CStr):ptr)
 (declare readdir (d:ptr):ptr)
 (declare closedir (d:ptr):i32)
@@ -18622,24 +18627,33 @@
                 (set! driver "riscv64-linux-gnu-gcc"))
               (when (not (symbol-none? g-linker-override))
                 (set! driver (symbol-as-view g-linker-override)))
-              (let ((cmds String) (string-new))
-                (emit cmds driver)
+              (let (cmd:Command (command driver))
                 (when (!= is-avr 0)
                   (let (device:Symbol g-mmcu-override)
                     (when (symbol-none? device) (set! device g-mcpu-override))
                     (when (not (symbol-none? device))
-                      (emit cmds " -mmcu=" device))))
-                (emit cmds " " obj-path " -o " out-path)
+                      (command-arg (addr-of cmd) (fstr "-mmcu=" device)))))
+                (command-arg (addr-of cmd) (symbol-as-view obj-path))
+                (command-arg (addr-of cmd) "-o")
+                (command-arg (addr-of cmd) (symbol-as-view out-path))
                 ; The other half of the per-definition sections `write-ir-section`
                 ; emitted; without it they only add section headers. Placed BEFORE
                 ; the user's link args so `--link-arg=-Wl,--no-gc-sections` can
                 ; turn it back off (last of the pair wins).
                 (when (!= g-elf-sections 0)
-                  (emit cmds " -Wl,--gc-sections"))
+                  (command-arg (addr-of cmd) "-Wl,--gc-sections"))
                 (dotimes (j (unsafe/cast i32 (count g-link-args)))
-                  (emit cmds " " (invoke g-link-args j:usize)))
-                (let (rc2:i32 (system (string-as-cstr cmds)))
-                  (drop (addr-of cmds))
+                  (command-arg (addr-of cmd) (symbol-as-view (invoke g-link-args j:usize))))
+                ; An argv, not a command line: a path with a space in it used to
+                ; be the caller's quoting problem and is now nobody's.
+                (let (rc2:i32 -1)
+                  (match (spawn (addr-of cmd))
+                    ((ok p)
+                     (match (process-wait (addr-of p))
+                       ((ok st) (set! rc2 (exit-code (addr-of st))))
+                       ((err e) (set! rc2 -1))))
+                    ((err e) (set! rc2 -1)))
+                  (drop (addr-of cmd))
                   (when (!= rc2 0)
                     (eprint "nucleusc: link step failed (" driver " exit " rc2 ")\n")
                     (exit 1)))))

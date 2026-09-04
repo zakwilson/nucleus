@@ -14325,6 +14325,77 @@ run_s17_strview_null_compare_rejected() {
 }
 spawn run_s17_strview_null_compare_rejected
 
+# Stage 19: lib/process.nuc. One unit per phase gate — P1 status decoding, P2
+# capture (including the both-pipes-overflow case that deadlocks a sequential
+# drain), P3 the job-pool primitives.
+run_s19_process_status() {
+  local bin actual
+  bin="./build/out/s19-process-status"
+  rm -f "$bin"
+  if ! ./build/nucleusc tests/fixtures/s19-process-status.nuc -o "$bin" 2>&1; then
+    echo "FAIL  s19-process-status (compile error)"
+    return 0
+  fi
+  actual="$("$bin" 2>&1 || true)"
+  if [ "$actual" = "zero 0
+three 3
+killed 137
+noexec 127
+signal 15" ]; then
+    echo "PASS  s19-process-status"
+  else
+    echo "FAIL  s19-process-status"
+    printf '%s\n' "$actual" | sed 's/^/    got: /'
+  fi
+}
+spawn run_s19_process_status
+
+run_s19_process_capture() {
+  local bin actual
+  bin="./build/out/s19-process-capture"
+  rm -f "$bin"
+  if ! ./build/nucleusc tests/fixtures/s19-process-capture.nuc -o "$bin" 2>&1; then
+    echo "FAIL  s19-process-capture (compile error)"
+    return 0
+  fi
+  # The timeout IS the assertion for the overflow case: a sequential drain hangs.
+  actual="$(timeout 60 "$bin" 2>&1 || true)"
+  if [ "$actual" = "code 3
+out to-stdout
+err to-stderr
+big-out 1288895 big-err 1288895 code 0
+arg a b \"c\" \$d
+env new=yes home=/s19-overridden" ]; then
+    echo "PASS  s19-process-capture"
+  else
+    echo "FAIL  s19-process-capture"
+    printf '%s\n' "$actual" | sed 's/^/    got: /'
+  fi
+}
+spawn run_s19_process_capture
+
+run_s19_process_pool() {
+  local bin actual
+  bin="./build/out/s19-process-pool"
+  rm -f "$bin"
+  if ! ./build/nucleusc tests/fixtures/s19-process-pool.nuc -o "$bin" 2>&1; then
+    echo "FAIL  s19-process-pool (compile error)"
+    return 0
+  fi
+  actual="$(timeout 60 "$bin" 2>&1 || true)"
+  if [ "$actual" = "try-wait: still running
+reaped 2
+reaped 3
+reaped 1
+killed: signal 9" ]; then
+    echo "PASS  s19-process-pool"
+  else
+    echo "FAIL  s19-process-pool"
+    printf '%s\n' "$actual" | sed 's/^/    got: /'
+  fi
+}
+spawn run_s19_process_pool
+
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided
 # by scanning buffered output, since `set -e` does not propagate across `&`).

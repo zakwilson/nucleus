@@ -1,0 +1,57 @@
+; Stage 19 P2: both streams captured, and the deadlock gate.
+;
+; A pipe holds a bounded amount (64 KiB on Linux). Draining stdout to EOF while
+; the child writes more than that to stderr hangs forever — the child blocks on
+; the full stderr pipe and never closes stdout. The second case here overflows
+; BOTH buffers, so it completes only if the capture polls them together.
+(import-use process)
+(import-use io)
+(import-use strview)
+(import-use string)
+
+(defn main ():i32
+  (let (c:Command (command "sh"))
+    (command-arg (addr-of c) "-c")
+    (command-arg (addr-of c) "echo to-stdout; echo to-stderr >&2; exit 3")
+    (match (run (addr-of c))
+      ((ok o)
+       (print "code " (exit-code (addr-of o 'status)) "\n")
+       (print "out " (string-as-view (addr-of o 'out)))
+       (print "err " (string-as-view (addr-of o 'err)))
+       (drop (addr-of o)))
+      ((err e) (print "run failed\n")))
+    (drop (addr-of c)))
+  (let (big:Command (command "sh"))
+    (command-arg (addr-of big) "-c")
+    (command-arg (addr-of big) "seq 1 200000; seq 1 200000 >&2")
+    (match (run (addr-of big))
+      ((ok o)
+       (print "big-out " (byte-len (addr-of o 'out))
+              " big-err " (byte-len (addr-of o 'err))
+              " code " (exit-code (addr-of o 'status)) "\n")
+       (drop (addr-of o)))
+      ((err e) (print "big run failed\n")))
+    (drop (addr-of big)))
+  ; An argv element containing a space and a quote: one argument, no quoting.
+  (let (q:Command (command "sh"))
+    (command-arg (addr-of q) "-c")
+    (command-arg (addr-of q) "printf '%s\n' \"$1\"")
+    (command-arg (addr-of q) "sh")
+    (command-arg (addr-of q) "a b \"c\" $d")
+    (match (run (addr-of q))
+      ((ok o) (print "arg " (string-as-view (addr-of o 'out))) (drop (addr-of o)))
+      ((err e) (print "arg run failed\n")))
+    (drop (addr-of q)))
+  ; Environment: a fresh variable, and one that REPLACES an inherited entry
+  ; rather than shadowing it (getenv returns the first match, so an appended
+  ; duplicate would never be seen). HOME is set by the harness.
+  (let (e:Command (command "sh"))
+    (command-arg (addr-of e) "-c")
+    (command-arg (addr-of e) "echo new=$S19_FRESH home=$HOME")
+    (command-env (addr-of e) "S19_FRESH" "yes")
+    (command-env (addr-of e) "HOME" "/s19-overridden")
+    (match (run (addr-of e))
+      ((ok o) (print "env " (string-as-view (addr-of o 'out))) (drop (addr-of o)))
+      ((err x) (print "env run failed\n")))
+    (drop (addr-of e)))
+  (return 0))

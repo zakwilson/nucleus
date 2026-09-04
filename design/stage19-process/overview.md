@@ -1,5 +1,7 @@
 # Stage 19 — process control
 
+**Status: built 2026-09-04** (P1–P6). §8 records the five deltas from this plan.
+
 **Goal.** `lib/process.nuc`: start a program, control its streams, wait for it,
 and read a typed exit status. A self-hosted systems language that cannot run
 another program is incomplete on its own terms, and today Nucleus cannot —
@@ -269,3 +271,65 @@ string library instead of a string module.
 4. **Where do the environment defaults come from?** Inherit the parent's `environ`
    unless overridden, or start empty and require what the child needs? Inheriting
    is expected; starting empty is what makes a test suite reproducible.
+
+---
+
+## 8. As built (2026-09-04)
+
+All six phases landed. 959 tests (955 + three phase gates + the example), IR
+snapshot byte-identical across 2,624 artifacts, bootstrap converged,
+`check-headers` and `check-cstr` clean.
+
+`lib/process.nuc` is 415 lines. Five deltas from the plan above:
+
+**8.1 `process-try-wait` returns `!bool`, not `!(Maybe ExitStatus)`.** The
+planned signature does not compile: `(Result (Maybe T) Err)` for a struct `T`
+stamps a `(Maybe ExitStatus)` whose type the `ok` arm's field rejects
+(*"type mismatch for a field of arm 'ok'"*), and the plain `:!(Maybe …)` sugar
+does not parse at all. A `bool` plus a `process-status` accessor says the same
+thing — the status is stored on the `Process` either way — and the accessor is
+useful on its own. **This is a real language limitation the port found**, of
+exactly the kind §1 said the exercise is for: nested template construction in a
+return position has no want channel to resolve `some` against. Fixing it is a
+compiler change with its own gates, not a phase of this stage.
+
+**8.2 `command-env` merges rather than appends, which settled §7 decision 4.**
+The child inherits the parent's environment and an override *replaces* the
+inherited entry. Appending would have been three lines, and wrong: `getenv`
+returns the first match, so a duplicate entry is never seen. `environ` needed an
+`(extern environ:ptr:ptr)` declaration — the C header reader takes function
+declarations and object-like macros, not `extern` variables. The child sets it
+with a pointer store, which is safe in the post-fork window where `setenv` (which
+allocates) would not be.
+
+**8.3 The `Command` holds one buffer, not a `(Vector String)`.** `Vector`'s
+`drop` frees its array **without dropping its elements**, so N owning strings
+would have leaked N heap buffers. Arguments accumulate NUL-terminated into a
+single `String` with a vector of offsets, which also makes the argv pointers
+stable and the whole thing one allocation.
+
+**8.4 P4 kept the cheader cache's `ptr`+length interface.** The cache stores a
+bare pointer in a `Node` and nothing ever frees it, so converting it to `String`
+would have meant changing the cache representation as well. Instead
+`cheader-capture` parks the captured `String` in a process-lifetime
+`g-cheader-bufs` vector and hands out `string-as-cstr`'s pointer — no copy, and
+the owner outlives every reader. Converting the cache itself is follow-on work.
+
+**8.5 The example is `examples/subprocess.nuc`, not `process.nuc`.** A file named
+`process.nuc` cannot `(import-use process)`: the compilation unit's root file is
+on no import list, so the import silently resolves to the file itself and every
+name from the module goes missing. The diagnostic — *"'Command' is defined in
+lib/process.nuc, which no import in this unit reaches"* — is accurate and reads
+like a bug in the import. Recorded in `context/conventions.md`.
+
+### What P4 retired
+
+`read-pipe-output`, the `popen`/`pclose` declares, and both `system` call sites
+are gone. Three consequences beyond the line count:
+
+- The link step passes an **argv**. A path with a space in it was the caller's
+  quoting problem and is now nobody's.
+- `clang -E` no longer needs `2>/dev/null` in a command string; stderr is a
+  separate captured stream that gets dropped.
+- The `--sysroot=<dir>` flag was interpolated into a shell command line. A
+  sysroot path containing a space was a latent bug; it is now one argument.
