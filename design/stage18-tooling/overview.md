@@ -776,6 +776,51 @@ the order-independence audit of the existing suite: a unit that only passes afte
 some other unit has run will fail here, and §T8.6 makes that a bug rather than a
 curiosity. Expect this phase to find some.
 
+#### As built (2026-09-04)
+
+`spawn` is the only dispatch point in the file, so the whole of `--list` and
+`--unit` lives inside it and **no unit function changed**. The count is 525
+spawned units, not the 176 named functions §T6 estimated: the three per-file
+loops (`examples/*.nuc`, `tests/fixtures/*.nuc`, and the reject tables) spawn one
+unit per file, and those are what a runner has to address.
+
+Three deltas from the sketch:
+
+1. **Names are `function:first-argument`, not function-plus-all-arguments.** The
+   first argument is already each unit's identity — `run_example <src>`,
+   `run_fixture <src>`, `run_reject <name> <fixture> <pattern>`. Later arguments
+   are *expected diagnostic text*, so joining them in produced names like
+   `run_reject_at:g2-array-nested:…:(array T N) is a storage type` — 100+ bytes
+   of error message, parens and spaces, in a token that has to survive a command
+   line. First-argument-only yields 525 unique names, longest 49 bytes, none
+   containing whitespace or a shell metacharacter. `spawn` rejects a duplicate
+   name outright rather than leaving a driver to discover an unaddressable unit.
+
+2. **`--unit` does not build.** The `make -s` at the top of the file exists to
+   stop 161 parallel jobs relinking `build/nucleusc` while others execute it; 525
+   concurrent `--unit` invocations would reintroduce exactly that race. The
+   runner builds once, before dispatch. This is the one thing a human invoking
+   `--unit` by hand has to know, so the usage comment says it.
+
+3. **`--unit` backgrounds the unit and waits, rather than calling it.** A unit
+   that dies mid-way has to leave the same partial output it would leave in the
+   pool. Calling it in the current shell under `|| true` would disable `set -e`
+   for the whole function body, so a unit that would have aborted would instead
+   run on — different output, and the gate would not have caught it because
+   nothing currently aborts.
+
+*Gate: passed.* All 525 units run alone, concatenated in dispatch order, are
+byte-identical to the full parallel run — 959 `PASS`, 0 `FAIL`. The only
+differing line is `make`'s build banner, which `--unit` deliberately does not
+emit.
+
+**The order-independence audit found nothing.** Every unit passes in a fresh
+process. This contradicts the expectation two paragraphs up, and the reason is
+the invariant the harness header already claimed: each unit owns its own
+`mktemp` space. That claim now has a test behind it, which is the part that was
+missing — and TF-2's `--shuffle` inherits a suite already known to be clean, so
+a future shuffle failure is a real regression rather than pre-existing debt.
+
 ### T6.2 TF-2 — `build/nuctest`, the runner
 
 A bounded job pool over Stage 19's `spawn` and `wait-any`; a scratch directory
