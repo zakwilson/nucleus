@@ -1,0 +1,8 @@
+kind=3 len=5
+host="localhost"
+port=8080
+tags=:fast
+ratio=0.75
+missing=()
+reread-equal=true
+roundtrip-equal=true

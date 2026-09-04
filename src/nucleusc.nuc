@@ -587,6 +587,9 @@
 
 ; Compiler mode flags.
 (defvar g-emit-nuch:i32 0)    ; when 1, output .nuch header instead of LLVM IR
+; Stage 18 TF-3: dump the reader's output and stop. The gate for lib/read.nuc is
+; agreement with THIS reader, and there is no other way to see what it produced.
+(defvar g-dump-ast:i32 0)
 (defvar g-emit-cheader:i32 0) ; when 1, output C header instead of LLVM IR
 (defvar g-emit-llvm:i32 0)    ; when 1, output textual LLVM IR to stdout instead of a binary
 (defvar g-emit-obj:i32 0)     ; when 1 (-c), emit a .o file instead of linking a binary
@@ -1098,8 +1101,15 @@
         (emit out (nn 's))
       NODE-KEYWORD
         (do (emit out ":") (emit out (nn 's)))
+      NODE-CHAR
+        ; Was falling through to the default and printing NOTHING. A printer
+        ; whose output cannot be read back is not a canonical printer.
+        (do (emit out "\\u{") (emit out (hex (nn 'i) 1)) (emit out "}"))
       NODE-STR
         (do
+          ; NS-4's CStr flag. Dropping it printed `c"x"` as `"x"`, which reads
+          ; back as a different literal -- found by Stage 18 TF-3's parity gate.
+          (when (!= (nn 'i) 0) (emit out "c"))
           (emit out "\"")
           (let (sv:StrView (symbol-as-view (nn 's))
                       len:i64 (unsafe/cast i64 (sv 'len)))
@@ -1112,7 +1122,10 @@
                   92 (do (emit out "\\") (emit out "\\"))
                   34 (do (emit out "\\") (emit out "\""))
                   0  (do (emit out "\\") (emit out "0"))
-                  (emit out (as Char (as ui32 c)))))))
+                  ; The BYTE, not `(as Char c)`: widening a byte to a codepoint
+                  ; re-encodes it as UTF-8, so "h\xc3\xa9" printed back as "hA©".
+                  ; Found by Stage 18 TF-3's parity gate.
+                  (emit out (strview (unsafe/ptr+ (sv 'data) i) 1))))))
           (emit out "\""))
       NODE-CELL
         (do
@@ -18750,6 +18763,8 @@
       (let (argview:StrView (strview-from-cstr (as CStr (aref (as ptr:ptr argv) i))))
         (cond (= argview "--emit-nuch")
                 (set! g-emit-nuch 1)
+              (= argview "--dump-ast")
+                (set! g-dump-ast 1)
               (= argview "--emit-cheader")
                 (set! g-emit-cheader 1)
               (or (= argview "--emit-llvm") (= argview "-S"))
@@ -18832,6 +18847,17 @@
       (set! g-line 1)
 
       (let (raw-forms:ptr (read-program-or-die))
+
+        ; Before `desugar` and before the prelude is prepended: what the reader
+        ; alone produced, one top-level form per line.
+        (when (!= g-dump-ast 0)
+          (let (cur:(raw Node) (as raw:Node raw-forms))
+            (while (!= cur null)
+              (print-node (cur 'car))
+              (emit (as ptr stdout) "\n")
+              (set! cur (cur 'cdr))))
+          (return 0))
+
       (let (forms:ptr (desugar raw-forms))
 
         ; Apply the standard prelude unless the source begins with

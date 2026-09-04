@@ -910,6 +910,84 @@ or a user's own macro tooling would call.
 *Gate:* round-trips every `.nuc` file in `tests/fixtures/` against
 `src/reader.nuc`'s parse of the same file, compared structurally.
 
+#### As built (2026-09-04)
+
+`lib/read.nuc`, 792 lines. `read-all` for whole text, a `Reader`/`read-one`
+pair for one form at a time (and for the error line, which the `!` channel
+cannot carry), `node-write`/`node-str` for the canonical text, `node-eq` for
+structural equality. Documented in `docs/reading.md`, with
+`examples/read-sexp.nuc` as the worked example.
+
+**The gate needed an instrument, so the compiler gained `--dump-ast`**: the
+reader's output, before `desugar` and before the prelude is prepended, one
+top-level form per line. There was no other way to see what `src/reader.nuc`
+produced — it is compiler internals and stays there (14 compiler globals,
+including the reader-macro table and three REPL/diagnostic ones). `readdump`
+(`tests/readdump.nuc`) prints `lib/read.nuc`'s answer in the same format, so
+parity is a `diff`.
+
+**Result — 429 files, zero disagreements:**
+
+| Corpus | Identical | Rejected | Compiler can't parse |
+| --- | --- | --- | --- |
+| `tests/fixtures/` | 220 | 0 | 6 (the reader-error fixtures) |
+| `examples/` | 156 | 7 | 0 |
+| `lib/` | 42 | 0 | 0 |
+| `src/` | 12 | 3 | 0 |
+
+Pinned as four `run_reader_parity` units, so this is a standing gate rather than
+a one-time measurement.
+
+##### The scope deviation, stated
+
+The gate as written implies full parity, and full parity is not achievable:
+`def-rmacro` extends the *compiler's* reader-macro table at compile time, so no
+library reader can agree with it on source that uses one. Given that, the line
+was drawn at what a **data** reader owes its callers. Excluded:
+
+- **Collection literals** `[…]`, `{…}`, `#{…}` — the desugaring infers an
+  element *type* from the elements (`lit-elem-kind`, `lit-type-node`). That is
+  type inference living in a reader; it belongs to the compiler. ~140 lines not
+  duplicated.
+- **User reader macros** — compiler state, as above. The six built-ins (`'`,
+  `` ` ``, `~`, `~@`, `@`, `&`) are implemented, because they are part of the
+  written language rather than a per-compilation registration.
+
+Everything else is implemented rather than waved off, including the two pieces
+of Nucleus surface sugar a data reader has no use for — `&T` → `ref:T`, and the
+`name:(Type)` colon-paren fuse with its `(fn ret)(params)` second group. They
+are ~110 lines and they are what takes the corpus from 175 files to 429: without
+them, 44 fixtures would parse into a *silently different* tree. That is the
+distinction that decided the line — **a construct that would be silently
+mis-parsed must be implemented; one that can be positively rejected may be
+excluded.** The ten excluded files fail with `read-collection-literal` and a
+line number, and `run_reader_parity` fails if a rejection ever has another
+cause, so the exclusion cannot quietly grow.
+
+##### Three bugs in the compiler's printer, found by the gate
+
+`fprint-node` is what `--emit-nuch` writes macro bodies with. Every difference
+the parity sweep reported turned out to be the *compiler* losing information,
+not the new reader:
+
+1. **`println` and `eprintln` were exported without their newline.** A
+   `NODE-CHAR` fell through to the default case and printed *nothing*, so
+   `lib/io.nuch` carried `(str-into b parts )` where the source has
+   `(str-into b parts \newline)`. Any multi-TU build importing the header got a
+   `println` that behaved as `print`. Fixed by printing `\u{…}`; the IR snapshot
+   re-take below is exactly this.
+2. **`c"…"` printed as `"…"`.** NS-4's CStr flag lives in `NODE-STR.i` and the
+   printer ignored it, so the literal read back as a different one.
+3. **Non-ASCII string literals were mojibake.** The default byte case did
+   `(emit out (as Char (as ui32 c)))`, widening each *byte* to a codepoint and
+   re-encoding it as UTF-8: `"hé"` printed back as `"hÃ©"`. Fixed by emitting a
+   one-byte `StrView`.
+
+None was reachable from any committed header, which is why 85 generated headers
+had been green over three of these bugs. A second implementation found all three
+in an afternoon — the argument §T2 makes for a native suite, arriving one phase
+before the suite exists.
+
 ### T6.4 TF-4 — `lib/test.nuc`, `deftest`, and the suite protocol
 
 - **`deftest`** (§T8.2) registers a named test into a table the suite walks,

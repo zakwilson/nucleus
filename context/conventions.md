@@ -6342,3 +6342,28 @@ the check is not "does this compile" but "does the emitted call intern". It
 calls `@symbol-intern-bytes`, which needs a `macro-jit-declare-raw` at **both**
 JIT declare sites (a JIT module only gets `declare`s for functions registered in
 the unit being compiled).
+
+## `print-node` is a canonical printer, and `--emit-nuch` is its only consumer
+
+`fprint-node` (`src/nucleusc.nuc`) is what `--emit-nuch` writes macro bodies
+with, which makes it a *round-trip* obligation: whatever it prints has to read
+back as the same tree. It was not treated as one, and Stage 18 TF-3 found three
+ways it silently lost information — a `NODE-CHAR` fell through the `case` and
+printed **nothing** (so `lib/io.nuch` exported `println` without its newline,
+and any multi-TU build importing that header got a `println` that behaved as
+`print`), `c"…"` printed as `"…"` (NS-4's CStr flag lives in `NODE-STR.i`), and
+the default byte case did `(emit out (as Char (as ui32 c)))`, widening each
+*byte* to a codepoint and re-encoding it as UTF-8 so `"hé"` came back `"hÃ©"`.
+
+**Adding a `NodeKind` means adding a `fprint-node` arm**, and its default arm
+must stay unreachable rather than silently drop a node.
+
+Neither `check-headers` nor the IR snapshot catches this class: both compare the
+compiler's output against *itself*, so a lossy printer is consistently lossy and
+stays green. What caught it was a second implementation that reads the output
+back — `nucleusc --dump-ast <file>` prints the reader's tree (before `desugar`,
+before the prelude) and `build/readdump` prints `lib/read.nuc`'s answer in the
+same format, so `run_reader_parity` diffs them over `tests/fixtures/`,
+`examples/`, `lib/` and `src/`. Use `--dump-ast` whenever you touch the reader
+or the printer; it is the only way to see what `src/reader.nuc` actually
+produced.

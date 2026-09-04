@@ -37,7 +37,7 @@ esac
 # build.sh, which runs `make` — harmless when the tree is already built, but if
 # any src/*.nuc is newer then 161 parallel jobs relink build/nucleusc while the
 # other jobs are executing it, and every unit dies with "Text file busy".
-[ "$MODE" = run ] && make -s
+[ "$MODE" = run ] && make -s test-tools
 
 # --- Parallel dispatch ----------------------------------------------------------
 # Test groups run concurrently as independent background jobs, bounded by
@@ -14475,6 +14475,57 @@ killed: signal 9" ]; then
   fi
 }
 spawn run_s19_process_pool
+
+# --- Stage 18 TF-3: lib/read.nuc agrees with src/reader.nuc ---------------------
+# Both readers print the same canonical text, so a tree difference is a diff.
+# Collection literals (`[…]`, `{…}`, `#{…}`) are lib/read.nuc's one documented
+# exclusion -- their desugaring infers an element type, which is compiler work.
+# A rejection for any OTHER reason is a failure, so the exclusion cannot quietly
+# grow. Files the compiler itself cannot parse are the reader-error fixtures.
+run_reader_parity() {  # <dir>
+  local dir="$1"
+  local name="reader-parity-${1//\//-}"
+  local ok=0 rej=0 skip=0 bad=0 d f
+  d="$(mktemp -d)"
+  : > "$d/detail"
+  for f in "$dir"/*.nuc; do
+    [ -f "$f" ] || continue
+    if ! ./build/nucleusc --dump-ast "$f" > "$d/a" 2>/dev/null; then
+      skip=$((skip + 1))
+      continue
+    fi
+    if ! ./build/readdump "$f" > "$d/b" 2>"$d/err"; then
+      if qgrep 'collection literals' "$d/err"; then
+        rej=$((rej + 1))
+      else
+        bad=$((bad + 1))
+        [ "$bad" -le 3 ] && echo "    $f: $(head -1 "$d/err")" >> "$d/detail"
+      fi
+      continue
+    fi
+    if diff -q "$d/a" "$d/b" >/dev/null; then
+      ok=$((ok + 1))
+    else
+      bad=$((bad + 1))
+      if [ "$bad" -le 3 ]; then
+        echo "    $f: lib/read.nuc disagrees with nucleusc --dump-ast" >> "$d/detail"
+        diff "$d/a" "$d/b" | head -4 | sed 's/^/      /' >> "$d/detail"
+      fi
+    fi
+  done
+  if [ "$bad" -eq 0 ]; then
+    echo "PASS  $name ($ok identical, $rej collection-literal, $skip unparseable)"
+  else
+    echo "FAIL  $name ($bad disagreements)"
+    cat "$d/detail"
+  fi
+  rm -rf "$d"
+}
+
+spawn run_reader_parity tests/fixtures
+spawn run_reader_parity examples
+spawn run_reader_parity lib
+spawn run_reader_parity src
 
 # --- Single-mode exits ----------------------------------------------------------
 if [ "$MODE" = list ]; then
