@@ -31,9 +31,29 @@ See `examples/subprocess.nuc` for a worked example.
 | `(command-env c k v)` | Set one variable. The child otherwise inherits the parent's environment; an override **replaces** the inherited entry rather than shadowing it, since `getenv` returns the first match. |
 | `(command-search c on)` | `true` (default) looks `prog` up on `PATH` (`execvp`); `false` treats it as an exact path (`execv`). |
 | `(command-capture c on)` | Pipe the child's stdout and stderr back instead of inheriting the parent's. `run` sets this; set it by hand when driving `spawn` yourself. |
+| `(command-stdout-path c path)` | Send the child's stdout to a file, created and truncated. |
+| `(command-stderr-to-stdout c on)` | The child's stderr follows its stdout — shell `2>&1`. |
 
 A `Command` owns its argument buffer: `drop` it when you are done, and do not
 add arguments to one that has already been spawned.
+
+### Pipes or a file?
+
+`command-capture` gives you the output as a `String`; `command-stdout-path`
+gives the child a file and hands you nothing. Which one you want depends on how
+many children there are.
+
+**One child: capture.** `run` does exactly this.
+
+**A pool of children: files.** A pipe holds a bounded amount — 64 KiB on Linux —
+and a child that fills its pipe blocks until somebody drains it. With *N*
+children in flight and one parent, draining child A means not draining child B,
+and a parent blocked in `wait-any` is draining nobody at all. A file has no such
+limit, so the parent can start every child and then wait, which is the whole
+shape of a job pool. `tests/nuctest.nuc` is the worked example.
+
+The parent opens the file before forking, so a bad path is a
+`process-redirect-failed` error rather than a child that silently exits 127.
 
 ## Running one thing: `run`
 
@@ -114,7 +134,8 @@ time `exec` fails the child already exists.
 ## Errors
 
 `deferror` codes: `process-spawn-failed`, `process-wait-failed`,
-`process-pipe-failed`, `process-read-failed`, `process-signal-failed`.
+`process-pipe-failed`, `process-read-failed`, `process-signal-failed`,
+`process-redirect-failed`.
 
 ## Platform
 

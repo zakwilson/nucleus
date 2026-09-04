@@ -100,8 +100,10 @@ spawn() {
     if qgrep '^FAIL' "$RESULTS_DIR/${id}.out" || [ ! -s "$RESULTS_DIR/${id}.out" ]; then
       _unit_fail=1
     fi
-    _unit_ran=1
-    return 0
+    # Nothing after this unit can change its verdict, and a driver pays this
+    # script's parse-and-glob cost once per unit -- so stop here rather than
+    # walking the remaining dispatch calls.
+    exit "$_unit_fail"
   fi
 
   "$@" >"$RESULTS_DIR/${id}.out" 2>&1 &
@@ -136,7 +138,7 @@ qgrep() { grep "$@" >/dev/null; }
 
 run_example() {  # <src>
   local src="$1" name expected actual_file build_log
-  name="$(basename "$src" .nuc)"
+  name="${src##*/}"; name="${name%.nuc}"
   expected="tests/expected/${name}.out"
   [ -f "$expected" ] || return 0
   # Never let a stale binary from a prior run mask a compile failure: a
@@ -170,7 +172,7 @@ run_example() {  # <src>
 # compare against tests/expected/repl-<name>.out.
 run_repl() {  # <src>
   local src="$1" name expected actual_file
-  name="$(basename "$src" .in)"
+  name="${src##*/}"; name="${name%.in}"
   expected="tests/expected/repl-${name}.out"
   [ -f "$expected" ] || return 0
   actual_file="$(mktemp)"
@@ -1435,7 +1437,7 @@ run_w9_lib_standalone() {
 
   bad=0; body=""
   for f in lib/*.nuc; do
-    ll="$d/$(basename "$f" .nuc).ll"
+    ll="${f##*/}"; ll="$d/${ll%.nuc}.ll"
     if ! ./build/nucleusc --emit-llvm "$f" >"$ll" 2>"$d/err"; then
       bad=1; body="${body}    ${f}"$'\n'"$(sed 's/^/      /' "$d/err")"$'\n'
       continue
@@ -6180,15 +6182,19 @@ EOF
 
 # --- Dispatch sequence (original top-to-bottom order) ---------------------------
 
+# Parameter expansion, not `basename`: this dispatch loop runs on every
+# invocation including `--unit`, and 161 forks per unit dominated the run.
 for src in examples/*.nuc; do
   [ -f "$src" ] || continue
-  [ -f "tests/expected/$(basename "$src" .nuc).out" ] || continue
+  _base="${src##*/}"; _base="${_base%.nuc}"
+  [ -f "tests/expected/${_base}.out" ] || continue
   spawn run_example "$src"
 done
 
 for src in tests/repl/*.in; do
   [ -f "$src" ] || continue
-  [ -f "tests/expected/repl-$(basename "$src" .in).out" ] || continue
+  _base="${src##*/}"; _base="${_base%.in}"
+  [ -f "tests/expected/repl-${_base}.out" ] || continue
   spawn run_repl "$src"
 done
 
