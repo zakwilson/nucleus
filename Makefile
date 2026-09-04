@@ -105,6 +105,19 @@ test: $(BIN)
 	@rm -rf $(BUILD)/out
 	./tests/run-tests.sh
 
+# Stage 18 TF-2: the native runner, driving the same shell bodies through
+# `run-tests.sh --unit`. Not part of `make test` yet -- at this phase it runs
+# the identical units, so running both would double the wall clock for no extra
+# coverage. TF-7 makes it the entry point. See design/stage18-tooling.
+NUCTEST := $(BUILD)/nuctest
+
+$(NUCTEST): tests/nuctest.nuc $(wildcard lib/*.nuc) $(BIN) | $(BUILD)
+	$(BIN) tests/nuctest.nuc -o $@
+
+nuctest: $(NUCTEST)
+	@rm -rf $(BUILD)/out
+	./$(NUCTEST)
+
 # Struct-ABI interop acceptance test (Phase C gate). Not part of `make test`
 # until aggregate ABI lowering lands; see design/stage8/platform.md.
 abi-test: $(BIN)
@@ -274,4 +287,4 @@ uninstall:
 	rm -f $(BINDIR)/nucleusc
 	rm -rf $(DESTDIR)$(PREFIX)/share/nucleus
 
-.PHONY: test abi-test layout-test avr-test riscv-test riscv-abi-test gen-stdlib-table clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders check-headers lib-objs lib-so lib install uninstall
+.PHONY: test nuctest abi-test layout-test avr-test riscv-test riscv-abi-test gen-stdlib-table clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders check-headers lib-objs lib-so lib install uninstall

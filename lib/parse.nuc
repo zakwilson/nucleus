@@ -46,7 +46,7 @@
 ; `from-str:!i32` for Self=i32. The `from-str` method takes a phantom
 ; `(self Self)` first argument so that generic dispatch selects the right
 ; conformer. At the call site, callers use `(parse T sv)` which expands to
-; `(from-str (cast T 0) sv)`.
+; `(from-str (as T 0) sv)`.
 ; ---------------------------------------------------------------------------
 (defprotocol (FromStr R)
   (from-str ((self Self) (sv (ref StrView))):R))

@@ -1,0 +1,328 @@
+; Stage 18 TF-2 — nuctest, the test runner.
+;
+; Design: design/stage18-tooling/overview.md §T6.2.
+;
+; A unit is a name, a command and a scratch directory. Every command here is
+; `tests/run-tests.sh --unit <name>`, so this replaces the shell harness's
+; dispatch, job pool, buffering and ordered replay without touching one test
+; body; TF-6 swaps the commands over one category at a time.
+;
+; Unit results go to stdout and the runner's own summary to stderr, which is
+; what lets the replay be compared byte-for-byte against the shell harness.
+
+(import-use "unistd.h")
+(import-use "sys/stat.h")
+
+(import-use error)
+(import-use strview)
+(import-use string)
+(import-use string-split)
+(import-use parse)
+(import-use vector)
+(import-use fmt)
+(import-use io)
+(import-use file)
+(import-use process)
+
+(deferror nuctest-list-failed "cannot list units")
+(deferror nuctest-scratch-failed "cannot create a scratch directory")
+(deferror nuctest-bad-args "bad arguments")
+
+(defconst DIR-MODE 493)         ; 0755
+(defconst BYTE-STAR 42)         ; '*'
+(defconst BYTE-QUESTION 63)     ; '?'
+
+; ---------------------------------------------------------------------------
+; Glob matching — §T8.4 ruled glob rather than regex.
+; ---------------------------------------------------------------------------
+
+; Unchecked because every caller has just bounds-checked `i`, and the checked
+; accessor yields `!ui8`, which a bool-returning matcher cannot propagate.
+(defn sv-byte ((v (ref StrView)) i:usize):ui8
+  (return (aref (v 'data) i)))
+
+; Backtracking rather than recursive: one remembered `*` position is enough,
+; since a second `*` supersedes the first.
+(defn glob-match ((pat (ref StrView)) (s (ref StrView))):bool
+  (let (pn:usize (strview-byte-len pat)
+        sn:usize (strview-byte-len s)
+        pi:usize 0
+        si:usize 0
+        star:i64 -1
+        mark:usize 0)
+    (while (< si sn)
+      (let (starred:bool false
+            matched:bool false)
+        (when (< pi pn)
+          (let (pc:ui8 (sv-byte pat pi))
+            (set! starred (= pc BYTE-STAR))
+            (set! matched (or (= pc BYTE-QUESTION) (= pc (sv-byte s si))))))
+        (cond starred
+                (do (set! star (as i64 pi))
+                    (set! mark si)
+                    (set! pi (+ pi 1)))
+              matched
+                (do (set! pi (+ pi 1))
+                    (set! si (+ si 1)))
+              (>= star 0)
+                (do (set! pi (+ (as usize star) 1))
+                    (set! mark (+ mark 1))
+                    (set! si mark))
+              true
+                (return false))))
+    (while (and (< pi pn) (= (sv-byte pat pi) BYTE-STAR))
+      (set! pi (+ pi 1)))
+    (return (= pi pn))))
+
+; ---------------------------------------------------------------------------
+; Shuffle — §T8.6 made order independence a requirement, so the runner has to
+; be able to violate any incidental ordering on purpose.
+; ---------------------------------------------------------------------------
+
+(defn rng-next ((state (ptr ui64))):ui64
+  (let (x:ui64 (deref state))
+    (set! x (bit-xor x (bit-shl x 13)))
+    (set! x (bit-xor x (bit-shr x 7)))
+    (set! x (bit-xor x (bit-shl x 17)))
+    (set! (deref state) x)
+    (return x)))
+
+(defn shuffle ((order (ref (Vector usize))) seed:ui64):void
+  (let (n:usize (count order)
+        ; A zero state is xorshift's fixed point, so seed 0 would not shuffle.
+        st:ui64 (bit-or seed 1)
+        i:usize 0)
+    (when (< n 2) (return))
+    (set! i (- n 1))
+    (while (> i 0)
+      (let (j:usize (as usize (% (rng-next (addr-of st)) (as ui64 (+ i 1))))
+            a:usize (invoke order i)
+            b:usize (invoke order j))
+        (set order i b)
+        (set order j a))
+      (set! i (- i 1)))))
+
+; ---------------------------------------------------------------------------
+; Units
+; ---------------------------------------------------------------------------
+
+(defstruct Slot
+  pid:i32
+  unit:usize)
+
+; The unit list comes from the suite itself rather than a checked-in manifest:
+; one source of truth, and `--list` is the interface TF-6 keeps as bodies move.
+(defn list-units ():!Output
+  (let (c:Command (command "tests/run-tests.sh"))
+    (command-arg (addr-of c) "--list")
+    (let (r:!Output (run (addr-of c)))
+      (drop (addr-of c))
+      (match r
+        ((ok o)
+          (match (o 'status)
+            ((exited code)
+              (when (!= code 0)
+                (drop (addr-of o))
+                (return (err! nuctest-list-failed))))
+            ((signaled sig)
+              (drop (addr-of o))
+              (return (err! nuctest-list-failed))))
+          (return (ok o)))
+        ((err e) (return (err e)))))))
+
+(defn dispatch-unit (name:StrView out-path:StrView scratch:StrView):!i32
+  (let (c:Command (command "tests/run-tests.sh"))
+    (command-arg (addr-of c) "--unit")
+    (command-arg (addr-of c) name)
+    (command-stdout-path (addr-of c) out-path)
+    (command-stderr-to-stdout (addr-of c) true)
+    (command-env (addr-of c) "NUCTEST_SCRATCH" scratch)
+    (let (r:!Process (spawn (addr-of c)))
+      (drop (addr-of c))
+      (match r
+        ((ok p)
+          (let (pid:i32 (process-pid (addr-of p)))
+            (process-detach (addr-of p))
+            (return (ok pid))))
+        ((err e) (return (err e)))))))
+
+; One child, whichever finishes first. `wait-any` is why the pool needs no
+; polling: the kernel picks, and the slot table says which unit that was.
+(defn reap-one ((inflight (ref (Vector Slot))) (status (ref (Vector i32)))):!void
+  (let (ce:ChildExit (try (wait-any))
+        n:usize (count inflight)
+        i:usize 0)
+    (while (< i n)
+      (let (s:Slot (invoke inflight i))
+        (when (= (s 'pid) (ce 'pid))
+          (set status (s 'unit) (exit-code (addr-of ce 'status)))
+          (remove-at inflight i)
+          (return (ok))))
+      (set! i (+ i 1)))
+    (return (ok))))
+
+(defn make-dir ((path (ref StrView))):!void
+  (let (buf:String (string-new))
+    (string-push-str-unchecked (addr-of buf) path)
+    (let (rc:i32 (mkdir (string-as-cstr (addr-of buf)) DIR-MODE))
+      (drop (addr-of buf))
+      (when (!= rc 0) (return (err! nuctest-scratch-failed)))
+      (return (ok)))))
+
+; ---------------------------------------------------------------------------
+; The run
+; ---------------------------------------------------------------------------
+
+(defn nuctest-main (argc:i32 argv:ptr):!i32
+  (let (jobs:usize 16
+        filter:StrView ""
+        have-filter:bool false
+        seed:ui64 0
+        want-shuffle:bool false
+        list-only:bool false
+        i:i32 1)
+    (while (< i argc)
+      (let (a:StrView (strview-from-cstr (as CStr (aref (as ptr:ptr argv) i))))
+        (cond (= a "--list")
+                (set! list-only true)
+              (= a "--jobs")
+                (do (set! i (+ i 1))
+                    (when (>= i argc) (return (err! nuctest-bad-args)))
+                    (let (v:StrView (strview-from-cstr
+                                      (as CStr (aref (as ptr:ptr argv) i))))
+                      (set! jobs (as usize (try (from-str (as i64 0)
+                                                          (addr-of v)))))))
+              (= a "--filter")
+                (do (set! i (+ i 1))
+                    (when (>= i argc) (return (err! nuctest-bad-args)))
+                    (set! filter (strview-from-cstr
+                                   (as CStr (aref (as ptr:ptr argv) i))))
+                    (set! have-filter true))
+              (= a "--shuffle")
+                (do (set! i (+ i 1))
+                    (when (>= i argc) (return (err! nuctest-bad-args)))
+                    (let (v:StrView (strview-from-cstr
+                                      (as CStr (aref (as ptr:ptr argv) i))))
+                      (set! seed (try (from-str (as ui64 0) (addr-of v))))
+                      (set! want-shuffle true)))
+              true
+                (return (err! nuctest-bad-args))))
+      (set! i (+ i 1)))
+    (when (< jobs 1) (set! jobs 1))
+
+    ; `listing` backs every name below: the units are views into it, so it has
+    ; to outlive the whole run.
+    (let (listing:Output (try (list-units))
+          names:(Vector StrView) (vector-new)
+          lv:StrView (string-as-view (addr-of listing 'out)))
+      (let (it:LineIter (strview-lines (addr-of lv)))
+        (while (not (lines-iter-done (addr-of it)))
+          (let (line:StrView (lines-iter-next (addr-of it)))
+            (when (> (strview-byte-len (addr-of line)) 0)
+              (when (or (not have-filter)
+                        (glob-match (addr-of filter) (addr-of line)))
+                (conj (addr-of names) line))))))
+
+      (let (n:usize (count (addr-of names))
+            order:(Vector usize) (vector-new)
+            k0:usize 0)
+        (while (< k0 n)
+          (conj (addr-of order) k0)
+          (set! k0 (+ k0 1)))
+        (when want-shuffle (shuffle (addr-of order) seed))
+
+        ; `--list` prints dispatch order, so `--list --shuffle N` shows exactly
+        ; what `--shuffle N` will do -- otherwise a shuffle is unobservable,
+        ; since the replay below is always in manifest order.
+        (when list-only
+          (let (k:usize 0)
+            (while (< k n)
+              (print (invoke (addr-of names) (invoke (addr-of order) k)) "\n")
+              (set! k (+ k 1))))
+          (drop (addr-of order))
+          (drop (addr-of names))
+          (drop (addr-of listing))
+          (return (ok 0)))
+
+        ; One root per run, named by pid so two runners never collide.
+        (let (root:String (str "build/nuctest-" (as i64 (getpid)))
+              rootv:StrView (string-as-view (addr-of root)))
+          (try (make-dir (addr-of rootv)))
+
+          (let (status:(Vector i32) (vector-new)
+                inflight:(Vector Slot) (vector-new)
+                k:usize 0)
+            (while (< k n)
+              (conj (addr-of status) -1)
+              (set! k (+ k 1)))
+
+            ; Dispatch in `order`, which shuffling permutes; replay below walks
+            ; 0..n, so a shuffled run's output is byte-identical to a plain one.
+            (set! k 0)
+            (while (< k n)
+              (when (>= (count (addr-of inflight)) jobs)
+                (try (reap-one (addr-of inflight) (addr-of status))))
+              (let (u:usize (invoke (addr-of order) k)
+                    outp:String (str (string-as-view (addr-of root)) "/" (as i64 u) ".out")
+                    scratch:String (str (string-as-view (addr-of root)) "/" (as i64 u))
+                    sv:StrView (string-as-view (addr-of scratch)))
+                (try (make-dir (addr-of sv)))
+                (let (pid:i32 (try (dispatch-unit (invoke (addr-of names) u)
+                                                  (string-as-view (addr-of outp))
+                                                  sv))
+                      s:&Slot (alloca Slot))
+                  (set! (s 'pid) pid)
+                  (set! (s 'unit) u)
+                  (conj (addr-of inflight) (deref s)))
+                (drop (addr-of outp))
+                (drop (addr-of scratch)))
+              (set! k (+ k 1)))
+            (while (> (count (addr-of inflight)) 0)
+              (try (reap-one (addr-of inflight) (addr-of status))))
+
+            ; Replay in manifest order, so the output does not depend on which
+            ; child happened to finish first.
+            (let (failed:usize 0)
+              (set! k 0)
+              (while (< k n)
+                (let (outp:String (str (string-as-view (addr-of root)) "/" (as i64 k) ".out")
+                      ov:StrView (string-as-view (addr-of outp)))
+                  (let (f:File (try (file-open-read (addr-of ov)))
+                        body:String (try (file-read-to-string (addr-of f))))
+                    (try (file-close (addr-of f)))
+                    (print (string-as-view (addr-of body)))
+                    (drop (addr-of body)))
+                  (drop (addr-of outp)))
+                (when (!= (invoke (addr-of status) k) 0)
+                  (set! failed (+ failed 1))
+                  (eprint "FAILED UNIT  " (invoke (addr-of names) k) "\n"))
+                (set! k (+ k 1)))
+
+              (eprint (as i64 n) " units, " (as i64 (- n failed)) " ok, "
+                      (as i64 failed) " failed\n")
+
+              (let (rm:Command (command "rm"))
+                (command-arg (addr-of rm) "-rf")
+                (command-arg (addr-of rm) (string-as-view (addr-of root)))
+                (match (spawn (addr-of rm))
+                  ((ok p) (match (process-wait (addr-of p))
+                            ((ok st) (do))
+                            ((err e) (do))))
+                  ((err e) (do)))
+                (drop (addr-of rm)))
+
+              (drop (addr-of inflight))
+              (drop (addr-of order))
+              (drop (addr-of status))
+              (drop (addr-of root))
+              (drop (addr-of names))
+              (drop (addr-of listing))
+              (when (> failed 0) (return (ok 1)))
+              (return (ok 0)))))))))
+
+(defn main (argc:i32 argv:ptr):int
+  (match (nuctest-main argc argv)
+    ((ok code) (return (as int code)))
+    ((err e)
+      (eprint "nuctest: " (err-message e) "\n")
+      (return 2))))

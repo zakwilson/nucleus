@@ -333,3 +333,43 @@ are gone. Three consequences beyond the line count:
   separate captured stream that gets dropped.
 - The `--sysroot=<dir>` flag was interpolated into a shell command line. A
   sysroot path containing a space was a latent bug; it is now one argument.
+
+## 9. Addendum: output redirection (added 2026-09-04 by Stage 18 TF-2)
+
+§2.3 established that draining two pipes needs `poll`, because reading one to
+EOF while the child fills the other deadlocks. TF-2 found the same argument one
+level up, and pipes lose it outright.
+
+A job pool has *N* children in flight and one parent. Draining child A means not
+draining child B, and a parent blocked in `wait-any` is draining nobody — so any
+child that fills its 64 KiB pipe never exits, and the pool never advances.
+`poll` does not help: the parent would have to interleave polling every child's
+two pipes with waiting for any child to exit, which is a select loop
+reimplementing what the kernel already does when the destination is a file.
+
+So `Command` gained two setters:
+
+| Form | Meaning |
+| --- | --- |
+| `(command-stdout-path c path)` | stdout to a file, created and truncated |
+| `(command-stderr-to-stdout c on)` | stderr follows stdout (`2>&1`) |
+
+plus `process-redirect-failed`. Three decisions inside it:
+
+- **The parent opens the file, not the child.** A failed `open` is then a
+  reportable error rather than a child exiting 127 indistinguishably from a
+  failed `exec`. It also keeps the fork-to-exec window at the size §2.2 argues
+  for: the child does `dup2` and `close`, both async-signal-safe, and nothing
+  else.
+- **Merged rather than two paths.** The one caller wants `2>&1`, which is what
+  ordered replay of a captured unit needs — interleaving is preserved because
+  both descriptors share one file offset. Separate stdout/stderr files are a
+  second field away if something needs them.
+- **`capture` and a redirect are independent fields.** They are not meaningfully
+  combinable, but making that a union would buy nothing: `spawn` applies the
+  pipe dup2s first and the file dup2s second, so a caller who sets both gets the
+  file, deterministically.
+
+This is the module's first extension after shipping, and it came from its first
+real consumer. What it was missing was again a question about a *set* of
+children rather than about any one child — the same shape as §2.6.

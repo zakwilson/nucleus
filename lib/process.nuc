@@ -6,6 +6,7 @@
 ; caller's correctness problem, and an argv vector has none (§2.1).
 
 (import-use "unistd.h")
+(import-use "fcntl.h")
 (import-use "sys/wait.h")
 (import-use "signal.h")
 (import-use "poll.h")
@@ -25,12 +26,15 @@
 (deferror process-pipe-failed "cannot create pipe")
 (deferror process-read-failed "cannot read from process")
 (deferror process-signal-failed "cannot signal process")
+(deferror process-redirect-failed "cannot redirect process output")
 
 ; Exit code a shell uses for "command not found or not executable"; the child
 ; reports a failed `exec` with it because it has no other channel back.
 (defconst EXEC-FAILED-STATUS 127)
 
 (defconst PROC-CHUNK 65536)
+
+(defconst PROC-MODE-644 420)   ; 0644, for a redirect target this creates
 
 ; ---------------------------------------------------------------------------
 ; ExitStatus — how a child ended.
@@ -77,7 +81,9 @@
   envs:(Vector usize)  ; offsets of "K=V" overrides; empty = inherit unchanged
   cwd-off:i64          ; -1 = inherit the parent's directory
   search:bool          ; PATH lookup (execvp) vs. an exact path (execv)
-  capture:bool)        ; pipe the child's stdout/stderr back, vs. inherit
+  capture:bool         ; pipe the child's stdout/stderr back, vs. inherit
+  out-path-off:i64     ; -1 = inherit stdout; else offset of a file to write
+  merge-err:bool)      ; the child's stderr follows its stdout (`2>&1`)
 
 ; The terminator is a real byte of the buffer, not `string-as-cstr`'s
 ; past-the-end NUL: every element but the last has more bytes after it.
@@ -97,6 +103,8 @@
     (set! (c 'cwd-off) -1)
     (set! (c 'search) true)
     (set! (c 'capture) false)
+    (set! (c 'out-path-off) -1)
+    (set! (c 'merge-err) false)
     (let (off:usize (command-push-cstr c prog))
       (conj (addr-of c 'offs) off))
     (return (deref c))))
@@ -131,6 +139,17 @@
 ; parent's. `run` sets this; a caller driving `spawn` itself sets it by hand.
 (defn command-capture ((self (ref Command)) on:bool):void
   (set! (self 'capture) on))
+
+; Send the child's stdout to a file, created and truncated. A job pool needs
+; this rather than `command-capture`: a pipe holds 64 KiB, so N children each
+; writing more than that would all block with nobody draining them until the
+; pool called `wait`, which is the one thing a blocked child prevents.
+(defn command-stdout-path ((self (ref Command)) path:StrView):void
+  (set! (self 'out-path-off) (as i64 (command-push-cstr self path))))
+
+; The child's stderr goes wherever its stdout goes -- shell `2>&1`.
+(defn command-stderr-to-stdout ((self (ref Command)) on:bool):void
+  (set! (self 'merge-err) on))
 
 (extend Command Drop)
 (defn drop ((self (ptr Command))):void
@@ -204,6 +223,9 @@
         prog:ptr null
         cwd:ptr null
         cap:bool (self 'capture)
+        merge:bool (self 'merge-err)
+        out-path:ptr null
+        out-fd:i32 -1
         op:ptr:i32 (as ptr:i32 (alloca i32 2))
         ep:ptr:i32 (as ptr:i32 (alloca i32 2)))
     (command-argv self (addr-of argv))
@@ -211,7 +233,9 @@
     (set! prog (invoke (addr-of argv) 0))
     (let (v:StrView (string-as-view (addr-of self 'buf)))
       (when (>= (self 'cwd-off) 0)
-        (set! cwd (as ptr (unsafe/ptr+ (v 'data) (self 'cwd-off))))))
+        (set! cwd (as ptr (unsafe/ptr+ (v 'data) (self 'cwd-off)))))
+      (when (>= (self 'out-path-off) 0)
+        (set! out-path (as ptr (unsafe/ptr+ (v 'data) (self 'out-path-off))))))
     (when cap
       (when (!= (pipe op) 0)
         (drop (addr-of argv))
@@ -222,12 +246,26 @@
         (drop (addr-of argv))
         (drop (addr-of envp))
         (return (err! process-pipe-failed))))
+    ; Opened by the parent, not the child: a failure here is reportable as an
+    ; error, and the fork-to-exec window stays as short as it already is.
+    (when (!= out-path null)
+      (set! out-fd (open (as CStr out-path)
+                         (bit-or O_WRONLY (bit-or O_CREAT O_TRUNC))
+                         PROC-MODE-644))
+      (when (< out-fd 0)
+        (when cap
+          (close (aref op 0)) (close (aref op 1))
+          (close (aref ep 0)) (close (aref ep 1)))
+        (drop (addr-of argv))
+        (drop (addr-of envp))
+        (return (err! process-redirect-failed))))
     (let (search:bool (self 'search)
           pid:i32 (fork))
       (when (< pid 0)
         (when cap
           (close (aref op 0)) (close (aref op 1))
           (close (aref ep 0)) (close (aref ep 1)))
+        (when (>= out-fd 0) (close out-fd))
         (drop (addr-of argv))
         (drop (addr-of envp))
         (return (err! process-spawn-failed)))
@@ -238,6 +276,10 @@
           (dup2 (aref ep 1) 2)
           (close (aref op 0)) (close (aref op 1))
           (close (aref ep 0)) (close (aref ep 1)))
+        (when (>= out-fd 0)
+          (dup2 out-fd 1)
+          (when merge (dup2 1 2))
+          (when (> out-fd 2) (close out-fd)))
         (when (!= cwd null)
           (when (!= (chdir (as CStr cwd)) 0) (_exit EXEC-FAILED-STATUS)))
         ; A pointer store, so it is safe in this window — unlike `setenv`, which
@@ -250,6 +292,7 @@
         (_exit EXEC-FAILED-STATUS))
       ; Parent. Closing the write ends is what makes the reader see EOF.
       (when cap (close (aref op 1)) (close (aref ep 1)))
+      (when (>= out-fd 0) (close out-fd))
       (drop (addr-of argv))
       (drop (addr-of envp))
       (let (p:&Process (alloca Process))

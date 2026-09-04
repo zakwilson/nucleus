@@ -835,6 +835,67 @@ command is `tests/run-tests.sh --unit <name>`.
 passes under `--shuffle` with three different seeds; wall-clock within 10% of the
 shell harness's 59s at `--jobs 16`.
 
+#### As built (2026-09-04)
+
+`tests/nuctest.nuc`, ~300 lines, built by `make nuctest` to `build/nuctest`.
+Flags are as specified: `--jobs N`, `--filter <glob>`, `--shuffle <seed>`,
+`--list`.
+
+**All three gates pass**, at 525 units:
+
+| Gate | Result |
+| --- | --- |
+| Byte-identical replay | 970 lines, identical to the shell harness's full run |
+| Three shuffled seeds | 1, 7, 12345 — all 525 pass, *and* all byte-identical |
+| Wall-clock at `--jobs 16` | 63.8s vs the shell harness's 62.0s — **+3.0%** |
+
+Five things the sketch did not say:
+
+1. **Unit results go to stdout, the runner's summary to stderr.** A summary line
+   on stdout would have made the byte-identity gate unmeetable by construction,
+   and the split is the honest one anyway: the replay is the suite's output, the
+   summary is the runner talking about itself.
+
+2. **Shuffling permutes *dispatch*; replay is always in manifest order.** The
+   gate only asked that a shuffled run pass, but replaying canonically costs
+   nothing and upgrades it: a shuffled run is byte-identical to an unshuffled
+   one, so a seed that breaks the suite produces a *diff*, not just a red exit
+   code. `--list` honours `--shuffle` so the order is inspectable — otherwise a
+   shuffle is unobservable and a no-op shuffle would pass its own gate. (Checked:
+   0, 0 and 2 fixed points across the three seeds.)
+
+3. **The unit list is generated, not stored.** `nuctest` runs
+   `tests/run-tests.sh --list` and turns each line into a unit. A checked-in
+   manifest would be a second place for a unit to exist and a third state to get
+   wrong; `--list` is the interface, and TF-6 keeps it as bodies move.
+
+4. **`lib/process.nuc` needed a new capability, and pipes were the wrong
+   primitive.** A pipe holds 64 KiB, so a pool of children capturing through
+   pipes deadlocks: a child that fills its pipe never exits, and a parent in
+   `wait-any` is draining nobody. Added `command-stdout-path` and
+   `command-stderr-to-stdout`; see stage19-process/overview.md §9. This is the
+   dogfooding the stage was justified on, arriving on schedule.
+
+5. **The `--unit` shim cost 27% until a `basename` fork was removed.** First
+   measurement was +37%, and cutting the walk short after the matching unit
+   (nothing later can change its verdict) only reached +27%. Profiling the
+   walk found the real cause: the top-level dispatch loops called
+   `$(basename …)` once per example and per REPL fixture — ~180 forks, 335ms,
+   on *every* invocation, which a 525-unit driver pays 525 times. Parameter
+   expansion instead: 335ms → 43ms, and the gate went from +27% to **+3.0%**.
+   The shell harness got the same speedup for free, so the baseline moved too.
+
+That last one is the phase's real lesson. The 10% target looked like it was
+about the runner, and the runner was never the problem: the shim was, and the
+shim was slow for a reason that had nothing to do with which language it was
+written in. **A shell harness pays a fork where a program pays a function call,
+and at 525 units that difference is the entire budget.**
+
+`make test` is unchanged and still runs the shell harness. At this phase both
+run the identical 525 units, so running both would double the wall clock for no
+extra coverage — §T8.7's dual-run ruling is about native *tests* against shell
+*tests*, which starts at TF-6. `make nuctest` runs the new one.
+
 ### T6.3 TF-3 — `lib/read.nuc`
 
 An s-expression reader over `StrView` producing `Node`, in `lib/`. The language

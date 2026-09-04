@@ -9,6 +9,7 @@
 
 #define EXEC_FAILED_STATUS 127
 #define PROC_CHUNK 65536
+#define PROC_MODE_644 420
 typedef struct ExitStatus {
     int32_t tag;
     union {
@@ -32,6 +33,8 @@ typedef struct Command {
     int64_t cwd_off;
     bool search;
     bool capture;
+    int64_t out_path_off;
+    bool merge_err;
 } Command;
 
 size_t command_push_cstr(void* self, struct StrView s) asm("command-push-cstr");
@@ -41,6 +44,8 @@ void command_cwd(void* self, struct StrView dir) asm("command-cwd");
 void command_search(void* self, bool on) asm("command-search");
 void command_env(void* self, struct StrView k, struct StrView v) asm("command-env");
 void command_capture(void* self, bool on) asm("command-capture");
+void command_stdout_path(void* self, struct StrView path) asm("command-stdout-path");
+void command_stderr_to_stdout(void* self, bool on) asm("command-stderr-to-stdout");
 void drop_pCommand(struct Command* self) asm("drop.pCommand");
 void command_argv(void* self, void* out) asm("command-argv");
 struct StrView env_key(uint8_t* e) asm("env-key");
