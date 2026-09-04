@@ -6,7 +6,7 @@ than on what it compiles.
 | Piece | Sections | State |
 | --- | --- | --- |
 | Restoring the REPL introspection layer | §1–§5 | **Done 2026-09-03** (R0–R7) |
-| A native test framework | §T1–§T8 | **Options only — undecided** |
+| A native test framework | §T1–§T9 | **Decided 2026-09-04** — plan in §T6, rulings in §T8 |
 
 ---
 
@@ -272,11 +272,16 @@ three forms have a consumer that composes them.
 
 # Part two — a native test framework
 
-**Status: options, not a plan.** Nothing here is decided. §T1–§T3 are
-measurements taken against the tree on 2026-09-03; §T4 asks what typed values would
-actually buy over text; §T5 sets out seven options against those measurements;
-§T6 recommends and says why the rest lose.
-A decision turns §T6 into phases.
+**Status: decided 2026-09-04.** The recommendation was accepted and the seven
+open questions were ruled on, so this is a plan now. §T1–§T3 are measurements
+taken against the tree on 2026-09-03; §T4 asks what typed values buy over text;
+§T5 sets out the seven options; §T6 is **the plan**, TF-1 through TF-7; §T8
+records the rulings and what each one costs; §T9 is what was deliberately put
+off. §T5 is kept as written because it is the argument for §T6, not a menu.
+
+**Step 0 is already done.** `lib/process.nuc` shipped as
+[Stage 19](../stage19-process/overview.md) on 2026-09-04, which is why this plan
+starts at a runner rather than at a syscall.
 
 **Why this is worth doing.** Not to delete shell for its own sake. 14,337 lines
 that work are not, by themselves, a problem worth a stage. Two reasons that are:
@@ -629,7 +634,7 @@ empirically, and no dogfooding of the language on its own largest tool.
 start a process, and a user asking "how do I test Nucleus code?" is still told to
 write bash.
 **Verdict:** rejected on the goal, not on the measurement. It remains the
-baseline every option's *output* is diffed against (§T6.1) — that is a different
+baseline every option's *output* is diffed against (§T6.2) — that is a different
 job from being a candidate.
 
 ### B. Extract the declarative tests to manifests, keep bash
@@ -732,78 +737,163 @@ and the reason C is worth more than "the same tests, in Nucleus". Its two
 prerequisites are both capabilities the language wants anyway, which is the
 pattern this whole stage keeps running into.
 
-## T6. Recommendation
+## T6. The plan
 
-**F, then C with G folded in, with E as a separate track and a permanent shell
-trust anchor.** Ordered so that each step is gated by the step before it:
+**F → C with G folded in, E as a separate track, and a permanent shell trust
+anchor.** Step 0 — `lib/process.nuc` — is [Stage 19](../stage19-process/overview.md),
+done 2026-09-04.
 
-0. **Stage 19 — `lib/process.nuc`.** Already staged separately and not
-   contingent on any decision here; see
-   [stage19-process/overview.md](../stage19-process/overview.md). Its P1–P3
-   deliver exactly what F1 consumes: spawn, wait, captured streams, and the
-   `waitpid(-1)` primitive a bounded job pool needs.
-1. **F1 — the native dispatcher.** A bounded job pool over Stage 19's `spawn` and
-   `wait-any`; per-unit result buffering; replay in dispatch order. Bodies still
-   run as `sh -c`.
-   *Gate:* on a green tree, the native runner's output is **byte-identical** to
-   `run-tests.sh`'s. §T2.3 makes this checkable, which is why it comes first.
-2. **F2 — `lib/fs.nuc`.** `mkdtemp`, `mkdir`, `unlink`, `rmdir`, `readdir`.
-   Per §T3 this needs no constant table now. Retires the 168 `mktemp` calls and
-   lets the runner own scratch-directory lifetime instead of each unit.
-3. **C1 — `lib/test.nuc`, designed as the public facility.** The six predicates
-   of §T1.2 and nothing else, with the matcher a wildcard glob rather than a
-   regex engine (§T1.2's 76 patterns need `*`, anchors and alternation). Failure
-   rendering lives here, so §T2.4 is one implementation instead of 599. Add
-   §T4.3's one structural affordance — split a `.ll` module into its `define`
-   blocks so an assertion can name the function it applies to — which is the only
-   thing the 209 text-by-contract IR sites actually want, and which retires the
-   63 module-scoped probes.
-   *This is the step that answers reason 2*, so it is finished only when it is
-   documented in `docs/` and there is an `examples/` program that declares and
-   runs its own tests without touching the compiler's harness. A module the
-   compiler suite alone can use is a private harness with a public name.
-4. **G — structured diagnostics, before the first migration and not after it.**
-   A `Diagnostic` record behind `die-at`/`report-at`, a machine-readable emission
-   mode, and `lib/read.nuc` to read it back. The scheduling is forced: C2's first
-   and largest category is the 172 reject/accept spawns, and those are precisely
-   the §T4.2 diagnostic assertions. Migrate them before G exists and the suite
-   bakes 250 substring probes into its native form — then pays to port them a
-   second time. Both prerequisites are owed to the REPL and to `Node`'s users
-   anyway (§T3).
-5. **C2 — migrate bodies by category, highest reuse first:** the 172
-   reject/accept spawns (option D's manifest is right *here*), then the 177
-   example and REPL units, then the bespoke units in descending size — the seven
-   largest are over 200 lines each. Every weakness the port hits is a library
-   defect to fix, not a body to contort around it — the same rule that made the
-   stage-17 sweep produce a string library rather than a pile of workarounds.
-6. **E — separate track, after F1.** Convert only the pure
-   emit-and-inspect-IR units, and only while the C2 versions still exist to
-   cross-check against. The order matters: E's contamination hazard is invisible
-   without a second implementation to disagree with it.
-7. **Permanent — the trust anchor.** A short shell script that compiles one
-   program, runs it, and diffs the output, run *before* the native runner. It is
-   the answer to §T2.1: when the compiler is broken badly enough that the native
-   runner will not build, something that does not depend on the compiler has
-   already said so. Keeping it is not a hedge; it is the reason the rest is
-   allowed to move.
+### T6.0 Shape
 
-The dependency worth stating plainly: **steps 1–5 are all downstream of
-`lib/process.nuc`.** Nothing about a native test framework is possible until
-Nucleus can start a process and wait for it, and today it cannot.
+The runner is **its own binary** (§T8.1), and it is generic: it knows how to run
+*units*, not how to test a compiler. A unit is a name plus a command plus a
+scratch directory. That single abstraction covers both halves of the migration —
+a shell body invoked as `sh -c`, and a native test invoked as
+`<suite> --run <name>` — so the runner does not change when the bodies do.
 
-That is why step 0 is a different stage rather than this plan's first phase. The
-capability is owed to the language whatever is decided here, so it is not
-sequenced behind an open question about how the compiler's own tests are spelled
-— and if this part is never built, Stage 19 still ships. The same logic applies
-one step further in: **stop after F2 and the language has gained a process API
-and a filesystem API, both hardened by 955 tests**, which is already a better
-outcome than option B reaches at its own completion.
+```
+build/nuctest  ──spawns──▶  tests/run-tests.sh --unit <name>     (shell, retiring)
+               ──spawns──▶  build/nuctests --run <name>          (native, growing)
+```
+
+Each unit is **one process**, which is what makes per-unit isolation (§T2.5) and
+order independence (§T8.6) properties of the architecture rather than promises.
+The suite binary reports each unit's result as an s-expression on stdout
+(§T8.5), which the runner reads with `lib/read.nuc` — the same reader that will
+read the compiler's structured diagnostics in TF-5.
+
+### T6.1 TF-1 — make the shell suite addressable
+
+`tests/run-tests.sh` gains `--list` and `--unit <name>`: the harness (dispatch,
+job pool, buffering, replay) separates from the 176 unit functions, and any one
+unit runs alone. Pure shell work, and the enabler for everything after it.
+
+*Gate:* every listed unit run alone, concatenated in dispatch order, is
+**byte-identical** to today's full run.
+
+That gate is worth more than it looks. Running each unit in a fresh process *is*
+the order-independence audit of the existing suite: a unit that only passes after
+some other unit has run will fail here, and §T8.6 makes that a bug rather than a
+curiosity. Expect this phase to find some.
+
+### T6.2 TF-2 — `build/nuctest`, the runner
+
+A bounded job pool over Stage 19's `spawn` and `wait-any`; a scratch directory
+per unit, owned by the runner rather than by each body; captured stdout and
+stderr per unit; replay in dispatch order; the summary. Flags: `--jobs N`,
+`--filter <pat>`, `--shuffle <seed>`, `--list`.
+
+Units come from a manifest naming each unit and its command. For now every
+command is `tests/run-tests.sh --unit <name>`.
+
+*Gates:* output byte-identical to `run-tests.sh`'s full run; the suite still
+passes under `--shuffle` with three different seeds; wall-clock within 10% of the
+shell harness's 59s at `--jobs 16`.
+
+### T6.3 TF-3 — `lib/read.nuc`
+
+An s-expression reader over `StrView` producing `Node`, in `lib/`. The language
+already hands every program `Node` and `NodeKind` through `lib/prelude.nuc` and
+ships no way to build one from text (§T4.6); `src/reader.nuc` is compiler
+internals and stays there.
+
+Needed by TF-4 (the result protocol) and TF-5 (diagnostics), and owed to the
+language independently of both — it is the module a config reader, a serializer,
+or a user's own macro tooling would call.
+
+*Gate:* round-trips every `.nuc` file in `tests/fixtures/` against
+`src/reader.nuc`'s parse of the same file, compared structurally.
+
+### T6.4 TF-4 — `lib/test.nuc`, `deftest`, and the suite protocol
+
+- **`deftest`** (§T8.2) registers a named test into a table the suite walks,
+  capturing its source file and line so a failure can point at itself.
+- **Assertions**: the six predicates of §T1.2 — contains-substring,
+  contains-whole-line, equals-string, matches-with-wildcards, files-identical,
+  output-empty/non-empty — plus §T4.3's scoped IR matcher, which splits a `.ll`
+  module into its `define` blocks so an assertion can name the function it
+  applies to. Glob, not regex (§T8.4).
+- **Failure propagation is `!T`**, which is what deletes §T4.5's 111 `$ok`/`$bad`
+  accumulators rather than translating them.
+- **Failure rendering lives here**, so §T2.4 is one implementation instead of
+  599.
+- **The suite binary** supports `--list` and `--run <name>` and emits one
+  s-expression result record per unit.
+
+*Completion condition, not a nicety:* this phase is done when `lib/test.nuc` is
+documented in `docs/` **and** an `examples/` program declares and runs its own
+tests without touching the compiler's harness. A module only the compiler suite
+can use is a private harness with a public name.
+
+### T6.5 TF-5 — structured diagnostics from `nucleusc` (option G)
+
+A `Diagnostic` record behind `die-at` and `report-at` (662 and 26 call sites), a
+`--diagnostics=sexp` output mode, and the runner reading it back with
+`lib/read.nuc`. Assertions then compare fields.
+
+**Before TF-6, not after.** TF-6's first and largest category is the 172
+reject/accept spawns, and those are precisely the §T4.2 diagnostic assertions.
+Migrating them first would bake 250 substring probes into the native suite and
+pay to port them a second time. It also closes `run_reject_at`'s hole: today two
+independent greps over one blob never check that the location and the message
+came from the same diagnostic, and `note:` lines carry locations.
+
+Wanted by the REPL and by any future LSP regardless of testing.
+
+### T6.6 TF-6 — migrate the bodies, retiring each category as it lands
+
+In descending order of reuse:
+
+| # | Category | Units | Notes |
+| --- | --- | ---: | --- |
+| a | `run_reject_at` / `run_reject` / `run_accepts` / `check_long` | 172 | A table, driven by TF-5's structured diagnostics. This is where option D's manifest is right. |
+| b | `examples/*.nuc` and `tests/repl/*.in` loops | 177 | Golden-output comparison; mechanical. |
+| c | Bespoke units, largest first | ~171 | The seven largest are over 200 lines each. |
+
+**Retirement is per category, not at the end** (§T8.7). A category's shell units
+are deleted once its native counterparts have returned identical verdicts on
+three consecutive green full runs, one of them shuffled. Until then `make test`
+runs both — which is the point of dual-running: after TF-6 begins, the two are
+different implementations and their agreement is evidence.
+
+Every weakness the port hits is a library defect to fix, not a body to contort
+around it — the rule that made Stage 17 produce a string library rather than a
+pile of workarounds, and Stage 19 produce three conventions entries.
+
+### T6.7 TF-7 — the end state
+
+`make test` runs the trust anchor and then `build/nuctest`. The shell that
+remains is §T7's 1,558 lines, which the framework *invokes* rather than replaces
+— including `check-headers.sh` and `check-cstr.py`, which are units of the suite
+today and stay units of it.
+
+### T6.8 TF-E — the in-process track, separate
+
+Option E, after TF-2 and only while TF-6's versions still exist to cross-check
+against. Convert only the pure emit-and-inspect-IR units. The order matters:
+E's contamination hazard — `repl-restore` truncates registries to watermarks
+rather than rebuilding the world — is invisible without a second implementation
+to disagree with it.
+
+### T6.9 Permanent — the trust anchor
+
+A short shell script that compiles one program, runs it, and diffs the output,
+run *before* the native runner. It is the answer to §T2.1: when the compiler is
+broken badly enough that the native runner will not build, something that does
+not depend on the compiler has already said so. Ruling §T8.1 makes this sharper,
+not softer — a separate runner binary is one more thing the broken compiler has
+to build before it can report anything.
+
+Keeping it is not a hedge; it is the reason the rest is allowed to move.
 
 ## T7. What stays outside the framework regardless
 
-1,558 lines of shell and Python, for reasons that are not inertia:
+1,558 lines of shell and Python, for reasons that are not inertia. **Outside the
+framework means not rewritten, not unrun** — `check-headers.sh` and
+`check-cstr.py` are units of the suite today and stay units of it, spawned by the
+runner like any other command (§T2.7):
 
-- **The trust anchor** (§T6.7) — by construction.
+- **The trust anchor** (§T6.9) — by construction.
 - **`run-avr-test.sh`, `run-riscv-test.sh`, `run-riscv-abi-test.sh`,
   `run-abi-test.sh`, `run-layout-test.sh`** — they gate on external toolchains,
   run outside `make test`, and their assertion *is* an external tool's output.
@@ -812,40 +902,134 @@ outcome than option B reaches at its own completion.
 - **`check-headers.sh`, `check-cstr.py`, `gen-stdlib-table.py`** — source-tree
   audits and a generator. Not tests, and not this stage's problem.
 
-## T8. Open decisions
+## T8. Decisions (ruled 2026-09-04)
 
-1. **Where does the runner live?** Its own `build/` binary, or a `nucleusc
-   --test` mode? A separate binary keeps the compiler's surface clean and makes
-   the T2.1 dependency explicit; a mode shares the reader for free. The
-   public-facility requirement (§T6.3) tilts this: a user with a `tests/`
-   directory should not have to build a runner before running a test, which
-   argues for `nucleusc --test` — or for shipping the runner binary alongside
-   the compiler, which is the same answer with a worse install story.
-2. **How does a user declare a test?** A `deftest` macro registering into a
-   table the runner walks, or plain functions found by name convention? The
-   macro is more typed and gives failure messages the source location for free;
-   the convention costs no language surface and works with `defn` as it is. This
-   decision is invisible to the compiler's own suite — which is exactly why it
-   needs deciding deliberately rather than falling out of whatever C2 finds
-   convenient.
-3. **Fixtures: embed or file?** Nucleus string literals span raw newlines
-   (verified), so embedding works — except that 93 of the 292 heredocs contain a
-   `"` and would need escaping, and escaped Nucleus inside Nucleus is unreadable.
-   Recommend moving the 588 inline fixtures onto disk beside the existing 223.
-4. **Glob or regex for `matches`?** §T1.2 says glob suffices for all 76 sites.
-   Regex is more general and is a much larger thing to own. Note that §T4.3's
-   function scoping is the larger win of the two and is independent of this
-   choice.
-5. **What carries a structured diagnostic across the boundary?** S-expressions
-   read by `lib/read.nuc` reuse the language's own syntax and cost no new format;
-   JSON is more conventional and readable by tools that are not this compiler.
-   Related and sharper: does the `Diagnostic` record *replace* `die-at`'s
-   rendering — one formatter with two back-ends — or sit beside it? Two renderers
-   for one diagnostic is how the text and the structure drift apart.
-6. **Is order-independence a stated property or a hope?** If E is ever adopted
-   the answer must be "stated", which means the runner shuffles dispatch order
-   under a flag and the suite still passes. Cheap to build in at F1; expensive to
-   retrofit.
-7. **Does `make test` become the native runner, or gain it alongside?** Running
-   both until C2 completes doubles the 59s. Running only the native one loses the
-   cross-check that makes the migration safe.
+Seven questions, seven rulings, each with what it buys and what it costs.
+
+### T8.1 The runner is its own binary
+
+`build/nuctest`, not a `nucleusc --test` mode.
+
+**Buys:** the compiler's surface stays clean, and the §T2.1 dependency becomes
+visible instead of implicit — a separate binary that the compiler under test must
+build is a thing you can *see* failing to build. It also keeps the runner
+generic: it runs units, and nothing in it knows what a compiler is.
+
+**Costs:** a user with a `tests/` directory has to have `nuctest` on hand, so it
+ships alongside `nucleusc` and `make install` grows a line. And it is one more
+artifact between a broken compiler and a verdict, which is precisely what §T6.9's
+trust anchor exists to cover.
+
+### T8.2 Tests are declared with a `deftest` macro
+
+Not a name convention over plain `defn`.
+
+**Buys:** the registration table, and with it `--list`, `--filter` and
+`--shuffle` for free; and the test's own source file and line, captured at the
+macro, so a failure points at itself without the assertion having to be told
+where it is.
+
+**Costs:** language surface — one more macro in `lib/`, and a name that is now
+spoken for.
+
+### T8.3 Fixtures may be embedded or on disk, and the rule is written down
+
+Both, chosen per fixture rather than by policy. The rule:
+
+| Put it on disk when | Embed it when |
+| --- | --- |
+| it contains a `"` | it is short and single-use |
+| more than one test uses it | it reads better beside its assertion |
+| it is more than ~20 lines | — |
+
+The `"` clause is the live one: 93 of the 292 heredocs in `run-tests.sh` contain
+a quote, and escaped Nucleus inside a Nucleus string literal is unreadable. That
+is a language gap, not a fixture policy — §T9.1.
+
+### T8.4 `matches` is a glob
+
+`*`, `?`, `^`/`$` anchors and alternation. §T1.2 measured that this covers all 76
+`qgrep -E` sites, only 14 of which use alternation at all; the rest are literal
+IR text with a wildcard standing in for a compiler-generated SSA name.
+
+**Costs:** a pattern that genuinely needs a regex has no home. §T9.2 keeps that
+door open, and §T4.3's function scoping is the larger win anyway and is
+independent of this choice.
+
+### T8.5 Structured data crosses process boundaries as s-expressions
+
+Both uses: the suite's per-unit result records, and `nucleusc`'s
+`--diagnostics=sexp`.
+
+**Buys:** no new format to specify, and `lib/read.nuc` (TF-3) reads both — a
+module the language owes its users regardless (§T4.6). The reader is the
+language's own, so the data is legible to every Nucleus program without a parser.
+
+**Costs:** tools that are not this compiler cannot read it without one. §T9.3.
+
+**The sharper half of this, unchanged from the question:** the `Diagnostic`
+record *replaces* `die-at`'s rendering rather than sitting beside it — one
+formatter, two back-ends. Two renderers for one diagnostic is how the text and
+the structure drift apart.
+
+### T8.6 Order independence is a requirement
+
+Not a hope. Every unit runs in its own process (§T6.0), the runner takes
+`--shuffle <seed>`, and a shuffled run is part of the gate at TF-2 and at every
+category's retirement in TF-6.
+
+**Costs:** units that share expensive setup cannot amortise it, and TF-1 will
+find existing units that quietly depend on order. Both are worth paying: the
+failure mode order-dependence produces is intermittent, and intermittent is the
+worst thing a test suite can be. §T9.4 leaves room for explicit dependencies if a
+real case turns up — *explicit*, declared and enforced, never incidental.
+
+### T8.7 `make test` runs both until the native runner is stable
+
+Then the redundant shell is retired and `make test` is the trust anchor plus
+`build/nuctest`.
+
+"Stable" is per category, not global: a category's shell units are deleted once
+its native counterparts have returned identical verdicts on three consecutive
+green full runs, one of them shuffled (§T6.6).
+
+**Costs:** the dual-run period roughly doubles the 59s. That is the price of the
+cross-check, and it is only real during TF-6 — before then the two runs are the
+same tests twice, and after each category retires the shell side shrinks.
+
+---
+
+## T9. Deferred
+
+Written down so they are choices rather than omissions.
+
+**T9.1 A raw string literal.** §T8.3 sends any fixture containing a `"` to disk
+because escaping Nucleus inside Nucleus is unreadable — 93 of 292 heredocs. A raw
+or heredoc-style literal would make that a preference instead of a rule. This is
+a language feature with users beyond testing (embedded JSON, shell snippets,
+generated C), so it belongs in its own stage.
+
+**T9.2 A richer matcher.** Regex, or something structural over IR. §T8.4 says
+glob covers every site measured today; the note is that "today" is doing work in
+that sentence. Revisit when a real pattern cannot be expressed, not before.
+
+**T9.3 Other structured formats.** JSON, EDN, or anything else the suite protocol
+and `--diagnostics` might also speak. The decision to defer is cheap to reverse
+because §T8.5 puts one renderer behind the `Diagnostic` record: a second back-end
+is a back-end, not a redesign.
+
+**T9.4 Explicit test dependencies.** §T8.6 rules out *incidental* ordering, not
+declared ordering. If a genuine case appears — a fixture that costs minutes to
+build and is read by twenty tests — the answer is a declared dependency the
+runner can schedule and verify, not a silent reliance on dispatch order.
+
+**T9.5 A worker-pool protocol.** TF-2 spawns one process per unit, which is 955
+`fork`+`exec` pairs for the compiler's suite. If that shows up in the wall-clock
+gate, the fix is to spawn one suite process per worker and feed it test names.
+Deferred because it trades isolation for speed, and §T8.6 just made isolation a
+requirement.
+
+**T9.6 A `nucleusc --test` convenience mode.** §T8.1 chose a separate binary and
+that is the architecture; a mode that shells out to `nuctest` could still be
+added later as a convenience. It would be a wrapper, not a second
+implementation.
