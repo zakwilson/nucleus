@@ -419,6 +419,11 @@ the language wants anyway, not as an obstacle course between here and a runner:
   is that **a self-hosted systems language with no way to run a program is
   incomplete on its own terms.** The compiler itself reaches around the gap with
   raw declares; every user program would have to do the same.
+  **This is no longer a dependency inside this plan.** It is
+  [Stage 19](../stage19-process/overview.md), staged ahead of this part and
+  independent of its outcome, because the dependency runs one way: the test
+  framework needs process control, process control does not need the test
+  framework.
 - **No filesystem beyond open/read/write/close.** `lib/file.nuc` exposes 15
   entry points and none of them is `mkdir`, `mkdtemp`, `unlink`, `rmdir` or
   `stat`. Directory enumeration exists exactly once, as raw `opendir`/`readdir`/
@@ -440,11 +445,15 @@ the language wants anyway, not as an obstacle course between here and a runner:
 - **No structured diagnostic.** `die-at` renders and exits (§T4.2, 662 call
   sites). Wanted by the REPL and by any future LSP independently of testing.
 
-**One thing got cheaper this stage.** Stage 17's C-macro constant import
-(`80d0f61`) means `O_*`, `S_*`, `WNOHANG` and friends now come from the real
-headers on the host. A `lib/process.nuc` and `lib/fs.nuc` written today need no
-hardcoded per-OS constant table — which was the ugliest part of the cost a week
-ago, and is now zero.
+**One thing got cheaper this stage — and the discount is not total.** Stage 17's
+C-macro constant import (`80d0f61`) means `O_*`, `S_*`, `WNOHANG` and friends now
+come from the real headers on the host, which was the ugliest part of the cost a
+week ago. **Corrected 2026-09-04:** the import admits *object-like* `#define`s
+only (`src/cheader.nuc:2787`), so `WIFEXITED`, `WEXITSTATUS`, `WIFSIGNALED` and
+`WTERMSIG` do not come across. `lib/process.nuc` needs exactly one piece of
+hardcoded platform knowledge after all — the wait-status layout — which
+[Stage 19](../stage19-process/overview.md) §2.4 puts behind a typed `ExitStatus`
+rather than at every call site. The rest of the discount stands.
 
 **And the list is shorter than a general-purpose runtime would need**, because
 the test suite is a demanding but narrow consumer: spawn/wait/capture,
@@ -728,9 +737,14 @@ pattern this whole stage keeps running into.
 **F, then C with G folded in, with E as a separate track and a permanent shell
 trust anchor.** Ordered so that each step is gated by the step before it:
 
-1. **F1 — `lib/process.nuc` and a native dispatcher.** Spawn, wait, capture
-   stdout/stderr; a bounded job pool; per-unit result buffering; replay in
-   dispatch order. Bodies still run as `sh -c`.
+0. **Stage 19 — `lib/process.nuc`.** Already staged separately and not
+   contingent on any decision here; see
+   [stage19-process/overview.md](../stage19-process/overview.md). Its P1–P3
+   deliver exactly what F1 consumes: spawn, wait, captured streams, and the
+   `waitpid(-1)` primitive a bounded job pool needs.
+1. **F1 — the native dispatcher.** A bounded job pool over Stage 19's `spawn` and
+   `wait-any`; per-unit result buffering; replay in dispatch order. Bodies still
+   run as `sh -c`.
    *Gate:* on a green tree, the native runner's output is **byte-identical** to
    `run-tests.sh`'s. §T2.3 makes this checkable, which is why it comes first.
 2. **F2 — `lib/fs.nuc`.** `mkdtemp`, `mkdir`, `unlink`, `rmdir`, `readdir`.
@@ -777,13 +791,13 @@ The dependency worth stating plainly: **steps 1–5 are all downstream of
 `lib/process.nuc`.** Nothing about a native test framework is possible until
 Nucleus can start a process and wait for it, and today it cannot.
 
-Read forward rather than backward, that ordering is the argument for the stage
-rather than an objection to it. Step 1 is not a tax the test framework levies
-before it can begin; it is a capability the language is missing, scheduled first
-because the framework is the thing that will prove it works. The same holds for
-step 2. **If the migration stopped after F2, the language would still have
-gained a process API and a filesystem API, both hardened by 955 tests** — and
-that is already a better outcome than option B reaches at its own completion.
+That is why step 0 is a different stage rather than this plan's first phase. The
+capability is owed to the language whatever is decided here, so it is not
+sequenced behind an open question about how the compiler's own tests are spelled
+— and if this part is never built, Stage 19 still ships. The same logic applies
+one step further in: **stop after F2 and the language has gained a process API
+and a filesystem API, both hardened by 955 tests**, which is already a better
+outcome than option B reaches at its own completion.
 
 ## T7. What stays outside the framework regardless
 
