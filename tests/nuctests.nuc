@@ -24,6 +24,7 @@
 (import-use node)
 (import-use read)
 (import-use test)
+(import-use suite-s16)
 
 
 
@@ -85,23 +86,181 @@
 ; Running the compiler
 ; ---------------------------------------------------------------------------
 
-; `nucleusc --diagnostics=sexp --emit-llvm <fixture>`, with stdout discarded --
-; the IR is not the subject, the diagnostics are.
-(defn compile-fixture (fixture:StrView):!String
+; What one `nucleusc --emit-llvm` produced. One record because most units ask
+; about more than one part of it, and asking twice means compiling twice.
+;
+; A `Diagnostic`'s views point at interned symbols, so `diags` stays valid after
+; `raw` is dropped.
+(defstruct Compiled
+  ok?:bool
+  ir:String
+  raw:String
+  diags:(Vector Diagnostic))
+
+(extend Compiled Drop)
+(defn drop ((self (ptr Compiled))):void
+  (drop (addr-of self 'ir))
+  (drop (addr-of self 'raw))
+  (drop (addr-of self 'diags)))
+
+(defn compile-path (path:StrView):!Compiled
   (let (c:Command (command (compiler-path)))
     (command-arg (addr-of c) "--diagnostics=sexp")
     (command-arg (addr-of c) "--emit-llvm")
-    (command-arg (addr-of c) fixture)
+    (command-arg (addr-of c) path)
+    (command-capture (addr-of c) true)
     (match (run (addr-of c))
       ((ok o)
-        (let (ev:StrView (string-as-view (addr-of o 'err))
-              err:String (try (string-from-view (addr-of ev))))
+        (let (ov:StrView (string-as-view (addr-of o 'out))
+              ev:StrView (string-as-view (addr-of o 'err))
+              r:&Compiled (alloca Compiled))
+          (set! (r 'ok?) (success? (addr-of o 'status)))
+          (set! (r 'ir) (try (string-from-view (addr-of ov))))
+          (set! (r 'raw) (try (string-from-view (addr-of ev))))
+          (set! (r 'diags) (try (read-diagnostics ev)))
           (drop (addr-of o))
           (drop (addr-of c))
-          (return (ok err))))
+          (return (ok (deref r)))))
       ((err e)
         (drop (addr-of c))
         (return (err e))))))
+
+; The same, for source written out of the test itself. Ruling 3 (§T8.3) admits
+; both embedded and file fixtures; a unit that varies one line of a program is
+; unreadable as a hundred files.
+(defn compile-source (src:StrView):!Compiled
+  (let (p:String (try (test-write-file "t.nuc" src))
+        r:Compiled (try (compile-path (string-as-view (addr-of p)))))
+    (drop (addr-of p))
+    (return (ok r))))
+
+; Compiling `src` must FAIL, and some error must carry `needle`.
+(defn check-source-rejects (src:StrView needle:StrView):!void
+  (let (r:Compiled (try (compile-source src)))
+    (when (r 'ok?)
+      (fail! "expected a rejection containing " (sexp-quote needle)
+             ", but it compiled"))
+    (try (check-error-anywhere (addr-of r 'diags) needle))
+    (drop (addr-of r))
+    (return (ok))))
+
+; Compiling `src` must SUCCEED, with no diagnostic at all.
+(defn check-source-accepts (src:StrView):!void
+  (let (r:Compiled (try (compile-source src)))
+    (when (not (r 'ok?))
+      (fail! "expected a clean compile\n     "
+             (test-show (string-as-view (addr-of r 'raw)))))
+    (try (check-empty (string-as-view (addr-of r 'raw))))
+    (drop (addr-of r))
+    (return (ok))))
+
+; The IR of a source that must compile.
+(defn source-ir (src:StrView):!String
+  (let (r:Compiled (try (compile-source src)))
+    (when (not (r 'ok?))
+      (fail! "expected a clean compile\n     "
+             (test-show (string-as-view (addr-of r 'raw)))))
+    (let (iv:StrView (string-as-view (addr-of r 'ir))
+          out:String (try (string-from-view (addr-of iv))))
+      (drop (addr-of r))
+      (return (ok out)))))
+
+; Compile `src` and run it; the assertion is its EXIT STATUS. The shape of
+; `w1_run`, which several bespoke units use for a program whose answer is a
+; number rather than output.
+(defn check-source-exit (src:StrView want:i32):!void
+  (let (p:String (try (test-write-file "t.nuc" src))
+        dir:StrView (try (test-scratch))
+        bin:String (str dir "/t.bin")
+        cc:Command (command (compiler-path)))
+    (command-arg (addr-of cc) (string-as-view (addr-of p)))
+    (command-arg (addr-of cc) "-o")
+    (command-arg (addr-of cc) (string-as-view (addr-of bin)))
+    (command-capture (addr-of cc) true)
+    (command-stderr-to-stdout (addr-of cc) true)
+    (match (run (addr-of cc))
+      ((ok o)
+        (let (built:bool (success? (addr-of o 'status)))
+          (when (not built)
+            (fail! "compile/link error\n     "
+                   (test-show (string-as-view (addr-of o 'out)))))
+          (drop (addr-of o))))
+      ((err e) (return (err e))))
+    (drop (addr-of cc))
+    (let (rc:Command (command (string-as-view (addr-of bin))))
+      (command-search (addr-of rc) false)
+      (command-capture (addr-of rc) true)
+      (command-stderr-to-stdout (addr-of rc) true)
+      (match (run (addr-of rc))
+        ((ok o)
+          (let (st:ExitStatus (o 'status)
+                got:i32 (exit-code (addr-of st)))
+            (when (!= got want)
+              (fail! "expected exit " (as i64 want) ", got " (as i64 got)))
+            (drop (addr-of o))))
+        ((err e) (return (err e))))
+      (drop (addr-of rc)))
+    (drop (addr-of p))
+    (drop (addr-of bin))
+    (return (ok))))
+
+; The generated C header for `src`, which must compile.
+(defn source-cheader (src:StrView):!String
+  (let (p:String (try (test-write-file "t.nuc" src))
+        c:Command (command (compiler-path)))
+    (command-arg (addr-of c) "--emit-cheader")
+    (command-arg (addr-of c) (string-as-view (addr-of p)))
+    (command-capture (addr-of c) true)
+    (match (run (addr-of c))
+      ((ok o)
+        (let (built:bool (success? (addr-of o 'status)))
+          (when (not built)
+            (fail! "expected a header, got an error\n     "
+                   (test-show (string-as-view (addr-of o 'err)))))
+          (let (ov:StrView (string-as-view (addr-of o 'out))
+                out:String (try (string-from-view (addr-of ov))))
+            (drop (addr-of o))
+            (drop (addr-of c))
+            (drop (addr-of p))
+            (return (ok out)))))
+      ((err e)
+        (drop (addr-of c))
+        (return (err e))))))
+
+; Compile `src` to a binary and run it, stdout and stderr on one stream.
+(defn build-run-source (src:StrView):!String
+  (let (p:String (try (test-write-file "t.nuc" src))
+        dir:StrView (try (test-scratch))
+        bin:String (str dir "/t.bin")
+        cc:Command (command (compiler-path)))
+    (command-arg (addr-of cc) (string-as-view (addr-of p)))
+    (command-arg (addr-of cc) "-o")
+    (command-arg (addr-of cc) (string-as-view (addr-of bin)))
+    (command-capture (addr-of cc) true)
+    (command-stderr-to-stdout (addr-of cc) true)
+    (match (run (addr-of cc))
+      ((ok o)
+        (let (built:bool (success? (addr-of o 'status)))
+          (when (not built)
+            (fail! "compile error\n     "
+                   (test-show (string-as-view (addr-of o 'out)))))
+          (drop (addr-of o))))
+      ((err e) (return (err e))))
+    (drop (addr-of cc))
+    (let (rc:Command (command (string-as-view (addr-of bin))))
+      (command-search (addr-of rc) false)
+      (command-capture (addr-of rc) true)
+      (command-stderr-to-stdout (addr-of rc) true)
+      (match (run (addr-of rc))
+        ((ok o)
+          (let (ov:StrView (string-as-view (addr-of o 'out))
+                out:String (try (string-from-view (addr-of ov))))
+            (drop (addr-of o))
+            (drop (addr-of rc))
+            (drop (addr-of p))
+            (drop (addr-of bin))
+            (return (ok out))))
+        ((err e) (return (err e)))))))
 
 ; ---------------------------------------------------------------------------
 ; Category (a): the rejection/acceptance table
@@ -114,8 +273,8 @@
 (defn run-reject-row (row:raw:Node):!void
   (let (fixture:StrView (row-file row)
         line:i32 (row-line row)
-        text:String (try (compile-fixture fixture))
-        ds:(Vector Diagnostic) (try (read-diagnostics (string-as-view (addr-of text)))))
+        c:Compiled (try (compile-path fixture))
+        ds:(Vector Diagnostic) (c 'diags))
     (when (= (count (addr-of ds)) 0)
       (fail! "compiling " fixture " produced no diagnostic"))
     ; With no pinned line the old shell unit only swept for a `:0:` substring.
@@ -140,13 +299,13 @@
 
 (defn run-accept-row (row:raw:Node):!void
   (let (fixture:StrView (row-file row)
-        text:String (try (compile-fixture fixture))
-        ds:(Vector Diagnostic) (try (read-diagnostics (string-as-view (addr-of text)))))
+        c:Compiled (try (compile-path fixture))
+        ds:(Vector Diagnostic) (c 'diags))
     (when (> (count (addr-of ds)) 0)
       (try (check-no-errors (addr-of ds))))
     ; A diagnostic-free compile is the claim, so anything on stderr is a failure
     ; -- including something the sexp reader skipped.
-    (try (check-empty (string-as-view (addr-of text))))
+    (try (check-empty (string-as-view (addr-of c 'raw))))
     (return (ok))))
 
 (defn run-manifest-row (data:ptr):!void

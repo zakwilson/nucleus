@@ -549,7 +549,43 @@
     (str-into b ")\n")
     (io-buf-end 1)))
 
+; ---------------------------------------------------------------------------
+; Scratch files
+;
+; A test that needs a fixture on disk gets one directory, named for the test, so
+; `--run <name>` reproduces exactly the files the full run made -- and no two
+; tests can collide. Under `build/out`, which `make test` clears.
+; ---------------------------------------------------------------------------
+
+(defvar g-test-scratch:StrView)
+
+; Interned rather than kept in a String: the view outlives the call, and a test
+; name is one of a small fixed set.
+(defn test-scratch-set (name:StrView):void
+  (let (p:String (str "build/out/nt/" name)
+        v:StrView (string-as-view (addr-of p)))
+    (set! g-test-scratch (symbol-as-view (symbol-intern (addr-of v))))
+    (drop (addr-of p))))
+
+; The current test's directory, created on first ask.
+(defn test-scratch ():!StrView
+  (try (make-dir "build/out"))
+  (try (make-dir "build/out/nt"))
+  (try (make-dir g-test-scratch))
+  (return (ok g-test-scratch)))
+
+; Write `content` to `name` inside the scratch directory; yields the path.
+(defn test-write-file (name:StrView content:StrView):!String
+  (let (dir:StrView (try (test-scratch))
+        path:String (str dir "/" name)
+        pv:StrView (string-as-view (addr-of path))
+        f:File (try (file-create (addr-of pv))))
+    (try (write-str (addr-of f) content))
+    (try (file-close (addr-of f)))
+    (return (ok path))))
+
 (defn test-run-one ((tc (ref TestCase))):bool
+  (test-scratch-set (symbol-as-view (tc 'name)))
   (test-fail-begin)
   (match (funcall (tc 'run) (tc 'data))
     (ok (do (test-report tc true) (return true)))

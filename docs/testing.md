@@ -148,6 +148,44 @@ row. Each row names a fixture, an optional line, and the messages and notes the
 compiler must produce for it — the whole of the compiler's rejection suite as
 data rather than as control flow.
 
+## Source fixtures
+
+A test whose subject is *the compiler* usually varies one line of a small
+program. Writing a hundred of those as files is unreadable; a string literal in
+Nucleus may span lines, so the program goes in the test:
+
+```lisp
+(deftest bool-is-not-an-integer
+  (try (check-source-rejects
+         "(defvar g:bool 1)
+(defn main ():i32 (return 0))
+"
+         "defvar: integer literal incompatible with type bool")))
+```
+
+`tests/nuctests.nuc` defines these over `lib/process.nuc`; they are the suite's,
+not the library's, because they run `./build/nucleusc`.
+
+| Form | Meaning |
+| --- | --- |
+| `(compile-source src)` | `!Compiled` — `ok?`, `ir`, `raw` stderr, and `diags`. |
+| `(compile-path path)` | The same for a file. |
+| `(check-source-rejects src needle)` | The compile must fail, and some error must contain `needle`. |
+| `(check-source-accepts src)` | The compile must succeed with no diagnostic at all. |
+| `(source-ir src)` | `!String` — the emitted IR; fails if the compile did. |
+| `(source-cheader src)` | `!String` — the generated C header. |
+| `(build-run-source src)` | `!String` — compile, run, stdout and stderr on one stream. |
+| `(check-source-exit src n)` | Compile, run, and require exit status `n`. |
+
+Each test gets its own scratch directory, `build/out/nt/<test-name>`, made on
+first use. `--run <name>` therefore reproduces exactly the files the full run
+made, and no two tests can collide.
+
+| Form | Meaning |
+| --- | --- |
+| `(test-scratch)` | `!StrView` — this test's directory, created if needed. |
+| `(test-write-file name content)` | `!String` — writes into it, yields the path. |
+
 ## Failing
 
 Failure text is written in one place — the assertion — and never at the call
