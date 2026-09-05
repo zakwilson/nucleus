@@ -1,0 +1,125 @@
+# Testing
+
+`lib/test.nuc` — declare tests, assert, and report.
+
+A test suite is an ordinary Nucleus program. `deftest` registers each test before
+`main` runs, so `main` is one call to `test-main`, and the binary answers
+`--list`, `--run <name>`, or no arguments at all.
+
+```lisp
+(import-use error)
+(import-use strview)
+(import-use string)
+(import-use io)
+(import-use test)
+
+(deftest greeting-is-friendly
+  (try (check-contains (greeting) "hello"))
+  (try (check-not-contains (greeting) "goodbye")))
+
+(defn main (argc:i32 argv:ptr):int
+  (return (as int (test-main argc argv))))
+```
+
+```
+$ ./suite
+(test (name "greeting-is-friendly") (file "suite.nuc") (line 7) (status pass))
+```
+
+See `examples/self-test.nuc` for a worked suite, one of whose tests fails on
+purpose so the output shows what a failure record looks like.
+
+## Declaring
+
+| Form | Meaning |
+| --- | --- |
+| `(deftest name body…)` | A test named `name`, run in registration order. |
+| `(test-main argc argv)` | The suite's `main`: `--list`, `--run <name>`, or all. |
+
+`deftest` takes a bare symbol, not a string. The body is a function body
+returning `!void`, which is why each assertion is wrapped in `try`: the first
+failure ends the test, and nothing after it runs. That is the point of the
+`!void` shape — a hand-rolled `ok=1 … || ok=0` accumulator passes
+unconditionally the one time you forget to write it.
+
+The file and line in a record come from `(source-file)` and `(source-line)`,
+which resolve at the `deftest` call site rather than inside the macro.
+
+## Asserting
+
+Every predicate returns `!void` and every one renders its own failure text, so a
+`try` is all a call site needs.
+
+| Assertion | Passes when |
+| --- | --- |
+| `(check-contains hay needle)` | `needle` occurs anywhere in `hay`. |
+| `(check-not-contains hay needle)` | it does not. |
+| `(check-line hay want)` | some line of `hay` is exactly `want`. |
+| `(check-eq got want)` | the two views are equal. |
+| `(check-eq-int got want what)` | two `i64`s are equal; `what` names the quantity. |
+| `(check-match hay pat)` | some line of `hay` matches the glob `pat` in full. |
+| `(check-not-match hay pat)` | no line does. |
+| `(check-empty s)` | `s` has no bytes. |
+| `(check-non-empty s)` | `s` has some. |
+| `(check-files-eq a b)` | two files have identical contents. |
+| `(check cond what)` | `cond` is true; the escape hatch for the rest. |
+
+In a glob, `*` stands for any run of bytes and `?` for any single byte. A glob
+matches a **whole line**, so `"define i32 @add(*)*"` is anchored at both ends —
+which is what makes it an assertion rather than a search.
+
+`(read-file path)` returns `!String` and is the usual way to get a haystack.
+
+### IR assertions
+
+A compiler test asserting about generated IR usually means "inside *this*
+function", and a search over the whole module cannot say that: `ret void` is in
+the module whenever any function returns void.
+
+| Assertion | Passes when |
+| --- | --- |
+| `(check-in-define module fname pat)` | a line of `@fname`'s `define` block matches `pat`. |
+| `(check-not-in-define module fname pat)` | none does. |
+| `(ir-define module fname)` | `(Maybe StrView)` — the block itself. |
+
+## Failing
+
+Failure text is written in one place — the assertion — and never at the call
+site. To write an assertion of your own, use `fail!`:
+
+```lisp
+(defn check-sorted ((v (ref (Vector i64)))):!void
+  (let (i:usize 1)
+    (while (< i (count v))
+      (when (< (invoke v i) (invoke v (- i 1)))
+        (fail! "not sorted at " i ": " (invoke v (- i 1)) " > " (invoke v i)))
+      (set! i (+ i 1))))
+  (return (ok)))
+```
+
+`fail!` renders its pieces with `str-into` and returns `(err! test-failed)`, so
+it is a `return`: nothing after it in the assertion runs. Pieces are anything
+with a `ToStr` conformance. `(sexp-quote s)` renders a `StrView` as a quoted
+s-expression string, and `(test-show s)` truncates a long haystack to 400 bytes,
+which is enough to recognise what was actually there.
+
+A test that returns an error which is *not* an assertion failure — a file that
+would not open, say — still produces a failure record, naming the error.
+
+## Reporting
+
+Every run emits one record per test, on stdout, one line each:
+
+```
+(test (name "…") (file "…") (line N) (status pass))
+(test (name "…") (file "…") (line N) (status fail) (message "…"))
+```
+
+The record is an s-expression, so `lib/read.nuc` reads it back: a tool that
+collects results across suites parses them rather than scraping them. Strings are
+escaped, so a message containing a quote or a newline survives the round trip.
+
+`test-main` exits 0 when everything passed and 1 when anything failed. `--list`
+prints one name per line, which is what a parallel runner needs to shard a
+suite; `build/nuctest` drives the shell suite through the same two-verb
+interface.

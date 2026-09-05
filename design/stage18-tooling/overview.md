@@ -1009,6 +1009,52 @@ documented in `docs/` **and** an `examples/` program declares and runs its own
 tests without touching the compiler's harness. A module only the compiler suite
 can use is a private harness with a public name.
 
+#### TF-4 as landed (2026-09-04)
+
+`lib/test.nuc` (376 lines), `docs/testing.md`, and `examples/self-test.nuc` with
+`tests/expected/self-test.out` — a suite whose last test fails on purpose, so the
+recorded output is the failure record's own regression test. The completion
+condition is met: the example imports `test` and nothing from `src/`.
+
+Shipped: `deftest`; the eleven `check-*` predicates (the six of §T1.2, plus
+`check-eq-int`, the two negations, and `check` as the escape hatch); §T4.3's
+`ir-define` / `check-in-define` / `check-not-in-define`; `fail!` for writing new
+assertions; `test-main` answering `--list` / `--run <name>` / all; and one
+s-expression record per test on stdout, with the message escaped so it reads back.
+
+Two compiler changes the phase turned out to require, both general rather than
+test-specific:
+
+1. **`(source-file)` / `(source-line)`.** A `deftest` must record where it is
+   written, and a macro cannot ask. Both resolve at the *call* site inside an
+   expansion, which is the property that makes them useful and is also what a
+   diagnostic macro will want in TF-5. Emitted as a literal — a `StrView` and an
+   integer — so they cost nothing.
+2. **Macro calls in top-level position.** `deftest` is a macro that must stand
+   where `defvar` stands, and the dispatch loop had no macro path at all: the
+   head was matched against the built-in forms and anything else died with
+   `unknown top-level form`. Expansion is now attempted **only in that default
+   arm**, so a built-in form still wins its own name and no existing program can
+   change meaning; a `(do …)` expansion splices, and the rewritten cell is
+   re-dispatched rather than advanced past, so an expansion may itself be a macro
+   call. `toplevel-expand-macro` in `src/nucleusc.nuc`.
+
+The known limit of (2) is that expansion happens in the dispatch loop, *after*
+the pre-scans have walked the file: a macro-produced definition is not in the
+signature registry, so it is not forward-referenceable, and a macro cannot
+produce an `extend` together with the methods that satisfy it. Fixing that means
+a macro-expansion pass ahead of the pre-scans, which in turn means `defmacro`
+bodies (and the imports they need) are JIT-compiled before any other top-level
+form is processed — a front-end restructuring, not a patch. Documented in
+`docs/macros.md`; deferred as T9.7.
+
+One trap worth the line: `str-into` re-evaluates its target once per piece
+(`lib/fmt.nuc` says so), and `test-fail-begin` *clears* the buffer, so the
+obvious `(str-into (test-fail-begin) ~@parts)` kept only the last piece. `fail!`
+binds the buffer first. Every assertion in the module went through that macro, so
+the bug was invisible until a test actually failed — which is why
+`examples/self-test.nuc` has one that always does.
+
 ### T6.5 TF-5 — structured diagnostics from `nucleusc` (option G)
 
 A `Diagnostic` record behind `die-at` and `report-at` (662 and 26 call sites), a
@@ -1217,3 +1263,11 @@ requirement.
 that is the architecture; a mode that shells out to `nuctest` could still be
 added later as a convenience. It would be a wrapper, not a second
 implementation.
+
+**T9.7 Top-level macro expansion before the pre-scans.** TF-4 added expansion in
+the dispatch loop, which is enough for `deftest` and for any macro that defines
+things nothing else forward-references. Moving it ahead of the pre-scans would
+make a macro-produced `defn` visible file-wide and let a macro produce an
+`extend` with its methods — but it requires `defmacro` bodies, and the imports
+they resolve against, to be processed before any other top-level form. That is a
+front-end staging change, and nothing in the suite needs it.

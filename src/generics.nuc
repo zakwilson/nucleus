@@ -2672,7 +2672,7 @@
   (if-some (head (as-ref hp))
            (contains? #{'let 'with 'do 'cond 'return 'while 'set! 'inc! 'quote 'quasiquote
                         'not '_and '_or 'cast 'addr-of 'deref 'ptr+ '_get
-                        'sizeof 'alloca 'char 'aref 'gensym 'funcall 'funcall-void
+                        'sizeof 'source-file 'source-line 'alloca 'char 'aref 'gensym 'funcall 'funcall-void
                         'funcall-ptr-1 'funcall-ptr-i32 'funcall-ptr-i64 'funcall-ptr-ptr
                         'as 'unsafe/cast 'unsafe/ptr+ 'unsafe/funcall-ptr-1 
                         'unsafe/funcall-ptr-i32 'unsafe/funcall-ptr-i64
@@ -5248,6 +5248,9 @@
         ; so this is byte-identical; on a 16-bit target (AVR, Stage 14 AVR-2) it
         ; is i16, keeping the node-type<->emit-node lockstep intact.
         (when (= hp 'sizeof) (return (ptr-int-type)))
+        ; Lockstep with emit-source-file, which emits a plain string literal.
+        (when (= hp 'source-file) (return (strview-type)))
+        (when (= hp 'source-line) (return (int-literal-type (as i64 (n 'line)))))
         (when (= hp 'alloca) (return (node-type-alloca n)))
         ; (char "x") is sugar for the \x char literal — a Char value (S0). Must
         ; match emit-char's result type so the Rung-3 cross-check agrees.

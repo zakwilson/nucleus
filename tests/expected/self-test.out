@@ -1,0 +1,7 @@
+(test (name "substrings") (file "examples/self-test.nuc") (line 35) (status pass))
+(test (name "whole-lines") (file "examples/self-test.nuc") (line 39) (status pass))
+(test (name "equality") (file "examples/self-test.nuc") (line 43) (status pass))
+(test (name "wildcards") (file "examples/self-test.nuc") (line 48) (status pass))
+(test (name "emptiness") (file "examples/self-test.nuc") (line 53) (status pass))
+(test (name "ir-is-scoped") (file "examples/self-test.nuc") (line 57) (status pass))
+(test (name "this-one-fails-on-purpose") (file "examples/self-test.nuc") (line 64) (status fail) (message "expected to contain \"au revoir\"\n     in: hello, world"))

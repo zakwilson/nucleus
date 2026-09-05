@@ -1,0 +1,68 @@
+; A program that declares and runs its own tests (lib/test.nuc).
+;
+; `deftest` registers each test before `main` runs, so `main` is one call to
+; `test-main`. Run it with no arguments to run everything, `--list` to see the
+; names, `--run <name>` to run one.
+;
+; The last test fails on purpose, so the output shows what a failure record
+; looks like.
+
+(import-use error)
+(import-use strview)
+(import-use string)
+(import-use io)
+(import-use test)
+
+(defn greeting ():StrView (return "hello, world"))
+
+(defn ledger ():StrView (return "alpha\nbeta\ngamma\n"))
+
+; A scrap of LLVM IR, the shape the compiler's own tests assert against.
+(defn module-ir ():StrView (return "target triple = \"x86_64-pc-linux-gnu\"
+
+define i32 @add(i32 %a, i32 %b) {
+entry:
+  %sum = add i32 %a, %b
+  ret i32 %sum
+}
+
+define void @noop() {
+entry:
+  ret void
+}
+"))
+
+(deftest substrings
+  (try (check-contains (greeting) "lo, wo"))
+  (try (check-not-contains (greeting) "goodbye")))
+
+(deftest whole-lines
+  (try (check-line (ledger) "beta"))
+  (try (check-line (ledger) "gamma")))
+
+(deftest equality
+  (try (check-eq (greeting) "hello, world"))
+  (let (g:StrView (greeting))
+    (try (check-eq-int (as i64 (strview-byte-len (addr-of g))) 12 "greeting length"))))
+
+(deftest wildcards
+  ; A glob matches a whole line; `*` stands for any run of bytes.
+  (try (check-match (module-ir) "define i32 @add(*)*"))
+  (try (check-not-match (module-ir) "*fdiv*")))
+
+(deftest emptiness
+  (try (check-non-empty (greeting)))
+  (try (check-empty "")))
+
+(deftest ir-is-scoped
+  ; The point of the scoped matcher: `ret void` IS in the module, but it is not
+  ; in @add, and a module-wide grep cannot tell the difference.
+  (try (check-in-define (module-ir) "add" "  %sum = add i32*"))
+  (try (check-not-in-define (module-ir) "add" "  ret void"))
+  (try (check-in-define (module-ir) "noop" "  ret void")))
+
+(deftest this-one-fails-on-purpose
+  (try (check-contains (greeting) "au revoir")))
+
+(defn main (argc:i32 argv:ptr):int
+  (return (as int (test-main argc argv))))

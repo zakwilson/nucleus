@@ -3628,6 +3628,17 @@
     (when (!= aalign 0)
       (set! aligned (fstr " __attribute__((aligned(" aalign ")))")))
     (check-ir-name-legal (nn 'line) (nn 's) name)
+    ; Stage 18 TF-4, the same ruling W9 item 44 made for a declaration: a field
+    ; whose type is a non-pointer `!T`/`?T` niche has no C spelling, and emitting
+    ; one names an undefined tag. Refuse the WHOLE struct — dropping just the
+    ; field would hand C a layout that silently disagrees with Nucleus.
+    (dotimes (i nfields)
+      (let (field:ptr (node-at form (+ (+ i 2) nattrs)))
+        (when (!= (cheader-niche-no-c
+                    (extract-type-node field ((unsafe/cast ptr:Node field) 'line))) 0)
+          (emit (as ptr stdout) "/* " name
+                ": a field uses an error-union or option type; not exported */\n")
+          (return))))
     ; Stage 15 W9 item 25: TAG the struct. `type-name-to-c` spells every reference
     ; to a user type `struct NAME`, so an anonymous typedef leaves `struct NAME` a
     ; never-completed tag and every BY-VALUE use of the type fails — a field
@@ -3739,31 +3750,48 @@
 ; Unwraps `(ptr T)` / `(ref T)` exactly as cheader-mentions-closure does, so
 ; `ptr:!ui8` — which rendered `struct _BANGui8*` — is refused with the rest.
 (defn cheader-niche-no-c (tn:(raw Node)):i32
-  (let (cur:ptr tn)
-    (while (!= cur null)
-      (let (n:ptr:Node (unsafe/cast ptr:Node cur))
-        (case (n 'kind)
-          NODE-SYM
-            (do
-              (when (and (!= (symbol-byte-at (n 's) 0) 33) (!= (symbol-byte-at (n 's) 0) 63)) (return 0))
-              (match (niche-sym-to-c (n 's))
-                ((some _) (return 0))
-                (none 0))
-              (return 1))
-          NODE-CELL
-            (let (head:ptr:Node (unsafe/cast ptr:Node (n 'car)))
-              (when (or (= (as ptr head) null) (!= (head 'kind) NODE-SYM)) (return 0))
-              (let (hs:Symbol (head 's))
-                ; A `!ptr`/`!ref` HEAD is the pointer niche in list form; it lands
-                ; on `void*`, which is size- and ABI-correct. Only ptr/ref wrappers
-                ; are unwrapped to look further in.
-                (when (and (!= hs "ptr") (!= hs "ref")) (return 0))
-                (let (rest:ptr (n 'cdr))
-                  (when (= rest null) (return 0))
-                  (if (= ((unsafe/cast ptr:Node rest) 'cdr) null)
-                    (set! cur ((unsafe/cast ptr:Node rest) 'car))
-                    (set! cur rest)))))
-          (return 0))))
+  (when (= tn null) (return 0))
+  ; Stage 18 TF-4: a `(fn RET)` / `((fn RET) (P…))` carries RET and its parameters
+  ; one level down, where the ptr/ref unwrapping below never looked — which is how
+  ; a `!void` callback reached lib/test.h as an undefined `struct _BANGvoid` tag.
+  (let (fh:ptr (cheader-fn-head-node (as ptr tn)))
+    (when (!= fh null)
+      (let (rn:ptr ((unsafe/cast ptr:Node fh) 'cdr))
+        (when (and (!= rn null)
+                   (!= (cheader-niche-no-c ((unsafe/cast ptr:Node rn) 'car)) 0))
+          (return 1)))
+      (when (!= fh (as ptr tn))
+        (let (pn:ptr ((unsafe/cast ptr:Node tn) 'cdr))
+          (when (!= pn null)
+            (let (cur:ptr ((unsafe/cast ptr:Node pn) 'car))
+              (while (!= cur null)
+                (when (!= (cheader-niche-no-c ((unsafe/cast ptr:Node cur) 'car)) 0)
+                  (return 1))
+                (set! cur ((unsafe/cast ptr:Node cur) 'cdr)))))))
+      (return 0)))
+  (let (n:ptr:Node (unsafe/cast ptr:Node tn))
+    (case (n 'kind)
+      NODE-SYM
+        (do
+          (when (and (!= (symbol-byte-at (n 's) 0) 33) (!= (symbol-byte-at (n 's) 0) 63)) (return 0))
+          (match (niche-sym-to-c (n 's))
+            ((some _) (return 0))
+            (none 0))
+          (return 1))
+      NODE-CELL
+        (let (head:ptr:Node (unsafe/cast ptr:Node (n 'car)))
+          (when (or (= (as ptr head) null) (!= (head 'kind) NODE-SYM)) (return 0))
+          (let (hs:Symbol (head 's))
+            ; A `!ptr`/`!ref` HEAD is the pointer niche in list form; it lands
+            ; on `void*`, which is size- and ABI-correct. Only ptr/ref wrappers
+            ; are unwrapped to look further in.
+            (when (and (!= hs "ptr") (!= hs "ref")) (return 0))
+            (let (rest:ptr (n 'cdr))
+              (when (= rest null) (return 0))
+              (if (= ((unsafe/cast ptr:Node rest) 'cdr) null)
+                (return (cheader-niche-no-c ((unsafe/cast ptr:Node rest) 'car)))
+                (return (cheader-niche-no-c rest))))))
+      0)
     (return 0)))
 
 ; The C-header return-type node of a defn form, honoring both signature styles:

@@ -733,6 +733,14 @@
       (set! n (- n 1))
       (string-push-bytes-raw out (as ptr:ui8 (unsafe/ptr+ buf n)) 1))))
 
+; A string as an s-expression literal -- quotes included, escapes applied. The
+; counterpart of what the reader accepts, exported so anything WRITING an
+; s-expression (lib/test.nuc's result records) escapes the way this reads.
+(defn sexp-write-string ((out (ref String)) sv:StrView):void
+  (write-str out "\"")
+  (rd-write-escaped out sv)
+  (write-str out "\""))
+
 ; The canonical text of a node: re-readable, and identical to what the compiler
 ; prints for the same tree.
 (defn node-write ((out (ref String)) n:raw:Node):void

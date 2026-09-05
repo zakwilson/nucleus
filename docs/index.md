@@ -102,6 +102,7 @@ compile-time error naming their replacement.
 | [Strings](strings.md) | `Char` scalar, `StrView` borrowed slice, `String` owning type, UTF-8 encode/decode, `ByteStr`/`Str` protocols, split, lines, trim, `FromStr`/`parse`, `Writer`/`ToStr`/`str` formatting, and which of `StrView`/`String`/`Symbol`/`CStr` to reach for (`lib/char.nuc`, `lib/strview.nuc`, `lib/string.nuc`, `lib/parse.nuc`, `lib/string-split.nuc`, `lib/fmt.nuc`) |
 | [Processes](process.md) | Starting other programs: `Command` as an argv (never a shell command line), `run`, `spawn`/`wait-any` for a job pool, typed `ExitStatus` (`lib/process.nuc`) |
 | [Reading s-expressions](reading.md) | Text to `Node` at runtime: `read-all`, the `Reader`/`read-one` pair, `node-write`/`node-eq`; agrees with the compiler's own reader (`lib/read.nuc`) |
+| [Testing](testing.md) | Declaring tests with `deftest`, the `check-*` assertions, scoped IR matching, `fail!`, and the s-expression result records a suite prints (`lib/test.nuc`) |
 | [I/O](io.md) | Standard streams and files as `Writer`s over raw descriptors: `FdOut`, `print`/`println`/`eprint`/`eprintln`, `read-line`, `File`, `BufWriter` (`lib/io.nuc`, `lib/file.nuc`) |
 | [AVR targets](avr.md) | Cross-compiling to 8-bit AVR microcontrollers: flags, a two-device walkthrough, the v1 profile and its exclusions, MMIO/ISR idioms (`lib/avr.nuc`, `lib/avr/*.nuc`) |
 
