@@ -1395,11 +1395,19 @@ embeds C, which is most of the deferred ones), what is left is:
 | Oracle-free | 101 | 3,982 |
 | Needs `clang`/`cc`/`python3` | 51 | 4,617 |
 
-**Half the remaining work is blocked on one missing capability**, not on
-porting effort — and it is a *capability*, not a helper: running the host C
-compiler, and recording a SKIP when it is absent. §T9's deferred list should
-gain it, and the plan for §T7 has to say whether `make test` may keep a shell
-tail for these or whether TF-6 must close them first.
+**Half the remaining work looked blocked on one missing capability** — running
+the host C compiler, and recording a SKIP when it is absent.
+
+**That was overstated, and the correction is worth more than the claim.** clang
+is already a *hard dependency* of this project: `src/nucleusc.nuc:18681` uses it
+as the default linker driver, and the `Makefile` links the compiler with it at
+four sites. "Is clang present" is therefore not a conditional any test needs to
+express — if it is absent, nothing built. What is genuinely conditional is
+narrower: whether a particular clang's target has `_Float16`/`__float128`. The
+corrected split of the 152 remaining functions is 101 oracle-free / 3,982 lines,
+41 clang-bound but unblocked / 4,142 lines, and **one** unit with a real
+oracle — `run_s16_fl_float_widths`, 206 lines of embedded Python, staged
+separately in [float-width-oracle.md](float-width-oracle.md).
 
 Four helpers this batch, all in `tests/nuctests.nuc`: `check-file-rejects`
 (with `check-source-rejects` becoming a wrapper), `source-compiles?` — a table
@@ -1418,6 +1426,35 @@ makes "it is a note" a field rather than a prefix in the text. And
 
 **Remaining: 152 shell functions, 8,599 body lines** by the corrected count —
 101 oracle-free functions / 3,982 lines of it portable today.
+
+#### Skip as a third verdict (2026-09-05)
+
+A test whose *subject* is not present to be tested is not a pass, and the shell
+suite has been printing `PASS  name (SKIP: reason)` — a line that reconciles
+into the PASS count and disappears from every summary that matters. `lib/test.nuc`
+now has three verdicts.
+
+- `(skip! parts…)` ends the test as skipped, with a **required** reason,
+  rendered by the same `str-into` machine as `fail!`. A skip nobody can read is
+  attrition nobody can audit; that is the whole argument for requiring it.
+- The record is `(status skip) (message "…")` — a field, not a prefix inside a
+  pass message, so `lib/read.nuc` reads it back and a collector counts it.
+- `--no-skip` turns every skip into a failure, message `skipped: <reason>`. It
+  is a **policy flag, not a mode**, so it composes with `--list` and `--run`;
+  `make run-nuctests NUCTESTS_ARGS=--no-skip` is the release-check spelling.
+- `make test` prints every skip line and ends `N passed, M failed, K skipped`.
+
+`test-run-one` returns the status rather than a bool, and `test-main` counts
+only `TEST-FAIL` toward its exit code — so a default run exits 0 with skips in
+it, and a `--no-skip` run does not. `examples/self-test.nuc` gained
+`this-one-skips-on-purpose` beside the deliberate failure, so the golden output
+shows both records.
+
+One implementation note that cost a debugging pass: the skip reason lives in the
+failure buffer, and `test-fail-begin` clears it, so the strict-mode conversion
+must **copy the reason out before** it begins writing the replacement message.
+`str-into` re-evaluates its target once per piece, which makes the aliasing
+easy to write and invisible until the message comes out empty.
 
 ### T6.7 TF-7 — the end state
 

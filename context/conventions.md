@@ -6420,3 +6420,16 @@ The `d_name` offset lives in `lib/file.nuc` **once**. Do not re-declare
 declines), so the offset is a hardcoded 19, and two copies is two things to be
 wrong. It is validated, not trusted — `.` and `..` exist in every POSIX
 directory, so `read-dir` fails when they do not appear.
+
+## `str-into` re-evaluates its target once per piece
+
+`(str-into (test-fail-begin) "a: " x)` calls `test-fail-begin` **twice** — the
+macro expands to one `string-push-*` per piece, each against the target
+expression as written. That is harmless for a plain binding and a live bug for
+a target with a side effect: a `begin`-shaped target clears the buffer between
+pieces, so all but the last piece disappear.
+
+The same shape bites when a piece READS the buffer the target writes: converting
+a skip into a failure (`lib/test.nuc`, `--no-skip`) has to copy the reason out
+of the failure buffer *before* beginning the replacement message, or the
+message comes out empty with no error anywhere. Bind first, then push.

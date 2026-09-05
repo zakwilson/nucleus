@@ -5,4 +5,5 @@
 (test (name "emptiness") (file "examples/self-test.nuc") (line 54) (status pass))
 (test (name "ir-is-scoped") (file "examples/self-test.nuc") (line 58) (status pass))
 (test (name "diagnostics") (file "examples/self-test.nuc") (line 72) (status pass))
-(test (name "this-one-fails-on-purpose") (file "examples/self-test.nuc") (line 83) (status fail) (message "expected to contain \"au revoir\"\n     in: hello, world"))
+(test (name "this-one-skips-on-purpose") (file "examples/self-test.nuc") (line 86) (status skip) (message "no oracle for hello, world on this host"))
+(test (name "this-one-fails-on-purpose") (file "examples/self-test.nuc") (line 89) (status fail) (message "expected to contain \"au revoir\"\n     in: hello, world"))

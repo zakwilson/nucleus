@@ -26,8 +26,9 @@ $ ./suite
 (test (name "greeting-is-friendly") (file "suite.nuc") (line 7) (status pass))
 ```
 
-See `examples/self-test.nuc` for a worked suite, one of whose tests fails on
-purpose so the output shows what a failure record looks like.
+See `examples/self-test.nuc` for a worked suite, two of whose tests do not pass
+on purpose so the output shows what a skip record and a failure record look
+like.
 
 ## Declaring
 
@@ -35,6 +36,7 @@ purpose so the output shows what a failure record looks like.
 | --- | --- |
 | `(deftest name body…)` | A test named `name`, run in registration order. |
 | `(test-main argc argv)` | The suite's `main`: `--list`, `--run <name>`, or all. |
+| `(skip! parts…)` | End the test as **skipped**, with a reason. |
 
 `deftest` takes a bare symbol, not a string. The body is a function body
 returning `!void`, which is why each assertion is wrapped in `try`: the first
@@ -44,6 +46,40 @@ unconditionally the one time you forget to write it.
 
 The file and line in a record come from `(source-file)` and `(source-line)`,
 which resolve at the `deftest` call site rather than inside the macro.
+
+## Skipping
+
+A test whose subject is not present to be tested — a host without the C
+compiler an oracle needs, a toolchain feature the compiler probes for — ends
+with `skip!`:
+
+```lisp
+(deftest layout-matches-cc
+  (when (not (try (have-cc?))) (skip! "needs a host C compiler"))
+  …)
+```
+
+A skip is a **third verdict**, not a quiet pass. It emits its own record with
+its reason, it is counted separately, and the run still exits 0 for it:
+
+```
+(test (name "…") (file "…") (line N) (status skip) (message "…"))
+```
+
+The reason is required, for the same reason a failure's is: a skip nobody can
+read is attrition nobody can audit. `make test` prints every skip line and ends
+with `N passed, M failed, K skipped`.
+
+**`--no-skip` turns every skip into a failure**, for a run that will not accept
+one — a release check, or a machine that is supposed to have the whole
+toolchain. The record becomes a `fail` whose message is `skipped: <reason>`, so
+what was skipped is still legible. It is a policy flag, not a mode, so it
+composes with `--list` and `--run`:
+
+```
+$ ./build/nuctests --run layout-matches-cc --no-skip
+$ make run-nuctests NUCTESTS_ARGS=--no-skip
+```
 
 ## Asserting
 
@@ -250,13 +286,15 @@ Every run emits one record per test, on stdout, one line each:
 ```
 (test (name "…") (file "…") (line N) (status pass))
 (test (name "…") (file "…") (line N) (status fail) (message "…"))
+(test (name "…") (file "…") (line N) (status skip) (message "…"))
 ```
 
 The record is an s-expression, so `lib/read.nuc` reads it back: a tool that
 collects results across suites parses them rather than scraping them. Strings are
 escaped, so a message containing a quote or a newline survives the round trip.
 
-`test-main` exits 0 when everything passed and 1 when anything failed. `--list`
+`test-main` exits 0 when everything passed or skipped and 1 when anything
+failed; under `--no-skip` a skip is one of the things that failed. `--list`
 prints one name per line, which is what a parallel runner needs to shard a
 suite; `build/nuctest` drives the shell suite through the same two-verb
 interface.

@@ -119,6 +119,9 @@ test: test-tools $(NUCTESTS)
 # suite; while both cover a category their agreement is the evidence that
 # retires the shell version. See design/stage18-tooling/overview.md T6.6.
 NUCTESTS := $(BUILD)/nuctests
+# `make run-nuctests NUCTESTS_ARGS=--no-skip` turns every skip into a failure,
+# for a run that cannot accept one.
+NUCTESTS_ARGS :=
 
 $(NUCTESTS): tests/nuctests.nuc tests/manifest/diagnostics.sexp $(wildcard lib/*.nuc) $(BIN) | $(BUILD)
 	$(BIN) tests/nuctests.nuc -o $@
@@ -126,9 +129,10 @@ $(NUCTESTS): tests/nuctests.nuc tests/manifest/diagnostics.sexp $(wildcard lib/*
 # The suite's stdout is a machine-readable record stream, so the human summary
 # is made here rather than by polluting it.
 run-nuctests: $(NUCTESTS) test-tools
-	@./$(NUCTESTS) > $(BUILD)/nuctests.out; s=$$?; \
+	@./$(NUCTESTS) $(NUCTESTS_ARGS) > $(BUILD)/nuctests.out; s=$$?; \
 	  grep -F '(status fail)' $(BUILD)/nuctests.out || true; \
-	  echo "nuctests: $$(grep -cF '(status pass)' $(BUILD)/nuctests.out) passed, $$(grep -cF '(status fail)' $(BUILD)/nuctests.out) failed"; \
+	  grep -F '(status skip)' $(BUILD)/nuctests.out || true; \
+	  echo "nuctests: $$(grep -cF '(status pass)' $(BUILD)/nuctests.out) passed, $$(grep -cF '(status fail)' $(BUILD)/nuctests.out) failed, $$(grep -cF '(status skip)' $(BUILD)/nuctests.out) skipped"; \
 	  exit $$s
 
 # Stage 18 TF-2: the native runner, driving the same shell bodies through
