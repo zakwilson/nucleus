@@ -18,6 +18,7 @@ By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` un
 | `--emit-cheader` | Output a C header (`.h`) instead of compiling. Emits `#pragma once`, `#include <stdint.h>` / `<stdbool.h>` / `<stddef.h>`, tagged typedefs for structs and unions (`typedef struct Pt { … } Pt;`, so both `Pt` and `struct Pt` work), extern function declarations, `extern` declarations for public `defvar` globals (see [Reaching a library's globals from C](#reaching-a-librarys-globals-from-c)), `#define` constants, and enums. For a namespaced library, function declarations use the C-legal mangled link name (`geom__area`, not the Nucleus name `geom/area`), so a C consumer links against the same symbol the library emits — and a struct's typedef name is mangled the same way (`} gt__Pt;`, not `} Pt;`), since two namespaces may each define a `Pt` and an unprefixed typedef would collide if both headers were included together. A `user`-namespace library's header is unaffected. An **overloaded** or **operator-named** function is declared under the per-signature symbol it really links as, each method with its own C name (see [Overloaded and operator-named functions in a C header](#overloaded-and-operator-named-functions-in-a-c-header)). A name that is a **word C or C++ reserves** (`union`, `signed`, `class`, `delete`) is renamed with a trailing `_` and re-bound with an `asm` label, so only its C spelling moves (see [Names C reserves](#names-c-reserves)). A name beginning with a **digit** takes a leading `_` — C identifiers may not start with one — and needs no label, because the emitted symbol takes the same escape (see [Hyphenated names in a C header](#hyphenated-names-in-a-c-header)). A type defined in **another** unit gets an `#include` of that unit's generated header, so a by-value use of it compiles (see [Types a header borrows from another unit](#types-a-header-borrows-from-another-unit)). A signature naming a **C typedef** (e.g. `off_t`, see [A C typedef is a Nucleus type name](structs-unions.md#a-c-typedef-is-a-nucleus-type-name)) renders the name bare — `struct off_t` names nothing — and gets an `#include` of the C header the source imported to reach it (`#include <unistd.h>`), so the generated header still compiles on its own (see [C typedefs a header borrows](#c-typedefs-a-header-borrows)). A signature mentioning an **error-union or option type over a non-pointer payload** (`:!i32`, `?Char`) is not declared at all — the value is niche-encoded, not a struct — and a comment says so in its place; the pointer niches `!ptr:T` / `!ref:T` are bare pointers and stay declared (see [Error-union and option types in a C header](#error-union-and-option-types-in-a-c-header)). Header emission resolves the whole unit's signatures and validates its **declarations**, so a source whose declarations do not compile produces the compiler's ordinary error — the same message at the same line an ordinary compile gives — rather than a header (see [What a header mode checks](#what-a-header-mode-checks)). See [Namespaced type names](types.md#namespaced-type-names). |
 | `-i` / `--interactive` | Start the REPL (interactive Read-Eval-Print Loop). |
 | `-I<path>` / `-I <path>` | Add a directory to the import search path. Searched after the source file's directory and `lib/`. |
+| `--diagnostics=text\|sexp` | Format for compiler diagnostics on stderr. Default `text` (`path:line: error: msg` plus indented `  note:` lines). With `sexp`, each diagnostic is one s-expression on one line, read back by `lib/read.nuc` — see [Structured diagnostics](#structured-diagnostics). |
 | `--repl-format=text\|json` | Format for REPL error output. Default `text` (legacy `  error: <msg>` lines). With `json`, each error is emitted as a single-line JSON object: `{"file":..,"line":..,"message":..}`. Suitable for agent-driven REPL sessions. |
 | `--target=<triple>` | Cross-compile: set the output module's target triple and datalayout (sourced from LLVM) instead of the host's. In-process JIT modules (compile-time bodies, `defmacro`, REPL) always stay on the host. Registered backends: X86 (`x86_64`/`i386`), AArch64 (`aarch64`), ARM (`arm`), AVR (`avr`), RISCV (`riscv64`); Linux, Darwin, and Windows (msvc/gnu) triples all resolve. Pointer size, `size_t`, and struct layout follow the selected target — and so do the C headers an `(import-use "…")` reads, since the `clang -E` that reads them is given the same triple (see [C headers under `--target=`](#c-headers-under---target)). The reloc model is chosen per target (static for `avr`, PIC otherwise). A `riscv64` triple additionally defaults CPU/features/ABI to `generic-rv64` / `+m,+a,+f,+d,+c` / `lp64d` (RV64GC, the glibc-compatible baseline) — LLVM's own empty-features default is bare RV64I with a soft-float ABI, silently incompatible with a real riscv64 Linux target, so a correct default (not a user-supplied flag) is load-bearing here. When the resolved ABI is non-empty, `--emit-llvm` output carries a `!llvm.module.flags` block pinning `target-abi` (e.g. `!"lp64d"`); every other target emits no module-flags block at all. On `riscv64`, struct-by-value follows the lp64d **hard-float** calling convention: an aggregate is first flattened (nested structs and arrays expand into their scalar members; a union never flattens), and a flattened list of exactly one FP real, two FP reals, or one FP real plus one integer — in either order — travels in FP registers (`float`, `{double,double}`, `{i32,float}`, `{float,i32}`) as long as the registers it needs are still free at that argument position. Anything else — three or more members, a union, an over-wide member, a **variadic** argument, or exhausted registers (fa0-fa7 / a0-a7, with a hidden `sret` pointer spending one of the latter) — takes the integer convention, coercing a struct ≤ 16 bytes to `i64`/`{i64,i64}`; a struct over 16 bytes passes as a plain pointer / returns via `sret` (no `byval`). A return is classified against a0/a1/fa0/fa1, which are always available, so a return never falls back for want of registers — see [Passing and returning structs by value](structs-unions.md#passing-and-returning-structs-by-value). On `avr`, every struct/union passed or returned by value (any size) uses the aarch64-style plain-pointer `ABI-MEMORY` convention — no `byval`, since the SysV eightbyte register-chunk model that other targets use doesn't fit an 8-bit target with no such registers (see [Passing and returning structs by value](structs-unions.md#passing-and-returning-structs-by-value)) — and `f64`/`double` is a compile-time error (no hardware double), both as an explicit annotation and as a bare float literal's default type; `f32` and `i64` remain fully supported (see [Built-in Types](types.md#built-in-types)). |
 | `--mcpu=<cpu>` | The target CPU/device passed to LLVM's `TargetMachine` (e.g. `--target=avr --mcpu=attiny1634`). Only meaningful with `--target=`; the host target always uses the empty (generic) CPU. For AVR, use the device name when LLVM lists it (`attiny1634`) or the family core for a device LLVM doesn't know (`avrxmega3` covers the AVR-Dx parts). Currently the datalayout for a given triple is CPU-independent, so `--mcpu` selects the codegen ISA, not the ABI. For `riscv64`, `--mcpu` overrides only the CPU (default `generic-rv64`); the `+m,+a,+f,+d,+c` features and `lp64d` ABI module flag are fixed per-triple defaults, unaffected by `--mcpu`. |
@@ -52,6 +53,42 @@ of the *enclosing form*, which does carry one — `node-line`
 (`lib/node.nuc`) is the helper that expresses this, and `emit-node` maintains
 the ambient enclosing line for the one site that cannot be handed a node
 (`emit-symbol-ref`, reached with only the operand).
+
+### Structured diagnostics
+
+`--diagnostics=sexp` writes each diagnostic as one s-expression, on one line,
+on stderr — the same stream and the same order as the text form, so a caller's
+`2>&1 >/dev/null` is unchanged:
+
+```lisp
+(diagnostic (severity error) (file "src/x.nuc") (line 12)
+            (message "get: no field 'z' on struct 'Pt'") (notes))
+```
+
+| Field | |
+| --- | --- |
+| `severity` | `error` or `warning` — a bare symbol, so it compares by interned identity after a read. |
+| `file` | The path, as a string. Empty when there is none. |
+| `line` | The line. `-1` when the message is about the toolchain rather than about your source. |
+| `message` | The first line of the diagnostic — never a note. |
+| `notes` | Zero or more strings. What the text form prints as indented `  note:` lines. |
+
+Every field is always present, so a reader never has to ask whether a key is
+there. Strings are escaped for `lib/read.nuc`, so a message containing a quote
+or a newline survives the round trip — and because newlines are escaped, **one
+diagnostic is exactly one line**, which is what lets a reader skip a line that
+is not a diagnostic. A tool the compiler shells out to (the `clang -E` that
+reads a C header import) still writes its own text to the same stream.
+
+The two forms come from one record, split into fields at one point, so they
+cannot drift: the text form is the fields rejoined, byte for byte what the
+compiler printed before the record existed.
+
+Reading it back is `lib/test.nuc`'s `read-diagnostics` — see
+[Testing](testing.md#compiler-diagnostics). That is what makes an assertion
+about a diagnostic one comparison against one record, rather than two greps
+over a blob that never check the location and the message came from the same
+diagnostic.
 
 ### Unresolved names
 

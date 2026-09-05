@@ -285,6 +285,156 @@
       (fail! "in @" fname ": expected NO line matching " (sexp-quote pat)))))
 
 ; ---------------------------------------------------------------------------
+; Compiler diagnostics (§T4.2)
+;
+; `nucleusc --diagnostics=sexp` writes one form per diagnostic. Reading them
+; back makes an assertion about a diagnostic ONE comparison against ONE record.
+; The shell suite greps stderr twice, once for the location and once for the
+; message, and never checks that the two came from the same diagnostic -- and
+; notes carry locations too, so a note can satisfy the location probe while the
+; error says something else somewhere else.
+; ---------------------------------------------------------------------------
+
+(defstruct Diagnostic
+  severity:Symbol
+  file:StrView
+  line:i32
+  message:StrView
+  notes:(ref (Vector StrView)))
+
+; The operands of the `(key …)` entry named `name`, or null.
+(defn diag-entry (body:raw:Node name:StrView):raw:Node
+  (let (cur:raw:Node body)
+    (while (!= cur null)
+      (let (e:raw:Node (cur 'car))
+        (when (and (!= e null) (= (e 'kind) NODE-CELL))
+          (let (h:raw:Node (e 'car))
+            (when (and (!= h null) (= (h 'kind) NODE-SYM)
+                       (= (symbol-as-view (h 's)) name))
+              (return (e 'cdr))))))
+      (set! cur (cur 'cdr)))
+    (return null)))
+
+(defn diag-text (n:raw:Node):StrView
+  (when (= n null) (return ""))
+  (when (= (n 'kind) NODE-CELL) (return ""))
+  (return (symbol-as-view (n 's))))
+
+(defn diag-of-node (form:raw:Node):!Diagnostic
+  (when (or (= form null) (!= (form 'kind) NODE-CELL))
+    (return (err! test-bad-args)))
+  (let (body:raw:Node (form 'cdr)
+        d:&Diagnostic (alloca Diagnostic)
+        sev:raw:Node (diag-entry body "severity")
+        file:raw:Node (diag-entry body "file")
+        line:raw:Node (diag-entry body "line")
+        msg:raw:Node (diag-entry body "message")
+        notes:raw:Node (diag-entry body "notes"))
+    (when (or (= sev null) (= file null) (= line null) (= msg null))
+      (return (err! test-bad-args)))
+    (let (sn:raw:Node (sev 'car)
+          ln:raw:Node (line 'car))
+      (when (or (= sn null) (= ln null)) (return (err! test-bad-args)))
+      (set! (d 'severity) (sn 's))
+      (set! (d 'line) (unsafe/cast i32 (ln 'i))))
+    (set! (d 'file) (diag-text (file 'car)))
+    (set! (d 'message) (diag-text (msg 'car)))
+    (set! (d 'notes) (vector-new-in (arena-allocator (addr-of g-test-alloc))))
+    (let (cur:raw:Node notes)
+      (while (!= cur null)
+        (conj (d 'notes) (diag-text (cur 'car)))
+        (set! cur (cur 'cdr))))
+    (return (ok (deref d)))))
+
+; Reads every diagnostic in `text`, which may be the compiler's raw stderr.
+; One diagnostic is one LINE -- the writer escapes every newline inside a
+; string -- so a line that is not one is skipped rather than failing the parse,
+; which is what lets output from a tool `nucleusc` invoked ride along.
+(defn read-diagnostics (text:StrView) (Result (Vector Diagnostic) Err)
+  (let (out:(Vector Diagnostic) (vector-new)
+        it:LineIter (strview-lines (addr-of text)))
+    (while (not (lines-iter-done (addr-of it)))
+      (let (line:StrView (lines-iter-next (addr-of it)))
+        (when (strview-has-prefix line "(diagnostic ")
+          (let (forms:raw:Node (try (read-all line)))
+            (conj (addr-of out) (try (diag-of-node (forms 'car))))))))
+    (return (ok out))))
+
+; Every diagnostic, one per line, for a failure message.
+(defn diag-list-text ((ds (ref (Vector Diagnostic)))):String
+  (let (s:String (string-new)
+        n:usize (count ds)
+        i:usize 0)
+    (when (= n 0) (str-into (addr-of s) "\n     (no diagnostics)"))
+    (while (< i n)
+      (let (d:Diagnostic (invoke ds i))
+        (str-into (addr-of s) "\n     " (symbol-as-view (d 'severity)) " "
+                  (d 'file) ":" (d 'line) ": " (d 'message))
+        (let (m:usize (count (d 'notes))
+              j:usize 0)
+          (while (< j m)
+            (str-into (addr-of s) "\n       note: " (invoke (d 'notes) j))
+            (set! j (+ j 1)))))
+      (set! i (+ i 1)))
+    (return s)))
+
+(defn diag-matches ((d (ref Diagnostic)) severity:StrView file:StrView line:i32 needle:StrView):bool
+  (return (and (= (symbol-as-view (d 'severity)) severity)
+               (= (d 'file) file)
+               (= (d 'line) line)
+               (contains? (d 'message) needle))))
+
+; The assertion the shell harness could not write: severity, file, line and
+; message are matched against ONE record, so a note cannot supply the location
+; for a message that came from somewhere else.
+(defn check-diagnostic ((ds (ref (Vector Diagnostic))) severity:StrView
+                        file:StrView line:i32 needle:StrView):!void
+  (let (n:usize (count ds)
+        i:usize 0)
+    (while (< i n)
+      (let (d:Diagnostic (invoke ds i))
+        (when (diag-matches (addr-of d) severity file line needle) (return (ok))))
+      (set! i (+ i 1))))
+  (let (l:String (diag-list-text ds))
+    (fail! "expected " severity " at " file ":" line " containing " (sexp-quote needle)
+           "\n     got:" (string-as-view (addr-of l)))))
+
+(defn check-error-at ((ds (ref (Vector Diagnostic))) file:StrView line:i32 needle:StrView):!void
+  (return (check-diagnostic ds "error" file line needle)))
+
+(defn check-warning-at ((ds (ref (Vector Diagnostic))) file:StrView line:i32 needle:StrView):!void
+  (return (check-diagnostic ds "warning" file line needle)))
+
+; A note on a diagnostic at that same location -- the pairing the two-grep
+; version had no way to express.
+(defn check-note-at ((ds (ref (Vector Diagnostic))) file:StrView line:i32 needle:StrView):!void
+  (let (n:usize (count ds)
+        i:usize 0)
+    (while (< i n)
+      (let (d:Diagnostic (invoke ds i))
+        (when (and (= (d 'file) file) (= (d 'line) line))
+          (let (m:usize (count (d 'notes))
+                j:usize 0)
+            (while (< j m)
+              (when (contains? (invoke (d 'notes) j) needle) (return (ok)))
+              (set! j (+ j 1))))))
+      (set! i (+ i 1))))
+  (let (l:String (diag-list-text ds))
+    (fail! "expected a note at " file ":" line " containing " (sexp-quote needle)
+           "\n     got:" (string-as-view (addr-of l)))))
+
+(defn check-no-errors ((ds (ref (Vector Diagnostic)))):!void
+  (let (n:usize (count ds)
+        i:usize 0)
+    (while (< i n)
+      (let (d:Diagnostic (invoke ds i))
+        (when (= (symbol-as-view (d 'severity)) "error")
+          (let (l:String (diag-list-text ds))
+            (fail! "expected no errors, got:" (string-as-view (addr-of l))))))
+      (set! i (+ i 1))))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
 ; Reporting -- s-expression result records (§T8.5)
 ; ---------------------------------------------------------------------------
 

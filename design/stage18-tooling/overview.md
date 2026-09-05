@@ -1070,6 +1070,52 @@ came from the same diagnostic, and `note:` lines carry locations.
 
 Wanted by the REPL and by any future LSP regardless of testing.
 
+#### TF-5 as landed (2026-09-05)
+
+`Diagnostic` (`src/reader.nuc`) — `severity`, `path`, `line`, `message`, `notes`
+— built once by `diag-emit` and rendered by whichever back-end `--diagnostics`
+selected. `die-at` and `report-at` construct one; so do the five **located**
+warnings, which had each been spelling `path ":" line ": warning: "` by hand.
+
+**The split is where the structure comes from, and it cost no call sites.**
+Twenty-odd diagnosing sites already build their notes into the message as
+`(fstr "…" "\n  note: " …)`, and two more (`g-mono-context`,
+`g-diag-note`) are ambient. `diag-build` splits on that exact marker, so `notes`
+is a real field without any of the 688 call sites changing. The text back-end
+rejoins — which makes it the identity, and the gate for that is not a new test
+but the 172 existing reject units, every one of which asserts its exact
+diagnostic text. All 965 stayed green on the first run.
+
+Two things the phase had to decide:
+
+- **A note printed *after* the call is not a field.** Three sites did that
+  (`report-unterminated`, the stray-`)` note, the preprocessor's sysroot
+  advice), because `die-at` is noreturn and there is no "and also". They now
+  stage the note first; `diag-stage-note` **appends** rather than overwriting,
+  which is what lets two sites contribute to one diagnostic.
+- **One diagnostic is one line**, because every newline inside a string is
+  escaped. That is what lets `read-diagnostics` skip a line that is not a
+  diagnostic — and it has to skip, because the `clang -E` a C-header import
+  shells out to writes its own text to the same stream. A location-less
+  toolchain message spells the absence as `(file "")` and `(line -1)` rather
+  than omitting the fields, so a reader never asks whether a key is present.
+
+The test side is `read-diagnostics` + `check-error-at` / `check-warning-at` /
+`check-note-at` / `check-no-errors` in `lib/test.nuc`, over `lib/read.nuc`.
+`examples/self-test.nuc` gained a `diagnostics` test that reads a blob
+containing an error at `a.nuc:12`, a line of tool output, and a warning at
+`b.nuc:3` — and asserts the pairing that §T4.2 says two greps cannot: the same
+blob satisfies "an error at a.nuc:12" and "a message containing `second ns`"
+separately, and `check-error-at` rejects the pair. `run_diagnostics_sexp` is the
+compiler-side gate: the exact form for an error, a note as a field, one line per
+diagnostic, a warning structured too, a `"` in a field surviving a `readdump`
+round trip, and `--diagnostics=text` being the default.
+
+Not converted: `cheader-preprocess-failed` re-runs `clang -E` with stderr
+attached so the user sees clang's own "file not found". That is another
+program's diagnostic, not this compiler's, and wrapping it would claim a
+structure it does not have.
+
 ### T6.6 TF-6 — migrate the bodies, retiring each category as it lands
 
 In descending order of reuse:

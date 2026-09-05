@@ -2262,6 +2262,19 @@ Stage 18 TF-4 gave the top-level dispatcher (`emit-toplevel-forms`' `case hp` in
 
 The pre-TF-4 note here said top-level sugar had to be a compiler directive (`fn-attr`-shaped: a `g-special-form-set` entry + a `case hp` arm + an `emit-<name>`). That is still the answer when the sugar must be visible to a prescan, or must reuse a built-in head; a `defmacro` is now the answer when neither applies — which is what `deftest` (`lib/test.nuc`) is.
 
+## A diagnostic's notes already live in its MESSAGE — split there, do not re-plumb 688 call sites
+
+`die-at` (662 sites) and `report-at` (26) take a line and a message. Stage 18 TF-5 needed a `Diagnostic` record with a separate `notes` field, and the cheap way in was not to change any of them: **twenty-odd diagnosing sites already build their note into the message** as `(fstr "…" "\n  note: " …)`, and two more are ambient globals sampled at render time (`g-mono-context`, `g-diag-note`). `diag-build` (`src/reader.nuc`) splits on that exact nine-byte marker, so the record gains a real field and the text back-end is the rejoin — i.e. the identity, byte for byte.
+
+That identity is what makes the change gateable, and the gate is not a new test: **172 `run_reject_at` units already assert their exact diagnostic text**, so any drift in the split/rejoin pair fails there. Anything that changes how a diagnostic is assembled should be measured against `make test` first and only then reasoned about.
+
+Two rules that fall out and are easy to get wrong:
+
+- **A note printed AFTER the call is not a field.** Three sites did exactly that (`report-unterminated`, the stray-`)` note in `read-form`, the preprocessor's sysroot advice) because `die-at` is `:noreturn` and there is no "and also" after it. They stage the note first with `diag-stage-note`, which **appends** rather than overwrites — a site that clobbers `g-diag-note` silently drops whatever another site had to say about the same error.
+- **One diagnostic is one line** in `--diagnostics=sexp`, because the writer escapes every newline inside a string. That invariant is load-bearing on the reader side: `read-diagnostics` (`lib/test.nuc`) skips any line that is not a diagnostic, which it must, since the `clang -E` a C-header import shells out to writes its own text to the same stream. Do not add a sexp field that can span lines.
+
+A message with no source location (a toolchain message, not one about the user's file) passes `line` -1: the text back-end omits the `path:line: ` prefix, the sexp one writes `(file "")` and `(line -1)`. Absence is spelled, never omitted — a reader that has to ask whether a key is present is a reader that will get it wrong.
+
 ## Scanning an LLVM datalayout string for a token requires boundary checks, not a bare substring search
 
 A datalayout is a `-`-separated token list (e.g. `e-p:64:64-...-P1-...`). Extracting a segment like `P<n>` (AVR's program-address-space marker) by searching for the literal substring `"P"` is wrong — it can match inside an unrelated token that merely contains a `P` character elsewhere (or at a different position), not just at a token boundary. `datalayout-prog-as` (src/nucleusc.nuc, added for Stage 14 AVR-6's `prog-as:i32` field on `Target`) scans for a `P` that is *either at the start of the string or immediately preceded by `-`*, then parses the following digits — a token-bounded scan, not `strstr`. Reuse this pattern (or the helper itself) for any future datalayout field extraction (e.g. a future `n8:16:32:64` native-integer-widths scan) rather than re-deriving a bare substring search that happens to pass on today's known triples.

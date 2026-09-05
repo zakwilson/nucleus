@@ -14527,6 +14527,81 @@ spawn run_reader_parity examples
 spawn run_reader_parity lib
 spawn run_reader_parity src
 
+# --- Stage 18 TF-5: --diagnostics=sexp ------------------------------------------
+# The structured back-end must carry exactly what the text one prints, and carry
+# it as FIELDS -- one form per diagnostic, notes as a `notes` operand rather than
+# as trailing lines. `run_reject_at`'s two independent greps cannot tell a
+# location on a note from a location on the error; a field comparison can.
+#
+# The text back-end's byte-identity is not asserted here: the 172 reject units
+# above already assert their exact diagnostic text, so any drift fails there.
+run_diagnostics_sexp() {
+  local d out
+  d="$(mktemp -d)"
+  local ok=1
+
+  # 1. An error: one form, on one line, with the same location the text mode
+  #    printed and an empty `notes`.
+  cat > "$d/e1.nuc" <<'EOF'
+(defstruct Pt x:i32 y:i32)
+(defn f ((p (ref Pt))):i32 (return (p 'z)))
+(defn main ():i32 (return 0))
+EOF
+  out="$(./build/nucleusc --diagnostics=sexp --emit-llvm "$d/e1.nuc" 2>&1 >/dev/null || true)"
+  if [ "$out" != "(diagnostic (severity error) (file \"$d/e1.nuc\") (line 2) (message \"get: no field 'z' on struct 'Pt'\") (notes))" ]; then
+    ok=0; echo "    error form: $out"
+  fi
+
+  # 2. A note is a FIELD. The text mode prints it as a `  note: ` line, which is
+  #    where it lives inside the message today -- the split is the whole point.
+  out="$(./build/nucleusc --diagnostics=sexp --emit-llvm tests/fixtures/g5-noinit-ref.nuc 2>&1 >/dev/null || true)"
+  if ! printf '%s' "$out" | qgrep -F '(notes "give it an initializer, or declare it nullable'; then
+    ok=0; echo "    note field: $out"
+  fi
+  if [ "$(printf '%s\n' "$out" | wc -l)" != "1" ]; then
+    ok=0; echo "    a diagnostic must be ONE line, got $(printf '%s\n' "$out" | wc -l)"
+  fi
+
+  # 3. Warnings are diagnostics too -- a mode that structured only errors would
+  #    hand a reader a stream it cannot parse.
+  cat > "$d/w1.nuc" <<'EOF'
+(ns alpha)
+(ns beta)
+(defn main ():i32 (return 0))
+EOF
+  out="$(./build/nucleusc --diagnostics=sexp --emit-llvm "$d/w1.nuc" 2>&1 >/dev/null || true)"
+  if ! printf '%s' "$out" | qgrep -F '(severity warning)'; then
+    ok=0; echo "    warning form: $out"
+  fi
+
+  # 4. A field carrying a `"` survives the round trip. The path is the reachable
+  #    one -- a filename may hold any byte -- and it exercises the same escaper
+  #    every field uses. `readdump` reprints the canonical form, so the check is
+  #    that lib/read.nuc read back the bytes the compiler wrote.
+  printf '(defn main ():i32 (return (nope 1)))\n' > "$d/a\"b.nuc"
+  ./build/nucleusc --diagnostics=sexp --emit-llvm "$d/a\"b.nuc" 2>"$d/q1.sexp" >/dev/null || true
+  if ! qgrep -F 'a\"b.nuc' "$d/q1.sexp"; then
+    ok=0; echo "    a quote in a field was not escaped: $(cat "$d/q1.sexp")"
+  fi
+  if ! ./build/readdump "$d/q1.sexp" > "$d/q1.ast" 2>"$d/q1.err"; then
+    ok=0; echo "    lib/read.nuc could not read it: $(head -1 "$d/q1.err")"
+  elif ! diff -q "$d/q1.sexp" "$d/q1.ast" >/dev/null; then
+    ok=0; echo "    round trip changed the form"; diff "$d/q1.sexp" "$d/q1.ast" | head -4 | sed 's/^/      /'
+  fi
+
+  # 5. `--diagnostics=text` is the default, and naming it explicitly is a no-op.
+  local a b
+  a="$(./build/nucleusc --emit-llvm "$d/e1.nuc" 2>&1 >/dev/null || true)"
+  b="$(./build/nucleusc --diagnostics=text --emit-llvm "$d/e1.nuc" 2>&1 >/dev/null || true)"
+  if [ "$a" != "$b" ]; then
+    ok=0; echo "    --diagnostics=text is not the default"
+  fi
+
+  if [ "$ok" = 1 ]; then echo "PASS  s18-diagnostics-sexp"; else echo "FAIL  s18-diagnostics-sexp"; fi
+  rm -rf "$d"
+}
+spawn run_diagnostics_sexp
+
 # --- Single-mode exits ----------------------------------------------------------
 if [ "$MODE" = list ]; then
   exit 0

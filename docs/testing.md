@@ -82,6 +82,39 @@ the module whenever any function returns void.
 | `(check-not-in-define module fname pat)` | none does. |
 | `(ir-define module fname)` | `(Maybe StrView)` — the block itself. |
 
+## Compiler diagnostics
+
+`nucleusc --diagnostics=sexp` writes each diagnostic as an s-expression rather
+than as text ([Structured diagnostics](compiler.md#structured-diagnostics)).
+`read-diagnostics` reads them back, and the assertions then compare **fields**.
+
+```lisp
+(let (ds:(Vector Diagnostic) (try (read-diagnostics stderr-text)))
+  (try (check-error-at (addr-of ds) "x.nuc" 12 "no field 'z'"))
+  (try (check-note-at  (addr-of ds) "x.nuc" 12 "did you mean")))
+```
+
+| Form | Meaning |
+| --- | --- |
+| `(read-diagnostics text)` | `!(Vector Diagnostic)` — every diagnostic in `text`, which may be raw stderr. |
+| `(check-error-at ds file line needle)` | An `error` at exactly `file:line` whose message contains `needle`. |
+| `(check-warning-at ds file line needle)` | The same for a `warning`. |
+| `(check-note-at ds file line needle)` | A diagnostic at `file:line` with a note containing `needle`. |
+| `(check-no-errors ds)` | No diagnostic has severity `error`. |
+| `(check-diagnostic ds severity file line needle)` | The general form the four above call. |
+
+A `Diagnostic` has `severity` (a `Symbol`), `file`, `line`, `message`, and
+`notes` (a `(Vector StrView)`).
+
+The point of matching four fields against one record is that **the alternative
+cannot express the assertion at all.** Grepping stderr for a location and then
+grepping it again for a message never checks that the two came from the same
+diagnostic — and notes carry locations too, so a note can satisfy the location
+probe while the error says something else somewhere else.
+
+`read-diagnostics` skips any line that is not a diagnostic, so the raw stderr of
+a compile that also invoked another tool can be handed to it unfiltered.
+
 ## Failing
 
 Failure text is written in one place — the assertion — and never at the call

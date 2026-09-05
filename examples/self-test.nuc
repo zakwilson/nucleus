@@ -10,6 +10,7 @@
 (import-use error)
 (import-use strview)
 (import-use string)
+(import-use vector)
 (import-use io)
 (import-use test)
 
@@ -60,6 +61,24 @@ entry:
   (try (check-in-define (module-ir) "add" "  %sum = add i32*"))
   (try (check-not-in-define (module-ir) "add" "  ret void"))
   (try (check-in-define (module-ir) "noop" "  ret void")))
+
+; What `nucleusc --diagnostics=sexp` writes, with a line of tool output in the
+; middle that a caller would get from the compiler's raw stderr.
+(defn compiler-stderr ():StrView (return "(diagnostic (severity error) (file \"a.nuc\") (line 12) (message \"get: no field 'z' on struct 'Pt'\") (notes))
+clang: error: something a tool said
+(diagnostic (severity warning) (file \"b.nuc\") (line 3) (message \"second ns directive\") (notes \"the first one wins\"))
+"))
+
+(deftest diagnostics
+  (let (ds:(Vector Diagnostic) (try (read-diagnostics (compiler-stderr))))
+    ; The line that is not a diagnostic is skipped, not fatal.
+    (try (check-eq-int (as i64 (count (addr-of ds))) 2 "diagnostic count"))
+    ; Severity, file, line and message are matched against ONE record. Two
+    ; independent greps over the blob above would also accept "an error at
+    ; a.nuc:12" paired with "second ns directive" -- which is the hole.
+    (try (check-error-at (addr-of ds) "a.nuc" 12 "no field 'z'"))
+    (try (check-warning-at (addr-of ds) "b.nuc" 3 "second ns"))
+    (try (check-note-at (addr-of ds) "b.nuc" 3 "the first one wins"))))
 
 (deftest this-one-fails-on-purpose
   (try (check-contains (greeting) "au revoir")))

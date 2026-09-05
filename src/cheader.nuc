@@ -193,9 +193,10 @@
         h:ptr:CDeclSite (unsafe/cast ptr:CDeclSite hdr))
     (when (!= (s 'warned) 0) (return))
     (set! (s 'warned) 1)
-    (eprint (s 'file) ":" (s 'line) ": warning: declaration of '" (s 'name)
-            "' as " (s 'sig) " conflicts with " (h 'file) ":" (h 'line)
-            ", which declares it as " (h 'sig) "; the explicit declaration wins\n")))
+    (diag-emit "warning" (s 'file) (s 'line)
+        (fstr "declaration of '" (s 'name)
+              "' as " (s 'sig) " conflicts with " (h 'file) ":" (h 'line)
+              ", which declares it as " (h 'sig) "; the explicit declaration wins"))))
 
 ; Collect every top-level `(declare NAME …)` in this unit. Runs with the other
 ; prescans in emit-toplevel-forms — i.e. before ANY import of this unit is
@@ -870,8 +871,8 @@
     (set! (e 'note) (symbol-intern (fstr g-cheader-file ":" dline ": " why)))
     (conj tbl e)
     (when (!= loud 0)
-      (eprint g-cheader-file ":" dline ": warning: skipping C declaration '" fname "': " why
-              "\n"))))
+      (diag-emit "warning" g-cheader-file dline
+          (fstr "skipping C declaration '" fname "': " why)))))
 
 ; The reason this declaration cannot be emitted, or null if it can.
 ;
@@ -1521,9 +1522,11 @@
       ; The macro run follows the declaration run for the same header, which has
       ; already said this.
       (when (and (= status 0) (= dump-macros 0))
-        (eprint "warning: C header '" header-path "' could not be preprocessed for target '"
-                g-target-triple "'; using the HOST's headers, whose type widths may differ\n")
-        (eprint "  note: pass --sysroot=<path> naming a sysroot that carries the target's own headers\n"))
+        ; No source location: this is about the toolchain, not the user's file.
+        (diag-stage-note "pass --sysroot=<path> naming a sysroot that carries the target's own headers")
+        (diag-emit "warning" (symbol-none) -1
+            (fstr "C header '" header-path "' could not be preprocessed for target '"
+                  g-target-triple "'; using the HOST's headers, whose type widths may differ")))
       (set! with-target false))
     ; Cached as a null buffer like any other answer — the pre-scan and the real
     ; import both ask, and the diagnosis should be printed once.
