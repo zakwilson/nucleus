@@ -259,14 +259,37 @@
         (drop (addr-of c))
         (return (err e))))))
 
-; Compile `path` to a binary and run it, stdout and stderr on one stream.
-(defn build-run-file (dir:StrView path:StrView):!String
+; `nucleusc -c <path> -o <out>`: a translation unit for a real link.
+(defn compile-object (path:StrView out:StrView):!void
+  (let (c:Command (command (compiler-path)))
+    (command-arg (addr-of c) "-c")
+    (command-arg (addr-of c) path)
+    (command-arg (addr-of c) "-o")
+    (command-arg (addr-of c) out)
+    (command-capture (addr-of c) true)
+    (command-stderr-to-stdout (addr-of c) true)
+    (match (run (addr-of c))
+      ((ok o)
+        (when (not (success? (addr-of o 'status)))
+          (fail! "expected an object file\n     "
+                 (test-show (string-as-view (addr-of o 'out)))))
+        (drop (addr-of o)))
+      ((err e)
+        (drop (addr-of c))
+        (return (err e))))
+    (drop (addr-of c))
+    (return (ok))))
+
+; Compile `path` to a binary and run it, stdout and stderr on one stream. An
+; empty `dir` adds no `-I`, and an empty `extra` no extra argument.
+(defn build-run-file (dir:StrView extra:StrView path:StrView):!String
   (let (sdir:StrView (try (test-scratch))
         bin:String (str sdir "/t.bin")
         cc:Command (command (compiler-path)))
     (when (not (= dir ""))
       (command-arg (addr-of cc) "-I")
       (command-arg (addr-of cc) dir))
+    (when (not (= extra "")) (command-arg (addr-of cc) extra))
     (command-arg (addr-of cc) path)
     (command-arg (addr-of cc) "-o")
     (command-arg (addr-of cc) (string-as-view (addr-of bin)))
@@ -297,7 +320,7 @@
 
 (defn build-run-source (src:StrView):!String
   (let (p:String (try (test-write-file "t.nuc" src))
-        out:String (try (build-run-file "" (string-as-view (addr-of p)))))
+        out:String (try (build-run-file "" "" (string-as-view (addr-of p)))))
     (drop (addr-of p))
     (return (ok out))))
 
@@ -329,6 +352,39 @@
       (let (l:StrView (lines-iter-next (addr-of it)))
         (when (contains? l needle) (return (ok l))))))
   (fail! "no line containing " (sexp-quote needle) "\n     in: " (test-show hay)))
+
+; How many lines of `hay` begin with `prefix`. A presence test cannot catch a
+; DOUBLE emit, which is the way a re-drain goes wrong.
+(defn count-lines-with-prefix (hay:StrView prefix:StrView):i64
+  (let (n:i64 0
+        it:LineIter (strview-lines (addr-of hay)))
+    (while (not (lines-iter-done (addr-of it)))
+      (when (strview-has-prefix (lines-iter-next (addr-of it)) prefix)
+        (set! n (+ n 1))))
+    (return n)))
+
+; The `%Name` of an IR type-definition line, or "".
+(defn type-line-name (l:StrView):StrView
+  (let (m:StrView " = type")
+    (when (not (strview-has-prefix l "%")) (return ""))
+    (match (strview-find (addr-of l) (addr-of m))
+      ((some at) (return (strview-take-bytes l at)))
+      (none (return "")))))
+
+; A type defined twice, or "". LLVM refuses a duplicate `%X = type` outright, so
+; this is about the emitter's own bookkeeping rather than about the module.
+(defn duplicate-type-name (ir:StrView):StrView
+  (let (outer:LineIter (strview-lines (addr-of ir)))
+    (while (not (lines-iter-done (addr-of outer)))
+      (let (nm:StrView (type-line-name (lines-iter-next (addr-of outer))))
+        (when (not (= nm ""))
+          (let (n:i64 0
+                inner:LineIter (strview-lines (addr-of ir)))
+            (while (not (lines-iter-done (addr-of inner)))
+              (when (= (type-line-name (lines-iter-next (addr-of inner))) nm)
+                (set! n (+ n 1))))
+            (when (> n 1) (return nm))))))
+    (return "")))
 
 ; ---------------------------------------------------------------------------
 ; Category (a): the rejection/acceptance table
