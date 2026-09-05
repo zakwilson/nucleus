@@ -27,8 +27,16 @@
 (import-use read)
 
 (deferror test-failed "assertion failed")
+(deferror test-skipped "test skipped")
 (deferror test-unknown "no such test")
 (deferror test-bad-args "bad arguments")
+
+; A skip is a THIRD verdict, not a quiet pass: a test that cannot run on this
+; host says so, in the record, with its reason. `--no-skip` turns every skip
+; into a failure, for a run that cannot accept one.
+(defenum TestStatus TEST-PASS TEST-FAIL TEST-SKIP)
+
+(defvar g-test-no-skip:bool)
 
 ; ---------------------------------------------------------------------------
 ; The registry
@@ -109,6 +117,14 @@
     `(let ((~b (ref String)) (test-fail-begin))
        (str-into ~b ~@parts)
        (return (err! test-failed)))))
+
+; `(skip! "needs " thing)` — the same shape, and the reason is required for the
+; same reason a failure's is: a skip with no reason cannot be audited later.
+(defmacro skip! (:rest parts)
+  (let (b:ptr (gensym))
+    `(let ((~b (ref String)) (test-fail-begin))
+       (str-into ~b ~@parts)
+       (return (err! test-skipped)))))
 
 ; Long haystacks make a failure unreadable; the first 400 bytes are enough to
 ; recognise what was actually there.
@@ -538,14 +554,17 @@
   (sexp-write-string out (self 'v))
   (return (ok)))
 
-(defn test-report ((tc (ref TestCase)) passed:bool):void
+(defn test-report ((tc (ref TestCase)) status:i32):void
   (let (b:ref:String (io-buf-begin))
     (str-into b "(test (name " (sexp-quote (symbol-as-view (tc 'name)))
               ") (file " (sexp-quote (tc 'file))
               ") (line " (tc 'line) ") (status ")
-    (if passed
-      (str-into b "pass)")
-      (str-into b "fail) (message " (sexp-quote (test-failure-text)) ")"))
+    (cond
+      (= status TEST-PASS) (str-into b "pass)")
+      (= status TEST-SKIP) (str-into b "skip) (message "
+                                     (sexp-quote (test-failure-text)) ")")
+      true                 (str-into b "fail) (message "
+                                     (sexp-quote (test-failure-text)) ")"))
     (str-into b ")\n")
     (io-buf-end 1)))
 
@@ -594,19 +613,29 @@
     (try (file-close (addr-of f)))
     (return (ok path))))
 
-(defn test-run-one ((tc (ref TestCase))):bool
+(defn test-run-one ((tc (ref TestCase))):i32
   (test-scratch-set (symbol-as-view (tc 'name)))
   (test-fail-begin)
   (match (funcall (tc 'run) (tc 'data))
-    (ok (do (test-report tc true) (return true)))
+    (ok (do (test-report tc TEST-PASS) (return TEST-PASS)))
     ((err e)
+      (when (= e test-skipped)
+        (when (not g-test-no-skip)
+          (test-report tc TEST-SKIP)
+          (return TEST-SKIP))
+        ; Copy first: `test-fail-begin` clears the buffer the reason lives in.
+        (let (s:String (str "skipped: " (test-failure-text)))
+          (str-into (test-fail-begin) (string-as-view (addr-of s)))
+          (drop (addr-of s)))
+        (test-report tc TEST-FAIL)
+        (return TEST-FAIL))
       ; An error that is not an assertion failure -- a file that would not open,
       ; say -- still has to say something, or the record reads as an empty
       ; failure.
       (when (= (test-failure-len) 0)
         (str-into (test-fail-begin) "test raised " (err-name e) ": " (err-message e)))
-      (test-report tc false)
-      (return false))))
+      (test-report tc TEST-FAIL)
+      (return TEST-FAIL))))
 
 ; ---------------------------------------------------------------------------
 ; The suite entry point
@@ -627,7 +656,7 @@
         failed:i32 0)
     (while (< i n)
       (let (tc:TestCase (invoke g-tests i))
-        (when (not (test-run-one (addr-of tc))) (set! failed (+ failed 1))))
+        (when (= (test-run-one (addr-of tc)) TEST-FAIL) (set! failed (+ failed 1))))
       (set! i (+ i 1)))
     (return (if (> failed 0) 1 0))))
 
@@ -646,34 +675,50 @@
       (set! i (+ i 1))))
   (return (symbol-none)))
 
+(defn test-list ():void
+  (let (n:usize (count g-tests)
+        i:usize 0)
+    (while (< i n)
+      (let (tc:TestCase (invoke g-tests i))
+        (print (symbol-as-view (tc 'name)) "\n"))
+      (set! i (+ i 1)))))
+
 ; `main` for a suite. `--list` names its tests, `--run <name>` runs exactly one,
-; no arguments runs them all; every run emits one record per test.
+; no arguments runs them all; every run emits one record per test. `--no-skip`
+; is a policy flag rather than a mode, so it composes with either verb.
 (defn test-main (argc:i32 argv:ptr):i32
   (let (dup:Symbol (test-duplicate-name))
     (when (not (symbol-none? dup))
       (eprint "duplicate test name: " (symbol-as-view dup) "\n")
       (return 2)))
-  (when (= argc 1) (return (test-run-all)))
-  (let (a:StrView (strview-from-cstr (as CStr (aref (as ptr:ptr argv) 1))))
-    (when (= a "--list")
-      (let (n:usize (count g-tests)
-            i:usize 0)
-        (while (< i n)
-          (let (tc:TestCase (invoke g-tests i))
-            (print (symbol-as-view (tc 'name)) "\n"))
-          (set! i (+ i 1))))
-      (return 0))
-    (when (= a "--run")
-      (when (< argc 3)
-        (eprint "usage: <suite> --run <name>\n")
-        (return 2))
-      (let (want:StrView (strview-from-cstr (as CStr (aref (as ptr:ptr argv) 2))))
-        (match (test-find want)
-          ((some i)
-            (let (tc:TestCase (invoke g-tests i))
-              (return (if (test-run-one (addr-of tc)) 0 1))))
-          (none
-            (eprint "no such test: " want "\n")
-            (return 2)))))
-    (eprint "usage: <suite> [--list | --run <name>]\n")
-    (return 2)))
+  (let (i:i32 1
+        mode:StrView ""
+        want:StrView "")
+    (while (< i argc)
+      (let (a:StrView (strview-from-cstr (as CStr (aref (as ptr:ptr argv) i))))
+        (cond
+          (= a "--no-skip") (set! g-test-no-skip true)
+          (= a "--list")    (set! mode "list")
+          (= a "--run")
+            (do
+              (when (>= (+ i 1) argc)
+                (eprint "usage: <suite> --run <name>\n")
+                (return 2))
+              (set! mode "run")
+              (set! i (+ i 1))
+              (set! want (strview-from-cstr (as CStr (aref (as ptr:ptr argv) i)))))
+          true
+            (do
+              (eprint "usage: <suite> [--list | --run <name>] [--no-skip]\n")
+              (return 2))))
+      (set! i (+ i 1)))
+    (when (= mode "list") (test-list) (return 0))
+    (when (= mode "run")
+      (match (test-find want)
+        ((some k)
+          (let (tc:TestCase (invoke g-tests k))
+            (return (if (= (test-run-one (addr-of tc)) TEST-FAIL) 1 0))))
+        (none
+          (eprint "no such test: " want "\n")
+          (return 2))))
+    (return (test-run-all))))

@@ -8,6 +8,13 @@
 
 /* Generated from lib/test.nuc by nucleusc --emit-cheader */
 
+enum TestStatus {
+    TestStatus_TEST_PASS = 0,
+    TestStatus_TEST_FAIL = 1,
+    TestStatus_TEST_SKIP = 2
+};
+
+extern bool g_test_no_skip asm("g-test-no-skip");
 /* TestCase: a field uses an error-union or option type; not exported */
 extern struct AllocHandle g_test_alloc asm("g-test-alloc");
 extern void* g_tests asm("g-tests");
@@ -69,14 +76,15 @@ typedef struct SexpStr {
 
 struct SexpStr sexp_quote(struct StrView v) asm("sexp-quote");
 /* to-str: uses an error-union or option type; not exported */
-void test_report(void* tc, bool passed) asm("test-report");
+void test_report(void* tc, int32_t status) asm("test-report");
 extern struct StrView g_test_scratch asm("g-test-scratch");
 void test_scratch_set(struct StrView name) asm("test-scratch-set");
 /* test-scratch: uses an error-union or option type; not exported */
 /* test-scratch-sub: uses an error-union or option type; not exported */
 /* test-write-file: uses an error-union or option type; not exported */
-bool test_run_one(void* tc) asm("test-run-one");
+int32_t test_run_one(void* tc) asm("test-run-one");
 /* test-find: uses a defunion-template instance type; not exported */
 int32_t test_run_all(void) asm("test-run-all");
 struct Symbol test_duplicate_name(void) asm("test-duplicate-name");
+void test_list(void) asm("test-list");
 int32_t test_main(int32_t argc, void* argv) asm("test-main");

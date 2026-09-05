@@ -4,8 +4,8 @@
 ; `test-main`. Run it with no arguments to run everything, `--list` to see the
 ; names, `--run <name>` to run one.
 ;
-; The last test fails on purpose, so the output shows what a failure record
-; looks like.
+; Two tests do not pass on purpose, so the output shows what a skip record and
+; a failure record look like.
 
 (import-use error)
 (import-use strview)
@@ -79,6 +79,12 @@ clang: error: something a tool said
     (try (check-error-at (addr-of ds) "a.nuc" 12 "no field 'z'"))
     (try (check-warning-at (addr-of ds) "b.nuc" 3 "second ns"))
     (try (check-note-at (addr-of ds) "b.nuc" 3 "the first one wins"))))
+
+; A test whose subject is not here to be tested says so, with its reason, and
+; the run still exits 0 for it. `--no-skip` turns it into a failure, for a run
+; that will not accept one.
+(deftest this-one-skips-on-purpose
+  (skip! "no oracle for " (greeting) " on this host"))
 
 (deftest this-one-fails-on-purpose
   (try (check-contains (greeting) "au revoir")))
