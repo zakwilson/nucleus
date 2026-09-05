@@ -179,3 +179,576 @@
     (drop (addr-of r))
     (drop (addr-of l))
     (drop (addr-of base))))
+
+; ---------------------------------------------------------------------------
+; Two namespaces, one name (W9 §9.6)
+; ---------------------------------------------------------------------------
+
+(defn w35-write-libs ():!StrView
+  (let (dir:StrView (try (test-scratch))
+        a:String (try (test-write-file "w35qa.nuc" "(ns w35qa)
+(defn w35-desc (x:i32):i32 (return (+ x 1)))
+"))
+        b:String (try (test-write-file "w35qb.nuc" "(ns w35qb)
+(defn w35-desc (x:i32):i32 (return (+ x 2)))
+")))
+    (drop (addr-of b))
+    (drop (addr-of a))
+    (return (ok dir))))
+
+; Both prefixed, both calls qualified: two definitions, two symbols, and each
+; qualified spelling reaches its own.
+(deftest w9-two-ns-one-name
+  (let (dir:StrView (try (w35-write-libs))
+        m:String (try (test-write-file "w35both.nuc" "(import-prefixed w35qa a)
+(import-prefixed w35qb b)
+(defn main ():i32 (return (+ (a/w35-desc 10) (b/w35-desc 20))))
+")))
+    (try (check-file-exit dir (string-as-view (addr-of m)) 33))
+    (drop (addr-of m))))
+
+(deftest w9-two-ns-distinct-symbols
+  (let (dir:StrView (try (w35-write-libs))
+        m:String (try (test-write-file "w35both.nuc" "(import-prefixed w35qa a)
+(import-prefixed w35qb b)
+(defn main ():i32 (return (+ (a/w35-desc 10) (b/w35-desc 20))))
+"))
+        c:Compiled (try (compile-path-in dir (string-as-view (addr-of m))))
+        iv:StrView (string-as-view (addr-of c 'ir)))
+    (try (check-match iv "define *@w35qa__w35-desc(*"))
+    (try (check-match iv "define *@w35qb__w35-desc(*"))
+    (drop (addr-of c))
+    (drop (addr-of m))))
+
+; Flatten exactly one: the bare call is not ambiguous at all, because only one
+; candidate is in this file's unqualified space.
+(deftest w9-two-ns-bare-picks-flattened
+  (let (dir:StrView (try (w35-write-libs))
+        m:String (try (test-write-file "w35one.nuc" "(import-use w35qa)
+(import-prefixed w35qb b)
+(defn main ():i32 (return (w35-desc 10)))
+")))
+    (try (check-file-exit dir (string-as-view (addr-of m)) 11))
+    (drop (addr-of m))))
+
+; Flatten BOTH: now the bare call really does name two functions, and that is
+; the use R4 was refusing the definitions to prevent. Located, and both
+; candidates named with a spelling that resolves.
+(deftest w9-two-ns-ambiguous-use
+  (let (dir:StrView (try (w35-write-libs))
+        m:String (try (test-write-file "w35amb.nuc" "(import-use w35qa)
+(import-use w35qb)
+(defn main ():i32 (return (w35-desc 10)))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        c:Compiled (try (compile-path-in dir mv))
+        raw:StrView (string-as-view (addr-of c 'raw)))
+    (try (check-error-at (addr-of c 'diags) mv 3 "ambiguous call to 'w35-desc'"))
+    (try (check-contains raw "'w35qa/w35-desc'"))
+    (try (check-contains raw "'w35qb/w35-desc'"))
+    (drop (addr-of c))
+    (drop (addr-of m))))
+
+; Neither flattened: the name is not in the unqualified space, and the message
+; says where it IS and what to write instead of guessing.
+(deftest w9-two-ns-unqualified-unreachable
+  (let (dir:StrView (try (w35-write-libs))
+        m:String (try (test-write-file "w35none.nuc" "(import-prefixed w35qa a)
+(import-prefixed w35qb b)
+(defn main ():i32 (return (w35-desc 10)))
+"))
+        c:Compiled (try (compile-path-in dir (string-as-view (addr-of m))))
+        raw:StrView (string-as-view (addr-of c 'raw)))
+    (try (check-contains raw "defined in namespaces 'w35qa' and 'w35qb'"))
+    (try (check-contains raw "write 'a/w35-desc' or 'b/w35-desc' here"))
+    (drop (addr-of c))
+    (drop (addr-of m))))
+
+; R4's rule survives where its reason does: ONE namespace still may not define
+; one signature twice, because that pair really would emit a symbol twice. The
+; test is the emitted PREFIX, not the namespace name, so two files sharing a
+; namespace are still a duplicate.
+(deftest w9-one-ns-still-refuses-duplicate
+  (let (dir:StrView (try (test-scratch))
+        a:String (try (test-write-file "w35dupa.nuc" "(ns w35dup)
+(defn w35-dup (x:i32):i32 (return x))
+"))
+        b:String (try (test-write-file "w35dupb.nuc" "(ns w35dup)
+(defn w35-dup (x:i32):i32 (return (+ x 1)))
+"))
+        m:String (try (test-write-file "w35dupm.nuc" "(import-use w35dupa)
+(import-use w35dupb)
+(defn main ():i32 (return 0))
+")))
+    (try (check-file-rejects dir (string-as-view (addr-of m))
+                             "duplicate definition of 'w35-dup'"))
+    (drop (addr-of m))
+    (drop (addr-of b))
+    (drop (addr-of a))))
+
+; ---------------------------------------------------------------------------
+; `defcast` reach, and the note that names a rule that almost applies (W9)
+; ---------------------------------------------------------------------------
+
+; Every typed slot, all on the rule's exact pair, linked and RUN — the baseline
+; compiles none of these past the first one.
+(deftest w9-defcast-every-slot
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defn i2p (x:i64):ptr (return (unsafe/cast ptr x)))
+(defcast i64 ptr i2p)
+(defstruct Bx p:ptr)
+(defn show (p:ptr):i64 (return (unsafe/cast i64 p)))
+(defn mk ():ptr (return (as i64 3)))
+(defn mk2 ():ptr (as i64 4))
+(defn main ():int
+  (let (a:i64 (show (as i64 1))
+        l:ptr (as i64 2)
+        b:ptr:Bx (alloca Bx)
+        arr:ptr (alloca ptr 2))
+    (set! (b 'p) (as i64 5))
+    (set! (aref (as ptr:ptr arr) 0) (as i64 6))
+    (printf \"%lld %lld %lld %lld %lld %lld\\n\"
+      a (show l) (show (mk)) (show (mk2)) (show (b 'p))
+      (show (aref (as ptr:ptr arr) 0))))
+  (return 0))
+")))
+    (try (check-eq (string-as-view (addr-of out)) "1 2 3 4 5 6\n"))
+    (drop (addr-of out))))
+
+(defn defcast-nocompose-src ():StrView
+  (return "(defn i2p (x:i64):ptr (return (unsafe/cast ptr x)))
+(defcast i64 ptr i2p)
+(defn take (p:ptr):void (return))
+(defn main ():int (take 0) (return 0))
+"))
+
+; The ruling: built-in widening does NOT chain into a user rule. A bare literal
+; is i32; the i64 rule stays out of reach, in argument position…
+(deftest w9-defcast-no-composition
+  (try (check-source-rejects (defcast-nocompose-src) "argument 1 has type i32")))
+
+; …and the refusal names the rule that ALMOST applies, with the spelling that
+; reaches it. Without this the ruling is indistinguishable from the rule never
+; having been registered. The shell grepped for `note: `; the record makes the
+; note a field, so this cannot pass on an error that merely says the words.
+(deftest w9-defcast-note-names-rule
+  (let (c:Compiled (try (compile-source (defcast-nocompose-src))))
+    (try (check-note-anywhere (addr-of c 'diags) "a defcast rule converts i64 to ptr"))
+    (try (check-note-anywhere (addr-of c 'diags) "(as i64"))
+    (drop (addr-of c))))
+
+; The `as` position is the one where the bare diagnostic was actively wrong:
+; "use unsafe/cast" throws away the safety the defcast was written to buy.
+(deftest w9-defcast-note-on-as
+  (let (c:Compiled (try (compile-source "(defn i2p (x:i64):ptr (return (unsafe/cast ptr x)))
+(defcast i64 ptr i2p)
+(defn main ():int (let (q:ptr (as ptr 0)) (return 0)))
+")))
+    (try (check-note-anywhere (addr-of c 'diags) "a defcast rule converts i64 to ptr"))
+    (drop (addr-of c))))
+
+; No rule to that target => no note. Pins the note against firing on every
+; unrelated type mismatch in a file that happens to contain a defcast.
+(deftest w9-defcast-note-only-on-near-miss
+  (let (c:Compiled (try (compile-source "(defn i2p (x:i64):ptr (return (unsafe/cast ptr x)))
+(defcast i64 ptr i2p)
+(defn take (x:f64):void (return))
+(defn main ():int (take (unsafe/cast ptr 0)) (return 0))
+"))
+        ds:(Vector Diagnostic) (c 'diags))
+    (when (= (count (addr-of ds)) 0) (fail! "expected a type error"))
+    (try (check-not-contains (string-as-view (addr-of c 'raw)) "a defcast rule"))
+    (drop (addr-of c))))
+
+; Built-in coercion still wins: a rule may not be registered for a pair the
+; compiler already converts, so "which fires first" can never be observed.
+(deftest w9-defcast-builtin-wins
+  (try (check-source-rejects "(defn widen (x:i32):i64 (return (as i64 x)))
+(defcast i32 i64 widen)
+(defn main ():int (return 0))
+" "handled by built-in coercion")))
+
+; ---------------------------------------------------------------------------
+; Layout and union registration resolve on REACHABILITY (W9 item 40)
+; ---------------------------------------------------------------------------
+;
+; Before this, a field access below the import reported "no field 'x' on struct
+; 'S'" for a struct that has that field, a literal reported "too many
+; initializers", and a by-value parameter compiled to `define … @f(i0 %v.arg)` —
+; a SILENT miscompile, which is why every case here links and RUNS rather than
+; just compiling.
+
+(defn w9lay-lib ():StrView
+  (return "(defconst W9LAY-N 3)
+(defstruct W9LayBox (a i32) (b i32))
+(defstruct W9LayArr (xs (array i32 W9LAY-N)) n:i32)
+(defunion W9LayOpt (W9LaySome x:i32) W9LayNone)
+(defmacro w9lay-mac (x) `(+ ~x 100))
+"))
+
+; Every use ABOVE the import: a literal, a field read, a by-value parameter (the
+; silent one), an array-field struct whose extent is a same-file `defconst`, and
+; a union built with `make` and taken apart with `match`.
+(defn w9lay-body ():StrView
+  (return "(import-use \"stdio.h\")
+(defn w9lay-byval ((v W9LayBox)):i32 (return (+ (_get (addr-of v) 'a) (_get (addr-of v) 'b))))
+(defn main ():i32
+  (let (bx (W9LayBox 3 4)
+        ar:ptr:W9LayArr (alloca W9LayArr)
+        u (make W9LayOpt W9LaySome 5))
+    (set! (aref (ar 'xs) 2) 6)
+    (set! (ar 'n) 7)
+    (printf \"%d %d %d %d %d\\n\"
+      (_get bx 'a) (w9lay-byval bx) (aref (ar 'xs) 2) (_get ar 'n)
+      (match u ((W9LaySome x) x) (W9LayNone 0))))
+  (return 0))
+"))
+
+; The library directory, and `below.nuc` — the import last.
+(defn w9lay-setup ():!String
+  (let (ldir:String (try (test-scratch-sub "l"))
+        lib:String (try (test-write-file "l/w9lay.nuc" (w9lay-lib)))
+        body:String (str (w9lay-body) "(import-use w9lay)\n")
+        below:String (try (test-write-file "below.nuc" (string-as-view (addr-of body)))))
+    (drop (addr-of below))
+    (drop (addr-of body))
+    (drop (addr-of lib))
+    (return (ok ldir))))
+
+(deftest w9-layout-below-use-runs
+  (let (ldir:String (try (w9lay-setup))
+        dir:StrView (try (test-scratch))
+        below:String (str dir "/below.nuc")
+        out:String (try (build-run-file (string-as-view (addr-of ldir)) ""
+                                        (string-as-view (addr-of below)))))
+    (try (check-eq (string-as-view (addr-of out)) "3 7 6 7 5\n"))
+    (drop (addr-of out))
+    (drop (addr-of below))
+    (drop (addr-of ldir))))
+
+; The by-value parameter, read off the IR rather than the exit status: `i0` is
+; what an unlaid-out struct classified to, and it is the shape LLVM rejects with
+; no source location at all.
+(deftest w9-layout-byval-classified
+  (let (ldir:String (try (w9lay-setup))
+        dir:StrView (try (test-scratch))
+        below:String (str dir "/below.nuc")
+        c:Compiled (try (compile-path-in (string-as-view (addr-of ldir))
+                                         (string-as-view (addr-of below)))))
+    (try (check-match (string-as-view (addr-of c 'ir))
+                      "define i32 @w9lay-byval(i64 *"))
+    (drop (addr-of c))
+    (drop (addr-of below))
+    (drop (addr-of ldir))))
+
+; The same shape inside ONE file: `(defn f (v:S))` textually above
+; `(defstruct S …)`. Recorded as latent-and-unfixed since W1d — the layout
+; prescan closes it with the cross-file case, since neither is about imports.
+(deftest w9-layout-same-file-forward
+  (try (check-source-exit "(defn w9lay-fwd ((v W9LayFwd)):i32 (return (+ (_get (addr-of v) 'p) (_get (addr-of v) 'q))))
+(defstruct W9LayFwd (p i32) (q i32))
+(defn main ():i32 (return (w9lay-fwd (W9LayFwd 2 3))))
+" 5)))
+
+; A `.nuch` header is a file in the graph like any other: its `defstruct` reaches
+; the very same `emit-defstruct`, so its layout hoists too. The library's source
+; is deliberately out of the include path — an import prefers the `.nuc` when
+; both are there.
+(deftest w9-layout-nuch-below-use
+  (let (ldir:String (try (test-scratch-sub "l"))
+        hdir:String (try (test-scratch-sub "h"))
+        lib:String (try (test-write-file "l/w9lay.nuc" (w9lay-lib)))
+        nuch:String (try (emit-for-file "" "--emit-nuch" (string-as-view (addr-of lib))))
+        hp:String (try (test-write-file "h/w9lay.nuch" (string-as-view (addr-of nuch))))
+        use:String (try (test-write-file "hbelow.nuc" "(import-use \"stdio.h\")
+(defn main ():i32
+  (let (bx (W9LayBox 8 9))
+    (printf \"%d\\n\" (+ (_get bx 'a) (_get bx 'b))))
+  (return 0))
+(import-use w9lay)
+"))
+        c:Compiled (try (compile-path-in (string-as-view (addr-of hdir))
+                                         (string-as-view (addr-of use)))))
+    (try (check-empty (string-as-view (addr-of c 'raw))))
+    (drop (addr-of c))
+    (drop (addr-of use))
+    (drop (addr-of hp))
+    (drop (addr-of nuch))
+    (drop (addr-of lib))
+    (drop (addr-of hdir))
+    (drop (addr-of ldir))))
+
+; Registration moved; EMISSION did not. Each type is DEFINED exactly once — a
+; prescan that wrote a `%Name = type` line of its own would double it, which the
+; LLVM parser rejects — and the two import orders carry the same set of
+; top-level definitions, so nothing was gained or lost by moving the import.
+(deftest w9-layout-emission-unmoved
+  (let (ldir:String (try (w9lay-setup))
+        ldv:StrView (string-as-view (addr-of ldir))
+        dir:StrView (try (test-scratch))
+        below:String (str dir "/below.nuc")
+        abody:String (str "(import-use w9lay)\n" (w9lay-body))
+        above:String (try (test-write-file "above.nuc" (string-as-view (addr-of abody))))
+        bc:Compiled (try (compile-path-in ldv (string-as-view (addr-of below))))
+        ac:Compiled (try (compile-path-in ldv (string-as-view (addr-of above))))
+        biv:StrView (string-as-view (addr-of bc 'ir)))
+    (try (check-eq-int (count-lines-with-prefix biv "%W9LayBox = type ") 1 "%W9LayBox"))
+    (try (check-eq-int (count-lines-with-prefix biv "%W9LayArr = type ") 1 "%W9LayArr"))
+    (try (check-eq-int (count-lines-with-prefix biv "%W9LayOpt = type ") 1 "%W9LayOpt"))
+    (try (check-same-decl-set (string-as-view (addr-of ac 'ir)) biv))
+    (drop (addr-of ac))
+    (drop (addr-of bc))
+    (drop (addr-of above))
+    (drop (addr-of abody))
+    (drop (addr-of below))
+    (drop (addr-of ldir))))
+
+; The residue, pinned so it is a decision rather than an oversight: a `defmacro`
+; is a COMPILED function, not a registration — `emit-defmacro` runs codegen and
+; materializes a JIT module — so it stays where the emitter is and still needs
+; the import above the use.
+(deftest w9-layout-macro-still-needs-import-above
+  (let (ldir:String (try (test-scratch-sub "l"))
+        lib:String (try (test-write-file "l/w9lay.nuc" (w9lay-lib)))
+        m:String (try (test-write-file "mac.nuc" "(defn main ():i32 (return (w9lay-mac 1)))
+(import-use w9lay)
+")))
+    (try (check-file-rejects (string-as-view (addr-of ldir))
+                             (string-as-view (addr-of m))
+                             "unknown: w9lay-mac"))
+    (drop (addr-of m))
+    (drop (addr-of lib))
+    (drop (addr-of ldir))))
+
+; ---------------------------------------------------------------------------
+; The private definers are namespace-private (B5 / B3′)
+; ---------------------------------------------------------------------------
+
+(defn b5-write-lib ():!StrView
+  (let (dir:StrView (try (test-scratch))
+        lib:String (try (test-write-file "b5-plib.nuc" "(ns b5p)
+(defstruct- B5HiddenS n:i32)
+(defunion- B5HiddenU (UA n:i32) UB)
+(defmacro- b5-hidden-mac (x) x)
+(defprotocol- B5HiddenP (b5-hm ((self (ref Self))) i32))
+(defstruct B5PublicS n:i32)
+(defn b5-lib-ok ():i32 (return 7))
+")))
+    (drop (addr-of lib))
+    (return (ok dir))))
+
+; These spell the private names THROUGH THE PREFIX. Before B3′ a type name was
+; bare-keyed and globally visible, so a bare `B5HiddenS` reached the library and
+; privacy was the only thing that could refuse it. R1 makes the bare spelling
+; fail for a *scope* reason, which would leave these asserting something they no
+; longer test. Qualified, they still measure privacy: the prefix resolves, the
+; entry is found, and `binding-visible` hides it.
+(defn check-b5-private (name:StrView src:StrView needle:StrView):!void
+  (let (dir:StrView (try (b5-write-lib))
+        p:String (try (test-write-file name src)))
+    (try (check-file-rejects dir (string-as-view (addr-of p)) needle))
+    (drop (addr-of p))
+    (return (ok))))
+
+(deftest b5-private-struct
+  (try (check-b5-private "b5-cs.nuc" "(import-prefixed b5-plib bp)
+(defn b5-take ((h (ref bp/B5HiddenS))):i32 (return (h 'n)))
+(defn main ():i32 (return 0))
+" "unknown type: bp/B5HiddenS")))
+
+(deftest b5-private-union
+  (try (check-b5-private "b5-cu.nuc" "(import-prefixed b5-plib bp)
+(defn b5-take ((u (raw bp/B5HiddenU))):i32 (return 0))
+(defn main ():i32 (return 0))
+" "unknown type: bp/B5HiddenU")))
+
+(deftest b5-private-macro
+  (try (check-b5-private "b5-cm.nuc" "(import-prefixed b5-plib bp)
+(defn main ():i32
+  (return (b5-hidden-mac 1)))
+" "unknown: b5-hidden-mac")))
+
+(deftest b5-private-protocol
+  (try (check-b5-private "b5-cp.nuc" "(import-prefixed b5-plib bp)
+(defstruct B5Cs n:i32)
+(extend B5Cs bp/B5HiddenP
+  (defn b5-hm ((self (ref B5Cs))):i32 (return 1)))
+(defn main ():i32 (return 0))
+" "extend: unknown protocol 'bp/B5HiddenP'")))
+
+; Positive control. Without it the four rejections above would also pass if the
+; filter simply hid everything: a file INSIDE the namespace still sees the
+; private struct, union and macro, and a consumer still reaches the library's
+; PUBLIC names through the prefix.
+; 1 (private struct field) + 2 (private union sizeof) + 4 (private macro)
+; + 7 (public fn) + 1 (public struct field 6 - 5) = 15.
+(deftest b5-private-visible-inside
+  (let (dir:StrView (try (b5-write-lib))
+        pin:String (try (test-write-file "b5-pin.nuc" "(ns b5p)
+(import-use b5-plib)
+
+(defn b5-inside-sum ():i32
+  (let (s:(ref B5HiddenS) (B5HiddenS 1)
+        usz:i32 (if (> (sizeof B5HiddenU) 0) 2 0)
+        m:i32 (b5-hidden-mac 4))
+    (return (+ (+ (s 'n) usz) m))))
+"))
+        m:String (try (test-write-file "b5-pmain.nuc" "(import-prefixed b5-pin bin)
+(import-prefixed b5-plib bp)
+
+(defn main ():i32
+  (let (p:(ref bp/B5PublicS) (bp/B5PublicS 6))
+    (return (+ (bin/b5-inside-sum) (+ (bp/b5-lib-ok) (- (p 'n) 5))))))
+")))
+    (try (check-file-exit dir (string-as-view (addr-of m)) 15))
+    (drop (addr-of m))
+    (drop (addr-of pin))))
+
+; The protocol's positive control is the DIAGNOSTIC, not a run: from inside the
+; namespace the name resolves, so `extend` gets as far as the conformance check
+; instead of "unknown protocol". (That conformance then fails, but for an
+; unrelated pre-existing reason — an `extend` written inside an explicit `(ns …)`
+; does not conform even for a PUBLIC protocol. What this pins is which of the two
+; diagnostics fires.)
+(deftest b5-private-protocol-visible-inside
+  (let (dir:StrView (try (b5-write-lib))
+        pin:String (try (test-write-file "b5-ppin.nuc" "(ns b5p)
+(import-use b5-plib)
+
+(defstruct B5InS n:i32)
+(extend B5InS B5HiddenP
+  (defn b5-hm ((self (ref B5InS))):i32 (return 1)))
+"))
+        m:String (try (test-write-file "b5-ppm.nuc" "(import-prefixed b5-ppin pi)
+(defn main ():i32 (return 0))
+"))
+        c:Compiled (try (compile-path-in dir (string-as-view (addr-of m))))
+        raw:StrView (string-as-view (addr-of c 'raw)))
+    (try (check-not-contains raw "extend: unknown protocol"))
+    (try (check-error-anywhere (addr-of c 'diags)
+                               "does not conform to protocol 'b5p/B5HiddenP'"))
+    (drop (addr-of c))
+    (drop (addr-of m))
+    (drop (addr-of pin))))
+
+; ---------------------------------------------------------------------------
+; A `(fn …)` slot takes what `let` takes, and checks the SIGNATURE (W9 / S16 FP-1)
+; ---------------------------------------------------------------------------
+
+(deftest w9-fnslot-arg
+  (try (check-file-exit "" "tests/fixtures/w9-fnslot-arg.nuc" 0)))
+
+(defn fnslot-hdr ():StrView
+  (return "(defstruct RS a:i32)
+(defn fscb (x:i32):i32 (return (* 2 x)))
+(defn take-fn (f:(fn i32)(i32)):i32 (return (funcall f 21)))
+"))
+
+(defn fnslot-locals ():StrView
+  (return "  (let (c:CStr \"hi\" p:ptr (unsafe/cast ptr c) r:raw (unsafe/cast raw c) rf:ptr:RS (RS 1) g:(fn i32)(i32) fscb)
+"))
+
+; `null` and a real fn value are the two a fn slot takes; the argument position
+; must answer exactly as the `let` slot does, which is the whole claim.
+(defn check-fnslot-row (spelling:StrView want:bool):!void
+  (let (a:String (str (fnslot-hdr) "(defn main ():i32\n" (fnslot-locals)
+                      "    (return (take-fn " spelling "))))\n")
+        l:String (str (fnslot-hdr) "(defn main ():i32\n" (fnslot-locals)
+                      "    (let (f:(fn i32)(i32) " spelling ") (return 0))))\n")
+        ga:bool (try (source-compiles? (string-as-view (addr-of a))))
+        gl:bool (try (source-compiles? (string-as-view (addr-of l)))))
+    (when (!= ga want)
+      (fail! spelling " in argument position: compiled=" (if ga "yes" "no")
+             ", wanted " (if want "yes" "no")))
+    (when (!= gl want)
+      (fail! spelling " in a let slot: compiled=" (if gl "yes" "no")
+             ", wanted " (if want "yes" "no")))
+    (drop (addr-of l))
+    (drop (addr-of a))
+    (return (ok))))
+
+(deftest w9-fnslot-arg-matches-let
+  (try (check-fnslot-row "null" true))
+  (try (check-fnslot-row "c" false))
+  (try (check-fnslot-row "p" false))
+  (try (check-fnslot-row "r" false))
+  (try (check-fnslot-row "rf" false))
+  (try (check-fnslot-row "7" false))
+  (try (check-fnslot-row "\"s\"" false))
+  (try (check-fnslot-row "g" true)))
+
+; Stage 16 FP-3: the diagnostic names the fn type as the user WROTE it. It used
+; to print `type-spelling`'s `__fnty_<id>` — the conformance-registry key, which
+; has to stay round-trippable and names nothing in the source.
+(deftest w9-fnslot-arg-diagnostic
+  (let (src:String (str (fnslot-hdr) "(defn main ():i32
+  (let (c:CStr \"hi\") (return (take-fn c))))
+"))
+    (try (check-source-rejects (string-as-view (addr-of src))
+           "take-fn: argument 1 has type CStr, which does not match parameter type (i32):i32"))
+    (drop (addr-of src))))
+
+; FP-1: a fn-pointer slot checks the SIGNATURE, not just the kind. A matching
+; signature must still pass at every typed slot.
+(deftest s16-fp1-fnsig-match-accepted
+  (let (src:String (str (fnslot-hdr) "(defn one-arg (a:i32):i32 (return a))
+(defn wrong-ret (a:i32):i64 (return 1))
+(defn main ():i32
+  (let (ok:(fn i32)(i32) fscb) (return (funcall ok 1))))
+"))
+    (try (check-source-accepts (string-as-view (addr-of src))))
+    (drop (addr-of src))))
+
+; …and each shape of mismatch is refused with both signatures named. Arity and
+; return type are the two that silently produced wrong values before FP-1.
+(deftest s16-fp1-fnsig-mismatch-refused
+  (let (arity:String (str (fnslot-hdr) "(defn wrong-arity (a:i32 b:i32):i32 (return a))
+(defn main ():i32 (return (take-fn wrong-arity)))
+")
+        ret:String (str (fnslot-hdr) "(defn wrong-ret (a:i32):i64 (return 1))
+(defn main ():i32 (return (take-fn wrong-ret)))
+")
+        lets:String (str (fnslot-hdr) "(defn wrong-arity (a:i32 b:i32):i32 (return a))
+(defn main ():i32
+  (let (f:(fn i32)(i32) wrong-arity) (return 0)))
+"))
+    (try (check-source-rejects (string-as-view (addr-of arity))
+           "has type (i32, i32):i32, which does not match parameter type (i32):i32"))
+    (try (check-source-rejects (string-as-view (addr-of ret))
+           "has type (i32):i64, which does not match parameter type (i32):i32"))
+    ; The `let` slot reaches the same rule through `coerce-int-val`.
+    (try (check-source-rejects (string-as-view (addr-of lets))
+           "let: init type mismatch for 'f': value is (i32, i32):i32, slot is (i32):i32"))
+    (drop (addr-of lets))
+    (drop (addr-of ret))
+    (drop (addr-of arity)))
+  ; The two deliberate relaxations: pointer KIND is not part of a signature, and
+  ; a bare elem-less `ptr` is the fn-pointer analogue of `void *`. Without these
+  ; the ubiquitous `qsort` comparator shape would stop compiling.
+  (try (check-source-accepts "(declare qs ((cmp (fn i32) (ptr ptr))) :void)
+(defn c1 (a:ptr:i32 b:(ref i32)):i32 (return 0))
+(defn main ():i32 (qs c1) (return 0))
+"))
+  ; …but a bare ptr is NOT a wildcard for a function pointer: that would
+  ; reinstate the data-pointer-into-callable conversion `unsafe/cast` owns.
+  (let (wild:bool (try (source-compiles? "(declare qs2 ((cmp (fn i32) ((fn i32)(i32)))) :void)
+(defn c2 (f:ptr):i32 (return 0))
+(defn main ():i32 (qs2 c2) (return 0))
+")))
+    (when wild (fail! "a bare ptr was accepted as a function-pointer wildcard")))
+  ; …and two different pointee types stay a refusal.
+  (let (elem:bool (try (source-compiles? "(defstruct N a:i32)
+(declare qs3 ((cmp (fn i32) (ptr:N))) :void)
+(defn c3 (p:ptr:i32):i32 (return 0))
+(defn main ():i32 (qs3 c3) (return 0))
+")))
+    (when elem (fail! "two different pointee types were accepted"))))
+
+; The other half of the widened guard: two types that lower to the same IR
+; string but differ in SIGN reach the literal range check, so an out-of-range
+; literal argument is refused instead of wrapping silently — again exactly what
+; `let` does with it.
+(deftest w9-fnslot-arg-samewidth-sign-checked
+  (try (check-source-rejects "(defn take-ui32 (x:ui32):ui32 (return x))
+(defn main ():i32 (return (as i32 (take-ui32 -1))))
+" "integer literal -1 does not fit ui32")))
