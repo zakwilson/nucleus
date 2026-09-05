@@ -2253,11 +2253,14 @@ Passing around untyped pointers and using casts is unsafe and must be reserved a
 
 A tree-wide rewrite of a special-form spelling (the Stage 14 `cast`→`as`/`unsafe/cast` split, UN-3/UN-4/UN-5) can miss sites where the compiler *programmatically* builds an AST node headed by the old spelling via `(intern-symbol "cast")` + `make-cell`, rather than writing `(cast …)` as literal source text. A `grep -n '(cast '` sweep is blind to these — the head symbol only exists as a string argument to `intern-symbol`. Found in UN-5: `fn-make-drop-method` (src/nucleusc.nuc, the cfn env-drop synthesizer) built a `(cast (raw ui8) self)` pointer reinterpret and a `(cast usize 8)` alignment literal this way; both survived the UN-3/UN-4 sweeps undetected and would have died the moment UN-5 retired the bare spelling (every with-bound closure with an owned env synthesizes a drop method through this path). When retiring or renaming a special-form spelling, also grep `intern-symbol "<old-name>"` (and check any other AST-synthesizing helper — lambda lift, closure invoke/drop, defunion arm ctors, type-erasure forwarding methods, per the `defn` synthesizer list above) before declaring the sweep complete.
 
-## Top-level dispatch does not expand user macros — new top-level sugar needs a compiler directive, not a `defmacro`
+## Top-level macro expansion happens in the dispatcher's DEFAULT arm — so it is invisible to every prescan
 
-The top-level form dispatcher (the `case hp` block in `src/nucleusc.nuc`, the same `case` that routes `defn`/`defvar`/`fn-attr`/`set-ir-prefix`/… by literal head symbol) runs *before* macro expansion. Macro expansion only happens for forms nested inside a function or macro body (the CT/macro-JIT path). So a `defmacro` invoked directly at the top level is never expanded — the dispatcher sees an unrecognized head symbol and dies `unknown top-level form`, even for a macro whose body expands to a single, otherwise-ordinary `defn`. There is no forward-reference/prescan step that could make this work either; top-level forms are processed strictly in source order.
+Stage 18 TF-4 gave the top-level dispatcher (`emit-toplevel-forms`' `case hp` in `src/nucleusc.nuc`) a macro path, which it had never had: `toplevel-expand-macro` is called from the `case`'s **default** arm only — where the head is already unknown to the compiler — expands to fixpoint, `desugar-form`s the result, rewrites the list cell in place, and returns 1 so the loop re-dispatches the same cell without advancing. `(do …)` splices its children as separate top-level forms, copying the spine rather than relinking the expansion's own cells (a `quote` template hands out a shared subtree). Two consequences worth knowing before designing around it:
 
-Confirmed twice independently during Stage 14 AVR-5 (design/stage14/avr-targets.md §5): the design's original sketch of a `(defisr <vector> …body)` macro wrapping a `fn-attr` call plus a `defn` turned out not to be implementable for this reason, and a second, separate verification pass reproduced the identical failure on a minimal test macro. **If a future task wants to add top-level definitional sugar (multiple forms generated from one user-facing spelling), the answer is a new compiler-recognized directive** — add a literal head symbol to `g-special-form-set` + a `case hp` arm + an `emit-<name>` function, the same shape as `fn-attr`/`set-ir-prefix`/`export` — **not** a `defmacro`. Don't rediscover this by trying the macro route first.
+- **Nothing else moved.** Because expansion is attempted only where the old code died, every built-in form still wins its own name, and a program that never wrote a top-level macro call emits the same bytes. This is the property that made the change safe to land inside a phase; do not "simplify" it by expanding before the `case`.
+- **The prescans never see the result.** `prescan-defn-signatures`, `prescan-struct-layouts` and the rest run over the form list *before* the loop, so a macro-produced definition is not forward-referenceable, and a macro cannot emit an `extend` together with the methods that satisfy it — the conformance check reads the prescanned method registry, whatever order the `do` splices in. Moving expansion ahead of the prescans means JIT-compiling `defmacro` bodies (and resolving their imports) before any other top-level form: a front-end staging change, deferred as stage18-tooling §T9.7.
+
+The pre-TF-4 note here said top-level sugar had to be a compiler directive (`fn-attr`-shaped: a `g-special-form-set` entry + a `case hp` arm + an `emit-<name>`). That is still the answer when the sugar must be visible to a prescan, or must reuse a built-in head; a `defmacro` is now the answer when neither applies — which is what `deftest` (`lib/test.nuc`) is.
 
 ## Scanning an LLVM datalayout string for a token requires boundary checks, not a bare substring search
 
@@ -4729,6 +4732,24 @@ answer: `cheader-defn-skip-reason` returns a reason *code*, the emitter maps it 
 the comment it prints, the pre-pass only tests it against zero. Replicating four
 predicates by hand in two places is the drift; one function with two readings is
 not.
+
+Stage 18 TF-4 found the two remaining holes in that shape, both from the same
+first Nucleus library with a **callback field**. (1) `cheader-niche-no-c` unwrapped
+`ptr`/`ref` and nothing else, so a `!T` nested inside a `(fn RET)` — the return of
+a function-pointer parameter — was never asked about, and `test-register` exported
+`struct _BANGvoid (*f)(void)`. A refusal predicate must look through **every type
+constructor that can carry a type**, and the fn-pointer node's shape (`(fn RET)`
+alone, or `((fn RET) (P…))` when it has parameters) is exactly the one
+`cheader-fn-head-node` already spells for the renderer — use it, do not re-derive
+it. (2) `emit-cheader-defstruct` asked *no* representability question at all: a
+struct is not a declaration, so it never went through `cheader-defn-skip-reason`,
+and it rendered whatever `type-node-to-c-decl` produced. It now refuses the whole
+struct, because dropping only the offending field would hand C a layout that
+silently disagrees with Nucleus — the same ruling item 44 made for declarations.
+The general form: **every emitter that writes a type is a refusal site, and the
+`_BANG`/`_QMARK` tag grep in `run-tests.sh` is the only thing that finds a missed
+one** — `check-headers.sh` does not, because an undefined tag behind a pointer is
+legal C.
 
 ## `define i64 @f(...)` is not evidence that the return type is a scalar
 

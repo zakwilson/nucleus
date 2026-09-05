@@ -164,6 +164,52 @@ including inside a loop, inside a `cond` arm, in argument position, inside a
 generic template body (compiled once per monomorphization), and inside a
 `defmacro` body.
 
+## Macros in top-level position
+
+A macro call can stand where a definition stands, and expands into one:
+
+```lisp
+(defmacro defpair (name a b)
+  `(defstruct ~name (fst ~a) (snd ~b)))
+
+(defpair IntPair i32 i32)     ; a top-level form
+```
+
+Note the list form `(fst ~a)` rather than `fst:~a`: a colon chain is one symbol
+token, so an unquote inside it is not seen. This is the same rule
+[typed bindings](types.md) follow anywhere a type is computed.
+
+The built-in top-level forms win their own names — expansion is tried only for a
+head the compiler does not recognise, so a macro can never change what `defn`
+means. An expansion to `(do …)` **splices**: each child is dispatched as a
+top-level form of its own, which is how one call defines several things.
+
+```lisp
+(defmacro defcounter (name reset)
+  `(do (defvar (~name i64) 0)
+       (defn ~reset ():void (set! ~name 0))))
+
+(defcounter hits reset-hits)
+```
+
+Expansion is re-dispatched, so a macro may expand into another macro call.
+
+Two limits follow from *when* the expansion happens — during the dispatch loop,
+after the pre-scans have already walked the file:
+
+- The macro must be **defined before the call**, in file order. There is no
+  pre-scan for macro definitions, so `(import-use …)` for a library's macros
+  belongs at the top of the file, where it already is.
+- A definition that only a macro produces is invisible to the pre-scans, so it
+  is not forward-referenceable: a `defn` produced by an expansion on line 90
+  cannot be called from a `defn` written on line 10. Ordinary definition order
+  applies to it, not the file-wide visibility the pre-scans give hand-written
+  ones. For the same reason a macro cannot produce an `extend` together with
+  the methods that satisfy it — the conformance check reads the pre-scanned
+  method registry, which the spliced `defn`s are not in, whichever order they
+  are spliced in. Write the `extend` by hand, or have the macro produce only
+  the methods.
+
 ## The type of a quoted form
 
 `'x` yields a `Node*`, but **which** pointer type depends on what was quoted:

@@ -6375,6 +6375,31 @@
                     ", align " (type-size elem) "\n")
               (return (alloc-val ty-void "")))))))))
 
+; Stage 18 TF-4: the path of the file this form was read from, as a StrView.
+; `deftest` needs it so a failing test can name its own source, and nothing else
+; in the language exposes it. Emits exactly what writing the literal here would.
+(defn emit-source-file (call:(raw Node)):ref:Val
+  (let (cc:(raw Node) call)
+    (when (!= (node-len cc) 1) (die-at (cc 'line) "source-file takes no arguments"))
+    (let (s:ptr:Node (as ptr:Node (alloc-node)))
+      (set! (s 'kind) NODE-STR)
+      (set! (s 'line) (cc 'line))
+      (set! (s 's) g-source-path)
+      (set! (s 'i) 0)
+      (return (emit-string (as raw:Node s) null)))))
+
+; Its `__LINE__` peer. Both are one form so that `deftest` -- and any other
+; macro that has to name its own source -- can capture a location the way a C
+; macro does, instead of the caller repeating it by hand.
+(defn emit-source-line (call:(raw Node)):ref:Val
+  (let (cc:(raw Node) call)
+    (when (!= (node-len cc) 1) (die-at (cc 'line) "source-line takes no arguments"))
+    (let (n:ptr:Node (as ptr:Node (alloc-node)))
+      (set! (n 'kind) NODE-INT)
+      (set! (n 'line) (cc 'line))
+      (set! (n 'i) (as i64 (cc 'line)))
+      (return (emit-int (as raw:Node n))))))
+
 ; (char "x") — now sugar for the `\x` char literal: produces a `Char`-typed
 ; value from the first byte of a single-byte string (Stage 11 M6 S0). Superseded
 ; by the `\x` reader literal; kept so existing call sites read as `Char`, not the
@@ -12026,6 +12051,8 @@
         (when (= hp 'get) (return (emit-get n scope)))
         (when (= hp 'invoke) (return (emit-invoke n scope)))
         (when (= hp 'sizeof) (return (emit-sizeof n scope)))
+        (when (= hp 'source-file) (return (emit-source-file n)))
+        (when (= hp 'source-line) (return (emit-source-line n)))
         (when (= hp 'alloca) (return (emit-alloca-form n scope)))
         (when (= hp 'char) (return (emit-char n scope)))
         (when (= hp 'aref) (return (emit-aref n scope)))
@@ -17061,6 +17088,43 @@
     (emit g-def-stream
           "@llvm.global_ctors = appending global [1 x { i32, ptr, ptr }] [{ i32, ptr, ptr } { i32 65535, ptr @__nucleus_init, ptr null }]\n\n")))
 
+; Stage 18 TF-4: a user macro in top-level position. Reached only from the
+; dispatch loop's default arm, so the built-in forms still win their own names.
+; Rewrites `cell` in place and returns 1 for "dispatch this cell again"; a `do`
+; expansion is spliced so each child becomes a top-level form of its own.
+; design/stage18-tooling/overview.md §T6.
+(defn toplevel-expand-macro (cell:ptr:Node f:ptr:Node h:Symbol):i32
+  (when (= (find-macro h) null)
+    (die-at (f 'line) (fstr "unknown top-level form: " h)))
+  (let (ex:ptr (desugar-form (macroexpand-form (as raw:Node f) -1)))
+    (when (or (= ex null)
+              (!= ((unsafe/cast ptr:Node ex) 'kind) NODE-CELL)
+              (= (node-len ex) 0))
+      (die-at (f 'line) (fstr "top-level macro '" h "' did not expand to a form")))
+    (let (head:ptr:Node (unsafe/cast ptr:Node (node-at ex 0)))
+      (when (and (= (head 'kind) NODE-SYM) (= (head 's) "do"))
+        (let (body:ptr ((unsafe/cast ptr:Node ex) 'cdr))
+          (when (= body null)
+            (die-at (f 'line) (fstr "top-level macro '" h "' expanded to an empty (do)")))
+          ; Copy the spine rather than relinking the expansion's own cells: a
+          ; template returning a quoted constant hands out a shared subtree.
+          (let (first:ptr null
+                tail:ptr null
+                it:ptr body)
+            (while (!= it null)
+              (let (nc:ptr (make-cell ((unsafe/cast ptr:Node it) 'car) null
+                                      ((unsafe/cast ptr:Node it) 'line)))
+                (if (= first null)
+                  (do (set! first nc) (set! tail nc))
+                  (do (set! ((unsafe/cast ptr:Node tail) 'cdr) nc) (set! tail nc))))
+              (set! it ((unsafe/cast ptr:Node it) 'cdr)))
+            (set! ((unsafe/cast ptr:Node tail) 'cdr) (cell 'cdr))
+            (set! (cell 'car) ((unsafe/cast ptr:Node first) 'car))
+            (set! (cell 'cdr) ((unsafe/cast ptr:Node first) 'cdr))
+            (return 1)))))
+    (set! (cell 'car) ex)
+    (return 1)))
+
 ; Emit a list of top-level forms (pre-scan + dispatch loop).
 ; Used by main and by emit-import for recursive processing.
 (defn emit-toplevel-forms (forms:(raw Node)):void
@@ -17177,8 +17241,10 @@
   ; `sigs-done`: an imported file re-entered at depth 2 finds its layouts done.
   (prescan-struct-layouts forms)
   (prescan-union-layouts forms)
-  (let (fc:ptr forms)
+  (let (fc:ptr forms
+        redo:i32 0)
     (while (!= fc null)
+      (set! redo 0)
       (let (f:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node fc) 'car)))
         (when (or (= (as ptr f) null)
                   (!= (f 'kind) NODE-CELL)
@@ -17324,19 +17390,22 @@
               (emit-unsafe-import-private (as ptr f))
             'declare
               (do (set! g-out (addr-of g-decl-stream)) (emit-nuch-declare-import (as ptr f)))
-            (die-at (f 'line) (fstr "unknown top-level form: " h)))))
-      (set! fc ((unsafe/cast ptr:Node fc) 'cdr))
-      ; Stage 15 W9 item 1. Two things, both only for the unit's root frame:
-      ; close the hoist window (one form of the root has now been emitted, so a
-      ; hoist from here on would duplicate it), and stop if the hoist actually
-      ; happened — `g-imported` carrying our own path means an import read and
-      ; emitted this very file, so the forms left in this list are the ones it
-      ; already emitted.
-      (when (= g-toplevel-depth 1)
-        (set! g-root-hoist-ok 0)
-        (when (and (not (symbol-none? g-unit-entry-path))
-                   (!= (import-list-has g-imported g-unit-entry-path) 0))
-          (set! fc null)))))
+            (set! redo (toplevel-expand-macro (unsafe/cast ptr:Node fc) (as ptr:Node f) h)))))
+      ; `redo` means the cell was rewritten by a top-level macro expansion:
+      ; dispatch the same cell again instead of advancing past it.
+      (when (= redo 0)
+        (set! fc ((unsafe/cast ptr:Node fc) 'cdr))
+        ; Stage 15 W9 item 1. Two things, both only for the unit's root frame:
+        ; close the hoist window (one form of the root has now been emitted, so a
+        ; hoist from here on would duplicate it), and stop if the hoist actually
+        ; happened — `g-imported` carrying our own path means an import read and
+        ; emitted this very file, so the forms left in this list are the ones it
+        ; already emitted.
+        (when (= g-toplevel-depth 1)
+          (set! g-root-hoist-ok 0)
+          (when (and (not (symbol-none? g-unit-entry-path))
+                     (!= (import-list-has g-imported g-unit-entry-path) 0))
+            (set! fc null))))))
   ; A2: type-check generic template bodies against their abstract protocol
   ; interface. Only at the outermost level — every import has now registered its
   ; names/protocols/conformances and g-source-path is back to this unit — and
@@ -18358,6 +18427,8 @@
        "." ".&" "cast" "as" "addr-of" "deref"
        "ptr-set!" "ptr+" "_get" ".set!"
        "sizeof" "alloca" "aref" "aset!"
+       ; Stage 18 TF-4: the call site's own file and line, as literals.
+       "source-file" "source-line"
        ; literals / quoting
        "quote" "quasiquote" "char"
        ; Stage 16: reader-generated collection-literal heads. Reserved (not

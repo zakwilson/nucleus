@@ -48,6 +48,7 @@
 (declare read-all ((src StrView)) :!raw:Node)
 (declare rd-write-escaped ((out (ref String)) (sv StrView)) :void)
 (declare rd-write-hex ((out (ref String)) (v ui64)) :void)
+(declare sexp-write-string ((out (ref String)) (sv StrView)) :void)
 (declare node-write ((out (ref String)) (n (raw Node))) :void)
 (declare node-str ((n (raw Node))) :String)
 (declare node-eq ((a (raw Node)) (b (raw Node))) :bool)

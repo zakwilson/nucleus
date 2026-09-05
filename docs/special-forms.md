@@ -61,6 +61,8 @@ failure.
 | `set` | **Generic**, the write side of `get`/`invoke`: a member place with a **computed** key, `(set! (m k) v)` or `(set! (get m k) v)`, is the call `(set m k v)` when the receiver's type has a `set` method. A **literal** selector is always the field, so a type with a `set` method can still write its own fields — the write side of the `_get` recursion trap. `Vector` and `HashMap` both define one. | `m[k] = v` |
 | `invoke` | General call on a value: `(invoke s 3)` ≡ `(s 3)`; user-defined (`Seq`/`Call`) | `s(3)` / `s[3]` |
 | `sizeof` | Size of a type | `sizeof(T)` |
+| `source-file` | `(source-file)` — the path of the file being compiled, as a `StrView` literal. Inside a macro expansion it names the **calling** file, which is what a diagnostic or a test registration wants. | `__FILE__` |
+| `source-line` | `(source-line)` — the line the form is written on, as an integer literal. Inside a macro expansion it is the **call site**'s line, not a line of the macro. | `__LINE__` |
 | `alloca` | Stack-allocate memory | `alloca()` / VLA |
 | `char` | Character literal | `'c'` |
 | `aref` | Array element access | `arr[i]` |

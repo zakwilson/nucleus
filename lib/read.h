@@ -53,6 +53,7 @@ void* read_one(void* self) asm("read-one");
 void* read_all(struct StrView src) asm("read-all");
 void rd_write_escaped(void* out, struct StrView sv) asm("rd-write-escaped");
 void rd_write_hex(void* out, uint64_t v) asm("rd-write-hex");
+void sexp_write_string(void* out, struct StrView sv) asm("sexp-write-string");
 void node_write(void* out, void* n) asm("node-write");
 struct String node_str(void* n) asm("node-str");
 bool node_eq(void* a, void* b) asm("node-eq");

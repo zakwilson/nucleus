@@ -1,0 +1,378 @@
+; Stage 18 TF-4 — test.nuc: declare tests, assert, and report.
+;
+; Design: design/stage18-tooling/overview.md §T6.4.
+;
+; A test is a `deftest`. It registers itself before `main` runs, so a suite is a
+; program whose `main` is one call to `test-main` -- and a suite binary answers
+; `--list` and `--run <name>`, which is the same interface `build/nuctest`
+; already drives shell units through.
+;
+; Assertions return `!void` and a test body is `try`-shaped, so a failing step
+; stops the test. That is the whole reason the framework is native: the shell
+; suite hand-rolls `ok=1 … || ok=0` accumulators 111 times, and forgetting one
+; makes a step unconditionally pass.
+;
+; Failure text is rendered in ONE place, here, rather than at each assertion's
+; call site. See docs/testing.md.
+
+(import-use error)
+(import-use strview)
+(import-use string)
+(import-use string-split)
+(import-use fmt)
+(import-use vector)
+(import-use io)
+(import-use file)
+(import-use allocator)
+(import-use read)
+
+(deferror test-failed "assertion failed")
+(deferror test-unknown "no such test")
+(deferror test-bad-args "bad arguments")
+
+; ---------------------------------------------------------------------------
+; The registry
+; ---------------------------------------------------------------------------
+
+(defstruct TestCase
+  name:Symbol
+  file:StrView
+  line:i32
+  run:(fn !void)())
+
+; Process-lifetime state, so it is built through the arena: its `drop` is a
+; no-op and nothing here is ever torn down.
+(defvar g-test-alloc:AllocHandle)
+(defvar (g-tests (ref (Vector TestCase)))
+  (vector-new-in (arena-allocator (addr-of g-test-alloc))))
+; Lazily built, like lib/io.nuc's output buffer: a global String with a
+; constant initializer would need an allocator this module has no reason to own.
+(defvar g-fail-buf:String)
+(defvar g-fail-ready:i32 0)
+
+; Called by `deftest`'s expansion from a global initializer, which is why it
+; returns an `i32` -- it needs a value for the slot it is initialising.
+(defn test-register (name:raw:Node file:StrView line:i32 (f (fn !void) ())):i32
+  (let (tc:&TestCase (alloca TestCase))
+    (set! (tc 'name) (name 's))
+    (set! (tc 'file) file)
+    (set! (tc 'line) line)
+    (set! (tc 'run) f)
+    (conj g-tests (deref tc))
+    (return 0)))
+
+; `(deftest name body…)`. The name is a bare symbol; `(source-file)` and
+; `(source-line)` resolve at the CALL site, so a failure names the `deftest`
+; rather than this macro.
+(defmacro deftest (name :rest body)
+  (let (g:ptr (gensym))
+    `(defvar (~g i32)
+       (test-register (quote ~name) (source-file) (source-line)
+                      (fn ():!void ~@body (return (ok)))))))
+
+; ---------------------------------------------------------------------------
+; Failure reporting -- one implementation, not one per assertion
+; ---------------------------------------------------------------------------
+
+; Clears the failure buffer and hands it back to be written into.
+(defn test-fail-begin ():ref:String
+  (when (= g-fail-ready 0)
+    (set! g-fail-buf (string-new))
+    (set! g-fail-ready 1))
+  (string-clear (addr-of g-fail-buf))
+  (return (addr-of g-fail-buf)))
+
+(defn test-failure-text ():StrView
+  (when (= g-fail-ready 0) (return ""))
+  (return (string-as-view (addr-of g-fail-buf))))
+
+(defn test-failure-len ():usize
+  (when (= g-fail-ready 0) (return 0))
+  (return (byte-len (addr-of g-fail-buf))))
+
+; `(fail! "expected " x " got " y)` — render, then propagate. A macro because
+; the pieces are variadic and heterogeneous, which a function cannot take.
+(defmacro fail! (:rest parts)
+  (let (b:ptr (gensym))
+    ; `str-into` re-evaluates its target once per piece, and `test-fail-begin`
+    ; clears -- so binding it first is what keeps all but the last piece.
+    `(let ((~b (ref String)) (test-fail-begin))
+       (str-into ~b ~@parts)
+       (return (err! test-failed)))))
+
+; Long haystacks make a failure unreadable; the first 400 bytes are enough to
+; recognise what was actually there.
+(defconst SHOW-LIMIT 400)
+
+(defn test-show (s:StrView):StrView
+  (when (<= (s 'len) SHOW-LIMIT) (return s))
+  (return (strview-take-bytes s SHOW-LIMIT)))
+
+; ---------------------------------------------------------------------------
+; Glob matching (§T8.4: glob, not regex)
+; ---------------------------------------------------------------------------
+
+; Unchecked: every caller has just bounds-checked `i`, and the checked accessor
+; yields `!ui8`, which a bool-returning matcher cannot propagate.
+(defn test-byte-at ((v (ref StrView)) i:usize):ui8
+  (return (aref (v 'data) i)))
+
+; `*` matches any run of bytes, `?` any single byte. Backtracking rather than
+; recursive: one remembered `*` is enough, since a second supersedes the first.
+(defn glob-match ((pat (ref StrView)) (s (ref StrView))):bool
+  (let (pn:usize (strview-byte-len pat)
+        sn:usize (strview-byte-len s)
+        pi:usize 0
+        si:usize 0
+        star:i64 -1
+        mark:usize 0)
+    (while (< si sn)
+      (let (starred:bool false
+            matched:bool false)
+        (when (< pi pn)
+          (let (pc:ui8 (test-byte-at pat pi))
+            (set! starred (= pc 42))
+            (set! matched (or (= pc 63) (= pc (test-byte-at s si))))))
+        (cond starred
+                (do (set! star (as i64 pi))
+                    (set! mark si)
+                    (set! pi (+ pi 1)))
+              matched
+                (do (set! pi (+ pi 1))
+                    (set! si (+ si 1)))
+              (>= star 0)
+                (do (set! pi (+ (as usize star) 1))
+                    (set! mark (+ mark 1))
+                    (set! si mark))
+              true
+                (return false))))
+    (while (and (< pi pn) (= (test-byte-at pat pi) 42))
+      (set! pi (+ pi 1)))
+    (return (= pi pn))))
+
+; ---------------------------------------------------------------------------
+; The predicates (§T1.2)
+; ---------------------------------------------------------------------------
+
+(defn contains? (hay:StrView needle:StrView):bool
+  (match (strview-find (addr-of hay) (addr-of needle))
+    ((some at) (return true))
+    (none (return false))))
+
+(defn has-line? (hay:StrView want:StrView):bool
+  (let (it:LineIter (strview-lines (addr-of hay)))
+    (while (not (lines-iter-done (addr-of it)))
+      (when (= (lines-iter-next (addr-of it)) want) (return true)))
+    (return false)))
+
+(defn has-matching-line? (hay:StrView pat:StrView):bool
+  (let (it:LineIter (strview-lines (addr-of hay)))
+    (while (not (lines-iter-done (addr-of it)))
+      (let (line:StrView (lines-iter-next (addr-of it)))
+        (when (glob-match (addr-of pat) (addr-of line)) (return true))))
+    (return false)))
+
+; 1. contains-substring
+(defn check-contains (hay:StrView needle:StrView):!void
+  (when (contains? hay needle) (return (ok)))
+  (fail! "expected to contain " (sexp-quote needle) "\n     in: " (test-show hay)))
+
+(defn check-not-contains (hay:StrView needle:StrView):!void
+  (when (not (contains? hay needle)) (return (ok)))
+  (fail! "expected NOT to contain " (sexp-quote needle) "\n     in: " (test-show hay)))
+
+; 2. contains-whole-line
+(defn check-line (hay:StrView want:StrView):!void
+  (when (has-line? hay want) (return (ok)))
+  (fail! "expected a line " (sexp-quote want) "\n     in: " (test-show hay)))
+
+; 3. equals-string
+(defn check-eq (got:StrView want:StrView):!void
+  (when (= got want) (return (ok)))
+  (fail! "expected " (sexp-quote want) "\n     got " (sexp-quote (test-show got))))
+
+; 4. matches-with-wildcards -- some line matches the glob in full
+(defn check-match (hay:StrView pat:StrView):!void
+  (when (has-matching-line? hay pat) (return (ok)))
+  (fail! "expected a line matching " (sexp-quote pat) "\n     in: " (test-show hay)))
+
+(defn check-not-match (hay:StrView pat:StrView):!void
+  (when (not (has-matching-line? hay pat)) (return (ok)))
+  (fail! "expected NO line matching " (sexp-quote pat) "\n     in: " (test-show hay)))
+
+; 5. files-identical
+(defn read-file (path:StrView):!String
+  (let (f:File (try (file-open-read (addr-of path)))
+        text:String (try (file-read-to-string (addr-of f))))
+    (try (file-close (addr-of f)))
+    (return (ok text))))
+
+(defn check-files-eq (a:StrView b:StrView):!void
+  (let (ta:String (try (read-file a))
+        tb:String (try (read-file b))
+        same:bool (= (string-as-view (addr-of ta)) (string-as-view (addr-of tb))))
+    (drop (addr-of ta))
+    (drop (addr-of tb))
+    (when same (return (ok)))
+    (fail! "expected identical files: " a " and " b)))
+
+; 6. output-empty / non-empty
+(defn check-empty (s:StrView):!void
+  (when (= (s 'len) 0) (return (ok)))
+  (fail! "expected empty, got " (sexp-quote (test-show s))))
+
+(defn check-non-empty (s:StrView):!void
+  (when (> (s 'len) 0) (return (ok)))
+  (fail! "expected non-empty output, got nothing"))
+
+; The general escape hatch, for a condition the six do not name.
+(defn check (cond:bool what:StrView):!void
+  (when cond (return (ok)))
+  (fail! "expected " what))
+
+(defn check-eq-int (got:i64 want:i64 what:StrView):!void
+  (when (= got want) (return (ok)))
+  (fail! "expected " what " = " want ", got " got))
+
+; ---------------------------------------------------------------------------
+; The scoped IR matcher (§T4.3)
+;
+; 202 of the suite's 209 IR probes assert about a DECISION -- an ABI class, a
+; linkage, a field order -- that is only observable in the rendering. A probe
+; over the whole module cannot say which function it means, so a match anywhere
+; satisfies it. Splitting the module into its `define` blocks makes the scope
+; explicit without the compiler growing an IR data structure it has no other
+; use for.
+; ---------------------------------------------------------------------------
+
+; The `define … @name(…) { … }` block for `name`, brace line included.
+(defn ir-define (module:StrView name:StrView) (Maybe StrView)
+  (let (needle:String (str "@" name "(")
+        nv:StrView (string-as-view (addr-of needle))
+        it:LineIter (strview-lines (addr-of module))
+        start:usize 0
+        seen:usize 0
+        in-body:bool false)
+    (while (not (lines-iter-done (addr-of it)))
+      (let (line:StrView (lines-iter-next (addr-of it))
+            len:usize (+ (line 'len) 1))
+        (if in-body
+          (when (and (= (line 'len) 1) (= line "}"))
+            (drop (addr-of needle))
+            (return (some (strview (unsafe/ptr+ (module 'data) (as i64 start))
+                                   (- (+ seen len) start)))))
+          (when (and (strview-has-prefix line "define") (contains? line nv))
+            (set! in-body true)
+            (set! start seen)))
+        (set! seen (+ seen len))))
+    (drop (addr-of needle))
+    (return none)))
+
+; A glob that must match a line INSIDE one function's body.
+(defn check-in-define (module:StrView fname:StrView pat:StrView):!void
+  (match (ir-define module fname)
+    (none (fail! "no `define` for " (sexp-quote fname) " in the module"))
+    ((some body)
+      (when (has-matching-line? body pat) (return (ok)))
+      (fail! "in @" fname ": expected a line matching " (sexp-quote pat)
+             "\n     body: " (test-show body)))))
+
+(defn check-not-in-define (module:StrView fname:StrView pat:StrView):!void
+  (match (ir-define module fname)
+    (none (fail! "no `define` for " (sexp-quote fname) " in the module"))
+    ((some body)
+      (when (not (has-matching-line? body pat)) (return (ok)))
+      (fail! "in @" fname ": expected NO line matching " (sexp-quote pat)))))
+
+; ---------------------------------------------------------------------------
+; Reporting -- s-expression result records (§T8.5)
+; ---------------------------------------------------------------------------
+
+; A `StrView` wrapper that renders as an s-expression string literal, so a
+; message containing a quote or a newline survives being written and read back.
+(defstruct SexpStr v:StrView)
+
+(defn sexp-quote (v:StrView):SexpStr
+  (let (q:&SexpStr (alloca SexpStr))
+    (set! (q 'v) v)
+    (return (deref q))))
+
+(extend SexpStr ToStr)
+(defn to-str (self:SexpStr (out (ref String))):!void
+  (sexp-write-string out (self 'v))
+  (return (ok)))
+
+(defn test-report ((tc (ref TestCase)) passed:bool):void
+  (let (b:ref:String (io-buf-begin))
+    (str-into b "(test (name " (sexp-quote (symbol-as-view (tc 'name)))
+              ") (file " (sexp-quote (tc 'file))
+              ") (line " (tc 'line) ") (status ")
+    (if passed
+      (str-into b "pass)")
+      (str-into b "fail) (message " (sexp-quote (test-failure-text)) ")"))
+    (str-into b ")\n")
+    (io-buf-end 1)))
+
+(defn test-run-one ((tc (ref TestCase))):bool
+  (test-fail-begin)
+  (match (funcall (tc 'run))
+    (ok (do (test-report tc true) (return true)))
+    ((err e)
+      ; An error that is not an assertion failure -- a file that would not open,
+      ; say -- still has to say something, or the record reads as an empty
+      ; failure.
+      (when (= (test-failure-len) 0)
+        (str-into (test-fail-begin) "test raised " (err-name e) ": " (err-message e)))
+      (test-report tc false)
+      (return false))))
+
+; ---------------------------------------------------------------------------
+; The suite entry point
+; ---------------------------------------------------------------------------
+
+(defn test-find (name:StrView):(Maybe usize)
+  (let (n:usize (count g-tests)
+        i:usize 0)
+    (while (< i n)
+      (let (tc:TestCase (invoke g-tests i))
+        (when (= (symbol-as-view (tc 'name)) name) (return (some i))))
+      (set! i (+ i 1)))
+    (return none)))
+
+(defn test-run-all ():i32
+  (let (n:usize (count g-tests)
+        i:usize 0
+        failed:i32 0)
+    (while (< i n)
+      (let (tc:TestCase (invoke g-tests i))
+        (when (not (test-run-one (addr-of tc))) (set! failed (+ failed 1))))
+      (set! i (+ i 1)))
+    (return (if (> failed 0) 1 0))))
+
+; `main` for a suite. `--list` names its tests, `--run <name>` runs exactly one,
+; no arguments runs them all; every run emits one record per test.
+(defn test-main (argc:i32 argv:ptr):i32
+  (when (= argc 1) (return (test-run-all)))
+  (let (a:StrView (strview-from-cstr (as CStr (aref (as ptr:ptr argv) 1))))
+    (when (= a "--list")
+      (let (n:usize (count g-tests)
+            i:usize 0)
+        (while (< i n)
+          (let (tc:TestCase (invoke g-tests i))
+            (print (symbol-as-view (tc 'name)) "\n"))
+          (set! i (+ i 1))))
+      (return 0))
+    (when (= a "--run")
+      (when (< argc 3)
+        (eprint "usage: <suite> --run <name>\n")
+        (return 2))
+      (let (want:StrView (strview-from-cstr (as CStr (aref (as ptr:ptr argv) 2))))
+        (match (test-find want)
+          ((some i)
+            (let (tc:TestCase (invoke g-tests i))
+              (return (if (test-run-one (addr-of tc)) 0 1))))
+          (none
+            (eprint "no such test: " want "\n")
+            (return 2)))))
+    (eprint "usage: <suite> [--list | --run <name>]\n")
+    (return 2)))
