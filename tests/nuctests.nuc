@@ -103,8 +103,13 @@
   (drop (addr-of self 'raw))
   (drop (addr-of self 'diags)))
 
-(defn compile-path (path:StrView):!Compiled
+; An empty `dir` adds no `-I`, which is the only optionality the multi-file
+; units need: they export a `.nuch` and then import it from a second unit.
+(defn compile-path-in (dir:StrView path:StrView):!Compiled
   (let (c:Command (command (compiler-path)))
+    (when (not (= dir ""))
+      (command-arg (addr-of c) "-I")
+      (command-arg (addr-of c) dir))
     (command-arg (addr-of c) "--diagnostics=sexp")
     (command-arg (addr-of c) "--emit-llvm")
     (command-arg (addr-of c) path)
@@ -121,6 +126,33 @@
           (drop (addr-of o))
           (drop (addr-of c))
           (return (ok (deref r)))))
+      ((err e)
+        (drop (addr-of c))
+        (return (err e))))))
+
+(defn compile-path (path:StrView):!Compiled
+  (return (compile-path-in "" path)))
+
+; `nucleusc [-I dir] <flag> <path>` — stdout, which for `--emit-nuch` and
+; `--emit-cheader` is the artifact itself.
+(defn emit-for-file (dir:StrView flag:StrView path:StrView):!String
+  (let (c:Command (command (compiler-path)))
+    (when (not (= dir ""))
+      (command-arg (addr-of c) "-I")
+      (command-arg (addr-of c) dir))
+    (command-arg (addr-of c) flag)
+    (command-arg (addr-of c) path)
+    (command-capture (addr-of c) true)
+    (match (run (addr-of c))
+      ((ok o)
+        (when (not (success? (addr-of o 'status)))
+          (fail! "expected " flag " to succeed\n     "
+                 (test-show (string-as-view (addr-of o 'err)))))
+        (let (ov:StrView (string-as-view (addr-of o 'out))
+              out:String (try (string-from-view (addr-of ov))))
+          (drop (addr-of o))
+          (drop (addr-of c))
+          (return (ok out))))
       ((err e)
         (drop (addr-of c))
         (return (err e))))))
@@ -227,13 +259,15 @@
         (drop (addr-of c))
         (return (err e))))))
 
-; Compile `src` to a binary and run it, stdout and stderr on one stream.
-(defn build-run-source (src:StrView):!String
-  (let (p:String (try (test-write-file "t.nuc" src))
-        dir:StrView (try (test-scratch))
-        bin:String (str dir "/t.bin")
+; Compile `path` to a binary and run it, stdout and stderr on one stream.
+(defn build-run-file (dir:StrView path:StrView):!String
+  (let (sdir:StrView (try (test-scratch))
+        bin:String (str sdir "/t.bin")
         cc:Command (command (compiler-path)))
-    (command-arg (addr-of cc) (string-as-view (addr-of p)))
+    (when (not (= dir ""))
+      (command-arg (addr-of cc) "-I")
+      (command-arg (addr-of cc) dir))
+    (command-arg (addr-of cc) path)
     (command-arg (addr-of cc) "-o")
     (command-arg (addr-of cc) (string-as-view (addr-of bin)))
     (command-capture (addr-of cc) true)
@@ -257,10 +291,44 @@
                 out:String (try (string-from-view (addr-of ov))))
             (drop (addr-of o))
             (drop (addr-of rc))
-            (drop (addr-of p))
             (drop (addr-of bin))
             (return (ok out))))
         ((err e) (return (err e)))))))
+
+(defn build-run-source (src:StrView):!String
+  (let (p:String (try (test-write-file "t.nuc" src))
+        out:String (try (build-run-file "" (string-as-view (addr-of p)))))
+    (drop (addr-of p))
+    (return (ok out))))
+
+; A REPL session: `text` is the child's stdin and the transcript is the answer.
+(defn repl-session (text:StrView):!String
+  (let (p:String (try (test-write-file "repl.in" text))
+        c:Command (command (compiler-path)))
+    (command-arg (addr-of c) "-i")
+    (command-stdin-path (addr-of c) (string-as-view (addr-of p)))
+    (command-capture (addr-of c) true)
+    (command-stderr-to-stdout (addr-of c) true)
+    (match (run (addr-of c))
+      ((ok o)
+        (let (ov:StrView (string-as-view (addr-of o 'out))
+              out:String (try (string-from-view (addr-of ov))))
+          (drop (addr-of o))
+          (drop (addr-of c))
+          (drop (addr-of p))
+          (return (ok out))))
+      ((err e)
+        (drop (addr-of c))
+        (return (err e))))))
+
+; The first line of `hay` containing `needle`. A claim about ONE instruction
+; cannot be made by searching the module: `i8 %` is in every module.
+(defn line-with (hay:StrView needle:StrView):!StrView
+  (let (it:LineIter (strview-lines (addr-of hay)))
+    (while (not (lines-iter-done (addr-of it)))
+      (let (l:StrView (lines-iter-next (addr-of it)))
+        (when (contains? l needle) (return (ok l))))))
+  (fail! "no line containing " (sexp-quote needle) "\n     in: " (test-show hay)))
 
 ; ---------------------------------------------------------------------------
 ; Category (a): the rejection/acceptance table
