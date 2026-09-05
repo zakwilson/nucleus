@@ -155,8 +155,122 @@
     (return (run-reject-row row))))
 
 ; ---------------------------------------------------------------------------
+; Category (b): golden output
+; ---------------------------------------------------------------------------
+
+; The base name a golden-output test was registered with. Carried as the
+; interned symbol NODE for the same reason a manifest row is carried as one:
+; `data` is a bare pointer, and an interned node outlives registration.
+(defn data-name (data:ptr):StrView
+  (return (symbol-as-view ((unsafe/cast raw:Node data) 's))))
+
+(defn name-node (nm:StrView):raw:Node
+  (return (as raw:Node (intern-node (symbol-intern nm)))))
+
+; Compile, then run, comparing the program's own output against its golden file.
+; Both captures merge stderr into stdout on ONE pipe: the golden file recorded
+; `2>&1`, and two separately drained streams cannot reproduce an interleaving.
+(defn run-example-test (data:ptr):!void
+  ; The suite owns its output directory: `make test` clears it, and a test run
+  ; on its own has no shell script to have made it.
+  (try (make-dir "build/out"))
+  (let (base:StrView (data-name data)
+        src:String (str "examples/" base ".nuc")
+        bin:String (str "build/out/" base)
+        exp:String (str "tests/expected/" base ".out")
+        cc:Command (command (compiler-path)))
+    (command-arg (addr-of cc) (string-as-view (addr-of src)))
+    (command-arg (addr-of cc) "-o")
+    (command-arg (addr-of cc) (string-as-view (addr-of bin)))
+    (command-capture (addr-of cc) true)
+    (command-stderr-to-stdout (addr-of cc) true)
+    (match (run (addr-of cc))
+      ((ok o)
+        (let (ok?:bool (success? (addr-of o 'status)))
+          (when (not ok?)
+            (fail! "compile error\n     " (test-show (string-as-view (addr-of o 'out)))))
+          (drop (addr-of o))))
+      ((err e) (return (err e))))
+    (drop (addr-of cc))
+    (let (rc:Command (command (string-as-view (addr-of bin))))
+      ; An exact path, not a PATH lookup -- and the exit status is deliberately
+      ; not asserted: an example that exits nonzero says so in its golden file.
+      (command-search (addr-of rc) false)
+      (command-capture (addr-of rc) true)
+      (command-stderr-to-stdout (addr-of rc) true)
+      (match (run (addr-of rc))
+        ((ok o)
+          (let (want:String (try (read-file (string-as-view (addr-of exp)))))
+            (try (check-golden (string-as-view (addr-of o 'out))
+                               (string-as-view (addr-of want))))
+            (drop (addr-of want))
+            (drop (addr-of o))))
+        ((err e) (return (err e))))
+      (drop (addr-of rc)))
+    (drop (addr-of src))
+    (drop (addr-of bin))
+    (drop (addr-of exp))
+    (return (ok))))
+
+; A REPL session: the `.in` file is the child's stdin, and the transcript is
+; compared whole.
+(defn run-repl-test (data:ptr):!void
+  (let (base:StrView (data-name data)
+        src:String (str "tests/repl/" base ".in")
+        exp:String (str "tests/expected/repl-" base ".out")
+        c:Command (command (compiler-path)))
+    (command-arg (addr-of c) "-i")
+    (command-stdin-path (addr-of c) (string-as-view (addr-of src)))
+    (command-capture (addr-of c) true)
+    (command-stderr-to-stdout (addr-of c) true)
+    (match (run (addr-of c))
+      ((ok o)
+        (let (want:String (try (read-file (string-as-view (addr-of exp)))))
+          (try (check-golden (string-as-view (addr-of o 'out))
+                             (string-as-view (addr-of want))))
+          (drop (addr-of want))
+          (drop (addr-of o))))
+      ((err e) (return (err e))))
+    (drop (addr-of c))
+    (drop (addr-of src))
+    (drop (addr-of exp))
+    (return (ok))))
+
+; ---------------------------------------------------------------------------
 ; Registration
 ; ---------------------------------------------------------------------------
+
+; Present and readable. Asked by reading it, because there is no `stat` in
+; `lib/file.nuc` and the file is small and about to be read anyway.
+(defn have-file? (path:StrView):bool
+  (match (read-file path)
+    ((ok t) (let (s:String t) (drop (addr-of s)) (return true)))
+    ((err e) (return false))))
+
+; Discovered from the directory, not listed in a manifest: a new example is a
+; new test with no edit anywhere, which is the property the shell glob had and
+; the reason category (b) is not a table like category (a).
+(defn register-golden (dir:StrView ext:StrView exp-prefix:StrView
+                       name-prefix:StrView (f (fn !void) (ptr))):!void
+  (let (d:DirEntries (try (read-dir dir))
+        n:usize (dir-count (addr-of d))
+        i:usize 0)
+    (while (< i n)
+      (let (nm:StrView (dir-name (addr-of d) i))
+        (when (strview-has-suffix nm ext)
+          (let (base:StrView (strview-take-bytes
+                               nm (- (strview-byte-len (addr-of nm))
+                                     (strview-byte-len (addr-of ext))))
+                exp:String (str exp-prefix base ".out")
+                tname:String (str name-prefix base))
+            (when (have-file? (string-as-view (addr-of exp)))
+              (test-add (string-as-view (addr-of tname)) dir 0 f
+                        (as raw (name-node base))))
+            (drop (addr-of exp))
+            (drop (addr-of tname)))))
+      (set! i (+ i 1)))
+    (drop (addr-of d))
+    (return (ok))))
 
 (defn register-manifest ():!void
   (let (text:String (try (read-file (manifest-path)))
@@ -169,10 +283,16 @@
       (set! cur (cur 'cdr)))
     (return (ok))))
 
+(defn register-all ():!void
+  (try (register-manifest))
+  (try (register-golden "examples" ".nuc" "tests/expected/" "" run-example-test))
+  (try (register-golden "tests/repl" ".in" "tests/expected/repl-" "repl-" run-repl-test))
+  (return (ok)))
+
 (defn main (argc:i32 argv:ptr):int
-  (match (register-manifest)
+  (match (register-all)
     (ok 0)
     ((err e)
-      (eprint "nuctests: could not read " (manifest-path) ": " (err-message e) "\n")
+      (eprint "nuctests: registration failed: " (err-message e) "\n")
       (return 2)))
   (return (as int (test-main argc argv))))

@@ -1188,6 +1188,70 @@ identical shape and was fixed with it.
 but are a target-triple ABI probe with IR greps, not a diagnostic assertion.
 They stay in the shell suite and belong to category (c).
 
+#### TF-6 category (b) as landed (2026-09-05)
+
+The `examples/*.nuc` and `tests/repl/*.in` golden-output loops now live in
+`tests/nuctests.nuc`: 155 example tests and 16 REPL tests, discovered by walking
+the directory rather than listed. That is deliberate — a table would have made
+"add an example" a two-file edit, and the shell glob did not.
+
+**Three library gaps the port hit, all fixed in the library** (§T3 named the
+first two as missing surface):
+
+- **`read-dir` / `dir-count` / `dir-name` / `make-dir` / `dir-exists?`
+  (`lib/file.nuc`).** `DirEntries` is one buffer of NUL-terminated names plus
+  their offsets — `Command`'s shape, for `Command`'s reason: `Vector`'s drop
+  frees its array without dropping elements, so a `(Vector String)` leaks every
+  name. Entries come back **sorted**, because `readdir` order differs between
+  machines and a test corpus walked twice must register the same order. The
+  `d_name` offset is validated rather than trusted: `.` and `..` exist in every
+  POSIX directory, so their absence means the offset is wrong on this platform
+  and `read-dir` fails instead of returning bytes read out of `d_ino`.
+- **`command-stdin-path` (`lib/process.nuc`).** A REPL test *is* a file piped
+  into `nucleusc -i`; there was no `< file`.
+- **`command-stderr-to-stdout` now applies under capture.** It had been honoured
+  only on the file-redirect path, silently doing nothing when `capture` was on.
+  A golden file records `2>&1` — one stream, one interleaving — and two
+  separately drained pipes cannot reproduce one. The child now dups the stdout
+  pipe onto fd 2 and the parent closes the unused err pipe.
+
+**One compiler crash, fixed at the root.** `(return (err e))` in a function
+returning `!void` segfaulted the compiler:
+
+```lisp
+(defn f (e:Err):!void (return (err e)))
+```
+
+`union-target-rewrite` sent every plain `err` at an `!T` site through
+`__err-handled`, and `emit-err-handled` dereferences the `ok` payload type to
+build the `(Maybe T)` a handler repairs with. `!void`'s `ok` arm has no payload,
+so that type is null. The negotiation is meaningless there — there is no value
+for a handler to supply — so `err` in a `!void` is now `err!`, and
+`emit-err-handled` keeps a guard that says so rather than dereferencing null.
+`(err! E)` and `try` were always fine; only the plain `err` spelling reached it.
+
+**One deduplication.** `src/nucleusc.nuc` had its own `opendir`/`readdir`/
+`closedir` declares and its own `DIRENT-D-NAME-OFFSET`; it now calls
+`lib/file.nuc`'s `read-dir`, which it reaches transitively already. The offset
+and its platform caveat exist once. `scan-dir-for-definer` inherits sorted
+order, which changed exactly one diagnostic in the whole corpus:
+`w9-unknown-type-ctor-unimported` now names `lib/vector.nuc` where it named
+`lib/vector.nuch`. That is the better answer — `.nuc` out-ranks `.nuch` in
+`resolve-import`, so the note names the file the author would actually import —
+and it was previously decided by filesystem order, which is to say not decided.
+
+**`check-golden`** (`lib/test.nuc`) reports the first differing line and its
+number. `check-eq` would have shown two truncated blobs; a golden file is long
+enough that "they differ" is not an answer.
+
+**Retirement**: three green runs, one a full `--run`-per-name shuffle, then the
+two loops and their two helpers were deleted. `make test` is 627 shell + 339
+native = the same 966 verdicts. The native suite is self-sufficient — it makes
+`build/out` itself rather than depending on a shell script having run first.
+
+`run_repl_meta_loose` stays: it is the three meta forms a golden diff cannot
+hold, which makes it a bespoke unit and category (c)'s problem.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that

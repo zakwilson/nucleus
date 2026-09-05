@@ -32,6 +32,7 @@ bool has_matching_line_QMARK(struct StrView hay, struct StrView pat) asm("has-ma
 /* check-match: uses an error-union or option type; not exported */
 /* check-not-match: uses an error-union or option type; not exported */
 /* read-file: uses an error-union or option type; not exported */
+/* check-golden: uses an error-union or option type; not exported */
 /* check-files-eq: uses an error-union or option type; not exported */
 /* check-empty: uses an error-union or option type; not exported */
 /* check-non-empty: uses an error-union or option type; not exported */
@@ -72,4 +73,5 @@ void test_report(void* tc, bool passed) asm("test-report");
 bool test_run_one(void* tc) asm("test-run-one");
 /* test-find: uses a defunion-template instance type; not exported */
 int32_t test_run_all(void) asm("test-run-all");
+struct Symbol test_duplicate_name(void) asm("test-duplicate-name");
 int32_t test_main(int32_t argc, void* argv) asm("test-main");

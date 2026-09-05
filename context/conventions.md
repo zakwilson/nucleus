@@ -6401,3 +6401,22 @@ same format, so `run_reader_parity` diffs them over `tests/fixtures/`,
 `examples/`, `lib/` and `src/`. Use `--dump-ast` whenever you touch the reader
 or the printer; it is the only way to see what `src/reader.nuc` actually
 produced.
+
+## `readdir` order is not an ordering — `lib/file.nuc`'s `read-dir` sorts
+
+`read-dir` returns entries **sorted by name**, and the compiler's
+`scan-dir-for-definer` goes through it. Anything that was "first match wins"
+over `readdir` was previously decided by the filesystem: the same tree on
+another machine, or after a rename, picks a different first match. One
+diagnostic in the corpus depended on it (`w9-unknown-type-ctor-unimported`
+named `lib/vector.nuch`; it now names `lib/vector.nuc`, which is also what
+`resolve-import` would pick). If you add a directory scan, do not re-derive an
+order from `readdir` — and if you need first-match-wins to mean something, say
+which order in the code.
+
+The `d_name` offset lives in `lib/file.nuc` **once**. Do not re-declare
+`opendir`/`readdir`/`closedir` in a second module: the C-header reader registers
+`struct dirent` opaque (its `char d_name[256]` is a shape the declaration parser
+declines), so the offset is a hardcoded 19, and two copies is two things to be
+wrong. It is validated, not trusted — `.` and `..` exist in every POSIX
+directory, so `read-dir` fails when they do not appear.

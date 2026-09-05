@@ -111,7 +111,7 @@ $(READDUMP): tests/readdump.nuc $(wildcard lib/*.nuc) $(BIN) | $(BUILD)
 test-tools: $(BIN) $(READDUMP)
 
 test: test-tools $(NUCTESTS)
-	@rm -rf $(BUILD)/out
+	@rm -rf $(BUILD)/out && mkdir -p $(BUILD)/out
 	./tests/run-tests.sh
 	@$(MAKE) --no-print-directory run-nuctests
 
@@ -141,7 +141,7 @@ $(NUCTEST): tests/nuctest.nuc $(wildcard lib/*.nuc) $(BIN) | $(BUILD)
 	$(BIN) tests/nuctest.nuc -o $@
 
 nuctest: $(NUCTEST) test-tools
-	@rm -rf $(BUILD)/out
+	@rm -rf $(BUILD)/out && mkdir -p $(BUILD)/out
 	./$(NUCTEST)
 
 # Struct-ABI interop acceptance test (Phase C gate). Not part of `make test`

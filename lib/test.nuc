@@ -217,6 +217,34 @@
     (try (file-close (addr-of f)))
     (return (ok text))))
 
+; Golden-output comparison. Reports the FIRST differing line and its number,
+; which is what `diff -u` gave the shell suite: two truncated blobs side by side
+; cannot say where they parted, and a golden file is usually long.
+(defn check-golden (got:StrView want:StrView):!void
+  (when (= got want) (return (ok)))
+  (let (gi:LineIter (strview-lines (addr-of got))
+        wi:LineIter (strview-lines (addr-of want))
+        n:i64 0)
+    (while (or (not (lines-iter-done (addr-of gi))) (not (lines-iter-done (addr-of wi))))
+      (set! n (+ n 1))
+      (let (gd:bool (lines-iter-done (addr-of gi))
+            wd:bool (lines-iter-done (addr-of wi)))
+        (when gd
+          (fail! "output ends at line " (- n 1) "; expected line " n ": "
+                 (sexp-quote (lines-iter-next (addr-of wi)))))
+        (when wd
+          (fail! "expected output ends at line " (- n 1) "; got line " n ": "
+                 (sexp-quote (lines-iter-next (addr-of gi)))))
+        (let (g:StrView (lines-iter-next (addr-of gi))
+              w:StrView (lines-iter-next (addr-of wi)))
+          (when (!= g w)
+            (fail! "line " n " differs\n     want " (sexp-quote w)
+                   "\n     got  " (sexp-quote g)))))))
+  ; Equal line by line but not byte for byte: a trailing newline, which a
+  ; line iterator cannot see and a golden file records.
+  (fail! "output differs only in trailing bytes (want " (as i64 (strview-byte-len (addr-of want)))
+         " bytes, got " (as i64 (strview-byte-len (addr-of got))) ")"))
+
 (defn check-files-eq (a:StrView b:StrView):!void
   (let (ta:String (try (read-file a))
         tb:String (try (read-file b))
@@ -557,9 +585,28 @@
       (set! i (+ i 1)))
     (return (if (> failed 0) 1 0))))
 
+; A duplicate name makes `--run` address the wrong test and a shard silently
+; cover one test twice, so it is checked once rather than left to be noticed.
+(defn test-duplicate-name ():Symbol
+  (let (n:usize (count g-tests)
+        i:usize 0)
+    (while (< i n)
+      (let (a:TestCase (invoke g-tests i)
+            j:usize (+ i 1))
+        (while (< j n)
+          (let (b:TestCase (invoke g-tests j))
+            (when (= (a 'name) (b 'name)) (return (a 'name))))
+          (set! j (+ j 1))))
+      (set! i (+ i 1))))
+  (return (symbol-none)))
+
 ; `main` for a suite. `--list` names its tests, `--run <name>` runs exactly one,
 ; no arguments runs them all; every run emits one record per test.
 (defn test-main (argc:i32 argv:ptr):i32
+  (let (dup:Symbol (test-duplicate-name))
+    (when (not (symbol-none? dup))
+      (eprint "duplicate test name: " (symbol-as-view dup) "\n")
+      (return 2)))
   (when (= argc 1) (return (test-run-all)))
   (let (a:StrView (strview-from-cstr (as CStr (aref (as ptr:ptr argv) 1))))
     (when (= a "--list")

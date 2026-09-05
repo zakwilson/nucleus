@@ -10,6 +10,8 @@
 
 (import-use "fcntl.h")
 (import-use "unistd.h")
+(import-use "dirent.h")
+(import-use "sys/stat.h")
 
 (import-use error)
 (import-use string-errors)
@@ -23,6 +25,7 @@
 ; target's (design/stage17-native-strings/platform-constants.md). `0644` is a
 ; literal in every libc, not a macro.
 (defconst MODE-644 420)    ; 0644
+(defconst MODE-755 493)    ; 0755
 
 (defconst FILE-CHUNK 65536)
 
@@ -159,3 +162,133 @@
   (flush self)
   (drop (addr-of self 'out))
   (drop (addr-of self 'buf)))
+
+; ---------------------------------------------------------------------------
+; Directories
+;
+; Design: design/stage18-tooling/overview.md §T3 lists directory enumeration
+; among the filesystem surface `lib/file.nuc` was missing; TF-6 category (b) is
+; the consumer that needed it.
+; ---------------------------------------------------------------------------
+
+(deferror dir-layout-unknown "struct dirent is not the assumed layout")
+
+; `d_name`'s byte offset in `struct dirent` on 64-bit glibc and musl:
+; ino_t(8) + off_t(8) + unsigned short(2) + unsigned char(1). The C-header
+; reader registers `struct dirent` opaque -- its `char d_name[256]` is a shape
+; the declaration parser declines -- so the offset cannot be asked for. It is
+; validated rather than trusted: see `read-dir`.
+(defconst DIRENT-D-NAME-OFFSET 19)
+
+; One buffer of NUL-terminated names plus their offsets, the shape `Command`
+; uses and for the same reason: `Vector`'s drop frees its array without dropping
+; elements, so a (Vector String) would leak every name.
+(defstruct DirEntries
+  buf:String
+  offs:(Vector usize))
+
+(defn dir-count ((self (ref DirEntries))):usize
+  (return (count (addr-of self 'offs))))
+
+; Valid while the DirEntries is alive and unmodified.
+(defn dir-name ((self (ref DirEntries)) i:usize):StrView
+  (let (v:StrView (string-as-view (addr-of self 'buf)))
+    (return (strview-from-cstr
+              (as CStr (unsafe/ptr+ (as ptr:i8 (as ptr (v 'data)))
+                                    (as i64 (invoke (addr-of self 'offs) i))))))))
+
+(extend DirEntries Drop)
+(defn drop ((self (ptr DirEntries))):void
+  (drop (addr-of self 'buf))
+  (drop (addr-of self 'offs)))
+
+; The terminator is a real byte of the buffer: every name but the last has more
+; bytes after it, so `string-as-cstr`'s past-the-end NUL would not do.
+(defn dir-push-name ((self (ref DirEntries)) nm:StrView):usize
+  (let (off:usize (byte-len (addr-of self 'buf))
+        z:ptr:ui8 (as ptr:ui8 (alloca ui8 1)))
+    (string-push-str-unchecked (addr-of self 'buf) &nm)
+    (set! (aref z 0) 0)
+    (string-push-bytes-raw (addr-of self 'buf) z 1)
+    (return off)))
+
+; Insertion sort over the OFFSETS, which is why the names never move: an
+; offset is a usize and the buffer is untouched.
+(defn dir-sort ((self (ref DirEntries))):void
+  (let (n:usize (dir-count self)
+        i:usize 1)
+    (while (< i n)
+      (let (key:usize (invoke (addr-of self 'offs) i)
+            kv:StrView (dir-name self i)
+            j:i64 (- (as i64 i) 1)
+            placed:i32 0)
+        (while (and (>= j 0) (= placed 0))
+          (let (jv:StrView (dir-name self (as usize j)))
+            (if (<= (strview-cmp-raw &jv &kv) 0)
+              (set! placed 1)
+              (do
+                (set (addr-of self 'offs) (as usize (+ j 1))
+                     (invoke (addr-of self 'offs) (as usize j)))
+                (set! j (- j 1))))))
+        (set (addr-of self 'offs) (as usize (+ j 1)) key))
+      (set! i (+ i 1)))))
+
+; Every entry in `path` except `.` and `..`, sorted by name.
+;
+; Sorted because `readdir` order is filesystem-dependent: a caller enumerating a
+; corpus would otherwise get a different test order on every machine.
+;
+; The offset above is validated here, not trusted. Every POSIX directory
+; contains `.` and `..`, so if neither is found the offset is wrong on this
+; platform and this fails -- rather than returning names read out of the middle
+; of `d_ino`.
+(defn read-dir (path:StrView):!DirEntries
+  (let (cpath:String (try (string-from-view &path))
+        d:ptr (opendir (string-as-cstr (addr-of cpath))))
+    (drop (addr-of cpath))
+    (when (= d null) (return (err! io-open-failed)))
+    (let (e:&DirEntries (alloca DirEntries)
+          seen:i32 0
+          ent:ptr (readdir d))
+      (set! (e 'buf) (string-new))
+      (vector-init (addr-of e 'offs))
+      (while (!= ent null)
+        (let (nm:StrView (strview-from-cstr
+                           (as CStr (unsafe/ptr+ (as ptr:i8 ent) DIRENT-D-NAME-OFFSET))))
+          (if (= nm ".")
+            (set! seen (bit-or seen 1))
+            (if (= nm "..")
+              (set! seen (bit-or seen 2))
+              (conj (addr-of e 'offs) (dir-push-name e nm)))))
+        (set! ent (readdir d)))
+      (closedir d)
+      (when (!= seen 3)
+        (drop e)
+        (return (err! dir-layout-unknown)))
+      (dir-sort e)
+      (return (ok (deref e))))))
+
+; True when `path` names a directory this process may open.
+(defn dir-exists? (path:StrView):bool
+  (match (string-from-view &path)
+    ((ok p)
+      (let (s:String p
+            d:ptr (opendir (string-as-cstr (addr-of s))))
+        (drop (addr-of s))
+        (when (= d null) (return false))
+        (closedir d)
+        (return true)))
+    ((err e) (return false))))
+
+; Create `path`, one level. Idempotent -- an existing directory is success,
+; which is what every caller means by "make sure this is there". Re-checked with
+; `opendir` rather than `errno`: `EEXIST` is a C macro the header import does
+; not carry, and the question a caller actually has is whether the directory is
+; there now.
+(defn make-dir (path:StrView):!void
+  (let (p:String (try (string-from-view &path))
+        rc:i32 (mkdir (string-as-cstr (addr-of p)) MODE-755))
+    (drop (addr-of p))
+    (when (= rc 0) (return (ok))))
+  (when (dir-exists? path) (return (ok)))
+  (return (err! io-open-failed)))
