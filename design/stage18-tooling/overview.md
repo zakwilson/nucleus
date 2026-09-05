@@ -1252,6 +1252,37 @@ native = the same 966 verdicts. The native suite is self-sufficient — it makes
 `run_repl_meta_loose` stays: it is the three meta forms a golden diff cannot
 hold, which makes it a bespoke unit and category (c)'s problem.
 
+#### TF-6 category (c), first batch (2026-09-05)
+
+Category (c) is 182 shell functions and 10,560 body lines, so it lands in
+batches with the support layer built first.
+
+**The layer.** Most bespoke units embed a program, compile it, and grep the
+result — `run_s16_bool_type` alone has a local `refuses_bool` that
+reimplements `run_reject`. So `tests/nuctests.nuc` gained `compile-source` /
+`compile-path` (returning a `Compiled` record: `ok?`, `ir`, `raw`, `diags`),
+`check-source-rejects`, `check-source-accepts`, `source-ir`, `source-cheader`,
+`build-run-source` and `check-source-exit`; `lib/test.nuc` gained per-test
+scratch files (`test-scratch`, `test-write-file`) under
+`build/out/nt/<test-name>`, so `--run` reproduces exactly what the full run
+wrote and no two tests collide. Category (a) was rerouted through
+`compile-path`, deleting its own `compile-fixture`.
+
+**Embedded fixtures read, because a string literal may span lines.** That was
+not obvious and is what makes ruling 3 (§T8.3) practical: an embedded program
+is a heredoc, not a wall of `\n`. Only `"` and `\` need escaping.
+
+**First batch, 5 shell functions → 20 tests** in `tests/suite-s16.nuc` (a
+separate module `tests/nuctests.nuc` imports, so the suite file does not become
+one enormous file): `run_s16_bool_type` (6), `run_s16_macrolet_refused` (10),
+`run_s16_atom_macro` (2), `run_s16_template_repr` and
+`run_s16_pointer_kind_names`. Every name is the one the shell unit printed, so
+nothing in the corpus is renamed. `make test` is 607 shell + 359 native = 966.
+
+**Remaining: 177 shell functions, ~10,200 body lines.** The `run_s16_*` family
+is the largest cluster at 32 functions and ~3,900 lines, and it is the one this
+layer was shaped by.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that

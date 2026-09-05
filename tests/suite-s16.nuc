@@ -1,0 +1,269 @@
+; Stage 18 TF-6 category (c) — the Stage 16 type-system units, ported.
+;
+; Design: design/stage18-tooling/overview.md §T6.6.
+;
+; These were the largest bodies in `tests/run-tests.sh`. Each varies one line of
+; a small program across a dozen spellings, so the fixture is embedded (§T8.3
+; ruling 3) rather than filed, and a string literal may span lines — which is
+; what makes an embedded program readable at all.
+
+; ---------------------------------------------------------------------------
+; bool as a type of its own (Stage 16 §BT)
+; ---------------------------------------------------------------------------
+
+; No implicit coercion in either direction — the {0,1} rule's replacement.
+(deftest s16-bool-no-implicit-coercion
+  (try (check-source-rejects
+         "(defvar g:bool 1)
+(defn main ():i32 (return 0))
+"
+         "defvar: integer literal incompatible with type bool"))
+  (try (check-source-rejects
+         "(defn main ():i32 (let (b:bool 1) (return 0)))
+"
+         "let: init type mismatch for 'b'"))
+  (try (check-source-rejects
+         "(defn main ():i32 (let (n:i32 true) (return 0)))
+"
+         "let: init type mismatch for 'n'"))
+  (try (check-source-rejects
+         "(defn main ():i32 (let (b:bool (as bool 1)) (return 0)))
+"
+         "as: lossy conversion from i32 to bool -- use unsafe/cast")))
+
+; Arithmetic refuses a bool operand, and a comparison refuses a MIXED pair. All
+; six comparisons on two bools stay legal (w9-bool-unsigned covers them).
+(deftest s16-bool-not-an-integer-operand
+  (try (check-source-rejects
+         "(defn main ():i32 (let (b:bool (+ true true)) (return 0)))
+"
+         "_+ does not apply to bool"))
+  (try (check-source-rejects
+         "(defn main ():i32 (let (b:bool (bit-and true true)) (return 0)))
+"
+         "bit-and does not apply to bool"))
+  (try (check-source-rejects
+         "(defn main ():i32 (let (b:bool (= true 1)) (return 0)))
+"
+         "=: mixed bool and non-bool operands")))
+
+; `i1` is retired as a spelling, in every type position, and names bool.
+(deftest s16-bool-i1-spelling-retired
+  (try (check-source-rejects
+         "(defn main ():i32 (let (b:i1 true) (return 0)))
+"
+         "i1 is no longer a type — use bool"))
+  (try (check-source-rejects
+         "(defn f (a:i1):i32 (return 0))
+(defn main ():i32 (return 0))
+"
+         "i1 is no longer a type — use bool"))
+  (try (check-source-rejects
+         "(defn f ():i1 (return true))
+(defn main ():i32 (return 0))
+"
+         "i1 is no longer a type — use bool")))
+
+; The accepting half. `(as i32 b)` is the sanctioned widening (zext, since bool
+; is unsigned), and a bool global must hold the value that was WRITTEN — the
+; assertion a run cannot make, since `global i1 false` for a written `true`
+; still exits 0 through every check a run could apply.
+(deftest s16-bool-widens-to-int
+  (let (src:StrView "(import-use \"stdio.h\")
+(defvar s16b-t:bool true)
+(defvar s16b-f:bool false)
+(defn main ():i32
+  (printf \"%d %d\\n\" (as i32 s16b-t) (as i32 s16b-f))
+  (return 0))
+")
+    (let (out:String (try (build-run-source src))
+          ov:StrView (string-as-view (addr-of out)))
+      (try (check-eq (strview-trim-end (addr-of ov)) "1 0"))
+      (drop (addr-of out)))
+    (let (ir:String (try (source-ir src)))
+      (try (check-contains (string-as-view (addr-of ir)) "@s16b-t = global i1 true"))
+      (try (check-contains (string-as-view (addr-of ir)) "@s16b-f = global i1 false"))
+      (try (check-contains (string-as-view (addr-of ir)) "zext i1"))
+      (drop (addr-of ir)))))
+
+; `as` names `unsafe/cast` in every bool rejection, so the hatch has to be
+; TOTAL: all five instruction-selection gates must admit a bool operand, or the
+; diagnostic advertises a conversion that cannot be written.
+(deftest s16-bool-unsafe-cast-is-total
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defn main ():i32
+  (let (b:bool (unsafe/cast bool 1)
+        z:bool (unsafe/cast bool 0)
+        n:i32  (unsafe/cast i32 true)
+        f:f64  (unsafe/cast f64 true)
+        w:i64  (unsafe/cast i64 false))
+    (printf \"%d %d %d %.1f %ld\\n\" (as i32 b) (as i32 z) n f w))
+  (return 0))
+")))
+    (let (ov:StrView (string-as-view (addr-of out)))
+      (try (check-eq (strview-trim-end (addr-of ov)) "1 0 1 1.0 0")))
+    (drop (addr-of out))))
+
+; The two permanent, user-visible spellings of the type: the mangle token in an
+; overload's link name, and the C rendering in a generated header. Both read
+; `i1` before Stage 16; a header consumer sees whichever ships.
+(deftest s16-bool-mangle-and-c-spelling
+  (let (src:StrView "(defn f (a:bool):i32 (return (as i32 a)))
+(defn f (a:i32):i32 (return a))
+(defn g (b:bool):bool (return (not b)))
+")
+    (let (ir:String (try (source-ir src)))
+      (try (check-contains (string-as-view (addr-of ir))
+                           "define i32 @f.bool(i1 %a.arg)"))
+      (drop (addr-of ir)))
+    (let (h:String (try (source-cheader src)))
+      (try (check-line (string-as-view (addr-of h))
+                       "int32_t f_bool(bool a) asm(\"f.bool\");"))
+      (try (check-line (string-as-view (addr-of h)) "bool g(bool b);"))
+      (try (check-line (string-as-view (addr-of h)) "#include <stdbool.h>"))
+      (drop (addr-of h)))))
+
+; ---------------------------------------------------------------------------
+; Macros: atoms, `macrolet`, and what `macrolet` refuses (Stage 16 §MA)
+; ---------------------------------------------------------------------------
+
+; A macro template that is a bare atom -- a literal, an unquoted symbol, or a
+; quoted one -- expands to that atom rather than to a call. The answer is the
+; exit status, since each of the four contributes a number.
+(deftest s16-atom-macro
+  (try (check-source-exit "(defmacro one () `1)
+(defmacro sym-of () `x)
+(defmacro quoted () 'y)
+(defn main ():i32
+  (let (x:i32 40 y:i32 2)
+    (macrolet ((two () `2))
+      (return (_+ (one) (_+ (two) (_+ (sym-of) (quoted))))))))
+" 45)))
+
+(deftest s16-defmacro-nonsym-param
+  (try (check-source-rejects
+         "(defmacro m (5) `1)\n(defn main ():i32 0)\n"
+         "defmacro: param must be a symbol")))
+
+(deftest s16-macrolet-refused-noargs
+  (try (check-source-rejects "(defn main ():i32 (macrolet) 0)
+"
+         "macrolet: expects a binding list and at least one body form")))
+(deftest s16-macrolet-refused-nobody
+  (try (check-source-rejects "(defn main ():i32 (macrolet ((m () `1))) 0)
+"
+         "macrolet: expects a binding list and at least one body form")))
+(deftest s16-macrolet-refused-badbind
+  (try (check-source-rejects "(defn main ():i32 (macrolet (m) 0))
+"
+         "macrolet: binding must be (name (params) body...)")))
+(deftest s16-macrolet-refused-badname
+  (try (check-source-rejects "(defn main ():i32 (macrolet ((5 () `1)) 0))
+"
+         "macrolet: macro name must be a symbol")))
+(deftest s16-macrolet-refused-badparams
+  (try (check-source-rejects "(defn main ():i32 (macrolet ((m 5 `1)) 0))
+"
+         "macrolet: params must be a list")))
+(deftest s16-macrolet-refused-badparam
+  (try (check-source-rejects "(defn main ():i32 (macrolet ((m (5) `1)) 0))
+"
+         "macrolet: param must be a symbol")))
+(deftest s16-macrolet-refused-special
+  (try (check-source-rejects "(defn main ():i32 (macrolet ((let (x) `1)) 0))
+"
+         "macrolet: 'let' is a special form and may not be shadowed")))
+(deftest s16-macrolet-refused-restpos
+  (try (check-source-rejects "(defn main ():i32 (macrolet ((m (:rest a b) `1)) 0))
+"
+         "macrolet: :rest must be second-to-last param")))
+(deftest s16-macrolet-refused-colon
+  (try (check-source-rejects "(defn main ():i32 (macrolet ((m:i32 () `1)) 0))
+"
+         "macrolet: a binding name takes no type annotation; write (m (params) ...)")))
+(deftest s16-macrolet-refused-toplevel
+  (try (check-source-rejects "(macrolet ((m () `1)) (m))
+"
+         "unknown top-level form: macrolet")))
+
+; ---------------------------------------------------------------------------
+; `:repr` on an UNINSTANTIATED template (Stage 16 §TR)
+; ---------------------------------------------------------------------------
+
+; The mode is checked where it is written, not where it is stamped: a template
+; nobody instantiates still has to be diagnosed.
+(deftest s16-template-repr
+  (try (check-source-rejects "(defunion (Box T) (some v:T) none :repr bogus)
+(defn main ():i32 (return 0))
+"
+         "defunion: :repr mode must be `tagged` or `niche`"))
+  (try (check-source-rejects "(defunion (Box T) (some v:T) none :repr)
+(defn main ():i32 (return 0))
+"
+         "defunion: :repr needs a mode (tagged or niche)"))
+  (try (check-source-rejects "(defunion (Box T) (some v:T) none &repr tagged)
+(defn main ():i32 (return 0))
+"
+         "'&repr' is no longer a marker -- write ':repr'"))
+  ; And a VALID uninstantiated template still compiles -- the check must
+  ; diagnose, not stamp.
+  (try (check-source-accepts "(defunion (Box T) (some v:T) none :repr tagged)
+(defn main ():i32 (return 0))
+")))
+
+; ---------------------------------------------------------------------------
+; `ref` / `raw` / `ptr` are reserved (Stage 16 §PK)
+; ---------------------------------------------------------------------------
+
+(deftest s16-pointer-kind-names-reserved
+  (try (check-source-rejects "(defvar ref:i32 5)
+"
+         "a symbol may name only one kind of thing"))
+  (try (check-source-rejects "(defn ref ():i32 (return 5))
+"
+         "a symbol may name only one kind of thing"))
+  (try (check-source-rejects "(defstruct ref x:i32)
+"
+         "a symbol may name only one kind of thing"))
+  (try (check-source-rejects "(defconst ref 5)
+"
+         "a symbol may name only one kind of thing"))
+  (try (check-source-rejects "(defvar raw:i32 5)
+"
+         "a symbol may name only one kind of thing"))
+  (try (check-source-rejects "(defn raw ():i32 (return 5))
+"
+         "a symbol may name only one kind of thing"))
+  (try (check-source-rejects "(defstruct raw x:i32)
+"
+         "a symbol may name only one kind of thing"))
+  (try (check-source-rejects "(defconst raw 5)
+"
+         "a symbol may name only one kind of thing"))
+  (try (check-source-rejects "(defvar ptr:i32 5)
+"
+         "a symbol may name only one kind of thing"))
+  (try (check-source-rejects "(defn ptr ():i32 (return 5))
+"
+         "a symbol may name only one kind of thing"))
+  (try (check-source-rejects "(defstruct ptr x:i32)
+"
+         "a symbol may name only one kind of thing"))
+  (try (check-source-rejects "(defconst ptr 5)
+"
+         "a symbol may name only one kind of thing"))
+  ; The noun is per-name, not per-row: `ref`/`raw` are not types.
+  (try (check-source-rejects "(defvar ref:i32 5)\n"
+         "'ref' already names a pointer kind"))
+  ; Unchanged: the kinds are still type syntax...
+  (try (check-source-accepts "(defstruct Pt x:i32)
+(defn f (a:ref:Pt b:raw:Pt c:ptr:Pt):i32 (return (a 'x)))
+(defn g (v:(ref Pt) w:(raw Pt)):i32 (return (v 'x)))
+"))
+  ; ...and `ref` is still not a resolvable type NAME, so a bare one in a
+  ; template argument is reported rather than collected as a tyvar.
+  (try (check-source-rejects "(import-use node)
+(import-use vector)
+(defn h (v:(Vector ref)):i32 (return 0))
+"
+         "'ref' is a pointer kind, not a type argument")))

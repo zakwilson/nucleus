@@ -70,6 +70,10 @@ typedef struct SexpStr {
 struct SexpStr sexp_quote(struct StrView v) asm("sexp-quote");
 /* to-str: uses an error-union or option type; not exported */
 void test_report(void* tc, bool passed) asm("test-report");
+extern struct StrView g_test_scratch asm("g-test-scratch");
+void test_scratch_set(struct StrView name) asm("test-scratch-set");
+/* test-scratch: uses an error-union or option type; not exported */
+/* test-write-file: uses an error-union or option type; not exported */
 bool test_run_one(void* tc) asm("test-run-one");
 /* test-find: uses a defunion-template instance type; not exported */
 int32_t test_run_all(void) asm("test-run-all");
