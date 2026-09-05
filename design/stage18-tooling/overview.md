@@ -1136,6 +1136,58 @@ Every weakness the port hits is a library defect to fix, not a body to contort
 around it — the rule that made Stage 17 produce a string library rather than a
 pile of workarounds, and Stage 19 produce three conventions entries.
 
+#### TF-6 category (a) as landed (2026-09-05)
+
+`tests/manifest/diagnostics.sexp` (168 rows) and `tests/nuctests.nuc`, which
+reads it and registers one test per row. The 168 `run_reject_at` / `run_reject`
+/ `run_accepts` units are gone from `tests/run-tests.sh` — 826 lines — and the
+three helpers with them.
+
+**The table is the point, not the port.** Every one of those units said the
+same thing about a different fixture, so the shell version was repeated control
+flow and the native version is a `while` loop over `tests/manifest`. A row is
+
+```lisp
+(reject NAME (file F) [(line N)] (message M)... [(note M)...])
+(accept NAME (file F))
+```
+
+and with a `(line …)` present, `(message …)` and `(note …)` are matched against
+**one** `Diagnostic` record rather than grepped independently out of one stderr
+blob.
+
+**Three rows were wrong, and the record found all three** — §T4.2's hole
+closing in practice. `w9-unknown-type-ctor-unimported` and `g5-noinit-ref-note`
+asserted text that lives on a **note**; `w5a-hex-escape-no-digit-rejected` had
+the `path:line: error: ` prefix baked into its pattern, which stopped being
+part of the message the moment the message became a field. All three are now
+strictly more precise than the units they replaced.
+
+**Retirement followed §T6.6's rule**: three consecutive green runs of the
+native table, one of them a full `--run`-per-name shuffle, then delete.
+`make test` runs both suites — 798 shell + 168 native = the same 966 verdicts
+as before, no unit lost. The suite's stdout stays a pure record stream; the
+human summary is made in the Makefile rather than by polluting it.
+
+The 62 rationale comments that introduced **only** retired units moved into the
+manifest verbatim as `;` blocks. The rest introduce surviving units and stayed;
+six that referred to the retired helpers by name were reworded.
+
+Two library changes the phase required, both general. `TestCase` gained a
+`data:raw` and its `run` takes a `ptr`, which is what lets a table row and a
+`deftest` be the same kind of test — a `deftest` ignores both. And
+`check-note-anywhere`, so an unpinned `(note …)` cannot silently assert
+nothing.
+
+**One crash worth recording:** `row-text` guarded with
+`(= (n 'kind) NODE-CELL)` rather than by kind, and `Node.s` is null on an INT,
+so reading a row's `(line N)` segfaulted. `diag-text` in `lib/test.nuc` had the
+identical shape and was fixed with it.
+
+`check_long`'s four units are counted in this category's 172 by §T6.6's table
+but are a target-triple ABI probe with IR greps, not a diagnostic assertion.
+They stay in the shell suite and belong to category (c).
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that

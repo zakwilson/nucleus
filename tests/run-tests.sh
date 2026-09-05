@@ -63,7 +63,7 @@ declare -A _unit_seen=()
 #
 # The unit's NAME is the function plus its FIRST argument, which is already the
 # unit's identity everywhere it matters: `run_example <src>`, `run_fixture <src>`,
-# `run_reject <name> ...`. Later arguments are expected diagnostic text — joining
+# `w1_reject_multi <name> ...`. Later arguments are expected diagnostic text — joining
 # those in would put error messages, spaces and parens into a name that has to
 # survive a command line. Names must be unique or `--unit` cannot address them,
 # which is checked here rather than left for a driver to discover.
@@ -1053,58 +1053,6 @@ EOF
   rm -rf "$sm3_dir"
 }
 
-# Single-fixture rejection checks: compiling <fixture> must FAIL with <pattern>
-# on stderr. Each is independent (its own nucleusc invocation), so each is its
-# own job. qgrep -F is safe for all patterns below (none carry regex metachars).
-run_reject() {  # <name> <fixture> <pattern>
-  local name="$1" fixture="$2" pattern="$3" err
-  err="$(./build/nucleusc --emit-llvm "$fixture" 2>&1 >/dev/null || true)"
-  # Stage 15 W4a: a rejection that reports `:0:` is a regression even when the
-  # message text is right. Checked here so every existing and future rejection
-  # test carries the location guarantee for free.
-  if printf '%s' "$err" | qgrep ':0:'; then
-    echo "FAIL  $name (diagnostic reports line 0)"
-    printf '%s\n' "$err" | sed 's/^/    /'
-  elif printf '%s' "$err" | qgrep -F "$pattern"; then
-    echo "PASS  $name"
-  else
-    echo "FAIL  $name"
-  fi
-}
-
-# Stage 15 W4a: like run_reject, but also pins the diagnostic's LOCATION.
-# `loc` is the literal "<path>:<line>: error:" prefix the compiler must print.
-# The whole name-resolution family used to report `:0:` because the subject of
-# the diagnostic is an interned symbol node with no per-occurrence line; these
-# fixtures are what keep the reference's own line in the message.
-run_reject_at() {  # <name> <fixture> <loc-prefix> <pattern>
-  local name="$1" fixture="$2" loc="$3" pattern="$4" err
-  err="$(./build/nucleusc --emit-llvm "$fixture" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | qgrep -F "$loc" && printf '%s' "$err" | qgrep -F "$pattern"; then
-    echo "PASS  $name"
-  else
-    echo "FAIL  $name"
-    echo "    expected location: $loc"
-    echo "    expected message:  $pattern"
-    printf '%s\n' "$err" | sed 's/^/    got: /'
-  fi
-}
-
-# The inverse of run_reject: a fixture that must COMPILE CLEAN. For pinning a
-# deliberate carve-out, where the risk is that a later, stricter check swallows
-# a spelling that is supposed to stay legal — run_no_line_zero only sweeps for
-# `:0:`, and would not notice a fixture that started failing outright.
-run_accepts() {  # <name> <fixture>
-  local name="$1" fixture="$2" err
-  err="$(./build/nucleusc --emit-llvm "$fixture" 2>&1 >/dev/null || true)"
-  if [ -z "$err" ]; then
-    echo "PASS  $name"
-  else
-    echo "FAIL  $name (must compile clean, but the compiler complained)"
-    printf '%s\n' "$err" | sed 's/^/    got: /'
-  fi
-}
-
 # Stage 15 W4a accept criterion: NO compiler diagnostic may report line 0.
 # Every tests/fixtures/*.nuc is a potential error producer, so compile them all
 # and fail if any stderr carries a `:0:` location. This is the check that stops
@@ -1314,8 +1262,8 @@ run_w1_declare_cycle_breaker() {
 # located, specific diagnostic.
 
 # Multi-file rejection: write files into <dir>, compile <main>, require <pattern>
-# in stderr and no `:0:` — the same location guarantee run_reject gives the
-# single-fixture rejections.
+# in stderr and no `:0:` — the same location guarantee tests/manifest/diagnostics.sexp
+# gives the single-fixture rejections.
 # The same, with a location prefix as well as a message — for a multi-file unit
 # where the fixture path is a mktemp dir and cannot be spelled in a literal.
 # Stage 15 B5 added it: which of two definers is BLAMED is half of what the
@@ -4992,7 +4940,7 @@ G3EOF
 }
 
 # --- Stage 15 W8 G-4: the initializer-ordering diagnostic --------------------
-# design/global-init.md §4.2. The rejections are `run_reject_at` fixtures below;
+# design/global-init.md §4.2. The rejections are rows of tests/manifest/diagnostics.sexp;
 # this unit is the other half — every shape the check must keep ACCEPTING, each
 # linked, run, and asserted BY VALUE. "It compiles" cannot tell an initializer
 # that ran from one that silently kept its zero, which is the exact failure the
@@ -5117,7 +5065,7 @@ run_g0_still_rejects() {
 # envs are created post-prescan, so they cannot appear in source signatures).
 # Stage 15 W3a: the opaque-misuse diagnostic names the C declaration's own
 # header and line ("declared at ./tests/fixtures/cheader-opaque.h:11"). The path
-# is host-dependent for a system header, so run_reject_at pins only the message
+# is host-dependent for a system header, so the manifest row pins only the message
 # prefix; this pins the provenance itself — a nonzero line against the fixture
 # header. Recovered from clang -E's `# N "file"` linemarkers, so a regression in
 # that tracking shows up here as `:0` rather than silently degrading.
@@ -6078,7 +6026,7 @@ EOF
 }
 
 # Stage 15 B2a: the rejection of an out-of-scope namespace qualifier must be a
-# SCOPE diagnostic. `run_reject_at` above already pins the head and the line; the
+# SCOPE diagnostic. The manifest row already pins the head and the line; the
 # assertion that carries the weight is the note — without it the message says a
 # protocol that IS declared and IS reachable is "unknown", full stop, which sends
 # the reader looking for a missing definition instead of a wrong spelling. The
@@ -6245,12 +6193,6 @@ spawn run_avr5_isr
 # no AVR toolchain.
 spawn run_avr6_fnvalue
 spawn run_avr6_const
-spawn run_reject avr6-const-on-let-rejected tests/fixtures/avr6-const-let.nuc \
-  "':const' applies only to a defvar global"
-spawn run_reject avr6-const-on-field-rejected tests/fixtures/avr6-const-field.nuc \
-  "':const' applies only to a defvar global"
-spawn run_reject avr6-const-mutate-rejected tests/fixtures/avr6-const-mutate-rejected.nuc \
-  "set!: cannot assign to 'answer' -- declared :const"
 
 # AVR-7 numerics + ABI gates: (1) f64 is rejected on AVR at both finalization
 # points (explicit :f64/double annotation AND bare float literal default) while
@@ -6283,49 +6225,6 @@ spawn run_ns6
 
 spawn run_sm3
 
-# Stage 13 L1: cfn escape analysis. A cfn captures each used local by reference,
-# so the closure value inherits the captured referent's frame region. Returning
-# it out of that scope would dangle, so compiling the fixture must FAIL with the
-# frame-region escape error. (The `examples/closures.nuc` run covers the positive
-# cfn case; this proves the escape rejection.)
-spawn run_reject closure-escape-rejected tests/fixtures/closure-escape.nuc \
-  "address of frame-local storage escapes via return"
-
-# Stage 13 CE-3: moving a struct-VALUE Drop binding into an `mfn` consumes the
-# source, so a later use must be rejected as use-after-move — including through
-# `addr-of` (the only way to read a struct value's field). Compiling the fixture
-# must FAIL with the use-after-move error. (The `examples/ce3-owning-closure.nuc`
-# run covers the positive move/drop-once path; this proves the consume.)
-spawn run_reject ce3-use-after-move-rejected tests/fixtures/ce3-use-after-move.nuc \
-  "use after move: 'r'"
-
-# Stage 14 LW-1/LW-2: an overload set with no i32 candidate (x:i64 / x:ui8)
-# called with a bare literal reaches the tier-2 widen/untyped-int-literal
-# adaptation pool on both candidates, so the call is genuinely ambiguous.
-# Compiling the fixture must FAIL with the widening-ambiguity error. (The
-# positive `examples/int-widening.nuc` run covers the unique-widen case; this
-# proves the ambiguity accounting still dies.)
-spawn run_reject lw-ambiguous-widening-rejected tests/fixtures/lw-ambiguous-widening.nuc \
-  "ambiguous overload for 'f' under argument widening"
-
-# Stage 14 LW-4: an out-of-range literal (300 does not fit ui8) must be a
-# compile-time error instead of the old silent trunc-and-wrap. Compiling the
-# fixture must FAIL with the representability error.
-spawn run_reject lw-literal-range-rejected tests/fixtures/lw-literal-range.nuc \
-  "integer literal 300 does not fit ui8"
-
-# Stage 14 SM-5: a name containing a character that is legal in a Nucleus
-# symbol but illegal in an unquoted LLVM identifier (ir-name-token only maps
-# `?`/`!`; the solitary defn path applies no other sanitizing) must be a
-# source-level compiler error, not a raw LLVM parse error at link/verify time.
-spawn run_reject sm5-illegal-char-rejected tests/fixtures/sm5-illegal-char.nuc \
-  "illegal character '%' in generated symbol for 'weird%name'"
-
-# Stage 14 TC-1: a zero-arg return-only-tyvar generic called with no expected
-# type (no declared binding → no want) must FAIL with the dedicated diagnostic,
-# not the misleading "no matching method".
-spawn run_reject tc-cannot-infer-tyvar tests/fixtures/tc-cannot-infer-tyvar.nuc \
-  "cannot infer type variable 'T' for 'box-empty'"
 
 spawn run_closure_cheader
 
@@ -6333,64 +6232,10 @@ spawn run_box_cheader
 
 spawn run_s1_sugar_rets
 
-# 2. A bare-name new-style defn missing its mandatory return operand dies cleanly
-#    with the targeted diagnostic (the same message a stale legacy spelling gets
-#    in Phase S4), not a crash or a remote type error.
-spawn run_reject s1-missing-ret-diagnostic tests/fixtures/s1-missing-ret.nuc \
-  "expected return type after the parameter list"
 
 spawn run_s1_block
 
-# Stage 14 defn-signature.md S4 — the legacy `name:ret` return-in-the-name signature
-# is retired. A colon-bearing (or list-head) defn / declare / protocol-method /
-# generic-template signature must now die with the targeted "legacy 'name:ret'
-# syntax is no longer supported" diagnostic, quoting the offending name, at each
-# chokepoint (defn-parse-sig, emit-nuch-declare-import, protocol-register-form,
-# register-generic-defn).
-spawn run_reject s4-legacy-defn-rejected tests/fixtures/s4-legacy-defn.nuc \
-  "defn 'foo': legacy 'name:ret' syntax is no longer supported"
-spawn run_reject s4-legacy-declare-rejected tests/fixtures/s4-legacy-declare.nuc \
-  "declare 'bar': legacy 'name:ret' syntax is no longer supported"
-spawn run_reject s4-legacy-proto-rejected tests/fixtures/s4-legacy-proto.nuc \
-  "protocol method 'area': legacy 'name:ret' syntax is no longer supported"
-spawn run_reject s4-legacy-template-rejected tests/fixtures/s4-legacy-template.nuc \
-  "defn 'gmax': legacy 'name:ret' syntax is no longer supported"
 
-spawn run_reject s17-dup-struct-field-rejected tests/fixtures/s17-dup-struct-field.nuc \
-  "defstruct: duplicate field 'x'"
-
-spawn run_reject s17-rvalue-addr-of-rejected tests/fixtures/s17-rvalue-addr-of.nuc \
-  "show: argument 1 has type StrView, which does not match parameter type ptr:StrView"
-
-# Stage 14 unsafe-namespace.md UN-1 — the `(as TYPE expr)` statically-safe
-# conversion form. Its three rejection categories each route to the right tool:
-#   lossy/narrowing  -> "use unsafe/cast"
-#   raw->ref launder -> mentions "as-ref" (honors pkind-flow-check, which `cast`
-#                       bypasses)
-#   reinterpretation -> "use unsafe/cast"
-spawn run_reject as-lossy-rejected tests/fixtures/as-lossy.nuc \
-  "as: lossy conversion from i32 to i8 -- use unsafe/cast"
-spawn run_reject as-raw-to-ref-rejected tests/fixtures/as-raw-to-ref.nuc \
-  "where non-null ptr:Rec is required -- use as-ref (checked) or unsafe/cast"
-spawn run_reject as-reinterpret-rejected tests/fixtures/as-reinterpret.nuc \
-  "as: reinterpretation from ptr:Sym to ptr:Rec -- use unsafe/cast"
-
-# Stage 16 as-sugar.md — a value-position `:type` annotation is that same `as`
-# cast (`baz:CStr` == `(as CStr baz)`), so the first three pin that it inherits
-# `as`'s refusals rather than getting a laxer path of its own; the accept side
-# runs as examples/as-sugar.nuc. The first is also the WART being closed: the
-# annotation used to be discarded unread, so `x:NoSuchType` compiled silently.
-# The fourth holds the excluded spelling: a parenthesised type is claimed by the
-# reader's colon-paren fuse in every list context, so it reads as a call and
-# must SAY so instead of reporting `unknown: ref`.
-spawn run_reject as-sugar-unknown-type tests/fixtures/as-sugar-unknown-type.nuc \
-  "unknown type 'NoSuchType' in the annotation 'x:NoSuchType'"
-spawn run_reject as-sugar-lossy tests/fixtures/as-sugar-lossy.nuc \
-  "as: lossy conversion from i64 to i32 -- use unsafe/cast"
-spawn run_reject as-sugar-raw-to-ref tests/fixtures/as-sugar-raw-to-ref.nuc \
-  "use as-ref (checked) or unsafe/cast (unchecked assertion)"
-spawn run_reject as-sugar-paren tests/fixtures/as-sugar-paren.nuc \
-  "'q:(ref ...)' reads as a call here"
 #
 # Stage 15 W9 item 8 refines the FIRST category only: a narrowing whose operand
 # is a literal that provably fits is not lossy. `as-lossy.nuc` above narrows a
@@ -6399,11 +6244,6 @@ spawn run_reject as-sugar-paren tests/fixtures/as-sugar-paren.nuc \
 # catch a sign error in the range test); the two rejects hold the boundary at
 # magnitude and at sign.
 spawn run_w9_as_literal_narrowing
-spawn run_reject w9-as-literal-too-big tests/fixtures/w9-as-literal-too-big.nuc \
-  "as: lossy conversion from i32 to i8 -- use unsafe/cast"
-spawn run_reject w9-as-literal-signed-into-unsigned \
-  tests/fixtures/w9-as-literal-signed-into-unsigned.nuc \
-  "as: lossy conversion from i32 to ui8 -- use unsafe/cast"
 
 # W9 item 30 does the same for f64->f32, and the two rejects hold the two edges
 # the ruling draws. `-inexact` is the VALUE edge: 3.14 is a literal that does not
@@ -6413,13 +6253,6 @@ spawn run_reject w9-as-literal-signed-into-unsigned \
 # reaches the same verdict with the same wording — it is a second asker of the
 # rule, and a second asker that re-derives is what this stage keeps finding.
 spawn run_w9_as_float_literal_narrowing
-spawn run_reject w9-as-float-inexact tests/fixtures/w9-as-float-inexact.nuc \
-  "as: lossy conversion from f64 to f32 -- use unsafe/cast"
-spawn run_reject w9-as-float-runtime tests/fixtures/w9-as-float-runtime.nuc \
-  "as: lossy conversion from f64 to f32 -- use unsafe/cast"
-spawn run_reject w9-as-float-global-inexact \
-  tests/fixtures/w9-as-float-global-inexact.nuc \
-  "as: lossy conversion from f64 to f32 -- use unsafe/cast"
 
 spawn run_w9_bool_unsigned
 spawn run_w9_unsigned_index
@@ -7493,71 +7326,6 @@ EOF
 }
 spawn run_s16_an_anonymous
 
-# W9 item 13: an unrecognized list head in type position used to fall out of
-# `parse-type-from-node` as null, which every caller reads as "no annotation was
-# written". Four positions, one shared fall-through — if a future change patches
-# a single caller instead of the predicate, the other three fixtures fail. The
-# `-unimported` case is the everyday one (a forgotten `import-use`) and pins
-# that the fix reuses `unknown-type-message`'s tiers rather than a local string;
-# the `-return` case pins the `:0:` half, which `run_reject` checks on its own.
-spawn run_reject w9-unknown-type-ctor-field \
-  tests/fixtures/w9-unknown-type-ctor-field.nuc \
-  "unknown type: nosuch — not defined anywhere in this compilation unit"
-spawn run_reject w9-unknown-type-ctor-param \
-  tests/fixtures/w9-unknown-type-ctor-param.nuc \
-  "unknown type: nosuch — not defined anywhere in this compilation unit"
-spawn run_reject w9-unknown-type-ctor-return \
-  tests/fixtures/w9-unknown-type-ctor-return.nuc \
-  "unknown type: nosuch — not defined anywhere in this compilation unit"
-spawn run_reject w9-unknown-type-ctor-unimported \
-  tests/fixtures/w9-unknown-type-ctor-unimported.nuc \
-  "'Vector' is defined in lib/vector.nuch, which no import in this unit reaches"
-# The other mistake class at the same fall-through: a head that IS a type. One
-# message for both would lie about this one.
-spawn run_reject w9-type-ctor-doubled-annotation \
-  tests/fixtures/w9-type-ctor-doubled-annotation.nuc \
-  "'i32' is a type, not a type constructor"
-
-# Stage 14 unsafe-namespace.md UN-2 — `unsafe` is a reserved pseudo-namespace
-# (D1): no user code may declare `(ns unsafe)`, which would make `unsafe/foo`
-# ambiguous between a reserved op and a real namespace member. (The positive
-# `examples/unsafe-spellings.nuc` run — dispatched via the examples/*.nuc loop
-# above — covers `as` and the unsafe/cast, unsafe/ptr+, unsafe/funcall-ptr-i32,
-# and unsafe/import-private routes.)
-spawn run_reject unsafe-ns-reserved-rejected tests/fixtures/unsafe-ns-reserved.nuc \
-  "'unsafe' is a reserved namespace name"
-
-# Stage 14 unsafe-namespace.md UN-5 — the bare legacy spellings (`cast`,
-# `funcall-ptr-*`, `ptr+`, `unsafe-import-private`) are retired: each dispatch
-# site now dies with a targeted error naming its replacement instead of
-# silently working as an alias (D6).
-spawn run_reject un5-bare-cast-rejected tests/fixtures/un5-bare-cast.nuc \
-  "'cast' was split in Stage 14: use 'as' (safe) or 'unsafe/cast' (unchecked)"
-spawn run_reject un5-bare-ptr-plus-rejected tests/fixtures/un5-bare-ptr-plus.nuc \
-  "'ptr+' was split in Stage 14: use 'unsafe/ptr+'"
-spawn run_reject un5-bare-funcall-ptr-rejected tests/fixtures/un5-bare-funcall-ptr.nuc \
-  "'funcall-ptr-i32' was split in Stage 14: use 'unsafe/funcall-ptr-i32'"
-spawn run_reject un5-bare-import-private-rejected tests/fixtures/un5-bare-import-private.nuc \
-  "'unsafe-import-private' was split in Stage 14: use 'unsafe/import-private'"
-
-# Stage 14 attributes.md AT-3 — the old postfix volatile spellings are retired:
-# both the list form `(T volatile)` and the colon-sugared `T:volatile` (which
-# reduces to the same trailing-symbol shape via split-colon-segments) now die
-# with a targeted error naming the `:volatile` attribute-slot replacement,
-# instead of silently stripping the trailing symbol and calling
-# type-with-volatile as before AT-3.
-spawn run_reject at3-postfix-volatile-rejected tests/fixtures/at3-postfix-volatile.nuc \
-  "postfix 'volatile' is retired: use the ':volatile' attribute"
-spawn run_reject at3-colon-volatile-rejected tests/fixtures/at3-colon-volatile.nuc \
-  "postfix 'volatile' is retired: use the ':volatile' attribute"
-
-# --- Stage 15 W5a: `\x` string escapes --------------------------------------
-# design/stage15-stress-test/ergonomics.md §W5a. A `\x` escape with no
-# following hex digit is a reader error. The pattern includes the `:6:` line
-# prefix on purpose: the diagnostic must be attributed to the literal's own
-# line, never line 0 (cf. run_no_line_zero).
-spawn run_reject w5a-hex-escape-no-digit-rejected tests/fixtures/w5a-hex-escape-no-digit.nuc \
-  "w5a-hex-escape-no-digit.nuc:6: error: \\x escape needs at least one hex digit"
 
 # --- Stage 15 W2a: binop literal typing -------------------------------------
 # design/stage15-stress-test/literal-typing.md §W2a. A binop's statically
@@ -7575,38 +7343,7 @@ spawn run_reject w5a-hex-escape-no-digit-rejected tests/fixtures/w5a-hex-escape-
 # signedness -- only an untyped literal adapts -- so the mixed-sign diagnostic
 # has to survive the fix, in both the arithmetic and comparison forms.
 spawn run_w2a_order_identical
-spawn run_reject_at w2a-mixed-sign tests/fixtures/w2a-mixed-sign.nuc \
-  "tests/fixtures/w2a-mixed-sign.nuc:10: error:" \
-  "mixed signed/unsigned operands — use explicit cast"
-spawn run_reject_at w2a-mixed-sign-cmp tests/fixtures/w2a-mixed-sign-cmp.nuc \
-  "tests/fixtures/w2a-mixed-sign-cmp.nuc:11: error:" \
-  ">: mixed signed/unsigned operands — use explicit cast"
 
-# --- Stage 15 W2b: a named integer constant behaves like the literal ---------
-# design/stage15-stress-test/literal-typing.md section W2b. The positive matrix
-# (a defconst against {i32, i64, ui32, ui64} in both operand orders, each line
-# paired with the identical inline-literal spelling; the enum-member case; the
-# BIG-value case; the vararg path) is examples/defconst-literal-typing.nuc, run
-# by the examples/*.nuc loop above. The committed boot compiler FAILS to compile
-# that file, which is the teeth.
-#
-# Here: the negative half. Two properties must survive the fix -- the provenance
-# is read through the SCOPE (so a shadowing local is not a literal), and it
-# carries the VALUE (so an out-of-range narrowing is rejected rather than
-# wrapped, at both the coerce-int-val chokepoint and the global-initializer
-# path, and for a named constant exactly as for the literal it names).
-spawn run_reject_at w2b-shadow-local tests/fixtures/w2b-shadow-local.nuc \
-  "tests/fixtures/w2b-shadow-local.nuc:12: error:" \
-  "<: mixed signed/unsigned operands — use explicit cast"
-spawn run_reject_at w2b-const-narrow tests/fixtures/w2b-const-narrow.nuc \
-  "tests/fixtures/w2b-const-narrow.nuc:10: error:" \
-  "integer literal 5000000000 does not fit i32"
-spawn run_reject_at w2b-defvar-const-narrow tests/fixtures/w2b-defvar-const-narrow.nuc \
-  "tests/fixtures/w2b-defvar-const-narrow.nuc:7: error:" \
-  "defvar: constant 'BIG' (5000000000) does not fit i32"
-spawn run_reject_at w2b-defvar-lit-narrow tests/fixtures/w2b-defvar-lit-narrow.nuc \
-  "tests/fixtures/w2b-defvar-lit-narrow.nuc:5: error:" \
-  "defvar: integer literal 5000000000 does not fit i32"
 
 # --- Stage 15 W2d: float literals adapt to an f32 target ---------------------
 # design/stage15-stress-test/literal-typing.md section W2d. The positive matrix
@@ -7621,27 +7358,7 @@ spawn run_reject_at w2b-defvar-lit-narrow tests/fixtures/w2b-defvar-lit-narrow.n
 # float target only (not an integer slot, not an integer binop operand), and
 # multimethod dispatch admits a float literal but never a typed f64 value.
 spawn run_w2d_dsp_bitexact
-spawn run_reject_at w2d-float-into-int tests/fixtures/w2d-float-into-int.nuc \
-  "tests/fixtures/w2d-float-into-int.nuc:9: error:" \
-  "let: init type mismatch for 'a'"
-spawn run_reject_at w2d-mixed-float-int-binop tests/fixtures/w2d-mixed-float-int-binop.nuc \
-  "tests/fixtures/w2d-mixed-float-int-binop.nuc:9: error:" \
-  "mixed float and non-float operands — use explicit cast"
-spawn run_reject_at w2d-dispatch-no-narrow tests/fixtures/w2d-dispatch-no-narrow.nuc \
-  "tests/fixtures/w2d-dispatch-no-narrow.nuc:15: error:" \
-  "no matching method for overloaded 'tk' with argument types (f64)"
 
-# --- Stage 15 W4a: located diagnostics --------------------------------------
-# design/stage15-stress-test/diagnostics.md §W4a. Every entry below reported
-# `:0:` before W4a. The location is part of the assertion, not decoration.
-spawn run_reject_at w4a-undefined-value tests/fixtures/w4a-undefined-value.nuc \
-  "tests/fixtures/w4a-undefined-value.nuc:8: error:" "undefined: missing-thing"
-spawn run_reject_at w4a-suggest-spelling tests/fixtures/w4a-suggest-spelling.nuc \
-  "tests/fixtures/w4a-suggest-spelling.nuc:6: error:" "unknown: printfx (did you mean 'printf'?)"
-spawn run_reject_at w4a-let-null-ref tests/fixtures/w4a-let-null-ref.nuc \
-  "tests/fixtures/w4a-let-null-ref.nuc:7: error:" "raw pointer where non-null (ref ...) is required"
-spawn run_reject_at w4a-bare-cast-head tests/fixtures/w4a-bare-cast-head.nuc \
-  "tests/fixtures/w4a-bare-cast-head.nuc:7: error:" "'cast' was split in Stage 14"
 
 # The two remaining Ground-truth cases (same-file defvar forward reference
 # §3.5, `(defvar- g:CStr null)` §3.7) are covered by the sweep rather than a
@@ -7651,158 +7368,11 @@ spawn run_reject_at w4a-bare-cast-head tests/fixtures/w4a-bare-cast-head.nuc \
 spawn run_no_line_zero
 spawn run_w4a_sibling_forward
 
-# --- Stage 15 W4b: defconst annotation rejected + sibling-definer sweep ----
-# design/stage15-stress-test/diagnostics.md §W4b. `defconst` never takes a
-# type annotation (its value is always ty-i32 from an integer literal), so
-# `(defconst K:i32 2)` is rejected at its own line rather than silently
-# registering nothing under the literal key "K:i32". The same silent-
-# registration bug recurred, unannounced, in every sibling top-level definer
-# whose own name is never annotated — each is pinned here too.
-spawn run_reject_at w4a-defconst-annotated tests/fixtures/w4a-defconst-annotated.nuc \
-  "tests/fixtures/w4a-defconst-annotated.nuc:7: error:" "defconst: takes no type annotation; write (defconst K 2)"
-spawn run_reject_at w4b-defconst-paren tests/fixtures/w4b-defconst-paren.nuc \
-  "tests/fixtures/w4b-defconst-paren.nuc:7: error:" "defconst: takes no type annotation; write (defconst K 2)"
-spawn run_reject_at w4b-defenum-annotated tests/fixtures/w4b-defenum-annotated.nuc \
-  "tests/fixtures/w4b-defenum-annotated.nuc:9: error:" "defenum: takes no type annotation; write (defenum E ...)"
-spawn run_reject_at w4b-defstruct-annotated tests/fixtures/w4b-defstruct-annotated.nuc \
-  "tests/fixtures/w4b-defstruct-annotated.nuc:9: error:" "defstruct: takes no type annotation; write (defstruct S ...)"
-spawn run_reject_at w4b-defprotocol-annotated tests/fixtures/w4b-defprotocol-annotated.nuc \
-  "tests/fixtures/w4b-defprotocol-annotated.nuc:9: error:" "defprotocol: takes no type annotation; write (defprotocol P ...)"
-spawn run_reject_at w4b-defmacro-annotated tests/fixtures/w4b-defmacro-annotated.nuc \
-  "tests/fixtures/w4b-defmacro-annotated.nuc:7: error:" "defmacro: takes no type annotation; write (defmacro m ...)"
-spawn run_reject_at w4b-defunion-annotated tests/fixtures/w4b-defunion-annotated.nuc \
-  "tests/fixtures/w4b-defunion-annotated.nuc:6: error:" "defunion: takes no type annotation; write (defunion U ...)"
-spawn run_reject_at w4b-deferror-annotated tests/fixtures/w4b-deferror-annotated.nuc \
-  "tests/fixtures/w4b-deferror-annotated.nuc:7: error:" "deferror: takes no type annotation; write (deferror MyErr \"message\")"
-# Found (not silent, but wrong location) while sweeping defvar the same way:
-# `(defvar x 3)` -- no annotation at all -- already died with the right
-# message but at line 0 (name-node is a bare interned NODE-SYM).
-spawn run_reject_at w4b-defvar-missing-type tests/fixtures/w4b-defvar-missing-type.nuc \
-  "tests/fixtures/w4b-defvar-missing-type.nuc:9: error:" "defvar: missing :type on 'x'"
 
-# --- Stage 15 W5f: an empty list `()` never segfaults ------------------------
-# design/stage15-stress-test/ergonomics.md §W5f. `()` reads as a NULL node (an
-# empty cons list), and a raw `(n kind)` / `(n line)` on it faults. Each fixture
-# below was a confirmed SIGSEGV-with-no-output before W5f; run_reject_at fails on
-# a crash too (no message to grep), so these double as segfault regressions.
-spawn run_reject_at w5f-empty-union-member tests/fixtures/w5f-empty-union-member.nuc \
-  "tests/fixtures/w5f-empty-union-member.nuc:11: error:" \
-  "expected a name:type declaration, found the empty list '()'"
-spawn run_reject_at w5f-empty-param tests/fixtures/w5f-empty-param.nuc \
-  "tests/fixtures/w5f-empty-param.nuc:7: error:" \
-  "expected a name:type declaration, found the empty list '()'"
-spawn run_reject_at w5f-empty-expr tests/fixtures/w5f-empty-expr.nuc \
-  "tests/fixtures/w5f-empty-expr.nuc:6: error:" \
-  "'()' is not an expression -- the empty list has no value"
-spawn run_reject_at w5f-empty-defunion-arm tests/fixtures/w5f-empty-defunion-arm.nuc \
-  "tests/fixtures/w5f-empty-defunion-arm.nuc:4: error:" \
-  "defunion: arm cannot be the empty list '()'"
-
-# --- Stage 15 W4c: unterminated forms point at the imbalance -----------------
-# design/stage15-stress-test/diagnostics.md §W4c. The reader already reported the
-# innermost unclosed form's OPENING line; what it lacked was the second number --
-# the first line that opens a new form in column 0 while a form is still open,
-# which is where an earlier missing `)` first became observable. Each entry below
-# pins BOTH: the `loc` argument carries the primary `path:line: error: message`
-# and the `pattern` argument carries the note with the second number, so a
-# regression in either half fails the test. (run_reject_at's loc is a literal
-# grep -F, so it can pin the message text as well as the location.)
-spawn run_reject_at w4c-unterminated-deep tests/fixtures/w4c-unterminated-deep.nuc \
-  "tests/fixtures/w4c-unterminated-deep.nuc:12: error: unterminated list" \
-  "note: line 23 starts a new form in column 0 while 1 form(s) are still open"
-spawn run_reject_at w4c-unterminated-deep-many tests/fixtures/w4c-unterminated-deep-many.nuc \
-  "tests/fixtures/w4c-unterminated-deep-many.nuc:12: error: unterminated list" \
-  "note: line 18 starts a new form in column 0 while 6 form(s) are still open"
-# No column-0 candidate exists (the imbalance is in the file's last form): the
-# alternative note must appear, and since the two notes are the arms of one
-# if/else, pinning this one also asserts no bogus second number is invented.
-spawn run_reject_at w4c-unterminated-last-form tests/fixtures/w4c-unterminated-last-form.nuc \
-  "tests/fixtures/w4c-unterminated-last-form.nuc:9: error: unterminated list" \
-  "note: end of file reached with 3 form(s) still open"
-# A bracket kind other than `(`: depth tracking spans ( [ { #{ , and the note
-# names the closer the form is actually waiting for.
-spawn run_reject_at w4c-unterminated-bracket tests/fixtures/w4c-unterminated-bracket.nuc \
-  "tests/fixtures/w4c-unterminated-bracket.nuc:7: error: unterminated vector literal" \
-  "note: line 9 starts a new form in column 0 while 4 form(s) are still open -- a ']' is probably missing"
-# The extra-`)`-in-a-let-binding-list shape, both ways it can land: still
-# balanced (caught at emit, in emit-let) and no longer balanced (caught by the
-# reader at the excess `)`, with the note bounding the search to one form).
-spawn run_reject_at w4c-let-extra-paren tests/fixtures/w4c-let-extra-paren.nuc \
-  "tests/fixtures/w4c-let-extra-paren.nuc:11: error:" \
-  "let: 'b:i32' is a body form, not a binding -- an extra ')' probably ended the binding list early"
-spawn run_reject_at w4c-stray-close-paren tests/fixtures/w4c-stray-close-paren.nuc \
-  "tests/fixtures/w4c-stray-close-paren.nuc:13: error: unexpected )" \
-  "note: the form opened at line 10 is already closed -- look for an extra ')' between lines 10 and 13"
-
-# --- Stage 15 W4d: errors that name the macro instead of the mistake ---------
-# design/stage15-stress-test/diagnostics.md §W4d. `case`'s documented-but-wrong
-# nested-clause shape used to die with the opaque "value is not callable: no
-# `invoke` method is defined for this type" -- naming the mechanism (an int
-# literal in call position), not the mistake. Fixed at the one chokepoint every
-# non-callable head funnels through (emit-invoke-with-callee), not inside the
-# `case` macro body: a macro body is ordinary user-scope Nucleus code and
-# `die-at`/`report-at` are only in scope for the compiler's own source, not a
-# user program's macro expansions (confirmed empirically -- a `defmacro` body
-# calling `die-at` fails `unknown: die-at`).
-spawn run_reject_at w4d-case-clause-form tests/fixtures/w4d-case-clause-form.nuc \
-  "tests/fixtures/w4d-case-clause-form.nuc:16: error:" \
-  "case takes flat value/result pairs, not clauses: (case x 1 \"one\" 2 \"two\" \"other\")"
-# examples/case.nuc (the real flat syntax) is covered as a regression by the
-# ordinary examples/*.nuc + tests/expected/case.out loop above -- no separate
-# fixture needed here.
-#
-# One-armed `if` used to die with the generic, unlocated-by-name
-# `macro: wrong number of args`. `if` is a fixed 3-arg macro
-# (test/then/else); there is no one-armed `if`, only `when`/`unless`.
-spawn run_reject_at w4d-if-one-armed tests/fixtures/w4d-if-one-armed.nuc \
-  "tests/fixtures/w4d-if-one-armed.nuc:11: error:" \
-  "if requires an else branch; use (when test then…) for a guard"
-# The generic arg-count messages themselves, now naming the macro and both
-# counts instead of the bare "macro: wrong number of args" / "macro: not
-# enough args".
-spawn run_reject_at w4d-macro-too-many-args tests/fixtures/w4d-macro-too-many-args.nuc \
-  "tests/fixtures/w4d-macro-too-many-args.nuc:11: error:" \
-  "macro 'for': expects 4 args, got 5"
-spawn run_reject_at w4d-macro-too-few-args tests/fixtures/w4d-macro-too-few-args.nuc \
-  "tests/fixtures/w4d-macro-too-few-args.nuc:12: error:" \
-  "macro 'case': expects at least 1 args, got 0"
-
-# --- Stage 15 W3a: opaque forward-declared C types ---------------------------
-# design/stage15-stress-test/cheader.md §1.6. `struct Foo;` used to be skipped
-# outright, so the type never registered and any later `ptr:Foo` died
-# `unknown type: Foo` — C's standard opaque-handle idiom (FILE, SDL_Window,
-# Mix_Music) was simply unusable. It now registers layout-less, is legal behind
-# a pointer, and every by-value use is refused at its own line naming the header
-# declaration. The runnable half is examples/cheader-opaque.nuc (a real
-# fopen/fprintf/fgets round trip through `ptr:FILE`, plus forward-declaration-
-# then-definition upgrades); the rejections are pinned here.
-spawn run_reject_at w3a-opaque-sizeof tests/fixtures/w3a-opaque-sizeof.nuc \
-  "tests/fixtures/w3a-opaque-sizeof.nuc:9: error:" \
-  "sizeof: 'CHOpaque' is an opaque type declared at "
-spawn run_reject_at w3a-opaque-alloca tests/fixtures/w3a-opaque-alloca.nuc \
-  "tests/fixtures/w3a-opaque-alloca.nuc:6: error:" \
-  "alloca: 'CHOpaque' is an opaque type declared at "
-spawn run_reject_at w3a-opaque-field tests/fixtures/w3a-opaque-field.nuc \
-  "tests/fixtures/w3a-opaque-field.nuc:7: error:" \
-  "field access: 'CHOpaque' is an opaque type declared at "
-spawn run_reject_at w3a-opaque-param tests/fixtures/w3a-opaque-param.nuc \
-  "tests/fixtures/w3a-opaque-param.nuc:6: error:" \
-  "defn parameter: 'CHOpaque' is an opaque type declared at "
-spawn run_reject_at w3a-opaque-return tests/fixtures/w3a-opaque-return.nuc \
-  "tests/fixtures/w3a-opaque-return.nuc:5: error:" \
-  "defn return type: 'CHOpaque' is an opaque type declared at "
 # The declaration line inside the message must be a real one — the header:line
 # provenance is recovered from clang -E's linemarkers, and a 0 there would be as
 # useless as the `:0:` W4a removed from the location prefix.
 spawn run_w3a_opaque_provenance
-# W3a also gave `unknown type:` a location: resolving a defn signature used to
-# blame the defn's NAME node, an interned NODE-SYM whose line is always 0. Both
-# halves (parameter, return) are pinned, and both fixtures also feed the
-# run_no_line_zero sweep above.
-spawn run_reject_at w3a-unknown-type-param tests/fixtures/w3a-unknown-type-param.nuc \
-  "tests/fixtures/w3a-unknown-type-param.nuc:6: error:" "unknown type: NoSuchTypeHere"
-spawn run_reject_at w3a-unknown-type-return tests/fixtures/w3a-unknown-type-return.nuc \
-  "tests/fixtures/w3a-unknown-type-return.nuc:3: error:" "unknown type: AlsoNoSuchType"
 # One real third-party header must give BOTH shapes from a single import.
 spawn run_w3a_sdl_mixer
 
@@ -7832,96 +7402,16 @@ spawn run_w3c_precedence
 # warn and win.
 spawn run_w3c_declare_params
 spawn run_w3c_declare_header
-# A parameter spelling that names no type is a located error, not a default —
-# and `:rest`/`:optional` are defn-only (the marker used to be counted as an
-# extra i32 parameter, so the declared arity silently disagreed).
-spawn run_reject_at w3c-declare-unknown-type tests/fixtures/w3c-declare-unknown-type.nuc \
-  "tests/fixtures/w3c-declare-unknown-type.nuc:4: error:" "unknown type: NoSuchDeclParamType"
-spawn run_reject_at w3c-declare-rest tests/fixtures/w3c-declare-rest.nuc \
-  "tests/fixtures/w3c-declare-rest.nuc:6: error:" \
-  "declare: ':rest' is not supported in a declaration"
 
 # --- Stage 15 W4e: docs/stdlib.md's availability table is generated ---------
 spawn run_stdlib_table
 spawn run_headers_generated
 spawn run_cstr_residue
 
-# --- Stage 15 W5c: a `defvar` global may be typed CStr ----------------------
-# design/stage15-stress-test/ergonomics.md §W5c (findings §3.7). The positive
-# matrix -- both literal spellings (plain "…" and c"…"), explicit `null`, no
-# init, `:const`, the private `defvar-`, `set!`, and every global handed to a
-# libc function declared `const char *` -- is examples/cstr-defvar.nuc, run by
-# the examples/*.nuc loop above against tests/expected/cstr-defvar.out. It is
-# checked BY VALUE (strlen/strcmp results, %s output) rather than by exit code,
-# because "it compiles" was never the question: the pre-W5c workaround compiled
-# too. That example also pins the segfault W5c fixed -- `(= cstr null)` lowered
-# to `strcmp(ptr, null)`, undefined behaviour in C and a crash under glibc.
-#
-# Here: the boundary the widened gate must NOT cross. `defvar-init-ir` now gates
-# a string literal and `null` on `is-ptr-like` instead of a bare `TY-PTR` kind,
-# which admits `CStr` -- and must still admit nothing else. (The `null` gate also
-# admits TY-FN by name since the fn-pointer-global fix below, which is why its
-# message names three admissible spellings; a string literal still does not.)
-spawn run_reject_at w5c-string-into-int tests/fixtures/w5c-string-into-int.nuc \
-  "tests/fixtures/w5c-string-into-int.nuc:5: error:" \
-  "defvar: string literal requires ptr or CStr type, not i32"
-spawn run_reject_at w5c-null-into-int tests/fixtures/w5c-null-into-int.nuc \
-  "tests/fixtures/w5c-null-into-int.nuc:4: error:" \
-  "defvar: null requires ptr, CStr or a function-pointer type, not i32"
-#
-# The carve-out, pinned in the other direction. `CStr` is flow-exempt (a null
-# `char*` is ordinary C), and `defvar-init-ir` states that exemption as its own
-# early return rather than letting it ride on `is-ptr-like`. W6 (below) has since
-# added a `pkind-flow-check` to the `TY-PTR` path beside it; this test is what
-# fails if `CStr` ever gets swept up with `ptr`.
-spawn run_accepts w5c-cstr-null-exempt tests/fixtures/w5c-cstr-null-exempt.nuc
 
-# --- Stage 15 W6: null into a non-null global -------------------------------
-# `defvar-init-ir` is a CONSTANT RENDERER: it never routes through
-# `coerce-int-val` (src/abi.nuc), the chokepoint every value-position assignment
-# passes for its Phase-F `pkind-flow-check`. So `(defvar g:ptr:Thing null)`
-# compiled clean and segfaulted on first use, while the identical local
-# `(let (p:ptr:Thing null) …)` was correctly rejected -- one rule living in one
-# path and not the other. The fix calls the SAME predicate from the global path
-# (source type = `ty-raw`, exactly what `emit-symbol-ref` gives the `null`
-# symbol), so the two cannot drift; these tests pin both directions.
-#
-# Rejections: a TYPED non-null pointer, in both spellings. The location is pinned
-# (not just the message) because the init node is the interned symbol `null`,
-# whose own line is always 0 -- the diagnostic has to borrow the enclosing
-# `defvar` form's line via `node-line`, and a regression there reports `:0:`.
-spawn run_reject_at w6-defvar-null-ptr-elem tests/fixtures/w6-defvar-null-ptr-elem.nuc \
-  "tests/fixtures/w6-defvar-null-ptr-elem.nuc:11: error:" \
-  "defvar: raw pointer where non-null (ref ...) is required"
-spawn run_reject_at w6-defvar-null-ref tests/fixtures/w6-defvar-null-ref.nuc \
-  "tests/fixtures/w6-defvar-null-ref.nuc:8: error:" \
-  "defvar: raw pointer where non-null (ref ...) is required"
-#
-# Stage 15 W9 item 7: the same rule, for the source kind it never reached. A
-# `CStr` is `TY-CSTR`, so `pkind-flow-check`'s `TY-PTR`-only guard let it launder
-# a null into a typed non-null slot — global and local alike, since the defvar
-# renderer calls the same predicate — and `as-ptr-convert` carried a second copy
-# of the premise. Measured before the fix: all three of these compiled clean and
-# segfaulted; the corpus contained exactly ONE conversion that this rejects
-# (lib/hash.nuc's CStr Hash conformance), now null-guarded.
-spawn run_reject_at w9-cstr-into-ref-defvar tests/fixtures/w9-cstr-into-ref-defvar.nuc \
-  "tests/fixtures/w9-cstr-into-ref-defvar.nuc:17: error:" \
-  "defvar: raw pointer where non-null (ref ...) is required"
-spawn run_reject_at w9-cstr-into-ref-let tests/fixtures/w9-cstr-into-ref-let.nuc \
-  "tests/fixtures/w9-cstr-into-ref-let.nuc:8: error:" \
-  "assignment: raw pointer where non-null (ref ...) is required"
-spawn run_reject_at w9-cstr-as-typed-ptr tests/fixtures/w9-cstr-as-typed-ptr.nuc \
-  "tests/fixtures/w9-cstr-as-typed-ptr.nuc:16: error:" \
-  "as: raw pointer CStr where non-null ptr:W9C7A is required"
 # W9 item 18: a function pointer is one `ptr` register, so `=` / `!=` against
 # null, against another slot, or against a function symbol is machine identity.
 spawn run_w9_fnptr_compare
-# ...but it is NOT admitted to the strcmp lowering. This is the tripwire against
-# "fixing" item 18 by widening `is-ptr-like` to contain TY-FN, which would turn
-# the line below into strcmp(hook, msg) — a function's code read as text.
-spawn run_reject_at w9-fnptr-cstr-compare tests/fixtures/w9-fnptr-cstr-compare.nuc \
-  "tests/fixtures/w9-fnptr-cstr-compare.nuc:15: error:" \
-  "=: a CStr compares only with a CStr or pointer"
 # W9 item 19, the storage half of the same sentence: one `ptr` register is one
 # TARGET pointer wide, so no fn-pointer slot may claim `align 1`.
 spawn run_w9_fnptr_align
@@ -7930,83 +7420,7 @@ spawn run_w9_fnptr_align
 # code is a bitmask of the five "is it unset?" answers plus two round-trips, so
 # a slot that compiles but holds the wrong value fails rather than passing.
 spawn run_w9_fnptr_null_init
-# ...but ONLY the literal. Gating item 20 on `is-ptr-repr` instead of on
-# Val.is-nlit would compile the line below and make any data pointer callable.
-spawn run_reject_at w9-fnptr-null-launder tests/fixtures/w9-fnptr-null-launder.nuc \
-  "tests/fixtures/w9-fnptr-null-launder.nuc:17: error:" \
-  "let: init type mismatch for 'f'"
-#
-# Acceptances: every NULLABLE or contract-free pointer destination stays legal --
-# elem-less bare `ptr` (with and without an init), `(raw T)` / `raw:T`, `?ptr:T`,
-# and `CStr`. The bare-`ptr` cases are the load-bearing ones: `ptr` is PTR-REF
-# since the Phase-F flip, so only `pkind-flow-check`'s untyped-destination
-# refinement keeps them compiling, and this compiler's own source has ~1550 such
-# bindings -- narrowing that refinement would take the bootstrap with it.
-spawn run_accepts w6-defvar-null-accepts tests/fixtures/w6-defvar-null-accepts.nuc
 
-# --- Stage 15 W8: a function-pointer-typed global ---------------------------
-# `(defvar h:(fn ret)(params) …)` could not be declared at all. Two stacked
-# defects: `name-existing-kind` called any TY-FN-typed global Sym "a function",
-# so once G-0's prescan defined that Sym the `defvar` collided with itself; and
-# behind it `defvar-init-ir`'s `null` gate tested `is-ptr-like`, which excludes
-# TY-FN by design. The positive matrix -- explicit `null`, no init, a runtime
-# initializer, `set!`, both call spellings, and reassignment -- is
-# examples/fnptr-global.nuc, run by the examples/*.nuc loop above against
-# tests/expected/fnptr-global.out and checked BY VALUE: a hook wired to the
-# wrong symbol, or an @__nucleus_init that never ran, links and exits 0.
-#
-# The two boundaries that must hold. First, the null admission is TY-FN-only:
-# `ptr:(fn …)` is a pointer TO a function pointer, an ordinary PTR-REF, and W6's
-# gate still refuses `null` there. The location is pinned for the same reason
-# W6's are -- the init node is the interned symbol `null`, whose own line is 0.
-spawn run_reject_at w8-fnptr-null-still-gated tests/fixtures/w8-fnptr-null-still-gated.nuc \
-  "tests/fixtures/w8-fnptr-null-still-gated.nuc:12: error:" \
-  "defvar: raw pointer where non-null (ref ...) is required"
-# Second, the `is-local` conjunct must not silence a real cross-kind collision.
-# g0-value-fn-collision-order1/2 pin the plain (i32-typed) shape; this is the
-# fn-typed one, i.e. exactly the shape the new conjunct changes the answer for.
-#
-# Stage 15 B5 re-pointed the LOCATION and the noun, not the verdict. The guard
-# now asks the shared binding table for the first binding whose kind is NOT the
-# one being defined (name-resolution.md §13.3), so the collision is reported at
-# whichever definer is EMITTED first — here the `defn`, naming the
-# `defvar` — instead of only at the second one. Before B5 the first definer's
-# own guard was silently masked by its own prescan registration, which is the
-# same class of hole this chunk exists to close; the pair is still refused, and
-# `run_reject_at` still proves no binary is produced.
-spawn run_reject_at w8-fnptr-global-name-collision tests/fixtures/w8-fnptr-global-name-collision.nuc \
-  "tests/fixtures/w8-fnptr-global-name-collision.nuc:19: error:" \
-  "'f' already names a value — a symbol may name only one kind of thing"
-
-# --- Stage 15 W5d: array literal ergonomics ---------------------------------
-# design/stage15-stress-test/ergonomics.md §3.9 + §3.10. The positive matrix is
-# examples/array-literal-ergonomics.nuc, run by the examples/*.nuc loop above:
-# bare struct compound literals as array elements (positional, designated and
-# mixed with the old `(deref …)` spelling), the zero-fill of an unspecified
-# struct/CStr slot, the same relaxation at the sibling typed slots (local, field,
-# aset!, by-value return), and the §3.10 `:ptr` bindings. The committed boot
-# compiler FAILS on that file (`array: type mismatch in positional initializer`),
-# which is the teeth.
-#
-# Here: the three boundaries the relaxations must NOT cross.
-# 1. §3.9 stays type-directed — a compound literal of a DIFFERENT struct is
-#    still a mismatch (the load is gated on the pointee's StructDef).
-# 2. The implicit load is a `deref`, so it inherits `deref`'s Stage 10
-#    obligation: a `?T` source must be narrowed first, or the sugar would be a
-#    nullability hole the explicit spelling does not have.
-# 3. §3.10 is SYNTACTIC (an `(array T …)` init and nothing else). A bare `:ptr`
-#    is the void*-style erasure hatch; inferring the element type generally
-#    would re-route multimethod dispatch across every such binding, so a `:ptr`
-#    bound from an `alloca` must stay elem-less.
-spawn run_reject_at w5d-array-wrong-struct tests/fixtures/w5d-array-wrong-struct.nuc \
-  "tests/fixtures/w5d-array-wrong-struct.nuc:9: error:" \
-  "array: type mismatch in positional initializer"
-spawn run_reject_at w5d-struct-slot-maybe-null tests/fixtures/w5d-struct-slot-maybe-null.nuc \
-  "tests/fixtures/w5d-struct-slot-maybe-null.nuc:12: error:" \
-  "assignment: value may be null"
-spawn run_reject_at w5d-elemless-not-inferred tests/fixtures/w5d-elemless-not-inferred.nuc \
-  "tests/fixtures/w5d-elemless-not-inferred.nuc:13: error:" \
-  "aref: operand must be typed pointer"
 
 # --- Stage 15 W1: whole-unit signature resolution ----------------------------
 # design/stage15-stress-test/resolution.md. Cross-file function references now
@@ -8069,33 +7483,6 @@ spawn run_g0_still_rejects
 # rule — plus the arithmetic faults folding introduces, each of which must be a
 # located diagnostic rather than a wrap, a SIGFPE in the compiler, or poison.
 spawn run_g1_fold_cross_file
-spawn run_reject_at g1-fold-range tests/fixtures/g1-fold-range.nuc \
-  "tests/fixtures/g1-fold-range.nuc:5: error:" \
-  "defvar: constant expression value 6000000000 does not fit i32"
-spawn run_reject_at g1-fold-overflow tests/fixtures/g1-fold-overflow.nuc \
-  "tests/fixtures/g1-fold-overflow.nuc:3: error:" \
-  "defvar: constant initializer overflows 64-bit signed integer arithmetic"
-spawn run_reject_at g1-div-zero tests/fixtures/g1-div-zero.nuc \
-  "tests/fixtures/g1-div-zero.nuc:4: error:" \
-  "defvar: division by zero in constant initializer"
-spawn run_reject_at g1-rem-zero tests/fixtures/g1-rem-zero.nuc \
-  "tests/fixtures/g1-rem-zero.nuc:2: error:" \
-  "defvar: remainder by zero in constant initializer"
-spawn run_reject_at g1-shift-range tests/fixtures/g1-shift-range.nuc \
-  "tests/fixtures/g1-shift-range.nuc:3: error:" \
-  "defvar: shift amount 64 out of range in constant initializer"
-spawn run_reject_at g1-as-lossy tests/fixtures/g1-as-lossy.nuc \
-  "tests/fixtures/g1-as-lossy.nuc:5: error:" \
-  "as: lossy conversion from i64 to i32 -- use unsafe/cast"
-spawn run_reject_at g1-as-null-launder tests/fixtures/g1-as-null-launder.nuc \
-  "tests/fixtures/g1-as-null-launder.nuc:7: error:" \
-  "defvar: raw pointer where non-null (ref ...) is required"
-spawn run_reject_at g1-addr-of-const tests/fixtures/g1-addr-of-const.nuc \
-  "tests/fixtures/g1-addr-of-const.nuc:4: error:" \
-  "defvar: addr-of: 'G1K' is a compile-time constant and has no address"
-spawn run_reject_at g1-not-constant tests/fixtures/g1-not-constant.nuc \
-  "tests/fixtures/g1-not-constant.nuc:5: error:" \
-  "defvar: init must be a compile-time constant"
 
 # --- Stage 15 W8 G-2: the (array T N) type + constant aggregates -------------
 # design/global-init.md §5 "G-2". The five shapes are exercised positively by
@@ -8108,64 +7495,6 @@ spawn run_reject_at g1-not-constant tests/fixtures/g1-not-constant.nuc \
 # be implied.
 spawn run_g2_cheader
 spawn run_g2_nuch
-spawn run_accepts g2-anon-struct-field tests/fixtures/g2-anon-struct-field.nuc
-spawn run_reject_at g2-array-param tests/fixtures/g2-array-param.nuc \
-  "tests/fixtures/g2-array-param.nuc:4: error:" \
-  "(array T N) is a storage type"
-spawn run_reject_at g2-array-return tests/fixtures/g2-array-return.nuc \
-  "tests/fixtures/g2-array-return.nuc:3: error:" \
-  "(array T N) is a storage type"
-spawn run_reject_at g2-array-let tests/fixtures/g2-array-let.nuc \
-  "tests/fixtures/g2-array-let.nuc:4: error:" \
-  "(array T N) is a storage type"
-spawn run_reject_at g2-array-ptr-elem tests/fixtures/g2-array-ptr-elem.nuc \
-  "tests/fixtures/g2-array-ptr-elem.nuc:4: error:" \
-  "(array T N) is a storage type"
-spawn run_reject_at g2-array-nested tests/fixtures/g2-array-nested.nuc \
-  "tests/fixtures/g2-array-nested.nuc:3: error:" \
-  "(array T N) is a storage type"
-spawn run_reject_at g2-array-generic-arg tests/fixtures/g2-array-generic-arg.nuc \
-  "tests/fixtures/g2-array-generic-arg.nuc:5: error:" \
-  "(array T N) is a storage type"
-spawn run_reject_at g2-len-nonconst tests/fixtures/g2-len-nonconst.nuc \
-  "tests/fixtures/g2-len-nonconst.nuc:4: error:" \
-  "(array T N): length must be a compile-time integer constant"
-spawn run_reject_at g2-len-zero tests/fixtures/g2-len-zero.nuc \
-  "tests/fixtures/g2-len-zero.nuc:4: error:" \
-  "(array T N): length must be positive, got 0"
-spawn run_reject_at g2-index-range tests/fixtures/g2-index-range.nuc \
-  "tests/fixtures/g2-index-range.nuc:3: error:" \
-  "index 5 is out of range for a 3-element array"
-spawn run_reject_at g2-index-twice tests/fixtures/g2-index-twice.nuc \
-  "tests/fixtures/g2-index-twice.nuc:3: error:" \
-  "index 1 specified twice"
-spawn run_reject_at g2-too-many tests/fixtures/g2-too-many.nuc \
-  "tests/fixtures/g2-too-many.nuc:3: error:" \
-  "too many initializers for a 2-element array"
-spawn run_reject_at g2-elem-mismatch tests/fixtures/g2-elem-mismatch.nuc \
-  "tests/fixtures/g2-elem-mismatch.nuc:3: error:" \
-  "array initializer element type i64 does not match the declared element type i32"
-spawn run_reject_at g2-elem-range tests/fixtures/g2-elem-range.nuc \
-  "tests/fixtures/g2-elem-range.nuc:4: error:" \
-  "defvar: constant expression value 6000000000 does not fit i32"
-spawn run_reject_at g2-scalar-init tests/fixtures/g2-scalar-init.nuc \
-  "tests/fixtures/g2-scalar-init.nuc:2: error:" \
-  "slot must be initialized with an (array T ...) literal"
-spawn run_reject_at g2-struct-scalar-init tests/fixtures/g2-struct-scalar-init.nuc \
-  "tests/fixtures/g2-struct-scalar-init.nuc:5: error:" \
-  "a P slot must be initialized with a (P ...) compound literal"
-spawn run_reject_at g2-struct-field-twice tests/fixtures/g2-struct-field-twice.nuc \
-  "tests/fixtures/g2-struct-field-twice.nuc:3: error:" \
-  "defvar: field 'x' specified twice"
-spawn run_reject_at g2-struct-no-field tests/fixtures/g2-struct-no-field.nuc \
-  "tests/fixtures/g2-struct-no-field.nuc:3: error:" \
-  "defvar: no field 'z' on struct 'P'"
-spawn run_reject_at g2-field-assign tests/fixtures/g2-field-assign.nuc \
-  "tests/fixtures/g2-field-assign.nuc:5: error:" \
-  "set!: field 'xs': an (array T N) is storage, not a value"
-spawn run_reject_at g2-set-global tests/fixtures/g2-set-global.nuc \
-  "tests/fixtures/g2-set-global.nuc:4: error:" \
-  "set!: 'g': an (array T N) is storage, not a value"
 
 # --- Stage 15 W8 G-3: @__nucleus_init ----------------------------------------
 # design/global-init.md §5 "G-3". The positive matrix is
@@ -8175,25 +7504,6 @@ spawn run_reject_at g2-set-global tests/fixtures/g2-set-global.nuc \
 # requirement was stated for — is in tests/run-avr-test.sh.
 spawn run_g3_zero_cost
 spawn run_g3_library
-# The queue predicate is `defvar-init-ir`'s own answer, so a runtime initializer
-# inherits every check the constant renderer already applied at the same slot —
-# §2.8's `pkind-flow-check` most of all, which is the whole acceptance argument
-# for combining declaration with initialization. Pinned at the `defvar`, not at
-# some synthesized set! the user never wrote.
-spawn run_reject_at g3-init-raw-into-ref tests/fixtures/g3-init-raw-into-ref.nuc \
-  "tests/fixtures/g3-init-raw-into-ref.nuc:9: error:" \
-  "raw pointer where non-null (ref ...) is required"
-spawn run_reject_at g3-init-type-mismatch tests/fixtures/g3-init-type-mismatch.nuc \
-  "tests/fixtures/g3-init-type-mismatch.nuc:6: error:" \
-  "set!: type mismatch for 'g3-bad'"
-# Positions where a runtime initializer has nowhere to run. Each must be a
-# located refusal rather than a slot that silently stays zero.
-spawn run_reject_at g3-init-in-compile-time tests/fixtures/g3-init-in-compile-time.nuc \
-  "tests/fixtures/g3-init-in-compile-time.nuc:6: error:" \
-  "a compile-time or macro body cannot have"
-spawn run_reject_at g3-init-const-storage tests/fixtures/g3-init-const-storage.nuc \
-  "tests/fixtures/g3-init-const-storage.nuc:6: error:" \
-  "is :const, so its initializer must be a compile-time constant"
 
 # --- Stage 15 W8 G-4: the initializer-ordering diagnostic --------------------
 # design/global-init.md §4.2. The accepting half — including the `(addr-of g)`
@@ -8202,44 +7512,7 @@ spawn run_reject_at g3-init-const-storage tests/fixtures/g3-init-const-storage.n
 # file:line:s. Note the second argument of each pair pins the NOTE's location,
 # i.e. the target `defvar`, so one call covers both halves of "name both sites".
 spawn run_g4_order
-spawn run_reject_at g4-forward-ref tests/fixtures/g4-forward-ref.nuc \
-  "tests/fixtures/g4-forward-ref.nuc:12: error: defvar: the initializer for 'g4-fwd-a' names global 'g4-fwd-b', whose own defvar has not been reached yet" \
-  "note: 'g4-fwd-b' is declared at tests/fixtures/g4-forward-ref.nuc:13"
-spawn run_reject_at g4-init-cycle tests/fixtures/g4-init-cycle.nuc \
-  "tests/fixtures/g4-init-cycle.nuc:10: error: defvar: the initializer for 'g4-cyc-a' names global 'g4-cyc-b'" \
-  "note: 'g4-cyc-b' is declared at tests/fixtures/g4-init-cycle.nuc:11"
-spawn run_reject_at g4-self-ref tests/fixtures/g4-self-ref.nuc \
-  "tests/fixtures/g4-self-ref.nuc:6: error: defvar: the initializer for 'g4-self' names 'g4-self' itself" \
-  "note: a global's initializer runs at the point its own defvar is reached, so it cannot read the global it is initializing"
-# The two carve-outs, pinned as ACCEPTING here as well as by value above: a
-# later, stricter walk that swallowed either would break programs that compile
-# today (examples/g1-const-init.nuc's forward `(addr-of g-later-target)` is the
-# in-tree instance of the first).
-spawn run_accepts g4-addr-of-forward-clean tests/fixtures/g4-addr-of-forward.nuc
-spawn run_accepts g4-laundered-call-clean tests/fixtures/g4-laundered-call.nuc
 
-# --- Stage 15 W8 G-5: eliminate compiler-init, then flip ---------------------
-# design/global-init.md §5 "G-5". The migration itself is verified by the whole
-# suite (the compiler that runs every test below IS the migrated compiler), plus
-# `assert-compiler-arena-backed`, which main/repl-main call on every invocation.
-#
-# The FLIP (acceptance criterion (B)): a `defvar` whose type is a non-null typed
-# pointer must be initialized. This closes nullability.md §1.5's remaining half
-# and makes `ptr:T` mean non-null at a global as it does everywhere else.
-spawn run_reject_at g5-noinit-ref tests/fixtures/g5-noinit-ref.nuc \
-  "tests/fixtures/g5-noinit-ref.nuc:12: error:" \
-  "defvar: 'g5-thing' has a non-null pointer type but no initializer"
-# ...and the note that tells you the two ways out, which is the whole reason the
-# rule is tolerable at all.
-spawn run_reject_at g5-noinit-ref-note tests/fixtures/g5-noinit-ref.nuc \
-  "tests/fixtures/g5-noinit-ref.nuc:12: error:" \
-  "declare it nullable with \`raw\`"
-# The carve-outs the flip must NOT swallow, all four in one fixture: `raw`, `?T`,
-# an elem-less bare `ptr` (~1550 of them in this compiler's own source), and
-# CStr. These are pkind-flow-check's own exemptions, inherited by calling it
-# rather than re-derived — a hand-written `(= (ty pkind) PTR-REF)` here would
-# have broken every bare `:ptr` global in the tree.
-spawn run_accepts g5-noinit-carve-outs tests/fixtures/g5-noinit-raw-ok.nuc
 
 # --- Stage 15 W5e: `defn-` name isolation -----------------------------------
 # design/stage15-stress-test/ergonomics.md §W5e. Sequenced after W1 because it is
@@ -8247,119 +7520,7 @@ spawn run_accepts g5-noinit-carve-outs tests/fixtures/g5-noinit-raw-ok.nuc
 # private name's key final before any form is emitted.
 spawn run_w5e_private_isolated
 spawn run_w5e_still_rejects
-spawn run_reject w5e-ns-hash-reserved tests/fixtures/w5e-ns-hash-reserved.nuc \
-  "a namespace name may not begin with '#'"
 
-# --- Stage 15 W7: a bare selector symbol may be a value ---------------------
-# design/stage15-stress-test/selector-ambiguity.md. The positive matrix is
-# examples/selector-value.nuc, run by the examples/*.nuc loop above against
-# tests/expected/selector-value.out: a local key in head position, through
-# `get`, and through `invoke` (which now falls back to `get`); a string-literal
-# key; an absent key; plain field access with a same-named local in scope; and
-# the collision case where the local names a REAL field, which still resolves to
-# the field with `invoke` as the escape hatch. Checked by value, not by exit
-# code — "it compiles" was never the question for the field-access half.
-#
-# Since step 3 the selector IS the local: `(p k)` reads `k` as a computed
-# selector, and an i32 is not one. The old W7 demotion this pinned is gone --
-# there is nothing left to demote when a bare symbol was never a field.
-spawn run_reject_at w7-local-not-a-field tests/fixtures/w7-local-not-a-field.nuc \
-  "tests/fixtures/w7-local-not-a-field.nuc:9: error:" \
-  "computed selector must evaluate to a symbol (ptr)"
-# And the hint must not leak onto an ordinary typo — no local named `zz`, so the
-# message stays the plain unadorned one.
-spawn run_reject_at w7-plain-typo tests/fixtures/w7-plain-typo.nuc \
-  "tests/fixtures/w7-plain-typo.nuc:7: error:" \
-  "get: no field 'zz' on struct 'Point'"
-
-# --- Stage 15 W9 defects 11 + 12 -----------------------------------------------
-# design/stage15-stress-test/progress.md, W9 rows 11 and 12 — a matched pair.
-#
-# Defect 11: FOUR call sites passed more substitutions than their fixed-arity
-# format helper takes (context/conventions.md opens with this trap), so snprintf
-# read a garbage vararg. The two `%d %d` sites printed a garbage COUNT rather
-# than crashing ("got 100", "got 115"), which is why nobody noticed; the two
-# `%s %s` sites dereferenced the garbage and SEGFAULTED the compiler with no
-# output at all. All four were cold paths a green suite had never executed, so
-# the durable half of the fix is that each now HAS a test: a corrected format
-# string nothing runs is one edit away from regressing.
-spawn run_reject_at w9-fnptr-arity tests/fixtures/w9-fnptr-arity.nuc \
-  "tests/fixtures/w9-fnptr-arity.nuc:12: error:" \
-  "call: expected 2 args, got 1"
-spawn run_reject_at w9-boxedfn-arity tests/fixtures/w9-boxedfn-arity.nuc \
-  "tests/fixtures/w9-boxedfn-arity.nuc:9: error:" \
-  "BoxedFn call: expected 1 args, got 2"
-# The two that SEGFAULTED before the fix (both substitutions are `%s`).
-# w9-dyn-not-protocol was RE-POINTED by defect 21 (see the fixture's own header):
-# it used to reach this message by exploiting the protocol/conformance key
-# mismatch that defect 21 fixed, and now reaches it the honest way — a `dyn`
-# position naming a protocol nothing declared. The `(extend Cat dp/Describe)`
-# above it now succeeds, which is the fix.
-spawn run_reject_at w9-dyn-not-protocol tests/fixtures/w9-dyn-not-protocol.nuc \
-  "tests/fixtures/w9-dyn-not-protocol.nuc:36: error:" \
-  "(dyn dp/Missing): 'dp/Missing' is not a declared protocol"
-spawn run_reject_at w9-extend-super-not-protocol tests/fixtures/w9-extend-super-not-protocol.nuc \
-  "tests/fixtures/w9-extend-super-not-protocol.nuc:11: error:" \
-  "extend: 'Describe' is a protocol, so its supertype 'Plain' must be a protocol too"
-
-# Defect 12: a wrong-arity call to a SOLITARY `defn` was not diagnosed at all —
-# `(f 1 2)` against a one-parameter `f` emitted `call i32 @f(i32 1, i32 2)`,
-# linked and ran. The rule now lives in ONE function (`call-arity-ok` /
-# `check-call-arity`, src/nucleusc.nuc) that the direct, indirect and BoxedFn
-# paths all CALL, so they cannot drift. Both directions are errors.
-spawn run_reject_at w9-call-too-many tests/fixtures/w9-call-too-many.nuc \
-  "tests/fixtures/w9-call-too-many.nuc:9: error:" \
-  "call to 'f': expected 1 args, got 2"
-spawn run_reject_at w9-call-too-few tests/fixtures/w9-call-too-few.nuc \
-  "tests/fixtures/w9-call-too-few.nuc:9: error:" \
-  "call to 'f': expected 2 args, got 1"
-# The legitimately variable arities: `:optional` is a band, `:rest` is a floor.
-spawn run_reject_at w9-optional-too-many tests/fixtures/w9-optional-too-many.nuc \
-  "tests/fixtures/w9-optional-too-many.nuc:7: error:" \
-  "call to 'opt': expected at most 2 args, got 3"
-spawn run_reject_at w9-rest-too-few tests/fixtures/w9-rest-too-few.nuc \
-  "tests/fixtures/w9-rest-too-few.nuc:7: error:" \
-  "call to 'r': expected at least 2 args, got 1"
-# A `declare`d signature is OPEN-TAILED: Nucleus has no `...` spelling, so the
-# documented way to call a C variadic function is to declare its fixed
-# parameters and let the extras ride the call site. This is the carve-out the
-# check must not swallow — three tests above (n6/sm3/s1) already depend on it.
-spawn run_accepts w9-declare-open-tail tests/fixtures/w9-declare-open-tail.nuc
-# ...but the fixed prefix is still asserted, so too FEW is an error.
-spawn run_reject_at w9-declare-too-few tests/fixtures/w9-declare-too-few.nuc \
-  "tests/fixtures/w9-declare-too-few.nuc:9: error:" \
-  "call to 'some-c-fn': expected at least 2 args, got 1"
-
-# --- Stage 15 W9 defect 21: protocols are namespaced entities -------------------
-# design/stage15-stress-test/progress.md W9 row 21; the ruling is recorded as a
-# dated supersession of Stage 12 decision 9 in design/stage12/namespaces.md.
-#
-# `(dyn ns/Proto)` was unusable across a namespace: the conformance registry
-# stripped the qualifier off BOTH the type and the protocol while
-# `protocol-lookup` matched the raw spelling, so `(extend Cat dp/Describe)`
-# recorded a fact `(dyn dp/Describe)` could never find. The fix keeps the strip
-# for the TYPE half (Stage 12's actual claim — a qualified type reference must
-# resolve to the same StructDef from any namespace) and replaces it for the
-# PROTOCOL half with resolution through the namespaced protocol registry.
-#
-# The positive, link-AND-RUN half is examples/w9-dyn-ns.nuc (dispatched by the
-# examples/*.nuc loop above against tests/expected/w9-dyn-ns.out): it asserts the
-# dispatched RESULTS 105/207/309, not an exit-0 compile. It pins all three halves
-# of the ruling at once — a qualified reference resolving cross-namespace under a
-# DIFFERENT import prefix, a bare reference inside its own namespace naming the
-# same identity, and two namespaces declaring a `Describe` apiece without
-# colliding. The committed pre-fix compiler rejects that program outright.
-#
-# The negative halves: conformance is still checked (and now names the protocol
-# by its namespaced identity, so a failure says *which* Describe), and a bare
-# reference that names no protocol in scope is still an error rather than
-# silently picking one.
-spawn run_reject_at w9-ns-proto-nonconform tests/fixtures/w9-ns-proto-nonconform.nuc \
-  "tests/fixtures/w9-ns-proto-nonconform.nuc:18: error:" \
-  "type 'Bad' does not conform to protocol 'dp/Describe'"
-spawn run_reject_at w9-ns-proto-ambiguous tests/fixtures/w9-ns-proto-ambiguous.nuc \
-  "tests/fixtures/w9-ns-proto-ambiguous.nuc:17: error:" \
-  "extend: unknown protocol 'Describe'"
 
 # --- Stage 15 B0: name resolution — the cells that must NOT move ---------------
 # See the header on run_b0_import_use_flatten above. The recording harness for
@@ -8375,12 +7536,6 @@ spawn run_b1_prefix_file_scope
 # (it spells `dpx/Describe` / `dpx2/Describe` and asserts the dispatched results
 # 105/207/309); these are the negative halves, plus the flatten half of §8.3's
 # table, which B2a is the first step to implement at all.
-spawn run_reject_at b2a-extend-ns-not-in-scope tests/fixtures/b2a-ns-not-in-scope.nuc \
-  "tests/fixtures/b2a-ns-not-in-scope.nuc:25: error:" \
-  "extend: unknown protocol 'dp/Describe'"
-spawn run_reject_at b2a-dyn-ns-not-in-scope tests/fixtures/b2a-dyn-ns-not-in-scope.nuc \
-  "tests/fixtures/b2a-dyn-ns-not-in-scope.nuc:27: error:" \
-  "(dyn dp/Describe): 'dp/Describe' is not a declared protocol"
 spawn run_b2a_scope_diagnostic
 spawn run_b2a_import_use_binds_namespace
 
@@ -8894,11 +8049,6 @@ EOF
 }
 spawn run_b3a_ns_type_generic
 
-# Defect #7's other half, and defect #4. `strip-ns-qualifier` used to discard a
-# type spelling's qualifier without checking it, so a type was reachable from
-# anywhere under any qualifier — including one naming no namespace at all.
-spawn run_reject_at b3-type-bogus-qualifier tests/fixtures/b3-type-bogus-qualifier.nuc \
-  "tests/fixtures/b3-type-bogus-qualifier.nuc:14: error:" "'nope' is not in scope in this file"
 # A bare type name from a prefixed import: the type is defined, its file is
 # reachable, the prescan registered it — so the diagnostic must NOT be the
 # reachability message (which would send the reader looking for a missing
@@ -8921,26 +8071,9 @@ run_b3_ns_type_diagnostic() {
   fi
 }
 spawn run_b3_ns_type_diagnostic
-# B3′ gave `unknown-type-message` the did-you-mean tier `unresolved-name-message`
-# already had. The tier is a COLD error path, so it needs a test that EXECUTES it
-# — the first cut called `fmt-3s` with two arguments, which conventions.md's
-# fixed-arity rule says is invisible until something runs the line.
-spawn run_reject_at b3-type-typo tests/fixtures/b3-type-typo.nuc \
-  "tests/fixtures/b3-type-typo.nuc:12: error:" "unknown type: Widgat (did you mean 'Widget'?)"
 
 # --- Stage 15 B2b: globals + the `unsafe` built-in namespace -------------------
 spawn run_b2b_prefixed_values
-# `unsafe` is a namespace now, not seven strings in the special-form set. The
-# positive half (unsafe/cast, unsafe/ptr+, unsafe/funcall-ptr-i32 and
-# unsafe/import-private all compiling and RUNNING, the last of them reaching a
-# `defn-` through the prefix) is examples/unsafe-spellings.nuc, dispatched by
-# the examples loop above; the four `un5-bare-*` rejections above still pin the
-# retired bare spellings, which are now refused because the namespace is bound
-# PREFIXED and never flattened rather than by a hard-coded arm in the dispatch
-# ladder. This is the third half: the qualified spellings stay RESERVED even
-# though they left `g-special-form-set`.
-spawn run_reject b2b-unsafe-reserved tests/fixtures/b2b-unsafe-reserved.nuc \
-  "'unsafe/cast' already names a special form"
 
 # --- Stage 15 B5: the shared binding interface --------------------------------
 spawn run_b5_protocol_kind
@@ -9652,25 +8785,6 @@ EOF
 }
 spawn run_w9_cheader_reserved_words
 
-# The tenth defect (`protocol-dyn-annot`). An annotation naming a protocol that
-# exists nowhere used to compile and fabricate a box type; admission now happens
-# at the annotation site, deferred to `drain-dyn-annots`. Nothing in this fixture
-# constructs a box, so only the annotation path can reach it.
-spawn run_reject_at b6-dyn-annot-unknown tests/fixtures/b6-dyn-annot-unknown.nuc \
-  "tests/fixtures/b6-dyn-annot-unknown.nuc:17: error:" \
-  "(dyn nope/Wholly-Absent): 'nope/Wholly-Absent' is not a declared protocol"
-# The erased-slot coercion's missing identity check, pinned at BOTH of its call
-# sites: the argument position (its own blocks in emit-call-with-args) and the
-# binding position (maybe-box-into-slot). The argument one is the one that
-# mattered — the SysV ABI splits the fat pointer into two i64s at the call, so
-# LLVM never saw the mismatch and the program linked and ran against the wrong
-# vtable.
-spawn run_reject_at b6-dyn-box-mismatch-arg tests/fixtures/b6-dyn-box-mismatch-arg.nuc \
-  "tests/fixtures/b6-dyn-box-mismatch-arg.nuc:30: error:" \
-  "type mismatch: a (dyn Pp) value cannot be used where (dyn Qq) is required"
-spawn run_reject_at b6-dyn-box-mismatch-let tests/fixtures/b6-dyn-box-mismatch-let.nuc \
-  "tests/fixtures/b6-dyn-box-mismatch-let.nuc:29: error:" \
-  "type mismatch: a (dyn Pp) value cannot be used where (dyn Qq) is required"
 
 # --- Stage 15 B4: generics get a qualified spelling ---------------------------
 # name-resolution.md §8.2 (R2) / defect #5. A generic is deliberately NOT re-keyed
@@ -9767,17 +8881,6 @@ EOF
 }
 spawn run_b4_qualified_template
 
-# The per-kind collision rule (§8.2's table, §14.2's `collides` column). Of the
-# three rows that were 0, only `BK-ENUM` hid a real hole: a `defunion` also
-# registers a backing StructDef under the same key so `BK-STRUCT` already
-# answered for it, and `__fnty_N` has no source spelling — but an enum registers
-# only its MEMBERS, so its own name collided with nothing.
-spawn run_reject_at b4-enum-vs-defn tests/fixtures/b4-enum-vs-defn.nuc \
-  "tests/fixtures/b4-enum-vs-defn.nuc:13: error:" \
-  "'Colour' already names an enumeration — a symbol may name only one kind of thing"
-spawn run_reject_at b4-enum-vs-defvar tests/fixtures/b4-enum-vs-defvar.nuc \
-  "tests/fixtures/b4-enum-vs-defvar.nuc:6: error:" \
-  "'Colour' already names an enumeration — a symbol may name only one kind of thing"
 
 # R4's eager rule (§11.1): two definitions of one name reaching one scope. Every
 # kind measured before B4 accepted this silently and with no agreed winner — a
@@ -14530,11 +13633,11 @@ spawn run_reader_parity src
 # --- Stage 18 TF-5: --diagnostics=sexp ------------------------------------------
 # The structured back-end must carry exactly what the text one prints, and carry
 # it as FIELDS -- one form per diagnostic, notes as a `notes` operand rather than
-# as trailing lines. `run_reject_at`'s two independent greps cannot tell a
+# as trailing lines. Two independent greps over one stderr blob cannot tell a
 # location on a note from a location on the error; a field comparison can.
 #
-# The text back-end's byte-identity is not asserted here: the 172 reject units
-# above already assert their exact diagnostic text, so any drift fails there.
+# The text back-end's byte-identity is not asserted here: the IR snapshot's
+# `.ll.err` artifacts compare every fixture's diagnostic text byte for byte.
 run_diagnostics_sexp() {
   local d out
   d="$(mktemp -d)"

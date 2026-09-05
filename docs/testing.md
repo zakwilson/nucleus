@@ -100,8 +100,11 @@ than as text ([Structured diagnostics](compiler.md#structured-diagnostics)).
 | `(check-error-at ds file line needle)` | An `error` at exactly `file:line` whose message contains `needle`. |
 | `(check-warning-at ds file line needle)` | The same for a `warning`. |
 | `(check-note-at ds file line needle)` | A diagnostic at `file:line` with a note containing `needle`. |
+| `(check-error-anywhere ds needle)` | Some `error` contains `needle`; no location pinned. |
+| `(check-note-anywhere ds needle)` | Some note contains `needle`; no location pinned. |
 | `(check-no-errors ds)` | No diagnostic has severity `error`. |
-| `(check-diagnostic ds severity file line needle)` | The general form the four above call. |
+| `(check-no-line-zero ds)` | No diagnostic reports line 0. |
+| `(check-diagnostic ds severity file line needle)` | The general form the located three call. |
 
 A `Diagnostic` has `severity` (a `Symbol`), `file`, `line`, `message`, and
 `notes` (a `(Vector StrView)`).
@@ -114,6 +117,30 @@ probe while the error says something else somewhere else.
 
 `read-diagnostics` skips any line that is not a diagnostic, so the raw stderr of
 a compile that also invoked another tool can be handed to it unfiltered.
+
+## Data-driven tests
+
+`deftest` names one test in source. When a suite's tests differ only in their
+data — the same assertion over a hundred fixtures — register them from a table
+instead, with `test-add`:
+
+```lisp
+(defn run-row (data:ptr):!void
+  (let (row:raw:Node (unsafe/cast raw:Node data))
+    …))
+
+(test-add name file line run-row row)
+```
+
+`test-add` takes the name as a `StrView`, so it can come from a file, and the
+`data` pointer is handed back to the function as its argument. A `deftest`
+registers through the same path and ignores the argument.
+
+`tests/nuctests.nuc` is the worked example: it reads
+`tests/manifest/diagnostics.sexp` with `lib/read.nuc` and registers one test per
+row. Each row names a fixture, an optional line, and the messages and notes the
+compiler must produce for it — the whole of the compiler's rejection suite as
+data rather than as control flow.
 
 ## Failing
 

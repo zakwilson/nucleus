@@ -110,9 +110,26 @@ $(READDUMP): tests/readdump.nuc $(wildcard lib/*.nuc) $(BIN) | $(BUILD)
 
 test-tools: $(BIN) $(READDUMP)
 
-test: test-tools
+test: test-tools $(NUCTESTS)
 	@rm -rf $(BUILD)/out
 	./tests/run-tests.sh
+	@$(MAKE) --no-print-directory run-nuctests
+
+# Stage 18 TF-6: the native suite. `make test` runs it alongside the shell
+# suite; while both cover a category their agreement is the evidence that
+# retires the shell version. See design/stage18-tooling/overview.md T6.6.
+NUCTESTS := $(BUILD)/nuctests
+
+$(NUCTESTS): tests/nuctests.nuc tests/manifest/diagnostics.sexp $(wildcard lib/*.nuc) $(BIN) | $(BUILD)
+	$(BIN) tests/nuctests.nuc -o $@
+
+# The suite's stdout is a machine-readable record stream, so the human summary
+# is made here rather than by polluting it.
+run-nuctests: $(NUCTESTS) test-tools
+	@./$(NUCTESTS) > $(BUILD)/nuctests.out; s=$$?; \
+	  grep -F '(status fail)' $(BUILD)/nuctests.out || true; \
+	  echo "nuctests: $$(grep -cF '(status pass)' $(BUILD)/nuctests.out) passed, $$(grep -cF '(status fail)' $(BUILD)/nuctests.out) failed"; \
+	  exit $$s
 
 # Stage 18 TF-2: the native runner, driving the same shell bodies through
 # `run-tests.sh --unit`. Not part of `make test` yet -- at this phase it runs
@@ -296,4 +313,4 @@ uninstall:
 	rm -f $(BINDIR)/nucleusc
 	rm -rf $(DESTDIR)$(PREFIX)/share/nucleus
 
-.PHONY: test test-tools nuctest abi-test layout-test avr-test riscv-test riscv-abi-test gen-stdlib-table clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders check-headers lib-objs lib-so lib install uninstall
+.PHONY: test test-tools nuctest run-nuctests abi-test layout-test avr-test riscv-test riscv-abi-test gen-stdlib-table clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders check-headers lib-objs lib-so lib install uninstall

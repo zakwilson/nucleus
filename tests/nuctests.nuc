@@ -1,0 +1,178 @@
+; Stage 18 TF-6 — the compiler's native test suite.
+;
+; Design: design/stage18-tooling/overview.md §T6.6.
+;
+; One binary, driven by `build/nuctest` the same way the shell suite is:
+; `--list` names every test, `--run <name>` runs exactly one and prints its
+; s-expression record. Each test is its own process, so isolation and order
+; independence are properties of the architecture rather than promises.
+;
+; Category (a) is a TABLE (`tests/manifest/diagnostics.sexp`), not 168 hand
+; written units: every row says the same thing about a different fixture, and
+; the thing it says is now a comparison against one `Diagnostic` record rather
+; than two greps over one stderr blob.
+
+(import-use error)
+(import-use strview)
+(import-use string)
+(import-use string-split)
+(import-use fmt)
+(import-use vector)
+(import-use io)
+(import-use file)
+(import-use process)
+(import-use node)
+(import-use read)
+(import-use test)
+
+
+
+(defn manifest-path ():StrView (return "tests/manifest/diagnostics.sexp"))
+(defn compiler-path ():StrView (return "./build/nucleusc"))
+
+; ---------------------------------------------------------------------------
+; Reading a row
+; ---------------------------------------------------------------------------
+
+; The operands of the `(key …)` entry named `name`, or null. Rows are the same
+; shape a diagnostic is, so they are read the same way.
+(defn row-entry (row:raw:Node name:StrView):raw:Node
+  (let (cur:raw:Node (row 'cdr))
+    (while (!= cur null)
+      (let (e:raw:Node (cur 'car))
+        (when (and (!= e null) (= (e 'kind) NODE-CELL))
+          (let (h:raw:Node (e 'car))
+            (when (and (!= h null) (= (h 'kind) NODE-SYM)
+                       (= (symbol-as-view (h 's)) name))
+              (return (e 'cdr))))))
+      (set! cur (cur 'cdr)))
+    (return null)))
+
+; A kind check, not a null check: `Node.s` is null on an INT or a FLOAT, and
+; `symbol-as-view` of null is a segfault, not an empty view.
+(defn row-text (n:raw:Node):StrView
+  (when (= n null) (return ""))
+  (let (k:i32 (n 'kind))
+    (when (and (!= k NODE-SYM) (!= k NODE-STR) (!= k NODE-KEYWORD)) (return "")))
+  (return (symbol-as-view (n 's))))
+
+; A row's Nth positional operand, counting the head as 0.
+(defn row-at (row:raw:Node i:i32):raw:Node
+  (let (cur:raw:Node row
+        k:i32 0)
+    (while (!= cur null)
+      (when (= k i) (return (cur 'car)))
+      (set! k (+ k 1))
+      (set! cur (cur 'cdr)))
+    (return null)))
+
+(defn row-head (row:raw:Node):StrView
+  (return (row-text (row-at row 0))))
+
+(defn row-name (row:raw:Node):StrView
+  (return (row-text (row-at row 1))))
+
+(defn row-file (row:raw:Node):StrView
+  (return (row-text ((row-entry row "file") 'car))))
+
+; The pinned line, or -1 when the row does not pin one.
+(defn row-line (row:raw:Node):i32
+  (let (e:raw:Node (row-entry row "line"))
+    (when (= e null) (return -1))
+    (return (unsafe/cast i32 ((e 'car) 'i)))))
+
+; ---------------------------------------------------------------------------
+; Running the compiler
+; ---------------------------------------------------------------------------
+
+; `nucleusc --diagnostics=sexp --emit-llvm <fixture>`, with stdout discarded --
+; the IR is not the subject, the diagnostics are.
+(defn compile-fixture (fixture:StrView):!String
+  (let (c:Command (command (compiler-path)))
+    (command-arg (addr-of c) "--diagnostics=sexp")
+    (command-arg (addr-of c) "--emit-llvm")
+    (command-arg (addr-of c) fixture)
+    (match (run (addr-of c))
+      ((ok o)
+        (let (ev:StrView (string-as-view (addr-of o 'err))
+              err:String (try (string-from-view (addr-of ev))))
+          (drop (addr-of o))
+          (drop (addr-of c))
+          (return (ok err))))
+      ((err e)
+        (drop (addr-of c))
+        (return (err e))))))
+
+; ---------------------------------------------------------------------------
+; Category (a): the rejection/acceptance table
+; ---------------------------------------------------------------------------
+
+; Each `(message …)` must appear in the message of a diagnostic at the pinned
+; location, and each `(note …)` in a note of a diagnostic there. That pairing is
+; the whole upgrade: eight rows of this table asserted a location that was only
+; ever on a NOTE, which two independent greps over one blob cannot tell apart.
+(defn run-reject-row (row:raw:Node):!void
+  (let (fixture:StrView (row-file row)
+        line:i32 (row-line row)
+        text:String (try (compile-fixture fixture))
+        ds:(Vector Diagnostic) (try (read-diagnostics (string-as-view (addr-of text)))))
+    (when (= (count (addr-of ds)) 0)
+      (fail! "compiling " fixture " produced no diagnostic"))
+    ; With no pinned line the old shell unit only swept for a `:0:` substring.
+    ; The record makes that a field.
+    (when (< line 0) (try (check-no-line-zero (addr-of ds))))
+    (let (cur:raw:Node (row 'cdr))
+      (while (!= cur null)
+        (let (e:raw:Node (cur 'car))
+          (when (and (!= e null) (= (e 'kind) NODE-CELL))
+            (let (k:StrView (row-text (e 'car))
+                  v:StrView (row-text ((e 'cdr) 'car)))
+              (when (= k "message")
+                (if (< line 0)
+                  (try (check-error-anywhere (addr-of ds) v))
+                  (try (check-error-at (addr-of ds) fixture line v))))
+              (when (= k "note")
+                (if (< line 0)
+                  (try (check-note-anywhere (addr-of ds) v))
+                  (try (check-note-at (addr-of ds) fixture line v)))))))
+        (set! cur (cur 'cdr))))
+    (return (ok))))
+
+(defn run-accept-row (row:raw:Node):!void
+  (let (fixture:StrView (row-file row)
+        text:String (try (compile-fixture fixture))
+        ds:(Vector Diagnostic) (try (read-diagnostics (string-as-view (addr-of text)))))
+    (when (> (count (addr-of ds)) 0)
+      (try (check-no-errors (addr-of ds))))
+    ; A diagnostic-free compile is the claim, so anything on stderr is a failure
+    ; -- including something the sexp reader skipped.
+    (try (check-empty (string-as-view (addr-of text))))
+    (return (ok))))
+
+(defn run-manifest-row (data:ptr):!void
+  (let (row:raw:Node (unsafe/cast raw:Node data))
+    (when (= (row-head row) "accept") (return (run-accept-row row)))
+    (return (run-reject-row row))))
+
+; ---------------------------------------------------------------------------
+; Registration
+; ---------------------------------------------------------------------------
+
+(defn register-manifest ():!void
+  (let (text:String (try (read-file (manifest-path)))
+        forms:raw:Node (try (read-all (string-as-view (addr-of text))))
+        cur:raw:Node forms)
+    (while (!= cur null)
+      (let (row:raw:Node (cur 'car))
+        (when (and (!= row null) (= (row 'kind) NODE-CELL))
+          (test-add (row-name row) (manifest-path) 0 run-manifest-row row)))
+      (set! cur (cur 'cdr)))
+    (return (ok))))
+
+(defn main (argc:i32 argv:ptr):int
+  (match (register-manifest)
+    (ok 0)
+    ((err e)
+      (eprint "nuctests: could not read " (manifest-path) ": " (err-message e) "\n")
+      (return 2)))
+  (return (as int (test-main argc argv))))
