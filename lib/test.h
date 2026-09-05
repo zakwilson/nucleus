@@ -39,6 +39,25 @@ bool has_matching_line_QMARK(struct StrView hay, struct StrView pat) asm("has-ma
 /* ir-define: uses a defunion-template instance type; not exported */
 /* check-in-define: uses an error-union or option type; not exported */
 /* check-not-in-define: uses an error-union or option type; not exported */
+typedef struct Diagnostic {
+    struct Symbol severity;
+    struct StrView file;
+    int32_t line;
+    struct StrView message;
+    void* notes;
+} Diagnostic;
+
+void* diag_entry(void* body, struct StrView name) asm("diag-entry");
+struct StrView diag_text(void* n) asm("diag-text");
+/* diag-of-node: uses an error-union or option type; not exported */
+/* read-diagnostics: uses a defunion-template instance type; not exported */
+struct String diag_list_text(void* ds) asm("diag-list-text");
+bool diag_matches(void* d, struct StrView severity, struct StrView file, int32_t line, struct StrView needle) asm("diag-matches");
+/* check-diagnostic: uses an error-union or option type; not exported */
+/* check-error-at: uses an error-union or option type; not exported */
+/* check-warning-at: uses an error-union or option type; not exported */
+/* check-note-at: uses an error-union or option type; not exported */
+/* check-no-errors: uses an error-union or option type; not exported */
 typedef struct SexpStr {
     struct StrView v;
 } SexpStr;

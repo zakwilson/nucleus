@@ -3752,7 +3752,7 @@
   (doseq (cr g-cast-rules (VecIter ref:CastRule))
     (when (and (!= (type-eq (cr 'to) target) 0)
                (= (type-eq (cr 'from) src) 0))
-      (set! g-diag-note
+      (diag-stage-note
         (fstr "a defcast rule converts " (type-spelling (cr 'from)) " to "
               (type-spelling (cr 'to)) ", but implicit conversions do not compose — write (as "
               (type-spelling (cr 'from)) " …) on the operand to reach it"))
@@ -14406,10 +14406,9 @@
                 (set! mc 1))
               (inc! mcpi))
             (when (!= mc 0)
-              (eprint g-source-path ":" (cc 'line) ": warning: "
-                      (fstr "'" fname
-                             "' exposes a closure or type-erased box type and will be excluded from generated C headers")
-                      "\n"))))
+              (diag-emit "warning" g-source-path (cc 'line)
+                    (fstr "'" fname
+                          "' exposes a closure or type-erased box type and will be excluded from generated C headers")))))
         ; Declaration attributes sit between the return operand and the body:
         ; `:noreturn` (die-at, longjmp and friends — drives the LLVM attribute
         ; and the Sym flag `terminate-after-noreturn` consumes) and
@@ -16781,8 +16780,8 @@
       ; A second `ns` in this unit warns (compile) / is silent (REPL).
       (when (!= g-ns-seen 0)
         (when (= g-interactive 0)
-          (eprint g-source-path ":" (ff 'line) ": warning: "
-                  (fstr "second ns directive; namespace re-set to '" (name-node 's) "'") "\n")))
+          (diag-emit "warning" g-source-path (ff 'line)
+                (fstr "second ns directive; namespace re-set to '" (name-node 's) "'"))))
       (set! g-current-ns (name-node 's))
       (set! g-ns-seen 1)
       ; Stage 15 B2a (name-resolution.md §9.1): this is the one point at which a
@@ -17042,10 +17041,9 @@
         (when (!= (job 'path) g-unit-entry-path)
           ; The location prefix already names the declaring file and line, so the
           ; sentence does not repeat the path.
-          (eprint (job 'path) ":" (job 'line) ": warning: "
-                  (fstr "defvar: '" (job 'name)
-                  "' has a run-time initializer, and this object only imports the file that declares it -- every object that imports that file runs the initializer again on the one shared global. Give it a compile-time constant initializer, or move it into the object that owns it")
-                  "\n"))
+          (diag-emit "warning" (job 'path) (job 'line)
+                (fstr "defvar: '" (job 'name)
+                "' has a run-time initializer, and this object only imports the file that declares it -- every object that imports that file runs the initializer again on the one shared global. Give it a compile-time constant initializer, or move it into the object that owns it")))
         (inc! i)))))
 
 ; The batch drain, called once per compilation at `emit-toplevel-forms` depth 1
@@ -18850,6 +18848,10 @@
                       (symbol-from-cstr (as CStr (aref (as ptr:ptr argv) i)))))
               (or (= argview "-i") (= argview "--interactive"))
                 (set! g-interactive 1)
+              (= argview "--diagnostics=text")
+                (set! g-diag-sexp 0)
+              (= argview "--diagnostics=sexp")
+                (set! g-diag-sexp 1)
               (= argview "--repl-format=text")
                 (set! g-repl-format 0)
               (= argview "--repl-format=json")
