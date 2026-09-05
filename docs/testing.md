@@ -176,6 +176,7 @@ not the library's, because they run `./build/nucleusc`.
 | `(source-cheader src)` | `!String` — the generated C header. |
 | `(build-run-source src)` | `!String` — compile, run, stdout and stderr on one stream. |
 | `(check-source-exit src n)` | Compile, run, and require exit status `n`. |
+| `(check-file-exit dir path n)` | The same for a file, resolving imports under `-I dir`. |
 
 Every fixture is written to the same `t.nuc`, so two programs compiled this way
 differ only where they *should*: `; ModuleID`, `source_filename` and the C

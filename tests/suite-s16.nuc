@@ -1489,3 +1489,331 @@ map=2
     (let (out:String (try (build-run-source src)))
       (try (check-eq (string-as-view (addr-of out)) "1\n"))
       (drop (addr-of out)))))
+
+; ---------------------------------------------------------------------------
+; `import-ct` — a library the program uses only at compile time (Stage 16)
+; ---------------------------------------------------------------------------
+
+; The definitions really are gone: one `define`, for `main`.
+(deftest s16-import-ct-emits-no-definitions
+  (let (ir:String (try (source-ir "(import-ct node)
+(defn main ():i32 (return 0))
+")))
+    (try (check-eq-int (count-lines-with-prefix (string-as-view (addr-of ir)) "define ")
+                       1 "definitions in the module"))
+    (drop (addr-of ir))))
+
+; The promise is kept at the two kinds of use: the compiler-synthesized one (a
+; quote lowers to @intern-symbol) and the ordinary one (a direct call).
+(deftest s16-import-ct-quote-refused
+  (try (check-source-rejects "(import-ct node)
+(defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))
+" "quote needs the node runtime")))
+
+(deftest s16-import-ct-call-refused
+  (try (check-source-rejects "(import-ct node)
+(defn main ():i32 (return (node-len null)))
+" "imported compile-time-only")))
+
+; …and it is a REFUSAL, not a link error: the message names a location in the
+; user's file, which is the whole reason the check exists. The shell grepped for
+; the message and again for `:2:`; one `check-error-at` requires both of the
+; same diagnostic.
+(deftest s16-import-ct-refusal-is-located
+  (let (p:String (try (test-write-file "t.nuc" "(import-ct node)
+(defn main ():i32 (return (node-len null)))
+"))
+        pv:StrView (string-as-view (addr-of p))
+        c:Compiled (try (compile-path pv)))
+    (try (check-error-at (addr-of c 'diags) pv 2 "imported compile-time-only"))
+    (drop (addr-of c))
+    (drop (addr-of p))))
+
+; Order independence. `lib/error.nuc` does `(import-ct node)`, so a program that
+; uses error handling AND quotes must get the runtime either way round. Getting
+; this wrong is silent in one order and a refusal in the other.
+(deftest s16-import-ct-real-import-wins-ct-first
+  (let (ir:String (try (source-ir "(import-use error)
+(import-use node)
+(defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))
+")))
+    (try (check-match (string-as-view (addr-of ir)) "define *@intern-symbol(*"))
+    (drop (addr-of ir))))
+
+(deftest s16-import-ct-real-import-wins-real-first
+  (let (ir:String (try (source-ir "(import-use node)
+(import-use error)
+(defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))
+")))
+    (try (check-match (string-as-view (addr-of ir)) "define *@intern-symbol(*"))
+    (drop (addr-of ir))))
+
+; The unit-level rule reaches THROUGH a ct-imported library: `ctlib` is
+; compile-time-only, but the `vector` it pulls in is one the program itself
+; imports, so vector must stay real — and, because a template stamp belongs to
+; no file, `(Vector i32)` must still be instantiated into the program. Measured
+; before the fix: every vector definition came out ct-only and the program was
+; refused at its own `[1 2 3]`.
+(deftest s16-import-ct-nested-real-import-survives
+  (let (libdir:String (try (test-scratch-sub "l"))
+        lib:String (try (test-write-file "l/ctlib.nuc" "(import-use vector)
+(defn ctlib-count ((v (ref (Vector i32)))):usize (return (count v)))
+"))
+        use:String (try (test-write-file "nested.nuc" "(import-use \"stdio.h\")
+(import-ct ctlib)
+(import-use vector)
+(defn main ():i32
+  (with ((v (ref (Vector i32))) [1 2 3])
+    (printf \"%d\\n\" (unsafe/cast i32 (count v))))
+  (return 0))
+"))
+        out:String (try (build-run-file (string-as-view (addr-of libdir)) ""
+                                        (string-as-view (addr-of use)))))
+    (try (check-eq (string-as-view (addr-of out)) "3\n"))
+    (drop (addr-of out))
+    (drop (addr-of use))
+    (drop (addr-of lib))
+    (drop (addr-of libdir))))
+
+; What `import-ct` is FOR: the compile-time surface is really registered, so a
+; macro body may call the library's functions. `with-handler` (lib/error) is the
+; in-tree case — it calls `node-at` under `(import-ct node)` — and it must still
+; expand in a program carrying no node runtime at all.
+(deftest s16-import-ct-macro-runs-with-no-runtime
+  (let (src:StrView "(import-use \"stdio.h\")
+(import-use error)
+(deferror EGone \"gone\")
+(defn probe ((e Err) (ctx ptr)):(Maybe i32) (return (some 7)))
+(defn risky (x:i32):!i32 (if (< x 0) (return (err EGone)) (return (ok x))))
+(defn main ():i32
+  (with-handler (EGone i32 probe null)
+    (match (risky -1) ((ok v) (printf \"%d\\n\" v)) ((err e) (printf \"unrepaired\\n\"))))
+  (return 0))
+")
+    (let (out:String (try (build-run-source src)))
+      (try (check-eq (string-as-view (addr-of out)) "7\n"))
+      (drop (addr-of out)))
+    (let (ir:String (try (source-ir src))
+          iv:StrView (string-as-view (addr-of ir)))
+      (try (check-not-match iv "define *@alloc-node(*"))
+      (try (check-not-match iv "define *@make-cell(*"))
+      (try (check-not-match iv "define *@intern-symbol(*"))
+      (try (check-not-match iv "define *@arena-alloc(*"))
+      (drop (addr-of ir)))))
+
+; Arity, so a typo is a diagnostic rather than a silent no-op.
+(deftest s16-import-ct-arity
+  (try (check-source-rejects "(import-ct)
+(defn main ():i32 (return 0))
+" "import-ct: expected (import-ct name)")))
+
+; ---------------------------------------------------------------------------
+; `:rest` / `:optional` / `:where` / `:repr` (keyword-markers.md)
+; ---------------------------------------------------------------------------
+
+; All four markers, plus the two shapes that could have collided with one:
+; `:where(Ord T)` with no separating space (the reader's colon-paren fuse keys
+; on a TRAILING colon, so a keyword must not trigger it), and an `:optional`
+; default that is itself a keyword VALUE one level down. `Ord3`/`less3` rather
+; than `Ord`/`less`: lib/numeric.nuc defines those and `import-use keyword`
+; reaches it, so the obvious names are a redefinition.
+(deftest s16-keyword-markers-accepted
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use node)
+(import-use keyword)
+(defprotocol Ord3 (less3 (a:Self b:Self):bool))
+(defn less3 (a:i32 b:i32):bool (return (< a b)))
+(extend i32 Ord3)
+(defstruct Point x:i32 y:i32)
+(defunion Shape (circle p:(ref Point)) none :repr tagged)
+(defn sum (:rest args:i64):i64
+  (let (total:i64 0)
+    (while (!= args null)
+      (set! total (+ total (unsafe/cast i64 ((unsafe/cast ptr:Node args) 'car))))
+      (set! args ((unsafe/cast ptr:Node args) 'cdr)))
+    total))
+(defn maxv (a:T b:T :where (Ord3 T)):T (return (if (less3 a b) b a)))
+(defn minv (a:T b:T :where(Ord3 T)):T (return (if (less3 b a) b a)))
+(defn kw-default (n:i32 :optional (k:Keyword :fallback)):i32 (return n))
+(defn greet (n:i32 :optional (m:i32 7)):i32 (return (+ n m)))
+(defmacro twice (x :rest r) `(+ ~x ~x))
+(defn main ():i32
+  (printf \"%ld %d %d %d %d %d\\n\"
+    (sum 1 2 3 4) (maxv 3 9) (minv 3 9) (greet 1) (greet 1 2) (twice 5))
+  (return (kw-default 0)))
+")))
+    (try (check-eq (string-as-view (addr-of out)) "10 9 3 8 3 10\n"))
+    (drop (addr-of out))))
+
+; Every retired `&x` spelling names its replacement, from the definer that owns
+; it. Without this each one falls through as an ordinary symbol and surfaces as
+; `missing :type on param '&rest'` or `unknown type: T`.
+(deftest s16-keyword-markers-legacy-rejected
+  (try (check-source-rejects "(defn f (a:i32 &rest xs:i64):i64 (return 0))\n"
+         "'&rest' is no longer a marker -- write ':rest'"))
+  (try (check-source-rejects "(defn f (n:i32 &optional (m:i32 7)):i32 (return n))\n"
+         "'&optional' is no longer a marker -- write ':optional'"))
+  (try (check-source-rejects "(defprotocol Ord (less (a:Self b:Self):bool))
+(defn maxv (a:T b:T &where (Ord T)):T (return a))
+" "'&where' is no longer a marker -- write ':where'"))
+  (try (check-source-rejects "(defprotocol Show (shout (a:Self):i32))
+(defstruct (Box T) v:T)
+(extend (Box T) Show &where (Show T))
+" "'&where' is no longer a marker -- write ':where'"))
+  (try (check-source-rejects "(defstruct Point x:i32)
+(defunion Shape (circle p:(ref Point)) none &repr tagged)
+" "'&repr' is no longer a marker -- write ':repr'"))
+  (try (check-source-rejects "(defmacro twice (x &rest r) `(+ ~x ~x))\n"
+         "'&rest' is no longer a marker -- write ':rest'"))
+  (try (check-source-rejects "(declare printf (fmt:CStr &rest args:i32) :i32)\n"
+         "'&rest' is no longer a marker -- write ':rest'")))
+
+; The keyword spelling did not weaken any rule the symbol spelling enforced.
+(deftest s16-keyword-markers-rules-preserved
+  (try (check-source-rejects "(defn f (:rest xs:i64 a:i32):i64 (return 0))\n"
+         "defn: :rest must be second-to-last param"))
+  (try (check-source-rejects "(defn f (a:i32 :optional (m:i32 1) :rest xs:i64):i64 (return 0))\n"
+         "defn: :optional cannot be combined with :rest"))
+  (try (check-source-rejects "(declare printf (fmt:CStr :rest args:i32) :i32)\n"
+         "declare: ':rest' is not supported in a declaration"))
+  (try (check-source-rejects "(defprotocol Ord (less (a:Self b:Self):bool))
+(defn maxv (a:T b:T :rest xs:i64 :where (Ord T)):T (return a))
+" "defn: :rest combined with a generic method is not supported yet"))
+  (try (check-source-rejects "(defmacro m (x :rest r y) `~x)\n"
+         "defmacro: :rest must be second-to-last param")))
+
+; `.nuch` is a serialization format: print-node must round-trip a marker keyword
+; with its colon, or a header exports a form its importer cannot re-read.
+; Asserted on the emitted text AND on a real import of it.
+(deftest s16-keyword-markers-nuch-roundtrip
+  (let (libdir:String (try (test-scratch-sub "lib"))
+        lib:String (try (test-write-file "lib/mklib.nuc"
+                          "(defprotocol Ord2 (less2 (a:Self b:Self):bool))
+(defn less2 (a:i32 b:i32):bool (return (< a b)))
+(extend i32 Ord2)
+(defn mk-max (a:T b:T :where (Ord2 T)):T (return (if (less2 a b) b a)))
+(defmacro mk-first (x :rest r) `~x)
+"))
+        nuch:String (try (emit-for-file "" "--emit-nuch" (string-as-view (addr-of lib))))
+        hp:String (try (test-write-file "lib/mklib.nuch" (string-as-view (addr-of nuch))))
+        use:String (try (test-write-file "use.nuc" "(import-use \"stdio.h\")
+(import-use mklib)
+(defn main ():i32 (printf \"%d\\n\" (mk-max 4 11)) (return 0))
+"))
+        nv:StrView (string-as-view (addr-of nuch)))
+    (try (check-contains nv ":where (Ord2 T)"))
+    (try (check-contains nv "(x :rest r)"))
+    (try (check-not-contains nv "&"))
+    (let (out:String (try (build-run-file (string-as-view (addr-of libdir)) ""
+                                          (string-as-view (addr-of use)))))
+      (try (check-eq (string-as-view (addr-of out)) "11\n"))
+      (drop (addr-of out)))
+    (drop (addr-of use))
+    (drop (addr-of hp))
+    (drop (addr-of nuch))
+    (drop (addr-of lib))
+    (drop (addr-of libdir))))
+
+; ---------------------------------------------------------------------------
+; `macrolet` (macrolet.md)
+; ---------------------------------------------------------------------------
+
+; Each program's exit code is a bitmask of FAILED checks, so a regression names
+; itself instead of reporting one anonymous wrong number.
+(deftest s16-macrolet
+  (try (check-source-exit "(defmacro dbl (x) `(_* 2 ~x))
+
+; A binding shadows a global macro for the body and only for the body.
+(defn ml-shadow ():i32
+  (let (r:i32 0)
+    (set! r (dbl 5))
+    (macrolet ((dbl (x) `(_* 3 ~x)))
+      (set! r (_+ r (dbl 5))))
+    (_+ r (dbl 5))))
+
+; Bindings are sequential (like Nucleus `let`, unlike Common Lisp's parallel
+; macrolet): `two` sees `one`.
+(defn ml-seq ():i32
+  (macrolet ((one () `1)
+             (two () `(_+ (one) (one))))
+    (two)))
+
+; An inner binding shadows an outer one of the same name; the outer is restored
+; after the inner body. This is the pop.
+(defn ml-nest ():i32
+  (macrolet ((m () `10))
+    (_+ (macrolet ((m () `100)) (m))
+        (m))))
+
+(defn ml-rest ():i32
+  (macrolet ((sum3 (a :rest more) `(_+ ~a (_+ ~@more))))
+    (sum3 1 2 3)))
+
+; The enclosing function's entry/body streams must survive the nested macro
+; compilation -- a macrolet inside a loop body is the cheapest proof.
+(defn ml-loop ():i32
+  (let (acc:i32 0 i:i32 0)
+    (while (< i 4)
+      (macrolet ((bump () `(set! acc (_+ acc i))))
+        (bump))
+      (inc! i))
+    acc))
+
+(defn main ():i32
+  (let (bad:i32 0)
+    (when (!= (ml-shadow) 35) (set! bad (_+ bad 1)))
+    (when (!= (ml-seq)     2) (set! bad (_+ bad 2)))
+    (when (!= (ml-nest)  110) (set! bad (_+ bad 4)))
+    (when (!= (ml-rest)    6) (set! bad (_+ bad 8)))
+    (when (!= (ml-loop)    6) (set! bad (_+ bad 16)))
+    (return bad)))
+" 0)))
+
+; A macrolet in ARGUMENT position sits mid-argument-walk, so the ambient
+; argument-register budget (g-abi-gpr-left/…) has to survive the nested emission
+; -- by-value structs of both ABI classes make that observable. Plus: a macrolet
+; in a `cond` arm, and one inside a generic template body (compiled once per
+; monomorphization, hence the monotonic jit-name counter).
+(deftest s16-macrolet-abi
+  (try (check-source-exit "(import-use numeric)
+(defstruct Big a:i64 b:i64 c:i64)
+(defstruct Pair x:i64 y:i64)
+
+(defn take6 (p:Pair q:Pair b:Big n:i32 m:i32):i64
+  (let (pp:ptr:Pair (addr-of p) qq:ptr:Pair (addr-of q) bb:ptr:Big (addr-of b))
+    (_+ (_+ (pp 'x) (qq 'y)) (_+ (bb 'c) (as i64 (_+ n m))))))
+
+(defn ml-argpos ():i64
+  (let (p:Pair (Pair 1 2) q:Pair (Pair 3 4) b:Big (Big 5 6 7))
+    (take6 p q b 10 (macrolet ((twenty () `20)) (twenty)))))
+
+(defn ml-cond (n:i32):i32
+  (cond (= n 0) (macrolet ((z () `100)) (z))
+        (= n 1) (macrolet ((o (k) `(_* ~k 3))) (o 7))
+        true    (macrolet ((d () `(_- 0 1))) (d))))
+
+(defn ml-maxish (a:T b:T :where (Ord T)):T
+  (macrolet ((pick (x y) `(if (< ~x ~y) ~y ~x)))
+    (pick a b)))
+
+(defn main ():i32
+  (let (bad:i32 0)
+    (when (!= (ml-argpos) (as i64 42)) (set! bad (_+ bad 1)))
+    (when (!= (ml-cond 0) 100) (set! bad (_+ bad 2)))
+    (when (!= (ml-cond 1)  21) (set! bad (_+ bad 4)))
+    (when (!= (ml-cond 2)  -1) (set! bad (_+ bad 8)))
+    (when (!= (ml-maxish 21 9) 21) (set! bad (_+ bad 16)))
+    (when (!= (ml-maxish (as i64 50) (as i64 77)) (as i64 77)) (set! bad (_+ bad 32)))
+    (return bad)))
+" 0)))
+
+; A macrolet inside a `defmacro` BODY: one macro JIT module compiled while
+; another is compiling. The hoist-to-a-pre-pass alternative could not do this;
+; `push-function-state` can. `(a car)` on the INT node `5` is null, so `pick`
+; expands to its second argument.
+(deftest s16-macrolet-in-defmacro
+  (try (check-source-exit "(defmacro pick (a b)
+  (macrolet ((first-of (x) `(~x 'car)))
+    (if (= (first-of a) null) b a)))
+(defn main ():i32 (return (pick 5 6)))
+" 6)))
