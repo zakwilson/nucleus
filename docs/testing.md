@@ -171,7 +171,9 @@ not the library's, because they run `./build/nucleusc`.
 | `(compile-source src)` | `!Compiled` — `ok?`, `ir`, `raw` stderr, and `diags`. |
 | `(compile-path path)` | The same for a file. |
 | `(check-source-rejects src needle)` | The compile must fail, and some error must contain `needle`. |
+| `(check-file-rejects dir path needle)` | The same for a file, resolving imports under `-I dir`. |
 | `(check-source-accepts src)` | The compile must succeed with no diagnostic at all. |
+| `(source-compiles? src)` | `!bool` — whether it compiled, for a table whose rows differ in the answer. |
 | `(source-ir src)` | `!String` — the emitted IR; fails if the compile did. |
 | `(source-cheader src)` | `!String` — the generated C header. |
 | `(build-run-source src)` | `!String` — compile, run, stdout and stderr on one stream. |
@@ -196,6 +198,7 @@ include directory, and one about the REPL needs a session:
 | `(line-with hay needle)` | `!StrView` — the first line containing `needle`. |
 | `(count-lines-with-prefix hay prefix)` | `i64` — how many lines begin with `prefix`. |
 | `(duplicate-type-name ir)` | `StrView` — a `%Name = type` defined twice, or `""`. |
+| `(check-same-decl-set a b)` | Two modules carry the same `type`/`define`/`declare` lines, as a set. |
 
 An empty `dir` or `extra` contributes no argument. `line-with` is for a claim
 about one instruction: `i8 %` is in every module, so `check-not-contains` over

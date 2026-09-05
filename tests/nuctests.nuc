@@ -167,15 +167,30 @@
     (drop (addr-of p))
     (return (ok r))))
 
-; Compiling `src` must FAIL, and some error must carry `needle`.
-(defn check-source-rejects (src:StrView needle:StrView):!void
-  (let (r:Compiled (try (compile-source src)))
+; Compiling `path` must FAIL, and some error must carry `needle`.
+(defn check-file-rejects (dir:StrView path:StrView needle:StrView):!void
+  (let (r:Compiled (try (compile-path-in dir path)))
     (when (r 'ok?)
       (fail! "expected a rejection containing " (sexp-quote needle)
              ", but it compiled"))
     (try (check-error-anywhere (addr-of r 'diags) needle))
     (drop (addr-of r))
     (return (ok))))
+
+(defn check-source-rejects (src:StrView needle:StrView):!void
+  (let (p:String (try (test-write-file "t.nuc" src)))
+    (try (check-file-rejects "" (string-as-view (addr-of p)) needle))
+    (drop (addr-of p))
+    (return (ok))))
+
+; Whether `src` compiles at all. A table of accept/reject spellings asks only
+; this, and neither `check-source-rejects` nor `check-source-accepts` can carry
+; the two halves of one row.
+(defn source-compiles? (src:StrView):!bool
+  (let (c:Compiled (try (compile-source src))
+        ok?:bool (c 'ok?))
+    (drop (addr-of c))
+    (return (ok ok?))))
 
 ; Compiling `src` must SUCCEED, with no diagnostic at all.
 (defn check-source-accepts (src:StrView):!void
@@ -378,6 +393,38 @@
     (match (strview-find (addr-of l) (addr-of m))
       ((some at) (return (strview-take-bytes l at)))
       (none (return "")))))
+
+; A top-level definition line: `%Name = type …`, `define …` or `declare …`.
+(defn decl-line? (l:StrView):bool
+  (when (strview-has-prefix l "define ") (return true))
+  (when (strview-has-prefix l "declare ") (return true))
+  (let (m:StrView " = type ")
+    (return (and (strview-has-prefix l "%") (contains? l m)))))
+
+(defn count-exact-lines (hay:StrView want:StrView):i64
+  (let (n:i64 0
+        it:LineIter (strview-lines (addr-of hay)))
+    (while (not (lines-iter-done (addr-of it)))
+      (when (= (lines-iter-next (addr-of it)) want) (set! n (+ n 1))))
+    (return n)))
+
+(defn check-decls-subsumed (a:StrView b:StrView):!void
+  (let (it:LineIter (strview-lines (addr-of a)))
+    (while (not (lines-iter-done (addr-of it)))
+      (let (l:StrView (lines-iter-next (addr-of it)))
+        (when (decl-line? l)
+          (when (!= (count-exact-lines a l) (count-exact-lines b l))
+            (fail! "the two modules' definition sets differ at "
+                   (sexp-quote l)))))))
+  (return (ok)))
+
+; Two modules must carry the same top-level definitions, as a SET: position
+; within the type section is order-dependent and inert, and the string pool
+; renumbers, so the artifacts themselves cannot be compared.
+(defn check-same-decl-set (a:StrView b:StrView):!void
+  (try (check-decls-subsumed a b))
+  (try (check-decls-subsumed b a))
+  (return (ok)))
 
 ; A type defined twice, or "". LLVM refuses a duplicate `%X = type` outright, so
 ; this is about the emitter's own bookkeeping rather than about the module.

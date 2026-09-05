@@ -1378,6 +1378,47 @@ where `check-error-at` requires both of the *same* diagnostic.
 **Remaining: 157 shell functions, 8,444 body lines**, of which `run_s16_*` is
 20 functions and 2,050 lines.
 
+#### TF-6 category (c), fifth batch (2026-09-05)
+
+**5 shell functions → 30 tests**, 593 shell lines retired:
+`run_w9_layout_reachability` (6), `run_w9_defcast_reach` (6),
+`run_w9_two_ns_one_name` (6), `run_b5_private_definers` (6),
+`run_w9_fnslot_arg` (6). All five are unit-boundary units, so all five went to
+`tests/suite-modules.nuc`. `make test` is 491 shell + 475 native = 966.
+
+**The measurement that should drive the rest of the plan.** Counting body lines
+with a heredoc-aware scanner (the naive `^}` scan stops early on any unit that
+embeds C, which is most of the deferred ones), what is left is:
+
+| | functions | body lines |
+| --- | --- | --- |
+| Oracle-free | 101 | 3,982 |
+| Needs `clang`/`cc`/`python3` | 51 | 4,617 |
+
+**Half the remaining work is blocked on one missing capability**, not on
+porting effort — and it is a *capability*, not a helper: running the host C
+compiler, and recording a SKIP when it is absent. §T9's deferred list should
+gain it, and the plan for §T7 has to say whether `make test` may keep a shell
+tail for these or whether TF-6 must close them first.
+
+Four helpers this batch, all in `tests/nuctests.nuc`: `check-file-rejects`
+(with `check-source-rejects` becoming a wrapper), `source-compiles?` — a table
+of accept/reject spellings asks only that, and neither `check-source-rejects`
+nor `check-source-accepts` can carry the two halves of one row — and
+`check-same-decl-set` with `count-exact-lines`, because the "moving the import
+did not move emission" claim compares two modules as a SET: position within the
+type section is order-dependent and inert, and the string pool renumbers, so
+the artifacts themselves cannot be compared.
+
+**Two shell greps became field assertions.** `w9-defcast-note-names-rule`
+grepped stderr for `note: a defcast rule converts …`; `check-note-anywhere`
+makes "it is a note" a field rather than a prefix in the text. And
+`w9-two-ns-ambiguous-use` grepped for the message and separately for
+`w35amb.nuc:3: error:`, where `check-error-at` requires both of one diagnostic.
+
+**Remaining: 152 shell functions, 8,599 body lines** by the corrected count —
+101 oracle-free functions / 3,982 lines of it portable today.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that
