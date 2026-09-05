@@ -267,3 +267,695 @@
 (defn h (v:(Vector ref)):i32 (return 0))
 "
          "'ref' is a pointer kind, not a type argument")))
+
+; ---------------------------------------------------------------------------
+; Nil punning at condition position (Stage 16 §BT, bool-truthiness.md)
+; ---------------------------------------------------------------------------
+
+; All six sites, for each of the four nullable types. Each probe returns a
+; bitmask so one number pins every site at once -- 1 cond, 2 not, 4 _and,
+; 8 _or, 16 while.
+;
+; The IR half is not redundant: a wrong value that only reaches a truthiness
+; test is invisible to every gate (conventions.md), so the two eliminations are
+; also pinned at the instruction level -- a pointer test is `icmp ne ptr`, a
+; value-Maybe test reads the tag word.
+(deftest s16-truthiness-six-sites
+  (let (src:StrView "(import-use \"stdio.h\")
+(import-use arena)
+
+(defstruct Pt x:i32)
+
+(defn probe-raw (p:(raw Pt) q:(raw Pt)):i32
+  (let (n:i32 0)
+    (when p (set! n (+ n 1)))
+    (when (not p) (set! n (+ n 2)))
+    (when (and p q) (set! n (+ n 4)))
+    (when (or p q) (set! n (+ n 8)))
+    (let (c:(raw Pt) p)
+      (while c (set! n (+ n 16)) (set! c null)))
+    (return n)))
+
+(defn probe-cstr (p:CStr q:CStr):i32
+  (let (n:i32 0)
+    (when p (set! n (+ n 1)))
+    (when (not p) (set! n (+ n 2)))
+    (when (and p q) (set! n (+ n 4)))
+    (when (or p q) (set! n (+ n 8)))
+    (let (c:CStr p)
+      (while c (set! n (+ n 16)) (set! c null)))
+    (return n)))
+
+(defn probe-maybe-ptr (p:?ptr:Pt q:?ptr:Pt):i32
+  (let (n:i32 0)
+    (when p (set! n (+ n 1)))
+    (when (not p) (set! n (+ n 2)))
+    (when (and p q) (set! n (+ n 4)))
+    (when (or p q) (set! n (+ n 8)))
+    (let (c:?ptr:Pt p)
+      (while c (set! n (+ n 16)) (set! c null)))
+    (return n)))
+
+(defn probe-maybe-val (p:(Maybe i64) q:(Maybe i64)):i32
+  (let (n:i32 0)
+    (when p (set! n (+ n 1)))
+    (when (not p) (set! n (+ n 2)))
+    (when (and p q) (set! n (+ n 4)))
+    (when (or p q) (set! n (+ n 8)))
+    (let (c:(Maybe i64) p)
+      (while c (set! n (+ n 16)) (set! c (make (Maybe i64) none))))
+    (return n)))
+
+(defn main ():i32
+  (let (a:(ref Pt) (new Pt)
+        b:(ref Pt) (new Pt)
+        s:CStr c\"x\"
+        t:CStr c\"y\"
+        nc:CStr (as CStr null)
+        sm:(Maybe i64) (make (Maybe i64) some 5)
+        nm:(Maybe i64) (make (Maybe i64) none))
+    (printf \"raw %d %d %d %d\\n\"
+      (probe-raw (as (raw Pt) a) (as (raw Pt) b))
+      (probe-raw (as (raw Pt) a) null)
+      (probe-raw null (as (raw Pt) b))
+      (probe-raw null null))
+    (printf \"cstr %d %d %d %d\\n\"
+      (probe-cstr s t) (probe-cstr s nc) (probe-cstr nc t) (probe-cstr nc nc))
+    (printf \"mptr %d %d %d %d\\n\"
+      (probe-maybe-ptr (as-ref a) (as-ref b))
+      (probe-maybe-ptr (as-ref a) null)
+      (probe-maybe-ptr null (as-ref b))
+      (probe-maybe-ptr null null))
+    (printf \"mval %d %d %d %d\\n\"
+      (probe-maybe-val sm sm) (probe-maybe-val sm nm)
+      (probe-maybe-val nm sm) (probe-maybe-val nm nm)))
+  (return 0))
+")
+    (let (out:String (try (build-run-source src)))
+      (try (check-golden (string-as-view (addr-of out))
+                         "raw 29 25 10 2
+cstr 29 25 10 2
+mptr 29 25 10 2
+mval 29 25 10 2
+"))
+      (drop (addr-of out)))
+    (let (ir:String (try (source-ir src))
+          iv:StrView (string-as-view (addr-of ir)))
+      (try (check-contains iv "icmp ne ptr"))
+      (try (check-match iv "*extractvalue %Maybe.i64 %*, 0*"))
+      (drop (addr-of ir)))))
+
+; The narrowing half. `test-true-nonnull` matches node SHAPES, so the bare
+; symbol needed its own arm -- without it the condition compiles and the BODY
+; fails, i.e. the sugar would break exactly the case that motivates it.
+(deftest s16-truthiness-narrows-bare-symbol
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use arena)
+
+(defstruct Pt x:i32)
+
+(defn f-when (m:?ptr:Pt):i32
+  (when m (return (m 'x)))
+  (return -1))
+
+(defn f-and (m:?ptr:Pt):i32
+  (when (and m (> (m 'x) 0)) (return (m 'x)))
+  (return -1))
+
+(defn f-guard (m:?ptr:Pt):i32
+  (when (not m) (return -1))
+  (return (m 'x)))
+
+(defn f-while (m:?ptr:Pt):i32
+  (let (n:i32 -1)
+    (while m
+      (set! n (m 'x))
+      (return n))
+    (return n)))
+
+(defn main ():i32
+  (let (a:(ref Pt) (new Pt))
+    (set! (a 'x) 7)
+    (printf \"%d %d %d %d %d %d %d %d\\n\"
+      (f-when (as-ref a))  (f-when null)
+      (f-and (as-ref a))   (f-and null)
+      (f-guard (as-ref a)) (f-guard null)
+      (f-while (as-ref a)) (f-while null)))
+  (return 0))
+")))
+    (try (check-eq (string-as-view (addr-of out)) "7 -1 7 -1 7 -1 7 -1\n"))
+    (drop (addr-of out))))
+
+; The refusals that must STAY refusals. `(when n:i32 …)` is what keeps both
+; zero-is-false and all-numbers-true revisable.
+(deftest s16-truthiness-numbers-stay-refused
+  (try (check-source-rejects
+         "(defn main ():i32 (let (n:i32 3) (when n (return 1))) (return 0))\n"
+         "cond: condition must be bool, not i32"))
+  (try (check-source-rejects
+         "(defn main ():i32 (let (n:i32 3) (while n (dec! n))) (return 0))\n"
+         "while: condition must be bool, not i32"))
+  (try (check-source-rejects
+         "(defn main ():i32 (let (n:i32 3) (when (not n) (return 1))) (return 0))\n"
+         "not: condition must be bool, not i32"))
+  (try (check-source-rejects
+         "(defn main ():i32 (let (n:i32 3) (when (and n (> n 0)) (return 1))) (return 0))\n"
+         "and: condition must be bool, not i32"))
+  (try (check-source-rejects
+         "(defn main ():i32 (let (n:i32 3) (when (or n (> n 0)) (return 1))) (return 0))\n"
+         "or: condition must be bool, not i32"))
+  (try (check-source-rejects
+         "(defn main ():i32 (let (f:f64 1.0) (when f (return 1))) (return 0))\n"
+         "cond: condition must be bool, not f64")))
+
+; The two types nil punning deliberately does not reach: a Result is neither
+; true nor false, and a non-null pointer's test is a constant. Both name their
+; own way out.
+(deftest s16-truthiness-nonnull-and-result-refused
+  (try (check-source-rejects "(defstruct Pt x:i32)
+(defn f (p:(ref Pt)):i32 (when p (return 1)) (return 0))
+(defn main ():i32 (return 0))
+"
+         "ptr:Pt is non-null, so this test is always true"))
+  (try (check-source-rejects "(defn f (p:ptr):i32 (when p (return 1)) (return 0))
+(defn main ():i32 (return 0))
+"
+         "ptr is non-null, so this test is always true"))
+  (try (check-source-rejects "(defstruct Pt x:i32)
+(deferror Boom \"boom\")
+(defn g ():!ptr:Pt (return (err Boom)))
+(defn f ():i32 (let (r:!ptr:Pt (g)) (when r (return 1))) (return 0))
+(defn main ():i32 (return 0))
+"
+         "a Result (!T) is neither true nor false")))
+
+; It is an ELIMINATION RULE, NOT A COERCION: `coerce-int-val` is untouched, so
+; `bool` did not become a universal sink. If any of these ever compiles,
+; truthiness has leaked into the coercion set and overload resolution is next.
+(deftest s16-truthiness-is-not-a-coercion
+  (try (check-source-rejects "(defstruct Pt x:i32)
+(defn f (b:bool):i32 (return 0))
+(defn g (p:(raw Pt)):i32 (return (f p)))
+(defn main ():i32 (return 0))
+"
+         "f: argument 1 has type ptr:Pt, which does not match parameter type bool"))
+  (try (check-source-rejects "(defstruct Pt x:i32)
+(defn g (p:(raw Pt)):i32 (let (b:bool p) (return 0)))
+(defn main ():i32 (return 0))
+"
+         "let: init type mismatch for 'b'"))
+  (try (check-source-rejects "(defstruct Pt x:i32)
+(defstruct S flag:bool)
+(defn g (p:(raw Pt)):i32 (let (s:(ref S) (alloca S)) (set! (s 'flag) p)) (return 0))
+(defn main ():i32 (return 0))
+"
+         "set!: type mismatch for field 'flag': value is ptr:Pt, field is bool")))
+
+; ---------------------------------------------------------------------------
+; Variables as collection-literal elements (Stage 16, collection-literal-variables.md)
+; ---------------------------------------------------------------------------
+
+(defn litvar-pre ():StrView
+  (return "(import-use \"stdio.h\")
+(import-use vector)
+(import-use hashset)
+(import-use hashmap)
+"))
+
+(defn check-litvar-rejects (body:StrView needle:StrView):!void
+  (let (src:String (str (litvar-pre) body "\n")
+        v:StrView (string-as-view (addr-of src)))
+    (try (check-source-rejects v needle))
+    (drop (addr-of src))
+    (return (ok))))
+
+; Enum members, a defconst, a local, and a call, in all three literal kinds.
+; Every one of these was a hard error before this item.
+(deftest s16-litvar-accepted
+  (let (src:String (str (litvar-pre) "(defenum BK BK-GLOBAL BK-PROTOCOL BK-GENERIC BK-MACRO)
+(defconst LIMIT 40)
+(defn twice (x:i32):i32 (return (* 2 x)))
+(defn main ():i32
+  (let (kind:i32 BK-MACRO other:i32 7)
+    (with ((s (ref (HashSet i32))) #{BK-GLOBAL BK-PROTOCOL other (twice 9)})
+      (printf \"set=%d %d %d %d\\n\" (unsafe/cast i32 (count s))
+        (unsafe/cast i32 (contains? s BK-GLOBAL)) (unsafe/cast i32 (contains? s 18))
+        (unsafe/cast i32 (contains? s kind))))
+    (with ((v (ref (Vector i32))) [LIMIT other])
+      (printf \"vec=%d %d\\n\" (invoke v 0) (invoke v 1)))
+    (with ((m (ref (HashMap i32 i32))) {BK-GLOBAL other BK-MACRO LIMIT})
+      (printf \"map=%d\\n\" (unsafe/cast i32 (count m)))))
+  (return 0))
+")
+        out:String (try (build-run-source (string-as-view (addr-of src)))))
+    (try (check-golden (string-as-view (addr-of out)) "set=4 1 1 0
+vec=40 7
+map=2
+"))
+    (drop (addr-of out))
+    (drop (addr-of src))))
+
+(defn litvar-target-src ():String
+  (return (str (litvar-pre) "(defn main ():i32
+  (with ((v (ref (Vector i64))) [1 2 3])
+    (printf \"want=%lld %d\\n\" (invoke v 0) (unsafe/cast i32 (count v))))
+  (return 0))
+")))
+
+; Target-first, and the soundness regression it closes: before this item
+; `(ref (Vector i64))` bound to a literal-built (Vector i32) with no error, and
+; `(invoke v 0)` read two i32 elements back as one i64 -- 8589934593.
+(deftest s16-litvar-target-wins
+  (let (src:String (litvar-target-src)
+        out:String (try (build-run-source (string-as-view (addr-of src)))))
+    (try (check-eq (string-as-view (addr-of out)) "want=1 3\n"))
+    (drop (addr-of out))
+    (drop (addr-of src))))
+
+; …and it must stamp only the wanted instance, not build i32 and reinterpret.
+(deftest s16-litvar-target-stamps-once
+  (let (src:String (litvar-target-src)
+        ir:String (try (source-ir (string-as-view (addr-of src)))))
+    (try (check-not-contains (string-as-view (addr-of ir)) "Vector.i32"))
+    (drop (addr-of ir))
+    (drop (addr-of src))))
+
+; A numeric literal ADAPTS to a value element, exactly as `(conj v 1)` on a
+; (Vector i64) already does; a value is never narrowed to suit a literal.
+(deftest s16-litvar-literal-adapts
+  (let (src:String (str (litvar-pre) "(defn main ():i32
+  (let (n:i64 5000000000)
+    (with ((v (ref (Vector i64))) [n 1 2])
+      (printf \"adapt=%lld %lld\\n\" (invoke v 0) (invoke v 1))))
+  (return 0))
+")
+        out:String (try (build-run-source (string-as-view (addr-of src)))))
+    (try (check-eq (string-as-view (addr-of out)) "adapt=5000000000 1\n"))
+    (drop (addr-of out))
+    (drop (addr-of src))))
+
+; Elements evaluate left to right, which only became observable once an element
+; could be a call.
+(deftest s16-litvar-eval-order
+  (let (src:String (str (litvar-pre) "(defvar seq:i32 0)
+(defn tick (tag:i32):i32 (printf \"%d\" tag) (set! seq (+ seq 1)) (return tag))
+(defn main ():i32
+  (with ((v (ref (Vector i32))) [(tick 1) (tick 2) (tick 3)])
+    (printf \"|%d\\n\" (unsafe/cast i32 (count v))))
+  (return 0))
+")
+        out:String (try (build-run-source (string-as-view (addr-of src)))))
+    (try (check-eq (string-as-view (addr-of out)) "123|3\n"))
+    (drop (addr-of out))
+    (drop (addr-of src))))
+
+; An empty literal is legal exactly when a target supplies the element type.
+(deftest s16-litvar-empty-with-target
+  (let (src:String (str (litvar-pre) "(defn main ():i32
+  (with ((v (ref (Vector i32))) [])
+    (printf \"empty=%d\\n\" (unsafe/cast i32 (count v))))
+  (return 0))
+")
+        out:String (try (build-run-source (string-as-view (addr-of src)))))
+    (try (check-eq (string-as-view (addr-of out)) "empty=0\n"))
+    (drop (addr-of out))
+    (drop (addr-of src))))
+
+; The refusals. Each names the literal and, where two types clash, both of them.
+(deftest s16-litvar-refused-mixed-values
+  (try (check-litvar-rejects
+         "(defn main ():i32 (let (a:i32 1 b:i64 2) (let (v [a b]) (return 0))))"
+         "vector literal: mixed element types -- 'i32' and 'i64'")))
+(deftest s16-litvar-refused-int-float
+  (try (check-litvar-rejects
+         "(defn main ():i32 (let (v [1 2.5]) (return 0)))"
+         "vector literal: mixed element types")))
+(deftest s16-litvar-refused-int-string
+  (try (check-litvar-rejects
+         "(defn main ():i32 (let (v [\"a\" 1]) (return 0)))"
+         "vector literal: mixed element types")))
+(deftest s16-litvar-refused-empty-no-target
+  (try (check-litvar-rejects
+         "(defn main ():i32 (let (v []) (return 0)))"
+         "empty vector literal: use (vector-new)")))
+(deftest s16-litvar-refused-narrow-value
+  (try (check-litvar-rejects
+         "(defn main ():i32 (let (n:i64 5) (with ((v (ref (Vector i32))) [n 1]) (return 0))))"
+         "no matching method for overloaded 'conj'")))
+(deftest s16-litvar-refused-unspellable
+  (try (check-litvar-rejects
+         "(defstruct P x:i32) (defn main ():i32 (let (p:(ref P) (alloca P)) (let (v [p p]) (return 0))))"
+         "cannot infer an element type from a value of type 'ptr:P'")))
+(deftest s16-litvar-refused-shadow-head
+  (try (check-litvar-rejects
+         "(defn vector-lit (x:i32):i32 (return x)) (defn main ():i32 (return 0))"
+         "already names a special form")))
+
+; ---------------------------------------------------------------------------
+; C's default argument promotions at a variadic call (varargs-promotion.md)
+; ---------------------------------------------------------------------------
+
+(defn vararg-run-src ():StrView
+  (return "(import-use \"stdio.h\")
+(defn main ():i32
+  (let (a:i8 65 b:i16 -300 c:ui8 200 d:f32 2.5 e:bool true f:Char \\A)
+    (printf \"%d %d %u %f %d %d\\n\" a b c d e f))
+  (return 0))
+"))
+
+; The run: every promoted type, against the answers C gives for the identical
+; program. i16 printed 1321270996 and f32 printed 0.000000.
+(deftest s16-vararg-promotion-run
+  (let (out:String (try (build-run-source (vararg-run-src))))
+    (try (check-eq (string-as-view (addr-of out)) "65 -300 200 2.500000 1 65\n"))
+    (drop (addr-of out))))
+
+; The instruction. `bool`/`i8`/`ui8` print correctly under BOTH behaviours, so
+; the run above cannot distinguish them -- only the IR can.
+(deftest s16-vararg-promotion-ir
+  (let (ir:String (try (source-ir (vararg-run-src)))
+        iv:StrView (string-as-view (addr-of ir))
+        l:StrView (try (line-with iv "call i32 (ptr, ...) @printf")))
+    (try (check-match l "*i32 %*, i32 %*, i32 %*, double %*, i32 %*, i32 %*"))
+    (try (check-not-contains l "i1 %"))
+    (try (check-not-contains l "i8 %"))
+    (try (check-not-contains l "i16 %"))
+    (try (check-not-contains l "float %"))
+    (drop (addr-of ir))))
+
+; Only the `...` tail promotes. A variadic callee's FIXED narrow parameter keeps
+; its declared type -- the promotion is a property of the position, not of the
+; type, so a rule applied one argument too early would widen it.
+(deftest s16-vararg-promotion-fixed-param-untouched
+  (let (h:String (try (test-write-file "fix.h" "int narrowfix(signed char tag, ...);\n"))
+        src:String (str "(import-use \"" (string-as-view (addr-of h)) "\")
+(defn go (a:i8 b:i8 c:f32):i32 (return (narrowfix a b c)))
+")
+        ir:String (try (source-ir (string-as-view (addr-of src)))))
+    (try (check-match (string-as-view (addr-of ir))
+                      "*@narrowfix(i8 %*, i32 %*, double %*"))
+    (drop (addr-of ir))
+    (drop (addr-of src))
+    (drop (addr-of h))))
+
+; Nothing already `int`-wide or wider is touched -- a spurious promotion would
+; be as wrong as a missing one, and costs an instruction per call.
+(deftest s16-vararg-promotion-no-spurious-widening
+  (let (ir:String (try (source-ir "(import-use \"stdio.h\")
+(defn main ():i32
+  (let (a:i32 1 b:i64 2 c:f64 3.5 d:ui32 4)
+    (printf \"%d %ld %f %u\\n\" a b c d))
+  (return 0))
+"))
+        iv:StrView (string-as-view (addr-of ir))
+        l:StrView (try (line-with iv "call i32 (ptr, ...) @printf")))
+    (try (check-match l "*i32 %*, i64 %*, double %*, i32 %*"))
+    (drop (addr-of ir))))
+
+; ---------------------------------------------------------------------------
+; Colon chains that overshoot a template's arity (container-type-sugar.md §1.2)
+; ---------------------------------------------------------------------------
+
+; The refusal must be LOCATED, which is the whole point of the item: the
+; surplus symbols used to be collected as tyvars, so a concrete defn was
+; reclassified as an uninstantiable template, `emit-defn` skipped its define,
+; and nothing at all was reported.
+(defn check-chain-refused (body:StrView needle:StrView):!void
+  (let (src:String (str "(import-use vector)
+(import-use hashmap)
+(import-use node)
+" body "\n(defn main ():i32 (return 0))\n")
+        p:String (try (test-write-file "t.nuc" (string-as-view (addr-of src))))
+        pv:StrView (string-as-view (addr-of p))
+        c:Compiled (try (compile-path pv)))
+    (try (check-error-at (addr-of c 'diags) pv 4 needle))
+    (drop (addr-of c))
+    (drop (addr-of p))
+    (drop (addr-of src))
+    (return (ok))))
+
+; The three silent rows of §1.2, each naming the template. Bare `ref` is the
+; trigger: `ptr` and `raw` are tyname-resolvable, so they overshoot into the
+; arity check below instead.
+(deftest s16-chain-nested-ref-refused
+  (try (check-chain-refused "(defn f (x:ref:Vector:ref:Node):i32 (return 21))"
+                            "Vector: 'ref' is a pointer kind"))
+  (try (check-chain-refused "(defn f (x:ref:HashMap:CStr:ref:Vector:i32):i32 (return 21))"
+                            "HashMap: 'ref' is a pointer kind"))
+  (try (check-chain-refused "(defn f (x:ref:HashMap:ref:Vector:i32:i32):i32 (return 21))"
+                            "HashMap: 'ref' is a pointer kind")))
+
+; The general net behind that one case: any over-long argument list in a type
+; pattern is an arity error.
+(deftest s16-chain-arity-refused
+  (try (check-chain-refused "(defn f (x:ref:Vector:ptr:i8):i32 (return 21))"
+         "Vector: wrong number of type arguments for defstruct template (2 given)"))
+  (try (check-chain-refused "(defn f (x:ref:(Vector i32 CStr)):i32 (return 21))"
+         "Vector: wrong number of type arguments for defstruct template (2 given)")))
+
+; The guards must not cost the spellings docs/types.md advertises, and a genuine
+; tyvar must still be a tyvar. Asserted as a `define` per function, because a
+; missing define IS the §1.2 bug.
+(deftest s16-chain-working-spellings
+  (let (src:StrView "(import-use \"stdio.h\")
+(import-use vector)
+(import-use hashmap)
+(import-use node)
+(import-use coll)
+(defn ca (x:ref:HashMap:CStr:i32):i32 (return 1))
+(defn cb (x:ref:Vector:i32):i32 (return 2))
+(defn cc (x:ref:(Vector (ref Node))):i32 (return 3))
+(defn cd (x:ref:(HashMap CStr i32)):i32 (return 4))
+(defn ce (x:ref:Vector:ptr):i32 (return 5))
+(defn tyv (v:(ref (Vector T))):i64 (return (as i64 (count v))))
+(defn main ():i32
+  (with (v:(ref (Vector i32)) (alloca (Vector i32)))
+    (vector-init v)
+    (conj v 9)
+    (printf \"%d %ld\\n\" (cb v) (tyv v)))
+  (return 0))
+")
+    (let (ir:String (try (source-ir src))
+          iv:StrView (string-as-view (addr-of ir)))
+      (try (check-match iv "define i32 @ca(*"))
+      (try (check-match iv "define i32 @cb(*"))
+      (try (check-match iv "define i32 @cc(*"))
+      (try (check-match iv "define i32 @cd(*"))
+      (try (check-match iv "define i32 @ce(*"))
+      (drop (addr-of ir)))
+    (let (out:String (try (build-run-source src)))
+      (try (check-eq (string-as-view (addr-of out)) "2 1\n"))
+      (drop (addr-of out)))))
+
+; The fuse and the list form are two spellings of one type, not two types:
+; asserted as IR equality rather than as a claim (the §3.11 convention). Both
+; compile from the same path, so even the module header lines must agree.
+(deftest s16-chain-fuse-transparent-ir
+  (let (a:String (try (source-ir "(import-use hashmap)
+(import-use coll)
+(defn t (m:ref:(HashMap CStr i32)):i64 (return (as i64 (count m))))
+"))
+        b:String (try (source-ir "(import-use hashmap)
+(import-use coll)
+(defn t (m:(ref (HashMap CStr i32))):i64 (return (as i64 (count m))))
+")))
+    (try (check-golden (string-as-view (addr-of a)) (string-as-view (addr-of b))))
+    (drop (addr-of a))
+    (drop (addr-of b))))
+
+; ---------------------------------------------------------------------------
+; Type aliases (container-type-sugar.md §3)
+; ---------------------------------------------------------------------------
+
+; An alias works in every declaration position, and composes with the colon
+; sugar (§3.9 -- a single-token type name needs no fuse at all).
+(deftest s16-deftype-every-position
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use hashset)
+(import-use coll)
+(deftype NameSet (ref (HashSet CStr)))
+(deftype Count i64)
+(defstruct Reg names:NameSet)
+(defvar gv:Count 7)
+(defn size (s:NameSet):Count (return (as Count (count s))))
+(defn main ():i32
+  (with (s:NameSet (alloca (HashSet CStr)))
+    (hashset-init s)
+    (conj s (as CStr \"a\"))
+    (conj s (as CStr \"b\"))
+    (let (t:NameSet s)
+      (printf \"%ld %ld\\n\" (size t) gv)))
+  (return 0))
+")))
+    (try (check-eq (string-as-view (addr-of out)) "2 7\n"))
+    (drop (addr-of out))))
+
+; Transparency (§3.2) is the load-bearing claim: an alias is a second SPELLING,
+; not a second type, so the IR must be identical to the spelled-out program.
+; This is also what keeps the bootstrap byte-identical until a source file
+; adopts one.
+(deftest s16-deftype-transparent-ir
+  (let (a:String (try (source-ir "(import-use hashmap)
+(import-use coll)
+(deftype SymTab (ref (HashMap CStr i32)))
+(defn tally (m:SymTab):i64 (return (as i64 (count m))))
+"))
+        b:String (try (source-ir "(import-use hashmap)
+(import-use coll)
+(defn tally (m:(ref (HashMap CStr i32))):i64 (return (as i64 (count m))))
+")))
+    (try (check-golden (string-as-view (addr-of a)) (string-as-view (addr-of b))))
+    (drop (addr-of a))
+    (drop (addr-of b))))
+
+; Composition (§3.3): the ?/! sigils, pointer-kind chains, template arguments,
+; alias-of-alias, and a forward reference all route through the two resolution
+; sites without their own code.
+(deftest s16-deftype-composes
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use vector)
+(defstruct Pt x:i32 y:i32)
+(deftype P Pt)
+(deftype PRef (ref P))
+(deftype Later i32)
+(defn viaq (v:?PRef):i32 (if-some (p v) (return (p 'x)) (return -1)))
+(defn chain (v:ref:P):i32 (return (v 'y)))
+(defn intmpl (v:(ref (Vector Later))):i32 (return 0))
+(defn fwd (n:Later):i32 (return n))
+(defn main ():i32
+  (with (p:PRef (alloca Pt))
+    (set! (p 'x) 3) (set! (p 'y) 4)
+    (printf \"%d %d %d\\n\" (viaq p) (chain p) (fwd 5)))
+  (return 0))
+")))
+    (try (check-eq (string-as-view (addr-of out)) "3 4 5\n"))
+    (drop (addr-of out))))
+
+; A colliding alias would be DEAD, not merely ambiguous -- `parse-type-name`
+; probes aliases last -- so every collision is refused rather than silently
+; ignored (§3.4). Both orders, since the check runs on the prescan pass and
+; again on the emit pass.
+(deftest s16-deftype-collisions-refused
+  (try (check-source-rejects "(defstruct Pt x:i32)
+(deftype Pt i32)
+" "already names a type"))
+  (try (check-source-rejects "(import-use vector)
+(deftype Vector i32)
+" "already names a struct template"))
+  (try (check-source-rejects "(defenum E A B)
+(deftype E i32)
+" "already names an enumeration"))
+  (try (check-source-rejects "(deftype i32 i64)\n" "already names a built-in type"))
+  (try (check-source-rejects "(deftype Q i32)
+(defstruct Q a:i32)
+" "already names a type"))
+  (try (check-source-rejects "(defn Q ():i32 (return 0))
+(deftype Q i32)
+" "a symbol may name only one kind of thing"))
+  (try (check-source-rejects "(deftype Q i32)
+(deftype Q i64)
+" "redefinition of 'Q'")))
+
+; Malformed forms, and the §3.6 cycle guard (a recursive body would not
+; otherwise terminate).
+(deftest s16-deftype-malformed-refused
+  (try (check-source-rejects "(deftype Q)\n" "deftype: expects a name and one type"))
+  (try (check-source-rejects "(deftype Q i32 i64)\n" "deftype: expects a name and one type"))
+  (try (check-source-rejects "(deftype Q:i32 i64)\n" "deftype: takes no type annotation"))
+  (try (check-source-rejects "(deftype () i32)\n" "deftype: alias name must be a symbol"))
+  (try (check-source-rejects "(deftype (Tbl) i32)\n" "deftype: parameter list required"))
+  (try (check-source-rejects "(deftype (Tbl 3) i32)\n"
+                             "deftype: each type parameter must be a symbol"))
+  (try (check-source-rejects "(deftype A B)
+(deftype B A)
+(defn f (x:A):i32 (return 0))
+" "expands into a cycle")))
+
+; `.nuch` round-trip. The header must CARRY the alias -- an exported defn may
+; name it in its signature, and the importer resolves that spelling in its own
+; unit. (This is the one part of the design that needed code: the export and
+; import dispatches are both explicit form lists.)
+(deftest s16-deftype-nuch-roundtrip
+  (let (dir:StrView (try (test-scratch))
+        lib:String (try (test-write-file "alib.nuc" "(deftype Count i64)
+(defn twice (n:Count):Count (return (* n 2)))
+"))
+        nuch:String (try (emit-for-file "" "--emit-nuch" (string-as-view (addr-of lib))))
+        hp:String (try (test-write-file "alib.nuch" (string-as-view (addr-of nuch))))
+        use:String (try (test-write-file "use.nuc" "(import-use \"stdio.h\")
+(import-use alib)
+(defn main ():i32 (printf \"%ld\\n\" (twice 21)) (return 0))
+"))
+        out:String (try (build-run-file dir (string-as-view (addr-of use)))))
+    (try (check-contains (string-as-view (addr-of nuch)) "(deftype Count i64)"))
+    (try (check-eq (string-as-view (addr-of out)) "42\n"))
+    (drop (addr-of out))
+    (drop (addr-of use))
+    (drop (addr-of hp))
+    (drop (addr-of nuch))
+    (drop (addr-of lib))))
+
+; Privacy here is NAMESPACE-level, as it is for the other four private type
+; definers, so the check needs a namespaced library and a consumer outside it --
+; spelling the name through the prefix, so a refusal measures privacy and not
+; just scope. Plus the positive control that `deftype` still exports.
+(deftest s16-deftype-private-namespaced
+  (let (dir:StrView (try (test-scratch))
+        lib:String (try (test-write-file "tplib.nuc" "(ns t16p)
+(deftype- T16Hidden i64)
+(deftype T16Public i64)
+(defn- t16-inside (n:T16Hidden):T16Hidden (return (* n 3)))
+(defn t16-pub (n:T16Public):T16Public (return (t16-inside n)))
+"))
+        nuch:String (try (emit-for-file dir "--emit-nuch" (string-as-view (addr-of lib))))
+        hp:String (try (test-write-file "tplib.nuch" (string-as-view (addr-of nuch))))
+        outp:String (try (test-write-file "tp-out.nuc" "(import-prefixed tplib tp)
+(defn t16-take (n:tp/T16Hidden):i64 (return n))
+(defn main ():i32 (return 0))
+"))
+        pubp:String (try (test-write-file "tp-pub.nuc" "(import-prefixed tplib tp)
+(defn t16-take (n:tp/T16Public):i64 (return n))
+(defn main ():i32 (return 0))
+"))
+        bad:Compiled (try (compile-path-in dir (string-as-view (addr-of outp))))
+        good:Compiled (try (compile-path-in dir (string-as-view (addr-of pubp)))))
+    (try (check-contains (string-as-view (addr-of bad 'raw)) "T16Hidden"))
+    (try (check-empty (string-as-view (addr-of good 'raw))))
+    (try (check-not-contains (string-as-view (addr-of nuch)) "T16Hidden"))
+    (try (check-contains (string-as-view (addr-of nuch)) "T16Public"))
+    (drop (addr-of good))
+    (drop (addr-of bad))
+    (drop (addr-of pubp))
+    (drop (addr-of outp))
+    (drop (addr-of hp))
+    (drop (addr-of nuch))
+    (drop (addr-of lib))))
+
+; The C header must show the alias's BODY. It has no C spelling of its own, and
+; `type-node-to-c` resolved names by spelling -- so the alias name leaked out as
+; `struct Count`, naming nothing the header defines. Asserted against the
+; spelled-out program, which is the only definition of "right" here.
+(deftest s16-deftype-cheader-expands
+  (let (a:String (try (source-cheader "(defstruct Pt x:i32 y:i32)
+(deftype Count i64)
+(deftype PtRef (ref Pt))
+(defn twice (n:Count):Count (return (* n 2)))
+(defn getx (p:PtRef):i32 (return (p 'x)))
+"))
+        b:String (try (source-cheader "(defstruct Pt x:i32 y:i32)
+(defn twice (n:i64):i64 (return (* n 2)))
+(defn getx (p:(ref Pt)):i32 (return (p 'x)))
+")))
+    (try (check-golden (string-as-view (addr-of a)) (string-as-view (addr-of b))))
+    (drop (addr-of a))
+    (drop (addr-of b))))
+
+; The REPL has its own top-level form chain; without an arm there `deftype` was
+; `unknown: deftype` and every later use of the name failed too.
+(deftest s16-deftype-repl
+  (let (out:String (try (repl-session "(deftype C i64)
+(defn d (n:C):C (return (* n 2)))
+(d 21)
+")))
+    (try (check-contains (string-as-view (addr-of out)) "42"))
+    (drop (addr-of out))))

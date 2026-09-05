@@ -177,6 +177,26 @@ not the library's, because they run `./build/nucleusc`.
 | `(build-run-source src)` | `!String` — compile, run, stdout and stderr on one stream. |
 | `(check-source-exit src n)` | Compile, run, and require exit status `n`. |
 
+Every fixture is written to the same `t.nuc`, so two programs compiled this way
+differ only where they *should*: `; ModuleID`, `source_filename` and the C
+header's `/* Generated from` banner are already equal, and `check-golden` can
+compare two whole artifacts rather than two filtered ones.
+
+A unit that exports a `.nuch` and imports it from a second file needs an
+include directory, and one about the REPL needs a session:
+
+| Form | Meaning |
+| --- | --- |
+| `(compile-path-in dir path)` | `!Compiled`, resolving imports under `-I dir`. |
+| `(emit-for-file dir flag path)` | `!String` — stdout of `nucleusc [-I dir] flag path`. |
+| `(build-run-file dir path)` | `!String` — build `path` under `-I dir` and run it. |
+| `(repl-session text)` | `!String` — `text` is `nucleusc -i`'s stdin, the transcript is the answer. |
+| `(line-with hay needle)` | `!StrView` — the first line containing `needle`. |
+
+An empty `dir` adds no `-I`. `line-with` is for a claim about one instruction:
+`i8 %` is in every module, so `check-not-contains` over the whole IR asserts
+nothing.
+
 Each test gets its own scratch directory, `build/out/nt/<test-name>`, made on
 first use. `--run <name>` therefore reproduces exactly the files the full run
 made, and no two tests can collide.

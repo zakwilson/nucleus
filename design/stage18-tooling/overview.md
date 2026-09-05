@@ -1279,9 +1279,45 @@ one enormous file): `run_s16_bool_type` (6), `run_s16_macrolet_refused` (10),
 `run_s16_pointer_kind_names`. Every name is the one the shell unit printed, so
 nothing in the corpus is renamed. `make test` is 607 shell + 359 native = 966.
 
-**Remaining: 177 shell functions, ~10,200 body lines.** The `run_s16_*` family
-is the largest cluster at 32 functions and ~3,900 lines, and it is the one this
-layer was shaped by.
+**Remaining: 170 shell functions, 10,339 body lines** (counting every
+`run_*()` in the file, §T7's trust-anchor units included). The `run_s16_*`
+family is the largest cluster, and it is the one this layer was shaped by.
+
+#### TF-6 category (c), second batch (2026-09-05)
+
+**5 shell functions → 35 tests**, 792 shell lines retired:
+`run_s16_bool_truthiness` (5), `run_s16_literal_variables` (13),
+`run_s16_vararg_promotion` (4), `run_s16_type_aliases` (9),
+`run_s16_chain_nesting` (4). `make test` is 572 shell + 394 native = 966 —
+unchanged, as it must be.
+
+**Four more helpers, each demanded by a unit rather than anticipated.** The
+first batch's units were all single-file; these are not.
+
+| Helper | The unit that needed it |
+| --- | --- |
+| `compile-path-in dir path` | `deftype-` privacy: a namespaced library and a consumer *outside* it. |
+| `emit-for-file dir flag path` | `--emit-nuch`, whose output is the artifact under test. |
+| `build-run-file dir path` | the `.nuch` round-trip: build a second unit against the exported header. |
+| `repl-session text` | `deftype` in the REPL, which has its own top-level form chain. |
+| `line-with hay needle` | a claim about ONE instruction — `i8 %` is in every module, so a module-wide search cannot make it. |
+
+`compile-path` and `build-run-source` are now one-liners over the `dir`-taking
+versions, and an empty `dir` adds no `-I`.
+
+**Two shell comparisons became stronger assertions, not weaker ones.**
+
+- The shell compared IR and C-header *files* after `grep -v`-ing out
+  `; ModuleID`, `source_filename` and the `/* Generated from` banner, because
+  the two programs lived at different paths. `compile-source` writes every
+  fixture to the same `t.nuc`, so those lines are already equal and
+  `check-golden` compares the whole artifact — banner included.
+- `refuses_chain` grepped stderr for the message and again for `c.nuc:4:`.
+  `check-error-at` requires both of the same diagnostic, which is category (a)'s
+  upgrade applied to a bespoke unit.
+
+**Remaining: 165 shell functions, 9,583 body lines**, of which the `run_s16_*`
+family is 27 functions and 3,057 lines.
 
 ### T6.7 TF-7 — the end state
 
