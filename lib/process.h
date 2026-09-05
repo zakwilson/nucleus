@@ -34,6 +34,7 @@ typedef struct Command {
     bool search;
     bool capture;
     int64_t out_path_off;
+    int64_t in_path_off;
     bool merge_err;
 } Command;
 
@@ -45,6 +46,7 @@ void command_search(void* self, bool on) asm("command-search");
 void command_env(void* self, struct StrView k, struct StrView v) asm("command-env");
 void command_capture(void* self, bool on) asm("command-capture");
 void command_stdout_path(void* self, struct StrView path) asm("command-stdout-path");
+void command_stdin_path(void* self, struct StrView path) asm("command-stdin-path");
 void command_stderr_to_stdout(void* self, bool on) asm("command-stderr-to-stdout");
 void drop_pCommand(struct Command* self) asm("drop.pCommand");
 void command_argv(void* self, void* out) asm("command-argv");

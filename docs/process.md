@@ -32,6 +32,7 @@ See `examples/subprocess.nuc` for a worked example.
 | `(command-search c on)` | `true` (default) looks `prog` up on `PATH` (`execvp`); `false` treats it as an exact path (`execv`). |
 | `(command-capture c on)` | Pipe the child's stdout and stderr back instead of inheriting the parent's. `run` sets this; set it by hand when driving `spawn` yourself. |
 | `(command-stdout-path c path)` | Send the child's stdout to a file, created and truncated. |
+| `(command-stdin-path c path)` | The child reads `path` as its stdin — shell `< path`. |
 | `(command-stderr-to-stdout c on)` | The child's stderr follows its stdout — shell `2>&1`. |
 
 A `Command` owns its argument buffer: `drop` it when you are done, and do not
@@ -52,8 +53,18 @@ and a parent blocked in `wait-any` is draining nobody at all. A file has no such
 limit, so the parent can start every child and then wait, which is the whole
 shape of a job pool. `tests/nuctest.nuc` is the worked example.
 
-The parent opens the file before forking, so a bad path is a
-`process-redirect-failed` error rather than a child that silently exits 127.
+The parent opens the file before forking — for `command-stdin-path` too — so a
+bad path is a `process-redirect-failed` error rather than a child that silently
+exits 127.
+
+### `2>&1` and capture together
+
+`command-stderr-to-stdout` applies to a captured child as well as a redirected
+one, and it means the same thing in both: **one** stream. Under capture the
+child's stderr is duplicated onto the *stdout pipe*, so `Output.out` holds the
+interleaving the child actually produced and `Output.err` is empty. Two
+separately drained pipes cannot reproduce an interleaving at all, which matters
+whenever the thing being compared is a transcript.
 
 ## Running one thing: `run`
 

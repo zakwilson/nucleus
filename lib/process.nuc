@@ -83,6 +83,7 @@
   search:bool          ; PATH lookup (execvp) vs. an exact path (execv)
   capture:bool         ; pipe the child's stdout/stderr back, vs. inherit
   out-path-off:i64     ; -1 = inherit stdout; else offset of a file to write
+  in-path-off:i64      ; -1 = inherit stdin; else offset of a file to read
   merge-err:bool)      ; the child's stderr follows its stdout (`2>&1`)
 
 ; The terminator is a real byte of the buffer, not `string-as-cstr`'s
@@ -104,6 +105,7 @@
     (set! (c 'search) true)
     (set! (c 'capture) false)
     (set! (c 'out-path-off) -1)
+    (set! (c 'in-path-off) -1)
     (set! (c 'merge-err) false)
     (let (off:usize (command-push-cstr c prog))
       (conj (addr-of c 'offs) off))
@@ -146,6 +148,11 @@
 ; pool called `wait`, which is the one thing a blocked child prevents.
 (defn command-stdout-path ((self (ref Command)) path:StrView):void
   (set! (self 'out-path-off) (as i64 (command-push-cstr self path))))
+
+; The child reads `path` as its stdin (`< path`). Opened by the parent, so a
+; missing file is an error rather than a child that dies after the fork.
+(defn command-stdin-path ((self (ref Command)) path:StrView):void
+  (set! (self 'in-path-off) (as i64 (command-push-cstr self path))))
 
 ; The child's stderr goes wherever its stdout goes -- shell `2>&1`.
 (defn command-stderr-to-stdout ((self (ref Command)) on:bool):void
@@ -226,6 +233,8 @@
         merge:bool (self 'merge-err)
         out-path:ptr null
         out-fd:i32 -1
+        in-path:ptr null
+        in-fd:i32 -1
         op:ptr:i32 (as ptr:i32 (alloca i32 2))
         ep:ptr:i32 (as ptr:i32 (alloca i32 2)))
     (command-argv self (addr-of argv))
@@ -235,7 +244,9 @@
       (when (>= (self 'cwd-off) 0)
         (set! cwd (as ptr (unsafe/ptr+ (v 'data) (self 'cwd-off)))))
       (when (>= (self 'out-path-off) 0)
-        (set! out-path (as ptr (unsafe/ptr+ (v 'data) (self 'out-path-off))))))
+        (set! out-path (as ptr (unsafe/ptr+ (v 'data) (self 'out-path-off)))))
+      (when (>= (self 'in-path-off) 0)
+        (set! in-path (as ptr (unsafe/ptr+ (v 'data) (self 'in-path-off))))))
     (when cap
       (when (!= (pipe op) 0)
         (drop (addr-of argv))
@@ -248,6 +259,15 @@
         (return (err! process-pipe-failed))))
     ; Opened by the parent, not the child: a failure here is reportable as an
     ; error, and the fork-to-exec window stays as short as it already is.
+    (when (!= in-path null)
+      (set! in-fd (open (as CStr in-path) O_RDONLY 0))
+      (when (< in-fd 0)
+        (when cap
+          (close (aref op 0)) (close (aref op 1))
+          (close (aref ep 0)) (close (aref ep 1)))
+        (drop (addr-of argv))
+        (drop (addr-of envp))
+        (return (err! process-redirect-failed))))
     (when (!= out-path null)
       (set! out-fd (open (as CStr out-path)
                          (bit-or O_WRONLY (bit-or O_CREAT O_TRUNC))
@@ -256,6 +276,7 @@
         (when cap
           (close (aref op 0)) (close (aref op 1))
           (close (aref ep 0)) (close (aref ep 1)))
+        (when (>= in-fd 0) (close in-fd))
         (drop (addr-of argv))
         (drop (addr-of envp))
         (return (err! process-redirect-failed))))
@@ -266,6 +287,7 @@
           (close (aref op 0)) (close (aref op 1))
           (close (aref ep 0)) (close (aref ep 1)))
         (when (>= out-fd 0) (close out-fd))
+        (when (>= in-fd 0) (close in-fd))
         (drop (addr-of argv))
         (drop (addr-of envp))
         (return (err! process-spawn-failed)))
@@ -273,13 +295,18 @@
         ; Child. Async-signal-safe calls only — everything else was done above.
         (when cap
           (dup2 (aref op 1) 1)
-          (dup2 (aref ep 1) 2)
+          ; Merged capture goes down the SAME pipe, which is what makes the
+          ; interleaving the child produced survive; two pipes cannot.
+          (dup2 (if merge (aref op 1) (aref ep 1)) 2)
           (close (aref op 0)) (close (aref op 1))
           (close (aref ep 0)) (close (aref ep 1)))
         (when (>= out-fd 0)
           (dup2 out-fd 1)
           (when merge (dup2 1 2))
           (when (> out-fd 2) (close out-fd)))
+        (when (>= in-fd 0)
+          (dup2 in-fd 0)
+          (when (> in-fd 2) (close in-fd)))
         (when (!= cwd null)
           (when (!= (chdir (as CStr cwd)) 0) (_exit EXEC-FAILED-STATUS)))
         ; A pointer store, so it is safe in this window — unlike `setenv`, which
@@ -293,12 +320,17 @@
       ; Parent. Closing the write ends is what makes the reader see EOF.
       (when cap (close (aref op 1)) (close (aref ep 1)))
       (when (>= out-fd 0) (close out-fd))
+      (when (>= in-fd 0) (close in-fd))
       (drop (addr-of argv))
       (drop (addr-of envp))
       (let (p:&Process (alloca Process))
         (set! (p 'pid) pid)
         (set! (p 'out-fd) (if cap (aref op 0) -1))
-        (set! (p 'err-fd) (if cap (aref ep 0) -1))
+        ; Merged capture left nothing on the err pipe; closing it here is what
+        ; keeps `process-capture`'s poll set from waiting on a stream that will
+        ; never carry a byte.
+        (when (and cap merge) (close (aref ep 0)))
+        (set! (p 'err-fd) (if (and cap (not merge)) (aref ep 0) -1))
         (set! (p 'status) (ExitStatus-exited 0))
         (return (ok (deref p)))))))
 

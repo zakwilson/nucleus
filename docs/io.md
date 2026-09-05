@@ -137,6 +137,43 @@ handed.
 
 ---
 
+## §4b — Directories (`lib/file.nuc`)
+
+| Function | Signature |
+|----------|-----------|
+| `read-dir` | `(path:StrView):!DirEntries` — every entry but `.` and `..`, sorted by name |
+| `dir-count` | `((self (ref DirEntries))):usize` |
+| `dir-name` | `((self (ref DirEntries)) i:usize):StrView` |
+| `make-dir` | `(path:StrView):!void` — one level, mode 0755 |
+| `dir-exists?` | `(path:StrView):bool` |
+
+```lisp
+(with (d (try (read-dir "examples")))
+  (let (i:usize 0)
+    (while (< i (dir-count d))
+      (println (dir-name d i))
+      (set! i (+ i 1)))))
+```
+
+`DirEntries` owns one buffer of NUL-terminated names plus their offsets, so a
+`dir-name` view is valid while the `DirEntries` is alive. It is `Drop`.
+
+**Sorted, not `readdir` order.** `readdir` hands back whatever order the
+filesystem keeps, which differs between machines and between two runs after a
+rename. Sorting here is what makes "walk this directory" reproducible; a caller
+that wants raw order does not exist yet.
+
+`make-dir` is **idempotent**: an existing directory is success. It makes one
+level, not a path — there is no `mkdir -p`.
+
+`read-dir` fails with `dir-layout-unknown` when the platform's `struct dirent`
+is not the layout it reads names at. It knows because `.` and `..` exist in
+every POSIX directory, so their absence means the offset is wrong — which is
+the difference between failing and returning names read out of the middle of
+`d_ino`.
+
+---
+
 ## §5 — `BufWriter` (`lib/file.nuc`)
 
 ```lisp

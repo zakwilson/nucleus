@@ -2824,29 +2824,8 @@
 ; not call it from a speculative or recoverable path; a directory walk plus a
 ; file read per candidate is affordable here and nowhere else.
 
-; POSIX directory enumeration. Declared here rather than imported from
-; <dirent.h>: the C-header reader registers `struct dirent` as *opaque* (its
-; `char d_name[256]` member is a shape the declaration parser declines), so a
-; field access on it is refused — and the scan needs only the name. The
-; compiler already depends on POSIX process control (lib/process.nuc) to run
-; `clang -E`, so this adds no new platform class.
-(declare opendir (path:CStr):ptr)
-(declare readdir (d:ptr):ptr)
-(declare closedir (d:ptr):i32)
-
-; Byte offset of `d_name` within `struct dirent` on 64-bit glibc and musl:
-; ino_t(8) + off_t(8) + unsigned short(2) + unsigned char(1). POSIX does not fix
-; the layout, so this is *validated, not trusted*: a directory entry is used only
-; when the bytes at this offset are a short NUL-terminated string ending in
-; `.nuc`/`.nuch` (`nuc-source-name`). On a platform whose layout differs, the
-; scan simply finds nothing and the diagnostic degrades to its primary text — it
-; can never put garbage in a message. The read stays inside the kernel-filled
-; dirent buffer either way, because `d_name` is the last member and is
-; NUL-terminated.
-(defconst DIRENT-D-NAME-OFFSET 19)
-
-; Does `fname` name a Nucleus source file? The length bound is what keeps a
-; wrong DIRENT-D-NAME-OFFSET harmless (see above) and bounds the path we build.
+; Does `fname` name a Nucleus source file? The length bound also bounds the
+; path this builds.
 (defn nuc-source-name (fname:StrView):i32
   (let (n:usize (fname 'len))
     (when (or (< n 5) (> n 250)) (return 0))
@@ -3045,22 +3024,23 @@
 ; Scan one directory (non-recursive) for a `.nuc`/`.nuch` file outside the unit
 ; that defines `name`. First match wins and stops the scan.
 (defn scan-dir-for-definer (dir:Symbol name:Symbol want-type:i32):Symbol
-  (let (d:ptr (opendir (symbol-as-cstr dir)))
-    (when (= d null) (return (symbol-none)))
-    (while true
-      (let (e:ptr (readdir d))
-        (when (= e null)
-          (closedir d)
-          (return (symbol-none)))
-        (let (fname:StrView (strview-from-cstr
-                              (as CStr (unsafe/ptr+ (as ptr:i8 e) DIRENT-D-NAME-OFFSET))))
-          (when (!= (nuc-source-name fname) 0)
-            (let (path:Symbol (symbol-intern (fstr dir "/" fname)))
-              (when (= (path-in-unit path) 0)
-                (when (!= (file-defines-name path name want-type) 0)
-                  (closedir d)
-                  (return path)))))))))
-  (return (symbol-none)))
+  (match (read-dir (symbol-as-view dir))
+    ((ok listing)
+      (let (es:DirEntries listing
+            n:usize (dir-count (addr-of es))
+            i:usize 0
+            found:Symbol (symbol-none))
+        (while (and (< i n) (symbol-none? found))
+          (let (fname:StrView (dir-name (addr-of es) i))
+            (when (!= (nuc-source-name fname) 0)
+              (let (path:Symbol (symbol-intern (fstr dir "/" fname)))
+                (when (= (path-in-unit path) 0)
+                  (when (!= (file-defines-name path name want-type) 0)
+                    (set! found path))))))
+          (set! i (+ i 1)))
+        (drop (addr-of es))
+        (return found)))
+    ((err e) (return (symbol-none)))))
 
 ; The directory of the file currently being emitted, or null when it has none
 ; (a bare filename in the cwd). Mirrors `try-import-path`'s first search step,

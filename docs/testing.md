@@ -61,6 +61,7 @@ Every predicate returns `!void` and every one renders its own failure text, so a
 | `(check-not-match hay pat)` | no line does. |
 | `(check-empty s)` | `s` has no bytes. |
 | `(check-non-empty s)` | `s` has some. |
+| `(check-golden got want)` | two blobs are identical; names the first differing line. |
 | `(check-files-eq a b)` | two files have identical contents. |
 | `(check cond what)` | `cond` is true; the escape hatch for the rest. |
 
@@ -135,6 +136,11 @@ instead, with `test-add`:
 `test-add` takes the name as a `StrView`, so it can come from a file, and the
 `data` pointer is handed back to the function as its argument. A `deftest`
 registers through the same path and ignores the argument.
+
+A table is not the only source. `tests/nuctests.nuc` also registers a test per
+`examples/*.nuc` that has a golden file, and per `tests/repl/*.in`, by walking
+the directory with `read-dir` — so a new example is a new test with no edit
+anywhere.
 
 `tests/nuctests.nuc` is the worked example: it reads
 `tests/manifest/diagnostics.sexp` with `lib/read.nuc` and registers one test per

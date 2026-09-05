@@ -149,7 +149,7 @@
         (message "unknown type: nosuch — not defined anywhere in this compilation unit"))
 (reject "w9-unknown-type-ctor-unimported" (file "tests/fixtures/w9-unknown-type-ctor-unimported.nuc") (line 12)
         (message "unknown type: Vector")
-        (note "'Vector' is defined in lib/vector.nuch, which no import in this unit reaches"))
+        (note "'Vector' is defined in lib/vector.nuc, which no import in this unit reaches"))
 
 ; The other mistake class at the same fall-through: a head that IS a type. One
 ; message for both would lie about this one.

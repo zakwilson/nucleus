@@ -33,9 +33,9 @@ case "${1:-}" in
     exit 2 ;;
 esac
 
-# Bring the compiler up to date BEFORE dispatch. run_example shells out to
+# Bring the compiler up to date BEFORE dispatch. Several units shell out to
 # build.sh, which runs `make` — harmless when the tree is already built, but if
-# any src/*.nuc is newer then 161 parallel jobs relink build/nucleusc while the
+# any src/*.nuc is newer then parallel jobs relink build/nucleusc while the
 # other jobs are executing it, and every unit dies with "Text file busy".
 [ "$MODE" = run ] && make -s test-tools
 
@@ -62,7 +62,7 @@ declare -A _unit_seen=()
 # captured to a numbered result file; ordering is recovered from UNIT_NAMES.
 #
 # The unit's NAME is the function plus its FIRST argument, which is already the
-# unit's identity everywhere it matters: `run_example <src>`, `run_fixture <src>`,
+# unit's identity everywhere it matters: `run_target_triple <triple>`,
 # `w1_reject_multi <name> ...`. Later arguments are expected diagnostic text — joining
 # those in would put error messages, spaces and parens into a name that has to
 # survive a command line. Names must be unique or `--unit` cannot address them,
@@ -135,56 +135,6 @@ qgrep() { grep "$@" >/dev/null; }
 # and echoes its PASS/FAIL line(s) to stdout. A unit is treated as the atomic
 # parallel grain — intra-unit steps that depend on each other (write lib →
 # emit → grep → link → run) stay serial within the unit.
-
-run_example() {  # <src>
-  local src="$1" name expected actual_file build_log
-  name="${src##*/}"; name="${name%.nuc}"
-  expected="tests/expected/${name}.out"
-  [ -f "$expected" ] || return 0
-  # Never let a stale binary from a prior run mask a compile failure: a
-  # successful old binary would let the diff pass silently. The compiler writes
-  # the binary atomically on success, so removing it first means a missing
-  # binary after build.sh unambiguously signals "did not compile".
-  rm -f "./build/out/$name"
-  build_log="$(mktemp)"
-  # Capture build output and check the exit code explicitly. `set -e` would
-  # otherwise kill this unit silently on a compile error, leaving an empty
-  # result file that the replay loop can flag as failed but cannot explain.
-  if ! ./build.sh "$src" >"$build_log" 2>&1; then
-    echo "FAIL  $name (compile error)"
-    sed 's/^/    /' "$build_log"
-    rm -f "$build_log"
-    return 0
-  fi
-  rm -f "$build_log"
-  actual_file="$(mktemp)"
-  ./build/out/"$name" > "$actual_file" 2>&1 || true
-  if diff -u "$expected" "$actual_file" >/dev/null; then
-    echo "PASS  $name"
-  else
-    echo "FAIL  $name"
-    diff -u "$expected" "$actual_file" || true
-  fi
-  rm -f "$actual_file"
-}
-
-# REPL session tests: pipe each tests/repl/<name>.in into `nucleusc -i` and
-# compare against tests/expected/repl-<name>.out.
-run_repl() {  # <src>
-  local src="$1" name expected actual_file
-  name="${src##*/}"; name="${name%.in}"
-  expected="tests/expected/repl-${name}.out"
-  [ -f "$expected" ] || return 0
-  actual_file="$(mktemp)"
-  ./build/nucleusc -i < "$src" > "$actual_file" 2>&1 || true
-  if diff -u "$expected" "$actual_file" >/dev/null; then
-    echo "PASS  repl-$name"
-  else
-    echo "FAIL  repl-$name"
-    diff -u "$expected" "$actual_file" || true
-  fi
-  rm -f "$actual_file"
-}
 
 # The three meta forms a golden diff cannot hold: `dir` lists every library name
 # (so any lib change rewrites it), `imports` names the prelude's own import set,
@@ -6130,21 +6080,9 @@ EOF
 
 # --- Dispatch sequence (original top-to-bottom order) ---------------------------
 
-# Parameter expansion, not `basename`: this dispatch loop runs on every
-# invocation including `--unit`, and 161 forks per unit dominated the run.
-for src in examples/*.nuc; do
-  [ -f "$src" ] || continue
-  _base="${src##*/}"; _base="${_base%.nuc}"
-  [ -f "tests/expected/${_base}.out" ] || continue
-  spawn run_example "$src"
-done
-
-for src in tests/repl/*.in; do
-  [ -f "$src" ] || continue
-  _base="${src##*/}"; _base="${_base%.in}"
-  [ -f "tests/expected/repl-${_base}.out" ] || continue
-  spawn run_repl "$src"
-done
+# The `examples/*.nuc` and `tests/repl/*.in` golden-output loops that stood here
+# are `tests/nuctests.nuc`'s, since Stage 18 TF-6 category (b). They discover
+# their inputs the same way, with `read-dir` in place of the glob.
 
 spawn run_repl_meta_loose
 

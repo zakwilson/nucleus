@@ -116,6 +116,11 @@ with the value discarded. The backing layout is the ordinary tagged struct
 This is why `try` is a special form rather than a library macro: the `ok` arm's
 binder count depends on the operand's *type*, and a macro cannot see one.
 
+In a `!void` function `(err E)` is `(err! E)`. The handler negotiation repairs
+a failure by supplying the `ok` **value**, and a payload-less `ok` arm has none
+to supply, so there is nothing for a handler to return — the chain is not
+consulted. Everything else about `!void` is an ordinary `!T`.
+
 See `examples/result-void.nuc`.
 
 ## C layout of `!T`

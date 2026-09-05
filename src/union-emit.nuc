@@ -751,6 +751,11 @@
           okty:ptr (result-ok-type g-fn-ret-type)
           rsd:ptr:StructDef (unsafe/cast ptr:StructDef (udd 'sdef))
           rty:ptr (type-for-sdef (udd 'sdef)))
+      ; Unreachable through `union-target-rewrite`, which excludes a
+      ; payload-less ok arm. Kept so a future caller gets a diagnostic instead
+      ; of the null dereference this used to be.
+      (when (= okty null)
+        (die-at ln "err: the enclosing !void has no ok value for a handler to repair — use err!"))
       ; The error value E and an optional ptr detail.
       (when (< (node-len cc) 2)
         (die-at ln "err: expects (err E) or (err E detail)"))
@@ -923,8 +928,11 @@
         ; form `(__err-handled E [detail])`; emit-__err-handled does the IR.
         ; Without the library, or for a custom (Result T NonErr), `err` falls
         ; through to the plain `(make … err …)` construct below (== err!).
+        ; A payload-less `ok` arm (`!void`) is excluded: §11's negotiation repairs
+        ; by supplying the ok VALUE, and there is none, so `err` there is `err!`.
         (when (and (= (head 's) "err")
                    (= (result-err-arm-is-err (as ptr udd)) 1)
+                   (!= (as ptr (result-ok-type target)) null)
                    (= (error-lib-in-scope) 1))
           (return (make-cell '__err-handled (n 'cdr) ln)))
         (when (< (union-arm-index (as ptr udd) (head 's)) 0) (return form))
