@@ -1352,6 +1352,32 @@ design decision, not a port, and it belongs beside §T9's deferred list.
 **Remaining: 161 shell functions, 8,936 body lines**, of which `run_s16_*` is
 23 functions and 2,410 lines.
 
+#### TF-6 category (c), fourth batch (2026-09-05)
+
+**4 shell functions → 30 tests**, 492 shell lines retired: `run_b4_redefinition`
+(14), `run_s16_import_ct` (9), `run_s16_keyword_markers` (4),
+`run_s16_macrolet` (3). `make test` is 521 shell + 445 native = 966.
+
+**A second suite module, `tests/suite-modules.nuc`**, for what a *unit
+boundary* does to a name — R4 redefinition now, the `run_w9_nuch_*` and
+namespace family next. `tests/suite-s16.nuc` was getting long, and the split
+that matters is by subject rather than by batch.
+
+One helper: `check-file-exit dir path want`, with `check-source-exit` becoming
+a wrapper on it. That is the shell's `w1_run`, which several surviving units
+still use.
+
+**Ten near-identical units became ten `deftest`s over one helper, not a
+table.** Category (a)'s rule is that a *fixture* corpus is data; here each
+program is three lines written in the test, and the ten differ in the definer
+being redefined — which is the thing a reader is looking for. What they share is
+the assertion, `check-redefines`, and that is where the upgrade lives: the shell
+grepped stderr for `redefinition of 'X'` and separately for `<file>:2: error:`,
+where `check-error-at` requires both of the *same* diagnostic.
+
+**Remaining: 157 shell functions, 8,444 body lines**, of which `run_s16_*` is
+20 functions and 2,050 lines.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that

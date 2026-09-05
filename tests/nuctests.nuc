@@ -25,6 +25,7 @@
 (import-use read)
 (import-use test)
 (import-use suite-s16)
+(import-use suite-modules)
 
 
 
@@ -197,15 +198,17 @@
       (drop (addr-of r))
       (return (ok out)))))
 
-; Compile `src` and run it; the assertion is its EXIT STATUS. The shape of
+; Build `path` and run it; the assertion is its EXIT STATUS. The shape of
 ; `w1_run`, which several bespoke units use for a program whose answer is a
 ; number rather than output.
-(defn check-source-exit (src:StrView want:i32):!void
-  (let (p:String (try (test-write-file "t.nuc" src))
-        dir:StrView (try (test-scratch))
+(defn check-file-exit (idir:StrView path:StrView want:i32):!void
+  (let (dir:StrView (try (test-scratch))
         bin:String (str dir "/t.bin")
         cc:Command (command (compiler-path)))
-    (command-arg (addr-of cc) (string-as-view (addr-of p)))
+    (when (not (= idir ""))
+      (command-arg (addr-of cc) "-I")
+      (command-arg (addr-of cc) idir))
+    (command-arg (addr-of cc) path)
     (command-arg (addr-of cc) "-o")
     (command-arg (addr-of cc) (string-as-view (addr-of bin)))
     (command-capture (addr-of cc) true)
@@ -232,8 +235,13 @@
             (drop (addr-of o))))
         ((err e) (return (err e))))
       (drop (addr-of rc)))
-    (drop (addr-of p))
     (drop (addr-of bin))
+    (return (ok))))
+
+(defn check-source-exit (src:StrView want:i32):!void
+  (let (p:String (try (test-write-file "t.nuc" src)))
+    (try (check-file-exit "" (string-as-view (addr-of p)) want))
+    (drop (addr-of p))
     (return (ok))))
 
 ; The generated C header for `src`, which must compile.

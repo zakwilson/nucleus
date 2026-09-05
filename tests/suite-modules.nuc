@@ -1,0 +1,181 @@
+; Stage 18 TF-6 category (c) — one name, one definition, across compilation units.
+;
+; Design: design/stage18-tooling/overview.md §T6.6.
+;
+; These units are about what a *unit boundary* does to a name: the R4
+; redefinition rule, and the `.nuch` and namespace machinery around it.
+
+; ---------------------------------------------------------------------------
+; R4: a redefinition is a located error (b4)
+; ---------------------------------------------------------------------------
+
+; Line 2 in every fixture is the second definition. The shell grepped stderr for
+; `redefinition of 'X'` and again for `<file>:2: error:`; one `check-error-at`
+; requires both of the same diagnostic, and `check-no-line-zero` is the sweep
+; that used to be a `:0:` substring search.
+(defn check-redefines (src:StrView nm:StrView):!void
+  (let (p:String (try (test-write-file "t.nuc" src))
+        pv:StrView (string-as-view (addr-of p))
+        c:Compiled (try (compile-path pv))
+        want:String (str "redefinition of '" nm "'"))
+    (try (check-no-line-zero (addr-of c 'diags)))
+    (try (check-error-at (addr-of c 'diags) pv 2 (string-as-view (addr-of want))))
+    (drop (addr-of want))
+    (drop (addr-of c))
+    (drop (addr-of p))
+    (return (ok))))
+
+(deftest b4r-struct
+  (try (check-redefines "(defstruct RdS a:i32)
+(defstruct RdS b:i32 c:i32)
+(defn main ():i32 (return 0))
+" "RdS")))
+
+(deftest b4r-union
+  (try (check-redefines "(defunion RdU (ra x:i32) (rb y:i32))
+(defunion RdU (rc x:i32))
+(defn main ():i32 (return 0))
+" "RdU")))
+
+(deftest b4r-proto
+  (try (check-redefines "(defprotocol RdP (rm (self:Self):i32))
+(defprotocol RdP (rn (self:Self):i32))
+(defn main ():i32 (return 0))
+" "RdP")))
+
+(deftest b4r-macro
+  (try (check-redefines "(defmacro rd-m (x) x)
+(defmacro rd-m (x) 99)
+(defn main ():i32 (return (rd-m 0)))
+" "rd-m")))
+
+(deftest b4r-enum
+  (try (check-redefines "(defenum RdE rd-a rd-b)
+(defenum RdE rd-c rd-d)
+(defn main ():i32 (return 0))
+" "RdE")))
+
+; A member, not the enumeration: two enums may coexist, but one member name
+; still means one thing.
+(deftest b4r-enum-member
+  (try (check-redefines "(defenum RdE1 rd-x rd-y)
+(defenum RdE2 rd-y rd-z)
+(defn main ():i32 (return rd-y))
+" "rd-y")))
+
+(deftest b4r-tmpl
+  (try (check-redefines "(defstruct (RdBox T) v:T)
+(defstruct (RdBox T) w:T)
+(defn main ():i32 (return 0))
+" "RdBox")))
+
+(deftest b4r-utmpl
+  (try (check-redefines "(defunion (RdRes T) (rok v:T) (rno))
+(defunion (RdRes T) (ryes v:T))
+(defn main ():i32 (return 0))
+" "RdRes")))
+
+(deftest b4r-var
+  (try (check-redefines "(defvar rd-v:i32 1)
+(defvar rd-v:i32 2)
+(defn main ():i32 (return rd-v))
+" "rd-v")))
+
+(deftest b4r-const
+  (try (check-redefines "(defconst RD-K 1)
+(defconst RD-K 2)
+(defn main ():i32 (return RD-K))
+" "RD-K")))
+
+; The shape R4 was actually written for (§11.1): the two definitions are in two
+; different FILES and neither file can see the other. `lib/prelude.nuc` and
+; `lib/list.nuc` both defining `Node` with different field nullability was this,
+; and the winner was decided by import order. The diagnostic must name the other
+; file, which is the whole reason the definition records carry `src-file`.
+(deftest b4-redefinition-cross-file
+  (let (dir:StrView (try (test-scratch))
+        a:String (try (test-write-file "b4r-fa.nuc" "(defstruct RdX n:i32)\n"))
+        b:String (try (test-write-file "b4r-fb.nuc" "(defstruct RdX n:i32 m:i32)\n"))
+        m:String (try (test-write-file "b4r-fm.nuc" "(import b4r-fa)
+(import b4r-fb)
+(defn main ():i32 (return 0))
+"))
+        c:Compiled (try (compile-path-in dir (string-as-view (addr-of m))))
+        raw:StrView (string-as-view (addr-of c 'raw)))
+    (try (check-error-anywhere (addr-of c 'diags) "redefinition of 'RdX'"))
+    (try (check-contains raw (string-as-view (addr-of a))))
+    (drop (addr-of c))
+    (drop (addr-of m))
+    (drop (addr-of b))
+    (drop (addr-of a))))
+
+; Equal values are NOT an exemption. The first external program to meet R4 — the
+; Doom port, 2026-08-15 — collided on seven same-valued `defconst`s in five file
+; pairs, two of them commented as deliberate copies, so this is the shape a
+; future relaxation would be tempted by. Pinned because the rule is about a name
+; having one meaning, not about detecting disagreement: letting equal values
+; through means the compiler decides which collisions matter.
+(deftest b4-redefinition-same-value
+  (let (dir:StrView (try (test-scratch))
+        a:String (try (test-write-file "b4r-eqa.nuc" "(defconst RD-EQ 7)\n"))
+        b:String (try (test-write-file "b4r-eqb.nuc" "(defconst RD-EQ 7)\n"))
+        m:String (try (test-write-file "b4r-eqm.nuc" "(import b4r-eqa)
+(import b4r-eqb)
+(defn main ():i32 (return RD-EQ))
+"))
+        c:Compiled (try (compile-path-in dir (string-as-view (addr-of m))))
+        raw:StrView (string-as-view (addr-of c 'raw)))
+    (try (check-error-anywhere (addr-of c 'diags) "redefinition of 'RD-EQ'"))
+    (try (check-contains raw (string-as-view (addr-of a))))
+    (drop (addr-of c))
+    (drop (addr-of m))
+    (drop (addr-of b))
+    (drop (addr-of a))))
+
+; …and the fix the diagnostic recommends has to work: one owner, reached by
+; `import`. This is the migration the port took, and it is the half of the
+; ruling that makes it liveable rather than merely strict.
+(deftest b4-redefinition-same-value-fix
+  (let (dir:StrView (try (test-scratch))
+        a:String (try (test-write-file "b4r-owna.nuc" "(defconst RD-OWN 7)\n"))
+        b:String (try (test-write-file "b4r-ownb.nuc" "(import b4r-owna)
+(defn rd-own-b ():i32 (return RD-OWN))
+"))
+        m:String (try (test-write-file "b4r-ownm.nuc" "(import b4r-owna)
+(import b4r-ownb)
+(defn main ():i32 (return (+ RD-OWN (rd-own-b))))
+")))
+    (try (check-file-exit dir (string-as-view (addr-of m)) 14))
+    (drop (addr-of m))
+    (drop (addr-of b))
+    (drop (addr-of a))))
+
+; The rule is per compilation unit, so re-importing one file through two paths —
+; the diamond every non-trivial program has — must stay legal. This is what
+; `same-definition-site` protects: the registrars really are re-entered.
+(deftest b4-redefinition-diamond-ok
+  (let (dir:StrView (try (test-scratch))
+        base:String (try (test-write-file "b4r-diamond.nuc" "(defstruct RdD n:i32)
+(defunion RdDU (da x:i32) (db))
+(defprotocol RdDP (dm (self:Self):i32))
+(defmacro rd-dm (x) x)
+(defenum RdDE rd-da rd-db)
+(defconst RD-DK 3)
+(defstruct (RdDBox T) v:T)
+"))
+        l:String (try (test-write-file "b4r-dl.nuc" "(import b4r-diamond)
+(defn rd-l ():i32 (return RD-DK))
+"))
+        r:String (try (test-write-file "b4r-dr.nuc" "(import b4r-diamond)
+(defn rd-r ():i32 (return rd-da))
+"))
+        m:String (try (test-write-file "b4r-dm.nuc" "(import b4r-dl)
+(import b4r-dr)
+(import b4r-diamond)
+(defn main ():i32 (return (+ (rd-l) (rd-r))))
+")))
+    (try (check-file-exit dir (string-as-view (addr-of m)) 3))
+    (drop (addr-of m))
+    (drop (addr-of r))
+    (drop (addr-of l))
+    (drop (addr-of base))))
