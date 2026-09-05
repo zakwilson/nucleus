@@ -13,6 +13,7 @@ extern struct AllocHandle g_test_alloc asm("g-test-alloc");
 extern void* g_tests asm("g-tests");
 extern struct String g_fail_buf asm("g-fail-buf");
 extern int32_t g_fail_ready asm("g-fail-ready");
+/* test-add: uses an error-union or option type; not exported */
 /* test-register: uses an error-union or option type; not exported */
 void* test_fail_begin(void) asm("test-fail-begin");
 struct StrView test_failure_text(void) asm("test-failure-text");
@@ -56,7 +57,10 @@ bool diag_matches(void* d, struct StrView severity, struct StrView file, int32_t
 /* check-diagnostic: uses an error-union or option type; not exported */
 /* check-error-at: uses an error-union or option type; not exported */
 /* check-warning-at: uses an error-union or option type; not exported */
+/* check-error-anywhere: uses an error-union or option type; not exported */
 /* check-note-at: uses an error-union or option type; not exported */
+/* check-note-anywhere: uses an error-union or option type; not exported */
+/* check-no-line-zero: uses an error-union or option type; not exported */
 /* check-no-errors: uses an error-union or option type; not exported */
 typedef struct SexpStr {
     struct StrView v;

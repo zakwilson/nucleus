@@ -38,7 +38,10 @@
   name:Symbol
   file:StrView
   line:i32
-  run:(fn !void)())
+  ; TF-6: `run` takes a `ptr` and `data` supplies it, so a test can come from a
+  ; TABLE as well as from a `deftest`. A `deftest` ignores both.
+  run:(fn !void)(ptr)
+  data:raw)
 
 ; Process-lifetime state, so it is built through the arena: its `drop` is a
 ; no-op and nothing here is ever torn down.
@@ -50,25 +53,32 @@
 (defvar g-fail-buf:String)
 (defvar g-fail-ready:i32 0)
 
-; Called by `deftest`'s expansion from a global initializer, which is why it
-; returns an `i32` -- it needs a value for the slot it is initialising.
-(defn test-register (name:raw:Node file:StrView line:i32 (f (fn !void) ())):i32
+; Register a test by name. The data-driven entry point: a suite that reads its
+; cases from a table calls this once per row, before `test-main`.
+(defn test-add (name:StrView file:StrView line:i32 (f (fn !void) (ptr)) data:raw):void
   (let (tc:&TestCase (alloca TestCase))
-    (set! (tc 'name) (name 's))
+    (set! (tc 'name) (symbol-intern name))
     (set! (tc 'file) file)
     (set! (tc 'line) line)
     (set! (tc 'run) f)
-    (conj g-tests (deref tc))
-    (return 0)))
+    (set! (tc 'data) data)
+    (conj g-tests (deref tc))))
+
+; Called by `deftest`'s expansion from a global initializer, which is why it
+; returns an `i32` -- it needs a value for the slot it is initialising.
+(defn test-register (name:raw:Node file:StrView line:i32 (f (fn !void) (ptr))):i32
+  (test-add (symbol-as-view (name 's)) file line f null)
+  (return 0))
 
 ; `(deftest name body…)`. The name is a bare symbol; `(source-file)` and
 ; `(source-line)` resolve at the CALL site, so a failure names the `deftest`
 ; rather than this macro.
 (defmacro deftest (name :rest body)
-  (let (g:ptr (gensym))
+  (let (g:ptr (gensym)
+        a:ptr (gensym))
     `(defvar (~g i32)
        (test-register (quote ~name) (source-file) (source-line)
-                      (fn ():!void ~@body (return (ok)))))))
+                      (fn ((~a ptr)):!void ~@body (return (ok)))))))
 
 ; ---------------------------------------------------------------------------
 ; Failure reporting -- one implementation, not one per assertion
@@ -315,9 +325,12 @@
       (set! cur (cur 'cdr)))
     (return null)))
 
+; A kind check, not a null check: `Node.s` is null on an INT or a FLOAT, and
+; `symbol-as-view` of null is a segfault, not an empty view.
 (defn diag-text (n:raw:Node):StrView
   (when (= n null) (return ""))
-  (when (= (n 'kind) NODE-CELL) (return ""))
+  (let (k:i32 (n 'kind))
+    (when (and (!= k NODE-SYM) (!= k NODE-STR) (!= k NODE-KEYWORD)) (return "")))
   (return (symbol-as-view (n 's))))
 
 (defn diag-of-node (form:raw:Node):!Diagnostic
@@ -405,6 +418,21 @@
 (defn check-warning-at ((ds (ref (Vector Diagnostic))) file:StrView line:i32 needle:StrView):!void
   (return (check-diagnostic ds "warning" file line needle)))
 
+; No location pinned: some error's message contains `needle`. The weaker form,
+; for a case whose line nobody has committed to.
+(defn check-error-anywhere ((ds (ref (Vector Diagnostic))) needle:StrView):!void
+  (let (n:usize (count ds)
+        i:usize 0)
+    (while (< i n)
+      (let (d:Diagnostic (invoke ds i))
+        (when (and (= (symbol-as-view (d 'severity)) "error")
+                   (contains? (d 'message) needle))
+          (return (ok))))
+      (set! i (+ i 1))))
+  (let (l:String (diag-list-text ds))
+    (fail! "expected an error containing " (sexp-quote needle)
+           "\n     got:" (string-as-view (addr-of l)))))
+
 ; A note on a diagnostic at that same location -- the pairing the two-grep
 ; version had no way to express.
 (defn check-note-at ((ds (ref (Vector Diagnostic))) file:StrView line:i32 needle:StrView):!void
@@ -422,6 +450,36 @@
   (let (l:String (diag-list-text ds))
     (fail! "expected a note at " file ":" line " containing " (sexp-quote needle)
            "\n     got:" (string-as-view (addr-of l)))))
+
+; No location pinned: some diagnostic carries a note containing `needle`.
+(defn check-note-anywhere ((ds (ref (Vector Diagnostic))) needle:StrView):!void
+  (let (n:usize (count ds)
+        i:usize 0)
+    (while (< i n)
+      (let (d:Diagnostic (invoke ds i)
+            m:usize (count (d 'notes))
+            j:usize 0)
+        (while (< j m)
+          (when (contains? (invoke (d 'notes) j) needle) (return (ok)))
+          (set! j (+ j 1))))
+      (set! i (+ i 1))))
+  (let (l:String (diag-list-text ds))
+    (fail! "expected a note containing " (sexp-quote needle)
+           "\n     got:" (string-as-view (addr-of l)))))
+
+; Stage 15 W4a's accept criterion, as a field check: the shell version greps
+; stderr for the literal `:0:`, which any message containing those bytes also
+; satisfies.
+(defn check-no-line-zero ((ds (ref (Vector Diagnostic)))):!void
+  (let (n:usize (count ds)
+        i:usize 0)
+    (while (< i n)
+      (let (d:Diagnostic (invoke ds i))
+        (when (= (d 'line) 0)
+          (let (l:String (diag-list-text ds))
+            (fail! "a diagnostic reports line 0:" (string-as-view (addr-of l))))))
+      (set! i (+ i 1))))
+  (return (ok)))
 
 (defn check-no-errors ((ds (ref (Vector Diagnostic)))):!void
   (let (n:usize (count ds)
@@ -465,7 +523,7 @@
 
 (defn test-run-one ((tc (ref TestCase))):bool
   (test-fail-begin)
-  (match (funcall (tc 'run))
+  (match (funcall (tc 'run) (tc 'data))
     (ok (do (test-report tc true) (return true)))
     ((err e)
       ; An error that is not an assertion failure -- a file that would not open,
