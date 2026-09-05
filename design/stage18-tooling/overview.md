@@ -1319,6 +1319,39 @@ versions, and an empty `dir` adds no `-I`.
 **Remaining: 165 shell functions, 9,583 body lines**, of which the `run_s16_*`
 family is 27 functions and 3,057 lines.
 
+#### TF-6 category (c), third batch (2026-09-05)
+
+**4 shell functions → 21 tests**, 679 shell lines retired:
+`run_s16_parametric_aliases` (7), `run_s16_d9_ct_types` (7),
+`run_s16_ref_sigil` (6), `run_s16_decl_attrs` (1). `make test` is 551 shell +
+415 native = 966.
+
+Three more helpers, again each demanded by a unit: `compile-object` (a real
+object-file link, not a reparse — the parametric alias has to survive one),
+`test-scratch-sub` in `lib/test.nuc`, and the `extra` argument on
+`build-run-file` that carries `--link-arg=`. Plus `count-lines-with-prefix` and
+`duplicate-type-name`, because D9's claim is that a type line is emitted
+**once**: a presence test cannot catch the double emit a re-drain produces, and
+LLVM rejects the module rather than picking one.
+
+**`run_s16_decl_attrs` stays one test, and gets better for it.** It was one
+shell unit with five internal checks, accumulated into `bad=1` and reported at
+the end — the hand-rolled `ok=1 … || ok=0` accumulator §T4 named as the reason
+the `!void` shape exists. As a `deftest` the first failure ends the test and
+says which of the five it was.
+
+**The oracle cluster is deferred, and now named.** `run_s16_fl_float_widths`,
+`run_s16_pk_packed`, `run_s16_pk3_aligned`, `run_s16_bf_bitfields`,
+`run_s16_an_anonymous`, `run_s16_c1_bare_unsigned` and `run_l5_typedef_names`
+assert Nucleus's layout *against clang's*, and two of them generate their
+fixtures and compare their results in embedded Python. They need two things the
+framework does not have: a way to run the host C compiler, and a way to record
+a SKIP — `command -v clang` is a real precondition, not a formality. That is a
+design decision, not a port, and it belongs beside §T9's deferred list.
+
+**Remaining: 161 shell functions, 8,936 body lines**, of which `run_s16_*` is
+23 functions and 2,410 lines.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that

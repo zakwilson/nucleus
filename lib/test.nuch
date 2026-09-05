@@ -60,6 +60,7 @@
 (extern (g-test-scratch StrView))
 (declare test-scratch-set ((name StrView)) :void)
 (declare test-scratch () :!StrView)
+(declare test-scratch-sub ((name StrView)) :!String)
 (declare test-write-file ((name StrView) (content StrView)) :!String)
 (declare test-run-one ((tc (ref TestCase))) :bool)
 (declare test-find ((name StrView)) (Maybe usize))

@@ -574,6 +574,16 @@
   (try (make-dir g-test-scratch))
   (return (ok g-test-scratch)))
 
+; A subdirectory of this test's scratch directory, created on first ask. A unit
+; that exports a `.nuch` needs one: `resolve-import` tries `.nuc` in every
+; search directory before any `.nuch`, so the source must sit outside them.
+(defn test-scratch-sub (name:StrView):!String
+  (let (dir:StrView (try (test-scratch))
+        p:String (str dir "/" name)
+        pv:StrView (string-as-view (addr-of p)))
+    (try (make-dir pv))
+    (return (ok p))))
+
 ; Write `content` to `name` inside the scratch directory; yields the path.
 (defn test-write-file (name:StrView content:StrView):!String
   (let (dir:StrView (try (test-scratch))

@@ -189,13 +189,22 @@ include directory, and one about the REPL needs a session:
 | --- | --- |
 | `(compile-path-in dir path)` | `!Compiled`, resolving imports under `-I dir`. |
 | `(emit-for-file dir flag path)` | `!String` — stdout of `nucleusc [-I dir] flag path`. |
-| `(build-run-file dir path)` | `!String` — build `path` under `-I dir` and run it. |
+| `(compile-object path out)` | `!void` — `nucleusc -c path -o out`, for a real link. |
+| `(build-run-file dir extra path)` | `!String` — build `path` under `-I dir` with one extra argument, and run it. |
 | `(repl-session text)` | `!String` — `text` is `nucleusc -i`'s stdin, the transcript is the answer. |
 | `(line-with hay needle)` | `!StrView` — the first line containing `needle`. |
+| `(count-lines-with-prefix hay prefix)` | `i64` — how many lines begin with `prefix`. |
+| `(duplicate-type-name ir)` | `StrView` — a `%Name = type` defined twice, or `""`. |
 
-An empty `dir` adds no `-I`. `line-with` is for a claim about one instruction:
-`i8 %` is in every module, so `check-not-contains` over the whole IR asserts
-nothing.
+An empty `dir` or `extra` contributes no argument. `line-with` is for a claim
+about one instruction: `i8 %` is in every module, so `check-not-contains` over
+the whole IR asserts nothing. `count-lines-with-prefix` is for a claim that
+something is emitted *once* — a presence test cannot catch a double emit.
+
+`(test-scratch-sub name)` makes a subdirectory of the test's scratch directory
+and yields its path. A unit that exports a `.nuch` needs one: `resolve-import`
+tries `.nuc` in every search directory before any `.nuch`, so the source has to
+sit outside them or the header is never read.
 
 Each test gets its own scratch directory, `build/out/nt/<test-name>`, made on
 first use. `--run <name>` therefore reproduces exactly the files the full run

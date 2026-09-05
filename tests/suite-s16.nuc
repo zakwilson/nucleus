@@ -886,7 +886,7 @@ map=2
 (import-use alib)
 (defn main ():i32 (printf \"%ld\\n\" (twice 21)) (return 0))
 "))
-        out:String (try (build-run-file dir (string-as-view (addr-of use)))))
+        out:String (try (build-run-file dir "" (string-as-view (addr-of use)))))
     (try (check-contains (string-as-view (addr-of nuch)) "(deftype Count i64)"))
     (try (check-eq (string-as-view (addr-of out)) "42\n"))
     (drop (addr-of out))
@@ -959,3 +959,533 @@ map=2
 ")))
     (try (check-contains (string-as-view (addr-of out)) "42"))
     (drop (addr-of out))))
+
+; ---------------------------------------------------------------------------
+; Parametric type aliases (container-type-sugar.md §3.7)
+; ---------------------------------------------------------------------------
+
+; Every declaration position, plus a colon-spelled body (`(Ref T) ref:T`), which
+; substitutes segment-wise rather than by node.
+(deftest s16-deftype-parametric-every-position
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use vector)
+(import-use hashmap)
+(import-use coll)
+(deftype (Vec T) (ref (Vector T)))
+(deftype (Table V) (ref (HashMap CStr V)))
+(deftype (Ref T) ref:T)
+(defstruct Pt x:i32 y:i32)
+(defstruct Reg items:(Vec i32) names:(Table i32))
+(defn total (v:(Vec i32)):i64 (return (as i64 (count v))))
+(defn look (m:(Table i32)):i64 (return (as i64 (count m))))
+(defn getx (p:(Ref Pt)):i32 (return (p 'x)))
+(defn main ():i32
+  (with (v:(Vec i32) (alloca (Vector i32))
+         m:(Table i32) (alloca (HashMap CStr i32))
+         p:(Ref Pt) (alloca Pt))
+    (vector-init v) (hashmap-init m)
+    (conj v 4) (conj v 5)
+    (assoc m \"a\" 1)
+    (set! (p 'x) 9)
+    (printf \"%ld %ld %d\\n\" (total v) (look m) (getx p)))
+  (return 0))
+")))
+    (try (check-eq (string-as-view (addr-of out)) "2 1 9\n"))
+    (drop (addr-of out))))
+
+; §3.7's stated hard case: a generic template whose RECEIVER is an alias
+; application, instantiated at two element types. This is the one that needed
+; `collect-pattern-tyvars` and `unify-tpat` taught about aliases.
+(deftest s16-deftype-parametric-receiver
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use vector)
+(import-use coll)
+(deftype (Vec T) (ref (Vector T)))
+(defn second (v:(Vec T)):T (return (invoke v (as usize 1))))
+(defn main ():i32
+  (with (a:(Vec i32) (alloca (Vector i32))
+         b:(Vec CStr) (alloca (Vector CStr)))
+    (vector-init a) (vector-init b)
+    (conj a 10) (conj a 20)
+    (conj b \"x\") (conj b \"y\")
+    (printf \"%d %s\\n\" (second a) (second b)))
+  (return 0))
+")))
+    (try (check-eq (string-as-view (addr-of out)) "20 y\n"))
+    (drop (addr-of out))))
+
+; Transparency, including the generic `t3`, whose stamped instance must mangle
+; from the expansion and not from the alias name.
+(deftest s16-deftype-parametric-transparent-ir
+  (let (a:String (try (source-ir "(import-use vector)
+(import-use hashmap)
+(import-use coll)
+(deftype (Vec T) (ref (Vector T)))
+(deftype (Table V) (ref (HashMap CStr V)))
+(defn t1 (v:(Vec i32)):i64 (return (as i64 (count v))))
+(defn t2 (m:(Table i32)):i64 (return (as i64 (count m))))
+(defn t3 (v:(Vec T)):i64 (return (as i64 (count v))))
+(defn use ():i64 (return (t3 (unsafe/cast (ref (Vector CStr)) null))))
+"))
+        b:String (try (source-ir "(import-use vector)
+(import-use hashmap)
+(import-use coll)
+(defn t1 (v:(ref (Vector i32))):i64 (return (as i64 (count v))))
+(defn t2 (m:(ref (HashMap CStr i32))):i64 (return (as i64 (count m))))
+(defn t3 (v:(ref (Vector T))):i64 (return (as i64 (count v))))
+(defn use ():i64 (return (t3 (unsafe/cast (ref (Vector CStr)) null))))
+")))
+    (try (check-golden (string-as-view (addr-of a)) (string-as-view (addr-of b))))
+    (drop (addr-of a))
+    (drop (addr-of b))))
+
+; Arity in both directions, a bare application, and the colon-body limit. A
+; cycle must be caught on the PATTERN path too: the depth guard in
+; `parse-type-from-node` does not cover `collect-pattern-tyvars`, which reaches
+; a defn parameter first and looped forever until it got its own.
+(deftest s16-deftype-parametric-refusals
+  (try (check-source-rejects "(import-use vector)
+(deftype (Vec T) (ref (Vector T)))
+(defn f (v:(Vec i32 CStr)):i32 (return 0))
+" "Vec: wrong number of type arguments for type alias (2 given)"))
+  (try (check-source-rejects "(import-use hashmap)
+(deftype (Table K V) (ref (HashMap K V)))
+(defn f (m:(Table CStr)):i32 (return 0))
+" "Table: wrong number of type arguments for type alias (1 given)"))
+  (try (check-source-rejects "(import-use vector)
+(deftype (Vec T) (ref (Vector T)))
+(defn f (v:Vec):i32 (return 0))
+" "type alias 'Vec' takes 1 type arguments"))
+  (try (check-source-rejects "(import-use node)
+(deftype (Ref T) ref:T)
+(defn f (v:(Ref (ref Node))):i32 (return 0))
+" "must be a single token"))
+  (try (check-source-rejects "(deftype (A T) (A T))
+(defn f (v:(A i32)):i32 (return 0))
+" "expands into a cycle"))
+  (try (check-source-rejects "(deftype (A T) (B T))
+(deftype (B T) (A T))
+(defn f (v:(A i32)):i32 (return 0))
+" "expands into a cycle")))
+
+; A parametric alias crosses a `.nuch` and a real object-file link: the header
+; must carry the `deftype` itself, since the `declare` beside it spells its
+; parameters in terms of the alias.
+(deftest s16-deftype-parametric-nuch-roundtrip
+  (let (lib:String (try (test-write-file "plib.nuc" "(import-use vector)
+(import-use coll)
+(deftype (Vec T) (ref (Vector T)))
+(defn plen (v:(Vec i32)):i64 (return (as i64 (count v))))
+"))
+        libv:StrView (string-as-view (addr-of lib))
+        nuch:String (try (emit-for-file "" "--emit-nuch" libv))
+        hp:String (try (test-write-file "plib.nuch" (string-as-view (addr-of nuch))))
+        dir:StrView (try (test-scratch))
+        obj:String (str dir "/plib.o")
+        usesrc:String (str "(import-use \"stdio.h\")
+(import-use vector)
+(import-use coll)
+(import-use \"" (string-as-view (addr-of hp)) "\")
+(defn main ():i32
+  (with (v:(ref (Vector i32)) (alloca (Vector i32)))
+    (vector-init v) (conj v 1) (conj v 2) (conj v 3)
+    (printf \"%ld\\n\" (plen v)))
+  (return 0))
+")
+        use:String (try (test-write-file "use.nuc" (string-as-view (addr-of usesrc)))))
+    (try (check-contains (string-as-view (addr-of nuch))
+                         "(deftype (Vec T) (ref (Vector T)))"))
+    (try (compile-object libv (string-as-view (addr-of obj))))
+    (let (linkarg:String (str "--link-arg=" (string-as-view (addr-of obj)))
+          out:String (try (build-run-file "" (string-as-view (addr-of linkarg))
+                                          (string-as-view (addr-of use)))))
+      (try (check-eq (string-as-view (addr-of out)) "3\n"))
+      (drop (addr-of out))
+      (drop (addr-of linkarg)))
+    (drop (addr-of use))
+    (drop (addr-of obj))
+    (drop (addr-of hp))
+    (drop (addr-of nuch))
+    (drop (addr-of lib))))
+
+; The C header has no spelling for an alias, parametric or not, so it must show
+; the expansion.
+(deftest s16-deftype-parametric-cheader-expands
+  (let (a:String (try (source-cheader "(import-use vector)
+(import-use coll)
+(deftype (Vec T) (ref (Vector T)))
+(defn plen (v:(Vec i32)):i64 (return (as i64 (count v))))
+"))
+        b:String (try (source-cheader "(import-use vector)
+(import-use coll)
+(defn plen (v:(ref (Vector i32))):i64 (return (as i64 (count v))))
+")))
+    (try (check-golden (string-as-view (addr-of a)) (string-as-view (addr-of b))))
+    (drop (addr-of a))
+    (drop (addr-of b))))
+
+(deftest s16-deftype-parametric-repl
+  (let (out:String (try (repl-session "(deftype (Pair T) (ptr T))
+(defn takes (p:(Pair i32)):i32 (return (aref p 0)))
+(let (a:ptr:i32 (array i32 41 42)) (takes a))
+")))
+    (try (check-contains (string-as-view (addr-of out)) "41"))
+    (drop (addr-of out))))
+
+; ---------------------------------------------------------------------------
+; Types stamped inside a `compile-time` body (Stage 16 D9, repl-libraries.md §3.3)
+; ---------------------------------------------------------------------------
+
+(defn d9-ct-stamp-src ():StrView
+  (return "(import-use \"stdio.h\")
+(compile-time
+  (defn d9-ct-maybe (n:i32):?i32 (some n))
+  (match (d9-ct-maybe 7)
+    ((some v) (printf \"d9 ct some %d\\n\" v))
+    (none (printf \"d9 ct none\\n\"))))
+(defn main ():i32 (return 0))
+"))
+
+; A `?i32` whose `%Maybe.i32` is stamped INSIDE the compile-time body. Pre-D9:
+; `IR parse error: Cannot allocate unsized type %Maybe.i32`. A batch failure,
+; not a REPL one -- the design note framed it as REPL-only.
+(deftest s16-d9-ct-body-stamp
+  (let (c:Compiled (try (compile-source (d9-ct-stamp-src)))
+        raw:StrView (string-as-view (addr-of c 'raw)))
+    (try (check-contains raw "d9 ct some 7"))
+    (try (check-not-contains raw "IR parse error"))
+    (drop (addr-of c))))
+
+; The drain that fixes the above writes into the PROGRAM's type buffer, and the
+; final drain runs over the same queue -- so the line must arrive exactly once.
+; A count, not a presence test: a double emit is what a re-drain gets wrong.
+(deftest s16-d9-ct-type-once
+  (let (ir:String (try (source-ir (d9-ct-stamp-src))))
+    (try (check-eq-int (count-lines-with-prefix (string-as-view (addr-of ir))
+                                                "%Maybe.i32 = type")
+                       1 "%Maybe.i32 definitions"))
+    (drop (addr-of ir))))
+
+; `emit-defstruct` queues every StructDef it writes, so the shared drain sees
+; types whose line is already in the buffer. `sdef-in-module` is what keeps that
+; inert; assert it over a program with several structs.
+(deftest s16-d9-no-duplicate-type-lines
+  (let (c:Compiled (try (compile-path "examples/struct.nuc"))
+        ir:StrView (string-as-view (addr-of c 'ir))
+        dup:StrView (duplicate-type-name ir))
+    (try (check-non-empty ir))
+    (when (not (= dup "")) (fail! "type defined twice: " dup))
+    (drop (addr-of c))))
+
+; The ruling: a `defstruct` inside a `compile-time` body defines a PROGRAM type,
+; so its line goes to the module's own type buffer rather than the CT module's.
+; Pre-D9 this exited 0 from `--emit-llvm` with three `%D9P` references and no
+; `%D9P = type` line, and died only at `-o`. Three assertions, because each
+; catches a different way to get it wrong: the count is 1 (0 = the old bug,
+; 2 = written to both buffers), the binary links, and it computes.
+(deftest s16-d9-ct-defstruct-is-program-type
+  (let (src:StrView "(import-use \"stdio.h\")
+(compile-time (defstruct D9P x:i32 y:i32))
+(defn d9-sum (a:i32 b:i32):i32
+  (let (q:ptr:D9P (as ptr:D9P (alloca D9P)))
+    (set! (q 'x) a) (set! (q 'y) b) (return (+ (q 'x) (q 'y)))))
+(defn main ():i32 (printf \"%d\\n\" (d9-sum 3 4)) (return 0))
+")
+    (let (c:Compiled (try (compile-source src)))
+      (try (check-not-contains (string-as-view (addr-of c 'raw)) "IR parse error"))
+      (try (check-eq-int (count-lines-with-prefix (string-as-view (addr-of c 'ir))
+                                                  "%D9P = type")
+                         1 "%D9P definitions"))
+      (drop (addr-of c)))
+    (let (out:String (try (build-run-source src)))
+      (try (check-eq (string-as-view (addr-of out)) "7\n"))
+      (drop (addr-of out)))))
+
+; D9 residue: the same type named in a SIGNATURE. This failed EARLIER -- before
+; any emission -- because `prescan-struct-names` was a flat walk over the
+; top-level form list and never descended into a `compile-time` body. The
+; by-value `defn` is placed BEFORE the block deliberately: it needs the LAYOUT,
+; not just the name, and an unlaid-out struct is sized 0 rather than diagnosed
+; (`define i32 @f(i0 %p.arg)`) -- so the assertion is on the lowered parameter
+; type as well as on the value.
+(deftest s16-d9-ct-type-in-signature
+  (let (src:StrView "(import-use \"stdio.h\")
+(defn d9-byval (p:D9V):i32 (return (+ (p 'x) (p 'y))))
+(compile-time (defstruct D9V x:i32 y:i32))
+(defn d9-byref (p:(ref D9V)):i32 (return (* (p 'x) (p 'y))))
+(defn main ():i32
+  (let (q:D9V (D9V 3 4))
+    (printf \"%d %d\\n\" (d9-byval q) (d9-byref (as ref:D9V (addr-of q)))))
+  (return 0))
+")
+    (let (ir:String (try (source-ir src)))
+      (try (check-match (string-as-view (addr-of ir)) "define i32 @d9-byval(i64 *"))
+      (drop (addr-of ir)))
+    (let (out:String (try (build-run-source src)))
+      (try (check-eq (string-as-view (addr-of out)) "7 12\n"))
+      (drop (addr-of out)))))
+
+; The same, one level in: `emit-compile-time` runs its own defn-signature
+; prescan BEFORE its body-form loop, so a `defn` in the block naming a
+; `defstruct` in the same block hit the identical ordering.
+(deftest s16-d9-ct-type-in-ct-signature
+  (let (c:Compiled (try (compile-source "(import-use \"stdio.h\")
+(compile-time
+  (defstruct D9Q x:i32 y:i32)
+  (defn d9-ct-sum (p:(ref D9Q)):i32 (return (+ (p 'x) (p 'y))))
+  (let (q:ptr:D9Q (as ptr:D9Q (alloca D9Q)))
+    (set! (q 'x) 5) (set! (q 'y) 6)
+    (printf \"d9 ct inner %d\\n\" (d9-ct-sum (as ref:D9Q q)))))
+(defn main ():i32 (return 0))
+"))
+        raw:StrView (string-as-view (addr-of c 'raw)))
+    (try (check-contains raw "d9 ct inner 11"))
+    (try (check-not-contains raw "IR parse error"))
+    (drop (addr-of c))))
+
+; The descent mirrors `emit-compile-time`'s SKIPS, not just its walk. That loop
+; has an arm for `defstruct` and for nothing else this prescan registers, so a
+; name it would never define must stay UNKNOWN -- registering one resolves the
+; signature, writes no `%Name = type` line, and exits 0 on invalid IR, which is
+; strictly worse than the diagnostic.
+(deftest s16-d9-ct-descent-mirrors-skips
+  (try (check-source-rejects "(compile-time (defstruct- D9K x:i32))
+(defn d9-skip (p:(ref D9K)):i32 (return 0))
+(defn main ():i32 (return 0))
+" "unknown type: D9K"))
+  (try (check-source-rejects "(compile-time (defunion D9K (a x:i32) (b)))
+(defn d9-skip (p:(ref D9K)):i32 (return 0))
+(defn main ():i32 (return 0))
+" "unknown type: D9K"))
+  (try (check-source-rejects "(compile-time (deftype D9K i32))
+(defn d9-skip (p:(ref D9K)):i32 (return 0))
+(defn main ():i32 (return 0))
+" "unknown type: D9K"))
+  (try (check-source-rejects "(compile-time (compile-time (defstruct D9K x:i32)))
+(defn d9-skip (p:(ref D9K)):i32 (return 0))
+(defn main ():i32 (return 0))
+" "unknown type: D9K")))
+
+; ---------------------------------------------------------------------------
+; `&T` as a spelling of `(ref T)` (Stage 16 §RS)
+; ---------------------------------------------------------------------------
+
+; Sugar, not a second type: both spellings emit byte-identical IR.
+(deftest s16-ref-sigil-ir-identical
+  (let (a:String (try (source-ir "(import-use node)
+(import-use vector)
+(defstruct Pt x:i32 y:i32)
+(defn s1 (p:&Pt):i32 (return (+ (p 'x) (p 'y))))
+(defn id1 (p:&Pt):&Pt (return p))
+(defn dd (pp:&&Pt):i32 (return (s1 (deref pp))))
+(defn tot (v:&(Vector &Pt)):i32
+  (let (s:i32 0) (dotimes (i (count v)) (set! s (+ s (s1 (v i))))) (return s)))
+"))
+        b:String (try (source-ir "(import-use node)
+(import-use vector)
+(defstruct Pt x:i32 y:i32)
+(defn s1 (p:ref:Pt):i32 (return (+ (p 'x) (p 'y))))
+(defn id1 (p:ref:Pt):ref:Pt (return p))
+(defn dd (pp:ref:ref:Pt):i32 (return (s1 (deref pp))))
+(defn tot (v:ref:(Vector ref:Pt)):i32
+  (let (s:i32 0) (dotimes (i (count v)) (set! s (+ s (s1 (v i))))) (return s)))
+")))
+    (try (check-golden (string-as-view (addr-of a)) (string-as-view (addr-of b))))
+    (drop (addr-of a))
+    (drop (addr-of b))))
+
+; The sigil is only a *leading* `&`, so a mid-token `&` (as in `a&b`, and in the
+; compiler) keeps its name, and the two spellings compose in one file.
+(deftest s16-ref-sigil-field-address-unclaimed
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Pt x:i32 y:i32)
+(defn bump (p:&Pt):i32
+  (let (xp:&i32 (addr-of p 'x))
+    (set! (deref xp) (+ (deref xp) 1))
+    (return (p 'x))))
+(defn main ():i32
+  (let (a:Pt (Pt 1 2) ap:&Pt (addr-of a))
+    (printf \"%d\\n\" (bump ap))
+    (return 0)))
+")))
+    (try (check-eq (string-as-view (addr-of out)) "2\n"))
+    (drop (addr-of out))))
+
+; `&T` IS `(ref T)`, so it carries `ref`'s non-null obligation, and the
+; whitespace near-miss is the same reader error `name: (T)` gets.
+(deftest s16-ref-sigil-rules-preserved
+  (try (check-source-rejects "(defstruct Pt x:i32)
+(defvar p:&Pt null)
+" "defvar: raw pointer where non-null (ref ...) is required"))
+  (try (check-source-rejects "(defstruct Pt x:i32)
+(defn f (p:&Pt):i32 (return 0))
+(defn g (q:raw:Pt):i32 (return (f q)))
+" "argument: raw pointer where non-null (ref ...) is required"))
+  (try (check-source-rejects "(defstruct Pt x:i32)
+(defn f (p:& Pt):i32 (return 0))
+" "binding name ends in ':'")))
+
+; A `.nuch` is a serialization format and the sigil is a *reader* rule -- so a
+; header must carry the canonical `(ref T)` / `:ref:T` spelling and no `&` at
+; all, or an importer re-reads a form the exporter never meant.
+(deftest s16-ref-sigil-nuch-roundtrip
+  (let (libdir:String (try (test-scratch-sub "lib"))
+        dirv:StrView (string-as-view (addr-of libdir))
+        src:String (try (test-write-file "siglib.nuc" "(defstruct Pt x:i32 y:i32)
+(defn pt-sum (p:&Pt):i32 (return (+ (p 'x) (p 'y))))
+(defn pt-id (p:&Pt):&Pt (return p))
+"))
+        nuch:String (try (emit-for-file "" "--emit-nuch" (string-as-view (addr-of src))))
+        hp:String (try (test-write-file "lib/siglib.nuch" (string-as-view (addr-of nuch))))
+        use:String (try (test-write-file "siguse.nuc" "(import-use \"stdio.h\")
+(import-use siglib)
+(defn main ():i32
+  (let (a:Pt (Pt 4 5) ap:&Pt (addr-of a))
+    (printf \"%d\\n\" (pt-sum (pt-id ap)))
+    (return 0)))
+"))
+        nv:StrView (string-as-view (addr-of nuch)))
+    (try (check-contains nv "((p (ref Pt)))"))
+    (try (check-contains nv ":ref:Pt"))
+    (try (check-not-contains nv "&"))
+    (let (out:String (try (build-run-file dirv "" (string-as-view (addr-of use)))))
+      (try (check-eq (string-as-view (addr-of out)) "9\n"))
+      (drop (addr-of out)))
+    (drop (addr-of use))
+    (drop (addr-of hp))
+    (drop (addr-of nuch))
+    (drop (addr-of src))
+    (drop (addr-of libdir))))
+
+; A `&` that starts a token is the address-of reader macro, and it is sugar in
+; the same strict sense: identical IR to the `(addr-of x)` it stands for.
+(deftest s16-ref-sigil-addr-of-ir-identical
+  (let (a:String (try (source-ir "(defstruct Pt x:i32 y:i32)
+(defn s1 (p:&Pt):i32 (return (+ (p 'x) (p 'y))))
+(defn go ():i32 (let (a:Pt (Pt 1 2)) (return (s1 &a))))
+"))
+        b:String (try (source-ir "(defstruct Pt x:i32 y:i32)
+(defn s1 (p:&Pt):i32 (return (+ (p 'x) (p 'y))))
+(defn go ():i32 (let (a:Pt (Pt 1 2)) (return (s1 (addr-of a)))))
+")))
+    (try (check-golden (string-as-view (addr-of a)) (string-as-view (addr-of b))))
+    (drop (addr-of a))
+    (drop (addr-of b))))
+
+; The two meanings are split by token position, not by context, so they have to
+; compose: `(as &Pt &p)` is a type and an operator in one form, and a standalone
+; `&T` in a type slot -- which the reader wrote as `(addr-of T)` before position
+; was known -- must still read as `(ref T)`.
+(deftest s16-ref-sigil-both-meanings
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Pt x:i32 y:i32)
+(defstruct Holder (link &Pt) (tag i32))
+(defn hx (h:&Holder):i32 (return ((h 'link) 'x)))
+(defn main ():i32
+  (let (a:Pt (Pt 3 4) ap:&Pt &a)
+    (printf \"%d %d %d\\n\" ((as &Pt &a) 'x) (unsafe/cast i32 (sizeof &Pt)) ((deref &ap) 'y))
+    (return 0)))
+")))
+    (try (check-eq (string-as-view (addr-of out)) "3 8 4\n"))
+    (drop (addr-of out))))
+
+; ---------------------------------------------------------------------------
+; `:noreturn` / `:returns-twice` (Stage 16 §DA)
+; ---------------------------------------------------------------------------
+
+; One test, as in the shell -- but the shell accumulated `bad=1` and reported at
+; the end, which is the hand-rolled accumulator `!void` exists to replace: here
+; the first failure ends the test and names itself.
+(deftest s16-decl-attrs
+  ; 1. The `define`. Both attributes, in either order, and both on one function.
+  (let (src:StrView "(import-use \"stdio.h\")
+(import-use \"stdlib.h\")
+(defn sj (b:ptr):i32 :returns-twice (return 0))
+(defn boom (m:CStr):void :noreturn (printf \"%s\\n\" m) (exit 3))
+(defn both (m:CStr):void :noreturn :returns-twice (printf \"%s\\n\" m) (exit 3))
+(defn plain (x:i32):i32 (return x))
+(defn main ():i32 (printf \"%d\\n\" (sj null)) (return 0))
+")
+    (let (ir:String (try (source-ir src))
+          iv:StrView (string-as-view (addr-of ir)))
+      ; Anchored at the start of the line, since a `define` also carries its
+      ; `section`.
+      (try (check-match iv "define i32 @sj(ptr %b.arg) returns_twice *"))
+      (try (check-match iv "define void @boom(ptr %m.arg) noreturn *"))
+      (try (check-match iv "define void @both(ptr %m.arg) noreturn returns_twice *"))
+      ; A function with no attribute must gain none.
+      (try (check-not-contains iv "define i32 @plain(i32 %x.arg) noreturn"))
+      (try (check-not-contains iv "define i32 @plain(i32 %x.arg) returns_twice"))
+      (drop (addr-of ir)))
+    (let (out:String (try (build-run-source src)))
+      (try (check-eq (string-as-view (addr-of out)) "0\n"))
+      (drop (addr-of out))))
+  ; 2. A top-level `(declare … :noreturn)` still drives `terminate-after-noreturn`
+  ;    (the one Nucleus-side consumer), and `:returns-twice` rides the declare.
+  (let (ir:String (try (source-ir "(declare my_abort ():void :noreturn)
+(declare my_sj (b:ptr):i32 :returns-twice)
+(defn main ():i32 (my_abort) (return 0))
+"))
+        iv:StrView (string-as-view (addr-of ir)))
+    (try (check-line iv "declare void @my_abort() noreturn"))
+    (try (check-line iv "declare i32 @my_sj(ptr) returns_twice"))
+    (try (check-line iv "  unreachable"))
+    (drop (addr-of ir)))
+  ; 3. `.nuch` round-trip, solitary AND overloaded -- the exporter and the two
+  ;    importers are three separate dispatch sites, and a missing one is silent.
+  ;    `resolve-import` tries `.nuc` everywhere before any `.nuch`, so the source
+  ;    sits outside every search directory or the header is never read.
+  (let (libdir:String (try (test-scratch-sub "lib"))
+        srcdir:String (try (test-scratch-sub "src"))
+        lib:String (try (test-write-file "src/atlib.nuc" "(import-use \"stdio.h\")
+(import-use \"stdlib.h\")
+(defn sj (b:ptr):i32 :returns-twice (return 0))
+(defn sj (b:ptr n:i32):i32 :returns-twice (return n))
+(defn nope (m:CStr):void :noreturn (printf \"%s\\n\" m) (exit 3))
+"))
+        nuch:String (try (emit-for-file "" "--emit-nuch" (string-as-view (addr-of lib))))
+        hp:String (try (test-write-file "lib/atlib.nuch" (string-as-view (addr-of nuch))))
+        use:String (try (test-write-file "u.nuc" "(import-use \"stdio.h\")
+(import-use atlib)
+(defn main ():i32 (printf \"%d\\n\" (sj null)) (nope \"bye\") (return 0))
+"))
+        nv:StrView (string-as-view (addr-of nuch)))
+    (try (check-contains nv "(declare nope ((m CStr)) :void :noreturn)"))
+    (try (check-contains nv ":i32 :returns-twice)"))
+    (let (c:Compiled (try (compile-path-in (string-as-view (addr-of libdir))
+                                           (string-as-view (addr-of use))))
+          iv:StrView (string-as-view (addr-of c 'ir)))
+      (try (check-line iv "declare i32 @sj.ptr(ptr) returns_twice"))
+      (try (check-line iv "declare i32 @sj.ptr.i32(ptr, i32) returns_twice"))
+      (try (check-line iv "declare void @nope(ptr) noreturn"))
+      (drop (addr-of c)))
+    (drop (addr-of use))
+    (drop (addr-of hp))
+    (drop (addr-of nuch))
+    (drop (addr-of lib))
+    (drop (addr-of srcdir))
+    (drop (addr-of libdir)))
+  ; 4. The retired bare spellings each name their replacement. Without this they
+  ;    fall through as ordinary symbols -- a body expression, or (in a declare) a
+  ;    phantom trailing operand -- and fail somewhere unrelated.
+  (try (check-source-rejects "(defn f (m:CStr):void noreturn (while (= 0 0) 0))\n"
+         "'noreturn' is no longer a declaration attribute -- write ':noreturn'"))
+  (try (check-source-rejects "(declare foo ():void noreturn)
+(defn main ():i32 (return 0))
+" "'noreturn' is no longer a declaration attribute -- write ':noreturn'"))
+  (try (check-source-rejects "(declare foo ():i32 returns_twice)
+(defn main ():i32 (return 0))
+" "'returns_twice' is no longer a declaration attribute -- write ':returns-twice'"))
+  ; 5. A LONE trailing form is the body, never an attribute -- otherwise a
+  ;    keyword-returning one-expression body would be silently eaten.
+  (let (src:StrView "(import-use \"stdio.h\")
+(import-use keyword)
+(defn kw ():Keyword :noreturn)
+(defn main ():i32 (printf \"%d\\n\" (if (= (kw) :noreturn) 1 0)) (return 0))
+")
+    (let (ir:String (try (source-ir src)))
+      (try (check-not-match (string-as-view (addr-of ir)) "*@kw(*) noreturn*"))
+      (drop (addr-of ir)))
+    (let (out:String (try (build-run-source src)))
+      (try (check-eq (string-as-view (addr-of out)) "1\n"))
+      (drop (addr-of out)))))
