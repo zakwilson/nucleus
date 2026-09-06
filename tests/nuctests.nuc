@@ -22,10 +22,12 @@
 (import-use file)
 (import-use process)
 (import-use node)
+(import-use parse)
 (import-use read)
 (import-use test)
 (import-use suite-s16)
 (import-use suite-modules)
+(import-use suite-float)
 
 
 
@@ -133,6 +135,35 @@
 
 (defn compile-path (path:StrView):!Compiled
   (return (compile-path-in "" path)))
+
+; The same, for a cross target. Separate from `compile-path-in` because the two
+; optional arguments are never both wanted: a `-I` search path is about this
+; project's sources and `--target` is about the machine they are emitted for.
+(defn compile-path-for (target:StrView path:StrView):!Compiled
+  (let (c:Command (command (compiler-path))
+        flag:String (str "--target=" target))
+    (command-arg (addr-of c) (string-as-view (addr-of flag)))
+    (command-arg (addr-of c) "--diagnostics=sexp")
+    (command-arg (addr-of c) "--emit-llvm")
+    (command-arg (addr-of c) path)
+    (command-capture (addr-of c) true)
+    (match (run (addr-of c))
+      ((ok o)
+        (let (ov:StrView (string-as-view (addr-of o 'out))
+              ev:StrView (string-as-view (addr-of o 'err))
+              r:&Compiled (alloca Compiled))
+          (set! (r 'ok?) (success? (addr-of o 'status)))
+          (set! (r 'ir) (try (string-from-view (addr-of ov))))
+          (set! (r 'raw) (try (string-from-view (addr-of ev))))
+          (set! (r 'diags) (try (read-diagnostics ev)))
+          (drop (addr-of o))
+          (drop (addr-of flag))
+          (drop (addr-of c))
+          (return (ok (deref r)))))
+      ((err e)
+        (drop (addr-of flag))
+        (drop (addr-of c))
+        (return (err e))))))
 
 ; `nucleusc [-I dir] <flag> <path>` — stdout, which for `--emit-nuch` and
 ; `--emit-cheader` is the artifact itself.
@@ -302,6 +333,45 @@
         (return (err e))))
     (drop (addr-of c))
     (return (ok))))
+
+; What clang made of a C file. `ok?` is false for a source clang refused —
+; which is how a unit asks whether THIS clang's target has a type, since a
+; version number does not say when each width arrived.
+(defstruct CcIr ok?:bool ir:String err:String)
+
+(extend CcIr Drop)
+(defn drop ((self (ptr CcIr))):void
+  (drop (addr-of self 'ir))
+  (drop (addr-of self 'err)))
+
+; clang's own IR for a C file — the oracle half of a unit that compares the two
+; compilers. clang itself is not optional: `src/nucleusc.nuc` uses it as the
+; default linker driver and the Makefile links with it, so a missing clang is a
+; broken toolchain rather than a skip.
+(defn cc-emit-llvm (path:StrView):!CcIr
+  (let (c:Command (command "clang"))
+    (command-arg (addr-of c) "-S")
+    (command-arg (addr-of c) "-emit-llvm")
+    (command-arg (addr-of c) "-O0")
+    (command-arg (addr-of c) "-w")
+    (command-arg (addr-of c) "-o")
+    (command-arg (addr-of c) "-")
+    (command-arg (addr-of c) path)
+    (command-capture (addr-of c) true)
+    (match (run (addr-of c))
+      ((ok o)
+        (let (ov:StrView (string-as-view (addr-of o 'out))
+              ev:StrView (string-as-view (addr-of o 'err))
+              r:&CcIr (alloca CcIr))
+          (set! (r 'ok?) (success? (addr-of o 'status)))
+          (set! (r 'ir) (try (string-from-view (addr-of ov))))
+          (set! (r 'err) (try (string-from-view (addr-of ev))))
+          (drop (addr-of o))
+          (drop (addr-of c))
+          (return (ok (deref r)))))
+      ((err e)
+        (drop (addr-of c))
+        (return (err e))))))
 
 ; Compile `path` to a binary and run it, stdout and stderr on one stream. An
 ; empty `dir` adds no `-I`, and an empty `extra` no extra argument.

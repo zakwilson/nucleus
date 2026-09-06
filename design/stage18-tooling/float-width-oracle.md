@@ -115,3 +115,91 @@ review rather than absorbing them.** Specifically:
 The retirement protocol is unchanged: port, two green native runs (one a
 `--run`-per-name shuffle), delete the shell function *and its `spawn` line as
 separate ranges*, all gates, reconcile the verdict total, then commit.
+
+---
+
+## What it cost — measured 2026-09-06
+
+Landed as `tests/suite-float.nuc`: six tests, the same six verdicts the shell
+printed. The shell unit was 206 lines, of which 45 were the two Python programs
+(23 generator, 22 comparator). The Nucleus file is 548 lines, 402 of them code.
+
+| part | shell | Nucleus |
+| --- | --- | --- |
+| generator | 23 (Python) | 38 |
+| comparator | 22 (Python) | 71 |
+| signature normalisation | 6 × `sed -E`, `sort`, `diff` | 102 |
+| fixtures, probe, six `deftest`s, target helpers | 161 (shell) | 191 |
+
+**The guess above was right about the float arithmetic and wrong about where
+the lines were.** `strtod` did collapse Python's two normalisation branches to
+one: `fl-f64-bits` is 4 lines and `fl-value-bits` is 8, against Python's single
+unreadable nested expression, and the Nucleus version is the legible one. The
+comparator still came out 3× the size, and none of that is float handling:
+
+- **`re.match` is one line and `fl-parse-global` is twenty.** There is no
+  regex, so `^@(\w+) = (?:dso_local )?(?:internal )?global (\S+) ([^,]+)`
+  becomes a hand-written prefix walk. This is the largest single difference in
+  the file.
+- **Python's dict is the join.** `out[name] = (ty, val)` and `for k in
+  sorted(b)` index and order for free; `fl-find-global` is a linear scan,
+  because the values are `StrView`s borrowed from the module text and a hash
+  map of borrowed views buys nothing at 104 rows.
+- **Three failure sites instead of one f-string** — missing, wrong type and
+  wrong value each say which they are.
+
+### The work item this raises
+
+**One, and it is small.** `fl-ident-byte?` and `fl-all-digits?` (12 lines)
+classify ASCII **bytes**. `lib/char.nuc` has `char-is-digit` and
+`char-is-alnum`, but over a decoded `Char`, and reaching them from a byte scan
+costs an `unsafe/cast` to save eight lines — worse than the eight lines.
+`lib/strview.nuc` already carries one byte-level classifier,
+`strview-is-ascii-ws (b:ui8)`, which is the precedent: **proposed, not done —
+`strview-is-ascii-digit` and an ident-byte predicate beside it.** It is a
+library change and wants review, so the twelve lines stay local until then.
+
+### The three staged gaps, as they resolved
+
+1. **Padded hex formatting — did not arise.** The comparator compares *values*,
+   as `ui64` bit patterns; only the failure message needs text, and there the
+   two compilers' raw spellings are strictly more useful than a normalised hex
+   would be. **No `lib/fmt.nuc` addition is proposed.**
+2. **No `replace` — did not arise as a `replace`.** Three of the four `sed`
+   substitutions delete *patterns* (`%[0-9]+`, `%[A-Za-z0-9_.]+\.arg`), not
+   literals, so a literal `replace` would have covered one of four; what covers
+   all four is a regex engine, which is not worth proposing for six
+   substitutions. The byte walk is 25 lines and the whitespace squeeze another
+   20 — and it is *one* normaliser where the shell had two different `sed`
+   pipelines, which is also why the vararg assertion could get stronger.
+3. **The `_Float16`/`__float128` probe — resolved with `skip!` as staged**, and
+   verified both ways: forced absent, the record reads `(status skip) (message
+   "this clang has no _Float16/__float128")` and the run exits 0; under
+   `--no-skip` it reads `(status fail) (message "skipped: …")` and exits 1.
+
+### One assertion got stronger
+
+FL-5 was `qgrep -E 'call i32 \(ptr, \.\.\.\) @flp\(ptr [^,]*, half [^,]*, …'`,
+five wildcards that each admit any text without a comma. The port extracts the
+argument list and compares the type sequence exactly — `ptr, half, double,
+x86_fp80, fp128, double`. Nothing was weakened to fit.
+
+### Verified by breaking it
+
+Three deliberate divergences, each reverted:
+
+- the C suffix `L` dropped from the `f80` row, so clang's wide literals
+  truncate through `double` → `v28_f80: nucleus 0xK4000C90FDAA22168C235, clang
+  0xK4000C90FDAA22168C000`, which is exactly the loss FL-3 exists to catch;
+- Nucleus `f2` retyped to `S1` → `f2: nucleus x86_fp80 (ptr byval(S1) align
+  16), clang fp128 (fp128)`;
+- the probe's `_Float16` misspelled → both units skip, and fail under
+  `--no-skip`.
+
+### One trap worth carrying forward
+
+`(parse f64 "0x3FF0000000000000")` returns **4.6e18**, not 1.0: a hex float's
+binary exponent is optional to `strtod`, so LLVM's 16-hex-digit f64 *bit
+pattern* parses as an integer-valued hex float. `fl-value-bits` branches on the
+absence of a `p` before it reaches `parse`. Recorded in
+`context/conventions.md`.

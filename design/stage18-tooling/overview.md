@@ -1456,6 +1456,43 @@ must **copy the reason out before** it begins writing the replacement message.
 `str-into` re-evaluates its target once per piece, which makes the aliasing
 easy to write and invisible until the message comes out empty.
 
+#### TF-6 category (c), the float-width oracle (2026-09-06)
+
+**1 shell function → 6 tests**, 206 shell lines retired: the whole of
+`run_s16_fl_float_widths`, into a third suite module `tests/suite-float.nuc`.
+`make test` is 485 shell + 481 native = 966. The fifth batch's "one unit with a
+real oracle" row is now zero, and what remains is 100% mechanical port.
+
+This was the unit staged separately in
+[float-width-oracle.md](float-width-oracle.md), because its port was a
+**rewrite of two Python programs** — a fixture generator and an IR-constant
+comparator — rather than a translation of shell text-munging. That document now
+carries the measurement, the one work item the port raises, and how each of the
+three staged gaps actually resolved. In short: the float arithmetic came out
+smaller than Python, as predicted; the *line parsing* came out 20× larger,
+which was not; and the only library change proposed is a pair of byte-level
+ASCII classifiers beside `strview-is-ascii-ws`, which is left for review rather
+than smuggled in.
+
+Two helpers, both in `tests/nuctests.nuc`: `cc-emit-llvm` — clang's own IR for
+a C file, the oracle half of any unit that compares the two compilers — and
+`compile-path-for`, `compile-path` under `--target=`. They are separate from
+`compile-path-in` on purpose: a `-I` search path is about this project's
+sources and a triple is about the machine they are emitted for, and no unit
+wants both.
+
+**Two assertions got stronger.** FL-5 was five `[^,]*` wildcards in a `grep -E`;
+it is now an exact comparison of the vararg call's type sequence. And the ABI
+unit's six `sed -E` substitutions became one normaliser shared with FL-5, so
+`%struct.S1` and `%S1` are the same claim in one place rather than in two
+pipelines that had to be kept in step by eye.
+
+**The Makefile did not depend on the suite modules.** `$(NUCTESTS)` listed
+`tests/nuctests.nuc` and `lib/*.nuc` but not `tests/suite-*.nuc`, so an edit to
+`suite-s16.nuc` or `suite-modules.nuc` did not rebuild the runner — a silently
+stale binary, which is how the first full run of this batch reported two
+spurious skips. Fixed at the root with `$(wildcard tests/suite-*.nuc)`.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that

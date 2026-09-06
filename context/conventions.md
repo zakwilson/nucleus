@@ -6433,3 +6433,16 @@ The same shape bites when a piece READS the buffer the target writes: converting
 a skip into a failure (`lib/test.nuc`, `--no-skip`) has to copy the reason out
 of the failure buffer *before* beginning the replacement message, or the
 message comes out empty with no error anywhere. Bind first, then push.
+
+## `(parse f64 …)` takes a hex float with NO exponent — so an LLVM bit pattern parses
+
+`(parse f64 "0x3FF0000000000000")` returns **4.6e18**, not 1.0. C's *grammar*
+requires a hex float's binary exponent, but `strtod` — which `lib/parse.nuc`
+delegates to — makes it optional, so LLVM's 16-hex-digit f64 **bit pattern**
+parses as an integer-valued hex float and every digit is consumed. There is no
+error to notice: `parse` only rejects trailing garbage, and there is none.
+
+Anything reading a `0x`-prefixed float field has to decide which of the two it
+is before parsing. `fl-value-bits` (`tests/suite-float.nuc`) branches on the
+absence of a `p`/`P`: no exponent means the text *is* the bits, so it goes to
+`strview-parse-magnitude` with radix 16 instead.
