@@ -8,19 +8,19 @@
 ; Types
 ; ============================================================
 
-(defn make-type (k:i32):ref:Type
-  (let (t:ref:Type (alloc-type))
+(defn make-type (k:i32):&Type
+  (let (t:&Type (alloc-type))
     (set! (t 'kind) k)
     (return t)))
 
 ; Stage 15 W8 G-5: the three pointer-kind singletons are the only `ty-*` that
 ; were construct-then-mutate rather than construct, so they are the one
 ; value-returning builder §4.4 item 1 asks for. `types-init` is gone — each
-; `ty-X` is now its own `(defvar ty-X:ref:Type (make-type TY-X))` in
+; `ty-X` is now its own `(defvar ty-X:&Type (make-type TY-X))` in
 ; nucleusc.nuc, which is what lets the singletons keep their non-null `ref:Type`
 ; declaration honestly.
-(defn make-ptr-type (pk:i32):ref:Type
-  (let (t:ref:Type (make-type TY-PTR))
+(defn make-ptr-type (pk:i32):&Type
+  (let (t:&Type (make-type TY-PTR))
     (set! (t 'pkind) pk)
     (return t)))
 
@@ -133,7 +133,7 @@
 (defn c-typedef-find (name:Symbol):?ptr:CTypedef
   (let (cur:ptr g-cheader-typedefs)
     (while (!= cur null)
-      (let (e:ptr:CTypedef (as ptr:CTypedef cur))
+      (let (e:ptr:CTypedef (as &CTypedef cur))
         (when (= (e 'name) name) (return e))
         (set! cur (e 'next)))))
   (return null))
@@ -216,7 +216,7 @@
   (set! (sd 'emit-epoch) g-module-epoch)
   ; Only the type buffer is carried into the REPL preamble at module close; a
   ; line in a def or compile-time buffer dies with its module.
-  (set! (sd 'in-type-buf) (if (= (as ptr out) (as ptr (addr-of g-type-stream))) 1 0)))
+  (set! (sd 'in-type-buf) (if (= (as ptr out) (as ptr &g-type-stream)) 1 0)))
 
 (defn cycle-pending-sdef (t:raw:Type):(raw StructDef)
   (when (= g-import-cycles null) (return null))
@@ -303,8 +303,8 @@
 
 ; Build the `(array T N)` type. The single constructor, so `arr-len` can never
 ; be left at 0 by a caller that forgot it.
-(defn array-type (elem:(raw Type) n:i32):ref:Type
-  (let (t:ref:Type (make-type TY-ARRAY))
+(defn array-type (elem:(raw Type) n:i32):&Type
+  (let (t:&Type (make-type TY-ARRAY))
     (set! (t 'elem) elem)
     (set! (t 'arr-len) n)
     (return t)))
@@ -325,7 +325,7 @@
   (when (= t null) (return t))
   (let (tt:(raw Type) t)
     (when (!= (tt 'kind) TY-ARRAY) (return t))
-    (let (pt:ref:Type (make-type TY-PTR))
+    (let (pt:&Type (make-type TY-PTR))
       (set! (pt 'elem) (tt 'elem))
       (set! (pt 'pkind) PTR-REF)
       (return (as raw:Type pt)))))
@@ -348,8 +348,8 @@
 ; hex-float syntax for the bit-exact spelling in the meantime.
 (defn f64-bits (d:f64):i64
   (let (r:f64 d
-        p:ptr:f64 (addr-of r))
-    (return (deref (unsafe/cast ptr:i64 p)))))
+        p:ptr:f64 &r)
+    (return (deref (unsafe/cast &i64 p)))))
 
 ; `0xK` is 4 hex digits of sign|exponent followed by 16 of the significand —
 ; which, unlike `0xL` below, is high half first.
@@ -667,14 +667,14 @@
 (defn hexfloat-const-ir (lex:StrView tk:i32):(Maybe StrView)
   (let (sign:i64 0 hi:i64 0 lo:i64 0 ue:i64 0 sticky:i64 0
         rhi:i64 0 rlo:i64 0)
-    (when (= (hexfloat-parse lex (as ptr:i64 (addr-of sign))
-                                 (as ptr:i64 (addr-of hi))
-                                 (as ptr:i64 (addr-of lo))
-                                 (as ptr:i64 (addr-of ue))
-                                 (as ptr:i64 (addr-of sticky))) 0)
+    (when (= (hexfloat-parse lex (as &i64 &sign)
+                                 (as &i64 &hi)
+                                 (as &i64 &lo)
+                                 (as &i64 &ue)
+                                 (as &i64 &sticky)) 0)
       (return (none)))
-    (let (rhp:ptr:i64 (as ptr:i64 (addr-of rhi))
-          rlp:ptr:i64 (as ptr:i64 (addr-of rlo)))
+    (let (rhp:ptr:i64 (as &i64 &rhi)
+          rlp:ptr:i64 (as &i64 &rlo))
       (when (= tk TY-F16)
         (let (be:i64 (hexfloat-fit hi lo sticky ue 11 -14 15 15 rhp rlp))
           (return (some (fstr "0xH"
@@ -723,7 +723,7 @@
   (when (= (tt 'kind) TY-ARRAY)
     (die-at line
       (fstr what
-            ": an (array T N) is storage, not a value -- it decays to a pointer when read, so pass or store ptr:T (or (ref T)) instead")))))
+            ": an (array T N) is storage, not a value -- it decays to a pointer when read, so pass or store &T (or (ref T)) instead")))))
 
 ; Stage 14 NS-2 (design/stage14/native-strings.md): is Type `t` the prelude
 ; `StrView` struct (`{ data:(ptr ui8), len:usize }`, promoted to the prelude in
@@ -1126,7 +1126,7 @@
 (defn type-as-pkind (t:raw:Type k:i32):raw:Type
   (let (src:raw:Type t)
     (when (= (src 'pkind) k) (return t))
-    (let (dst:ref:Type (alloc-type))
+    (let (dst:&Type (alloc-type))
       (set! (dst 'kind) (src 'kind))
       (set! (dst 'ret) (src 'ret))
       (set! (dst 'params) (src 'params))

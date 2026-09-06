@@ -38,8 +38,8 @@
 ; allocate from the same bump pointer and neither ever frees.
 (defvar g-strfmt-alloc:AllocHandle (AllocHandle ALLOC-ARENA null))
 
-(defn strfmt-alloc ():ref:AllocHandle
-  (return (addr-of g-strfmt-alloc)))
+(defn strfmt-alloc ():&AllocHandle
+  (return &g-strfmt-alloc))
 
 ; The honest form: the length the formatting already knew, carried out with the
 ; bytes instead of thrown away and re-derived by a `strlen`.
@@ -66,17 +66,17 @@
 (defvar g-emit-buf:String)
 (defvar g-emit-buf-ready:i32 0)
 
-(defn emit-buf ():ref:String
+(defn emit-buf ():&String
   (when (= g-emit-buf-ready 0)
     (set! g-emit-buf (string-with-capacity 1024))
     (set! g-emit-buf-ready 1))
-  (return (addr-of g-emit-buf)))
+  (return &g-emit-buf))
 
 ; Writes the bytes appended since `mark` and rewinds to it. The mark is what
 ; makes one shared buffer safe when an argument's own side effect emits: the
 ; inner text goes out first and the buffer is left as it was found, which is the
 ; order `fprintf` gave when an argument emitted.
-(defn emit-flush (f:ptr (b (ref String)) mark:usize):void
+(defn emit-flush (f:ptr b:&String mark:usize):void
   (let (v:StrView (string-as-view b)
         n:usize (v 'len))
     (when (> n mark)
@@ -93,7 +93,7 @@
 ; `g-decl-out`, `g-def-stream` — are null before a module opens, exactly as the
 ; `FILE*`s they replace were. An owning buffer reaches it by the non-null-to-
 ; nullable coercion, so a call site never spells the difference.
-(defn emit-flush ((f (raw String)) (b (ref String)) mark:usize):void
+(defn emit-flush ((f (raw String)) b:&String mark:usize):void
   (when (= f null) (return))
   (let (v:StrView (string-as-view b)
         n:usize (v 'len))
@@ -105,12 +105,12 @@
 ; Append a whole buffer, bypassing `emit`'s staging. The function-body buffers
 ; are appended wholesale once per emitted function, so staging them would copy
 ; every byte of the module a second time.
-(defn emit-all (f:ptr (src (ref String))):void
+(defn emit-all (f:ptr src:&String):void
   (let (v:StrView (string-as-view src))
     (when (> (v 'len) 0)
       (fwrite (as ptr (v 'data)) 1 (as i64 (v 'len)) f))))
 
-(defn emit-all ((f (raw String)) (src (ref String))):void
+(defn emit-all (f:raw:String src:&String):void
   (when (= f null) (return))
   (let (v:StrView (string-as-view src))
     (when (> (v 'len) 0)
@@ -140,8 +140,8 @@
     (return (deref h))))
 
 (extend Hex ToStr)
-(defn to-str (self:Hex (out (ref String))):!void
-  (let (buf:ptr:ui8 (as ptr:ui8 (alloca ui8 16))
+(defn to-str (self:Hex out:&String):!void
+  (let (buf:ptr:ui8 (as &ui8 (alloca ui8 16))
         x:ui64 (as ui64 (self 'v))
         n:usize 0
         w:usize (as usize (self 'width)))

@@ -19,7 +19,7 @@
 (deferror parse-error "parse error")
 
 (defn cstr-byte-at (s:ptr pos:i64):i32
-  (return (bit-and (as i32 (aref (as ptr:i8 s) pos)) 255)))
+  (return (bit-and (as i32 (aref (as &i8 s) pos)) 255)))
 
 ; Its `StrView` peer, for the scanners that bound `i` themselves — the library's
 ; `strview-byte-at` returns `!ui8`, a `try` per byte on a per-character loop.
@@ -54,7 +54,7 @@
 ; because `die-at` is noreturn and there is no "and also" after it. Appending
 ; rather than overwriting is what lets two sites each contribute to one error.
 (defn diag-stage-note (note:StrView):void
-  (if (str-empty? (addr-of g-diag-note))
+  (if (str-empty? &g-diag-note)
     (set! g-diag-note note)
     (set! g-diag-note (fstr g-diag-note "\n  note: " note))))
 
@@ -75,15 +75,15 @@
       (set! i (+ i 1)))
     (return n)))
 
-(defn diag-build (severity:StrView path:Symbol line:i32 msg:StrView):ref:Diagnostic
-  (let (d:ref:Diagnostic (new Diagnostic)
+(defn diag-build (severity:StrView path:Symbol line:i32 msg:StrView):&Diagnostic
+  (let (d:&Diagnostic (new Diagnostic)
         n:i64 (as i64 (msg 'len))
         head:i64 (diag-note-start msg 0))
     (set! (d 'severity) severity)
     (set! (d 'path) path)
     (set! (d 'line) line)
     (set! (d 'message) (strview (msg 'data) (as usize head)))
-    (set! (d 'notes) (vector-new-in (addr-of g-arena-alloc)))
+    (set! (d 'notes) (vector-new-in &g-arena-alloc))
     (let (i:i64 head)
       (while (< i n)
         (let (start:i64 (+ i 9)
@@ -121,7 +121,7 @@
 ; string because a path is not a symbol spelling. An absent location is the empty
 ; file and line -1, never an omitted field — a reader should not have to ask
 ; whether a key is present.
-(defn diag-write-sexp ((d (ref Diagnostic))):void
+(defn diag-write-sexp (d:&Diagnostic):void
   (eprint "(diagnostic (severity " (d 'severity) ") (file ")
   (diag-write-string (if (symbol-none? (d 'path)) "" (symbol-as-view (d 'path))))
   (eprint ") (line " (d 'line) ") (message ")
@@ -138,7 +138,7 @@
 ; The human rendering, byte-for-byte what the compiler printed before this
 ; record existed: the notes were already `\n  note: ` inside the message, so
 ; rejoining them is the identity.
-(defn diag-write-text ((d (ref Diagnostic))):void
+(defn diag-write-text (d:&Diagnostic):void
   (when (>= (d 'line) 0) (eprint (d 'path) ":" (d 'line) ": "))
   (eprint (d 'severity) ": " (d 'message))
   (let (n:usize (count (d 'notes))
@@ -153,10 +153,10 @@
 ; instead of exiting — cannot carry one onto an unrelated later error.
 (defn diag-emit (severity:StrView path:Symbol line:i32 msg:StrView):void
   (let (full:StrView msg)
-    (when (not (str-empty? (addr-of g-diag-note)))
+    (when (not (str-empty? &g-diag-note))
       (set! full (fstr full "\n  note: " g-diag-note))
       (set! g-diag-note ""))
-    (let (d:ref:Diagnostic (diag-build severity path line full))
+    (let (d:&Diagnostic (diag-build severity path line full))
       (if (= g-diag-sexp 0)
         (diag-write-text d)
         (diag-write-sexp d)))))
@@ -166,7 +166,7 @@
 ; inside — so it is attached here rather than at the 688 call sites.
 (defn diag-error (line:i32 msg:StrView):void
   (let (full:StrView msg)
-    (when (not (str-empty? (addr-of g-mono-context)))
+    (when (not (str-empty? &g-mono-context))
       (set! full (fstr full "\n  note: " g-mono-context)))
     (diag-emit "error" g-source-path line full)))
 
@@ -333,12 +333,12 @@
             (when (>= n 4095)
               (do (report-at open-line "string literal too long")
                   (return (err! parse-error))))
-            (set! (aref (as ptr:i8 buf) n) (unsafe/cast i8 c))
+            (set! (aref (as &i8 buf) n) (unsafe/cast i8 c))
             (set! n (+ n 1))))))
-    (let (t:ptr:Tok (as ptr:Tok (alloc-tok)))
+    (let (t:ptr:Tok (as &Tok (alloc-tok)))
       (set! (t 'kind) TOK-STRING)
       (set! (t 'line) open-line)
-      (set! (t 's) (symbol-intern-bytes (as ptr:ui8 buf) (as usize n)))
+      (set! (t 's) (symbol-intern-bytes (as &ui8 buf) (as usize n)))
       (return (ok (as ptr t))))))
 
 ; Stage 11 M6 (S0): char literals (design/stage11/string.md §"Char types",
@@ -362,7 +362,7 @@
 
 ; Build a TOK-CHAR with codepoint `cp` at `line`.
 (defn make-char-tok (cp:i32 line:i32):ptr
-  (let (t:ptr:Tok (as ptr:Tok (alloc-tok)))
+  (let (t:ptr:Tok (as &Tok (alloc-tok)))
     (set! (t 'kind) TOK-CHAR)
     (set! (t 'line) line)
     (set! (t 'i) cp)
@@ -422,8 +422,8 @@
       (while (!= (is-sym-char (peek-char)) 0)
         (next-char))
       (let (len:i64 (- g-pos start)
-            text:ptr (unsafe/ptr+ (as ptr:i8 g-src) start)
-            tv:StrView (strview (unsafe/cast ptr:ui8 (unsafe/ptr+ (as ptr:i8 g-src) start))
+            text:ptr (unsafe/ptr+ (as &i8 g-src) start)
+            tv:StrView (strview (unsafe/cast &ui8 (unsafe/ptr+ (as &i8 g-src) start))
                                 (unsafe/cast usize (- g-pos start))))
         (when (= len 1)
           (return (ok (make-char-tok (cstr-byte-at text 0) open-line))))
@@ -449,7 +449,7 @@
   (when (<= len 0) (return 0))
   ; Special tokens.
   (when (= len 6)
-    (let (tv:StrView (strview (unsafe/cast ptr:ui8 text) (unsafe/cast usize len)))
+    (let (tv:StrView (strview (unsafe/cast &ui8 text) (unsafe/cast usize len)))
       (when (or (= tv "+inf.0") (or (= tv "-inf.0") (= tv "+nan.0"))) (return 1))))
   (let (i:i64 0
         c0:i32 (cstr-byte-at text 0))
@@ -556,7 +556,7 @@
       ; Left unexpanded so a retired marker still reaches reject-legacy-marker,
       ; which names its replacement instead of failing as `unknown type: rest`.
       (let (mk:StrView (legacy-marker-tail (symbol-as-view s)))
-        (when (not (str-empty? (addr-of mk))) (return s)))
+        (when (not (str-empty? &mk)) (return s)))
       (let (out:ptr (arena-alloc (+ (+ len (* 3 n)) 1))
             o:i64 0
             j:i64 0
@@ -564,12 +564,12 @@
         (while (< j len)
           (let (c:i32 (cstr-byte-at text j))
             (if (and (= c 38) (!= seg2 0))
-              (do (set! (aref (as ptr:i8 out) o) (unsafe/cast i8 114))          ; 'r'
-                  (set! (aref (as ptr:i8 out) (+ o 1)) (unsafe/cast i8 101))    ; 'e'
-                  (set! (aref (as ptr:i8 out) (+ o 2)) (unsafe/cast i8 102))    ; 'f'
-                  (set! (aref (as ptr:i8 out) (+ o 3)) (unsafe/cast i8 58))     ; ':'
+              (do (set! (aref (as &i8 out) o) (unsafe/cast i8 114))          ; 'r'
+                  (set! (aref (as &i8 out) (+ o 1)) (unsafe/cast i8 101))    ; 'e'
+                  (set! (aref (as &i8 out) (+ o 2)) (unsafe/cast i8 102))    ; 'f'
+                  (set! (aref (as &i8 out) (+ o 3)) (unsafe/cast i8 58))     ; ':'
                   (set! o (+ o 4)))
-              (do (set! (aref (as ptr:i8 out) o) (unsafe/cast i8 c))
+              (do (set! (aref (as &i8 out) o) (unsafe/cast i8 c))
                   (set! o (+ o 1))))
             (set! seg2 (ref-sigil-seg-next c seg2)))
           (set! j (+ j 1)))
@@ -582,10 +582,10 @@
     (while (!= (is-sym-char (cstr-byte-at g-src end)) 0)
       (set! end (+ end 1)))
     (when (<= (- end g-pos) 1) (return 0))
-    (let (tok:StrView (strview (unsafe/cast (ptr ui8) (unsafe/ptr+ (as ptr:i8 g-src) g-pos))
+    (let (tok:StrView (strview (unsafe/cast (ptr ui8) (unsafe/ptr+ (as &i8 g-src) g-pos))
                                (as usize (- end g-pos))))
       (let (mk:StrView (legacy-marker-tail tok))
-        (return (if (str-empty? (addr-of mk)) 0 1))))))
+        (return (if (str-empty? &mk) 0 1))))))
 
 ; LW-4's two-step, as one place. `lib/parse.nuc`'s `FromStr` is keyed only on
 ; the target TYPE, so it cannot say "signed at this width, and if that overflows
@@ -597,7 +597,7 @@
 ; gets no second chance: below -2^63 there is nothing wider to widen to.
 (defn lex-int-value (tv:StrView radix:i32):!i64
   (let (start:usize 0
-        neg:i32 (strview-parse-sign tv (addr-of start))
+        neg:i32 (strview-parse-sign tv &start)
         digits:StrView (strview-drop-bytes tv start)
         smax:ui64 (if (!= neg 0) 9223372036854775808 9223372036854775807))
     ; `strtol` skipped the `0x` itself in base 16; the magnitude parser reads
@@ -621,7 +621,7 @@
     (while (!= (is-sym-char (peek-char)) 0)
       (next-char))
     (let (len:i64 (- g-pos start)
-          text:ptr (unsafe/ptr+ (as ptr:i8 g-src) start)
+          text:ptr (unsafe/ptr+ (as &i8 g-src) start)
           is-int:i32 1
           i0:i64 0)
       (when (= len 0) (set! is-int 0))
@@ -636,8 +636,8 @@
             (do (set! is-int 0) (set! i len))
             (set! i (+ i 1)))))
       (when (!= is-int 0)
-        (let (t:ptr:Tok (as ptr:Tok (alloc-tok))
-              tv:StrView (strview (unsafe/cast ptr:ui8 text) (unsafe/cast usize len)))
+        (let (t:ptr:Tok (as &Tok (alloc-tok))
+              tv:StrView (strview (unsafe/cast &ui8 text) (unsafe/cast usize len)))
           (set! (t 'kind) TOK-INT)
           (set! (t 'line) start-line)
           ; LW-4: a non-negative literal that overflows signed i64 may still fit
@@ -657,14 +657,14 @@
       ; is purely additive to every existing program.
       (let (hk:i32 (hex-atom-kind text len))
         (when (= hk 2)
-          (let (tf:ptr:Tok (as ptr:Tok (alloc-tok)))
+          (let (tf:ptr:Tok (as &Tok (alloc-tok)))
             (set! (tf 'kind) TOK-FLOAT)
             (set! (tf 'line) start-line)
-            (set! (tf 's) (symbol-intern-bytes (as ptr:ui8 text) (as usize len)))
+            (set! (tf 's) (symbol-intern-bytes (as &ui8 text) (as usize len)))
             (return (ok (as ptr tf)))))
         (when (= hk 1)
-          (let (t:ptr:Tok (as ptr:Tok (alloc-tok))
-                tv:StrView (strview (unsafe/cast ptr:ui8 text) (unsafe/cast usize len)))
+          (let (t:ptr:Tok (as &Tok (alloc-tok))
+                tv:StrView (strview (unsafe/cast &ui8 text) (unsafe/cast usize len)))
               (set! (t 'kind) TOK-INT)
               (set! (t 'line) start-line)
               ; Same two-step as the decimal path (LW-4): a positive literal
@@ -676,10 +676,10 @@
                       (return (err! parse-error)))))
               (return (ok (as ptr t))))))
       (when (!= (is-float-literal text len) 0)
-        (let (tf:ptr:Tok (as ptr:Tok (alloc-tok)))
+        (let (tf:ptr:Tok (as &Tok (alloc-tok)))
           (set! (tf 'kind) TOK-FLOAT)
           (set! (tf 'line) start-line)
-          (set! (tf 's) (symbol-intern-bytes (as ptr:ui8 text) (as usize len)))
+          (set! (tf 's) (symbol-intern-bytes (as &ui8 text) (as usize len)))
           (return (ok (as ptr tf)))))
       ; Keyword literal (Stage 11 cleanup §2): an atom that begins with ':' and
       ; has a non-empty remainder is a keyword. The token carries the NAME only
@@ -690,12 +690,12 @@
       ; point). Colon-CHAIN spellings like `ptr:i8` or trailing-colon sugar
       ; `name:` do not begin with ':' and are unaffected.
       (when (and (> len 1) (= (cstr-byte-at text 0) 58))
-        (let (tk:ptr:Tok (as ptr:Tok (alloc-tok)))
+        (let (tk:ptr:Tok (as &Tok (alloc-tok)))
           (set! (tk 'kind) TOK-KEYWORD)
           (set! (tk 'line) start-line)
-          (set! (tk 's) (expand-ref-sigil (unsafe/ptr+ (as ptr:i8 text) 1) (- len 1)))
+          (set! (tk 's) (expand-ref-sigil (unsafe/ptr+ (as &i8 text) 1) (- len 1)))
           (return (ok (as ptr tk)))))
-      (let (ts:ptr:Tok (as ptr:Tok (alloc-tok)))
+      (let (ts:ptr:Tok (as &Tok (alloc-tok)))
         (set! (ts 'kind) TOK-SYMBOL)
         (set! (ts 'line) start-line)
         (set! (ts 's) (expand-ref-sigil text len))
@@ -706,21 +706,21 @@
   (let (c:i32 (peek-char)
         line:i32 g-line)
     (when (= c 0)
-      (let (te:ptr:Tok (as ptr:Tok (alloc-tok)))
+      (let (te:ptr:Tok (as &Tok (alloc-tok)))
         (set! (te 'kind) TOK-EOF)
         (set! (te 'line) line)
         (return (ok (as ptr te)))))
     (when (= c 40)
       (do (reader-open-bracket line 1)
           (next-char)
-        (let (tl:ptr:Tok (as ptr:Tok (alloc-tok)))
+        (let (tl:ptr:Tok (as &Tok (alloc-tok)))
           (set! (tl 'kind) TOK-LPAREN)
           (set! (tl 'line) line)
           (return (ok (as ptr tl))))))
     (when (= c 41)
       (do (reader-close-bracket)
           (next-char)
-        (let (tr:ptr:Tok (as ptr:Tok (alloc-tok)))
+        (let (tr:ptr:Tok (as &Tok (alloc-tok)))
           (set! (tr 'kind) TOK-RPAREN)
           (set! (tr 'line) line)
           (return (ok (as ptr tr))))))
@@ -733,35 +733,35 @@
     (when (= c 91)
       (do (reader-open-bracket line 0)
           (next-char)
-        (let (tlb:ptr:Tok (as ptr:Tok (alloc-tok)))
+        (let (tlb:ptr:Tok (as &Tok (alloc-tok)))
           (set! (tlb 'kind) TOK-LBRACK)
           (set! (tlb 'line) line)
           (return (ok (as ptr tlb))))))
     (when (= c 93)
       (do (reader-close-bracket)
           (next-char)
-        (let (trb:ptr:Tok (as ptr:Tok (alloc-tok)))
+        (let (trb:ptr:Tok (as &Tok (alloc-tok)))
           (set! (trb 'kind) TOK-RBRACK)
           (set! (trb 'line) line)
           (return (ok (as ptr trb))))))
     (when (and (= c 35) (= (cstr-byte-at g-src (+ g-pos 1)) 123))
       (do (reader-open-bracket line 0)
           (next-char) (next-char)
-        (let (thb:ptr:Tok (as ptr:Tok (alloc-tok)))
+        (let (thb:ptr:Tok (as &Tok (alloc-tok)))
           (set! (thb 'kind) TOK-HASHBRACE)
           (set! (thb 'line) line)
           (return (ok (as ptr thb))))))
     (when (= c 123)
       (do (reader-open-bracket line 0)
           (next-char)
-        (let (tlc:ptr:Tok (as ptr:Tok (alloc-tok)))
+        (let (tlc:ptr:Tok (as &Tok (alloc-tok)))
           (set! (tlc 'kind) TOK-LBRACE)
           (set! (tlc 'line) line)
           (return (ok (as ptr tlc))))))
     (when (= c 125)
       (do (reader-close-bracket)
           (next-char)
-        (let (trc:ptr:Tok (as ptr:Tok (alloc-tok)))
+        (let (trc:ptr:Tok (as &Tok (alloc-tok)))
           (set! (trc 'kind) TOK-RBRACE)
           (set! (trc 'line) line)
           (return (ok (as ptr trc))))))
@@ -773,7 +773,7 @@
           best-len:i32 0
           ri:i32 0)
       (while (< ri (unsafe/cast i32 (count g-rmacros)))
-        (let (rm:ptr:RMacro (as ptr:RMacro (invoke g-rmacros (as usize ri)))
+        (let (rm:ptr:RMacro (as &RMacro (invoke g-rmacros (as usize ri)))
               plen:i32 (rm 'prefix-len)
               match:i32 1
               j:i32 0)
@@ -788,13 +788,13 @@
                 (set! best-len plen))))
         (inc! ri))
       (when (>= best-idx 0)
-        (let (rm:ptr:RMacro (as ptr:RMacro (invoke g-rmacros best-idx:usize)))
+        (let (rm:ptr:RMacro (as &RMacro (invoke g-rmacros best-idx:usize)))
           ; Advance past prefix characters (tracking newlines)
           (let (k:i32 0)
             (while (< k best-len)
               (next-char)
               (inc! k)))
-          (let (tq:ptr:Tok (as ptr:Tok (alloc-tok)))
+          (let (tq:ptr:Tok (as &Tok (alloc-tok)))
             (set! (tq 'kind) TOK-RMACRO)
             (set! (tq 'line) line)
             (set! (tq 's) (rm 'wrap-sym))
@@ -812,7 +812,7 @@
       (do (next-char)
           (next-char)
           (let (cst:ptr (try (lex-string line)))
-            (set! ((as ptr:Tok cst) 'i) 1)
+            (set! ((as &Tok cst) 'i) 1)
             (return (ok cst)))))
     (when (= c 34)
       (do (next-char) (return (lex-string line))))
@@ -891,14 +891,14 @@
 ; check every other element kind gets.
 (defn lit-is-quoted-sym (n:ptr):i32
   (when (= n null) (return 0))
-  (let (nn:ptr:Node (as ptr:Node n))
+  (let (nn:ptr:Node (as &Node n))
     (when (!= (nn 'kind) NODE-CELL) (return 0))
     (when (!= (node-len n) 2) (return 0))
     (let (h:ptr (node-at n 0)
           a:ptr (node-at n 1))
       (when (or (= h null) (= a null)) (return 0))
-      (let (hn:ptr:Node (as ptr:Node h)
-            an:ptr:Node (as ptr:Node a))
+      (let (hn:ptr:Node (as &Node h)
+            an:ptr:Node (as &Node a))
         (when (!= (hn 'kind) NODE-SYM) (return 0))
         (when (!= (hn 's) "quote") (return 0))
         (when (!= (an 'kind) NODE-SYM) (return 0))
@@ -913,7 +913,7 @@
 ; already accepted. Kinds 3-5 are fixed.
 (defn lit-elem-kind (n:ptr):i32
   (when (= n null) (return 0))
-  (let (nn:ptr:Node (as ptr:Node n))
+  (let (nn:ptr:Node (as &Node n))
     (when (= (nn 'kind) NODE-INT) (return 1))
     (when (= (nn 'kind) NODE-FLOAT) (return 2))
     (when (= (nn 'kind) NODE-STR) (return 3))
@@ -954,7 +954,7 @@
   (let (head:ptr null
         tail:ptr null)
     (while (!= 0 1)
-      (let (t:ptr:Tok (as ptr:Tok (try (peek-tok))))
+      (let (t:ptr:Tok (as &Tok (try (peek-tok))))
         (when (= (t 'kind) TOK-EOF)
           (let (closer:StrView "}")
             (when (= close-kind TOK-RBRACK) (set! closer "]"))
@@ -965,7 +965,7 @@
         (let (child:ptr (try (read-form))
               cell:ptr (make-cell child null open-line))
           (when (= tail null) (set! head cell))
-          (when (!= tail null) (set! ((as ptr:Node tail) 'cdr) cell))
+          (when (!= tail null) (set! ((as &Node tail) 'cdr) cell))
           (set! tail cell))))
     (return (ok head))))
 
@@ -994,7 +994,7 @@
                   (make-cell (nucleus_gensym) head line) line)))))
 
 (defn read-form ():!ptr
-  (let (t:ptr:Tok (as ptr:Tok (try (eat-tok))))
+  (let (t:ptr:Tok (as &Tok (try (eat-tok))))
     (when (= (t 'kind) TOK-LPAREN) (return (read-list (t 'line))))
     (when (= (t 'kind) TOK-LBRACK) (return (read-vector-literal (t 'line))))
     (when (= (t 'kind) TOK-HASHBRACE) (return (read-hashset-literal (t 'line))))
@@ -1026,7 +1026,7 @@
                                (make-cell quoted null (t 'line))
                                (t 'line))))))
     (when (= (t 'kind) TOK-INT)
-      (let (n:ptr:Node (as ptr:Node (alloc-node)))
+      (let (n:ptr:Node (as &Node (alloc-node)))
         (set! (n 'kind) NODE-INT)
         (set! (n 'line) (t 'line))
         (set! (n 'i) (t 'i))
@@ -1035,19 +1035,19 @@
     ; scalar value in `i`. Self-evaluating; the compiler emits it as a Char-typed
     ; i32 constant (emit-char-literal).
     (when (= (t 'kind) TOK-CHAR)
-      (let (n:ptr:Node (as ptr:Node (alloc-node)))
+      (let (n:ptr:Node (as &Node (alloc-node)))
         (set! (n 'kind) NODE-CHAR)
         (set! (n 'line) (t 'line))
         (set! (n 'i) (t 'i))
         (return (ok (as ptr n)))))
     (when (= (t 'kind) TOK-FLOAT)
-      (let (n:ptr:Node (as ptr:Node (alloc-node)))
+      (let (n:ptr:Node (as &Node (alloc-node)))
         (set! (n 'kind) NODE-FLOAT)
         (set! (n 'line) (t 'line))
         (set! (n 's) (t 's))
         (return (ok (as ptr n)))))
     (when (= (t 'kind) TOK-STRING)
-      (let (n:ptr:Node (as ptr:Node (alloc-node)))
+      (let (n:ptr:Node (as &Node (alloc-node)))
         (set! (n 'kind) NODE-STR)
         (set! (n 'line) (t 'line))
         ; NS-4: carry the CStr flag (0 = StrView default, 1 = explicit c"…").
@@ -1062,7 +1062,7 @@
     ; name (colon already stripped by the lexer). Self-evaluating; the compiler
     ; lowers it to a keyword-intern call.
     (when (= (t 'kind) TOK-KEYWORD)
-      (let (n:ptr:Node (as ptr:Node (alloc-node)))
+      (let (n:ptr:Node (as &Node (alloc-node)))
         (set! (n 'kind) NODE-KEYWORD)
         (set! (n 'line) (t 'line))
         (set! (n 's) (t 's))
@@ -1129,7 +1129,7 @@
 (defn fuse-colon-paren (child:ptr line:i32):!ptr
   ; Only consider a freshly-lexed symbol/keyword with no token peeked past it.
   (when (or (= child null) (!= g-peek-valid 0)) (return (ok child)))
-  (let (cn:ptr:Node (as ptr:Node child))
+  (let (cn:ptr:Node (as &Node child))
     (when (and (!= (cn 'kind) NODE-SYM) (!= (cn 'kind) NODE-KEYWORD)) (return (ok child)))
     (let (sv:StrView (symbol-as-view (cn 's))
           len:usize (symbol-len (cn 's)))
@@ -1167,7 +1167,7 @@
                     seg-node:ptr (as ptr (intern-node (symbol-intern seg)))
                     cell:ptr (make-cell seg-node null line))
                 (when (= tail null) (set! head cell))
-                (when (!= tail null) (set! ((as ptr:Node tail) 'cdr) cell))
+                (when (!= tail null) (set! ((as &Node tail) 'cdr) cell))
                 (set! tail cell))
               (if (= more 0)
                 (set! done 1)
@@ -1176,8 +1176,8 @@
           (let (name-node:ptr null
                 ctor-list:ptr head)
             (when (= (cn 'kind) NODE-SYM)
-              (do (set! name-node ((as ptr:Node head) 'car))
-                  (set! ctor-list ((as ptr:Node head) 'cdr))))
+              (do (set! name-node ((as &Node head) 'car))
+                  (set! ctor-list ((as &Node head) 'cdr))))
             ; Reverse the constructor list, then fold it right-to-left around
             ; the paren form, wrapping the name last if non-empty.
             (let (rev:ptr null
@@ -1185,16 +1185,16 @@
                   result:ptr paren-form
                   q:ptr null)
               (while (!= p null)
-                (let (nxt:ptr ((as ptr:Node p) 'cdr))
-                  (set! ((as ptr:Node p) 'cdr) rev)
+                (let (nxt:ptr ((as &Node p) 'cdr))
+                  (set! ((as &Node p) 'cdr) rev)
                   (set! rev p)
                   (set! p nxt)))
               (set! q rev)
               (while (!= q null)
-                (set! result (make-cell ((as ptr:Node q) 'car)
+                (set! result (make-cell ((as &Node q) 'car)
                                         (make-cell result null line)
                                         line))
-                (set! q ((as ptr:Node q) 'cdr)))
+                (set! q ((as &Node q) 'cdr)))
               (when (!= name-node null)
                 (set! result (make-cell name-node (make-cell result null line) line)))
               (return (ok (as ptr result))))))))))
@@ -1203,7 +1203,7 @@
   (let (head:ptr null
         tail:ptr null)
     (while (!= 0 1)
-      (let (t:ptr:Tok (as ptr:Tok (try (peek-tok))))
+      (let (t:ptr:Tok (as &Tok (try (peek-tok))))
         (when (= (t 'kind) TOK-EOF)
           (do (report-unterminated line "unterminated list" ")")
               (return (err! parse-error))))
@@ -1213,7 +1213,7 @@
               child:ptr (try (fuse-colon-paren raw line))
               cell:ptr (make-cell child null line))
           (when (= tail null) (set! head cell))
-          (when (!= tail null) (set! ((as ptr:Node tail) 'cdr) cell))
+          (when (!= tail null) (set! ((as &Node tail) 'cdr) cell))
           (set! tail cell))))
     (return (ok head))))
 
@@ -1231,7 +1231,7 @@
   (let (head:ptr null
         tail:ptr null)
     (while (!= 0 1)
-      (let (pk:ptr:Tok (as ptr:Tok (try (peek-tok))))
+      (let (pk:ptr:Tok (as &Tok (try (peek-tok))))
         (when (= (pk 'kind) TOK-EOF) (return (ok head)))
         ; Stage 15 W4a: seed the spine cell with the line of the form's FIRST
         ; TOKEN, then prefer the form's own line when it has one. Identical for
@@ -1242,11 +1242,11 @@
           (let (form:ptr (try (read-form))
                 line:i32 start-line)
             (when (!= form null)
-              (let (fl:i32 ((as ptr:Node form) 'line))
+              (let (fl:i32 ((as &Node form) 'line))
                 (when (!= fl 0) (set! line fl))))
             (let (cell:ptr (make-cell form null line))
               (when (= tail null) (set! head cell))
-              (when (!= tail null) (set! ((as ptr:Node tail) 'cdr) cell))
+              (when (!= tail null) (set! ((as &Node tail) 'cdr) cell))
               (set! tail cell))))))
     (return (ok head))))
 

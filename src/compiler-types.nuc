@@ -347,7 +347,7 @@
   ; because a name-only pre-registered struct (register-struct) has no fields
   ; yet — null until struct-set-fields populates it. All reads are guarded by the
   ; `num-fields`-bounded loops, so field-at's raw→ref assertion is sound.
-  (fields (raw (Vector (ref Field))))
+  (fields (raw (Vector &Field)))
   num-fields:i32    ; == (count fields); cached length for i32 loops (hot: struct-field-index/ABI)
   emitted:i32       ; type definition already written to IR (vs. name-only pre-registration)
   ; Stage 16 R4 (design/stage16-ergonomics/repl-libraries.md §3.3): WHICH buffer
@@ -439,7 +439,7 @@
   (sdef (raw StructDef))      ; backing StructDef (tag [+ payload])
   (union-sd (raw StructDef))  ; payload union's StructDef (one member per payload arm), or null
   num-arms:i32                ; == (count arms); cached length for i32 loops
-  (arms (ref (Vector (ref Arm)))) ; the arm table (was five parallel arm-* arrays)
+  (arms (ref (Vector &Arm))) ; the arm table (was five parallel arm-* arrays)
   ; --- Stage 10 U4 niche layout (design/stage10/unions.md §6) ---
   layout:i32        ; LAYOUT-ENUM / NICHE-MAYBE / NICHE-ERRPTR / TAGGED
   (niche-elem (raw Type)) ; for NICHE-MAYBE/ERRPTR: the (ref T) payload's element Type*
@@ -523,7 +523,7 @@
   ; stays intact. Reads go through `field-at` (abi.nuc); builds through
   ; `type-set-params` (abi.nuc). Nullable (`raw`): a zero-param or non-fn Type
   ; leaves it null, so `field-at`'s raw→ref cast is guarded by the num-params>0 loops.
-  (params (raw (Vector (ref Field))))
+  (params (raw (Vector &Field)))
   num-params:i32
   variadic:i32
   has-rest:i32
@@ -683,13 +683,13 @@
 (defunion Cleanup
   (libc-free (slot StrView))
   (drop (slot StrView) (dropfn Symbol) (dropret (raw Type)))
-  (defer (node (raw Node)) (scope (ref Scope))))
+  (defer (node (raw Node)) (scope &Scope)))
 
 ; A narrowing undo entry (Stage 10 nullability §4). Restores are skipped when
 ; the binding's kstamp moved past `stamp` — a kill (reassignment) is sticky.
 (defstruct NarrowUndo
   name:Symbol
-  scope:ref:Scope
+  scope:&Scope
   (old-ntype (raw Type))
   old-ndepth:i32
   stamp:i32)
@@ -704,7 +704,7 @@
   ; `ref`, not `raw`: each Scope is individually arena-allocated once by
   ; scope-new and never explicitly reset to null (unlike g-ns-prefix-table),
   ; matching Generic.methods/g-vtable-table/g-boxedfn-table/g-dyn-table.
-  (cleanup-slots (ref (Vector (ref Cleanup)))))
+  (cleanup-slots (ref (Vector &Cleanup))))
 
 (defstruct StrLit
   ; The bytes are copied into the arena because the source buffer they were read
@@ -888,7 +888,7 @@
 ; The pointer kind is left OUTSIDE this alias because a constraint clause is
 ; genuinely held both ways — `raw:` on a struct field (null for no :where),
 ; `ref:` once a site has proved it non-null (container-type-sugar.md §3.10).
-(deftype ConstraintVec (Vector (ref Constraint)))
+(deftype ConstraintVec (Vector &Constraint))
 
 (defstruct Method
   param-types:ptr   ; ptr to array of ptr:Type (length num-params); null for intrinsic
@@ -957,7 +957,7 @@
   ; like g-vtable-table/g-boxedfn-table/g-dyn-table — unlike g-ns-prefix-table,
   ; which used to be nulled once per unit by compiler-init; since Stage 15 W8
   ; G-5 that reset is gone and the table simply starts at its defvar zero).
-  (methods (ref (Vector (ref Method))))
+  (methods (ref (Vector &Method)))
   finalized:i32     ; mangling decided + solitary scope binding established
   mangled:i32       ; 0 = solitary, unmangled @name (C-callable); 1 = mangled set
   ; Stage 12 N4: the IR-mangling prefix string for this generic's methods (e.g.
@@ -1118,13 +1118,13 @@
   tmp:i32
   label:i32
   block-term:i32
-  (lbl-tbl (ref (Vector (ref LabelEntry))))
+  (lbl-tbl (ref (Vector &LabelEntry)))
   cur-fname:StrView
   fn-ret-abi:ptr
   fn-sret-name:StrView
   fn-ret-type:ptr
   loop-depth:i32
-  (nundo (ref (Vector (ref NarrowUndo))))
+  (nundo (ref (Vector &NarrowUndo)))
   ; Pointers, not `String` values: this file is imported before `lib/string.nuc`,
   ; so a `%String`-typed field names a type the compile-time module's own type
   ; section does not carry. A pointer field is `ptr` in IR and carries nothing.
@@ -1214,7 +1214,7 @@
 ; Pointer kind left outside, as for ConstraintVec: `g-file-imports` and the
 ; saved copies of it are `raw:` (null before the first import), the locals that
 ; index the table are `ref:`.
-(deftype ImportVec (Vector (ref ImportBind)))
+(deftype ImportVec (Vector &ImportBind))
 
 ; The namespace one source file declared. Stage 17 C7-4a gave this its own
 ; record: it was a `Node` cell abusing `s` for the path and `car` — a
@@ -1224,7 +1224,7 @@
   path:Symbol ; source path, interned by `resolve-import` — compared by identity
   ns:Symbol)
 
-(deftype FileNsVec (Vector (ref FileNs)))
+(deftype FileNsVec (Vector &FileNs))
 
 ; Stage 15 B2a (design/stage15-stress-test/name-resolution.md §5.2 B2, §8.3) —
 ; the result of `resolve-spelling`, the ONE canonicaliser on the *reference*
@@ -1282,7 +1282,7 @@
   path:Symbol   ; interned source path that owns these names
   ns:Symbol     ; the synthetic namespace ("#pN")
   prefix:Symbol ; IR prefix for that namespace
-  (names (ref (Vector (ref PrivName)))))
+  (names (ref (Vector &PrivName))))
 
 ; Stage 14 AVR-5 (design/stage14/avr-targets.md §5 AVR-5) — function-attribute
 ; entry: maps a `defn`'s source name to one LLVM string function attribute set by

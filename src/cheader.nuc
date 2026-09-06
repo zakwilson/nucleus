@@ -146,7 +146,7 @@
 (defn cdecl-site-find (list:(raw CDeclSite) fname:Symbol):(raw CDeclSite)
   (let (cur:ptr list)
     (while (!= cur null)
-      (let (e:ptr:CDeclSite (as ptr:CDeclSite cur))
+      (let (e:ptr:CDeclSite (as &CDeclSite cur))
         (when (= (e 'name) fname) (return (as raw:CDeclSite e)))
         (set! cur (e 'next)))))
   (return null))
@@ -163,7 +163,7 @@
   (let ((acc String) (str-alloc (strfmt-alloc) (type-to-ir (as ptr ret)) " ("))
     (dotimes (i:i32 np)
       (when (!= i 0) (str-into acc ", "))
-      (str-into acc (type-to-ir (aref (as ptr:ptr ptypes) i))))
+      (str-into acc (type-to-ir (aref (as &ptr ptypes) i))))
     (when (!= variadic 0)
       (if (= np 0)
         (str-into acc "...")
@@ -189,8 +189,8 @@
 ; deduplicated, so without this a conflict warns once per import of the header.
 (defn cheader-warn-decl-conflict (site:(raw CDeclSite) hdr:(raw CDeclSite)):void
   (when (or (= (as ptr site) null) (= (as ptr hdr) null)) (return))
-  (let (s:ptr:CDeclSite (unsafe/cast ptr:CDeclSite site)
-        h:ptr:CDeclSite (unsafe/cast ptr:CDeclSite hdr))
+  (let (s:ptr:CDeclSite (unsafe/cast &CDeclSite site)
+        h:ptr:CDeclSite (unsafe/cast &CDeclSite hdr))
     (when (!= (s 'warned) 0) (return))
     (set! (s 'warned) 1)
     (diag-emit "warning" (s 'file) (s 'line)
@@ -204,13 +204,13 @@
 (defn prescan-explicit-declares (forms:(raw Node)):void
   (let (fc:ptr forms)
     (while (!= fc null)
-      (let (f:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node fc) 'car)))
+      (let (f:ptr:Node (unsafe/cast &Node ((unsafe/cast &Node fc) 'car)))
         (when (and (!= (as ptr f) null)
                    (= (f 'kind) NODE-CELL)
                    (>= (node-len (as ptr f)) 2)
-                   (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 'kind) (= _ NODE-SYM))
-                   (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 's) (= _ "declare")))
-          (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr f) 1)))
+                   (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM))
+                   (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's) (= _ "declare")))
+          (let (nn:ptr:Node (unsafe/cast &Node (node-at (as ptr f) 1)))
             ; W9 item 45: `node-kind` — `(declare ())` names nothing to record,
             ; and this prescan skips it exactly as it skips any other name kind
             ; it cannot use. `emit-declare` diagnoses the form.
@@ -220,7 +220,7 @@
                     (cdecl-site-push g-explicit-declares (nn 's)
                                      g-source-path (f 'line) ""
                                      (as raw:Node f)))))))
-      (set! fc ((unsafe/cast ptr:Node fc) 'cdr)))))
+      (set! fc ((unsafe/cast &Node fc) 'cdr)))))
 
 ; The source line of buffer offset `pos`, per the last recorded linemarker.
 (defn cheader-line-at (buf:ptr pos:i64):i32
@@ -254,7 +254,7 @@
           (while (and (< p nl-end) (!= (cstr-byte-at buf p) 34))
             (set! p (+ p 1)))
           (set! g-cheader-file
-                (symbol-intern (strview (unsafe/cast ptr:ui8 (unsafe/ptr+ (as ptr:i8 buf) fstart))
+                (symbol-intern (strview (unsafe/cast &ui8 (unsafe/ptr+ (as &i8 buf) fstart))
                                         (as usize (- p fstart))))))))))
 
 ; Skip whitespace in buffer, returning new position.
@@ -275,8 +275,8 @@
                                  (<= (as i32 (cstr-byte-at buf pos)) 122))
                             (= (as i32 (cstr-byte-at buf pos)) 95)))))
       (set! pos (+ pos 1)))
-    (set! (deref out-end) pos)
-    (return (symbol-intern (strview (unsafe/cast (ptr ui8) (unsafe/ptr+ (as ptr:i8 buf) start))
+    (set! @out-end pos)
+    (return (symbol-intern (strview (unsafe/cast (ptr ui8) (unsafe/ptr+ (as &i8 buf) start))
                                     (as usize (- pos start)))))))
 
 ; Map a C type name to a Nucleus type.
@@ -289,7 +289,7 @@
   (when (!= (abi-is-avr) 0) (return ty-f64))
   (when (!= (abi-is-riscv) 0) (return ty-f128))
   ; Measured: MSVC makes it `double` even on x86_64, so this must precede x86.
-  (let (tv:StrView (symbol-as-view ((as ptr:Target g-target) 'triple)))
+  (let (tv:StrView (symbol-as-view ((as &Target g-target) 'triple)))
     (when (strview-contains tv "msvc")    (return ty-f64))
     (when (strview-contains tv "aarch64") (return ty-f128))
     (when (strview-contains tv "x86_64")  (return ty-f80))
@@ -336,8 +336,8 @@
   ; pointer-sized on every target the compiler registers a backend for. Stage 16
   ; C4 — 16-bit on AVR, 32-bit on i386; it was a hardcoded 64 before.
   (when (= name "size_t")
-    (when (= ((as ptr:Target g-target) 'ptr-size) 2) (return ty-ui16))
-    (when (= ((as ptr:Target g-target) 'ptr-size) 4) (return ty-ui32))
+    (when (= ((as &Target g-target) 'ptr-size) 2) (return ty-ui16))
+    (when (= ((as &Target g-target) 'ptr-size) 4) (return ty-ui32))
     (return ty-ui64))
   (when (= name "ssize_t") (return (as raw:Type (ptr-int-type))))
   ; __gnuc_va_list / va_list — treat as ptr
@@ -381,7 +381,7 @@
     (while (!= more 0)
       (set! more 0)
       (let (te:i64 0
-            t:Symbol (c-read-ident buf p len (as ptr:i64 (addr-of te))))
+            t:Symbol (c-read-ident buf p len (as &i64 &te)))
         (when (or (= t "const") (= t "volatile") (= t "restrict")
                   (= t "__restrict") (= t "__restrict__") (= t "_Atomic"))
           (set! p (c-skip-ws buf te len))
@@ -398,7 +398,7 @@
   (let (p:i64 start)
     (while (< p stop)
       (let (e:i64 0
-            t:Symbol (c-read-ident buf p stop (as ptr:i64 (addr-of e))))
+            t:Symbol (c-read-ident buf p stop (as &i64 &e)))
         (if (= (symbol-len t) 0)
           (set! p (+ p 1))
           (do (when (or (= (symbol-as-view t) a) (= (symbol-as-view t) b)) (return 1))
@@ -432,7 +432,7 @@
             (set! p (+ p 1)))
           (return v))))
     (let (e:i64 0
-          t:Symbol (c-read-ident buf p stop (as ptr:i64 (addr-of e))))
+          t:Symbol (c-read-ident buf p stop (as &i64 &e)))
       (when (or (= t "__alignof__") (or (= t "__alignof") (= t "_Alignof"))
                 (= t "sizeof"))
         (let (q:i64 (c-skip-ws buf e stop))
@@ -446,7 +446,7 @@
                   save-quiet:i32 g-cheader-unrep-quiet
                   ty:ptr null)
               (set! g-cheader-unrep 0)
-              (set! ty (c-parse-type buf (+ q 1) (- close 1) (as ptr:i64 (addr-of te))))
+              (set! ty (c-parse-type buf (+ q 1) (- close 1) (as &i64 &te)))
               (let (bad:i32 g-cheader-unrep)
                 (set! g-cheader-unrep save-unrep)
                 (set! g-cheader-unrep-why save-why)
@@ -462,7 +462,7 @@
   (let (p:i64 start)
     (while (< p stop)
       (let (e:i64 0
-            t:Symbol (c-read-ident buf p stop (as ptr:i64 (addr-of e))))
+            t:Symbol (c-read-ident buf p stop (as &i64 &e)))
         (if (= (symbol-len t) 0)
           (set! p (+ p 1))
           (do
@@ -490,7 +490,7 @@
     (while (!= more 0)
       (set! more 0)
       (let (ae:i64 0
-            at:Symbol (c-read-ident buf p len (as ptr:i64 (addr-of ae))))
+            at:Symbol (c-read-ident buf p len (as &i64 &ae)))
         (when (= at "__attribute__")
           (set! p (c-skip-ws buf ae len))
           (when (and (< p len) (= (cstr-byte-at buf p) 40))
@@ -502,14 +502,14 @@
               (set! p close)))
           (set! p (c-skip-ws buf p len))
           (set! more 1))))
-    (set! (deref out-end) p)
+    (set! @out-end p)
     (set! (aref out-align 0) align)
     (return found)))
 
 (defn c-skip-attributes (buf:ptr pos:i64 len:i64):i64
   (let (e:i64 0
         a:i32 0)
-    (c-read-attributes buf pos len (as ptr:i64 (addr-of e)) (as ptr:i32 (addr-of a)))
+    (c-read-attributes buf pos len (as &i64 &e) (as &i32 &a))
     (return e)))
 
 ; Position after the `}` matching the `{` at `pos`. A struct body holds no
@@ -534,7 +534,7 @@
 (defn c-trailing-packed (buf:ptr brace-pos:i64 len:i64 out-align:ptr:i32):i32
   (let (e:i64 0)
     (return (c-read-attributes buf (c-skip-braces buf brace-pos len) len
-                               (as ptr:i64 (addr-of e)) out-align))))
+                               (as &i64 &e) out-align))))
 
 ; Whitespace plus `#`-led lines — clang -E emits linemarkers inside struct bodies.
 ; Not recorded: that moves g-cheader-dpos past a declaration still being parsed.
@@ -569,7 +569,7 @@
         (when (>= pos len) (set! done 1) (set! pos len))
         (when (= done 0)
           (let (tok-end:i64 0
-                tok:Symbol (c-read-ident buf pos len (as ptr:i64 (addr-of tok-end))))
+                tok:Symbol (c-read-ident buf pos len (as &i64 &tok-end)))
             (when (= (symbol-len tok) 0) (set! done 1))
             (when (= done 0)
               (cond
@@ -593,7 +593,7 @@
                       (set! pos tok-end)
                       (let (peek-pos:i64 (c-skip-ws buf tok-end len)
                             peek-end:i64 0
-                            peek-tok:Symbol (c-read-ident buf peek-pos len (as ptr:i64 (addr-of peek-end))))
+                            peek-tok:Symbol (c-read-ident buf peek-pos len (as &i64 &peek-end)))
                         (when (not (let ((ints (ref (HashSet StrView)))
                                           #{"int" "char" "short" "long"
                                             "__int128" "_BitInt"})
@@ -606,13 +606,13 @@
                       ; `long double`, and `long` as a base type.
                       (let (peek-pos:i64 (c-skip-ws buf tok-end len)
                             peek-end:i64 0
-                            peek-tok:Symbol (c-read-ident buf peek-pos len (as ptr:i64 (addr-of peek-end))))
+                            peek-tok:Symbol (c-read-ident buf peek-pos len (as &i64 &peek-end)))
                         ; Consume a second "long" (long long) and re-peek.
                         (when (= peek-tok "long")
                           (set! is-long (+ is-long 1))
                           (set! pos peek-end)
                           (set! peek-pos (c-skip-ws buf peek-end len))
-                          (set! peek-tok (c-read-ident buf peek-pos len (as ptr:i64 (addr-of peek-end)))))
+                          (set! peek-tok (c-read-ident buf peek-pos len (as &i64 &peek-end))))
                         ; "int"/"double" follow as the base; otherwise the base is
                         ; an implicit int and "long" is the (long-counted) base.
                         ; C1: declaration specifiers are order-independent, so
@@ -631,7 +631,7 @@
                       ; the declarator, so `short` itself is the base type.
                       (let (peek-pos:i64 (c-skip-ws buf tok-end len)
                             peek-end:i64 0
-                            peek-tok:Symbol (c-read-ident buf peek-pos len (as ptr:i64 (addr-of peek-end))))
+                            peek-tok:Symbol (c-read-ident buf peek-pos len (as &i64 &peek-end)))
                         ; C1: `short unsigned a;` is the same order-independence
                         ; case as `long unsigned` above.
                         (when (and (!= peek-tok "int")
@@ -679,7 +679,7 @@
     (while (and (< pos len) (= (cstr-byte-at buf pos) 42))
       (inc! ptr-depth)
       (set! pos (c-skip-type-quals buf (+ pos 1) len)))
-    (set! (deref out-end) pos)
+    (set! @out-end pos)
     ; W3c: enum base. The specifier loop has already taken an optional tag into
     ; `base-name`; what may remain is an inline `{ … }` enumerator list (for
     ; `enum { A, B } x` the loop stopped at the `{` without consuming anything,
@@ -692,7 +692,7 @@
           (while (and (< look len) (= (cstr-byte-at buf look) 42))
             (inc! ptr-depth)
             (set! look (c-skip-type-quals buf (+ look 1) len)))
-          (set! (deref out-end) look)))
+          (set! @out-end look)))
       (when (> ptr-depth 0) (return ty-ptr))
       (return (as ptr (c-int-type 0))))
     ; Struct/union base. struct {...} / struct Tag {...} parse the body to a
@@ -706,12 +706,12 @@
           (let (sd-end:i64 0
                 tail-align:i32 0
                 tail-packed:i32 (c-trailing-packed buf look len
-                                                   (as ptr:i32 (addr-of tail-align)))
-                sd:ptr (c-parse-struct-body buf look len (as ptr:i64 (addr-of sd-end))
+                                                   (as &i32 &tail-align))
+                sd:ptr (c-parse-struct-body buf look len (as &i64 &sd-end)
                                         tag is-union
                                         (if (!= spec-packed 0) 1 tail-packed)
                                         (if (!= spec-align 0) spec-align tail-align)))
-            (set! (deref out-end) sd-end)
+            (set! @out-end sd-end)
             (when (!= sd null)
               (return (as ptr (type-for-sdef sd))))
             ; W3b: a BY-VALUE aggregate whose body we could not parse. `ptr` is
@@ -733,7 +733,7 @@
             ; pointer for invalid IR. Converting these into a skip-with-warning
             ; is W3b's validity gate (cheader.md §1.5), not this phase.
             (when (and (!= sd null)
-                       (= (-> sd (unsafe/cast ptr:StructDef _) (_ 'opaque)) 0))
+                       (= (-> sd (unsafe/cast &StructDef _) (_ 'opaque)) 0))
               (return (as ptr (type-for-sdef sd))))))
         ; W3b: fell through — a by-value `struct Tag` whose tag is opaque or
         ; unknown. Same reasoning as the unparsable-body case above: keep `ptr`,
@@ -767,8 +767,8 @@
       (when (= base-type null)
         (let (sd:ptr (lookup-struct base-sym))
           (when (and (!= sd null)
-                     (= (-> sd (unsafe/cast ptr:StructDef _) (_ 'opaque)) 0))
-            (set! base-type (as ptr (type-for-sdef (as ptr:StructDef sd)))))))
+                     (= (-> sd (unsafe/cast &StructDef _) (_ 'opaque)) 0))
+            (set! base-type (as ptr (type-for-sdef (as &StructDef sd)))))))
       ; Apply pointer depth. A pointer to anything is `ptr` in Nucleus, so an
       ; unresolvable POINTEE is harmless and must not mark the declaration —
       ; `struct _IO_FILE *` and `void (*)(int)` are perfectly describable.
@@ -864,9 +864,9 @@
 (defn cheader-record-skip (fname:Symbol why:StrView dline:i32 loud:i32):void
   (match (cheader-skip-note fname) (none 0) ((some _seen) (return)))
   (when (= g-cheader-skipped null)
-    (set! g-cheader-skipped (vector-new-in (addr-of g-arena-alloc))))
-  (let (tbl:(ref (Vector (ref CheaderSkip))) (unsafe/cast (ref (Vector (ref CheaderSkip))) g-cheader-skipped)
-        e:ref:CheaderSkip (new CheaderSkip))
+    (set! g-cheader-skipped (vector-new-in &g-arena-alloc)))
+  (let (tbl:(ref (Vector &CheaderSkip)) (unsafe/cast (ref (Vector &CheaderSkip)) g-cheader-skipped)
+        e:&CheaderSkip (new CheaderSkip))
     (set! (e 'name) fname)
     (set! (e 'note) (symbol-intern (fstr g-cheader-file ":" dline ": " why)))
     (conj tbl e)
@@ -882,13 +882,13 @@
 ; lets one arm cover both W3b's layout-less aggregates and W3c's unresolvable
 ; type names while still naming the offending type in the warning.
 (defn c-decl-skip-reason (unrep-why:StrView ret-type:raw:Type ptypes:ptr np:i32):StrView
-  (when (not (str-empty? (addr-of unrep-why))) (return unrep-why))
+  (when (not (str-empty? &unrep-why)) (return unrep-why))
   (when (> np C-MAX-PARAMS)
     (return (fstr "more than " C-MAX-PARAMS " parameters")))
   (when (= ret-type null) (return "an unparsed return type"))
   (when (!= (opaque-sdef-of ret-type) null) (return "an opaque return type"))
   (dotimes (i:i32 np)
-    (let (pt:(raw Type) (as raw:Type (aref (as ptr:ptr ptypes) i)))
+    (let (pt:(raw Type) (as raw:Type (aref (as &ptr ptypes) i)))
       (when (= pt null) (return "an unparsed parameter type"))
       ; `void` is legal only as a whole (empty) parameter list, which is consumed
       ; before any parameter is recorded — so a recorded void parameter is always
@@ -929,14 +929,14 @@
       (when (= done 0)
         ; `(void)` is C's spelling for "no parameters", not a void parameter.
         (let (ve:i64 0
-              vt:Symbol (c-read-ident buf pos len (as ptr:i64 (addr-of ve))))
+              vt:Symbol (c-read-ident buf pos len (as &i64 &ve)))
           (when (= vt "void")
             (let (after:i64 (c-skip-ws buf ve len))
               (when (and (< after len) (= (cstr-byte-at buf after) 41))
                 (set! done 1))))))
       (when (= done 0)
         (set! g-cheader-unrep 0)
-        (set! pt (c-parse-type buf pos len (as ptr:i64 (addr-of te))))
+        (set! pt (c-parse-type buf pos len (as &i64 &te)))
         (when (= pt null) (set! bad 1) (set! done 1)))
       (when (= done 0)
         (set! pos (c-skip-ws buf te len))
@@ -946,14 +946,14 @@
           (let (fe:i64 0
                 fpn:Symbol (symbol-none)
                 ft:ptr (c-parse-fnptr-decl buf pos len pt
-                                           (as ptr:i64 (addr-of fe))
-                                           (as ptr:Symbol (addr-of fpn))))
+                                           (as &i64 &fe)
+                                           (as &Symbol &fpn)))
             (set! pos fe)
             (set! g-cheader-unrep 0)
             (set! pt (if (!= ft null) ft ty-ptr))))
         (set! pos (c-skip-ws buf pos len))
         (let (ne:i64 0
-              pn:Symbol (c-read-ident buf pos len (as ptr:i64 (addr-of ne))))
+              pn:Symbol (c-read-ident buf pos len (as &i64 &ne)))
           (when (!= (symbol-len pn) 0) (set! pos ne)))
         (set! pos (c-skip-ws buf pos len))
         (while (and (< pos len) (= (cstr-byte-at buf pos) 91))
@@ -966,7 +966,7 @@
         (when (!= g-cheader-unrep 0) (set! bad 1) (set! done 1)))
       (when (and (= done 0) (>= np C-MAX-PARAMS)) (set! bad 1) (set! done 1))
       (when (= done 0)
-        (set! (aref (as ptr:ptr ptypes) np) pt)
+        (set! (aref (as &ptr ptypes) np) pt)
         (inc! np)
         (set! pos (c-skip-ws buf pos len))
         (if (and (< pos len) (= (cstr-byte-at buf pos) 44))
@@ -977,7 +977,7 @@
     (set! g-cheader-unrep-quiet save-quiet)
     (when (!= bad 0) (return null))
     ; The same four lines the function's own signature is built from, below.
-    (let (ft:ptr:Type (as ptr:Type (make-type TY-FN)))
+    (let (ft:ptr:Type (as &Type (make-type TY-FN)))
       (set! (ft 'ret) rett)
       (type-set-params ft ptypes np)
       (set! (ft 'variadic) variadic)
@@ -990,7 +990,7 @@
 ; the field name the struct-member site used to drop.
 (defn c-parse-fnptr-decl (buf:ptr pos:i64 len:i64 rett:ptr
                           out-end:ptr:i64 out-name:ptr:Symbol):ptr
-  (set! (deref out-name) (symbol-none))
+  (set! @out-name (symbol-none))
   (let (q:i64 (c-skip-ws buf (+ pos 1) len)
         stars:i32 0
         dname:Symbol (symbol-none))
@@ -998,7 +998,7 @@
       (inc! stars)
       (set! q (c-skip-type-quals buf (+ q 1) len)))
     (let (ne:i64 0
-          fpn:Symbol (c-read-ident buf q len (as ptr:i64 (addr-of ne))))
+          fpn:Symbol (c-read-ident buf q len (as &i64 &ne)))
       (when (!= (symbol-len fpn) 0) (set! dname fpn)))
     (let (after1:i64 (c-skip-ws buf (c-skip-parens buf pos len) len)
           has2:i32 0
@@ -1006,8 +1006,8 @@
       (when (and (< after1 len) (= (cstr-byte-at buf after1) 40))
         (set! has2 1)
         (set! after2 (c-skip-parens buf after1 len)))
-      (set! (deref out-end) (if (!= has2 0) after2 after1))
-      (set! (deref out-name) dname)
+      (set! @out-end (if (!= has2 0) after2 after1))
+      (set! @out-name dname)
       ; No `*`, or no argument list: a parenthesized declarator, not a function
       ; pointer.
       (when (or (= stars 0) (= has2 0)) (return null))
@@ -1027,7 +1027,7 @@
   (while (!= attr-check 0)
     (set! attr-check 0)
     (let (ae:i64 0
-          at:Symbol (c-read-ident buf pos len (as ptr:i64 (addr-of ae))))
+          at:Symbol (c-read-ident buf pos len (as &i64 &ae)))
       (when (= at "__attribute__")
          (set! pos (c-skip-ws buf ae len))
          (when (and (< pos len) (= (cstr-byte-at buf pos) 40))
@@ -1043,7 +1043,7 @@
 ; Skip semicolon
 (when (and (< pos len) (= (cstr-byte-at buf pos) 59))
   (set! pos (+ pos 1)))
-(set! (deref out-end) pos)
+(set! @out-end pos)
 ; W3b validity gate (cheader.md §1.5). The declaration is consumed either
 ; way — `out-end` is already past its semicolon, so returning 1 keeps the
 ; caller from rescanning it — but a declaration the importer cannot
@@ -1052,7 +1052,7 @@
 ; produce a dangling `prefix/name`.
 (let (why:StrView (c-decl-skip-reason unrep-why (as raw:Type ret-type)
                                       param-types num-params))
-  (when (not (str-empty? (addr-of why)))
+  (when (not (str-empty? &why))
     ; W3c: only a reason that came through the unrep channel can be
     ; quiet; every other arm (void parameter, opaque type, arity cap,
     ; unparsed type) is a parse-side limitation and stays loud, exactly
@@ -1076,7 +1076,7 @@
     (cheader-line-at buf decl-start))
   (return 1))
 ; Register the function
-(let (ft:ptr:Type (as ptr:Type (make-type TY-FN)))
+(let (ft:ptr:Type (as &Type (make-type TY-FN)))
   (set! (ft 'ret) ret-type)
   (type-set-params ft param-types num-params)
   (set! (ft 'variadic) is-variadic)
@@ -1087,9 +1087,9 @@
                           (fstr "@" fname) 0))
         ; Stage 10 Phase F1: mark known-noreturn libc functions.
         (when (c-fn-noreturn fname)
-          (set! ((as ptr:Sym csym) 'noreturn) 1))
+          (set! ((as &Sym csym) 'noreturn) 1))
         (when (c-fn-returns-twice fname)
-          (set! ((as ptr:Sym csym) 'returns-twice) 1)))
+          (set! ((as &Sym csym) 'returns-twice) 1)))
       (when (= fname "malloc")
         (set! g-malloc-decl-done 1))
       ; Emit LLVM declare, lowering a struct-by-value parameter or return
@@ -1108,13 +1108,13 @@
       ; both helpers reduce to `type-to-ir`, so the emitted text is
       ; byte-identical to the former loop.
       (let (ret-info:ptr:AbiInfo
-              (unsafe/cast ptr:AbiInfo (abi-classify (as raw:Type ret-type))))
+              (unsafe/cast &AbiInfo (abi-classify (as raw:Type ret-type))))
         (emit g-out "declare " (abi-ret-ir (as raw:AbiInfo ret-info) (as raw:Type ret-type))
               " @" fname "(")
         (let (need-comma:i32 0)
-          (when (= ((as ptr:AbiInfo ret-info) 'kind) ABI-MEMORY)
+          (when (= ((as &AbiInfo ret-info) 'kind) ABI-MEMORY)
             (emit g-out "ptr sret(" (type-to-ir ret-type) ") align "
-                  ((as ptr:AbiInfo ret-info) 'align))
+                  ((as &AbiInfo ret-info) 'align))
             (set! need-comma 1))
           ; RV-6c: one walk over this declare's parameters — reset the
           ; riscv64 register budget (design/stage14/riscv-fp-abi.md §4).
@@ -1153,7 +1153,7 @@
       (set! q (c-skip-type-quals buf (+ q 1) len)))
     (when (= stars 0) (return -1))
     (let (ne:i64 0
-          fname:Symbol (c-read-ident buf q len (as ptr:i64 (addr-of ne))))
+          fname:Symbol (c-read-ident buf q len (as &i64 &ne)))
       (when (= (symbol-len fname) 0) (return -1))
       (let (ip:i64 (c-skip-ws buf ne len))
         ; `(*name)` with no argument list after the identifier is a plain
@@ -1170,10 +1170,10 @@
             ; ptr fallback can paper over; decline and let the skip machinery
             ; report it as before.
             (when (= sigt null) (return -1))
-            (let (st:ptr:Type (as ptr:Type sigt)
+            (let (st:ptr:Type (as &Type sigt)
                   ptypes:ptr (arena-alloc (* C-MAX-PARAMS 8)))
               (dotimes (j (st 'num-params))
-                (set! (aref (as ptr:ptr ptypes) j) (as ptr ((field-at (st 'params) j) 'type))))
+                (set! (aref (as &ptr ptypes) j) (as ptr ((field-at (st 'params) j) 'type))))
               (return (c-finish-fn-decl buf after2 len out-end fname retfn
                                         ptypes (st 'num-params) (st 'variadic)
                                         "" 0 decl-start)))))))))
@@ -1200,7 +1200,7 @@
         (if (or (and (>= c 65) (<= c 90))
                 (or (and (>= c 97) (<= c 122)) (= c 95)))
           (let (e:i64 0
-                id:Symbol (c-read-ident buf p stop (as ptr:i64 (addr-of e))))
+                id:Symbol (c-read-ident buf p stop (as &i64 &e)))
             ; A keyword is a specifier, never the declared name.
             (when (= (cheader-reserved-word (symbol-as-view id)) 0)
               (set! name id)
@@ -1233,7 +1233,7 @@
   ; Parse the return type
   (let (ret-end:i64 0
         decl-start:i64 pos
-        ret-type:ptr (c-parse-type buf pos len (as ptr:i64 (addr-of ret-end))))
+        ret-type:ptr (c-parse-type buf pos len (as &i64 &ret-end)))
     (set! pos ret-end)
     ; C decays an array in a parameter or return position; a struct MEMBER keeps
     ; its extent, which is why the call is here and not in c-parse-type.
@@ -1244,14 +1244,14 @@
         (when (>= fr 0) (return fr))))
     ; Read the function name
     (let (name-end:i64 0
-          fname:Symbol (c-read-ident buf pos len (as ptr:i64 (addr-of name-end))))
+          fname:Symbol (c-read-ident buf pos len (as &i64 &name-end)))
       (when (= (symbol-len fname) 0)
-         (set! (deref out-end) pos) (return 0))
+         (set! @out-end pos) (return 0))
       (set! pos name-end)
       (set! pos (c-skip-ws buf pos len))
       ; Expect '('
       (when (or (>= pos len) (!= (cstr-byte-at buf pos) 40))
-         (set! (deref out-end) pos) (return 0))
+         (set! @out-end pos) (return 0))
       (set! pos (+ pos 1))
       ; Parse parameters
       (let (param-types:ptr (arena-alloc (* C-MAX-PARAMS 8))
@@ -1291,7 +1291,7 @@
               (when (= pdone 0)
                 ; Check for void param (no-arg function)
                 (let (void-check-end:i64 0
-                      void-check:Symbol (c-read-ident buf pos len (as ptr:i64 (addr-of void-check-end))))
+                      void-check:Symbol (c-read-ident buf pos len (as &i64 &void-check-end)))
                   (when (= void-check "void")
                     (let (after-void:i64 (c-skip-ws buf void-check-end len))
                       (when (and (< after-void len) (= (cstr-byte-at buf after-void) 41))
@@ -1302,7 +1302,7 @@
                   ; first so it reports on THIS parameter only.
                   (set! g-cheader-unrep 0)
                   (let (ptype-end:i64 0
-                        ptype:ptr (c-parse-type buf pos len (as ptr:i64 (addr-of ptype-end))))
+                        ptype:ptr (c-parse-type buf pos len (as &i64 &ptype-end)))
                     (set! pos ptype-end)
                     (set! pos (c-skip-ws buf pos len))
                     ; Handle function pointer params: void (*name)(args)
@@ -1310,8 +1310,8 @@
                       (let (fe:i64 0
                             fpn:Symbol (symbol-none)
                             ft:ptr (c-parse-fnptr-decl buf pos len ptype
-                                                       (as ptr:i64 (addr-of fe))
-                                                       (as ptr:Symbol (addr-of fpn))))
+                                                       (as &i64 &fe)
+                                                       (as &Symbol &fpn)))
                         (set! pos fe)
                         ; A pointer-to-function parameter is a pointer whatever
                         ; its return/argument types were, so an aggregate met
@@ -1326,7 +1326,7 @@
                                             (<= (as i32 (cstr-byte-at buf pos)) 122))
                                        (= (as i32 (cstr-byte-at buf pos)) 95))))
                       (let (skip-end:i64 0
-                            skip:Symbol (c-read-ident buf pos len (as ptr:i64 (addr-of skip-end))))
+                            skip:Symbol (c-read-ident buf pos len (as &i64 &skip-end)))
                         (set! pos skip-end)))
                     ; Skip array brackets if present: [N]
                     (set! pos (c-skip-ws buf pos len))
@@ -1347,14 +1347,14 @@
                     (set! ptype (as ptr (array-decay ptype)))
                     ; W3b: this parameter's contribution to the gate, taken after
                     ; every override above.
-                    (when (and (!= g-cheader-unrep 0) (str-empty? (addr-of unrep-why)))
+                    (when (and (!= g-cheader-unrep 0) (str-empty? &unrep-why))
                       (set! unrep-why g-cheader-unrep-why)
                       (set! unrep-quiet g-cheader-unrep-quiet))
                     ; Store parameter type. Over capacity the count still grows,
                     ; so the gate below sees the real arity and skips the
                     ; declaration instead of emitting a truncated one.
                     (when (< num-params C-MAX-PARAMS)
-                      (set! (aref (as ptr:ptr param-types) num-params) ptype))
+                      (set! (aref (as &ptr param-types) num-params) ptype))
                     (inc! num-params)
                     (set! pos (c-skip-ws buf pos len))
                     ; Expect ',' or ')'
@@ -1390,7 +1390,7 @@
 ; flags at most, which is why they go on an argv rather than into a string.
 (defn cheader-cc-target? ():bool
   (return (or (and (not (symbol-none? g-target-triple-override))
-                   (!= g-target-triple ((as ptr:Target g-host-target) 'triple)))
+                   (!= g-target-triple ((as &Target g-host-target) 'triple)))
               (not (symbol-none? g-sysroot-override)))))
 
 ; The `clang -E` invocation, as an argv. A `--sysroot` naming a directory with a
@@ -1398,20 +1398,20 @@
 ; argument.
 (defn cheader-cpp-command (header-path:Symbol with-target:bool dump-macros:i32):Command
   (let (c:Command (command "clang"))
-    (command-arg (addr-of c) "-E")
-    (when (!= dump-macros 0) (command-arg (addr-of c) "-dM"))
+    (command-arg &c "-E")
+    (when (!= dump-macros 0) (command-arg &c "-dM"))
     (when with-target
       (when (and (not (symbol-none? g-target-triple-override))
-                 (!= g-target-triple ((as ptr:Target g-host-target) 'triple)))
-        (command-arg (addr-of c) (fstr "--target=" g-target-triple)))
+                 (!= g-target-triple ((as &Target g-host-target) 'triple)))
+        (command-arg &c (fstr "--target=" g-target-triple)))
       (when (not (symbol-none? g-sysroot-override))
-        (command-arg (addr-of c) (fstr "--sysroot=" g-sysroot-override))))
-    (command-arg (addr-of c) "-x")
-    (command-arg (addr-of c) "c")
+        (command-arg &c (fstr "--sysroot=" g-sysroot-override))))
+    (command-arg &c "-x")
+    (command-arg &c "c")
     (when (not (symbol-none? header-path))
-      (command-arg (addr-of c) "-include")
-      (command-arg (addr-of c) (symbol-as-view header-path)))
-    (command-arg (addr-of c) "/dev/null")
+      (command-arg &c "-include")
+      (command-arg &c (symbol-as-view header-path)))
+    (command-arg &c "/dev/null")
     (return c)))
 
 ; The same invocation as text, for a diagnostic that has to show the user what
@@ -1421,7 +1421,7 @@
     (when (!= dump-macros 0) (set! out (fstr out " -dM")))
     (when with-target
       (when (and (not (symbol-none? g-target-triple-override))
-                 (!= g-target-triple ((as ptr:Target g-host-target) 'triple)))
+                 (!= g-target-triple ((as &Target g-host-target) 'triple)))
         (set! out (fstr out " --target=" g-target-triple)))
       (when (not (symbol-none? g-sysroot-override))
         (set! out (fstr out " --sysroot=" g-sysroot-override))))
@@ -1435,32 +1435,32 @@
 ; pointer and nothing ever frees them, so the owner has to outlive every reader.
 ; The child's stderr is captured and dropped, which is what the old command
 ; string's `2>/dev/null` did.
-(defn cheader-capture ((c (ref Command)) out-len:ptr:i64 out-status:ptr:i32):ptr
+(defn cheader-capture ((c &Command) out-len:ptr:i64 out-status:ptr:i32):ptr
   (command-capture c true)
-  (set! (deref out-len) 0)
-  (set! (deref out-status) -1)
+  (set! @out-len 0)
+  (set! @out-status -1)
   (let (out:String (string-new)
         errs:String (string-new))
     (match (spawn c)
       ((ok p)
-       (match (process-capture (addr-of p) (addr-of out) (addr-of errs))
+       (match (process-capture &p &out &errs)
          (ok
-          (match (process-wait (addr-of p))
-            ((ok st) (set! (deref out-status) (exit-code (addr-of st))))
-            ((err e) (set! (deref out-status) -1))))
-         ((err e) (set! (deref out-status) -1))))
+          (match (process-wait &p)
+            ((ok st) (set! @out-status (exit-code &st)))
+            ((err e) (set! @out-status -1))))
+         ((err e) (set! @out-status -1))))
       ((err e)
-       (drop (addr-of out))
-       (drop (addr-of errs))
+       (drop &out)
+       (drop &errs)
        (return null)))
-    (drop (addr-of errs))
-    (when (!= (deref out-status) 0)
-      (drop (addr-of out))
+    (drop &errs)
+    (when (!= @out-status 0)
+      (drop &out)
       (return null))
     ; `string-as-cstr` before the length: it reserves one byte for the NUL and
     ; may reallocate, so the pointer has to be taken after it, not before.
-    (let (p:ptr (as ptr (string-as-cstr (addr-of out))))
-      (set! (deref out-len) (as i64 (byte-len (addr-of out))))
+    (let (p:ptr (as ptr (string-as-cstr &out)))
+      (set! @out-len (as i64 (byte-len &out)))
       (conj g-cheader-bufs out)
       (return p))))
 
@@ -1468,8 +1468,8 @@
 (defn cheader-run-cpp (header-path:Symbol with-target:bool dump-macros:i32
                        out-len:ptr:i64 out-status:ptr:i32):ptr
   (let (c:Command (cheader-cpp-command header-path with-target dump-macros)
-        buf:ptr (cheader-capture (addr-of c) out-len out-status))
-    (drop (addr-of c))
+        buf:ptr (cheader-capture &c out-len out-status))
+    (drop &c)
     (return buf)))
 
 ; C4: clang could not read the header at all. Re-run the failing command with
@@ -1479,12 +1479,12 @@
   (eprint "  note: " (cheader-cpp-display header-path with-target 0) "\n")
   (let (c:Command (cheader-cpp-command header-path with-target 0))
     ; stdout would be the preprocessed text; only the diagnosis is wanted.
-    (command-arg (addr-of c) "-o")
-    (command-arg (addr-of c) "/dev/null")
-    (match (spawn (addr-of c))
-      ((ok p) (process-wait (addr-of p)) 0)
+    (command-arg &c "-o")
+    (command-arg &c "/dev/null")
+    (match (spawn &c)
+      ((ok p) (process-wait &p) 0)
       ((err e) 0))
-    (drop (addr-of c))))
+    (drop &c)))
 
 (defn cheader-preprocess (header-path:Symbol out-len:ptr:i64):ptr
   (return (cheader-preprocess-mode header-path 0 out-len)))
@@ -1496,9 +1496,9 @@
 (defn cheader-preprocess-mode (header-path:Symbol dump-macros:i32 out-len:ptr:i64):ptr
   (let (cur:ptr g-cheader-cache)
     (while (!= cur null)
-      (let (e:ptr:Node (unsafe/cast ptr:Node cur))
+      (let (e:ptr:Node (unsafe/cast &Node cur))
         (when (and (= (e 's) header-path) (= (e 'line) dump-macros))
-          (set! (deref out-len) (e 'i))
+          (set! @out-len (e 'i))
           (return (as ptr (e 'car))))
         (set! cur (e 'cdr)))))
   (let (with-target:bool (cheader-cc-target?)
@@ -1506,8 +1506,8 @@
         status:i32 0
         buf:ptr null)
     (set! buf (cheader-run-cpp header-path with-target dump-macros
-                               (as ptr:i64 (addr-of buf-len))
-                               (as ptr:i32 (addr-of status))))
+                               (as &i64 &buf-len)
+                               (as &i32 &status)))
     ; C4: a non-zero exit means clang produced only its built-in preamble, so
     ; every name the header declares would go missing with no explanation.
     ; Off-host that is usually "no sysroot for this target on this machine", and
@@ -1517,8 +1517,8 @@
     ; but say so: the widths in it are the host's.
     (when (and (!= status 0) with-target)
       (set! buf (cheader-run-cpp header-path false dump-macros
-                                 (as ptr:i64 (addr-of buf-len))
-                                 (as ptr:i32 (addr-of status))))
+                                 (as &i64 &buf-len)
+                                 (as &i32 &status)))
       ; The macro run follows the declaration run for the same header, which has
       ; already said this.
       (when (and (= status 0) (= dump-macros 0))
@@ -1534,7 +1534,7 @@
       (when (= dump-macros 0) (cheader-preprocess-failed header-path with-target))
       (set! buf null)
       (set! buf-len 0))
-    (when (= buf null) (set! (deref out-len) 0))
+    (when (= buf null) (set! @out-len 0))
     (let (n:ref:Node (new Node))
       (set! (n 'kind) NODE-STR)
       (set! (n 'line) dump-macros)
@@ -1543,7 +1543,7 @@
       (set! (n 'car) buf)
       (set! (n 'cdr) g-cheader-cache)
       (set! g-cheader-cache (as raw:Node n)))
-    (set! (deref out-len) buf-len)
+    (set! @out-len buf-len)
     (return buf)))
 
 ; Process a C header file: run clang -E, parse function declarations.
@@ -1552,8 +1552,8 @@
 ; LP64 -> 8, ILP32 -> 4, LLP64 (Windows) -> 4. `long long` is always 8.
 ; C4: `<= 4`, not `= 4` — AVR is a 2-byte-pointer target whose `long` is 4.
 (defn target-long-size ():i32
-  (when (<= ((as ptr:Target g-target) 'ptr-size) 4) (return 4))
-  (when (strview-contains (symbol-as-view ((as ptr:Target g-target) 'triple))
+  (when (<= ((as &Target g-target) 'ptr-size) 4) (return 4))
+  (when (strview-contains (symbol-as-view ((as &Target g-target) 'triple))
                           "windows")
     (return 4))
   (return 8))
@@ -1562,7 +1562,7 @@
 ; target the compiler registers a backend for; also the width clang gives a C
 ; enum (verified against `clang --target=avr`, which does NOT short-enum).
 (defn c-int-type (is-unsigned:i32):(raw Type)
-  (when (= ((as ptr:Target g-target) 'ptr-size) 2)
+  (when (= ((as &Target g-target) 'ptr-size) 2)
     (if (!= is-unsigned 0) (return ty-ui16) (return ty-i16)))
   (if (!= is-unsigned 0) (return ty-ui32) (return ty-i32)))
 
@@ -1589,13 +1589,13 @@
       (set! (sd 'is-union) 1)
       (conj g-pending-unions sd))
     (do
-      (emit-struct-type-line (addr-of g-type-stream) (as raw:StructDef sd))
+      (emit-struct-type-line &g-type-stream (as raw:StructDef sd))
       ; W3c: pending-union-deps-ready consults this before writing a queued union
       ; whose field names this struct, and the cheader path writes its
       ; `%X = type {…}` line directly rather than through emit-struct-ir-type —
       ; so it has to record the write itself. Without it a C union with a struct
       ; member (SDL's `SDL_WindowShapeParams`) deferred on every drain.
-      (sdef-note-emitted (as raw:StructDef sd) (addr-of g-type-stream)))))
+      (sdef-note-emitted (as raw:StructDef sd) &g-type-stream))))
 
 ; Stage 15 W3a: make `dst` share `src`'s layout and write `dst`'s own LLVM type
 ; definition. Used for a `typedef struct Tag Name;` alias entry (which is a
@@ -1616,17 +1616,17 @@
       (set! (dst 'is-union) 1)
       (conj g-pending-unions dst))
     (do
-      (emit-struct-type-line (addr-of g-type-stream) (as raw:StructDef dst))
+      (emit-struct-type-line &g-type-stream (as raw:StructDef dst))
       ; W3c: see cheader-struct-define — the alias's definition is now in this
       ; module's type buffer, so a queued union naming it must count it as ready.
-      (sdef-note-emitted (as raw:StructDef dst) (addr-of g-type-stream)))))
+      (sdef-note-emitted (as raw:StructDef dst) &g-type-stream))))
 
 ; Stage 15 W3a: propagate a just-upgraded tag's layout to every
 ; `typedef struct Tag Name;` alias that was registered while Tag was still
 ; opaque. `alias-of` is the only link between the two registry entries.
 (defn struct-upgrade-aliases (tag:ptr:StructDef):void
   (dotimes (i (unsafe/cast i32 (count g-structs)))
-    (let (a:ptr:StructDef (as ptr:StructDef (invoke g-structs i:usize)))
+    (let (a:ptr:StructDef (as &StructDef (invoke g-structs i:usize)))
       (when (and (= (as ptr (a 'alias-of)) (as ptr tag)) (!= (a 'opaque) 0))
         (cheader-adopt-shape a tag)))))
 
@@ -1669,7 +1669,7 @@
 (defn c-cexpr-type-ahead (buf:ptr pos:i64 len:i64):i32
   (let (p:i64 (c-skip-ws buf pos len)
         e:i64 0
-        tok:Symbol (c-read-ident buf p len (as ptr:i64 (addr-of e))))
+        tok:Symbol (c-read-ident buf p len (as &i64 &e)))
     (when (= (symbol-len tok) 0) (return 0))
     (let ((specs (ref (HashSet StrView)))
           #{"void" "char" "short" "int" "long" "float" "double"
@@ -1709,10 +1709,10 @@
               (set! v (+ (* v base) (as i64 d)))
               (set! p (+ p 1))
               (set! more 1)))))
-      (when (= p start) (set! (deref ok) 0))
+      (when (= p start) (set! @ok 0))
       ; A decimal literal that does not fit i64 is not a value. Hex and octal are
       ; bit patterns, so `0xffffffffffffffff` keeps wrapping to -1.
-      (when (and (!= over 0) (= base 10)) (set! (deref ok) 0)))
+      (when (and (!= over 0) (= base 10)) (set! @ok 0)))
     (let (more:i32 1)
       (while (!= more 0)
         (set! more 0)
@@ -1721,7 +1721,7 @@
             (when (or (or (= c 117) (= c 85)) (or (= c 108) (= c 76)))
               (set! p (+ p 1))
               (set! more 1))))))
-    (set! (deref out-end) p)
+    (set! @out-end p)
     (return v)))
 
 ; `sizeof (<type>)`, with `pos` just past the `(`.
@@ -1733,24 +1733,24 @@
         ty:ptr null
         n:i64 0)
     (set! g-cheader-unrep 0)
-    (set! ty (c-parse-type buf pos len (as ptr:i64 (addr-of te))))
+    (set! ty (c-parse-type buf pos len (as &i64 &te)))
     ; An unresolvable name comes back as `ptr` with the flag raised, so folding
     ; its size here would be exactly the silent wrong answer L1/L2 remove.
-    (when (or (= ty null) (!= g-cheader-unrep 0)) (set! (deref ok) 0) (set! ty null))
+    (when (or (= ty null) (!= g-cheader-unrep 0)) (set! @ok 0) (set! ty null))
     (set! g-cheader-unrep save-unrep)
     (set! g-cheader-unrep-why save-why)
     (set! g-cheader-unrep-quiet save-quiet)
     (set! te (c-skip-body-ws buf te len))
     (if (and (< te len) (= (cstr-byte-at buf te) 41))
       (set! te (+ te 1))
-      (set! (deref ok) 0))
-    (set! (deref out-end) te)
+      (set! @ok 0))
+    (set! @out-end te)
     (when (!= ty null) (set! n (as i64 (abi-sizeof ty))))
     (return n)))
 
 (defn c-cexpr-primary (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
   (let (p:i64 (c-skip-body-ws buf pos len))
-    (when (>= p len) (set! (deref ok) 0) (set! (deref out-end) p) (return 0))
+    (when (>= p len) (set! @ok 0) (set! @out-end p) (return 0))
     (let (c:i32 (cstr-byte-at buf p))
       (when (!= (isdigit c) 0)
         (return (c-cexpr-number buf p len out-end ok)))
@@ -1760,15 +1760,15 @@
         (when (!= (c-cexpr-type-ahead buf (+ p 1) len) 0)
           (return (c-cexpr-unary buf (c-skip-parens buf p len) len out-end ok)))
         (let (e:i64 0
-              v:i64 (c-cexpr-top buf (+ p 1) len (as ptr:i64 (addr-of e)) ok))
+              v:i64 (c-cexpr-top buf (+ p 1) len (as &i64 &e) ok))
           (set! e (c-skip-body-ws buf e len))
           (if (and (< e len) (= (cstr-byte-at buf e) 41))
             (set! e (+ e 1))
-            (set! (deref ok) 0))
-          (set! (deref out-end) e)
+            (set! @ok 0))
+          (set! @out-end e)
           (return v)))
       (let (e:i64 0
-            tok:Symbol (c-read-ident buf p len (as ptr:i64 (addr-of e))))
+            tok:Symbol (c-read-ident buf p len (as &i64 &e)))
         (when (= tok "sizeof")
           (let (q:i64 (c-skip-body-ws buf e len))
             (when (and (< q len) (= (cstr-byte-at buf q) 40))
@@ -1779,16 +1779,16 @@
         ; wrong answer rather than a better one.
         (when (!= g-cmacro-folding 0)
           (let (mv:i64 0)
-            (when (!= (cmacro-value tok (as ptr:i64 (addr-of mv))) 0)
-              (set! (deref out-end) e)
+            (when (!= (cmacro-value tok (as &i64 &mv)) 0)
+              (set! @out-end e)
               (return mv)))))
-      (set! (deref ok) 0)
-      (set! (deref out-end) p)
+      (set! @ok 0)
+      (set! @out-end p)
       (return 0))))
 
 (defn c-cexpr-unary (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
   (let (p:i64 (c-skip-body-ws buf pos len))
-    (when (>= p len) (set! (deref ok) 0) (set! (deref out-end) p) (return 0))
+    (when (>= p len) (set! @ok 0) (set! @out-end p) (return 0))
     (let (c:i32 (cstr-byte-at buf p))
       (when (= c 43) (return (c-cexpr-unary buf (+ p 1) len out-end ok)))
       (when (= c 45)
@@ -1797,7 +1797,7 @@
 
 (defn c-cexpr-mul (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
   (let (e:i64 0
-        v:i64 (c-cexpr-unary buf pos len (as ptr:i64 (addr-of e)) ok)
+        v:i64 (c-cexpr-unary buf pos len (as &i64 &e) ok)
         more:i32 1)
     (while (!= more 0)
       (set! more 0)
@@ -1806,21 +1806,21 @@
           (let (c:i32 (cstr-byte-at buf p))
             (when (or (= c 42) (or (= c 47) (= c 37)))
               (let (e2:i64 0
-                    r:i64 (c-cexpr-unary buf (+ p 1) len (as ptr:i64 (addr-of e2)) ok))
+                    r:i64 (c-cexpr-unary buf (+ p 1) len (as &i64 &e2) ok))
                 ; Executing the division would SIGFPE the compiler itself.
-                (when (and (!= c 42) (= r 0)) (set! (deref ok) 0) (set! r 1))
+                (when (and (!= c 42) (= r 0)) (set! @ok 0) (set! r 1))
                 (cond
                   (= c 42) (set! v (* v r))
                   (= c 47) (set! v (/ v r))
                   true     (set! v (% v r)))
                 (set! e e2)
                 (set! more 1)))))))
-    (set! (deref out-end) e)
+    (set! @out-end e)
     (return v)))
 
 (defn c-cexpr-add (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
   (let (e:i64 0
-        v:i64 (c-cexpr-mul buf pos len (as ptr:i64 (addr-of e)) ok)
+        v:i64 (c-cexpr-mul buf pos len (as &i64 &e) ok)
         more:i32 1)
     (while (!= more 0)
       (set! more 0)
@@ -1829,16 +1829,16 @@
           (let (c:i32 (cstr-byte-at buf p))
             (when (or (= c 43) (= c 45))
               (let (e2:i64 0
-                    r:i64 (c-cexpr-mul buf (+ p 1) len (as ptr:i64 (addr-of e2)) ok))
+                    r:i64 (c-cexpr-mul buf (+ p 1) len (as &i64 &e2) ok))
                 (if (= c 43) (set! v (+ v r)) (set! v (- v r)))
                 (set! e e2)
                 (set! more 1)))))))
-    (set! (deref out-end) e)
+    (set! @out-end e)
     (return v)))
 
 (defn c-cexpr-shift (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
   (let (e:i64 0
-        v:i64 (c-cexpr-add buf pos len (as ptr:i64 (addr-of e)) ok)
+        v:i64 (c-cexpr-add buf pos len (as &i64 &e) ok)
         more:i32 1)
     (while (!= more 0)
       (set! more 0)
@@ -1847,13 +1847,13 @@
           (let (c:i32 (cstr-byte-at buf p))
             (when (and (or (= c 60) (= c 62)) (= (cstr-byte-at buf (+ p 1)) c))
               (let (e2:i64 0
-                    r:i64 (c-cexpr-add buf (+ p 2) len (as ptr:i64 (addr-of e2)) ok))
+                    r:i64 (c-cexpr-add buf (+ p 2) len (as &i64 &e2) ok))
                 ; A count outside [0,64) is poison, not a value.
-                (when (or (< r 0) (>= r 64)) (set! (deref ok) 0) (set! r 0))
+                (when (or (< r 0) (>= r 64)) (set! @ok 0) (set! r 0))
                 (if (= c 60) (set! v (bit-shl v r)) (set! v (bit-shr v r)))
                 (set! e e2)
                 (set! more 1)))))))
-    (set! (deref out-end) e)
+    (set! @out-end e)
     (return v)))
 
 ; C's three bitwise levels, `&` tightest. Added for the macro fold
@@ -1861,7 +1861,7 @@
 ; Each refuses the doubled form, or `a && b` would fold as `a & (&b)`.
 (defn c-cexpr-bitand (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
   (let (e:i64 0
-        v:i64 (c-cexpr-shift buf pos len (as ptr:i64 (addr-of e)) ok)
+        v:i64 (c-cexpr-shift buf pos len (as &i64 &e) ok)
         more:i32 1)
     (while (!= more 0)
       (set! more 0)
@@ -1869,32 +1869,32 @@
         (when (and (< p len) (= (cstr-byte-at buf p) 38))
           (when (or (>= (+ p 1) len) (!= (cstr-byte-at buf (+ p 1)) 38))
             (let (e2:i64 0
-                  r:i64 (c-cexpr-shift buf (+ p 1) len (as ptr:i64 (addr-of e2)) ok))
+                  r:i64 (c-cexpr-shift buf (+ p 1) len (as &i64 &e2) ok))
               (set! v (bit-and v r))
               (set! e e2)
               (set! more 1))))))
-    (set! (deref out-end) e)
+    (set! @out-end e)
     (return v)))
 
 (defn c-cexpr-bitxor (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
   (let (e:i64 0
-        v:i64 (c-cexpr-bitand buf pos len (as ptr:i64 (addr-of e)) ok)
+        v:i64 (c-cexpr-bitand buf pos len (as &i64 &e) ok)
         more:i32 1)
     (while (!= more 0)
       (set! more 0)
       (let (p:i64 (c-skip-body-ws buf e len))
         (when (and (< p len) (= (cstr-byte-at buf p) 94))
           (let (e2:i64 0
-                r:i64 (c-cexpr-bitand buf (+ p 1) len (as ptr:i64 (addr-of e2)) ok))
+                r:i64 (c-cexpr-bitand buf (+ p 1) len (as &i64 &e2) ok))
             (set! v (bit-xor v r))
             (set! e e2)
             (set! more 1)))))
-    (set! (deref out-end) e)
+    (set! @out-end e)
     (return v)))
 
 (defn c-cexpr-bitor (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
   (let (e:i64 0
-        v:i64 (c-cexpr-bitxor buf pos len (as ptr:i64 (addr-of e)) ok)
+        v:i64 (c-cexpr-bitxor buf pos len (as &i64 &e) ok)
         more:i32 1)
     (while (!= more 0)
       (set! more 0)
@@ -1902,11 +1902,11 @@
         (when (and (< p len) (= (cstr-byte-at buf p) 124))
           (when (or (>= (+ p 1) len) (!= (cstr-byte-at buf (+ p 1)) 124))
             (let (e2:i64 0
-                  r:i64 (c-cexpr-bitxor buf (+ p 1) len (as ptr:i64 (addr-of e2)) ok))
+                  r:i64 (c-cexpr-bitxor buf (+ p 1) len (as &i64 &e2) ok))
               (set! v (bit-or v r))
               (set! e e2)
               (set! more 1))))))
-    (set! (deref out-end) e)
+    (set! @out-end e)
     (return v)))
 
 ; The evaluator's entry point. Only the macro fold takes the bitwise levels:
@@ -1920,14 +1920,14 @@
 ; for anything that does not fold to a positive i32 count.
 (defn c-array-extent (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i32
   (let (e:i64 0
-        v:i64 (c-cexpr-shift buf (+ pos 1) len (as ptr:i64 (addr-of e)) ok))
+        v:i64 (c-cexpr-shift buf (+ pos 1) len (as &i64 &e) ok))
     (set! e (c-skip-body-ws buf e len))
     (if (and (< e len) (= (cstr-byte-at buf e) 93))
       (set! e (+ e 1))
-      (set! (deref ok) 0))
-    (set! (deref out-end) e)
+      (set! @ok 0))
+    (set! @out-end e)
     ; The clamp above is what makes the narrowing exact.
-    (when (or (< v 1) (> v 2147483647)) (set! (deref ok) 0) (set! v 1))
+    (when (or (< v 1) (> v 2147483647)) (set! @ok 0) (set! v 1))
     (return (unsafe/cast i32 v))))
 
 ; C1a: `[]` with no extent. In member position that is C99's flexible array
@@ -1937,7 +1937,7 @@
   (let (p:i64 (c-skip-body-ws buf (+ pos 1) len))
     (when (>= p len) (return 0))
     (when (!= (cstr-byte-at buf p) 93) (return 0))
-    (set! (deref out-end) (+ p 1))
+    (set! @out-end (+ p 1))
     (return 1)))
 
 ; Wrap `elem` in the `[…]` extents at `pos`, or return `elem` unchanged when
@@ -1953,24 +1953,24 @@
       (let (ee:i64 0
             n:i32 0
             flex:i32 (if (and (= nd 0) (!= allow-flex 0))
-                       (c-flex-extent-here buf p len (as ptr:i64 (addr-of ee)))
+                       (c-flex-extent-here buf p len (as &i64 &ee))
                        0))
         ; -1, not 0: 0 is the prescan's provisional-length marker (type-to-ir).
         (if (!= flex 0)
           (set! n -1)
-          (set! n (c-array-extent buf p len (as ptr:i64 (addr-of ee))
-                                  (as ptr:i32 (addr-of ok)))))
+          (set! n (c-array-extent buf p len (as &i64 &ee)
+                                  (as &i32 &ok))))
         (when (>= nd 8) (set! ok 0))
         (when (!= ok 0)
-          (set! (aref (as ptr:i32 dims) nd) n)
+          (set! (aref (as &i32 dims) nd) n)
           (inc! nd))
         (set! p (c-skip-body-ws buf ee len))))
-    (set! (deref out-end) p)
+    (set! @out-end p)
     (when (= ok 0) (return null))
     (let (t:ptr elem
           k:i32 (- nd 1))
       (while (>= k 0)
-        (set! t (as ptr (array-type t (aref (as ptr:i32 dims) k))))
+        (set! t (as ptr (array-type t (aref (as &i32 dims) k))))
         (set! k (- k 1)))
       (return t))))
 
@@ -1980,7 +1980,7 @@
   (when (>= pos len) (return 0))
   (when (!= (cstr-byte-at buf pos) 59) (return 0))
   (when (= fty null) (return 0))
-  (let (k:i32 (-> fty (unsafe/cast ptr:Type _) (_ 'kind)))
+  (let (k:i32 (-> fty (unsafe/cast &Type _) (_ 'kind)))
     (return (if (or (= k TY-STRUCT) (= k TY-UNION)) 1 0))))
 
 ; Parse a C struct/union body `{ field; field; ... }` into a StructDef.
@@ -1994,7 +1994,7 @@
   (let (decl-line:i32 (cheader-line-at buf pos))
   ; Expect '{' at pos.
   (when (or (>= pos len) (!= (cstr-byte-at buf pos) 123))
-    (set! (deref out-end) pos) (return null))
+    (set! @out-end pos) (return null))
   ; Pre-scan: locate the matching '}' so out-end is set ONCE here.
   ; All failure paths can simply `return null` and the caller's pos is
   ; correctly positioned past the body.
@@ -2006,7 +2006,7 @@
       (when (> depth 0)
         (set! body-end (+ body-end 1))))
     (when (< body-end len) (set! body-end (+ body-end 1)))
-    (set! (deref out-end) body-end))
+    (set! @out-end body-end))
   (set! pos (+ pos 1))
   (let (max-fields:i32 64
         fnames:ptr (arena-alloc (* 64 8))
@@ -2061,7 +2061,7 @@
         (if (= more 0)
           (do
             (set! spec-start pos)
-            (set! fty (c-parse-type buf pos len (as ptr:i64 (addr-of te))))
+            (set! fty (c-parse-type buf pos len (as &i64 &te)))
             (set! base-ty fty)
             (when (!= (c-span-has-star buf spec-start te) 0) (set! base-ty null)))
           ; Continuing `T a, *b;`: the specifiers are the previous declarator's,
@@ -2085,8 +2085,8 @@
           (let (fe:i64 0
                 fpn:Symbol (symbol-none)
                 ft:ptr (c-parse-fnptr-decl buf pos len fty
-                                           (as ptr:i64 (addr-of fe))
-                                           (as ptr:Symbol (addr-of fpn))))
+                                           (as &i64 &fe)
+                                           (as &Symbol &fpn)))
             (set! pos fe)
             ; A function pointer is pointer-sized whichever way this went, so
             ; the layout is safe even when the inner types were not parseable.
@@ -2097,7 +2097,7 @@
               (set! fname-done 1)))
           (set! pos (c-skip-ws buf pos len))))
       (when (and (= done 0) (= fname-done 0))
-        (set! fname (c-read-ident buf pos len (as ptr:i64 (addr-of ne))))
+        (set! fname (c-read-ident buf pos len (as &i64 &ne)))
         (when (= (symbol-len fname) 0)
           ; BF-4: `unsigned :3;` and `unsigned :0;` have no declarator at all.
           ; They still occupy (or close) a storage unit, so they must become
@@ -2122,7 +2122,7 @@
         ; L2b/L2c: `[N]` declarators. A member's array type does not decay.
         (when (and (< pos len) (= (cstr-byte-at buf pos) 91))
           (let (ae:i64 0
-                at:ptr (c-array-declarator buf fty pos len (as ptr:i64 (addr-of ae)) 1))
+                at:ptr (c-array-declarator buf fty pos len (as &i64 &ae) 1))
             (set! pos ae)
             (if (= at null)
               (do (set! bad 1) (set! done 1))
@@ -2149,8 +2149,8 @@
         (when (and (= done 0) (< pos len) (!= (cstr-byte-at buf pos) 59))
           (let (ae2:i64 0
                 a:i32 0)
-            (c-read-attributes buf pos len (as ptr:i64 (addr-of ae2))
-                               (as ptr:i32 (addr-of a)))
+            (c-read-attributes buf pos len (as &i64 &ae2)
+                               (as &i32 &a))
             (when (!= ae2 pos)
               (set! pos (c-skip-body-ws buf ae2 len))
               (if (< a 0)
@@ -2165,10 +2165,10 @@
       (when (= done 0)
         (when (>= nfields max-fields) (set! bad 1) (set! done 1)))
       (when (= done 0)
-        (set! (aref (as ptr:Symbol fnames) nfields) fname)
-        (set! (aref (as ptr:ptr ftypes) nfields) fty)
-        (set! (aref (as ptr:i32 faligns) nfields) falign)
-        (set! (aref (as ptr:i32 fbits) nfields) fbit)
+        (set! (aref (as &Symbol fnames) nfields) fname)
+        (set! (aref (as &ptr ftypes) nfields) fty)
+        (set! (aref (as &i32 faligns) nfields) falign)
+        (set! (aref (as &i32 fbits) nfields) fbit)
         (inc! nfields)
         (set! pos (+ pos 1))))
     ; Every exit below this point is covered: nothing after the loop parses a
@@ -2199,7 +2199,7 @@
     ; StructDef*, so every `ptr:Tag` Type already handed out gains the layout too.
     (let (existing:ptr (lookup-struct tag-name))
       (when (!= existing null)
-        (let (esd:ptr:StructDef (as ptr:StructDef existing))
+        (let (esd:ptr:StructDef (as &StructDef existing))
           (when (= (esd 'opaque) 0) (return existing))
           (cheader-struct-define esd fnames ftypes faligns fbits nfields is-union packed align)
           (struct-upgrade-aliases esd)
@@ -2222,7 +2222,7 @@
                                 is-typedef:i32 tag:Symbol tag-line:i32
                                 sd:ptr):i64
   (let (ne:i64 0
-        dn:Symbol (c-read-ident buf pos len (as ptr:i64 (addr-of ne)))
+        dn:Symbol (c-read-ident buf pos len (as &i64 &ne))
         ab:i64 0)
     (when (= (symbol-len dn) 0) (return pos))
     (set! ab (c-skip-ws buf ne len))
@@ -2247,16 +2247,16 @@
           (when (not (symbol-none? tag)) (set! tsd (lookup-struct tag)))
           (when (= tsd null) (set! tsd (lookup-struct (symbol-intern (fstr "__carr." dn)))))
           (when (and (!= tsd null) (!= sd null))
-            (let (t2:ptr:StructDef (as ptr:StructDef tsd))
+            (let (t2:ptr:StructDef (as &StructDef tsd))
               (when (!= (t2 'opaque) 0)
-                (cheader-adopt-shape t2 (as ptr:StructDef sd))
+                (cheader-adopt-shape t2 (as &StructDef sd))
                 (struct-upgrade-aliases t2))))
           (when (!= tsd null) (set! esd tsd)))
         (set! at (c-array-declarator buf
                    (if (!= esd null)
-                     (as ptr (type-for-sdef (as ptr:StructDef esd)))
+                     (as ptr (type-for-sdef (as &StructDef esd)))
                      ty-ptr)
-                   ab len (as ptr:i64 (addr-of ae)) 0))
+                   ab len (as &i64 &ae) 0))
         (when (and (!= is-typedef 0) (!= sd null))
           (c-typedef-record dn at g-cheader-file tag-line))
         (return ae)))
@@ -2270,10 +2270,10 @@
             (set! (alias 'alias-of) (as raw:StructDef sd))
             (set! (alias 'src-file) g-cheader-file)
             (set! (alias 'src-line) tag-line)
-            (cheader-adopt-shape alias (as ptr:StructDef sd)))
-          (let (psd:ptr:StructDef (as ptr:StructDef prior))
+            (cheader-adopt-shape alias (as &StructDef sd)))
+          (let (psd:ptr:StructDef (as &StructDef prior))
             (when (!= (psd 'opaque) 0)
-              (cheader-adopt-shape psd (as ptr:StructDef sd)))))))
+              (cheader-adopt-shape psd (as &StructDef sd)))))))
     (return ne)))
 
 ; Parse a top-level `struct Tag {...};`, `union Tag {...};`, or
@@ -2283,7 +2283,7 @@
   (let (is-typedef:i32 0
         is-union:i32 0
         te:i64 0
-        tok:Symbol (c-read-ident buf pos len (as ptr:i64 (addr-of te))))
+        tok:Symbol (c-read-ident buf pos len (as &i64 &te)))
     (cond
       (= tok "typedef")
         (do (set! is-typedef 1) (set! pos te))
@@ -2292,15 +2292,15 @@
       (= tok "union")
         (do (set! is-union 1) (set! pos te))
       true
-        (do (set! (deref out-end) pos) (return 0)))
+        (do (set! @out-end pos) (return 0)))
     (when (!= is-typedef 0)
       (set! pos (c-skip-ws buf pos len))
       (let (te2:i64 0
-            t2:Symbol (c-read-ident buf pos len (as ptr:i64 (addr-of te2))))
+            t2:Symbol (c-read-ident buf pos len (as &i64 &te2)))
         (cond
           (= t2 "struct") 0
           (= t2 "union" ) (set! is-union 1)
-          true (do (set! (deref out-end) pos) (return 0)))
+          true (do (set! @out-end pos) (return 0)))
         (set! pos te2)))
     ; After 'struct': an optional attribute run, then optional tag, then body.
     ; PK-2: the run is read here rather than skipped — it is one of the three
@@ -2309,13 +2309,13 @@
     ; before c-parse-struct-body writes the type line).
     (let (lead-end:i64 0
           lead-align:i32 0
-          lead-packed:i32 (c-read-attributes buf pos len (as ptr:i64 (addr-of lead-end))
-                                             (as ptr:i32 (addr-of lead-align))))
+          lead-packed:i32 (c-read-attributes buf pos len (as &i64 &lead-end)
+                                             (as &i32 &lead-align)))
     (set! pos lead-end)
     (let (tag:Symbol (symbol-none)
           tag-end:i64 0
           tag-line:i32 (cheader-line-at buf pos)
-          maybe-tag:Symbol (c-read-ident buf pos len (as ptr:i64 (addr-of tag-end))))
+          maybe-tag:Symbol (c-read-ident buf pos len (as &i64 &tag-end)))
       (when (!= (symbol-len maybe-tag) 0)
         (set! tag maybe-tag)
         (set! pos tag-end)
@@ -2328,10 +2328,10 @@
       ; `ptr:Foo` resolves; a by-value use is refused later with this header:line.
       (when (or (>= pos len) (!= (cstr-byte-at buf pos) 123))
         (when (symbol-none? tag)
-          (set! (deref out-end) pos) (return 0))
+          (set! @out-end pos) (return 0))
         (let (tag-sd:ptr (cheader-register-opaque tag tag-line is-union null))
           (when (>= pos len)
-            (set! (deref out-end) pos) (return 0))
+            (set! @out-end pos) (return 0))
           (if (!= is-typedef 0)
             ; `typedef struct Foo Bar;` — Bar is a second opaque entry sharing
             ; Foo's (future) layout through alias-of. When Bar spells the same
@@ -2339,15 +2339,15 @@
             ; idiom) cheader-register-opaque finds the tag entry and returns it
             ; untouched.
             (let (ne:i64 0
-                  tname:Symbol (c-read-ident buf pos len (as ptr:i64 (addr-of ne))))
+                  tname:Symbol (c-read-ident buf pos len (as &i64 &ne)))
               (when (= (symbol-len tname) 0)
                 ; Not a plain identifier — `*Bar`, `(*fp)(…)`, an array
                 ; declarator. The tag is registered; the declaration itself is
                 ; a shape we do not model, so fall back to the caller's skip.
-                (set! (deref out-end) pos) (return 0))
+                (set! @out-end pos) (return 0))
               (set! pos ne)
               (let (ab:i64 (c-skip-ws buf ne len)
-                    tsd:ptr:StructDef (as ptr:StructDef tag-sd))
+                    tsd:ptr:StructDef (as &StructDef tag-sd))
                 ; `typedef struct Foo Bar[N];` — Bar names an ARRAY of Foo, not a
                 ; second name for Foo, so it belongs in the typedef table (D4);
                 ; the StructDef alias is what discarded the extent. With no
@@ -2358,7 +2358,7 @@
                          (and (= (cstr-byte-at buf ab) 91) (= (tsd 'opaque) 0)))
                   (let (ae:i64 0
                         at:ptr (c-array-declarator buf (as ptr (type-for-sdef tsd))
-                                                   ab len (as ptr:i64 (addr-of ae)) 0))
+                                                   ab len (as &i64 &ae) 0))
                     (c-typedef-record tname at g-cheader-file tag-line)
                     (set! pos ae))
                   (cheader-register-opaque tname tag-line is-union
@@ -2366,18 +2366,18 @@
             ; Plain `struct Foo;`. Anything else after the tag (a `*` declarator,
             ; a variable name, a function declarator) is not a forward declaration.
             (when (!= (cstr-byte-at buf pos) 59)
-              (set! (deref out-end) pos) (return 0)))
+              (set! @out-end pos) (return 0)))
           (set! pos (c-skip-ws buf pos len))
           (when (and (< pos len) (= (cstr-byte-at buf pos) 59))
             (set! pos (+ pos 1)))
-          (set! (deref out-end) pos)
+          (set! @out-end pos)
           (return 1)))
       (let (body-end:i64 0
             tail-align:i32 0
             tail-packed:i32 (c-trailing-packed buf pos len
-                                               (as ptr:i32 (addr-of tail-align)))
+                                               (as &i32 &tail-align))
             sd:ptr (c-parse-struct-body buf pos len
-                                        (as ptr:i64 (addr-of body-end))
+                                        (as &i64 &body-end)
                                         (if (!= is-typedef 0) (symbol-none) tag) is-union
                                         (if (!= lead-packed 0) 1 tail-packed)
                                         (if (!= lead-align 0) lead-align tail-align)))
@@ -2389,9 +2389,9 @@
         (when (and (!= sd null) (!= is-typedef 0) (not (symbol-none? tag)))
           (let (tsd:ptr (lookup-struct tag))
             (when (!= tsd null)
-              (let (tsd2:ptr:StructDef (as ptr:StructDef tsd))
+              (let (tsd2:ptr:StructDef (as &StructDef tsd))
                 (when (!= (tsd2 'opaque) 0)
-                  (cheader-adopt-shape tsd2 (as ptr:StructDef sd))
+                  (cheader-adopt-shape tsd2 (as &StructDef sd))
                   (struct-upgrade-aliases tsd2))))))
         ; For typedef, the typedef name comes after the body and may
         ; differ from the inner tag. Register a separate StructDef
@@ -2426,7 +2426,7 @@
         ; Consume trailing semicolon.
         (when (and (< pos len) (= (cstr-byte-at buf pos) 59))
           (set! pos (+ pos 1)))
-        (set! (deref out-end) pos)
+        (set! @out-end pos)
         (return 1))))))
 
 ; Stage 15 W3c (cheader.md §1.4): record a NON-aggregate top-level typedef —
@@ -2445,8 +2445,8 @@
 ; gets a located skip naming the type, instead of the pre-W3c silent `ptr`.
 (defn c-parse-typedef-decl (buf:ptr pos:i64 len:i64 out-end:ptr:i64):i32
   (let (te:i64 0
-        tok:Symbol (c-read-ident buf pos len (as ptr:i64 (addr-of te))))
-    (when (!= tok "typedef") (set! (deref out-end) pos) (return 0))
+        tok:Symbol (c-read-ident buf pos len (as &i64 &te)))
+    (when (!= tok "typedef") (set! @out-end pos) (return 0))
     (let (dline:i32 (cheader-line-at buf pos)
           save-unrep:i32 g-cheader-unrep
           save-why:StrView g-cheader-unrep-why
@@ -2460,7 +2460,7 @@
       ; so save/restore rather than let this parse leak a verdict sideways.
       (set! g-cheader-unrep 0)
       (set! base (c-parse-type buf (c-skip-ws buf te len) len
-                               (as ptr:i64 (addr-of tend))))
+                               (as &i64 &tend)))
       (when (!= g-cheader-unrep 0) (set! bad 1))
       (set! g-cheader-unrep save-unrep)
       (set! g-cheader-unrep-why save-why)
@@ -2481,8 +2481,8 @@
           (let (fe:i64 0
                 fpn:Symbol (symbol-none)
                 ft:ptr (c-parse-fnptr-decl buf p len base
-                                           (as ptr:i64 (addr-of fe))
-                                           (as ptr:Symbol (addr-of fpn))))
+                                           (as &i64 &fe)
+                                           (as &Symbol &fpn)))
             (set! p fe)
             (when (not (symbol-none? fpn))
               (set! name fpn)
@@ -2492,11 +2492,11 @@
               (set! bad 0))))
         (when (symbol-none? name)
           (let (ne:i64 0
-                dn:Symbol (c-read-ident buf p len (as ptr:i64 (addr-of ne))))
+                dn:Symbol (c-read-ident buf p len (as &i64 &ne)))
             ; No declarator identifier — a shape not modelled at all. Decline, so
             ; nothing is recorded under a name that is not the declarator's.
             (when (= (symbol-len dn) 0)
-              (set! (deref out-end) pos) (return 0))
+              (set! @out-end pos) (return 0))
             (set! name dn)
             (set! p ne)))
         (set! p (c-skip-ws buf p len))
@@ -2505,7 +2505,7 @@
         ; every struct whose member is one — come out at the C size.
         (when (and (< p len) (= (cstr-byte-at buf p) 91))
           (let (ae:i64 0
-                at:ptr (c-array-declarator buf base p len (as ptr:i64 (addr-of ae)) 0))
+                at:ptr (c-array-declarator buf base p len (as &i64 &ae) 0))
             (set! p ae)
             (if (or (= at null) (!= bad 0))
               (set! bad 1)
@@ -2525,7 +2525,7 @@
               (inc! ns)
               (set! p (c-skip-type-quals buf (+ p 1) len)))
             (when (> ns 0) (set! dty ty-ptr) (set! dbad 0))
-            (set! dn2 (c-read-ident buf p len (as ptr:i64 (addr-of ne2))))
+            (set! dn2 (c-read-ident buf p len (as &i64 &ne2)))
             (if (= (symbol-len dn2) 0)
               (set! p len)
               (do
@@ -2535,14 +2535,14 @@
                         ; A placeholder element when the base was lost — the
                         ; extents still have to be consumed to find the `,`.
                         at2:ptr (c-array-declarator buf (if (!= dty null) dty ty-ptr)
-                                                    p len (as ptr:i64 (addr-of ae2)) 0))
+                                                    p len (as &i64 &ae2) 0))
                     (set! p ae2)
                     (if (or (= at2 null) (= dty null))
                       (set! dbad 1)
                       (set! dty at2))))
                 (c-typedef-record dn2 (if (!= dbad 0) null dty) g-cheader-file dline)
                 (set! p (c-skip-ws buf p len))))))
-        (set! (deref out-end) (cheader-skip-to-semi buf p len))
+        (set! @out-end (cheader-skip-to-semi buf p len))
         (return 1)))))
 
 ; ============================================================
@@ -2619,17 +2619,17 @@
 (defn cheader-scan-typedef (buf:ptr start:i64 p:i64 len:i64):i64
   (let (q:i64 (c-skip-type-quals buf p len)
         te:i64 0
-        t:Symbol (c-read-ident buf q len (as ptr:i64 (addr-of te))))
+        t:Symbol (c-read-ident buf q len (as &i64 &te)))
     (when (or (= t "struct") (= t "union"))
       (return (cheader-skip-to-semi buf p len))))
   (let (e:i64 0)
-    (when (= (c-parse-typedef-decl buf start len (as ptr:i64 (addr-of e))) 0)
+    (when (= (c-parse-typedef-decl buf start len (as &i64 &e)) 0)
       (return (cheader-skip-to-semi buf p len)))
     (return e)))
 
 (defn cheader-scan-opaque-decl (buf:ptr pos:i64 len:i64):i64
   (let (te:i64 0
-        tok:Symbol (c-read-ident buf pos len (as ptr:i64 (addr-of te)))
+        tok:Symbol (c-read-ident buf pos len (as &i64 &te))
         is-typedef:i32 0
         is-union:i32 0
         p:i64 pos)
@@ -2641,7 +2641,7 @@
       (set! is-typedef 1)
       (set! p (c-skip-ws buf p len))
       (let (te2:i64 0
-            t2:Symbol (c-read-ident buf p len (as ptr:i64 (addr-of te2))))
+            t2:Symbol (c-read-ident buf p len (as &i64 &te2)))
         (when (and (!= t2 "struct") (!= t2 "union"))
           (return (cheader-scan-typedef buf pos p len)))
         (when (= t2 "union") (set! is-union 1))
@@ -2655,7 +2655,7 @@
     (set! p (c-skip-attributes buf p len))
     (let (decl-line:i32 (cheader-line-at buf p)
           tend:i64 0
-          tag:Symbol (c-read-ident buf p len (as ptr:i64 (addr-of tend)))
+          tag:Symbol (c-read-ident buf p len (as &i64 &tend))
           has-tag:i32 0)
       (when (!= (symbol-len tag) 0)
         (set! has-tag 1)
@@ -2680,7 +2680,7 @@
                     (inc! stars)
                     (set! p (c-skip-type-quals buf (+ p 1) len)))
                   (let (ne:i64 0
-                        dname:Symbol (c-read-ident buf p len (as ptr:i64 (addr-of ne)))
+                        dname:Symbol (c-read-ident buf p len (as &i64 &ne))
                         ab:i64 0)
                     (when (!= (symbol-len dname) 0)
                       (set! ab (c-skip-ws buf ne len))
@@ -2701,11 +2701,11 @@
                           (let (ae:i64 0
                                 anchor:Symbol (if (!= has-tag 0) tag (symbol-intern (fstr "__carr." dname)))
                                 elem:ptr (as ptr (type-for-sdef
-                                                   (as ptr:StructDef
+                                                   (as &StructDef
                                                      (cheader-register-opaque anchor decl-line
                                                                               is-union null)))))
                             (c-typedef-record dname
-                              (c-array-declarator buf elem ab len (as ptr:i64 (addr-of ae)) 0)
+                              (c-array-declarator buf elem ab len (as &i64 &ae) 0)
                               g-cheader-file decl-line)
                             (set! p ae))
                         true
@@ -2723,7 +2723,7 @@
             ; non-identifier here (`*Y`, `(*fp)(…)`) is a pointer/function typedef
             ; we do not model, so only the tag is worth recording.
             (let (ne:i64 0
-                  tname:Symbol (c-read-ident buf p len (as ptr:i64 (addr-of ne)))
+                  tname:Symbol (c-read-ident buf p len (as &i64 &ne))
                   tag-sd:ptr (cheader-register-opaque tag decl-line is-union null))
               ; `typedef struct Foo Bar[N];` registers no StructDef for Bar (D4,
               ; it is an array typedef) — and this scan must stay name-for-name
@@ -2740,8 +2740,8 @@
                   (let (ae:i64 0)
                     (c-typedef-record tname
                       (c-array-declarator buf
-                        (as ptr (type-for-sdef (as ptr:StructDef tag-sd)))
-                        ab len (as ptr:i64 (addr-of ae)) 0)
+                        (as ptr (type-for-sdef (as &StructDef tag-sd)))
+                        ab len (as &i64 &ae) 0)
                       g-cheader-file decl-line))
                   (when (!= (symbol-len tname) 0)
                     (cheader-register-opaque tname decl-line is-union
@@ -2756,7 +2756,7 @@
 ; fails again (with a diagnostic) at the real import.
 (defn cheader-prescan-opaque (header-path:Symbol):void
   (let (buf-len:i64 0
-        buf:ptr (cheader-preprocess header-path (as ptr:i64 (addr-of buf-len))))
+        buf:ptr (cheader-preprocess header-path (as &i64 &buf-len)))
     (when (= buf null) (return))
     (set! g-cheader-file header-path)
     (set! g-cheader-import-header header-path)
@@ -2799,21 +2799,21 @@
   val:i64
   folded:i32)
 
-(defvar (g-cmacros (ref (Vector (ref CMacro)))) (vector-new-in (addr-of g-arena-alloc)))
-(defvar (g-cmacro-index (ref (HashMap Symbol (ref CMacro))))
-  (hashmap-new-in (addr-of g-arena-alloc)))
+(defvar (g-cmacros (ref (Vector &CMacro))) (vector-new-in &g-arena-alloc))
+(defvar (g-cmacro-index (ref (HashMap Symbol &CMacro)))
+  (hashmap-new-in &g-arena-alloc))
 ; clang's own predefines, subtracted before registration: `-include fcntl.h`
 ; dumps 739 names of which 398 are `linux`, `unix`, `__GNUC__` and friends.
 ; They stay in the fold table, since a header's macros are written in terms of
 ; them.
-(defvar (g-cmacro-baseline (ref (HashSet Symbol))) (hashset-new-in (addr-of g-arena-alloc)))
+(defvar (g-cmacro-baseline (ref (HashSet Symbol))) (hashset-new-in &g-arena-alloc))
 (defvar g-cmacro-baseline-ready:i32 0)
 (defvar g-cmacro-folding:i32 0)
 (defvar g-cmacro-buf:ptr null)
 
 (defn cheader-macro-reset ():void
-  (let (v:(ref (Vector (ref CMacro))) (vector-new-in (addr-of g-arena-alloc))
-        m:(ref (HashMap Symbol (ref CMacro))) (hashmap-new-in (addr-of g-arena-alloc)))
+  (let (v:(ref (Vector &CMacro)) (vector-new-in &g-arena-alloc)
+        m:(ref (HashMap Symbol &CMacro)) (hashmap-new-in &g-arena-alloc))
     (set! g-cmacros v)
     (set! g-cmacro-index m)))
 
@@ -2821,14 +2821,14 @@
 (defn cmacro-value (name:Symbol out:ptr:i64):i32
   (when-some (m (get g-cmacro-index name))
     (when (!= (m 'folded) 0)
-      (set! (deref out) (m 'val))
+      (set! @out (m 'val))
       (return 1)))
   (return 0))
 
 (defn cmacro-private-name? (name:Symbol):i32
   (let (sv:StrView (symbol-as-view name)
         pfx:StrView "_")
-    (when (strview-starts-with (addr-of sv) (addr-of pfx)) (return 1))
+    (when (strview-starts-with &sv &pfx) (return 1))
     (return 0)))
 
 ; `#define NAME body` on [start,line-end). A `(` immediately after NAME makes it
@@ -2837,11 +2837,11 @@
   (let (p:i64 (c-skip-ws buf start line-end))
     (when (or (>= p line-end) (!= (cstr-byte-at buf p) 35)) (return))
     (let (de:i64 0
-          d:Symbol (c-read-ident buf (+ p 1) line-end (as ptr:i64 (addr-of de))))
+          d:Symbol (c-read-ident buf (+ p 1) line-end (as &i64 &de)))
       (when (!= d "define") (return))
       (let (ne:i64 0
             name:Symbol (c-read-ident buf (c-skip-ws buf de line-end) line-end
-                                      (as ptr:i64 (addr-of ne))))
+                                      (as &i64 &ne)))
         (when (= (symbol-len name) 0) (return))
         (when (and (< ne line-end) (= (cstr-byte-at buf ne) 40)) (return))
         (let (m:ref:CMacro (new CMacro))
@@ -2876,7 +2876,7 @@
             (let (ok:i32 1
                   e:i64 0
                   v:i64 (c-cexpr-top g-cmacro-buf (m 'body-start) (m 'body-end)
-                                     (as ptr:i64 (addr-of e)) (as ptr:i32 (addr-of ok))))
+                                     (as &i64 &e) (as &i32 &ok)))
               ; The body must consume itself: `3.14159` folds its leading `3` and
               ; stops at the `.`, which would register M_PI as 3.
               (set! e (c-skip-ws g-cmacro-buf e (m 'body-end)))
@@ -2914,8 +2914,8 @@
   (let (buf-len:i64 0
         status:i32 0
         buf:ptr (cheader-run-cpp (symbol-none) (cheader-cc-target?) 1
-                                 (as ptr:i64 (addr-of buf-len))
-                                 (as ptr:i32 (addr-of status))))
+                                 (as &i64 &buf-len)
+                                 (as &i32 &status)))
     (when (or (= buf null) (!= status 0)) (return))
     (cheader-macro-reset)
     (cheader-macro-scan buf buf-len)
@@ -2930,7 +2930,7 @@
 (defn cheader-import-macros (header-path:Symbol):void
   (cheader-macro-baseline-load)
   (let (buf-len:i64 0
-        buf:ptr (cheader-preprocess-mode header-path 1 (as ptr:i64 (addr-of buf-len))))
+        buf:ptr (cheader-preprocess-mode header-path 1 (as &i64 &buf-len)))
     (when (= buf null) (return))
     (cheader-macro-reset)
     (set! g-cmacro-buf buf)
@@ -2951,7 +2951,7 @@
   ; The preprocessed text is cached by path (cheader-preprocess) — the same header
   ; is imported by many library files, and the W3a name pre-scan reads it too.
   (let (buf-len:i64 0)
-    (let (buf:ptr (cheader-preprocess header-path (as ptr:i64 (addr-of buf-len))))
+    (let (buf:ptr (cheader-preprocess header-path (as &i64 &buf-len)))
       (when (= buf null)
         (die-at line (fstr "c-include: failed to preprocess '" header-path "'")))
       ; Parse declarations
@@ -2974,7 +2974,7 @@
                   (cheader-note-linemarker buf dstart pos buf-len))
               ; Try to read an identifier to check what kind of declaration
               (let (tok-end:i64 0
-                    tok:Symbol (c-read-ident buf pos buf-len (as ptr:i64 (addr-of tok-end))))
+                    tok:Symbol (c-read-ident buf pos buf-len (as &i64 &tok-end)))
                 ; Skip typedefs, static inline functions, etc.
                 ; Process extern/implicit function declarations and top-level type declarations.
                 ; musl (Alpine ARM64) omits `extern` on function declarations, so we try
@@ -3005,7 +3005,7 @@
                     ; struct/union/typedef -> layout.
                     (let (decl-end:i64 0
                           ok:i32 (c-parse-struct-decl buf pos buf-len
-                                                      (as ptr:i64 (addr-of decl-end)) line))
+                                                      (as &i64 &decl-end) line))
                       (if (!= ok 0)
                         (set! pos decl-end)
                         ; W3c: not an aggregate declaration. A scalar / pointer /
@@ -3015,7 +3015,7 @@
                         ; skip-to-semicolon.
                         (let (td-end:i64 0
                               tdok:i32 (c-parse-typedef-decl buf pos buf-len
-                                                             (as ptr:i64 (addr-of td-end))))
+                                                             (as &i64 &td-end)))
                           (if (!= tdok 0)
                             (set! pos td-end)
                             ; W3c: a declaration whose first token is
@@ -3037,7 +3037,7 @@
                             (let (fn-end:i64 0
                                   fnok:i32 (if (= tok "typedef") 0
                                              (c-parse-func-decl buf pos buf-len
-                                               (as ptr:i64 (addr-of fn-end)) line)))
+                                               (as &i64 &fn-end) line)))
                               (if (!= fnok 0)
                                 (set! pos fn-end)
                                 (let (dstart:i64 pos)
@@ -3052,7 +3052,7 @@
                     ; bare `int foo(...)` — c-parse-type skips `extern` internally).
                     (let (decl-end:i64 0
                           ok:i32 (c-parse-func-decl buf pos buf-len
-                                                    (as ptr:i64 (addr-of decl-end)) line))
+                                                    (as &i64 &decl-end) line))
                       (if (!= ok 0)
                         (set! pos decl-end)
                         ; Not a function — skip to semicolon or next line
@@ -3221,7 +3221,7 @@
   (when (symbol-none? g-source-path) (return))
   (let (sd:?ptr:StructDef (struct-lookup-ref name))
     (when (= sd null) (return))
-    (let (f:Symbol ((as ptr:StructDef sd) 'src-file))
+    (let (f:Symbol ((as &StructDef sd) 'src-file))
       (when (symbol-none? f) (return))
       ; Only a Nucleus unit, whose header the build generates beside it by the
       ; same rule (`lib/%.h: lib/%.nuc`). A C header's opaque type is already
@@ -3294,17 +3294,17 @@
         cur:ptr g-cheader-c-includes)
     (while (!= cur null)
       (set! n (+ n 1))
-      (set! cur ((unsafe/cast ptr:Node cur) 'cdr)))
+      (set! cur ((unsafe/cast &Node cur) 'cdr)))
     (when (= n 0) (return))
     (let (arr:ptr (arena-alloc (* n (ptr-bytes)))
           i:i32 n)
       (set! cur g-cheader-c-includes)
       (while (!= cur null)
         (set! i (- i 1))
-        (set! (aref (as ptr:Symbol arr) i) ((unsafe/cast ptr:Node cur) 's))
-        (set! cur ((unsafe/cast ptr:Node cur) 'cdr)))
+        (set! (aref (as &Symbol arr) i) ((unsafe/cast &Node cur) 's))
+        (set! cur ((unsafe/cast &Node cur) 'cdr)))
       (dotimes (j n)
-        (emit (as ptr stdout) (cheader-c-include-spelling (aref (as ptr:Symbol arr) j))
+        (emit (as ptr stdout) (cheader-c-include-spelling (aref (as &Symbol arr) j))
               "\n")))))
 
 (defn cheader-emit-includes ():void
@@ -3312,18 +3312,18 @@
         cur:ptr g-cheader-includes)
     (while (!= cur null)
       (set! n (+ n 1))
-      (set! cur ((unsafe/cast ptr:Node cur) 'cdr)))
+      (set! cur ((unsafe/cast &Node cur) 'cdr)))
     (when (= n 0) (return))
     (let (arr:ptr (arena-alloc (* n (ptr-bytes)))
           i:i32 n)
       (set! cur g-cheader-includes)
       (while (!= cur null)
         (set! i (- i 1))
-        (set! (aref (as ptr:Symbol arr) i) ((unsafe/cast ptr:Node cur) 's))
-        (set! cur ((unsafe/cast ptr:Node cur) 'cdr)))
+        (set! (aref (as &Symbol arr) i) ((unsafe/cast &Node cur) 's))
+        (set! cur ((unsafe/cast &Node cur) 'cdr)))
       (dotimes (j n)
         (emit (as ptr stdout) "#include \""
-              (cheader-include-spelling (aref (as ptr:Symbol arr) j)) "\"\n")))))
+              (cheader-include-spelling (aref (as &Symbol arr) j)) "\"\n")))))
 
 ; Every builtin scalar MUST have a row here. A missing row does not fail loudly:
 ; it falls through to the "assume struct" branch below.
@@ -3387,7 +3387,7 @@
 
 (defn type-node-to-c (tn:ptr):StrView
   (when (= tn null) (return "void"))
-  (let (n:ptr:Node (unsafe/cast ptr:Node tn))
+  (let (n:ptr:Node (unsafe/cast &Node tn))
     (case (n 'kind)
       NODE-SYM
         (do
@@ -3405,9 +3405,9 @@
                 ; A colon-chain body (`ref:Pt`) needs the same split the return
                 ; and parameter positions do before it is a type NODE.
                 (when (and (= (node-kind bn) NODE-SYM)
-                           (symbol-contains-byte (-> bn (unsafe/cast ptr:Node _) (_ 's)) 58))
+                           (symbol-contains-byte (-> bn (unsafe/cast &Node _) (_ 's)) 58))
                   (set! bn (split-colon-segments
-                             (-> bn (unsafe/cast ptr:Node _) (_ 's)) (n 'line))))
+                             (-> bn (unsafe/cast &Node _) (_ 's)) (n 'line))))
                 (set! g-type-alias-depth (+ g-type-alias-depth 1))
                 (let (c:StrView (type-node-to-c bn))
                   (set! g-type-alias-depth (- g-type-alias-depth 1))
@@ -3427,32 +3427,32 @@
                 (set! g-type-alias-depth (- g-type-alias-depth 1))
                 (return c))))
           (when (and (!= head null)
-                     (and (= ((unsafe/cast ptr:Node head) 'kind) NODE-SYM)
-                          (= ((unsafe/cast ptr:Node head) 's) "ptr")))
+                     (and (= ((unsafe/cast &Node head) 'kind) NODE-SYM)
+                          (= ((unsafe/cast &Node head) 's) "ptr")))
             (when (= rest null) (return "void*"))
             (let (inner:StrView "")
-              (if (= ((unsafe/cast ptr:Node rest) 'cdr) null)
-                (set! inner (type-node-to-c ((unsafe/cast ptr:Node rest) 'car)))
+              (if (= ((unsafe/cast &Node rest) 'cdr) null)
+                (set! inner (type-node-to-c ((unsafe/cast &Node rest) 'car)))
                 (set! inner (type-node-to-c rest)))
               (return (fstr inner "*"))))
           ; Anonymous union: (union member:type ...) → inline `union { ... }`.
           (when (and (!= head null)
-                     (and (= ((unsafe/cast ptr:Node head) 'kind) NODE-SYM)
-                          (= ((unsafe/cast ptr:Node head) 's) "union")))
+                     (and (= ((unsafe/cast &Node head) 'kind) NODE-SYM)
+                          (= ((unsafe/cast &Node head) 's) "union")))
             (let ((acc String) (str-alloc (strfmt-alloc) "union { ")
                   cur:ptr rest)
               (while (!= cur null)
-                (let (member:ptr ((unsafe/cast ptr:Node cur) 'car)
+                (let (member:ptr ((unsafe/cast &Node cur) 'car)
                       mname:Symbol (symbol-none)
                       mtname:Symbol (symbol-none))
-                  (extract-name-type member (as ptr:Symbol (addr-of mname)) (as ptr:Symbol (addr-of mtname)))
-                  (let (mtnode:ptr (extract-type-node member ((unsafe/cast ptr:Node member) 'line)))
+                  (extract-name-type member (as &Symbol &mname) (as &Symbol &mtname))
+                  (let (mtnode:ptr (extract-type-node member ((unsafe/cast &Node member) 'line)))
                     ; W9 item 4: an inline union's member names are emitted here
                     ; rather than by emit-cheader-defstruct, so they need the same
                     ; sanitize its named fields get.
                     (str-into acc (type-node-to-c mtnode) " "
                               (cheader-c-ident-view mname) "; ")))
-                (set! cur ((unsafe/cast ptr:Node cur) 'cdr)))
+                (set! cur ((unsafe/cast &Node cur) 'cdr)))
               (str-into acc "}")
               (return (string-as-view acc)))))
       0)
@@ -3465,13 +3465,13 @@
 ;   - null if no type
 (defn extract-type-node (binding:(raw Node) line:i32):ptr
   (when (= binding null) (return null))
-  (let (n:ptr:Node (unsafe/cast ptr:Node binding))
+  (let (n:ptr:Node (unsafe/cast &Node binding))
     (case (n 'kind)
       NODE-SYM
         (let (tname:Symbol (symbol-none)  bname:Symbol (symbol-none))
-          (split-typed (n 's) (as ptr:Symbol (addr-of bname)) (as ptr:Symbol (addr-of tname)))
+          (split-typed (n 's) (as &Symbol &bname) (as &Symbol &tname))
           (when (symbol-none? tname) (return null))
-          (let (tn:ptr:Node (as ptr:Node (alloc-node)))
+          (let (tn:ptr:Node (as &Node (alloc-node)))
             (set! (tn 'kind) NODE-SYM)
             (set! (tn 'line) line)
             (set! (tn 's) tname)
@@ -3483,11 +3483,11 @@
           ; `(cb (fn i32) (i32 i32))` — so returning only the first element
           ; dropped the parameter list. Same rule extract-name-type applies
           ; (src/nucleusc.nuc, "legacy fn-pointer form").
-          (let (t0:ptr ((unsafe/cast ptr:Node rest) 'car))
+          (let (t0:ptr ((unsafe/cast &Node rest) 'car))
             (when (and (!= t0 null) (= (node-kind t0) NODE-CELL))
-              (let (ih:ptr ((unsafe/cast ptr:Node t0) 'car))
+              (let (ih:ptr ((unsafe/cast &Node t0) 'car))
                 (when (and (!= ih null) (= (node-kind ih) NODE-SYM)
-                           (= ((unsafe/cast ptr:Node ih) 's) "fn"))
+                           (= ((unsafe/cast &Node ih) 's) "fn"))
                   (return rest))))
             (return t0)))
       (return null))))
@@ -3496,7 +3496,7 @@
 ; (so the caller can read the element type and the extent) or null.
 (defn cheader-array-field-node (tn:(raw Node)):ptr
   (when (= tn null) (return null))
-  (let (n:ptr:Node (unsafe/cast ptr:Node tn))
+  (let (n:ptr:Node (unsafe/cast &Node tn))
     (when (!= (n 'kind) NODE-CELL) (return null))
     (when (!= (node-len (as ptr n)) 3) (return null))
     (let (hd:(raw Node) (node-at (as ptr n) 0))
@@ -3520,13 +3520,13 @@
         lnn:ptr (node-at an 2)
         lline:i32 (node-line lnn encl))
     (when (!= (const-fold-int (as raw:Node lnn)
-                              (as ptr:i64 (addr-of len))
+                              (as &i64 &len)
                               lline) 0)
       (return (fstr len)))
     ; W9 item 4: sanitized, because this extent must name the `#define`
     ; emit-cheader-defconst emits — and that one is sanitized too. A hyphenated
     ; constant would otherwise give `int32_t xs[MY-LEN];` against `#define MY_LEN`.
-    (let (ln:ptr:Node (unsafe/cast ptr:Node lnn))
+    (let (ln:ptr:Node (unsafe/cast &Node lnn))
       (when (= (ln 'kind) NODE-SYM)
         (return (cheader-c-ident-view (ln 's)))))
     (die-at lline "--emit-cheader: (array T N): length must be a literal, a named constant, or a constant expression over them")
@@ -3538,16 +3538,16 @@
 ; whether the answer IS `tn`.
 (defn cheader-fn-head-node (tn:ptr):ptr
   (when (= tn null) (return null))
-  (let (n:ptr:Node (unsafe/cast ptr:Node tn))
+  (let (n:ptr:Node (unsafe/cast &Node tn))
     (when (!= (n 'kind) NODE-CELL) (return null))
     (let (head:ptr (n 'car))
       (when (= head null) (return null))
-      (let (h:ptr:Node (unsafe/cast ptr:Node head))
+      (let (h:ptr:Node (unsafe/cast &Node head))
         (when (and (= (h 'kind) NODE-SYM) (= (h 's) "fn")) (return tn))
         (when (= (h 'kind) NODE-CELL)
           (let (h2:ptr (h 'car))
             (when (!= h2 null)
-              (let (hh:ptr:Node (unsafe/cast ptr:Node h2))
+              (let (hh:ptr:Node (unsafe/cast &Node h2))
                 (when (and (= (hh 'kind) NODE-SYM) (= (hh 's) "fn"))
                   (return head))))))
         (return null)))))
@@ -3572,22 +3572,22 @@
       (let (rnode:ptr null
             plist:ptr null
             (acc String) (str-alloc (strfmt-alloc) ""))
-        (let (rn:ptr ((unsafe/cast ptr:Node fh) 'cdr))
-          (when (!= rn null) (set! rnode ((unsafe/cast ptr:Node rn) 'car))))
+        (let (rn:ptr ((unsafe/cast &Node fh) 'cdr))
+          (when (!= rn null) (set! rnode ((unsafe/cast &Node rn) 'car))))
         ; `(fn RET)` alone carries no parameter list; `((fn RET) (P…))` holds it
         ; in the outer cell's second element.
         (when (!= fh tn)
-          (let (pn:ptr ((unsafe/cast ptr:Node tn) 'cdr))
-            (when (!= pn null) (set! plist ((unsafe/cast ptr:Node pn) 'car)))))
+          (let (pn:ptr ((unsafe/cast &Node tn) 'cdr))
+            (when (!= pn null) (set! plist ((unsafe/cast &Node pn) 'car)))))
         (if (= plist null)
           (str-into acc "void")
           (let (cur:ptr plist
                 first:i32 1)
             (while (!= cur null)
               (when (= first 0) (str-into acc ", "))
-              (str-into acc (type-node-to-c-decl ((unsafe/cast ptr:Node cur) 'car) "" line))
+              (str-into acc (type-node-to-c-decl ((unsafe/cast &Node cur) 'car) "" line))
               (set! first 0)
-              (set! cur ((unsafe/cast ptr:Node cur) 'cdr)))))
+              (set! cur ((unsafe/cast &Node cur) 'cdr)))))
         (return (type-node-to-c-decl rnode
                   (fstr "(*" name ")(" (string-as-view acc) ")") line)))))
   (when (= (strview-byte-len name) 0) (return (type-node-to-c tn)))
@@ -3602,9 +3602,9 @@
   (let (aflags:i32 0
         aalign:i32 0
         nattrs:i32 (struct-attr-scan (as raw:Node form)
-                                     (as ptr:i32 (addr-of aflags))
-                                     (as ptr:i32 (addr-of aalign)) 0
-                                     ((unsafe/cast ptr:Node form) 'line)))
+                                     (as &i32 &aflags)
+                                     (as &i32 &aalign) 0
+                                     ((unsafe/cast &Node form) 'line)))
   (when (!= (node-kind (node-at form (+ 1 nattrs))) NODE-SYM) (return))
   ; ir-name-token first (`?`→_QMARK / `!`→_BANG), then the blanket C sanitize; see
   ; type-name-to-c. A no-op for names without `?`/`!`, so headers stay byte-identical.
@@ -3617,7 +3617,7 @@
   ; existing header is byte-identical.
   ; W9 item 28: `cheader-c-ident` — the tag and typedef of a struct named `union`
   ; must be escaped, in lockstep with every reference to it (type-name-to-c).
-  (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at form (+ 1 nattrs)))
+  (let (nn:ptr:Node (unsafe/cast &Node (node-at form (+ 1 nattrs)))
         name:StrView (cheader-c-ident-view (ns-ir-base (nn 's)))
         nfields:i32 (- (- (node-len form) 2) nattrs)
         ; PK-2: the attribute goes after the closing brace, which is the one
@@ -3638,7 +3638,7 @@
     (dotimes (i nfields)
       (let (field:ptr (node-at form (+ (+ i 2) nattrs)))
         (when (!= (cheader-niche-no-c
-                    (extract-type-node field ((unsafe/cast ptr:Node field) 'line))) 0)
+                    (extract-type-node field ((unsafe/cast &Node field) 'line))) 0)
           (emit (as ptr stdout) "/* " name
                 ": a field uses an error-union or option type; not exported */\n")
           (return))))
@@ -3654,18 +3654,18 @@
       (let (falign:i32 0
             fbits:i32 0
             field:ptr (field-peel-attrs (node-at form (+ (+ i 2) nattrs))
-                                        (as ptr:i32 (addr-of falign))
-                                        (as ptr:i32 (addr-of fbits)) 0
-                                        ((unsafe/cast ptr:Node form) 'line))
+                                        (as &i32 &falign)
+                                        (as &i32 &fbits) 0
+                                        ((unsafe/cast &Node form) 'line))
             fname:Symbol (symbol-none)
             tname:Symbol (symbol-none))
         ; AN-2: C spells an anonymous member by inlining its BODY, so a member
         ; that names an already-declared type has no standard C rendering.
         (when (!= (field-anon-type-node (node-at form (+ (+ i 2) nattrs))) null)
-          (die-at ((unsafe/cast ptr:Node form) 'line)
+          (die-at ((unsafe/cast &Node form) 'line)
             "--emit-cheader: a ':anon' member has no standard C spelling -- C writes an anonymous member's body inline, which a named Nucleus type cannot be"))
-        (extract-name-type field (as ptr:Symbol (addr-of fname)) (as ptr:Symbol (addr-of tname)))
-        (let (tnode:ptr (extract-type-node field ((unsafe/cast ptr:Node field) 'line)))
+        (extract-name-type field (as &Symbol &fname) (as &Symbol &tname))
+        (let (tnode:ptr (extract-type-node field ((unsafe/cast &Node field) 'line)))
           (when (!= tnode null)
             (let (bits:StrView ""
                   fal:StrView "")
@@ -3676,7 +3676,7 @@
               ; declarators; type-node-to-c-decl is the single renderer for them.
               (emit (as ptr stdout) "    "
                     (type-node-to-c-decl tnode (cheader-c-ident-view fname)
-                                     ((unsafe/cast ptr:Node field) 'line))
+                                     ((unsafe/cast &Node field) 'line))
                     bits fal ";\n"))))))
     (emit (as ptr stdout) "}" packed aligned " " name ";\n\n"))))
 
@@ -3686,9 +3686,9 @@
 ; so the declare can be skipped honestly.
 (defn cheader-template-instance (tn:(raw Node)):i32
   (when (= tn null) (return 0))
-  (let (n:ptr:Node (unsafe/cast ptr:Node tn))
+  (let (n:ptr:Node (unsafe/cast &Node tn))
     (when (!= (n 'kind) NODE-CELL) (return 0))
-    (let (head:ptr:Node (unsafe/cast ptr:Node (n 'car)))
+    (let (head:ptr:Node (unsafe/cast &Node (n 'car)))
       (when (= (as ptr head) null) (return 0))
       (when (!= (head 'kind) NODE-SYM) (return 0))
       (when (!= (union-template-lookup-ref (head 's)) null) (return 1))
@@ -3706,14 +3706,14 @@
 (defn cheader-mentions-closure (tn:(raw Node)):i32
   (let (cur:ptr tn)
     (while (!= cur null)
-      (let (n:ptr:Node (unsafe/cast ptr:Node cur))
+      (let (n:ptr:Node (unsafe/cast &Node cur))
         (case (n 'kind)
           NODE-SYM
             (do
               (when (strview-has-prefix (symbol-as-view (n 's)) "__vfn_env_") (return 1))
               (return 0))
           NODE-CELL
-            (let (head:ptr:Node (unsafe/cast ptr:Node (n 'car)))
+            (let (head:ptr:Node (unsafe/cast &Node (n 'car)))
               (when (or (= (as ptr head) null) (!= (head 'kind) NODE-SYM)) (return 0))
               (let (hs:Symbol (head 's))
                 ; Type-erased box types: (BoxedFn …) and (dyn P) carry fat-pointer
@@ -3722,8 +3722,8 @@
                 (when (and (!= hs "ptr") (!= hs "ref")) (return 0))
                 (let (rest:ptr (n 'cdr))
                   (when (= rest null) (return 0))
-                  (if (= ((unsafe/cast ptr:Node rest) 'cdr) null)
-                    (set! cur ((unsafe/cast ptr:Node rest) 'car))
+                  (if (= ((unsafe/cast &Node rest) 'cdr) null)
+                    (set! cur ((unsafe/cast &Node rest) 'car))
                     (set! cur rest)))))
           (return 0))))
     (return 0)))
@@ -3759,20 +3759,20 @@
   ; a `!void` callback reached lib/test.h as an undefined `struct _BANGvoid` tag.
   (let (fh:ptr (cheader-fn-head-node (as ptr tn)))
     (when (!= fh null)
-      (let (rn:ptr ((unsafe/cast ptr:Node fh) 'cdr))
+      (let (rn:ptr ((unsafe/cast &Node fh) 'cdr))
         (when (and (!= rn null)
-                   (!= (cheader-niche-no-c ((unsafe/cast ptr:Node rn) 'car)) 0))
+                   (!= (cheader-niche-no-c ((unsafe/cast &Node rn) 'car)) 0))
           (return 1)))
       (when (!= fh (as ptr tn))
-        (let (pn:ptr ((unsafe/cast ptr:Node tn) 'cdr))
+        (let (pn:ptr ((unsafe/cast &Node tn) 'cdr))
           (when (!= pn null)
-            (let (cur:ptr ((unsafe/cast ptr:Node pn) 'car))
+            (let (cur:ptr ((unsafe/cast &Node pn) 'car))
               (while (!= cur null)
-                (when (!= (cheader-niche-no-c ((unsafe/cast ptr:Node cur) 'car)) 0)
+                (when (!= (cheader-niche-no-c ((unsafe/cast &Node cur) 'car)) 0)
                   (return 1))
-                (set! cur ((unsafe/cast ptr:Node cur) 'cdr)))))))
+                (set! cur ((unsafe/cast &Node cur) 'cdr)))))))
       (return 0)))
-  (let (n:ptr:Node (unsafe/cast ptr:Node tn))
+  (let (n:ptr:Node (unsafe/cast &Node tn))
     (case (n 'kind)
       NODE-SYM
         (do
@@ -3782,7 +3782,7 @@
             (none 0))
           (return 1))
       NODE-CELL
-        (let (head:ptr:Node (unsafe/cast ptr:Node (n 'car)))
+        (let (head:ptr:Node (unsafe/cast &Node (n 'car)))
           (when (or (= (as ptr head) null) (!= (head 'kind) NODE-SYM)) (return 0))
           (let (hs:Symbol (head 's))
             ; A `!ptr`/`!ref` HEAD is the pointer niche in list form; it lands
@@ -3791,8 +3791,8 @@
             (when (and (!= hs "ptr") (!= hs "ref")) (return 0))
             (let (rest:ptr (n 'cdr))
               (when (= rest null) (return 0))
-              (if (= ((unsafe/cast ptr:Node rest) 'cdr) null)
-                (return (cheader-niche-no-c ((unsafe/cast ptr:Node rest) 'car)))
+              (if (= ((unsafe/cast &Node rest) 'cdr) null)
+                (return (cheader-niche-no-c ((unsafe/cast &Node rest) 'car)))
                 (return (cheader-niche-no-c rest))))))
       0)
     (return 0)))
@@ -3809,12 +3809,12 @@
     ; `validate-header-forms`, which runs before any of this.
     (when (= (sig-name-is-bare name-node) 0)
       (return (extract-type-node name-node
-                (node-line name-node ((unsafe/cast ptr:Node form) 'line)))))
+                (node-line name-node ((unsafe/cast &Node form) 'line)))))
     ; New style: the return operand is at index 3. type-node-to-c needs the nested
     ; type-node form, so a colon-chain spelling (`ptr:Pt`) is split into `(ptr Pt)`
     ; exactly as the legacy desugar path yields it; a plain spelling stays a symbol
     ; node; a parenthesized list-form return is used verbatim.
-    (let (rn:ptr:Node (unsafe/cast ptr:Node (node-at form 3)))
+    (let (rn:ptr:Node (unsafe/cast &Node (node-at form 3)))
       (when (or (= (node-kind (as ptr rn)) NODE-KEYWORD)
                 (= (node-kind (as ptr rn)) NODE-SYM))
         (when (symbol-contains-byte (rn 's) 58)
@@ -3853,7 +3853,7 @@
       (dotimes (pi np)
         (when (!= (cheader-template-instance
                     (extract-type-node (node-at params pi)
-                                       ((unsafe/cast ptr:Node (node-at params pi)) 'line))) 0)
+                                       ((unsafe/cast &Node (node-at params pi)) 'line))) 0)
           (set! skip 1)))
       (when (!= skip 0) (return 2)))
     ; L8: a signature exposing a capturing-closure env type (__vfn_env_N) or a
@@ -3862,7 +3862,7 @@
       (dotimes (clpi np)
         (when (!= (cheader-mentions-closure
                     (extract-type-node (node-at params clpi)
-                                       ((unsafe/cast ptr:Node (node-at params clpi)) 'line))) 0)
+                                       ((unsafe/cast &Node (node-at params clpi)) 'line))) 0)
           (set! skip-cl 1)))
       (when (!= skip-cl 0) (return 3)))
     ; W9 item 44: a niche-encoded `!T` / `?T` over a non-pointer payload.
@@ -3870,7 +3870,7 @@
       (dotimes (nipi np)
         (when (!= (cheader-niche-no-c
                     (extract-type-node (node-at params nipi)
-                                       ((unsafe/cast ptr:Node (node-at params nipi)) 'line))) 0)
+                                       ((unsafe/cast &Node (node-at params nipi)) 'line))) 0)
           (set! skip-ni 1)))
       (when (!= skip-ni 0) (return 4)))
     (return 0)))
@@ -3880,7 +3880,7 @@
   (let (name-node:ptr (node-at form 1)
         fname:Symbol (symbol-none)
         ret-name:Symbol (symbol-none))
-    (extract-name-type name-node (as ptr:Symbol (addr-of fname)) (as ptr:Symbol (addr-of ret-name)))
+    (extract-name-type name-node (as &Symbol &fname) (as &Symbol &ret-name))
     (let (why:i32 (cheader-defn-skip-reason form))
       (macrolet ((result (x why-text)
                          `(when (= why ~x)
@@ -3925,12 +3925,12 @@
           (let (p:ptr (node-at params i)
                 pname:Symbol (symbol-none)
                 ptname:Symbol (symbol-none))
-            (extract-name-type p (as ptr:Symbol (addr-of pname)) (as ptr:Symbol (addr-of ptname)))
-            (let (ptnode:ptr (extract-type-node p ((unsafe/cast ptr:Node p) 'line))
+            (extract-name-type p (as &Symbol &pname) (as &Symbol &ptname))
+            (let (ptnode:ptr (extract-type-node p ((unsafe/cast &Node p) 'line))
                   pc:StrView (cheader-c-ident-view pname))
               (if (!= ptnode null)
                 (str-into acc (type-node-to-c-decl ptnode pc
-                                                   ((unsafe/cast ptr:Node p) 'line)))
+                                                   ((unsafe/cast &Node p) 'line)))
                 ; No type node at all — a shape this pass cannot read.
                 (when (not (symbol-none? pname))
                   (str-into acc "void* " pc))))))
@@ -3948,13 +3948,13 @@
 ; `void*`, which is the right size and ABI). Every other cell — `(array T N)`, a
 ; struct/union template instance, a bare `(fn …)` — is refused.
 (defn cheader-defvar-type-ok (tn:ptr):i32
-  (let (n:ptr:Node (unsafe/cast ptr:Node tn))
+  (let (n:ptr:Node (unsafe/cast &Node tn))
     (when (= (n 'kind) NODE-SYM) (return 0))
     (when (!= (n 'kind) NODE-CELL) (return 1))
     (let (head:ptr (n 'car))
       (when (= head null) (return 1))
-      (when (!= ((unsafe/cast ptr:Node head) 'kind) NODE-SYM) (return 1))
-      (let (h:Symbol ((unsafe/cast ptr:Node head) 's))
+      (when (!= ((unsafe/cast &Node head) 'kind) NODE-SYM) (return 1))
+      (let (h:Symbol ((unsafe/cast &Node head) 's))
         (when (= h "ptr") (return 0))
         (when (= h "raw") (return 0))
         (when (= h "ref") (return 0))
@@ -3989,22 +3989,22 @@
 ; site") — which holds for type/field/arm/enum names, since those have no linkage,
 ; and does not hold for anything the linker resolves.
 (defn emit-cheader-defvar (form:ptr):void
-  (let (fc:ptr:Node (unsafe/cast ptr:Node form)
+  (let (fc:ptr:Node (unsafe/cast &Node form)
         attr-flags:i32 0)
     ; The name may be preceded by declaration attributes (`(defvar :const g:i32 1)`),
     ; so the name node comes off the advanced cursor rather than a fixed index —
     ; the same chokepoint `emit-defvar` uses, not a second reading of the grammar.
     (let (decl:ptr (parse-decl-attrs (as ptr (fc 'cdr))
-                     (as ptr:i32 (addr-of attr-flags)) (fc 'line)))
+                     (as &i32 &attr-flags) (fc 'line)))
       (when (= decl null) (return))
-      (let (name-node:ptr ((unsafe/cast ptr:Node decl) 'car)
+      (let (name-node:ptr ((unsafe/cast &Node decl) 'car)
             vname:Symbol (symbol-none)
             vtname:Symbol (symbol-none))
-        (extract-name-type name-node (as ptr:Symbol (addr-of vname))
-                                     (as ptr:Symbol (addr-of vtname)))
+        (extract-name-type name-node (as &Symbol &vname)
+                                     (as &Symbol &vtname))
         (when (symbol-none? vname) (return))
         (let (tnode:ptr (extract-type-node name-node
-                          ((unsafe/cast ptr:Node name-node) 'line)))
+                          ((unsafe/cast &Node name-node) 'line)))
           (when (= tnode null)
             (emit (as ptr stdout) "/* " vname ": no type annotation; not exported */\n")
             (return))
@@ -4055,8 +4055,8 @@
   ; W9 item 45: a name spelled `()` is a NULL node (W5f) and defines no macro;
   ; `validate-header-forms` refuses the form before this emitter is reached.
   (when (!= (node-kind (node-at form 1)) NODE-SYM) (return))
-  (let (name:StrView (cheader-c-ident-view ((unsafe/cast ptr:Node (node-at form 1)) 's))
-        val-node:ptr:Node (unsafe/cast ptr:Node (node-at form 2)))
+  (let (name:StrView (cheader-c-ident-view ((unsafe/cast &Node (node-at form 1)) 's))
+        val-node:ptr:Node (unsafe/cast &Node (node-at form 2)))
     (case (node-kind (as ptr val-node))
       NODE-INT (emit (as ptr stdout) "#define " name " " (val-node 'i) "\n")
       NODE-STR (emit (as ptr stdout) "#define " name " \"" (val-node 's) "\"\n")
@@ -4073,11 +4073,11 @@
   (when (!= (node-kind (node-at form 1)) NODE-SYM) (return))
   (dotimes (mi (- (node-len form) 2))
     (when (!= (node-kind (node-at form (+ mi 2))) NODE-SYM) (return)))
-  (let (name:StrView (cheader-c-ident-view ((unsafe/cast ptr:Node (node-at form 1)) 's))
+  (let (name:StrView (cheader-c-ident-view ((unsafe/cast &Node (node-at form 1)) 's))
         n:i32 (- (node-len form) 2))
     (emit (as ptr stdout) "enum " name " {\n")
     (dotimes (i n)
-      (let (variant:StrView (cheader-c-ident-join name ((unsafe/cast ptr:Node (node-at form (+ i 2))) 's)))
+      (let (variant:StrView (cheader-c-ident-join name ((unsafe/cast &Node (node-at form (+ i 2))) 's)))
         (emit (as ptr stdout) "    " variant " = " i)
         (when (< i (- n 1)) (emit (as ptr stdout) ","))
         (emit (as ptr stdout) "\n")))
@@ -4087,7 +4087,7 @@
 ; enum of tag constants, fully legible and constructible from C. Templates
 ; define no type and are skipped.
 (defn emit-cheader-defunion (form:ptr):void
-  (let (name-node:ptr:Node (unsafe/cast ptr:Node (node-at form 1)))
+  (let (name-node:ptr:Node (unsafe/cast &Node (node-at form 1)))
     ; W9 item 45: `node-kind` — a name spelled `()` is a NULL node (W5f), skipped
     ; here as a template name is; `validate-header-forms` refuses the form.
     (when (!= (node-kind (as ptr name-node)) NODE-SYM) (return))
@@ -4104,7 +4104,7 @@
       (check-ir-name-legal (name-node 'line) (name-node 's) name)
       ; Any payload-bearing arm?
       (dotimes (i narms)
-        (when (= ((unsafe/cast ptr:Node (node-at form (+ i 2))) 'kind) NODE-CELL)
+        (when (= ((unsafe/cast &Node (node-at form (+ i 2))) 'kind) NODE-CELL)
           (inc! npay)))
       ; Tagged for the same reason a defstruct is (item 25): `type-name-to-c`
       ; spells a reference to a union type `struct NAME` too.
@@ -4112,14 +4112,14 @@
       (when (> npay 0)
         (emit (as ptr stdout) "    union {\n")
         (dotimes (i narms)
-          (let (arm:ptr:Node (unsafe/cast ptr:Node (node-at form (+ i 2))))
+          (let (arm:ptr:Node (unsafe/cast &Node (node-at form (+ i 2))))
             (when (= (arm 'kind) NODE-CELL)
-              (let (aname:StrView (cheader-c-ident-view ((unsafe/cast ptr:Node (node-at (as ptr arm) 0)) 's))
+              (let (aname:StrView (cheader-c-ident-view ((unsafe/cast &Node (node-at (as ptr arm) 0)) 's))
                     nf:i32 (- (node-len (as ptr arm)) 1))
                 (if (= nf 1)
                   ; One field → the payload is just that field, named by the arm.
                   (let (field:ptr (node-at (as ptr arm) 1)
-                        tnode:ptr (extract-type-node field ((unsafe/cast ptr:Node field) 'line)))
+                        tnode:ptr (extract-type-node field ((unsafe/cast &Node field) 'line)))
                     (emit (as ptr stdout) "        " (type-node-to-c tnode) " " aname ";\n"))
                   (do
                     (emit (as ptr stdout) "        struct { ")
@@ -4127,9 +4127,9 @@
                       (let (field:ptr (node-at (as ptr arm) (+ fi 1))
                             fname:Symbol (symbol-none)
                             ftname:Symbol (symbol-none))
-                        (extract-name-type field (as ptr:Symbol (addr-of fname))
-                                                  (as ptr:Symbol (addr-of ftname)))
-                        (let (tnode:ptr (extract-type-node field ((unsafe/cast ptr:Node field) 'line)))
+                        (extract-name-type field (as &Symbol &fname)
+                                                  (as &Symbol &ftname))
+                        (let (tnode:ptr (extract-type-node field ((unsafe/cast &Node field) 'line)))
                           (emit (as ptr stdout) (type-node-to-c tnode) " "
                                 (cheader-c-ident-view fname) "; "))))
                     (emit (as ptr stdout) "} " aname ";\n")))))))
@@ -4138,10 +4138,10 @@
       ; Tag constants: declaration order from 0 — part of the C contract.
       (emit (as ptr stdout) "enum " name "_tag {\n")
       (dotimes (i narms)
-        (let (arm:ptr:Node (unsafe/cast ptr:Node (node-at form (+ i 2)))
+        (let (arm:ptr:Node (unsafe/cast &Node (node-at form (+ i 2)))
               aname:StrView (cheader-c-ident-join name
                           (if (= (arm 'kind) NODE-SYM) (arm 's)
-                            ((unsafe/cast ptr:Node (node-at (as ptr arm) 0)) 's))))
+                            ((unsafe/cast &Node (node-at (as ptr arm) 0)) 's))))
           (emit (as ptr stdout) "    " aname " = " i)
           (when (< i (- narms 1)) (emit (as ptr stdout) ","))
           (emit (as ptr stdout) "\n")))
@@ -4181,9 +4181,9 @@
 ; the `-` (private) spellings are absent from both, which is what keeps a private
 ; definition from contributing a dependency nothing exported can need.
 (defn cheader-scan-form-types (form:ptr):void
-  (let (f:ptr:Node (unsafe/cast ptr:Node form))
+  (let (f:ptr:Node (unsafe/cast &Node form))
     (when (or (!= (f 'kind) NODE-CELL) (< (node-len form) 2)) (return))
-    (let (h0:ptr:Node (unsafe/cast ptr:Node (node-at form 0)))
+    (let (h0:ptr:Node (unsafe/cast &Node (node-at form 0)))
       (when (!= (h0 'kind) NODE-SYM) (return))
       (let (h:Symbol (h0 's))
         (when (= h "defn")
@@ -4194,10 +4194,10 @@
           ; for the `Char` payload of a `!Char` return that is no longer declared.
           (when (!= (cheader-defn-skip-reason form) 0) (return))
           (when (>= (node-len form) 3)
-            (let (params:ptr:Node (unsafe/cast ptr:Node (node-at form 2)))
+            (let (params:ptr:Node (unsafe/cast &Node (node-at form 2)))
               (when (and (!= (as ptr params) null) (= (params 'kind) NODE-CELL))
                 (dotimes (i (node-len (as ptr params)))
-                  (let (p:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr params) i)))
+                  (let (p:ptr:Node (unsafe/cast &Node (node-at (as ptr params) i)))
                     (cheader-scan-type-node
                       (extract-type-node (as raw:Node p) (node-line (as ptr p) (f 'line))))))))
             ; Guarded exactly as cheader-defn-ret-node dereferences: the legacy
@@ -4216,17 +4216,17 @@
           ; about one. `validate-header-forms` is what refuses the form.
           (when (!= (node-kind (node-at form 1)) NODE-SYM) (return))
           (dotimes (i (- (node-len form) 2))
-            (let (fl:ptr:Node (unsafe/cast ptr:Node (node-at form (+ i 2))))
+            (let (fl:ptr:Node (unsafe/cast &Node (node-at form (+ i 2))))
               (cheader-scan-type-node
                 (extract-type-node (as raw:Node fl) (node-line (as ptr fl) (f 'line))))))
           (return))
         (when (= h "defunion")
           (when (!= (node-kind (node-at form 1)) NODE-SYM) (return))
           (dotimes (i (- (node-len form) 2))
-            (let (arm:ptr:Node (unsafe/cast ptr:Node (node-at form (+ i 2))))
+            (let (arm:ptr:Node (unsafe/cast &Node (node-at form (+ i 2))))
               (when (= (node-kind (as ptr arm)) NODE-CELL)
                 (dotimes (fi (- (node-len (as ptr arm)) 1))
-                  (let (fl:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr arm) (+ fi 1))))
+                  (let (fl:ptr:Node (unsafe/cast &Node (node-at (as ptr arm) (+ fi 1))))
                     (cheader-scan-type-node
                       (extract-type-node (as raw:Node fl) (node-line (as ptr fl) (f 'line)))))))))
           (return))
@@ -4236,7 +4236,7 @@
         ; `parse-decl-attrs`, which can die, before the preamble is printed.
         (when (= h "defvar")
           (dotimes (i (- (node-len form) 1))
-            (let (op:ptr:Node (unsafe/cast ptr:Node (node-at form (+ i 1))))
+            (let (op:ptr:Node (unsafe/cast &Node (node-at form (+ i 1))))
               (cheader-scan-type-node
                 (extract-type-node (as raw:Node op) (node-line (as ptr op) (f 'line)))))))))))
 
@@ -4295,8 +4295,8 @@
   (set! g-cheader-c-includes null)
   (let (sc:ptr forms)
     (while (!= sc null)
-      (cheader-scan-form-types ((unsafe/cast ptr:Node sc) 'car))
-      (set! sc ((unsafe/cast ptr:Node sc) 'cdr))))
+      (cheader-scan-form-types ((unsafe/cast &Node sc) 'car))
+      (set! sc ((unsafe/cast &Node sc) 'cdr))))
   (emit (as ptr stdout) "#pragma once\n")
   (emit (as ptr stdout) "#include <stdint.h>\n")
   (emit (as ptr stdout) "#include <stdbool.h>\n")
@@ -4312,23 +4312,23 @@
   ; signatures that mention template-instance types.
   (let (fc0:ptr forms)
     (while (!= fc0 null)
-      (let (f:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node fc0) 'car)))
+      (let (f:ptr:Node (unsafe/cast &Node ((unsafe/cast &Node fc0) 'car)))
         (when (and (and (!= (as ptr f) null) (= (f 'kind) NODE-CELL))
                    (and (> (node-len (as ptr f)) 1)
-                        (and (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 'kind) (= _ NODE-SYM))
-                             (and (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 's) (= _ "defunion"))
+                        (and (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM))
+                             (and (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's) (= _ "defunion"))
                                   ; W9 item 45: `node-kind` — a name spelled `()`
                                   ; registers no template here.
                                   (= (node-kind (node-at (as ptr f) 1)) NODE-CELL)))))
           (register-union-template (as ptr f))))
-      (set! fc0 ((unsafe/cast ptr:Node fc0) 'cdr))))
+      (set! fc0 ((unsafe/cast &Node fc0) 'cdr))))
   (let (fc:ptr forms)
     (while (!= fc null)
-      (let (f:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node fc) 'car)))
+      (let (f:ptr:Node (unsafe/cast &Node ((unsafe/cast &Node fc) 'car)))
         (when (and (and (!= (as ptr f) null) (= (f 'kind) NODE-CELL))
                    (and (> (node-len (as ptr f)) 0)
-                        (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 'kind) (= _ NODE-SYM))))
-          (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ 's)))
+                        (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM))))
+          (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
             (case h
                   "defstruct" (emit-cheader-defstruct (as ptr f))
                   "defunion"  (emit-cheader-defunion (as ptr f))
@@ -4337,4 +4337,4 @@
                   "defconst"  (emit-cheader-defconst (as ptr f))
                   "defenum"   (emit-cheader-defenum (as ptr f))
                   0))))
-      (set! fc ((unsafe/cast ptr:Node fc) 'cdr)))))
+      (set! fc ((unsafe/cast &Node fc) 'cdr)))))
