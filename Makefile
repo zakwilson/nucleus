@@ -123,7 +123,7 @@ NUCTESTS := $(BUILD)/nuctests
 # for a run that cannot accept one.
 NUCTESTS_ARGS :=
 
-$(NUCTESTS): tests/nuctests.nuc tests/manifest/diagnostics.sexp $(wildcard lib/*.nuc) $(BIN) | $(BUILD)
+$(NUCTESTS): tests/nuctests.nuc $(wildcard tests/suite-*.nuc) tests/manifest/diagnostics.sexp $(wildcard lib/*.nuc) $(BIN) | $(BUILD)
 	$(BIN) tests/nuctests.nuc -o $@
 
 # The suite's stdout is a machine-readable record stream, so the human summary

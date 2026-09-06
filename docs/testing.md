@@ -236,6 +236,20 @@ include directory, and one about the REPL needs a session:
 | `(duplicate-type-name ir)` | `StrView` — a `%Name = type` defined twice, or `""`. |
 | `(check-same-decl-set a b)` | Two modules carry the same `type`/`define`/`declare` lines, as a set. |
 
+A unit whose claim is *what the platform C compiler does* needs clang's own
+answer, and a claim about another machine needs `nucleusc` pointed at it:
+
+| Form | Meaning |
+| --- | --- |
+| `(cc-emit-llvm path)` | `!CcIr` — `ok?`, `ir` and `err` from `clang -S -emit-llvm -O0 -w` on a C file. |
+| `(compile-path-for target path)` | `!Compiled`, under `--target=<target>`. |
+
+clang is not optional — `nucleusc` uses it as the default linker driver — so a
+missing clang is a broken toolchain rather than something to skip over. What is
+conditional is narrower: whether a particular clang's target *has* `_Float16`
+or `__float128`, which `tests/suite-float.nuc` asks by compiling a two-line
+probe and answers with `skip!`.
+
 An empty `dir` or `extra` contributes no argument. `line-with` is for a claim
 about one instruction: `i8 %` is in every module, so `check-not-contains` over
 the whole IR asserts nothing. `count-lines-with-prefix` is for a claim that

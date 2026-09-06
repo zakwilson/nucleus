@@ -1,0 +1,541 @@
+; Stage 18 TF-6 category (c) — the float widths, with clang as the oracle.
+;
+; Design: design/stage18-tooling/float-width-oracle.md.
+;
+; The one shell unit whose port was a rewrite rather than a port: it embedded
+; two Python programs, a fixture GENERATOR and an IR-constant COMPARATOR, and
+; both are here in Nucleus.
+
+; ---------------------------------------------------------------------------
+; The fixture tables
+; ---------------------------------------------------------------------------
+
+; `nucleus|C type|C literal suffix`. Order is load-bearing: a decimal literal
+; folds through the host f64, so it is asserted only at the first three widths
+; (§10 limit 1, design/future/decimal-float-literals.md).
+(defn fl-kinds ():StrView
+  (return "f16|_Float16|f16
+f32|float|f
+f64|double|
+f80|long double|L
+f128|__float128|q"))
+
+; The edges are what earn the table: a significand wider than every format,
+; f64's overflow exponent, and f80's subnormal floor.
+(defn fl-hex-literals ():StrView
+  (return "0x1p0 0x1.8p+3 -0x1.8p-3 0x0p0 -0x0p0 0x1.921fb54442d18469898cc51701b8p+1 0xabcdefp-20 -0x1.fp-5 0x1.0000000000001p0 0x1.00000000000008p0 0x1.00000000000018p0 0x123456789abcdef0123456789abcdefp0 0X1.8P1 0x1p16 0x1p+1024 0x1p-16445"))
+
+(defn fl-decimal-literals ():StrView
+  (return "1.0 2.5 0.5 3.14 -0.0 1e3 100.0 0.125"))
+
+; The `i`th `|`-separated field of a kinds row. The f64 row's suffix is empty,
+; which is why the separator is written out rather than trimmed away.
+(defn fl-field (row:StrView i:usize):StrView
+  (let (bar:StrView "|"
+        it:SplitIter (strview-split (addr-of row) (addr-of bar))
+        k:usize 0)
+    (while (not (split-iter-done (addr-of it)))
+      (let (f:StrView (split-iter-next (addr-of it)))
+        (when (= k i) (return f))
+        (set! k (+ k 1))))
+    (return "")))
+
+; One `defvar`/`static` pair per (literal, width), named by a running row index
+; so the two modules line up by NAME — the comparison never has to assume the
+; two compilers emit their globals in the same order. Yields the next index.
+(defn fl-emit-rows (lits:StrView nkinds:usize (nuc (ref String)) (c (ref String))
+                    start:usize):usize
+  (let (sp:StrView " "
+        kinds:StrView (fl-kinds)
+        n:usize start
+        it:SplitIter (strview-split (addr-of lits) (addr-of sp)))
+    (while (not (split-iter-done (addr-of it)))
+      (let (lit:StrView (split-iter-next (addr-of it))
+            ki:usize 0
+            kit:LineIter (strview-lines (addr-of kinds)))
+        (while (and (< ki nkinds) (not (lines-iter-done (addr-of kit))))
+          (let (row:StrView (lines-iter-next (addr-of kit))
+                nk:StrView (fl-field row 0))
+            (str-into nuc "(defvar v" n "_" nk ":" nk " " lit ")\n")
+            (str-into c "__attribute__((used)) static " (fl-field row 1)
+                      " v" n "_" nk " = " lit (fl-field row 2) ";\n"))
+          (set! n (+ n 1))
+          (set! ki (+ ki 1)))))
+    (return n)))
+
+; ---------------------------------------------------------------------------
+; Reading a global out of a module
+; ---------------------------------------------------------------------------
+
+; One `@name = … global <ty> <val>` line. The views borrow the module text.
+(defstruct FlGlobal name:StrView ty:StrView val:StrView)
+
+; The prefix of `sv` before the first `b`, or all of it.
+(defn fl-upto (sv:StrView b:ui8):StrView
+  (match (strview-find-byte (addr-of sv) b)
+    ((some i) (return (strview-take-bytes sv i)))
+    (none (return sv))))
+
+; The two compilers agree on `@name = … global <ty> <val>` and on nothing else
+; about the line: clang writes `internal`, Nucleus writes a section, and both
+; write a trailing `align`. False when the line is not a global definition.
+(defn fl-parse-global (l:StrView (out (ref FlGlobal))):bool
+  (when (not (strview-has-prefix l "@")) (return false))
+  (let (eq:StrView " = ")
+    (match (strview-find (addr-of l) (addr-of eq))
+      ((some at)
+        (set! (out 'name) (strview-drop-bytes (strview-take-bytes l at) 1))
+        (let (r:StrView (strview-drop-bytes l (+ at 3)))
+          (when (strview-has-prefix r "dso_local ") (set! r (strview-drop-bytes r 10)))
+          (when (strview-has-prefix r "internal ") (set! r (strview-drop-bytes r 9)))
+          (when (not (strview-has-prefix r "global ")) (return false))
+          (set! r (strview-drop-bytes r 7))
+          (let (ty:StrView (fl-upto r 32)
+                tn:usize (strview-byte-len (addr-of ty)))
+            (when (>= tn (strview-byte-len (addr-of r))) (return false))
+            (let (v:StrView (fl-upto (strview-drop-bytes r (+ tn 1)) 44))
+              (set! (out 'ty) ty)
+              (set! (out 'val) (strview-trim (addr-of v)))
+              (return true)))))
+      (none (return false)))))
+
+; The `@v…` global named `name`, if the module has one.
+(defn fl-find-global (module:StrView name:StrView (out (ref FlGlobal))):bool
+  (let (it:LineIter (strview-lines (addr-of module)))
+    (while (not (lines-iter-done (addr-of it)))
+      (let (l:StrView (lines-iter-next (addr-of it)))
+        (when (and (strview-has-prefix l "@v") (fl-parse-global l out))
+          (when (= (out 'name) name) (return true))))))
+  (return false))
+
+; ---------------------------------------------------------------------------
+; Comparing two constants
+; ---------------------------------------------------------------------------
+
+; `0xH…`, `0xK…` and `0xL…` are half, x86_fp80 and fp128 written as their own
+; bits; every other spelling denotes a value LLVM chose a rendering for.
+(defn fl-bit-pattern? (val:StrView):bool
+  (return (or (strview-has-prefix val "0xH")
+              (strview-has-prefix val "0xK")
+              (strview-has-prefix val "0xL"))))
+
+; Nucleus has no bitcast operator; this is its established spelling
+; (`f64-bits`, src/type-utils.nuc; the f64 Hash conformance, lib/hash.nuc).
+(defn fl-f64-bits (d:f64):ui64
+  (let (r:f64 d
+        p:ptr:f64 (addr-of r))
+    (return (deref (unsafe/cast ptr:ui64 p)))))
+
+; An f32/f64 constant's 64 bits, from either spelling LLVM uses. The `0x` case
+; needs its own branch and not just `strtod`: a hex float's binary exponent is
+; optional to `strtod`, so `0x3FF0000000000000` would parse as the integer
+; 4.6e18 rather than as the 1.0 those bits are.
+(defn fl-value-bits (val:StrView):!ui64
+  (when (and (strview-has-prefix val "0x")
+             (not (strview-contains val "p"))
+             (not (strview-contains val "P")))
+    (return (ok (try (strview-parse-magnitude (strview-drop-bytes val 2) 16
+                                              18446744073709551615)))))
+  (return (ok (fl-f64-bits (try (parse f64 val))))))
+
+; LLVM prints an f32/f64 constant as a decimal when it round-trips and as the
+; f64 bit pattern when it does not, so two compilers can agree on the value and
+; disagree on the text. The three wider formats print as bits already, and
+; there the text IS the value.
+(defn fl-check-same-value (name:StrView got:StrView want:StrView):!void
+  (when (or (fl-bit-pattern? want) (fl-bit-pattern? got))
+    (when (not (= got want))
+      (fail! name ": nucleus " got ", clang " want))
+    (return (ok)))
+  (let (gb:ui64 (try (fl-value-bits got))
+        wb:ui64 (try (fl-value-bits want)))
+    (when (!= gb wb)
+      (fail! name ": nucleus " got ", clang " want)))
+  (return (ok)))
+
+; Every `@v…` clang emitted must be in the Nucleus module under the same name,
+; with the same type and the same value. `want` is clang's module.
+(defn fl-compare-globals (want:StrView got:StrView):!i64
+  (let (rows:i64 0
+        w:&FlGlobal (alloca FlGlobal)
+        g:&FlGlobal (alloca FlGlobal)
+        it:LineIter (strview-lines (addr-of want)))
+    (while (not (lines-iter-done (addr-of it)))
+      (let (l:StrView (lines-iter-next (addr-of it)))
+        (when (and (strview-has-prefix l "@v") (fl-parse-global l w))
+          (set! rows (+ rows 1))
+          (when (not (fl-find-global got (w 'name) g))
+            (fail! (w 'name) ": missing from the Nucleus module"))
+          (when (not (= (g 'ty) (w 'ty)))
+            (fail! (w 'name) ": nucleus type " (g 'ty) ", clang " (w 'ty)))
+          (try (fl-check-same-value (w 'name) (g 'val) (w 'val))))))
+    (return (ok rows))))
+
+; ---------------------------------------------------------------------------
+; Normalising a signature
+; ---------------------------------------------------------------------------
+
+(defn fl-ident-byte? (b:ui8):bool
+  (return (or (and (>= b 48) (<= b 57))
+              (and (>= b 65) (<= b 90))
+              (and (>= b 97) (<= b 122))
+              (= b 95) (= b 46))))
+
+(defn fl-all-digits? (s:StrView):bool
+  (let (n:usize (strview-byte-len (addr-of s))
+        i:usize 0)
+    (when (= n 0) (return false))
+    (while (< i n)
+      (let (b:ui8 (aref (s 'data) (as i64 i)))
+        (when (or (< b 48) (> b 57)) (return false)))
+      (set! i (+ i 1)))
+    (return true)))
+
+; Deleting a name leaves the space that preceded it: `(ptr %0, half` becomes
+; `(ptr , half`. A run of spaces, and any space before `,`, `)` or the end, is
+; not part of what the signature claims.
+(defn fl-squeeze (s:StrView):String
+  (let (out:String (string-new)
+        sp:StrView " "
+        n:usize (strview-byte-len (addr-of s))
+        i:usize 0)
+    (while (< i n)
+      (cond
+        (= (aref (s 'data) (as i64 i)) 32)
+          (let (j:usize i)
+            (while (and (< j n) (= (aref (s 'data) (as i64 j)) 32)) (set! j (+ j 1)))
+            (when (and (< j n)
+                       (!= (aref (s 'data) (as i64 j)) 44)
+                       (!= (aref (s 'data) (as i64 j)) 41))
+              (string-push-str-unchecked (addr-of out) (addr-of sp)))
+            (set! i j))
+        true
+          (do
+            (string-push-bytes-raw (addr-of out)
+                                   (unsafe/ptr+ (s 'data) (as i64 i)) 1)
+            (set! i (+ i 1)))))
+    (return out)))
+
+; The spellings the two compilers differ on, gone: ` noundef`, the `%struct.`
+; prefix, and SSA VALUE names — `%0` and `%s.arg` name one argument. A
+; surviving `%`-token is a TYPE, so it keeps its text and loses its sigil.
+(defn fl-strip-ssa (s:StrView):String
+  (let (out:String (string-new)
+        n:usize (strview-byte-len (addr-of s))
+        i:usize 0)
+    (while (< i n)
+      (let (r:StrView (strview-drop-bytes s i))
+        (cond
+          (strview-has-prefix r " noundef") (set! i (+ i 8))
+          (strview-has-prefix r "%struct.") (set! i (+ i 8))
+          (= (aref (s 'data) (as i64 i)) 37)
+            (let (j:usize (+ i 1))
+              (while (and (< j n) (fl-ident-byte? (aref (s 'data) (as i64 j))))
+                (set! j (+ j 1)))
+              (let (tok:StrView (strview (unsafe/ptr+ (s 'data) (as i64 (+ i 1)))
+                                         (- j (+ i 1))))
+                (when (not (or (fl-all-digits? tok) (strview-has-suffix tok ".arg")))
+                  (string-push-str-unchecked (addr-of out) (addr-of tok))))
+              (set! i j))
+          true
+            (do
+              (string-push-bytes-raw (addr-of out)
+                                     (unsafe/ptr+ (s 'data) (as i64 i)) 1)
+              (set! i (+ i 1))))))
+    (let (ov:StrView (string-as-view (addr-of out))
+          sq:String (fl-squeeze ov))
+      (drop (addr-of out))
+      (return sq))))
+
+; The text between `open` and the LAST `)` of the line. Greedy on purpose:
+; `byval(%S1)` puts a `)` inside the parameter list.
+(defn fl-arg-list (l:StrView open:StrView):!StrView
+  (match (strview-find (addr-of l) (addr-of open))
+    ((some at)
+      (let (rest:StrView (strview-drop-bytes l (+ at (strview-byte-len (addr-of open)))))
+        (match (strview-rfind-byte (addr-of rest) 41)
+          ((some close) (return (ok (strview-take-bytes rest close))))
+          (none (fail! "unterminated argument list: " (test-show l))))))
+    (none (fail! "no " (sexp-quote open) " in " (test-show l)))))
+
+; `<ret> (<params>)` for one `define`, with the SSA names gone.
+(defn fl-signature (module:StrView name:StrView):!String
+  (let (open:String (str "@" name "(")
+        ov:StrView (string-as-view (addr-of open))
+        l:StrView (try (line-with module ov)))
+    (when (not (strview-has-prefix l "define "))
+      (fail! "not a definition line: " (test-show l)))
+    (let (r:StrView (strview-drop-bytes l 7))
+      (when (strview-has-prefix r "dso_local ") (set! r (strview-drop-bytes r 10)))
+      (match (strview-find (addr-of r) (addr-of ov))
+        ((some at)
+          (let (rt:StrView (strview-take-bytes r at)
+                ret:StrView (strview-trim-end (addr-of rt))
+                params:StrView (try (fl-arg-list r ov))
+                pn:String (fl-strip-ssa params)
+                pv:StrView (string-as-view (addr-of pn))
+                sig:String (str ret " (" pv ")"))
+            (drop (addr-of pn))
+            (drop (addr-of open))
+            (return (ok sig))))
+        (none (fail! "no " (sexp-quote ov) " in " (test-show l)))))))
+
+; The types of a call's arguments, `, `-joined: each is `<type> <ssa name>`,
+; and the type is the claim the shell made with five `[^,]*` wildcards.
+(defn fl-arg-types (args:StrView):String
+  (let (out:String (string-new)
+        sep:StrView ", "
+        first:bool true
+        it:SplitIter (strview-split (addr-of args) (addr-of sep)))
+    (while (not (split-iter-done (addr-of it)))
+      (let (a:StrView (split-iter-next (addr-of it)))
+        (when (not first) (string-push-str-unchecked (addr-of out) (addr-of sep)))
+        (set! first false)
+        (let (t:StrView (fl-upto a 32))
+          (string-push-str-unchecked (addr-of out) (addr-of t)))))
+    (return out)))
+
+; ---------------------------------------------------------------------------
+; Probing the oracle
+; ---------------------------------------------------------------------------
+
+; `_Float16` and `__float128` are per-target clang features, so the question is
+; asked by compiling: neither arrived on every target at once. clang ITSELF is
+; not conditional — the project links with it — so its absence fails, not skips.
+(defn require-extended-float-widths ():!void
+  (let (p:String (try (test-write-file "probe.c"
+                        "__attribute__((used)) static _Float16 h = 1;
+__attribute__((used)) static __float128 q = 1;
+"))
+        r:CcIr (try (cc-emit-llvm (string-as-view (addr-of p))))
+        have:bool (r 'ok?))
+    (drop (addr-of r))
+    (drop (addr-of p))
+    (when (not have) (skip! "this clang has no _Float16/__float128")))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; FL-3: every literal at every width, against clang's own constant
+; ---------------------------------------------------------------------------
+
+(deftest s16-fl-constants-vs-clang
+  (try (require-extended-float-widths))
+  (let (nucsrc:String (string-new)
+        csrc:String (string-new)
+        nb:ref:String (addr-of nucsrc)
+        cb:ref:String (addr-of csrc)
+        n:usize 0)
+    (set! n (fl-emit-rows (fl-hex-literals) 5 nb cb n))
+    (set! n (fl-emit-rows (fl-decimal-literals) 3 nb cb n))
+    (str-into nb "(defn main ():i32 (return 0))\n")
+    (let (np:String (try (test-write-file "lit.nuc" (string-as-view nb)))
+          cp:String (try (test-write-file "lit.c" (string-as-view cb)))
+          nir:Compiled (try (compile-path (string-as-view (addr-of np))))
+          cir:CcIr (try (cc-emit-llvm (string-as-view (addr-of cp)))))
+      (when (not (nir 'ok?))
+        (fail! "expected a clean compile\n     "
+               (test-show (string-as-view (addr-of nir 'raw)))))
+      (when (not (cir 'ok?))
+        (fail! "clang refused the generated fixture\n     "
+               (test-show (string-as-view (addr-of cir 'err)))))
+      (let (rows:i64 (try (fl-compare-globals (string-as-view (addr-of cir 'ir))
+                                              (string-as-view (addr-of nir 'ir)))))
+        ; 16 hex literals at five widths and 8 decimal ones at three: a
+        ; generator that quietly emitted nothing would otherwise pass.
+        (try (check-eq-int rows 104 "constants compared")))
+      (drop (addr-of cir))
+      (drop (addr-of nir))
+      (drop (addr-of cp))
+      (drop (addr-of np)))
+    (drop (addr-of csrc))
+    (drop (addr-of nucsrc))))
+
+; ---------------------------------------------------------------------------
+; FL-4: the aggregate ABI
+; ---------------------------------------------------------------------------
+
+; Where the three widths differ from each other rather than from f64: X87
+; poisons its aggregate to MEMORY, a 16-byte fp128 does not, and an f16 beside
+; an i32 max-merges into one INTEGER eightbyte
+; (design/stage16-ergonomics/c-boundary-defects.md, FL-4).
+(deftest s16-fl-aggregate-abi
+  (try (require-extended-float-widths))
+  (let (cp:String (try (test-write-file "agg.c"
+                         "struct S1 { long double x; };
+struct S2 { __float128 x; };
+struct S3 { _Float16 x; int y; };
+long double f0(long double a){return a;}
+_Float16 f4(_Float16 a){return a;}
+__float128 f5(__float128 a){return a;}
+struct S1 f1(struct S1 s){return s;}
+struct S2 f2(struct S2 s){return s;}
+struct S3 f3(struct S3 s){return s;}
+"))
+        np:String (try (test-write-file "agg.nuc"
+                         "(defstruct S1 x:f80)
+(defstruct S2 x:f128)
+(defstruct S3 x:f16 y:i32)
+(defn f0 (a:f80):f80 (return a))
+(defn f4 (a:f16):f16 (return a))
+(defn f5 (a:f128):f128 (return a))
+(defn f1 (s:S1):S1 (return s))
+(defn f2 (s:S2):S2 (return s))
+(defn f3 (s:S3):S3 (return s))
+(defn main ():i32 (return 0))
+"))
+        cir:CcIr (try (cc-emit-llvm (string-as-view (addr-of cp))))
+        nir:Compiled (try (compile-path (string-as-view (addr-of np)))))
+    (when (not (nir 'ok?))
+      (fail! "expected a clean compile\n     "
+             (test-show (string-as-view (addr-of nir 'raw)))))
+    (when (not (cir 'ok?))
+      (fail! "clang refused the aggregate fixture\n     "
+             (test-show (string-as-view (addr-of cir 'err)))))
+    (let (cv:StrView (string-as-view (addr-of cir 'ir))
+          nv:StrView (string-as-view (addr-of nir 'ir))
+          i:usize 0)
+      (while (< i 6)
+        (let (nm:String (str "f" i)
+              fv:StrView (string-as-view (addr-of nm))
+              want:String (try (fl-signature cv fv))
+              got:String (try (fl-signature nv fv)))
+          (when (not (= (string-as-view (addr-of got)) (string-as-view (addr-of want))))
+            (fail! fv ": nucleus " (string-as-view (addr-of got))
+                   ", clang " (string-as-view (addr-of want))))
+          (drop (addr-of got))
+          (drop (addr-of want))
+          (drop (addr-of nm)))
+        (set! i (+ i 1))))
+    (drop (addr-of nir))
+    (drop (addr-of cir))
+    (drop (addr-of np))
+    (drop (addr-of cp))))
+
+; ---------------------------------------------------------------------------
+; FL-5: what `...` promotes
+; ---------------------------------------------------------------------------
+
+; `...` promotes f32 to double and leaves the other four alone — measured from
+; clang, and the tempting generalization ("promote any float narrower than
+; f64") would break `half` in exactly this line.
+(deftest s16-fl-vararg-unpromoted
+  (let (h:String (try (test-write-file "va.h" "int flp(const char *fmt, ...);\n"))
+        src:String (str "(import-use \"" (string-as-view (addr-of h)) "\")
+(defn g (h:f16 f:f32 ld:f80 q:f128 dd:f64):void (flp \"\" h f ld q dd))
+(defn main ():i32 (return 0))
+")
+        ir:String (try (source-ir (string-as-view (addr-of src))))
+        open:StrView "@flp("
+        l:StrView (try (line-with (string-as-view (addr-of ir))
+                                  "call i32 (ptr, ...) @flp("))
+        args:StrView (try (fl-arg-list l open))
+        types:String (fl-arg-types args))
+    (try (check-eq (string-as-view (addr-of types))
+                   "ptr, half, double, x86_fp80, fp128, double"))
+    (drop (addr-of types))
+    (drop (addr-of ir))
+    (drop (addr-of src))
+    (drop (addr-of h))))
+
+; ---------------------------------------------------------------------------
+; FL-6 / FL-7: which widths a target has
+; ---------------------------------------------------------------------------
+
+(defn check-target-rejects (target:StrView path:StrView needle:StrView):!void
+  (let (c:Compiled (try (compile-path-for target path)))
+    (when (c 'ok?)
+      (fail! "expected " target " to reject " path))
+    (try (check-error-anywhere (addr-of c 'diags) needle))
+    (drop (addr-of c))
+    (return (ok))))
+
+(defn check-target-declares (target:StrView path:StrView want:StrView):!void
+  (let (c:Compiled (try (compile-path-for target path)))
+    (when (not (c 'ok?))
+      (fail! target ": " (test-show (string-as-view (addr-of c 'raw)))))
+    (try (check-line (string-as-view (addr-of c 'ir)) want))
+    (drop (addr-of c))
+    (return (ok))))
+
+(defn check-avr-refuses (name:StrView):!void
+  (let (src:String (str "(defn f (x:" name "):" name " (return x))
+(defn main ():i32 (return 0))
+")
+        p:String (try (test-write-file "avr.nuc" (string-as-view (addr-of src))))
+        want:String (str name " is not supported on AVR"))
+    (try (check-target-rejects "avr-unknown-unknown-elf"
+                               (string-as-view (addr-of p))
+                               (string-as-view (addr-of want))))
+    (drop (addr-of want))
+    (drop (addr-of p))
+    (drop (addr-of src))
+    (return (ok))))
+
+; §10 limit 3: a width the emission target has no format for is a located
+; error, not IR no backend can select. C's own `long double` stays portable —
+; only the representation spelling `f80` is target-bound.
+(deftest s16-fl-target-availability
+  (let (p:String (try (test-write-file "w.nuc" "(defn f (x:f80):f80 (return x))
+(defn main ():i32 (return 0))
+"))
+        pv:StrView (string-as-view (addr-of p))
+        no-x87:StrView "f80 is the x87 80-bit format and exists only on x86")
+    (try (check-target-rejects "aarch64-unknown-linux-gnu" pv no-x87))
+    (try (check-target-rejects "riscv64-unknown-linux-gnu" pv no-x87))
+    (try (check-avr-refuses "f16"))
+    (try (check-avr-refuses "f80"))
+    (try (check-avr-refuses "f128"))
+    (let (c:Compiled (try (compile-path pv)))
+      (when (not (c 'ok?))
+        (fail! "the host target refused f80\n     "
+               (test-show (string-as-view (addr-of c 'raw)))))
+      (drop (addr-of c)))
+    (drop (addr-of p)))
+  ; FL-7: `long double` is whatever the target's C compiler makes it. MSVC
+  ; keeps it a plain double even on x86_64, which is why the check for it
+  ; cannot be inferred from the architecture.
+  (let (h:String (try (test-write-file "ld.h" "long double ldf(long double x);\n"))
+        src:String (str "(import-use \"" (string-as-view (addr-of h)) "\")
+(defn main ():i32 (return 0))
+")
+        p:String (try (test-write-file "ld.nuc" (string-as-view (addr-of src))))
+        pv:StrView (string-as-view (addr-of p)))
+    (try (check-target-declares "aarch64-unknown-linux-gnu" pv
+                                "declare fp128 @ldf(fp128)"))
+    (try (check-target-declares "riscv64-unknown-linux-gnu" pv
+                                "declare fp128 @ldf(fp128)"))
+    (try (check-target-declares "x86_64-unknown-linux-gnu" pv
+                                "declare x86_fp80 @ldf(x86_fp80)"))
+    (try (check-target-declares "x86_64-pc-windows-msvc" pv
+                                "declare double @ldf(double)"))
+    (drop (addr-of p))
+    (drop (addr-of src))
+    (drop (addr-of h))))
+
+; ---------------------------------------------------------------------------
+; FL-3 at run time
+; ---------------------------------------------------------------------------
+
+(deftest s16-fl3-hex-literals
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defn id80 (x:f80):f80 (return x))
+(defn main ():i32
+  (let (a:i64 0xDEADBEEF b:i32 0x7F c:ui64 0xFFFFFFFFFFFFFFFF d:i64 -0x10
+        e:f64 0x1.8p+3)
+    (printf \"%ld %d %lu %ld %.4f\\n\" a b c d e)
+    (printf \"%.21Lg\\n\" (id80 0x1.921fb54442d18469p+1)))
+  (return 0))
+"))
+        ov:StrView (string-as-view (addr-of out)))
+    (try (check-eq (strview-trim-end (addr-of ov))
+                   "3735928559 127 18446744073709551615 -16 12.0000
+3.1415926535897932383"))
+    (drop (addr-of out))))
+
+; C requires the binary exponent, so `0x1F` is an integer and `0x1.8` is
+; neither that nor a float.
+(deftest s16-fl3-exponent-required
+  (try (check-source-rejects
+         "(defn main ():i32 (let (x:f64 0x1.8) (return 0)))
+"
+         "undefined: 0x1.8")))
