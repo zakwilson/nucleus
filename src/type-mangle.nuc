@@ -80,13 +80,13 @@
 ; (no TY-FN flows through a generic in the compiler's own source: `make
 ; bootstrap` re-converges with this change).
 (defvar g-fnty-id:i32 0)
-(defvar (g-fnty (ref (HashMap Symbol ref:Type))) (hashmap-new-in (addr-of g-arena-alloc)))
+(defvar (g-fnty (ref (HashMap Symbol ref:Type))) (hashmap-new-in &g-arena-alloc))
 
-(defn fnty-intern (t:ref:Type):Symbol
+(defn fnty-intern (t:&Type):Symbol
   (doseq (entry g-fnty (HashMapEntryIter Symbol ref:Type))
-         (when (= ((addr-of entry) 'val)
+         (when (= (&entry 'val)
                   t)
-               (return ((addr-of entry) 'key))))
+               (return (&entry 'key))))
   (let (name:Symbol (symbol-intern (fstr "__fnty_" g-fnty-id)))
     (inc! g-fnty-id)
     (assoc g-fnty name t)
@@ -167,15 +167,15 @@
         acc:String (string-new)
         any:i32 0)
     (let (it:ListIter (list-iter segs))
-      (doseq-iter (e (addr-of it))
+      (doseq-iter (e &it)
         (let (seg:Symbol ((as ptr:Node e) 's)
               idx:i32 (tyvar-index-of seg tyvars ntv)
               piece:Symbol (if (>= idx 0) (aref (as ptr:Symbol spellings) idx) seg))
-          (when (!= any 0) (str-into (addr-of acc) ":"))
-          (str-into (addr-of acc) piece)
+          (when (!= any 0) (str-into &acc ":"))
+          (str-into &acc piece)
           (set! any 1))))
     (when (= any 0) (return s))
-    (return (symbol-intern (string-as-view (addr-of acc))))))
+    (return (symbol-intern (string-as-view &acc)))))
 
 ; Deep-copy a node, substituting type variables (by colon-spelling) in every
 ; symbol. Used to stamp a concrete instance from a generic template.

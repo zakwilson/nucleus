@@ -22,25 +22,25 @@
 ; ============================================================
 
 ; (some r) — wrap a non-null (ref T) as (Maybe (ref T)). Pure relabel, no IR.
-(defn emit-some (call:ptr scope:ref:Scope):ref:Val
-  (let (cc:ptr:Node (unsafe/cast ptr:Node call))
+(defn emit-some (call:ptr scope:&Scope):&Val
+  (let (cc:ptr:Node (unsafe/cast &Node call))
     (when (!= (node-len cc) 2) (die-at (cc 'line) "some expects 1 arg"))
-    (let (v:ref:Val (emit-node (node-at cc 1) scope))
+    (let (v:&Val (emit-node (node-at cc 1) scope))
       (when (!= (ptr-pkind (v 'type)) PTR-REF)
         (die-at (cc 'line) "some: value must be non-null (ref ...) — launder a raw pointer with (as-ref ...)"))
-      (let (rv:ref:Val (alloc-val (type-as-pkind (v 'type) PTR-MAYBE) (v 'val)))
+      (let (rv:&Val (alloc-val (type-as-pkind (v 'type) PTR-MAYBE) (v 'val)))
         (val-copy-taint (as ptr rv) (as ptr v))
         (return rv)))))
 
 ; (as-ref p) — launder a raw pointer into (Maybe (ref T)): null stays none.
 ; Pure relabel, no IR; the value still has to be narrowed before use.
-(defn emit-as-ref (call:ptr scope:ref:Scope):ref:Val
-  (let (cc:ptr:Node (unsafe/cast ptr:Node call))
+(defn emit-as-ref (call:ptr scope:&Scope):&Val
+  (let (cc:ptr:Node (unsafe/cast &Node call))
     (when (!= (node-len cc) 2) (die-at (cc 'line) "as-ref expects 1 arg"))
-    (let (v:ref:Val (emit-node (node-at cc 1) scope))
-      (when (-> v (_ 'type) (unsafe/cast ptr:Type _) (_ 'kind) (!= _ TY-PTR))
+    (let (v:&Val (emit-node (node-at cc 1) scope))
+      (when (-> v (_ 'type) (unsafe/cast &Type _) (_ 'kind) (!= _ TY-PTR))
         (die-at (cc 'line) "as-ref: value must be a pointer"))
-      (let (rv:ref:Val (alloc-val (type-as-pkind (v 'type) PTR-MAYBE) (v 'val)))
+      (let (rv:&Val (alloc-val (type-as-pkind (v 'type) PTR-MAYBE) (v 'val)))
         (val-copy-taint (as ptr rv) (as ptr v))
         (return rv)))))
 
@@ -49,7 +49,7 @@
 ; (Stage 10 C3, like die-at), then prints err-name/err-message and aborts (the
 ; panic tier). Printing needs printf in scope (e.g. (import-use "stdio.h")); the abort
 ; is @llvm.trap, so no libc abort symbol is needed.
-(defn emit-unwrap-result (v:raw:Val ud:raw:UnionDef scope:ref:Scope line:i32):ref:Val
+(defn emit-unwrap-result (v:raw:Val ud:raw:UnionDef scope:&Scope line:i32):&Val
   (let (vv:raw:Val v
         udd:raw:UnionDef ud
         sd:raw:StructDef (udd 'sdef)
@@ -112,11 +112,11 @@
         (when (!= (error-lib-in-scope) 0)
           (let (uesym:?ptr:Sym (scope-lookup g-globals (symbol-intern "unhandled-error")))
             (when (and (!= uesym null)
-                       (!= ((unsafe/cast ptr:Sym uesym) 'is-const) 0))
-              (emit-handler-call ((unsafe/cast ptr:Sym uesym) 'const-val)
+                       (!= ((unsafe/cast &Sym uesym) 'is-const) 0))
+              (emit-handler-call ((unsafe/cast &Sym uesym) 'const-val)
                                  (as ptr ty-i32) msg scope line))))
         (emit g-body-stream "  " ftmp " = getelementptr inbounds ["
-              (+ (unsafe/cast i32 (byte-len (addr-of fmt))) 1) " x i8], ptr @.str." fmt-id
+              (+ (unsafe/cast i32 (byte-len &fmt)) 1) " x i8], ptr @.str." fmt-id
               ", i64 0, i64 0\n")
         (emit g-body-stream "  call i32 (ptr, ...) @printf(ptr " ftmp ", ptr " nm ", ptr " msg
               ")\n")
@@ -137,7 +137,7 @@
 
 ; (unwrap-or r default) over a Result: the `ok` payload, or `default` (evaluated
 ; only on the err path; it must satisfy the ok payload type).
-(defn emit-unwrap-or-result (v:raw:Val ud:raw:UnionDef default-node:ptr scope:ref:Scope line:i32):ref:Val
+(defn emit-unwrap-or-result (v:raw:Val ud:raw:UnionDef default-node:ptr scope:&Scope line:i32):&Val
   (let (vv:raw:Val v
         udd:raw:UnionDef ud
         sd:raw:StructDef (udd 'sdef)
@@ -169,14 +169,14 @@
       ; err path: evaluate the default.
       (emit g-body-stream err-lbl ":\n")
       (set! g-block-term 0)
-      (let (dv:ref:Val (emit-node default-node scope)
+      (let (dv:&Val (emit-node default-node scope)
             dval:StrView ""
             dterm:i32 g-block-term)
         (when (= dterm 0)
           (let (coerced:ptr (coerce-int-val (as ptr dv) ok-ty line))
             (when (= coerced null)
               (die-at line "unwrap-or: default type mismatch"))
-            (set! dval ((as ptr:Val coerced) 'val)))
+            (set! dval ((as &Val coerced) 'val)))
           (emit g-body-stream "  br label %" join-lbl "\n")
           (emit g-body-stream join-lbl ":\n")
           (emit g-body-stream "  br label %" end-lbl "\n"))
@@ -196,7 +196,7 @@
 ; the (ref T) pointer; on the err arm print err-name/err-message and abort — the
 ; panic tier, mirroring emit-unwrap-result but discriminated by is-err and with
 ; the id recovered from the sentinel pointer (0 - ptrtoint r) rather than a tag.
-(defn emit-unwrap-niche-errptr (v:raw:Val elem:raw:Type scope:ref:Scope line:i32):ref:Val
+(defn emit-unwrap-niche-errptr (v:raw:Val elem:raw:Type scope:&Scope line:i32):&Val
   (let (vv:raw:Val v
         rval:StrView (vv 'val))
     (when (= (scope-lookup g-globals (symbol-intern "printf")) null)
@@ -233,11 +233,11 @@
         (emit g-body-stream "  " msg " = load ptr, ptr " mgep ", align 8\n")
         (when (!= (error-lib-in-scope) 0)
           (let (uesym:?ptr:Sym (scope-lookup g-globals (symbol-intern "unhandled-error")))
-            (when (and (!= uesym null) (!= ((unsafe/cast ptr:Sym uesym) 'is-const) 0))
-              (emit-handler-call ((unsafe/cast ptr:Sym uesym) 'const-val)
+            (when (and (!= uesym null) (!= ((unsafe/cast &Sym uesym) 'is-const) 0))
+              (emit-handler-call ((unsafe/cast &Sym uesym) 'const-val)
                                  (as ptr ty-i32) msg scope line))))
         (emit g-body-stream "  " ftmp " = getelementptr inbounds ["
-              (+ (unsafe/cast i32 (byte-len (addr-of fmt))) 1) " x i8], ptr @.str." fmt-id
+              (+ (unsafe/cast i32 (byte-len &fmt)) 1) " x i8], ptr @.str." fmt-id
               ", i64 0, i64 0\n")
         (emit g-body-stream "  call i32 (ptr, ...) @printf(ptr " ftmp ", ptr " nm ", ptr " msg
               ")\n")
@@ -248,17 +248,17 @@
       ; ok path: r is the (ref T) pointer (non-null, never top-page).
       (emit g-body-stream ok-lbl ":\n")
       (set! g-block-term 0)
-      (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR)))
+      (let (rt:ptr:Type (as &Type (make-type TY-PTR)))
         (set! (rt 'elem) elem)
         (set! (rt 'pkind) PTR-REF)
-        (let (rv:ref:Val (alloc-val (as ptr rt) rval))
+        (let (rv:&Val (alloc-val (as ptr rt) rval))
           (set! (rv 'taint) (vv 'taint))
           (return rv))))))
 
-(defn emit-unwrap (call:ptr scope:ref:Scope):ref:Val
-  (let (cc:ptr:Node (unsafe/cast ptr:Node call))
+(defn emit-unwrap (call:ptr scope:&Scope):&Val
+  (let (cc:ptr:Node (unsafe/cast &Node call))
     (when (!= (node-len cc) 2) (die-at (cc 'line) "unwrap expects 1 arg"))
-    (let (v:ref:Val (emit-node (node-at cc 1) scope))
+    (let (v:&Val (emit-node (node-at cc 1) scope))
       (when (= (niche-layout-of (v 'type)) LAYOUT-NICHE-ERRPTR)
         (return (emit-unwrap-niche-errptr v
                   ((v 'type) 'elem) scope (cc 'line))))
@@ -281,17 +281,17 @@
         (emit g-body-stream "  unreachable\n")
         (emit g-body-stream ok-lbl ":\n")
         (set! g-block-term 0)
-        (let (rv:ref:Val (alloc-val (type-as-pkind (v 'type) PTR-REF) (v 'val)))
+        (let (rv:&Val (alloc-val (type-as-pkind (v 'type) PTR-REF) (v 'val)))
           (set! (rv 'taint) (v 'taint))
           (return rv))))))
 
 ; (unwrap-or r default) over a niche-ERRPTR `!T`: the ok (ref T) pointer, or
 ; `default` (evaluated only on the err arm; must satisfy the (ref T) result).
 (defn emit-unwrap-or-niche-errptr (v:raw:Val elem:raw:Type default-node:ptr
-                                           scope:ref:Scope line:i32):ref:Val
+                                           scope:&Scope line:i32):&Val
   (let (vv:raw:Val v
         rval:StrView (vv 'val)
-        ref-ty:ptr:Type (as ptr:Type (make-type TY-PTR))
+        ref-ty:ptr:Type (as &Type (make-type TY-PTR))
         iserr:StrView (emit-errptr-is-err rval)
         id:i32 (new-label-id)
         ok-lbl:StrView (fstr "unwrapor.ok" id)
@@ -305,7 +305,7 @@
     (emit g-body-stream "  br label %" end-lbl "\n")
     (emit g-body-stream err-lbl ":\n")
     (set! g-block-term 0)
-    (let (dv:ref:Val (emit-node default-node scope)
+    (let (dv:&Val (emit-node default-node scope)
           dval:StrView ""
           dtaint:ptr null
           dterm:i32 g-block-term)
@@ -313,7 +313,7 @@
         (let (coerced:ptr (coerce-int-val (as ptr dv) (as ptr ref-ty) line))
           (when (= coerced null)
             (die-at line "unwrap-or: default type mismatch"))
-          (set! dval ((as ptr:Val coerced) 'val))
+          (set! dval ((as &Val coerced) 'val))
           (set! dtaint (dv 'taint)))
         (emit g-body-stream "  br label %" join-lbl "\n")
         (emit g-body-stream join-lbl ":\n")
@@ -325,16 +325,16 @@
           (emit g-body-stream "  " tmp " = phi ptr [ " rval ", %" ok-lbl " ], [ " dval ", %"
                 join-lbl " ]\n")
           (emit g-body-stream "  " tmp " = phi ptr [ " rval ", %" ok-lbl " ]\n"))
-        (let (rv:ref:Val (alloc-val (as ptr ref-ty) tmp))
+        (let (rv:&Val (alloc-val (as ptr ref-ty) tmp))
           (set! (rv 'taint) (taint-merge (vv 'taint) dtaint))
           (return rv))))))
 
 ; (unwrap-or m default) — the narrowed value, or `default` (evaluated only on
 ; the none path; it must satisfy the non-null (ref ...) result type).
-(defn emit-unwrap-or (call:ptr scope:ref:Scope):ref:Val
-  (let (cc:ptr:Node (unsafe/cast ptr:Node call))
+(defn emit-unwrap-or (call:ptr scope:&Scope):&Val
+  (let (cc:ptr:Node (unsafe/cast &Node call))
     (when (!= (node-len cc) 3) (die-at (cc 'line) "unwrap-or expects 2 args"))
-    (let (v:ref:Val (emit-node (node-at cc 1) scope))
+    (let (v:&Val (emit-node (node-at cc 1) scope))
       (when (= (niche-layout-of (v 'type)) LAYOUT-NICHE-ERRPTR)
         (return (emit-unwrap-or-niche-errptr v
                   ((v 'type) 'elem) (node-at cc 2) scope (cc 'line))))
@@ -357,7 +357,7 @@
         (emit g-body-stream "  br label %" end-lbl "\n")
         (emit g-body-stream none-lbl ":\n")
         (set! g-block-term 0)
-        (let (dv:ref:Val (emit-node (node-at cc 2) scope)
+        (let (dv:&Val (emit-node (node-at cc 2) scope)
               dval:StrView ""
               dtaint:ptr null)
           (let (dterm:i32 g-block-term)
@@ -365,7 +365,7 @@
               (let (coerced:ptr (coerce-int-val (as ptr dv) ref-ty (cc 'line)))
                 (when (= coerced null)
                   (die-at (cc 'line) "unwrap-or: default type mismatch"))
-                (set! dval ((as ptr:Val coerced) 'val))
+                (set! dval ((as &Val coerced) 'val))
                 (set! dtaint (dv 'taint)))
               (emit g-body-stream "  br label %" join-lbl "\n")
               (emit g-body-stream join-lbl ":\n")
@@ -377,7 +377,7 @@
                 (emit g-body-stream "  " tmp " = phi ptr [ " (v 'val) ", %" some-lbl " ], [ "
                       dval ", %" join-lbl " ]\n")
                 (emit g-body-stream "  " tmp " = phi ptr [ " (v 'val) ", %" some-lbl " ]\n"))
-              (let (rv:ref:Val (alloc-val ref-ty tmp))
+              (let (rv:&Val (alloc-val ref-ty tmp))
                 (set! (rv 'taint) (taint-merge (v 'taint) dtaint))
                 (return rv)))))))))
 
@@ -386,21 +386,21 @@
 ; narrowing point, so x reads as (ref T) exactly inside the then arm (and stays
 ; Maybe in the else arm). Reuses cond's phi typing, fall-through, and
 ; after-the-form narrowing rules wholesale.
-(defn emit-if-some (call:ptr scope:ref:Scope is-when:i32):ref:Val
-  (let (cc:ptr:Node (unsafe/cast ptr:Node call)
+(defn emit-if-some (call:ptr scope:&Scope is-when:i32):&Val
+  (let (cc:ptr:Node (unsafe/cast &Node call)
         tag:StrView "if-some")
     (when (!= is-when 0) (set! tag "when-some"))
     (when (< (node-len cc) 3)
       (die-at (cc 'line) (fstr tag ": expects (name maybe-expr) and a body")))
     (when (and (= is-when 0) (> (node-len cc) 4))
       (die-at (cc 'line) "if-some: expects (name maybe-expr) then [else]"))
-    (let (binder:ptr:Node (unsafe/cast ptr:Node (node-at cc 1)))
+    (let (binder:ptr:Node (unsafe/cast &Node (node-at cc 1)))
       (when (or (!= (binder 'kind) NODE-CELL) (!= (node-len (as ptr binder)) 2))
         (die-at (cc 'line) (fstr tag ": binding must be (name maybe-expr)")))
-      (let (xnode:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr binder) 0)))
+      (let (xnode:ptr:Node (unsafe/cast &Node (node-at (as ptr binder) 0)))
         (when (!= (xnode 'kind) NODE-SYM)
           (die-at (binder 'line) (fstr tag ": name must be a symbol")))
-        (let (mv:ref:Val (emit-node (node-at (as ptr binder) 1) scope))
+        (let (mv:&Val (emit-node (node-at (as ptr binder) 1) scope))
           (when (!= (ptr-pkind (mv 'type)) PTR-MAYBE)
             (die-at (cc 'line) (fstr tag
                                      ": value must be (Maybe (ref ...)) — launder a raw pointer with (as-ref ...)")))
@@ -411,8 +411,8 @@
             (inc! g-tmp)
             (emit g-entry-stream "  " slot " = alloca ptr, align 8\n")
             (emit g-body-stream "  store ptr " (mv 'val) ", ptr " slot ", align 8\n")
-            (let (inner:ref:Scope (scope-new scope)
-                  sym:ref:Sym (scope-define inner (xnode 's) (mv 'type) slot 1)
+            (let (inner:&Scope (scope-new scope)
+                  sym:&Sym (scope-define inner (xnode 's) (mv 'type) slot 1)
                   ln:i32 (cc 'line))
               (set! (sym 'taint) (mv 'taint))
               (let (test:ptr (make-cell '!=
@@ -420,7 +420,7 @@
                                  (make-cell 'null null ln) ln) ln)
                     tail:ptr null)
                 (if (!= is-when 0)
-                  (let (body-chain:ptr (-> cc (_ 'cdr) (unsafe/cast ptr:Node _) (_ 'cdr)))
+                  (let (body-chain:ptr (-> cc (_ 'cdr) (unsafe/cast &Node _) (_ 'cdr)))
                     (set! tail (make-cell (make-cell 'do body-chain ln) null ln)))
                   (if (= (node-len cc) 4)
                     (set! tail (make-cell (node-at cc 2)
@@ -444,11 +444,11 @@
 ; and load the whole struct as a first-class value. Argument taints merge
 ; into the result (a with-owned pointer stored into the value escapes with
 ; it, and `return` already rejects tainted values).
-(defn emit-union-construct (ud:raw:UnionDef arm:i32 call:ptr argi:i32 scope:ref:Scope):ref:Val
+(defn emit-union-construct (ud:raw:UnionDef arm:i32 call:ptr argi:i32 scope:&Scope):&Val
   (let (udd:raw:UnionDef ud
-        cc:ptr:Node (unsafe/cast ptr:Node call)
+        cc:ptr:Node (unsafe/cast &Node call)
         sd:raw:StructDef (udd 'sdef)
-        arm-rec:ref:Arm (invoke (udd 'arms) arm:usize)
+        arm-rec:&Arm (invoke (udd 'arms) arm:usize)
         nf:i32 (arm-rec 'nfields)
         nargs:i32 (- (node-len cc) argi)
         taint:ptr null)
@@ -465,30 +465,30 @@
       (when (> nf 0)
         (let (pp:StrView (new-tmp)
               ftypes:ptr (arm-rec 'ftypes)
-              ptype:ptr:Type (unsafe/cast ptr:Type (arm-rec 'ptype)))
+              ptype:ptr:Type (unsafe/cast &Type (arm-rec 'ptype)))
           (emit g-body-stream "  " pp " = getelementptr inbounds i8, ptr " base ", i64 "
                 (union-payload-off ud) "\n")
           (dotimes (fi:i32 nf)
-            (let (ftype:ptr (aref (as ptr:ptr ftypes) fi)
-                  v:ref:Val (emit-node (node-at cc (+ argi fi)) scope)
+            (let (ftype:ptr (aref (as &ptr ftypes) fi)
+                  v:&Val (emit-node (node-at cc (+ argi fi)) scope)
                   coerced:ptr (coerce-int-val v ftype (cc 'line)))
               (when (= coerced null)
                 (die-at (cc 'line)
                   (fstr (udd 'name) ": type mismatch for a field of arm '" (arm-rec 'name) "'")))
               (set! taint (taint-merge taint (v 'taint)))
-              (let (cv:ptr:Val (as ptr:Val coerced)
+              (let (cv:ptr:Val (as &Val coerced)
                     fgep:StrView pp)
                 ; Several fields → the payload is the memoized anon struct;
                 ; one field → the payload IS the field, at offset 0.
                 (when (> nf 1)
                   (set! fgep (new-tmp))
                   (emit g-body-stream "  " fgep " = getelementptr inbounds %"
-                        ((unsafe/cast ptr:StructDef (ptype 'sdef)) 'name) ", ptr " pp
+                        ((unsafe/cast &StructDef (ptype 'sdef)) 'name) ", ptr " pp
                         ", i32 0, i32 " fi "\n"))
                 (emit-store (type-to-ir ftype) (cv 'val) fgep ftype))))))
       (let (v:StrView (new-tmp))
         (emit g-body-stream "  " v " = load %" (sd 'ir-name) ", ptr " base "\n")
-        (let (rv:ref:Val (alloc-val (type-for-sdef sd) v))
+        (let (rv:&Val (alloc-val (type-for-sdef sd) v))
           (set! (rv 'taint) taint)
           (return rv))))))
 
@@ -514,8 +514,8 @@
 ;                 (err E)  → inttoptr(0 - zext(E)) — a top-page sentinel
 ; The eliminators (match/unwrap/null-guard/is-err) read the same encoding back.
 (defn emit-niche-construct (ty:raw:Type layout:i32 arm:Symbol call:ptr argi:i32
-                                    scope:ref:Scope line:i32):ref:Val
-  (let (cc:ptr:Node (unsafe/cast ptr:Node call)
+                                    scope:&Scope line:i32):&Val
+  (let (cc:ptr:Node (unsafe/cast &Node call)
         elem:ptr (ty 'elem))
     (if (= layout LAYOUT-NICHE-MAYBE)
       ; --- rule 2: nullable pointer, null = none ---
@@ -523,11 +523,11 @@
         (do
           (when (!= (node-len cc) (+ argi 1))
             (die-at line "make: some takes one (ref T) field"))
-          (let (v:ref:Val (emit-node (node-at cc argi) scope))
-            (when (or (-> v (_ 'type) (unsafe/cast ptr:Type _) (_ 'kind) (!= _ TY-PTR))
+          (let (v:&Val (emit-node (node-at cc argi) scope))
+            (when (or (-> v (_ 'type) (unsafe/cast &Type _) (_ 'kind) (!= _ TY-PTR))
                       (= (ptr-pkind (v 'type)) PTR-MAYBE))
               (die-at line "make: some expects a non-null (ref T) value"))
-            (let (rv:ref:Val (alloc-val (type-as-pkind ty PTR-MAYBE) (v 'val)))
+            (let (rv:&Val (alloc-val (type-as-pkind ty PTR-MAYBE) (v 'val)))
               (set! (rv 'taint) (v 'taint))
               (return rv))))
         (if (= arm "none")
@@ -541,19 +541,19 @@
         (do
           (when (!= (node-len cc) (+ argi 1))
             (die-at line "make: ok takes one (ref T) field"))
-          (let (v:ref:Val (emit-node (node-at cc argi) scope))
-            (when (-> v (_ 'type) (unsafe/cast ptr:Type _) (_ 'kind) (!= _ TY-PTR))
+          (let (v:&Val (emit-node (node-at cc argi) scope))
+            (when (-> v (_ 'type) (unsafe/cast &Type _) (_ 'kind) (!= _ TY-PTR))
               (die-at line "make: ok expects a (ref T) pointer value"))
             ; p is stored directly; the flip guarantees it is non-null and never
             ; in the reserved top page, so it can't collide with an error.
-            (let (rv:ref:Val (alloc-val (type-as-pkind ty PTR-ERRPTR) (v 'val)))
+            (let (rv:&Val (alloc-val (type-as-pkind ty PTR-ERRPTR) (v 'val)))
               (set! (rv 'taint) (v 'taint))
               (return rv))))
         (if (= arm "err")
           (do
             (when (!= (node-len cc) (+ argi 1))
               (die-at line "make: err takes one Err field"))
-            (let (ev:ref:Val (emit-node (node-at cc argi) scope))
+            (let (ev:&Val (emit-node (node-at cc argi) scope))
               (when (= (is-int-type (ev 'type)) 0)
                 (die-at line "make: err expects an Err (i32) value"))
               ; (err E) = inttoptr(0 - zext(E to iptr)). Id 0 ("no error") maps to
@@ -572,20 +572,20 @@
 ; produced only by union-target-rewrite when the enclosing return type is a
 ; niche (rules 2/3). The encoding target is g-fn-ret-type (the niche pointer);
 ; the arm/args carry the original ok/err/some/none and their operands.
-(defn emit-niche-ctor (call:ptr scope:ref:Scope):ref:Val
-  (let (cc:ptr:Node (unsafe/cast ptr:Node call)
-        ln:i32 ((unsafe/cast ptr:Node call) 'line)
+(defn emit-niche-ctor (call:ptr scope:&Scope):&Val
+  (let (cc:ptr:Node (unsafe/cast &Node call)
+        ln:i32 ((unsafe/cast &Node call) 'line)
         ty:ptr g-fn-ret-type
         layout:i32 (niche-layout-of g-fn-ret-type)
-        arm-node:ptr:Node (unsafe/cast ptr:Node (node-at cc 1)))
+        arm-node:ptr:Node (unsafe/cast &Node (node-at cc 1)))
     (when (= layout LAYOUT-TAGGED)
       (die-at ln "__niche-ctor: enclosing return type is not a niche"))
     (return (emit-niche-construct ty layout (arm-node 's) call 2 scope ln))))
 
 ; Works for any defunion type, including stamped template instances, which
 ; have no constructor functions of their own.
-(defn emit-make (call:ptr scope:ref:Scope):ref:Val
-  (let (cc:ptr:Node (unsafe/cast ptr:Node call))
+(defn emit-make (call:ptr scope:&Scope):&Val
+  (let (cc:ptr:Node (unsafe/cast &Node call))
     (when (< (node-len cc) 3)
       (die-at (cc 'line) "make: expects (make Type arm args...)"))
     (let (ty:ptr (parse-type-from-node (node-at cc 1) (cc 'line))
@@ -593,17 +593,17 @@
       ; Niche layouts (rules 2/3) have no backing struct — construct the encoded
       ; pointer directly. uniondef-for-type would return null for these.
       (when (!= layout LAYOUT-TAGGED)
-        (let (arm-node:ptr:Node (unsafe/cast ptr:Node (node-at cc 2)))
+        (let (arm-node:ptr:Node (unsafe/cast &Node (node-at cc 2)))
           (when (!= (arm-node 'kind) NODE-SYM)
             (die-at (node-line (as ptr arm-node) (cc 'line)) "make: arm must be a symbol"))
           (return (emit-niche-construct ty layout (arm-node 's) call 3 scope (cc 'line)))))
       (let (ud:?ptr:UnionDef (uniondef-for-type ty))
         (when (= ud null)
           (die-at (cc 'line) "make: type is not a defunion"))
-        (let (arm-node:ptr:Node (unsafe/cast ptr:Node (node-at cc 2)))
+        (let (arm-node:ptr:Node (unsafe/cast &Node (node-at cc 2)))
           (when (!= (arm-node 'kind) NODE-SYM)
             (die-at (node-line (as ptr arm-node) (cc 'line)) "make: arm must be a symbol"))
-          (let (udd:ptr:UnionDef (unsafe/cast ptr:UnionDef ud)
+          (let (udd:ptr:UnionDef (unsafe/cast &UnionDef ud)
                 ai:i32 (union-arm-index (as ptr udd) (arm-node 's)))
             (when (< ai 0)
               (die-at (node-line (as ptr arm-node) (cc 'line))
@@ -626,18 +626,18 @@
 ;
 ; Yields a (Maybe repair-ty) Val, built into a slot defaulted to `none` and
 ; overwritten by the handler's result on a match (avoids a struct phi).
-(defn emit-handler-call (eid:StrView repair-ty:raw:Type detail-val:StrView scope:ref:Scope line:i32):ref:Val
+(defn emit-handler-call (eid:StrView repair-ty:raw:Type detail-val:StrView scope:&Scope line:i32):&Val
   (let (maybe-ty:ptr (stamp-maybe-type repair-ty line)
-        mudd:ptr:UnionDef (unsafe/cast ptr:UnionDef (uniondef-for-type maybe-ty))
-        msd:ptr:StructDef (unsafe/cast ptr:StructDef (mudd 'sdef))
+        mudd:ptr:UnionDef (unsafe/cast &UnionDef (uniondef-for-type maybe-ty))
+        msd:ptr:StructDef (unsafe/cast &StructDef (mudd 'sdef))
         noneai:i32 (union-arm-index (as ptr mudd) (symbol-intern "none"))
         mslot:StrView (new-tmp)
         none-place:ptr (make-cell 'none null line)
-        none-val:ref:Val (emit-union-construct (as ptr mudd) noneai none-place 1 scope))
+        none-val:&Val (emit-union-construct (as ptr mudd) noneai none-place 1 scope))
     ; Result slot, defaulted to `none`.
     (emit g-entry-stream "  " mslot " = alloca %" (msd 'ir-name) ", align "
           (abi-struct-align (as ptr msd)) "\n")
-    (emit g-body-stream "  store %" (msd 'ir-name) " " ((as ptr:Val none-val) 'val) ", ptr "
+    (emit g-body-stream "  store %" (msd 'ir-name) " " ((as &Val none-val) 'val) ", ptr "
           mslot "\n")
     ; Token for repair-ty (its mangled name as a CStr), as with-handler's
     ; type-token emits, so the two agree (errors.md §11.2).
@@ -651,9 +651,9 @@
       ; with no natural null-guard at the use sites, the cast-to-(ref) is the
       ; audited "known valid" assertion (nullability.md §5).
       (let (h:StrView (new-tmp)
-            efh:ptr:Sym (unsafe/cast ptr:Sym (scope-lookup g-globals (symbol-intern "err-find-handler")))
-            ght:ptr:Sym (unsafe/cast ptr:Sym (scope-lookup g-globals (symbol-intern "g-handler-top")))
-            hsd:ptr:StructDef (unsafe/cast ptr:StructDef (struct-lookup-ref (symbol-intern "Handler")))
+            efh:ptr:Sym (unsafe/cast &Sym (scope-lookup g-globals (symbol-intern "err-find-handler")))
+            ght:ptr:Sym (unsafe/cast &Sym (scope-lookup g-globals (symbol-intern "g-handler-top")))
+            hsd:ptr:StructDef (unsafe/cast &StructDef (struct-lookup-ref (symbol-intern "Handler")))
             id:i32 (new-label-id))
         (emit g-body-stream "  " h " = call ptr " (efh 'ir-name) "(i32 " eid ", ptr " tok ")\n")
         (let (hnull:StrView (new-tmp)
@@ -690,10 +690,10 @@
             ; Emitted here rather than via emit-funcall-value: there is no AST
             ; for this call, so the ABI lowering has to be spelled out.
             (let (arglist:StrView (fstr "ptr " ctx ", ptr " detail-val)
-                  mres:ref:Val (abi-emit-struct-call (abi-classify maybe-ty)
+                  mres:&Val (abi-emit-struct-call (abi-classify maybe-ty)
                                                      maybe-ty hfn arglist 2))
               (emit g-body-stream "  store ptr " saved ", ptr " (ght 'ir-name) "\n")
-              (emit g-body-stream "  store %" (msd 'ir-name) " " ((as ptr:Val mres) 'val)
+              (emit g-body-stream "  store %" (msd 'ir-name) " " ((as &Val mres) 'val)
                     ", ptr " mslot "\n")
               (emit g-body-stream "  br label %" join-lbl "\n")))
           ; Join: load the (Maybe T).
@@ -709,19 +709,19 @@
 ; straight back, so the caller decides what to do (continue in place, fall back,
 ; propagate). RepairType is a *type* operand, parsed not evaluated, like
 ; with-handler's type-token. Resolves only when (import error) is in scope.
-(defn emit-signal (call:ptr scope:ref:Scope):ref:Val
-  (let (cc:ptr:Node (unsafe/cast ptr:Node call)
-        ln:i32 ((unsafe/cast ptr:Node call) 'line))
+(defn emit-signal (call:ptr scope:&Scope):&Val
+  (let (cc:ptr:Node (unsafe/cast &Node call)
+        ln:i32 ((unsafe/cast &Node call) 'line))
     (when (< (node-len cc) 3)
       (die-at ln "signal: expects (signal E RepairType [detail])"))
     (when (= (error-lib-in-scope) 0)
       (die-at ln "signal: requires (import error) — it walks the handler chain"))
-    (let (ev:ref:Val (emit-node (node-at cc 1) scope)
-          eid:StrView ((as ptr:Val ev) 'val)
+    (let (ev:&Val (emit-node (node-at cc 1) scope)
+          eid:StrView ((as &Val ev) 'val)
           repair-ty:ptr (parse-type-from-node (node-at cc 2) ln)
           detail-val:StrView "null")
       (when (>= (node-len cc) 4)
-        (let (dv:ref:Val (emit-node (node-at cc 3) scope))
+        (let (dv:&Val (emit-node (node-at cc 3) scope))
           (set! detail-val (dv 'val))))
       (return (emit-handler-call eid repair-ty detail-val scope ln)))))
 
@@ -739,17 +739,17 @@
 ; `detail` is borrowed for the handler call and never stored (§11.5). E is the
 ; deferror Err value (a compile-time constant in every real use), so building the
 ; err arm and passing E to the find-walk evaluates it twice harmlessly.
-(defn emit-err-handled (call:ptr scope:ref:Scope):ref:Val
-  (let (cc:ptr:Node (unsafe/cast ptr:Node call)
-        ln:i32 ((unsafe/cast ptr:Node call) 'line)
+(defn emit-err-handled (call:ptr scope:&Scope):&Val
+  (let (cc:ptr:Node (unsafe/cast &Node call)
+        ln:i32 ((unsafe/cast &Node call) 'line)
         ud:?ptr:UnionDef (result-union-of g-fn-ret-type))
     (when (= ud null)
       (die-at ln "__err-handled: enclosing return type is not a Result"))
-    (let (udd:ptr:UnionDef (unsafe/cast ptr:UnionDef ud)
+    (let (udd:ptr:UnionDef (unsafe/cast &UnionDef ud)
           okai:i32 (union-arm-index (as ptr udd) (symbol-intern "ok"))
           errai:i32 (union-arm-index (as ptr udd) (symbol-intern "err"))
           okty:ptr (result-ok-type g-fn-ret-type)
-          rsd:ptr:StructDef (unsafe/cast ptr:StructDef (udd 'sdef))
+          rsd:ptr:StructDef (unsafe/cast &StructDef (udd 'sdef))
           rty:ptr (type-for-sdef (udd 'sdef)))
       ; Unreachable through `union-target-rewrite`, which excludes a
       ; payload-less ok arm. Kept so a future caller gets a diagnostic instead
@@ -760,28 +760,28 @@
       (when (< (node-len cc) 2)
         (die-at ln "err: expects (err E) or (err E detail)"))
       (let (enode:ptr (node-at cc 1)
-            ev:ref:Val (emit-node enode scope)
-            eid:StrView ((as ptr:Val ev) 'val)
+            ev:&Val (emit-node enode scope)
+            eid:StrView ((as &Val ev) 'val)
             detail-val:StrView "null")
         (when (>= (node-len cc) 3)
-          (let (dv:ref:Val (emit-node (node-at cc 2) scope))
+          (let (dv:&Val (emit-node (node-at cc 2) scope))
             (set! detail-val (dv 'val))))
         ; Result slot, defaulted to (err E).
         (let (rslot:StrView (new-tmp)
               err-place:ptr (make-cell 'err
                               (make-cell enode null ln) ln)
-              err-val:ref:Val (emit-union-construct (as ptr udd) errai err-place 1 scope))
+              err-val:&Val (emit-union-construct (as ptr udd) errai err-place 1 scope))
           (emit g-entry-stream "  " rslot " = alloca %" (rsd 'ir-name) ", align "
                 (abi-struct-align (as ptr rsd)) "\n")
-          (emit g-body-stream "  store %" (rsd 'ir-name) " " ((as ptr:Val err-val) 'val)
+          (emit g-body-stream "  store %" (rsd 'ir-name) " " ((as &Val err-val) 'val)
                 ", ptr " rslot "\n")
           ; Negotiate with bound handlers: the shared chain walk yields (Maybe T)
           ; (none if no handler matched or it declined).
-          (let (m-val:ref:Val (emit-handler-call eid okty detail-val scope ln)
+          (let (m-val:&Val (emit-handler-call eid okty detail-val scope ln)
                 maybe-ty:ptr (m-val 'type)
                 id:i32 (new-label-id)
-                mudd:ptr:UnionDef (unsafe/cast ptr:UnionDef (uniondef-for-type maybe-ty))
-                msd:ptr:StructDef (unsafe/cast ptr:StructDef (mudd 'sdef))
+                mudd:ptr:UnionDef (unsafe/cast &UnionDef (uniondef-for-type maybe-ty))
+                msd:ptr:StructDef (unsafe/cast &StructDef (mudd 'sdef))
                 mslot:StrView (new-tmp)
                 someai:i32 (union-arm-index (as ptr mudd) (symbol-intern "some"))
                 tgep:StrView (new-tmp)
@@ -792,7 +792,7 @@
             ; match m: read its tag; some -> overwrite the slot with (ok v).
             (emit g-entry-stream "  " mslot " = alloca %" (msd 'ir-name) ", align "
                   (abi-struct-align (as ptr msd)) "\n")
-            (emit g-body-stream "  store %" (msd 'ir-name) " " ((as ptr:Val m-val) 'val)
+            (emit g-body-stream "  store %" (msd 'ir-name) " " ((as &Val m-val) 'val)
                   ", ptr " mslot "\n")
             (emit g-body-stream "  " tgep " = getelementptr inbounds %" (msd 'ir-name) ", ptr "
                   mslot ", i32 0, i32 0\n")
@@ -815,8 +815,8 @@
               (scope-define scope (symbol-intern "__errh_v") okty vslot 1)
               (let (ok-place:ptr (make-cell 'ok
                                    (make-cell '__errh_v null ln) ln)
-                    ok-val:ref:Val (emit-union-construct (as ptr udd) okai ok-place 1 scope))
-                (emit g-body-stream "  store %" (rsd 'ir-name) " " ((as ptr:Val ok-val) 'val)
+                    ok-val:&Val (emit-union-construct (as ptr udd) okai ok-place 1 scope))
+                (emit g-body-stream "  store %" (rsd 'ir-name) " " ((as &Val ok-val) 'val)
                       ", ptr " rslot "\n")
                 (emit g-body-stream "  br label %" join-lbl "\n")))
             ; Join: load the (Result T Err) value.
@@ -829,12 +829,12 @@
 ; Stamp the value-Maybe template instance (Maybe T) for the handler-call return
 ; type at an err site (errors.md §11.2). T is the !T's ok payload (a value type
 ; in v1; a (ref X) repair type — niche-encoded Maybe — is unsupported here).
-(defn stamp-maybe-type (t:raw:Type line:i32):ref:Type
+(defn stamp-maybe-type (t:raw:Type line:i32):&Type
   (let (ut:?ptr:UnionTemplate (union-template-lookup-ref (symbol-intern "Maybe")))
     (when (= ut null)
       (die-at line (missing-template-message "err handler" (symbol-intern "Maybe"))))
     (let (argts:ptr (arena-alloc (ptr-bytes)))
-      (set! (aref (as ptr:ptr argts) 0) t)
+      (set! (aref (as &ptr argts) 0) t)
       (return (union-template-stamp-types ut argts 1 line)))))
 
 ; The error library (lib/error.nuc) is in scope: g-handler-top and
@@ -855,7 +855,7 @@
   (let (ai:i32 (union-arm-index ud (symbol-intern "err")))
     (when (< ai 0) (return 0))
     (let (udd:raw:UnionDef ud
-          arm:ref:Arm (invoke (udd 'arms) ai:usize))
+          arm:&Arm (invoke (udd 'arms) ai:usize))
       (when (!= (arm 'nfields) 1) (return 0))
       (let (pty:raw:Type (arm 'ptype))
         (when (= pty null) (return 0))
@@ -879,9 +879,9 @@
   ; §11 negotiation doesn't apply). Niche-MAYBE targets are left untouched: their
   ; some/none already lower via emit-some / the null literal (byte-identical).
   (when (= (niche-layout-of target) LAYOUT-NICHE-ERRPTR)
-    (when (and (= (-> (unsafe/cast ptr:Node form) (_ 'kind)) NODE-CELL) (> (node-len form) 0))
-      (let (head:ptr:Node (unsafe/cast ptr:Node (node-at form 0))
-            ln:i32 (-> (unsafe/cast ptr:Node form) (_ 'line)))
+    (when (and (= (-> (unsafe/cast &Node form) (_ 'kind)) NODE-CELL) (> (node-len form) 0))
+      (let (head:ptr:Node (unsafe/cast &Node (node-at form 0))
+            ln:i32 (-> (unsafe/cast &Node form) (_ 'line)))
         (when (= (head 'kind) NODE-SYM)
           (let (hs:Symbol (head 's)
                 arm:Symbol (symbol-none))
@@ -890,12 +890,12 @@
             (when (not (symbol-none? arm))
               (return (make-cell '__niche-ctor
                         (make-cell (intern-node arm)
-                          (-> (unsafe/cast ptr:Node form) (_ 'cdr)) ln)
+                          (-> (unsafe/cast &Node form) (_ 'cdr)) ln)
                         ln))))))))
   (let (ud:?ptr:UnionDef (uniondef-for-type target))
     (when (= ud null) (return form))
-    (let (udd:ptr:UnionDef (unsafe/cast ptr:UnionDef ud)
-          n:ptr:Node (unsafe/cast ptr:Node form))
+    (let (udd:ptr:UnionDef (unsafe/cast &UnionDef ud)
+          n:ptr:Node (unsafe/cast &Node form))
       ; Bare `none` in return position of a value-Maybe function: construct the
       ; payload-less arm. `none` is a reserved keyword (never a user variable),
       ; so this can't shadow a binding; for a pointer-Maybe (niche) return,
@@ -910,7 +910,7 @@
                     ln))))
       (when (!= (n 'kind) NODE-CELL) (return form))
       (when (= (node-len form) 0) (return form))
-      (let (head:ptr:Node (unsafe/cast ptr:Node (node-at form 0))
+      (let (head:ptr:Node (unsafe/cast &Node (node-at form 0))
             ln:i32 (n 'line))
         (when (!= (head 'kind) NODE-SYM) (return form))
         ; err! : construct the `err` arm unconditionally (the E3 opt-out that
@@ -945,7 +945,7 @@
 ; constants, so a collision already means same-kind reuse).
 (defn enumdef-lookup-member (member:Symbol):?ptr:EnumDef
   (dotimes (i (count g-enumdefs))
-    (let (ed:ptr:EnumDef (as ptr:EnumDef (invoke g-enumdefs i)))
+    (let (ed:ptr:EnumDef (as &EnumDef (invoke g-enumdefs i)))
       (when (>= (enum-member-index ed member) 0)
         (return (as ptr ed)))))
   (return null))
@@ -953,7 +953,7 @@
 (defn enum-member-index (ed:raw:EnumDef member:Symbol):i32
   (let (edd:raw:EnumDef ed)
     (dotimes (i (edd 'num-members))
-      (when (= (aref (as ptr:Symbol (edd 'members)) i) member)
+      (when (= (aref (as &Symbol (edd 'members)) i) member)
         (return i)))
     (return -1)))
 
@@ -962,18 +962,18 @@
 ; field by value (a typed copy, like any field load — taint drops), `_`
 ; ignores it, and (ref x) binds a (ref FieldType) aliasing the field in place
 ; (pointer scrutinee only; the alias keeps the scrutinee's escape taint).
-(defn emit-match-binders (ud:raw:UnionDef ai:i32 binders:ptr pp:StrView inner:ref:Scope
+(defn emit-match-binders (ud:raw:UnionDef ai:i32 binders:ptr pp:StrView inner:&Scope
                                is-ptr:i32 staint:raw:Scope line:i32):void
   (let (udd:raw:UnionDef ud
-        arm:ref:Arm (invoke (udd 'arms) ai:usize)
+        arm:&Arm (invoke (udd 'arms) ai:usize)
         nf:i32 (arm 'nfields)
         ftypes:ptr (arm 'ftypes)
-        ptype:ptr:Type (unsafe/cast ptr:Type (arm 'ptype))
+        ptype:ptr:Type (unsafe/cast &Type (arm 'ptype))
         bcur:ptr binders
         fi:i32 0)
     (while (!= bcur null)
-      (let (b:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node bcur) 'car))
-            ftype:ptr (aref (as ptr:ptr ftypes) fi)
+      (let (b:ptr:Node (unsafe/cast &Node ((unsafe/cast &Node bcur) 'car))
+            ftype:ptr (aref (as &ptr ftypes) fi)
             skip:i32 0)
         (when (and (= (b 'kind) NODE-SYM) (= (b 's) "_"))
           (set! skip 1))
@@ -984,7 +984,7 @@
             (when (> nf 1)
               (set! fa (new-tmp))
               (emit g-body-stream "  " fa " = getelementptr inbounds %"
-                    ((unsafe/cast ptr:StructDef (ptype 'sdef)) 'ir-name) ", ptr " pp
+                    ((unsafe/cast &StructDef (ptype 'sdef)) 'ir-name) ", ptr " pp
                     ", i32 0, i32 " fi "\n"))
             (if (= (b 'kind) NODE-SYM)
               ; By value: load the field into an ordinary local slot.
@@ -1004,30 +1004,30 @@
                 (when (= is-ptr 0)
                   (die-at (b 'line)
                     "match: (ref ...) binder needs a pointer scrutinee — a by-value match binds copies"))
-                (let (xn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr b) 1)))
+                (let (xn:ptr:Node (unsafe/cast &Node (node-at (as ptr b) 1)))
                   (when (!= (xn 'kind) NODE-SYM)
                     (die-at (b 'line) "match: (ref name) needs a symbol"))
                   (let (slot:StrView (fstr "%" (ir-name-token (symbol-as-view (xn 's))) ".addr." g-tmp))
                     (inc! g-tmp)
                     (emit g-entry-stream "  " slot " = alloca ptr, align 8\n")
                     (emit g-body-stream "  store ptr " fa ", ptr " slot ", align 8\n")
-                    (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR)))
+                    (let (rt:ptr:Type (as &Type (make-type TY-PTR)))
                       (set! (rt 'elem) ftype)
                       (set! (rt 'pkind) PTR-REF)
-                      (let (sym:ref:Sym (scope-define inner (xn 's) (as ptr rt) slot 1))
+                      (let (sym:&Sym (scope-define inner (xn 's) (as ptr rt) slot 1))
                         (set! (sym 'taint) staint))))))))))
       (inc! fi)
-      (set! bcur ((unsafe/cast ptr:Node bcur) 'cdr)))))
+      (set! bcur ((unsafe/cast &Node bcur) 'cdr)))))
 
 ; The shared lowering for match: an LLVM `switch` on the discriminant, one
 ; block per clause, cond's strict cross-branch typing and phi/void-collapse at
 ; the join. With no `_` clause the default block is `unreachable` (the match
 ; is exhaustive by construction; a corrupted tag is UB, the C contract).
 ; `ud`/`clause-binders` are null (and `base` empty) for the defenum variant.
-(defn emit-match-clauses (call:ptr scope:ref:Scope disc:StrView disc-ty:StrView
+(defn emit-match-clauses (call:ptr scope:&Scope disc:StrView disc-ty:StrView
                                   clause-val:ptr clause-binders:ptr ndefault:i32
-                                  ud:raw:UnionDef is-ptr:i32 base:StrView staint:raw:Scope):ref:Val
-  (let (cc:ptr:Node (unsafe/cast ptr:Node call)
+                                  ud:raw:UnionDef is-ptr:i32 base:StrView staint:raw:Scope):&Val
+  (let (cc:ptr:Node (unsafe/cast &Node call)
         nclauses:i32 (- (node-len cc) 2)
         ; TC-5 part 2: re-arm the want for each arm's value tail (a prior arm
         ; body or the dispatch may have consumed it).
@@ -1035,8 +1035,8 @@
         id:i32 (new-label-id)
         def-lbl:StrView (fstr "match.def" id)
         end-lbl:StrView (fstr "match.end" id)
-        (vals (ref (Vector StrView))) (vector-new-in (addr-of g-arena-alloc))
-        (preds (ref (Vector StrView))) (vector-new-in (addr-of g-arena-alloc))
+        (vals (ref (Vector StrView))) (vector-new-in &g-arena-alloc)
+        (preds (ref (Vector StrView))) (vector-new-in &g-arena-alloc)
         result-type:ptr null
         result-lit:i32 0
         result-taint:ptr null
@@ -1045,8 +1045,8 @@
     (emit g-body-stream "  switch " disc-ty " " disc ", label %" def-lbl " [")
     (set! ci 0)
     (while (< ci nclauses)
-      (when (>= (aref (as ptr:i32 clause-val) ci) 0)
-        (emit g-body-stream " " disc-ty " " (aref (as ptr:i32 clause-val) ci) ", label %match.c"
+      (when (>= (aref (as &i32 clause-val) ci) 0)
+        (emit g-body-stream " " disc-ty " " (aref (as &i32 clause-val) ci) ", label %match.c"
               id "." ci))
       (inc! ci))
     (emit g-body-stream " ]\n")
@@ -1054,34 +1054,34 @@
     ; Clause bodies (the `_` default's body is emitted under def-lbl).
     (set! ci 0)
     (while (< ci nclauses)
-      (let (clause:ptr:Node (unsafe/cast ptr:Node (node-at cc (+ ci 2)))
-            is-def:i32 (if (< (aref (as ptr:i32 clause-val) ci) 0) 1 0))
+      (let (clause:ptr:Node (unsafe/cast &Node (node-at cc (+ ci 2)))
+            is-def:i32 (if (< (aref (as &i32 clause-val) ci) 0) 1 0))
         (if (!= is-def 0)
           (emit g-body-stream def-lbl ":\n")
           (emit g-body-stream "match.c" id "." ci ":\n"))
         (set! g-block-term 0)
-        (let (inner:ref:Scope (scope-new scope)
+        (let (inner:&Scope (scope-new scope)
               tmark:i32 (narrow-mark))
           ; Payload binders (defunion clauses only).
           (when (and (!= ud null) (= is-def 0))
-            (let (ai:i32 (aref (as ptr:i32 clause-val) ci)
-                  binders:ptr (aref (as ptr:ptr clause-binders) ci))
+            (let (ai:i32 (aref (as &i32 clause-val) ci)
+                  binders:ptr (aref (as &ptr clause-binders) ci))
               (when (!= binders null)
                 (let (pp:StrView (new-tmp))
                   (emit g-body-stream "  " pp " = getelementptr inbounds i8, ptr " base ", i64 "
                         (union-payload-off ud) "\n")
                   (emit-match-binders ud ai binders pp inner is-ptr staint (cc 'line))))))
           ; Body: one or more forms, implicit do.
-          (let (bv:ref:Val (alloc-val ty-void "")
-                bcur:ptr ((unsafe/cast ptr:Node clause) 'cdr))
+          (let (bv:&Val (alloc-val ty-void "")
+                bcur:ptr ((unsafe/cast &Node clause) 'cdr))
             (while (!= bcur null)
-              (let (form:ptr ((unsafe/cast ptr:Node bcur) 'car))
+              (let (form:ptr ((unsafe/cast &Node bcur) 'car))
                 ; TC-5 part 2: target-type the tail (last) form against the armed want.
-                (when (= ((unsafe/cast ptr:Node bcur) 'cdr) null)
+                (when (= ((unsafe/cast &Node bcur) 'cdr) null)
                   (set! g-want-type my-want)
                   (set! form (union-target-rewrite form my-want)))
                 (set! bv (emit-node form inner)))
-              (set! bcur ((unsafe/cast ptr:Node bcur) 'cdr)))
+              (set! bcur ((unsafe/cast &Node bcur) 'cdr)))
             (emit-scope-cleanups inner)
             (let (bterm:i32 g-block-term)
               (when (= bterm 0)
@@ -1100,7 +1100,7 @@
                     (do
                       (set! result-type (type-join result-type bty result-lit (bv 'is-lit)))
                       (set! result-lit (if (and (!= result-lit 0) (!= (bv 'is-lit) 0)) 1 0))))
-                  (when (= ((as ptr:Type bty) 'kind) TY-VOID)
+                  (when (= ((as &Type bty) 'kind) TY-VOID)
                     (set! result-type ty-void))
                   (set! result-taint (taint-merge result-taint (bv 'taint)))
                   (emit g-body-stream "  br label %" join-lbl "\n")
@@ -1120,7 +1120,7 @@
       (emit g-body-stream "  unreachable\n")
       (set! g-block-term 1))
     (if (or (= result-type null)
-            (= ((as ptr:Type result-type) 'kind) TY-VOID))
+            (= ((as &Type result-type) 'kind) TY-VOID))
       (return (alloc-val ty-void ""))
       (let (tmp:StrView (new-tmp)
             ty-ir:StrView (type-to-ir result-type)
@@ -1131,14 +1131,14 @@
           (emit g-body-stream "[ " (invoke vals k) ", %" (invoke preds k) " ]")
           (set! k (+ k 1)))
         (emit g-body-stream "\n")
-        (let (rv:ref:Val (alloc-val result-type tmp))
+        (let (rv:&Val (alloc-val result-type tmp))
           (set! (rv 'taint) result-taint)
           (return rv))))))
 
 ; match over a defenum scrutinee (the §4 freebie): bare member names as
 ; patterns, the same exhaustiveness rule, lowered to the same switch.
-(defn emit-match-enum (call:ptr scope:ref:Scope sv:raw:Val):ref:Val
-  (let (cc:ptr:Node (unsafe/cast ptr:Node call)
+(defn emit-match-enum (call:ptr scope:&Scope sv:raw:Val):&Val
+  (let (cc:ptr:Node (unsafe/cast &Node call)
         svv:raw:Val sv
         nclauses:i32 (- (node-len cc) 2)
         clause-val:ptr (arena-alloc (* (+ nclauses 1) 4))
@@ -1148,10 +1148,10 @@
     (when (< nclauses 1) (die-at (cc 'line) "match: at least one clause required"))
     ; Pass 1: resolve every pattern to a member value; find the default.
     (while (< ci nclauses)
-      (let (clause:ptr:Node (unsafe/cast ptr:Node (node-at cc (+ ci 2))))
+      (let (clause:ptr:Node (unsafe/cast &Node (node-at cc (+ ci 2))))
         (when (or (!= (clause 'kind) NODE-CELL) (< (node-len (as ptr clause)) 2))
           (die-at (clause 'line) "match: clause must be (pattern body...)"))
-        (let (pat:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr clause) 0)))
+        (let (pat:ptr:Node (unsafe/cast &Node (node-at (as ptr clause) 0)))
           (when (!= (pat 'kind) NODE-SYM)
             (die-at (node-line (as ptr pat) (clause 'line)) "match: enum patterns are bare member names (or _)"))
           (if (= (pat 's) "_")
@@ -1159,7 +1159,7 @@
               (when (!= ci (- nclauses 1))
                 (die-at (node-line (as ptr pat) (clause 'line)) "match: _ default must be the last clause"))
               (set! ndefault 1)
-              (set! (aref (as ptr:i32 clause-val) ci) -1))
+              (set! (aref (as &i32 clause-val) ci) -1))
             (do
               (when (= ed null)
                 (set! ed (as ptr (enumdef-lookup-member (pat 's))))
@@ -1170,31 +1170,31 @@
                 (when (< mi 0)
                   (die-at (node-line (as ptr pat) (clause 'line))
                     (fstr "match: '" (pat 's) "' is not a member of enum '"
-                          ((as ptr:EnumDef ed) 'name) "'")))
+                          ((as &EnumDef ed) 'name) "'")))
                 (let (cj:i32 0)
                   (while (< cj ci)
-                    (when (= (aref (as ptr:i32 clause-val) cj) mi)
+                    (when (= (aref (as &i32 clause-val) cj) mi)
                       (die-at (node-line (as ptr pat) (clause 'line)) (fstr "match: duplicate arm '"
                                                                             (pat 's) "'")))
                     (inc! cj)))
-                (set! (aref (as ptr:i32 clause-val) ci) mi))))))
+                (set! (aref (as &i32 clause-val) ci) mi))))))
       (inc! ci))
     (when (= ed null)
       (die-at (cc 'line) "match: enum match needs at least one member pattern"))
     ; Exhaustiveness: without _, every member must appear.
     (when (= ndefault 0)
-      (let (edd:ptr:EnumDef (as ptr:EnumDef ed)
+      (let (edd:ptr:EnumDef (as &EnumDef ed)
             mi:i32 0)
         (while (< mi (edd 'num-members))
           (let (hit:i32 0
                 cj:i32 0)
             (while (< cj nclauses)
-              (when (= (aref (as ptr:i32 clause-val) cj) mi) (set! hit 1))
+              (when (= (aref (as &i32 clause-val) cj) mi) (set! hit 1))
               (inc! cj))
             (when (= hit 0)
               (die-at (cc 'line)
                 (fstr "match: non-exhaustive — missing member '"
-                      (aref (as ptr:Symbol (edd 'members)) mi) "' (add it or a _ default)"))))
+                      (aref (as &Symbol (edd 'members)) mi) "' (add it or a _ default)"))))
           (inc! mi))))
     (return (emit-match-clauses call scope (svv 'val) (type-to-ir (svv 'type))
                                 (as ptr clause-val) null ndefault
@@ -1220,8 +1220,8 @@
 ; the extracted Err (0 - ptrtoint r, truncated to i32). Parallels the PTR-MAYBE
 ; some/none match lowering, with the ERR_PTR sentinel range as the discriminant.
 ; try/unwrap/unwrap-or route through here, so they need no niche-specific surface.
-(defn emit-match-niche-errptr (call:ptr scope:ref:Scope sv:raw:Val elem:raw:Type):ref:Val
-  (let (cc:ptr:Node (unsafe/cast ptr:Node call)
+(defn emit-match-niche-errptr (call:ptr scope:&Scope sv:raw:Val elem:raw:Type):&Val
+  (let (cc:ptr:Node (unsafe/cast &Node call)
         ; TC-5 part 2: emit-match re-arms the want just before dispatching here,
         ; so the arm emitters get it from the channel rather than the signature.
         my-want:ptr g-want-type
@@ -1234,21 +1234,21 @@
         ci:i32 0)
     ; Resolve the (at most two) arm clauses + optional _ default.
     (while (< ci nclauses)
-      (let (clause:ptr:Node (unsafe/cast ptr:Node (node-at cc (+ ci 2))))
+      (let (clause:ptr:Node (unsafe/cast &Node (node-at cc (+ ci 2))))
         (when (or (!= (clause 'kind) NODE-CELL) (< (node-len (as ptr clause)) 2))
           (die-at (clause 'line) "match: clause must be (pattern body...)"))
-        (let (pat:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr clause) 0)))
+        (let (pat:ptr:Node (unsafe/cast &Node (node-at (as ptr clause) 0)))
           (if (and (= (pat 'kind) NODE-SYM) (= (pat 's) "_"))
-            (set! def-body ((unsafe/cast ptr:Node clause) 'cdr))
+            (set! def-body ((unsafe/cast &Node clause) 'cdr))
             (let (an:ptr:Node (if (= (pat 'kind) NODE-SYM) pat
-                                (unsafe/cast ptr:Node (node-at (as ptr pat) 0))))
+                                (unsafe/cast &Node (node-at (as ptr pat) 0))))
               (when (!= (an 'kind) NODE-SYM)
                 (die-at (node-line (as ptr an) (clause 'line)) "match: arm name must be a symbol"))
-              (let (binders:ptr (if (= (pat 'kind) NODE-CELL) (as ptr ((unsafe/cast ptr:Node pat) 'cdr)) null))
+              (let (binders:ptr (if (= (pat 'kind) NODE-CELL) (as ptr ((unsafe/cast &Node pat) 'cdr)) null))
                 (if (= (an 's) "ok")
-                  (do (set! ok-body ((unsafe/cast ptr:Node clause) 'cdr)) (set! ok-bind binders))
+                  (do (set! ok-body ((unsafe/cast &Node clause) 'cdr)) (set! ok-bind binders))
                   (if (= (an 's) "err")
-                    (do (set! err-body ((unsafe/cast ptr:Node clause) 'cdr)) (set! err-bind binders))
+                    (do (set! err-body ((unsafe/cast &Node clause) 'cdr)) (set! err-bind binders))
                     (die-at (node-line (as ptr an) (clause 'line))
                       (fstr "match: niche (Result (ref T) Err) has arms `ok`/`err`, not '"
                             (an 's) "'")))))))))
@@ -1264,8 +1264,8 @@
           err-lbl:StrView (fstr "match.err" id)
           ok-lbl:StrView (fstr "match.ok" id)
           end-lbl:StrView (fstr "match.end" id)
-          (vals (ref (Vector StrView))) (vector-new-in (addr-of g-arena-alloc))
-          (preds (ref (Vector StrView))) (vector-new-in (addr-of g-arena-alloc))
+          (vals (ref (Vector StrView))) (vector-new-in &g-arena-alloc)
+          (preds (ref (Vector StrView))) (vector-new-in &g-arena-alloc)
           ; result-type/result-taint are threaded through both arms; a single-
           ; element i32/ptr array stands in for a by-reference local. ltbox
           ; (LW-6) tracks whether every arm folded into rtbox so far was a
@@ -1273,16 +1273,16 @@
           rtbox:ptr (arena-alloc (ptr-bytes))
           ttbox:ptr (arena-alloc (ptr-bytes))
           ltbox:ptr (arena-alloc 4))
-      (set! (aref (as ptr:ptr rtbox) 0) null)
-      (set! (aref (as ptr:ptr ttbox) 0) null)
-      (set! (aref (as ptr:i32 ltbox) 0) 0)
+      (set! (aref (as &ptr rtbox) 0) null)
+      (set! (aref (as &ptr ttbox) 0) null)
+      (set! (aref (as &i32 ltbox) 0) 0)
       (emit g-body-stream "  br i1 " iserr ", label %" err-lbl ", label %" ok-lbl "\n")
       ; --- err arm: bind e = extracted id, run the err (or default) body ---
       (emit g-body-stream err-lbl ":\n")
       (set! g-block-term 0)
-      (let (inner:ref:Scope (scope-new scope))
-        (when (and (!= err-bind null) (!= (-> (unsafe/cast ptr:Node err-bind) (_ 'car)) null))
-          (let (b:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node err-bind) 'car)))
+      (let (inner:&Scope (scope-new scope))
+        (when (and (!= err-bind null) (!= (-> (unsafe/cast &Node err-bind) (_ 'car)) null))
+          (let (b:ptr:Node (unsafe/cast &Node ((unsafe/cast &Node err-bind) 'car)))
             (when (and (= (b 'kind) NODE-SYM) (!= (b 's) "_"))
               (let (pineg:StrView (new-tmp) eid:StrView (new-tmp) idtr:StrView eid
                     slot:StrView (fstr "%" (ir-name-token (symbol-as-view (b 's))) ".addr." g-tmp))
@@ -1301,30 +1301,30 @@
       ; --- ok arm: bind p = r typed (ref T), run the ok (or default) body ---
       (emit g-body-stream ok-lbl ":\n")
       (set! g-block-term 0)
-      (let (inner:ref:Scope (scope-new scope))
-        (when (and (!= ok-bind null) (!= (-> (unsafe/cast ptr:Node ok-bind) (_ 'car)) null))
-          (let (b:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node ok-bind) 'car)))
+      (let (inner:&Scope (scope-new scope))
+        (when (and (!= ok-bind null) (!= (-> (unsafe/cast &Node ok-bind) (_ 'car)) null))
+          (let (b:ptr:Node (unsafe/cast &Node ((unsafe/cast &Node ok-bind) 'car)))
             (when (and (= (b 'kind) NODE-SYM) (!= (b 's) "_"))
-              (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR))
+              (let (rt:ptr:Type (as &Type (make-type TY-PTR))
                     slot:StrView (fstr "%" (ir-name-token (symbol-as-view (b 's))) ".addr." g-tmp))
                 (inc! g-tmp)
                 (set! (rt 'elem) elem)
                 (set! (rt 'pkind) PTR-REF)
                 (emit g-entry-stream "  " slot " = alloca ptr, align 8\n")
                 (emit g-body-stream "  store ptr " rval ", ptr " slot ", align 8\n")
-                (let (sym:ref:Sym (scope-define inner (b 's) (as ptr rt) slot 1))
+                (let (sym:&Sym (scope-define inner (b 's) (as ptr rt) slot 1))
                   (set! (sym 'taint) staint))))))
         (emit-niche-match-arm (if (!= ok-body null) ok-body def-body) inner
           vals preds rtbox ttbox ltbox end-lbl id 1 my-want))
       ; --- join ---
       (emit g-body-stream end-lbl ":\n")
       (set! g-block-term 0)
-      (let (result-type:ptr (aref (as ptr:ptr rtbox) 0)
-            result-taint:ptr (aref (as ptr:ptr ttbox) 0))
+      (let (result-type:ptr (aref (as &ptr rtbox) 0)
+            result-taint:ptr (aref (as &ptr ttbox) 0))
         (when (= (count vals) 0)
           (emit g-body-stream "  unreachable\n")
           (set! g-block-term 1))
-        (if (or (= result-type null) (= ((as ptr:Type result-type) 'kind) TY-VOID))
+        (if (or (= result-type null) (= ((as &Type result-type) 'kind) TY-VOID))
           (return (alloc-val ty-void ""))
           (let (tmp:StrView (new-tmp) ty-ir:StrView (type-to-ir result-type)
                 k:usize 0)
@@ -1334,7 +1334,7 @@
               (emit g-body-stream "[ " (invoke vals k) ", %" (invoke preds k) " ]")
               (set! k (+ k 1)))
             (emit g-body-stream "\n")
-            (let (rv:ref:Val (alloc-val result-type tmp))
+            (let (rv:&Val (alloc-val result-type tmp))
               (set! (rv 'taint) result-taint)
               (return rv))))))))
 
@@ -1343,8 +1343,8 @@
 ; The some clause binds p = r typed (ref T) (the niche elem); the none clause
 ; has no binder. Parallels the PTR-ERRPTR ok/err match lowering, with the
 ; null pointer as the discriminant.
-(defn emit-match-niche-maybe (call:ptr scope:ref:Scope sv:raw:Val elem:raw:Type):ref:Val
-  (let (cc:ptr:Node (unsafe/cast ptr:Node call)
+(defn emit-match-niche-maybe (call:ptr scope:&Scope sv:raw:Val elem:raw:Type):&Val
+  (let (cc:ptr:Node (unsafe/cast &Node call)
         ; TC-5 part 2: emit-match re-arms the want just before dispatching here,
         ; so the arm emitters get it from the channel rather than the signature.
         my-want:ptr g-want-type
@@ -1357,24 +1357,24 @@
         ci:i32 0)
     ; Resolve the (at most two) arm clauses + optional _ default.
     (while (< ci nclauses)
-      (let (clause:ptr:Node (unsafe/cast ptr:Node (node-at cc (+ ci 2))))
+      (let (clause:ptr:Node (unsafe/cast &Node (node-at cc (+ ci 2))))
         (when (or (!= (clause 'kind) NODE-CELL) (< (node-len (as ptr clause)) 2))
           (die-at (clause 'line) "match: clause must be (pattern body...)"))
-        (let (pat:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr clause) 0)))
+        (let (pat:ptr:Node (unsafe/cast &Node (node-at (as ptr clause) 0)))
           (if (and (= (pat 'kind) NODE-SYM) (= (pat 's) "_"))
-            (set! def-body ((unsafe/cast ptr:Node clause) 'cdr))
+            (set! def-body ((unsafe/cast &Node clause) 'cdr))
             (let (an:ptr:Node (if (= (pat 'kind) NODE-SYM) pat
-                                (unsafe/cast ptr:Node (node-at (as ptr pat) 0))))
+                                (unsafe/cast &Node (node-at (as ptr pat) 0))))
               (when (!= (an 'kind) NODE-SYM)
                 (die-at (node-line (as ptr an) (clause 'line)) "match: arm name must be a symbol"))
-              (let (binders:ptr (if (= (pat 'kind) NODE-CELL) (as ptr ((unsafe/cast ptr:Node pat) 'cdr)) null))
+              (let (binders:ptr (if (= (pat 'kind) NODE-CELL) (as ptr ((unsafe/cast &Node pat) 'cdr)) null))
                 (if (= (an 's) "some")
-                  (do (set! some-body ((unsafe/cast ptr:Node clause) 'cdr)) (set! some-bind binders))
+                  (do (set! some-body ((unsafe/cast &Node clause) 'cdr)) (set! some-bind binders))
                   (if (= (an 's) "none")
                     (do
-                      (when (and (!= binders null) (!= (-> (unsafe/cast ptr:Node binders) (_ 'car)) null))
+                      (when (and (!= binders null) (!= (-> (unsafe/cast &Node binders) (_ 'car)) null))
                         (die-at (node-line (as ptr an) (clause 'line)) "match: arm 'none' carries no payload — remove its binders"))
-                      (set! none-body ((unsafe/cast ptr:Node clause) 'cdr)))
+                      (set! none-body ((unsafe/cast &Node clause) 'cdr)))
                     (die-at (node-line (as ptr an) (clause 'line))
                       (fstr "match: niche (Maybe (ref T)) has arms `some`/`none`, not '" (an 's)
                             "'")))))))))
@@ -1390,50 +1390,50 @@
           none-lbl:StrView (fstr "match.none" id)
           some-lbl:StrView (fstr "match.some" id)
           end-lbl:StrView (fstr "match.end" id)
-          (vals (ref (Vector StrView))) (vector-new-in (addr-of g-arena-alloc))
-          (preds (ref (Vector StrView))) (vector-new-in (addr-of g-arena-alloc))
+          (vals (ref (Vector StrView))) (vector-new-in &g-arena-alloc)
+          (preds (ref (Vector StrView))) (vector-new-in &g-arena-alloc)
           rtbox:ptr (arena-alloc (ptr-bytes))
           ttbox:ptr (arena-alloc (ptr-bytes))
           ltbox:ptr (arena-alloc 4))
-      (set! (aref (as ptr:ptr rtbox) 0) null)
-      (set! (aref (as ptr:ptr ttbox) 0) null)
-      (set! (aref (as ptr:i32 ltbox) 0) 0)
+      (set! (aref (as &ptr rtbox) 0) null)
+      (set! (aref (as &ptr ttbox) 0) null)
+      (set! (aref (as &i32 ltbox) 0) 0)
       ; Discriminant: null = none, non-null = some.
       (emit g-body-stream "  " cmp " = icmp eq ptr " rval ", null\n")
       (emit g-body-stream "  br i1 " cmp ", label %" none-lbl ", label %" some-lbl "\n")
       ; --- none arm: no binder, run the none (or default) body ---
       (emit g-body-stream none-lbl ":\n")
       (set! g-block-term 0)
-      (let (inner:ref:Scope (scope-new scope))
+      (let (inner:&Scope (scope-new scope))
         (emit-niche-match-arm (if (!= none-body null) none-body def-body) inner
           vals preds rtbox ttbox ltbox end-lbl id 0 my-want))
       ; --- some arm: bind p = r typed (ref T), run the some (or default) body ---
       (emit g-body-stream some-lbl ":\n")
       (set! g-block-term 0)
-      (let (inner:ref:Scope (scope-new scope))
-        (when (and (!= some-bind null) (!= (-> (unsafe/cast ptr:Node some-bind) (_ 'car)) null))
-          (let (b:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node some-bind) 'car)))
+      (let (inner:&Scope (scope-new scope))
+        (when (and (!= some-bind null) (!= (-> (unsafe/cast &Node some-bind) (_ 'car)) null))
+          (let (b:ptr:Node (unsafe/cast &Node ((unsafe/cast &Node some-bind) 'car)))
             (when (and (= (b 'kind) NODE-SYM) (!= (b 's) "_"))
-              (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR))
+              (let (rt:ptr:Type (as &Type (make-type TY-PTR))
                     slot:StrView (fstr "%" (ir-name-token (symbol-as-view (b 's))) ".addr." g-tmp))
                 (inc! g-tmp)
                 (set! (rt 'elem) elem)
                 (set! (rt 'pkind) PTR-REF)
                 (emit g-entry-stream "  " slot " = alloca ptr, align 8\n")
                 (emit g-body-stream "  store ptr " rval ", ptr " slot ", align 8\n")
-                (let (sym:ref:Sym (scope-define inner (b 's) (as ptr rt) slot 1))
+                (let (sym:&Sym (scope-define inner (b 's) (as ptr rt) slot 1))
                   (set! (sym 'taint) staint))))))
         (emit-niche-match-arm (if (!= some-body null) some-body def-body) inner
           vals preds rtbox ttbox ltbox end-lbl id 1 my-want))
       ; --- join ---
       (emit g-body-stream end-lbl ":\n")
       (set! g-block-term 0)
-      (let (result-type:ptr (aref (as ptr:ptr rtbox) 0)
-            result-taint:ptr (aref (as ptr:ptr ttbox) 0))
+      (let (result-type:ptr (aref (as &ptr rtbox) 0)
+            result-taint:ptr (aref (as &ptr ttbox) 0))
         (when (= (count vals) 0)
           (emit g-body-stream "  unreachable\n")
           (set! g-block-term 1))
-        (if (or (= result-type null) (= ((as ptr:Type result-type) 'kind) TY-VOID))
+        (if (or (= result-type null) (= ((as &Type result-type) 'kind) TY-VOID))
           (return (alloc-val ty-void ""))
           (let (tmp:StrView (new-tmp) ty-ir:StrView (type-to-ir result-type)
                 k:usize 0)
@@ -1443,7 +1443,7 @@
               (emit g-body-stream "[ " (invoke vals k) ", %" (invoke preds k) " ]")
               (set! k (+ k 1)))
             (emit g-body-stream "\n")
-            (let (rv:ref:Val (alloc-val result-type tmp))
+            (let (rv:&Val (alloc-val result-type tmp))
               (set! (rv 'taint) result-taint)
               (return rv))))))))
 
@@ -1452,15 +1452,15 @@
 ; (unless the block terminated) branch to a per-arm join feeding the end phi.
 ; `vals`/`preds` are the (ref (Vector ptr)) phi-incoming tables; the drain
 ; deferral makes the parametric type safe in this signature (see make-vec).
-(defn emit-niche-match-arm (body:ptr inner:ref:Scope
+(defn emit-niche-match-arm (body:ptr inner:&Scope
                                  (vals (ref (Vector StrView))) (preds (ref (Vector StrView)))
                                  rtbox:ptr ttbox:ptr ltbox:ptr end-lbl:StrView id:i32 which:i32
                                  want:ptr):void
-  (let (bv:ref:Val (alloc-val ty-void "")
+  (let (bv:&Val (alloc-val ty-void "")
         bcur:ptr body)
     (while (!= bcur null)
-      (set! bv (emit-node ((unsafe/cast ptr:Node bcur) 'car) inner))
-      (set! bcur ((unsafe/cast ptr:Node bcur) 'cdr)))
+      (set! bv (emit-node ((unsafe/cast &Node bcur) 'car) inner))
+      (set! bcur ((unsafe/cast &Node bcur) 'cdr)))
     (emit-scope-cleanups inner)
     (when (= g-block-term 0)
       ; Stage 14 NS-3: a niche/Result match arm ending in a string literal
@@ -1469,17 +1469,17 @@
       (set! bv (join-strlit-branch bv want g-form-line))
       (let (join-lbl:StrView (fstr "match.join" id "." which)
             bty:ptr (bv 'type)
-            rt:ptr (aref (as ptr:ptr rtbox) 0)
-            rlit:i32 (aref (as ptr:i32 ltbox) 0))
+            rt:ptr (aref (as &ptr rtbox) 0)
+            rlit:i32 (aref (as &i32 ltbox) 0))
         (if (= rt null)
-          (do (set! (aref (as ptr:ptr rtbox) 0) bty) (set! (aref (as ptr:i32 ltbox) 0) (bv 'is-lit)))
+          (do (set! (aref (as &ptr rtbox) 0) bty) (set! (aref (as &i32 ltbox) 0) (bv 'is-lit)))
           ; MC-1: shared join (absorbs bare-vs-typed ptr to (raw E));
           ; LW-6: literal branches widen to a typed int sibling.
           (do
-            (set! (aref (as ptr:ptr rtbox) 0) (type-join rt bty rlit (bv 'is-lit)))
-            (set! (aref (as ptr:i32 ltbox) 0) (if (and (!= rlit 0) (!= (bv 'is-lit) 0)) 1 0))))
-        (when (= ((as ptr:Type bty) 'kind) TY-VOID) (set! (aref (as ptr:ptr rtbox) 0) (as ptr ty-void)))
-        (set! (aref (as ptr:ptr ttbox) 0) (taint-merge (aref (as ptr:ptr ttbox) 0) (bv 'taint)))
+            (set! (aref (as &ptr rtbox) 0) (type-join rt bty rlit (bv 'is-lit)))
+            (set! (aref (as &i32 ltbox) 0) (if (and (!= rlit 0) (!= (bv 'is-lit) 0)) 1 0))))
+        (when (= ((as &Type bty) 'kind) TY-VOID) (set! (aref (as &ptr rtbox) 0) (as ptr ty-void)))
+        (set! (aref (as &ptr ttbox) 0) (taint-merge (aref (as &ptr ttbox) 0) (bv 'taint)))
         (emit g-body-stream "  br label %" join-lbl "\n")
         (emit g-body-stream join-lbl ":\n")
         (emit g-body-stream "  br label %" end-lbl "\n")
@@ -1490,13 +1490,13 @@
 ; (unions.md §4). Scrutinee: a defunion value, a ref/ptr to one (auto-deref
 ; for the tag; by-value binders copy payload fields, (ref x) binders alias
 ; them in place), or a defenum integer.
-(defn emit-match (call:ptr scope:ref:Scope):ref:Val
-  (let (cc:ptr:Node (unsafe/cast ptr:Node call))
+(defn emit-match (call:ptr scope:&Scope):&Val
+  (let (cc:ptr:Node (unsafe/cast &Node call))
     (when (< (node-len cc) 3)
       (die-at (cc 'line) "match: expects a scrutinee and at least one clause"))
     (let (my-want:ptr g-want-type
-          sv:ref:Val (emit-node (node-at cc 1) scope)
-          st:ptr:Type (unsafe/cast ptr:Type (sv 'type)))
+          sv:&Val (emit-node (node-at cc 1) scope)
+          st:ptr:Type (unsafe/cast &Type (sv 'type)))
       ; TC-5 part 2: the scrutinee (a generic call) may have consumed the want;
       ; re-arm so clause/arm-body emitters distribute it to value tails.
       (set! g-want-type my-want)
@@ -1518,7 +1518,7 @@
           (when (!= ud null)
             ; Spill the by-value scrutinee so the tag and payload are addressable.
             (set! base (new-tmp))
-            (let (sd:ptr:StructDef (unsafe/cast ptr:StructDef ((unsafe/cast ptr:UnionDef ud) 'sdef)))
+            (let (sd:ptr:StructDef (unsafe/cast &StructDef ((unsafe/cast &UnionDef ud) 'sdef)))
               (emit g-entry-stream "  " base " = alloca %" (sd 'ir-name) ", align "
                     (abi-struct-align (as ptr sd)) "\n")
               (emit g-body-stream "  store %" (sd 'ir-name) " " (sv 'val) ", ptr " base "\n"))))
@@ -1531,7 +1531,7 @@
         (when (= ud null)
           (die-at (cc 'line)
             "match: scrutinee must be a defunion value, a pointer to one, or a defenum integer"))
-        (let (udd:ptr:UnionDef (unsafe/cast ptr:UnionDef ud)
+        (let (udd:ptr:UnionDef (unsafe/cast &UnionDef ud)
               nclauses:i32 (- (node-len cc) 2)
               clause-val:ptr (arena-alloc (* (+ nclauses 1) 4))
               clause-binders:ptr (arena-alloc (* (+ nclauses 1) (ptr-bytes)))
@@ -1539,18 +1539,18 @@
               ci:i32 0)
           ; Pass 1: resolve patterns to arm indices; collect binder chains.
           (while (< ci nclauses)
-            (let (clause:ptr:Node (unsafe/cast ptr:Node (node-at cc (+ ci 2))))
+            (let (clause:ptr:Node (unsafe/cast &Node (node-at cc (+ ci 2))))
               (when (or (!= (clause 'kind) NODE-CELL) (< (node-len (as ptr clause)) 2))
                 (die-at (clause 'line) "match: clause must be (pattern body...)"))
-              (set! (aref (as ptr:ptr clause-binders) ci) null)
-              (let (pat:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr clause) 0)))
+              (set! (aref (as &ptr clause-binders) ci) null)
+              (let (pat:ptr:Node (unsafe/cast &Node (node-at (as ptr clause) 0)))
                 (if (= (pat 'kind) NODE-SYM)
                   (if (= (pat 's) "_")
                     (do
                       (when (!= ci (- nclauses 1))
                         (die-at (node-line (as ptr pat) (clause 'line)) "match: _ default must be the last clause"))
                       (set! ndefault 1)
-                      (set! (aref (as ptr:i32 clause-val) ci) -1))
+                      (set! (aref (as &i32 clause-val) ci) -1))
                     (let (ai:i32 (union-arm-index (as ptr udd) (pat 's)))
                       (when (< ai 0)
                         (die-at (node-line (as ptr pat) (clause 'line))
@@ -1559,11 +1559,11 @@
                         (die-at (node-line (as ptr pat) (clause 'line))
                           (fstr "match: arm '" (pat 's)
                                 "' carries a payload — bind its fields with (arm f...)")))
-                      (set! (aref (as ptr:i32 clause-val) ci) ai)))
+                      (set! (aref (as &i32 clause-val) ci) ai)))
                   (do
                     (when (or (!= (pat 'kind) NODE-CELL) (= (node-len (as ptr pat)) 0))
                       (die-at (clause 'line) "match: pattern must be `arm`, `(arm binders...)`, or _"))
-                    (let (an:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr pat) 0)))
+                    (let (an:ptr:Node (unsafe/cast &Node (node-at (as ptr pat) 0)))
                       (when (!= (an 'kind) NODE-SYM)
                         (die-at (node-line (as ptr an) (clause 'line)) "match: arm name must be a symbol"))
                       (let (ai:i32 (union-arm-index (as ptr udd) (an 's)))
@@ -1575,14 +1575,14 @@
                           (die-at (node-line (as ptr pat) (clause 'line))
                             (fstr "match: arm '" (an 's)
                                   "' binder count does not match its field count (use _ to ignore a field)")))
-                        (set! (aref (as ptr:i32 clause-val) ci) ai)
-                        (set! (aref (as ptr:ptr clause-binders) ci) ((unsafe/cast ptr:Node pat) 'cdr))))))
+                        (set! (aref (as &i32 clause-val) ci) ai)
+                        (set! (aref (as &ptr clause-binders) ci) ((unsafe/cast &Node pat) 'cdr))))))
                 ; Duplicate-arm check (defaults are -1 and can't collide).
-                (when (>= (aref (as ptr:i32 clause-val) ci) 0)
+                (when (>= (aref (as &i32 clause-val) ci) 0)
                   (let (cj:i32 0)
                     (while (< cj ci)
-                      (when (= (aref (as ptr:i32 clause-val) cj)
-                               (aref (as ptr:i32 clause-val) ci))
+                      (when (= (aref (as &i32 clause-val) cj)
+                               (aref (as &i32 clause-val) ci))
                         (die-at (node-line (as ptr pat) (clause 'line)) "match: duplicate arm"))
                       (inc! cj))))))
             (inc! ci))
@@ -1593,7 +1593,7 @@
                 (let (hit:i32 0
                       cj:i32 0)
                   (while (< cj nclauses)
-                    (when (= (aref (as ptr:i32 clause-val) cj) ai) (set! hit 1))
+                    (when (= (aref (as &i32 clause-val) cj) ai) (set! hit 1))
                     (inc! cj))
                   (when (= hit 0)
                     (die-at (cc 'line)
@@ -1601,7 +1601,7 @@
                             ((invoke (udd 'arms) ai:usize) 'name) "' (add it or a _ default)"))))
                 (inc! ai))))
           ; Read the tag and hand off to the shared switch/join emitter.
-          (let (sd:ptr:StructDef (unsafe/cast ptr:StructDef (udd 'sdef))
+          (let (sd:ptr:StructDef (unsafe/cast &StructDef (udd 'sdef))
                 tgep:StrView (new-tmp)
                 tag:StrView (new-tmp))
             (emit g-body-stream "  " tgep " = getelementptr inbounds %" (sd 'ir-name) ", ptr "
@@ -1612,38 +1612,38 @@
                                         ndefault (as ptr udd) is-ptr base
                                         (sv 'taint)))))))))
 
-(defn emit-ptr-add (call:ptr scope:ref:Scope):ref:Val
-  (let (cc:ptr:Node (unsafe/cast ptr:Node call))
+(defn emit-ptr-add (call:ptr scope:&Scope):&Val
+  (let (cc:ptr:Node (unsafe/cast &Node call))
     (when (!= (node-len cc) 3) (die-at (cc 'line) "ptr+ expects 2 args"))
-    (let (p:ref:Val (emit-node (node-at cc 1) scope))
-      (when (or (-> p (_ 'type) (unsafe/cast ptr:Type _) (_ 'kind) (!= _ TY-PTR))
-              (-> p (_ 'type) (unsafe/cast ptr:Type _) (_ 'elem) (= _ null)))
+    (let (p:&Val (emit-node (node-at cc 1) scope))
+      (when (or (-> p (_ 'type) (unsafe/cast &Type _) (_ 'kind) (!= _ TY-PTR))
+              (-> p (_ 'type) (unsafe/cast &Type _) (_ 'elem) (= _ null)))
         (die-at (cc 'line) "ptr+: operand must be typed pointer"))
-      (let (nv:ref:Val (emit-node (node-at cc 2) scope))
+      (let (nv:&Val (emit-node (node-at cc 2) scope))
         (when (= (is-int-type (nv 'type)) 0)
           (die-at (cc 'line) "ptr+: offset must be integer"))
         ; The GEP index must be a pointer-sized integer and the register must
         ; match that annotation — `gep-index-ir` is that rule, shared with aref
         ; and aset! (Stage 15 W9 item 15).
         (let (idx:StrView (gep-index-ir nv))
-          (let (elem:ptr (-> p (_ 'type) (unsafe/cast ptr:Type _) (_ 'elem))
+          (let (elem:ptr (-> p (_ 'type) (unsafe/cast &Type _) (_ 'elem))
                 tmp:StrView (new-tmp))
             (emit g-body-stream "  " tmp " = getelementptr inbounds " (type-to-ir elem) ", ptr "
                   (p 'val) ", " (ptr-int-ir) " " idx "\n")
             ; An interior pointer aliases the resource: keep the taint
             ; (lifecycle.md §2.2) and, Stage 13 L1, the frame-region flag.
-            (let (rv:ref:Val (alloc-val (p 'type) tmp))
+            (let (rv:&Val (alloc-val (p 'type) tmp))
               (val-copy-taint (as ptr rv) (as ptr p))
               (return rv))))))))
 
 ; Eliminate a condition to bool, for the six condition sites. An ELIMINATION,
 ; not a coercion — kept out of `coerce-int-val` so a `bool` slot does not become
 ; a universal sink. design/stage16-ergonomics/bool-truthiness.md
-(defn condition-bool (v:ref:Val line:i32 ctx:StrView):ref:Val
+(defn condition-bool (v:&Val line:i32 ctx:StrView):&Val
   (let (t:ptr (v 'type))
     (when (= t null)
       (die-at line (fstr ctx ": condition has no type")))
-    (let (tt:ptr:Type (unsafe/cast ptr:Type t))
+    (let (tt:ptr:Type (unsafe/cast &Type t))
       (when (= (tt 'kind) TY-BOOL) (return v))
       ; raw / bare raw / CStr / ?T. `ptr-pkind` answers PTR-RAW for CStr, which
       ; is what admits it without a kind arm of its own.
@@ -1663,7 +1663,7 @@
       (let (ud:?ptr:UnionDef (value-maybe-union-of t))
         (when (!= ud null)
           (let (si:i32 (union-arm-index (as ptr ud) (symbol-intern "some"))
-                sd:ptr:StructDef (unsafe/cast ptr:StructDef (ud 'sdef))
+                sd:ptr:StructDef (unsafe/cast &StructDef (ud 'sdef))
                 tag:StrView (new-tmp)
                 tmp:StrView (new-tmp))
             (emit g-body-stream "  " tag " = extractvalue %" (sd 'ir-name) " " (v 'val) ", 0\n")
@@ -1673,16 +1673,16 @@
         (fstr ctx ": condition must be bool, not " (type-spelling t) " -- compare explicitly"))
       (return v))))
 
-(defn emit-not (call:ptr scope:ref:Scope):ref:Val
-  (let (cc:ptr:Node (unsafe/cast ptr:Node call))
+(defn emit-not (call:ptr scope:&Scope):&Val
+  (let (cc:ptr:Node (unsafe/cast &Node call))
     (when (!= (node-len cc) 2) (die-at (cc 'line) "not expects 1 arg"))
-    (let (a:ref:Val (condition-bool (emit-node (node-at cc 1) scope) (cc 'line) "not")
+    (let (a:&Val (condition-bool (emit-node (node-at cc 1) scope) (cc 'line) "not")
           tmp:StrView (new-tmp))
       (emit g-body-stream "  " tmp " = xor i1 " (a 'val) ", 1\n")
       (return (alloc-val ty-bool tmp)))))
 
-(defn emit-short-circuit (call:ptr scope:ref:Scope is-and:i32):ref:Val
-  (let (cc:ptr:Node (unsafe/cast ptr:Node call)
+(defn emit-short-circuit (call:ptr scope:&Scope is-and:i32):&Val
+  (let (cc:ptr:Node (unsafe/cast &Node call)
         tag:StrView "or")
     (when (!= is-and 0) (set! tag "and"))
     (when (!= (node-len cc) 3)
@@ -1692,7 +1692,7 @@
           end-lbl:StrView (fstr tag ".end" id)
           slot:StrView (fstr "%" tag ".val" id))
       (emit g-entry-stream "  " slot " = alloca i1, align 1\n")
-      (let (lhs:ref:Val (condition-bool (emit-node (node-at cc 1) scope)
+      (let (lhs:&Val (condition-bool (emit-node (node-at cc 1) scope)
                           (node-line (node-at cc 1) (cc 'line)) tag))
         (emit g-body-stream "  store i1 " (lhs 'val) ", ptr " slot ", align 1\n")
         (if (!= is-and 0)
@@ -1704,12 +1704,12 @@
         ; or false (or) — so the lhs's facts hold while it is emitted. This
         ; is what makes (and (!= m null) (m kind)) check.
         (let (scmark:i32 (narrow-mark)
-              (scfacts (ref (Vector Symbol))) (vector-new-in (addr-of g-arena-alloc)))
+              (scfacts (ref (Vector Symbol))) (vector-new-in &g-arena-alloc))
           (if (!= is-and 0)
             (test-true-nonnull (node-at cc 1) scfacts)
             (test-false-nonnull (node-at cc 1) scfacts))
           (narrow-names scope scfacts)
-        (let (rhs:ref:Val (condition-bool (emit-node (node-at cc 2) scope)
+        (let (rhs:&Val (condition-bool (emit-node (node-at cc 2) scope)
                             (node-line (node-at cc 2) (cc 'line)) tag))
           (narrow-restore scmark)
           (emit g-body-stream "  store i1 " (rhs 'val) ", ptr " slot ", align 1\n")
@@ -1742,8 +1742,8 @@
       (when (< oi 0) (return 1))
       (return ((invoke (ud 'arms) (as usize oi)) 'nfields)))))
 
-(defn emit-try (call:ptr scope:ref:Scope):ref:Val
-  (let (cc:ptr:Node (unsafe/cast ptr:Node call))
+(defn emit-try (call:ptr scope:&Scope):&Val
+  (let (cc:ptr:Node (unsafe/cast &Node call))
     (when (!= (node-len cc) 2)
       (die-at (cc 'line) "try: expects exactly one operand — (try expr)"))
     (let (ln:i32 (cc 'line)

@@ -10,7 +10,7 @@
 ; Symbol table
 ; ============================================================
 
-(defn scope-new (parent:raw:Scope):ref:Scope
+(defn scope-new (parent:raw:Scope):&Scope
   ; The Vector is bound before it is stored rather than written inline through
   ; an `(as (ref (Vector (ref Cleanup))) …)`: a binding is a declared-type
   ; position the want channel has always armed, so `vector-new-in`'s return-only
@@ -18,13 +18,13 @@
   ; unit stamped first. (`emit-as` arms the want too as of Stage 15 W8 G-5, but
   ; this spelling does not depend on that and is clearer about where T comes
   ; from.)
-  (let (s:ref:Scope (new Scope)
-        cs:(ref (Vector (ref Cleanup))) (vector-new-in (addr-of g-arena-alloc)))
+  (let (s:&Scope (new Scope)
+        cs:(ref (Vector &Cleanup)) (vector-new-in &g-arena-alloc))
     (set! (s 'parent) parent)
     (set! (s 'cleanup-slots) cs)
     (return s)))
 
-(defn scope-define (s:raw:Scope name:Symbol type:raw:Type ir-name:StrView is-local:i32):ref:Sym
+(defn scope-define (s:raw:Scope name:Symbol type:raw:Type ir-name:StrView is-local:i32):&Sym
   (let (sc:raw:Scope s)
     ; Stage 12: globals are keyed by their fully-qualified name. The global scope
     ; is the unique null-parent scope; local scopes (params, let bindings) always
@@ -47,7 +47,7 @@
             (memcpy ns (sc 'syms) (* (sc 'len) (sizeof Sym))))
           (set! (sc 'syms) ns)
           (set! (sc 'cap) nc))))
-    (let (sym:ptr:Sym (as ptr:Sym (unsafe/ptr+ (as ptr:Sym (sc 'syms)) (sc 'len))))
+    (let (sym:ptr:Sym (as &Sym (unsafe/ptr+ (as &Sym (sc 'syms)) (sc 'len))))
       (set! (sym 'name) name)
       (set! (sym 'type) type)
       (set! (sym 'ir-name) ir-name)
@@ -60,7 +60,7 @@
 ; Nucleus definers: an `extern`, a C-header import and a prelude registration
 ; genuinely have no source line here, and `locate` says so rather than blaming
 ; whichever file was being compiled when they were registered.
-(defn sym-record-src (sym:ref:Sym line:i32):void
+(defn sym-record-src (sym:&Sym line:i32):void
   (set! (sym 'src-file) g-source-path)
   (set! (sym 'src-line) line))
 
@@ -73,7 +73,7 @@
 (defn scope-frame-find (sc:raw:Scope key:Symbol):?ptr:Sym
   (let (i:i32 (- (sc 'len) 1))
     (while (>= i 0)
-      (let (sym:ptr:Sym (as ptr:Sym (unsafe/ptr+ (as ptr:Sym (sc 'syms)) i)))
+      (let (sym:ptr:Sym (as &Sym (unsafe/ptr+ (as &Sym (sc 'syms)) i)))
         (when (= (sym 'name) key)
           (return (as ptr sym))))
       (set! i (- i 1))))
@@ -87,7 +87,7 @@
 (defn scope-frame-find-public (sc:raw:Scope key:Symbol):?ptr:Sym
   (let (i:i32 (- (sc 'len) 1))
     (while (>= i 0)
-      (let (sym:ptr:Sym (as ptr:Sym (unsafe/ptr+ (as ptr:Sym (sc 'syms)) i)))
+      (let (sym:ptr:Sym (as &Sym (unsafe/ptr+ (as &Sym (sc 'syms)) i)))
         (when (and (= (sym 'name) key) (= (sym 'sym-private) 0))
           (return (as ptr sym))))
       (set! i (- i 1))))
@@ -166,9 +166,9 @@
 ; The id is the element's position in g-strs; each StrLit is individually
 ; arena-allocated and its pointer appended in order.
 (defn intern-string (sv:StrView):i32
-  (let (p:ptr:StrView (addr-of sv)
+  (let (p:ptr:StrView &sv
         id:i32 (unsafe/cast i32 (count g-strs))
-        sl:ref:StrLit (as ref:StrLit (arena-alloc (sizeof StrLit))))
+        sl:&StrLit (as ref:StrLit (arena-alloc (sizeof StrLit))))
     (set! (sl 'bytes) (strview (unsafe/cast (ptr ui8)
                                  (arena-bytes (as ptr (p 'data)) (p 'len)))
                                (p 'len)))
@@ -198,8 +198,8 @@
 
 ; Park a `String` in the arena so a `FnState` can hold it — see the field
 ; comment in compiler-types.nuc for why the field cannot be the value itself.
-(defn string-box ((v (ref String))):ref:String
-  (let (p:ref:String (as ref:String (arena-alloc (sizeof String))))
+(defn string-box (v:&String):&String
+  (let (p:&String (as ref:String (arena-alloc (sizeof String))))
     (set! (p 'bytes) (v 'bytes))
     (return p)))
 
@@ -224,13 +224,13 @@
   (set! g-tmp 0)
   (set! g-label 0)
   (set! g-block-term 0)
-  (set! g-lbl-tbl (unsafe/cast (ref (Vector (ref LabelEntry))) (vector-new-in (addr-of g-arena-alloc))))
+  (set! g-lbl-tbl (unsafe/cast (ref (Vector &LabelEntry)) (vector-new-in &g-arena-alloc)))
   (set! g-cur-fname "")
   (set! g-fn-ret-abi null)
   (set! g-fn-sret-name "")
   (set! g-fn-ret-type null)
   (set! g-loop-depth 0)
-  (set! g-nundo (vector-new-in (addr-of g-arena-alloc)))
+  (set! g-nundo (vector-new-in &g-arena-alloc))
   (ensure-emit-buffers)
   (string-clear g-entry-stream)
   (string-clear g-body-stream))
@@ -247,8 +247,8 @@
 ;
 ; Kept adjacent to `reset-function-state` deliberately — a global added there
 ; and not here is the drift this placement exists to make obvious.
-(defn push-function-state ():ref:FnState
-  (let (s:ref:FnState (as ref:FnState (arena-alloc (sizeof FnState))))
+(defn push-function-state ():&FnState
+  (let (s:&FnState (as ref:FnState (arena-alloc (sizeof FnState))))
     (set! (s 'tmp) g-tmp)
     (set! (s 'label) g-label)
     (set! (s 'block-term) g-block-term)
@@ -276,7 +276,7 @@
 ; closing and freeing the entry/body streams `reset-function-state` opened for
 ; it (emit-defmacro's body compiler already does); this only re-points the
 ; globals at the outer function's still-open pair.
-(defn pop-function-state (s:ref:FnState):void
+(defn pop-function-state (s:&FnState):void
   (set! g-tmp (s 'tmp))
   (set! g-label (s 'label))
   (set! g-block-term (s 'block-term))
@@ -287,8 +287,8 @@
   (set! g-fn-ret-type (s 'fn-ret-type))
   (set! g-loop-depth (s 'loop-depth))
   (set! g-nundo (s 'nundo))
-  (drop (addr-of g-entry-stream))
-  (drop (addr-of g-body-stream))
+  (drop &g-entry-stream)
+  (drop &g-body-stream)
   (set! g-entry-stream (deref (unsafe/cast ref:String (s 'entry-stream))))
   (set! g-body-stream (deref (unsafe/cast ref:String (s 'body-stream))))
   (set! g-abi-gpr-left (s 'abi-gpr-left))
@@ -300,14 +300,14 @@
 ; True while codegen is redirected into a macro/compile-time JIT module rather
 ; than the main program module (g-decl-out is swapped away from g-decl-stream).
 (defn in-jit-module ():i32
-  (return (if (!= (as ptr g-decl-out) (as ptr (addr-of g-decl-stream))) 1 0)))
+  (return (if (!= (as ptr g-decl-out) (as ptr &g-decl-stream)) 1 0)))
 
 ; The captured ProgDefn for an emitted @symbol, or null. Membership was by
 ; content and is now one `icmp`: C7-4b interned the ir-name substrate, which is
 ; what made content and identity the same question.
 (defn program-defn-lookup (irn:Symbol):?ptr:ProgDefn
   (dotimes (i (unsafe/cast i32 (count g-program-defns)))
-    (let (pd:ref:ProgDefn (invoke g-program-defns i:usize))
+    (let (pd:&ProgDefn (invoke g-program-defns i:usize))
       (when (= (pd 'ir-name) irn)
         (return pd))))
   (return null))
@@ -321,7 +321,7 @@
   (when (!= (in-jit-module) 0) (return))
   (when (symbol-none? irn) (return))
   (when (!= (as ptr (program-defn-lookup irn)) null) (return))
-  (let (pd:ref:ProgDefn (as ref:ProgDefn (arena-alloc (sizeof ProgDefn))))
+  (let (pd:&ProgDefn (as ref:ProgDefn (arena-alloc (sizeof ProgDefn))))
     (set! (pd 'ir-name) irn)
     (set! (pd 'ret) ret)
     (set! (pd 'ptypes) ptypes)

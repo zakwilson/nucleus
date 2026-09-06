@@ -17,7 +17,7 @@
 
 ; Replace chars invalid in LLVM IR identifiers with underscores.
 (defn sanitize-for-ir (name:StrView):StrView
-  (let (v:ptr:StrView (addr-of name)
+  (let (v:ptr:StrView &name
         n:i64 (as i64 (v 'len))
         s:ptr (arena-alloc (+ n 1))
         i:i64 0)
@@ -29,11 +29,11 @@
             is-safe:bool  (or (= c 95) (= c 46))
             ok:bool       (or is-digit is-lower is-upper is-safe))
         (if ok
-          (set! (aref (as ptr:i8 s) i) (unsafe/cast i8 c))
-          (set! (aref (as ptr:i8 s) i) 95)))
+          (set! (aref (as &i8 s) i) (unsafe/cast i8 c))
+          (set! (aref (as &i8 s) i) 95)))
       (set! i (+ i 1)))
-    (set! (aref (as ptr:i8 s) n) 0)
-    (return (strview (as ptr:ui8 s) (as usize n)))))
+    (set! (aref (as &i8 s) n) 0)
+    (return (strview (as &ui8 s) (as usize n)))))
 
 ; Replace chars invalid in C identifiers with underscores.
 ; Like sanitize-for-ir but dots (.) are also replaced — C identifiers are
@@ -55,7 +55,7 @@
 ; escape — it belongs on a complete identifier, and a fragment about to be joined
 ; after a prefix is never at position 0. W9 item 39.
 (defn sanitize-for-c (name:StrView):StrView
-  (let (v:ptr:StrView (addr-of name)
+  (let (v:ptr:StrView &name
         n:i64 (as i64 (v 'len))
         s:ptr (arena-alloc (+ n 1))
         i:i64 0)
@@ -66,11 +66,11 @@
             is-upper:bool (and (>= c 65) (<= c 90))
             ok:bool       (or is-digit is-lower is-upper (= c 95)))
         (if ok
-          (set! (aref (as ptr:i8 s) i) (unsafe/cast i8 c))
-          (set! (aref (as ptr:i8 s) i) 95)))
+          (set! (aref (as &i8 s) i) (unsafe/cast i8 c))
+          (set! (aref (as &i8 s) i) 95)))
       (set! i (+ i 1)))
-    (set! (aref (as ptr:i8 s) n) 0)
-    (return (strview (as ptr:ui8 s) (as usize n)))))
+    (set! (aref (as &i8 s) n) 0)
+    (return (strview (as &ui8 s) (as usize n)))))
 
 ; Copy `lit`'s bytes into `dst` at byte offset `off`; return the offset just
 ; past them.
@@ -78,7 +78,7 @@
   (let (m:i64 (as i64 (lit 'len))
         i:i64 0)
     (while (< i m)
-      (set! (aref (as ptr:i8 dst) (+ off i)) (unsafe/cast i8 (aref (lit 'data) i)))
+      (set! (aref (as &i8 dst) (+ off i)) (unsafe/cast i8 (aref (lit 'data) i)))
       (set! i (+ i 1)))
     (return (+ off m))))
 
@@ -116,7 +116,7 @@
 ; alternative renames every hyphenated symbol the compiler defines and breaks the
 ; byte-identical bootstrap (§1.3).
 (defn ir-name-token (name:StrView):StrView
-  (let (v:ptr:StrView (addr-of name)
+  (let (v:ptr:StrView &name
         n:i64 (as i64 (v 'len))
         special:i32 0
         lead:i32 0
@@ -144,17 +144,17 @@
             si:i64 0
             k:i64 0)
         (when (!= lead 0)
-          (set! (aref (as ptr:i8 s) 0) 95)
+          (set! (aref (as &i8 s) 0) 95)
           (set! si 1))
         (while (< k n)
           (let (c:i32 (as i32 (aref (v 'data) k)))
             (cond (= c 63) (set! si (ir-name-append s si "_QMARK"))
                   (= c 33) (set! si (ir-name-append s si "_BANG"))
-                  true     (do (set! (aref (as ptr:i8 s) si) (unsafe/cast i8 c))
+                  true     (do (set! (aref (as &i8 s) si) (unsafe/cast i8 c))
                                (set! si (+ si 1)))))
           (set! k (+ k 1)))
-        (set! (aref (as ptr:i8 s) si) 0)
-        (return (strview (as ptr:ui8 s) (as usize si)))))))
+        (set! (aref (as &i8 s) si) 0)
+        (return (strview (as &ui8 s) (as usize si)))))))
 
 ; SM-5 (design/stage14/symbol-mangling.md): a small reusable validity check for
 ; a FINAL ir-name — the diagnostic backstop that catches any LLVM-illegal
@@ -172,7 +172,7 @@
 ; Returns the first illegal character code found (scanning after any leading
 ; sigil), or -1 if `name` is entirely legal.
 (defn ir-name-illegal-char (name:StrView):i32
-  (let (v:ptr:StrView (addr-of name)
+  (let (v:ptr:StrView &name
         n:i64 (as i64 (v 'len))
         i:i64 0)
     (when (> n 0)
@@ -200,7 +200,7 @@
 ; ir-name-token now escapes this before it reaches emission, so this is purely
 ; the backstop for a future path that skips that transform.
 (defn ir-name-leading-digit (name:StrView):i32
-  (let (v:ptr:StrView (addr-of name)
+  (let (v:ptr:StrView &name
         n:i64 (as i64 (v 'len))
         i:i64 0)
     (when (= n 0) (return 0))
