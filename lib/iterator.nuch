@@ -3,7 +3,7 @@
 (defstruct IntRangeIter (start i32) (end i32))
 (extend IntRangeIter (Iterator i32))
 (defmethod "@next.pIntRangeIter" next ((self (ref IntRangeIter))) (Maybe i32))
-(defstruct I64ArrayIter (data (ptr i64)) (pos usize) (len usize))
+(defstruct I64ArrayIter (data (ref i64)) (pos usize) (len usize))
 (extend I64ArrayIter (Iterator i64))
 (defmethod "@next.pI64ArrayIter" next ((self (ref I64ArrayIter))) (Maybe i64))
 (defprotocol (UnaryFn Arg Ret) (apply ((self (ref Self)) (x Arg)) Ret))

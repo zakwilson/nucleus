@@ -51,16 +51,16 @@
 ; Reinterpreting a byte pointer at the header is the one thing this layout
 ; cannot express in the type, hence `unsafe/cast`. malloc's alignment is at
 ; least usize's, and the header is a whole number of words, so `p` is aligned.
-(defn symbol-header (self:Symbol):ptr:SymHeader
+(defn symbol-header (self:Symbol):&SymHeader
   (return (unsafe/cast ptr:SymHeader
             (unsafe/ptr+ (self 'p) (- 0 (as i64 (sizeof SymHeader)))))))
 
 (defn symbol-len (self:Symbol):usize
-  (let (h:ptr:SymHeader (symbol-header self))
+  (let (h:&SymHeader (symbol-header self))
     (return (h 'len))))
 
 (defn symbol-cached-hash (self:Symbol):usize
-  (let (h:ptr:SymHeader (symbol-header self))
+  (let (h:&SymHeader (symbol-header self))
     (return (h 'hash))))
 
 ; Spelled out rather than `(strview …)`: the constructor lives in lib/strview.nuc,
@@ -69,7 +69,7 @@
   (let (sv:&StrView (alloca StrView))
     (set! (sv 'data) (self 'p))
     (set! (sv 'len) (symbol-len self))
-    (return (deref sv))))
+    (return @sv)))
 
 ; Free, not a conversion: the interner NUL-terminates, so the bytes already are
 ; a C string. This is what keeps every surviving FFI seam copy-free.
@@ -90,7 +90,7 @@
 (defn symbol-none ():Symbol
   (let (s:&Symbol (alloca Symbol))
     (memset (as ptr s) 0 (as i64 (sizeof Symbol)))
-    (return (deref s))))
+    (return @s)))
 
 ; A spelling test against a written literal — the overwhelmingly common
 ; comparison, and the one thing pointer identity cannot answer, since interning
@@ -140,7 +140,7 @@
         base:?ptr (malloc (+ hdrsz (as i64 (+ n 1)))))
     (when (= base null) (intern-oom))
     (let (p:(ptr ui8) (as ptr:ui8 (unsafe/ptr+ (as ptr:ui8 base) hdrsz))
-          hdr:ptr:SymHeader (unsafe/cast ptr:SymHeader base))
+          hdr:&SymHeader (unsafe/cast ptr:SymHeader base))
       (set! (hdr 'hash) h)
       (set! (hdr 'len) n)
       (when (> n 0) (memcpy (as ptr p) (as ptr src) (as i64 n)))
@@ -167,7 +167,7 @@
               (let (ep:(ptr ui8) (as ptr:ui8 e)
                     es:&Symbol (alloca Symbol))
                 (set! (es 'p) ep)
-                (intern-place nt newcap ep (symbol-cached-hash (deref es)))))
+                (intern-place nt newcap ep (symbol-cached-hash @es))))
             (set! i (+ i 1)))))
       (free g-sym-table))
     (set! g-sym-table nt)
@@ -191,14 +191,14 @@
             (intern-place g-sym-table g-sym-cap p h)
             (set! g-sym-count (+ g-sym-count 1))
             (set! (s 'p) p)
-            (return (deref s))))
+            (return @s)))
         (set! (s 'p) (as ptr:ui8 e))
-        (when (and (= (symbol-len (deref s)) n)
+        (when (and (= (symbol-len @s) n)
                    (or (= n 0)
                        (= (memcmp (as ptr (s 'p)) (as ptr src) (as i64 n)) 0)))
-          (return (deref s))))
+          (return @s)))
       (set! i (bit-and (+ i 1) mask)))
-    (return (deref s))))
+    (return @s)))
 
 (defn symbol-intern ((sv (ref StrView))):Symbol
   (return (symbol-intern-bytes (sv 'data) (sv 'len))))
@@ -208,7 +208,7 @@
 ; #34): address-of is lvalue-only, so a literal and a freshly formatted `fstr`
 ; result cannot reach the `(ref StrView)` form at all.
 (defn symbol-intern (sv:StrView):Symbol
-  (return (symbol-intern (addr-of sv))))
+  (return (symbol-intern &sv)))
 
 (defn symbol-from-cstr ((cs CStr)):Symbol
   (return (symbol-intern-bytes (as ptr:ui8 (as ptr cs))
@@ -221,7 +221,7 @@
 (defn symbol-from-cstr-unchecked ((cs CStr)):Symbol
   (let (s:&Symbol (alloca Symbol))
     (set! (s 'p) (unsafe/cast (ptr ui8) (as ptr cs)))
-    (return (deref s))))
+    (return @s)))
 
 ; How many distinct names are interned. For diagnostics and the B4 benchmark.
 (defn symbol-count ():usize (return g-sym-count))

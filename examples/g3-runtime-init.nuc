@@ -27,10 +27,10 @@
 (defvar g-after:i32 (+ g-n 1))
 
 ; --- a non-null pointer global, filled at startup -----------------------------
-; `ptr:Pt` is non-null under the Phase-F regime, and this typechecks because the
+; `&Pt` is non-null under the Phase-F regime, and this typechecks because the
 ; initializer lowers to an ordinary `set!` — §2.8's `pkind-flow-check` applies
 ; with no second nullability rule. Returning `(raw Pt)` here is rejected.
-(defvar g-pt:ptr:Pt (make-pt 3 4))
+(defvar g-pt:&Pt (make-pt 3 4))
 
 ; --- a by-value struct global -------------------------------------------------
 (defvar g-origin:Pt (make-pt-val 11 22))
@@ -56,8 +56,8 @@
 
 (defn compute ():i32 (return (* BASE 5)))
 
-(defn make-pt (x:i32 y:i32):ptr:Pt
-  (let (p:ptr:Pt (as ptr:Pt (malloc (sizeof Pt))))
+(defn make-pt (x:i32 y:i32):&Pt
+  (let (p:&Pt (as ptr:Pt (malloc (sizeof Pt))))
     (set! (p 'x) x)
     (set! (p 'y) y)
     (return p)))
@@ -77,7 +77,7 @@
   (printf "g-n       = %d\n" g-n)
   (printf "g-after   = %d\n" g-after)
   (printf "g-pt      = %d,%d\n" (g-pt 'x) (g-pt 'y))
-  (printf "g-origin  = %d,%d\n" ((addr-of g-origin) 'x) ((addr-of g-origin) 'y))
+  (printf "g-origin  = %d,%d\n" (&g-origin 'x) (&g-origin 'y))
   (printf "g-label   = %s\n" g-label)
   (printf "g-hook()  = %d\n" (g-hook))
   (printf "g-const   = %d\n" g-const)

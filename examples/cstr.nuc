@@ -23,7 +23,7 @@
   ; Distinct buffer, equal text: proves strcmp, not pointer identity. The runtime
   ; copy lives at a different address than the literal it is compared against, so
   ; the CStr `=` is 1 (content) while the raw ptr `=` is 0 (identity).
-  (let (buf:ptr:i8 (alloca i8 8))
+  (let (buf:&i8 (alloca i8 8))
     (strcpy buf "foo")
     (printf "copy = foo  : %d\n" (= (as CStr buf) "foo"))
     (printf "copy ptr==  : %d\n" (= (as ptr buf) (as ptr "foo"))))

@@ -141,7 +141,7 @@
 
 (extend Hex ToStr)
 (defn to-str (self:Hex out:&String):!void
-  (let (buf:ptr:ui8 (as &ui8 (alloca ui8 16))
+  (let (buf:ptr:ui8 (as ref:ui8 (alloca ui8 16))
         x:ui64 (as ui64 (self 'v))
         n:usize 0
         w:usize (as usize (self 'width)))

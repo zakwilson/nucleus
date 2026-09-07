@@ -17,7 +17,7 @@
 ; signal yields (Maybe i64), eliminated with `match` (value-Maybe is not a
 ; pointer, so if-some/unwrap don't apply). `detail` carries the bytes needed.
 (defn grow (need:i64):i64
-  (match (signal out-of-memory i64 (as ptr (addr-of need)))
+  (match (signal out-of-memory i64 (as ptr &need))
     ((some sz) sz)               ; a handler supplied a size: continue with it
     (none      0)))   ; declined / no handler: the mechanism's fallback
 

@@ -18,42 +18,42 @@
 
       ; ---- find (Maybe E) ----
       (let ((it (VecIter i32)) (iter v))
-        (match (find (vfn (x:i32):bool (return (> x 4))) (addr-of it))
+        (match (find (vfn (x:i32):bool (return (> x 4))) &it)
           ((some f) (printf "find-inline=%d\n" f))
           (none (printf "find-inline=none\n"))))
       (let (gtthr (vfn (x:i32):bool (return (> x thr))))
         (let ((it (VecIter i32)) (iter v))
-          (match (find gtthr (addr-of it))
+          (match (find gtthr &it)
             ((some f) (printf "find-named=%d\n" f))
             (none (printf "find-named=none\n")))))
 
       ; ---- find-index ----
       (let ((it (VecIter i32)) (iter v))
         (printf "findidx-inline=%d\n"
-          (find-index (vfn (x:i32):bool (return (= x 4))) (addr-of it))))
+          (find-index (vfn (x:i32):bool (return (= x 4))) &it)))
       (let (eq9 (vfn (x:i32):bool (return (= x 9))))
         (let ((it (VecIter i32)) (iter v))
-          (printf "findidx-named=%d\n" (find-index eq9 (addr-of it)))))
+          (printf "findidx-named=%d\n" (find-index eq9 &it))))
 
       ; ---- any? / exists? ----
       (let ((it (VecIter i32)) (iter v))
-        (printf "any-inline=%d\n" (any? (vfn (x:i32):bool (return (> x 8))) (addr-of it))))
+        (printf "any-inline=%d\n" (any? (vfn (x:i32):bool (return (> x 8))) &it)))
       (let (gtthr (vfn (x:i32):bool (return (> x thr))))
         (let ((it (VecIter i32)) (iter v))
-          (printf "exists-named=%d\n" (exists? gtthr (addr-of it)))))
+          (printf "exists-named=%d\n" (exists? gtthr &it))))
 
       ; ---- every? / all? ----
       (let ((it (VecIter i32)) (iter v))
-        (printf "every-inline=%d\n" (every? (vfn (x:i32):bool (return (> x 0))) (addr-of it))))
+        (printf "every-inline=%d\n" (every? (vfn (x:i32):bool (return (> x 0))) &it)))
       (let (gtthr (vfn (x:i32):bool (return (> x thr))))
         (let ((it (VecIter i32)) (iter v))
-          (printf "all-named=%d\n" (all? gtthr (addr-of it)))))
+          (printf "all-named=%d\n" (all? gtthr &it))))
 
       ; ---- count-if ----
       (let ((it (VecIter i32)) (iter v))
         (printf "countif-inline=%d\n"
-          (count-if (vfn (x:i32):bool (return (= x 1))) (addr-of it))))
+          (count-if (vfn (x:i32):bool (return (= x 1))) &it)))
       (let (gtthr (vfn (x:i32):bool (return (> x thr))))
         (let ((it (VecIter i32)) (iter v))
-          (printf "countif-named=%d\n" (count-if gtthr (addr-of it)))))))
+          (printf "countif-named=%d\n" (count-if gtthr &it))))))
   (return 0))

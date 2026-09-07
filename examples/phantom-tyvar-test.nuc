@@ -57,7 +57,7 @@
 (defn main ():i32
   ; Concrete instance: I=i32, F=f64, S=i32, E=i64.
   (let ((t (ref (Two i32 f64 i32 i64))) (alloca (Two i32 f64 i32 i64)))
-    (set! (deref t) @((Two i32 f64 i32 i64) 42 (as f64 3.14)))
+    (set! @t @((Two i32 f64 i32 i64) 42 (as f64 3.14)))
     (printf "a=%d\n" (two-a t))               ; a=42
     (printf "s=%d\n" (two-s t))               ; s=42  (S=i32)
     (printf "e=%lld\n" (as i64 (two-e t))))  ; e=42  (E=i64)
@@ -65,7 +65,7 @@
   ; MapIterVerbose instance: I=i32, F=i32, S=i64, E=i32.
   (let ((m (ref (MapIterVerbose i32 i32 i64 i32)))
         (alloca (MapIterVerbose i32 i32 i64 i32)))
-    (set! (deref m) @((MapIterVerbose i32 i32 i64 i32) 7 99))
+    (set! @m @((MapIterVerbose i32 i32 i64 i32) 7 99))
     (printf "miv-e=%d\n" (miv-e m))                 ; miv-e=99 (E=i32)
     (printf "miv-s=%lld\n" (as i64 (miv-s m))))    ; miv-s=99 (S=i64)
   0)

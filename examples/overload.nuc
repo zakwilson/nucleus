@@ -8,10 +8,10 @@
 (import-use "stdio.h")
 
 ; Overload on pointer-to-struct argument type.
-(defn area (c:ptr:Circle):i32
+(defn area (c:&Circle):i32
   (return (* (* (c 'rad) (c 'rad)) 3)))
 
-(defn area (s:ptr:Rect):i32
+(defn area (s:&Rect):i32
   (return (* (s 'w) (s 'h))))
 
 ; Overload on primitive argument type (and different return types — B1).
@@ -23,8 +23,8 @@
 (defn sum (a:i32 b:i32):i32 (return (+ a b)))
 
 (defn main ():int
-  (let (c:ptr:Circle (alloca Circle)
-        s:ptr:Rect (alloca Rect))
+  (let (c:&Circle (alloca Circle)
+        s:&Rect (alloca Rect))
     (set! (c 'rad) 5)
     (set! (s 'w) 4)
     (set! (s 'h) 6)

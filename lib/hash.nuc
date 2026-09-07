@@ -58,17 +58,17 @@
 (extend i32 Hash)
 (defn hash ((self (ref i32))):usize
   (let (h:i64 -3750763034362895579)
-    (return (as usize (fnv1a-int h (as i64 (deref self)) 4)))))
+    (return (as usize (fnv1a-int h (as i64 @self) 4)))))
 
 (extend i64 Hash)
 (defn hash ((self (ref i64))):usize
   (let (h:i64 -3750763034362895579)
-    (return (as usize (fnv1a-int h (deref self) 8)))))
+    (return (as usize (fnv1a-int h @self 8)))))
 
 (extend usize Hash)
 (defn hash ((self (ref usize))):usize
   (let (h:i64 -3750763034362895579)
-    (return (as usize (fnv1a-int h (as i64 (deref self)) 8)))))
+    (return (as usize (fnv1a-int h (as i64 @self) 8)))))
 
 ; f64 / f32 — fold the BIT PATTERN, read back through the receiver. `(as i64 x)`
 ; would convert the value and round the fraction away, so equal-but-unequal
@@ -81,13 +81,13 @@
 (extend f64 Hash)
 (defn hash ((self (ref f64))):usize
   (let (h:i64 -3750763034362895579
-        bits:i64 (if (= (deref self) 0.0) 0 (deref (unsafe/cast ptr:i64 self))))
+        bits:i64 (if (= @self 0.0) 0 (deref (unsafe/cast ptr:i64 self))))
     (return (as usize (fnv1a-int h bits 8)))))
 
 (extend f32 Hash)
 (defn hash ((self (ref f32))):usize
   (let (h:i64 -3750763034362895579
-        bits:i64 (if (= (deref self) 0.0) 0 (as i64 (deref (unsafe/cast ptr:i32 self)))))
+        bits:i64 (if (= @self 0.0) 0 (as i64 (deref (unsafe/cast ptr:i32 self)))))
     (return (as usize (fnv1a-int h bits 4)))))
 
 ; `(ref Node)` — a symbol. `intern-symbol` keeps one canonical Node per spelling,
@@ -100,7 +100,7 @@
 ; `:where` bounds, which nothing here needs.
 (defn hash ((self (ref (ref Node)))):usize
   (let (h:i64 -3750763034362895579)
-    (return (as usize (fnv1a-int h (unsafe/cast i64 (as ptr (deref self))) 8)))))
+    (return (as usize (fnv1a-int h (unsafe/cast i64 (as ptr @self)) 8)))))
 
 ; Beside CStr's below rather than in lib/strview.nuc: `"…"` is the element type
 ; of a string collection literal, so the conformance has to reach every unit that
@@ -121,9 +121,9 @@
 ; There is no error channel on `hash`, so this follows `vector-bounds`: report
 ; the caller's bug and stop, rather than fault on the first `aref`.
 (defn hash ((self (ref CStr))):usize
-  (when (= (as raw:i8 (deref self)) null) (hash-null-cstr))
+  (when (= (as raw:i8 @self) null) (hash-null-cstr))
   (let (h:i64 -3750763034362895579
-        s:ptr:i8 (unsafe/cast ptr:i8 (deref self))
+        s:&i8 (unsafe/cast ptr:i8 @self)
         i:i64 0)
     (let (c:i32 (bit-and (as i32 (aref s 0)) 255))
       (while (!= c 0)

@@ -46,7 +46,7 @@
       (printf "set count=%d sum=%d\n" n sum)))      ; set count=3 sum=60
 
   ; ---- 3. HashMap entries via generic doseq (C2.2c) ----------------------
-  ;        doseq yields (Entry K V) values; read fields via (addr-of e).
+  ;        doseq yields (Entry K V) values; read fields via &e.
   (with ((m (ref (HashMap CStr i32))) (alloca (HashMap CStr i32)))
     (hashmap-init m)
     (assoc m "a" 100)
@@ -55,7 +55,7 @@
     (let (vsum:i32 0
           n:i32 0)
       (doseq (e m (HashMapEntryIter CStr i32))
-        (set! vsum (+ vsum ((addr-of e) 'val)))
+        (set! vsum (+ vsum (&e 'val)))
         (set! n (+ n 1)))
       (printf "map count=%d valsum=%d\n" n vsum)))  ; map count=3 valsum=600
 

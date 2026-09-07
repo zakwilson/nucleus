@@ -12,23 +12,23 @@
 ; ---- A user numeric type: rationals reduced to a common scale (here /100). ----
 (defstruct Cents v:i32)
 
-(defn mk (n:i32):ptr:Cents
-  (let (r:ptr:Cents (as ptr:Cents (malloc (as i64 (sizeof Cents)))))
+(defn mk (n:i32):&Cents
+  (let (r:&Cents (as ptr:Cents (malloc (as i64 (sizeof Cents)))))
     (set! (r 'v) n)
     (return r)))
 
 ; Operator overloads. (+ a b) folds to (_+ a b), so the arithmetic primitive is
 ; the overload point; comparisons dispatch on the operator name directly.
-(defn _+ (a:ptr:Cents b:ptr:Cents):ptr:Cents (return (mk (+ (a 'v) (b 'v)))))
-(defn _- (a:ptr:Cents b:ptr:Cents):ptr:Cents (return (mk (- (a 'v) (b 'v)))))
-(defn _* (a:ptr:Cents b:ptr:Cents):ptr:Cents (return (mk (/ (* (a 'v) (b 'v)) 100))))
-(defn _/ (a:ptr:Cents b:ptr:Cents):ptr:Cents (return (mk (/ (* (a 'v) 100) (b 'v)))))
-(defn <  (a:ptr:Cents b:ptr:Cents):bool (return (< (a 'v) (b 'v))))
-(defn <= (a:ptr:Cents b:ptr:Cents):bool (return (<= (a 'v) (b 'v))))
-(defn >  (a:ptr:Cents b:ptr:Cents):bool (return (> (a 'v) (b 'v))))
-(defn >= (a:ptr:Cents b:ptr:Cents):bool (return (>= (a 'v) (b 'v))))
-(defn =  (a:ptr:Cents b:ptr:Cents):bool (return (= (a 'v) (b 'v))))
-(defn != (a:ptr:Cents b:ptr:Cents):bool (return (!= (a 'v) (b 'v))))
+(defn _+ (a:&Cents b:&Cents):&Cents (return (mk (+ (a 'v) (b 'v)))))
+(defn _- (a:&Cents b:&Cents):&Cents (return (mk (- (a 'v) (b 'v)))))
+(defn _* (a:&Cents b:&Cents):&Cents (return (mk (/ (* (a 'v) (b 'v)) 100))))
+(defn _/ (a:&Cents b:&Cents):&Cents (return (mk (/ (* (a 'v) 100) (b 'v)))))
+(defn <  (a:&Cents b:&Cents):bool (return (< (a 'v) (b 'v))))
+(defn <= (a:&Cents b:&Cents):bool (return (<= (a 'v) (b 'v))))
+(defn >  (a:&Cents b:&Cents):bool (return (> (a 'v) (b 'v))))
+(defn >= (a:&Cents b:&Cents):bool (return (>= (a 'v) (b 'v))))
+(defn =  (a:&Cents b:&Cents):bool (return (= (a 'v) (b 'v))))
+(defn != (a:&Cents b:&Cents):bool (return (!= (a 'v) (b 'v))))
 
 ; Cents satisfies the library protocols; both assertions are code-free checks.
 (extend ptr:Cents Ord)
@@ -51,9 +51,9 @@
   (printf "sum3 i32 = %d\n" (sum3 1 2 3))
   (printf "sum3 f64 = %g\n" (sum3 1.5 2.5 3.0))
   ; The user type Cents dispatches to its own operator methods.
-  (let (a:ptr:Cents (mk 150)
-        b:ptr:Cents (mk 220)
-        c:ptr:Cents (mk 30))
+  (let (a:&Cents (mk 150)
+        b:&Cents (mk 220)
+        c:&Cents (mk 30))
     (printf "cents sum   = %d\n" ((sum3 a b c) 'v))
     (printf "cents max   = %d\n" ((maxv a b) 'v))
     (printf "cents a+b   = %d\n" ((+ a b) 'v))

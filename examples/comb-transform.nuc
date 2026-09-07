@@ -14,7 +14,7 @@
 (defn apply ((self (ref ExpandFn)) (x i32)) (Vector i32)
   (let ((r (ref (Vector i32))) (alloca (Vector i32)))
     (vector-init r) (conj r x) (conj r (+ x (self 'k)))
-    (return (deref r))))
+    (return @r)))
 
 (defn show (label:CStr (v (ref (Vector i32)))):void
   (printf "%s[" label)
@@ -33,41 +33,41 @@
 
       ; ---- map ----
       (let ((it (VecIter i32)) (iter v))
-        (let ((m (Vector i32)) (map (vfn (x:i32):i32 (return (* x 2))) (addr-of it)))
-          (show "map-inline " (addr-of m)) (drop (addr-of m))))
+        (let ((m (Vector i32)) (map (vfn (x:i32):i32 (return (* x 2))) &it))
+          (show "map-inline " &m) (drop &m)))
       (let (addk (vfn (x:i32):i32 (return (+ x k))))
         (let ((it (VecIter i32)) (iter v))
-          (let ((m (Vector i32)) (map addk (addr-of it)))
-            (show "map-named  " (addr-of m)) (drop (addr-of m)))))
+          (let ((m (Vector i32)) (map addk &it))
+            (show "map-named  " &m) (drop &m))))
 
       ; ---- filter ----
       (let ((it (VecIter i32)) (iter v))
-        (let ((f (Vector i32)) (filter (vfn (x:i32):bool (return (!= (bit-and x 1) 0))) (addr-of it)))
-          (show "filt-inline" (addr-of f)) (drop (addr-of f))))
+        (let ((f (Vector i32)) (filter (vfn (x:i32):bool (return (!= (bit-and x 1) 0))) &it))
+          (show "filt-inline" &f) (drop &f)))
       (let (gtthr (vfn (x:i32):bool (return (> x thr))))
         (let ((it (VecIter i32)) (iter v))
-          (let ((f (Vector i32)) (filter gtthr (addr-of it)))
-            (show "filt-named " (addr-of f)) (drop (addr-of f)))))
+          (let ((f (Vector i32)) (filter gtthr &it))
+            (show "filt-named " &f) (drop &f))))
 
       ; ---- remove-if ----
       (let ((it (VecIter i32)) (iter v))
-        (let ((r (Vector i32)) (remove-if (vfn (x:i32):bool (return (!= (bit-and x 1) 0))) (addr-of it)))
-          (show "rmif-inline" (addr-of r)) (drop (addr-of r))))
+        (let ((r (Vector i32)) (remove-if (vfn (x:i32):bool (return (!= (bit-and x 1) 0))) &it))
+          (show "rmif-inline" &r) (drop &r)))
       (let (gtthr (vfn (x:i32):bool (return (> x thr))))
         (let ((it (VecIter i32)) (iter v))
-          (let ((r (Vector i32)) (remove-if gtthr (addr-of it)))
-            (show "rmif-named " (addr-of r)) (drop (addr-of r)))))
+          (let ((r (Vector i32)) (remove-if gtthr &it))
+            (show "rmif-named " &r) (drop &r))))
 
       ; ---- for-each (pure side effect: print) ----
       (printf "feach-inl  ")
       (let ((it (VecIter i32)) (iter v))
-        (for-each (vfn (x:i32):i32 (printf " %d" x) (return 0)) (addr-of it)))
+        (for-each (vfn (x:i32):i32 (printf " %d" x) (return 0)) &it))
       (printf "\n")
       (let (base:i32 100
             emit (vfn (x:i32):i32 (printf " %d" (+ x base)) (return 0)))
         (printf "feach-name ")
         (let ((it (VecIter i32)) (iter v))
-          (for-each emit (addr-of it)))
+          (for-each emit &it))
         (printf "\n"))
 
       ; ---- flat-map ----
@@ -80,11 +80,11 @@
       (let ((ef (ref ExpandFn)) (alloca ExpandFn))
         (set! (ef 'k) k)
         (let ((it (VecIter i32)) (iter v))
-          (let ((fm (Vector i32)) (flat-map ef (addr-of it)))
-            (show "fmap-named1" (addr-of fm)) (drop (addr-of fm)))))
+          (let ((fm (Vector i32)) (flat-map ef &it))
+            (show "fmap-named1" &fm) (drop &fm))))
       (let ((ef2 (ref ExpandFn)) (alloca ExpandFn))
         (set! (ef2 'k) 100)
         (let ((it (VecIter i32)) (iter v))
-          (let ((fm (Vector i32)) (flat-map ef2 (addr-of it)))
-            (show "fmap-named2" (addr-of fm)) (drop (addr-of fm)))))))
+          (let ((fm (Vector i32)) (flat-map ef2 &it))
+            (show "fmap-named2" &fm) (drop &fm))))))
   (return 0))

@@ -9,23 +9,23 @@
 (import-use "stdio.h")
 
 (defprotocol Shape
-  (area (self:ptr:Self):i32)
-  (describe (self:ptr:Self):ptr))
+  (area (self:&Self):i32)
+  (describe (self:&Self):ptr))
 
 ; Concrete implementations are ordinary overloaded defns (Option 1 substrate).
-(defn area (s:ptr:Circle):i32 (return (* (* (s 'rad) (s 'rad)) 3)))
-(defn describe (s:ptr:Circle):ptr (return "circle"))
+(defn area (s:&Circle):i32 (return (* (* (s 'rad) (s 'rad)) 3)))
+(defn describe (s:&Circle):ptr (return "circle"))
 
-(defn area (s:ptr:Square):i32 (return (* (s 'side) (s 'side))))
-(defn describe (s:ptr:Square):ptr (return "square"))
+(defn area (s:&Square):i32 (return (* (s 'side) (s 'side))))
+(defn describe (s:&Square):ptr (return "square"))
 
 ; Code-free conformance assertions; fail to compile if a method is missing.
 (extend Circle Shape)
 (extend Square Shape)
 
 (defn main ():int
-  (let (c:ptr:Circle (alloca Circle)
-        sq:ptr:Square (alloca Square))
+  (let (c:&Circle (alloca Circle)
+        sq:&Square (alloca Square))
     (set! (c 'rad) 5)
     (set! (sq 'side) 4)
     (printf "%s area=%d\n" (describe c) (area c))

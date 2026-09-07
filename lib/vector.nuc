@@ -82,7 +82,7 @@
   (set! (v 'data) null)
   (set! (v 'len) 0)
   (set! (v 'cap) 0)
-  (set! (v 'alloc) (deref a)))
+  (set! (v 'alloc) @a))
 
 ; ---------------------------------------------------------------------------
 ; Value/heap constructors (target-typed — design/stage14/target-typed-
@@ -96,15 +96,15 @@
 (defn vector-new () (Vector T)
   (let (r (alloca (Vector T)))
     (vector-init r)
-    (return (deref r))))
+    (return @r)))
 (defn vector-new-alloc ((a (ref AllocHandle))) (Vector T)
   (let (r (alloca (Vector T)))
     (vector-init-alloc r a)
-    (return (deref r))))
+    (return @r)))
 (defn vector-new-capacity (n:usize) (Vector T)
   (let (r (alloca (Vector T)))
     (vector-init-capacity r n)
-    (return (deref r))))
+    (return @r)))
 ; heap placement — struct allocated through the handle; returns an escapable ref.
 (defn vector-new-in ((a (ref AllocHandle))) (ref (Vector T))
   (let (v (unsafe/cast (ref (Vector T))
@@ -124,7 +124,7 @@
         elem-size:usize (as usize (sizeof T)))
     (let (old-bytes:usize (* (_get v 'cap) elem-size)
           new-bytes:usize (* new-cap elem-size)
-          ah:ref:AllocHandle (addr-of v 'alloc))
+          ah:&AllocHandle (addr-of v 'alloc))
       (let ((new-data (raw ui8))
             (alloc-handle-realloc ah (_get v 'data) old-bytes new-bytes 8))
         (when (= (as ptr new-data) null) (vector-oom))
@@ -184,7 +184,7 @@
 (defn insert ((self (ref (Vector T))) i:usize elem:T):void
   (when (> i (_get self 'len)) (vector-bounds "insert" i (_get self 'len)))
   (when (>= (_get self 'len) (_get self 'cap)) (vector-grow self))
-  (let (buf:ptr:T (as ptr:T (as ptr (_get self 'data)))
+  (let (buf:&T (as ptr:T (as ptr (_get self 'data)))
         j:usize (_get self 'len))
     (while (> j i)
       (set! (aref buf (as i64 j)) (aref buf (as i64 (- j 1))))
@@ -196,7 +196,7 @@
 ; i must be < len (i = len-1 removes the last element). Panics out-of-bounds.
 (defn remove-at ((self (ref (Vector T))) i:usize):void
   (when (>= i (_get self 'len)) (vector-bounds "remove-at" i (_get self 'len)))
-  (let (buf:ptr:T (as ptr:T (as ptr (_get self 'data)))
+  (let (buf:&T (as ptr:T (as ptr (_get self 'data)))
         j:usize i)
     (while (< (+ j 1) (_get self 'len))
       (set! (aref buf (as i64 j)) (aref buf (as i64 (+ j 1))))
@@ -279,8 +279,8 @@
 ;
 ; NOTE: `iter-init` is the internal fill-in-place helper. The protocol surface
 ; is the value-returning `iter` (Coll conformance, defined below): it alloca's a
-; VecIter, calls `iter-init`, and returns `(deref it)` by value through the SysV
-; sret path. Consumers `(addr-of …)` the returned value to get the (ref (VecIter
+; VecIter, calls `iter-init`, and returns `@it` by value through the SysV
+; sret path. Consumers `&`-address the returned value to get the (ref (VecIter
 ; T)) that `next` wants (the doseq/into convention — C2.1).
 ; ---------------------------------------------------------------------------
 (defstruct (VecIter T)
@@ -314,4 +314,4 @@
 (defn iter ((self (ref (Vector T)))) (VecIter T)
   (let ((it (ref (VecIter T))) (alloca (VecIter T)))
     (iter-init it self)
-    (return (deref it))))
+    (return @it)))

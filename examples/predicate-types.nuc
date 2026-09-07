@@ -48,7 +48,7 @@
 
 ; match over the `?`-named union → type REFERENCE to %Shape_QMARK (ptr scrutinee
 ; GEPs into the backing struct).
-(defn shape-area (s:ptr:Shape?):i32
+(defn shape-area (s:&Shape?):i32
   (match s
     ((circle radius) (return (* radius radius)))
     (nothing         (return 0))))
@@ -75,8 +75,8 @@
   ; `?`-named union: construct each arm, match
   (let (c:Shape? (Shape?-circle 6)
         n:Shape? (Shape?-nothing))
-    (printf "area circle(6) = %d\n" (shape-area (addr-of c)))   ; 36
-    (printf "area nothing = %d\n" (shape-area (addr-of n))))    ; 0
+    (printf "area circle(6) = %d\n" (shape-area &c))   ; 36
+    (printf "area nothing = %d\n" (shape-area &n)))    ; 0
 
   (printf "done\n")
   (return 0))

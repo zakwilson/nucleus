@@ -62,7 +62,7 @@
       (let (nm:String (str "n" i)
             v:StrView (string-as-view nm))
         (symbol-intern v)
-        (drop (addr-of nm))))
+        (drop &nm)))
     (let (again:Symbol (symbol-from-cstr c"n0"))
       (set! stable (= first again)))
     (println "grew=" (> (symbol-count) before) " identity-survives-rehash=" stable))

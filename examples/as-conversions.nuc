@@ -47,7 +47,7 @@
 
 ; weakening (ref Rec) -> (raw Rec): the callee accepts a non-null ref, weakens the
 ; contract to a nullable raw, then reads a field through it (raw is derefable).
-(defn peek-kind (r:ref:Rec):i32
+(defn peek-kind (r:&Rec):i32
   (let (rr:raw:Rec (as raw:Rec r))
     (return (rr 'kind))))
 
@@ -72,7 +72,7 @@
   ;   - (as ptr r)       weakening a typed pointer back to a bare `ptr`
   (with (p:ptr (malloc (as i64 (sizeof Rec))))
     (when (!= p null)
-      (let (r:ptr:Rec (as ptr:Rec p))
+      (let (r:&Rec (as ptr:Rec p))
         (set! (r 'kind) 7)
         (set! (r 'x) 99)
         (printf "void-hatch      = kind=%d x=%d\n" (r 'kind) (r 'x))

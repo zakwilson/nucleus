@@ -1,6 +1,6 @@
 ; Stage 11 collections — HashSet T: an open-addressing hash set with linear
 ; probing. O(1) average `contains?`/`insert`/`set-remove`. Members conform to
-; Hash + Eq (= for equality, (hash (addr-of k)) for hashing). Owns two parallel
+; Hash + Eq (= for equality, `(hash &k)` for hashing). Owns two parallel
 ; byte arrays (keys buffer and state buffer) through a stored allocator handle
 ; and frees them via `Drop` at `with`-scope exit.
 ;
@@ -95,7 +95,7 @@
 (defn hashset-init-alloc ((s (ref (HashSet T))) (a (ref AllocHandle))):void
   (let (init-cap:usize 8
         elem-size:usize (as usize (sizeof T)))
-    (set! (s 'alloc) (deref a))
+    (set! (s 'alloc) @a)
     (let ((kbuf (raw ui8))
           (alloc-handle-alloc (addr-of s 'alloc)
                               (* init-cap elem-size)
@@ -119,11 +119,11 @@
 (defn hashset-new () (HashSet T)
   (let (r (alloca (HashSet T)))
     (hashset-init r)
-    (return (deref r))))
+    (return @r)))
 (defn hashset-new-alloc ((a (ref AllocHandle))) (HashSet T)
   (let (r (alloca (HashSet T)))
     (hashset-init-alloc r a)
-    (return (deref r))))
+    (return @r)))
 (defn hashset-new-in ((a (ref AllocHandle))) (ref (HashSet T))
   ; `unsafe/cast`, as hashmap-new-in: `as` refuses to reinterpret the handle's
   ; `ptr:ui8`, so this never instantiated.
@@ -152,17 +152,17 @@
         (memset (as ptr new-states) 0 (as i64 new-cap))
         (let (new-mask:usize (- new-cap 1)
               old-cap:usize (s 'cap)
-              old-kbuf:ptr:T (as ptr:T (as ptr (s 'keys)))
-              old-sbuf:ptr:ui8 (as ptr:ui8 (as ptr (s 'states)))
-              new-kbuf:ptr:T (as ptr:T (as ptr new-keys))
-              new-sbuf:ptr:ui8 (as ptr:ui8 (as ptr new-states))
+              old-kbuf:&T (as ptr:T (as ptr (s 'keys)))
+              old-sbuf:&ui8 (as ptr:ui8 (as ptr (s 'states)))
+              new-kbuf:&T (as ptr:T (as ptr new-keys))
+              new-sbuf:&ui8 (as ptr:ui8 (as ptr new-states))
               i:usize 0)
           ; Rehash every occupied bucket from the old table.
           (while (< i old-cap)
             (when (= (as i32 (aref old-sbuf (as i64 i))) 1)
               (let (elem:T (aref old-kbuf (as i64 i))
                     k:T elem
-                    h:usize (hash (addr-of k))
+                    h:usize (hash &k)
                     idx:usize (bit-and h new-mask)
                     done:i32 0)
                 (while (= done 0)
@@ -195,11 +195,11 @@
   (when (>= (* (self 'count) 4)
             (* (self 'cap)   3))
     (hashset-resize self (* (self 'cap) 2)))
-  (let (kbuf:ptr:T (as ptr:T (as ptr (self 'keys)))
-        sbuf:ptr:ui8 (as ptr:ui8 (as ptr (self 'states)))
+  (let (kbuf:&T (as ptr:T (as ptr (self 'keys)))
+        sbuf:&ui8 (as ptr:ui8 (as ptr (self 'states)))
         mask:usize (- (self 'cap) 1)
         k:T elem
-        idx:usize (bit-and (hash (addr-of k)) mask)
+        idx:usize (bit-and (hash &k) mask)
         first-tomb:usize 0
         has-tomb:i32 0
         done:i32 0)
@@ -231,11 +231,11 @@
 ; Set conformance.
 ; ---------------------------------------------------------------------------
 (defn contains? ((self (ref (HashSet T))) elem:T):bool
-  (let (kbuf:ptr:T (as ptr:T (as ptr (self 'keys)))
-        sbuf:ptr:ui8 (as ptr:ui8 (as ptr (self 'states)))
+  (let (kbuf:&T (as ptr:T (as ptr (self 'keys)))
+        sbuf:&ui8 (as ptr:ui8 (as ptr (self 'states)))
         mask:usize (- (self 'cap) 1)
         k:T elem
-        idx:usize (bit-and (hash (addr-of k)) mask)
+        idx:usize (bit-and (hash &k) mask)
         done:i32 0
         result:bool false)
     (while (= done 0)
@@ -257,11 +257,11 @@
 ; Named `set-remove` rather than `remove` to avoid shadowing libc `remove`.
 ; ---------------------------------------------------------------------------
 (defn set-remove ((self (ref (HashSet T))) elem:T):void
-  (let (kbuf:ptr:T (as ptr:T (as ptr (self 'keys)))
-        sbuf:ptr:ui8 (as ptr:ui8 (as ptr (self 'states)))
+  (let (kbuf:&T (as ptr:T (as ptr (self 'keys)))
+        sbuf:&ui8 (as ptr:ui8 (as ptr (self 'states)))
         mask:usize (- (self 'cap) 1)
         k:T elem
-        idx:usize (bit-and (hash (addr-of k)) mask)
+        idx:usize (bit-and (hash &k) mask)
         done:i32 0)
     (while (= done 0)
       (let (st:i32 (as i32 (aref sbuf (as i64 idx))))
@@ -302,8 +302,8 @@
 
 ; union: add every occupied member of `other` into self.
 (defn union ((self (ref (HashSet T))) (other (ref (HashSet T)))):void
-  (let (kbuf:ptr:T (as ptr:T (as ptr (other 'keys)))
-        sbuf:ptr:ui8 (as ptr:ui8 (as ptr (other 'states)))
+  (let (kbuf:&T (as ptr:T (as ptr (other 'keys)))
+        sbuf:&ui8 (as ptr:ui8 (as ptr (other 'states)))
         cap:usize (other 'cap)
         i:usize 0)
     (while (< i cap)
@@ -313,8 +313,8 @@
 
 ; difference: remove from self every member that is also in other.
 (defn difference ((self (ref (HashSet T))) (other (ref (HashSet T)))):void
-  (let (kbuf:ptr:T (as ptr:T (as ptr (self 'keys)))
-        sbuf:ptr:ui8 (as ptr:ui8 (as ptr (self 'states)))
+  (let (kbuf:&T (as ptr:T (as ptr (self 'keys)))
+        sbuf:&ui8 (as ptr:ui8 (as ptr (self 'states)))
         cap:usize (self 'cap)
         i:usize 0)
     (while (< i cap)
@@ -326,8 +326,8 @@
 
 ; intersection: keep in self only members also in other.
 (defn intersection ((self (ref (HashSet T))) (other (ref (HashSet T)))):void
-  (let (kbuf:ptr:T (as ptr:T (as ptr (self 'keys)))
-        sbuf:ptr:ui8 (as ptr:ui8 (as ptr (self 'states)))
+  (let (kbuf:&T (as ptr:T (as ptr (self 'keys)))
+        sbuf:&ui8 (as ptr:ui8 (as ptr (self 'states)))
         cap:usize (self 'cap)
         i:usize 0)
     (while (< i cap)
@@ -384,8 +384,8 @@
 (extend (HashSetIter T) (Iterator T))
 
 (defn next ((self (ref (HashSetIter T)))) (Maybe T)
-  (let (kptr:ptr:T (as ptr:T (self 'kbuf))
-        sptr:ptr:ui8 (as ptr:ui8 (self 'sbuf))
+  (let (kptr:&T (as ptr:T (self 'kbuf))
+        sptr:&ui8 (as ptr:ui8 (self 'sbuf))
         done:i32 0
         result:i32 0)
     (while (= done 0)
@@ -419,4 +419,4 @@
 (defn iter ((self (ref (HashSet T)))) (HashSetIter T)
   (let ((it (ref (HashSetIter T))) (alloca (HashSetIter T)))
     (hashset-iter it self)
-    (return (deref it))))
+    (return @it)))

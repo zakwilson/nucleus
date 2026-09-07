@@ -11,7 +11,7 @@
 (import-use strview)
 
 ; (2) fixed StrView by-value parameter — reads .len via the by-ref accessor.
-(defn sv-len (v:StrView):usize (return (strview-byte-len (addr-of v))))
+(defn sv-len (v:StrView):usize (return (strview-byte-len &v)))
 
 (defn main ():i32
   (let (a:StrView "hello"

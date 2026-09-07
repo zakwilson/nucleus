@@ -26,7 +26,7 @@
 
 (extend Symbol Hash)
 (defn hash ((self (ref Symbol))):usize
-  (return (symbol-cached-hash (deref self))))
+  (return (symbol-cached-hash @self)))
 
 (extend Symbol ToStr)
 (defn to-str (self:Symbol (out (ref String))):!void
@@ -38,52 +38,52 @@
 ; `as-view`, which is two words and no allocation.
 (extend Symbol (ByteStr ByteIter))
 
-(defn byte-len ((self (ref Symbol))):usize (return (symbol-len (deref self))))
+(defn byte-len ((self (ref Symbol))):usize (return (symbol-len @self)))
 
 (defn byte-at ((self (ref Symbol)) i:usize):!ui8
-  (let (v:StrView (symbol-as-view (deref self)))
+  (let (v:StrView (symbol-as-view @self))
     (return (byte-at v i))))
 
 (defn bytes ((self (ref Symbol))):ByteIter
-  (let (v:StrView (symbol-as-view (deref self)))
+  (let (v:StrView (symbol-as-view @self))
     (return (bytes v))))
 
 (defn as-view ((self (ref Symbol))):StrView
-  (return (symbol-as-view (deref self))))
+  (return (symbol-as-view @self)))
 
 (defn sub-bytes ((self (ref Symbol)) start:usize end:usize):!StrView
-  (let (v:StrView (symbol-as-view (deref self)))
+  (let (v:StrView (symbol-as-view @self))
     (return (sub-bytes v start end))))
 
 (defn byte-find ((self (ref Symbol)) (needle (ref StrView))) (Maybe usize)
-  (let (v:StrView (symbol-as-view (deref self)))
+  (let (v:StrView (symbol-as-view @self))
     (return (byte-find v needle))))
 
 (extend Symbol (Str CharIter))
 
 (defn char-count ((self (ref Symbol))):usize
-  (let (v:StrView (symbol-as-view (deref self)))
+  (let (v:StrView (symbol-as-view @self))
     (return (char-count v))))
 
 (defn str-empty? ((self (ref Symbol))):bool
-  (return (= (symbol-len (deref self)) 0)))
+  (return (= (symbol-len @self) 0)))
 
 (defn char-at ((self (ref Symbol)) i:usize):!Char
-  (let (v:StrView (symbol-as-view (deref self)))
+  (let (v:StrView (symbol-as-view @self))
     (return (char-at v i))))
 
 (defn chars ((self (ref Symbol))):CharIter
-  (let (v:StrView (symbol-as-view (deref self)))
+  (let (v:StrView (symbol-as-view @self))
     (return (chars v))))
 
 (defn starts-with? ((self (ref Symbol)) (prefix (ref StrView))):bool
-  (let (v:StrView (symbol-as-view (deref self)))
+  (let (v:StrView (symbol-as-view @self))
     (return (starts-with? v prefix))))
 
 (defn ends-with? ((self (ref Symbol)) (suffix (ref StrView))):bool
-  (let (v:StrView (symbol-as-view (deref self)))
+  (let (v:StrView (symbol-as-view @self))
     (return (ends-with? v suffix))))
 
 (defn contains-str? ((self (ref Symbol)) (needle (ref StrView))):bool
-  (let (v:StrView (symbol-as-view (deref self)))
+  (let (v:StrView (symbol-as-view @self))
     (return (contains-str? v needle))))

@@ -66,7 +66,7 @@
 (defn cfile (f:ptr):CFile
   (let (c:&CFile (alloca CFile))
     (set! (c 'f) f)
-    (return (deref c))))
+    (return @c)))
 
 (extend CFile Writer)
 
@@ -97,7 +97,7 @@
 ; buffer and reversed on the way out; 20 digits covers every 64-bit value.
 
 (defn string-push-u64 ((out (ref String)) v:ui64):void
-  (let (buf:ptr:ui8 (as ptr:ui8 (alloca ui8 20))
+  (let (buf:&ui8 (as ptr:ui8 (alloca ui8 20))
         n:usize 0
         x:ui64 v)
     (when (= x 0)
@@ -166,7 +166,7 @@
 ; native, and swapping in a native printer later is invisible.
 
 (defn string-push-f64 ((out (ref String)) v:f64 prec:CStr):void
-  (let (buf:ptr:i8 (alloca i8 64))
+  (let (buf:&i8 (alloca i8 64))
     (let (n:i32 (snprintf buf 64 prec v))
       (when (> n 0)
         (string-push-bytes-raw out (as ptr:ui8 (as ptr buf)) (as usize n))))))

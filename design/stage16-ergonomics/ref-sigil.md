@@ -112,6 +112,20 @@ when scanning for a pointer-kind mistake. If it is adopted, do it as one
 mechanical sweep against a pre-adoption `build/nucleusc.ll`, the way the
 `deftype` adoption was verified.
 
+**Adopted 2026-09-06/07** — `src/` in `a15f38e`, then `lib/`+`examples/` (see
+[progress.md](../progress.md)). One line was drawn that this section did not
+anticipate: the sweep takes `&` only at an **interior** chain segment
+(`p:ptr:T` → `p:&T`, `?ptr:V` → `?&V`), never standalone (`(as ptr:T x)`,
+`(p (ref T))`). The interior form is the lexer rewrite of §2 and leaves no trace;
+the standalone form is §6's reader macro, so the node is `(addr-of T)` and
+`--emit-nuch`'s verbatim export of protocols and generic templates carries it
+into the committed header. §6's "a spelling nobody writes" is true of
+hand-written source and not of a mechanical sweep: `a15f38e` wrote 2,469 of them
+into `src/` before the rule existed, and they were swept back out on 2026-09-07
+— a cast operand to `ref:T`, a type expression to `(ref T)`, a binding pair to
+the attached `name:&T` — with `build/nucleusc.ll` byte-identical across the
+change, which is the proof that the two spellings only ever differed as text.
+
 ## 6. `&x` is `(addr-of x)`
 
 `(addr-of x)` is written ~854 times in the tree (530 `src/`, 198 `examples/`,
@@ -179,8 +193,9 @@ check (`(addr-of X)` there is a real call and must stay one), and the cheader
 walkers see types, not the source node.
 
 The cost is that `(addr-of T)` becomes a legal, strange way to spell `(ref T)`.
-That is the price of a reader that decides before position is known, and it is
-paid in a spelling nobody writes.
+That is the price of a reader that decides before position is known. "A spelling
+nobody writes" turned out to be wrong once a sweep was pointed at it — see §5,
+and `--emit-nuch` prints the node.
 
 ### The retired markers, again
 

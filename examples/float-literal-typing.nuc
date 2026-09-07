@@ -80,16 +80,16 @@
     (tkind (giveback-implicit)) (as f64 (giveback-implicit)))
 
   ; ---- struct literal (positional + designated) and .set! field store --------
-  (let (p:ptr:P (P 0.1 0.2 0.1))
+  (let (p:&P (P 0.1 0.2 0.1))
     (printf "struct-pos  %s %.9g %.9g | %s %.17g\n"
       (tkind (p 'x)) (as f64 (p 'x)) (as f64 (p 'y)) (tkind (p 'w)) (p 'w))
     (set! (p 'x) 0.3)
     (printf "field-set   %.9g\n" (as f64 (p 'x))))
-  (let (q:ptr:P (P (y 0.1) (x 0.2)))
+  (let (q:&P (P (y 0.1) (x 0.2)))
     (printf "struct-desg %.9g %.9g\n" (as f64 (q 'x)) (as f64 (q 'y))))
 
   ; ---- array literal (positional + designated) ------------------------------
-  (let (ar:ptr:f32 (array f32 0.1 0.2 (4 0.3)))
+  (let (ar:&f32 (array f32 0.1 0.2 (4 0.3)))
     (printf "array       %.9g %.9g %.9g %.9g\n"
       (as f64 (aref ar 0)) (as f64 (aref ar 1))
       (as f64 (aref ar 2)) (as f64 (aref ar 4))))

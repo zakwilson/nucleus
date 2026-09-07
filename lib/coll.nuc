@@ -127,4 +127,4 @@
 ; (examples/drop-defer.nuc does), in a unit that does not import this one.
 ; ---------------------------------------------------------------------------
 (defprotocol Drop
-  (drop (self:ptr:Self):void))
+  (drop (self:&Self):void))

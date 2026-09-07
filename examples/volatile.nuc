@@ -5,7 +5,7 @@
   (:volatile status:i32))
 
 (defn bump-counter ((p (ptr :volatile i32))):void
-  (set! (deref p) (+ (deref p) 1)))
+  (set! @p (+ @p 1)))
 
 (defn main ():int
   (let (:volatile x:i32 0)
@@ -13,14 +13,14 @@
     (inc! x)
     (printf "x=%d\n" x))
 
-  (let (r:ptr:Reg (alloca Reg))
+  (let (r:&Reg (alloca Reg))
     (set! (r 'flags) 7)
     (set! (r 'status) 42)
     (printf "flags=%d status=%d\n" (get r 'flags) (get r 'status)))
 
   (let (slot:i32 0)
-    (bump-counter (addr-of slot))
-    (bump-counter (addr-of slot))
+    (bump-counter &slot)
+    (bump-counter &slot)
     (printf "slot=%d\n" slot))
 
   (return 0))

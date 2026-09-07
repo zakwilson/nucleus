@@ -46,7 +46,7 @@
 
     ; ---- 2. chars iteration --------------------------------------------------
     (let (ci:CharIter (chars s))
-      (doseq-iter (c (addr-of ci))
+      (doseq-iter (c &ci)
         (printf "char=%u\n" (as ui32 c))))  ; 72 101 108 108 111
 
     ; ---- 3. string-push-str: append " World" ----------------------------------
@@ -60,7 +60,7 @@
       (printf "byte-len-after=%llu\n" (as ui64 (byte-len s))) ; 11
       ; Print as CStr using strview-to-cstr on as-view.
       (let (sv:StrView (as-view s))
-        (printf "content=%s\n" (strview-to-cstr (addr-of sv)))))  ; Hello World
+        (printf "content=%s\n" (strview-to-cstr &sv))))  ; Hello World
 
     ; ---- 4. string-pop-char: pop 'd' -----------------------------------------
     (let ((popped (Maybe Char)) (string-pop-char s))
@@ -77,15 +77,15 @@
         (match r2
           ((ok s2)
            (printf "from-view=ok\n")
-           (let (sv3:StrView (as-view (addr-of s2)))
-             (printf "from-view-content=%s\n" (strview-to-cstr (addr-of sv3))))
+           (let (sv3:StrView (as-view &s2))
+             (printf "from-view-content=%s\n" (strview-to-cstr &sv3)))
            ; Drop s2 explicitly since we're inside a match arm.
-           (drop (addr-of s2)))
+           (drop &s2))
           ((err e) (printf "from-view=err\n")))))
 
     ; ---- 5b. string-from-view: invalid UTF-8 → error --------------------------
     ; 0xFF is not a valid UTF-8 lead byte.
-    (let (bad-buf:ptr:ui8 (as ptr:ui8 (malloc 1)))
+    (let (bad-buf:&ui8 (as ptr:ui8 (malloc 1)))
       (set! (aref bad-buf 0) 255)
       (let ((bad-sv (ref StrView)) (alloca StrView))
         (set! (bad-sv 'data) bad-buf)
@@ -94,7 +94,7 @@
           (match r3
             ((ok s3)
              (printf "from-view-bad=ok\n")
-             (drop (addr-of s3)))
+             (drop &s3))
             ((err e) (printf "from-view-bad=err\n")))))  ; err
       (free (as ptr bad-buf)))
 
@@ -116,17 +116,17 @@
     (printf "eq-same=%d\n"  (if (= a b) 1 0))   ; 1
     (printf "eq-diff=%d\n"  (if (= a c) 1 0))   ; 0
     (printf "neq-diff=%d\n" (if (!= a c) 1 0))  ; 1
-    (drop (addr-of a))
-    (drop (addr-of b))
-    (drop (addr-of c)))
+    (drop &a)
+    (drop &b)
+    (drop &c))
 
   ; ---- 8. Ord -----------------------------------------------------------------
   (let (p:String (string-from-cstr-unchecked "Hello")
         q:String (string-from-cstr-unchecked "World"))
     (printf "lt-hv=%d\n"  (if (< p q) 1 0))   ; 1 ("Hello" < "World")
     (printf "gt-vh=%d\n"  (if (> q p) 1 0))   ; 1
-    (drop (addr-of p))
-    (drop (addr-of q)))
+    (drop &p)
+    (drop &q))
 
   ; ---- 9. HashMap<String,i32> -------------------------------------------------
   (with ((m (ref (HashMap String i32))) (alloca (HashMap String i32)))

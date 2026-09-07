@@ -36,8 +36,8 @@
 
 (defn show (label:StrView n:raw:Node):void
   (let (s:String (node-str n))
-    (print label "=" (string-as-view (addr-of s)) "\n")
-    (drop (addr-of s))))
+    (print label "=" (string-as-view &s) "\n")
+    (drop &s)))
 
 (defn main ():i32
   (match (read-all (config))
@@ -61,8 +61,8 @@
         ((err e2) (print "reread-failed\n")))
       ; Reading what we printed gives the same tree back.
       (let (text:String (node-str (forms 'car)))
-        (match (read-all (string-as-view (addr-of text)))
+        (match (read-all (string-as-view &text))
           ((ok round) (print "roundtrip-equal=" (node-eq (forms 'car) (round 'car)) "\n"))
           ((err e3) (print "roundtrip-failed\n")))
-        (drop (addr-of text)))
+        (drop &text))
       (return 0))))

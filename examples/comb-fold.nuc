@@ -17,24 +17,24 @@
       ; 0 -> 0*10+4=4 -> 4*10+3=43 -> 43*10+2=432 -> 432*10+1=4321
       (let ((it (VecIter i32)) (iter v))
         (printf "foldr-inline=%d\n"
-          (foldr (vfn (acc:i32 x:i32):i32 (return (+ (* acc base) x))) 0 (addr-of it))))
+          (foldr (vfn (acc:i32 x:i32):i32 (return (+ (* acc base) x))) 0 &it)))
       (let (horner (vfn (acc:i32 x:i32):i32 (return (+ (* acc base) x))))
         (let ((it (VecIter i32)) (iter v))
-          (printf "foldr-named=%d\n" (foldr horner 0 (addr-of it)))))
+          (printf "foldr-named=%d\n" (foldr horner 0 &it))))
 
       ; ---- numeric wrappers ----
-      (let ((it (VecIter i32)) (iter v)) (printf "sum=%d\n" (sum (addr-of it))))
-      (let ((it (VecIter i32)) (iter v)) (printf "product=%d\n" (product (addr-of it))))
-      (let ((it (VecIter i32)) (iter v)) (printf "min=%d\n" (min (addr-of it))))
-      (let ((it (VecIter i32)) (iter v)) (printf "max=%d\n" (max (addr-of it))))
+      (let ((it (VecIter i32)) (iter v)) (printf "sum=%d\n" (sum &it)))
+      (let ((it (VecIter i32)) (iter v)) (printf "product=%d\n" (product &it)))
+      (let ((it (VecIter i32)) (iter v)) (printf "min=%d\n" (min &it)))
+      (let ((it (VecIter i32)) (iter v)) (printf "max=%d\n" (max &it)))
 
       ; ---- keep-last: last value of (x+base) over the sequence (= 4+10) ----
       (let ((it (VecIter i32)) (iter v))
         (printf "keeplast-inline=%d\n"
-          (keep-last (vfn (x:i32):i32 (return (+ x base))) -1 (addr-of it))))
+          (keep-last (vfn (x:i32):i32 (return (+ x base))) -1 &it)))
       (let (addbase (vfn (x:i32):i32 (return (+ x base))))
         (let ((it (VecIter i32)) (iter v))
-          (printf "keeplast-named=%d\n" (keep-last addbase -1 (addr-of it)))))
+          (printf "keeplast-named=%d\n" (keep-last addbase -1 &it))))
 
       ; ---- do-last: implicit-progn last value ----
       (printf "do-last=%d\n" (do-last (printf "") (+ base 1) (* base 3)))))

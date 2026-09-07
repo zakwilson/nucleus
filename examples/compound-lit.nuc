@@ -1,40 +1,40 @@
 (defstruct Point x:int y:int)
-(defstruct Rect tl:ptr:Point br:ptr:Point label:ptr)
+(defstruct Rect tl:&Point br:&Point label:ptr)
 
 (import-use "stdio.h")
 
 (defn main ():int
   ; Positional struct literal.
-  (let (p:ptr:Point (Point 10 20))
+  (let (p:&Point (Point 10 20))
     (printf "p = %d,%d\n" (get p 'x) (get p 'y)))
 
   ; Designated struct literal — out of order, partial (z default = 0... no z here).
-  (let (q:ptr:Point (Point (y 99) (x 1)))
+  (let (q:&Point (Point (y 99) (x 1)))
     (printf "q = %d,%d\n" (get q 'x) (get q 'y)))
 
   ; Mix designated and positional; unspecified -> zero.
-  (let (r:ptr:Point (Point (y 42)))
+  (let (r:&Point (Point (y 42)))
     (printf "r = %d,%d\n" (get r 'x) (get r 'y)))
 
   ; Nested compound literal.
-  (let (rect:ptr:Rect (Rect (tl (Point 0 0)) (br (Point 4 5)) (label "box")))
+  (let (rect:&Rect (Rect (tl (Point 0 0)) (br (Point 4 5)) (label "box")))
     (printf "rect %s tl=%d,%d br=%d,%d\n"
       (get rect 'label)
       (get (get rect 'tl) 'x) (get (get rect 'tl) 'y)
       (get (get rect 'br) 'x) (get (get rect 'br) 'y)))
 
   ; Array literal — positional.
-  (let (a:ptr:int (array int 10 20 30 40 50))
+  (let (a:&int (array int 10 20 30 40 50))
     (printf "a: %d %d %d %d %d\n"
       (aref a 0) (aref a 1) (aref a 2) (aref a 3) (aref a 4)))
 
   ; Array literal — designated indices with zero fill.
-  (let (b:ptr:int (array int (0 7) (3 13) (4 99)))
+  (let (b:&int (array int (0 7) (3 13) (4 99)))
     (printf "b: %d %d %d %d %d\n"
       (aref b 0) (aref b 1) (aref b 2) (aref b 3) (aref b 4)))
 
   ; Array literal — mixed: positional first then designated.
-  (let (c:ptr:int (array int 1 2 (5 50)))
+  (let (c:&int (array int 1 2 (5 50)))
     (printf "c: %d %d %d %d %d %d\n"
       (aref c 0) (aref c 1) (aref c 2) (aref c 3) (aref c 4) (aref c 5)))
 

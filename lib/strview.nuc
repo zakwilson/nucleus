@@ -100,7 +100,7 @@
   (let ((sv (ref StrView)) (alloca StrView))
     (set! (sv 'data) data)
     (set! (sv 'len) len)
-    (return (deref sv))))
+    (return @sv)))
 
 ; ---------------------------------------------------------------------------
 ; CStr bridge.
@@ -148,11 +148,11 @@
 (defn = (a:StrView b:StrView):bool
   (let (la:StrView a
         lb:StrView b)
-    (return (strview-eq (addr-of la) (addr-of lb)))))
+    (return (strview-eq &la &lb))))
 (defn != (a:StrView b:StrView):bool
   (let (la:StrView a
         lb:StrView b)
-    (return (not (strview-eq (addr-of la) (addr-of lb))))))
+    (return (not (strview-eq &la &lb)))))
 
 ; ---------------------------------------------------------------------------
 ; S3: CharIter — iterates UTF-8 codepoints of a StrView.
@@ -177,9 +177,9 @@
     (return none))
   (let (rem:usize (- (self 'len) (self 'pos))
         dr:DecodeResult (char-decode-utf8 (unsafe/ptr+ (self 'buf) (as i64 (self 'pos))) rem))
-    (when (= ((addr-of dr) 'ok) 1)
-      (set! (self 'pos) (+ (self 'pos) ((addr-of dr) 'nbytes)))
-      (return (some ((addr-of dr) 'ch))))
+    (when (= (&dr 'ok) 1)
+      (set! (self 'pos) (+ (self 'pos) (&dr 'nbytes)))
+      (return (some (&dr 'ch))))
     ; Invalid byte: skip one byte, emit U+FFFD replacement character.
     (set! (self 'pos) (+ (self 'pos) 1))
     (return (some (as Char 65533)))))
@@ -210,11 +210,11 @@
     (set! (it 'buf) (sv 'data))
     (set! (it 'pos) 0)
     (set! (it 'len) (sv 'len))
-    (return (deref it))))
+    (return @it)))
 
 ; strview-as-view — identity: return the StrView by value (two-word copy).
 (defn strview-as-view ((sv (ref StrView))):StrView
-  (return (deref sv)))
+  (return @sv))
 
 ; ---------------------------------------------------------------------------
 ; CStr byte/char iterators.
@@ -232,7 +232,7 @@
     (set! (it 'buf) (as ptr:ui8 (as ptr cs)))
     (set! (it 'pos) 0)
     (set! (it 'len) (as usize (strlen (as ptr cs))))
-    (return (deref it))))
+    (return @it)))
 
 ; cstr-chars — a CharIter over the UTF-8 codepoints of cs (by value).
 (defn cstr-chars (cs:CStr):CharIter
@@ -240,7 +240,7 @@
     (set! (it 'buf) (as ptr:ui8 (as ptr cs)))
     (set! (it 'pos) 0)
     (set! (it 'len) (as usize (strlen (as ptr cs))))
-    (return (deref it))))
+    (return @it)))
 
 ; strview-sub-bytes — O(1) sub-slice [start, end).
 ;
@@ -277,7 +277,7 @@
   (let ((result (ref StrView)) (alloca StrView))
     (set! (result 'data) (unsafe/ptr+ (sv 'data) (as i64 start)))
     (set! (result 'len) (- end start))
-    (return (ok (deref result)))))
+    (return (ok @result))))
 
 ; strview-find — first byte index of needle in sv, or none.
 ;
@@ -320,7 +320,7 @@
 
 ; strview-find-byte — first index of byte b, or none.
 (defn strview-find-byte ((sv (ref StrView)) b:ui8) (Maybe usize)
-  (let (p:ptr:ui8 (sv 'data)
+  (let (p:&ui8 (sv 'data)
         n:usize (sv 'len)
         i:usize 0)
     (while (< i n)
@@ -330,7 +330,7 @@
 
 ; strview-rfind-byte — last index of byte b, or none.
 (defn strview-rfind-byte ((sv (ref StrView)) b:ui8) (Maybe usize)
-  (let (p:ptr:ui8 (sv 'data)
+  (let (p:&ui8 (sv 'data)
         i:usize (sv 'len))
     (while (> i 0)
       (set! i (- i 1))
@@ -357,18 +357,18 @@
 ; encoded. UTF-8 is self-synchronizing, so a byte-level search for the encoding
 ; cannot match inside another codepoint and needs no boundary check.
 (defn strview-find-char ((sv (ref StrView)) c:Char) (Maybe usize)
-  (let (buf:ptr:ui8 (as ptr:ui8 (alloca ui8 4)))
+  (let (buf:&ui8 (as ptr:ui8 (alloca ui8 4)))
     (let (n:usize (char-encode-utf8 c buf))
       (when (= n 1) (return (strview-find-byte sv (aref buf 0))))
       (let (nv:StrView (strview buf n))
-        (return (strview-find sv (addr-of nv)))))))
+        (return (strview-find sv &nv))))))
 
 (defn strview-rfind-char ((sv (ref StrView)) c:Char) (Maybe usize)
-  (let (buf:ptr:ui8 (as ptr:ui8 (alloca ui8 4)))
+  (let (buf:&ui8 (as ptr:ui8 (alloca ui8 4)))
     (let (n:usize (char-encode-utf8 c buf))
       (when (= n 1) (return (strview-rfind-byte sv (aref buf 0))))
       (let (nv:StrView (strview buf n))
-        (return (strview-rfind sv (addr-of nv)))))))
+        (return (strview-rfind sv &nv))))))
 
 ; strview-char-count — O(n): count lead bytes (non-continuation bytes).
 ; A UTF-8 continuation byte has bit pattern 10xxxxxx: (b & 0xC0) == 0x80.
@@ -376,7 +376,7 @@
 (defn strview-char-count ((sv (ref StrView))):usize
   (let (n:usize 0
         len:usize (sv 'len)
-        p:ptr:ui8 (sv 'data))
+        p:&ui8 (sv 'data))
     (dotimes (i:usize len)
       (let (b:ui8 (aref p (as i64 i)))
         (when (!= (bit-and (as ui32 b) 192) 128)
@@ -389,17 +389,17 @@
   (let (pos:usize 0
         count:usize 0
         len:usize (sv 'len)
-        p:ptr:ui8 (sv 'data)
+        p:&ui8 (sv 'data)
         done:i32 0)
     (while (and (< pos len) (= done 0))
       (let (rem:usize (- len pos)
             dr:DecodeResult (char-decode-utf8 (unsafe/ptr+ p (as i64 pos)) rem))
         (when (= count i)
-          (when (= ((addr-of dr) 'ok) 1)
-            (return (ok ((addr-of dr) 'ch))))
+          (when (= (&dr 'ok) 1)
+            (return (ok (&dr 'ch))))
           ; Invalid byte at target position: return replacement char U+FFFD.
           (return (ok (as Char 65533))))
-        (set! pos (+ pos ((addr-of dr) 'nbytes)))
+        (set! pos (+ pos (&dr 'nbytes)))
         (set! count (+ count 1))))
     (return (err! str-index-out-of-bounds))))
 
@@ -410,7 +410,7 @@
     (set! (it 'buf) (sv 'data))
     (set! (it 'pos) 0)
     (set! (it 'len) (sv 'len))
-    (return (deref it))))
+    (return @it)))
 
 ; strview-empty — true if the view has zero bytes.
 (defn strview-empty ((sv (ref StrView))):bool
@@ -473,7 +473,7 @@
 ; The sign, and the offset of the first digit. Split out because every signed
 ; conformance needs both halves and the magnitude limit differs between them:
 ; two's complement admits -2^63 but not +2^63.
-(defn strview-parse-sign (sv:StrView out-start:ptr:usize):i32
+(defn strview-parse-sign (sv:StrView out-start:&usize):i32
   (set! (aref out-start 0) 0)
   (when (= (sv 'len) 0) (return 0))
   (let (b:ui32 (as ui32 (aref (sv 'data) 0)))
@@ -497,13 +497,13 @@
 ; local at every call site, and the overwhelmingly common prefix — a literal —
 ; is not an lvalue, so it cannot be passed to them at all.
 (defn strview-has-prefix (sv:StrView prefix:StrView):bool
-  (return (strview-starts-with (addr-of sv) (addr-of prefix))))
+  (return (strview-starts-with &sv &prefix)))
 
 (defn strview-has-suffix (sv:StrView suffix:StrView):bool
-  (return (strview-ends-with (addr-of sv) (addr-of suffix))))
+  (return (strview-ends-with &sv &suffix)))
 
 (defn strview-contains (sv:StrView needle:StrView):bool
-  (return (strview-contains-str (addr-of sv) (addr-of needle))))
+  (return (strview-contains-str &sv &needle)))
 
 ; strview-contains-str — true if sv contains needle as a substring.
 (defn strview-contains-str ((sv (ref StrView)) (needle (ref StrView))):bool
@@ -524,7 +524,7 @@
 
 ; strview-trim-start — remove leading ASCII whitespace.
 (defn strview-trim-start ((sv (ref StrView))):StrView
-  (let (p:ptr:ui8 (sv 'data)
+  (let (p:&ui8 (sv 'data)
         len:usize (sv 'len)
         i:usize 0)
     (while (and (< i len) (strview-is-ascii-ws (aref p (as i64 i))))
@@ -532,11 +532,11 @@
     (let ((result (ref StrView)) (alloca StrView))
       (set! (result 'data) (unsafe/ptr+ p (as i64 i)))
       (set! (result 'len) (- len i))
-      (return (deref result)))))
+      (return @result))))
 
 ; strview-trim-end — remove trailing ASCII whitespace.
 (defn strview-trim-end ((sv (ref StrView))):StrView
-  (let (p:ptr:ui8 (sv 'data)
+  (let (p:&ui8 (sv 'data)
         len:usize (sv 'len))
     (while (and (> len 0)
                 (strview-is-ascii-ws (aref p (as i64 (- len 1)))))
@@ -544,12 +544,12 @@
     (let ((result (ref StrView)) (alloca StrView))
       (set! (result 'data) p)
       (set! (result 'len) len)
-      (return (deref result)))))
+      (return @result))))
 
 ; strview-trim — remove both leading and trailing ASCII whitespace.
 (defn strview-trim ((sv (ref StrView))):StrView
   (let (s:StrView (strview-trim-start sv))
-    (return (strview-trim-end (addr-of s)))))
+    (return (strview-trim-end &s))))
 
 ; ---------------------------------------------------------------------------
 ; S3: ByteStr / Str conformances for StrView live in lib/strview-str.nuc.
@@ -584,13 +584,13 @@
 
 (defn < (a:StrView b:StrView):bool
   (let (la:StrView a lb:StrView b)
-    (if (< (strview-cmp-raw (addr-of la) (addr-of lb)) 0) true false)))
+    (if (< (strview-cmp-raw &la &lb) 0) true false)))
 (defn <= (a:StrView b:StrView):bool
   (let (la:StrView a lb:StrView b)
-    (if (<= (strview-cmp-raw (addr-of la) (addr-of lb)) 0) true false)))
+    (if (<= (strview-cmp-raw &la &lb) 0) true false)))
 (defn > (a:StrView b:StrView):bool
   (let (la:StrView a lb:StrView b)
-    (if (> (strview-cmp-raw (addr-of la) (addr-of lb)) 0) true false)))
+    (if (> (strview-cmp-raw &la &lb) 0) true false)))
 (defn >= (a:StrView b:StrView):bool
   (let (la:StrView a lb:StrView b)
-    (if (>= (strview-cmp-raw (addr-of la) (addr-of lb)) 0) true false)))
+    (if (>= (strview-cmp-raw &la &lb) 0) true false)))

@@ -157,3 +157,46 @@ This could make trouble using libraries with headers only, no source.
 * c-type-to-nucleus
 * c-typedef-find
 * cdecl-site-find
+
+## Pointer-kind spellings: make the sugar general, or ban the ambiguous half
+
+Raised 2026-09-07, after the `&`/`@` adoption sweep across `src/`, `lib/` and
+`examples/` (see [progress.md](progress.md) and
+[stage16-ergonomics/ref-sigil.md](stage16-ergonomics/ref-sigil.md) §5/§6).
+
+The `&` sigil is split by position **inside the token**: `p:&T` is the lexer
+rewrite to `ref:` and leaves no trace, while a standalone `&T` is the address-of
+reader macro and reaches the parser as `(addr-of T)`. In a type slot that node is
+accepted (`parse-type-from-node`, `node-is-ptr-wrapper`, and since 2026-09-06
+`type-node-to-c`), so it compiles and emits identical IR — but `--emit-nuch`
+prints `defprotocol` and generic-template forms **verbatim**, so the odd spelling
+lands in a committed header. `a15f38e` wrote 2,469 of them into `src/` before
+anyone noticed; the sweep that removed them is convention, not a rule the
+compiler enforces.
+
+Two coherent end-states, and they point opposite ways:
+
+- **Make it general.** `&T` should be legal and canonical in every type slot,
+  round-tripping through `--emit-nuch` as `&T` or `(ref T)`. The reader cannot
+  decide by position, so the node has to *remember it was written `&`* — a
+  distinct head both the type path and the value path accept, printed back as
+  the source spelling. Cost is the usual reach list: the `node-type`↔`emit-node`
+  lockstep, `gcheck`'s value-path wrapper test, and `fn-rewrite-captures`.
+  §6 costed the wrapping-with-`addr-of` alternative at zero value-side changes
+  precisely by *not* doing this; that trade should be re-priced now that the
+  spelling has 3,000 uses rather than none.
+- **Ban the ambiguous half.** Make a standalone `&T` in a type slot a
+  diagnostic naming `ref:T` / `(ref T)`, so the convention is mechanical instead
+  of a thing a sweep has to re-derive. Cheap — one arm in
+  `parse-type-from-node` — but it retires `(sizeof &Pt)`, `(as &Pt q)`,
+  `(link &Pt)` and `(Vector &Pt)`, which §"Where the two meet" blesses and
+  `examples/ref-sigil.nuc` plus `s16-ref-sigil-both-meanings` exercise.
+
+The general principle worth settling first: **a spelling whose meaning depends
+on where the reader happens to be should not be silently accepted.** Today three
+spellings of the same pointer kind (`ptr:T`, `ref:T`, `&T`) differ in nothing
+the type system can see, yet differed for a year in what `--emit-cheader`
+printed (`T*` vs `void*` — fixed 2026-09-06) and still differ in what
+`--emit-nuch` prints. `raw:T` is the remaining case: it widens to `void*` in a C
+header deliberately, which is defensible for a nullable pointer and is still a
+header whose fidelity depends on which synonym the author typed.

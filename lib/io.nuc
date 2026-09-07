@@ -34,7 +34,7 @@
 (defn fd-out (fd:i32):FdOut
   (let (o:&FdOut (alloca FdOut))
     (set! (o 'fd) fd)
-    (return (deref o))))
+    (return @o)))
 
 (defn std-out ():FdOut (return (fd-out 1)))
 (defn std-err ():FdOut (return (fd-out 2)))
@@ -78,16 +78,16 @@
 ; Clear and hand back the shared buffer. Lazily constructed: a `defvar` with a
 ; runtime initializer would build a String in every program that links this
 ; module, including one that never prints.
-(defn io-buf-begin ():ref:String
+(defn io-buf-begin ():&String
   (when (= g-io-buf-ready 0)
     (set! g-io-buf (string-new))
     (set! g-io-buf-ready 1))
-  (string-clear (addr-of g-io-buf))
-  (return (addr-of g-io-buf)))
+  (string-clear &g-io-buf)
+  (return &g-io-buf))
 
 (defn io-buf-end (fd:i32):!void
   (let (o:FdOut (fd-out fd))
-    (return (write-str o (string-as-view (addr-of g-io-buf))))))
+    (return (write-str o (string-as-view &g-io-buf)))))
 
 ; `~b` is bound once because `str-into` evaluates its sink once per piece and
 ; `io-buf-begin` clears.
@@ -156,5 +156,5 @@
         (set! g-in-pos (+ g-in-pos 1))
         (set! any 1)
         (when (= c \newline) (return (some out)))
-        (string-push-char (addr-of out) c)))
+        (string-push-char &out c)))
     (return (none))))

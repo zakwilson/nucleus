@@ -69,7 +69,7 @@
 
   ; (2) A repairing handler bound for (config-missing, i64): err → (ok ctx).
   (let (fixed:i64 777)
-    (with-handler (config-missing i64 repair-from-ctx (as ptr (addr-of fixed)))
+    (with-handler (config-missing i64 repair-from-ctx (as ptr &fixed))
       (show "repaired" (load-num 0))      ; repaired → ok 777
       (show "repaired-ok" (load-num 5))   ; no fault → ok 50
       ; (3) err! bypasses the bound handler — still the error value.
@@ -82,7 +82,7 @@
   ; (5) (err E detail): the handler reads the detail pointer.
   (let (amount:i64 21)
     (with-handler (config-missing i64 repair-from-detail null)
-      (show "detail" (load-with-detail 0 (as ptr (addr-of amount))))))
+      (show "detail" (load-with-detail 0 (as ptr &amount)))))
 
   ; (6) Nested with-handler + CL unbind rule. Outer handler repairs with 42;
   ; the inner handler re-raises config-missing, which (the chain being unbound

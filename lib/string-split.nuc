@@ -61,7 +61,7 @@
 (defn split-iter-next ((it (ref SplitIter))):StrView
   (let (slen:usize (it 'sep-len)
         rem:usize  (it 'rem)
-        buf:ptr:ui8 (it 'buf))
+        buf:&ui8 (it 'buf))
     ; Search for separator in buf[0..rem).
     (when (> slen 0)
       ; Build a temporary StrView over the remaining buffer for strview-find.
@@ -81,14 +81,14 @@
                  ; Advance past this segment and the separator.
                  (set! (it 'buf) (unsafe/ptr+ buf (as i64 (+ k slen))))
                  (set! (it 'rem) (- rem (+ k slen)))
-                 (return (deref seg))))
+                 (return @seg)))
               (none
                ; Not found: yield the entire tail, mark done.
                (let ((seg (ref StrView)) (alloca StrView))
                  (set! (seg 'data) buf)
                  (set! (seg 'len) rem)
                  (set! (it 'done) true)
-                 (return (deref seg)))))))))
+                 (return @seg))))))))
     ; Sep-len == 0 edge case: yield one-byte segments (or mark done immediately
     ; on empty). For simplicity and to match common expectations when sep is
     ; empty, treat the entire remaining buffer as a single segment and mark done.
@@ -96,7 +96,7 @@
       (set! (seg 'data) buf)
       (set! (seg 'len) rem)
       (set! (it 'done) true)
-      (return (deref seg)))))
+      (return @seg))))
 
 ; strview-split — construct a SplitIter over sv splitting on sep.
 ; Both sv and sep are borrowed; the caller must keep them alive for the
@@ -111,7 +111,7 @@
     ; first call will yield an empty segment and then set done=true, so start
     ; with false always (one empty segment for empty input matches Python/Rust).
     (set! (it 'done) false)
-    (return (deref it))))
+    (return @it)))
 
 ; Yields each segment as a StrView BY VALUE. Was (Iterator ptr) with a `cur`
 ; scratch slot until Stage 17 A3: design/stage17-native-strings/overview.md.
@@ -143,7 +143,7 @@
 ;
 ; Precondition: done is false.
 (defn lines-iter-next ((it (ref LineIter))):StrView
-  (let (buf:ptr:ui8 (it 'buf)
+  (let (buf:&ui8 (it 'buf)
         rem:usize   (it 'rem)
         i:usize     0
         found:i32   0
@@ -167,14 +167,14 @@
             ; Advance past the '\n'.
             (set! (it 'buf) (unsafe/ptr+ buf (as i64 (+ nl-pos 1))))
             (set! (it 'rem) (- rem (+ nl-pos 1)))
-            (return (deref seg)))))
+            (return @seg))))
       (do
         ; No '\n' found: yield the remaining bytes as the last line.
         (let ((seg (ref StrView)) (alloca StrView))
           (set! (seg 'data) buf)
           (set! (seg 'len) rem)
           (set! (it 'done) true)
-          (return (deref seg)))))))
+          (return @seg))))))
 
 ; strview-lines — construct a LineIter over sv.
 ; Borrowed: caller must keep sv alive for the iterator's lifetime.
@@ -183,7 +183,7 @@
     (set! (it 'buf) (sv 'data))
     (set! (it 'rem) (sv 'len))
     (set! (it 'done) false)
-    (return (deref it))))
+    (return @it)))
 
 ; ---------------------------------------------------------------------------
 ; LineIter as an Iterator. Identical to the SplitIter conformance above; yields

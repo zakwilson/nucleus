@@ -1,6 +1,6 @@
 ; .nuch header for lib/intern.nuc
 (defstruct SymHeader (hash usize) (len usize))
-(declare symbol-header ((self Symbol)) :ptr:SymHeader)
+(declare symbol-header ((self Symbol)) :ref:SymHeader)
 (declare symbol-len ((self Symbol)) :usize)
 (declare symbol-cached-hash ((self Symbol)) :usize)
 (declare symbol-as-view ((self Symbol)) :StrView)

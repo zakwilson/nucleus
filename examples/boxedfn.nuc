@@ -64,7 +64,7 @@
     (let (idx:i32 0)
       (doseq (e v (VecIter (BoxedFn (i32) i32)))
         (printf "vec[%d](5) = %d\n" idx (e 5))
-        (drop (addr-of e))
+        (drop &e)
         (set! idx (+ idx 1)))))
 
   (printf "done\n")

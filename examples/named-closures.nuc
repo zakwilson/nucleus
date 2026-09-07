@@ -12,7 +12,7 @@
 
 (defn main ():i32
   (let ((r (ref IntRangeIter)) (alloca IntRangeIter)
-        h:ref:AllocHandle (default-allocator)
+        h:&AllocHandle (default-allocator)
         mult:i32 3)
 
     ; 1. let-bound cfn (env type inferred), captured `mult` by reference,

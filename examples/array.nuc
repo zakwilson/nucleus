@@ -1,7 +1,7 @@
 (import-use "stdio.h")
 
 (defn main ():int
-  (let (arr:ptr:int (alloca int 3))
+  (let (arr:&int (alloca int 3))
     (set! (aref arr 0) 10)
     (set! (aref arr 1) 20)
     (set! (aref arr 2) 30)

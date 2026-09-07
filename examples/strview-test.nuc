@@ -18,10 +18,10 @@
         bv:StrView (strview-from-cstr "hello")
         cv:StrView (strview-from-cstr "world")
         dv:StrView (strview-from-cstr "hell")
-        a:ptr:StrView (addr-of av)
-        b:ptr:StrView (addr-of bv)
-        c:ptr:StrView (addr-of cv)
-        d:ptr:StrView (addr-of dv))
+        a:&StrView &av
+        b:&StrView &bv
+        c:&StrView &cv
+        d:&StrView &dv)
     ; Length.
     (printf "len-a=%llu\n" (as ui64 (strview-byte-len a)))      ; len-a=5
     (printf "len-d=%llu\n" (as ui64 (strview-byte-len d)))      ; len-d=4

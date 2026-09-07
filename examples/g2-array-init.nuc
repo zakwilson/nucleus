@@ -36,10 +36,10 @@
 ; --- shape 4: a pointer global backed by an anonymous constant table --------
 ; Emits `@g-names.data = internal global [3 x ptr] […]` plus
 ; `@g-names = global ptr @g-names.data` — provably non-null with no runtime code
-; (design/global-init.md §2.7), which is why `ptr:CStr` (non-null since the
+; (design/global-init.md §2.7), which is why `&CStr` (non-null since the
 ; Phase-F flip) accepts it.
-(defvar g-names:ptr:CStr (array CStr (as CStr "red") (as CStr "green") (as CStr "blue")))
-(defvar g-primes:ptr:i32 (array i32 2 3 5 7 11))
+(defvar g-names:&CStr (array CStr (as CStr "red") (as CStr "green") (as CStr "blue")))
+(defvar g-primes:&i32 (array i32 2 3 5 7 11))
 
 ; --- shape 5: a constant struct literal -------------------------------------
 (defvar g-origin:Pt (Pt 3 4))
@@ -86,8 +86,8 @@
   (printf "names-non-null %d\n" (if (= (unsafe/cast i64 g-names) 0) 0 1))
 
   ; --- shape 5: constant struct literals ------------------------------------
-  (let (o:ptr:Pt (addr-of g-origin)
-        u:ptr:Pt (addr-of g-unit))
+  (let (o:&Pt &g-origin
+        u:&Pt &g-unit)
     (printf "origin %d %d\n" (o 'x) (o 'y))
     (printf "unit %d %d\n" (u 'x) (u 'y)))
 
@@ -95,29 +95,29 @@
   (let (c0:Pt (aref g-corners 0)
         c1:Pt (aref g-corners 1)
         c2:Pt (aref g-corners 2))
-    (let (p0:ptr:Pt (addr-of c0)
-          p1:ptr:Pt (addr-of c1)
-          p2:ptr:Pt (addr-of c2))
+    (let (p0:&Pt &c0
+          p1:&Pt &c1
+          p2:&Pt &c2)
       (printf "corners %d %d %d %d %d %d\n"
         (p0 'x) (p0 'y) (p1 'x) (p1 'y) (p2 'x) (p2 'y))))
 
-  (let (r:ptr:Row (addr-of g-row))
+  (let (r:&Row &g-row)
     ; Reading the array FIELD decays to `ptr:i32` — the GEP, no load.
     (printf "row %d %d %d %d %d %d\n"
       (as i32 (r 'tag))
       (aref (r 'cells) 0) (aref (r 'cells) 1) (aref (r 'cells) 2) (aref (r 'cells) 3)
       (as i32 (r 'mark))))
 
-  (let (g:ptr:Grid (addr-of g-grid))
+  (let (g:&Grid &g-grid)
     (let (q0:Pt (aref (g 'pts) 0)
           q1:Pt (aref (g 'pts) 1))
-      (let (z0:ptr:Pt (addr-of q0)
-            z1:ptr:Pt (addr-of q1))
+      (let (z0:&Pt &q0
+            z1:&Pt &q1)
         (printf "grid %d %d %d %d %d\n" (z0 'x) (z0 'y) (z1 'x) (z1 'y) (g 'n)))))
 
   ; --- a local fixed-size table ---------------------------------------------
   ; `(alloca (array T N))` reserves N slots and hands back the decayed `ptr:T`.
-  (let (buf:ptr:i32 (alloca (array i32 4)))
+  (let (buf:&i32 (alloca (array i32 4)))
     (set! (aref buf 0) 41)
     (set! (aref buf 3) 44)
     (printf "alloca %d %d\n" (aref buf 0) (aref buf 3)))
@@ -127,8 +127,8 @@
     (unsafe/cast i32 (sizeof (array i32 5)))
     (unsafe/cast i32 (sizeof (array i16 8)))
     (unsafe/cast i32 (sizeof (array Pt 3))))
-  (let (r:ptr:Row (addr-of g-row)
-        g:ptr:Grid (addr-of g-grid))
+  (let (r:&Row &g-row
+        g:&Grid &g-grid)
     (printf "row-layout %d %s %s\n"
       (unsafe/cast i32 (sizeof Row))
       ; cells starts at offset 4 (i8 + 3 pad), mark at 20, total 24.

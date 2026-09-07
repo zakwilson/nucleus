@@ -24,8 +24,8 @@ enum ExitStatus_tag {
 };
 
 struct ExitStatus wait_status_decode(int32_t raw) asm("wait-status-decode");
-bool success_QMARK(void* self);
-int32_t exit_code(void* self) asm("exit-code");
+bool success_QMARK(struct ExitStatus* self);
+int32_t exit_code(struct ExitStatus* self) asm("exit-code");
 typedef struct Command {
     struct String buf;
     void* offs;
@@ -38,20 +38,20 @@ typedef struct Command {
     bool merge_err;
 } Command;
 
-size_t command_push_cstr(void* self, struct StrView s) asm("command-push-cstr");
+size_t command_push_cstr(struct Command* self, struct StrView s) asm("command-push-cstr");
 struct Command command(struct StrView prog);
-void command_arg(void* self, struct StrView a) asm("command-arg");
-void command_cwd(void* self, struct StrView dir) asm("command-cwd");
-void command_search(void* self, bool on) asm("command-search");
-void command_env(void* self, struct StrView k, struct StrView v) asm("command-env");
-void command_capture(void* self, bool on) asm("command-capture");
-void command_stdout_path(void* self, struct StrView path) asm("command-stdout-path");
-void command_stdin_path(void* self, struct StrView path) asm("command-stdin-path");
-void command_stderr_to_stdout(void* self, bool on) asm("command-stderr-to-stdout");
+void command_arg(struct Command* self, struct StrView a) asm("command-arg");
+void command_cwd(struct Command* self, struct StrView dir) asm("command-cwd");
+void command_search(struct Command* self, bool on) asm("command-search");
+void command_env(struct Command* self, struct StrView k, struct StrView v) asm("command-env");
+void command_capture(struct Command* self, bool on) asm("command-capture");
+void command_stdout_path(struct Command* self, struct StrView path) asm("command-stdout-path");
+void command_stdin_path(struct Command* self, struct StrView path) asm("command-stdin-path");
+void command_stderr_to_stdout(struct Command* self, bool on) asm("command-stderr-to-stdout");
 void drop_pCommand(struct Command* self) asm("drop.pCommand");
-void command_argv(void* self, void* out) asm("command-argv");
+void command_argv(struct Command* self, void** out) asm("command-argv");
 struct StrView env_key(uint8_t* e) asm("env-key");
-void command_envp(void* self, void* out) asm("command-envp");
+void command_envp(struct Command* self, void** out) asm("command-envp");
 typedef struct Process {
     int32_t pid;
     int32_t out_fd;
@@ -59,13 +59,13 @@ typedef struct Process {
     struct ExitStatus status;
 } Process;
 
-int32_t process_pid(void* self) asm("process-pid");
+int32_t process_pid(struct Process* self) asm("process-pid");
 /* spawn: uses an error-union or option type; not exported */
 /* process-drain-one: uses an error-union or option type; not exported */
 /* process-capture: uses an error-union or option type; not exported */
 /* process-wait: uses an error-union or option type; not exported */
 /* process-try-wait: uses an error-union or option type; not exported */
-struct ExitStatus process_status(void* self) asm("process-status");
+struct ExitStatus process_status(struct Process* self) asm("process-status");
 /* process-kill: uses an error-union or option type; not exported */
 typedef struct ChildExit {
     int32_t pid;
@@ -73,7 +73,7 @@ typedef struct ChildExit {
 } ChildExit;
 
 /* wait-any: uses an error-union or option type; not exported */
-void process_detach(void* self) asm("process-detach");
+void process_detach(struct Process* self) asm("process-detach");
 void drop_pProcess(struct Process* self) asm("drop.pProcess");
 typedef struct Output {
     struct ExitStatus status;

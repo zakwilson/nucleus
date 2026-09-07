@@ -2,8 +2,8 @@
 
 (defn main ():int
   (let (x:int 42
-        p:ptr:int (addr-of x))
+        p:&int &x)
     (printf "deref = %d\n" @p)
-    (set! (deref p) 99)
+    (set! @p 99)
     (printf "at    = %d\n" @p))
   (return 0))
