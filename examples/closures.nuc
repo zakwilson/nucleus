@@ -104,7 +104,7 @@
     ; ------------------------------------------------------------------
     (set! (r 'start) 1) (set! (r 'end) 6)
     (let (mult:i32 3
-          h:ref:AllocHandle (default-allocator))
+          h:&AllocHandle (default-allocator))
       (printf "cfn  ref          sum (x*mult=3)   = %d   [mult after = %d]\n"
               (reduce (cfn h (acc:i32 x:i32):i32 (return (+ acc (* x mult)))) 0 r)
               mult)))

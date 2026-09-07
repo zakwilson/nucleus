@@ -19,7 +19,7 @@
 ; The parent's environment, for the merge `command-env` does. Declared rather
 ; than imported: the C header reader takes function declarations and object-like
 ; macros, not `extern` variables.
-(extern environ:ptr:ptr)
+(extern environ:&ptr)
 
 (deferror process-spawn-failed "cannot start process")
 (deferror process-wait-failed "cannot wait for process")
@@ -90,7 +90,7 @@
 ; past-the-end NUL: every element but the last has more bytes after it.
 (defn command-push-cstr ((self (ref Command)) s:StrView):usize
   (let (off:usize (byte-len (addr-of self 'buf))
-        z:ptr:ui8 (as ptr:ui8 (alloca ui8 1)))
+        z:&ui8 (as ptr:ui8 (alloca ui8 1)))
     (string-push-str-unchecked (addr-of self 'buf) &s)
     (set! (aref z 0) 0)
     (string-push-bytes-raw (addr-of self 'buf) z 1)
@@ -109,7 +109,7 @@
     (set! (c 'merge-err) false)
     (let (off:usize (command-push-cstr c prog))
       (conj (addr-of c 'offs) off))
-    (return (deref c))))
+    (return @c)))
 
 (defn command-arg ((self (ref Command)) a:StrView):void
   (let (off:usize (command-push-cstr self a))
@@ -129,7 +129,7 @@
 (defn command-env ((self (ref Command)) k:StrView v:StrView):void
   (let (off:usize (byte-len (addr-of self 'buf))
         eq:StrView "="
-        z:ptr:ui8 (as ptr:ui8 (alloca ui8 1)))
+        z:&ui8 (as ptr:ui8 (alloca ui8 1)))
     (string-push-str-unchecked (addr-of self 'buf) &k)
     (string-push-str-unchecked (addr-of self 'buf) &eq)
     (string-push-str-unchecked (addr-of self 'buf) &v)
@@ -169,7 +169,7 @@
 ; forking and never adds an argument afterwards.
 (defn command-argv ((self (ref Command)) (out (ref (Vector ptr)))):void
   (let (v:StrView (string-as-view (addr-of self 'buf))
-        base:ptr:ui8 (v 'data)
+        base:&ui8 (v 'data)
         n:usize (count (addr-of self 'offs))
         i:usize 0)
     (while (< i n)
@@ -178,7 +178,7 @@
     (conj out null)))
 
 ; Key of a "K=V" entry, as a view over the entry itself.
-(defn env-key (e:ptr:ui8):StrView
+(defn env-key (e:&ui8):StrView
   (let (n:i64 0)
     (while (and (!= (aref e n) 0) (!= (aref e n) 61))
       (set! n (+ n 1)))
@@ -189,19 +189,19 @@
 ; the same reason (§2.2).
 (defn command-envp ((self (ref Command)) (out (ref (Vector ptr)))):void
   (let (v:StrView (string-as-view (addr-of self 'buf))
-        base:ptr:ui8 (v 'data)
+        base:&ui8 (v 'data)
         n:usize (count (addr-of self 'envs))
-        e:ptr:ptr (as ptr:ptr environ)
+        e:&ptr (as ptr:ptr environ)
         i:i64 0)
     (while (!= (aref e i) null)
-      (let (entry:ptr:ui8 (as ptr:ui8 (aref e i))
+      (let (entry:&ui8 (as ptr:ui8 (aref e i))
             ek:StrView (env-key entry)
             shadowed:bool false
             j:usize 0)
         (while (< j n)
-          (let (ov:ptr:ui8 (unsafe/ptr+ base (as i64 (invoke (addr-of self 'envs) j)))
+          (let (ov:&ui8 (unsafe/ptr+ base (as i64 (invoke (addr-of self 'envs) j)))
                 ok2:StrView (env-key ov))
-            (when (strview-eq (addr-of ek) (addr-of ok2)) (set! shadowed true)))
+            (when (strview-eq &ek &ok2) (set! shadowed true)))
           (set! j (+ j 1)))
         (when (not shadowed) (conj out (as ptr entry))))
       (set! i (+ i 1)))
@@ -235,11 +235,11 @@
         out-fd:i32 -1
         in-path:ptr null
         in-fd:i32 -1
-        op:ptr:i32 (as ptr:i32 (alloca i32 2))
-        ep:ptr:i32 (as ptr:i32 (alloca i32 2)))
-    (command-argv self (addr-of argv))
-    (when has-env (command-envp self (addr-of envp)))
-    (set! prog (invoke (addr-of argv) 0))
+        op:&i32 (as ptr:i32 (alloca i32 2))
+        ep:&i32 (as ptr:i32 (alloca i32 2)))
+    (command-argv self &argv)
+    (when has-env (command-envp self &envp))
+    (set! prog (invoke &argv 0))
     (let (v:StrView (string-as-view (addr-of self 'buf)))
       (when (>= (self 'cwd-off) 0)
         (set! cwd (as ptr (unsafe/ptr+ (v 'data) (self 'cwd-off)))))
@@ -249,13 +249,13 @@
         (set! in-path (as ptr (unsafe/ptr+ (v 'data) (self 'in-path-off))))))
     (when cap
       (when (!= (pipe op) 0)
-        (drop (addr-of argv))
-        (drop (addr-of envp))
+        (drop &argv)
+        (drop &envp)
         (return (err! process-pipe-failed)))
       (when (!= (pipe ep) 0)
         (close (aref op 0)) (close (aref op 1))
-        (drop (addr-of argv))
-        (drop (addr-of envp))
+        (drop &argv)
+        (drop &envp)
         (return (err! process-pipe-failed))))
     ; Opened by the parent, not the child: a failure here is reportable as an
     ; error, and the fork-to-exec window stays as short as it already is.
@@ -265,8 +265,8 @@
         (when cap
           (close (aref op 0)) (close (aref op 1))
           (close (aref ep 0)) (close (aref ep 1)))
-        (drop (addr-of argv))
-        (drop (addr-of envp))
+        (drop &argv)
+        (drop &envp)
         (return (err! process-redirect-failed))))
     (when (!= out-path null)
       (set! out-fd (open (as CStr out-path)
@@ -277,8 +277,8 @@
           (close (aref op 0)) (close (aref op 1))
           (close (aref ep 0)) (close (aref ep 1)))
         (when (>= in-fd 0) (close in-fd))
-        (drop (addr-of argv))
-        (drop (addr-of envp))
+        (drop &argv)
+        (drop &envp)
         (return (err! process-redirect-failed))))
     (let (search:bool (self 'search)
           pid:i32 (fork))
@@ -288,8 +288,8 @@
           (close (aref ep 0)) (close (aref ep 1)))
         (when (>= out-fd 0) (close out-fd))
         (when (>= in-fd 0) (close in-fd))
-        (drop (addr-of argv))
-        (drop (addr-of envp))
+        (drop &argv)
+        (drop &envp)
         (return (err! process-spawn-failed)))
       (when (= pid 0)
         ; Child. Async-signal-safe calls only — everything else was done above.
@@ -312,17 +312,17 @@
         ; A pointer store, so it is safe in this window — unlike `setenv`, which
         ; would allocate. `execvp` reads `environ` for the child it starts.
         (when has-env
-          (set! environ (unsafe/cast ptr:ptr (as ptr (_get (addr-of envp) 'data)))))
+          (set! environ (unsafe/cast ptr:ptr (as ptr (_get &envp 'data)))))
         (if search
-          (execvp (as CStr prog) (as ptr (_get (addr-of argv) 'data)))
-          (execv (as CStr prog) (as ptr (_get (addr-of argv) 'data))))
+          (execvp (as CStr prog) (as ptr (_get &argv 'data)))
+          (execv (as CStr prog) (as ptr (_get &argv 'data))))
         (_exit EXEC-FAILED-STATUS))
       ; Parent. Closing the write ends is what makes the reader see EOF.
       (when cap (close (aref op 1)) (close (aref ep 1)))
       (when (>= out-fd 0) (close out-fd))
       (when (>= in-fd 0) (close in-fd))
-      (drop (addr-of argv))
-      (drop (addr-of envp))
+      (drop &argv)
+      (drop &envp)
       (let (p:&Process (alloca Process))
         (set! (p 'pid) pid)
         (set! (p 'out-fd) (if cap (aref op 0) -1))
@@ -332,7 +332,7 @@
         (when (and cap merge) (close (aref ep 0)))
         (set! (p 'err-fd) (if (and cap (not merge)) (aref ep 0) -1))
         (set! (p 'status) (ExitStatus-exited 0))
-        (return (ok (deref p)))))))
+        (return (ok @p))))))
 
 ; ---------------------------------------------------------------------------
 ; Capture — both pipes drained together.
@@ -357,10 +357,10 @@
     (return (ok))))
 
 (defn process-capture ((self (ref Process)) (out (ref String)) (errs (ref String))):!void
-  (let (pf:ptr:pollfd (as ptr:pollfd (alloca pollfd 2))
-        buf:ptr:ui8 (as ptr:ui8 (alloca ui8 PROC-CHUNK))
-        a:ptr:pollfd pf
-        b:ptr:pollfd (unsafe/ptr+ pf 1))
+  (let (pf:&pollfd (as ptr:pollfd (alloca pollfd 2))
+        buf:&ui8 (as ptr:ui8 (alloca ui8 PROC-CHUNK))
+        a:&pollfd pf
+        b:&pollfd (unsafe/ptr+ pf 1))
     (set! (a 'fd) (self 'out-fd))
     (set! (a 'events) POLLIN)
     (set! (a 'revents) 0)
@@ -383,7 +383,7 @@
   ; No retry loop: this module installs no signal handlers (§6), so a `waitpid`
   ; that fails has lost the child rather than been interrupted.
   (let (raw:i32 0
-        rc:i32 (waitpid (self 'pid) (as ptr:i32 (addr-of raw)) 0))
+        rc:i32 (waitpid (self 'pid) (as ptr:i32 &raw) 0))
     (when (< rc 0) (return (err! process-wait-failed)))
     (set! (self 'status) (wait-status-decode raw))
     (set! (self 'pid) -1)
@@ -401,7 +401,7 @@
 (defn process-try-wait ((self (ref Process))):!bool
   (when (< (self 'pid) 0) (return (ok true)))
   (let (raw:i32 0
-        rc:i32 (waitpid (self 'pid) (as ptr:i32 (addr-of raw)) WNOHANG))
+        rc:i32 (waitpid (self 'pid) (as ptr:i32 &raw) WNOHANG))
     (when (< rc 0) (return (err! process-wait-failed)))
     (when (= rc 0) (return (ok false)))
     (set! (self 'status) (wait-status-decode raw))
@@ -433,12 +433,12 @@
 
 (defn wait-any ():!ChildExit
   (let (raw:i32 0
-        rc:i32 (waitpid -1 (as ptr:i32 (addr-of raw)) 0))
+        rc:i32 (waitpid -1 (as ptr:i32 &raw) 0))
     (when (< rc 0) (return (err! process-wait-failed)))
     (let (c:&ChildExit (alloca ChildExit))
       (set! (c 'pid) rc)
       (set! (c 'status) (wait-status-decode raw))
-      (return (ok (deref c))))))
+      (return (ok @c)))))
 
 ; Give up ownership without waiting. The child becomes the caller's problem (or
 ; init's); use it when a zombie is genuinely not wanted to be reaped here.
@@ -480,11 +480,11 @@
     (set! (o 'status) (ExitStatus-exited 0))
     (set! (o 'out) (string-new))
     (set! (o 'err) (string-new))
-    (match (process-capture (addr-of p) (addr-of o 'out) (addr-of o 'err))
+    (match (process-capture &p (addr-of o 'out) (addr-of o 'err))
       (ok
-       (match (process-wait (addr-of p))
+       (match (process-wait &p)
          ((ok st)
           (set! (o 'status) st)
-          (return (ok (deref o))))
+          (return (ok @o)))
          ((err e) (drop o) (return (err e)))))
       ((err e) (drop o) (return (err e))))))

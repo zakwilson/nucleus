@@ -26,7 +26,7 @@
     (let (first-item:i32 1)
       (printf "(")
       (doseq-iter (elem lit)
-        (let (node:ptr:Node (as ptr:Node elem))
+        (let (node:&Node (as ptr:Node elem))
           (when (= first-item 0) (printf " "))
           (cond (= (node 'kind) 0) (printf "%ld" (node 'i))
                 (= (node 'kind) 2) (printf "%s" (node 's))

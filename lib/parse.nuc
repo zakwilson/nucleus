@@ -16,7 +16,7 @@
 ; TOKENIZER NOTES (carried from strview.nuc / string.nuc):
 ;   - `?` and `!` must NOT appear in plain defn names.
 ;   - strtol / strtoll / strtod: brought in by `(import-use "stdlib.h")`.
-;   - Endptr pattern: `(let (ep:ptr null) (strtod cs (addr-of ep)) ...)`.
+;   - Endptr pattern: `(let (ep:ptr null) (strtod cs &ep) ...)`.
 ;     `addr-of` requires a named local symbol; field expressions don't work.
 ;   - NUL-terminated copy: StrView bytes are not guaranteed NUL-terminated,
 ;     so we malloc(n+1), memcpy, set buf[n]=0, call libc, then free.
@@ -69,9 +69,9 @@
 ; Allocate a NUL-terminated copy of sv's bytes. Caller must free the result.
 ; Precondition: sv.len > 0 (callers check this before calling).
 ; ---------------------------------------------------------------------------
-(defn parse-nul-copy ((sv (ref StrView))):ptr:ui8
+(defn parse-nul-copy ((sv (ref StrView))):&ui8
   (let (n:usize (sv 'len)
-        buf:ptr:ui8 (as ptr:ui8 (malloc (as i64 (+ n 1)))))
+        buf:&ui8 (as ptr:ui8 (malloc (as i64 (+ n 1)))))
     (memcpy (as ptr buf) (as ptr (sv 'data)) (as i64 n))
     (set! (aref buf (as i64 n)) 0)
     (return buf)))
@@ -87,7 +87,7 @@
 (defn from-str ((self i32) (sv (ref StrView))):!i32
   (let (svv:StrView (strview-as-view sv)
         start:usize 0
-        neg:i32 (strview-parse-sign svv (addr-of start))
+        neg:i32 (strview-parse-sign svv &start)
         limit:ui64 (if (!= neg 0) 2147483648 2147483647)
         mag:ui64 (try (strview-parse-magnitude (strview-drop-bytes svv start) 10 limit)))
     (when (!= neg 0) (return (ok (- 0 (unsafe/cast i32 mag)))))
@@ -104,7 +104,7 @@
 (defn from-str ((self i64) (sv (ref StrView))):!i64
   (let (svv:StrView (strview-as-view sv)
         start:usize 0
-        neg:i32 (strview-parse-sign svv (addr-of start))
+        neg:i32 (strview-parse-sign svv &start)
         limit:ui64 (if (!= neg 0) 9223372036854775808 9223372036854775807)
         mag:ui64 (try (strview-parse-magnitude (strview-drop-bytes svv start) 10 limit)))
     (when (!= neg 0) (return (ok (- 0 (unsafe/cast i64 mag)))))
@@ -120,7 +120,7 @@
 (defn from-str ((self ui64) (sv (ref StrView))):!ui64
   (let (svv:StrView (strview-as-view sv)
         start:usize 0
-        neg:i32 (strview-parse-sign svv (addr-of start)))
+        neg:i32 (strview-parse-sign svv &start))
     (when (!= neg 0) (return (err! parse-int-error)))
     (return (ok (try (strview-parse-magnitude (strview-drop-bytes svv start)
                                               10 18446744073709551615))))))
@@ -138,9 +138,9 @@
   (let (n:usize (sv 'len))
     (when (= n 0)
       (return (err! parse-float-error)))
-    (let (buf:ptr:ui8 (parse-nul-copy sv)
+    (let (buf:&ui8 (parse-nul-copy sv)
           ep:ptr null
-          val:f64 (strtod (as CStr (as ptr buf)) (addr-of ep))
+          val:f64 (strtod (as CStr (as ptr buf)) &ep)
           consumed:i64 (- (unsafe/cast i64 ep) (unsafe/cast i64 (as ptr buf))))
       (free (as ptr buf))
       ; strtod consumed zero bytes → no valid number.

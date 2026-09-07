@@ -32,7 +32,7 @@ uint8_t* intern_alloc_bytes(uint8_t* src, size_t n, size_t h) asm("intern-alloc-
 void intern_place(void* tbl, size_t cap, uint8_t* p, size_t h) asm("intern-place");
 void intern_grow(size_t newcap) asm("intern-grow");
 struct Symbol symbol_intern_bytes(uint8_t* src, size_t n) asm("symbol-intern-bytes");
-struct Symbol symbol_intern_pStrView(void* sv) asm("symbol_intern.pStrView");
+struct Symbol symbol_intern_pStrView(struct StrView* sv) asm("symbol_intern.pStrView");
 struct Symbol symbol_intern_StrView(struct StrView sv) asm("symbol_intern.StrView");
 struct Symbol symbol_from_cstr(const char* cs) asm("symbol-from-cstr");
 struct Symbol symbol_from_cstr_unchecked(const char* cs) asm("symbol-from-cstr-unchecked");

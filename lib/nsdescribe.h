@@ -9,4 +9,4 @@ typedef struct dp__Fox {
     int32_t n;
 } dp__Fox;
 
-int32_t dp__describe(void* self);
+int32_t dp__describe(struct dp__Fox* self);

@@ -41,11 +41,11 @@ typedef struct DirEntries {
     void* offs;
 } DirEntries;
 
-size_t dir_count(void* self) asm("dir-count");
-struct StrView dir_name(void* self, size_t i) asm("dir-name");
+size_t dir_count(struct DirEntries* self) asm("dir-count");
+struct StrView dir_name(struct DirEntries* self, size_t i) asm("dir-name");
 void drop_pDirEntries(struct DirEntries* self) asm("drop.pDirEntries");
-size_t dir_push_name(void* self, struct StrView nm) asm("dir-push-name");
-void dir_sort(void* self) asm("dir-sort");
+size_t dir_push_name(struct DirEntries* self, struct StrView nm) asm("dir-push-name");
+void dir_sort(struct DirEntries* self) asm("dir-sort");
 /* read-dir: uses an error-union or option type; not exported */
 bool dir_exists_QMARK(struct StrView path) asm("dir-exists_QMARK");
 /* make-dir: uses an error-union or option type; not exported */

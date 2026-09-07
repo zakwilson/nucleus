@@ -27,7 +27,7 @@
 
 (defn print-string ((s (ref String))):void
   (let (sv:StrView (string-as-view s))
-    (printf "%.*s" (unsafe/cast i32 ((addr-of sv) 'len)) (as ptr ((addr-of sv) 'data)))))
+    (printf "%.*s" (unsafe/cast i32 (&sv 'len)) (as ptr (&sv 'data)))))
 
 (defn main ():i32
   (with ((v (ref (Vector i32))) (alloca (Vector i32)))
@@ -56,7 +56,7 @@
     (sort-by (vfn (x:i32):i32 (return x)) v)   ; ascending again
     (printf "emitj-inline=[")
     (let ((it (VecIter i32)) (iter v))
-      (emit-joined (vfn (x:i32):i32 (printf "%d" x) (return 0)) ", " (addr-of it)))
+      (emit-joined (vfn (x:i32):i32 (printf "%d" x) (return 0)) ", " &it))
     (printf "]\n")
 
     ; ---- emit-joined (named) ----
@@ -64,7 +64,7 @@
           emit (vfn (x:i32):i32 (printf "%d" (+ x star)) (return 0)))
       (printf "emitj-named=[")
       (let ((it (VecIter i32)) (iter v))
-        (emit-joined emit " | " (addr-of it)))
+        (emit-joined emit " | " &it))
       (printf "]\n"))
 
     ; ---- join into a String (inline render closure i32 -> StrView) ----
@@ -74,13 +74,13 @@
             render (vfn (x:i32):StrView (if (= (+ x q) 1) (return "a")
                                       (if (= x 2) (return "b") (return "c")))))
         (let ((it (VecIter i32)) (iter w))
-          (let ((s String) (join render "/" (addr-of it)))
-            (printf "join-inline=") (print-string (addr-of s)) (printf "\n")
-            (drop (addr-of s)))))
+          (let ((s String) (join render "/" &it))
+            (printf "join-inline=") (print-string &s) (printf "\n")
+            (drop &s))))
       ; ---- join (named render conformer) ----
       (let ((nf (ref NameFn)) (alloca NameFn))
         (let ((it (VecIter i32)) (iter w))
-          (let ((s String) (join nf "-" (addr-of it)))
-            (printf "join-named=") (print-string (addr-of s)) (printf "\n")
-            (drop (addr-of s)))))))
+          (let ((s String) (join nf "-" &it))
+            (printf "join-named=") (print-string &s) (printf "\n")
+            (drop &s))))))
   (return 0))

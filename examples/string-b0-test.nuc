@@ -20,7 +20,7 @@
 
   ; ---- 6. Vector bulk append -------------------------------------------------
   (with (v:(ref (Vector i32)) (vector-new))
-    (let (src:ptr:i32 (as ptr:i32 (alloca i32 3)))
+    (let (src:&i32 (as ptr:i32 (alloca i32 3)))
       (set! (aref src 0) 10)
       (set! (aref src 1) 20)
       (set! (aref src 2) 30)
@@ -38,26 +38,26 @@
     (printf "hay-len=%llu\n" (as ui64 (hay 'len)))           ; 6
 
     ; ---- 10. byte / backward / codepoint search ------------------------------
-    (show-maybe "find-a"  (strview-find-byte  (addr-of hay) (as ui8 97)))   ; 1
-    (show-maybe "rfind-a" (strview-rfind-byte (addr-of hay) (as ui8 97)))   ; 5
-    (show-maybe "find-z"  (strview-find-byte  (addr-of hay) (as ui8 122)))  ; none
+    (show-maybe "find-a"  (strview-find-byte  &hay (as ui8 97)))   ; 1
+    (show-maybe "rfind-a" (strview-rfind-byte &hay (as ui8 97)))   ; 5
+    (show-maybe "find-z"  (strview-find-byte  &hay (as ui8 122)))  ; none
     (let (ana:StrView (strview (as ptr:ui8 (as ptr "ana")) 3))
-      (show-maybe "find-ana"  (strview-find  (addr-of hay) (addr-of ana)))  ; 1
-      (show-maybe "rfind-ana" (strview-rfind (addr-of hay) (addr-of ana)))) ; 3
+      (show-maybe "find-ana"  (strview-find  &hay &ana))  ; 1
+      (show-maybe "rfind-ana" (strview-rfind &hay &ana))) ; 3
     ; `\n` is the LETTER n — Nucleus spells line feed `\newline`.
-    (show-maybe "find-char-n"  (strview-find-char  (addr-of hay) \n))       ; 2
-    (show-maybe "rfind-char-n" (strview-rfind-char (addr-of hay) \n)))      ; 4
+    (show-maybe "find-char-n"  (strview-find-char  &hay \n))       ; 2
+    (show-maybe "rfind-char-n" (strview-rfind-char &hay \n)))      ; 4
 
   ; multi-byte codepoint: "hé" is 68 C3 A9, so é starts at byte 1
   (let (acc:StrView (strview (as ptr:ui8 (as ptr "hé")) 3))
-    (show-maybe "find-char-e-acute" (strview-find-char (addr-of acc) \u{e9})))
+    (show-maybe "find-char-e-acute" (strview-find-char &acc \u{e9})))
 
   ; ---- 5, 9, 13. push / truncate / CStr bridge -------------------------------
   (with (s:(ref String) (string-new))
     (let (a:StrView (strview (as ptr:ui8 (as ptr "hello")) 5)
           b:StrView (strview (as ptr:ui8 (as ptr ", world")) 7))
-      (string-push-str-unchecked s (addr-of a))
-      (match (string-push-str s (addr-of b))
+      (string-push-str-unchecked s &a)
+      (match (string-push-str s &b)
         ((ok)    (printf "push=ok\n"))
         ((err e) (printf "push=err\n"))))
     (printf "as-cstr=%s len=%llu\n" (string-as-cstr s) (as ui64 (byte-len s)))

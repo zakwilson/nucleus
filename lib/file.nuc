@@ -37,7 +37,7 @@
 (defn file (fd:i32):File
   (let (f:&File (alloca File))
     (set! (f 'fd) fd)
-    (return (deref f))))
+    (return @f)))
 
 ; NOTE: Drop's receiver is `(ptr Self)`, not `(ref Self)`.
 (extend File Drop)
@@ -63,7 +63,7 @@
   (let (buf:String (string-new))
     (string-push-str-unchecked buf path)
     (let (fd:i32 (open (string-as-cstr buf) flags mode))
-      (drop (addr-of buf))
+      (drop &buf)
       (when (< fd 0) (return (err! io-open-failed)))
       (return (ok (file fd))))))
 
@@ -102,12 +102,12 @@
 ; problem to diagnose, not the reader's to refuse.
 (defn file-read-to-string ((self (ref File))):!String
   (let (out:String (string-new)
-        buf:ptr:ui8 (as ptr:ui8 (alloca ui8 FILE-CHUNK))
+        buf:&ui8 (as ptr:ui8 (alloca ui8 FILE-CHUNK))
         go:bool true)
     (while go
       (let (n:i64 (as i64 (read (self 'fd) (as ptr buf) FILE-CHUNK)))
         (when (< n 0)
-          (drop (addr-of out))
+          (drop &out)
           (return (err! io-read-failed)))
         (when (= n 0) (set! go false))
         (when go (string-push-bytes-raw out buf (as usize n)))))
@@ -126,7 +126,7 @@
   (let (b:&BufWriter (alloca BufWriter))
     (set! (b 'out) f)
     (set! (b 'buf) (string-with-capacity BUF-WRITER-CAP))
-    (return (deref b))))
+    (return @b)))
 
 (defn flush ((self (ref BufWriter))):!void
   (let (v:StrView (string-as-view (addr-of self 'buf)))
@@ -206,7 +206,7 @@
 ; bytes after it, so `string-as-cstr`'s past-the-end NUL would not do.
 (defn dir-push-name ((self (ref DirEntries)) nm:StrView):usize
   (let (off:usize (byte-len (addr-of self 'buf))
-        z:ptr:ui8 (as ptr:ui8 (alloca ui8 1)))
+        z:&ui8 (as ptr:ui8 (alloca ui8 1)))
     (string-push-str-unchecked (addr-of self 'buf) &nm)
     (set! (aref z 0) 0)
     (string-push-bytes-raw (addr-of self 'buf) z 1)
@@ -244,8 +244,8 @@
 ; of `d_ino`.
 (defn read-dir (path:StrView):!DirEntries
   (let (cpath:String (try (string-from-view &path))
-        d:ptr (opendir (string-as-cstr (addr-of cpath))))
-    (drop (addr-of cpath))
+        d:ptr (opendir (string-as-cstr &cpath)))
+    (drop &cpath)
     (when (= d null) (return (err! io-open-failed)))
     (let (e:&DirEntries (alloca DirEntries)
           seen:i32 0
@@ -266,15 +266,15 @@
         (drop e)
         (return (err! dir-layout-unknown)))
       (dir-sort e)
-      (return (ok (deref e))))))
+      (return (ok @e)))))
 
 ; True when `path` names a directory this process may open.
 (defn dir-exists? (path:StrView):bool
   (match (string-from-view &path)
     ((ok p)
       (let (s:String p
-            d:ptr (opendir (string-as-cstr (addr-of s))))
-        (drop (addr-of s))
+            d:ptr (opendir (string-as-cstr &s)))
+        (drop &s)
         (when (= d null) (return false))
         (closedir d)
         (return true)))
@@ -287,8 +287,8 @@
 ; there now.
 (defn make-dir (path:StrView):!void
   (let (p:String (try (string-from-view &path))
-        rc:i32 (mkdir (string-as-cstr (addr-of p)) MODE-755))
-    (drop (addr-of p))
+        rc:i32 (mkdir (string-as-cstr &p) MODE-755))
+    (drop &p)
     (when (= rc 0) (return (ok))))
   (when (dir-exists? path) (return (ok)))
   (return (err! io-open-failed)))

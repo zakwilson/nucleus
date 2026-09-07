@@ -7,25 +7,25 @@
 (import-use "stdlib.h")
 
 (defprotocol Drop
-  (drop (self:ptr:Self):void))
+  (drop (self:&Self):void))
 
 (defstruct Res id:i32)
 
-(defn drop (self:ptr:Res):void
+(defn drop (self:&Res):void
   (printf "drop %d\n" (self 'id))
   (free (as ptr self)))
 
 (extend Res Drop)
 
-(defn make-res (id:i32):ptr:Res
-  (let (r:ptr:Res (as ptr:Res (malloc 4)))
+(defn make-res (id:i32):&Res
+  (let (r:&Res (as ptr:Res (malloc 4)))
     (set! (r 'id) id)
     (return r)))
 
 (defn main ():i32
   (defer (printf "bye\n"))
-  (with (a:ptr:Res (make-res 1)
-         b:ptr:Res (make-res 2))
+  (with (a:&Res (make-res 1)
+         b:&Res (make-res 2))
     (printf "body %d %d\n" (a 'id) (b 'id)))
   (printf "end\n")
   (return 0))

@@ -17,7 +17,7 @@
 (defn rec-k (r:raw:Rec):i32 (if (= r null) 0 (r 'k)))
 
 ; The motivating shape: a cast in argument position, without the extra parens.
-(defn lookup (baz:ptr:i8):void
+(defn lookup (baz:&i8):void
   (if (contains? #{"foo" "bar"} (strview-from-cstr baz:CStr))
     (printf "hit\n")
     (printf "miss\n")))
@@ -34,7 +34,7 @@
   (let (n:i32 42
         big:i64 5000000000
         s:CStr "hello"
-        r:ref:Rec (alloca Rec))
+        r:&Rec (alloca Rec))
     ; int widening
     (take-i64 n:i64)
     ; The sugar attaches to a NAME. A computed operand still spells `as` in

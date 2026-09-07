@@ -15,5 +15,5 @@ struct StrView keyword_name(struct Keyword self) asm("keyword-name");
 struct Symbol keyword_symbol(struct Keyword self) asm("keyword-symbol");
 bool eq_Keyword_Keyword(struct Keyword a, struct Keyword b) asm("eq.Keyword.Keyword");
 bool ne_Keyword_Keyword(struct Keyword a, struct Keyword b) asm("ne.Keyword.Keyword");
-size_t hash_pKeyword(void* self) asm("hash.pKeyword");
+size_t hash_pKeyword(struct Keyword* self) asm("hash.pKeyword");
 /* to-str: uses an error-union or option type; not exported */

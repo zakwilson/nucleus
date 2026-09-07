@@ -21,8 +21,8 @@
 ; Build a StrView from a raw byte array on the heap.
 ; "héllo" = [0x68, 0xC3, 0xA9, 0x6C, 0x6C, 0x6F] — 6 bytes, 5 codepoints.
 (defn make-hello-utf8 () (ptr StrView)
-  (let (buf:ptr:ui8 (as ptr:ui8 (malloc 7))  ; 6 bytes + NUL
-        sv:ptr:StrView (as ptr:StrView (malloc (as i64 (sizeof StrView)))))
+  (let (buf:&ui8 (as ptr:ui8 (malloc 7))  ; 6 bytes + NUL
+        sv:&StrView (as ptr:StrView (malloc (as i64 (sizeof StrView)))))
     ; h é(high) é(low) l l o NUL
     (set! (aref buf 0) 104)   ; 'h'
     (set! (aref buf 1) 195)   ; 0xC3 (lead byte of é)
@@ -36,7 +36,7 @@
     (return sv)))
 
 (defn main ():i32
-  (with (sv:ptr:StrView (make-hello-utf8))
+  (with (sv:&StrView (make-hello-utf8))
 
     ; --- byte-len and char-count ---
     (printf "byte-len=%llu\n"   (as ui64 (byte-len sv)))    ; 6
@@ -44,13 +44,13 @@
 
     ; --- iterate bytes ---
     (let (bit:ByteIter (bytes sv))
-      (doseq-iter (b (addr-of bit))
+      (doseq-iter (b &bit)
         (printf "byte=%u\n" (as ui32 b))))
     ; expected: 104 195 169 108 108 111
 
     ; --- iterate chars ---
     (let (cit:CharIter (chars sv))
-      (doseq-iter (c (addr-of cit))
+      (doseq-iter (c &cit)
         (printf "char=%u\n" (as ui32 (char-to-u32 c)))))
     ; expected: 104 233 108 108 111
 
@@ -90,7 +90,7 @@
   ; --- strview-trim ---
   (let (wsv:StrView (strview-from-cstr "  hello  ")
         t:StrView (strview-trim wsv))
-    (printf "trim-len=%llu\n" (as ui64 ((addr-of t) 'len))))  ; 5
+    (printf "trim-len=%llu\n" (as ui64 (&t 'len))))  ; 5
 
   ; --- str-empty? on an empty view ---
   (let (esv:StrView (strview-from-cstr ""))

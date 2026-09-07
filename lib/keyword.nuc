@@ -34,7 +34,7 @@
 (defn keyword-intern (sv:StrView):Keyword
   (let (k:&Keyword (alloca Keyword))
     (set! (k 'sym) (symbol-intern sv))
-    (return (deref k))))
+    (return @k)))
 
 ; The keyword's name. Borrowed and process-lived, like every interned view.
 (defn keyword-name (self:Keyword):StrView

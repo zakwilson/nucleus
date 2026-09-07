@@ -59,7 +59,7 @@
         (match (next it)
           ((some v) (conj out (apply g v)))
           (none (set! done 1)))))
-    (return (deref out))))
+    (return @out)))
 
 ; filter — keep every element for which pred answers true, into a new (Vector S).
 ; pred : (UnaryFn S bool). Returns the new Vector by value (caller drops it).
@@ -73,7 +73,7 @@
         (match (next it)
           ((some v) (when (apply pred v) (conj out v)))
           (none (set! done 1)))))
-    (return (deref out))))
+    (return @out)))
 
 ; remove-if — the complement of filter: keep every element for which pred is
 ; FALSE. pred : (UnaryFn S bool). Returns a new (Vector S) by value.
@@ -87,7 +87,7 @@
         (match (next it)
           ((some v) (when (not (apply pred v)) (conj out v)))
           (none (set! done 1)))))
-    (return (deref out))))
+    (return @out)))
 
 ; for-each — apply f to every element for side effects, discarding each result.
 ; f : (UnaryFn S R) for any R. Returns void.
@@ -119,15 +119,15 @@
         (match (next it)
           ((some v)
            (let ((inner R) (apply g v))
-             (let ((iit It) (iter (addr-of inner)))
+             (let ((iit It) (iter &inner))
                (let (idone:i32 0)
                  (while (= idone 0)
-                   (match (next (addr-of iit))
+                   (match (next &iit)
                      ((some e) (conj out e))
                      (none (set! idone 1))))))
-             (drop (addr-of inner))))
+             (drop &inner)))
           (none (set! done 1)))))
-    (return (deref out))))
+    (return @out)))
 
 ; ===========================================================================
 ; Search (early-stopping)
@@ -303,7 +303,7 @@
 (defn sort ((cmp (ref C)) (v (ref (Vector T)))
                  :where ((BinaryFn T i32) C)):void
   (let (n:usize (count v)
-        buf:ptr:T (as ptr:T (as ptr (_get v 'data))))
+        buf:&T (as ptr:T (as ptr (_get v 'data))))
     (let (i:usize 1)
       (while (< i n)
         (let (key:T (aref buf (as i64 i))
@@ -319,7 +319,7 @@
 (defn sort-by ((keyf (ref F)) (v (ref (Vector T)))
                     :where ((UnaryFn T K) F)):void
   (let (n:usize (count v)
-        buf:ptr:T (as ptr:T (as ptr (_get v 'data))))
+        buf:&T (as ptr:T (as ptr (_get v 'data))))
     (let (i:usize 1)
       (while (< i n)
         (let (key:T (aref buf (as i64 i))
@@ -369,10 +369,10 @@
     (while (= done 0)
       (match (next it)
         ((some v)
-         (when (= first 0) (string-push-str-unchecked (addr-of out) (addr-of sep)))
+         (when (= first 0) (string-push-str-unchecked &out &sep))
          (set! first 0)
          (let (r:StrView (apply renderf v))
-           (string-push-str-unchecked (addr-of out) (addr-of r))))
+           (string-push-str-unchecked &out &r)))
         (none (set! done 1))))
     (return out)))
 

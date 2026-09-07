@@ -22,7 +22,7 @@
 (defn main ():i32
   ; --- plain struct: a bare symbol still names a field, even when a local
   ;     of the same name is in scope (the field wins) ---
-  (let (p:ptr:Point (alloca Point)
+  (let (p:&Point (alloca Point)
         x:i32 99)
     (set! (p 'x) 3)
     (set! (p 'y) 4)

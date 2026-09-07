@@ -55,7 +55,7 @@
 ; no-op and nothing here is ever torn down.
 (defvar g-test-alloc:AllocHandle)
 (defvar (g-tests (ref (Vector TestCase)))
-  (vector-new-in (arena-allocator (addr-of g-test-alloc))))
+  (vector-new-in (arena-allocator &g-test-alloc)))
 ; Lazily built, like lib/io.nuc's output buffer: a global String with a
 ; constant initializer would need an allocator this module has no reason to own.
 (defvar g-fail-buf:String)
@@ -70,7 +70,7 @@
     (set! (tc 'line) line)
     (set! (tc 'run) f)
     (set! (tc 'data) data)
-    (conj g-tests (deref tc))))
+    (conj g-tests @tc)))
 
 ; Called by `deftest`'s expansion from a global initializer, which is why it
 ; returns an `i32` -- it needs a value for the slot it is initialising.
@@ -93,20 +93,20 @@
 ; ---------------------------------------------------------------------------
 
 ; Clears the failure buffer and hands it back to be written into.
-(defn test-fail-begin ():ref:String
+(defn test-fail-begin ():&String
   (when (= g-fail-ready 0)
     (set! g-fail-buf (string-new))
     (set! g-fail-ready 1))
-  (string-clear (addr-of g-fail-buf))
-  (return (addr-of g-fail-buf)))
+  (string-clear &g-fail-buf)
+  (return &g-fail-buf))
 
 (defn test-failure-text ():StrView
   (when (= g-fail-ready 0) (return ""))
-  (return (string-as-view (addr-of g-fail-buf))))
+  (return (string-as-view &g-fail-buf)))
 
 (defn test-failure-len ():usize
   (when (= g-fail-ready 0) (return 0))
-  (return (byte-len (addr-of g-fail-buf))))
+  (return (byte-len &g-fail-buf)))
 
 ; `(fail! "expected " x " got " y)` — render, then propagate. A macro because
 ; the pieces are variadic and heterogeneous, which a function cannot take.
@@ -181,21 +181,21 @@
 ; ---------------------------------------------------------------------------
 
 (defn contains? (hay:StrView needle:StrView):bool
-  (match (strview-find (addr-of hay) (addr-of needle))
+  (match (strview-find &hay &needle)
     ((some at) (return true))
     (none (return false))))
 
 (defn has-line? (hay:StrView want:StrView):bool
-  (let (it:LineIter (strview-lines (addr-of hay)))
-    (while (not (lines-iter-done (addr-of it)))
-      (when (= (lines-iter-next (addr-of it)) want) (return true)))
+  (let (it:LineIter (strview-lines &hay))
+    (while (not (lines-iter-done &it))
+      (when (= (lines-iter-next &it) want) (return true)))
     (return false)))
 
 (defn has-matching-line? (hay:StrView pat:StrView):bool
-  (let (it:LineIter (strview-lines (addr-of hay)))
-    (while (not (lines-iter-done (addr-of it)))
-      (let (line:StrView (lines-iter-next (addr-of it)))
-        (when (glob-match (addr-of pat) (addr-of line)) (return true))))
+  (let (it:LineIter (strview-lines &hay))
+    (while (not (lines-iter-done &it))
+      (let (line:StrView (lines-iter-next &it))
+        (when (glob-match &pat &line) (return true))))
     (return false)))
 
 ; 1. contains-substring
@@ -228,9 +228,9 @@
 
 ; 5. files-identical
 (defn read-file (path:StrView):!String
-  (let (f:File (try (file-open-read (addr-of path)))
-        text:String (try (file-read-to-string (addr-of f))))
-    (try (file-close (addr-of f)))
+  (let (f:File (try (file-open-read &path))
+        text:String (try (file-read-to-string &f)))
+    (try (file-close &f))
     (return (ok text))))
 
 ; Golden-output comparison. Reports the FIRST differing line and its number,
@@ -238,35 +238,35 @@
 ; cannot say where they parted, and a golden file is usually long.
 (defn check-golden (got:StrView want:StrView):!void
   (when (= got want) (return (ok)))
-  (let (gi:LineIter (strview-lines (addr-of got))
-        wi:LineIter (strview-lines (addr-of want))
+  (let (gi:LineIter (strview-lines &got)
+        wi:LineIter (strview-lines &want)
         n:i64 0)
-    (while (or (not (lines-iter-done (addr-of gi))) (not (lines-iter-done (addr-of wi))))
+    (while (or (not (lines-iter-done &gi)) (not (lines-iter-done &wi)))
       (set! n (+ n 1))
-      (let (gd:bool (lines-iter-done (addr-of gi))
-            wd:bool (lines-iter-done (addr-of wi)))
+      (let (gd:bool (lines-iter-done &gi)
+            wd:bool (lines-iter-done &wi))
         (when gd
           (fail! "output ends at line " (- n 1) "; expected line " n ": "
-                 (sexp-quote (lines-iter-next (addr-of wi)))))
+                 (sexp-quote (lines-iter-next &wi))))
         (when wd
           (fail! "expected output ends at line " (- n 1) "; got line " n ": "
-                 (sexp-quote (lines-iter-next (addr-of gi)))))
-        (let (g:StrView (lines-iter-next (addr-of gi))
-              w:StrView (lines-iter-next (addr-of wi)))
+                 (sexp-quote (lines-iter-next &gi))))
+        (let (g:StrView (lines-iter-next &gi)
+              w:StrView (lines-iter-next &wi))
           (when (!= g w)
             (fail! "line " n " differs\n     want " (sexp-quote w)
                    "\n     got  " (sexp-quote g)))))))
   ; Equal line by line but not byte for byte: a trailing newline, which a
   ; line iterator cannot see and a golden file records.
-  (fail! "output differs only in trailing bytes (want " (as i64 (strview-byte-len (addr-of want)))
-         " bytes, got " (as i64 (strview-byte-len (addr-of got))) ")"))
+  (fail! "output differs only in trailing bytes (want " (as i64 (strview-byte-len &want))
+         " bytes, got " (as i64 (strview-byte-len &got)) ")"))
 
 (defn check-files-eq (a:StrView b:StrView):!void
   (let (ta:String (try (read-file a))
         tb:String (try (read-file b))
-        same:bool (= (string-as-view (addr-of ta)) (string-as-view (addr-of tb))))
-    (drop (addr-of ta))
-    (drop (addr-of tb))
+        same:bool (= (string-as-view &ta) (string-as-view &tb)))
+    (drop &ta)
+    (drop &tb)
     (when same (return (ok)))
     (fail! "expected identical files: " a " and " b)))
 
@@ -302,24 +302,24 @@
 ; The `define … @name(…) { … }` block for `name`, brace line included.
 (defn ir-define (module:StrView name:StrView) (Maybe StrView)
   (let (needle:String (str "@" name "(")
-        nv:StrView (string-as-view (addr-of needle))
-        it:LineIter (strview-lines (addr-of module))
+        nv:StrView (string-as-view &needle)
+        it:LineIter (strview-lines &module)
         start:usize 0
         seen:usize 0
         in-body:bool false)
-    (while (not (lines-iter-done (addr-of it)))
-      (let (line:StrView (lines-iter-next (addr-of it))
+    (while (not (lines-iter-done &it))
+      (let (line:StrView (lines-iter-next &it)
             len:usize (+ (line 'len) 1))
         (if in-body
           (when (and (= (line 'len) 1) (= line "}"))
-            (drop (addr-of needle))
+            (drop &needle)
             (return (some (strview (unsafe/ptr+ (module 'data) (as i64 start))
                                    (- (+ seen len) start)))))
           (when (and (strview-has-prefix line "define") (contains? line nv))
             (set! in-body true)
             (set! start seen)))
         (set! seen (+ seen len))))
-    (drop (addr-of needle))
+    (drop &needle)
     (return none)))
 
 ; A glob that must match a line INSIDE one function's body.
@@ -396,12 +396,12 @@
       (set! (d 'line) (unsafe/cast i32 (ln 'i))))
     (set! (d 'file) (diag-text (file 'car)))
     (set! (d 'message) (diag-text (msg 'car)))
-    (set! (d 'notes) (vector-new-in (arena-allocator (addr-of g-test-alloc))))
+    (set! (d 'notes) (vector-new-in (arena-allocator &g-test-alloc)))
     (let (cur:raw:Node notes)
       (while (!= cur null)
         (conj (d 'notes) (diag-text (cur 'car)))
         (set! cur (cur 'cdr))))
-    (return (ok (deref d)))))
+    (return (ok @d))))
 
 ; Reads every diagnostic in `text`, which may be the compiler's raw stderr.
 ; One diagnostic is one LINE -- the writer escapes every newline inside a
@@ -409,12 +409,12 @@
 ; which is what lets output from a tool `nucleusc` invoked ride along.
 (defn read-diagnostics (text:StrView) (Result (Vector Diagnostic) Err)
   (let (out:(Vector Diagnostic) (vector-new)
-        it:LineIter (strview-lines (addr-of text)))
-    (while (not (lines-iter-done (addr-of it)))
-      (let (line:StrView (lines-iter-next (addr-of it)))
+        it:LineIter (strview-lines &text))
+    (while (not (lines-iter-done &it))
+      (let (line:StrView (lines-iter-next &it))
         (when (strview-has-prefix line "(diagnostic ")
           (let (forms:raw:Node (try (read-all line)))
-            (conj (addr-of out) (try (diag-of-node (forms 'car))))))))
+            (conj &out (try (diag-of-node (forms 'car))))))))
     (return (ok out))))
 
 ; Every diagnostic, one per line, for a failure message.
@@ -422,15 +422,15 @@
   (let (s:String (string-new)
         n:usize (count ds)
         i:usize 0)
-    (when (= n 0) (str-into (addr-of s) "\n     (no diagnostics)"))
+    (when (= n 0) (str-into &s "\n     (no diagnostics)"))
     (while (< i n)
       (let (d:Diagnostic (invoke ds i))
-        (str-into (addr-of s) "\n     " (symbol-as-view (d 'severity)) " "
+        (str-into &s "\n     " (symbol-as-view (d 'severity)) " "
                   (d 'file) ":" (d 'line) ": " (d 'message))
         (let (m:usize (count (d 'notes))
               j:usize 0)
           (while (< j m)
-            (str-into (addr-of s) "\n       note: " (invoke (d 'notes) j))
+            (str-into &s "\n       note: " (invoke (d 'notes) j))
             (set! j (+ j 1)))))
       (set! i (+ i 1)))
     (return s)))
@@ -450,11 +450,11 @@
         i:usize 0)
     (while (< i n)
       (let (d:Diagnostic (invoke ds i))
-        (when (diag-matches (addr-of d) severity file line needle) (return (ok))))
+        (when (diag-matches &d severity file line needle) (return (ok))))
       (set! i (+ i 1))))
   (let (l:String (diag-list-text ds))
     (fail! "expected " severity " at " file ":" line " containing " (sexp-quote needle)
-           "\n     got:" (string-as-view (addr-of l)))))
+           "\n     got:" (string-as-view &l))))
 
 (defn check-error-at ((ds (ref (Vector Diagnostic))) file:StrView line:i32 needle:StrView):!void
   (return (check-diagnostic ds "error" file line needle)))
@@ -475,7 +475,7 @@
       (set! i (+ i 1))))
   (let (l:String (diag-list-text ds))
     (fail! "expected an error containing " (sexp-quote needle)
-           "\n     got:" (string-as-view (addr-of l)))))
+           "\n     got:" (string-as-view &l))))
 
 ; A note on a diagnostic at that same location -- the pairing the two-grep
 ; version had no way to express.
@@ -493,7 +493,7 @@
       (set! i (+ i 1))))
   (let (l:String (diag-list-text ds))
     (fail! "expected a note at " file ":" line " containing " (sexp-quote needle)
-           "\n     got:" (string-as-view (addr-of l)))))
+           "\n     got:" (string-as-view &l))))
 
 ; No location pinned: some diagnostic carries a note containing `needle`.
 (defn check-note-anywhere ((ds (ref (Vector Diagnostic))) needle:StrView):!void
@@ -509,7 +509,7 @@
       (set! i (+ i 1))))
   (let (l:String (diag-list-text ds))
     (fail! "expected a note containing " (sexp-quote needle)
-           "\n     got:" (string-as-view (addr-of l)))))
+           "\n     got:" (string-as-view &l))))
 
 ; Stage 15 W4a's accept criterion, as a field check: the shell version greps
 ; stderr for the literal `:0:`, which any message containing those bytes also
@@ -521,7 +521,7 @@
       (let (d:Diagnostic (invoke ds i))
         (when (= (d 'line) 0)
           (let (l:String (diag-list-text ds))
-            (fail! "a diagnostic reports line 0:" (string-as-view (addr-of l))))))
+            (fail! "a diagnostic reports line 0:" (string-as-view &l)))))
       (set! i (+ i 1))))
   (return (ok)))
 
@@ -532,7 +532,7 @@
       (let (d:Diagnostic (invoke ds i))
         (when (= (symbol-as-view (d 'severity)) "error")
           (let (l:String (diag-list-text ds))
-            (fail! "expected no errors, got:" (string-as-view (addr-of l))))))
+            (fail! "expected no errors, got:" (string-as-view &l)))))
       (set! i (+ i 1))))
   (return (ok)))
 
@@ -547,7 +547,7 @@
 (defn sexp-quote (v:StrView):SexpStr
   (let (q:&SexpStr (alloca SexpStr))
     (set! (q 'v) v)
-    (return (deref q))))
+    (return @q)))
 
 (extend SexpStr ToStr)
 (defn to-str (self:SexpStr (out (ref String))):!void
@@ -555,7 +555,7 @@
   (return (ok)))
 
 (defn test-report ((tc (ref TestCase)) status:i32):void
-  (let (b:ref:String (io-buf-begin))
+  (let (b:&String (io-buf-begin))
     (str-into b "(test (name " (sexp-quote (symbol-as-view (tc 'name)))
               ") (file " (sexp-quote (tc 'file))
               ") (line " (tc 'line) ") (status ")
@@ -582,9 +582,9 @@
 ; name is one of a small fixed set.
 (defn test-scratch-set (name:StrView):void
   (let (p:String (str "build/out/nt/" name)
-        v:StrView (string-as-view (addr-of p)))
-    (set! g-test-scratch (symbol-as-view (symbol-intern (addr-of v))))
-    (drop (addr-of p))))
+        v:StrView (string-as-view &p))
+    (set! g-test-scratch (symbol-as-view (symbol-intern &v)))
+    (drop &p)))
 
 ; The current test's directory, created on first ask.
 (defn test-scratch ():!StrView
@@ -599,7 +599,7 @@
 (defn test-scratch-sub (name:StrView):!String
   (let (dir:StrView (try (test-scratch))
         p:String (str dir "/" name)
-        pv:StrView (string-as-view (addr-of p)))
+        pv:StrView (string-as-view &p))
     (try (make-dir pv))
     (return (ok p))))
 
@@ -607,10 +607,10 @@
 (defn test-write-file (name:StrView content:StrView):!String
   (let (dir:StrView (try (test-scratch))
         path:String (str dir "/" name)
-        pv:StrView (string-as-view (addr-of path))
-        f:File (try (file-create (addr-of pv))))
-    (try (write-str (addr-of f) content))
-    (try (file-close (addr-of f)))
+        pv:StrView (string-as-view &path)
+        f:File (try (file-create &pv)))
+    (try (write-str &f content))
+    (try (file-close &f))
     (return (ok path))))
 
 (defn test-run-one ((tc (ref TestCase))):i32
@@ -625,8 +625,8 @@
           (return TEST-SKIP))
         ; Copy first: `test-fail-begin` clears the buffer the reason lives in.
         (let (s:String (str "skipped: " (test-failure-text)))
-          (str-into (test-fail-begin) (string-as-view (addr-of s)))
-          (drop (addr-of s)))
+          (str-into (test-fail-begin) (string-as-view &s))
+          (drop &s))
         (test-report tc TEST-FAIL)
         (return TEST-FAIL))
       ; An error that is not an assertion failure -- a file that would not open,
@@ -656,7 +656,7 @@
         failed:i32 0)
     (while (< i n)
       (let (tc:TestCase (invoke g-tests i))
-        (when (= (test-run-one (addr-of tc)) TEST-FAIL) (set! failed (+ failed 1))))
+        (when (= (test-run-one &tc) TEST-FAIL) (set! failed (+ failed 1))))
       (set! i (+ i 1)))
     (return (if (> failed 0) 1 0))))
 
@@ -717,7 +717,7 @@
       (match (test-find want)
         ((some k)
           (let (tc:TestCase (invoke g-tests k))
-            (return (if (= (test-run-one (addr-of tc)) TEST-FAIL) 1 0))))
+            (return (if (= (test-run-one &tc) TEST-FAIL) 1 0))))
         (none
           (eprint "no such test: " want "\n")
           (return 2))))

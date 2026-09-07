@@ -55,7 +55,7 @@
     (set! (r 'pos) 0)
     (set! (r 'line) 1)
     (set! (r 'err-line) 0)
-    (return (deref r))))
+    (return @r)))
 
 ; The line a diagnostic should name. Valid after `read-one`/`read-all` returns
 ; an error; the `!` channel carries a code, and this carries the position.
@@ -198,7 +198,7 @@
         i:usize 0)
     (when (= n 0) (return false))
     (when (= n 6)
-      (let (v:StrView (deref tv))
+      (let (v:StrView @tv)
         (when (or (= v "+inf.0") (or (= v "-inf.0") (= v "+nan.0"))) (return true))))
     (let (c0:i32 (rd-tv-at tv 0))
       (when (or (= c0 43) (= c0 45)) (set! i 1)))
@@ -236,7 +236,7 @@
 ; into the signed field where two's-complement wrap reproduces it.
 (defn rd-int-value ((self (ref Reader)) tv:StrView radix:i32 line:i32):!i64
   (let (start:usize 0
-        neg:i32 (strview-parse-sign tv (addr-of start))
+        neg:i32 (strview-parse-sign tv &start)
         digits:StrView (strview-drop-bytes tv start)
         smax:ui64 (if (!= neg 0) 9223372036854775808 9223372036854775807))
     (when (and (= radix 16)
@@ -282,7 +282,7 @@
         i:usize 0
         count:i32 0
         seg:i32 1
-        tp:ptr:StrView (addr-of tv))
+        tp:&StrView &tv)
     (while (< i n)
       (let (c:i32 (rd-tv-at tp i))
         (when (and (= c 38) (!= seg 0)) (set! count (+ count 1)))
@@ -297,13 +297,13 @@
       (while (< j n)
         (let (c:i32 (rd-tv-at tp j))
           (if (and (= c 38) (!= seg2 0))
-            (string-push-str-unchecked (addr-of out) (addr-of ref-colon))
+            (string-push-str-unchecked &out &ref-colon)
             (let (one:StrView (strview (unsafe/ptr+ (tp 'data) (as i64 j)) 1))
-              (string-push-str-unchecked (addr-of out) (addr-of one))))
+              (string-push-str-unchecked &out &one)))
           (set! seg2 (rd-seg-next c seg2)))
         (set! j (+ j 1)))
-      (let (s:Symbol (symbol-intern (string-as-view (addr-of out))))
-        (drop (addr-of out))
+      (let (s:Symbol (symbol-intern (string-as-view &out)))
+        (drop &out)
         (return s)))))
 
 ; The `&` reader macro must not swallow a retired marker.
@@ -321,8 +321,8 @@
 ; Node construction
 ; ---------------------------------------------------------------------------
 
-(defn rd-node (kind:i32 line:i32):ref:Node
-  (let (n:ref:Node (alloc-node))
+(defn rd-node (kind:i32 line:i32):&Node
+  (let (n:&Node (alloc-node))
     (set! (n 'kind) kind)
     (set! (n 'line) line)
     (return n)))
@@ -333,20 +333,20 @@
 
 ; No 4 KiB ceiling: the compiler lexes into a fixed buffer and rejects anything
 ; longer, which is a compiler-internal limit rather than a language one.
-(defn rd-string ((self (ref Reader)) open-line:i32 is-cstr:bool):!ref:Node
+(defn rd-string ((self (ref Reader)) open-line:i32 is-cstr:bool):!&Node
   (let (buf:String (string-new)
-        one:ptr:ui8 (as ptr:ui8 (alloca ui8 1)))
+        one:&ui8 (as ptr:ui8 (alloca ui8 1)))
     (while true
       (let (c:i32 (rd-next self))
         (when (= c 0)
-          (drop (addr-of buf))
+          (drop &buf)
           (rd-fail self open-line)
           (return (err! read-unterminated-string)))
         (when (= c 34)
-          (let (n:ref:Node (rd-node NODE-STR open-line))
-            (set! (n 's) (symbol-intern (string-as-view (addr-of buf))))
+          (let (n:&Node (rd-node NODE-STR open-line))
+            (set! (n 's) (symbol-intern (string-as-view &buf)))
             (set! (n 'i) (if is-cstr 1 0))
-            (drop (addr-of buf))
+            (drop &buf)
             (return (ok n))))
         (when (= c 92)
           (let (e:i32 (rd-next self)
@@ -360,7 +360,7 @@
                   (= e 120)
                     (let (h1:i32 (rd-hex-val (rd-peek self)))
                       (when (< h1 0)
-                        (drop (addr-of buf))
+                        (drop &buf)
                         (rd-fail self (self 'line))
                         (return (err! read-bad-escape)))
                       (rd-next self)
@@ -371,19 +371,19 @@
                           (set! c (+ (* c 16) h2)))))
                   true (set! handled false))
             (when (not handled)
-              (drop (addr-of buf))
+              (drop &buf)
               (rd-fail self (self 'line))
               (return (err! read-bad-escape)))))
         (set! (aref one 0) (unsafe/cast ui8 c))
-        (string-push-bytes-raw (addr-of buf) one 1)))
+        (string-push-bytes-raw &buf one 1)))
     (return (err! read-unterminated-string))))
 
-(defn rd-char-node (cp:i32 line:i32):ref:Node
-  (let (n:ref:Node (rd-node NODE-CHAR line))
+(defn rd-char-node (cp:i32 line:i32):&Node
+  (let (n:&Node (rd-node NODE-CHAR line))
     (set! (n 'i) (as i64 cp))
     (return n)))
 
-(defn rd-char ((self (ref Reader)) open-line:i32):!ref:Node
+(defn rd-char ((self (ref Reader)) open-line:i32):!&Node
   (rd-next self)                                    ; the leading backslash
   (let (c0:i32 (rd-peek self))
     (when (= c0 0)
@@ -431,7 +431,7 @@
         (rd-next self))
       (let (tv:StrView (rd-slice self start))
         (when (= (tv 'len) 1)
-          (return (ok (rd-char-node (rd-tv-at (addr-of tv) 0) open-line))))
+          (return (ok (rd-char-node (rd-tv-at &tv 0) open-line))))
         (when (= tv "newline")   (return (ok (rd-char-node 10 open-line))))
         (when (= tv "return")    (return (ok (rd-char-node 13 open-line))))
         (when (= tv "tab")       (return (ok (rd-char-node 9 open-line))))
@@ -443,34 +443,34 @@
         (rd-fail self open-line)
         (return (err! read-bad-char))))))
 
-(defn rd-atom ((self (ref Reader))):!ref:Node
+(defn rd-atom ((self (ref Reader))):!&Node
   (let (line:i32 (self 'line)
         start:usize (self 'pos))
     (while (rd-sym-char? (rd-peek self))
       (rd-next self))
     (let (tv:StrView (rd-slice self start)
-          tp:ptr:StrView (addr-of tv))
+          tp:&StrView &tv)
       (when (rd-int-atom? tp)
-        (let (n:ref:Node (rd-node NODE-INT line))
+        (let (n:&Node (rd-node NODE-INT line))
           (set! (n 'i) (try (rd-int-value self tv 10 line)))
           (return (ok n))))
       (let (hk:i32 (rd-hex-kind tp))
         (when (= hk 2)
-          (let (n:ref:Node (rd-node NODE-FLOAT line))
+          (let (n:&Node (rd-node NODE-FLOAT line))
             (set! (n 's) (symbol-intern tv))
             (return (ok n))))
         (when (= hk 1)
-          (let (n:ref:Node (rd-node NODE-INT line))
+          (let (n:&Node (rd-node NODE-INT line))
             (set! (n 'i) (try (rd-int-value self tv 16 line)))
             (return (ok n)))))
       (when (rd-float-atom? tp)
-        (let (n:ref:Node (rd-node NODE-FLOAT line))
+        (let (n:&Node (rd-node NODE-FLOAT line))
           (set! (n 's) (symbol-intern tv))
           (return (ok n))))
       ; A leading ':' with a non-empty remainder is a keyword; a lone ':' is a
       ; plain symbol, which is what makes the `):(` return-type sugar lex.
       (when (and (> (tv 'len) 1) (= (rd-tv-at tp 0) 58))
-        (let (n:ref:Node (rd-node NODE-KEYWORD line))
+        (let (n:&Node (rd-node NODE-KEYWORD line))
           (set! (n 's) (rd-expand-sigil (strview-drop-bytes tv 1)))
           (return (ok n))))
       ; Symbols are interned singletons shared across the whole program, so
@@ -548,23 +548,23 @@
         (while (not done)
           (let (seg-len:usize (cur 'len)
                 more:bool false)
-            (match (strview-find-byte (addr-of cur) 58)
+            (match (strview-find-byte &cur 58)
               ((some at) (do (set! seg-len at) (set! more true)))
               (none (do)))
             (when (= seg-len 0)
-              (drop (addr-of segs))
+              (drop &segs)
               (rd-fail self line)
               (return (err! read-empty-segment)))
-            (conj (addr-of segs) (symbol-intern (strview-take-bytes cur seg-len)))
+            (conj &segs (symbol-intern (strview-take-bytes cur seg-len)))
             (if more
               (set! cur (strview-drop-bytes cur (+ seg-len 1)))
               (set! done true))))
-        (let (n:usize (count (addr-of segs))
+        (let (n:usize (count &segs)
               start:usize 0
               name:Symbol (symbol-none)
               have-name:bool false)
           (when (= (child 'kind) NODE-SYM)
-            (set! name (invoke (addr-of segs) 0))
+            (set! name (invoke &segs 0))
             (set! have-name true)
             (set! start 1))
           (let (result:raw:Node paren-form
@@ -572,7 +572,7 @@
             (while (> i start)
               (set! i (- i 1))
               (set! result (as raw:Node
-                             (make-cell (as raw:Node (intern-node (invoke (addr-of segs) i)))
+                             (make-cell (as raw:Node (intern-node (invoke &segs i)))
                                         (as raw:Node (make-cell result null line))
                                         line))))
             (when have-name
@@ -580,7 +580,7 @@
                              (make-cell (as raw:Node (intern-node name))
                                         (as raw:Node (make-cell result null line))
                                         line))))
-            (drop (addr-of segs))
+            (drop &segs)
             (return (ok result))))))))
 
 (defn rd-list ((self (ref Reader)) open-line:i32):!raw:Node
@@ -632,7 +632,7 @@
         ((ok n) (return (ok (as raw:Node n))))
         ((err e) (return (err e)))))
     (let (mname:StrView (rd-macro-name self))
-      (when (not (strview-empty (addr-of mname)))
+      (when (not (strview-empty &mname))
         (let (k:i32 (rd-macro-len mname)
               j:i32 0)
           (while (< j k)
@@ -683,9 +683,9 @@
   (let (r:Reader (reader src)
         head:raw:Node null
         tail:raw:Node null)
-    (while (not (reader-eof? (addr-of r)))
+    (while (not (reader-eof? &r))
       (let (start-line:i32 (r 'line)
-            form:raw:Node (try (rd-form (addr-of r)))
+            form:raw:Node (try (rd-form &r))
             line:i32 start-line)
         (when (!= form null)
           (let (fl:i32 (form 'line))
@@ -703,7 +703,7 @@
 (defn rd-write-escaped ((out (ref String)) sv:StrView):void
   (let (n:usize (sv 'len)
         i:usize 0
-        one:ptr:ui8 (as ptr:ui8 (alloca ui8 1)))
+        one:&ui8 (as ptr:ui8 (alloca ui8 1)))
     (while (< i n)
       (let (c:i32 (bit-and (as i32 (aref (sv 'data) (as i64 i))) 255))
         (cond (= c 10) (write-str out "\\n")
@@ -718,7 +718,7 @@
 
 ; `\u{…}` is hex, and lib/fmt.nuc writes decimal only.
 (defn rd-write-hex ((out (ref String)) v:ui64):void
-  (let (buf:ptr:ui8 (as ptr:ui8 (alloca ui8 16))
+  (let (buf:&ui8 (as ptr:ui8 (alloca ui8 16))
         n:i32 0
         x:ui64 v)
     (when (= x 0)
@@ -778,7 +778,7 @@
 
 (defn node-str (n:raw:Node):String
   (let (s:String (string-new))
-    (node-write (addr-of s) n)
+    (node-write &s n)
     (return s)))
 
 ; Structural equality: same shape, same kinds, same values. Symbols compare by

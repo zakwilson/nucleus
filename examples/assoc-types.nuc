@@ -88,7 +88,7 @@
       (set! (it 'end) 13)
       (collect-all it v))
     (let ((it (VecIter i32)) (iter v))
-      (for-each (vfn (x:i32):i32 (printf "%d\n" x) (return 0)) (addr-of it))))
+      (for-each (vfn (x:i32):i32 (printf "%d\n" x) (return 0)) &it)))
 
   ; sum-i32-iter: constrain case — only accepts (Iterator i32).
   (let ((it2 (ref IntRangeIter)) (alloca IntRangeIter))

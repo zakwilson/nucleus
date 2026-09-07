@@ -17,7 +17,7 @@ struct FdOut std_err(void) asm("std-err");
 /* write-str: uses an error-union or option type; not exported */
 extern struct String g_io_buf asm("g-io-buf");
 extern int32_t g_io_buf_ready asm("g-io-buf-ready");
-void* io_buf_begin(void) asm("io-buf-begin");
+struct String* io_buf_begin(void) asm("io-buf-begin");
 /* io-buf-end: uses an error-union or option type; not exported */
 #define IO_IN_CAP 8192
 extern void* g_in_buf asm("g-in-buf");

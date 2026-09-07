@@ -73,8 +73,8 @@
 ; A global's address is a link-time constant AND provably non-null, so this is
 ; the one G-1 spelling that fills a non-null `ptr:T` slot with no runtime store.
 (defvar g-target:i32 4242)
-(defvar g-addr:ptr:i32       (addr-of g-target))
-(defvar g-addr-fwd:ptr:i32   (addr-of g-later-target))
+(defvar g-addr:&i32       &g-target)
+(defvar g-addr-fwd:&i32   &g-later-target)
 (defvar g-later-target:i32 99)
 
 (defn agree (folded:i32 runtime:i64):CStr
@@ -95,5 +95,5 @@
     (agree g-sz-nested (as i64 (sizeof Nested))))
   (printf "as %lld %s %s\n" g-as-i64 g-as-cstr g-as-ptr)
   (printf "char %d %d\n" g-char g-char-arith)
-  (printf "addr %d %d\n" (deref g-addr) (deref g-addr-fwd))
+  (printf "addr %d %d\n" @g-addr @g-addr-fwd)
   (return 0))

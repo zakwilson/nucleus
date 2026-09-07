@@ -32,9 +32,9 @@
           ksum:i32 0
           vsum:i32 0
           n:i32 0)
-      (doseq-iter (e (addr-of it))
-        (set! ksum (+ ksum ((addr-of e) 'key)))
-        (set! vsum (+ vsum ((addr-of e) 'val)))
+      (doseq-iter (e &it)
+        (set! ksum (+ ksum (&e 'key)))
+        (set! vsum (+ vsum (&e 'val)))
         (set! n (+ n 1)))
       (printf "iter n=%d ksum=%d vsum=%d\n" n ksum vsum)))  ; iter n=3 ksum=6 vsum=60
 
@@ -44,11 +44,11 @@
     (let ((e (ref (Entry i32 i32))) (alloca (Entry i32 i32)))
       (set! (e 'key) 5)
       (set! (e 'val) 500)
-      (conj m (deref e)))
+      (conj m @e))
     (let ((e (ref (Entry i32 i32))) (alloca (Entry i32 i32)))
       (set! (e 'key) 6)
       (set! (e 'val) 600)
-      (conj m (deref e)))
+      (conj m @e))
     (printf "conj count=%llu\n" (as ui64 (count m)))      ; conj count=2
     (match (get m 5)
       ((some v) (printf "get 5=%d\n" v))                    ; get 5=500

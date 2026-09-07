@@ -41,7 +41,7 @@
 ; Helper: run the chain test and return the sum.
 ; Separated into its own function to keep main readable.
 ; ---------------------------------------------------------------------------
-(defn run-chain (arr:ptr:i64):i64
+(defn run-chain (arr:&i64):i64
   (let ((sq  (ref SquareI64))  (alloca SquareI64)
         (ev  (ref IsEvenI64))  (alloca IsEvenI64)
         (sm  (ref SumI64))     (alloca SumI64)
@@ -70,7 +70,7 @@
       (printf "%d\n" x)))
 
   ; ---- 2. map/filter/reduce chain over i64 elements ----------------------
-  (let (arr:ptr:i64 (alloca i64 5))
+  (let (arr:&i64 (alloca i64 5))
     (set! (aref arr 0) 1)
     (set! (aref arr 1) 2)
     (set! (aref arr 2) 3)

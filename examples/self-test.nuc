@@ -44,7 +44,7 @@ entry:
 (deftest equality
   (try (check-eq (greeting) "hello, world"))
   (let (g:StrView (greeting))
-    (try (check-eq-int (as i64 (strview-byte-len (addr-of g))) 12 "greeting length"))))
+    (try (check-eq-int (as i64 (strview-byte-len &g)) 12 "greeting length"))))
 
 (deftest wildcards
   ; A glob matches a whole line; `*` stands for any run of bytes.
@@ -72,13 +72,13 @@ clang: error: something a tool said
 (deftest diagnostics
   (let (ds:(Vector Diagnostic) (try (read-diagnostics (compiler-stderr))))
     ; The line that is not a diagnostic is skipped, not fatal.
-    (try (check-eq-int (as i64 (count (addr-of ds))) 2 "diagnostic count"))
+    (try (check-eq-int (as i64 (count &ds)) 2 "diagnostic count"))
     ; Severity, file, line and message are matched against ONE record. Two
     ; independent greps over the blob above would also accept "an error at
     ; a.nuc:12" paired with "second ns directive" -- which is the hole.
-    (try (check-error-at (addr-of ds) "a.nuc" 12 "no field 'z'"))
-    (try (check-warning-at (addr-of ds) "b.nuc" 3 "second ns"))
-    (try (check-note-at (addr-of ds) "b.nuc" 3 "the first one wins"))))
+    (try (check-error-at &ds "a.nuc" 12 "no field 'z'"))
+    (try (check-warning-at &ds "b.nuc" 3 "second ns"))
+    (try (check-note-at &ds "b.nuc" 3 "the first one wins"))))
 
 ; A test whose subject is not here to be tested says so, with its reason, and
 ; the run still exits 0 for it. `--no-skip` turns it into a failure, for a run

@@ -1,7 +1,7 @@
 ; .nuch header for lib/node.nuc
 (declare alloc-node () :ref:Node)
 (declare make-cell ((car (raw Node)) (cdr (raw Node)) (line i32)) :ref:Node)
-(declare node-at ((n (raw Node)) (i i32)) :?ptr:Node)
+(declare node-at ((n (raw Node)) (i i32)) :?ref:Node)
 (declare node-len ((n (raw Node))) :i32)
 (declare node-line ((n (raw Node)) (encl i32)) :i32)
 (declare node-is-list ((n (raw Node))) :bool)

@@ -21,7 +21,7 @@
 ; buffer, OR we copy it to a temp buffer).
 (defn print-sv ((sv (ref StrView))):void
   (with (n:usize (sv 'len)
-         buf:ptr:ui8 (as ptr:ui8 (malloc (as i64 (+ n 1)))))
+         buf:&ui8 (as ptr:ui8 (malloc (as i64 (+ n 1)))))
     (memcpy (as ptr buf) (as ptr (sv 'data)) (as i64 n))
     (set! (aref buf (as i64 n)) 0)
     (printf "%s" (as CStr (as ptr buf)))))
@@ -32,7 +32,7 @@
   (let (sv:StrView (strview-from-cstr "a,b,c")
         sep:StrView (strview-from-cstr ",")
         it:SplitIter (strview-split sv sep))
-    (doseq-iter (seg (addr-of it))
+    (doseq-iter (seg &it)
                  (print-sv seg)
                  (printf "\n")))
 
@@ -40,7 +40,7 @@
   (let (sv:StrView (strview-from-cstr "hello")
         sep:StrView (strview-from-cstr "x")
         it:SplitIter (strview-split sv sep))
-    (doseq-iter (seg (addr-of it))
+    (doseq-iter (seg &it)
                  (print-sv seg)
                  (printf "\n")))
 
@@ -49,7 +49,7 @@
          sep:StrView (strview-from-cstr ",")
          it:SplitIter (strview-split sv sep)
          count:i32 0)
-    (doseq-iter (seg (addr-of it))
+    (doseq-iter (seg &it)
                  (set! count (+ count 1))
                  (printf "empty-seg-len=%llu\n" (as ui64 (seg 'len)))
                  (printf "empty-count=%d\n" count)))
@@ -58,14 +58,14 @@
   (let (sv:StrView (strview-from-cstr "a--b--c")
          sep:StrView (strview-from-cstr "--")
          it:SplitIter (strview-split sv sep))
-    (doseq-iter (seg (addr-of it))
+    (doseq-iter (seg &it)
                  (print-sv seg)
                  (printf "\n")))
 
   ; ---- 5. strview-lines "line1\nline2\nline3" ---------------------------------
   (let (sv:StrView (strview-from-cstr "line1\nline2\nline3")
          it:LineIter (strview-lines sv))
-    (doseq-iter (seg (addr-of it))
+    (doseq-iter (seg &it)
                  (print-sv seg)
                  (printf "\n")))
 
@@ -73,7 +73,7 @@
   (let (sv:StrView (strview-from-cstr "line1\r\nline2\r\n")
         it:LineIter (strview-lines sv)
         count:i32 0)
-    (doseq-iter (seg (addr-of it))
+    (doseq-iter (seg &it)
                  (set! count (+ count 1))
                  (printf "crlf%d=" count)
                  (print-sv seg)
@@ -82,16 +82,16 @@
   ; ---- 7. strview-trim "  hello  " → len=5 -----------------------------------
   (let (sv:StrView (strview-from-cstr "  hello  ")
         trimmed:StrView (strview-trim sv))
-    (printf "trim-len=%llu\n" (as ui64 ((addr-of trimmed) 'len))))
+    (printf "trim-len=%llu\n" (as ui64 (&trimmed 'len))))
 
   ; ---- 8. strview-trim-start "  hello" → len=5 --------------------------------
   (let (sv:StrView (strview-from-cstr "  hello")
         trimmed:StrView (strview-trim-start sv))
-    (printf "trim-start-len=%llu\n" (as ui64 ((addr-of trimmed) 'len))))
+    (printf "trim-start-len=%llu\n" (as ui64 (&trimmed 'len))))
 
   ; ---- 9. strview-trim-end "hello  " → len=5 ----------------------------------
   (let (sv:StrView (strview-from-cstr "hello  ")
         trimmed:StrView (strview-trim-end sv))
-    (printf "trim-end-len=%llu\n" (as ui64 ((addr-of trimmed) 'len))))
+    (printf "trim-end-len=%llu\n" (as ui64 (&trimmed 'len))))
 
   (return 0))

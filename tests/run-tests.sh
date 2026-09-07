@@ -7732,7 +7732,7 @@ EOF
 
   # Each method gets its own C name and its own label; the solitary one keeps
   # its bare name and needs no label at all.
-  if qgrep -xF 'int32_t scale_pPt_i32(void* p, int32_t k) asm("scale.pPt.i32");' "$d/ovlib.h" \
+  if qgrep -xF 'int32_t scale_pPt_i32(struct Pt* p, int32_t k) asm("scale.pPt.i32");' "$d/ovlib.h" \
      && qgrep -xF 'int32_t scale_i32_i32(int32_t a, int32_t k) asm("scale.i32.i32");' "$d/ovlib.h" \
      && qgrep -xF 'bool eq_Pt_Pt(struct Pt a, struct Pt b) asm("eq.Pt.Pt");' "$d/ovlib.h" \
      && qgrep -xF 'int32_t solo(int32_t n);' "$d/ovlib.h"; then
@@ -7842,7 +7842,7 @@ EOF
      && qgrep -xF 'extern int32_t delete_ asm("delete");' "$d/kwlib.h" \
      && qgrep -xF 'int32_t union_(int32_t a, int32_t b) asm("union");' "$d/kwlib.h" \
      && qgrep -xF 'int32_t xor_(int32_t a, int32_t default_) asm("xor");' "$d/kwlib.h" \
-     && qgrep -xF 'int32_t plain(void* b);' "$d/kwlib.h"; then
+     && qgrep -xF 'int32_t plain(struct Box* b);' "$d/kwlib.h"; then
     echo "PASS  w9-cheader-reserved-escaped"
   else
     echo "FAIL  w9-cheader-reserved-escaped"; sed 's/^/    /' "$d/kwlib.h" | sed -n '7,40p'

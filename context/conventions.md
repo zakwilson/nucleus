@@ -1090,6 +1090,30 @@ committed headers match the compiler; it cannot tell you they are *correct*, and
 it will happily lock in a wrong spelling. The check that finds this is compiling a
 generated header with `clang -fsyntax-only`, which the `w9-cheader-*` gates do.
 
+`type-node-to-c`'s pointer arm keys on the head SYMBOL, so it has to name every
+spelling of the same kind: `ptr`, `ref` (its documented synonym) and `addr-of`
+(what a standalone `&T` in a type slot reads as). It named only `ptr` until
+2026-09-06, so `(ref T)`/`&T` in an exported signature silently rendered `void*`
+— pointer-sized and ABI-correct, which is why it survived, and why two
+`w9-cheader-*` goldens had the `void*` spelling written into them. `raw` still
+widens deliberately. Docs: `docs/compiler.md` §C headers.
+
+## A standalone `&T` in a type slot is an `(addr-of T)` node, and `--emit-nuch` prints nodes
+
+`&` at a token boundary is the address-of reader macro, so `(as &T x)`,
+`(Vector &T)` and the list-form binding `(p &T)` all reach the parser as
+`(addr-of T)`; only a `&` *inside* an atom (`p:&T`, `?&T`, `):&T`) is the type
+sigil, which the lexer rewrites to `ref:` before any node exists. Type consumers
+accept both, so it compiles — but `--emit-nuch` prints `defprotocol` and
+generic-template forms **verbatim**, so the odd spelling lands in the committed
+header (measured: sugaring `lib/`'s standalone spellings put 50 `(addr-of T)`
+into `lib/*.nuch`). **Tree-wide rule: adopt `&` for a type only after a `:`/`?`/`!`**
+— `p:&T`, `?&V`, `):&T`. A cast operand is one token, so it takes the chain
+(`(as ref:T x)`); a type expression takes the list form (`(Vector (ref T))`).
+`src/` was swept back to that rule on 2026-09-07 (2,469 sites, `build/nucleusc.ll`
+byte-identical), so a standalone `&T` in a type slot is a defect anywhere now.
+See [design/stage16-ergonomics/ref-sigil.md](../design/stage16-ergonomics/ref-sigil.md) §6.
+
 ## In C, a typedef is not a tag — emit both, and give them the same spelling
 
 `typedef struct { … } Rec;` defines a typedef named `Rec` and **no** struct tag, so

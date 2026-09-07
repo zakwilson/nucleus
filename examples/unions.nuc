@@ -22,17 +22,17 @@
 (defenum Color RED GREEN BLUE)
 
 ; Exhaustive match: no `_` arm, so adding a Shape arm breaks this loudly.
-(defn area (s:ptr:Shape):f64
+(defn area (s:&Shape):f64
   (match s
     ((circle r) (return (* 3.14159 (* r r))))
     ((rect w h) (return (* w h)))
     (point      (return 0.0))))
 
 ; (ref x) binders need a pointer scrutinee; they alias the field in place.
-(defn scale-by (s:ptr:Shape k:f64):void
+(defn scale-by (s:&Shape k:f64):void
   (match s
-    ((circle (ref r))       (set! (deref r) (* @r k)))
-    ((rect (ref w) (ref h)) (do (set! (deref w) (* @w k)) (set! (deref h) (* @h k))))
+    ((circle (ref r))       (set! @r (* @r k)))
+    ((rect (ref w) (ref h)) (do (set! @w (* @w k)) (set! @h (* @h k))))
     (point 0)))
 
 ; A parameterized defunion declares a template; (Result i64 i32) stamps and
@@ -59,7 +59,7 @@
 
 (defn main ():i32
   ; Untagged: write one member, read it back; .& gives the field pointer.
-  (let (s:ptr:Scalar (alloca Scalar)
+  (let (s:&Scalar (alloca Scalar)
         (d (ptr (union as-int:i64 as-float:f64))) (addr-of s 'data))
     (set! (s 'kind) 1)
     (set! (d 'as-int) 42)
@@ -71,9 +71,9 @@
         r:Shape (make Shape rect 3.0 4.0)
         p:Shape (Shape-point))
     (printf "areas %.2f %.2f %.2f\n"
-      (area (addr-of c)) (area (addr-of r)) (area (addr-of p)))
-    (scale-by (addr-of r) 2.0)
-    (printf "scaled %.2f\n" (area (addr-of r)))
+      (area &c) (area &r) (area &p))
+    (scale-by &r 2.0)
+    (printf "scaled %.2f\n" (area &r))
     ; match is also a value expression (cond's phi rules)
     (printf "kind %s\n"
       (match r

@@ -6,18 +6,18 @@
 (import-use arena)
 
 ; arena-alloc aborts on exhaustion, so node allocation never yields null.
-(defn alloc-node ():ref:Node
+(defn alloc-node ():&Node
   (return (as ref:Node (arena-alloc (sizeof Node)))))
 
-(defn make-cell (car:raw:Node cdr:raw:Node line:i32):ref:Node
-  (let (c:ref:Node (alloc-node))
+(defn make-cell (car:raw:Node cdr:raw:Node line:i32):&Node
+  (let (c:&Node (alloc-node))
     (set! (c 'kind) NODE-CELL)
     (set! (c 'line) line)
     (set! (c 'car) car)
     (set! (c 'cdr) cdr)
     (return c)))
 
-(defn node-at (n:raw:Node i:i32):?ptr:Node
+(defn node-at (n:raw:Node i:i32):?&Node
   (match (as-ref n)
     ((some nn)
      (while (and (= (nn 'kind) NODE-CELL) (> i 0))
@@ -109,17 +109,17 @@
 ; it, where the bare pointer had to be cast back into a Symbol to be hashed.
 (defstruct InternEntry
   spelling:Symbol
-  node:ref:Node)  ; valid whenever spelling is not symbol-none (occupied entry)
+  node:&Node)  ; valid whenever spelling is not symbol-none (occupied entry)
 
 (defvar g-intern-table:ptr)
 (defvar g-intern-cap:i32 0)
 (defvar g-intern-len:i32 0)
 
-(defn sym-node-place (table:ptr cap:i32 sp:Symbol nd:ref:Node h:i64):void
+(defn sym-node-place (table:ptr cap:i32 sp:Symbol nd:&Node h:i64):void
   (let (mask:i64 (as i64 (- cap 1))
         j:i64 (bit-and h mask))
     (while (!= 0 1)
-      (let (e:ptr:InternEntry (as ptr:InternEntry
+      (let (e:&InternEntry (as ptr:InternEntry
                                     (unsafe/ptr+ (as ptr:InternEntry table) (unsafe/cast i32 j))))
         (when (symbol-none? (e 'spelling))
           (set! (e 'spelling) sp)
@@ -137,14 +137,14 @@
     (set! g-intern-table new-table)
     (let (i:i32 0)
       (while (< i old-cap)
-        (let (e:ptr:InternEntry (as ptr:InternEntry
+        (let (e:&InternEntry (as ptr:InternEntry
                                       (unsafe/ptr+ (as ptr:InternEntry old-table) i)))
           (when (not (symbol-none? (e 'spelling)))
             (sym-node-place new-table new-cap (e 'spelling) (e 'node)
                             (unsafe/cast i64 (symbol-cached-hash (e 'spelling))))))
         (inc! i)))))
 
-(defn intern-node (sym:Symbol):ref:Node
+(defn intern-node (sym:Symbol):&Node
   (when (= g-intern-cap 0)
     (set! g-intern-cap 1024)
     (set! g-intern-table (arena-alloc (* (as i64 g-intern-cap)
@@ -154,10 +154,10 @@
   (let (mask:i64 (as i64 (- g-intern-cap 1))
         j:i64 (bit-and (unsafe/cast i64 (symbol-cached-hash sym)) mask))
     (while (!= 0 1)
-      (let (e:ptr:InternEntry (as ptr:InternEntry
+      (let (e:&InternEntry (as ptr:InternEntry
                                     (unsafe/ptr+ (as ptr:InternEntry g-intern-table) (unsafe/cast i32 j))))
         (when (symbol-none? (e 'spelling))
-          (let (nd:ref:Node (alloc-node))
+          (let (nd:&Node (alloc-node))
             (set! (nd 'kind) NODE-SYM)
             (set! (nd 'line) 0)
             (set! (nd 's) sym)
@@ -172,5 +172,5 @@
 ; The ONLY caller is the `'foo` lowering, which emits `call ptr @intern-symbol`
 ; with a C string constant — this is that lowering's ABI, not a source-level API.
 ; Nucleus source interns through `(intern-node (symbol-intern …))`.
-(defn intern-symbol (s:CStr):ref:Node
+(defn intern-symbol (s:CStr):&Node
   (return (intern-node (symbol-from-cstr s))))

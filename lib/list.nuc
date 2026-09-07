@@ -26,7 +26,7 @@
 (defn cons (car:ptr cdr:ptr):ptr
   ; calloc, not malloc: `s` is a Symbol, which has no null value to assign —
   ; a cell simply has no name, and zeroed is what the arena's nodes are too.
-  (let (c:ptr:Node (as ptr:Node (calloc 1 (sizeof Node))))
+  (let (c:&Node (as ptr:Node (calloc 1 (sizeof Node))))
     (set! (c 'kind) 3)
     (set! (c 'line) 0)
     (set! (c 'i) 0)
@@ -77,4 +77,4 @@
 (defn list-iter (lst:ptr):ListIter
   (let ((it (ref ListIter)) (alloca ListIter))
     (set! (it 'cur) lst)
-    (return (deref it))))
+    (return @it)))

@@ -19,6 +19,16 @@ Grouped by what a reader needs to do next:
 
 ## Needs a decision
 
+- **Standalone `&T` in a type slot: generalize the sugar, or ban it.**
+  [ref-sigil.md](ref-sigil.md) §5/§6 and
+  [../stage888-deferred.md](../stage888-deferred.md) ("Pointer-kind spellings").
+  `p:&T` is the lexer rewrite and leaves no trace; a bare `&T` is the address-of
+  reader macro, so a type slot gets `(addr-of T)` — legal, IR-identical, and
+  printed verbatim into a `.nuch` by `--emit-nuch`. The 2026-09-07 sweep removed
+  2,469 of them from `src/` by convention; the ruling is whether the node should
+  remember it was written `&` (usable everywhere) or a type slot should refuse it
+  (mechanical rule, retires `(sizeof &Pt)` / `(Vector &Pt)` and their gates).
+
 - **Making a `(compile-time …)`-defined `defvar`/`defn` visible to the
   program module.** [repl-libraries.md](repl-libraries.md) (the D9a section):
   the two type prescans now descend into a `compile-time` body so a CT-defined

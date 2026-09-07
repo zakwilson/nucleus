@@ -23,8 +23,8 @@
 
 ; ---- invoke: an i32 vector, indexable by call. Vec defines `invoke`, so its
 ;      own fields are read with `_get` (the callable form indexes, not gets). ----
-(defstruct Vec data:ptr:i32 len:i32)
-(defn invoke (self:ptr:Vec i:i32):i32
+(defstruct Vec data:&i32 len:i32)
+(defn invoke (self:&Vec i:i32):i32
   (return (aref (_get self 'data) i)))
 
 ; ---- UnaryFn: a function object that adds a fixed delta to its i32 argument ----
@@ -45,21 +45,21 @@
 ;      field with the `_get` primitive (not head position `(self c)`, which would
 ;      dispatch back into this same method and recurse).
 (defstruct Temp c:i32)
-(defn get (self:ptr:Temp sel:ptr):i32
+(defn get (self:&Temp sel:ptr):i32
   (if (= sel 'f) (return (+ (* (_get self 'c) 2) 30))
                  (return (_get self 'c))))
 
 (defn main ():i32
   ; Member access by call — the Struct default. (p x) == (_get p x).
-  (let (p:ptr:Point (as ptr:Point (malloc (as i64 (sizeof Point)))))
+  (let (p:&Point (as ptr:Point (malloc (as i64 (sizeof Point)))))
     (set! (p 'x) 3)
     (set! (p 'y) 4)
     (printf "point: x=%d y=%d\n" (p 'x) (p 'y)))
 
   ; invoke takes precedence: (v i) indexes (literal OR a local index symbol);
   ; the field `len` is read with `_get` since Vec has an `invoke` method.
-  (let (v:ptr:Vec (as ptr:Vec (malloc (as i64 (sizeof Vec))))
-        arr:ptr:i32 (as ptr:i32 (malloc 12)))
+  (let (v:&Vec (as ptr:Vec (malloc (as i64 (sizeof Vec))))
+        arr:&i32 (as ptr:i32 (malloc 12)))
     (set! (aref arr 0) 10)
     (set! (aref arr 1) 20)
     (set! (aref arr 2) 30)
@@ -81,7 +81,7 @@
     (printf "fold: 1*2*3*4=%d\n" (fold mul (fold mul (fold mul 1 2) 3) 4)))
 
   ; User get override beats the intrinsic; 'f is synthetic, 'c delegates to the field.
-  (let (t:ptr:Temp (as ptr:Temp (malloc (as i64 (sizeof Temp)))))
+  (let (t:&Temp (as ptr:Temp (malloc (as i64 (sizeof Temp)))))
     (set! (t 'c) 20)
     (printf "temp: c=%d f=%d\n" (t 'c) (t 'f)))
   (return 0))

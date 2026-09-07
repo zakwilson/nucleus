@@ -24,13 +24,13 @@
 (import-use "stdlib.h")
 
 (defprotocol Drop
-  (drop (self:ptr:Self):void))
+  (drop (self:&Self):void))
 
 ; An owning resource: holds a heap buffer that `drop` frees. `id` lets us see
 ; which resource drops, and when.
 (defstruct Res id:i32 buf:ptr)
 
-(defn drop (self:ptr:Res):void
+(defn drop (self:&Res):void
   (printf "drop Res %d\n" (self 'id))
   (free (self 'buf)))
 
@@ -48,14 +48,14 @@
 ; once. Returns the moved id so we can observe the data survived the move.
 (defn move-into-closure ():i32
   (with (r (make-res 2))
-    (with (f (mfn ():i32 (return (get (addr-of r) 'id))))
+    (with (f (mfn ():i32 (return (get &r 'id))))
       (return (f)))))
 
 (defn main ():i32
   ; 1. (b)+(c): a by-value owning struct, with-bound at the caller, drops at
   ;    scope exit: "use Res 1" then "drop Res 1".
   (with (r (make-res 1))
-    (printf "use Res %d\n" (get (addr-of r) 'id)))
+    (printf "use Res %d\n" (get &r 'id)))
 
   ; 2. (c) double-duty: the mfn moves a struct-value Drop binding in. The
   ;    closure drops the moved resource (id 2) once, at its scope; r's cleanup

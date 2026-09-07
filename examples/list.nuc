@@ -16,7 +16,7 @@
 ; calloc, not malloc: `s` is a Symbol, which has no null value to assign — a
 ; cell simply has no name, and zeroed is what the arena's nodes are too.
 (defn cons (car:ptr cdr:ptr):ptr
-  (let (c:ptr:Node (as ptr:Node (calloc 1 (sizeof Node))))
+  (let (c:&Node (as ptr:Node (calloc 1 (sizeof Node))))
     (set! (c 'kind) 3)
     (set! (c 'line) 0)
     (set! (c 'i) 0)
@@ -50,7 +50,7 @@
     (let (first-item:i32 1)
       (printf "(")
       (doseq-iter (elem lit)
-        (let (node:ptr:Node (as ptr:Node elem))
+        (let (node:&Node (as ptr:Node elem))
           (when (= first-item 0) (printf " "))
           (cond (= (node 'kind) 0) (printf "%ld" (node 'i))
                 (= (node 'kind) 2) (printf "%s" (as ptr (symbol-as-cstr (node 's))))

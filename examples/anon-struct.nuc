@@ -14,7 +14,7 @@
   tag:i32)
 
 (defn nested-field ():i32
-  (let (o:ptr:Outer (alloca Outer))
+  (let (o:&Outer (alloca Outer))
     (set! ((addr-of o 'point) 'x) 10)
     (set! ((addr-of o 'point) 'y) 20)
     (set! (o 'tag) 7)

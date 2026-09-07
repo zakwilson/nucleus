@@ -25,8 +25,8 @@
 ; (null on a name-only pre-registered struct), so this asserts raw→ref before
 ; `invoke` — sound because every caller loops under the `num-fields` bound, so a
 ; null `fields` is never indexed.
-(defn field-at (fields:(raw (Vector &Field)) i:i32):&Field
-  (return (invoke (unsafe/cast (ref (Vector &Field)) fields) (as usize i))))
+(defn field-at (fields:(raw (Vector (ref Field))) i:i32):&Field
+  (return (invoke (unsafe/cast (ref (Vector (ref Field))) fields) (as usize i))))
 
 ; Stage 16 PK-1: the alignment a load/store through a field of `sd` may claim.
 ; A packed field can sit at any byte, so the access must say `align 1` — an IR
@@ -35,7 +35,7 @@
 ; diff, which is why §11 asks for an access-side assertion of its own.
 (defn field-load-align (sd:(raw StructDef) ty:(raw Type)):i32
   (when (= sd null) (return (type-size ty)))
-  (when (!= ((unsafe/cast &StructDef sd) 'packed) 0) (return 1))
+  (when (!= ((unsafe/cast ref:StructDef sd) 'packed) 0) (return 1))
   (return (type-size ty)))
 
 ; The same rule for the two sites that emit a bare `store` with no align clause
@@ -44,7 +44,7 @@
 ; existing program's IR stays byte-identical.
 (defn packed-align-suffix (sd:(raw StructDef)):StrView
   (when (= sd null) (return ""))
-  (when (= ((unsafe/cast &StructDef sd) 'packed) 0) (return ""))
+  (when (= ((unsafe/cast ref:StructDef sd) 'packed) 0) (return ""))
   (return ", align 1"))
 
 ; Stage 16 PK-1: write `%NAME = type { … }` — or `<{ … }>` when the struct is
@@ -61,10 +61,10 @@
         ne:i32 0 sz:i32 0 tp:i32 0)
     (emit stream "%" (sdd 'ir-name) " = type " (if (!= packed 0) "<{ " "{ "))
     (dotimes (i (sdd 'num-fields))
-      (struct-walk sd i (as &i32 &el) (as &i32 &bt)
-                   (as &i32 &pad) (as &i32 &blob)
-                   (as &i32 &rs) (as &i32 &ne)
-                   (as &i32 &sz) (as &i32 &tp))
+      (struct-walk sd i (as ref:i32 &el) (as ref:i32 &bt)
+                   (as ref:i32 &pad) (as ref:i32 &blob)
+                   (as ref:i32 &rs) (as ref:i32 &ne)
+                   (as ref:i32 &sz) (as ref:i32 &tp))
       ; PK-3: an `aligned(N)` gap is an element of its own, so the separator
       ; counts EMITTED elements rather than fields.
       (when (> pad 0)
@@ -229,11 +229,11 @@
 ; identity match); types are the raw Type* pointers. This is the single
 ; array→Vector conversion point for every StructDef builder.
 (defn struct-set-fields (sd:(raw StructDef) fnames:ptr ftypes:ptr nfields:i32):void
-  (let ((fields-vec (ref (Vector &Field))) (vector-new-in &g-arena-alloc))
+  (let ((fields-vec (ref (Vector (ref Field)))) (vector-new-in &g-arena-alloc))
     (dotimes (i:i32 nfields)
       (let (rec:&Field (new Field))
-        (set! (rec 'name) (aref (as &Symbol fnames) i))
-        (set! (rec 'type) (as raw:Type (aref (as &ptr ftypes) i)))
+        (set! (rec 'name) (aref (as ref:Symbol fnames) i))
+        (set! (rec 'type) (as raw:Type (aref (as ref:ptr ftypes) i)))
         (conj fields-vec rec)))
     (set! (sd 'fields) fields-vec)
     (set! (sd 'num-fields) nfields)
@@ -254,18 +254,18 @@
 (defn struct-set-field-aligns (sd:(raw StructDef) faligns:ptr nfields:i32):void
   (when (= faligns null) (return))
   (dotimes (i:i32 nfields)
-    (let (a:i32 (aref (as &i32 faligns) i))
+    (let (a:i32 (aref (as ref:i32 faligns) i))
       (when (!= a 0)
-        (set! ((field-at ((unsafe/cast &StructDef sd) 'fields) i) 'align-attr) a)))))
+        (set! ((field-at ((unsafe/cast ref:StructDef sd) 'fields) i) 'align-attr) a)))))
 
 ; Stage 16 BF-3: the same shape for `: width`. Signedness comes from the declared
 ; type rather than a separate flag, exactly as C reads it.
 (defn struct-set-field-bits (sd:(raw StructDef) fbits:ptr nfields:i32):void
   (when (= fbits null) (return))
   (dotimes (i:i32 nfields)
-    (let (w:i32 (aref (as &i32 fbits) i))
+    (let (w:i32 (aref (as ref:i32 fbits) i))
       (when (!= w 0)
-        (let (f:&Field (field-at ((unsafe/cast &StructDef sd) 'fields) i))
+        (let (f:&Field (field-at ((unsafe/cast ref:StructDef sd) 'fields) i))
           (set! (f 'bit-width) w)
           (set! (f 'bf-signed) (if (!= (is-unsigned (f 'type)) 0) 0 1)))))))
 
@@ -298,12 +298,12 @@
 ; The `name` slot is left null — a Type's params carry no names (`param-names`
 ; was dead storage). Shared by `type-set-params` and the BoxedFn signature-token
 ; builder (union-registry.nuc), which must walk the same element shape.
-(defn make-param-vec (ptypes:ptr np:i32) (ref (Vector &Field))
-  (let ((pv (ref (Vector &Field))) (vector-new-in &g-arena-alloc))
+(defn make-param-vec (ptypes:ptr np:i32) (ref (Vector (ref Field)))
+  (let ((pv (ref (Vector (ref Field)))) (vector-new-in &g-arena-alloc))
     (dotimes (i:i32 np)
       (let (rec:ref:Field (new Field))
         (set! (rec 'name) (symbol-none))
-        (set! (rec 'type) (as raw:Type (aref (as &ptr ptypes) i)))
+        (set! (rec 'type) (as raw:Type (aref (as ref:ptr ptypes) i)))
         (conj pv rec)))
     (return pv)))
 
@@ -322,7 +322,7 @@
 (defn type-set-param-names (t:(raw Type) pnames:ptr np:i32):void
   (when (= pnames null) (return))
   (dotimes (i:i32 np)
-    (set! ((field-at (t 'params) i) 'name) (aref (as &Symbol pnames) i))))
+    (set! ((field-at (t 'params) i) 'name) (aref (as ref:Symbol pnames) i))))
 
 ; Check if target is aarch64 (AAPCS64 ABI uses plain pointers for large structs,
 ; not byval attributes).
@@ -625,18 +625,18 @@
 ; re-derives the allocation.
 (defn struct-walk-size (sd:raw:StructDef):i32
   (let (a:i32 0 b:i32 0 c:i32 0 d:i32 0 e:i32 0 f:i32 0 g:i32 0 h:i32 0)
-    (struct-walk sd -1 (as &i32 &a) (as &i32 &b)
-                 (as &i32 &c) (as &i32 &d)
-                 (as &i32 &e) (as &i32 &f)
-                 (as &i32 &g) (as &i32 &h))
+    (struct-walk sd -1 (as ref:i32 &a) (as ref:i32 &b)
+                 (as ref:i32 &c) (as ref:i32 &d)
+                 (as ref:i32 &e) (as ref:i32 &f)
+                 (as ref:i32 &g) (as ref:i32 &h))
     (return g)))
 
 (defn struct-tail-pad (sd:raw:StructDef):i32
   (let (a:i32 0 b:i32 0 c:i32 0 d:i32 0 e:i32 0 f:i32 0 g:i32 0 h:i32 0)
-    (struct-walk sd -1 (as &i32 &a) (as &i32 &b)
-                 (as &i32 &c) (as &i32 &d)
-                 (as &i32 &e) (as &i32 &f)
-                 (as &i32 &g) (as &i32 &h))
+    (struct-walk sd -1 (as ref:i32 &a) (as ref:i32 &b)
+                 (as ref:i32 &c) (as ref:i32 &d)
+                 (as ref:i32 &e) (as ref:i32 &f)
+                 (as ref:i32 &g) (as ref:i32 &h))
     (return h)))
 
 ; Source field index → element index in the emitted LLVM type. They differ by
@@ -645,19 +645,19 @@
 (defn field-ir-index (sd:raw:StructDef i:i32):i32
   (when (= sd null) (return i))
   (let (a:i32 0 b:i32 0 c:i32 0 d:i32 0 e:i32 0 f:i32 0 g:i32 0 h:i32 0)
-    (struct-walk sd i (as &i32 &a) (as &i32 &b)
-                 (as &i32 &c) (as &i32 &d)
-                 (as &i32 &e) (as &i32 &f)
-                 (as &i32 &g) (as &i32 &h))
+    (struct-walk sd i (as ref:i32 &a) (as ref:i32 &b)
+                 (as ref:i32 &c) (as ref:i32 &d)
+                 (as ref:i32 &e) (as ref:i32 &f)
+                 (as ref:i32 &g) (as ref:i32 &h))
     (return a)))
 
 ; Absolute bit offset of field `i`'s value from the struct's first byte.
 (defn field-bit-offset (sd:raw:StructDef i:i32):i32
   (let (a:i32 0 b:i32 0 c:i32 0 d:i32 0 e:i32 0 f:i32 0 g:i32 0 h:i32 0)
-    (struct-walk sd i (as &i32 &a) (as &i32 &b)
-                 (as &i32 &c) (as &i32 &d)
-                 (as &i32 &e) (as &i32 &f)
-                 (as &i32 &g) (as &i32 &h))
+    (struct-walk sd i (as ref:i32 &a) (as ref:i32 &b)
+                 (as ref:i32 &c) (as ref:i32 &d)
+                 (as ref:i32 &e) (as ref:i32 &f)
+                 (as ref:i32 &g) (as ref:i32 &h))
     (return b)))
 
 ; The alignment an `alloca` holding `t` must state. Only ever RAISES what the
@@ -855,7 +855,7 @@
 ; `off1` carries the second member's own offset — 4 for `{i32,f32}` and
 ; `{float[2]}`, NOT the SysV second eightbyte.
 (defn abi-riscv-fp-classify (t:raw:Type info:&AbiInfo gpr:i32 fpr:i32):i32
-  (let (f:&RvFlat (as &RvFlat (arena-alloc (sizeof RvFlat))))
+  (let (f:&RvFlat (as ref:RvFlat (arena-alloc (sizeof RvFlat))))
     (set! (f 'cnt) 0)
     (rv-flatten-type t 0 f)
     (let (n:i32 (f 'cnt))
@@ -904,7 +904,7 @@
 ; same struct is `ptr byval align 16` going in and `x86_fp80` coming out
 ; (measured against clang). Every other rule here is position-independent.
 (defn abi-classify-avail (t:raw:Type gpr:i32 fpr:i32 is-arg:i32):raw:AbiInfo
-  (let (info:&AbiInfo (as &AbiInfo (arena-alloc (sizeof AbiInfo))))
+  (let (info:&AbiInfo (as ref:AbiInfo (arena-alloc (sizeof AbiInfo))))
     (set! (info 'kind) ABI-DIRECT)
     (set! (info 'reg0) "")
     (set! (info 'reg1) "")
@@ -1186,8 +1186,8 @@
 ; eightbyte(s) and returns the reg(s).
 (defn emit-struct-ret (v:raw:Val):void
   (let (vv:raw:Val v
-        info:&AbiInfo (as &AbiInfo g-fn-ret-abi)
-        k:i32 ((as &AbiInfo g-fn-ret-abi) 'kind))
+        info:&AbiInfo (as ref:AbiInfo g-fn-ret-abi)
+        k:i32 ((as ref:AbiInfo g-fn-ret-abi) 'kind))
     ; Stage 17 C6: a string literal returned into a `StrView` slot. Neither return
     ; path (explicit or implicit) runs the coercer before reaching here, and the
     ; chameleon's `val` is still the bare data pointer, so the aggregate below
@@ -1430,7 +1430,7 @@
     ; pass the chameleon through unmaterialized (a bare ptr typed as %StrView).
     (when (and (!= (vv 'is-lit) 0) (!= (type-is-strview src) 0))
       (when (!= (strview-borrow-target target) 0)
-        (let (rv:&Val (as &Val (alloc-val target (vv 'val))))
+        (let (rv:&Val (as ref:Val (alloc-val target (vv 'val))))
           (set! (rv 'taint) (vv 'taint))
           (set! (rv 'taint-frame) (vv 'taint-frame))
           (return (as ptr rv))))
@@ -1534,7 +1534,7 @@
     ; ptr is expected, and a ptr usable where a CStr slot is declared.
     (when (or (and (= sk TY-CSTR) (= dk TY-PTR))
               (and (= sk TY-PTR) (= dk TY-CSTR)))
-      (let (rv:&Val (as &Val (alloc-val target (vv 'val))))
+      (let (rv:&Val (as ref:Val (alloc-val target (vv 'val))))
         (set! (rv 'taint) (vv 'taint))
         ; Stage 13 L1: carry the frame-region flag through CStr<->ptr coercion.
         (set! (rv 'taint-frame) (vv 'taint-frame))
@@ -1647,7 +1647,7 @@
     (when (or (= tgt null) (= (type-is-strview tgt) 0)) (set! tgt (strview-type)))
     (when (and (!= tgt null) (!= (v 'is-lit) 0) (!= (type-is-strview (v 'type)) 0))
       (let (mv:?&Val (coerce-int-val (as raw:Val v) (as raw:Type tgt) line))
-        (when (!= mv null) (return (as &Val mv))))))
+        (when (!= mv null) (return (as ref:Val mv))))))
   (collapse-strlit-cstr (as ptr v))
   (return v))
 

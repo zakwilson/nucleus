@@ -15,7 +15,7 @@
 ; print-sv — print a StrView's bytes (copied to a NUL-terminated temp).
 (defn print-sv ((sv (ref StrView))):void
   (with (n:usize (sv 'len)
-         buf:ptr:ui8 (as ptr:ui8 (malloc (as i64 (+ n 1)))))
+         buf:&ui8 (as ptr:ui8 (malloc (as i64 (+ n 1)))))
     (memcpy (as ptr buf) (as ptr (sv 'data)) (as i64 n))
     (set! (aref buf (as i64 n)) 0)
     (printf "%s" (as CStr (as ptr buf)))))
@@ -24,7 +24,7 @@
 (defstruct SegLenSum dummy:i32)
 (extend SegLenSum (FoldFn i64 StrView))
 (defn fold ((self (ref SegLenSum)) (acc i64) (x StrView)) i64
-  (return (+ acc (as i64 ((addr-of x) 'len)))))
+  (return (+ acc (as i64 (&x 'len)))))
 
 ; FoldFn: count segments (ignores the element).
 (defstruct CountSeg dummy:i32)
@@ -37,7 +37,7 @@
   (let (sv:StrView (strview-from-cstr "a,b,c")
          sep:StrView (strview-from-cstr ",")
          it:SplitIter (strview-split sv sep))
-    (doseq-iter (seg (addr-of it))
+    (doseq-iter (seg &it)
       (print-sv seg)
       (printf "\n")))
 
@@ -49,13 +49,13 @@
          (ls (ref SegLenSum)) (alloca SegLenSum)
          it1:SplitIter (strview-split sv sep)
          it2:SplitIter (strview-split sv sep))
-    (printf "split-count=%lld\n" (reduce cs 0 (addr-of it1)))
-    (printf "split-len-total=%lld\n" (reduce ls 0 (addr-of it2))))
+    (printf "split-count=%lld\n" (reduce cs 0 &it1))
+    (printf "split-len-total=%lld\n" (reduce ls 0 &it2)))
 
   ; ---- 3. doseq-iter over LineIter: 3 lines ---------------------------------
   (let (sv:StrView (strview-from-cstr "line1\nline2\nline3")
          it:LineIter (strview-lines sv))
-    (doseq-iter (ln (addr-of it))
+    (doseq-iter (ln &it)
                  (print-sv ln)
                  (printf "\n")))
 
@@ -64,12 +64,12 @@
          sep:StrView (strview-from-cstr ",")
          iter-acc:i32 0
          it:SplitIter (strview-split sv sep))
-    (doseq-iter (seg (addr-of it))
+    (doseq-iter (seg &it)
       (when (> (seg 'len) 0)
             (set! iter-acc (+ iter-acc (as i32 (aref (seg 'data) 0))))))
     (with (flag-acc:i32 0
            it2:SplitIter (strview-split sv sep))
-      (doseq-iter (s (addr-of it2))
+      (doseq-iter (s &it2)
         (when (> (s 'len) 0)
               (set! flag-acc (+ flag-acc (as i32 (aref (s 'data) 0))))))
       (printf "parity iter==flag: %d (%d)\n"

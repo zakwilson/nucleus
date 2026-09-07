@@ -57,7 +57,7 @@
 ;    The test stores pointer-cast i64 values (1..5) and recovers them as i64.
 ; ---------------------------------------------------------------------------
 (defstruct I64ArrayIter
-  data:ptr:i64
+  data:&i64
   pos:usize
   len:usize)
 

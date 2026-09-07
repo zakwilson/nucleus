@@ -15,10 +15,10 @@ typedef struct AllocHandle {
     void* data;
 } AllocHandle;
 
-void* alloc_handle_alloc(void* h, size_t size, size_t align) asm("alloc-handle-alloc");
-void* alloc_handle_realloc(void* h, void* p, size_t old, size_t new_, size_t align) asm("alloc-handle-realloc");
-void alloc_handle_free(void* h, void* p, size_t size, size_t align) asm("alloc-handle-free");
+void* alloc_handle_alloc(struct AllocHandle* h, size_t size, size_t align) asm("alloc-handle-alloc");
+void* alloc_handle_realloc(struct AllocHandle* h, void* p, size_t old, size_t new_, size_t align) asm("alloc-handle-realloc");
+void alloc_handle_free(struct AllocHandle* h, void* p, size_t size, size_t align) asm("alloc-handle-free");
 extern struct AllocHandle g_default_alloc asm("g-default-alloc");
-void* default_allocator(void) asm("default-allocator");
-void* libc_allocator(void* h) asm("libc-allocator");
-void* arena_allocator(void* h) asm("arena-allocator");
+struct AllocHandle* default_allocator(void) asm("default-allocator");
+struct AllocHandle* libc_allocator(struct AllocHandle* h) asm("libc-allocator");
+struct AllocHandle* arena_allocator(struct AllocHandle* h) asm("arena-allocator");

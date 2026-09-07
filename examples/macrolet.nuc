@@ -48,7 +48,7 @@
 
 (defn main ():i32
   (let (p:Point (Point 3 4))
-    (printf "point-sum  %d\n" (point-sum (addr-of p))))
+    (printf "point-sum  %d\n" (point-sum &p)))
   (report 7)
   (printf "shadowing  %d\n" (shadowing))
   (printf "variadic   %d\n" (variadic))

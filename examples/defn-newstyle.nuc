@@ -3,7 +3,7 @@
 ; this alongside the legacy `(defn name:ret (params) body…)`; both parse to an
 ; identical function (proven byte-identical at the IR level). This program is
 ; entirely new-style and exercises: a keyword ret (:i32/:i64), :void, a
-; colon-chain ret (:ptr:Box), a space-separated list-form ret ((Maybe i32)), a
+; colon-chain ret (:&Box), a space-separated list-form ret ((Maybe i32)), a
 ; new-style defprotocol method sig, new-style overloaded conformer defns, and a
 ; bounded-generic template whose return is a type variable (:T) stamped per call.
 (import-use "stdio.h")
@@ -17,10 +17,10 @@
 ; void ret in the new position
 (defn banner (n:i32):void (printf "banner=%d\n" n))
 
-; colon-chain keyword ret :ptr:Box
+; colon-chain keyword ret :&Box
 (defstruct Box v:i32)
 (defvar the-box:Box)
-(defn box-ptr (x:i32):ptr:Box (set! ((addr-of the-box) 'v) x) (addr-of the-box))
+(defn box-ptr (x:i32):&Box (set! (&the-box 'v) x) &the-box)
 
 ; space-separated list-form ret (Maybe i32)
 (defn maybe-pos (x:i32) (Maybe i32)

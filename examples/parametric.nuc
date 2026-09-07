@@ -64,22 +64,22 @@
   ; 2 + 4. Type application in type position; explicit construction.
   ;   ((Pair i32 i32) 3 4) stamps Pair.i32.i32 and constructs a value.
   (let ((p (ref (Pair i32 i32))) (alloca (Pair i32 i32)))
-    (set! (deref p) @((Pair i32 i32) 3 4))
+    (set! @p @((Pair i32 i32) 3 4))
     (printf "pair fst=%d snd=%d\n" (pair-first p) (pair-second p)))
 
   ; Pair with different element types.
   (let ((q (ref (Pair i32 f64))) (alloca (Pair i32 f64)))
-    (set! (deref q) @((Pair i32 f64) 7 2.5))
+    (set! @q @((Pair i32 f64) 7 2.5))
     (printf "pair fst=%d snd=%g\n" (pair-first q) (pair-second q)))
 
   ; 1b + 6. Box with usize length field.
   (let ((b (ref (Box i32))) (alloca (Box i32)))
-    (set! (deref b) @((Box i32) 42 1))
+    (set! @b @((Box i32) 42 1))
     (printf "box val=%d len=%llu\n" (box-val b) (as ui64 (box-len b))))
 
   ; 5b. Parametric protocol: get-elem dispatches to Box T's conforming method.
   (let ((b2 (ref (Box i32))) (alloca (Box i32)))
-    (set! (deref b2) @((Box i32) 99 1))
+    (set! @b2 @((Box i32) 99 1))
     (show-box b2))
 
   (return 0))

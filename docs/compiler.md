@@ -489,7 +489,7 @@ A global whose type has no faithful C spelling is **omitted with a comment** rat
 /* m-skip: type has no C spelling here; not exported */
 ```
 
-This covers `(array T N)`, union-template instances like `(Maybe i32)`, closure and type-erased box types. The reason it is an omission rather than a best effort is that the fallback spelling would be `void*` — pointer-sized, which is right for a pointer and silently wrong for anything else, and a declaration the C compiler trusts and gets wrong is worse than one that is missing. Pointer-typed globals *are* exported under all three spellings (`ptr:T`, `raw:T`, `ref:T`); the latter two currently widen to `void*`, as they already do in function signatures.
+This covers `(array T N)`, union-template instances like `(Maybe i32)`, closure and type-erased box types. The reason it is an omission rather than a best effort is that the fallback spelling would be `void*` — pointer-sized, which is right for a pointer and silently wrong for anything else, and a declaration the C compiler trusts and gets wrong is worse than one that is missing. Pointer-typed globals *are* exported under all three spellings (`ptr:T`, `raw:T`, `ref:T`); `ptr:T` and `ref:T` (and so `&T`) spell the element out, while `raw:T` currently widens to `void*`, as it already does in function signatures.
 
 ## Hyphenated names in a C header
 
@@ -552,7 +552,7 @@ own identifier and its own label:
 ```
 
 ```c
-int32_t scale_pPt_i32(void* p, int32_t k) asm("scale.pPt.i32");
+int32_t scale_pPt_i32(struct Pt* p, int32_t k) asm("scale.pPt.i32");
 int32_t scale_i32_i32(int32_t a, int32_t k) asm("scale.i32.i32");
 bool eq_Pt_Pt(struct Pt a, struct Pt b) asm("eq.Pt.Pt");
 int32_t solo(int32_t n);

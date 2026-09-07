@@ -139,8 +139,8 @@
 ; Returns the shared default handle. Stable for the process lifetime; callers
 ; store the (ref AllocHandle) in the collections they build. `ref:AllocHandle`
 ; is the colon-chain spelling of `(ref AllocHandle)`.
-(defn default-allocator ():ref:AllocHandle
-  (return (addr-of g-default-alloc)))
+(defn default-allocator ():&AllocHandle
+  (return &g-default-alloc))
 
 ; ---------------------------------------------------------------------------
 ; 5. Convenience: initialise a caller-owned AllocHandle slot for a given kind.
@@ -150,14 +150,14 @@
 ; ---------------------------------------------------------------------------
 
 ; Initialise a caller-owned slot as a libc handle and return it.
-(defn libc-allocator ((h (ref AllocHandle))):ref:AllocHandle
+(defn libc-allocator ((h (ref AllocHandle))):&AllocHandle
   (set! (h 'kind) ALLOC-LIBC)
   (set! (h 'data) null)
   (return h))
 
 ; Initialise a caller-owned slot as the arena handle and return it. The arena's
 ; state lives in lib/arena.nuc's module globals, so `data` stays null.
-(defn arena-allocator ((h (ref AllocHandle))):ref:AllocHandle
+(defn arena-allocator ((h (ref AllocHandle))):&AllocHandle
   (set! (h 'kind) ALLOC-ARENA)
   (set! (h 'data) null)
   (return h))

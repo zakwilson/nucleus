@@ -16,7 +16,7 @@
 
 (defstruct Rec kind:i32 x:i32)
 
-(defn classify (m:?ptr:Rec):i32
+(defn classify (m:?&Rec):i32
   ; 3-arg variadic and: each later clause derefs m under the prior non-null.
   (cond (and (!= m null) (= (m 'kind) 1) (> (m 'x) 0))
           (return 100)
@@ -26,7 +26,7 @@
           (return 0)))
 
 (defn main ():i32
-  (with (r:ptr:Rec (as ptr:Rec (malloc (as i64 (sizeof Rec)))))
+  (with (r:&Rec (as ptr:Rec (malloc (as i64 (sizeof Rec)))))
     (set! (r 'kind) 1)
     (set! (r 'x) 42)
     (printf "kind1-big = %d\n" (classify (some (as ref:Rec r))))

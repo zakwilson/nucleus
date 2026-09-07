@@ -6,22 +6,22 @@
 (import-use "string.h")
 
 (defn fall-through ():void
-  (with (p:ptr:i32 (malloc 16))
-    (set! (deref p) 7)
-    (printf "fall-through: %d\n" (deref p))))
+  (with (p:&i32 (malloc 16))
+    (set! @p 7)
+    (printf "fall-through: %d\n" @p)))
 
 (defn early-return (flag:i32):i32
-  (with (p:ptr:i32 (malloc 16))
-    (set! (deref p) 42)
-    (cond (= flag 1) (return (deref p)))
-    (return (+ (deref p) 1))))
+  (with (p:&i32 (malloc 16))
+    (set! @p 42)
+    (cond (= flag 1) (return @p))
+    (return (+ @p 1))))
 
 (defn nested ():void
-  (with (a:ptr:i32 (malloc 16))
-    (set! (deref a) 10)
-    (with (b:ptr:i32 (calloc 4 4))
-      (set! (deref b) 20)
-      (printf "nested: %d %d\n" (deref a) (deref b)))))
+  (with (a:&i32 (malloc 16))
+    (set! @a 10)
+    (with (b:&i32 (calloc 4 4))
+      (set! @b 20)
+      (printf "nested: %d %d\n" @a @b))))
 
 (defn strdup-bind ():void
   (with (s:ptr (strdup "world"))
@@ -34,9 +34,9 @@
 
 (defn mixed ():void
   (with (n:i32 99
-         p:ptr:i32 (malloc 16))
-    (set! (deref p) n)
-    (printf "mixed: %d\n" (deref p))))
+         p:&i32 (malloc 16))
+    (set! @p n)
+    (printf "mixed: %d\n" @p)))
 
 (defn main ():int
   (fall-through)

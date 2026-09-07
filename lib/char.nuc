@@ -116,7 +116,7 @@
     (set! (r 'ch) \nul)
     (set! (r 'nbytes) 1)
     (set! (r 'ok) 0)
-    (return (deref r))))
+    (return @r)))
 
 (defn char-decode-utf8 ((p (ptr ui8)) (len usize)):DecodeResult
   (when (= len 0) (return (decode-err)))
@@ -129,7 +129,7 @@
         (set! (r 'ch) (as Char b0))
         (set! (r 'nbytes) 1)
         (set! (r 'ok) 1)
-        (return (deref r))))
+        (return @r)))
 
     ; --- 2-byte: 110xxxxx 10xxxxxx ---
     (when (= (bit-and b0 224) 192)
@@ -144,7 +144,7 @@
             (set! (r 'ch) (as Char cp))
             (set! (r 'nbytes) 2)
             (set! (r 'ok) 1)
-            (return (deref r))))))
+            (return @r)))))
 
     ; --- 3-byte: 1110xxxx 10xxxxxx 10xxxxxx ---
     (when (= (bit-and b0 240) 224)
@@ -165,7 +165,7 @@
             (set! (r 'ch) (as Char cp))
             (set! (r 'nbytes) 3)
             (set! (r 'ok) 1)
-            (return (deref r))))))
+            (return @r)))))
 
     ; --- 4-byte: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx ---
     (when (= (bit-and b0 248) 240)
@@ -188,7 +188,7 @@
             (set! (r 'ch) (as Char cp))
             (set! (r 'nbytes) 4)
             (set! (r 'ok) 1)
-            (return (deref r))))))
+            (return @r)))))
 
     ; --- Invalid lead byte ---
     (return (decode-err))))

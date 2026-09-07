@@ -197,6 +197,16 @@ Remaining for follow-up 14.6 batches: `AbiInfo.kind` (explicitly SKIPPED, option
 
 ---
 
+## `&`/`@` adoption in `lib/` and `examples/` (2026-09-06)
+
+The sweep [ref-sigil.md](stage16-ergonomics/ref-sigil.md) §5 deferred, following the `src/` adoption in `a15f38e`: `(addr-of x)` → `&x`, `(deref p)` → `@p`, and `ref:`/`ptr:` → `&` at an **interior** colon-chain segment (`out-end:ptr:i64` → `out-end:&i64`, `?ptr:Val` → `?&Val`, `):ptr:Box` → `):&Box`). 105 files, output-identical, bootstrap converged. `examples/ptr.nuc`, `ref-sigil.nuc`, `colon-paren-types.nuc` and `errptr.nuc` are left in their canonical spellings — each exists to exercise one.
+
+  **Two spellings the sweep does not take — and `a15f38e` had taken both, so `src/` was swept back the next day (2,469 sites: 2,361 cast operands to `ref:T`, 101 type expressions to `(ref T)`, 7 binding pairs to the attached `name:&T`; `build/nucleusc.ll` byte-identical, so the two spellings only ever differed as text).** A `&` at a TOKEN boundary is the address-of reader macro, so a standalone `&T` in a type slot is an `(addr-of T)` cell — the cost §6 accepted knowingly. It compiles (`parse-type-from-node` and `node-is-ptr-wrapper` both read that head as `ref`), but `--emit-nuch` prints `defprotocol` and generic-template forms **verbatim**, so `(as ptr:T x)` → `(as &T x)` and `(p (ref T))` → `(p &T)` put the spelling into the committed `.nuch`. Measured across `lib/`: **50** `(addr-of T)` in type slots, on top of the 42 genuine value-position ones already exported. The interior-segment forms have no such node — the lexer rewrites `&` to `ref:` before the parser sees anything — which is what makes the line between the two halves of §6 the line this sweep draws.
+
+  **`--emit-cheader` rendered `(ref T)` as `void*`, and two goldens had it written into them.** `type-node-to-c` keys on the head symbol and named only `ptr`, so `ref` — its documented synonym since the Phase F flip — and `addr-of` fell through to the `void*` default. Adopting `ptr:T` → `&T` in `lib/` would therefore have degraded 11 public C headers (`char_encode_utf8(uint8_t*)` → `(void*)`), so the arm now names all three. That is a fix, not a side effect: 19 header files gain real element types (`hash_pi32(int32_t*)`, `strview_split(struct StrView*, struct StrView*)`, `dir_count(struct DirEntries*)`), three gain the `#include` the element type needs, and `w9-cheader-overload-distinct-symbols` / `w9-cheader-reserved-escaped` were asserting the imprecise spelling — exactly the "it will happily lock in a wrong spelling" failure the conventions file names two paragraphs above the renderer. `raw` still widens to `void*`, deliberately.
+
+---
+
 ## Stage 18 — the REPL introspection layer, restored (2026-09-03)
 
 Spec: [stage18-tooling/overview.md](stage18-tooling/overview.md) §1–§5. Triggered by a user typing `(type-of "foo")` at the prompt and getting *unknown: type-of — not defined anywhere in this compilation unit*.

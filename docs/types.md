@@ -278,7 +278,10 @@ There the reader has already written `(addr-of T)` before anyone knows the
 position, and a type slot reads that as `(ref T)` — which is why `(sizeof &Pt)`,
 `(link &Point)` and `(Vector &Point)` above are still types. The consequence to
 know is that `(addr-of T)` is therefore a legal, if strange, way to spell
-`(ref T)`.
+`(ref T)`. It is also the spelling `--emit-nuch` prints, since a protocol or a
+generic template is exported verbatim — so in a module you export a header from,
+prefer the attached forms (`p:&T`, `?&T`) or the plain `(ref T)` for a type a
+signature names, and keep the standalone `&T` for local code.
 
 Only a **typed** non-null destination adds obligations: a `raw` or `?T` value
 may not flow into a `(ptr T)`/`(ref T)` slot (binding, `set!`, field/element
