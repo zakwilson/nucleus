@@ -1817,3 +1817,233 @@ map=2
     (if (= (first-of a) null) b a)))
 (defn main ():i32 (return (pick 5 6)))
 " 6)))
+
+; ---------------------------------------------------------------------------
+; What a place is (dot-forms.md §5 steps 4-6)
+; ---------------------------------------------------------------------------
+;
+; `.` and `.&` are gone and `set!` takes a PLACE. `.` was `_get` verbatim, so
+; its sites became `get` (or `_get`, where a user override must be bypassed);
+; `.&` became an ARITY OVERLOAD on `addr-of` — 1-arg is a binding's address,
+; 2-arg is a field's, and the two cannot collide because a binding address takes
+; a bare symbol. `.set!`, `ptr-set!` and `aset!` became places under one `set!`.
+; Every retired spelling stays RESERVED, so the answer is the replacement rather
+; than "undefined function" and no user definition can shadow it into silence.
+
+; One refusal, pinned to the line that wrote it. The shell grepped stderr for
+; the message alone, which a note at some other location also satisfies.
+(defn check-place-refused (src:StrView line:i32 needle:StrView):!void
+  (let (p:String (try (test-write-file "t.nuc" src))
+        pv:StrView (string-as-view (addr-of p))
+        c:Compiled (try (compile-path pv)))
+    (try (check-error-at (addr-of c 'diags) pv line needle))
+    (drop (addr-of c))
+    (drop (addr-of p)))
+  (return (ok)))
+
+; The 2-arg `addr-of` covers every shape `.&` did: a plain field, a nested one,
+; an array field (which DECAYS to `ptr:elem` — a pointer-to-array is useless), a
+; union member, and a by-value struct receiver.
+(deftest s16-addr-of-2arg
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Inner a:i32)
+(defstruct Outer p:Inner cells:(array i32 3) n:i32)
+(defstruct Holder u:(union as-int:i64 as-f:f64))
+(defn by-val (o:Outer):i32 (return (deref (addr-of (addr-of o) 'n))))
+(defn main ():i32
+  (let (o:ptr:Outer (alloca Outer)
+        h:ptr:Holder (alloca Holder))
+    (set! (deref (addr-of o 'n)) 5)
+    (set! (deref (addr-of (addr-of o 'p) 'a)) 6)
+    (set! (aref (addr-of o 'cells) 1) 7)
+    (set! (deref (addr-of (addr-of h 'u) 'as-int)) 8)
+    (let (c:ptr:i32 (addr-of o 'cells)
+          n:i32 5 q:ptr:i32 (addr-of n))
+      (printf \"%d %d %d %lld %d %d %d\\n\"
+              (deref (addr-of o 'n)) (deref (addr-of (addr-of o 'p) 'a))
+              (aref c 1) (deref (addr-of (addr-of h 'u) 'as-int))
+              (by-val (deref o)) (deref q) (aref (addr-of o 'cells) 1))))
+  (return 0))
+")))
+    (try (check-eq (string-as-view (addr-of out)) "5 6 7 8 5 5 7\n"))
+    (drop (addr-of out))))
+
+; `node-type` must split on the same arity the emitter does. Without the mirror
+; the 2-arg form types as the BINDING's address (`ptr:ptr:Pt`), which only shows
+; up where the type is load-bearing — an argument position and an annotated
+; binding, not in the value itself.
+(deftest s16-addr-of-2arg-node-type
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Pt x:i32 y:i32)
+(defn takes (q:ptr:i32):i32 (return (deref q)))
+(defn main ():i32
+  (let (p:ptr:Pt (alloca Pt))
+    (set! (p 'x) 3)
+    (let (q:ptr:i32 (addr-of p 'x))
+      (printf \"%d %d\\n\" (takes (addr-of p 'x)) (deref q))))
+  (return 0))
+")))
+    (try (check-eq (string-as-view (addr-of out)) "3 3\n"))
+    (drop (addr-of out))))
+
+; Both retired spellings answer with the replacement, both stay reserved, and
+; `addr-of`'s own diagnostics name the form the user wrote rather than `.&`.
+(deftest s16-dot-forms-retired
+  (try (check-place-refused "(defstruct Pt x:i32)
+(defn f (p:&Pt):i32 (return (. p 'x)))
+" 2 "'.' was retired in Stage 16: use 'get' -- (get p 'field), or head position (p 'field)"))
+  (try (check-place-refused "(defstruct Pt x:i32)
+(defn f (p:&Pt):ptr:i32 (return (.& p 'x)))
+" 2 "'.&' was retired in Stage 16: use the 2-argument 'addr-of' -- (addr-of p 'field)"))
+  (try (check-place-refused "(defn . (a:i32):i32 (return a))
+" 1 "'.' already names a special form"))
+  (try (check-place-refused "(defstruct Pt x:i32)
+(defn f (p:&Pt):ptr:i32 (return (addr-of p 'z)))
+" 2 "addr-of: no field 'z' on struct 'Pt'"))
+  (try (check-place-refused "(defstruct Pt x:i32)
+(defn f (p:&Pt):ptr:i32 (return (addr-of p 'x 1)))
+" 2 "addr-of expects 1 or 2 args")))
+
+; One program varying one line: a member place in each of its three spellings,
+; a nested member, a deref, a pointer element and an array-field element.
+;
+; The identical-IR half is what the retirement actually claimed — every place
+; delegates to the writer it replaced — and the shell asserted only that the
+; program printed the right numbers, which four different code paths could also
+; do. `compile-source` writes every fixture to the same `t.nuc`, so two modules
+; that should agree agree byte for byte.
+(defn place-ir (write:StrView):!String
+  (let (src:String (str "(defstruct Pt x:i32 y:i32)
+(defn f (p:ptr:Pt):i32 " write " (return (_get p 'y)))
+")
+        ir:String (try (source-ir (string-as-view (addr-of src)))))
+    (drop (addr-of src))
+    (return (ok ir))))
+
+(deftest s16-set-places
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Inner a:i32)
+(defstruct Pt x:i32 y:i32 in:Inner cells:(array i32 3))
+(defn main ():i32
+  (let (p:ptr:Pt (alloca Pt)
+        buf:ptr:i32 (alloca i32 4)
+        n:i32 0)
+    (set! n 7)
+    (set! (p 'x) 1)
+    (set! (get p 'y) 2)
+    (set! (_get p 'y) 3)
+    (set! ((addr-of p 'in) 'a) 4)
+    (set! (deref (addr-of p 'x)) 5)
+    (set! (aref buf 2) 6)
+    (set! (aref (addr-of p 'cells) 1) 9)
+    (printf \"%d %d %d %d %d %d\\n\"
+            n (p 'x) (p 'y) ((addr-of p 'in) 'a) (aref buf 2)
+            (aref (addr-of p 'cells) 1)))
+  (return 0))
+")))
+    (try (check-eq (string-as-view (addr-of out)) "7 5 3 4 6 9\n"))
+    (drop (addr-of out)))
+  (let (a:String (try (place-ir "(set! (p 'y) 2)"))
+        b:String (try (place-ir "(set! (get p 'y) 2)"))
+        c:String (try (place-ir "(set! (_get p 'y) 2)"))
+        d:String (try (place-ir "(set! (deref (addr-of p 'y)) 2)")))
+    (try (check-golden (string-as-view (addr-of b)) (string-as-view (addr-of a))))
+    (try (check-golden (string-as-view (addr-of c)) (string-as-view (addr-of a))))
+    (try (check-golden (string-as-view (addr-of d)) (string-as-view (addr-of a))))
+    (drop (addr-of d))
+    (drop (addr-of c))
+    (drop (addr-of b))
+    (drop (addr-of a))))
+
+; The three retired writers answer with the replacement and stay reserved; a
+; place that is not assignable is refused by name; and the delegated writers'
+; own diagnostics say `set!`, the only spelling left. `()` reads as a null node,
+; so the place judgement has to precede any dereference of it.
+(deftest s16-set-writers-retired
+  (try (check-place-refused "(defstruct Pt x:i32)
+(defn f (p:&Pt):i32 (.set! p 'x 1) (return 0))
+" 2 "'.set!' was retired in Stage 16: set! takes a place -- (set! (p 'field) v)"))
+  (try (check-place-refused "(defn f (p:ptr:i32):i32 (ptr-set! p 1) (return 0))
+" 1 "'ptr-set!' was retired in Stage 16: set! takes a place -- (set! (deref p) v)"))
+  (try (check-place-refused "(defn f (a:ptr:i32):i32 (aset! a 0 1) (return 0))
+" 1 "'aset!' was retired in Stage 16: set! takes a place -- (set! (aref a i) v)"))
+  (try (check-place-refused "(defn aset! (a:i32):i32 (return a))
+" 1 "'aset!' already names a special form"))
+  (try (check-place-refused "(defn f ():i32 (set! (+ 1 2) 3) (return 0))
+" 1 "set!: not an assignable place -- write a name, (deref p), (aref a i), or a member access (r 'field)"))
+  (try (check-place-refused "(defn f ():i32 (set! () 3) (return 0))
+" 1 "set!: not an assignable place"))
+  (try (check-place-refused "(defstruct Pt x:i32)
+(defn f (p:&Pt):i32 (set! (p 'zzz) 1) (return 0))
+" 2 "set!: no field 'zzz' on struct 'Pt'")))
+
+; A closure body's member place. The receiver sits in head position, which
+; `fn-capture-walk` used to skip — `.set!` walked its receiver explicitly.
+(deftest s16-set-place-in-closure
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defn main ():i32
+  (let (total:i32 0)
+    (let (f (vfn (d:i32):i32 (set! total (+ total d)) (return total)))
+      (printf \"%d\\n\" (+ (invoke f 2) (invoke f 3)))))
+  (return 0))
+")))
+    (try (check-eq (string-as-view (addr-of out)) "7\n"))
+    (drop (addr-of out))))
+
+; A member place whose key is COMPUTED dispatches to a user `set` method on
+; (recv, key, value), reusing the multimethod machinery rather than a second
+; extension protocol — so `Vector` and `HashMap` are writable through the place
+; form, in both spellings.
+(deftest s16-set-generic-collections
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use vector)
+(import-use hashmap)
+(defn main ():i32
+  (with ((v (ref (Vector i32))) (alloca (Vector i32)))
+    (vector-init v) (conj v 10) (conj v 20) (conj v 30)
+    (let (i:usize (as usize 1))
+      (set! (v i) 99)
+      (printf \"%d %d %d\\n\" (v (as usize 0)) (v i) (v (as usize 2)))))
+  (with ((m (ref (HashMap CStr i32))) (alloca (HashMap CStr i32)))
+    (hashmap-init m)
+    (let (k:CStr \"a\")
+      (set! (m k) 1)
+      (set! (get m k) 7)
+      (match (get m k) ((some x) (printf \"%d %lld\\n\" x (count m)))
+                       (none (printf \"none\\n\")))))
+  (return 0))
+")))
+    (try (check-eq (string-as-view (addr-of out)) "10 99 30\n7 1\n"))
+    (drop (addr-of out))))
+
+; A LITERAL selector is always the field, even on a receiver that HAS a `set`
+; method — otherwise a collection could no longer write its own fields, which is
+; the write side of the `_get` recursion trap. The method's return type is the
+; place's type, which is the `node-type` mirror.
+(deftest s16-set-generic-literal-is-the-field
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Box n:i32 hits:i32)
+(defn set ((self (ref Box)) (k i32) (x i32)):i32
+  (set! (self 'hits) (+ (_get self 'hits) 1))
+  (set! (self 'n) (+ (_get self 'n) x))
+  (return (_get self 'n)))
+(defn main ():i32
+  (let (b:ptr:Box (alloca Box) k:i32 0)
+    (set! (b 'n) 1) (set! (b 'hits) 0)
+    (let (r:i32 (set! (b k) 10))
+      (printf \"%d %d %d\\n\" r (_get b 'n) (_get b 'hits))))
+  (return 0))
+")))
+    (try (check-eq (string-as-view (addr-of out)) "11 11 1\n"))
+    (drop (addr-of out))))
+
+; A computed key on a READABLE collection with no `set` method says so. The
+; field path would answer with a missing-quote note about a non-field.
+(deftest s16-set-generic-missing-method
+  (try (check-place-refused "(defstruct Ro n:i32)
+(defn invoke ((self (ref Ro)) i:i32):i32 (return (+ (_get self 'n) i)))
+(defn main ():i32
+  (let (r:ref:Ro (alloca Ro) k:i32 0)
+    (set! (r k) 5))
+  (return 0))
+" 5 "ptr:Ro has no `set` method -- a computed key writes through the `set` generic")))
