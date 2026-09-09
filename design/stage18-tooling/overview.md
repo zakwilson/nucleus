@@ -1697,6 +1697,77 @@ the deletion will use, and count before believing the port is complete. Four of
 the seven had their `spawn` line ~3,600 lines from the body, so body and `spawn`
 went as separate ranges.
 
+#### TF-6 category (c), what a C header import loses (2026-09-09)
+
+**6 shell functions → 21 tests**, 797 body lines retired (856 lines of the file,
+including the family's own section banner): `run_l1_member_opaque` (3),
+`run_l2_layout_matrix` (4), `run_l2_libc_layouts` (2), `run_l3_decay` (2),
+`run_l4_returns_twice` (2) and `run_l5_typedef_names` (8), into a sixth suite
+module `tests/suite-cimport.nuc`. `tests/run-tests.sh` is 8,492 → 7,637 lines
+and 136 → 130 functions. `make test` is 387 shell + 579 native = 966.
+
+The whole L1-L5 family, which is why it is one batch: it is contiguous in the
+file, it has a single shared claim — importing a C header must either produce
+the layout C produces or fail SAFELY — and it is the largest body left. The
+three biggest remaining functions were all in it.
+
+**A dead verdict, found by counting.** `run_l2_libc_layouts` names three
+verdicts but emits only two: `l2-libc-opaque` appears in the two early-return
+skip paths and nowhere else, so on any machine with a working `cc` it is never
+reported. There was nothing to port — the assertion it once named is gone — so
+the batch retires 21 live verdicts and adds 21. Worth stating because the static
+count (32 `echo "PASS` lines across the family) and the live count disagree, and
+only the live one reconciles against 966.
+
+**Seven assertions got stronger, none weaker.** Every located diagnostic the
+shell matched with a path wildcard is now exact text including the resolved
+header path: `[^ ]*l1-members\.h:27` became
+`declared at ./tests/fixtures/l1-members.h:27; only pointers to it are valid`,
+and the same for the `l2-arrays.h` rows and for `l5-unrepresentable-message`'s
+own generated header. Two L5 refusals moved from a stderr grep to
+`check-error-at`, which pins the file and line as *fields* — the duplicate
+definition at line 3, the `deftype` collision at line 2. `l5-repl-rollback`
+asserted the session survived with `qgrep -F '7'`, which any line containing a 7
+satisfies; it is now the exact line `nuc>   7`, and its positive control — which
+previously only checked that no "unknown type:" appeared — gained the matching
+`nuc>   9`. And three units ran their `cc` cross-check inside
+`if command -v cc`, silently passing with no oracle at all when it was absent;
+they now open with `(try (require-cc))`, so an absent `cc` is a visible skip
+rather than a green tick over an assertion that never ran.
+
+**Two capabilities.** `check-ir-parses` runs `llvm-as`, because `--emit-llvm`
+never reads back what it writes and exit 0 says only that the compiler produced
+text. `opt-o2` runs `opt -O2 -S`, the only way to ask whether `returns_twice`
+changes what the optimizer does; the L4 unit keeps the shell's negative control,
+which is what makes it an assertion — "`-O2` did not tail-call `_setjmp`" is
+also true of an `-O2` that tail-calls nothing, so the same module with the
+attribute stripped must tail-call it. That control doubles as the proof that the
+stripping helper works.
+
+**One limit raised, not absorbed.** The reader caps a string literal at 4095
+decoded bytes (a fixed buffer in `src/reader.nuc`), and the libc survey's
+Nucleus program is 4490 — the error is `string literal too long`. It is split
+into two literals at the declarations/`main` boundary with a comment saying why.
+Moving it to `tests/fixtures/*.nuc` would have been worse: a new `.nuc` there is
+an IR-snapshot input and would force a re-take. Raising the cap is a change to
+the reader and belongs to review, not to a test port; recorded in
+`context/build.md`.
+
+**Verified by breaking it**, three ways, each reverted by editing the source
+back. Changing one opaque row's declared line from 37 to 38 printed the whole
+diagnostic record against the expectation. Adding 1 to one field offset in the
+libc program reported `line 2 differs / want "timespec … tv_nsec=8" / got
+"… tv_nsec=9"` — which is also the proof the 13-line oracle is comparing live
+glibc data rather than two empty outputs. Feeding `check-ir-parses` a module
+with `ret i32 zzz` reported `llvm-as: …: error: expected value token`.
+
+The family's section banner went with it, and its one durable point moved into
+the module header: the IR sweep over the tree's own modules is structurally
+blind here, since the whole tree imports six C headers exposing 14 of the 65
+struct types the survey measured, so a change that broke `signal.h` or
+`netinet/in.h` outright would sweep clean. One surviving comment that named
+`run_l2_layout_matrix` for its methodology was reworded to name the module.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that
