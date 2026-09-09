@@ -1,0 +1,562 @@
+; Stage 18 TF-6 category (c) — a mangled public name, on every export surface.
+;
+; Design: design/stage18-tooling/overview.md §T6.6; Stage 12 N6 in
+; design/stage12/namespaces.md, Stage 14 SM-3 in
+; design/stage14/symbol-mangling.md, and W9 item 23 in
+; design/stage15-stress-test/progress.md.
+;
+; One claim in three spellings. A public name the compiler mangles — by
+; namespace (`geom/area` → `geom__area`), by `?`/`!` (`full?` → `full_QMARK`),
+; or by which namespace OWNS it (`w23b/describe` stays `@w23b__describe` however
+; much else the unit contains) — must come out as the same symbol on all three
+; surfaces: the object's symbol table, the `.nuch` an importer re-resolves
+; through, and the C header. Reading a surface is never the test. A header that
+; parses can still name a symbol nothing defines, which is exactly what W9-23
+; was: `.nuch` and header both declared `w23b__describe` while the object
+; emitted `@w23b__describe.i64`, and every consumer failed to link. So each unit
+; here compiles a separate consumer, links it against the real object and reads
+; what it prints.
+
+; ---------------------------------------------------------------------------
+; The three surfaces of one library
+; ---------------------------------------------------------------------------
+
+; All three emissions of one library, plus the two artifacts a consumer needs on
+; disk: the object to link against and the `.nuch` to import. `emit-for-file`
+; fails loudly — the shell wrote `2>/dev/null || true` and then grepped a file
+; that a failed emit had left empty, which reports a missing symbol rather than
+; the compiler error that caused it.
+(defstruct Exports ll:String nuch:String h:String llpath:String nuchpath:String)
+
+(extend Exports Drop)
+(defn drop ((self (ptr Exports))):void
+  (drop (addr-of self 'll))
+  (drop (addr-of self 'nuch))
+  (drop (addr-of self 'h))
+  (drop (addr-of self 'llpath))
+  (drop (addr-of self 'nuchpath)))
+
+(defn exports-ll ((e (ref Exports))):StrView
+  (return (string-as-view (addr-of e 'll))))
+(defn exports-nuch ((e (ref Exports))):StrView
+  (return (string-as-view (addr-of e 'nuch))))
+(defn exports-h ((e (ref Exports))):StrView
+  (return (string-as-view (addr-of e 'h))))
+(defn exports-ll-path ((e (ref Exports))):StrView
+  (return (string-as-view (addr-of e 'llpath))))
+(defn exports-nuch-path ((e (ref Exports))):StrView
+  (return (string-as-view (addr-of e 'nuchpath))))
+
+; `stem` names the artifacts on disk, and that name is load-bearing wherever a
+; consumer imports the `.nuch` with a bare `(import "path")`: the library binds
+; under the FILE STEM, not under the `(ns …)` it declares.
+(defn export-surfaces (stem:StrView lib:StrView):!Exports
+  (let (dir:StrView (try (test-scratch))
+        lln:String (str stem ".ll")
+        nun:String (str stem ".nuch")
+        ll:String (try (emit-for-file "" "--emit-llvm" lib))
+        nuch:String (try (emit-for-file "" "--emit-nuch" lib))
+        h:String (try (emit-for-file "" "--emit-cheader" lib))
+        llp:String (try (write-into dir (string-as-view (addr-of lln))
+                                    (string-as-view (addr-of ll))))
+        nup:String (try (write-into dir (string-as-view (addr-of nun))
+                                    (string-as-view (addr-of nuch))))
+        e:&Exports (alloca Exports))
+    (set! (e 'll) ll)
+    (set! (e 'nuch) nuch)
+    (set! (e 'h) h)
+    (set! (e 'llpath) llp)
+    (set! (e 'nuchpath) nup)
+    (drop (addr-of nun))
+    (drop (addr-of lln))
+    (return (ok (deref e)))))
+
+; A separately compiled consumer: its IR, to ask which symbol the call resolved
+; to, and its object, to link against the library's.
+(defstruct Consumer ir:String llpath:String)
+
+(extend Consumer Drop)
+(defn drop ((self (ptr Consumer))):void
+  (drop (addr-of self 'ir))
+  (drop (addr-of self 'llpath)))
+
+(defn consumer-ir ((c (ref Consumer))):StrView
+  (return (string-as-view (addr-of c 'ir))))
+
+(defn consumer (stem:StrView src:StrView):!Consumer
+  (let (dir:StrView (try (test-scratch))
+        nn:String (str stem "-main.nuc")
+        ln:String (str stem "-main.ll")
+        p:String (try (test-write-file (string-as-view (addr-of nn)) src))
+        ir:String (try (emit-for-file "" "--emit-llvm" (string-as-view (addr-of p))))
+        lp:String (try (write-into dir (string-as-view (addr-of ln))
+                                   (string-as-view (addr-of ir))))
+        c:&Consumer (alloca Consumer))
+    (set! (c 'ir) ir)
+    (set! (c 'llpath) lp)
+    (drop (addr-of p))
+    (drop (addr-of ln))
+    (drop (addr-of nn))
+    (return (ok (deref c)))))
+
+; Link the library's object with the consumer's and run it. The consumer
+; excludes the prelude — the library object already provides it — so the two
+; link without duplicate prelude symbols.
+(defn link-two ((e (ref Exports)) (c (ref Consumer))):!String
+  (let (parts:String (str (exports-ll-path e) " " (string-as-view (addr-of c 'llpath)))
+        out:String (try (link-run (string-as-view (addr-of parts)))))
+    (drop (addr-of parts))
+    (return (ok out))))
+
+(defn check-links-and-prints ((e (ref Exports)) (c (ref Consumer))
+                              want:StrView):!void
+  (let (out:String (try (link-two e c))
+        ov:StrView (string-as-view (addr-of out)))
+    (try (check-eq (strview-trim-end (addr-of ov)) want))
+    (drop (addr-of out))
+    (return (ok))))
+
+; ---------------------------------------------------------------------------
+; Symbol sets
+; ---------------------------------------------------------------------------
+
+; Where a symbol token ends: the first space, `(` or newline, which is the
+; `[^ (]*` the shell matched within one line.
+(defn earlier-byte (sv:StrView b:ui8 e:usize):usize
+  (match (strview-find-byte (addr-of sv) b)
+    ((some i)
+      (when (< i e) (return i))
+      (return e))
+    ((none) (return e))))
+
+(defn symbol-token-end (sv:StrView):usize
+  (let (e:usize (strview-byte-len (addr-of sv)))
+    (set! e (earlier-byte sv 32 e))
+    (set! e (earlier-byte sv 40 e))
+    (set! e (earlier-byte sv 10 e))
+    (return e)))
+
+(defn views-have ((v (ref (Vector StrView))) s:StrView):bool
+  (let (n:usize (count v)
+        i:usize 0)
+    (while (< i n)
+      (when (= (invoke v i) s) (return true))
+      (set! i (+ i 1)))
+    (return false)))
+
+; Every distinct `@<base>…` symbol in a module. The views point into `ir`, which
+; outlives the comparison.
+(defn ir-symbols (ir:StrView base:StrView (out (ref (Vector StrView)))):void
+  (let (rest:StrView ir)
+    (while true
+      (match (strview-find (addr-of rest) (addr-of base))
+        ((none) (return))
+        ((some i)
+          (let (tail:StrView (strview-drop-bytes rest i)
+                n:usize (symbol-token-end tail)
+                tok:StrView (strview-take-bytes tail n))
+            (when (not (views-have out tok)) (conj out tok))
+            (set! rest (strview-drop-bytes tail n))))))))
+
+(defn views-text ((v (ref (Vector StrView)))):String
+  (let (s:String (str "")
+        n:usize (count v)
+        i:usize 0)
+    (while (< i n)
+      (str-into (addr-of s) (invoke v i) " ")
+      (set! i (+ i 1)))
+    (return s)))
+
+; Set equality by mutual containment, so the answer does not depend on where in
+; each module a symbol first appears. Stated as the invariant rather than as two
+; literals: what the unit claims is that a namespace's symbol is the same string
+; whether or not another namespace is in the same compilation unit.
+(defn check-same-symbols (a:StrView b:StrView base:StrView):!void
+  (let (va:(Vector StrView) (vector-new)
+        vb:(Vector StrView) (vector-new))
+    (ir-symbols a base (addr-of va))
+    (ir-symbols b base (addr-of vb))
+    (when (= (count (addr-of va)) 0)
+      (fail! "no " base " symbol in the module at all"))
+    (let (n:usize (count (addr-of va))
+          i:usize 0
+          ta:String (views-text (addr-of va))
+          tb:String (views-text (addr-of vb)))
+      (while (< i n)
+        (when (not (views-have (addr-of vb) (invoke (addr-of va) i)))
+          (fail! "symbol sets differ\n     alone:    " (string-as-view (addr-of ta))
+                 "\n     together: " (string-as-view (addr-of tb))))
+        (set! i (+ i 1)))
+      (set! i 0)
+      (let (m:usize (count (addr-of vb)))
+        (while (< i m)
+          (when (not (views-have (addr-of va) (invoke (addr-of vb) i)))
+            (fail! "symbol sets differ\n     alone:    " (string-as-view (addr-of ta))
+                   "\n     together: " (string-as-view (addr-of tb))))
+          (set! i (+ i 1))))
+      (drop (addr-of tb))
+      (drop (addr-of ta)))
+    (drop (addr-of vb))
+    (drop (addr-of va))
+    (return (ok))))
+
+(defn check-symbol-count (ir:StrView base:StrView want:usize):!void
+  (let (v:(Vector StrView) (vector-new))
+    (ir-symbols ir base (addr-of v))
+    (let (got:usize (count (addr-of v))
+          t:String (views-text (addr-of v)))
+      (when (!= got want)
+        (fail! "expected " (as i64 want) " distinct " base " symbols, got "
+               (as i64 got) ": " (string-as-view (addr-of t))))
+      (drop (addr-of t)))
+    (drop (addr-of v))
+    (return (ok))))
+
+; ---------------------------------------------------------------------------
+; N6: a namespace's mangled name across the three surfaces
+; ---------------------------------------------------------------------------
+
+(defn ns6-lib ():StrView (return "tests/fixtures/nsgeomlib.nuc"))
+
+; The `.nuch` carries the namespace directive so the importer can re-mangle, and
+; carries the declarations under their BARE spelling — re-keying under `geom/`
+; is the importer's job, which is the half `(ns geom)` alone does not say.
+(deftest n6-nuch-carries-ns
+  (let (e:Exports (try (export-surfaces "n6" (ns6-lib)))
+        nuch:StrView (exports-nuch (addr-of e)))
+    (try (check-line nuch "(ns geom)"))
+    (try (check-line nuch "(declare area ((w i32) (h i32)) :i32)"))
+    (try (check-line nuch "(declare perimeter ((w i32) (h i32)) :i32)"))
+    (drop (addr-of e)))
+  (return (ok)))
+
+; The header emits the C-legal mangled name, never the slash form — and the
+; object defines exactly that symbol, which is the half reading the header
+; cannot say.
+(deftest n6-cheader-c-legal
+  (let (e:Exports (try (export-surfaces "n6c" (ns6-lib)))
+        h:StrView (exports-h (addr-of e))
+        ll:StrView (exports-ll (addr-of e)))
+    (try (check-line h "int32_t geom__area(int32_t w, int32_t h);"))
+    (try (check-line h "int32_t geom__perimeter(int32_t w, int32_t h);"))
+    (try (check-not-contains h "geom/area"))
+    (try (check-line ll "define i32 @geom__area(i32 %w.arg, i32 %h.arg) section \".text.geom__area\" {"))
+    (try (check-line ll "define i32 @geom__perimeter(i32 %w.arg, i32 %h.arg) section \".text.geom__perimeter\" {"))
+    (drop (addr-of e)))
+  (return (ok)))
+
+(defn ns6-consumer-src (nuch:StrView):String
+  (return (str "(exclude-prelude)\n(import-prefixed \"" nuch "\" g)\n"
+               "(declare printf (fmt:CStr):i32)\n"
+               "(defn main () :i32\n"
+               "  (printf \"area=%d perimeter=%d\\n\" (g/area 6 7) (g/perimeter 6 7))\n"
+               "  (return 0))\n")))
+
+; Importing the `.nuch` by path re-resolves `g/area` to `@geom__area`, and the
+; consumer links against the library object and runs.
+(deftest n6-import-resolves-mangled
+  (let (e:Exports (try (export-surfaces "n6i" (ns6-lib)))
+        src:String (ns6-consumer-src (exports-nuch-path (addr-of e)))
+        c:Consumer (try (consumer "n6i" (string-as-view (addr-of src))))
+        ir:StrView (consumer-ir (addr-of c)))
+    (try (check-line ir "  %t1 = call i32 @geom__area(i32 6, i32 7)"))
+    (try (check-line ir "  %t2 = call i32 @geom__perimeter(i32 6, i32 7)"))
+    (drop (addr-of c))
+    (drop (addr-of src))
+    (drop (addr-of e)))
+  (return (ok)))
+
+(deftest n6-nuch-link-and-run
+  (let (e:Exports (try (export-surfaces "n6r" (ns6-lib)))
+        src:String (ns6-consumer-src (exports-nuch-path (addr-of e)))
+        c:Consumer (try (consumer "n6r" (string-as-view (addr-of src)))))
+    (try (check-links-and-prints (addr-of e) (addr-of c) "area=42 perimeter=26"))
+    (drop (addr-of c))
+    (drop (addr-of src))
+    (drop (addr-of e)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; B3′: the same round trip for a namespaced TYPE
+; ---------------------------------------------------------------------------
+
+; Two namespaces may now both define `Pt`, so an unprefixed C typedef would
+; collide in any program including both headers. The `.nuch` is the odd one out
+; on purpose: it carries `(ns gt)` plus the BARE spelling, leaving the importer
+; to re-key it under `gt/` itself.
+(defn b3-lib-src ():StrView
+  (return "(ns gt)
+(defstruct Pt x:i32 y:i32)
+(defn pt-sum ((p (ref Pt))):i32 (return (+ (_get p 'x) (_get p 'y))))
+"))
+
+(defn b3-exports (stem:StrView):!Exports
+  (let (nn:String (str stem "-tylib.nuc")
+        p:String (try (test-write-file (string-as-view (addr-of nn)) (b3-lib-src)))
+        e:Exports (try (export-surfaces stem (string-as-view (addr-of p)))))
+    (drop (addr-of p))
+    (drop (addr-of nn))
+    (return (ok e))))
+
+(deftest b3-ns-type-export-surfaces
+  (let (e:Exports (try (b3-exports "b3s")))
+    (try (check-line (exports-ll (addr-of e)) "%gt__Pt = type { i32, i32 }"))
+    (try (check-line (exports-h (addr-of e)) "typedef struct gt__Pt {"))
+    (try (check-line (exports-h (addr-of e)) "} gt__Pt;"))
+    ; The C name and the LINK name are different strings and both have to be
+    ; right: `gt__pt-sum` is not a C identifier, so the declaration carries it
+    ; as an `asm` label beside the sanitized spelling.
+    (try (check-line (exports-h (addr-of e))
+                     "int32_t gt__pt_sum(struct gt__Pt* p) asm(\"gt__pt-sum\");"))
+    (try (check-line (exports-nuch (addr-of e)) "(ns gt)"))
+    (try (check-line (exports-nuch (addr-of e)) "(defstruct Pt (x i32) (y i32))"))
+    (try (check-line (exports-nuch (addr-of e)) "(declare pt-sum ((p (ref Pt))) :i32)"))
+    (drop (addr-of e)))
+  (return (ok)))
+
+; The whole re-keying chain end to end: `(ns gt)` in the header re-registers
+; `gt/Pt`, `g/Pt` resolves to it through the import environment, and the call
+; reaches `@gt__pt-sum` in the library object.
+(deftest b3-ns-type-nuch-link-and-run
+  (let (e:Exports (try (b3-exports "b3r"))
+        src:String (str "(exclude-prelude)\n(import-prefixed \""
+                        (exports-nuch-path (addr-of e)) "\" g)\n"
+                        "(declare printf (fmt:CStr):i32)\n"
+                        "(defn main () :i32\n"
+                        "  (let (p:(ref g/Pt) (g/Pt 20 22))\n"
+                        "    (printf \"sum=%d\\n\" (g/pt-sum p)))\n"
+                        "  (return 0))\n")
+        c:Consumer (try (consumer "b3r" (string-as-view (addr-of src)))))
+    (try (check-contains (consumer-ir (addr-of c)) "call i32 @gt__pt-sum"))
+    (try (check-links-and-prints (addr-of e) (addr-of c) "sum=42"))
+    (drop (addr-of c))
+    (drop (addr-of src))
+    (drop (addr-of e)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; SM-3: `?` and `!` survive the export surfaces
+; ---------------------------------------------------------------------------
+
+(defn sm3-lib ():StrView (return "tests/fixtures/sm3-predlib.nuc"))
+
+; Both name kinds round-trip: a solitary `?`/`!` as a `declare` under its source
+; spelling, and the overloaded `?` pair as `defmethod` entries carrying each
+; method's stored mangled symbol verbatim — the importer re-derives one from the
+; shared ns-ir-base rule and reads the other off the header.
+(deftest sm3-nuch-roundtrip
+  (let (e:Exports (try (export-surfaces "sm3n" (sm3-lib)))
+        nuch:StrView (exports-nuch (addr-of e)))
+    (try (check-line nuch "(declare full? ((n i32)) :i32)"))
+    (try (check-line nuch "(declare push! ((n i32)) :i32)"))
+    (try (check-line nuch "(defmethod \"@even_QMARK.i32\" even? ((x i32)) :i32)"))
+    (try (check-line nuch "(defmethod \"@even_QMARK.i64\" even? ((x i64)) :i32)"))
+    (drop (addr-of e)))
+  (return (ok)))
+
+(deftest sm3-lib-symbols
+  (let (e:Exports (try (export-surfaces "sm3s" (sm3-lib)))
+        ll:StrView (exports-ll (addr-of e)))
+    (try (check-line ll "define i32 @full_QMARK(i32 %n.arg) section \".text.full_QMARK\" {"))
+    (try (check-line ll "define i32 @push_BANG(i32 %n.arg) section \".text.push_BANG\" {"))
+    (try (check-line ll "define i32 @even_QMARK.i32(i32 %x.arg) section \".text.even_QMARK.i32\" {"))
+    (try (check-line ll "define i32 @even_QMARK.i64(i64 %x.arg) section \".text.even_QMARK.i64\" {"))
+    (drop (addr-of e)))
+  (return (ok)))
+
+; The header names C-legal symbols, never the illegal `full?`. The overloaded
+; pair needs both halves: `.` is not a C identifier character either, so the
+; declaration is `even_QMARK_i32` with the real symbol on an `asm` label.
+(deftest sm3-cheader-fn-legal
+  (let (e:Exports (try (export-surfaces "sm3h" (sm3-lib)))
+        h:StrView (exports-h (addr-of e)))
+    (try (check-line h "int32_t full_QMARK(int32_t n);"))
+    (try (check-line h "int32_t push_BANG(int32_t n);"))
+    (try (check-line h "int32_t even_QMARK_i32(int32_t x) asm(\"even_QMARK.i32\");"))
+    (try (check-line h "int32_t even_QMARK_i64(int64_t x) asm(\"even_QMARK.i64\");"))
+    (try (check-not-contains h "full?"))
+    (try (check-not-contains h "push!"))
+    (drop (addr-of e)))
+  (return (ok)))
+
+(defn sm3-consumer-src (nuch:StrView):String
+  (return (str "(exclude-prelude)\n(import-use \"" nuch "\")\n"
+               "(declare printf (fmt:CStr):i32)\n"
+               "(defn main () :i32\n"
+               "  (printf \"full=%d push=%d even4=%d even7=%d even6L=%d\\n\"\n"
+               "    (full? 5) (push! 7) (even? 4) (even? 7) (even? (as i64 6)))\n"
+               "  (return 0))\n")))
+
+; The importer re-derives the exact symbols the object defines: solitary
+; `full?`/`push!` through ns-ir-base, overloaded `even?` dispatching to the two
+; suffixed methods read off the `.nuch`.
+(deftest sm3-import-resolves-mangled
+  (let (e:Exports (try (export-surfaces "sm3i" (sm3-lib)))
+        src:String (sm3-consumer-src (exports-nuch-path (addr-of e)))
+        c:Consumer (try (consumer "sm3i" (string-as-view (addr-of src))))
+        ir:StrView (consumer-ir (addr-of c)))
+    (try (check-contains ir "call i32 @full_QMARK("))
+    (try (check-contains ir "call i32 @push_BANG("))
+    (try (check-contains ir "call i32 @even_QMARK.i32("))
+    (try (check-contains ir "call i32 @even_QMARK.i64("))
+    (drop (addr-of c))
+    (drop (addr-of src))
+    (drop (addr-of e)))
+  (return (ok)))
+
+(deftest sm3-nuch-link-and-run
+  (let (e:Exports (try (export-surfaces "sm3r" (sm3-lib)))
+        src:String (sm3-consumer-src (exports-nuch-path (addr-of e)))
+        c:Consumer (try (consumer "sm3r" (string-as-view (addr-of src)))))
+    (try (check-links-and-prints (addr-of e) (addr-of c)
+                                 "full=1 push=8 even4=1 even7=0 even6L=1"))
+    (drop (addr-of c))
+    (drop (addr-of src))
+    (drop (addr-of e)))
+  (return (ok)))
+
+; `sanitize-for-c` maps `?`/`!` in struct and union TYPE names, at every site
+; that spells one: the two typedef names, the union's typedef and its tag enum
+; with the arm constants, and a `struct <name>` reference in a parameter.
+(deftest sm3-cheader-typenames
+  (let (h:String (try (emit-for-file "" "--emit-cheader"
+                                     "tests/fixtures/sm3-typenames.nuc"))
+        hv:StrView (string-as-view (addr-of h)))
+    (try (check-line hv "} Full_QMARK;"))
+    (try (check-line hv "} Push_BANG;"))
+    (try (check-line hv "} Shape_QMARK;"))
+    (try (check-line hv "enum Shape_QMARK_tag {"))
+    (try (check-line hv "    Shape_QMARK_circle = 0,"))
+    (try (check-line hv "    Shape_QMARK_square = 1"))
+    (try (check-line hv "int32_t getn(struct Full_QMARK* f);"))
+    (try (check-not-contains hv "Full?"))
+    (drop (addr-of h)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; W9 item 23: a symbol belongs to its own namespace, not to the unit
+; ---------------------------------------------------------------------------
+
+; `w23b` is `(ns w23b)` and merely imports a library that happens to define
+; `describe` too. Mangling used to ask the merged generic two questions that are
+; per-namespace facts — which prefix, and whether to suffix at all — and
+; answered with whichever namespace created it first and "yes, it looks
+; overloaded". So `w23b.nuc` emitted `@w23b__describe.i64` while its `.nuch` and
+; its header both declared `w23b__describe`, and swapping the import lines
+; renamed every symbol.
+; The two file names are load-bearing: an unprefixed `(import "path")` binds the
+; library under the FILE STEM, not under the `(ns …)` the file declares, so
+; `w23a/describe` below resolves only while the stem and the namespace agree.
+; Each test has its own scratch directory, so the fixed names cannot collide.
+(defn w23-pair ((a-out (ref String)) (b-out (ref String))):!void
+  (let (ap:String (try (test-write-file "w23a.nuc"
+                                        "(ns w23a)
+(defn describe (x:i32):i32 (return (+ x 1)))
+"))
+        bsrc:String (str "(ns w23b)\n(import \"" (string-as-view (addr-of ap)) "\")\n"
+                         "(defn describe (x:i64):i64"
+                         " (return (+ (unsafe/cast i64 (w23a/describe 1)) x)))\n")
+        bp:String (try (test-write-file "w23b.nuc"
+                                        (string-as-view (addr-of bsrc)))))
+    (set! (deref a-out) ap)
+    (set! (deref b-out) bp)
+    (drop (addr-of bsrc))
+    (return (ok))))
+
+(deftest w9-ns-symbol-ownership
+  (let (ap:String (str "") bp:String (str ""))
+    (try (w23-pair (addr-of ap) (addr-of bp)))
+    (let (alone:String (try (emit-for-file "" "--emit-llvm" (string-as-view (addr-of ap))))
+          together:String (try (emit-for-file "" "--emit-llvm" (string-as-view (addr-of bp)))))
+      (try (check-same-symbols (string-as-view (addr-of alone))
+                               (string-as-view (addr-of together))
+                               "@w23a__describe"))
+      (try (check-line (string-as-view (addr-of together))
+                       "define i64 @w23b__describe(i64 %x.arg) section \".text.w23b__describe\" {"))
+      ; The imported definition rides along as `weak_odr`, which is what lets two
+      ; objects that each inline it link.
+      (try (check-line (string-as-view (addr-of together))
+                       "define weak_odr i32 @w23a__describe(i32 %x.arg) section \".text.w23a__describe\" {"))
+      (drop (addr-of together))
+      (drop (addr-of alone)))
+    (drop (addr-of bp))
+    (drop (addr-of ap)))
+  (return (ok)))
+
+; One method from one namespace is not an overload of anything, however the
+; merged generic looks.
+(deftest w9-ns-no-phantom-overload
+  (let (ap:String (str "") bp:String (str ""))
+    (try (w23-pair (addr-of ap) (addr-of bp)))
+    (let (ir:String (try (emit-for-file "" "--emit-llvm" (string-as-view (addr-of bp))))
+          iv:StrView (string-as-view (addr-of ir)))
+      (try (check-not-contains iv "@w23a__describe."))
+      (try (check-not-contains iv "@w23b__describe."))
+      (drop (addr-of ir)))
+    (drop (addr-of bp))
+    (drop (addr-of ap)))
+  (return (ok)))
+
+; The export surfaces name a symbol the object actually defines — the original
+; end-to-end failure, which was a link error and nothing earlier.
+(deftest w9-ns-nuch-link-and-run
+  (let (ap:String (str "") bp:String (str ""))
+    (try (w23-pair (addr-of ap) (addr-of bp)))
+    (let (e:Exports (try (export-surfaces "w23b" (string-as-view (addr-of bp))))
+          src:String (str "(exclude-prelude)\n(import \""
+                          (exports-nuch-path (addr-of e)) "\")\n"
+                          "(declare printf (fmt:CStr):i32)\n"
+                          "(defn main ():i32\n"
+                          "  (printf \"d=%lld\\n\" (w23b/describe 20))\n"
+                          "  (return 0))\n")
+          c:Consumer (try (consumer "w23l" (string-as-view (addr-of src)))))
+      (try (check-line (exports-nuch (addr-of e)) "(ns w23b)"))
+      (try (check-line (exports-nuch (addr-of e)) "(declare describe ((x i64)) :i64)"))
+      (try (check-links-and-prints (addr-of e) (addr-of c) "d=22"))
+      (drop (addr-of c))
+      (drop (addr-of src))
+      (drop (addr-of e)))
+    (drop (addr-of bp))
+    (drop (addr-of ap)))
+  (return (ok)))
+
+; The header was never the wrong half — it always declared the solitary form.
+; This pins the other side of the equality the link test exercises, so a future
+; change cannot "fix" a mismatch by moving the header to meet a suffixed object.
+(deftest w9-ns-cheader-matches-object
+  (let (ap:String (str "") bp:String (str ""))
+    (try (w23-pair (addr-of ap) (addr-of bp)))
+    (let (h:String (try (emit-for-file "" "--emit-cheader" (string-as-view (addr-of bp)))))
+      (try (check-line (string-as-view (addr-of h))
+                       "int64_t w23b__describe(int64_t x);"))
+      (drop (addr-of h)))
+    (drop (addr-of bp))
+    (drop (addr-of ap)))
+  (return (ok)))
+
+; Two consumers importing the same two namespaces in opposite orders must
+; reference the same symbols.
+(deftest w9-ns-symbols-order-independent
+  (let (ap:String (str "") bp:String (str ""))
+    (try (w23-pair (addr-of ap) (addr-of bp)))
+    (let (av:StrView (string-as-view (addr-of ap))
+          bv:StrView (string-as-view (addr-of bp))
+          body:StrView "(defn main ():i32 (return (+ (w23a/describe 1) (unsafe/cast i32 (w23b/describe 2)))))\n"
+          s1:String (str "(import \"" av "\")\n(import \"" bv "\")\n" body)
+          s2:String (str "(import \"" bv "\")\n(import \"" av "\")\n" body)
+          n1:String (try (test-write-file "w23q-ord1.nuc" (string-as-view (addr-of s1))))
+          n2:String (try (test-write-file "w23q-ord2.nuc" (string-as-view (addr-of s2))))
+          i1:String (try (emit-for-file "" "--emit-llvm" (string-as-view (addr-of n1))))
+          i2:String (try (emit-for-file "" "--emit-llvm" (string-as-view (addr-of n2)))))
+      (try (check-symbol-count (string-as-view (addr-of i1)) "@w23" 2))
+      (try (check-same-symbols (string-as-view (addr-of i1))
+                               (string-as-view (addr-of i2)) "@w23"))
+      (drop (addr-of i2))
+      (drop (addr-of i1))
+      (drop (addr-of n2))
+      (drop (addr-of n1))
+      (drop (addr-of s2))
+      (drop (addr-of s1)))
+    (drop (addr-of bp))
+    (drop (addr-of ap)))
+  (return (ok)))

@@ -32,6 +32,7 @@
 (import-use suite-cheader)
 (import-use suite-cimport)
 (import-use suite-declarators)
+(import-use suite-exports)
 
 
 

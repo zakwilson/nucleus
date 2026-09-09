@@ -8,7 +8,7 @@
 ;   * `even?` is OVERLOADED (i32 and i64 conformers) → the mangle-fn-name path →
 ;     @even_QMARK.i32 / @even_QMARK.i64 (a (defmethod "@sym" ...) per method in the
 ;     .nuch, each carrying its stored mangled string verbatim).
-; tests/run-tests.sh compiles this to a .nuch and a .ll, then links a consumer
+; tests/suite-exports.nuc compiles this to a .nuch and a .ll, then links a consumer
 ; that imports the .nuch — proving the exporter's symbols and the importer's
 ; re-derived declarations agree at link time with no round-trip mismatch.
 
