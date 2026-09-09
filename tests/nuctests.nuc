@@ -33,6 +33,7 @@
 (import-use suite-cimport)
 (import-use suite-declarators)
 (import-use suite-exports)
+(import-use suite-linking)
 
 
 
@@ -111,6 +112,24 @@
   (drop (addr-of self 'raw))
   (drop (addr-of self 'diags)))
 
+; One prepared `nucleusc` command, run. Every builder below differs from the
+; others only in which arguments it adds, and a unit that asserts the compiler
+; said NOTHING needs the diagnostic list rather than a stderr grep.
+(defn compiled-run ((c (ref Command))):!Compiled
+  (command-capture c true)
+  (match (run c)
+    ((ok o)
+      (let (ov:StrView (string-as-view (addr-of o 'out))
+            ev:StrView (string-as-view (addr-of o 'err))
+            r:&Compiled (alloca Compiled))
+        (set! (r 'ok?) (success? (addr-of o 'status)))
+        (set! (r 'ir) (try (string-from-view (addr-of ov))))
+        (set! (r 'raw) (try (string-from-view (addr-of ev))))
+        (set! (r 'diags) (try (read-diagnostics ev)))
+        (drop (addr-of o))
+        (return (ok (deref r)))))
+    ((err e) (return (err e)))))
+
 ; An empty `dir` adds no `-I`, which is the only optionality the multi-file
 ; units need: they export a `.nuch` and then import it from a second unit.
 (defn compile-path-in (dir:StrView path:StrView):!Compiled
@@ -121,25 +140,65 @@
     (command-arg (addr-of c) "--diagnostics=sexp")
     (command-arg (addr-of c) "--emit-llvm")
     (command-arg (addr-of c) path)
-    (command-capture (addr-of c) true)
-    (match (run (addr-of c))
-      ((ok o)
-        (let (ov:StrView (string-as-view (addr-of o 'out))
-              ev:StrView (string-as-view (addr-of o 'err))
-              r:&Compiled (alloca Compiled))
-          (set! (r 'ok?) (success? (addr-of o 'status)))
-          (set! (r 'ir) (try (string-from-view (addr-of ov))))
-          (set! (r 'raw) (try (string-from-view (addr-of ev))))
-          (set! (r 'diags) (try (read-diagnostics ev)))
-          (drop (addr-of o))
-          (drop (addr-of c))
-          (return (ok (deref r)))))
-      ((err e)
-        (drop (addr-of c))
-        (return (err e))))))
+    (let (r:Compiled (try (compiled-run (addr-of c))))
+      (drop (addr-of c))
+      (return (ok r)))))
 
 (defn compile-path (path:StrView):!Compiled
   (return (compile-path-in "" path)))
+
+; The same for an emit mode other than `--emit-llvm`. Unlike `emit-for-file`
+; this survives a refusal, so a unit can ask whether an emission was CLEAN.
+(defn emit-checked (dir:StrView flag:StrView path:StrView):!Compiled
+  (let (c:Command (command (compiler-path)))
+    (when (not (= dir ""))
+      (command-arg (addr-of c) "-I")
+      (command-arg (addr-of c) dir))
+    (command-arg (addr-of c) "--diagnostics=sexp")
+    (command-arg (addr-of c) flag)
+    (command-arg (addr-of c) path)
+    (let (r:Compiled (try (compiled-run (addr-of c))))
+      (drop (addr-of c))
+      (return (ok r)))))
+
+; `nucleusc [-I dir] -c <path> -o <out>`. `-c` is the only flag that says
+; "relocatable object", so it is the only one under which the compiler can warn
+; about what ANOTHER object will do; `compile-object-in` discards that.
+(defn object-checked (dir:StrView path:StrView out:StrView):!Compiled
+  (let (c:Command (command (compiler-path)))
+    (when (not (= dir ""))
+      (command-arg (addr-of c) "-I")
+      (command-arg (addr-of c) dir))
+    (command-arg (addr-of c) "--diagnostics=sexp")
+    (command-arg (addr-of c) "-c")
+    (command-arg (addr-of c) path)
+    (command-arg (addr-of c) "-o")
+    (command-arg (addr-of c) out)
+    (let (r:Compiled (try (compiled-run (addr-of c))))
+      (drop (addr-of c))
+      (return (ok r)))))
+
+; `nucleusc [-I dir] <path> -o <bin>` — a whole program, link included.
+(defn build-checked (dir:StrView path:StrView bin:StrView):!Compiled
+  (let (c:Command (command (compiler-path)))
+    (when (not (= dir ""))
+      (command-arg (addr-of c) "-I")
+      (command-arg (addr-of c) dir))
+    (command-arg (addr-of c) "--diagnostics=sexp")
+    (command-arg (addr-of c) path)
+    (command-arg (addr-of c) "-o")
+    (command-arg (addr-of c) bin)
+    (let (r:Compiled (try (compiled-run (addr-of c))))
+      (drop (addr-of c))
+      (return (ok r)))))
+
+; No diagnostics at all. `check-no-errors` is not this claim: a warning is what
+; three of the separate-compilation units are asserting the absence of.
+(defn check-silent ((c (ref Compiled)) what:StrView):!void
+  (when (> (count (addr-of c 'diags)) 0)
+    (let (l:String (diag-list-text (addr-of c 'diags)))
+      (fail! what " must say nothing, got:" (string-as-view (addr-of l)))))
+  (return (ok)))
 
 (defn compiled-ir ((c (ref Compiled))):StrView
   (return (string-as-view (addr-of c 'ir))))
@@ -160,24 +219,10 @@
     (command-arg (addr-of c) "--diagnostics=sexp")
     (command-arg (addr-of c) "--emit-llvm")
     (command-arg (addr-of c) path)
-    (command-capture (addr-of c) true)
-    (match (run (addr-of c))
-      ((ok o)
-        (let (ov:StrView (string-as-view (addr-of o 'out))
-              ev:StrView (string-as-view (addr-of o 'err))
-              r:&Compiled (alloca Compiled))
-          (set! (r 'ok?) (success? (addr-of o 'status)))
-          (set! (r 'ir) (try (string-from-view (addr-of ov))))
-          (set! (r 'raw) (try (string-from-view (addr-of ev))))
-          (set! (r 'diags) (try (read-diagnostics ev)))
-          (drop (addr-of o))
-          (drop (addr-of flag))
-          (drop (addr-of c))
-          (return (ok (deref r)))))
-      ((err e)
-        (drop (addr-of flag))
-        (drop (addr-of c))
-        (return (err e))))))
+    (let (r:Compiled (try (compiled-run (addr-of c))))
+      (drop (addr-of flag))
+      (drop (addr-of c))
+      (return (ok r)))))
 
 ; `nucleusc [-I dir] <flag> <path>` — stdout, which for `--emit-nuch` and
 ; `--emit-cheader` is the artifact itself.
@@ -282,19 +327,54 @@
       (drop (addr-of r))
       (return (ok out)))))
 
+; Run a built binary. `command-search false` because the path is one this test
+; just wrote, not a program name to find.
+(defn run-stdout (bin:StrView):!String
+  (let (rc:Command (command bin))
+    (command-search (addr-of rc) false)
+    (command-capture (addr-of rc) true)
+    (command-stderr-to-stdout (addr-of rc) true)
+    (match (run (addr-of rc))
+      ((ok o)
+        (let (ov:StrView (string-as-view (addr-of o 'out))
+              out:String (try (string-from-view (addr-of ov))))
+          (drop (addr-of o))
+          (drop (addr-of rc))
+          (return (ok out))))
+      ((err e) (return (err e))))))
+
+; The same run, when the program's answer is its exit status. Separate because
+; a program deliberately kept to a handful of symbols cannot print: `print`
+; would pull the whole io closure into an object whose symbol table is the
+; assertion.
+(defn run-exit (bin:StrView):!i32
+  (let (rc:Command (command bin))
+    (command-search (addr-of rc) false)
+    (command-capture (addr-of rc) true)
+    (command-stderr-to-stdout (addr-of rc) true)
+    (match (run (addr-of rc))
+      ((ok o)
+        (let (st:ExitStatus (o 'status)
+              got:i32 (exit-code (addr-of st)))
+          (drop (addr-of o))
+          (drop (addr-of rc))
+          (return (ok got))))
+      ((err e) (return (err e))))))
+
 ; Build `path` and run it; the assertion is its EXIT STATUS. The shape of
 ; `w1_run`, which several bespoke units use for a program whose answer is a
 ; number rather than output.
 (defn check-file-exit (idir:StrView path:StrView want:i32):!void
   (let (dir:StrView (try (test-scratch))
         bin:String (str dir "/t.bin")
+        bv:StrView (string-as-view (addr-of bin))
         cc:Command (command (compiler-path)))
     (when (not (= idir ""))
       (command-arg (addr-of cc) "-I")
       (command-arg (addr-of cc) idir))
     (command-arg (addr-of cc) path)
     (command-arg (addr-of cc) "-o")
-    (command-arg (addr-of cc) (string-as-view (addr-of bin)))
+    (command-arg (addr-of cc) bv)
     (command-capture (addr-of cc) true)
     (command-stderr-to-stdout (addr-of cc) true)
     (match (run (addr-of cc))
@@ -306,19 +386,9 @@
           (drop (addr-of o))))
       ((err e) (return (err e))))
     (drop (addr-of cc))
-    (let (rc:Command (command (string-as-view (addr-of bin))))
-      (command-search (addr-of rc) false)
-      (command-capture (addr-of rc) true)
-      (command-stderr-to-stdout (addr-of rc) true)
-      (match (run (addr-of rc))
-        ((ok o)
-          (let (st:ExitStatus (o 'status)
-                got:i32 (exit-code (addr-of st)))
-            (when (!= got want)
-              (fail! "expected exit " (as i64 want) ", got " (as i64 got)))
-            (drop (addr-of o))))
-        ((err e) (return (err e))))
-      (drop (addr-of rc)))
+    (let (got:i32 (try (run-exit bv)))
+      (when (!= got want)
+        (fail! "expected exit " (as i64 want) ", got " (as i64 got))))
     (drop (addr-of bin))
     (return (ok))))
 
@@ -385,7 +455,7 @@
 ;
 ; `-Wall -Werror` because "it parses" is not the claim a generated header has to
 ; meet; a real consumer builds clean or the header is broken.
-(defn driver-link-run (drv:StrView idir:StrView parts:StrView):!String
+(defn driver-link (drv:StrView idir:StrView parts:StrView):!String
   (let (dir:StrView (try (test-scratch))
         bin:String (str dir "/linked.bin")
         sp:StrView " "
@@ -409,22 +479,23 @@
         (drop (addr-of o)))
       ((err e) (return (err e))))
     (drop (addr-of c))
-    (let (rc:Command (command (string-as-view (addr-of bin))))
-      (command-search (addr-of rc) false)
-      (command-capture (addr-of rc) true)
-      (command-stderr-to-stdout (addr-of rc) true)
-      (match (run (addr-of rc))
-        ((ok o)
-          (let (ov:StrView (string-as-view (addr-of o 'out))
-                out:String (try (string-from-view (addr-of ov))))
-            (drop (addr-of o))
-            (drop (addr-of rc))
-            (drop (addr-of bin))
-            (return (ok out))))
-        ((err e) (return (err e)))))))
+    (return (ok bin))))
+
+(defn driver-link-run (drv:StrView idir:StrView parts:StrView):!String
+  (let (bin:String (try (driver-link drv idir parts))
+        out:String (try (run-stdout (string-as-view (addr-of bin)))))
+    (drop (addr-of bin))
+    (return (ok out))))
 
 (defn cc-link-run (idir:StrView parts:StrView):!String
   (return (driver-link-run "clang" idir parts)))
+
+; The same link, for a program whose answer is its exit status.
+(defn cc-link-exit (parts:StrView):!i32
+  (let (bin:String (try (driver-link "clang" "" parts))
+        got:i32 (try (run-exit (string-as-view (addr-of bin)))))
+    (drop (addr-of bin))
+    (return (ok got))))
 
 ; The same consumer through the platform C++ driver. A generated header is
 ; routinely read from C++ behind `extern "C"`, where a name C tolerates can
@@ -516,6 +587,62 @@
       ((err e)
         (drop (addr-of c))
         (return (err e))))))
+
+; Every symbol in `path`, as `<type> <name>` lines. `nm-defined` cannot answer a
+; separate-compilation question: it drops both the linkage letter, which is what
+; says an imported definition is a COPY, and the undefined symbols, which are
+; what says a call crossed the object boundary at all.
+(defn nm-typed (path:StrView):!String
+  (let (c:Command (command "nm"))
+    (command-arg (addr-of c) path)
+    (command-capture (addr-of c) true)
+    (match (run (addr-of c))
+      ((ok o)
+        (when (not (success? (addr-of o 'status)))
+          (fail! "nm failed\n     " (test-show (string-as-view (addr-of o 'err)))))
+        (let (ov:StrView (string-as-view (addr-of o 'out))
+              nl:StrView "\n"
+              out:String (string-new)
+              it:SplitIter (strview-split (addr-of ov) (addr-of nl)))
+          (while (not (split-iter-done (addr-of it)))
+            (let (l:StrView (split-iter-next (addr-of it)))
+              (match (strview-rfind-byte (addr-of l) 32)
+                ((some at)
+                  ; `<value> <type> <name>`, and an undefined symbol pads the
+                  ; value field with spaces — so the letter is the byte before
+                  ; the last space, whichever form the line took.
+                  (when (> at 0)
+                    (str-into (addr-of out)
+                              (strview-take-bytes (strview-drop-bytes l (- at 1)) 1)
+                              " " (strview-drop-bytes l (+ at 1)) "\n")))
+                (none 0))))
+          (drop (addr-of o))
+          (drop (addr-of c))
+          (return (ok out))))
+      ((err e)
+        (drop (addr-of c))
+        (return (err e))))))
+
+; Every non-empty line of `want` must be a line of `got`, and the two must have
+; the same number of them. Symbol names are unique within one object, so that is
+; set equality — and order is not: `nm` sorts by value, and every symbol in a
+; relocatable object has value 0.
+(defn check-line-set (got:StrView want:StrView what:StrView):!void
+  (let (ng:i64 0
+        nw:i64 0
+        gi:LineIter (strview-lines (addr-of got))
+        wi:LineIter (strview-lines (addr-of want)))
+    (while (not (lines-iter-done (addr-of gi)))
+      (when (!= (lines-iter-next (addr-of gi)) "") (set! ng (+ ng 1))))
+    (while (not (lines-iter-done (addr-of wi)))
+      (let (l:StrView (lines-iter-next (addr-of wi)))
+        (when (!= l "")
+          (set! nw (+ nw 1))
+          (when (not (has-line? got l))
+            (fail! what ": missing " (sexp-quote l) "\n     got:\n" got)))))
+    (when (!= ng nw)
+      (fail! what ": expected " nw " line(s), got " ng "\n     got:\n" got)))
+  (return (ok)))
 
 ; `test-write-file` only reaches the scratch directory itself, and a `.nuch`
 ; unit needs its header in a subdirectory of it — `resolve-import` tries `.nuc`
@@ -695,19 +822,9 @@
           (drop (addr-of o))))
       ((err e) (return (err e))))
     (drop (addr-of cc))
-    (let (rc:Command (command (string-as-view (addr-of bin))))
-      (command-search (addr-of rc) false)
-      (command-capture (addr-of rc) true)
-      (command-stderr-to-stdout (addr-of rc) true)
-      (match (run (addr-of rc))
-        ((ok o)
-          (let (ov:StrView (string-as-view (addr-of o 'out))
-                out:String (try (string-from-view (addr-of ov))))
-            (drop (addr-of o))
-            (drop (addr-of rc))
-            (drop (addr-of bin))
-            (return (ok out))))
-        ((err e) (return (err e)))))))
+    (let (out:String (try (run-stdout (string-as-view (addr-of bin)))))
+      (drop (addr-of bin))
+      (return (ok out)))))
 
 ; Compile `path` to a binary and run it, stdout and stderr on one stream. An
 ; empty `dir` adds no `-I`, and an empty `extra` no extra argument.
@@ -733,19 +850,9 @@
           (drop (addr-of o))))
       ((err e) (return (err e))))
     (drop (addr-of cc))
-    (let (rc:Command (command (string-as-view (addr-of bin))))
-      (command-search (addr-of rc) false)
-      (command-capture (addr-of rc) true)
-      (command-stderr-to-stdout (addr-of rc) true)
-      (match (run (addr-of rc))
-        ((ok o)
-          (let (ov:StrView (string-as-view (addr-of o 'out))
-                out:String (try (string-from-view (addr-of ov))))
-            (drop (addr-of o))
-            (drop (addr-of rc))
-            (drop (addr-of bin))
-            (return (ok out))))
-        ((err e) (return (err e)))))))
+    (let (out:String (try (run-stdout (string-as-view (addr-of bin)))))
+      (drop (addr-of bin))
+      (return (ok out)))))
 
 (defn build-run-source (src:StrView):!String
   (let (p:String (try (test-write-file "t.nuc" src))
@@ -851,6 +958,41 @@
               (when (= (type-line-name (lines-iter-next (addr-of inner))) nm)
                 (set! n (+ n 1))))
             (when (> n 1) (return nm))))))
+    (return "")))
+
+; The `@name` a `define` line names, or "". No lib module emits a quoted global,
+; so the name is everything between the first `@` and the `(` after it.
+(defn define-line-name (l:StrView):StrView
+  (when (not (strview-has-prefix l "define ")) (return ""))
+  (match (strview-find-byte (addr-of l) 64)
+    ((some at)
+      (let (rest:StrView (strview-drop-bytes l (+ at 1)))
+        (match (strview-find-byte (addr-of rest) 40)
+          ((some p) (return (strview-take-bytes rest p)))
+          ((none) (return "")))))
+    ((none) (return ""))))
+
+; A function defined twice, or "". Unlike a duplicate type LLVM accepts this and
+; the module still parses; the second definition simply wins, which is how a
+; re-drain silently doubles a library's contents.
+(defn duplicate-define-name (ir:StrView):StrView
+  (let (names:(Vector StrView) (vector-new)
+        it:LineIter (strview-lines (addr-of ir)))
+    (while (not (lines-iter-done (addr-of it)))
+      (let (nm:StrView (define-line-name (lines-iter-next (addr-of it))))
+        (when (not (= nm "")) (conj (addr-of names) nm))))
+    (let (n:usize (count (addr-of names))
+          i:usize 0)
+      (while (< i n)
+        (let (a:StrView (invoke (addr-of names) i)
+              j:usize (+ i 1))
+          (while (< j n)
+            (when (= (invoke (addr-of names) j) a)
+              (drop (addr-of names))
+              (return a))
+            (set! j (+ j 1))))
+        (set! i (+ i 1))))
+    (drop (addr-of names))
     (return "")))
 
 ; ---------------------------------------------------------------------------

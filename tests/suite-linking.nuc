@@ -1,0 +1,452 @@
+; Stage 18 TF-6 category (c) — separate compilation: what two objects owe each
+; other.
+;
+; Design: design/stage18-tooling/overview.md §T6.6; W9 item 2 in
+; design/stage15-stress-test/progress.md.
+;
+; A `.nuc` import is INLINED, so an object carries a copy of everything its
+; import closure declares. Two such objects therefore have to agree about three
+; separate things or `make lib-so` cannot be built at all: which of the copies
+; the linker keeps (one, `weak_odr`), which definitions are the unit's own to
+; export (its root forms, external) and which are nobody's business (its
+; `defn-`s, local); and the one thing the compiler cannot decide alone — a
+; run-time initializer on a global the unit does not own, which every importing
+; object runs again on the one shared global.
+;
+; "It links" is the weaker half of all three and cannot be the whole test: a
+; linker that kept two PRIVATE copies of a global would also link, and each
+; object would then have its own. So the units below read the objects' symbol
+; tables and run the linked program for a number only the shared reading can
+; produce.
+
+; ---------------------------------------------------------------------------
+; lib/ compiles on its own
+; ---------------------------------------------------------------------------
+
+; `read-dir` sorts, so a failure names the same file on every machine.
+(defn lib-sources ():!DirEntries
+  (return (read-dir "lib")))
+
+; Every `lib/*.nuc` under one emit mode. The real target is `make lib-objs` /
+; `lib-headers` / `lib-cheaders`: a file that compiles only as part of the
+; prelude's import closure is a compiler fragment, not a library file — which is
+; why the reader moved to src/. Four of these are inside the prelude's own
+; closure (prelude → macros, node → arena) and are the ones the root-reentry bug
+; hit; the rest guard the `--emit-nuch` half, which skipped the prelude entirely
+; and so could not resolve `Node`, `StrView`, `String`, `(Maybe T)` or the `!T`
+; sugar's `(Result T E)` in an exported signature.
+(defn check-lib-emits (flag:StrView):!void
+  (let (d:DirEntries (try (lib-sources))
+        n:usize (dir-count (addr-of d))
+        i:usize 0)
+    (while (< i n)
+      (let (nm:StrView (dir-name (addr-of d) i))
+        (when (strview-has-suffix nm ".nuc")
+          (let (p:String (str "lib/" nm)
+                pv:StrView (string-as-view (addr-of p))
+                c:Compiled (try (emit-checked "" flag pv)))
+            (when (not (c 'ok?))
+              (fail! pv " does not survive " flag " on its own:\n     "
+                     (test-show (string-as-view (addr-of c 'raw)))))
+            (drop (addr-of c))
+            (drop (addr-of p)))))
+      (set! i (+ i 1)))
+    (drop (addr-of d)))
+  (return (ok)))
+
+(deftest w9-lib-emit-llvm
+  (let (d:DirEntries (try (lib-sources))
+        n:usize (dir-count (addr-of d))
+        i:usize 0)
+    (while (< i n)
+      (let (nm:StrView (dir-name (addr-of d) i))
+        (when (strview-has-suffix nm ".nuc")
+          (let (p:String (str "lib/" nm)
+                pv:StrView (string-as-view (addr-of p))
+                c:Compiled (try (emit-checked "" "--emit-llvm" pv)))
+            (when (not (c 'ok?))
+              (fail! pv " does not compile on its own:\n     "
+                     (test-show (string-as-view (addr-of c 'raw)))))
+            ; A presence test cannot catch a DOUBLE emit, and LLVM accepts one:
+            ; the second definition simply wins.
+            (let (dup:StrView (duplicate-define-name (compiled-ir (addr-of c))))
+              (when (not (= dup ""))
+                (fail! pv " defines @" dup " twice")))
+            (drop (addr-of c))
+            (drop (addr-of p)))))
+      (set! i (+ i 1)))
+    (drop (addr-of d)))
+  (return (ok)))
+
+(deftest w9-lib-emit-nuch
+  (try (check-lib-emits "--emit-nuch"))
+  (return (ok)))
+
+(deftest w9-lib-emit-cheader
+  (try (check-lib-emits "--emit-cheader"))
+  (return (ok)))
+
+(defn warns-about ((ds (ref (Vector Diagnostic))) needle:StrView):bool
+  (let (n:usize (count ds)
+        i:usize 0)
+    (while (< i n)
+      (let (d:Diagnostic (invoke ds i))
+        (when (and (= (symbol-as-view (d 'severity)) "warning")
+                   (contains? (d 'message) needle))
+          (return true)))
+      (set! i (+ i 1)))
+    (return false)))
+
+; W9 item 2's known limit, gated for lib/ rather than merely documented: no
+; library file may carry a run-time initializer for a global it does not own,
+; because `make lib-so` links all of the objects and each would run it again on
+; the one shared global. True today; this is what makes adding one a failure
+; instead of a silent double init. The shell skipped a file that would not
+; compile as an object at all — the loops above make that its own failure, so
+; this one requires the object too.
+(deftest w9-lib-no-shared-runtime-init
+  (let (dir:StrView (try (test-scratch))
+        obj:String (str dir "/gate.o")
+        ov:StrView (string-as-view (addr-of obj))
+        d:DirEntries (try (lib-sources))
+        n:usize (dir-count (addr-of d))
+        i:usize 0)
+    (while (< i n)
+      (let (nm:StrView (dir-name (addr-of d) i))
+        (when (strview-has-suffix nm ".nuc")
+          (let (p:String (str "lib/" nm)
+                pv:StrView (string-as-view (addr-of p))
+                c:Compiled (try (object-checked "" pv ov)))
+            (when (not (c 'ok?))
+              (fail! pv " does not compile to an object:\n     "
+                     (test-show (string-as-view (addr-of c 'raw)))))
+            (when (warns-about (addr-of c 'diags) "run-time initializer")
+              (let (l:String (diag-list-text (addr-of c 'diags)))
+                (fail! pv " initializes a global it does not own:"
+                       (string-as-view (addr-of l)))))
+            (drop (addr-of c))
+            (drop (addr-of p)))))
+      (set! i (+ i 1)))
+    (drop (addr-of d))
+    (drop (addr-of obj)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; Two objects, one shared global
+; ---------------------------------------------------------------------------
+
+(defn w9-share-src ():StrView
+  (return "(defvar w9-count:i32 0)
+(defn w9-bump ():void (set! w9-count (+ w9-count 1)))
+(defn w9-get ():i32 (return w9-count))
+"))
+
+(defstruct W9Objects mainobj:String sideobj:String)
+
+(extend W9Objects Drop)
+(defn drop ((self (ptr W9Objects))):void
+  (drop (addr-of self 'mainobj))
+  (drop (addr-of self 'sideobj)))
+
+(defn w9-parts ((o (ref W9Objects))):String
+  (return (str (string-as-view (addr-of o 'mainobj)) " "
+               (string-as-view (addr-of o 'sideobj)))))
+
+; The item-2 fixture, compiled to two objects. What is on the search path is
+; load-bearing. `w9share.nuc` is, so both objects inline it — that is the
+; duplication under test. `w9side.nuc` is NOT: only its generated `.nuch` is, so
+; `w9side` cannot resolve to source and the call genuinely crosses the object
+; boundary. Moving the source onto the path instead makes `resolve-import` take
+; it (`.nuc` in every search directory is tried before any `.nuch`) and the unit
+; quietly stops testing a cross-object call.
+;
+; `main` returns the counter rather than printing it: `print` would pull the
+; whole io closure into an object whose symbol table is the assertion.
+(defn w9-objects ():!W9Objects
+  (let (share:String (try (test-scratch-sub "share"))
+        side:String (try (test-scratch-sub "side"))
+        mdir:String (try (test-scratch-sub "main"))
+        sharev:StrView (string-as-view (addr-of share))
+        sidev:StrView (string-as-view (addr-of side))
+        sp:String (try (write-into sharev "w9share.nuc" (w9-share-src)))
+        dp:String (try (write-into sidev "w9side.nuc"
+                         "(import w9share)
+(defn w9-side-bump ():void (w9-bump) (w9-bump))
+"))
+        mp:String (try (write-into (string-as-view (addr-of mdir)) "w9main.nuc"
+                         "(import w9share)
+(import w9side)
+(defn main ():i32
+  (w9-bump)
+  (w9-side-bump)
+  (return (w9-get)))
+"))
+        hp:String (try (emit-into sharev "--emit-nuch"
+                                  (string-as-view (addr-of dp)) sharev "w9side.nuch"))
+        r:&W9Objects (alloca W9Objects))
+    (set! (r 'sideobj) (str sidev "/side.o"))
+    (set! (r 'mainobj) (str (string-as-view (addr-of mdir)) "/main.o"))
+    (try (compile-object-in sharev (string-as-view (addr-of dp))
+                            (string-as-view (addr-of r 'sideobj))))
+    (try (compile-object-in sharev (string-as-view (addr-of mp))
+                            (string-as-view (addr-of r 'mainobj))))
+    (drop (addr-of hp))
+    (drop (addr-of mp))
+    (drop (addr-of dp))
+    (drop (addr-of sp))
+    (drop (addr-of mdir))
+    (drop (addr-of side))
+    (drop (addr-of share))
+    (return (ok (deref r)))))
+
+; 1 + 2 = 3 is reachable only if all three bumps and the read reach ONE counter
+; at run time. Which copy the linker kept is a separate question the symbol
+; table below answers: making the global `defvar-` still prints 3, because the
+; one weak `w9-bump` that survived carries its own file's copy with it.
+(deftest w9-multi-object-link
+  (let (o:W9Objects (try (w9-objects))
+        parts:String (w9-parts (addr-of o))
+        got:i32 (try (cc-link-exit (string-as-view (addr-of parts)))))
+    (when (!= got 3)
+      (fail! "the two objects do not share w9-count: expected 3, got " (as i64 got)))
+    (drop (addr-of parts))
+    (drop (addr-of o)))
+  (return (ok)))
+
+; The whole symbol table of both objects, which the shell asked two regexes
+; about. Every claim item 2 makes is one line of it: the inlined import is
+; duplicated and WEAK in both (`W`/`V`, so the linker keeps one), the call to
+; the other object is undefined in main.o (`U`, so something really crosses the
+; boundary), and each unit's own root form is the only strong definition it
+; carries. Asserted on `w9-bump`, this fixture's own inlined import, not on the
+; prelude's `arena-init`: since the Stage 16 split the prelude emits no runtime
+; at all (compile-time-imports.md §4b).
+(deftest w9-multi-object-weak-prelude
+  (let (o:W9Objects (try (w9-objects))
+        ms:String (try (nm-typed (string-as-view (addr-of o 'mainobj))))
+        ss:String (try (nm-typed (string-as-view (addr-of o 'sideobj)))))
+    (try (check-line-set (string-as-view (addr-of ms))
+                         "T main
+W w9-bump
+V w9-count
+W w9-get
+U w9-side-bump
+"
+                         "main.o"))
+    (try (check-line-set (string-as-view (addr-of ss))
+                         "W w9-bump
+V w9-count
+W w9-get
+T w9-side-bump
+"
+                         "side.o"))
+    (drop (addr-of ss))
+    (drop (addr-of ms))
+    (drop (addr-of o)))
+  (return (ok)))
+
+; Ownership is per definition, not per unit: the root's own forms stay external
+; (they are what a library EXPORTS), imported ones are copies, and `internal`
+; still wins for a private definer. One `--emit-llvm` decides all three, so a
+; rule that answered any of them wrongly fails here.
+;
+; The private definer's `_pN` is the only glob: N is the 1-based creation order
+; of the files that own private names, so it moves when an unrelated file gains
+; a `defn-`. What `internal` MEANS is asserted on the object instead — reading
+; the word in the IR does not say the symbol is unlinkable.
+(deftest w9-linkage-ownership
+  (let (share:String (try (test-scratch-sub "share"))
+        mdir:String (try (test-scratch-sub "main"))
+        sharev:StrView (string-as-view (addr-of share))
+        obj:String (str (string-as-view (addr-of mdir)) "/own.o")
+        sp:String (try (write-into sharev "w9share.nuc" (w9-share-src)))
+        mp:String (try (write-into (string-as-view (addr-of mdir)) "w9own.nuc"
+                         "(import w9share)
+(defn- w9-secret ():i32 (return 9))
+(defn w9-own ():i32 (return (+ (w9-get) (w9-secret))))
+(defn main ():i32 (return (w9-own)))
+"))
+        mv:StrView (string-as-view (addr-of mp))
+        c:Compiled (try (emit-checked sharev "--emit-llvm" mv))
+        ir:StrView (compiled-ir (addr-of c)))
+    (try (check-silent (addr-of c) "--emit-llvm on the importing file"))
+    (try (check-line ir "define i32 @w9-own() section \".text.w9-own\" {"))
+    (try (check-line ir "define weak_odr i32 @w9-get() section \".text.w9-get\" {"))
+    (try (check-line ir
+           "@w9-count = weak_odr global i32 0, section \".bss.w9-count\", align 4"))
+    (try (check-match ir "define internal i32 @w9own_p*__w9-secret() section *"))
+    (try (compile-object-in sharev mv (string-as-view (addr-of obj))))
+    (let (syms:String (try (nm-defined (string-as-view (addr-of obj)))))
+      (try (check-line-set (string-as-view (addr-of syms))
+                           "main
+w9-bump
+w9-count
+w9-get
+w9-own
+"
+                           "the object's linkable names"))
+      (drop (addr-of syms)))
+    (drop (addr-of c))
+    (drop (addr-of mp))
+    (drop (addr-of sp))
+    (drop (addr-of obj))
+    (drop (addr-of mdir))
+    (drop (addr-of share)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; The initializer the compiler can only half see
+; ---------------------------------------------------------------------------
+
+(defstruct DTree share:String dshare:String dside:String dmain:String
+                 dwhole:String)
+
+(extend DTree Drop)
+(defn drop ((self (ptr DTree))):void
+  (drop (addr-of self 'share))
+  (drop (addr-of self 'dshare))
+  (drop (addr-of self 'dside))
+  (drop (addr-of self 'dmain))
+  (drop (addr-of self 'dwhole)))
+
+(defn dtree-share ((t (ref DTree))):StrView
+  (return (string-as-view (addr-of t 'share))))
+(defn dtree-dshare ((t (ref DTree))):StrView
+  (return (string-as-view (addr-of t 'dshare))))
+(defn dtree-dside ((t (ref DTree))):StrView
+  (return (string-as-view (addr-of t 'dside))))
+(defn dtree-dmain ((t (ref DTree))):StrView
+  (return (string-as-view (addr-of t 'dmain))))
+(defn dtree-dwhole ((t (ref DTree))):StrView
+  (return (string-as-view (addr-of t 'dwhole))))
+
+; `d-runs` is on line 3 of `dshare.nuc`, and every unit below pins it there.
+; `dmain.nuc` imports `dside` through the header, so the `.nuch` has to exist
+; before the first compile, not merely before the link.
+(defn dtree ():!DTree
+  (let (share:String (try (test-scratch-sub "share"))
+        side:String (try (test-scratch-sub "side"))
+        mdir:String (try (test-scratch-sub "main"))
+        sharev:StrView (string-as-view (addr-of share))
+        mdirv:StrView (string-as-view (addr-of mdir))
+        t:&DTree (alloca DTree))
+    (set! (t 'dshare)
+      (try (write-into sharev "dshare.nuc"
+             "(defvar d-calls:i32 0)
+(defn d-next ():i32 (set! d-calls (+ d-calls 1)) (return d-calls))
+(defvar d-runs:i32 (d-next))
+(defn d-calls-get ():i32 (return d-calls))
+")))
+    (set! (t 'dside)
+      (try (write-into (string-as-view (addr-of side)) "dside.nuc"
+             "(import dshare)
+(defn d-side ():i32 (return (d-calls-get)))
+")))
+    (set! (t 'dmain)
+      (try (write-into mdirv "dmain.nuc"
+             "(import dshare)
+(import dside)
+(defn main ():i32 (return (d-calls-get)))
+")))
+    (set! (t 'dwhole)
+      (try (write-into mdirv "dwhole.nuc"
+             "(import dshare)
+(defn main ():i32 (return (d-calls-get)))
+")))
+    (let (h:String (try (emit-into sharev "--emit-nuch" (dtree-dside t)
+                                   sharev "dside.nuch")))
+      (drop (addr-of h)))
+    (set! (t 'share) share)
+    (drop (addr-of mdir))
+    (drop (addr-of side))
+    (return (ok (deref t)))))
+
+; Since imported globals are `weak_odr`, N objects that each inline the
+; declaring file share ONE global but each still carry a constructor for it. The
+; compiler cannot see the other half — whether another object also inlines that
+; file — so it warns on the half it can prove, and only under `-c`, the one flag
+; that says "relocatable object".
+(deftest w9-shared-init-warns-under-c
+  (let (t:DTree (try (dtree))
+        obj:String (str (dtree-share (addr-of t)) "/main.o")
+        c:Compiled (try (object-checked (dtree-share (addr-of t))
+                                        (dtree-dmain (addr-of t))
+                                        (string-as-view (addr-of obj)))))
+    (when (not (c 'ok?))
+      (fail! "expected an object\n     "
+             (test-show (string-as-view (addr-of c 'raw)))))
+    (try (check-warning-at (addr-of c 'diags) (dtree-dshare (addr-of t)) 3
+           "defvar: 'd-runs' has a run-time initializer, and this object only imports the file that declares it"))
+    (drop (addr-of c))
+    (drop (addr-of obj))
+    (drop (addr-of t)))
+  (return (ok)))
+
+; The object that OWNS the global runs the initializer exactly once however many
+; other objects import it, so warning there would be noise.
+(deftest w9-shared-init-silent-for-owner
+  (let (t:DTree (try (dtree))
+        obj:String (str (dtree-share (addr-of t)) "/own.o")
+        c:Compiled (try (object-checked (dtree-share (addr-of t))
+                                        (dtree-dshare (addr-of t))
+                                        (string-as-view (addr-of obj)))))
+    (try (check-silent (addr-of c) "-c on the file that declares the global"))
+    (drop (addr-of c))
+    (drop (addr-of obj))
+    (drop (addr-of t)))
+  (return (ok)))
+
+; `--emit-llvm` is equally how a WHOLE program is inspected, and says nothing
+; about an eventual link.
+(deftest w9-shared-init-silent-under-emit-llvm
+  (let (t:DTree (try (dtree))
+        c:Compiled (try (emit-checked (dtree-share (addr-of t)) "--emit-llvm"
+                                      (dtree-dwhole (addr-of t)))))
+    (try (check-silent (addr-of c) "--emit-llvm"))
+    (drop (addr-of c))
+    (drop (addr-of t)))
+  (return (ok)))
+
+; A whole-program build is silent *and* correct — the initializer runs once.
+; Asserted by value, so a future change that suppressed the constructor to
+; silence the warning fails here rather than passing quietly.
+(deftest w9-shared-init-whole-program-runs-once
+  (let (t:DTree (try (dtree))
+        bin:String (str (dtree-share (addr-of t)) "/whole.bin")
+        bv:StrView (string-as-view (addr-of bin))
+        c:Compiled (try (build-checked (dtree-share (addr-of t))
+                                       (dtree-dwhole (addr-of t)) bv)))
+    (when (not (c 'ok?))
+      (fail! "expected a program\n     "
+             (test-show (string-as-view (addr-of c 'raw)))))
+    (try (check-silent (addr-of c) "a whole-program build"))
+    (let (got:i32 (try (run-exit bv)))
+      (when (!= got 1)
+        (fail! "the initializer ran " (as i64 got) " time(s), not once")))
+    (drop (addr-of c))
+    (drop (addr-of bin))
+    (drop (addr-of t)))
+  (return (ok)))
+
+; And the thing the warning is about, by value: two objects, one shared global,
+; the initializer observed running twice. This is the measurement behind the
+; known limit in docs/compiler.md — if a future change ever makes it 1, this
+; fails and the doc is what needs updating.
+(deftest w9-shared-init-runs-once-per-object
+  (let (t:DTree (try (dtree))
+        mobj:String (str (dtree-share (addr-of t)) "/main.o")
+        sobj:String (str (dtree-share (addr-of t)) "/side.o"))
+    (try (compile-object-in (dtree-share (addr-of t)) (dtree-dmain (addr-of t))
+                            (string-as-view (addr-of mobj))))
+    (try (compile-object-in (dtree-share (addr-of t)) (dtree-dside (addr-of t))
+                            (string-as-view (addr-of sobj))))
+    (let (parts:String (str (string-as-view (addr-of mobj)) " "
+                            (string-as-view (addr-of sobj)))
+          got:i32 (try (cc-link-exit (string-as-view (addr-of parts)))))
+      (when (!= got 2)
+        (fail! "the initializer ran " (as i64 got) " time(s), not once per object"))
+      (drop (addr-of parts)))
+    (drop (addr-of sobj))
+    (drop (addr-of mobj))
+    (drop (addr-of t)))
+  (return (ok)))
