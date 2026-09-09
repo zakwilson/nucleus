@@ -28,6 +28,7 @@
 (import-use suite-s16)
 (import-use suite-modules)
 (import-use suite-float)
+(import-use suite-layout)
 
 
 
@@ -208,6 +209,30 @@
     (drop (addr-of r))
     (return (ok))))
 
+; `nucleusc <flag> <path>` must FAIL, with `needle` in some error. The
+; `--emit-cheader` refusals are the ones a `--emit-llvm` run cannot reach at
+; all: they fire while rendering the header, which that run never does.
+(defn check-emit-rejects (flag:StrView path:StrView needle:StrView):!void
+  (let (c:Command (command (compiler-path)))
+    (command-arg (addr-of c) "--diagnostics=sexp")
+    (command-arg (addr-of c) flag)
+    (command-arg (addr-of c) path)
+    (command-capture (addr-of c) true)
+    (match (run (addr-of c))
+      ((ok o)
+        (when (success? (addr-of o 'status))
+          (fail! "expected " flag " to refuse " path))
+        (let (ev:StrView (string-as-view (addr-of o 'err))
+              ds:(Vector Diagnostic) (try (read-diagnostics ev)))
+          (try (check-error-anywhere (addr-of ds) needle))
+          (drop (addr-of ds))
+          (drop (addr-of o))))
+      ((err e)
+        (drop (addr-of c))
+        (return (err e))))
+    (drop (addr-of c))
+    (return (ok))))
+
 (defn check-source-rejects (src:StrView needle:StrView):!void
   (let (p:String (try (test-write-file "t.nuc" src)))
     (try (check-file-rejects "" (string-as-view (addr-of p)) needle))
@@ -373,6 +398,119 @@
         (drop (addr-of c))
         (return (err e))))))
 
+; Whether clang accepted a C file, and what it said. For a `-fsyntax-only`
+; oracle `ok?` is the whole verdict: the assertions are `_Static_assert`s in the
+; file itself, so there is nothing left to compare.
+(defstruct CcCheck ok?:bool err:String)
+
+(extend CcCheck Drop)
+(defn drop ((self (ptr CcCheck))):void
+  (drop (addr-of self 'err)))
+
+(defn cc-check-run ((c (ref Command))):!CcCheck
+  (command-capture c true)
+  (match (run c)
+    ((ok o)
+      (let (ev:StrView (string-as-view (addr-of o 'err))
+            r:&CcCheck (alloca CcCheck))
+        (set! (r 'ok?) (success? (addr-of o 'status)))
+        (set! (r 'err) (try (string-from-view (addr-of ev))))
+        (drop (addr-of o))
+        (return (ok (deref r)))))
+    ((err e) (return (err e)))))
+
+; A complete compile-time `sizeof`/`offsetof` oracle for a machine this one
+; cannot execute: `_Static_assert`s rule, so there is no sysroot, no link and
+; no run.
+(defn cc-syntax-only-for (target:StrView path:StrView):!CcCheck
+  (let (flag:String (str "--target=" target)
+        c:Command (command "clang"))
+    (command-arg (addr-of c) (string-as-view (addr-of flag)))
+    (command-arg (addr-of c) "-ffreestanding")
+    (command-arg (addr-of c) "-fsyntax-only")
+    (command-arg (addr-of c) path)
+    (let (r:CcCheck (try (cc-check-run (addr-of c))))
+      (drop (addr-of flag))
+      (drop (addr-of c))
+      (return (ok r)))))
+
+; A C consumer of a generated header, compiled as strictly as a real one would
+; be — which is the half of "the header is valid C" that reading it cannot say.
+(defn cc-compile-strict (path:StrView):!CcCheck
+  (let (c:Command (command "clang"))
+    (command-arg (addr-of c) "-std=gnu11")
+    (command-arg (addr-of c) "-Wall")
+    (command-arg (addr-of c) "-Wextra")
+    (command-arg (addr-of c) "-Werror")
+    (command-arg (addr-of c) "-c")
+    (command-arg (addr-of c) path)
+    (command-arg (addr-of c) "-o")
+    (command-arg (addr-of c) "/dev/null")
+    (let (r:CcCheck (try (cc-check-run (addr-of c))))
+      (drop (addr-of c))
+      (return (ok r)))))
+
+; Whether the platform C compiler is on PATH, asked by running it. clang is a
+; hard dependency of this project and never skips; `cc` is not one, and it is
+; `cc` an ABI oracle wants — the claim is agreement with the compiler the
+; platform's own headers were written for.
+(defn have-cc? ():bool
+  (let (c:Command (command "cc"))
+    (command-arg (addr-of c) "--version")
+    (command-capture (addr-of c) true)
+    (match (run (addr-of c))
+      ((ok o)
+        (let (ok?:bool (success? (addr-of o 'status)))
+          (drop (addr-of o))
+          (drop (addr-of c))
+          (return ok?)))
+      ((err e)
+        (drop (addr-of c))
+        (return false)))))
+
+(defn require-cc ():!void
+  (when (not (have-cc?)) (skip! "no cc to build the oracle against"))
+  (return (ok)))
+
+; Build a C program with `cc` and run it; stdout is the answer. The oracle half
+; of a layout unit, whose claim is that the two compilers put the same bytes in
+; the same places. An empty `idir` adds no `-I`.
+(defn cc-run-file (idir:StrView path:StrView):!String
+  (let (sdir:StrView (try (test-scratch))
+        bin:String (str sdir "/c.bin")
+        cc:Command (command "cc"))
+    (command-arg (addr-of cc) "-w")
+    (when (not (= idir ""))
+      (command-arg (addr-of cc) "-I")
+      (command-arg (addr-of cc) idir))
+    (command-arg (addr-of cc) path)
+    (command-arg (addr-of cc) "-o")
+    (command-arg (addr-of cc) (string-as-view (addr-of bin)))
+    (command-capture (addr-of cc) true)
+    (command-stderr-to-stdout (addr-of cc) true)
+    (match (run (addr-of cc))
+      ((ok o)
+        (let (built:bool (success? (addr-of o 'status)))
+          (when (not built)
+            (fail! "cc refused the oracle program\n     "
+                   (test-show (string-as-view (addr-of o 'out)))))
+          (drop (addr-of o))))
+      ((err e) (return (err e))))
+    (drop (addr-of cc))
+    (let (rc:Command (command (string-as-view (addr-of bin))))
+      (command-search (addr-of rc) false)
+      (command-capture (addr-of rc) true)
+      (command-stderr-to-stdout (addr-of rc) true)
+      (match (run (addr-of rc))
+        ((ok o)
+          (let (ov:StrView (string-as-view (addr-of o 'out))
+                out:String (try (string-from-view (addr-of ov))))
+            (drop (addr-of o))
+            (drop (addr-of rc))
+            (drop (addr-of bin))
+            (return (ok out))))
+        ((err e) (return (err e)))))))
+
 ; Compile `path` to a binary and run it, stdout and stderr on one stream. An
 ; empty `dir` adds no `-I`, and an empty `extra` no extra argument.
 (defn build-run-file (dir:StrView extra:StrView path:StrView):!String
@@ -445,6 +583,12 @@
       (let (l:StrView (lines-iter-next (addr-of it)))
         (when (contains? l needle) (return (ok l))))))
   (fail! "no line containing " (sexp-quote needle) "\n     in: " (test-show hay)))
+
+; The prefix of `sv` before the first `b`, or all of it.
+(defn view-upto-byte (sv:StrView b:ui8):StrView
+  (match (strview-find-byte (addr-of sv) b)
+    ((some i) (return (strview-take-bytes sv i)))
+    (none (return sv))))
 
 ; How many lines of `hay` begin with `prefix`. A presence test cannot catch a
 ; DOUBLE emit, which is the way a re-drain goes wrong.

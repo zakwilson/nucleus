@@ -1493,6 +1493,74 @@ pipelines that had to be kept in step by eye.
 stale binary, which is how the first full run of this batch reported two
 spurious skips. Fixed at the root with `$(wildcard tests/suite-*.nuc)`.
 
+#### TF-6 category (c), the C layout units (2026-09-09)
+
+**4 shell functions → 25 tests**, 804 body lines retired (847 lines of the file,
+counting the four rationale headers, the `spawn` lines and the blanks between):
+`run_s16_pk_packed` (7), `run_s16_pk3_aligned` (7), `run_s16_bf_bitfields` (6),
+`run_s16_an_anonymous` (5) — the four largest bodies left in the suite, into a
+fourth suite module `tests/suite-layout.nuc`. `tests/run-tests.sh` is 10,576 →
+9,729 lines and 151 → 147 functions. `make test` is 460 shell + 506 native =
+966.
+
+**They were large because the same oracle was spelled out three times.** Each of
+the three layout units generated one `_Static_assert` per struct from `@sX =
+global i64 N` lines with its own `sed -nE`, ran it under five targets with its
+own loop, and guarded vacuity with its own `grep -c`. That is now one
+`check-sizes-cross-target`, and the other two recurring shapes are one function
+each: `check-agrees-with-cc` (one Nucleus program and one C program printing the
+same list, each built by its own compiler) and `check-cheader-roundtrip` (a
+generated header compiled by a strict C consumer, then read back). 123 lines of
+shared machinery stand behind 455 lines of tests, and most of those 455 are the
+embedded programs themselves — the same bytes the heredocs held.
+
+**The clang/`cc` split, made properly.** The shell skipped four units on
+`command -v clang`; clang is a hard dependency, as the fifth batch's correction
+established, so those are now plain failures. `cc` genuinely is optional — nothing in the
+build needs it — so the ten units whose oracle is the platform compiler open
+with `(try (require-cc))`. That is `skip!`'s second real consumer, and it was
+verified both ways: with `have-cc?` pointed at a name that does not exist the
+units report `(status skip)` at exit 0 and `(status fail)` with message
+`skipped: no cc to build the oracle against` under `--no-skip`.
+
+**Five assertions got stronger, and none got weaker.**
+
+- `s16-pk-access-align` counted `grep -cE '(load|store) i32[, ].*align 1$' >= 3`
+  over the whole module and then asserted a negative regex to cover the case the
+  count could not see. Each access is now asserted inside the function it
+  belongs to (`check-in-define`), so the claim names which access it means.
+- `s16-pk3-type-line-and-slots` matched the pad sizes as `[0-9]+`; the type line
+  is now exact — `%B = type { i8, [12 x i8], i32, [12 x i8] }`.
+- `s16-bf-cheader-roundtrip` asked for `: 4;` anywhere in the header, which any
+  four-bit field in any struct satisfies. It now pins all three bit-field lines.
+- `s16-an-refusals`' `--emit-cheader` case was a stderr grep; `check-emit-rejects`
+  makes it a comparison against a `Diagnostic` record, which is category (a)'s
+  upgrade applied to the one refusal an `--emit-llvm` run cannot reach.
+- The cross-target oracle now requires `nucleusc` to **succeed** on each target.
+  The shell wrote `|| true` and leaned entirely on the assert count, so a target
+  that stopped emitting at all would have been caught only by the vacuity guard,
+  with no message saying why.
+
+**Verified by breaking it**, three ways, each reverted by editing the source
+back: dropping `__attribute__((packed))` from the C side of the PK-1 table
+reported `x86_64-unknown-linux-gnu: … static assertion failed … 'sizeof(struct
+A) == 7' … expression evaluates to '12 == 7'`; unpacking `P` failed the type
+line, and unpacking it with the type line adjusted failed
+`in @rd: expected a line matching "*load i32, ptr %*, align 1"` with the whole
+function body printed; and the `cc` probe above.
+
+**One helper moved rather than being duplicated.** `fl-upto`, suite-float's
+"prefix before the first byte b", is wanted by the size-assert parser too. It is
+now `view-upto-byte` in `tests/nuctests.nuc` — the suite modules are one
+compilation unit, so a helper left in a sibling would have been reachable by
+accident, which is not the same as being shared on purpose.
+
+**One trap worth carrying forward.** A test that writes a header and a C
+consumer of it side by side must `#include` the header by **base name**. A
+quoted include resolves from the including file's own directory, and the path
+`test-write-file` returns is relative to the project root — which is right for
+`import-use`, and wrong for `#include`. Written up in `docs/testing.md`.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that

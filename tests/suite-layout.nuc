@@ -1,0 +1,763 @@
+; Stage 18 TF-6 category (c) — the C layout units: packing, alignment,
+; bit-fields and anonymous members.
+;
+; Design: design/stage18-tooling/overview.md §T6.6, and
+; design/stage16-ergonomics/c-boundary-defects.md §§7-9 and §11.
+;
+; Four of the five largest bodies in `tests/run-tests.sh`, and they were large
+; for one reason: each ran the same cross-target `_Static_assert` oracle over a
+; different table of struct shapes, spelled out three times. Here it is one
+; function, and so is each of the two ways a unit asks the platform C compiler
+; the same question the Nucleus program asks.
+
+; ---------------------------------------------------------------------------
+; The cross-target size oracle
+; ---------------------------------------------------------------------------
+
+; clang's driver takes the bare architecture for AVR; nucleusc wants a triple.
+(defn layout-nuc-target (t:StrView):StrView
+  (when (= t "avr") (return "avr-unknown-unknown-elf"))
+  (return t))
+
+; `avr` is what pays for the list: its BIGGEST_ALIGNMENT is 8 bits, so every
+; type is byte-aligned there and a rule inferred from x86 alone is wrong.
+(defn layout-targets ():StrView
+  (return "x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu riscv64-unknown-linux-gnu i386-unknown-linux-gnu avr"))
+
+; One `_Static_assert(sizeof(struct X)==N,"X");` for a `@sX = global i64 N`
+; line, appended to `out`; 1 if the line was one, 0 if it was not.
+(defn size-assert-line (l:StrView (out (ref String))):i64
+  (when (not (strview-has-prefix l "@s")) (return 0))
+  (let (marker:StrView " = global i64 ")
+    (match (strview-find (addr-of l) (addr-of marker))
+      ((some at)
+        (let (nm:StrView (strview-drop-bytes (strview-take-bytes l at) 2)
+              sz:StrView (view-upto-byte (strview-drop-bytes l (+ at 14)) 44))
+          (str-into out "_Static_assert(sizeof(struct " nm ")==" sz ",\""
+                    nm "\");\n")
+          (return 1)))
+      (none (return 0)))))
+
+; The sizes a module states, as C the target's own compiler can rule on. Read
+; back out of the IR rather than printed by a running program, which is what
+; makes a machine this one cannot execute testable at all.
+(defn size-asserts (ir:StrView (out (ref String))):i64
+  (let (n:i64 0
+        it:LineIter (strview-lines (addr-of ir)))
+    (while (not (lines-iter-done (addr-of it)))
+      (set! n (+ n (size-assert-line (lines-iter-next (addr-of it)) out))))
+    (return n)))
+
+; The whole cross-target gate, which three units share: emit the sizes for one
+; target, put them beside the identical C declarations as `_Static_assert`s, and
+; let clang rule. `n` guards against the vacuous pass an empty assertion list
+; would otherwise be.
+(defn check-sizes-cross-target (stem:StrView nuc-src:StrView c-decls:StrView
+                                n:i64):!void
+  (let (nn:String (str stem ".nuc")
+        p:String (try (test-write-file (string-as-view (addr-of nn)) nuc-src))
+        pv:StrView (string-as-view (addr-of p))
+        sp:StrView " "
+        targets:StrView (layout-targets)
+        it:SplitIter (strview-split (addr-of targets) (addr-of sp)))
+    (while (not (split-iter-done (addr-of it)))
+      (let (t:StrView (split-iter-next (addr-of it))
+            c:Compiled (try (compile-path-for (layout-nuc-target t) pv)))
+        (when (not (c 'ok?))
+          (fail! t ": " (test-show (string-as-view (addr-of c 'raw)))))
+        (let (chk:String (str c-decls)
+              got:i64 (size-asserts (string-as-view (addr-of c 'ir))
+                                    (addr-of chk))
+              cn:String (str stem "-" t ".c"))
+          (when (!= got n)
+            (fail! t ": expected " n " sizes in the module, got " got))
+          (let (cp:String (try (test-write-file (string-as-view (addr-of cn))
+                                                (string-as-view (addr-of chk))))
+                r:CcCheck (try (cc-syntax-only-for
+                                 t (string-as-view (addr-of cp)))))
+            (when (not (r 'ok?))
+              (fail! t ": " (test-show (string-as-view (addr-of r 'err)))))
+            (drop (addr-of r))
+            (drop (addr-of cp)))
+          (drop (addr-of cn))
+          (drop (addr-of chk)))
+        (drop (addr-of c))))
+    (drop (addr-of p))
+    (drop (addr-of nn))
+    (return (ok))))
+
+; ---------------------------------------------------------------------------
+; The two compilers on the same question
+; ---------------------------------------------------------------------------
+
+; One Nucleus program and one C program that print the same list, each built by
+; its own compiler, and the answers compared. `cidir` is the C side's `-I`
+; alone: nucleusc resolves an `import-use` path from the project root already,
+; where a quoted `#include` resolves from the including file's directory.
+(defn check-agrees-with-cc (stem:StrView cidir:StrView nuc-src:StrView
+                            c-src:StrView):!void
+  (let (nn:String (str stem ".nuc")
+        cn:String (str stem ".c")
+        np:String (try (test-write-file (string-as-view (addr-of nn)) nuc-src))
+        cp:String (try (test-write-file (string-as-view (addr-of cn)) c-src))
+        got:String (try (build-run-file "" "" (string-as-view (addr-of np))))
+        want:String (try (cc-run-file cidir (string-as-view (addr-of cp)))))
+    (try (check-golden (string-as-view (addr-of got))
+                       (string-as-view (addr-of want))))
+    (drop (addr-of want))
+    (drop (addr-of got))
+    (drop (addr-of cp))
+    (drop (addr-of np))
+    (drop (addr-of cn))
+    (drop (addr-of nn))
+    (return (ok))))
+
+; The same, over a header this test wrote: both programs include it, so the
+; question is what each compiler made of the same C declarations. The C side
+; includes it by BASE name — the two files are written side by side, and a
+; quoted `#include` resolves from the including file's own directory, where
+; nucleusc resolves an `import-use` path from the project root.
+(defn check-header-agrees (stem:StrView header:StrView nuc-main:StrView
+                           c-main:StrView):!void
+  (let (hn:String (str stem ".h")
+        hp:String (try (test-write-file (string-as-view (addr-of hn)) header))
+        hv:StrView (string-as-view (addr-of hp))
+        n:String (str "(import-use \"stdio.h\")\n(import-use \"" hv "\")\n"
+                      nuc-main)
+        c:String (str "#include <stdio.h>\n#include \""
+                      (string-as-view (addr-of hn)) "\"\n" c-main))
+    (try (check-agrees-with-cc stem "" (string-as-view (addr-of n))
+                              (string-as-view (addr-of c))))
+    (drop (addr-of c))
+    (drop (addr-of n))
+    (drop (addr-of hp))
+    (drop (addr-of hn))
+    (return (ok))))
+
+; A generated header is valid C only if a C compiler says so, and faithful only
+; if reading it back reproduces the sizes. Both halves want it on disk, so they
+; are one step; an empty `body` asks only the first.
+(defn check-cheader-roundtrip (stem:StrView header:StrView asserts:StrView
+                               body:StrView want:StrView):!void
+  (let (hn:String (str stem ".h")
+        hp:String (try (test-write-file (string-as-view (addr-of hn)) header))
+        hv:StrView (string-as-view (addr-of hp))
+        cn:String (str stem "-use.c")
+        csrc:String (str "#include \"" (string-as-view (addr-of hn)) "\"\n"
+                         asserts)
+        cp:String (try (test-write-file (string-as-view (addr-of cn))
+                                        (string-as-view (addr-of csrc))))
+        r:CcCheck (try (cc-compile-strict (string-as-view (addr-of cp)))))
+    (when (not (r 'ok?))
+      (fail! "clang refused the generated header\n     "
+             (test-show (string-as-view (addr-of r 'err)))))
+    (drop (addr-of r))
+    (when (not (= body ""))
+      (let (nsrc:String (str "(import-use \"" hv "\")\n(import-use \"stdio.h\")\n"
+                             "(defn main ():i32 " body " (return 0))\n")
+            nn:String (str stem "-rt.nuc")
+            np:String (try (test-write-file (string-as-view (addr-of nn))
+                                            (string-as-view (addr-of nsrc))))
+            got:String (try (build-run-file "" ""
+                                            (string-as-view (addr-of np))))
+            gv:StrView (string-as-view (addr-of got)))
+        (try (check-eq (strview-trim-end (addr-of gv)) want))
+        (drop (addr-of got))
+        (drop (addr-of np))
+        (drop (addr-of nn))
+        (drop (addr-of nsrc))))
+    (drop (addr-of cp))
+    (drop (addr-of csrc))
+    (drop (addr-of cn))
+    (drop (addr-of hp))
+    (drop (addr-of hn))
+    (return (ok))))
+
+; ---------------------------------------------------------------------------
+; PK-1: packed structs (§7)
+;
+; The gate is deliberately three-part, because a `sizeof`/offset diff cannot see
+; two of the three consequences: the IR type line has to say `<{ … }>`, and
+; every access through a packed field has to say `align 1` or the IR states an
+; alignment the layout does not provide — a real miscompile on a
+; strict-alignment target and under vectorization on x86.
+; ---------------------------------------------------------------------------
+
+; The cross-target oracle earns its place immediately: it caught AVR's
+; BIGGEST_ALIGNMENT being 8 bits, so `struct B` is 7 bytes there and not 12 —
+; wrong since before packing existed, and invisible to a host-only layout test.
+(deftest s16-pk-layout-cross-target
+  (try (check-sizes-cross-target "pk"
+    "(defstruct :packed A c:i8 i:i32 s:i16)
+(defstruct B c:i8 i:i32 s:i16)
+(defstruct :packed C c:i8 l:i64)
+(defstruct D a:i16 (b (array i32 3)) c:i8)
+(defstruct :packed E a:i16 (b (array i32 3)) c:i8)
+(defstruct F c:i8 inner:A i:i32)
+(defvar sA:i64 (sizeof A))
+(defvar sB:i64 (sizeof B))
+(defvar sC:i64 (sizeof C))
+(defvar sD:i64 (sizeof D))
+(defvar sE:i64 (sizeof E))
+(defvar sF:i64 (sizeof F))
+"
+    "#include <stdint.h>
+struct __attribute__((packed)) A { int8_t c; int32_t i; int16_t s; };
+struct B { int8_t c; int32_t i; int16_t s; };
+struct __attribute__((packed)) C { int8_t c; int64_t l; };
+struct D { int16_t a; int32_t b[3]; int8_t c; };
+struct __attribute__((packed)) E { int16_t a; int32_t b[3]; int8_t c; };
+struct F { int8_t c; struct A inner; int32_t i; };
+"
+    6)))
+
+; The two consequences a layout diff is blind to. Each access is asserted inside
+; the function it belongs to: a count over the whole module cannot say which
+; access it counted, which is what the shell's `grep -c … >= 3` could not.
+(deftest s16-pk-access-align
+  (let (ir:String (try (source-ir "(defstruct :packed P c:i8 i:i32)
+(defstruct Q c:i8 i:i32)
+(defn rd (p:ptr:P):i32 (return (get p 'i)))
+(defn wr (p:ptr:P):void (set! (p 'i) 7))
+(defn lit ():ptr:P (return (P 1 2)))
+(defn rdq (q:ptr:Q):i32 (return (get q 'i)))
+"))
+        m:StrView (string-as-view (addr-of ir)))
+    (try (check-line m "%P = type <{ i8, i32 }>"))
+    (try (check-line m "%Q = type { i8, i32 }"))
+    (try (check-in-define m "rd" "*load i32, ptr %*, align 1"))
+    (try (check-in-define m "wr" "*store i32 7, ptr %*, align 1"))
+    (try (check-in-define m "lit" "*store i32 2, ptr %*, align 1"))
+    (try (check-in-define m "rdq" "*load i32, ptr %*, align 4"))
+    (drop (addr-of ir))))
+
+(deftest s16-pk-values
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct :packed R c:i8 i:i32 s:i16)
+(defn main ():i32
+  (let (p:ptr:R (alloca R))
+    (set! (p 'c) 1) (set! (p 'i) 305419896) (set! (p 's) -3)
+    (printf \"%ld %d %d %d\\n\" (sizeof R)
+      (as i32 (get p 'c)) (get p 'i) (as i32 (get p 's))))
+  (let (r:ptr:R (R 7 8 9))
+    (printf \"%d %d %d\\n\" (as i32 (get r 'c)) (get r 'i) (as i32 (get r 's))))
+  (return 0))
+"))
+        ov:StrView (string-as-view (addr-of out)))
+    (try (check-eq (strview-trim-end (addr-of ov)) "7 1 305419896 -3
+7 8 9"))
+    (drop (addr-of out))))
+
+; PK-2, import side: the two positions C honours, the one it ignores (both clang
+; and gcc warn `-Wignored-attributes` there, so honouring it would disagree with
+; every C compiler on the platform), and the alias path — an alias shares the
+; field table, which is NOT the same as sharing the layout.
+(deftest s16-pk-import-positions
+  (try (require-cc))
+  (try (check-header-agrees "pkh"
+    "struct __attribute__((packed)) PK1 { char c; int i; short s; };
+struct PK2 { char c; int i; short s; } __attribute__((packed));
+typedef struct { char c; int i; } __attribute__((packed)) PK3;
+typedef struct { char c; int i; } PK4;
+typedef struct { char c; int i; } PK5 __attribute__((packed));
+struct __attribute__((__packed__)) PK7 { char c; long l; };
+"
+    "(defn main ():i32
+  (printf \"%ld %ld %ld %ld %ld %ld\\n\" (sizeof PK1) (sizeof PK2) (sizeof PK3)
+    (sizeof PK4) (sizeof PK5) (sizeof PK7))
+  (return 0))
+"
+    "int main(void){ printf(\"%zu %zu %zu %zu %zu %zu\\n\", sizeof(struct PK1),
+  sizeof(struct PK2), sizeof(PK3), sizeof(PK4), sizeof(PK5), sizeof(struct PK7));
+  return 0; }
+")))
+
+; PK-2, export side: the attribute is written back out, a C consumer's own
+; `_Static_assert` agrees, and re-importing the generated header reproduces the
+; size.
+(deftest s16-pk-cheader-roundtrip
+  (let (h:String (try (source-cheader
+                        "(defstruct :packed WireHdr tag:i8 len:i32 flags:i16)
+(defstruct PlainHdr tag:i8 len:i32 flags:i16)
+(defn wire-len (h:ptr:WireHdr):i32 (return (get h 'len)))
+"))
+        hv:StrView (string-as-view (addr-of h)))
+    (try (check-line hv "} __attribute__((packed)) WireHdr;"))
+    (try (check-line hv "} PlainHdr;"))
+    (try (check-cheader-roundtrip "pkx" hv
+           "_Static_assert(sizeof(WireHdr)==7,\"packed\");
+_Static_assert(sizeof(PlainHdr)==12,\"plain\");
+"
+           "(printf \"%ld %ld\\n\" (sizeof WireHdr) (sizeof PlainHdr))" "7 12"))
+    (drop (addr-of h))))
+
+; `epoll_event` — cheader-parser-vs-libclang.md §2 measured this as the one
+; `sizeof` mismatch in its 103-type census, and the one row it conceded to
+; libclang outright.
+(deftest s16-pk-epoll-event
+  (try (require-cc))
+  (try (check-agrees-with-cc "pkep" ""
+    "(import-use \"sys/epoll.h\")
+(import-use \"stdio.h\")
+(defn main ():i32 (printf \"%ld\\n\" (sizeof epoll_event)) (return 0))
+"
+    "#include <stdio.h>
+#include <sys/epoll.h>
+int main(void){printf(\"%zu\\n\",sizeof(struct epoll_event));return 0;}
+")))
+
+(deftest s16-pk-unknown-attribute-refused
+  (try (check-source-rejects "(defstruct :squished S x:i32)
+(defn main ():i32 (return 0))
+"
+         "unknown defstruct attribute ':squished'")))
+
+; ---------------------------------------------------------------------------
+; PK-3: `__attribute__((aligned(N)))` (§7)
+;
+; A DIFFERENT mechanism from packing: it raises a struct's or a member's
+; alignment (never lowers it), which grows `sizeof` and moves offsets while
+; LLVM's own type models neither — so the growth has to be explicit `[k x i8]`
+; elements, and every GEP index past one of them shifts.
+; ---------------------------------------------------------------------------
+
+; `aligned` is where the cross-target oracle earns its keep twice over:
+; `aligned(2)` on an `int` struct is IGNORED, and the packed+aligned pair means
+; the two mechanisms have to compose rather than override.
+(deftest s16-pk3-align-cross-target
+  (try (check-sizes-cross-target "pk3"
+    "(defstruct :align 16 A x:i32)
+(defstruct B c:i8 (:align 16 i:i32))
+(defstruct :packed :align 4 C c:i8 i:i32)
+(defstruct :packed D c:i8 (:align 4 i:i32))
+(defstruct :align 2 E x:i32)
+(defstruct F inner:A c:i8)
+(defvar sA:i64 (sizeof A))
+(defvar sB:i64 (sizeof B))
+(defvar sC:i64 (sizeof C))
+(defvar sD:i64 (sizeof D))
+(defvar sE:i64 (sizeof E))
+(defvar sF:i64 (sizeof F))
+"
+    "#include <stdint.h>
+struct A { int32_t x; } __attribute__((aligned(16)));
+struct B { int8_t c; int32_t i __attribute__((aligned(16))); };
+struct __attribute__((packed,aligned(4))) C { int8_t c; int32_t i; };
+struct __attribute__((packed)) D { int8_t c; int32_t i __attribute__((aligned(4))); };
+struct E { int32_t x; } __attribute__((aligned(2)));
+struct F { struct A inner; int8_t c; };
+"
+    6)))
+
+; What a size diff is blind to: the pad elements in the type line, the `align N`
+; an alloca must state (LLVM derives its own from the element list, which knows
+; nothing about the attribute), and the GEP index of a field after a pad.
+(deftest s16-pk3-type-line-and-slots
+  (let (ir:String (try (source-ir "(import-use \"stdio.h\")
+(defstruct :align 16 A x:i32)
+(defstruct B c:i8 (:align 16 i:i32))
+(defn read-i (p:ptr:B):i32 (return (get p 'i)))
+(defn main ():i32
+  (let (a:ptr:A (alloca A) b:ptr:B (B 1 7))
+    (set! (a 'x) 5)
+    (printf \"%d %d\\n\" (get a 'x) (read-i b)))
+  (return 0))
+"))
+        m:StrView (string-as-view (addr-of ir)))
+    ; Tail pad on the over-aligned struct, inter-field pad on the over-aligned
+    ; member -- and `i` is element 2, not element 1.
+    (try (check-line m "%A = type { i32, [12 x i8] }"))
+    (try (check-line m "%B = type { i8, [12 x i8], i32, [12 x i8] }"))
+    (try (check-in-define m "main" "*alloca %A, align 16"))
+    (try (check-in-define m "read-i"
+                          "*getelementptr inbounds %B, ptr %*, i32 0, i32 2"))
+    (try (check-not-match m "*getelementptr inbounds %B, ptr %*, i32 0, i32 1"))
+    (drop (addr-of ir))))
+
+; The values round-trip, and the member really is where C puts it — the offset
+; is read back rather than assumed.
+(deftest s16-pk3-values
+  (try (require-cc))
+  (try (check-agrees-with-cc "pk3v" ""
+    "(import-use \"stdio.h\")
+(defstruct B c:i8 (:align 16 i:i32))
+(defn main ():i32
+  (let (p:ptr:B (B 1 305419896))
+    (printf \"%ld %ld %d %d\\n\" (sizeof B)
+      (- (unsafe/cast i64 (addr-of p 'i)) (unsafe/cast i64 p))
+      (as i32 (get p 'c)) (get p 'i)))
+  (return 0))
+"
+    "#include <stdio.h>
+#include <stddef.h>
+struct B { char c; int i __attribute__((aligned(16))); };
+int main(void){ struct B b = {1, 305419896};
+  printf(\"%zu %zu %d %d\\n\", sizeof(struct B), offsetof(struct B,i), b.c, b.i);
+  return 0; }
+")))
+
+; Import side: every position C honours, plus the `__alignof__(T)` argument
+; form — the idiom that PINS a member's alignment rather than raising it, and
+; the one that matters, since it is what `max_align_t` is made of.
+(deftest s16-pk3-import-positions
+  (try (require-cc))
+  (try (check-header-agrees "pk3h"
+    "struct __attribute__((aligned(16))) AL1 { int x; };
+struct AL2 { int x; } __attribute__((aligned(16)));
+typedef struct { int x; } __attribute__((aligned(32))) AL3;
+struct AL4 { char c; int i __attribute__((aligned(16))); };
+struct AL5 { char c; long l __attribute__((__aligned__(__alignof__(long)))); };
+struct __attribute__((packed, aligned(4))) AL6 { char c; int i; };
+"
+    "(defn main ():i32
+  (printf \"%ld %ld %ld %ld %ld %ld\\n\" (sizeof AL1) (sizeof AL2) (sizeof AL3)
+    (sizeof AL4) (sizeof AL5) (sizeof AL6))
+  (return 0))
+"
+    "int main(void){ printf(\"%zu %zu %zu %zu %zu %zu\\n\", sizeof(struct AL1),
+  sizeof(struct AL2), sizeof(AL3), sizeof(struct AL4), sizeof(struct AL5),
+  sizeof(struct AL6)); return 0; }
+")))
+
+; `max_align_t` — cheader-parser-vs-libclang.md §1 listed it among the nine
+; blocked types, misattributed to `long double`; the actual blocker is the
+; member `__attribute__((__aligned__(…)))` in clang's own definition.
+(deftest s16-pk3-max-align-t
+  (try (require-cc))
+  (try (check-agrees-with-cc "pk3ma" ""
+    "(import-use \"stddef.h\")
+(import-use \"stdio.h\")
+(defn main ():i32 (printf \"%ld\\n\" (sizeof max_align_t)) (return 0))
+"
+    "#include <stdio.h>
+#include <stddef.h>
+int main(void){printf(\"%zu\\n\",sizeof(max_align_t));return 0;}
+")))
+
+; Export side: both attributes are written back out, at the struct and at the
+; member, and a C consumer agrees on the sizes they produce.
+(deftest s16-pk3-cheader-roundtrip
+  (let (h:String (try (source-cheader "(defstruct :align 32 Cache x:i64)
+(defstruct Slot c:i8 (:align 16 v:i32))
+(defn slot-v (s:ptr:Slot):i32 (return (get s 'v)))
+"))
+        hv:StrView (string-as-view (addr-of h)))
+    (try (check-line hv "} __attribute__((aligned(32))) Cache;"))
+    (try (check-line hv "    int32_t v __attribute__((aligned(16)));"))
+    (try (check-cheader-roundtrip "pk3x" hv
+           "_Static_assert(sizeof(Cache)==32,\"cache\");
+_Static_assert(sizeof(Slot)==32,\"slot\");
+"
+           "" ""))
+    (drop (addr-of h))))
+
+; A non-power-of-two alignment is refused rather than reaching LLVM as an
+; unparseable `align 3`, and an `aligned(N)` whose N we cannot evaluate leaves
+; the C type opaque WITH a reason instead of a guessed layout.
+(deftest s16-pk3-bad-align-refused
+  (try (check-source-rejects "(defstruct :align 3 S x:i32)
+(defn main ():i32 (return 0))
+"
+         "':align 3' must be a power of two"))
+  (let (h:String (try (test-write-file "ua.h"
+                        "struct __attribute__((aligned(NOPE))) UA { int x; };\n"))
+        src:String (str "(import-use \"" (string-as-view (addr-of h)) "\")
+(defn main ():i32 (return (as i32 (sizeof UA))))
+"))
+    (try (check-source-rejects (string-as-view (addr-of src))
+                               "is an opaque type declared at"))
+    (drop (addr-of src))
+    (drop (addr-of h))))
+
+; ---------------------------------------------------------------------------
+; BF-1…BF-4: bit-fields (§8)
+;
+; `(:bits 24 flags2:i32)` on the declaring side, `: 24` on the importing side.
+; Several Nucleus fields share one storage unit, which is the invariant FR-1 had
+; to break first — so every assertion here is really about `struct-walk` being
+; the one place the layout is decided, and about the shift/mask access agreeing
+; with what C compiled.
+; ---------------------------------------------------------------------------
+
+; Bit-field allocation is where C is most implementation-defined, so matching
+; the platform compiler IS the specification. I/J/K are the shapes that tell the
+; four rules apart; A-H alone cannot. Fixed-width C types throughout, because
+; `int c:24` is a hard error on AVR, where `int` is 16 bits.
+(deftest s16-bf-layout-cross-target
+  (try (check-sizes-cross-target "bf"
+    "(defstruct A (:bits 3 a:i32) (:bits 5 b:ui32) (:bits 24 c:i32) d:i32)
+(defstruct B c:i8 (:bits 3 a:i32))
+(defstruct C (:bits 1 x:ui32) (:bits 0 z:ui32) (:bits 1 y:ui32))
+(defstruct D (:bits 31 a:ui32) (:bits 2 b:ui32))
+(defstruct E c:i8 (:bits 40 l:i64))
+(defstruct :packed F c:i8 (:bits 3 a:i32) (:bits 30 b:i32))
+(defstruct G (:bits 9 s:i16) c:i8 (:bits 20 i:i32))
+(defstruct H (:bits 3 a:ui32) (:bits 3 b:ui32))
+(defstruct I (:bits 31 a:ui32) (:bits 2 b:ui32) (:bits 31 c:ui32))
+(defstruct J c:i8 (:bits 0 z:ui32) d:i8)
+(defstruct :packed K (:bits 1 x:ui32) (:bits 0 z:ui32) (:bits 1 y:ui32))
+(defvar sA:i64 (sizeof A))
+(defvar sB:i64 (sizeof B))
+(defvar sC:i64 (sizeof C))
+(defvar sD:i64 (sizeof D))
+(defvar sE:i64 (sizeof E))
+(defvar sF:i64 (sizeof F))
+(defvar sG:i64 (sizeof G))
+(defvar sH:i64 (sizeof H))
+(defvar sI:i64 (sizeof I))
+(defvar sJ:i64 (sizeof J))
+(defvar sK:i64 (sizeof K))
+"
+    "#include <stdint.h>
+struct A { int32_t a:3; uint32_t b:5; int32_t c:24; int32_t d; };
+struct B { int8_t c; int32_t a:3; };
+struct C { uint32_t x:1; uint32_t :0; uint32_t y:1; };
+struct D { uint32_t a:31; uint32_t b:2; };
+struct E { int8_t c; int64_t l:40; };
+struct __attribute__((packed)) F { int8_t c; int32_t a:3; int32_t b:30; };
+struct G { int16_t s:9; int8_t c; int32_t i:20; };
+struct H { uint32_t a:3; uint32_t b:3; };
+struct I { uint32_t a:31; uint32_t b:2; uint32_t c:31; };
+struct J { int8_t c; uint32_t :0; int8_t d; };
+struct __attribute__((packed)) K { uint32_t x:1; uint32_t :0; uint32_t y:1; };
+"
+    11)))
+
+; A correct offset with a wrong shift or mask is invisible to a layout diff,
+; which is why §11 asks for this one: write a pattern through every bit-field
+; and read it back, against the identical C program. Signed truncation, an
+; unsigned neighbour, a field that crosses a natural boundary inside a packed
+; struct, and a struct literal.
+(deftest s16-bf-values
+  (try (require-cc))
+  (try (check-agrees-with-cc "bfv" ""
+    "(import-use \"stdio.h\")
+(defstruct A (:bits 3 a:i32) (:bits 5 b:ui32) (:bits 24 c:i32) d:i32)
+(defstruct :packed F c:i8 (:bits 3 a:i32) (:bits 30 b:i32))
+(defn main ():i32
+  (let (p:ptr:A (alloca A))
+    (set! (p 'a) -3) (set! (p 'b) 21) (set! (p 'c) -100000) (set! (p 'd) 7)
+    (printf \"%ld %d %d %d %d\\n\" (sizeof A) (get p 'a) (as i32 (get p 'b)) (get p 'c) (get p 'd)))
+  (let (q:ptr:F (alloca F))
+    (set! (q 'c) 65) (set! (q 'a) 2) (set! (q 'b) 123456789)
+    (printf \"%ld %d %d %d\\n\" (sizeof F) (as i32 (get q 'c)) (get q 'a) (get q 'b)))
+  (let (r:ptr:A (A 1 2 3 4))
+    (printf \"%d %d %d %d\\n\" (get r 'a) (as i32 (get r 'b)) (get r 'c) (get r 'd)))
+  (return 0))
+"
+    "#include <stdio.h>
+struct A { int a:3; unsigned b:5; int c:24; int d; };
+struct __attribute__((packed)) F { char c; int a:3; int b:30; };
+int main(void){
+  struct A p; p.a=-3; p.b=21; p.c=-100000; p.d=7;
+  printf(\"%zu %d %d %d %d\\n\", sizeof(struct A), p.a, p.b, p.c, p.d);
+  struct F q; q.c=65; q.a=2; q.b=123456789;
+  printf(\"%zu %d %d %d\\n\", sizeof(struct F), q.c, q.a, q.b);
+  struct A r = {1,2,3,4};
+  printf(\"%d %d %d %d\\n\", r.a, r.b, r.c, r.d);
+  return 0; }
+")))
+
+; BF-4, the importer: `: width`, unnamed members, a zero-width boundary, and the
+; same declaration reached through a typedef.
+(deftest s16-bf-import
+  (try (require-cc))
+  (try (check-header-agrees "bfh"
+    "struct BI1 { int a:3; unsigned b:5; int c:24; int d; };
+struct BI2 { unsigned x:1; unsigned :3; unsigned y:1; };
+struct BI3 { unsigned x:1; unsigned :0; unsigned y:1; };
+typedef struct { char c; int a:3; } BI4;
+struct __attribute__((packed)) BI5 { char c; int a:3; int b:30; };
+"
+    "(defn main ():i32
+  (let (p:ptr:BI1 (alloca BI1))
+    (set! (p 'a) -3) (set! (p 'b) 21) (set! (p 'c) -100000) (set! (p 'd) 7)
+    (printf \"%ld %ld %ld %ld %ld %d %d %d %d\\n\" (sizeof BI1) (sizeof BI2)
+      (sizeof BI3) (sizeof BI4) (sizeof BI5)
+      (get p 'a) (as i32 (get p 'b)) (get p 'c) (get p 'd)))
+  (return 0))
+"
+    "int main(void){ struct BI1 p; p.a=-3; p.b=21; p.c=-100000; p.d=7;
+  printf(\"%zu %zu %zu %zu %zu %d %d %d %d\\n\", sizeof(struct BI1),
+    sizeof(struct BI2), sizeof(struct BI3), sizeof(BI4), sizeof(struct BI5),
+    p.a, p.b, p.c, p.d);
+  return 0; }
+")))
+
+; `FILE` — the marquee casualty in cheader-parser-vs-libclang.md §1, opaque for
+; one reason (`int _flags2:24`). Nine blocked types become seven.
+(deftest s16-bf-file
+  (try (require-cc))
+  (try (check-agrees-with-cc "bff" ""
+    "(import-use \"stdio.h\")
+(defn main ():i32 (printf \"%ld\\n\" (sizeof FILE)) (return 0))
+"
+    "#include <stdio.h>
+int main(void){printf(\"%zu\\n\",sizeof(FILE));return 0;}
+")))
+
+; Export: `--emit-cheader` writes `: w` back out and a C consumer agrees.
+(deftest s16-bf-cheader-roundtrip
+  (let (h:String (try (source-cheader
+                        "(defstruct Hdr (:bits 4 ver:ui32) (:bits 12 len:ui32) (:bits 16 id:i32) tail:i32)
+(defn hdr-ver (h:ptr:Hdr):ui32 (return (get h 'ver)))
+"))
+        hv:StrView (string-as-view (addr-of h)))
+    (try (check-line hv "    uint32_t ver : 4;"))
+    (try (check-line hv "    uint32_t len : 12;"))
+    (try (check-line hv "    int32_t id : 16;"))
+    (try (check-cheader-roundtrip "bfx" hv
+           "_Static_assert(sizeof(Hdr)==8,\"hdr\");\n" "" ""))
+    (drop (addr-of h))))
+
+; The three things a bit-field may not be. A field address is C's own
+; constraint, not a Nucleus limitation, which is what makes refusing it the
+; faithful answer rather than a gap.
+(deftest s16-bf-refusals
+  (try (check-source-rejects "(defstruct S (:bits 3 a:i32))
+(defn f (p:ptr:S):ptr (return (addr-of p 'a)))
+(defn main ():i32 (return 0))
+"
+         "a bit-field has no address"))
+  (try (check-source-rejects "(defstruct S (:bits 40 a:i32))
+(defn main ():i32 (return 0))
+"
+         "exceeds the 32 bits of its declared type"))
+  (try (check-source-rejects "(defstruct S (:bits 3 a:f32))
+(defn main ():i32 (return 0))
+"
+         "must have an integer type")))
+
+; ---------------------------------------------------------------------------
+; AN-1/AN-2 + C1a: C11 anonymous members (§9, §11)
+;
+; An anonymous member is an ordinary nested member whose OWN names are the ones
+; visible from outside, so the whole feature is a transitive lookup over FR-1's
+; path. Every check below therefore compares against the identical C program:
+; the outside names must resolve to the same bytes clang resolves them to, not
+; merely to some consistent bytes of our own.
+; ---------------------------------------------------------------------------
+
+; Two levels of minted name (a struct inside an anonymous union inside a
+; struct), a named member of an anonymous type beside them, and an anonymous
+; struct that opens a declaration — the three shapes glibc uses.
+(deftest s16-an-import
+  (try (require-cc))
+  (try (check-agrees-with-cc "an" "."
+    "(import-use \"stdio.h\")
+(import-use \"tests/fixtures/s16-anon.h\")
+(defn main ():i32
+  (let (s:ptr:s16_sig (alloca s16_sig))
+    (set! (s 'code) 7) (set! (s 'pid) 42) (set! (s 'uid) 99)
+    (set! ((addr-of s 'named) 'a) 1) (set! ((addr-of s 'named) 'b) 2)
+    (printf \"%d %d %d %d %d %d\\n\" (get s 'code) (get s 'pid) (get s 'uid) (get s 'si_int)
+            (get (addr-of s 'named) 'a) (get (addr-of s 'named) 'b)))
+  (let (r:ptr:s16_rus (alloca s16_rus))
+    (set! (r 'sec) 5) (set! (r 'usec) 6) (set! (r 'maxrss) 8)
+    (printf \"%ld %ld %d %ld %ld\\n\" (get r 'sec) (get r 'usec) (get r 'maxrss)
+            (sizeof s16_sig) (sizeof s16_rus)))
+  (return 0))
+"
+    "#include <stdio.h>
+#include \"tests/fixtures/s16-anon.h\"
+int main(void){
+  s16_sig s; s.code=7; s.pid=42; s.uid=99; s.named.a=1; s.named.b=2;
+  printf(\"%d %d %d %d %d %d\\n\", s.code, s.pid, s.uid, s.si_int, s.named.a, s.named.b);
+  s16_rus r; r.sec=5; r.usec=6; r.maxrss=8;
+  printf(\"%ld %ld %d %zu %zu\\n\", r.sec, r.usec, r.maxrss, sizeof(s16_sig), sizeof(s16_rus));
+  return 0; }
+")))
+
+; The census (§11) is the acceptance test for §§6-9, and these are the nine
+; names it listed as blocked. All nine must now emit a `%Name = type` line; a
+; regression in any one of the four features shows up here by name.
+(defn check-lays-out (m:StrView name:StrView):!void
+  (let (pat:String (str "%" name " = type*"))
+    (try (check-match m (string-as-view (addr-of pat))))
+    (drop (addr-of pat))
+    (return (ok))))
+
+(deftest s16-an-census
+  (let (ir:String (try (source-ir "(import-use \"signal.h\")
+(import-use \"pthread.h\")
+(import-use \"sys/resource.h\")
+(import-use \"stdio.h\")
+(import-use \"sys/socket.h\")
+(import-use \"stddef.h\")
+(defn main ():i32 (return 0))
+"))
+        m:StrView (string-as-view (addr-of ir)))
+    (try (check-lays-out m "sigaction"))
+    (try (check-lays-out m "sigevent"))
+    (try (check-lays-out m "__pthread_cleanup_frame"))
+    (try (check-lays-out m "_pthread_cleanup_buffer"))
+    (try (check-lays-out m "sigcontext"))
+    (try (check-lays-out m "rusage"))
+    (try (check-lays-out m "_IO_FILE"))
+    (try (check-lays-out m "cmsghdr"))
+    (try (check-lays-out m "max_align_t"))
+    (drop (addr-of ir))))
+
+; A layout that is merely PRESENT is the weaker claim; these are the names §1 of
+; cheader-parser-vs-libclang.md listed, so they are the ones to size.
+(deftest s16-an-census-sizeof
+  (try (require-cc))
+  (try (check-agrees-with-cc "ans" ""
+    "(import-use \"stdio.h\")
+(import-use \"signal.h\")
+(import-use \"sys/resource.h\")
+(import-use \"sys/socket.h\")
+(defn main ():i32
+  (printf \"%ld %ld %ld\\n\" (sizeof sigcontext) (sizeof rusage) (sizeof cmsghdr))
+  (return 0))
+"
+    "#include <stdio.h>
+#include <signal.h>
+#include <sys/resource.h>
+#include <sys/socket.h>
+int main(void){ printf(\"%zu %zu %zu\\n\", sizeof(struct sigcontext),
+  sizeof(struct rusage), sizeof(struct cmsghdr)); return 0; }
+")))
+
+; The `defstruct` surface. `(:anon T)` is the same member the importer mints, so
+; the same lookup has to reach it — including through `addr-of`, which is the
+; path a GEP chain gets wrong differently from a load.
+(deftest s16-an-defstruct
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Inner a:i32 b:i32)
+(defstruct Extra c:i32)
+(defstruct Outer tag:i32 (:anon Inner) (:anon Extra) z:i32)
+(defn main ():i32
+  (let (p:ptr:Outer (alloca Outer))
+    (set! (p 'tag) 1) (set! (p 'a) 2) (set! (p 'b) 3) (set! (p 'c) 4) (set! (p 'z) 5)
+    (printf \"%ld %d %d %d %d %d %d\\n\" (sizeof Outer)
+            (get p 'tag) (get p 'a) (get p 'b) (get p 'c) (get p 'z) (deref (addr-of p 'b))))
+  (return 0))
+"))
+        ov:StrView (string-as-view (addr-of out)))
+    (try (check-eq (strview-trim-end (addr-of ov)) "20 1 2 3 4 5 3"))
+    (drop (addr-of out))))
+
+; The first is C's own ambiguity rule; the second is a member that could not
+; contribute a name at all; the third is the one place the surface is NOT a
+; superset of C — C spells an anonymous member by inlining its body, so a named
+; type has no rendering on export.
+(deftest s16-an-refusals
+  (try (check-source-rejects "(defstruct A dup:i32 x:i32)
+(defstruct B dup:i32 y:i32)
+(defstruct C (:anon A) (:anon B))
+(defn f (p:ptr:C):i32 (return (get p 'dup)))
+(defn main ():i32 (return 0))
+"
+         "more than one anonymous member supplies it"))
+  (try (check-source-rejects "(defstruct D (:anon i32))
+(defn main ():i32 (return 0))
+"
+         "must be a struct or a union, not i32"))
+  (let (p:String (try (test-write-file "anx.nuc" "(defstruct A dup:i32)
+(defstruct C (:anon A) z:i32)
+(defn main ():i32 (return 0))
+")))
+    (try (check-emit-rejects "--emit-cheader" (string-as-view (addr-of p))
+                             "has no standard C spelling"))
+    (drop (addr-of p))))

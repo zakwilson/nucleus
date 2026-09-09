@@ -70,12 +70,6 @@ f128|__float128|q"))
 ; One `@name = … global <ty> <val>` line. The views borrow the module text.
 (defstruct FlGlobal name:StrView ty:StrView val:StrView)
 
-; The prefix of `sv` before the first `b`, or all of it.
-(defn fl-upto (sv:StrView b:ui8):StrView
-  (match (strview-find-byte (addr-of sv) b)
-    ((some i) (return (strview-take-bytes sv i)))
-    (none (return sv))))
-
 ; The two compilers agree on `@name = … global <ty> <val>` and on nothing else
 ; about the line: clang writes `internal`, Nucleus writes a section, and both
 ; write a trailing `align`. False when the line is not a global definition.
@@ -90,10 +84,10 @@ f128|__float128|q"))
           (when (strview-has-prefix r "internal ") (set! r (strview-drop-bytes r 9)))
           (when (not (strview-has-prefix r "global ")) (return false))
           (set! r (strview-drop-bytes r 7))
-          (let (ty:StrView (fl-upto r 32)
+          (let (ty:StrView (view-upto-byte r 32)
                 tn:usize (strview-byte-len (addr-of ty)))
             (when (>= tn (strview-byte-len (addr-of r))) (return false))
-            (let (v:StrView (fl-upto (strview-drop-bytes r (+ tn 1)) 44))
+            (let (v:StrView (view-upto-byte (strview-drop-bytes r (+ tn 1)) 44))
               (set! (out 'ty) ty)
               (set! (out 'val) (strview-trim (addr-of v)))
               (return true)))))
@@ -291,7 +285,7 @@ f128|__float128|q"))
       (let (a:StrView (split-iter-next (addr-of it)))
         (when (not first) (string-push-str-unchecked (addr-of out) (addr-of sep)))
         (set! first false)
-        (let (t:StrView (fl-upto a 32))
+        (let (t:StrView (view-upto-byte a 32))
           (string-push-str-unchecked (addr-of out) (addr-of t)))))
     (return out)))
 

@@ -242,13 +242,32 @@ answer, and a claim about another machine needs `nucleusc` pointed at it:
 | Form | Meaning |
 | --- | --- |
 | `(cc-emit-llvm path)` | `!CcIr` — `ok?`, `ir` and `err` from `clang -S -emit-llvm -O0 -w` on a C file. |
+| `(cc-syntax-only-for target path)` | `!CcCheck` — `ok?` and `err` from `clang --target=<target> -ffreestanding -fsyntax-only`. |
+| `(cc-compile-strict path)` | `!CcCheck` — the same, from `clang -std=gnu11 -Wall -Wextra -Werror -c … -o /dev/null`. |
+| `(cc-run-file idir path)` | `!String` — build a C program with `cc [-I idir]` and run it; stdout is the answer. |
+| `(have-cc?)` / `(require-cc)` | Whether `cc` is on PATH; the second `skip!`s when it is not. |
 | `(compile-path-for target path)` | `!Compiled`, under `--target=<target>`. |
+| `(check-emit-rejects flag path needle)` | `nucleusc <flag> <path>` must fail, with `needle` in some error. |
 
 clang is not optional — `nucleusc` uses it as the default linker driver — so a
 missing clang is a broken toolchain rather than something to skip over. What is
 conditional is narrower: whether a particular clang's target *has* `_Float16`
 or `__float128`, which `tests/suite-float.nuc` asks by compiling a two-line
-probe and answers with `skip!`.
+probe and answers with `skip!`. `cc` **is** conditional — nothing in the build
+needs it — so a unit whose oracle is the platform compiler starts with
+`(try (require-cc))`.
+
+`cc-syntax-only-for` is what makes a machine this one cannot execute testable:
+`_Static_assert`s over sizes read back out of a cross-compiled module are a
+complete `sizeof`/`offsetof` oracle with no sysroot, no link and no run.
+`check-emit-rejects` reaches the refusals `--emit-llvm` never can, since
+`--emit-cheader`'s fire while rendering the header.
+
+A test that writes a header and a C consumer of it side by side must
+`#include` the header by **base name**: a quoted include resolves from the
+including file's own directory, and the path `test-write-file` hands back is
+relative to the project root, which is where `nucleusc` resolves an
+`import-use` from.
 
 An empty `dir` or `extra` contributes no argument. `line-with` is for a claim
 about one instruction: `i8 %` is in every module, so `check-not-contains` over
