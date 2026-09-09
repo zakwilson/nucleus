@@ -2112,6 +2112,52 @@ its escape removed; `check-not-contains "asm("` inverted; one symbol dropped
 from the `nm` set, which fails on the count; and one digit changed in a
 program's expected output.
 
+#### TF-6 category (c), what a place is (2026-09-09)
+
+**3 shell functions → 9 tests**, 263 body lines retired (281 lines of the file,
+including three rationale headers and three `spawn` lines):
+`run_s16_dot_forms_retired` (3), `run_s16_set_places` (3) and
+`run_s16_set_generic` (3), into the existing `tests/suite-s16.nuc` rather than a
+new module — the Stage 16 language surface is where they belong.
+`tests/run-tests.sh` is 6,396 → 6,115 lines and 119 → 116 functions. `make test`
+is 290 shell + 676 native = 966.
+
+The three are one ruling read three ways (dot-forms.md §5 steps 4-6): `.` and
+`.&` are gone, `set!` takes a place, and a computed key dispatches through the
+`set` generic. Every retired spelling stays RESERVED, so the answer is the
+replacement rather than "undefined function" and no user definition can shadow
+it into silence.
+
+**The claim the shell's own header made and its body never tested.** "Every
+place delegates to the writer it replaced, so the spellings must emit identical
+IR" — and then the unit only checked that a program printed the right numbers,
+which four different code paths could equally do. `s16-set-places` now compiles
+one function four ways (`(set! (p 'y) 2)`, `(set! (get p 'y) 2)`,
+`(set! (_get p 'y) 2)`, `(set! (deref (addr-of p 'y)) 2)`) and compares the
+modules whole: `compile-source` writes every fixture to the same `t.nuc`, so
+`; ModuleID` and `source_filename` already agree and `check-golden` can rule on
+the artifacts rather than on filtered ones. All four are byte-identical.
+
+**Twelve `qgrep -F`s over stderr became twelve located diagnostics.** Each of
+the retirement messages, the two reserved-name refusals, the two
+not-an-assignable-place refusals, the two missing-field refusals and the
+missing-`set`-method refusal is now one `check-error-at` against one record, so
+the message and its line must come from the same diagnostic. `()` in a place
+position keeps its own row: it reads as a null node, so the place judgement has
+to precede any dereference of it.
+
+**One accumulator per function became one assertion per claim.** Each shell unit
+threaded an `ok=1` variable through three to seven probes and printed a single
+FAIL naming none of them, dumping up to ten lines of concatenated stderr. Nine
+units now fail at the assertion that failed, with the wanted and got values.
+
+**Verified by breaking it**, nine ways — one per unit — each reverted by editing
+the source back: a retirement message with `2-argument` changed to `3-argument`;
+a pinned line 2 → 3; one digit changed in each of the five programs' expected
+output; a pinned line 5 → 4 on the missing-method refusal; and one of the four
+place spellings given a different constant, where `check-golden` names the
+differing IR line and both store instructions.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that
