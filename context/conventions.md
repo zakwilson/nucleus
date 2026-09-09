@@ -3222,8 +3222,8 @@ item 1, beside `repl.nuc` / `cheader.nuc` / `format.nuc`, which are in `src/`
 for the same reason. Import resolution searches the importing file's own
 directory first, so `(import-use reader)` from `src/nucleusc.nuc` still finds
 it and the compiler's IR is byte-identical across the move. If you add a file
-under `lib/`, compile it standalone once; `run_w9_lib_standalone`
-(`tests/run-tests.sh`) will otherwise find it for you.
+under `lib/`, compile it standalone once; the `w9-lib-emit-*` units
+(`tests/suite-linking.nuc`) will otherwise find it for you.
 
 **`--emit-nuch` was exempt from the prelude and processed no imports at all**,
 which is why nine library files could not produce a header: a `.nuch` exports

@@ -234,6 +234,13 @@ include directory, and one about the REPL needs a session:
 | `(emit-for-file dir flag path)` | `!String` — stdout of `nucleusc [-I dir] flag path`. |
 | `(compile-object path out)` | `!void` — `nucleusc -c path -o out`, for a real link. |
 | `(compile-object-in dir path out)` | The same, resolving imports under `-I dir`. |
+| `(emit-checked dir flag path)` | `!Compiled` for any emit mode — unlike `emit-for-file` it survives a refusal, so a unit can ask whether the emission was *clean*. |
+| `(object-checked dir path out)` | `!Compiled` from `nucleusc -c`, keeping the diagnostics: `-c` is the only flag under which the compiler warns about what another object will do. |
+| `(build-checked dir path bin)` | `!Compiled` from a whole-program build, link included. |
+| `(check-silent c what)` | The compile emitted no diagnostic at all — not `check-no-errors`, which permits warnings. |
+| `(run-stdout bin)` | `!String` — run a binary this test just built; stderr on the same stream. |
+| `(run-exit bin)` | `!i32` — the same, when the program's answer is its exit status. |
+| `(cc-link-exit parts)` | `!i32` — link the parts with clang and return the exit status of the result. |
 | `(cc-link-run idir parts)` | `!String` — build the space-separated `.c`/`.o`/`.ll` paths with `clang -Wall -Werror [-I idir]` and run the result. |
 | `(cxx-link-run idir parts)` | The same through `c++`, for a header read behind `extern "C"`. |
 | `(link-run parts)` | `cc-link-run` with no include directory. |
@@ -244,6 +251,8 @@ include directory, and one about the REPL needs a session:
 | `(line-with hay needle)` | `!StrView` — the first line containing `needle`. |
 | `(count-lines-with-prefix hay prefix)` | `i64` — how many lines begin with `prefix`. |
 | `(duplicate-type-name ir)` | `StrView` — a `%Name = type` defined twice, or `""`. |
+| `(duplicate-define-name ir)` | `StrView` — a function `define`d twice, or `""`; LLVM accepts this and the second wins. |
+| `(check-line-set got want what)` | Every non-empty line of `want` is a line of `got`, and the counts match — set equality, for output whose order is not a property. |
 | `(check-same-decl-set a b)` | Two modules carry the same `type`/`define`/`declare` lines, as a set. |
 
 A unit whose claim is *what the platform C compiler does* needs clang's own
@@ -262,6 +271,7 @@ answer, and a claim about another machine needs `nucleusc` pointed at it:
 | `(compile-path-for target path)` | `!Compiled`, under `--target=<target>`. |
 | `(check-emit-rejects flag path needle)` | `nucleusc <flag> <path>` must fail, with `needle` in some error. |
 | `(nm-defined path)` | `!String` — the global symbols an object file defines, one per line. |
+| `(nm-typed path)` | `!String` — *every* symbol as `<type> <name>` lines, which is what a separate-compilation claim needs: the linkage letter says an imported definition is a copy, and an undefined symbol says a call crossed the object boundary. |
 
 clang is not optional — `nucleusc` uses it as the default linker driver — so a
 missing clang is a broken toolchain rather than something to skip over. What is

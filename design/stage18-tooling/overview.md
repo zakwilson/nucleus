@@ -1914,6 +1914,93 @@ genuinely differ — `alone: @w23a__describe / together: @w23a__describe
 @w23b__describe`, which is the set comparison itself working rather than its
 guard.
 
+#### TF-6 category (c), what two objects owe each other (2026-09-09)
+
+**3 shell functions → 12 tests**, 214 body lines retired (251 lines of the file,
+including the three rationale headers and three distant `spawn` lines):
+`run_w9_lib_standalone` (4), `run_w9_multi_object` (3) and
+`run_w9_shared_init_warning` (5), into a ninth suite module
+`tests/suite-linking.nuc`. `tests/run-tests.sh` is 7,027 → 6,776 lines and
+125 → 122 functions. `make test` is 350 shell + 616 native = 966.
+
+The three go together because a `.nuc` import is INLINED, and every consequence
+of that is a question about two objects rather than one: which of the duplicated
+copies the linker keeps, which definitions a unit owns and exports, and the one
+thing the compiler cannot decide alone — a run-time initializer on a global the
+unit does not own, which every importing object runs again on the one shared
+global. `lib/` is the corpus all three are about: `make lib-so` links all 43
+objects.
+
+**A regex over `nm` became the whole symbol table.** The shell asked two
+questions of `run_w9_multi_object`'s objects — is `w9-bump` weak in both, is
+`w9-side-bump` undefined in main.o — with `grep -cE ' [WV] w9-bump$'` and
+`qgrep -E '^ +U w9-side-bump$'`. Both objects have five symbols and four; the
+unit now pins every one of them, so it also states that `w9-count` is a single
+weak *object* (`V`) rather than two private ones, that `w9-get` is a copy too,
+and that `main` and `w9-side-bump` are the only strong definitions either object
+carries. `nm-typed` normalizes `nm` to `<type> <name>` lines and `check-line-set`
+compares them as a set — `nm` sorts by value, and every symbol in a relocatable
+object has value 0, so order is not a property to assert.
+
+**The shell's own argument, tested, turned out to be sharper than the shell's
+test.** Its comment says a linker that kept two private copies would also link,
+so the counter is read back through a third call and 1 + 2 = 3 is "reachable
+only if the two objects share one `w9-count`". Making the global `defvar-`
+disproves that: the program still prints 3, because the one weak `w9-bump` that
+survived carries its own file's copy with it, and all three bumps reach that
+one. The symbol table catches it exactly — `V w9-count` becomes
+`b w9share_p1__w9-count`. The value and the symbol table are complementary, not
+redundant, and the ported comment now says which one answers which question.
+
+**Two search directories became one.** The shell used `-I inc -I share` with the
+generated `.nuch` in a third directory. What is load-bearing is only that
+`w9side.nuc` is NOT on the search path — `resolve-import` tries `.nuc` in every
+search directory before any `.nuch`, so the source would win and the call would
+stop crossing the object boundary. Putting the `.nuch` beside the shared source
+says exactly that with one `-I`, and `-I` takes one directory at a time
+(`nucleusc.nuc:18859`), so the helpers need no list.
+
+**Diagnostics instead of stderr greps.** All five arms of the initializer family
+are about what the compiler said: `qgrep -F "dshare.nuc:3: warning: defvar: …"`
+for the one that warns, `[ -z "$out" ]` for the three that must not. Under
+`--diagnostics=sexp` these become `check-warning-at` against one record —
+severity, file and line matched together — and `check-silent`, which reports the
+diagnostics it found rather than an empty-string comparison. `check-no-errors`
+is not that claim: a *warning* is what three of these units assert the absence
+of.
+
+**One assertion the shell skipped, and one it could not make.** Its `-c` loop
+over `lib/` did `continue` when a file would not compile at all, on the grounds
+that standalone compilation is the other loops' assertion; the emit loops do
+gate that, so this one now requires the object too. And `w9-linkage-ownership`
+read `define internal …` out of the IR, which is a word, not a property: the
+unit now also compiles the object and pins its five linkable names, so the
+private definer's absence from the symbol table is what says `internal` meant
+something. The `_pN` counter stays a glob — N is the 1-based creation order of
+files that own private names (`nucleusc.nuc:5323`), so it moves when an
+unrelated file gains a `defn-`.
+
+**Shared infra, deduplicated.** Four functions in `tests/nuctests.nuc` repeated
+the same fifteen lines of "run a prepared command and read the result", and
+three more repeated "run the binary just built". Extracted as `compiled-run`,
+`run-stdout` and `run-exit`, which is what made `emit-checked`, `object-checked`
+and `build-checked` eight lines each rather than another three copies;
+`driver-link` split from `driver-link-run` for the same reason, since a program
+whose answer is an exit status links identically to one whose answer is stdout.
+
+**Verified by breaking it**, seven ways, each reverted by editing the source
+back: feeding the duplicate-`define` scanner a module concatenated with itself
+(`lib/allocator.nuc defines @arena-init twice`); the `defvar-` above; writing
+`w9side.nuc` onto the search path, which turns `U w9-side-bump` into a weak
+inlined copy; `defn-` → `defn` on the private definer; a compile-time
+initializer for `d-runs`, which fails all three of the units that measure it;
+pointing the owner-silence unit at the importing file; and a temporary
+`lib/zz-share.nuc` + `lib/zz-user.nuc` pair carrying a real shared initializer,
+plus a `lib/zz-broken.nuc` whose exported signature names an unresolvable type.
+That last one corrected a wrong first attempt: a file whose *body* calls an
+undefined function passes `--emit-nuch` and `--emit-cheader`, because neither
+mode compiles bodies — the perturbation has to be in the signature.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that
