@@ -1198,7 +1198,7 @@ variable (`struct S { … } x, y;`).~~ **Both closed 2026-08-29 as CD-4 — §9.
 | `src/cheader.nuc` — `c-parse-typedef-decl` | `base0` / `bad0` captured before the first declarator's paths rewrite them, then a declarator loop after the first record |
 | `src/cheader.nuc` — `c-parse-struct-decl`, the body branch's typedef-name read | CD-3: an array declarator after the name records a typedef instead of registering a `StructDef` alias, anchored on the tag or on `__carr.<name>` |
 | `src/cheader.nuc` — `cheader-scan-opaque-decl`, the body branch | the same branch in the prescan, name-for-name |
-| `tests/fixtures/cd-declarators.h`, `tests/run-tests.sh` `run_cd_declarators` | 6 assertions: exact type lines, `sizeof` vs `cc`, the mixed-pointer refusal, the typedef list's per-declarator lowering, CD-3's storage + decay, and `tcp_info` against `cc` |
+| `tests/fixtures/cd-declarators.h`, the `cd*` units in `tests/suite-declarators.nuc` | 6 assertions: exact type lines, `sizeof` vs `cc`, the mixed-pointer refusal, the typedef list's per-declarator lowering, CD-3's storage + decay, and `tcp_info` against `cc` |
 | `tests/fixtures/l1-members.h` | **the L1 fixture's witness moved.** Its `c-parse-type:529` row was `typedef struct { int x; int a, b; } l1_multi_t;` — a multi-declarator line, chosen because BF-4 had made the previous witness (a bit-field) representable. CD-1 made *that* one representable in turn, so the row now uses CD-1's own residue, `int *a, b;`. The row guards "an unreadable by-value aggregate body marks the enclosing declaration", not any particular spelling, and it keeps guarding it. |
 
 ---
@@ -1330,7 +1330,7 @@ would move no committed header.
 | `src/cheader.nuc` — `cheader-note-c-include`, `cheader-c-include-spelling`, `cheader-emit-c-includes`, `g-cheader-c-includes` | the second include list and its angle-bracket spelling rule |
 | `src/cheader.nuc` — `type-name-to-c`, the L5 typedef arm | notes the header before returning the bare name |
 | `src/cheader.nuc` — `emit-cheader-header` | resets the list, emits it after `<stddef.h>` and before the borrowed Nucleus units' headers |
-| `tests/fixtures/cd4-declarator-list.h`, `tests/run-tests.sh` `run_cd4_declarator_list` | 2 assertions: exact type lines for every declarator of every list (including the array declarator's `[3 x %__carr.cd4_G]` storage), and every `sizeof` against `cc` |
+| `tests/fixtures/cd4-declarator-list.h`, the `cd4-*` units in `tests/suite-declarators.nuc` | 2 assertions: exact type lines for every declarator of every list (including the array declarator's `[3 x %__carr.cd4_G]` storage), and every `sizeof` against `cc` |
 | `tests/run-tests.sh` `run_cheader_c_include` | 2 assertions: the `#include` is present, is the import spelling (never `/usr/include/…`), the declaration is the bare name, the header passes `clang -fsyntax-only`; and a header naming no C typedef gains no include |
 | `tests/run-tests.sh` `run_l5_typedef_names` item 8 | its "known gap, recorded rather than asserted" note is now an assertion |
 

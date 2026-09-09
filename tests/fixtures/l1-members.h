@@ -1,4 +1,4 @@
-/* Fixture for run_l1_member_opaque (Stage 16 L1,
+/* Fixture for `l1-member-*` in tests/suite-cimport.nuc (Stage 16 L1,
    design/stage16-ergonomics/c-header-layout.md §1.3/§3.1).
 
    `c-parse-type` raises `g-cheader-unrep` on five distinct shapes; before L1 the

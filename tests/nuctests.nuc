@@ -31,6 +31,7 @@
 (import-use suite-layout)
 (import-use suite-cheader)
 (import-use suite-cimport)
+(import-use suite-declarators)
 
 
 

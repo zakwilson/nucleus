@@ -1,4 +1,4 @@
-/* Fixture for run_l2_layout_matrix (Stage 16 L2,
+/* Fixture for `l2-layout-*` in tests/suite-cimport.nuc (Stage 16 L2,
    design/stage16-ergonomics/c-header-layout.md §1.5/§3.2).
 
    The C body parser had no array member type at all: a `[` after a field name

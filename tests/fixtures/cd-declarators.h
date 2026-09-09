@@ -1,4 +1,4 @@
-/* Fixture for run_cd_declarators (Stage 16 CD-1/CD-2/CD-3,
+/* Fixture for the `cd*` units in tests/suite-declarators.nuc (Stage 16 CD-1/CD-2/CD-3,
    design/stage16-ergonomics/c-header-layout.md §8).
 
    Three C declarator shapes the parser used to drop:
@@ -18,7 +18,8 @@
    is why "it compiled" is never the assertion.
 
    `int` / `short` / `char` throughout, so the stated sizes hold on any target
-   with a 4-byte int. */
+   with a 4-byte int. LINE NUMBERS BELOW ARE ASSERTED: `cd1-mixed-pointer-refused`
+   pins the line `struct cd_mixed_ptr` is declared on. */
 
 /* ---- CD-1: multi-declarator field lines ---------------------------------- */
 
