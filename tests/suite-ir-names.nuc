@@ -1,0 +1,207 @@
+; Stage 18 TF-6 category (c) — what an identifier may be in generated IR.
+;
+; Design: design/stage18-tooling/overview.md §T6.6; W9 item 39 in
+; design/stage15-stress-test/progress.md; SM-1 in
+; design/stage14/symbol-mangling.md.
+;
+; LLVM's unquoted identifier has TWO rules — a body character class and a
+; first-position rule — and the compiler applied only the first, only to global
+; symbols. Both halves reached LLVM raw and died at IR-parse time, on a message
+; naming a line of generated IR and nothing in the user's source:
+;
+;   define i32 @add_QMARK(i32 %ok?.arg, i32 %n!.arg)
+;
+; — the function name mangled, the parameter three tokens away from it not. So
+; the two halves are asserted separately: every position a name can occupy with
+; a leading DIGIT (which no path escaped), and `?`/`!` in the positions inside a
+; function body (which the global path escaped and the local one did not).
+;
+; Each unit reads the escaped name out of the IR, hands the module to `llvm-as`
+; — the reader that used to reject it — and then LINKS and RUNS the program,
+; because "the module parses" is not the whole claim: a `goto` must still reach
+; its label and a match binder must still read the field it was bound to after
+; both were renamed.
+
+; ---------------------------------------------------------------------------
+; A leading digit, in every position a name can occupy
+; ---------------------------------------------------------------------------
+
+; Type name, union arm, global, constant, function, parameter, `let` binding,
+; match binder and `label`/`goto` target — every one digit-leading.
+(defn w39-lib-src ():StrView
+  (return "(defstruct 2Pair a:i32 b:i32)
+(defunion 2Shape (2circle r:i32) (2square s:i32))
+(defvar 2count:i32 100)
+(defconst 2LIM 9)
+(defn 2fast (2n:i32):i32
+  (let (2acc:i32 0)
+    (set! 2acc (* 2n 2))
+    2acc))
+(defn 2pick (sh:2Shape):i32
+  (match sh ((2circle 2v) 2v) ((2square 2w) (* 2w 10))))
+(defn 2loop ():i32
+  (let (i:i32 0)
+    (label 2top)
+    (set! i (+ i 1))
+    (when (< i 3) (goto 2top))
+    i))
+"))
+
+(defn w39-main-src ():StrView
+  (return "(import-use \"stdio.h\")
+(import-use w39dlib)
+(defn main ():i32
+  (let (p:ptr:2Pair (2Pair 3 4))
+    (printf \"%d %d %d %d %d %d\\n\"
+      (2fast 20) 2count 2LIM (get p 'a) (2pick (make 2Shape 2circle 7)) (2loop)))
+  0)
+"))
+
+; The `.addr.N` serial is a scope counter, so only the escaped prefix is pinned
+; there; everything else is the whole line. `2LIM` is absent by design — a
+; `defconst` folds, so its escape is only observable in the C header below.
+(deftest w9-ir-name-digit-every-position
+  (let (dir:StrView (try (test-scratch))
+        lib:String (try (test-write-file "w39dlib.nuc" (w39-lib-src)))
+        m:String (try (test-write-file "w39dig.nuc" (w39-main-src)))
+        c:Compiled (try (emit-checked dir "--emit-llvm"
+                                      (string-as-view (addr-of lib))))
+        ir:StrView (compiled-ir (addr-of c)))
+    (try (check-silent (addr-of c) "--emit-llvm on the library"))
+    (try (check-line ir "%_2Pair = type { i32, i32 }"))
+    (try (check-match ir "%_2Shape = type { i32, %__anon_union_* }"))
+    (try (check-line ir
+           "define i64 @_2Shape-2circle(i32 %r.arg) section \".text._2Shape-2circle\" {"))
+    (try (check-line ir
+           "define i64 @_2Shape-2square(i32 %s.arg) section \".text._2Shape-2square\" {"))
+    (try (check-line ir "@_2count = global i32 100, section \".data._2count\", align 4"))
+    (try (check-line ir "define i32 @_2fast(i32 %_2n.arg) section \".text._2fast\" {"))
+    (try (check-match ir "  %_2acc.addr.* = alloca i32, align 4"))
+    (try (check-line ir "define i32 @_2pick(i64 %sh.arg) section \".text._2pick\" {"))
+    (try (check-match ir "  %_2v.addr.* = alloca i32, align 4"))
+    (try (check-match ir "  %_2w.addr.* = alloca i32, align 4"))
+    (try (check-line ir "define i32 @_2loop() section \".text._2loop\" {"))
+    (try (check-line ir "lbl._2top:"))
+    (try (check-line ir "  br label %lbl._2top"))
+    (try (check-ir-parses ir))
+    (let (out:String (try (build-run-file dir "" (string-as-view (addr-of m)))))
+      (try (check-eq (string-as-view (addr-of out)) "40 100 9 3 7 3\n"))
+      (drop (addr-of out)))
+    (drop (addr-of c))
+    (drop (addr-of m))
+    (drop (addr-of lib)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; `?` and `!` inside a function body
+; ---------------------------------------------------------------------------
+
+; The other half, and the one that was NOT latent: `?` and `!` are legal in a
+; Nucleus symbol and `(defn even? …)` has worked since SM-1 mangled it to
+; `@even_QMARK` — but the same character in a parameter, a `let` binding, a
+; match binder or a label went to LLVM verbatim.
+(defn w39-chr-src ():StrView
+  (return "(import-use \"stdio.h\")
+(defunion Sh! (circ! r:i32) (sq? s:i32))
+(defn add? (ok?:i32 n!:i32):i32
+  (let (acc!:i32 0)
+    (set! acc! (+ ok? n!))
+    acc!))
+(defn peek! (sh:Sh!):i32
+  (match sh ((circ! v?) v?) ((sq? w!) (* w! 10))))
+(defn spin? ():i32
+  (let (i!:i32 0)
+    (label top!)
+    (set! i! (+ i! 1))
+    (when (< i! 3) (goto top!))
+    i!))
+(defn main ():i32
+  (printf \"%d %d %d\\n\" (add? 1 20) (peek! (make Sh! circ! 7)) (spin?))
+  0)
+"))
+
+(deftest w9-ir-name-body-chars-in-locals
+  (let (p:String (try (test-write-file "w39chr.nuc" (w39-chr-src)))
+        pv:StrView (string-as-view (addr-of p))
+        c:Compiled (try (emit-checked "" "--emit-llvm" pv))
+        ir:StrView (compiled-ir (addr-of c)))
+    (try (check-silent (addr-of c) "--emit-llvm"))
+    (try (check-match ir "%Sh_BANG = type { i32, %__anon_union_* }"))
+    (try (check-line ir
+           "define i64 @Sh_BANG-circ_BANG(i32 %r.arg) section \".text.Sh_BANG-circ_BANG\" {"))
+    (try (check-line ir
+           "define i64 @Sh_BANG-sq_QMARK(i32 %s.arg) section \".text.Sh_BANG-sq_QMARK\" {"))
+    (try (check-line ir
+           "define i32 @add_QMARK(i32 %ok_QMARK.arg, i32 %n_BANG.arg) section \".text.add_QMARK\" {"))
+    (try (check-match ir "  %acc_BANG.addr.* = alloca i32, align 4"))
+    (try (check-line ir "define i32 @peek_BANG(i64 %sh.arg) section \".text.peek_BANG\" {"))
+    (try (check-match ir "  %v_QMARK.addr.* = alloca i32, align 4"))
+    (try (check-match ir "  %w_BANG.addr.* = alloca i32, align 4"))
+    (try (check-line ir "define i32 @spin_QMARK() section \".text.spin_QMARK\" {"))
+    (try (check-line ir "lbl.top_BANG:"))
+    (try (check-line ir "  br label %lbl.top_BANG"))
+    (try (check-ir-parses ir))
+    (let (out:String (try (build-run-file "" "" pv)))
+      (try (check-eq (string-as-view (addr-of out)) "21 7 3\n"))
+      (drop (addr-of out)))
+    (drop (addr-of c))
+    (drop (addr-of p)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; The same rule at the other backend
+; ---------------------------------------------------------------------------
+
+; C's first-position rule is identical, so `sanitize-for-c` escapes with the
+; same `_` — which is what makes the C spelling and the link symbol AGREE, and
+; is why no declaration here carries an `asm` label. Only linking and running a
+; C consumer can show that: a header whose declarations merely parse would still
+; fail at the linker.
+(defn w39-c-src ():StrView
+  (return "#include <stdio.h>
+#include \"w39dlib.h\"
+int main(void) {
+    struct _2Pair p = { 3, 4 };
+    struct _2Shape c;
+    c.tag = _2Shape_2circle;
+    c.payload._2circle = 7;
+    printf(\"%d %d %d %d %d %d\\n\",
+           _2fast(20), _2count, _2LIM, p.a, _2pick(c), _2loop());
+    return 0;
+}
+"))
+
+; The two union-arm constructors are absent from the header because a hyphen is
+; no more a C identifier character than a leading digit is; the C consumer
+; builds the value by hand, and `nm` is where their escape is visible.
+(deftest w9-ir-name-digit-header-c-callable
+  (let (l:CLib (try (c-lib "w39dlib" (w39-lib-src)))
+        h:StrView (c-lib-text (addr-of l)))
+    (try (check-line h "typedef struct _2Pair {"))
+    (try (check-line h "} _2Pair;"))
+    (try (check-line h "        int32_t _2circle;"))
+    (try (check-line h "        int32_t _2square;"))
+    (try (check-line h "    _2Shape_2circle = 0,"))
+    (try (check-line h "    _2Shape_2square = 1"))
+    (try (check-line h "extern int32_t _2count;"))
+    (try (check-line h "#define _2LIM 9"))
+    (try (check-line h "int32_t _2fast(int32_t _2n);"))
+    (try (check-line h "int32_t _2pick(struct _2Shape sh);"))
+    (try (check-line h "int32_t _2loop(void);"))
+    (try (check-not-contains h "asm("))
+    (let (syms:String (try (nm-defined (c-lib-obj (addr-of l)))))
+      (try (check-line-set (string-as-view (addr-of syms))
+                           "_2Shape-2circle
+_2Shape-2square
+_2count
+_2fast
+_2loop
+_2pick
+"
+                           "the object's linkable names"))
+      (drop (addr-of syms)))
+    (let (out:String (try (c-lib-run (addr-of l) (w39-c-src))))
+      (try (check-eq (string-as-view (addr-of out)) "40 100 9 3 7 3\n"))
+      (drop (addr-of out)))
+    (drop (addr-of l)))
+  (return (ok)))

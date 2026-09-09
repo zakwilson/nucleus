@@ -2061,6 +2061,57 @@ printed. An eighth attempt was invalid and is worth recording: a file carrying a
 signature error *and* a body error does not make the modes disagree, because the
 signature error aborts before the body is reached.
 
+#### TF-6 category (c), what an identifier may be in generated IR (2026-09-09)
+
+**1 shell function → 3 tests**, 114 body lines retired (130 lines of the file,
+including its rationale header and one distant `spawn` line):
+`run_w9_ir_name_positions`, into an eleventh suite module
+`tests/suite-ir-names.nuc`. `tests/run-tests.sh` is 6,526 → 6,396 lines and
+120 → 119 functions. `make test` is 299 shell + 667 native = 966.
+
+W9 item 39: LLVM's unquoted identifier has two rules — a body character class
+and a first-position rule — and the compiler applied only the first, only to
+global symbols. The failure was at IR-parse time, on a line of generated IR the
+user never wrote.
+
+**The shell asserted only that the programs printed the right numbers.** It
+never read the IR, so it could say the escape happened but not what it was. Each
+unit now pins the escaped name in every position it occupies — type, union arm,
+global, function, parameter, `let` binding, match binder and `label`/`goto`
+target — as whole IR lines. The `.addr.N` serial is a scope counter, so it stays
+a glob; everything around it is exact.
+
+**`check-ir-parses` is the assertion the item is actually about.** `--emit-llvm`
+never reads back what it writes, so exiting 0 says nothing about whether the
+module is valid — and being invalid was the bug. Handing the module to `llvm-as`
+states it directly. Confirmed as the live gate by editing `_QMARK` back to `?`
+in an emitted module: `llvm-as` reproduces the item's own quoted error,
+`define i32 @add_QMARK(i32 %ok?.arg, i32 %n!.arg)`, at that column.
+
+**A regex sweep became the header, line by line.** The C-callable unit asserted
+`! grep -v '^/\*' … | qgrep -E '\b[0-9]+[A-Za-z_]'` — no digit-leading
+identifier anywhere — which passes on a header that declares nothing at all. The
+unit now pins each declaration, `#define _2LIM 9` included, plus the six symbols
+`nm` finds in the object as a set, plus the absence of any `asm` label. That
+last is the actual ruling: C's first-position rule is identical, so
+`sanitize-for-c` escapes with the same `_`, the C spelling and the link symbol
+agree, and no label is needed. The consumer also builds under `-Wall -Werror`
+now, where the shell ran plain `clang`.
+
+**One helper moved rather than being copied.** `CLib` and its `c-lib` /
+`c-lib-run` / `c-consumer-run` machine — write a library, emit its header beside
+it, compile its object, link a C consumer against it — lived in
+`tests/suite-cheader.nuc` and now has a second caller, so its 82 lines moved to
+the shared layer in `tests/nuctests.nuc` and are documented in `docs/testing.md`.
+A pure move; no behaviour changed.
+
+**Verified by breaking it**, six ways in the source, each reverted by editing it
+back: the `@_2count` global asserted in its unescaped spelling; `%ok_QMARK.arg`
+/ `%n_BANG.arg` asserted as `%ok.arg` / `%n.arg`; the `%_2acc.addr.*` glob with
+its escape removed; `check-not-contains "asm("` inverted; one symbol dropped
+from the `nm` set, which fails on the count; and one digit changed in a
+program's expected output.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that

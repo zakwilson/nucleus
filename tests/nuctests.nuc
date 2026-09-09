@@ -35,6 +35,7 @@
 (import-use suite-exports)
 (import-use suite-linking)
 (import-use suite-refusals)
+(import-use suite-ir-names)
 
 
 
@@ -1000,6 +1001,88 @@
         (set! i (+ i 1))))
     (drop (addr-of names))
     (return "")))
+
+; ---------------------------------------------------------------------------
+; A library, its generated header, and its object
+; ---------------------------------------------------------------------------
+
+; The object to link against and the header's text to read. Both artifacts sit
+; in the test's own scratch directory, which is also where a C consumer gets
+; written — a quoted `#include` resolves against the including file's own
+; directory, so the header is reachable by BASE NAME and needs no path here.
+(defstruct CLib obj:String text:String)
+
+(extend CLib Drop)
+(defn drop ((self (ptr CLib))):void
+  (drop (addr-of self 'obj))
+  (drop (addr-of self 'text)))
+
+(defn c-lib-obj ((l (ref CLib))):StrView
+  (return (string-as-view (addr-of l 'obj))))
+
+(defn c-lib-text ((l (ref CLib))):StrView
+  (return (string-as-view (addr-of l 'text))))
+
+; Write `stem.nuc`, emit its header beside it, compile its object. The scratch
+; directory is always on the include path, so a library that imports a sibling
+; needs no second spelling.
+(defn c-lib (stem:StrView src:StrView):!CLib
+  (let (dir:StrView (try (test-scratch))
+        nuc:String (str stem ".nuc")
+        hdr:String (str stem ".h")
+        obj:String (str dir "/" stem ".o")
+        p:String (try (test-write-file (string-as-view (addr-of nuc)) src))
+        hp:String (try (emit-into dir "--emit-cheader" (string-as-view (addr-of p))
+                                  dir (string-as-view (addr-of hdr))))
+        text:String (try (read-file (string-as-view (addr-of hp))))
+        l:&CLib (alloca CLib))
+    (try (compile-object-in dir (string-as-view (addr-of p))
+                            (string-as-view (addr-of obj))))
+    (set! (l 'obj) obj)
+    (set! (l 'text) text)
+    (drop (addr-of hp))
+    (drop (addr-of p))
+    (drop (addr-of nuc))
+    (drop (addr-of hdr))
+    (return (ok (deref l)))))
+
+; Emit a header without compiling anything: what a unit wants when the claim is
+; that a declaration was REFUSED, so there may be no symbol to link.
+(defn c-header (stem:StrView src:StrView):!String
+  (let (dir:StrView (try (test-scratch))
+        nuc:String (str stem ".nuc")
+        hdr:String (str stem ".h")
+        p:String (try (test-write-file (string-as-view (addr-of nuc)) src))
+        hp:String (try (emit-into dir "--emit-cheader" (string-as-view (addr-of p))
+                                  dir (string-as-view (addr-of hdr))))
+        text:String (try (read-file (string-as-view (addr-of hp)))))
+    (drop (addr-of nuc))
+    (drop (addr-of hdr))
+    (drop (addr-of p))
+    (drop (addr-of hp))
+    (return (ok text))))
+
+; Build `main-src` against the headers in the scratch directory, link it with
+; `parts`, run it. The shape every end-to-end unit here is made of.
+(defn c-consumer-run (main-src:StrView parts:StrView):!String
+  (let (dir:StrView (try (test-scratch))
+        p:String (try (test-write-file "main.c" main-src))
+        all:String (str (string-as-view (addr-of p)) " " parts)
+        out:String (try (cc-link-run dir (string-as-view (addr-of all)))))
+    (drop (addr-of all))
+    (drop (addr-of p))
+    (return (ok out))))
+
+(defn c-lib-run ((l (ref CLib)) main-src:StrView):!String
+  (return (c-consumer-run main-src (c-lib-obj l))))
+
+; What clang makes of a consumer it is only asked to parse — the form a unit
+; needs when the expected answer is "it does not compile".
+(defn c-consumer-syntax (idir:StrView main-src:StrView):!CcCheck
+  (let (p:String (try (test-write-file "probe.c" main-src))
+        r:CcCheck (try (cc-syntax-only-in idir (string-as-view (addr-of p)))))
+    (drop (addr-of p))
+    (return (ok r))))
 
 ; ---------------------------------------------------------------------------
 ; Category (a): the rejection/acceptance table
