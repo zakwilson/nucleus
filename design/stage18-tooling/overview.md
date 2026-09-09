@@ -1561,6 +1561,61 @@ quoted include resolves from the including file's own directory, and the path
 `test-write-file` returns is relative to the project root — which is right for
 `import-use`, and wrong for `#include`. Written up in `docs/testing.md`.
 
+#### TF-6 category (c), what a `.nuch` carries (2026-09-09)
+
+**4 shell functions → 20 tests**, 430 body lines retired (484 lines of the
+file): `run_w9_nuch_ns_union` (5), `run_w9_nuch_import_order` (5),
+`run_w9_nuch_declare_generic` (4), `run_w9_nuch_declare_shadowed` (6), into
+`tests/suite-modules.nuc`, whose subject they already are.
+`tests/run-tests.sh` is 9,729 → 9,246 lines and 147 → 143 functions.
+`make test` is 440 shell + 526 native = 966.
+
+**The capability this batch needed is `link-run`.** A unit that compiles a
+library and its consumer *together* proves nothing about the library's header —
+the compiler has seen the source either way. Compiling the two separately and
+linking makes the **linker** resolve the symbol, so the claim becomes "the
+header promised the name the library actually exports", and a wrong answer is an
+undefined reference rather than a silently different program. `link-run` takes a
+space-separated list of `.o` or `.ll` paths, links with clang, runs the result
+and returns stdout. Verified by breaking it: dropping the library's object from
+the link reported `undefined reference to 'w9no-add'` and
+`undefined reference to 'w9no-counter'` — exactly the names the header carries.
+
+**Four hand-rolled library setups became one.** Each unit built the same thing:
+source under `l/`, generated header under `h/`, object beside them, with the
+source deliberately outside the include path (`resolve-import` tries `.nuc` in
+every search directory before any `.nuch`, so a header next to its source is
+never read). That is now `NuchLib` plus `nuch-lib` and `nuch-link-run` — write,
+emit, compile, then "compile this consumer against the header and link it
+against the library" as one call.
+
+**One assertion was a misattribution, and the record found it.**
+`w9-nuch-shadowed-declare-reported` grepped stderr for two strings; the second —
+`the header declares helper(i32):i32, the unit has helper(i64):i64` — is a
+**note**, not the error's message. Two independent greps over one blob cannot
+tell those apart, which is the defect §T4.2 named and category (a) found three
+instances of. It is now `check-error-anywhere` for the error and
+`check-note-anywhere` for the note. `w9-nuch-shadowed-both-sites-named` was one
+regex spanning the `file:line: error:` prefix *and* the message; `check-error-at`
+pins the header's path and line 2 as fields, and a second check requires the
+message to name the defining site. Breaking the line number to 3 prints the
+whole diagnostic record, notes included, where the shell printed a failed match.
+
+Four helpers in `tests/nuctests.nuc`: `link-run`, `compile-object-in`
+(`compile-object` under `-I`), `write-into` (a file in a *subdirectory* of the
+scratch tree, which `test-write-file` cannot reach) and `emit-into` (an emitted
+artifact written where the next compile can read it).
+
+**Two of the four had their `spawn` line ~3,000 lines from the body** — the trap
+`context/build.md` records — so the deletion took body and `spawn` as separate
+ranges. One surviving unit's comment named `run_w9_nuch_declare_generic` and was
+reworded to name the suite module instead.
+
+**One thing not to repeat.** The deletion script also collapsed runs of blank
+lines, which reached two pre-existing four-blank separators elsewhere in the
+file and turned a clean deletion diff into unrelated churn. Both were put back;
+the rule is now in `context/build.md`.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that
