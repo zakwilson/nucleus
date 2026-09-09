@@ -1,0 +1,870 @@
+; Stage 18 TF-6 category (c) — what `--emit-cheader` promises a C consumer:
+; identifiers, symbols, declarations and the includes that complete them.
+;
+; Design: design/stage18-tooling/overview.md §T6.6, and W9 items 3, 4, 25, 26,
+; 27, 28, 37 and 44 in design/stage16-ergonomics/c-boundary-defects.md.
+;
+; Every unit here is the same claim in a different position: reading the header
+; is never the test. A header that merely parses can still name a symbol no
+; object defines, or disagree about layout — so each of these builds a C
+; consumer, links it against the real object, and reads what it prints.
+
+; ---------------------------------------------------------------------------
+; A library, its generated header, and its object
+; ---------------------------------------------------------------------------
+
+; The object to link against and the header's text to read. Both artifacts sit
+; in the test's own scratch directory, which is also where a C consumer gets
+; written — a quoted `#include` resolves against the including file's own
+; directory, so the header is reachable by BASE NAME and needs no path here.
+(defstruct CLib obj:String text:String)
+
+(extend CLib Drop)
+(defn drop ((self (ptr CLib))):void
+  (drop (addr-of self 'obj))
+  (drop (addr-of self 'text)))
+
+(defn c-lib-obj ((l (ref CLib))):StrView
+  (return (string-as-view (addr-of l 'obj))))
+
+(defn c-lib-text ((l (ref CLib))):StrView
+  (return (string-as-view (addr-of l 'text))))
+
+; Write `stem.nuc`, emit its header beside it, compile its object. The scratch
+; directory is always on the include path, so a library that imports a sibling
+; needs no second spelling.
+(defn c-lib (stem:StrView src:StrView):!CLib
+  (let (dir:StrView (try (test-scratch))
+        nuc:String (str stem ".nuc")
+        hdr:String (str stem ".h")
+        obj:String (str dir "/" stem ".o")
+        p:String (try (test-write-file (string-as-view (addr-of nuc)) src))
+        hp:String (try (emit-into dir "--emit-cheader" (string-as-view (addr-of p))
+                                  dir (string-as-view (addr-of hdr))))
+        text:String (try (read-file (string-as-view (addr-of hp))))
+        l:&CLib (alloca CLib))
+    (try (compile-object-in dir (string-as-view (addr-of p))
+                            (string-as-view (addr-of obj))))
+    (set! (l 'obj) obj)
+    (set! (l 'text) text)
+    (drop (addr-of hp))
+    (drop (addr-of p))
+    (drop (addr-of nuc))
+    (drop (addr-of hdr))
+    (return (ok (deref l)))))
+
+; Emit a header without compiling anything: what a unit wants when the claim is
+; that a declaration was REFUSED, so there may be no symbol to link.
+(defn c-header (stem:StrView src:StrView):!String
+  (let (dir:StrView (try (test-scratch))
+        nuc:String (str stem ".nuc")
+        hdr:String (str stem ".h")
+        p:String (try (test-write-file (string-as-view (addr-of nuc)) src))
+        hp:String (try (emit-into dir "--emit-cheader" (string-as-view (addr-of p))
+                                  dir (string-as-view (addr-of hdr))))
+        text:String (try (read-file (string-as-view (addr-of hp)))))
+    (drop (addr-of nuc))
+    (drop (addr-of hdr))
+    (drop (addr-of p))
+    (drop (addr-of hp))
+    (return (ok text))))
+
+; Build `main-src` against the headers in the scratch directory, link it with
+; `parts`, run it. The shape every end-to-end unit here is made of.
+(defn c-consumer-run (main-src:StrView parts:StrView):!String
+  (let (dir:StrView (try (test-scratch))
+        p:String (try (test-write-file "main.c" main-src))
+        all:String (str (string-as-view (addr-of p)) " " parts)
+        out:String (try (cc-link-run dir (string-as-view (addr-of all)))))
+    (drop (addr-of all))
+    (drop (addr-of p))
+    (return (ok out))))
+
+(defn c-lib-run ((l (ref CLib)) main-src:StrView):!String
+  (return (c-consumer-run main-src (c-lib-obj l))))
+
+; What clang makes of a consumer it is only asked to parse — the form a unit
+; needs when the expected answer is "it does not compile".
+(defn c-consumer-syntax (idir:StrView main-src:StrView):!CcCheck
+  (let (p:String (try (test-write-file "probe.c" main-src))
+        r:CcCheck (try (cc-syntax-only-in idir (string-as-view (addr-of p)))))
+    (drop (addr-of p))
+    (return (ok r))))
+
+; ---------------------------------------------------------------------------
+; Reading a generated header
+; ---------------------------------------------------------------------------
+
+; The `asm("…")` label on `l`, or an empty view when the line carries none.
+(defn asm-label (l:StrView):StrView
+  (let (m:StrView "asm(\"")
+    (match (strview-find (addr-of l) (addr-of m))
+      ((some at) (return (view-upto-byte (strview-drop-bytes l (+ at 5)) 34)))
+      (none (return "")))))
+
+; A name made only of punctuation is an operator that reached the C side; one
+; ASCII letter is enough to say the emitter produced a name rather than a symbol.
+(defn has-ascii-letter? (sv:StrView):bool
+  (let (n:usize (strview-byte-len (addr-of sv))
+        i:usize 0)
+    (while (< i n)
+      (let (b:ui8 (test-byte-at (addr-of sv) i))
+        (when (or (and (>= b 65) (<= b 90)) (and (>= b 97) (<= b 122)))
+          (return true)))
+      (set! i (+ i 1)))
+    (return false)))
+
+; A generated line carries at most one label and it always sits last, so what
+; comes before it is the whole of what has to be legal C.
+(defn line-before-label (l:StrView):StrView
+  (let (m:StrView " asm(\"")
+    (match (strview-find (addr-of l) (addr-of m))
+      ((some at) (return (strview-take-bytes l at)))
+      (none (return l)))))
+
+; Outside the provenance comment and the labels — which MUST keep the real
+; hyphenated symbol — no hyphen may reach a C header.
+(defn check-no-stray-hyphen (text:StrView):!void
+  (let (nl:StrView "\n"
+        it:SplitIter (strview-split (addr-of text) (addr-of nl)))
+    (while (not (split-iter-done (addr-of it)))
+      (let (l:StrView (split-iter-next (addr-of it)))
+        (when (not (strview-has-prefix l "/* Generated from"))
+          (let (bare:StrView (line-before-label l))
+            (match (strview-find-byte (addr-of bare) 45)
+              ((some at) (fail! "hyphen survives into C: " (test-show l)))
+              (none 0))))))
+    (return (ok))))
+
+; Every symbol the header binds a label to must be one the object defines.
+; Stated against the object rather than against a list, so it still holds when
+; the mangling changes — which is the only way it can outlast the defect.
+(defn check-labels-defined ((l (ref CLib))):!void
+  (let (syms:String (try (nm-defined (c-lib-obj l)))
+        sv:StrView (string-as-view (addr-of syms))
+        text:StrView (c-lib-text l)
+        nl:StrView "\n"
+        it:SplitIter (strview-split (addr-of text) (addr-of nl)))
+    (while (not (split-iter-done (addr-of it)))
+      (let (lab:StrView (asm-label (split-iter-next (addr-of it))))
+        (when (and (not (= lab "")) (not (has-line? sv lab)))
+          (fail! "the header binds " (test-show lab)
+                 ", which the object does not define\n     " (test-show sv)))))
+    (drop (addr-of syms))
+    (return (ok))))
+
+; ---------------------------------------------------------------------------
+; The committed corpus
+; ---------------------------------------------------------------------------
+
+; No committed `lib/*.h` may contain `needle`; the failure names the file. The
+; corpus is the real regression surface — a fixture only proves the emitter did
+; the right thing once.
+(defn check-lib-headers-lack (needle:StrView):!void
+  (let (d:DirEntries (try (read-dir "lib"))
+        n:usize (dir-count (addr-of d))
+        i:usize 0)
+    (while (< i n)
+      (let (nm:StrView (dir-name (addr-of d) i))
+        (when (strview-has-suffix nm ".h")
+          (let (p:String (str "lib/" nm)
+                t:String (try (read-file (string-as-view (addr-of p)))))
+            (when (strview-contains (string-as-view (addr-of t)) needle)
+              (fail! "lib/" nm " contains " (test-show needle)))
+            (drop (addr-of t))
+            (drop (addr-of p)))))
+      (set! i (+ i 1)))
+    (drop (addr-of d))
+    (return (ok))))
+
+; Each of the space-separated `stems` names a committed `lib/<stem>.h` that a C
+; program can include on its own.
+(defn check-lib-headers-compile (stems:StrView):!void
+  (let (sp:StrView " "
+        it:SplitIter (strview-split (addr-of stems) (addr-of sp)))
+    (while (not (split-iter-done (addr-of it)))
+      (let (stem:StrView (split-iter-next (addr-of it))
+            src:String (str "#include \"" stem ".h\"\nint main(void){return 0;}\n")
+            r:CcCheck (try (c-consumer-syntax
+                             "lib" (string-as-view (addr-of src)))))
+        (when (not (r 'ok?))
+          (fail! "lib/" stem ".h does not compile\n     "
+                 (test-show (string-as-view (addr-of r 'err)))))
+        (drop (addr-of r))
+        (drop (addr-of src))))
+    (return (ok))))
+
+; ---------------------------------------------------------------------------
+; W9 item 3: globals, and the types that have no C spelling
+; ---------------------------------------------------------------------------
+
+(defn globals-lib ():StrView
+  (return "(defvar counter:i32 7)
+(defvar :const limit:i32 99)
+(defvar tick-count:i64 41)
+(defvar- hidden:i32 5)
+(defstruct CRec (a i32))
+(defvar rec-val:CRec)
+(defvar m-skip:(Maybe i32) (none))
+(defvar arr-skip:(array i32 4))
+(defn bump ():i32 (set! counter (+ counter 1)) (return counter))
+"))
+
+(deftest w9-cheader-global-lines
+  (let (l:CLib (try (c-lib "clib" (globals-lib)))
+        h:StrView (c-lib-text (addr-of l)))
+    (try (check-line h "extern int32_t counter;"))
+    (try (check-line h "extern const int32_t limit;"))
+    (try (check-line h "extern int64_t tick_count asm(\"tick-count\");"))
+    (try (check-line h "extern struct CRec rec_val asm(\"rec-val\");"))
+    (try (check-not-contains h "hidden"))
+    (drop (addr-of l))
+    (return (ok))))
+
+; A declaration the C compiler trusts and gets wrong is worse than an omission:
+; `type-node-to-c` answers `void*` for any cell head it does not know, which
+; would declare a pointer-sized object over a `(Maybe i32)` or an array.
+(deftest w9-cheader-global-skips-unspellable
+  (let (l:CLib (try (c-lib "clib" (globals-lib)))
+        h:StrView (c-lib-text (addr-of l)))
+    (try (check-contains
+           h "/* m-skip: uses a defunion-template instance type; not exported */"))
+    (try (check-contains
+           h "/* arr-skip: type has no C spelling here; not exported */"))
+    (drop (addr-of l))
+    (return (ok))))
+
+; The whole point, end to end: a C program reads the globals BY VALUE, calls in
+; to mutate one and sees the new value, so the labelled declaration and the
+; plain one both reach the real symbol. `rec_val.a` is what proves the by-value
+; struct spelling works — it was the typedef name until W9 item 25 tagged the
+; struct, and an incomplete tag then.
+(deftest w9-cheader-c-consumer-reads-globals
+  (let (l:CLib (try (c-lib "clib" (globals-lib)))
+        out:String (try (c-lib-run (addr-of l)
+"#include <stdio.h>
+#include \"clib.h\"
+int main(void) {
+    int b = bump();
+    printf(\"%d %d %lld %d %d\\n\", counter, limit, (long long)tick_count, b, rec_val.a);
+    return 0;
+}
+")))
+    (try (check-eq (string-as-view (addr-of out)) "8 99 41 8 0\n"))
+    (drop (addr-of out))
+    (drop (addr-of l))
+    (return (ok))))
+
+; A private global must not be reachable from C at all — asserted by a consumer
+; that names it FAILING to compile, not merely by its absence from the header.
+(deftest w9-cheader-private-global-not-exported
+  (let (l:CLib (try (c-lib "clib" (globals-lib)))
+        r:CcCheck (try (c-consumer-syntax
+                         (try (test-scratch))
+                         "#include \"clib.h\"\nint main(void){ return hidden; }\n")))
+    (when (r 'ok?) (fail! "a defvar- reached C"))
+    (try (check-contains (string-as-view (addr-of r 'err)) "hidden"))
+    (drop (addr-of r))
+    (drop (addr-of l))
+    (return (ok))))
+
+; usize/ssize map to size_t/ptrdiff_t. Before W9 item 3 they fell through the
+; "assume struct" arm and emitted `struct usize`, which does not exist — 14 of
+; the committed lib/*.h carried it, and a `usize` GLOBAL is what turned a latent
+; defect into a broken `extern` line.
+(deftest w9-cheader-usize-maps-to-size-t
+  (let (t:String (try (c-header "sz"
+"(defvar kc:usize 3)
+(defn take (n:usize):ssize (return (as ssize n)))
+")))
+    (let (h:StrView (string-as-view (addr-of t)))
+      (try (check-line h "extern size_t kc;"))
+      (try (check-line h "ptrdiff_t take(size_t n);"))
+      (try (check-not-contains h "struct usize")))
+    (drop (addr-of t))
+    (return (ok))))
+
+; ---------------------------------------------------------------------------
+; W9 item 4: no hyphen may reach a generated C header
+;
+; A Nucleus name is legal with `-` in it, C's is not, and `sanitize-for-c`
+; reached the struct/union TYPE name only — so every field, `defunion` arm, enum
+; tag, `#define`, parameter and prototype came out as invalid C. The split is
+; item 3's rule applied to the rest of the surface: a name the LINKER resolves
+; carries a label, a name it never sees is just sanitized.
+; ---------------------------------------------------------------------------
+
+(defn idents-lib ():StrView
+  (return "(defconst BUF-LEN 4)
+(defenum My-Col my-red my-green)
+(defstruct My-Rec a-field:i32 xs:(array i32 BUF-LEN) (data (union as-int:i64 as-flt:f64)))
+(defunion My-Uni (uni-a x-val:i32) (uni-b p-one:i32 p-two:i32))
+(defvar my-count:i64 41)
+(defn my-bump (n-arg:i32):i32 (return (+ n-arg 1)))
+(defn my-rec-sum (r:ptr:My-Rec):i32 (return (+ (r 'a-field) 100)))
+(defn plain (n:i32):i32 (return n))
+"))
+
+(deftest w9-cheader-no-stray-hyphen
+  (let (l:CLib (try (c-lib "hlib" (idents-lib))))
+    (try (check-no-stray-hyphen (c-lib-text (addr-of l))))
+    (drop (addr-of l))
+    (return (ok))))
+
+; A label appears only where it is load-bearing, so a C-legal library still gets
+; a portable header: `plain` has none, `my-bump` does.
+(deftest w9-cheader-label-only-where-needed
+  (let (l:CLib (try (c-lib "hlib" (idents-lib)))
+        h:StrView (c-lib-text (addr-of l)))
+    (try (check-line h "int32_t my_bump(int32_t n_arg) asm(\"my-bump\");"))
+    (try (check-line h "int32_t plain(int32_t n);"))
+    (try (check-line h "#define BUF_LEN 4"))
+    (try (check-contains h "int32_t xs[BUF_LEN];"))
+    (try (check-contains h "My_Uni_uni_b = 1"))
+    (try (check-contains h "My_Col_my_green = 1"))
+    (drop (addr-of l))
+    (return (ok))))
+
+; End to end. Every sanitized kind goes through a real link: the label on a call
+; and on a global read, a struct field, an array extent that must agree with the
+; `#define`, an inline-union member, a defunion arm field and its tag constant,
+; and an enum member.
+(deftest w9-cheader-c-consumer-hyphenated-names
+  (let (l:CLib (try (c-lib "hlib" (idents-lib)))
+        out:String (try (c-lib-run (addr-of l)
+"#include <stdio.h>
+#include \"hlib.h\"
+int main(void) {
+    My_Rec r; r.a_field = 5; r.xs[BUF_LEN - 1] = 9; r.data.as_int = 7;
+    My_Uni u; u.tag = My_Uni_uni_b; u.payload.uni_b.p_two = 3;
+    printf(\"%d %d %lld %d %d %d %lld\\n\",
+           my_bump(1), my_rec_sum(&r), (long long)my_count,
+           (int)My_Col_my_green, u.payload.uni_b.p_two, r.xs[BUF_LEN - 1],
+           (long long)r.data.as_int);
+    return 0;
+}
+")))
+    (try (check-eq (string-as-view (addr-of out)) "2 105 41 1 3 9 7\n"))
+    (drop (addr-of out))
+    (drop (addr-of l))
+    (return (ok))))
+
+; The label must name what the object actually defines — the reason a sanitized
+; name alone is not enough.
+(deftest w9-cheader-symbols-keep-hyphens
+  (let (l:CLib (try (c-lib "hlib" (idents-lib)))
+        syms:String (try (nm-defined (c-lib-obj (addr-of l))))
+        sv:StrView (string-as-view (addr-of syms)))
+    (try (check-line sv "my-bump"))
+    (try (check-line sv "my-count"))
+    (try (check-not-contains sv "my_bump"))
+    (try (check-labels-defined (addr-of l)))
+    (drop (addr-of syms))
+    (drop (addr-of l))
+    (return (ok))))
+
+; ---------------------------------------------------------------------------
+; W9 item 37: a header that NAMES an imported type must include its header
+;
+; `type-name-to-c` spells every reference to a user type `struct NAME`, and a
+; tag C never completes is not a usable declaration: a by-value FIELD does not
+; compile at all, and a by-value PARAMETER parses and then cannot be called,
+; which is worse for being silent. The include set is the set of references the
+; header EMITS, not the import list.
+; ---------------------------------------------------------------------------
+
+(defn w37-base ():StrView
+  (return "(defstruct Pt (x i32) (y i32))
+(defn pt-make (a:i32 b:i32):Pt
+  (let ((p (ref Pt)) (alloca Pt))
+    (set! (p 'x) a)
+    (set! (p 'y) b)
+    (return p)))
+"))
+
+; Names Pt by value in an exported field AND in an exported return type.
+(defn w37-use ():StrView
+  (return "(import-use w37base)
+(defstruct Seg (a Pt) (b Pt))
+(defn seg-make (n:i32):Seg
+  (let ((s (ref Seg)) (alloca Seg))
+    (set! (s 'a) (pt-make n 1))
+    (set! (s 'b) (pt-make n 2))
+    (return s)))
+"))
+
+(defn w37-main ():StrView
+  (return "#include <stdio.h>
+#include \"w37use.h\"
+int main(void) {
+    Seg s = seg_make(5);
+    struct Pt p = s.a;          /* by-value copy of an imported struct */
+    printf(\"%d %d %d\\n\", p.x, p.y, s.b.y);
+    return 0;
+}
+"))
+
+; The defining unit is a sibling, so the include is its basename alone — the
+; spelling a quoted include resolves against the including file's own
+; directory, which is where the build writes it (`lib/%.h: lib/%.nuc`).
+(deftest w9-cheader-imported-type-included
+  (let (base:CLib (try (c-lib "w37base" (w37-base)))
+        use:String (try (c-header "w37use" (w37-use)))
+        ; Imports the same library and names Pt only INSIDE a body, so nothing
+        ; it exports mentions the type and its header depends on nothing.
+        quiet:String (try (c-header "w37quiet"
+"(import-use w37base)
+(defn plain (n:i32):i32
+  (let ((p (ref Pt)) (alloca Pt))
+    (set! (p 'x) n)
+    (return (p 'x))))
+")))
+    (try (check-line (string-as-view (addr-of use)) "#include \"w37base.h\""))
+    (try (check-not-contains (string-as-view (addr-of quiet)) "w37base.h"))
+    (drop (addr-of quiet))
+    (drop (addr-of use))
+    (drop (addr-of base))
+    (return (ok))))
+
+; The include is load-bearing, not decorative: the same consumer against a
+; header with that one line removed reproduces the original defect verbatim.
+(deftest w9-cheader-include-is-load-bearing
+  (let (dir:StrView (try (test-scratch))
+        base:CLib (try (c-lib "w37base" (w37-base)))
+        use:CLib (try (c-lib "w37use" (w37-use)))
+        stripped:String (string-new)
+        nl:StrView "\n"
+        text:StrView (c-lib-text (addr-of use))
+        it:SplitIter (strview-split (addr-of text) (addr-of nl)))
+    (while (not (split-iter-done (addr-of it)))
+      (let (l:StrView (split-iter-next (addr-of it)))
+        (when (not (strview-contains l "w37base.h"))
+          (str-into (addr-of stripped) l "\n"))))
+    (let (sp:String (try (write-into dir "stripped.h"
+                                     (string-as-view (addr-of stripped))))
+          r:CcCheck (try (c-consumer-syntax dir
+"#include \"stripped.h\"
+int main(void) { Seg s = seg_make(5); struct Pt p = s.a; return p.x; }
+")))
+      (when (r 'ok?) (fail! "stripping the include did not break the consumer"))
+      (try (check-contains (string-as-view (addr-of r 'err))
+                           "field has incomplete type 'struct Pt'"))
+      (drop (addr-of r))
+      (drop (addr-of sp)))
+    (drop (addr-of stripped))
+    (drop (addr-of use))
+    (drop (addr-of base))
+    (return (ok))))
+
+; End to end, which is the only thing that can tell a correct include from a
+; plausible one: compile both units, link, and read the imported struct by value
+; through the generated header.
+(deftest w9-cheader-imported-type-c-consumer
+  (let (base:CLib (try (c-lib "w37base" (w37-base)))
+        use:CLib (try (c-lib "w37use" (w37-use)))
+        parts:String (str (c-lib-obj (addr-of use)) " " (c-lib-obj (addr-of base)))
+        out:String (try (c-consumer-run (w37-main)
+                                        (string-as-view (addr-of parts)))))
+    (try (check-eq (string-as-view (addr-of out)) "5 1 2\n"))
+    (drop (addr-of out))
+    (drop (addr-of parts))
+    (drop (addr-of use))
+    (drop (addr-of base))
+    (return (ok))))
+
+; The reported artifact itself: a COMMITTED header that names an imported user
+; struct by value, which only compiles if the generated include chain made that
+; struct complete. Fails if the committed copies are regenerated wrong.
+(deftest w9-cheader-committed-header-usable
+  (let (r:CcCheck (try (c-consumer-syntax "."
+"#include \"lib/string.h\"
+int main(void) {
+    String s = string_new();
+    struct StrView v = string_as_view(&s);   /* imported struct, by value */
+    (void)eq_String_String(s, s);            /* and by-value parameters */
+    (void)v;
+    return 0;
+}
+")))
+    (when (not (r 'ok?))
+      (fail! "lib/string.h is not usable\n     "
+             (test-show (string-as-view (addr-of r 'err)))))
+    (drop (addr-of r))
+    (return (ok))))
+
+; ---------------------------------------------------------------------------
+; W9 item 44: a niche-encoded `!T`/`?T` over a non-pointer payload
+;
+; It was declared `struct _BANGui8` — a tag no header defines and none can,
+; because the value is not an aggregate. The declaration is wrong twice and the
+; second way is the dangerous one: a C author who completes the tag by hand gets
+; a program that compiles, links, runs and reads the wrong value.
+; ---------------------------------------------------------------------------
+
+(defn w44-lib ():StrView
+  (return "(import-use prelude)
+(import-use error)
+(deferror w44-range \"index out of range\")
+(defstruct W44Pt (x i32) (y i32))
+(defvar g-w44-flag:!ui8)
+(defn w44-byte (i:i32):!ui8
+  (when (< i 0) (return (err w44-range)))
+  (return (ok (unsafe/cast ui8 i))))
+(defn w44-takes (b:!ui8):i32 0)
+(defn w44-find (p:ptr:W44Pt i:i32):!ptr:W44Pt
+  (when (!= i 0) (return (err w44-range)))
+  (return (ok (as ref:W44Pt p))))
+(defn w44-show (r:!ptr:W44Pt):i32
+  (match r ((ok q) (return (q 'x))) ((err e) (return -1))))
+"))
+
+; No niche tag survives anywhere — return position, PARAMETER position and
+; `defvar` alike, since a niche is no more constructible by a C caller than it
+; is decodable.
+(deftest w9-cheader-niche-scalar-not-declared
+  (let (l:CLib (try (c-lib "w44niche" (w44-lib)))
+        h:StrView (c-lib-text (addr-of l)))
+    (try (check-not-contains h "struct _BANG"))
+    (try (check-not-contains h "struct _QMARK"))
+    (try (check-contains
+           h "/* w44-byte: uses an error-union or option type; not exported */"))
+    (try (check-contains
+           h "/* w44-takes: uses an error-union or option type; not exported */"))
+    (try (check-contains
+           h "/* g-w44-flag: uses an error-union or option type; not exported */"))
+    (drop (addr-of l))
+    (return (ok))))
+
+; The other side of the ruling: a pointer niche is ABI-identical to a C `T*`
+; (design/stage10/unions.md §6 rule 3), so it stays declared and stays callable.
+; Run, not read — the only check that can tell a kept declaration from a
+; plausible one.
+(deftest w9-cheader-niche-pointer-still-callable
+  (let (l:CLib (try (c-lib "w44niche" (w44-lib)))
+        out:String (try (c-lib-run (addr-of l)
+"#include <stdio.h>
+#include \"w44niche.h\"
+int main(void) {
+    struct W44Pt pt = {7, 9};
+    struct W44Pt* q = (struct W44Pt*)w44_find(&pt, 0);
+    printf(\"%d %d %d\\n\", q->x, q->y, w44_show(q));
+    return 0;
+}
+")))
+    (try (check-eq (string-as-view (addr-of out)) "7 9 7\n"))
+    (drop (addr-of out))
+    (drop (addr-of l))
+    (return (ok))))
+
+; Item 37 interaction: a type named ONLY by a refused declaration is not a
+; dependency of the header. The emitter refuses the whole declaration on any one
+; signature position, so the include pre-pass has to ask that of the whole form.
+(deftest w9-cheader-niche-refused-decl-adds-no-include
+  (let (base:CLib (try (c-lib "w44base" "(defstruct W44Only (x i32))\n"))
+        t:String (try (c-header "w44only"
+"(import-use prelude)
+(import-use error)
+(import-use w44base)
+(deferror w44-only-bad \"bad\")
+(defn w44-probe (p:ptr:W44Only):!ui8
+  (when (< (p 'x) 0) (return (err w44-only-bad)))
+  (return (ok (unsafe/cast ui8 1))))
+")))
+    (let (h:StrView (string-as-view (addr-of t)))
+      (try (check-not-contains h "w44base.h"))
+      (try (check-not-contains h "struct W44Only")))
+    (drop (addr-of t))
+    (drop (addr-of base))
+    (return (ok))))
+
+; The reported artefact: 14 declarations across 5 committed headers carried the
+; undefined tag. `string-from-cstr-unchecked` returns a real `struct String` and
+; must remain — it is the escape route a C caller is meant to take.
+(deftest w9-cheader-committed-headers-no-niche-tag
+  (try (check-lib-headers-lack "struct _BANG"))
+  (try (check-lib-headers-lack "struct _QMARK"))
+  (let (t:String (try (read-file "lib/string.h")))
+    (try (check-contains (string-as-view (addr-of t))
+                         "struct String string_from_cstr_unchecked"))
+    (drop (addr-of t)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; W9 item 25: the struct tag, and the builtin scalars that are not structs
+;
+; While `emit-cheader-defstruct` emitted an anonymous `typedef struct { … }
+; NAME;` the tag was never completed and every by-value use of a library's own
+; type failed. `Char` and `Err` are builtin scalars lowering to `i32`, and this
+; name-keyed renderer had no case for either, so they came out as `struct Char`
+; / `struct Err` — the second cause of the same broken headers.
+; ---------------------------------------------------------------------------
+
+(defn tag-lib ():StrView
+  (return "(defstruct Rec a:i32 b:i32)
+(defstruct Holder r:Rec n:i32)
+(defunion Shape (circle r:i32) (square s:i32))
+(defn rec-sum (r:Rec):i32
+  (let (q:ptr:Rec (alloca Rec))
+    (set! (deref q) r)
+    (return (+ (q 'a) (q 'b)))))
+(defn holder-sum (h:(ref Holder)):i32
+  (let (q:ptr:Rec (alloca Rec))
+    (set! (deref q) (h 'r))
+    (return (+ (+ (q 'a) (q 'b)) (h 'n)))))
+(defn ch-echo (c:Char):Char (return c))
+"))
+
+; Tag and typedef share a spelling — legal C, separate namespaces — so both
+; `Rec` and `struct Rec` name the completed type. A defunion is tagged for the
+; same reason: `type-name-to-c` answers `struct NAME` for a union name too.
+(deftest w9-cheader-struct-tagged
+  (let (l:CLib (try (c-lib "tlib" (tag-lib)))
+        h:StrView (c-lib-text (addr-of l)))
+    (try (check-line h "typedef struct Rec {"))
+    (try (check-line h "typedef struct Holder {"))
+    (try (check-line h "typedef struct Shape {"))
+    (drop (addr-of l))
+    (return (ok))))
+
+; A builtin scalar is not a struct. `Char` lowers to i32, so the C spelling is
+; uint32_t.
+(deftest w9-cheader-builtin-scalar-not-struct
+  (let (l:CLib (try (c-lib "tlib" (tag-lib)))
+        h:StrView (c-lib-text (addr-of l)))
+    (try (check-line h "uint32_t ch_echo(uint32_t c) asm(\"ch-echo\");"))
+    (try (check-not-contains h "struct Char"))
+    (drop (addr-of l))
+    (return (ok))))
+
+; A header that merely parses could still disagree about layout, and `sum`/
+; `hold` are wrong if it does — so the consumer nests the struct, reads the
+; nested field and passes one by value.
+(deftest w9-cheader-struct-by-value-c-consumer
+  (let (l:CLib (try (c-lib "tlib" (tag-lib)))
+        out:String (try (c-lib-run (addr-of l)
+"#include <stdio.h>
+#include \"tlib.h\"
+int main(void) {
+    Holder h;
+    h.r.a = 100; h.r.b = 7; h.n = 202;
+    struct Rec byval = h.r;
+    printf(\"sum=%d hold=%d ch=%u\\n\", rec_sum(byval), holder_sum(&h), ch_echo(0x1F600u));
+    return 0;
+}
+")))
+    (try (check-eq (string-as-view (addr-of out))
+                   "sum=107 hold=309 ch=128512\n"))
+    (drop (addr-of out))
+    (drop (addr-of l))
+    (return (ok))))
+
+; No committed header may reintroduce an anonymous typedef, which is the defect
+; itself and is checkable without compiling anything.
+(deftest w9-cheader-no-anonymous-typedef
+  (try (check-lib-headers-lack "typedef struct {"))
+  (return (ok)))
+
+; The two headers this item takes from broken to compiling. Item 4 measured 27
+; of the 34 lib/*.h parsing; these make it 29.
+(deftest w9-cheader-lib-corpus-compiles
+  (try (check-lib-headers-compile "char error"))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; W9 item 26: the header must name the symbol each `defn` actually links as
+;
+; `ns-ir-base` is that symbol only for a solitary, non-operator function — an
+; overload is mangled per signature, and an operator goes through `op-name-token`
+; even when it is the sole user method. The header derived the solitary form
+; unconditionally, so it declared symbols no object defines, twice under one C
+; name.
+; ---------------------------------------------------------------------------
+
+(defn ovl-lib ():StrView
+  (return "(defstruct Pt x:i32 y:i32)
+(defn scale (p:(ref Pt) k:i32):i32 (return (* (+ (p 'x) (p 'y)) k)))
+(defn scale (a:i32 k:i32):i32 (return (* a k)))
+(defn = (a:Pt b:Pt):bool
+  (let (la:Pt a lb:Pt b)
+    (return (if (and (= ((addr-of la) 'x) ((addr-of lb) 'x))
+                     (= ((addr-of la) 'y) ((addr-of lb) 'y))) true false))))
+(defn solo (n:i32):i32 (return (+ n 1)))
+"))
+
+; Each method gets its own C name and its own label; the solitary one keeps its
+; bare name and needs no label at all.
+(deftest w9-cheader-overload-distinct-symbols
+  (let (l:CLib (try (c-lib "ovlib" (ovl-lib)))
+        h:StrView (c-lib-text (addr-of l)))
+    (try (check-line
+           h "int32_t scale_pPt_i32(struct Pt* p, int32_t k) asm(\"scale.pPt.i32\");"))
+    (try (check-line
+           h "int32_t scale_i32_i32(int32_t a, int32_t k) asm(\"scale.i32.i32\");"))
+    (try (check-line
+           h "bool eq_Pt_Pt(struct Pt a, struct Pt b) asm(\"eq.Pt.Pt\");"))
+    (try (check-line h "int32_t solo(int32_t n);"))
+    (drop (addr-of l))
+    (return (ok))))
+
+(deftest w9-cheader-symbol-defined
+  (let (l:CLib (try (c-lib "ovlib" (ovl-lib))))
+    (try (check-labels-defined (addr-of l)))
+    (drop (addr-of l))
+    (return (ok))))
+
+(deftest w9-cheader-overload-c-consumer
+  (let (l:CLib (try (c-lib "ovlib" (ovl-lib)))
+        out:String (try (c-lib-run (addr-of l)
+"#include <stdio.h>
+#include \"ovlib.h\"
+int main(void) {
+    Pt p = {3, 4};
+    Pt q = {3, 4};
+    printf(\"a=%d b=%d eq=%d solo=%d\\n\",
+           scale_pPt_i32(&p, 10), scale_i32_i32(6, 7), (int)eq_Pt_Pt(p, q), solo(41));
+    return 0;
+}
+")))
+    (try (check-eq (string-as-view (addr-of out)) "a=70 b=42 eq=1 solo=42\n"))
+    (drop (addr-of out))
+    (drop (addr-of l))
+    (return (ok))))
+
+; An operator's C name sanitized to `_` is the defect's signature — two of them
+; in one header is what made `string.h`/`strview.h` unparseable — and no header
+; may bind a label whose name has no letter in it, which is what an operator
+; reaching the C side looks like.
+(deftest w9-cheader-no-operator-c-name
+  (try (check-lib-headers-lack " _("))
+  (let (d:DirEntries (try (read-dir "lib"))
+        n:usize (dir-count (addr-of d))
+        i:usize 0
+        nl:StrView "\n")
+    (while (< i n)
+      (let (nm:StrView (dir-name (addr-of d) i))
+        (when (strview-has-suffix nm ".h")
+          (let (p:String (str "lib/" nm)
+                t:String (try (read-file (string-as-view (addr-of p))))
+                tv:StrView (string-as-view (addr-of t))
+                it:SplitIter (strview-split (addr-of tv) (addr-of nl)))
+            (while (not (split-iter-done (addr-of it)))
+              (let (lab:StrView (asm-label (split-iter-next (addr-of it))))
+                (when (and (not (= lab "")) (not (has-ascii-letter? lab)))
+                  (fail! "lib/" nm " binds the operator label "
+                         (test-show lab)))))
+            (drop (addr-of t))
+            (drop (addr-of p)))))
+      (set! i (+ i 1)))
+    (drop (addr-of d)))
+  (return (ok)))
+
+; The four headers this item takes from broken to compiling.
+(deftest w9-cheader-overload-lib-corpus-compiles
+  (try (check-lib-headers-compile "parse string strview keyword"))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; W9 item 28: a Nucleus name that happens to be a C or C++ reserved word
+;
+; `sanitize-for-c` maps illegal *characters*, so `union`, `signed`, `class` and
+; `delete` reached the header intact and it did not parse. Each is renamed with a
+; trailing `_` and re-bound with a label, so the symbol is unchanged and only the
+; C spelling moves. The fixture puts a keyword in every position the emitter
+; produces an identifier for.
+; ---------------------------------------------------------------------------
+
+(defn kw-lib ():StrView
+  (return "(defstruct Box class:i32 signed:i32)
+(defstruct class x:i32)
+(defenum Kind auto static default)
+(defconst SIGNED-LIMIT 7)
+(defvar delete:i32 41)
+(defn union (a:i32 b:i32):i32 (return (bit-or a b)))
+(defn xor (a:i32 default:i32):i32 (return (bit-xor a default)))
+(defn plain (b:(ref Box)):i32 (return (+ (b 'class) (b 'signed))))
+(defn bump (v:class):class
+  (let (l:class v)
+    (set! ((addr-of l) 'x) (+ ((addr-of l) 'x) 1))
+    (return l)))
+"))
+
+; One consumer body under two spellings of the include, so the C and the C++
+; reading of the header cannot drift apart.
+(defn kw-consumer (include:StrView):String
+  (return (str "#include <stdio.h>\n" include "
+int main(void) {
+    Box b = {3, 4};
+    class_ c = {8};
+    printf(\"u=%d x=%d p=%d n=%d k=%d d=%d s=%d\\n\",
+           union_(8, 1), xor_(6, 3), plain(&b), bump(c).x,
+           (int)Kind_default, delete_, SIGNED_LIMIT);
+    return 0;
+}
+")))
+
+; The tag and the by-value reference to it must move together, or the header
+; parses and then names a type it never defines.
+(deftest w9-cheader-reserved-escaped
+  (let (l:CLib (try (c-lib "kwlib" (kw-lib)))
+        h:StrView (c-lib-text (addr-of l)))
+    (try (check-line h "    int32_t class_;"))
+    (try (check-line h "    int32_t signed_;"))
+    (try (check-line h "typedef struct class_ {"))
+    (try (check-line h "struct class_ bump(struct class_ v);"))
+    (try (check-line h "extern int32_t delete_ asm(\"delete\");"))
+    (try (check-line h "int32_t union_(int32_t a, int32_t b) asm(\"union\");"))
+    (try (check-line h "int32_t xor_(int32_t a, int32_t default_) asm(\"xor\");"))
+    (try (check-line h "int32_t plain(struct Box* b);"))
+    (drop (addr-of l))
+    (return (ok))))
+
+; A prefixed member is already an identifier; escaping the fragment would rename
+; `Kind_default` for no reason. The escape belongs on the join.
+(deftest w9-cheader-reserved-join-not-fragment
+  (let (l:CLib (try (c-lib "kwlib" (kw-lib))))
+    (try (check-line (c-lib-text (addr-of l)) "    Kind_default = 2"))
+    (drop (addr-of l))
+    (return (ok))))
+
+; Renaming the C identifier must not move the symbol.
+(deftest w9-cheader-reserved-symbol-defined
+  (let (l:CLib (try (c-lib "kwlib" (kw-lib)))
+        syms:String (try (nm-defined (c-lib-obj (addr-of l)))))
+    (try (check-line (string-as-view (addr-of syms)) "delete"))
+    (try (check-labels-defined (addr-of l)))
+    (drop (addr-of syms))
+    (drop (addr-of l))
+    (return (ok))))
+
+(deftest w9-cheader-reserved-c-consumer
+  (let (l:CLib (try (c-lib "kwlib" (kw-lib)))
+        src:String (kw-consumer "#include \"kwlib.h\"\n")
+        out:String (try (c-lib-run (addr-of l)
+                                   (string-as-view (addr-of src)))))
+    (try (check-eq (string-as-view (addr-of out))
+                   "u=9 x=5 p=7 n=9 k=2 d=41 s=7\n"))
+    (drop (addr-of out))
+    (drop (addr-of src))
+    (drop (addr-of l))
+    (return (ok))))
+
+; Why the table carries C++'s keywords too: a generated header is routinely read
+; through `extern "C"` from C++, where `class` and `delete` are as fatal as
+; `union` is in C.
+(deftest w9-cheader-reserved-cxx-consumer
+  (when (not (have-cxx?)) (skip! "no c++ to build the C++ consumer with"))
+  (let (dir:StrView (try (test-scratch))
+        l:CLib (try (c-lib "kwlib" (kw-lib)))
+        src:String (kw-consumer "extern \"C\" {\n#include \"kwlib.h\"\n}")
+        p:String (try (write-into dir "main.cpp" (string-as-view (addr-of src))))
+        parts:String (str (string-as-view (addr-of p)) " "
+                          (c-lib-obj (addr-of l)))
+        out:String (try (cxx-link-run dir (string-as-view (addr-of parts)))))
+    (try (check-eq (string-as-view (addr-of out))
+                   "u=9 x=5 p=7 n=9 k=2 d=41 s=7\n"))
+    (drop (addr-of out))
+    (drop (addr-of parts))
+    (drop (addr-of p))
+    (drop (addr-of src))
+    (drop (addr-of l))
+    (return (ok))))

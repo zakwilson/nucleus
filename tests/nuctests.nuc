@@ -29,6 +29,7 @@
 (import-use suite-modules)
 (import-use suite-float)
 (import-use suite-layout)
+(import-use suite-cheader)
 
 
 
@@ -365,16 +366,24 @@
 (defn compile-object (path:StrView out:StrView):!void
   (return (compile-object-in "" path out)))
 
-; Link the space-separated `parts` — `.o` or `.ll`, clang takes either — and run
-; the result; stdout is the answer. Separate compilation is the only thing that
-; tests what a `.nuch` actually promised: the symbol has to be resolved by the
-; LINKER, not by the compiler having seen the library's source.
-(defn link-run (parts:StrView):!String
+; Build the space-separated `parts` — `.c`, `.o` or `.ll`, clang takes any — and
+; run the result; stdout is the answer. Separate compilation is the only thing
+; that tests what a `.nuch` or a generated `.h` actually promised: the symbol has
+; to be resolved by the LINKER, not by the compiler having seen the source.
+;
+; `-Wall -Werror` because "it parses" is not the claim a generated header has to
+; meet; a real consumer builds clean or the header is broken.
+(defn driver-link-run (drv:StrView idir:StrView parts:StrView):!String
   (let (dir:StrView (try (test-scratch))
         bin:String (str dir "/linked.bin")
         sp:StrView " "
-        c:Command (command "clang")
+        c:Command (command drv)
         it:SplitIter (strview-split (addr-of parts) (addr-of sp)))
+    (command-arg (addr-of c) "-Wall")
+    (command-arg (addr-of c) "-Werror")
+    (when (not (= idir ""))
+      (command-arg (addr-of c) "-I")
+      (command-arg (addr-of c) idir))
     (while (not (split-iter-done (addr-of it)))
       (command-arg (addr-of c) (split-iter-next (addr-of it))))
     (command-arg (addr-of c) "-o")
@@ -401,6 +410,48 @@
             (drop (addr-of bin))
             (return (ok out))))
         ((err e) (return (err e)))))))
+
+(defn cc-link-run (idir:StrView parts:StrView):!String
+  (return (driver-link-run "clang" idir parts)))
+
+; The same consumer through the platform C++ driver. A generated header is
+; routinely read from C++ behind `extern "C"`, where a name C tolerates can
+; still be a keyword.
+(defn cxx-link-run (idir:StrView parts:StrView):!String
+  (return (driver-link-run "c++" idir parts)))
+
+(defn link-run (parts:StrView):!String
+  (return (cc-link-run "" parts)))
+
+; The global symbols `path` DEFINES, one per line. The independent witness a
+; generated header needs: reading it cannot tell a correct `asm` label from one
+; naming a symbol no object defines, and that is the whole risk of a label.
+(defn nm-defined (path:StrView):!String
+  (let (c:Command (command "nm"))
+    (command-arg (addr-of c) "-g")
+    (command-arg (addr-of c) "--defined-only")
+    (command-arg (addr-of c) path)
+    (command-capture (addr-of c) true)
+    (match (run (addr-of c))
+      ((ok o)
+        (when (not (success? (addr-of o 'status)))
+          (fail! "nm failed\n     " (test-show (string-as-view (addr-of o 'err)))))
+        (let (ov:StrView (string-as-view (addr-of o 'out))
+              nl:StrView "\n"
+              out:String (string-new)
+              it:SplitIter (strview-split (addr-of ov) (addr-of nl)))
+          (while (not (split-iter-done (addr-of it)))
+            (let (l:StrView (split-iter-next (addr-of it)))
+              (match (strview-rfind-byte (addr-of l) 32)
+                ((some at)
+                  (str-into (addr-of out) (strview-drop-bytes l (+ at 1)) "\n"))
+                (none 0))))
+          (drop (addr-of o))
+          (drop (addr-of c))
+          (return (ok out))))
+      ((err e)
+        (drop (addr-of c))
+        (return (err e))))))
 
 ; `test-write-file` only reaches the scratch directory itself, and a `.nuch`
 ; unit needs its header in a subdirectory of it — `resolve-import` tries `.nuc`
@@ -497,6 +548,20 @@
       (drop (addr-of c))
       (return (ok r)))))
 
+; Does this C file parse against the headers in `idir`? The question a unit asks
+; when the expected answer is NO — a link would report the same defect much
+; later and with a worse message.
+(defn cc-syntax-only-in (idir:StrView path:StrView):!CcCheck
+  (let (c:Command (command "clang"))
+    (command-arg (addr-of c) "-fsyntax-only")
+    (when (not (= idir ""))
+      (command-arg (addr-of c) "-I")
+      (command-arg (addr-of c) idir))
+    (command-arg (addr-of c) path)
+    (let (r:CcCheck (try (cc-check-run (addr-of c))))
+      (drop (addr-of c))
+      (return (ok r)))))
+
 ; A C consumer of a generated header, compiled as strictly as a real one would
 ; be — which is the half of "the header is valid C" that reading it cannot say.
 (defn cc-compile-strict (path:StrView):!CcCheck
@@ -513,12 +578,12 @@
       (drop (addr-of c))
       (return (ok r)))))
 
-; Whether the platform C compiler is on PATH, asked by running it. clang is a
-; hard dependency of this project and never skips; `cc` is not one, and it is
-; `cc` an ABI oracle wants — the claim is agreement with the compiler the
-; platform's own headers were written for.
-(defn have-cc? ():bool
-  (let (c:Command (command "cc"))
+; Whether `name` is on PATH, asked by running it. clang is a hard dependency of
+; this project and never skips; `cc` and `c++` are not, and it is `cc` an ABI
+; oracle wants — the claim is agreement with the compiler the platform's own
+; headers were written for.
+(defn have-program? (name:StrView):bool
+  (let (c:Command (command name))
     (command-arg (addr-of c) "--version")
     (command-capture (addr-of c) true)
     (match (run (addr-of c))
@@ -530,6 +595,12 @@
       ((err e)
         (drop (addr-of c))
         (return false)))))
+
+(defn have-cc? ():bool
+  (return (have-program? "cc")))
+
+(defn have-cxx? ():bool
+  (return (have-program? "c++")))
 
 (defn require-cc ():!void
   (when (not (have-cc?)) (skip! "no cc to build the oracle against"))
