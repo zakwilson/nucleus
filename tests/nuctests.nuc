@@ -338,9 +338,12 @@
         (drop (addr-of c))
         (return (err e))))))
 
-; `nucleusc -c <path> -o <out>`: a translation unit for a real link.
-(defn compile-object (path:StrView out:StrView):!void
+; `nucleusc [-I dir] -c <path> -o <out>`: a translation unit for a real link.
+(defn compile-object-in (dir:StrView path:StrView out:StrView):!void
   (let (c:Command (command (compiler-path)))
+    (when (not (= dir ""))
+      (command-arg (addr-of c) "-I")
+      (command-arg (addr-of c) dir))
     (command-arg (addr-of c) "-c")
     (command-arg (addr-of c) path)
     (command-arg (addr-of c) "-o")
@@ -358,6 +361,66 @@
         (return (err e))))
     (drop (addr-of c))
     (return (ok))))
+
+(defn compile-object (path:StrView out:StrView):!void
+  (return (compile-object-in "" path out)))
+
+; Link the space-separated `parts` — `.o` or `.ll`, clang takes either — and run
+; the result; stdout is the answer. Separate compilation is the only thing that
+; tests what a `.nuch` actually promised: the symbol has to be resolved by the
+; LINKER, not by the compiler having seen the library's source.
+(defn link-run (parts:StrView):!String
+  (let (dir:StrView (try (test-scratch))
+        bin:String (str dir "/linked.bin")
+        sp:StrView " "
+        c:Command (command "clang")
+        it:SplitIter (strview-split (addr-of parts) (addr-of sp)))
+    (while (not (split-iter-done (addr-of it)))
+      (command-arg (addr-of c) (split-iter-next (addr-of it))))
+    (command-arg (addr-of c) "-o")
+    (command-arg (addr-of c) (string-as-view (addr-of bin)))
+    (command-capture (addr-of c) true)
+    (command-stderr-to-stdout (addr-of c) true)
+    (match (run (addr-of c))
+      ((ok o)
+        (when (not (success? (addr-of o 'status)))
+          (fail! "link error\n     " (test-show (string-as-view (addr-of o 'out)))))
+        (drop (addr-of o)))
+      ((err e) (return (err e))))
+    (drop (addr-of c))
+    (let (rc:Command (command (string-as-view (addr-of bin))))
+      (command-search (addr-of rc) false)
+      (command-capture (addr-of rc) true)
+      (command-stderr-to-stdout (addr-of rc) true)
+      (match (run (addr-of rc))
+        ((ok o)
+          (let (ov:StrView (string-as-view (addr-of o 'out))
+                out:String (try (string-from-view (addr-of ov))))
+            (drop (addr-of o))
+            (drop (addr-of rc))
+            (drop (addr-of bin))
+            (return (ok out))))
+        ((err e) (return (err e)))))))
+
+; `test-write-file` only reaches the scratch directory itself, and a `.nuch`
+; unit needs its header in a subdirectory of it — `resolve-import` tries `.nuc`
+; in every search directory before any `.nuch`, so the source must sit outside.
+(defn write-into (dir:StrView name:StrView content:StrView):!String
+  (let (p:String (str dir "/" name)
+        pv:StrView (string-as-view (addr-of p))
+        f:File (try (file-create (addr-of pv))))
+    (try (write-str (addr-of f) content))
+    (try (file-close (addr-of f)))
+    (return (ok p))))
+
+; `nucleusc [-I idir] <flag> <src>`, written to `dir/name`. The artifact has to
+; be a FILE for the next compile to import or the linker to read.
+(defn emit-into (idir:StrView flag:StrView src:StrView dir:StrView
+                 name:StrView):!String
+  (let (t:String (try (emit-for-file idir flag src))
+        p:String (try (write-into dir name (string-as-view (addr-of t)))))
+    (drop (addr-of t))
+    (return (ok p))))
 
 ; What clang made of a C file. `ok?` is false for a source clang refused —
 ; which is how a unit asks whether THIS clang's target has a type, since a

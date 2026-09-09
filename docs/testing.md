@@ -229,6 +229,10 @@ include directory, and one about the REPL needs a session:
 | `(compile-path-in dir path)` | `!Compiled`, resolving imports under `-I dir`. |
 | `(emit-for-file dir flag path)` | `!String` — stdout of `nucleusc [-I dir] flag path`. |
 | `(compile-object path out)` | `!void` — `nucleusc -c path -o out`, for a real link. |
+| `(compile-object-in dir path out)` | The same, resolving imports under `-I dir`. |
+| `(link-run parts)` | `!String` — clang-link the space-separated `.o`/`.ll` paths and run the result. |
+| `(write-into dir name content)` | `!String` — write into a subdirectory of the scratch tree; yields the path. |
+| `(emit-into idir flag src dir name)` | `!String` — `nucleusc [-I idir] flag src` written to `dir/name`. |
 | `(build-run-file dir extra path)` | `!String` — build `path` under `-I dir` with one extra argument, and run it. |
 | `(repl-session text)` | `!String` — `text` is `nucleusc -i`'s stdin, the transcript is the answer. |
 | `(line-with hay needle)` | `!StrView` — the first line containing `needle`. |
@@ -273,6 +277,13 @@ An empty `dir` or `extra` contributes no argument. `line-with` is for a claim
 about one instruction: `i8 %` is in every module, so `check-not-contains` over
 the whole IR asserts nothing. `count-lines-with-prefix` is for a claim that
 something is emitted *once* — a presence test cannot catch a double emit.
+
+`link-run` is what tests a `.nuch`. A unit that compiles the library and its
+consumer together proves nothing about the header: the compiler has seen the
+source either way. Compiling the two separately and linking makes the LINKER
+resolve the symbol, so the claim is that the header promised the name the
+library actually exports — and a wrong answer is an undefined reference rather
+than a silently different program.
 
 `(test-scratch-sub name)` makes a subdirectory of the test's scratch directory
 and yields its path. A unit that exports a `.nuch` needs one: `resolve-import`
