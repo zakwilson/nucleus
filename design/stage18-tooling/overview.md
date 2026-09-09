@@ -2001,6 +2001,66 @@ That last one corrected a wrong first attempt: a file whose *body* calls an
 undefined function passes `--emit-nuch` and `--emit-cheader`, because neither
 mode compiles bodies — the perturbation has to be in the signature.
 
+#### TF-6 category (c), the declarations a header mode must refuse (2026-09-09)
+
+**2 shell functions and their shared helper → 48 tests**, 212 body lines retired
+(250 lines of the file, including the two rationale headers and two distant
+`spawn` lines): `run_w9_header_validation` (20) and
+`run_w9_empty_name_position` (28), into a tenth suite module
+`tests/suite-refusals.nuc`. `tests/run-tests.sh` is 6,776 → 6,526 lines and
+122 → 120 functions. `make test` is 302 shell + 664 native = 966.
+
+The two go together because they are one defect counted twice. Both header modes
+run the compiler's PRESCAN layer and never its EMISSION layer, and every prescan
+defers its diagnosis to emission; with no emitter downstream, nothing asked, and
+a truncated definer or a `()` in a name position reached a raw `(node-at form N)`
+dereference. W9 item 38 found it through the header modes, item 45 through
+`--emit-llvm`, and the fix is the same walk. They also shared one shell helper —
+`w9_header_agrees`, which is why retiring one without the other was not possible.
+
+**The three-way agreement became a comparison of records, not of stderr blobs.**
+The shell captured each mode's stderr and required the three strings equal. Under
+`--diagnostics=sexp` the same claim is `diag-list-text` over three `(Vector
+Diagnostic)`s — severity, file, line and message per record — and each unit also
+pins the located message itself through `check-error-at`, which the string
+comparison could not do: three modes agreeing on a *wrong* message passed. That
+is 44 messages now stated in the suite rather than deferred to whatever the
+compiler happens to say.
+
+**`Compiled` gained `exit`.** `ok?` is `success?`, which cannot tell 1 from 139,
+and the whole of item 38 is that a segfault also produces no output — so
+"refused" and "crashed" were indistinguishable to a helper reading `ok?`. The
+field is `exit-code`, which spells a signalled child 128+signal, and the two
+header modes are required to exit exactly 1.
+
+**Two boundaries, asserted rather than assumed.** A BODY error is out of scope by
+construction (no body is read), so `--emit-llvm` refuses
+`(defn w38-body (x:i64):i32 (return (as i32 x)))` and both header modes still
+succeed; `deferror` and `def-rmacro` are refused by `--emit-llvm` and rightly
+silent in the header modes. The shell asserted only the `--emit-llvm` half of
+each and left the rest to a comment. `check-probe-llvm-only` asserts both halves,
+so a crash in either mode is still a failure.
+
+**The two negative controls became whole artifacts.** `w38ok.nuc` was checked
+with four `qgrep -F` substrings and `w45ok.nuc` with two; both headers of both are
+now pinned line by line. That is what makes the template visible as the one
+declaration the two surfaces disagree about, and each is right: a `.nuch`
+consumer can stamp `w38-tw` from the body it carries, and C has nothing to stamp
+it into, so the C header says `/* w38-tw: generic template; not exported */`.
+Reading the C spelling of the inline union is likewise the only way to see the
+walk descended into it rather than skipping a field it could not name.
+
+**Verified by breaking it**, seven ways, each reverted by editing the source
+back: a message with one letter changed (`defn: bad form` → `bad forms`); a
+fixture's pinned line 7 → 8; one character off a generated C header line
+(`} W38Box;`); routing `deferror` through the refusal helper rather than the
+boundary one, which fails on `--emit-cheader exited 0, not 1`; the required exit
+1 → 2; the stdout-must-be-empty check inverted to `check-non-empty`; and the
+three-way comparison itself inverted, which fails every unit with both lists
+printed. An eighth attempt was invalid and is worth recording: a file carrying a
+signature error *and* a body error does not make the modes disagree, because the
+signature error aborts before the body is reached.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that

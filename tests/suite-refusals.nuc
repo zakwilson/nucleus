@@ -1,0 +1,452 @@
+; Stage 18 TF-6 category (c) — the declarations a header mode must refuse.
+;
+; Design: design/stage18-tooling/overview.md §T6.6; W9 items 38 and 45 in
+; design/stage15-stress-test/progress.md.
+;
+; `--emit-cheader` and `--emit-nuch` run the compiler's PRESCAN layer and never
+; its EMISSION layer, and every prescan defers its diagnosis to emission
+; (`defn-params-to-types`: "the located diagnostic is emit-defn's job";
+; `prescan-file-imports`: "a missing library is diagnosed by do-import"). With no
+; emitter downstream nothing ever asked, so a truncated definer reached a raw
+; `(node-at form N)` dereference and the compiler died with SIGSEGV and no output
+; — the worst diagnosis of a syntax error available — while an unresolvable
+; import exited 0 and printed a header that silently omitted its every name.
+;
+; So each unit asks the same two questions of one file: `--emit-llvm` refuses it
+; at a located error, and each header mode produces the IDENTICAL diagnostic
+; list, no output, and exit 1. Exit 1 rather than merely nonzero is the half that
+; was the bug: a segfault also produces no output, so only the status separates
+; "refused" from "crashed".
+
+; ---------------------------------------------------------------------------
+; The three modes on one file
+; ---------------------------------------------------------------------------
+
+; The rendered diagnostic lists are compared rather than a message quoted per
+; mode: the fix routes all three through one chokepoint, and comparing them is
+; what pins that. Three quoted copies would drift and never notice.
+(defn check-header-mode-agrees (dir:StrView path:StrView (want (ref Compiled))
+                                flag:StrView):!void
+  (let (c:Compiled (try (emit-checked dir flag path)))
+    (when (!= (c 'exit) 1)
+      (fail! flag " exited " (as i64 (c 'exit)) ", not 1\n     "
+             (test-show (string-as-view (addr-of c 'raw)))))
+    ; A header mode that refuses must print no header: a consumer that reads
+    ; stdout regardless would otherwise commit a file describing nothing.
+    (try (check-empty (compiled-ir (addr-of c))))
+    (let (a:String (diag-list-text (addr-of want 'diags))
+          b:String (diag-list-text (addr-of c 'diags)))
+      (when (!= (string-as-view (addr-of a)) (string-as-view (addr-of b)))
+        (fail! flag " and --emit-llvm disagree.\n     --emit-llvm:"
+               (string-as-view (addr-of a)) "\n     " flag ":"
+               (string-as-view (addr-of b))))
+      (drop (addr-of b))
+      (drop (addr-of a)))
+    (drop (addr-of c)))
+  (return (ok)))
+
+(defn check-refused-alike (dir:StrView path:StrView line:i32 msg:StrView):!void
+  (let (c:Compiled (try (emit-checked dir "--emit-llvm" path)))
+    (when (!= (c 'exit) 1)
+      (fail! "--emit-llvm exited " (as i64 (c 'exit)) ", not 1\n     "
+             (test-show (string-as-view (addr-of c 'raw)))))
+    (try (check-error-at (addr-of c 'diags) path line msg))
+    (try (check-header-mode-agrees dir path (addr-of c) "--emit-cheader"))
+    (try (check-header-mode-agrees dir path (addr-of c) "--emit-nuch"))
+    (drop (addr-of c)))
+  (return (ok)))
+
+; A one-form probe. Both tables below are a head and a shape, so the fixture is
+; a line of source and the location is always line 1.
+(defn check-probe-refused (src:StrView msg:StrView):!void
+  (let (dir:StrView (try (test-scratch))
+        p:String (try (test-write-file "probe.nuc" src)))
+    (try (check-refused-alike dir (string-as-view (addr-of p)) 1 msg))
+    (drop (addr-of p)))
+  (return (ok)))
+
+; The boundary: a head `--emit-llvm` refuses that the header modes are right to
+; pass. Asserted rather than assumed, so a later reader cannot take it for a
+; regression — and so that a crash in either mode is still a failure.
+(defn check-probe-llvm-only (src:StrView msg:StrView):!void
+  (let (dir:StrView (try (test-scratch))
+        p:String (try (test-write-file "probe.nuc" src))
+        pv:StrView (string-as-view (addr-of p))
+        c:Compiled (try (emit-checked dir "--emit-llvm" pv)))
+    (when (!= (c 'exit) 1)
+      (fail! "--emit-llvm exited " (as i64 (c 'exit)) ", not 1"))
+    (try (check-error-at (addr-of c 'diags) pv 1 msg))
+    (let (h:Compiled (try (emit-checked dir "--emit-cheader" pv))
+          n:Compiled (try (emit-checked dir "--emit-nuch" pv)))
+      (try (check-silent (addr-of h) "--emit-cheader"))
+      (try (check-silent (addr-of n) "--emit-nuch"))
+      (when (not (and (h 'ok?) (n 'ok?)))
+        (fail! "the header modes must still succeed: cheader exit "
+               (as i64 (h 'exit)) ", nuch exit " (as i64 (n 'exit))))
+      (drop (addr-of n))
+      (drop (addr-of h)))
+    (drop (addr-of c))
+    (drop (addr-of p)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; W9 item 38: the shapes the prescan accepted and the header emitter dropped
+; ---------------------------------------------------------------------------
+
+; The three fixtures that segfaulted: a missing return operand, an empty-list
+; parameter, and an empty-list member of an inline union.
+(deftest w9-cheader-missing-ret
+  (try (check-refused-alike "" "tests/fixtures/s1-missing-ret.nuc" 4
+         "defn 'foo': expected return type after the parameter list"))
+  (return (ok)))
+
+(deftest w9-cheader-empty-param
+  (try (check-refused-alike "" "tests/fixtures/w5f-empty-param.nuc" 7
+         "expected a name:type declaration, found the empty list '()'"))
+  (return (ok)))
+
+(deftest w9-cheader-empty-union-member
+  (try (check-refused-alike "" "tests/fixtures/w5f-empty-union-member.nuc" 11
+         "expected a name:type declaration, found the empty list '()'"))
+  (return (ok)))
+
+; The residue: an import that names nothing. Not a crash but a wrong ANSWER,
+; which is the worse half — the header described a unit it could not see, and
+; `--emit-nuch`'s copy would have been committed and linked against.
+(deftest w9-header-unresolvable-import
+  (try (check-probe-refused "(import-use w38nosuchlib)
+(defn w38-f (x:i32):i32 (return x))
+"
+         "import: cannot find 'w38nosuchlib'"))
+  (return (ok)))
+
+; The three fixtures were only the shapes the CORPUS happened to contain.
+; Probing every head the two header emitters dispatch on found ten crashing
+; shapes, not three — a truncated form of each definer, and an inline aggregate
+; reached through a pointer, an array or a `defvar` rather than a struct field.
+; Each is the same defect, so each pins the same three-way agreement.
+
+(deftest w9-header-truncated-defn
+  (try (check-probe-refused "(defn)" "defn: bad form"))
+  (return (ok)))
+
+(deftest w9-header-truncated-defstruct
+  (try (check-probe-refused "(defstruct)" "defstruct: missing name"))
+  (return (ok)))
+
+(deftest w9-header-truncated-defunion
+  (try (check-probe-refused "(defunion U)"
+         "defunion: expects a name and at least one arm"))
+  (return (ok)))
+
+(deftest w9-header-truncated-defvar
+  (try (check-probe-refused "(defvar)" "defvar: expects name and optional init"))
+  (return (ok)))
+
+(deftest w9-header-truncated-defconst
+  (try (check-probe-refused "(defconst K)" "defconst: expects name and value"))
+  (return (ok)))
+
+(deftest w9-header-truncated-defenum
+  (try (check-probe-refused "(defenum)" "defenum: missing name"))
+  (return (ok)))
+
+(deftest w9-header-truncated-defmacro
+  (try (check-probe-refused "(defmacro)"
+         "defmacro: expects name, params, and body"))
+  (return (ok)))
+
+(deftest w9-header-truncated-defcast
+  (try (check-probe-refused "(defcast)"
+         "defcast: expects (defcast From To conv-fn)"))
+  (return (ok)))
+
+(deftest w9-header-truncated-extend
+  (try (check-probe-refused "(extend)"
+         "extend: expected (extend Subject Protocol)"))
+  (return (ok)))
+
+(deftest w9-header-union-under-ptr
+  (try (check-probe-refused "(defstruct A (f (ptr (union a:i32 ()))))"
+         "expected a name:type declaration, found the empty list '()'"))
+  (return (ok)))
+
+(deftest w9-header-union-under-array
+  (try (check-probe-refused "(defstruct A (f (array (union a:i32 ()) 4)))"
+         "expected a name:type declaration, found the empty list '()'"))
+  (return (ok)))
+
+(deftest w9-header-union-in-defvar
+  (try (check-probe-refused "(defvar v:(union a:i32 ()) 0)"
+         "expected a name:type declaration, found the empty list '()'"))
+  (return (ok)))
+
+; A CONTROL, not a case this change fixed: the return position already refused
+; correctly, and this pins that the walk did not stop covering it.
+(deftest w9-header-union-in-ret
+  (try (check-probe-refused "(defn f (x:i32):(union a:i32 ()) (return 0))"
+         "expected a name:type declaration, found the empty list '()'"))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; The negative control, and the point of the whole ruling
+; ---------------------------------------------------------------------------
+
+; A valid unit — including a bounded-generic template, whose body `--emit-llvm`
+; checks only when a call site stamps it, so refusing one here would make the
+; header modes STRICTER than the compiler.
+(defn w38-ok-src ():StrView
+  (return "(defprotocol W38Z (w38z-zero (self:Self):i32))
+(defn w38z-zero (x:i32):i32 (return x))
+(extend i32 W38Z)
+(defn w38-tw (x:T :where (W38Z T)):i32 (return (+ (w38z-zero x) 1)))
+(defstruct W38Box (v (union as-int:i64 as-ptr:ptr)))
+(defn w38-plain (b:ptr:W38Box):i64 (return 7))
+(defn main ():i32 (return (w38-tw 41)))
+"))
+
+(deftest w9-header-validation-control-compiles
+  (try (check-source-accepts (w38-ok-src)))
+  (return (ok)))
+
+; Both headers, whole. The template is the one declaration the two disagree
+; about, and they are each right: a `.nuch` consumer can stamp `w38-tw` from the
+; body it carries, and C has nothing to stamp it into. Reading the C spelling of
+; the inline union is also the only way to see that the walk descended into it
+; rather than skipping the field it could not name.
+(deftest w9-header-validation-passes-valid-unit
+  (let (dir:StrView (try (test-scratch))
+        p:String (try (test-write-file "w38ok.nuc" (w38-ok-src)))
+        pv:StrView (string-as-view (addr-of p))
+        h:String (try (emit-for-file dir "--emit-cheader" pv))
+        n:String (try (emit-for-file dir "--emit-nuch" pv))
+        hv:StrView (string-as-view (addr-of h))
+        nv:StrView (string-as-view (addr-of n)))
+    (try (check-line hv "int32_t w38z_zero(int32_t x) asm(\"w38z-zero\");"))
+    (try (check-line hv "/* w38-tw: generic template; not exported */"))
+    (try (check-line hv "typedef struct W38Box {"))
+    (try (check-line hv "    union { int64_t as_int; void* as_ptr; } v;"))
+    (try (check-line hv "} W38Box;"))
+    (try (check-line hv "int64_t w38_plain(struct W38Box* b) asm(\"w38-plain\");"))
+    (try (check-line hv "int32_t main(void);"))
+    (try (check-line nv "(defprotocol W38Z (w38z-zero (self:Self) :i32))"))
+    (try (check-line nv "(declare w38z-zero ((x i32)) :i32)"))
+    (try (check-line nv "(extend i32 W38Z)"))
+    (try (check-line nv
+           "(defn w38-tw ((x T) :where (W38Z T)) :i32 (return (+ (w38z-zero x) 1)))"))
+    (try (check-line nv "(defstruct W38Box (v (union as-int:i64 as-ptr:ptr)))"))
+    (try (check-line nv "(declare w38-plain ((b (ptr W38Box))) :i64)"))
+    (try (check-line nv "(declare main () :i32)"))
+    (drop (addr-of n))
+    (drop (addr-of h))
+    (drop (addr-of p)))
+  (return (ok)))
+
+; And the boundary, asserted rather than assumed: a BODY error is out of scope by
+; construction — no body is read — so the header modes still succeed where
+; `--emit-llvm` fails. Stating it here is what stops a later reader from taking
+; the residue for a regression.
+(deftest w9-header-validation-body-error-out-of-scope
+  (try (check-probe-llvm-only "(defn w38-body (x:i64):i32 (return (as i32 x)))"
+         "as: lossy conversion from i64 to i32 -- use unsafe/cast"))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; W9 item 45: `()` in a position that requires a name
+; ---------------------------------------------------------------------------
+;
+; `()` reads as a NULL node (W5f: read-list returns null for a zero-element
+; list), and nearly every top-level definer read `(node-at form N)` and
+; dereferenced it. The item was filed for four heads measured by hand; probing
+; every top-level head found the same crash in twenty-odd shapes across all three
+; modes.
+;
+; The fix is not twenty new messages. Every one of these positions ALREADY owned
+; the right diagnostic for a wrong-kind name — the kind test that would have
+; fired it crashed first. `node-kind` (lib/node.nuc) answers NODE-NIL for a null
+; node, so each site's own message is what these units pin.
+
+; The four heads item 45 was filed for: each died SIGSEGV under plain
+; `--emit-llvm`, which is what separated it from item 38.
+(deftest w45-empty-name-defstruct
+  (try (check-probe-refused "(defstruct ())" "defstruct: missing name"))
+  (return (ok)))
+
+(deftest w45-empty-name-defunion
+  (try (check-probe-refused "(defunion () (A i32))" "defunion: missing name"))
+  (return (ok)))
+
+(deftest w45-empty-name-defenum
+  (try (check-probe-refused "(defenum ())" "defenum: missing name"))
+  (return (ok)))
+
+(deftest w45-empty-name-defprotocol
+  (try (check-probe-refused "(defprotocol ())" "defprotocol: missing name"))
+  (return (ok)))
+
+; The rest of the class, found by probing rather than by report. A bare
+; `(defn)`/`(defvar)` is caught by an arity guard, so the name position is only
+; reached once the form is long enough — which is why these carry a body.
+(deftest w45-empty-name-defn
+  (try (check-probe-refused "(defn () (x:i32):i32 (return x))"
+         "defn: missing name"))
+  (return (ok)))
+
+(deftest w45-empty-name-defvar
+  (try (check-probe-refused "(defvar () 0)"
+         "expected a name:type declaration, found the empty list '()'"))
+  (return (ok)))
+
+(deftest w45-empty-name-defconst
+  (try (check-probe-refused "(defconst () 7)" "defconst: name must be symbol"))
+  (return (ok)))
+
+(deftest w45-empty-name-defmacro
+  (try (check-probe-refused "(defmacro () (x) x)" "defmacro: missing name"))
+  (return (ok)))
+
+(deftest w45-empty-name-defcast
+  (try (check-probe-refused "(defcast () i32 f)" "unable to parse type expression"))
+  (return (ok)))
+
+(deftest w45-empty-name-extern
+  (try (check-probe-refused "(extern ())"
+         "expected a name:type declaration, found the empty list '()'"))
+  (return (ok)))
+
+(deftest w45-empty-name-declare
+  (try (check-probe-refused "(declare ())" "declare: missing name"))
+  (return (ok)))
+
+(deftest w45-empty-name-export
+  (try (check-probe-refused "(export ())"
+         "export: each argument must be a symbol"))
+  (return (ok)))
+
+(deftest w45-empty-name-ns
+  (try (check-probe-refused "(ns ())" "ns: namespace must be a symbol"))
+  (return (ok)))
+
+(deftest w45-empty-name-set-ir-prefix
+  (try (check-probe-refused "(set-ir-prefix ())"
+         "set-ir-prefix: argument must be a string literal"))
+  (return (ok)))
+
+(deftest w45-empty-name-import
+  (try (check-probe-refused "(import ())"
+         "import: name must be a symbol or string path"))
+  (return (ok)))
+
+(deftest w45-empty-name-import-use
+  (try (check-probe-refused "(import-use ())"
+         "import: name must be a symbol or string path"))
+  (return (ok)))
+
+; Not the name: an operand, a member, a signature, a template head. Same NULL,
+; same cause, and each already had the message it should give.
+(deftest w45-empty-defcast-target
+  (try (check-probe-refused "(defcast i32 () f)"
+         "unable to parse type expression"))
+  (return (ok)))
+
+(deftest w45-empty-extend-subject
+  (try (check-probe-refused "(extend () Eq)"
+         "extend: subject must be a symbol or struct template"))
+  (return (ok)))
+
+(deftest w45-empty-extend-protocol
+  (try (check-probe-refused "(extend i32 ())"
+         "extend: protocol must be a symbol or (Protocol args...)"))
+  (return (ok)))
+
+(deftest w45-empty-defenum-member
+  (try (check-probe-refused "(defenum E A () B)" "defenum: value must be symbol"))
+  (return (ok)))
+
+(deftest w45-empty-defprotocol-sig
+  (try (check-probe-refused "(defprotocol P ())"
+         "defprotocol: method signature must be a list, e.g. (name (params):ret)"))
+  (return (ok)))
+
+(deftest w45-empty-defstruct-template
+  (try (check-probe-refused "(defstruct (()) (f i32))"
+         "defstruct: template name must be a symbol"))
+  (return (ok)))
+
+(deftest w45-empty-defprotocol-template
+  (try (check-probe-refused "(defprotocol (()) (m (s:ptr):i32))"
+         "defprotocol: protocol name must be a symbol"))
+  (return (ok)))
+
+; CONTROLS. A struct field and a union arm route through `extract-name-and-type`
+; / the arm walk, both of which W5f and the unions work had already made
+; null-safe. They pin that this change did not move them.
+(deftest w45-empty-defstruct-field
+  (try (check-probe-refused "(defstruct S (f i32) ())"
+         "expected a name:type declaration, found the empty list '()'"))
+  (return (ok)))
+
+(deftest w45-empty-defunion-arm
+  (try (check-probe-refused "(defunion U (A i32) ())"
+         "defunion: arm cannot be the empty list '()' -- write `name` or `(name field:type ...)`"))
+  (return (ok)))
+
+; THE BOUNDARY. Two heads are refused by `--emit-llvm` and stay silent in the
+; header modes: `deferror`'s checks `report-at` and return `!i32`, a recoverable
+; contract the validation deliberately does not join, and `def-rmacro` is a
+; reader directive rather than a declaration a header describes.
+(deftest w45-empty-name-deferror
+  (try (check-probe-llvm-only "(deferror () \"boom\")"
+         "deferror: name must be a symbol"))
+  (return (ok)))
+
+(deftest w45-empty-name-def-rmacro
+  (try (check-probe-llvm-only "(def-rmacro ())"
+         "def-rmacro: expects (def-rmacro \"prefix\" symbol)"))
+  (return (ok)))
+
+; NEGATIVE CONTROL: the same heads, spelled correctly, still compile and still
+; reach both headers. `node-kind` returning NODE-NIL only for a null node makes
+; that true by construction, but a guard added at twenty sites is exactly the
+; kind of change that could quietly refuse a valid program. The `ns` is what
+; makes the C spelling worth reading: every exported name carries the namespace
+; and an `asm` label naming the unmangled symbol.
+(defn w45-ok-src ():StrView
+  (return "(ns w45ns)
+(defenum W45E W45A W45B)
+(defstruct W45Pt (x i32) (y i32))
+(defunion W45U (w45-some v:i32) w45-none)
+(defprotocol W45Z (w45z-zero (self:Self):i32))
+(defn w45z-zero (x:i32):i32 (return x))
+(extend i32 W45Z)
+(defconst W45K 7)
+(defvar w45-g:i32 0)
+(defn w45-add (a:i32 b:i32):i32 (return (+ a b)))
+(defn main ():i32 (return (w45-add W45K (w45z-zero 0))))
+"))
+
+(deftest w45-valid-unit-unaffected
+  (try (check-source-accepts (w45-ok-src)))
+  (let (dir:StrView (try (test-scratch))
+        p:String (try (test-write-file "w45ok.nuc" (w45-ok-src)))
+        pv:StrView (string-as-view (addr-of p))
+        h:String (try (emit-for-file dir "--emit-cheader" pv))
+        n:String (try (emit-for-file dir "--emit-nuch" pv))
+        hv:StrView (string-as-view (addr-of h))
+        nv:StrView (string-as-view (addr-of n)))
+    (try (check-line hv "    W45E_W45A = 0,"))
+    (try (check-line hv "} w45ns__W45Pt;"))
+    (try (check-line hv "    w45ns__W45U_w45_some = 0,"))
+    (try (check-line hv "#define W45K 7"))
+    (try (check-line hv "extern int32_t w45ns__w45_g asm(\"w45ns__w45-g\");"))
+    (try (check-line hv
+           "int32_t w45ns__w45_add(int32_t a, int32_t b) asm(\"w45ns__w45-add\");"))
+    (try (check-line nv "(ns w45ns)"))
+    (try (check-line nv "(defenum W45E W45A W45B)"))
+    (try (check-line nv "(defunion W45U (w45-some v:i32) w45-none)"))
+    (try (check-line nv "(extern (w45-g i32))"))
+    (try (check-line nv "(declare w45-add ((a i32) (b i32)) :i32)"))
+    (drop (addr-of n))
+    (drop (addr-of h))
+    (drop (addr-of p)))
+  (return (ok)))

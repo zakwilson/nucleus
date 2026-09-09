@@ -34,6 +34,7 @@
 (import-use suite-declarators)
 (import-use suite-exports)
 (import-use suite-linking)
+(import-use suite-refusals)
 
 
 
@@ -100,8 +101,12 @@
 ;
 ; A `Diagnostic`'s views point at interned symbols, so `diags` stays valid after
 ; `raw` is dropped.
+;
+; `exit` as well as `ok?`: a segfault also produces no output and no diagnostic,
+; so only the status separates "refused" from "crashed".
 (defstruct Compiled
   ok?:bool
+  exit:i32
   ir:String
   raw:String
   diags:(Vector Diagnostic))
@@ -123,6 +128,7 @@
             ev:StrView (string-as-view (addr-of o 'err))
             r:&Compiled (alloca Compiled))
         (set! (r 'ok?) (success? (addr-of o 'status)))
+        (set! (r 'exit) (exit-code (addr-of o 'status)))
         (set! (r 'ir) (try (string-from-view (addr-of ov))))
         (set! (r 'raw) (try (string-from-view (addr-of ev))))
         (set! (r 'diags) (try (read-diagnostics ev)))

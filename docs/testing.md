@@ -204,7 +204,7 @@ not the library's, because they run `./build/nucleusc`.
 
 | Form | Meaning |
 | --- | --- |
-| `(compile-source src)` | `!Compiled` — `ok?`, `ir`, `raw` stderr, and `diags`. |
+| `(compile-source src)` | `!Compiled` — `ok?`, `exit`, `ir`, `raw` stderr, and `diags`. `exit` is 128+signal for a signalled child, so a crash is distinguishable from a refusal. |
 | `(compile-path path)` | The same for a file. |
 | `(check-source-rejects src needle)` | The compile must fail, and some error must contain `needle`. |
 | `(check-file-rejects dir path needle)` | The same for a file, resolving imports under `-I dir`. |
@@ -254,6 +254,9 @@ include directory, and one about the REPL needs a session:
 | `(duplicate-define-name ir)` | `StrView` — a function `define`d twice, or `""`; LLVM accepts this and the second wins. |
 | `(check-line-set got want what)` | Every non-empty line of `want` is a line of `got`, and the counts match — set equality, for output whose order is not a property. |
 | `(check-same-decl-set a b)` | Two modules carry the same `type`/`define`/`declare` lines, as a set. |
+| `(check-refused-alike dir path line msg)` | `--emit-llvm` refuses `path` at `line` with `msg`, and both header modes exit **1** with no output and the identical diagnostic list. |
+| `(check-probe-refused src msg)` | The same for a one-form fixture, whose error is always at line 1. |
+| `(check-probe-llvm-only src msg)` | The boundary: `--emit-llvm` refuses and both header modes still succeed, silently. |
 
 A unit whose claim is *what the platform C compiler does* needs clang's own
 answer, and a claim about another machine needs `nucleusc` pointed at it:
