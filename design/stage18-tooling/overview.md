@@ -1838,6 +1838,82 @@ in `tests/run-tests.sh` — but it spans documents this work has no other reason
 touch, so it belongs to review as one cleanup at the end of TF-6, not to a test
 port.
 
+#### TF-6 category (c), a mangled name on every export surface (2026-09-09)
+
+**3 shell functions → 17 tests**, 270 body lines retired (303 lines of the file,
+including three section banners and two distant `spawn` lines): `run_ns6` (6),
+`run_sm3` (6) and `run_w9_ns_symbol_ownership` (5), into an eighth suite module
+`tests/suite-exports.nuc`. `tests/run-tests.sh` is 7,330 → 7,027 lines and
+128 → 125 functions. `make test` is 362 shell + 604 native = 966.
+
+The three go together because they are one claim in three spellings: a public
+name the compiler mangles — by namespace (`geom/area` → `geom__area`), by `?`
+or `!` (`full?` → `full_QMARK`), or by which namespace OWNS it — must be the
+same symbol on all three export surfaces, and a separately compiled consumer
+must link against the object and run. They also share one machine, which is why
+the port shrinks them: write a library, emit `.ll`/`.nuch`/`.h`, write a
+consumer, emit its IR, link the two objects, compare stdout. That is `Exports` +
+`Consumer` + `link-two` — three helpers replacing three hand-rolled copies that
+had drifted apart in their `import` spellings and in what they bothered to
+check.
+
+**Every emit in all three units was `2>/dev/null || true`.** A failed emit left
+an empty file, the greps then failed, and the unit reported a missing symbol —
+never the compiler error that caused it. `emit-for-file` fails with the
+diagnostic. The same held at the other end: `clang … 2>/dev/null && [ "$(bin)"
+= "…" ]` reported one FAIL for a link error and a wrong answer alike, where
+`link-run` prints clang's output and `check-eq` prints want against got.
+
+**Ten assertions got stronger, none weaker.** The header checks were unanchored
+substrings — `qgrep 'geom__area'` matches `geom__areaX` — and are now exact
+declaration lines. `n6-cheader-c-legal` gained the object side, since a header
+name is only right if something defines it. `n6-nuch-carries-ns` asserted
+`(ns geom)` alone and now also both `(declare …)` lines, which carry the BARE
+spelling the importer re-keys. `n6-import-resolves-mangled` checked `area` and
+not `perimeter`, and now pins both numbered call lines. `sm3-lib-symbols` and
+`sm3-nuch-roundtrip` moved from `-F` substrings to whole lines.
+`w9-ns-symbol-ownership` gained the `weak_odr` linkage of the imported
+definition, which is what lets two objects that each inline it link at all.
+
+**Three assertions the surfaces demanded and nobody made.** `.` is no more a C
+identifier character than `?` is, so an overloaded `?` method needs *two* right
+answers in the header — the sanitized spelling and the real symbol on an `asm`
+label. `sm3-cheader-fn-legal` checked neither for the pair; it now pins
+`int32_t even_QMARK_i32(int32_t x) asm("even_QMARK.i32");` and its `i64` twin.
+The same gap existed for the namespaced type: `b3-ns-type-export-surfaces`
+checked the typedef and never the function, and now pins
+`int32_t gt__pt_sum(struct gt__Pt* p) asm("gt__pt-sum");`, where the C name and
+the link name are different strings that both have to be right. And
+`sm3-cheader-typenames` checked four spellings of the mapping but not the union
+tag enum, so `enum Shape_QMARK_tag` and both arm constants are rows now.
+
+**One capability.** `ir-symbols` + `check-same-symbols` replace
+`grep -o … | sort -u` into two files and `cmp`. The comparison is mutual
+containment rather than a sort, so it does not depend on where in each module a
+symbol first appears, and it prints both sets when they differ. The shell's
+argument for comparing sets rather than asserting literals is preserved
+verbatim, because it is right: what the unit claims is that a namespace's symbol
+is the same string whether or not another namespace shares the compilation unit.
+
+**A discovery, from a diagnostic that was already good.** An unprefixed
+`(import "path")` binds the library under the FILE STEM, not under the `(ns …)`
+the file declares. The shell's fixtures worked only because their names and
+namespaces happened to agree; naming them `w23o-w23a.nuc` broke `w23a/describe`
+with `'w23a' is not in scope in this file`, and the note listed the stem. The
+same holds for a generated `.nuch` a consumer imports bare, which is why
+`export-surfaces` names its artifacts after the library. Recorded in
+`context/build.md`; the coupling is now stated in the module beside the fixture
+it constrains.
+
+**Verified by breaking it**, five ways, each reverted by editing the source
+back: a `geom__area` → `geom_area` header spelling; dropping the `asm` label
+from an overloaded declaration; one wrong digit in the linked program's expected
+output; asking for a symbol base neither module defines, which fires the
+non-empty guard; and comparing the two modules on the base `@w23`, whose sets
+genuinely differ — `alone: @w23a__describe / together: @w23a__describe
+@w23b__describe`, which is the set comparison itself working rather than its
+guard.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that
