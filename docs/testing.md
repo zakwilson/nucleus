@@ -227,6 +227,10 @@ include directory, and one about the REPL needs a session:
 | Form | Meaning |
 | --- | --- |
 | `(compile-path-in dir path)` | `!Compiled`, resolving imports under `-I dir`. |
+| `(compiled-ir c)` | `StrView` over a `Compiled`'s emitted IR. |
+| `(scratch-file name)` | `!String` — where a fixture written by `compile-source` and friends lands, for pinning the `file` field of a diagnostic about it. |
+| `(check-ir-parses ir)` | The module must pass `llvm-as`. |
+| `(opt-o2 stem ir)` | `!String` — the module after `opt -O2 -S`. |
 | `(emit-for-file dir flag path)` | `!String` — stdout of `nucleusc [-I dir] flag path`. |
 | `(compile-object path out)` | `!void` — `nucleusc -c path -o out`, for a real link. |
 | `(compile-object-in dir path out)` | The same, resolving imports under `-I dir`. |
@@ -278,6 +282,13 @@ A test that writes a header and a C consumer of it side by side must
 including file's own directory, and the path `test-write-file` hands back is
 relative to the project root, which is where `nucleusc` resolves an
 `import-use` from.
+
+`check-ir-parses` exists because `--emit-llvm` never reads back what it writes:
+exiting 0 says the compiler produced text, not that the text is a valid module.
+`opt-o2` answers the one question a function attribute raises — whether it
+changes what the optimizer does — and its assertions want a negative control,
+since "`-O2` did not tail-call this" also holds on an `-O2` that tail-calls
+nothing.
 
 An empty `dir` or `extra` contributes no argument. `line-with` is for a claim
 about one instruction: `i8 %` is in every module, so `check-not-contains` over

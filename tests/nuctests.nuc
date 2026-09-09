@@ -30,6 +30,7 @@
 (import-use suite-float)
 (import-use suite-layout)
 (import-use suite-cheader)
+(import-use suite-cimport)
 
 
 
@@ -137,6 +138,15 @@
 
 (defn compile-path (path:StrView):!Compiled
   (return (compile-path-in "" path)))
+
+(defn compiled-ir ((c (ref Compiled))):StrView
+  (return (string-as-view (addr-of c 'ir))))
+
+; Where `compile-source` and friends put a fixture, so a unit can pin the file
+; field of a diagnostic about source it wrote itself.
+(defn scratch-file (name:StrView):!String
+  (let (dir:StrView (try (test-scratch)))
+    (return (ok (str dir "/" name)))))
 
 ; The same, for a cross target. Separate from `compile-path-in` because the two
 ; optional arguments are never both wanted: a `-I` search path is about this
@@ -422,6 +432,58 @@
 
 (defn link-run (parts:StrView):!String
   (return (cc-link-run "" parts)))
+
+; `--emit-llvm` never reads back what it writes, so exiting 0 says nothing about
+; whether the module is valid. `llvm-as` is the reader.
+(defn check-ir-parses (ir:StrView):!void
+  (let (p:String (try (test-write-file "parse-probe.ll" ir))
+        c:Command (command "llvm-as"))
+    (command-arg (addr-of c) (string-as-view (addr-of p)))
+    (command-arg (addr-of c) "-o")
+    (command-arg (addr-of c) "/dev/null")
+    (command-capture (addr-of c) true)
+    (match (run (addr-of c))
+      ((ok o)
+        (when (not (success? (addr-of o 'status)))
+          (fail! "emitted IR does not parse\n     "
+                 (test-show (string-as-view (addr-of o 'err)))))
+        (drop (addr-of o)))
+      ((err e)
+        (drop (addr-of c))
+        (return (err e))))
+    (drop (addr-of c))
+    (drop (addr-of p))
+    (return (ok))))
+
+; `opt -O2` over a module, as text. The only way to ask whether a function
+; attribute changes what the optimizer actually does.
+(defn opt-o2 (stem:StrView ir:StrView):!String
+  (let (dir:StrView (try (test-scratch))
+        nm:String (str stem ".ll")
+        p:String (try (test-write-file (string-as-view (addr-of nm)) ir))
+        out:String (str dir "/" stem ".opt.ll")
+        c:Command (command "opt"))
+    (command-arg (addr-of c) "-O2")
+    (command-arg (addr-of c) "-S")
+    (command-arg (addr-of c) (string-as-view (addr-of p)))
+    (command-arg (addr-of c) "-o")
+    (command-arg (addr-of c) (string-as-view (addr-of out)))
+    (command-capture (addr-of c) true)
+    (match (run (addr-of c))
+      ((ok o)
+        (when (not (success? (addr-of o 'status)))
+          (fail! "opt -O2 rejected the emitted module\n     "
+                 (test-show (string-as-view (addr-of o 'err)))))
+        (drop (addr-of o)))
+      ((err e)
+        (drop (addr-of c))
+        (return (err e))))
+    (let (text:String (try (read-file (string-as-view (addr-of out)))))
+      (drop (addr-of c))
+      (drop (addr-of out))
+      (drop (addr-of p))
+      (drop (addr-of nm))
+      (return (ok text)))))
 
 ; The global symbols `path` DEFINES, one per line. The independent witness a
 ; generated header needs: reading it cannot tell a correct `asm` label from one
