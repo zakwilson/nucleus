@@ -1,0 +1,246 @@
+; Stage 18 TF-6 category (c) — the C declarator shapes the header parser used to
+; drop, and what each one costs when it is dropped.
+;
+; Design: design/stage18-tooling/overview.md §T6.6, and CD-1…CD-4 in
+; design/stage16-ergonomics/c-header-layout.md §8.
+;
+; A C declaration is shared specifiers plus a LIST of declarators, and every
+; declarator carries its own pointer depth, its own extents and its own
+; bit-field width over those specifiers. Reading only the first is what this
+; family is about. The oracle is never a size alone: every wrong row in the §1.5
+; survey compiles, links and runs, so each unit pins the exact `%X = type` line
+; — which IS the field offsets — or the exact signature, or a located refusal.
+
+(defn cd-header ():StrView (return "tests/fixtures/cd-declarators.h"))
+
+; One program serves five verdicts: the type lines, the three typedef
+; signatures, the CD-3 storage, and the size list the `cc` oracle rules on.
+(defn cd-main-src ():StrView
+  (return "(import-use \"stdio.h\")
+(import-use \"tests/fixtures/cd-declarators.h\")
+(defvar tv:cd_tagarr)
+(defvar av:cd_anonarr)
+(defn f_ta (x:cd_ta):i32 (return x))
+(defn f_tb (x:cd_tb):i32 (return 0))
+(defn f_tc (x:cd_tc):i32 (return 0))
+(defn main ():i32
+  (printf \"cd_plain %lld\\n\" (as i64 (sizeof cd_plain)))
+  (printf \"cd_ptrs %lld\\n\" (as i64 (sizeof cd_ptrs)))
+  (printf \"cd_arrays %lld\\n\" (as i64 (sizeof cd_arrays)))
+  (printf \"cd_bits %lld\\n\" (as i64 (sizeof cd_bits)))
+  (printf \"cd_three %lld\\n\" (as i64 (sizeof cd_three)))
+  (printf \"cd_td %lld\\n\" (as i64 (sizeof cd_td)))
+  (printf \"cd_tagarr %lld\\n\" (as i64 (sizeof cd_tagarr)))
+  (printf \"cd_anonarr %lld\\n\" (as i64 (sizeof cd_anonarr)))
+  (return 0))
+"))
+
+(defn cd-c-src ():StrView
+  (return "#include <stdio.h>
+#include \"tests/fixtures/cd-declarators.h\"
+int main(void){
+  printf(\"cd_plain %zu\\n\", sizeof(struct cd_plain));
+  printf(\"cd_ptrs %zu\\n\", sizeof(struct cd_ptrs));
+  printf(\"cd_arrays %zu\\n\", sizeof(struct cd_arrays));
+  printf(\"cd_bits %zu\\n\", sizeof(struct cd_bits));
+  printf(\"cd_three %zu\\n\", sizeof(struct cd_three));
+  printf(\"cd_td %zu\\n\", sizeof(cd_td));
+  printf(\"cd_tagarr %zu\\n\", sizeof(cd_tagarr));
+  printf(\"cd_anonarr %zu\\n\", sizeof(cd_anonarr));
+  return 0;
+}
+"))
+
+; ---------------------------------------------------------------------------
+; CD-1: a multi-declarator field line
+; ---------------------------------------------------------------------------
+
+; The exact layout of each shape a declarator list can vary: its own stars
+; (`cd_ptrs`), its own extents (`cd_arrays`), its own bit-field width
+; (`cd_bits` — the `tcp_info` shape), and three declarators to pin that the loop
+; is a loop. Empty stderr rather than a zero exit, so a warning trips it too.
+(deftest cd1-multi-declarator-types
+  (let (c:Compiled (try (compile-source (cd-main-src)))
+        ir:StrView (compiled-ir (addr-of c)))
+    (try (check-empty (string-as-view (addr-of c 'raw))))
+    (try (check-line ir "%cd_plain = type { i32, i32 }"))
+    (try (check-line ir "%cd_ptrs = type { ptr, ptr, i32 }"))
+    (try (check-line ir "%cd_arrays = type { i32, [3 x i32] }"))
+    (try (check-line ir "%cd_bits = type { [1 x i8], i32 }"))
+    (try (check-line ir "%cd_three = type { i16, i16, i16, i32 }"))
+    (try (check-ir-parses ir))
+    (drop (addr-of c)))
+  (return (ok)))
+
+; CD-1's residue fails SAFE. Declarators that disagree in pointer depth leave
+; the struct opaque with a located error and no layout: `*p` has already
+; collapsed the base into `ptr`, and giving `q` that type is exactly the silent
+; class L1 removed.
+(deftest cd1-mixed-pointer-refused
+  (try (check-opaque-at (cd-header) "cd_mixed_ptr" "48"))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; CD-2: a comma-separated typedef declarator list
+; ---------------------------------------------------------------------------
+
+; `typedef int cd_ta, *cd_tb;` — every declarator recorded with its own pointer
+; depth, not just the first. The whole signature, since a parameter that lost
+; its type is still a parameter of some type.
+(deftest cd2-typedef-list
+  (let (c:Compiled (try (compile-source (cd-main-src)))
+        ir:StrView (compiled-ir (addr-of c)))
+    (try (check-line ir "define i32 @f_ta(i32 %x.arg) section \".text.f_ta\" {"))
+    (try (check-line ir "define i32 @f_tb(ptr %x.arg) section \".text.f_tb\" {"))
+    (try (check-line ir "define i32 @f_tc(i64 %x.arg) section \".text.f_tc\" {"))
+    (drop (addr-of c)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; CD-3: a with-body aggregate array typedef
+; ---------------------------------------------------------------------------
+
+; `typedef struct Tag { … } Name[N];`. The storage carries the extent and the
+; PARAMETER decays, as C decays it — before this both were `declare void
+; @f(i64)`, an aggregate in a register with no diagnostic. The element type
+; lines are asserted too: a minted `__carr.` anchor is only right if it is the
+; body, and a tagged one must anchor on the tag the whole-unit prescan saw.
+(deftest cd3-array-typedef-body
+  (let (c:Compiled (try (compile-source (cd-main-src)))
+        ir:StrView (compiled-ir (addr-of c)))
+    (try (check-line ir "%cd_tag = type { i32, i32 }"))
+    (try (check-line ir "%__carr.cd_anonarr = type { i32, i32 }"))
+    (try (check-line ir "@tv = global [2 x %cd_tag] zeroinitializer, section \".bss.tv\", align 8"))
+    (try (check-line ir "@av = global [3 x %__carr.cd_anonarr] zeroinitializer, section \".bss.av\", align 8"))
+    (try (check-line ir "declare void @cd_take_tagarr(ptr)"))
+    (try (check-line ir "declare void @cd_take_anonarr(ptr)"))
+    (drop (addr-of c)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; The two compilers on the same header
+; ---------------------------------------------------------------------------
+
+(deftest cd-sizeof-vs-cc
+  (try (require-cc))
+  (try (check-agrees-with-cc "cdsz" "." (cd-main-src) (cd-c-src)))
+  (return (ok)))
+
+; The real-header witness. `struct tcp_info` splits a bit-field run across a
+; declarator list (`tcpi_snd_wscale : 4, tcpi_rcv_wscale : 4`) and was the one
+; glibc type across the 40 standard headers surveyed that CD-1 unblocks.
+;
+; Three questions, not one: the size, the struct's own alignment (as the offset
+; of a `tcp_info` after a `char`), and the offsets on either side of the
+; bit-field run — which is what says the run consumed the right storage rather
+; than that the totals happen to agree.
+(defn tcp-nuc-src ():StrView
+  (return "(import-use \"stdio.h\")
+(import-use \"netinet/tcp.h\")
+(defstruct TAlign pad:i8 v:tcp_info)
+(defn main ():i32
+  (let (a:ptr:TAlign (alloca TAlign)
+        t:ptr:tcp_info (alloca tcp_info))
+    (printf \"tcp_info %lld %lld\\n\" (as i64 (sizeof tcp_info))
+      (- (unsafe/cast i64 (addr-of a 'v)) (unsafe/cast i64 a)))
+    (printf \"tcpi_options %lld\\n\"
+      (- (unsafe/cast i64 (addr-of t 'tcpi_options)) (unsafe/cast i64 t)))
+    (printf \"tcpi_rto %lld\\n\"
+      (- (unsafe/cast i64 (addr-of t 'tcpi_rto)) (unsafe/cast i64 t))))
+  (return 0))
+"))
+
+(defn tcp-c-src ():StrView
+  (return "#include <netinet/tcp.h>
+#include <stdio.h>
+struct tcpi_align { char pad; struct tcp_info v; };
+int main(void){
+  printf(\"tcp_info %zu %zu\\n\", sizeof(struct tcp_info),
+         __builtin_offsetof(struct tcpi_align, v));
+  printf(\"tcpi_options %zu\\n\", __builtin_offsetof(struct tcp_info, tcpi_options));
+  printf(\"tcpi_rto %zu\\n\", __builtin_offsetof(struct tcp_info, tcpi_rto));
+  return 0;
+}
+"))
+
+(deftest cd-libc-tcp-info
+  (try (require-cc))
+  (let (p:String (try (test-write-file "tcp-probe.c" (tcp-c-src)))
+        r:CcCheck (try (cc-syntax-only-in "" (string-as-view (addr-of p))))
+        have:bool (r 'ok?))
+    (drop (addr-of r))
+    (drop (addr-of p))
+    (when (not have) (skip! "no netinet/tcp.h to take the witness from")))
+  (try (check-agrees-with-cc "cdtcp" "" (tcp-nuc-src) (tcp-c-src)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; CD-4: a declarator list after a struct or union body
+; ---------------------------------------------------------------------------
+
+(defn cd4-main-src ():StrView
+  (return "(import-use \"stdio.h\")
+(import-use \"tests/fixtures/cd4-declarator-list.h\")
+(defvar gv:cd4_G)
+(defn f_ep (p:cd4_Ep):i32 (return 0))
+(defn main ():i32
+  (printf \"cd4_A %lld\\n\" (as i64 (sizeof cd4_A)))
+  (printf \"cd4_B %lld\\n\" (as i64 (sizeof cd4_B)))
+  (printf \"cd4_C %lld\\n\" (as i64 (sizeof cd4_C)))
+  (printf \"cd4_D %lld\\n\" (as i64 (sizeof cd4_D)))
+  (printf \"cd4_E %lld\\n\" (as i64 (sizeof cd4_E)))
+  (printf \"cd4_F %lld\\n\" (as i64 (sizeof cd4_F)))
+  (printf \"cd4_G %lld\\n\" (as i64 (sizeof cd4_G)))
+  (printf \"cd4_U %lld\\n\" (as i64 (sizeof cd4_U)))
+  (printf \"cd4_V %lld\\n\" (as i64 (sizeof cd4_V)))
+  (printf \"cd4_S %lld\\n\" (as i64 (sizeof cd4_S)))
+  (printf \"cd4_after %lld\\n\" (as i64 (sizeof cd4_after)))
+  (return 0))
+"))
+
+(defn cd4-c-src ():StrView
+  (return "#include <stdio.h>
+#include \"tests/fixtures/cd4-declarator-list.h\"
+int main(void){
+  printf(\"cd4_A %zu\\ncd4_B %zu\\ncd4_C %zu\\ncd4_D %zu\\ncd4_E %zu\\ncd4_F %zu\\n\"
+         \"cd4_G %zu\\ncd4_U %zu\\ncd4_V %zu\\ncd4_S %zu\\ncd4_after %zu\\n\",
+    sizeof(cd4_A), sizeof(cd4_B), sizeof(cd4_C), sizeof(cd4_D), sizeof(cd4_E),
+    sizeof(cd4_F), sizeof(cd4_G), sizeof(cd4_U), sizeof(cd4_V),
+    sizeof(struct cd4_S), sizeof(struct cd4_after));
+  return 0;
+}
+"))
+
+; Every declarator of every list is a real type with the body's layout.
+; `cd4_B`/`cd4_D`/`cd4_V` did not exist at all before; `cd4_Ep` is a POINTER
+; declarator, so it belongs in the typedef table and must not become a second
+; record; `cd4_G` is an array declarator in a later position, anchored on a
+; minted `__carr.` element like CD-3's. `cd4_after` is the witness that the
+; non-typedef variable list `struct cd4_S { … } x, y;` was consumed rather than
+; left for the function-declaration parser to read from the wrong offset.
+(deftest cd4-declarator-list
+  (let (c:Compiled (try (compile-source (cd4-main-src)))
+        ir:StrView (compiled-ir (addr-of c)))
+    (try (check-empty (string-as-view (addr-of c 'raw))))
+    (try (check-line ir "%cd4_A = type { i32, i32 }"))
+    (try (check-line ir "%cd4_B = type { i32, i32 }"))
+    (try (check-line ir "%cd4_C = type { i32, i32 }"))
+    (try (check-line ir "%cd4_D = type { i32, i32 }"))
+    (try (check-line ir "%cd4_E = type { i32 }"))
+    (try (check-line ir "%cd4_F = type { i8 }"))
+    (try (check-line ir "%cd4_U = type { i32 }"))
+    (try (check-line ir "%cd4_V = type { i32 }"))
+    (try (check-line ir "%cd4_S = type { i32, i64 }"))
+    (try (check-line ir "%cd4_after = type { i32 }"))
+    (try (check-line ir "%__carr.cd4_G = type { i8 }"))
+    (try (check-not-contains ir "%cd4_Ep = type"))
+    (try (check-line ir "define i32 @f_ep(ptr %p.arg) section \".text.f_ep\" {"))
+    (try (check-line ir "@gv = global [3 x %__carr.cd4_G] zeroinitializer, section \".bss.gv\", align 8"))
+    (try (check-ir-parses ir))
+    (drop (addr-of c)))
+  (return (ok)))
+
+(deftest cd4-sizeof-vs-cc
+  (try (require-cc))
+  (try (check-agrees-with-cc "cd4sz" "." (cd4-main-src) (cd4-c-src)))
+  (return (ok)))

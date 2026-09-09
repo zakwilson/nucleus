@@ -1768,6 +1768,76 @@ struct types the survey measured, so a change that broke `signal.h` or
 `netinet/in.h` outright would sweep clean. One surviving comment that named
 `run_l2_layout_matrix` for its methodology was reworded to name the module.
 
+#### TF-6 category (c), the C declarator shapes a header parser drops (2026-09-09)
+
+**2 shell functions → 8 tests**, 289 body lines retired (307 lines of the file,
+including both section banners): `run_cd_declarators` (6) and
+`run_cd4_declarator_list` (2), into a seventh suite module
+`tests/suite-declarators.nuc`. `tests/run-tests.sh` is 7,637 → 7,330 lines and
+130 → 128 functions. `make test` is 379 shell + 587 native = 966.
+
+The pair goes together because it is one claim in two halves: a C declaration is
+shared specifiers plus a *list* of declarators, and each declarator carries its
+own pointer depth, extents and bit-field width. CD-1/2/3 is the list inside a
+declaration; CD-4 is the list after an aggregate body. The retired L family's
+own comment already named this pair as sharing its methodology.
+
+**Five assertions got stronger, none weaker.** The three CD-2 signatures were
+prefix regexes — `^define i32 @f_ta\(i32 ` says nothing about the rest of the
+line — and are now the whole `define` line including the section. CD-4's array
+storage was the substring `global [3 x %__carr.cd4_G] zeroinitializer`, now the
+whole `@gv = …, align 8` line. `cd1-mixed-pointer-refused` matched its located
+error with the path wildcard `[^ ]*cd-declarators\.h:47`; it now goes through
+`check-opaque-at`, which pins the resolved path, the line, the message and the
+absence of any `%cd_mixed_ptr = type`. Both "the import was silent" checks were
+`[ -s "$d/m.err" ]` on a file the shell also appended link errors to later in
+the same unit; they are `check-empty` over the compile's own stderr, so a
+warning trips them and nothing else can.
+
+**Four assertions the shell's comments claimed but never made.** CD-4's table
+covered 8 of the 11 types; `cd4_E`, `cd4_F` and the minted `%__carr.cd4_G`
+element are now rows, which is what says an array declarator in a later position
+anchors on the *body* rather than on a placeholder. The comment on `cd4_Ep` said
+a pointer declarator must be a typedef-table entry "NOT a second StructDef, or
+it shadows the record", and asserted neither half: `%cd4_Ep = type` must now be
+absent and `@f_ep` must take a `ptr`. CD-3 gained `%cd_tag` and
+`%__carr.cd_anonarr` for the same reason its globals were already pinned.
+
+**The `tcp_info` witness asks three questions instead of one.** It was size plus
+the struct's own alignment, read as the offset of a `tcp_info` after a `char`.
+Both totals are unchanged by a bit-field run that consumed the wrong storage, so
+the unit now also prints the offsets on either side of the run —
+`tcpi_options` at 5 and `tcpi_rto` at 8 — from both compilers. Member offsets on
+an imported C struct work on the Nucleus side, which is what makes the stronger
+oracle available at all.
+
+**Two skips replace two green ticks.** Both `sizeof`-vs-`cc` units ran their
+oracle inside `if command -v cc` and echoed `PASS … (SKIP: …)` when it was
+absent; they now open with `(try (require-cc))`. The `tcp_info` unit probed for
+`netinet/tcp.h` by trying to build its C oracle and echoing PASS on failure; it
+now syntax-checks the probe with clang — a hard dependency, so the probe never
+skips for its own reasons — and skips visibly when the header is not there.
+
+**Verified by breaking it**, four ways, each reverted by editing the source
+back. Widening `%cd_bits` to `[2 x i8]` failed the type table. Moving the opaque
+row's declared line from 48 to 47 printed the real diagnostic beside the
+expectation. Inverting the `%cd4_Ep` absence to a presence check failed, which is
+how a negative assertion is shown to be about something. Adding 1 to the
+`tcpi_rto` offset on the Nucleus side reported `line 3 differs / want
+"tcpi_rto 8" / got "tcpi_rto 9"` — also the proof that both compilers really
+ran.
+
+**Raised, not absorbed: 59 dangling `run_*` names in `design/`.** Four batches of
+this migration have retired shell functions that the Stage 15 and Stage 16 design
+documents still name as the live gate, in "where the gate lives" tables. This
+batch retargeted its own two rows and the three fixture headers whose opening
+comment named a retired function (`cd-declarators.h`, and `l1-members.h` /
+`l2-arrays.h` from the previous batch). The remaining sweep is mechanical —
+compare every `run_[a-z0-9_]*` in `design/` against the functions still defined
+in `tests/run-tests.sh` — but it spans documents this work has no other reason to
+touch, so it belongs to review as one cleanup at the end of TF-6, not to a test
+port.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that
