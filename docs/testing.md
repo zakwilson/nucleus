@@ -230,7 +230,9 @@ include directory, and one about the REPL needs a session:
 | `(emit-for-file dir flag path)` | `!String` — stdout of `nucleusc [-I dir] flag path`. |
 | `(compile-object path out)` | `!void` — `nucleusc -c path -o out`, for a real link. |
 | `(compile-object-in dir path out)` | The same, resolving imports under `-I dir`. |
-| `(link-run parts)` | `!String` — clang-link the space-separated `.o`/`.ll` paths and run the result. |
+| `(cc-link-run idir parts)` | `!String` — build the space-separated `.c`/`.o`/`.ll` paths with `clang -Wall -Werror [-I idir]` and run the result. |
+| `(cxx-link-run idir parts)` | The same through `c++`, for a header read behind `extern "C"`. |
+| `(link-run parts)` | `cc-link-run` with no include directory. |
 | `(write-into dir name content)` | `!String` — write into a subdirectory of the scratch tree; yields the path. |
 | `(emit-into idir flag src dir name)` | `!String` — `nucleusc [-I idir] flag src` written to `dir/name`. |
 | `(build-run-file dir extra path)` | `!String` — build `path` under `-I dir` with one extra argument, and run it. |
@@ -249,9 +251,13 @@ answer, and a claim about another machine needs `nucleusc` pointed at it:
 | `(cc-syntax-only-for target path)` | `!CcCheck` — `ok?` and `err` from `clang --target=<target> -ffreestanding -fsyntax-only`. |
 | `(cc-compile-strict path)` | `!CcCheck` — the same, from `clang -std=gnu11 -Wall -Wextra -Werror -c … -o /dev/null`. |
 | `(cc-run-file idir path)` | `!String` — build a C program with `cc [-I idir]` and run it; stdout is the answer. |
+| `(cc-syntax-only-in idir path)` | `!CcCheck` — `clang -fsyntax-only [-I idir]`, for a claim whose answer is "it does not compile". |
+| `(have-program? name)` | Whether `name` is on PATH, asked by running it. |
 | `(have-cc?)` / `(require-cc)` | Whether `cc` is on PATH; the second `skip!`s when it is not. |
+| `(have-cxx?)` | The same for `c++`. |
 | `(compile-path-for target path)` | `!Compiled`, under `--target=<target>`. |
 | `(check-emit-rejects flag path needle)` | `nucleusc <flag> <path>` must fail, with `needle` in some error. |
+| `(nm-defined path)` | `!String` — the global symbols an object file defines, one per line. |
 
 clang is not optional — `nucleusc` uses it as the default linker driver — so a
 missing clang is a broken toolchain rather than something to skip over. What is
@@ -284,6 +290,14 @@ source either way. Compiling the two separately and linking makes the LINKER
 resolve the symbol, so the claim is that the header promised the name the
 library actually exports — and a wrong answer is an undefined reference rather
 than a silently different program.
+
+A generated **C** header is the same argument one step further out, which is why
+`cc-link-run` is strict: reading the header cannot tell a correct `asm` label
+from one naming a symbol no object defines, and a header that merely parses can
+still disagree about layout. Build a C consumer, link it against the real
+object, and read what it prints. `nm-defined` is the independent witness for the
+half a consumer cannot reach — that the C identifier and the ELF symbol really
+are different strings.
 
 `(test-scratch-sub name)` makes a subdirectory of the test's scratch directory
 and yields its path. A unit that exports a `.nuch` needs one: `resolve-import`

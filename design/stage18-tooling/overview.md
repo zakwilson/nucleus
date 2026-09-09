@@ -1616,6 +1616,87 @@ lines, which reached two pre-existing four-blank separators elsewhere in the
 file and turned a clean deletion diff into unrelated churn. Both were put back;
 the rule is now in `context/build.md`.
 
+#### TF-6 category (c), what a `.h` carries (2026-09-09)
+
+**7 shell functions → 32 tests**, 662 body lines retired (754 lines of the
+file): `run_w9_cheader_globals` (5), `run_w9_cheader_identifiers` (4),
+`run_w9_cheader_imported_types` (4), `run_w9_cheader_niche_types` (4),
+`run_w9_cheader_struct_tag` (5), `run_w9_cheader_overload_symbols` (5) and
+`run_w9_cheader_reserved_words` (5), into a fifth suite module
+`tests/suite-cheader.nuc`. `tests/run-tests.sh` is 9,246 → 8,492 lines and
+143 → 136 functions. `make test` is 408 shell + 558 native = 966.
+
+The successor to the previous batch, one step further out: a `.nuch` is read by
+`nucleusc`, a `.h` by a C compiler, and the argument for testing them is the
+same. Reading the header is never the claim. A header that merely parses can
+still bind an `asm` label to a symbol no object defines, or agree about names
+and disagree about layout — so all seven units end in a C consumer that is
+compiled, linked against the real object, and run.
+
+**Seven hand-rolled setups became one.** Every unit wrote a library, emitted its
+header, compiled its object and built a consumer beside them; that is `CLib`
+plus `c-lib` and `c-lib-run`. `c-header` is the variant for a unit whose claim
+is that a declaration was *refused*, where there may be no symbol to link at all.
+
+**`cc-link-run` is `link-run` generalised and made strict.** It takes `.c`
+alongside `.o`/`.ll` — clang takes any of them — adds `-I` for the scratch
+directory, and compiles with `-Wall -Werror`, which three of the seven shell
+units did not. `link-run` is now that with no include directory, and
+`driver-link-run` underneath takes the driver, so `cxx-link-run` is one line:
+the C++ consumer is the reason the reserved-word table carries C++'s keywords,
+since a generated header is routinely read behind `extern "C"` where `class` and
+`delete` are as fatal as `union` is in C.
+
+**`nm-defined` is the witness a consumer cannot be.** Grep over a header cannot
+tell a correct label from one naming a symbol that does not exist, and running a
+consumer only proves the labels it happens to call. `check-labels-defined`
+states the invariant against the object — *every* label the header binds must be
+a symbol the object defines — rather than against a hardcoded list, which is the
+only form that outlasts a change to the mangling. Two units did this by hand
+with `nm | awk | sort -u` and a shell loop, and disagreed on the filter (`T`/`W`
+in one, `!= U` in the other).
+
+**Two assertions got stronger, none weaker.** The operator check was
+`! qgrep -E 'asm\("[<>=!+*/%-]+"\)'`, a character class that has to be kept in
+step with the operator set; it is now "every label in every committed `lib/*.h`
+contains at least one ASCII letter", which is the actual claim — an operator's
+name is all punctuation — and needs no maintenance. And
+`w9-cheader-private-global-not-exported` discarded the compiler's stderr and
+asserted only that the consumer failed, so a consumer that failed for an
+unrelated reason passed it; it now requires the diagnostic to name `hidden`.
+
+**Verified by breaking it**, five ways, each reverted by editing the source
+back. Dropping the label-stripping from `check-no-stray-hyphen` reported
+``hyphen survives into C: extern int64_t my_count asm("my-count")`` — proof the
+line loop runs at all. Inverting the operator predicate reported
+`lib/allocator.h binds the operator label alloc-handle-alloc`, proof the corpus
+scan finds labels rather than passing on an empty set. Inverting
+`check-labels-defined` reported `the header binds scale.pPt.i32, which the
+object does not define` with the real symbol list attached. Searching the corpus
+for `typedef` instead of `typedef struct {` named `lib/allocator.h`, and adding
+a nonexistent stem to the corpus compile named `lib/nosuchheader.h`. The skip
+path was checked by running with `c++` hidden from `PATH`:
+`(status skip) (message "no c++ to build the C++ consumer with")`.
+
+Four helpers in `tests/nuctests.nuc`: `cc-link-run`/`cxx-link-run` over a shared
+`driver-link-run`, `cc-syntax-only-in` (the include-path form, for a claim whose
+expected answer is "it does not compile"), `nm-defined`, and `have-program?`,
+which `have-cc?` and the new `have-cxx?` are now one line each on top of.
+
+**The heredoc trap, hit exactly as recorded, and the 966 invariant caught the
+consequence.** A naive `^}$` scan for a function's end stopped at the C `main`'s
+closing brace inside a heredoc and reported the seven bodies as 389 lines when
+they are 662. `context/build.md` already warned about this; the fix is the
+heredoc-aware scan it prescribes. But the *same* truncated ranges were also used
+to enumerate what each unit asserts, so one verdict at the tail of the niche
+unit — `w9-cheader-committed-headers-no-niche-tag`, a corpus scan for the
+`struct _BANG…` tag across `lib/*.h` — was never ported, and the deletion
+retired 32 verdicts against 31 new tests. `make test` came back 408 + 557 = 965
+and named the gap immediately. Enumerate a unit's verdicts from the same ranges
+the deletion will use, and count before believing the port is complete. Four of
+the seven had their `spawn` line ~3,600 lines from the body, so body and `spawn`
+went as separate ranges.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that
