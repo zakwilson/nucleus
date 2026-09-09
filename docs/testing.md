@@ -258,6 +258,22 @@ include directory, and one about the REPL needs a session:
 | `(check-probe-refused src msg)` | The same for a one-form fixture, whose error is always at line 1. |
 | `(check-probe-llvm-only src msg)` | The boundary: `--emit-llvm` refuses and both header modes still succeed, silently. |
 
+A generated C header is only right if a real consumer links against the object
+the same compile produced, so that whole shape is one machine:
+
+| Form | Meaning |
+| --- | --- |
+| `(c-lib stem src)` | `!CLib` — write `stem.nuc`, emit `stem.h` beside it, compile `stem.o`; `obj` is the object's path and `text` the header's contents. |
+| `(c-lib-obj l)` / `(c-lib-text l)` | `StrView` over either. |
+| `(c-header stem src)` | `!String` — the header alone, for a claim about a declaration that was *refused*, where there may be no symbol to link. |
+| `(c-consumer-run main-src parts)` | `!String` — build `main-src` as `main.c` against the scratch directory's headers, link it with `parts`, run it. |
+| `(c-lib-run l main-src)` | `c-consumer-run` against that library's object. |
+| `(c-consumer-syntax idir main-src)` | `!CcCheck` — what clang makes of a consumer it is only asked to parse. |
+
+Both artifacts land in the test's own scratch directory, which is also where the
+C consumer is written — so a quoted `#include` reaches the header by **base
+name** and needs no path.
+
 A unit whose claim is *what the platform C compiler does* needs clang's own
 answer, and a claim about another machine needs `nucleusc` pointed at it:
 
