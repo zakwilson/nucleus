@@ -41,6 +41,7 @@
 (import-use suite-globals)
 (import-use suite-conversions)
 (import-use suite-fnptr)
+(import-use suite-cdecl)
 
 
 
