@@ -2559,3 +2559,127 @@ map=2
 (defn main ():i32 (return 0))
 " 2 "_get: no field 'zzz' on struct 'Pt'"))
   (return (ok)))
+
+; ---------------------------------------------------------------------------
+; What the compiler records when it reads a signature
+; ---------------------------------------------------------------------------
+
+; `tyname-resolvable` (src/generics.nuc) decides whether a symbol in a stamped
+; method's type pattern names a CONCRETE type or a free type variable. Read as a
+; tyvar, a concrete argument makes the stamp look like an unmonomorphized
+; template, so `emit-defn` skips its define while the call site still names its
+; ir-name — an undefined symbol only LLVM's parser catches, which is why the
+; assertion is `llvm-as` rather than the shell's hand-rolled `comm` over the
+; call and define lines.
+(defn check-tyname-stamps (t:StrView):!void
+  (let (s:String (str "(import-use vector)
+(defn main ():i32
+  (with ((v (ref (Vector " t "))) (alloca (Vector " t ")))
+    (vector-init v))
+  (return 0))
+")
+        c:Compiled (try (compile-source (string-as-view (addr-of s)))))
+    (try (check-no-errors (addr-of c 'diags)))
+    (try (check-ir-parses (compiled-ir (addr-of c))))
+    (drop (addr-of c))
+    (drop (addr-of s)))
+  (return (ok)))
+
+; The whole builtin set, because it had drifted from `parse-type-name` three
+; times (__fnty_N, ptr:X, and `Char`). `raw` is included: the shell listed it,
+; said it was the point of listing it, then `continue`d past it before writing
+; a file — so the one name singled out was the one never exercised, and it
+; stamps and parses like the rest.
+(deftest builtin-tyname-resolvable
+  (try (check-tyname-stamps "Char"))
+  (try (check-tyname-stamps "usize"))
+  (try (check-tyname-stamps "ssize"))
+  (try (check-tyname-stamps "i32"))
+  (try (check-tyname-stamps "ui8"))
+  (try (check-tyname-stamps "f64"))
+  (try (check-tyname-stamps "bool"))
+  (try (check-tyname-stamps "ptr"))
+  (try (check-tyname-stamps "CStr"))
+  (try (check-tyname-stamps "Err"))
+  (try (check-tyname-stamps "raw"))
+  (return (ok)))
+
+; keyword-markers.md §7, follow-up 1: the two signature-registration sites
+; inferred `has-rest` from `(< (defn-params-count …) (node-len …))`, which is
+; equally true of an `:optional` list — so every `:optional` defn registered
+; has-rest = 1. `finalize-generics` binds that Type for a SOLITARY name, so a
+; call above the definition took the `:rest` path; the widening dispatch tiers
+; gate on `(= (m has-rest) 0)`, so an overloaded one never resolved.
+;
+; The shell reported four distinct FAIL names under a single PASS name, so the
+; names a red run printed did not exist in a green one.
+(deftest s16-optional-has-rest
+  ; Solitary, called from ABOVE its definition, optional omitted — the prescan
+  ; Type verbatim. Before the fix this reported `a :rest call needs the node
+  ; runtime` for a defn with no `:rest` in it.
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defn caller ():i64 (return (early 1)))
+(defn early (a:i32 :optional (b:i64 5)):i64 (return b))
+(defn main ():i32 (printf \"%ld\\n\" (caller)) (return 0))
+")))
+    (try (check-eq (string-as-view (addr-of out)) "5\n"))
+    (drop (addr-of out)))
+  ; Overloaded, so the call resolves through the generic registry rather than
+  ; the scope binding; the literal 3 needs widening to i64, which lands it in
+  ; the adapt tier — the one gated on has-rest.
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defn pick (a:CStr :optional (b:i64 7)):i64 (return b))
+(defn pick (a:i32):i64 (return (as i64 a)))
+(defn main ():i32 (printf \"%ld %ld\\n\" (pick \"x\" 3) (pick 5)) (return 0))
+")))
+    (try (check-eq (string-as-view (addr-of out)) "3 5\n"))
+    (drop (addr-of out)))
+  ; The second site: the same overload set arriving as `.nuch` `defmethod`
+  ; entries. A SOLITARY `:optional` defn exports a `(declare …)` its own
+  ; importer refuses, so the overloaded shape is the only round-trip there is.
+  ; `resolve-import` tries `.nuc` in every search directory before any `.nuch`,
+  ; so the source sits outside them.
+  (let (src:String (try (test-scratch-sub "optsrc"))
+        hdr:String (try (test-scratch-sub "optlib"))
+        use:String (try (test-scratch-sub "optuse"))
+        hv:StrView (string-as-view (addr-of hdr))
+        lib:String (try (write-into (string-as-view (addr-of src)) "optlib.nuc"
+                          "(defn pick (a:CStr :optional (b:i64 7)):i64 (return b))
+(defn pick (a:i32):i64 (return (as i64 a)))
+"))
+        u:String (try (write-into (string-as-view (addr-of use)) "u.nuc"
+                        "(import-use \"stdio.h\")
+(import-use optlib)
+(defn main ():i32 (printf \"%ld\\n\" (pick \"x\" 3)) (return 0))
+")))
+    (let (h:String (try (emit-into "" "--emit-nuch" (string-as-view (addr-of lib))
+                                   hv "optlib.nuch")))
+      (drop (addr-of h)))
+    (let (c:Compiled (try (compile-path-in hv (string-as-view (addr-of u))))
+          iv:StrView (compiled-ir (addr-of c)))
+      ; Both members: the round trip is of the overload SET, and the shell asked
+      ; only about the `:optional` one.
+      (try (check-line iv "declare i64 @pick.cstr.i64(ptr, i64)"))
+      (try (check-line iv "declare i64 @pick.i32(i32)"))
+      (drop (addr-of c)))
+    (drop (addr-of u))
+    (drop (addr-of lib))
+    (drop (addr-of use))
+    (drop (addr-of hdr))
+    (drop (addr-of src)))
+  ; The rule the fix must not lose: a real `:rest` defn still registers has-rest
+  ; at the prescan, so a forward call folds its tail into a node list.
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use node)
+(defn caller ():i64 (return (sum 1 2 3 4)))
+(defn sum (:rest args:i64):i64
+  (let (total:i64 0)
+    (while (!= args null)
+      (set! total (+ total (unsafe/cast i64 ((unsafe/cast ptr:Node args) 'car))))
+      (set! args ((unsafe/cast ptr:Node args) 'cdr)))
+    total))
+(defn main ():i32 (printf \"%ld\\n\" (caller)) (return 0))
+")))
+    (try (check-eq (string-as-view (addr-of out)) "10\n"))
+    (drop (addr-of out)))
+  (return (ok)))

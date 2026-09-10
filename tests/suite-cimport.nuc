@@ -705,3 +705,74 @@ typedef struct RLTag rl_arr_t[1];
     (try (check-line hv "off_t f(off_t x);"))
     (drop (addr-of h))
     (return (ok))))
+
+; ---------------------------------------------------------------------------
+; A bare `unsigned`, and a declaration the parser declines
+; ---------------------------------------------------------------------------
+;
+; Design: design/stage16-ergonomics/cheader-parser-vs-libclang.md §3. C1: a bare
+; `unsigned`/`signed` used to make the DECLARATOR name the base type, so
+; `unsigned a;` abandoned its struct and `unsigned f(void);` was dropped — zero
+; occurrences in glibc, which is why the census missed it, and pervasive in
+; third-party headers (libclang's own `clang-c/Index.h` among them). C2: a
+; declaration the parser declines is recorded with a reason, so the use site
+; says more than "not defined anywhere".
+
+; The oracle half. `cc` is not a hard dependency, so its absence is a SKIP —
+; the shell printed `PASS  s16-c1-bare-unsigned (SKIP: no cc …)` for both the
+; missing compiler and an oracle that failed to build, which is a green verdict
+; for a claim nothing checked.
+(deftest s16-c1-bare-unsigned
+  (try (require-cc))
+  (try (check-agrees-with-cc "s16u" "tests/fixtures"
+    "(import-use \"tests/fixtures/s16-unsigned.h\")
+(declare printf (fmt:CStr):i32)
+(defn main ():i32
+  (printf \"%ld %ld %ld %ld %ld %ld %ld %ld\\n\"
+    (as i64 (sizeof S16U01)) (as i64 (sizeof S16U02)) (as i64 (sizeof S16U03))
+    (as i64 (sizeof S16U04)) (as i64 (sizeof S16U05)) (as i64 (sizeof S16U06))
+    (as i64 (sizeof S16U07)) (as i64 (sizeof S16U08)))
+  (return 0))
+"
+    "#include <stdio.h>
+#include \"s16-unsigned.h\"
+int main(void){
+  printf(\"%zu %zu %zu %zu %zu %zu %zu %zu\\n\",
+    sizeof(struct S16U01), sizeof(struct S16U02), sizeof(struct S16U03),
+    sizeof(struct S16U04), sizeof(struct S16U05), sizeof(struct S16U06),
+    sizeof(struct S16U07), sizeof(struct S16U08));
+  return 0;
+}
+"))
+  (return (ok)))
+
+; Signedness, not just size: an out-of-range literal is refused for the unsigned
+; field and accepted for the signed one. Both bare-specifier FUNCTIONS have to
+; register too — the shell said "the two functions" and asked about one.
+(deftest s16-c1-signedness-and-functions
+  (try (check-place-refused "(import-use \"tests/fixtures/s16-unsigned.h\")
+(defn main ():i32
+  (let (p:ptr:S16U01 (alloca S16U01)) (set! (p 'a) -1) (return 0)))
+" 3 "integer literal -1 does not fit ui32"))
+  (try (check-source-accepts "(import-use \"tests/fixtures/s16-unsigned.h\")
+(defn main ():i32
+  (let (p:ptr:S16U02 (alloca S16U02)) (set! (p 'a) -1) (return 0)))
+"))
+  (let (c:Compiled (try (compile-source "(import-use \"tests/fixtures/s16-unsigned.h\")
+(defn main ():i32 (s16u_f) (s16u_g 1 2) (return 0))
+"))
+        iv:StrView (compiled-ir (addr-of c)))
+    (try (check-line iv "declare i32 @s16u_f()"))
+    (try (check-line iv "declare i32 @s16u_g(i32, i32)"))
+    (drop (addr-of c)))
+  (return (ok)))
+
+; C2: the use site names the header, the LINE and a reason. Pinned as one
+; record at the call's own line — the shell ran a regex over the whole stderr
+; blob with `[0-9]+` where the header line belongs, so a reason recorded
+; against the wrong declaration read the same.
+(deftest s16-c2-skip-reason-recorded
+  (try (check-place-refused "(import-use \"tests/fixtures/s16-unsigned.h\")
+(defn main ():i32 (return (s16u_odd 1)))
+" 2 "unknown: 's16u_odd' — its C header declaration was skipped (./tests/fixtures/s16-unsigned.h:21: a declaration shape the C header parser does not recognize)"))
+  (return (ok)))
