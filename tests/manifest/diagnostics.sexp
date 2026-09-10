@@ -123,6 +123,20 @@
         (message "use as-ref (checked) or unsafe/cast (unchecked assertion)"))
 (reject "as-sugar-paren" (file "tests/fixtures/as-sugar-paren.nuc")
         (message "'q:(ref ...)' reads as a call here"))
+; Stage 15 W9 items 8 and 30 refine the narrowing rule for LITERALS only: an
+; operand that provably fits its destination is not lossy, so `as` stops being
+; stricter than the implicit coercion at the same slot. `as-lossy.nuc` above
+; narrows a parameter -- an unknown runtime value -- and is unaffected, which is
+; the distinction these five hold. The accept side is the `w9-as-literal-*` and
+; `w9-as-float-literal-*` units of tests/suite-conversions.nuc.
+;
+; The integer pair holds the boundary at magnitude and at sign. The float trio
+; holds two different edges: `-inexact` is the VALUE edge (3.14 is a literal that
+; does not round-trip, and admitting it would make `as` round silently),
+; `-runtime` is the KNOWLEDGE edge (a parameter is unknown, so the widths alone
+; decide and the original rule stands), and `-global-inexact` pins that
+; `defvar-init-ir`'s fold reaches the same verdict with the same wording -- a
+; second asker that re-derives the rule.
 (reject "w9-as-literal-too-big" (file "tests/fixtures/w9-as-literal-too-big.nuc")
         (message "as: lossy conversion from i32 to i8 -- use unsafe/cast"))
 (reject "w9-as-literal-signed-into-unsigned" (file "tests/fixtures/w9-as-literal-signed-into-unsigned.nuc")

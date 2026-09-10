@@ -2308,13 +2308,13 @@ shell's own.
 
 #### TF-6 category (c), what a global is worth before `main` runs (2026-09-10)
 
-**10 shell functions → 32 tests**, 409 body lines retired (552 lines of the
+**10 shell functions → 32 tests**, 409 body lines retired (555 lines of the
 file, including six section banners and ten `spawn` lines): `run_g0_value_order`
 (6), `run_g0_value_scoping` (5), `run_g0_cycle_values` (3),
 `run_g0_still_rejects` (5), `run_g1_fold_cross_file` (4), `run_g2_cheader` (1),
 `run_g2_nuch` (1), `run_g3_zero_cost` (1), `run_g3_library` (1) and
 `run_g4_order` (5), into a new fourteenth module `tests/suite-globals.nuc`
-(797 lines). `tests/run-tests.sh` is 5,348 → 4,796 lines and 100 → 90
+(797 lines). `tests/run-tests.sh` is 5,348 → 4,793 lines and 100 → 90
 functions. `make test` is 213 shell + 753 native = 966.
 
 One question in five steps (global-init.md). G-0 registers `defvar` /
@@ -2375,6 +2375,67 @@ namespace it is not; `weak_odr` dropped from a cross-file global; the C header's
 named extent replaced by its value; the exported array `extern` narrowed to a
 pointer; `.bss` changed to `.data` on the folded zeros; and
 `__nucleus_init`'s symbol type raised from local to global.
+
+#### TF-6 category (c), what a conversion costs at a width boundary (2026-09-10)
+
+**5 shell functions → 16 tests**, 117 body lines retired (193 lines of the file,
+including five section banners, the two `spawn` banners and five `spawn` lines):
+`run_w9_as_literal_narrowing` (2), `run_w9_as_float_literal_narrowing` (2),
+`run_w9_bool_unsigned` (2), `run_w9_unsigned_index` (4) and `run_w9_arg_coerce`
+(6), into a new fifteenth module `tests/suite-conversions.nuc` (217 lines).
+`tests/run-tests.sh` is 4,793 → 4,600 lines and 90 → 85 functions. `make test`
+is 197 shell + 769 native = 966.
+
+One question at five boundaries (Stage 15 W9 items 8, 30, 31, 32, 33): when a
+value changes width or signedness, what may the compiler do silently, and what
+must it emit? Items 8 and 30 settle that `as` may never be STRICTER than the
+implicit coercion at the same slot — the explicit spelling of a conversion was
+refusing `(as i8 5)` as lossy while `(let (a:i8 5) …)` accepted it and emitted
+the very same `trunc i32 5 to i8`. Item 31 makes bool unsigned so every consumer
+of `is-unsigned` agrees; item 32 widens a GEP index by its own signedness; item
+33 stops a call argument that no conversion reaches from being passed untouched.
+
+**The rule is a COMPARISON, and the shell asserted one side of it.** Items 8 and
+30 are stated as "no stricter than implicit", but `run_w9_as_literal_narrowing`
+only checked that the `as` spelling emits `trunc i32 5 to i8` — true of any
+lowering at all, and silent on the spelling it is supposed to be compared
+against. Both units now emit the implicit form beside it and require the same
+instruction: `(let (a:i8 5) …)` gives the identical `trunc i32 5 to i8`, and
+`(let (a:f32 1.5) …)` the identical `store float 0x3FF8000000000000` with no
+`fptrunc` — so the sentence the item settled is the sentence the test reads.
+
+**The bool gate was the g3-zero-cost shape again.** `run_w9_bool_unsigned` asked
+only that no SIGNED instruction reached a bool — no `sext i1`, no `icmp s*`, no
+`sitofp i1` — which a module that emitted nothing satisfies equally well. What
+item 31 actually fixed is which instruction gets picked, so the unsigned ones are
+now pinned by presence: `zext i1` at both widths and both values, all four
+`icmp u*` orderings, `uitofp i1`, and the computed-bool `zext i1 %t… to i32`.
+That is the half a run on this host cannot witness — `sext i1` and `zext i1`
+differ only above bit 0, and every consumer tests `(!= x 0)`, which -1 and 1 both
+satisfy, which is exactly why the defect survived every bootstrap until it was
+measured on the instruction. The same absence-only shape was in
+`run_w9_unsigned_index`, and the `zext i8` / `zext i16` that replaced the `sext`
+are pinned beside its absence for the same reason.
+
+**The refusing complement was already native and is left where it is.**
+`w9-as-literal-too-big`, `w9-as-literal-signed-into-unsigned`,
+`w9-as-float-inexact`, `-runtime` and `-global-inexact` are rows of
+`tests/manifest/diagnostics.sexp`, so this module owns the accepting side and the
+artifact only. The two retired `spawn` banners carried the reasoning for those
+five rows — the integer pair holding the boundary at magnitude and at sign, the
+float trio holding the VALUE edge, the KNOWLEDGE edge and the second asker that
+re-derives — and no manifest row carried it. It moved into the manifest above
+those rows rather than being deleted with the banners.
+
+**Verified by breaking it**, sixteen ways — one per unit — each reverted by
+editing the source back: six expected exit statuses moved; the two implicit-half
+instructions changed to ones the compiler does not emit; a `check-not-match` on
+`fptrunc` inverted; `icmp ult i1` changed to `icmp slt i1` and `zext i8` to
+`zext i24` (the two presence assertions the shell did not make); `sext i32`
+swapped with `zext i32` in both index units; three refusal needles changed to a
+message the compiler does not print; the pinned diagnostic line moved; and one
+refused call made LEGAL, which the unit reports as "expected a rejection …, but
+it compiled".
 
 ### T6.7 TF-7 — the end state
 
