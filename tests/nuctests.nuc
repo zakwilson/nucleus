@@ -44,6 +44,7 @@
 (import-use suite-cdecl)
 (import-use suite-namespaces)
 (import-use suite-runtime)
+(import-use suite-audits)
 
 
 
@@ -144,6 +145,51 @@
         (drop (addr-of o))
         (return (ok (deref r)))))
     ((err e) (return (err e)))))
+
+; What one command that is not `nucleusc --diagnostics=sexp` did. `Compiled`
+; reads its stderr as structured diagnostics, which only the compiler in that
+; mode emits; a unit spawning an audit script, `readdump`, or the compiler's own
+; text back-end needs the two streams themselves.
+(defstruct Ran ok?:bool out:String err:String)
+
+(extend Ran Drop)
+(defn drop ((self (ptr Ran))):void
+  (drop (addr-of self 'out))
+  (drop (addr-of self 'err)))
+
+; Unchecked, where the rest of this file validates: a child's streams are bytes,
+; and `examples/hex-escape-test.nuc` dumps an AST that is deliberately not UTF-8.
+; The answer to "do the two readers agree" is those bytes.
+(defn ran-stream (v:StrView):String
+  (let (s:String (string-new))
+    (string-push-str-unchecked (addr-of s) (addr-of v))
+    (return s)))
+
+(defn ran ((c (ref Command))):!Ran
+  (command-capture c true)
+  (match (run c)
+    ((ok o)
+      (let (ov:StrView (string-as-view (addr-of o 'out))
+            ev:StrView (string-as-view (addr-of o 'err))
+            r:&Ran (alloca Ran))
+        (set! (r 'ok?) (success? (addr-of o 'status)))
+        (set! (r 'out) (ran-stream ov))
+        (set! (r 'err) (ran-stream ev))
+        (drop (addr-of o))
+        (return (ok (deref r)))))
+    ((err e) (return (err e)))))
+
+; `nucleusc [flag] --emit-llvm <path>`, with nothing else added. The units that
+; assert about the diagnostic FORMAT cannot use the builders above: every one of
+; them passes `--diagnostics=sexp`, which is the thing under test.
+(defn nucleusc-raw (flag:StrView path:StrView):!Ran
+  (let (c:Command (command (compiler-path)))
+    (when (not (= flag "")) (command-arg (addr-of c) flag))
+    (command-arg (addr-of c) "--emit-llvm")
+    (command-arg (addr-of c) path)
+    (let (r:Ran (try (ran (addr-of c))))
+      (drop (addr-of c))
+      (return (ok r)))))
 
 ; An empty `dir` adds no `-I`, which is the only optionality the multi-file
 ; units need: they export a `.nuch` and then import it from a second unit.
@@ -756,6 +802,16 @@
       (fail! what ": expected " nw " line(s), got " ng "\n     got:\n" got)))
   (return (ok)))
 
+; `check-golden` with the subject named first. A unit that walks a corpus needs
+; it: "line 7 differs" says nothing about which of 226 files line 7 was in.
+(defn check-golden-in (what:StrView got:StrView want:StrView):!void
+  (match (check-golden got want)
+    (ok (return (ok)))
+    ((err e)
+      (let (t:StrView (test-failure-text)
+            w:String (try (string-from-view (addr-of t))))
+        (fail! what ": " (string-as-view (addr-of w)))))))
+
 ; `test-write-file` only reaches the scratch directory itself, and a `.nuch`
 ; unit needs its header in a subdirectory of it — `resolve-import` tries `.nuc`
 ; in every search directory before any `.nuch`, so the source must sit outside.
@@ -907,6 +963,28 @@
 
 (defn require-cc ():!void
   (when (not (have-cc?)) (skip! "no cc to build the oracle against"))
+  (return (ok)))
+
+; Run a source-tree audit or an external-toolchain script and require exit 0.
+; These stay shell and Python by design — the framework invokes them rather than
+; replacing them (design/stage18-tooling/overview.md §T7) — so the script's own
+; report is the diagnosis, and a failure reprints it rather than restating it.
+; `args` is split on spaces; none of these takes an argument containing one.
+(defn check-script-ok (prog:StrView args:StrView):!void
+  (let (sp:StrView " "
+        c:Command (command prog)
+        it:SplitIter (strview-split (addr-of args) (addr-of sp)))
+    (while (not (split-iter-done (addr-of it)))
+      (let (a:StrView (split-iter-next (addr-of it)))
+        (when (!= a "") (command-arg (addr-of c) a))))
+    (command-env (addr-of c) "NUCLEUSC" (compiler-path))
+    (command-stderr-to-stdout (addr-of c) true)
+    (let (r:Ran (try (ran (addr-of c))))
+      (when (not (r 'ok?))
+        (fail! prog " " args " reported a failure\n     "
+               (test-show (string-as-view (addr-of r 'out)))))
+      (drop (addr-of r))
+      (drop (addr-of c))))
   (return (ok)))
 
 ; Build a C program with `cc` and run it; stdout is the answer. The oracle half

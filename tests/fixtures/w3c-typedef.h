@@ -4,7 +4,7 @@
  * builtin to `ptr` — so EVERY declaration below imported as `declare ptr @f(...)`
  * regardless of what it actually returns, and `size_t` worked only because
  * c-type-to-nucleus hardcodes that one name. The emitted `declare` line for each
- * function here is asserted exactly by run_w3c_typedef in tests/run-tests.sh:
+ * function here is asserted exactly by `w3c-typedef` (tests/suite-cdecl.nuc):
  * the point is the SIGNATURE, not that the header compiles — every wrong row
  * compiled fine before.
  */

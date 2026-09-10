@@ -1,7 +1,7 @@
 /* Stage 15 W2d accept test — the C twin of tests/fixtures/w2d-dsp-biquad.nuc.
  *
  * Line-for-line the same kernel, with C's natural `f`-suffixed float literals.
- * Compiled by run_w2d_dsp_bitexact (tests/run-tests.sh) with
+ * Compiled by `w2d-dsp-bitexact` (tests/suite-conversions.nuc) with
  * `-ffp-contract=off`: clang's default is to contract `a*b + c` into an FMA
  * where the target has one, and Nucleus never emits the `contract` fast-math
  * flag, so leaving it on would make the comparison a test of the *kernel*

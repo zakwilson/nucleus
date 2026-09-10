@@ -1,6 +1,6 @@
 ; Stage 15 W9 item 34, the ACCEPTING half: what a function-pointer parameter
 ; and a pointer parameter must still take. The refusing half, and the parity
-; with `let` that is the item's actual claim, are in `run_w9_fnslot_arg`.
+; with `let` that is the item's actual claim, are in `w9-fnslot-arg`.
 ;
 ; The coercion guard in `emit-call-with-args` compared LOWERED IR type strings,
 ; and every pointer flavour lowers to `ptr` — so a `CStr`, a `raw`, a `(ref T)`,

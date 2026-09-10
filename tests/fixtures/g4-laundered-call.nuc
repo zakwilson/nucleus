@@ -8,7 +8,7 @@
 ; and design/global-init.md §4.2 and §6 adopt the same boundary. The compiler's
 ; own shape, `(vector-new-in (addr-of g-arena-alloc))`, is this case.
 ;
-; So this compiles, and `g4-lc-dst` ends up **0**, not 99. `run_g4_order` links
+; So this compiles, and `g4-lc-dst` ends up **0**, not 99. `g4-laundered-gap` links
 ; and runs it and asserts the observed value: `main` returns `(+ 10 g4-lc-dst)`,
 ; so the gap reads as exit 10 and a future fix that closed it — either by
 ; diagnosing the shape or by ordering the initializers — would read as 109 and

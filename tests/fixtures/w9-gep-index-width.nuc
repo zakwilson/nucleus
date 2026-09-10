@@ -7,7 +7,7 @@
 ; 64-bit arithmetic on an 8-bit MCU, well-formed but absurd.
 ;
 ; `(exclude-prelude)` so the unit is freestanding and compiles for --target=avr;
-; the host path is asserted from the same file (see run_w9_gep_index_width).
+; the host path is asserted from the same file (see `w9-gep-index-width-host`).
 
 (exclude-prelude)
 

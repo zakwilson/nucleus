@@ -1,5 +1,5 @@
 ; Stage 15 W3b: the C type-qualifier matrix (tests/fixtures/w3b-quals.h).
-; run_w3b_quals asserts the exact `declare` line the importer emits for every
+; `w3b-quals` asserts the exact `declare` line the importer emits for every
 ; spelling in that header — arity and types both.
 (import-use "tests/fixtures/w3b-quals.h")
 

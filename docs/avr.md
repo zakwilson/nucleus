@@ -340,8 +340,8 @@ It is separate from `make test`/`make bootstrap`, which stay host-only: the
 freestanding AVR examples have no expected-stdout harness to diff against on
 the host. `make avr-test` is gated on `avr-gcc` (the whole script SKIPs
 cleanly without it) and, independently, on `simavr` (only the simulator step
-SKIPs without it) — the same convention `tests/run-tests.sh`'s
-`run_avr3_link`/`run_avr5_isr` gates already use.
+SKIPs without it) — the same convention `tests/suite-target.nuc`'s
+`avr3-link`/`avr5-isr` units already use.
 
 The container toolchain this all depends on: `avr-gcc`, `binutils-avr`,
 `avr-libc` (≥ 2.2, for AVR-Dx crt/specs support), and `simavr`. See

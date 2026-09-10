@@ -1,5 +1,5 @@
 ; Stage 15 W3b: the validity gate on a synthesized `declare`
-; (design/stage15-stress-test/cheader.md §1.5). run_w3b_skip asserts that the
+; (design/stage15-stress-test/cheader.md §1.5). `w3b-skip` asserts that the
 ; representable declaration survives, the three unrepresentable ones are absent
 ; from the IR, and each is reported with its own `<header>:<line>:`.
 (import-use "tests/fixtures/w3b-skip.h")
