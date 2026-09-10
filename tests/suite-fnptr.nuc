@@ -1,0 +1,295 @@
+; Stage 18 TF-6 — what a function pointer is worth.
+;
+; Design: design/stage18-tooling/overview.md §T6.6.
+;
+; Six claims about one value. Stage 15 W9 items 18, 19 and 20 settle what a
+; function pointer IS to the compiler — it compares as a pointer, it occupies one
+; target pointer's width, and `null` reaches it in every position. Stage 16 FP-2,
+; FP-4 and FP-5 settle what it is at the C boundary — an indirect call goes
+; through the same argument path as a direct one, the C importer recovers a real
+; TY-FN from all four declarator positions, and the export side renders a real
+; declarator rather than `void*`.
+;
+; The three W9 fixtures are self-checking and sum their slots into an exit code,
+; so each is RUN as well as read: a comparison that compiles but answers wrongly,
+; or a slot that loads at the wrong width, fails there rather than passing as
+; "accepted".
+
+(defn fp-ir (path:StrView):!String
+  (let (dir:StrView (try (test-scratch)))
+    (return (emit-for-file dir "--emit-llvm" path))))
+
+(defn fp-exit (path:StrView want:i32):!void
+  (let (dir:StrView (try (test-scratch)))
+    (try (check-file-exit dir path want)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; W9 item 18 — a function pointer compares as a pointer
+; ---------------------------------------------------------------------------
+
+(deftest w9-fnptr-compare-ir
+  (let (ir:String (try (fp-ir "tests/fixtures/w9-fnptr-compare.nuc"))
+        iv:StrView (string-as-view (addr-of ir)))
+    (try (check-ir-parses iv))
+    ; The two shapes no other lowering produces: identity against a function
+    ; symbol, and a null test with the literal on the left.
+    (try (check-match iv "  %t* = icmp eq ptr %t*, @twice"))
+    (try (check-match iv "  %t* = icmp ne ptr null, %t*"))
+    (drop (addr-of ir)))
+  (return (ok)))
+
+; The exit code is the sum of six comparisons across all four positions a
+; function pointer occupies, so a comparison that compiles and answers wrongly
+; fails here rather than passing as "accepted".
+(deftest w9-fnptr-compare-run
+  (try (fp-exit "tests/fixtures/w9-fnptr-compare.nuc" 2)))
+
+; ---------------------------------------------------------------------------
+; W9 item 19 — a function-pointer slot is one TARGET pointer wide
+; ---------------------------------------------------------------------------
+
+; `type-size` had no TY-FN case, so every fn-pointer slot claimed `align 1` --
+; free on x86-64, but a strict-alignment backend honours the claim and splits the
+; access byte-wise. The first four assertions are the invariant rather than a
+; count: NO ptr-VALUED slot may claim `align 1`. Matching on the value type keeps
+; `store i1 %x, ptr %y, align 1` out of it, which is correct at one byte.
+(deftest w9-fnptr-align-ir
+  (let (ir:String (try (fp-ir "tests/fixtures/w9-fnptr-align.nuc"))
+        iv:StrView (string-as-view (addr-of ir)))
+    (try (check-ir-parses iv))
+    (try (check-not-match iv "*alloca ptr, align 1"))
+    (try (check-not-match iv "*load ptr, ptr*, align 1"))
+    (try (check-not-match iv "*store ptr*, ptr*, align 1"))
+    (try (check-not-match iv "@* = global ptr*, align 1"))
+    (try (check-line iv "@fn-global = global ptr null, section \".bss.fn-global\", align 8"))
+    (try (check-line iv "  %h.addr = alloca ptr, align 8"))
+    (try (check-match iv "  %loc.addr.* = alloca ptr, align 8"))
+    (drop (addr-of ir)))
+  (return (ok)))
+
+; Item 15's rule on item 19's operand: the width is the TARGET's, not 8.
+(deftest w9-fnptr-align-target-width
+  (let (c:Compiled (try (target-emit "i386-unknown-linux-gnu" ""
+                                     "tests/fixtures/w9-fnptr-align.nuc"))
+        iv:StrView (compiled-ir (addr-of c)))
+    (try (check-no-errors (addr-of c 'diags)))
+    (try (check-line iv "@fn-global = global ptr null, section \".bss.fn-global\", align 4"))
+    (try (check-match iv "  %loc.addr.* = alloca ptr, align 4"))
+    (drop (addr-of c)))
+  (return (ok)))
+
+(deftest w9-fnptr-align-run
+  (try (fp-exit "tests/fixtures/w9-fnptr-align.nuc" 19)))
+
+; ---------------------------------------------------------------------------
+; W9 item 20 — `null` reaches a fn-pointer slot in every position
+; ---------------------------------------------------------------------------
+
+; The literal is a retype, not a conversion, so it costs no instruction: the
+; field store is a plain `store ptr null` and the return a plain `ret ptr null`.
+(deftest w9-fnptr-null-init-ir
+  (let (ir:String (try (fp-ir "tests/fixtures/w9-fnptr-null-init.nuc"))
+        iv:StrView (string-as-view (addr-of ir)))
+    (try (check-ir-parses iv))
+    (try (check-line iv "@g-hook = global ptr null, section \".bss.g-hook\", align 8"))
+    (try (check-match iv "  store ptr null, ptr %loc.addr.*, align 8"))
+    (try (check-line iv "  ret ptr null"))
+    (drop (addr-of ir)))
+  (return (ok)))
+
+(deftest w9-fnptr-null-init-run
+  (try (fp-exit "tests/fixtures/w9-fnptr-null-init.nuc" 38)))
+
+; ---------------------------------------------------------------------------
+; Stage 16 FP-2 — an indirect call is the same call
+; ---------------------------------------------------------------------------
+
+(defn fp2-src ():StrView
+  (return "(declare printf (fmt:CStr):i32)
+(defstruct Pt x:i64 y:i64)
+(defstruct Big a:i64 b:i64 c:i64)
+(defn sum-pt (p:Pt):i64
+  (let (q:ptr:Pt (addr-of p)) (return (+ (q 'x) (q 'y)))))
+(defn make-big (n:i64):Big (return (Big n (+ n 1) (+ n 2))))
+(defn addl (a:i64):i64 (return (+ a 1)))
+(defn main ():i32
+  (let (f:(fn i64)(Pt) sum-pt
+        g:(fn Big)(i64) make-big
+        h:(fn i64)(i64) addl)
+    (printf \"%lld\\n\" (funcall f (Pt 3 4)))
+    (let (b:Big (funcall g 10)
+          bp:ptr:Big (addr-of b))
+      (printf \"%lld\\n\" (bp 'c)))
+    (printf \"%lld\\n\" (funcall h 5))
+    (return 0)))
+"))
+
+; An indirect call used to stop at the arity check — no coercion, no struct ABI —
+; so a by-value struct was handed over as a raw aggregate the callee never reads.
+; Asserted on the IR because the wrong code links and can return the right answer
+; for a small struct by luck. `Pt` is two INTEGER eightbytes so SysV passes it in
+; two registers; `Big` is over the limit and returns through `sret`; and the i32
+; literal widens to the i64 parameter exactly as it does on the direct path.
+(deftest s16-fp2-indirect-call-abi
+  (let (ir:String (try (source-ir (fp2-src)))
+        iv:StrView (string-as-view (addr-of ir)))
+    (try (check-match iv "*= call i64 %t*(i64 %t*, i64 %t*)"))
+    (try (check-match iv "*call void %t*(ptr sret(%Big) align 8 *"))
+    (try (check-match iv "*= call i64 %t*(i64 %t*)"))
+    (drop (addr-of ir)))
+  (return (ok)))
+
+(deftest s16-fp2-indirect-call-runs
+  (let (p:String (try (test-write-file "fp2.nuc" (fp2-src)))
+        dir:StrView (try (test-scratch)))
+    (try (check-file-exit dir (string-as-view (addr-of p)) 0))
+    (drop (addr-of p)))
+  (return (ok)))
+
+; A variadic fn pointer keeps its `(ptr, ...)` call signature and promotes f32 to
+; double — the promotion is the caller's job, and nobody was doing it here.
+(deftest s16-fp2-indirect-vararg-promoted
+  (let (ir:String (try (source-ir "(import-use \"stdio.h\")
+(defn main ():i32
+  (let (p printf
+        fv:f32 1.5)
+    (funcall p \"%s %d %.1f\\n\" \"x\" 7 fv)
+    (return 0)))
+"))
+        iv:StrView (string-as-view (addr-of ir)))
+    (try (check-match iv "*call i32 (ptr, ...) %t*double %t*)"))
+    (drop (addr-of ir)))
+  (return (ok)))
+
+; And the argument check itself now reaches indirect calls — the `funcall` twin
+; of W9 item 33's direct-call diagnostic.
+(deftest s16-fp2-indirect-arg-diagnostic
+  (try (check-source-rejects "(defn addl (a:i64):i64 (return (+ a 1)))
+(defn main ():i32
+  (let (h:(fn i64)(i64) addl
+        c:CStr \"hi\")
+    (return (as i32 (funcall h c)))))
+" "call: argument 1 has type CStr, which does not match parameter type i64")))
+
+; ---------------------------------------------------------------------------
+; Stage 16 FP-4 — the C importer recovers a real TY-FN
+; ---------------------------------------------------------------------------
+
+; The headline case, against the real system header: the two most canonical
+; callbacks in C, called with a Nucleus function and no cast. Every one of these
+; used to become `ptr`, so `qsort`/`atexit` refused a Nucleus function outright.
+(deftest s16-fp4-qsort-atexit
+  (let (c:Compiled (try (compile-source "(import-use \"stdlib.h\")
+(defn cmpi (a:ptr b:ptr):i32 (return 0))
+(defn bye ():void (return))
+(defn main ():i32
+  (let (arr:ptr (malloc 40))
+    (qsort arr 10 4 cmpi)
+    (atexit bye)
+    (return 0)))
+")))
+    (try (check-silent (addr-of c) "importing qsort and atexit"))
+    (drop (addr-of c)))
+  (return (ok)))
+
+(defn fp4-src ():StrView
+  (return "(import-use \"tests/fixtures/s16-fnptr.h\")
+(declare printf (fmt:CStr):i32)
+(defn cmpv (a:ptr b:ptr):i32 (return 0))
+(defn ten (a:i32):i32 (return (* a 10)))
+(defn main ():i32
+  (let (h:ptr:S16Hold (S16Hold ten 5)
+        c:s16_cmp cmpv)
+    (printf \"member=%d field=%d\\n\" (funcall (h 'cb) 4) (h 'n))
+    (set! (h 'cb) ten)
+    (funcall c null null)
+    (return 0)))
+"))
+
+; All four declarator positions. The member's NAME was dropped before FP-4, which
+; abandoned the struct; `void (*s16_signal(int, void (*)(int)))(int)` and
+; `int (*s16_get(void))(int,int)` were skipped entirely.
+(deftest s16-fp4-declarator-positions
+  (let (ir:String (try (source-ir (fp4-src)))
+        iv:StrView (string-as-view (addr-of ir)))
+    (try (check-contains iv "%S16Hold = type { ptr, i32 }"))
+    (try (check-line iv "declare ptr @s16_signal(i32, ptr)"))
+    (try (check-line iv "declare ptr @s16_get()"))
+    (try (check-line iv "declare i32 @s16_nest(ptr)"))
+    (drop (addr-of ir)))
+  (return (ok)))
+
+(deftest s16-fp4-callbacks-run
+  (let (p:String (try (test-write-file "fp4.nuc" (fp4-src)))
+        dir:StrView (try (test-scratch)))
+    (try (check-file-exit dir (string-as-view (addr-of p)) 0))
+    (drop (addr-of p)))
+  (return (ok)))
+
+; The recovered type is a CHECKED type — the point of doing this after FP-1. Each
+; of three positions refuses a wrong signature, and the shell bundled all three
+; behind one `ok=` accumulator, so whichever failed first was the only one named.
+(deftest s16-fp4-recovered-type-is-checked
+  (try (check-source-rejects "(import-use \"tests/fixtures/s16-fnptr.h\")
+(defn one (a:i32):i32 (return a))
+(defn main ():i32 (s16_apply_inline one 1 2) (return 0))
+" "s16_apply_inline: argument 1 has type (i32):i32, which does not match parameter type (i32, i32):i32"))
+  (try (check-source-rejects "(import-use \"tests/fixtures/s16-fnptr.h\")
+(defn one (a:i32):i32 (return a))
+(defn main ():i32
+  (let (h:ptr:S16Hold (S16Hold one 5))
+    (return (funcall (h 'cb) 1 2))))
+" "expected 1 args, got 2"))
+  (try (check-source-rejects "(import-use \"tests/fixtures/s16-fnptr.h\")
+(defn one (a:i32):i32 (return a))
+(defn main ():i32 (let (c:s16_cmp one) (return 0)))
+" "let: init type mismatch for 'c'")))
+
+; ---------------------------------------------------------------------------
+; Stage 16 FP-5 — the export side renders a real declarator
+; ---------------------------------------------------------------------------
+
+(defn fp5-lib-src ():StrView
+  (return "(defstruct Hold (cb (fn i32) (i32 i32)) n:i32)
+(defstruct Arr (xs (array i32 4)) k:i32)
+(defn addem (a:i32 b:i32):i32 (return (+ a b)))
+(defn use2 (f:(fn i32)(i32 i32)):i32 (return (funcall f 1 2)))
+(defn getf ():(fn i32)(i32 i32) (return addem))
+(defn holdsum (h:ptr:Hold):i32 (return (funcall (h 'cb) (h 'n) (h 'n))))
+"))
+
+; Every function-pointer type used to render as `void*` — not merely unchecked
+; but not standard C, since ISO C defines no conversion between a function
+; pointer and `void *`, so a conforming compiler may diagnose every call site.
+(deftest s16-fp5-cheader-declarators
+  (let (l:CLib (try (c-lib "lib" (fp5-lib-src)))
+        hv:StrView (c-lib-text (addr-of l)))
+    (try (check-line hv "    int32_t (*cb)(int32_t, int32_t);"))
+    (try (check-line hv "int32_t use2(int32_t (*f)(int32_t, int32_t));"))
+    ; A function RETURNING a function pointer wraps its own declarator.
+    (try (check-line hv "int32_t (*getf(void))(int32_t, int32_t);"))
+    ; The array declarator still comes out of the same renderer unchanged.
+    (try (check-line hv "    int32_t xs[4];"))
+    (drop (addr-of l)))
+  (return (ok)))
+
+; Asserted against a real C consumer, built with `-Werror`, rather than against
+; the header text. The shell reported the no-`cc` case as a PASS; a suite with a
+; third verdict says what it is, and `--no-skip` can refuse it.
+(deftest s16-fp5-c-consumer
+  (when (not (have-cc?)) (skip! "no cc to build the C consumer with"))
+  (let (l:CLib (try (c-lib "lib" (fp5-lib-src)))
+        out:String (try (c-lib-run (addr-of l) "#include <stdio.h>
+#include \"lib.h\"
+static int times(int a, int b) { return a * b; }
+int main(void) {
+  Hold h = { times, 6 };
+  printf(\"use2=%d getf=%d hold=%d\\n\", use2(times), getf()(3, 4), holdsum(&h));
+  return 0;
+}
+")))
+    (try (check-line (string-as-view (addr-of out)) "use2=2 getf=7 hold=36"))
+    (drop (addr-of out))
+    (drop (addr-of l)))
+  (return (ok)))

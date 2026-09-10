@@ -2437,6 +2437,51 @@ message the compiler does not print; the pinned diagnostic line moved; and one
 refused call made LEGAL, which the unit reports as "expected a rejection …, but
 it compiled".
 
+#### TF-6 category (c), what a function pointer is worth (2026-09-10)
+
+**6 shell functions → 17 tests**, 308 body lines retired (366 lines of the file,
+including six section banners, three `spawn` banners and six `spawn` lines):
+`run_w9_fnptr_compare` (2), `run_w9_fnptr_align` (3), `run_w9_fnptr_null_init`
+(2), `run_s16_fp2_indirect_call` (4), `run_s16_fp4_cheader_fnptr` (4) and
+`run_s16_fp5_cheader_fnptr` (2), into a new sixteenth module
+`tests/suite-fnptr.nuc` (295 lines). `tests/run-tests.sh` is 4,600 → 4,234 lines
+and 85 → 79 functions. `make test` is 180 shell + 786 native = 966.
+
+Six claims about one value, from two stages. W9 items 18, 19 and 20 settle what a
+function pointer IS to the compiler — it compares as a pointer, it occupies one
+TARGET pointer's width, and `null` reaches it in every position. Stage 16 FP-2,
+FP-4 and FP-5 settle what it is at the C boundary — an indirect call goes through
+the same argument path as a direct one, the C importer recovers a real TY-FN from
+all four declarator positions, and the export side renders a real declarator
+rather than `void*`, which is not merely unchecked but not standard C.
+
+**A skip was being reported as a pass.** `run_s16_fp5_cheader_fnptr` ends with
+`echo "PASS s16-fp5-c-consumer (SKIP: no cc)"` — on a machine without a C
+compiler, the unit that exists to prove the generated header satisfies a real
+conforming consumer counted as green. The native suite has a third verdict, so it
+is a `skip!` with a reason now, and `--no-skip` can refuse it: a release check
+that cannot accept an unproven header can say so.
+
+**Two units bundled several claims behind one `ok=` accumulator**, which is the
+hand-rolled pattern `lib/test.nuc` exists to replace: whichever grep failed first
+was the only one the FAIL line named, and the rest went unreported.
+`s16-fp4-recovered-type-is-checked` is three separate refusals — a wrong callback
+signature by name, an arity mismatch through a struct member, and a typedef'd
+`s16_cmp` slot — and `s16-fp2-indirect-call-abi` is three ABI shapes. As `try`-
+shaped assertions each names itself; the perturbation that moved only the MIDDLE
+refusal is what shows the difference.
+
+**Verified by breaking it**, seventeen ways — one per unit — each reverted by
+editing the source back: five expected exit statuses moved; a function symbol,
+an `sret` struct name, a `declare` return type and a C declarator changed to
+shapes the compiler does not emit; the `align 1` invariant inverted from
+`check-not-match` to `check-match`; the 32-bit target's slot width changed back
+to the host's; `ret ptr null` changed to `ret ptr undef`; the vararg promotion
+changed from `double` to `float`; two diagnostic needles retargeted; the C
+consumer's expected answer changed by one; and `qsort` given a callback of the
+wrong signature, which the silent-compile unit reports as `qsort: argument 4 has
+type ():void, which does not match parameter type`.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that
