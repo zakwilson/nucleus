@@ -774,3 +774,294 @@
     (drop (addr-of m))
     (drop (addr-of f)))
   (return (ok)))
+
+; ---------------------------------------------------------------------------
+; W9 item 43: a prefixed import must not change what a bare call means
+; ---------------------------------------------------------------------------
+
+; A generic is the one registry R2 keys BARE, and B4 filtered only the QUALIFIED
+; path through each method's recorded namespace, deferring the bare half. So a
+; file that defined `w43-helper (x:i64)` and called `(w43-helper 3)` emitted a
+; call to a LIBRARY's `w43-helper (x:i32)`, reached through a prefix the call
+; never spells: nothing was unresolved, the wrong candidate simply scored better
+; on the literal.
+;
+; Four cells, and the second is the point — the same program, the same line, two
+; answers depending only on whether an unrelated import form is present.
+(defn w43-lib ():!void
+  (try (test-write-file "w43lib.nuc" "(ns w43n)
+(defn w43-helper (x:i32):i32 (return (+ x 100)))
+"))
+  (return (ok)))
+
+; The baseline: the file's own definition, alone. 3 + 7.
+(deftest w9-bare-ref-alone
+  (let (m:String (try (test-write-file "w43alone.nuc" "(defn w43-helper (x:i64):i32 (return (unsafe/cast i32 (+ x 7))))
+(defn main ():i32 (return (w43-helper 3)))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 10))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; Plus a PREFIXED import of a library that also exports the name. The unchanged
+; line must still mean the file's own function.
+(deftest w9-bare-ref-prefix-inert
+  (try (w43-lib))
+  (let (m:String (try (test-write-file "w43pfx.nuc" "(import-prefixed w43lib wx)
+(defn w43-helper (x:i64):i32 (return (unsafe/cast i32 (+ x 7))))
+(defn main ():i32 (return (w43-helper 3)))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 10))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; …and the prefix still reaches the library's, so nothing was hidden — only the
+; unqualified space was left alone.
+(deftest w9-bare-ref-qualified
+  (try (w43-lib))
+  (let (m:String (try (test-write-file "w43qual.nuc" "(import-prefixed w43lib wx)
+(defn w43-helper (x:i64):i32 (return (unsafe/cast i32 (+ x 7))))
+(defn main ():i32 (return (wx/w43-helper 3)))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 103))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; `import-use` FLATTENS, which is R2's escape hatch: there the two overloads
+; genuinely merge and the i32 one wins the literal. Pinned so the filter cannot
+; quietly grow into a ban on flattened overloading.
+(deftest w9-bare-ref-flattened
+  (try (w43-lib))
+  (let (m:String (try (test-write-file "w43flat.nuc" "(import-use w43lib)
+(defn w43-helper (x:i64):i32 (return (unsafe/cast i32 (+ x 7))))
+(defn main ():i32 (return (w43-helper 3)))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 103))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; The emitted call names the file's own symbol, which is the artefact the row
+; reports. Both directions: the library's symbol is DEFINED in the module (the
+; prefixed import emitted it), so requiring its absence outright would assert the
+; wrong thing — what must be absent is a CALL to it.
+(deftest w9-bare-ref-prefix-symbol
+  (try (w43-lib))
+  (let (m:String (try (test-write-file "w43pfxir.nuc" "(import-prefixed w43lib wx)
+(defn w43-helper (x:i64):i32 (return (unsafe/cast i32 (+ x 7))))
+(defn main ():i32 (return (w43-helper 3)))
+"))
+        s:String (try (w1-ir (string-as-view (addr-of m))))
+        iv:StrView (string-as-view (addr-of s)))
+    (try (check-match iv "*call i32 @w43-helper(i64 *"))
+    (try (check-not-match iv "*call*@w43n__w43-helper(*"))
+    (drop (addr-of s))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; W9 item 43: a template body is the LIBRARY's text
+; ---------------------------------------------------------------------------
+
+; The deferred-work record for a stamped body was the one that did not restore
+; the environment it was created in, so the body was emitted in the environment
+; of whichever file instantiated it. On the pre-item-43 compiler this program
+; failed with `unknown: w43t-solo — not defined anywhere in this compilation
+; unit`, blaming the CALLER's file at the LIBRARY's line — while the very same
+; program with a second `w43t-solo` overload compiled, because an overloaded
+; name reached the merged bare-keyed generic and a solitary one went through the
+; import environment. Correctness by overload count.
+;
+; The library's namespace is reached from the template body three ways at once —
+; a solitary function, a global and a protocol method — none of which the caller
+; can name, since it bound only the prefix `pg`. (3*10) + 5.
+(deftest w9-template-body-library-env
+  (try (test-write-file "w43tlib.nuc" "(ns w43t)
+(defprotocol W43Num (w43t-zero (self:Self):i32))
+(defn w43t-zero (x:i32):i32 (return x))
+(extend i32 W43Num)
+(defn w43t-solo (x:i32):i32 (return (* x 10)))
+(defvar w43t-gv:i32 5)
+(defn w43t-twice (x:T :where (W43Num T)):i32
+  (return (+ (w43t-solo (w43t-zero x)) w43t-gv)))
+"))
+  (let (m:String (try (test-write-file "w43tuse.nuc" "(import-prefixed w43tlib pg)
+(defn main ():i32 (return (pg/w43t-twice 3)))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 35))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; A genuine error in a template body is reported against the LIBRARY's file, to
+; go with the library's line, and the note says which call site asked. Before
+; this the pair was `<caller>.nuc:<library line>` — a location that in this
+; program does not exist, the caller having two lines — and the reported error
+; was the resolution failure the wrong environment caused rather than the type
+; error actually in the body.
+;
+; The shell checked three substrings over the whole stderr blob and never that
+; they belonged to one diagnostic, nor the `requested at` half at all, which is
+; the only part naming the instantiation site.
+(deftest w9-template-error-blames-library
+  (let (l:String (try (test-write-file "w43blib.nuc" "(ns w43b)
+(defprotocol W43B (w43b-zero (self:Self):i32))
+(defn w43b-zero (x:i32):i32 (return x))
+(extend i32 W43B)
+(defn w43b-take (x:i32):i32 (return x))
+(defn w43b-tw (x:T :where (W43B T)):i32
+  (return (+ (w43b-zero x) (w43b-take \"not an int\"))))
+"))
+        m:String (try (test-write-file "w43buse.nuc" "(import-prefixed w43blib pg)
+(defn main ():i32 (return (pg/w43b-tw 3)))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        c:Compiled (try (w1-compile mv))
+        want:String (str "while instantiating @w43b__w43b_tw.i32 (requested at " mv ":2)"))
+    (try (check-no-line-zero (addr-of c 'diags)))
+    (try (check-error-at (addr-of c 'diags) (string-as-view (addr-of l)) 7
+                         "w43b/w43b-take: argument 1 has type StrView, which does not match parameter type i32"))
+    (try (check-note-at (addr-of c 'diags) (string-as-view (addr-of l)) 7
+                        (string-as-view (addr-of want))))
+    (drop (addr-of want))
+    (drop (addr-of c))
+    (drop (addr-of m))
+    (drop (addr-of l)))
+  (return (ok)))
+
+; The realistic library shape: the template is declared in a generated `.nuch`
+; and instantiated from a SEPARATELY COMPILED object. The import environment is
+; captured wherever the namespace and file are, and a header replay reaches the
+; template registration with the header file's own environment already filled,
+; so the stamped body resolves the library's names and the two objects link.
+; Pre-item-43 this failed to compile at all.
+;
+; The source sits in `l/` and the header in `h/`, and only `h/` is a search
+; directory for the consumer — `resolve-import` tries `.nuc` in every search
+; directory before any `.nuch`, so a source the consumer could see would win and
+; the unit would not be testing the header path at all.
+(deftest w9-template-nuch-separate-compilation
+  (let (ldir:String (try (test-scratch-sub "l"))
+        hdir:String (try (test-scratch-sub "h"))
+        lib:String (try (test-write-file "l/w43ntl.nuc" "(ns w43z)
+(defprotocol W43Z (w43z-zero (self:Self):i32))
+(defn w43z-zero (x:i32):i32 (return x))
+(extend i32 W43Z)
+(defn w43z-solo (x:i32):i32 (return (* x 10)))
+(defn w43z-tw (x:T :where (W43Z T)):i32 (return (w43z-solo (w43z-zero x))))
+"))
+        lv:StrView (string-as-view (addr-of lib))
+        nuch:String (try (emit-for-file "" "--emit-nuch" lv))
+        hp:String (try (write-into (string-as-view (addr-of hdir)) "w43ntl.nuch"
+                                   (string-as-view (addr-of nuch))))
+        use:String (try (test-write-file "w43ntu.nuc" "(import w43ntl w43p)
+(defn main ():i32 (return (w43p/w43z-tw 3)))
+"))
+        uobj:String (str (string-as-view (addr-of hdir)) "/w43ntu.o")
+        lobj:String (str (string-as-view (addr-of ldir)) "/w43ntl.o"))
+    (try (compile-object-in (string-as-view (addr-of hdir))
+                            (string-as-view (addr-of use))
+                            (string-as-view (addr-of uobj))))
+    (try (compile-object-in "" lv (string-as-view (addr-of lobj))))
+    (let (parts:String (str (string-as-view (addr-of uobj)) " "
+                            (string-as-view (addr-of lobj)))
+          got:i32 (try (cc-link-exit (string-as-view (addr-of parts)))))
+      (try (check-eq-int got 30 "the header-declared template stamps and links"))
+      (drop (addr-of parts)))
+    (drop (addr-of lobj))
+    (drop (addr-of uobj))
+    (drop (addr-of use))
+    (drop (addr-of hp))
+    (drop (addr-of nuch))
+    (drop (addr-of lib))
+    (drop (addr-of hdir))
+    (drop (addr-of ldir)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; W9 item 41: a solitary protocol method still dispatches through the vtable
+; ---------------------------------------------------------------------------
+
+; The `(dyn P)` vtable forwarding lives in the generic-call path, which a method
+; with exactly ONE conformer never reaches — it stays a solitary `defn` and took
+; the ordinary call path, passing the fat pointer straight to the concrete
+; method. The fixture's own `main` is the witness: a method with a second
+; parameter receives the box's vtable word in it, so it printed 885001780
+; instead of 105.
+(deftest w9-dyn-solitary
+  (try (w1-exit "tests/fixtures/w9-dyn-solitary.nuc" 0))
+  (return (ok)))
+
+; What the run cannot see: that NO call to a protocol method from a box is
+; direct. The shell asserted only the absence, which an empty module satisfies —
+; and its own sibling unit below carries the comment explaining exactly that
+; hazard. The three boxed dispatches are required by count first.
+(deftest w9-dyn-solitary-dispatches-indirectly
+  (let (c:Compiled (try (compile-path "tests/fixtures/w9-dyn-solitary.nuc"))
+        iv:StrView (compiled-ir (addr-of c)))
+    (try (check-eq-int (count-matching-lines iv "  %* = call i32 %*(ptr *") 3
+                       "three boxed dispatches, all through a vtable slot"))
+    (try (check-not-match iv "*call i32 @add-k(*"))
+    (try (check-not-match iv "*call i32 @name-of(*"))
+    (drop (addr-of c)))
+  (return (ok)))
+
+; The QUALIFIED spelling of a namespaced protocol's method reaches its slot,
+; which needs the bare-name match the slot lookup only makes after checking the
+; qualifier against the protocol's own namespace. The library excludes the
+; prelude so its object and the consumer's link together — the same separate
+; compilation shape a `.nuch` needs, which is also the only way to spell a
+; qualified call to a method.
+(defn w41-files ():!String
+  (try (test-write-file "w41lib.nuc" "(exclude-prelude)
+(ns w41)
+(defprotocol Describe (describe ((self (ref Self))) i32))
+(defstruct Fox n:i32)
+(defn describe ((self (ref Fox))):i32 (return (_get self 'n)))
+(extend Fox Describe)
+"))
+  (let (dir:StrView (try (test-scratch))
+        lib:String (str dir "/w41lib.nuc")
+        nuch:String (try (emit-into "" "--emit-nuch" (string-as-view (addr-of lib))
+                                    dir "w41lib.nuch"))
+        src:String (str "(import-use \"stdio.h\")
+(import-use allocator)
+(import \"" (string-as-view (addr-of nuch)) "\" wx)
+(defn main ():i32
+  (let (b:(dyn wx/Describe) (wx/Fox 309))
+    (printf \"d=%d\\n\" (wx/describe b)))
+  (return 0))
+"))
+    (drop (addr-of nuch))
+    (drop (addr-of lib))
+    (return (test-write-file "w41use.nuc" (string-as-view (addr-of src))))))
+
+(deftest w9-dyn-solitary-qualified-reaches-slot
+  (let (u:String (try (w41-files))
+        s:String (try (w1-ir (string-as-view (addr-of u))))
+        iv:StrView (string-as-view (addr-of s)))
+    ; An empty module would pass a purely negative assertion, so the indirect
+    ; call is required as well as the direct one refused.
+    (try (check-match iv "  %* = call i32 %*(ptr *"))
+    (try (check-not-match iv "*call i32 @w41__describe(*"))
+    (drop (addr-of s))
+    (drop (addr-of u)))
+  (return (ok)))
+
+(deftest w9-dyn-solitary-qualified-runs
+  (let (u:String (try (w41-files))
+        dir:StrView (try (test-scratch))
+        lib:String (str dir "/w41lib.nuc")
+        lll:String (try (emit-into "" "--emit-llvm" (string-as-view (addr-of lib))
+                                   dir "w41lib.ll"))
+        ull:String (try (emit-into "" "--emit-llvm" (string-as-view (addr-of u))
+                                   dir "w41use.ll"))
+        parts:String (str (string-as-view (addr-of lll)) " "
+                          (string-as-view (addr-of ull)))
+        out:String (try (cc-link-run "" (string-as-view (addr-of parts)))))
+    (try (check-eq (string-as-view (addr-of out)) "d=309\n"))
+    (drop (addr-of out))
+    (drop (addr-of parts))
+    (drop (addr-of ull))
+    (drop (addr-of lll))
+    (drop (addr-of lib))
+    (drop (addr-of u)))
+  (return (ok)))
