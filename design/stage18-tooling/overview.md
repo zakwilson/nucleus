@@ -2933,6 +2933,58 @@ the source back, never with git. Two refusal lines moved, the `define` anchor
 dropped from a stamp count, the element-0 read asked for 2 instead of 1, a
 printed field changed, and a struct name misspelled in a missing-field message.
 
+#### TF-6 category (c), what the compiler records when it reads a declaration (2026-09-10)
+
+**3 shell functions → 5 tests**, 237 lines of the file retired (including three
+banners and three `spawn` lines): `run_builtin_tyname_resolvable` (1) and
+`run_s16_optional_has_rest` (1) into `tests/suite-s16.nuc` (2,561 → 2,685
+lines), `run_s16_c1_bare_unsigned` (3) into `tests/suite-cimport.nuc` (707 →
+778). `tests/run-tests.sh` is 1,329 → 1,092 lines and 27 → 24 functions.
+`make test` is 36 shell + 930 native = 966.
+
+Three registration sites, one subject: a stamped method's type pattern, a
+`defn`'s parameter list, and a C header's declarator. Each recorded the wrong
+thing and broke a use site far away from it.
+
+**The one type the comment singled out was the one never exercised.**
+`run_builtin_tyname_resolvable` loops over eleven builtin type names and its
+own comment says of `raw`: "the point of listing it is that tyname-resolvable
+must still answer for it." The next line is `[ "$T" = "raw" ] && continue`,
+before any file is written. `(Vector raw)` in fact stamps and its IR parses, so
+the claim was true, untested, and testable. All eleven are exercised now.
+
+**A hand-rolled `comm` where the parser was the assertion.** The same function
+built the set of called `@names` and the set of defined-or-declared ones and
+diffed them with `comm`, to find a call with no define — which is precisely
+what `llvm-as` reports, as the function's own comment says ("LLVM's own parser
+is the only thing that catches it"). `check-ir-parses` replaces the pipeline.
+
+**Four FAIL names that no green run prints.** `run_s16_optional_has_rest`
+reports `s16-optional-forward-call`, `s16-optional-overload-widen`,
+`s16-optional-nuch-defmethod` and `s16-rest-still-folds` on failure, and a
+single `s16-optional-has-rest` on success. A reader diffing a red run against a
+green one sees four names that do not exist in the baseline. One unit, four
+claims, one name.
+
+**Skips reported as passes.** `run_s16_c1_bare_unsigned` prints
+`PASS  s16-c1-bare-unsigned (SKIP: no cc …)` when `cc` is missing and again
+when the oracle fails to build — a green verdict for a claim nothing checked.
+`require-cc` already existed and raises a real `skip!`.
+
+**Halves of a stated claim, unasserted.** The comment says "the two
+bare-specifier FUNCTIONS register at all" and the shell asked about one; the
+`.nuch` round trip is of an overload SET and it asked about the `:optional`
+member only. Both members are pinned in each. C2's reason was matched with
+`[0-9]+` where the header line belongs, so a reason recorded against the wrong
+declaration read the same; the line is pinned.
+
+**Verified by breaking it**, five ways, one per unit, each reverted by editing
+the source back, never with git. A bad type name substituted for `raw`, the
+widened overload's answer changed, a `declare` arity narrowed, the recorded
+header line moved by one, and the C oracle asked for the wrong struct's size —
+that last one twice, because the first attempt swapped two structs that are
+both 16 bytes and so asserted nothing.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that
