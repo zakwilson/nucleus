@@ -2482,6 +2482,62 @@ consumer's expected answer changed by one; and `qsort` given a callback of the
 wrong signature, which the silent-compile unit reports as `qsort: argument 4 has
 type ():void, which does not match parameter type`.
 
+#### TF-6 category (c), which C declaration wins (2026-09-10)
+
+**9 shell functions → 9 tests**, 389 body lines retired (508 lines of the file,
+including the per-function banners, two `spawn` section banners and nine `spawn`
+lines): `run_w3a_opaque_provenance`, `run_w3a_sdl_mixer`, `run_w3b_quals`,
+`run_w3b_skip`, `run_w3b_sdl`, `run_w3c_typedef`, `run_w3c_precedence`,
+`run_w3c_declare_params` and `run_w3c_declare_header`, into a new seventeenth
+module `tests/suite-cdecl.nuc` (297 lines). `tests/run-tests.sh` is 4,234 →
+3,726 lines and 79 → 70 functions. `make test` is 171 shell + 795 native = 966.
+
+Stage 15 W3a, W3b and W3c are one question in three parts: which C declaration
+the importer believes, and which one it refuses to guess at. W3a settles that an
+undefined tag is opaque and that saying so names the C header's own line. W3b
+settles that a qualifier is legal in every position C allows, and that a
+declaration recognized as a function but not faithfully describable is SKIPPED
+with a located warning. W3c settles that a typedef resolves to what it names and
+that an explicit `(declare …)` beats a header-derived one in either order.
+
+**The one-to-one mapping is exact here** — nine functions, nine units — because
+each shell function was already a single subject. What changed is inside them:
+seven used `ok=1 … || ok=0` accumulators over 19, 19 and 18 `grep` rows, so a
+failure named only the function, never the row. As `try`-shaped `check-line`
+assertions each row names itself, and each pins a WHOLE `declare` line rather
+than a substring, so a wrong parameter type fails in the row that carries it.
+
+**Two skips were being reported as passes.** `run_w3a_sdl_mixer` and
+`run_w3b_sdl` both printed `PASS … (SKIP: SDL2 not installed)`. These are the
+§1.5 accept criterion — importing a real system header transitively reaching the
+x86 intrinsics headers, where `void _mm_clflush(void const *)` once imported as
+`declare void @_mm_clflush(void, ptr)` and killed the compilation at `failed to
+parse generated IR`. A machine without SDL2 counted that as green. They are
+`skip!` with a reason now, so `--no-skip` can refuse them.
+
+**Pinning the location caught an error the shell could not have.** The
+precedence conflict warning is at line 6 of the conflict fixture; I first wrote
+5, copied from the sibling `w3c-prec-first` fixture, and the unit failed
+immediately. The shell's `grep` carried no location at all, so it would have
+accepted the same warning raised anywhere in the file. The conflicting header's
+own path and line ARE host-dependent, so that message is pinned as its two
+stable halves rather than as the middle.
+
+**A pre-existing defect fixed by the deletion itself.** Lines 1474-1479 were a
+Stage 13 L8 banner orphaned from `run_closure_cheader` — the W3a block had been
+inserted between them, and `run_closure_cheader` had no banner of its own.
+Removing the block reunites them.
+
+**Verified by breaking it**, nine ways — one per unit — each reverted by editing
+the source back. Six restore the actual pre-fix shapes: `{ i32, ptr, ptr, ptr }`
+for `Mix_Chunk` (the typedef'd `Uint8`/`Uint32` fields degraded to `ptr`),
+`@w3b_int_const(i32, ptr)` (the east qualifier eaten as a parameter name),
+`@_mm_clflush(void, ptr)` (the IR LLVM rejects), `declare ptr @w3c_f_u8()` (every
+scalar typedef resolving to `ptr`), `@lseek(i32, i64, i32)` (the header winning
+over the explicit declaration) and `@w3d_bare_5(i32, i32)` (a bare parameter list
+emitted as all-`i32`). The other three move the opaque-provenance line, the
+by-value skip warning's line, and the matching-header `declare`.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that
