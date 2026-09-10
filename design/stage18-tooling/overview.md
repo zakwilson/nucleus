@@ -2538,6 +2538,88 @@ over the explicit declaration) and `@w3d_bare_5(i32, i32)` (a bare parameter lis
 emitted as all-`i32`). The other three move the opaque-provenance line, the
 by-value skip warning's line, and the matching-header `declare`.
 
+#### TF-6 category (c), a machine that is not the host (2026-09-10)
+
+**12 shell functions → 36 tests**, 300 body lines retired (479 lines of the
+file, including the per-function banners, the nine-triple `for` loop and
+seventeen `spawn` lines): `run_target_triple` (9), `run_avr_emit` (4),
+`run_avr2_16bit` (4), `run_w9_gep_index_width` (3), `run_avr3_link` (2),
+`run_avr5_isr`, `run_avr6_fnvalue`, `run_avr6_const`, `run_avr7_f64` (3),
+`run_avr7_struct` (2), `run_riscv_emit` (2) and `check_long` (4), into
+`tests/suite-target.nuc`, which grows 362 → 1,078 lines.
+`tests/run-tests.sh` is 3,726 → 3,247 lines and 70 → 59 functions. `make test`
+is 135 shell + 831 native = 966.
+
+Not a new module: §T6.6's "what the target decides, not the compiler" is this
+question, and `riscv-emit` and RV-6's struct ABI are plainly the same subject.
+`check_long` lands here as category (a) said it would (§"TF-6 category (a) as
+landed") — a target-triple ABI probe with IR greps, not a diagnostic row.
+
+**The shell asked the module header; the header is what a broken compiler gets
+right.** `run_target_triple` grepped for `target triple = "<t>"` — a string the
+compiler was handed. Every defect in this lane emitted that line correctly and
+then went on emitting for the host: a 64-bit GEP index on an 8-bit MCU, a Node
+cell sized 40 for a 16-bit pointer, a SysV eightbyte classification on a part
+with no register to hold one, soft-float libcalls against a hard-float ABI. So
+each triple unit now (a) compares its datalayout against **clang's own answer
+for that triple**, from the same LLVM the compiler links against, and (b)
+requires the target's pointer width on **all six** GEP indices of W9 item 15's
+fixture. The fixture is freestanding, so silence is a real assertion too.
+
+**The RV-1 gate was testing llc, not the compiler.** `run_riscv_emit` passed
+`llc -mattr=+m,+a,+f,+d,+c` on the command line and then asked whether the
+output had a hardware `mul` — which asks whether llc can lower the IR when told
+the features, not whether the features ever reached the compiler's own
+TargetMachine. `riscv-llc-features` disassembles the object `nucleusc -c`
+produced, and keeps the bare-RV64I llc run as the control that shows the two
+answers differ at all.
+
+**A case the shell claimed and never ran.** `run_avr7_f64`'s step 2 is commented
+"`double` spelling — AVR rejects" and re-runs step 1's command on step 1's
+fixture. `f64` and `double` are separate branches of one test in
+`src/union-registry.nuc:368`, and the `double` branch had never been compiled
+for AVR. It is a real case now, against source written into the scratch
+directory rather than a new `tests/fixtures/*.nuc` (which would force an IR
+snapshot re-take).
+
+**Three assertions got stronger because the native form could carry them.**
+`avr-objdump -f` reports `architecture: avr:35` for attiny1634 and `avr:103` for
+the avrxmega3-family avr32dd20 — so pinning it is what says `--mmcu`, not
+`--mcpu`, supplied the device name at link; the shell asked `file` whether the
+ELF was "Atmel AVR 8-bit", which is the same answer for both. `avr3-link-*` pins
+`data = 0` exactly rather than "under 256", which is the prelude-free floor the
+fixture exists for. And `w9-gep-index-width-avr-parses` builds its own negative:
+the emitted module with `, i16 %` rewritten to `, i64 %` is the historical
+defect verbatim, and llvm-as must refuse it with `but expected 'i16'`.
+
+**Two skips are now real**, in the sense that they were already conditional:
+`run_avr_emit`'s llc arm and `run_avr3_link`'s toolchain arm printed nothing and
+`SKIP` respectively, so the shell's PASS count varied by host with no record of
+why. Every toolchain-gated unit is a `skip!` with a reason.
+
+**Library gaps filled rather than worked around** (§T6.6's rule):
+`count-matching-lines` — `check-match` answers "at least one", which cannot tell
+six pointer-sized indices from one and five left behind; `check-ir-rejects`, the
+complement of `check-ir-parses`; and `replace-all`, so a unit can build the
+module that is wrong in exactly one respect. All three in `tests/nuctests.nuc`,
+which is not an IR-snapshot input.
+
+**Raised, not fixed:** `--target=avr` still emits `align 8` on 16-bit pointer
+slots (`design/stage888-deferred.md`). It is a codegen change, and the units
+that would gate it are the ones being ported here.
+
+**Verified by breaking it**, thirty-five ways covering all thirty-six units —
+the two `avr2-16bit-*` share one helper and fail together — each reverted by
+editing the source back, never with git. Nine pointer widths moved off the
+target's, four `long` models swapped, two `llc` triples made unresolvable, the
+qq-helper's `malloc(i64 22)` restored to the host's 40, the `i64`-absence
+inverted, six GEP indices asked for as five, the two link units given each
+other's device family, `__vector_13` moved to 12, the fn-value diagnostic's line
+moved by one, `constant` changed back to `global`, the `double` case's parameter
+changed to `f32` so AVR accepts it, `float` to `double`, `mul nsw i64` to i32,
+the AVR struct parameter changed to the host's `i32`, `lp64d` to `lp64`, and the
+riscv multiply's operands changed by one register.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that

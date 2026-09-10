@@ -541,6 +541,45 @@
     (drop (addr-of p))
     (return (ok))))
 
+; The complement. That llvm-as accepted a module says nothing until the same
+; llvm-as is shown refusing the defect the unit is about, named in `needle`.
+(defn check-ir-rejects (ir:StrView needle:StrView):!void
+  (let (p:String (try (test-write-file "reject-probe.ll" ir))
+        c:Command (command "llvm-as"))
+    (command-arg (addr-of c) (string-as-view (addr-of p)))
+    (command-arg (addr-of c) "-o")
+    (command-arg (addr-of c) "/dev/null")
+    (command-capture (addr-of c) true)
+    (match (run (addr-of c))
+      ((ok o)
+        (when (success? (addr-of o 'status))
+          (fail! "expected llvm-as to reject this IR\n     " (test-show ir)))
+        (try (check-contains (string-as-view (addr-of o 'err)) needle))
+        (drop (addr-of o)))
+      ((err e)
+        (drop (addr-of c))
+        (return (err e))))
+    (drop (addr-of c))
+    (drop (addr-of p))
+    (return (ok))))
+
+; `hay` with every `needle` replaced by `repl`. A unit that emits a module and
+; then wants its NEGATIVE has no other way to build one that is wrong in exactly
+; one respect.
+(defn replace-all (hay:StrView needle:StrView repl:StrView):!String
+  (let (out:String (string-new)
+        rest:StrView hay
+        more:bool true)
+    (while more
+      (match (strview-find (addr-of rest) (addr-of needle))
+        ((some at)
+          (str-into (addr-of out) (strview-take-bytes rest at) repl)
+          (set! rest (strview-drop-bytes rest (+ at (strview-byte-len (addr-of needle))))))
+        (none
+          (str-into (addr-of out) rest)
+          (set! more false))))
+    (return (ok out))))
+
 ; `opt -O2` over a module, as text. The only way to ask whether a function
 ; attribute changes what the optimizer actually does.
 (defn opt-o2 (stem:StrView ir:StrView):!String
@@ -916,6 +955,16 @@
     (while (not (lines-iter-done (addr-of it)))
       (when (strview-has-prefix (lines-iter-next (addr-of it)) prefix)
         (set! n (+ n 1))))
+    (return n)))
+
+; How many lines of `hay` match `pat`. `check-match` answers "at least one",
+; which cannot tell six pointer-sized indices from one and five left behind.
+(defn count-matching-lines (hay:StrView pat:StrView):i64
+  (let (n:i64 0
+        it:LineIter (strview-lines (addr-of hay)))
+    (while (not (lines-iter-done (addr-of it)))
+      (let (l:StrView (lines-iter-next (addr-of it)))
+        (when (glob-match (addr-of pat) (addr-of l)) (set! n (+ n 1)))))
     (return n)))
 
 ; The `%Name` of an IR type-definition line, or "".

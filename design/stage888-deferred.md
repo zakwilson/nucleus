@@ -294,3 +294,26 @@ What blocks it today:
 Not urgent: 82.8s for `make test` is not the bottleneck it was at 282s. Revisit
 when TF-E makes in-process compilation real, since that is the change that makes
 threads worth more than processes.
+
+## `align 8` on 16-bit pointer slots under `--target=avr`
+
+Found while porting the AVR units into `tests/suite-target.nuc` (Stage 18 TF-6,
+2026-09-10). Stage 14 AVR-2 fixed the quasiquote helper's Node cell — 22 bytes,
+`align 1` — and `tests/fixtures/avr2-16bit.nuc` pins it. But the same module,
+emitted for `attiny1634`, still carries 93 `align 8` operands, and three of them
+are on POINTER slots:
+
+    store ptr %t12, ptr %nnn.addr.14, align 8
+    store ptr %t0, ptr %nn.addr.2, align 8
+
+A pointer is two bytes there, so eight is not merely generous: on a
+strict-alignment backend an over-claimed alignment is a promise the emitter has
+no way to keep, and LLVM is entitled to use it. The `i64` slots (`alloca i64,
+align 8`) are a separate and milder question — legal, but AVR's preferred
+alignment for every type is 1.
+
+Not fixed here because it is a codegen change, not a test change, and the unit
+that would gate it is the one being ported. `avr2-16bit-attiny1634` /
+`avr2-16bit-avrxmega3` pin the qq-helper's `align 1` by presence, so the fix has
+somewhere to land; add the pointer-slot absence to those two units once the
+alignment comes from the datalayout rather than the host default.
