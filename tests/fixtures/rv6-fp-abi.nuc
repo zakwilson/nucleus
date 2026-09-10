@@ -3,7 +3,7 @@
 ; the development container (§7). Every shape below was checked against
 ; `clang --target=riscv64-unknown-linux-gnu -O0 -S -emit-llvm` on the
 ; structurally identical C, and against x86_64 SysV for the same structs; the
-; assertions live in `run_rv6_fp_abi` (tests/run-tests.sh).
+; assertions live in the `rv6-*` units of tests/suite-target.nuc.
 ;
 ; This file is compiled, never run — the variadic call at the bottom passes
 ; aggregates to printf, which is meaningless at runtime and is exactly the

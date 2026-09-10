@@ -2158,6 +2158,74 @@ output; a pinned line 5 → 4 on the missing-method refusal; and one of the four
 place spellings given a different constant, where `check-golden` names the
 differing IR line and both store instructions.
 
+#### TF-6 category (c), what the target decides, not the compiler (2026-09-10)
+
+**3 shell functions → 12 tests**, 289 body lines retired (304 lines of the file,
+including three rationale headers and three `spawn` lines):
+`run_c4_target_headers` (4), `run_platform_constants` (4) and `run_rv6_fp_abi`
+(4), into a new twelfth module `tests/suite-target.nuc` (363 lines).
+`tests/run-tests.sh` is 6,115 → 5,811 lines and 116 → 113 functions. `make test`
+is 278 shell + 688 native = 966.
+
+Three stages, one subject. What `size_t` is in a declaration (Stage 16 C4), what
+`O_CREAT` equals (Stage 17 platform constants) and how a struct of two floats is
+passed (Stage 14 RV-6) are all the target's to answer, and each was once
+answered by something written into the compiler instead: the host's headers
+under every `--target=`, a hardcoded constant table in `lib/file.nuc`, and the
+SysV classifier for every machine.
+
+**So no oracle is a number quoted in the test.** The C4 lane reads the widths
+back out of the emitted module (avr's `size_t` is `i16` where the host's is
+`i64`, with glibc's `__memcmpeq` as the independent witness that the host's text
+was *not* read after all). The constants lane compares against a C program clang
+builds from the same headers — `printf` of the seven macros, `-Wall -Werror` —
+so the reference is the C compiler rather than this container. The RV-6 lane
+names both triples explicitly and pins shapes derived from
+`clang --target=riscv64-unknown-linux-gnu` on structurally identical C.
+
+**A skip is a verdict about the environment, not a hole.** Two units decide
+which lane they are by asking `clang -E --target=<t> -include string.h` whether
+the target's headers are reachable: `c4-avr-target-headers` skips without them,
+and `c4-missing-sysroot-falls-back` skips *with* them, because a fallback cannot
+be observed on a triple that needs no fallback. Here avr's are installed and
+i386's are not, so both run. The shell hardcoded the same assumption and would
+simply have failed on a container where it did not hold.
+
+**Two `2>/dev/null`s hid two diagnostics.** The riscv64 lane emits C4's fallback
+warning (no riscv sysroot here) and the shell discarded stderr wholesale, which
+also discarded any error. `rv6-ir` uses `check-no-errors` rather than
+`check-silent`: *which* triple lacks a sysroot is a property of the container,
+but an error would be a property of the compiler either way.
+
+**Nineteen `grep -E`s over `define` lines became nineteen whole lines.** The
+shell matched `^define .*@f_pair` and the like, so an argument list that changed
+shape while keeping its name passed. The 8 flattening shapes, 10
+register-counting shapes and 8 x86 anti-leak shapes are now exact `check-line`
+assertions including the `section` attribute — the shell checked five of the x86
+lines, and a leak in any of the other three would have gone unseen. The variadic
+tail asked that no `float`/`double` appear anywhere in the `printf` call, which a
+call that lost its arguments also satisfies; `check-match` on the whole call now
+pins the five operand types in order, leaving only the SSA serials to `*`.
+
+**Six refusals that "the compile failed" became six located `undefined:`s.** The
+reserved `_MP_BASE`, the function-like `MP_FN`, the string `MP_STR`, the float
+`MP_FLOAT`, the logical `MP_LOGIC` and the decimal-overflow `MP_OVER` each now
+name the line that used them, so an unrelated error cannot stand in for the
+refusal. The clang-predefine case reads the first letter-initial `#define` out of
+`clang -E -dM` rather than naming one, since which it is is the platform's
+business (`linux` here) — and a leading-underscore predefine would be refused by
+the underscore rule instead, testing nothing.
+
+**Verified by breaking it**, twelve ways — one per unit — each reverted by
+editing the source back: `strlen` → `strlenx`; avr's `i16` → the host's `i64`;
+the fallback warning's `HOST` → `host`; a pinned line 1 → 2; one digit in the
+admitted-macro output; `MP_FN` → the admitted `MP_PUB` (which produces no
+diagnostic at all); `8` → `9` for the private macro; `O_CREAT` → `O_EXCL` in the
+C reference alone, where the printed 64 vs 128 shows the oracle really is read
+from clang; `f_pair`'s `i64` → `i32`; `fpr7_dd`'s integer-convention pair → the
+x86 double pair; one variadic `i64` → `double`; and `f_farr2`'s x86
+`<2 x float>` → the riscv flattened pair.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that

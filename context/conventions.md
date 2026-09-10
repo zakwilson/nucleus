@@ -2042,7 +2042,8 @@ reference `.c` (no `#include`: there is no riscv64 sysroot, so any include
 fails) lowered with `clang --target=riscv64-unknown-linux-gnu -O0 -S
 -emit-llvm`, diffed against the same shapes through
 `nucleusc --target=riscv64-unknown-linux-gnu --emit-llvm`. That is what
-`tests/fixtures/rv6-fp-abi.nuc` + `run_rv6_fp_abi` pin permanently, together
+`tests/fixtures/rv6-fp-abi.nuc` + the `rv6-*` units of
+`tests/suite-target.nuc` pin permanently, together
 with an x86_64 control asserting the same structs still lower as SysV. It is
 **not** an execution gate; only a native `make abi-test` on riscv64 closes
 that.
@@ -2365,7 +2366,7 @@ re-derived in shell (`tests/run-riscv-test.sh` / `run-riscv-abi-test.sh`).
 The same "a triple is not a host" confusion recurs in the test harness, where it
 is easier to miss because the test *passes* on the machine it was written on.
 
-`run_rv6_fp_abi` (`tests/run-tests.sh`) compares riscv64 lowering against x86_64
+The RV-6 gate (`tests/suite-target.nuc`) compares riscv64 lowering against x86_64
 SysV lowering of the same fixture — an anti-leak control proving the riscv
 flattening rules did not reach the SysV path. The riscv lane named its triple;
 the x86_64 lane ran bare `--emit-llvm` and rode the default target. On x86_64
