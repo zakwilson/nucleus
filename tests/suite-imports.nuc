@@ -771,3 +771,408 @@
     (drop (addr-of m))
     (drop (addr-of o)))
   (return (ok)))
+
+; ---------------------------------------------------------------------------
+; W9 item 1: the unit's ROOT file is a member of the import graph too
+; ---------------------------------------------------------------------------
+
+; A library that imports the root re-enters it. If the re-entry lands while the
+; root has emitted none of its own forms, `do-import` HOISTS the root — emits it
+; there — and the depth-1 loop stops because its own path is now on the imported
+; list. That is the shape the auto-prelude creates for lib/macros.nuc and
+; lib/arena.nuc, where a plain cycle skip is not merely suboptimal: the skipped
+; file holds the macros the rest of the chain is about to use.
+; `(exclude-prelude)` is how a hand-written test reaches the same window, since
+; with the prelude prepended form 0 is the prelude import.
+;
+; Both roots carry an OVERLOADED name, which is what makes the prescan half
+; observable and is exactly how lib/arena.nuc failed; both fail on the committed
+; boot compiler with `duplicate definition of 'dup-fn'`.
+; The compiled file must BE `w9h-main.nuc`: the library imports it under that
+; name, so a copy under any other name puts both in the unit and collides on
+; `dup-fn` before the cycle is ever reached.
+(defn w9-hoist-main ():!String
+  (try (test-write-file "w9h-lib.nuc" "(import-use w9h-main)
+(defn lib-fn ():i32 (return (dup-fn 2 3)))
+"))
+  (return (test-write-file "w9h-main.nuc" "(exclude-prelude)
+(import-use w9h-lib)
+(defn dup-fn (a:i32):i32 (return a))
+(defn dup-fn (a:i32 b:i32):i32 (return (_+ a b)))
+(defn main ():i32 (return (lib-fn)))
+")))
+
+(deftest w9-root-hoist
+  (let (m:String (try (w9-hoist-main)))
+    (try (w1-exit (string-as-view (addr-of m)) 5))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; The exit status cannot see a double emission — LLVM would, but only at the
+; link step, and the duplicate-signature error fires first and hides it. So each
+; of the four definitions is required exactly once, by count rather than by the
+; shell's `sort | uniq -d` over a grep that had to be `|| true`-guarded lest a
+; non-match kill the unit and lose its second verdict silently.
+;
+; The order is the real claim, and the shell asserted nothing about it: the
+; hoist and the cycle skip emit the SAME four symbols, so `main` landing before
+; the library's `lib-fn` is the only thing that says the root was hoisted at the
+; re-entry rather than skipped.
+(defn w9-defined-once (ir:StrView what:StrView):!void
+  (let (dup:StrView (duplicate-define-name ir))
+    (when (!= dup "")
+      (fail! what ": the module defines " dup " twice")))
+  ; Presence, so an empty module cannot satisfy a duplicate check. The overloaded
+  ; pair is what makes the prescan half observable; `main` and the library's
+  ; `lib-fn` are required by the order check below.
+  (try (check-match ir "define*@dup_fn.i32(*"))
+  (try (check-match ir "define*@dup_fn.i32.i32(*"))
+  (return (ok)))
+
+(deftest w9-root-hoist-single-emission
+  (let (m:String (try (w9-hoist-main))
+        s:String (try (w1-ir (string-as-view (addr-of m))))
+        iv:StrView (string-as-view (addr-of s)))
+    (try (w9-defined-once iv "root hoist"))
+    (try (check-order iv "define i32 @main(" "define weak_odr i32 @lib-fn("
+                      "the hoisted root is emitted at the re-entry"))
+    (drop (addr-of s))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; The same cycle with one of the root's own definitions emitted BEFORE the
+; back-import. Hoisting there would emit that definition a second time, so the
+; window is shut and the re-entry takes W1d's ordinary cycle skip — which must
+; still leave exactly one copy of everything. This is the half that would
+; regress if the hoist were widened without the guard.
+(defn w9-skip-main ():!String
+  (try (test-write-file "w9c-lib.nuc" "(import-use w9c-main)
+(defn lib-fn ():i32 (return (dup-fn 2 4)))
+"))
+  (return (test-write-file "w9c-main.nuc" "(exclude-prelude)
+(defn dup-fn (a:i32):i32 (return a))
+(defn dup-fn (a:i32 b:i32):i32 (return (_+ a b)))
+(import-use w9c-lib)
+(defn main ():i32 (return (lib-fn)))
+")))
+
+(deftest w9-root-cycle-skip
+  (let (m:String (try (w9-skip-main)))
+    (try (w1-exit (string-as-view (addr-of m)) 6))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; …and the mirror of the order claim: the window being shut means the library is
+; emitted at the import and the root's `main` follows it.
+(deftest w9-root-cycle-skip-single-emission
+  (let (m:String (try (w9-skip-main))
+        s:String (try (w1-ir (string-as-view (addr-of m))))
+        iv:StrView (string-as-view (addr-of s)))
+    (try (w9-defined-once iv "cycle skip"))
+    (try (check-order iv "define weak_odr i32 @lib-fn(" "define i32 @main("
+                      "the shut window takes the ordinary cycle skip"))
+    (drop (addr-of s))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; W9: a source file outranks a `.nuch` sitting beside it
+; ---------------------------------------------------------------------------
+
+; The library, its generated sibling header, and a consumer, all in a search
+; directory of their own so the header is genuinely adjacent to the source.
+(defn w9-sibling-files ():!StrView
+  (let (l:String (try (test-scratch-sub "l"))
+        lv:StrView (string-as-view (addr-of l))
+        src:String (try (write-into lv "w9sh.nuc" "(ns shn)
+(defstruct W9Rec (n i32))
+(defn w9sh-get ((r (ref W9Rec))):i32 (return (_get r 'n)))
+")))
+    (try (emit-into lv "--emit-nuch" (string-as-view (addr-of src)) lv "w9sh.nuch"))
+    (drop (addr-of src))
+    (return (ok lv))))
+
+; The import takes the SOURCE even with a header beside it: an inlined
+; definition, not a link-time `declare`.
+(deftest w9-import-prefers-source
+  (let (lv:StrView (try (w9-sibling-files))
+        m:String (try (test-write-file "w9shok.nuc" "(import w9sh)
+(defn main ():i32 (return 0))
+"))
+        s:String (try (emit-for-file lv "--emit-llvm" (string-as-view (addr-of m)))))
+    (try (check-line (string-as-view (addr-of s))
+                     "define weak_odr i32 @shn__w9sh-get(ptr %r.arg) section \".text.shn__w9sh-get\" {"))
+    (drop (addr-of s))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; The diagnostic side of the same ruling. The bare `W9Rec` is wrong — the file
+; bound the prefix `shp` — and the message must say so; what it must NOT do is
+; name the sibling `.nuch` as an unreachable definer of a library the unit
+; imports, which would send the reader to a generated file.
+(deftest w9-sibling-header-not-unreachable
+  (let (lv:StrView (try (w9-sibling-files))
+        m:String (try (test-write-file "w9shuse.nuc" "(import-prefixed w9sh shp)
+(defn w9-take ((r (ref W9Rec))):i32 (return (w9sh-get r)))
+(defn main ():i32 (return 0))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        c:Compiled (try (compile-path-in lv mv)))
+    (try (check-no-line-zero (addr-of c 'diags)))
+    (try (check-error-at (addr-of c 'diags) mv 2
+                         "unknown type: W9Rec — defined in namespace 'shn'"))
+    (try (check-note-at (addr-of c 'diags) mv 2 "write 'shp/W9Rec' here"))
+    (try (check-no-diag-containing (addr-of c 'diags) "w9sh.nuch"))
+    (drop (addr-of c))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; W9 item 6: a string-path import joins the same prescan
+; ---------------------------------------------------------------------------
+
+; `(import-use foo)` and `(import-use "…/foo.nuc")` name one file and are one
+; import, but both prescan passes walked the symbol form only — so the string
+; spelling registered nothing and every name in that file resolved on import
+; ORDER, reporting "not defined anywhere in this compilation unit" for a name
+; that is in the unit.
+;
+; All four kinds the two passes cover are used BEFORE the import form, so an
+; order-dependent resolution cannot pass, and each links and runs: 5 + 7 = 12,
+; + 30 = 42, + 1 (sp-green) = 43. A field ACCESS before the import is
+; deliberately absent — pass 1 registers struct names, not layouts, so it fails
+; ahead of the import for the symbol spelling too (measured). That is the W1d
+; name-vs-layout split, not this item.
+(defn w9-sp-lib ():!String
+  (let (sub:String (try (test-scratch-sub "sub"))
+        p:String (try (write-into (string-as-view (addr-of sub)) "sp.nuc" "(defconst SP-K 7)
+(defenum SpColor sp-red sp-green)
+(defstruct SpRec n:i32)
+(defvar sp-gv:i32 30)
+(defn sp-add (a:i32):i32 (return (+ a SP-K)))
+")))
+    (drop (addr-of sub))
+    (return (ok p))))
+
+(deftest w9-string-path-use-before-import
+  (let (p:String (try (w9-sp-lib))
+        src:String (str "(defn sp-use (r:ptr:SpRec):i32
+  (return (+ (+ (sp-add 5) sp-gv) sp-green)))
+(import-use \"" (string-as-view (addr-of p)) "\")
+(defn main ():i32
+  (let (r:ref:SpRec (SpRec 2))
+    (return (sp-use (as ptr:SpRec r)))))
+")
+        m:String (try (test-write-file "spmain.nuc" (string-as-view (addr-of src)))))
+    (try (w1-exit (string-as-view (addr-of m)) 43))
+    (drop (addr-of m))
+    (drop (addr-of src))
+    (drop (addr-of p)))
+  (return (ok)))
+
+; The point of the fix is that the two spellings agree: same program, symbol
+; spelling, same answer. A regression in either direction fails here.
+(deftest w9-string-path-matches-symbol-spelling
+  (try (test-write-file "sp.nuc" "(defconst SP-K 7)
+(defenum SpColor sp-red sp-green)
+(defstruct SpRec n:i32)
+(defvar sp-gv:i32 30)
+(defn sp-add (a:i32):i32 (return (+ a SP-K)))
+"))
+  (let (m:String (try (test-write-file "spsym.nuc" "(defn sp-use (r:ptr:SpRec):i32
+  (return (+ (+ (sp-add 5) sp-gv) sp-green)))
+(import-use sp)
+(defn main ():i32
+  (let (r:ref:SpRec (SpRec 2))
+    (return (sp-use (as ptr:SpRec r)))))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 43))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; The two spellings must agree on a MISSING file too. The string branch's null
+; check could never fire — the path is the string verbatim — so the error fell
+; through to `read-file`'s unlocated `perror`, while the symbol spelling
+; reported `import: cannot find` at the import's own line.
+(deftest w9-string-path-missing-file-located
+  (let (dir:StrView (try (test-scratch))
+        src:String (str "(import-use \"" dir "/sub/nosuch.nuc\")
+(defn main ():i32 (return 0))
+")
+        m:String (try (test-write-file "spbad.nuc" (string-as-view (addr-of src))))
+        mv:StrView (string-as-view (addr-of m))
+        c:Compiled (try (w1-compile mv))
+        want:String (str "import: cannot find '" dir "/sub/nosuch.nuc'"))
+    (try (check-no-line-zero (addr-of c 'diags)))
+    (try (check-error-at (addr-of c 'diags) mv 1 (string-as-view (addr-of want))))
+    (drop (addr-of want))
+    (drop (addr-of c))
+    (drop (addr-of m))
+    (drop (addr-of src)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; W5e: `defn-` name isolation
+; ---------------------------------------------------------------------------
+
+; A private definer in a file with no `(ns …)` is keyed under that file's
+; implicit namespace, so two files may each define a private `helper`. Exit
+; codes rather than "it compiles": a wrongly-routed call links fine and returns
+; the OTHER file's answer, which only a value check catches. Each unit encodes
+; both files' answers in one status.
+(defn w5e-priv-files ():!void
+  (try (test-write-file "w5e-pa.nuc" "(defn- w5e-h ():i32 (return 1))
+(defn w5e-a ():i32 (return (w5e-h)))
+"))
+  (try (test-write-file "w5e-pb.nuc" "(defn- w5e-h ():i32 (return 2))
+(defn w5e-b ():i32 (return (w5e-h)))
+"))
+  (return (ok)))
+
+(deftest w5e-private-defn-order1
+  (try (w5e-priv-files))
+  (let (m:String (try (test-write-file "w5e-p1.nuc" "(import-use w5e-pa)
+(import-use w5e-pb)
+(defn main ():i32 (return (+ (* 10 (w5e-a)) (w5e-b))))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 12))
+    (drop (addr-of m)))
+  (return (ok)))
+
+(deftest w5e-private-defn-order2
+  (try (w5e-priv-files))
+  (let (m:String (try (test-write-file "w5e-p2.nuc" "(import-use w5e-pb)
+(import-use w5e-pa)
+(defn main ():i32 (return (+ (* 10 (w5e-a)) (w5e-b))))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 12))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; `defvar-` is the same class with a worse symptom: two `@g` definitions in one
+; module, rejected by the LLVM parser with no source location at all.
+(deftest w5e-private-defvar
+  (try (test-write-file "w5e-va.nuc" "(defvar- w5e-g:i32 3)
+(defn w5e-va ():i32 (return w5e-g))
+"))
+  (try (test-write-file "w5e-vb.nuc" "(defvar- w5e-g:i32 4)
+(defn w5e-vb ():i32 (return w5e-g))
+"))
+  (let (m:String (try (test-write-file "w5e-v1.nuc" "(import-use w5e-va)
+(import-use w5e-vb)
+(defn main ():i32 (return (+ (* 10 (w5e-va)) (w5e-vb))))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 34))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; A file's own private definition shadows a public one of the same name
+; elsewhere — as a namespace-local name shadows an imported one — and the public
+; name stays reachable from everywhere else. 1, 9 and 9 in one status.
+(defn w5e-shadow-files ():!void
+  (try (test-write-file "w5e-sa.nuc" "(defn- w5e-s ():i32 (return 1))
+(defn w5e-sa ():i32 (return (w5e-s)))
+"))
+  (try (test-write-file "w5e-sc.nuc" "(defn w5e-s ():i32 (return 9))
+(defn w5e-sc ():i32 (return (w5e-s)))
+"))
+  (return (ok)))
+
+(deftest w5e-private-shadows-public-order1
+  (try (w5e-shadow-files))
+  (let (m:String (try (test-write-file "w5e-s1.nuc" "(import-use w5e-sa)
+(import-use w5e-sc)
+(defn main ():i32 (return (+ (* 100 (w5e-sa)) (+ (* 10 (w5e-sc)) (w5e-s)))))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 199))
+    (drop (addr-of m)))
+  (return (ok)))
+
+(deftest w5e-private-shadows-public-order2
+  (try (w5e-shadow-files))
+  (let (m:String (try (test-write-file "w5e-s2.nuc" "(import-use w5e-sc)
+(import-use w5e-sa)
+(defn main ():i32 (return (+ (* 100 (w5e-sa)) (+ (* 10 (w5e-sc)) (w5e-s)))))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 199))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; Two files each defining TWO private `w5e-o` methods exercises the mangled
+; per-method path rather than the solitary one, and would collide on the bare
+; mangled name without W5e.
+(deftest w5e-private-overloaded
+  (try (test-write-file "w5e-oa.nuc" "(defn- w5e-o (n:i32):i32 (return 1))
+(defn- w5e-o (a:i32 b:i32):i32 (return 2))
+(defn w5e-oa ():i32 (return (+ (w5e-o 0) (w5e-o 0 0))))
+"))
+  (try (test-write-file "w5e-ob.nuc" "(defn- w5e-o (n:i32):i32 (return 10))
+(defn- w5e-o (a:i32 b:i32):i32 (return 20))
+(defn w5e-ob ():i32 (return (+ (w5e-o 0) (w5e-o 0 0))))
+"))
+  (let (m:String (try (test-write-file "w5e-o1.nuc" "(import-use w5e-oa)
+(import-use w5e-ob)
+(defn main ():i32 (return (+ (w5e-oa) (w5e-ob))))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 33))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; What W5e must NOT relax. A PUBLIC name is still unique across the whole unit.
+; The SECOND file is blamed, at its own line, and the first is named in the
+; message — which the shell could not tell apart from the reverse, since it
+; grepped the whole stderr blob for the two paths independently.
+(deftest w5e-public-collision-rejected
+  (let (a:String (try (test-write-file "w5e-ca.nuc" "(defn w5e-pub ():i32 (return 1))
+"))
+        b:String (try (test-write-file "w5e-cb.nuc" "(defn w5e-pub ():i32 (return 2))
+"))
+        m:String (try (test-write-file "w5e-c1.nuc" "(import-use w5e-ca)
+(import-use w5e-cb)
+(defn main ():i32 (return (w5e-pub)))
+"))
+        c:Compiled (try (w1-compile (string-as-view (addr-of m))))
+        want:String (str "duplicate definition of 'w5e-pub' — the same parameter types are already defined at "
+                         (string-as-view (addr-of a)) ":1"))
+    (try (check-no-line-zero (addr-of c 'diags)))
+    (try (check-error-at (addr-of c 'diags) (string-as-view (addr-of b)) 1
+                         (string-as-view (addr-of want))))
+    (try (check-note-at (addr-of c 'diags) (string-as-view (addr-of b)) 1
+                        "'w5e-pub' is public, and a public name must be unique across the whole compilation unit"))
+    (drop (addr-of want))
+    (drop (addr-of c))
+    (drop (addr-of m))
+    (drop (addr-of b))
+    (drop (addr-of a)))
+  (return (ok)))
+
+; …and `defn-` in an EXPLICIT namespace is still private to that namespace, so
+; two files sharing one `(ns …)` still collide. The note states the rule, which
+; is the half that distinguishes this refusal from the public one above.
+(deftest w5e-ns-private-collision-rejected
+  (let (a:String (try (test-write-file "w5e-na.nuc" "(ns w5eg)
+(defn- w5e-nsh ():i32 (return 1))
+(defn w5e-na ():i32 (return (w5e-nsh)))
+"))
+        b:String (try (test-write-file "w5e-nb.nuc" "(ns w5eg)
+(defn- w5e-nsh ():i32 (return 2))
+(defn w5e-nb ():i32 (return (w5e-nsh)))
+"))
+        m:String (try (test-write-file "w5e-n1.nuc" "(import-use w5e-na)
+(import-use w5e-nb)
+(defn main ():i32 (return 0))
+"))
+        c:Compiled (try (w1-compile (string-as-view (addr-of m))))
+        want:String (str "duplicate definition of 'w5e-nsh' — the same parameter types are already defined at "
+                         (string-as-view (addr-of a)) ":2"))
+    (try (check-no-line-zero (addr-of c 'diags)))
+    (try (check-error-at (addr-of c 'diags) (string-as-view (addr-of b)) 2
+                         (string-as-view (addr-of want))))
+    (try (check-note-at (addr-of c 'diags) (string-as-view (addr-of b)) 2
+                        "`defn-` makes a name private to its NAMESPACE, not to its file, and both definitions are in namespace 'w5eg'"))
+    (drop (addr-of want))
+    (drop (addr-of c))
+    (drop (addr-of m))
+    (drop (addr-of b))
+    (drop (addr-of a)))
+  (return (ok)))
