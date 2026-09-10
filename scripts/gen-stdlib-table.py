@@ -293,8 +293,8 @@ def probe_available(name, tmpdir):
 
 def probe_all(names):
     """Returns {name: bool available}. Compiler invocations are independent
-    (one throwaway file each) so they run concurrently, matching
-    tests/run-tests.sh's own bounded-parallel-job convention."""
+    (one throwaway file each) so they run concurrently, bounded by
+    NUCLEUS_TEST_JOBS the way the suite's own shards are."""
     results = {}
     with tempfile.TemporaryDirectory() as tmpdir:
         workers = int(os.environ.get("NUCLEUS_TEST_JOBS", os.cpu_count() or 4))

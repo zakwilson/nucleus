@@ -4,8 +4,8 @@
 ;
 ; A test is a `deftest`. It registers itself before `main` runs, so a suite is a
 ; program whose `main` is one call to `test-main` -- and a suite binary answers
-; `--list` and `--run <name>`, which is the same interface `build/nuctest`
-; already drives shell units through.
+; `--list` and `--run <name>`, the two verbs an outside runner needs to address
+; one test or shard a suite.
 ;
 ; Assertions return `!void` and a test body is `try`-shaped, so a failing step
 ; stops the test. That is the whole reason the framework is native: the shell

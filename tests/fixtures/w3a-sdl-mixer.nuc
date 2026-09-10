@@ -2,7 +2,7 @@
 ; SDL2/SDL_mixer.h declares `typedef struct Mix_Music Mix_Music;` (opaque — no
 ; body anywhere) and `typedef struct Mix_Chunk { … } Mix_Chunk;` (fully defined)
 ; in the same file. Compile-only: linking would need -lSDL2_mixer, and
-; tests/run-tests.sh has no per-test link-flag mechanism.
+; the golden-example loop has no per-test link-flag mechanism.
 (import-use "SDL2/SDL_mixer.h")
 
 ; Opaque handle in a defn signature — all a handle needs.

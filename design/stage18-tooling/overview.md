@@ -3159,10 +3159,61 @@ broken by flipping `check-no-line-zero`'s sentinel, which proves it reads the
 
 ### T6.7 TF-7 — the end state
 
-`make test` runs the trust anchor and then `build/nuctest`. The shell that
-remains is §T7's 1,558 lines, which the framework *invokes* rather than replaces
-— including `check-headers.sh` and `check-cstr.py`, which are units of the suite
-today and stay units of it.
+`make test` runs the trust anchor and then the native suite. The shell that
+remains is §T7's, which the framework *invokes* rather than replaces — including
+`check-headers.sh` and `check-cstr.py`, which are units of the suite today and
+stay units of it.
+
+#### TF-7 done (2026-09-10)
+
+`make test` is `tests/check-compiler-works.sh`, then a recursive
+`make run-nuctests`. Three things changed and two files went.
+
+**The anchor is `tests/check-compiler-works.sh`**, not `trust-anchor.sh`: the
+name says what it checks rather than what role it plays in this document's
+argument, which is what a maintainer reading `ls tests/` needs. It compiles
+`examples/hello.nuc`, requires a binary to exist, runs it, and diffs against
+`tests/expected/hello.out` — 25 lines of bash with four distinct failure
+messages, and no `set -e`, because errexit would kill it before its diagnostic
+reached stderr. Verified by breaking it four ways: a missing compiler, one that
+refuses, one that exits 0 and writes nothing, and a wrong expected file.
+
+**`$(NUCTESTS)` is deliberately not a prerequisite of `test`.** A prerequisite is
+built *before* the recipe runs, so `test: test-tools $(NUCTESTS)` would have make
+build the suite binary — with the compiler under test — before the anchor could
+say a word, and a compiler broken badly enough to take that build down would stop
+`make` with a build error and no verdict. That is §T2.1 exactly, and it would
+have made the anchor decorative. The recipe now depends on `$(BIN)` alone and
+recurses into `run-nuctests`, which builds the suite after the anchor has spoken.
+Verified by putting an error in a suite module: `PASS compiler-works` prints,
+*then* the suite build fails.
+
+**Two stale artifacts deleted**, per the ruling that nothing stale is kept:
+
+- `tests/run-tests.sh` — TF-6's last batch left it with no units, only mode and
+  dispatch machinery.
+- `tests/nuctest.nuc` and the `nuctest` / `$(NUCTEST)` targets — the TF-2 runner
+  drove shell units through `run-tests.sh --unit`, and there are none. §T8.1's
+  "the runner is its own binary" is satisfied by `build/nuctests` itself, which
+  is a binary the compiler under test must build; that was always the ruling's
+  point, and the TF-2 runner was scaffolding on the way to it.
+
+`--shuffle` went with it. The suite has `--list`, `--run`, `--shard` and
+`--no-skip`; shuffled order-independence is an external `shuf` over `--list` plus
+one `--run` per name, which costs 966 process spawns. An in-suite `--shuffle
+<seed>` over `test-run-all`'s stride is raised in `design/stage888-deferred.md`
+rather than absorbed here.
+
+**41 comments repointed** across `examples/`, `tests/fixtures/`, `tests/`,
+`scripts/`, `lib/test.nuc`, `docs/` and `context/` — every reference to
+`tests/run-tests.sh` or `build/nuctest` outside the historical record now names
+the native unit, manifest row or suite module that replaced it. Three
+`context/conventions.md` sections were about the shell harness's mechanics: the
+`qgrep` rule is rewritten as the general `pipefail` trap (three scripts in
+`tests/` still run under it), the heredoc-grep rule now covers the suite's
+embedded string literals, and the empty-result-file rule records that the native
+suite closed that hole by construction — a dead test is a missing record, and a
+missing record is a count mismatch against `--list`.
 
 ### T6.8 TF-E — the in-process track, separate
 
@@ -3188,9 +3239,12 @@ Keeping it is not a hedge; it is the reason the rest is allowed to move.
 1,558 lines of shell and Python, for reasons that are not inertia. **Outside the
 framework means not rewritten, not unrun** — `check-headers.sh` and
 `check-cstr.py` are units of the suite today and stay units of it, spawned by the
-runner like any other command (§T2.7):
+runner like any other command (§T2.7). As built (TF-6, 2026-09-10) all five
+spawned scripts are `deftest`s in `tests/suite-audits.nuc` that run the script
+and require exit 0:
 
-- **The trust anchor** (§T6.9) — by construction.
+- **The trust anchor** (§T6.9) — by construction; shipped as
+  `tests/check-compiler-works.sh` at TF-7.
 - **`run-avr-test.sh`, `run-riscv-test.sh`, `run-riscv-abi-test.sh`,
   `run-abi-test.sh`, `run-layout-test.sh`** — they gate on external toolchains,
   run outside `make test`, and their assertion *is* an external tool's output.

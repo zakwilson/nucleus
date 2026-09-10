@@ -102,7 +102,8 @@ boot-binary: | $(BUILD)
 	clang boot/nucleusc.ll $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic $(NATIVE_OPT) -o bin/nucleusc
 
 # Programs the suite itself runs. `readdump` is Stage 18 TF-3's half of the
-# reader-parity gate; `run-tests.sh` builds this target before dispatch.
+# reader-parity gate, spawned by `tests/suite-audits.nuc`; `run-nuctests`
+# builds it via `test-tools` before the suite starts.
 READDUMP := $(BUILD)/readdump
 
 $(READDUMP): tests/readdump.nuc $(wildcard lib/*.nuc) $(BIN) | $(BUILD)
@@ -110,14 +111,18 @@ $(READDUMP): tests/readdump.nuc $(wildcard lib/*.nuc) $(BIN) | $(BUILD)
 
 test-tools: $(BIN) $(READDUMP)
 
-test: test-tools $(NUCTESTS)
+# Stage 18 TF-7: the trust anchor, then the suite. `$(NUCTESTS)` is NOT a
+# prerequisite here -- a prerequisite is built before the recipe runs, so a
+# compiler broken badly enough to take the suite build down with it would stop
+# `make` before the anchor could say so. The recursive `run-nuctests` builds it
+# after. See design/stage18-tooling/overview.md §T2.1 and §T6.9.
+test: $(BIN)
 	@rm -rf $(BUILD)/out && mkdir -p $(BUILD)/out
-	./tests/run-tests.sh
+	./tests/check-compiler-works.sh
 	@$(MAKE) --no-print-directory run-nuctests
 
-# Stage 18 TF-6: the native suite. `make test` runs it alongside the shell
-# suite; while both cover a category their agreement is the evidence that
-# retires the shell version. See design/stage18-tooling/overview.md T6.6.
+# Stage 18 TF-6: the native suite, and since TF-7 the whole of `make test`'s
+# 966 verdicts. See design/stage18-tooling/overview.md T6.6.
 NUCTESTS := $(BUILD)/nuctests
 # `make run-nuctests NUCTESTS_ARGS=--no-skip` turns every skip into a failure,
 # for a run that cannot accept one.
@@ -150,18 +155,6 @@ run-nuctests: $(NUCTESTS) test-tools
 	  echo "nuctests: $$(grep -cF '(status pass)' $(BUILD)/nuctests.out) passed, $$(grep -cF '(status fail)' $(BUILD)/nuctests.out) failed, $$(grep -cF '(status skip)' $(BUILD)/nuctests.out) skipped"; \
 	  exit $$s
 
-# Stage 18 TF-2: the native runner, driving the same shell bodies through
-# `run-tests.sh --unit`. Not part of `make test` yet -- at this phase it runs
-# the identical units, so running both would double the wall clock for no extra
-# coverage. TF-7 makes it the entry point. See design/stage18-tooling.
-NUCTEST := $(BUILD)/nuctest
-
-$(NUCTEST): tests/nuctest.nuc $(wildcard lib/*.nuc) $(BIN) | $(BUILD)
-	$(BIN) tests/nuctest.nuc -o $@
-
-nuctest: $(NUCTEST) test-tools
-	@rm -rf $(BUILD)/out && mkdir -p $(BUILD)/out
-	./$(NUCTEST)
 
 # Struct-ABI interop acceptance test (Phase C gate). Not part of `make test`
 # until aggregate ABI lowering lands; see design/stage8/platform.md.
@@ -202,7 +195,7 @@ riscv-abi-test: $(BIN)
 # not hand-curated, since the "no import needed" set is host/libc-dependent
 # (see the doc's own framing paragraph and context/build.md's musl note). The
 # regenerated-vs-committed check runs as part of `make test` (the
-# `stdlib-table-generated` unit in tests/run-tests.sh); this target is the
+# `stdlib-table-generated` unit in tests/suite-audits.nuc); this target is the
 # convenience entry point for actually updating the doc after a toolchain/libc
 # change.
 gen-stdlib-table: $(BIN)
@@ -283,7 +276,7 @@ lib-objs: $(LIB_OBJS)
 # emits. They are generated-and-committed, and the build never reads the
 # committed copies (the rules above overwrite them), so a change to src/nuch.nuc
 # or src/cheader.nuc invalidates them silently. Runs as part of `make test` (the
-# `headers-generated` unit in tests/run-tests.sh); this target is the convenience
+# `headers-generated` unit in tests/suite-audits.nuc); this target is the convenience
 # entry point. `scripts/check-headers.sh --fix` regenerates -- including
 # lib/mapiterlib.nuch, which $(LIB_NUCHS) cannot reach because its source is
 # tests/fixtures/mapiterlib.nuc.
@@ -332,4 +325,4 @@ uninstall:
 	rm -f $(BINDIR)/nucleusc
 	rm -rf $(DESTDIR)$(PREFIX)/share/nucleus
 
-.PHONY: test test-tools nuctest run-nuctests abi-test layout-test avr-test riscv-test riscv-abi-test gen-stdlib-table clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders check-headers lib-objs lib-so lib install uninstall
+.PHONY: test test-tools run-nuctests abi-test layout-test avr-test riscv-test riscv-abi-test gen-stdlib-table clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders check-headers lib-objs lib-so lib install uninstall

@@ -11,7 +11,7 @@
 ; Here both are used as plain i64 arithmetic, so a regression fails at compile
 ; time rather than silently.
 ;
-; Only libc is called — tests/run-tests.sh has no per-test link-flag mechanism.
+; Only libc is called — the golden-example loop has no per-test link flags.
 
 (import-use "stdio.h")
 (import-use "stdlib.h")

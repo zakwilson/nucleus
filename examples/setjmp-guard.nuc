@@ -15,7 +15,7 @@
 ;          table to be a Nucleus type name. Without it this is `(array
 ;          __jmp_buf_tag 1)` spelled by hand.
 ;
-; Only libc is called - tests/run-tests.sh has no per-test link-flag mechanism.
+; Only libc is called - the golden-example loop has no per-test link flags.
 
 (import-use "stdio.h")
 (import-use "setjmp.h")

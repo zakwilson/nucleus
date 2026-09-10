@@ -368,3 +368,27 @@ as stdout, so the recorded `.ll.err` changes and the snapshot must be re-taken
 with the reason recorded in `design/progress.md`. Whoever does it should also
 decide whether `use-dyn`'s warning firing is worth a second assertion or
 whether `l13-cheader-warns` simply loses its error half.
+
+## The suite has no `--shuffle`
+
+`build/nuctests` answers `--list`, `--run <name>`, `--shard <i>/<n>` and
+`--no-skip`. It has no way to permute the order in which `test-run-all` walks
+the registration list, so the order-independence check every retirement batch
+ran is external: `--list | shuf`, then one `--run` per name. That is 966
+process spawns and about six minutes, where an in-process shuffled run would
+cost what a normal run costs.
+
+`build/nuctest` (the TF-2 runner, deleted at TF-7) had `--shuffle <seed>`, over
+shell units. Nothing carried it across, because the property it protects is
+already structural in the native suite — every test owns a scratch directory
+keyed by its name, and `test-duplicate-name` refuses a suite where two could
+claim one path. What a shuffle still catches is the *other* kind of coupling:
+the process-global registries a test leaves behind (`g-fail-buf`, the interner)
+and any assertion that quietly depends on a file an earlier test wrote.
+
+The shape is small: a `--shuffle <seed>` flag, a permutation of the index
+sequence `test-run-all` strides, and the same seed printed in the run's first
+record so a failure is reproducible. Sharding must keep working alongside it —
+shuffle the whole list, then stride — or a shuffled run and a sharded run
+cannot both be trusted. Deferred rather than absorbed into TF-7, which was a
+deletion.

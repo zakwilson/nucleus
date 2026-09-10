@@ -2,10 +2,10 @@
 ;
 ; Design: design/stage18-tooling/overview.md §T6.6.
 ;
-; One binary, driven by `build/nuctest` the same way the shell suite is:
-; `--list` names every test, `--run <name>` runs exactly one and prints its
-; s-expression record. Each test is its own process, so isolation and order
-; independence are properties of the architecture rather than promises.
+; One binary: `--list` names every test, `--run <name>` runs exactly one and
+; prints its s-expression record, and `--shard i/n` is how `make test` spreads
+; the suite across cores. A shard is a process and each test owns a scratch
+; directory keyed by its name, so the split needs no locking.
 ;
 ; Category (a) is a TABLE (`tests/manifest/diagnostics.sexp`), not 168 hand
 ; written units: every row says the same thing about a different fixture, and
