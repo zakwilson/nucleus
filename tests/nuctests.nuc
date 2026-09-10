@@ -40,6 +40,7 @@
 (import-use suite-imports)
 (import-use suite-globals)
 (import-use suite-conversions)
+(import-use suite-fnptr)
 
 
 
