@@ -3148,7 +3148,10 @@
           ; that names a coupling the compiler no longer has sends the reader to
           ; break a cycle they do not need to break.
           note:StrView (fstr "  note: " (import-cycle-note defpath)
-                         "; a cycle resolves function signatures and value names before any emission, but a macro, deferror id or extern declaration registers only when its file is emitted -- and a cycle member's body is emitted before the rest of the file it back-imports. Either "
+                         ; No `Either …, or …` like the layout message below:
+                         ; a macro has no pointer escape, so there is no second
+                         ; alternative to offer.
+                         "; a cycle resolves function signatures and value names before any emission, but a macro, deferror id or extern declaration registers only when its file is emitted -- and a cycle member's body is emitted before the rest of the file it back-imports. The fix is to "
                          (import-cycle-advice)))
       (return (some (fstr head "\n" note))))))
 
