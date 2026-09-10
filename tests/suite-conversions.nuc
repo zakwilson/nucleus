@@ -1,0 +1,217 @@
+; Stage 18 TF-6 — what a conversion costs at a width boundary.
+;
+; Design: design/stage18-tooling/overview.md §T6.6.
+;
+; Stage 15 W9 items 8, 30, 31, 32 and 33 are one question asked at five
+; boundaries: when a value changes width or signedness, what may the compiler do
+; silently, and what must it emit? Items 8 and 30 settle that `as` may never be
+; STRICTER than the implicit coercion at the same slot; 31 makes bool unsigned so
+; every consumer of `is-unsigned` agrees; 32 widens a GEP index by its own
+; signedness; 33 stops a call argument that no conversion reaches from being
+; passed untouched.
+;
+; The fixtures are self-checking — each compares every binding against the value
+; it must hold and returns a distinct code per mismatch — so they are RUN, and
+; the exit status names which claim broke. The refusing complement is already
+; native: `w9-as-literal-too-big`, `w9-as-literal-signed-into-unsigned` and
+; `w9-as-float-inexact` are rows of tests/manifest/diagnostics.sexp. This module
+; owns the accepting side and the artifact.
+
+(defn cv-exit (path:StrView want:i32):!void
+  (let (dir:StrView (try (test-scratch)))
+    (try (check-file-exit dir path want)))
+  (return (ok)))
+
+(defn cv-ir (path:StrView):!String
+  (let (dir:StrView (try (test-scratch)))
+    (return (emit-for-file dir "--emit-llvm" path))))
+
+; ---------------------------------------------------------------------------
+; W9 item 8 — `as` narrows an integer literal that fits
+; ---------------------------------------------------------------------------
+
+(deftest w9-as-literal-fits
+  (try (cv-exit "tests/fixtures/w9-as-literal-fits.nuc" 0)))
+
+; The claim is an EQUALITY between two spellings, and the shell asserted only
+; the `as` half — which is true of any lowering at all. The implicit coercion at
+; the identical slot must emit the same one instruction, or "no stricter than
+; implicit" is a sentence no test reads.
+(deftest w9-as-literal-lowers-like-implicit
+  (let (ir:String (try (cv-ir "tests/fixtures/w9-as-literal-fits.nuc"))
+        imp:String (try (source-ir "(defn main ():i32
+  (let (a:i8 5)
+    (return (as i32 a))))
+"))
+        iv:StrView (string-as-view (addr-of ir))
+        pv:StrView (string-as-view (addr-of imp)))
+    (try (check-match iv "  %t* = trunc i32 5 to i8"))
+    (try (check-line iv "@w9as-g = global i8 9, section \".data.w9as-g\", align 1"))
+    ; The same instruction from the implicit spelling: the two halves of the rule.
+    (try (check-match pv "  %t* = trunc i32 5 to i8"))
+    (drop (addr-of imp))
+    (drop (addr-of ir)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; W9 item 30 — the float half of the same rule
+; ---------------------------------------------------------------------------
+
+(deftest w9-as-float-literal-fits
+  (try (cv-exit "tests/fixtures/w9-as-float-literal-fits.nuc" 0)))
+
+; Stronger than the integer case: the accepted form must cost NO instruction at
+; all, so an `fptrunc` anywhere means the cast was lowered as a conversion
+; instead of folded. The implicit spelling is checked beside it for the same
+; reason as item 8 — the rule is a comparison, not a property of one side.
+(deftest w9-as-float-literal-lowers-like-implicit
+  (let (ir:String (try (cv-ir "tests/fixtures/w9-as-float-literal-fits.nuc"))
+        imp:String (try (source-ir "(defn main ():i32
+  (let (a:f32 1.5)
+    (return 0)))
+"))
+        iv:StrView (string-as-view (addr-of ir))
+        pv:StrView (string-as-view (addr-of imp)))
+    (try (check-line iv "@w9asf-g = global float 0x3FF8000000000000, section \".data.w9asf-g\", align 4"))
+    (try (check-line iv "@w9asf-gd = global double 3.5, section \".data.w9asf-gd\", align 8"))
+    (try (check-match iv "  store float 0x3FF8000000000000, ptr %a.addr.*, align 4"))
+    (try (check-match iv "  store float 0xBFD0000000000000, ptr %b.addr.*, align 4"))
+    (try (check-not-match iv "*fptrunc*"))
+    (try (check-match pv "  store float 0x3FF8000000000000, ptr %a.addr.*, align 4"))
+    (try (check-not-match pv "*fptrunc*"))
+    (drop (addr-of imp))
+    (drop (addr-of ir)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; W9 item 31 — bool is unsigned
+; ---------------------------------------------------------------------------
+
+(deftest w9-bool-unsigned
+  (try (cv-exit "tests/fixtures/w9-bool-unsigned.nuc" 0)))
+
+; The shell asked only that no SIGNED instruction reached a bool, which a module
+; emitting nothing satisfies equally well. What the item actually fixed is which
+; instruction is picked, so the unsigned ones are pinned by presence — the half a
+; run on this host cannot witness, since `sext i1` and `zext i1` differ only
+; above bit 0 and every consumer tests `(!= x 0)`, which -1 and 1 both satisfy.
+; That is exactly why the defect survived every bootstrap until it was measured.
+(deftest w9-bool-unsigned-picks-unsigned-instructions
+  (let (ir:String (try (cv-ir "tests/fixtures/w9-bool-unsigned.nuc"))
+        iv:StrView (string-as-view (addr-of ir)))
+    (try (check-not-match iv "*sext i1*"))
+    (try (check-not-match iv "*icmp slt i1*"))
+    (try (check-not-match iv "*icmp sgt i1*"))
+    (try (check-not-match iv "*icmp sle i1*"))
+    (try (check-not-match iv "*icmp sge i1*"))
+    (try (check-not-match iv "*sitofp i1*"))
+    (try (check-match iv "  %t* = zext i1 1 to i32"))
+    (try (check-match iv "  %t* = zext i1 1 to i64"))
+    (try (check-match iv "  %t* = zext i1 0 to i32"))
+    (try (check-match iv "  %t* = zext i1 0 to i64"))
+    (try (check-match iv "  %t* = icmp ult i1 0, 1"))
+    (try (check-match iv "  %t* = icmp ugt i1 1, 0"))
+    (try (check-match iv "  %t* = icmp ule i1 0, 1"))
+    (try (check-match iv "  %t* = icmp uge i1 1, 0"))
+    ; A computed bool widens the same way a named one does.
+    (try (check-match iv "  %t* = zext i1 %t* to i32"))
+    (try (check-match iv "  %t* = uitofp i1 1 to double"))
+    (drop (addr-of ir)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; W9 item 32 — a GEP index widens by its own signedness
+; ---------------------------------------------------------------------------
+
+(deftest w9-unsigned-index
+  (try (cv-exit "tests/fixtures/w9-unsigned-index.nuc" 0)))
+
+; Absence of `sext` was the shell's whole check; the `zext` that replaced it is
+; pinned here too, so a fixture that stopped indexing at all cannot pass.
+(deftest w9-unsigned-index-widens-unsigned-with-zext
+  (let (ir:String (try (cv-ir "tests/fixtures/w9-unsigned-index.nuc"))
+        iv:StrView (string-as-view (addr-of ir)))
+    (try (check-not-match iv "*sext i8 *"))
+    (try (check-not-match iv "*sext i16 *"))
+    (try (check-match iv "  %t* = zext i8 %t* to i64"))
+    (try (check-match iv "  %t* = zext i16 %t* to i64"))
+    (drop (addr-of ir)))
+  (return (ok)))
+
+; The fix is signedness-directed, not a blanket zext: a negative i32 index still
+; has to reach backwards, so `(aref p -1)` keeps its sign extension.
+(deftest w9-unsigned-index-keeps-sext-for-signed
+  (let (ir:String (try (cv-ir "tests/fixtures/w9-unsigned-index.nuc"))
+        iv:StrView (string-as-view (addr-of ir)))
+    (try (check-match iv "  %t* = sext i32 %t* to i64"))
+    (drop (addr-of ir)))
+  (return (ok)))
+
+; The case the item was filed from, which only the IR can witness: four billion
+; elements is not addressable, so a ui32 at 2^31 cannot be run into.
+(deftest w9-unsigned-index-ui32
+  (let (ir:String (try (source-ir "(import prelude)
+(defn f (p:ptr:i32 i:ui32):i32 (return (aref p i)))
+(defn main ():i32 (return 0))
+"))
+        iv:StrView (string-as-view (addr-of ir)))
+    (try (check-match iv "  %t* = zext i32 %t* to i64"))
+    (try (check-not-match iv "*sext i32 *"))
+    (drop (addr-of ir)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; W9 item 33 — an argument no conversion reaches
+; ---------------------------------------------------------------------------
+
+; The ACCEPTING half, and the guard against over-correcting: the failure mode of
+; item 33's fix is refusing a conversion the language does perform. A skipped
+; coercion still compiles — that was the defect — so the fixture compares every
+; result rather than just its exit status.
+(deftest w9-arg-coerce
+  (try (cv-exit "tests/fixtures/w9-arg-coerce.nuc" 0)))
+
+(deftest w9-arg-coerce-rejects-int-into-ptr
+  (try (check-source-rejects "(defstruct W9S a:i32)
+(defn f (p:ptr:W9S):i32 (return 1))
+(defn main ():i32 (return (f 7)))
+" "does not match parameter type")))
+
+(deftest w9-arg-coerce-rejects-cstr-into-int
+  (try (check-source-rejects "(defn f (x:i32):i32 (return x))
+(defn main ():i32 (let (c:CStr \"hi\") (return (f c))))
+" "does not match parameter type")))
+
+(deftest w9-arg-coerce-rejects-float-into-int
+  (try (check-source-rejects "(defn f (x:i32):i32 (return x))
+(defn main ():i32 (return (f 1.5)))
+" "does not match parameter type")))
+
+; The case that was not merely unchecked but wrong on ordinary-looking code:
+; before item 33 `(take-f64 3)` printed 0.000000.
+(deftest w9-arg-coerce-rejects-int-into-float
+  (try (check-source-rejects "(defn f (x:f64):f64 (return x))
+(defn main ():i32 (f 3)
+  (return 0))
+" "does not match parameter type")))
+
+; The diagnostic locates the CALL and names the callee, the position and both
+; spellings. The shell matched one flat string containing all of it; the location
+; is checked as a location here, so a message that kept the words and lost the
+; line cannot pass.
+(deftest w9-arg-coerce-diagnostic-locates-and-names
+  (let (dir:StrView (try (test-scratch))
+        p:String (try (test-write-file "w9ac.nuc" "(defn f (x:f64):f64 (return x))
+(defn main ():i32 (f 3)
+  (return 0))
+"))
+        pv:StrView (string-as-view (addr-of p))
+        c:Compiled (try (compile-path-in dir pv)))
+    (when (c 'ok?)
+      (fail! "expected the int-into-float call to be refused"))
+    (try (check-error-at (addr-of c 'diags) pv 2
+           "f: argument 1 has type i32, which does not match parameter type f64"))
+    (try (check-no-line-zero (addr-of c 'diags)))
+    (drop (addr-of c))
+    (drop (addr-of p)))
+  (return (ok)))

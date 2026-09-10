@@ -212,6 +212,38 @@ Whether the current string literal length limit is desirable should be revisited
   ("defn" "defmacro" "defvar" "defconst"))
 ```
 
+## A transient `import: cannot find` in w9-multi-object-link
+
+Seen once, 2026-09-10: `w9-multi-object-link` (`tests/suite-linking.nuc`) failed
+a full serial run with
+
+```
+expected an object file
+build/out/nt/w9-multi-object-link/side/w9side.nuc:1: error: import: cannot find 'w9share'
+```
+
+and passed on the immediately following full run, on the shuffled `--run`-per-name
+pass, and on a sharded `make test`. One failure in roughly 2,300 test executions;
+cold (`rm -rf build/out`) it passes, and 20/20 in isolation.
+
+What makes it interesting rather than merely flaky: **`emit-into` resolved the
+same `w9share` from the same search directory microseconds earlier**, in the same
+helper (`w9-objects`), and only `compile-object-in` failed. Between the two calls
+the only change on disk is that `share/w9side.nuch` was created. The test right
+before it in registration order is `w9-lib-no-shared-runtime-init`, which spawns a
+compiler for every one of the 43 `lib/*.nuc`.
+
+The suspicion is that a transient failure inside import resolution is reported as
+absence: `import-form-path` decides with `file-exists`, and `do-import` turns a
+null answer into `import: cannot find`, so a stat that fails for a reason other
+than ENOENT is indistinguishable from a file that is not there. If that is what
+happened, the defect is the conflation, not the transient — a failed stat should
+say so rather than blame the import.
+
+Not reproduced, so not fixed. Worth an hour with `strace` on a loop of the full
+serial suite before changing anything; a speculative fix to a path that cannot be
+made to fail is worse than the flake.
+
 ## A threaded test runner
 
 `test-main --shard i/n` (2026-09-10) parallelises the native suite the naive
