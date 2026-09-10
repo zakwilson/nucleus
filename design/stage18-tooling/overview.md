@@ -2894,6 +2894,45 @@ printed answer changed, two refusal lines moved, the intern call misspelled,
 the no-call assertion inverted, a `.bss` prefix rewritten to `.data`, the
 foreign-target absence inverted, and the dropped symbol asserted to survive.
 
+#### TF-6 category (c), what a typed slot and a receiver accept (2026-09-10)
+
+**2 shell functions → 6 tests**, 172 lines of the file retired (including both
+banners and two `spawn` lines): `run_s16_se_template_ref` (4) and
+`run_s16_sv1_struct_value_receiver` (2), into `tests/suite-s16.nuc`, which grows
+2,383 → 2,561 lines. `tests/run-tests.sh` is 1,501 → 1,329 lines and 29 → 27
+functions. `make test` is 41 shell + 925 native = 966.
+
+Not a new module: SE-1 is which values may occupy a typed slot and SV-1 which
+may occupy a receiver position, and `suite-s16.nuc` already owns what a place
+is.
+
+**An assertion the call site satisfied on its own.** SE-2's claim is that a
+constructor whose type variable appears only in its return type is *stamped*
+once per instance. The shell asserted it with `qgrep -F` on the mangled name —
+a substring the CALL line carries as well as the `define`. A module that named
+both instances and defined neither would have passed, which is exactly the
+unmonomorphized-template failure `run_builtin_tyname_resolvable` exists to
+catch, still live in the same file. Pinned on `define` and by COUNT now, so
+a re-drain that doubles a stamp fails too. The perturbation is the shell's own
+assertion: drop the `define` anchor and the count goes to 2.
+
+**One `got` for four greps.** Both retired verdicts reuse a single shell
+variable across their greps, so the FAIL branch printed the LAST diagnostic
+whichever claim had failed — a report naming the wrong refusal. Every claim is
+a separate `check-place-refused` now, each with its own line.
+
+**Needles that stopped before the actionable half.** The two temporary-receiver
+refusals were matched as `.set!: the receiver is a temporary struct value, so
+it has no address` and, shorter still, `addr-of: the receiver is a temporary
+struct value` — dropping `-- bind it to a name first`, which is the only part
+telling the reader what to do. The argument-mismatch needle likewise dropped
+the `takes:` prefix that says which call is blamed. All are pinned whole.
+
+**Verified by breaking it**, six ways, one per unit, each reverted by editing
+the source back, never with git. Two refusal lines moved, the `define` anchor
+dropped from a stamp count, the element-0 read asked for 2 instead of 1, a
+printed field changed, and a struct name misspelled in a missing-field message.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that

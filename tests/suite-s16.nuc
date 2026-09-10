@@ -2381,3 +2381,181 @@ map=2
     (try (check-not-match iv "*call *"))
     (drop (addr-of c)))
   (return (ok)))
+
+; ---------------------------------------------------------------------------
+; What a typed slot and a receiver accept
+; ---------------------------------------------------------------------------
+;
+; Design: design/stage16-ergonomics/template-ref-equality.md (SE-1/SE-2) and
+; c-boundary-defects.md §2.5 (SV-1). A typed slot checks the TYPE and not only
+; the pointer kind; a struct VALUE is a member-access receiver.
+;
+; Every refusal here is pinned at its line. The shell grepped the whole stderr
+; blob and, worse, reused one `got` variable across the greps in a verdict, so
+; the FAIL branch reported the LAST diagnostic whichever claim had failed.
+
+; §6.1 at all three positions. Each message names both types, so a regression
+; that refuses for the wrong reason cannot pass — and the `takes:` prefix, which
+; the shell's needle dropped, is what says which call is blamed.
+(deftest s16-se1-template-ref-refused
+  (try (check-place-refused "(import-use \"stdio.h\")
+(import-use vector)
+(defn takes ((v (ref (Vector i64)))):i64 (return (invoke v 0)))
+(defn main ():i32
+  (with ((a (ref (Vector i32))) [1 2 3])
+    (printf \"%lld\\n\" (takes a)))
+  (return 0))
+" 6 "takes: argument 1 has type ptr:Vector.i32, which does not match parameter type ptr:Vector.i64"))
+  (try (check-place-refused "(import-use \"stdio.h\")
+(import-use vector)
+(defn main ():i32
+  (with ((a (ref (Vector i32))) [1 2 3])
+    (let (b:(ref (Vector i64)) a) (return 0))))
+" 5 "let: init type mismatch for 'b': value is ptr:Vector.i32, slot is ptr:Vector.i64"))
+  (try (check-place-refused "(import-use \"stdio.h\")
+(import-use vector)
+(defn main ():i32
+  (with ((a (ref (Vector i32))) [1 2 3]
+         (b (ref (Vector i64))) [4 5 6])
+    (set! b a) (return 0)))
+" 6 "set!: type mismatch for 'b': value is ptr:Vector.i32, slot is ptr:Vector.i64"))
+  (return (ok)))
+
+; The runtime shape §6.1 measured: a correctly-typed literal reads element 0 as
+; ONE i64. The defect printed 8589934593 — 0x2_00000001, two i32s read at the
+; wrong stride — so the value is the assertion.
+(deftest s16-se1-template-ref-runtime
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use vector)
+(defn takes ((v (ref (Vector i64)))):i64 (return (invoke v 0)))
+(defn main ():i32
+  (with ((a (ref (Vector i64))) [1 2 3])
+    (printf \"%lld\\n\" (takes a)))
+  (return 0))
+")))
+    (try (check-eq (string-as-view (addr-of out)) "1\n"))
+    (drop (addr-of out)))
+  (return (ok)))
+
+; The rule is about pointees, not templates: two plain structs are the same
+; defect and the same refusal. The two relaxations FP-1 installed survive —
+; pointer KIND is not part of the question (pkind-flow-check owns that) and an
+; elem-less bare `ptr` is `void *` — and `defvar` is the SECOND value-into-a-
+; typed-slot path, which had the identity hole independently.
+(deftest s16-se1-pointee-rule-general
+  (try (check-place-refused "(defstruct SA x:i32)
+(defstruct SB y:i64 z:i64)
+(defn takes (b:(ref SB)):i64 (return (b 'y)))
+(defn main ():i32
+  (let (a:(ref SA) (SA 7)) (return (as i32 (takes a)))))
+" 5 "takes: argument 1 has type ptr:SA, which does not match parameter type ptr:SB"))
+  (try (check-source-accepts "(defstruct SA x:i32)
+(defn takes (b:(ref SA)):i32 (return (b 'x)))
+(defn wild (p:ptr):i32 (return 0))
+(defn main ():i32
+  (let (a:ptr:SA (SA 7) q:ptr (unsafe/cast ptr (SA 1)))
+    (let (r:(ref SA) (unsafe/cast (ref SA) q) w:ptr a)
+      (return (+ (takes a) (+ (wild a) (takes r)))))))
+"))
+  (try (check-place-refused "(defstruct SA x:i32)
+(defstruct SB y:i64)
+(defvar ga:SA)
+(defvar gp:(ref SB) (addr-of ga))
+(defn main ():i32 (return 0))
+" 4 "defvar: addr-of: 'ga' has type ptr:SA, which does not match ptr:SB"))
+  (try (check-source-accepts "(defstruct SA x:i32)
+(defvar ga:SA)
+(defvar gq:ptr (addr-of ga))
+(defvar gr:(ref SA) (addr-of ga))
+(defn main ():i32 (return 0))
+"))
+  (return (ok)))
+
+; SE-2: a constructor whose type variable appears only in its RETURN type is
+; stamped once per instance, under a symbol saying which. Asserted on the
+; `define` and by COUNT: the shell grepped the mangled name as a substring,
+; which the CALL site carries too — so a module that named both instances and
+; defined neither, the unmonomorphized-template failure `tyname-resolvable`
+; exists to catch, satisfied it.
+(deftest s16-se2-want-stamped-instances
+  (let (c:Compiled (try (compile-source "(import-use \"stdio.h\")
+(import-use vector)
+(defn main ():i32
+  (let (a:(ref (Vector i32)) (vector-new-in (default-allocator))
+        b:(ref (Vector i64)) (vector-new-in (default-allocator)))
+    (conj a 5) (conj b 7000000000)
+    (let (i:usize 0)
+      (printf \"%d %lld\\n\" (invoke a i) (invoke b i))))
+  (return 0))
+"))
+        iv:StrView (compiled-ir (addr-of c)))
+    (try (check-eq-int
+           (count-matching-lines iv "define*@vector_new_in.pAllocHandle.$r.pVector.i32(*")
+           1 "one stamp for the i32 instance"))
+    (try (check-eq-int
+           (count-matching-lines iv "define*@vector_new_in.pAllocHandle.$r.pVector.i64(*")
+           1 "one stamp for the i64 instance"))
+    (drop (addr-of c)))
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use vector)
+(defn main ():i32
+  (let (a:(ref (Vector i32)) (vector-new-in (default-allocator))
+        b:(ref (Vector i64)) (vector-new-in (default-allocator)))
+    (conj a 5) (conj b 7000000000)
+    (let (i:usize 0)
+      (printf \"%d %lld\\n\" (invoke a i) (invoke b i))))
+  (return 0))
+")))
+    (try (check-eq (string-as-view (addr-of out)) "5 7000000000\n"))
+    (drop (addr-of out)))
+  (return (ok)))
+
+; SV-1: a struct VALUE is a receiver. All three read spellings against a
+; by-value parameter, straight off a call result with no binding at all, and
+; `.set!` on a by-value local mutating the local copy as in C.
+(deftest s16-sv1-struct-value-receiver
+  (let (out:String (try (build-run-source "(declare printf (fmt:CStr):i32)
+(defstruct Pt x:i64 y:i64)
+(defn mk (n:i64):Pt (return (Pt n (* n 2))))
+(defn sum (p:Pt):i64 (return (+ (get p 'x) (+ (p 'y) (_get p 'x)))))
+(defn direct ():i64 (return (get (mk 5) 'y)))
+(defn main ():i32
+  (let (v:Pt (mk 3))
+    (printf \"%lld %lld %lld %lld\\n\" (sum v) (direct) (get v 'x) (v 'y))
+    (set! (v 'x) 40)
+    (printf \"%lld %d\\n\" (get v 'x) (if (= (addr-of v 'y) null) 0 1))
+    (return 0)))
+")))
+    (try (check-eq (string-as-view (addr-of out)) "12 10 3 6
+40 1
+"))
+    (drop (addr-of out)))
+  (return (ok)))
+
+; The other half: `.set!` and `addr-of` need the receiver's STORAGE, so a
+; temporary stays an error rather than a store into something about to be
+; discarded — which is also what keeps a pointer into that copy from being
+; returned. Each message is pinned WHOLE: the shell's needles stopped before
+; `-- bind it to a name first`, the half that says what to do.
+(deftest s16-sv1-lvalue-and-refusals
+  (try (check-place-refused "(defstruct Pt x:i64 y:i64)
+(defn mk (n:i64):Pt (return (Pt n n)))
+(defn main ():i32 (set! ((mk 1) 'x) 5) (return 0))
+" 3 ".set!: the receiver is a temporary struct value, so it has no address -- bind it to a name first"))
+  (try (check-place-refused "(defstruct Pt x:i64 y:i64)
+(defn mk (n:i64):Pt (return (Pt n n)))
+(defn leak ():ptr:i64 (return (addr-of (mk 1) 'x)))
+(defn main ():i32 (return 0))
+" 3 "addr-of: the receiver is a temporary struct value, so it has no address -- bind it to a name first"))
+  ; A non-struct receiver is still refused, and the message names BOTH legal
+  ; receivers now that a value is one of them.
+  (try (check-place-refused "(defstruct Pt x:i64 y:i64)
+(defn main ():i32 (let (k:i64 5) (return (as i32 (_get k 'x)))))
+" 2 "_get: operand must be a struct or union, or a pointer to one"))
+  ; A missing field on a VALUE receiver reports the FIELD, not the receiver —
+  ; only possible if the type pass unwrapped it in lockstep.
+  (try (check-place-refused "(defstruct Pt x:i64 y:i64)
+(defn f (p:Pt):i64 (return (_get p 'zzz)))
+(defn main ():i32 (return 0))
+" 2 "_get: no field 'zzz' on struct 'Pt'"))
+  (return (ok)))
