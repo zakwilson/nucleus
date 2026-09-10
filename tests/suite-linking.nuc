@@ -450,3 +450,108 @@ w9-own
     (drop (addr-of mobj))
     (drop (addr-of t)))
   (return (ok)))
+
+; ---------------------------------------------------------------------------
+; What the link reclaims that the module could not
+; ---------------------------------------------------------------------------
+;
+; Design: design/stage16-ergonomics/compile-time-imports.md §4d. An imported
+; `defn` the program never calls is emitted `weak_odr`, and `weak_odr` may not
+; be discarded, so nothing in the module removed it; the string table goes into
+; the program module whole, macro-only entries included. Both are reclaimed at
+; the LINK: one section per definition plus `-Wl,--gc-sections`.
+;
+; The section NAME is not cosmetic. LLVM keys SHT_NOBITS off it, so a `.bss`
+; name with a non-zero initializer is a hard error and a zero one under `.data`
+; newly costs file bytes — which is why each storage class is pinned, and why
+; `llvm-as` is asked to accept the result.
+
+; Both files sit in the test's own scratch directory: `resolve-import` searches
+; the importing file's own directory, so no `-I` is needed and `--target=` — the
+; one helper that takes no search path — can be used on the same fixture.
+(defn gc-main ():!String
+  (try (test-write-file "gclib.nuc" "(defn gc-used (x:i32):i32 (return (+ x 1)))
+(defn gc-never-called (x:i32):i32 (return (* x 7)))
+"))
+  (return (test-write-file "gcmain.nuc" "(import-use \"stdio.h\")
+(import-use gclib)
+(defvar gc-zero:i32 0)
+(defvar gc-nonzero:i32 5)
+(defvar :const gc-ro:i32 9)
+(defn main ():i32 (printf \"%d\\n\" (gc-used gc-nonzero)) (return gc-zero))
+")))
+
+; Every storage class lands under the prefix its content requires, and LLVM
+; accepts the result. The program's own format string is matched by CONTENT: the
+; shell pinned `@.str.0`, which is a macro-table entry and not this program's.
+(deftest s16-sections-per-definition
+  (let (p:String (try (gc-main))
+        c:Compiled (try (compile-path (string-as-view (addr-of p))))
+        iv:StrView (compiled-ir (addr-of c)))
+    (try (check-line iv "define i32 @main() section \".text.main\" {"))
+    (try (check-line iv
+      "define weak_odr i32 @gc-used(i32 %x.arg) section \".text.gc-used\" {"))
+    (try (check-line iv "@gc-zero = global i32 0, section \".bss.gc-zero\", align 4"))
+    (try (check-line iv
+      "@gc-nonzero = global i32 5, section \".data.gc-nonzero\", align 4"))
+    (try (check-line iv "@gc-ro = constant i32 9, section \".rodata.gc-ro\", align 4"))
+    (try (check-match iv "*c\"%d\\0A\\00\", section \".rodata..str.*\", align 1"))
+    (try (check-ir-parses iv))
+    (drop (addr-of c))
+    (drop (addr-of p)))
+  (return (ok)))
+
+; The section spelling is ELF's. A Mach-O specifier is "SEGMENT,section" and
+; LLVM rejects a bare name outright; COFF collects with /OPT:REF, not
+; --gc-sections. Neither target may see one — and each must still emit the
+; program, which the shell's count of zero was satisfied by either way.
+(deftest s16-sections-elf-only
+  (let (p:String (try (gc-main))
+        pv:StrView (string-as-view (addr-of p))
+        d:Compiled (try (compile-path-for "x86_64-apple-darwin" pv))
+        w:Compiled (try (compile-path-for "x86_64-pc-windows-msvc" pv)))
+    (try (check-line (compiled-ir (addr-of d)) "define i32 @main() {"))
+    (try (check-not-match (compiled-ir (addr-of d)) "*section \"*"))
+    (try (check-line (compiled-ir (addr-of w)) "define i32 @main() {"))
+    (try (check-not-match (compiled-ir (addr-of w)) "*section \"*"))
+    (drop (addr-of w))
+    (drop (addr-of d))
+    (drop (addr-of p)))
+  (return (ok)))
+
+; The half that actually reclaims anything. `gc-never-called` is in the linked
+; object either way — weak_odr, not discardable — and only the link drops it;
+; `--link-arg=-Wl,--no-gc-sections` is the documented escape hatch and must put
+; it back. The unused CONSTANT goes the same way, which the shell never looked
+; for: a per-definition section reclaims data, not only code.
+(deftest s16-gc-sections-drops-unused-import
+  (let (p:String (try (gc-main))
+        pv:StrView (string-as-view (addr-of p))
+        dir:StrView (try (test-scratch))
+        bin:String (str dir "/gc.bin")
+        nogc:String (str dir "/nogc.bin")
+        binv:StrView (string-as-view (addr-of bin))
+        nogcv:StrView (string-as-view (addr-of nogc))
+        c:Compiled (try (build-checked-with "" "" pv binv))
+        n:Compiled (try (build-checked-with "" "--link-arg=-Wl,--no-gc-sections"
+                                            pv nogcv)))
+    (let (out:String (try (run-stdout binv))
+          gs:String (try (nm-typed binv))
+          ns:String (try (nm-typed nogcv)))
+      (try (check-eq (string-as-view (addr-of out)) "6\n"))
+      (try (check-eq-int (try (run-exit binv)) 0 "the program exits on gc-zero"))
+      ; Present either way, so the absences below are the link's doing.
+      (try (check-line (string-as-view (addr-of gs)) "W gc-used"))
+      (try (check-not-match (string-as-view (addr-of gs)) "* gc-never-called"))
+      (try (check-not-match (string-as-view (addr-of gs)) "* gc-ro"))
+      (try (check-line (string-as-view (addr-of ns)) "W gc-never-called"))
+      (try (check-line (string-as-view (addr-of ns)) "R gc-ro"))
+      (drop (addr-of ns))
+      (drop (addr-of gs))
+      (drop (addr-of out)))
+    (drop (addr-of n))
+    (drop (addr-of c))
+    (drop (addr-of nogc))
+    (drop (addr-of bin))
+    (drop (addr-of p)))
+  (return (ok)))

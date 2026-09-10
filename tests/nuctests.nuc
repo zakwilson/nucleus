@@ -206,6 +206,24 @@
       (drop (addr-of c))
       (return (ok r)))))
 
+; The same, plus one driver flag. A link-time claim needs the binary's PATH to
+; hand to `nm`, and `build-run-file` — the only other helper taking an extra
+; flag — returns the program's output instead.
+(defn build-checked-with (dir:StrView extra:StrView path:StrView
+                          bin:StrView):!Compiled
+  (let (c:Command (command (compiler-path)))
+    (when (not (= dir ""))
+      (command-arg (addr-of c) "-I")
+      (command-arg (addr-of c) dir))
+    (command-arg (addr-of c) "--diagnostics=sexp")
+    (when (not (= extra "")) (command-arg (addr-of c) extra))
+    (command-arg (addr-of c) path)
+    (command-arg (addr-of c) "-o")
+    (command-arg (addr-of c) bin)
+    (let (r:Compiled (try (compiled-run (addr-of c))))
+      (drop (addr-of c))
+      (return (ok r)))))
+
 ; No diagnostics at all. `check-no-errors` is not this claim: a warning is what
 ; three of the separate-compilation units are asserting the absence of.
 (defn check-silent ((c (ref Compiled)) what:StrView):!void
@@ -1074,6 +1092,17 @@
           ((some p) (return (strview-take-bytes rest p)))
           ((none) (return "")))))
     ((none) (return ""))))
+
+; Every function the module defines, one name per line, for `check-line-set`. A
+; COUNT of `define` lines is a weaker claim than it looks: two different sets of
+; the same size compare equal.
+(defn define-names (ir:StrView):String
+  (let (out:String (string-new)
+        it:LineIter (strview-lines (addr-of ir)))
+    (while (not (lines-iter-done (addr-of it)))
+      (let (nm:StrView (define-line-name (lines-iter-next (addr-of it))))
+        (when (not (= nm "")) (str-into (addr-of out) nm "\n"))))
+    (return out)))
 
 ; A function defined twice, or "". Unlike a duplicate type LLVM accepts this and
 ; the module still parses; the second definition simply wins, which is how a

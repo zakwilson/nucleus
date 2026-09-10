@@ -2842,6 +2842,58 @@ SLOT retyped rather than its datum — `(quote 1)` is also `(raw Node)`, so
 changing the datum asserted nothing; `(raw Node)` → `(raw i32)` is what
 contradicts the claim.
 
+#### TF-6 category (c), what a program pays for what it never uses (2026-09-10)
+
+**2 shell functions → 10 tests**, 174 lines of the file retired (including both
+banners and two `spawn` lines): `run_s16_prelude_split` (7) into
+`tests/suite-s16.nuc` (2,276 → 2,383 lines) and `run_s16_gc_sections` (3) into
+`tests/suite-linking.nuc` (452 → 557). `tests/run-tests.sh` is 1,675 → 1,501
+lines and 31 → 29 functions. `make test` is 47 shell + 919 native = 966.
+
+Split across two modules rather than kept together, because the two halves are
+answered in different places. What the prelude emits is a property of one
+module, which is `suite-s16.nuc`'s question; what survives `--gc-sections` is a
+property of the link, which is `suite-linking.nuc`'s.
+
+**A count where a set was meant.** `s16-defmacro-costs-no-runtime` compared the
+NUMBER of `define` lines in a plain program against a macro-defining one. Two
+different sets of the same size compare equal, so the claim — that a `defmacro`
+adds no definition, because a macro body is JIT'd against the compiler's own
+copies — was not the one being checked. The FAIL branch already ran a proper
+`diff`; the tooling for the right assertion was sitting in the error path. Both
+sets are now compared with `check-line-set`, and each is separately required to
+be exactly `main`.
+
+**Absence with nothing requiring a module.** The measured case grepped for the
+absence of five runtime definitions, which a module emitting nothing satisfies.
+It is an exact define-set now, so a program that lost its own `main` fails.
+`s16-sections-elf-only` had the same shape from the other end — `grep -c
+'section "'` equal to zero under two foreign targets, which a compiler that
+emitted nothing under `--target=` also satisfies; both targets must now emit
+`define i32 @main() {` before the absence is asked for.
+
+**A string constant pinned by index.** The `.rodata` row matched `@.str.0`,
+which is `"_+"` — a macro-table entry, not this program's. The program's own
+`"%d\n"` is `@.str.91`, and it is matched by CONTENT now, so the row survives
+any change to how many macro strings precede it.
+
+**What the shell never looked for.** `--gc-sections` also reclaims the unused
+`:const` global: `gc-ro` is absent from the linked binary and `R gc-ro` returns
+under `--no-gc-sections`. A per-definition section reclaims data, not only
+code, and that half had no coverage.
+
+**Library gaps filled** rather than worked around: `define-names` and
+`build-checked-with`, both in `tests/nuctests.nuc`. The second exists because a
+link-time claim needs the binary's PATH for `nm`, and the only helper that took
+an extra driver flag returned the program's output instead.
+
+**Verified by breaking it**, ten ways, one per unit, each reverted by editing
+the source back, never with git. A runtime name added to an expected define
+set, the macro comparison pointed at a set that is not the plain program's, the
+printed answer changed, two refusal lines moved, the intern call misspelled,
+the no-call assertion inverted, a `.bss` prefix rewritten to `.data`, the
+foreign-target absence inverted, and the dropped symbol asserted to survive.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that
