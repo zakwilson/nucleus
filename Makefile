@@ -128,8 +128,23 @@ $(NUCTESTS): tests/nuctests.nuc $(wildcard tests/suite-*.nuc) tests/manifest/dia
 
 # The suite's stdout is a machine-readable record stream, so the human summary
 # is made here rather than by polluting it.
+#
+# Shards are processes, not threads: each test owns a scratch directory keyed by
+# its name, so the split needs no locking. NUCTESTS_JOBS=1 restores a serial run.
+NUCTESTS_JOBS := $(shell nproc 2>/dev/null || echo 4)
+
 run-nuctests: $(NUCTESTS) test-tools
-	@./$(NUCTESTS) $(NUCTESTS_ARGS) > $(BUILD)/nuctests.out; s=$$?; \
+	@n=$(NUCTESTS_JOBS); pids=; i=0; \
+	  while [ $$i -lt $$n ]; do \
+	    ./$(NUCTESTS) $(NUCTESTS_ARGS) --shard $$i/$$n > $(BUILD)/nuctests.out.$$i & \
+	    pids="$$pids $$!"; i=$$(($$i+1)); \
+	  done; \
+	  s=0; for p in $$pids; do wait $$p || s=1; done; \
+	  : > $(BUILD)/nuctests.out; i=0; \
+	  while [ $$i -lt $$n ]; do \
+	    cat $(BUILD)/nuctests.out.$$i >> $(BUILD)/nuctests.out; \
+	    rm -f $(BUILD)/nuctests.out.$$i; i=$$(($$i+1)); \
+	  done; \
 	  grep -F '(status fail)' $(BUILD)/nuctests.out || true; \
 	  grep -F '(status skip)' $(BUILD)/nuctests.out || true; \
 	  echo "nuctests: $$(grep -cF '(status pass)' $(BUILD)/nuctests.out) passed, $$(grep -cF '(status fail)' $(BUILD)/nuctests.out) failed, $$(grep -cF '(status skip)' $(BUILD)/nuctests.out) skipped"; \

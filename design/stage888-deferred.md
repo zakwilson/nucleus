@@ -200,3 +200,65 @@ printed (`T*` vs `void*` — fixed 2026-09-06) and still differ in what
 `--emit-nuch` prints. `raw:T` is the remaining case: it widens to `void*` in a C
 header deliberately, which is defensible for a nullable pointer and is still a
 header whose fidelity depends on which synonym the author typed.
+
+## String literal limit
+
+Whether the current string literal length limit is desirable should be revisited
+
+## macmap, maybe macreduce
+
+```lisp
+(macmap ((tok) `(when (!= (text-token-is text start e ~tok) 0) (return 1)))
+  ("defn" "defmacro" "defvar" "defconst"))
+```
+
+## A threaded test runner
+
+`test-main --shard i/n` (2026-09-10) parallelises the native suite the naive
+way: `n` whole processes, each striding the registration list, fanned out by
+`run-nuctests`. It bought most of what was there to buy, but it is not the good
+version and the numbers say where the rest went.
+
+Measured, 753 tests on 16 cores:
+
+| runner | wall | CPU |
+|---|---|---|
+| serial (`test-run-all` before this) | 239.3s | 88% |
+| 16 process shards, static stride | 36.3s | 861% |
+| 32 shards | 37.1s | 926% |
+| 48 shards | 39.1s | 914% |
+| `xargs -P16`, one process per test | 31.5s | 1068% |
+
+Two things worth keeping. **Oversubscription does not help** — 32 and 48 shards
+are slower than 16, so the ~900% ceiling is not scheduling slack that more
+workers would soak up. It is contention: `sys` time is at or above `user` time in
+every row, because each test forks `nucleusc`, `clang` and the linker and then
+moves files through its scratch directory. The runner loop is not the cost; the
+per-test subprocess is. **Dynamic beats static by ~15%** (31.5s vs 36.3s): a
+static stride leaves a tail, and per-test dispatch balances for free — but it
+pays 753 process startups to get there, which is where its extra ~120s of CPU
+goes.
+
+So the smarter version is a thread pool pulling from a shared work queue: it
+gets the dynamic balance without the startup tax, and one process means the
+registration list, the interned symbol table and the fixture reads are shared
+rather than rebuilt 16 times. Combined with TF-E's in-process compiler track it
+would remove the fork entirely, which is the only thing that moves the 900%
+ceiling.
+
+What blocks it today:
+
+- **No threads.** `lib/process.nuc` is fork/exec only (`spawn`, `process-wait`,
+  `process-capture`); there are no pthread bindings anywhere in `lib/` or `src/`.
+- **The runner's state is process-wide.** `g-test-scratch` (`lib/test.nuc`) is a
+  `defvar` that `test-scratch-set` rewrites per test, `g-test-no-skip` is a
+  global policy flag, and failure text accumulates in one buffer behind
+  `test-fail-begin`. A pool needs all three per-worker, which is a thread-local
+  story Nucleus has not had to tell yet.
+- **Record ordering.** Nothing consumes `build/nuctests.out` in order today, so
+  interleaving is free now — but a threaded runner writing one stdout wants a
+  per-worker buffer flushed whole, or records will interleave mid-line.
+
+Not urgent: 82.8s for `make test` is not the bottleneck it was at 282s. Revisit
+when TF-E makes in-process compilation real, since that is the change that makes
+threads worth more than processes.
