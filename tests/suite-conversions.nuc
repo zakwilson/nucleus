@@ -215,3 +215,57 @@
     (drop (addr-of c))
     (drop (addr-of p)))
   (return (ok)))
+
+; ---------------------------------------------------------------------------
+; What a literal's type must not depend on
+; ---------------------------------------------------------------------------
+
+; Stage 15 W2a: `(* 2 cl)` and `(* cl 2)` must be indistinguishable. The two
+; fixtures differ only in the operands of a `*` whose right-hand side is a ui32
+; global; before W2a the literal-first spelling typed the product i32 — operand
+; 1's type alone — and died "mixed signed/unsigned operands", while the
+; literal-second spelling compiled.
+;
+; The comparison is of NORMALIZED IR: the module header names the file and the
+; emitter preserves source operand order, so `mul i32 2, %t2` against
+; `mul i32 %t2, 2` is meaningless. Everything carrying typing information — the
+; types, the opcodes (`mul` vs `mul nsw`, `udiv` vs `sdiv`, `icmp ugt` vs
+; `icmp sgt`), the sequence, and the operand order of NON-commutative
+; instructions such as `icmp` — is compared verbatim.
+(deftest w2a-operand-order-identical
+  (let (a:Compiled (try (compile-path "tests/fixtures/w2a-order-lit-first.nuc"))
+        b:Compiled (try (compile-path "tests/fixtures/w2a-order-lit-second.nuc")))
+    (try (check-silent (addr-of a) "the literal-first spelling"))
+    (try (check-silent (addr-of b) "the literal-second spelling"))
+    (let (na:String (normalize-commutative (compiled-ir (addr-of a)))
+          nb:String (normalize-commutative (compiled-ir (addr-of b))))
+      ; Presence, so two modules that both failed to emit cannot agree trivially.
+      (try (check-match (string-as-view (addr-of na)) "*mul*"))
+      (try (check-golden (string-as-view (addr-of nb))
+                         (string-as-view (addr-of na))))
+      (drop (addr-of nb))
+      (drop (addr-of na)))
+    (drop (addr-of b))
+    (drop (addr-of a)))
+  (return (ok)))
+
+; Stage 15 W2d: a `float`-typed DSP kernel written with bare float literals — no
+; `(unsafe/cast f32 …)` anywhere — must produce output identical to the
+; equivalent C program, compared as exact 32-bit patterns and not as rounded
+; decimals. The two sources are checked in side by side so the comparison is
+; reproducible.
+;
+; The Nucleus side goes through the real compile-and-link path rather than
+; `--emit-llvm`: emitting IR never parses it, so it cannot catch an invalid
+; float constant (`float 3.14`) or a type-mismatched call operand. The C side
+; needs the fixture's own `-ffp-contract=off` or the reference is not a
+; reference.
+(deftest w2d-dsp-bitexact
+  (let (got:String (try (build-run-file "" "" "tests/fixtures/w2d-dsp-biquad.nuc"))
+        want:String (try (clang-run-file "-O2 -ffp-contract=off"
+                                         "tests/fixtures/w2d-dsp-biquad.c")))
+    (try (check-golden (string-as-view (addr-of got))
+                       (string-as-view (addr-of want))))
+    (drop (addr-of want))
+    (drop (addr-of got)))
+  (return (ok)))

@@ -3028,6 +3028,86 @@ two prototypes altered, an omission comment's name changed, an omission
 inverted to a presence, the two diagnostic lines moved, and the expected
 `#include` swapped for another header.
 
+#### TF-6 category (c), the Stage 14/15 remainder (2026-09-10)
+
+**5 shell functions → 8 tests**, 243 lines of the file retired (including two
+orphaned banners whose units had moved and five `spawn` lines):
+`run_s1_sugar_rets` (1) into `tests/suite-s16.nuc`, `run_s1_block` (4) into
+`tests/suite-exports.nuc`, `run_w4a_sibling_forward` (1) into
+`tests/suite-imports.nuc`, `run_w2a_order_identical` and
+`run_w2d_dsp_bitexact` (1 each) into `tests/suite-conversions.nuc`.
+`tests/run-tests.sh` is 952 → 709 lines and 21 → 16 functions. `make test` is
+19 shell + 947 native = 966.
+
+**A unit that asserts nothing, by its own design.** `run_w4a_sibling_forward`
+passes if the compile emits an error naming the referencing line *or* emits no
+error at all — written that way deliberately, its comment says, "so this keeps
+passing once W1 removes the error entirely". W1 removed it. The compile is
+silent today, so the empty-`err` branch is the one that fires and the unit has
+been vacuous ever since: it would pass if the compiler stopped resolving the
+sibling reference, stopped linking, or stopped emitting a program at all. What
+is true now is stronger and is what is pinned — the compile is silent, no
+diagnostic reports line 0, and the program builds, runs and exits 7.
+
+**A `.nuch` that promised a symbol nobody linked.** The three `s1_block`
+surfaces were four `qgrep`s, four `qgrep`s and three `qgrep`s under one verdict
+each, matched as substrings. `check-line` pins whole lines now: a `(declare
+twice …)` whose parameter spelling drifted is exactly the failure this surface
+has, and a substring cannot see it. The template stamps are counted rather than
+found, so a re-drain that emits `@gmax.i32.i32` twice fails here instead of at
+someone else's link. The cheader unit also refuses `int32_t scale(` outright —
+`scale` is overloaded, so a bare prototype would name a symbol the object never
+defines.
+
+**Library gaps filled** rather than worked around: `normalize-commutative` and
+`clang-run-file`, both in `tests/nuctests.nuc`. The first replaces a 25-line
+inline `awk` program that canonicalised commutative operand order; the second
+exists because a bit-exact float comparison needs the reference built with the
+fixture's own `-ffp-contract=off`, and `cc-run-file` passes neither that nor
+`-O2`.
+
+**Verified by breaking it**, eight ways, one per unit, each reverted by editing
+the source back, never with git. The `noreturn` attribute dropped, the sibling
+program's exit status moved, a `.nuch` parameter type changed, an asm label
+truncated, a printed field changed, the `define` anchor dropped from a stamp
+count, a normalized module compared against a raw one, and the C reference
+built with `-ffast-math`. Two needed a second attempt: comparing the W2a
+fixture against itself agrees trivially, and `-ffp-contract=fast` does not
+change this kernel's output — neither said anything about the unit.
+
+#### TF-6 category (c), what the runtime library does at the edges (2026-09-10)
+
+**8 shell functions → 8 tests**, 189 further lines of the file retired:
+`run_s17_read_line`, `run_s17_strview_literal_return`,
+`run_s17_strview_literal_join`, `run_s17_strview_null_compare_rejected`,
+`run_s19_process_status`, `run_s19_process_capture`, `run_s19_process_pool`
+and `run_repl_meta_loose`, into a new nineteenth module
+`tests/suite-runtime.nuc` (142 lines). `tests/run-tests.sh` is 709 → 520 lines
+and 16 → 8 functions. `make test` is 11 shell + 955 native = 966.
+
+A new module because none of these can be an `examples/*.nuc` golden test, and
+that is what they have in common: the read-line fixture needs a stdin the
+golden loop cannot give it (a child inheriting the harness's stdin blocks on a
+terminal), the process fixtures need a timeout because the failure under test
+is a deadlock, and the REPL session prints an elapsed time that differs every
+run.
+
+**A needle that dropped the suggestion.** `s17-strview-null-compare-rejected`
+matched `!=: a StrView is never null` and stopped. The message continues
+`— use (str-empty? &v) to test for the empty view`, which is the whole reason
+the diagnostic exists: a `StrView` is a 16-byte struct that is never null, so
+`(= sv null)` used to fall into the CStr `strcmp` lowering and compare `.data`
+against NULL — a silent SIGSEGV. Naming the predicate the author meant is the
+fix; the shell did not check it. Pinned whole, at its line.
+
+**Library gap filled**: `build-run-stdin`, in `tests/nuctests.nuc`.
+
+**Verified by breaking it**, eight ways, one per unit, each reverted by editing
+the source back, never with git. The blank line's contents changed, the two
+StrView fixtures pointed at each other's expected output, the suggested
+predicate renamed, a decoded signal status changed, an overflow byte count
+moved by one, a kill signal changed, and the elapsed-time marker reworded.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that

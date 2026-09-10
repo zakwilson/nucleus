@@ -1176,3 +1176,35 @@
     (drop (addr-of b))
     (drop (addr-of a)))
   (return (ok)))
+
+; Stage 15 W4a / findings §2.1: the sibling forward reference across two
+; imported files. W4a's contract was only that the failure names the
+; referencing line rather than `:0:`, and the shell wrote it as "an error
+; mentioning the referencing file, OR no error at all" so it would keep passing
+; once W1 removed the error.
+;
+; W1 did. The compile is silent now, so the shell's `[ -z "$err" ]` branch is
+; the one that fires and the unit asserts nothing whatever. What is true today
+; is stronger and is what is pinned: the program builds AND runs, `x-uses`
+; reaching the sibling `y-later` through the whole-graph prescan.
+(deftest w4a-sibling-forward
+  (let (dir:StrView (try (test-scratch)))
+    (try (test-write-file "w4a-sib-x.nuc" "(defn x-uses ():i32
+  (return (y-later)))
+"))
+    (try (test-write-file "w4a-sib-y.nuc" "(defn y-later ():i32
+  (return 7))
+"))
+    (let (m:String (try (test-write-file "w4a-sib-main.nuc" "(import w4a-sib-x)
+(import w4a-sib-y)
+(defn main ():i32
+  (return (x-uses)))
+"))
+          mv:StrView (string-as-view (addr-of m))
+          c:Compiled (try (compile-path-in dir mv)))
+      (try (check-silent (addr-of c) "a sibling forward reference"))
+      (try (check-no-line-zero (addr-of c 'diags)))
+      (drop (addr-of c))
+      (try (check-file-exit dir mv 7))
+      (drop (addr-of m))))
+  (return (ok)))

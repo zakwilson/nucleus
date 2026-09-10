@@ -136,36 +136,6 @@ qgrep() { grep "$@" >/dev/null; }
 # parallel grain — intra-unit steps that depend on each other (write lib →
 # emit → grep → link → run) stay serial within the unit.
 
-# The three meta forms a golden diff cannot hold: `dir` lists every library name
-# (so any lib change rewrites it), `imports` names the prelude's own import set,
-# and `time` prints a measured duration. Asserted by substring instead — the
-# other thirteen are pinned exactly by tests/repl/meta-introspection.in.
-#
-# Together these are design/stage18-tooling §5.3: the layer they
-# cover was documented, implemented, and silently lost to a rebase in 2026-06
-# because no test named any of it.
-run_repl_meta_loose() {
-  local out fails=""
-  out="$(printf '%s\n' \
-    '(defn zzq (n:i32):i32 (return n))' \
-    '(dir)' \
-    '(imports)' \
-    '(time (zzq 1))' \
-    | ./build/nucleusc -i 2>&1)" || true
-  # dir renders a defn as its signature, in defn spelling.
-  case "$out" in *"(zzq (n:i32):i32)"*) ;; *) fails="$fails dir" ;; esac
-  # imports lists resolved paths, one per line.
-  case "$out" in *"lib/prelude.nuc"*) ;; *) fails="$fails imports" ;; esac
-  # time evaluates the form AND reports a duration.
-  case "$out" in *"; elapsed: "*) ;; *) fails="$fails time-elapsed" ;; esac
-  case "$out" in *"  1"*) ;; *) fails="$fails time-value" ;; esac
-  if [ -z "$fails" ]; then
-    echo "PASS  repl-meta-loose"
-  else
-    echo "FAIL  repl-meta-loose ($fails)"
-    printf '%s\n' "$out" | sed 's/^/    /'
-  fi
-}
 
 # Struct ABI interop: Nucleus<->C aggregate passing/returning must match the
 # platform C ABI (Phase C). A mismatch is silently catastrophic, so it gates.
@@ -205,29 +175,6 @@ run_no_line_zero() {
   fi
 }
 
-# Stage 15 W4a / findings §2.1: the sibling forward reference across two
-# imported files. Making it COMPILE is W1's job; W4a's contract is only that the
-# failure names the referencing line in the referencing file instead of `:0:`.
-# Asserted as "an error mentioning the referencing file, and no `:0:` anywhere",
-# so this keeps passing once W1 removes the error entirely.
-run_w4a_sibling_forward() {
-  local d err
-  d="$(mktemp -d)"
-  printf '(defn x-uses ():i32\n  (return (y-later)))\n' > "$d/w4a-sib-x.nuc"
-  printf '(defn y-later ():i32\n  (return 7))\n' > "$d/w4a-sib-y.nuc"
-  printf '(import w4a-sib-x)\n(import w4a-sib-y)\n(defn main ():i32\n  (return (x-uses)))\n' > "$d/w4a-sib-main.nuc"
-  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w4a-sib-main.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | qgrep ':0:'; then
-    echo "FAIL  w4a-sibling-forward (diagnostic reports line 0)"
-    printf '%s\n' "$err" | sed 's/^/    /'
-  elif [ -z "$err" ] || printf '%s' "$err" | qgrep 'w4a-sib-x.nuc:2:'; then
-    echo "PASS  w4a-sibling-forward"
-  else
-    echo "FAIL  w4a-sibling-forward"
-    printf '%s\n' "$err" | sed 's/^/    got: /'
-  fi
-  rm -rf "$d"
-}
 
 # --- Multi-file programs: the shared compile+link+run helper -----------------
 # A caller writes its files into one directory, compiles+LINKS and runs the
@@ -299,102 +246,6 @@ w1_reject_multi() {  # <name> <dir> <main.nuc> <pattern>
 # remaining surfaces — the ?/! sugars + `noreturn` in the new ret position, the
 # missing-ret diagnostic, and the cross-unit .nuch / cheader round-trip.
 
-# 1. The ?/! sugar returns (:!ptr:T, :!i32, :?ptr:T) and a trailing `noreturn`
-#    parse in the new position, and the define carries the LLVM noreturn attr.
-run_s1_sugar_rets() {
-  local s1_sugar_ll; s1_sugar_ll="$(mktemp)"
-  ./build/nucleusc --emit-llvm tests/fixtures/s1-sugar-rets.nuc > "$s1_sugar_ll" 2>/dev/null || true
-  if qgrep -F 'define ptr @lookup(' "$s1_sugar_ll" \
-     && qgrep -F 'define i64 @checked(' "$s1_sugar_ll" \
-     && qgrep -F 'define ptr @maybe-pt(' "$s1_sugar_ll" \
-     && qgrep -E '^define void @spin\(ptr %m\.arg\) noreturn( |$)' "$s1_sugar_ll"; then
-    echo "PASS  s1-sugar-rets-and-noreturn"
-  else
-    echo "FAIL  s1-sugar-rets-and-noreturn"
-  fi
-  rm -f "$s1_sugar_ll"
-}
-
-# 3. Cross-unit: an entirely new-style library round-trips through .nuch and links
-#    with a consumer. Plain solitary defns export as (declare …); the overloaded
-#    pair as (defmethod …); the bounded-generic template verbatim (new-style).
-run_s1_block() {
-  local s1_dir s1_lib
-  s1_dir="$(mktemp -d)"
-  s1_lib="$(pwd)/tests/fixtures/s1-newlib.nuc"
-  ./build/nucleusc --emit-nuch    "$s1_lib" > "$s1_dir/lib.nuch" 2>/dev/null || true
-  ./build/nucleusc --emit-cheader "$s1_lib" > "$s1_dir/lib.h"    2>/dev/null || true
-  ./build/nucleusc --emit-llvm    "$s1_lib" > "$s1_dir/lib.ll"   2>/dev/null || true
-
-  # 3a. The .nuch (S3) emits solitary/overloaded defns in the new-style signature
-  #     `NAME (params) :ret` its declare/defmethod readers consume, and exports the
-  #     generic template verbatim (also new style).
-  if qgrep -F '(declare twice ((x i32)) :i32)' "$s1_dir/lib.nuch" \
-     && qgrep -F '(defmethod "@scale.i32" scale ((x i32)) :i32)' "$s1_dir/lib.nuch" \
-     && qgrep -F '(defn gmax ((a T) (b T) :where (Ord T)) :T' "$s1_dir/lib.nuch"; then
-    echo "PASS  s1-nuch-export-shapes"
-  else
-    echo "FAIL  s1-nuch-export-shapes"
-  fi
-
-  # 3b. The cheader names the plain new-style prototypes correctly — and names an
-  #     overloaded one the way the .nuch above already did (W9 item 26). The old
-  #     `int32_t scale(int32_t x);` asserted a symbol the object never defines:
-  #     `scale` is overloaded, so its methods are `@scale.i32` / `@scale.i64`.
-  if qgrep -F 'int32_t twice(int32_t x);' "$s1_dir/lib.h" \
-     && qgrep -F 'int32_t add3(int32_t a, int32_t b, int32_t c);' "$s1_dir/lib.h" \
-     && qgrep -F 'int32_t scale_i32(int32_t x) asm("scale.i32");' "$s1_dir/lib.h" \
-     && qgrep -F 'int64_t scale_i64(int64_t x) asm("scale.i64");' "$s1_dir/lib.h"; then
-    echo "PASS  s1-cheader-plain-prototypes"
-  else
-    echo "FAIL  s1-cheader-plain-prototypes"
-  fi
-
-  # 3c. A consumer imports the .nuch, resolves the plain + overloaded symbols, links
-  #     against the lib object, and runs. (exclude-prelude so the two objects link
-  #     without duplicate prelude symbols; no template call, so no stamping.)
-  cat > "$s1_dir/main.nuc" <<EOF
-(exclude-prelude)
-(import-use "$s1_dir/lib.nuch")
-(declare printf (fmt:CStr):i32)
-(defn main () :i32
-  (printf "twice=%d add3=%d scale32=%d scale64=%ld\n"
-    (twice 21) (add3 1 2 3) (scale 4) (scale (as i64 5)))
-  (return 0))
-EOF
-  ./build/nucleusc --emit-llvm "$s1_dir/main.nuc" > "$s1_dir/main.ll" 2>/dev/null || true
-  if clang "$s1_dir/lib.ll" "$s1_dir/main.ll" -o "$s1_dir/bin" 2>/dev/null \
-     && [ "$("$s1_dir/bin")" = "twice=42 add3=6 scale32=40 scale64=500" ]; then
-    echo "PASS  s1-nuch-link-and-run"
-  else
-    echo "FAIL  s1-nuch-link-and-run"
-  fi
-
-  # 3d. Importing the .nuch re-registers the new-style template so a consumer stamps
-  #     it at its call sites (proves register-generic-defn + the stamper handle a
-  #     new-style tyvar return arriving verbatim). Emit-only: the template body uses
-  #     `if` (a prelude macro), so the consumer keeps the prelude.
-  cat > "$s1_dir/tmain.nuc" <<EOF
-(import-use "$s1_dir/lib.nuch")
-(import-use "stdio.h")
-(defn main () :i32
-  (printf "gmax32=%d gmax64=%ld\n" (gmax 8 3) (gmax (as i64 4) (as i64 9)))
-  (return 0))
-EOF
-  # W9 item 2: a stamp belongs to no file — any unit that instantiates the same
-  # template at the same types re-derives the identical body under the identical
-  # symbol — so it is `weak_odr`, which is what lets two objects that both
-  # use `(gmax i32 i32)` link. Asserted here rather than matched loosely.
-  ./build/nucleusc --emit-llvm "$s1_dir/tmain.nuc" > "$s1_dir/tmain.ll" 2>/dev/null || true
-  if qgrep -F 'define weak_odr i32 @gmax.i32.i32(' "$s1_dir/tmain.ll" \
-     && qgrep -F 'define weak_odr i64 @gmax.i64.i64(' "$s1_dir/tmain.ll" \
-     && qgrep -F 'call i32 @gmax.i32.i32(' "$s1_dir/tmain.ll"; then
-    echo "PASS  s1-nuch-template-stamps"
-  else
-    echo "FAIL  s1-nuch-template-stamps"
-  fi
-  rm -rf "$s1_dir"
-}
 
 # Stage 15 W4e (design/stage15-stress-test/diagnostics.md §W4e): docs/stdlib.md's
 # availability tables are GENERATED by probing build/nucleusc
@@ -485,90 +336,6 @@ run_cstr_residue() {
 # information -- the IR types, the opcodes (`mul` vs `mul nsw`, `udiv` vs
 # `sdiv`, `icmp ugt` vs `icmp sgt`), the instruction sequence, and the operand
 # order of NON-commutative instructions such as icmp -- is compared verbatim.
-run_w2a_order_identical() {
-  local d a b
-  d="$(mktemp -d)"
-  ./build/nucleusc --emit-llvm tests/fixtures/w2a-order-lit-first.nuc \
-    > "$d/first.ll" 2>"$d/first.err" || true
-  ./build/nucleusc --emit-llvm tests/fixtures/w2a-order-lit-second.nuc \
-    > "$d/second.ll" 2>"$d/second.err" || true
-  if [ -s "$d/first.err" ] || [ -s "$d/second.err" ]; then
-    echo "FAIL  w2a-operand-order-identical (compile error)"
-    sed 's/^/    /' "$d/first.err" "$d/second.err"
-    rm -rf "$d"
-    return 0
-  fi
-  for f in first second; do
-    grep -v -e '^; ModuleID' -e '^source_filename' "$d/$f.ll" \
-      | awk '
-          function ncommas(s,   i, c) {
-            c = 0
-            for (i = 1; i <= length(s); i++) if (substr(s, i, 1) == ",") c++
-            return c
-          }
-          {
-            line = $0
-            if (line ~ /^  %[A-Za-z0-9_.]+ = (add|mul|and|or|xor|fadd|fmul)[ ]/ \
-                && ncommas(line) == 1) {
-              ci = index(line, ", ")
-              head = substr(line, 1, ci - 1)
-              b = substr(line, ci + 2)
-              si = 0
-              for (i = length(head); i > 0; i--) {
-                if (substr(head, i, 1) == " ") { si = i; break }
-              }
-              a = substr(head, si + 1)
-              if (a > b) { t = a; a = b; b = t }
-              line = substr(head, 1, si) a ", " b
-            }
-            print line
-          }' > "$d/$f.norm"
-  done
-  if diff -u "$d/first.norm" "$d/second.norm" >/dev/null; then
-    echo "PASS  w2a-operand-order-identical"
-  else
-    echo "FAIL  w2a-operand-order-identical"
-    diff -u "$d/first.norm" "$d/second.norm" | sed 's/^/    /' || true
-  fi
-  rm -rf "$d"
-}
-
-# Stage 15 W2d accept criterion (design/stage15-stress-test/literal-typing.md):
-# a `float`-typed DSP kernel written with bare float literals — no
-# `(unsafe/cast f32 …)` anywhere — must produce output identical to the
-# equivalent C program, compared as exact 32-bit patterns and not just as
-# rounded decimals. The two sources are checked in side by side
-# (tests/fixtures/w2d-dsp-biquad.{nuc,c}) so the comparison is reproducible.
-#
-# The Nucleus side goes through the real compile-and-link path (`-o`), not
-# `--emit-llvm`: `--emit-llvm` never parses the IR it writes, so it cannot catch
-# an invalid float constant (`float 3.14`) or a type-mismatched call operand.
-# The C side is built with -ffp-contract=off; see the fixture's header.
-run_w2d_dsp_bitexact() {
-  local d
-  d="$(mktemp -d)"
-  if ! ./build/nucleusc tests/fixtures/w2d-dsp-biquad.nuc -o "$d/nuc" >"$d/nuc.log" 2>&1; then
-    echo "FAIL  w2d-dsp-bitexact (nucleus compile error)"
-    sed 's/^/    /' "$d/nuc.log"
-    rm -rf "$d"
-    return 0
-  fi
-  if ! clang -O2 -ffp-contract=off -o "$d/c" tests/fixtures/w2d-dsp-biquad.c >"$d/c.log" 2>&1; then
-    echo "FAIL  w2d-dsp-bitexact (C reference compile error)"
-    sed 's/^/    /' "$d/c.log"
-    rm -rf "$d"
-    return 0
-  fi
-  "$d/nuc" > "$d/nuc.out" 2>&1 || true
-  "$d/c"   > "$d/c.out"   2>&1 || true
-  if diff -u "$d/c.out" "$d/nuc.out" >/dev/null; then
-    echo "PASS  w2d-dsp-bitexact"
-  else
-    echo "FAIL  w2d-dsp-bitexact (float kernel does not match C bit-for-bit)"
-    diff -u "$d/c.out" "$d/nuc.out" | sed 's/^/    /' || true
-  fi
-  rm -rf "$d"
-}
 
 
 # --- Dispatch sequence (original top-to-bottom order) ---------------------------
@@ -577,50 +344,10 @@ run_w2d_dsp_bitexact() {
 # are `tests/nuctests.nuc`'s, since Stage 18 TF-6 category (b). They discover
 # their inputs the same way, with `read-dir` in place of the glob.
 
-spawn run_repl_meta_loose
 
 spawn run_abi_subtest
 
 spawn run_layout_subtest
-
-
-spawn run_s1_sugar_rets
-
-
-spawn run_s1_block
-
-
-# --- Stage 15 W2a: binop literal typing -------------------------------------
-# design/stage15-stress-test/literal-typing.md §W2a. A binop's statically
-# inferred type now equals the type it emits, because both halves call one
-# shared rule (`binop-result-type`, src/nucleusc.nuc). The positive matrix
-# ({literal-first, literal-second, both-typed, both-literal} x {i32, i64, ui32,
-# ui64} x {arith, comparison}, plus the f32 float-literal case and the two
-# original repros) is examples/binop-literal-typing.nuc, run by the
-# examples/*.nuc loop above against tests/expected/binop-literal-typing.out --
-# result types are observed via multimethod dispatch, so a wrong unification
-# prints a wrong type name instead of hiding in the IR.
-#
-# Here: the operand-order equivalence, and the negative half. Unifying operand
-# types must NOT silently sign-reinterpret two TYPED operands of different
-# signedness -- only an untyped literal adapts -- so the mixed-sign diagnostic
-# has to survive the fix, in both the arithmetic and comparison forms.
-spawn run_w2a_order_identical
-
-
-# --- Stage 15 W2d: float literals adapt to an f32 target ---------------------
-# design/stage15-stress-test/literal-typing.md section W2d. The positive matrix
-# (every position that used to reject an f32 target -- let/with init, set!,
-# .set!, explicit and implicit return, struct-literal and array initializers,
-# call arguments, the defvar global initializer -- checked by VALUE, plus the
-# f64 lanes that must stay f64) is examples/float-literal-typing.nuc, run by the
-# examples/*.nuc loop above. The bit-exactness accept criterion is
-# run_w2d_dsp_bitexact.
-#
-# Here: the three boundaries the fix must NOT cross. A float literal adapts to a
-# float target only (not an integer slot, not an integer binop operand), and
-# multimethod dispatch admits a float literal but never a typed f64 value.
-spawn run_w2d_dsp_bitexact
 
 
 # The two remaining Ground-truth cases (same-file defvar forward reference
@@ -629,7 +356,6 @@ spawn run_w2d_dsp_bitexact
 # W4a's contract — a real location — holds either way. defconst-with-
 # annotation (§3.2) is now pinned below (W4b decided: reject).
 spawn run_no_line_zero
-spawn run_w4a_sibling_forward
 
 
 # --- Stage 15 W4e: docs/stdlib.md's availability table is generated ---------
@@ -637,164 +363,6 @@ spawn run_stdlib_table
 spawn run_headers_generated
 spawn run_cstr_residue
 
-
-# Stage 17 B2: `read-line` over a buffered fd 0. Not an example — an example
-# inherits the harness's stdin and would block on a terminal — so the input is
-# piped here. The last line deliberately has no terminator, and the blank line
-# must come back as a zero-length String rather than being skipped.
-run_s17_read_line() {
-  local bin actual
-  bin="./build/out/s17-read-line"
-  rm -f "$bin"
-  if ! ./build/nucleusc tests/fixtures/s17-read-line.nuc -o "$bin" 2>&1; then
-    echo "FAIL  s17-read-line (compile error)"
-    return 0
-  fi
-  actual="$(printf 'alpha\nbeta\n\nno-newline' | "$bin" 2>&1 || true)"
-  if [ "$actual" = "1: [alpha] len=5
-2: [beta] len=4
-3: [] len=0
-4: [no-newline] len=10
-eof" ]; then
-    echo "PASS  s17-read-line"
-  else
-    echo "FAIL  s17-read-line"
-    printf '%s\n' "$actual" | sed 's/^/    got: /'
-  fi
-}
-spawn run_s17_read_line
-
-# Stage 17 C6: a bare string literal returned from a `StrView` function. The
-# struct-return path skipped the coercion that materializes the chameleon
-# literal, so LLVM rejected `store %StrView <bare ptr>` with no source location.
-run_s17_strview_literal_return() {
-  local bin actual
-  bin="./build/out/s17-strview-literal-return"
-  rm -f "$bin"
-  if ! ./build/nucleusc tests/fixtures/s17-strview-literal-return.nuc -o "$bin" 2>&1; then
-    echo "FAIL  s17-strview-literal-return (compile error)"
-    return 0
-  fi
-  actual="$("$bin" 2>&1 || true)"
-  if [ "$actual" = "$(cat tests/expected/s17-strview-literal-return.out)" ]; then
-    echo "PASS  s17-strview-literal-return"
-  else
-    echo "FAIL  s17-strview-literal-return"
-    printf '%s\n' "$actual" | sed 's/^/    got: /'
-  fi
-}
-spawn run_s17_strview_literal_return
-
-# Stage 17 C6: string literals meeting at a cond/if/match phi in a StrView slot.
-# The unconditional collapse to CStr made the phi carry bare data pointers, and
-# the aggregate return then read a length off the end of a pointer-sized slot.
-run_s17_strview_literal_join() {
-  local bin actual
-  bin="./build/out/s17-strview-literal-join"
-  rm -f "$bin"
-  if ! ./build/nucleusc tests/fixtures/s17-strview-literal-join.nuc -o "$bin" 2>&1; then
-    echo "FAIL  s17-strview-literal-join (compile error)"
-    return 0
-  fi
-  actual="$("$bin" 2>&1 || true)"
-  if [ "$actual" = "$(cat tests/expected/s17-strview-literal-join.out)" ]; then
-    echo "PASS  s17-strview-literal-join"
-  else
-    echo "FAIL  s17-strview-literal-join"
-    printf '%s\n' "$actual" | sed 's/^/    got: /'
-  fi
-}
-spawn run_s17_strview_literal_join
-
-# Stage 17 C7-4b: the null-check trap one level down. A `StrView` is a 16-byte
-# struct that is never null, so `(= sv null)` fell into the CStr strcmp lowering
-# and compared its `.data` against NULL — a SIGSEGV, silently. It is a type
-# error now, and the diagnostic names the predicate the author meant.
-run_s17_strview_null_compare_rejected() {
-  local d out
-  d="$(mktemp -d)"
-  printf '(defn main ():i32\n  (let (sv:StrView "abc")\n    (when (!= sv null) (return 1))\n    (return 0)))\n' > "$d/s17nsv.nuc"
-  out="$(./build/nucleusc --emit-llvm "$d/s17nsv.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$out" | qgrep -F 's17nsv.nuc:3: error: !=: a StrView is never null'; then
-    echo "PASS  s17-strview-null-compare-rejected"
-  else
-    echo "FAIL  s17-strview-null-compare-rejected"
-    echo "    got: ${out:-<none>}"
-  fi
-  rm -rf "$d"
-}
-spawn run_s17_strview_null_compare_rejected
-
-# Stage 19: lib/process.nuc. One unit per phase gate — P1 status decoding, P2
-# capture (including the both-pipes-overflow case that deadlocks a sequential
-# drain), P3 the job-pool primitives.
-run_s19_process_status() {
-  local bin actual
-  bin="./build/out/s19-process-status"
-  rm -f "$bin"
-  if ! ./build/nucleusc tests/fixtures/s19-process-status.nuc -o "$bin" 2>&1; then
-    echo "FAIL  s19-process-status (compile error)"
-    return 0
-  fi
-  actual="$("$bin" 2>&1 || true)"
-  if [ "$actual" = "zero 0
-three 3
-killed 137
-noexec 127
-signal 15" ]; then
-    echo "PASS  s19-process-status"
-  else
-    echo "FAIL  s19-process-status"
-    printf '%s\n' "$actual" | sed 's/^/    got: /'
-  fi
-}
-spawn run_s19_process_status
-
-run_s19_process_capture() {
-  local bin actual
-  bin="./build/out/s19-process-capture"
-  rm -f "$bin"
-  if ! ./build/nucleusc tests/fixtures/s19-process-capture.nuc -o "$bin" 2>&1; then
-    echo "FAIL  s19-process-capture (compile error)"
-    return 0
-  fi
-  # The timeout IS the assertion for the overflow case: a sequential drain hangs.
-  actual="$(timeout 60 "$bin" 2>&1 || true)"
-  if [ "$actual" = "code 3
-out to-stdout
-err to-stderr
-big-out 1288895 big-err 1288895 code 0
-arg a b \"c\" \$d
-env new=yes home=/s19-overridden" ]; then
-    echo "PASS  s19-process-capture"
-  else
-    echo "FAIL  s19-process-capture"
-    printf '%s\n' "$actual" | sed 's/^/    got: /'
-  fi
-}
-spawn run_s19_process_capture
-
-run_s19_process_pool() {
-  local bin actual
-  bin="./build/out/s19-process-pool"
-  rm -f "$bin"
-  if ! ./build/nucleusc tests/fixtures/s19-process-pool.nuc -o "$bin" 2>&1; then
-    echo "FAIL  s19-process-pool (compile error)"
-    return 0
-  fi
-  actual="$(timeout 60 "$bin" 2>&1 || true)"
-  if [ "$actual" = "try-wait: still running
-reaped 2
-reaped 3
-reaped 1
-killed: signal 9" ]; then
-    echo "PASS  s19-process-pool"
-  else
-    echo "FAIL  s19-process-pool"
-    printf '%s\n' "$actual" | sed 's/^/    got: /'
-  fi
-}
-spawn run_s19_process_pool
 
 # --- Stage 18 TF-3: lib/read.nuc agrees with src/reader.nuc ---------------------
 # Both readers print the same canonical text, so a tree difference is a diff.

@@ -1,0 +1,142 @@
+; What the runtime library does at the edges
+;
+; Stage 17's string and stdin surfaces and Stage 19's `lib/process.nuc`, plus
+; the REPL's own meta forms. These are whole programs whose answer is their
+; output, so each fixture is built, run, and compared — but none of them can be
+; an `examples/*.nuc` golden test: the read-line fixture needs stdin the golden
+; loop cannot give it, the process fixtures need a timeout because the failure
+; mode under test is a deadlock, and the REPL session prints an elapsed time
+; that differs on every run.
+
+; ---------------------------------------------------------------------------
+; Stage 17: strings, and a buffered fd 0
+; ---------------------------------------------------------------------------
+
+; Stage 17 B2: `read-line` over a buffered fd 0. The last line deliberately has
+; no terminator, and the blank line must come back as a zero-length String
+; rather than being skipped.
+(deftest s17-read-line
+  (let (out:String (try (build-run-stdin "tests/fixtures/s17-read-line.nuc"
+                                         "alpha
+beta
+
+no-newline")))
+    (try (check-golden (string-as-view (addr-of out)) "1: [alpha] len=5
+2: [beta] len=4
+3: [] len=0
+4: [no-newline] len=10
+eof
+"))
+    (drop (addr-of out)))
+  (return (ok)))
+
+; Stage 17 C6: a bare string literal returned from a `StrView` function. The
+; struct-return path skipped the coercion that materializes the chameleon
+; literal, so LLVM rejected `store %StrView <bare ptr>` with no source location.
+(deftest s17-strview-literal-return
+  (let (want:String (try (read-file "tests/expected/s17-strview-literal-return.out"))
+        got:String (try (build-run-file "" ""
+                          "tests/fixtures/s17-strview-literal-return.nuc")))
+    (try (check-golden (string-as-view (addr-of got))
+                       (string-as-view (addr-of want))))
+    (drop (addr-of got))
+    (drop (addr-of want)))
+  (return (ok)))
+
+; Stage 17 C6: string literals meeting at a cond/if/match phi in a StrView slot.
+; The unconditional collapse to CStr made the phi carry bare data pointers, and
+; the aggregate return then read a length off the end of a pointer-sized slot.
+(deftest s17-strview-literal-join
+  (let (want:String (try (read-file "tests/expected/s17-strview-literal-join.out"))
+        got:String (try (build-run-file "" ""
+                          "tests/fixtures/s17-strview-literal-join.nuc")))
+    (try (check-golden (string-as-view (addr-of got))
+                       (string-as-view (addr-of want))))
+    (drop (addr-of got))
+    (drop (addr-of want)))
+  (return (ok)))
+
+; Stage 17 C7-4b: the null-check trap one level down. A `StrView` is a 16-byte
+; struct that is never null, so `(= sv null)` fell into the CStr strcmp lowering
+; and compared its `.data` against NULL — a SIGSEGV, silently. It is a type
+; error now, and the diagnostic names the predicate the author meant.
+(deftest s17-strview-null-compare-rejected
+  (try (check-place-refused "(defn main ():i32
+  (let (sv:StrView \"abc\")
+    (when (!= sv null) (return 1))
+    (return 0)))
+" 3 "!=: a StrView is never null — use (str-empty? &v) to test for the empty view"))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; Stage 19: lib/process.nuc, one unit per phase gate
+; ---------------------------------------------------------------------------
+
+; P1: status decoding. A signal death and a missing executable are not exit
+; codes, and reporting them as 137 and 127 is the shell's convention, not the
+; kernel's.
+(deftest s19-process-status
+  (let (out:String (try (build-run-file "" ""
+                          "tests/fixtures/s19-process-status.nuc")))
+    (try (check-golden (string-as-view (addr-of out)) "zero 0
+three 3
+killed 137
+noexec 127
+signal 15
+"))
+    (drop (addr-of out)))
+  (return (ok)))
+
+; P2: capture, including the both-pipes-overflow case. A sequential drain
+; deadlocks there — the child blocks writing stderr while the parent blocks
+; reading stdout — so finishing at all is half the assertion and the byte counts
+; are the other half.
+(deftest s19-process-capture
+  (let (out:String (try (build-run-file "" ""
+                          "tests/fixtures/s19-process-capture.nuc")))
+    (try (check-golden (string-as-view (addr-of out)) "code 3
+out to-stdout
+err to-stderr
+big-out 1288895 big-err 1288895 code 0
+arg a b \"c\" $d
+env new=yes home=/s19-overridden
+"))
+    (drop (addr-of out)))
+  (return (ok)))
+
+; P3: the job-pool primitives — a non-blocking poll that reports "still
+; running", reaping out of spawn order, and a kill whose signal survives.
+(deftest s19-process-pool
+  (let (out:String (try (build-run-file "" ""
+                          "tests/fixtures/s19-process-pool.nuc")))
+    (try (check-golden (string-as-view (addr-of out)) "try-wait: still running
+reaped 2
+reaped 3
+reaped 1
+killed: signal 9
+"))
+    (drop (addr-of out)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; The REPL's meta forms
+; ---------------------------------------------------------------------------
+
+; Loose by necessity: `(time …)` prints an elapsed duration that differs every
+; run, so this cannot be a `tests/repl/*.in` golden like the per-form tests
+; beside it. The four claims are what a transcript comparison would have
+; covered — `dir` renders a defn as its signature in defn spelling, `imports`
+; lists resolved paths, and `time` reports BOTH a duration and the form's value.
+(deftest repl-meta-loose
+  (let (out:String (try (repl-session "(defn zzq (n:i32):i32 (return n))
+(dir)
+(imports)
+(time (zzq 1))
+")))
+    (let (ov:StrView (string-as-view (addr-of out)))
+      (try (check-contains ov "(zzq (n:i32):i32)"))
+      (try (check-contains ov "lib/prelude.nuc"))
+      (try (check-contains ov "; elapsed: "))
+      (try (check-contains ov "  1")))
+    (drop (addr-of out)))
+  (return (ok)))
