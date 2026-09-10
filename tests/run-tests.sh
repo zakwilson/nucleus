@@ -290,87 +290,6 @@ w1_reject_multi() {  # <name> <dir> <main.nuc> <pattern>
     printf '%s\n' "$err" | sed 's/^/    got: /'
   fi
 }
-# Stage 13 L8: a public defn whose signature exposes a capturing-closure env
-# type (__vfn_env_N) is not C-callable, so --emit-cheader OMITS its prototype
-# (writing a comment in its place) and the compiler WARNS at the definition. A
-# plain function-pointer-compatible defn is emitted normally. The fixture
-# declares a __vfn_env_0 struct by hand to stand in for a synthesized env (real
-# envs are created post-prescan, so they cannot appear in source signatures).
-run_closure_cheader() {
-  local ch_dir ch_warn
-  ch_dir="$(mktemp -d)"
-  ./build/nucleusc --emit-cheader tests/fixtures/closure-cheader.nuc > "$ch_dir/lib.h" 2>/dev/null || true
-  ch_warn="$(./build/nucleusc --emit-llvm tests/fixtures/closure-cheader.nuc 2>&1 >/dev/null || true)"
-
-  # 1. closure-typed prototype is OMITTED, with the explanatory comment in place.
-  if qgrep 'apply-closure: exposes a closure or type-erased box type; not C-callable, omitted' "$ch_dir/lib.h" \
-     && ! qgrep 'apply-closure(' "$ch_dir/lib.h"; then
-    echo "PASS  l8-cheader-omits-closure"
-  else
-    echo "FAIL  l8-cheader-omits-closure"
-  fi
-
-  # 2. the plain fn-pointer defn IS emitted to the header. W9 item 4: under its
-  # sanitized C name, with the asm label that binds it back to `@plain-fn`.
-  if qgrep -xF 'int32_t plain_fn(int32_t x, int32_t y) asm("plain-fn");' "$ch_dir/lib.h"; then
-    echo "PASS  l8-cheader-emits-fnptr"
-  else
-    echo "FAIL  l8-cheader-emits-fnptr"
-  fi
-
-  # 3. the definition site warns on stderr.
-  if printf '%s' "$ch_warn" | qgrep "warning: 'apply-closure' exposes a closure or type-erased box type"; then
-    echo "PASS  l8-cheader-warns"
-  else
-    echo "FAIL  l8-cheader-warns"
-  fi
-  rm -rf "$ch_dir"
-}
-
-# Stage 13 — C header exclusion of BoxedFn/dyn-typed public defns.
-# --emit-cheader omits prototypes whose signatures mention (BoxedFn …) or (dyn P)
-# (fat pointers with Nucleus-side semantics; no faithful C spelling), emitting a
-# comment in place and warning at the definition site. Plain fn-pointer defns are
-# still emitted normally.
-run_box_cheader() {
-  local bch_dir bch_warn
-  bch_dir="$(mktemp -d)"
-  ./build/nucleusc --emit-cheader tests/fixtures/box-cheader.nuc > "$bch_dir/lib.h" 2>/dev/null || true
-  bch_warn="$(./build/nucleusc --emit-llvm tests/fixtures/box-cheader.nuc 2>&1 >/dev/null || true)"
-
-  # 4. BoxedFn-typed prototype is OMITTED, with the explanatory comment in place.
-  if qgrep 'make-boxed: exposes a closure or type-erased box type; not C-callable, omitted' "$bch_dir/lib.h" \
-     && ! qgrep 'make-boxed(' "$bch_dir/lib.h"; then
-    echo "PASS  l13-cheader-omits-boxedfn"
-  else
-    echo "FAIL  l13-cheader-omits-boxedfn"
-  fi
-
-  # 5. dyn-typed prototype is OMITTED, with the explanatory comment in place.
-  if qgrep 'use-dyn: exposes a closure or type-erased box type; not C-callable, omitted' "$bch_dir/lib.h" \
-     && ! qgrep 'use-dyn(' "$bch_dir/lib.h"; then
-    echo "PASS  l13-cheader-omits-dyn"
-  else
-    echo "FAIL  l13-cheader-omits-dyn"
-  fi
-
-  # 6. the plain fn-pointer defn IS emitted to the header. W9 item 4: under its
-  # sanitized C name, with the asm label that binds it back to `@plain-fn`.
-  if qgrep -xF 'int32_t plain_fn(int32_t x, int32_t y) asm("plain-fn");' "$bch_dir/lib.h"; then
-    echo "PASS  l13-cheader-emits-fnptr"
-  else
-    echo "FAIL  l13-cheader-emits-fnptr"
-  fi
-
-  # 7. the definition site warns on stderr (at least one box-typed defn fires).
-  if printf '%s' "$bch_warn" | qgrep "warning:.*exposes a closure or type-erased box type"; then
-    echo "PASS  l13-cheader-warns"
-  else
-    echo "FAIL  l13-cheader-warns"
-  fi
-  rm -rf "$bch_dir"
-}
-
 # Stage 14 defn-signature.md S1 — the new `(defn NAME (params):ret body…)` style.
 # As of Phase S4 it is the ONLY accepted style; the legacy `(defn name:ret
 # (params) …)` spelling is now a hard error (negative checks below). The
@@ -665,10 +584,6 @@ spawn run_abi_subtest
 spawn run_layout_subtest
 
 
-spawn run_closure_cheader
-
-spawn run_box_cheader
-
 spawn run_s1_sugar_rets
 
 
@@ -722,61 +637,6 @@ spawn run_stdlib_table
 spawn run_headers_generated
 spawn run_cstr_residue
 
-
-# Stage 16 (c-header-layout.md §6, the `--emit-cheader` item): a public
-# signature naming a C typedef renders the name BARE — `struct off_t` names
-# nothing — so the generated header did not compile at all until it also
-# carried the `#include` the name came from. This is the rule the preamble
-# already applies to `size_t` with `<stddef.h>`.
-run_cheader_c_include() {
-  local d bad
-  d="$(mktemp -d)"
-  printf '(import-use "unistd.h")\n(defn seek (fd:i32 off:off_t):off_t (return off))\n' \
-    > "$d/o.nuc"
-  ./build/nucleusc --emit-cheader "$d/o.nuc" > "$d/o.h" 2>"$d/o.err" || true
-
-  bad=0
-  if ! qgrep -F -x '#include <unistd.h>' "$d/o.h"; then
-    echo "FAIL  cheader-c-typedef-include (no #include for the header off_t came from)"
-    sed 's/^/    got: /' "$d/o.h" | head -8
-    bad=1
-  fi
-  # The include is the IMPORT spelling, never the /usr/include file a
-  # linemarker names — only the former is portable.
-  if qgrep -F '/usr/include' "$d/o.h"; then
-    echo "FAIL  cheader-c-typedef-include (included an absolute system path)"
-    { grep -F '/usr/include' "$d/o.h" || true; } | sed 's/^/    got: /' | head -2
-    bad=1
-  fi
-  if ! qgrep -F -x 'off_t seek(int32_t fd, off_t off);' "$d/o.h"; then
-    echo "FAIL  cheader-c-typedef-include (declaration is not the bare typedef name)"
-    { grep -F ' seek(' "$d/o.h" || true; } | sed 's/^/    got: /' | head -2
-    bad=1
-  fi
-  # The point of the include: the header now compiles on its own.
-  if command -v clang >/dev/null 2>&1; then
-    if ! clang -fsyntax-only -Wno-pragma-once-outside-header -x c "$d/o.h" 2>"$d/o.cerr"; then
-      echo "FAIL  cheader-c-typedef-include (generated header does not compile)"
-      sed 's/^/    /' "$d/o.cerr" | head -4
-      bad=1
-    fi
-  fi
-  [ "$bad" = 0 ] && echo "PASS  cheader-c-typedef-include"
-
-  # A header naming NO C typedef gains no include — the list is the types the
-  # header actually names, as it is on the Nucleus side.
-  bad=0
-  printf '(import-use "unistd.h")\n(defn plain (x:i32):i32 (return x))\n' > "$d/p.nuc"
-  ./build/nucleusc --emit-cheader "$d/p.nuc" > "$d/p.h" 2>/dev/null || true
-  if qgrep -F '#include <unistd.h>' "$d/p.h"; then
-    echo "FAIL  cheader-c-include-only-when-named (included an unused C header)"
-    bad=1
-  fi
-  [ "$bad" = 0 ] && echo "PASS  cheader-c-include-only-when-named"
-
-  rm -rf "$d"
-}
-spawn run_cheader_c_include
 
 # Stage 17 B2: `read-line` over a buffered fd 0. Not an example — an example
 # inherits the harness's stdin and would block on a terminal — so the input is

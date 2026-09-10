@@ -2985,6 +2985,49 @@ header line moved by one, and the C oracle asked for the wrong struct's size —
 that last one twice, because the first attempt swapped two structs that are
 both 16 bytes and so asserted nothing.
 
+#### TF-6 category (c), a type C cannot spell (2026-09-10)
+
+**3 shell functions → 9 tests**, 140 lines of the file retired (including three
+banners and three `spawn` lines): `run_closure_cheader` (3),
+`run_box_cheader` (4) and `run_cheader_c_include` (2), into
+`tests/suite-cheader.nuc`, which grows 788 → 921 lines. `tests/run-tests.sh` is
+1,092 → 952 lines and 24 → 21 functions. `make test` is 27 shell + 939
+native = 966.
+
+One subject: what `--emit-cheader` does with a signature C has no spelling for
+(a closure env, a `(BoxedFn …)`, a `(dyn P)`) and with one C *can* spell but
+only given the right `#include`.
+
+**A fixture that does not compile, and a needle written to accept that.**
+`run_box_cheader`'s last claim is that the definition site warns, and its
+comment says "(at least one box-typed defn fires)". Only one does.
+`--emit-llvm` on `tests/fixtures/box-cheader.nuc` exits 1: `make-boxed` warns
+at line 19, then line 20 is an error — `(return 0)` cannot produce the
+`(BoxedFn (i32) i32)` it declares — so `use-dyn` at line 23 is never reached
+and never warns. The shell's `2>&1 >/dev/null || true` swallowed the exit
+status and its grep found the one warning. The comment recorded the symptom
+without the cause. `l13-cheader-warns` pins both halves now, and the fixture
+defect is written up in `design/stage888-deferred.md`: fixing it edits an
+IR-snapshot input whose recorded stderr changes with it, so it needs a re-take
+with a stated reason rather than a quiet edit here.
+
+**Absence with no anchor.** `cheader-c-include-only-when-named` asserted only
+that `<unistd.h>` is absent, which an empty or failed header satisfies. The
+`plain` prototype is required first. The omission units get the same treatment
+from the other side: the closure header must still carry the `__vfn_env_0`
+typedef — the very type whose exposure caused the omission.
+
+**A claim guarded out of existence.** The generated header compiling on its own
+is the entire point of the `#include`, and the shell ran it under
+`if command -v clang`. clang is a hard dependency of this project and never
+skips; the check is unconditional now.
+
+**Verified by breaking it**, nine ways, one per unit, each reverted by editing
+the source back, never with git. The env typedef renamed, two asm labels and
+two prototypes altered, an omission comment's name changed, an omission
+inverted to a presence, the two diagnostic lines moved, and the expected
+`#include` swapped for another header.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that

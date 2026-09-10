@@ -339,3 +339,32 @@ it are the ones being ported. `s16-kwlit-refused-mix-vec` and
 `s16-kwlit-refused-mix-val` pin the current wording, so the fix has somewhere to
 land: extend those two needles with the type names once the message carries
 them.
+
+## `tests/fixtures/box-cheader.nuc` does not compile, so half of it is unreachable
+
+The fixture's own comment says both box-typed defns are "warned at definition".
+Only `make-boxed` is. `--emit-llvm` on the fixture exits 1:
+
+    line 19  warning  'make-boxed' exposes a closure or type-erased box type …
+    line 20  error    BoxedFn: can only box a closure value (a capturing
+                      closure's (ref Env), or a bare `fn`)
+
+`make-boxed`'s body is `(return 0)`, and an integer cannot be boxed into the
+`(BoxedFn (i32) i32)` it declares. The compile stops there, so `use-dyn` at
+line 23 is never reached and never warns. `--emit-cheader` is unaffected — it
+scans signatures, not bodies — which is why both omission comments appear and
+the header side of the fixture is sound.
+
+The retired shell asserted `warning:.*exposes a closure or type-erased box
+type` over the whole stderr blob, with `|| true` swallowing the exit status,
+and its comment records the symptom without the cause: "(at least one box-typed
+defn fires)". `l13-cheader-warns` now pins both halves — the warning that fires
+at line 19 and the error at line 20 — so the defect is visible rather than
+absorbed.
+
+Fixing it means giving `make-boxed` a body that produces its declared return
+type. That edits an IR-snapshot input, and `emit_all` snapshots stderr as well
+as stdout, so the recorded `.ll.err` changes and the snapshot must be re-taken
+with the reason recorded in `design/progress.md`. Whoever does it should also
+decide whether `use-dyn`'s warning firing is worth a second assertion or
+whether `l13-cheader-warns` simply loses its error half.
