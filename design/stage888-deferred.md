@@ -317,3 +317,25 @@ that would gate it is the one being ported. `avr2-16bit-attiny1634` /
 `avr2-16bit-avrxmega3` pin the qq-helper's `align 1` by presence, so the fix has
 somewhere to land; add the pointer-slot absence to those two units once the
 alignment comes from the datalayout rather than the host default.
+
+## Mixed-literal diagnostics name their types inconsistently
+
+Found while porting the container-literal refusals into `tests/suite-s16.nuc`
+(Stage 18 TF-6, 2026-09-10). Four spellings of one error, measured:
+
+    set literal: mixed element types -- 'Keyword' and 'StrView'
+    map literal: mixed key types -- 'Keyword' and 'StrView'
+    vector literal: mixed element types
+    map literal: mixed value types
+
+The set and map-key forms name the two types that conflicted; the vector and
+map-value forms do not, so a reader of `[:a 1]` is told only that the elements
+disagree and has to work out which two. The types are available at each of the
+four sites — the two that report them prove it — so this is a message that was
+not carried across rather than information the emitter lacks.
+
+Not fixed here because it is a diagnostic change and the units that would gate
+it are the ones being ported. `s16-kwlit-refused-mix-vec` and
+`s16-kwlit-refused-mix-val` pin the current wording, so the fix has somewhere to
+land: extend those two needles with the type names once the message carries
+them.

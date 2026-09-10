@@ -2790,6 +2790,58 @@ emitted call's operand width changed to the library's, the template error's
 blame moved to the caller, the boxed-dispatch count asked for as four, the
 direct-call refusal inverted, and the printed answer changed by one.
 
+#### TF-6 category (c), what a literal element and a selector may be (2026-09-10)
+
+**3 shell functions → 16 tests**, 204 lines of the file retired (including the
+per-function banners and three `spawn` lines): `run_s16_keyword_literal_refused`
+(10), `run_s16_symbol_values` (4) and `run_s16_selector_rule` (2), into
+`tests/suite-s16.nuc`, which grows 2,049 → 2,276 lines. `tests/run-tests.sh` is
+1,879 → 1,675 lines and 34 → 31 functions. `make test` is 57 shell + 909
+native = 966.
+
+No new module: `suite-s16.nuc` already owns what a place is, and a selector is
+a place's field name. The literal half belongs beside it because the refusals
+are the same shape — a form that looks like data and is resolved as a type or a
+variable.
+
+**Nine claims under two verdicts.** `run_s16_selector_rule` is the
+`ok=1 … || ok=0` accumulator pattern again: two `echo PASS` lines cover a
+runtime output comparison, a bare-symbol diagnostic, three fixed-position forms
+and a non-symbol selector. Any one of the nine failing lost the same single
+verdict, so the report could not say which. Six units now, one claim each.
+
+**The same needle for three different diagnostics.** The three fixed-position
+forms were checked with one identical string,
+`field name must be a quoted selector -- write 'x`. The compiler prefixes each
+with its own form — `.set!:`, `addr-of:`, `_get:` — and the whole point of
+those forms sharing a rule is that the reader is told which one they hit; three
+diagnostics all saying `.set!` would have passed. Each is pinned with its
+prefix now.
+
+**A needle that stopped before the discriminating half.** The mixed-literal
+refusals grepped for `set literal: mixed element types`, which cannot tell one
+mixture from another. Three of the five messages go on to name the two
+conflicting types (`-- 'Keyword' and 'StrView'`) and two do not; the three are
+pinned in full and the two are recorded in `design/stage888-deferred.md`, so
+the inconsistency has somewhere to land rather than being frozen by a needle
+that never looked.
+
+**A blob grep over a ten-line preamble.** Every refusal here compiled a source
+with a ten- or eight-line import header and grepped the whole stderr; a
+diagnostic raised anywhere in the preamble satisfied it. All sixteen pin the
+line. `s16-kwlit-missing-import-names-file` was two independent greps — the
+head and the path `lib/keyword.nuc` — which a note belonging to some other
+diagnostic satisfied; it is one record with its note now.
+
+**Verified by breaking it**, sixteen ways, one per unit, each reverted by
+editing the source back, never with git. Five mixed-literal messages reworded,
+four element-refusal heads changed, the intern call misspelled, the quoted-list
+nullability refusal inverted, the printed field values changed, and the four
+selector prefixes swapped between forms. The nullable-slot unit needed its
+SLOT retyped rather than its datum — `(quote 1)` is also `(raw Node)`, so
+changing the datum asserted nothing; `(raw Node)` → `(raw i32)` is what
+contradicts the claim.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that

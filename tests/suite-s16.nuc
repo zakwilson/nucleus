@@ -2047,3 +2047,230 @@ map=2
     (set! (r k) 5))
   (return 0))
 " 5 "ptr:Ro has no `set` method -- a computed key writes through the `set` generic")))
+
+; ---------------------------------------------------------------------------
+; Keyword and symbol elements in container literals
+; ---------------------------------------------------------------------------
+;
+; Design: design/stage16-ergonomics/container-literal-elements.md §1. The
+; success paths are examples/keyword-lit-test.nuc; what needed coverage is the
+; refusals, which had none before this item.
+;
+; Every unit here pins the LINE, which the shell could not: it grepped the whole
+; stderr blob, so a diagnostic raised anywhere in the ten-line import preamble
+; would have satisfied it.
+
+; The preamble is ten lines, so every mixed-literal body below is line 11.
+(defn kwlit-src (body:StrView):String
+  (return (str "(import-use \"stdio.h\")
+(import-use strview)
+(import-use hash)
+(import-use keyword)
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use hashset)
+(import-use hashmap)
+(import-use vector)
+" body "
+")))
+
+(defn check-kwlit (body:StrView needle:StrView):!void
+  (let (s:String (kwlit-src body))
+    (try (check-place-refused (string-as-view (addr-of s)) 11 needle))
+    (drop (addr-of s)))
+  (return (ok)))
+
+; A set of `Keyword` will not take a string. The two conflicting types are named
+; in the message, and pinned — the shell's needle stopped at "mixed element
+; types", which is the half that cannot tell this apart from any other mixture.
+(deftest s16-kwlit-refused-mix-set
+  (try (check-kwlit "(defn main ():i32 (with ((s (ref (HashSet Keyword))) #{:a \"b\"}) 0) 0)"
+                    "set literal: mixed element types -- 'Keyword' and 'StrView'"))
+  (return (ok)))
+
+; The vector form reports no types. Measured, not chosen: see the deferred entry
+; on mixed-literal diagnostics naming their types inconsistently.
+(deftest s16-kwlit-refused-mix-vec
+  (try (check-kwlit "(defn main ():i32 (with ((v (ref (Vector Keyword))) [:a 1]) 0) 0)"
+                    "vector literal: mixed element types"))
+  (return (ok)))
+
+(deftest s16-kwlit-refused-mix-key
+  (try (check-kwlit "(defn main ():i32 (with ((m (ref (HashMap Keyword i32))) {:a 1 \"b\" 2}) 0) 0)"
+                    "map literal: mixed key types -- 'Keyword' and 'StrView'"))
+  (return (ok)))
+
+(deftest s16-kwlit-refused-mix-val
+  (try (check-kwlit "(defn main ():i32 (with ((m (ref (HashMap Keyword Keyword))) {:a :x :b 2}) 0) 0)"
+                    "map literal: mixed value types"))
+  (return (ok)))
+
+; A quoted symbol lowers to `ptr:Node`, so mixing one with a string is the same
+; refusal reported over the two lowered types.
+(deftest s16-kwlit-refused-mix-sym
+  (try (check-kwlit "(defn main ():i32 (with ((s (ref (HashSet (ref Node)))) #{'a \"b\"}) 0) 0)"
+                    "set literal: mixed element types -- 'ptr:Node' and 'StrView'"))
+  (return (ok)))
+
+; Element kinds still refused at a `(HashSet (ref Node))`. These used to share
+; one blanket "must be scalar literals" message; the collection-literal-variables
+; item removed that refusal, so each now fails for its own reason — and those
+; reasons are what the shape check always meant. A quoted LIST or INT is
+; `(raw Node)`, not the `(ref Node)` a quoted symbol lowers to, so nullability
+; refuses it; a bare symbol is a variable reference, now admitted as an element,
+; so it reports the missing variable instead. Losing the blanket message is the
+; feature; losing the refusals would be the bug.
+;
+; This preamble is eight lines, so each body is line 9.
+(defn symlit-src (elems:StrView):String
+  (return (str "(import-use \"stdio.h\")
+(import-use numeric)
+(import-use node)
+(import-use hash)
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use hashset)
+(defn main ():i32 (with ((s (ref (HashSet (ref Node)))) " elems ") 0) 0)
+")))
+
+(defn check-symlit (elems:StrView needle:StrView):!void
+  (let (s:String (symlit-src elems))
+    (try (check-place-refused (string-as-view (addr-of s)) 9 needle))
+    (drop (addr-of s)))
+  (return (ok)))
+
+(deftest s16-symlit-refused-qlist
+  (try (check-symlit "#{'(a b) '(c d)}"
+                     "argument: raw pointer where non-null (ref ...) is required"))
+  (return (ok)))
+
+(deftest s16-symlit-refused-qint
+  (try (check-symlit "#{'1 '2}"
+                     "argument: raw pointer where non-null (ref ...) is required"))
+  (return (ok)))
+
+(deftest s16-symlit-refused-bare
+  (try (check-symlit "#{a b}" "undefined: a — not defined anywhere in this compilation unit"))
+  (return (ok)))
+
+(deftest s16-symlit-refused-call
+  (try (check-symlit "#{(f x)}" "unknown: f — not defined anywhere in this compilation unit"))
+  (return (ok)))
+
+; Without `(import-use keyword)` the expansion names a type the unit cannot see.
+; The note must point at the FILE, or the reader's expansion looks like a
+; compiler bug to whoever wrote `#{:a :b}`. The shell grepped for the head and
+; the path independently, so a note belonging to some other diagnostic would
+; have satisfied it; here both are matched against one record.
+(deftest s16-kwlit-missing-import-names-file
+  (let (p:String (try (test-write-file "noimp.nuc" "(import-use \"stdio.h\")
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use hashset)
+(defn main ():i32 (with ((s (ref (HashSet Keyword))) #{:a :b}) 0) 0)
+"))
+        pv:StrView (string-as-view (addr-of p))
+        c:Compiled (try (compile-path pv)))
+    (try (check-error-at (addr-of c 'diags) pv 6
+                         "unknown type: Keyword — not defined anywhere in this compilation unit"))
+    (try (check-note-at (addr-of c 'diags) pv 6
+                        "'Keyword' is defined in lib/keyword.nuc, which no import in this unit reaches"))
+    (drop (addr-of c))
+    (drop (addr-of p)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; A quoted symbol is a value, and it is non-null
+; ---------------------------------------------------------------------------
+;
+; `(import-use node)` throughout because a quote is a RUNTIME call since the
+; prelude split — without it the list case would fail for the wrong reason and
+; the nullability assertion would pass vacuously.
+
+; A quoted symbol fits a `(ref Node)` slot with no cast.
+(deftest s16-quoted-symbol-is-ref
+  (try (check-source-accepts "(import-use node)
+(defn main ():i32 (let (l:(ref Node) (quote a)) (return 0)))
+"))
+  (return (ok)))
+
+; …and it really is the intern call, not a laundered raw pointer.
+(deftest s16-quoted-symbol-lowers-to-intern
+  (let (c:Compiled (try (compile-source "(import-use node)
+(defn main ():i32 (let (l:(ref Node) (quote a)) (return 0)))
+")))
+    (try (check-match (compiled-ir (addr-of c)) "*call ptr @intern-symbol*"))
+    (drop (addr-of c)))
+  (return (ok)))
+
+; A quoted LIST stays nullable. If this ever passes, the conditional has been
+; flattened and `'()` is being typed non-null.
+(deftest s16-quoted-list-stays-raw
+  (try (check-place-refused "(import-use node)
+(defn main ():i32 (let (l:(ref Node) (quote (a b))) (return 0)))
+" 2 "raw pointer where non-null (ref ...) is required"))
+  (return (ok)))
+
+; Non-null narrows into a nullable slot, so pre-Stage-16 spellings still build.
+(deftest s16-quoted-symbol-still-fits-raw
+  (try (check-source-accepts "(import-use node)
+(defn main ():i32 (let (l:(raw Node) (quote a)) (return 0)))
+"))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; A selector is quoted; a bare symbol is a variable
+; ---------------------------------------------------------------------------
+
+; A quoted selector is the field at every form, and a computed one needs no
+; annotation to be read as a value: `_get`, `get`, the callable-value form and a
+; computed selector all reach the same two fields.
+(deftest s16-selector-quoted-is-the-field
+  (let (p:String (try (test-write-file "sel.nuc" "(import-use \"stdio.h\")
+(import-use node)
+(defstruct Pt x:i32 y:i32)
+(defn main ():i32
+  (let (p:ptr:Pt (alloca Pt))
+    (set! (p 'x) 1)
+    (set! (deref (addr-of p 'y)) 2)
+    (let (sel:ptr (quote y))
+      (printf \"%d %d %d %d\\n\" (_get p 'x) (get p 'y) (p 'x) (p sel))))
+  (return 0))
+"))
+        out:String (try (build-run-file "" "" (string-as-view (addr-of p)))))
+    (try (check-eq (string-as-view (addr-of out)) "1 2 1 2\n"))
+    (drop (addr-of out))
+    (drop (addr-of p)))
+  (return (ok)))
+
+; A bare symbol is the variable. Unbound, it is refused — and because the
+; overwhelmingly likely cause is a missed quote on a real field, the message
+; names the receiver and the spelling rather than saying "undefined".
+;
+; The three fixed-position forms need a literal, and a bare symbol is not one:
+; "must be symbol" would describe a bare symbol as failing a test it appears to
+; pass. Each names ITS OWN form, which the shell's needle could not see — it was
+; the same string for all three, so all three reporting `.set!` would have
+; passed.
+(deftest s16-selector-bare-is-a-variable
+  (try (check-place-refused "(defstruct Pt x:i32 y:i32)
+(defn f (p:&Pt):i32 (return (p x)))
+" 2 "get: 'x' is undefined here, and a bare symbol in selector position is an ordinary variable -- write (p 'x)"))
+  (try (check-place-refused "(defstruct Pt x:i32)
+(defn f (p:&Pt):i32 (set! (p x) 1) (return 0))
+" 2 ".set!: field name must be a quoted selector -- write 'x"))
+  (try (check-place-refused "(defstruct Pt x:i32)
+(defn f (p:&Pt):i32 (let (q:ptr:i32 (addr-of p x)) 0) (return 0))
+" 2 "addr-of: field name must be a quoted selector -- write 'x"))
+  (try (check-place-refused "(defstruct Pt x:i32)
+(defn f (p:&Pt):i32 (let (v:i32 (_get p x)) 0) (return 0))
+" 2 "_get: field name must be a quoted selector -- write 'x"))
+  ; A selector that is neither spelling is still refused, and this one carries no
+  ; "write 'x" tail because there is no symbol to suggest.
+  (try (check-place-refused "(defstruct Pt x:i32)
+(defn f (p:&Pt):i32 (set! (p 3) 9) (return 0))
+" 2 ".set!: field name must be a quoted selector"))
+  (return (ok)))
