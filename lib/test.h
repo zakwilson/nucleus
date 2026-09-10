@@ -84,7 +84,8 @@ void test_scratch_set(struct StrView name) asm("test-scratch-set");
 /* test-write-file: uses an error-union or option type; not exported */
 int32_t test_run_one(struct TestCase* tc) asm("test-run-one");
 /* test-find: uses a defunion-template instance type; not exported */
-int32_t test_run_all(void) asm("test-run-all");
+int32_t test_run_all(size_t shard, size_t nshards) asm("test-run-all");
 struct Symbol test_duplicate_name(void) asm("test-duplicate-name");
 void test_list(void) asm("test-list");
+/* test-parse-shard: uses an error-union or option type; not exported */
 int32_t test_main(int32_t argc, void* argv) asm("test-main");

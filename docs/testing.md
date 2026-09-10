@@ -4,7 +4,7 @@
 
 A test suite is an ordinary Nucleus program. `deftest` registers each test before
 `main` runs, so `main` is one call to `test-main`, and the binary answers
-`--list`, `--run <name>`, or no arguments at all.
+`--list`, `--run <name>`, `--shard <i>/<n>`, or no arguments at all.
 
 ```lisp
 (import-use error)
@@ -35,7 +35,7 @@ like.
 | Form | Meaning |
 | --- | --- |
 | `(deftest name body…)` | A test named `name`, run in registration order. |
-| `(test-main argc argv)` | The suite's `main`: `--list`, `--run <name>`, or all. |
+| `(test-main argc argv)` | The suite's `main`: `--list`, `--run <name>`, `--shard <i>/<n>`, or all. |
 | `(skip! parts…)` | End the test as **skipped**, with a reason. |
 
 `deftest` takes a bare symbol, not a string. The body is a function body
@@ -80,6 +80,28 @@ composes with `--list` and `--run`:
 $ ./build/nuctests --run layout-matches-cc --no-skip
 $ make run-nuctests NUCTESTS_ARGS=--no-skip
 ```
+
+## Running in parallel
+
+**`--shard <i>/<n>` runs every nth test starting at `i`**, so `n` processes cover
+the suite exactly once between them. `make test` fans out one shard per core and
+concatenates the records; `NUCTESTS_JOBS=1` puts it back to a single serial run.
+
+```
+$ ./build/nuctests --shard 0/4          # tests 0, 4, 8, …
+$ make test NUCTESTS_JOBS=1             # serial
+```
+
+Shards are separate processes. The runner has no concurrency of its own and
+needs none: each test's scratch directory is keyed by its name, so no two tests
+share a path, and `test-main` refuses a suite with a duplicate name rather than
+let one shard cover a test twice. Records are written per shard and concatenated,
+so `build/nuctests.out` is no longer in registration order — nothing reads it
+that way, but a tool that wants a stable order should sort by name.
+
+Like `--no-skip`, sharding composes with `--run`: the shard that owns the named
+test runs it and the others exit clean, so `NUCTESTS_ARGS=--run <name>` still
+produces exactly one record.
 
 ## Asserting
 

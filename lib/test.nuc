@@ -650,14 +650,16 @@
       (set! i (+ i 1)))
     (return none)))
 
-(defn test-run-all ():i32
+; Shards STRIDE rather than take contiguous blocks: neighbouring tests share
+; fixtures and cost, so a block split hands one shard a whole expensive family.
+(defn test-run-all (shard:usize nshards:usize):i32
   (let (n:usize (count g-tests)
-        i:usize 0
+        i:usize shard
         failed:i32 0)
     (while (< i n)
       (let (tc:TestCase (invoke g-tests i))
         (when (= (test-run-one &tc) TEST-FAIL) (set! failed (+ failed 1))))
-      (set! i (+ i 1)))
+      (set! i (+ i nshards)))
     (return (if (> failed 0) 1 0))))
 
 ; A duplicate name makes `--run` address the wrong test and a shard silently
@@ -683,9 +685,25 @@
         (print (symbol-as-view (tc 'name)) "\n"))
       (set! i (+ i 1)))))
 
+; `--shard i/n` runs every nth test from i, so n processes cover the suite once
+; between them; the pair parses as one argument because half is meaningless alone.
+(defn test-parse-shard (a:StrView out-shard:&usize out-n:&usize):!void
+  (match (strview-find-byte &a 47)
+    ((some k)
+      (let (lhs:StrView (try (strview-sub-bytes &a 0 k))
+            rhs:StrView (try (strview-sub-bytes &a (+ k 1) (a 'len)))
+            si:ui64 (try (strview-parse-magnitude lhs 10 65536))
+            ni:ui64 (try (strview-parse-magnitude rhs 10 65536)))
+        (when (or (= ni 0) (>= si ni)) (return (err! test-bad-args)))
+        (set! (aref out-shard 0) (as usize si))
+        (set! (aref out-n 0) (as usize ni))
+        (return (ok))))
+    (none (return (err! test-bad-args)))))
+
 ; `main` for a suite. `--list` names its tests, `--run <name>` runs exactly one,
-; no arguments runs them all; every run emits one record per test. `--no-skip`
-; is a policy flag rather than a mode, so it composes with either verb.
+; `--shard <i>/<n>` runs every nth from i (the Makefile fans one process per
+; core), no arguments runs them all; every run emits one record per test.
+; `--no-skip` is a policy flag rather than a mode, so it composes with any verb.
 (defn test-main (argc:i32 argv:ptr):i32
   (let (dup:Symbol (test-duplicate-name))
     (when (not (symbol-none? dup))
@@ -693,7 +711,9 @@
       (return 2)))
   (let (i:i32 1
         mode:StrView ""
-        want:StrView "")
+        want:StrView ""
+        shard:usize 0
+        nshards:usize 1)
     (while (< i argc)
       (let (a:StrView (strview-from-cstr (as CStr (aref (as ptr:ptr argv) i))))
         (cond
@@ -707,18 +727,35 @@
               (set! mode "run")
               (set! i (+ i 1))
               (set! want (strview-from-cstr (as CStr (aref (as ptr:ptr argv) i)))))
+          (= a "--shard")
+            (do
+              (when (>= (+ i 1) argc)
+                (eprint "usage: <suite> --shard <i>/<n>\n")
+                (return 2))
+              (set! i (+ i 1))
+              (match (test-parse-shard
+                       (strview-from-cstr (as CStr (aref (as ptr:ptr argv) i)))
+                       &shard &nshards)
+                (ok 0)
+                ((err e)
+                  (eprint "bad --shard: " (err-message e)
+                          "; want <i>/<n> with 0 <= i < n\n")
+                  (return 2))))
           true
             (do
-              (eprint "usage: <suite> [--list | --run <name>] [--no-skip]\n")
+              (eprint "usage: <suite> [--list | --run <name> | --shard <i>/<n>] [--no-skip]\n")
               (return 2))))
       (set! i (+ i 1)))
     (when (= mode "list") (test-list) (return 0))
     (when (= mode "run")
       (match (test-find want)
         ((some k)
+          ; A sharded `--run` is still one test in one shard, so passing both
+          ; yields one record rather than one per shard.
+          (when (!= (% k nshards) shard) (return 0))
           (let (tc:TestCase (invoke g-tests k))
             (return (if (= (test-run-one &tc) TEST-FAIL) 1 0))))
         (none
           (eprint "no such test: " want "\n")
           (return 2))))
-    (return (test-run-all))))
+    (return (test-run-all shard nshards))))
