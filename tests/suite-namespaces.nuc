@@ -1,0 +1,776 @@
+; Stage 18 TF-6 category (c) — what a namespace does to a name.
+;
+; Design: design/stage18-tooling/overview.md §T6.6; Stage 15 B0…B7 in
+; design/stage15-stress-test/name-resolution.md.
+;
+; One question, asked of every kind of binding: given a file's imports, which
+; spellings reach which definition? R1 makes type identity namespaced, R2 keeps
+; a generic's methods merged across namespaces so `import-use` of two libraries
+; that each declare a `describe` stays usable, and R3 says a prefixed import
+; binds its library under the PREFIX it names and not under the library's own
+; namespace. Each unit below is one cell of that table for one kind: function,
+; global, constant, enum member, type, protocol, generic, template, macro,
+; `(dyn P)` box.
+;
+; The oracle is mostly an exit status, because a wrongly-resolved name links to
+; the wrong definition rather than failing — the value says which definition
+; answered. Where the claim is about the ARTIFACT instead of the answer (a
+; namespace-mangled symbol, one box identity, one stamp per instance) the unit
+; reads the module as well. `w1-exit`, `w1-ir` and `w1-compile` are
+; tests/suite-imports.nuc's; every suite is one compilation unit.
+;
+; The refusals all carry a third assertion the shell could not write: no
+; diagnostic may degrade to "not defined anywhere in this compilation unit".
+; These names ARE defined and their files ARE reachable, so that message sends
+; the reader looking for a missing definition instead of a wrong spelling.
+;
+; The behavioural matrix proper — 43 cells, most of them recording defects — is
+; tests/resolution-matrix.sh against tests/expected/resolution-matrix.baseline.
+; That harness is a RECORDER and is deliberately not run from here: a recorded
+; defect changing is the expected outcome of the next step, not a failure.
+
+; The scope refusals share a shape: compile, expect one located error, expect
+; the note that names what the file can actually spell, and refuse the
+; reachability message.
+(defn ns-scope-refusal (main:StrView head:StrView note:StrView):!void
+  (let (c:Compiled (try (w1-compile main)))
+    (try (check-no-line-zero (addr-of c 'diags)))
+    (try (check-error-at (addr-of c 'diags) main 2 head))
+    (try (check-note-at (addr-of c 'diags) main 2 note))
+    (try (check-no-diag-containing (addr-of c 'diags)
+                                   "not defined anywhere in this compilation unit"))
+    (drop (addr-of c)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; B0: the cells that must not move
+; ---------------------------------------------------------------------------
+
+; `import-use` flattens into the unqualified space: a bare function, global and
+; type from the imported file all resolve. The matrix is about the PREFIXED
+; import; this is the path 123 of the tree's 124 imports take, so it is the one
+; that must not move. 40 (global) + 2 (struct field) through the imported
+; function.
+(deftest b0-import-use-flatten
+  (try (test-write-file "b0-uselib.nuc" "(defstruct B0Point x:i32)
+(defvar b0-base:i32 40)
+(defn b0-add (a:i32 b:i32):i32 (return (+ a b)))
+"))
+  (let (m:String (try (test-write-file "b0-use.nuc" "(import-use b0-uselib)
+(defn main ():i32
+  (let (p:(ref B0Point) (B0Point 2))
+    (return (b0-add b0-base (_get p 'x)))))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 42))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; `import-prefixed` resolves `prefix/fn` for a solitary `defn` — the one cell of
+; the `zx/` column that was `ok` before Stage 15 and that every later step has to
+; keep. Two shapes reach the alias by different routes, and both return 42, so
+; the emitted symbol is the only thing that separates them: a library with an
+; explicit `(ns …)` is reached through a namespace-mangled name.
+(deftest b0-prefixed-fn-namespaced
+  (try (test-write-file "b0-nslib.nuc" "(ns b0ns)
+(defn b0-triple (x:i32):i32 (return (* 3 x)))
+"))
+  (let (m:String (try (test-write-file "b0-pfx-ns.nuc" "(import-prefixed b0-nslib zp)
+(defn main ():i32 (return (zp/b0-triple 14)))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        s:String (try (w1-ir mv)))
+    (try (check-line (string-as-view (addr-of s))
+                     "define weak_odr i32 @b0ns__b0-triple(i32 %x.arg) section \".text.b0ns__b0-triple\" {"))
+    (try (w1-exit mv 42))
+    (drop (addr-of s))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; …and a library without one is reached through a bare symbol, where the alias
+; is the only thing the prefix contributes.
+(deftest b0-prefixed-fn-plain
+  (try (test-write-file "b0-plainlib.nuc" "(defn b0-double (x:i32):i32 (return (* 2 x)))
+"))
+  (let (m:String (try (test-write-file "b0-pfx-plain.nuc" "(import-prefixed b0-plainlib q)
+(defn main ():i32 (return (q/b0-double 21)))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        s:String (try (w1-ir mv)))
+    (try (check-line (string-as-view (addr-of s))
+                     "define weak_odr i32 @b0-double(i32 %x.arg) section \".text.b0-double\" {"))
+    (try (w1-exit mv 42))
+    (drop (addr-of s))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; B1: an import prefix is FILE-scoped
+; ---------------------------------------------------------------------------
+
+; Before B1 a prefix was unit-global: the alias key was one string in every file,
+; so a prefix declared while compiling file A resolved from file B, which never
+; declared it. Both halves are pinned, because the fix scopes the prefix rather
+; than deleting it — the middle file, which DOES declare it, must still run.
+(defn b1-files ():!void
+  (try (test-write-file "b1-lib.nuc" "(ns b1ns)
+(defn b1-inc (x:i32):i32 (return (+ x 1)))
+"))
+  (try (test-write-file "b1-mid.nuc" "(import-prefixed b1-lib zx)
+(defn b1-mid-call (x:i32):i32 (return (zx/b1-inc x)))
+"))
+  (return (ok)))
+
+(deftest b1-prefix-in-declaring-file
+  (try (b1-files))
+  (let (m:String (try (test-write-file "b1-ok.nuc" "(import-use b1-mid)
+(defn main ():i32 (return (b1-mid-call 41)))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 42))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; The note is the half that carries the fix: it names the file that DOES bind
+; the prefix, which is the one thing a reader cannot work out from the head.
+(deftest b1-prefix-not-visible-cross-file
+  (try (b1-files))
+  (let (m:String (try (test-write-file "b1-leak.nuc" "(import-use b1-mid)
+(defn main ():i32 (return (zx/b1-inc 41)))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        c:Compiled (try (w1-compile mv)))
+    (try (check-no-line-zero (addr-of c 'diags)))
+    (try (check-error-at (addr-of c 'diags) mv 2
+                         "unknown: zx/b1-inc — 'zx' is not in scope in this file"))
+    (try (check-note-at (addr-of c 'diags) mv 2
+                        "an import prefix is file-scoped: another file in this unit binds 'zx' to "))
+    (try (check-note-at (addr-of c 'diags) mv 2
+                        "This file has no import qualifiers in scope."))
+    (try (check-no-diag-containing (addr-of c 'diags)
+                                   "not defined anywhere in this compilation unit"))
+    (drop (addr-of c))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; B2a: a prefixed import DEFINES the spellings in scope
+; ---------------------------------------------------------------------------
+
+; The originally reported defect: the fixture imports lib/nsdescribe.nuc as
+; `dpx`, and before B2a the library's own `dp/Describe` resolved anyway, which
+; made a prefix an addition to the spellings in scope rather than the definition
+; of them. The shell checked only the note; the head and its line are what say
+; the failure is `extend`'s and not something upstream of it.
+(deftest b2a-scope-diagnostic
+  (let (c:Compiled (try (compile-path "tests/fixtures/b2a-ns-not-in-scope.nuc")))
+    (try (check-no-line-zero (addr-of c 'diags)))
+    (try (check-error-at (addr-of c 'diags) "tests/fixtures/b2a-ns-not-in-scope.nuc" 25
+                         "extend: unknown protocol 'dp/Describe'"))
+    (try (check-note-at (addr-of c 'diags) "tests/fixtures/b2a-ns-not-in-scope.nuc" 25
+                        "'dp' is not in scope in this file"))
+    (try (check-note-at (addr-of c 'diags) "tests/fixtures/b2a-ns-not-in-scope.nuc" 25
+                        "In scope here: dpx."))
+    (try (check-no-diag-containing (addr-of c 'diags)
+                                   "not defined anywhere in this compilation unit"))
+    (drop (addr-of c)))
+  (return (ok)))
+
+; `import-use` flattens a namespaced library AND binds the namespace's own name
+; as a qualifier — the escape hatch, because the remedy for a collision must not
+; be "change how you imported". Both spellings are new, and the pair is RUN
+; because what is asserted is that they land on ONE protocol identity: the box
+; dispatches `dp`'s `describe` on a type that conformed under the bare spelling.
+(deftest b2a-import-use-binds-namespace
+  (let (m:String (try (test-write-file "b2a-flat.nuc" "(import-use allocator)
+(import-use nsdescribe)
+(defstruct Cat n:i32)
+(defn describe ((self (ref Cat))):i32 (return (+ 40 (self 'n))))
+(extend Cat Describe)
+(defn main ():i32
+  (let (a:(dyn dp/Describe) (Cat 2))
+    (return (describe a))))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 42))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; B2b: every kind resolves through the import environment
+; ---------------------------------------------------------------------------
+
+; The alias slice used to be filtered on two fields that mean something else, so
+; a prefixed import silently reached functions and nothing else. All four kinds
+; go through one path now, so all four resolve: 40 (defvar) + 2 (defconst) + 0 +
+; 1 (both enum members, which carry the defaults) = 43. The RUN is the point —
+; an alias carried the ir-name verbatim, so a wrong one linked to the wrong
+; symbol rather than failing.
+(deftest b2b-prefixed-values
+  (try (test-write-file "b2b-vlib.nuc" "(ns b2bns)
+(defn b2b-fn (x:i32):i32 (return x))
+(defvar b2b-gv:i32 40)
+(defconst B2B-K 2)
+(defenum B2BE B2B-A B2B-B)
+"))
+  (let (m:String (try (test-write-file "b2b-vuse.nuc" "(import-prefixed b2b-vlib bv)
+(defn main ():i32
+  (return (bv/b2b-fn (+ (+ bv/b2b-gv bv/B2B-K)
+                        (+ bv/B2B-A bv/B2B-B)))))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 43))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; R3 for the kinds that had no qualified spelling at all before B2b: the
+; DEFINING namespace is out of scope, because the consumer asked for `bv`.
+(deftest b2b-prefixed-values-ns-refused
+  (try (test-write-file "b2b-vlib.nuc" "(ns b2bns)
+(defn b2b-fn (x:i32):i32 (return x))
+(defvar b2b-gv:i32 40)
+(defconst B2B-K 2)
+(defenum B2BE B2B-A B2B-B)
+"))
+  (let (m:String (try (test-write-file "b2b-vns.nuc" "(import-prefixed b2b-vlib bv)
+(defn main ():i32 (return b2bns/b2b-gv))
+")))
+    (try (ns-scope-refusal (string-as-view (addr-of m))
+                           "undefined: b2bns/b2b-gv — 'b2bns' is not in scope in this file"
+                           "In scope here: bv."))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; B3′: type identity is namespaced (R1)
+; ---------------------------------------------------------------------------
+
+(defn b3-vector-files ():!void
+  (try (test-write-file "b3-veca.nuc" "(ns va)
+(defstruct Vector x:i32 y:i32)
+(defn sum-a ((v (ref Vector))):i32 (return (+ (_get v 'x) (_get v 'y))))
+"))
+  (try (test-write-file "b3-vecb.nuc" "(ns vb)
+(defstruct Vector a:i32 b:i32 c:i32)
+(defn sum-b ((v (ref Vector))):i32
+  (return (+ (_get v 'a) (+ (_get v 'b) (_get v 'c)))))
+"))
+  (return (ok)))
+
+; The headline: two namespaces may both define `Vector`, and one unit may use
+; both. It LINKS AND RUNS because "it compiles" cannot tell two types from one —
+; these two have different field counts, so a collapsed identity reads the wrong
+; offsets rather than failing. 3 + 28.
+(deftest b3-two-vectors
+  (try (b3-vector-files))
+  (let (m:String (try (test-write-file "b3-vmain.nuc" "(import-prefixed b3-veca va)
+(import-prefixed b3-vecb vb)
+(defn main ():i32
+  (let (p:(ref va/Vector) (va/Vector 1 2)
+        q:(ref vb/Vector) (vb/Vector 4 8 16))
+    (return (+ (va/sum-a p) (vb/sum-b q)))))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 31))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; And they are two TYPES, not one name with two spellings. `type-eq` is
+; StructDef-pointer identity, so a BY-VALUE slot of one initialized from the
+; other must be refused. The whole message is pinned: the shell's needle stopped
+; at "init type mismatch for 'q'", which is exactly the half that would still
+; match if both types were reported under one bare `Vector`.
+;
+; A `(ref …)` slot is deliberately not used: the compiler does not today check a
+; `(ref A)` value against a `(ref B)` slot, a pre-existing gap unrelated to R1,
+; so that spelling would assert nothing.
+(deftest b3-two-vectors-distinct
+  (try (b3-vector-files))
+  (let (m:String (try (test-write-file "b3-vmix.nuc" "(import-prefixed b3-veca va)
+(import-prefixed b3-vecb vb)
+(defn main ():i32
+  (let (q:vb/Vector (va/Vector 1 2))
+    (return 0)))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        c:Compiled (try (w1-compile mv)))
+    (try (check-no-line-zero (addr-of c 'diags)))
+    (try (check-error-at (addr-of c 'diags) mv 4
+                         "let: init type mismatch for 'q': value is ptr:va/Vector, slot is vb/Vector"))
+    (drop (addr-of c))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; The canonical name reaches diagnostics too: a field of the OTHER `Vector` is
+; reported against the namespaced type name, not a bare one.
+(deftest b3-two-vectors-field
+  (try (b3-vector-files))
+  (let (m:String (try (test-write-file "b3-vfield.nuc" "(import-prefixed b3-veca va)
+(defn main ():i32
+  (let (p:(ref va/Vector) (va/Vector 1 2))
+    (return (_get p 'c))))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        c:Compiled (try (w1-compile mv)))
+    (try (check-no-line-zero (addr-of c 'diags)))
+    (try (check-error-at (addr-of c 'diags) mv 4
+                         "_get: no field 'c' on struct 'va/Vector'"))
+    (drop (addr-of c))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; B3′a: a namespaced type must survive every SYNTHESIS region — where the
+; compiler renders a Type back to its canonical spelling and re-parses it. A
+; synthesized spelling was written by no file, so `b3ang/Pt` is not nameable in
+; a consumer that bound only `bx`; three regions were unarmed and each refused a
+; legal program. The widest is the per-instance conformance check, which every
+; collection in lib/ carries — so before B3′a no namespaced type could be a
+; collection element. It runs, because a wrongly-resolved element type is a
+; layout bug: 3 + 5 + (3*4) = 20.
+(deftest b3a-ns-type-in-collection
+  (try (test-write-file "b3a-lib.nuc" "(ns b3ang)
+(defstruct Pt x:i32 y:i32)
+(defprotocol Areal (area ((self (ref Self))) i32))
+"))
+  (let (m:String (try (test-write-file "b3a-use.nuc" "(import-use vector)
+(import-prefixed b3a-lib bx)
+(defn area ((self (ref bx/Pt))):i32 (return (* (_get self 'x) (_get self 'y))))
+(extend bx/Pt bx/Areal)
+(defn main ():i32
+  (with (v:(ref (Vector (ref bx/Pt))) (vector-new))
+    (let (a:(ref bx/Pt) (bx/Pt 3 4) b:(ref bx/Pt) (bx/Pt 5 6) t:i32 0)
+      (conj v a)
+      (conj v b)
+      (dotimes (i (unsafe/cast i32 (count v)))
+        (set! t (+ t (_get (invoke v (as usize i)) 'x))))
+      (return (+ t (area a))))))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 20))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; A bare type name from a prefixed import: the type is defined, its file is
+; reachable and the prescan registered it, so the diagnostic names the defining
+; namespace and the spelling this file can actually write.
+(deftest b3-type-ns-not-in-scope
+  (let (c:Compiled (try (compile-path "tests/fixtures/b3-type-ns-not-in-scope.nuc")))
+    (try (check-no-line-zero (addr-of c 'diags)))
+    (try (check-error-at (addr-of c 'diags) "tests/fixtures/b3-type-ns-not-in-scope.nuc" 18
+                         "unknown type: Fox — defined in namespace 'dp'"))
+    (try (check-note-at (addr-of c 'diags) "tests/fixtures/b3-type-ns-not-in-scope.nuc" 18
+                        "write 'dpx/Fox' here"))
+    (try (check-no-diag-containing (addr-of c 'diags)
+                                   "not defined anywhere in this compilation unit"))
+    (drop (addr-of c)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; B4: generics get a qualified spelling
+; ---------------------------------------------------------------------------
+
+(defn b4-generic-files ():!void
+  (try (test-write-file "b4-glib-a.nuc" "(ns b4a)
+(defn b4-desc (x:i32):i32 (return (+ x 100)))
+"))
+  (try (test-write-file "b4-glib-b.nuc" "(ns b4b)
+(defn b4-desc (x:i32 y:i32):i32 (return (+ (+ x y) 20)))
+"))
+  (return (ok)))
+
+; A generic is deliberately NOT re-keyed by namespace — one Generic per bare
+; name, methods merged (R2). The qualified spelling is recovered from each
+; method's recorded namespace instead, so `pa/name` is the bare generic FILTERED
+; to what `pa` denotes. Two namespaces each define a `b4-desc` at different
+; arities so both live in one merged method set: 101 + 23.
+(deftest b4-qualified-generic
+  (try (b4-generic-files))
+  (let (m:String (try (test-write-file "b4-guse.nuc" "(import-prefixed b4-glib-a pa)
+(import-prefixed b4-glib-b pb)
+(defn main ():i32 (return (+ (pa/b4-desc 1) (pb/b4-desc 1 2))))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 124))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; The filter is real: `pa/` may not reach the arity `b4b` defined. A lookup that
+; merely ignored the qualifier would resolve this and return 23.
+(deftest b4-qualified-generic-filtered
+  (try (b4-generic-files))
+  (let (m:String (try (test-write-file "b4-gwrong.nuc" "(import-prefixed b4-glib-a pa)
+(import-prefixed b4-glib-b pb)
+(defn main ():i32 (return (pa/b4-desc 1 2)))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        c:Compiled (try (w1-compile mv)))
+    (try (check-no-line-zero (addr-of c 'diags)))
+    (try (check-error-at (addr-of c 'diags) mv 3
+                         "no matching method for overloaded 'b4-desc' with argument types (i32, i32)"))
+    (drop (addr-of c))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; …and R3 still holds for generics. The note lists BOTH prefixes this file bound,
+; which is what shows the list is built from this file's environment rather than
+; from whatever the failed qualifier happened to be near.
+(deftest b4-qualified-generic-ns-refused
+  (try (b4-generic-files))
+  (let (m:String (try (test-write-file "b4-gns.nuc" "(import-prefixed b4-glib-a pa)
+(import-prefixed b4-glib-b pb)
+(defn main ():i32 (return (b4a/b4-desc 1)))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        c:Compiled (try (w1-compile mv)))
+    (try (check-no-line-zero (addr-of c 'diags)))
+    (try (check-error-at (addr-of c 'diags) mv 3
+                         "unknown: b4a/b4-desc — 'b4a' is not in scope in this file"))
+    (try (check-note-at (addr-of c 'diags) mv 3 "In scope here: pa, pb."))
+    (try (check-no-diag-containing (addr-of c 'diags)
+                                   "not defined anywhere in this compilation unit"))
+    (drop (addr-of c))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; A bounded-generic TEMPLATE through a prefix, stamped twice for one concrete
+; type. Two things only this shape reaches: a template records no provenance of
+; its own, so before B4 a method-generic filtered to nothing and `pg/b4-twice`
+; did not resolve; and a stamp is registered under the CALL SITE's namespace, so
+; without re-owning it to the template's the second i32 call misses the memo and
+; the instance is emitted twice under one symbol. Both are link failures, so the
+; run is the check — 6 + 10 + 8 — and the module says which of the two it was:
+; the stamps are owned by `b4g`, and there is exactly one per concrete type
+; although `pg/b4-twice` is called at i32 twice.
+(deftest b4-qualified-template
+  (try (test-write-file "b4-tlib.nuc" "(ns b4g)
+(defprotocol B4Num (b4-zero (self:Self):i32))
+(defn b4-zero (x:i32):i32 (return x))
+(defn b4-zero (x:i16):i32 (return (as i32 x)))
+(extend i32 B4Num)
+(extend i16 B4Num)
+(defn b4-twice (x:T :where (B4Num T)):i32
+  (return (+ (b4-zero x) (b4-zero x))))
+"))
+  (let (m:String (try (test-write-file "b4-tuse.nuc" "(import-prefixed b4-tlib pg)
+(defn main ():i32
+  (let (s:i16 4)
+    (return (+ (pg/b4-twice 3) (+ (pg/b4-twice 5) (pg/b4-twice s))))))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        s:String (try (w1-ir mv))
+        iv:StrView (string-as-view (addr-of s)))
+    (try (check-eq-int (count-matching-lines iv "define weak_odr i32 @b4g__b4_twice.i32(*") 1
+                       "one i32 stamp for two i32 call sites"))
+    (try (check-eq-int (count-matching-lines iv "define weak_odr i32 @b4g__b4_twice.i16(*") 1
+                       "one i16 stamp"))
+    (try (w1-exit mv 24))
+    (drop (addr-of s))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; B5: the shared binding interface
+; ---------------------------------------------------------------------------
+
+; One table with a row per name-keyed registry, the row order being resolution
+; priority. The protocol row was declared, accepted as an input, and unreachable
+; because nothing probed it — so before B5 BOTH orders below died at the
+; PROTOCOL's line saying "already names a type", and the `defn` shape did not
+; error at all. Each case names the line that must be blamed, which is the one
+; the shell's unordered grep could not distinguish between the two orders.
+(defn b5-kind-clash (name:StrView src:StrView line:i32):!void
+  (let (p:String (try (test-write-file name src))
+        pv:StrView (string-as-view (addr-of p))
+        c:Compiled (try (w1-compile pv)))
+    (try (check-no-line-zero (addr-of c 'diags)))
+    (try (check-error-at (addr-of c 'diags) pv line
+                         "'B5Shape' already names a protocol — a symbol may name only one kind of thing"))
+    (drop (addr-of c))
+    (drop (addr-of p)))
+  (return (ok)))
+
+(deftest b5-protocol-vs-struct
+  (try (b5-kind-clash "b5-p1.nuc" "(defprotocol B5Shape
+  (b5-area ((self (ref Self))) i32))
+
+(defstruct B5Shape n:i32)
+
+(defn main ():i32 (return 0))
+" 4))
+  (return (ok)))
+
+(deftest b5-protocol-vs-struct-order2
+  (try (b5-kind-clash "b5-p2.nuc" "(defstruct B5Shape n:i32)
+
+(defprotocol B5Shape
+  (b5-area ((self (ref Self))) i32))
+
+(defn main ():i32 (return 0))
+" 1))
+  (return (ok)))
+
+; A `defn` over a protocol name compiled clean before B5: the guard asked for the
+; highest-priority binding and found the Generic its own signature prescan had
+; just registered, matched the function row, and never looked further.
+(deftest b5-protocol-vs-defn
+  (try (b5-kind-clash "b5-p3.nuc" "(defprotocol B5Shape
+  (b5-area ((self (ref Self))) i32))
+
+(defn B5Shape (x:i32):i32 (return x))
+
+(defn main ():i32 (return 0))
+" 4))
+  (return (ok)))
+
+(defn b5-suggest-lib ():!void
+  (try (test-write-file "b5-slib.nuc" "(ns b5s)
+(defn b5-suggest (x:i32):i32 (return (+ x 1)))
+"))
+  (return (ok)))
+
+; The did-you-mean echoed its input: a candidate reachable only as `sx/b5-suggest`
+; was offered as `b5-suggest`, the very spelling that had just failed. A
+; suggestion is rendered through the writing file's environment now, and one with
+; no such spelling is not offered at all. The head states the fact ahead of
+; guessing at a spelling; the note is the offer, and it is never the failed name.
+(deftest b5-did-you-mean-not-echo
+  (try (b5-suggest-lib))
+  (let (m:String (try (test-write-file "b5-sbad.nuc" "(import-prefixed b5-slib sx)
+(defn main ():i32 (return (b5-suggest 1)))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        c:Compiled (try (w1-compile mv)))
+    (try (check-no-line-zero (addr-of c 'diags)))
+    (try (check-error-at (addr-of c 'diags) mv 2
+                         "unknown: b5-suggest — defined in namespace 'b5s'"))
+    (try (check-note-at (addr-of c 'diags) mv 2 "write 'sx/b5-suggest' here"))
+    (try (check-no-diag-containing (addr-of c 'diags) "did you mean 'b5-suggest'?"))
+    (drop (addr-of c))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; And the suggestion is not merely different — it compiles and runs.
+(deftest b5-did-you-mean-usable
+  (try (b5-suggest-lib))
+  (let (m:String (try (test-write-file "b5-sgood.nuc" "(import-prefixed b5-slib sx)
+(defn main ():i32 (return (sx/b5-suggest 41)))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 42))
+    (drop (addr-of m)))
+  (return (ok)))
+
+(defn b5-export-files ():!void
+  (try (test-write-file "b5-elib.nuc" "(ns b5e)
+(defstruct B5ExpS n:i32)
+(defn b5-exp-fn ((s (ref B5ExpS))):i32 (return (+ 1 (s 'n))))
+(defmacro b5-exp-mac (x) x)
+"))
+  (return (ok)))
+
+; Once type identity is namespaced, a facade that re-exports `b5e/b5-exp-fn` but
+; cannot re-export `b5e/B5ExpS` exports a function whose signature names a type
+; the consumer cannot spell. So the type row is re-exportable: the facade
+; re-exports a type AND a function over it, and the consumer names both through
+; the FACADE's prefix, links and runs — the library's own namespace is not in
+; scope here at all.
+(deftest b5-export-type-facade
+  (try (b5-export-files))
+  (try (test-write-file "b5-efac.nuc" "(ns b5facade)
+(import-use b5-elib)
+(export B5ExpS b5-exp-fn)
+"))
+  (let (m:String (try (test-write-file "b5-em.nuc" "(import-prefixed b5-efac fac)
+(defn main ():i32
+  (let (v:(ref fac/B5ExpS) (fac/B5ExpS 40))
+    (return (fac/b5-exp-fn v))))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 41))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; B6: a `(dyn P)` box's identity is its protocol's canonical name
+; ---------------------------------------------------------------------------
+
+; A library that writes `(dyn Describe)` bare inside `(ns b6dp)` and a consumer
+; that writes `(dyn dpx/Describe)` through its own prefix land on ONE StructDef.
+; Before B6 they were two, and `type-eq` is pointer identity, so this program was
+; unbuildable in both directions — the library's box returned into the consumer's
+; annotation failed in the LLVM parser with no source location, and a consumer
+; value passed into the library's parameter failed at box construction because
+; admission was asked against a canonical name, which is not nameable through a
+; prefix.
+;
+; It runs, and the value is the point: 11 (a library type through the library's
+; own vtable) + 16 (a CONSUMER type dispatched through a vtable the library's
+; forwarder loads). The module then says the identity is the canonical one and
+; that the prefix spelling produced no second box type.
+(deftest b6-dyn-cross-ns
+  (try (test-write-file "b6-dlib.nuc" "(ns b6dp)
+(import-use allocator)
+(defprotocol Describe (describe ((self (ref Self))) i32))
+(defstruct Fox n:i32)
+(defn describe ((self (ref Fox))):i32 (return (+ 3 (_get self 'n))))
+(extend Fox Describe)
+(defn make-fox ((n i32)):(dyn Describe) (return (Fox n)))
+(defn show ((b (dyn Describe))):i32 (return (+ 1 (describe b))))
+"))
+  (let (m:String (try (test-write-file "b6-duse.nuc" "(import-use allocator)
+(import-prefixed b6-dlib dpx)
+(defstruct Cat n:i32)
+(defn describe ((self (ref Cat))):i32 (return (+ 10 (_get self 'n))))
+(extend Cat dpx/Describe)
+(defn main ():i32
+  (let (a:(dyn dpx/Describe) (dpx/make-fox 7))
+    (return (+ (dpx/show a) (dpx/show (Cat 5))))))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        s:String (try (w1-ir mv))
+        iv:StrView (string-as-view (addr-of s)))
+    (try (check-match iv "*%__dyn.b6dp_Describe*"))
+    (try (check-not-match iv "*%__dyn.dpx_Describe*"))
+    (try (w1-exit mv 27))
+    (drop (addr-of s))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; B7: macros resolve through the import environment
+; ---------------------------------------------------------------------------
+
+(defn b7-macro-lib ():!void
+  (try (test-write-file "b7-mlib.nuc" "(ns b7ns)
+(defmacro b7-twice (x) `(+ ~x ~x))
+"))
+  (return (ok)))
+
+; A macro was the last kind on the bare-keyed path. Nothing in the tree exercises
+; this — no macro anywhere in src/, lib/ or examples/ is declared inside a
+; namespaced file, which is also why B7 was byte-identical for the whole tree.
+(deftest b7-macro-prefixed
+  (try (b7-macro-lib))
+  (let (m:String (try (test-write-file "b7-mpre.nuc" "(import-prefixed b7-mlib pm)
+(defn main ():i32 (return (pm/b7-twice 21)))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 42))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; `import-use` binds both the unqualified name and the library's namespace, for a
+; macro exactly as for everything else. 40 through the bare spelling, 2 through
+; the namespaced one.
+(deftest b7-macro-flattened
+  (try (b7-macro-lib))
+  (let (m:String (try (test-write-file "b7-mflat.nuc" "(import-use b7-mlib)
+(defn main ():i32 (return (+ (b7-twice 20) (b7ns/b7-twice 1))))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 42))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; R3 for macros. Before B7 this "worked" for the wrong reason: every macro was
+; one unit-global bare name, so no qualifier resolved and none was needed.
+(deftest b7-macro-ns-refused
+  (try (b7-macro-lib))
+  (let (m:String (try (test-write-file "b7-mns.nuc" "(import-prefixed b7-mlib pm)
+(defn main ():i32 (return (b7ns/b7-twice 21)))
+")))
+    (try (ns-scope-refusal (string-as-view (addr-of m))
+                           "unknown: b7ns/b7-twice — 'b7ns' is not in scope in this file"
+                           "In scope here: pm."))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; The did-you-mean offers a macro spelling that compiles. The macro row was the
+; last one the suggester refused, because `p/mac` would have failed on the next
+; compile; it is a cold path, so it needs a test that executes it.
+(deftest b7-macro-did-you-mean
+  (try (b7-macro-lib))
+  (let (m:String (try (test-write-file "b7-mbare.nuc" "(import-prefixed b7-mlib pm)
+(defn main ():i32 (return (b7-twice 21)))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        c:Compiled (try (w1-compile mv)))
+    (try (check-no-line-zero (addr-of c 'diags)))
+    (try (check-error-at (addr-of c 'diags) mv 2
+                         "unknown: b7-twice (did you mean 'pm/b7-twice'?)"))
+    (drop (addr-of c))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; Three macro sources at once from inside a namespace: the prelude's `when`
+; (reached by the walk's final probe — a namespaced file must not lose the
+; prelude), the file's OWN macro, and another namespace's through a prefix. This
+; is the case a per-kind key walk gets wrong if any one of its three slots is
+; dropped. (2*20) + 1 = 41.
+(deftest b7-macro-three-sources
+  (try (b7-macro-lib))
+  (try (test-write-file "b7-mmid.nuc" "(ns b7mid)
+(import-prefixed b7-mlib pm)
+(defmacro b7-mid-mac (x) `(+ ~x 1))
+(defn b7-mid (n:i32):i32
+  (let (x:i32 0)
+    (when (> n 3) (set! x (b7-mid-mac (pm/b7-twice n))))
+    (return x)))
+"))
+  (let (m:String (try (test-write-file "b7-mmm.nuc" "(import-prefixed b7-mmid md)
+(defn main ():i32 (return (md/b7-mid 20)))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 41))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; Two namespaces may each declare a macro of one bare name — the thing a single
+; unit-global key made impossible. Under the redefinition rule these would have
+; collided; they are two keys now, and each prefix reaches its own: 20 + 21.
+(deftest b7-macro-two-namespaces
+  (try (b7-macro-lib))
+  (try (test-write-file "b7-mlib2.nuc" "(ns b7ns2)
+(defmacro b7-twice (x) `(* ~x 3))
+"))
+  (let (m:String (try (test-write-file "b7-mboth.nuc" "(import-prefixed b7-mlib pa)
+(import-prefixed b7-mlib2 pb)
+(defn main ():i32 (return (+ (pa/b7-twice 10) (pb/b7-twice 7))))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 41))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; A macro re-exports through a facade and EXPANDS through the facade's prefix.
+; This pin used to assert a refusal whose stated reason — that a macro is
+; "identified by a globally-unique bare name" — was circular: macros were
+; bare-keyed only because they had never been cut over. The run is the point; a
+; compile-only check would pass on a macro that resolved and expanded to nothing.
+(deftest b7-export-macro-facade
+  (try (b5-export-files))
+  (try (test-write-file "b5-emac.nuc" "(ns b5facade2)
+(import-use b5-elib)
+(export b5-exp-mac)
+"))
+  (let (m:String (try (test-write-file "b5-emm.nuc" "(import-prefixed b5-emac fac2)
+(defn main ():i32 (return (fac2/b5-exp-mac 41)))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 41))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; What genuinely stays unexportable, for a reason that is true: an OVERLOADED
+; name is deliberately merged across namespaces, so it is not keyed by namespace
+; and a re-export would change nothing. The blame is the FACADE's `export` line,
+; not the consumer that imported it — which is the part the shell's grep over the
+; whole stderr blob could not see.
+(deftest b7-export-overload-refused
+  (try (test-write-file "b5-eovl.nuc" "(ns b5ov)
+(defn b5-exp-ov (x:i32):i32 (return x))
+(defn b5-exp-ov (x:i32 y:i32):i32 (return (+ x y)))
+"))
+  (let (f:String (try (test-write-file "b5-eovfac.nuc" "(ns b5ovfacade)
+(import-use b5-eovl)
+(export b5-exp-ov)
+"))
+        m:String (try (test-write-file "b5-eovm.nuc" "(import-use b5-eovfac)
+(defn main ():i32 (return 0))
+"))
+        c:Compiled (try (w1-compile (string-as-view (addr-of m)))))
+    (try (check-no-line-zero (addr-of c 'diags)))
+    (try (check-error-at (addr-of c 'diags) (string-as-view (addr-of f)) 3
+                         "export: 'b5-exp-ov' is a function — that kind is not keyed by namespace, so a re-export would not change how it resolves"))
+    (try (check-note-at (addr-of c 'diags) (string-as-view (addr-of f)) 3
+                        "an overloaded name is deliberately merged across namespaces"))
+    (drop (addr-of c))
+    (drop (addr-of m))
+    (drop (addr-of f)))
+  (return (ok)))

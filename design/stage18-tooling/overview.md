@@ -2620,6 +2620,78 @@ changed to `f32` so AVR accepts it, `float` to `double`, `mul nsw i64` to i32,
 the AVR struct parameter changed to the host's `i32`, `lp64d` to `lp64`, and the
 riscv multiply's operands changed by one register.
 
+#### TF-6 category (c), what a namespace does to a name (2026-09-10)
+
+**16 shell functions → 33 tests**, 563 body lines retired (827 lines of the
+file, including the per-function banners and the twenty-one `spawn` lines):
+`run_b0_import_use_flatten`, `run_b0_import_prefixed_fn` (2),
+`run_b1_prefix_file_scope` (2), `run_b2a_scope_diagnostic`,
+`run_b2a_import_use_binds_namespace`, `run_b2b_prefixed_values` (2),
+`run_b3_two_vectors` (3), `run_b3a_ns_type_generic`,
+`run_b3_ns_type_diagnostic`, `run_b4_qualified_generic` (3),
+`run_b4_qualified_template`, `run_b5_protocol_kind` (3),
+`run_b5_did_you_mean` (2), `run_b5_export_kinds` (3), `run_b6_dyn_cross_ns` and
+`run_b7_qualified_macro` (6), into a new `tests/suite-namespaces.nuc` (776
+lines). `tests/run-tests.sh` is 3,247 → 2,420 lines and 59 → 43 functions.
+`make test` is 102 shell + 864 native = 966.
+
+A new module rather than an addition to `suite-modules.nuc` or
+`suite-imports.nuc`: those two ask what a *unit boundary* does to a name (the
+redefinition rule) and *when* a name may be used (order and reachability). This
+one asks which spellings reach which definition given a file's imports — R1,
+R2 and R3 of `name-resolution.md` §8, one cell per kind of binding.
+
+**The shell checked the note and never the diagnostic it hangs off.**
+`run_b2a_scope_diagnostic` grepped stderr for `note: 'dp' is not in scope in
+this file` and `In scope here: dpx.` — both notes. The error itself is
+`extend: unknown protocol 'dp/Describe'` at line 25, and neither its text nor
+its location was asserted at all, so any diagnostic anywhere in the run could
+have supplied the notes. `check-error-at` plus `check-note-at` match one record.
+
+**A needle that dropped the discriminating half.** `b3-two-vectors-distinct`
+exists to show `va/Vector` and `vb/Vector` are two type identities, and the
+shell asserted `let: init type mismatch for 'q'` — the prefix of the message
+that stops one character before the type names. The full message is `value is
+ptr:va/Vector, slot is vb/Vector`, and it is pinned now: the perturbation that
+rewrites `slot is vb/Vector` to `slot is va/Vector` is exactly the collapse the
+unit is about, and the shell's needle would not have noticed it.
+
+**The wrong file was being blamed and nobody could see it.**
+`b7-export-overload-refused` compiles a consumer, and the error is raised
+against the *facade*'s `export` line (`b5-eovfac.nuc:3`), which is correct and
+is the useful half — the consumer did nothing wrong. A grep over the whole
+stderr blob cannot tell that from an error on the consumer.
+
+**Three claims the comments made and the assertions did not.** Each is now
+checked, and each is what separates a pair of units that otherwise agree:
+`b0-prefixed-fn-namespaced` and `-plain` both return 42, and the difference
+between them — `@b0ns__b0-triple` against a bare `@b0-double` — lives only in
+the module; `b6-dyn-cross-ns` says the box identity is the canonical
+`%__dyn.b6dp_Describe` and that the prefix spelling produced no second box
+type; and `b4-qualified-template` counts **one** `@b4g__b4_twice.i32` for two
+i32 call sites, which is the memo claim, and finds it under the template's
+namespace rather than the call site's.
+
+**One library gap filled**: `check-no-diag-containing`, in
+`tests/nuctests.nuc`. Five of these refusals carry an anti-degradation guard —
+the message must not fall back to "not defined anywhere in this compilation
+unit", which for a name that is defined and reachable is false — and a
+`qgrep` for its absence over stderr was the only way to write it before.
+
+**Verified by breaking it**, thirty-three ways, one per unit, each reverted by
+editing the source back, never with git. Twelve expected exit values moved by
+one, two emitted symbols misspelled, one stamp count asked for as two, the box
+identity asked for under the prefix spelling, four `In scope here:` lists
+changed, three blamed lines moved, two suggested spellings altered, the type
+mismatch's slot type collapsed onto the value's, the field owner swapped, the
+overload refusal's blame moved from the facade to the consumer, and the
+`binds 'zx' to` note's prefix renamed.
+
+**Carried forward, not resolved:** the mechanical sweep of dangling `run_*`
+names in `design/` now also covers `examples/w9-dyn-ns.nuc:56`, which names
+`run_b6_dyn_cross_ns` in a comment. A comment-only edit to an example emits
+byte-identical IR, so the sweep forces no snapshot re-take.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that

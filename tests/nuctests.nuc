@@ -42,6 +42,7 @@
 (import-use suite-conversions)
 (import-use suite-fnptr)
 (import-use suite-cdecl)
+(import-use suite-namespaces)
 
 
 
@@ -579,6 +580,30 @@
           (str-into (addr-of out) rest)
           (set! more false))))
     (return (ok out))))
+
+; No diagnostic, message or note, says `needle`. The guard a scope diagnostic
+; needs: "unknown" plus the right note still passes if the compiler ALSO fell
+; back to claiming the name is absent from the unit, which for a name that is
+; defined and reachable is false.
+(defn check-no-diag-containing ((ds (ref (Vector Diagnostic))) needle:StrView):!void
+  (let (n:usize (count ds)
+        i:usize 0)
+    (while (< i n)
+      (let (d:Diagnostic (invoke ds i))
+        (when (contains? (d 'message) needle)
+          (let (l:String (diag-list-text ds))
+            (fail! "no diagnostic may contain " (sexp-quote needle) "\n     got:"
+                   (string-as-view (addr-of l)))))
+        (let (m:usize (count (d 'notes))
+              j:usize 0)
+          (while (< j m)
+            (when (contains? (invoke (d 'notes) j) needle)
+              (let (l:String (diag-list-text ds))
+                (fail! "no note may contain " (sexp-quote needle) "\n     got:"
+                       (string-as-view (addr-of l)))))
+            (set! j (+ j 1)))))
+      (set! i (+ i 1))))
+  (return (ok)))
 
 ; `opt -O2` over a module, as text. The only way to ask whether a function
 ; attribute changes what the optimizer actually does.
