@@ -2744,6 +2744,52 @@ the two emission orders swapped, an emitted symbol misspelled, a suggested
 spelling changed, an `import: cannot find` head reworded, and the two collision
 messages pointed at the blamed file instead of the earlier one.
 
+#### TF-6 category (c), what a prefix must not change (2026-09-10)
+
+**3 shell functions → 12 tests**, 192 body lines retired (234 lines of the file,
+including the per-function banners and three `spawn` lines):
+`run_w9_bare_ref_prefix` (5), `run_w9_template_env` (3) and
+`run_w9_dyn_solitary` (4), into `tests/suite-namespaces.nuc`, which grows 776 →
+1,067 lines. `tests/run-tests.sh` is 2,113 → 1,879 lines and 37 → 34 functions.
+`make test` is 73 shell + 893 native = 966.
+
+Not a new module: these are W9 items 41 and 43, and all three are the same
+question §T6.6's namespace suite already asks — which spellings reach which
+definition. Item 43 is the bare half of the rule B4 implemented for the
+qualified half, and item 41 is a protocol method's slot reached through a
+qualifier.
+
+**A purely negative assertion, in a function that knew better.**
+`w9-dyn-solitary-dispatches-indirectly` asserted only that no direct call to
+`add-k` or `name-of` appears — which an empty module satisfies. Twenty lines
+below it, the sibling unit `w9-dyn-solitary-qualified-reaches-slot` carries the
+comment "An empty module would pass a purely negative assertion, so require the
+indirect call to be there as well as the direct one to be gone", and does. The
+hazard was known and applied to one of the two. The native unit requires the
+three boxed dispatches by COUNT before refusing the direct ones.
+
+**Three substrings, one diagnostic never established.**
+`w9-template-error-blames-library` grepped stderr for a location, a message
+fragment and the words "while instantiating", with nothing tying them to one
+record — and never checked the `requested at <caller>:2` half at all, which is
+the only part naming the instantiation site and the entire reason the note
+exists. That is what makes the error usable: the blamed line is the library's,
+so without it the reader has no way back to the call that asked. Pinned as one
+record now, note included.
+
+**A `mv` replaced by the mechanism that exists for it.** The `.nuch`
+separate-compilation unit moved the library source aside mid-test so
+`resolve-import` could not prefer it over the header. `test-scratch-sub` exists
+for exactly this — its own comment says so — so the source sits in `l/`, the
+header in `h/`, and only `h/` is a search directory for the consumer.
+
+**Verified by breaking it**, twelve ways, one per unit, each reverted by editing
+the source back, never with git. Six expected values moved — one of them to
+103, which is the defect itself, a bare call reaching the prefixed library — the
+emitted call's operand width changed to the library's, the template error's
+blame moved to the caller, the boxed-dispatch count asked for as four, the
+direct-call refusal inverted, and the printed answer changed by one.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that
