@@ -360,3 +360,719 @@ int main(void) {
     (try (check-line ir "define void @sret6_mixed(ptr sret(%Big) align 8 %.sret, i64 %a.arg, i64 %b.arg, i64 %c.arg, i64 %d.arg, i64 %e.arg, i64 %f.arg, i64 %m.arg) section \".text.sret6_mixed\" {"))
     (drop (addr-of s)))
   (return (ok)))
+
+; ---------------------------------------------------------------------------
+; Stage 14 AVR-1..AVR-7 and RV-1, Stage 15 W9 item 15 — a machine that is not
+; the host
+; ---------------------------------------------------------------------------
+;
+; The lanes above ask what the target decides about C. This one asks the prior
+; question: whether `--target=` reached anything at all. A compiler can echo a
+; triple into the module header and go on emitting for the machine it is running
+; on, and every one of these defects was exactly that — a 64-bit GEP index on an
+; 8-bit MCU, a Node cell sized 40 for a 16-bit pointer, an SysV eightbyte
+; classification on a part with no registers to hold one, soft-float libcalls
+; against a hard-float ABI. None of them is an error; all of them are silent.
+;
+; So no unit here is satisfied by the header. Each reads the emitted
+; INSTRUCTIONS, or drives the target's own toolchain, and the AVR ones come in
+; pairs against the host: the same source, one target keyed off the descriptor.
+
+; `clang --target=<t>` over an empty translation unit. The datalayout is LLVM's
+; own answer for the triple, from the same LLVM the compiler is linked against,
+; so a unit can ask whether the compiler agreed with it rather than whether the
+; compiler still says what it said last time.
+(defn clang-datalayout (target:StrView):!String
+  (let (dir:StrView (try (test-scratch))
+        src:String (try (write-into dir "empty.c" ""))
+        flag:String (str "--target=" target)
+        c:Command (command "clang"))
+    (command-arg (addr-of c) (string-as-view (addr-of flag)))
+    (command-arg (addr-of c) "-S")
+    (command-arg (addr-of c) "-emit-llvm")
+    (command-arg (addr-of c) "-o")
+    (command-arg (addr-of c) "-")
+    (command-arg (addr-of c) (string-as-view (addr-of src)))
+    (command-capture (addr-of c) true)
+    (match (run (addr-of c))
+      ((ok o)
+        (when (not (success? (addr-of o 'status)))
+          (fail! "clang cannot describe target " target "\n     "
+                 (test-show (string-as-view (addr-of o 'err)))))
+        (let (ov:StrView (string-as-view (addr-of o 'out))
+              l:StrView (try (line-with ov "target datalayout = "))
+              out:String (try (string-from-view (addr-of l))))
+          (drop (addr-of o))
+          (drop (addr-of c))
+          (drop (addr-of flag))
+          (drop (addr-of src))
+          (return (ok out))))
+      ((err e)
+        (drop (addr-of c))
+        (drop (addr-of flag))
+        (drop (addr-of src))
+        (return (err e))))))
+
+; What one `--target=` is worth. The fixture is W9 item 15's, freestanding, so
+; the absence of the target's own C headers is not part of the question and
+; silence is a real assertion; and because every indexing form is in it, the
+; pointer width has somewhere to show up besides the module header. `idx` is a
+; property of the machine's NAME, not of this compiler, which is why it is
+; written here rather than read back.
+(defn tgt-triple-one (target:StrView idx:StrView):!void
+  (let (c:Compiled (try (compile-path-for target "tests/fixtures/w9-gep-index-width.nuc"))
+        iv:StrView (compiled-ir (addr-of c))
+        what:String (str "cross-emitting for " target)
+        triple:String (str "target triple = \"" target "\"")
+        dl:String (try (clang-datalayout target))
+        gep:String (str "  %t* = getelementptr inbounds i8, ptr %t*, " idx " %t*")
+        gwhat:String (str "pointer-sized GEP indices for " target))
+    (try (check-silent (addr-of c) (string-as-view (addr-of what))))
+    (try (check-line iv (string-as-view (addr-of triple))))
+    (try (check-line iv (string-as-view (addr-of dl))))
+    ; All six, not one: a partial conversion leaves the rest at host width, and
+    ; only the index that is at or above the target pointer width fails to parse.
+    (try (check-eq-int (count-matching-lines iv (string-as-view (addr-of gep))) 6
+                       (string-as-view (addr-of gwhat))))
+    (drop (addr-of gwhat))
+    (drop (addr-of gep))
+    (drop (addr-of dl))
+    (drop (addr-of triple))
+    (drop (addr-of what))
+    (drop (addr-of c)))
+  (return (ok)))
+
+(deftest target-x86_64-pc-linux-gnu
+  (return (tgt-triple-one "x86_64-pc-linux-gnu" "i64")))
+
+(deftest target-x86_64-apple-darwin
+  (return (tgt-triple-one "x86_64-apple-darwin" "i64")))
+
+(deftest target-aarch64-apple-darwin
+  (return (tgt-triple-one "aarch64-apple-darwin" "i64")))
+
+(deftest target-aarch64-unknown-linux-gnu
+  (return (tgt-triple-one "aarch64-unknown-linux-gnu" "i64")))
+
+(deftest target-arm-unknown-linux-gnueabihf
+  (return (tgt-triple-one "arm-unknown-linux-gnueabihf" "i32")))
+
+(deftest target-x86_64-pc-windows-msvc
+  (return (tgt-triple-one "x86_64-pc-windows-msvc" "i64")))
+
+(deftest target-x86_64-pc-windows-gnu
+  (return (tgt-triple-one "x86_64-pc-windows-gnu" "i64")))
+
+(deftest target-i386-pc-linux-gnu
+  (return (tgt-triple-one "i386-pc-linux-gnu" "i32")))
+
+(deftest target-avr
+  (return (tgt-triple-one "avr" "i16")))
+
+; ---------------------------------------------------------------------------
+; The `long` data model, per target
+; ---------------------------------------------------------------------------
+
+; C `long` is 64-bit on LP64, 32-bit on ILP32 and on Windows LLP64, while `long
+; long` is 64-bit everywhere — so the two together separate all three models,
+; and neither alone does. The probe is written into the test's own scratch
+; directory; the shell wrote it into `tests/abi/` beside the header, which is
+; the source tree.
+(defn long-abi-one (target:StrView want-l:StrView want-ll:StrView):!void
+  (let (dir:StrView (try (test-scratch))
+        probe:String (try (write-into dir "long-probe.nuc"
+"(exclude-prelude)
+(import-use \"tests/abi/long.h\")
+(defn use ():i64 (return (lfn 1)))
+"))
+        c:Compiled (try (compile-path-for target (string-as-view (addr-of probe))))
+        iv:StrView (compiled-ir (addr-of c))
+        l:String (str "declare " want-l " @lfn(" want-l ")")
+        ll:String (str "declare " want-ll " @llfn(" want-ll ")")
+        ul:String (str "declare " want-l " @ulfn(" want-l ")"))
+    (try (check-no-errors (addr-of c 'diags)))
+    (try (check-line iv (string-as-view (addr-of l))))
+    (try (check-line iv (string-as-view (addr-of ll))))
+    ; `unsigned long` is the same width as `long`; the shell declared it in the
+    ; header and then never looked at it.
+    (try (check-line iv (string-as-view (addr-of ul))))
+    (drop (addr-of ul))
+    (drop (addr-of ll))
+    (drop (addr-of l))
+    (drop (addr-of c))
+    (drop (addr-of probe)))
+  (return (ok)))
+
+(deftest long-abi-x86_64-pc-linux-gnu
+  (return (long-abi-one "x86_64-pc-linux-gnu" "i64" "i64")))
+
+(deftest long-abi-aarch64-apple-darwin
+  (return (long-abi-one "aarch64-apple-darwin" "i64" "i64")))
+
+(deftest long-abi-i386-pc-linux-gnu
+  (return (long-abi-one "i386-pc-linux-gnu" "i32" "i64")))
+
+(deftest long-abi-x86_64-pc-windows-msvc
+  (return (long-abi-one "x86_64-pc-windows-msvc" "i32" "i64")))
+
+; ---------------------------------------------------------------------------
+; AVR: the toolchain, and what it is handed
+; ---------------------------------------------------------------------------
+
+; The two reference devices: `attiny1634` names an exact part, `avrxmega3` names
+; the AVR-Dx family core that the deviceless AVR32DD20 is compiled for. Both
+; must lower, because the family path is the one that needs `--mmcu` at link.
+(defn avr-mcpu (cpu:StrView):String
+  (return (str "--mcpu=" cpu)))
+
+(defn avr-ir (cpu:StrView path:StrView):!String
+  (let (flag:String (avr-mcpu cpu)
+        c:Compiled (try (target-emit "avr" (string-as-view (addr-of flag)) path))
+        iv:StrView (compiled-ir (addr-of c)))
+    (try (check-no-errors (addr-of c 'diags)))
+    (let (out:String (try (string-from-view (addr-of iv))))
+      (drop (addr-of c))
+      (drop (addr-of flag))
+      (return (ok out)))))
+
+; `llc` over emitted IR, as an object. The compiler never reads back what it
+; writes, so this is the only thing that says the module is not merely
+; well-formed text but something the AVR backend accepts.
+(defn llc-object (stem:StrView mtriple:StrView mcpu:StrView ir:StrView):!void
+  (let (dir:StrView (try (test-scratch))
+        name:String (str stem ".ll")
+        src:String (try (write-into dir (string-as-view (addr-of name)) ir))
+        obj:String (str dir "/" stem ".o")
+        tflag:String (str "-mtriple=" mtriple)
+        cflag:String (str "-mcpu=" mcpu)
+        c:Command (command "llc"))
+    (command-arg (addr-of c) (string-as-view (addr-of tflag)))
+    (when (not (= mcpu "")) (command-arg (addr-of c) (string-as-view (addr-of cflag))))
+    (command-arg (addr-of c) "-filetype=obj")
+    (command-arg (addr-of c) (string-as-view (addr-of src)))
+    (command-arg (addr-of c) "-o")
+    (command-arg (addr-of c) (string-as-view (addr-of obj)))
+    (command-capture (addr-of c) true)
+    (match (run (addr-of c))
+      ((ok o)
+        (when (not (success? (addr-of o 'status)))
+          (fail! "llc rejected the emitted " mtriple " IR\n     "
+                 (test-show (string-as-view (addr-of o 'err)))))
+        (drop (addr-of o)))
+      ((err e)
+        (drop (addr-of c))
+        (return (err e))))
+    (let (got:String (try (read-file (string-as-view (addr-of obj)))))
+      (try (check-non-empty (string-as-view (addr-of got))))
+      (drop (addr-of got)))
+    (drop (addr-of c))
+    (drop (addr-of cflag))
+    (drop (addr-of tflag))
+    (drop (addr-of obj))
+    (drop (addr-of src))
+    (drop (addr-of name)))
+  (return (ok)))
+
+; AVR-1: the datalayout is the one clang derives for `avr`, and llc lowers what
+; the compiler emitted. `--mcpu` reaches the TargetMachine or llc's own device
+; check refuses the object.
+(deftest avr-emit-attiny1634
+  (let (s:String (try (avr-ir "attiny1634" "examples/arith.nuc"))
+        ir:StrView (string-as-view (addr-of s))
+        dl:String (try (clang-datalayout "avr")))
+    (try (check-line ir "target triple = \"avr\""))
+    (try (check-line ir (string-as-view (addr-of dl))))
+    (drop (addr-of dl))
+    (drop (addr-of s)))
+  (return (ok)))
+
+(deftest avr-emit-avrxmega3
+  (let (s:String (try (avr-ir "avrxmega3" "examples/arith.nuc"))
+        ir:StrView (string-as-view (addr-of s))
+        dl:String (try (clang-datalayout "avr")))
+    (try (check-line ir "target triple = \"avr\""))
+    (try (check-line ir (string-as-view (addr-of dl))))
+    (drop (addr-of dl))
+    (drop (addr-of s)))
+  (return (ok)))
+
+(deftest avr-llc-attiny1634
+  (when (not (have-program? "llc")) (skip! "llc is not installed"))
+  (let (s:String (try (avr-ir "attiny1634" "examples/arith.nuc")))
+    (try (llc-object "avr-emit-attiny1634" "avr" "attiny1634" (string-as-view (addr-of s))))
+    (drop (addr-of s)))
+  (return (ok)))
+
+(deftest avr-llc-avrxmega3
+  (when (not (have-program? "llc")) (skip! "llc is not installed"))
+  (let (s:String (try (avr-ir "avrxmega3" "examples/arith.nuc")))
+    (try (llc-object "avr-emit-avrxmega3" "avr" "avrxmega3" (string-as-view (addr-of s))))
+    (drop (addr-of s)))
+  (return (ok)))
+
+; AVR-2: 16-bit correctness where llc cannot see it. A wrong-but-well-formed
+; `malloc` size lowers perfectly — the quasiquote helper's Node cell is 16 + 3*2
+; on a 16-bit pointer, and was the host's 40 with `align 8`.
+(defn avr2-16bit-one (cpu:StrView):!void
+  (let (s:String (try (avr-ir cpu "tests/fixtures/avr2-16bit.nuc"))
+        ir:StrView (string-as-view (addr-of s)))
+    (try (check-match ir "*ptrtoint ptr %t* to i16"))
+    (try (check-match ir "*call ptr @malloc(i64 22)"))
+    (try (check-match ir "  store ptr %a, ptr %p4, align 1"))
+    (try (check-not-match ir "*call ptr @malloc(i64 40)"))
+    (drop (addr-of s)))
+  (return (ok)))
+
+(deftest avr2-16bit-attiny1634
+  (return (avr2-16bit-one "attiny1634")))
+
+(deftest avr2-16bit-avrxmega3
+  (return (avr2-16bit-one "avrxmega3")))
+
+(deftest avr2-llc-attiny1634
+  (when (not (have-program? "llc")) (skip! "llc is not installed"))
+  (let (s:String (try (avr-ir "attiny1634" "tests/fixtures/avr2-16bit.nuc")))
+    (try (llc-object "avr2-attiny1634" "avr" "attiny1634" (string-as-view (addr-of s))))
+    (drop (addr-of s)))
+  (return (ok)))
+
+(deftest avr2-llc-avrxmega3
+  (when (not (have-program? "llc")) (skip! "llc is not installed"))
+  (let (s:String (try (avr-ir "avrxmega3" "tests/fixtures/avr2-16bit.nuc")))
+    (try (llc-object "avr2-avrxmega3" "avr" "avrxmega3" (string-as-view (addr-of s))))
+    (drop (addr-of s)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; W9 item 15: the GEP index follows the target pointer
+; ---------------------------------------------------------------------------
+;
+; The nine triple units above assert the width; these three assert the two ways
+; the old code was wrong, which the width alone does not distinguish. An index
+; at or above the pointer width was passed through unwidened while the
+; annotation still read `i64`, naming an i16 register — LLVM refuses that
+; outright. A NARROWER one was widened to a real i64, which parses and lowers
+; and emits 64-bit arithmetic on an 8-bit MCU; only its absence can be seen.
+
+(deftest w9-gep-index-width-avr-parses
+  (let (s:String (try (avr-ir "attiny1634" "tests/fixtures/w9-gep-index-width.nuc"))
+        sv:StrView (string-as-view (addr-of s)))
+    (try (check-ir-parses sv))
+    ; The control, and the defect itself: widening only the ANNOTATION is what
+    ; the old code did, so llvm-as accepting the module above means something
+    ; only because the same llvm-as refuses this one.
+    (let (bad:String (try (replace-all sv ", i16 %" ", i64 %")))
+      (try (check-ir-rejects (string-as-view (addr-of bad)) "but expected 'i16'"))
+      (drop (addr-of bad)))
+    (drop (addr-of s)))
+  (return (ok)))
+
+(deftest w9-gep-index-width-avr-no-i64
+  (let (s:String (try (avr-ir "attiny1634" "tests/fixtures/w9-gep-index-width.nuc"))
+        ir:StrView (string-as-view (addr-of s)))
+    ; Instruction lines only. The AVR datalayout names i64 as a legal scalar
+    ; width, which says nothing about whether an instruction uses one.
+    (try (check-not-match ir "  *i64*"))
+    (drop (addr-of s)))
+  (return (ok)))
+
+(deftest w9-gep-index-width-host
+  (let (c:Compiled (try (compile-path "tests/fixtures/w9-gep-index-width.nuc"))
+        iv:StrView (compiled-ir (addr-of c)))
+    (try (check-eq-int
+           (count-matching-lines iv "  %t* = getelementptr inbounds i8, ptr %t*, i64 %t*")
+           6 "host GEP indices at the host pointer width"))
+    (drop (addr-of c)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; AVR-3/AVR-5: a real link, driven by the target's own toolchain
+; ---------------------------------------------------------------------------
+
+(defn have-avr-toolchain? ():bool
+  (return (and (have-program? "avr-gcc")
+               (and (have-program? "avr-objdump") (have-program? "avr-size")))))
+
+; `nucleusc --target=avr --mcpu=<cpu> [--mmcu=<device>] <path> -o <elf>`. No
+; `-c` and no `--emit-llvm`: the compiler emits the object and shells out to
+; `avr-gcc`, which is the part under test.
+(defn avr-link (stem:StrView cpu:StrView mmcu:StrView path:StrView):!String
+  (let (dir:StrView (try (test-scratch))
+        elf:String (str dir "/" stem ".elf")
+        cflag:String (avr-mcpu cpu)
+        mflag:String (str "--mmcu=" mmcu)
+        what:String (str "linking " path " for " cpu)
+        c:Command (command (compiler-path)))
+    (command-arg (addr-of c) "--target=avr")
+    (command-arg (addr-of c) (string-as-view (addr-of cflag)))
+    (when (not (= mmcu "")) (command-arg (addr-of c) (string-as-view (addr-of mflag))))
+    (command-arg (addr-of c) "--diagnostics=sexp")
+    (command-arg (addr-of c) path)
+    (command-arg (addr-of c) "-o")
+    (command-arg (addr-of c) (string-as-view (addr-of elf)))
+    (let (r:Compiled (try (compiled-run (addr-of c))))
+      (try (check-silent (addr-of r) (string-as-view (addr-of what))))
+      (drop (addr-of r)))
+    (drop (addr-of c))
+    (drop (addr-of what))
+    (drop (addr-of mflag))
+    (drop (addr-of cflag))
+    (return (ok elf))))
+
+(defn avr-tool (tool:StrView flag:StrView path:StrView):!String
+  (let (c:Command (command tool))
+    (command-arg (addr-of c) flag)
+    (command-arg (addr-of c) path)
+    (command-capture (addr-of c) true)
+    (match (run (addr-of c))
+      ((ok o)
+        (when (not (success? (addr-of o 'status)))
+          (fail! tool " " flag " failed\n     "
+                 (test-show (string-as-view (addr-of o 'err)))))
+        (let (ov:StrView (string-as-view (addr-of o 'out))
+              out:String (try (string-from-view (addr-of ov))))
+          (drop (addr-of o))
+          (drop (addr-of c))
+          (return (ok out))))
+      ((err e)
+        (drop (addr-of c))
+        (return (err e))))))
+
+; The n'th whitespace-separated field of `l`. `avr-size`'s Berkeley columns are
+; padded to a width, so they are not separated by a fixed string.
+(defn ws-field (l:StrView n:i64):!StrView
+  (let (rest:StrView (strview-trim-start (addr-of l))
+        i:i64 0)
+    (while (not (strview-empty (addr-of rest)))
+      (let (end:usize (strview-byte-len (addr-of rest))
+            k:usize 0)
+        (while (and (< k end)
+                    (not (strview-is-ascii-ws (try (strview-byte-at (addr-of rest) k)))))
+          (set! k (+ k 1)))
+        (when (= i n) (return (ok (strview-take-bytes rest k))))
+        (let (tail:StrView (strview-drop-bytes rest k))
+          (set! rest (strview-trim-start (addr-of tail))))
+        (set! i (+ i 1)))))
+  (fail! "no field " n " in " (sexp-quote l)))
+
+; The `text` and `data` columns of `avr-size`. A freestanding program is tens of
+; bytes; a pulled-in host runtime is kilobytes and brings initialized data with
+; it, so `data` is the load-bearing half and `text` is the sanity bound.
+(defn avr-footprint (elf:StrView out-text:&ui64 out-data:&ui64):!void
+  (let (s:String (try (avr-tool "avr-size" "-B" elf))
+        sv:StrView (string-as-view (addr-of s))
+        it:LineIter (strview-lines (addr-of sv))
+        row:StrView "")
+    (while (not (lines-iter-done (addr-of it)))
+      (let (l:StrView (lines-iter-next (addr-of it)))
+        (when (and (= row "") (contains? l "/")) (set! row l))))
+    (when (= row "") (fail! "avr-size printed no row for " elf "\n     " (test-show sv)))
+    (set! (aref out-text 0) (try (strview-parse-magnitude (try (ws-field row 0)) 10 1000000)))
+    (set! (aref out-data 0) (try (strview-parse-magnitude (try (ws-field row 1)) 10 1000000)))
+    (drop (addr-of s)))
+  (return (ok)))
+
+; AVR-3. `architecture: avr:<n>` is the device family binutils recorded in the
+; ELF, and it differs between the two devices — which is what says `--mmcu`, not
+; `--mcpu`, supplied the device name on the link line. The shell asked `file`
+; whether the ELF was "Atmel AVR 8-bit", which is the same answer for both.
+(defn avr3-link-one (stem:StrView cpu:StrView mmcu:StrView arch:StrView):!void
+  (when (not (have-avr-toolchain?)) (skip! "the avr-gcc toolchain is not installed"))
+  (let (elf:String (try (avr-link stem cpu mmcu "tests/fixtures/avr3-link.nuc"))
+        ev:StrView (string-as-view (addr-of elf))
+        f:String (try (avr-tool "avr-objdump" "-f" ev))
+        fv:StrView (string-as-view (addr-of f))
+        want:String (str "architecture: " arch ",*")
+        dwhat:String (str stem " initialized data bytes")
+        twhat:String (str stem " text under 4096 bytes")
+        text:ui64 0
+        data:ui64 0)
+    (try (check-match fv "*file format elf32-avr"))
+    (try (check-match fv (string-as-view (addr-of want))))
+    (try (avr-footprint ev (addr-of text) (addr-of data)))
+    ; Exactly zero: the prelude-free floor this fixture exists to pin. The shell
+    ; allowed anything under 256, which a small pulled-in runtime satisfies.
+    (try (check-eq-int (as i64 data) 0 (string-as-view (addr-of dwhat))))
+    (try (check (< text 4096) (string-as-view (addr-of twhat))))
+    (drop (addr-of twhat))
+    (drop (addr-of dwhat))
+    (drop (addr-of want))
+    (drop (addr-of f))
+    (drop (addr-of elf)))
+  (return (ok)))
+
+(deftest avr3-link-attiny1634
+  (return (avr3-link-one "avr3-attiny1634" "attiny1634" "" "avr:35")))
+
+(deftest avr3-link-avr32dd20
+  (return (avr3-link-one "avr3-avr32dd20" "avrxmega3" "avr32dd20" "avr:103")))
+
+; The disassembly of one function: from its `<name>:` label to the next blank
+; line. avr-libc's vector table is full of `reti`, so a whole-file search proves
+; nothing about the handler.
+(defn disasm-body (dis:StrView name:StrView):!String
+  (let (label:String (str "<" name ">:")
+        lv:StrView (string-as-view (addr-of label))
+        it:LineIter (strview-lines (addr-of dis))
+        out:String (string-new)
+        seen:bool false
+        done:bool false)
+    (while (not (lines-iter-done (addr-of it)))
+      (let (l:StrView (lines-iter-next (addr-of it)))
+        (when (not done)
+          (if seen
+            (if (= (strview-trim (addr-of l)) "")
+              (set! done true)
+              (str-into (addr-of out) l "\n"))
+            (when (contains? l lv) (set! seen true))))))
+    (drop (addr-of label))
+    (when (not seen) (fail! "no disassembly for " name "\n     " (test-show dis)))
+    (return (ok out))))
+
+; Any line of `body` whose mnemonic is `m`. objdump pads address and opcode
+; columns with tabs, so the mnemonic is what the line ends with.
+(defn body-has-mnemonic? (body:StrView m:StrView):bool
+  (let (it:LineIter (strview-lines (addr-of body)))
+    (while (not (lines-iter-done (addr-of it)))
+      (let (l:StrView (lines-iter-next (addr-of it)))
+        (when (strview-has-suffix (strview-trim (addr-of l)) m) (return true))))
+    (return false)))
+
+; AVR-5: `(fn-attr <name> "signal")` on a defn named for an avr-libc vector
+; symbol. The two halves are separate claims — the strong symbol overrode
+; avr-libc's weak `__bad_interrupt`, and the attribute reached the backend,
+; which is the only thing that turns the epilogue from `ret` into `reti`.
+(deftest avr5-isr
+  (when (not (have-avr-toolchain?)) (skip! "the avr-gcc toolchain is not installed"))
+  (let (elf:String (try (avr-link "avr5-isr" "atmega328p" "" "examples/avr-isr.nuc"))
+        ev:StrView (string-as-view (addr-of elf))
+        f:String (try (avr-tool "avr-objdump" "-f" ev))
+        d:String (try (avr-tool "avr-objdump" "-d" ev))
+        dv:StrView (string-as-view (addr-of d)))
+    (try (check-match (string-as-view (addr-of f)) "architecture: avr:5,*"))
+    (try (check-match dv "*jmp*<__vector_13>"))
+    (let (body:String (try (disasm-body dv "__vector_13")))
+      (try (check (body-has-mnemonic? (string-as-view (addr-of body)) "reti")
+                  "__vector_13 to end in reti"))
+      (drop (addr-of body)))
+    (drop (addr-of d))
+    (drop (addr-of f))
+    (drop (addr-of elf)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; AVR-6: the Harvard hazards
+; ---------------------------------------------------------------------------
+
+; A function materialized as a first-class DATA pointer is `ptr addrspace(1)` on
+; AVR where a plain `ptr` is required — an LLVM verifier error, so v1 refuses at
+; compile time. Keyed on the descriptor's prog-as, which is why the SAME source
+; must compile on the host: a diagnostic that fired everywhere would pass a test
+; that only looked at AVR.
+(deftest avr6-fnvalue-diagnostic
+  (let (flag:String (avr-mcpu "attiny1634")
+        a:Compiled (try (target-emit "avr" (string-as-view (addr-of flag))
+                                     "tests/fixtures/avr6-fnvalue.nuc")))
+    ; Located, so a regression that reports the hazard against the wrong form is
+    ; a failure rather than a pass: the shell matched the message anywhere.
+    (try (check-error-at (addr-of a 'diags) "tests/fixtures/avr6-fnvalue.nuc" 15
+           "cannot use function 'add' as a value on this target"))
+    (drop (addr-of a))
+    (drop (addr-of flag)))
+  (let (h:Compiled (try (compile-path "tests/fixtures/avr6-fnvalue.nuc")))
+    (try (check-silent (addr-of h) "the same source on the host"))
+    (drop (addr-of h)))
+  (return (ok)))
+
+; `:const` on a defvar global emits an LLVM `constant`, so on a mapped-flash part
+; the table costs no RAM; a plain defvar is unchanged, which is the half that
+; says existing programs stay byte-identical.
+(deftest avr6-const-global
+  (let (c:Compiled (try (compile-path "tests/fixtures/avr6-const.nuc"))
+        iv:StrView (compiled-ir (addr-of c)))
+    (try (check-line iv "@answer = constant i32 42, section \".rodata.answer\", align 4"))
+    (try (check-line iv "@mutable-count = global i32 0, section \".bss.mutable-count\", align 4"))
+    (drop (addr-of c)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; AVR-7: numerics and the aggregate ABI
+; ---------------------------------------------------------------------------
+
+; The other half of every target-keyed rejection: the SAME file on the host.
+(defn host-accepts (path:StrView):!void
+  (let (c:Compiled (try (compile-path path))
+        what:String (str path " on the host"))
+    (try (check-silent (addr-of c) (string-as-view (addr-of what))))
+    (drop (addr-of what))
+    (drop (addr-of c)))
+  (return (ok)))
+
+(defn avr-rejects (cpu:StrView path:StrView line:i32 needle:StrView):!void
+  (let (flag:String (avr-mcpu cpu)
+        c:Compiled (try (target-emit "avr" (string-as-view (addr-of flag)) path)))
+    (try (check-error-at (addr-of c 'diags) path line needle))
+    (drop (addr-of c))
+    (drop (addr-of flag)))
+  (return (ok)))
+
+; f64 has no hardware on an 8-bit part, and the rejection has to happen at BOTH
+; finalization points — an explicit annotation reaches `parse-type-name`, a bare
+; float literal never does and reaches `emit-float` instead. Each half is keyed
+; against the host accepting the same file.
+;
+; The `double` spelling is a THIRD case, not a restatement of the first: the two
+; names are separate branches of the same test in `union-registry.nuc`. The
+; shell's step 2 claimed to cover it and re-ran step 1's command on step 1's
+; fixture, so it had never been compiled for AVR at all.
+(deftest avr7-f64-rejected
+  (let (msg:StrView "f64 is not supported on AVR")
+    (try (avr-rejects "attiny1634" "tests/fixtures/avr7-f64-annot.nuc" 5 msg))
+    (try (host-accepts "tests/fixtures/avr7-f64-annot.nuc"))
+    (let (dir:StrView (try (test-scratch))
+          dbl:String (try (write-into dir "avr7-double.nuc" "(exclude-prelude)
+(defn takes-double (x:double):double (return x))
+"))
+          dv:StrView (string-as-view (addr-of dbl)))
+      (try (avr-rejects "attiny1634" dv 2 msg))
+      (drop (addr-of dbl)))
+    (try (avr-rejects "attiny1634" "tests/fixtures/avr7-f64-literal.nuc" 6 msg))
+    (try (host-accepts "tests/fixtures/avr7-f64-literal.nuc")))
+  (return (ok)))
+
+(deftest avr7-f32-allowed
+  (let (s:String (try (avr-ir "attiny1634" "tests/fixtures/avr7-f32.nuc"))
+        ir:StrView (string-as-view (addr-of s)))
+    (try (check-line ir "define float @idf(float %a.arg) section \".text.idf\" {"))
+    (drop (addr-of s)))
+  (return (ok)))
+
+(deftest avr7-i64-allowed
+  (let (s:String (try (avr-ir "attiny1634" "tests/fixtures/avr7-i64.nuc"))
+        ir:StrView (string-as-view (addr-of s)))
+    ; Costly but correct: libgcc's __muldi3 supplies it at link.
+    (try (check-match ir "*mul nsw i64 %t*, %t*"))
+    (drop (addr-of s)))
+  (return (ok)))
+
+; AVR classifies EVERY aggregate as ABI-MEMORY with aarch64-style plain-pointer
+; passing, bypassing the SysV eightbyte model that assumes 8-byte register
+; chunks. Target-keyed against the host, where the same 4-byte struct is
+; register-coerced — without that half the claim is satisfied by a compiler that
+; passes every struct by pointer everywhere.
+(deftest avr7-struct-abi
+  (let (s:String (try (avr-ir "atmega328p" "tests/fixtures/avr7-struct.nuc"))
+        ir:StrView (string-as-view (addr-of s)))
+    (try (check-line ir "define i16 @sum(ptr %p.arg) section \".text.sum\" {"))
+    (try (check-match ir "define void @mk(ptr sret(%Point) align 1 %.sret, i16 %a.arg, i16 %b.arg)*"))
+    (try (check-not-match ir "*byval*"))
+    (drop (addr-of s)))
+  (let (c:Compiled (try (compile-path "tests/fixtures/avr7-struct.nuc"))
+        iv:StrView (compiled-ir (addr-of c)))
+    (try (check-line iv "define i16 @sum(i32 %p.arg) section \".text.sum\" {"))
+    (try (check-line iv "define i32 @mk(i16 %a.arg, i16 %b.arg) section \".text.mk\" {"))
+    (drop (addr-of c)))
+  (return (ok)))
+
+; The emitted ABI is one thing; avr-gcc accepting it is another. This is the
+; only unit that puts the struct convention through the real assembler and
+; linker.
+(deftest avr7-struct-link
+  (when (not (have-avr-toolchain?)) (skip! "the avr-gcc toolchain is not installed"))
+  (let (elf:String (try (avr-link "avr7-struct" "atmega328p" "" "tests/fixtures/avr7-struct.nuc"))
+        ev:StrView (string-as-view (addr-of elf))
+        f:String (try (avr-tool "avr-objdump" "-f" ev))
+        text:ui64 0
+        data:ui64 0)
+    (try (check-match (string-as-view (addr-of f)) "architecture: avr:5,*"))
+    (try (avr-footprint ev (addr-of text) (addr-of data)))
+    (try (check (> text 0) "avr7-struct to carry code"))
+    (drop (addr-of f))
+    (drop (addr-of elf)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; RV-1: the features cliff
+; ---------------------------------------------------------------------------
+
+(defn rv1-ir ():!String
+  (let (c:Compiled (try (compile-path-for "riscv64-unknown-linux-gnu"
+                                          "tests/fixtures/riscv-features.nuc"))
+        iv:StrView (compiled-ir (addr-of c)))
+    (try (check-no-errors (addr-of c 'diags)))
+    (let (out:String (try (string-from-view (addr-of iv))))
+      (drop (addr-of c))
+      (return (ok out)))))
+
+(deftest riscv-emit
+  (let (s:String (try (rv1-ir))
+        ir:StrView (string-as-view (addr-of s))
+        dl:String (try (clang-datalayout "riscv64-unknown-linux-gnu")))
+    (try (check-line ir "target triple = \"riscv64-unknown-linux-gnu\""))
+    (try (check-line ir (string-as-view (addr-of dl))))
+    ; The module flag is what makes the hard-float ABI a property of the module
+    ; rather than of whoever runs llc next.
+    (try (check-line ir "!0 = !{i32 1, !\"target-abi\", !\"lp64d\"}"))
+    (drop (addr-of dl))
+    (drop (addr-of s)))
+  (return (ok)))
+
+; With +m,+a,+f,+d,+c an i64 multiply is a hardware `mul` and an f64 add a
+; `fadd.d`; with bare RV64I both become `__muldi3`/`__adddf3` soft-float
+; libcalls — a SILENT ABI mismatch with riscv64 glibc, not an error.
+;
+; So the load-bearing half is the compiler's OWN object: the shell handed llc
+; the feature list on the command line, which asks whether llc can lower the IR,
+; not whether the features ever reached the compiler's TargetMachine. The bare
+; llc run stays as the control that shows the two answers differ at all.
+(deftest riscv-llc-features
+  (when (not (have-program? "llc")) (skip! "llc is not installed"))
+  (when (not (have-program? "llvm-objdump")) (skip! "llvm-objdump is not installed"))
+  (let (dir:StrView (try (test-scratch))
+        obj:String (str dir "/riscv-features.o")
+        ov:StrView (string-as-view (addr-of obj))
+        c:Command (command (compiler-path)))
+    (command-arg (addr-of c) "--target=riscv64-unknown-linux-gnu")
+    (command-arg (addr-of c) "--diagnostics=sexp")
+    (command-arg (addr-of c) "-c")
+    (command-arg (addr-of c) "tests/fixtures/riscv-features.nuc")
+    (command-arg (addr-of c) "-o")
+    (command-arg (addr-of c) ov)
+    (let (r:Compiled (try (compiled-run (addr-of c))))
+      (try (check-no-errors (addr-of r 'diags)))
+      (drop (addr-of r)))
+    (drop (addr-of c))
+    (let (d:String (try (avr-tool "llvm-objdump" "-d" ov))
+          dv:StrView (string-as-view (addr-of d)))
+      (try (check-match dv "*mul*a0, a0, a1"))
+      (try (check-match dv "*fadd.d*"))
+      (try (check-not-match dv "*__muldi3*"))
+      (try (check-not-match dv "*__adddf3*"))
+      (drop (addr-of d)))
+    (drop (addr-of obj)))
+  ; The control: the same IR at bare RV64I falls off the cliff, so the
+  ; assertions above are discriminating rather than true of any lowering.
+  (let (s:String (try (rv1-ir))
+        dir:StrView (try (test-scratch))
+        src:String (try (write-into dir "rv64i.ll" (string-as-view (addr-of s))))
+        asm:String (str dir "/rv64i.s")
+        c:Command (command "llc"))
+    (command-arg (addr-of c) "-mtriple=riscv64")
+    (command-arg (addr-of c) "-filetype=asm")
+    (command-arg (addr-of c) (string-as-view (addr-of src)))
+    (command-arg (addr-of c) "-o")
+    (command-arg (addr-of c) (string-as-view (addr-of asm)))
+    (command-capture (addr-of c) true)
+    (match (run (addr-of c))
+      ((ok o) (drop (addr-of o)))
+      ((err e) (drop (addr-of c)) (return (err e))))
+    (drop (addr-of c))
+    (let (a:String (try (read-file (string-as-view (addr-of asm))))
+          av:StrView (string-as-view (addr-of a)))
+      (try (check-match av "*__muldi3*"))
+      (try (check-match av "*__adddf3*"))
+      (drop (addr-of a)))
+    (drop (addr-of asm))
+    (drop (addr-of src))
+    (drop (addr-of s)))
+  (return (ok)))
