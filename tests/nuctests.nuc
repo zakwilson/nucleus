@@ -43,6 +43,7 @@
 (import-use suite-fnptr)
 (import-use suite-cdecl)
 (import-use suite-namespaces)
+(import-use suite-runtime)
 
 
 
@@ -991,6 +992,35 @@
         (drop (addr-of c))
         (return (err e))))))
 
+; Build `path`, feed the program `input` on stdin, and answer its output. An
+; example cannot ask this: the golden-output loop hands a child the harness's
+; own stdin, which on a terminal would block.
+(defn build-run-stdin (path:StrView input:StrView):!String
+  (let (sdir:StrView (try (test-scratch))
+        bin:String (str sdir "/stdin.bin")
+        binv:StrView (string-as-view (addr-of bin))
+        c:Compiled (try (build-checked "" path binv)))
+    (try (check-silent (addr-of c) path))
+    (drop (addr-of c))
+    (let (ip:String (try (test-write-file "stdin.txt" input))
+          rc:Command (command binv))
+      (command-search (addr-of rc) false)
+      (command-stdin-path (addr-of rc) (string-as-view (addr-of ip)))
+      (command-capture (addr-of rc) true)
+      (command-stderr-to-stdout (addr-of rc) true)
+      (match (run (addr-of rc))
+        ((ok o)
+          (let (ov:StrView (string-as-view (addr-of o 'out))
+                out:String (try (string-from-view (addr-of ov))))
+            (drop (addr-of o))
+            (drop (addr-of rc))
+            (drop (addr-of ip))
+            (drop (addr-of bin))
+            (return (ok out))))
+        ((err e)
+          (drop (addr-of rc))
+          (return (err e)))))))
+
 ; The first line of `hay` containing `needle`. A claim about ONE instruction
 ; cannot be made by searching the module: `i8 %` is in every module.
 (defn line-with (hay:StrView needle:StrView):!StrView
@@ -1015,6 +1045,107 @@
       (when (strview-has-prefix (lines-iter-next (addr-of it)) prefix)
         (set! n (+ n 1))))
     (return n)))
+
+; The opcodes whose two operands may be written either way. Everything else --
+; `icmp` above all -- carries meaning in its operand order and is left alone.
+(defn commutative-opcode? (rest:StrView):bool
+  (when (strview-has-prefix rest "add ") (return true))
+  (when (strview-has-prefix rest "mul ") (return true))
+  (when (strview-has-prefix rest "and ") (return true))
+  (when (strview-has-prefix rest "or ") (return true))
+  (when (strview-has-prefix rest "xor ") (return true))
+  (when (strview-has-prefix rest "fadd ") (return true))
+  (when (strview-has-prefix rest "fmul ") (return true))
+  (return false))
+
+; Writes `l` with its two operands in a canonical order and answers true, or
+; answers false having written nothing. Only a `  %t = <commutative> a, b` line
+; with exactly one comma qualifies.
+(defn write-canonical-binop (l:StrView (out (ptr String))):bool
+  (when (not (strview-has-prefix l "  %")) (return false))
+  (let (eq:StrView " = "
+        comma:StrView ", "
+        opc:bool false
+        at:usize 0
+        ci:usize 0
+        si:usize 0
+        found:bool false)
+    (match (strview-find (addr-of l) (addr-of eq))
+      ((some x) (set! at x) (set! found true))
+      (none (set! found false)))
+    (when (not found) (return false))
+    (set! opc (commutative-opcode? (strview-drop-bytes l (+ at 3))))
+    (when (not opc) (return false))
+    (set! found false)
+    (match (strview-find (addr-of l) (addr-of comma))
+      ((some x) (set! ci x) (set! found true))
+      (none (set! found false)))
+    (when (not found) (return false))
+    (let (tail:StrView (strview-drop-bytes l (+ ci 2))
+          head:StrView (strview-take-bytes l ci)
+          second:bool false)
+      ; A second comma means the operand list is not a simple pair.
+      (match (strview-find-byte (addr-of tail) 44)
+        ((some x) (set! second true))
+        (none (set! second false)))
+      (when second (return false))
+      (set! found false)
+      (match (strview-rfind-byte (addr-of head) 32)
+        ((some x) (set! si x) (set! found true))
+        (none (set! found false)))
+      (when (not found) (return false))
+      (let (a:StrView (strview-drop-bytes head (+ si 1))
+            pre:StrView (strview-take-bytes head (+ si 1)))
+        (if (> (strview-cmp-raw (addr-of a) (addr-of tail)) 0)
+            (str-into out pre tail ", " a "\n")
+            (str-into out pre a ", " tail "\n")))
+      (return true))))
+
+; `ir` with the module header dropped and every commutative binop's operands in
+; a canonical order. "Identical IR" cannot mean byte-identical text: the emitter
+; preserves SOURCE operand order, so `mul i32 2, %t2` against `mul i32 %t2, 2`
+; is an unavoidable and meaningless difference, and the header names the file.
+(defn normalize-commutative (ir:StrView):String
+  (let (out:String (string-new)
+        it:LineIter (strview-lines (addr-of ir)))
+    (while (not (lines-iter-done (addr-of it)))
+      (let (l:StrView (lines-iter-next (addr-of it)))
+        (when (not (strview-has-prefix l "; ModuleID"))
+          (when (not (strview-has-prefix l "source_filename"))
+            (when (not (write-canonical-binop l (addr-of out)))
+              (str-into (addr-of out) l "\n"))))))
+    (return out)))
+
+; `clang <flags> -o <bin> <path>`, then run it. `cc-run-file` is the wrong tool
+; for a float kernel: the comparison is bit-exact, so the reference has to be
+; built with the fixture's own `-ffp-contract=off`.
+(defn clang-run-file (flags:StrView path:StrView):!String
+  (let (sdir:StrView (try (test-scratch))
+        bin:String (str sdir "/cref.bin")
+        sp:StrView " "
+        c:Command (command "clang")
+        it:SplitIter (strview-split (addr-of flags) (addr-of sp)))
+    (while (not (split-iter-done (addr-of it)))
+      (let (f:StrView (split-iter-next (addr-of it)))
+        (when (!= f "") (command-arg (addr-of c) f))))
+    (command-arg (addr-of c) "-o")
+    (command-arg (addr-of c) (string-as-view (addr-of bin)))
+    (command-arg (addr-of c) path)
+    (command-capture (addr-of c) true)
+    (command-stderr-to-stdout (addr-of c) true)
+    (match (run (addr-of c))
+      ((ok o)
+        (when (not (success? (addr-of o 'status)))
+          (fail! "the C reference does not build\n     "
+                 (test-show (string-as-view (addr-of o 'out)))))
+        (drop (addr-of o)))
+      ((err e)
+        (drop (addr-of c))
+        (return (err e))))
+    (drop (addr-of c))
+    (let (out:String (try (run-stdout (string-as-view (addr-of bin)))))
+      (drop (addr-of bin))
+      (return (ok out)))))
 
 ; How many lines of `hay` match `pat`. `check-match` answers "at least one",
 ; which cannot tell six pointer-sized indices from one and five left behind.

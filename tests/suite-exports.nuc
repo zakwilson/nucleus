@@ -560,3 +560,108 @@
     (drop (addr-of bp))
     (drop (addr-of ap)))
   (return (ok)))
+
+; ---------------------------------------------------------------------------
+; A new-style signature across a unit boundary
+; ---------------------------------------------------------------------------
+;
+; Stage 14 defn-signature.md S1/S3. `tests/fixtures/s1-newlib.nuc` is written
+; entirely in the `(defn NAME (params):ret …)` style; what these ask is what
+; survives the three export surfaces and comes back usable.
+
+(defn s1-newlib ():StrView (return "tests/fixtures/s1-newlib.nuc"))
+
+; The `.nuch` emits solitary and overloaded defns in the new-style signature its
+; own declare/defmethod readers consume, and exports the generic template
+; verbatim. Whole lines: a `(declare twice …)` with the wrong parameter spelling
+; is exactly the failure this surface has.
+(deftest s1-nuch-export-shapes
+  (let (h:String (try (emit-for-file "" "--emit-nuch" (s1-newlib)))
+        hv:StrView (string-as-view (addr-of h)))
+    (try (check-line hv "(declare twice ((x i32)) :i32)"))
+    (try (check-line hv "(declare add3 ((a i32) (b i32) (c i32)) :i32)"))
+    (try (check-line hv "(defmethod \"@scale.i32\" scale ((x i32)) :i32)"))
+    (try (check-line hv "(defmethod \"@scale.i64\" scale ((x i64)) :i64)"))
+    (try (check-line hv "(defn gmax ((a T) (b T) :where (Ord T)) :T (if (less a b) b a))"))
+    (drop (addr-of h)))
+  (return (ok)))
+
+; The C header names the plain prototypes, and names an overloaded one the way
+; the `.nuch` already did (W9 item 26): `scale` is overloaded, so its methods
+; are `@scale.i32` / `@scale.i64` and a bare `int32_t scale(int32_t)` would
+; assert a symbol the object never defines. The template is a comment, not a
+; prototype — C has no spelling for it.
+(deftest s1-cheader-plain-prototypes
+  (let (h:String (try (emit-for-file "" "--emit-cheader" (s1-newlib)))
+        hv:StrView (string-as-view (addr-of h)))
+    (try (check-line hv "int32_t twice(int32_t x);"))
+    (try (check-line hv "int32_t add3(int32_t a, int32_t b, int32_t c);"))
+    (try (check-line hv "int32_t scale_i32(int32_t x) asm(\"scale.i32\");"))
+    (try (check-line hv "int64_t scale_i64(int64_t x) asm(\"scale.i64\");"))
+    (try (check-line hv "/* gmax: generic template; not exported */"))
+    (try (check-not-match hv "*int32_t scale(*"))
+    (drop (addr-of h)))
+  (return (ok)))
+
+; A consumer imports the `.nuch`, resolves the plain and overloaded symbols,
+; links against the library object and runs — the only thing that tests what
+; the `.nuch` promised, since the symbol has to be resolved by the LINKER.
+; `exclude-prelude` so the two objects link without duplicate prelude symbols.
+(deftest s1-nuch-link-and-run
+  (let (dir:StrView (try (test-scratch))
+        nuch:String (try (emit-into "" "--emit-nuch" (s1-newlib) dir "lib.nuch"))
+        libll:String (try (emit-into "" "--emit-llvm" (s1-newlib) dir "lib.ll"))
+        src:String (str "(exclude-prelude)
+(import-use \"" (string-as-view (addr-of nuch)) "\")
+(declare printf (fmt:CStr):i32)
+(defn main () :i32
+  (printf \"twice=%d add3=%d scale32=%d scale64=%ld\\n\"
+    (twice 21) (add3 1 2 3) (scale 4) (scale (as i64 5)))
+  (return 0))
+")
+        mp:String (try (test-write-file "s1main.nuc" (string-as-view (addr-of src))))
+        mainll:String (try (emit-into "" "--emit-llvm" (string-as-view (addr-of mp))
+                                      dir "main.ll"))
+        parts:String (str (string-as-view (addr-of libll)) " "
+                          (string-as-view (addr-of mainll)))
+        out:String (try (cc-link-run "" (string-as-view (addr-of parts)))))
+    (try (check-eq (string-as-view (addr-of out))
+                   "twice=42 add3=6 scale32=40 scale64=500\n"))
+    (drop (addr-of out))
+    (drop (addr-of parts))
+    (drop (addr-of mainll))
+    (drop (addr-of mp))
+    (drop (addr-of src))
+    (drop (addr-of libll))
+    (drop (addr-of nuch)))
+  (return (ok)))
+
+; Importing the `.nuch` re-registers the new-style template, so a consumer
+; stamps it at its call sites. W9 item 2: a stamp belongs to no file — any unit
+; instantiating the same template at the same types re-derives the identical
+; body under the identical symbol — so it is `weak_odr`, which is what lets two
+; objects that both use `(gmax i32 i32)` link. Counted, so a re-drain that
+; emits a stamp twice fails here rather than at someone else's link.
+(deftest s1-nuch-template-stamps
+  (let (dir:StrView (try (test-scratch))
+        nuch:String (try (emit-into "" "--emit-nuch" (s1-newlib) dir "lib.nuch"))
+        src:String (str "(import-use \"" (string-as-view (addr-of nuch)) "\")
+(import-use \"stdio.h\")
+(defn main () :i32
+  (printf \"gmax32=%d gmax64=%ld\\n\" (gmax 8 3) (gmax (as i64 4) (as i64 9)))
+  (return 0))
+")
+        mp:String (try (test-write-file "s1tmain.nuc" (string-as-view (addr-of src))))
+        c:Compiled (try (compile-path (string-as-view (addr-of mp))))
+        iv:StrView (compiled-ir (addr-of c)))
+    (try (check-eq-int (count-matching-lines iv "define weak_odr i32 @gmax.i32.i32(*")
+                       1 "one i32 stamp"))
+    (try (check-eq-int (count-matching-lines iv "define weak_odr i64 @gmax.i64.i64(*")
+                       1 "one i64 stamp"))
+    (try (check-match iv "*call i32 @gmax.i32.i32(*"))
+    (try (check-match iv "*call i64 @gmax.i64.i64(*"))
+    (drop (addr-of c))
+    (drop (addr-of mp))
+    (drop (addr-of src))
+    (drop (addr-of nuch)))
+  (return (ok)))

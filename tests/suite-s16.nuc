@@ -2683,3 +2683,19 @@ map=2
     (try (check-eq (string-as-view (addr-of out)) "10\n"))
     (drop (addr-of out)))
   (return (ok)))
+
+; Stage 14 defn-signature.md S1: the `?`/`!` sugar returns (`:!ptr:T`, `:!i32`,
+; `:?ptr:T`) and a trailing `noreturn` parse in the new return position, and the
+; define carries the LLVM attribute. Whole `define` lines, not the substrings
+; the shell matched — a signature test that cannot see the parameter list is
+; not checking the signature.
+(deftest s1-sugar-rets-and-noreturn
+  (let (c:Compiled (try (compile-path "tests/fixtures/s1-sugar-rets.nuc"))
+        iv:StrView (compiled-ir (addr-of c)))
+    (try (check-no-errors (addr-of c 'diags)))
+    (try (check-line iv "define ptr @lookup(ptr %p.arg, i32 %i.arg) section \".text.lookup\" {"))
+    (try (check-line iv "define i64 @checked(i32 %x.arg) section \".text.checked\" {"))
+    (try (check-line iv "define ptr @maybe-pt(i1 %give.arg, ptr %p.arg) section \".text.maybe-pt\" {"))
+    (try (check-line iv "define void @spin(ptr %m.arg) noreturn section \".text.spin\" {"))
+    (drop (addr-of c)))
+  (return (ok)))
