@@ -2692,6 +2692,58 @@ names in `design/` now also covers `examples/w9-dyn-ns.nuc:56`, which names
 `run_b6_dyn_cross_ns` in a comment. A comment-only edit to an example emits
 byte-identical IR, so the sweep forces no snapshot re-take.
 
+#### TF-6 category (c), the shape of the import graph (2026-09-10)
+
+**6 shell functions and one shared helper → 17 tests**, 214 body lines retired
+(307 lines of the file, including the per-function banners, two `spawn` section
+banners and six `spawn` lines): `run_w9_root_hoist` (2), `run_w9_root_cycle_skip`
+(2), `run_w9_source_outranks_header` (2), `run_w9_string_path_prescan` (3),
+`run_w5e_private_isolated` (6), `run_w5e_still_rejects` (2) and
+`w9_run_single_emission`, into `tests/suite-imports.nuc`, which grows 773 →
+1,178 lines. `tests/run-tests.sh` is 2,420 → 2,113 lines and 43 → 37 functions.
+`make test` is 85 shell + 881 native = 966.
+
+Not a new module: §T6.6's "when a name may be used before its file is" is this
+question. W9 item 1 is about the root file's membership in the graph, item 6
+about a string-path import joining the same prescan, and W5e about the key a
+private name gets — all three are the same walk.
+
+**The two root-graph units asserted nothing that told them apart.** The hoist
+and the ordinary cycle skip emit the SAME four definitions; the shell checked an
+exit status and "no symbol defined twice", and both units satisfy both claims.
+Their exit codes differ only because the two fixtures compute `2+3` and `2+4` —
+arithmetic, not mechanism. What separates the paths is WHEN the root's own forms
+are written: a hoisted root is emitted at the re-entry, so `main` precedes the
+library's `lib-fn`; a shut window takes the skip, so `lib-fn` precedes `main`.
+`check-order` pins it, and swapping the two arguments is what the perturbation
+does — each unit then fails, which is the proof the old pair could not offer.
+
+**The duplicate check was a pipeline that had to be guarded against its own
+success.** `w9_run_single_emission` greps `define` lines, sorts and takes
+`uniq -d`, with `|| true` on each pipeline — and the shell's own comment records
+why: under `set -euo pipefail` a grep that matches nothing exits 1, "which would
+kill the unit mid-way and lose its second PASS line silently (the harness only
+flags a result file that is entirely empty)". The native form is
+`duplicate-define-name`, which already existed and is used by `w1-diamond` and
+`w1-two-routes` a few hundred lines above in the same file, plus a presence
+anchor so an empty module cannot satisfy a duplicate check.
+
+**Two refusals could not tell which file was blamed.** `w5e-public-collision-
+rejected` and `w5e-ns-private-collision-rejected` grepped the whole stderr blob
+for the two file paths independently, so a diagnostic blaming either file passed.
+The compiler blames the SECOND file at its own line and names the first inside
+the message; both are pinned as one record now, with the note that states the
+rule — which is the only thing distinguishing the public refusal from the
+namespace-private one, since the heads are identical in shape.
+
+**Library gap filled**: `check-order`, in `tests/nuctests.nuc`.
+
+**Verified by breaking it**, seventeen ways, one per unit, each reverted by
+editing the source back, never with git. Nine expected exit values moved by one,
+the two emission orders swapped, an emitted symbol misspelled, a suggested
+spelling changed, an `import: cannot find` head reworded, and the two collision
+messages pointed at the blamed file instead of the earlier one.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that

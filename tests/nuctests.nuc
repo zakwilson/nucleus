@@ -581,6 +581,22 @@
           (set! more false))))
     (return (ok out))))
 
+; `first` is emitted before `second`. The root hoist and the ordinary cycle skip
+; produce the same four definitions, so WHEN the root's own forms are written is
+; the only artifact that tells the two paths apart.
+(defn check-order (hay:StrView first:StrView second:StrView what:StrView):!void
+  (let (a:usize 0
+        b:usize 0)
+    (match (strview-find (addr-of hay) (addr-of first))
+      ((some at) (set! a at))
+      (none (fail! what ": not emitted at all: " (test-show first))))
+    (match (strview-find (addr-of hay) (addr-of second))
+      ((some at) (set! b at))
+      (none (fail! what ": not emitted at all: " (test-show second))))
+    (when (> a b)
+      (fail! what ": " (test-show first) " must be emitted before " (test-show second))))
+  (return (ok)))
+
 ; No diagnostic, message or note, says `needle`. The guard a scope diagnostic
 ; needs: "unknown" plus the right note still passes if the compiler ALSO fell
 ; back to claiming the name is absent from the unit, which for a name that is
