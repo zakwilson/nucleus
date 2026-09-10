@@ -656,8 +656,8 @@ are still refused because they are not `(ref Node)`: `'(a b)` is a quoted list
 and `'1` a quoted int, both `(raw Node)`.
 
 Success paths live in `examples/{vector,hashmap,hashset,keyword}-lit-test.nuc`;
-the refusals are covered by `run_s16_keyword_literal_refused` and
-`run_s16_literal_variables` in `tests/run-tests.sh`.
+the refusals are covered by the `s16-kwlit-refused-*` and
+`s16-litvar-refused-*` units in `tests/suite-s16.nuc`.
 
 ---
 

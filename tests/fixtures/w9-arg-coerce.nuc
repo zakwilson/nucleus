@@ -1,6 +1,6 @@
 ; Stage 15 W9 item 33, the ACCEPTING half: every implicit conversion that a
 ; call argument is still entitled to. The refusing half is generated inside
-; `run_w9_arg_coerce` — one program per rejection, because compilation stops at
+; `w9-arg-coerce` — one program per rejection, because compilation stops at
 ; the first.
 ;
 ; This file is the guard against over-correcting. Item 33 turned

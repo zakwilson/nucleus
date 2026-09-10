@@ -6,8 +6,8 @@
 # UART example under simavr as the behavioral smoke test: the only one of the
 # four devices AVR-0 ground-verified against a real simulator core.
 #
-# Gated on avr-gcc (SKIP gracefully, same convention as tests/run-tests.sh's
-# run_avr3_link/run_avr5_isr) so a container without the AVR toolchain doesn't
+# Gated on avr-gcc (SKIP gracefully, same convention as tests/suite-target.nuc's
+# avr3-link-* / avr5-isr units) so a container without the AVR toolchain doesn't
 # fail the whole script — just skips. The simulator step has its own,
 # independent simavr gate.
 #

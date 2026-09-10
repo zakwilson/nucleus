@@ -3108,6 +3108,55 @@ StrView fixtures pointed at each other's expected output, the suggested
 predicate renamed, a decoded signal status changed, an overflow byte count
 moved by one, a kill signal changed, and the elapsed-time marker reworded.
 
+#### TF-6 category (c), what holds across the whole tree (2026-09-10)
+
+**8 shell functions → 11 tests**, 360 further lines of the file retired:
+`run_abi_subtest`, `run_layout_subtest`, `run_no_line_zero`, `run_stdlib_table`,
+`run_headers_generated`, `run_cstr_residue`, `run_reader_parity` (four corpora,
+four verdicts) and `run_diagnostics_sexp`, into a new twentieth module
+`tests/suite-audits.nuc` (250 lines). `tests/run-tests.sh` is 520 → 163 lines
+and 8 → 0 unit functions. **`make test` is 0 shell + 966 native = 966**, which
+completes TF-6.
+
+The 360 lines include the three `w1_*` helpers and four orphaned comment blocks
+that earlier batches left behind when their callers went; nothing referenced
+them.
+
+**Two kinds of unit, one module.** The corpus walks (`w4a-no-line-zero`, the
+four `reader-parity-*`) and the spawns (`abi-interop`, `layout`,
+`stdlib-table-generated`, `headers-generated`, `cstr-residue`) share a shape
+the rest of the suite does not: the subject is a corpus or the source tree, not
+a program. §T7 rules the five scripts stay outside the framework, and that
+outside means *not rewritten, not unrun* — so each unit runs the script and
+requires exit 0, and the script's own report is the failure text.
+
+**Three vacuity holes closed.** A sweep that swept nothing passed every
+assertion it never made: both corpus loops now require at least one file to have
+been walked and, for parity, agreed on. `run_diagnostics_sexp`'s claim 5
+compared `--diagnostics=text` against the default and would have been satisfied
+by two empty streams; the text form is now pinned, which also makes claim 1's
+"the same location the text mode printed" a comparison rather than a remark. And
+its claim 2 grepped a note prefix out of the blob — `check-note-at` pairs the
+note with the record it belongs to, at its line.
+
+**Library gaps filled**, in `tests/nuctests.nuc`: `Ran` and `ran` (a command's
+two streams, kept apart and *unvalidated* — `examples/hex-escape-test.nuc` dumps
+an AST that is deliberately not UTF-8), `nucleusc-raw` (the format units cannot
+use a builder that passes `--diagnostics=sexp`, which is the thing under test),
+`check-script-ok`, and `check-golden-in` (a corpus loop needs the file named:
+"line 7 differs" says nothing about which of 226 files line 7 was in).
+
+**Verified by breaking it**, twelve ways, one per unit plus one per remaining
+sexp claim, each reverted by editing the source back, never with git. The five
+spawns were broken at their *subject*, never their invocation — an expected ABI
+sum, a `sizeof` in the layout oracle, a false availability row in
+`docs/stdlib.md`, a return type in a committed `.nuch`, an allowlist count — so
+a unit that spawned the right script and ignored its verdict would still have
+gone red. Reader parity was broken by making `readdump` print a trailing space,
+which turned all four red and named the file each time. The line-0 sweep was
+broken by flipping `check-no-line-zero`'s sentinel, which proves it reads the
+`line` field of real diagnostics rather than passing over an empty list.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that

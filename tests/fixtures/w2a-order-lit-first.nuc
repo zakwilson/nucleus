@@ -1,6 +1,6 @@
 ; Stage 15 W2a operand-order symmetry, spelling A: the literal FIRST.
 ; Paired with w2a-order-lit-second.nuc, which differs only in the operands of
-; the `*`. tests/run-tests.sh `run_w2a_order_identical` emits both and requires
+; the `*`. `w2a-operand-order-identical` (suite-conversions.nuc) emits both and requires
 ; the IR to match once the module header and the operand order *within* the
 ; commutative `mul` are normalized away — i.e. same types, same opcodes, same
 ; instruction sequence. Before W2a the literal-first spelling typed the product

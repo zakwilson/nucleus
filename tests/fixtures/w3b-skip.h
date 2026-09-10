@@ -6,7 +6,7 @@
  * LLVM parser thousands of lines later as `failed to parse generated IR`, with
  * nothing pointing at the header or the function responsible.
  *
- * Line numbers below are asserted by run_w3b_skip in tests/run-tests.sh — adding
+ * Line numbers below are asserted by `w3b-skip` (tests/suite-cdecl.nuc) — adding
  * or removing a line here means updating it.
  */
 

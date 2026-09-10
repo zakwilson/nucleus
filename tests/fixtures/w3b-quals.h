@@ -9,7 +9,7 @@
  * (`declare void @_mm_clflush(void, ptr)`, from SDL_cpuinfo.h's intrinsics
  * chain); every other spelling produced a silently wrong arity and ABI.
  *
- * Both halves are pinned in tests/run-tests.sh (run_w3b_quals) — the previously
+ * Both halves are pinned in tests/suite-cdecl.nuc (`w3b-quals`) — the previously
  * broken spellings AND the previously correct ones, so a future "fix" cannot
  * trade one for the other.
  */

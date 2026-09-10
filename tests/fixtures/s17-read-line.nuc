@@ -1,5 +1,5 @@
-; Stage 17 B2 — `read-line` over buffered fd 0. Fed by `run_s17_read_line` in
-; tests/run-tests.sh; not an example, because an example inherits the harness's
+; Stage 17 B2 — `read-line` over buffered fd 0. Fed by `s17-read-line` in
+; tests/suite-runtime.nuc; not an example, because an example inherits the harness's
 ; stdin and would block on a terminal.
 ;
 ; Covers: an ordinary line, an empty line, a final line with no terminator, and

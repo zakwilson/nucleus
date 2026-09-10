@@ -53,7 +53,7 @@
 ; changed only their NAMES — `%__dyn.dp_Describe` / `%__dyn.dp2_Describe` rather
 ; than the consumer's prefixes — because a box's identity is now the protocol's
 ; canonical name. The defect that renaming fixes is a cross-file one and cannot
-; be witnessed inside a single file; `run_b6_dyn_cross_ns` in tests/run-tests.sh
+; be witnessed inside a single file; `b6-dyn-cross-ns` in suite-namespaces.nuc
 ; is the witness.
 
 (import-use "stdio.h")

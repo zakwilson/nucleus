@@ -11,7 +11,7 @@
 ;
 ; So a DECLARED signature is open-tailed: more arguments than parameters is
 ; legal, fewer is still an error (pinned by w9-declare-too-few.nuc). This must
-; compile clean — run_accepts, not run_reject.
+; compile clean — an `accept` row, not a `reject` one.
 (exclude-prelude)
 
 (declare printf (fmt:CStr):i32)

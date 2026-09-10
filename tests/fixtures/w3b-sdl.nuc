@@ -4,7 +4,7 @@
 ; used to import as `declare void @_mm_clflush(void, ptr)` and kill the whole
 ; compilation at `failed to parse generated IR`.
 ;
-; run_w3b_sdl builds this with `-o` (a real link), NOT `--emit-llvm`: --emit-llvm
+; `w3b-sdl` builds this with `-o` (a real link), NOT `--emit-llvm`: --emit-llvm
 ; never parses the IR it writes, so exit 0 there is not evidence of a valid
 ; module. Nothing here CALLS an SDL function, so no -lSDL2 is needed — the
 ; declarations alone are what is under test.

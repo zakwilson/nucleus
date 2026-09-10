@@ -15,7 +15,7 @@
 
    Deliberately `int` / `short` / `char` throughout: the sizes below then hold
    on any target with a 4-byte int, so the stated numbers are not an x86_64
-   assumption. The `long`-bearing shapes are covered by run_l2_libc_layouts,
+   assumption. The `long`-bearing shapes are covered by `l2-libc-layouts`,
    which compares against clang rather than against a number. */
 
 #define L2_MACRO_N 6

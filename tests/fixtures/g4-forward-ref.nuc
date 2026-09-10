@@ -6,7 +6,7 @@
 ; Initializers run in the order their `defvar` forms are reached during
 ; emission, so `g4-fwd-a` would run while `g4-fwd-b` still held its zero and
 ; `g4-fwd-a` would silently be 1 instead of 42. Swapping the two forms is the
-; whole fix; `run_g4_order` links and runs that version and asserts 42.
+; whole fix; `g4-backward-ref` links and runs that version and asserts 42.
 (defn g4-fwd-compute ():i32 (return 41))
 
 (defvar g4-fwd-a:i32 (+ g4-fwd-b 1))

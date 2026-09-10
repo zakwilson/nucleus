@@ -2,7 +2,7 @@
 ; a `float`-typed DSP kernel written with bare float literals — no
 ; `(unsafe/cast f32 …)` anywhere — whose output must match the equivalent C
 ; program BIT FOR BIT. Its twin is tests/fixtures/w2d-dsp-biquad.c; the two are
-; compared by `run_w2d_dsp_bitexact` in tests/run-tests.sh.
+; compared by `w2d-dsp-bitexact` in tests/suite-conversions.nuc.
 ;
 ; What it exercises, all in one kernel:
 ;   - float literals adapting at a `let` binding init (every coefficient),
