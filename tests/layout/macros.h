@@ -1,6 +1,6 @@
 /* Stage 17: the admission rules for object-like #define import
  * (design/stage17-native-strings/platform-constants.md). Each name below is a
- * case the importer must get right; tests/run-tests.sh asserts every one. */
+ * case the importer must get right; the s17-cmacro-* units assert every one. */
 #pragma once
 
 /* Implementation-reserved: not registered, but must still FOLD — MP_PUB is

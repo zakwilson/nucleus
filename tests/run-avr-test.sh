@@ -88,8 +88,8 @@ check_example global-init examples/avr-global-init.nuc  attiny1634 >"$TMP/global
 #      only CONSTANT initializers, so the queue is empty and the emitted IR must
 #      contain no `@__nucleus_init` and no `llvm.global_ctors` — not a dead one,
 #      not an empty one, none. This is the microcontroller half of the tripwire
-#      in tests/run-tests.sh; it is asserted on the target the requirement was
-#      stated for, not only on the host.
+#      in tests/suite-globals.nuc (`g3-zero-cost`); it is asserted on the
+#      target the requirement was stated for, not only on the host.
 #
 #  (b) LOUD REFUSAL. tests/fixtures/avr-runtime-init.nuc asks for a run-time
 #      initializer. AVR has no verified append-only startup mechanism (§2.6:
@@ -99,7 +99,7 @@ check_example global-init examples/avr-global-init.nuc  attiny1634 >"$TMP/global
 #
 # Both use --emit-llvm rather than a link, because what is asserted is the IR's
 # content and the diagnostic, neither of which needs avr-gcc. They still sit
-# here rather than in run-tests.sh because they are --target=avr behaviour.
+# here rather than in the native suite because they are --target=avr behaviour.
 ZC_LL="$TMP/avr-global-init.ll"
 if ! "$NUCLEUSC" --target=avr --mcpu=attiny1634 --emit-llvm examples/avr-global-init.nuc \
      >"$ZC_LL" 2>"$TMP/zc.err"; then

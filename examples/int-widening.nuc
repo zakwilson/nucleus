@@ -1,7 +1,7 @@
 ; Stage 14 LW-1..LW-4 — integer literal widening: the residual cast gaps are
 ; closed. This is the positive-path complement to the ambiguity/range-error
-; fixtures in tests/fixtures/ (see tests/run-tests.sh, "lw-ambiguous-widening"
-; / "lw-literal-does-not-fit").
+; fixtures in tests/fixtures/ (the manifest rows "lw-ambiguous-widening-rejected"
+; and "lw-literal-range-rejected").
 ;
 ;   - LW-1/LW-2: template-tier methods (the stamped collections API — conj,
 ;     insert, (v i) invoke on a parametric struct like (Vector i64)) now

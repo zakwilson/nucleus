@@ -416,5 +416,5 @@ escaped, so a message containing a quote or a newline survives the round trip.
 `test-main` exits 0 when everything passed or skipped and 1 when anything
 failed; under `--no-skip` a skip is one of the things that failed. `--list`
 prints one name per line, which is what a parallel runner needs to shard a
-suite; `build/nuctest` drives the shell suite through the same two-verb
-interface.
+suite, and `--shard <i>/<n>` runs the `i`th slice of it — which is how
+`make test` spreads the compiler's own suite across cores.

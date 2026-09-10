@@ -51,7 +51,8 @@ and a child that fills its pipe blocks until somebody drains it. With *N*
 children in flight and one parent, draining child A means not draining child B,
 and a parent blocked in `wait-any` is draining nobody at all. A file has no such
 limit, so the parent can start every child and then wait, which is the whole
-shape of a job pool. `tests/nuctest.nuc` is the worked example.
+shape of a job pool. `tests/fixtures/s19-process-pool.nuc` is the worked
+example.
 
 The parent opens the file before forking — for `command-stdin-path` too — so a
 bad path is a `process-redirect-failed` error rather than a child that silently

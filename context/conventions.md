@@ -820,7 +820,7 @@ Two riders:
 
 - **Cover the unrepresentable case on the instruction instead.** The `ui32`-at-2^31
   case that started the item cannot be written as a running check at all, so it
-  is a `zext i32 … to i64` grep in `run-tests.sh`. Pair "what the program
+  is a `zext i32 … to i64` probe in `w9-unsigned-index`. Pair "what the program
   computed" with "what the compiler emitted" whenever the interesting input is
   out of reach.
 - **Assert the branch you did *not* take.** A signedness fix is one `if`, and a
@@ -1212,23 +1212,28 @@ Two traps in the emit-only half:
 A header cannot `import` (there is no `import` arm in `emit-nuch-import-forms`),
 so the prescan does not recurse into one.
 
-## `tests/run-tests.sh`: `qgrep`, never `grep -q`
+## In a shell test under `pipefail`, never pipe into `grep -q`
 
-The harness runs under `set -o pipefail`. `grep -q` exits at its first match,
-which SIGPIPEs the process feeding it, and that non-zero status becomes the
-pipeline's — so an assertion that **matched** reads as false. It is one-sided (a
-real non-match never trips it: grep then reads to the end), so it surfaces as a
-few tests failing at random rather than as a consistent wrong answer, and it only
-bites once the producer's output outgrows a stdio buffer. Measured on the 54KB of
-IR `w1-late-overload-symbol` greps: 186 of 200 identical runs said "no match" for
-a pattern that is present. `qgrep` (defined at the top of the file) is
-`grep "$@" >/dev/null` — same exit status, reads its input to the end.
+The shell suite this was written for is gone (Stage 18 TF-7), but every script
+left in `tests/` and `scripts/` still runs under `set -uo pipefail`, and the trap
+is one line away from returning.
 
-`qgrep` fixes the producer-SIGPIPE half only. **`pipefail` also reports a
-producer that legitimately fails** — which every rejection test has, since the
-compiler exits non-zero on the error it is asserting. `nucleusc … 2>&1 >/dev/null
-| qgrep -F 'the message'` is false whenever the message is present. Redirect
-stderr to a file with `|| true`, then grep the file.
+`grep -q` exits at its first match, which SIGPIPEs the process feeding it, and
+that non-zero status becomes the pipeline's — so an assertion that **matched**
+reads as false. It is one-sided (a real non-match never trips it: grep then reads
+to the end), so it surfaces as a few tests failing at random rather than as a
+consistent wrong answer, and it only bites once the producer's output outgrows a
+stdio buffer. Measured on the 54KB of IR one former unit grepped: 186 of 200
+identical runs said "no match" for a pattern that is present. Either `grep "$@"
+>/dev/null` (same exit status, reads to the end) or grep a file.
+
+That fixes the producer-SIGPIPE half only. **`pipefail` also reports a producer
+that legitimately fails** — which every rejection check has, since the compiler
+exits non-zero on the error being asserted. `nucleusc … 2>&1 >/dev/null | grep -F
+'the message'` is false whenever the message is present. Redirect stderr to a
+file with `|| true`, then grep the file. (Every one of these is a non-issue in
+`tests/suite-*.nuc`, where the compiler's status and its stderr are two fields of
+one record.)
 
 A second trap when writing a test *about* headers: `resolve-import` tries
 `NAME.nuc` in every directory before any `NAME.nuch`, so a header sitting beside
@@ -1357,8 +1362,9 @@ Two consequences, both load-bearing:
   when it has one and the fallback otherwise, so the same expression is correct
   whether the subject turns out to be a symbol or a cell. Stage 15 W4a converted
   ~110 raise sites to this shape. The guard that keeps it that way is
-  `run_no_line_zero` in `tests/run-tests.sh` (compiles every fixture, fails on
-  any `:0:`) plus a `:0:` check inside `run_reject` itself.
+  `w4a-no-line-zero` in `tests/suite-audits.nuc` (compiles every fixture and
+  reads the `line` field of every diagnostic) plus `check-no-line-zero` inside
+  the manifest's own rejection runner.
 - **Never `(set! (sym 'line) …)`.** The write is observed by every *other*
   occurrence of that spelling in the program. `stamp-macro-lines`
   (`src/nucleusc.nuc`) used to do exactly this while attributing macro
@@ -2827,18 +2833,18 @@ Two corollaries from the same fix:
   parameter *named* `ptr` of type `FILE`. Bare `ptr` is the unnamed-pointer
   spelling; a typed pointer parameter is named.
 
-## A tree-wide grep for a spelling must include `tests/run-tests.sh` heredocs
+## A tree-wide grep for a spelling misses the programs a test writes
 
-Test programs are not all files. `tests/run-tests.sh` writes several `.nuc`
-consumers inline with `cat > … <<EOF`, so a `grep -r` over `*.nuc`/`*.nuch` —
-however careful — reports zero uses of a construct that three tests depend on.
-Stage 15's `declare` fix hit exactly this: a scan concluded nothing used
-`:rest` in a `declare`, and `make test` then failed five assertions in the
-`n6` / `sm3` / `s1` `.nuch` link-and-run consumers, all three of which generate
-`(declare printf (fmt:CStr :rest args:i32) :i32)` from a heredoc. Grep
-`tests/run-tests.sh` itself (and any other harness that generates sources)
-before concluding a spelling is unused — or just treat `make test` as the
-authority, which is what it is.
+Test programs are not all files. The suite writes whole `.nuc` consumers inline
+— once as shell heredocs, now as Nucleus string literals in `tests/suite-*.nuc`
+— so a `grep -r` over `*.nuc`/`*.nuch` reports the spelling as *source text in a
+test*, or, if the grep is scoped to definitions, as nothing at all. Stage 15's
+`declare` fix hit exactly this: a scan concluded nothing used `:rest` in a
+`declare`, and `make test` then failed five assertions in the `n6` / `sm3` / `s1`
+`.nuch` link-and-run consumers, all three of which generate
+`(declare printf (fmt:CStr :rest args:i32) :i32)` on the fly. Grep the suite
+modules themselves before concluding a spelling is unused — or just treat
+`make test` as the authority, which is what it is.
 
 Worth knowing alongside it: **call arity is not checked against a
 declaration.** `(declare printf (fmt:CStr):i32)` followed by
@@ -3764,7 +3770,7 @@ Three things about it that a future session will otherwise re-learn the hard way
   error**: `unknown type: gg/Pt — 'gg' is not in scope in this file`, pointing at
   a library's own line or at line 0. Nothing in the test suite reproduces it,
   because it needs a namespaced type crossing a namespace boundary.
-  `tests/run-tests.sh`'s `b3a-ns-type-in-collection` is the one program that
+  `tests/suite-namespaces.nuc`'s `b3a-ns-type-in-collection` is the one that
   does — a namespaced struct as a `Vector` element, reached through generic
   dispatch, with a cross-namespace `extend` over it. Keep it running.
 - **The arm sites are not "the functions that parse a type" but "the functions
@@ -3997,7 +4003,7 @@ Two things that made this hard to see, both worth remembering:
   *solitary* name or a global went through `globals-lookup-ref`, which has
   filtered since B2b. So a template calling its own namespace's functions worked
   or failed depending on **how many overloads the callee happened to have**.
-  `tests/run-tests.sh`'s `b4-qualified-template` was passing on the strength of
+  `tests/suite-namespaces.nuc`'s `b4-qualified-template` was passing on the strength of
   that accident — delete one overload from its fixture and it fails. When a test
   covers a path with a merged registry on it, check whether it is passing for the
   reason it claims.
@@ -4623,7 +4629,8 @@ property that makes it the same thing and test that property directly**; a proxy
 that merely correlates (here: the signature) will admit the case the proxy cannot
 express. And **a green corpus sweep plus a green bootstrap is not sufficient
 evidence for a rule change** — neither reaches the generated multi-file fixtures
-in `tests/run-tests.sh`, which is where cross-file rulings actually live. Run the
+in `tests/suite-imports.nuc` and `tests/suite-modules.nuc`, which is where
+cross-file rulings actually live. Run the
 suite before believing a resolution change is inert (see "Tightening a rule? The
 corpus sweep is not the measurement — stage 2 is", of which this is the
 cross-file half).
@@ -4785,7 +4792,7 @@ and it rendered whatever `type-node-to-c-decl` produced. It now refuses the whol
 struct, because dropping only the offending field would hand C a layout that
 silently disagrees with Nucleus — the same ruling item 44 made for declarations.
 The general form: **every emitter that writes a type is a refusal site, and the
-`_BANG`/`_QMARK` tag grep in `run-tests.sh` is the only thing that finds a missed
+`_BANG`/`_QMARK` tag check in `tests/suite-cheader.nuc` is the only thing that finds a missed
 one** — `check-headers.sh` does not, because an undefined tag behind a pointer is
 legal C.
 
@@ -5039,7 +5046,7 @@ Stage 16 dropped `(import-use node)` from `lib/prelude.nuc`. `lib/node.nuc`
 imports `lib/arena.nuc`, which imports `stdio.h`, `stdlib.h` and `string.h` — so
 for as long as the prelude carried node, **every program in the tree was handed
 `printf` and `malloc` for free**. Twelve examples, seven fixtures and several
-inline heredoc fixtures in `tests/run-tests.sh` used one without importing it,
+inline harness fixtures used one without importing it,
 and all nineteen broke the moment the middle of the chain went away.
 
 Nothing about the change touched libc. Expect this shape whenever an import is
@@ -5333,19 +5340,20 @@ its body, and after a `declare`'s return operand. Same three-helper shape —
 
 ## A test unit that dies before its first `echo` is invisible, not failing
 
-`tests/run-tests.sh` buffers each unit to a file and decides PASS/FAIL by
-scanning the replayed output. An empty result file *is* counted
-(`[ ! -s "$out" ] && fail=1`), but nothing is printed for it — so a unit killed
-by `set -e` before its first `echo` shows up only in the script's **exit code**,
-and a run that reports "755 PASS, zero FAIL" can be exiting 1.
-
-The killer is almost always the one `run_headers_generated` documents:
-`out="$(cmd)"` as a bare assignment is fatal under `set -e` when `cmd` fails —
-use `out="$(cmd)" || ec=$?`. Found in `run_stdlib_table` (Stage 16), where it
-had been hiding a genuine regression for the whole of the prelude-split work:
+A shell test that dies before it prints reports nothing, and the harness that
+counts printed verdicts counts nothing either — so a run can say "755 PASS, zero
+FAIL" and still be exiting 1. The killer is almost always `out="$(cmd)"` as a
+bare assignment, which is fatal under `set -e` when `cmd` fails; use
+`out="$(cmd)" || ec=$?`. Found in the old `stdlib-table` unit (Stage 16), where
+it had been hiding a genuine regression for the whole of the prelude-split work:
 165 libc names had left the no-import set and `docs/stdlib.md` still claimed
-them. **When `make test` exits non-zero with no `FAIL` line, look for an empty
-result file, not a flake.**
+them.
+
+**The native suite closed this by construction** (Stage 18 TF-6): a test that
+dies is a missing record, and a missing record is a count mismatch against
+`--list`, not a silent pass. The lesson still applies to everything in `tests/`
+and `scripts/` that is still shell — and to any harness that decides a verdict by
+scanning output rather than by counting what it dispatched.
 
 ## A conversion keyed on POSITION cannot live in the type-pair chokepoint
 
