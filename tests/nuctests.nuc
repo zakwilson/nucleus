@@ -36,6 +36,7 @@
 (import-use suite-linking)
 (import-use suite-refusals)
 (import-use suite-ir-names)
+(import-use suite-target)
 
 
 

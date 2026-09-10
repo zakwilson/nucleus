@@ -585,7 +585,7 @@ this container only AVR has them: `clang -E --target=riscv64-linux-gnu` /
 
 Refusing there would retire cross-compiling for every triple whose libc headers
 are not installed locally — which is how **every** target lane in `make test`
-runs (`run_target_triple`, `run_rv6_fp_abi`, the `long-abi-*` lanes, the
+runs (`run_target_triple`, the `rv6-*` lanes, the `long-abi-*` lanes, the
 `s16-*-cross-target` layout matrices), and how `make windows-boot` builds the
 committed Windows boot IRs. So the policy is: **retry on the host, and say so.**
 
