@@ -1,0 +1,773 @@
+; Stage 18 TF-6 category (c) — when a name may be used before its file is.
+;
+; Design: design/stage18-tooling/overview.md §T6.6; W1a/W1c/W1d in
+; design/stage15-stress-test/resolution.md; the cycle table in docs/toplevel.md.
+;
+; Three questions about one walk. W1a made the compiler register every REACHABLE
+; file's signatures, protocols and type names before emitting anything, so a
+; cross-file reference no longer depends on import order. W1d then made a mutual
+; import pair legal, because once that prescan exists a cycle has nothing left to
+; break. W1c is what survives: with order gone, an unresolved name is a typo, a
+; genuinely absent symbol, or §2.7's reachability constraint — the name IS in the
+; unit, in a file no import reaches — and the note has to say which.
+;
+; So the oracle is mostly a program's exit status: a wrongly-routed cross-file
+; call links and runs, and only the value says which definition answered. Where
+; the shell stopped at that status these units also read the module, because
+; three of the family's claims are about the artifact rather than the answer —
+; a file reached twice must be emitted once, a namespace must reach the mangled
+; symbol, and a cross-file `declare` must not become a second declaration.
+
+; `nucleusc -I <this test's scratch dir> -o … <main>`, run; the exit status is
+; the answer. The scratch directory is where `test-write-file` puts every file
+; the unit wrote, so one `-I` makes the whole graph reachable.
+(defn w1-exit (main:StrView want:i32):!void
+  (let (dir:StrView (try (test-scratch)))
+    (try (check-file-exit dir main want)))
+  (return (ok)))
+
+; The same graph compiled to IR rather than run.
+(defn w1-ir (main:StrView):!String
+  (let (dir:StrView (try (test-scratch)))
+    (return (emit-for-file dir "--emit-llvm" main))))
+
+; The same graph refused; the diagnostics are the answer.
+(defn w1-compile (main:StrView):!Compiled
+  (let (dir:StrView (try (test-scratch)))
+    (return (compile-path-in dir main))))
+
+; ---------------------------------------------------------------------------
+; W1a: every reachable signature is registered before anything is emitted
+; ---------------------------------------------------------------------------
+
+; The shape that motivates W1a (resolution.md's corrected repro E): two files
+; that depend on each other's functions, each importing what it uses. Before
+; W1a this failed in BOTH orders — signature registration was purely ordinal —
+; so the two orders are the measurement, not a pair of similar cases.
+(deftest w1-mutual-order1
+  (try (test-write-file "w1-mx.nuc" "(defn x-uses ():i32 (return (y-later)))
+(defn x-helper ():i32 (return 7))
+"))
+  (try (test-write-file "w1-my.nuc" "(defn y-later ():i32 (return (x-helper)))
+"))
+  (let (m:String (try (test-write-file "w1-m1.nuc" "(import w1-mx)
+(import w1-my)
+(defn main ():i32 (return (x-uses)))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 7))
+    (drop (addr-of m)))
+  (return (ok)))
+
+(deftest w1-mutual-order2
+  (try (test-write-file "w1-mx.nuc" "(defn x-uses ():i32 (return (y-later)))
+(defn x-helper ():i32 (return 7))
+"))
+  (try (test-write-file "w1-my.nuc" "(defn y-later ():i32 (return (x-helper)))
+"))
+  (let (m:String (try (test-write-file "w1-m2.nuc" "(import w1-my)
+(import w1-mx)
+(defn main ():i32 (return (x-uses)))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 7))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; The two namespaced files both orders need. `w1-nsa` imports `w1-nsb` because
+; R3 (name-resolution.md §8.3) makes a namespace nameable only through an import
+; that binds it.
+(defn w1-ns-files ():!void
+  (try (test-write-file "w1-nsa.nuc" "(ns w1alpha)
+(import-use w1-nsb)
+(defn a-thing ():i32 (return (w1beta/b-thing)))
+"))
+  (try (test-write-file "w1-nsb.nuc" "(ns w1beta)
+(defn b-thing ():i32 (return 42))
+"))
+  (return (ok)))
+
+; W1b: the same claim across namespaces. A defn signature is namespace-QUALIFIED
+; — scope-define qualifies the key and generic-new snapshots the ir-prefix — so
+; the prescan must apply each visited file's own leading `(ns …)` rather than the
+; importer's. The shell asserted only that the program returned 42; the mangled
+; symbol is where prescanning under the wrong namespace would show, so both
+; define lines are pinned here and the answer confirms they are the ones called.
+(defn w1-ns-check (main:StrView):!void
+  (let (s:String (try (w1-ir main))
+        ir:StrView (string-as-view (addr-of s)))
+    (try (check-line ir "define weak_odr i32 @w1beta__b-thing() section \".text.w1beta__b-thing\" {"))
+    (try (check-line ir "define weak_odr i32 @w1alpha__a-thing() section \".text.w1alpha__a-thing\" {"))
+    (drop (addr-of s)))
+  (try (w1-exit main 42))
+  (return (ok)))
+
+(deftest w1-ns-order1
+  (try (w1-ns-files))
+  (let (m:String (try (test-write-file "w1-nm1.nuc" "(import-use w1-nsa)
+(import-use w1-nsb)
+(defn main ():i32 (return (w1alpha/a-thing)))
+")))
+    (try (w1-ns-check (string-as-view (addr-of m))))
+    (drop (addr-of m)))
+  (return (ok)))
+
+(deftest w1-ns-order2
+  (try (w1-ns-files))
+  (let (m:String (try (test-write-file "w1-nm2.nuc" "(import-use w1-nsb)
+(import-use w1-nsa)
+(defn main ():i32 (return (w1alpha/a-thing)))
+")))
+    (try (w1-ns-check (string-as-view (addr-of m))))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; The graph shapes that worked before W1a and must keep working. The walk dedups
+; on RESOLVED PATH, so a file reached twice is prescanned and emitted once — the
+; claim the shell's own comment made and left to the exit status, which a
+; doubled emission does not change. `duplicate-define-name` states it over the
+; whole module rather than over the one function that happens to be shared.
+(defn w1-leaf-files ():!void
+  (try (test-write-file "w1-leaf.nuc" "(defn w1-leaf ():i32 (return 5))
+"))
+  (try (test-write-file "w1-dl.nuc" "(import w1-leaf)
+(defn w1-dl ():i32 (return (w1-leaf)))
+"))
+  (return (ok)))
+
+(defn w1-check-single-emission (main:StrView):!void
+  (let (s:String (try (w1-ir main))
+        ir:StrView (string-as-view (addr-of s))
+        dup:StrView (duplicate-define-name ir))
+    (when (!= dup "")
+      (fail! "the module defines " dup " twice"))
+    (try (check-line ir "define weak_odr i32 @w1-leaf() section \".text.w1-leaf\" {"))
+    (drop (addr-of s)))
+  (return (ok)))
+
+; Two importers of one shared leaf.
+(deftest w1-diamond
+  (try (w1-leaf-files))
+  (try (test-write-file "w1-dr.nuc" "(import w1-leaf)
+(defn w1-dr ():i32 (return (+ (w1-leaf) 1)))
+"))
+  (let (m:String (try (test-write-file "w1-diamond.nuc" "(import w1-dl)
+(import w1-dr)
+(defn main ():i32 (return (+ (w1-dl) (w1-dr))))
+")))
+    (let (mv:StrView (string-as-view (addr-of m)))
+      (try (w1-check-single-emission mv))
+      (try (w1-exit mv 11)))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; One file reachable both directly and through a chain; neither route may
+; re-emit it.
+(deftest w1-two-routes
+  (try (w1-leaf-files))
+  (let (m:String (try (test-write-file "w1-routes.nuc" "(import w1-dl)
+(import w1-leaf)
+(defn main ():i32 (return (+ (w1-dl) (w1-leaf))))
+")))
+    (let (mv:StrView (string-as-view (addr-of m)))
+      (try (w1-check-single-emission mv))
+      (try (w1-exit mv 10)))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; A file forward-referencing up into two independent higher files with no
+; chaining between them.
+(deftest w1-two-higher
+  (try (test-write-file "w1-hi-a.nuc" "(defn w1-hi-a ():i32 (return 3))
+"))
+  (try (test-write-file "w1-hi-b.nuc" "(defn w1-hi-b ():i32 (return 4))
+"))
+  (try (test-write-file "w1-low.nuc" "(defn w1-low ():i32 (return (* (w1-hi-a) (w1-hi-b))))
+"))
+  (let (m:String (try (test-write-file "w1-higher.nuc" "(import w1-hi-a)
+(import w1-hi-b)
+(import w1-low)
+(defn main ():i32 (return (w1-low)))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 12))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; The first thing W1a must NOT relax: two files defining the same name and
+; arity are still a duplicate, since silent last-wins would be a worse
+; regression than the bug W1a fixed. Both definers are named, and the note
+; carries the rule and the way out — the half a message grep cannot reach.
+(deftest w1-duplicate-rejected
+  (let (a:String (try (test-write-file "w1-dup-a.nuc" "(defn w1-dupe (n:i32):i32 (return n))
+"))
+        b:String (try (test-write-file "w1-dup-b.nuc" "(defn w1-dupe (n:i32):i32 (return (+ n 1)))
+"))
+        m:String (try (test-write-file "w1-dup.nuc" "(import w1-dup-a)
+(import w1-dup-b)
+(defn main ():i32 (return (w1-dupe 1)))
+"))
+        c:Compiled (try (w1-compile (string-as-view (addr-of m))))
+        want:String (str "duplicate definition of 'w1-dupe' — the same parameter types are already defined at "
+                         (string-as-view (addr-of a)) ":1"))
+    (try (check-error-at (addr-of c 'diags) (string-as-view (addr-of b)) 1
+                         (string-as-view (addr-of want))))
+    (try (check-note-at (addr-of c 'diags) (string-as-view (addr-of b)) 1
+           "a public name must be unique across the whole compilation unit"))
+    (drop (addr-of want))
+    (drop (addr-of c))
+    (drop (addr-of m))
+    (drop (addr-of b))
+    (drop (addr-of a)))
+  (return (ok)))
+
+; The second: a name defined nowhere in the graph is still refused, and after
+; W1a the message has to say "not defined anywhere in this compilation unit" —
+; a bare `unknown:` would now read as "not imported yet".
+(deftest w1-missing-rejected
+  (try (test-write-file "w1-dup-a.nuc" "(defn w1-dupe (n:i32):i32 (return n))
+"))
+  (let (m:String (try (test-write-file "w1-missing.nuc" "(import w1-dup-a)
+(defn main ():i32 (return (w1-nowhere)))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        c:Compiled (try (w1-compile mv)))
+    (try (check-error-at (addr-of c 'diags) mv 2
+           "unknown: w1-nowhere — not defined anywhere in this compilation unit"))
+    (drop (addr-of c))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; W1e: `(declare f …)` as the cross-file cycle-breaker keeps working. Once the
+; prescan registers every reachable signature, EVERY such declare matches a
+; reachable defn, and emit-nuch-declare-import's "already in g-globals" early
+; return is what keeps that a no-op — so the module must carry the `define` and
+; no `declare` beside it. The shell named that interaction and then asserted
+; only the exit status, which a duplicate declaration does not change.
+(defn w1-declare-files ():!void
+  (try (test-write-file "w1-bf3.nuc" "(declare w1-a-fn (i32):i32)
+(defn w1-b-fn (n:i32):i32 (if (= n 0) (return 2) (return (w1-a-fn (- n 1)))))
+"))
+  (try (test-write-file "w1-af3.nuc" "(import w1-bf3)
+(defn w1-a-fn (n:i32):i32 (if (= n 0) (return 1) (return (w1-b-fn (- n 1)))))
+"))
+  (return (ok)))
+
+(defn w1-declare-check (main:StrView):!void
+  (let (s:String (try (w1-ir main))
+        ir:StrView (string-as-view (addr-of s)))
+    (try (check-line ir "define weak_odr i32 @w1-a-fn(i32 %n.arg) section \".text.w1-a-fn\" {"))
+    (try (check-line ir "define weak_odr i32 @w1-b-fn(i32 %n.arg) section \".text.w1-b-fn\" {"))
+    (try (check-not-contains ir "declare i32 @w1-a-fn"))
+    (drop (addr-of s)))
+  (try (w1-exit main 2))
+  (return (ok)))
+
+(deftest w1-declare-cycle-breaker
+  (try (w1-declare-files))
+  (let (m:String (try (test-write-file "w1-decl1.nuc" "(import w1-af3)
+(defn main ():i32 (return (w1-a-fn 3)))
+")))
+    (try (w1-declare-check (string-as-view (addr-of m))))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; The declare and a reachable defn of the same name coexisting in one unit.
+(deftest w1-declare-plus-import
+  (try (w1-declare-files))
+  (let (m:String (try (test-write-file "w1-decl2.nuc" "(import w1-af3)
+(import w1-bf3)
+(defn main ():i32 (return (w1-a-fn 3)))
+")))
+    (try (w1-declare-check (string-as-view (addr-of m))))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; The pre-existing defect W1a fixes with teeth: a function emitted BEFORE a
+; later import overloads its name got the solitary `@append`, while every call
+; site after that import went through generic dispatch and emitted the mangled
+; `@append.ptr.ptr` — an undefined symbol at link time. Registering every
+; reachable signature before the first `define` makes the solitary-vs-mangled
+; decision final.
+;
+; `weak_odr` is matched rather than skipped: `append` is written in a file this
+; unit IMPORTS, so W9 item 2 gives it that linkage, and a silent flip to
+; external would be the multi-object link failure item 2 fixed. The shell
+; required the mangled define and the absence of a solitary one; the call site
+; agreeing is the other half of "definition and call sites disagree", so it is
+; asserted here too.
+(deftest w1-late-overload-symbol
+  (let (m:String (try (test-write-file "w1-late.nuc" "(import-use \"lib/list.nuc\")
+(import-use vector)
+(import-use node)
+(defn main ():i32
+  (let (c:ptr (make-cell null null 0)
+        r:ptr (append c c))
+    (return 0)))
+"))
+        s:String (try (w1-ir (string-as-view (addr-of m))))
+        ir:StrView (string-as-view (addr-of s)))
+    (try (check-line ir "define weak_odr ptr @append.ptr.ptr(ptr %a.arg, ptr %b.arg) section \".text.append.ptr.ptr\" {"))
+    (try (check-match ir "  %t* = call ptr @append.ptr.ptr(ptr %t*, ptr %t*)"))
+    ; Covers a solitary define and a solitary call at once, and needs no
+    ; maintenance when the linkage word or the parameter names change.
+    (try (check-not-contains ir "@append("))
+    (drop (addr-of s))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; The deferral defect W1a exposed, fixed in defunion-register (union-registry.nuc)
+; and reproducible on the PRE-W1a compiler: a union backing struct's
+; `%X = type { i32, %anon }` line was written eagerly while its anon payload sat
+; on the deferred queue waiting for a struct payload's own type (`%String`,
+; defined by a LATER import). Every module assembled in between — here the
+; `compile-time` block preceding the import — carried the reference with no
+; definition and died `use of undefined type named '__anon_union_…'`.
+;
+; That error comes from the LLVM parser, so `check-ir-parses` is the assertion
+; rather than a search of stderr for its text.
+(deftest w1-deferred-union-payload
+  (let (m:String (try (test-write-file "w1-ctdefer.nuc" "(compile-time (+ 1 1))
+(import-use string)
+(defn w1-wrap (sv:StrView):!String (return (string-from-view sv)))
+(defn main ():i32 (return 0))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        c:Compiled (try (w1-compile mv)))
+    (try (check-silent (addr-of c) "a compile-time block before an import"))
+    (try (check-ir-parses (compiled-ir (addr-of c))))
+    (drop (addr-of c))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; W1d: a mutual `(import …)` pair is LEGAL
+; ---------------------------------------------------------------------------
+;
+; resolution.md "W1d — mutual imports", Option 2 (2026-07-31). `do-import` skips
+; a re-entry of an in-progress path instead of erroring, so a cycle compiles;
+; W1a has already registered every reachable file's signatures, so every
+; cross-file reference in the cycle resolves. What the retired hard-error test
+; guarded is preserved: the positive cases compile, LINK and run, and each
+; coupling a cycle still cannot satisfy is pinned to a located diagnostic.
+
+(defn w1-cycle-files ():!void
+  (try (test-write-file "w1-ca.nuc" "(import w1-cb)
+(defn w1-ca-fn (n:i32):i32 (if (= n 0) (return 1) (return (w1-cb-fn (- n 1)))))
+"))
+  (try (test-write-file "w1-cb.nuc" "(import w1-ca)
+(defn w1-cb-fn (n:i32):i32 (if (= n 0) (return 2) (return (w1-ca-fn (- n 1)))))
+"))
+  (return (ok)))
+
+; `w1-ca-fn 3` walks a→b→a→b and returns 2; `w1-cb-fn 3` walks b→a→b→a and
+; returns 1, so the two entry points cannot pass by accident on one shared
+; answer.
+(deftest w1d-cycle-order1
+  (try (w1-cycle-files))
+  (let (m:String (try (test-write-file "w1-circ1.nuc" "(import w1-ca)
+(defn main ():i32 (return (w1-ca-fn 3)))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 2))
+    (drop (addr-of m)))
+  (return (ok)))
+
+(deftest w1d-cycle-order2
+  (try (w1-cycle-files))
+  (let (m:String (try (test-write-file "w1-circ2.nuc" "(import w1-cb)
+(defn main ():i32 (return (w1-cb-fn 3)))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 1))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; The flatten spelling reaches the same guard: `import-use` binds no prefix.
+(deftest w1d-cycle-import-use
+  (try (test-write-file "w1-cua.nuc" "(import-use w1-cub)
+(defn w1-cua ():i32 (return (+ (w1-cub) 1)))
+"))
+  (try (test-write-file "w1-cub.nuc" "(import-use w1-cua)
+(defn w1-cub ():i32 (return 5))
+"))
+  (let (m:String (try (test-write-file "w1-cu.nuc" "(import-use w1-cua)
+(defn main ():i32 (return (w1-cua)))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 6))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; A cycle longer than two files: the skip is on an in-progress PATH, not on a
+; pairing.
+(deftest w1d-cycle-three-file
+  (try (test-write-file "w1-t3a.nuc" "(import w1-t3b)
+(defn w1-f3a (n:i32):i32 (if (= n 0) (return 1) (return (w1-f3b (- n 1)))))
+"))
+  (try (test-write-file "w1-t3b.nuc" "(import w1-t3c)
+(defn w1-f3b (n:i32):i32 (if (= n 0) (return 2) (return (w1-f3c (- n 1)))))
+"))
+  (try (test-write-file "w1-t3c.nuc" "(import w1-t3a)
+(defn w1-f3c (n:i32):i32 (if (= n 0) (return 3) (return (w1-f3a (- n 1)))))
+"))
+  (let (m:String (try (test-write-file "w1-t3.nuc" "(import w1-t3a)
+(defn main ():i32 (return (w1-f3a 5)))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 3))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; The degenerate cycle — a file that imports itself — is the same in-progress
+; path, so it reaches the same guard rather than a special case.
+(deftest w1d-cycle-self-import
+  (try (test-write-file "w1-self.nuc" "(import w1-self)
+(defn w1-self-fn ():i32 (return 9))
+"))
+  (let (m:String (try (test-write-file "w1-selfm.nuc" "(import w1-self)
+(defn main ():i32 (return (w1-self-fn)))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 9))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; A macro defined by the cycle partner. This is one of the two couplings a
+; prescan genuinely cannot carry: a macro name is registered by its EMITTER, and
+; a cycle member's body is emitted before the rest of the file it back-imports.
+;
+; The shell matched the message prefix and never read the note, which is the
+; half that tells the author what to do — and which names both cycle members, so
+; it is also what proves the compiler identified the cycle rather than guessing.
+(deftest w1d-cycle-macro-diagnosed
+  (let (a:String (try (test-write-file "w1-mca.nuc" "(import w1-mcb)
+(defmacro w1-amac (x) `(+ ,x 100))
+(defn w1-mca ():i32 (return 1))
+"))
+        b:String (try (test-write-file "w1-mcb.nuc" "(import w1-mca)
+(defn w1-mcb (n:i32):i32 (return (w1-amac n)))
+"))
+        bv:StrView (string-as-view (addr-of b))
+        m:String (try (test-write-file "w1-mcm.nuc" "(import w1-mca)
+(defn main ():i32 (return (w1-mcb 5)))
+"))
+        c:Compiled (try (w1-compile (string-as-view (addr-of m))))
+        pair:String (str (string-as-view (addr-of a)) " is in an import cycle with " bv))
+    (try (check-error-at (addr-of c 'diags) bv 2
+           "unknown: w1-amac — defined in a file this unit imports circularly, and not registered yet at this point"))
+    (try (check-note-at (addr-of c 'diags) bv 2 (string-as-view (addr-of pair))))
+    (try (check-note-at (addr-of c 'diags) bv 2
+           "a macro, deferror id or extern declaration registers only when its file is emitted"))
+    (drop (addr-of pair))
+    (drop (addr-of c))
+    (drop (addr-of m))
+    (drop (addr-of b))
+    (drop (addr-of a)))
+  (return (ok)))
+
+; The other coupling: a `deferror` id, whose value `emit-deferror` allocates at
+; emission time. This unit replaces the retired `defconst`/`defenum` pair —
+; Stage 15 W8 G-0 moved value-name registration into the prescan, so those two
+; now RESOLVE across a cycle and the positives live in the G-0 units.
+(deftest w1d-cycle-deferror-diagnosed
+  (let (a:String (try (test-write-file "w1-dfa.nuc" "(import w1-dfb)
+(deferror W1Boom \"boom\")
+(defn w1-dfa ():i32 (return 1))
+"))
+        b:String (try (test-write-file "w1-dfb.nuc" "(import w1-dfa)
+(defn w1-dfb ():i32 (return (as i32 W1Boom)))
+"))
+        bv:StrView (string-as-view (addr-of b))
+        m:String (try (test-write-file "w1-dfm.nuc" "(import w1-dfa)
+(defn main ():i32 (return (w1-dfb)))
+"))
+        c:Compiled (try (w1-compile (string-as-view (addr-of m))))
+        pair:String (str (string-as-view (addr-of a)) " is in an import cycle with " bv))
+    (try (check-error-at (addr-of c 'diags) bv 2
+           "undefined: W1Boom — defined in a file this unit imports circularly, and not registered yet at this point"))
+    (try (check-note-at (addr-of c 'diags) bv 2 (string-as-view (addr-of pair))))
+    (drop (addr-of pair))
+    (drop (addr-of c))
+    (drop (addr-of m))
+    (drop (addr-of b))
+    (drop (addr-of a)))
+  (return (ok)))
+
+; A field access on a struct the cycle partner defines. This INVERTED in Stage
+; 15 W9 item 40: the layout prescan registers every reachable file's field table
+; before any form is emitted, so the "'S' has no layout at this point" rejection
+; it used to pin can no longer fire. Re-pointed rather than re-baselined, and the
+; type line is pinned beside the answer — the field table being right is what
+; the answer depends on.
+(deftest w1d-cycle-layout-resolves
+  (try (test-write-file "w1-sca.nuc" "(import w1-scb)
+(defstruct W1SC
+  x:i32
+  y:i32)
+(defn w1-sca ():i32 (return 1))
+"))
+  (try (test-write-file "w1-scb.nuc" "(import w1-sca)
+(defn w1-scb (p:ptr:W1SC):i32 (set! (p 'x) 11) (return (p 'x)))
+"))
+  (let (m:String (try (test-write-file "w1-scm.nuc" "(import w1-sca)
+(defn main ():i32 (let (s:ptr:W1SC (alloca W1SC)) (return (w1-scb s))))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        s:String (try (w1-ir mv)))
+    (try (check-line (string-as-view (addr-of s)) "%W1SC = type { i32, i32 }"))
+    (try (w1-exit mv 11))
+    (drop (addr-of s))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; A struct literal over the partner's type: the same inversion at the
+; constructor rather than the accessor.
+(deftest w1d-cycle-structlit-resolves
+  (try (test-write-file "w1-lca.nuc" "(import w1-lcb)
+(defstruct W1LC
+  x:i32
+  y:i32)
+(defn w1-lca ():i32 (return 1))
+"))
+  (try (test-write-file "w1-lcb.nuc" "(import w1-lca)
+(defn w1-lcb ():i32 (let (v:W1LC (W1LC 3 4)) (return (+ (_get (addr-of v) 'x) (_get (addr-of v) 'y)))))
+"))
+  (let (m:String (try (test-write-file "w1-lcm.nuc" "(import w1-lca)
+(defn main ():i32 (return (w1-lcb)))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        s:String (try (w1-ir mv)))
+    (try (check-line (string-as-view (addr-of s)) "%W1LC = type { i32, i32 }"))
+    (try (w1-exit mv 7))
+    (drop (addr-of s))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; The by-value parameter, and the one whose old failure was a SILENT
+; MISCOMPILE: with no layout the ABI classifier saw a zero-sized aggregate and
+; emitted `define … @w1-bcb(i0 %v.arg)`. So the signature is the assertion —
+; 16 bytes of i32 is two SysV INTEGER eightbytes — and the answer confirms both
+; halves of the struct survived the call.
+(deftest w1d-cycle-byval-resolves
+  (try (test-write-file "w1-bca.nuc" "(import w1-bcb)
+(defstruct W1BC
+  x:i32
+  y:i32
+  z:i32
+  w:i32)
+(defn w1-bca ():i32 (return 1))
+"))
+  (try (test-write-file "w1-bcb.nuc" "(import w1-bca)
+(defn w1-bcb (v:W1BC):i32 (return (+ (_get (addr-of v) 'x) (_get (addr-of v) 'w))))
+"))
+  (let (m:String (try (test-write-file "w1-bcm.nuc" "(import w1-bca)
+(defn main ():i32 (let (v:W1BC (W1BC 1 2 3 4)) (return (w1-bcb v))))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        s:String (try (w1-ir mv)))
+    (try (check-line (string-as-view (addr-of s))
+           "define weak_odr i32 @w1-bcb(i64 %v.arg.0, i64 %v.arg.1) section \".text.w1-bcb\" {"))
+    (try (w1-exit mv 5))
+    (drop (addr-of s))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; A `prefix/name` over a cycle member, which INVERTED in Stage 15 B2b. W1d
+; diagnosed it because a skipped re-entry has no global-scope slice for
+; `inject-import-aliases` to alias over; B2b deleted the injection — a prefix
+; names the FILE, whose signatures the W1a prescan has already registered — so
+; the spelling resolves and the program runs. Asserting the answer is what makes
+; this a test of resolution rather than of a diagnostic that no longer exists.
+(deftest w1d-cycle-prefix-resolves
+  (try (test-write-file "w1-pca.nuc" "(import w1-pcb)
+(defn w1-pca (n:i32):i32 (return (+ n 1)))
+"))
+  (try (test-write-file "w1-pcb.nuc" "(import w1-pca)
+(defn w1-pcb (n:i32):i32 (return (w1-pca/w1-pca n)))
+"))
+  (let (m:String (try (test-write-file "w1-pcm.nuc" "(import w1-pca)
+(defn main ():i32 (return (w1-pcb 5)))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 6))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; The rule the skip must NOT relax: cycle partners defining the same name and
+; arity are still a duplicate. Silent last-wins here would be a worse regression
+; than the error W1d removed.
+(deftest w1d-cycle-duplicate-rejected
+  (let (a:String (try (test-write-file "w1-dca.nuc" "(import w1-dcb)
+(defn w1-dcdup (n:i32):i32 (return n))
+"))
+        b:String (try (test-write-file "w1-dcb.nuc" "(import w1-dca)
+(defn w1-dcdup (n:i32):i32 (return (+ n 1)))
+"))
+        m:String (try (test-write-file "w1-dcm.nuc" "(import w1-dca)
+(defn main ():i32 (return (w1-dcdup 1)))
+"))
+        c:Compiled (try (w1-compile (string-as-view (addr-of m))))
+        want:String (str "duplicate definition of 'w1-dcdup' — the same parameter types are already defined at "
+                         (string-as-view (addr-of a)) ":2"))
+    (try (check-error-at (addr-of c 'diags) (string-as-view (addr-of b)) 2
+                         (string-as-view (addr-of want))))
+    (drop (addr-of want))
+    (drop (addr-of c))
+    (drop (addr-of m))
+    (drop (addr-of b))
+    (drop (addr-of a)))
+  (return (ok)))
+
+; Two `.nuc` STRING-path imports in one file. Pre-existing bug: every NODE-STR
+; import defaulted its prefix to `c` — right for a C header, wrong for a Nucleus
+; path — so the second died naming a prefix the author never wrote. A `.nuc` or
+; `.nuch` path now defaults from its basename, the rule the symbol spelling uses.
+(defn w1-pp-files ():!void
+  (try (test-write-file "w1-ppa.nuc" "(defn w1-ppa ():i32 (return 3))
+"))
+  (try (test-write-file "w1-ppb.nuc" "(defn w1-ppb ():i32 (return 4))
+"))
+  (return (ok)))
+
+(deftest w1d-two-path-imports
+  (try (w1-pp-files))
+  (let (dir:StrView (try (test-scratch))
+        src:String (str "(import \"" dir "/w1-ppa.nuc\")
+(import \"" dir "/w1-ppb.nuc\")
+(defn main ():i32 (return (+ (w1-ppa/w1-ppa) (w1-ppb/w1-ppb))))
+")
+        m:String (try (test-write-file "w1-pp.nuc" (string-as-view (addr-of src)))))
+    (try (w1-exit (string-as-view (addr-of m)) 7))
+    (drop (addr-of m))
+    (drop (addr-of src)))
+  (return (ok)))
+
+; An explicit second operand still wins over the basename default.
+(deftest w1d-path-explicit-prefix
+  (try (w1-pp-files))
+  (let (dir:StrView (try (test-scratch))
+        src:String (str "(import \"" dir "/w1-ppa.nuc\" alpha)
+(defn main ():i32 (return (alpha/w1-ppa)))
+")
+        m:String (try (test-write-file "w1-ppx.nuc" (string-as-view (addr-of src)))))
+    (try (w1-exit (string-as-view (addr-of m)) 3))
+    (drop (addr-of m))
+    (drop (addr-of src)))
+  (return (ok)))
+
+; A C header string path still defaults to `c` — the rule only changed for
+; `.nuc`/`.nuch`. The shell ran this program for its exit status alone; what it
+; prints is what says the call went through `c/printf` rather than being folded
+; away, so stdout is the assertion.
+(deftest w1d-cheader-prefix-unchanged
+  (let (m:String (try (test-write-file "w1-ppc.nuc" "(import \"stdio.h\")
+(defn main ():i32 (c/printf \"w1d\\n\") (return 0))
+"))
+        dir:StrView (try (test-scratch))
+        out:String (try (build-run-file dir "" (string-as-view (addr-of m)))))
+    (try (check-eq (string-as-view (addr-of out)) "w1d\n"))
+    (drop (addr-of out))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; Two different files whose basenames collide is a real conflict, and the
+; message names the binding already in force rather than a prefix nobody wrote.
+(deftest w1d-path-prefix-collision
+  (try (w1-pp-files))
+  (let (sub:String (try (test-scratch-sub "sub"))
+        p2:String (try (write-into (string-as-view (addr-of sub)) "w1-ppa.nuc"
+                                   "(defn w1-ppa2 ():i32 (return 5))
+"))
+        dir:StrView (try (test-scratch))
+        src:String (str "(import \"" dir "/w1-ppa.nuc\")
+(import \"" dir "/sub/w1-ppa.nuc\")
+(defn main ():i32 (return 0))
+")
+        m:String (try (test-write-file "w1-ppdup.nuc" (string-as-view (addr-of src))))
+        mv:StrView (string-as-view (addr-of m))
+        c:Compiled (try (compile-path mv))
+        want:String (str "import: prefix 'w1-ppa' is already bound to '" dir "/w1-ppa.nuc'"))
+    (try (check-error-at (addr-of c 'diags) mv 2 (string-as-view (addr-of want))))
+    (drop (addr-of want))
+    (drop (addr-of c))
+    (drop (addr-of m))
+    (drop (addr-of src))
+    (drop (addr-of p2))
+    (drop (addr-of sub)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; W1c: the unreachable-definer note
+; ---------------------------------------------------------------------------
+;
+; resolution.md §W1c. W1a made a name that exists anywhere in the unit resolve,
+; so the surviving `unknown:`/`undefined:` cases are a typo, a genuinely absent
+; symbol, or §2.7's reachability constraint. One unit per tier, plus the control
+; that keeps the scan from firing on a definition the unit already reaches.
+
+; Tier 2: the name is defined in a sibling `.nuc` on the `-I` path that nothing
+; imports. The note must name THAT file, and the primary error must still be
+; true on its own.
+(deftest w1c-unreachable-file
+  (let (o:String (try (test-write-file "w1c-other.nuc" "(defn w1c-elsewhere ():i32 (return 7))
+"))
+        m:String (try (test-write-file "w1c-main.nuc" "(defn main ():i32 (return (w1c-elsewhere)))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        c:Compiled (try (w1-compile mv))
+        want:String (str "'w1c-elsewhere' is defined in " (string-as-view (addr-of o))
+                         ", which no import in this unit reaches"))
+    (try (check-error-at (addr-of c 'diags) mv 1
+           "unknown: w1c-elsewhere — not defined anywhere in this compilation unit"))
+    (try (check-note-at (addr-of c 'diags) mv 1 (string-as-view (addr-of want))))
+    (try (check-no-line-zero (addr-of c 'diags)))
+    (drop (addr-of want))
+    (drop (addr-of c))
+    (drop (addr-of m))
+    (drop (addr-of o)))
+  (return (ok)))
+
+; The control: adding the import makes it compile, link and run. The note must
+; be advice that actually works, and the scan must not fire on a definition the
+; unit already reaches.
+(deftest w1c-note-advice-works
+  (try (test-write-file "w1c-other.nuc" "(defn w1c-elsewhere ():i32 (return 7))
+"))
+  (let (m:String (try (test-write-file "w1c-fixed.nuc" "(import w1c-other)
+(defn main ():i32 (return (w1c-elsewhere)))
+")))
+    (try (w1-exit (string-as-view (addr-of m)) 7))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; Tier 4: nothing on the search path defines it. The message must say so
+; plainly, and carry NO note — there is no file to point at, and a note here
+; would be an invention.
+(deftest w1c-defined-nowhere
+  (let (m:String (try (test-write-file "w1c-none.nuc" "(defn main ():i32 (return (w1c-absent-everywhere)))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        c:Compiled (try (w1-compile mv)))
+    (try (check-error-at (addr-of c 'diags) mv 1
+           "unknown: w1c-absent-everywhere — not defined anywhere in this compilation unit"))
+    (let (t:String (diag-list-text (addr-of c 'diags)))
+      (try (check-not-contains (string-as-view (addr-of t)) "note:"))
+      (drop (addr-of t)))
+    (drop (addr-of c))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; §2.7's TYPE reachability constraint stays a rule; W1c only improves its
+; message. A struct named in a signature but defined in an unreached file gets
+; the same note, from `parse-type-name`'s `unknown type:` raise.
+(deftest w1c-unreachable-type
+  (let (o:String (try (test-write-file "w1c-ty.nuc" "(defstruct W1cWidget (a i32))
+"))
+        m:String (try (test-write-file "w1c-tymain.nuc" "(defn w1c-take (w:ptr:W1cWidget):i32 (return 0))
+(defn main ():i32 (return 0))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        c:Compiled (try (w1-compile mv))
+        want:String (str "'W1cWidget' is defined in " (string-as-view (addr-of o))
+                         ", which no import in this unit reaches"))
+    (try (check-error-at (addr-of c 'diags) mv 1
+           "unknown type: W1cWidget — not defined anywhere in this compilation unit"))
+    (try (check-note-at (addr-of c 'diags) mv 1 (string-as-view (addr-of want))))
+    (try (check-no-line-zero (addr-of c 'diags)))
+    (drop (addr-of want))
+    (drop (addr-of c))
+    (drop (addr-of m))
+    (drop (addr-of o)))
+  (return (ok)))

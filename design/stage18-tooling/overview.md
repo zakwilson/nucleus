@@ -2226,6 +2226,86 @@ from clang; `f_pair`'s `i64` → `i32`; `fpr7_dd`'s integer-convention pair → 
 x86 double pair; one variadic `i64` → `double`; and `f_farr2`'s x86
 `<2 x float>` → the riscv flattened pair.
 
+#### TF-6 category (c), when a name may be used before its file is (2026-09-10)
+
+**13 shell functions → 33 tests**, 318 body lines retired (462 lines of the
+file, including five rationale headers, two section banners and thirteen
+`spawn` lines): `run_w1_mutual` (2), `run_w1_ns` (2), `run_w1_graph_shapes` (3),
+`run_w1_still_rejects` (2), `run_w1_declare_cycle_breaker` (2),
+`run_w1d_cycle_accepts` (5), `run_w1d_cycle_diagnoses` (7),
+`run_w1d_path_prefix` (4), `run_w1_deferred_union_payload` (1),
+`run_w1_late_overload_symbol` (1), `run_w1c_unreachable_file` (2),
+`run_w1c_defined_nowhere` (1) and `run_w1c_unreachable_type` (1), into a new
+thirteenth module `tests/suite-imports.nuc` (773 lines).
+`tests/run-tests.sh` is 5,811 → 5,348 lines and 113 → 100 functions. `make test`
+is 245 shell + 721 native = 966.
+
+The three sub-families are one walk. W1a registers every REACHABLE file's
+signatures, protocols and type names before emitting anything, so a cross-file
+reference stopped depending on import order; W1d then made a mutual import pair
+legal, because once that prescan exists a cycle has nothing left to break; W1c
+is what survives, since with order gone an unresolved name is a typo, a
+genuinely absent symbol, or §2.7's reachability constraint. `w1_run` itself
+stays in the shell — forty other functions call it — so only the W1 units and
+their banner went.
+
+**A vacuous test, found by running its fixture.** `run_w1_deferred_union_payload`
+writes a program whose first line is `(compile-time (printf "ct ran\n"))`, and
+`printf` left the prelude in the split: the compile dies at line 1 with
+`unknown: printf` and never reaches the `(import-use string)` whose deferred
+union payload is the entire subject. The shell asks only whether stderr contains
+`undefined type`, so a different error every time reads as PASS. The native unit
+uses `(compile-time (+ 1 1))` — same structure, no prelude dependency — and
+asserts the real property: the compile is silent and the module parses, since
+`use of undefined type named '__anon_union_…'` is the LLVM parser's own message
+and `check-ir-parses` is what asks it. The perturbation restores the shell's
+line verbatim and the unit fails on the `unknown: printf` the shell passed over.
+
+**A dangling `Either` in a diagnostic, fixed rather than pinned.**
+`cycle-definer-message` (`src/nucleusc.nuc`) built its note as
+`"… back-imports. Either " + import-cycle-advice()`, producing "Either break
+the cycle -- …" with no `or` — the "Either …, or …" scaffolding belongs to
+`cycle-layout-message`, which has a second alternative to offer (use a pointer)
+where a macro has none. It now reads "The fix is to break the cycle -- …",
+keeping the advice text in one place. Nothing pinned it because the shell
+grepped the message and never read the note.
+
+**Three claims the shell's own comments made and its bodies never tested.** The
+graph-shape comment says the walk dedups on resolved path so a file reached
+twice is prescanned once — asserted only through an exit status, which a doubled
+emission does not change; `duplicate-define-name` now states it over the whole
+module. The W1b comment says prescanning under the importer's namespace would
+"mangle it under the wrong prefix" — and checked only that the program returned
+42; both `@w1alpha__a-thing` and `@w1beta__b-thing` define lines are pinned now,
+in both import orders. And the W1e comment names
+`emit-nuch-declare-import`'s "already in g-globals" early return as the thing
+under test — so the module must carry the `define` and no `declare` beside it,
+which is now asserted.
+
+**The by-value cycle case pins the signature, not just the answer.** Its old
+failure was a silent miscompile: with no layout the ABI classifier saw a
+zero-sized aggregate and emitted `define … @w1-bcb(i0 %v.arg)`. Pinning
+`(i64 %v.arg.0, i64 %v.arg.1)` — two SysV INTEGER eightbytes — says the layout
+prescan ran, where the exit status only says the call happened to work.
+
+**Nine stderr greps became nine located records.** Both duplicate-definition
+refusals now name the blamed definer AND the file:line of the other one, which
+the message carries and `qgrep -F "duplicate definition of 'w1-dupe'"` discarded;
+the cycle macro and `deferror` refusals pin the note that names both cycle
+members, which is what proves the compiler identified the cycle rather than
+guessing; the path-prefix collision pins the binding already in force; and both
+W1c notes pin the unreachable definer's path as a field. `w1c-defined-nowhere`'s
+"and no note" is a search of the rendered diagnostic list rather than of stderr,
+so a note attached to any diagnostic fails it.
+
+**Verified by breaking it**, thirty-three ways — one per unit — each reverted by
+editing the source back: eleven expected exit statuses moved by one; the
+namespace prefix changed to a name nothing mangles to; four pinned diagnostic
+lines moved; two negative assertions inverted; the `%W1SC` type widened; the
+by-value signature narrowed to `i32`; one variadic-shaped call operand retyped;
+the `w1d` stdout changed to `w1e`; and the `compile-time` line restored to the
+shell's own.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that
