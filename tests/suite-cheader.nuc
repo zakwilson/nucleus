@@ -786,3 +786,136 @@ int main(void) {
     (drop (addr-of src))
     (drop (addr-of l))
     (return (ok))))
+
+; ---------------------------------------------------------------------------
+; A type C cannot spell, and the include a type C CAN spell needs
+; ---------------------------------------------------------------------------
+;
+; Design: Stage 13 L8 and its BoxedFn/dyn sibling. A public defn whose signature
+; exposes a capturing-closure env type, a `(BoxedFn …)` or a `(dyn P)` is not
+; C-callable — a fat pointer carrying Nucleus-side Drop and vtable semantics has
+; no faithful C spelling — so `--emit-cheader` omits its prototype, writes a
+; comment in its place, and the compiler warns at the definition site.
+
+(defn closure-fixture ():StrView (return "tests/fixtures/closure-cheader.nuc"))
+(defn box-fixture ():StrView (return "tests/fixtures/box-cheader.nuc"))
+
+(defn fixture-cheader (path:StrView):!String
+  (return (emit-for-file "" "--emit-cheader" path)))
+
+; The omission comment is a whole line, and no prototype for the name survives.
+; The `__vfn_env_0` typedef is the anchor: it is the type whose exposure caused
+; the omission and it IS spelled, so an empty or truncated header cannot satisfy
+; a purely negative check.
+(deftest l8-cheader-omits-closure
+  (let (h:String (try (fixture-cheader (closure-fixture)))
+        hv:StrView (string-as-view (addr-of h)))
+    (try (check-line hv "} __vfn_env_0;"))
+    (try (check-line hv
+      "/* apply-closure: exposes a closure or type-erased box type; not C-callable, omitted */"))
+    (try (check-not-match hv "*apply-closure(*"))
+    (try (check-not-match hv "*apply_closure(*"))
+    (drop (addr-of h)))
+  (return (ok)))
+
+; The plain fn-pointer defn IS emitted, under its sanitized C name and with the
+; asm label binding it back to `@plain-fn` (W9 item 4).
+(deftest l8-cheader-emits-fnptr
+  (let (h:String (try (fixture-cheader (closure-fixture))))
+    (try (check-line (string-as-view (addr-of h))
+                     "int32_t plain_fn(int32_t x, int32_t y) asm(\"plain-fn\");"))
+    (drop (addr-of h)))
+  (return (ok)))
+
+; The definition site warns, at its own line and with nothing else to say. The
+; shell grepped stderr for the substring, which any diagnostic anywhere in the
+; run could have supplied.
+(deftest l8-cheader-warns
+  (let (c:Compiled (try (compile-path (closure-fixture))))
+    (try (check-warning-at (addr-of c 'diags) (closure-fixture) 18
+      "'apply-closure' exposes a closure or type-erased box type and will be excluded from generated C headers"))
+    (try (check-no-errors (addr-of c 'diags)))
+    (drop (addr-of c)))
+  (return (ok)))
+
+(deftest l13-cheader-omits-boxedfn
+  (let (h:String (try (fixture-cheader (box-fixture)))
+        hv:StrView (string-as-view (addr-of h)))
+    (try (check-line hv
+      "/* make-boxed: exposes a closure or type-erased box type; not C-callable, omitted */"))
+    (try (check-not-match hv "*make-boxed(*"))
+    (try (check-not-match hv "*make_boxed(*"))
+    (drop (addr-of h)))
+  (return (ok)))
+
+(deftest l13-cheader-omits-dyn
+  (let (h:String (try (fixture-cheader (box-fixture)))
+        hv:StrView (string-as-view (addr-of h)))
+    (try (check-line hv
+      "/* use-dyn: exposes a closure or type-erased box type; not C-callable, omitted */"))
+    (try (check-not-match hv "*use-dyn(*"))
+    (try (check-not-match hv "*use_dyn(*"))
+    (drop (addr-of h)))
+  (return (ok)))
+
+(deftest l13-cheader-emits-fnptr
+  (let (h:String (try (fixture-cheader (box-fixture))))
+    (try (check-line (string-as-view (addr-of h))
+                     "int32_t plain_fn(int32_t x, int32_t y) asm(\"plain-fn\");"))
+    (drop (addr-of h)))
+  (return (ok)))
+
+; Only ONE of the fixture's two box-typed defns warns, and the shell's needle
+; ("at least one fires", per its own comment) was written to accept that rather
+; than ask why. The reason is on the next line: `(return 0)` cannot produce a
+; `(BoxedFn (i32) i32)`, the compile stops there, and `use-dyn` at line 23 is
+; never reached. Both halves are pinned so the fixture defect is visible; see
+; design/stage888-deferred.md.
+(deftest l13-cheader-warns
+  (let (c:Compiled (try (compile-path (box-fixture))))
+    (try (check-warning-at (addr-of c 'diags) (box-fixture) 19
+      "'make-boxed' exposes a closure or type-erased box type and will be excluded from generated C headers"))
+    (try (check-error-at (addr-of c 'diags) (box-fixture) 20
+      "BoxedFn: can only box a closure value (a capturing closure's (ref Env), or a bare `fn`)"))
+    (drop (addr-of c)))
+  (return (ok)))
+
+; c-header-layout.md §6: a public signature naming a C typedef renders the name
+; BARE — `struct off_t` names nothing — so the header did not compile at all
+; until it also carried the `#include` the name came from. That is the rule the
+; preamble already applies to `size_t` with `<stddef.h>`.
+(deftest cheader-c-typedef-include
+  (let (h:String (try (c-header "o" "(import-use \"unistd.h\")
+(defn seek (fd:i32 off:off_t):off_t (return off))
+"))
+        hv:StrView (string-as-view (addr-of h))
+        dir:StrView (try (test-scratch)))
+    (try (check-line hv "#include <unistd.h>"))
+    (try (check-line hv "off_t seek(int32_t fd, off_t off);"))
+    ; The include is the IMPORT spelling, never the /usr/include file a
+    ; linemarker names — only the former is portable.
+    (try (check-not-match hv "*/usr/include*"))
+    ; The point of the include: the header compiles on its own. clang is a hard
+    ; dependency, so this never skips — the shell guarded it with `command -v`.
+    (let (r:CcCheck (try (c-consumer-syntax dir "#include \"o.h\"
+int main(void){return 0;}
+")))
+      (when (not (r 'ok?))
+        (fail! "the generated header does not compile\n     "
+               (test-show (string-as-view (addr-of r 'err)))))
+      (drop (addr-of r)))
+    (drop (addr-of h)))
+  (return (ok)))
+
+; A header naming NO C typedef gains no include — the list is the types the
+; header actually names, as it is on the Nucleus side. The prototype is required
+; too: the shell asked only for the absence, which an empty header satisfies.
+(deftest cheader-c-include-only-when-named
+  (let (h:String (try (c-header "p" "(import-use \"unistd.h\")
+(defn plain (x:i32):i32 (return x))
+"))
+        hv:StrView (string-as-view (addr-of h)))
+    (try (check-line hv "int32_t plain(int32_t x);"))
+    (try (check-not-match hv "*<unistd.h>*"))
+    (drop (addr-of h)))
+  (return (ok)))
