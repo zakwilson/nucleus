@@ -1,0 +1,797 @@
+; Stage 18 TF-6 category (c) — what a global is worth before `main` runs.
+;
+; Design: design/stage18-tooling/overview.md §T6.6; Stage 15 W8 G-0…G-4 in
+; design/global-init.md §§2.5, 4.1-4.3, 4.8, 5.
+;
+; One question in five steps. G-0 registers `defvar`/`defconst`/`defenum` names
+; on the same whole-graph walk that already carried signatures, so a value
+; resolves on reachability rather than on emission order. G-1 folds a constant
+; initializer, G-2 adds `(array T N)` and constant aggregates, G-3 runs what
+; cannot be folded from `@__nucleus_init` — and only when there is something to
+; run. G-4 is the diagnostic for the one thing none of that can fix: an
+; initializer that reads a global whose own initializer has not run.
+;
+; So the oracle is a VALUE, almost everywhere. A global resolved to the wrong
+; constant links and runs; an initializer that never ran leaves a zero that is
+; indistinguishable from success unless something reads it. Where the shell
+; stopped at "it compiled" these units run the program, and where the claim is
+; about the artifact — the zero-cost gate, the library's constructor, the
+; generated header's declarator — they read the artifact.
+
+; `nucleusc -I <this test's scratch dir> -o … <main>`, run; the exit status is
+; the answer.
+(defn g-exit (main:StrView want:i32):!void
+  (let (dir:StrView (try (test-scratch)))
+    (try (check-file-exit dir main want)))
+  (return (ok)))
+
+; The same graph refused; the diagnostics are the answer.
+(defn g-compile (main:StrView):!Compiled
+  (let (dir:StrView (try (test-scratch)))
+    (return (compile-path-in dir main))))
+
+; ---------------------------------------------------------------------------
+; G-0: a value name resolves on reachability
+; ---------------------------------------------------------------------------
+;
+; W1a did this for `defn` signatures, protocols and type names; the three value
+; definers were left registering at emission time, so a reference to one not yet
+; emitted died `undefined: X — not defined anywhere in this compilation unit`
+; for a name that IS in the unit. Both import orders return the same number, so
+; a wrong answer is visible only in the value — never in the exit code of the
+; compile.
+
+(defn g0-const-files ():!void
+  (try (test-write-file "g0-ca.nuc" "(defn g0-use-const ():i32 (return G0-MYK))
+"))
+  (try (test-write-file "g0-cb.nuc" "(defconst G0-MYK 42)
+"))
+  (return (ok)))
+
+; Probe 2/3 of global-init.md §2.5: order 1 worked before G-0, order 2 died.
+(deftest g0-defconst-order1
+  (try (g0-const-files))
+  (let (m:String (try (test-write-file "g0-c1.nuc" "(import g0-cb)
+(import g0-ca)
+(defn main ():i32 (return (g0-use-const)))
+")))
+    (try (g-exit (string-as-view (addr-of m)) 42))
+    (drop (addr-of m)))
+  (return (ok)))
+
+(deftest g0-defconst-order2
+  (try (g0-const-files))
+  (let (m:String (try (test-write-file "g0-c2.nuc" "(import g0-ca)
+(import g0-cb)
+(defn main ():i32 (return (g0-use-const)))
+")))
+    (try (g-exit (string-as-view (addr-of m)) 42))
+    (drop (addr-of m)))
+  (return (ok)))
+
+(defn g0-enum-files ():!void
+  (try (test-write-file "g0-ea.nuc" "(defn g0-use-enum ():i32 (return G0-GREEN))
+"))
+  (try (test-write-file "g0-eb.nuc" "(defenum G0Color G0-RED G0-GREEN G0-BLUE)
+"))
+  (return (ok)))
+
+; Probe 4, a defenum MEMBER. `G0-GREEN` is ordinal 1, so a member resolved to
+; the wrong ordinal — or to the enum's own name — shows in the exit status.
+(deftest g0-defenum-order1
+  (try (g0-enum-files))
+  (let (m:String (try (test-write-file "g0-e1.nuc" "(import g0-eb)
+(import g0-ea)
+(defn main ():i32 (return (g0-use-enum)))
+")))
+    (try (g-exit (string-as-view (addr-of m)) 1))
+    (drop (addr-of m)))
+  (return (ok)))
+
+(deftest g0-defenum-order2
+  (try (g0-enum-files))
+  (let (m:String (try (test-write-file "g0-e2.nuc" "(import g0-ea)
+(import g0-eb)
+(defn main ():i32 (return (g0-use-enum)))
+")))
+    (try (g-exit (string-as-view (addr-of m)) 1))
+    (drop (addr-of m)))
+  (return (ok)))
+
+(defn g0-var-files ():!void
+  (try (test-write-file "g0-va.nuc" "(defn g0-use-var ():i32 (set! g0-gv (+ g0-gv 4)) (return g0-gv))
+"))
+  (try (test-write-file "g0-vb.nuc" "(defvar g0-gv:i32 33)
+"))
+  (return (ok)))
+
+; A real global, so this also pins that a `load` emitted BEFORE the
+; `@g = global` line is a legal forward reference, and that a `set!` through the
+; prescan-registered Sym writes the same storage the emitter defines: 33+4 = 37.
+(deftest g0-defvar-order1
+  (try (g0-var-files))
+  (let (m:String (try (test-write-file "g0-v1.nuc" "(import g0-vb)
+(import g0-va)
+(defn main ():i32 (return (g0-use-var)))
+")))
+    (try (g-exit (string-as-view (addr-of m)) 37))
+    (drop (addr-of m)))
+  (return (ok)))
+
+(deftest g0-defvar-order2
+  (try (g0-var-files))
+  (let (m:String (try (test-write-file "g0-v2.nuc" "(import g0-va)
+(import g0-vb)
+(defn main ():i32 (return (g0-use-var)))
+")))
+    (try (g-exit (string-as-view (addr-of m)) 37))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; W1b's half of G-0: `scope-define` qualifies a global's key against
+; `g-current-ns`, so the prescan must apply each visited file's own leading
+; `(ns …)`. The constant is declared BELOW the function that reads it, so the
+; prescan is what resolves both the bare in-namespace reference and the
+; qualified cross-file one.
+(defn g0-ns-files ():!void
+  (try (test-write-file "g0-nsa.nuc" "(ns g0alpha)
+(defn g0-ns-get ():i32 (return G0-NSK))
+(defconst G0-NSK 55)
+"))
+  (try (test-write-file "g0-nsb.nuc" "(import-use g0-nsa)
+(defn g0-ns-user ():i32 (return g0alpha/G0-NSK))
+"))
+  (return (ok)))
+
+(deftest g0-ns-qualified-value
+  (try (g0-ns-files))
+  (let (m:String (try (test-write-file "g0-ns1.nuc" "(import-use g0-nsb)
+(import-use g0-nsa)
+(defn main ():i32 (return (g0-ns-user)))
+")))
+    (try (g-exit (string-as-view (addr-of m)) 55))
+    (drop (addr-of m)))
+  (return (ok)))
+
+(deftest g0-ns-internal-forward
+  (try (g0-ns-files))
+  (let (m:String (try (test-write-file "g0-ns2.nuc" "(import-use g0-nsb)
+(import-use g0-nsa)
+(defn main ():i32 (return (g0alpha/g0-ns-get)))
+")))
+    (try (g-exit (string-as-view (addr-of m)) 55))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; …and the key really is namespace-qualified: the bare spelling must not leak
+; into a file outside the namespace, since registering it under the importer's
+; `user` namespace would make this compile — the exact W1b failure. The message
+; also carries the spelling that WOULD work, which is the half a search for
+; `undefined: G0-NSK` cannot see.
+(deftest g0-ns-value-not-leaked
+  (try (g0-ns-files))
+  (let (m:String (try (test-write-file "g0-ns3.nuc" "(import g0-nsa)
+(defn main ():i32 (return G0-NSK))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        c:Compiled (try (g-compile mv)))
+    (try (check-error-at (addr-of c 'diags) mv 2
+           "undefined: G0-NSK (did you mean 'g0-nsa/G0-NSK'?)"))
+    (drop (addr-of c))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; A private constant forward-referenced from earlier in its OWN file: the
+; prescan must key it under the file's synthetic `#pN/` namespace exactly as the
+; emitter does, or the reader resolves to nothing — or, worse, to another file's
+; public name of the same spelling. That "worse" is not hypothetical: on the
+; pre-G-0 compiler this program compiles clean and returns 7, the other file's
+; PUBLIC constant. Which is why the unit runs it and checks 61.
+(deftest g0-private-const-forward
+  (try (test-write-file "g0-pa.nuc" "(defn g0-priv-get ():i32 (return G0-SECRET))
+(defconst- G0-SECRET 61)
+"))
+  (try (test-write-file "g0-pb.nuc" "(defconst G0-SECRET 7)
+"))
+  (let (m:String (try (test-write-file "g0-p1.nuc" "(import g0-pb)
+(import g0-pa)
+(defn main ():i32 (return (g0-priv-get)))
+")))
+    (try (g-exit (string-as-view (addr-of m)) 61))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; …and it stays private: another file may not see it, and gets the
+; not-in-the-unit message rather than a suggestion, since there is no spelling
+; that would reach it.
+(deftest g0-private-const-stays-private
+  (try (test-write-file "g0-pc.nuc" "(defconst- G0-OTHER-SECRET 3)
+(defn g0-pc ():i32 (return G0-OTHER-SECRET))
+"))
+  (let (m:String (try (test-write-file "g0-p3.nuc" "(import g0-pc)
+(defn main ():i32 (return G0-OTHER-SECRET))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        c:Compiled (try (g-compile mv)))
+    (try (check-error-at (addr-of c 'diags) mv 2
+           "undefined: G0-OTHER-SECRET — not defined anywhere in this compilation unit"))
+    (drop (addr-of c))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; The positive replacements for the retired `w1d-cycle-defconst-diagnosed` and
+; `w1d-cycle-defenum-diagnosed`, which pinned the OLD behaviour. G-0 registers
+; value names before any emission and the whole-graph walk visits both members
+; of a cycle, so these three now resolve — and each asserts the VALUE, not exit
+; 0. `w1d-cycle-deferror-diagnosed` keeps the diagnostic pinned for the names a
+; cycle still cannot carry.
+(deftest g0-cycle-defconst
+  (try (test-write-file "g0-kca.nuc" "(import g0-kcb)
+(defconst G0-KA 42)
+(defn g0-kca ():i32 (return 1))
+"))
+  (try (test-write-file "g0-kcb.nuc" "(import g0-kca)
+(defn g0-kcb ():i32 (return G0-KA))
+"))
+  (let (m:String (try (test-write-file "g0-kcm.nuc" "(import g0-kca)
+(defn main ():i32 (return (g0-kcb)))
+")))
+    (try (g-exit (string-as-view (addr-of m)) 42))
+    (drop (addr-of m)))
+  (return (ok)))
+
+(deftest g0-cycle-defenum
+  (try (test-write-file "g0-eca.nuc" "(import g0-ecb)
+(defenum G0CColor G0C-RED G0C-GREEN G0C-BLUE)
+(defn g0-eca ():i32 (return 1))
+"))
+  (try (test-write-file "g0-ecb.nuc" "(import g0-eca)
+(defn g0-ecb ():i32 (return G0C-BLUE))
+"))
+  (let (m:String (try (test-write-file "g0-ecm.nuc" "(import g0-eca)
+(defn main ():i32 (return (g0-ecb)))
+")))
+    (try (g-exit (string-as-view (addr-of m)) 2))
+    (drop (addr-of m)))
+  (return (ok)))
+
+(deftest g0-cycle-defvar
+  (try (test-write-file "g0-vca.nuc" "(import g0-vcb)
+(defvar g0-vg:i32 77)
+(defn g0-vca ():i32 (return 1))
+"))
+  (try (test-write-file "g0-vcb.nuc" "(import g0-vca)
+(defn g0-vcb ():i32 (return g0-vg))
+"))
+  (let (m:String (try (test-write-file "g0-vcm.nuc" "(import g0-vca)
+(defn main ():i32 (return (g0-vcb)))
+")))
+    (try (g-exit (string-as-view (addr-of m)) 77))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; What G-0 must NOT relax. The message it removes is a FALSE one — a name that
+; genuinely is not in the unit must still say so, with no note, since there is
+; no file to point at.
+(deftest g0-value-defined-nowhere
+  (let (m:String (try (test-write-file "g0-none.nuc" "(defn main ():i32 (return g0-absent-everywhere))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        c:Compiled (try (g-compile mv)))
+    (try (check-error-at (addr-of c 'diags) mv 1
+           "undefined: g0-absent-everywhere — not defined anywhere in this compilation unit"))
+    (let (t:String (diag-list-text (addr-of c 'diags)))
+      (try (check-not-contains (string-as-view (addr-of t)) "note:"))
+      (drop (addr-of t)))
+    (drop (addr-of c))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; W1c tier 2 for a VALUE: defined in a sibling file nothing imports. This is
+; what makes "not defined anywhere" useful rather than merely true.
+(deftest g0-value-unreachable-file
+  (let (o:String (try (test-write-file "g0-far.nuc" "(defconst G0-UNREACHED 5)
+"))
+        m:String (try (test-write-file "g0-farmain.nuc" "(defn main ():i32 (return G0-UNREACHED))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        c:Compiled (try (g-compile mv))
+        want:String (str "'G0-UNREACHED' is defined in " (string-as-view (addr-of o))
+                         ", which no import in this unit reaches"))
+    (try (check-error-at (addr-of c 'diags) mv 1
+           "undefined: G0-UNREACHED — not defined anywhere in this compilation unit"))
+    (try (check-note-at (addr-of c 'diags) mv 1 (string-as-view (addr-of want))))
+    (try (check-no-line-zero (addr-of c 'diags)))
+    (drop (addr-of want))
+    (drop (addr-of c))
+    (drop (addr-of m))
+    (drop (addr-of o)))
+  (return (ok)))
+
+; Two files, one global name — still rejected, and since Stage 15 B4 (R4) by the
+; COMPILER rather than by LLVM: before B4 both `@g0-dupg = global` lines were
+; emitted and the IR parser said `redefinition of global '@g0-dupg'` with no
+; source location at all. The note carries the two ways out, which is what makes
+; the diagnostic better rather than merely located.
+(deftest g0-duplicate-global-rejected
+  (let (a:String (try (test-write-file "g0-da.nuc" "(defvar g0-dupg:i32 1)
+"))
+        b:String (try (test-write-file "g0-db.nuc" "(defvar g0-dupg:i32 2)
+"))
+        bv:StrView (string-as-view (addr-of b))
+        m:String (try (test-write-file "g0-dm.nuc" "(import g0-da)
+(import g0-db)
+(defn main ():i32 (return g0-dupg))
+"))
+        c:Compiled (try (g-compile (string-as-view (addr-of m))))
+        want:String (str "redefinition of 'g0-dupg' — it already names a value defined at "
+                         (string-as-view (addr-of a)) ":1"))
+    (try (check-error-at (addr-of c 'diags) bv 1 (string-as-view (addr-of want))))
+    (try (check-note-at (addr-of c 'diags) bv 1
+           "a name may be defined only once in a compilation unit"))
+    (drop (addr-of want))
+    (drop (addr-of c))
+    (drop (addr-of m))
+    (drop (addr-of b))
+    (drop (addr-of a)))
+  (return (ok)))
+
+; A value name and a function name still may not collide, in either order — the
+; prescan registers both, so the cross-kind guard fires whichever file is
+; emitted first. Stage 15 B5 made the noun depend on which definer is emitted
+; first (name-resolution.md §13.3), and the BLAMED FILE flips with it: order1
+; emits the `defvar` first and blames it while naming the function, order2 the
+; reverse. A message-only check cannot see that, which is the half the shell
+; left out.
+(defn g0-collide-files ():!void
+  (try (test-write-file "g0-ka.nuc" "(defvar g0-collide:i32 1)
+"))
+  (try (test-write-file "g0-kb.nuc" "(defn g0-collide ():i32 (return 2))
+"))
+  (return (ok)))
+
+(deftest g0-value-fn-collision-order1
+  (try (g0-collide-files))
+  (let (a:String (try (test-write-file "g0-ka.nuc" "(defvar g0-collide:i32 1)
+"))
+        m:String (try (test-write-file "g0-km1.nuc" "(import g0-ka)
+(import g0-kb)
+(defn main ():i32 (return 0))
+"))
+        c:Compiled (try (g-compile (string-as-view (addr-of m)))))
+    (try (check-error-at (addr-of c 'diags) (string-as-view (addr-of a)) 1
+           "'g0-collide' already names a function — a symbol may name only one kind of thing"))
+    (drop (addr-of c))
+    (drop (addr-of m))
+    (drop (addr-of a)))
+  (return (ok)))
+
+(deftest g0-value-fn-collision-order2
+  (try (g0-collide-files))
+  (let (b:String (try (test-write-file "g0-kb.nuc" "(defn g0-collide ():i32 (return 2))
+"))
+        m:String (try (test-write-file "g0-km2.nuc" "(import g0-kb)
+(import g0-ka)
+(defn main ():i32 (return 0))
+"))
+        c:Compiled (try (g-compile (string-as-view (addr-of m)))))
+    (try (check-error-at (addr-of c 'diags) (string-as-view (addr-of b)) 1
+           "'g0-collide' already names a value — a symbol may name only one kind of thing"))
+    (drop (addr-of c))
+    (drop (addr-of m))
+    (drop (addr-of b)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; G-1: constant expressions in a global initializer
+; ---------------------------------------------------------------------------
+;
+; The shape matrix (arithmetic, bit ops, sizeof, `as`, `(char "x")`, `addr-of`,
+; a same-file forward constant) is examples/g1-const-init.nuc, which prints
+; every folded value — a folder's characteristic failure is the WRONG NUMBER.
+; What needs more than one file is here, and all of it reads W2b's `const-lit`
+; provenance, which G-0 arms on the whole-graph prescan.
+
+; `g1-xb` has no import of `g1-xa`: the fold resolves `G1XK` purely by
+; reachability. Order 2 emits `g1-xb`'s `@g1-xv = global` line before `g1-xa` is
+; processed at all, so a fold reading only already-emitted state would get
+; nothing.
+(defn g1-cross-files ():!void
+  (try (test-write-file "g1-xa.nuc" "(defconst G1XK 7)
+"))
+  (try (test-write-file "g1-xb.nuc" "(defvar g1-xv:i32 (* G1XK 6))
+(defn g1-xget ():i32 (return g1-xv))
+"))
+  (return (ok)))
+
+(deftest g1-fold-cross-order1
+  (try (g1-cross-files))
+  (let (m:String (try (test-write-file "g1-x1.nuc" "(import g1-xa)
+(import g1-xb)
+(defn main ():i32 (return (g1-xget)))
+")))
+    (try (g-exit (string-as-view (addr-of m)) 42))
+    (drop (addr-of m)))
+  (return (ok)))
+
+(deftest g1-fold-cross-order2
+  (try (g1-cross-files))
+  (let (m:String (try (test-write-file "g1-x2.nuc" "(import g1-xb)
+(import g1-xa)
+(defn main ():i32 (return (g1-xget)))
+")))
+    (try (g-exit (string-as-view (addr-of m)) 42))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; W5e's private key one level down: the folded initializer sits EARLIER in the
+; file than the `defconst-` it reads, and another file defines the same spelling
+; publicly. 9*5 = 45 is the private constant; 9*7 = 63 would be the public one
+; leaking in.
+(deftest g1-fold-private-const
+  (try (test-write-file "g1-pa.nuc" "(defvar g1-pv:i32 (* G1PK 9))
+(defconst- G1PK 5)
+(defn g1-pget ():i32 (return g1-pv))
+"))
+  (try (test-write-file "g1-pb.nuc" "(defconst G1PK 7)
+"))
+  (let (m:String (try (test-write-file "g1-p1.nuc" "(import g1-pb)
+(import g1-pa)
+(defn main ():i32 (return (g1-pget)))
+")))
+    (try (g-exit (string-as-view (addr-of m)) 45))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; `(addr-of g)` across files, where the target is defined in a file emitted
+; AFTER the initializer that takes its address: the emitted `@g1-atgt` is a
+; forward reference LLVM resolves at end of module, and the symbol spelling
+; comes from G-0's prescan. The emitted initializer is pinned beside the value,
+; since "88" would also come back from a pointer that happened to be right for
+; the wrong reason.
+(deftest g1-addr-of-cross-file
+  (try (test-write-file "g1-aa.nuc" "(defvar g1-atgt:i32 88)
+"))
+  (try (test-write-file "g1-ab.nuc" "(defvar g1-aptr:ptr:i32 (addr-of g1-atgt))
+(defn g1-aget ():i32 (return (deref g1-aptr)))
+"))
+  (let (dir:StrView (try (test-scratch))
+        m:String (try (test-write-file "g1-a1.nuc" "(import g1-ab)
+(import g1-aa)
+(defn main ():i32 (return (g1-aget)))
+"))
+        mv:StrView (string-as-view (addr-of m))
+        s:String (try (emit-for-file dir "--emit-llvm" mv)))
+    ; `weak_odr` on both: each is defined in a file this unit imports, so W9
+    ; item 2 owns the linkage word. The pointer's line comes FIRST, which is
+    ; what makes the forward reference visible in the artifact.
+    (try (check-line (string-as-view (addr-of s))
+           "@g1-aptr = weak_odr global ptr @g1-atgt, section \".data.g1-aptr\", align 8"))
+    (try (check-line (string-as-view (addr-of s))
+           "@g1-atgt = weak_odr global i32 88, section \".data.g1-atgt\", align 4"))
+    (try (g-exit mv 88))
+    (drop (addr-of s))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; G-2: the `(array T N)` type and constant aggregates
+; ---------------------------------------------------------------------------
+;
+; The five shapes' positive matrix is examples/g2-array-init.nuc. What needs
+; more than one file, or an output mode other than `--emit-llvm`, is here.
+
+; The C header's postfix array declarator, checked by COMPILING the header and
+; comparing offsets against Nucleus's own — a declarator that parses but means
+; something else is exactly what a grep cannot separate from a correct one. The
+; consumer builds `-Wall -Werror`, where the shell ran plain `cc`.
+(deftest g2-cheader-array-field
+  (try (require-cc))
+  (let (dir:StrView (try (test-scratch))
+        src:String (str "(defconst G2N 3)
+(defstruct G2Rec tag:i8 (cells (array i32 4)) (names (array CStr G2N)) mark:i8)
+")
+        p:String (try (test-write-file "g2h.nuc" (string-as-view (addr-of src))))
+        h:String (try (emit-into "" "--emit-cheader" (string-as-view (addr-of p))
+                                 dir "g2h.h"))
+        ht:String (try (read-file (string-as-view (addr-of h))))
+        hv:StrView (string-as-view (addr-of ht)))
+    ; The whole record, so a declarator that moved rather than changed shape is
+    ; also caught. `G2N` survives as the NAME, which is why the header exports
+    ; `#define G2N 3` beside it.
+    (try (check-line hv "#define G2N 3"))
+    (try (check-line hv "typedef struct G2Rec {"))
+    (try (check-line hv "    int8_t tag;"))
+    (try (check-line hv "    int32_t cells[4];"))
+    (try (check-line hv "    const char* names[G2N];"))
+    (try (check-line hv "    int8_t mark;"))
+    (try (check-line hv "} G2Rec;"))
+    (let (cp:String (try (test-write-file "g2h.c" "#include <stdio.h>
+#include <stddef.h>
+#include \"g2h.h\"
+int main(void){ printf(\"%zu %zu %zu %zu\\n\", sizeof(G2Rec), offsetof(G2Rec,cells), offsetof(G2Rec,names), offsetof(G2Rec,mark)); return 0; }
+"))
+          np:String (try (test-write-file "g2n.nuc" "(import-use \"stdio.h\")
+(defconst G2N 3)
+(defstruct G2Rec tag:i8 (cells (array i32 4)) (names (array CStr G2N)) mark:i8)
+(defn g2off (base:ptr fld:ptr):i64 (return (- (unsafe/cast i64 fld) (unsafe/cast i64 base))))
+(defn main ():i32
+  (let (s:ptr:G2Rec (alloca G2Rec))
+    (printf \"%lld %lld %lld %lld\\n\" (as i64 (sizeof G2Rec))
+      (g2off s (addr-of s 'cells)) (g2off s (addr-of s 'names)) (g2off s (addr-of s 'mark))))
+  (return 0))
+"))
+          want:String (try (cc-link-run dir (string-as-view (addr-of cp))))
+          got:String (try (build-run-file dir "" (string-as-view (addr-of np)))))
+      (try (check-eq (string-as-view (addr-of got)) (string-as-view (addr-of want))))
+      (drop (addr-of got))
+      (drop (addr-of want))
+      (drop (addr-of np))
+      (drop (addr-of cp)))
+    (drop (addr-of ht))
+    (drop (addr-of h))
+    (drop (addr-of p))
+    (drop (addr-of src)))
+  (return (ok)))
+
+; A `.nuch` must round-trip an array field: emit it, import it back, use the
+; field. `emit-nuch-defstruct` prints the field forms verbatim, so what this
+; pins is that the IMPORT side re-parses `(array T N)` into the same layout —
+; the `sizeof` is compared against the original unit's. The array-typed global
+; is the second half: it exports as an `extern` of array type, so the import
+; side's `extern` path must accept one, and a library that emits a header its
+; own consumer cannot read is the failure this catches.
+;
+; 7 + 9 + sizeof(G2Box) + g2tab[1] = 7 + 9 + 16 + 200 = 232.
+(deftest g2-nuch-array-field
+  (let (dir:StrView (try (test-scratch))
+        inc:String (try (test-scratch-sub "inc"))
+        lib:String (try (test-write-file "g2lib.nuc" "(defconst G2K 3)
+(defstruct G2Box (slots (array i32 G2K)) n:i32)
+(defvar g2tab:(array i32 4) (array i32 100 200 300 400))
+"))
+        h:String (try (emit-into "" "--emit-nuch" (string-as-view (addr-of lib))
+                                 (string-as-view (addr-of inc)) "g2lib.nuch"))
+        ht:String (try (read-file (string-as-view (addr-of h))))
+        hv:StrView (string-as-view (addr-of ht)))
+    (try (check-line hv "(defconst G2K 3)"))
+    (try (check-line hv "(defstruct G2Box (slots (array i32 G2K)) (n i32))"))
+    (try (check-line hv "(extern (g2tab (array i32 4)))"))
+    (let (u:String (try (write-into dir "g2use.nuc" "(import-use g2lib)
+(defn main ():i32
+  (let (b:ptr:G2Box (alloca G2Box))
+    (set! (aref (b 'slots) 2) 7)
+    (set! (b 'n) 9)
+    (return (+ (aref (b 'slots) 2) (+ (b 'n) (+ (unsafe/cast i32 (sizeof G2Box)) (aref g2tab 1)))))))
+")))
+      (try (check-file-exit (string-as-view (addr-of inc)) (string-as-view (addr-of u)) 232))
+      (drop (addr-of u)))
+    (drop (addr-of ht))
+    (drop (addr-of h))
+    (drop (addr-of lib))
+    (drop (addr-of inc)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; G-3: `@__nucleus_init`, emitted only when there is something to run
+; ---------------------------------------------------------------------------
+
+; THE GATE (§4.8). A unit with no runtime initializer must emit NOTHING: no
+; `@__nucleus_init`, no `llvm.global_ctors`, no registration global of any kind.
+; The stated reason is microcontroller binary size, so it is a hard requirement
+; rather than a nicety, and it is what keeps the bootstrap byte-identical
+; through this step.
+;
+; Deliberately checked against a unit using EVERY constant-initializer shape
+; G-1/G-2 added, not an empty file: the failure guarded against is a classifier
+; that quietly routes a FOLDABLE initializer down the runtime path, which an
+; empty file could never see. So the nine globals are pinned as emitted
+; constants — the shell asserted only that the machinery was absent, which is
+; equally true of a module that emitted nothing at all.
+(defn g3-const-src ():StrView
+  (return "(defconst G3K 6)
+(defstruct G3P x:i32 y:i32)
+(defvar g3-lit:i32 41)
+(defvar g3-fold:i32 (* G3K 7))
+(defvar g3-str:CStr (as CStr \"zero-cost\"))
+(defvar g3-addr:ptr:i32 (addr-of g3-lit))
+(defvar g3-arr:(array i32 3) (array i32 1 2 3))
+(defvar g3-zeros:(array i32 4))
+(defvar g3-struct:G3P (G3P 1 2))
+(defvar g3-tabp:ptr:i32 (array i32 9 8 7))
+"))
+
+; The nine, in emission order. `.bss` for the zeroed array is part of the claim:
+; a runtime-initialized global also lands in `.bss`, so the section is what
+; separates "folded to zeros" from "left for the initializer".
+(defn g3-check-constants (ir:StrView):!void
+  (try (check-line ir "@g3-lit = global i32 41, section \".data.g3-lit\", align 4"))
+  (try (check-line ir "@g3-fold = global i32 42, section \".data.g3-fold\", align 4"))
+  ; The literal's serial is the prelude's business, so it is the one glob here.
+  (try (check-match ir "@g3-str = global ptr @.str.*, section \".data.g3-str\", align 8"))
+  (try (check-line ir "@g3-addr = global ptr @g3-lit, section \".data.g3-addr\", align 8"))
+  (try (check-line ir "@g3-arr = global [3 x i32] [i32 1, i32 2, i32 3], section \".data.g3-arr\", align 4"))
+  (try (check-line ir "@g3-zeros = global [4 x i32] zeroinitializer, section \".bss.g3-zeros\", align 4"))
+  (try (check-line ir "@g3-struct = global %G3P { i32 1, i32 2 }, section \".data.g3-struct\", align 8"))
+  (try (check-line ir "@g3-tabp.data = internal global [3 x i32] [i32 9, i32 8, i32 7], section \".data.g3-tabp.data\", align 4"))
+  (try (check-line ir "@g3-tabp = global ptr @g3-tabp.data, section \".data.g3-tabp\", align 8"))
+  (return (ok)))
+
+(deftest g3-zero-cost
+  (let (src:String (str (g3-const-src) "(defn main ():i32 (return (+ g3-lit (+ g3-fold (aref g3-arr 0)))))
+")
+        s:String (try (source-ir (string-as-view (addr-of src))))
+        ir:StrView (string-as-view (addr-of s)))
+    (try (g3-check-constants ir))
+    (try (check-not-contains ir "__nucleus_init"))
+    (try (check-not-contains ir "global_ctors"))
+    (drop (addr-of s))
+    (drop (addr-of src)))
+  ; The complement, in the same unit so the two can never drift apart: add ONE
+  ; runtime initializer and both artefacts must appear — without this half,
+  ; deleting the whole feature would still pass the tripwire. The nine constants
+  ; must be UNCHANGED, which is what says the classifier moved one initializer
+  ; rather than the file.
+  (let (src:String (str (g3-const-src) "(defvar g3-rt:i32 (g3-call))
+(defn g3-call ():i32 (return 5))
+(defn main ():i32 (return (+ g3-lit (+ g3-fold (aref g3-arr 0)))))
+")
+        s:String (try (source-ir (string-as-view (addr-of src))))
+        ir:StrView (string-as-view (addr-of s)))
+    (try (g3-check-constants ir))
+    (try (check-line ir "@g3-rt = global i32 0, section \".bss.g3-rt\", align 4"))
+    (try (check-line ir "define internal void @__nucleus_init() {"))
+    (try (check-line ir "@llvm.global_ctors = appending global [1 x { i32, ptr, ptr }] [{ i32, ptr, ptr } { i32 65535, ptr @__nucleus_init, ptr null }]"))
+    (drop (addr-of s))
+    (drop (addr-of src)))
+  (return (ok)))
+
+; The multi-TU case, and the one that justifies `llvm.global_ctors` over every
+; synthetic-entry-point option (§2.4, §4.3): a LIBRARY with no Nucleus `main`,
+; exported as `.nuch` plus a separately compiled `.o`, whose global is
+; initialized by its own object's constructor entry. `main` lives in the
+; consumer's translation unit and never calls anything to make it happen.
+;
+; The library is `(exclude-prelude)` and that is NOT incidental: two separately
+; compiled Nucleus objects cannot currently be linked at all, because both carry
+; the prelude's globals and functions with external linkage — W9 defect 2.
+;
+; The object's own symbol table is the mechanism, and the shell could only see
+; its effect: `__nucleus_init` must be LOCAL (each object runs its own), the
+; global must be a `.bss` definition rather than an initialized one, and the two
+; functions must be the only external definitions.
+(deftest g3-library-nuch
+  (let (libsrc:String (try (test-scratch-sub "libsrc"))
+        inc:String (try (test-scratch-sub "inc"))
+        dir:StrView (try (test-scratch))
+        lib:String (try (write-into (string-as-view (addr-of libsrc)) "g3lib.nuc"
+                                    "(exclude-prelude)
+(defvar g3-lib-n:i32 (g3-lib-compute))
+(defn g3-lib-compute ():i32 (return 42))
+(defn g3-lib-get ():i32 (return g3-lib-n))
+"))
+        libv:StrView (string-as-view (addr-of lib))
+        h:String (try (emit-into "" "--emit-nuch" libv (string-as-view (addr-of inc))
+                                 "g3lib.nuch"))
+        ht:String (try (read-file (string-as-view (addr-of h)))))
+    (try (check-line (string-as-view (addr-of ht)) "(extern (g3-lib-n i32))"))
+    (let (obj:String (str dir "/g3lib.o")
+          objv:StrView (string-as-view (addr-of obj)))
+      (try (compile-object libv objv))
+      (let (syms:String (try (nm-typed objv)))
+        (try (check-line-set (string-as-view (addr-of syms))
+                             "t __nucleus_init
+T g3-lib-compute
+T g3-lib-get
+B g3-lib-n
+" "the library object"))
+        (drop (addr-of syms)))
+      (let (u:String (try (test-write-file "g3user.nuc" "(import g3lib)
+(defn main ():i32
+  (when (!= g3-lib-n 42) (return 1))
+  (when (!= (g3-lib-get) 42) (return 2))
+  (return 0))
+"))
+            uobj:String (str dir "/g3user.o")
+            uobjv:StrView (string-as-view (addr-of uobj))
+            parts:String (str uobjv " " objv))
+        (try (compile-object-in (string-as-view (addr-of inc))
+                                (string-as-view (addr-of u)) uobjv))
+        (let (bin:String (try (driver-link "clang" "" (string-as-view (addr-of parts))))
+              got:i32 (try (run-exit (string-as-view (addr-of bin)))))
+          (when (!= got 0)
+            (fail! "the library initializer did not run: exit " (as i64 got)))
+          (drop (addr-of bin)))
+        (drop (addr-of parts))
+        (drop (addr-of uobj))
+        (drop (addr-of u)))
+      (drop (addr-of obj)))
+    (drop (addr-of ht))
+    (drop (addr-of h))
+    (drop (addr-of lib))
+    (drop (addr-of inc))
+    (drop (addr-of libsrc)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; G-4: the initializer-ordering diagnostic
+; ---------------------------------------------------------------------------
+;
+; design/global-init.md §4.2. The rejections are rows of
+; tests/manifest/diagnostics.sexp; these are the other half — every shape the
+; check must keep ACCEPTING, linked, run and asserted by value. "It compiles"
+; cannot tell an initializer that ran from one that silently kept its zero,
+; which is the exact failure the diagnostic exists to prevent.
+
+; Same-file BACKWARD reference: the legal direction, and the mirror of the
+; forward fixture. 41 + 1 = 42.
+(deftest g4-backward-ref
+  (let (m:String (try (test-write-file "g4-back.nuc" "(defn g4-c ():i32 (return 41))
+(defvar g4-b:i32 (g4-c))
+(defvar g4-a:i32 (+ g4-b 1))
+(defn main ():i32 (return g4-a))
+")))
+    (try (g-exit (string-as-view (addr-of m)) 42))
+    (drop (addr-of m)))
+  (return (ok)))
+
+(defn g4-cross-files ():!void
+  (try (test-write-file "g4xa.nuc" "(defn g4-xc ():i32 (return 40))
+(defvar g4-xbase:i32 (g4-xc))
+"))
+  (try (test-write-file "g4xb.nuc" "(defvar g4-xderived:i32 (+ g4-xbase 2))
+(defn g4-xget ():i32 (return g4-xderived))
+"))
+  (return (ok)))
+
+; §4.1 consequence 1 made visible: the good order links and returns 42.
+(deftest g4-cross-file-order
+  (try (g4-cross-files))
+  (let (m:String (try (test-write-file "g4-ok.nuc" "(import g4xa)
+(import g4xb)
+(defn main ():i32 (return (g4-xget)))
+")))
+    (try (g-exit (string-as-view (addr-of m)) 42))
+    (drop (addr-of m)))
+  (return (ok)))
+
+; …and the reversed one is refused. Only a cross-FILE case can check that the
+; note names the other file's path — a same-file fixture cannot tell a real
+; lookup from an echo of its own. The note also carries the ordering rule and
+; the cycle caveat, which is the advice half and which the shell never read.
+(deftest g4-cross-file-both-sites
+  (try (g4-cross-files))
+  (let (dir:StrView (try (test-scratch))
+        b:String (str dir "/g4xb.nuc")
+        a:String (str dir "/g4xa.nuc")
+        m:String (try (test-write-file "g4-bad.nuc" "(import g4xb)
+(import g4xa)
+(defn main ():i32 (return (g4-xget)))
+"))
+        c:Compiled (try (g-compile (string-as-view (addr-of m))))
+        note:String (str "'g4-xbase' is declared at " (string-as-view (addr-of a)) ":2"))
+    (try (check-error-at (addr-of c 'diags) (string-as-view (addr-of b)) 1
+           "defvar: the initializer for 'g4-xderived' names global 'g4-xbase', whose own defvar has not been reached yet -- it still holds its zero at this point"))
+    (try (check-note-at (addr-of c 'diags) (string-as-view (addr-of b)) 1
+                        (string-as-view (addr-of note))))
+    (try (check-note-at (addr-of c 'diags) (string-as-view (addr-of b)) 1
+           "initializers run in the order their defvars are reached (source order within a file, import order across files)"))
+    (drop (addr-of note))
+    (drop (addr-of c))
+    (drop (addr-of m))
+    (drop (addr-of a))
+    (drop (addr-of b)))
+  (return (ok)))
+
+; `(addr-of g)` forward, on the RUN-TIME path — the decision this step had to
+; make, asserted by dereferencing the pointer rather than by compiling.
+(deftest g4-addr-of-forward
+  (try (check-file-exit "" "tests/fixtures/g4-addr-of-forward.nuc" 7))
+  (return (ok)))
+
+; The KNOWN GAP, pinned by value: a forward read laundered through a call is not
+; detected, so the global keeps its zero. Exit 10 is the gap; a fix would make
+; it 109 and fail here rather than pass quietly.
+(deftest g4-laundered-gap
+  (try (check-file-exit "" "tests/fixtures/g4-laundered-call.nuc" 10))
+  (return (ok)))

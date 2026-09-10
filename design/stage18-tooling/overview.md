@@ -2306,6 +2306,76 @@ by-value signature narrowed to `i32`; one variadic-shaped call operand retyped;
 the `w1d` stdout changed to `w1e`; and the `compile-time` line restored to the
 shell's own.
 
+#### TF-6 category (c), what a global is worth before `main` runs (2026-09-10)
+
+**10 shell functions → 32 tests**, 409 body lines retired (552 lines of the
+file, including six section banners and ten `spawn` lines): `run_g0_value_order`
+(6), `run_g0_value_scoping` (5), `run_g0_cycle_values` (3),
+`run_g0_still_rejects` (5), `run_g1_fold_cross_file` (4), `run_g2_cheader` (1),
+`run_g2_nuch` (1), `run_g3_zero_cost` (1), `run_g3_library` (1) and
+`run_g4_order` (5), into a new fourteenth module `tests/suite-globals.nuc`
+(797 lines). `tests/run-tests.sh` is 5,348 → 4,796 lines and 100 → 90
+functions. `make test` is 213 shell + 753 native = 966.
+
+One question in five steps (global-init.md). G-0 registers `defvar` /
+`defconst` / `defenum` names on the same whole-graph walk that already carried
+signatures, so a value resolves on reachability rather than emission order; G-1
+folds a constant initializer; G-2 adds `(array T N)` and constant aggregates;
+G-3 runs what cannot be folded from `@__nucleus_init`, and only when there is
+something to run; G-4 diagnoses the one thing none of that fixes — an
+initializer reading a global whose own initializer has not run.
+
+**The oracle is a VALUE almost everywhere**, and that is the family's own
+argument: a global resolved to the wrong constant links and runs, and an
+initializer that never ran leaves a zero indistinguishable from success unless
+something reads it. The shell already knew this and every positive unit ran the
+program; what the port adds is the artifact wherever the claim is about the
+artifact rather than the answer.
+
+**The zero-cost gate was half a test.** §4.8 requires a unit with no runtime
+initializer to emit *nothing* — no `@__nucleus_init`, no `llvm.global_ctors` —
+and the shell asserted exactly that absence, which is equally true of a module
+that emitted nothing at all. The unit now pins all nine constant-initializer
+shapes as emitted globals, `.bss` versus `.data` included, since a
+runtime-initialized global also lands in `.bss` and the section is what
+separates "folded to zeros" from "left for the initializer". The complement adds
+one runtime initializer and requires those same nine to be **unchanged** beside
+the new `@g3-rt = global i32 0` — which is what says the classifier moved one
+initializer rather than the file.
+
+**The library test could see only the effect.** `g3-library-nuch` links a
+`.nuch`-exported library object into a consumer whose `main` never calls
+anything, and asserted the program's exit status. The mechanism is in the
+object: `nm` must show `__nucleus_init` as a **local** symbol (each object runs
+its own), `g3-lib-n` as a `.bss` definition, and the two functions as the only
+external definitions — four rows, compared as a set. (The section the linker
+actually emits here is `.ctors`, not the `.init_array` the shell's comment
+names; that is LLVM/linker territory, so the unit pins `llvm.global_ctors` and
+the symbol table instead of a section name.)
+
+**A suggestion nobody was reading.** `g0-ns-value-not-leaked` greps for
+`undefined: G0-NSK`; the message is `undefined: G0-NSK (did you mean
+'g0-nsa/G0-NSK'?)`, and the parenthetical — the spelling that would actually
+work — is the whole point of the diagnostic. Likewise the duplicate-global note
+carries the two ways out (rename, or namespace it and import prefixed) and the
+G-4 note carries the ordering rule plus the cycle caveat; all three are pinned
+now.
+
+**The collision pair distinguishes the two orders for the first time.** Stage 15
+B5 made the noun depend on which definer is emitted first, and the **blamed
+file** moves with it — order1 blames the `defvar` while naming the function,
+order2 the reverse. `w1_reject_multi` matches a message with no location, so the
+shell could see only half of the property its own comment describes.
+
+**Verified by breaking it**, thirty-two ways — one per unit — each reverted by
+editing the source back: seventeen expected exit statuses moved; the two
+collision nouns swapped with each other; four pinned diagnostic locations moved;
+one negative assertion inverted; the did-you-mean spelling changed to the
+namespace it is not; `weak_odr` dropped from a cross-file global; the C header's
+named extent replaced by its value; the exported array `extern` narrowed to a
+pointer; `.bss` changed to `.data` on the folded zeros; and
+`__nucleus_init`'s symbol type raised from local to global.
+
 ### T6.7 TF-7 — the end state
 
 `make test` runs the trust anchor and then `build/nuctest`. The shell that
