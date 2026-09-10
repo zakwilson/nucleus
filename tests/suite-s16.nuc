@@ -2274,3 +2274,110 @@ map=2
 (defn f (p:&Pt):i32 (set! (p 3) 9) (return 0))
 " 2 ".set!: field name must be a quoted selector"))
   (return (ok)))
+
+; ---------------------------------------------------------------------------
+; What a program pays for a runtime it never reaches
+; ---------------------------------------------------------------------------
+;
+; Design: design/stage16-ergonomics/compile-time-imports.md §4b. `lib/prelude.nuc`
+; had `(import-use node)`, so EVERY program carried alloc-node / make-cell /
+; intern-symbol / the intern table and the arena behind them — sixteen
+; definitions and 4569 bytes of .text for a program reaching none of it, and an
+; unlinkable one for freestanding AVR. The prelude now holds only forms that
+; emit no IR and the runtime is a library like any other.
+;
+; The two halves fail in opposite directions, which is why these are asserted
+; here rather than left to `make bootstrap`: too little and a quoting program
+; has no `@intern-symbol` to call, a LINK error with no location; too much and
+; the saving is silently gone with every test still green.
+
+(defn plain-src ():StrView
+  (return "(import-use \"stdio.h\")
+(defn main ():i32 (printf \"hi\\n\") (return 0))
+"))
+
+; A macro, and an expansion that is ordinary arithmetic needing no runtime.
+(defn macro-src ():StrView
+  (return "(import-use \"stdio.h\")
+(defmacro twice (x) `(_+ ~x ~x))
+(defn main ():i32 (let (a:i32 21) (printf \"%d\\n\" (twice a))) (return 0))
+"))
+
+; The measured case, as a SET rather than the shell's absence of five names: a
+; program that never asked for the runtime defines its own `main` and nothing
+; else. Absence alone is satisfied by a module that emits nothing at all.
+(deftest s16-prelude-emits-no-node-runtime
+  (let (ir:String (try (source-ir (plain-src)))
+        names:String (define-names (string-as-view (addr-of ir))))
+    (try (check-line-set (string-as-view (addr-of names)) "main
+" "a program that quotes nothing"))
+    (drop (addr-of names))
+    (drop (addr-of ir)))
+  (return (ok)))
+
+; The premise the design note had to correct: defining a macro costs nothing,
+; because a macro body is JIT'd against the COMPILER's copies. The shell
+; compared define COUNTS, which two different sets of the same size satisfy.
+(deftest s16-defmacro-costs-no-runtime
+  (let (pi:String (try (source-ir (plain-src)))
+        mi:String (try (source-ir (macro-src)))
+        pn:String (define-names (string-as-view (addr-of pi)))
+        mn:String (define-names (string-as-view (addr-of mi))))
+    (try (check-line-set (string-as-view (addr-of mn))
+                         (string-as-view (addr-of pn))
+                         "defining a macro adds no definition"))
+    (drop (addr-of mn))
+    (drop (addr-of pn))
+    (drop (addr-of mi))
+    (drop (addr-of pi)))
+  (return (ok)))
+
+; …and it still RUNS, which is the half a definition set cannot see.
+(deftest s16-defmacro-still-expands-without-node
+  (let (out:String (try (build-run-source (macro-src))))
+    (try (check-eq (string-as-view (addr-of out)) "42\n"))
+    (drop (addr-of out)))
+  (return (ok)))
+
+; A quote is a runtime call, so it is refused by NAME rather than left to fail
+; at link time with no location — which is the whole point, so the line is
+; pinned; the shell grepped the stderr blob.
+(deftest s16-quote-demands-node-import
+  (try (check-place-refused "(defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))
+" 1 "quote needs the node runtime — add (import-use node)"))
+  (return (ok)))
+
+; The same program with the import compiles — a diagnostic naming a fix that
+; does not work is worse than none — and reaches the call the refusal was about.
+(deftest s16-quote-import-is-the-fix
+  (let (c:Compiled (try (compile-source "(import-use node)
+(defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))
+")))
+    (try (check-no-errors (addr-of c 'diags)))
+    (try (check-match (compiled-ir (addr-of c)) "*call ptr @intern-symbol(*"))
+    (drop (addr-of c)))
+  (return (ok)))
+
+; The SECOND emission site, and the one easy to miss: a `:rest` call folds its
+; tail into Node cells at the CALL, nowhere near emit-quote-tree. A check on
+; quote alone leaves this a link error.
+(deftest s16-rest-call-demands-node-import
+  (try (check-place-refused "(defn takes (:rest xs:i64):i32 (return 0))
+(defn main ():i32 (return (takes 1 2)))
+" 2 "a :rest call needs the node runtime — add (import-use node)"))
+  (return (ok)))
+
+; What the split must not take away: `Node` is a type, the prelude still
+; registers it, and reading a field off one emits no call at all — the second
+; half is what the shell's comment claimed and its exit-status check could not
+; see.
+(deftest s16-node-type-survives-without-runtime
+  (let (c:Compiled (try (compile-source "(defn f ((n (raw Node))):i32 (return (n 'kind)))
+(defn main ():i32 (return 0))
+"))
+        iv:StrView (compiled-ir (addr-of c)))
+    (try (check-no-errors (addr-of c 'diags)))
+    (try (check-match iv "define i32 @f(*"))
+    (try (check-not-match iv "*call *"))
+    (drop (addr-of c)))
+  (return (ok)))
