@@ -973,6 +973,7 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `funcall-ptr-i64` | Call a `ptr` function pointer with no arguments, returning `i64` | `((long(*)())fn)()` |
 | `funcall-ptr-ptr` | Call a `ptr` function pointer with no arguments, returning `ptr` | `((void*(*)())fn)()` |
 | `gensym` | Return a fresh unique symbol `Node*` (e.g. `__gs_0`); for use in macro bodies to avoid variable capture | — |
+| `macro-error` | `(macro-error node "message")` — report `message` at `node`'s line and abort the expansion. Only inside a `defmacro`/`macrolet`/`compile-time` body; the message must be a string literal. See [Macros](macros.md#macro-error--a-macro-rejecting-its-own-call-site). | — |
 | `some` | `(some r)` — wrap a non-null `(ref T)` as `?T` / `(Maybe (ref T))`. Pure relabel, no IR. | — |
 | `as-ref` | `(as-ref p)` — launder a raw pointer into `?T` (null stays none). Pure relabel, no IR; narrow before use. | — |
 | `unwrap` | `(unwrap m)` — the `(ref T)` inside a `?T`, or trap (`llvm.trap`) if none. The one runtime branch nullability costs, paid only where written. | `assert(p); p` |

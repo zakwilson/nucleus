@@ -4,77 +4,96 @@
 ; They are pulled in automatically by the prelude; a file may also bring them
 ; in explicitly with (import-use macros).
 
+; (macfoldr op unit a b c) => (op a (op b c))   [right-nested]
+; (macfoldl op unit a b c) => (op (op a b) c)   [left-nested]
+;   no args  => unit;  one arg => that arg, untouched.
+;
+; The generalisation of the six variadic operators below, and the way to make a
+; new one variadic without copying their shape. `op` is spliced into head
+; position, so it may be any callable spelling — a primitive, a function, or
+; another macro.
+;
+; `cond` only, no `if`/`when`: these are the first macros in the file, so nothing
+; defined below them is callable from these bodies yet, and `cond` is a special
+; form. Same reason the `case` macro further down says so.
+(defmacro macfoldr (op unit :rest args)
+  (let ((rev (raw Node)) null
+        (a (raw Node)) args)
+    (while (!= a null)
+      (set! rev `(~(a 'car) ~@rev))
+      (set! a (a 'cdr)))
+    (cond (= rev null)
+            unit
+          true
+            (let ((acc (raw Node)) (rev 'car)
+                  (r (raw Node)) (rev 'cdr))
+              (while (!= r null)
+                (set! acc `(~op ~(r 'car) ~acc))
+                (set! r (r 'cdr)))
+              acc))))
+
+(defmacro macfoldl (op unit :rest args)
+  (cond (= args null)
+          unit
+        true
+          (let ((acc (raw Node)) (args 'car)
+                (a (raw Node)) (args 'cdr))
+            (while (!= a null)
+              (set! acc `(~op ~acc ~(a 'car)))
+              (set! a (a 'cdr)))
+            acc)))
+
 ; variadic math
 ;   (+)            => 0
 ;   (+ x)          => x
-;   (+ x y z ...)  => (_+ x (+ y z ...))   [right-fold; associative]
+;   (+ x y)        => (_+ x y)
+;   (+ x y z ...)  => (_+ x (_+ y z ...))  [right-fold; associative]
+;
+; The 0/1/2-ary arms are spelled out rather than left to `macfoldr` so that the
+; overwhelmingly common binary call costs one expansion and not two: 94% of the
+; 3,103 operator call sites in this tree are binary
+; (design/stage20-macros/overview.md §3.1).
 (defmacro + (:rest args)
-  (cond (= args null)
-    `0
-    (= (args 'cdr) null)
-    (args 'car)
-    true
-    `(_+ ~(args 'car)
-           (+ ~@(args 'cdr)))))
+  (cond (= args null)                `0
+        (= (args 'cdr) null)         (args 'car)
+        (= ((args 'cdr) 'cdr) null)  `(_+ ~(args 'car) ~((args 'cdr) 'car))
+        true                         `(macfoldr _+ 0 ~@args)))
 
 (defmacro * (:rest args)
-  (cond (= args null)
-          `1
-        (= (args 'cdr) null)
-          (args 'car)
-        true
-          `(_* ~(args 'car)
-                (* ~@(args 'cdr)))))
+  (cond (= args null)                `1
+        (= (args 'cdr) null)         (args 'car)
+        (= ((args 'cdr) 'cdr) null)  `(_* ~(args 'car) ~((args 'cdr) 'car))
+        true                         `(macfoldr _* 1 ~@args)))
 
 ; Subtraction: unary negates; n-ary left-folds (matches Common Lisp).
 (defmacro - (:rest args)
-  (cond (= args null)
-          `0
-        (= (args 'cdr) null)
-          `(_- 0 ~(args 'car))
-        (= ((args 'cdr) 'cdr) null)
-          `(_- ~(args 'car)
-                ~((args 'cdr) 'car))
-        true
-          `(- (_- ~(args 'car)
-                   ~((args 'cdr) 'car))
-              ~@((args 'cdr) 'cdr))))
+  (cond (= args null)                `0
+        (= (args 'cdr) null)         `(_- 0 ~(args 'car))
+        (= ((args 'cdr) 'cdr) null)  `(_- ~(args 'car) ~((args 'cdr) 'car))
+        true                         `(macfoldl _- 0 ~@args)))
 
 ; Division: unary is reciprocal (integer: 1/x); n-ary left-folds.
 (defmacro / (:rest args)
-  (cond (= args null)
-          `1
-        (= (args 'cdr) null)
-          `(_/ 1 ~(args 'car))
-        (= ((args 'cdr) 'cdr) null)
-          `(_/ ~(args 'car)
-                ~((args 'cdr) 'car))
-        true
-          `(/ (_/ ~(args 'car)
-                   ~((args 'cdr) 'car))
-              ~@((args 'cdr) 'cdr))))
+  (cond (= args null)                `1
+        (= (args 'cdr) null)         `(_/ 1 ~(args 'car))
+        (= ((args 'cdr) 'cdr) null)  `(_/ ~(args 'car) ~((args 'cdr) 'car))
+        true                         `(macfoldl _/ 1 ~@args)))
 
 ; variadic logic
 ;   (and)         => true
 ;   (and x)       => x
-;   (and x y z..) => (_and x (and y z..))   [right-fold; short-circuits]
+;   (and x y z..) => (_and x (_and y z..))  [right-fold; short-circuits]
 (defmacro and (:rest args)
-  (cond (= args null)
-          `true
-        (= (args 'cdr) null)
-          (args 'car)
-        true
-          `(_and ~(args 'car)
-                 (and ~@(args 'cdr)))))
+  (cond (= args null)                `true
+        (= (args 'cdr) null)         (args 'car)
+        (= ((args 'cdr) 'cdr) null)  `(_and ~(args 'car) ~((args 'cdr) 'car))
+        true                         `(macfoldr _and true ~@args)))
 
 (defmacro or (:rest args)
-  (cond (= args null)
-          `false
-        (= (args 'cdr) null)
-          (args 'car)
-        true
-          `(_or ~(args 'car)
-                (or ~@(args 'cdr)))))
+  (cond (= args null)                `false
+        (= (args 'cdr) null)         (args 'car)
+        (= ((args 'cdr) 'cdr) null)  `(_or ~(args 'car) ~((args 'cdr) 'car))
+        true                         `(macfoldr _or false ~@args)))
 
 (defmacro bit-not (x)
   `(bit-xor ~x -1))
@@ -333,3 +352,86 @@
           (set! result `(~form ~result))))
       (set! current (current 'cdr)))
     result))
+
+; (macmap ((param ...) template) (row ...)) — expand one template once per row
+; of a literal table and splice the results in sequence.
+;
+;   (macmap ((tok) `(when (!= (text-token-is text start e ~tok) 0) (return 1)))
+;     ("defn" "defmacro" "defvar" "defconst"))
+;
+; A one-parameter template takes each row WHOLE, so a row may be any expression;
+; a multi-parameter one destructures the row, which must then be a list of that
+; many elements.
+;
+;   (macmap ((res ret) `(when (= test ~res) (return ~ret)))
+;     (((+ 2 2) "four!") ("dammit" "curses!") (null 0)))
+;
+; Lowered to a gensym'd `macrolet` plus one application per row, so nothing here
+; walks the template: the existing macro machinery compiles it, and its line
+; numbers, its diagnostics and its `gensym` are whatever `macrolet` already
+; gives. design/stage20-macros/overview.md §2.1.
+;
+; Member access rather than `node-at`/`node-len`: the prelude registers the Node
+; TYPE but imports no node runtime, so a signature from lib/node.nuc is not in
+; scope here even though the JIT'd body could resolve one.
+;
+; The binding is the fixed name `__macmap`, not a `gensym`: gensym'd names are
+; numbered from one global counter, so a gensym here renumbers every `__gs_N` in
+; every function emitted after it and no macrolet-to-macmap migration could be
+; byte-identical. A fixed name is safe because the only forms inside the body
+; are the applications built below, an inner `macrolet` shadows an outer binding
+; of the same name and restores it on pop, and `__` is reserved.
+(defmacro macmap (spec rows)
+  ; Order matters: `or` short-circuits, and member access on a null (raw Node)
+  ; dereferences — it would segfault the COMPILER, at expansion time, before any
+  ; diagnostic could be raised. Every chain below is reached only past its guard.
+  (when (or (= spec null)
+            (!= (spec 'kind) NODE-CELL)
+            (= (spec 'cdr) null)
+            (= ((spec 'cdr) 'car) null))
+    (macro-error (if (= spec null) rows spec)
+      "macmap: the first argument must be ((param ...) template)"))
+  (let ((params (raw Node)) (spec 'car)
+        (tmpl (raw Node))   ((spec 'cdr) 'car)
+        ntotal:i32          0
+        nfixed:i32          0
+        variadic:i32        0
+        calls:ptr           null)
+    ; Two counts, not one. `ntotal` decides the whole-row rule below; `nfixed`
+    ; and `variadic` decide how long a row may be, since `:rest` lets it run
+    ; longer. The keyword test reaches through `Symbol.p` for the same reason
+    ; `case` does — the prelude cannot import `lib/intern.nuc`, where `=` on two
+    ; Symbols lives, and one byte table makes identity the same question.
+    (let ((p (raw Node)) params)
+      (while (!= p null)
+        (let ((e (raw Node)) (p 'car))
+          (when (and (!= e null) (= (e 'kind) NODE-KEYWORD)
+                     (= (as ptr ((e 's) 'p)) (as ptr (('rest 's) 'p))))
+            (set! variadic 1))
+          (when (= variadic 0) (set! nfixed (+ nfixed 1))))
+        (set! ntotal (+ ntotal 1))
+        (set! p (p 'cdr))))
+    (let ((row (raw Node)) rows)
+      (while (!= row null)
+        (let ((r (raw Node)) (row 'car))
+          (if (= ntotal 1)
+            (set! calls `(~@calls (__macmap ~r)))
+            (do
+              (when (or (= r null) (!= (r 'kind) NODE-CELL))
+                (macro-error rows
+                  "macmap: a row must be a list, one element per template parameter"))
+              (let (n:i32 0
+                    (e (raw Node)) r)
+                (while (!= e null)
+                  (set! n (+ n 1))
+                  (set! e (e 'cdr)))
+                (when (if (= variadic 0) (!= n ntotal) (< n nfixed))
+                  (macro-error r
+                    "macmap: this row's length does not match the template's parameter list")))
+              (set! calls `(~@calls (__macmap ~@r))))))
+        (set! row (row 'cdr))))
+    ; An empty table is `(do)`, not a `macrolet` with an empty body: the lowering
+    ; may not surface as a diagnostic about a form the caller never wrote.
+    (if (= calls null)
+      `(do)
+      `(macrolet ((__macmap ~params ~tmpl)) ~@calls))))

@@ -1,0 +1,106 @@
+; macmap, macfoldl, macfoldr — one template over many arguments (Stage 20).
+;
+; `macrolet` names a template once and then applies it by hand, one call per
+; row. These three do the applying too: `macmap` walks a literal table, the
+; folds walk a variadic argument list. Neither is a compiler builtin — both are
+; ordinary macros in lib/macros.nuc, and `macmap` lowers to the `macrolet` you
+; would have written.
+;
+; Shape:  (macmap ((param ...) template) (row ...))
+;         (macfoldl op unit arg ...)   ; ((op (op a b) c))
+;         (macfoldr op unit arg ...)   ; ((op a (op b c)))
+;
+; See design/stage20-macros/overview.md and docs/macros.md.
+
+(import-use "stdio.h")
+
+; --- the table ------------------------------------------------------------
+;
+; The template is applied to each row and the results are spliced in sequence,
+; so a `macmap` goes wherever that sequence would have gone: a function body,
+; a `let`, a loop. Under a ONE-parameter template a row is the argument itself;
+; under any other arity it is a list, one element per parameter.
+
+(defn squares ():i32
+  (macmap ((n) `(printf "%d " (* ~n ~n)))
+    (1 2 3 4 5))
+  (printf "\n")
+  0)
+
+; `:rest` works as it does in `defmacro`, and then rows may differ in length
+; past the fixed parameters. `(+ ~@vals)` takes them all: the prelude's `+` is
+; variadic, over the same folds as below.
+(defn totals ():i32
+  (macmap ((label :rest vals) `(printf "%-7s %d\n" ~label (+ ~@vals)))
+    (("first" 1 7 3)
+     ("second" 9)
+     ("third" 4 4 8 2)))
+  0)
+
+; --- top level ------------------------------------------------------------
+;
+; A `macmap` at top level generates definitions. The pre-scan limit on any
+; macro-produced definition applies unchanged: these are not forward-
+; referenceable, so nothing above may call them.
+
+(macmap ((name val) `(defn ~name ():i32 (return ~val)))
+  ((one 1) (two 2) (three 3)))
+
+; --- one table, several templates -----------------------------------------
+;
+; Rows are literal and a macro's arguments are not expanded, so a table cannot
+; be passed in as a name. Invert it: the table lives in a macro that takes the
+; TEMPLATE as its parameter. This is how src/repl.nuc holds its 54-row session
+; roster — the save and the restore are two templates over one table, which is
+; what stops the two walks from drifting apart.
+;
+; Two columns, because the field is `line` and the global is `g-line` and
+; nothing pastes a prefix onto a name at expansion time.
+
+(defstruct Cursor line:i32 col:i32)
+
+(defvar g-line:i32 0)
+(defvar g-col:i32 0)
+
+(defmacro over-cursor (spec)
+  `(macmap ~spec ((line g-line) (col g-col))))
+
+(defn cursor-save (c:&Cursor):void
+  (over-cursor ((f g) `(set! (c '~f) ~g))))
+
+(defn cursor-load (c:&Cursor):void
+  (over-cursor ((f g) `(set! ~g (c '~f)))))
+
+; --- the folds ------------------------------------------------------------
+;
+; `macfoldl` and `macfoldr` nest `op` over the arguments, left- or right-first,
+; and expand to `unit` when there are none. The prelude's `+ - * /` and
+; `and` / `or` are built on them: each keeps its own 0/1/2-ary arms — that is
+; the common case and it should not pay for a second expansion — and hands
+; anything longer to a fold.
+
+(defn bigger (a:i32 b:i32):i32 (if (> a b) a b))
+(defn minus (a:i32 b:i32):i32 (- a b))
+
+(defmacro max-of (:rest args) `(macfoldl bigger 0 ~@args))
+
+; Direction is visible as soon as `op` is not associative.
+(defmacro subl (:rest args) `(macfoldl minus 0 ~@args))
+(defmacro subr (:rest args) `(macfoldr minus 0 ~@args))
+
+(defn main ():i32
+  (squares)
+  (totals)
+  (printf "defined    %d %d %d\n" (one) (two) (three))
+  (set! g-line 12)
+  (set! g-col 34)
+  (let (c:Cursor (Cursor 0 0))
+    (cursor-save &c)
+    (set! g-line 0)
+    (set! g-col 0)
+    (cursor-load &c)
+    (printf "cursor     %d %d\n" g-line g-col))
+  (printf "subl       %d\n" (subl 10 3 2))  ; ((10 - 3) - 2)
+  (printf "subr       %d\n" (subr 10 3 2))  ; (10 - (3 - 2))
+  (printf "empty      %d %d\n" (subl) (max-of))
+  (return 0))

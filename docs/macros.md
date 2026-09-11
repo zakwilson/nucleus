@@ -44,6 +44,9 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 | `into` | `(into dest-coll src-coll IterType)` | Drain a **collection** `src-coll` into `dest-coll`: calls `(iter src-coll)` to get a fresh `IterType` by value, then `(conj dest-coll elem)` for each element. `IterType` is the associated iterator type of `src-coll`. |
 | `into-iter` | `(into-iter dest-coll iter-ref)` | Drain a **bare iterator reference** `iter-ref` into `dest-coll`: calls `(next iter-ref)` each step and `(conj dest-coll elem)` for each element. The pre-Coll form, kept for pure iterators that have no `iter`. |
 | `->` | `(-> x form ...)` | Threads `x` through each form. If a form contains `_`, the value replaces `_`; otherwise inserts as first arg (thread-first). Bare symbols wrap as `(sym value)`. `_` is only special inside `->`. |
+| `macmap` | `(macmap ((param ...) template) (row ...))` | Expands `template` once per row, binding the parameters to the row, and splices the results in sequence. See [`macmap`](#macmap--one-template-over-a-table-of-rows) below. |
+| `macfoldr` | `(macfoldr op unit a b c)` | `(op a (op b c))` — right-nested fold over a variadic argument list. No args → `unit`; one arg → that arg. See [`macfoldl`/`macfoldr`](#macfoldl--macfoldr--a-template-over-a-variadic-argument-list). |
+| `macfoldl` | `(macfoldl op unit a b c)` | `(op (op a b) c)` — the left-nested counterpart. |
 
 Two notes on the `:type` annotation inside these expansions. `for` and `dotimes`
 splice the annotated loop variable into the body, so `(dotimes (i:i32 n) (foo
@@ -74,33 +77,181 @@ The **keyword head is what marks the list** — a plain parenthesised value stay
 
 `+ - * /` are macros that expand to nested binary primitive calls. They live in `lib/macros.nuc` and are available in every program via the auto-imported prelude. The binary primitives `_+ _- _* _/` are the actual binops; the macros exist to break the expansion cycle.
 
-| Form          | Expansion                                       |
-|---------------|-------------------------------------------------|
-| `(+)`         | `0`                                             |
-| `(+ x)`       | `x`                                             |
-| `(+ a b ...)` | `(_+ a (+ b ...))` — right-fold                |
-| `(*)`         | `1`                                             |
-| `(* a b ...)` | `(_* a (* b ...))` — right-fold                |
-| `(- x)`       | `(_- 0 x)` — unary negation                    |
-| `(- a b)`     | `(_- a b)`                                     |
-| `(- a b ...)` | `(- (_- a b) ...)` — left-fold                 |
-| `(/ x)`       | `(_/ 1 x)` — integer reciprocal                |
-| `(/ a b ...)` | `(/ (_/ a b) ...)` — left-fold                 |
+| Form            | Expansion                                              |
+|-----------------|--------------------------------------------------------|
+| `(+)`           | `0`                                                    |
+| `(+ x)`         | `x`                                                    |
+| `(+ a b)`       | `(_+ a b)`                                             |
+| `(+ a b c ...)` | `(macfoldr _+ 0 a b c ...)` → `(_+ a (_+ b c ...))` — right-fold |
+| `(*)`           | `1`                                                    |
+| `(* a b)`       | `(_* a b)`                                             |
+| `(* a b c ...)` | `(macfoldr _* 1 a b c ...)` — right-fold               |
+| `(-)`           | `0`                                                    |
+| `(- x)`         | `(_- 0 x)` — unary negation                            |
+| `(- a b)`       | `(_- a b)`                                             |
+| `(- a b c ...)` | `(macfoldl _- 0 a b c ...)` → `(_- (_- a b) c ...)` — left-fold |
+| `(/ x)`         | `(_/ 1 x)` — integer reciprocal                        |
+| `(/ a b)`       | `(_/ a b)`                                             |
+| `(/ a b c ...)` | `(macfoldl _/ 1 a b c ...)` — left-fold                |
+
+The 0-, 1- and 2-ary arms are spelled out in each operator rather than left to
+the fold, because 94% of the operator calls in a real program are binary and a
+spelled-out arm costs one expansion where delegating costs two. Tree-wide that
+is the difference between 6,066 macro expansions and 3,282
+([design/stage20-macros/overview.md](../design/stage20-macros/overview.md) §3.1).
+The resulting form is identical either way.
 
 ## Variadic Logical Operators
 
 `and`/`or` are macros that expand to nested binary short-circuit primitive calls, mirroring the `_+`/`+` split above. They live in `lib/macros.nuc` and are available in every program via the auto-imported prelude. The binary primitives `_and`/`_or` are the actual short-circuit forms; the macros exist to make the logical operators variadic.
 
-| Form          | Expansion                                       |
-|---------------|-------------------------------------------------|
-| `(and)`       | `true`                                          |
-| `(and x)`     | `x` — **unchecked** (no condition check)        |
-| `(and a b ...)` | `(_and a (and b ...))` — right-fold          |
-| `(or)`        | `false`                                         |
-| `(or x)`      | `x` — **unchecked** (no condition check)        |
-| `(or a b ...)` | `(_or a (or b ...))` — right-fold             |
+| Form              | Expansion                                            |
+|-------------------|------------------------------------------------------|
+| `(and)`           | `true`                                               |
+| `(and x)`         | `x` — **unchecked** (no condition check)             |
+| `(and a b)`       | `(_and a b)`                                         |
+| `(and a b c ...)` | `(macfoldr _and true a b c ...)` → `(_and a (_and b c ...))` — right-fold |
+| `(or)`            | `false`                                              |
+| `(or x)`          | `x` — **unchecked** (no condition check)             |
+| `(or a b)`        | `(_or a b)`                                          |
+| `(or a b c ...)`  | `(macfoldr _or false a b c ...)` — right-fold        |
 
 The binary `_and`/`_or` eliminate both operands to `bool` at each condition site (not just `bool` itself — a nullable `raw`/`CStr`/`?T` or a value `Maybe` is punned too, and a non-null `ptr`/`(ref T)` or a `!T` gets its own diagnostic; see [Condition position](types.md#condition-position-is-an-elimination-not-a-coercion)) and short-circuit left-to-right (`_and` stops at the first false, `_or` at the first true). Because the macro right-nests, each operand in an N-ary chain narrows under all prior ones (cumulative narrowing — a later `(m field)` typechecks after an earlier `(!= m null)`). See the [`and`/`or`/`_and`/`_or`](special-forms.md#special-forms) rows for the full short-circuit and narrowing semantics.
+
+## `macfoldl` / `macfoldr` — a template over a variadic argument list
+
+```
+(macfoldr OP UNIT ARG ...)   ; (OP a (OP b c))  — right-nested
+(macfoldl OP UNIT ARG ...)   ; (OP (OP a b) c)  — left-nested
+```
+
+With no arguments the result is `UNIT`; with one, that argument, untouched. `OP`
+is spliced into head position, so it may be any callable spelling — a primitive
+such as `_+`, an ordinary function, or another macro.
+
+These are the generalisation of the six operators above, and the way to make a
+new operator variadic without copying their shape:
+
+```lisp
+(defn int-max (a:i32 b:i32):i32 (if (< a b) b a))
+(defmacro maxn (a :rest more) `(macfoldl int-max ~a ~@more))
+
+(maxn 3)            ; 3
+(maxn 3 9 4 12 1)   ; 12
+```
+
+Note that this *is* a fold written inside a macro body, and it works: `~@more`
+splices a list the macro already holds. What does not work is a `macmap` there,
+because its template would be a nested quasiquote — see the rules below.
+
+Both are ordinary macros in `lib/macros.nuc`, available through the prelude.
+They are defined before everything else in that file, so their own bodies use
+only `cond` — nothing defined below them is callable from them yet.
+
+**Nesting direction is a semantic choice, not a style one.** `and`/`or` fold
+right so that each operand narrows under all the operands before it (cumulative
+narrowing — see [Condition position](types.md#condition-position-is-an-elimination-not-a-coercion)),
+and `-`/`/` fold left because they are not associative.
+
+## `macmap` — one template over a table of rows
+
+Expand one template once per row of a literal table, and splice the results in
+sequence. It is the applied form of [`macrolet`](#macrolet--lexically-scoped-macros):
+where `macrolet` binds a template to a name you then call, `macmap` supplies the
+arguments too, for the common case where the name has exactly one use.
+
+```
+(macmap ((PARAM ...) TEMPLATE) (ROW ...))
+```
+
+```lisp
+(macmap ((tok) `(when (!= (text-token-is text start e ~tok) 0) (return 1)))
+  ("defn" "defmacro" "defvar" "defconst"))
+```
+
+**A one-parameter template takes each row whole**, so a row may be any
+expression — including a parenthesised one. **A multi-parameter template
+destructures** the row, which must then be a list of that many elements:
+
+```lisp
+(macmap ((res ret) `(when (= test ~res) (return ~ret)))
+  (((+ 2 2) "four!") ("dammit" "curses!") (null 0)))
+```
+
+**Rules.**
+
+* **The template is an ordinary quasiquote**, compiled exactly as a `macrolet`
+  body is — `~param` splices a row element, `gensym` is available, and names in
+  the expansion resolve at the call site. There is no hygiene, as everywhere else
+  in this macro system.
+* **`:rest` works** in the parameter list, under the same "second-to-last"
+  rule as `defmacro`.
+* **The results are spliced in order**, so a template may expand to a statement
+  — one that `return`s, `set!`s or breaks out of a loop — and not only to a value.
+  That is what `macmap` is for; a table of *values* is better served by `case`
+  with `(:or …)`, a `#{…}` set membership test, or an array and a loop.
+* **An empty table expands to `(do)`** and emits nothing.
+* **Top-level position works**, so a `macmap` may generate a family of
+  definitions. The pre-scan limit on any macro-produced definition applies
+  unchanged: they are not forward-referenceable, and the family cannot include
+  an `extend` with its methods. See
+  [Macros in top-level position](#macros-in-top-level-position).
+* **A `macmap` cannot be written inside a `defmacro` or `macrolet` body.** Its
+  template would be a nested quasiquote, and Nucleus quasiquote has no nesting
+  level: the inner `~param` is resolved against the *outer* macro's bindings and
+  fails as `undefined: <param>`. To share one table across several templates,
+  pass the template *in* as a parameter instead — a received node is spliced, not
+  walked, so its unquotes survive:
+
+  ```lisp
+  (defmacro over-fields (spec)
+    `(macmap ~spec ((source-path g-source-path) (src g-src) (pos g-pos))))
+
+  (over-fields ((f g) `(set! (st '~f) ~g)))
+  (over-fields ((f g) `(set! ~g (st '~f))))
+  ```
+
+* **Diagnostics name `macmap`**, not the `macrolet` it lowers to, via
+  [`macro-error`](#macro-error--a-macro-rejecting-its-own-call-site). A row
+  whose length disagrees with the parameter count reports at **that row's** own
+  line (`macmap: this row's length does not match the template's parameter
+  list`); a row that is not a list under a multi-parameter template, and a first
+  argument that is not `((param …) template)`, report likewise.
+
+## `macro-error` — a macro rejecting its own call site
+
+```
+(macro-error NODE "message")
+```
+
+Report `message` at `NODE`'s line and abort the expansion, with the same
+formatting as any other compiler diagnostic. The point is *where* it lands: at
+the call site the macro is objecting to, not at the macro's own definition and
+not against whatever the expansion happened to lower to.
+
+```lisp
+(defmacro only-ints (x)
+  (when (!= (x 'kind) NODE-INT)
+    (macro-error x "only-ints: the argument must be an integer literal"))
+  `(printf "%d\n" ~x))
+
+(only-ints "nope")
+; error: only-ints: the argument must be an integer literal   ← at line of "nope"
+```
+
+**Rules.**
+
+* **Only inside a `defmacro`, `macrolet` or `compile-time` body.** Elsewhere it
+  is refused (`macro-error: only available inside a defmacro, macrolet or
+  compile-time body`) rather than emitted as a call a program could not link.
+* **The message is a string literal.** A library macro has no string formatting
+  available to it anyway, and a literal keeps the call free of any by-value
+  aggregate: it passes as a pointer and a length, both constants.
+* **`NODE` is any `(raw Node)` expression** — ordinarily one of the macro's own
+  parameters, or a piece reached through `'car`/`'cdr`, which is what carries the
+  user's line. A `null` node reports at line 0.
+* **It aborts the expansion**, so nothing after it in the macro body runs. In the
+  REPL it returns to the prompt rather than ending the session.
 
 ## `macrolet` — lexically scoped macros
 
@@ -133,11 +284,16 @@ The full example is [`examples/macrolet.nuc`](../examples/macrolet.nuc).
 
 **Rules.**
 
-* **A binding is an expression form**, not a definer: `macrolet` may appear
-  wherever an expression may, and a top-level `(macrolet …)` is refused with
-  `unknown top-level form: macrolet`.
-* **The body is a `do`.** Its value is the last form's, it introduces no new
-  variable scope, and `let`/`defer` inside it behave as they would inside a `do`.
+* **A binding is not a definer**: `macrolet` may appear wherever an expression
+  may, *and* at top level, where its body is a sequence of top-level forms
+  rather than a `do` — so the bindings can be used by the definitions they
+  scope. The bindings still exist for the body and nowhere else.
+* **In expression position the body is a `do`.** Its value is the last form's,
+  it introduces no new variable scope, and `let`/`defer` inside it behave as
+  they would inside a `do`. At top level there is no `do`: each body form is
+  dispatched as a top-level form of its own, so a body of `defn`s is a body of
+  `defn`s. A top-level body that expands to no form at all is refused, as any
+  top-level macro call with nothing to define is.
 * **Bindings are sequential**, like Nucleus `let` — a later binding's body sees
   an earlier one. (Common Lisp's `macrolet` is parallel; Nucleus follows its own
   `let` instead.) A binding is also visible inside its own body, matching
@@ -193,6 +349,23 @@ top-level form of its own, which is how one call defines several things.
 ```
 
 Expansion is re-dispatched, so a macro may expand into another macro call.
+
+[`macrolet`](#macrolet--lexically-scoped-macros) and
+[`macmap`](#macmap--one-template-over-a-table-of-rows) stand here too. A
+top-level `macrolet` splices its body as top-level forms, so its bindings are in
+scope for the definitions it wraps — which is how one table can drive two
+functions that must not drift apart:
+
+```lisp
+(macrolet ((over-cursor (spec) `(macmap ~spec ((line g-line) (col g-col)))))
+  (defn cursor-save (c:&Cursor):void
+    (over-cursor ((f g) `(set! (c '~f) ~g))))
+  (defn cursor-load (c:&Cursor):void
+    (over-cursor ((f g) `(set! ~g (c '~f))))))
+```
+
+See [`examples/macmap.nuc`](../examples/macmap.nuc), and `src/repl.nuc`, where
+this shape holds the 54-row REPL session roster.
 
 Two limits follow from *when* the expansion happens — during the dispatch loop,
 after the pre-scans have already walked the file:

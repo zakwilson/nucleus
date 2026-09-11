@@ -181,10 +181,14 @@
   (try (check-source-rejects "(defn main ():i32 (macrolet ((m:i32 () `1)) 0))
 "
          "macrolet: a binding name takes no type annotation; write (m (params) ...)")))
-(deftest s16-macrolet-refused-toplevel
+; Stage 20 M2 lifted the top-level refusal this test was written against, so
+; what it now pins is the rule that outlived it: a top-level `macrolet` body is
+; a list of TOP-LEVEL forms, so a binding that expands to a value is as wrong
+; there as any other non-definition would be.
+(deftest s20-macrolet-toplevel-body-is-toplevel
   (try (check-source-rejects "(macrolet ((m () `1)) (m))
 "
-         "unknown top-level form: macrolet")))
+         "top-level macro 'm' did not expand to a form")))
 
 ; ---------------------------------------------------------------------------
 ; `:repr` on an UNINSTANTIATED template (Stage 16 §TR)
@@ -1817,6 +1821,285 @@ map=2
     (if (= (first-of a) null) b a)))
 (defn main ():i32 (return (pick 5 6)))
 " 6)))
+
+; ---------------------------------------------------------------------------
+; `macmap` (design/stage20-macros/overview.md)
+; ---------------------------------------------------------------------------
+
+; Same bitmask convention as the macrolet block above.
+(deftest s20-macmap
+  (try (check-source-exit "
+; One parameter: the row IS the argument, whole.
+(defn mm-one ():i32
+  (let (acc:i32 0)
+    (macmap ((v) `(set! acc (_+ acc ~v))) (1 2 4))
+    acc))
+
+; More than one: the row is destructured across the parameters.
+(defn mm-two (n:i32):i32
+  (macmap ((v r) `(when (= n ~v) (return ~r)))
+    ((1 10) (2 20) (3 30)))
+  -1)
+
+; A one-parameter row may be any expression, a list included -- the arity rule
+; is what makes that unambiguous.
+(defn mm-expr ():i32
+  (let (acc:i32 0)
+    (macmap ((v) `(set! acc (_+ acc ~v))) ((_* 2 3) 1))
+    acc))
+
+; :rest in the template parameters, over rows of the same shape.
+(defn mm-rest ():i32
+  (let (acc:i32 0)
+    (macmap ((a :rest more) `(set! acc (_+ acc (_+ ~a (_+ ~@more)))))
+      ((1 2 3) (4 5 6)))
+    acc))
+
+; An empty table emits nothing and is still a well-formed expression.
+(defn mm-empty ():i32
+  (let (acc:i32 7)
+    (macmap ((v) `(set! acc ~v)) ())
+    acc))
+
+; A row expression may itself contain a macmap: the inner binding shadows the
+; outer one and the outer is restored on pop.
+(defn mm-nested ():i32
+  (let (acc:i32 0)
+    (macmap ((v) `(set! acc (_+ acc ~v)))
+      ((let (inner:i32 0)
+         (macmap ((w) `(set! inner (_+ inner ~w))) (1 2))
+         inner)
+       10))
+    acc))
+
+; Statement position inside a loop body, and expression position in a cond arm.
+(defn mm-loop ():i32
+  (let (acc:i32 0 i:i32 0)
+    (while (< i 3)
+      (macmap ((v) `(set! acc (_+ acc ~v))) (1 2))
+      (inc! i))
+    acc))
+
+(defn mm-cond (n:i32):i32
+  (cond (= n 0) (let (a:i32 0) (macmap ((v) `(set! a (_+ a ~v))) (5 6)) a)
+        true    (let (b:i32 0) (macmap ((v) `(set! b (_+ b ~v))) (1))   b)))
+
+(defn main ():i32
+  (let (bad:i32 0)
+    (when (!= (mm-one)     7) (set! bad (_+ bad 1)))
+    (when (!= (mm-two 2)  20) (set! bad (_+ bad 2)))
+    (when (!= (mm-two 9)  -1) (set! bad (_+ bad 4)))
+    (when (!= (mm-expr)    7) (set! bad (_+ bad 8)))
+    (when (!= (mm-rest)   21) (set! bad (_+ bad 16)))
+    (when (!= (mm-empty)   7) (set! bad (_+ bad 32)))
+    (when (!= (mm-nested) 13) (set! bad (_+ bad 64)))
+    (when (!= (mm-loop)    9) (set! bad (_+ bad 128)))
+    (when (!= (mm-cond 0) 11) (set! bad (_+ bad 256)))
+    (when (!= (mm-cond 1)  1) (set! bad (_+ bad 512)))
+    (return bad)))
+" 0)))
+
+; M2: `macrolet` in top-level position, which is what lets `macmap` stand where
+; a definition stands. `fifty` proves the inner binding shadows the outer one
+; and `mk` after the body proves the outer scope really closed -- the pop is a
+; synthetic `(__macrolet-end N)` spliced after the body, so a missing one would
+; leave `mk` bound as a macro and the `defn` would collide.
+(deftest s20-macmap-toplevel
+  (try (check-source-exit "
+(macmap ((name val) `(defn ~name ():i32 ~val))
+  ((one 1) (two 2) (three 3)))
+
+(macrolet ((mk (n v) `(defn ~n ():i32 ~v)))
+  (mk four 4)
+  (macrolet ((mk (n v) `(defn ~n ():i32 (_* ~v 10))))
+    (mk fifty 5))
+  (mk six 6))
+
+(defn mk ():i32 99)
+
+(defn main ():i32
+  (let (bad:i32 0)
+    (when (!= (one)    1) (set! bad (_+ bad 1)))
+    (when (!= (two)    2) (set! bad (_+ bad 2)))
+    (when (!= (three)  3) (set! bad (_+ bad 4)))
+    (when (!= (four)   4) (set! bad (_+ bad 8)))
+    (when (!= (fifty) 50) (set! bad (_+ bad 16)))
+    (when (!= (six)    6) (set! bad (_+ bad 32)))
+    (when (!= (mk)    99) (set! bad (_+ bad 64)))
+    (return bad)))
+" 0)))
+
+; The same two shape errors the expression-position form reports, from the
+; top-level arm -- which validates independently of `emit-macrolet`.
+(deftest s20-macrolet-toplevel-refused-noargs
+  (try (check-source-rejects "(macrolet)
+(defn main ():i32 0)
+"
+         "macrolet: expects a binding list and at least one body form")))
+(deftest s20-macrolet-toplevel-refused-nobody
+  (try (check-source-rejects "(macrolet ((m () `1)))
+(defn main ():i32 0)
+"
+         "macrolet: expects a binding list and at least one body form")))
+(deftest s20-macrolet-toplevel-refused-badbind
+  (try (check-source-rejects "(macrolet (5) (defn main ():i32 0))
+"
+         "macrolet: binding must be (name (params) body...)")))
+
+; ---------------------------------------------------------------------------
+; `macfoldl` / `macfoldr` (design/stage20-macros/overview.md §3)
+; ---------------------------------------------------------------------------
+
+; The folds themselves, then the six operators they now back at arity >= 3 --
+; every arity of every one, since the rewrite's whole claim is that the final
+; tree is unchanged. `_-`/`_/` left-fold, the rest right-fold.
+(deftest s20-macfold
+  (try (check-source-exit "
+(defn main ():i32
+  (let (bad:i32 0)
+    ; the folds directly: nesting direction, unit, single argument
+    (when (!= (macfoldr _+ 0 1 2 3 4)   10) (set! bad (_+ bad 1)))
+    (when (!= (macfoldl _- 0 10 1 2 3)   4) (set! bad (_+ bad 2)))
+    (when (!= (macfoldr _+ 0)            0) (set! bad (_+ bad 4)))
+    (when (!= (macfoldl _- 99)          99) (set! bad (_+ bad 8)))
+    (when (!= (macfoldr _+ 0 7)          7) (set! bad (_+ bad 16)))
+    (when (!= (macfoldl _* 1 2 3 4)     24) (set! bad (_+ bad 32)))
+    ; an operator spelled by a MACRO, not a primitive: the head is spliced
+    (when (!= (macfoldr + 0 1 2 3)       6) (set! bad (_+ bad 64)))
+    ; + and * : identity, single, binary, n-ary
+    (when (!= (+)                        0) (set! bad (_+ bad 128)))
+    (when (!= (+ 5)                      5) (set! bad (_+ bad 256)))
+    (when (!= (+ 5 6)                   11) (set! bad (_+ bad 512)))
+    (when (!= (+ 1 2 3 4 5)             15) (set! bad (_+ bad 1024)))
+    (when (!= (*)                        1) (set! bad (_+ bad 2048)))
+    (when (!= (* 2 3 4)                 24) (set! bad (_+ bad 4096)))
+    ; - and / : unary negate / reciprocal, then LEFT folds
+    (when (!= (-)                        0) (set! bad (_+ bad 8192)))
+    (when (!= (- 5)                     -5) (set! bad (_+ bad 16384)))
+    (when (!= (- 10 3)                   7) (set! bad (_+ bad 32768)))
+    (when (!= (- 10 3 2 1)               4) (set! bad (_+ bad 65536)))
+    (when (!= (/ 100 5 2)               10) (set! bad (_+ bad 131072)))
+    (when (!= (/ 100 5 2 5)              2) (set! bad (_+ bad 262144)))
+    (return bad)))
+" 0)))
+
+; and/or keep short-circuit at every arity: `boom` divides by zero, so reaching
+; it at all traps. The right-fold is what makes each operand narrow under all
+; the ones before it, so the arity-3+ path must still nest to the RIGHT.
+(deftest s20-macfold-shortcircuit
+  (try (check-source-exit "
+(defvar hits:i32 0)
+(defn bump (v:i32):bool (set! hits (_+ hits 1)) (if (= v 0) false true))
+(defn main ():i32
+  (let (bad:i32 0)
+    (unless (and)           (set! bad (_+ bad 1)))
+    (when (or)              (set! bad (_+ bad 2)))
+    (set! hits 0)
+    (when (and (bump 0) (bump 1) (bump 1)) (set! bad (_+ bad 4)))
+    (when (!= hits 1) (set! bad (_+ bad 8)))
+    (set! hits 0)
+    (unless (or (bump 1) (bump 1) (bump 1)) (set! bad (_+ bad 16)))
+    (when (!= hits 1) (set! bad (_+ bad 32)))
+    (set! hits 0)
+    (unless (and (bump 1) (bump 1) (bump 1) (bump 1)) (set! bad (_+ bad 64)))
+    (when (!= hits 4) (set! bad (_+ bad 128)))
+    (return bad)))
+" 0)))
+
+; ---------------------------------------------------------------------------
+; `macro-error` (design/stage20-macros/overview.md §2.5)
+; ---------------------------------------------------------------------------
+
+; A macro that inspects its argument and accepts it emits nothing extra.
+(deftest s20-macro-error-accepts
+  (try (check-source-exit "(import-use \"stdio.h\")
+(defmacro only-ints (x)
+  (when (!= (x 'kind) NODE-INT)
+    (macro-error x \"only-ints: the argument must be an integer literal\"))
+  `~x)
+(defn main ():i32 (return (only-ints 7)))
+" 7)))
+
+; ... and one that rejects reports the macro's own message.
+(deftest s20-macro-error-rejects
+  (try (check-source-rejects "(defmacro only-ints (x)
+  (when (!= (x 'kind) NODE-INT)
+    (macro-error x \"only-ints: the argument must be an integer literal\"))
+  `~x)
+(defn main ():i32 (return (only-ints \"nope\")))
+"
+         "only-ints: the argument must be an integer literal")))
+
+; Outside a macro/CT body there is no compiler to call into, so the form is
+; refused rather than emitted as a call nothing will resolve.
+(deftest s20-macro-error-refused-in-program
+  (try (check-source-rejects "(defn main ():i32 (macro-error null \"x\") 0)
+"
+         "macro-error: only available inside a defmacro, macrolet or compile-time body")))
+
+(deftest s20-macro-error-refused-nonliteral
+  (try (check-source-rejects "(defmacro m (x) (macro-error x (some-expr)) `0)
+(defn main ():i32 (m 1))
+"
+         "macro-error: the message must be a string literal")))
+
+(deftest s20-macro-error-refused-arity
+  (try (check-source-rejects "(defmacro m (x) (macro-error x) `0)
+(defn main ():i32 (m 1))
+"
+         "macro-error: expects a node and a string literal")))
+
+; A `macrolet` body reaches it too -- the guard is `in-jit-module`, which a
+; macrolet's body module satisfies exactly as a defmacro's does.
+(deftest s20-macro-error-in-macrolet
+  (try (check-source-rejects "(defn main ():i32
+  (macrolet ((m (x) (macro-error x \"m: no\") `0))
+    (m 1)))
+"
+         "m: no")))
+
+; `macmap`'s own shape checks, the first user of macro-error in the prelude.
+; Without them each of these reported against `__macmap`, the binding the
+; lowering introduces and the caller never wrote.
+(deftest s20-macmap-refused-short-row
+  (try (check-source-rejects "(defn f (n:i32):i32
+  (macmap ((a b) `(when (= n ~a) (return ~b))) ((1 10) (2)))
+  0)
+(defn main ():i32 0)
+"
+         "macmap: this row's length does not match the template's parameter list")))
+(deftest s20-macmap-refused-nonlist-row
+  (try (check-source-rejects "(defn f (n:i32):i32
+  (macmap ((a b) `(when (= n ~a) (return ~b))) (1 2))
+  0)
+(defn main ():i32 0)
+"
+         "macmap: a row must be a list, one element per template parameter")))
+(deftest s20-macmap-refused-bad-spec
+  (try (check-source-rejects "(defn main ():i32 (macmap (x) (1 2)) 0)
+"
+         "macmap: the first argument must be ((param ...) template)")))
+; `()` reads as a NULL node, so the diagnostic falls back to the row list for a
+; line -- reporting at 0 would name no source at all.
+(deftest s20-macmap-refused-empty-spec
+  (try (check-source-rejects "(defn main ():i32 (macmap () (1 2)) 0)
+"
+         "macmap: the first argument must be ((param ...) template)")))
+(deftest s20-macmap-refused-no-template
+  (try (check-source-rejects "(defn main ():i32 (macmap ((a)) (1 2)) 0)
+"
+         "macmap: the first argument must be ((param ...) template)")))
+
+; `:rest` makes the row check a lower bound, not an equality: rows of differing
+; length past the fixed parameters are exactly what it is for.
+(deftest s20-macmap-rest-rows-vary
+  (try (check-source-exit "
+(defn main ():i32
+  (let (acc:i32 0)
+    (macmap ((a :rest more) `(set! acc (_+ acc (+ ~a ~@more))))
+      ((1 2) (3 4 5)))
+    (return (_- acc 15))))
+" 0)))
 
 ; ---------------------------------------------------------------------------
 ; What a place is (dot-forms.md §5 steps 4-6)
