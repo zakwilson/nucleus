@@ -141,8 +141,8 @@ new operator variadic without copying their shape:
 ```
 
 Note that this *is* a fold written inside a macro body, and it works: `~@more`
-splices a list the macro already holds. What does not work is a `macmap` there,
-because its template would be a nested quasiquote — see the rules below.
+splices a list the macro already holds. A `macmap` there is a nested quasiquote,
+which also works — see [Nesting levels](#nesting-levels).
 
 Both are ordinary macros in `lib/macros.nuc`, available through the prelude.
 They are defined before everything else in that file, so their own bodies use
@@ -196,12 +196,12 @@ destructures** the row, which must then be a list of that many elements:
   unchanged: they are not forward-referenceable, and the family cannot include
   an `extend` with its methods. See
   [Macros in top-level position](#macros-in-top-level-position).
-* **A `macmap` cannot be written inside a `defmacro` or `macrolet` body.** Its
-  template would be a nested quasiquote, and Nucleus quasiquote has no nesting
-  level: the inner `~param` is resolved against the *outer* macro's bindings and
-  fails as `undefined: <param>`. To share one table across several templates,
-  pass the template *in* as a parameter instead — a received node is spliced, not
-  walked, so its unquotes survive:
+* **A `macmap` inside a `defmacro` or `macrolet` body is a nested quasiquote**,
+  and is compiled as one — the inner `~param` belongs to the inner template. See
+  [Nesting levels](#nesting-levels). To share one table across several templates
+  the older idiom is still the better one, because it keeps the table in one
+  place: pass the template *in* as a parameter, which is not nesting at all — a
+  received node is spliced, not walked, so its unquotes survive:
 
   ```lisp
   (defmacro over-fields (spec)
@@ -382,6 +382,51 @@ after the pre-scans have already walked the file:
   method registry, which the spliced `defn`s are not in, whichever order they
   are spliced in. Write the `extend` by hand, or have the macro produce only
   the methods.
+
+## Nesting levels
+
+A backtick opens a level; `~` and `~@` close one. **Only a level-1 unquote is
+code.** Deeper, an unquote is data — rebuilt with its level lowered by one — so
+an inner template's `~param` survives the outer expansion and fires at the inner
+one. This is what lets a macro write a macro.
+
+| form, seen at level L | L = 1 | L > 1 |
+|---|---|---|
+| `` `X `` | data, and X is walked at L+1 | data, X walked at L+1 |
+| `~X`, form position | **evaluate X** (must yield a `Node*`) | data, X walked at L−1 |
+| `~@X`, list element | **splice X's value** | data element, X walked at L−1 |
+| `~@X`, form position | `error: unquote-splice outside list` | data, X walked at L−1 |
+| anything else | walked unchanged | walked unchanged |
+
+A quasiquote reached *through* an unquote is a fresh outermost one and starts at
+level 1 again.
+
+```lisp
+(defmacro def-adder (name k)
+  `(defmacro ~name (v) `(+ ~v ~'~k)))
+
+(def-adder add5 5)
+(add5 100)                ; 105
+```
+
+`~name` is level 1 and fires now. `~v` is level 2, so it is data here and
+belongs to `add5`.
+
+**`~'~x` is how an outer argument reaches an inner template**, and is the
+spelling to learn. The outer `~x` yields the node the caller passed, `'` makes
+the inner template hold it as a literal, and the inner `~` reads it back.
+`~@'~xs` is its splicing counterpart, for a `:rest` list. A bare `~~x` lowers
+correctly too, but it means *evaluate `x` at the inner expansion*, where the
+outer macro's parameters no longer exist — so it is almost never what you want.
+The bare `~` that reads an outer value is a mistake the levels make visible:
+
+```lisp
+`(defmacro ~name (v) `(+ ~v ~k))      ; `k` is add5's, and add5 has no `k`
+```
+
+An unquote with no enclosing quasiquote is an error (`unquote outside
+quasiquote`). Inside a plain `quote` it is ordinary data: `'(a ~b)` is a
+two-element list.
 
 ## The type of a quoted form
 

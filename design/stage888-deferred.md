@@ -414,6 +414,14 @@ as an idiom, is to pass a template *in* as a parameter and splice it: a received
 node is never walked as source, so its unquotes survive
 ([stage20-macros/overview.md](stage20-macros/overview.md) §2.6).
 
+**No longer deferred: designed and built 2026-09-11 as
+[stage20-macros/quasiquote-levels.md](stage20-macros/quasiquote-levels.md),
+Stage 20 part two.** The byte-identical gate this entry assumed was the obstacle
+turns out to be attainable, because the tree contains **0 nested backticks in 471
+files** and the level-1 delta is one table row. Kept here, struck through rather
+than deleted, because the *reasoning* that deferred it is the thing worth
+re-reading before the next "this wants its own design" call.
+
 ### Name pasting
 
 There is no way to compose `g-src` from `src` at expansion time — no

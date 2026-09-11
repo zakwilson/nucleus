@@ -1,0 +1,57 @@
+; Quasiquote nesting levels — a macro that writes a macro (Stage 20, part two).
+;
+; A backtick opens a level; `~` and `~@` close one. Only a level-1 unquote is
+; code. Deeper it is data, rebuilt with its level lowered by one, so an inner
+; template's `~param` survives the outer expansion and fires at the inner one.
+;
+;   `(f `(g ~x))     the inner ~x belongs to the INNER template
+;   `(f `(g ~'~x))   ... and this one carries the OUTER macro's argument in
+;
+; See design/stage20-macros/quasiquote-levels.md and docs/macros.md.
+
+(import-use "stdio.h")
+
+; --- a macro that writes a macro -------------------------------------------
+;
+; `~name` fires now, at level 1. `~v` does not: it sits inside the inner
+; backtick, so it is rebuilt as data and fires when `add5` is called.
+;
+; `~'~k` is the compound that reaches ACROSS the levels: the outer `~k` yields
+; the node the caller passed, `'` makes the inner template hold it as a
+; literal, and the inner `~` reads it back at the inner expansion. It is the
+; spelling to learn — a bare `~~k` also lowers correctly, but its operand is
+; then evaluated in the inner body, where the outer macro's parameters are gone.
+
+(defmacro def-adder (name k)
+  `(defmacro ~name (v) `(+ ~v ~'~k)))
+
+(def-adder add5 5)
+(def-adder add9 9)
+
+; --- a macmap inside a macro body ------------------------------------------
+;
+; The motivating case. `macmap`'s template is a quasiquote, so a `macmap`
+; written in a macro body is always nested: without levels the inner `~p` was
+; resolved against `say-all`'s bindings and failed as `undefined: p`.
+
+(defmacro say-all (:rest parts)
+  `(macmap ((p) `(printf "%s\n" ~p)) ~parts))
+
+; --- ~@ at level 2 ---------------------------------------------------------
+;
+; A splice is data at level 2 exactly as an unquote is, so `~@body` below
+; belongs to the GENERATED macro's `:rest`, not to `def-wrapper`'s. `~@'~after`
+; is the splicing counterpart of `~'~`, handing the outer rest list to the
+; inner template.
+
+(defmacro def-wrapper (name :rest after)
+  `(defmacro ~name (:rest body)
+     `(do ~@body ~@'~after)))
+
+(def-wrapper announced (printf "done\n"))
+
+(defn main ():i32
+  (printf "adders     %d %d\n" (add5 100) (add9 100))
+  (say-all "one" "two")
+  (announced (printf "work\n"))
+  (return 0))

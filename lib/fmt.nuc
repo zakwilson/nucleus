@@ -191,18 +191,13 @@
 ; compiler. There is no format-string DSL and no `%` escaping to get wrong.
 ;
 ; Each piece needs WRAPPING in a `(to-str … out)` call, which `~@` cannot do —
-; it splices a rest list unchanged — so the expansion recurses one piece at a
-; time, the shape `+` and `-` in lib/macros.nuc already use.
+; it splices a rest list unchanged — so this is a `macmap` over `:rest`. The
+; template is a nested quasiquote, and `~'~out` is what carries the sink across
+; the level: design/stage20-macros/quasiquote-levels.md, docs/macros.md.
 ; ---------------------------------------------------------------------------
 
 (defmacro str-into (out :rest parts)
-  (cond (= parts null)
-          `(do)
-        (= (parts 'cdr) null)
-          `(to-str ~(parts 'car) ~out)
-        true
-          `(do (to-str ~(parts 'car) ~out)
-               (str-into ~out ~@(parts 'cdr)))))
+  `(macmap ((p) `(to-str ~p ~'~out)) ~parts))
 
 ; `out` is evaluated once per piece by the recursion above, so it must be a
 ; plain binding — which it is at every site, since the argument is a `(ref

@@ -1,0 +1,18 @@
+; Stage 20 part two: a nested template in the REPL
+; (design/stage20-macros/quasiquote-levels.md §7). `emit-qq-tagged` is the
+; second setter of `g-qq-used`, which the REPL saves and restores around every
+; form — so the level-2 path has to work here too, not only in a batch build.
+;
+; A macro that produces a `defmacro` is a separate, pre-existing REPL gap (the
+; top-level dispatcher does not re-dispatch a definer out of an expansion, with
+; or without nesting), so the nested template here is one a function body uses.
+;
+; One form per line — the REPL reads a line at a time.
+
+(defmacro sum-all (:rest parts) `(macmap ((p) `(set! acc (_+ acc ~p))) ~parts))
+(defn s ():i32 (let (acc:i32 0) (sum-all 1 2 4) acc))
+(s)
+
+; Again after a recovered error, because the recovery longjmps past the restore.
+(this-is-not-defined)
+(s)
