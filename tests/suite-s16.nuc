@@ -2102,6 +2102,78 @@ map=2
 " 0)))
 
 ; ---------------------------------------------------------------------------
+; Quasiquote nesting levels (design/stage20-macros/quasiquote-levels.md)
+; ---------------------------------------------------------------------------
+;
+; Every unit below FAILS on a compiler without the level counter: the inner
+; template's unquotes fire at the outer level, so `v`/`p`/`body` are reported
+; undefined at the outer macro's definition site.
+
+; A macro that writes a macro. `~name` is level 1 and fires now; `~v` is level 2
+; and belongs to `add5`; `~'~k` is the compound that carries the OUTER
+; argument in (quasiquote-levels.md §10).
+(deftest s20-qq-nested-template
+  (try (check-source-exit "(defmacro def-adder (name k)
+  `(defmacro ~name (v) `(+ ~v ~'~k)))
+(def-adder add5 5)
+(defn main ():i32 (return (add5 1)))
+" 6)))
+
+; The motivating case: a `macmap` in a macro body is always a nested template.
+(deftest s20-qq-macmap-in-macro
+  (try (check-source-exit "(defmacro sum-all (:rest parts)
+  `(macmap ((p) `(set! acc (_+ acc ~p))) ~parts))
+(defn main ():i32
+  (let (acc:i32 0)
+    (sum-all 1 2 4)
+    (return acc)))
+" 7)))
+
+; `~~'v` lowers twice and lands on the inner parameter, which is what `~v`
+; already says — the equivalence is the checkable statement of the arithmetic.
+(deftest s20-qq-double-unquote
+  (try (check-source-exit "(defmacro def-id (name)
+  `(defmacro ~name (v) `(do ~~'v)))
+(def-id idy)
+(defn main ():i32 (return (idy (_+ 40 2))))
+" 42)))
+
+; `~@body` is data at level 2 and splices the GENERATED macro's rest list;
+; `~@'~after` is the splicing counterpart of `~'~`.
+(deftest s20-qq-inner-splice
+  (try (check-source-exit "(defmacro def-wrapper (name :rest after)
+  `(defmacro ~name (:rest body) `(do ~@body ~@'~after)))
+(def-wrapper w (set! acc (_+ acc 4)))
+(defn main ():i32
+  (let (acc:i32 0)
+    (w (set! acc (_+ acc 3)))
+    (return acc)))
+" 7)))
+
+; The common case, which the counter must leave exactly where it was. The
+; 2,690-artifact IR snapshot is the real gate for that; this is the unit that
+; says so from inside the suite.
+(deftest s20-qq-level-one-unchanged
+  (try (check-source-exit "(defmacro pair (a :rest more)
+  `(_+ ~a (+ ~@more)))
+(defn main ():i32 (return (pair 1 2 3)))
+" 6)))
+
+; Level 1 keeps its refusal; deeper the same form is data.
+(deftest s20-qq-splice-outside-list
+  (try (check-source-rejects "(defmacro m (x) `~@x)
+(defn main ():i32 0)
+"
+         "unquote-splice outside list")))
+
+; Was `unknown: unquote`, which named the reader macro's expansion rather than
+; the mistake.
+(deftest s20-qq-unquote-outside-quasiquote
+  (try (check-source-rejects "(defn main ():i32 (let (x:i32 1) (return ~x)))
+"
+         "unquote outside quasiquote")))
+
+; ---------------------------------------------------------------------------
 ; What a place is (dot-forms.md §5 steps 4-6)
 ; ---------------------------------------------------------------------------
 ;

@@ -5003,6 +5003,11 @@ and macro body). The program module is unaffected by either — it *defines* all
 three — which is why the whole class is invisible outside a JIT module and why
 the fix is IR-inert.
 
+Stage 20 part two (quasiquote levels) added a **second setter**: `emit-qq-tagged`
+builds the cells for a level-≥2 `(unquote X)` / `` `X `` without going through
+`emit-qq-list`, so it sets `g-qq-used` itself. A new `__cons`/`__append` emission
+site anywhere must do the same, or the helper it calls is never defined.
+
 Related, same change: hand-written `declare` lines in a JIT module must go
 through `macro-jit-declare-raw`, which shares the `g-macro-decls` dedup set with
 `macro-jit-ensure-decl`. A macro body that both quotes *and* calls a node

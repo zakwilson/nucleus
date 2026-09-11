@@ -1,0 +1,8 @@
+Nucleus REPL (type Ctrl-D to exit)
+nuc> nuc> nuc> nuc> nuc> nuc> nuc> nuc> nuc> nuc> nuc> nuc>   defined
+nuc>   defined
+nuc>   7
+nuc> nuc> nuc> <repl>:1: error: unknown: this-is-not-defined — not defined anywhere in this compilation unit
+  error: error (recovered)
+nuc>   7
+nuc> 
