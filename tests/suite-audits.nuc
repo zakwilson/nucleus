@@ -69,6 +69,15 @@
   (try (check-script-ok "python3" "scripts/check-cstr.py"))
   (return (ok)))
 
+; Stage 20 M5: `repl-snapshot`/`repl-restore` drive off two tables now, but a
+; field added to `defstruct ReplState` with no row in either still compiles —
+; and still leaks that global from one prompt into the next, which no REPL
+; golden would notice unless it happened to name the global. Exact and in both
+; directions, so the tables stay diffable against the struct field for field.
+(deftest repl-roster
+  (try (check-script-ok "python3" "scripts/check-repl-roster.py"))
+  (return (ok)))
+
 ; ---------------------------------------------------------------------------
 ; Stage 15 W4a: no diagnostic reports line 0
 ; ---------------------------------------------------------------------------

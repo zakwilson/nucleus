@@ -205,13 +205,6 @@ header whose fidelity depends on which synonym the author typed.
 
 Whether the current string literal length limit is desirable should be revisited
 
-## macmap, maybe macreduce
-
-```lisp
-(macmap ((tok) `(when (!= (text-token-is text start e ~tok) 0) (return 1)))
-  ("defn" "defmacro" "defvar" "defconst"))
-```
-
 ## A transient `import: cannot find` in w9-multi-object-link
 
 Seen once, 2026-09-10: `w9-multi-object-link` (`tests/suite-linking.nuc`) failed
@@ -392,3 +385,94 @@ record so a failure is reproducible. Sharding must keep working alongside it —
 shuffle the whole list, then stride — or a shuffled run and a sharded run
 cannot both be trusted. Deferred rather than absorbed into TF-7, which was a
 deletion.
+
+## Stage 20 macro deferrals
+
+Named while designing [stage20-macros/overview.md](stage20-macros/overview.md)
+§8. `macmap` is the first thing that makes the first two cost something.
+
+### Quasiquote has no nesting level
+
+`emit-qq-form` / `emit-qq-list` (`src/nucleusc.nuc:2427-2464`) test
+`qq-is-tagged form 'unquote` at every depth with no counter, so an inner
+backtick is an ordinary list head and protects nothing. Probed: inside a macro
+body with `x` bound to `42`, `` `(f `(g ~x)) `` builds `(f (quasiquote (g 42)))`
+— the inner `~x` fired at the outer level.
+
+The consequence is that **a macro cannot generate a macro body**: a `macmap` (or
+any template) written inside another macro's body fails as
+`undefined: <param>`, because the inner unquote is resolved against the outer
+macro's bindings. It is why `lib/fmt.nuc`'s `str-into` and `lib/io.nuc`'s
+`print` family stay hand-rolled folds.
+
+The fix is a level counter threaded through `emit-qq-form`/`emit-qq-list`, with
+`quasiquote` raising and `unquote`/`unquote-splice` lowering it, and only a
+level-1 unquote emitting. That is a change to the core of macro expansion under
+a byte-identical gate over every macro in the tree, and it wants its own design
+before it is attempted. The workaround, good enough that Stage 20 recommends it
+as an idiom, is to pass a template *in* as a parameter and splice it: a received
+node is never walked as source, so its unquotes survive
+([stage20-macros/overview.md](stage20-macros/overview.md) §2.6).
+
+### Name pasting
+
+There is no way to compose `g-src` from `src` at expansion time — no
+`concat_idents!`, no `intern` over formatted parts reachable from a macro body
+under Stage 20's decision 8 (call nothing outside `lib/node.nuc`). The one place
+in the tree that wants it is the `repl.nuc` field table, where the struct field
+and the global differ only by a `g-` prefix, and a two-column row answers it
+explicitly and greppably. Reconsider only when a second table wants it; Rust's
+`concat_idents!` has been unstable for a decade for reasons that apply here too.
+
+### A macro body may call only what the compiler binary exports
+
+`context/macros-jit.md` says a macro body may call "ordinary program `defn`s".
+Probed 2026-09-11 and the rule is narrower: the callee must be in
+`build/nucleusc` itself. A `defn` belonging to the program being compiled fails
+at JIT link with `Symbols not found`, because that program is not linked yet.
+
+So a macro body cannot call a recursive helper of its own, and cannot recurse
+(a self-reference in head position is a macro *call*). Every tree walk a macro
+needs must be written iteratively and inline. Lifting this means JIT-compiling
+the program's functions on demand during compilation — a substantial feature,
+and not one Stage 20 needs, since `macmap` lowers to `macrolet` and walks
+nothing.
+
+Related hazard, not a deferral but a rule: `-rdynamic` exports all 2,280
+compiler symbols, `macroexpand-form` and `desugar-form` among them. That is an
+accidental, unversioned API surface, and nothing in `lib/` may reach into it.
+
+### `macmap` over a computed row list
+
+`macmap`'s rows are literal, and a macro's arguments are not expanded, so
+`(macmap SPEC (some-table))` cannot work — `rows` would be the unexpanded call.
+The wrapper-macro idiom covers the case that motivated it. A general form would
+need `macmap` to expand its own rows argument, which means calling
+`macroexpand-form` from `lib/macros.nuc` and violating the rule above.
+
+### The string-literal table is one per compilation, not one per module
+
+`g-strs` is a single global vector and `emit-string-table` writes **all** of it
+into whichever module is being assembled. So every macro body's quasiquote
+interns its symbol spellings into the same table the program module emits, and
+those constants are emitted into the program and never referenced by it.
+
+Measured 2026-09-11: a hello-world-sized program carries **92 dead
+`@.str` constants** before its first line of code — `_+`, `+`, `_*`, `cond`,
+`let`, `while`, `match`, `macrolet` and the rest of `lib/prelude.nuc`'s macro
+bodies. Adding one macro to `lib/macros.nuc` adds its own, and renumbers every
+string after it in every program, which is why a change to the prelude can never
+be byte-identical.
+
+It is not only the prelude. Every `defmacro` or `macrolet` in `src/` pays the
+same way, in proportion to how many distinct symbols its templates name: Stage
+20 M5's two `macrolet` bindings in `src/repl.nuc` — a 54-row table, twice — put
+**125 dead constants** into `build/nucleusc.ll` on their own. A table-driven
+refactor is exactly the shape that pays most, so the cost lands on the idiom the
+compiler is being pushed toward.
+
+The fix is a per-module string table — save and restore `g-strs` around
+`compile-macro-body` and the CT module path, the way `push-function-state`
+already saves the entry/body streams. It is contained, but it moves bytes in
+every program in the tree, so it wants its own gate and its own commit rather
+than riding along with a feature.

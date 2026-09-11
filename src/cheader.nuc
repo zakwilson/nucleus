@@ -3887,14 +3887,14 @@
         ret-name:Symbol (symbol-none))
     (extract-name-type name-node (as ref:Symbol &fname) (as ref:Symbol &ret-name))
     (let (why:i32 (cheader-defn-skip-reason form))
-      (macrolet ((result (x why-text)
-                         `(when (= why ~x)
-                            (emit (as ptr stdout) "/* " fname ~why-text " */\n")
-                            (return))))
-                (result 1 ": generic template; not exported")
-                (result 2 ": uses a defunion-template instance type; not exported")
-                (result 3 ": exposes a closure or type-erased box type; not C-callable, omitted")
-                (result 4 ": uses an error-union or option type; not exported")))
+      (macmap ((x why-text)
+               `(when (= why ~x)
+                  (emit (as ptr stdout) "/* " fname ~why-text " */\n")
+                  (return)))
+        ((1 ": generic template; not exported")
+         (2 ": uses a defunion-template instance type; not exported")
+         (3 ": exposes a closure or type-erased box type; not C-callable, omitted")
+         (4 ": uses an error-union or option type; not exported"))))
     ; Stage 12 N6: emit the C-legal mangled link name (`geom__area`) for a
     ; namespaced library. ns-ir-base composes g-current-ns's ir-prefix onto the
     ; bare name; identity under `user`, so existing headers are byte-identical.

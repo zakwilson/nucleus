@@ -1047,6 +1047,15 @@
       (set! (n 's) (symbol-intern (fstr "__gs_" id)))
       (return (as ptr n)))))
 
+; Stage 20 M3: the diagnostic a macro body raises about its own call site
+; (design/stage20-macros/overview.md §2.5). Reached only from a macro/CT JIT
+; module, which resolves it from this binary the way it resolves nucleus_gensym;
+; `die-at` from here aborts the expansion and, under the REPL, longjmps back to
+; the prompt. The message arrives as bytes plus a length rather than a StrView so
+; the emitter needs no by-value aggregate ABI — both are constants at the call.
+(defn nucleus_macro_error (n:(raw Node) data:(ptr ui8) len:i64):void
+  (die-at (node-line n 0) (strview data (as usize len))))
+
 (defn alloc-type ():&Type
   (return (as ref:Type (arena-alloc (sizeof Type)))))
 
@@ -2463,6 +2472,30 @@
     (when (!= (node-len call) 2) (die-at (cc 'line) "quasiquote: expects 1 arg"))
     (return (emit-qq-form (node-at call 1) scope))))
 
+; Stage 20 M3: `(macro-error node "message")` — the diagnostic a macro body
+; raises about its own call site. design/stage20-macros/overview.md §2.5.
+;
+; The message is a string LITERAL, not a StrView expression: a library macro has
+; no formatting available anyway (`fstr` is the compiler's own), and a literal's
+; data pointer and byte count are both constants here, so the call needs no
+; by-value aggregate ABI. `emit-string` with a null target leaves the bare GEP in
+; `val` and the byte length in `lit-i64`, which is exactly the pair to pass.
+(defn emit-macro-error (call:(raw Node) scope:&Scope):&Val
+  (let (cc:(raw Node) call)
+    (when (= (in-jit-module) 0)
+      (die-at (cc 'line)
+        "macro-error: only available inside a defmacro, macrolet or compile-time body"))
+    (when (!= (node-len call) 3)
+      (die-at (cc 'line) "macro-error: expects a node and a string literal"))
+    (let (msg:(raw Node) (as raw:Node (node-at cc 2)))
+      (when (or (= msg null) (!= ((unsafe/cast ref:Node msg) 'kind) NODE-STR))
+        (die-at (cc 'line) "macro-error: the message must be a string literal"))
+      (let (nv:&Val (emit-node (as raw:Node (node-at cc 1)) scope)
+            mv:&Val (emit-string msg null))
+        (emit g-body-stream "  call void @nucleus_macro_error(ptr " (nv 'val)
+              ", ptr " (mv 'val) ", i64 " (mv 'lit-i64) ")\n")
+        (return (alloc-val ty-void ""))))))
+
 ; ============================================================
 ; Stage 10: flow narrowing (nullability.md §4) + escape analysis (lifecycle.md)
 ; ============================================================
@@ -2867,23 +2900,19 @@
   (let (e:i64 end)
     (when (and (> e start) (= (text-byte-at text (- e 1)) 45))
       (set! e (- e 1)))
+    ; `macrolet` and not `macmap` (design/stage20-macros/overview.md §5, M1): one
+    ; template applied to two groups split by an early return still wants a name,
+    ; and a macmap per group would spell the template twice — which interns its
+    ; symbols twice, since the string table is one per compilation, not per macro.
     (macrolet ((true-if (tok)
                  `(when (!= (text-token-is text start e ~tok) 0) (return 1))))
               (when (!= want-type 0)
-                (true-if "defstruct")
-                (true-if "defunion")
-                (true-if "defprotocol")
-                (true-if "deftype")
+                (macmap ((t) `(true-if ~t))
+                  ("defstruct" "defunion" "defprotocol" "deftype"))
                 (return 0))
-              (true-if "defn")
-              (true-if "defmacro")
-              (true-if "defvar")
-              (true-if "defconst")
-              (true-if "defenum")
-              (true-if "deferror")
-              (true-if "extern")
-              (true-if "declare")
-              (true-if "defmethod")))
+              (macmap ((t) `(true-if ~t))
+                ("defn" "defmacro" "defvar" "defconst" "defenum" "deferror"
+                 "extern" "declare" "defmethod"))))
   (return 0))
 
 ; Does the source text `text` (length `len`) define `name` with a top-level
@@ -11980,6 +12009,7 @@
           (let (tmp:StrView (new-tmp))
             (emit g-body-stream "  " tmp " = call ptr @nucleus_gensym()\n")
             (return (alloc-val (ty-raw-node) tmp))))
+        (when (= hp 'macro-error) (return (emit-macro-error n scope)))
         ; Stage 14 UN-5 / Stage 15 B2b: the bare `funcall-ptr-*` spellings do not
         ; resolve because the `unsafe` namespace is bound PREFIXED in every file
         ; and never flattened — the binding is the mechanism, and the targeted
@@ -14927,6 +14957,10 @@
                   (emit ct-def "}\n\n"))
 
 
+            ; Stage 20 M3: reachable from a CT body as from a macro body — the
+            ; emitter's guard is `in-jit-module`, which covers both.
+            (emit ct-decl "declare void @nucleus_macro_error(ptr, ptr, i64)\n")
+
             ; D9: the flush at the top of this function is stale by now — the CT
             ; body itself stamps types — so re-drain and re-flush before
             (drain-pending-union-irs)
@@ -15244,6 +15278,7 @@
 
                   ; Always declare nucleus_gensym
                   (emit ct-decl "declare ptr @nucleus_gensym()\n")
+                  (emit ct-decl "declare void @nucleus_macro_error(ptr, ptr, i64)\n")
 
 
                   ; Union type defs are emitted lazily; make sure any pending
@@ -17074,6 +17109,62 @@
 ; Rewrites `cell` in place and returns 1 for "dispatch this cell again"; a `do`
 ; expansion is spliced so each child becomes a top-level form of its own.
 ; design/stage18-tooling/overview.md §T6.
+; Splice `body` (plus `extra`, when non-null) into the dispatch list in place of
+; the form `cell` currently holds, keeping the rest of the list after it. The
+; caller returns 1 so the loop dispatches `cell` again, now holding the first
+; spliced form. Copies the spine rather than relinking the source's own cells: a
+; template returning a quoted constant hands out a shared subtree.
+(defn toplevel-splice (cell:ptr:Node body:(raw Node) extra:(raw Node)):void
+  (let (first:ptr null
+        tail:ptr null
+        it:ptr body)
+    (while (!= it null)
+      (let (nc:ptr (make-cell ((unsafe/cast ref:Node it) 'car) null
+                              ((unsafe/cast ref:Node it) 'line)))
+        (if (= first null)
+          (do (set! first nc) (set! tail nc))
+          (do (set! ((unsafe/cast ref:Node tail) 'cdr) nc) (set! tail nc))))
+      (set! it ((unsafe/cast ref:Node it) 'cdr)))
+    (when (!= extra null)
+      (let (nc:ptr (make-cell extra null ((unsafe/cast ref:Node extra) 'line)))
+        (if (= first null)
+          (do (set! first nc) (set! tail nc))
+          (do (set! ((unsafe/cast ref:Node tail) 'cdr) nc) (set! tail nc)))))
+    (set! ((unsafe/cast ref:Node tail) 'cdr) (cell 'cdr))
+    (set! (cell 'car) ((unsafe/cast ref:Node first) 'car))
+    (set! (cell 'cdr) ((unsafe/cast ref:Node first) 'cdr))))
+
+; Stage 20 M2: `macrolet` in top-level position (design/stage20-macros/overview.md
+; §2.2), which is what lets `macmap` stand where a definition stands. The
+; bindings are pushed here and the body forms spliced into the dispatch list,
+; followed by a synthetic `(__macrolet-end N)` that pops them: the loop dispatches
+; one form at a time, so the scope cannot be closed before returning, and
+; recursing into a fresh dispatch loop would re-run the per-form root-hoist
+; bookkeeping `emit-toplevel-forms` owns.
+;
+; Body definitions are invisible to the pre-scans, exactly as macro-produced ones
+; are (docs/macros.md) — the scans walk the top-level list and see the `macrolet`.
+(defn emit-toplevel-macrolet (cell:ptr:Node f:ptr:Node):i32
+  (when (< (node-len (as ptr f)) 3)
+    (die-at (f 'line) "macrolet: expects a binding list and at least one body form"))
+  (let (binds:ptr (node-at f 1))
+    (when (not (node-is-list binds))
+      (die-at (f 'line) "macrolet: bindings must be a list"))
+    (let (nb:i32 (node-len binds))
+      (dotimes (i nb)
+        (macrolet-bind (as raw:Node (node-at binds i)) (f 'line)))
+      (let (cnt:&Node (alloc-node))
+        (set! (cnt 'kind) NODE-INT)
+        (set! (cnt 'line) (f 'line))
+        (set! (cnt 'i) (as i64 nb))
+        (toplevel-splice cell
+                         ((f 'cdr) 'cdr)
+                         (as raw:Node
+                             (make-cell (as raw:Node (intern-node (symbol-intern "__macrolet-end")))
+                                        (make-cell (as raw:Node cnt) null (f 'line))
+                                        (f 'line)))))))
+  (return 1))
+
 (defn toplevel-expand-macro (cell:ptr:Node f:ptr:Node h:Symbol):i32
   (when (= (find-macro h) null)
     (die-at (f 'line) (fstr "unknown top-level form: " h)))
@@ -17087,22 +17178,8 @@
         (let (body:ptr ((unsafe/cast ref:Node ex) 'cdr))
           (when (= body null)
             (die-at (f 'line) (fstr "top-level macro '" h "' expanded to an empty (do)")))
-          ; Copy the spine rather than relinking the expansion's own cells: a
-          ; template returning a quoted constant hands out a shared subtree.
-          (let (first:ptr null
-                tail:ptr null
-                it:ptr body)
-            (while (!= it null)
-              (let (nc:ptr (make-cell ((unsafe/cast ref:Node it) 'car) null
-                                      ((unsafe/cast ref:Node it) 'line)))
-                (if (= first null)
-                  (do (set! first nc) (set! tail nc))
-                  (do (set! ((unsafe/cast ref:Node tail) 'cdr) nc) (set! tail nc))))
-              (set! it ((unsafe/cast ref:Node it) 'cdr)))
-            (set! ((unsafe/cast ref:Node tail) 'cdr) (cell 'cdr))
-            (set! (cell 'car) ((unsafe/cast ref:Node first) 'car))
-            (set! (cell 'cdr) ((unsafe/cast ref:Node first) 'cdr))
-            (return 1)))))
+          (toplevel-splice cell body null)
+          (return 1))))
     (set! (cell 'car) ex)
     (return 1)))
 
@@ -17371,6 +17448,18 @@
               (emit-unsafe-import-private (as ptr f))
             'declare
               (do (set! g-out (addr-of g-decl-stream)) (emit-nuch-declare-import (as ptr f)))
+            'macrolet
+              (set! redo (emit-toplevel-macrolet (unsafe/cast ref:Node fc) (as ref:Node f)))
+            '__macrolet-end
+              ; The scope closer emit-toplevel-macrolet spliced after the body.
+              ; Innermost-first, so a nested binding of the same name restores
+              ; the outer one — the same pop `emit-macrolet` performs. Bounded by
+              ; the stack rather than trusting the count: the name is reserved,
+              ; but a hand-written one must not underflow.
+              (dotimes (i (unsafe/cast i32 ((unsafe/cast ref:Node (node-at f 1)) 'i)))
+                (when (!= (count g-macrolet-stack) 0)
+                  (remove-at g-macrolet-stack
+                             (as usize (- (unsafe/cast i32 (count g-macrolet-stack)) 1)))))
             (set! redo (toplevel-expand-macro (unsafe/cast ref:Node fc) (as ref:Node f) h)))))
       ; `redo` means the cell was rewritten by a top-level macro expansion:
       ; dispatch the same cell again instead of advancing past it.
@@ -18418,7 +18507,7 @@
         ; logic
         "not" "_and" "_or"
        ; macros / functions
-       "gensym" "funcall" "funcall-void"
+       "gensym" "macro-error" "funcall" "funcall-void"
        "funcall-ptr-1" "funcall-ptr-i32" "funcall-ptr-i64" "funcall-ptr-ptr"
        ; Stage 14 UN-2: reserved `unsafe/` pseudo-namespace spellings (D2) —
        ; each routes to the exact same emitter as its bare alias above. UN-5

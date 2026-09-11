@@ -5564,6 +5564,16 @@ one `ReplState` snapshot taken at the top of every top-level form and one
   (an `open_memstream`, a pool an already-emitted line references), record the
   registry and the reason in the design doc rather than leaving the gap silent.
 
+**"Once" is now literal (Stage 20 M5).** The roster was still spelled four times
+— save and restore, globals and watermarks — with nothing checking the four
+agreed. It is two `macmap` tables held by a top-level `macrolet` over both
+`defn`s, `(field global)` per row, in `defstruct ReplState`'s own order.
+Adding a field means adding one row; `globals-len` is the sole exception,
+being a `Scope` field rather than a global. A table is only half the fix,
+because a field added with no row still compiles and still leaks that global
+between prompts — `scripts/check-repl-roster.py` (unit `repl-roster`) is the
+other half, and a new field must go in a table or that unit fails.
+
 ## A `case` arm takes exactly one expression — inserting a second silently reparses
 
 Adding a form to the top of an existing `case` arm in the compiler's own source
@@ -6043,9 +6053,37 @@ macro into scope, because the same edit moves every other body's horizon.
 
 This is the same rule that keeps `die-at`/`report-at` out of macro bodies
 (`case-clause-hint`, `src/nucleusc.nuc`) — a body is compiled in the user's
-scope, not the compiler's, so a *located* error is not available to it. A
-variadic marker's degenerate case therefore has to have a defensible value
-rather than a diagnostic: `(:or)` in `case` is `false`, like `(or)`.
+scope, not the compiler's. Stage 20 gave it the one thing it was missing:
+`(macro-error node "literal")`, a special form that lowers to a call the JIT
+module resolves from the compiler binary. A *located* error is available now;
+what is still unavailable is a formatted one (the message must be a literal), so
+a degenerate case with nothing to say still needs a defensible value rather than
+a diagnostic — `(:or)` in `case` is `false`, like `(or)`.
+
+## Member access on a null node in a macro body kills the COMPILER, before any diagnostic
+
+The section above on `()` applies here with the stakes raised: a macro body runs
+inside the compiler process, at expansion time, so `(x 'car)` on a null
+`(raw Node)` is not a crash in the program being compiled — it is exit 139 from
+`nucleusc` itself, with no diagnostic, whatever `macro-error` the next line was
+about to raise. And `lib/macros.nuc` cannot reach `node-kind`: the prelude
+registers the `Node` type and imports no node runtime, so a body has member
+access and nothing else.
+
+So a shape check is a short-circuit chain whose every term is reached past its
+own guard, and the order is load-bearing:
+
+```lisp
+(when (or (= spec null) (!= (spec 'kind) NODE-CELL)
+          (= (spec 'cdr) null) (= ((spec 'cdr) 'car) null))
+  (macro-error … ))
+```
+
+Swap the last two and `(macmap (x) (1 2))` segfaults. Write the comment — the
+ordering reads as arbitrary and a later edit will otherwise "tidy" it. Second
+trap in the same breath: `macro-error` on a node with no line reports at line 0,
+which `w4a-no-line-zero` exists to catch, so blame a node the user actually
+wrote (`macmap` blames the *rows* when the spec is the empty `()`).
 
 ## A form whose SHAPE depends on its operand's type cannot be a macro
 
