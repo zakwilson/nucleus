@@ -851,7 +851,26 @@
   (ret (raw Type))
   ptypes:ptr   ; ptr array of param Type*
   nparams:i32
-  variadic:i32)
+  variadic:i32
+  ; The `define`'s byte span in `g-def-buf`, so a compile-time mirror module can
+  ; copy it verbatim; `ir-start == ir-end == 0` means "no span, not mirrorable"
+  ; (design/stage20-macros/macro-call-linking.md §5.1).
+  ir-start:usize
+  ir-end:usize
+  ; Defining file was under `g-ct-lib-root` — §3.1 condition 1.
+  from-lib:i32)
+
+; Stage 20 L6: the ProgDefn of a program `defvar`. `ty-ir` is the LLVM type text,
+; so a JIT module that only NAMES the global can declare it `external` without
+; re-deriving the type; the span is the whole `@g = … align N` emission, backing
+; global included (design/stage20-macros/macro-call-linking.md §5.7).
+(defstruct ProgGlobal
+  ir-name:Symbol
+  ty-ir:Symbol
+  ir-start:usize
+  ir-end:usize
+  from-lib:i32
+  is-const:i32)
 
 (defstruct BinOp
   ; All three are content-only: `name` is only ever content-compared against
@@ -1071,7 +1090,11 @@
   ns:Symbol
   path:Symbol
   line:i32
-  name:Symbol)
+  name:Symbol
+  ; Stage 20 L6: the global's `@name`, so a compile-time mirror can ask whether
+  ; the globals it copied have a pending initializer without re-deriving the
+  ; namespace mangling (macro-call-linking.md §5.7).
+  ir-name:Symbol)
 
 (defstruct MacroDef
   name:Symbol
@@ -1087,7 +1110,18 @@
   ; :rest/:optional keywords) for tooling. null if not captured.
   param-names:ptr
   priv:i32          ; Stage 15 B5 — see StructDef.priv (`defmacro-`)
-  src-ns:Symbol)
+  src-ns:Symbol
+  ; Stage 20 L4: the ir-names this body calls that do NOT resolve to the host,
+  ; so `expand-macro-call` can mirror them before its lookup — the flush is at
+  ; expansion, not here (design/stage20-macros/macro-call-linking.md §5.3).
+  (ct-roots (ref (Vector Symbol))))
+
+; Stage 20 L4: the same for a `(compile-time …)` block, which has no MacroDef.
+; Keyed by the `__compile_time_main_N` symbol, because the flush belongs at
+; `jit-call-ct-main-sym`'s lookup (macro-call-linking.md §5.3).
+(defstruct CtBlock
+  sym:Symbol
+  (roots (ref (Vector Symbol))))
 
 (defstruct RMacro
   ; `prefix-len` is kept beside the view because the reader's

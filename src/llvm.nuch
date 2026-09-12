@@ -39,6 +39,11 @@
 (declare LLVMGetErrorMessage (err:ptr) :ptr)
 (declare LLVMDisposeErrorMessage (msg:ptr) :void)
 (declare LLVMConsumeError (err:ptr) :void)
+; llvm-c/Support.h — process symbol lookup, portable where dlsym is not
+; (design/stage20-macros/macro-call-linking.md §5.2). A null filename means
+; this process.
+(declare LLVMLoadLibraryPermanently (filename:ptr) :i32)
+(declare LLVMSearchForAddressOfSymbol (name:ptr) :ptr)
 ; Target-machine APIs used by the binary (object-file) compilation path.
 (declare LLVMGetDefaultTargetTriple () :ptr)
 (declare LLVMGetTargetFromTriple (triple:ptr target:ptr msg:ptr) :i32)

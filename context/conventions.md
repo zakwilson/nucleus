@@ -6160,6 +6160,15 @@ Since Stage 17, a struct **value** in a binding also reaches a `&T` parameter
 with no `&` at all (lvalue-only implicit address-of, borrow-conventions.md
 §3.4), so `(strview-byte-len sv)` needs neither a cast nor an address.
 
+Two spellings that do not work and fail as *undefined name*, not as a syntax
+error, so the message points at the wrong thing:
+
+- **`&rest`** is read as the variadic parameter marker, never as `addr-of rest`.
+  Name the binding something else.
+- **`(invoke v 0:usize)`** — the `name:type` sugar needs a *name*, so an index
+  literal is `(as usize 0)`. `(invoke v i:usize)` over a binding is fine, which
+  is why every existing call site reads as though the literal would work.
+
 ## Dispatch happens before coercion, and the tier decides what else moves
 
 An argument rule that only touches `coerce-call-argument` reaches plain
@@ -6522,3 +6531,231 @@ Anything reading a `0x`-prefixed float field has to decide which of the two it
 is before parsing. `fl-value-bits` (`tests/suite-float.nuc`) branches on the
 absence of a `p`/`P`: no exponent means the text *is* the bits, so it goes to
 `strview-parse-magnitude` with radix 16 instead.
+
+## `g-def-buf` is the emitted module's own TAIL — which is how a byte offset into it is checkable
+
+`assemble-module-ir` appends `g-def-buf` **last**, after the type section, the
+string table, the deferror table and `g-decl-stream`. So the definition buffer is
+a suffix of the module text, and an offset recorded into it can be verified
+against a `--emit-llvm` dump with no new plumbing: slice the last `byte-len
+g-def-buf` bytes off the `.ll` and index straight in. Stage 20 L1's span
+verification is exactly that, and L3's will be.
+
+The offsets themselves are a claim about **which** buffer, and `g-out` is not one
+buffer — `compile-macro-body` and `emit-compile-time` point it at a module's
+private stream, `emit-import-forms` at an `import-ct` sink, the REPL at its
+per-entry buffers. `ct-span-recordable` (`src/scope.nuc`) is the guard: `g-out`
+must be `g-def-stream-program` *and* that must be `&g-def-buf`. This is the
+"a latch is a claim about a buffer" rule above applied to an offset rather than a
+boolean, and the failure is quieter — a wrong offset is a plausible number.
+
+Two shapes that recur whenever a mark and a close bracket an emission:
+
+- **Take the mark before the `emit` it measures.** L1's design said
+  `program-defn-record` sat one line before `emit g-out "define "`; it sat one
+  line after, so the recorded start would have pointed past the define's own
+  header. Read the call order, do not take the comment's word for it.
+- **Offset 0 is a legitimate offset**, so it cannot double as "no mark". Close
+  the span by re-asking the guard, not by testing the start against 0, and make
+  the opener return null when it declines so the closer has nothing to write.
+
+## `LLVMSearchForAddressOfSymbol` returns null until `LLVMLoadLibraryPermanently` has run
+
+It searches only the handles `LLVMLoadLibraryPermanently` opened, so without a
+one-time `LLVMLoadLibraryPermanently(null)` (null = this process) the search set
+is **empty** and every lookup answers "not exported" — measured, not assumed:
+with the call removed, `node-at`, `alloc-node`, `intern-symbol`, `desugar-form`
+and `printf` all came back 0 from the same binary that exports all five. There is
+no error and no diagnostic; the call site just gets a plausible negative.
+
+Two things follow. The lazy `LLVMLoadLibraryPermanently` is not redundant
+initialisation and must not be tidied away. And any gate on a process-symbol
+lookup has to **assert a positive** — "it returned 0 and nothing crashed" is
+exactly what a broken lookup looks like, and for `host-exports?` (Stage 20 L2)
+the false negative is also the *safe* direction, so nothing downstream will
+complain either.
+
+This is also the reason the pair is used at all instead of
+`dlsym(RTLD_DEFAULT, …)`, which is shorter and already linked (`-ldl`,
+Makefile): `make windows-boot` cross-emits the compiler's own source to
+`x86_64-pc-windows-{gnu,msvc}`, and a POSIX-only extern lands in both IRs. A
+declare the host never links is invisible here and fatal there — check
+`boot/nucleusc-x86_64-windows-*.ll` before reaching for a libc facility in
+compiler code.
+
+## A "reset per body" latch that is never RESTORED cannot carry a per-body result
+
+`g-macro-decls` is created fresh at the top of `compile-macro-body` and
+`emit-compile-time` and left there — nothing puts the previous one back. That is
+survivable for a dedup set (the worst case is a redundant `declare` in a module
+nobody re-enters) and fatal for anything the caller reads afterwards.
+
+Stage 20 L4's mirror roots are read afterwards, and §5.3 said to accumulate them
+"alongside the existing `g-macro-decls` latch". Copying the idiom loses them, and
+one shape proves it — a `macrolet` compiled **inside** a `defmacro` body:
+
+```lisp
+(defmacro outer ()
+  (macrolet ((inner (k) `(mk (_+ (base) ~k))))
+    (inner 2)))
+```
+
+`macrolet-bind` opens a second body midway through the first, so the reset points
+the global at the *inner* binding's vector; the calls the inner template then
+splices are `outer`'s, and they land nowhere. Measured: with the restore removed
+this file fails `Symbols not found: [ mk, base ]` — mode 1 again, in the one
+shape a tree of top-level macros never reaches. Save and restore beside the
+stream pointers, which that function already does for `g-out`/`g-decl-out`.
+
+The general form: before copying a neighbouring global's lifecycle, ask whether
+the neighbour is *read* after the body ends. `g-macro-decls` is not, so its
+missing restore is invisible; a latent one, since a nested body does silently
+inherit the wrong dedup set.
+
+## A macro body's callees are all emitted BEFORE the body compiles
+
+Stage 20 L4 flushes the compile-time mirror at `expand-macro-call`, and §5.5
+gives the reason as "a callee defined between the `defmacro` and its first call
+site is only emitted by then". That reason does not hold. A root is recorded by
+`macro-jit-ensure-decl`, which needs a `ProgDefn` — and `program-defn-record`
+runs at `emit-defn`, so a callee not yet emitted has no `ProgDefn`, gets no
+`declare`, and never becomes a root. It is mode 2 (`use of undefined value
+'@f'`), with or without the mirror. Flushing at `defmacro` time would therefore
+reach exactly the same set.
+
+Expansion time is still the right site, for two reasons the document does not
+give: a macro that is defined and never called emits no module at all, and a
+`macrolet` compiled mid-`emit-defn` would otherwise try to copy the enclosing
+function's span while its `ir-end` is still 0.
+
+## An early return with four reasons cannot become a diagnostic about one of them
+
+`macro-jit-ensure-decl` returns without emitting a `declare` whenever
+`program-defn-lookup` answers null, and Stage 20 L5 had to turn **one** of those
+reasons — a callee the unit prescanned but has not emitted — into a located
+error. The design gave the test as "resolves in `g-globals` to a `TY-FN` `Sym`
+with no `ProgDefn`". That is also true of a `defn` defined inside the
+`(compile-time …)` block being compiled: `program-defn-record` declines under
+`in-jit-module` **by design** (the defn already lives in that module), while the
+block's own signature prescan registers it as a global `TY-FN` `Sym` with
+`@fname`. Measured — with the extra guard removed, a CT block whose `defn` calls
+another `defn` of the same block fails `calls 'ct-inner', which is defined later
+in this unit`, a file that compiles and prints 42 with the guard in.
+
+The separators are cheap once enumerated: `is-local` rules out a local and a
+function-pointer value, a scan of `g-decl-stream` rules out an extern, a C-header
+import and an intrinsic, and the fourth needs a per-body set that did not exist
+(`g-ct-module-defns`, fed from the CT prescan *and* from `emit-defn` under
+`in-jit-module`, because the prescan's `@fname` and `defn-ir-name`'s mangled
+spelling can differ).
+
+The general rule: **before narrowing a guard into a diagnostic, enumerate every
+reason the guard fires and write one probe per reason.** A false positive here is
+worse than the leak it replaces — the leak was ugly output on a program that was
+already broken; the false positive rejects a program that works.
+
+## A JIT module needs the `declare` for a function it NAMES, not only one it calls
+
+`macro-jit-ensure-decl` hung off `emit-call-with-args` alone, so a macro body
+that took a program defn's *address* — `(let (f:(fn i32)(i32) twice) (f 21))` —
+emitted `store ptr @twice` into a module that declared nothing, and LLVM answered
+`use of undefined value '@twice'` for a callee defined **above** the macro. A
+call and a value use reach an `@name` by different paths, and only the call path
+was instrumented.
+
+`emit-symbol-ref-bound`'s function-materialization branch is the other one, and
+it is already marked as the single chokepoint for value uses (AVR-6's
+addrspace(1) check sits there for the same reason). Anything that must happen
+per reference to a global function — a declare, a link-name record, a target
+check — belongs at **both** sites or it has a hole shaped like function
+pointers.
+
+## When a reference has no chokepoint, scan the IR the emitter already produced
+
+The entry above fixed a call site and a value site for a *function*. A program
+**global** has four — a read (`emit-symbol-ref-bound`'s load), a `set!`, an
+`addr-of`, a member GEP — and no one of them is marked as the place a global
+becomes a link name. Stage 20 L6 needed a `declare` and a mirror root per
+reference, and instrumenting those four would have left a fifth.
+
+So it asks the module's own finished IR instead (`ct-scan-body-globals`, once per
+macro/CT body, over `g-entry-stream`/`g-body-stream`/`ct-def`). The text is the
+ground truth the mirror's closure walk already trusts, and it cannot have a hole:
+whatever route put `@g` into the module put it in the text.
+
+Two mechanics that make it safe: the declares are written to a **side buffer**
+and appended afterwards, because `emit` reallocates a `String` and would leave
+the `StrView` being scanned dangling; and a name the module *defines* is not a
+reference, so a global's own span — which since G-2 shape 4 can hold both
+`@g.data = private constant …` and `@g = global ptr @g.data` — is scanned with
+"skip what this text defines" on.
+
+## A "reset per flush" latch nests too, if the flush can emit code
+
+`ct-mirror-flush` (Stage 20 L3) reset its worklist globals at entry and never
+restored them — the `g-macro-decls` idiom L4 had already found fatal once, and
+safe here only while a flush emitted no code. L6 made it emit a `defvar`'s queued
+initializer with `emit-node`, which expands macros, and an expansion **flushes**:
+
+```lisp
+(defmacro dbl (k) (if (= (s20-t2 3) 6) `(_* ~k 2) `0))
+(defvar g-n:i32 (dbl (s20-seed)))      ; the initializer expands a macro
+```
+
+The inner flush repoints the vectors and the outer walk resumes on them —
+`Symbols not found: [ s20-readn ]`, measured. The fix is the same one L4 reached
+for: split the body out and make the entry point a save/restore wrapper. Any
+counter the nested call also mints from (`g-ct-init-id`, which names
+`@__ct_init_N`) has to be **claimed at mint time**, not when the caller finally
+decides to use it, or two live flushes pick the same number.
+
+## The cursor you were told to snapshot may not need reading at all
+
+`design/global-init.md`'s runtime-initializer queue has one persistent cursor,
+`g-init-drained`, and the program's `@__nucleus_init` is emitted from whatever it
+leaves. Stage 20 L6's design said the compile-time copy should drain from a
+*snapshot* of that cursor and restore it afterwards — plausible, and wrong twice:
+a snapshot drain emits `set!`s for globals the mirror does not define (an
+undefined `@g` in the module), and the restore makes the **next** flush re-emit
+the same jobs, running a shared global's initializer a second time.
+
+The filter that is correct selects jobs by the globals *this* module defines
+(`InitJob.ir-name` against the mirror's copied set), which a define-exactly-once
+set already makes single-shot. The cursor is then never touched, and "the
+program still gets its initializers" holds by construction rather than by a
+restore someone has to remember. **Before implementing a save/restore of shared
+state, check whether the operation needs to read that state at all** — the
+version that never touches it cannot be got wrong on a later path.
+
+## A per-invocation object is not an identity — compare the fact, not the handle
+
+`target-init` sets `g-target` to `g-host-target` **only** when no `--target=` was
+given; any `--target=`, the host's own triple included, builds a second `Target`
+through `make-target-for-triple`. So `g-target != g-host-target` answers "was a
+`--target=` flag passed", not "is this a cross-compilation", and Stage 20 §5.9
+spelled its refusal that way. Under the object test
+`--target=x86_64-pc-linux-gnu` on an x86_64 host — same triple, same datalayout,
+same ABI — is refused for nothing.
+
+The test that means what the sentence means is the one `src/cheader.nuc` already
+uses for the same question: `g-target-triple` against
+`((as ref:Target g-host-target) 'triple)`, two interned `Symbol`s. Reach for the
+field the decision actually turns on; a freshly-built handle is never evidence of
+difference, and `==` on it is never evidence of sameness.
+
+## A refusal makes the condition behind it observable from outside
+
+Stage 20 §6's gate was "the bootstrap flushes zero compile-time mirror modules",
+and through L7 the only way to read it was a throwaway `eprint` in the emitter,
+rebuilt twice per measurement. L8 added a refusal on a *different* axis —
+cross-compiling a body that needs a mirror — and because a flush is refused
+**iff** a flush is required, "this unit mirrors nothing" became an exit code:
+`nucleusc --target=riscv64-unknown-linux-gnu --emit-llvm src/nucleusc.nuc`
+succeeding says it, and so does every green `make avr-test`.
+
+Worth looking for whenever a phase adds a guard: a condition that used to need
+instrumentation may already be reported by some *other* path that refuses on it.
+The throwaway is still how you prove the guard itself works — a marker that fires
+**5 times under `make test`, in exactly the five units written to exercise the
+path**, is what makes the zeroes elsewhere a measurement rather than a broken
+`eprint`.

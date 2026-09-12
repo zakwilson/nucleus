@@ -303,6 +303,27 @@
       (drop (addr-of c))
       (return (ok r)))))
 
+; The host triple as the compiler itself spells it — the module header of a
+; native `--emit-llvm`. A unit asserting a cross-target diagnostic needs it
+; without pinning the machine the suite happens to run on.
+(defn host-triple ():!String
+  (let (ir:String (try (source-ir "(defn main ():i32 (return 0))\n"))
+        v:StrView (string-as-view (addr-of ir))
+        key:StrView "target triple = \"")
+    (match (strview-find &v &key)
+      ((some i)
+        (let (after:StrView (strview-drop-bytes v (+ i (strview-byte-len key))))
+          (match (strview-find-byte &after (as ui8 34))
+            ((some j)
+              (let (tv:StrView (strview-take-bytes after j)
+                    out:String (try (string-from-view (addr-of tv))))
+                (drop (addr-of ir))
+                (return (ok out))))
+            (none (drop (addr-of ir))
+                  (fail! "no closing quote on the module's target triple")))))
+      (none (drop (addr-of ir))
+            (fail! "no `target triple` line in a native --emit-llvm")))))
+
 ; `nucleusc [-I dir] <flag> <path>` — stdout, which for `--emit-nuch` and
 ; `--emit-cheader` is the artifact itself.
 (defn emit-for-file (dir:StrView flag:StrView path:StrView):!String

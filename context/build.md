@@ -116,6 +116,13 @@ re-run"). Read that section before concluding a fresh failure is a regression.
 - `-Toolchain mingw` (default, fully open source: `x86_64-pc-windows-gnu`, clang+LLD, links `-Wl,--export-all-symbols` for the JIT) and `-Toolchain msvc` (`x86_64-pc-windows-msvc`, clang → `link.exe`/`lld-link`). Both drive `clang` and use `llvm-config` (`orcjit core irreader` + `--system-libs`); only triple, boot IR, and export flag differ.
 - `build.ps1` passes `--target=<triple>` on every self-host step so the emitted triple is deterministic (independent of how the host LLVM names itself) and matches the committed boot IR, keeping the fixed-point check honest.
 - **The committed Windows boot IRs are built from the HOST's headers.** `clang -E` finds no Windows sysroot on this Linux host, so `make windows-boot` warns once per C header import (six as of the `setjmp.h` addition) and falls back. That was inert while every host-header type in the compiler's IR was used only behind a pointer; since `repl-protect` allocas a `[1 x %__jmp_buf_tag]`, the boot IR carries glibc's 200-byte layout where mingw-w64's `jmp_buf` is larger. It does not reach a real Windows build — `build.ps1` uses the boot binary only in **batch** mode to emit `build\nucleusc.exe`, and that emission reads the real Windows headers — but pass `--sysroot` to `make windows-boot` if you want it exact. See `design/stage16-ergonomics/c-header-layout.md` §11.5.
+- **`make windows-boot` is a commit, not a check.** It writes the two committed
+  `boot/nucleusc-x86_64-windows-*.ll` in place, so running it merely to prove a
+  change cross-emits leaves them refreshed while `boot/nucleusc.ll` is not —
+  breaking the lock-step the previous bullet relies on, for an ~18k-line diff per
+  file. To *verify* cross-emission, run the two `build/nucleusc --target=… --emit-llvm`
+  commands the target wraps and redirect them somewhere scratch; keep the target
+  itself for `update-bootstrap`.
 - **Do not redirect native stdout with PowerShell `>`** — Windows PowerShell 5.1 re-encodes it as UTF-16-with-BOM, corrupting the `.ll`. `build.ps1` uses `Start-Process -RedirectStandardOutput`, which preserves the child's raw bytes.
 - Win64 aggregate ABI at the C boundary is **not** correct yet (Phase C did SysV only); the compiler itself never hits this because its own IR passes only pointers (no real `byval`/`sret`), so it still bootstraps on Win64.
 

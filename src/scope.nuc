@@ -302,6 +302,35 @@
 (defn in-jit-module ():i32
   (return (if (!= (as ptr g-decl-out) (as ptr &g-decl-stream)) 1 0)))
 
+; Stage 20 L1: is a byte offset taken now an offset into the program's own
+; definition buffer? `g-out` is also pointed at a macro/CT module's private
+; stream, at an `import-ct` sink, and at the REPL's per-entry buffers, and an
+; offset recorded against any of those is garbage a mirror would splice into a
+; JIT module (design/stage20-macros/macro-call-linking.md §5.1).
+(defn ct-span-recordable ():i32
+  (when (= (as ptr g-out) null) (return 0))
+  (when (!= (as ptr g-out) (as ptr g-def-stream-program)) (return 0))
+  (when (!= (as ptr g-def-stream-program) (as ptr &g-def-buf)) (return 0))
+  (return 1))
+
+; §3.1 condition 1: is `path` a file under the library root this invocation
+; resolved the prelude through? A directory prefix, so a root of `lib` does not
+; claim `libfoo/x.nuc`. Spelling only — §3.5 edge 5 accepts that a symlinked or
+; `..`-containing path may not match, because the failure direction is 0, which
+; mirrors rather than binding the wrong function.
+(defn path-under-ct-lib-root (path:Symbol):i32
+  (when (symbol-none? g-ct-lib-root) (return 0))
+  (when (symbol-none? path) (return 0))
+  (let (rn:usize (symbol-len g-ct-lib-root))
+    (when (= rn 0) (return 0))
+    (when (<= (symbol-len path) rn) (return 0))
+    (when (!= (symbol-byte-at path rn) 47) (return 0))
+    (when (= (strview-has-prefix (symbol-as-view path)
+                                 (symbol-as-view g-ct-lib-root))
+             false)
+      (return 0))
+    (return 1)))
+
 ; The captured ProgDefn for an emitted @symbol, or null. Membership was by
 ; content and is now one `icmp`: C7-4b interned the ir-name substrate, which is
 ; what made content and identity the same question.
@@ -317,14 +346,67 @@
 ; recorded — a defn emitted *inside* a CT/macro JIT module already lives in that
 ; module, so re-declaring it there is a redefinition error.
 ;
-(defn program-defn-record (irn:Symbol ret:raw:Type ptypes:ptr nparams:i32 variadic:i32):void
-  (when (!= (in-jit-module) 0) (return))
-  (when (symbol-none? irn) (return))
-  (when (!= (as ptr (program-defn-lookup irn)) null) (return))
+; Stage 20 L1: also opens the `define`'s byte span, so it must be called with
+; `g-out` positioned at the byte `define` is about to land on. Returns the fresh
+; record — null whenever it declined, which is exactly when nothing may write
+; `ir-end` (a second emission of one ir-name must not pair its end with the
+; first's start).
+(defn program-defn-record (irn:Symbol ret:raw:Type ptypes:ptr nparams:i32 variadic:i32):?ptr:ProgDefn
+  (when (!= (in-jit-module) 0) (return null))
+  (when (symbol-none? irn) (return null))
+  (when (!= (as ptr (program-defn-lookup irn)) null) (return null))
   (let (pd:&ProgDefn (as ref:ProgDefn (arena-alloc (sizeof ProgDefn))))
     (set! (pd 'ir-name) irn)
     (set! (pd 'ret) ret)
     (set! (pd 'ptypes) ptypes)
     (set! (pd 'nparams) nparams)
     (set! (pd 'variadic) variadic)
-    (conj g-program-defns pd)))
+    (set! (pd 'from-lib) (path-under-ct-lib-root g-source-path))
+    (set! (pd 'ir-start) (if (!= (ct-span-recordable) 0)
+                           (byte-len &g-def-buf)
+                           (as usize 0)))
+    (set! (pd 'ir-end) (as usize 0))
+    (conj g-program-defns pd)
+    (return pd)))
+
+; Close the span `program-defn-record` opened. Re-asks the guard rather than
+; testing `ir-start`, which is legitimately 0 for the first defn in the buffer.
+(defn program-defn-note-end (pd:?ptr:ProgDefn):void
+  (when (= (as ptr pd) null) (return))
+  (when (= (ct-span-recordable) 0) (return))
+  (set! ((unsafe/cast ref:ProgDefn pd) 'ir-end) (byte-len &g-def-buf)))
+
+; Stage 20 L6, the `defvar` half of the three above. Same contract in every
+; respect: idempotent by ir-name, null when it declined, and `ir-start ==
+; ir-end == 0` is the only "no span" test.
+(defn program-global-lookup (irn:Symbol):?ptr:ProgGlobal
+  (dotimes (i (unsafe/cast i32 (count g-program-globals)))
+    (let (pg:&ProgGlobal (invoke g-program-globals i:usize))
+      (when (= (pg 'ir-name) irn)
+        (return pg))))
+  (return null))
+
+(defn program-global-record (irn:Symbol is-const:i32):?ptr:ProgGlobal
+  (when (!= (in-jit-module) 0) (return null))
+  (when (symbol-none? irn) (return null))
+  (when (!= (as ptr (program-global-lookup irn)) null) (return null))
+  (let (pg:&ProgGlobal (as ref:ProgGlobal (arena-alloc (sizeof ProgGlobal))))
+    (set! (pg 'ir-name) irn)
+    (set! (pg 'ty-ir) (symbol-none))
+    (set! (pg 'is-const) is-const)
+    (set! (pg 'from-lib) (path-under-ct-lib-root g-source-path))
+    (set! (pg 'ir-start) (if (!= (ct-span-recordable) 0)
+                           (byte-len &g-def-buf)
+                           (as usize 0)))
+    (set! (pg 'ir-end) (as usize 0))
+    (conj g-program-globals pg)
+    (return pg)))
+
+; `ty-ir` is taken here rather than at record time because `type-to-ir` may
+; register a struct body in `g-type-stream`, and calling it early would reorder
+; that stream against the constant renderer's own types.
+(defn program-global-note-end (pg:?ptr:ProgGlobal ty-ir:StrView):void
+  (when (= (as ptr pg) null) (return))
+  (set! ((unsafe/cast ref:ProgGlobal pg) 'ty-ir) (symbol-intern ty-ir))
+  (when (= (ct-span-recordable) 0) (return))
+  (set! ((unsafe/cast ref:ProgGlobal pg) 'ir-end) (byte-len &g-def-buf)))
