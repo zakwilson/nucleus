@@ -383,6 +383,123 @@ after the pre-scans have already walked the file:
   are spliced in. Write the `extend` by hand, or have the macro produce only
   the methods.
 
+## What a macro body may call
+
+A macro body runs inside the compiler, so a name in it has to mean something
+before your program exists. The rule:
+
+> A name in a macro body means what it means in the program — **except** for the
+> compile-time runtime, which is the compiler's.
+
+The compile-time runtime is the set a macro body shares with the compiler *by
+necessity*, because the compiler allocates, interns and reads the nodes the macro
+returns. Concretely, a call resolves to the compiler's own copy when **both** of
+these hold: the callee's defining file is under the library root this compilation
+resolved `lib/prelude.nuc` through, **and** the compiler binary exports that
+symbol. `alloc-node`, `make-cell`, `intern-symbol` and `node-at` are this set.
+
+Everything else — your own `defn`s, and a `lib/` module the compiler does not
+itself link — resolves to **your** definition, which the compiler JIT-compiles on
+demand into a private *compile-time mirror* module. So:
+
+```lisp
+(defn double (n:i32):i32 (_* n 2))
+(defmacro twice (x) `(_+ ~x ~x))          ; needs nothing
+(defmacro four () (mk-int (as i64 (double 2))))   ; calls your `double`
+```
+
+Five consequences worth knowing:
+
+- **A macro body may call a helper, and that helper may recurse.** A macro that
+  names *itself* in head position is still a macro call, but a tree walk written
+  as an ordinary recursive `defn` and called from the body works.
+- **A callee must be defined above the macro**, in file order — the same rule the
+  macro itself follows. A `defn` written below the `defmacro` is not yet emitted
+  when the body is compiled, and the compiler says so:
+
+  ```
+  probe.nuc:1: error: macro 'probe' calls 'helper', which is defined later in this unit
+    note: a macro body may only call functions defined above it — move 'helper' above the macro
+  ```
+
+  A `(compile-time …)` block gets the same message naming the block. A callee
+  whose definition the compiler recorded no IR span for gets its own error
+  rather than a link failure.
+- **A macro body may read your program's globals**, directly or through a helper,
+  and a global whose initializer is not a compile-time constant has already run
+  its initializer by the time the body sees it:
+
+  ```lisp
+  (defn seed ():i32 (return 21))
+  (defvar g-limit:i32 (_* (seed) 2))          ; a run-time initializer
+  (defmacro capped (x) (if (= g-limit 42) `(min ~x 42) `~x))
+  ```
+
+  The global is one copy, shared by every macro in the compilation, and writing
+  to it from a macro body is visible to the next one. It is *not* the same
+  storage your program uses at run time — the compiler's copy lives in the JIT —
+  so a compile-time write does not survive into the built program, and the
+  program's own startup initialization happens as usual.
+- **A name of yours that collides with one of the compiler's** — a `defn` or a
+  `defvar` global — now means *yours*. It used to mean the compiler's, silently,
+  and with a mismatched signature that crashed the compiler. The compiler warns
+  once per collision; see [`--warn-ct-shadow`](compiler.md#compiler-flags).
+- **Under `--target=`, a body that needs your own code is refused.** See below.
+
+### ⚠ Sharp edge: cross-compiling a macro body
+
+A macro body runs *here*, in the compiler's own process. Your program's
+definitions, though, were lowered for the machine `--target=` names — different
+register classes, different struct conventions, a different pointer size — so the
+compiler cannot run them. When a body would need one, it says so rather than
+running wrong-ABI code:
+
+```
+probe.nuc:3: error: macro 'xt' needs the program's own 'xt-helper' at compile time,
+  and the program is lowered for 'avr' while a macro body runs on the host,
+  'x86_64-pc-linux-gnu'
+  note: when cross-compiling, a compile-time body may call only the compiler's own
+  library — move 'xt-helper' there, or compute the value without it
+```
+
+Only that case is refused. A body calling nothing but the compile-time runtime —
+which is every macro in `lib/`, and so every macro the AVR and RISC-V examples
+use — cross-compiles exactly as before.
+
+### ⚠ Sharp edge: which `lib/` counts as the compiler's
+
+The first condition is a **path prefix** against the directory *this compilation*
+resolved `lib/prelude.nuc` through, and the import search has five steps — the
+source file's directory, `lib/` relative to the **current directory**, each `-I`,
+`$NUCLEUS_LIB`, then the installed `/usr/local/share/nucleus/lib/`. A development
+build finds its library at step 2; an installed one at step 5. Five consequences:
+
+1. **A cwd-relative `lib/` can capture the root.** Run a program from a directory
+   that has its own `lib/prelude.nuc` and *that* becomes the root, so every module
+   beside it counts as compile-time runtime. A project with its own `lib/node.nuc`
+   then gets the **compiler's** `node-at` at compile time. This one is not warned
+   about: in a checkout of the compiler the cwd-relative `lib/` genuinely *is* the
+   compiler's, and the two cases are indistinguishable from the path alone.
+2. **Inside a compiler checkout the root is that checkout's `lib/`**, which is not
+   what an installed compiler gives. A test that pins this behaviour has to name
+   the root rather than inherit the current directory.
+3. **Editing a `lib/` file changes nothing until the compiler is rebuilt.** The
+   second condition asks the *running* binary, so a modified `lib/node.nuc` still
+   binds to the compiler's old `node-at` at compile time. At compile time, library
+   code is the compiler's build of it.
+4. **`-I` and `$NUCLEUS_LIB` can name a library the compiler was not built from.**
+   The root is then that one while the second condition still answers from the
+   running binary, so the two can disagree about what a module contains. Nothing
+   unsafe follows — a symbol either exists in the compiler or it does not — but
+   `-I` over the standard library is unsupported for compile-time purposes.
+5. **The comparison is on path spelling.** A symlinked or `..`-containing path may
+   not prefix-match a root it is genuinely under. The failure direction is safe: a
+   spelling mismatch makes the module *yours*, which mirrors — slower and more
+   isolated, never a wrong function.
+
+A program that suppresses the automatic prelude has no root at all, so every one
+of its `defn`s is its own. That is the safe direction and needs no special case.
+
 ## Nesting levels
 
 A backtick opens a level; `~` and `~@` close one. **Only a level-1 unquote is

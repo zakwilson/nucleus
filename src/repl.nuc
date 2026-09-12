@@ -842,7 +842,7 @@
                         (set! g-out g-def-stream)
                         (emit-defn (as ptr f))
                         (when (!= g-qq-used 0)
-                          (emit-qq-helpers (addr-of g-decl-stream) g-def-stream))
+                          (emit-qq-helpers (addr-of g-decl-stream) g-def-stream g-target ""))
                         (jit-ensure-init (f 'line))
                         ; First definition: JIT the thunk module and add a
                         ; declare for @fname-ir to the preamble so subsequent
@@ -1162,7 +1162,7 @@
                         (string-clear g-body-stream)
                         ; Build and JIT module
                         (when (!= g-qq-used 0)
-                          (emit-qq-helpers (addr-of g-decl-stream) g-def-stream))
+                          (emit-qq-helpers (addr-of g-decl-stream) g-def-stream g-target ""))
                         ; R3: the expression may have stamped a generic, lifted
                         ; a lambda or built a closure — their bodies and the
                         ; preamble `declare`s this module needs come from here.
@@ -1489,26 +1489,7 @@
 (defn repl-preamble-declare-progdefn (pd:&ProgDefn):void
   (when (!= (repl-preamble-has-decl (pd 'ir-name)) 0) (return))
   (repl-preamble-note-decl (pd 'ir-name))
-  (when (!= (pd 'variadic) 0)
-    (emit g-repl-preamble "declare " (type-to-ir (pd 'ret)) " " (pd 'ir-name) "(...)\n")
-    (return))
-  (let (rinfo:ptr:AbiInfo (unsafe/cast ref:AbiInfo (abi-classify (pd 'ret))))
-    (emit g-repl-preamble "declare " (abi-ret-ir rinfo (pd 'ret)) " " (pd 'ir-name) "(")
-    (let (need-comma:i32 0)
-      ; An sret prefix occupies the first operand slot even at zero parameters.
-      (when (= ((as ref:AbiInfo rinfo) 'kind) ABI-MEMORY)
-        (emit g-repl-preamble "ptr sret(" (type-to-ir (pd 'ret)) ") align "
-              ((as ref:AbiInfo rinfo) 'align))
-        (set! need-comma 1))
-      (abi-args-begin rinfo)
-      (dotimes (j (pd 'nparams))
-        (when (!= need-comma 0) (emit g-repl-preamble ", "))
-        (abi-print-param-to g-repl-preamble
-          (abi-classify-arg (aref (as ref:ptr (pd 'ptypes)) j))
-          (aref (as ref:ptr (pd 'ptypes)) j)
-          (symbol-none))
-        (set! need-comma 1)))
-    (emit g-repl-preamble ")\n")))
+  (progdefn-declare-to g-repl-preamble pd))
 
 ; Does the `@symbol` starting at `buf[a]` name a function THIS module defines?
 ; `keep` (an `@`-prefixed name, or null) is the one exception: a defn's impl

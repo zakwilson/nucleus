@@ -2174,6 +2174,387 @@ map=2
          "unquote outside quasiquote")))
 
 ; ---------------------------------------------------------------------------
+; What a macro body may call (design/stage20-macros/macro-call-linking.md)
+; ---------------------------------------------------------------------------
+;
+; Stage 20 L4 turned the compile-time mirror on: a name in a macro body means
+; what it means in the PROGRAM, except for the compile-time runtime, which is a
+; `lib/` file the running compiler also exports (§3.1). Every unit below was one
+; of §1's three failure modes before L4, so each is a regression test for a
+; behaviour that USED to be a link error, a wrong answer or a core dump.
+
+; §1.1, mode 1. `Symbols not found: [ my-ident ]` before L4 — the program's
+; `define` was text in g-def-buf that nothing compiled until after expansion.
+(deftest s20-macro-calls-own-defn
+  (try (check-source-exit "(import-use node)
+(defn my-ident (n:(raw Node)):(raw Node) (return n))
+(defmacro ident (x) (my-ident x))
+(defn main ():i32 (return (ident 7)))
+" 7)))
+
+; §1.5, and the deferral's headline claim retired: a macro body could not
+; recurse, because the only recursion available to it was a helper. The REPL
+; answered 4 for this file while the batch compiler said `Symbols not found`.
+(deftest s20-macro-calls-recursive-helper
+  (try (check-source-exit "(import-use node)
+(defn depth (n:(raw Node)):i32
+  (if (= n null) (return 0)
+      (return (_+ 1 (depth ((unsafe/cast ref:Node n) 'cdr))))))
+(defn mk-int (v:i64):(raw Node)
+  (let (n:&Node (alloc-node))
+    (set! (n 'kind) NODE-INT)
+    (set! (n 'i) v)
+    (return (as raw:Node n))))
+(defmacro dep (:rest xs) (mk-int (as i64 (depth xs))))
+(defn main ():i32 (return (dep 1 2 3 4)))
+" 4)))
+
+; §3.2's one-arena invariant, which design C (a copy of the closure per macro)
+; would have broken silently: two macros share one helper, the helper allocates
+; through the HOST's `alloc-node` because the mirror only declares it, and both
+; expansions survive to runtime.
+(deftest s20-macro-helper-shares-arena
+  (try (check-source-exit "(import-use node)
+(defn mk (v:i64):(raw Node)
+  (let (n:&Node (alloc-node))
+    (set! (n 'kind) NODE-INT)
+    (set! (n 'i) v)
+    (return (as raw:Node n))))
+(defmacro a () (mk 3))
+(defmacro b () (mk 4))
+(defn main ():i32 (return (_+ (a) (b))))
+" 7)))
+
+; §5.6: a `defn-`'s `define internal` cannot link from a mirror, which is its
+; own object, so the COPY is rewritten to `weak_odr`. The program's own bytes
+; must not move — that is the second assertion.
+(deftest s20-macro-calls-private-defn
+  (let (src:StrView "(defn- ctm-priv (n:i32):i32 (return (_+ n 1)))
+(defmacro probe () (if (= (ctm-priv 6) 7) `7 `99))
+(defn main ():i32 (return (probe)))
+")
+    (try (check-source-exit src 7))
+    ; W5e keys a private name on its FILE, and every embedded fixture is `t.nuc`,
+    ; so the mangled spelling is stable. N4's mangling is also why §5.6's
+    ; `weak_odr` collision worry cannot arise (L3).
+    (let (ir:String (try (source-ir src)))
+      (try (check-line (string-as-view (addr-of ir))
+             "define internal i32 @t_p1__ctm-priv(i32 %n.arg) section \".text.t_p1__ctm-priv\" {"))
+      (drop (addr-of ir))))
+  (return (ok)))
+
+; The mode-3 shape in all three of its claims. Three compiles, because the
+; answer and the diagnostic come from different invocations.
+(defn check-ct-shadow-of (verb:StrView src:StrView name:StrView note:StrView
+                          line:i32):!void
+  (try (check-source-exit src 7))
+  (let (p:String (try (test-write-file "t.nuc" src))
+        pv:StrView (string-as-view (addr-of p))
+        needle:String (str verb " '" name
+                           "', which is also a symbol exported by the compiler")
+        c:Compiled (try (compile-path pv)))
+    (try (check-warning-at (addr-of c 'diags) pv line
+                           (string-as-view (addr-of needle))))
+    (try (check-note-at (addr-of c 'diags) pv line note))
+    (drop (addr-of c))
+    (drop (addr-of needle))
+    ; `nucleusc-raw`, because the claim is that stderr says NOTHING — which a
+    ; sexp-diagnostics run would also satisfy by emitting no records, but this
+    ; way the assertion covers any spelling of the message.
+    (let (r:Ran (try (nucleusc-raw "--no-warn-ct-shadow" pv)))
+      (try (check-empty (string-as-view (addr-of r 'err))))
+      (drop (addr-of r)))
+    (drop (addr-of p)))
+  (return (ok)))
+
+(defn check-ct-shadow (src:StrView name:StrView line:i32):!void
+  (return (check-ct-shadow-of "calls" src name "the compiler's ran instead" line)))
+
+; §1.3, mode 3, and the reason this item is a soundness fix rather than a
+; feature. THIS TEST PASSED AT EXIT 99 BEFORE L4: `-rdynamic` exports 1,658
+; lowercase-hyphenated compiler symbols, the program's `in-jit-module` collided
+; with one, and the COMPILER's ran mid-compilation and chose the expansion.
+(deftest s20-macro-shadows-compiler-symbol
+  (try (check-ct-shadow "(defn in-jit-module ():i32 (return 7))
+(defmacro probe () (if (= (in-jit-module) 7) `7 `99))
+(defn main ():i32 (return (probe)))
+" "in-jit-module" 2)))
+
+; The same collision with a MISMATCHED signature, which is the memory-unsafe
+; half: the compiler's `desugar-form` takes a `Node*`, this one takes an `i32`,
+; and calling it from a macro body dereferenced 21. `nucleusc` dumped core —
+; no cast, no `unsafe/`, no C, just an unlucky function name.
+(deftest s20-macro-shadows-compiler-signature
+  (try (check-ct-shadow "(defn desugar-form (n:i32):i32 (return (_* n 2)))
+(defmacro probe () (if (= (desugar-form 21) 42) `7 `99))
+(defn main ():i32 (return (probe)))
+" "desugar-form" 2)))
+
+; The same collision on a program GLOBAL, which L6 made reachable and L8 names
+; (§7 L8). Equally discriminating: the compiler's own `g-block-term` is 0 or 1
+; mid-compilation, never 7, so only the program's copy can have chosen `7`.
+(deftest s20-macro-shadows-compiler-global
+  (try (check-ct-shadow-of "reads" "(defvar g-block-term:i32 7)
+(defmacro probe () (if (= g-block-term 7) `7 `99))
+(defn main ():i32 (return (probe)))
+" "g-block-term" "a different object" 2)))
+
+; The shape that distinguishes a correct root set from a lost one: a `macrolet`
+; compiled INSIDE a macro body opens a second body mid-way through the first,
+; and the calls the inner template splices belong to the OUTER macro. With the
+; roots reset the way `g-macro-decls` is — reset, never restored — this file
+; fails with `Symbols not found: [ mk, base ]` (measured).
+(deftest s20-macro-roots-survive-nested-macrolet
+  (try (check-source-exit "(import-use node)
+(defn mk (v:i64):(raw Node)
+  (let (n:&Node (alloc-node))
+    (set! (n 'kind) NODE-INT)
+    (set! (n 'i) v)
+    (return (as raw:Node n))))
+(defn base ():i64 (return 5))
+(defmacro outer ()
+  (macrolet ((inner (k) `(mk (_+ (base) ~k))))
+    (inner 2)))
+(defn main ():i32 (return (outer)))
+" 7)))
+
+; §3.1 condition 2, which is what keeps a `lib/` module the compiler does not
+; link from becoming an unresolvable `declare`: `lib/mathlib.nuc` is under the
+; root, so condition 1 holds, but `build/nucleusc` exports no `square`. Mode 1
+; before L4.
+(deftest s20-macro-calls-unlinked-lib
+  (try (check-source-exit "(import-use \"lib/mathlib.nuc\")
+(defmacro probe () (if (= (square 3) 9) `7 `99))
+(defn main ():i32 (return (probe)))
+" 7)))
+
+; L7's probe, reached for free: a `(compile-time …)` block flushes at its own
+; lookup site, so it calls a program `defn` exactly as a macro body does.
+; `Symbols not found: [ twice ]` before L4.
+(deftest s20-ct-block-calls-own-defn
+  (let (p:String (try (test-write-file "t.nuc" "(import-use \"stdio.h\")
+(defn twice (n:i32):i32 (return (_* n 2)))
+(compile-time (printf \"%d\\n\" (twice 21)))
+(defn main ():i32 (return 0))
+")))
+    ; `nucleusc-raw`: a CT block's stdout is redirected to stderr so it cannot
+    ; corrupt the IR, and 42 is not a diagnostic.
+    (let (r:Ran (try (nucleusc-raw "" (string-as-view (addr-of p)))))
+      (try (check (r 'ok?) "a clean compile"))
+      (try (check-eq (string-as-view (addr-of r 'err)) "42\n"))
+      (drop (addr-of r)))
+    (drop (addr-of p)))
+  (return (ok)))
+
+; L7, the shape L4's one-call probe did not reach: a CT block whose helper
+; recurses. The mirror has to carry `fib`'s own `@fib` call sites, which is the
+; closure walk finding a span it has already chosen.
+(deftest s20-ct-block-calls-recursive-helper
+  (let (p:String (try (test-write-file "t.nuc" "(import-use \"stdio.h\")
+(defn fib (n:i32):i32
+  (if (< n 2) (return n) (return (_+ (fib (_- n 1)) (fib (_- n 2))))))
+(compile-time (printf \"%d\\n\" (fib 10)))
+(defn main ():i32 (return 0))
+")))
+    (let (r:Ran (try (nucleusc-raw "" (string-as-view (addr-of p)))))
+      (try (check (r 'ok?) "a clean compile"))
+      (try (check-eq (string-as-view (addr-of r 'err)) "55\n"))
+      (drop (addr-of r)))
+    (drop (addr-of p)))
+  (return (ok)))
+
+; L5's false-positive gate. Each of the four units below reaches
+; `macro-jit-ensure-decl` with NO `ProgDefn` for a legitimate reason, and L5's
+; forward-reference diagnostic has to be narrower than that early return: a
+; mis-drawn check turns every one of them into a compile error.
+
+; An extern reached through a C header: already in `g-decl-stream`, which the
+; macro module copies verbatim.
+(deftest s20-macro-calls-c-header-fn
+  (try (check-source-exit "(import-use \"stdio.h\")
+(defmacro probe () (printf \"\") `7)
+(defn main ():i32 (return (probe)))
+" 7)))
+
+; A top-level `declare`, the other producer of a `g-decl-stream` entry.
+(deftest s20-macro-calls-declared-fn
+  (try (check-source-exit "(declare abs (i32):i32)
+(defmacro probe () (if (= (abs -7) 7) `7 `99))
+(defn main ():i32 (return (probe)))
+" 7)))
+
+; A call through a function-POINTER local: its `ir-name` is `%f.addr.0`, an IR
+; text that is not a link name at all.
+(deftest s20-macro-calls-through-fn-ptr
+  (try (check-source-exit "(declare abs (i32):i32)
+(defmacro probe ()
+  (let (f:(fn i32)(i32) abs)
+    (if (= (f -7) 7) `7 `99)))
+(defn main ():i32 (return (probe)))
+" 7)))
+
+; A `defn` the CT block DEFINES: `program-defn-record` declines inside a JIT
+; module, so it has no `ProgDefn` and never will — and it needs no `declare`,
+; because its `define` is in this very module. §5.8's stated test (no
+; `ProgDefn`, not in `g-decl-stream`, a global `TY-FN` `Sym`) admits it, so
+; this is the unit that says the fourth condition is load-bearing. The second
+; `defn` is defined BELOW its caller inside the block, which the CT prescan is
+; what covers.
+(deftest s20-ct-block-defines-own-defn
+  (let (p:String (try (test-write-file "t.nuc" "(import-use \"stdio.h\")
+(compile-time
+  (defn ct-outer (x:i32):i32 (return (ct-inner x)))
+  (defn ct-inner (x:i32):i32 (return (_* x 2)))
+  (printf \"%d\\n\" (ct-outer 21)))
+(defn main ():i32 (return 0))
+")))
+    (let (r:Ran (try (nucleusc-raw "" (string-as-view (addr-of p)))))
+      (try (check (r 'ok?) "a clean compile"))
+      (try (check-eq (string-as-view (addr-of r 'err)) "42\n"))
+      (drop (addr-of r)))
+    (drop (addr-of p)))
+  (return (ok)))
+
+; A macro body may also NAME a program defn rather than call it. That reaches
+; `emit-symbol-ref-bound`'s materialization chokepoint, not `emit-call`, and
+; before L5 it was the one remaining path that leaked LLVM's own `use of
+; undefined value '@twice'` for a callee defined ABOVE the macro.
+(deftest s20-macro-names-defn-as-value
+  (try (check-source-exit "(defn twice (x:i32):i32 (return (_* x 2)))
+(defmacro probe ()
+  (let (f:(fn i32)(i32) twice)
+    (if (= (f 21) 42) `7 `99)))
+(defn main ():i32 (return (probe)))
+" 7)))
+
+; --- L6: program globals in the closure (§5.7) ------------------------------
+
+; L5 refused this one, worded as a current limitation. The helper's span names
+; `@g-s20k`, so the mirror has to carry the global as well as the function.
+(deftest s20-macro-helper-reads-program-global
+  (try (check-source-exit "(defvar g-s20k:i32 7)
+(defn s20-readk ():i32 (return g-s20k))
+(defmacro probe () (if (= (s20-readk) 7) `7 `99))
+(defn main ():i32 (return (probe)))
+" 7)))
+
+; The sibling with no helper at all. A call records its root at
+; `macro-jit-ensure-decl`; a global reference has no such site — a read, a
+; `set!`, an `addr-of` and a member GEP each spell `@g` by their own route — so
+; the root comes from the body's own IR text. Before L6 this leaked LLVM's
+; `use of undefined value '@g-s20k'`.
+(deftest s20-macro-reads-program-global-directly
+  (try (check-source-exit "(defvar g-s20k:i32 7)
+(defmacro probe () (if (= g-s20k 7) `7 `99))
+(defn main ():i32 (return (probe)))
+" 7)))
+
+; The half of §5.7 that fails SILENTLY. The mirror needs the global's queued
+; initializer to have run, and the program needs the identical job still in its
+; own `@__nucleus_init` — so the value is asserted twice, at compile time
+; (`probe` expands to 1) and at run time (`g-s20r` reads 42). A mirror that
+; drained `g-init-drained` would still compile, still link, expand to 1, and
+; exit 1 instead of 43.
+(deftest s20-macro-global-runtime-init
+  (let (src:StrView "(defn s20-seed ():i32 (return 21))
+(defvar g-s20r:i32 (_* (s20-seed) 2))
+(defn s20-readr ():i32 (return g-s20r))
+(defmacro probe () (if (= (s20-readr) 42) `1 `0))
+(defn main ():i32 (return (_+ (probe) g-s20r)))
+")
+    (try (check-source-exit src 43))
+    (let (ir:String (try (source-ir src)))
+      (try (check-line (string-as-view (addr-of ir))
+             "define internal void @__nucleus_init() {"))
+      (try (check-line (string-as-view (addr-of ir))
+             "  store i32 %t1, ptr @g-s20r, align 4"))
+      (drop (addr-of ir))))
+  (return (ok)))
+
+; A chain: the mirrored global's initializer reads another global whose own
+; initializer is still queued. The copied-global set and the initializer IR grow
+; each other, so the walk has to reach a fixpoint rather than run once.
+(deftest s20-macro-global-init-chain
+  (try (check-source-exit "(defn s20-base ():i32 (return 10))
+(defvar g-s20a:i32 (_* (s20-base) 2))
+(defvar g-s20b:i32 (_+ g-s20a 5))
+(defn s20-readb ():i32 (return g-s20b))
+(defmacro probe () (if (= (s20-readb) 25) `1 `0))
+(defn main ():i32 (return (_+ (probe) g-s20b)))
+" 26)))
+
+; A flush INSIDE a flush. The mirror emits the queued initializer with
+; `emit-node`, so a macro in that initializer expands — and expanding it flushes
+; a mirror of its own, against the same globals. With the per-flush vectors
+; merely reset instead of restored, the outer walk resumes on the inner's state
+; and this file fails `Symbols not found: [ s20-readn ]` (measured).
+(deftest s20-macro-global-init-expands-macro
+  (try (check-source-exit "(defn s20-t2 (x:i32):i32 (return (_* x 2)))
+(defmacro dbl (k) (if (= (s20-t2 3) 6) `(_* ~k 2) `0))
+(defn s20-seed ():i32 (return 10))
+(defvar g-n:i32 (dbl (s20-seed)))
+(defn s20-readn ():i32 (return g-n))
+(defmacro probe () (if (= (s20-readn) 20) `1 `0))
+(defn main ():i32 (return (_+ (probe) g-n)))
+" 21)))
+
+; §11 Q3, settled by probe and pinned here: two flushes that need one global
+; must see one copy. Each macro has its own helper, so the second flush is a
+; real second module that DECLARES the global the first one defined. Under
+; `internal` — the other plausible answer — the measured failure is
+; `JIT session error: Symbols not found: [ q3_p1__g-s20p ]`. Exit 1 would mean
+; two copies; the `defvar-` is what makes the linkage question bite at all.
+(deftest s20-macro-global-two-flushes-one-copy
+  (try (check-source-exit "(defvar- g-s20p:i32 0)
+(defn- s20-bump1 ():i32 (do (set! g-s20p (_+ g-s20p 1)) (return g-s20p)))
+(defn- s20-bump2 ():i32 (do (set! g-s20p (_+ g-s20p 1)) (return g-s20p)))
+(defmacro a () (if (= (s20-bump1) 1) `1 `0))
+(defmacro b () (if (= (s20-bump2) 2) `1 `0))
+(defn main ():i32 (return (_+ (a) (b))))
+" 2)))
+
+; §3.2's one-arena invariant, on the GLOBAL rather than the allocator: a
+; `lib/` global the running compiler exports stays a `declare`, so the mirrored
+; helper reads the HOST's arena counter. A copy of `g-arena-used` would be a
+; fresh zero, and the expansion would be 99.
+(deftest s20-macro-lib-global-is-the-hosts
+  (try (check-source-exit "(import-use arena)
+(defn s20-arena-used ():i64 (return g-arena-used))
+(defmacro probe () (if (> (s20-arena-used) 0) `7 `99))
+(defn main ():i32 (return (probe)))
+" 7)))
+
+; A pointer global backed by an anonymous constant table (G-2 shape 4) is TWO
+; definitions inside one span, and the second names the first. The walk must
+; skip what the span defines, or `@g-s20pa.data` is classified as a reference
+; nothing in the unit declares. Private, so the linkage rewrite has to find the
+; global's own line past the backing global's.
+(deftest s20-macro-global-array-backing
+  (try (check-source-exit "(defvar- g-s20pa:&i32 (array i32 3 4 5))
+(defn- s20-r1 ():i32 (return (aref g-s20pa 2)))
+(defn- s20-r2 ():i32 (return (aref g-s20pa 0)))
+(defmacro a () (if (= (s20-r1) 5) `4 `0))
+(defmacro b () (if (= (s20-r2) 3) `3 `0))
+(defn main ():i32 (return (_+ (a) (b))))
+" 7)))
+
+; L7 parity for L6: a `(compile-time …)` block reaches a program global by the
+; same route a macro body does.
+(deftest s20-ct-block-reads-program-global
+  (let (p:String (try (test-write-file "t.nuc" "(import-use \"stdio.h\")
+(defn s20-ctseed ():i32 (return 21))
+(defvar g-s20ct:i32 (_* (s20-ctseed) 2))
+(compile-time (printf \"%d\\n\" g-s20ct))
+(defn main ():i32 (return 0))
+")))
+    (let (r:Ran (try (nucleusc-raw "" (string-as-view (addr-of p)))))
+      (try (check (r 'ok?) "a clean compile"))
+      (try (check-eq (string-as-view (addr-of r 'err)) "42\n"))
+      (drop (addr-of r)))
+    (drop (addr-of p)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
 ; What a place is (dot-forms.md §5 steps 4-6)
 ; ---------------------------------------------------------------------------
 ;

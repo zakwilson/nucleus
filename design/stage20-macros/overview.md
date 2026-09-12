@@ -108,12 +108,21 @@ A macro body may call **only what the compiler binary itself exports** — its o
 they belong to the program but because they are in `build/nucleusc`. The program
 being compiled is not linked yet, so a function it defines can never be there.
 
-Two consequences that shape this stage:
+**Retired 2026-09-12 by part three**
+([macro-call-linking.md](macro-call-linking.md)), which is where this defect was
+found and where the rule became *provenance decides, not the linker*: a macro body
+may now call the program's own `defn`s, and the first bullet below no longer binds.
+The second is a standing rule and does bind. The paragraph is kept because it is
+what part one was designed against.
 
-* **A macro body cannot call a recursive helper it defines itself**, and cannot
+Two consequences that shaped this stage:
+
+* ~~**A macro body cannot call a recursive helper it defines itself**, and cannot
   recurse (a self-reference in head position is a macro *call*, i.e. expansion).
-  Any tree walk a macro needs must be written iteratively, inline, in the body.
-  This is why §2.1's lowering — which needs no walk at all — matters so much.
+  Any tree walk a macro needs must be written iteratively, inline, in the body.~~
+  Closed by part three L4: a body may call its own helpers and recurse through
+  one. A self-reference in head position is still a macro call. §2.1's lowering
+  still needs no walk, which is why part one did not wait for this.
 * **`-rdynamic` exports all 2,280 compiler symbols**, `macroexpand-form`,
   `find-macro` and `desugar-form` among them. That is an accidental, unversioned
   API surface. `lib/macros.nuc` must not reach into it: a standard-library macro
@@ -566,10 +575,12 @@ and do not add them to the build.
   favour of two-column tables (§2.6). Worth reconsidering only if a second table
   wants it; Rust's `concat_idents!` is unstable after a decade for reasons that
   apply here too.
-* **A macro body calling the program's own `defn`s** (§1.3). This would mean
-  JIT-compiling the program's functions on demand during compilation — a
-  substantial feature, and not one `macmap` needs, since §2.1's lowering walks
-  nothing.
+* ~~**A macro body calling the program's own `defn`s** (§1.3).~~ **Shipped**, as
+  part three ([macro-call-linking.md](macro-call-linking.md), phases L1-L8,
+  2026-09-11/12): the program's functions *are* JIT-compiled on demand during
+  compilation, into a per-flush compile-time mirror module. It was a substantial
+  feature, and correctly not one `macmap` waited for — §2.1's lowering walks
+  nothing. It was also a soundness bug, which is why it came back so soon.
 * **`macmap` over a computed list** — rows that are not literal. The wrapper-macro
   idiom (§2.6) covers the case that motivated it; a general form would need
   `macmap` to expand its rows argument, which means reaching into

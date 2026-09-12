@@ -21,6 +21,20 @@
   emits a `/* not exported */` comment). Fix requires a naming convention
   for instances (e.g. `nuc_Result_Config_Err`). Blocked on no exported
   surface having adopted `!T` yet; revisit when it does (errors.md §11.7).
+- **C++ interop — a library, not a language feature.** Nucleus reaches C
+  and nothing else, so any C++ API without a C facade is unreachable. First
+  concrete want, named 2026-09-11: ORC's `JITDylib::setLinkOrder`, which
+  [stage20-macros/macro-call-linking.md](stage20-macros/macro-call-linking.md)
+  §4 option B needed to say "host first, program second" and could not reach —
+  LLVM's C API exposes a search order for explicit lookups only. Whatever this
+  becomes, it is a **library** (`lib/`, or a generated shim beside the header
+  importer), not core syntax: name mangling, vtable layout, exceptions and
+  templates are an ABI to model at the boundary, not semantics to add to the
+  language. Note the standing constraint it runs into — Stage 16 retired
+  `src/repl_shim.c` and the compiler is pure Nucleus, so a design that
+  reintroduces a C++ translation unit into the compiler's own build is
+  answering a different question than one that ships a library for programs.
+  No plan; filed so the next "we'd need C++ for that" has somewhere to land.
 
 ## Stage 10 safety / error-handling deferrals
 
@@ -391,64 +405,40 @@ deletion.
 Named while designing [stage20-macros/overview.md](stage20-macros/overview.md)
 §8. `macmap` is the first thing that makes the first two cost something.
 
-### Quasiquote has no nesting level
+### Name pasting — **no longer blocked, still not wanted**
 
-`emit-qq-form` / `emit-qq-list` (`src/nucleusc.nuc:2427-2464`) test
-`qq-is-tagged form 'unquote` at every depth with no counter, so an inner
-backtick is an ordinary list head and protects nothing. Probed: inside a macro
-body with `x` bound to `42`, `` `(f `(g ~x)) `` builds `(f (quasiquote (g 42)))`
-— the inner `~x` fired at the outer level.
+There is no `concat_idents!`, and the reason recorded here was that nothing could
+`intern` over formatted parts from a macro body under Stage 20's decision 8 (call
+nothing outside `lib/node.nuc`). **That blocker is gone.** Decision 8 was retired
+by [stage20-macros/macro-call-linking.md](stage20-macros/macro-call-linking.md)
+§3.1: a macro body may call its own helpers, so composing a spelling and interning
+it is an ordinary `defn` — measured 2026-09-12 at L8, `(str "g-" …)` →
+`intern-node` → a spliced symbol, exit 42.
 
-The consequence is that **a macro cannot generate a macro body**: a `macmap` (or
-any template) written inside another macro's body fails as
-`undefined: <param>`, because the inner unquote is resolved against the outer
-macro's bindings. It is why `lib/fmt.nuc`'s `str-into` and `lib/io.nuc`'s
-`print` family stay hand-rolled folds.
+What remains is a design preference, which is the part that was always load-bearing.
+The one place in the tree that wants it is the `repl.nuc` field table, where the
+struct field and the global differ only by a `g-` prefix, and a two-column row
+answers it explicitly and greppably. A pasted name is ungreppable, which is why
+Rust's `concat_idents!` has been unstable for a decade. Reconsider only when a
+second table wants it — and note that a paste helper is now something a *program*
+can write for itself without the language growing a form.
 
-The fix is a level counter threaded through `emit-qq-form`/`emit-qq-list`, with
-`quasiquote` raising and `unquote`/`unquote-splice` lowering it, and only a
-level-1 unquote emitting. That is a change to the core of macro expansion under
-a byte-identical gate over every macro in the tree, and it wants its own design
-before it is attempted. The workaround, good enough that Stage 20 recommends it
-as an idiom, is to pass a template *in* as a parameter and splice it: a received
-node is never walked as source, so its unquotes survive
-([stage20-macros/overview.md](stage20-macros/overview.md) §2.6).
+### Nothing in `lib/` may reach into the compiler's exported surface
 
-**No longer deferred: designed and built 2026-09-11 as
-[stage20-macros/quasiquote-levels.md](stage20-macros/quasiquote-levels.md),
-Stage 20 part two.** The byte-identical gate this entry assumed was the obstacle
-turns out to be attainable, because the tree contains **0 nested backticks in 471
-files** and the level-1 delta is one table row. Kept here, struck through rather
-than deleted, because the *reasoning* that deferred it is the thing worth
-re-reading before the next "this wants its own design" call.
+A rule, not a deferral, and the residue of the entry that stood here. `-rdynamic`
+exports 2,285 symbols from `build/nucleusc`, of which 1,658 are spelled as
+ordinary lowercase-hyphenated Nucleus identifiers — `macroexpand-form`,
+`desugar-form` and `find-macro` among them. That is an accidental, unversioned
+API surface, and no library file may name it.
 
-### Name pasting
-
-There is no way to compose `g-src` from `src` at expansion time — no
-`concat_idents!`, no `intern` over formatted parts reachable from a macro body
-under Stage 20's decision 8 (call nothing outside `lib/node.nuc`). The one place
-in the tree that wants it is the `repl.nuc` field table, where the struct field
-and the global differ only by a `g-` prefix, and a two-column row answers it
-explicitly and greppably. Reconsider only when a second table wants it; Rust's
-`concat_idents!` has been unstable for a decade for reasons that apply here too.
-
-### A macro body may call only what the compiler binary exports
-
-`context/macros-jit.md` says a macro body may call "ordinary program `defn`s".
-Probed 2026-09-11 and the rule is narrower: the callee must be in
-`build/nucleusc` itself. A `defn` belonging to the program being compiled fails
-at JIT link with `Symbols not found`, because that program is not linked yet.
-
-So a macro body cannot call a recursive helper of its own, and cannot recurse
-(a self-reference in head position is a macro *call*). Every tree walk a macro
-needs must be written iteratively and inline. Lifting this means JIT-compiling
-the program's functions on demand during compilation — a substantial feature,
-and not one Stage 20 needs, since `macmap` lowers to `macrolet` and walks
-nothing.
-
-Related hazard, not a deferral but a rule: `-rdynamic` exports all 2,280
-compiler symbols, `macroexpand-form` and `desugar-form` among them. That is an
-accidental, unversioned API surface, and nothing in `lib/` may reach into it.
+The deferral this rule was attached to — "a macro body may call only what the
+compiler binary exports" — was designed 2026-09-11 as
+[stage20-macros/macro-call-linking.md](stage20-macros/macro-call-linking.md),
+Stage 20 part three, after probing established that it is not only a missing
+feature: a program `defn` whose name lands on one of those 1,658 binds to the
+*compiler's* function silently, and with a mismatched signature segfaults the
+compiler. Naming a supported compile-time API — and hiding the rest — stays
+deferred there (§10).
 
 ### `macmap` over a computed row list
 

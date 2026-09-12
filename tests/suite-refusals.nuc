@@ -450,3 +450,132 @@
     (drop (addr-of h))
     (drop (addr-of p)))
   (return (ok)))
+
+; ---------------------------------------------------------------------------
+; Stage 20 L5 — what a macro body may NOT call
+; (design/stage20-macros/macro-call-linking.md §5.8, §7 L5)
+; ---------------------------------------------------------------------------
+;
+; A macro/CT body is compiled and RUN mid-unit, so a callee `emit-defn` has not
+; reached yet has no `declare` and the JIT module is malformed. Every unit below
+; used to surface LLVM's own parse error — `<compile-time>:189:18: error: use of
+; undefined value '@helper'` — against generated text the author never wrote and
+; at a line number from a file that does not exist. The header modes never
+; compile a macro body, so they are right to pass: this is `check-probe-llvm-
+; only`'s shape with a line and a note.
+(defn check-ct-refused (src:StrView line:i32 msg:StrView note:StrView):!void
+  (let (dir:StrView (try (test-scratch))
+        p:String (try (test-write-file "probe.nuc" src))
+        pv:StrView (string-as-view (addr-of p))
+        c:Compiled (try (emit-checked dir "--emit-llvm" pv)))
+    (when (!= (c 'exit) 1)
+      (fail! "--emit-llvm exited " (as i64 (c 'exit)) ", not 1\n     "
+             (test-show (string-as-view (addr-of c 'raw)))))
+    (try (check-error-at (addr-of c 'diags) pv line msg))
+    (try (check-note-at (addr-of c 'diags) pv line note))
+    ; The whole point of the located message is that it replaced LLVM's, so the
+    ; raw output is asserted clean of it rather than merely "an error happened".
+    (let (raw:StrView (string-as-view (addr-of c 'raw)))
+      (when (contains? raw "use of undefined value")
+        (fail! "LLVM's own diagnostic still leaks:\n     " (test-show raw)))
+      (when (contains? raw "IR parse error")
+        (fail! "LLVM's own diagnostic still leaks:\n     " (test-show raw))))
+    (let (h:Compiled (try (emit-checked dir "--emit-cheader" pv))
+          n:Compiled (try (emit-checked dir "--emit-nuch" pv)))
+      (try (check-silent (addr-of h) "--emit-cheader"))
+      (try (check-silent (addr-of n) "--emit-nuch"))
+      (when (not (and (h 'ok?) (n 'ok?)))
+        (fail! "the header modes must still succeed: cheader exit "
+               (as i64 (h 'exit)) ", nuch exit " (as i64 (n 'exit))))
+      (drop (addr-of n))
+      (drop (addr-of h)))
+    (drop (addr-of c))
+    (drop (addr-of p)))
+  (return (ok)))
+
+; §1.2, mode 2 verbatim.
+(deftest s20-macro-forward-reference
+  (try (check-ct-refused "(defmacro probe () (if (= (helper) 7) `7 `99))
+(defn helper ():i32 (return 7))
+(defn main ():i32 (return (probe)))
+" 1 "macro 'probe' calls 'helper', which is defined later in this unit"
+    "a macro body may only call functions defined above it — move 'helper' above the macro"))
+  (return (ok)))
+
+; The same rule for a `(compile-time …)` block — one mechanism, two consumers
+; (§1.5's closing sentence), so the diagnostic names the block rather than a
+; macro.
+(deftest s20-ct-block-forward-reference
+  (try (check-ct-refused "(compile-time (later 21))
+(defn later (x:i32):i32 (return (_* x 2)))
+(defn main ():i32 (return 0))
+" 1 "compile-time block calls 'later', which is defined later in this unit"
+    "a compile-time body may only call functions defined above it — move 'later' above the block"))
+  (return (ok)))
+
+; §5.9, L8. A mirror splices `g-def-buf` spans into a host-triple module, and
+; those spans were ABI-lowered for `--target=`. Before L8 this compiled clean and
+; the macro's answer came from wrong-ABI text run on the host.
+;
+; The target triple is pinned; the host's is read back from the compiler rather
+; than spelled, so the unit says what it means on any machine.
+(deftest s20-macro-cross-target
+  (let (p:String (try (test-write-file "probe.nuc"
+                        "(defn xt-helper (x:i32):i32 (return (_* x 2)))
+(defmacro xt (k) (if (= (xt-helper 3) 6) `(_* ~k 2) `0))
+(defn main ():i32 (return (xt 21)))
+"))
+        pv:StrView (string-as-view (addr-of p))
+        c:Compiled (try (compile-path-for "riscv64-unknown-linux-gnu" pv)))
+    (when (c 'ok?)
+      (fail! "the cross-target compile succeeded\n     "
+             (test-show (string-as-view (addr-of c 'raw)))))
+    (let (lowered:String (str "macro 'xt' needs the program's own 'xt-helper' at compile"
+                              " time, and the program is lowered for"
+                              " 'riscv64-unknown-linux-gnu'"))
+      (try (check-error-at (addr-of c 'diags) pv 3 (string-as-view (addr-of lowered))))
+      (drop (addr-of lowered)))
+    (let (h:String (try (host-triple))
+          want:String (str "while a macro body runs on the host, '"
+                           (string-as-view (addr-of h)) "'"))
+      (try (check-error-at (addr-of c 'diags) pv 3 (string-as-view (addr-of want))))
+      (drop (addr-of want))
+      (drop (addr-of h)))
+    (try (check-note-at (addr-of c 'diags) pv 3
+           "a compile-time body may call only the compiler's own library"))
+    ; The refusal replaced nothing here — it replaced a silent wrong answer — so
+    ; what the raw stream must be clean of is LLVM, as for every unit above.
+    (let (raw:StrView (string-as-view (addr-of c 'raw)))
+      (when (contains? raw "use of undefined value")
+        (fail! "LLVM's own diagnostic leaked:\n     " (test-show raw))))
+    (drop (addr-of c))
+    (drop (addr-of p)))
+  (return (ok)))
+
+; The other half of §5.9: only a FLUSH is refused. A macro body whose every name
+; resolves to the host (§3.1 conditions 1 ∧ 2) records no root, so the whole AVR
+; and RISC-V surface — which uses macros heavily — cross-compiles as before.
+(deftest s20-macro-cross-target-host-resolved
+  (let (p:String (try (test-write-file "probe-host.nuc"
+                        "(import-use node)
+(defmacro pick (xs) (node-at xs (as usize 1)))
+(defn main ():i32 (return (pick (_+ 7 0))))
+"))
+        pv:StrView (string-as-view (addr-of p))
+        c:Compiled (try (compile-path-for "riscv64-unknown-linux-gnu" pv)))
+    ; Not `check-silent`: a cross target with no sysroot warns about C header
+    ; widths, which is suite-target's subject and not this one's.
+    (try (check-no-errors (addr-of c 'diags)))
+    (when (not (c 'ok?))
+      (fail! "a host-resolved macro body must still cross-compile\n     "
+             (test-show (string-as-view (addr-of c 'raw)))))
+    (try (check-line (compiled-ir (addr-of c))
+                     "target triple = \"riscv64-unknown-linux-gnu\""))
+    (drop (addr-of c))
+    (drop (addr-of p)))
+  (return (ok)))
+
+; L6 retired this refusal: a mirrored global is legal, and the unit that used to
+; be refused here is `s20-macro-helper-reads-program-global` in `suite-s16.nuc`,
+; where it exits 7. What is left of the reason is a backstop for a global with
+; no `defvar` of its own in the unit, which nothing can copy.

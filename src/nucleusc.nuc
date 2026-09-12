@@ -585,6 +585,60 @@
 ; g-globals Sym for an overloaded/generic name carries no usable param array).
 (defvar (g-program-defns (ref (Vector (ref ProgDefn)))) (vector-new-in &g-arena-alloc))
 
+; Stage 20 L6: the same for program `defvar`s. Separate from g-program-defns
+; because the two are classified differently — a global is copied as a span or
+; declared `external`, never ABI-lowered (macro-call-linking.md §5.7).
+(defvar (g-program-globals (ref (Vector (ref ProgGlobal)))) (vector-new-in &g-arena-alloc))
+
+; host-exports? memo, parallel by index (design/stage20-macros/macro-call-linking.md
+; §5.2). Interning makes Symbol identity and spelling the same question, so the
+; membership test is one `icmp` over a set the closure walk asks once per callee.
+(defvar (g-host-export-names (ref (Vector Symbol))) (vector-new-in &g-arena-alloc))
+(defvar (g-host-export-answers (ref (Vector i32))) (vector-new-in &g-arena-alloc))
+(defvar g-host-lib-loaded:i32 0)
+
+; Stage 20 L3 (design/stage20-macros/macro-call-linking.md §5.5): the ir-names a
+; compile-time mirror module has already DEFINED in the JIT. Session-wide, so a
+; second flush over an overlapping closure declares them instead of hitting
+; "Duplicate definition of symbol".
+(defvar (g-ct-mirror-defined (ref (Vector Symbol))) (vector-new-in &g-arena-alloc))
+; §6's gate: the bootstrap must flush zero mirror modules.
+(defvar g-ct-mirror-count:i32 0)
+; Why the last flush declined, and on which @name — `symbol-none` when it did
+; not. L5 turns these into a located diagnostic.
+(defvar g-ct-mirror-refuse:Symbol)
+(defvar g-ct-mirror-refuse-name:Symbol)
+; Closure-walk state, live only for the duration of one `ct-mirror-flush`. Fresh
+; vectors per flush (the `g-macro-decls` idiom), so the defvar initializers exist
+; only to make them arena-backed.
+(defvar (g-ctm-defs (ref (Vector (ref ProgDefn)))) (vector-new-in &g-arena-alloc))
+(defvar (g-ctm-decls (ref (Vector (ref ProgDefn)))) (vector-new-in &g-arena-alloc))
+(defvar (g-ctm-seen (ref (Vector Symbol))) (vector-new-in &g-arena-alloc))
+(defvar g-ctm-qq:i32 0)
+; L6 (§5.7): the same split for program globals — copied into the mirror, or
+; declared because the host owns them (§3.2) or an earlier flush defined them.
+(defvar (g-ctm-globals (ref (Vector (ref ProgGlobal)))) (vector-new-in &g-arena-alloc))
+(defvar (g-ctm-gdecls (ref (Vector (ref ProgGlobal)))) (vector-new-in &g-arena-alloc))
+; Numbers `@__ct_init_N`, the mirror's copy of the queued runtime initializers.
+(defvar g-ct-init-id:i32 0)
+
+; Stage 20 L4 (macro-call-linking.md §5.3): the mirror roots of the macro/CT body
+; being compiled right now. It aliases the record the roots are stored on, so the
+; accumulation and the storage are one write; saved/restored per body, since
+; `macrolet` compiles a body inside another one.
+(defvar (g-ct-roots (ref (Vector Symbol))) (vector-new-in &g-arena-alloc))
+; The macro whose body that is, for `--warn-ct-shadow`'s text. `symbol-none`
+; means a `(compile-time …)` block.
+(defvar g-ct-body-name:Symbol)
+; Stage 20 L5: the ir-names the macro/CT module being compiled DEFINES
+; itself. `program-defn-record` declines inside a JIT module, so these never get
+; a `ProgDefn` and nothing else distinguishes them from a forward reference.
+; Saved/restored per body, as `g-ct-roots` is.
+(defvar (g-ct-module-defns (ref (Vector Symbol))) (vector-new-in &g-arena-alloc))
+; One record per `(compile-time …)` block, so `jit-call-ct-main-sym` can flush
+; from the symbol it is about to look up.
+(defvar (g-ct-blocks (ref (Vector (ref CtBlock)))) (vector-new-in &g-arena-alloc))
+
 ; Compiler mode flags.
 (defvar g-emit-nuch:i32 0)    ; when 1, output .nuch header instead of LLVM IR
 ; Stage 18 TF-3: dump the reader's output and stop. The gate for lib/read.nuc is
@@ -603,6 +657,10 @@
 ; the cheader cache never frees an entry, so the Strings must outlive every
 ; reader. Arena-backed, so the vector itself is a no-op to drop.
 (defvar (g-cheader-bufs (ref (Vector String))) (vector-new-in &g-arena-alloc))
+; Stage 20 L4 (macro-call-linking.md §7, Q2): warn when a macro/CT body calls a
+; program defn whose name the compiler also exports. On by default because §6
+; measures it firing zero times across lib/, src/ and examples/.
+(defvar g-warn-ct-shadow:i32 1)
 (defvar g-interactive:i32 0)  ; when 1, run in REPL mode (-i / --interactive)
 (defvar g-repl-format:i32 0)  ; 0 = text (default), 1 = json (one JSON object per error)
 (defvar g-opt-level:i32 0)    ; -O0..-O3; LLVMCodeGenOptLevel: None=0, Less=1, Default=2, Aggressive=3
@@ -639,6 +697,13 @@
 ; real import of one of these still reads and emits it. A second `import-ct` of
 ; the same path stops on this list instead.
 (defvar g-ct-imported:ptr)
+; Stage 20 L1: the directory this invocation resolved `lib/prelude.nuc` through.
+; There is no single library root — `try-import-path` searches five places, so a
+; dev build finds `lib/` at step 2 and an installed compiler at step 5 — and the
+; prelude is the one import every compilation makes and no program writes.
+; `symbol-none` (no prelude imported) reads downstream as "nothing is from-lib".
+; design/stage20-macros/macro-call-linking.md §3.4.
+(defvar g-ct-lib-root:Symbol)
 ; Stage 16: nesting depth of the file whose definitions are actually being
 ; discarded. Distinct from `g-import-ct`, which only says a compile-time-only
 ; import was ASKED for: a library the unit imports for real stays real even when
@@ -1367,6 +1432,58 @@
   (when (!= (repl-preamble-has-decl irn) 0) (return))
   (conj g-repl-preamble-decls irn))
 
+; Does the running compiler binary export `irn`? (-rdynamic keeps hyphens, so
+; there is no mangling step.) Through LLVM rather than dlsym so the Windows boot
+; IRs carry no POSIX-only extern — design/stage20-macros/macro-call-linking.md §5.2.
+(defn host-exports? (irn:Symbol):i32
+  (dotimes (i (count g-host-export-names))
+    (when (= (invoke g-host-export-names i) irn)
+      (return (invoke g-host-export-answers i))))
+  ; LLVMSearchForAddressOfSymbol searches only handles this has opened; without
+  ; it the search set is empty and every answer is a silent false negative.
+  (when (= g-host-lib-loaded 0)
+    (LLVMLoadLibraryPermanently null)
+    (set! g-host-lib-loaded 1))
+  ; Every caller holds an ir-name, which carries the `@` sigil; the linker's
+  ; symbol does not. Memoised on the name as passed, searched on the bare one.
+  (let (bare:Symbol (if (= (symbol-byte-at irn (as usize 0)) 64)
+                      (symbol-intern (strview-drop-bytes (symbol-as-view irn) (as usize 1)))
+                      irn)
+        ans:i32 (if (= (LLVMSearchForAddressOfSymbol (symbol-as-cstr bare)) null) 0 1))
+    (conj g-host-export-names irn)
+    (conj g-host-export-answers ans)
+    (return ans)))
+
+; The ABI-lowered `declare` for one captured definition, byte for byte as
+; `emit-defn` lowered the `define` it names. Three consumers want it against
+; three different buffers and three different dedup latches, so this emits the
+; line and nothing else — latching is the caller's
+; (design/stage20-macros/macro-call-linking.md §5.4).
+(defn progdefn-declare-to ((out (raw String)) pd:&ProgDefn):void
+  ; Variadic prototypes lower trivially (no struct args reach a macro body).
+  (when (!= (pd 'variadic) 0)
+    (emit out "declare " (type-to-ir (pd 'ret)) " " (pd 'ir-name) "(...)\n")
+    (return))
+  (let (rinfo:ptr:AbiInfo (unsafe/cast ref:AbiInfo (abi-classify (pd 'ret))))
+    (emit out "declare " (abi-ret-ir rinfo (pd 'ret)) " " (pd 'ir-name) "(")
+    (let (need-comma:i32 0)
+      ; An sret prefix occupies the first operand slot even at zero parameters.
+      (when (= ((as ref:AbiInfo rinfo) 'kind) ABI-MEMORY)
+        (emit out "ptr sret(" (type-to-ir (pd 'ret)) ") align "
+              ((as ref:AbiInfo rinfo) 'align))
+        (set! need-comma 1))
+      ; RV-6c: one walk over this signature, so reset the riscv64 register budget
+      ; before it (design/stage14/riscv-fp-abi.md §4).
+      (abi-args-begin rinfo)
+      (dotimes (j (pd 'nparams))
+        (when (!= need-comma 0) (emit out ", "))
+        (abi-print-param-to out
+          (abi-classify-arg (aref (as ref:ptr (pd 'ptypes)) j))
+          (aref (as ref:ptr (pd 'ptypes)) j)
+          (symbol-none))
+        (set! need-comma 1)))
+    (emit out ")\n")))
+
 ; Write a hand-written `declare` line into a macro/CT JIT module's decl stream
 ; unless `irn` is already declared there. Shares `g-macro-decls` with
 ; macro-jit-ensure-decl, so a macro body that both quotes and calls one of the
@@ -1380,7 +1497,72 @@
   (conj g-macro-decls irn)
   (emit out proto))
 
-(defn macro-jit-ensure-decl (ss:(raw Sym)):void
+; The macro/CT body being compiled, as a diagnostic subject.
+(defn ct-body-who ():StrView
+  (when (symbol-none? g-ct-body-name) (return "compile-time block"))
+  (return (fstr "macro '" g-ct-body-name "'")))
+
+; §1.3's shape, doing the right thing at last: the program's own definition wins
+; over a compiler symbol it collides with. Worth saying out loud because the same
+; program segfaulted the compiler a phase ago
+; (design/stage20-macros/macro-call-linking.md §7 L4, Q2).
+(defn warn-ct-shadow (name:Symbol line:i32):void
+  (when (= g-warn-ct-shadow 0) (return))
+  (let (who:StrView (ct-body-who))
+    (diag-stage-note
+      "before Stage 20 L4 the compiler's ran instead — rename to silence this")
+    (diag-emit "warning" g-source-path line
+      (fstr who " calls '" name "', which is also a symbol exported by the"
+            " compiler; the program's definition is the one that runs"))))
+
+; The same collision on a program GLOBAL a body reads (L8). Symmetric with the
+; call above: §3.1 resolves the name to the program's, and the compiler's object
+; of that name is a different one.
+(defn warn-ct-shadow-global (irn:Symbol line:i32):void
+  (when (= g-warn-ct-shadow 0) (return))
+  (let (nv:StrView (symbol-as-view irn))
+    ; An ir-name's `@` is IR spelling, not anything the author wrote.
+    (when (= (symbol-byte-at irn (as usize 0)) 64)
+      (set! nv (strview-drop-bytes nv (as usize 1))))
+    (diag-stage-note
+      "the compiler's global of that name is a different object — rename to silence this")
+    (diag-emit "warning" g-source-path line
+      (fstr (ct-body-who) " reads '" nv "', which is also a symbol exported by the"
+            " compiler; the program's global is the one it sees"))))
+
+; A name this macro/CT module `define`s itself — the fourth reason a `ProgDefn`
+; is legitimately missing (design/stage20-macros/macro-call-linking.md §7 L5).
+(defn ct-module-defn-note (irn:Symbol):void
+  (when (= (in-jit-module) 0) (return))
+  (doseq (m g-ct-module-defns (VecIter Symbol))
+    (when (= m irn) (return)))
+  (conj g-ct-module-defns irn))
+
+(defn ct-module-defines? (irn:Symbol):i32
+  (doseq (m g-ct-module-defns (VecIter Symbol))
+    (when (= m irn) (return 1)))
+  (return 0))
+
+; §5.8, mode 2. Each guard below rules out one LEGITIMATE reason the caller's
+; `ProgDefn` lookup failed; drop any and working code starts erroring (§7 L5).
+(defn ct-forward-ref-check (s:(raw Sym) irn:Symbol line:i32):void
+  ; A REPL entry is itself a JIT module, so nothing it defines has a `ProgDefn`.
+  (when (!= g-interactive 0) (return))
+  (when (!= ((unsafe/cast ref:Sym s) 'is-local) 0) (return))
+  (let (ft:ptr:Type (unsafe/cast ref:Type ((unsafe/cast ref:Sym s) 'type)))
+    (when (= (as ptr ft) null) (return))
+    (when (!= (ft 'kind) TY-FN) (return)))
+  (when (!= (ct-module-defines? irn) 0) (return))
+  (when (!= (ct-mirror-decl-stream-has irn) 0) (return))
+  (let (nm:Symbol ((unsafe/cast ref:Sym s) 'name)
+        body:StrView (if (symbol-none? g-ct-body-name) "compile-time body" "macro body"))
+    (diag-stage-note (fstr "a " body " may only call functions defined above it — move '"
+                           nm "' above the "
+                           (if (symbol-none? g-ct-body-name) "block" "macro")))
+    (die-at line (fstr (ct-body-who) " calls '" nm
+                       "', which is defined later in this unit"))))
+
+(defn macro-jit-ensure-decl (ss:(raw Sym) line:i32):void
   (when (= (in-jit-module) 0) (return))
   (let (s:(raw Sym) ss
         irv:StrView (s 'ir-name))
@@ -1390,44 +1572,21 @@
     (let (irn:Symbol (symbol-intern irv))
     (when (!= (repl-preamble-has-decl irn) 0) (return))
     (let (pd:?ptr:ProgDefn (program-defn-lookup irn))
-      (when (= pd null) (return))
+      (when (= pd null) (ct-forward-ref-check s irn line) (return))
       ; Dedup within this module.
       (doseq (m g-macro-decls (VecIter Symbol))
         (when (= m irn) (return)))
       (conj g-macro-decls irn)
-      ; Variadic prototypes lower trivially (no struct args reach a macro body).
-      (when (!= (pd 'variadic) 0)
-        (emit g-decl-out "declare " (type-to-ir (pd 'ret)) " " irn "(...)\n")
-        (return))
-      (let (ret-info:ptr:AbiInfo (unsafe/cast ref:AbiInfo (abi-classify (pd 'ret))))
-        (emit g-decl-out "declare " (abi-ret-ir ret-info (pd 'ret)) " " irn "(")
-        (let (need-comma:i32 0)
-          (when (= ((as ref:AbiInfo ret-info) 'kind) ABI-MEMORY)
-            (emit g-decl-out "ptr sret(" (type-to-ir (pd 'ret)) ") align "
-                  ((as ref:AbiInfo ret-info) 'align))
-            (set! need-comma 1))
-          ; RV-6c: one walk over this signature's parameters, so reset the
-          ; riscv64 register budget before it (design/stage14/riscv-fp-abi.md §4).
-          (abi-args-begin ret-info)
-          (dotimes (j:i32 (pd 'nparams))
-                   (when (!= need-comma 0) (emit g-decl-out ", "))
-              ; abi-print-param writes to g-out (the def stream); format the
-              ; declare's param types straight into g-decl-out instead.
-              ; RV-6c: classified ONCE (it used to classify twice, for `pinfo`
-              ; and `pk`) via abi-classify-arg, which debits the budget.
-              (let (pty:ptr (aref (as ref:ptr (pd 'ptypes)) j)
-                    pinfo:ptr:AbiInfo (unsafe/cast ref:AbiInfo (abi-classify-arg (aref (as ref:ptr (pd 'ptypes)) j)))
-                    pk:i32 (pinfo 'kind))
-                (cond (= pk ABI-MEMORY)
-                        (emit g-decl-out "ptr byval(" (type-to-ir pty) ") align " (pinfo 'align))
-                      (= pk ABI-COERCE1)
-                        (emit g-decl-out (pinfo 'reg0))
-                      (= pk ABI-COERCE2)
-                        (emit g-decl-out (pinfo 'reg0) ", " (pinfo 'reg1))
-                      true
-                        (emit g-decl-out (type-to-ir pty))))
-              (set! need-comma 1)))
-        (emit g-decl-out ")\n"))))))
+      (progdefn-declare-to g-decl-out (unsafe/cast ref:ProgDefn pd))
+      ; §5.3: the module needs the declare either way; what splits is WHOSE
+      ; definition the name means. The host's only when both §3.1 conditions
+      ; hold — otherwise this is a mirror root, and a host-exported name
+      ; reaching here is exactly §1.3's shadow.
+      (let (p:&ProgDefn (unsafe/cast ref:ProgDefn pd)
+            hosted:i32 (host-exports? irn))
+        (when (and (!= (p 'from-lib) 0) (!= hosted 0)) (return))
+        (conj g-ct-roots irn)
+        (when (!= hosted 0) (warn-ct-shadow (s 'name) line)))))))
 
 ; "No type annotation" is the ZERO Symbol, not null: `Symbol.p` is a non-null
 ; pointer type, so the absent case has to be minted (`symbol-none`) and tested
@@ -3094,18 +3253,23 @@
         (return found)))
     ((err e) (return (symbol-none)))))
 
+; The directory part of a path, or null when it has none (a bare filename).
+(defn path-dir (path:Symbol):Symbol
+  (when (symbol-none? path) (return (symbol-none)))
+  (let (pathlen:i64 (as i64 (symbol-len path))
+        last-slash:i64 -1)
+    (dotimes (i pathlen)
+      (when (= (symbol-byte-at path (as usize i)) 47)
+        (set! last-slash i)))
+    (when (< last-slash 0) (return (symbol-none)))
+    (return (symbol-intern (strview-take-bytes (symbol-as-view path)
+                                               (as usize last-slash))))))
+
 ; The directory of the file currently being emitted, or null when it has none
 ; (a bare filename in the cwd). Mirrors `try-import-path`'s first search step,
 ; so the note names files the author could have imported by bare name.
 (defn source-file-dir ():Symbol
-  (let (pathlen:i64 (as i64 (symbol-len g-source-path))
-        last-slash:i64 -1)
-    (dotimes (i pathlen)
-      (when (= (symbol-byte-at g-source-path (as usize i)) 47)
-        (set! last-slash i)))
-    (when (< last-slash 0) (return (symbol-none)))
-    (return (symbol-intern (strview-take-bytes (symbol-as-view g-source-path)
-                                               (as usize last-slash))))))
+  (return (path-dir g-source-path)))
 
 ; The path of a Nucleus source file that is on the import search path, is NOT
 ; part of this compilation unit, and defines `name` — or null. Searches exactly
@@ -3533,6 +3697,9 @@
                       "' as a value on this target: functions live in program memory (address space "
                       ((as ref:Target g-target) 'prog-as)
                       ") and cannot be materialized as a data pointer -- call it directly instead")))
+            ; Stage 20 L5: a JIT module needs the `declare` for a function it
+            ; NAMES as much as for one it calls (§7 L5).
+            (macro-jit-ensure-decl (as (raw Sym) sym) (node-line n line))
             (return (alloc-val (sym 'type) (sym 'ir-name))))
           (die-at (node-line n line) (fstr "cannot use '" (nn 's) "' as value")))
         ; Stage 15 W8 G-2: an `(array T N)`-typed binding DECAYS — reading it
@@ -7195,8 +7362,9 @@
         (when (!= (ft 'kind) TY-FN)
           (die-at (cc 'line) (fstr "not a function: " (ss 'name))))
         ; In a macro/CT JIT module, a call to an ordinary program-module defn
-        ; needs a local `declare` (the symbol resolves from the -rdynamic host).
-        (macro-jit-ensure-decl ss)
+        ; needs a local `declare`, and — Stage 20 L4 — decides whether the name
+        ; means the host's copy or the program's.
+        (macro-jit-ensure-decl ss (cc 'line))
         (if (!= (ft 'variadic) 0)
           (do
             (let ((sigs String) (str-alloc (strfmt-alloc) (type-to-ir (ft 'ret)) " ("))
@@ -11165,6 +11333,14 @@
             (set! rj (- rj 1))
             (set! rest-list (make-cell (node-at (unsafe/cast ref:Node call) (+ rj 1)) rest-list 0)))
           (set! (aref (as ref:ptr args-arr) regular-params) rest-list)))
+      ; §5.5: the program definitions this body calls must be in the JITDylib
+      ; before the lookup below materialises the macro module — and not at
+      ; `defmacro` time, since a callee defined between the two is only emitted
+      ; by now. L5: a refusal is a located error here, not the JIT's own "lookup
+      ; failed" below.
+      (when (= (ct-mirror-flush (mdef 'ct-roots) ((unsafe/cast ref:Node call) 'line)) 0)
+        (ct-mirror-report-refusal (fstr "macro '" (mdef 'name) "'")
+                                  ((unsafe/cast ref:Node call) 'line)))
       (let (addr:i64 0
             err:ptr (LLVMOrcLLJITLookup g-jit &addr (symbol-as-cstr (mdef 'jit-name))))
         (when (!= err null)
@@ -13258,7 +13434,7 @@
 ; the initializer at drain time is located at the `defvar` the user wrote —
 ; interned symbols (the `set!` head and the target name) have no line of their
 ; own (context/conventions.md).
-(defn defvar-queue-init (name:Symbol init:(raw Node) line:i32):void
+(defn defvar-queue-init (name:Symbol irn:Symbol init:(raw Node) line:i32):void
   (let (args:ptr (as ptr (make-cell (intern-node name)
                                     (as ptr (make-cell init null line))
                                     line))
@@ -13269,6 +13445,7 @@
     (set! (job 'path) g-source-path)
     (set! (job 'line) line)
     (set! (job 'name) name)
+    (set! (job 'ir-name) irn)
     (conj g-init-worklist job)))
 
 ; ============================================================
@@ -13483,6 +13660,14 @@
                 ; type's zero and the initializer is queued for @__nucleus_init.
                 runtime-init:i32 0)
             (check-ir-name-legal (cc 'line) name ir-name)
+            ; Stage 20 L6 (§5.7): open the span here, above the array-backing
+            ; global, so `@g.data` is inside the text a mirror copies.
+            (let (pg:?ptr:ProgGlobal
+                   (program-global-record (symbol-intern ir-name)
+                                          (if (!= (bit-and attr-flags DECL-ATTR-CONST) 0) 1 0)))
+            ; L5's fourth condition, for a global: a `defvar` inside the CT block
+            ; being compiled already lives in that module.
+            (ct-module-defn-note (symbol-intern ir-name))
             (when (!= init-cell null)
               (set! init-node (as raw:Node ((unsafe/cast ref:Node init-cell) 'car))))
             ; G-2 shape 4: a pointer-typed global initialized with an array
@@ -13528,7 +13713,7 @@
               ; element must be constant regardless of order, and it keeps the
               ; better "init must be a compile-time constant" diagnostic.
               (defvar-check-init-order init-node name (cc 'line))
-              (defvar-queue-init name init-node (cc 'line)))
+              (defvar-queue-init name (symbol-intern ir-name) init-node (cc 'line)))
             ; No initializer (or a runtime one, whose slot starts at zero and is
             ; filled by @__nucleus_init): the type's zero. G-2 moved the
             ; three-bucket rule (pointers `null`, aggregates `zeroinitializer` —
@@ -13565,6 +13750,7 @@
                                          init-ir (as raw:Type ty))
                   ir-name))
               (emit g-out ", align " align "\n\n"))
+            (program-global-note-end pg (type-to-ir ty)))
             (let (vsym:&Sym (scope-define g-globals name ty ir-name 1))
               (sym-record-src vsym (cc 'line))
               (when (!= g-ct-emitting 0) (set! ((unsafe/cast ref:Sym vsym) 'ct-only) 1))
@@ -14668,57 +14854,63 @@
                                 ": implicit return type mismatch — last expression does not match declared return type")))
                       (let (cv:ptr:Val (unsafe/cast ref:Val coerced))
                         (emit g-body-stream "  ret " (type-to-ir ret) " " (cv 'val) "\n"))))))))
-            ; Emit the function
-            ; Stage 12 N3 (`internal` for a private defn) and W9 item 2
-            ; (`weak_odr` for a definition this unit only carries a copy of)
-            ; are the same decision, taken once in `def-linkage`.
-            (emit g-out "define " (def-linkage) (abi-ret-ir g-fn-ret-abi ret) " "
-                  (defn-ir-name fname param-types nparams ret) "(")
+            ; Emit the function.
             ; Record so a macro/CT JIT module can re-declare it (the define lives
             ; only here in the program module). param-types/nparams are exactly
-            ; the signature emitted above (rest param already folded to ptr).
-            (program-defn-record (defn-ir-name fname param-types nparams ret)
-                                 ret param-types nparams 0)
-            ; A MEMORY return prepends the hidden sret pointer parameter.
-            (let (need-comma:i32 0)
-              (when (= ((unsafe/cast ref:AbiInfo g-fn-ret-abi) 'kind) ABI-MEMORY)
-                (emit g-out "ptr sret(" (type-to-ir ret) ") align "
-                      ((unsafe/cast ref:AbiInfo g-fn-ret-abi) 'align) " " g-fn-sret-name)
-                (set! need-comma 1))
-              ; RV-6c: the second walk over this signature (see the prologue
-              ; loop above) — reset the riscv64 register budget for it.
-              (abi-args-begin (unsafe/cast raw:AbiInfo g-fn-ret-abi))
-              (set! i 0)
-              (while (< i nparams)
-                (when (!= need-comma 0) (emit g-out ", "))
-                (abi-print-param
-                  (abi-classify-arg (aref (as ref:ptr param-types) i))
-                  (aref (as ref:ptr param-types) i)
-                  (aref (as ref:Symbol param-names) i))
-                (set! need-comma 1)
-                (inc! i)))
-            ; Stage 10 Phase F1: the LLVM `noreturn` function attribute lets the
-            ; optimizer and verifier know control never returns from this define.
-            ; Stage 14 AVR-5: emit-fn-attrs-for then appends any string function
-            ; attributes registered by `(fn-attr fname …)` (e.g. AVR "signal"/
-            ; "interrupt" ISR attributes). Split into pieces so both a keyword attr
-            ; (noreturn) and string attrs can coexist on one `define` line; with no
-            ; fn-attr entries the emitted bytes are exactly the historical
-            ; `") noreturn {\n"` / `") {\n"` (byte-identical for existing programs).
-            (emit g-out ")")
-            (when (!= is-noreturn 0) (emit g-out " noreturn"))
-            (when (!= is-returns-twice 0) (emit g-out " returns_twice"))
-            (emit-fn-attrs-for fname)
-            (when (!= (ir-sections-on) 0)
-              (write-ir-section g-out ".text"
-                (symbol-as-view (defn-ir-name fname param-types nparams ret))))
-            (emit g-out " {\n")
-            (emit g-out "entry:\n")
-            (emit-all g-out g-entry-stream)
-            (emit-all g-out g-body-stream)
-            (emit g-out "}\n\n")
-            (string-clear g-entry-stream)
-            (string-clear g-body-stream))))))))))
+            ; the signature emitted below (rest param already folded to ptr).
+            ; Stage 20 L1: it must precede the `define`, because it also opens
+            ; that define's byte span in g-def-buf (§5.1). Nothing it does emits.
+            (let (pd:?ptr:ProgDefn
+                    (program-defn-record (defn-ir-name fname param-types nparams ret)
+                                         ret param-types nparams 0))
+              ; L5: the mangled counterpart of the CT prescan's `@fname`.
+              (ct-module-defn-note (defn-ir-name fname param-types nparams ret))
+              ; Stage 12 N3 (`internal` for a private defn) and W9 item 2
+              ; (`weak_odr` for a definition this unit only carries a copy of)
+              ; are the same decision, taken once in `def-linkage`.
+              (emit g-out "define " (def-linkage) (abi-ret-ir g-fn-ret-abi ret) " "
+                    (defn-ir-name fname param-types nparams ret) "(")
+              ; A MEMORY return prepends the hidden sret pointer parameter.
+              (let (need-comma:i32 0)
+                (when (= ((unsafe/cast ref:AbiInfo g-fn-ret-abi) 'kind) ABI-MEMORY)
+                  (emit g-out "ptr sret(" (type-to-ir ret) ") align "
+                        ((unsafe/cast ref:AbiInfo g-fn-ret-abi) 'align) " " g-fn-sret-name)
+                  (set! need-comma 1))
+                ; RV-6c: the second walk over this signature (see the prologue
+                ; loop above) — reset the riscv64 register budget for it.
+                (abi-args-begin (unsafe/cast raw:AbiInfo g-fn-ret-abi))
+                (set! i 0)
+                (while (< i nparams)
+                  (when (!= need-comma 0) (emit g-out ", "))
+                  (abi-print-param
+                    (abi-classify-arg (aref (as ref:ptr param-types) i))
+                    (aref (as ref:ptr param-types) i)
+                    (aref (as ref:Symbol param-names) i))
+                  (set! need-comma 1)
+                  (inc! i)))
+              ; Stage 10 Phase F1: the LLVM `noreturn` function attribute lets the
+              ; optimizer and verifier know control never returns from this define.
+              ; Stage 14 AVR-5: emit-fn-attrs-for then appends any string function
+              ; attributes registered by `(fn-attr fname …)` (e.g. AVR "signal"/
+              ; "interrupt" ISR attributes). Split into pieces so both a keyword attr
+              ; (noreturn) and string attrs can coexist on one `define` line; with no
+              ; fn-attr entries the emitted bytes are exactly the historical
+              ; `") noreturn {\n"` / `") {\n"` (byte-identical for existing programs).
+              (emit g-out ")")
+              (when (!= is-noreturn 0) (emit g-out " noreturn"))
+              (when (!= is-returns-twice 0) (emit g-out " returns_twice"))
+              (emit-fn-attrs-for fname)
+              (when (!= (ir-sections-on) 0)
+                (write-ir-section g-out ".text"
+                  (symbol-as-view (defn-ir-name fname param-types nparams ret))))
+              (emit g-out " {\n")
+              (emit g-out "entry:\n")
+              (emit-all g-out g-entry-stream)
+              (emit-all g-out g-body-stream)
+              (emit g-out "}\n\n")
+              (program-defn-note-end pd)
+              (string-clear g-entry-stream)
+              (string-clear g-body-stream)))))))))))
 
 ; ============================================================
 ; Compile-time JIT helpers
@@ -14778,20 +14970,491 @@
             (when (!= g-interactive 0) (repl-throw))
             (exit 1)))))
 
+; Stage 20 L4 (§5.3): a CT block's mirror roots, joined to the symbol its flush
+; site looks up, because `emit-compile-time` has restored the compilation state
+; by the time the call happens.
+(defn ct-block-note (sym:Symbol (roots (ref (Vector Symbol)))):void
+  (let (b:&CtBlock (as ref:CtBlock (arena-alloc (sizeof CtBlock))))
+    (set! (b 'sym) sym)
+    (set! (b 'roots) roots)
+    (conj g-ct-blocks b)))
+
+; Run a JITed nullary void function. Redirects stdout -> stderr for the call, so
+; a compile-time `printf` cannot corrupt the IR on stdout.
+(defn jit-run-void (addr:i64):void
+  (fflush (as ptr stdout))
+  (let (saved-fd:i32 (dup 1))
+    (dup2 2 1)
+    (funcall-void (unsafe/cast ptr addr))
+    (fflush (as ptr stdout))
+    (dup2 saved-fd 1)
+    (close saved-fd)))
+
 (defn jit-call-ct-main-sym (line:i32 sym:Symbol):void
+  ; §5.5, as at `expand-macro-call`: immediately before the lookup.
+  (doseq (b g-ct-blocks (VecIter ref:CtBlock))
+    (when (= (b 'sym) sym)
+      (when (= (ct-mirror-flush (b 'roots) line) 0)
+        (ct-mirror-report-refusal "compile-time block" line))))
   (let (addr:i64 0)
     (let (err:ptr (LLVMOrcLLJITLookup g-jit (as ptr &addr) (symbol-as-cstr sym)))
       (when (!= err null)
          (LLVMConsumeError err) (return))
       (when (= addr 0) (return))
-      ; Redirect stdout -> stderr so CT printf does not corrupt the IR output
-      (fflush (as ptr stdout))
-      (let (saved-fd:i32 (dup 1))
-        (dup2 2 1)
-        (funcall-void (unsafe/cast ptr addr))
-        (fflush (as ptr stdout))
-        (dup2 saved-fd 1)
-        (close saved-fd)))))
+      (jit-run-void addr))))
+
+; ============================================================
+; The compile-time mirror (Stage 20 L3)
+; design/stage20-macros/macro-call-linking.md §5.4-§5.6
+; ============================================================
+
+; Is `c` part of an LLVM global identifier's body? The emitter's names come from
+; `defn-ir-name` (hyphens kept) and `sanitize-for-ir` (`_`/`.`), so this is the
+; character set the span scan may not stop inside.
+(defn ct-mirror-name-byte (c:i32):i32
+  (when (and (>= c 97) (<= c 122)) (return 1))
+  (when (and (>= c 65) (<= c 90)) (return 1))
+  (when (and (>= c 48) (<= c 57)) (return 1))
+  (when (or (= c 95) (= c 46)) (return 1))
+  (when (or (= c 45) (= c 36)) (return 1))
+  (return 0))
+
+; Decline this flush, recording why. Returns 0 so every caller is `(return
+; (ct-mirror-refuse …))`. L5 turns the pair into a located diagnostic.
+(defn ct-mirror-refuse (why:StrView name:Symbol):i32
+  (set! g-ct-mirror-refuse (symbol-intern why))
+  (set! g-ct-mirror-refuse-name name)
+  (return 0))
+
+; Is `irn` a program GLOBAL rather than a function? §5.4 row 4 — L6's job; before
+; it, a refusal, because the mirror would carry a reference it cannot satisfy.
+(defn ct-mirror-global-nonfn (irn:Symbol):i32
+  (let (si:i32 0)
+    (while (< si ((as ref:Scope g-globals) 'len))
+      (let (sym:ptr:Sym (as ref:Sym (unsafe/ptr+ (as ref:Sym ((as ref:Scope g-globals) 'syms)) si))
+            ft:ptr:Type (unsafe/cast ref:Type (sym 'type))
+            irv:StrView (sym 'ir-name))
+        (when (and (not (str-empty? &irv)) (!= (ft 'kind) TY-FN))
+          (when (= (symbol-intern irv) irn) (return 1))))
+      (inc! si)))
+  (return 0))
+
+; Does `g-decl-stream` — which the mirror copies verbatim — already name `irn`?
+; Same tokenizer as the span scan, so an extern, a C-header import and
+; `@llvm.trap` all answer yes and need nothing further.
+(defn ct-mirror-decl-stream-has (irn:Symbol):i32
+  (let (buf:StrView (string-as-view g-decl-stream)
+        n:i64 (as i64 (byte-len g-decl-stream))
+        i:i64 0)
+    (while (< i n)
+      (if (= (text-byte-at buf i) 64)
+        (let (a:i64 (+ i 1))
+          (while (and (< a n) (!= (ct-mirror-name-byte (text-byte-at buf a)) 0))
+            (set! a (+ a 1)))
+          (when (> a (+ i 1))
+            (when (= (symbol-intern (strview-take-bytes
+                                      (strview-drop-bytes buf (as usize i))
+                                      (as usize (- a i))))
+                     irn)
+              (return 1)))
+          (set! i (if (> a (+ i 1)) a (+ i 1))))
+        (set! i (+ i 1)))))
+  (return 0))
+
+; §5.4's table, one `@`-token at a time. Returns 0 only to refuse the flush.
+(defn ct-mirror-classify (irn:Symbol):i32
+  (dotimes (i (unsafe/cast i32 (count g-ctm-seen)))
+    (when (= (invoke g-ctm-seen i:usize) irn) (return 1)))
+  (conj g-ctm-seen irn)
+  (let (v:StrView (symbol-as-view irn))
+    ; The string table is emitted into the mirror, so these are already there.
+    (when (strview-has-prefix v "@.str.") (return 1)))
+  ; §5.4 calls these "already in the module"; they are not. `emit-qq-helpers`
+  ; runs at `flush-module-ir`, long after any expansion, so at flush time the
+  ; program's own `@__cons` does not exist yet — the mirror emits its own.
+  (when (or (= irn "@__cons") (= irn "@__append"))
+    (set! g-ctm-qq 1)
+    (return 1))
+  (let (pd:?ptr:ProgDefn (program-defn-lookup irn))
+    (when (!= (as ptr pd) null)
+      (let (p:&ProgDefn (unsafe/cast ref:ProgDefn pd))
+        ; §3.1: both conditions hold, so this name means the compiler's.
+        (when (and (!= (p 'from-lib) 0) (!= (host-exports? irn) 0))
+          (conj g-ctm-decls p)
+          (return 1))
+        ; An earlier flush already defined it into the same JITDylib.
+        (dotimes (i (unsafe/cast i32 (count g-ct-mirror-defined)))
+          (when (= (invoke g-ct-mirror-defined i:usize) irn)
+            (conj g-ctm-decls p)
+            (return 1)))
+        (when (= (p 'ir-end) 0)
+          (return (ct-mirror-refuse "is defined where no span was recorded" irn)))
+        (conj g-ctm-defs p)
+        (return 1))))
+  ; L6 (§5.7): the same three-way split for a program global.
+  (let (pg:?ptr:ProgGlobal (program-global-lookup irn))
+    (when (!= (as ptr pg) null)
+      (let (g:&ProgGlobal (unsafe/cast ref:ProgGlobal pg))
+        ; §3.2's one-arena invariant is this line: a host-exported `lib/`
+        ; global stays a declare, so mirrored code allocates from the host.
+        (when (and (!= (g 'from-lib) 0) (!= (host-exports? irn) 0))
+          (conj g-ctm-gdecls g)
+          (return 1))
+        (dotimes (i (unsafe/cast i32 (count g-ct-mirror-defined)))
+          (when (= (invoke g-ct-mirror-defined i:usize) irn)
+            (conj g-ctm-gdecls g)
+            (return 1)))
+        (when (= (g 'ir-end) 0)
+          (return (ct-mirror-refuse "is defined where no span was recorded" irn)))
+        (conj g-ctm-globals g)
+        (return 1))))
+  (when (!= (ct-mirror-decl-stream-has irn) 0) (return 1))
+  ; Above the registry this was every global; what is left is one with no
+  ; `defvar` of its own in this unit, which nothing can copy.
+  (when (!= (ct-mirror-global-nonfn irn) 0)
+    (return (ct-mirror-refuse "reads a program global" irn)))
+  (return (ct-mirror-refuse "is neither defined nor declared in this unit" irn)))
+
+; The bytes of a recorded span.
+(defn ct-mirror-span-view (s:usize e:usize):StrView
+  (return (strview-take-bytes (strview-drop-bytes (string-as-view g-def-buf) s) (- e s))))
+
+; Does this text DEFINE `tok` rather than reference it? A global's span carries
+; its own `@g` and, since G-2 shape 4, a `@g.data` backing global.
+(defn ct-mirror-span-defines (v:StrView tok:Symbol):i32
+  (when (strview-contains v (fstr (symbol-as-view tok) " = ")) (return 1))
+  (return 0))
+
+; Scan chosen IR text for `@`-tokens, extending the walk. Safe over a function
+; body because inline `c"…"` bytes appear only in global definitions (§5.4).
+; `own` is 1 for a global span, whose own definitions must be skipped.
+(defn ct-mirror-scan-view (v:StrView own:i32):i32
+  (let (n:i64 (as i64 (strview-byte-len v))
+        i:i64 0)
+    (while (< i n)
+      (if (= (text-byte-at v i) 64)
+        (let (a:i64 (+ i 1))
+          (while (and (< a n) (!= (ct-mirror-name-byte (text-byte-at v a)) 0))
+            (set! a (+ a 1)))
+          (when (> a (+ i 1))
+            (let (tok:Symbol (symbol-intern (strview-take-bytes
+                                              (strview-drop-bytes v (as usize i))
+                                              (as usize (- a i)))))
+              (when (or (= own 0) (= (ct-mirror-span-defines v tok) 0))
+                (when (= (ct-mirror-classify tok) 0) (return 0)))))
+          (set! i (if (> a (+ i 1)) a (+ i 1))))
+        (set! i (+ i 1)))))
+  (return 1))
+
+; One `@`-token of a macro/CT body's own IR: a program global it names needs a
+; `declare`, and a mirror root unless §3.1 sends the name to the host.
+(defn ct-body-global-note (irn:Symbol (seen (ref (Vector Symbol)))
+                           (decl-out (raw String)) (roots (ref (Vector Symbol)))
+                           line:i32):void
+  (doseq (m seen (VecIter Symbol))
+    (when (= m irn) (return)))
+  (conj seen irn)
+  (when (!= (ct-module-defines? irn) 0) (return))
+  (when (!= (ct-mirror-decl-stream-has irn) 0) (return))
+  (when (!= (repl-preamble-has-decl irn) 0) (return))
+  (let (pg:?ptr:ProgGlobal (program-global-lookup irn))
+    (when (= (as ptr pg) null) (return))
+    (let (g:&ProgGlobal (unsafe/cast ref:ProgGlobal pg)
+          hosted:i32 (host-exports? irn))
+      (ct-mirror-global-declare-to decl-out g)
+      ; §3.2: both conditions hold, so the reference just emitted binds to the
+      ; host's copy — the one arena, the one intern table.
+      (when (and (!= (g 'from-lib) 0) (!= hosted 0)) (return))
+      (doseq (m roots (VecIter Symbol))
+        (when (= m irn) (return)))
+      (conj roots irn)
+      (when (!= hosted 0) (warn-ct-shadow-global irn line)))))
+
+; Stage 20 L6: a global reference has no emitter chokepoint the way a call has
+; `macro-jit-ensure-decl`, so the module's finished IR is asked instead (§7 L6).
+; `decl-out` must not be the buffer being scanned — `emit` reallocates it.
+(defn ct-scan-body-globals (v:StrView (seen (ref (Vector Symbol)))
+                            (decl-out (raw String)) (roots (ref (Vector Symbol)))
+                            line:i32):void
+  (let (n:i64 (as i64 (strview-byte-len v))
+        i:i64 0)
+    (while (< i n)
+      (if (= (text-byte-at v i) 64)
+        (let (a:i64 (+ i 1))
+          (while (and (< a n) (!= (ct-mirror-name-byte (text-byte-at v a)) 0))
+            (set! a (+ a 1)))
+          (when (> a (+ i 1))
+            (ct-body-global-note (symbol-intern (strview-take-bytes
+                                                  (strview-drop-bytes v (as usize i))
+                                                  (as usize (- a i))))
+                                 seen decl-out roots line))
+          (set! i (if (> a (+ i 1)) a (+ i 1))))
+        (set! i (+ i 1))))))
+
+; §5.6: the copy of a private defn must be `weak_odr`, since a mirror module is
+; its own object and a later flush declares what this one defined. The program's
+; own bytes never move — the rewrite happens here, at the one place that copies.
+(defn ct-mirror-put-span ((out (raw String)) pd:&ProgDefn):void
+  (let (span:StrView (ct-mirror-span-view (pd 'ir-start) (pd 'ir-end)))
+    (when (strview-has-prefix span "define internal ")
+      (emit out "define weak_odr " (strview-drop-bytes span (as usize 16)))
+      (return))
+    (emit out span)))
+
+; A global the mirror does not define: the host owns it (§3.2) or an earlier
+; flush defined it. `ty-ir` is why `ProgGlobal` carries the type text.
+(defn ct-mirror-global-declare-to ((out (raw String)) pg:&ProgGlobal):void
+  (emit out (pg 'ir-name) " = external "
+        (if (!= (pg 'is-const) 0) "constant " "global ")
+        (pg 'ty-ir) "\n"))
+
+; §5.6's linkage rewrite, for a global (§11 Q3, settled by probe): a `defvar-`
+; emits `internal`, which a later flush's `external` reference cannot bind. Only
+; the global's own line moves; a backing `@g.data` is named only from here.
+(defn ct-mirror-put-global-span ((out (raw String)) pg:&ProgGlobal):void
+  (let (span:StrView (ct-mirror-span-view (pg 'ir-start) (pg 'ir-end))
+        nm:StrView (symbol-as-view (pg 'ir-name))
+        needle:StrView (fstr (symbol-as-view (pg 'ir-name)) " = internal "))
+    (when (strview-contains span needle)
+      (match (strview-find span needle)
+        ((some i)
+          (do (emit out (strview-take-bytes span i))
+              (emit out nm " = weak_odr ")
+              (emit out (strview-drop-bytes span (+ i (strview-byte-len needle))))
+              (return)))
+        (none 0)))
+    (emit out span)))
+
+; Is `irn` one of the globals THIS mirror defines? Only those may have their
+; queued initializer re-emitted here — an earlier flush's ran at its own flush.
+(defn ct-mirror-defines-global (irn:Symbol):i32
+  (dotimes (i (unsafe/cast i32 (count g-ctm-globals)))
+    (when (= (-> (invoke g-ctm-globals i:usize) (_ 'ir-name)) irn) (return 1)))
+  (return 0))
+
+; L6: the queued runtime initializers of the globals this mirror defines, as
+; `@__ct_init_N`; 0 when there are none, and then nothing is written.
+; `g-init-drained` is deliberately NOT advanced — §5.7 asks for a snapshot and a
+; restore, and both are wrong; see §7 L6. `push-function-state` because this can
+; run while a program function is mid-emission, as `macrolet` does.
+(defn ct-mirror-build-init ((out (raw String)) sym:Symbol):i32
+  (let (any:i32 0
+        i:usize g-init-drained)
+    (while (< i (count g-init-worklist))
+      (when (!= (ct-mirror-defines-global (-> (invoke g-init-worklist i) (_ 'ir-name))) 0)
+        (set! any 1))
+      (set! i (+ i (as usize 1))))
+    (when (= any 0) (return 0)))
+  (let (fs:&FnState (push-function-state)
+        saved-out:raw:String g-out
+        saved-ns:Symbol g-current-ns
+        saved-path:Symbol g-source-path
+        saved-line:i32 g-form-line)
+    (set! g-out out)
+    (reset-function-state)
+    (let (fn-scope:&Scope (scope-new g-globals)
+          i:usize g-init-drained)
+      (while (< i (count g-init-worklist))
+        (let (job:ptr:InitJob (as ref:InitJob (invoke g-init-worklist i)))
+          (when (!= (ct-mirror-defines-global (job 'ir-name)) 0)
+            (set! g-current-ns (job 'ns))
+            (set! g-source-path (job 'path))
+            (set! g-form-line (job 'line))
+            (emit-node (as ptr (job 'form)) fn-scope)))
+        (set! i (+ i (as usize 1)))))
+    (when (= g-block-term 0)
+      (emit g-body-stream "  ret void\n"))
+    (emit out "define void @" sym "() {\n")
+    (emit out "entry:\n")
+    (emit-all out g-entry-stream)
+    (emit-all out g-body-stream)
+    (emit out "}\n\n")
+    (string-clear g-entry-stream)
+    (string-clear g-body-stream)
+    (set! g-out saved-out)
+    (set! g-current-ns saved-ns)
+    (set! g-source-path saved-path)
+    (set! g-form-line saved-line)
+    (pop-function-state fs))
+  (return 1))
+
+; §5.5: assembled exactly as `compile-macro-body` assembles a macro module, and
+; added to the main JITDylib untracked. ORC materialises on lookup, so this costs
+; one IR parse until a macro actually calls in.
+(defn ct-mirror-emit-module (line:i32 (initir (ref String)) init-sym:Symbol):void
+  (drain-pending-union-irs)
+  (let ((mdecl String) (string-new)
+        (mdef String) (string-new))
+    (dotimes (i (unsafe/cast i32 (count g-ctm-gdecls)))
+      (ct-mirror-global-declare-to (addr-of mdecl) (invoke g-ctm-gdecls i:usize)))
+    (dotimes (i (unsafe/cast i32 (count g-ctm-decls)))
+      (progdefn-declare-to (addr-of mdecl) (invoke g-ctm-decls i:usize)))
+    (dotimes (i (unsafe/cast i32 (count g-ctm-globals)))
+      (ct-mirror-put-global-span (addr-of mdef) (invoke g-ctm-globals i:usize)))
+    (dotimes (i (unsafe/cast i32 (count g-ctm-defs)))
+      (ct-mirror-put-span (addr-of mdef) (invoke g-ctm-defs i:usize)))
+    ; `private`, so two mirrors never collide on one helper, and host-sized,
+    ; because a mirror module is always built for the host.
+    (when (!= g-ctm-qq 0)
+      (emit-qq-helpers (addr-of mdecl) (addr-of mdef) g-host-target "private "))
+    (let ((irs String) (string-new))
+      (emit irs "; ModuleID = '<ct-mirror " g-ct-mirror-count ">'\n")
+      (emit irs "target triple = \"" ((as ref:Target g-host-target) 'triple) "\"\n\n")
+      (emit-all irs g-type-stream)
+      (emit-string-table irs 0)
+      (emit-all irs g-decl-stream)
+      (emit-all irs mdecl)
+      (emit-all irs mdef)
+      (emit-all irs initir)
+      (jit-add-module (string-as-view irs) line)
+      (drop &irs))
+    (drop &mdecl)
+    (drop &mdef))
+  (dotimes (i (unsafe/cast i32 (count g-ctm-defs)))
+    (conj g-ct-mirror-defined (-> (invoke g-ctm-defs i:usize) (_ 'ir-name))))
+  (dotimes (i (unsafe/cast i32 (count g-ctm-globals)))
+    (conj g-ct-mirror-defined (-> (invoke g-ctm-globals i:usize) (_ 'ir-name))))
+  (inc! g-ct-mirror-count)
+  ; §5.7: "called once, before the first expansion that needs it" — here, since
+  ; the module is added and the caller's lookup is next.
+  (when (not (symbol-none? init-sym))
+    (let (addr:i64 0
+          err:ptr (LLVMOrcLLJITLookup g-jit (as ptr &addr) (symbol-as-cstr init-sym)))
+      (when (!= err null)
+        (LLVMConsumeError err)
+        (die-at line (fstr "compile-time: could not run '" init-sym
+                           "', the initializers of the program globals this body reads")))
+      (when (= addr 0)
+        (die-at line (fstr "compile-time: could not run '" init-sym
+                           "', the initializers of the program globals this body reads")))
+      (jit-run-void addr))))
+
+; The body of `ct-mirror-flush`, split out so the wrapper can save and restore
+; the per-flush globals around it.
+(defn ct-mirror-flush-1 ((roots (ref (Vector Symbol))) line:i32):i32
+  (set! g-ctm-defs (unsafe/cast (ref (Vector (ref ProgDefn))) (vector-new-in (addr-of g-arena-alloc))))
+  (set! g-ctm-decls (unsafe/cast (ref (Vector (ref ProgDefn))) (vector-new-in (addr-of g-arena-alloc))))
+  (set! g-ctm-seen (unsafe/cast (ref (Vector Symbol)) (vector-new-in (addr-of g-arena-alloc))))
+  (set! g-ctm-globals (unsafe/cast (ref (Vector (ref ProgGlobal))) (vector-new-in (addr-of g-arena-alloc))))
+  (set! g-ctm-gdecls (unsafe/cast (ref (Vector (ref ProgGlobal))) (vector-new-in (addr-of g-arena-alloc))))
+  (set! g-ctm-qq 0)
+  (dotimes (i (unsafe/cast i32 (count roots)))
+    (when (= (ct-mirror-classify (invoke roots i:usize)) 0) (return 0)))
+  ; The worklists ARE the chosen lists, and the initializer IR is more text to
+  ; walk — a global it reads must be defined here too, so all three iterate.
+  (let ((initir String) (string-new)
+        init-sym:Symbol (symbol-none)
+        have-init:i32 0
+        di:i32 0
+        gi:i32 0
+        nglob:i32 -1
+        more:i32 1
+        refused:i32 0)
+    (while (and (= refused 0) (!= more 0))
+      (set! more 0)
+      (while (and (= refused 0) (< di (unsafe/cast i32 (count g-ctm-defs))))
+        (let (pd:&ProgDefn (invoke g-ctm-defs di:usize))
+          (when (= (ct-mirror-scan-view (ct-mirror-span-view (pd 'ir-start) (pd 'ir-end)) 0) 0)
+            (set! refused 1)))
+        (inc! di)
+        (set! more 1))
+      (while (and (= refused 0) (< gi (unsafe/cast i32 (count g-ctm-globals))))
+        (let (pg:&ProgGlobal (invoke g-ctm-globals gi:usize))
+          (when (= (ct-mirror-scan-view (ct-mirror-span-view (pg 'ir-start) (pg 'ir-end)) 1) 0)
+            (set! refused 1)))
+        (inc! gi)
+        (set! more 1))
+      (when (and (= refused 0) (!= nglob (unsafe/cast i32 (count g-ctm-globals))))
+        (set! nglob (unsafe/cast i32 (count g-ctm-globals)))
+        (when (symbol-none? init-sym)
+          (set! init-sym (symbol-intern (fstr "__ct_init_" (as i64 g-ct-init-id))))
+          ; The module's own `define void @__ct_init_N` is not a reference.
+          (conj g-ctm-seen (symbol-intern (fstr "@__ct_init_" (as i64 g-ct-init-id))))
+          ; Claimed at mint time, not at emit time: a nested flush must not mint
+          ; the same number while this one is still deciding.
+          (inc! g-ct-init-id))
+        (string-clear initir)
+        (set! have-init (ct-mirror-build-init (addr-of initir) init-sym))
+        (when (!= have-init 0)
+          (when (= (ct-mirror-scan-view (string-as-view initir) 0) 0)
+            (set! refused 1))
+          (set! more 1))))
+    (when (!= refused 0) (drop &initir) (return 0))
+    (when (and (= (count g-ctm-defs) 0) (= (count g-ctm-globals) 0))
+      (drop &initir)
+      (return 1))
+    (ct-mirror-emit-module line initir (if (!= have-init 0) init-sym (symbol-none)))
+    (drop &initir))
+  (return 1))
+
+; Build a compile-time mirror for the closure of `roots` (ir-names of program
+; defns a macro/CT body calls, and program globals it reads) and add it to the
+; JIT. 1 = done, which includes the free case of an empty closure; 0 = declined,
+; with the reason in `g-ct-mirror-refuse` / `g-ct-mirror-refuse-name`.
+(defn ct-mirror-flush ((roots (ref (Vector Symbol))) line:i32):i32
+  (set! g-ct-mirror-refuse (symbol-none))
+  (set! g-ct-mirror-refuse-name (symbol-none))
+  ; §5.5: the REPL records spans too, against a buffer cleared at each prompt —
+  ; stale offsets, not corrupt ones. It reaches the same end by its own route
+  ; (repl-preamble-declare-progdefn) and must not grow a second one.
+  (when (!= g-interactive 0) (return 1))
+  (when (= (count roots) 0) (return 1))
+  ; §5.9: every span in `g-def-buf` was ABI-lowered for `g-target`, and the
+  ; mirror is a host-triple module — splicing one into the other miscompiles
+  ; silently. Only a flush is refused; a body whose names all resolve to the
+  ; host (§3.1) never reaches here, so cross-compiling stays unaffected.
+  (when (!= g-target-triple ((as ref:Target g-host-target) 'triple))
+    (return (ct-mirror-refuse "cross-target" (invoke roots (as usize 0)))))
+  ; L6: a flush NESTS — an initializer emitted with `emit-node` expands macros,
+  ; and those flush too — so these are restored, not merely reset (§7 L6).
+  (let (sd:(ref (Vector (ref ProgDefn))) g-ctm-defs
+        sdc:(ref (Vector (ref ProgDefn))) g-ctm-decls
+        ss:(ref (Vector Symbol)) g-ctm-seen
+        sg:(ref (Vector (ref ProgGlobal))) g-ctm-globals
+        sgd:(ref (Vector (ref ProgGlobal))) g-ctm-gdecls
+        sq:i32 g-ctm-qq
+        r:i32 (ct-mirror-flush-1 roots line))
+    (set! g-ctm-defs sd)
+    (set! g-ctm-decls sdc)
+    (set! g-ctm-seen ss)
+    (set! g-ctm-globals sg)
+    (set! g-ctm-gdecls sgd)
+    (set! g-ctm-qq sq)
+    (return r)))
+
+; Stage 20 L5: `ct-mirror-flush` records a reason rather than raising, so
+; the message is built at a flush site, where the body's name is known —
+; `g-ct-body-name` has been restored by then.
+(defn ct-mirror-report-refusal (who:StrView line:i32):void
+  (when (symbol-none? g-ct-mirror-refuse) (return))
+  (let (nv:StrView (symbol-as-view g-ct-mirror-refuse-name))
+    ; An ir-name's `@` is IR spelling, not anything the author wrote.
+    (when (= (symbol-byte-at g-ct-mirror-refuse-name (as usize 0)) 64)
+      (set! nv (strview-drop-bytes nv (as usize 1))))
+    ; This reason names the GLOBAL, not the function reading it, so it cannot
+    ; ride the template below. L6 made a mirrored global legal, leaving this as
+    ; the backstop for one this unit has no `defvar` for.
+    (when (= g-ct-mirror-refuse "reads a program global")
+      (diag-stage-note (fstr "only a global this unit declares with `defvar` can be copied"
+                             " into the compile-time JIT — pass the value in as an argument"))
+      (die-at line (fstr who " needs the program global '" nv "'")))
+    (when (= g-ct-mirror-refuse "is neither defined nor declared in this unit")
+      (diag-stage-note (fstr "a compile-time body's callees are compiled into the JIT, which"
+                             " needs every function they reach to be defined or declared here")))
+    (when (= g-ct-mirror-refuse "is defined where no span was recorded")
+      (diag-stage-note (fstr "only a function defined at the top level of this unit can be"
+                             " copied into the compile-time JIT")))
+    ; §5.9. Named separately from the template because the fault is the pair of
+    ; triples, not the callee — which is mentioned only to locate the body.
+    (when (= g-ct-mirror-refuse "cross-target")
+      (diag-stage-note (fstr "when cross-compiling, a compile-time body may call only the"
+                             " compiler's own library — move '" nv "' there, or compute"
+                             " the value without it"))
+      (die-at line (fstr who " needs the program's own '" nv "' at compile time, and the"
+                         " program is lowered for '" g-target-triple "' while a macro body"
+                         " runs on the host, '"
+                         ((as ref:Target g-host-target) 'triple) "'")))
+    (die-at line (fstr who " needs '" nv "', which " g-ct-mirror-refuse))))
 
 ; ============================================================
 ; compile-time special form
@@ -14823,12 +15486,21 @@
       (let (saved-g-out:raw:String g-out
             saved-decl-out:raw:String g-decl-out
             saved-qq-used:i32 g-qq-used
+            saved-ct-roots:(ref (Vector Symbol)) g-ct-roots
+            saved-ct-defns:(ref (Vector Symbol)) g-ct-module-defns
+            saved-ct-name:Symbol g-ct-body-name
             saved-node-ctor:i32 g-node-ctor-used)
         (set! g-qq-used 0)
         (set! g-node-ctor-used 0)
         (set! g-decl-out (addr-of ct-decl))
         ; Fresh per-module declare set (see emit-defmacro / macro-jit-ensure-decl).
         (set! g-macro-decls (unsafe/cast (ref (Vector Symbol)) (vector-new-in (addr-of g-arena-alloc))))
+        ; L5: and a fresh set of the names this module defines itself.
+        (set! g-ct-module-defns (unsafe/cast (ref (Vector Symbol)) (vector-new-in (addr-of g-arena-alloc))))
+        ; Stage 20 L4 (§5.3): and a fresh root set, handed to `ct-block-note`
+        ; below. `symbol-none` names this body a CT block in the shadow warning.
+        (set! g-ct-roots (unsafe/cast (ref (Vector Symbol)) (vector-new-in (addr-of g-arena-alloc))))
+        (set! g-ct-body-name (symbol-none))
 
         ; Stage 16 D9 residue: the signature loop below RESOLVES type names, so
         ; this body's own `defstruct`s must be registered first. Idempotent under
@@ -14880,7 +15552,10 @@
                             (set! (ft 'ret) ret)
                             (type-set-params ft ptypes nparams)
                             (scope-define g-globals fname (as ptr ft)
-                                          (fstr "@" fname) 0)))))))))
+                                          (fstr "@" fname) 0)
+                            ; L5: registered before any of the block's forms
+                            ; emit, so one CT defn may call another below it.
+                            (ct-module-defn-note (symbol-intern (fstr "@" fname)))))))))))
             (inc! bi)))
 
         ; Collect expression forms (non-top-level) for __compile_time_main.
@@ -14932,13 +15607,30 @@
           (string-clear g-entry-stream)
           (string-clear g-body-stream)
 
+          ; L6, as in `compile-macro-body`. Both buffers, because a CT
+          ; `defvar`'s constant initializer can name a program global too.
+          (let ((gdecl String) (string-new)
+                (gseen (ref (Vector Symbol)))
+                  (unsafe/cast (ref (Vector Symbol)) (vector-new-in (addr-of g-arena-alloc))))
+            (ct-scan-body-globals (string-as-view ct-def) gseen (addr-of gdecl) g-ct-roots (ff 'line))
+            (ct-scan-body-globals (string-as-view ct-decl) gseen (addr-of gdecl) g-ct-roots (ff 'line))
+            (emit-all ct-decl gdecl)
+            (drop &gdecl))
+
           (let (ct-qq:i32 g-qq-used
-                ct-nodes:i32 g-node-ctor-used)
+                ct-nodes:i32 g-node-ctor-used
+                ; Captured before the restore below; the flush needs it at the
+                ; lookup, which happens after this block (§5.3).
+                ct-roots:(ref (Vector Symbol)) g-ct-roots)
             ; Restore global state.
             (set! g-out saved-g-out)
             (set! g-decl-out saved-decl-out)
             (set! g-qq-used saved-qq-used)
             (set! g-node-ctor-used saved-node-ctor)
+            (set! g-ct-roots saved-ct-roots)
+            (set! g-ct-module-defns saved-ct-defns)
+            (set! g-ct-body-name saved-ct-name)
+            (ct-block-note ct-sym ct-roots)
 
             ; Declare the host-defined node constructors if the body built any
             ; node at all — a plain `'x` or a quasiquoted atom reaches
@@ -15147,12 +15839,13 @@
             (set! (mdef 'param-names) pnames)
             (set! (mdef 'docstring) (body-docstring ff 3))
             (when (!= g-defining-private 0) (set! g-priv-bindings 1))
-            (conj g-macros mdef))
+            (conj g-macros mdef)
 
-          ; Stage 16: the body compiler is shared with `macrolet`
-          ; (design/stage16-ergonomics/macrolet.md §5.1). Everything above this
-          ; line is registration — the half a macrolet binding does NOT do.
-          (compile-macro-body jit-name macro-name pnames pcount form 3))))))
+            ; Stage 16: the body compiler is shared with `macrolet`
+            ; (design/stage16-ergonomics/macrolet.md §5.1). Everything above this
+            ; line is registration — the half a macrolet binding does NOT do.
+            ; Stage 20 L4: it writes `ct-roots`, so the record has to be in scope.
+            (compile-macro-body mdef jit-name macro-name pnames pcount form 3)))))))
 
 ; Compile a macro body into its own JIT module and add it to the JIT. Shared by
 ; `emit-defmacro` (body-start 3, over the whole `(defmacro name (params) …)`
@@ -15162,7 +15855,8 @@
 ;
 ; NOTE this calls `reset-function-state` (via the streams it opens below) — see
 ; `push-function-state`, which every mid-function caller must bracket it with.
-(defn compile-macro-body (jit-name:Symbol macro-name:Symbol pnames:ptr pcount:i32
+(defn compile-macro-body (mdef:ptr:MacroDef jit-name:Symbol macro-name:Symbol
+                          pnames:ptr pcount:i32
                           form:(raw Node) body-start:i32):void
   (let (ff:ptr:Node (unsafe/cast ref:Node form))
           ; Flush main streams
@@ -15175,6 +15869,9 @@
             (let (saved-g-out:raw:String g-out
                   saved-decl-out:raw:String g-decl-out
                   saved-qq-used:i32 g-qq-used
+                  saved-ct-roots:(ref (Vector Symbol)) g-ct-roots
+                  saved-ct-defns:(ref (Vector Symbol)) g-ct-module-defns
+                  saved-ct-name:Symbol g-ct-body-name
                   saved-node-ctor:i32 g-node-ctor-used)
               (set! g-qq-used 0)
               (set! g-node-ctor-used 0)
@@ -15183,6 +15880,15 @@
               ; Fresh per-module declare set: macro bodies that call ordinary
               ; defns (node-at, intern-symbol, ...) get those declared here.
               (set! g-macro-decls (unsafe/cast (ref (Vector Symbol)) (vector-new-in (addr-of g-arena-alloc))))
+              ; L5: and a fresh set of the names this module defines itself.
+              (set! g-ct-module-defns (unsafe/cast (ref (Vector Symbol)) (vector-new-in (addr-of g-arena-alloc))))
+              ; Stage 20 L4 (§5.3): the roots go on the MacroDef, because the
+              ; flush happens at expansion rather than here. Saved/restored
+              ; because `macrolet` compiles a body inside another one.
+              (set! (mdef 'ct-roots)
+                    (unsafe/cast (ref (Vector Symbol)) (vector-new-in (addr-of g-arena-alloc))))
+              (set! g-ct-roots (mdef 'ct-roots))
+              (set! g-ct-body-name macro-name)
 
               ; Set up function codegen state
               (reset-function-state)
@@ -15230,6 +15936,17 @@
                     (inc! bi))
                   (emit g-body-stream "  ret ptr " last-val "\n"))
 
+                ; L6: the body's finished IR is where every program global it
+                ; reads is spelled, whichever emitter put it there.
+                (let ((gdecl String) (string-new)
+                      (gseen (ref (Vector Symbol)))
+                        (unsafe/cast (ref (Vector Symbol)) (vector-new-in (addr-of g-arena-alloc))))
+                  (ct-scan-body-globals (string-as-view g-entry-stream) gseen (addr-of gdecl) g-ct-roots (ff 'line))
+                  (ct-scan-body-globals (string-as-view g-body-stream) gseen (addr-of gdecl) g-ct-roots (ff 'line))
+                  (ct-scan-body-globals (string-as-view ct-decl) gseen (addr-of gdecl) g-ct-roots (ff 'line))
+                  (emit-all ct-decl gdecl)
+                  (drop &gdecl))
+
                 (let (macro-qq:i32 g-qq-used
                       macro-nodes:i32 g-node-ctor-used)
                   ; Restore global state
@@ -15237,6 +15954,13 @@
                   (set! g-decl-out saved-decl-out)
                   (set! g-qq-used saved-qq-used)
                   (set! g-node-ctor-used saved-node-ctor)
+                  ; NOT the `g-macro-decls` idiom beside it: that one is reset
+                  ; and never restored, and copying it here loses the outer
+                  ; body's roots to a nested `macrolet` (macro-call-linking.md
+                  ; §5.3, corrected).
+                  (set! g-ct-roots saved-ct-roots)
+                  (set! g-ct-module-defns saved-ct-defns)
+                  (set! g-ct-body-name saved-ct-name)
 
                   ; Finalize the function
                   (emit ct-def "define ptr @" jit-name "(ptr %__args.arg) {\n")
@@ -15402,7 +16126,7 @@
             ; safe; compile-macro-body calls reset-function-state, which would
             ; otherwise clobber the enclosing function's entry/body streams.
             (let (saved:&FnState (push-function-state))
-              (compile-macro-body jit-name mname pnames pcount b 2)
+              (compile-macro-body mdef jit-name mname pnames pcount b 2)
               (pop-function-state saved))))))))
 
 (defn emit-macrolet (call:(raw Node) scope:&Scope):&Val
@@ -17735,6 +18459,16 @@
     (when (not (symbol-none? nuch-path)) (return nuch-path)))
   (return (symbol-none)))
 
+; Stage 20 L1: capture the compile-time library root from the prelude import.
+; Called from `do-import` with a RESOLVED path, because which of
+; `try-import-path`'s five steps found it is the whole answer (§3.4). First
+; capture wins: the auto-prepended `(import-use prelude)` is the unit's first
+; import form, and a later re-import resolves to the same file.
+(defn ct-lib-root-note (name:Symbol path:Symbol):void
+  (when (not (symbol-none? g-ct-lib-root)) (return))
+  (when (!= name "prelude") (return))
+  (set! g-ct-lib-root (path-dir path)))
+
 ; Are THIS file's definitions what an enclosing `(import-ct …)` asked to withhold?
 ;
 ; Only when no ordinary import in the unit reaches it. Compile-time-only is a
@@ -17956,6 +18690,9 @@
           path:Symbol (resolve-import name line))
       (when (symbol-none? path)
         (die-import-not-found name line))
+      ; Stage 20 L1: before the dedup returns below and before the descent, so
+      ; the root is set for every defn the prelude's own closure emits.
+      (ct-lib-root-note name path)
       ; Stage 15 B1: bind in the importing FILE's environment before any early
       ; return below — see the twin site in the string-path branch above.
       (file-import-record prefix path)
@@ -18631,11 +19368,16 @@
 ; field offsets (0,4,8, then 16, 16+ptr-size, 16+2*ptr-size). Hosted output is
 ; byte-identical (malloc 40, align 8/4/8/8/8/8); this closes the long-standing
 ; 32-bit/16-bit target blocker (stage9/cleanup.md).
-(defn emit-qq-helpers ((decl (raw String)) (def (raw String))):void
+;
+; Stage 20 L3: `tgt` and `vis` are parameters because the compile-time mirror
+; needs a HOST-sized copy at `private` linkage, where the program module needs a
+; target-sized one at external; every pre-L3 caller passes `g-target` and `""`
+; (design/stage20-macros/macro-call-linking.md §5.4).
+(defn emit-qq-helpers ((decl (raw String)) (def (raw String)) tgt:ptr vis:StrView):void
   (when (= g-malloc-decl-done 0)
     (emit decl "declare ptr @malloc(i64)\n"))
-  (let (psize:i32 ((as ref:Target g-target) 'ptr-size)
-        pa:i32    ((as ref:Target g-target) 'ptr-align)
+  (let (psize:i32 ((as ref:Target tgt) 'ptr-size)
+        pa:i32    ((as ref:Target tgt) 'ptr-align)
         cell-size:i32 (+ 16 (* 3 psize))
         a0:i32 (qq-cell-align 0 pa)
         a1:i32 (qq-cell-align 4 pa)
@@ -18643,7 +19385,7 @@
         a3:i32 (qq-cell-align 16 pa)
         a4:i32 (qq-cell-align (+ 16 psize) pa)
         a5:i32 (qq-cell-align (+ 16 (* 2 psize)) pa))
-    (emit def "define ptr @__cons(ptr %a, ptr %b) {\n")
+    (emit def "define " vis "ptr @__cons(ptr %a, ptr %b) {\n")
     (emit def "  %c = call ptr @malloc(i64 " cell-size ")\n")
     (emit def
           "  %p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %c, i32 0, i32 0\n")
@@ -18665,7 +19407,7 @@
     (emit def "  store ptr %b, ptr %p5, align " a5 "\n")
     (emit def "  ret ptr %c\n")
     (emit def "}\n\n")
-    (emit def "define ptr @__append(ptr %a, ptr %b) {\n")
+    (emit def "define " vis "ptr @__append(ptr %a, ptr %b) {\n")
     (emit def "entry:\n")
     (emit def "  %z = icmp eq ptr %a, null\n")
     (emit def "  br i1 %z, label %nil, label %rec\n")
@@ -18696,7 +19438,8 @@
   (set! g-def-stream-program g-def-stream)
   (set! g-decl-out (addr-of g-decl-stream))
   (set! g-macro-decls (unsafe/cast (ref (Vector Symbol)) (vector-new-in (addr-of g-arena-alloc))))
-  (set! g-program-defns (vector-new-in (addr-of g-arena-alloc))))
+  (set! g-program-defns (vector-new-in (addr-of g-arena-alloc)))
+  (set! g-program-globals (vector-new-in (addr-of g-arena-alloc))))
 
 ; ============================================================
 ; Close module streams, output IR to stdout (batch mode)
@@ -18844,7 +19587,7 @@
 ; Close module streams; emit either textual IR (--emit-llvm) or an object/binary.
 (defn flush-module-ir (source-file:Symbol):void
   (when (!= g-qq-used 0)
-    (emit-qq-helpers (addr-of g-decl-stream) g-def-stream))
+    (emit-qq-helpers (addr-of g-decl-stream) g-def-stream g-target ""))
   (drain-pending-union-irs)
   (let ((ir String) (assemble-module-ir source-file)
         v:StrView (string-as-view ir))
@@ -18952,6 +19695,10 @@
                 (set! g-diag-sexp 0)
               (= argview "--diagnostics=sexp")
                 (set! g-diag-sexp 1)
+              (= argview "--warn-ct-shadow")
+                (set! g-warn-ct-shadow 1)
+              (= argview "--no-warn-ct-shadow")
+                (set! g-warn-ct-shadow 0)
               (= argview "--repl-format=text")
                 (set! g-repl-format 0)
               (= argview "--repl-format=json")

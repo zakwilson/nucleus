@@ -463,6 +463,21 @@ A C header (`(import-ct "stdio.h")`) is imported normally: a header emits only
 declarations, and libc supplies the definitions either way, so there is nothing
 to withhold.
 
+**`import-ct` only works for a library the compiler itself links.** Withholding
+the definitions is exactly what leaves nothing for the compile-time JIT to run,
+so the symbol has to already be in the compiler process — which is the first
+condition in [What a macro body may call](macros.md#what-a-macro-body-may-call),
+and is true of `node`, `intern`, `strview` and the rest of the standard library.
+Reaching a library of your own this way is refused at the macro:
+
+```
+probe.nuc:3: error: macro 'probe' needs 'mydouble', which is defined where no span was recorded
+  note: only a function defined at the top level of this unit can be copied into the compile-time JIT
+```
+
+Import it with `import-use` instead — a macro body may call the program's own
+code, and then there is a definition to copy.
+
 ## Cross-file resolution: reachability, not import order
 
 **A `defn`, a `defvar`, a `defconst` or a `defenum` member in any reachable file
