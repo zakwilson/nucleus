@@ -440,13 +440,26 @@ feature: a program `defn` whose name lands on one of those 1,658 binds to the
 compiler. Naming a supported compile-time API — and hiding the rest — stays
 deferred there (§10).
 
-### `macmap` over a computed row list
+### `macmap` over a computed row list — **no longer deferred**
 
-`macmap`'s rows are literal, and a macro's arguments are not expanded, so
-`(macmap SPEC (some-table))` cannot work — `rows` would be the unexpanded call.
-The wrapper-macro idiom covers the case that motivated it. A general form would
-need `macmap` to expand its own rows argument, which means calling
-`macroexpand-form` from `lib/macros.nuc` and violating the rule above.
+Taken up 2026-09-14 as
+[stage20-macros/computed-macro-arguments.md](stage20-macros/computed-macro-arguments.md).
+The blocker recorded here — that it "would need `macmap` to expand its own rows
+argument, which means calling `macroexpand-form` from `lib/macros.nuc`" — was
+never the real one. It assumed *expansion* is the only route to a computed
+argument. **Evaluation is another, it was already legal, and it reaches no
+compiler internals**: `~` inside a macro body is ordinary code running at
+expansion time, and since
+[macro-call-linking.md](stage20-macros/macro-call-linking.md) §3.1 that code may
+call the program's own functions, so a wrapper macro that computes its rows with
+a `defn` and splices them into a `macmap` already worked with no compiler change
+(probed, exit 13). What was missing was the same spelling one level out, at
+source level, where `~e` is the error `unquote outside quasiquote` — which is
+what makes the spelling free to claim.
+
+The second half of the entry stands and is why the wrapper idiom remains the
+baseline any feature had to beat: it works today and costs one adapter macro per
+site.
 
 ### The string-literal table is one per compilation, not one per module
 

@@ -2554,6 +2554,126 @@ map=2
     (drop (addr-of p)))
   (return (ok)))
 
+; --- C1/C2: a computed macro argument -----------------------------------------
+; (design/stage20-macros/computed-macro-arguments.md §2.1 width (a))
+;
+; `~e` in macro-argument position evaluates `e` at compile time and substitutes
+; the node it returns. It is the macro-body path with a different caller, so
+; everything L4-L8 built is inherited — these units pin what that buys.
+
+; The ask, verbatim from §1: rows a program `defn` computes, spliced into
+; `macmap` as if they had been written out. Before C2 this was
+; `unquote outside quasiquote`.
+(deftest s20-computed-arg-macmap
+  (try (check-source-exit "(import-use node)
+(defn s20-rows ():(raw Node) (return `((a 1) (b 2) (c 3))))
+(macmap ((name arity) `(defn ~name ():i32 (return ~arity))) ~(s20-rows))
+(defn main ():i32 (return (_+ (a) (_+ (b) (c)))))
+" 6)))
+
+; The closure, which is L4's machinery doing the work: the evaluated form calls
+; a program `defn` that calls another, so BOTH spans have to reach the mirror.
+(deftest s20-computed-arg-calls-helper
+  (try (check-source-exit "(import-use node)
+(defn s20-leaf ():(raw Node) (return `(_* 4 3)))
+(defn s20-rows2 ():(raw Node) (return `((p ~(s20-leaf)) (q 5))))
+(macmap ((name v) `(defn ~name ():i32 (return ~v))) ~(s20-rows2))
+(defn main ():i32 (return (_+ (p) (q))))
+" 17)))
+
+; §4.4 asks whether `macrolet` is on this path rather than asserting it. It is —
+; both definers compile through `compile-macro-body`, and the substitution is in
+; `expand-macro-call`, which both call. Mid-function, so this is also the unit
+; that says `ct-eval-node` brackets `push-function-state` the way `macrolet-bind`
+; does: without it the enclosing `main`'s entry/body streams are reset under it.
+(deftest s20-computed-arg-macrolet
+  (try (check-source-exit "(import-use node)
+(defn s20-val ():(raw Node) (return `(_* 6 7)))
+(defn main ():i32
+  (macrolet ((one (x) x))
+    (return (one ~(s20-val)))))
+" 42)))
+
+; A body that names nothing but the compile-time runtime records no root, so it
+; needs no mirror — which is what keeps `~e` usable under `--target=` (the other
+; half is `s20-computed-arg-cross-target` in suite-refusals.nuc).
+(deftest s20-computed-arg-host-resolved
+  (try (check-source-exit "(import-use node)
+(defmacro one (x) x)
+(defn main ():i32 (return (one ~`(_* 6 7))))
+" 42)))
+
+; --- C3: `~@e`, the splice ----------------------------------------------------
+; (design/stage20-macros/computed-macro-arguments.md §4.3)
+;
+; `~e` is one argument; `~@e` is N. That is what serves the `:rest` family, which
+; §2.1 says the feature exists for: without it the stage covers `macmap` and none
+; of its friends. Substitution happens before the arity checks either way, so a
+; splice is indistinguishable from having written the elements out.
+
+; §4.3 verbatim, and the same list through `+` — which lowers to `macfoldr` only
+; above two arguments, so the two units together cover both of that macro's arms.
+(deftest s20-computed-arg-splice
+  (try (check-source-exit "(import-use node)
+(defn s20-nums ():(raw Node) (return `(1 2 3 4)))
+(defn main ():i32 (return (macfoldr _+ 0 ~@(s20-nums))))
+" 10))
+  (try (check-source-exit "(import-use node)
+(defn s20-nums2 ():(raw Node) (return `(1 2 3 4)))
+(defn main ():i32 (return (+ ~@(s20-nums2))))
+" 10))
+  (return (ok)))
+
+; A user `:rest` macro gets it with no change of its own, which is the claim in
+; §2.1's third bullet. The splice lands in the macro's OWN `:rest`, so what it
+; sees is four arguments and not one list.
+(deftest s20-computed-arg-splice-rest-macro
+  (try (check-source-exit "(import-use node)
+(defn s20-nums3 ():(raw Node) (return `(1 2 3 4)))
+(defmacro s20-count (:rest args)
+  (let ((acc (raw Node)) `0
+        (a (raw Node)) args)
+    (while (!= a null) (set! acc `(_+ 1 ~acc)) (set! a (a 'cdr)))
+    acc))
+(defn main ():i32 (return (s20-count ~@(s20-nums3))))
+" 4)))
+
+; The empty splice contributes zero arguments — not one null argument, which is
+; the failure mode a copy-the-cell implementation would have. `macfoldr` with no
+; args is its unit, so 7 says the argument list really is empty.
+(deftest s20-computed-arg-splice-empty
+  (try (check-source-exit "(import-use node)
+(defn s20-nothing ():(raw Node) (return null))
+(defn main ():i32 (return (macfoldr _+ 7 ~@(s20-nothing))))
+" 7))
+  (try (check-source-exit "(import-use node)
+(defn s20-nothing2 ():(raw Node) (return null))
+(defmacro s20-sum (:rest args) `(macfoldr _+ 100 ~@args))
+(defn main ():i32 (return (s20-sum ~@(s20-nothing2))))
+" 100))
+  (return (ok)))
+
+; Both spellings in one call, against a FIXED-arity macro: `~@` has to widen the
+; list to exactly the two arguments the middle needs while `~` stays one, or the
+; arity check rejects the call. 1+2+3+4+5.
+(deftest s20-computed-arg-splice-mixed
+  (try (check-source-exit "(import-use node)
+(defn s20-mid ():(raw Node) (return `(2 3)))
+(defn s20-one ():(raw Node) (return `4))
+(defmacro s20-five (a b c d e) `(_+ ~a (_+ ~b (_+ ~c (_+ ~d ~e)))))
+(defn main ():i32 (return (s20-five 1 ~@(s20-mid) ~(s20-one) 5)))
+" 15)))
+
+; `macrolet` is on this path for `~@` too, mid-function — the same confirmation
+; §4.4 asked for and C2 made for `~`.
+(deftest s20-computed-arg-splice-macrolet
+  (try (check-source-exit "(import-use node)
+(defn s20-pair ():(raw Node) (return `(6 7)))
+(defn main ():i32
+  (macrolet ((s20-mul (a b) `(_* ~a ~b)))
+    (return (s20-mul ~@(s20-pair)))))
+" 42)))
+
 ; ---------------------------------------------------------------------------
 ; What a place is (dot-forms.md §5 steps 4-6)
 ; ---------------------------------------------------------------------------

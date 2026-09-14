@@ -191,6 +191,8 @@ destructures** the row, which must then be a list of that many elements:
   That is what `macmap` is for; a table of *values* is better served by `case`
   with `(:or …)`, a `#{…}` set membership test, or an array and a loop.
 * **An empty table expands to `(do)`** and emits nothing.
+* **The table may be computed** rather than written out, by marking it `~`. See
+  [`~e` — a computed macro argument](#e--a-computed-macro-argument).
 * **Top-level position works**, so a `macmap` may generate a family of
   definitions. The pre-scan limit on any macro-produced definition applies
   unchanged: they are not forward-referenceable, and the family cannot include
@@ -217,6 +219,90 @@ destructures** the row, which must then be a list of that many elements:
   line (`macmap: this row's length does not match the template's parameter
   list`); a row that is not a list under a multi-parameter template, and a first
   argument that is not `((param …) template)`, report likewise.
+
+## `~e` — a computed macro argument
+
+A macro's arguments are source text, so a table like `macmap`'s is normally
+written out. Prefixing an argument with `~` instead says **evaluate this now**:
+the compiler compiles `e` into its compile-time JIT, runs it, and substitutes the
+node it returns as if you had typed that node.
+
+```lisp
+(defn build-rows ():(raw Node) (return `((a 1) (b 2) (c 3))))
+
+(macmap ((name arity) `(defn ~name ():i32 (return ~arity))) ~(build-rows))
+```
+
+This is the same `~` a macro body already has — "evaluate now" — one level
+further out, and it serves every macro at once: `macfoldr`, `case` and the
+variadic operators take a computed argument with no change of their own.
+
+**Rules.**
+
+* **`e` must evaluate to a node** — `(raw Node)`, which is what a quasiquote,
+  `quote`, or a `:(raw Node)`-returning `defn` yields. Anything else is refused
+  at the argument's own line:
+
+  ```
+  probe.nuc:2: error: the computed argument '~5' must evaluate to (raw Node), not i32
+  ```
+
+* **Only at the top level of a macro argument.** `~` anywhere else — nested
+  inside an argument's subforms, a function call's argument, a `defn` body, top
+  level — is still `unquote outside quasiquote`. The rule is one sentence on
+  purpose.
+* **It is one argument, not many.** `~(rows)` passes the whole list as a single
+  argument, so a template that wants *N* arguments still has to be given *N* —
+  that is what [`~@e`](#e--a-computed-argument-list) is for. Arity is counted
+  after the substitution, so `macro 'two': expects 2 args, got 1` is about what
+  the macro received.
+* **`e` obeys [what a macro body may call](#what-a-macro-body-may-call)** — it
+  *is* a macro body, an anonymous one with no parameters. It may call your own
+  `defn`s and read your globals, its callees must be defined above the call, and
+  under `--target=` a body needing your own code is refused. The diagnostics name
+  the argument rather than a macro, because the mistake is at the call:
+
+  ```
+  probe.nuc:3: error: the computed argument '~(rows)' calls 'rows', which is defined later in this unit
+    note: a computed macro argument may only call functions defined above it — move 'rows' above the call
+  ```
+
+* **A `macrolet` binding gets this too**, since both definers compile a body the
+  same way.
+
+## `~@e` — a computed argument *list*
+
+`~e` is one argument. `~@e` evaluates `e` the same way and splices the list it
+returns in as **separate arguments**, which is what a `:rest` macro wants:
+
+```lisp
+(defn nums ():(raw Node) (return `(1 2 3 4)))
+
+(defn main ():i32 (return (macfoldr _+ 0 ~@(nums))))   ; => 10
+```
+
+`macfoldr` sees four arguments, not one list — exactly as if `1 2 3 4` had been
+typed. `macfoldl`, the variadic operators, `case` and any `:rest` macro of your
+own take it with no change of their own, and it may be mixed with `~` and with
+ordinary arguments in one call.
+
+Everything under [`~e`](#e--a-computed-macro-argument) applies unchanged: the
+same evaluation, the same "top level of a macro argument only" boundary (`~@`
+anywhere else stays `unquote-splice outside quasiquote`), the same rules about
+what `e` may call. Two things are its own:
+
+* **The result must be a list** — or null, which splices *nothing*. A node that
+  is not a list is refused at the argument's line, and so is a list with a dotted
+  tail:
+
+  ```
+  probe.nuc:4: error: the computed argument '~@(atom)' must evaluate to a list of nodes
+    note: `~@` splices its result in as N arguments, so it must evaluate to a list — `~` substitutes a single node
+  ```
+
+* **An empty splice contributes zero arguments**, so a fixed-arity macro then
+  reports the count it really got (`macro 'one': expects 1 args, got 0`) rather
+  than receiving one empty argument.
 
 ## `macro-error` — a macro rejecting its own call site
 
