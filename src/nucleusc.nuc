@@ -630,6 +630,12 @@
 ; The macro whose body that is, for `--warn-ct-shadow`'s text. `symbol-none`
 ; means a `(compile-time …)` block.
 (defvar g-ct-body-name:Symbol)
+; Stage 20 C1: 1 while the body being compiled is a computed macro argument
+; (`~e`), whose diagnostics name the argument rather than the macro it feeds.
+; Saved/restored per body, as `g-ct-body-name` is.
+(defvar g-ct-body-arg:i32 0)
+; Numbers `@__ct_eval_N`, one per computed macro argument evaluated.
+(defvar g-ct-eval-id:i32 0)
 ; Stage 20 L5: the ir-names the macro/CT module being compiled DEFINES
 ; itself. `program-defn-record` declines inside a JIT module, so these never get
 ; a `ProgDefn` and nothing else distinguishes them from a forward reference.
@@ -1499,8 +1505,70 @@
 
 ; The macro/CT body being compiled, as a diagnostic subject.
 (defn ct-body-who ():StrView
+  ; C1: a computed argument's fault is in the CALLER's text, so the subject is
+  ; the argument rather than the macro it is being passed to.
+  (when (!= g-ct-body-arg 0)
+    (return (fstr "the computed argument '" g-ct-body-name "'")))
   (when (symbol-none? g-ct-body-name) (return "compile-time block"))
   (return (fstr "macro '" g-ct-body-name "'")))
+
+; What a computed macro argument may evaluate to. A bare `ptr` is in because the
+; compiler's own node producers (`macroexpand-form`, `expand-macro-call`) are
+; declared that way; `?&Node` is a TY-PTR with the null niche, so it is too.
+(defn ct-node-typed? (t:(raw Type)):i32
+  (when (= t null) (return 0))
+  (let (tt:(raw Type) t)
+    (when (!= (tt 'kind) TY-PTR) (return 0))
+    (let (e:(raw Type) (tt 'elem))
+      (when (= e null) (return 1))
+      (when (!= (e 'kind) TY-STRUCT) (return 0))
+      (let (sd:(raw StructDef) (e 'sdef))
+        (when (= sd null) (return 0))
+        (when (= (sd 'name) "Node") (return 1))
+        (return 0)))))
+
+; Stage 20 C1 (computed-macro-arguments.md §4.4): the check `~` inside a
+; quasiquote never got — an operand of the wrong type reaches LLVM there as
+; `integer constant must have integer type`, about generated code.
+(defn ct-eval-require-node (bv:(raw Val) line:i32):void
+  (let (t:(raw Type) null)
+    (when (!= bv null) (set! t (bv 'type)))
+    (when (!= (ct-node-typed? t) 0) (return))
+    (diag-stage-note (fstr "a computed macro argument is substituted as source, so it"
+                           " must evaluate to a node — what a quasiquote, `quote` or a"
+                           " ':(raw Node)' function yields"))
+    (die-at line (fstr (ct-body-who) " must evaluate to (raw Node), not "
+                       (type-display t)))))
+
+; The argument named in those diagnostics. Head-and-ellipsis rather than the
+; whole form: it only has to point, the line does the locating.
+(defn ct-eval-arg-spelling (e:(raw Node) splice:i32):Symbol
+  (let (pfx:StrView "~")
+    (when (!= splice 0) (set! pfx "~@"))
+    (when (= e null) (return (symbol-intern (fstr pfx "()"))))
+    (let (en:(raw Node) e)
+      (when (= (en 'kind) NODE-SYM) (return (symbol-intern (fstr pfx (en 's)))))
+      (when (= (en 'kind) NODE-INT) (return (symbol-intern (fstr pfx (en 'i)))))
+      (when (= (en 'kind) NODE-CELL)
+        (let (h:(raw Node) (en 'car))
+          (when (and (!= h null) (= (h 'kind) NODE-SYM))
+            (when (= (node-len e) 1) (return (symbol-intern (fstr pfx "(" (h 's) ")"))))
+            (return (symbol-intern (fstr pfx "(" (h 's) " ...)"))))))
+      (return (symbol-intern (fstr pfx "..."))))))
+
+; Stage 20 C3: `~@e` contributes N arguments, so its value must be a proper list
+; — null splices none. The type check above already required a node; this is the
+; shape, and a dotted tail fails it at the cell that has one rather than being
+; dropped. The spelling is computed only on the error path.
+(defn ct-eval-require-list (v:(raw Node) e:(raw Node) line:i32):void
+  (let (it:(raw Node) v)
+    (while (!= it null)
+      (when (!= (it 'kind) NODE-CELL)
+        (diag-stage-note (fstr "`~@` splices its result in as N arguments, so it must"
+                               " evaluate to a list — `~` substitutes a single node"))
+        (die-at line (fstr "the computed argument '" (ct-eval-arg-spelling e 1)
+                           "' must evaluate to a list of nodes")))
+      (set! it (it 'cdr)))))
 
 ; §1.3's shape, doing the right thing at last: the program's own definition wins
 ; over a compiler symbol it collides with. Worth saying out loud because the same
@@ -1555,10 +1623,12 @@
   (when (!= (ct-module-defines? irn) 0) (return))
   (when (!= (ct-mirror-decl-stream-has irn) 0) (return))
   (let (nm:Symbol ((unsafe/cast ref:Sym s) 'name)
-        body:StrView (if (symbol-none? g-ct-body-name) "compile-time body" "macro body"))
+        body:StrView (if (!= g-ct-body-arg 0) "computed macro argument"
+                       (if (symbol-none? g-ct-body-name) "compile-time body" "macro body"))
+        site:StrView (if (!= g-ct-body-arg 0) "call"
+                       (if (symbol-none? g-ct-body-name) "block" "macro")))
     (diag-stage-note (fstr "a " body " may only call functions defined above it — move '"
-                           nm "' above the "
-                           (if (symbol-none? g-ct-body-name) "block" "macro")))
+                           nm "' above the " site))
     (die-at line (fstr (ct-body-who) " calls '" nm
                        "', which is defined later in this unit"))))
 
@@ -11301,7 +11371,62 @@
       (stamp-macro-lines (n 'car) ln)
       (stamp-macro-lines (n 'cdr) ln))))
 
+; Stage 20 C2/C3 (computed-macro-arguments.md §4.2): `~e` and `~@e` are
+; evaluations only at the TOP LEVEL of a macro argument. Nested inside one, or
+; anywhere else, they stay `unquote outside quasiquote` — emit-list's arm never
+; sees the ones consumed here. The call is rebuilt rather than mutated, and only
+; when a marker is actually present, so every other program reaches the body on
+; the very node the reader produced.
+(defn ct-subst-args (call:(raw Node)):(raw Node)
+  (let (n:i32 (node-len call)
+        found:i32 0
+        i:i32 1)
+    (while (< i n)
+      (let (a:(raw Node) (as raw:Node (node-at call i)))
+        (when (or (!= (qq-is-tagged a 'unquote) 0)
+                  (!= (qq-is-tagged a 'unquote-splice) 0))
+          (set! found 1)))
+      (inc! i))
+    (when (= found 0) (return call))
+    (let (cc:(raw Node) call
+          encl:i32 (cc 'line)
+          out:ptr null
+          tail:ptr null
+          it:(raw Node) call
+          idx:i32 0)
+      (while (and (!= it null) (= (it 'kind) NODE-CELL))
+        ; What this input cell contributes: one element normally, and for `~@e`
+        ; the evaluated list entire — which may be empty, so the arity check in
+        ; expand-macro-call counts what the macro really receives. Copied rather
+        ; than linked in: the computed list is the program's value, and a cached
+        ; one spliced twice would otherwise be relinked under its owner.
+        (let (sub:(raw Node) (as raw:Node (make-cell (it 'car) null (it 'line))))
+          (when (> idx 0)
+            (let (ln:i32 (node-line (it 'car) encl))
+              (when (!= (qq-is-tagged (it 'car) 'unquote) 0)
+                (set! sub (as raw:Node
+                            (make-cell (ct-eval-node (node-at (it 'car) 1) ln 0)
+                                       null (it 'line)))))
+              (when (!= (qq-is-tagged (it 'car) 'unquote-splice) 0)
+                (let (arg:(raw Node) (as raw:Node (node-at (it 'car) 1))
+                      v:ptr (ct-eval-node (node-at (it 'car) 1) ln 1))
+                  (ct-eval-require-list (as raw:Node v) arg ln)
+                  (set! sub (as raw:Node v))))))
+          (while (!= sub null)
+            (let (new:ptr (make-cell (sub 'car) null (it 'line)))
+              (if (= out null)
+                (do (set! out new) (set! tail new))
+                (do (set! ((unsafe/cast ref:Node tail) 'cdr) new)
+                    (set! tail new))))
+            (set! sub (sub 'cdr))))
+        (set! it (it 'cdr))
+        (inc! idx))
+      (return (as raw:Node out)))))
+
 (defn expand-macro-call (call:(raw Node) macro-def:(raw MacroDef)):ptr
+  ; C2: before the arity checks, so "expects N args, got M" counts what the
+  ; macro actually receives.
+  (set! call (ct-subst-args call))
   (let (mdef:ptr:MacroDef (unsafe/cast ref:MacroDef macro-def)
         nargs:i32 (- (node-len (unsafe/cast ref:Node call)) 1))
     (when (!= (mdef 'variadic) 0)
@@ -15845,7 +15970,7 @@
             ; (design/stage16-ergonomics/macrolet.md §5.1). Everything above this
             ; line is registration — the half a macrolet binding does NOT do.
             ; Stage 20 L4: it writes `ct-roots`, so the record has to be in scope.
-            (compile-macro-body mdef jit-name macro-name pnames pcount form 3)))))))
+            (compile-macro-body mdef jit-name macro-name pnames pcount form 3 0)))))))
 
 ; Compile a macro body into its own JIT module and add it to the JIT. Shared by
 ; `emit-defmacro` (body-start 3, over the whole `(defmacro name (params) …)`
@@ -15855,9 +15980,11 @@
 ;
 ; NOTE this calls `reset-function-state` (via the streams it opens below) — see
 ; `push-function-state`, which every mid-function caller must bracket it with.
+; `is-arg` marks the Stage 20 C1 caller — a computed macro argument, which is an
+; anonymous zero-parameter body whose value must be a node (`ct-eval-node`).
 (defn compile-macro-body (mdef:ptr:MacroDef jit-name:Symbol macro-name:Symbol
                           pnames:ptr pcount:i32
-                          form:(raw Node) body-start:i32):void
+                          form:(raw Node) body-start:i32 is-arg:i32):void
   (let (ff:ptr:Node (unsafe/cast ref:Node form))
           ; Flush main streams
 
@@ -15872,6 +15999,7 @@
                   saved-ct-roots:(ref (Vector Symbol)) g-ct-roots
                   saved-ct-defns:(ref (Vector Symbol)) g-ct-module-defns
                   saved-ct-name:Symbol g-ct-body-name
+                  saved-ct-arg:i32 g-ct-body-arg
                   saved-node-ctor:i32 g-node-ctor-used)
               (set! g-qq-used 0)
               (set! g-node-ctor-used 0)
@@ -15889,6 +16017,7 @@
                     (unsafe/cast (ref (Vector Symbol)) (vector-new-in (addr-of g-arena-alloc))))
               (set! g-ct-roots (mdef 'ct-roots))
               (set! g-ct-body-name macro-name)
+              (set! g-ct-body-arg is-arg)
 
               ; Set up function codegen state
               (reset-function-state)
@@ -15928,6 +16057,10 @@
                       bi:i32 body-start)
                   (while (< bi (node-len ff))
                     (let (bv:&Val (emit-node (node-at ff bi) fn-scope))
+                      ; C1 (§4.4): without this `~5` reaches LLVM as `integer
+                      ; constant must have integer type`, naming generated code.
+                      (when (and (!= is-arg 0) (= bi (- (node-len ff) 1)))
+                        (ct-eval-require-node (as raw:Val bv) (ff 'line)))
                       (when (!= (as ptr bv) null)
                         (let (bvv:StrView (bv 'val))
                           (when (and (!= (strview-byte-len bvv) 0)
@@ -15961,6 +16094,7 @@
                   (set! g-ct-roots saved-ct-roots)
                   (set! g-ct-module-defns saved-ct-defns)
                   (set! g-ct-body-name saved-ct-name)
+                  (set! g-ct-body-arg saved-ct-arg)
 
                   ; Finalize the function
                   (emit ct-def "define ptr @" jit-name "(ptr %__args.arg) {\n")
@@ -16039,7 +16173,8 @@
 
                   ; Assemble the macro JIT module IR
                   (let ((irs String) (string-new))
-                    (emit irs "; ModuleID = '<defmacro " macro-name ">'\n")
+                    (emit irs "; ModuleID = '<" (if (!= is-arg 0) "ct-eval" "defmacro")
+                          " " macro-name ">'\n")
                     (emit irs "target triple = \"" ((as ref:Target g-host-target) 'triple)
                           "\"\n\n")
                     ; In REPL mode, include the accumulated preamble
@@ -16054,6 +16189,50 @@
                     (drop (addr-of ct-decl))
                     (drop (addr-of ct-def))
                     (drop &irs))))))))
+
+; Stage 20 C1 (computed-macro-arguments.md §4.1): evaluate `e` at compile time
+; and return the node it yields. It IS the macro-body path with a different
+; caller — an anonymous, zero-parameter body — so the mirror, the closure walk,
+; `--warn-ct-shadow` and all three refusals are inherited, not rebuilt.
+; C3: `splice` only picks the marker the diagnostics quote back — `~` or `~@`.
+; The evaluation is the same one; what differs is what the caller does with it.
+(defn ct-eval-node (e:(raw Node) line:i32 splice:i32):ptr
+  (when (= e null)
+    (let (mark:StrView "~")
+      (when (!= splice 0) (set! mark "~@"))
+      (die-at line (fstr "a computed macro argument needs an expression after `" mark "`"))))
+  (let (who:Symbol (ct-eval-arg-spelling e splice)
+        jit-name:Symbol (symbol-intern (fstr "__ct_eval_" (as i64 g-ct-eval-id)))
+        mdef:ptr:MacroDef (as ref:MacroDef (arena-alloc (sizeof MacroDef))))
+    (inc! g-ct-eval-id)
+    (set! (mdef 'name) who)
+    (set! (mdef 'jit-name) jit-name)
+    (set! (mdef 'num-params) 0)
+    (set! (mdef 'variadic) 0)
+    (set! (mdef 'priv) 0)
+    (set! (mdef 'src-ns) g-current-ns)
+    (set! (mdef 'src-file) g-source-path)
+    (set! (mdef 'src-line) line)
+    ; body-start 1 over a synthetic `(<nothing> e)`, so the body loop compiles
+    ; exactly `e`. The bracket is `macrolet-bind`'s: a macro call is expanded
+    ; mid-function, and `compile-macro-body` calls `reset-function-state`.
+    (let (inner:(raw Node) (as raw:Node (make-cell e null line))
+          form:(raw Node) (as raw:Node (make-cell null inner line))
+          saved:&FnState (push-function-state))
+      (compile-macro-body mdef jit-name who null 0 form 1 1)
+      (pop-function-state saved))
+    (when (= (ct-mirror-flush (mdef 'ct-roots) line) 0)
+      (ct-mirror-report-refusal (fstr "the computed argument '" who "'") line))
+    (let (addr:i64 0
+          err:ptr (LLVMOrcLLJITLookup g-jit &addr (symbol-as-cstr jit-name)))
+      (when (!= err null)
+        (LLVMConsumeError err)
+        (die-at line (fstr "the computed argument '" who "': JIT lookup failed")))
+      (when (= (unsafe/cast ptr addr) null)
+        (die-at line (fstr "the computed argument '" who "': JIT function not found")))
+      ; A null result is `()`, not a failure — unlike a macro expansion, which
+      ; must produce a form.
+      (return (unsafe/funcall-ptr-1 (unsafe/cast ptr addr) null)))))
 
 ; ============================================================
 ; macrolet (Stage 16, design/stage16-ergonomics/macrolet.md)
@@ -16126,7 +16305,7 @@
             ; safe; compile-macro-body calls reset-function-state, which would
             ; otherwise clobber the enclosing function's entry/body streams.
             (let (saved:&FnState (push-function-state))
-              (compile-macro-body mdef jit-name mname pnames pcount b 2)
+              (compile-macro-body mdef jit-name mname pnames pcount b 2 0)
               (pop-function-state saved))))))))
 
 (defn emit-macrolet (call:(raw Node) scope:&Scope):&Val

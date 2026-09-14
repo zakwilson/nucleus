@@ -364,11 +364,16 @@ In `tests/suite-s16.nuc`, beside the existing 35 `macmap`/`macrolet` units:
 Two pre-existing defects this work surfaced and deliberately did not fix, both
 byte-identical on the pre-change binary:
 
-* **An unquote whose operand is not `Node`-typed is not diagnosed** (§10.3). `~5`
-  emits `call ptr @__cons(ptr 5, …)` and comes back from LLVM as `integer
-  constant must have integer type`, naming generated code the author never wrote.
-  It is a typing question about unquote operands, not about levels, and fixing it
-  moves diagnostic text — so it wants its own gate, not this one's.
+* **An unquote whose operand is not `Node`-typed is not diagnosed** (§10.3), in
+  **two** shapes. Nested in a list, `~5` emits `call ptr @__cons(ptr 5, …)` and
+  comes back from LLVM as `integer constant must have integer type`, naming
+  generated code the author never wrote. **Bare**, `` `~n `` yields
+  `macro 'm': returned null` — no line, no `~`, no type — because
+  `compile-macro-body`'s body loop keeps `last-val` only for a `TY-PTR`. It is a
+  typing question about unquote operands, not about levels, and fixing it moves
+  diagnostic text — so it wants its own gate, not this one's. Still open, and
+  [computed-macro-arguments.md](computed-macro-arguments.md) C3 raises its
+  priority: `~@e`'s natural use is counting, which is the bare shape.
 * **A macro cannot produce a `defmacro` at the REPL** (§10.4) — `unknown:
   defmacro`, because the REPL's top-level dispatcher does not re-dispatch a
   definer out of an expansion. Independent of nesting; the same program is fine
@@ -443,6 +448,31 @@ naming generated code the author never wrote. **Pre-existing**: byte-identical o
 the pre-change binary, so it is nothing this work introduced. Not fixed here
 either — it is a typing question about unquote operands, not about levels, and a
 fix would move diagnostic text under a gate this stage wanted clean. Filed in §8.
+
+**There are two manifestations, not one — the second is worse and was missed
+here.** Found 2026-09-14 by
+[computed-macro-arguments.md](computed-macro-arguments.md) C3, and both
+reproduce byte-for-byte on the committed `bin/nucleusc`, so both predate that
+work too:
+
+| shape | what the author sees |
+|---|---|
+| nested in a list, `` `(_+ 0 ~n) `` | the IR parse error above — bad, but it does name a type conflict |
+| **bare**, `` `~n `` as the body's value | `macro 'm': returned null` — **no line, no mention of `~`, and no type in it at all** |
+
+The bare case is the one to fix first. Its cause is not the `@__cons` argument
+but `compile-macro-body`'s body loop, which keeps `last-val` only when the
+`Val`'s type is `TY-PTR`: a non-node value is dropped on the floor and the macro
+silently yields null, so the diagnostic describes a symptom two steps removed
+from the mistake.
+
+C3 also records *why this became more likely to be hit*: interpolating a computed
+integer is the natural way to write a producer for a spliced argument list ("emit
+N of these"), which is exactly `` `~n ``. A `~e` author tends to return
+quasiquoted structure; a `~@e` author is more often counting. Until this is
+fixed, a row producer composes quasiquoted literals — and note `lib/node.nuc` has
+`alloc-node`, `make-cell` and `intern-node` but **no integer-node constructor**,
+so there is currently no clean way to do the thing that fails.
 
 ### 10.4 A macro cannot produce a `defmacro` at the REPL
 

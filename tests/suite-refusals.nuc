@@ -579,3 +579,146 @@
 ; be refused here is `s20-macro-helper-reads-program-global` in `suite-s16.nuc`,
 ; where it exits 7. What is left of the reason is a backstop for a global with
 ; no `defvar` of its own in the unit, which nothing can copy.
+; ---------------------------------------------------------------------------
+; Stage 20 C2 — what a computed macro argument may be
+; (design/stage20-macros/computed-macro-arguments.md §4.2, §4.4)
+; ---------------------------------------------------------------------------
+
+; §4.4's first question. A quasiquote whose operand is not `Node`-typed is an
+; undiagnosed hole — `~5` reaches LLVM as `integer constant must have integer
+; type`, naming generated code (quasiquote-levels.md §10.3) — and C2 must not
+; inherit it. The subject is the ARGUMENT, not the macro: the fault is in the
+; caller's text.
+(deftest s20-computed-arg-not-a-node
+  (try (check-ct-refused "(defmacro two (a b) `(_+ ~a ~b))
+(defn main ():i32 (return (two 1 ~5)))
+" 2 "the computed argument '~5' must evaluate to (raw Node), not i32"
+    "a computed macro argument is substituted as source, so it must evaluate to a node"))
+  (try (check-ct-refused "(defn s20-cs ():CStr (return \"hi\"))
+(defmacro two (a b) `(_+ ~a ~b))
+(defn main ():i32 (return (two 1 ~(s20-cs))))
+" 3 "the computed argument '~(s20-cs)' must evaluate to (raw Node), not CStr"
+    "a computed macro argument is substituted as source, so it must evaluate to a node"))
+  (return (ok)))
+
+; L5's diagnostic, reached through the new caller. The message and the note both
+; name the argument and its call rather than a macro, which is the only part of
+; that path C1 had to add.
+(deftest s20-computed-arg-forward-reference
+  (try (check-ct-refused "(import-use node)
+(defmacro one (x) x)
+(defn main ():i32 (return (one ~(s20-later))))
+(defn s20-later ():(raw Node) (return `7))
+" 3 "the computed argument '~(s20-later)' calls 's20-later', which is defined later in this unit"
+    "a computed macro argument may only call functions defined above it — move 's20-later' above the call"))
+  (return (ok)))
+
+; §4.2, the scope boundary and the whole point of width (a): `~e` is an
+; evaluation ONLY at the top level of a macro argument. The arm in `emit-node`
+; still owns every other position, including one nesting level in — which is the
+; case a recursive substitution would have silently swallowed.
+(deftest s20-computed-arg-only-in-macro-argument
+  (try (check-source-rejects "(defn main ():i32 (return ~(_+ 1 2)))
+" "unquote outside quasiquote"))
+  (try (check-source-rejects "(defn s20-f (x:i32):i32 (return x))
+(defn main ():i32 (return (s20-f ~(_+ 1 2))))
+" "unquote outside quasiquote"))
+  (try (check-source-rejects "(import-use node)
+(defn s20-v ():(raw Node) (return `1))
+(defmacro one (x) x)
+(defn main ():i32 (return (one (_+ 1 ~(s20-v)))))
+" "unquote outside quasiquote"))
+  (try (check-source-rejects "~(s20-nothing)
+(defn main ():i32 (return 0))
+" "unknown top-level form: unquote"))
+  ; C3 put `~@` on the same boundary, so the same four positions still refuse it.
+  (try (check-source-rejects "(defn main ():i32 (return ~@(_+ 1 2)))
+" "unquote-splice outside quasiquote"))
+  (try (check-source-rejects "(defn s20-g (x:i32):i32 (return x))
+(defn main ():i32 (return (s20-g ~@(_+ 1 2))))
+" "unquote-splice outside quasiquote"))
+  (try (check-source-rejects "(import-use node)
+(defn s20-w ():(raw Node) (return `1))
+(defmacro one (x) x)
+(defn main ():i32 (return (one (_+ 1 ~@(s20-w)))))
+" "unquote-splice outside quasiquote"))
+  (try (check-source-rejects "~@(s20-nothing)
+(defn main ():i32 (return 0))
+" "unknown top-level form: unquote-splice"))
+  (return (ok)))
+
+; §4.1: the substitution runs BEFORE the arity checks, so "expects N args, got M"
+; counts what the macro receives. `~e` is exactly ONE argument, `~@e` is however
+; many the list has — including none, which is the count a fixed-arity macro then
+; has to report rather than seeing one null argument.
+(deftest s20-computed-arg-arity-counts-substitution
+  (try (check-source-rejects "(import-use node)
+(defn s20-one ():(raw Node) (return `1))
+(defmacro two (a b) `(_+ ~a ~b))
+(defn main ():i32 (return (two ~(s20-one))))
+" "macro 'two': expects 2 args, got 1"))
+  (try (check-source-rejects "(import-use node)
+(defn s20-pair ():(raw Node) (return `(1 2)))
+(defmacro three (a b c) `(_+ ~a (_+ ~b ~c)))
+(defn main ():i32 (return (three ~@(s20-pair))))
+" "macro 'three': expects 3 args, got 2"))
+  (try (check-source-rejects "(import-use node)
+(defn s20-trio ():(raw Node) (return `(1 2 3)))
+(defmacro two2 (a b) `(_+ ~a ~b))
+(defn main ():i32 (return (two2 ~@(s20-trio))))
+" "macro 'two2': expects 2 args, got 3"))
+  (try (check-source-rejects "(import-use node)
+(defn s20-empty ():(raw Node) (return null))
+(defmacro one2 (x) x)
+(defn main ():i32 (return (one2 ~@(s20-empty))))
+" "macro 'one2': expects 1 args, got 0"))
+  (return (ok)))
+
+; C3's own diagnostic. The type check `~` already had says the value is a node;
+; this says it is a node of the right SHAPE, because `~@` substitutes N arguments
+; and only a list has N elements. A dotted tail fails at the cell that has one
+; rather than being silently dropped — the list is walked, not just its head.
+(deftest s20-computed-arg-splice-not-a-list
+  (try (check-ct-refused "(import-use node)
+(defn s20-atom ():(raw Node) (return `7))
+(defmacro two (a b) `(_+ ~a ~b))
+(defn main ():i32 (return (two 1 ~@(s20-atom))))
+" 4 "the computed argument '~@(s20-atom)' must evaluate to a list of nodes"
+    "`~@` splices its result in as N arguments, so it must evaluate to a list"))
+  (try (check-ct-refused "(import-use node)
+(defn s20-dotted ():(raw Node)
+  (return (as raw:Node (make-cell (as raw:Node `1) (as raw:Node `2) 0))))
+(defmacro s20-sum2 (:rest args) `(macfoldr _+ 0 ~@args))
+(defn main ():i32 (return (s20-sum2 ~@(s20-dotted))))
+" 5 "the computed argument '~@(s20-dotted)' must evaluate to a list of nodes"
+    "`~@` splices its result in as N arguments, so it must evaluate to a list"))
+  ; Not a node at all: C2's type check owns this one, and it names `~@`.
+  (try (check-ct-refused "(defmacro two (a b) `(_+ ~a ~b))
+(defn main ():i32 (return (two 1 ~@5)))
+" 2 "the computed argument '~@5' must evaluate to (raw Node), not i32"
+    "a computed macro argument is substituted as source, so it must evaluate to a node"))
+  (return (ok)))
+
+; L8's refusal through the new caller: a computed argument whose body calls a
+; program `defn` needs a mirror, and a mirror is host-triple text spliced from
+; spans lowered for `--target=`. The message names the argument.
+(deftest s20-computed-arg-cross-target
+  (let (p:String (try (test-write-file "probe-carg.nuc"
+                        "(import-use node)
+(defn s20-xrows ():(raw Node) (return `((a 1))))
+(macmap ((n v) `(defn ~n ():i32 (return ~v))) ~(s20-xrows))
+(defn main ():i32 (return (a)))
+"))
+        pv:StrView (string-as-view (addr-of p))
+        c:Compiled (try (compile-path-for "riscv64-unknown-linux-gnu" pv)))
+    (when (c 'ok?)
+      (fail! "the cross-target compile succeeded\n     "
+             (test-show (string-as-view (addr-of c 'raw)))))
+    (let (lowered:String (str "the computed argument '~(s20-xrows)' needs the program's own"
+                              " 's20-xrows' at compile time, and the program is lowered for"
+                              " 'riscv64-unknown-linux-gnu'"))
+      (try (check-error-at (addr-of c 'diags) pv 3 (string-as-view (addr-of lowered))))
+      (drop (addr-of lowered)))
+    (drop (addr-of c))
+    (drop (addr-of p)))
+  (return (ok)))
