@@ -70,9 +70,13 @@ so an AVR program may keep it: measured on `avr-blink` with the directive
 removed, the ATtiny1634 link succeeds at 626 bytes of text against 604 with it,
 with zero `.data` either way. The two examples keep `(exclude-prelude)` because
 they also pin that path; a new AVR program does not need it. The string table
-used to cost 126 bytes of `.data` in that measurement — it is emitted into the
-program module whole, macro-only entries included — and is now collected at the
-link along with every unreferenced definition (see
+used to cost 126 bytes of `.data` in that measurement, because it was emitted
+into the program module whole — every string a macro body interned while being
+compiled included. Stage 20 gave each compile-time module its own table, so a
+program that uses no string literal of its own now emits **none**: that same
+file, with the directive removed, went from 106 `@.str` constants to zero.
+Whatever a program does emit is still collected at the link if nothing
+references it (see
 [Separate compilation and symbol linkage](compiler.md#separate-compilation-and-symbol-linkage));
 `avr-gcc` gets the same `-Wl,--gc-sections` every other ELF target does.
 
