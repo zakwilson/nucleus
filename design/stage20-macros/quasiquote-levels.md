@@ -371,9 +371,11 @@ byte-identical on the pre-change binary:
   `macro 'm': returned null` — no line, no `~`, no type — because
   `compile-macro-body`'s body loop keeps `last-val` only for a `TY-PTR`. It is a
   typing question about unquote operands, not about levels, and fixing it moves
-  diagnostic text — so it wants its own gate, not this one's. Still open, and
-  [computed-macro-arguments.md](computed-macro-arguments.md) C3 raises its
-  priority: `~@e`'s natural use is counting, which is the bare shape.
+  diagnostic text — so it wants its own gate, not this one's.
+  **CLOSED 2026-09-15** by
+  [unquote-operand-typing.md](unquote-operand-typing.md) U1–U3, which found a
+  **third** shape §10.3 does not record (`~@` against `@__append`) and added
+  `node-int` so the thing that failed has a spelling.
 * **A macro cannot produce a `defmacro` at the REPL** (§10.4) — `unknown:
   defmacro`, because the REPL's top-level dispatcher does not re-dispatch a
   definer out of an expansion. Independent of nesting; the same program is fine
@@ -435,6 +437,15 @@ the phase came out smaller than it was budgeted for.
 
 ### 10.3 `~<non-Node expression>` leaks an LLVM parse error
 
+**CLOSED 2026-09-15 by [unquote-operand-typing.md](unquote-operand-typing.md)**
+U1 (the check, warn-only, swept) and U2 (promoted to a located `die-at`, plus
+the macro body's own value). Two corrections that section records and this one
+got wrong: there are **three** manifestations, not the two tabulated below —
+`emit-qq-list`'s splice arm has the same hole against `@__append`, so
+`` `(_+ 0 ~@n) `` with `n:i32` was a fourth undiagnosed shape — and the
+"no clean way to do the thing that fails" below is now `node-int`
+(`lib/node.nuc`, U3).
+
 Found while writing §10.1's probe, because `~~k` produces exactly this shape:
 
 ```
@@ -473,6 +484,10 @@ quasiquoted structure; a `~@e` author is more often counting. Until this is
 fixed, a row producer composes quasiquoted literals — and note `lib/node.nuc` has
 `alloc-node`, `make-cell` and `intern-node` but **no integer-node constructor**,
 so there is currently no clean way to do the thing that fails.
+
+*(That last sentence is what U3 answered: `(node-int v)` is in `lib/node.nuc`
+since 2026-09-15, and it is compile-time-runtime resolved like `node-at`, so a
+macro body calling it needs no mirror and cross-compiles unaffected.)*
 
 ### 10.4 A macro cannot produce a `defmacro` at the REPL
 

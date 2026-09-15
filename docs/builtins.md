@@ -74,7 +74,7 @@ Functions can be redefined. Redefining a `defn` confirms with `redefined` (vs. `
 Limitations:
 - Functions need explicit `(return ...)` to return values (same as batch mode).
 - Redefining a function with a different signature is allowed by the REPL but existing callers were compiled against the old signature; calls through them have undefined behavior. Restart the session if the type changes.
-- `(import-use node)` brings in the AST utilities (`make-cell`, `node-at`, `node-len`, `node-is-list`, `node-line`, `node-kind`); they allocate via `arena-alloc` and the arena initializes lazily on first call. `node-at` returns a *nullable* node — `()` reads as null — so read its result's kind with `node-kind` (which answers `NODE-NIL` for a null node rather than faulting) and its line with `node-line`.
+- `(import-use node)` brings in the AST utilities (`make-cell`, `node-int`, `node-at`, `node-len`, `node-is-list`, `node-line`, `node-kind`); they allocate via `arena-alloc` and the arena initializes lazily on first call. `node-at` returns a *nullable* node — `()` reads as null — so read its result's kind with `node-kind` (which answers `NODE-NIL` for a null node rather than faulting) and its line with `node-line`. `node-int` builds the `NODE-INT` leaf a quasiquote needs when what is interpolated is a computed number (see [Interpolating a computed number](macros.md#interpolating-a-computed-number)).
 - stdout from JIT'd code is line-buffered (`setvbuf(stdout, NULL, _IOLBF, 0)` is called on REPL startup) so printf output appears immediately in both terminal and pipe-driven sessions.
 
 ## .nuch Header Format

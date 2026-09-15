@@ -482,7 +482,8 @@ necessity*, because the compiler allocates, interns and reads the nodes the macr
 returns. Concretely, a call resolves to the compiler's own copy when **both** of
 these hold: the callee's defining file is under the library root this compilation
 resolved `lib/prelude.nuc` through, **and** the compiler binary exports that
-symbol. `alloc-node`, `make-cell`, `intern-symbol` and `node-at` are this set.
+symbol. `alloc-node`, `make-cell`, `node-int`, `intern-symbol` and `node-at` are
+this set.
 
 Everything else — your own `defn`s, and a `lib/` module the compiler does not
 itself link — resolves to **your** definition, which the compiler JIT-compiles on
@@ -631,6 +632,55 @@ An unquote with no enclosing quasiquote is an error (`unquote outside
 quasiquote`). Inside a plain `quote` it is ordinary data: `'(a ~b)` is a
 two-element list.
 
+**A level-1 operand that is not node-typed is refused at its own line.** The
+same rule as a [computed macro argument](#e--a-computed-macro-argument) — `~` and `~@`
+substitute source, so the operand must be `(raw Node)`, which is what a
+quasiquote, `quote`, [`node-int`](#interpolating-a-computed-number), or a
+`:(raw Node)`-returning `defn` yields:
+
+```
+probe.nuc:3: error: the unquote operand '~n' must evaluate to (raw Node), not i32
+  note: `~` substitutes its value as source, so it must evaluate to a node — what a quasiquote, `quote`, `node-int` or a ':(raw Node)' function yields
+```
+
+`~@` gets the same message with its own marker (`'~@n'`) and note (`` `~@`
+splices its value in as source ``).
+
+**A macro body's own value is held to the same rule**, whether or not an
+unquote is what produced it — `(defmacro m () 5)` is
+`macro 'm' must evaluate to (raw Node), not i32`, at the body form's line.
+
+### Interpolating a computed number
+
+`~n` where `n` is an `i32` is the mistake the rule above exists to catch, so
+interpolating a number a macro *computed* needs a node for it. `(import-use
+node)` supplies one:
+
+```lisp
+(import-use node)
+
+(defmacro double ()
+  (let (n:i32 21)
+    `(_* ~(node-int n) 2)))       ; => 42
+```
+
+`node-int` takes an `i64` (an `i32` widens at the call) and yields a fresh
+`NODE-INT` with no line, so diagnostics about it fall back to the enclosing
+form's line — the same treatment `node-line` gives any synthesized node. It is
+the natural way to write the producer for a spliced argument list:
+
+```lisp
+(defn range-nodes ():(raw Node)
+  (let ((acc (raw Node)) null
+        i:i64 4)
+    (while (> i 0)
+      (set! acc (as raw:Node (make-cell (as raw:Node (node-int i)) acc 0)))
+      (set! i (- i 1)))
+    (return acc)))
+
+(defn main ():i32 (return (macfoldr _+ 0 ~@(range-nodes))))   ; => 10
+```
+
 ## The type of a quoted form
 
 `'x` yields a `Node*`, but **which** pointer type depends on what was quoted:
@@ -646,8 +696,8 @@ interned, symbols work directly as collection elements and keys — see
 `(raw Node)` slot (non-null narrows into nullable), so nothing written before
 this rule needs changing.
 
-`quasiquote` stays `(raw Node)` throughout: an unquote can inject any value, so
-its result type is expansion-dependent.
+`quasiquote` stays `(raw Node)` throughout: an unquote can inject any *node*,
+including a null one, so its result type is expansion-dependent.
 
 **In ordinary code a quote is a run-time call**, so a program that writes one
 needs `(import-use node)` — the prelude registers the `Node` type but no longer
@@ -707,11 +757,16 @@ vs `i32`, or two different struct types — do not unify, and the whole
 expression collapses to `void`. That failure then surfaces as:
 
 - a `let`/`set!` reporting `init type mismatch` / a type error, and
-- a macro whose entire body is such a `cond` **silently returns `null`**,
-  surfacing later as `macro '<name>': returned null`.
+- a macro whose entire body is such a `cond` reporting
+  `macro '<name>' must evaluate to (raw Node), not void`, at the body form's
+  own line.
 
 This is a genuine type error; there's no shortcut but making the branches
 agree on element type.
+
+(The unlocated `macro '<name>': returned null` this used to surface as is now
+reachable only from a macro whose value is node-*typed* and null at run time —
+a body ending in `'()`, say — never from a type mistake.)
 
 Mixing a **typed** pointer branch (`(raw Node)`, `ptr:Foo`, `ref:Foo`, ...)
 with a **bare, elem-less** `ptr` branch is *not* a collapse case — the join

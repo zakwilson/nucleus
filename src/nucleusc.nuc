@@ -1529,14 +1529,19 @@
 
 ; Stage 20 C1 (computed-macro-arguments.md §4.4): the check `~` inside a
 ; quasiquote never got — an operand of the wrong type reaches LLVM there as
-; `integer constant must have integer type`, about generated code.
+; `integer constant must have integer type`, about generated code. Stage 20 U2
+; shares it with the macro body's own value; only the note differs, so it
+; branches on the flag `ct-body-who` keys on.
 (defn ct-eval-require-node (bv:(raw Val) line:i32):void
   (let (t:(raw Type) null)
     (when (!= bv null) (set! t (bv 'type)))
     (when (!= (ct-node-typed? t) 0) (return))
-    (diag-stage-note (fstr "a computed macro argument is substituted as source, so it"
-                           " must evaluate to a node — what a quasiquote, `quote` or a"
-                           " ':(raw Node)' function yields"))
+    (let (lead:StrView "a computed macro argument is substituted as source, so it")
+      (when (= g-ct-body-arg 0)
+        (set! lead "a macro body's value is substituted as source, so it"))
+      (diag-stage-note (fstr lead
+                             " must evaluate to a node — what a quasiquote, `quote` or a"
+                             " ':(raw Node)' function yields")))
     (die-at line (fstr (ct-body-who) " must evaluate to (raw Node), not "
                        (type-display t)))))
 
@@ -1555,6 +1560,22 @@
             (when (= (node-len e) 1) (return (symbol-intern (fstr pfx "(" (h 's) ")"))))
             (return (symbol-intern (fstr pfx "(" (h 's) " ...)"))))))
       (return (symbol-intern (fstr pfx "..."))))))
+
+; Stage 20 U1 (design/stage20-macros/unquote-operand-typing.md). A sibling of
+; `ct-eval-require-node`, not a reuse: quasiquote is legal in a plain `defn` too,
+; which `ct-body-who` would misname "compile-time block".
+(defn qq-require-node-operand (bv:(raw Val) e:(raw Node) splice:i32 line:i32):void
+  (let (t:(raw Type) null)
+    (when (!= bv null) (set! t (bv 'type)))
+    (when (!= (ct-node-typed? t) 0) (return))
+    (let (lead:StrView "`~` substitutes its value as source")
+      (when (!= splice 0) (set! lead "`~@` splices its value in as source"))
+      (diag-stage-note (fstr lead ", so it must evaluate to a node — what a"
+                             " quasiquote, `quote`, `node-int` or a ':(raw Node)'"
+                             " function yields"))
+      (die-at line
+        (fstr "the unquote operand '" (ct-eval-arg-spelling e splice)
+              "' must evaluate to (raw Node), not " (type-display t))))))
 
 ; Stage 20 C3: `~@e` contributes N arguments, so its value must be a proper list
 ; — null splices none. The type check above already required a node; this is the
@@ -2688,12 +2709,13 @@
     ; it as one ordinary element.
     (when (and (= level 1) (!= (qq-is-tagged elem 'unquote-splice) 0))
       (let (inner:(raw Node) (node-at elem 1)
-            a:&Val (emit-node inner scope)
-            rest:&Val (emit-qq-list (lc 'cdr) scope level)
-            tmp:StrView (new-tmp))
-        (emit g-body-stream "  " tmp " = call ptr @__append(ptr " (a 'val) ", ptr " (rest 'val)
-              ")\n")
-        (return (alloc-val (ty-raw-node) tmp))))
+            a:&Val (emit-node inner scope))
+        (qq-require-node-operand (as raw:Val a) inner 1 (node-line elem (lc 'line)))
+        (let (rest:&Val (emit-qq-list (lc 'cdr) scope level)
+              tmp:StrView (new-tmp))
+          (emit g-body-stream "  " tmp " = call ptr @__append(ptr " (a 'val) ", ptr " (rest 'val)
+                ")\n")
+          (return (alloc-val (ty-raw-node) tmp)))))
     (let (head:&Val (emit-qq-form elem scope level)
           tail:&Val (emit-qq-list (lc 'cdr) scope level)
           tmp:StrView (new-tmp))
@@ -2712,7 +2734,11 @@
     (when (!= (qq-is-tagged form 'quasiquote) 0)
       (return (emit-qq-tagged form scope (+ level 1))))
     (when (!= (qq-is-tagged form 'unquote) 0)
-      (when (= level 1) (return (emit-node (node-at form 1) scope)))
+      (when (= level 1)
+        (let (inner:(raw Node) (node-at form 1)
+              v:&Val (emit-node inner scope))
+          (qq-require-node-operand (as raw:Val v) inner 0 (fn 'line))
+          (return v)))
       (return (emit-qq-tagged form scope (- level 1))))
     (when (!= (qq-is-tagged form 'unquote-splice) 0)
       (when (= level 1) (die-at (fn 'line) "unquote-splice outside list"))
@@ -16059,8 +16085,13 @@
                     (let (bv:&Val (emit-node (node-at ff bi) fn-scope))
                       ; C1 (§4.4): without this `~5` reaches LLVM as `integer
                       ; constant must have integer type`, naming generated code.
-                      (when (and (!= is-arg 0) (= bi (- (node-len ff) 1)))
-                        (ct-eval-require-node (as raw:Val bv) (ff 'line)))
+                      ; U2: `ff` is the whole `defmacro`, so only the computed
+                      ; argument — a synthetic one-form body — is blamed at it.
+                      (when (= bi (- (node-len ff) 1))
+                        (ct-eval-require-node (as raw:Val bv)
+                          (if (!= is-arg 0)
+                            (ff 'line)
+                            (node-line (as raw:Node (node-at ff bi)) (ff 'line)))))
                       (when (!= (as ptr bv) null)
                         (let (bvv:StrView (bv 'val))
                           (when (and (!= (strview-byte-len bvv) 0)

@@ -722,3 +722,56 @@
     (drop (addr-of c))
     (drop (addr-of p)))
   (return (ok)))
+
+; ---------------------------------------------------------------------------
+; Stage 20 U2 — what `~` may substitute, and what a macro body may return
+; (design/stage20-macros/unquote-operand-typing.md; closes quasiquote-levels.md
+; §10.3)
+; ---------------------------------------------------------------------------
+;
+; One omission, three manifestations, and `check-ct-refused`'s clean-of-LLVM
+; assertion is the point of each: nested, the author used to get `'%t5' defined
+; with type 'i32' but expected 'ptr'` about generated text; bare and no-unquote,
+; the value was dropped by `compile-macro-body`'s TY-PTR filter and the macro
+; silently `returned null`, with no line, no `~` and no type.
+
+(deftest s20-unquote-operand-not-a-node
+  ; nested — §10.3's recorded face, the one LLVM used to object to
+  (try (check-ct-refused "(defmacro m ()
+  (let (n:i32 5)
+    `(_+ 0 ~n)))
+(defn main ():i32 (return (m)))
+" 3 "the unquote operand '~n' must evaluate to (raw Node), not i32"
+    "`~` substitutes its value as source, so it must evaluate to a node"))
+  ; bare — the same branch, and the `returned null` face
+  (try (check-ct-refused "(defmacro m ()
+  (let (n:i32 5)
+    `~n))
+(defn main ():i32 (return (m)))
+" 3 "the unquote operand '~n' must evaluate to (raw Node), not i32"
+    "`~` substitutes its value as source, so it must evaluate to a node"))
+  ; splice — the third manifestation, against `@__append` rather than `@__cons`
+  (try (check-ct-refused "(defmacro m ()
+  (let (n:i32 5)
+    `(_+ 0 ~@n)))
+(defn main ():i32 (return (m)))
+" 3 "the unquote operand '~@n' must evaluate to (raw Node), not i32"
+    "`~@` splices its value in as source, so it must evaluate to a node"))
+  (return (ok)))
+
+; The face with no unquote in it at all, which the check above cannot see: the
+; subject is the macro, because the fault is the body's own value. The second
+; case is what makes the line the BODY form's — `ff` is the whole `defmacro`,
+; so blaming it would have said line 1 here too.
+(deftest s20-macro-body-not-a-node
+  (try (check-ct-refused "(defmacro m () 5)
+(defn main ():i32 (return (m)))
+" 1 "macro 'm' must evaluate to (raw Node), not i32"
+    "a macro body's value is substituted as source, so it must evaluate to a node"))
+  (try (check-ct-refused "(defmacro m ()
+  `1
+  5)
+(defn main ():i32 (return (m)))
+" 3 "macro 'm' must evaluate to (raw Node), not i32"
+    "a macro body's value is substituted as source, so it must evaluate to a node"))
+  (return (ok)))

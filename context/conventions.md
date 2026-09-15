@@ -799,6 +799,50 @@ signed `i32` and pointer-width `usize`, and `usize` emits no instruction at
 all). **Blast radius follows the type's idiom in the code being compiled, not
 the helper's fan-out.** Sweep to find out; do not reason it out.
 
+## A warn-only sweep reporting zero must prove REACH, and the cheap proof is a compiler that warns on success
+
+The `--warn-ct-shadow`/U1 procedure — land a tightening as a warning, sweep
+`lib/`, `src/`, `examples/` and `tests/`, promote only on zero fires — has a
+failure mode that looks exactly like success: **zero fires and zero reaches are
+the same number.** Sweeping this tree by compiling every `.nuc` file individually
+makes that concrete: of 478 files, **196 exit non-zero** (163 deliberate refusal
+fixtures, plus the 13 `src/` modules and 20 `tests/suite-*.nuc` that do not stand
+alone and are only reached through `src/nucleusc.nuc` and `tests/nuctests.nuc`).
+A guard sitting past any of those abort points is never executed, and the sweep
+cannot tell you so.
+
+**Build a second compiler whose guard warns on the success path instead of the
+failure path, and re-run the same sweep.** It costs two builds and turns "zero
+fires" into "the branch was reached 50,207 times across 64 files and none of them
+fired". Keep the probe binary out of the tree — copy it to the scratch directory
+and revert the source edit immediately, before running the sweep, so the probe
+can never be what gets committed. A second, independent reading is worth having
+too (here: no failing fixture contains the token the guard is about), because the
+probe measures the tree as it compiled, not as it is written.
+
+The same caution applies to `make test`: the harness runs the compiler as a
+subprocess and captures its stderr internally, so a green suite is not evidence
+about a new warning's volume. Sweep with direct compiles and capture stderr
+yourself.
+
+**Measure the probe's per-file BASELINE before reading a count as coverage.**
+The auto-imported prelude is compiled into every unit, so a guard anywhere the
+prelude reaches has a floor: U2's macro-body guard reports 23 reaches for
+`(defn main ():i32 (return 0))`. A refusal fixture reporting exactly 23 has had
+*none of its own* constructs reached, and reads identically to one that had all
+of them — so compile a one-line program with the probe, subtract, and only then
+claim a file was covered. A file at the baseline is not evidence; find it
+covered elsewhere (a `src/` module through `src/nucleusc.nuc`, a `tests/suite-*`
+through `tests/nuctests.nuc`) or account for it by hand.
+
+And a new guard on an *old* site does not inherit the old site's sweep. U1
+measured `emit-qq-form`'s unquote arms; U2's second half sits in
+`compile-macro-body`'s body loop, which that sweep never executed a single check
+in. Same class of mistake, same file, different site — so it got its own
+warn-only build, its own sweep and its own reach probe, and the numbers came out
+an order of magnitude apart (12,111 reaches across 403 files versus 50,207
+across 64), because the two sites have completely different populations.
+
 ## Testing a wrong-ADDRESS defect: keep both addresses mapped, or the test reports a signal
 
 The natural repro for a bad index is the extreme one — W9 item 32 was filed from
