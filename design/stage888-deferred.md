@@ -465,8 +465,11 @@ site.
 
 Taken up 2026-09-15 as
 [stage20-macros/string-table-per-module.md](stage20-macros/string-table-per-module.md),
-and **built the same day** (`S1`, `S3`; `S2`, the boot convergence, is the
-document's own open phase). The analysis below stands as written and is the
+and **built the same day**, all four phases: `S1` the fix, `S2` the boot
+convergence, `S3` the assertion, `S4` the residue `S1`'s own sweep found. The
+tree is now at **zero** dead `@.str` constants over the 229 program modules in
+`tests/fixtures/` and `examples/`, and that claim is asserted with no allowlist
+by `tests/suite-audits.nuc`. The analysis below stands as written and is the
 design's §1; what the entry lacked was the two checks that make the fix small
 (`intern-string` keeps no dedup cache, and the CT paths already save and restore
 sibling globals) and the one exception that stops it being a find-and-replace
@@ -481,6 +484,16 @@ And the **125 dead constants** attributed to `src/repl.nuc`'s two `macrolet`
 tables measured 145, low because several of their spellings are minted by other
 macro bodies too. Everything else held: 92 dead constants in a hello-world-sized
 program had grown to 106 by the time of the fix, and is now **0**.
+
+**And the per-module table was not the whole of it.** A third mechanism reaches
+the same defect from outside any compile-time module: `emit-import-forms` points
+the definition stream at a throwaway sink for a compile-time-only import and
+runs the emitter unchanged into it, so the bodies' `@.str` *references* are
+discarded while `intern-string` still appends. No watermark or swap can separate
+that window's two kinds of string, because a `drain-mono-worklist` inside it
+writes to the real program buffer. `S4`'s answer is at the consumer instead —
+emit what the module *references* rather than what was interned, which closes
+the class by construction rather than by enumeration.
 
 `g-strs` is a single global vector and `emit-string-table` writes **all** of it
 into whichever module is being assembled. So every macro body's quasiquote

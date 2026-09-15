@@ -111,6 +111,121 @@
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
+; Stage 20 S4: no program module defines an @.str nothing references
+; ---------------------------------------------------------------------------
+
+; The tree-wide form of the claim above, which S3 could only make about two
+; synthesized programs: while `emit-import-forms`' compile-time-only sink still
+; interned into a table whose references it discarded, the honest form needed an
+; allowlist naming three library strings. S4 emits what the module references
+; rather than what was interned, so it is available with none — and stays the
+; check by construction, since any future path that interns into a discarded
+; stream trips here without being found first.
+; design/stage20-macros/string-table-per-module.md §8.
+;
+; REMOVABLE AS A UNIT: everything to the end marker below is used by nothing
+; else in the suite, and costs ~18% of its wall clock (two corpus compiles).
+
+(defn ir-byte (ir:StrView i:usize):i32
+  (return (as i32 (aref (ir 'data) (as i64 i)))))
+
+; Widen `marks` to cover `id`. Ids are positions in the module's own table, so
+; this appends; it does not sparsely map.
+(defn str-mark-slot ((marks (ref (Vector i32))) id:i32):void
+  (while (<= (count marks) (as usize id)) (conj marks 0)))
+
+; One walk of a module's IR: bit 1 marks an id DEFINED at the head of a line,
+; bit 2 marks it named anywhere else. A newline cannot occur inside a constant's
+; own `c"…"` bytes, so a line-initial token is always a definition, never the
+; content of some other constant.
+(defn str-table-marks (ir:StrView (marks (ref (Vector i32)))):void
+  (let (needle:StrView "@.str."
+        n:usize (strview-byte-len (addr-of ir))
+        off:usize 0
+        more:bool true)
+    (while more
+      (let (rest:StrView (strview-drop-bytes ir off))
+        (match (strview-find (addr-of rest) (addr-of needle))
+          ((some at)
+            (let (start:usize (+ off at)
+                  a:usize (+ start 6)
+                  id:i32 0
+                  digits:i32 0)
+              (while (and (< a n) (>= (ir-byte ir a) 48) (<= (ir-byte ir a) 57))
+                (set! id (+ (* id 10) (- (ir-byte ir a) 48)))
+                (set! digits (+ digits 1))
+                (set! a (+ a 1)))
+              (when (> digits 0)
+                (str-mark-slot marks id)
+                (let (head:bool (or (= start 0) (= (ir-byte ir (- start 1)) 10))
+                      def:bool (and (< (+ a 2) n)
+                                    (= (ir-byte ir a) 32)
+                                    (= (ir-byte ir (+ a 1)) 61)
+                                    (= (ir-byte ir (+ a 2)) 32)))
+                  (set! (marks (as usize id))
+                        (bit-or (invoke marks (as usize id))
+                                (if (and head def) 1 2)))))
+              (set! off (+ start 6))))
+          (none (set! more false)))))))
+
+(defn check-str-table-live (path:StrView ir:StrView):!void
+  (let ((marks (Vector i32)) (vector-new)
+        dead:i64 0
+        first:i64 -1)
+    (str-table-marks ir (addr-of marks))
+    (let (n:usize (count (addr-of marks))
+          i:usize 0)
+      (while (< i n)
+        ; Defined (bit 1) and named nowhere else (no bit 2).
+        (when (= (invoke (addr-of marks) i) 1)
+          (set! dead (+ dead 1))
+          (when (< first 0) (set! first (as i64 i))))
+        (set! i (+ i 1))))
+    (drop (addr-of marks))
+    (when (> dead 0)
+      (fail! path ": " dead " @.str constant(s) defined and referenced nowhere"
+             ", first @.str." first)))
+  (return (ok)))
+
+; Returns the number of modules actually EMITTED — a refusal fixture produces no
+; module and says nothing about this, so the population is not the file count.
+(defn str-table-live-over (dir:StrView):!i64
+  (let (d:DirEntries (try (read-dir dir))
+        n:usize (dir-count (addr-of d))
+        i:usize 0
+        seen:i64 0)
+    (while (< i n)
+      (let (nm:StrView (dir-name (addr-of d) i))
+        (when (strview-has-suffix nm ".nuc")
+          (let (p:String (str dir "/" nm)
+                pv:StrView (string-as-view (addr-of p))
+                c:Compiled (try (compile-path pv)))
+            (when (c 'ok?)
+              (try (check-str-table-live pv (compiled-ir (addr-of c))))
+              (set! seen (+ seen 1)))
+            (drop (addr-of c))
+            (drop (addr-of p)))))
+      (set! i (+ i 1)))
+    (drop (addr-of d))
+    (return (ok seen))))
+
+; One unit per directory, as the reader-parity walks are: each is a ~40s corpus
+; compile, and the suite shards by unit.
+(deftest string-table-live-tests-fixtures
+  (let (seen:i64 (try (str-table-live-over "tests/fixtures")))
+    ; A sweep that swept nothing passes every assertion it never made.
+    (try (check (> seen 0) "tests/fixtures to hold a program that compiles")))
+  (return (ok)))
+
+(deftest string-table-live-examples
+  (let (seen:i64 (try (str-table-live-over "examples")))
+    (try (check (> seen 0) "examples to hold a program that compiles")))
+  (return (ok)))
+
+; --- end of the removable S4 block; `string-table-per-module` above is the
+; --- cheap synthesized-program check and stands on its own.
+
+; ---------------------------------------------------------------------------
 ; Stage 15 W4a: no diagnostic reports line 0
 ; ---------------------------------------------------------------------------
 
