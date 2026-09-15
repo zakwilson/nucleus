@@ -147,5 +147,5 @@ Existing utilities to reuse:
    - Triggering a deliberate error in the REPL produces a JSON line that
      `compilation-shell-minor-mode` makes clickable, jumping to the
      offending source line.
-4. Update `design/stage999-future.md` to reflect that local Emacs
+4. Update `design/future/overview.md` to reflect that local Emacs
    interaction is now in stage 7 and other editors remain deferred.

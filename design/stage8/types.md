@@ -15,7 +15,7 @@
 * Handle C enums in headers
 * Handle function pointers in structs. Nucleus has function pointers, and if they're missing functionality equivalent to C, that needs to be addressed.
 
-## Deferred - note these in stage888-deferred.md
+## Deferred - note these in deferred/overview.md
 
 * Conditional compilation to use system-dependent types where that is desired.
 * `restrict` and `const` qualifiers or equivalent
@@ -64,7 +64,7 @@ Resolve at least 1, 3, 5, 7, 8 and I'm ready. END TRANSMISSION.
 1. An anonymous union is a type expression. A named union both defines and "returns" it as a type expression.  Match C for anonymous union field names - I think we need to for interop.
 2. Bit fields are only inside structs and unions for now. Match C.
 3. &attributes takes a variable number of attributes which can be symbols or lists (and must be lists if they take arguments)
-4. `f80` is strictly the 80-bit extended precision implementation. Implementing whatever other platforms do with `long double` is deferred. Note in stage888-deferred.md
+4. `f80` is strictly the 80-bit extended precision implementation. Implementing whatever other platforms do with `long double` is deferred. Note in deferred/overview.md
 5. Use the type name like a constructor: `(cf32 3.0 4.0)`
 6. Postfix for both (i32 volatile) and i32:volatile. That shouldn't require any changes to sugaring.
 7. A real enum type

@@ -82,7 +82,7 @@ constraints (overview.md, AGENTS.md "Pre-release"):
 
 | Decision | Resolution |
 |---|---|
-| **Scope of Stage 10** | Lifecycle **and** nullability — the two areas above. Bounds-checked slices, `const`/read-only pointers, and sum-types+`match` are noted as adjacent follow-ons but are **out of scope** here (tracked in [../stage999-future.md](../stage999-future.md)). |
+| **Scope of Stage 10** | Lifecycle **and** nullability — the two areas above. Bounds-checked slices, `const`/read-only pointers, and sum-types+`match` are noted as adjacent follow-ons but are **out of scope** here (tracked in [../future/overview.md](../future/overview.md)). |
 | **Non-null rollout** | **Opt-in spelling first, flip later.** Introduce `(ref T)` as a new non-null pointer type; `(ptr T)` keeps today's raw/nullable meaning so the bootstrap is untouched. Convert the compiler to `(ref T)` incrementally (leaning on its existing null-guards for narrowing). The eventual **flip** — making `(ptr T)` itself mean non-null and retiring raw to an `unsafe`-named spelling — is deferred to a later stage and decided with conversion data. Mirrors the Stage 9 byte-identical-bootstrap discipline. |
 | **`unsafe` frontier** | **Naming convention only.** Relegate raw ops to an `unsafe/`-named namespace/library; no enforced lexical `(unsafe …)` block in this stage. |
 

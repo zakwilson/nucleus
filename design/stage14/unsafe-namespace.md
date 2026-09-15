@@ -26,7 +26,7 @@ contract-subverting site in the tree — the audit trail Stage 10 promised.
 not an enforced lexical construct, in this stage"* and deferred the real
 gathering: *"Relegate raw ops to an `unsafe/`-named namespace/library"*, with
 flip.md noting *"no `unsafe` namespace yet — arrives with namespaces"*. Stage 12
-delivered namespaces. The stage888-deferred.md "`unsafe` lexical block" entry
+delivered namespaces. The deferred/overview.md "`unsafe` lexical block" entry
 records the same plan. This doc is the follow-through; the *enforced block*
 remains deferred (§Rejected).
 
@@ -112,7 +112,7 @@ remains deferred (§Rejected).
 ## 2. Non-goals
 
 - **No enforced `(unsafe …)` lexical block.** Still deferred
-  (stage888-deferred.md entry stands). The namespace delivers the grep/audit
+  (deferred/overview.md entry stands). The namespace delivers the grep/audit
   value now; a future block can consume the roster this stage creates.
 - **No change to implicit coercion.** Call-site adaptation, binop widening,
   literal typing, the elem-less-`ptr` `void*` flow exemption

@@ -33,7 +33,7 @@ converged (incl. Windows IRs).
   type via want). Deleted `make-vec`/`mkvec`/`mkhash` from src/nucleusc.nuc and
   rewrote all ~43 registry-construction sites to `(vector-new-in (addr-of
   g-arena-alloc))` / `(hashmap-new-in …)` — the `cast`-over-`make-vec` type hole
-  (stage999-future.md) is retired (element types now honest via want). Reader
+  (future/overview.md) is retired (element types now honest via want). Reader
   empty-literal hints retargeted to the new constructors.
   `examples/constructors.nuc` + `tests/expected/constructors.out` cover stack/
   with-Drop/explicit-alloc/heap-in-arena/HashMap-two-tyvar/HashSet; a negative
@@ -68,7 +68,7 @@ type twice and splits construction across two statements
 (`(with ((v (ref (Vector i32))) (alloca (Vector i32))) (vector-init v) …)`);
 the compiler's own globals go through hand-rolled per-project macros
 (`mkvec`/`mkhash`/`make-vec`, src/nucleusc.nuc:494-513) whose `cast` over
-`make-vec` is the type hole stage999-future.md laments; and every collection
+`make-vec` is the type hole future/overview.md laments; and every collection
 re-invents constructor names (`vector-init`/`hashmap-init`/`string-new`).
 
 The root cause is single: **type variables bind from argument types only.**
@@ -192,7 +192,7 @@ cases they can't, and the error hints get retargeted in TC-4.
   ceremony.
 - **No literal-typing changes.** LW owns literal adaptation; want composes
   with it (§3 TC-1) but does not re-type literals.
-- **`defvar` inits stay literal-only** (stage999-future.md); globals adopt
+- **`defvar` inits stay literal-only** (future/overview.md); globals adopt
   constructors via `set!` in init functions, which is where the compiler
   builds its registries anyway.
 
@@ -348,7 +348,7 @@ Adoption and retirement:
 - Docs: docs/collections.md §Construction rewritten around the new idiom
   (the ref+alloca+init form demoted to "caller-managed storage");
   lib/vector.nuc:17-22's no-value-constructor rationale replaced;
-  docs/generics.md documents the want channel; stage999-future.md's
+  docs/generics.md documents the want channel; future/overview.md's
   constructor lament resolved.
 - Tests: `examples/constructors.nuc` (stack + with/Drop + explicit-allocator
   + heap-in-arena + a `(HashMap CStr i32)` two-tyvar bind); negative

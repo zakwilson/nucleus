@@ -6,7 +6,7 @@
 * `defvar` must accept all literal values the language can express
 * `extern` should work for Nucleus-to-C and Nucleus-to-Nucleus, not just C-to-Nucleus
 
-Storage classes are deferred. Note it in stage888-deferred.md
+Storage classes are deferred. Note it in deferred/overview.md
 
 #### Robot
 
@@ -33,7 +33,7 @@ Implemented in this branch:
   `f32`/`f64` mappings to `float`/`double`), and `--emit-nuch` /
   the nuch importer round-trip `defvar` as `(extern name:type)`.
 * Storage classes (`static`, `register`, `thread_local`) are
-  recorded in `design/stage888-deferred.md`.
+  recorded in `design/deferred/overview.md`.
 
 Known limitations not blocking this stage:
 

@@ -3,7 +3,7 @@
 #### Designer
 
 Nucleus currently lacks an error handling mechanism (`die-at` isn't
-error-handling — [../stage999-future.md](../stage999-future.md)). Survey the
+error-handling — [../future/overview.md](../future/overview.md)). Survey the
 options. Candidates include: an Error type with a shape similar to `Maybe`,
 with definable error values representing errors or unusual conditions; a
 traditional exception system; a condition/restart system. Add any good options
@@ -200,7 +200,7 @@ the zero-mandatory-cost rule, unlike B.
 
 Three Nucleus-specific frictions:
 
-1. **No closures** ([../stage999-future.md](../stage999-future.md)). CL's
+1. **No closures** ([../future/overview.md](../future/overview.md)). CL's
    ergonomics lean entirely on closures for handlers and restarts. Without
    them, every handler is a fn-pointer + context-struct pair — workable (it's
    how C callbacks live) but heavy enough that the system loses much of its

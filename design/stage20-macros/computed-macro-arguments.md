@@ -2,7 +2,7 @@
 
 **Status: §2.1 at width (a) selected 2026-09-14; plan in §4, phases `C1`–`C4`.**
 Supersedes the "`macmap` over a computed row list" entry in
-[stage888-deferred.md](../stage888-deferred.md), whose stated blocker is stale —
+[deferred/overview.md](../deferred/overview.md), whose stated blocker is stale —
 see §1.3.
 
 `macmap`'s rows are literal. The question is what it would take to write
@@ -62,7 +62,7 @@ intact. Only the evaluation is missing.
 
 ### 1.3 The recorded blocker is stale
 
-[stage888-deferred.md](../stage888-deferred.md) says a general form "would need
+[deferred/overview.md](../deferred/overview.md) says a general form "would need
 `macmap` to expand its own rows argument, which means calling `macroexpand-form`
 from `lib/macros.nuc`" and violating the rule against `lib/` reaching into the
 compiler's exported surface. That framing assumed *expansion* is the only route.
@@ -252,7 +252,7 @@ diagnostics count post-splice.
 
 **C4 — documentation and the stale deferral.** `docs/macros.md` gains the
 feature and its boundary (§4.2); `context/macros-jit.md` gains a bullet;
-[stage888-deferred.md](../stage888-deferred.md)'s "`macmap` over a computed row
+[deferred/overview.md](../deferred/overview.md)'s "`macmap` over a computed row
 list" is rewritten the way "Name pasting" was, since §1.3 shows its recorded
 blocker is not the real one; `design/progress.md` and
 [overview.md](../overview.md) record what was built.
