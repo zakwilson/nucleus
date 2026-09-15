@@ -6803,3 +6803,45 @@ The throwaway is still how you prove the guard itself works — a marker that fi
 **5 times under `make test`, in exactly the five units written to exercise the
 path**, is what makes the zeroes elsewhere a measurement rather than a broken
 `eprint`.
+
+## A swap cannot serve a nested reader — when shared state must stay readable, use a WATERMARK
+
+Stage 20 S1 gave each compile-time module its own string-literal table.
+`design/stage20-macros/string-table-per-module.md` prescribed the obvious shape:
+save `g-strs` in the "redirect global state" `let` beside `saved-qq-used`,
+install a fresh vector, restore. It also carried one documented exception —
+`ct-mirror-flush` must keep emitting the **program's** table, because the
+`define` spans it copies out of `g-def-buf` name program `@.str` ids.
+
+**The two are incompatible, and the reason generalizes: the exception is
+reachable from inside the bracket.** `expand-macro-call` flushes a mirror before
+every expansion, a macro body is itself compiled with `emit-node`, and
+`ct-mirror-build-init` runs `emit-node` over a program global's initializer — so
+a mirror is built while the swapped-in table is live, and "leave that call alone"
+then means "give the mirror the CT body's table". Measured on a throwaway build:
+`use of undefined value '@.str.29'`. It cannot be patched either, because under
+a swap the mirror would need *both* tables and both start at `@.str.0`.
+
+The shape that works keeps one object and records a position in it: each path
+notes `(count g-strs)` as a **watermark**, the emitter takes it as a `from`
+parameter and writes only the tail, and a truncate drops that tail when the
+module is assembled. Every reader keeps seeing the program's ids at all times,
+so the nested case is right by construction rather than by a restore.
+
+Two rules:
+
+* **Before writing a save/restore of shared state, ask who else reads it while
+  the bracket is open.** If any nested call needs the *original*, a swap has no
+  way to hand it over — an ambient global cannot be two things at once. This is
+  the sibling of `g-def-stream-program`, which solves the same problem by
+  keeping a second name for the real one; a watermark solves it by never taking
+  the name away.
+* **A watermark degrades better under `die-at`.** A longjmp past a truncate
+  leaves the program a few extra rows; a longjmp past a restore leaves the
+  program pointing at the *wrong table entirely*.
+
+The call-site census is worth its own line: the design tabulated four
+`emit-string-table` callers and the tree has five — `src/repl.nuc` assembles a
+REPL entry's own program module and never appeared in a plan written against
+`src/nucleusc.nuc`. Grep the whole tree for the function you are about to change
+the signature of, not the file the design was written from.

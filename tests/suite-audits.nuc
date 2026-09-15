@@ -78,6 +78,38 @@
   (try (check-script-ok "python3" "scripts/check-repl-roster.py"))
   (return (ok)))
 
+; Stage 20 S1: the string table is per module. `g-strs` is one vector shared by
+; every module the compiler assembles, so before S1 a macro body's quasiquote
+; spellings were emitted into the PROGRAM module and never referenced there —
+; 106 dead `@.str` constants in a program with no literal of its own, and one
+; more for every macro anyone adds to `lib/prelude.nuc`. The subject is the
+; tree's own prelude rather than any one program, and the symptom is bytes
+; nobody reads, so nothing but an assertion keeps the class away.
+; design/stage20-macros/string-table-per-module.md §5 (S3).
+(deftest string-table-per-module
+  ; No literal of its own, and every path that used to leak: the prelude's macro
+  ; bodies, this program's own `defmacro`, and the expansion of both.
+  (let (c:Compiled (try (compile-source "(defmacro s20-twice (x) `(_+ ~x ~x))
+(defn main ():i32
+  (let (n:i32 1)
+    (dotimes (i 3) (set! n (s20-twice n)))
+    (when (> n 0) (return 1))
+    (return 0)))
+")))
+    (try (check (c 'ok?) "the literal-free program to compile"))
+    (try (check-not-contains (compiled-ir (addr-of c)) "@.str"))
+    (drop (addr-of c)))
+  ; The control. Without it the claim above is also satisfied by a compiler that
+  ; emits no string table at all, which is the other way to get this wrong.
+  (let (c:Compiled (try (compile-source "(import-use \"stdio.h\")
+(defn main ():i32 (return (puts c\"x\")))
+")))
+    (try (check (c 'ok?) "the one-literal program to compile"))
+    (try (check-contains (compiled-ir (addr-of c))
+                         "@.str.0 = private unnamed_addr constant [2 x i8] c\"x\\00\""))
+    (drop (addr-of c)))
+  (return (ok)))
+
 ; ---------------------------------------------------------------------------
 ; Stage 15 W4a: no diagnostic reports line 0
 ; ---------------------------------------------------------------------------

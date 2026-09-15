@@ -15452,7 +15452,9 @@
       (emit irs "; ModuleID = '<ct-mirror " g-ct-mirror-count ">'\n")
       (emit irs "target triple = \"" ((as ref:Target g-host-target) 'triple) "\"\n\n")
       (emit-all irs g-type-stream)
-      (emit-string-table irs 0)
+      ; From 0: the spans copied above are program text and name the PROGRAM's
+      ; `@.str` ids, so a compile-time body's tail is not what this module needs.
+      (emit-string-table irs 0 0)
       (emit-all irs g-decl-stream)
       (emit-all irs mdecl)
       (emit-all irs mdef)
@@ -15637,6 +15639,9 @@
       (let (saved-g-out:raw:String g-out
             saved-decl-out:raw:String g-decl-out
             saved-qq-used:i32 g-qq-used
+            ; S1: a watermark, not a swap — a nested `ct-mirror-flush` still has
+            ; to see the program's ids (string-table-per-module.md §3, as built).
+            ct-str-base:i32 (unsafe/cast i32 (count g-strs))
             saved-ct-roots:(ref (Vector Symbol)) g-ct-roots
             saved-ct-defns:(ref (Vector Symbol)) g-ct-module-defns
             saved-ct-name:Symbol g-ct-body-name
@@ -15846,8 +15851,10 @@
               ; Type defs: main-so-far + CT-specific
               (emit-all irs g-type-stream)
               (emit-all irs ct-type)
-              ; String constants (shared)
-              (emit-string-table irs 0)
+              ; String constants: this body's own, then dropped from the shared
+              ; table before the JIT call below can flush a mirror.
+              (emit-string-table irs 0 ct-str-base)
+              (strs-truncate-to ct-str-base)
               ; Declarations: main-so-far + CT-specific
               (emit-all irs g-decl-stream)
               (emit-all irs ct-decl)
@@ -16022,6 +16029,8 @@
             (let (saved-g-out:raw:String g-out
                   saved-decl-out:raw:String g-decl-out
                   saved-qq-used:i32 g-qq-used
+                  ; S1: a watermark, not a swap — see `emit-compile-time`.
+                  macro-str-base:i32 (unsafe/cast i32 (count g-strs))
                   saved-ct-roots:(ref (Vector Symbol)) g-ct-roots
                   saved-ct-defns:(ref (Vector Symbol)) g-ct-module-defns
                   saved-ct-name:Symbol g-ct-body-name
@@ -16212,7 +16221,8 @@
                     (when (!= g-interactive 0)
                          (emit-all irs g-repl-preamble))
                     (emit-all irs g-type-stream)
-                    (emit-string-table irs 0)
+                    (emit-string-table irs 0 macro-str-base)
+                    (strs-truncate-to macro-str-base)
                     (emit-all irs g-decl-stream)
                     (emit-all irs ct-decl)
                     (emit-all irs ct-def)
@@ -16374,22 +16384,25 @@
 ; `sections` is passed rather than read from `ir-sections-on` because the table
 ; is written at module-assembly time, after the stream swaps that predicate reads
 ; have been undone — a CT/macro module would look like the program module here.
-(defn emit-string-table (out:&String sections:i32):void
+; `from` is a watermark into the one shared table: a compile-time module emits
+; only what its own body interned (design/stage20-macros/string-table-per-module.md).
+(defn emit-string-table (out:&String sections:i32 from:i32):void
   (doseq (sl g-strs (VecIter ref:StrLit))
-    (let (ir-len:i32 (+ (sl 'len) 1))
-      (emit out "@.str." (sl 'id) " = private unnamed_addr constant [" ir-len " x i8] c\"")
-      (dotimes (j (sl 'len))
-        (let (c:i32 (text-byte-at (sl 'bytes) (as i64 j)))
-          (if (or (= c 92)
-                  (= c 34)
-                  (< c 32) (>= c 127))
-            (emit out "\\" (hexu c 2))
-            (emit out (as Char (as ui32 c))))))
-      (emit out "\\00\"")
-      (when (!= sections 0)
-        (emit out ", section \".rodata..str." (sl 'id) "\""))
-      (emit out ", align 1\n")))
-  (when (!= (count g-strs) 0) (emit out "\n")))
+    (when (>= (sl 'id) from)
+      (let (ir-len:i32 (+ (sl 'len) 1))
+        (emit out "@.str." (sl 'id) " = private unnamed_addr constant [" ir-len " x i8] c\"")
+        (dotimes (j (sl 'len))
+          (let (c:i32 (text-byte-at (sl 'bytes) (as i64 j)))
+            (if (or (= c 92)
+                    (= c 34)
+                    (< c 32) (>= c 127))
+              (emit out "\\" (hexu c 2))
+              (emit out (as Char (as ui32 c))))))
+        (emit out "\\00\"")
+        (when (!= sections 0)
+          (emit out ", section \".rodata..str." (sl 'id) "\""))
+        (emit out ", align 1\n"))))
+  (when (> (unsafe/cast i32 (count g-strs)) from) (emit out "\n")))
 
 ; Stage 10 errors: the deferror descriptor table (design/stage10/errors.md §8).
 ; Two arrays of name/message pointers, indexed by error id (slot 0 reserved =
@@ -19674,7 +19687,7 @@
         (emit irs "!0 = !{i32 1, !\"target-abi\", !\"" target-abi "\"}\n")))
     (emit irs "\n")
     (emit-all irs g-type-stream)
-    (emit-string-table irs g-elf-sections)
+    (emit-string-table irs g-elf-sections 0)
     (emit-deferror-table irs)
     (emit-all irs g-decl-stream)
     (emit-all irs g-def-buf)

@@ -1460,7 +1460,9 @@
     ; declare this module defines — see repl-put-preamble. R4: this module's own
     ; types were just absorbed into it, so it is the whole type section.
     (repl-put-preamble irs (if (symbol-none? fname) (symbol-none) (symbol-intern (fstr "@" fname))))
-    (emit-string-table irs 0)
+    ; From 0: this is the entry's PROGRAM module, and its def buffer names every
+    ; id the session has interned so far.
+    (emit-string-table irs 0 0)
     ; This module's declarations
     (emit-all irs g-decl-stream)
     ; This module's definitions — optionally renaming the first "@<fname>("

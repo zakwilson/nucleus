@@ -461,7 +461,26 @@ The second half of the entry stands and is why the wrapper idiom remains the
 baseline any feature had to beat: it works today and costs one adapter macro per
 site.
 
-### The string-literal table is one per compilation, not one per module
+### The string-literal table is one per compilation, not one per module — **FIXED**
+
+Taken up 2026-09-15 as
+[stage20-macros/string-table-per-module.md](stage20-macros/string-table-per-module.md),
+and **built the same day** (`S1`, `S3`; `S2`, the boot convergence, is the
+document's own open phase). The analysis below stands as written and is the
+design's §1; what the entry lacked was the two checks that make the fix small
+(`intern-string` keeps no dedup cache, and the CT paths already save and restore
+sibling globals) and the one exception that stops it being a find-and-replace
+(`ct-mirror-flush` must keep emitting the *program's* table, because the spans
+it copies reference program `@.str` ids).
+
+Two corrections the build made to the paragraphs below. **The "save and restore
+`g-strs`" fix is not the one that works** — a mirror flush nests inside the very
+bodies the swap brackets, so the exception above cannot be honoured by a swap at
+all; the shipped form is a watermark into the one shared table, per §6.1 there.
+And the **125 dead constants** attributed to `src/repl.nuc`'s two `macrolet`
+tables measured 145, low because several of their spellings are minted by other
+macro bodies too. Everything else held: 92 dead constants in a hello-world-sized
+program had grown to 106 by the time of the fix, and is now **0**.
 
 `g-strs` is a single global vector and `emit-string-table` writes **all** of it
 into whichever module is being assembled. So every macro body's quasiquote

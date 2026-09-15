@@ -177,6 +177,13 @@
     (conj g-strs sl)
     (return id)))
 
+; Drop everything a compile-time module's body interned, once that module has
+; been assembled — the program's own ids are unmoved because they are all below
+; `n` (design/stage20-macros/string-table-per-module.md §3).
+(defn strs-truncate-to (n:i32):void
+  (while (> (unsafe/cast i32 (count g-strs)) n)
+    (remove-at g-strs (as usize (- (unsafe/cast i32 (count g-strs)) 1)))))
+
 ; ============================================================
 ; Codegen helpers
 ; ============================================================

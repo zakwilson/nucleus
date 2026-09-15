@@ -626,8 +626,13 @@ once per quasiquote in its body) and renumbers every `@.str` after them.
 The gate actually used, and the one M2/M4 should use: **normalise `@.str.N`
 numbering and diff; nothing outside added string constants may move.** For M1
 the whole IR delta is five dead constants — three `__macmap` and two `true-if`
-— and not one instruction. The table itself is now a deferred item
-(`design/stage888-deferred.md`).
+— and not one instruction.
+
+**Fixed 2026-09-15** by [string-table-per-module.md](string-table-per-module.md)
+(`S1`, `S3` done; `S2`, the boot convergence, open): the table is now per
+module, a literal-free program carries **zero** dead constants where it carried
+106, and the gate above is no longer needed — a `lib/macros.nuc` edit that adds
+no program string moves no program byte.
 
 ### 9.3 `text-token-is-definer` keeps its `macrolet`
 
