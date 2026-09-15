@@ -30,13 +30,8 @@ deferred.
 
 ## Base features
 
-* `addr-of` probably needs a reader macro; likewise a sigil/reader macro for `ref` in type signatures
 /* `set!` should take multiple pairs like `let` and/or be polymorphic
 * `inc!`/`dec!` predate macros; they should probably become macros over `set!`
-
-## macrolet
-
-Lexically scoped macros are useful, especially when it's desirable to capture symbols from the enclosing scope. Toplevel macros also capture, but that's a footgun because their behavior will vary by call site.
 
 ## errata
 

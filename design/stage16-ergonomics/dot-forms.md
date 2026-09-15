@@ -177,7 +177,7 @@ is the answer unless a case appears.
 ## 4. What none of this fixes
 
 Field iteration over a **heterogeneous** struct — see
-[stage888-deferred.md](../stage888-deferred.md#what-survives-that-fix-field-iteration-over-a-heterogeneous-struct).
+[deferred/overview.md](../deferred/overview.md#what-survives-that-fix-field-iteration-over-a-heterogeneous-struct).
 The homogeneity gate is a typing fact, not a spelling one, and no selector
 syntax removes it.
 

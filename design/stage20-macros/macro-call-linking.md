@@ -1,7 +1,7 @@
 # Stage 20, part three — What a macro body may call
 
 *Designed 2026-09-11. Brought back from the deferral in
-[stage888-deferred.md](../stage888-deferred.md) §"A macro body may call only what
+[deferred/overview.md](../deferred/overview.md) §"A macro body may call only what
 the compiler binary exports", which filed it as "a substantial feature, and not
 one Stage 20 needs". Part of Stage 20 rather than a stage of its own for the
 same reason [quasiquote-levels.md](quasiquote-levels.md) is: it is the same
@@ -338,7 +338,7 @@ exposes a search order only for explicit `ExecutionSession` lookups
 `JITDylib::setLinkOrder`. Reaching it needs C++, and Stage 16 retired
 `src/repl_shim.c` on the standing rule that the compiler is pure Nucleus.
 Rejected as unreachable, not as wrong — and filed as the first concrete want
-for C++ interop in [stage888-deferred.md](../stage888-deferred.md) §"C interop
+for C++ interop in [deferred/overview.md](../deferred/overview.md) §"C interop
 boundaries", where it belongs as a library question rather than a language one.
 
 **C — copy the closure into each macro's own module.** Self-contained modules,
@@ -935,7 +935,7 @@ which now takes the body's line); `docs/macros.md` gains §3.5's five edges and 
 cross-target one; `docs/compiler.md`'s `--target=` and `--warn-ct-shadow` rows say
 what changed. `context/macros-jit.md` bullet 11 was already §3.1 (L4 rewrote it,
 L5/L6 extended it) and needed the two L8 sentences, not a rewrite; the
-[stage888-deferred.md](../stage888-deferred.md) entry was already reduced to the
+[deferred/overview.md](../deferred/overview.md) entry was already reduced to the
 `-rdynamic` rule before this phase. Gate met: `make bootstrap` byte-identical with
 the mirror counter **measured** 0 (a throwaway marker, since removed and grepped
 for — 0 over `make bootstrap`, 0 over a 478-file sweep of `examples/`, `lib/`,
@@ -980,7 +980,7 @@ Smaller, from the consistency pass. `docs/macros.md` said "Three consequences" o
 four bullets (L6 added the fourth). `(invoke v 0:usize)` does not parse — the
 `name:type` sugar needs a name, so an index literal is `(as usize 0)`. `&rest` in
 test code is read as the variadic marker, not as `addr-of rest`. And
-[stage888-deferred.md](../stage888-deferred.md)'s **"Name pasting"** entry is stale:
+[deferred/overview.md](../deferred/overview.md)'s **"Name pasting"** entry is stale:
 its stated blocker was "no `intern` over formatted parts reachable from a macro
 body", and after L4 a macro body may call its own helper, so
 `(str "g-" …)` → `intern-node` → a spliced symbol works — measured, exit 42.

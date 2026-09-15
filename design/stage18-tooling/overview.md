@@ -2605,7 +2605,7 @@ module that is wrong in exactly one respect. All three in `tests/nuctests.nuc`,
 which is not an IR-snapshot input.
 
 **Raised, not fixed:** `--target=avr` still emits `align 8` on 16-bit pointer
-slots (`design/stage888-deferred.md`). It is a codegen change, and the units
+slots (`design/deferred/overview.md`). It is a codegen change, and the units
 that would gate it are the ones being ported here.
 
 **Verified by breaking it**, thirty-five ways covering all thirty-six units —
@@ -2822,7 +2822,7 @@ prefix now.
 refusals grepped for `set literal: mixed element types`, which cannot tell one
 mixture from another. Three of the five messages go on to name the two
 conflicting types (`-- 'Keyword' and 'StrView'`) and two do not; the three are
-pinned in full and the two are recorded in `design/stage888-deferred.md`, so
+pinned in full and the two are recorded in `design/deferred/overview.md`, so
 the inconsistency has somewhere to land rather than being frozen by a needle
 that never looked.
 
@@ -3007,7 +3007,7 @@ at line 19, then line 20 is an error — `(return 0)` cannot produce the
 and never warns. The shell's `2>&1 >/dev/null || true` swallowed the exit
 status and its grep found the one warning. The comment recorded the symptom
 without the cause. `l13-cheader-warns` pins both halves now, and the fixture
-defect is written up in `design/stage888-deferred.md`: fixing it edits an
+defect is written up in `design/deferred/overview.md`: fixing it edits an
 IR-snapshot input whose recorded stderr changes with it, so it needs a re-take
 with a stated reason rather than a quiet edit here.
 
@@ -3201,7 +3201,7 @@ Verified by putting an error in a suite module: `PASS compiler-works` prints,
 `--shuffle` went with it. The suite has `--list`, `--run`, `--shard` and
 `--no-skip`; shuffled order-independence is an external `shuf` over `--list` plus
 one `--run` per name, which costs 966 process spawns. An in-suite `--shuffle
-<seed>` over `test-run-all`'s stride is raised in `design/stage888-deferred.md`
+<seed>` over `test-run-all`'s stride is raised in `design/deferred/overview.md`
 rather than absorbed here.
 
 **41 comments repointed** across `examples/`, `tests/fixtures/`, `tests/`,

@@ -21,7 +21,7 @@ Grouped by what a reader needs to do next:
 
 - **Standalone `&T` in a type slot: generalize the sugar, or ban it.**
   [ref-sigil.md](ref-sigil.md) §5/§6 and
-  [../stage888-deferred.md](../stage888-deferred.md) ("Pointer-kind spellings").
+  [../deferred/overview.md](../deferred/overview.md) ("Pointer-kind spellings").
   `p:&T` is the lexer rewrite and leaves no trace; a bare `&T` is the address-of
   reader macro, so a type slot gets `(addr-of T)` — legal, IR-identical, and
   printed verbatim into a `.nuch` by `--emit-nuch`. The 2026-09-07 sweep removed

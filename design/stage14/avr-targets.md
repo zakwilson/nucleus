@@ -162,7 +162,7 @@ values / boxed closures / `dyn` (addrspace(1), diagnostic in AVR-6); `f64`
 (diagnostic or documented multilib requirement); C struct-by-value interop on
 AVR (avr-gcc register-packing ABI deferred); a progmem type system (`(flash
 T)` — sketched in AVR-6, deferred; mapped-flash parts don't need it);
-`import-only` tree-shaking (stage999-future.md:97 — unnecessary, lazy
+`import-only` tree-shaking (future/overview.md:97 — unnecessary, lazy
 emission already yields zero-dep programs).
 
 ## 4. Decisions
@@ -645,7 +645,7 @@ ATtiny1634, blink + UART on the AVR32DD20 — with `.elf` size recorded.
 - **Synthesizing our own crt/vector table.** avr-libc's crt + weak
   `__vector_N` override is standard and battle-tested; emitting our own buys
   nothing and adds a divergence to maintain.
-- **`import-only` tree-shaking as a prerequisite** (stage999-future.md:97).
+- **`import-only` tree-shaking as a prerequisite** (future/overview.md:97).
   Ground truth §2.8: emission is already lazy to the point that minimal
   programs reference zero runtime symbols; dead-code concerns are handled by
   `-ffunction-sections`-style linker GC later if ever needed.

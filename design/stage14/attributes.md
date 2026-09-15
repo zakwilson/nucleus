@@ -1,7 +1,7 @@
 # Stage 14 — Declaration attributes: `:volatile`, `:thread-local`, and the keyword-attribute slot
 
 Storage class specifiers were deferred at Stage 8 (tracked in
-stage888-deferred.md until this doc absorbed the item; the overview's
+deferred/overview.md until this doc absorbed the item; the overview's
 oldest TODO). This doc resolves the deferral by committing to
 a **keyword-attribute slot on declarations** — one extensible position that
 absorbs the whole family C spreads across storage-class specifiers, type
@@ -255,7 +255,7 @@ the spec it inherits.
   examples/logic.nuc to the new spellings; verify by emitted-IR identity
   diff. Docs sweep: docs/types.md + docs/builtins.md volatile sections
   rewritten around the slot, docs/toplevel.md (`defvar` row + the
-  storage-class deferral note), stage888-deferred.md pointer, overview.md
+  storage-class deferral note), deferred/overview.md pointer, overview.md
   TODO close-out.
 
   **Status: DONE (2026-07-16).** `examples/volatile.nuc`/`logic.nuc`
@@ -267,7 +267,7 @@ the spec it inherits.
   rewritten with the new spelling primary and the old postfix spellings
   noted as still-accepted; `docs/toplevel.md`'s `defvar` row rewritten;
   `design/overview.md`'s TODO item updated to reflect AT-1 done/AT-2 done.
-  `design/stage888-deferred.md` needed no edit — the storage-class item was
+  `design/deferred/overview.md` needed no edit — the storage-class item was
   already removed from that file during the 2026-07-02 prune once this doc
   absorbed it. `make clean && make` clean, `make test` 178/178 (docs/
   examples only, no compiler source changed, no bootstrap needed).

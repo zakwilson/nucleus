@@ -1,7 +1,7 @@
 # The string-literal table, one per module
 
 **Status: done.** Phases `S1`–`S4`, all landed 2026-09-15. Promoted out of
-[stage888-deferred.md](../stage888-deferred.md) on 2026-09-15, where it was
+[deferred/overview.md](../deferred/overview.md) on 2026-09-15, where it was
 recorded as measurement without a fix.
 
 ---
@@ -109,7 +109,7 @@ make yet — no program module defines an `@.str` nothing references — promote
 into `tests/suite-audits.nuc` with no allowlist. **§8's plan held; §9.1 is the
 one row it was missing.**
 
-**Documentation:** [stage888-deferred.md](../stage888-deferred.md)'s entry
+**Documentation:** [deferred/overview.md](../deferred/overview.md)'s entry
 becomes a pointer here; [overview.md](overview.md) and
 [progress.md](../progress.md) gain the phase.
 

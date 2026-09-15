@@ -90,7 +90,7 @@ A symbol *value* today is `(quote foo)`, typed `(raw Node)`
    reference. Symbols must be written `'a`, which reads as the *list*
    `(quote a)` — so `lit-elem-kind`, which switches on a node's `kind`, cannot
    classify it at all. It needs a list-shape check. (This is the same ambiguity
-   recorded in `stage888-deferred.md` under "Symbols for struct field access".)
+   recorded in `deferred/overview.md` under "Symbols for struct field access".)
 2. **The element type is not a symbol.** `(raw Node)` is a compound type node,
    so `lit-kind-type`'s "return a spelling for `lit-sym`" contract breaks. The
    builder would need a type-*node* return, touching all three readers.
@@ -241,7 +241,7 @@ That is tolerable today because symbol keys are newly possible and rare. Ship
 wart moves from "obscure" to "on the happy path".
 
 The principled fix is narrow and is the disambiguation
-`stage888-deferred.md` asks for under "Symbols for struct field access": **an
+`deferred/overview.md` asks for under "Symbols for struct field access": **an
 explicitly quoted symbol is a value, never a selector.** A `(quote sym)` node in
 selector position should suppress the field-name interpretation rather than be
 stripped to its inner symbol. That is a strictly-narrowing change — it can only

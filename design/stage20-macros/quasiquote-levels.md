@@ -1,7 +1,7 @@
 # Stage 20, part two — Quasiquote nesting levels
 
 *Designed 2026-09-11, built 2026-09-11 (Q1–Q5; §10). Brought back from the
-deferral in [stage888-deferred.md](../stage888-deferred.md) §"Quasiquote has no
+deferral in [deferred/overview.md](../deferred/overview.md) §"Quasiquote has no
 nesting level", which asked for a design before an attempt. Part of Stage 20
 rather than a stage of its own: it is the same subject — what a macro can write —
 and [overview.md](overview.md) §1.4 is where the defect was found. Phases keep
@@ -299,7 +299,7 @@ goldens. What it must show, in the order a reader needs it:
   §2's table is already in the right shape for a reference page.
 * `context/conventions.md` — the entry that records quasiquote's flatness; plus
   anything Q1 turns up.
-* `design/stage888-deferred.md` — retire the item and point it here.
+* `design/deferred/overview.md` — retire the item and point it here.
 * `design/overview.md` — one bullet, house style.
 * `design/progress.md` — the outcome, per the close protocol.
 
@@ -349,7 +349,7 @@ In `tests/suite-s16.nuc`, beside the existing 35 `macmap`/`macrolet` units:
   resolve at the inner expansion's call site, which is the same rule one level
   up.
 * **Name pasting** — composing `g-src` from `src` at expansion time. Stays
-  deferred (`stage888-deferred.md`); two-column tables answer it and the one
+  deferred (`deferred/overview.md`); two-column tables answer it and the one
   production site is `src/repl.nuc`'s roster.
 * **A macro body calling the program's own `defn`s.** Stays deferred. Note that
   this stage does *not* relax it: the body of a macro that generates a macro is

@@ -4,7 +4,7 @@ A survey of things that work in C today but are not yet expressible (or are
 incomplete) in Nucleus as of stage 7. Not a plan — a backlog to draw from
 when scoping stage 8 and beyond. Cross-references existing design docs
 where they exist (notably `stage3c.md` for C interop gaps and
-`stage999-future.md` for Lisp-ward features).
+`future/overview.md` for Lisp-ward features).
 
 ## Type system / data
 
@@ -56,7 +56,7 @@ where they exist (notably `stage3c.md` for C interop gaps and
   literals remain expression-only.
 - **Storage class specifiers** — no `static` (file-local linkage), no
   `register`, no `thread_local` / `_Thread_local`. Deferred; see
-  `design/stage888-deferred.md`.
+  `design/deferred/overview.md`.
 - ~~**Extern variables in Nucleus-defined modules**~~ — `defvar` is
   externally linkable from C and from other Nucleus modules. The
   producing side of `--emit-cheader` and `--emit-nuch` re-exports
@@ -93,7 +93,7 @@ where they exist (notably `stage3c.md` for C interop gaps and
   goes straight to `LLVMTargetMachineEmitToFile`. Missing passes
   include `mem2reg`, LICM, GVN, instcombine, the loop unroller, and
   `LoopVectorize` / `SLPVectorize`. Net effect: `nucleusc -O3` is
-  closer to `clang -O0` than to `clang -O3`. See `stage999-future.md`
+  closer to `clang -O0` than to `clang -O3`. See `future/overview.md`
   for the full breakdown.
 - **Fast-math flags not emitted** on `fadd` / `fmul` / `fdiv`, so FP
   reductions can't vectorize even if the middle end were running.
@@ -105,5 +105,5 @@ where they exist (notably `stage3c.md` for C interop gaps and
   `tprint` example in `docs/builtins.md`), but there is no value-typed
   dispatch primitive.
 - **Lexical closures / lambdas** — none. Tracked in
-  `stage999-future.md`; also absent from C itself, but a stated
+  `future/overview.md`; also absent from C itself, but a stated
   Nucleus goal.

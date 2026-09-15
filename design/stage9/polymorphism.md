@@ -879,7 +879,7 @@ Implementation: a `g-blanket` set (or a flag on `Protocol`) consulted by
 `generic-constraints-ok` and `emit-extend` *before* the nominal `g-conformances`
 lookup. Exported in `.nuch` as built-in (importers re-derive, don't re-check).
 **`Any` and `Struct` are hardcoded** for now; a *declarable* blanket-protocol facility
-(libraries defining their own) is parked in `design/stage999-future.md`.
+(libraries defining their own) is parked in `design/future/overview.md`.
 
 ### 10.2 Inferred structural bounds — `Valid`
 
@@ -1124,7 +1124,7 @@ with `BoxedFn` (TE-5/TE-6); 129 tests pass, byte-identical bootstrap. See
 nested / multiple type-variable positions and a real unifier (full Option 3);
 REPL per-method redefinition; `(addr-of overloaded-name)` disambiguation;
 `extend`'s inline-`defn` sugar; bare-`x:Show` parameter sugar; a
-user-declarable blanket facility (parked in stage999-future.md); and exact
+user-declarable blanket facility (parked in future/overview.md); and exact
 value-position typing of `cond`/`if`/macro results in `node-type` (the rung-3
 frontier `Valid` and A2 inherit). The `Struct` blanket's `get` member-access
 method is specified in callable-values.md and not part of this section.
