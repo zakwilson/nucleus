@@ -75,8 +75,10 @@ into the program module whole — every string a macro body interned while being
 compiled included. Stage 20 gave each compile-time module its own table, so a
 program that uses no string literal of its own now emits **none**: that same
 file, with the directive removed, went from 106 `@.str` constants to zero.
-Whatever a program does emit is still collected at the link if nothing
-references it (see
+A program module now also emits only the constants it actually *references*, so
+a string a library interned while being imported for its compile-time surface
+alone never reaches the object at all. Whatever does get emitted is still
+collected at the link if nothing references it (see
 [Separate compilation and symbol linkage](compiler.md#separate-compilation-and-symbol-linkage));
 `avr-gcc` gets the same `-Wl,--gc-sections` every other ELF target does.
 

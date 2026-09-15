@@ -1,6 +1,6 @@
 # The string-literal table, one per module
 
-**Status: S1, S2 and S3 done; S4 open.** Phases `S1`–`S4`. Promoted out of
+**Status: done.** Phases `S1`–`S4`, all landed 2026-09-15. Promoted out of
 [stage888-deferred.md](../stage888-deferred.md) on 2026-09-15, where it was
 recorded as measurement without a fix.
 
@@ -101,16 +101,85 @@ the divergence §4 predicted was staleness and nothing else.
 a program that uses no string literals of its own emits no string table. Without
 it the regression is invisible — the symptom is bytes nobody reads.
 
-**S4 — the compile-time-only import's sink.** *Open, found by S1's sweep.* The
-last three dead constants in the tree come from `emit-import-forms`' throwaway
-`sink`, not from a CT module; §6.5 has the mechanism and why a watermark there
-is not the same one-liner. *Gate:* the corpus claim §7 could not make yet — no
-program module defines an `@.str` nothing references — promoted into
-`tests/suite-audits.nuc` with no allowlist.
+**S4 — the compile-time-only import's sink. DONE 2026-09-15, see §9.** Found by
+S1's sweep. The last dead constants in the tree come from `emit-import-forms`'
+throwaway `sink`, not from a CT module; §6.5 has the mechanism and why a
+watermark there is not the same one-liner. *Gate:* the corpus claim §7 could not
+make yet — no program module defines an `@.str` nothing references — promoted
+into `tests/suite-audits.nuc` with no allowlist. **§8's plan held; §9.1 is the
+one row it was missing.**
 
 **Documentation:** [stage888-deferred.md](../stage888-deferred.md)'s entry
 becomes a pointer here; [overview.md](overview.md) and
 [progress.md](../progress.md) gain the phase.
+
+---
+
+## 8. S4 — the plan
+
+### 8.1 Why neither of S1's two tools transfers
+
+S1 has a watermark and the deferred entry had a swap, and **the sink window
+defeats both for the same reason**: it is not a window in which all interning is
+discardable. `emit-toplevel-forms` runs `drain-mono-worklist` at every depth and
+a drain writes to `g-def-stream-program` — the real buffer, deliberately
+distinct from `g-def-stream` precisely so a stamp survives an `import-ct`
+(`src/nucleusc.nuc:296`). So inside one window the table receives two kinds of
+string, interleaved, and a positional id cannot tell them apart: truncating
+takes live stamp references with it, and keeping is today's leak.
+
+Promoting the survivors out of the tail is not open either — an id *is* a
+position, so moving one renumbers everything after it.
+
+### 8.2 The fix: emit what is referenced, not what was interned
+
+Filter at the point of emission instead of tracking provenance. `emit-string-table`
+already writes `@.str.<sl 'id>` from the stored id rather than from the loop
+counter, so **the table may be sparse**: dropping an entry renumbers nothing,
+and a gap is not a thing LLVM can object to.
+
+The referenced set is fully determined by state that exists when
+`assemble-module-ir` runs:
+
+* `g-type-stream`, `g-decl-stream`, `g-def-buf` — scan for `@.str.<digits>`;
+* `g-deferror-name-sids` — read the ids directly. **This one is not optional and
+  not in the buffers:** `emit-deferror-table` (`:16428`) emits `ptr @.str.<sid>`
+  *after* the string table, so a scan of the buffers alone would drop every
+  deferror name.
+
+Scan the ids, not the texts, wherever a vector of ids already exists; parse the
+full integer run when scanning text, so `@.str.1` does not match `@.str.10`.
+
+### 8.3 Why this is the right shape and not a bigger hammer
+
+It closes the leak **by construction rather than by enumeration** — any future
+path that interns into a discarded stream is covered without being found first,
+which matters because S1's own sweep is how this one surfaced. It also retires
+the allowlist §7 needed, making the honest tree-wide claim available to S3's
+test.
+
+Scope it to the program module (`assemble-module-ir`), and consider the REPL's
+per-entry module (`src/repl.nuc:1465`) and the mirror
+(`ct-mirror-emit-module`) separately: both take the whole table today, and the
+mirror's correctness rests on the spans it copies, so it gets the same treatment
+only if the scan covers exactly the text it emits.
+
+### 8.4 The gate, and a prediction worth checking first
+
+S1 left `build/nucleusc.ll` with **zero** dead constants, so if this fix is
+correct it should change the compiler's own IR **not at all** — no renumbering,
+nothing to drop. **`make bootstrap` is therefore expected to stay
+byte-identical, and S4 should need no boot convergence.**
+
+That is a prediction, and it is the first thing to check: if the compiler's IR
+*does* move, either S1's measurement was wrong or the filter is dropping
+something live. Either way, stop and report rather than converging.
+
+*Gate:* `make bootstrap` byte-identical; `make test`; the three known leaks
+(`"arena malloc"`, `"arena grow"`, `"intern: out of memory\n"`) gone; and the
+corpus claim §7 could not make — no program module in `tests/fixtures/` or
+`examples/` defines an `@.str` nothing references — promoted into
+`tests/suite-audits.nuc` with no allowlist.
 
 ---
 
@@ -261,3 +330,126 @@ claim is "no program module defines an `@.str` nothing references", and §6.5's
 three ct-import residues mean that form needs an allowlist today — a second
 thing to keep in step, for a claim the two programs above already pin exactly.
 It becomes available once `S4` lands.
+
+---
+
+## 9. S4 as built
+
+`emit-string-table` gained a fourth parameter, `refd`, a nullable `(Vector i32)`
+of per-id marks. `assemble-module-ir` builds one and passes it; the other four
+call sites pass `null`, which means "the whole `[from, end)` window". The table
+is keyed on `(sl 'id)`, so dropping an entry renumbers nothing and the sparse
+result is a module LLVM has no opinion about, exactly as §8.2 predicted.
+
+### 9.1 The correction: the deferror table has TWO id vectors, not one
+
+§8.2 names `g-deferror-name-sids` as the set that is "not optional and not in
+the buffers". It is half of it. `emit-deferror-table` emits **two** arrays —
+`@nuc_err_names` from `g-deferror-name-sids` and `@nuc_err_messages` from
+`g-deferror-msg-sids` (`src/nucleusc.nuc:16438`) — and both are written *after*
+the string table, so neither vector's ids appear in any scanned buffer. A filter
+built to §8.2 as literally written emits a module that references its error
+*messages* and defines none of them.
+
+`tests/fixtures/s1-sugar-rets.nuc` is the witness that was already in the tree:
+its `@.str.3`/`@.str.5` are the two error names and its `@.str.4`/`@.str.6` the
+two messages, and all four are referenced by nothing but those two arrays.
+
+The generalisation is the census rule S1 already met once: **a derived
+referenced-set must enumerate every emitter of a reference, and a table built
+from parallel id vectors has one emitter per vector.** §8's own table of call
+sites was right; the row it was short is inside a single function.
+
+Two smaller things the plan does not mention, both of which the code needs:
+
+* **Index 0 of the deferror vectors is a reserved "no error" placeholder**,
+  emitted as `ptr null`. The marking loop starts at 1 — marking slot 0 would
+  hold `@.str.0` alive in every program that defines an error, for a reference
+  that is never emitted.
+* **The trailing blank line stopped being a function of the count.**
+  `emit-string-table` closed with `(when (> (count g-strs) from) …)`, which was
+  equivalent to "this module emitted at least one constant" only while every id
+  in the window was emitted. It is now a latch set by the emit itself. The
+  witness is a two-line program, `(import-ct intern)` over a bare `main`: its
+  whole table is the sink's residue, and without the latch the module would keep
+  a separator with nothing above it.
+
+### 9.2 What the filter covers, and what deliberately still does not
+
+Only `assemble-module-ir` filters. The other two program-shaped modules keep the
+whole table, and the reason is the same for both: the scan would not cover the
+text they emit.
+
+| site | module | filtered? |
+|---|---|---|
+| `nucleusc.nuc` `assemble-module-ir` | the program | **yes** — its text is exactly `g-type-stream` + `g-decl-stream` + `g-def-buf` + the deferror table |
+| `nucleusc.nuc` `ct-mirror-emit-module` | the CT mirror | no — assembled from four further buffers (`mdecl`, `mdef`, `initir`, plus `emit-qq-helpers`' output) |
+| `repl.nuc` `repl-jit-module-rt-rewrite` | a REPL entry's program module | no — the REPL preamble is a second module buffer a `g-def-buf` scan cannot see |
+| `nucleusc.nuc` `emit-compile-time` | a `(compile-time …)` block | no — watermark only |
+| `nucleusc.nuc` `compile-macro-body` | a macro/CT body | no — watermark only |
+
+Both unfiltered program-shaped modules are JIT-only and never reach a file, so
+the residue costs bytes in a module that is parsed once and never written.
+Filtering either is a separate question about whether its scan can be made to
+cover its own text, not a loose end in this one.
+
+### 9.3 The gate
+
+**§8.4's prediction held exactly.** `build/nucleusc.ll` had zero dead constants
+after S1, so the filter is a no-op on the compiler's own module: **`make
+bootstrap` byte-identical, `PASS: stage1.ll == stage2.ll`, with no boot
+convergence and no committed artifact touched.** The compiler's own table went
+6,237 → 6,238 constants, the one addition being `vector-bounds`' `"set"` literal
+from the `(Vector i32)` stamp the marks vector instantiates — a live constant,
+and the same shape of addition S1's truncate made.
+
+**The tree-wide sweep, with its reach proof.** 392 `.nuc` files in
+`tests/fixtures/` and `examples/` compiled with `--emit-llvm`: **229 emitted a
+module** (the population §6.5 measured) and 163 refused, which is the count
+`context/conventions.md` records for this tree's deliberate refusal fixtures.
+Over those 229 modules: **3,494 `@.str` constants defined of which 72 were dead,
+against 3,422 defined and 0 dead after** — 72 removed, spread over 41 of the 229
+modules. §6.5's "three dead constants" is three distinct *texts*; the population
+was 72 instances.
+
+**The live set is provably untouched.** Per-file `defined − dead` is identical
+in both sweeps for all 229 modules, and a line-level diff of old-vs-new IR over
+the same 229 finds that **every** differing line is a removed
+`@.str.N = private unnamed_addr constant …` definition. Nothing was renumbered,
+no instruction moved, and no separator drifted.
+
+**Compile-time cost is not measurable.** The scan is one pass over the assembled
+module's three buffers, ~13 MB for the compiler's own. `src/nucleusc.nuc` →
+`--emit-llvm`, three runs each: 7.75 / 7.83 / 8.08 s before, 7.92 / 7.92 / 8.05 s
+after — a ~0.07 s mean delta on an 7.9 s compile, inside the spread of the runs
+themselves. An early return when the table is empty keeps a literal-free program
+off the walk entirely.
+
+### 9.4 S4's test
+
+`string-table-live-tests-fixtures` and `string-table-live-examples` in
+`tests/suite-audits.nuc`, beside S3's `string-table-per-module`, which stays: the
+two synthesized programs pin the claim exactly and cheaply, and these two make it
+tree-wide **with no allowlist**.
+
+The walk is `w4a-no-line-zero`'s — discover the directory, compile each file,
+skip what refuses — and it counts the modules *emitted* rather than the files
+seen, because a refusal fixture produces no module and says nothing about this.
+Per directory rather than one unit over both, following the file's own
+`reader-parity-*` convention: the suite shards by unit, and one combined unit
+made its shard the critical path at 101 s where the next was 55 s.
+
+Each module's IR is walked once for `@.str.` tokens: bit 1 marks an id defined at
+the head of a line, bit 2 marks it named anywhere else, and a surviving bare
+bit 1 is the failure. Line-initial is what makes a definition decidable —
+a newline cannot occur inside a constant's own `c"…"` bytes, so a token at the
+head of a line is never another constant's content.
+
+**It fails against the pre-S4 compiler**, run over a symlinked tree so nothing in
+the repository moved: `tests/fixtures/s1-sugar-rets.nuc: 3 @.str constant(s)
+defined and referenced nowhere, first @.str.0`.
+
+`make test` **1046/0/0** (1044 + these two). The two units cost 37 s and 46 s of
+serial work; under the suite's 16-way sharding the wall-clock goes **83.8 s →
+98.9 s** (+18%), measured A/B against a baseline binary built from a copy of
+`tests/` with the two units removed.

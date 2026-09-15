@@ -15454,7 +15454,9 @@
       (emit-all irs g-type-stream)
       ; From 0: the spans copied above are program text and name the PROGRAM's
       ; `@.str` ids, so a compile-time body's tail is not what this module needs.
-      (emit-string-table irs 0 0)
+      ; Unfiltered too: this module's text is assembled from four buffers a
+      ; `g-def-buf` scan does not cover, so it takes the whole table (§8.2).
+      (emit-string-table irs 0 0 null)
       (emit-all irs g-decl-stream)
       (emit-all irs mdecl)
       (emit-all irs mdef)
@@ -15853,7 +15855,7 @@
               (emit-all irs ct-type)
               ; String constants: this body's own, then dropped from the shared
               ; table before the JIT call below can flush a mirror.
-              (emit-string-table irs 0 ct-str-base)
+              (emit-string-table irs 0 ct-str-base null)
               (strs-truncate-to ct-str-base)
               ; Declarations: main-so-far + CT-specific
               (emit-all irs g-decl-stream)
@@ -16221,7 +16223,7 @@
                     (when (!= g-interactive 0)
                          (emit-all irs g-repl-preamble))
                     (emit-all irs g-type-stream)
-                    (emit-string-table irs 0 macro-str-base)
+                    (emit-string-table irs 0 macro-str-base null)
                     (strs-truncate-to macro-str-base)
                     (emit-all irs g-decl-stream)
                     (emit-all irs ct-decl)
@@ -16381,28 +16383,89 @@
 ; String table emission
 ; ============================================================
 
+; S4: mark every `@.str.<n>` id this IR text names. The whole digit run is
+; consumed, so `@.str.1` never matches the prefix of `@.str.10`.
+(defn note-str-refs (v:StrView (marks (ref (Vector i32)))):void
+  (let (n:i64 (as i64 (strview-byte-len v))
+        nm:i64 (as i64 (count marks))
+        i:i64 0)
+    (while (< i n)
+      (if (and (= (text-byte-at v i) 64)
+               (< (+ i 6) n)
+               (= (text-byte-at v (+ i 1)) 46)
+               (= (text-byte-at v (+ i 2)) 115)
+               (= (text-byte-at v (+ i 3)) 116)
+               (= (text-byte-at v (+ i 4)) 114)
+               (= (text-byte-at v (+ i 5)) 46))
+        (let (a:i64 (+ i 6)
+              id:i64 0)
+          (while (and (< a n)
+                      (>= (text-byte-at v a) 48)
+                      (<= (text-byte-at v a) 57))
+            (set! id (+ (* id 10) (as i64 (- (text-byte-at v a) 48))))
+            (set! a (+ a 1)))
+          (if (> a (+ i 6))
+            (do (when (< id nm) (set! (marks (as usize id)) 1))
+                (set! i a))
+            (set! i (+ i 6))))
+        (set! i (+ i 1))))))
+
+(defn mark-str-ref ((marks (ref (Vector i32))) id:i32):void
+  (when (and (>= id 0) (< (as usize id) (count marks)))
+    (set! (marks (as usize id)) 1)))
+
+; S4: the program module's referenced set — its three buffers, plus the deferror
+; table's ids, which `emit-deferror-table` writes AFTER the string table and so
+; appear in none of them (design/stage20-macros/string-table-per-module.md §8.2).
+(defn fill-program-str-refs ((marks (ref (Vector i32)))):void
+  (let (n:i32 (unsafe/cast i32 (count g-strs)))
+    (when (= n 0) (return))
+    (dotimes (i n) (conj marks 0))
+    (note-str-refs (string-as-view g-type-stream) marks)
+    (note-str-refs (string-as-view g-decl-stream) marks)
+    (note-str-refs (string-as-view g-def-buf) marks)
+    ; Index 0 is the reserved "no error" placeholder, which emits as `ptr null`.
+    (let (ne:i32 (unsafe/cast i32 (count g-deferror-name-sids))
+          i:i32 1)
+      (while (< i ne)
+        (mark-str-ref marks (invoke g-deferror-name-sids (as usize i)))
+        (mark-str-ref marks (invoke g-deferror-msg-sids (as usize i)))
+        (set! i (+ i 1))))))
+
+; A null `refd` means "the whole window": only a module whose entire text is
+; scannable at assembly time filters, and that is the program module.
+(defn str-ref-live ((refd (raw (Vector i32))) id:i32):i32
+  (when (= (as ptr refd) null) (return 1))
+  (let (m:(ref (Vector i32)) (unsafe/cast (ref (Vector i32)) refd))
+    (when (>= (as usize id) (count m)) (return 1))
+    (return (invoke m (as usize id)))))
+
 ; `sections` is passed rather than read from `ir-sections-on` because the table
 ; is written at module-assembly time, after the stream swaps that predicate reads
 ; have been undone — a CT/macro module would look like the program module here.
 ; `from` is a watermark into the one shared table: a compile-time module emits
-; only what its own body interned (design/stage20-macros/string-table-per-module.md).
-(defn emit-string-table (out:&String sections:i32 from:i32):void
-  (doseq (sl g-strs (VecIter ref:StrLit))
-    (when (>= (sl 'id) from)
-      (let (ir-len:i32 (+ (sl 'len) 1))
-        (emit out "@.str." (sl 'id) " = private unnamed_addr constant [" ir-len " x i8] c\"")
-        (dotimes (j (sl 'len))
-          (let (c:i32 (text-byte-at (sl 'bytes) (as i64 j)))
-            (if (or (= c 92)
-                    (= c 34)
-                    (< c 32) (>= c 127))
-              (emit out "\\" (hexu c 2))
-              (emit out (as Char (as ui32 c))))))
-        (emit out "\\00\"")
-        (when (!= sections 0)
-          (emit out ", section \".rodata..str." (sl 'id) "\""))
-        (emit out ", align 1\n"))))
-  (when (> (unsafe/cast i32 (count g-strs)) from) (emit out "\n")))
+; only what its own body interned. `refd` additionally filters that window down
+; to what the module references, which is what closes the compile-time-only
+; import's sink (design/stage20-macros/string-table-per-module.md §6.1, §8.2).
+(defn emit-string-table (out:&String sections:i32 from:i32 (refd (raw (Vector i32)))):void
+  (let (any:i32 0)
+    (doseq (sl g-strs (VecIter ref:StrLit))
+      (when (and (>= (sl 'id) from) (!= (str-ref-live refd (sl 'id)) 0))
+        (set! any 1)
+        (let (ir-len:i32 (+ (sl 'len) 1))
+          (emit out "@.str." (sl 'id) " = private unnamed_addr constant [" ir-len " x i8] c\"")
+          (dotimes (j (sl 'len))
+            (let (c:i32 (text-byte-at (sl 'bytes) (as i64 j)))
+              (if (or (= c 92)
+                      (= c 34)
+                      (< c 32) (>= c 127))
+                (emit out "\\" (hexu c 2))
+                (emit out (as Char (as ui32 c))))))
+          (emit out "\\00\"")
+          (when (!= sections 0)
+            (emit out ", section \".rodata..str." (sl 'id) "\""))
+          (emit out ", align 1\n"))))
+    (when (!= any 0) (emit out "\n"))))
 
 ; Stage 10 errors: the deferror descriptor table (design/stage10/errors.md §8).
 ; Two arrays of name/message pointers, indexed by error id (slot 0 reserved =
@@ -19671,7 +19734,9 @@
 ; Assemble the full module IR. The caller owns the returned String and must
 ; drop it (the module buffers are cleared here).
 (defn assemble-module-ir (source-file:Symbol):String
-  (let ((irs String) (string-with-capacity 262144))
+  (let ((irs String) (string-with-capacity 262144)
+        (refd (Vector i32)) (vector-new-capacity (count g-strs)))
+    (fill-program-str-refs &refd)
     (emit irs "; ModuleID = '" source-file "'\n")
     (emit irs "source_filename = \"" source-file "\"\n")
     (emit irs "target datalayout = \"" ((as ref:Target g-target) 'datalayout) "\"\n")
@@ -19687,13 +19752,14 @@
         (emit irs "!0 = !{i32 1, !\"target-abi\", !\"" target-abi "\"}\n")))
     (emit irs "\n")
     (emit-all irs g-type-stream)
-    (emit-string-table irs g-elf-sections 0)
+    (emit-string-table irs g-elf-sections 0 &refd)
     (emit-deferror-table irs)
     (emit-all irs g-decl-stream)
     (emit-all irs g-def-buf)
     (string-clear g-type-stream)
     (string-clear g-decl-stream)
     (string-clear g-def-buf)
+    (drop &refd)
     (return irs)))
 
 ; Parse the in-memory IR, emit an object file, and (unless -c) invoke clang

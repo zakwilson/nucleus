@@ -1461,8 +1461,9 @@
     ; types were just absorbed into it, so it is the whole type section.
     (repl-put-preamble irs (if (symbol-none? fname) (symbol-none) (symbol-intern (fstr "@" fname))))
     ; From 0: this is the entry's PROGRAM module, and its def buffer names every
-    ; id the session has interned so far.
-    (emit-string-table irs 0 0)
+    ; id the session has interned so far. Unfiltered: the preamble above is a
+    ; second buffer a `g-def-buf` scan does not cover (§8.2).
+    (emit-string-table irs 0 0 null)
     ; This module's declarations
     (emit-all irs g-decl-stream)
     ; This module's definitions — optionally renaming the first "@<fname>("

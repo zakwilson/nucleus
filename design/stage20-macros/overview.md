@@ -629,10 +629,11 @@ the whole IR delta is five dead constants — three `__macmap` and two `true-if`
 — and not one instruction.
 
 **Fixed 2026-09-15** by [string-table-per-module.md](string-table-per-module.md)
-(`S1`, `S3` done; `S2`, the boot convergence, open): the table is now per
-module, a literal-free program carries **zero** dead constants where it carried
-106, and the gate above is no longer needed — a `lib/macros.nuc` edit that adds
-no program string moves no program byte.
+(`S1`–`S4` all done): the table is now per module, a literal-free program
+carries **zero** dead constants where it carried 106, and the gate above is no
+longer needed — a `lib/macros.nuc` edit that adds no program string moves no
+program byte. `S4` also filters the program module down to the constants it
+actually references, so the whole tree is at zero, asserted with no allowlist.
 
 ### 9.3 `text-token-is-definer` keeps its `macrolet`
 

@@ -6845,3 +6845,49 @@ The call-site census is worth its own line: the design tabulated four
 REPL entry's own program module and never appeared in a plan written against
 `src/nucleusc.nuc`. Grep the whole tree for the function you are about to change
 the signature of, not the file the design was written from.
+
+## When no window can separate the two kinds, filter at the CONSUMER — and count every EMITTER of a reference
+
+S1's watermark (above) fixes a leak whose window is *entirely* discardable. Stage
+20 S4 is the case where that premise fails: `emit-import-forms` runs the emitter
+into a throwaway sink for a compile-time-only import, so the bodies' `@.str`
+references are discarded while `intern-string` still appends — but
+`emit-toplevel-forms` runs `drain-mono-worklist` at every depth, and a drain
+writes to `g-def-stream-program`, the *real* program buffer. So one window
+receives discardable and live entries interleaved. A watermark truncating it
+dangles a live reference; not truncating is the leak; and with a positional id,
+promoting the survivors out of the tail renumbers everything after them.
+
+**The move is to stop tracking provenance and ask the output what it uses.**
+Emit what the module references rather than what was interned: scan the assembled
+buffers, drop the rest. It closes the class *by construction rather than by
+enumeration* — a future path that interns into a discarded stream is covered
+without being found first, which matters, because the sweep for the first one is
+how the second surfaced. Two preconditions, both cheap to check and both true
+here: the emitted name must come from a **stored id** and not a loop counter (so
+the table may be sparse and dropping an entry renumbers nothing), and the
+consumer must be able to see the module's whole text.
+
+**The trap is the census, and it is not the call-site census.** A derived
+referenced-set has to enumerate every *emitter* of a reference, and a table built
+from **parallel id vectors has one emitter per vector**. The plan named
+`g-deferror-name-sids`; `emit-deferror-table` emits from that one *and*
+`g-deferror-msg-sids`, both after the string table and so in none of the scanned
+buffers — a filter built to the plan as written emits a module that references
+its error messages and defines none of them. `tests/fixtures/s1-sugar-rets.nuc`
+was already the witness in the tree. Also: a reserved index-0 placeholder emits
+as `ptr null`, so mark from 1 — marking slot 0 holds a genuinely dead constant
+alive in every program that uses the feature.
+
+**And re-derive every proxy the filter invalidates.** `emit-string-table` closed
+with `(when (> (count g-strs) from) …)` as a stand-in for "this module emitted at
+least one row", which was equivalent only while every row in the window *was*
+emitted. Once rows can be dropped it must become a latch set by the emit itself,
+or a module whose whole window is filtered keeps a separator with nothing above
+it. Scan for this class whenever a filter lands between a count and its use.
+
+The gate for a change like this is the one the leak makes available: if the
+compiler's own module already had zero of the thing being dropped, the filter is
+a **no-op on it**, and `make bootstrap` must stay byte-identical with no boot
+convergence. That prediction is also the sharpest correctness test on offer — IR
+that moves means the filter is dropping something live.
