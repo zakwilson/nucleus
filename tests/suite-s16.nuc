@@ -2674,6 +2674,29 @@ map=2
     (return (s20-mul ~@(s20-pair)))))
 " 42)))
 
+; U3 (unquote-operand-typing.md §2): the one-liner U2's diagnostic names. `~n`
+; with `n:i32` is an error, so interpolating a computed number needs a node
+; constructor — and the producer for a spliced list is the shape that wanted
+; one, which C3's units had to write out of quasiquoted literals instead.
+(deftest s20-node-int
+  (try (check-source-exit "(import-use node)
+(defmacro s20-double ()
+  (let (n:i32 21)
+    `(_* ~(node-int n) 2)))
+(defn main ():i32 (return (s20-double)))
+" 42))
+  (try (check-source-exit "(import-use node)
+(defn s20-range ():(raw Node)
+  (let ((acc (raw Node)) null
+        i:i64 4)
+    (while (> i 0)
+      (set! acc (as raw:Node (make-cell (as raw:Node (node-int i)) acc 0)))
+      (set! i (- i 1)))
+    (return acc)))
+(defn main ():i32 (return (macfoldr _+ 0 ~@(s20-range))))
+" 10))
+  (return (ok)))
+
 ; ---------------------------------------------------------------------------
 ; What a place is (dot-forms.md §5 steps 4-6)
 ; ---------------------------------------------------------------------------

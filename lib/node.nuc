@@ -17,6 +17,15 @@
     (set! (c 'cdr) cdr)
     (return c)))
 
+; An integer leaf, which is what `~` wants when what a macro computed is a
+; number. No line: a synthesized node has no source position, and `node-line`'s
+; fallback to the enclosing form is what reads it.
+(defn node-int (v:i64):&Node
+  (let (n:&Node (alloc-node))
+    (set! (n 'kind) NODE-INT)
+    (set! (n 'i) v)
+    (return n)))
+
 (defn node-at (n:raw:Node i:i32):?&Node
   (match (as-ref n)
     ((some nn)

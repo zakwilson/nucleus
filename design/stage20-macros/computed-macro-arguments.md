@@ -355,3 +355,11 @@ constructor**, and the obvious way to build a row list from computed numbers —
 composes quasiquoted literals today rather than interpolating computed integers.
 That is a documentation matter for C4, not a blocker, but it is the first thing
 someone writing a real row producer will hit.
+
+> **Resolved 2026-09-15** by
+> [unquote-operand-typing.md](unquote-operand-typing.md): `~n` with `n:i32` is
+> now a located error naming the author's own `~n` rather than §10.3's LLVM
+> leak, and U3 added `(node-int v)` to `lib/node.nuc`, so the row producer that
+> wants a computed integer writes `` `(~(node-int n)) `` and the diagnostic
+> names that spelling in its note. `node-int` is compile-time-runtime resolved
+> like `node-at` — no mirror, and it cross-compiles unaffected.

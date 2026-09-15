@@ -8,6 +8,7 @@
 
 struct Node* alloc_node(void) asm("alloc-node");
 struct Node* make_cell(void* car, void* cdr, int32_t line) asm("make-cell");
+struct Node* node_int(int64_t v) asm("node-int");
 void* node_at(void* n, int32_t i) asm("node-at");
 int32_t node_len(void* n) asm("node-len");
 int32_t node_line(void* n, int32_t encl) asm("node-line");
