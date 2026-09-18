@@ -3448,7 +3448,7 @@
   (when (= name ".")
     (return (some "'.' was retired in Stage 16: use 'get' -- (get p 'field), or head position (p 'field)")))
   (when (= name ".&")
-    (return (some "'.&' was retired in Stage 16: use the 2-argument 'addr-of' -- (addr-of p 'field)")))
+    (return (some "'.&' was retired in Stage 16: use the 2-argument 'ref' -- (ref p 'field)")))
   (when (= name ".set!")
     (return (some "'.set!' was retired in Stage 16: set! takes a place -- (set! (p 'field) v)")))
   (when (= name "ptr-set!")
@@ -6405,6 +6405,21 @@
       (let (m:&Method (generic-resolve g argtypes arg-nodes total line null))
         (return (emit-resolved-call n scope (symbol-intern "invoke") m args total line))))))
 
+; Is `a` a `(ref …)` cell that is a VALUE address — `&x` on a binding, or the
+; 2-argument field form — rather than the `(ref T)` type a fused `q:(ref T)`
+; leaves in argument position? An unbound operand that names no type is treated
+; as a value too, so its error is `undefined 'x'` and not the annotation hint.
+(defn ref-cell-is-address (a:(raw Node) scope:&Scope):i32
+  (let (ah:(raw Node) (node-at (as ptr a) 0))
+    (when (or (= ah null) (!= (ah 'kind) NODE-SYM) (!= (ah 's) "ref")) (return 0))
+    (when (= (node-len (as ptr a)) 3) (return 1))
+    (when (!= (node-len (as ptr a)) 2) (return 0))
+    (let (op:(raw Node) (node-at (as ptr a) 1))
+      (when (or (= op null) (!= (op 'kind) NODE-SYM)) (return 0))
+      (when (!= (as ptr (scope-lookup scope (op 's))) null) (return 1))
+      (when (!= (tyname-resolvable (op 's)) 0) (return 0))
+      (return 1))))
+
 ; The desugar entry point: an already-emitted non-function head value `callee-val`
 ; in `(callee arg…)`. Routing is `invoke → get → _get`: if the callee type
 ; participates in the `invoke` generic it indexes/applies (the arg is a *value*, so
@@ -6429,7 +6444,10 @@
             (when (and (!= ah null)
                        (= (ah 'kind) NODE-SYM)
                        (or (= (ah 's) "ptr") (= (ah 's) "ref")
-                           (= (ah 's) "raw") (= (ah 's) "fn")))
+                           (= (ah 's) "raw") (= (ah 's) "fn"))
+                       ; `(cb &x)` reads as `(cb (ref x))` since PK-1: a `ref`
+                       ; whose operand is a value address is the argument it says.
+                       (= (ref-cell-is-address a scope) 0))
               (die-at (node-line (node-at n 0) ((unsafe/cast ref:Node n) 'line))
                 (fstr "'" (-> (node-at n 0) (unsafe/cast ref:Node _) (_ 's)) ":(" (ah 's)
                       " ...)' reads as a call here -- a parenthesised type after ':' is a binding annotation, not a cast: spell the cast (as (...) name), or name the type with deftype")))))))
@@ -7949,8 +7967,10 @@
         ; addr-of's target must be a binding name, and a field load is an rvalue.
         ; mode 2 (cfn): the field ALREADY holds the captured local's address, so
         ; `(addr-of cap)` == `(_get self 'cap)` (no extra indirection). A non-capture
-        ; / shadowed operand keeps the ordinary addr-of.
-        (when (and (= h "addr-of") (= (node-len node) 2))
+        ; / shadowed operand keeps the ordinary addr-of. `ref` is the head `&cap`
+        ; reads as (PK-1); missing it here is a bootstrap divergence, not a bug
+        ; report — the boot's reader still writes addr-of.
+        (when (and (or (= h "addr-of") (= h "ref")) (= (node-len node) 2))
           (let (opnode:ptr:Node (unsafe/cast ref:Node (node-at node 1)))
             (when (= (opnode 'kind) NODE-SYM)
               (let (oname:Symbol (symbol-none)
@@ -12414,7 +12434,8 @@
         (when (= hp '_or) (return (emit-short-circuit n scope 0)))
         (when (= hp 'unsafe/cast) (return (emit-cast n scope)))
         (when (= hp 'as) (return (emit-as n scope)))
-        (when (= hp 'addr-of) (return (emit-addr-of n scope)))
+        ; `(ref x)` is what `&x` reads as (PK-1); `addr-of` stays until PK-5.
+        (when (or (= hp 'ref) (= hp 'addr-of)) (return (emit-addr-of n scope)))
         (when (= hp 'funcall-void) (return (emit-funcall-void n scope)))
         (when (= hp 'funcall) (return (emit-funcall n scope)))
         (when (= hp 'deref) (return (emit-deref n scope)))
@@ -13490,8 +13511,8 @@
                         (fstr "as: lossy conversion from " (type-spelling ty-f64) " to "
                               (type-spelling dst) " -- use unsafe/cast")))
                     (return (float-literal-ir-at (symbol-as-view (arg 's)) ty)))))))
-          ; `(addr-of g)` — the address of another global.
-          (when (and (= hd0 'addr-of) (= nargs0 1))
+          ; `(addr-of g)` / `(ref g)` — the address of another global.
+          (when (and (or (= hd0 'addr-of) (= hd0 'ref)) (= nargs0 1))
             (return (defvar-addr-of-ir (node-at (as ptr nn) 1) ty (node-line init encl)))))))
     ; An integer destination folds an arbitrary integer constant expression. The
     ; result is an untyped literal of that value, so it faces the SAME
@@ -13697,7 +13718,7 @@
       (return))
     (when (!= (nn 'kind) NODE-CELL) (return))
     ; Three heads whose operands are not value reads, skipped subtree and all:
-    ;   `addr-of`     — an address, not a value (see the decision above);
+    ;   `addr-of`/`ref` — an address, not a value (see the decision above);
     ;   `quote` /     — the symbols inside are DATA. Walking them would reject
     ;   `quasiquote`    `(defvar g:(raw Node) (quote (b c)))` for "naming" a
     ;                   global `b` it never reads. A quasiquote's `~b` unquote
@@ -13708,7 +13729,7 @@
     (let (hd:ptr (node-at (as ptr nn) 0))
       (when (and (!= hd null)
                  (= ((unsafe/cast ref:Node hd) 'kind) NODE-SYM)
-                 (or (= hd 'addr-of) (= hd 'quote) (= hd 'quasiquote)))
+                 (or (= hd 'addr-of) (= hd 'ref) (= hd 'quote) (= hd 'quasiquote)))
         (return)))
     ; Head position included on purpose: a call through a function-POINTER
     ; global — `(g-hook 1)` — reads that global's value like any other use.
@@ -16326,6 +16347,11 @@
           (when (!= (special-form-named mname) 0)
             (die-at bline (fstr "macrolet: '" mname
                                 "' is a special form and may not be shadowed")))
+          ; `ref` is reserved through pointer-kind-named, not the special-form
+          ; set, and it is `&x`'s head — the same shadowing hole.
+          (when (!= (pointer-kind-named mname) 0)
+            (die-at bline (fstr "macrolet: '" mname
+                                "' is a pointer kind and may not be shadowed")))
           (let (variadic:i32 0
                 pnames:ptr null
                 pcount:i32 (macro-parse-params params-node "macrolet" bline

@@ -11,7 +11,7 @@ fewer "convention, not a rule" edges in it.
 
 ## Items
 
-1. **Pointer-kind and type-sigil spellings** —
+1. **Pointer-kind and type-sigil spellings** — **PK-1 built 2026-09-18** —
    [pointer-kind-spellings.md](pointer-kind-spellings.md) (designed 2026-09-16,
    PK-1 … PK-6). `&` becomes `ref` in both the type and the value world, so a
    standalone `&T` is the same node the type path already canonicalises and

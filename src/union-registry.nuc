@@ -2096,11 +2096,10 @@
                   (set! (pt 'pkind) PTR-RAW)
                   (return pt)))))))
       ; Stage 10: (ref T) — a non-null pointer to T. Same shape as (ptr T)
-      ; (colon sugar ref:T arrives here too), but the element is required.
-      ; `addr-of` joins `ref` here: a standalone `&T` reaches the reader macro
-      ; before its position is known, so a type slot sees the value form (§6).
+      ; (colon sugar ref:T and the standalone `&T` arrive here too), but the
+      ; element is required.
       (let (head:ptr (n 'car))
-        (when (or (= head 'ref) (= head 'addr-of))
+        (when (= head 'ref)
           (let (rest:ptr (n 'cdr))
             (when (= rest null)
               (die-at line "ref: element type required — (ref T)"))

@@ -243,3 +243,51 @@ read-through: ok
     (drop (addr-of imp))
     (drop (addr-of bad)))
   (return (ok)))
+
+; ---------------------------------------------------------------------------
+; PK-1: `&` reads as `ref` in both worlds
+; ---------------------------------------------------------------------------
+
+; One node for the type and the value (pointer-kind-spellings.md §3). The
+; fixture is a witness, not a re-spelling: the pre-PK-1 compiler refuses its
+; line 27 with `unknown: ref`, since `(ref x)` had no value-world meaning.
+(deftest s21-pk1-ref-head
+  ; 1. Every standalone `&T` position §3 names, both value arities, and a
+  ;    callable value applied to `&x` (which reads as `(cb (ref n))` and must
+  ;    not trip the `q:(ref T)` annotation diagnostic).
+  (let (out:String (try (build-run-file "" "" "tests/fixtures/s21-pk1-ref-head.nuc")))
+    (try (check-golden (string-as-view (addr-of out)) "3 4 8 12\n3 4 4\n42 3 3\n9 3\n"))
+    (drop (addr-of out)))
+
+  ; 2. The header of a lib-shaped file: `&k` in a macro body and `&Self` /
+  ;    `&Pt` in exported signatures all print as `ref`, and `addr-of` nowhere.
+  (let (p:String (try (test-write-file "s21-pk1-lib.nuc" "(import-use vector)
+(defstruct Pt x:i32 y:i32)
+(defmacro addr-x (k) `(bump &k))
+(defn bump (p:&i32):void (set! (deref p) (+ (deref p) 1)))
+(defprotocol Area (area ((self &Self)):i32))
+(defn first-x ((v (ref (Vector &Pt))) q:&Pt):i32 (return (q 'x)))
+"))
+        nuch:String (try (emit-for-file "" "--emit-nuch" (string-as-view (addr-of p))))
+        nv:StrView (string-as-view (addr-of nuch)))
+    (try (check-line nv "(defmacro addr-x (k) (quasiquote (bump (ref k))))"))
+    (try (check-line nv "(defprotocol Area (area ((self (ref Self))) :i32))"))
+    (try (check-line nv "(declare first-x ((v (ref (Vector (ref Pt)))) (q (ref Pt))) :i32)"))
+    (try (check-not-contains nv "addr-of"))
+    (drop (addr-of nuch))
+    (drop (addr-of p)))
+
+  ; 3. A `macrolet` may not shadow the head `&x` now reads as: the macro table
+  ;    is consulted before the special-form chain, so the guard is the only
+  ;    thing between a binding named `ref` and every `&x` in the body.
+  (let (p:String (try (test-write-file "s21-pk1-macrolet.nuc" "(defn main ():i32
+  (macrolet ((ref (x) x))
+    (return (ref 1))))
+"))
+        pv:StrView (string-as-view (addr-of p))
+        c:Compiled (try (compile-path pv)))
+    (try (check-error-at (addr-of c 'diags) pv 2
+                         "macrolet: 'ref' is a pointer kind and may not be shadowed"))
+    (drop (addr-of c))
+    (drop (addr-of p)))
+  (return (ok)))

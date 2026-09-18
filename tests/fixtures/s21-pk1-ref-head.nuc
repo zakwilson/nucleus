@@ -1,0 +1,40 @@
+; Stage 21 PK-1 (design/stage21-cleanup/pointer-kind-spellings.md §3): `&` reads
+; as `ref` in both worlds. A standalone `&T` in a type slot is the canonical
+; `(ref T)`; a value-position `&x` / `(ref x)` is the address-of and `(ref p 'f)`
+; the field address; the written-out `addr-of` still works until PK-5.
+(import-use "stdio.h")
+(import-use vector)
+
+(defstruct Pt x:i32 y:i32)
+
+; `&Pt` in a type slot, every standalone position §3 names.
+(defstruct Holder (link &Pt) (tag i32))
+(deftype PtRef &Pt)
+(defprotocol Area (area ((self &Self)):i32))
+(defn area (p:&Pt):i32 (return (* (p 'x) (p 'y))))
+(extend Pt Area)
+
+(defn hx (h:&Holder):i32 (return ((h 'link) 'x)))
+(defn via-alias (p:PtRef):i32 (return (p 'y)))
+(defn first-x ((v (ref (Vector &Pt)))):i32 (return ((invoke v 0) 'x)))
+
+; A callable VALUE applied to `&x`: reads as `(cb (ref n))`, which is an
+; address argument, not the fused `cb:(ref T)` annotation shape.
+(defn bump (p:&i32):void (set! (deref p) (+ (deref p) 1)))
+
+(defn main ():i32
+  (let (a:Pt (Pt 3 4)
+        ap:&Pt (ref a)
+        h:Holder (Holder ap 7)
+        n:i32 41
+        cb:(fn void)(&i32) bump
+        v:(ref (Vector &Pt)) (vector-new))
+    (conj v &a)
+    (cb &n)
+    (printf "%d %d %d %d\n" (hx &h) (via-alias ap) (unsafe/cast i32 (sizeof &Pt)) (area &a))
+    (printf "%d %d %d\n" (deref (ref a 'x)) (deref (ref a 'y)) (deref (addr-of a 'y)))
+    (printf "%d %d %d\n" n ((as &Pt &a) 'x) (first-x v))
+    (set! (deref (ref h 'tag)) 9)
+    (printf "%d %d\n" (h 'tag) ((deref &ap) 'x))
+    (drop v)
+    (return 0)))

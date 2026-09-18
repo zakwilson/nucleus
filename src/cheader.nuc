@@ -3426,14 +3426,12 @@
               (let (c:StrView (type-node-to-c (as ptr ex)))
                 (set! g-type-alias-depth (- g-type-alias-depth 1))
                 (return c))))
-          ; `ref` is `ptr`'s synonym (types.md §Pointer kinds) and `addr-of` is
-          ; what a standalone `&T` in a type slot reads as, so all three spell
+          ; `ref` is `ptr`'s synonym (types.md §Pointer kinds), so both spell
           ; the same `T*`; without this the element type was lost to `void*`.
           (when (and (!= head null)
                      (and (= ((unsafe/cast ref:Node head) 'kind) NODE-SYM)
                           (or (= ((unsafe/cast ref:Node head) 's) "ptr")
-                              (or (= ((unsafe/cast ref:Node head) 's) "ref")
-                                  (= ((unsafe/cast ref:Node head) 's) "addr-of")))))
+                              (= ((unsafe/cast ref:Node head) 's) "ref"))))
             (when (= rest null) (return "void*"))
             (let (inner:StrView "")
               (if (= ((unsafe/cast ref:Node rest) 'cdr) null)
@@ -3724,7 +3722,7 @@
                 ; Type-erased box types: (BoxedFn …) and (dyn P) carry fat-pointer
                 ; Nucleus semantics with no faithful C spelling.
                 (when (or (= hs "BoxedFn") (= hs "dyn")) (return 1))
-                (when (and (!= hs "ptr") (and (!= hs "ref") (!= hs "addr-of"))) (return 0))
+                (when (and (!= hs "ptr") (!= hs "ref")) (return 0))
                 (let (rest:ptr (n 'cdr))
                   (when (= rest null) (return 0))
                   (if (= ((unsafe/cast ref:Node rest) 'cdr) null)
@@ -3793,7 +3791,7 @@
             ; A `!ptr`/`!ref` HEAD is the pointer niche in list form; it lands
             ; on `void*`, which is size- and ABI-correct. Only ptr/ref wrappers
             ; are unwrapped to look further in.
-            (when (and (!= hs "ptr") (and (!= hs "ref") (!= hs "addr-of"))) (return 0))
+            (when (and (!= hs "ptr") (!= hs "ref")) (return 0))
             (let (rest:ptr (n 'cdr))
               (when (= rest null) (return 0))
               (if (= ((unsafe/cast ref:Node rest) 'cdr) null)
@@ -3949,8 +3947,8 @@
 ; Non-zero when this type node is one `type-node-to-c` would answer for by
 ; falling through to its `void*` default — i.e. a cell head it does not handle.
 ; A NODE-SYM is always fine (scalar, or a struct typedef name); a pointer cell is
-; fine under every spelling (`ptr`/`ref`/`addr-of` spell the element out, `raw`
-; lands on `void*`, which is the right size and ABI). Every other cell — `(array T N)`, a
+; fine under every spelling (`ptr`/`ref` spell the element out, `raw` lands on
+; `void*`, which is the right size and ABI). Every other cell — `(array T N)`, a
 ; struct/union template instance, a bare `(fn …)` — is refused.
 (defn cheader-defvar-type-ok (tn:ptr):i32
   (let (n:ptr:Node (unsafe/cast ref:Node tn))
@@ -3963,7 +3961,6 @@
         (when (= h "ptr") (return 0))
         (when (= h "raw") (return 0))
         (when (= h "ref") (return 0))
-        (when (= h "addr-of") (return 0))
         (when (= h "union") (return 0))
         (return 1)))))
 

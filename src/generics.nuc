@@ -1317,10 +1317,7 @@
     (when (!= (n 'kind) NODE-CELL) (return 0))
     (let (head:raw:Node (n 'car))
       (when (or (= head null) (!= (head 'kind) NODE-SYM)) (return 0))
-      ; `addr-of`: a standalone `&T` in a type slot, which the reader macro wrote
-      ; as the value form before position was known (ref-sigil.md §6).
-      (when (or (= (head 's) "ptr") (= (head 's) "raw") (= (head 's) "ref")
-                (= (head 's) "addr-of"))
+      (when (or (= (head 's) "ptr") (= (head 's) "raw") (= (head 's) "ref"))
         (return 1))
       (return 0))))
 
@@ -2671,7 +2668,7 @@
 (defn gcheck-special-form (hp:raw:Node):bool
   (if-some (head (as-ref hp))
            (contains? #{'let 'with 'do 'cond 'return 'while 'set! 'inc! 'quote 'quasiquote
-                        'not '_and '_or 'cast 'addr-of 'deref 'ptr+ '_get
+                        'not '_and '_or 'cast 'addr-of 'ref 'deref 'ptr+ '_get
                         'sizeof 'source-file 'source-line 'alloca 'char 'aref 'gensym 'macro-error
                         'funcall 'funcall-void
                         'funcall-ptr-1 'funcall-ptr-i32 'funcall-ptr-i64 'funcall-ptr-ptr
@@ -5237,7 +5234,8 @@
         ; `unsafe/cast` types exactly as the retired bare `cast` used to.
         (when (= hp 'unsafe/cast) (return (node-type-cast n)))
         (when (= hp 'as) (return (node-type-as n)))
-        (when (= hp 'addr-of) (return (node-type-addr-of n scope)))
+        ; Lockstep with emit-list: `ref` is the value-world address-of head too.
+        (when (or (= hp 'ref) (= hp 'addr-of)) (return (node-type-addr-of n scope)))
         (when (= hp 'funcall-void) (return ty-void))
         (when (= hp 'funcall) (return (node-type-funcall n scope)))
         (when (= hp 'deref) (return (node-type-deref-elem n scope)))
