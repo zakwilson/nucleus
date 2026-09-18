@@ -271,17 +271,18 @@ symbol character, so a `&` inside a token keeps its name, and the retired
 types.
 
 A `&` that starts a whole **token** is the address-of reader macro instead —
-`&x` is `(addr-of x)`, see [Special forms](special-forms.md). The two are split
+`&x` is `(ref x)`, see [Special forms](special-forms.md). The two are split
 by position in the token, not by context: the sigil is always preceded by
 something (`p:&T`, `?&T`, `):&T`), so only the standalone spelling is shared.
-There the reader has already written `(addr-of T)` before anyone knows the
-position, and a type slot reads that as `(ref T)` — which is why `(sizeof &Pt)`,
-`(link &Point)` and `(Vector &Point)` above are still types. The consequence to
-know is that `(addr-of T)` is therefore a legal, if strange, way to spell
-`(ref T)`. It is also the spelling `--emit-nuch` prints, since a protocol or a
-generic template is exported verbatim — so in a module you export a header from,
-prefer the attached forms (`p:&T`, `?&T`) or the plain `(ref T)` for a type a
-signature names, and keep the standalone `&T` for local code.
+There the reader writes `(ref X)` before anyone knows the position, and that is
+one node with one meaning per world: in a type slot `(ref T)` is the non-null
+pointer, which is why `(sizeof &Pt)`, `(link &Point)` and `(Vector &Point)`
+above are types; in a value slot `(ref x)` is the address-of, whose type is
+`(ref (type-of x))`. Since the node is the canonical one, `--emit-nuch` prints
+`(ref T)` for a standalone `&T` in an exported signature — no spelling leaks
+into a header. (Before Stage 21 PK-1 the reader macro wrote `addr-of`, which the
+type path had to accept as a synonym; `(addr-of T)` in a type slot is no longer
+one.)
 
 Only a **typed** non-null destination adds obligations: a `raw` or `?T` value
 may not flow into a `(ptr T)`/`(ref T)` slot (binding, `set!`, field/element

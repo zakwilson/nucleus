@@ -8,10 +8,10 @@
 ;   ):&T        -> ):ref:T      [return position, keyword-led spelling too]
 ;   &&T         -> ref:ref:T    and  ?&T -> ?ref:T,  &raw:T -> ref:raw:T
 ;
-; `&` at the start of a token is the reader macro `&x -> (addr-of x)`. It runs
-; before the token is lexed, so it takes the standalone spelling and the sigil
-; keeps the rest; a type slot handed `(addr-of T)` reads it as `(ref T)`, which
-; is why `(link &Point)` and `(Vector &Point)` below are still types.
+; `&` at the start of a token is the reader macro `&x -> (ref x)`. It runs before
+; the token is lexed, so it takes the standalone spelling and the sigil keeps the
+; rest; the node is the same `ref` a type slot already means, which is why
+; `(link &Point)` and `(Vector &Point)` below are types and `&a` is an address.
 ;
 ; A `&` anywhere else in an atom is an ordinary symbol character — `.&` (the
 ; field-address form) is untouched — and the four retired `&x` markers keep

@@ -105,9 +105,10 @@
     (rd-macro-add tbl "'" (symbol-intern "quote"))
     (rd-macro-add tbl "`" (symbol-intern "quasiquote"))
     (rd-macro-add tbl "@" (symbol-intern "deref"))
-    ; `&x` is `(addr-of x)` only at a token boundary; the mid-atom `&` is the
-    ; `ref:` sigil (design/stage16-ergonomics/ref-sigil.md §6).
-    (rd-macro-add tbl "&" (symbol-intern "addr-of"))
+    ; `&x` is `(ref x)` only at a token boundary; the mid-atom `&` is the `ref:`
+    ; sigil. One head for both worlds: a type slot reads `(ref T)` as the
+    ; non-null pointer, a value slot as address-of (pointer-kind-spellings.md §3).
+    (rd-macro-add tbl "&" (symbol-intern "ref"))
     (return tbl)))
 
 ; ---------------------------------------------------------------------------

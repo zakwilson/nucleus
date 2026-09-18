@@ -1,9 +1,16 @@
 # Stage 21 — Pointer-kind and type-sigil spellings: make the sugar general
 
-**Status:** designed 2026-09-16, not built. Every claim in §1 was reproduced
-against `build/nucleusc` on that date (probe generator and full run kept beside
-this document's research pass; the 437-row matrix is summarised in §1.1).
-Milestones are **PK-1 … PK-6**; §9 sequences them across the boot refresh.
+**Status:** designed 2026-09-16; **PK-1 built 2026-09-18** (after item 2, so
+the reader edit is the one `&` row in `lib/read.nuc`'s `read-macro-table-new`
+and there is no twin; `.ll` artifacts that *contain* the reader — `lib/read.nuc`,
+`lib/test.nuc` and their importers — move by that one string constant, which §9
+step 1's "no `.ll` differs" did not foresee; the value-path reach list needed one
+site §3 missed, `emit-callable-value`'s `q:(ref T)` annotation guard, which
+`(cb &x)` now reaches; see progress.md). PK-2 … PK-6 not built. Every claim in
+§1 was reproduced against `build/nucleusc` on 2026-09-16 (probe generator and
+full run kept beside this document's research pass; the 437-row matrix is
+summarised in §1.1). Milestones are **PK-1 … PK-6**; §9 sequences them across
+the boot refresh.
 
 **Goal.** A type spelling must mean the same thing in every slot, and the node
 the reader produces for it must be one the type path, the value path and the

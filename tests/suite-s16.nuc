@@ -1378,8 +1378,7 @@ map=2
 
 ; The two meanings are split by token position, not by context, so they have to
 ; compose: `(as &Pt &p)` is a type and an operator in one form, and a standalone
-; `&T` in a type slot -- which the reader wrote as `(addr-of T)` before position
-; was known -- must still read as `(ref T)`.
+; `&T` in a type slot is the same `(ref T)` node the value form is (PK-1).
 (deftest s16-ref-sigil-both-meanings
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
 (defstruct Pt x:i32 y:i32)
@@ -2773,7 +2772,7 @@ map=2
 " 2 "'.' was retired in Stage 16: use 'get' -- (get p 'field), or head position (p 'field)"))
   (try (check-place-refused "(defstruct Pt x:i32)
 (defn f (p:&Pt):ptr:i32 (return (.& p 'x)))
-" 2 "'.&' was retired in Stage 16: use the 2-argument 'addr-of' -- (addr-of p 'field)"))
+" 2 "'.&' was retired in Stage 16: use the 2-argument 'ref' -- (ref p 'field)"))
   (try (check-place-refused "(defn . (a:i32):i32 (return a))
 " 1 "'.' already names a special form"))
   (try (check-place-refused "(defstruct Pt x:i32)

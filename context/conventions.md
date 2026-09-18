@@ -1142,21 +1142,17 @@ spelling of the same kind: `ptr`, `ref` (its documented synonym) and `addr-of`
 `w9-cheader-*` goldens had the `void*` spelling written into them. `raw` still
 widens deliberately. Docs: `docs/compiler.md` §C headers.
 
-## A standalone `&T` in a type slot is an `(addr-of T)` node, and `--emit-nuch` prints nodes
+## A standalone `&T` in a type slot is a `(ref T)` node — the same head as the value form
 
-`&` at a token boundary is the address-of reader macro, so `(as &T x)`,
-`(Vector &T)` and the list-form binding `(p &T)` all reach the parser as
-`(addr-of T)`; only a `&` *inside* an atom (`p:&T`, `?&T`, `):&T`) is the type
-sigil, which the lexer rewrites to `ref:` before any node exists. Type consumers
-accept both, so it compiles — but `--emit-nuch` prints `defprotocol` and
-generic-template forms **verbatim**, so the odd spelling lands in the committed
-header (measured: sugaring `lib/`'s standalone spellings put 50 `(addr-of T)`
-into `lib/*.nuch`). **Tree-wide rule: adopt `&` for a type only after a `:`/`?`/`!`**
-— `p:&T`, `?&V`, `):&T`. A cast operand is one token, so it takes the chain
-(`(as ref:T x)`); a type expression takes the list form (`(Vector (ref T))`).
-`src/` was swept back to that rule on 2026-09-07 (2,469 sites, `build/nucleusc.ll`
-byte-identical), so a standalone `&T` in a type slot is a defect anywhere now.
-See [design/stage16-ergonomics/ref-sigil.md](../design/stage16-ergonomics/ref-sigil.md) §6.
+`&` at a token boundary is the `ref` reader macro (`read-macro-table-new`,
+`lib/read.nuc`), so `(as &T x)`, `(Vector &T)`, `(p &T)` and `&x` all reach the
+parser as `(ref …)`: one node, the non-null pointer in a type slot and the
+address-of in a value slot, and `--emit-nuch` prints it canonically. Only a `&`
+*inside* an atom (`p:&T`, `?&T`, `):&T`) is the type sigil the lexer rewrites to
+`ref:`. `addr-of` is a value-world head the compiler still accepts (Stage 21
+PK-1; retired in PK-5, pointer-kind-spellings.md §7) and no type consumer
+recognizes it any more. Attached forms are still preferred in exported
+signatures only as a matter of taste — nothing leaks into a header now.
 
 ## In C, a typedef is not a tag — emit both, and give them the same spelling
 
@@ -6074,16 +6070,20 @@ other way: do NOT reach for `lex-atom` there. Value position already has a
 grammar for `name:Type` — an ascription that lowers to `as` (`emit-symbol-ref`:
 `split-typed`, then `as-convert` to the annotation) — so an atom the lexer
 rewrites into a colon chain lands *inside* that grammar rather than beside it.
-Stage 16's `&x`-for-`(addr-of x)` is the worked example: expanded in the lexer
+Stage 16's `&x` address-of is the worked example: expanded in the lexer
 it becomes `ref:x`, which already parses as "the variable `ref`, cast to type
 `x`", and `ref` is a legal *binding* name — a definition may not take it
 (name-resolution.md §15) but a `let` or a parameter still may, which is exactly
 the position the ambiguity lives in. The right layer is the **reader-macro
-table** (`build-rmacros`, beside `@` → `deref`), which is matched in `next-tok`
-*before* `lex-atom` and only at a token boundary — so it wraps the next form in
-an existing head instead of minting a spelling. Wrapping in a head the compiler
-already matches on costs nothing downstream; a *new* head would have needed arms
-in `emit-symbol-ref`, `node-type-sym` and `fn-rewrite-captures`. Note that `def-rmacro` *can* do this from source, since Stage 21 R-1
+table** (`read-macro-table-new` in `lib/read.nuc`, beside `@` → `deref`), which
+is matched *before* `rd-atom` and only at a token boundary — so it wraps the
+next form in a head instead of minting a spelling. Wrapping in a head the
+compiler already matches on costs nothing downstream; a head new to one world
+needs that world's arms: Stage 21 PK-1 moved `&x` from `addr-of` to `ref`, and
+the value path's reading sites (`emit-list`, `node-type`, `fn-rewrite-captures`,
+`defvar-init-ir`, `defvar-check-init-order`, `gcheck-special-form`,
+`macrolet-bind`, and the `q:(ref T)` annotation guard in `emit-callable-value`)
+each needed a `ref` arm. Note that `def-rmacro` *can* do this from source, since Stage 21 R-1
 (`design/stage21-cleanup/one-reader.md`): the reader registers `(def-rmacro "p"
 sym)` as it reads it, so a prefix takes effect for the forms after it in its
 own file — file-scoped and forward-only, not global — while the REPL keeps one
@@ -6236,12 +6236,13 @@ macro, and **the short spellings are preferred in new code**:
 |---|---|
 | `p:&Point` | `p:ptr:Point`, `(p (ref Point))` |
 | `):&T` | `):ref:T` |
-| `&x` | `(addr-of x)` |
+| `&x` | `(ref x)`, `(addr-of x)` |
 
 `&` inside an atom is the type sigil (`&T` → `ref:T`, chaining as `&&T`, `?&T`,
-`&raw:T`); `&` starting a token is `(addr-of x)`. A field address stays
-`(addr-of s 'field)` — there is no `&s.field`. `(ref T)` list form is still
-required where a parameter's type is parenthesised, e.g. `(v (ref (Vector T)))`.
+`&raw:T`); `&` starting a token is `(ref x)`. A field address is the 2-argument
+form, `(ref s 'field)` (or `(addr-of s 'field)` until PK-5) — there is no
+`&s.field`. `(ref T)` list form is still required where a parameter's type is
+parenthesised, e.g. `(v (ref (Vector T)))`.
 
 Since Stage 17, a struct **value** in a binding also reaches a `&T` parameter
 with no `&` at all (lvalue-only implicit address-of, borrow-conventions.md
