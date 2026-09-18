@@ -1391,8 +1391,8 @@ parser (`%Full?` → "expected comma after getelementptr's type"), not silently.
 
 ## Symbol nodes are interned singletons — they have **no line**, and you must never write one
 
-`src/reader.nuc` `read-form` handles `TOK-SYMBOL` as
-`(return (ok (intern-symbol (t s))))`: every occurrence of a spelling anywhere
+`lib/read.nuc`'s `rd-atom` interns every symbol it reads (`intern-node
+(rd-expand-sigil tv)`): every occurrence of a spelling anywhere
 in the program is the **same `Node`**, and `intern-symbol` sets its `line` to 0.
 Every other node kind (`NODE-INT`, `NODE-STR`, `NODE-CHAR`, `NODE-FLOAT`,
 `NODE-KEYWORD`, and cells via `make-cell`) is allocated per occurrence and does
@@ -1439,28 +1439,29 @@ first and every enclosing one just propagates its `(err! parse-error)` through
 "fix" it to report the innermost; it already does. (Stage 15 W4c's design doc
 asserted the opposite; measured false.)
 
-Bracket balance is tracked in `next-tok` (`reader-open-bracket` /
-`reader-close-bracket`, `src/reader.nuc`) as each bracket **token** is produced,
-covering `(`/`)`, `[`/`]`, `{`/`}`, `#{`/`}`. Two properties are load-bearing:
-the depth is **not clamped at zero** (a negative depth is exactly "this closer
-has no matching opener", which is what distinguishes a stray top-level `)` from
-a `)` inside an unclosed `[…]`), and because it counts tokens rather than
-characters it is immune to a bracket inside a string literal or comment — unlike
-a naive external paren counter. The four globals (`g-paren-depth`,
-`g-form-open-line`, `g-col0-open-line`, `g-col0-open-depth`, declared in
-`src/nucleusc.nuc` beside `g-peek`) are reset at the top of **`read-program`**,
-not save/restored at the three import sites that save `g-src`/`g-pos`/`g-line`:
-`read-program` is the single whole-file read entry (batch, import, REPL) and
-reads never interleave, because an import is processed during *emission*, after
-the importing file's own read has completed.
+Bracket balance is tracked on the `Reader` itself (`rd-open-bracket` /
+`rd-close-bracket`, `lib/read.nuc`, called as each bracket **token** is
+produced) covering `(`/`)`, `[`/`]`, `{`/`}`, `#{`/`}`. Two properties are
+load-bearing: the depth (the `paren-depth` field) is **not clamped at zero**
+(a negative depth is exactly "this closer has no matching opener", which is
+what distinguishes a stray top-level `)` from a `)` inside an unclosed
+`[…]`), and because it counts tokens rather than characters it is immune to a
+bracket inside a string literal or comment — unlike a naive external paren
+counter. The four fields (`paren-depth`, `form-open-line`, `col0-open-line`,
+`col0-open-depth`) live **on the `Reader` value**, not in a global — each
+`reader`/`read-all` call starts a fresh one, so nothing needs resetting or
+save/restoring across a nested read the way the old compiler globals did (a
+Stage 21 R-2 simplification: an import site used to save/restore five reader
+globals by hand; a nested read is now just a `Reader` in the callee's frame).
 
 Column-0 detection needs no column counter: at the moment a bracket token is
-produced `g-pos` still points at the bracket, so `g-src[g-pos-1] == '\n'` is
-exactly "this bracket is the first character on its line". Prefer that
-lookbehind to threading a column through `next-char` — one fewer invariant a
-future lexer path can forget. (Verified: idiomatic Nucleus has **zero** column-0
-`(` at nonzero depth across `src/`, `lib/`, `examples/`, `tests/`, which is what
-makes "a column-0 `(` while a form is open" a reliable imbalance signal.)
+produced `pos` still points at the bracket, so `src[pos-1] == '\n'` is exactly
+"this bracket is the first character on its line" (`rd-at self (- pos 1)`).
+Prefer that lookbehind to threading a column through the char-reading
+primitives — one fewer invariant a future lexer path can forget. (Verified:
+idiomatic Nucleus has **zero** column-0 `(` at nonzero depth across `src/`,
+`lib/`, `examples/`, `tests/`, which is what makes "a column-0 `(` while a
+form is open" a reliable imbalance signal.)
 
 ## An extra `)` in a `let` binding list leaves an EVEN binding list
 
@@ -1549,10 +1550,10 @@ rule rather than two.
 
 `(fn ret)` and its parameter list are separate list elements
 (`((fn ret) (params))` canonical), so the colon-paren binding fuse
-(`fuse-colon-paren`, `src/reader.nuc`) — which absorbs *one* paren form after a
+(`rd-fuse-colon-paren`, `lib/read.nuc`) — which absorbs *one* paren form after a
 trailing-colon atom — cannot express a function-pointer type by itself.
-`fuse-fn-params` (added in W5f, called from `fuse-colon-paren` right after the
-first `read-form`) absorbs a **second, immediately-adjacent** group when the
+`rd-fuse-fn-params` (added in W5f, called from `rd-fuse-colon-paren` right after the
+first recursive read) absorbs a **second, immediately-adjacent** group when the
 first is `(fn …)`-headed, producing the nested `((fn ret) (params))` — which
 `extract-name-and-type`'s CELL branch passes straight to
 `parse-type-from-node`'s fn branch, and which composes for free with the
@@ -2231,6 +2232,33 @@ Return something flatter until this is fixed. Stage 19's `process-try-wait`
 returns `!bool` with the status parked on the receiver
 (`design/stage19-process/overview.md` §8.1).
 
+## A template stamp loses the pointer KIND — `(Result (raw T) E)` is `(Result (ref T) E)`
+
+`union-template-stamp-types-in` / `struct-template-stamp-types-in`
+(`src/union-registry.nuc`) substitute each argument by its `type-spelling`, and
+`type-spelling` (`src/type-mangle.nuc`) spells every `TY-PTR` as `ptr:elem`
+regardless of `pkind`. So `(Result (raw Node) ReadError)`, `(Result (raw Node)
+i32)` and `(Maybe (raw Node))` all stamp a `ref` payload and refuse `null` at
+construction (*"raw pointer where non-null (ref ...) is required"*). `!raw:Node`
+works only because the two-arm `Err` shape takes the ERRPTR niche, whose
+constructor is lenient. Found by Stage 21 R-1: the memo key is
+`type-mangle-token` (`pNode` for both kinds), so the first stamp of either kind
+answers for both — do not "fix" `type-spelling` locally; every stamped `pkind`
+in `src/` moves with it (it belongs with the pointer-kind item).
+
+Until then, a raw payload in a sum with a non-`Err` error arm is a **named**
+union with the same arms — `(defunion ReadResult (ok v:raw:Node) (err
+e:ReadError))` in `lib/read.nuc` — which `try`/`unwrap`/`match` treat exactly
+like a `Result` because `result-union-of` is structural.
+
+Two smaller traps from the same work: a two-element **call** in a positional
+struct-literal slot, `(S a (f x))`, is read by `emit-struct-lit` as a designated
+`(field value)` initializer (*"struct literal: no field 'f'"*) — construct through a
+plain function instead; and a `defcast` whose `From` is a struct used to emit the
+conversion call with the aggregate passed first-class, which a 16-byte struct
+survived by register coincidence and a larger one segfaulted on — `coerce-via-cast-rule`
+now goes through `abi-arg-frag`/`abi-emit-struct-call` like every other call.
+
 ## `macros.nuc` is auto-imported — adding macros shifts the string pool
 
 `lib/macros.nuc` is transitively auto-imported into **every** compilation
@@ -2316,8 +2344,9 @@ When flattening an existing stack the hazard is the **body**, not the bindings:
 every level being collapsed may carry trailing forms after its inner `let`, and
 all of them have to survive into the single merged body. Losing them is not a
 type error — a `!T` function that falls off the end still compiles.
-`read-vector-literal` and `read-hashset-literal` (`src/reader.nuc`) were flattened
-correctly and lost their `(return (ok …))` tails, which surfaced as
+`read-vector-literal` and `read-hashset-literal` (then two separate functions
+in `src/reader.nuc`, now one shared `rd-lit-elems` in `lib/read.nuc`) were
+flattened correctly and lost their `(return (ok …))` tails, which surfaced as
 `'()' is not an expression` reported against the *caller's* source line.
 
 ## Avoid untyped pointers
@@ -2339,7 +2368,7 @@ The pre-TF-4 note here said top-level sugar had to be a compiler directive (`fn-
 
 ## A diagnostic's notes already live in its MESSAGE — split there, do not re-plumb 688 call sites
 
-`die-at` (662 sites) and `report-at` (26) take a line and a message. Stage 18 TF-5 needed a `Diagnostic` record with a separate `notes` field, and the cheap way in was not to change any of them: **twenty-odd diagnosing sites already build their note into the message** as `(fstr "…" "\n  note: " …)`, and two more are ambient globals sampled at render time (`g-mono-context`, `g-diag-note`). `diag-build` (`src/reader.nuc`) splits on that exact nine-byte marker, so the record gains a real field and the text back-end is the rejoin — i.e. the identity, byte for byte.
+`die-at` (662 sites) and `report-at` (26) take a line and a message. Stage 18 TF-5 needed a `Diagnostic` record with a separate `notes` field, and the cheap way in was not to change any of them: **twenty-odd diagnosing sites already build their note into the message** as `(fstr "…" "\n  note: " …)`, and two more are ambient globals sampled at render time (`g-mono-context`, `g-diag-note`). `diag-build` (`src/diagnostics.nuc`) splits on that exact nine-byte marker, so the record gains a real field and the text back-end is the rejoin — i.e. the identity, byte for byte.
 
 That identity is what makes the change gateable, and the gate is not a new test: **172 `run_reject_at` units already assert their exact diagnostic text**, so any drift in the split/rejoin pair fails there. Anything that changes how a diagnostic is assembled should be measured against `make test` first and only then reasoned about.
 
@@ -3266,15 +3295,21 @@ Two consequences worth keeping:
 
 The invariant `make lib-objs` / `make lib-headers` / `make lib-cheaders` assert
 is that every `lib/*.nuc` compiles as its own entry file in all three emit
-modes. The reader never did — it reads and writes `g-src` / `g-pos` /
-`g-line` / `g-source-path` / `g-peek` / `g-interactive` / `g-mono-context`,
-which `src/nucleusc.nuc` defines — so it moved to **`src/reader.nuc`** in W9
-item 1, beside `repl.nuc` / `cheader.nuc` / `format.nuc`, which are in `src/`
-for the same reason. Import resolution searches the importing file's own
-directory first, so `(import-use reader)` from `src/nucleusc.nuc` still finds
-it and the compiler's IR is byte-identical across the move. If you add a file
-under `lib/`, compile it standalone once; the `w9-lib-emit-*` units
-(`tests/suite-linking.nuc`) will otherwise find it for you.
+modes. The reader is the worked example of **both** directions of this rule:
+it moved out of `lib/` at W9 item 1 because it read and wrote compiler globals
+(`g-src`/`g-pos`/`g-line`/`g-source-path`/`g-peek`/`g-interactive`/`g-mono-context`),
+and it moved back — as `lib/read.nuc` — at Stage 21 R-1/R-2
+(`design/stage21-cleanup/one-reader.md`) once its state became a `Reader`
+*value* with no compiler dependency left. What genuinely needs the globals —
+`die-at`, `report-at`, the two byte helpers — split out into
+`src/diagnostics.nuc` instead, which stays in `src/` for exactly the original
+reason; `repl.nuc` / `cheader.nuc` / `format.nuc` are there for the same
+reason. Import resolution searches the importing file's own directory first,
+so `(import-use read)` / `(import-use diagnostics)` from `src/nucleusc.nuc`
+find them wherever they live, and a file's IR is byte-identical across a move
+like either of these. If you add a file under `lib/`, compile it standalone
+once; the `w9-lib-emit-*` units (`tests/suite-linking.nuc`) will otherwise
+find it for you.
 
 **`--emit-nuch` was exempt from the prelude and processed no imports at all**,
 which is why nine library files could not produce a header: a `.nuch` exports
@@ -3319,18 +3354,24 @@ platforms can host the compiler.)
 
 ## Never re-enter the reader from a diagnostic path — scan text instead
 
-`read-program` / `desugar` mutate `g-src`, `g-pos`, `g-line`, `g-source-path`,
-`g-peek` and `g-peek-valid`. Composing a diagnostic is not a safe moment to do
-that: the message is being built from state that belongs to the form being
-blamed. When a diagnostic wants to know something about *another file* (W1c's
-"which file defines this name?"), scan the bytes. A small tokenizer that skips
+Before Stage 21, `read-program` / `desugar` mutated five compiler globals
+(`g-src`, `g-pos`, `g-line`, `g-peek`, `g-peek-valid`), and composing a
+diagnostic was not a safe moment to do that: the message is being built from
+state that belongs to the form being blamed. `lib/read.nuc`'s `Reader` is a
+value now, with no ambient state to clobber, but the rule still holds for a
+different reason (`text-defines-name`'s own comment, `src/nucleusc.nuc`): a
+full read plus `desugar` from a diagnostic path buys nothing a byte scan does
+not, and `desugar` can die itself — while the caller is already on a dying
+path composing *its own* diagnostic. When a diagnostic wants to know something
+about *another file* (W1c's "which file defines this name?"), scan the bytes
+instead. A small tokenizer that skips
 line comments and string literals removes the two false-positive sources that
 matter, and what remains — a definer spelled inside a quasiquoted macro body —
 is acceptable precisely because the result is phrased as a `note:` and the
 primary error text stays true on its own.
 
 The corollary that makes this affordable: **check that every caller is on a
-dying path before spending anything on a diagnostic.** `die-at` (src/reader.nuc)
+dying path before spending anything on a diagnostic.** `die-at` (src/diagnostics.nuc)
 carries `noreturn`, so a scan reached only from `die-at` call sites runs at most
 once per compile — a directory walk plus a file read per candidate is invisible
 (a failing fixture compiles in the same 0.135 s as a clean one). The same work
@@ -6042,10 +6083,11 @@ table** (`build-rmacros`, beside `@` → `deref`), which is matched in `next-tok
 *before* `lex-atom` and only at a token boundary — so it wraps the next form in
 an existing head instead of minting a spelling. Wrapping in a head the compiler
 already matches on costs nothing downstream; a *new* head would have needed arms
-in `emit-symbol-ref`, `node-type-sym` and `fn-rewrite-captures`. Note that
-`def-rmacro` cannot do this from source: a unit is read in full before its forms
-are processed, so a `def-rmacro` never affects its own file (it does work in the
-REPL, which reads a form at a time).
+in `emit-symbol-ref`, `node-type-sym` and `fn-rewrite-captures`. Note that `def-rmacro` *can* do this from source, since Stage 21 R-1
+(`design/stage21-cleanup/one-reader.md`): the reader registers `(def-rmacro "p"
+sym)` as it reads it, so a prefix takes effect for the forms after it in its
+own file — file-scoped and forward-only, not global — while the REPL keeps one
+session table across prompts.
 
 ## A check on an emit path counts INSTANTIATIONS, not source sites
 
@@ -6156,7 +6198,8 @@ The general rule: a macro may *contain* type-dependent code, but it may not
 so the library macro and the special form cannot coexist for even one commit.
 (2) The compiler's own sources must compile under the **previous** boot, which
 has neither the new special form nor the renamed macro. With `src/reader.nuc`
-holding 19 `try` sites, the migration is therefore three states, not two: rename
+(since deleted; Stage 21 moved the reader to `lib/read.nuc`) holding 19 `try`
+sites, the migration is therefore three states, not two: rename
 the macro (`try-boot`) and repoint `src/` at it; land the special form and drop
 the old macro name; `make update-bootstrap`; then flip `src/` back and delete the
 shim. Budget a boot generation for any macro→special-form promotion whose name
@@ -6261,7 +6304,8 @@ The sequence is: land the feature (src/ still not using it) → `make` green →
 `lib/strview-str.nuc` / `lib/string.nuc` bring `char-at`, `byte-at`, `bytes`,
 `as-view`, `chars`, `count`, `sub-bytes` into scope as protocol methods. The
 compiler has always been free to use those spellings for its own helpers, and
-one of them had: `src/reader.nuc`'s `char-at (s:ptr pos:i64)`.
+one of them had: `src/reader.nuc`'s `char-at (s:ptr pos:i64)` (the function
+survives as `cstr-byte-at`, since Stage 21 R-2 in `src/diagnostics.nuc`).
 
 Once the name is a generic with several methods, a call that previously adapted
 (`CStr` argument at a `ptr` parameter) is resolved by exact dispatch instead and
@@ -6518,18 +6562,31 @@ and any multi-TU build importing that header got a `println` that behaved as
 the default byte case did `(emit out (as Char (as ui32 c)))`, widening each
 *byte* to a codepoint and re-encoding it as UTF-8 so `"hé"` came back `"hÃ©"`.
 
-**Adding a `NodeKind` means adding a `fprint-node` arm**, and its default arm
-must stay unreachable rather than silently drop a node.
+**Adding a `NodeKind` means adding a `node-write` arm** (`lib/read.nuc`), and
+its default arm must stay unreachable rather than silently drop a node.
 
 Neither `check-headers` nor the IR snapshot catches this class: both compare the
 compiler's output against *itself*, so a lossy printer is consistently lossy and
-stays green. What caught it was a second implementation that reads the output
-back — `nucleusc --dump-ast <file>` prints the reader's tree (before `desugar`,
-before the prelude) and `build/readdump` prints `lib/read.nuc`'s answer in the
-same format, so `run_reader_parity` diffs them over `tests/fixtures/`,
-`examples/`, `lib/` and `src/`. Use `--dump-ast` whenever you touch the reader
-or the printer; it is the only way to see what `src/reader.nuc` actually
-produced.
+stays green. `print-node` is a wrapper over `lib/read.nuc`'s `node-write`; R-4's
+round-trip unit reads the output back.
+
+## The reader is `lib/read.nuc`; the compiler's diagnostics are `src/diagnostics.nuc`
+
+Since Stage 21 R-2 (`design/stage21-cleanup/one-reader.md`) `src/reader.nuc` is
+gone and `lib/read.nuc` is the only reader — standalone-compilable, used by the
+compiler, `lib/test.nuc` and any program. A reader error reaches a caller as a
+`ReadError` value (`code line msg note`, arena-owned strings; `docs/reading.md`
+§`ReadResult`), not a `report-at` call: `lib/read.nuc` has no diagnostics
+dependency and cannot have one (`context/macros-jit.md`'s "a macro body cannot
+call `die-at`/`report-at`" is exactly this same layer, one file over). Adding a
+new reader diagnostic is adding a new `msg` wording at the fault site in
+`lib/read.nuc`, nothing else. The compiler is the one caller that renders a
+`ReadError`, through `read-source-or-report` (`src/nucleusc.nuc`), which calls
+`report-at`/`diag-stage-note` (`src/diagnostics.nuc`) with the value's fields.
+The general rule this generalizes: a library whose failures carry context
+returns its own `E` and registers one `defcast E Err`, never side fields on a
+handle — `docs/errors.md`'s two-tier principle (`Err` the code, `(Result T E)`
+the payload).
 
 ## `readdir` order is not an ordering — `lib/file.nuc`'s `read-dir` sorts
 

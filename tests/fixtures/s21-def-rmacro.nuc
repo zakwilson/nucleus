@@ -1,0 +1,10 @@
+; Stage 21 R-4 (design/stage21-cleanup/one-reader.md §6.6): `def-rmacro`
+; registers as the file is READ, forward-only and file-scoped. `$s21-x` on
+; line 7 is the symbol `$s21-x`; on line 9 it is `(s21-w s21-x)`. An importer
+; may define its own `$` and sees neither of these (tests/suite-s21.nuc).
+(import-use node)
+(defvar s21-x:i32 4)
+(defn s21-before ():raw:Node (return '$s21-x))
+(defn s21-w (v:i32):i32 (return (* v 10)))
+(def-rmacro "$" s21-w)
+(defn s21-after ():i32 (return $s21-x))

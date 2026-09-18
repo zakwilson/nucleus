@@ -1,0 +1,8 @@
+; Stage 21 R-4 (design/stage21-cleanup/one-reader.md §6.6): the REPL owns one
+; reader-macro table for the session, so a `def-rmacro` at one prompt applies
+; at the next. One form per line.
+(def-rmacro "$" quote)
+$foo
+(kind-of "$")
+(kind-of "'")
+(def-rmacro "$" quote)

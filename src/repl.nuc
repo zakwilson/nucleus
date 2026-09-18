@@ -158,9 +158,7 @@
 ; a name, so `(kind-of "'")` is the way to ask about one.
 (defn repl-classify (name:Symbol):StrView
   (when (!= (find-macro name) null) (return "macro"))
-  (dotimes (i (unsafe/cast i32 (count g-rmacros)))
-    (let (rm:&RMacro (invoke g-rmacros (as usize i)))
-      (when (= name (rm 'prefix)) (return "rmacro"))))
+  (when (>= (rd-macro-find repl-rmacros (symbol-as-view name)) 0) (return "rmacro"))
   (when (!= (lookup-struct name) null) (return "struct"))
   (let (sym:?ptr:Sym (scope-lookup g-globals name))
     (when (!= sym null)
@@ -516,9 +514,9 @@
           (return 1))
         (return 0)))))
 
-; Read lines from stdin until parens are balanced, return the accumulated buffer.
-; Returns null on EOF.
-(defn repl-read-input ():ptr
+; Read lines from stdin until parens are balanced, return the accumulated buffer,
+; or `none` at EOF.
+(defn repl-read-input ():(Maybe String)
   (let ((buf String) (string-new)
         depth:i32 0
         got-input:i32 0
@@ -533,7 +531,7 @@
       (match (read-line)
         (none
           (if (= got-input 0)
-            (do (drop &buf) (return null))
+            (do (drop &buf) (return (none)))
             (set! done 1)))
         ((some line)
           (let ((ln String) line)
@@ -573,8 +571,8 @@
               (when (and (<= depth 0) (!= got-input 0))
                 (set! done 1))
               (drop &ln))))))
-    ; The reader keeps `Node.s` pointers into this text for the session.
-    (return (as ptr (string-as-cstr buf)))))
+    ; The caller drops it once read: everything the reader returns is interned.
+    (return (some buf))))
 
 ; Stage 15 W8 G-3, the REPL half (design/global-init.md §4.5). There is no queue
 ; to accumulate across a session, because each form is its own unit: a `defvar`
@@ -925,9 +923,9 @@
                   (repl-absorb-type-buf)
                   (clear-module-buffers)
                   (emit stderr "  defined\n"))
+            ; Already registered in `repl-rmacros` while the input was read.
             (and (not (symbol-none? h)) (= h "def-rmacro"))
-              (do (emit-def-rmacro (as ptr f))
-                  (emit stderr "  defined\n"))
+              (emit stderr "  defined\n")
             (and (not (symbol-none? h))
                  (or (= h "macroexpand")
                      (= h "macroexpand-1")
@@ -1668,13 +1666,7 @@
 ; roster is spelled here once instead of at each site.
 ; See design/stage16-ergonomics/repl-libraries.md §3.4 (D4) for what is left out.
 (defstruct ReplState
-  ; --- reader ---
   source-path:Symbol
-  src:ptr
-  pos:i64
-  line:i32
-  peek:ptr
-  peek-valid:i32
   ; --- import bookkeeping (prepend-only lists: the head IS the watermark) ---
   imported:ptr
   importing:ptr
@@ -1744,6 +1736,9 @@
 ; The desugared form list of the input line, handed back from the protected
 ; `desugar` step (a callback returns nothing).
 (defvar g-repl-forms:ptr)
+; The session's reader-macro table: every input is read through it, so a
+; `def-rmacro` at one prompt is in force at the next. Rolled back by count.
+(defvar (repl-rmacros (ref (Vector RMacro))) (read-macro-table-new))
 ; Reused, not rebuilt: a snapshot per top-level form would grow the arena forever.
 (defvar (g-repl-generic-marks (ref (Vector (ref GenericMark))))
   (vector-new-in &g-arena-alloc))
@@ -1759,11 +1754,6 @@
 (macrolet ((over-repl-globals (spec)
              `(macmap ~spec
                 ((source-path g-source-path)
-                 (src g-src)
-                 (pos g-pos)
-                 (line g-line)
-                 (peek g-peek)
-                 (peek-valid g-peek-valid)
                  (imported g-imported)
                  (importing g-importing)
                  (ct-imported g-ct-imported)
@@ -1808,7 +1798,7 @@
                  ; A longjmp out of emit-macrolet skips its pop.
                  (n-macrolet g-macrolet-stack)
                  (n-cast-rules g-cast-rules)
-                 (n-rmacros g-rmacros)
+                 (n-rmacros repl-rmacros)
                  ; These three hand back a StructDef, so an entry must not
                  ; outlive g-structs'.
                  (n-vtables g-vtable-table)
@@ -1873,38 +1863,24 @@
 
 ; The body of repl-preload-prelude, as a protected callback.
 (defn repl-protect-preload (ctx:ptr):void
-  (match (read-program)
+  (match (read-source-or-report "(import-use prelude)" repl-rmacros)
     ((ok raw)
       (let (fc:ptr (desugar raw))
         (while (!= fc null)
           (repl-eval-form ((unsafe/cast ref:Node fc) 'car))
           (set! fc ((unsafe/cast ref:Node fc) 'cdr)))))
-    ((err e) (set! g-peek-valid 0)))
+    ((err e) (do)))
   (return))
 
 ; The prelude goes through the ordinary import arm, exactly as batch `main`
 ; splices it, so a session and a batch compile agree on its types; a hand mirror
 ; here did not (design/stage16-ergonomics/repl-libraries.md §3.1).
 (defn repl-preload-prelude ():void
-  (let (save-src:ptr g-src
-        save-pos:i64 g-pos
-        save-line:i32 g-line
-        save-peek:ptr g-peek
-        save-peek-valid:i32 g-peek-valid)
-    (set! g-src "(import-use prelude)")
-    (set! g-pos 0)
-    (set! g-line 1)
-    (set! g-peek-valid 0)
-    (repl-snapshot &g-repl-saved)
-    (set! g-repl-booting 1)
-    (when (!= (repl-protect repl-protect-preload null) 0)
-      (repl-restore &g-repl-saved))
-    (set! g-repl-booting 0)
-    (set! g-src save-src)
-    (set! g-pos save-pos)
-    (set! g-line save-line)
-    (set! g-peek save-peek)
-    (set! g-peek-valid save-peek-valid)))
+  (repl-snapshot &g-repl-saved)
+  (set! g-repl-booting 1)
+  (when (!= (repl-protect repl-protect-preload null) 0)
+    (repl-restore &g-repl-saved))
+  (set! g-repl-booting 0))
 
 ; REPL main loop
 (defn repl-main ():void
@@ -1928,17 +1904,13 @@
   (repl-preload-prelude)
   (let (running:i32 1)
     (while (!= running 0)
-      (let (input:ptr (repl-read-input))
-        (when (= input null)
-              (emit stderr "\n") (set! running 0))
-        (when (!= input null)
-              (when (!= running 0)
-              ; Parse the input
-              (set! g-src input)
-              (set! g-pos 0)
-              (set! g-line 1)
-              (set! g-peek-valid 0)
-              (match (read-program)
+      (match (repl-read-input)
+        (none
+          (do (emit stderr "\n") (set! running 0)))
+        ((some input)
+          (let ((text String) input)
+              ; A syntax error has already been reported; nothing to reset.
+              (match (read-source-or-report (string-as-view &text) repl-rmacros)
                 ((ok raw)
                   (do
                     ; `desugar` can die too, and runs before any form does.
@@ -1957,5 +1929,5 @@
                             (repl-restore &g-repl-saved)
                             (repl-error (node-line f 0) "error (recovered)")))
                         (set! fc ((unsafe/cast ref:Node fc) 'cdr))))))
-                ((err e) (set! g-peek-valid 0)))
-              (free input)))))))
+                ((err e) (do)))
+              (drop &text)))))))

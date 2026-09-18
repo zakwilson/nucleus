@@ -1,0 +1,245 @@
+; Stage 21 — one reader (design/stage21-cleanup/one-reader.md §6.6).
+;
+; The compiler reads through `lib/read.nuc` since R-2, so what a program's
+; `read-all` sees and what `--dump-ast` prints are the same reader's answer,
+; and the units here ask both. The reader's failures are values (`ReadError`,
+; §2.1) rather than a printed line and an exit, which is what makes the second
+; half of the file testable at all: a program can hold the code, the line and
+; the message and say what it got.
+
+; ---------------------------------------------------------------------------
+; A string literal has no 4095-byte cap
+; ---------------------------------------------------------------------------
+
+; 600 x "abcdefghij" + "END": the literal the fixture carries three times.
+(defn s21-big-literal ():String
+  (let (s:String (string-new)
+        i:i32 0)
+    (while (< i 600)
+      (str-into (addr-of s) "abcdefghij")
+      (set! i (+ i 1)))
+    (str-into (addr-of s) "END")
+    (return s)))
+
+; The R-1 probe, pinned: as a global, a macro body and a local it compiles and
+; prints its length, and the two modes that reprint the tree carry it whole.
+(deftest s21-long-string-literal
+  (let (path:StrView "tests/fixtures/s21-long-string-literal.nuc"
+        lit:String (s21-big-literal)
+        lv:StrView (string-as-view (addr-of lit))
+        out:String (try (build-run-file "" "" path)))
+    (try (check-eq-int (as i64 (lv 'len)) 6003 "literal length"))
+    (try (check-golden (string-as-view (addr-of out))
+                       "6003 6003 6003\nabcdefghij...abcdefghijEND\n"))
+    (drop (addr-of out))
+    (let (nuch:String (try (emit-for-file "" "--emit-nuch" path)))
+      (try (check-contains (string-as-view (addr-of nuch)) "(defmacro bigm () (quote \""))
+      (try (check-contains (string-as-view (addr-of nuch)) lv))
+      (drop (addr-of nuch)))
+    (let (ast:String (try (emit-for-file "" "--dump-ast" path)))
+      (try (check-contains (string-as-view (addr-of ast)) "(defvar big:CStr c\""))
+      (try (check-contains (string-as-view (addr-of ast)) lv))
+      (drop (addr-of ast)))
+    (drop (addr-of lit)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; `def-rmacro` registers at read time: forward-only, file-scoped
+; ---------------------------------------------------------------------------
+
+; A one-form-per-line program the fixture's `def-rmacro` must refuse, with the
+; form on line 3 so the line is a claim rather than the default.
+(defn s21-rmacro-refused (form:StrView msg:StrView):!void
+  (let (src:String (str "(import-use node)\n(defn w (x:i32):i32 (return x))\n" form
+                        "\n(defn main ():i32 (return 0))\n")
+        p:String (try (test-write-file "t.nuc" (string-as-view (addr-of src)))))
+    (try (check-refused-alike "" (string-as-view (addr-of p)) 3 msg))
+    (drop (addr-of p))
+    (drop (addr-of src)))
+  (return (ok)))
+
+(deftest s21-def-rmacro
+  ; 1. Through `--dump-ast`: `$s21-x` on line 7 is the symbol, on line 10 it is
+  ;    `(s21-w s21-x)`, and the directive itself is printed as data.
+  (let (ast:String (try (emit-for-file "" "--dump-ast" "tests/fixtures/s21-def-rmacro.nuc"))
+        av:StrView (string-as-view (addr-of ast)))
+    (try (check-line av "(defn s21-before () :raw:Node (return (quote $s21-x)))"))
+    (try (check-line av "(def-rmacro \"$\" s21-w)"))
+    (try (check-line av "(defn s21-after () :i32 (return (s21-w s21-x)))"))
+    (drop (addr-of ast)))
+
+  ; 2. Through a program's `read-all`: the same forward-only rule in one
+  ;    buffer, a fresh table for the next buffer, and the three collection
+  ;    literals with no gensym element -- the compiler mints that itself.
+  (let (out:String (try (build-run-source "(import-use error)
+(import-use strview)
+(import-use string)
+(import-use io)
+(import-use node)
+(import-use read)
+(defn show (text:StrView):void
+  (match (read-all text)
+    ((ok forms)
+      (let (s:String (node-str forms))
+        (print (string-as-view (addr-of s)) \"\\n\")
+        (drop (addr-of s))))
+    ((err e) (print \"error line \" (e 'line) \": \" (e 'msg) \"\\n\"))))
+(defn main ():i32
+  (show \"$x (def-rmacro \\\"$\\\" w) $x\")
+  (show \"$x\")
+  (show \"[1 2]\")
+  (show \"{:a 1}\")
+  (show \"#{1}\")
+  (show \"[a:(T) b]\")
+  (return 0))
+"))
+        ov:StrView (string-as-view (addr-of out)))
+    (try (check-golden ov "($x (def-rmacro \"$\" w) (w x))
+($x)
+((vector-lit 1 2))
+((hashmap-lit :a 1))
+((hashset-lit 1))
+((vector-lit a: (T) b))
+"))
+    (try (check-not-contains ov "__gs"))
+    (drop (addr-of out)))
+
+  ; 3. File-scoped, both ways: an importer defines its own `$` and the imported
+  ;    file its own, and each reads its forms through its own table. Were the
+  ;    table shared, whichever file was read second would be refused with
+  ;    "already a reader macro".
+  (let (p:String (try (test-write-file "s21-importer.nuc" "(import-use \"stdio.h\")
+(import-use \"tests/fixtures/s21-def-rmacro.nuc\")
+(defn s21-v (n:i32):i32 (return (+ n 1)))
+(def-rmacro \"$\" s21-v)
+(defn main ():i32
+  (printf \"%s %d %d\\n\" (symbol-as-cstr ((s21-before) 's)) (s21-after) $s21-x)
+  (return 0))
+"))
+        out:String (try (build-run-file "" "" (string-as-view (addr-of p)))))
+    (try (check-golden (string-as-view (addr-of out)) "$s21-x 40 5\n"))
+    (drop (addr-of out))
+    (drop (addr-of p)))
+
+  ; 4. And an importer that defines nothing sees a bare `$s21-x` as the symbol
+  ;    it is: the diagnostic is the importer's, at the importer's line.
+  (let (p:String (try (test-write-file "s21-plain.nuc" "(import-use \"tests/fixtures/s21-def-rmacro.nuc\")
+(defn s21-uses ():i32 (return $s21-x))
+"))
+        pv:StrView (string-as-view (addr-of p))
+        c:Compiled (try (compile-path pv)))
+    (try (check-error-at (addr-of c 'diags) pv 2 "undefined: $s21-x"))
+    (drop (addr-of c))
+    (drop (addr-of p)))
+
+  ; 5. The two refusals R-1 added, alike in every emit mode. `(def-rmacro ())`
+  ;    is `w45-empty-name-def-rmacro` in tests/suite-refusals.nuc.
+  (try (s21-rmacro-refused "(def-rmacro \"~\" w)"
+                           "def-rmacro: '~' is already a reader macro"))
+  (try (s21-rmacro-refused "(def-rmacro \"my\" w)"
+                           "def-rmacro: prefix must not begin with a byte that can start an atom"))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; A custom `E` through `(Result T E)`, and across `try` into `!T` callers
+; ---------------------------------------------------------------------------
+
+; The two §1.7 probes as one program (the fixture says what it pins). The
+; whole output is compared: a field that came back empty or swapped is a
+; different line, not a missing substring.
+(deftest s21-typed-error-propagation
+  (let (out:String (try (build-run-file "" "" "tests/fixtures/s21-typed-error-propagation.nuc")))
+    (try (check-golden (string-as-view (addr-of out)) "direct
+err s21-bad line=4 msg=[unknown escape \\q] note=[]
+err s21-worse line=7 msg=[too big] note=[a note]
+ok 10
+same-e
+err s21-worse line=7 msg=[too big] note=[a note]
+ok 11
+into-i32
+err s21-bad
+ok 10
+into-void
+err s21-worse
+ok void
+"))
+    (drop (addr-of out)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; A read failure is a value
+; ---------------------------------------------------------------------------
+
+; No diagnostic names `file`. The complement of `check-error-at`: a nested
+; import's error must be blamed on the imported file and on nothing else.
+(defn s21-check-no-diag-in ((ds (ref (Vector Diagnostic))) file:StrView):!void
+  (let (n:usize (count ds)
+        i:usize 0)
+    (while (< i n)
+      (let (d:Diagnostic (invoke ds i))
+        (when (= (d 'file) file)
+          (let (l:String (diag-list-text ds))
+            (fail! "no diagnostic may be attributed to " file "\n     got:"
+                   (string-as-view (addr-of l))))))
+      (set! i (+ i 1))))
+  (return (ok)))
+
+(deftest s21-read-error-value
+  ; 1. The program: code, line, message and note off the value; the `!void`
+  ;    wrapper's `try` yields the bare code through the `defcast`; a top-level
+  ;    `)` carries the note and one inside an unclosed `[…]` does not.
+  (let (out:String (try (build-run-file "" "" "tests/fixtures/s21-read-error-value.nuc")))
+    (try (check-golden (string-as-view (addr-of out)) "bad-escape: read-bad-escape line=1 msg=[unknown escape \\q] note=none
+bad-escape-line3: read-bad-escape line=3 msg=[unknown escape \\q] note=none
+stray-close-top: read-unexpected-close line=2 msg=[unexpected )] note=some
+  note: the form opened at line 1 is already closed -- look for an extra ')' between lines 1 and 2
+close-inside-vector: read-unexpected-close line=1 msg=[unexpected )] note=none
+clean: ok 2 form(s)
+read-through: err read-bad-escape
+read-through: ok 2 form(s)
+read-through: ok
+"))
+    (drop (addr-of out)))
+
+  ; 2. The compiler: a syntax error in an IMPORTED file is reported at that
+  ;    file's path and line, and blamed on nothing in the importer.
+  (let (dir:StrView (try (test-scratch))
+        bad:String (try (test-write-file "s21-synerr.nuc" "(defn s21-synerr-ok ():i32 (return 1))
+(defn s21-synerr-bad ():i32
+  (return (s21-synerr-ok \"x\\q\")))
+"))
+        badv:StrView (string-as-view (addr-of bad))
+        imp:String (try (test-write-file "s21-nested.nuc" "(import s21-synerr)
+(defn main ():i32 (return (s21-synerr-ok)))
+"))
+        impv:StrView (string-as-view (addr-of imp))
+        c:Compiled (try (compile-path-in dir impv)))
+    (when (!= (c 'exit) 1)
+      (fail! "expected exit 1 for a syntax error in an imported file, got "
+             (as i64 (c 'exit)) "\n     " (test-show (string-as-view (addr-of c 'raw)))))
+    (try (check-error-at (addr-of c 'diags) badv 3 "unknown escape \\q"))
+    (try (s21-check-no-diag-in (addr-of c 'diags) impv))
+    (try (check-eq-int (as i64 (count (addr-of c 'diags))) 1 "diagnostics"))
+    (drop (addr-of c))
+
+    ; 3. The REPL recovers from the same import, as from any failed import
+    ;    (stage16 repl-libraries.md §3.4): the next diagnostic is `<repl>`'s,
+    ;    a retry reports the same error, and an unrelated import still works.
+    (let (text:String (str "(import-use \"" badv "\")\n(zzz 1)\n(import-use \"" badv
+                           "\")\n(import-use \"tests/fixtures/r1-import-works.nuc\")\n(r1-works)\n")
+          want:String (str badv ":3: error: unknown escape \\q\n  error: error (recovered)\n")
+          pat:String (str "*" badv ":3: error: unknown escape \\q")
+          t:String (try (repl-session (string-as-view (addr-of text))))
+          tv:StrView (string-as-view (addr-of t)))
+      (try (check-eq-int (count-matching-lines tv (string-as-view (addr-of pat)))
+                         2 "reports of the import's syntax error"))
+      (try (check-contains tv (string-as-view (addr-of want))))
+      (try (check-contains tv "<repl>:1: error: unknown: zzz — not defined anywhere in this compilation unit\n  error: error (recovered)\n"))
+      (try (check-contains tv "  imported tests/fixtures/r1-import-works.nuc\nnuc>   42\n"))
+      (drop (addr-of t))
+      (drop (addr-of pat))
+      (drop (addr-of want))
+      (drop (addr-of text)))
+    (drop (addr-of imp))
+    (drop (addr-of bad)))
+  (return (ok)))

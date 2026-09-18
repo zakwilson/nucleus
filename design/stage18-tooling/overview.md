@@ -988,6 +988,20 @@ had been green over three of these bugs. A second implementation found all three
 in an afternoon — the argument §T2 makes for a native suite, arriving one phase
 before the suite exists.
 
+##### Update (2026-09-18)
+
+Both grounds this section's "scope deviation" rested on — collection-literal
+type inference living in a reader, and `def-rmacro` needing compiler-only
+state — turned out to be stale: the inference had already moved to
+`emit-collection-lit` by Stage 16, before this document's "as built" was even
+written, and `def-rmacro` only looked compiler-only because it registered from
+the wrong place (the emitter, after the whole file was read, not the reader).
+`lib/read.nuc` is now the compiler's only reader — collection literals and
+`def-rmacro` both included — `src/reader.nuc` and the four `run_reader_parity`
+units are gone, and `--dump-ast` is the same instrument this section built,
+still in use as the round-trip gate. See
+[stage21-cleanup/one-reader.md](../stage21-cleanup/one-reader.md).
+
 ### T6.4 TF-4 — `lib/test.nuc`, `deftest`, and the suite protocol
 
 - **`deftest`** (§T8.2) registers a named test into a table the suite walks,

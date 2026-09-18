@@ -81,3 +81,78 @@ The fix is a per-module string table — save and restore `g-strs` around
 already saves the entry/body streams. It is contained, but it moves bytes in
 every program in the tree, so it wants its own gate and its own commit rather
 than riding along with a feature.
+
+
+### Pointer-kind spellings: make the sugar general, or ban the ambiguous half — **no longer deferred**
+
+Taken up 2026-09-16 as
+[stage21-cleanup/pointer-kind-spellings.md](../stage21-cleanup/pointer-kind-spellings.md),
+on the **general** side. The design costs the general option lower than this
+entry priced it: the node does not need to "remember it was written `&`",
+because the type path already has a canonical head for the non-null pointer —
+`ref` — and the value path already has a form whose result type is `(ref
+(type-of x))`; the two worlds differed only in the *name* the reader macro
+wrote, so `&` → `ref` makes them agree on one node with no new head at all,
+and the six type-path `addr-of` arms are deleted rather than joined by a
+seventh. The ban lost because it is a convention enforced by a diagnostic, it
+retires the four blessed standalone forms, and it leaves untouched the two
+defects the probe pass found beside this one: `?(Vector i32)` / `!(…)` parse in
+no position at all (the fuse keys on a trailing `:`), and a sigil over a
+concrete type in a generic pattern is collected as a **type variable**, so
+`(Vector i32)` is silently accepted where `(Vector ?Pt)` was declared. `addr-of`
+is retired outright after the boot refresh, since an alias would mean every
+future head-match site must know two names — the failure this entry describes.
+The `raw:T` → `void*` question in the last paragraph is not taken up there.
+
+Raised 2026-09-07, after the `&`/`@` adoption sweep across `src/`, `lib/` and
+`examples/` (see [progress.md](progress.md) and
+[stage16-ergonomics/ref-sigil.md](stage16-ergonomics/ref-sigil.md) §5/§6).
+
+The `&` sigil is split by position **inside the token**: `p:&T` is the lexer
+rewrite to `ref:` and leaves no trace, while a standalone `&T` is the address-of
+reader macro and reaches the parser as `(addr-of T)`. In a type slot that node is
+accepted (`parse-type-from-node`, `node-is-ptr-wrapper`, and since 2026-09-06
+`type-node-to-c`), so it compiles and emits identical IR — but `--emit-nuch`
+prints `defprotocol` and generic-template forms **verbatim**, so the odd spelling
+lands in a committed header. `a15f38e` wrote 2,469 of them into `src/` before
+anyone noticed; the sweep that removed them is convention, not a rule the
+compiler enforces.
+
+Two coherent end-states, and they point opposite ways:
+
+### String literal limit — **closed**
+
+Closed 2026-09-18 by [stage21-cleanup/one-reader.md](../stage21-cleanup/one-reader.md)
+R-1/R-2, as a side effect rather than a direct design target: the limit was
+`src/reader.nuc`'s `lex-string`, which read into a 4096-byte alloca and refused
+past 4095 bytes. `lib/read.nuc`'s `rd-string` reads into an unbounded `String`,
+and R-2 made that the whole compiler's reader, so the cap did not move or
+raise — it is simply gone. Probed 2026-09-16 as R-1's gate: a 6003-byte string
+literal compiles, prints, and exports through `--emit-nuch` and `--dump-ast`;
+a grep of `src/` for another 4095 found only the `deferror` id cap and
+`:align`, both unrelated.
+
+- **Make it general.** `&T` should be legal and canonical in every type slot,
+  round-tripping through `--emit-nuch` as `&T` or `(ref T)`. The reader cannot
+  decide by position, so the node has to *remember it was written `&`* — a
+  distinct head both the type path and the value path accept, printed back as
+  the source spelling. Cost is the usual reach list: the `node-type`↔`emit-node`
+  lockstep, `gcheck`'s value-path wrapper test, and `fn-rewrite-captures`.
+  §6 costed the wrapping-with-`addr-of` alternative at zero value-side changes
+  precisely by *not* doing this; that trade should be re-priced now that the
+  spelling has 3,000 uses rather than none.
+- **Ban the ambiguous half.** Make a standalone `&T` in a type slot a
+  diagnostic naming `ref:T` / `(ref T)`, so the convention is mechanical instead
+  of a thing a sweep has to re-derive. Cheap — one arm in
+  `parse-type-from-node` — but it retires `(sizeof &Pt)`, `(as &Pt q)`,
+  `(link &Pt)` and `(Vector &Pt)`, which §"Where the two meet" blesses and
+  `examples/ref-sigil.nuc` plus `s16-ref-sigil-both-meanings` exercise.
+
+The general principle worth settling first: **a spelling whose meaning depends
+on where the reader happens to be should not be silently accepted.** Today three
+spellings of the same pointer kind (`ptr:T`, `ref:T`, `&T`) differ in nothing
+the type system can see, yet differed for some time in what `--emit-cheader`
+printed (`T*` vs `void*` — fixed 2026-09-06) and still differ in what
+`--emit-nuch` prints. `raw:T` is the remaining case: it widens to `void*` in a C
+header deliberately, which is defensible for a nullable pointer and is still a
+header whose fidelity depends on which synonym the author typed.

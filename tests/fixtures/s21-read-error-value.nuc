@@ -1,0 +1,39 @@
+; Stage 21 R-4 (design/stage21-cleanup/one-reader.md §2.1, §6.6): a read
+; failure is a VALUE -- code, line, message, note -- and a `!void` caller
+; `try`s it through the `defcast` to the bare code. The escape has to sit
+; inside a string literal: `(a \q)` is a char literal in the reader.
+(import-use error)
+(import-use strview)
+(import-use string)
+(import-use io)
+(import-use node)
+(import-use read)
+
+(defn show (label:StrView text:StrView):void
+  (match (read-all text)
+    ((ok forms) (print label ": ok " (node-len forms) " form(s)\n"))
+    ((err e)
+      (print label ": " (err-name (e 'code)) " line=" (e 'line)
+             " msg=[" (e 'msg) "] note=" (if (strview-empty (addr-of e 'note)) "none" "some")
+             "\n")
+      (when (not (strview-empty (addr-of e 'note)))
+        (print "  note: " (e 'note) "\n")))))
+
+(defn read-through (text:StrView):!void
+  (let (forms:raw:Node (try (read-all text)))
+    (print "read-through: ok " (node-len forms) " form(s)\n")
+    (return (ok))))
+
+(defn main ():i32
+  (show "bad-escape" "(a \"\\q\")")
+  (show "bad-escape-line3" "(a\n b\n \"x\\q\")")
+  (show "stray-close-top" "(a)\n)")
+  (show "close-inside-vector" "[1 2 )")
+  (show "clean" "(a b) (c)")
+  (match (read-through "(a \"\\q\")")
+    ((ok) (print "read-through: ok\n"))
+    ((err e) (print "read-through: err " (err-name e) "\n")))
+  (match (read-through "(a b) (c)")
+    ((ok) (print "read-through: ok\n"))
+    ((err e) (print "read-through: err " (err-name e) "\n")))
+  (return 0))

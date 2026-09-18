@@ -42,7 +42,7 @@
 (defn main ():i32
   (match (read-all (config))
     ((err e)
-      (eprint "read failed: " (err-message e) "\n")
+      (eprint "read failed: line " (e 'line) ": " (e 'msg) "\n")
       (return 1))
     ((ok forms)
       ; One top-level form, `(server …)`; its body is everything after the head.

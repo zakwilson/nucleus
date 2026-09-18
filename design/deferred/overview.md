@@ -172,52 +172,30 @@ This could make trouble using libraries with headers only, no source.
 * c-typedef-find
 * cdecl-site-find
 
-## Pointer-kind spellings: make the sugar general, or ban the ambiguous half
+## A template stamp loses the pointer kind — `(Result raw:Node E)` / `(Maybe raw:T)` cannot be built
 
-Raised 2026-09-07, after the `&`/`@` adoption sweep across `src/`, `lib/` and
-`examples/` (see [progress.md](progress.md) and
-[stage16-ergonomics/ref-sigil.md](stage16-ergonomics/ref-sigil.md) §5/§6).
+`union-template-stamp-types-in` (`src/union-registry.nuc`) substitutes a
+template argument by its `type-spelling`, which spells every `TY-PTR` as
+`ptr:elem` regardless of `pkind` — so a template stamped over a `raw`
+(nullable) pointer payload comes back with a `ref` (non-null) payload and
+refuses `null` at construction. Found by Stage 21 R-1
+(`design/stage21-cleanup/one-reader.md` §2.1; `context/conventions.md`'s "A
+template stamp loses the pointer KIND"): `lib/read.nuc`'s own error value
+could not be `(Result raw:Node ReadError)` for exactly this reason, and is a
+hand-written structural `defunion` instead (`ReadResult`, which `try`/`match`/
+`unwrap` treat as a Result because `result-union-of` is structural rather than
+template-instance-only). Already in scope for
+[stage21-cleanup/pointer-kind-spellings.md](../stage21-cleanup/pointer-kind-spellings.md)
+PK-5/PK-6 — every stamped `pkind` in `src/` has to move together, since the
+memo key (`type-mangle-token`) does not distinguish pointer kinds and the
+first stamp of either kind answers for both.
 
-The `&` sigil is split by position **inside the token**: `p:&T` is the lexer
-rewrite to `ref:` and leaves no trace, while a standalone `&T` is the address-of
-reader macro and reaches the parser as `(addr-of T)`. In a type slot that node is
-accepted (`parse-type-from-node`, `node-is-ptr-wrapper`, and since 2026-09-06
-`type-node-to-c`), so it compiles and emits identical IR — but `--emit-nuch`
-prints `defprotocol` and generic-template forms **verbatim**, so the odd spelling
-lands in a committed header. `a15f38e` wrote 2,469 of them into `src/` before
-anyone noticed; the sweep that removed them is convention, not a rule the
-compiler enforces.
+## A string-literal receiver in head position mis-parses a struct member access
 
-Two coherent end-states, and they point opposite ways:
-
-- **Make it general.** `&T` should be legal and canonical in every type slot,
-  round-tripping through `--emit-nuch` as `&T` or `(ref T)`. The reader cannot
-  decide by position, so the node has to *remember it was written `&`* — a
-  distinct head both the type path and the value path accept, printed back as
-  the source spelling. Cost is the usual reach list: the `node-type`↔`emit-node`
-  lockstep, `gcheck`'s value-path wrapper test, and `fn-rewrite-captures`.
-  §6 costed the wrapping-with-`addr-of` alternative at zero value-side changes
-  precisely by *not* doing this; that trade should be re-priced now that the
-  spelling has 3,000 uses rather than none.
-- **Ban the ambiguous half.** Make a standalone `&T` in a type slot a
-  diagnostic naming `ref:T` / `(ref T)`, so the convention is mechanical instead
-  of a thing a sweep has to re-derive. Cheap — one arm in
-  `parse-type-from-node` — but it retires `(sizeof &Pt)`, `(as &Pt q)`,
-  `(link &Pt)` and `(Vector &Pt)`, which §"Where the two meet" blesses and
-  `examples/ref-sigil.nuc` plus `s16-ref-sigil-both-meanings` exercise.
-
-The general principle worth settling first: **a spelling whose meaning depends
-on where the reader happens to be should not be silently accepted.** Today three
-spellings of the same pointer kind (`ptr:T`, `ref:T`, `&T`) differ in nothing
-the type system can see, yet differed for some time in what `--emit-cheader`
-printed (`T*` vs `void*` — fixed 2026-09-06) and still differ in what
-`--emit-nuch` prints. `raw:T` is the remaining case: it widens to `void*` in a C
-header deliberately, which is defensible for a nullable pointer and is still a
-header whose fidelity depends on which synonym the author typed.
-
-## String literal limit
-
-Whether the current string literal length limit is desirable should be revisited
+`(("abc") 'len)` — or a macro yielding a string node in the same position —
+emits `store %StrView` from a `ptr` temporary and fails to parse the generated
+IR. Pre-existing; found while probing Stage 21 item 2
+(`design/stage21-cleanup/one-reader.md`). Not diagnosed further.
 
 ## A transient `import: cannot find` in w9-multi-object-link
 

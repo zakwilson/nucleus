@@ -6,8 +6,8 @@ added to a persistent JIT session, and (for expression forms) called
 immediately. Definitions persist across forms instead of exiting. Recovery is
 split by error kind: **reader/source syntax errors** (unbalanced `)`,
 unterminated form, bad escape, …) are an ordinary `!T` value path as of Stage 10
-E4 — `read-program` returns `(err parse-error)`, the REPL `match`es it and
-continues; **eval/JIT errors** (and the `die-at` panic tier) still unwind via
+E4 — `read-source-or-report` (the shim over `lib/read.nuc`'s `read-all`) returns
+`(err parse-error)`, the REPL `match`es it and continues; **eval/JIT errors** (and the `die-at` panic tier) still unwind via
 `repl-throw` (`_setjmp`/`longjmp`, in `src/repl.nuc`). That was C —
 `src/repl_shim.c`, the tree's last C file — until 2026-08-30, when Stage 16's
 C-header-layout work (`jmp_buf` is expressible) and FP-2 (a `(fn f64)()` value

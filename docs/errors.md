@@ -51,14 +51,27 @@ sugar.) `!` over a parenthesized payload has no sugar; write
 ## Constructing and eliminating `!T`
 
 **Construction.** In `return` position (and the implicit-return tail) of a
-function declared `!T`, bare `(ok v)` / `(err E)` resolve against the return
-type (the union target-typing rule). **Reading rule:** `(err E)` means "give up
-unless a bound handler repairs"; `(err! E)` means "give up unconditionally" —
-it bypasses the handler chain and returns the error value. Use `err!` when you
-want an unconditional error return regardless of any bound handlers. Elsewhere
-(non-return positions, custom `(Result T MyErrStruct)` types), use
-`(make (Result T Err) ok v)`; stored Results are plain data with no handler
-machinery.
+function declared `!T` — or declared to return any `(Result T E)`, `E` need
+not be the builtin `Err` — bare `(ok v)` / `(err e)` resolve against the
+declared return type (the union target-typing rule):
+
+```lisp
+(defn parse-line (s:StrView):(Result i32 ReadError)
+  (when (bad? s) (return (err (ReadError read-bad-escape line msg ""))))
+  (return (ok n)))
+```
+
+needs no `make`. **Reading rule (builtin `Err` only):** `(err E)` means "give
+up unless a bound handler repairs"; `(err! E)` means "give up
+unconditionally" — it bypasses the handler chain and returns the error value.
+Use `err!` when you want an unconditional error return regardless of any
+bound handlers; with a custom `E` there is no handler chain to bypass (only
+the builtin `Err` gets one — [Handler-aware `err` and
+`with-handler`](#handler-aware-err-and-with-handler-e3) below), so `err` and
+`err!` behave alike there. Outside return position — a stored value, a
+`Result` built as data rather than returned — construct explicitly with
+`(make (Result T E) ok v)`; stored Results are plain data with no handler
+machinery either way.
 
 **Elimination.**
 
@@ -87,6 +100,50 @@ machinery.
   ((ok v)  ...)
   ((err e) (printf "%s: %s\n" (err-name e) (err-message e))))
 ```
+
+## `Err` is the code; `(Result T E)` is the payload
+
+`Err` carries no payload by design: a C-legible `i32` enum, and the one
+pointer `!ptr:T` needs for its [ERR_PTR niche](structs-unions.md#niche-layout-and-repr-stage-10-c4)
+(`sizeof(!ptr:T) == sizeof(T*)`). A function whose failure needs a line
+number, a formatted message, or any other data does not grow `Err` a payload
+— it returns its own `E` instead. `(Result T E)` admits any `E`, constructed
+and eliminated exactly like `!T` above, and one `(defcast E Err from-e-fn)`
+is the bridge back to the code tier: `try` propagates an `(err e)` unchanged
+into a caller returning the *same* `(Result T E)`, and — through the
+`defcast` — converts it to the `Err` code at the `(return (err! e))` `try`
+expands to when the caller is a plain `!T`:
+
+```lisp
+(defstruct ReadError code:Err line:i32 msg:StrView note:StrView)
+(defn read-error-code (e:ReadError):Err (return (e 'code)))
+(defcast ReadError Err read-error-code)
+
+(defn parse-config (src:StrView):(Result Config ReadError)
+  …)
+
+(defn load (path:StrView):!Config        ; a plain !T caller
+  (let (src:StrView (try (read-file-view path)))
+    (return (ok (try (parse-config src))))))   ; ReadError -> Err, via the defcast
+```
+
+`lib/read.nuc`'s own `ReadError` ([Reading s-expressions](reading.md#readresult-and-readerror))
+is exactly this shape, and is why `read-all`/`read-one` can hand a caller a
+line and a formatted message without `Err` growing a payload or the reader
+inventing side fields for it. A library whose failures carry context should
+follow the same shape: return its own `E`, register one `defcast E Err`, and
+let `try` do the conversion — not a fatter `Err` and not accessor fields
+bolted onto some other value.
+
+A `defunion` with an `ok` arm and an `err` arm is eliminated as a Result by
+`match`/`try`/`unwrap`/`unwrap-or` **structurally** — it need not be a
+`(Result T E)` template instance. `lib/read.nuc`'s `ReadResult` relies on
+this: a template instance stamped over a `raw` (nullable) pointer payload
+loses that pointer kind (`type-spelling` re-spells every stamped pointer as
+non-null `ref:`), so `(Result raw:Node ReadError)` would refuse to hold a
+null node, and `ReadResult` is a hand-written `(defunion ReadResult (ok
+v:raw:Node) (err e:ReadError))` instead. See [Unions and tagged
+sums](structs-unions.md#unions-and-tagged-sums).
 
 ## `!void` — a Result with no `ok` payload
 

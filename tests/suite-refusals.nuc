@@ -391,17 +391,19 @@
          "defunion: arm cannot be the empty list '()' -- write `name` or `(name field:type ...)`"))
   (return (ok)))
 
-; THE BOUNDARY. Two heads are refused by `--emit-llvm` and stay silent in the
-; header modes: `deferror`'s checks `report-at` and return `!i32`, a recoverable
-; contract the validation deliberately does not join, and `def-rmacro` is a
-; reader directive rather than a declaration a header describes.
+; THE BOUNDARY. `deferror` is refused by `--emit-llvm` and stays silent in the
+; header modes: its checks `report-at` and return `!i32`, a recoverable
+; contract the validation deliberately does not join.
 (deftest w45-empty-name-deferror
   (try (check-probe-llvm-only "(deferror () \"boom\")"
          "deferror: name must be a symbol"))
   (return (ok)))
 
+; `def-rmacro` used to sit on that boundary too, registered by the emitter. Since
+; Stage 21 R-2 the reader registers it as it reads, so a malformed one is a
+; syntax error, refused alike in every mode (one-reader.md §3).
 (deftest w45-empty-name-def-rmacro
-  (try (check-probe-llvm-only "(def-rmacro ())"
+  (try (check-probe-refused "(def-rmacro ())"
          "def-rmacro: expects (def-rmacro \"prefix\" symbol)"))
   (return (ok)))
 

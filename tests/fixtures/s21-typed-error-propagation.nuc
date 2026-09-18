@@ -1,0 +1,71 @@
+; Stage 21 R-4 (design/stage21-cleanup/one-reader.md §1.7, §2.1, §6.6): a
+; function with a custom `E` builds it with bare `ok`/`err`/`err!` in return
+; position, `match` binds the whole struct, `try` keeps it into a same-`E`
+; caller and converts it through the `defcast E Err` rule into `!i32` and
+; `!void` callers. `E` is 48 bytes -- wider than the two-register SysV class,
+; which is the case that once mis-lowered the cast's byval argument.
+(import-use error)
+(import-use strview)
+(import-use io)
+
+(deferror s21-bad "bad")
+(deferror s21-worse "worse")
+
+(defstruct S21Err code:Err line:i32 msg:StrView note:StrView)
+(defn s21-err-code (e:S21Err):Err (return (e 'code)))
+(defcast S21Err Err s21-err-code)
+
+(defn s21-p (n:i32):(Result i32 S21Err)
+  (when (< n 0) (return (err (S21Err s21-bad 4 "unknown escape \\q" ""))))
+  (when (> n 100) (return (err! (S21Err s21-worse 7 "too big" "a note"))))
+  (return (ok (* n 2))))
+
+(defn s21-same-e (n:i32):(Result i32 S21Err)
+  (let (v:i32 (try (s21-p n)))
+    (return (ok (+ v 1)))))
+
+(defn s21-into-i32 (n:i32):!i32
+  (let (v:i32 (try (s21-p n)))
+    (return (ok v))))
+
+(defn s21-into-void (n:i32):!void
+  (try (s21-p n))
+  (return (ok)))
+
+(defn show-e (e:S21Err):void
+  (print "err " (err-name (e 'code)) " line=" (e 'line) " msg=[" (e 'msg)
+         "] note=[" (e 'note) "]\n"))
+
+(defn main ():i32
+  (print "direct\n")
+  (match (s21-p -1)
+    ((ok v) (print "ok " v "\n"))
+    ((err e) (show-e e)))
+  (match (s21-p 200)
+    ((ok v) (print "ok " v "\n"))
+    ((err e) (show-e e)))
+  (match (s21-p 5)
+    ((ok v) (print "ok " v "\n"))
+    ((err e) (show-e e)))
+  (print "same-e\n")
+  (match (s21-same-e 200)
+    ((ok v) (print "ok " v "\n"))
+    ((err e) (show-e e)))
+  (match (s21-same-e 5)
+    ((ok v) (print "ok " v "\n"))
+    ((err e) (show-e e)))
+  (print "into-i32\n")
+  (match (s21-into-i32 -1)
+    ((ok v) (print "ok " v "\n"))
+    ((err e) (print "err " (err-name e) "\n")))
+  (match (s21-into-i32 5)
+    ((ok v) (print "ok " v "\n"))
+    ((err e) (print "err " (err-name e) "\n")))
+  (print "into-void\n")
+  (match (s21-into-void 200)
+    ((ok) (print "ok void\n"))
+    ((err e) (print "err " (err-name e) "\n")))
+  (match (s21-into-void 3)
+    ((ok) (print "ok void\n"))
+    ((err e) (print "err " (err-name e) "\n")))
+  (return 0))

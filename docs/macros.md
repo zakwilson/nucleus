@@ -395,8 +395,10 @@ The full example is [`examples/macrolet.nuc`](../examples/macrolet.nuc).
   the same code, and the same "second-to-last param" rule applies.
 * **The binding name takes no type annotation**, like every other definer name.
 * Bindings are not exported, not namespace-qualified, and not visible to
-  `macroexpand` from outside the body. Reader macros (`def-rmacro`) remain
-  global.
+  `macroexpand` from outside the body. Reader macros (`def-rmacro`) are an
+  unrelated mechanism — registered by the reader itself as it reads the file,
+  file-scoped and forward-only, with no `macrolet`-style body scope at all.
+  See [Reading s-expressions](reading.md#def-rmacro).
 
 A `macrolet` body is compiled and JIT'd exactly as a `defmacro` body is, so it
 has the same compile-time requirements — the `Node` type, which the prelude

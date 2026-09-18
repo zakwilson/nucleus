@@ -1,0 +1,181 @@
+; Diagnostics — the compiler's error/warning layer, plus the byte helpers it
+; and the rest of src/ scan text with. In src/, not beside a library reader,
+; because it reads compiler globals (g-source-path, g-interactive,
+; g-mono-context, g-diag-note); a macro body cannot call it (context/macros-jit.md).
+
+(import-use error)
+
+(deferror parse-error "parse error")
+
+(defn cstr-byte-at (s:ptr pos:i64):i32
+  (return (bit-and (as i32 (aref (as ref:i8 s) pos)) 255)))
+
+; Its `StrView` peer, for the scanners that bound `i` themselves — the library's
+; `strview-byte-at` returns `!ui8`, a `try` per byte on a per-character loop.
+(defn text-byte-at (text:StrView i:i64):i32
+  (return (bit-and (as i32 (aref (text 'data) i)) 255)))
+
+; ============================================================
+; Error reporting
+; ============================================================
+
+; Stage 18 TF-5: the compiler had the structure of a diagnostic at each of its
+; 688 call sites and destroyed it on the way out — a location, a message and its
+; notes went to stderr as one blob, and a consumer could only grep. `Diagnostic`
+; is that structure, built once and rendered by whichever back-end the
+; `--diagnostics` flag selected. design/stage18-tooling/overview.md §T4.2.
+;
+; `path`/`line` are absent (`line` -1) for a message about the toolchain rather
+; than about the source; every back-end has to spell that absence somehow.
+(defstruct Diagnostic
+  severity:StrView
+  path:Symbol
+  line:i32
+  message:StrView
+  notes:(ref (Vector StrView)))
+
+; 0 = the human rendering (`path:line: error: msg`), 1 = `--diagnostics=sexp`.
+; Both write to stderr: the flag changes the shape, never the stream, so a
+; caller's `2>&1 >/dev/null` keeps working.
+(defvar g-diag-sexp:i32 0)
+
+; W9 item 42, generalized: a note the diagnosing site stages before calling,
+; because `die-at` is noreturn and there is no "and also" after it. Appending
+; rather than overwriting is what lets two sites each contribute to one error.
+(defn diag-stage-note (note:StrView):void
+  (if (str-empty? &g-diag-note)
+    (set! g-diag-note note)
+    (set! g-diag-note (fstr g-diag-note "\n  note: " note))))
+
+; The index at or after `from` where a `\n  note: ` marker starts, else the end.
+; Notes reach here inside the message because that is how the diagnosing sites
+; build them (`(fstr "…" "\n  note: " …)`, 20-odd sites); splitting here is what
+; lets the record have a `notes` field without touching any of them.
+(defn diag-note-start (s:StrView from:i64):i64
+  (let (n:i64 (as i64 (s 'len))
+        i:i64 from)
+    (while (< i n)
+      (when (and (= (text-byte-at s i) 10) (< (+ i 8) n)
+                 (= (text-byte-at s (+ i 1)) 32) (= (text-byte-at s (+ i 2)) 32)
+                 (= (text-byte-at s (+ i 3)) 110) (= (text-byte-at s (+ i 4)) 111)
+                 (= (text-byte-at s (+ i 5)) 116) (= (text-byte-at s (+ i 6)) 101)
+                 (= (text-byte-at s (+ i 7)) 58) (= (text-byte-at s (+ i 8)) 32))
+        (return i))
+      (set! i (+ i 1)))
+    (return n)))
+
+(defn diag-build (severity:StrView path:Symbol line:i32 msg:StrView):&Diagnostic
+  (let (d:&Diagnostic (new Diagnostic)
+        n:i64 (as i64 (msg 'len))
+        head:i64 (diag-note-start msg 0))
+    (set! (d 'severity) severity)
+    (set! (d 'path) path)
+    (set! (d 'line) line)
+    (set! (d 'message) (strview (msg 'data) (as usize head)))
+    (set! (d 'notes) (vector-new-in &g-arena-alloc))
+    (let (i:i64 head)
+      (while (< i n)
+        (let (start:i64 (+ i 9)
+              stop:i64 (diag-note-start msg start))
+          (conj (d 'notes) (strview (unsafe/ptr+ (msg 'data) start) (as usize (- stop start))))
+          (set! i stop))))
+    (return d)))
+
+(defn diag-hex-digit (v:i32):StrView
+  (let (digits:StrView "0123456789abcdef")
+    (return (strview (unsafe/ptr+ (digits 'data) (as i64 v)) 1))))
+
+; An s-expression string literal, escaped so `lib/read.nuc` reads back exactly
+; these bytes. The escape set is that reader's, not C's.
+(defn diag-write-string (sv:StrView):void
+  (eprint "\"")
+  (let (n:i64 (as i64 (sv 'len))
+        i:i64 0)
+    (while (< i n)
+      (let (c:i32 (text-byte-at sv i))
+        (cond (= c 34) (eprint "\\\"")
+              (= c 92) (eprint "\\\\")
+              (= c 10) (eprint "\\n")
+              (= c 9)  (eprint "\\t")
+              (= c 13) (eprint "\\r")
+              (= c 0)  (eprint "\\0")
+              (or (< c 32) (= c 127))
+                (eprint "\\x" (diag-hex-digit (bit-shr c 4)) (diag-hex-digit (bit-and c 15)))
+              true (eprint (strview (unsafe/ptr+ (sv 'data) i) 1))))
+      (set! i (+ i 1))))
+  (eprint "\""))
+
+; `--diagnostics=sexp`. One form per diagnostic, one line, on stderr. `severity`
+; is a bare symbol so it compares by interned identity after a read; `file` is a
+; string because a path is not a symbol spelling. An absent location is the empty
+; file and line -1, never an omitted field — a reader should not have to ask
+; whether a key is present.
+(defn diag-write-sexp (d:&Diagnostic):void
+  (eprint "(diagnostic (severity " (d 'severity) ") (file ")
+  (diag-write-string (if (symbol-none? (d 'path)) "" (symbol-as-view (d 'path))))
+  (eprint ") (line " (d 'line) ") (message ")
+  (diag-write-string (d 'message))
+  (eprint ") (notes")
+  (let (n:usize (count (d 'notes))
+        i:usize 0)
+    (while (< i n)
+      (eprint " ")
+      (diag-write-string (invoke (d 'notes) i))
+      (set! i (+ i 1))))
+  (eprint "))\n"))
+
+; The human rendering, byte-for-byte what the compiler printed before this
+; record existed: the notes were already `\n  note: ` inside the message, so
+; rejoining them is the identity.
+(defn diag-write-text (d:&Diagnostic):void
+  (when (>= (d 'line) 0) (eprint (d 'path) ":" (d 'line) ": "))
+  (eprint (d 'severity) ": " (d 'message))
+  (let (n:usize (count (d 'notes))
+        i:usize 0)
+    (while (< i n)
+      (eprint "\n  note: " (invoke (d 'notes) i))
+      (set! i (+ i 1))))
+  (eprint "\n"))
+
+; The one point a diagnostic becomes bytes. Every staged note is folded in here
+; and the stage cleared, so an interactive session — where `repl-throw` unwinds
+; instead of exiting — cannot carry one onto an unrelated later error.
+(defn diag-emit (severity:StrView path:Symbol line:i32 msg:StrView):void
+  (let (full:StrView msg)
+    (when (not (str-empty? &g-diag-note))
+      (set! full (fstr full "\n  note: " g-diag-note))
+      (set! g-diag-note ""))
+    (let (d:&Diagnostic (diag-build severity path line full))
+      (if (= g-diag-sexp 0)
+        (diag-write-text d)
+        (diag-write-sexp d)))))
+
+; An error about the source being compiled. The monomorphization context is
+; ambient rather than staged — it says which instantiation the compiler is
+; inside — so it is attached here rather than at the 688 call sites.
+(defn diag-error (line:i32 msg:StrView):void
+  (let (full:StrView msg)
+    (when (not (str-empty? &g-mono-context))
+      (set! full (fstr full "\n  note: " g-mono-context)))
+    (diag-emit "error" g-source-path line full)))
+
+(defn die-at (line:i32 msg:StrView):void
+  :noreturn
+  ; Stage 10 C3: consult the panic-tier debugger hook before aborting. With no
+  ; (unhandled-error, i32) handler bound this is a one-load chain walk that
+  ; returns none and falls straight through to today's abort; a bound handler
+  ; may log/record `msg` first. The repair value is ignored (we abort anyway).
+  ; Stage 17 C6: the detail is a `(ptr StrView)`, not the bytes — `signal`'s
+  ; `detail:ptr` has no slot for a length, and the message is no longer
+  ; NUL-terminated.
+  (signal unhandled-error i32 (as ptr &msg))
+  (diag-error line msg)
+  (when (!= g-interactive 0)
+    (repl-throw))
+  (exit 1))
+
+; Stage 10 E4: report a recoverable reader error without aborting. Emits the
+; same diagnostic `die-at` does, but returns to the caller, which then
+; propagates `(err! parse-error)`.
+(defn report-at (line:i32 msg:StrView):void
+  (diag-error line msg))
