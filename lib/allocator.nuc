@@ -48,14 +48,8 @@
 ; This file calls libc `free`/`realloc` by name and so deliberately defines NO
 ; `free`/`realloc`/`malloc` generic, keeping those libc symbols intact.
 ;
-; NOTE (tokenizer): a parameter OR a method's return type whose spelling is a
-; parenthesised form, e.g. (raw ui8), must use the list binding form. The colon
-; sugar does not tokenise for a parenthesised RHS:
-;   - parameter:    `(p (raw ui8))`               not  `p:(raw ui8)`
-;   - return type:  `((alloc (raw ui8)) ...)`     not  `(alloc:(raw ui8) ...)`
-; A colon CHAIN with no parens (e.g. `ref:AllocHandle`) does tokenise and means
-; `(ref AllocHandle)`. The byte element type is `ui8` (= C `unsigned char`); `u8`
-; is not a Nucleus type name (the design doc's `u8` reads as `ui8` here).
+; The byte element type is `ui8` (= C `unsigned char`); `u8` is not a Nucleus
+; type name (the design doc's `u8` reads as `ui8` here).
 ; ---------------------------------------------------------------------------
 
 (import-use "stdio.h")
@@ -73,9 +67,9 @@
 ; the contract so an allocator that needs it has it.
 ; ---------------------------------------------------------------------------
 (defprotocol Allocator
-  (alloc   ((self (ref Self)) size:usize align:usize) (raw ui8))
-  (realloc ((self (ref Self)) (p (raw ui8)) old:usize new:usize align:usize) (raw ui8))
-  (free           ((self (ref Self)) (p (raw ui8)) size:usize align:usize):void))
+  (alloc   (self:&Self size:usize align:usize) (raw ui8))
+  (realloc (self:&Self (p (raw ui8)) old:usize new:usize align:usize) (raw ui8))
+  (free           (self:&Self (p (raw ui8)) size:usize align:usize):void))
 
 ; ---------------------------------------------------------------------------
 ; 2. AllocKind — the runtime discriminant for AllocHandle dispatch.
@@ -99,14 +93,14 @@
 
 ; (alloc-handle-alloc h size align) -> (raw ui8). Returns null on libc OOM (the
 ; caller checks); the arena arm aborts internally rather than returning null.
-(defn alloc-handle-alloc ((h (ref AllocHandle)) size:usize align:usize) (raw ui8)
+(defn alloc-handle-alloc (h:&AllocHandle size:usize align:usize) (raw ui8)
   (when (= (h 'kind) ALLOC-ARENA)
     (return (as (raw ui8) (arena-alloc (as i64 size)))))
   (return (as (raw ui8) (malloc (as i64 size)))))
 
 ; (alloc-handle-realloc h p old new align) -> (raw ui8).
 (defn alloc-handle-realloc
-    ((h (ref AllocHandle)) (p (raw ui8)) old:usize new:usize align:usize) (raw ui8)
+    (h:&AllocHandle (p (raw ui8)) old:usize new:usize align:usize) (raw ui8)
   (when (= (h 'kind) ALLOC-ARENA)
     ; The arena cannot grow a prior allocation in place, so allocate fresh and
     ; copy the smaller of old/new bytes. The old block is abandoned (released
@@ -121,7 +115,7 @@
 
 ; (alloc-handle-free h p size align) -> void.
 (defn alloc-handle-free
-    ((h (ref AllocHandle)) (p (raw ui8)) size:usize align:usize):void
+    (h:&AllocHandle (p (raw ui8)) size:usize align:usize):void
   ; The arena frees nothing per-allocation; the whole arena is released at once.
   (when (= (h 'kind) ALLOC-ARENA)
     (return))
@@ -150,14 +144,14 @@
 ; ---------------------------------------------------------------------------
 
 ; Initialise a caller-owned slot as a libc handle and return it.
-(defn libc-allocator ((h (ref AllocHandle))):&AllocHandle
+(defn libc-allocator (h:&AllocHandle):&AllocHandle
   (set! (h 'kind) ALLOC-LIBC)
   (set! (h 'data) null)
   (return h))
 
 ; Initialise a caller-owned slot as the arena handle and return it. The arena's
 ; state lives in lib/arena.nuc's module globals, so `data` stays null.
-(defn arena-allocator ((h (ref AllocHandle))):&AllocHandle
+(defn arena-allocator (h:&AllocHandle):&AllocHandle
   (set! (h 'kind) ALLOC-ARENA)
   (set! (h 'data) null)
   (return h))

@@ -18,7 +18,7 @@
 (import-use hashmap)
 
 (defn main ():i32
-  (with ((m (ref (HashMap CStr i32))) (alloca (HashMap CStr i32)))
+  (with (m:&(HashMap CStr i32) (alloca (HashMap CStr i32)))
     (hashmap-init m)
 
     ; --- Basic inserts ---
@@ -77,7 +77,7 @@
     ; --- HashMapKeyIter: count iterated keys (order is hash-dependent) ---
     ; HashMapKeyIter is a single-projection iterator (not the Coll entry iter),
     ; so it uses the bare-iterator-ref form `doseq-iter`.
-    (let ((it (ref (HashMapKeyIter CStr i32))) (alloca (HashMapKeyIter CStr i32)))
+    (let (it:&(HashMapKeyIter CStr i32) (alloca (HashMapKeyIter CStr i32)))
       (hmap-iter-keys it m)
       (let (iter-count:i32 0)
         (doseq-iter (k it) (set! iter-count (+ iter-count 1)))

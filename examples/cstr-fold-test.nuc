@@ -16,19 +16,19 @@
 ; FoldFn: FNV-1a one byte at a time. acc = running i64 hash; x = the byte (ui8).
 (defstruct Fnv1aFold dummy:i32)
 (extend Fnv1aFold (FoldFn i64 ui8))
-(defn fold ((self (ref Fnv1aFold)) (acc i64) (x ui8)) i64
+(defn fold (self:&Fnv1aFold (acc i64) (x ui8)) i64
   (return (fnv1a-byte acc (bit-and (as i64 x) 255))))
 
 ; FoldFn: sum byte values into an i64 accumulator.
 (defstruct ByteSum dummy:i32)
 (extend ByteSum (FoldFn i64 ui8))
-(defn fold ((self (ref ByteSum)) (acc i64) (x ui8)) i64
+(defn fold (self:&ByteSum (acc i64) (x ui8)) i64
   (return (+ acc (bit-and (as i64 x) 255))))
 
 ; fnv-via-reduce — fold the bytes of a ByteIter through FNV-1a, seeded with the
 ; same offset basis strview-hash uses, returning the hash as usize.
-(defn fnv-via-reduce ((it (ref ByteIter))):usize
-  (let ((f (ref Fnv1aFold)) (alloca Fnv1aFold)
+(defn fnv-via-reduce (it:&ByteIter):usize
+  (let (f:&Fnv1aFold (alloca Fnv1aFold)
         (basis i64) -3750763034362895579)
     (return (as usize (reduce f basis it)))))
 
@@ -59,8 +59,8 @@
     (printf "abc byte-sum=%lld\n" total))
 
     ; ---- 4. reduce byte-sum over a ByteIter -----------------------------------
-  (let ((bs (ref ByteSum)) (alloca ByteSum)
-        (it (ref ByteIter)) (alloca ByteIter)
+  (let (bs:&ByteSum (alloca ByteSum)
+        it:&ByteIter (alloca ByteIter)
         it2:ByteIter (cstr-bytes "ABC"))
     (printf "abc reduce-sum=%lld\n" (reduce bs 0 &it2)))
 

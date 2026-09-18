@@ -32,7 +32,7 @@
 
 (extend CountIter (Iterator i32))
 
-(defn next ((self (ref CountIter))) (Maybe i32)
+(defn next (self:&CountIter):?i32
   (when (>= (self 'cur) (self 'stop)) (return none))
   (let (v:i32 (self 'cur))
     (set! (self 'cur) (+ v 1))
@@ -44,7 +44,7 @@
 ; (next (Maybe E)) — bound at the extend site, recovered at dispatch.
 ; ---------------------------------------------------------------------------
 (defprotocol (IterColl It)
-  (mk-iter ((self (ref Self))):It))
+  (mk-iter (self:&Self):It))
 
 ; ---------------------------------------------------------------------------
 ; A small container conforming to (IterColl CountIter). mk-iter builds a fresh
@@ -55,8 +55,8 @@
 
 (extend Span (IterColl CountIter))
 
-(defn mk-iter ((self (ref Span))):CountIter
-  (let ((it (ref CountIter)) (alloca CountIter))
+(defn mk-iter (self:&Span):CountIter
+  (let (it:&CountIter (alloca CountIter))
     (set! (it 'cur) (self 'base))
     (set! (it 'stop) (+ (self 'base) (self 'len)))
     (return @it)))
@@ -68,14 +68,14 @@
 ;                        is recovered from It's Iterator conformance.
 ; Then mk-iter yields an It (bare associated type), driven via next.
 ; ---------------------------------------------------------------------------
-(defn count-coll ((c (ref C))
+(defn count-coll (c:&C
                       :where ((IterColl It) C)
                              ((Iterator E) It)):i32
   (let (it:It (mk-iter c))
     (return (reduce (vfn (acc:i32 x:E):i32 (+ acc 1)) 0 &it))))
 
 (defn main ():i32
-  (let ((s (ref Span)) (alloca Span))
+  (let (s:&Span (alloca Span))
     (set! (s 'base) 10)
     (set! (s 'len) 5)
     ; Span [10,15) has 5 elements.

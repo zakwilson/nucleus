@@ -17,4 +17,4 @@
 
 (ns dp2)
 
-(defprotocol Describe (tag-of ((self (ref Self))) i32))
+(defprotocol Describe (tag-of (self:&Self) i32))

@@ -3,12 +3,9 @@
 ;
 ; Design: design/stage11/collections.md §"M2 — Iteration".
 ;
-; TOKENIZER NOTES (critical):
-;   - A parameter or return type spelled as a parenthesized form must use the
-;     list binding form. `name:(Maybe T)` does NOT tokenize; use `(name (Maybe T))`.
-;   - Return types that are parenthesized use list-form for the defn head:
-;       (defn (next (Maybe i32)) (...))  not  (defn next:(Maybe i32) ...)
-;   - Colon chains without parens DO tokenize: `ptr:Self`, `ref:AllocHandle`.
+; NOTES:
+;   - `(Maybe E)` over a type variable stays the list form: `?E` is a bare
+;     symbol, which tyvar substitution does not enter (PK-5a refusal class).
 ;   - Protocol names are NOT usable as concrete type names (only struct/union
 ;     names are in the type table).
 ;   - (Maybe ptr) is niche-encoded (nullable pointer, not a tagged struct).
@@ -29,10 +26,9 @@
 ;
 ; A type T conforms to (Iterator E) by providing a `next` method that
 ; advances the iterator and returns the next element, or none when exhausted.
-; Uses `(ref Self)` list binding form (colon form doesn't work for paren types).
 ; ---------------------------------------------------------------------------
 (defprotocol (Iterator E)
-  (next ((self (ref Self))) (Maybe E)))
+  (next (self:&Self) (Maybe E)))
 
 ; ---------------------------------------------------------------------------
 ; 2. IntRangeIter — iterates i32 values in [start, end).
@@ -44,7 +40,7 @@
 
 (extend IntRangeIter (Iterator i32))
 
-(defn next ((self (ref IntRangeIter))) (Maybe i32)
+(defn next (self:&IntRangeIter):?i32
   (when (>= (self 'start) (self 'end))
     (return none))
   (let (v:i32 (self 'start))
@@ -63,7 +59,7 @@
 
 (extend I64ArrayIter (Iterator i64))
 
-(defn next ((self (ref I64ArrayIter))) (Maybe i64)
+(defn next (self:&I64ArrayIter):?i64
   (when (>= (self 'pos) (self 'len))
     (return none))
   (let (v:i64 (aref (self 'data) (as i64 (self 'pos))))
@@ -74,13 +70,13 @@
 ; 4. UnaryFn Arg Ret — function objects mapping one value to another.
 ; ---------------------------------------------------------------------------
 (defprotocol (UnaryFn Arg Ret)
-  (apply ((self (ref Self)) (x Arg)) Ret))
+  (apply (self:&Self (x Arg)) Ret))
 
 ; ---------------------------------------------------------------------------
 ; 5. FoldFn Acc Elem — binary fold: (acc, elem) -> acc.
 ; ---------------------------------------------------------------------------
 (defprotocol (FoldFn Acc Elem)
-  (fold ((self (ref Self)) (acc Acc) (x Elem)) Acc))
+  (fold (self:&Self (acc Acc) (x Elem)) Acc))
 
 ; ---------------------------------------------------------------------------
 ; 6. MapIter I F — generic lazy map. S (source element) and E (result element)
@@ -90,12 +86,12 @@
   source:I
   f:F)
 
-(defn next ((self (ref (MapIter I F)))
+(defn next (self:&(MapIter I F)
                         :where ((Iterator S) I)
                                ((UnaryFn S E) F)) (Maybe E)
-  (let ((res (Maybe S)) (next (addr-of self 'source)))
+  (let ((res (Maybe S)) (next (ref self 'source)))
     (match res
-      ((some v) (return (some (apply (addr-of self 'f) v))))
+      ((some v) (return (some (apply (ref self 'f) v))))
       (none (return none)))))
 
 (extend (MapIter I F) (Iterator E)
@@ -110,15 +106,15 @@
   source:I
   pred:F)
 
-(defn next ((self (ref (FilterIter I F)))
+(defn next (self:&(FilterIter I F)
                         :where ((Iterator S) I)
                                ((UnaryFn S i32) F)) (Maybe S)
   (let (done:i32 0)
     (while (= done 0)
-      (let ((item (Maybe S)) (next (addr-of self 'source)))
+      (let ((item (Maybe S)) (next (ref self 'source)))
         (match item
           ((some v)
-           (when (!= (apply (addr-of self 'pred) v) 0)
+           (when (!= (apply (ref self 'pred) v) 0)
              (return (some v))))
           (none (return none)))))
     (return none)))
@@ -130,7 +126,7 @@
 ; ---------------------------------------------------------------------------
 ; 8. Generic reduce over any Iterator.
 ; ---------------------------------------------------------------------------
-(defn reduce ((g (ref G)) (init Acc) (it (ref I))
+(defn reduce (g:&G (init Acc) it:&I
                   :where ((Iterator S) I)
                          ((FoldFn Acc S) G)):Acc
   (let (acc:Acc init)

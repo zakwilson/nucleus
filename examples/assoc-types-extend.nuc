@@ -28,48 +28,48 @@
 ; the ret position the undetermined E (RECOVERED -> E=i32).
 (defstruct SqFn dummy:i32)
 (extend SqFn (UnaryFn i32 i32))
-(defn apply ((self (ref SqFn)) (x i32)) i32
+(defn apply (self:&SqFn (x i32)) i32
   (return (* x x)))
 
 ; EvenPred: i32 -> i32 (truthy = nonzero). Conforms to (UnaryFn i32 i32).
 (defstruct EvenPred dummy:i32)
 (extend EvenPred (UnaryFn i32 i32))
-(defn apply ((self (ref EvenPred)) (x i32)) i32
+(defn apply (self:&EvenPred (x i32)) i32
   (if (= (% x 2) 0) (return 1) (return 0)))
 
 ; SumFn: folds (i32 acc, i32 elem) -> i32 by addition. Conforms to (FoldFn i32 i32).
 (defstruct SumFn dummy:i32)
 (extend SumFn (FoldFn i32 i32))
-(defn fold ((self (ref SumFn)) (acc i32) (x i32)) i32
+(defn fold (self:&SumFn (acc i32) (x i32)) i32
   (return (+ acc x)))
 
 (defn main ():i32
   ; Level 1: reduce over a MapIter (squares of [1,5)) -> 1+4+9+16 = 30.
-  (let ((src (ref IntRangeIter)) (alloca IntRangeIter))
+  (let (src:&IntRangeIter (alloca IntRangeIter))
     (set! (src 'start) 1)
     (set! (src 'end) 5)
-    (let ((mi (ref (MapIter IntRangeIter SqFn))) (alloca (MapIter IntRangeIter SqFn)))
-      (set! ((addr-of mi 'source) 'start) 1)
-      (set! ((addr-of mi 'source) 'end) 5)
-      (set! ((addr-of mi 'f) 'dummy) 0)
-      (let ((sum (ref SumFn)) (alloca SumFn))
+    (let (mi:&(MapIter IntRangeIter SqFn) (alloca (MapIter IntRangeIter SqFn)))
+      (set! ((ref mi 'source) 'start) 1)
+      (set! ((ref mi 'source) 'end) 5)
+      (set! ((ref mi 'f) 'dummy) 0)
+      (let (sum:&SumFn (alloca SumFn))
         (set! (sum 'dummy) 0)
         (printf "reduce(map sq [1,5)) = %d\n" (reduce sum 0 mi)))))
 
   ; Level 2: reduce over a FilterIter wrapping a MapIter — even squares of [1,5):
   ; squares are 1 4 9 16, evens are 4 16 -> 4+16 = 20. A 2-level combinator chain.
-  (let ((mi2 (ref (MapIter IntRangeIter SqFn))) (alloca (MapIter IntRangeIter SqFn)))
-    (set! ((addr-of mi2 'source) 'start) 1)
-    (set! ((addr-of mi2 'source) 'end) 5)
-    (set! ((addr-of mi2 'f) 'dummy) 0)
-    (let ((fi (ref (FilterIter (MapIter IntRangeIter SqFn) EvenPred)))
+  (let (mi2:&(MapIter IntRangeIter SqFn) (alloca (MapIter IntRangeIter SqFn)))
+    (set! ((ref mi2 'source) 'start) 1)
+    (set! ((ref mi2 'source) 'end) 5)
+    (set! ((ref mi2 'f) 'dummy) 0)
+    (let (fi:&(FilterIter (MapIter IntRangeIter SqFn) EvenPred)
           (alloca (FilterIter (MapIter IntRangeIter SqFn) EvenPred)))
       ; The FilterIter's source is the MapIter by value.
-      (set! ((addr-of (addr-of fi 'source) 'source) 'start) 1)
-      (set! ((addr-of (addr-of fi 'source) 'source) 'end) 5)
-      (set! ((addr-of (addr-of fi 'source) 'f) 'dummy) 0)
-      (set! ((addr-of fi 'pred) 'dummy) 0)
-      (let ((sum2 (ref SumFn)) (alloca SumFn))
+      (set! ((ref (ref fi 'source) 'source) 'start) 1)
+      (set! ((ref (ref fi 'source) 'source) 'end) 5)
+      (set! ((ref (ref fi 'source) 'f) 'dummy) 0)
+      (set! ((ref fi 'pred) 'dummy) 0)
+      (let (sum2:&SumFn (alloca SumFn))
         (set! (sum2 'dummy) 0)
         (printf "reduce(filter even (map sq [1,5))) = %d\n" (reduce sum2 0 fi)))))
 

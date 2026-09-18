@@ -16,13 +16,13 @@
 
 (defn main ():i32
   ; ---- 1. Entry round-trip -----------------------------------------------
-  (let ((e (ref (Entry i32 i32))) (alloca (Entry i32 i32)))
+  (let (e:&(Entry i32 i32) (alloca (Entry i32 i32)))
     (set! (e 'key) 7)
     (set! (e 'val) 42)
     (printf "entry key=%d val=%d\n" (e 'key) (e 'val)))   ; entry key=7 val=42
 
   ; ---- 2. iter yields Entry values; drive next manually ------------------
-  (with ((m (ref (HashMap i32 i32))) (alloca (HashMap i32 i32)))
+  (with (m:&(HashMap i32 i32) (alloca (HashMap i32 i32)))
     (hashmap-init m)
     (assoc m 1 10)
     (assoc m 2 20)
@@ -39,13 +39,13 @@
       (printf "iter n=%d ksum=%d vsum=%d\n" n ksum vsum)))  ; iter n=3 ksum=6 vsum=60
 
   ; ---- 3. conj a HashMap via an Entry (Coll conj == assoc) ---------------
-  (with ((m (ref (HashMap i32 i32))) (alloca (HashMap i32 i32)))
+  (with (m:&(HashMap i32 i32) (alloca (HashMap i32 i32)))
     (hashmap-init m)
-    (let ((e (ref (Entry i32 i32))) (alloca (Entry i32 i32)))
+    (let (e:&(Entry i32 i32) (alloca (Entry i32 i32)))
       (set! (e 'key) 5)
       (set! (e 'val) 500)
       (conj m @e))
-    (let ((e (ref (Entry i32 i32))) (alloca (Entry i32 i32)))
+    (let (e:&(Entry i32 i32) (alloca (Entry i32 i32)))
       (set! (e 'key) 6)
       (set! (e 'val) 600)
       (conj m @e))

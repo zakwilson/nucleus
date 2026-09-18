@@ -11,7 +11,7 @@
 (import-use string)
 (import-use char)
 
-(defn show-maybe (label:CStr (m (Maybe usize))):void
+(defn show-maybe (label:CStr m:?usize):void
   (match m
     ((some i) (printf "%s=%llu\n" label (as ui64 i)))
     (none     (printf "%s=none\n" label))))
@@ -19,29 +19,29 @@
 (defn main ():i32
 
   ; ---- 6. Vector bulk append -------------------------------------------------
-  (with (v:(ref (Vector i32)) (vector-new))
-    (let (src:&i32 (as ptr:i32 (alloca i32 3)))
+  (with (v:&(Vector i32) (vector-new))
+    (let (src:&i32 (as &i32 (alloca i32 3)))
       (set! (aref src 0) 10)
       (set! (aref src 1) 20)
       (set! (aref src 2) 30)
       (vector-extend-raw v src 3))
     (printf "vec-count=%llu\n" (as ui64 (count v)))          ; 3
     (printf "vec=%d,%d,%d\n" (v 0) (v 1) (v 2))              ; 10,20,30
-    (with (w:(ref (Vector i32)) (vector-new))
+    (with (w:&(Vector i32) (vector-new))
       (conj w 40)
       (vector-extend w v)
       (printf "w-count=%llu w0=%d w3=%d\n"
               (as ui64 (count w)) (w 0) (w 3))))             ; 4 40 30
 
   ; ---- 8. The strview value constructor --------------------------------------
-  (let (hay:StrView (strview (as ptr:ui8 (as ptr "banana")) 6))
+  (let (hay:StrView (strview (as &ui8 (as ptr "banana")) 6))
     (printf "hay-len=%llu\n" (as ui64 (hay 'len)))           ; 6
 
     ; ---- 10. byte / backward / codepoint search ------------------------------
     (show-maybe "find-a"  (strview-find-byte  &hay (as ui8 97)))   ; 1
     (show-maybe "rfind-a" (strview-rfind-byte &hay (as ui8 97)))   ; 5
     (show-maybe "find-z"  (strview-find-byte  &hay (as ui8 122)))  ; none
-    (let (ana:StrView (strview (as ptr:ui8 (as ptr "ana")) 3))
+    (let (ana:StrView (strview (as &ui8 (as ptr "ana")) 3))
       (show-maybe "find-ana"  (strview-find  &hay &ana))  ; 1
       (show-maybe "rfind-ana" (strview-rfind &hay &ana))) ; 3
     ; `\n` is the LETTER n — Nucleus spells line feed `\newline`.
@@ -49,13 +49,13 @@
     (show-maybe "rfind-char-n" (strview-rfind-char &hay \n)))      ; 4
 
   ; multi-byte codepoint: "hé" is 68 C3 A9, so é starts at byte 1
-  (let (acc:StrView (strview (as ptr:ui8 (as ptr "hé")) 3))
+  (let (acc:StrView (strview (as &ui8 (as ptr "hé")) 3))
     (show-maybe "find-char-e-acute" (strview-find-char &acc \u{e9})))
 
   ; ---- 5, 9, 13. push / truncate / CStr bridge -------------------------------
-  (with (s:(ref String) (string-new))
-    (let (a:StrView (strview (as ptr:ui8 (as ptr "hello")) 5)
-          b:StrView (strview (as ptr:ui8 (as ptr ", world")) 7))
+  (with (s:&String (string-new))
+    (let (a:StrView (strview (as &ui8 (as ptr "hello")) 5)
+          b:StrView (strview (as &ui8 (as ptr ", world")) 7))
       (string-push-str-unchecked s &a)
       (match (string-push-str s &b)
         ((ok)    (printf "push=ok\n"))

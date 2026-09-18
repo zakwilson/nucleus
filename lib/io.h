@@ -25,4 +25,4 @@ extern size_t g_in_len asm("g-in-len");
 extern size_t g_in_pos asm("g-in-pos");
 extern int32_t g_in_eof asm("g-in-eof");
 int32_t io_in_fill(void) asm("io-in-fill");
-/* read-line: uses a defunion-template instance type; not exported */
+/* read-line: uses an error-union or option type; not exported */

@@ -62,12 +62,12 @@
 ;                a legitimate "not found", not an error: returns (Maybe usize).
 ; ---------------------------------------------------------------------------
 (defprotocol (ByteStr ByteI)
-  (byte-len   ((self (ref Self))):usize)
-  (byte-at     ((self (ref Self)) i:usize):!ui8)
-  (bytes      ((self (ref Self))):ByteI)
-  (as-view  ((self (ref Self))):StrView)
-  (sub-bytes ((self (ref Self)) start:usize end:usize):!StrView)
-  (byte-find ((self (ref Self)) (needle (ref StrView))) (Maybe usize)))
+  (byte-len   (self:&Self):usize)
+  (byte-at     (self:&Self i:usize):!ui8)
+  (bytes      (self:&Self):ByteI)
+  (as-view  (self:&Self):StrView)
+  (sub-bytes (self:&Self start:usize end:usize):!StrView)
+  (byte-find (self:&Self needle:&StrView):?usize))
 
 ; ---------------------------------------------------------------------------
 ; Str CharI — the codepoint layer.
@@ -96,13 +96,13 @@
 ;   contains-str?— true when self contains the given needle StrView.
 ; ---------------------------------------------------------------------------
 (defprotocol (Str CharI)
-  (char-count    ((self (ref Self))):usize)
-  (str-empty?      ((self (ref Self))):bool)
-  (char-at       ((self (ref Self)) i:usize):!Char)
-  (chars         ((self (ref Self))):CharI)
-  (starts-with?    ((self (ref Self)) (prefix (ref StrView))):bool)
-  (ends-with?      ((self (ref Self)) (suffix (ref StrView))):bool)
-  (contains-str?   ((self (ref Self)) (needle (ref StrView))):bool))
+  (char-count    (self:&Self):usize)
+  (str-empty?      (self:&Self):bool)
+  (char-at       (self:&Self i:usize):!Char)
+  (chars         (self:&Self):CharI)
+  (starts-with?    (self:&Self prefix:&StrView):bool)
+  (ends-with?      (self:&Self suffix:&StrView):bool)
+  (contains-str?   (self:&Self needle:&StrView):bool))
 
 ; Str extends Eq: every type that conforms to Str must also conform to Eq
 ; (content comparison).  This mirrors `(extend Ord Eq)` in lib/numeric.nuc.

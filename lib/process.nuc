@@ -53,14 +53,14 @@
       (return (ExitStatus-exited (bit-and (bit-shr raw 8) 255))))
     (return (ExitStatus-signaled sig))))
 
-(defn success? ((self (ref ExitStatus))):bool
+(defn success? (self:&ExitStatus):bool
   (match self
     ((exited code) (return (= code 0)))
     ((signaled _) (return false))))
 
 ; A signalled child has no exit code; 128+signal is the shell's spelling for one
 ; and is what a caller comparing against a number expects.
-(defn exit-code ((self (ref ExitStatus))):i32
+(defn exit-code (self:&ExitStatus):i32
   (match self
     ((exited code) (return code))
     ((signaled sig) (return (+ 128 sig)))))
@@ -88,19 +88,19 @@
 
 ; The terminator is a real byte of the buffer, not `string-as-cstr`'s
 ; past-the-end NUL: every element but the last has more bytes after it.
-(defn command-push-cstr ((self (ref Command)) s:StrView):usize
-  (let (off:usize (byte-len (addr-of self 'buf))
-        z:&ui8 (as ptr:ui8 (alloca ui8 1)))
-    (string-push-str-unchecked (addr-of self 'buf) &s)
+(defn command-push-cstr (self:&Command s:StrView):usize
+  (let (off:usize (byte-len (ref self 'buf))
+        z:&ui8 (as &ui8 (alloca ui8 1)))
+    (string-push-str-unchecked (ref self 'buf) &s)
     (set! (aref z 0) 0)
-    (string-push-bytes-raw (addr-of self 'buf) z 1)
+    (string-push-bytes-raw (ref self 'buf) z 1)
     (return off)))
 
 (defn command (prog:StrView):Command
   (let (c:&Command (alloca Command))
     (set! (c 'buf) (string-new))
-    (vector-init (addr-of c 'offs))
-    (vector-init (addr-of c 'envs))
+    (vector-init (ref c 'offs))
+    (vector-init (ref c 'envs))
     (set! (c 'cwd-off) -1)
     (set! (c 'search) true)
     (set! (c 'capture) false)
@@ -108,72 +108,72 @@
     (set! (c 'in-path-off) -1)
     (set! (c 'merge-err) false)
     (let (off:usize (command-push-cstr c prog))
-      (conj (addr-of c 'offs) off))
+      (conj (ref c 'offs) off))
     (return @c)))
 
-(defn command-arg ((self (ref Command)) a:StrView):void
+(defn command-arg (self:&Command a:StrView):void
   (let (off:usize (command-push-cstr self a))
-    (conj (addr-of self 'offs) off)))
+    (conj (ref self 'offs) off)))
 
-(defn command-cwd ((self (ref Command)) dir:StrView):void
+(defn command-cwd (self:&Command dir:StrView):void
   (set! (self 'cwd-off) (as i64 (command-push-cstr self dir))))
 
 ; Look the program up on PATH (the default), or treat it as an exact path.
-(defn command-search ((self (ref Command)) on:bool):void
+(defn command-search (self:&Command on:bool):void
   (set! (self 'search) on))
 
 ; Set one variable in the child. The child otherwise inherits the parent's
 ; environment unchanged; an override replaces the inherited entry rather than
 ; shadowing it, because `getenv` returns the FIRST match and a merely-appended
 ; entry would never be seen. Resolves §7 open decision 4.
-(defn command-env ((self (ref Command)) k:StrView v:StrView):void
-  (let (off:usize (byte-len (addr-of self 'buf))
+(defn command-env (self:&Command k:StrView v:StrView):void
+  (let (off:usize (byte-len (ref self 'buf))
         eq:StrView "="
-        z:&ui8 (as ptr:ui8 (alloca ui8 1)))
-    (string-push-str-unchecked (addr-of self 'buf) &k)
-    (string-push-str-unchecked (addr-of self 'buf) &eq)
-    (string-push-str-unchecked (addr-of self 'buf) &v)
+        z:&ui8 (as &ui8 (alloca ui8 1)))
+    (string-push-str-unchecked (ref self 'buf) &k)
+    (string-push-str-unchecked (ref self 'buf) &eq)
+    (string-push-str-unchecked (ref self 'buf) &v)
     (set! (aref z 0) 0)
-    (string-push-bytes-raw (addr-of self 'buf) z 1)
-    (conj (addr-of self 'envs) off)))
+    (string-push-bytes-raw (ref self 'buf) z 1)
+    (conj (ref self 'envs) off)))
 
 ; Pipe the child's stdout and stderr back instead of letting it inherit the
 ; parent's. `run` sets this; a caller driving `spawn` itself sets it by hand.
-(defn command-capture ((self (ref Command)) on:bool):void
+(defn command-capture (self:&Command on:bool):void
   (set! (self 'capture) on))
 
 ; Send the child's stdout to a file, created and truncated. A job pool needs
 ; this rather than `command-capture`: a pipe holds 64 KiB, so N children each
 ; writing more than that would all block with nobody draining them until the
 ; pool called `wait`, which is the one thing a blocked child prevents.
-(defn command-stdout-path ((self (ref Command)) path:StrView):void
+(defn command-stdout-path (self:&Command path:StrView):void
   (set! (self 'out-path-off) (as i64 (command-push-cstr self path))))
 
 ; The child reads `path` as its stdin (`< path`). Opened by the parent, so a
 ; missing file is an error rather than a child that dies after the fork.
-(defn command-stdin-path ((self (ref Command)) path:StrView):void
+(defn command-stdin-path (self:&Command path:StrView):void
   (set! (self 'in-path-off) (as i64 (command-push-cstr self path))))
 
 ; The child's stderr goes wherever its stdout goes -- shell `2>&1`.
-(defn command-stderr-to-stdout ((self (ref Command)) on:bool):void
+(defn command-stderr-to-stdout (self:&Command on:bool):void
   (set! (self 'merge-err) on))
 
 (extend Command Drop)
-(defn drop ((self (ptr Command))):void
-  (drop (addr-of self 'buf))
-  (drop (addr-of self 'offs))
-  (drop (addr-of self 'envs)))
+(defn drop (self:&Command):void
+  (drop (ref self 'buf))
+  (drop (ref self 'offs))
+  (drop (ref self 'envs)))
 
 ; The argv pointer array, NULL-terminated. Valid only while the Command's buffer
 ; is unmodified, which is why the single caller builds it immediately before
 ; forking and never adds an argument afterwards.
-(defn command-argv ((self (ref Command)) (out (ref (Vector ptr)))):void
-  (let (v:StrView (string-as-view (addr-of self 'buf))
+(defn command-argv (self:&Command out:&(Vector ptr)):void
+  (let (v:StrView (string-as-view (ref self 'buf))
         base:&ui8 (v 'data)
-        n:usize (count (addr-of self 'offs))
+        n:usize (count (ref self 'offs))
         i:usize 0)
     (while (< i n)
-      (conj out (as ptr (unsafe/ptr+ base (as i64 (invoke (addr-of self 'offs) i)))))
+      (conj out (as ptr (unsafe/ptr+ base (as i64 (invoke (ref self 'offs) i)))))
       (set! i (+ i 1)))
     (conj out null)))
 
@@ -187,19 +187,19 @@
 ; The child's environment, NULL-terminated: every inherited entry whose key is
 ; not overridden, then the overrides. Built before the fork like the argv, for
 ; the same reason (§2.2).
-(defn command-envp ((self (ref Command)) (out (ref (Vector ptr)))):void
-  (let (v:StrView (string-as-view (addr-of self 'buf))
+(defn command-envp (self:&Command out:&(Vector ptr)):void
+  (let (v:StrView (string-as-view (ref self 'buf))
         base:&ui8 (v 'data)
-        n:usize (count (addr-of self 'envs))
-        e:&ptr (as ptr:ptr environ)
+        n:usize (count (ref self 'envs))
+        e:&ptr (as &ptr environ)
         i:i64 0)
     (while (!= (aref e i) null)
-      (let (entry:&ui8 (as ptr:ui8 (aref e i))
+      (let (entry:&ui8 (as &ui8 (aref e i))
             ek:StrView (env-key entry)
             shadowed:bool false
             j:usize 0)
         (while (< j n)
-          (let (ov:&ui8 (unsafe/ptr+ base (as i64 (invoke (addr-of self 'envs) j)))
+          (let (ov:&ui8 (unsafe/ptr+ base (as i64 (invoke (ref self 'envs) j)))
                 ok2:StrView (env-key ov))
             (when (strview-eq &ek &ok2) (set! shadowed true)))
           (set! j (+ j 1)))
@@ -207,7 +207,7 @@
       (set! i (+ i 1)))
     (let (j:usize 0)
       (while (< j n)
-        (conj out (as ptr (unsafe/ptr+ base (as i64 (invoke (addr-of self 'envs) j)))))
+        (conj out (as ptr (unsafe/ptr+ base (as i64 (invoke (ref self 'envs) j)))))
         (set! j (+ j 1))))
     (conj out null)))
 
@@ -220,13 +220,13 @@
   err-fd:i32           ; read end of the child's stderr, or -1
   status:ExitStatus)
 
-(defn process-pid ((self (ref Process))):i32
+(defn process-pid (self:&Process):i32
   (return (self 'pid)))
 
-(defn spawn ((self (ref Command))):!Process
+(defn spawn (self:&Command):!Process
   (let (argv:(Vector ptr) (vector-new)
         envp:(Vector ptr) (vector-new)
-        has-env:bool (> (count (addr-of self 'envs)) 0)
+        has-env:bool (> (count (ref self 'envs)) 0)
         prog:ptr null
         cwd:ptr null
         cap:bool (self 'capture)
@@ -235,12 +235,12 @@
         out-fd:i32 -1
         in-path:ptr null
         in-fd:i32 -1
-        op:&i32 (as ptr:i32 (alloca i32 2))
-        ep:&i32 (as ptr:i32 (alloca i32 2)))
+        op:&i32 (as &i32 (alloca i32 2))
+        ep:&i32 (as &i32 (alloca i32 2)))
     (command-argv self &argv)
     (when has-env (command-envp self &envp))
     (set! prog (invoke &argv 0))
-    (let (v:StrView (string-as-view (addr-of self 'buf)))
+    (let (v:StrView (string-as-view (ref self 'buf)))
       (when (>= (self 'cwd-off) 0)
         (set! cwd (as ptr (unsafe/ptr+ (v 'data) (self 'cwd-off)))))
       (when (>= (self 'out-path-off) 0)
@@ -312,7 +312,7 @@
         ; A pointer store, so it is safe in this window — unlike `setenv`, which
         ; would allocate. `execvp` reads `environ` for the child it starts.
         (when has-env
-          (set! environ (unsafe/cast ptr:ptr (as ptr (_get &envp 'data)))))
+          (set! environ (unsafe/cast &ptr (as ptr (_get &envp 'data)))))
         (if search
           (execvp (as CStr prog) (as ptr (_get &argv 'data)))
           (execv (as CStr prog) (as ptr (_get &argv 'data))))
@@ -343,7 +343,7 @@
 ; whichever is ready, is the fix (§2.3). A negative `fd` is ignored by `poll`,
 ; which is how a finished stream drops out of the set.
 ; ---------------------------------------------------------------------------
-(defn process-drain-one ((p (ref pollfd)) (into (ref String)) (buf (ptr ui8))):!void
+(defn process-drain-one (p:&pollfd into:&String buf:&ui8):!void
   (when (< (p 'fd) 0) (return (ok)))
   (when (= (bit-and (p 'revents) (bit-or POLLIN (bit-or POLLHUP POLLERR))) 0)
     (return (ok)))
@@ -356,9 +356,9 @@
     (string-push-bytes-raw into buf (as usize n))
     (return (ok))))
 
-(defn process-capture ((self (ref Process)) (out (ref String)) (errs (ref String))):!void
-  (let (pf:&pollfd (as ptr:pollfd (alloca pollfd 2))
-        buf:&ui8 (as ptr:ui8 (alloca ui8 PROC-CHUNK))
+(defn process-capture (self:&Process out:&String errs:&String):!void
+  (let (pf:&pollfd (as &pollfd (alloca pollfd 2))
+        buf:&ui8 (as &ui8 (alloca ui8 PROC-CHUNK))
         a:&pollfd pf
         b:&pollfd (unsafe/ptr+ pf 1))
     (set! (a 'fd) (self 'out-fd))
@@ -378,12 +378,12 @@
     (set! (self 'err-fd) -1)
     (return (ok))))
 
-(defn process-wait ((self (ref Process))):!ExitStatus
+(defn process-wait (self:&Process):!ExitStatus
   (when (< (self 'pid) 0) (return (ok (self 'status))))
   ; No retry loop: this module installs no signal handlers (§6), so a `waitpid`
   ; that fails has lost the child rather than been interrupted.
   (let (raw:i32 0
-        rc:i32 (waitpid (self 'pid) (as ptr:i32 &raw) 0))
+        rc:i32 (waitpid (self 'pid) (as &i32 &raw) 0))
     (when (< rc 0) (return (err! process-wait-failed)))
     (set! (self 'status) (wait-status-decode raw))
     (set! (self 'pid) -1)
@@ -398,10 +398,10 @@
 ; `(Maybe ExitStatus)` the `ok` arm's field type does not match. Recorded in
 ; design/stage19-process/overview.md §8; the status lives on the Process either
 ; way, so the bool costs the caller nothing.
-(defn process-try-wait ((self (ref Process))):!bool
+(defn process-try-wait (self:&Process):!bool
   (when (< (self 'pid) 0) (return (ok true)))
   (let (raw:i32 0
-        rc:i32 (waitpid (self 'pid) (as ptr:i32 &raw) WNOHANG))
+        rc:i32 (waitpid (self 'pid) (as &i32 &raw) WNOHANG))
     (when (< rc 0) (return (err! process-wait-failed)))
     (when (= rc 0) (return (ok false)))
     (set! (self 'status) (wait-status-decode raw))
@@ -409,10 +409,10 @@
     (return (ok true))))
 
 ; Valid once `process-wait` has returned or `process-try-wait` has said `true`.
-(defn process-status ((self (ref Process))):ExitStatus
+(defn process-status (self:&Process):ExitStatus
   (return (self 'status)))
 
-(defn process-kill ((self (ref Process)) sig:i32):!void
+(defn process-kill (self:&Process sig:i32):!void
   (when (< (self 'pid) 0) (return (ok)))
   (when (!= (kill (self 'pid) sig) 0) (return (err! process-signal-failed)))
   (return (ok)))
@@ -433,7 +433,7 @@
 
 (defn wait-any ():!ChildExit
   (let (raw:i32 0
-        rc:i32 (waitpid -1 (as ptr:i32 &raw) 0))
+        rc:i32 (waitpid -1 (as &i32 &raw) 0))
     (when (< rc 0) (return (err! process-wait-failed)))
     (let (c:&ChildExit (alloca ChildExit))
       (set! (c 'pid) rc)
@@ -442,7 +442,7 @@
 
 ; Give up ownership without waiting. The child becomes the caller's problem (or
 ; init's); use it when a zombie is genuinely not wanted to be reaped here.
-(defn process-detach ((self (ref Process))):void
+(defn process-detach (self:&Process):void
   (set! (self 'pid) -1))
 
 ; Drop reaps, because a runner that spawns hundreds of children would otherwise
@@ -450,7 +450,7 @@
 ; running: the intended path is an explicit `process-wait`, and this is the
 ; error path's safety net (§2.5).
 (extend Process Drop)
-(defn drop ((self (ptr Process))):void
+(defn drop (self:&Process):void
   (when (>= (self 'out-fd) 0) (close (self 'out-fd)) (set! (self 'out-fd) -1))
   (when (>= (self 'err-fd) 0) (close (self 'err-fd)) (set! (self 'err-fd) -1))
   (when (>= (self 'pid) 0)
@@ -469,18 +469,18 @@
   err:String)
 
 (extend Output Drop)
-(defn drop ((self (ptr Output))):void
-  (drop (addr-of self 'out))
-  (drop (addr-of self 'err)))
+(defn drop (self:&Output):void
+  (drop (ref self 'out))
+  (drop (ref self 'err)))
 
-(defn run ((self (ref Command))):!Output
+(defn run (self:&Command):!Output
   (command-capture self true)
   (let (o:&Output (alloca Output)
         p:Process (try (spawn self)))
     (set! (o 'status) (ExitStatus-exited 0))
     (set! (o 'out) (string-new))
     (set! (o 'err) (string-new))
-    (match (process-capture &p (addr-of o 'out) (addr-of o 'err))
+    (match (process-capture &p (ref o 'out) (ref o 'err))
       (ok
        (match (process-wait &p)
          ((ok st)

@@ -17,7 +17,7 @@
   ; ----------------------------------------------------------------
   ; 1. Basic CStr insert / contains? / set-remove
   ; ----------------------------------------------------------------
-  (with ((s (ref (HashSet CStr))) (alloca (HashSet CStr)))
+  (with (s:&(HashSet CStr) (alloca (HashSet CStr)))
     (hashset-init s)
 
     (insert s "dog")
@@ -44,7 +44,7 @@
   ;    cross the 3/4 threshold and force at least one resize) and verify
   ;    all members are still reachable after rehashing.
   ; ----------------------------------------------------------------
-  (with ((r (ref (HashSet i32))) (alloca (HashSet i32)))
+  (with (r:&(HashSet i32) (alloca (HashSet i32)))
     (hashset-init r)
     (insert r 1) (insert r 2) (insert r 3) (insert r 4) (insert r 5)
     (insert r 6) (insert r 7) (insert r 8) (insert r 9)
@@ -65,10 +65,10 @@
   ; ----------------------------------------------------------------
 
   ; --- union ---
-  (with ((a (ref (HashSet i32))) (alloca (HashSet i32)))
+  (with (a:&(HashSet i32) (alloca (HashSet i32)))
     (hashset-init a)
     (insert a 1) (insert a 2) (insert a 3) (insert a 4)
-    (with ((b (ref (HashSet i32))) (alloca (HashSet i32)))
+    (with (b:&(HashSet i32) (alloca (HashSet i32)))
       (hashset-init b)
       (insert b 3) (insert b 4) (insert b 5) (insert b 6)
       (union a b)
@@ -78,10 +78,10 @@
       (printf "union has 7: %d\n" (contains? a 7))))             ; 0
 
   ; --- intersection ---
-  (with ((a (ref (HashSet i32))) (alloca (HashSet i32)))
+  (with (a:&(HashSet i32) (alloca (HashSet i32)))
     (hashset-init a)
     (insert a 1) (insert a 2) (insert a 3) (insert a 4)
-    (with ((b (ref (HashSet i32))) (alloca (HashSet i32)))
+    (with (b:&(HashSet i32) (alloca (HashSet i32)))
       (hashset-init b)
       (insert b 3) (insert b 4) (insert b 5) (insert b 6)
       (intersection a b)
@@ -91,10 +91,10 @@
       (printf "intersection has 1: %d\n" (contains? a 1))))       ; 0
 
   ; --- difference ---
-  (with ((a (ref (HashSet i32))) (alloca (HashSet i32)))
+  (with (a:&(HashSet i32) (alloca (HashSet i32)))
     (hashset-init a)
     (insert a 1) (insert a 2) (insert a 3) (insert a 4)
-    (with ((b (ref (HashSet i32))) (alloca (HashSet i32)))
+    (with (b:&(HashSet i32) (alloca (HashSet i32)))
       (hashset-init b)
       (insert b 3) (insert b 4) (insert b 5) (insert b 6)
       (difference a b)
@@ -107,7 +107,7 @@
   ; 4. Iterator: insert {10, 20, 30, 40, 50} and sum with HashSetIter.
   ;    Sum is order-independent so output is deterministic.
   ; ----------------------------------------------------------------
-  (with ((s (ref (HashSet i32))) (alloca (HashSet i32)))
+  (with (s:&(HashSet i32) (alloca (HashSet i32)))
     (hashset-init s)
     (insert s 10) (insert s 20) (insert s 30) (insert s 40) (insert s 50)
     ; doseq dispatches generically over the Coll: (iter s) yields a HashSetIter.

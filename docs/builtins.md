@@ -546,9 +546,10 @@ C-legible names: `--emit-cheader` maps dots (and any non-`[A-Za-z0-9_]`
 character) to `_` via `sanitize-for-c` (`src/cheader.nuc`), so `Vector.i32`
 exports as `Vector_i32`. LLVM IR keeps the dotted name (dots are legal in IR).
 
-**Known limitation (`.nuch` consumer):** when a `declare` form has a
-parametric return type, the list-form name node is required:
-`(declare p2_make (...) (P2 i32 i32))`.
+A `declare` with a parametric return type puts it after the parameter list,
+as a list or attached: `(declare p2_make (...) (P2 i32 i32))` or
+`(declare p2_make (...):(P2 i32 i32))`; the legacy name node
+`(declare (p2_make (P2 i32 i32)) ...)` is refused.
 
 See also `examples/parametric.nuc`, `examples/import-parametric.nuc`, and
 `tests/abi/interop.nuc`.
@@ -1567,14 +1568,14 @@ a backend ignores it. The byte type is `(raw ui8)` (= C `unsigned char *`):
 
 ```lisp
 (defprotocol Allocator
-  ((alloc   (raw ui8)) ((self (ref Self)) size:usize align:usize))
-  ((realloc (raw ui8)) ((self (ref Self)) (p (raw ui8)) old:usize new:usize align:usize))
-  (free:void           ((self (ref Self)) (p (raw ui8)) size:usize align:usize)))
+  (alloc   (self:&Self size:usize align:usize) (raw ui8))
+  (realloc (self:&Self (p (raw ui8)) old:usize new:usize align:usize) (raw ui8))
+  (free    (self:&Self (p (raw ui8)) size:usize align:usize):void))
 ```
 
-Note the **list-form method names** (`(alloc (raw ui8))`, not `alloc:(raw ui8)`):
-a parenthesised type does not tokenise in a colon return/parameter position, so
-both the name's return type and `(raw ui8)` parameters use the list binding form.
+A method's return type follows its parameter list — `(raw ui8)` as a list, or
+attached as `):void` / `):(raw ui8)`; `(p (raw ui8))` and `p:(raw ui8)` are the
+same parameter.
 
 ### Runtime dispatch: `AllocHandle`
 

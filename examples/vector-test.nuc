@@ -15,7 +15,7 @@
 (defn main ():i32
   ; Stack-allocate a Vector i32 owned by `with`; vector-init sets the libc
   ; allocator and zeroes the fields. `drop` fires automatically at scope exit.
-  (with ((v (ref (Vector i32))) (alloca (Vector i32)))
+  (with (v:&(Vector i32) (alloca (Vector i32)))
     (vector-init v)
 
     ; conj three elements (exercises capacity doubling: 0 -> 4).

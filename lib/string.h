@@ -20,7 +20,7 @@ void string_push_bytes_raw(struct String* self, uint8_t* p, size_t n) asm("strin
 void string_push_char(struct String* self, uint32_t c) asm("string-push-char");
 void string_push_str_unchecked(struct String* self, struct StrView* s) asm("string-push-str-unchecked");
 /* string-push-str: uses an error-union or option type; not exported */
-/* string-pop-char: uses a defunion-template instance type; not exported */
+/* string-pop-char: uses an error-union or option type; not exported */
 void string_clear(struct String* self) asm("string-clear");
 /* string-truncate: uses an error-union or option type; not exported */
 void string_truncate_unchecked(struct String* self, size_t byte_len) asm("string-truncate-unchecked");
@@ -36,7 +36,7 @@ size_t byte_len_pString(struct String* self) asm("byte_len.pString");
 struct ByteIter bytes_pString(struct String* self) asm("bytes.pString");
 struct StrView as_view_pString(struct String* self) asm("as_view.pString");
 /* sub-bytes: uses an error-union or option type; not exported */
-/* byte-find: uses a defunion-template instance type; not exported */
+/* byte-find: uses an error-union or option type; not exported */
 size_t char_count_pString(struct String* self) asm("char_count.pString");
 bool str_empty_QMARK_pString(struct String* self) asm("str_empty_QMARK.pString");
 /* char-at: uses an error-union or option type; not exported */

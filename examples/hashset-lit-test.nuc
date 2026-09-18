@@ -13,7 +13,7 @@
 (import-use hashset)
 
 (defn main ():i32
-  (with ((s (ref (HashSet CStr))) #{"a" "b" "c"})
+  (with (s:&(HashSet CStr) #{"a" "b" "c"})
     (printf "count=%llu\n" (as ui64 (count s)))         ; count=3
     (printf "has-a=%d\n" (contains? s "a"))               ; has-a=1
     (printf "has-b=%d\n" (contains? s "b"))               ; has-b=1
@@ -21,21 +21,21 @@
     (printf "has-z=%d\n" (contains? s "z")))              ; has-z=0
 
   ; i32 element set literal; duplicate element is deduplicated by insert.
-  (with ((n (ref (HashSet i32))) #{10 20 20 30})
+  (with (n:&(HashSet i32) #{10 20 20 30})
     (printf "ncount=%llu\n" (as ui64 (count n)))        ; ncount=3
     (printf "has-20=%d\n" (contains? n 20))               ; has-20=1
     (printf "has-99=%d\n" (contains? n 99)))              ; has-99=0
 
   ; Float element set. `f64` gained a Hash conformance in Stage 16; before that
   ; a float set literal read fine and then failed to instantiate `insert`.
-  (with ((f (ref (HashSet f64))) #{1.5 2.5 1.5})
+  (with (f:&(HashSet f64) #{1.5 2.5 1.5})
     (printf "fcount=%llu\n" (as ui64 (count f)))        ; fcount=2
     (printf "has-1.5=%d\n" (contains? f 1.5))             ; has-1.5=1
     (printf "has-9.5=%d\n" (contains? f 9.5)))            ; has-9.5=0
 
   ; `0.0` and `-0.0` are `=` but differ in bits, so hash normalises zero: they
   ; dedupe to one entry and the negative spelling still finds it.
-  (with ((z (ref (HashSet f64))) #{0.0 -0.0})
+  (with (z:&(HashSet f64) #{0.0 -0.0})
     (printf "zcount=%llu\n" (as ui64 (count z)))        ; zcount=1
     (printf "find-neg=%d\n" (contains? z -0.0)))          ; find-neg=1
 

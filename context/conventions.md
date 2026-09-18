@@ -6251,9 +6251,21 @@ macro, and **the short spellings are preferred in new code**:
 
 `&` inside an atom is the type sigil (`&T` → `ref:T`, chaining as `&&T`, `?&T`,
 `&raw:T`); `&` starting a token is `(ref x)`. A field address is the 2-argument
-form, `(ref s 'field)` (or `(addr-of s 'field)` until PK-5) — there is no
-`&s.field`. `(ref T)` list form is still required where a parameter's type is
-parenthesised, e.g. `(v (ref (Vector T)))`.
+form, `(ref s 'field)` (or `(addr-of s 'field)` until PK-5b) — there is no
+`&s.field`. A parenthesised operand takes the sigil too: `v:&(Vector T)`,
+`x:?(Vector i32)`, `):!(Vector i32)` (PK-2's open-segment fuse).
+
+`scripts/stage21/sugar-sweep.py` (Stage 21 PK-5a) rewrites a tree to these
+spellings and is idempotent; rerun it after adding code in the old ones. Four
+shapes it refuses on purpose, and which stay in the list form: **a sigil over
+a type variable** (`(Maybe E)` — `?E` is one symbol, and tyvar substitution
+walks colon segments, so it would never be substituted; `?&T` and `?(Vector T)`
+are fine); **`(Maybe (raw T))`** (a value-Maybe; `?raw:T` is the niche pointer);
+**a paren operand in an exported signature** (`(Result (Vector D) Err)` in a
+public `defn` — the `--emit-cheader` classifiers read a `(Maybe …)`/`(Result …)`
+head and not a `(? X)`/`(! X)` cell, so the `!(…)` spelling exports an ABI-wrong
+`void*`); and **an `extend` subject** (`(extend ptr:Cents Ord)` — `extend` reads
+a cell subject as a template application, so `&Cents` is refused there).
 
 Since Stage 17, a struct **value** in a binding also reaches a `&T` parameter
 with no `&` at all (lvalue-only implicit address-of, borrow-conventions.md

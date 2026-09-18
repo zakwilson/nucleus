@@ -46,7 +46,7 @@
       ; computed once at registration. `ir-name == name` for every `user` type,
       ; so every mangled symbol in this compiler and in `lib/` is unchanged.
       (:or TY-STRUCT TY-UNION)
-        (return (symbol-as-view (-> tt (_ 'sdef) (unsafe/cast ptr:StructDef _) (_ 'ir-name))))
+        (return (symbol-as-view (-> tt (_ 'sdef) (unsafe/cast &StructDef _) (_ 'ir-name))))
       TY-FN (return "fn")
       TY-CSTR (return "cstr")
       TY-CHAR (return "Char")
@@ -80,10 +80,10 @@
 ; (no TY-FN flows through a generic in the compiler's own source: `make
 ; bootstrap` re-converges with this change).
 (defvar g-fnty-id:i32 0)
-(defvar (g-fnty (ref (HashMap Symbol ref:Type))) (hashmap-new-in &g-arena-alloc))
+(defvar g-fnty:&(HashMap Symbol &Type) (hashmap-new-in &g-arena-alloc))
 
 (defn fnty-intern (t:&Type):Symbol
-  (doseq (entry g-fnty (HashMapEntryIter Symbol ref:Type))
+  (doseq (entry g-fnty (HashMapEntryIter Symbol &Type))
          (when (= (&entry 'val)
                   t)
                (return (&entry 'key))))
@@ -95,7 +95,7 @@
 ; Resolve a "__fnty_<id>" name back to its Type*, so a stamped generic body's
 ; `(ref __fnty_3)` re-parses to the original TY-FN. Identity, not a string
 ; compare: the name reaching here is interned, as every registry key now is.
-(defn fnty-resolve (name:Symbol):?ref:Type
+(defn fnty-resolve (name:Symbol):?&Type
   (get g-fnty name))
 
 ; A type's source spelling as a colon-joined string: the inverse of the type
@@ -124,7 +124,7 @@
       TY-F80  (return (symbol-intern "f80"))
       TY-F128 (return (symbol-intern "f128"))
       (:or TY-STRUCT TY-UNION)
-                (return (-> tt (_ 'sdef) (unsafe/cast ptr:StructDef _) (_ 'name)))
+                (return (-> tt (_ 'sdef) (unsafe/cast &StructDef _) (_ 'name)))
       TY-CSTR  (return (symbol-intern "CStr"))
       TY-CHAR  (return (symbol-intern "Char"))
       TY-ERR   (return (symbol-intern "Err"))
@@ -133,7 +133,7 @@
       ; t is provably non-null here (its `kind` was already read above), so
       ; asserting ref is sound — fnty-intern keys its HashMap by Type* identity.
       TY-FN
-        (return (fnty-intern (unsafe/cast ref:Type t)))
+        (return (fnty-intern (unsafe/cast &Type t)))
       TY-PTR
         (if (= (tt 'elem) null)
           (return (symbol-intern "ptr"))
@@ -150,7 +150,7 @@
 
 (defn tyvar-index-of (name:Symbol tyvars:ptr ntv:i32):i32
   (dotimes (i ntv)
-    (when (= (aref (as ptr:Symbol tyvars) i) name) (return i)))
+    (when (= (aref (as &Symbol tyvars) i) name) (return i)))
   (return -1))
 
 ; Substitute type variables inside one symbol's colon spelling: split on ':',
@@ -161,16 +161,16 @@
 (defn subst-tyvars-sym (s:Symbol tyvars:ptr spellings:ptr ntv:i32 line:i32):Symbol
   (when (= (symbol-contains-byte s 58) false)
     (let (idx:i32 (tyvar-index-of s tyvars ntv))
-      (when (>= idx 0) (return (aref (as ptr:Symbol spellings) idx)))
+      (when (>= idx 0) (return (aref (as &Symbol spellings) idx)))
       (return s)))
   (let (segs:ptr (split-colon-segments s line)
         acc:String (string-new)
         any:i32 0)
     (let (it:ListIter (list-iter segs))
       (doseq-iter (e &it)
-        (let (seg:Symbol ((as ptr:Node e) 's)
+        (let (seg:Symbol ((as &Node e) 's)
               idx:i32 (tyvar-index-of seg tyvars ntv)
-              piece:Symbol (if (>= idx 0) (aref (as ptr:Symbol spellings) idx) seg))
+              piece:Symbol (if (>= idx 0) (aref (as &Symbol spellings) idx) seg))
           (when (!= any 0) (str-into &acc ":"))
           (str-into &acc piece)
           (set! any 1))))
@@ -186,7 +186,7 @@
       NODE-SYM
         (let (ns:Symbol (subst-tyvars-sym (n 's) tyvars spellings ntv (n 'line)))
           (when (= ns (n 's)) (return node))
-          (let (new:ptr:Node (as ptr:Node (alloc-node)))
+          (let (new:ptr:Node (as &Node (alloc-node)))
             (set! (new 'kind) NODE-SYM)
             (set! (new 'line) (n 'line))
             (set! (new 's) ns)
@@ -200,7 +200,7 @@
       NODE-KEYWORD
         (let (ns:Symbol (subst-tyvars-sym (n 's) tyvars spellings ntv (n 'line)))
           (when (= ns (n 's)) (return node))
-          (let (new:ptr:Node (as ptr:Node (alloc-node)))
+          (let (new:ptr:Node (as &Node (alloc-node)))
             (set! (new 'kind) NODE-KEYWORD)
             (set! (new 'line) (n 'line))
             (set! (new 's) ns)

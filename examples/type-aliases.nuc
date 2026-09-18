@@ -11,13 +11,13 @@
 (import-use vector)
 (import-use coll)
 
-(deftype SymTab  (ref (HashMap CStr i32)))
-(deftype NameSet (ref (HashSet CStr)))
+(deftype SymTab  &(HashMap CStr i32))
+(deftype NameSet &(HashSet CStr))
 (deftype Count   i64)
 
 ; The body is an ordinary type expression, so the colon-paren sugar works there
 ; too — and an alias may name another alias.
-(deftype IntVec ref:(Vector i32))
+(deftype IntVec &(Vector i32))
 (deftype Tally  Count)
 
 ; Every declaration position takes the alias through the plain colon sugar.
@@ -42,8 +42,8 @@
 ; An alias may take type parameters (§3.7). Its arguments are substituted into
 ; the body and the result parsed, so `(Vec CStr)` IS `(ref (Vector CStr))` — a
 ; parametric alias is exactly as transparent as a plain one.
-(deftype (Vec T)   (ref (Vector T)))
-(deftype (Table V) (ref (HashMap CStr V)))
+(deftype (Vec T)   &(Vector T))
+(deftype (Table V) &(HashMap CStr V))
 
 ; Because the expansion happens before type variables are collected, an alias
 ; application works as a generic method's receiver too: `T` here is still free.

@@ -61,7 +61,7 @@
   (let (v:P (P 11 22))
     (printf "local:     %d %d\n" (&v 'x) (&v 'y)))
   (let (r:&Row (Row (P 33 44) 55))
-    (printf "field:     %d %d %d\n" ((addr-of r 'p) 'x) ((addr-of r 'p) 'y) (r 'n)))
+    (printf "field:     %d %d %d\n" ((ref r 'p) 'x) ((ref r 'p) 'y) (r 'n)))
   (let (slots:&P (array P (P 0 0) (P 0 0)))
     (set! (aref slots 1) (P 66 77))
     (printf "aset:      %d %d\n" ((unsafe/ptr+ slots 1) 'x) ((unsafe/ptr+ slots 1) 'y)))

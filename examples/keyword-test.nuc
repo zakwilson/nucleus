@@ -26,7 +26,7 @@
   (printf "foo!=bar? %d\n" (if (!= :foo :bar) 1 0))         ; foo!=bar? 1
 
   ; Keyword as a HashMap key.
-  (with ((m (ref (HashMap Keyword i32))) (alloca (HashMap Keyword i32)))
+  (with (m:&(HashMap Keyword i32) (alloca (HashMap Keyword i32)))
     (hashmap-init m)
     (assoc m :a 1)
     (assoc m :b 2)

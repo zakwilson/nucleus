@@ -15,7 +15,7 @@
 
 ; Deliberate capture. `take` names `total` and `p` — locals of this function —
 ; because it is written for this function.
-(defn point-sum ((p (ref Point))):i32
+(defn point-sum (p:&Point):i32
   (let (total:i32 0)
     (macrolet ((take (f) `(set! total (+ total (get p '~f)))))
       (take x)

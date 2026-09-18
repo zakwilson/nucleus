@@ -54,7 +54,7 @@
 ; Process-lifetime state, so it is built through the arena: its `drop` is a
 ; no-op and nothing here is ever torn down.
 (defvar g-test-alloc:AllocHandle)
-(defvar (g-tests (ref (Vector TestCase)))
+(defvar g-tests:&(Vector TestCase)
   (vector-new-in (arena-allocator &g-test-alloc)))
 ; Lazily built, like lib/io.nuc's output buffer: a global String with a
 ; constant initializer would need an allocator this module has no reason to own.
@@ -114,7 +114,7 @@
   (let (b:ptr (gensym))
     ; `str-into` re-evaluates its target once per piece, and `test-fail-begin`
     ; clears -- so binding it first is what keeps all but the last piece.
-    `(let ((~b (ref String)) (test-fail-begin))
+    `(let ((~b &String) (test-fail-begin))
        (str-into ~b ~@parts)
        (return (err! test-failed)))))
 
@@ -122,7 +122,7 @@
 ; same reason a failure's is: a skip with no reason cannot be audited later.
 (defmacro skip! (:rest parts)
   (let (b:ptr (gensym))
-    `(let ((~b (ref String)) (test-fail-begin))
+    `(let ((~b &String) (test-fail-begin))
        (str-into ~b ~@parts)
        (return (err! test-skipped)))))
 
@@ -140,12 +140,12 @@
 
 ; Unchecked: every caller has just bounds-checked `i`, and the checked accessor
 ; yields `!ui8`, which a bool-returning matcher cannot propagate.
-(defn test-byte-at ((v (ref StrView)) i:usize):ui8
+(defn test-byte-at (v:&StrView i:usize):ui8
   (return (aref (v 'data) i)))
 
 ; `*` matches any run of bytes, `?` any single byte. Backtracking rather than
 ; recursive: one remembered `*` is enough, since a second supersedes the first.
-(defn glob-match ((pat (ref StrView)) (s (ref StrView))):bool
+(defn glob-match (pat:&StrView s:&StrView):bool
   (let (pn:usize (strview-byte-len pat)
         sn:usize (strview-byte-len s)
         pi:usize 0
@@ -300,7 +300,7 @@
 ; ---------------------------------------------------------------------------
 
 ; The `define … @name(…) { … }` block for `name`, brace line included.
-(defn ir-define (module:StrView name:StrView) (Maybe StrView)
+(defn ir-define (module:StrView name:StrView):?StrView
   (let (needle:String (str "@" name "(")
         nv:StrView (string-as-view &needle)
         it:LineIter (strview-lines &module)
@@ -354,7 +354,7 @@
   file:StrView
   line:i32
   message:StrView
-  notes:(ref (Vector StrView)))
+  notes:&(Vector StrView))
 
 ; The operands of the `(key …)` entry named `name`, or null.
 (defn diag-entry (body:raw:Node name:StrView):raw:Node
@@ -418,7 +418,7 @@
     (return (ok out))))
 
 ; Every diagnostic, one per line, for a failure message.
-(defn diag-list-text ((ds (ref (Vector Diagnostic)))):String
+(defn diag-list-text (ds:&(Vector Diagnostic)):String
   (let (s:String (string-new)
         n:usize (count ds)
         i:usize 0)
@@ -435,7 +435,7 @@
       (set! i (+ i 1)))
     (return s)))
 
-(defn diag-matches ((d (ref Diagnostic)) severity:StrView file:StrView line:i32 needle:StrView):bool
+(defn diag-matches (d:&Diagnostic severity:StrView file:StrView line:i32 needle:StrView):bool
   (return (and (= (symbol-as-view (d 'severity)) severity)
                (= (d 'file) file)
                (= (d 'line) line)
@@ -444,7 +444,7 @@
 ; The assertion the shell harness could not write: severity, file, line and
 ; message are matched against ONE record, so a note cannot supply the location
 ; for a message that came from somewhere else.
-(defn check-diagnostic ((ds (ref (Vector Diagnostic))) severity:StrView
+(defn check-diagnostic (ds:&(Vector Diagnostic) severity:StrView
                         file:StrView line:i32 needle:StrView):!void
   (let (n:usize (count ds)
         i:usize 0)
@@ -456,15 +456,15 @@
     (fail! "expected " severity " at " file ":" line " containing " (sexp-quote needle)
            "\n     got:" (string-as-view &l))))
 
-(defn check-error-at ((ds (ref (Vector Diagnostic))) file:StrView line:i32 needle:StrView):!void
+(defn check-error-at (ds:&(Vector Diagnostic) file:StrView line:i32 needle:StrView):!void
   (return (check-diagnostic ds "error" file line needle)))
 
-(defn check-warning-at ((ds (ref (Vector Diagnostic))) file:StrView line:i32 needle:StrView):!void
+(defn check-warning-at (ds:&(Vector Diagnostic) file:StrView line:i32 needle:StrView):!void
   (return (check-diagnostic ds "warning" file line needle)))
 
 ; No location pinned: some error's message contains `needle`. The weaker form,
 ; for a case whose line nobody has committed to.
-(defn check-error-anywhere ((ds (ref (Vector Diagnostic))) needle:StrView):!void
+(defn check-error-anywhere (ds:&(Vector Diagnostic) needle:StrView):!void
   (let (n:usize (count ds)
         i:usize 0)
     (while (< i n)
@@ -479,7 +479,7 @@
 
 ; A note on a diagnostic at that same location -- the pairing the two-grep
 ; version had no way to express.
-(defn check-note-at ((ds (ref (Vector Diagnostic))) file:StrView line:i32 needle:StrView):!void
+(defn check-note-at (ds:&(Vector Diagnostic) file:StrView line:i32 needle:StrView):!void
   (let (n:usize (count ds)
         i:usize 0)
     (while (< i n)
@@ -496,7 +496,7 @@
            "\n     got:" (string-as-view &l))))
 
 ; No location pinned: some diagnostic carries a note containing `needle`.
-(defn check-note-anywhere ((ds (ref (Vector Diagnostic))) needle:StrView):!void
+(defn check-note-anywhere (ds:&(Vector Diagnostic) needle:StrView):!void
   (let (n:usize (count ds)
         i:usize 0)
     (while (< i n)
@@ -514,7 +514,7 @@
 ; Stage 15 W4a's accept criterion, as a field check: the shell version greps
 ; stderr for the literal `:0:`, which any message containing those bytes also
 ; satisfies.
-(defn check-no-line-zero ((ds (ref (Vector Diagnostic)))):!void
+(defn check-no-line-zero (ds:&(Vector Diagnostic)):!void
   (let (n:usize (count ds)
         i:usize 0)
     (while (< i n)
@@ -525,7 +525,7 @@
       (set! i (+ i 1))))
   (return (ok)))
 
-(defn check-no-errors ((ds (ref (Vector Diagnostic)))):!void
+(defn check-no-errors (ds:&(Vector Diagnostic)):!void
   (let (n:usize (count ds)
         i:usize 0)
     (while (< i n)
@@ -550,11 +550,11 @@
     (return @q)))
 
 (extend SexpStr ToStr)
-(defn to-str (self:SexpStr (out (ref String))):!void
+(defn to-str (self:SexpStr out:&String):!void
   (sexp-write-string out (self 'v))
   (return (ok)))
 
-(defn test-report ((tc (ref TestCase)) status:i32):void
+(defn test-report (tc:&TestCase status:i32):void
   (let (b:&String (io-buf-begin))
     (str-into b "(test (name " (sexp-quote (symbol-as-view (tc 'name)))
               ") (file " (sexp-quote (tc 'file))
@@ -613,7 +613,7 @@
     (try (file-close &f))
     (return (ok path))))
 
-(defn test-run-one ((tc (ref TestCase))):i32
+(defn test-run-one (tc:&TestCase):i32
   (test-scratch-set (symbol-as-view (tc 'name)))
   (test-fail-begin)
   (match (funcall (tc 'run) (tc 'data))
@@ -641,7 +641,7 @@
 ; The suite entry point
 ; ---------------------------------------------------------------------------
 
-(defn test-find (name:StrView):(Maybe usize)
+(defn test-find (name:StrView):?usize
   (let (n:usize (count g-tests)
         i:usize 0)
     (while (< i n)
@@ -715,7 +715,7 @@
         shard:usize 0
         nshards:usize 1)
     (while (< i argc)
-      (let (a:StrView (strview-from-cstr (as CStr (aref (as ptr:ptr argv) i))))
+      (let (a:StrView (strview-from-cstr (as CStr (aref (as &ptr argv) i))))
         (cond
           (= a "--no-skip") (set! g-test-no-skip true)
           (= a "--list")    (set! mode "list")
@@ -726,7 +726,7 @@
                 (return 2))
               (set! mode "run")
               (set! i (+ i 1))
-              (set! want (strview-from-cstr (as CStr (aref (as ptr:ptr argv) i)))))
+              (set! want (strview-from-cstr (as CStr (aref (as &ptr argv) i)))))
           (= a "--shard")
             (do
               (when (>= (+ i 1) argc)
@@ -734,7 +734,7 @@
                 (return 2))
               (set! i (+ i 1))
               (match (test-parse-shard
-                       (strview-from-cstr (as CStr (aref (as ptr:ptr argv) i)))
+                       (strview-from-cstr (as CStr (aref (as &ptr argv) i)))
                        &shard &nshards)
                 (ok 0)
                 ((err e)

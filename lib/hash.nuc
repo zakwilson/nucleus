@@ -41,7 +41,7 @@
 ; The Hash protocol.
 ; ---------------------------------------------------------------------------
 (defprotocol Hash
-  (hash ((self (ref Self))):usize))
+  (hash (self:&Self):usize))
 
 ; ---------------------------------------------------------------------------
 ; Built-in conformances. Each loads the value through the (ref Self) receiver,
@@ -56,17 +56,17 @@
 ; ---------------------------------------------------------------------------
 
 (extend i32 Hash)
-(defn hash ((self (ref i32))):usize
+(defn hash (self:&i32):usize
   (let (h:i64 -3750763034362895579)
     (return (as usize (fnv1a-int h (as i64 @self) 4)))))
 
 (extend i64 Hash)
-(defn hash ((self (ref i64))):usize
+(defn hash (self:&i64):usize
   (let (h:i64 -3750763034362895579)
     (return (as usize (fnv1a-int h @self 8)))))
 
 (extend usize Hash)
-(defn hash ((self (ref usize))):usize
+(defn hash (self:&usize):usize
   (let (h:i64 -3750763034362895579)
     (return (as usize (fnv1a-int h (as i64 @self) 8)))))
 
@@ -79,15 +79,15 @@
 ; none — it is `=` to nothing, itself included, so a NaN key is unfindable
 ; whatever it hashes to.
 (extend f64 Hash)
-(defn hash ((self (ref f64))):usize
+(defn hash (self:&f64):usize
   (let (h:i64 -3750763034362895579
-        bits:i64 (if (= @self 0.0) 0 (deref (unsafe/cast ptr:i64 self))))
+        bits:i64 (if (= @self 0.0) 0 (deref (unsafe/cast &i64 self))))
     (return (as usize (fnv1a-int h bits 8)))))
 
 (extend f32 Hash)
-(defn hash ((self (ref f32))):usize
+(defn hash (self:&f32):usize
   (let (h:i64 -3750763034362895579
-        bits:i64 (if (= @self 0.0) 0 (as i64 (deref (unsafe/cast ptr:i32 self)))))
+        bits:i64 (if (= @self 0.0) 0 (as i64 (deref (unsafe/cast &i32 self)))))
     (return (as usize (fnv1a-int h bits 4)))))
 
 ; `(ref Node)` — a symbol. `intern-symbol` keeps one canonical Node per spelling,
@@ -98,7 +98,7 @@
 ; No `(extend (ref Node) Hash)` — `extend` takes a struct template, not a pointer
 ; type. The bare overload resolves on its own; the conformance record only feeds
 ; `:where` bounds, which nothing here needs.
-(defn hash ((self (ref (ref Node)))):usize
+(defn hash (self:&&Node):usize
   (let (h:i64 -3750763034362895579)
     (return (as usize (fnv1a-int h (unsafe/cast i64 (as ptr @self)) 8)))))
 
@@ -106,7 +106,7 @@
 ; of a string collection literal, so the conformance has to reach every unit that
 ; imports a hash container, exactly as CStr's does.
 (extend StrView Hash)
-(defn hash ((self (ref StrView))):usize
+(defn hash (self:&StrView):usize
   (return (fnv1a-bytes (self 'data) (self 'len))))
 
 (defn hash-null-cstr ():void
@@ -120,10 +120,10 @@
 ; non-null `ptr:i8` silently and a null key segfaulted inside the loop below).
 ; There is no error channel on `hash`, so this follows `vector-bounds`: report
 ; the caller's bug and stop, rather than fault on the first `aref`.
-(defn hash ((self (ref CStr))):usize
+(defn hash (self:&CStr):usize
   (when (= (as raw:i8 @self) null) (hash-null-cstr))
   (let (h:i64 -3750763034362895579
-        s:&i8 (unsafe/cast ptr:i8 @self)
+        s:&i8 (unsafe/cast &i8 @self)
         i:i64 0)
     (let (c:i32 (bit-and (as i32 (aref s 0)) 255))
       (while (!= c 0)

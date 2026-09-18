@@ -26,7 +26,7 @@
 (defn cons (car:ptr cdr:ptr):ptr
   ; calloc, not malloc: `s` is a Symbol, which has no null value to assign —
   ; a cell simply has no name, and zeroed is what the arena's nodes are too.
-  (let (c:&Node (as ptr:Node (calloc 1 (sizeof Node))))
+  (let (c:&Node (as &Node (calloc 1 (sizeof Node))))
     (set! (c 'kind) 3)
     (set! (c 'line) 0)
     (set! (c 'i) 0)
@@ -36,11 +36,11 @@
 
 (defn first (n:ptr):ptr
   (cond (= n null) (return null))
-  (return ((as ptr:Node n) 'car)))
+  (return ((as &Node n) 'car)))
 
 (defn rest (n:ptr):ptr
   (cond (= n null) (return null))
-  (return ((as ptr:Node n) 'cdr)))
+  (return ((as &Node n) 'cdr)))
 
 (defn append (a:ptr b:ptr):ptr
   (cond (= a null) (return b))
@@ -65,7 +65,7 @@
 
 (extend ListIter (Iterator ptr))
 
-(defn next ((self (ref ListIter))) (Maybe ptr)
+(defn next (self:&ListIter):?ptr
   (let (c:ptr (self 'cur))
     (when (= c null) (return none))
     (set! (self 'cur) (rest c))
@@ -75,6 +75,6 @@
 ; Returned BY VALUE (alloca + set + deref), the value-return convention the
 ; other iterators use; drive with (addr-of it) + next, or via doseq-iter.
 (defn list-iter (lst:ptr):ListIter
-  (let ((it (ref ListIter)) (alloca ListIter))
+  (let (it:&ListIter (alloca ListIter))
     (set! (it 'cur) lst)
     (return @it)))

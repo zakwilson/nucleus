@@ -22,7 +22,17 @@ with `ir-snapshot.sh` moving nothing, and `make update-bootstrap` taken —
 `boot/nucleusc.ll` and both Windows boot IRs now read `(ref x)`, `(ref p 'f)`
 and the sigil-paren forms, so PK-5 may rewrite `src/`; the step-2
 `build/nucleusc.ll` is PK-5a's byte-identical baseline (progress.md, "Boot
-refresh for Stage 21"). PK-4b, PK-5, PK-6 not built. Every claim in
+refresh for Stage 21"). **PK-5a built 2026-09-18**: `scripts/stage21/sugar-sweep.py`
+swept 134 files to a fixed point (4,985 rewrites, 18 refusals); the compiler's
+`.ll` is byte-identical modulo the two prescribed local renames (a local's name
+is its alloca's name — §7's "byte-identical" holds only after the rename is
+undone in the text), every other `.ll` byte-identical, 47 `.nuch` + 18 `.h`
+spelling-only. Four refusal classes §7 did not name — a sigil over a **type
+variable** (`?E` is a bare symbol; `subst-tyvars-sym` walks colon segments),
+`(Maybe (raw T))` (value-Maybe ≠ `?raw:T`), a paren operand in an **exported**
+slot (the cheader classifiers read a `(Maybe …)`/`(Result …)` head, not a
+`(? X)`/`(! X)` cell — §5's "walkers need no change" was one face), and an
+`extend` subject — are in §7. PK-4b, PK-5b, PK-6 not built. Every claim in
 §1 was reproduced against `build/nucleusc` on 2026-09-16 (probe generator and
 full run kept beside this document's research pass; the 437-row matrix is
 summarised in §1.1). Milestones are **PK-1 … PK-6**; §9 sequences them across
@@ -531,6 +541,43 @@ diffs are expected and are confined to signature spellings; the proof they are
 only spellings is the `.ll` identity of every importer of that header, which the
 same `verify` run establishes. Record the diff count in progress.md as the
 2026-09-06 sweep did.
+
+**As built (2026-09-18).** The table held; the script's slot classifier is a
+role walk (value / type / binder list / param list / arm / signature / pattern /
+return / quote / quasiquote / match arm / name / type list) rather than a
+head-only test, because a `defn` parameter list, a `:where` clause, an
+attribute keyword at a binder slot and the two-group function-pointer type
+`x:(fn ret)(params)` all put a type where the table's "second element of a
+binding pair" does not look. R8 also attaches a return type after a parameter
+list (`(params) T` → `(params):T`, 50 sites), which the table did not say and
+the `.nuch` printer already does. Under `quasiquote` only R1/R2/R3/R5 fire
+(templates are data until spliced; a `(Maybe X)` there is not a type slot);
+under `quote` nothing does. Five refusal classes beyond "a `(Maybe X)` the
+script cannot classify", each proved on the compiler, not assumed:
+
+| refused | why the rewrite would not be meaning-preserving |
+| --- | --- |
+| R6/R7 whose operand is a **type variable** of the enclosing template/protocol/`:where` (`(Maybe E)`, 14 sites) | `?E` is one bare symbol; `subst-tyvars-sym` substitutes by colon **segment**, so `?E` is never substituted while `(Maybe E)`, `?&E` and `?(Vector E)` are |
+| R6 over **`(raw T)`** | `(Maybe (raw T))` is a value-Maybe; `?raw:T` is the niche-encoded nullable pointer |
+| R6/R7 with a **paren operand in an exported slot** (a public `defn`/`declare`/`defprotocol` signature, a field; 2 sites) | `cheader-template-instance` / `cheader-niche-no-c` key on the `(Maybe …)`/`(Result …)` head and do not read a `(? X)`/`(! X)` cell, so `!(Vector D)` exported `void* read_diagnostics(...)` — an ABI-wrong C declaration; local slots (`let`, `as`, `sizeof`, …) are fine |
+| R5 on an **`extend` subject** (`(extend ptr:Cents Ord)`, 2 sites) | `extend` reads a cell subject as a template application; `&Cents` is `(ref Cents)` |
+| R1/R2/R4/R6/R7 under **`quote`**; a comment **inside** the form | quoted data is a literal; a comment would be lost or moved by the reprint |
+
+Two of the design's gate claims were one step off. (1) "byte-identical against
+the step-2 build" holds only modulo the two `ref:StrView` → `tree:StrView`
+renames this section prescribes — a local's name is its `alloca`'s name
+(`%tree.addr.15`), so the compiler's `.ll` differs by exactly the six lines
+that spell it; undoing the rename in the text restores identity. (2) The
+snapshot's `.h` artifacts move too, not only `.nuch`: a `(Maybe i32)` in a
+public signature was refused by `cheader-template-instance` (a cell whose head
+is a union template) and its `?i32` successor by `cheader-niche-no-c` (a
+sigil-led symbol with no C spelling), so the *reason* text in the "not
+exported" comment changes (18 headers, "defunion-template instance" →
+"error-union or option type") with no declaration moved — the two
+classifiers agree on *what* is exported, which is the gate, and differ on
+*why*. And the `.nuch` diffs are not confined to
+signatures: a template or macro body prints verbatim, so its `&x`/`?T`
+spellings are in the header text as well.
 
 **PK-5b, the retirement.** The four cell-building sites (`:8045`, `:8432`,
 `:9471`, `:9539`) build `ref`; the diagnostic nouns that say `addr-of`

@@ -14,7 +14,7 @@
 (import-use io)
 (import-use file)
 
-(defn write-lines ((path (ref StrView)) n:i64):!void
+(defn write-lines (path:&StrView n:i64):!void
   (with (bw (buf-writer (try (file-create path))))
     (dotimes (i n)
       (let (line:String (str "line " i \newline))
@@ -22,7 +22,7 @@
         (drop &line)))
     (return (buf-writer-close bw))))
 
-(defn slurp ((path (ref StrView))):!String
+(defn slurp (path:&StrView):!String
   (with (f (try (file-open-read path)))
     (return (file-read-to-string f))))
 
@@ -66,8 +66,8 @@
   0)
 
 ; The last non-empty line of `txt`, for the append check.
-(defn last-line ((txt (ref StrView))):(Maybe StrView)
-  (let (found:(Maybe StrView) (none)
+(defn last-line (txt:&StrView):?StrView
+  (let (found:?StrView (none)
         it:LineIter (strview-lines txt))
     ; `it` is a binding, so `next` inside doseq-iter takes its address
     ; implicitly — the iterator must be named, never an rvalue.

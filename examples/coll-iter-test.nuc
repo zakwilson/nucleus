@@ -24,7 +24,7 @@
 
 (defn main ():i32
   ; ---- 1. Vector via generic doseq ---------------------------------------
-  (with ((v (ref (Vector i32))) (alloca (Vector i32)))
+  (with (v:&(Vector i32) (alloca (Vector i32)))
     (vector-init v)
     (conj v 1) (conj v 2) (conj v 3) (conj v 4)
     (let (sum:i32 0
@@ -35,7 +35,7 @@
       (printf "vec count=%d sum=%d\n" n sum)))      ; vec count=4 sum=10
 
   ; ---- 2. HashSet via generic doseq --------------------------------------
-  (with ((s (ref (HashSet i32))) (alloca (HashSet i32)))
+  (with (s:&(HashSet i32) (alloca (HashSet i32)))
     (hashset-init s)
     (insert s 10) (insert s 20) (insert s 30)
     (let (sum:i32 0
@@ -47,7 +47,7 @@
 
   ; ---- 3. HashMap entries via generic doseq (C2.2c) ----------------------
   ;        doseq yields (Entry K V) values; read fields via &e.
-  (with ((m (ref (HashMap CStr i32))) (alloca (HashMap CStr i32)))
+  (with (m:&(HashMap CStr i32) (alloca (HashMap CStr i32)))
     (hashmap-init m)
     (assoc m "a" 100)
     (assoc m "b" 200)
@@ -60,10 +60,10 @@
       (printf "map count=%d valsum=%d\n" n vsum)))  ; map count=3 valsum=600
 
   ; ---- 4. into: copy one Vector into another (generic Coll -> Coll) ------
-  (with ((src (ref (Vector i32))) (alloca (Vector i32)))
+  (with (src:&(Vector i32) (alloca (Vector i32)))
     (vector-init src)
     (conj src 5) (conj src 6) (conj src 7)
-    (with ((dst (ref (Vector i32))) (alloca (Vector i32)))
+    (with (dst:&(Vector i32) (alloca (Vector i32)))
       (vector-init dst)
       (into dst src (VecIter i32))
       (let (sum:i32 0

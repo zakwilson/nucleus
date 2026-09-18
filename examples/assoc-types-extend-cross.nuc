@@ -22,23 +22,23 @@
 ; element type reads THIS conformance at stamp time in this unit.
 (defstruct SqFn dummy:i32)
 (extend SqFn (UnaryFn i32 i32))
-(defn apply ((self (ref SqFn)) (x i32)) i32
+(defn apply (self:&SqFn (x i32)) i32
   (return (* x x)))
 
 ; SumFn: folds (i32 acc, i32 elem) -> i32 by addition. Conforms to (FoldFn i32 i32)
 ; from lib/iterator.nuc.
 (defstruct SumFn dummy:i32)
 (extend SumFn (FoldFn i32 i32))
-(defn fold ((self (ref SumFn)) (acc i32) (x i32)) i32
+(defn fold (self:&SumFn (acc i32) (x i32)) i32
   (return (+ acc x)))
 
 (defn main ():i32
   ; Stamp (MapIter IntRangeIter SqFn) over squares of [1,5) -> 1+4+9+16 = 30.
-  (let ((mi (ref (MapIter IntRangeIter SqFn))) (alloca (MapIter IntRangeIter SqFn)))
-    (set! ((addr-of mi 'source) 'start) 1)
-    (set! ((addr-of mi 'source) 'end) 5)
-    (set! ((addr-of mi 'f) 'dummy) 0)
-    (let ((sum (ref SumFn)) (alloca SumFn))
+  (let (mi:&(MapIter IntRangeIter SqFn) (alloca (MapIter IntRangeIter SqFn)))
+    (set! ((ref mi 'source) 'start) 1)
+    (set! ((ref mi 'source) 'end) 5)
+    (set! ((ref mi 'f) 'dummy) 0)
+    (let (sum:&SumFn (alloca SumFn))
       (set! (sum 'dummy) 0)
       (printf "reduce(map sq [1,5)) = %d\n" (reduce sum 0 mi))))
   (return 0))

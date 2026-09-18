@@ -28,7 +28,7 @@
 
 (defn main ():i32
   ; Set membership. The repeated 'alpha dedupes: interning made them one value.
-  (with ((s (ref (HashSet (ref Node)))) (alloca (HashSet (ref Node))))
+  (with (s:&(HashSet &Node) (alloca (HashSet &Node)))
     (hashset-init s)
     (conj s 'alpha)
     (conj s 'alpha)
@@ -43,7 +43,7 @@
   ; selector is a field name first, and the quote is not what distinguishes them
   ; — `(m 'count)` reads HashMap's `count` FIELD and returns a wrong answer
   ; rather than an error. `invoke` is the always-a-value escape hatch.
-  (with ((m (ref (HashMap (ref Node) i32))) (alloca (HashMap (ref Node) i32)))
+  (with (m:&(HashMap &Node i32) (alloca (HashMap &Node i32)))
     (hashmap-init m)
     (assoc m 'width 640)
     (assoc m 'height 480)
@@ -52,7 +52,7 @@
     (match (invoke m 'depth)  ((some v) (printf "map depth=%d\n" v))  (none (printf "map depth=none\n"))))
 
   ; Ordered, duplicates kept.
-  (with ((v (ref (Vector (ref Node)))) (alloca (Vector (ref Node))))
+  (with (v:&(Vector &Node) (alloca (Vector &Node)))
     (vector-init v)
     (conj v 'x) (conj v 'y) (conj v 'x)
     (printf "vec n=%llu\n" (as ui64 (count v)))          ; vec n=3
@@ -60,8 +60,8 @@
 
   ; Identity, not spelling equality: a symbol reached through a binding is the
   ; same value as one written inline.
-  (let (k:(ref Node) 'alpha)
-    (with ((s2 (ref (HashSet (ref Node)))) (alloca (HashSet (ref Node))))
+  (let (k:&Node 'alpha)
+    (with (s2:&(HashSet &Node) (alloca (HashSet &Node)))
       (hashset-init s2)
       (conj s2 'alpha)
       (printf "interned=%d\n" (contains? s2 k))))         ; interned=1
@@ -73,20 +73,20 @@
   ; Container literals take quoted symbols, inferring `(ref Node)` the way an
   ; integer literal infers `i32`. Admitted by a shape check for `(quote <symbol>)`
   ; specifically: `'(a b)`, `'1` and a bare `a` are all still refused.
-  (with ((ls (ref (HashSet (ref Node)))) #{'red 'green 'red})
+  (with (ls:&(HashSet &Node) #{'red 'green 'red})
     (printf "lit-set n=%llu red=%d blue=%d\n" (as ui64 (count ls))
       (contains? ls 'red) (contains? ls 'blue)))     ; lit-set n=2 red=1 blue=0
 
-  (with ((lv (ref (Vector (ref Node)))) ['one 'two 'one])
+  (with (lv:&(Vector &Node) ['one 'two 'one])
     (printf "lit-vec n=%llu one=%d\n" (as ui64 (count lv))
       (contains? lv 'one)))                          ; lit-vec n=3 one=1
 
   ; Symbols on either side of a map literal; each side infers independently.
-  (with ((lm (ref (HashMap (ref Node) i32))) {'width 640 'height 480})
+  (with (lm:&(HashMap &Node i32) {'width 640 'height 480})
     (match (invoke lm 'height) ((some v) (printf "lit-map height=%d\n" v))
                                (none (printf "lit-map height=?\n"))))
 
-  (with ((vm (ref (HashMap i32 (ref Node)))) {1 'first 2 'second})
+  (with (vm:&(HashMap i32 &Node) {1 'first 2 'second})
     (match (invoke vm 2) ((some v) (printf "lit-map val-is-sym=%d\n" (if (= (v 'kind) NODE-SYM) 1 0)))
                          (none (printf "lit-map val=?\n"))))
 

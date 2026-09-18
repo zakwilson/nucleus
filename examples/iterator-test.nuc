@@ -17,7 +17,7 @@
 ; ---------------------------------------------------------------------------
 (defstruct SumI64 dummy:i32)
 (extend SumI64 (FoldFn i64 i64))
-(defn fold ((self (ref SumI64)) (acc i64) (x i64)) i64
+(defn fold (self:&SumI64 (acc i64) (x i64)) i64
   (return (+ acc x)))
 
 ; ---------------------------------------------------------------------------
@@ -25,7 +25,7 @@
 ; ---------------------------------------------------------------------------
 (defstruct SquareI64 dummy:i32)
 (extend SquareI64 (UnaryFn i64 i64))
-(defn apply ((self (ref SquareI64)) (x i64)) i64
+(defn apply (self:&SquareI64 (x i64)) i64
   (return (* x x)))
 
 ; ---------------------------------------------------------------------------
@@ -34,7 +34,7 @@
 ; ---------------------------------------------------------------------------
 (defstruct IsEvenI64 dummy:i32)
 (extend IsEvenI64 (UnaryFn i64 i32))
-(defn apply ((self (ref IsEvenI64)) (x i64)) i32
+(defn apply (self:&IsEvenI64 (x i64)) i32
   (return (as i32 (= (% x 2) 0))))
 
 ; ---------------------------------------------------------------------------
@@ -42,28 +42,28 @@
 ; Separated into its own function to keep main readable.
 ; ---------------------------------------------------------------------------
 (defn run-chain (arr:&i64):i64
-  (let ((sq  (ref SquareI64))  (alloca SquareI64)
-        (ev  (ref IsEvenI64))  (alloca IsEvenI64)
-        (sm  (ref SumI64))     (alloca SumI64)
-        (src (ref I64ArrayIter)) (alloca I64ArrayIter)
-        (mi  (ref (MapIter I64ArrayIter SquareI64)))
+  (let (sq:&SquareI64  (alloca SquareI64)
+        ev:&IsEvenI64  (alloca IsEvenI64)
+        sm:&SumI64     (alloca SumI64)
+        src:&I64ArrayIter (alloca I64ArrayIter)
+        mi:&(MapIter I64ArrayIter SquareI64)
              (alloca (MapIter I64ArrayIter SquareI64))
-        (fi  (ref (FilterIter (MapIter I64ArrayIter SquareI64) IsEvenI64)))
+        fi:&(FilterIter (MapIter I64ArrayIter SquareI64) IsEvenI64)
              (alloca (FilterIter (MapIter I64ArrayIter SquareI64) IsEvenI64)))
     (set! (src 'data) arr)
     (set! (src 'pos) 0)
     (set! (src 'len) 5)
-    (memcpy (as ptr (addr-of mi 'source)) (as ptr src) (as i64 (sizeof I64ArrayIter)))
-    (memcpy (as ptr (addr-of mi 'f))      (as ptr sq)  (as i64 (sizeof SquareI64)))
-    (memcpy (as ptr (addr-of fi 'source)) (as ptr mi)
+    (memcpy (as ptr (ref mi 'source)) (as ptr src) (as i64 (sizeof I64ArrayIter)))
+    (memcpy (as ptr (ref mi 'f))      (as ptr sq)  (as i64 (sizeof SquareI64)))
+    (memcpy (as ptr (ref fi 'source)) (as ptr mi)
             (as i64 (sizeof (MapIter I64ArrayIter SquareI64))))
-    (memcpy (as ptr (addr-of fi 'pred)) (as ptr ev) (as i64 (sizeof IsEvenI64)))
+    (memcpy (as ptr (ref fi 'pred)) (as ptr ev) (as i64 (sizeof IsEvenI64)))
     (return (reduce sm 0 fi))))
 
 (defn main ():i32
   ; ---- 1. doseq-iter over a bare IntRangeIter ref (a pure Iterator, not a
   ;         Coll, so it uses the iterator-ref form) ----------------------------
-  (let ((r (ref IntRangeIter)) (alloca IntRangeIter))
+  (let (r:&IntRangeIter (alloca IntRangeIter))
     (set! (r 'start) 1)
     (set! (r 'end) 6)
     (doseq-iter (x r)

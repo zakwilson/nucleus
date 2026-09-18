@@ -53,9 +53,9 @@
 (defn != (a:Keyword b:Keyword):bool (return (!= (a 'sym) (b 'sym))))
 
 (extend Keyword Hash)
-(defn hash ((self (ref Keyword))):usize
-  (return (hash (addr-of self 'sym))))
+(defn hash (self:&Keyword):usize
+  (return (hash (ref self 'sym))))
 
 (extend Keyword ToStr)
-(defn to-str (self:Keyword (out (ref String))):!void
+(defn to-str (self:Keyword out:&String):!void
   (return (to-str (self 'sym) out)))

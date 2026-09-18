@@ -18,15 +18,15 @@
 ; FoldFn: add the .i field of each list node (a Node*, arriving as a ptr) to acc.
 (defstruct SumNodeI dummy:i32)
 (extend SumNodeI (FoldFn i64 ptr))
-(defn fold ((self (ref SumNodeI)) (acc i64) (x ptr)) i64
-  (let (n:&Node (as ptr:Node x))
+(defn fold (self:&SumNodeI (acc i64) (x ptr)) i64
+  (let (n:&Node (as &Node x))
     (return (+ acc (n 'i)))))
 
 ; int-node — a fresh INT node carrying value v.
 ; calloc, not malloc: `s` is a Symbol, which has no null value to assign — a
 ; node with no name is simply a zeroed one.
 (defn int-node (v:i64):ptr
-  (let (c:&Node (as ptr:Node (calloc 1 (sizeof Node))))
+  (let (c:&Node (as &Node (calloc 1 (sizeof Node))))
     (set! (c 'kind) 0)
     (set! (c 'line) 0)
     (set! (c 'i) v)
@@ -42,10 +42,10 @@
     ; 1. doseq-iter: print each element's .i field.
     (let (it:ListIter (list-iter lst))
       (doseq-iter (x &it)
-        (printf "elem=%lld\n" ((as ptr:Node x) 'i))))
+        (printf "elem=%lld\n" ((as &Node x) 'i))))
     ; 2. reduce: sum the .i fields.
-    (let ((sm (ref SumNodeI)) (alloca SumNodeI)
-          (it (ref ListIter)) (alloca ListIter))
+    (let (sm:&SumNodeI (alloca SumNodeI)
+          it:&ListIter (alloca ListIter))
       (set! (it 'cur) lst)
       (printf "sum=%lld\n" (reduce sm 0 it))))
   (return 0))

@@ -1,6 +1,6 @@
 ; .nuch header for lib/parse.nuc
 (deferror parse-float-error "invalid float")
-(defprotocol (FromStr R) (from-str ((self Self) (sv (ref StrView))) :R))
+(defprotocol (FromStr R) (from-str ((self Self) sv:ref:StrView) :R))
 (defmacro parse (ty sv) (quasiquote (from-str (unsafe/cast (unquote ty) 0) (unquote sv))))
 (declare parse-nul-copy ((sv (ref StrView))) :ref:ui8)
 (extend i32 (FromStr !i32))

@@ -61,7 +61,7 @@
 (defn err-find-handler (eid:Err token:ptr):ptr
   (let (h:ptr g-handler-top)
     (while (!= h null)
-      (let (hh:&Handler (as ptr:Handler h))
+      (let (hh:&Handler (as &Handler h))
         (when (and (= (hh 'what) eid)
                    (or (= (hh 'rty) token)
                        (= (strcmp (hh 'rty) token) 0)))

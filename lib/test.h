@@ -45,7 +45,7 @@ bool has_matching_line_QMARK(struct StrView hay, struct StrView pat) asm("has-ma
 /* check-non-empty: uses an error-union or option type; not exported */
 /* check: uses an error-union or option type; not exported */
 /* check-eq-int: uses an error-union or option type; not exported */
-/* ir-define: uses a defunion-template instance type; not exported */
+/* ir-define: uses an error-union or option type; not exported */
 /* check-in-define: uses an error-union or option type; not exported */
 /* check-not-in-define: uses an error-union or option type; not exported */
 typedef struct Diagnostic {
@@ -83,7 +83,7 @@ void test_scratch_set(struct StrView name) asm("test-scratch-set");
 /* test-scratch-sub: uses an error-union or option type; not exported */
 /* test-write-file: uses an error-union or option type; not exported */
 int32_t test_run_one(struct TestCase* tc) asm("test-run-one");
-/* test-find: uses a defunion-template instance type; not exported */
+/* test-find: uses an error-union or option type; not exported */
 int32_t test_run_all(size_t shard, size_t nshards) asm("test-run-all");
 struct Symbol test_duplicate_name(void) asm("test-duplicate-name");
 void test_list(void) asm("test-list");

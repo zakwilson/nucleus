@@ -57,7 +57,7 @@
 (defn compute ():i32 (return (* BASE 5)))
 
 (defn make-pt (x:i32 y:i32):&Pt
-  (let (p:&Pt (as ptr:Pt (malloc (sizeof Pt))))
+  (let (p:&Pt (as &Pt (malloc (sizeof Pt))))
     (set! (p 'x) x)
     (set! (p 'y) y)
     (return p)))

@@ -49,7 +49,7 @@
 ; `(from-str (as T 0) sv)`.
 ; ---------------------------------------------------------------------------
 (defprotocol (FromStr R)
-  (from-str ((self Self) (sv (ref StrView))):R))
+  (from-str ((self Self) sv:&StrView):R))
 
 ; ---------------------------------------------------------------------------
 ; parse macro — type-directed dispatch to FromStr.
@@ -69,9 +69,9 @@
 ; Allocate a NUL-terminated copy of sv's bytes. Caller must free the result.
 ; Precondition: sv.len > 0 (callers check this before calling).
 ; ---------------------------------------------------------------------------
-(defn parse-nul-copy ((sv (ref StrView))):&ui8
+(defn parse-nul-copy (sv:&StrView):&ui8
   (let (n:usize (sv 'len)
-        buf:&ui8 (as ptr:ui8 (malloc (as i64 (+ n 1)))))
+        buf:&ui8 (as &ui8 (malloc (as i64 (+ n 1)))))
     (memcpy (as ptr buf) (as ptr (sv 'data)) (as i64 n))
     (set! (aref buf (as i64 n)) 0)
     (return buf)))
@@ -84,7 +84,7 @@
 ; ---------------------------------------------------------------------------
 (extend i32 (FromStr !i32))
 
-(defn from-str ((self i32) (sv (ref StrView))):!i32
+(defn from-str ((self i32) sv:&StrView):!i32
   (let (svv:StrView (strview-as-view sv)
         start:usize 0
         neg:i32 (strview-parse-sign svv &start)
@@ -101,7 +101,7 @@
 ; ---------------------------------------------------------------------------
 (extend i64 (FromStr !i64))
 
-(defn from-str ((self i64) (sv (ref StrView))):!i64
+(defn from-str ((self i64) sv:&StrView):!i64
   (let (svv:StrView (strview-as-view sv)
         start:usize 0
         neg:i32 (strview-parse-sign svv &start)
@@ -117,7 +117,7 @@
 ; ---------------------------------------------------------------------------
 (extend ui64 (FromStr !ui64))
 
-(defn from-str ((self ui64) (sv (ref StrView))):!ui64
+(defn from-str ((self ui64) sv:&StrView):!ui64
   (let (svv:StrView (strview-as-view sv)
         start:usize 0
         neg:i32 (strview-parse-sign svv &start))
@@ -134,7 +134,7 @@
 ; ---------------------------------------------------------------------------
 (extend f64 (FromStr !f64))
 
-(defn from-str ((self f64) (sv (ref StrView))):!f64
+(defn from-str ((self f64) sv:&StrView):!f64
   (let (n:usize (sv 'len))
     (when (= n 0)
       (return (err! parse-float-error)))

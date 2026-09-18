@@ -130,10 +130,10 @@
 ; table itself.
 (defvar g-cheader-import-header:Symbol)
 
-(defn c-typedef-find (name:Symbol):?ptr:CTypedef
+(defn c-typedef-find (name:Symbol):?&CTypedef
   (let (cur:ptr g-cheader-typedefs)
     (while (!= cur null)
-      (let (e:ptr:CTypedef (as ref:CTypedef cur))
+      (let (e:ptr:CTypedef (as &CTypedef cur))
         (when (= (e 'name) name) (return e))
         (set! cur (e 'next)))))
   (return null))
@@ -349,7 +349,7 @@
 (defn f64-bits (d:f64):i64
   (let (r:f64 d
         p:ptr:f64 &r)
-    (return (deref (unsafe/cast ref:i64 p)))))
+    (return (deref (unsafe/cast &i64 p)))))
 
 ; `0xK` is 4 hex digits of sign|exponent followed by 16 of the significand —
 ; which, unlike `0xL` below, is high half first.
@@ -664,17 +664,17 @@
 ; The LLVM constant text for hex-float lexeme `lex` at type kind `tk`, or null
 ; when `lex` is not a hex float. Assembling f80 and f128 from the 128-bit
 ; significand directly is the whole reason this path exists.
-(defn hexfloat-const-ir (lex:StrView tk:i32):(Maybe StrView)
+(defn hexfloat-const-ir (lex:StrView tk:i32):?StrView
   (let (sign:i64 0 hi:i64 0 lo:i64 0 ue:i64 0 sticky:i64 0
         rhi:i64 0 rlo:i64 0)
-    (when (= (hexfloat-parse lex (as ref:i64 &sign)
-                                 (as ref:i64 &hi)
-                                 (as ref:i64 &lo)
-                                 (as ref:i64 &ue)
-                                 (as ref:i64 &sticky)) 0)
+    (when (= (hexfloat-parse lex (as &i64 &sign)
+                                 (as &i64 &hi)
+                                 (as &i64 &lo)
+                                 (as &i64 &ue)
+                                 (as &i64 &sticky)) 0)
       (return (none)))
-    (let (rhp:ptr:i64 (as ref:i64 &rhi)
-          rlp:ptr:i64 (as ref:i64 &rlo))
+    (let (rhp:ptr:i64 (as &i64 &rhi)
+          rlp:ptr:i64 (as &i64 &rlo))
       (when (= tk TY-F16)
         (let (be:i64 (hexfloat-fit hi lo sticky ue 11 -14 15 15 rhp rlp))
           (return (some (fstr "0xH"

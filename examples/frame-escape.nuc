@@ -23,12 +23,12 @@
 
 ; A pointer derived from a (ref ...) parameter escapes legally: the pointee
 ; lives in the caller, so returning its interior address is sound.
-(defn point-x-addr ((p (ref Point))):&i32
-  (return (addr-of p 'x)))
+(defn point-x-addr (p:&Point):&i32
+  (return (ref p 'x)))
 
 ; Downward borrow: a pointer into THIS frame's local is passed into a callee.
 ; The callee only reads through it; nothing escapes upward.
-(defn read-i32 ((p (ref i32))):i32
+(defn read-i32 (p:&i32):i32
   (return @p))
 
 (defn sum-locals (a:i32 b:i32):i32
@@ -40,7 +40,7 @@
 ; Value-return idiom: build a struct in an alloca, then `deref` a COPY out. The
 ; deref clears the frame taint, so the returned value carries nothing dangling.
 (defn make-point (x:i32 y:i32):Point
-  (let ((p (ref Point)) (alloca Point))
+  (let (p:&Point (alloca Point))
     (set! (p 'x) x)
     (set! (p 'y) y)
     (return @p)))

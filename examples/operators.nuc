@@ -13,7 +13,7 @@
 (defstruct Cents v:i32)
 
 (defn mk (n:i32):&Cents
-  (let (r:&Cents (as ptr:Cents (malloc (as i64 (sizeof Cents)))))
+  (let (r:&Cents (as &Cents (malloc (as i64 (sizeof Cents)))))
     (set! (r 'v) n)
     (return r)))
 

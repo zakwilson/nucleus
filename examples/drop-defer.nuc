@@ -18,7 +18,7 @@
 (extend Res Drop)
 
 (defn make-res (id:i32):&Res
-  (let (r:&Res (as ptr:Res (malloc 4)))
+  (let (r:&Res (as &Res (malloc 4)))
     (set! (r 'id) id)
     (return r)))
 

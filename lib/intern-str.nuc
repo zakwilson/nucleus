@@ -25,11 +25,11 @@
 (extend Symbol Eq)
 
 (extend Symbol Hash)
-(defn hash ((self (ref Symbol))):usize
+(defn hash (self:&Symbol):usize
   (return (symbol-cached-hash @self)))
 
 (extend Symbol ToStr)
-(defn to-str (self:Symbol (out (ref String))):!void
+(defn to-str (self:Symbol out:&String):!void
   (let (v:StrView (symbol-as-view self))
     (string-push-str-unchecked out &v))
   (return (ok)))
@@ -38,52 +38,52 @@
 ; `as-view`, which is two words and no allocation.
 (extend Symbol (ByteStr ByteIter))
 
-(defn byte-len ((self (ref Symbol))):usize (return (symbol-len @self)))
+(defn byte-len (self:&Symbol):usize (return (symbol-len @self)))
 
-(defn byte-at ((self (ref Symbol)) i:usize):!ui8
+(defn byte-at (self:&Symbol i:usize):!ui8
   (let (v:StrView (symbol-as-view @self))
     (return (byte-at v i))))
 
-(defn bytes ((self (ref Symbol))):ByteIter
+(defn bytes (self:&Symbol):ByteIter
   (let (v:StrView (symbol-as-view @self))
     (return (bytes v))))
 
-(defn as-view ((self (ref Symbol))):StrView
+(defn as-view (self:&Symbol):StrView
   (return (symbol-as-view @self)))
 
-(defn sub-bytes ((self (ref Symbol)) start:usize end:usize):!StrView
+(defn sub-bytes (self:&Symbol start:usize end:usize):!StrView
   (let (v:StrView (symbol-as-view @self))
     (return (sub-bytes v start end))))
 
-(defn byte-find ((self (ref Symbol)) (needle (ref StrView))) (Maybe usize)
+(defn byte-find (self:&Symbol needle:&StrView):?usize
   (let (v:StrView (symbol-as-view @self))
     (return (byte-find v needle))))
 
 (extend Symbol (Str CharIter))
 
-(defn char-count ((self (ref Symbol))):usize
+(defn char-count (self:&Symbol):usize
   (let (v:StrView (symbol-as-view @self))
     (return (char-count v))))
 
-(defn str-empty? ((self (ref Symbol))):bool
+(defn str-empty? (self:&Symbol):bool
   (return (= (symbol-len @self) 0)))
 
-(defn char-at ((self (ref Symbol)) i:usize):!Char
+(defn char-at (self:&Symbol i:usize):!Char
   (let (v:StrView (symbol-as-view @self))
     (return (char-at v i))))
 
-(defn chars ((self (ref Symbol))):CharIter
+(defn chars (self:&Symbol):CharIter
   (let (v:StrView (symbol-as-view @self))
     (return (chars v))))
 
-(defn starts-with? ((self (ref Symbol)) (prefix (ref StrView))):bool
+(defn starts-with? (self:&Symbol prefix:&StrView):bool
   (let (v:StrView (symbol-as-view @self))
     (return (starts-with? v prefix))))
 
-(defn ends-with? ((self (ref Symbol)) (suffix (ref StrView))):bool
+(defn ends-with? (self:&Symbol suffix:&StrView):bool
   (let (v:StrView (symbol-as-view @self))
     (return (ends-with? v suffix))))
 
-(defn contains-str? ((self (ref Symbol)) (needle (ref StrView))):bool
+(defn contains-str? (self:&Symbol needle:&StrView):bool
   (let (v:StrView (symbol-as-view @self))
     (return (contains-str? v needle))))

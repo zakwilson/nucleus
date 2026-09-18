@@ -41,7 +41,7 @@
 
 ; NOTE: Drop's receiver is `(ptr Self)`, not `(ref Self)`.
 (extend File Drop)
-(defn drop ((self (ptr File))):void
+(defn drop (self:&File):void
   (when (>= (self 'fd) 0)
     (close (self 'fd))
     ; -1 so a `with` scope that already closed explicitly does not close a
@@ -50,7 +50,7 @@
 
 ; Close now and observe the result. `close` can fail late (a deferred write
 ; error on NFS), which the `Drop` path has no way to report.
-(defn file-close ((self (ref File))):!void
+(defn file-close (self:&File):!void
   (let (fd:i32 (self 'fd))
     (set! (self 'fd) -1)
     (when (< fd 0) (return (ok)))
@@ -59,7 +59,7 @@
 
 ; open(2) wants a NUL-terminated path and a StrView is not one, so the path is
 ; copied. Unchecked: a path is bytes, not necessarily UTF-8.
-(defn file-open-flags ((path (ref StrView)) flags:i32 mode:i32):!File
+(defn file-open-flags (path:&StrView flags:i32 mode:i32):!File
   (let (buf:String (string-new))
     (string-push-str-unchecked buf path)
     (let (fd:i32 (open (string-as-cstr buf) flags mode))
@@ -67,21 +67,21 @@
       (when (< fd 0) (return (err! io-open-failed)))
       (return (ok (file fd))))))
 
-(defn file-open-read ((path (ref StrView))):!File
+(defn file-open-read (path:&StrView):!File
   (return (file-open-flags path O_RDONLY 0)))
 
-(defn file-create ((path (ref StrView))):!File
+(defn file-create (path:&StrView):!File
   (return (file-open-flags path (bit-or O_WRONLY (bit-or O_CREAT O_TRUNC))
                            MODE-644)))
 
-(defn file-open-append ((path (ref StrView))):!File
+(defn file-open-append (path:&StrView):!File
   (return (file-open-flags path (bit-or O_WRONLY (bit-or O_CREAT O_APPEND))
                            MODE-644)))
 
 ; ---------------------------------------------------------------------------
 ; Reading and writing
 ; ---------------------------------------------------------------------------
-(defn file-write-bytes ((self (ref File)) (p (ptr ui8)) n:usize):!void
+(defn file-write-bytes (self:&File p:&ui8 n:usize):!void
   (let (off:usize 0)
     (while (< off n)
       (let (w:i64 (as i64 (write (self 'fd)
@@ -93,16 +93,16 @@
 
 (extend File Writer)
 
-(defn write-str ((self (ref File)) s:StrView):!void
+(defn write-str (self:&File s:StrView):!void
   (when (= (s 'len) 0) (return (ok)))
   (return (file-write-bytes self (s 'data) (s 'len))))
 
 ; The whole file, from the current offset. Bytes, not text: no UTF-8 validation,
 ; because the compiler reads source files whose encoding is the *program's*
 ; problem to diagnose, not the reader's to refuse.
-(defn file-read-to-string ((self (ref File))):!String
+(defn file-read-to-string (self:&File):!String
   (let (out:String (string-new)
-        buf:&ui8 (as ptr:ui8 (alloca ui8 FILE-CHUNK))
+        buf:&ui8 (as &ui8 (alloca ui8 FILE-CHUNK))
         go:bool true)
     (while go
       (let (n:i64 (as i64 (read (self 'fd) (as ptr buf) FILE-CHUNK)))
@@ -128,40 +128,40 @@
     (set! (b 'buf) (string-with-capacity BUF-WRITER-CAP))
     (return @b)))
 
-(defn flush ((self (ref BufWriter))):!void
-  (let (v:StrView (string-as-view (addr-of self 'buf)))
+(defn flush (self:&BufWriter):!void
+  (let (v:StrView (string-as-view (ref self 'buf)))
     (when (> (v 'len) 0)
-      (try (file-write-bytes (addr-of self 'out) (v 'data) (v 'len)))
-      (string-clear (addr-of self 'buf))))
+      (try (file-write-bytes (ref self 'out) (v 'data) (v 'len)))
+      (string-clear (ref self 'buf))))
   (return (ok)))
 
 (extend BufWriter Writer)
 
 ; Anything at least a bufferful goes straight to the descriptor: staging it
 ; would be a memcpy that buys no syscall.
-(defn write-str ((self (ref BufWriter)) s:StrView):!void
+(defn write-str (self:&BufWriter s:StrView):!void
   (when (= (s 'len) 0) (return (ok)))
   (when (>= (s 'len) BUF-WRITER-CAP)
     (try (flush self))
-    (return (file-write-bytes (addr-of self 'out) (s 'data) (s 'len))))
-  (when (> (+ (byte-len (addr-of self 'buf)) (s 'len)) BUF-WRITER-CAP)
+    (return (file-write-bytes (ref self 'out) (s 'data) (s 'len))))
+  (when (> (+ (byte-len (ref self 'buf)) (s 'len)) BUF-WRITER-CAP)
     (try (flush self)))
-  (string-push-str-unchecked (addr-of self 'buf) &s)
+  (string-push-str-unchecked (ref self 'buf) &s)
   (return (ok)))
 
 ; Flush, then close. A `Drop`-only path cannot report a failed final write, so
 ; call this when the bytes reaching disk is something the program must know.
-(defn buf-writer-close ((self (ref BufWriter))):!void
+(defn buf-writer-close (self:&BufWriter):!void
   (try (flush self))
-  (return (file-close (addr-of self 'out))))
+  (return (file-close (ref self 'out))))
 
 (extend BufWriter Drop)
-(defn drop ((self (ptr BufWriter))):void
+(defn drop (self:&BufWriter):void
   ; The flush result is unobservable here — that is what `buf-writer-close` is
   ; for. Dropping without it still writes the bytes on the ordinary path.
   (flush self)
-  (drop (addr-of self 'out))
-  (drop (addr-of self 'buf)))
+  (drop (ref self 'out))
+  (drop (ref self 'buf)))
 
 ; ---------------------------------------------------------------------------
 ; Directories
@@ -187,38 +187,38 @@
   buf:String
   offs:(Vector usize))
 
-(defn dir-count ((self (ref DirEntries))):usize
-  (return (count (addr-of self 'offs))))
+(defn dir-count (self:&DirEntries):usize
+  (return (count (ref self 'offs))))
 
 ; Valid while the DirEntries is alive and unmodified.
-(defn dir-name ((self (ref DirEntries)) i:usize):StrView
-  (let (v:StrView (string-as-view (addr-of self 'buf)))
+(defn dir-name (self:&DirEntries i:usize):StrView
+  (let (v:StrView (string-as-view (ref self 'buf)))
     (return (strview-from-cstr
-              (as CStr (unsafe/ptr+ (as ptr:i8 (as ptr (v 'data)))
-                                    (as i64 (invoke (addr-of self 'offs) i))))))))
+              (as CStr (unsafe/ptr+ (as &i8 (as ptr (v 'data)))
+                                    (as i64 (invoke (ref self 'offs) i))))))))
 
 (extend DirEntries Drop)
-(defn drop ((self (ptr DirEntries))):void
-  (drop (addr-of self 'buf))
-  (drop (addr-of self 'offs)))
+(defn drop (self:&DirEntries):void
+  (drop (ref self 'buf))
+  (drop (ref self 'offs)))
 
 ; The terminator is a real byte of the buffer: every name but the last has more
 ; bytes after it, so `string-as-cstr`'s past-the-end NUL would not do.
-(defn dir-push-name ((self (ref DirEntries)) nm:StrView):usize
-  (let (off:usize (byte-len (addr-of self 'buf))
-        z:&ui8 (as ptr:ui8 (alloca ui8 1)))
-    (string-push-str-unchecked (addr-of self 'buf) &nm)
+(defn dir-push-name (self:&DirEntries nm:StrView):usize
+  (let (off:usize (byte-len (ref self 'buf))
+        z:&ui8 (as &ui8 (alloca ui8 1)))
+    (string-push-str-unchecked (ref self 'buf) &nm)
     (set! (aref z 0) 0)
-    (string-push-bytes-raw (addr-of self 'buf) z 1)
+    (string-push-bytes-raw (ref self 'buf) z 1)
     (return off)))
 
 ; Insertion sort over the OFFSETS, which is why the names never move: an
 ; offset is a usize and the buffer is untouched.
-(defn dir-sort ((self (ref DirEntries))):void
+(defn dir-sort (self:&DirEntries):void
   (let (n:usize (dir-count self)
         i:usize 1)
     (while (< i n)
-      (let (key:usize (invoke (addr-of self 'offs) i)
+      (let (key:usize (invoke (ref self 'offs) i)
             kv:StrView (dir-name self i)
             j:i64 (- (as i64 i) 1)
             placed:i32 0)
@@ -227,10 +227,10 @@
             (if (<= (strview-cmp-raw &jv &kv) 0)
               (set! placed 1)
               (do
-                (set (addr-of self 'offs) (as usize (+ j 1))
-                     (invoke (addr-of self 'offs) (as usize j)))
+                (set (ref self 'offs) (as usize (+ j 1))
+                     (invoke (ref self 'offs) (as usize j)))
                 (set! j (- j 1))))))
-        (set (addr-of self 'offs) (as usize (+ j 1)) key))
+        (set (ref self 'offs) (as usize (+ j 1)) key))
       (set! i (+ i 1)))))
 
 ; Every entry in `path` except `.` and `..`, sorted by name.
@@ -251,15 +251,15 @@
           seen:i32 0
           ent:ptr (readdir d))
       (set! (e 'buf) (string-new))
-      (vector-init (addr-of e 'offs))
+      (vector-init (ref e 'offs))
       (while (!= ent null)
         (let (nm:StrView (strview-from-cstr
-                           (as CStr (unsafe/ptr+ (as ptr:i8 ent) DIRENT-D-NAME-OFFSET))))
+                           (as CStr (unsafe/ptr+ (as &i8 ent) DIRENT-D-NAME-OFFSET))))
           (if (= nm ".")
             (set! seen (bit-or seen 1))
             (if (= nm "..")
               (set! seen (bit-or seen 2))
-              (conj (addr-of e 'offs) (dir-push-name e nm)))))
+              (conj (ref e 'offs) (dir-push-name e nm)))))
         (set! ent (readdir d)))
       (closedir d)
       (when (!= seen 3)

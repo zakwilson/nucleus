@@ -236,7 +236,7 @@
     `(let ((~it-sym ~it-type) (iter ~coll-expr))
        (let ((~done-sym i32) 0)
          (while (= ~done-sym 0)
-           (match (next (addr-of ~it-sym))
+           (match (next &~it-sym)
              ((some ~var-sym) (do ~@body))
              (none (set! ~done-sym 1))))))))
 
@@ -279,7 +279,7 @@
     `(let ((~it-sym ~it-type) (iter ~src-coll))
        (let ((~done-sym i32) 0)
          (while (= ~done-sym 0)
-           (match (next (addr-of ~it-sym))
+           (match (next &~it-sym)
              ((some ~x-sym) (conj ~coll-sym ~x-sym))
              (none (set! ~done-sym 1))))))))
 

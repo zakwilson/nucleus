@@ -43,7 +43,7 @@
 ; required rather than defensive. A negative return is not retried: EINTR is
 ; only reachable behind a handler installed without SA_RESTART, and retrying an
 ; unclassified error would spin forever.
-(defn fd-write-all (fd:i32 (p (ptr ui8)) n:usize):!void
+(defn fd-write-all (fd:i32 p:&ui8 n:usize):!void
   (let (off:usize 0)
     (while (< off n)
       (let (w:i64 (as i64 (write fd
@@ -55,7 +55,7 @@
 
 (extend FdOut Writer)
 
-(defn write-str ((self (ref FdOut)) s:StrView):!void
+(defn write-str (self:&FdOut s:StrView):!void
   (when (= (s 'len) 0) (return (ok)))
   (return (fd-write-all (self 'fd) (s 'data) (s 'len))))
 
@@ -93,25 +93,25 @@
 ; `io-buf-begin` clears.
 (defmacro print (:rest parts)
   (let (b:ptr (gensym))
-    `(let ((~b (ref String)) (io-buf-begin))
+    `(let ((~b &String) (io-buf-begin))
        (str-into ~b ~@parts)
        (io-buf-end 1))))
 
 (defmacro println (:rest parts)
   (let (b:ptr (gensym))
-    `(let ((~b (ref String)) (io-buf-begin))
+    `(let ((~b &String) (io-buf-begin))
        (str-into ~b ~@parts \newline)
        (io-buf-end 1))))
 
 (defmacro eprint (:rest parts)
   (let (b:ptr (gensym))
-    `(let ((~b (ref String)) (io-buf-begin))
+    `(let ((~b &String) (io-buf-begin))
        (str-into ~b ~@parts)
        (io-buf-end 2))))
 
 (defmacro eprintln (:rest parts)
   (let (b:ptr (gensym))
-    `(let ((~b (ref String)) (io-buf-begin))
+    `(let ((~b &String) (io-buf-begin))
        (str-into ~b ~@parts \newline)
        (io-buf-end 2))))
 
@@ -143,7 +143,7 @@
 
 ; The next line from standard input, without its terminator, or `none` at end of
 ; input. A final line with no newline is still returned.
-(defn read-line ():(Maybe String)
+(defn read-line ():?String
   (let (out:String (string-new)
         any:i32 0)
     (while true
@@ -151,7 +151,7 @@
         (when (= (io-in-fill) 0)
           (when (= any 0) (return (none)))
           (return (some out))))
-      (let (c:Char (as Char (as ui32 (aref (as ptr:ui8 g-in-buf)
+      (let (c:Char (as Char (as ui32 (aref (as &ui8 g-in-buf)
                                            (as i64 g-in-pos)))))
         (set! g-in-pos (+ g-in-pos 1))
         (set! any 1)

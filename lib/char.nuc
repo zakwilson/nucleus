@@ -68,7 +68,7 @@
 ;   3 bytes: 1110xxxx 10xxxxxx 10xxxxxx
 ;   4 bytes: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
 ; ---------------------------------------------------------------------------
-(defn char-encode-utf8 ((c Char) (buf (ptr ui8))):usize
+(defn char-encode-utf8 ((c Char) buf:&ui8):usize
   (let (n:ui32 (as ui32 c))
     (when (<= n 127)
       (set! (aref buf 0) (unsafe/cast ui8 n))
@@ -112,20 +112,20 @@
 
 ; Helper: build an error DecodeResult consuming 1 byte.
 (defn decode-err ():DecodeResult
-  (let ((r (ref DecodeResult)) (alloca DecodeResult))
+  (let (r:&DecodeResult (alloca DecodeResult))
     (set! (r 'ch) \nul)
     (set! (r 'nbytes) 1)
     (set! (r 'ok) 0)
     (return @r)))
 
-(defn char-decode-utf8 ((p (ptr ui8)) (len usize)):DecodeResult
+(defn char-decode-utf8 (p:&ui8 (len usize)):DecodeResult
   (when (= len 0) (return (decode-err)))
 
   (let (b0:ui32 (as ui32 (aref p 0)))
 
     ; --- 1-byte (ASCII): 0xxxxxxx ---
     (when (= (bit-and b0 128) 0)
-      (let ((r (ref DecodeResult)) (alloca DecodeResult))
+      (let (r:&DecodeResult (alloca DecodeResult))
         (set! (r 'ch) (as Char b0))
         (set! (r 'nbytes) 1)
         (set! (r 'ok) 1)
@@ -140,7 +140,7 @@
                               (bit-and b1 63)))
           ; Overlong: must be >= 0x80
           (when (< cp 128) (return (decode-err)))
-          (let ((r (ref DecodeResult)) (alloca DecodeResult))
+          (let (r:&DecodeResult (alloca DecodeResult))
             (set! (r 'ch) (as Char cp))
             (set! (r 'nbytes) 2)
             (set! (r 'ok) 1)
@@ -161,7 +161,7 @@
           ; Surrogates: U+D800..U+DFFF
           (when (and (>= cp 55296) (<= cp 57343))
             (return (decode-err)))
-          (let ((r (ref DecodeResult)) (alloca DecodeResult))
+          (let (r:&DecodeResult (alloca DecodeResult))
             (set! (r 'ch) (as Char cp))
             (set! (r 'nbytes) 3)
             (set! (r 'ok) 1)
@@ -184,7 +184,7 @@
           (when (< cp 65536) (return (decode-err)))
           ; Must be <= U+10FFFF
           (when (> cp 1114111) (return (decode-err)))
-          (let ((r (ref DecodeResult)) (alloca DecodeResult))
+          (let (r:&DecodeResult (alloca DecodeResult))
             (set! (r 'ch) (as Char cp))
             (set! (r 'nbytes) 4)
             (set! (r 'ok) 1)

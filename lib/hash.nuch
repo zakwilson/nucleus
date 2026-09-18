@@ -1,5 +1,5 @@
 ; .nuch header for lib/hash.nuc
-(defprotocol Hash (hash ((self (ref Self))) :usize))
+(defprotocol Hash (hash (self:ref:Self) :usize))
 (extend i32 Hash)
 (defmethod "@hash.pi32" hash ((self (ref i32))) :usize)
 (extend i64 Hash)
@@ -10,7 +10,7 @@
 (defmethod "@hash.pf64" hash ((self (ref f64))) :usize)
 (extend f32 Hash)
 (defmethod "@hash.pf32" hash ((self (ref f32))) :usize)
-(defmethod "@hash.ppNode" hash ((self (ref (ref Node)))) :usize)
+(defmethod "@hash.ppNode" hash ((self (ref ref Node))) :usize)
 (extend StrView Hash)
 (defmethod "@hash.pStrView" hash ((self (ref StrView))) :usize)
 (declare hash-null-cstr () :void)
