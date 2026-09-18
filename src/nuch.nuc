@@ -758,8 +758,7 @@
                 (register-type-alias (as ptr f) 0)
               "defmacro"
                 (emit-defmacro (as ptr f))
-              "def-rmacro"
-                (emit-def-rmacro (as ptr f))
+              ; `def-rmacro` is the reader's, already applied while reading.
               0)))))
   ; Finalize any newly-imported generic templates so their names dispatch
   ; through the registry (imported concrete methods finalize themselves).

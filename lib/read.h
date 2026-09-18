@@ -4,23 +4,62 @@
 #include <stddef.h>
 #include "prelude.h"
 #include "string.h"
+#include "allocator.h"
 
 /* Generated from lib/read.nuc by nucleusc --emit-cheader */
 
+typedef struct ReadError {
+    int32_t code;
+    int32_t line;
+    struct StrView msg;
+    struct StrView note;
+} ReadError;
+
+int32_t read_error_code(struct ReadError e) asm("read-error-code");
+typedef struct ReadResult {
+    int32_t tag;
+    union {
+        struct raw_Node ok;
+        struct ReadError err;
+    } payload;
+} ReadResult;
+
+enum ReadResult_tag {
+    ReadResult_ok = 0,
+    ReadResult_err = 1
+};
+
+struct ReadError rd_error(int32_t code, int32_t line, struct StrView msg, struct StrView note) asm("rd-error");
+struct StrView rd_arena_str(struct String* s) asm("rd-arena-str");
+typedef struct RMacro {
+    struct StrView prefix;
+    struct Symbol wrap;
+} RMacro;
+
+extern struct AllocHandle g_read_alloc asm("g-read-alloc");
+void rd_macro_add(void** tbl, struct StrView prefix, struct Symbol wrap) asm("rd-macro-add");
+int32_t rd_macro_find(void** tbl, struct StrView prefix) asm("rd-macro-find");
+void** read_macro_table_new(void) asm("read-macro-table-new");
 typedef struct Reader {
     struct StrView src;
     size_t pos;
     int32_t line;
-    int32_t err_line;
+    int32_t paren_depth;
+    int32_t form_open_line;
+    int32_t col0_open_line;
+    int32_t col0_open_depth;
+    void** macros;
 } Reader;
 
+struct Reader reader_with_macros(struct StrView src, void** table) asm("reader-with-macros");
 struct Reader reader(struct StrView src);
-int32_t reader_error_line(struct Reader* self) asm("reader-error-line");
-void rd_fail(struct Reader* self, int32_t line) asm("rd-fail");
 int32_t rd_at(struct Reader* self, size_t i) asm("rd-at");
 int32_t rd_peek(struct Reader* self) asm("rd-peek");
 int32_t rd_peek1(struct Reader* self) asm("rd-peek1");
 int32_t rd_next(struct Reader* self) asm("rd-next");
+void rd_open_bracket(struct Reader* self, int32_t line, bool is_paren) asm("rd-open-bracket");
+void rd_close_bracket(struct Reader* self) asm("rd-close-bracket");
+struct ReadError rd_unterminated(struct Reader* self, int32_t open_line, struct StrView msg, struct StrView closer) asm("rd-unterminated");
 bool rd_space_QMARK(int32_t c) asm("rd-space_QMARK");
 bool rd_digit_QMARK(int32_t c) asm("rd-digit_QMARK");
 int32_t rd_hex_val(int32_t c) asm("rd-hex-val");
@@ -37,20 +76,27 @@ bool rd_legacy_marker_QMARK(struct StrView sv) asm("rd-legacy-marker_QMARK");
 struct Symbol rd_expand_sigil(struct StrView tv) asm("rd-expand-sigil");
 bool rd_at_legacy_marker(struct Reader* self) asm("rd-at-legacy-marker");
 struct Node* rd_node(int32_t kind, int32_t line) asm("rd-node");
-void* rd_string(struct Reader* self, int32_t open_line, bool is_cstr) asm("rd-string");
+struct ReadResult rd_string(struct Reader* self, int32_t open_line, bool is_cstr) asm("rd-string");
 struct Node* rd_char_node(int32_t cp, int32_t line) asm("rd-char-node");
-void* rd_char(struct Reader* self, int32_t open_line) asm("rd-char");
-void* rd_atom(struct Reader* self) asm("rd-atom");
-struct StrView rd_macro_name(struct Reader* self) asm("rd-macro-name");
-int32_t rd_macro_len(struct StrView name) asm("rd-macro-len");
+struct ReadResult rd_char(struct Reader* self, int32_t open_line) asm("rd-char");
+struct ReadResult rd_int_node(struct StrView tv, int32_t radix, int32_t line) asm("rd-int-node");
+struct ReadResult rd_atom(struct Reader* self) asm("rd-atom");
+int32_t rd_macro_match(struct Reader* self) asm("rd-macro-match");
+bool rd_atom_start_QMARK(int32_t c) asm("rd-atom-start_QMARK");
+struct ReadResult reader_register_macro(struct Reader* self, struct StrView prefix, struct Symbol wrap, int32_t line) asm("reader-register-macro");
+bool rd_def_rmacro_form_QMARK(void* form) asm("rd-def-rmacro-form_QMARK");
+struct ReadResult rd_def_rmacro(struct Reader* self, void* form) asm("rd-def-rmacro");
 bool rd_fn_type_form_QMARK(void* form) asm("rd-fn-type-form_QMARK");
-void* rd_fuse_fn_params(struct Reader* self, void* paren_form, int32_t line) asm("rd-fuse-fn-params");
-void* rd_fuse_colon_paren(struct Reader* self, void* child, int32_t line) asm("rd-fuse-colon-paren");
-void* rd_list(struct Reader* self, int32_t open_line) asm("rd-list");
-void* rd_form(struct Reader* self) asm("rd-form");
+struct ReadResult rd_fuse_fn_params(struct Reader* self, void* paren_form, int32_t line) asm("rd-fuse-fn-params");
+struct ReadResult rd_fuse_colon_paren(struct Reader* self, void* child, int32_t line) asm("rd-fuse-colon-paren");
+struct ReadResult rd_list(struct Reader* self, int32_t open_line) asm("rd-list");
+struct ReadResult rd_lit_elems(struct Reader* self, struct StrView what, int32_t closer, int32_t open_line) asm("rd-lit-elems");
+void* rd_lit_cell(struct StrView name, void* elems, int32_t line) asm("rd-lit-cell");
+struct ReadResult rd_form(struct Reader* self) asm("rd-form");
 bool reader_eof_QMARK(struct Reader* self) asm("reader-eof_QMARK");
-void* read_one(struct Reader* self) asm("read-one");
-void* read_all(struct StrView src) asm("read-all");
+struct ReadResult read_one(struct Reader* self) asm("read-one");
+struct ReadResult read_all_with_macros(struct StrView src, void** table) asm("read-all-with-macros");
+struct ReadResult read_all(struct StrView src) asm("read-all");
 void rd_write_escaped(struct String* out, struct StrView sv) asm("rd-write-escaped");
 void rd_write_hex(struct String* out, uint64_t v) asm("rd-write-hex");
 void sexp_write_string(struct String* out, struct StrView sv) asm("sexp-write-string");

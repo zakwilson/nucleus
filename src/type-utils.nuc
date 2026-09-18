@@ -546,7 +546,7 @@
                 (set! done 1)
                 (do (set! seen-dot 1) (set! i (+ i 1))))
             true
-              (let (v:i32 (hex-digit-val c))
+              (let (v:i32 (rd-hex-val c))
                 (if (< v 0)
                   (set! done 1)
                   (do (set! any 1)

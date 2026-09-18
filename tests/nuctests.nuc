@@ -45,6 +45,7 @@
 (import-use suite-namespaces)
 (import-use suite-runtime)
 (import-use suite-audits)
+(import-use suite-s21)
 
 
 
@@ -148,8 +149,8 @@
 
 ; What one command that is not `nucleusc --diagnostics=sexp` did. `Compiled`
 ; reads its stderr as structured diagnostics, which only the compiler in that
-; mode emits; a unit spawning an audit script, `readdump`, or the compiler's own
-; text back-end needs the two streams themselves.
+; mode emits; a unit spawning an audit script or the compiler's own text
+; back-end needs the two streams themselves.
 (defstruct Ran ok?:bool out:String err:String)
 
 (extend Ran Drop)
@@ -158,8 +159,7 @@
   (drop (addr-of self 'err)))
 
 ; Unchecked, where the rest of this file validates: a child's streams are bytes,
-; and `examples/hex-escape-test.nuc` dumps an AST that is deliberately not UTF-8.
-; The answer to "do the two readers agree" is those bytes.
+; and a fixture may deliberately print what is not UTF-8.
 (defn ran-stream (v:StrView):String
   (let (s:String (string-new))
     (string-push-str-unchecked (addr-of s) (addr-of v))
@@ -822,16 +822,6 @@
     (when (!= ng nw)
       (fail! what ": expected " nw " line(s), got " ng "\n     got:\n" got)))
   (return (ok)))
-
-; `check-golden` with the subject named first. A unit that walks a corpus needs
-; it: "line 7 differs" says nothing about which of 226 files line 7 was in.
-(defn check-golden-in (what:StrView got:StrView want:StrView):!void
-  (match (check-golden got want)
-    (ok (return (ok)))
-    ((err e)
-      (let (t:StrView (test-failure-text)
-            w:String (try (string-from-view (addr-of t))))
-        (fail! what ": " (string-as-view (addr-of w)))))))
 
 ; `test-write-file` only reaches the scratch directory itself, and a `.nuch`
 ; unit needs its header in a subdirectory of it — `resolve-import` tries `.nuc`

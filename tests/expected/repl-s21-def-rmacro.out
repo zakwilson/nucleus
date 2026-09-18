@@ -1,0 +1,7 @@
+Nucleus REPL (type Ctrl-D to exit)
+nuc> nuc> nuc> nuc>   defined
+nuc>   foo
+nuc>   rmacro
+nuc>   rmacro
+nuc> <repl>:1: error: def-rmacro: '$' is already a reader macro
+nuc> 

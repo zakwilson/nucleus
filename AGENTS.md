@@ -2,15 +2,6 @@
 
 This file provides guidance to LLM agents when working with code in this repository.
 
-## Large tasks: delegate to subagents first
-
-**Before starting any large task, stop and plan a subagent delegation strategy — do not begin doing the work yourself in this (orchestrating) session.** A task is "large" if it is multi-phase, spans multiple files, or you would describe it as large, complex, or multi-step. The moment you notice yourself acknowledging that a task is big is the trigger to delegate, not a reason to push ahead solo.
-
-- Read [context/local.md](context/local.md) for the available subagents and how to use them. It is **required reading for large tasks**, not just environment setup.
-- Split the work into chunks that each fit comfortably under 100K tokens of context, and dispatch each chunk to the appropriate subagent.
-- Keep this session lean: delegate code reading, implementation, building/testing, and doc updates. Reserve the main thread for planning and integration.
-- **Every delegation prompt that has a subagent write or modify compiler code must direct it to read [context/conventions.md](context/conventions.md) first.** Subagents start without this session's context and will otherwise re-hit documented traps (the `node-type`↔`emit-node` cross-file lockstep, format-helper segfaults, struct-field interning, `CStr`/`is-ptr-like` ABI).
-
 ## Design document
 
 The design documents for this project are in the design directory. Any additional plans or design documents should be placed there and noted in overview.md.
@@ -29,7 +20,7 @@ Documentation for the current state of the language lives in the docs directory.
 
 ## Comments
 
-Comment compiler code only to say **why** — a decision a future maintainer might
+Comment code only to say **why** — a decision a future maintainer might
 revisit, or an implementation a competent developer would misread. Never restate
 what the code does.
 

@@ -30,15 +30,6 @@
 ; encoding needs — no renumbering when U4 lands.
 (defconst MAX-DEFERRORS 4095)
 
-; Token kinds
-(defenum TokKind TOK-LPAREN TOK-RPAREN TOK-RMACRO TOK-INT TOK-STRING TOK-SYMBOL TOK-FLOAT TOK-EOF
-                 TOK-LBRACK TOK-RBRACK TOK-LBRACE TOK-RBRACE TOK-HASHBRACE TOK-KEYWORD
-                 ; Stage 11 M6 (S0): a `\a` / `\newline` / `\u{1F600}` char literal.
-                 ; The token carries the (validated) Unicode scalar value in `i`;
-                 ; read-form lowers it to a NODE-CHAR. Appended last to keep the
-                 ; existing TOK-* ordinals unchanged.
-                 TOK-CHAR)
-
 ; Name kinds for the one-symbol-one-meaning shadowing check (see
 ; guard-name-kind / binding-noun). These are the *nouns a diagnostic
 ; says*, not the registries — several registries report the same NK (every type
@@ -550,12 +541,6 @@
   ; a Type must copy it (type-with-volatile, src/nucleusc.nuc — the one such
   ; site today).
   arr-len:i32)
-
-(defstruct Tok
-  kind:i32
-  line:i32
-  i:i64
-  s:Symbol)   ; the lexer interns; `(n 's)` is a copy of this word
 
 ; Node struct comes from lib/prelude.nuc (imported below).
 
@@ -1122,13 +1107,6 @@
 (defstruct CtBlock
   sym:Symbol
   (roots (ref (Vector Symbol))))
-
-(defstruct RMacro
-  ; `prefix-len` is kept beside the view because the reader's
-  ; longest-prefix-match scan compares lengths before bytes.
-  prefix:StrView
-  prefix-len:i32
-  wrap-sym:Symbol)
 
 ; A label declaration within the current function (Stage 8 goto support).
 ; `total` is the number of (label NAME) occurrences seen in the pre-scan;

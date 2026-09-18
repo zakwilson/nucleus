@@ -101,16 +101,6 @@ ensure-boot: | $(BUILD)
 boot-binary: | $(BUILD)
 	clang boot/nucleusc.ll $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic $(NATIVE_OPT) -o bin/nucleusc
 
-# Programs the suite itself runs. `readdump` is Stage 18 TF-3's half of the
-# reader-parity gate, spawned by `tests/suite-audits.nuc`; `run-nuctests`
-# builds it via `test-tools` before the suite starts.
-READDUMP := $(BUILD)/readdump
-
-$(READDUMP): tests/readdump.nuc $(wildcard lib/*.nuc) $(BIN) | $(BUILD)
-	$(BIN) tests/readdump.nuc -o $@
-
-test-tools: $(BIN) $(READDUMP)
-
 # Stage 18 TF-7: the trust anchor, then the suite. `$(NUCTESTS)` is NOT a
 # prerequisite here -- a prerequisite is built before the recipe runs, so a
 # compiler broken badly enough to take the suite build down with it would stop
@@ -138,7 +128,7 @@ $(NUCTESTS): tests/nuctests.nuc $(wildcard tests/suite-*.nuc) tests/manifest/dia
 # its name, so the split needs no locking. NUCTESTS_JOBS=1 restores a serial run.
 NUCTESTS_JOBS := $(shell nproc 2>/dev/null || echo 4)
 
-run-nuctests: $(NUCTESTS) test-tools
+run-nuctests: $(NUCTESTS)
 	@n=$(NUCTESTS_JOBS); pids=; i=0; \
 	  while [ $$i -lt $$n ]; do \
 	    ./$(NUCTESTS) $(NUCTESTS_ARGS) --shard $$i/$$n > $(BUILD)/nuctests.out.$$i & \
@@ -325,4 +315,4 @@ uninstall:
 	rm -f $(BINDIR)/nucleusc
 	rm -rf $(DESTDIR)$(PREFIX)/share/nucleus
 
-.PHONY: test test-tools run-nuctests abi-test layout-test avr-test riscv-test riscv-abi-test gen-stdlib-table clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders check-headers lib-objs lib-so lib install uninstall
+.PHONY: test run-nuctests abi-test layout-test avr-test riscv-test riscv-abi-test gen-stdlib-table clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders check-headers lib-objs lib-so lib install uninstall

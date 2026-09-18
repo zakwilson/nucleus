@@ -21,38 +21,6 @@
 
 (defvar g-source-path:Symbol)
 
-(defvar g-src:ptr)
-(defvar g-pos:i64 0)
-(defvar g-line:i32 1)
-
-(defvar g-peek:ptr)
-(defvar g-peek-valid:i32 0)
-
-; Stage 15 W4c (design/stage15-stress-test/diagnostics.md §W4c): bracket-balance
-; tracking, maintained in `next-tok` as each token is produced and consumed only
-; by reader diagnostics. All four are reset at the top of `read-program`, which
-; is the single entry point for reading a whole file (batch, import, and REPL
-; alike); reads never interleave, so no save/restore is needed at the import
-; sites that already save g-src/g-pos/g-line/g-peek.
-;
-; g-paren-depth counts every bracket kind the lexer knows — `(` `[` `{` `#{` —
-; and is deliberately NOT clamped at zero: a negative depth at an `unexpected )`
-; is exactly "this `)` has no matching open anywhere", which distinguishes a
-; stray top-level `)` from a `)` that merely turned up where a form was expected
-; (e.g. inside an unclosed `[…]`).
-(defvar g-paren-depth:i32 0)
-; Opening line of the `(` that most recently took the depth from 0 to 1 — the
-; top-level form currently being read, or the last one completed.
-(defvar g-form-open-line:i32 0)
-; The W4c heuristic itself: line of the FIRST `(` that starts a line in column 0
-; while the depth is already nonzero, plus that depth. That is the first point at
-; which an earlier missing `)` became observable — a new top-level form swallowed
-; by an unclosed one — and it localizes the mistake far better than the innermost
-; unclosed form's own opening line. 0 means "no such line" (the imbalance is in
-; the file's last top-level form), in which case no second number is reported.
-(defvar g-col0-open-line:i32 0)
-(defvar g-col0-open-depth:i32 0)
-
 ; Singleton types. Stage 15 W8 G-5: each is built by its own initializer rather
 ; than by a `types-init` pass, so the `ref:Type` on the declaration is true from
 ; process start instead of true-after-someone-remembers-to-call-init. They are
@@ -557,11 +525,6 @@
 ; stack pops, and a macrolet inside a generic template body is compiled once per
 ; monomorphization.
 (defvar g-macrolet-id:i32 0)
-
-; Reader macro table
-; Reader macro table. (Vector ptr) of RMacro* (each individually arena-allocated,
-; registration order).
-(defvar (g-rmacros (ref (Vector (ref RMacro)))) (build-rmacros))
 
 ; Set to 1 once @malloc has been declared via a C-header import (e.g. (import-use "stdlib.h")).
 ; Guards against emitting a duplicate malloc declaration in macro JIT modules.
@@ -1096,8 +1059,6 @@
 ; ============================================================
 
 ; Arena-backed allocators: arena-alloc aborts on exhaustion, never null.
-(defn alloc-tok ():&Tok
-  (return (as ref:Tok (arena-alloc (sizeof Tok)))))
 
 ; G-5 (§2.12 A2): the deferror sid tables are construct-then-populate — index 0
 ; is a reserved "no error" placeholder so the vector index equals the 1-based
@@ -1149,14 +1110,14 @@
 ; `make-vec`/`mkvec`/`mkhash` cast-over-arena hole is retired).
 
 ; ============================================================
-; Reader — imported from src/reader.nuc. It lives in src/, not lib/, for the
-; same reason repl.nuc and cheader.nuc do: it reads and writes the compiler's own
-; globals (g-src/g-pos/g-line/g-source-path/g-peek/g-interactive/g-mono-context),
-; so it is a fragment of this translation unit rather than a standalone library.
-; `lib/` means "compiles on its own" — that is what `make lib-objs` asserts.
+; Diagnostics, then the reader. The diagnostics layer stays in src/ because it
+; reads this unit's globals (g-source-path/g-interactive/g-mono-context/
+; g-diag-note); the reader is the library's, rendered through it by
+; `read-source-or-report` (design/stage21-cleanup/one-reader.md).
 ; ============================================================
 
-(import-use reader)
+(import-use diagnostics)
+(import-use read)
 
 ; Stage 10 C3: condition class for recoverable malformed top-level forms that
 ; the compiler validates at definition time (e.g. a malformed `(deferror …)`).
@@ -1164,62 +1125,18 @@
 ; for definition-shape faults. Like the reader's `parse-error`, the diagnostic
 ; is printed at the fault site (report-at) and this Err is the value-channel
 ; signal the single caller `match`es on (emit-toplevel-forms → exit 1). `import
-; reader` above transitively pulls in `error`, so the !T sugar is available.
+; diagnostics` above transitively pulls in `error`, so the !T sugar is available.
 (deferror malformed-form "malformed definition form")
 
 ; ============================================================
-; AST printer — inverse of the reader, serializes nodes to stdout
+; AST printer — the library's `node-write`, aimed at a FILE*. One printer, so
+; `--emit-nuch` cannot drift from what `lib/read.nuc` reads back.
 ; ============================================================
 
 (defn fprint-node (out:ptr n:(raw Node)):void
-  (when (= n null) (emit out "()") (return))
-  (let (nn:(raw Node) n)
-    (case (nn 'kind)
-      NODE-INT
-        (emit out (nn 'i))
-      (:or NODE-FLOAT NODE-SYM)
-        (emit out (nn 's))
-      NODE-KEYWORD
-        (do (emit out ":") (emit out (nn 's)))
-      NODE-CHAR
-        ; Was falling through to the default and printing NOTHING. A printer
-        ; whose output cannot be read back is not a canonical printer.
-        (do (emit out "\\u{") (emit out (hex (nn 'i) 1)) (emit out "}"))
-      NODE-STR
-        (do
-          ; NS-4's CStr flag. Dropping it printed `c"x"` as `"x"`, which reads
-          ; back as a different literal -- found by Stage 18 TF-3's parity gate.
-          (when (!= (nn 'i) 0) (emit out "c"))
-          (emit out "\"")
-          (let (sv:StrView (symbol-as-view (nn 's))
-                      len:i64 (unsafe/cast i64 (sv 'len)))
-            (dotimes (i len)
-              (let (c:i32 (as i32 (aref (sv 'data) i)))
-                (case c
-                  10 (do (emit out "\\") (emit out "n"))
-                  9  (do (emit out "\\") (emit out "t"))
-                  13 (do (emit out "\\") (emit out "r"))
-                  92 (do (emit out "\\") (emit out "\\"))
-                  34 (do (emit out "\\") (emit out "\""))
-                  0  (do (emit out "\\") (emit out "0"))
-                  ; The BYTE, not `(as Char c)`: widening a byte to a codepoint
-                  ; re-encodes it as UTF-8, so "h\xc3\xa9" printed back as "hA©".
-                  ; Found by Stage 18 TF-3's parity gate.
-                  (emit out (strview (unsafe/ptr+ (sv 'data) i) 1))))))
-          (emit out "\""))
-      NODE-CELL
-        (do
-          (emit out "(")
-          (let (cur:(raw Node) n
-                        first:i32 1)
-            (while (and (!= cur null)
-                        (= (cur 'kind) NODE-CELL))
-              (when (= first 0) (emit out " "))
-              (set! first 0)
-              (fprint-node out (cur 'car))
-              (set! cur (cur 'cdr))))
-          (emit out ")"))
-      0)))
+  (let (s:String (node-str n))
+    (emit-all out &s)
+    (drop &s)))
 
 (defn print-node (n:(raw Node)):void
   (fprint-node (as ptr stdout) n))
@@ -3194,9 +3111,8 @@
   (return 0))
 
 ; Does the source text `text` (length `len`) define `name` with a top-level
-; definer? A deliberately TEXTUAL scan: re-entering `read-program`/`desugar`
-; from a diagnostic path would clobber g-src / g-pos / g-line / g-source-path /
-; g-peek / g-peek-valid while a message is being composed, for no benefit.
+; definer? A deliberately TEXTUAL scan: a full read plus `desugar` on a dying
+; path buys nothing a byte scan does not, and `desugar` can die itself.
 ;
 ; Line comments and string literals are skipped, so the two obvious
 ; false-positive sources are out; a definer spelled inside a quasiquoted macro
@@ -3859,8 +3775,8 @@
 
 ; G-5: `add-binop` appends to the vector it is HANDED rather than to the global,
 ; because `build-binops` runs as `g-binops`' own initializer — the global is
-; still null while its value is being built. Same shape as `build-rmacros` /
-; `build-generics` below; a builder may never name the global it initializes.
+; still null while its value is being built. Same shape as `build-generics`
+; below; a builder may never name the global it initializes.
 (defn add-binop (v:(ref (Vector (ref BinOp))) name:Symbol instr:StrView instr-u:StrView is-cmp:i32):void
   (let (op:ptr:BinOp (as ref:BinOp (arena-alloc (sizeof BinOp))))
     (set! (op 'name) name)
@@ -4032,11 +3948,18 @@
         src:(raw Type) (vv 'type)
         rule:(raw CastRule) (lookup-cast-rule src target))
     (when (= rule null) (return null))
+    ; An ordinary call, so a struct From/To is ABI-lowered (byval/sret) rather than
+    ; passed first-class; every call emitter coerces args BEFORE its abi-args-begin.
     (let (cr:(raw CastRule) rule
-          tmp:StrView (new-tmp))
-      (emit g-body-stream "  " tmp " = call " (type-to-ir target) " " (cr 'ir-name) "("
-            (type-to-ir src) " " (vv 'val) ")\n")
-      (return (alloc-val target tmp)))))
+          ret-info:raw:AbiInfo (abi-classify target))
+      (abi-args-begin ret-info)
+      (let (arglist:StrView (abi-arg-frag (as ptr vv)))
+        (when (!= (ret-info 'kind) ABI-DIRECT)
+          (return (abi-emit-struct-call ret-info target (cr 'ir-name) arglist 1)))
+        (let (tmp:StrView (new-tmp))
+          (emit g-body-stream "  " tmp " = call " (type-to-ir target) " " (cr 'ir-name) "("
+                arglist ")\n")
+          (return (alloc-val target tmp)))))))
 
 ; W9 item 42: implicit conversions do NOT compose — one conversion, built-in or
 ; user, never both (design/stage15-stress-test/implicit-conversions.md). That
@@ -12146,6 +12069,87 @@
 ; element has a TYPE.
 ; design/stage16-ergonomics/collection-literal-variables.md
 
+; Build a single-symbol Node from a name (interned: identical spellings share
+; identity, matching reader-produced symbols elsewhere).
+(defn lit-sym (s:Symbol):ptr
+  (return (as ptr (intern-node s))))
+
+(defn lit-sym (s:StrView):ptr
+  (return (as ptr (intern-node (symbol-intern s)))))
+
+; Build the node list `( <a> <b> )`.
+(defn lit-list2 (a:ptr b:ptr line:i32):ptr
+  (return (as ptr (make-cell a (make-cell b null line) line))))
+
+; Build the node list `( <a> <b> <c> )`.
+(defn lit-list3 (a:ptr b:ptr c:ptr line:i32):ptr
+  (return (as ptr (make-cell a (make-cell b (make-cell c null line) line) line))))
+
+; Build `(ref <ty>)` where <ty> is an already-built type node.
+(defn lit-ref (ty:ptr line:i32):ptr
+  (return (lit-list2 (lit-sym "ref") ty line)))
+
+; Build `(alloca <ty>)` where <ty> is an already-built type node.
+(defn lit-alloca (ty:ptr line:i32):ptr
+  (return (lit-list2 (lit-sym "alloca") ty line)))
+
+; Is `n` the form `(quote <symbol>)` — i.e. `'foo`? A symbol ELEMENT has to be
+; written quoted (bare `foo` is a variable reference), and the reader macro turns
+; `'foo` into a two-element list, so this is a shape check rather than the kind
+; check every other element kind gets.
+(defn lit-is-quoted-sym (n:ptr):i32
+  (when (= n null) (return 0))
+  (let (nn:ptr:Node (as ref:Node n))
+    (when (!= (nn 'kind) NODE-CELL) (return 0))
+    (when (!= (node-len n) 2) (return 0))
+    (let (h:ptr (node-at n 0)
+          a:ptr (node-at n 1))
+      (when (or (= h null) (= a null)) (return 0))
+      (let (hn:ptr:Node (as ref:Node h)
+            an:ptr:Node (as ref:Node a))
+        (when (!= (hn 'kind) NODE-SYM) (return 0))
+        (when (!= (hn 's) "quote") (return 0))
+        (when (!= (an 'kind) NODE-SYM) (return 0))
+        (return 1)))))
+
+; Classify one literal element node into a coarse "kind": 1 = integer, 2 = float,
+; 3 = string, 4 = keyword, 5 = quoted symbol, 0 = anything else, whose type
+; `emit-collection-lit` asks `node-type` for instead.
+;
+; Kinds 1 and 2 are *adaptable* — an integer literal alongside an `i64` value
+; makes the collection `i64`, exactly as `(conj v 1)` on a `(Vector i64)` is
+; already accepted. Kinds 3-5 are fixed.
+(defn lit-elem-kind (n:ptr):i32
+  (when (= n null) (return 0))
+  (let (nn:ptr:Node (as ref:Node n))
+    (when (= (nn 'kind) NODE-INT) (return 1))
+    (when (= (nn 'kind) NODE-FLOAT) (return 2))
+    (when (= (nn 'kind) NODE-STR) (return 3))
+    (when (= (nn 'kind) NODE-KEYWORD) (return 4))
+    (when (!= (lit-is-quoted-sym n) 0) (return 5))
+    (return 0)))
+
+; The element type for a kind, as a FRESH type node.
+;
+; A node rather than a spelling because a symbol's type is the compound
+; `(ref Node)`, which `lit-sym` cannot spell. Fresh per call because the readers
+; stamp the type into two positions (the `ref` binding and the `alloca`) and must
+; not share one node between them.
+;
+; `Keyword` is defined in lib/keyword.nuc, so a keyword literal is the one bracket
+; literal whose element type the collection import does not reach; the
+; unknown-type diagnostic names the file to import. `Node` is in lib/prelude.nuc,
+; so a symbol literal needs nothing extra.
+(defn lit-type-node (kind:i32 line:i32):ptr
+  (when (= kind 1) (return (lit-sym "i32")))
+  (when (= kind 2) (return (lit-sym "f64")))
+  (when (= kind 3) (return (lit-sym "StrView")))
+  (when (= kind 4) (return (lit-sym "Keyword")))
+  ; A quoted symbol lowers to intern-symbol, whose result is non-null — see
+  ; quoted-datum-type in src/nucleusc.nuc.
+  (when (= kind 5) (return (lit-list2 (lit-sym "ref") (lit-sym "Node") line)))
+  (return null))
+
 ; The element type node for a value-tier element, from the compiler's own
 ; round-trip spelling. `type-spelling` flattens `(ref T)` to `ptr:T` and cannot
 ; spell an array or a function type at all, so those are refused with the fix
@@ -12251,7 +12255,7 @@
 (defn emit-collection-lit (n:(raw Node) scope:&Scope tmpl:Symbol what:StrView
                            init-fn:StrView add-fn:StrView is-map:i32 empty-msg:StrView):&Val
   (let (line:i32 (node-line (as ptr n) g-form-line)
-        ; the reader always puts the gensym here, so the cdr is never null
+        ; `mint-collection-gensyms` put the gensym here, so the cdr is never null
         gcell:ptr:Node (unsafe/cast ref:Node ((unsafe/cast ref:Node n) 'cdr))
         gs:ptr (gcell 'car)
         head:ptr (as ptr (gcell 'cdr))
@@ -16508,9 +16512,9 @@
 ; Driver
 ; ============================================================
 
-; The text is process-lifetime and deliberately never freed: the reader hands
-; out `Node.s` pointers into it. That is what the `malloc` this replaces did too.
-(defn read-file (path:Symbol):ptr
+; The caller owns the text and may drop it once read: nothing the reader
+; returns points into it -- every symbol and string is interned.
+(defn read-file (path:Symbol):String
   (let (pv:StrView (symbol-as-view path))
     (match (file-open-read pv)
       ((err e) (do (perror (symbol-as-cstr path)) (exit 1)))
@@ -16521,7 +16525,51 @@
             ((ok text)
               (let ((src String) text)
                 (file-close fh)
-                (return (as ptr (string-as-cstr src)))))))))))
+                (return src)))))))))
+
+; `emit-collection-lit` reads a gensym as the second element of every `*-lit`
+; cell. The reader mints none, so this walk does -- post-order, left to right,
+; the order the compiler's old reader minted in, so `__gs_N` numbering and
+; every emitted IR byte are unchanged (one-reader.md §4c; deleted with PK-5).
+(defn mint-collection-gensyms (n:(raw Node)):void
+  (when (= n null) (return))
+  (when (!= (n 'kind) NODE-CELL) (return))
+  (let (c:(raw Node) n)
+    (while (!= c null)
+      (mint-collection-gensyms (c 'car))
+      (set! c (c 'cdr))))
+  (let (h:(raw Node) (n 'car))
+    (when (and (!= h null) (= (h 'kind) NODE-SYM)
+               (or (= (h 's) "vector-lit") (= (h 's) "hashmap-lit") (= (h 's) "hashset-lit")))
+      (set! (n 'cdr) (as raw:Node (make-cell (nucleus_gensym) (n 'cdr) (n 'line)))))))
+
+; The one place a reader error becomes a diagnostic: the `ReadError` is
+; rendered through `report-at` exactly as the old in-reader sites did, and the
+; caller sees `parse-error` as before. `table` is the reader-macro table the
+; buffer is read through -- fresh per file, shared per REPL session.
+(defn read-source-or-report (text:StrView (table (ref (Vector RMacro)))):!raw:Node
+  (match (read-all-with-macros text table)
+    ((err e)
+      (let (note:StrView (e 'note))
+        (when (> (note 'len) 0) (diag-stage-note note))
+        (report-at (e 'line) (e 'msg))
+        (return (err! parse-error))))
+    ((ok forms)
+      (let (c:(raw Node) forms)
+        (while (!= c null)
+          (mint-collection-gensyms (c 'car))
+          (set! c (c 'cdr)))
+        (return (ok forms))))))
+
+; Batch entry: the diagnostic is already printed, so a syntax error just aborts
+; the build. A REPL import unwinds instead, as `die-at` does, so a failed
+; import leaves the session as it found it (stage16 repl-libraries.md §3.4).
+(defn read-source-or-die (text:StrView):(raw Node)
+  (match (read-source-or-report text (read-macro-table-new))
+    ((ok forms) (return forms))
+    ((err e) (do (when (!= g-interactive 0) (repl-throw))
+                 (exit 1)
+                 (return null)))))
 
 ; ============================================================
 ; Desugar pass — split colon-typed symbols into lists
@@ -17115,12 +17163,7 @@
                   (when (and (not (symbol-none? path))
                              (= (import-list-has g-prescan-visited path) 0))
                     (set! g-prescan-visited (import-list-push g-prescan-visited path))
-                    (let (save-src:ptr g-src
-                          save-pos:i64 g-pos
-                          save-line:i32 g-line
-                          save-path:Symbol g-source-path
-                          save-peek:ptr g-peek
-                          save-peek-valid:i32 g-peek-valid
+                    (let (save-path:Symbol g-source-path
                           ; Stage 15 B3′: pass 1 crosses a file boundary, and
                           ; since B3′ what it registers is KEYED by the defining
                           ; file's namespace — so it must save/clear/restore the
@@ -17134,29 +17177,20 @@
                           save-ns:Symbol g-current-ns
                           save-ns-seen:i32 g-ns-seen
                           save-file-imports:raw:ImportVec g-file-imports)
-                      (let (src:ptr (read-file path))
+                      (let (src:String (read-file path))
                         (set! g-source-path path)
-                        (set! g-src src)
-                        (set! g-pos 0)
-                        (set! g-line 1)
-                        (set! g-peek-valid 0)
                         (set! g-current-ns (symbol-intern "user"))
                         (set! g-ns-seen 0)
                         (set! g-file-imports null)
-                        (let (ifs:ptr (apply-leading-ns (desugar (read-program-or-die))))
+                        (let (ifs:ptr (apply-leading-ns (desugar (read-source-or-die (string-as-view &src)))))
                           ; A leading `set-ir-prefix` must be applied before any
                           ; type is registered: `register-struct` snapshots the
                           ; namespace's ir-prefix into `StructDef.ir-prefix`.
                           (apply-early-set-ir-prefix ifs)
                           (prescan-imported-types ifs)
                           (prescan-struct-names ifs))
-                        (free src))
+                        (drop &src))
                       (set! g-source-path save-path)
-                      (set! g-src save-src)
-                      (set! g-pos save-pos)
-                      (set! g-line save-line)
-                      (set! g-peek save-peek)
-                      (set! g-peek-valid save-peek-valid)
                       (set! g-current-ns save-ns)
                       (set! g-ns-seen save-ns-seen)
                       (set! g-file-imports save-file-imports))))))))))
@@ -17726,12 +17760,7 @@
                     ; In-flight here (the cycle breaker); DONE only once the
                     ; prescan has actually run — see g-prescan-inflight.
                     (set! g-prescan-inflight (import-list-push g-prescan-inflight path))
-                    (let (save-src:ptr g-src
-                          save-pos:i64 g-pos
-                          save-line:i32 g-line
-                          save-path:Symbol g-source-path
-                          save-peek:ptr g-peek
-                          save-peek-valid:i32 g-peek-valid
+                    (let (save-path:Symbol g-source-path
                           save-ns:Symbol g-current-ns
                           save-ns-seen:i32 g-ns-seen
                           ; Stage 15 B1: the prescan crosses a file boundary too,
@@ -17741,16 +17770,12 @@
                           ; the honest state while prescanning file F is "F has no
                           ; bindings yet", not "F inherits its importer's".
                           save-file-imports:raw:ImportVec g-file-imports)
-                      (let (src:ptr (read-file path))
+                      (let (src:String (read-file path))
                         (set! g-source-path path)
-                        (set! g-src src)
-                        (set! g-pos 0)
-                        (set! g-line 1)
-                        (set! g-peek-valid 0)
                         (set! g-current-ns (symbol-intern "user"))
                         (set! g-ns-seen 0)
                         (set! g-file-imports null)
-                        (let (ifs:ptr (apply-leading-ns (desugar (read-program-or-die))))
+                        (let (ifs:ptr (apply-leading-ns (desugar (read-source-or-die (string-as-view &src)))))
                           (apply-early-set-ir-prefix ifs)
                           (if (!= (str-ends-with path ".nuch") 0)
                             ; W9 item 29: a header's own registrars, in
@@ -17777,31 +17802,14 @@
                               ; so nothing pre-order needs is lost.
                               (prescan-struct-layouts ifs)
                               (prescan-union-layouts ifs))))
-                        (free src))
+                        (drop &src))
                       (set! g-prescan-sigs (import-list-push g-prescan-sigs path))
                       (set! g-prescan-inflight (import-list-pop g-prescan-inflight))
                       (set! g-source-path save-path)
-                      (set! g-src save-src)
-                      (set! g-pos save-pos)
-                      (set! g-line save-line)
-                      (set! g-peek save-peek)
-                      (set! g-peek-valid save-peek-valid)
                       (set! g-current-ns save-ns)
                       (set! g-ns-seen save-ns-seen)
                       (set! g-file-imports save-file-imports))))))))))
       (set! fc ((unsafe/cast ref:Node fc) 'cdr)))))
-
-(defn emit-def-rmacro (call:(raw Node)):void
-  (let (cc:ptr:Node (unsafe/cast ref:Node call))
-    (when (!= (node-len cc) 3)
-      (die-at (cc 'line) "def-rmacro: expects (def-rmacro \"prefix\" symbol)"))
-    (let (prefix-node:ptr:Node (unsafe/cast ref:Node (node-at cc 1))
-          sym-node:ptr:Node (unsafe/cast ref:Node (node-at cc 2)))
-      (when (!= (prefix-node 'kind) NODE-STR)
-        (die-at (prefix-node 'line) "def-rmacro: prefix must be a string"))
-      (when (!= (sym-node 'kind) NODE-SYM)
-        (die-at (sym-node 'line) "def-rmacro: wrap symbol must be a symbol"))
-      (register-rmacro (prefix-node 's) (sym-node 's)))))
 
 ; Stage 12 namespaces. Validate an `(ns NAME)` form and set the current
 ; namespace. `ns` is deliberately minimal — it sets the namespace and nothing
@@ -18421,7 +18429,8 @@
             'defmacro
               (emit-defmacro (as ptr f))
             'def-rmacro
-              (emit-def-rmacro (as ptr f))
+              ; The reader registered and validated it as it read the file.
+              0
             ; Stage 12 N3: private definers — same as their public counterparts
             ; but with g-defining-private=1 set around the call. For link-emitting
             ; forms (defn-/defvar-) this drives internal LLVM linkage and sets
@@ -18896,12 +18905,7 @@
                       (note-import-cycle path line)
                       (return))
                     (set! start-len ((as ref:Scope g-globals) 'len))
-                    (let (save-src:ptr g-src
-                          save-pos:i64 g-pos
-                          save-line:i32 g-line
-                          save-path:Symbol g-source-path
-                          save-peek:ptr g-peek
-                          save-peek-valid:i32 g-peek-valid
+                    (let (save-path:Symbol g-source-path
                           save-ns:Symbol g-current-ns
                           save-ns-seen:i32 g-ns-seen
                           ; Stage 15 B1: the imported file gets its OWN import
@@ -18909,25 +18913,16 @@
                           ; a prefix file-scoped rather than unit-scoped.
                           save-file-imports:raw:ImportVec g-file-imports)
                       (set! g-importing (import-list-push g-importing path))
-                      (let (src:ptr (read-file path))
+                      (let (src:String (read-file path))
                         (set! g-source-path path)
-                        (set! g-src src)
-                        (set! g-pos 0)
-                        (set! g-line 1)
-                        (set! g-peek-valid 0)
                         (set! g-current-ns (symbol-intern "user"))
                         (set! g-ns-seen 0)
                         (set! g-file-imports null)
-                        (let (forms:ptr (desugar (read-program-or-die)))
+                        (let (forms:ptr (desugar (read-source-or-die (string-as-view &src))))
                           (emit-import-forms forms (str-ends-with path ".nuch") (ct-sink-here path))
-                          (free src)))
+                          (drop &src)))
                       (set! g-importing (import-list-pop g-importing))
                       (set! g-source-path save-path)
-                      (set! g-src save-src)
-                      (set! g-pos save-pos)
-                      (set! g-line save-line)
-                      (set! g-peek save-peek)
-                      (set! g-peek-valid save-peek-valid)
                       (set! g-current-ns save-ns)
                       (set! g-ns-seen save-ns-seen)
                       (set! g-file-imports save-file-imports))
@@ -19025,13 +19020,7 @@
                 (note-import-cycle path line)
                 (return))
               (set! start-len ((as ref:Scope g-globals) 'len))
-              ; Save reader state
-              (let (save-src:ptr g-src
-                    save-pos:i64 g-pos
-                    save-line:i32 g-line
-                    save-path:Symbol g-source-path
-                    save-peek:ptr g-peek
-                    save-peek-valid:i32 g-peek-valid
+              (let (save-path:Symbol g-source-path
                     ; Stage 12: the imported unit gets its own namespace state. It
                     ; starts in `user` (its own leading `ns`, if any, sets it) and
                     ; the importer's namespace is restored afterward, so neither
@@ -19045,29 +19034,19 @@
                 ; Push onto importing stack
                 (set! g-importing (import-list-push g-importing path))
                 ; Read and parse the imported file
-                (let (src:ptr (read-file path))
+                (let (src:String (read-file path))
                   (set! g-source-path path)
-                  (set! g-src src)
-                  (set! g-pos 0)
-                  (set! g-line 1)
-                  (set! g-peek-valid 0)
                   (set! g-current-ns (symbol-intern "user"))
                   (set! g-ns-seen 0)
                   (set! g-file-imports null)
-                  (let (forms:ptr (desugar (read-program-or-die)))
+                  (let (forms:ptr (desugar (read-source-or-die (string-as-view &src))))
                     ; Process imported forms
                     (emit-import-forms forms (str-ends-with path ".nuch") (ct-sink-here path))
                     ; Free imported source buffer
-                    (free src)))
+                    (drop &src)))
                 ; Pop from importing stack
                 (set! g-importing (import-list-pop g-importing))
-                ; Restore reader state
                 (set! g-source-path save-path)
-                (set! g-src save-src)
-                (set! g-pos save-pos)
-                (set! g-line save-line)
-                (set! g-peek save-peek)
-                (set! g-peek-valid save-peek-valid)
                 (set! g-current-ns save-ns)
                 (set! g-ns-seen save-ns-seen)
                 (set! g-file-imports save-file-imports))
@@ -19282,36 +19261,6 @@
 ; ============================================================
 ; Compiler initialization — shared by batch and REPL modes
 ; ============================================================
-
-(defn register-rmacro (prefix:Symbol wrap-sym:Symbol):void
-  (let (rm:ptr:RMacro (as ref:RMacro (arena-alloc (sizeof RMacro))))
-    (set! (rm 'prefix) (symbol-as-view prefix))
-    (set! (rm 'prefix-len) (unsafe/cast i32 (symbol-len prefix)))
-    (set! (rm 'wrap-sym) wrap-sym)
-    (conj g-rmacros rm)))
-
-; G-5: appends to the vector it is handed — see add-binop's note.
-(defn register-rmacro (v:(ref (Vector (ref RMacro))) prefix:StrView wrap-sym:StrView):void
-  (let (rm:ptr:RMacro (as ref:RMacro (arena-alloc (sizeof RMacro)))
-        pp:ptr:StrView &prefix)
-    (set! (rm 'prefix) prefix)
-    (set! (rm 'prefix-len) (unsafe/cast i32 (pp 'len)))
-    (set! (rm 'wrap-sym) (symbol-intern wrap-sym))
-    (conj v (as ref:RMacro rm))))
-
-(defn build-rmacros ():(ref (Vector (ref RMacro)))
-  (let (v:(ref (Vector (ref RMacro))) (vector-new-in (addr-of g-arena-alloc)))
-    ; Register longest prefixes first for correct matching.
-    (register-rmacro v "~@" "unquote-splice")
-    (register-rmacro v "~" "unquote")
-    (register-rmacro v "'" "quote")
-    (register-rmacro v "`" "quasiquote")
-    (register-rmacro v "@" "deref")
-    ; `&x` is `(addr-of x)`, fired only at a token boundary — the mid-atom `&`
-    ; type sigil is untouched, and a standalone `&T` reads as `(ref T)`
-    ; (design/stage16-ergonomics/ref-sigil.md §6).
-    (register-rmacro v "&" "addr-of")
-    (return v)))
 
 ; Register the built-in blanket protocols (§10.1). Hardcoded for now; a
 ; user-declarable blanket facility is parked in design/stage999-future.md.
@@ -20041,7 +19990,7 @@
     (when (symbol-none? source-file)
        (eprint "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [--mmcu=<device>] [--sysroot=<path>] [--linker=<cmd>] [--link-arg=<arg>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
     (set! g-source-path source-file)
-    (let (src:ptr (read-file g-source-path))
+    (let (src:String (read-file g-source-path))
       ; G-5: `compiler-init` is gone. Every global it used to build is now built
       ; by its own `defvar` initializer — the constants by the loader, the rest
       ; by `@__nucleus_init` before this function was entered. What is left is
@@ -20050,17 +19999,12 @@
       (target-init)
       (assert-compiler-arena-backed)
 
-      ; Lex/parse
-      (set! g-src src)
-      (set! g-pos 0)
-      (set! g-line 1)
-
-      (let (raw-forms:ptr (read-program-or-die))
+      (let (raw-forms:raw:Node (read-source-or-die (string-as-view &src)))
 
         ; Before `desugar` and before the prelude is prepended: what the reader
         ; alone produced, one top-level form per line.
         (when (!= g-dump-ast 0)
-          (let (cur:(raw Node) (as raw:Node raw-forms))
+          (let (cur:(raw Node) raw-forms)
             (while (!= cur null)
               (print-node (cur 'car))
               (emit (as ptr stdout) "\n")

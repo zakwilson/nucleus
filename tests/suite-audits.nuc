@@ -6,9 +6,9 @@
 ; the subject is a corpus or the source tree itself, not a fixture.
 ;
 ;   - The corpus walks — every `tests/fixtures/*.nuc` compiles without a line-0
-;     location; every readable file in four directories reads the same through
-;     `lib/read.nuc` as through `src/reader.nuc`. Both discover their inputs
-;     from the directory, so a new file is covered with no edit here.
+;     location; every readable file in four directories survives a print and
+;     re-read through `lib/read.nuc`. Both discover their inputs from the
+;     directory, so a new file is covered with no edit here.
 ;
 ;   - The spawns — the struct-ABI and struct-layout oracles, the two generated-
 ;     artifact audits and the CStr residue audit. §T7 rules these stay outside
@@ -209,8 +209,8 @@
     (drop (addr-of d))
     (return (ok seen))))
 
-; One unit per directory, as the reader-parity walks are: each is a ~40s corpus
-; compile, and the suite shards by unit.
+; One unit per directory: each is a ~40s corpus compile, and the suite shards
+; by unit.
 (deftest string-table-live-tests-fixtures
   (let (seen:i64 (try (str-table-live-over "tests/fixtures")))
     ; A sweep that swept nothing passes every assertion it never made.
@@ -257,76 +257,94 @@
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
-; Stage 18 TF-3: lib/read.nuc agrees with src/reader.nuc
+; Stage 21 R-4: what `node-write` prints reads back as the same tree
 ; ---------------------------------------------------------------------------
 
-(defn dump-ast (path:StrView):!Ran
-  (let (c:Command (command (compiler-path)))
-    (command-arg (addr-of c) "--dump-ast")
-    (command-arg (addr-of c) path)
-    (let (r:Ran (try (ran (addr-of c))))
-      (drop (addr-of c))
-      (return (ok r)))))
+; `node-write` is what `--emit-nuch` and `--dump-ast` print with, and neither
+; `check-headers` nor the IR snapshot can see a lossy printer: both compare the
+; compiler's output against itself. design/stage21-cleanup/one-reader.md §6.5.
 
-(defn read-dump (path:StrView):!Ran
-  (let (c:Command (command "./build/readdump"))
-    (command-arg (addr-of c) path)
-    (let (r:Ran (try (ran (addr-of c))))
-      (drop (addr-of c))
-      (return (ok r)))))
+; The corpus files the reader refuses, and the code it must refuse them with.
+; A refusal anywhere else is a reader regression, not a file to skip.
+(defn reader-error-code-for (name:StrView):StrView
+  (when (= name "w4c-stray-close-paren.nuc") (return "read-unexpected-close"))
+  (when (= name "w4c-unterminated-deep.nuc") (return "read-unterminated-list"))
+  (when (= name "w4c-unterminated-deep-many.nuc") (return "read-unterminated-list"))
+  (when (= name "w4c-unterminated-last-form.nuc") (return "read-unterminated-list"))
+  (when (= name "w4c-unterminated-bracket.nuc") (return "read-unterminated-list"))
+  (when (= name "w5a-hex-escape-no-digit.nuc") (return "read-bad-escape"))
+  (return ""))
 
-; Both readers print the same canonical text, so a tree difference is a diff.
-; Collection literals (`[…]`, `{…}`, `#{…}`) are lib/read.nuc's one documented
-; exclusion — their desugaring infers an element type, which is compiler work —
-; and a rejection for any OTHER reason is a failure, so the exclusion cannot
-; quietly grow. Files the compiler itself cannot parse are the reader-error
-; fixtures and say nothing about the two readers agreeing.
-(defn reader-parity-over (dir:StrView):!void
+; One print must read back as exactly one form, or a printer that dropped a
+; bracket would still pass on a prefix.
+(defn check-forms-roundtrip (path:StrView forms:raw:Node):!void
+  (let (cur:raw:Node forms
+        k:i64 0)
+    (while (!= cur null)
+      (let (form:raw:Node (cur 'car)
+            text:String (node-str form))
+        (match (read-all (string-as-view (addr-of text)))
+          ((ok back)
+            (when (or (= back null) (!= (back 'cdr) null))
+              (fail! path ": form " k " printed as "
+                     (test-show (string-as-view (addr-of text)))
+                     "\n     which reads back as " (node-len back) " form(s), not 1"))
+            (when (not (node-eq form (back 'car)))
+              (fail! path ": form " k " does not survive print and re-read\n     "
+                     (test-show (string-as-view (addr-of text))))))
+          ((err e)
+            (fail! path ": form " k " printed as text the reader refuses ("
+                   (e 'msg) ")\n     " (test-show (string-as-view (addr-of text))))))
+        (drop (addr-of text)))
+      (set! k (+ k 1))
+      (set! cur (cur 'cdr))))
+  (return (ok)))
+
+; Returns the number of files that round-tripped; a refused file counts in
+; `refused` only when it is one of the six above, with the right code.
+(defn roundtrip-over (dir:StrView (refused (ref i64))):!i64
   (let (d:DirEntries (try (read-dir dir))
         n:usize (dir-count (addr-of d))
         i:usize 0
-        agreed:i64 0)
+        seen:i64 0)
     (while (< i n)
       (let (nm:StrView (dir-name (addr-of d) i))
         (when (strview-has-suffix nm ".nuc")
           (let (p:String (str dir "/" nm)
                 pv:StrView (string-as-view (addr-of p))
-                a:Ran (try (dump-ast pv)))
-            (when (a 'ok?)
-              (let (b:Ran (try (read-dump pv)))
-                (if (b 'ok?)
-                    (do (try (check-golden-in pv (string-as-view (addr-of b 'out))
-                                              (string-as-view (addr-of a 'out))))
-                        (set! agreed (+ agreed 1)))
-                    (when (not (contains? (string-as-view (addr-of b 'err))
-                                          "collection literals"))
-                      (fail! pv ": lib/read.nuc refused it, and not for collection"
-                             " literals\n     "
-                             (test-show (string-as-view (addr-of b 'err))))))
-                (drop (addr-of b))))
-            (drop (addr-of a))
+                text:String (try (read-file pv)))
+            (match (read-all (string-as-view (addr-of text)))
+              ((ok forms)
+                (when (!= (reader-error-code-for nm) "")
+                  (fail! pv ": expected the reader to refuse it with "
+                         (reader-error-code-for nm) ", but it read"))
+                (try (check-forms-roundtrip pv forms))
+                (set! seen (+ seen 1)))
+              ((err e)
+                (let (want:StrView (reader-error-code-for nm))
+                  (when (= want "")
+                    (fail! pv ": the reader refused it\n     line " (e 'line)
+                           ": " (e 'msg)))
+                  (when (!= (err-name (e 'code)) want)
+                    (fail! pv ": expected " want ", got " (err-name (e 'code))
+                           " (line " (e 'line) ": " (e 'msg) ")"))
+                  (set! (aref refused 0) (+ (aref refused 0) 1)))))
+            (drop (addr-of text))
             (drop (addr-of p)))))
       (set! i (+ i 1)))
     (drop (addr-of d))
-    (let (what:String (str dir " to hold a file both readers accept"))
-      (try (check (> agreed 0) (string-as-view (addr-of what))))
-      (drop (addr-of what))))
-  (return (ok)))
+    (return (ok seen))))
 
-(deftest reader-parity-tests-fixtures
-  (try (reader-parity-over "tests/fixtures"))
-  (return (ok)))
-
-(deftest reader-parity-examples
-  (try (reader-parity-over "examples"))
-  (return (ok)))
-
-(deftest reader-parity-lib
-  (try (reader-parity-over "lib"))
-  (return (ok)))
-
-(deftest reader-parity-src
-  (try (reader-parity-over "src"))
+(deftest reader-printer-roundtrip
+  (let (refused:i64 0
+        a:i64 (try (roundtrip-over "tests/fixtures" (addr-of refused)))
+        b:i64 (try (roundtrip-over "examples" (addr-of refused)))
+        c:i64 (try (roundtrip-over "lib" (addr-of refused)))
+        d:i64 (try (roundtrip-over "src" (addr-of refused))))
+    ; A sweep that swept nothing passes every assertion it never made -- and the
+    ; six refusals are part of what it must have reached.
+    (try (check (> (+ a (+ b (+ c d))) 200) "the corpus to hold more than 200 readable files"))
+    (try (check-eq-int refused 6 "reader-error fixtures refused")))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -389,21 +407,26 @@
 
   ; 4. A field carrying a `"` survives the round trip. The path is the reachable
   ;    one — a filename may hold any byte — and it exercises the same escaper
-  ;    every field uses. `readdump` reprints the canonical form, so the check is
+  ;    every field uses. `node-str` reprints the canonical form, so the check is
   ;    that lib/read.nuc read back the bytes the compiler wrote.
   (let (p:String (try (test-write-file "a\"b.nuc" "(defn main ():i32 (return (nope 1)))\n"))
         pv:StrView (string-as-view (addr-of p))
         r:Ran (try (nucleusc-raw "--diagnostics=sexp" pv))
         ev:StrView (string-as-view (addr-of r 'err)))
     (try (check-contains ev "a\\\"b.nuc"))
-    (let (q:String (try (test-write-file "q1.sexp" ev))
-          back:Ran (try (read-dump (string-as-view (addr-of q)))))
-      (when (not (back 'ok?))
-        (fail! "lib/read.nuc could not read the sexp diagnostic\n     "
-               (test-show (string-as-view (addr-of back 'err)))))
-      (try (check-golden (string-as-view (addr-of back 'out)) ev))
-      (drop (addr-of back))
-      (drop (addr-of q)))
+    (match (read-all ev)
+      ((ok forms)
+        (let (back:String (string-new)
+              cur:raw:Node forms)
+          (while (!= cur null)
+            (node-write (addr-of back) (cur 'car))
+            (str-into (addr-of back) "\n")
+            (set! cur (cur 'cdr)))
+          (try (check-golden (string-as-view (addr-of back)) ev))
+          (drop (addr-of back))))
+      ((err e)
+        (fail! "lib/read.nuc could not read the sexp diagnostic\n     line "
+               (e 'line) ": " (e 'msg))))
     (drop (addr-of r))
     (drop (addr-of p)))
   (return (ok)))

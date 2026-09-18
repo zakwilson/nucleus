@@ -115,3 +115,20 @@
        2. with-drop-method arms Drop only for TY-PTR bindings → a with-bound owning closure's synthesized drop does NOT fire at scope exit (export-from-with drop-firing is IR-level-only).
        3. Anonymous env types can't be named in let/with (no type inference) → closures must be passed inline as combinator args; can't bind-and-call-later.
        Net: the four forms compute correctly and derive conformances; only the owning-closure-Drop-firing-at-scope-exit demo is not end-to-end runnable. Mechanism is in place; awaits an ABI fix (#1) and a with-drop-method generalization (#2, scratch L5 limitation 1).
+
+
+
+## Large tasks: delegate to subagents first
+
+**Before starting any large task, stop and plan a subagent delegation strategy — do not begin doing the work yourself in this (orchestrating) session.** A task is "large" if it is multi-phase, spans multiple files, or you would describe it as large, complex, or multi-step. The moment you notice yourself acknowledging that a task is big is the trigger to delegate, not a reason to push ahead solo.
+
+- Read [context/local.md](context/local.md) for the available subagents and how to use them. It is **required reading for large tasks**, not just environment setup.
+- Split the work into chunks that each fit comfortably under 100K tokens of context, and dispatch each chunk to the appropriate subagent.
+- Keep this session lean: delegate code reading, implementation, building/testing, and doc updates. Reserve the main thread for planning and integration.
+- **Every delegation prompt that has a subagent write or modify compiler code must direct it to read [context/conventions.md](context/conventions.md) first.** Subagents start without this session's context and will otherwise re-hit documented traps (the `node-type`↔`emit-node` cross-file lockstep, format-helper segfaults, struct-field interning, `CStr`/`is-ptr-like` ABI).
+
+
+
+**Large or multi-phase tasks must be split up and delegated to subagents** to keep this (the orchestrating) session's context below 100K tokens. If you catch yourself acknowledging that a task is large, complex, or multi-step, that acknowledgement *is* the signal to delegate — plan the split before writing or reading code yourself. Working a large task directly in the main thread is a mistake, even if it feels faster.
+
+**Dispatch only one implementation subagent at a time** even when tasks seem like they should not conflict.
