@@ -63,17 +63,19 @@ fewer "convention, not a rule" edges in it.
    kind — filed as its own deferred item); landing it also fixed two
    pre-existing compiler bugs, a `coerce-via-cast-rule` struct-passing
    segfault reached through `defcast E Err` and a syntax error inside an
-   imported file killing the whole REPL session (one-reader.md §10). **One
-   step is still pending**, sequenced before item 1's boot refresh (§8):
-   delete `mint-collection-gensyms` (`src/nucleusc.nuc`) so
-   `emit-collection-lit` mints the gensym itself, absorbing the `__gs_N`
-   renumbering into that one refresh.
+   imported file killing the whole REPL session (one-reader.md §10). **The
+   last step landed 2026-09-18** with item 1's boot refresh (§8):
+   `mint-collection-gensyms` (`src/nucleusc.nuc`) is deleted,
+   `emit-collection-lit` mints the gensym itself, and the `__gs_N`
+   renumbering was absorbed by that one refresh (one-reader.md §10).
 
 ## Sequencing
 
 Item 2 lands between item 1's PK-1 and PK-2: **PK-1 → R-1, R-2 (R-3 optional)
 → PK-2, PK-3, PK-4a → delete the gensym walk → boot refresh → PK-5 →
-PK-4b, PK-6.** PK-1 is one line in each reader and stops the header leak now;
+PK-4b, PK-6.** Everything up to and including the boot refresh landed
+2026-09-18 (progress.md, "Boot refresh for Stage 21"); PK-5 is next.
+PK-1 is one line in each reader and stops the header leak now;
 PK-2 is structural in the reader and would otherwise be written twice; R is
 fixed-point-preserving on its own, so its gensym walk can be deleted as the last
 commit before the refresh and that one refresh absorbs the renumbering (deleting

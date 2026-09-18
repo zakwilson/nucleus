@@ -6600,6 +6600,12 @@ returns its own `E` and registers one `defcast E Err`, never side fields on a
 handle — `docs/errors.md`'s two-tier principle (`Err` the code, `(Result T E)`
 the payload).
 
+A collection literal reaches the compiler as `(vector-lit e …)` with **no**
+gensym element: `emit-collection-lit` mints the hygiene symbol itself, at
+emit, so `__gs_N` numbering is emission order and a `--dump-ast` tree carries
+none. Nothing may rely on the second element of a `*-lit` cell being anything
+but the first element.
+
 ## `readdir` order is not an ordering — `lib/file.nuc`'s `read-dir` sorts
 
 `read-dir` returns entries **sorted by name**, and the compiler's

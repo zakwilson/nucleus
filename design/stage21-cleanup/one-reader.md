@@ -702,3 +702,17 @@ Corrections to the design above, found while landing R-1 … R-4. Facts only.
 * **`make test`: 1048 passed** (was 1046) — the reader-parity/`readdump`
   retirement and the four new `suite-s21.nuc` units roughly offset.
   `make bootstrap` byte-identical throughout; no boot refresh needed.
+* **§4f done 2026-09-18, after PK-3/PK-4a: `mint-collection-gensyms` deleted**
+  and `emit-collection-lit` mints the gensym where the body is built, so a
+  literal's `__gs_N` is numbered in emission order rather than read post-order.
+  Gated as §4f says — `build/nucleusc.ll` vs `build/stage2.ll` normalised on
+  `__gs_N` is identical (41,172 raw diff lines, 0 after; 3,479 gensyms a side)
+  and the stage-2 binary recompiles the source byte-identically — then the
+  boot refreshed (pointer-kind-spellings.md §9 step 2). `ir-snapshot.sh
+  verify` moved **nothing** (0 of 2,750): no corpus program has a literal
+  nested in another or a gensym-minting macro expanded before one, so the
+  two orders coincide everywhere in the tree; a probe with both renumbers
+  and is identical normalised. `--dump-ast` lost the `__gs_N` element in
+  exactly ten inputs (the seven `*-lit` examples, `src/cheader.nuc`,
+  `src/generics.nuc`, `src/nucleusc.nuc`); the s21 pin at
+  `tests/suite-s21.nuc` updated. Numbers in progress.md.
