@@ -11,14 +11,15 @@ fewer "convention, not a rule" edges in it.
 
 ## Items
 
-1. **Pointer-kind and type-sigil spellings** — **PK-1 built 2026-09-18** —
+1. **Pointer-kind and type-sigil spellings** — **PK-1 and PK-2 built 2026-09-18** —
    [pointer-kind-spellings.md](pointer-kind-spellings.md) (designed 2026-09-16,
    PK-1 … PK-6). `&` becomes `ref` in both the type and the value world, so a
    standalone `&T` is the same node the type path already canonicalises and
    `--emit-nuch` stops printing `addr-of` into committed headers; the
    colon-paren fuse gates on an *open* final chain segment and moves into
-   `read-form`, so `?(Vector i32)`, `!(…)`, `?!(…)`, `&?(…)` parse in every
-   position (today they parse in none); a bare-sigil head `(? X)` is the
+   `rd-form` (PK-2, made once in `lib/read.nuc`), so `?(Vector i32)`, `!(…)`,
+   `?!(…)`, `&?(…)` *read* as `(? (Vector i32))` etc. in every position (before,
+   the paren form dangled as a sibling in all of them); a bare-sigil head `(? X)` is the
    canonical list form; the generic-pattern walkers learn that a sigil over a
    concrete type is concrete (closing a soundness hole where `(Vector i32)` was
    accepted for `(Vector ?Pt)`); after one boot refresh a paren-aware sweep

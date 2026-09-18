@@ -6,7 +6,11 @@ and there is no twin; `.ll` artifacts that *contain* the reader — `lib/read.nu
 `lib/test.nuc` and their importers — move by that one string constant, which §9
 step 1's "no `.ll` differs" did not foresee; the value-path reach list needed one
 site §3 missed, `emit-callable-value`'s `q:(ref T)` annotation guard, which
-`(cb &x)` now reaches; see progress.md). PK-2 … PK-6 not built. Every claim in
+`(cb &x)` now reaches; see progress.md). **PK-2 built 2026-09-18**, made once in
+`lib/read.nuc` (the only reader since item 2): `rd-open-segment?` is the gate,
+the split strips one trailing `:`, and the call moved from `rd-list` into
+`rd-form` (`rd-atom-form`); `dump-ast-corpus.sh verify` moved no input but
+`lib/read.nuc` itself, confirming §1.5's census. PK-3 … PK-6 not built. Every claim in
 §1 was reproduced against `build/nucleusc` on 2026-09-16 (probe generator and
 full run kept beside this document's research pass; the 437-row matrix is
 summarised in §1.1). Milestones are **PK-1 … PK-6**; §9 sequences them across

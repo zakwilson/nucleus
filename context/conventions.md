@@ -1546,8 +1546,9 @@ rule rather than two.
 
 `(fn ret)` and its parameter list are separate list elements
 (`((fn ret) (params))` canonical), so the colon-paren binding fuse
-(`rd-fuse-colon-paren`, `lib/read.nuc`) — which absorbs *one* paren form after a
-trailing-colon atom — cannot express a function-pointer type by itself.
+(`rd-fuse-colon-paren`, `lib/read.nuc`) — which absorbs *one* paren form after an
+atom whose final chain segment is open (`x:`, `x:?`, `?`; Stage 21 PK-2, called
+from `rd-form` on every atom) — cannot express a function-pointer type by itself.
 `rd-fuse-fn-params` (added in W5f, called from `rd-fuse-colon-paren` right after the
 first recursive read) absorbs a **second, immediately-adjacent** group when the
 first is `(fn …)`-headed, producing the nested `((fn ret) (params))` — which
@@ -6043,7 +6044,7 @@ spelling, because that is where `?T` and `!T` live. They are not, and Stage 16's
 
 A colon-chain spelling is consumed by at least four independent readers before
 (and instead of) the type parser: `split-colon-segments` / `desugar-symbol` cut
-a binding's `name:type`, `fuse-colon-paren` joins a trailing-colon atom to an
+a binding's `name:type`, `rd-fuse-colon-paren` joins an open-segment atom to an
 adjacent paren form, `collect-pattern-tyvars` walks a *type pattern* looking for
 tyvars, and `unify-tpat` / `pattern-determines-tyvar` mirror it. Add the sugar
 at the parser and each of those needs its own arm — and the one that bites is

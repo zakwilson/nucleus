@@ -421,7 +421,11 @@ A macro call can stand where a definition stands, and expands into one:
 
 Note the list form `(fst ~a)` rather than `fst:~a`: a colon chain is one symbol
 token, so an unquote inside it is not seen. This is the same rule
-[typed bindings](types.md) follow anywhere a type is computed.
+[typed bindings](types.md) follow anywhere a type is computed. The other order
+does not help either: `~name:(T)` reads as `(unquote (name (T)))` — the
+colon-paren fuse fires on the unquote's operand like on any atom — which
+evaluates `(name (T))` as a call at expansion time, so the list form
+`(~name (T))` remains the template idiom.
 
 The built-in top-level forms win their own names — expansion is tried only for a
 head the compiler does not recognise, so a macro can never change what `defn`
