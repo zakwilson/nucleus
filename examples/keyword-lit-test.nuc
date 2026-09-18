@@ -21,26 +21,26 @@
 
 (defn main ():i32
   ; Set: the repeated :foo dedupes, as an interned identity should.
-  (with ((s (ref (HashSet Keyword))) #{:foo :bar :foo})
+  (with (s:&(HashSet Keyword) #{:foo :bar :foo})
     (printf "set n=%llu\n" (as ui64 (count s)))          ; set n=2
     (printf "set foo=%d\n" (contains? s :foo))            ; set foo=1
     (printf "set baz=%d\n" (contains? s :baz)))           ; set baz=0
 
   ; Map: keyword keys, i32 values — each side infers independently.
-  (with ((m (ref (HashMap Keyword i32))) {:a 1 :b 2})
+  (with (m:&(HashMap Keyword i32) {:a 1 :b 2})
     (match (m :a) ((some v) (printf "map a=%d\n" v)) (none (printf "map a=?\n")))
     (match (m :b) ((some v) (printf "map b=%d\n" v)) (none (printf "map b=?\n")))
     (match (m :z) ((some v) (printf "map z=%d\n" v)) (none (printf "map z=none\n"))))
 
   ; Vector: ordered, duplicates kept.
-  (with ((v (ref (Vector Keyword))) [:x :y :x])
+  (with (v:&(Vector Keyword) [:x :y :x])
     (printf "vec n=%llu\n" (as ui64 (count v)))          ; vec n=3
     (printf "vec x=%d\n" (contains? v :x))                ; vec x=1
     (printf "vec z=%d\n" (contains? v :z)))               ; vec z=0
 
   ; A literal keyword and one reached through a binding are the same value.
   (let (k:Keyword :foo)
-    (with ((s2 (ref (HashSet Keyword))) #{:foo})
+    (with (s2:&(HashSet Keyword) #{:foo})
       (printf "interned=%d\n" (contains? s2 k))))         ; interned=1
 
   (printf "done\n")

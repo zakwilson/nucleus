@@ -8,12 +8,12 @@
 
 ; (Maybe i64) over a non-pointer. Parenthesized types use the list form in
 ; binding/return positions (the name:(...) colon sugar does not parse there).
-(defn half (n:i64) (Maybe i64)
+(defn half (n:i64):?i64
   (when (!= (% n 2) 0)
     (return none))                          ; bare none target-types here
   (return (some (/ n 2))))        ; (some v) target-types here
 
-(defn show ((m (Maybe i64))):void
+(defn show (m:?i64):void
   (match m
     ((some v) (printf "some %lld\n" v))
     (none     (printf "none\n"))))
@@ -39,8 +39,8 @@
 (defn main ():i32
   (show (half 8))
   (show (half 7))
-  (show (make (Maybe i64) some 99))
-  (show (make (Maybe i64) none))
+  (show (make ?i64 some 99))
+  (show (make ?i64 none))
   (show-r (lookup 5))
   (show-r (lookup 0))
   (show-r (lookup -1))

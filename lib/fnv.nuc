@@ -30,7 +30,7 @@
 ; Fold `n` bytes at `p`, seeded with the offset basis, narrowed to usize.
 ; `unsafe/cast`, not `as`: the fold is i64 on every target and usize is 16-bit
 ; on AVR, where `as` would refuse the narrowing.
-(defn fnv1a-bytes (p:(ptr ui8) n:usize):usize
+(defn fnv1a-bytes (p:&ui8 n:usize):usize
   (let (h:i64 -3750763034362895579
         i:usize 0)
     (while (< i n)

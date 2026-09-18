@@ -52,7 +52,7 @@
 ; cannot express in the type, hence `unsafe/cast`. malloc's alignment is at
 ; least usize's, and the header is a whole number of words, so `p` is aligned.
 (defn symbol-header (self:Symbol):&SymHeader
-  (return (unsafe/cast ptr:SymHeader
+  (return (unsafe/cast &SymHeader
             (unsafe/ptr+ (self 'p) (- 0 (as i64 (sizeof SymHeader)))))))
 
 (defn symbol-len (self:Symbol):usize
@@ -135,12 +135,12 @@
   (exit 1))
 
 ; The interned block for `src`/`n`, NUL-terminated, with its header filled in.
-(defn intern-alloc-bytes (src:(ptr ui8) n:usize h:usize):(ptr ui8)
+(defn intern-alloc-bytes (src:&ui8 n:usize h:usize):&ui8
   (let (hdrsz:i64 (as i64 (sizeof SymHeader))
         base:?ptr (malloc (+ hdrsz (as i64 (+ n 1)))))
     (when (= base null) (intern-oom))
-    (let (p:(ptr ui8) (as ptr:ui8 (unsafe/ptr+ (as ptr:ui8 base) hdrsz))
-          hdr:&SymHeader (unsafe/cast ptr:SymHeader base))
+    (let (p:&ui8 (as &ui8 (unsafe/ptr+ (as &ui8 base) hdrsz))
+          hdr:&SymHeader (unsafe/cast &SymHeader base))
       (set! (hdr 'hash) h)
       (set! (hdr 'len) n)
       (when (> n 0) (memcpy (as ptr p) (as ptr src) (as i64 n)))
@@ -149,12 +149,12 @@
 
 ; Place an already-interned pointer into `tbl`. Only ever called with a key not
 ; present, so it stops at the first empty slot without comparing.
-(defn intern-place (tbl:ptr cap:usize p:(ptr ui8) h:usize):void
+(defn intern-place (tbl:ptr cap:usize p:&ui8 h:usize):void
   (let (mask:usize (- cap 1)
         i:usize (bit-and h mask))
-    (while (!= (aref (as ptr:ptr tbl) (as i64 i)) null)
+    (while (!= (aref (as &ptr tbl) (as i64 i)) null)
       (set! i (bit-and (+ i 1) mask)))
-    (set! (aref (as ptr:ptr tbl) (as i64 i)) (as ptr p))))
+    (set! (aref (as &ptr tbl) (as i64 i)) (as ptr p))))
 
 (defn intern-grow (newcap:usize):void
   (let (nt:?ptr (calloc (as i64 newcap) (sizeof ptr)))
@@ -162,9 +162,9 @@
     (when (!= g-sym-table null)
       (let (i:usize 0)
         (while (< i g-sym-cap)
-          (let (e:?ptr (aref (as ptr:ptr g-sym-table) (as i64 i)))
+          (let (e:?ptr (aref (as &ptr g-sym-table) (as i64 i)))
             (when (!= e null)
-              (let (ep:(ptr ui8) (as ptr:ui8 e)
+              (let (ep:&ui8 (as &ui8 e)
                     es:&Symbol (alloca Symbol))
                 (set! (es 'p) ep)
                 (intern-place nt newcap ep (symbol-cached-hash @es))))
@@ -175,7 +175,7 @@
 
 ; The canonical Symbol for these bytes. Two calls with equal bytes return the
 ; same pointer, which is the whole contract.
-(defn symbol-intern-bytes (src:(ptr ui8) n:usize):Symbol
+(defn symbol-intern-bytes (src:&ui8 n:usize):Symbol
   (when (= g-sym-table null) (intern-grow (as usize INTERN-INIT-CAP)))
   ; Grow at 3/4 load: linear probing degrades sharply past that.
   (when (>= (* (+ g-sym-count 1) 4) (* g-sym-cap 3))
@@ -185,14 +185,14 @@
         i:usize (bit-and h mask)
         s:&Symbol (alloca Symbol))
     (while true
-      (let (e:?ptr (aref (as ptr:ptr g-sym-table) (as i64 i)))
+      (let (e:?ptr (aref (as &ptr g-sym-table) (as i64 i)))
         (when (= e null)
-          (let (p:(ptr ui8) (intern-alloc-bytes src n h))
+          (let (p:&ui8 (intern-alloc-bytes src n h))
             (intern-place g-sym-table g-sym-cap p h)
             (set! g-sym-count (+ g-sym-count 1))
             (set! (s 'p) p)
             (return @s)))
-        (set! (s 'p) (as ptr:ui8 e))
+        (set! (s 'p) (as &ui8 e))
         (when (and (= (symbol-len @s) n)
                    (or (= n 0)
                        (= (memcmp (as ptr (s 'p)) (as ptr src) (as i64 n)) 0)))
@@ -200,7 +200,7 @@
       (set! i (bit-and (+ i 1) mask)))
     (return @s)))
 
-(defn symbol-intern ((sv (ref StrView))):Symbol
+(defn symbol-intern (sv:&StrView):Symbol
   (return (symbol-intern-bytes (sv 'data) (sv 'len))))
 
 ; The by-value convenience beside the by-reference primitive, for the same
@@ -211,7 +211,7 @@
   (return (symbol-intern &sv)))
 
 (defn symbol-from-cstr ((cs CStr)):Symbol
-  (return (symbol-intern-bytes (as ptr:ui8 (as ptr cs))
+  (return (symbol-intern-bytes (as &ui8 (as ptr cs))
                                (as usize (strlen (as ptr cs))))))
 
 ; The exact inverse of `symbol-as-cstr`, for a `Symbol` parked in a
@@ -220,7 +220,7 @@
 ; re-find the entry it already is.
 (defn symbol-from-cstr-unchecked ((cs CStr)):Symbol
   (let (s:&Symbol (alloca Symbol))
-    (set! (s 'p) (unsafe/cast (ptr ui8) (as ptr cs)))
+    (set! (s 'p) (unsafe/cast &ui8 (as ptr cs)))
     (return @s)))
 
 ; How many distinct names are interned. For diagnostics and the B4 benchmark.

@@ -5,5 +5,5 @@
 (declare append ((a ptr) (b ptr)) :ptr)
 (defstruct ListIter (cur ptr))
 (extend ListIter (Iterator ptr))
-(declare next ((self (ref ListIter))) (Maybe ptr))
+(declare next ((self (ref ListIter))) :?ptr)
 (declare list-iter ((lst ptr)) :ListIter)

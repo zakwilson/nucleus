@@ -23,17 +23,17 @@
 
 ; A single, single-method user protocol: `describe` maps a value to an int.
 (defprotocol Describe
-             (describe ((self (ref Self))) i32))
+             (describe (self:&Self) i32))
 
 ; Two DISTINCT concrete types that nominally extend Describe.
 (defstruct Cat n:i32)
 (extend Cat Describe)
-(defn describe ((self (ref Cat))):i32
+(defn describe (self:&Cat):i32
   (return (+ 100 (self 'n))))
 
 (defstruct Dog tag:i32)
 (extend Dog Describe)
-(defn describe ((self (ref Dog))):i32
+(defn describe (self:&Dog):i32
   (return (* 10 (self 'tag))))
 
 ; (B2) A defn whose return type is the unbound-abstract `(dyn Describe)`. Each
@@ -69,7 +69,7 @@
   ; then iterate, dispatch `describe` through the vtable, and drop each box element
   ; exactly once. The Vector's own Drop frees the buffer at scope exit. No leak,
   ; no double-free.
-  (with ((v (ref (Vector (dyn Describe)))) (alloca (Vector (dyn Describe))))
+  (with (v:&(Vector (dyn Describe)) (alloca (Vector (dyn Describe))))
     (vector-init v)
     (let (cat:(dyn Describe)  (Cat 1)
           dog:(dyn Describe)  (Dog 2)

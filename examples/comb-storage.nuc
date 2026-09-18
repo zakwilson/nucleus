@@ -13,7 +13,7 @@
 (import-use vector)
 
 (defn main ():i32
-  (with ((v (ref (Vector (BoxedFn (i32) i32)))) (alloca (Vector (BoxedFn (i32) i32))))
+  (with (v:&(Vector (BoxedFn (i32) i32)) (alloca (Vector (BoxedFn (i32) i32))))
     (vector-init v)
     ; compose: x -> (x*2)+1
     (let (c0:(BoxedFn (i32) i32)

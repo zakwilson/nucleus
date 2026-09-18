@@ -7,7 +7,7 @@
 
 ; arena-alloc aborts on exhaustion, so node allocation never yields null.
 (defn alloc-node ():&Node
-  (return (as ref:Node (arena-alloc (sizeof Node)))))
+  (return (as &Node (arena-alloc (sizeof Node)))))
 
 (defn make-cell (car:raw:Node cdr:raw:Node line:i32):&Node
   (let (c:&Node (alloc-node))
@@ -128,8 +128,8 @@
   (let (mask:i64 (as i64 (- cap 1))
         j:i64 (bit-and h mask))
     (while (!= 0 1)
-      (let (e:&InternEntry (as ptr:InternEntry
-                                    (unsafe/ptr+ (as ptr:InternEntry table) (unsafe/cast i32 j))))
+      (let (e:&InternEntry (as &InternEntry
+                                    (unsafe/ptr+ (as &InternEntry table) (unsafe/cast i32 j))))
         (when (symbol-none? (e 'spelling))
           (set! (e 'spelling) sp)
           (set! (e 'node) nd)
@@ -146,8 +146,8 @@
     (set! g-intern-table new-table)
     (let (i:i32 0)
       (while (< i old-cap)
-        (let (e:&InternEntry (as ptr:InternEntry
-                                      (unsafe/ptr+ (as ptr:InternEntry old-table) i)))
+        (let (e:&InternEntry (as &InternEntry
+                                      (unsafe/ptr+ (as &InternEntry old-table) i)))
           (when (not (symbol-none? (e 'spelling)))
             (sym-node-place new-table new-cap (e 'spelling) (e 'node)
                             (unsafe/cast i64 (symbol-cached-hash (e 'spelling))))))
@@ -163,8 +163,8 @@
   (let (mask:i64 (as i64 (- g-intern-cap 1))
         j:i64 (bit-and (unsafe/cast i64 (symbol-cached-hash sym)) mask))
     (while (!= 0 1)
-      (let (e:&InternEntry (as ptr:InternEntry
-                                    (unsafe/ptr+ (as ptr:InternEntry g-intern-table) (unsafe/cast i32 j))))
+      (let (e:&InternEntry (as &InternEntry
+                                    (unsafe/ptr+ (as &InternEntry g-intern-table) (unsafe/cast i32 j))))
         (when (symbol-none? (e 'spelling))
           (let (nd:&Node (alloc-node))
             (set! (nd 'kind) NODE-SYM)

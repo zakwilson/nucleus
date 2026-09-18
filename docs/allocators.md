@@ -12,14 +12,14 @@ a backend ignores it. The byte type is `(raw ui8)` (= C `unsigned char *`):
 
 ```lisp
 (defprotocol Allocator
-  ((alloc   (raw ui8)) ((self (ref Self)) size:usize align:usize))
-  ((realloc (raw ui8)) ((self (ref Self)) (p (raw ui8)) old:usize new:usize align:usize))
-  (free:void           ((self (ref Self)) (p (raw ui8)) size:usize align:usize)))
+  (alloc   (self:&Self size:usize align:usize) (raw ui8))
+  (realloc (self:&Self (p (raw ui8)) old:usize new:usize align:usize) (raw ui8))
+  (free    (self:&Self (p (raw ui8)) size:usize align:usize):void))
 ```
 
-Note the **list-form method names** (`(alloc (raw ui8))`, not `alloc:(raw ui8)`):
-a parenthesised type does not tokenise in a colon return/parameter position, so
-both the name's return type and `(raw ui8)` parameters use the list binding form.
+A method's return type follows its parameter list — `(raw ui8)` as a list, or
+attached as `):void` / `):(raw ui8)`; `(p (raw ui8))` and `p:(raw ui8)` are the
+same parameter.
 
 ## Runtime dispatch: `AllocHandle`
 

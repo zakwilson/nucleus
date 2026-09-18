@@ -98,7 +98,7 @@
   (let (v:StrView (string-as-view b)
         n:usize (v 'len))
     (when (> n mark)
-      (string-push-bytes-raw (unsafe/cast ref:String f)
+      (string-push-bytes-raw (unsafe/cast &String f)
                              (unsafe/ptr+ (v 'data) (as i64 mark)) (- n mark)))
     (string-truncate-unchecked b mark)))
 
@@ -114,11 +114,11 @@
   (when (= f null) (return))
   (let (v:StrView (string-as-view src))
     (when (> (v 'len) 0)
-      (string-push-bytes-raw (unsafe/cast ref:String f) (v 'data) (v 'len)))))
+      (string-push-bytes-raw (unsafe/cast &String f) (v 'data) (v 'len)))))
 
 (defmacro emit (sink :rest parts)
   (let (b:ptr (gensym) m:ptr (gensym))
-    `(let ((~b (ref String)) (emit-buf))
+    `(let ((~b &String) (emit-buf))
        (let (~m (byte-len ~b))
          (str-into ~b ~@parts)
          (emit-flush ~sink ~b ~m)))))
@@ -141,7 +141,7 @@
 
 (extend Hex ToStr)
 (defn to-str (self:Hex out:&String):!void
-  (let (buf:ptr:ui8 (as ref:ui8 (alloca ui8 16))
+  (let (buf:ptr:ui8 (as &ui8 (alloca ui8 16))
         x:ui64 (as ui64 (self 'v))
         n:usize 0
         w:usize (as usize (self 'width)))

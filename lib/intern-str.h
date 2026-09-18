@@ -14,7 +14,7 @@ size_t byte_len_pSymbol(struct Symbol* self) asm("byte_len.pSymbol");
 struct ByteIter bytes_pSymbol(struct Symbol* self) asm("bytes.pSymbol");
 struct StrView as_view_pSymbol(struct Symbol* self) asm("as_view.pSymbol");
 /* sub-bytes: uses an error-union or option type; not exported */
-/* byte-find: uses a defunion-template instance type; not exported */
+/* byte-find: uses an error-union or option type; not exported */
 size_t char_count_pSymbol(struct Symbol* self) asm("char_count.pSymbol");
 bool str_empty_QMARK_pSymbol(struct Symbol* self) asm("str_empty_QMARK.pSymbol");
 /* char-at: uses an error-union or option type; not exported */

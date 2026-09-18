@@ -11,7 +11,7 @@
 (import-use allocator)
 
 (defn main ():i32
-  (let ((r (ref IntRangeIter)) (alloca IntRangeIter)
+  (let (r:&IntRangeIter (alloca IntRangeIter)
         h:&AllocHandle (default-allocator)
         mult:i32 3)
 

@@ -36,7 +36,7 @@
 (defn main ():i32
   ; One shared iterator slot. `reduce` advances it to exhaustion, so reset
   ; start/end before each fold.
-  (let ((r (ref IntRangeIter)) (alloca IntRangeIter))
+  (let (r:&IntRangeIter (alloca IntRangeIter))
     (set! (r 'start) 1)
     (set! (r 'end) 6)
 

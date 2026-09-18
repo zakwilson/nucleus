@@ -21,7 +21,7 @@
   (printf "tick\n"))
 
 (defn think (arg:ptr):i32
-  (printf "think %d\n" (deref (unsafe/cast ptr:i32 arg)))
+  (printf "think %d\n" (deref (unsafe/cast &i32 arg)))
   (return 7))
 
 (defn add (a:i32 b:i32):i32 (return (+ a b)))
@@ -44,7 +44,7 @@
 
 (defn main ():i32
   (let (r:&Row (alloca Row)
-        (slot (ptr (union acv:(fn void)() ac1:(fn i32)(ptr) n:i32))) (addr-of r 'action)
+        slot:&(union acv:(fn void)() ac1:(fn i32)(ptr) n:i32) (ref r 'action)
         v:i32 41)
     (set! (r 'tics) 3)
     (printf "tics %d\n" (r 'tics))
@@ -62,12 +62,12 @@
     (printf "n %d\n" (slot 'n))
 
     ; 4a. the standalone global union
-    (let (gp:(ptr (union acv:(fn void)() ac1:(fn i32)(ptr) n:i32)) &g-slot)
+    (let (gp:&(union acv:(fn void)() ac1:(fn i32)(ptr) n:i32) &g-slot)
       (set! (gp 'acv) tick)
       (funcall (gp 'acv)))
 
     ; 4b. a standalone local union — never a struct field
-    (let (lp:(ptr (union acv:(fn void)() ac1:(fn i32)(ptr) n:i32))
+    (let (lp:&(union acv:(fn void)() ac1:(fn i32)(ptr) n:i32)
               (alloca (union acv:(fn void)() ac1:(fn i32)(ptr) n:i32)))
       (set! (lp 'ac1) think)
       (printf "ret %d\n" (funcall (lp 'ac1) (unsafe/cast ptr &v))))

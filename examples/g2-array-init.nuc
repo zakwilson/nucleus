@@ -132,9 +132,9 @@
     (printf "row-layout %d %s %s\n"
       (unsafe/cast i32 (sizeof Row))
       ; cells starts at offset 4 (i8 + 3 pad), mark at 20, total 24.
-      (agree (off (unsafe/cast ptr r) (unsafe/cast ptr (addr-of r 'cells))) 4)
-      (agree (off (unsafe/cast ptr r) (unsafe/cast ptr (addr-of r 'mark))) 20))
+      (agree (off (unsafe/cast ptr r) (unsafe/cast ptr (ref r 'cells))) 4)
+      (agree (off (unsafe/cast ptr r) (unsafe/cast ptr (ref r 'mark))) 20))
     (printf "grid-layout %d %s\n"
       (unsafe/cast i32 (sizeof Grid))
-      (agree (off (unsafe/cast ptr g) (unsafe/cast ptr (addr-of g 'n))) 16)))
+      (agree (off (unsafe/cast ptr g) (unsafe/cast ptr (ref g 'n))) 16)))
   (return 0))

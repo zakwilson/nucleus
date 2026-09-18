@@ -25,7 +25,7 @@
 ; Selector position, where a bare symbol otherwise always names a FIELD: the
 ; annotation is what says "this is a value". `(m k:CStr)` is a keyed lookup,
 ; never a field called `k:CStr` — a field name can never carry a colon.
-(defn describe ((m (ref (HashMap CStr i32))) k:ptr):void
+(defn describe (m:&(HashMap CStr i32) k:ptr):void
   (match (m k:CStr)
     ((some v) (printf "%s -> %d\n" k v))
     (none     (printf "%s -> absent\n" k))))
@@ -40,7 +40,7 @@
     ; The sugar attaches to a NAME. A computed operand still spells `as` in
     ; full — `(as ptr:i8 "world"):CStr` would lex `:CStr` as a keyword.
     (take-cstr s:CStr)
-    (take-cstr (as CStr (as ptr:i8 "world")))
+    (take-cstr (as CStr (as &i8 "world")))
     ; pointer weakening: ref -> raw
     (set! (r 'k) 7)
     (printf "k: %d\n" (rec-k r:raw:Rec))
@@ -49,9 +49,9 @@
     (dotimes (i:i32 3)
       (printf "i: %d\n" i:i32))
     (printf "big: %ld\n" big:i64)
-    (lookup (as ptr:i8 "foo"))
-    (lookup (as ptr:i8 "quux"))
-    (let ((counts (ref (HashMap CStr i32))) {"a" 1 "b" 2})
+    (lookup (as &i8 "foo"))
+    (lookup (as &i8 "quux"))
+    (let (counts:&(HashMap CStr i32) {"a" 1 "b" 2})
       (describe counts "a")
       (describe counts "zz"))
     (return 0)))

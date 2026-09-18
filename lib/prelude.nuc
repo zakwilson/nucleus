@@ -22,7 +22,7 @@
 ; so the reader, the macro JIT module and the bootstrap all need the type
 ; registered without importing anything. `lib/intern.nuc` provides the table
 ; and every method; this is only the bare data definition.
-(defstruct Symbol p:(ptr ui8))
+(defstruct Symbol p:&ui8)
 
 (defstruct Node
   kind:i32
@@ -49,7 +49,7 @@
 ; `(import-use strview)`. lib/strview.nuc still provides every method
 ; (`extend`/`defn`); this is only the bare data definition.
 (defstruct StrView
-  data:(ptr ui8)
+  data:&ui8
   len:usize)
 
 (import-use macros)
@@ -63,7 +63,7 @@
 ; only an owning (Drop) type hand-writes `clone` via `(extend <S> Clone)`. A
 ; protocol emits no IR, so this is byte-identical for programs that never use it.
 (defprotocol Clone
-  (clone ((self (ref Self))) Self))
+  (clone (self:&Self) Self))
 
 ; Stage 10 errors (design/stage10/errors.md §9): the generic Result template,
 ; always available so the `!T` sugar — `(Result T Err)` — works in any program.

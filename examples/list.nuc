@@ -16,7 +16,7 @@
 ; calloc, not malloc: `s` is a Symbol, which has no null value to assign — a
 ; cell simply has no name, and zeroed is what the arena's nodes are too.
 (defn cons (car:ptr cdr:ptr):ptr
-  (let (c:&Node (as ptr:Node (calloc 1 (sizeof Node))))
+  (let (c:&Node (as &Node (calloc 1 (sizeof Node))))
     (set! (c 'kind) 3)
     (set! (c 'line) 0)
     (set! (c 'i) 0)
@@ -26,11 +26,11 @@
 
 (defn first (n:ptr):ptr
   (cond (= n null) (return null))
-  (return ((as ptr:Node n) 'car)))
+  (return ((as &Node n) 'car)))
 
 (defn rest (n:ptr):ptr
   (cond (= n null) (return null))
-  (return ((as ptr:Node n) 'cdr)))
+  (return ((as &Node n) 'cdr)))
 
 (defn append (a:ptr b:ptr):ptr
   (cond (= a null) (return b))
@@ -38,19 +38,19 @@
 
 (defstruct ListIter cur:ptr)
 (extend ListIter (Iterator ptr))
-(defn next ((self (ref ListIter))) (Maybe ptr)
+(defn next (self:&ListIter):?ptr
   (let (c:ptr (self 'cur))
     (when (= c null) (return none))
     (set! (self 'cur) (rest c))
     (return (some (first c)))))
 
 (defn print-list (n:ptr):void
-  (let ((lit (ref ListIter)) (alloca ListIter))
+  (let (lit:&ListIter (alloca ListIter))
     (set! (lit 'cur) n)
     (let (first-item:i32 1)
       (printf "(")
       (doseq-iter (elem lit)
-        (let (node:&Node (as ptr:Node elem))
+        (let (node:&Node (as &Node elem))
           (when (= first-item 0) (printf " "))
           (cond (= (node 'kind) 0) (printf "%ld" (node 'i))
                 (= (node 'kind) 2) (printf "%s" (as ptr (symbol-as-cstr (node 's))))

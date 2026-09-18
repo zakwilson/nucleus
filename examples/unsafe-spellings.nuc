@@ -35,7 +35,7 @@
     (printf "unsafe/cast     = %u\n" (unsafe/cast ui32 n)))
 
   ; `unsafe/ptr+` — pointer arithmetic (D2 Class 2).
-  (let (p:&Pair (as ptr:Pair (malloc (* (as i64 2) (sizeof Pair)))))
+  (let (p:&Pair (as &Pair (malloc (* (as i64 2) (sizeof Pair)))))
     (set! (p 'a) 10)
     (set! (p 'b) 20)
     (let (r:&Pair (unsafe/ptr+ p 1))

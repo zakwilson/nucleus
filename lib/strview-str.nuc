@@ -19,17 +19,17 @@
 ; ByteI = ByteIter (defined in strview.nuc).
 ; ---------------------------------------------------------------------------
 (extend StrView (ByteStr ByteIter))
-(defn byte-len ((self (ref StrView))):usize
+(defn byte-len (self:&StrView):usize
   (strview-byte-len self))
-(defn byte-at ((self (ref StrView)) i:usize):!ui8
+(defn byte-at (self:&StrView i:usize):!ui8
   (strview-byte-at self i))
-(defn bytes ((self (ref StrView))):ByteIter
+(defn bytes (self:&StrView):ByteIter
   (strview-bytes self))
-(defn as-view ((self (ref StrView))):StrView
+(defn as-view (self:&StrView):StrView
   (strview-as-view self))
-(defn sub-bytes ((self (ref StrView)) start:usize end:usize):!StrView
+(defn sub-bytes (self:&StrView start:usize end:usize):!StrView
   (strview-sub-bytes self start end))
-(defn byte-find ((self (ref StrView)) (needle (ref StrView))) (Maybe usize)
+(defn byte-find (self:&StrView needle:&StrView):?usize
   (strview-find self needle))
 
 ; ---------------------------------------------------------------------------
@@ -37,17 +37,17 @@
 ; CharI = CharIter (defined in strview.nuc).
 ; ---------------------------------------------------------------------------
 (extend StrView (Str CharIter))
-(defn char-count ((self (ref StrView))):usize
+(defn char-count (self:&StrView):usize
   (strview-char-count self))
-(defn str-empty? ((self (ref StrView))):bool
+(defn str-empty? (self:&StrView):bool
   (strview-empty self))
-(defn char-at ((self (ref StrView)) i:usize):!Char
+(defn char-at (self:&StrView i:usize):!Char
   (strview-char-at self i))
-(defn chars ((self (ref StrView))):CharIter
+(defn chars (self:&StrView):CharIter
   (strview-chars self))
-(defn starts-with? ((self (ref StrView)) (prefix (ref StrView))):bool
+(defn starts-with? (self:&StrView prefix:&StrView):bool
   (strview-starts-with self prefix))
-(defn ends-with? ((self (ref StrView)) (suffix (ref StrView))):bool
+(defn ends-with? (self:&StrView suffix:&StrView):bool
   (strview-ends-with self suffix))
-(defn contains-str? ((self (ref StrView)) (needle (ref StrView))):bool
+(defn contains-str? (self:&StrView needle:&StrView):bool
   (strview-contains-str self needle))

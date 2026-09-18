@@ -23,7 +23,7 @@
 (defn box-ptr (x:i32):&Box (set! (&the-box 'v) x) &the-box)
 
 ; space-separated list-form ret (Maybe i32)
-(defn maybe-pos (x:i32) (Maybe i32)
+(defn maybe-pos (x:i32):?i32
   (when (> x 0) (return (some x)))
   (return none))
 

@@ -20,9 +20,9 @@
 (defn use-chboxed ():i32
   (let (b:&CHBoxed (alloca CHBoxed))
     (set! (b 'tag) 99)
-    (set! ((addr-of b 'p) 'x) 7)
-    (set! ((addr-of b 'p) 'y) 8)
-    (return (+ (get b 'tag) (+ (get (addr-of b 'p) 'x) (get (addr-of b 'p) 'y))))))
+    (set! ((ref b 'p) 'x) 7)
+    (set! ((ref b 'p) 'y) 8)
+    (return (+ (get b 'tag) (+ (get (ref b 'p) 'x) (get (ref b 'p) 'y))))))
 
 ; CHWithAnon's `point` field is an anonymous inline struct `{ int a; int b; }`
 ; — the c-header parser registers it as an anonymous (content-hashed)
@@ -30,9 +30,9 @@
 (defn use-chwithanon ():i32
   (let (w:&CHWithAnon (alloca CHWithAnon))
     (set! (w 'kind) 5)
-    (set! ((addr-of w 'point) 'a) 100)
-    (set! ((addr-of w 'point) 'b) 200)
-    (return (+ (get w 'kind) (+ (get (addr-of w 'point) 'a) (get (addr-of w 'point) 'b))))))
+    (set! ((ref w 'point) 'a) 100)
+    (set! ((ref w 'point) 'b) 200)
+    (return (+ (get w 'kind) (+ (get (ref w 'point) 'a) (get (ref w 'point) 'b))))))
 
 (defn main ():int
   (printf "chpoint=%d\n" (use-chpoint))

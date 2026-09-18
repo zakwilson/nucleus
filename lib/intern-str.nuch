@@ -10,7 +10,7 @@
 (declare bytes ((self (ref Symbol))) :ByteIter)
 (declare as-view ((self (ref Symbol))) :StrView)
 (declare sub-bytes ((self (ref Symbol)) (start usize) (end usize)) :!StrView)
-(declare byte-find ((self (ref Symbol)) (needle (ref StrView))) (Maybe usize))
+(declare byte-find ((self (ref Symbol)) (needle (ref StrView))) :?usize)
 (extend Symbol (Str CharIter))
 (declare char-count ((self (ref Symbol))) :usize)
 (declare str-empty? ((self (ref Symbol))) :bool)

@@ -8,7 +8,7 @@
 (deferror parse-error "parse error")
 
 (defn cstr-byte-at (s:ptr pos:i64):i32
-  (return (bit-and (as i32 (aref (as ref:i8 s) pos)) 255)))
+  (return (bit-and (as i32 (aref (as &i8 s) pos)) 255)))
 
 ; Its `StrView` peer, for the scanners that bound `i` themselves — the library's
 ; `strview-byte-at` returns `!ui8`, a `try` per byte on a per-character loop.
@@ -32,7 +32,7 @@
   path:Symbol
   line:i32
   message:StrView
-  notes:(ref (Vector StrView)))
+  notes:&(Vector StrView))
 
 ; 0 = the human rendering (`path:line: error: msg`), 1 = `--diagnostics=sexp`.
 ; Both write to stderr: the flag changes the shape, never the stream, so a

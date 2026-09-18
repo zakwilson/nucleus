@@ -13,7 +13,7 @@ typedef struct ByteIter {
     size_t len;
 } ByteIter;
 
-/* next: uses a defunion-template instance type; not exported */
+/* next: uses an error-union or option type; not exported */
 size_t strview_hash(struct StrView* sv) asm("strview-hash");
 struct StrView strview(uint8_t* data, size_t len);
 struct StrView strview_from_cstr(const char* cs) asm("strview-from-cstr");
@@ -26,7 +26,7 @@ typedef struct CharIter {
     size_t len;
 } CharIter;
 
-/* next: uses a defunion-template instance type; not exported */
+/* next: uses an error-union or option type; not exported */
 size_t strview_byte_len(struct StrView* sv) asm("strview-byte-len");
 /* strview-byte-at: uses an error-union or option type; not exported */
 struct ByteIter strview_bytes(struct StrView* sv) asm("strview-bytes");
@@ -34,12 +34,12 @@ struct StrView strview_as_view(struct StrView* sv) asm("strview-as-view");
 struct ByteIter cstr_bytes(const char* cs) asm("cstr-bytes");
 struct CharIter cstr_chars(const char* cs) asm("cstr-chars");
 /* strview-sub-bytes: uses an error-union or option type; not exported */
-/* strview-find: uses a defunion-template instance type; not exported */
-/* strview-find-byte: uses a defunion-template instance type; not exported */
-/* strview-rfind-byte: uses a defunion-template instance type; not exported */
-/* strview-rfind: uses a defunion-template instance type; not exported */
-/* strview-find-char: uses a defunion-template instance type; not exported */
-/* strview-rfind-char: uses a defunion-template instance type; not exported */
+/* strview-find: uses an error-union or option type; not exported */
+/* strview-find-byte: uses an error-union or option type; not exported */
+/* strview-rfind-byte: uses an error-union or option type; not exported */
+/* strview-rfind: uses an error-union or option type; not exported */
+/* strview-find-char: uses an error-union or option type; not exported */
+/* strview-rfind-char: uses an error-union or option type; not exported */
 size_t strview_char_count(struct StrView* sv) asm("strview-char-count");
 /* strview-char-at: uses an error-union or option type; not exported */
 struct CharIter strview_chars(struct StrView* sv) asm("strview-chars");

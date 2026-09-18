@@ -27,7 +27,7 @@
         cur:ptr xs)
     (while (!= cur null)
       (inc! n)
-      (set! cur ((as ptr:Node cur) 'cdr)))
+      (set! cur ((as &Node cur) 'cdr)))
     (return (+ base n))))
 
 ; --- 3: overloaded `defn` (multimethod) — resolved by argument TYPE, not name -
@@ -39,10 +39,10 @@
   (return x))
 
 ; --- 5: protocol method — dispatched through the generic registry -------------
-(defprotocol Sized (size-of ((self (ref Self))) i32))
+(defprotocol Sized (size-of (self:&Self) i32))
 (defstruct Blob n:i32)
 (extend Blob Sized)
-(defn size-of ((self (ref Blob))):i32 (return (* 2 (self 'n))))
+(defn size-of (self:&Blob):i32 (return (* 2 (self 'n))))
 
 ; --- 6: fn-pointer call — the indirect path, checked against the VALUE's type -
 (defn add2 (a:i32 b:i32):i32 (return (+ a b)))
@@ -57,7 +57,7 @@
   ; generic template
   (printf "gener  %d\n" (ident 41))
   ; protocol method through a nominal conformance
-  (with ((b (ref Blob)) (Blob 21))
+  (with (b:&Blob (Blob 21))
     (printf "proto  %d\n" (size-of b)))
   ; fn-pointer value called indirectly
   (let (fp:(fn i32)(i32 i32) add2)

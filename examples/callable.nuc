@@ -30,13 +30,13 @@
 ; ---- UnaryFn: a function object that adds a fixed delta to its i32 argument ----
 (defstruct Adder delta:i32)
 (extend Adder (UnaryFn i32 i32))
-(defn apply ((self (ref Adder)) (x i32)) i32
+(defn apply (self:&Adder (x i32)) i32
   (return (+ x (self 'delta))))
 
 ; ---- FoldFn: a function object that multiplies accumulator by element ----
 (defstruct Multiplier dummy:i32)
 (extend Multiplier (FoldFn i32 i32))
-(defn fold ((self (ref Multiplier)) (acc i32) (x i32)) i32
+(defn fold (self:&Multiplier (acc i32) (x i32)) i32
   (return (* acc x)))
 
 ; ---- A user `get` override: it owns all member access on its type (tier 0
@@ -51,15 +51,15 @@
 
 (defn main ():i32
   ; Member access by call — the Struct default. (p x) == (_get p x).
-  (let (p:&Point (as ptr:Point (malloc (as i64 (sizeof Point)))))
+  (let (p:&Point (as &Point (malloc (as i64 (sizeof Point)))))
     (set! (p 'x) 3)
     (set! (p 'y) 4)
     (printf "point: x=%d y=%d\n" (p 'x) (p 'y)))
 
   ; invoke takes precedence: (v i) indexes (literal OR a local index symbol);
   ; the field `len` is read with `_get` since Vec has an `invoke` method.
-  (let (v:&Vec (as ptr:Vec (malloc (as i64 (sizeof Vec))))
-        arr:&i32 (as ptr:i32 (malloc 12)))
+  (let (v:&Vec (as &Vec (malloc (as i64 (sizeof Vec))))
+        arr:&i32 (as &i32 (malloc 12)))
     (set! (aref arr 0) 10)
     (set! (aref arr 1) 20)
     (set! (aref arr 2) 30)
@@ -71,17 +71,17 @@
       (printf "seq: v0=%d vidx=%d v2=%d len=%d\n" (v 0) (v idx) (v 2) (_get v 'len))))
 
   ; UnaryFn: a function object invoked with an i32 argument via apply.
-  (let ((add5 (ref Adder)) (alloca Adder))
+  (let (add5:&Adder (alloca Adder))
     (set! (add5 'delta) 5)
     (printf "call: 37+5=%d\n" (apply add5 37)))
 
   ; FoldFn: reduce [2,3,4] by multiplication starting from 1 via fold.
-  (let ((mul (ref Multiplier)) (alloca Multiplier))
+  (let (mul:&Multiplier (alloca Multiplier))
     (set! (mul 'dummy) 0)
     (printf "fold: 1*2*3*4=%d\n" (fold mul (fold mul (fold mul 1 2) 3) 4)))
 
   ; User get override beats the intrinsic; 'f is synthetic, 'c delegates to the field.
-  (let (t:&Temp (as ptr:Temp (malloc (as i64 (sizeof Temp)))))
+  (let (t:&Temp (as &Temp (malloc (as i64 (sizeof Temp)))))
     (set! (t 'c) 20)
     (printf "temp: c=%d f=%d\n" (t 'c) (t 'f)))
   (return 0))

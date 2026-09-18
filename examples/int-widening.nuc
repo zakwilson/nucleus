@@ -33,7 +33,7 @@
   (return n))
 
 (defn main ():i32
-  (with ((v (ref (Vector i64))) (alloca (Vector i64)))
+  (with (v:&(Vector i64) (alloca (Vector i64)))
     (vector-init v)
 
     ; LW-1: castless conj — the stamped `conj` method on (Vector i64) binds

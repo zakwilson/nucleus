@@ -72,7 +72,7 @@
   ;   - (as ptr r)       weakening a typed pointer back to a bare `ptr`
   (with (p:ptr (malloc (as i64 (sizeof Rec))))
     (when (!= p null)
-      (let (r:&Rec (as ptr:Rec p))
+      (let (r:&Rec (as &Rec p))
         (set! (r 'kind) 7)
         (set! (r 'x) 99)
         (printf "void-hatch      = kind=%d x=%d\n" (r 'kind) (r 'x))

@@ -61,12 +61,12 @@
 
 ; A message's variable part, copied into the arena beside the nodes it
 ; describes, so nothing the reader returns is owned.
-(defn rd-arena-str ((s (ref String))):StrView
+(defn rd-arena-str (s:&String):StrView
   (let (v:StrView (string-as-view s)
         n:usize (v 'len)
         p:ptr (arena-bytes (v 'data) (as i64 n)))
     (drop s)
-    (return (strview (as ptr:ui8 p) n))))
+    (return (strview (as &ui8 p) n))))
 
 ; ---------------------------------------------------------------------------
 ; Reader macros: `prefix` at a token boundary reads the next form as
@@ -80,14 +80,14 @@
 (defvar g-read-alloc:AllocHandle)
 
 ; The prefix is interned so a table outlives whatever buffer it was spelled in.
-(defn rd-macro-add ((tbl (ref (Vector RMacro))) prefix:StrView wrap:Symbol):void
+(defn rd-macro-add (tbl:&(Vector RMacro) prefix:StrView wrap:Symbol):void
   (let (rm:&RMacro (alloca RMacro))
     (set! (rm 'prefix) (symbol-as-view (symbol-intern prefix)))
     (set! (rm 'wrap) wrap)
     (conj tbl @rm)))
 
 ; The index of the row whose prefix is exactly `prefix`, or -1.
-(defn rd-macro-find ((tbl (ref (Vector RMacro))) prefix:StrView):i32
+(defn rd-macro-find (tbl:&(Vector RMacro) prefix:StrView):i32
   (let (n:usize (count tbl)
         i:usize 0)
     (while (< i n)
@@ -98,8 +98,8 @@
 
 ; A fresh table holding the six built-ins, for a caller that wants to own one
 ; (a REPL session's, shared across its inputs through `reader-with-macros`).
-(defn read-macro-table-new ():(ref (Vector RMacro))
-  (let (tbl:(ref (Vector RMacro)) (vector-new-in (arena-allocator &g-read-alloc)))
+(defn read-macro-table-new ():&(Vector RMacro)
+  (let (tbl:&(Vector RMacro) (vector-new-in (arena-allocator &g-read-alloc)))
     (rd-macro-add tbl "~@" (symbol-intern "unquote-splice"))
     (rd-macro-add tbl "~" (symbol-intern "unquote"))
     (rd-macro-add tbl "'" (symbol-intern "quote"))
@@ -125,11 +125,11 @@
   form-open-line:i32
   col0-open-line:i32
   col0-open-depth:i32
-  (macros (ref (Vector RMacro))))
+  macros:&(Vector RMacro))
 
 ; A reader over `src` whose reader-macro table is `table`, which the caller
 ; owns and may share with the readers it builds next.
-(defn reader-with-macros (src:StrView (table (ref (Vector RMacro)))):Reader
+(defn reader-with-macros (src:StrView table:&(Vector RMacro)):Reader
   (let (r:&Reader (alloca Reader))
     (set! (r 'src) src)
     (set! (r 'pos) 0)
@@ -146,18 +146,18 @@
 
 ; 0 at end of input, exactly as the compiler's NUL sentinel behaves -- so an
 ; embedded NUL byte ends the text in both readers rather than in neither.
-(defn rd-at ((self (ref Reader)) i:usize):i32
+(defn rd-at (self:&Reader i:usize):i32
   (let (sv:StrView (self 'src))
     (when (>= i (sv 'len)) (return 0))
     (return (bit-and (as i32 (aref (sv 'data) (as i64 i))) 255))))
 
-(defn rd-peek ((self (ref Reader))):i32
+(defn rd-peek (self:&Reader):i32
   (return (rd-at self (self 'pos))))
 
-(defn rd-peek1 ((self (ref Reader))):i32
+(defn rd-peek1 (self:&Reader):i32
   (return (rd-at self (+ (self 'pos) 1))))
 
-(defn rd-next ((self (ref Reader))):i32
+(defn rd-next (self:&Reader):i32
   (let (c:i32 (rd-peek self))
     (when (= c 0) (return 0))
     (set! (self 'pos) (+ (self 'pos) 1))
@@ -166,7 +166,7 @@
 
 ; Called BEFORE the bracket is consumed, so the byte at pos-1 is the lookbehind.
 ; Only a `(` is a column-0 candidate: a top-level form is a parenthesised list.
-(defn rd-open-bracket ((self (ref Reader)) line:i32 is-paren:bool):void
+(defn rd-open-bracket (self:&Reader line:i32 is-paren:bool):void
   (let (pos:usize (self 'pos)
         depth:i32 (self 'paren-depth))
     (when (= depth 0) (set! (self 'form-open-line) line))
@@ -176,12 +176,12 @@
       (set! (self 'col0-open-depth) depth))
     (set! (self 'paren-depth) (+ depth 1))))
 
-(defn rd-close-bracket ((self (ref Reader))):void
+(defn rd-close-bracket (self:&Reader):void
   (set! (self 'paren-depth) (- (self 'paren-depth) 1)))
 
 ; The note names the first column-0 form opened while this one was still open;
 ; with no such candidate it says only how many forms EOF left open.
-(defn rd-unterminated ((self (ref Reader)) open-line:i32 msg:StrView closer:StrView):ReadError
+(defn rd-unterminated (self:&Reader open-line:i32 msg:StrView closer:StrView):ReadError
   (let (note:String (string-new)
         c0:i32 (self 'col0-open-line))
     (if (and (!= c0 0) (!= c0 open-line))
@@ -208,7 +208,7 @@
   (when (and (>= c 65) (<= c 70)) (return (+ (- c 65) 10)))
   (return -1))
 
-(defn rd-skip-ws ((self (ref Reader))):void
+(defn rd-skip-ws (self:&Reader):void
   (while true
     (let (c:i32 (rd-peek self))
       (when (= c 0) (return))
@@ -234,7 +234,7 @@
   (return true))
 
 ; The slice from `start` to the current position.
-(defn rd-slice ((self (ref Reader)) start:usize):StrView
+(defn rd-slice (self:&Reader start:usize):StrView
   (let (sv:StrView (self 'src))
     (return (strview (unsafe/ptr+ (sv 'data) (as i64 start)) (- (self 'pos) start)))))
 
@@ -243,11 +243,11 @@
 ; that classifies differently in the two readers is a silently different tree.
 ; ---------------------------------------------------------------------------
 
-(defn rd-tv-at ((tv (ref StrView)) i:usize):i32
+(defn rd-tv-at (tv:&StrView i:usize):i32
   (when (>= i (tv 'len)) (return 0))
   (return (bit-and (as i32 (aref (tv 'data) (as i64 i))) 255)))
 
-(defn rd-int-atom? ((tv (ref StrView))):bool
+(defn rd-int-atom? (tv:&StrView):bool
   (let (n:usize (tv 'len)
         i:usize 0)
     (when (= n 0) (return false))
@@ -261,7 +261,7 @@
 
 ; 0 = not hex, 1 = hex integer, 2 = hex float. C makes the binary exponent
 ; mandatory on a hex float, which is what separates the two.
-(defn rd-hex-kind ((tv (ref StrView))):i32
+(defn rd-hex-kind (tv:&StrView):i32
   (let (n:usize (tv 'len)
         i:usize 0)
     (when (< n 3) (return 0))
@@ -300,7 +300,7 @@
         (when (!= i n) (return 0))
         (return 2)))))
 
-(defn rd-float-atom? ((tv (ref StrView))):bool
+(defn rd-float-atom? (tv:&StrView):bool
   (let (n:usize (tv 'len)
         i:usize 0)
     (when (= n 0) (return false))
@@ -411,7 +411,7 @@
         (return s)))))
 
 ; The `&` reader macro must not swallow a retired marker.
-(defn rd-at-legacy-marker ((self (ref Reader))):bool
+(defn rd-at-legacy-marker (self:&Reader):bool
   (let (end:usize (self 'pos))
     (while (rd-sym-char? (rd-at self end))
       (set! end (+ end 1)))
@@ -436,9 +436,9 @@
 ; ---------------------------------------------------------------------------
 
 ; No length ceiling: the buffer grows.
-(defn rd-string ((self (ref Reader)) open-line:i32 is-cstr:bool):ReadResult
+(defn rd-string (self:&Reader open-line:i32 is-cstr:bool):ReadResult
   (let (buf:String (string-new)
-        one:&ui8 (as ptr:ui8 (alloca ui8 1)))
+        one:&ui8 (as &ui8 (alloca ui8 1)))
     (while true
       (let (c:i32 (rd-next self))
         (when (= c 0)
@@ -488,7 +488,7 @@
     (set! (n 'i) (as i64 cp))
     (return n)))
 
-(defn rd-char ((self (ref Reader)) open-line:i32):ReadResult
+(defn rd-char (self:&Reader open-line:i32):ReadResult
   (rd-next self)                                    ; the leading backslash
   (let (c0:i32 (rd-peek self))
     (when (= c0 0)
@@ -555,7 +555,7 @@
       (set! (n 'i) v)
       (return (ok (as raw:Node n))))))
 
-(defn rd-atom ((self (ref Reader))):ReadResult
+(defn rd-atom (self:&Reader):ReadResult
   (let (line:i32 (self 'line)
         start:usize (self 'pos))
     (while (rd-sym-char? (rd-peek self))
@@ -591,8 +591,8 @@
 
 ; The table row whose prefix is at the current position, longest prefix
 ; winning, or -1. An empty prefix never matches: it cannot beat `best-len` 0.
-(defn rd-macro-match ((self (ref Reader))):i32
-  (let (tbl:(ref (Vector RMacro)) (self 'macros)
+(defn rd-macro-match (self:&Reader):i32
+  (let (tbl:&(Vector RMacro) (self 'macros)
         n:usize (count tbl)
         pos:usize (self 'pos)
         best:i32 -1
@@ -628,8 +628,8 @@
 
 ; Add `prefix` to this reader's table, with the two checks a `(def-rmacro …)`
 ; form gets. `ok` carries no node.
-(defn reader-register-macro ((self (ref Reader)) prefix:StrView wrap:Symbol line:i32):ReadResult
-  (let (tbl:(ref (Vector RMacro)) (self 'macros)
+(defn reader-register-macro (self:&Reader prefix:StrView wrap:Symbol line:i32):ReadResult
+  (let (tbl:&(Vector RMacro) (self 'macros)
         none:raw:Node null)
     (when (>= (rd-macro-find tbl prefix) 0)
       (let (m:String (str "def-rmacro: '" prefix "' is already a reader macro"))
@@ -650,7 +650,7 @@
 
 ; A top-level `(def-rmacro "p" sym)`, registered as it is read so the forms
 ; after it see the prefix. The first three messages are the compiler's.
-(defn rd-def-rmacro ((self (ref Reader)) form:raw:Node):ReadResult
+(defn rd-def-rmacro (self:&Reader form:raw:Node):ReadResult
   (let (line:i32 (form 'line))
     (when (!= (node-len form) 3)
       (return (err (rd-error read-bad-rmacro line
@@ -679,7 +679,7 @@
 ; `(f ((fn i32) (i32)))`, not as a zero-parameter fn type with a dangling
 ; sibling. Adjacency is required -- a space-separated second group is genuinely
 ; ambiguous with the next binding in the enclosing list.
-(defn rd-fuse-fn-params ((self (ref Reader)) paren-form:raw:Node line:i32):ReadResult
+(defn rd-fuse-fn-params (self:&Reader paren-form:raw:Node line:i32):ReadResult
   (when (not (rd-fn-type-form? paren-form)) (return (ok paren-form)))
   (when (!= (rd-peek self) 40) (return (ok paren-form)))
   (let (plist:raw:Node (try (rd-form self)))
@@ -701,7 +701,7 @@
 ; Colon-paren binding sugar (design/stage11/cleanup.md §1). The colon is an
 ; ordinary symbol char, so `name:(ref (Vector T))` lexes as the atom `name:`
 ; followed by a separate list; fuse them back together.
-(defn rd-fuse-colon-paren ((self (ref Reader)) child:raw:Node line:i32):ReadResult
+(defn rd-fuse-colon-paren (self:&Reader child:raw:Node line:i32):ReadResult
   (when (= child null) (return (ok child)))
   (when (and (!= (child 'kind) NODE-SYM) (!= (child 'kind) NODE-KEYWORD))
     (return (ok child)))
@@ -765,7 +765,7 @@
             (drop &segs)
             (return (ok result))))))))
 
-(defn rd-list ((self (ref Reader)) open-line:i32):ReadResult
+(defn rd-list (self:&Reader open-line:i32):ReadResult
   (let (head:raw:Node null
         tail:raw:Node null)
     (while true
@@ -785,7 +785,7 @@
     (return (ok head))))
 
 ; The elements of a `[…]`/`{…}`/`#{…}` literal up to `closer`.
-(defn rd-lit-elems ((self (ref Reader)) what:StrView closer:i32 open-line:i32):ReadResult
+(defn rd-lit-elems (self:&Reader what:StrView closer:i32 open-line:i32):ReadResult
   (let (head:raw:Node null
         tail:raw:Node null)
     (while true
@@ -814,11 +814,11 @@
 
 ; The fuse lives here, not in `rd-list`, so it fires wherever an atom is read:
 ; a reader-macro operand, a literal element, a top-level form.
-(defn rd-atom-form ((self (ref Reader)) line:i32):ReadResult
+(defn rd-atom-form (self:&Reader line:i32):ReadResult
   (let (atom:raw:Node (try (rd-atom self)))
     (return (rd-fuse-colon-paren self atom line))))
 
-(defn rd-form ((self (ref Reader))):ReadResult
+(defn rd-form (self:&Reader):ReadResult
   (rd-skip-ws self)
   (let (line:i32 (self 'line)
         c:i32 (rd-peek self))
@@ -901,14 +901,14 @@
 ; Public entry points
 ; ---------------------------------------------------------------------------
 
-(defn reader-eof? ((self (ref Reader))):bool
+(defn reader-eof? (self:&Reader):bool
   (rd-skip-ws self)
   (return (= (rd-peek self) 0)))
 
 ; The next form. Check `reader-eof?` first: `()` reads as a null node, so a
 ; null return is a legitimate empty list rather than end of input. A top-level
 ; `def-rmacro` takes effect here, before the form is returned.
-(defn read-one ((self (ref Reader))):ReadResult
+(defn read-one (self:&Reader):ReadResult
   (let (form:raw:Node (try (rd-form self)))
     (when (rd-def-rmacro-form? form)
       (try (rd-def-rmacro self form)))
@@ -917,7 +917,7 @@
 ; Every form in `src`, as a list, read through the caller's table -- so a
 ; `def-rmacro` in one buffer is seen by the caller's next read over the same
 ; table (a REPL session). Each spine cell carries the line the form started on.
-(defn read-all-with-macros (src:StrView (table (ref (Vector RMacro)))):ReadResult
+(defn read-all-with-macros (src:StrView table:&(Vector RMacro)):ReadResult
   (let (r:Reader (reader-with-macros src table)
         head:raw:Node null
         tail:raw:Node null)
@@ -942,10 +942,10 @@
 ; Writing and comparing
 ; ---------------------------------------------------------------------------
 
-(defn rd-write-escaped ((out (ref String)) sv:StrView):void
+(defn rd-write-escaped (out:&String sv:StrView):void
   (let (n:usize (sv 'len)
         i:usize 0
-        one:&ui8 (as ptr:ui8 (alloca ui8 1)))
+        one:&ui8 (as &ui8 (alloca ui8 1)))
     (while (< i n)
       (let (c:i32 (bit-and (as i32 (aref (sv 'data) (as i64 i))) 255))
         (cond (= c 10) (write-str out "\\n")
@@ -959,8 +959,8 @@
       (set! i (+ i 1)))))
 
 ; `\u{…}` is hex, and lib/fmt.nuc writes decimal only.
-(defn rd-write-hex ((out (ref String)) v:ui64):void
-  (let (buf:&ui8 (as ptr:ui8 (alloca ui8 16))
+(defn rd-write-hex (out:&String v:ui64):void
+  (let (buf:&ui8 (as &ui8 (alloca ui8 16))
         n:i32 0
         x:ui64 v)
     (when (= x 0)
@@ -973,19 +973,19 @@
       (set! x (/ x 16)))
     (while (> n 0)
       (set! n (- n 1))
-      (string-push-bytes-raw out (as ptr:ui8 (unsafe/ptr+ buf n)) 1))))
+      (string-push-bytes-raw out (as &ui8 (unsafe/ptr+ buf n)) 1))))
 
 ; A string as an s-expression literal -- quotes included, escapes applied. The
 ; counterpart of what the reader accepts, exported so anything WRITING an
 ; s-expression (lib/test.nuc's result records) escapes the way this reads.
-(defn sexp-write-string ((out (ref String)) sv:StrView):void
+(defn sexp-write-string (out:&String sv:StrView):void
   (write-str out "\"")
   (rd-write-escaped out sv)
   (write-str out "\""))
 
 ; The canonical text of a node: re-readable, and identical to what the compiler
 ; prints for the same tree.
-(defn node-write ((out (ref String)) n:raw:Node):void
+(defn node-write (out:&String n:raw:Node):void
   (when (= n null)
     (write-str out "()")
     (return))

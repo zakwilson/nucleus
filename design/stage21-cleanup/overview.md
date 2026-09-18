@@ -128,3 +128,25 @@ twin edits pointer-kind-spellings.md §4 specifies. Rationale in
   nothing in the compiler is missing. What *is* missing is on the compiler's
   side: `context/macros-jit.md:16` — a macro body cannot raise a diagnostic at
   all.
+- **The C-header classifiers do not read a `(? X)` / `(! X)` cell** (found
+  building PK-5a). `cheader-template-instance` (`src/cheader.nuc:3690`) keys on
+  a cell whose *head* is a union template — `(Maybe …)`, `(Result …)` — and
+  `cheader-niche-no-c` (`:3758`) on a sigil-led *symbol*; the PK-3 list form
+  `(! (Vector Diagnostic))` is neither, so a public `(defn read-diagnostics
+  (…):!(Vector Diagnostic) …)` exports `void* read_diagnostics(...)` — a
+  by-value tagged struct declared as a pointer, the ABI-wrong declaration both
+  classifiers exist to refuse. PK-3's "the cheader walkers need no change" held
+  for the *pointer* walkers only. The sweep refuses the paren operand in an
+  exported slot (`lib/test.nuc:410`, `lib/hashmap.nuc:472`) until an arm for the
+  sigil-head cell is added beside the two existing ones.
+- **`extend` reads a cell subject as a template application**, so
+  `(extend &Cents Ord)` — `(ref Cents)` after PK-1 — is refused where
+  `(extend ptr:Cents Ord)` conforms the pointer type (`examples/operators.nuc:34`).
+  Either the subject parser peels `ref`/`ptr`/`raw` heads before the template
+  lookup, or the colon spelling stays the one way to conform a pointer type.
+- **A sigil over a type variable is a different symbol to `subst-tyvars-sym`.**
+  `?E` in a protocol signature or template body is one bare symbol and
+  substitution walks colon *segments*, so `(Maybe E)` substitutes and `?E` does
+  not — the same collect-but-never-bind family as H5/PK-4b, on the substituter
+  rather than the unifier. PK-5a refuses R6/R7 over a tyvar (14 sites, all in
+  `lib/`); PK-4b's walker change should take the substituter with it.

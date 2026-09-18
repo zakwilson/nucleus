@@ -13,7 +13,7 @@
 (import-use hashmap)
 
 (defn main ():i32
-  (with ((m (ref (HashMap CStr i32))) {"foo" 42 "bar" 7 "baz" 99}
+  (with (m:&(HashMap CStr i32) {"foo" 42 "bar" 7 "baz" 99}
          k:CStr "foo")
     (printf "count=%llu\n" (as ui64 (count m)))     ; count=3
     (match (m k)
@@ -30,7 +30,7 @@
       (none     (printf "missing=absent\n"))))         ; missing=absent
 
   ; Single pair literal.
-  (with ((s (ref (HashMap CStr i32))) {"only" 1})
+  (with (s:&(HashMap CStr i32) {"only" 1})
     (printf "single-count=%llu\n" (as ui64 (count s))) ; single-count=1
     (match (s "only")
       ((some x) (printf "only=%d\n" x))                ; only=1

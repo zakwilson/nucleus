@@ -13,5 +13,5 @@ typedef struct ListIter {
     void* cur;
 } ListIter;
 
-/* next: uses a defunion-template instance type; not exported */
+/* next: uses an error-union or option type; not exported */
 struct ListIter list_iter(void* lst) asm("list-iter");

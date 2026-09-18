@@ -46,7 +46,7 @@
                " ends=" (ends-with? a lo)))
 
     ; ---- a Symbol is a HashMap key ---------------------------------------------
-    (with ((m (ref (HashMap Symbol i32))) (hashmap-new))
+    (with (m:&(HashMap Symbol i32) (hashmap-new))
       (assoc m a 1)
       (assoc m c 2)
       (match (m b) ((some v) (println "map hello=" v)) (none (println "map hello=?")))

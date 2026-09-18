@@ -9,24 +9,24 @@
 (import-use iterator)
 (import-use node)   ; a runtime quasiquote calls intern-symbol/make-cell
 
-(defn first (n:ptr):ptr (return ((as ptr:Node n) 'car)))
-(defn rest  (n:ptr):ptr (return ((as ptr:Node n) 'cdr)))
+(defn first (n:ptr):ptr (return ((as &Node n) 'car)))
+(defn rest  (n:ptr):ptr (return ((as &Node n) 'cdr)))
 
 (defstruct ListIter cur:ptr)
 (extend ListIter (Iterator ptr))
-(defn next ((self (ref ListIter))) (Maybe ptr)
+(defn next (self:&ListIter):?ptr
   (let (c:ptr (self 'cur))
     (when (= c null) (return none))
     (set! (self 'cur) (rest c))
     (return (some (first c)))))
 
 (defn print-list (n:ptr):void
-  (let ((lit (ref ListIter)) (alloca ListIter))
+  (let (lit:&ListIter (alloca ListIter))
     (set! (lit 'cur) n)
     (let (first-item:i32 1)
       (printf "(")
       (doseq-iter (elem lit)
-        (let (node:&Node (as ptr:Node elem))
+        (let (node:&Node (as &Node elem))
           (when (= first-item 0) (printf " "))
           (cond (= (node 'kind) 0) (printf "%ld" (node 'i))
                 (= (node 'kind) 2) (printf "%s" (node 's))

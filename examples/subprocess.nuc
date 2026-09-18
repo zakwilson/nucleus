@@ -10,11 +10,11 @@
 (import-use strview)
 
 ; One-shot: run it, capture both streams, wait.
-(defn show (label:StrView (c (ref Command))):void
+(defn show (label:StrView c:&Command):void
   (match (run c)
     ((ok o)
-     (print label " exit=" (exit-code (addr-of o 'status))
-            " out=" (string-as-view (addr-of o 'out)))
+     (print label " exit=" (exit-code (ref o 'status))
+            " out=" (string-as-view (ref o 'out)))
      (drop &o))
     ((err e) (print label " could not run\n"))))
 
@@ -39,9 +39,9 @@
     (command-arg &bad "echo problem >&2; exit 2")
     (match (run &bad)
       ((ok o)
-       (print "failing: exit=" (exit-code (addr-of o 'status))
-              " ok=" (if (success? (addr-of o 'status)) "yes" "no")
-              " stderr=" (string-as-view (addr-of o 'err)))
+       (print "failing: exit=" (exit-code (ref o 'status))
+              " ok=" (if (success? (ref o 'status)) "yes" "no")
+              " stderr=" (string-as-view (ref o 'err)))
        (drop &o))
       ((err e) (print "failing: could not run\n")))
     (drop &bad))
@@ -59,7 +59,7 @@
         (let (i:i32 0)
           (while (< i 2)
             (match (wait-any)
-              ((ok ce) (print "finished: exit=" (exit-code (addr-of ce 'status)) "\n"))
+              ((ok ce) (print "finished: exit=" (exit-code (ref ce 'status)) "\n"))
               ((err e) (print "finished: wait failed\n")))
             (set! i (+ i 1))))
         (process-detach &a)

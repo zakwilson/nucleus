@@ -21,14 +21,14 @@
 ; calloc, not malloc: `s` is a Symbol, which has no null value to assign — a
 ; node with no name is simply a zeroed one.
 (defn int-node (val:i64):ptr
-  (let (c:&Node (as ptr:Node (calloc 1 (sizeof Node))))
+  (let (c:&Node (as &Node (calloc 1 (sizeof Node))))
     (set! (c 'kind) 0) (set! (c 'line) 0) (set! (c 'i) val)
     (set! (c 'car) null) (set! (c 'cdr) null)
     (return (as ptr c))))
 
 (defn main ():i32
   ; ===== 1. Vector (i32) =====
-  (with ((v (ref (Vector i32))) (alloca (Vector i32)))
+  (with (v:&(Vector i32) (alloca (Vector i32)))
     (vector-init v) (conj v 10) (conj v 20) (conj v 30) (conj v 40)
     (let ((it (VecIter i32)) (iter v))
       (let ((m (Vector i32)) (map (vfn (x:i32):i32 (return (/ x 10))) &it))
@@ -50,35 +50,35 @@
                             (cons (int-node 30)
                                   (cons (int-node 40) null)))))
     ; map: Node* -> its .i field, into a (Vector i64)
-    (let ((it (ref ListIter)) (alloca ListIter))
+    (let (it:&ListIter (alloca ListIter))
       (set! (it 'cur) lst)
       (let ((m (Vector i64))
-            (map (vfn (e:ptr):i64 (return ((as ptr:Node e) 'i))) it))
+            (map (vfn (e:ptr):i64 (return ((as &Node e) 'i))) it))
         (printf "lst map count=%d m0=%lld\n"
           (count &m) (as i64 (&m 0)))
         (drop &m)))
     ; filter: keep nodes with .i > 25 (the Node* survives as ptr)
-    (let ((it (ref ListIter)) (alloca ListIter))
+    (let (it:&ListIter (alloca ListIter))
       (set! (it 'cur) lst)
       (let ((f (Vector ptr))
-            (filter (vfn (e:ptr):bool (return (> ((as ptr:Node e) 'i) 25))) it))
+            (filter (vfn (e:ptr):bool (return (> ((as &Node e) 'i) 25))) it))
         (printf "lst filter-count=%d\n" (count &f))
         (drop &f)))
     ; find: first node with .i > 25
-    (let ((it (ref ListIter)) (alloca ListIter))
+    (let (it:&ListIter (alloca ListIter))
       (set! (it 'cur) lst)
-      (match (find (vfn (e:ptr):bool (return (> ((as ptr:Node e) 'i) 25))) it)
-        ((some e) (printf "lst find=%lld\n" ((as ptr:Node e) 'i)))
+      (match (find (vfn (e:ptr):bool (return (> ((as &Node e) 'i) 25))) it)
+        ((some e) (printf "lst find=%lld\n" ((as &Node e) 'i)))
         (none (printf "lst find=none\n"))))
     ; any / every over .i
-    (let ((it (ref ListIter)) (alloca ListIter))
+    (let (it:&ListIter (alloca ListIter))
       (set! (it 'cur) lst)
       (printf "lst any=%d\n"
-        (any? (vfn (e:ptr):bool (return (> ((as ptr:Node e) 'i) 35))) it)))
-    (let ((it (ref ListIter)) (alloca ListIter))
+        (any? (vfn (e:ptr):bool (return (> ((as &Node e) 'i) 35))) it)))
+    (let (it:&ListIter (alloca ListIter))
       (set! (it 'cur) lst)
       (printf "lst every=%d\n"
-        (every? (vfn (e:ptr):bool (return (> ((as ptr:Node e) 'i) 5))) it))))
+        (every? (vfn (e:ptr):bool (return (> ((as &Node e) 'i) 5))) it))))
 
   ; ===== 3. String characters (CharIter yields Char) =====
   (let (s:String (string-from-cstr-unchecked "hello"))

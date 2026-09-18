@@ -13,7 +13,7 @@
 (import-use allocator)
 
 (defn main ():i32
-  (let ((r (ref IntRangeIter)) (alloca IntRangeIter))
+  (let (r:&IntRangeIter (alloca IntRangeIter))
 
     ; ---------------------------------------------------------------
     ; 1. mfn with inc! on a captured `seen` counter.

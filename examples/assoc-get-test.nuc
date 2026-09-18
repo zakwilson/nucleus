@@ -14,7 +14,7 @@
 
 (defn main ():i32
   ; CStr-keyed map.
-  (with ((m (ref (HashMap CStr i32))) (alloca (HashMap CStr i32)))
+  (with (m:&(HashMap CStr i32) (alloca (HashMap CStr i32)))
     (hashmap-init m)
     (assoc m "alpha" 1)
     (assoc m "beta"  2)

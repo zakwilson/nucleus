@@ -71,14 +71,14 @@
 ; ---------------------------------------------------------------------------
 
 ; Initialise an empty Vector with the default (libc) allocator.
-(defn vector-init ((v (ref (Vector T)))):void
+(defn vector-init (v:&(Vector T)):void
   (set! (v 'data) null)
   (set! (v 'len) 0)
   (set! (v 'cap) 0)
-  (libc-allocator (addr-of v 'alloc)))
+  (libc-allocator (ref v 'alloc)))
 
 ; Initialise an empty Vector with an explicit allocator handle (copied in).
-(defn vector-init-alloc ((v (ref (Vector T))) (a (ref AllocHandle))):void
+(defn vector-init-alloc (v:&(Vector T) a:&AllocHandle):void
   (set! (v 'data) null)
   (set! (v 'len) 0)
   (set! (v 'cap) 0)
@@ -97,7 +97,7 @@
   (let (r (alloca (Vector T)))
     (vector-init r)
     (return @r)))
-(defn vector-new-alloc ((a (ref AllocHandle))) (Vector T)
+(defn vector-new-alloc (a:&AllocHandle) (Vector T)
   (let (r (alloca (Vector T)))
     (vector-init-alloc r a)
     (return @r)))
@@ -106,8 +106,8 @@
     (vector-init-capacity r n)
     (return @r)))
 ; heap placement — struct allocated through the handle; returns an escapable ref.
-(defn vector-new-in ((a (ref AllocHandle))) (ref (Vector T))
-  (let (v (unsafe/cast (ref (Vector T))
+(defn vector-new-in (a:&AllocHandle):&(Vector T)
+  (let (v (unsafe/cast &(Vector T)
              (alloc-handle-alloc a (sizeof (Vector T)) 8)))
     (vector-init-alloc v a)
     (return v)))
@@ -117,14 +117,14 @@
 ; Internal: grow the buffer. Doubles capacity (or seeds 4 when empty),
 ; reallocating through the stored allocator. Aborts on OOM.
 ; ---------------------------------------------------------------------------
-(defn vector-grow ((v (ref (Vector T)))):void
+(defn vector-grow (v:&(Vector T)):void
   (let (new-cap:usize (if (= (_get v 'cap) 0)
                         4
                         (* (_get v 'cap) 2))
         elem-size:usize (as usize (sizeof T)))
     (let (old-bytes:usize (* (_get v 'cap) elem-size)
           new-bytes:usize (* new-cap elem-size)
-          ah:&AllocHandle (addr-of v 'alloc))
+          ah:&AllocHandle (ref v 'alloc))
       (let ((new-data (raw ui8))
             (alloc-handle-realloc ah (_get v 'data) old-bytes new-bytes 8))
         (when (= (as ptr new-data) null) (vector-oom))
@@ -136,17 +136,17 @@
 ; ---------------------------------------------------------------------------
 
 ; count -> number of live elements.
-(defn count ((self (ref (Vector T)))):usize
+(defn count (self:&(Vector T)):usize
   (return (_get self 'len)))
 
 ; conj: append an element at the back, growing if needed.
-(defn conj ((self (ref (Vector T))) elem:T):void
+(defn conj (self:&(Vector T) elem:T):void
   (when (>= (_get self 'len) (_get self 'cap)) (vector-grow self))
-  (set! (aref (as ptr:T (as ptr (_get self 'data))) (as i64 (_get self 'len))) elem)
+  (set! (aref (as &T (as ptr (_get self 'data))) (as i64 (_get self 'len))) elem)
   (set! (self 'len) (+ (_get self 'len) 1)))
 
 ; empty? -> true when len = 0.
-(defn empty? ((self (ref (Vector T)))):bool
+(defn empty? (self:&(Vector T)):bool
   (return (= (_get self 'len) 0)))
 
 ; ---------------------------------------------------------------------------
@@ -155,36 +155,36 @@
 ; ---------------------------------------------------------------------------
 
 ; invoke: index access `(v i)` -> element. Panics on out-of-bounds.
-(defn invoke ((self (ref (Vector T))) i:usize):T
+(defn invoke (self:&(Vector T) i:usize):T
   (when (>= i (_get self 'len)) (vector-bounds "get" i (_get self 'len)))
-  (return (aref (as ptr:T (as ptr (_get self 'data))) (as i64 i))))
+  (return (aref (as &T (as ptr (_get self 'data))) (as i64 i))))
 
 ; set: index assignment `(set! (v i) x)` — the write side of `invoke`
 ; (dot-forms.md §3). Panics out-of-bounds exactly as `invoke` does; growing on a
 ; write would make a typo silently extend the vector.
-(defn set ((self (ref (Vector T))) i:usize elem:T):void
+(defn set (self:&(Vector T) i:usize elem:T):void
   (when (>= i (_get self 'len)) (vector-bounds "set" i (_get self 'len)))
-  (set! (aref (as ptr:T (as ptr (_get self 'data))) (as i64 i)) elem))
+  (set! (aref (as &T (as ptr (_get self 'data))) (as i64 i)) elem))
 
 ; append: add at the back (same as conj for a vector).
-(defn append ((self (ref (Vector T))) elem:T):void
+(defn append (self:&(Vector T) elem:T):void
   (conj self elem))
 
 ; contains?: linear scan with =. (Scalar element types.)
-(defn contains? ((self (ref (Vector T))) elem:T):bool
+(defn contains? (self:&(Vector T) elem:T):bool
   (let (i:usize 0)
     (while (< i (_get self 'len))
-      (when (= (aref (as ptr:T (as ptr (_get self 'data))) (as i64 i)) elem)
+      (when (= (aref (as &T (as ptr (_get self 'data))) (as i64 i)) elem)
         (return true))
       (set! i (+ i 1)))
     (return false)))
 
 ; insert: place elem at index i, shifting [i,len) right by one. Grows if full.
 ; i may equal len (append). i > len is out of bounds.
-(defn insert ((self (ref (Vector T))) i:usize elem:T):void
+(defn insert (self:&(Vector T) i:usize elem:T):void
   (when (> i (_get self 'len)) (vector-bounds "insert" i (_get self 'len)))
   (when (>= (_get self 'len) (_get self 'cap)) (vector-grow self))
-  (let (buf:&T (as ptr:T (as ptr (_get self 'data)))
+  (let (buf:&T (as &T (as ptr (_get self 'data)))
         j:usize (_get self 'len))
     (while (> j i)
       (set! (aref buf (as i64 j)) (aref buf (as i64 (- j 1))))
@@ -194,9 +194,9 @@
 
 ; remove-at: delete the element at index i, shifting (i,len) left by one.
 ; i must be < len (i = len-1 removes the last element). Panics out-of-bounds.
-(defn remove-at ((self (ref (Vector T))) i:usize):void
+(defn remove-at (self:&(Vector T) i:usize):void
   (when (>= i (_get self 'len)) (vector-bounds "remove-at" i (_get self 'len)))
-  (let (buf:&T (as ptr:T (as ptr (_get self 'data)))
+  (let (buf:&T (as &T (as ptr (_get self 'data)))
         j:usize i)
     (while (< (+ j 1) (_get self 'len))
       (set! (aref buf (as i64 j)) (aref buf (as i64 (+ j 1))))
@@ -209,16 +209,16 @@
 ; ---------------------------------------------------------------------------
 
 ; capacity -> current allocated slot count.
-(defn capacity ((self (ref (Vector T)))):usize
+(defn capacity (self:&(Vector T)):usize
   (return (_get self 'cap)))
 
 ; reserve: ensure at least n total slots (grows by doubling until cap >= n).
-(defn reserve ((self (ref (Vector T))) n:usize):void
+(defn reserve (self:&(Vector T) n:usize):void
   (while (< (_get self 'cap) n) (vector-grow self)))
 
 ; vector-init-capacity: initialise empty (default allocator) with >= n slots
 ; reserved. The with-capacity constructor for known-size builds.
-(defn vector-init-capacity ((v (ref (Vector T))) n:usize):void
+(defn vector-init-capacity (v:&(Vector T) n:usize):void
   (vector-init v)
   (reserve v n))
 
@@ -231,21 +231,21 @@
 
 ; vector-extend-raw: append n elements read from `p`. `p` must not point into
 ; this vector's own buffer — the reserve may reallocate it.
-(defn vector-extend-raw ((self (ref (Vector T))) (p (ptr T)) n:usize):void
+(defn vector-extend-raw (self:&(Vector T) p:&T n:usize):void
   (when (= n 0) (return))
   (let (len:usize (_get self 'len)
         esz:usize (as usize (sizeof T)))
     (reserve self (+ len n))
-    (memcpy (as ptr (unsafe/ptr+ (as ptr:ui8 (as ptr (_get self 'data)))
+    (memcpy (as ptr (unsafe/ptr+ (as &ui8 (as ptr (_get self 'data)))
                                  (as i64 (* len esz))))
             (as ptr p)
             (as i64 (* n esz)))
     (set! (self 'len) (+ len n))))
 
 ; vector-extend: append every element of `other`, which is left unchanged.
-(defn vector-extend ((self (ref (Vector T))) (other (ref (Vector T)))):void
+(defn vector-extend (self:&(Vector T) other:&(Vector T)):void
   (vector-extend-raw self
-                     (as ptr:T (as ptr (_get other 'data)))
+                     (as &T (as ptr (_get other 'data)))
                      (_get other 'len)))
 
 ; ---------------------------------------------------------------------------
@@ -255,9 +255,9 @@
 (extend (Vector T) (Seq T))
 (extend (Vector T) Drop)
 
-(defn drop ((self (ptr (Vector T)))):void
+(defn drop (self:&(Vector T)):void
   (when (!= (as ptr (_get self 'data)) null)
-    (alloc-handle-free (addr-of self 'alloc)
+    (alloc-handle-free (ref self 'alloc)
                        (_get self 'data)
                        (* (_get self 'cap) (as usize (sizeof T)))
                        8))
@@ -290,15 +290,15 @@
 
 (extend (VecIter T) (Iterator T))
 
-(defn next ((self (ref (VecIter T)))) (Maybe T)
+(defn next (self:&(VecIter T)) (Maybe T)
   (when (>= (self 'pos) (self 'len)) (return none))
-  (let (v:T (aref (as ptr:T (self 'data)) (as i64 (self 'pos))))
+  (let (v:T (aref (as &T (self 'data)) (as i64 (self 'pos))))
     (set! (self 'pos) (+ (self 'pos) 1))
     (return (some v))))
 
 ; iter-init: configure `it` to scan `v` from the start (borrowing its buffer).
 ; Internal helper: the value-returning `iter` (Coll conformance) wraps it.
-(defn iter-init ((it (ref (VecIter T))) (v (ref (Vector T)))):void
+(defn iter-init (it:&(VecIter T) v:&(Vector T)):void
   (set! (it 'data) (as ptr (_get v 'data)))
   (set! (it 'pos) 0)
   (set! (it 'len) (_get v 'len)))
@@ -311,7 +311,7 @@
 ; ---------------------------------------------------------------------------
 (extend (Vector T) (Coll T (VecIter T)))
 
-(defn iter ((self (ref (Vector T)))) (VecIter T)
-  (let ((it (ref (VecIter T))) (alloca (VecIter T)))
+(defn iter (self:&(Vector T)) (VecIter T)
+  (let (it:&(VecIter T) (alloca (VecIter T)))
     (iter-init it self)
     (return @it)))

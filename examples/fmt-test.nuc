@@ -15,7 +15,7 @@
 
 (extern stdout:ptr)
 
-(defn show ((s (ref String))):void
+(defn show (s:&String):void
   (printf "%s\n" (string-as-cstr s)))
 
 (defn main ():i32

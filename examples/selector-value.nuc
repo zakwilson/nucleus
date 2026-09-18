@@ -28,7 +28,7 @@
     (set! (p 'y) 4)
     (printf "field=%d local=%d quoted=%d\n" (p 'x) x (get p 'x)))  ; 3 99 3
 
-  (with ((m (ref (HashMap CStr i32))) {"foo" 42 "bar" 7}
+  (with (m:&(HashMap CStr i32) {"foo" 42 "bar" 7}
          k:CStr "foo"
          miss:CStr "nope")
     ; --- the fix: a local key in head position ---
@@ -54,7 +54,7 @@
 
   ; --- the collision: a local named after a real HashMap field. Quoting
   ;     decides it, so both readings are spellable with no escape hatch. ---
-  (with ((c (ref (HashMap CStr i32))) {"count" 5}
+  (with (c:&(HashMap CStr i32) {"count" 5}
          count:CStr "count")
     (printf "count-field=%llu\n" (as ui64 (c 'count)))             ; 1 — the field
     (match (c count)

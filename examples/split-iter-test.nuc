@@ -13,9 +13,9 @@
 (import-use string-split)
 
 ; print-sv — print a StrView's bytes (copied to a NUL-terminated temp).
-(defn print-sv ((sv (ref StrView))):void
+(defn print-sv (sv:&StrView):void
   (with (n:usize (sv 'len)
-         buf:&ui8 (as ptr:ui8 (malloc (as i64 (+ n 1)))))
+         buf:&ui8 (as &ui8 (malloc (as i64 (+ n 1)))))
     (memcpy (as ptr buf) (as ptr (sv 'data)) (as i64 n))
     (set! (aref buf (as i64 n)) 0)
     (printf "%s" (as CStr (as ptr buf)))))
@@ -23,13 +23,13 @@
 ; FoldFn: sum segment byte-lengths. Segments arrive as StrView values (A3).
 (defstruct SegLenSum dummy:i32)
 (extend SegLenSum (FoldFn i64 StrView))
-(defn fold ((self (ref SegLenSum)) (acc i64) (x StrView)) i64
+(defn fold (self:&SegLenSum (acc i64) (x StrView)) i64
   (return (+ acc (as i64 (&x 'len)))))
 
 ; FoldFn: count segments (ignores the element).
 (defstruct CountSeg dummy:i32)
 (extend CountSeg (FoldFn i64 StrView))
-(defn fold ((self (ref CountSeg)) (acc i64) (x StrView)) i64
+(defn fold (self:&CountSeg (acc i64) (x StrView)) i64
   (return (+ acc 1)))
 
 (defn main ():i32
@@ -45,8 +45,8 @@
   ;        "a--b--c" on "--" → 3 segments, total length 3.
   (let (sv:StrView (strview-from-cstr "a--b--c")
          sep:StrView (strview-from-cstr "--")
-         (cs (ref CountSeg)) (alloca CountSeg)
-         (ls (ref SegLenSum)) (alloca SegLenSum)
+         cs:&CountSeg (alloca CountSeg)
+         ls:&SegLenSum (alloca SegLenSum)
          it1:SplitIter (strview-split sv sep)
          it2:SplitIter (strview-split sv sep))
     (printf "split-count=%lld\n" (reduce cs 0 &it1))

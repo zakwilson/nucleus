@@ -32,8 +32,8 @@
 (defn main ():i32
 
   ; ---- 1. Build "Hello" with push-char ----------------------------------------
-  (with ((s (ref String)) (alloca String))
-    (vector-init (addr-of s 'bytes))
+  (with (s:&String (alloca String))
+    (vector-init (ref s 'bytes))
 
     (string-push-char s \H)
     (string-push-char s \e)
@@ -50,8 +50,8 @@
         (printf "char=%u\n" (as ui32 c))))  ; 72 101 108 108 111
 
     ; ---- 3. string-push-str: append " World" ----------------------------------
-    (let ((needle (ref StrView)) (alloca StrView))
-      (set! (needle 'data) (as ptr:ui8 (as ptr " World")))
+    (let (needle:&StrView (alloca StrView))
+      (set! (needle 'data) (as &ui8 (as ptr " World")))
       (set! (needle 'len) 6)
       (let (r:!void (string-push-str s needle))
         (match r
@@ -63,15 +63,15 @@
         (printf "content=%s\n" (strview-to-cstr &sv))))  ; Hello World
 
     ; ---- 4. string-pop-char: pop 'd' -----------------------------------------
-    (let ((popped (Maybe Char)) (string-pop-char s))
+    (let (popped:?Char (string-pop-char s))
       (match popped
         ((some c) (printf "popped=%u\n" (as ui32 c)))   ; 100 (= 'd')
         (none (printf "popped=none\n"))))
     (printf "byte-len-after-pop=%llu\n" (as ui64 (byte-len s))) ; 10
 
     ; ---- 5a. string-from-view: success path ------------------------------------
-    (let ((sv2 (ref StrView)) (alloca StrView))
-      (set! (sv2 'data) (as ptr:ui8 (as ptr "hi")))
+    (let (sv2:&StrView (alloca StrView))
+      (set! (sv2 'data) (as &ui8 (as ptr "hi")))
       (set! (sv2 'len) 2)
       (let (r2:!String (string-from-view sv2))
         (match r2
@@ -85,9 +85,9 @@
 
     ; ---- 5b. string-from-view: invalid UTF-8 → error --------------------------
     ; 0xFF is not a valid UTF-8 lead byte.
-    (let (bad-buf:&ui8 (as ptr:ui8 (malloc 1)))
+    (let (bad-buf:&ui8 (as &ui8 (malloc 1)))
       (set! (aref bad-buf 0) 255)
-      (let ((bad-sv (ref StrView)) (alloca StrView))
+      (let (bad-sv:&StrView (alloca StrView))
         (set! (bad-sv 'data) bad-buf)
         (set! (bad-sv 'len) 1)
         (let (r3:!String (string-from-view bad-sv))
@@ -102,8 +102,8 @@
   ; String `s` drops here automatically.
 
   ; ---- 6. Drop via with block --------------------------------------------------
-  (with ((s2 (ref String)) (alloca String))
-    (vector-init (addr-of s2 'bytes))
+  (with (s2:&String (alloca String))
+    (vector-init (ref s2 'bytes))
     (string-push-char s2 \X)
     (printf "in-with\n"))
   ; Drop fires at the closing paren above.
@@ -129,7 +129,7 @@
     (drop &q))
 
   ; ---- 9. HashMap<String,i32> -------------------------------------------------
-  (with ((m (ref (HashMap String i32))) (alloca (HashMap String i32)))
+  (with (m:&(HashMap String i32) (alloca (HashMap String i32)))
     (hashmap-init m)
 
     ; assoc String keys into the map (regular generic dispatch, no get-intrinsic issue).

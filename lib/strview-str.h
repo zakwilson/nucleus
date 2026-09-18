@@ -12,7 +12,7 @@ size_t byte_len(struct StrView* self) asm("byte-len");
 struct ByteIter bytes(struct StrView* self);
 struct StrView as_view(struct StrView* self) asm("as-view");
 /* sub-bytes: uses an error-union or option type; not exported */
-/* byte-find: uses a defunion-template instance type; not exported */
+/* byte-find: uses an error-union or option type; not exported */
 size_t char_count(struct StrView* self) asm("char-count");
 bool str_empty_QMARK(struct StrView* self) asm("str-empty_QMARK");
 /* char-at: uses an error-union or option type; not exported */
