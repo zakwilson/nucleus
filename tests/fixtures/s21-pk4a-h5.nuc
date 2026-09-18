@@ -1,0 +1,16 @@
+; Stage 21 PK-4a (design/stage21-cleanup/pointer-kind-spellings.md §1.4, H5):
+; `?Pt` is a concrete type, so `f-qpt` is a plain defn over `(Vector (Maybe Pt))`
+; and the call below is a type error. The pre-PK-4a compiler collected `?Pt` as
+; a type VARIABLE — the sigil made the name unresolvable — stamped
+; `f_qpt.pVector.i32` and ran this program, printing 1.
+(import-use "stdio.h")
+(import-use vector)
+(defstruct Pt x:i32 y:i32)
+
+(defn f-qpt ((v (ref (Vector ?Pt)))):i32 (return 1))
+
+(defn main ():i32
+  (let (v:(Vector i32) (vector-new))
+    (conj &v 7)
+    (printf "%d\n" (f-qpt &v))
+    (return 0)))

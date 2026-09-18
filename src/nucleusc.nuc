@@ -4395,7 +4395,7 @@
     (when (!= (node-len cc) 3)
       (die-at (cc 'line) "cast expects 2 args"))
     (let (type-node:(raw Node) (node-at cc 1))
-      (let (dst:(raw Type) (parse-type-from-node type-node (type-node 'line))
+      (let (dst:(raw Type) (parse-type-from-node type-node (node-line (as ptr type-node) (cc 'line)))
             v:&Val (emit-node (node-at cc 2) scope)
             src:(raw Type) (v 'type))
         ; Stage 14 NS-3 (design/stage14/native-strings.md): a StrView chameleon
@@ -4665,7 +4665,7 @@
     (when (!= (node-len cc) 3)
       (die-at (cc 'line) "as expects 2 args"))
     (let (type-node:(raw Node) (node-at cc 1))
-      (let (dst:(raw Type) (parse-type-from-node type-node (type-node 'line))
+      (let (dst:(raw Type) (parse-type-from-node type-node (node-line (as ptr type-node) (cc 'line)))
             ; TC-2 want channel: `as` NAMES a type at this position, exactly as a
             ; let/with binding, a `set!` target or place, a `return` or a field
             ; does — so it must arm `g-want-type` for its operand. It was the one
@@ -6503,7 +6503,7 @@
       ; the table's byte size. parse-type-from-node consumes the flag on entry,
       ; so no restore is needed.
       (set! g-array-ok 1)
-      (let (ty:(raw Type) (parse-type-from-node tn (tn 'line))
+      (let (ty:(raw Type) (parse-type-from-node tn (node-line (as ptr tn) (cc 'line)))
             gep:StrView (new-tmp))
         ; W3a: an opaque C type has no size. Refuse here rather than emitting a
         ; GEP over an undefined `%Foo` (or, worse, a plausible-looking number).
@@ -6523,7 +6523,7 @@
       ; table and, like every other array read, hands back the decayed `ptr:T`
       ; (below) rather than a pointer-to-array.
       (set! g-array-ok 1)
-      (let (ty:(raw Type) (parse-type-from-node tn (tn 'line))
+      (let (ty:(raw Type) (parse-type-from-node tn (node-line (as ptr tn) (cc 'line)))
             slot:StrView (new-tmp)
             pt:&Type (make-type TY-PTR))
         ; W3a: no layout means no stack slot can be reserved for it.
@@ -11064,7 +11064,7 @@
     (when (< nargs 1)
       (die-at (cc 'line) "array: expects element type and 0+ initializers"))
     (let (etype-node:ptr (node-at cc 1)
-          etype:ptr (parse-type-from-node etype-node ((unsafe/cast ref:Node etype-node) 'line))
+          etype:ptr (parse-type-from-node etype-node (node-line etype-node (cc 'line)))
           ninits:i32 (- nargs 1))
       ; Pass 1: scan inits to compute length and parse designated keys.
       (let (max-idx:i32 -1

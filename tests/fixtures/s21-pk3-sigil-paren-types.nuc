@@ -1,0 +1,97 @@
+; Stage 21 PK-3 (design/stage21-cleanup/pointer-kind-spellings.md §5): a bare
+; sigil head is the canonical list form of a sigil-paren type. `?(Vector i32)`
+; reads as `(? (Vector i32))` since PK-2, and the type parser now reads that cell
+; as `?X` reads the atom — in every position §1.1's matrix said it failed:
+; param, return, let, defstruct field, deftype, sizeof, alloca, as, defvar, a
+; protocol signature, a lambda, a template argument. `(?! X)` composes a
+; value-Maybe over a Result; `(?ref X)` is the glued head PK-3 leaves as it was.
+(import-use "stdio.h")
+(import-use vector)
+
+(defstruct Pt x:i32 y:i32)
+
+; defstruct field, both spellings; deftype; defvar.
+(defstruct Holder (mv (? (Vector i32))) rv:!(Vector i32))
+(deftype MV ?(Vector i32))
+(defvar g-mv:?(Vector i32))
+
+; Parameter (colon and list form), return `):?(V)` / `):!(V)` / `):?!(V)`.
+(defn take-mv (m:?(Vector i32)):i32
+  (match m ((some v) (return (unsafe/cast i32 (count &v)))) (none (return -1))))
+(defn take-mv-list ((m (? (Vector i32)))):i32
+  (return (take-mv m)))
+(defn give-mv (n:i32):?(Vector i32)
+  (when (< n 0) (return none))
+  (let (v:(Vector i32) (vector-new))
+    (dotimes (i n) (conj &v i))
+    (return (some v))))
+(defn give-rv (n:i32):!(Vector i32)
+  (let (v:(Vector i32) (vector-new))
+    (dotimes (i n) (conj &v i))
+    (return (ok v))))
+(defn give-qr (n:i32):?!(Vector i32)
+  (when (< n 0) (return none))
+  (let (r:!(Vector i32) (give-rv n))
+    (return (some r))))
+(defn rv-len (r:!(Vector i32)):i32
+  (match r ((ok v) (return (unsafe/cast i32 (count &v)))) ((err e) (return -9))))
+
+; `&?(V)`: a reader-macro operand fuses, so this is `(ref (? (Vector i32)))`.
+(defn take-ref (p:&?(Vector i32)):i32
+  (return (take-mv (deref p))))
+
+; `?&Pt` (an atom, `?ref:Pt`) and the glued list head `(?ref Pt)`.
+(defn take-qref (q:?&Pt):i32
+  (if-some (p q) (return (p 'x)) (return -3)))
+(defn take-qref-list ((q (?ref Pt))):i32
+  (if-some (p q) (return (p 'y)) (return -4)))
+
+; A protocol signature and its conformer.
+(defprotocol Wrap (wrap ((self &Self) n:i32):?(Vector i32)))
+(defn wrap (p:&Pt n:i32):?(Vector i32) (return (give-mv (+ n (p 'x)))))
+(extend Pt Wrap)
+
+; A template argument: a Vector of Maybe-Vectors.
+(defn count-somes ((vv (ref (Vector ?(Vector i32))))):i32
+  (let (n:i32 0)
+    (dotimes (i (count vv))
+      (when (>= (take-mv (invoke vv i)) 0) (set! n (+ n 1))))
+    (return n)))
+
+(defn main ():i32
+  (let (a:?(Vector i32) (give-mv 3)
+        b:(? (Vector i32)) (give-mv -1)
+        pt:Pt (Pt 5 6))
+    (printf "%d %d %d\n" (take-mv a) (take-mv b) (take-mv-list a))
+    (printf "%d\n" (take-ref &a))
+    (printf "%d %d\n" (take-qref (as-ref &pt)) (take-qref null))
+    (printf "%d %d\n" (take-qref-list (as-ref &pt)) (take-qref-list null))
+    ; sizeof, both spellings (one type, so one size), and `as` to the same type.
+    (printf "%d %d\n" (if (= (sizeof ?(Vector i32)) (sizeof (? (Vector i32)))) 1 0)
+            (take-mv (as ?(Vector i32) a)))
+    ; alloca.
+    (let (s:&?(Vector i32) (alloca ?(Vector i32)))
+      (set! (deref s) (give-mv 2))
+      (printf "%d\n" (take-ref s)))
+    (set! g-mv (give-mv 4))
+    (printf "%d\n" (take-mv g-mv))
+    (let (hm:?(Vector i32) (give-mv 1)
+          hr:!(Vector i32) (give-rv 2)
+          h:Holder (Holder hm hr))
+      (printf "%d %d\n" (take-mv (h 'mv)) (rv-len (h 'rv))))
+    (let (qr:?!(Vector i32) (give-qr 5)
+          qn:?!(Vector i32) (give-qr -1))
+      (match qr ((some r) (printf "%d\n" (rv-len r))) (none (printf "none\n")))
+      (match qn ((some r) (printf "%d\n" (rv-len r))) (none (printf "none\n"))))
+    (let (m:MV (give-mv 6))
+      (printf "%d\n" (take-mv m)))
+    (printf "%d\n" (take-mv (wrap &pt 2)))
+    ; A lambda whose parameter and return carry the sigil-paren form.
+    (let ((f (fn ?(Vector i32)) (?(Vector i32))) (fn (m:?(Vector i32)):?(Vector i32) (return m)))
+      (printf "%d\n" (take-mv (f a))))
+    (let (vv:(Vector ?(Vector i32)) (vector-new))
+      (conj &vv (give-mv 1))
+      (conj &vv (give-mv -1))
+      (conj &vv (give-mv 2))
+      (printf "%d\n" (count-somes &vv)))
+    (return 0)))

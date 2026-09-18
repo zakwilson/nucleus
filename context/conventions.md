@@ -1404,7 +1404,12 @@ Two consequences, both load-bearing:
   ~110 raise sites to this shape. The guard that keeps it that way is
   `w4a-no-line-zero` in `tests/suite-audits.nuc` (compiles every fixture and
   reads the `line` field of every diagnostic) plus `check-no-line-zero` inside
-  the manifest's own rejection runner.
+  the manifest's own rejection runner. **That guard sees SITES only through
+  FIXTURES**: a raise no fixture reaches is unaudited, which is how the type
+  operand of `as`/`cast`/`sizeof`/`alloca`/`array` — and their `node-type`
+  mirrors — kept passing `(tn 'line)` to `parse-type-from-node` until Stage 21
+  PK-3 (`(as Nope 1)` reported `:0:`). A type operand is the classic
+  may-be-a-symbol subject; hand the parser `(node-line tn (cc 'line))`.
 - **Never `(set! (sym 'line) …)`.** The write is observed by every *other*
   occurrence of that spelling in the program. `stamp-macro-lines`
   (`src/nucleusc.nuc`) used to do exactly this while attributing macro
@@ -1884,13 +1889,18 @@ references its ir-name. Nothing in the compiler complains: the symptom is
 LLVM's own parser saying `use of undefined value '@count.pVector.Char'`, and
 only for a program that reaches that instantiation.
 
-It has drifted from `parse-type-name` three times (`__fnty_N`, `ptr:X`, and
-`Char`). It now consults **`builtin-type-name`** — the probe that was extracted
+It has drifted from `parse-type-name` four times (`__fnty_N`, `ptr:X`, `Char`,
+and the `?`/`!` sigils — Stage 21 PK-4a, where a fake tyvar did not drop an
+instantiation but *accepted every argument*: `(Vector i32)` bound the "tyvar"
+`?Pt`). It now consults **`builtin-type-name`** — the probe that was extracted
 FROM `parse-type-name` precisely to be asked without dying — rather than
 `g-primitive-type-set`, which answers a different question (the
 one-symbol-one-kind rule) and omits `Char`/`usize`/`ssize`/`raw`. When adding a
 built-in type, `builtin-type-name` is the one list that matters here; adding it
-only to `g-primitive-type-set` leaves generics over it silently broken.
+only to `g-primitive-type-set` leaves generics over it silently broken. **Two
+arms are still missing**: `deftype` aliases and C typedefs (both resolve in
+`parse-type-name`, neither here), so a bare alias name in a template argument is
+the same accept-anything shape — recorded in stage21-cleanup/overview.md.
 
 **An arity overload still needs a `node-type` mirror.** `(addr-of x)` is a
 binding's address and `(addr-of p 'f)` is a field's — one emitter, split on

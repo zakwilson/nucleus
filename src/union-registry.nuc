@@ -300,6 +300,14 @@
   (when (= name "f128") (return (as ptr ty-f128)))
   (return null))
 
+; The leading `?`/`!` run of a type spelling. `symbol-byte-at` at `len` reads
+; the interner's NUL, so the scan needs no bound of its own.
+(defn type-sigil-run (name:Symbol):usize
+  (let (i:usize 0)
+    (while (or (= (symbol-byte-at name i) 63) (= (symbol-byte-at name i) 33))
+      (set! i (+ i 1)))
+    (return i)))
+
 ; The one-shot `(array T N)` permission (`g-array-ok`, src/nucleusc.nuc) is
 ; consumed HERE, as parse-type-from-node consumes it on entry, so every
 ; recursion below — `?T`, `!T`, the colon delegation, an alias body — sees 0 and
@@ -309,8 +317,17 @@
     (set! g-array-ok 0)
     (return (resolve-type-name name line array-ok))))
 
+; PK-3: a spelling that is nothing but sigils is `? (Vector i32)` written with
+; a space — name the near-miss rather than an empty `unknown type`.
+(defn reject-bare-sigil (name:Symbol line:i32):void
+  (let (run:usize (type-sigil-run name))
+    (when (and (> run 0) (= run (symbol-len name)))
+      (die-at line (fstr "a type sigil must be attached to its type -- write "
+                         name "T or " name "(T ...) with no space")))))
+
 (defn resolve-type-name (name:Symbol line:i32 array-ok:i32):&Type
   (let (sv:StrView (symbol-as-view name))
+  (reject-bare-sigil name line)
   ; Stage 10 errors sugar: ?!T => (Maybe (Result T Err)) — a fallible result
   ; that may be absent. The leading ?! reads as a *value* Maybe over the Result
   ; (errors.md §10): the operand is already a complete value type, so it is not
@@ -1846,32 +1863,43 @@
       ; (!ptr Node). Strip the prefix from the head, parse the remainder as a type,
       ; then apply the prefix's sugar (? = niche/value Maybe; ! = (Result T Err)).
       ; Bare ?Foo / !Foo never reach here (single token, handled in parse-type-name).
+      ; PK-3: a head that is ONLY sigils is the list form of `?X` — X is its sole
+      ; element; `(?! X)` → `(! X)` → X composes as resolve-type-name's `?!` does.
       (let (head0:ptr (n 'car))
         (when (and (!= head0 null) (= (-> head0 (unsafe/cast ref:Node _) (_ 'kind)) NODE-SYM))
           (let (hs:Symbol (-> head0 (unsafe/cast ref:Node _) (_ 's))
                 hv:StrView (symbol-as-view hs)
                 c0:i32 (if (> (hv 'len) 0) (as i32 (aref (hv 'data) 0)) 0))
             (when (or (= c0 63) (= c0 33))
-              (let (stripped:ptr (as ptr (intern-node (symbol-intern (strview-drop-bytes hv 1))))
-                    inner-list:ptr (make-cell stripped (n 'cdr) line)
-                    inner:ptr (parse-type-from-node inner-list line))
-                (when (= c0 63)
-                  (when (= (-> inner (unsafe/cast ref:Type _) (_ 'kind)) TY-PTR)
-                    (return (unsafe/cast ref:Type (type-as-pkind inner PTR-MAYBE))))
-                  ; Value operand: stamp the value-Maybe template (Phase F uniform ?).
-                  (let (ut:?ptr:UnionTemplate (union-template-lookup-ref (symbol-intern "Maybe")))
+              (let (bare:i32 (if (= (type-sigil-run hs) (hv 'len)) 1 0)
+                    rest:ptr (n 'cdr))
+                (when (and (!= bare 0)
+                           (or (= rest null) (!= ((unsafe/cast ref:Node rest) 'cdr) null)))
+                  (die-at line (fstr "'" hs "' takes one type -- (" hs " T)")))
+                (let (inner:ptr
+                        (if (and (!= bare 0) (= (hv 'len) 1))
+                          (as ptr (parse-type-from-node ((unsafe/cast ref:Node rest) 'car) line))
+                          (as ptr (parse-type-from-node
+                                    (make-cell (as ptr (intern-node (symbol-intern (strview-drop-bytes hv 1))))
+                                               rest line)
+                                    line))))
+                  (when (= c0 63)
+                    (when (= (-> inner (unsafe/cast ref:Type _) (_ 'kind)) TY-PTR)
+                      (return (unsafe/cast ref:Type (type-as-pkind inner PTR-MAYBE))))
+                    ; Value operand: stamp the value-Maybe template (Phase F uniform ?).
+                    (let (ut:?ptr:UnionTemplate (union-template-lookup-ref (symbol-intern "Maybe")))
+                      (when (= ut null)
+                        (die-at line (missing-template-message "?T" (symbol-intern "Maybe"))))
+                      (let (argts:ptr (arena-alloc (ptr-bytes)))
+                        (set! (aref (as ref:ptr argts) 0) inner)
+                        (return (union-template-stamp-types (as ptr ut) argts 1 line)))))
+                  (let (ut:?ptr:UnionTemplate (union-template-lookup-ref (symbol-intern "Result")))
                     (when (= ut null)
-                      (die-at line (missing-template-message "?T" (symbol-intern "Maybe"))))
-                    (let (argts:ptr (arena-alloc (ptr-bytes)))
+                      (die-at line (missing-template-message "!T" (symbol-intern "Result"))))
+                    (let (argts:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
                       (set! (aref (as ref:ptr argts) 0) inner)
-                      (return (union-template-stamp-types (as ptr ut) argts 1 line)))))
-                (let (ut:?ptr:UnionTemplate (union-template-lookup-ref (symbol-intern "Result")))
-                  (when (= ut null)
-                    (die-at line (missing-template-message "!T" (symbol-intern "Result"))))
-                  (let (argts:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
-                    (set! (aref (as ref:ptr argts) 0) inner)
-                    (set! (aref (as ref:ptr argts) 1) (as ptr ty-err))
-                    (return (union-template-stamp-types (as ptr ut) argts 2 line)))))))))
+                      (set! (aref (as ref:ptr argts) 1) (as ptr ty-err))
+                      (return (union-template-stamp-types (as ptr ut) argts 2 line))))))))))
       ; AT-3: postfix volatile is retired. (T volatile) / (T1 T2 ... volatile) —
       ; the list-form spelling — and colon-sugared T:volatile (which reduces to
       ; this same trailing-symbol shape via split-colon-segments before it ever
