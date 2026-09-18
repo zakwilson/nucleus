@@ -10,7 +10,13 @@ site §3 missed, `emit-callable-value`'s `q:(ref T)` annotation guard, which
 `lib/read.nuc` (the only reader since item 2): `rd-open-segment?` is the gate,
 the split strips one trailing `:`, and the call moved from `rd-list` into
 `rd-form` (`rd-atom-form`); `dump-ast-corpus.sh verify` moved no input but
-`lib/read.nuc` itself, confirming §1.5's census. PK-3 … PK-6 not built. Every claim in
+`lib/read.nuc` itself, confirming §1.5's census. **PK-3 and PK-4a built
+2026-09-18** (§5, §6a; the near-miss and the line-0 discipline reached five
+emitters and three `node-type` mirrors, not `emit-alloca-form` alone — `as`,
+`cast`, `sizeof` and `array` passed the interned atom's line too; `tyname-resolvable`
+still does not consult `deftype` aliases or C typedefs, so a bare alias name in a
+template argument is the same fake-tyvar shape as H5, out of this item's scope —
+see progress.md). PK-4b, PK-5, PK-6 not built. Every claim in
 §1 was reproduced against `build/nucleusc` on 2026-09-16 (probe generator and
 full run kept beside this document's research pass; the 437-row matrix is
 summarised in §1.1). Milestones are **PK-1 … PK-6**; §9 sequences them across

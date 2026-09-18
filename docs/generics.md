@@ -179,6 +179,16 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
 - **Type variables are declared-only:** a name is a type variable iff it is bound
   in a `:where` constraint. Any other unknown type identifier is still an
   `unknown type` error, so typos stay caught.
+- **A sigil over a concrete type is concrete.** In a receiver-inferred pattern
+  (a template argument such as `(Vector ?Pt)`, `(Vector !i32)`, `(Vector ?&Pt)`),
+  `?X`/`!X` is a type variable only if `X` is; `?Pt` over a struct `Pt` is the
+  ordinary `(Maybe Pt)` and the parameter accepts exactly that, so passing a
+  `(Vector i32)` where `(Vector ?Pt)` was declared is a type error. (Before Stage
+  21 PK-4a the sigil made the name unresolvable, so `?Pt` was silently collected
+  as a type *variable* and any vector was accepted.) A sigil over a real type
+  variable — `(Vector ?T)` with `T` inferred from the receiver — is refused for
+  now: `Vector: '?T' -- a type sigil over a type variable is not supported in a
+  generic pattern yet; write the concrete type` (PK-4b lifts this).
 - **Binding** gathers the concrete type at every bare occurrence of a variable
   among the arguments and requires they agree; the bound type must conform
   (nominally, via `extend`) to the variable's protocol(s). There is no unifier:

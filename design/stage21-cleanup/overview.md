@@ -11,7 +11,7 @@ fewer "convention, not a rule" edges in it.
 
 ## Items
 
-1. **Pointer-kind and type-sigil spellings** — **PK-1 and PK-2 built 2026-09-18** —
+1. **Pointer-kind and type-sigil spellings** — **PK-1 … PK-4a built 2026-09-18** —
    [pointer-kind-spellings.md](pointer-kind-spellings.md) (designed 2026-09-16,
    PK-1 … PK-6). `&` becomes `ref` in both the type and the value world, so a
    standalone `&T` is the same node the type path already canonicalises and
@@ -20,9 +20,12 @@ fewer "convention, not a rule" edges in it.
    `rd-form` (PK-2, made once in `lib/read.nuc`), so `?(Vector i32)`, `!(…)`,
    `?!(…)`, `&?(…)` *read* as `(? (Vector i32))` etc. in every position (before,
    the paren form dangled as a sibling in all of them); a bare-sigil head `(? X)` is the
-   canonical list form; the generic-pattern walkers learn that a sigil over a
-   concrete type is concrete (closing a soundness hole where `(Vector i32)` was
-   accepted for `(Vector ?Pt)`); after one boot refresh a paren-aware sweep
+   canonical list form (PK-3: the type parser reads it as `?X`, exports it
+   structurally, and names the `? (V)` space near-miss at the form's line); the
+   generic-pattern walkers learn that a sigil over a concrete type is concrete
+   (PK-4a: closes the soundness hole where `(Vector i32)` was accepted for
+   `(Vector ?Pt)`, and with it the value-position `q:?&Pt` annotation; a sigil
+   over a real tyvar is refused until PK-4b); after one boot refresh a paren-aware sweep
    script (`scripts/stage21/sugar-sweep.py`, eight rules, refuses what it
    cannot classify) retires `addr-of` and adopts the sugar across `src/`,
    `lib/` and `examples/`, gated byte-identical by `ir-snapshot.sh`.
@@ -108,6 +111,13 @@ twin edits pointer-kind-spellings.md §4 specifies. Rationale in
   never binds — the same collect-but-never-bind shape as item 1's H5, on the
   pointer prefixes rather than the sigils (`src/generics.nuc:1363`, `:1400`,
   `:1459`).
+- **A `deftype` alias or C typedef name in a template argument is a fake
+  tyvar** (found building PK-4a). `tyname-resolvable` mirrors
+  `parse-type-name`'s acceptance set without its alias and C-typedef arms, so
+  `(deftype PtRef &Pt)` then `(defn f ((v (ref (Vector PtRef)))) …)` is silently
+  a template that accepts `(Vector i32)` — H5 with the sigil replaced by an
+  alias; `q:PtRef` in value position is refused as an unknown annotation for
+  the same reason. Two arms in one function, gated like PK-4a's H5 unit.
 - **The error docs hide the payload tier.** `docs/errors.md:10` presents
   `Err` as *the* error type and its `(Result T E)` section says a custom `E`
   needs `make` — stale: bare `err`/`err!`/`ok` target-type against any return

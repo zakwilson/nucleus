@@ -1,0 +1,25 @@
+; Stage 21 PK-4a (design/stage21-cleanup/pointer-kind-spellings.md §6): a sigil
+; over a concrete type is concrete in a generic pattern's template argument, so
+; `(Vector ?Pt)`, `(Vector ?&Pt)` and `(Vector !i32)` are ordinary parameter
+; types that accept exactly themselves. Before PK-4a `?&Pt` here died `cannot
+; infer type variable '?ref:Pt'` and the other two were fake type variables.
+(import-use "stdio.h")
+(import-use vector)
+(defstruct Pt x:i32 y:i32)
+
+(defn n-qpt ((v (ref (Vector ?Pt)))):i32 (return (unsafe/cast i32 (count v))))
+(defn n-qrefpt ((v (ref (Vector ?&Pt)))):i32 (return (unsafe/cast i32 (count v))))
+(defn n-bang ((v (ref (Vector !i32)))):i32 (return (unsafe/cast i32 (count v))))
+
+(defn main ():i32
+  (let (pt:Pt (Pt 5 6)
+        v:(Vector ?Pt) (vector-new)
+        w:(Vector ?&Pt) (vector-new)
+        b:(Vector !i32) (vector-new))
+    (printf "%d %d %d\n" (n-qpt &v) (n-qrefpt &w) (n-bang &b))
+    (let (mp:?Pt (some pt)
+          ok3:!i32 (ok 3))
+      (conj &v mp)
+      (conj &b ok3))
+    (printf "%d %d %d\n" (n-qpt &v) (n-qrefpt &w) (n-bang &b))
+    (return 0)))

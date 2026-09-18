@@ -35,6 +35,7 @@ undefined at every use.
 | `!T`  | `(Result T Err)`           | fallible value — `T` as written (`!i64` is `(Result i64 Err)`) |
 | `!?T` | `(Result (Maybe T) Err)`   | error, or none, or value |
 | `?!T` | `(Maybe (Result T Err))`   | a fallible result that may be absent (value-`Maybe` over a Result) |
+| `!(T …)` | `(Result (T …) Err)`    | the paren form: `!(Vector i32)`, `?!(Vector i32)`, `r:!(ref FILE)` — reads as the list form `(! (Vector i32))`, which is the same type |
 
 After the Phase F flip `?` is uniform `(Maybe T)` (no `(ref …)` injection), so
 `?` and `!` compose without asymmetry — both take their payload as written
@@ -45,8 +46,10 @@ toplevel signature prescan now resolves imported (prelude) types, `name:!Config`
 parses in ordinary signatures. (`name:(Result Config Err)` now parses too via
 the colon-paren sugar, so `!` is no longer *required* for that — but it
 remains the terser spelling and composes with the `?!` value-Maybe-over-Result
-sugar.) `!` over a parenthesized payload has no sugar; write
-`(Result (ref FILE) Err)` longhand.
+sugar.) `!` over a parenthesized payload is written attached, `!(ref FILE)`,
+and reads as `(! (ref FILE))` — a bare `!` head is the canonical list form of
+the sigil (Stage 21 PK-3; see [types.md](types.md#type-syntax-and-desugar)).
+`! (ref FILE)` with a space is refused as a near-miss.
 
 ## Constructing and eliminating `!T`
 

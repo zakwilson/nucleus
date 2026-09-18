@@ -354,3 +354,194 @@ foo:(bar)
     (drop (addr-of ast))
     (drop (addr-of p)))
   (return (ok)))
+
+; ---------------------------------------------------------------------------
+; PK-3: a bare-sigil head is the canonical list form of a sigil-paren type
+; ---------------------------------------------------------------------------
+
+; The rows of pointer-kind-spellings.md §1.1 that failed in 21 of 23 positions:
+; the fixture is a witness (the pre-PK-3 compiler refuses its line 19 with an
+; empty `unknown type:`), and the header half is the round-trip property §5
+; states -- `(? (Vector i32))` prints structurally, re-reads to itself, and a
+; separately compiled consumer links through it.
+(deftest s21-pk3-sigil-paren-types
+  ; 1. Every position, compiled and run.
+  (let (out:String (try (build-run-file "" "" "tests/fixtures/s21-pk3-sigil-paren-types.nuc")))
+    (try (check-golden (string-as-view (addr-of out))
+                       "3 -1 3\n3\n5 -3\n6 -4\n1 3\n2\n4\n1 2\n5\nnone\n6\n7\n3\n2\n"))
+    (drop (addr-of out)))
+
+  ; 2. `--emit-nuch` prints the list forms, and a consumer imports the header
+  ;    back (the header in `h/` only, so `resolve-import` cannot find the source
+  ;    first) and calls through every sigil-paren signature.
+  (let (ldir:String (try (test-scratch-sub "l"))
+        hdir:String (try (test-scratch-sub "h"))
+        lib:String (try (test-write-file "l/s21pk3l.nuc" "(ns s21pk3)
+(import-use vector)
+(defstruct Pt x:i32 y:i32)
+(defstruct Holder (mv (? (Vector i32))) rv:!(Vector i32) q:?&Pt)
+(deftype MV ?(Vector i32))
+(defprotocol Wrap (wrap ((self &Self) n:i32):?(Vector i32)))
+(defn mv-len (m:?(Vector i32)):i32
+  (match m ((some v) (return (unsafe/cast i32 (count &v)))) (none (return -1))))
+(defn mv-give (n:i32):?!(Vector i32)
+  (when (< n 0) (return none))
+  (let (v:(Vector i32) (vector-new))
+    (dotimes (i n) (conj &v i))
+    (let (r:!(Vector i32) (ok v))
+      (return (some r)))))
+(defn qr-len (q:?!(Vector i32)):i32
+  (match q
+    ((some r) (match r ((ok v) (return (unsafe/cast i32 (count &v)))) ((err e) (return -9))))
+    (none (return -1))))
+(defn q-x ((q (?ref Pt))):i32 (if-some (p q) (return (p 'x)) (return -3)))
+"))
+        lv:StrView (string-as-view (addr-of lib))
+        nuch:String (try (emit-for-file "" "--emit-nuch" lv))
+        nv:StrView (string-as-view (addr-of nuch))
+        hp:String (try (write-into (string-as-view (addr-of hdir)) "s21pk3l.nuch" nv))
+        use:String (try (test-write-file "s21pk3u.nuc" "(import-use \"stdio.h\")
+(import-use vector)
+(import s21pk3l k)
+(defn main ():i32
+  (let (pt:k/Pt (k/Pt 5 6)
+        q:?!(Vector i32) (k/mv-give 4)
+        m:?(Vector i32) none
+        v:(Vector i32) (vector-new)
+        r:!(Vector i32) (ok v)
+        qp:?&k/Pt (as-ref &pt)
+        h:k/Holder (k/Holder m r qp))
+    (printf \"%d %d %d %d\\n\" (k/qr-len q) (k/mv-len m) (k/q-x (h 'q)) (k/mv-len (h 'mv)))
+    (return 0)))
+"))
+        uobj:String (str (string-as-view (addr-of hdir)) "/s21pk3u.o")
+        lobj:String (str (string-as-view (addr-of ldir)) "/s21pk3l.o"))
+    (try (check-line nv "(defstruct Holder (mv (? (Vector i32))) (rv (! (Vector i32))) (q (?ref Pt)))"))
+    (try (check-line nv "(deftype MV (? (Vector i32)))"))
+    (try (check-line nv "(defprotocol Wrap (wrap ((self (ref Self)) n:i32) (? (Vector i32))))"))
+    (try (check-line nv "(declare mv-len ((m (? (Vector i32)))) :i32)"))
+    (try (check-line nv "(declare mv-give ((n i32)) (?! (Vector i32)))"))
+    (try (check-line nv "(declare q-x ((q (?ref Pt))) :i32)"))
+    (try (compile-object-in (string-as-view (addr-of hdir))
+                            (string-as-view (addr-of use))
+                            (string-as-view (addr-of uobj))))
+    (try (compile-object-in "" lv (string-as-view (addr-of lobj))))
+    (let (parts:String (str (string-as-view (addr-of uobj)) " "
+                            (string-as-view (addr-of lobj)))
+          got:String (try (cc-link-run "" (string-as-view (addr-of parts)))))
+      (try (check-golden (string-as-view (addr-of got)) "4 -1 5 -1\n"))
+      (drop (addr-of got))
+      (drop (addr-of parts)))
+    (drop (addr-of lobj))
+    (drop (addr-of uobj))
+    (drop (addr-of use))
+    (drop (addr-of hp))
+    (drop (addr-of nuch))
+    (drop (addr-of lib))
+    (drop (addr-of hdir))
+    (drop (addr-of ldir)))
+  (return (ok)))
+
+; One form per probe, on line 3 so the line is a claim rather than the default.
+(defn s21-type-refused (form:StrView line:i32 msg:StrView):!void
+  (let (src:String (str "(import-use vector)\n\n" form "\n(defn main ():i32 (return 0))\n")
+        p:String (try (test-write-file "t.nuc" (string-as-view (addr-of src))))
+        pv:StrView (string-as-view (addr-of p))
+        c:Compiled (try (compile-path pv)))
+    (when (c 'ok?) (fail! "expected a refusal of " (test-show form)))
+    (try (check-error-at (addr-of c 'diags) pv line msg))
+    (drop (addr-of c))
+    (drop (addr-of p))
+    (drop (addr-of src)))
+  (return (ok)))
+
+; §5's near-miss: a sigil with a space after it is a bare `?` atom and a
+; dangling paren form, named as such at the form's line -- including at
+; `alloca`, whose type operand is an interned symbol with no line of its own.
+; The list form takes exactly one operand.
+(deftest s21-pk3-diagnostics
+  (let (near:StrView "a type sigil must be attached to its type -- write ?T or ?(T ...) with no space")
+    (try (s21-type-refused "(defn f (x:? (Vector i32)):i32 (return 0))" 3 near))
+    (try (s21-type-refused "(defstruct S (f ? (Vector i32)))" 3 near))
+    (try (s21-type-refused "(defvar g:? (Vector i32))" 3 near))
+    (try (s21-type-refused "(defn f ():i32 (let (s:&i32 (alloca ? (Vector i32))) (return 0)))" 3 near))
+    (try (s21-type-refused "(defn f ():i32 (return (unsafe/cast i32 (sizeof ?))))" 3 near))
+    (try (s21-type-refused "(defn f ():i32 (return (as ? 1)))" 3 near))
+    (try (s21-type-refused "(defn f ():i32 (return (as ! 1)))" 3
+                           "a type sigil must be attached to its type -- write !T or !(T ...) with no space"))
+    (try (s21-type-refused "(defn f ():i32 (return (as ?! 1)))" 3
+                           "a type sigil must be attached to its type -- write ?!T or ?!(T ...) with no space")))
+  (try (s21-type-refused "(defn f ((x (? i32 i64))):i32 (return 0))" 3 "'?' takes one type -- (? T)"))
+  (try (s21-type-refused "(defn f ((x (?))):i32 (return 0))" 3 "'?' takes one type -- (? T)"))
+  (try (s21-type-refused "(defn f ((x (!))):i32 (return 0))" 3 "'!' takes one type -- (! T)"))
+  (try (s21-type-refused "(defn f ((x (?! i32 i64))):i32 (return 0))" 3 "'?!' takes one type -- (?! T)"))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; PK-4a: a sigil over a concrete type is concrete to the generic-pattern walkers
+; ---------------------------------------------------------------------------
+
+; H5 (pointer-kind-spellings.md §1.4): the fixture's `(Vector ?Pt)` was a fake
+; type variable, so the pre-PK-4a compiler stamped `f_qpt.pVector.i32` from a
+; `(Vector i32)` argument and the program printed 1. A sigil over a type
+; variable is refused until PK-4b, rather than collected under a spelling the
+; unifier never binds.
+(deftest s21-pk4a-h5
+  (let (path:StrView "tests/fixtures/s21-pk4a-h5.nuc"
+        c:Compiled (try (compile-path path)))
+    (when (c 'ok?) (fail! "expected (Vector i32) to be refused where (Vector ?Pt) was declared"))
+    (try (check-error-at (addr-of c 'diags) path 15
+                         "f-qpt: argument 1 has type ptr:Vector.i32, which does not match parameter type ptr:Vector.Maybe.Pt"))
+    (drop (addr-of c)))
+  (let (out:String (try (build-run-file "" "" "tests/fixtures/s21-pk4a-sigil-concrete.nuc")))
+    (try (check-golden (string-as-view (addr-of out)) "0 0 0\n1 0 1\n"))
+    (drop (addr-of out)))
+  (try (s21-type-refused "(defn f-qt ((v (ref (Vector ?T)))):i32 (return 1))" 3
+                         "Vector: '?T' -- a type sigil over a type variable is not supported in a generic pattern yet; write the concrete type"))
+  (try (s21-type-refused "(defn f-bt ((v (ref (Vector !T)))):i32 (return 1))" 3
+                         "Vector: '!T' -- a type sigil over a type variable is not supported in a generic pattern yet; write the concrete type"))
+  (return (ok)))
+
+; The IR of a `define`, header line dropped, so two functions can be compared
+; body for body.
+(defn s21-define-body (ir:StrView name:StrView):!StrView
+  (match (ir-define ir name)
+    (none (fail! "no `define` for " (sexp-quote name)))
+    ((some block)
+      (match (strview-find-byte &block (as ui8 10))
+        ((some i) (return (ok (strview-drop-bytes block (+ i 1)))))
+        (none (fail! "a one-line `define` for " (sexp-quote name)))))))
+
+; The second face of H5: `value-annot-type` gates the value-position annotation
+; on the same predicate, so `q:?&Pt` used to be refused as an unknown type while
+; `(as ?&Pt q)` worked. Now the two are one function body.
+(deftest s21-value-annotation
+  (let (src:StrView "(import-use \"stdio.h\")
+(defstruct Pt x:i32 y:i32)
+(defn via-annot (q:&Pt):?&Pt (return q:?&Pt))
+(defn via-as (q:&Pt):?&Pt (return (as ?&Pt q)))
+(defn main ():i32
+  (let (pt:Pt (Pt 5 6))
+    (if-some (p (via-annot &pt)) (printf \"%d\\n\" (p 'x)) (printf \"none\\n\"))
+    (if-some (p (via-as &pt)) (printf \"%d\\n\" (p 'y)) (printf \"none\\n\"))
+    (return 0)))
+"
+        ir:String (try (source-ir src))
+        iv:StrView (string-as-view (addr-of ir))
+        a:StrView (try (s21-define-body iv "via-annot"))
+        b:StrView (try (s21-define-body iv "via-as")))
+    (try (check-eq a b))
+    (drop (addr-of ir)))
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Pt x:i32 y:i32)
+(defn via-annot (q:&Pt):?&Pt (return q:?&Pt))
+(defn via-as (q:&Pt):?&Pt (return (as ?&Pt q)))
+(defn main ():i32
+  (let (pt:Pt (Pt 5 6))
+    (if-some (p (via-annot &pt)) (printf \"%d\\n\" (p 'x)) (printf \"none\\n\"))
+    (if-some (p (via-as &pt)) (printf \"%d\\n\" (p 'y)) (printf \"none\\n\"))
+    (return 0)))
+")))
+    (try (check-golden (string-as-view (addr-of out)) "5\n6\n"))
+    (drop (addr-of out)))
+  (return (ok)))

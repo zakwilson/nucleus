@@ -1252,6 +1252,11 @@
 ; acceptance set without dying. A free symbol that is NOT resolvable here is a
 ; candidate type variable.
 (defn tyname-resolvable (name:Symbol):i32
+  ; Stage 21 PK-4a: peel `?`/`!` first, as resolve-type-name does — a sigil
+  ; spelling used to be an unresolvable name, i.e. a fake tyvar (H5, §1.4).
+  (let (run:usize (type-sigil-run name))
+    (when (> run 0)
+      (return (tyname-resolvable (symbol-intern (strview-drop-bytes (symbol-as-view name) run))))))
   ; `builtin-type-name`, not `g-primitive-type-set`: only the former was
   ; extracted from parse-type-name, the set this mirrors (context/conventions.md,
   ; "A concrete type read as a TYVAR silently drops a whole instantiation").
@@ -1395,6 +1400,14 @@
                                   ": 'ref' is a pointer kind, not a type argument -- a colon chain cannot nest, so parenthesize the inner type: ref:("
                                   (stt 'name) " (ref X))")))
                         (when (= (tyname-resolvable (an 's)) 0)
+                          ; PK-4a: collected as `?T`, the unifier would never bind
+                          ; it; refused until PK-4b makes the sigil a wrapper.
+                          (when (> (type-sigil-run (an 's)) 0)
+                            (let (aline:i32 (node-line (as ptr an) (node-line (as ptr node) 0)))
+                              (reject-bare-sigil (an 's) aline)
+                              (die-at aline
+                                (fstr (stt 'name) ": '" (an 's)
+                                      "' -- a type sigil over a type variable is not supported in a generic pattern yet; write the concrete type"))))
                           (tyvars-add (an 's) out-tyvars io-ntv)))
                       (collect-pattern-tyvars arg out-tyvars io-ntv)))))
               (when (!= nargs (stt 'ntv))
@@ -4805,7 +4818,7 @@
 
 (defn node-type-cast (n:raw:Node):ref:Type
   (let (tn:ptr:Node (unsafe/cast ref:Node (node-at n 1)))
-    (return (parse-type-from-node (as ptr tn) (tn 'line)))))
+    (return (parse-type-from-node (as ptr tn) (node-line (as ptr tn) (n 'line))))))
 
 ; Stage 14 UN-1: `(as TYPE expr)` type mirror (node-type<->emit-node lockstep,
 ; conventions.md). emit-as (src/nucleusc.nuc) returns a Val typed EXACTLY the
@@ -4816,7 +4829,7 @@
 ; type that actually flows to a parent.
 (defn node-type-as (n:raw:Node):ref:Type
   (let (tn:ptr:Node (unsafe/cast ref:Node (node-at n 1)))
-    (return (parse-type-from-node (as ptr tn) (tn 'line)))))
+    (return (parse-type-from-node (as ptr tn) (node-line (as ptr tn) (n 'line))))))
 
 (defn node-type-alloca (n:raw:Node):ref:Type
   (let (tn:ptr:Node (unsafe/cast ref:Node (node-at n 1)))
@@ -4826,7 +4839,7 @@
     ; `(alloca (array i32 4))` types as an error in the non-emitting pass while
     ; codegen accepts it, which is the divergence the lockstep exists to stop.
     (set! g-array-ok 1)
-    (let (ty:ptr (parse-type-from-node (as ptr tn) (tn 'line))
+    (let (ty:ptr (parse-type-from-node (as ptr tn) (node-line (as ptr tn) (n 'line)))
           pt:ref:Type (make-type TY-PTR))
       (if (= ((unsafe/cast ref:Type ty) 'kind) TY-ARRAY)
         (set! (pt 'elem) ((unsafe/cast ref:Type ty) 'elem))
