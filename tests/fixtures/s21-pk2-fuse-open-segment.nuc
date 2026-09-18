@@ -1,0 +1,51 @@
+; Stage 21 PK-2 (design/stage21-cleanup/pointer-kind-spellings.md §4): the
+; colon-paren fuse gates on an OPEN final chain segment, a trailing sigil run
+; is a segment of its own, and the fuse fires on every atom `rd-form` reads --
+; so a reader-macro operand, a literal element and a top-level atom fuse too.
+; The spellings sit inside string literals so this file reads the same under
+; any reader; what each one reads AS is the program's output.
+(import-use error)
+(import-use strview)
+(import-use string)
+(import-use io)
+(import-use node)
+(import-use read)
+
+(defn show (text:StrView):void
+  (match (read-all text)
+    ((ok forms)
+      (let (s:String (node-str forms))
+        (print text " => " (string-as-view (addr-of s)) "\n")
+        (drop (addr-of s))))
+    ((err e) (print text " => error line " (e 'line) ": " (e 'msg) "\n"))))
+
+(defn main ():i32
+  ; §4 table
+  (show "?(V)")
+  (show "x:?(V)")
+  (show "x:!(V)")
+  (show "?!(V)")
+  (show "(f (a):?(V))")
+  (show "x:&?(V)")
+  (show "x:?&(V)")
+  (show "x:(V)")
+  (show "x:ref:(V)")
+  (show "(f (a):(V))")
+  (show "f:(fn i32)(i32 i32)")
+  (show "f:(fn i32)")
+  ; the three consequences of the move into rd-form
+  (show "&?(V)")
+  (show "&ptr:(V)")
+  (show "'x:(T)")
+  (show "~x:(T)")
+  (show "[x:(T)]")
+  (show "foo:(bar)")
+  ; a closed final segment never fuses
+  (show "foo?(x)")
+  (show "push!(x)")
+  (show "!=(x)")
+  (show "x:foo?(x)")
+  (show "&rest(x)")
+  ; adjacency is still required
+  (show "x:? (V)")
+  (return 0))

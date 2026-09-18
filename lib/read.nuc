@@ -687,24 +687,39 @@
                                         (as raw:Node (make-cell plist null line))
                                         line))))))
 
+; The final chain segment is still open (`x:`, `?`, `x:?`, `?!` -- not `foo?`,
+; `!=`): the fuse gate of pointer-kind-spellings.md §4, on the `&`-sigil machine.
+(defn rd-open-segment? (sv:StrView):bool
+  (let (n:usize (sv 'len)
+        i:usize 0
+        seg:i32 1)
+    (while (< i n)
+      (set! seg (rd-seg-next (rd-tv-at &sv i) seg))
+      (set! i (+ i 1)))
+    (return (= seg 1))))
+
 ; Colon-paren binding sugar (design/stage11/cleanup.md §1). The colon is an
 ; ordinary symbol char, so `name:(ref (Vector T))` lexes as the atom `name:`
-; followed by a separate list; in list context, fuse them back together.
+; followed by a separate list; fuse them back together.
 (defn rd-fuse-colon-paren ((self (ref Reader)) child:raw:Node line:i32):ReadResult
   (when (= child null) (return (ok child)))
   (when (and (!= (child 'kind) NODE-SYM) (!= (child 'kind) NODE-KEYWORD))
     (return (ok child)))
   (let (sv:StrView (symbol-as-view (child 's))
         len:usize (symbol-len (child 's)))
-    (when (not (strview-has-suffix sv ":")) (return (ok child)))
+    (when (not (rd-open-segment? sv)) (return (ok child)))
     (when (!= (rd-peek self) 40) (return (ok child)))
     (let (first:raw:Node (try (rd-form self))
           paren-form:raw:Node (try (rd-fuse-fn-params self first line))
-          body:StrView (strview-take-bytes sv (- len 1)))
+          body:StrView sv)
       ; A bare ':' fuses to the paren form directly, so `(fn (x:i32):(ref T) …)`
       ; reads as `(fn (x:i32) (ref T) …)`.
-      (when (and (= (child 'kind) NODE-SYM) (= len 1))
+      (when (and (= (child 'kind) NODE-SYM) (= sv ":"))
         (return (ok paren-form)))
+      ; A trailing sigil run is a segment of its own (`x:?` → `x`, `?`), so
+      ; only a trailing ':' is stripped before the split.
+      (when (strview-has-suffix sv ":")
+        (set! body (strview-take-bytes sv (- len 1))))
       ; Split the body on ':'. The first segment is the binding name for a
       ; symbol (empty for a keyword, whose colon the lexer already stripped);
       ; the rest wrap the paren form right-to-left as unary constructors.
@@ -762,16 +777,14 @@
           (rd-close-bracket self)
           (rd-next self)
           (return (ok head)))
-        (let (raw-form:raw:Node (try (rd-form self))
-              child:raw:Node (try (rd-fuse-colon-paren self raw-form open-line))
+        (let (child:raw:Node (try (rd-form self))
               cell:raw:Node (as raw:Node (make-cell child null open-line)))
           (when (= tail null) (set! head cell))
           (when (!= tail null) (set! (tail 'cdr) cell))
           (set! tail cell))))
     (return (ok head))))
 
-; The elements of a `[…]`/`{…}`/`#{…}` literal up to `closer`, read with no
-; fuse, as the compiler's `read-lit-elems` reads them.
+; The elements of a `[…]`/`{…}`/`#{…}` literal up to `closer`.
 (defn rd-lit-elems ((self (ref Reader)) what:StrView closer:i32 open-line:i32):ReadResult
   (let (head:raw:Node null
         tail:raw:Node null)
@@ -798,6 +811,12 @@
 (defn rd-lit-cell (name:StrView elems:raw:Node line:i32):raw:Node
   (return (as raw:Node (make-cell (as raw:Node (intern-node (symbol-intern name)))
                                   elems line))))
+
+; The fuse lives here, not in `rd-list`, so it fires wherever an atom is read:
+; a reader-macro operand, a literal element, a top-level form.
+(defn rd-atom-form ((self (ref Reader)) line:i32):ReadResult
+  (let (atom:raw:Node (try (rd-atom self)))
+    (return (rd-fuse-colon-paren self atom line))))
 
 (defn rd-form ((self (ref Reader))):ReadResult
   (rd-skip-ws self)
@@ -850,7 +869,7 @@
     ; A retired `&x` marker must reach the compiler's own check rather than be
     ; consumed by the `&` reader macro.
     (when (and (= c 38) (rd-at-legacy-marker self))
-      (return (rd-atom self)))
+      (return (rd-atom-form self line)))
     (let (mi:i32 (rd-macro-match self))
       (when (>= mi 0)
         (let (rm:RMacro (invoke (self 'macros) (as usize mi))
@@ -876,7 +895,7 @@
       (return (rd-string self line false)))
     (when (= c 92)
       (return (rd-char self line)))
-    (return (rd-atom self))))
+    (return (rd-atom-form self line))))
 
 ; ---------------------------------------------------------------------------
 ; Public entry points

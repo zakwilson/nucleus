@@ -70,7 +70,8 @@
 
   ; 2. Through a program's `read-all`: the same forward-only rule in one
   ;    buffer, a fresh table for the next buffer, and the three collection
-  ;    literals with no gensym element -- the compiler mints that itself.
+  ;    literals with no gensym element -- the compiler mints that itself. A
+  ;    literal element fuses like a list element since PK-2.
   (let (out:String (try (build-run-source "(import-use error)
 (import-use strview)
 (import-use string)
@@ -99,7 +100,7 @@
 ((vector-lit 1 2))
 ((hashmap-lit :a 1))
 ((hashset-lit 1))
-((vector-lit a: (T) b))
+((vector-lit (a (T)) b))
 "))
     (try (check-not-contains ov "__gs"))
     (drop (addr-of out)))
@@ -289,5 +290,67 @@ read-through: ok
     (try (check-error-at (addr-of c 'diags) pv 2
                          "macrolet: 'ref' is a pointer kind and may not be shadowed"))
     (drop (addr-of c))
+    (drop (addr-of p)))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; PK-2: the fuse gates on an open segment, and fires on every atom
+; ---------------------------------------------------------------------------
+
+; Every row of pointer-kind-spellings.md §4's table, the three consequences of
+; the move from list reading into form reading, and the spellings a closed
+; final segment must leave alone -- through `read-all`, then the compiler's
+; own `--dump-ast` for the rows a program's source can carry.
+(deftest s21-pk2-fuse-open-segment
+  ; 1. The fixture reads each spelling and prints what it read.
+  (let (out:String (try (build-run-file "" "" "tests/fixtures/s21-pk2-fuse-open-segment.nuc")))
+    (try (check-golden (string-as-view (addr-of out)) "?(V) => ((? (V)))
+x:?(V) => ((x (? (V))))
+x:!(V) => ((x (! (V))))
+?!(V) => ((?! (V)))
+(f (a):?(V)) => ((f (a) (? (V))))
+x:&?(V) => ((x (ref (? (V)))))
+x:?&(V) => ((x (?ref (V))))
+x:(V) => ((x (V)))
+x:ref:(V) => ((x (ref (V))))
+(f (a):(V)) => ((f (a) (V)))
+f:(fn i32)(i32 i32) => ((f ((fn i32) (i32 i32))))
+f:(fn i32) => ((f (fn i32)))
+&?(V) => ((ref (? (V))))
+&ptr:(V) => ((ref (ptr (V))))
+'x:(T) => ((quote (x (T))))
+~x:(T) => ((unquote (x (T))))
+[x:(T)] => ((vector-lit (x (T))))
+foo:(bar) => ((foo (bar)))
+foo?(x) => (foo? (x))
+push!(x) => (push! (x))
+!=(x) => (!= (x))
+x:foo?(x) => (x:foo? (x))
+&rest(x) => (&rest (x))
+x:? (V) => (x:? (V))
+"))
+    (drop (addr-of out)))
+
+  ; 2. The compiler reads the same way: a sigil-paren parameter, a `):?(…)`
+  ;    return, a reader-macro operand, a literal element and a top-level atom
+  ;    (one form, where the pre-PK-2 reader gave a bare symbol then a list).
+  (let (p:String (try (test-write-file "s21-pk2-ast.nuc" "(defn f1 (x:?(Vector i32)) :i32 (return 0))
+(defn f2 (a:i32):?(Vector i32) (return 0))
+(defn f3 () :i32 (return (as &?(Vector i32) x)))
+(defmacro m1 () `(let (~x:(T) 1) 2))
+(defn f4 () :i32 (return [x:(T)]))
+foo:(bar)
+(defn f5 () :i32 (return (foo?(x) push!(x))))
+"))
+        ast:String (try (emit-for-file "" "--dump-ast" (string-as-view (addr-of p))))
+        av:StrView (string-as-view (addr-of ast)))
+    (try (check-line av "(defn f1 ((x (? (Vector i32)))) :i32 (return 0))"))
+    (try (check-line av "(defn f2 (a:i32) (? (Vector i32)) (return 0))"))
+    (try (check-line av "(defn f3 () :i32 (return (as (ref (? (Vector i32))) x)))"))
+    (try (check-line av "(defmacro m1 () (quasiquote (let ((unquote (x (T))) 1) 2)))"))
+    (try (check-line av "(defn f4 () :i32 (return (vector-lit __gs_0 (x (T)))))"))
+    (try (check-line av "(foo (bar))"))
+    (try (check-line av "(defn f5 () :i32 (return (foo? (x) push! (x))))"))
+    (drop (addr-of ast))
     (drop (addr-of p)))
   (return (ok)))

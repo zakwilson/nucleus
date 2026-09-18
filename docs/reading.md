@@ -169,7 +169,7 @@ The s-expression language, and Nucleus's atom syntax:
 | Keywords | `:name` |
 | Comments | `;` to end of line |
 | Reader macros | `'` `` ` `` `~` `~@` `@` `&` → `quote` `quasiquote` `unquote` `unquote-splice` `deref` `ref` — one head for both worlds: `&T` in a type slot is the non-null pointer `(ref T)`, `&x` in a value slot is the address-of `(ref x)` |
-| Type sugar | `&T` → `ref:T`, and the colon-paren fuse `name:(Type)` → `(name (Type))` |
+| Type sugar | `&T` → `ref:T`, and the colon-paren fuse `name:(Type)` → `(name (Type))` — on any atom whose final chain segment is open (`x:`, `x:?`, `?`, `?!`, the lone `:`) and is immediately followed by `(`, wherever the atom is read: a list element, a reader-macro operand, a literal element, a top-level form ([types.md](types.md#type-syntax-and-desugar)) |
 | Collection literals | `[a b]` → `(vector-lit a b)`, `{k v}` → `(hashmap-lit k v)`, `#{a b}` → `(hashset-lit a b)` — **no element-type inference and no gensym**; the compiler infers a literal's element type and mints its hygiene symbol itself, at emit time |
 | `def-rmacro` | registers a new reader macro as it is read (above) |
 
