@@ -12083,7 +12083,7 @@
 ; ------------------------------------------------------------
 ; collection literals
 ; ------------------------------------------------------------
-; `[…]` / `#{…}` / `{…}` reach here as `(vector-lit <g> e …)` and friends. The
+; `[…]` / `#{…}` / `{…}` reach here as `(vector-lit e …)` and friends. The
 ; reader used to build the whole expansion, which is why an element had to be a
 ; scalar literal; it waits until emit because this is the first phase where an
 ; element has a TYPE.
@@ -12275,10 +12275,7 @@
 (defn emit-collection-lit (n:(raw Node) scope:&Scope tmpl:Symbol what:StrView
                            init-fn:StrView add-fn:StrView is-map:i32 empty-msg:StrView):&Val
   (let (line:i32 (node-line (as ptr n) g-form-line)
-        ; `mint-collection-gensyms` put the gensym here, so the cdr is never null
-        gcell:ptr:Node (unsafe/cast ref:Node ((unsafe/cast ref:Node n) 'cdr))
-        gs:ptr (gcell 'car)
-        head:ptr (as ptr (gcell 'cdr))
+        head:ptr (as ptr ((unsafe/cast ref:Node n) 'cdr))
         want:ptr (collection-lit-want-node tmpl))
     (when (and (= head null) (= want null)) (die-at line empty-msg))
     (let (kk:i32 0  vk:i32 0
@@ -12309,8 +12306,10 @@
                           (if (!= et1 null) et1 (lit-type-node kk line)) line))
             (set! coll2 (lit-list2 (lit-sym tmpl)
                           (if (!= et2 null) et2 (lit-type-node kk line)) line)))))
-      ; Body, forward: (init g) (add g e …) … g
-      (let (chead:ptr null
+      ; Body, forward: (init g) (add g e …) … g. The hygiene symbol is minted
+      ; here, not by the reader, so `__gs_N` is numbered in emission order.
+      (let (gs:ptr (as ptr (nucleus_gensym))
+            chead:ptr null
             ctail:ptr null
             cur:ptr head)
         (while (!= cur null)
@@ -16553,22 +16552,6 @@
                 (file-close fh)
                 (return src)))))))))
 
-; `emit-collection-lit` reads a gensym as the second element of every `*-lit`
-; cell. The reader mints none, so this walk does -- post-order, left to right,
-; the order the compiler's old reader minted in, so `__gs_N` numbering and
-; every emitted IR byte are unchanged (one-reader.md §4c; deleted with PK-5).
-(defn mint-collection-gensyms (n:(raw Node)):void
-  (when (= n null) (return))
-  (when (!= (n 'kind) NODE-CELL) (return))
-  (let (c:(raw Node) n)
-    (while (!= c null)
-      (mint-collection-gensyms (c 'car))
-      (set! c (c 'cdr))))
-  (let (h:(raw Node) (n 'car))
-    (when (and (!= h null) (= (h 'kind) NODE-SYM)
-               (or (= (h 's) "vector-lit") (= (h 's) "hashmap-lit") (= (h 's) "hashset-lit")))
-      (set! (n 'cdr) (as raw:Node (make-cell (nucleus_gensym) (n 'cdr) (n 'line)))))))
-
 ; The one place a reader error becomes a diagnostic: the `ReadError` is
 ; rendered through `report-at` exactly as the old in-reader sites did, and the
 ; caller sees `parse-error` as before. `table` is the reader-macro table the
@@ -16580,12 +16563,7 @@
         (when (> (note 'len) 0) (diag-stage-note note))
         (report-at (e 'line) (e 'msg))
         (return (err! parse-error))))
-    ((ok forms)
-      (let (c:(raw Node) forms)
-        (while (!= c null)
-          (mint-collection-gensyms (c 'car))
-          (set! c (c 'cdr)))
-        (return (ok forms))))))
+    ((ok forms) (return (ok forms)))))
 
 ; Batch entry: the diagnostic is already printed, so a syntax error just aborts
 ; the build. A REPL import unwinds instead, as `die-at` does, so a failed

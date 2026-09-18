@@ -16,7 +16,13 @@ emitters and three `node-type` mirrors, not `emit-alloca-form` alone — `as`,
 `cast`, `sizeof` and `array` passed the interned atom's line too; `tyname-resolvable`
 still does not consult `deftype` aliases or C typedefs, so a bare alias name in a
 template argument is the same fake-tyvar shape as H5, out of this item's scope —
-see progress.md). PK-4b, PK-5, PK-6 not built. Every claim in
+see progress.md). **§9 step 2 done 2026-09-18**: `mint-collection-gensyms`
+deleted (one-reader.md §4f, §10), the `__gs_N`-normalised identity gate held
+with `ir-snapshot.sh` moving nothing, and `make update-bootstrap` taken —
+`boot/nucleusc.ll` and both Windows boot IRs now read `(ref x)`, `(ref p 'f)`
+and the sigil-paren forms, so PK-5 may rewrite `src/`; the step-2
+`build/nucleusc.ll` is PK-5a's byte-identical baseline (progress.md, "Boot
+refresh for Stage 21"). PK-4b, PK-5, PK-6 not built. Every claim in
 §1 was reproduced against `build/nucleusc` on 2026-09-16 (probe generator and
 full run kept beside this document's research pass; the 437-row matrix is
 summarised in §1.1). Milestones are **PK-1 … PK-6**; §9 sequences them across
