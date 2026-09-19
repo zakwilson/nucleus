@@ -2299,6 +2299,9 @@
               (die-at line
                 (fstr "'" hs "' is a type, not a type constructor -- (" hs
                       " ...) is not a type; a doubled annotation like x:T:T desugars to exactly this")))
+            ; A retired value-form head in a type slot (`(addr-of T)`, once a legal
+            ; spelling of `(ref T)`) gets the same answer the value path gives.
+            (match (retired-form-message hs) (none 0) ((some retired) (die-at line retired)))
             (die-at line (unknown-type-message hs))))
         (die-at line "unable to parse type expression")))
     (die-at line "unable to parse type expression"))))

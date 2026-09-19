@@ -11,5 +11,5 @@
 (defn main ():i32
   (let (m:?ptr:P (pick 1)
         v:P m)
-    (printf "%d\n" ((addr-of v) x)))
+    (printf "%d\n" (&v x)))
   (return 0))

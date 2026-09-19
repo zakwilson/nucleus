@@ -756,7 +756,7 @@
               ; @<fname>.tgt is updated to point at it. On redefinition, the
               ; old impl tracker is removed, a new impl is JIT'd as
               ; @<fname>.impl.<N+1>, and @<fname>.tgt is repointed. Existing
-              ; callers and (addr-of foo) bind to the thunk and pick up the
+              ; callers and `&foo` bind to the thunk and pick up the
               ; new impl transparently.
               (let (name-node:ptr (node-at form 1)
                     fname:Symbol (symbol-none)  ret-name:Symbol (symbol-none))
@@ -1232,7 +1232,7 @@
 
 ; Emit a "thunk" function `@<fname>` that loads the current implementation
 ; pointer from `@<fname>.tgt` and calls it. The thunk is what callers (and
-; (addr-of foo)) bind to; the tgt global is updated on every redefinition so
+; `&foo`) bind to; the tgt global is updated on every redefinition so
 ; callers transparently dispatch to the latest implementation.
 ;
 ; ft is a (raw Type) with kind=TY-FN; type-to-ir handles each parameter and return.

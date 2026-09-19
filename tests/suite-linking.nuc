@@ -37,45 +37,45 @@
 ; sugar's `(Result T E)` in an exported signature.
 (defn check-lib-emits (flag:StrView):!void
   (let (d:DirEntries (try (lib-sources))
-        n:usize (dir-count (addr-of d))
+        n:usize (dir-count &d)
         i:usize 0)
     (while (< i n)
-      (let (nm:StrView (dir-name (addr-of d) i))
+      (let (nm:StrView (dir-name &d i))
         (when (strview-has-suffix nm ".nuc")
           (let (p:String (str "lib/" nm)
-                pv:StrView (string-as-view (addr-of p))
+                pv:StrView (string-as-view &p)
                 c:Compiled (try (emit-checked "" flag pv)))
             (when (not (c 'ok?))
               (fail! pv " does not survive " flag " on its own:\n     "
-                     (test-show (string-as-view (addr-of c 'raw)))))
-            (drop (addr-of c))
-            (drop (addr-of p)))))
+                     (test-show (string-as-view (ref c 'raw)))))
+            (drop &c)
+            (drop &p))))
       (set! i (+ i 1)))
-    (drop (addr-of d)))
+    (drop &d))
   (return (ok)))
 
 (deftest w9-lib-emit-llvm
   (let (d:DirEntries (try (lib-sources))
-        n:usize (dir-count (addr-of d))
+        n:usize (dir-count &d)
         i:usize 0)
     (while (< i n)
-      (let (nm:StrView (dir-name (addr-of d) i))
+      (let (nm:StrView (dir-name &d i))
         (when (strview-has-suffix nm ".nuc")
           (let (p:String (str "lib/" nm)
-                pv:StrView (string-as-view (addr-of p))
+                pv:StrView (string-as-view &p)
                 c:Compiled (try (emit-checked "" "--emit-llvm" pv)))
             (when (not (c 'ok?))
               (fail! pv " does not compile on its own:\n     "
-                     (test-show (string-as-view (addr-of c 'raw)))))
+                     (test-show (string-as-view (ref c 'raw)))))
             ; A presence test cannot catch a DOUBLE emit, and LLVM accepts one:
             ; the second definition simply wins.
-            (let (dup:StrView (duplicate-define-name (compiled-ir (addr-of c))))
+            (let (dup:StrView (duplicate-define-name (compiled-ir &c)))
               (when (not (= dup ""))
                 (fail! pv " defines @" dup " twice")))
-            (drop (addr-of c))
-            (drop (addr-of p)))))
+            (drop &c)
+            (drop &p))))
       (set! i (+ i 1)))
-    (drop (addr-of d)))
+    (drop &d))
   (return (ok)))
 
 (deftest w9-lib-emit-nuch
@@ -107,28 +107,28 @@
 (deftest w9-lib-no-shared-runtime-init
   (let (dir:StrView (try (test-scratch))
         obj:String (str dir "/gate.o")
-        ov:StrView (string-as-view (addr-of obj))
+        ov:StrView (string-as-view &obj)
         d:DirEntries (try (lib-sources))
-        n:usize (dir-count (addr-of d))
+        n:usize (dir-count &d)
         i:usize 0)
     (while (< i n)
-      (let (nm:StrView (dir-name (addr-of d) i))
+      (let (nm:StrView (dir-name &d i))
         (when (strview-has-suffix nm ".nuc")
           (let (p:String (str "lib/" nm)
-                pv:StrView (string-as-view (addr-of p))
+                pv:StrView (string-as-view &p)
                 c:Compiled (try (object-checked "" pv ov)))
             (when (not (c 'ok?))
               (fail! pv " does not compile to an object:\n     "
-                     (test-show (string-as-view (addr-of c 'raw)))))
-            (when (warns-about (addr-of c 'diags) "run-time initializer")
-              (let (l:String (diag-list-text (addr-of c 'diags)))
+                     (test-show (string-as-view (ref c 'raw)))))
+            (when (warns-about (ref c 'diags) "run-time initializer")
+              (let (l:String (diag-list-text (ref c 'diags)))
                 (fail! pv " initializes a global it does not own:"
-                       (string-as-view (addr-of l)))))
-            (drop (addr-of c))
-            (drop (addr-of p)))))
+                       (string-as-view &l))))
+            (drop &c)
+            (drop &p))))
       (set! i (+ i 1)))
-    (drop (addr-of d))
-    (drop (addr-of obj)))
+    (drop &d)
+    (drop &obj))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -145,12 +145,12 @@
 
 (extend W9Objects Drop)
 (defn drop ((self (ptr W9Objects))):void
-  (drop (addr-of self 'mainobj))
-  (drop (addr-of self 'sideobj)))
+  (drop (ref self 'mainobj))
+  (drop (ref self 'sideobj)))
 
 (defn w9-parts ((o (ref W9Objects))):String
-  (return (str (string-as-view (addr-of o 'mainobj)) " "
-               (string-as-view (addr-of o 'sideobj)))))
+  (return (str (string-as-view (ref o 'mainobj)) " "
+               (string-as-view (ref o 'sideobj)))))
 
 ; The item-2 fixture, compiled to two objects. What is on the search path is
 ; load-bearing. `w9share.nuc` is, so both objects inline it — that is the
@@ -166,14 +166,14 @@
   (let (share:String (try (test-scratch-sub "share"))
         side:String (try (test-scratch-sub "side"))
         mdir:String (try (test-scratch-sub "main"))
-        sharev:StrView (string-as-view (addr-of share))
-        sidev:StrView (string-as-view (addr-of side))
+        sharev:StrView (string-as-view &share)
+        sidev:StrView (string-as-view &side)
         sp:String (try (write-into sharev "w9share.nuc" (w9-share-src)))
         dp:String (try (write-into sidev "w9side.nuc"
                          "(import w9share)
 (defn w9-side-bump ():void (w9-bump) (w9-bump))
 "))
-        mp:String (try (write-into (string-as-view (addr-of mdir)) "w9main.nuc"
+        mp:String (try (write-into (string-as-view &mdir) "w9main.nuc"
                          "(import w9share)
 (import w9side)
 (defn main ():i32
@@ -182,21 +182,21 @@
   (return (w9-get)))
 "))
         hp:String (try (emit-into sharev "--emit-nuch"
-                                  (string-as-view (addr-of dp)) sharev "w9side.nuch"))
+                                  (string-as-view &dp) sharev "w9side.nuch"))
         r:&W9Objects (alloca W9Objects))
     (set! (r 'sideobj) (str sidev "/side.o"))
-    (set! (r 'mainobj) (str (string-as-view (addr-of mdir)) "/main.o"))
-    (try (compile-object-in sharev (string-as-view (addr-of dp))
-                            (string-as-view (addr-of r 'sideobj))))
-    (try (compile-object-in sharev (string-as-view (addr-of mp))
-                            (string-as-view (addr-of r 'mainobj))))
-    (drop (addr-of hp))
-    (drop (addr-of mp))
-    (drop (addr-of dp))
-    (drop (addr-of sp))
-    (drop (addr-of mdir))
-    (drop (addr-of side))
-    (drop (addr-of share))
+    (set! (r 'mainobj) (str (string-as-view &mdir) "/main.o"))
+    (try (compile-object-in sharev (string-as-view &dp)
+                            (string-as-view (ref r 'sideobj))))
+    (try (compile-object-in sharev (string-as-view &mp)
+                            (string-as-view (ref r 'mainobj))))
+    (drop &hp)
+    (drop &mp)
+    (drop &dp)
+    (drop &sp)
+    (drop &mdir)
+    (drop &side)
+    (drop &share)
     (return (ok (deref r)))))
 
 ; 1 + 2 = 3 is reachable only if all three bumps and the read reach ONE counter
@@ -205,12 +205,12 @@
 ; one weak `w9-bump` that survived carries its own file's copy with it.
 (deftest w9-multi-object-link
   (let (o:W9Objects (try (w9-objects))
-        parts:String (w9-parts (addr-of o))
-        got:i32 (try (cc-link-exit (string-as-view (addr-of parts)))))
+        parts:String (w9-parts &o)
+        got:i32 (try (cc-link-exit (string-as-view &parts))))
     (when (!= got 3)
       (fail! "the two objects do not share w9-count: expected 3, got " (as i64 got)))
-    (drop (addr-of parts))
-    (drop (addr-of o)))
+    (drop &parts)
+    (drop &o))
   (return (ok)))
 
 ; The whole symbol table of both objects, which the shell asked two regexes
@@ -223,9 +223,9 @@
 ; at all (compile-time-imports.md §4b).
 (deftest w9-multi-object-weak-prelude
   (let (o:W9Objects (try (w9-objects))
-        ms:String (try (nm-typed (string-as-view (addr-of o 'mainobj))))
-        ss:String (try (nm-typed (string-as-view (addr-of o 'sideobj)))))
-    (try (check-line-set (string-as-view (addr-of ms))
+        ms:String (try (nm-typed (string-as-view (ref o 'mainobj))))
+        ss:String (try (nm-typed (string-as-view (ref o 'sideobj)))))
+    (try (check-line-set (string-as-view &ms)
                          "T main
 W w9-bump
 V w9-count
@@ -233,16 +233,16 @@ W w9-get
 U w9-side-bump
 "
                          "main.o"))
-    (try (check-line-set (string-as-view (addr-of ss))
+    (try (check-line-set (string-as-view &ss)
                          "W w9-bump
 V w9-count
 W w9-get
 T w9-side-bump
 "
                          "side.o"))
-    (drop (addr-of ss))
-    (drop (addr-of ms))
-    (drop (addr-of o)))
+    (drop &ss)
+    (drop &ms)
+    (drop &o))
   (return (ok)))
 
 ; Ownership is per definition, not per unit: the root's own forms stay external
@@ -257,27 +257,27 @@ T w9-side-bump
 (deftest w9-linkage-ownership
   (let (share:String (try (test-scratch-sub "share"))
         mdir:String (try (test-scratch-sub "main"))
-        sharev:StrView (string-as-view (addr-of share))
-        obj:String (str (string-as-view (addr-of mdir)) "/own.o")
+        sharev:StrView (string-as-view &share)
+        obj:String (str (string-as-view &mdir) "/own.o")
         sp:String (try (write-into sharev "w9share.nuc" (w9-share-src)))
-        mp:String (try (write-into (string-as-view (addr-of mdir)) "w9own.nuc"
+        mp:String (try (write-into (string-as-view &mdir) "w9own.nuc"
                          "(import w9share)
 (defn- w9-secret ():i32 (return 9))
 (defn w9-own ():i32 (return (+ (w9-get) (w9-secret))))
 (defn main ():i32 (return (w9-own)))
 "))
-        mv:StrView (string-as-view (addr-of mp))
+        mv:StrView (string-as-view &mp)
         c:Compiled (try (emit-checked sharev "--emit-llvm" mv))
-        ir:StrView (compiled-ir (addr-of c)))
-    (try (check-silent (addr-of c) "--emit-llvm on the importing file"))
+        ir:StrView (compiled-ir &c))
+    (try (check-silent &c "--emit-llvm on the importing file"))
     (try (check-line ir "define i32 @w9-own() section \".text.w9-own\" {"))
     (try (check-line ir "define weak_odr i32 @w9-get() section \".text.w9-get\" {"))
     (try (check-line ir
            "@w9-count = weak_odr global i32 0, section \".bss.w9-count\", align 4"))
     (try (check-match ir "define internal i32 @w9own_p*__w9-secret() section *"))
-    (try (compile-object-in sharev mv (string-as-view (addr-of obj))))
-    (let (syms:String (try (nm-defined (string-as-view (addr-of obj)))))
-      (try (check-line-set (string-as-view (addr-of syms))
+    (try (compile-object-in sharev mv (string-as-view &obj)))
+    (let (syms:String (try (nm-defined (string-as-view &obj))))
+      (try (check-line-set (string-as-view &syms)
                            "main
 w9-bump
 w9-count
@@ -285,13 +285,13 @@ w9-get
 w9-own
 "
                            "the object's linkable names"))
-      (drop (addr-of syms)))
-    (drop (addr-of c))
-    (drop (addr-of mp))
-    (drop (addr-of sp))
-    (drop (addr-of obj))
-    (drop (addr-of mdir))
-    (drop (addr-of share)))
+      (drop &syms))
+    (drop &c)
+    (drop &mp)
+    (drop &sp)
+    (drop &obj)
+    (drop &mdir)
+    (drop &share))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -303,22 +303,22 @@ w9-own
 
 (extend DTree Drop)
 (defn drop ((self (ptr DTree))):void
-  (drop (addr-of self 'share))
-  (drop (addr-of self 'dshare))
-  (drop (addr-of self 'dside))
-  (drop (addr-of self 'dmain))
-  (drop (addr-of self 'dwhole)))
+  (drop (ref self 'share))
+  (drop (ref self 'dshare))
+  (drop (ref self 'dside))
+  (drop (ref self 'dmain))
+  (drop (ref self 'dwhole)))
 
 (defn dtree-share ((t (ref DTree))):StrView
-  (return (string-as-view (addr-of t 'share))))
+  (return (string-as-view (ref t 'share))))
 (defn dtree-dshare ((t (ref DTree))):StrView
-  (return (string-as-view (addr-of t 'dshare))))
+  (return (string-as-view (ref t 'dshare))))
 (defn dtree-dside ((t (ref DTree))):StrView
-  (return (string-as-view (addr-of t 'dside))))
+  (return (string-as-view (ref t 'dside))))
 (defn dtree-dmain ((t (ref DTree))):StrView
-  (return (string-as-view (addr-of t 'dmain))))
+  (return (string-as-view (ref t 'dmain))))
 (defn dtree-dwhole ((t (ref DTree))):StrView
-  (return (string-as-view (addr-of t 'dwhole))))
+  (return (string-as-view (ref t 'dwhole))))
 
 ; `d-runs` is on line 3 of `dshare.nuc`, and every unit below pins it there.
 ; `dmain.nuc` imports `dside` through the header, so the `.nuch` has to exist
@@ -327,8 +327,8 @@ w9-own
   (let (share:String (try (test-scratch-sub "share"))
         side:String (try (test-scratch-sub "side"))
         mdir:String (try (test-scratch-sub "main"))
-        sharev:StrView (string-as-view (addr-of share))
-        mdirv:StrView (string-as-view (addr-of mdir))
+        sharev:StrView (string-as-view &share)
+        mdirv:StrView (string-as-view &mdir)
         t:&DTree (alloca DTree))
     (set! (t 'dshare)
       (try (write-into sharev "dshare.nuc"
@@ -338,7 +338,7 @@ w9-own
 (defn d-calls-get ():i32 (return d-calls))
 ")))
     (set! (t 'dside)
-      (try (write-into (string-as-view (addr-of side)) "dside.nuc"
+      (try (write-into (string-as-view &side) "dside.nuc"
              "(import dshare)
 (defn d-side ():i32 (return (d-calls-get)))
 ")))
@@ -355,10 +355,10 @@ w9-own
 ")))
     (let (h:String (try (emit-into sharev "--emit-nuch" (dtree-dside t)
                                    sharev "dside.nuch")))
-      (drop (addr-of h)))
+      (drop &h))
     (set! (t 'share) share)
-    (drop (addr-of mdir))
-    (drop (addr-of side))
+    (drop &mdir)
+    (drop &side)
     (return (ok (deref t)))))
 
 ; Since imported globals are `weak_odr`, N objects that each inline the
@@ -368,43 +368,43 @@ w9-own
 ; that says "relocatable object".
 (deftest w9-shared-init-warns-under-c
   (let (t:DTree (try (dtree))
-        obj:String (str (dtree-share (addr-of t)) "/main.o")
-        c:Compiled (try (object-checked (dtree-share (addr-of t))
-                                        (dtree-dmain (addr-of t))
-                                        (string-as-view (addr-of obj)))))
+        obj:String (str (dtree-share &t) "/main.o")
+        c:Compiled (try (object-checked (dtree-share &t)
+                                        (dtree-dmain &t)
+                                        (string-as-view &obj))))
     (when (not (c 'ok?))
       (fail! "expected an object\n     "
-             (test-show (string-as-view (addr-of c 'raw)))))
-    (try (check-warning-at (addr-of c 'diags) (dtree-dshare (addr-of t)) 3
+             (test-show (string-as-view (ref c 'raw)))))
+    (try (check-warning-at (ref c 'diags) (dtree-dshare &t) 3
            "defvar: 'd-runs' has a run-time initializer, and this object only imports the file that declares it"))
-    (drop (addr-of c))
-    (drop (addr-of obj))
-    (drop (addr-of t)))
+    (drop &c)
+    (drop &obj)
+    (drop &t))
   (return (ok)))
 
 ; The object that OWNS the global runs the initializer exactly once however many
 ; other objects import it, so warning there would be noise.
 (deftest w9-shared-init-silent-for-owner
   (let (t:DTree (try (dtree))
-        obj:String (str (dtree-share (addr-of t)) "/own.o")
-        c:Compiled (try (object-checked (dtree-share (addr-of t))
-                                        (dtree-dshare (addr-of t))
-                                        (string-as-view (addr-of obj)))))
-    (try (check-silent (addr-of c) "-c on the file that declares the global"))
-    (drop (addr-of c))
-    (drop (addr-of obj))
-    (drop (addr-of t)))
+        obj:String (str (dtree-share &t) "/own.o")
+        c:Compiled (try (object-checked (dtree-share &t)
+                                        (dtree-dshare &t)
+                                        (string-as-view &obj))))
+    (try (check-silent &c "-c on the file that declares the global"))
+    (drop &c)
+    (drop &obj)
+    (drop &t))
   (return (ok)))
 
 ; `--emit-llvm` is equally how a WHOLE program is inspected, and says nothing
 ; about an eventual link.
 (deftest w9-shared-init-silent-under-emit-llvm
   (let (t:DTree (try (dtree))
-        c:Compiled (try (emit-checked (dtree-share (addr-of t)) "--emit-llvm"
-                                      (dtree-dwhole (addr-of t)))))
-    (try (check-silent (addr-of c) "--emit-llvm"))
-    (drop (addr-of c))
-    (drop (addr-of t)))
+        c:Compiled (try (emit-checked (dtree-share &t) "--emit-llvm"
+                                      (dtree-dwhole &t))))
+    (try (check-silent &c "--emit-llvm"))
+    (drop &c)
+    (drop &t))
   (return (ok)))
 
 ; A whole-program build is silent *and* correct — the initializer runs once.
@@ -412,20 +412,20 @@ w9-own
 ; silence the warning fails here rather than passing quietly.
 (deftest w9-shared-init-whole-program-runs-once
   (let (t:DTree (try (dtree))
-        bin:String (str (dtree-share (addr-of t)) "/whole.bin")
-        bv:StrView (string-as-view (addr-of bin))
-        c:Compiled (try (build-checked (dtree-share (addr-of t))
-                                       (dtree-dwhole (addr-of t)) bv)))
+        bin:String (str (dtree-share &t) "/whole.bin")
+        bv:StrView (string-as-view &bin)
+        c:Compiled (try (build-checked (dtree-share &t)
+                                       (dtree-dwhole &t) bv)))
     (when (not (c 'ok?))
       (fail! "expected a program\n     "
-             (test-show (string-as-view (addr-of c 'raw)))))
-    (try (check-silent (addr-of c) "a whole-program build"))
+             (test-show (string-as-view (ref c 'raw)))))
+    (try (check-silent &c "a whole-program build"))
     (let (got:i32 (try (run-exit bv)))
       (when (!= got 1)
         (fail! "the initializer ran " (as i64 got) " time(s), not once")))
-    (drop (addr-of c))
-    (drop (addr-of bin))
-    (drop (addr-of t)))
+    (drop &c)
+    (drop &bin)
+    (drop &t))
   (return (ok)))
 
 ; And the thing the warning is about, by value: two objects, one shared global,
@@ -434,21 +434,21 @@ w9-own
 ; fails and the doc is what needs updating.
 (deftest w9-shared-init-runs-once-per-object
   (let (t:DTree (try (dtree))
-        mobj:String (str (dtree-share (addr-of t)) "/main.o")
-        sobj:String (str (dtree-share (addr-of t)) "/side.o"))
-    (try (compile-object-in (dtree-share (addr-of t)) (dtree-dmain (addr-of t))
-                            (string-as-view (addr-of mobj))))
-    (try (compile-object-in (dtree-share (addr-of t)) (dtree-dside (addr-of t))
-                            (string-as-view (addr-of sobj))))
-    (let (parts:String (str (string-as-view (addr-of mobj)) " "
-                            (string-as-view (addr-of sobj)))
-          got:i32 (try (cc-link-exit (string-as-view (addr-of parts)))))
+        mobj:String (str (dtree-share &t) "/main.o")
+        sobj:String (str (dtree-share &t) "/side.o"))
+    (try (compile-object-in (dtree-share &t) (dtree-dmain &t)
+                            (string-as-view &mobj)))
+    (try (compile-object-in (dtree-share &t) (dtree-dside &t)
+                            (string-as-view &sobj)))
+    (let (parts:String (str (string-as-view &mobj) " "
+                            (string-as-view &sobj))
+          got:i32 (try (cc-link-exit (string-as-view &parts))))
       (when (!= got 2)
         (fail! "the initializer ran " (as i64 got) " time(s), not once per object"))
-      (drop (addr-of parts)))
-    (drop (addr-of sobj))
-    (drop (addr-of mobj))
-    (drop (addr-of t)))
+      (drop &parts))
+    (drop &sobj)
+    (drop &mobj)
+    (drop &t))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -486,8 +486,8 @@ w9-own
 ; shell pinned `@.str.0`, which is a macro-table entry and not this program's.
 (deftest s16-sections-per-definition
   (let (p:String (try (gc-main))
-        c:Compiled (try (compile-path (string-as-view (addr-of p))))
-        iv:StrView (compiled-ir (addr-of c)))
+        c:Compiled (try (compile-path (string-as-view &p)))
+        iv:StrView (compiled-ir &c))
     (try (check-line iv "define i32 @main() section \".text.main\" {"))
     (try (check-line iv
       "define weak_odr i32 @gc-used(i32 %x.arg) section \".text.gc-used\" {"))
@@ -497,8 +497,8 @@ w9-own
     (try (check-line iv "@gc-ro = constant i32 9, section \".rodata.gc-ro\", align 4"))
     (try (check-match iv "*c\"%d\\0A\\00\", section \".rodata..str.*\", align 1"))
     (try (check-ir-parses iv))
-    (drop (addr-of c))
-    (drop (addr-of p)))
+    (drop &c)
+    (drop &p))
   (return (ok)))
 
 ; The section spelling is ELF's. A Mach-O specifier is "SEGMENT,section" and
@@ -507,16 +507,16 @@ w9-own
 ; program, which the shell's count of zero was satisfied by either way.
 (deftest s16-sections-elf-only
   (let (p:String (try (gc-main))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         d:Compiled (try (compile-path-for "x86_64-apple-darwin" pv))
         w:Compiled (try (compile-path-for "x86_64-pc-windows-msvc" pv)))
-    (try (check-line (compiled-ir (addr-of d)) "define i32 @main() {"))
-    (try (check-not-match (compiled-ir (addr-of d)) "*section \"*"))
-    (try (check-line (compiled-ir (addr-of w)) "define i32 @main() {"))
-    (try (check-not-match (compiled-ir (addr-of w)) "*section \"*"))
-    (drop (addr-of w))
-    (drop (addr-of d))
-    (drop (addr-of p)))
+    (try (check-line (compiled-ir &d) "define i32 @main() {"))
+    (try (check-not-match (compiled-ir &d) "*section \"*"))
+    (try (check-line (compiled-ir &w) "define i32 @main() {"))
+    (try (check-not-match (compiled-ir &w) "*section \"*"))
+    (drop &w)
+    (drop &d)
+    (drop &p))
   (return (ok)))
 
 ; The half that actually reclaims anything. `gc-never-called` is in the linked
@@ -526,32 +526,32 @@ w9-own
 ; for: a per-definition section reclaims data, not only code.
 (deftest s16-gc-sections-drops-unused-import
   (let (p:String (try (gc-main))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         dir:StrView (try (test-scratch))
         bin:String (str dir "/gc.bin")
         nogc:String (str dir "/nogc.bin")
-        binv:StrView (string-as-view (addr-of bin))
-        nogcv:StrView (string-as-view (addr-of nogc))
+        binv:StrView (string-as-view &bin)
+        nogcv:StrView (string-as-view &nogc)
         c:Compiled (try (build-checked-with "" "" pv binv))
         n:Compiled (try (build-checked-with "" "--link-arg=-Wl,--no-gc-sections"
                                             pv nogcv)))
     (let (out:String (try (run-stdout binv))
           gs:String (try (nm-typed binv))
           ns:String (try (nm-typed nogcv)))
-      (try (check-eq (string-as-view (addr-of out)) "6\n"))
+      (try (check-eq (string-as-view &out) "6\n"))
       (try (check-eq-int (try (run-exit binv)) 0 "the program exits on gc-zero"))
       ; Present either way, so the absences below are the link's doing.
-      (try (check-line (string-as-view (addr-of gs)) "W gc-used"))
-      (try (check-not-match (string-as-view (addr-of gs)) "* gc-never-called"))
-      (try (check-not-match (string-as-view (addr-of gs)) "* gc-ro"))
-      (try (check-line (string-as-view (addr-of ns)) "W gc-never-called"))
-      (try (check-line (string-as-view (addr-of ns)) "R gc-ro"))
-      (drop (addr-of ns))
-      (drop (addr-of gs))
-      (drop (addr-of out)))
-    (drop (addr-of n))
-    (drop (addr-of c))
-    (drop (addr-of nogc))
-    (drop (addr-of bin))
-    (drop (addr-of p)))
+      (try (check-line (string-as-view &gs) "W gc-used"))
+      (try (check-not-match (string-as-view &gs) "* gc-never-called"))
+      (try (check-not-match (string-as-view &gs) "* gc-ro"))
+      (try (check-line (string-as-view &ns) "W gc-never-called"))
+      (try (check-line (string-as-view &ns) "R gc-ro"))
+      (drop &ns)
+      (drop &gs)
+      (drop &out))
+    (drop &n)
+    (drop &c)
+    (drop &nogc)
+    (drop &bin)
+    (drop &p))
   (return (ok)))

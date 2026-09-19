@@ -149,8 +149,8 @@ than as text ([Structured diagnostics](compiler.md#structured-diagnostics)).
 
 ```lisp
 (let (ds:(Vector Diagnostic) (try (read-diagnostics stderr-text)))
-  (try (check-error-at (addr-of ds) "x.nuc" 12 "no field 'z'"))
-  (try (check-note-at  (addr-of ds) "x.nuc" 12 "did you mean")))
+  (try (check-error-at &ds "x.nuc" 12 "no field 'z'"))
+  (try (check-note-at  &ds "x.nuc" 12 "did you mean")))
 ```
 
 | Form | Meaning |

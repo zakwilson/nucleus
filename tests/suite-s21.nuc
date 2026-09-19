@@ -16,9 +16,9 @@
   (let (s:String (string-new)
         i:i32 0)
     (while (< i 600)
-      (str-into (addr-of s) "abcdefghij")
+      (str-into &s "abcdefghij")
       (set! i (+ i 1)))
-    (str-into (addr-of s) "END")
+    (str-into &s "END")
     (return s)))
 
 ; The R-1 probe, pinned: as a global, a macro body and a local it compiles and
@@ -26,21 +26,21 @@
 (deftest s21-long-string-literal
   (let (path:StrView "tests/fixtures/s21-long-string-literal.nuc"
         lit:String (s21-big-literal)
-        lv:StrView (string-as-view (addr-of lit))
+        lv:StrView (string-as-view &lit)
         out:String (try (build-run-file "" "" path)))
     (try (check-eq-int (as i64 (lv 'len)) 6003 "literal length"))
-    (try (check-golden (string-as-view (addr-of out))
+    (try (check-golden (string-as-view &out)
                        "6003 6003 6003\nabcdefghij...abcdefghijEND\n"))
-    (drop (addr-of out))
+    (drop &out)
     (let (nuch:String (try (emit-for-file "" "--emit-nuch" path)))
-      (try (check-contains (string-as-view (addr-of nuch)) "(defmacro bigm () (quote \""))
-      (try (check-contains (string-as-view (addr-of nuch)) lv))
-      (drop (addr-of nuch)))
+      (try (check-contains (string-as-view &nuch) "(defmacro bigm () (quote \""))
+      (try (check-contains (string-as-view &nuch) lv))
+      (drop &nuch))
     (let (ast:String (try (emit-for-file "" "--dump-ast" path)))
-      (try (check-contains (string-as-view (addr-of ast)) "(defvar big:CStr c\""))
-      (try (check-contains (string-as-view (addr-of ast)) lv))
-      (drop (addr-of ast)))
-    (drop (addr-of lit)))
+      (try (check-contains (string-as-view &ast) "(defvar big:CStr c\""))
+      (try (check-contains (string-as-view &ast) lv))
+      (drop &ast))
+    (drop &lit))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -52,21 +52,21 @@
 (defn s21-rmacro-refused (form:StrView msg:StrView):!void
   (let (src:String (str "(import-use node)\n(defn w (x:i32):i32 (return x))\n" form
                         "\n(defn main ():i32 (return 0))\n")
-        p:String (try (test-write-file "t.nuc" (string-as-view (addr-of src)))))
-    (try (check-refused-alike "" (string-as-view (addr-of p)) 3 msg))
-    (drop (addr-of p))
-    (drop (addr-of src)))
+        p:String (try (test-write-file "t.nuc" (string-as-view &src))))
+    (try (check-refused-alike "" (string-as-view &p) 3 msg))
+    (drop &p)
+    (drop &src))
   (return (ok)))
 
 (deftest s21-def-rmacro
   ; 1. Through `--dump-ast`: `$s21-x` on line 7 is the symbol, on line 10 it is
   ;    `(s21-w s21-x)`, and the directive itself is printed as data.
   (let (ast:String (try (emit-for-file "" "--dump-ast" "tests/fixtures/s21-def-rmacro.nuc"))
-        av:StrView (string-as-view (addr-of ast)))
+        av:StrView (string-as-view &ast))
     (try (check-line av "(defn s21-before () :raw:Node (return (quote $s21-x)))"))
     (try (check-line av "(def-rmacro \"$\" s21-w)"))
     (try (check-line av "(defn s21-after () :i32 (return (s21-w s21-x)))"))
-    (drop (addr-of ast)))
+    (drop &ast))
 
   ; 2. Through a program's `read-all`: the same forward-only rule in one
   ;    buffer, a fresh table for the next buffer, and the three collection
@@ -82,8 +82,8 @@
   (match (read-all text)
     ((ok forms)
       (let (s:String (node-str forms))
-        (print (string-as-view (addr-of s)) \"\\n\")
-        (drop (addr-of s))))
+        (print (string-as-view &s) \"\\n\")
+        (drop &s)))
     ((err e) (print \"error line \" (e 'line) \": \" (e 'msg) \"\\n\"))))
 (defn main ():i32
   (show \"$x (def-rmacro \\\"$\\\" w) $x\")
@@ -94,7 +94,7 @@
   (show \"[a:(T) b]\")
   (return 0))
 "))
-        ov:StrView (string-as-view (addr-of out)))
+        ov:StrView (string-as-view &out))
     (try (check-golden ov "($x (def-rmacro \"$\" w) (w x))
 ($x)
 ((vector-lit 1 2))
@@ -103,7 +103,7 @@
 ((vector-lit (a (T)) b))
 "))
     (try (check-not-contains ov "__gs"))
-    (drop (addr-of out)))
+    (drop &out))
 
   ; 3. File-scoped, both ways: an importer defines its own `$` and the imported
   ;    file its own, and each reads its forms through its own table. Were the
@@ -117,21 +117,21 @@
   (printf \"%s %d %d\\n\" (symbol-as-cstr ((s21-before) 's)) (s21-after) $s21-x)
   (return 0))
 "))
-        out:String (try (build-run-file "" "" (string-as-view (addr-of p)))))
-    (try (check-golden (string-as-view (addr-of out)) "$s21-x 40 5\n"))
-    (drop (addr-of out))
-    (drop (addr-of p)))
+        out:String (try (build-run-file "" "" (string-as-view &p))))
+    (try (check-golden (string-as-view &out) "$s21-x 40 5\n"))
+    (drop &out)
+    (drop &p))
 
   ; 4. And an importer that defines nothing sees a bare `$s21-x` as the symbol
   ;    it is: the diagnostic is the importer's, at the importer's line.
   (let (p:String (try (test-write-file "s21-plain.nuc" "(import-use \"tests/fixtures/s21-def-rmacro.nuc\")
 (defn s21-uses ():i32 (return $s21-x))
 "))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         c:Compiled (try (compile-path pv)))
-    (try (check-error-at (addr-of c 'diags) pv 2 "undefined: $s21-x"))
-    (drop (addr-of c))
-    (drop (addr-of p)))
+    (try (check-error-at (ref c 'diags) pv 2 "undefined: $s21-x"))
+    (drop &c)
+    (drop &p))
 
   ; 5. The two refusals R-1 added, alike in every emit mode. `(def-rmacro ())`
   ;    is `w45-empty-name-def-rmacro` in tests/suite-refusals.nuc.
@@ -150,7 +150,7 @@
 ; different line, not a missing substring.
 (deftest s21-typed-error-propagation
   (let (out:String (try (build-run-file "" "" "tests/fixtures/s21-typed-error-propagation.nuc")))
-    (try (check-golden (string-as-view (addr-of out)) "direct
+    (try (check-golden (string-as-view &out) "direct
 err s21-bad line=4 msg=[unknown escape \\q] note=[]
 err s21-worse line=7 msg=[too big] note=[a note]
 ok 10
@@ -164,7 +164,7 @@ into-void
 err s21-worse
 ok void
 "))
-    (drop (addr-of out)))
+    (drop &out))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -181,7 +181,7 @@ ok void
         (when (= (d 'file) file)
           (let (l:String (diag-list-text ds))
             (fail! "no diagnostic may be attributed to " file "\n     got:"
-                   (string-as-view (addr-of l))))))
+                   (string-as-view &l)))))
       (set! i (+ i 1))))
   (return (ok)))
 
@@ -190,7 +190,7 @@ ok void
   ;    wrapper's `try` yields the bare code through the `defcast`; a top-level
   ;    `)` carries the note and one inside an unclosed `[…]` does not.
   (let (out:String (try (build-run-file "" "" "tests/fixtures/s21-read-error-value.nuc")))
-    (try (check-golden (string-as-view (addr-of out)) "bad-escape: read-bad-escape line=1 msg=[unknown escape \\q] note=none
+    (try (check-golden (string-as-view &out) "bad-escape: read-bad-escape line=1 msg=[unknown escape \\q] note=none
 bad-escape-line3: read-bad-escape line=3 msg=[unknown escape \\q] note=none
 stray-close-top: read-unexpected-close line=2 msg=[unexpected )] note=some
   note: the form opened at line 1 is already closed -- look for an extra ')' between lines 1 and 2
@@ -200,7 +200,7 @@ read-through: err read-bad-escape
 read-through: ok 2 form(s)
 read-through: ok
 "))
-    (drop (addr-of out)))
+    (drop &out))
 
   ; 2. The compiler: a syntax error in an IMPORTED file is reported at that
   ;    file's path and line, and blamed on nothing in the importer.
@@ -209,19 +209,19 @@ read-through: ok
 (defn s21-synerr-bad ():i32
   (return (s21-synerr-ok \"x\\q\")))
 "))
-        badv:StrView (string-as-view (addr-of bad))
+        badv:StrView (string-as-view &bad)
         imp:String (try (test-write-file "s21-nested.nuc" "(import s21-synerr)
 (defn main ():i32 (return (s21-synerr-ok)))
 "))
-        impv:StrView (string-as-view (addr-of imp))
+        impv:StrView (string-as-view &imp)
         c:Compiled (try (compile-path-in dir impv)))
     (when (!= (c 'exit) 1)
       (fail! "expected exit 1 for a syntax error in an imported file, got "
-             (as i64 (c 'exit)) "\n     " (test-show (string-as-view (addr-of c 'raw)))))
-    (try (check-error-at (addr-of c 'diags) badv 3 "unknown escape \\q"))
-    (try (s21-check-no-diag-in (addr-of c 'diags) impv))
-    (try (check-eq-int (as i64 (count (addr-of c 'diags))) 1 "diagnostics"))
-    (drop (addr-of c))
+             (as i64 (c 'exit)) "\n     " (test-show (string-as-view (ref c 'raw)))))
+    (try (check-error-at (ref c 'diags) badv 3 "unknown escape \\q"))
+    (try (s21-check-no-diag-in (ref c 'diags) impv))
+    (try (check-eq-int (as i64 (count (ref c 'diags))) 1 "diagnostics"))
+    (drop &c)
 
     ; 3. The REPL recovers from the same import, as from any failed import
     ;    (stage16 repl-libraries.md §3.4): the next diagnostic is `<repl>`'s,
@@ -230,19 +230,19 @@ read-through: ok
                            "\")\n(import-use \"tests/fixtures/r1-import-works.nuc\")\n(r1-works)\n")
           want:String (str badv ":3: error: unknown escape \\q\n  error: error (recovered)\n")
           pat:String (str "*" badv ":3: error: unknown escape \\q")
-          t:String (try (repl-session (string-as-view (addr-of text))))
-          tv:StrView (string-as-view (addr-of t)))
-      (try (check-eq-int (count-matching-lines tv (string-as-view (addr-of pat)))
+          t:String (try (repl-session (string-as-view &text)))
+          tv:StrView (string-as-view &t))
+      (try (check-eq-int (count-matching-lines tv (string-as-view &pat))
                          2 "reports of the import's syntax error"))
-      (try (check-contains tv (string-as-view (addr-of want))))
+      (try (check-contains tv (string-as-view &want)))
       (try (check-contains tv "<repl>:1: error: unknown: zzz — not defined anywhere in this compilation unit\n  error: error (recovered)\n"))
       (try (check-contains tv "  imported tests/fixtures/r1-import-works.nuc\nnuc>   42\n"))
-      (drop (addr-of t))
-      (drop (addr-of pat))
-      (drop (addr-of want))
-      (drop (addr-of text)))
-    (drop (addr-of imp))
-    (drop (addr-of bad)))
+      (drop &t)
+      (drop &pat)
+      (drop &want)
+      (drop &text))
+    (drop &imp)
+    (drop &bad))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -257,8 +257,8 @@ read-through: ok
   ;    callable value applied to `&x` (which reads as `(cb (ref n))` and must
   ;    not trip the `q:(ref T)` annotation diagnostic).
   (let (out:String (try (build-run-file "" "" "tests/fixtures/s21-pk1-ref-head.nuc")))
-    (try (check-golden (string-as-view (addr-of out)) "3 4 8 12\n3 4 4\n42 3 3\n9 3\n"))
-    (drop (addr-of out)))
+    (try (check-golden (string-as-view &out) "3 4 8 12\n3 4 4\n42 3 3\n9 3\n"))
+    (drop &out))
 
   ; 2. The header of a lib-shaped file: `&k` in a macro body and `&Self` /
   ;    `&Pt` in exported signatures all print as `ref`, and `addr-of` nowhere.
@@ -269,14 +269,14 @@ read-through: ok
 (defprotocol Area (area ((self &Self)):i32))
 (defn first-x ((v (ref (Vector &Pt))) q:&Pt):i32 (return (q 'x)))
 "))
-        nuch:String (try (emit-for-file "" "--emit-nuch" (string-as-view (addr-of p))))
-        nv:StrView (string-as-view (addr-of nuch)))
+        nuch:String (try (emit-for-file "" "--emit-nuch" (string-as-view &p)))
+        nv:StrView (string-as-view &nuch))
     (try (check-line nv "(defmacro addr-x (k) (quasiquote (bump (ref k))))"))
     (try (check-line nv "(defprotocol Area (area ((self (ref Self))) :i32))"))
     (try (check-line nv "(declare first-x ((v (ref (Vector (ref Pt)))) (q (ref Pt))) :i32)"))
     (try (check-not-contains nv "addr-of"))
-    (drop (addr-of nuch))
-    (drop (addr-of p)))
+    (drop &nuch)
+    (drop &p))
 
   ; 3. A `macrolet` may not shadow the head `&x` now reads as: the macro table
   ;    is consulted before the special-form chain, so the guard is the only
@@ -285,12 +285,12 @@ read-through: ok
   (macrolet ((ref (x) x))
     (return (ref 1))))
 "))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         c:Compiled (try (compile-path pv)))
-    (try (check-error-at (addr-of c 'diags) pv 2
+    (try (check-error-at (ref c 'diags) pv 2
                          "macrolet: 'ref' is a pointer kind and may not be shadowed"))
-    (drop (addr-of c))
-    (drop (addr-of p)))
+    (drop &c)
+    (drop &p))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -304,7 +304,7 @@ read-through: ok
 (deftest s21-pk2-fuse-open-segment
   ; 1. The fixture reads each spelling and prints what it read.
   (let (out:String (try (build-run-file "" "" "tests/fixtures/s21-pk2-fuse-open-segment.nuc")))
-    (try (check-golden (string-as-view (addr-of out)) "?(V) => ((? (V)))
+    (try (check-golden (string-as-view &out) "?(V) => ((? (V)))
 x:?(V) => ((x (? (V))))
 x:!(V) => ((x (! (V))))
 ?!(V) => ((?! (V)))
@@ -329,7 +329,7 @@ x:foo?(x) => (x:foo? (x))
 &rest(x) => (&rest (x))
 x:? (V) => (x:? (V))
 "))
-    (drop (addr-of out)))
+    (drop &out))
 
   ; 2. The compiler reads the same way: a sigil-paren parameter, a `):?(…)`
   ;    return, a reader-macro operand, a literal element and a top-level atom
@@ -342,8 +342,8 @@ x:? (V) => (x:? (V))
 foo:(bar)
 (defn f5 () :i32 (return (foo?(x) push!(x))))
 "))
-        ast:String (try (emit-for-file "" "--dump-ast" (string-as-view (addr-of p))))
-        av:StrView (string-as-view (addr-of ast)))
+        ast:String (try (emit-for-file "" "--dump-ast" (string-as-view &p)))
+        av:StrView (string-as-view &ast))
     (try (check-line av "(defn f1 ((x (? (Vector i32)))) :i32 (return 0))"))
     (try (check-line av "(defn f2 (a:i32) (? (Vector i32)) (return 0))"))
     (try (check-line av "(defn f3 () :i32 (return (as (ref (? (Vector i32))) x)))"))
@@ -351,8 +351,8 @@ foo:(bar)
     (try (check-line av "(defn f4 () :i32 (return (vector-lit (x (T)))))"))
     (try (check-line av "(foo (bar))"))
     (try (check-line av "(defn f5 () :i32 (return (foo? (x) push! (x))))"))
-    (drop (addr-of ast))
-    (drop (addr-of p)))
+    (drop &ast)
+    (drop &p))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -367,9 +367,9 @@ foo:(bar)
 (deftest s21-pk3-sigil-paren-types
   ; 1. Every position, compiled and run.
   (let (out:String (try (build-run-file "" "" "tests/fixtures/s21-pk3-sigil-paren-types.nuc")))
-    (try (check-golden (string-as-view (addr-of out))
+    (try (check-golden (string-as-view &out)
                        "3 -1 3\n3\n5 -3\n6 -4\n1 3\n2\n4\n1 2\n5\nnone\n6\n7\n3\n2\n"))
-    (drop (addr-of out)))
+    (drop &out))
 
   ; 2. `--emit-nuch` prints the list forms, and a consumer imports the header
   ;    back (the header in `h/` only, so `resolve-import` cannot find the source
@@ -396,10 +396,10 @@ foo:(bar)
     (none (return -1))))
 (defn q-x ((q (?ref Pt))):i32 (if-some (p q) (return (p 'x)) (return -3)))
 "))
-        lv:StrView (string-as-view (addr-of lib))
+        lv:StrView (string-as-view &lib)
         nuch:String (try (emit-for-file "" "--emit-nuch" lv))
-        nv:StrView (string-as-view (addr-of nuch))
-        hp:String (try (write-into (string-as-view (addr-of hdir)) "s21pk3l.nuch" nv))
+        nv:StrView (string-as-view &nuch)
+        hp:String (try (write-into (string-as-view &hdir) "s21pk3l.nuch" nv))
         use:String (try (test-write-file "s21pk3u.nuc" "(import-use \"stdio.h\")
 (import-use vector)
 (import s21pk3l k)
@@ -414,45 +414,45 @@ foo:(bar)
     (printf \"%d %d %d %d\\n\" (k/qr-len q) (k/mv-len m) (k/q-x (h 'q)) (k/mv-len (h 'mv)))
     (return 0)))
 "))
-        uobj:String (str (string-as-view (addr-of hdir)) "/s21pk3u.o")
-        lobj:String (str (string-as-view (addr-of ldir)) "/s21pk3l.o"))
+        uobj:String (str (string-as-view &hdir) "/s21pk3u.o")
+        lobj:String (str (string-as-view &ldir) "/s21pk3l.o"))
     (try (check-line nv "(defstruct Holder (mv (? (Vector i32))) (rv (! (Vector i32))) (q (?ref Pt)))"))
     (try (check-line nv "(deftype MV (? (Vector i32)))"))
     (try (check-line nv "(defprotocol Wrap (wrap ((self (ref Self)) n:i32) (? (Vector i32))))"))
     (try (check-line nv "(declare mv-len ((m (? (Vector i32)))) :i32)"))
     (try (check-line nv "(declare mv-give ((n i32)) (?! (Vector i32)))"))
     (try (check-line nv "(declare q-x ((q (?ref Pt))) :i32)"))
-    (try (compile-object-in (string-as-view (addr-of hdir))
-                            (string-as-view (addr-of use))
-                            (string-as-view (addr-of uobj))))
-    (try (compile-object-in "" lv (string-as-view (addr-of lobj))))
-    (let (parts:String (str (string-as-view (addr-of uobj)) " "
-                            (string-as-view (addr-of lobj)))
-          got:String (try (cc-link-run "" (string-as-view (addr-of parts)))))
-      (try (check-golden (string-as-view (addr-of got)) "4 -1 5 -1\n"))
-      (drop (addr-of got))
-      (drop (addr-of parts)))
-    (drop (addr-of lobj))
-    (drop (addr-of uobj))
-    (drop (addr-of use))
-    (drop (addr-of hp))
-    (drop (addr-of nuch))
-    (drop (addr-of lib))
-    (drop (addr-of hdir))
-    (drop (addr-of ldir)))
+    (try (compile-object-in (string-as-view &hdir)
+                            (string-as-view &use)
+                            (string-as-view &uobj)))
+    (try (compile-object-in "" lv (string-as-view &lobj)))
+    (let (parts:String (str (string-as-view &uobj) " "
+                            (string-as-view &lobj))
+          got:String (try (cc-link-run "" (string-as-view &parts))))
+      (try (check-golden (string-as-view &got) "4 -1 5 -1\n"))
+      (drop &got)
+      (drop &parts))
+    (drop &lobj)
+    (drop &uobj)
+    (drop &use)
+    (drop &hp)
+    (drop &nuch)
+    (drop &lib)
+    (drop &hdir)
+    (drop &ldir))
   (return (ok)))
 
 ; One form per probe, on line 3 so the line is a claim rather than the default.
 (defn s21-type-refused (form:StrView line:i32 msg:StrView):!void
   (let (src:String (str "(import-use vector)\n\n" form "\n(defn main ():i32 (return 0))\n")
-        p:String (try (test-write-file "t.nuc" (string-as-view (addr-of src))))
-        pv:StrView (string-as-view (addr-of p))
+        p:String (try (test-write-file "t.nuc" (string-as-view &src)))
+        pv:StrView (string-as-view &p)
         c:Compiled (try (compile-path pv)))
     (when (c 'ok?) (fail! "expected a refusal of " (test-show form)))
-    (try (check-error-at (addr-of c 'diags) pv line msg))
-    (drop (addr-of c))
-    (drop (addr-of p))
-    (drop (addr-of src)))
+    (try (check-error-at (ref c 'diags) pv line msg))
+    (drop &c)
+    (drop &p)
+    (drop &src))
   (return (ok)))
 
 ; §5's near-miss: a sigil with a space after it is a bare `?` atom and a
@@ -490,12 +490,12 @@ foo:(bar)
   (let (path:StrView "tests/fixtures/s21-pk4a-h5.nuc"
         c:Compiled (try (compile-path path)))
     (when (c 'ok?) (fail! "expected (Vector i32) to be refused where (Vector ?Pt) was declared"))
-    (try (check-error-at (addr-of c 'diags) path 15
+    (try (check-error-at (ref c 'diags) path 15
                          "f-qpt: argument 1 has type ptr:Vector.i32, which does not match parameter type ptr:Vector.Maybe.Pt"))
-    (drop (addr-of c)))
+    (drop &c))
   (let (out:String (try (build-run-file "" "" "tests/fixtures/s21-pk4a-sigil-concrete.nuc")))
-    (try (check-golden (string-as-view (addr-of out)) "0 0 0\n1 0 1\n"))
-    (drop (addr-of out)))
+    (try (check-golden (string-as-view &out) "0 0 0\n1 0 1\n"))
+    (drop &out))
   (try (s21-type-refused "(defn f-qt ((v (ref (Vector ?T)))):i32 (return 1))" 3
                          "Vector: '?T' -- a type sigil over a type variable is not supported in a generic pattern yet; write the concrete type"))
   (try (s21-type-refused "(defn f-bt ((v (ref (Vector !T)))):i32 (return 1))" 3
@@ -527,11 +527,11 @@ foo:(bar)
     (return 0)))
 "
         ir:String (try (source-ir src))
-        iv:StrView (string-as-view (addr-of ir))
+        iv:StrView (string-as-view &ir)
         a:StrView (try (s21-define-body iv "via-annot"))
         b:StrView (try (s21-define-body iv "via-as")))
     (try (check-eq a b))
-    (drop (addr-of ir)))
+    (drop &ir))
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
 (defstruct Pt x:i32 y:i32)
 (defn via-annot (q:&Pt):?&Pt (return q:?&Pt))
@@ -542,6 +542,29 @@ foo:(bar)
     (if-some (p (via-as &pt)) (printf \"%d\\n\" (p 'y)) (printf \"none\\n\"))
     (return 0)))
 ")))
-    (try (check-golden (string-as-view (addr-of out)) "5\n6\n"))
-    (drop (addr-of out)))
+    (try (check-golden (string-as-view &out) "5\n6\n"))
+    (drop &out))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; PK-5b: `addr-of` is retired, and stays reserved
+; ---------------------------------------------------------------------------
+
+; The head is in `g-special-form-set` so no definition can shadow it, and every
+; path that used to have an `addr-of` arm now hands the name to
+; `retired-form-message`: `emit-list`'s dispatch tail, `gcheck`'s call walk, the
+; `defvar` constant renderer, and `parse-type-from-node`'s fall-through for the
+; type slot (`(addr-of T)` was a legal spelling of `(ref T)` until PK-5b). A
+; parameter type is the one slot the header modes resolve too, so that probe
+; runs under all three.
+(deftest s21-addr-of-retired
+  (let (msg:StrView "'addr-of' was retired: write &x, or (ref x) / (ref p 'field)")
+    (try (s21-type-refused "(defn f ():i32 (let (x:i32 1 p:&i32 (addr-of x)) (return 0)))" 3 msg))
+    (try (s21-type-refused "(defstruct Pt x:i32) (defn f (p:&Pt):&i32 (return (addr-of p 'x)))" 3 msg))
+    (try (s21-type-refused "(defvar gx:i32 3) (defvar gp:&i32 (addr-of gx))" 3 msg))
+    (try (s21-type-refused "(defn f ():i32 (let (x:i32 1 p:(addr-of i32) &x) (return 0)))" 3 msg))
+    (try (s21-type-refused "(defprotocol Sh (sh (self:&Self):i32)) (defn g (x:T :where (Sh T)):i32 (return (deref (addr-of x))))" 3 msg))
+    (try (s21-type-refused "(defn f (x:i32):i32 (return (addr-of)))" 3 msg))
+    (try (check-probe-refused "(defn f ((x (addr-of i32))):i32 (return 0))" msg))
+    (try (s21-type-refused "(defn addr-of (x:i32):i32 (return x))" 3 "'addr-of' already names a special form")))
   (return (ok)))

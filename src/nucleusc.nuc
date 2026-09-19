@@ -947,7 +947,7 @@
 ; (Stage 11). The compiler's growable pointer tables are (Vector ptr) values;
 ; the globals/locals holding them are typed (ref (Vector ptr)) so use sites call
 ; conj/count/invoke directly (bounds-checked indexing, amortized growth) with no
-; per-use cast. `vector-new-in (addr-of g-arena-alloc)` returns the concrete
+; per-use cast. `vector-new-in &g-arena-alloc` returns the concrete
 ; (ref (Vector ptr)) (the element type filled from the slot's declared type via
 ; the want channel), so construction sites need no cast either. Naming (Vector ptr)
 ; in vector-new-in's *signature* stamps the instance during the defn-signature
@@ -1018,7 +1018,7 @@
 ;     positively rather than trusting a green test suite.
 ;
 ; §2.10 predicted this defvar would have to move UP, above the first registry at
-; the top of the file, so the `(vector-new-in (addr-of g-arena-alloc))`
+; the top of the file, so the `(vector-new-in &g-arena-alloc)`
 ; initializers would not forward-reference it. Measured, the move is the
 ; opposite one and for a different reason. Upward is impossible: a constant
 ; struct literal needs `AllocHandle`'s LAYOUT, and `lib/allocator.nuc` is not
@@ -1026,7 +1026,7 @@
 ; renderer sees a fieldless registry entry and dies "too many initializers for
 ; struct 'AllocHandle'". Upward is also unnecessary: a constant initializer is
 ; applied by the loader, so it has no order (§4.1 consequence 4), and every
-; reference to it is `(addr-of …)` — an address, which G-4 already exempts
+; reference to it is `&…` — an address, which G-4 already exempts
 ; because it is a link-time constant requiring no initialization to have
 ; happened.
 (defvar g-arena-alloc:AllocHandle (AllocHandle ALLOC-ARENA null))
@@ -1105,7 +1105,7 @@
 ; built through the shared arena handle (g-arena-alloc, whose free is a no-op)
 ; so these process-lifetime tables are never dropped. Construction uses the
 ; target-typed lib constructors (design/stage14/target-typed-constructors.md):
-; `(vector-new-in (addr-of g-arena-alloc))` fills the element type from the
+; `(vector-new-in &g-arena-alloc)` fills the element type from the
 ; binding's declared type via the want channel — no per-use cast (the old
 ; `make-vec`/`mkvec`/`mkhash` cast-over-arena hole is retired).
 
@@ -2908,7 +2908,7 @@
 ; Stage 13 L1: copy both escape-taint fields (the with/frame Scope* and the
 ; frame-region flag) from src to dst. Every identity-preserving op that today
 ; does `(set! (dst 'taint) (src 'taint))` should call this instead so the
-; frame-region distinction survives casts, ptr+, addr-of, and symbol reads.
+; frame-region distinction survives casts, ptr+, `&x`, and symbol reads.
 (defn val-copy-taint (dst:(raw Val) src:(raw Val)):void
   (set! (dst 'taint) (src 'taint))
   (set! (dst 'taint-frame) (src 'taint-frame)))
@@ -3449,6 +3449,8 @@
     (return (some "'.' was retired in Stage 16: use 'get' -- (get p 'field), or head position (p 'field)")))
   (when (= name ".&")
     (return (some "'.&' was retired in Stage 16: use the 2-argument 'ref' -- (ref p 'field)")))
+  (when (= name "addr-of")
+    (return (some "'addr-of' was retired: write &x, or (ref x) / (ref p 'field)")))
   (when (= name ".set!")
     (return (some "'.set!' was retired in Stage 16: set! takes a place -- (set! (p 'field) v)")))
   (when (= name "ptr-set!")
@@ -5946,14 +5948,14 @@
         (let (mv:ptr:Val (as &Val (tc3-materialize (as raw:Val p) (as raw:Type rt)
                                                       (as raw:Type pt) line)))
           ; The copy is frame storage, so a pointer into it must not outlive the
-          ; frame — the rule emit-addr-of applies to any alloca it hands out.
+          ; frame — the rule emit-ref applies to any alloca it hands out.
           (when (= (mv 'taint) null)
             (set! (mv 'taint) (as raw:Scope scope))
             (set! (mv 'taint-frame) 1))
           (return (as &Val mv)))))))
 
-; SV-1's other half. A member place and `addr-of` need the receiver's own STORAGE, not a
-; copy, so they take exactly what `addr-of` takes — a binding, whose slot is
+; SV-1's other half. A member place and `ref` need the receiver's own STORAGE, not a
+; copy, so they take exactly what `ref` takes — a binding, whose slot is
 ; used directly. A temporary stays an error: the store would land in something
 ; about to be discarded.
 (defn emit-lvalue-receiver (rnode:(raw Node) scope:&Scope what:StrView line:i32):&Val
@@ -6652,37 +6654,37 @@
         (die-at (node-line (as ptr arg) (cc 'line)) "char: arg must be single-char string"))
       (return (alloc-val ty-char (fstr (symbol-byte-at (arg 's) 0)))))))
 
-(defn emit-addr-of (call:(raw Node) scope:&Scope):&Val
+(defn emit-ref (call:(raw Node) scope:&Scope):&Val
   (let (cc:(raw Node) call)
     ; An arity overload, not a new dispatch: 1-arg is a binding's address, 2-arg
     ; is a field's. The two cannot collide -- a binding address takes a bare
     ; symbol and a field address takes a receiver plus a selector
-    ; (dot-forms.md §3). `node-type-addr-of` splits on the same arity.
+    ; (dot-forms.md §3). `node-type-ref` splits on the same arity.
     (when (= (node-len cc) 3) (return (emit-field-addr call scope)))
-    (when (!= (node-len cc) 2) (die-at (cc 'line) "addr-of expects 1 or 2 args"))
+    (when (!= (node-len cc) 2) (die-at (cc 'line) "ref expects 1 or 2 args"))
     (let (target:(raw Node) (node-at cc 1))
       (when (!= (target 'kind) NODE-SYM)
-        (die-at (node-line (as ptr target) (cc 'line)) "addr-of: target must be symbol"))
+        (die-at (node-line (as ptr target) (cc 'line)) "ref: target must be symbol"))
       (let (sym:?ptr:Sym (scope-lookup scope (target 's)))
         (when (= sym null)
-          (die-at (node-line (as ptr target) (cc 'line)) (fstr "addr-of: undefined '"
+          (die-at (node-line (as ptr target) (cc 'line)) (fstr "ref: undefined '"
                                                                (target 's) "'")))
         ; CE-3 (closure-enhancements.md §CE-3): a moved-out binding is consumed,
         ; so taking its address is a use-after-move just like reading it
         ; (emit-symbol-ref). Newly reachable now that struct-VALUE with-bindings
         ; can be moved (owns=1) and the only way to read a struct value's field
-        ; is through its address — so an unchecked addr-of would silently revive a
+        ; is through its address — so an unchecked `&x` would silently revive a
         ; moved struct value.
         (when (!= (sym 'moved) 0)
           (die-at (node-line (as ptr target) (cc 'line)) (fstr "use after move: '" (target 's)
                                                                "'")))
         (when (= ((sym 'type) 'kind) TY-FN)
-          (die-at (node-line (as ptr target) (cc 'line)) (fstr "addr-of: cannot take address of function '"
+          (die-at (node-line (as ptr target) (cc 'line)) (fstr "ref: cannot take address of function '"
                                                                (target 's) "'")))
         (return (binding-address-val sym))))))
 
 ; The address of a binding's own storage, as a `(ref T)` Val. Shared by the
-; explicit `&x` / `(addr-of x)` and by the implicit lvalue address-of at an
+; explicit `&x` / `(ref x)` and by the implicit lvalue address-of at an
 ; argument position, so the escape-taint rule below has one owner.
 (defn binding-address-val (sym:&Sym):&Val
   (let (pt:&Type (make-type TY-PTR))
@@ -7961,16 +7963,14 @@
         ; Quoted data is opaque.
         (when (or (= h "quote") (= h "quasiquote"))
           (return node))
-        ; addr-of a capture: `(addr-of cap)` takes the address of the by-value
-        ; local. Inside the closure that local lives as an env field. mode 0/1
-        ; (vfn/mfn): the address is `(addr-of self 'cap)` (the field's address) —
-        ; addr-of's target must be a binding name, and a field load is an rvalue.
-        ; mode 2 (cfn): the field ALREADY holds the captured local's address, so
-        ; `(addr-of cap)` == `(_get self 'cap)` (no extra indirection). A non-capture
-        ; / shadowed operand keeps the ordinary addr-of. `ref` is the head `&cap`
-        ; reads as (PK-1); missing it here is a bootstrap divergence, not a bug
-        ; report — the boot's reader still writes addr-of.
-        (when (and (or (= h "addr-of") (= h "ref")) (= (node-len node) 2))
+        ; `&cap` takes the address of the by-value local. Inside the closure that
+        ; local lives as an env field. mode 0/1 (vfn/mfn): the address is
+        ; `(ref self 'cap)` (the field's address) — `ref`'s target must be a
+        ; binding name, and a field load is an rvalue. mode 2 (cfn): the field
+        ; ALREADY holds the captured local's address, so `&cap` == `(_get self
+        ; 'cap)` (no extra indirection). A non-capture / shadowed operand keeps
+        ; the ordinary `ref`.
+        (when (and (= h "ref") (= (node-len node) 2))
           (let (opnode:ptr:Node (unsafe/cast &Node (node-at node 1)))
             (when (= (opnode 'kind) NODE-SYM)
               (let (oname:Symbol (symbol-none)
@@ -7985,7 +7985,7 @@
                                 (make-cell (quoted-selector (as ptr (intern-node oname)) line) null line)
                                 line)
                               line))
-                    (return (make-cell (intern-node (symbol-intern "addr-of"))
+                    (return (make-cell (intern-node (symbol-intern "ref"))
                               (make-cell self-sym
                                 (make-cell (quoted-selector (as ptr (intern-node oname)) line) null line)
                                 line)
@@ -8216,7 +8216,7 @@
                 (let (fty:ptr (sym-effective-type csym))
                   ; mode 2 (cfn): the field stores a POINTER to the captured
                   ; local's storage, so its type is (ref <T>) (PTR-REF, mirroring
-                  ; what (addr-of cap) yields). mode 0/1: the value type as-is.
+                  ; what `&cap` yields). mode 0/1: the value type as-is.
                   (when (= mode 2)
                     (let (pt:ptr:Type (as &Type (make-type TY-PTR)))
                       (set! (pt 'elem) fty)
@@ -8301,8 +8301,8 @@
 
 ; Synthesize, register, and queue the closure's `drop` method for an OWNING env.
 ; mode 0/1 (vfn/mfn — at least one field is a Drop type):
-;   (defn drop:void ((self (ptr <Env>))) (drop (addr-of self 'fK)) … reverse order)
-; Each owned field is dropped via `(drop (addr-of self 'f))` — it yields a (ref
+;   (defn drop:void ((self (ptr <Env>))) (drop (ref self 'fK)) … reverse order)
+; Each owned field is dropped via `(drop (ref self 'f))` — it yields a (ref
 ; FieldType) whose nominal Drop method resolves through the `drop` generic,
 ; exactly like a collection's hand-written drop (e.g. String drops its `bytes`).
 ; Fields are dropped in REVERSE declaration order (innermost-first, mirroring
@@ -8366,13 +8366,13 @@
                               line)
                             line))
         (set! body (make-cell freecall null line)))
-      ; vfn/mfn: reverse-order (drop (addr-of self 'fK)) over the Drop fields. Built
+      ; vfn/mfn: reverse-order (drop (ref self 'fK)) over the Drop fields. Built
       ; head-first by prepending in forward order → final spine is reverse order.
       (dotimes (k nf)
         (let (fty:ptr ((field-at (sd 'fields) k) 'type))
           (when (!= (type-conforms-drop fty) 0)
                 (let (fname:Symbol ((field-at (sd 'fields) k) 'name)
-                                addr:ptr (make-cell (intern-node (symbol-intern "addr-of"))
+                                addr:ptr (make-cell (intern-node (symbol-intern "ref"))
                                                     (make-cell self-sym
                                                                (make-cell (quoted-selector (as ptr (intern-node fname)) line) null line)
                                                                line)
@@ -9343,7 +9343,7 @@
 ;   4. Capturing → generate the anonymous env struct, synthesize+register the
 ;      `invoke` method (callable-values routes `(c arg…)` to it), classify each
 ;      capture (POD → bitwise clone = bare-symbol field init; Drop-with-Clone →
-;      deep clone via `(clone (addr-of x))`; Drop-without-Clone → directed mfn
+;      deep clone via `(clone &x)`; Drop-without-Clone → directed mfn
 ;      error), and if any field is Drop, synthesize the env's `drop` + record
 ;      its Drop conformance. The expression's value is the populated env (a
 ;      stack-allocated struct, returned as a (ref Env)).
@@ -9351,7 +9351,7 @@
 ; Emit the closure environment value: alloca the env struct, populate each field
 ; per capture, return its (ref Env). The init for each capture is emitted as an
 ; AST node (POD → the bare capture symbol = bitwise value copy, zero overhead;
-; Drop-with-Clone → `(clone (addr-of x))` = deep, independently-owned copy) and
+; Drop-with-Clone → `(clone &x)` = deep, independently-owned copy) and
 ; stored into the field GEP, mirroring emit-struct-lit's field loop. Emitting
 ; directly (rather than synthesizing a `(<Env> …)` struct literal) avoids the
 ; struct-literal designated-initializer heuristic, which would mis-read a
@@ -9371,8 +9371,8 @@
       ; leading __alloc field (the (ref AllocHandle) that backed the env). The env
       ; storage is heap-allocated through `alloc-aptr`'s handle (always-heap first
       ; cut, per lambda-prompt L6). Each capture field is populated by storing
-      ; (addr-of cap) into it. The closure value inherits the JOIN of the
-      ; captures' addr-of taints (L1 region inheritance): a with-owned capture
+      ; `&cap` into it. The closure value inherits the JOIN of the
+      ; captures' address taints (L1 region inheritance): a with-owned capture
       ; contributes with-taint (rejected at return AND store-out sinks), a frame-
       ; local capture contributes frame-taint (rejected at return), a ref/ptr-
       ; param or global capture contributes nothing. The join picks the innermost
@@ -9403,7 +9403,7 @@
             (emit g-body-stream "  " g0 " = getelementptr inbounds %" (sd 'ir-name) ", ptr " blk
                   ", i32 0, i32 0\n")
             (emit g-body-stream "  store ptr " alloc-aptr ", ptr " g0 ", align 8\n")
-            ; Per-capture: store (addr-of cap) into field k+1; join addr-of taints.
+            ; Per-capture: store `&cap` into field k+1; join the address taints.
             (let (k:i32 0
                   cur:ptr caps)
               (while (!= cur null)
@@ -9411,12 +9411,12 @@
                       gep:StrView (new-tmp))
                   (emit g-body-stream "  " gep " = getelementptr inbounds %" (sd 'ir-name)
                         ", ptr " blk ", i32 0, i32 " (+ k 1) "\n")
-                  (let (addr-node:ptr (make-cell (intern-node (symbol-intern "addr-of"))
+                  (let (addr-node:ptr (make-cell (intern-node (symbol-intern "ref"))
                                           (make-cell (as ptr (intern-node cname)) null line)
                                           line)
                         av:&Val (emit-node addr-node scope))
                     (emit g-body-stream "  store ptr " (av 'val) ", ptr " gep ", align 8\n")
-                    ; Join the addr-of taint (L1 region inheritance).
+                    ; Join the address taint (L1 region inheritance).
                     (when (!= (av 'taint) null)
                       (let (d:i32 (scope-depth (av 'taint)))
                         (if (= (av 'taint-frame) 0)
@@ -9471,7 +9471,7 @@
                     (emit g-body-stream "  store " fty-ir " "
                           (-> coerced (as &Val _) (_ 'val)) ", ptr " gep "\n"))
                   ; Drop capture: require a hand-written Clone, else direct to mfn; then
-                  ; deep-clone via `(clone (addr-of x))`.
+                  ; deep-clone via `(clone &x)`.
                   (do
                     (when (= (conformance-lookup (type-spelling fty) (symbol-intern "Clone")) 0)
                       (die-at line
@@ -9479,7 +9479,7 @@
                               " is Drop with no Clone); use mfn to move it instead")))
                     (set! @out-owns-drop 1)
                     (let (clone-node:ptr (make-cell (intern-node (symbol-intern "clone"))
-                                           (make-cell (make-cell (intern-node (symbol-intern "addr-of"))
+                                           (make-cell (make-cell (intern-node (symbol-intern "ref"))
                                                         (make-cell (intern-node cname) null line)
                                                         line)
                                                      null line)
@@ -9686,10 +9686,10 @@
 ;   * the env is a struct of POINTERS into the captured locals, preceded by a
 ;     leading __alloc field holding the (ref AllocHandle);
 ;   * the env storage is heap-allocated through `alloc` (always-heap first cut);
-;   * each capture field is populated by storing (addr-of cap);
+;   * each capture field is populated by storing `&cap`;
 ;   * the closure conforms to Drop unconditionally (it owns the env storage), and
 ;     the synthesized drop frees the env block via the stored handle;
-;   * the closure value inherits the join of the captures' addr-of taints (L1
+;   * the closure value inherits the join of the captures' address taints (L1
 ;     region inheritance) so escaping a captured frame/with local's scope is
 ;     rejected at the existing sinks.
 ; A non-capturing cfn folds to a bare `fn` pointer (zero overhead), dropping the
@@ -10993,42 +10993,42 @@
         (return i)))
     (return -1)))
 
-; (addr-of p 'field) -> pointer to the field within struct *p (dot-forms.md §3).
+; (ref p 'field) -> pointer to the field within struct *p (dot-forms.md §3).
 (defn emit-field-addr (call:(raw Node) scope:&Scope):&Val
   (let (cc:ptr:Node (unsafe/cast &Node call))
-    (when (!= (node-len cc) 3) (die-at (cc 'line) "addr-of: field address expects a receiver and a quoted selector"))
-    (let (p:&Val (emit-lvalue-receiver (node-at cc 1) scope "addr-of" (cc 'line))
+    (when (!= (node-len cc) 3) (die-at (cc 'line) "ref: field address expects a receiver and a quoted selector"))
+    (let (p:&Val (emit-lvalue-receiver (node-at cc 1) scope "ref" (cc 'line))
           pt:ptr:Type (unsafe/cast &Type (p 'type))
           ek:i32 (if (and (= (pt 'kind) TY-PTR) (!= (pt 'elem) null))
                    (-> pt (_ 'elem) (unsafe/cast &Type _) (_ 'kind))
                    TY-VOID))
       (when (and (!= ek TY-STRUCT) (!= ek TY-UNION))
-        (die-at (cc 'line) "addr-of: operand must be a struct or union, or a pointer to one"))
-      (require-derefable pt (cc 'line) "addr-of")
+        (die-at (cc 'line) "ref: operand must be a struct or union, or a pointer to one"))
+      (require-derefable pt (cc 'line) "ref")
       (let (fn-node:(raw Node) (selector-literal-sym (node-at cc 2)))
         (when (= fn-node null)
-          (die-nonliteral-selector (node-at cc 2) (node-line (node-at cc 2) (cc 'line)) "addr-of"))
+          (die-nonliteral-selector (node-at cc 2) (node-line (node-at cc 2) (cc 'line)) "ref"))
         (let (sd:ptr:StructDef (unsafe/cast &StructDef ((pt 'elem) 'sdef))
               idx:i32 (struct-field-idx (as ptr sd) (fn-node 's))
               afr:?ptr:FieldRef null)
           (reject-cycle-pending-sdef (as ptr sd)
                                      (node-line (as ptr fn-node) (cc 'line))
                                      "field address")
-          (union-field-guard (as ptr sd) (cc 'line) "addr-of")
+          (union-field-guard (as ptr sd) (cc 'line) "ref")
           (when (< idx 0)
             ; AN-2: an anonymous member's own field has an address like any other.
             (set! afr (struct-field-ref (as ptr sd) (fn-node 's)))
             (when (= afr null)
               (die-at (node-line (as ptr fn-node) (cc 'line))
-                (fstr "addr-of: no field '" (fn-node 's) "' on struct '" (sd 'name) "'")))
+                (fstr "ref: no field '" (fn-node 's) "' on struct '" (sd 'name) "'")))
             (reject-anon-ambiguous (fn-node 's) (sd 'name)
-                                   (node-line (as ptr fn-node) (cc 'line)) "addr-of"))
+                                   (node-line (as ptr fn-node) (cc 'line)) "ref"))
           ; BF-2: a bit-field has no address — it shares its bytes with its
           ; neighbours. This is C's own rule (`&s.bits` is ill-formed there too),
           ; so it is a faithful diagnostic rather than a Nucleus limitation.
           (when (!= (if (!= afr null) (afr 'bit-width) ((field-at (sd 'fields) idx) 'bit-width)) 0)
             (die-at (node-line (as ptr fn-node) (cc 'line))
-              (fstr "addr-of: '" (fn-node 's) "' is a bit-field of '" (sd 'name)
+              (fstr "ref: '" (fn-node 's) "' is a bit-field of '" (sd 'name)
                     "', and a bit-field has no address -- read it by value")))
           (let (ftype:ptr (if (!= afr null) (afr 'type) ((field-at (sd 'fields) idx) 'type))
                 gep:StrView (p 'val))
@@ -11051,7 +11051,7 @@
               (set! (rt 'pkind) PTR-REF)
               ; Interior address into the resource: keep the escape taint
               ; (lifecycle.md §2.2) and, Stage 13 L1, the frame-region flag —
-              ; so `(addr-of (addr-of p) 'f)` over a by-value struct param p stays
+              ; so `(ref &p 'f)` over a by-value struct param p stays
               ; frame-tainted and is rejected if returned.
               (let (rv:&Val (alloc-val (as ptr rt) gep))
                 (val-copy-taint (as ptr rv) (as ptr p))
@@ -12433,8 +12433,9 @@
         (when (= hp '_or) (return (emit-short-circuit n scope 0)))
         (when (= hp 'unsafe/cast) (return (emit-cast n scope)))
         (when (= hp 'as) (return (emit-as n scope)))
-        ; `(ref x)` is what `&x` reads as (PK-1); `addr-of` stays until PK-5.
-        (when (or (= hp 'ref) (= hp 'addr-of)) (return (emit-addr-of n scope)))
+        ; `(ref x)` is what `&x` reads as; `addr-of` is reserved and answers with
+        ; `retired-form-message` through the dispatch tail.
+        (when (= hp 'ref) (return (emit-ref n scope)))
         (when (= hp 'funcall-void) (return (emit-funcall-void n scope)))
         (when (= hp 'funcall) (return (emit-funcall n scope)))
         (when (= hp 'deref) (return (emit-deref n scope)))
@@ -12493,7 +12494,7 @@
         ; lowers to an anonymous env struct of pointers (plus a stored AllocHandle)
         ; heap-allocated through the `alloc` operand, an `invoke` method, and a
         ; synthesized `drop` that frees the env via the handle. The closure value
-        ; inherits the join of the captures' addr-of taints (L1) so escaping a
+        ; inherits the join of the captures' address taints (L1) so escaping a
         ; captured frame/with local's scope is rejected at the existing sinks.
         (when (and (= hp 'cfn) (= (as ptr (scope-lookup scope (symbol-intern "cfn"))) null))
           (return (emit-cfn n scope)))
@@ -12961,38 +12962,38 @@
                 (return 1)))))
         (return 0)))))
 
-; `(addr-of g)` as a global initializer: the address of another global is a
+; `&g` as a global initializer: the address of another global is a
 ; link-time constant, so `@g` is a legal initializer operand — and it is provably
 ; non-null, which makes this the one G-1 spelling that can initialize a
 ; **non-null** `(ref T)` global with no runtime store at all (design/
 ; global-init.md §3 Option 3b, "interaction with the nullability fix").
 ;
-; The resolution rules mirror `emit-addr-of`'s, minus the two that are
+; The resolution rules mirror `emit-ref`'s, minus the two that are
 ; meaningless at file scope: a global is never moved, and it has no frame region
 ; to escape from. A forward reference resolves because G-0's `prescan-defvar-name`
 ; registers the Sym — with the same `def-ir-base` symbol, under the same
 ; `g-defining-private` arming — before any form is emitted, and LLVM's textual
 ; parser resolves a forward `@g` at end of module.
-(defn defvar-addr-of-ir (target:(raw Node) ty:(raw Type) line:i32):StrView
+(defn defvar-ref-ir (target:(raw Node) ty:(raw Type) line:i32):StrView
   (when (= target null)
-    (die-at line "defvar: addr-of target must be a symbol"))
+    (die-at line "defvar: ref target must be a symbol"))
   (let (tn:ptr:Node (unsafe/cast &Node target))
     (when (!= (tn 'kind) NODE-SYM)
-      (die-at line "defvar: addr-of target must be a symbol"))
+      (die-at line "defvar: ref target must be a symbol"))
     (let (sym:?ptr:Sym (scope-lookup g-globals (tn 's)))
       (when (= sym null)
-        (die-at line (fstr "defvar: addr-of: undefined '" (tn 's) "'")))
+        (die-at line (fstr "defvar: ref: undefined '" (tn 's) "'")))
       ; A `defconst` / `defenum` member / `deferror` id is a compile-time value
       ; with no storage, so there is no address to take.
       (when (or (!= (sym 'is-const) 0) (symbol-none? (symbol-intern (sym 'ir-name))))
         (die-at line
-          (fstr "defvar: addr-of: '" (tn 's) "' is a compile-time constant and has no address")))
+          (fstr "defvar: ref: '" (tn 's) "' is a compile-time constant and has no address")))
       (when (= ((sym 'type) 'kind) TY-FN)
         (die-at line
-          (fstr "defvar: addr-of: cannot take the address of function '" (tn 's) "'")))
+          (fstr "defvar: ref: cannot take the address of function '" (tn 's) "'")))
       (when (= (is-ptr-like ty) 0)
         (die-at line
-          (fstr "defvar: addr-of requires ptr or CStr type, not " (type-spelling ty))))
+          (fstr "defvar: ref requires ptr or CStr type, not " (type-spelling ty))))
       ; The address of a global IS a `(ref T)`. Handing pkind-flow-check a
       ; PTR-REF source is what admits it into a non-null slot — the same call the
       ; `null` branch below makes with `ty-raw`, so the two spellings move
@@ -13002,13 +13003,13 @@
         (set! (pt 'pkind) PTR-REF)
         (pkind-flow-check (as ptr pt) ty line "defvar")
         ; SE-1: the constant renderer is the second typed-slot path, and it had
-        ; the identity hole too — `(defvar p:(ref B) (addr-of a))` on an `A`
+        ; the identity hole too — `(defvar p:&B &a)` on an `A`
         ; global was a silent reinterpretation. The same CALL the value path
         ; makes, not a copy of it; a `CStr` destination keeps its own rule.
         (when (and (= (ty 'kind) TY-PTR)
                    (= (slot-type-compat (as raw:Type pt) ty) 0))
           (die-at line
-            (fstr "defvar: addr-of: '" (tn 's) "' has type " (type-display (as raw:Type pt))
+            (fstr "defvar: ref: '" (tn 's) "' has type " (type-display (as raw:Type pt))
                   ", which does not match " (type-display ty))))
         ; C6/C7 seam: `Sym.ir-name` is still the interned C string.
         (return (sym 'ir-name))))))
@@ -13129,7 +13130,7 @@
 ; Aggregates stream their bracketed/braced element list; everything else defers
 ; to defvar-init-ir, so every scalar rule (integer folding, range checks, float
 ; re-rendering at the target width, `pkind-flow-check`, `(as CStr …)`,
-; `(addr-of g)`) applies to an ELEMENT exactly as it applies to a whole global.
+; `&g`) applies to an ELEMENT exactly as it applies to a whole global.
 (defn defvar-write-const (init:(raw Node) ty:(raw Type) encl:i32):void
   (let (tt:(raw Type) ty
         tk:i32 (tt 'kind))
@@ -13265,7 +13266,7 @@
         (emit g-out ",")
         (write-ir-section g-out ".data" data-name))
       (emit g-out ", align " (abi-slot-align at) "\n")
-      ; Same call the `(addr-of g)` branch makes, with the same PTR-REF source:
+      ; Same call the `&g` branch makes, with the same PTR-REF source:
       ; the flow rule lives in one predicate, never re-derived here.
       (let (pt:&Type (make-type TY-PTR))
         (set! (pt 'elem) ety)
@@ -13510,9 +13511,9 @@
                         (fstr "as: lossy conversion from " (type-spelling ty-f64) " to "
                               (type-spelling dst) " -- use unsafe/cast")))
                     (return (float-literal-ir-at (symbol-as-view (arg 's)) ty)))))))
-          ; `(addr-of g)` / `(ref g)` — the address of another global.
-          (when (and (or (= hd0 'addr-of) (= hd0 'ref)) (= nargs0 1))
-            (return (defvar-addr-of-ir (node-at (as ptr nn) 1) ty (node-line init encl)))))))
+          ; `&g` — the address of another global.
+          (when (and (= hd0 'ref) (= nargs0 1))
+            (return (defvar-ref-ir (node-at (as ptr nn) 1) ty (node-line init encl)))))))
     ; An integer destination folds an arbitrary integer constant expression. The
     ; result is an untyped literal of that value, so it faces the SAME
     ; `int-literal-fits` gate the written literal above faces — a folded
@@ -13639,7 +13640,7 @@
 ; * A reference **laundered through a call** is not, and is not going to be: it
 ;   needs callee effect summaries, which `design/stage15-stress-test/
 ;   nullability.md` §9 declares a permanent non-goal for exactly this reason.
-;   This compiler's own shape, `(vector-new-in (addr-of g-arena-alloc))`, is
+;   This compiler's own shape, `(vector-new-in &g-arena-alloc)`, is
 ;   that case. It is undiagnosed and **documented as undiagnosed**
 ;   (docs/toplevel.md) — the honest boundary W6 §4.5 draws, not a silent gap.
 ; * A genuine **cycle** falls out of the same check with no cycle machinery of
@@ -13661,13 +13662,13 @@
 ;    DECLARED, and `emit-defvar` appends a second Sym for the same key saying
 ;    REACHED. This check therefore never reports "undefined" — that is still
 ;    resolution's answer, and it is still order-independent.
-; 2. **`(addr-of g)` is not a read.** A global's address is a link-time constant
+; 2. **`&g` is not a read.** A global's address is a link-time constant
 ;    that requires no initialization to have happened — it is exactly what G-1
 ;    folds to a bare `@g` — so taking it before the target's `defvar` is
 ;    legitimate, and this compiler's own source does it. Reading the *value*
 ;    (`(+ g 1)`) is what gets a zero. `examples/g1-const-init.nuc` already ships
-;    the forward `(addr-of g-later-target)` shape and must keep compiling;
-;    `tests/fixtures/g4-addr-of-forward-ok.nuc` pins the decision on the
+;    the forward `&g-later-target` shape and must keep compiling;
+;    `tests/fixtures/g4-addr-of-forward.nuc` pins the decision on the
 ;    run-time path too, where the exemption is not incidental.
 ;
 ; Blame one symbol named by an initializer. Silent unless it resolves to a
@@ -13717,7 +13718,7 @@
       (return))
     (when (!= (nn 'kind) NODE-CELL) (return))
     ; Three heads whose operands are not value reads, skipped subtree and all:
-    ;   `addr-of`/`ref` — an address, not a value (see the decision above);
+    ;   `ref` — an address, not a value (see the decision above);
     ;   `quote` /     — the symbols inside are DATA. Walking them would reject
     ;   `quasiquote`    `(defvar g:(raw Node) (quote (b c)))` for "naming" a
     ;                   global `b` it never reads. A quasiquote's `~b` unquote
@@ -13728,7 +13729,7 @@
     (let (hd:ptr (node-at (as ptr nn) 0))
       (when (and (!= hd null)
                  (= ((unsafe/cast &Node hd) 'kind) NODE-SYM)
-                 (or (= hd 'addr-of) (= hd 'ref) (= hd 'quote) (= hd 'quasiquote)))
+                 (or (= hd 'ref) (= hd 'quote) (= hd 'quasiquote)))
         (return)))
     ; Head position included on purpose: a call through a function-POINTER
     ; global — `(g-hook 1)` — reads that global's value like any other use.

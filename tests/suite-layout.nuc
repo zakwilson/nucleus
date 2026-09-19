@@ -29,7 +29,7 @@
 (defn size-assert-line (l:StrView (out (ref String))):i64
   (when (not (strview-has-prefix l "@s")) (return 0))
   (let (marker:StrView " = global i64 ")
-    (match (strview-find (addr-of l) (addr-of marker))
+    (match (strview-find &l &marker)
       ((some at)
         (let (nm:StrView (strview-drop-bytes (strview-take-bytes l at) 2)
               sz:StrView (view-upto-byte (strview-drop-bytes l (+ at 14)) 44))
@@ -43,9 +43,9 @@
 ; makes a machine this one cannot execute testable at all.
 (defn size-asserts (ir:StrView (out (ref String))):i64
   (let (n:i64 0
-        it:LineIter (strview-lines (addr-of ir)))
-    (while (not (lines-iter-done (addr-of it)))
-      (set! n (+ n (size-assert-line (lines-iter-next (addr-of it)) out))))
+        it:LineIter (strview-lines &ir))
+    (while (not (lines-iter-done &it))
+      (set! n (+ n (size-assert-line (lines-iter-next &it) out))))
     (return n)))
 
 ; The whole cross-target gate, which three units share: emit the sizes for one
@@ -55,35 +55,35 @@
 (defn check-sizes-cross-target (stem:StrView nuc-src:StrView c-decls:StrView
                                 n:i64):!void
   (let (nn:String (str stem ".nuc")
-        p:String (try (test-write-file (string-as-view (addr-of nn)) nuc-src))
-        pv:StrView (string-as-view (addr-of p))
+        p:String (try (test-write-file (string-as-view &nn) nuc-src))
+        pv:StrView (string-as-view &p)
         sp:StrView " "
         targets:StrView (layout-targets)
-        it:SplitIter (strview-split (addr-of targets) (addr-of sp)))
-    (while (not (split-iter-done (addr-of it)))
-      (let (t:StrView (split-iter-next (addr-of it))
+        it:SplitIter (strview-split &targets &sp))
+    (while (not (split-iter-done &it))
+      (let (t:StrView (split-iter-next &it)
             c:Compiled (try (compile-path-for (layout-nuc-target t) pv)))
         (when (not (c 'ok?))
-          (fail! t ": " (test-show (string-as-view (addr-of c 'raw)))))
+          (fail! t ": " (test-show (string-as-view (ref c 'raw)))))
         (let (chk:String (str c-decls)
-              got:i64 (size-asserts (string-as-view (addr-of c 'ir))
-                                    (addr-of chk))
+              got:i64 (size-asserts (string-as-view (ref c 'ir))
+                                    &chk)
               cn:String (str stem "-" t ".c"))
           (when (!= got n)
             (fail! t ": expected " n " sizes in the module, got " got))
-          (let (cp:String (try (test-write-file (string-as-view (addr-of cn))
-                                                (string-as-view (addr-of chk))))
+          (let (cp:String (try (test-write-file (string-as-view &cn)
+                                                (string-as-view &chk)))
                 r:CcCheck (try (cc-syntax-only-for
-                                 t (string-as-view (addr-of cp)))))
+                                 t (string-as-view &cp))))
             (when (not (r 'ok?))
-              (fail! t ": " (test-show (string-as-view (addr-of r 'err)))))
-            (drop (addr-of r))
-            (drop (addr-of cp)))
-          (drop (addr-of cn))
-          (drop (addr-of chk)))
-        (drop (addr-of c))))
-    (drop (addr-of p))
-    (drop (addr-of nn))
+              (fail! t ": " (test-show (string-as-view (ref r 'err)))))
+            (drop &r)
+            (drop &cp))
+          (drop &cn)
+          (drop &chk))
+        (drop &c)))
+    (drop &p)
+    (drop &nn)
     (return (ok))))
 
 ; ---------------------------------------------------------------------------
@@ -98,18 +98,18 @@
                             c-src:StrView):!void
   (let (nn:String (str stem ".nuc")
         cn:String (str stem ".c")
-        np:String (try (test-write-file (string-as-view (addr-of nn)) nuc-src))
-        cp:String (try (test-write-file (string-as-view (addr-of cn)) c-src))
-        got:String (try (build-run-file "" "" (string-as-view (addr-of np))))
-        want:String (try (cc-run-file cidir (string-as-view (addr-of cp)))))
-    (try (check-golden (string-as-view (addr-of got))
-                       (string-as-view (addr-of want))))
-    (drop (addr-of want))
-    (drop (addr-of got))
-    (drop (addr-of cp))
-    (drop (addr-of np))
-    (drop (addr-of cn))
-    (drop (addr-of nn))
+        np:String (try (test-write-file (string-as-view &nn) nuc-src))
+        cp:String (try (test-write-file (string-as-view &cn) c-src))
+        got:String (try (build-run-file "" "" (string-as-view &np)))
+        want:String (try (cc-run-file cidir (string-as-view &cp))))
+    (try (check-golden (string-as-view &got)
+                       (string-as-view &want)))
+    (drop &want)
+    (drop &got)
+    (drop &cp)
+    (drop &np)
+    (drop &cn)
+    (drop &nn)
     (return (ok))))
 
 ; The same, over a header this test wrote: both programs include it, so the
@@ -120,18 +120,18 @@
 (defn check-header-agrees (stem:StrView header:StrView nuc-main:StrView
                            c-main:StrView):!void
   (let (hn:String (str stem ".h")
-        hp:String (try (test-write-file (string-as-view (addr-of hn)) header))
-        hv:StrView (string-as-view (addr-of hp))
+        hp:String (try (test-write-file (string-as-view &hn) header))
+        hv:StrView (string-as-view &hp)
         n:String (str "(import-use \"stdio.h\")\n(import-use \"" hv "\")\n"
                       nuc-main)
         c:String (str "#include <stdio.h>\n#include \""
-                      (string-as-view (addr-of hn)) "\"\n" c-main))
-    (try (check-agrees-with-cc stem "" (string-as-view (addr-of n))
-                              (string-as-view (addr-of c))))
-    (drop (addr-of c))
-    (drop (addr-of n))
-    (drop (addr-of hp))
-    (drop (addr-of hn))
+                      (string-as-view &hn) "\"\n" c-main))
+    (try (check-agrees-with-cc stem "" (string-as-view &n)
+                              (string-as-view &c)))
+    (drop &c)
+    (drop &n)
+    (drop &hp)
+    (drop &hn)
     (return (ok))))
 
 ; A generated header is valid C only if a C compiler says so, and faithful only
@@ -140,37 +140,37 @@
 (defn check-cheader-roundtrip (stem:StrView header:StrView asserts:StrView
                                body:StrView want:StrView):!void
   (let (hn:String (str stem ".h")
-        hp:String (try (test-write-file (string-as-view (addr-of hn)) header))
-        hv:StrView (string-as-view (addr-of hp))
+        hp:String (try (test-write-file (string-as-view &hn) header))
+        hv:StrView (string-as-view &hp)
         cn:String (str stem "-use.c")
-        csrc:String (str "#include \"" (string-as-view (addr-of hn)) "\"\n"
+        csrc:String (str "#include \"" (string-as-view &hn) "\"\n"
                          asserts)
-        cp:String (try (test-write-file (string-as-view (addr-of cn))
-                                        (string-as-view (addr-of csrc))))
-        r:CcCheck (try (cc-compile-strict (string-as-view (addr-of cp)))))
+        cp:String (try (test-write-file (string-as-view &cn)
+                                        (string-as-view &csrc)))
+        r:CcCheck (try (cc-compile-strict (string-as-view &cp))))
     (when (not (r 'ok?))
       (fail! "clang refused the generated header\n     "
-             (test-show (string-as-view (addr-of r 'err)))))
-    (drop (addr-of r))
+             (test-show (string-as-view (ref r 'err)))))
+    (drop &r)
     (when (not (= body ""))
       (let (nsrc:String (str "(import-use \"" hv "\")\n(import-use \"stdio.h\")\n"
                              "(defn main ():i32 " body " (return 0))\n")
             nn:String (str stem "-rt.nuc")
-            np:String (try (test-write-file (string-as-view (addr-of nn))
-                                            (string-as-view (addr-of nsrc))))
+            np:String (try (test-write-file (string-as-view &nn)
+                                            (string-as-view &nsrc)))
             got:String (try (build-run-file "" ""
-                                            (string-as-view (addr-of np))))
-            gv:StrView (string-as-view (addr-of got)))
-        (try (check-eq (strview-trim-end (addr-of gv)) want))
-        (drop (addr-of got))
-        (drop (addr-of np))
-        (drop (addr-of nn))
-        (drop (addr-of nsrc))))
-    (drop (addr-of cp))
-    (drop (addr-of csrc))
-    (drop (addr-of cn))
-    (drop (addr-of hp))
-    (drop (addr-of hn))
+                                            (string-as-view &np)))
+            gv:StrView (string-as-view &got))
+        (try (check-eq (strview-trim-end &gv) want))
+        (drop &got)
+        (drop &np)
+        (drop &nn)
+        (drop &nsrc)))
+    (drop &cp)
+    (drop &csrc)
+    (drop &cn)
+    (drop &hp)
+    (drop &hn)
     (return (ok))))
 
 ; ---------------------------------------------------------------------------
@@ -222,14 +222,14 @@ struct F { int8_t c; struct A inner; int32_t i; };
 (defn lit ():ptr:P (return (P 1 2)))
 (defn rdq (q:ptr:Q):i32 (return (get q 'i)))
 "))
-        m:StrView (string-as-view (addr-of ir)))
+        m:StrView (string-as-view &ir))
     (try (check-line m "%P = type <{ i8, i32 }>"))
     (try (check-line m "%Q = type { i8, i32 }"))
     (try (check-in-define m "rd" "*load i32, ptr %*, align 1"))
     (try (check-in-define m "wr" "*store i32 7, ptr %*, align 1"))
     (try (check-in-define m "lit" "*store i32 2, ptr %*, align 1"))
     (try (check-in-define m "rdq" "*load i32, ptr %*, align 4"))
-    (drop (addr-of ir))))
+    (drop &ir)))
 
 (deftest s16-pk-values
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
@@ -243,10 +243,10 @@ struct F { int8_t c; struct A inner; int32_t i; };
     (printf \"%d %d %d\\n\" (as i32 (get r 'c)) (get r 'i) (as i32 (get r 's))))
   (return 0))
 "))
-        ov:StrView (string-as-view (addr-of out)))
-    (try (check-eq (strview-trim-end (addr-of ov)) "7 1 305419896 -3
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "7 1 305419896 -3
 7 8 9"))
-    (drop (addr-of out))))
+    (drop &out)))
 
 ; PK-2, import side: the two positions C honours, the one it ignores (both clang
 ; and gcc warn `-Wignored-attributes` there, so honouring it would disagree with
@@ -281,7 +281,7 @@ struct __attribute__((__packed__)) PK7 { char c; long l; };
 (defstruct PlainHdr tag:i8 len:i32 flags:i16)
 (defn wire-len (h:ptr:WireHdr):i32 (return (get h 'len)))
 "))
-        hv:StrView (string-as-view (addr-of h)))
+        hv:StrView (string-as-view &h))
     (try (check-line hv "} __attribute__((packed)) WireHdr;"))
     (try (check-line hv "} PlainHdr;"))
     (try (check-cheader-roundtrip "pkx" hv
@@ -289,7 +289,7 @@ struct __attribute__((__packed__)) PK7 { char c; long l; };
 _Static_assert(sizeof(PlainHdr)==12,\"plain\");
 "
            "(printf \"%ld %ld\\n\" (sizeof WireHdr) (sizeof PlainHdr))" "7 12"))
-    (drop (addr-of h))))
+    (drop &h)))
 
 ; `epoll_event` — cheader-parser-vs-libclang.md §2 measured this as the one
 ; `sizeof` mismatch in its 103-type census, and the one row it conceded to
@@ -363,7 +363,7 @@ struct F { struct A inner; int8_t c; };
     (printf \"%d %d\\n\" (get a 'x) (read-i b)))
   (return 0))
 "))
-        m:StrView (string-as-view (addr-of ir)))
+        m:StrView (string-as-view &ir))
     ; Tail pad on the over-aligned struct, inter-field pad on the over-aligned
     ; member -- and `i` is element 2, not element 1.
     (try (check-line m "%A = type { i32, [12 x i8] }"))
@@ -372,7 +372,7 @@ struct F { struct A inner; int8_t c; };
     (try (check-in-define m "read-i"
                           "*getelementptr inbounds %B, ptr %*, i32 0, i32 2"))
     (try (check-not-match m "*getelementptr inbounds %B, ptr %*, i32 0, i32 1"))
-    (drop (addr-of ir))))
+    (drop &ir)))
 
 ; The values round-trip, and the member really is where C puts it — the offset
 ; is read back rather than assumed.
@@ -384,7 +384,7 @@ struct F { struct A inner; int8_t c; };
 (defn main ():i32
   (let (p:ptr:B (B 1 305419896))
     (printf \"%ld %ld %d %d\\n\" (sizeof B)
-      (- (unsafe/cast i64 (addr-of p 'i)) (unsafe/cast i64 p))
+      (- (unsafe/cast i64 (ref p 'i)) (unsafe/cast i64 p))
       (as i32 (get p 'c)) (get p 'i)))
   (return 0))
 "
@@ -441,7 +441,7 @@ int main(void){printf(\"%zu\\n\",sizeof(max_align_t));return 0;}
 (defstruct Slot c:i8 (:align 16 v:i32))
 (defn slot-v (s:ptr:Slot):i32 (return (get s 'v)))
 "))
-        hv:StrView (string-as-view (addr-of h)))
+        hv:StrView (string-as-view &h))
     (try (check-line hv "} __attribute__((aligned(32))) Cache;"))
     (try (check-line hv "    int32_t v __attribute__((aligned(16)));"))
     (try (check-cheader-roundtrip "pk3x" hv
@@ -449,7 +449,7 @@ int main(void){printf(\"%zu\\n\",sizeof(max_align_t));return 0;}
 _Static_assert(sizeof(Slot)==32,\"slot\");
 "
            "" ""))
-    (drop (addr-of h))))
+    (drop &h)))
 
 ; A non-power-of-two alignment is refused rather than reaching LLVM as an
 ; unparseable `align 3`, and an `aligned(N)` whose N we cannot evaluate leaves
@@ -461,13 +461,13 @@ _Static_assert(sizeof(Slot)==32,\"slot\");
          "':align 3' must be a power of two"))
   (let (h:String (try (test-write-file "ua.h"
                         "struct __attribute__((aligned(NOPE))) UA { int x; };\n"))
-        src:String (str "(import-use \"" (string-as-view (addr-of h)) "\")
+        src:String (str "(import-use \"" (string-as-view &h) "\")
 (defn main ():i32 (return (as i32 (sizeof UA))))
 "))
-    (try (check-source-rejects (string-as-view (addr-of src))
+    (try (check-source-rejects (string-as-view &src)
                                "is an opaque type declared at"))
-    (drop (addr-of src))
-    (drop (addr-of h))))
+    (drop &src)
+    (drop &h)))
 
 ; ---------------------------------------------------------------------------
 ; BF-1…BF-4: bit-fields (§8)
@@ -602,20 +602,20 @@ int main(void){printf(\"%zu\\n\",sizeof(FILE));return 0;}
                         "(defstruct Hdr (:bits 4 ver:ui32) (:bits 12 len:ui32) (:bits 16 id:i32) tail:i32)
 (defn hdr-ver (h:ptr:Hdr):ui32 (return (get h 'ver)))
 "))
-        hv:StrView (string-as-view (addr-of h)))
+        hv:StrView (string-as-view &h))
     (try (check-line hv "    uint32_t ver : 4;"))
     (try (check-line hv "    uint32_t len : 12;"))
     (try (check-line hv "    int32_t id : 16;"))
     (try (check-cheader-roundtrip "bfx" hv
            "_Static_assert(sizeof(Hdr)==8,\"hdr\");\n" "" ""))
-    (drop (addr-of h))))
+    (drop &h)))
 
 ; The three things a bit-field may not be. A field address is C's own
 ; constraint, not a Nucleus limitation, which is what makes refusing it the
 ; faithful answer rather than a gap.
 (deftest s16-bf-refusals
   (try (check-source-rejects "(defstruct S (:bits 3 a:i32))
-(defn f (p:ptr:S):ptr (return (addr-of p 'a)))
+(defn f (p:ptr:S):ptr (return (ref p 'a)))
 (defn main ():i32 (return 0))
 "
          "a bit-field has no address"))
@@ -649,9 +649,9 @@ int main(void){printf(\"%zu\\n\",sizeof(FILE));return 0;}
 (defn main ():i32
   (let (s:ptr:s16_sig (alloca s16_sig))
     (set! (s 'code) 7) (set! (s 'pid) 42) (set! (s 'uid) 99)
-    (set! ((addr-of s 'named) 'a) 1) (set! ((addr-of s 'named) 'b) 2)
+    (set! ((ref s 'named) 'a) 1) (set! ((ref s 'named) 'b) 2)
     (printf \"%d %d %d %d %d %d\\n\" (get s 'code) (get s 'pid) (get s 'uid) (get s 'si_int)
-            (get (addr-of s 'named) 'a) (get (addr-of s 'named) 'b)))
+            (get (ref s 'named) 'a) (get (ref s 'named) 'b)))
   (let (r:ptr:s16_rus (alloca s16_rus))
     (set! (r 'sec) 5) (set! (r 'usec) 6) (set! (r 'maxrss) 8)
     (printf \"%ld %ld %d %ld %ld\\n\" (get r 'sec) (get r 'usec) (get r 'maxrss)
@@ -673,8 +673,8 @@ int main(void){
 ; regression in any one of the four features shows up here by name.
 (defn check-lays-out (m:StrView name:StrView):!void
   (let (pat:String (str "%" name " = type*"))
-    (try (check-match m (string-as-view (addr-of pat))))
-    (drop (addr-of pat))
+    (try (check-match m (string-as-view &pat)))
+    (drop &pat)
     (return (ok))))
 
 (deftest s16-an-census
@@ -686,7 +686,7 @@ int main(void){
 (import-use \"stddef.h\")
 (defn main ():i32 (return 0))
 "))
-        m:StrView (string-as-view (addr-of ir)))
+        m:StrView (string-as-view &ir))
     (try (check-lays-out m "sigaction"))
     (try (check-lays-out m "sigevent"))
     (try (check-lays-out m "__pthread_cleanup_frame"))
@@ -696,7 +696,7 @@ int main(void){
     (try (check-lays-out m "_IO_FILE"))
     (try (check-lays-out m "cmsghdr"))
     (try (check-lays-out m "max_align_t"))
-    (drop (addr-of ir))))
+    (drop &ir)))
 
 ; A layout that is merely PRESENT is the weaker claim; these are the names §1 of
 ; cheader-parser-vs-libclang.md listed, so they are the ones to size.
@@ -720,7 +720,7 @@ int main(void){ printf(\"%zu %zu %zu\\n\", sizeof(struct sigcontext),
 ")))
 
 ; The `defstruct` surface. `(:anon T)` is the same member the importer mints, so
-; the same lookup has to reach it — including through `addr-of`, which is the
+; the same lookup has to reach it — including through `ref`, which is the
 ; path a GEP chain gets wrong differently from a load.
 (deftest s16-an-defstruct
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
@@ -731,12 +731,12 @@ int main(void){ printf(\"%zu %zu %zu\\n\", sizeof(struct sigcontext),
   (let (p:ptr:Outer (alloca Outer))
     (set! (p 'tag) 1) (set! (p 'a) 2) (set! (p 'b) 3) (set! (p 'c) 4) (set! (p 'z) 5)
     (printf \"%ld %d %d %d %d %d %d\\n\" (sizeof Outer)
-            (get p 'tag) (get p 'a) (get p 'b) (get p 'c) (get p 'z) (deref (addr-of p 'b))))
+            (get p 'tag) (get p 'a) (get p 'b) (get p 'c) (get p 'z) (deref (ref p 'b))))
   (return 0))
 "))
-        ov:StrView (string-as-view (addr-of out)))
-    (try (check-eq (strview-trim-end (addr-of ov)) "20 1 2 3 4 5 3"))
-    (drop (addr-of out))))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov) "20 1 2 3 4 5 3"))
+    (drop &out)))
 
 ; The first is C's own ambiguity rule; the second is a member that could not
 ; contribute a name at all; the third is the one place the surface is NOT a
@@ -758,6 +758,6 @@ int main(void){ printf(\"%zu %zu %zu\\n\", sizeof(struct sigcontext),
 (defstruct C (:anon A) z:i32)
 (defn main ():i32 (return 0))
 ")))
-    (try (check-emit-rejects "--emit-cheader" (string-as-view (addr-of p))
+    (try (check-emit-rejects "--emit-cheader" (string-as-view &p)
                              "has no standard C spelling"))
-    (drop (addr-of p))))
+    (drop &p)))

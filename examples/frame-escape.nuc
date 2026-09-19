@@ -13,8 +13,8 @@
 ;   * a value copied/`deref`-ed out of frame storage clears taint and may escape.
 ;
 ; The corresponding REJECTED forms are compile errors, e.g.
-;   (defn bad:ptr () (let (x:i32 5) (return (addr-of x))))   ; address of frame-local 'x'
-;   (defn leak:ptr (p:Point) (return (.& (addr-of p) x)))    ; field of frame-local 'p'
+;   (defn bad:ptr () (let (x:i32 5) (return &x)))   ; address of frame-local 'x'
+;   (defn leak:ptr (p:Point) (return (ref &p 'x)))  ; field of frame-local 'p'
 ; (verified at the compiler, not runnable here since they do not compile).
 
 (import-use "stdio.h")

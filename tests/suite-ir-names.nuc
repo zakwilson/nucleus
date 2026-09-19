@@ -65,9 +65,9 @@
         lib:String (try (test-write-file "w39dlib.nuc" (w39-lib-src)))
         m:String (try (test-write-file "w39dig.nuc" (w39-main-src)))
         c:Compiled (try (emit-checked dir "--emit-llvm"
-                                      (string-as-view (addr-of lib))))
-        ir:StrView (compiled-ir (addr-of c)))
-    (try (check-silent (addr-of c) "--emit-llvm on the library"))
+                                      (string-as-view &lib)))
+        ir:StrView (compiled-ir &c))
+    (try (check-silent &c "--emit-llvm on the library"))
     (try (check-line ir "%_2Pair = type { i32, i32 }"))
     (try (check-match ir "%_2Shape = type { i32, %__anon_union_* }"))
     (try (check-line ir
@@ -84,12 +84,12 @@
     (try (check-line ir "lbl._2top:"))
     (try (check-line ir "  br label %lbl._2top"))
     (try (check-ir-parses ir))
-    (let (out:String (try (build-run-file dir "" (string-as-view (addr-of m)))))
-      (try (check-eq (string-as-view (addr-of out)) "40 100 9 3 7 3\n"))
-      (drop (addr-of out)))
-    (drop (addr-of c))
-    (drop (addr-of m))
-    (drop (addr-of lib)))
+    (let (out:String (try (build-run-file dir "" (string-as-view &m))))
+      (try (check-eq (string-as-view &out) "40 100 9 3 7 3\n"))
+      (drop &out))
+    (drop &c)
+    (drop &m)
+    (drop &lib))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -122,10 +122,10 @@
 
 (deftest w9-ir-name-body-chars-in-locals
   (let (p:String (try (test-write-file "w39chr.nuc" (w39-chr-src)))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         c:Compiled (try (emit-checked "" "--emit-llvm" pv))
-        ir:StrView (compiled-ir (addr-of c)))
-    (try (check-silent (addr-of c) "--emit-llvm"))
+        ir:StrView (compiled-ir &c))
+    (try (check-silent &c "--emit-llvm"))
     (try (check-match ir "%Sh_BANG = type { i32, %__anon_union_* }"))
     (try (check-line ir
            "define i64 @Sh_BANG-circ_BANG(i32 %r.arg) section \".text.Sh_BANG-circ_BANG\" {"))
@@ -142,10 +142,10 @@
     (try (check-line ir "  br label %lbl.top_BANG"))
     (try (check-ir-parses ir))
     (let (out:String (try (build-run-file "" "" pv)))
-      (try (check-eq (string-as-view (addr-of out)) "21 7 3\n"))
-      (drop (addr-of out)))
-    (drop (addr-of c))
-    (drop (addr-of p)))
+      (try (check-eq (string-as-view &out) "21 7 3\n"))
+      (drop &out))
+    (drop &c)
+    (drop &p))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -176,7 +176,7 @@ int main(void) {
 ; builds the value by hand, and `nm` is where their escape is visible.
 (deftest w9-ir-name-digit-header-c-callable
   (let (l:CLib (try (c-lib "w39dlib" (w39-lib-src)))
-        h:StrView (c-lib-text (addr-of l)))
+        h:StrView (c-lib-text &l))
     (try (check-line h "typedef struct _2Pair {"))
     (try (check-line h "} _2Pair;"))
     (try (check-line h "        int32_t _2circle;"))
@@ -189,8 +189,8 @@ int main(void) {
     (try (check-line h "int32_t _2pick(struct _2Shape sh);"))
     (try (check-line h "int32_t _2loop(void);"))
     (try (check-not-contains h "asm("))
-    (let (syms:String (try (nm-defined (c-lib-obj (addr-of l)))))
-      (try (check-line-set (string-as-view (addr-of syms))
+    (let (syms:String (try (nm-defined (c-lib-obj &l))))
+      (try (check-line-set (string-as-view &syms)
                            "_2Shape-2circle
 _2Shape-2square
 _2count
@@ -199,9 +199,9 @@ _2loop
 _2pick
 "
                            "the object's linkable names"))
-      (drop (addr-of syms)))
-    (let (out:String (try (c-lib-run (addr-of l) (w39-c-src))))
-      (try (check-eq (string-as-view (addr-of out)) "40 100 9 3 7 3\n"))
-      (drop (addr-of out)))
-    (drop (addr-of l)))
+      (drop &syms))
+    (let (out:String (try (c-lib-run &l (w39-c-src))))
+      (try (check-eq (string-as-view &out) "40 100 9 3 7 3\n"))
+      (drop &out))
+    (drop &l))
   (return (ok)))

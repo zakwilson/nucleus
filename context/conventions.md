@@ -259,7 +259,7 @@ design note as a claim with an expiry date.
 accepts an arbitrary constant expression (arithmetic/bit ops over literals,
 `defconst`/`defenum` names, `(char "x")`, `(sizeof T)` and `(as IntT x)`), and a
 pointer-like destination accepts `(as PtrT x)` — which is what makes
-`(as CStr "…")` legal — and `(addr-of other-global)`. Three things about that
+`(as CStr "…")` legal — and `&other-global`. Three things about that
 are worth knowing before you touch it:
 
 - **A folded result is treated as an untyped integer literal of that value**, so
@@ -398,11 +398,11 @@ calling `value-annot-type` (generics.nuc) for the destination and `as-convert`
 
 **It is NOT a tree rewrite, and must never become one.** SEVEN passes split a
 value-position annotation and key on the bare name: `emit-symbol-ref-bound`, the
-`emit-set` target, `fn-capture-walk`, `fn-rewrite-captures` (+ its `addr-of` and
+`emit-set` target, `fn-capture-walk`, `fn-rewrite-captures` (+ its `ref` and
 `set!` arms), `node-binding-name` (the Stage 10 non-null flow facts),
 `node-is-const-int-literal` / `const-fold-int`, and `node-type-sym`. Emitting the
 cast at the value read leaves the node a `NODE-SYM`, so all seven keep working
-and `set!`/`addr-of` keep the lvalue reading for free. A reader or `desugar`
+and `set!`/`ref` keep the lvalue reading for free. A reader or `desugar`
 rewrite would break them at once — the demonstration is
 `(when (!= p:?ptr:N null) (p k))`, which narrows, against
 `(when (!= (as ?ptr:N p) null) (p k))`, which does not (`node-binding-name`
@@ -451,9 +451,9 @@ Two related facts from the same step:
   `(import-use vector)` far below; the renderer sees a fieldless registry entry
   and dies *"too many initializers for struct 'AllocHandle'"*. It did not need
   to move up: a constant initializer is applied by the loader, so it has no
-  order, and every reference to it is `(addr-of …)`, which is an address rather
+  order, and every reference to it is `&…`, which is an address rather
   than a read.
-- **A `(defvar g:ptr (addr-of-ish some-function))` cannot be a constant when the
+- **A `(defvar g:ptr &some-function)`-ish initializer cannot be a constant when the
   function is defined in a LATER import.** A constant `@fn` reference is
   resolved at the defvar's own emission point. The compiler's two late-binding
   hooks are structurally unable to satisfy that — the defvar must sit above the
@@ -981,7 +981,7 @@ with a by-value `S` (e.g. `(with (v:(ref (Vector i32)) (vector-new)) …)`) mate
 `tc3-emit-binding-init` derives the want via two non-emitting probes (whole `(ref S)`,
 then pointee `S`), emits once, and `tc3-materialize` allocas a backing slot + stores +
 binds the ref. The materialized backing is frame storage, dropped through the existing
-`with-drop-method` TY-PTR arm. Methods take `(ref …)`, so no `addr-of` per call (resolves
+`with-drop-method` TY-PTR arm. Methods take `(ref …)`, so no `&` per call (resolves
 the receiver-shape problem).
 
 **TC-5 union target-typing:** `union-target-rewrite` (src/union-emit.nuc) is parameterized
@@ -1135,8 +1135,8 @@ it will happily lock in a wrong spelling. The check that finds this is compiling
 generated header with `clang -fsyntax-only`, which the `w9-cheader-*` gates do.
 
 `type-node-to-c`'s pointer arm keys on the head SYMBOL, so it has to name every
-spelling of the same kind: `ptr`, `ref` (its documented synonym) and `addr-of`
-(what a standalone `&T` in a type slot reads as). It named only `ptr` until
+spelling of the same kind: `ptr` and `ref` (its documented synonym; until Stage 21
+the reader also wrote `addr-of` for a standalone `&T`). It named only `ptr` until
 2026-09-06, so `(ref T)`/`&T` in an exported signature silently rendered `void*`
 — pointer-sized and ABI-correct, which is why it survived, and why two
 `w9-cheader-*` goldens had the `void*` spelling written into them. `raw` still
@@ -1149,9 +1149,10 @@ widens deliberately. Docs: `docs/compiler.md` §C headers.
 parser as `(ref …)`: one node, the non-null pointer in a type slot and the
 address-of in a value slot, and `--emit-nuch` prints it canonically. Only a `&`
 *inside* an atom (`p:&T`, `?&T`, `):&T`) is the type sigil the lexer rewrites to
-`ref:`. `addr-of` is a value-world head the compiler still accepts (Stage 21
-PK-1; retired in PK-5, pointer-kind-spellings.md §7) and no type consumer
-recognizes it any more. Attached forms are still preferred in exported
+`ref:`. The older value-world head `addr-of` is retired and reserved (Stage 21
+PK-5b, pointer-kind-spellings.md §7): `retired-form-message` answers it on the
+value path, in `gcheck`, and from `parse-type-from-node`'s fall-through, so
+`(addr-of T)` in a type slot gets the same message. Attached forms are still preferred in exported
 signatures only as a matter of taste — nothing leaks into a header now.
 
 ## In C, a typedef is not a tag — emit both, and give them the same spelling
@@ -1828,7 +1829,7 @@ primitive; `emit-field-get`) and ordinary code uses **head position `(s 'field)`
 instead (the callable-values `get` path: Struct-blanket intrinsic, byte-identical
 GEP+load). The selector is **quoted** — see the next section. Stage 16 finished
 the job: `.`, `.&`, `.set!`, `ptr-set!` and `aset!` are all gone (`get`, the
-2-argument `addr-of`, and `set!` over a **place** replace them), but every one
+2-argument `ref`, and `set!` over a **place** replace them), but every one
 stays **reserved** so a retired-form message carrying the replacement always
 reaches the user. Two non-obvious hazards — both bit the `.`→head-position migration and are why `_get` still exists:
 
@@ -1854,7 +1855,7 @@ W7 demotion (`callee-has-field` + `selector-shadowed-by-local`) and Stage 16's
 (`design/stage16-ergonomics/dot-forms.md` §5 step 3) deleted all three. Three
 things that fall out of it, each of which had to be built:
 
-- **`_get`, `.set!` and the 2-argument `addr-of` require a literal** and refuse a bare symbol rather
+- **`_get`, `.set!` and the 2-argument `ref` require a literal** and refuse a bare symbol rather
   than reading it as a variable — they name a field statically, so there is
   nothing for a computed selector to mean there (`die-nonliteral-selector`).
 - **Head position and `get` route on the RECEIVER, not on the argument's shape.**
@@ -1902,9 +1903,9 @@ arms are still missing**: `deftype` aliases and C typedefs (both resolve in
 `parse-type-name`, neither here), so a bare alias name in a template argument is
 the same accept-anything shape — recorded in stage21-cleanup/overview.md.
 
-**An arity overload still needs a `node-type` mirror.** `(addr-of x)` is a
-binding's address and `(addr-of p 'f)` is a field's — one emitter, split on
-`node-len`. `node-type-addr-of` has to split on the *same* arity or the 2-arg
+**An arity overload still needs a `node-type` mirror.** `(ref x)` is a
+binding's address and `(ref p 'f)` is a field's — one emitter, split on
+`node-len`. `node-type-ref` has to split on the *same* arity or the 2-arg
 form falls into the 1-arg path and types as `ptr:ptr:Point`, the address of the
 BINDING. That is invisible in the value itself: it only surfaces where the type
 is load-bearing (an argument position, an annotated binding), which is the
@@ -1967,13 +1968,13 @@ emitter copies the value into a fresh slot (`materialize-struct-value`,
 `src/nucleusc.nuc`) and `access-receiver-sdef` (`src/generics.nuc`) unwraps the
 same receivers in the type pass — the cross-file lockstep this file opens with.
 
-A member **place** (`(set! (v 'f) …)`) and the 2-argument `addr-of` are the
+A member **place** (`(set! (v 'f) …)`) and the 2-argument `ref` are the
 exception: they need the receiver's own **storage**, so they take exactly what
-`addr-of` takes — a binding, whose slot they use directly. A temporary is an
+`&x` takes — a binding, whose slot they use directly. A temporary is an
 error ("the receiver is a temporary struct value, so it has no address"), which
 is also what stops a pointer into a compiler-made copy from being returned.
 
-The older `(addr-of v)`-then-access shape (`lib/strview.nuc`,
+The older `&v`-then-access shape (`lib/strview.nuc`,
 `examples/comb-order.nuc:30`) is still correct and is how a member place on a
 by-value parameter is spelled when the receiver is not already a name.
 
@@ -5994,7 +5995,7 @@ Three things to carry forward.
   was the looser one for years. Check both directions when you audit a
   conversion: the rule as stated only catches half of it.
 - **`defvar-init-ir` needs the same rule, and got it late.** The constant
-  renderer's `(addr-of g)` fold (`defvar-addr-of-ir`) checked `pkind` and never
+  renderer's `&g` fold (`defvar-ref-ir`) checked `pkind` and never
   the pointee — the sixth instance of the "a SECOND value-into-a-typed-slot
   path" trap above. The fix is the same *call*, guarded to `TY-PTR` destinations
   so a bare `ptr` and a `CStr` keep their own rules.
@@ -6134,7 +6135,7 @@ touching any source: the flag reports what is *emitted*, so it found these,
 and a spelling change that had only rewritten source would have broken every
 closure in the language the moment the rule flipped. They now go through
 `quoted-selector` (`src/nucleusc.nuc`). The same twelve sites bit again when
-`.`/`.&` were retired — they synthesize `_get` and `addr-of` now, `_get` rather
+`.`/`.&` were retired — they synthesize `_get` and `ref` now, `_get` rather
 than `get` because a synthesized read of a compiler-generated env struct means
 *raw field load*, which is what the bypass primitive is for.
 
@@ -6247,11 +6248,11 @@ macro, and **the short spellings are preferred in new code**:
 |---|---|
 | `p:&Point` | `p:ptr:Point`, `(p (ref Point))` |
 | `):&T` | `):ref:T` |
-| `&x` | `(ref x)`, `(addr-of x)` |
+| `&x` | `(ref x)` (and `addr-of`, which is retired) |
 
 `&` inside an atom is the type sigil (`&T` → `ref:T`, chaining as `&&T`, `?&T`,
 `&raw:T`); `&` starting a token is `(ref x)`. A field address is the 2-argument
-form, `(ref s 'field)` (or `(addr-of s 'field)` until PK-5b) — there is no
+form, `(ref s 'field)` — there is no
 `&s.field`. A parenthesised operand takes the sigil too: `v:&(Vector T)`,
 `x:?(Vector i32)`, `):!(Vector i32)` (PK-2's open-segment fuse).
 
@@ -6274,7 +6275,7 @@ with no `&` at all (lvalue-only implicit address-of, borrow-conventions.md
 Two spellings that do not work and fail as *undefined name*, not as a syntax
 error, so the message points at the wrong thing:
 
-- **`&rest`** is read as the variadic parameter marker, never as `addr-of rest`.
+- **`&rest`** is read as the variadic parameter marker, never as `(ref rest)`.
   Name the binding something else.
 - **`(invoke v 0:usize)`** — the `name:type` sugar needs a *name*, so an index
   literal is `(as usize 0)`. `(invoke v i:usize)` over a binding is fine, which
@@ -6349,7 +6350,7 @@ at whichever buffer the form being emitted belongs to, so they are `(raw String)
 
 Three consequences that are not obvious from a call site:
 
-- `(set! g-out g-type-stream)` is now `(set! g-out (addr-of g-type-stream))`.
+- `(set! g-out g-type-stream)` is now `(set! g-out &g-type-stream)`.
   Assigning the value would copy the struct and the writes would go nowhere the
   owner can see.
 - **Saving an owner around a nested emission is a MOVE.** `push-function-state`
@@ -6805,7 +6806,7 @@ pointers.
 
 The entry above fixed a call site and a value site for a *function*. A program
 **global** has four — a read (`emit-symbol-ref-bound`'s load), a `set!`, an
-`addr-of`, a member GEP — and no one of them is marked as the place a global
+`&g`, a member GEP — and no one of them is marked as the place a global
 becomes a link name. Stage 20 L6 needed a `declare` and a mirror root per
 reference, and instrumenting those four would have left a fifth.
 

@@ -77,14 +77,14 @@
   (return 0))
 ")
     (let (out:String (try (build-run-source src))
-          ov:StrView (string-as-view (addr-of out)))
-      (try (check-eq (strview-trim-end (addr-of ov)) "1 0"))
-      (drop (addr-of out)))
+          ov:StrView (string-as-view &out))
+      (try (check-eq (strview-trim-end &ov) "1 0"))
+      (drop &out))
     (let (ir:String (try (source-ir src)))
-      (try (check-contains (string-as-view (addr-of ir)) "@s16b-t = global i1 true"))
-      (try (check-contains (string-as-view (addr-of ir)) "@s16b-f = global i1 false"))
-      (try (check-contains (string-as-view (addr-of ir)) "zext i1"))
-      (drop (addr-of ir)))))
+      (try (check-contains (string-as-view &ir) "@s16b-t = global i1 true"))
+      (try (check-contains (string-as-view &ir) "@s16b-f = global i1 false"))
+      (try (check-contains (string-as-view &ir) "zext i1"))
+      (drop &ir))))
 
 ; `as` names `unsafe/cast` in every bool rejection, so the hatch has to be
 ; TOTAL: all five instruction-selection gates must admit a bool operand, or the
@@ -100,9 +100,9 @@
     (printf \"%d %d %d %.1f %ld\\n\" (as i32 b) (as i32 z) n f w))
   (return 0))
 ")))
-    (let (ov:StrView (string-as-view (addr-of out)))
-      (try (check-eq (strview-trim-end (addr-of ov)) "1 0 1 1.0 0")))
-    (drop (addr-of out))))
+    (let (ov:StrView (string-as-view &out))
+      (try (check-eq (strview-trim-end &ov) "1 0 1 1.0 0")))
+    (drop &out)))
 
 ; The two permanent, user-visible spellings of the type: the mangle token in an
 ; overload's link name, and the C rendering in a generated header. Both read
@@ -113,15 +113,15 @@
 (defn g (b:bool):bool (return (not b)))
 ")
     (let (ir:String (try (source-ir src)))
-      (try (check-contains (string-as-view (addr-of ir))
+      (try (check-contains (string-as-view &ir)
                            "define i32 @f.bool(i1 %a.arg)"))
-      (drop (addr-of ir)))
+      (drop &ir))
     (let (h:String (try (source-cheader src)))
-      (try (check-line (string-as-view (addr-of h))
+      (try (check-line (string-as-view &h)
                        "int32_t f_bool(bool a) asm(\"f.bool\");"))
-      (try (check-line (string-as-view (addr-of h)) "bool g(bool b);"))
-      (try (check-line (string-as-view (addr-of h)) "#include <stdbool.h>"))
-      (drop (addr-of h)))))
+      (try (check-line (string-as-view &h) "bool g(bool b);"))
+      (try (check-line (string-as-view &h) "#include <stdbool.h>"))
+      (drop &h))))
 
 ; ---------------------------------------------------------------------------
 ; Macros: atoms, `macrolet`, and what `macrolet` refuses (Stage 16 §MA)
@@ -356,18 +356,18 @@
   (return 0))
 ")
     (let (out:String (try (build-run-source src)))
-      (try (check-golden (string-as-view (addr-of out))
+      (try (check-golden (string-as-view &out)
                          "raw 29 25 10 2
 cstr 29 25 10 2
 mptr 29 25 10 2
 mval 29 25 10 2
 "))
-      (drop (addr-of out)))
+      (drop &out))
     (let (ir:String (try (source-ir src))
-          iv:StrView (string-as-view (addr-of ir)))
+          iv:StrView (string-as-view &ir))
       (try (check-contains iv "icmp ne ptr"))
       (try (check-match iv "*extractvalue %Maybe.i64 %*, 0*"))
-      (drop (addr-of ir)))))
+      (drop &ir))))
 
 ; The narrowing half. `test-true-nonnull` matches node SHAPES, so the bare
 ; symbol needed its own arm -- without it the condition compiles and the BODY
@@ -407,8 +407,8 @@ mval 29 25 10 2
       (f-while (as-ref a)) (f-while null)))
   (return 0))
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "7 -1 7 -1 7 -1 7 -1\n"))
-    (drop (addr-of out))))
+    (try (check-eq (string-as-view &out) "7 -1 7 -1 7 -1 7 -1\n"))
+    (drop &out)))
 
 ; The refusals that must STAY refusals. `(when n:i32 …)` is what keeps both
 ; zero-is-false and all-numbers-true revisable.
@@ -488,9 +488,9 @@ mval 29 25 10 2
 
 (defn check-litvar-rejects (body:StrView needle:StrView):!void
   (let (src:String (str (litvar-pre) body "\n")
-        v:StrView (string-as-view (addr-of src)))
+        v:StrView (string-as-view &src))
     (try (check-source-rejects v needle))
-    (drop (addr-of src))
+    (drop &src)
     (return (ok))))
 
 ; Enum members, a defconst, a local, and a call, in all three literal kinds.
@@ -511,13 +511,13 @@ mval 29 25 10 2
       (printf \"map=%d\\n\" (unsafe/cast i32 (count m)))))
   (return 0))
 ")
-        out:String (try (build-run-source (string-as-view (addr-of src)))))
-    (try (check-golden (string-as-view (addr-of out)) "set=4 1 1 0
+        out:String (try (build-run-source (string-as-view &src))))
+    (try (check-golden (string-as-view &out) "set=4 1 1 0
 vec=40 7
 map=2
 "))
-    (drop (addr-of out))
-    (drop (addr-of src))))
+    (drop &out)
+    (drop &src)))
 
 (defn litvar-target-src ():String
   (return (str (litvar-pre) "(defn main ():i32
@@ -531,18 +531,18 @@ map=2
 ; `(invoke v 0)` read two i32 elements back as one i64 -- 8589934593.
 (deftest s16-litvar-target-wins
   (let (src:String (litvar-target-src)
-        out:String (try (build-run-source (string-as-view (addr-of src)))))
-    (try (check-eq (string-as-view (addr-of out)) "want=1 3\n"))
-    (drop (addr-of out))
-    (drop (addr-of src))))
+        out:String (try (build-run-source (string-as-view &src))))
+    (try (check-eq (string-as-view &out) "want=1 3\n"))
+    (drop &out)
+    (drop &src)))
 
 ; …and it must stamp only the wanted instance, not build i32 and reinterpret.
 (deftest s16-litvar-target-stamps-once
   (let (src:String (litvar-target-src)
-        ir:String (try (source-ir (string-as-view (addr-of src)))))
-    (try (check-not-contains (string-as-view (addr-of ir)) "Vector.i32"))
-    (drop (addr-of ir))
-    (drop (addr-of src))))
+        ir:String (try (source-ir (string-as-view &src))))
+    (try (check-not-contains (string-as-view &ir) "Vector.i32"))
+    (drop &ir)
+    (drop &src)))
 
 ; A numeric literal ADAPTS to a value element, exactly as `(conj v 1)` on a
 ; (Vector i64) already does; a value is never narrowed to suit a literal.
@@ -553,10 +553,10 @@ map=2
       (printf \"adapt=%lld %lld\\n\" (invoke v 0) (invoke v 1))))
   (return 0))
 ")
-        out:String (try (build-run-source (string-as-view (addr-of src)))))
-    (try (check-eq (string-as-view (addr-of out)) "adapt=5000000000 1\n"))
-    (drop (addr-of out))
-    (drop (addr-of src))))
+        out:String (try (build-run-source (string-as-view &src))))
+    (try (check-eq (string-as-view &out) "adapt=5000000000 1\n"))
+    (drop &out)
+    (drop &src)))
 
 ; Elements evaluate left to right, which only became observable once an element
 ; could be a call.
@@ -568,10 +568,10 @@ map=2
     (printf \"|%d\\n\" (unsafe/cast i32 (count v))))
   (return 0))
 ")
-        out:String (try (build-run-source (string-as-view (addr-of src)))))
-    (try (check-eq (string-as-view (addr-of out)) "123|3\n"))
-    (drop (addr-of out))
-    (drop (addr-of src))))
+        out:String (try (build-run-source (string-as-view &src))))
+    (try (check-eq (string-as-view &out) "123|3\n"))
+    (drop &out)
+    (drop &src)))
 
 ; An empty literal is legal exactly when a target supplies the element type.
 (deftest s16-litvar-empty-with-target
@@ -580,10 +580,10 @@ map=2
     (printf \"empty=%d\\n\" (unsafe/cast i32 (count v))))
   (return 0))
 ")
-        out:String (try (build-run-source (string-as-view (addr-of src)))))
-    (try (check-eq (string-as-view (addr-of out)) "empty=0\n"))
-    (drop (addr-of out))
-    (drop (addr-of src))))
+        out:String (try (build-run-source (string-as-view &src))))
+    (try (check-eq (string-as-view &out) "empty=0\n"))
+    (drop &out)
+    (drop &src)))
 
 ; The refusals. Each names the literal and, where two types clash, both of them.
 (deftest s16-litvar-refused-mixed-values
@@ -631,36 +631,36 @@ map=2
 ; program. i16 printed 1321270996 and f32 printed 0.000000.
 (deftest s16-vararg-promotion-run
   (let (out:String (try (build-run-source (vararg-run-src))))
-    (try (check-eq (string-as-view (addr-of out)) "65 -300 200 2.500000 1 65\n"))
-    (drop (addr-of out))))
+    (try (check-eq (string-as-view &out) "65 -300 200 2.500000 1 65\n"))
+    (drop &out)))
 
 ; The instruction. `bool`/`i8`/`ui8` print correctly under BOTH behaviours, so
 ; the run above cannot distinguish them -- only the IR can.
 (deftest s16-vararg-promotion-ir
   (let (ir:String (try (source-ir (vararg-run-src)))
-        iv:StrView (string-as-view (addr-of ir))
+        iv:StrView (string-as-view &ir)
         l:StrView (try (line-with iv "call i32 (ptr, ...) @printf")))
     (try (check-match l "*i32 %*, i32 %*, i32 %*, double %*, i32 %*, i32 %*"))
     (try (check-not-contains l "i1 %"))
     (try (check-not-contains l "i8 %"))
     (try (check-not-contains l "i16 %"))
     (try (check-not-contains l "float %"))
-    (drop (addr-of ir))))
+    (drop &ir)))
 
 ; Only the `...` tail promotes. A variadic callee's FIXED narrow parameter keeps
 ; its declared type -- the promotion is a property of the position, not of the
 ; type, so a rule applied one argument too early would widen it.
 (deftest s16-vararg-promotion-fixed-param-untouched
   (let (h:String (try (test-write-file "fix.h" "int narrowfix(signed char tag, ...);\n"))
-        src:String (str "(import-use \"" (string-as-view (addr-of h)) "\")
+        src:String (str "(import-use \"" (string-as-view &h) "\")
 (defn go (a:i8 b:i8 c:f32):i32 (return (narrowfix a b c)))
 ")
-        ir:String (try (source-ir (string-as-view (addr-of src)))))
-    (try (check-match (string-as-view (addr-of ir))
+        ir:String (try (source-ir (string-as-view &src))))
+    (try (check-match (string-as-view &ir)
                       "*@narrowfix(i8 %*, i32 %*, double %*"))
-    (drop (addr-of ir))
-    (drop (addr-of src))
-    (drop (addr-of h))))
+    (drop &ir)
+    (drop &src)
+    (drop &h)))
 
 ; Nothing already `int`-wide or wider is touched -- a spurious promotion would
 ; be as wrong as a missing one, and costs an instruction per call.
@@ -671,10 +671,10 @@ map=2
     (printf \"%d %ld %f %u\\n\" a b c d))
   (return 0))
 "))
-        iv:StrView (string-as-view (addr-of ir))
+        iv:StrView (string-as-view &ir)
         l:StrView (try (line-with iv "call i32 (ptr, ...) @printf")))
     (try (check-match l "*i32 %*, i64 %*, double %*, i32 %*"))
-    (drop (addr-of ir))))
+    (drop &ir)))
 
 ; ---------------------------------------------------------------------------
 ; Colon chains that overshoot a template's arity (container-type-sugar.md §1.2)
@@ -689,13 +689,13 @@ map=2
 (import-use hashmap)
 (import-use node)
 " body "\n(defn main ():i32 (return 0))\n")
-        p:String (try (test-write-file "t.nuc" (string-as-view (addr-of src))))
-        pv:StrView (string-as-view (addr-of p))
+        p:String (try (test-write-file "t.nuc" (string-as-view &src)))
+        pv:StrView (string-as-view &p)
         c:Compiled (try (compile-path pv)))
-    (try (check-error-at (addr-of c 'diags) pv 4 needle))
-    (drop (addr-of c))
-    (drop (addr-of p))
-    (drop (addr-of src))
+    (try (check-error-at (ref c 'diags) pv 4 needle))
+    (drop &c)
+    (drop &p)
+    (drop &src)
     (return (ok))))
 
 ; The three silent rows of §1.2, each naming the template. Bare `ref` is the
@@ -740,16 +740,16 @@ map=2
   (return 0))
 ")
     (let (ir:String (try (source-ir src))
-          iv:StrView (string-as-view (addr-of ir)))
+          iv:StrView (string-as-view &ir))
       (try (check-match iv "define i32 @ca(*"))
       (try (check-match iv "define i32 @cb(*"))
       (try (check-match iv "define i32 @cc(*"))
       (try (check-match iv "define i32 @cd(*"))
       (try (check-match iv "define i32 @ce(*"))
-      (drop (addr-of ir)))
+      (drop &ir))
     (let (out:String (try (build-run-source src)))
-      (try (check-eq (string-as-view (addr-of out)) "2 1\n"))
-      (drop (addr-of out)))))
+      (try (check-eq (string-as-view &out) "2 1\n"))
+      (drop &out))))
 
 ; The fuse and the list form are two spellings of one type, not two types:
 ; asserted as IR equality rather than as a claim (the §3.11 convention). Both
@@ -763,9 +763,9 @@ map=2
 (import-use coll)
 (defn t (m:(ref (HashMap CStr i32))):i64 (return (as i64 (count m))))
 ")))
-    (try (check-golden (string-as-view (addr-of a)) (string-as-view (addr-of b))))
-    (drop (addr-of a))
-    (drop (addr-of b))))
+    (try (check-golden (string-as-view &a) (string-as-view &b)))
+    (drop &a)
+    (drop &b)))
 
 ; ---------------------------------------------------------------------------
 ; Type aliases (container-type-sugar.md §3)
@@ -791,8 +791,8 @@ map=2
       (printf \"%ld %ld\\n\" (size t) gv)))
   (return 0))
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "2 7\n"))
-    (drop (addr-of out))))
+    (try (check-eq (string-as-view &out) "2 7\n"))
+    (drop &out)))
 
 ; Transparency (§3.2) is the load-bearing claim: an alias is a second SPELLING,
 ; not a second type, so the IR must be identical to the spelled-out program.
@@ -808,9 +808,9 @@ map=2
 (import-use coll)
 (defn tally (m:(ref (HashMap CStr i32))):i64 (return (as i64 (count m))))
 ")))
-    (try (check-golden (string-as-view (addr-of a)) (string-as-view (addr-of b))))
-    (drop (addr-of a))
-    (drop (addr-of b))))
+    (try (check-golden (string-as-view &a) (string-as-view &b)))
+    (drop &a)
+    (drop &b)))
 
 ; Composition (§3.3): the ?/! sigils, pointer-kind chains, template arguments,
 ; alias-of-alias, and a forward reference all route through the two resolution
@@ -832,8 +832,8 @@ map=2
     (printf \"%d %d %d\\n\" (viaq p) (chain p) (fwd 5)))
   (return 0))
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "3 4 5\n"))
-    (drop (addr-of out))))
+    (try (check-eq (string-as-view &out) "3 4 5\n"))
+    (drop &out)))
 
 ; A colliding alias would be DEAD, not merely ambiguous -- `parse-type-name`
 ; probes aliases last -- so every collision is refused rather than silently
@@ -884,20 +884,20 @@ map=2
         lib:String (try (test-write-file "alib.nuc" "(deftype Count i64)
 (defn twice (n:Count):Count (return (* n 2)))
 "))
-        nuch:String (try (emit-for-file "" "--emit-nuch" (string-as-view (addr-of lib))))
-        hp:String (try (test-write-file "alib.nuch" (string-as-view (addr-of nuch))))
+        nuch:String (try (emit-for-file "" "--emit-nuch" (string-as-view &lib)))
+        hp:String (try (test-write-file "alib.nuch" (string-as-view &nuch)))
         use:String (try (test-write-file "use.nuc" "(import-use \"stdio.h\")
 (import-use alib)
 (defn main ():i32 (printf \"%ld\\n\" (twice 21)) (return 0))
 "))
-        out:String (try (build-run-file dir "" (string-as-view (addr-of use)))))
-    (try (check-contains (string-as-view (addr-of nuch)) "(deftype Count i64)"))
-    (try (check-eq (string-as-view (addr-of out)) "42\n"))
-    (drop (addr-of out))
-    (drop (addr-of use))
-    (drop (addr-of hp))
-    (drop (addr-of nuch))
-    (drop (addr-of lib))))
+        out:String (try (build-run-file dir "" (string-as-view &use))))
+    (try (check-contains (string-as-view &nuch) "(deftype Count i64)"))
+    (try (check-eq (string-as-view &out) "42\n"))
+    (drop &out)
+    (drop &use)
+    (drop &hp)
+    (drop &nuch)
+    (drop &lib)))
 
 ; Privacy here is NAMESPACE-level, as it is for the other four private type
 ; definers, so the check needs a namespaced library and a consumer outside it --
@@ -911,8 +911,8 @@ map=2
 (defn- t16-inside (n:T16Hidden):T16Hidden (return (* n 3)))
 (defn t16-pub (n:T16Public):T16Public (return (t16-inside n)))
 "))
-        nuch:String (try (emit-for-file dir "--emit-nuch" (string-as-view (addr-of lib))))
-        hp:String (try (test-write-file "tplib.nuch" (string-as-view (addr-of nuch))))
+        nuch:String (try (emit-for-file dir "--emit-nuch" (string-as-view &lib)))
+        hp:String (try (test-write-file "tplib.nuch" (string-as-view &nuch)))
         outp:String (try (test-write-file "tp-out.nuc" "(import-prefixed tplib tp)
 (defn t16-take (n:tp/T16Hidden):i64 (return n))
 (defn main ():i32 (return 0))
@@ -921,19 +921,19 @@ map=2
 (defn t16-take (n:tp/T16Public):i64 (return n))
 (defn main ():i32 (return 0))
 "))
-        bad:Compiled (try (compile-path-in dir (string-as-view (addr-of outp))))
-        good:Compiled (try (compile-path-in dir (string-as-view (addr-of pubp)))))
-    (try (check-contains (string-as-view (addr-of bad 'raw)) "T16Hidden"))
-    (try (check-empty (string-as-view (addr-of good 'raw))))
-    (try (check-not-contains (string-as-view (addr-of nuch)) "T16Hidden"))
-    (try (check-contains (string-as-view (addr-of nuch)) "T16Public"))
-    (drop (addr-of good))
-    (drop (addr-of bad))
-    (drop (addr-of pubp))
-    (drop (addr-of outp))
-    (drop (addr-of hp))
-    (drop (addr-of nuch))
-    (drop (addr-of lib))))
+        bad:Compiled (try (compile-path-in dir (string-as-view &outp)))
+        good:Compiled (try (compile-path-in dir (string-as-view &pubp))))
+    (try (check-contains (string-as-view (ref bad 'raw)) "T16Hidden"))
+    (try (check-empty (string-as-view (ref good 'raw))))
+    (try (check-not-contains (string-as-view &nuch) "T16Hidden"))
+    (try (check-contains (string-as-view &nuch) "T16Public"))
+    (drop &good)
+    (drop &bad)
+    (drop &pubp)
+    (drop &outp)
+    (drop &hp)
+    (drop &nuch)
+    (drop &lib)))
 
 ; The C header must show the alias's BODY. It has no C spelling of its own, and
 ; `type-node-to-c` resolved names by spelling -- so the alias name leaked out as
@@ -950,9 +950,9 @@ map=2
 (defn twice (n:i64):i64 (return (* n 2)))
 (defn getx (p:(ref Pt)):i32 (return (p 'x)))
 ")))
-    (try (check-golden (string-as-view (addr-of a)) (string-as-view (addr-of b))))
-    (drop (addr-of a))
-    (drop (addr-of b))))
+    (try (check-golden (string-as-view &a) (string-as-view &b)))
+    (drop &a)
+    (drop &b)))
 
 ; The REPL has its own top-level form chain; without an arm there `deftype` was
 ; `unknown: deftype` and every later use of the name failed too.
@@ -961,8 +961,8 @@ map=2
 (defn d (n:C):C (return (* n 2)))
 (d 21)
 ")))
-    (try (check-contains (string-as-view (addr-of out)) "42"))
-    (drop (addr-of out))))
+    (try (check-contains (string-as-view &out) "42"))
+    (drop &out)))
 
 ; ---------------------------------------------------------------------------
 ; Parametric type aliases (container-type-sugar.md §3.7)
@@ -994,8 +994,8 @@ map=2
     (printf \"%ld %ld %d\\n\" (total v) (look m) (getx p)))
   (return 0))
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "2 1 9\n"))
-    (drop (addr-of out))))
+    (try (check-eq (string-as-view &out) "2 1 9\n"))
+    (drop &out)))
 
 ; §3.7's stated hard case: a generic template whose RECEIVER is an alias
 ; application, instantiated at two element types. This is the one that needed
@@ -1015,8 +1015,8 @@ map=2
     (printf \"%d %s\\n\" (second a) (second b)))
   (return 0))
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "20 y\n"))
-    (drop (addr-of out))))
+    (try (check-eq (string-as-view &out) "20 y\n"))
+    (drop &out)))
 
 ; Transparency, including the generic `t3`, whose stamped instance must mangle
 ; from the expansion and not from the alias name.
@@ -1039,9 +1039,9 @@ map=2
 (defn t3 (v:(ref (Vector T))):i64 (return (as i64 (count v))))
 (defn use ():i64 (return (t3 (unsafe/cast (ref (Vector CStr)) null))))
 ")))
-    (try (check-golden (string-as-view (addr-of a)) (string-as-view (addr-of b))))
-    (drop (addr-of a))
-    (drop (addr-of b))))
+    (try (check-golden (string-as-view &a) (string-as-view &b)))
+    (drop &a)
+    (drop &b)))
 
 ; Arity in both directions, a bare application, and the colon-body limit. A
 ; cycle must be caught on the PATTERN path too: the depth guard in
@@ -1081,36 +1081,36 @@ map=2
 (deftype (Vec T) (ref (Vector T)))
 (defn plen (v:(Vec i32)):i64 (return (as i64 (count v))))
 "))
-        libv:StrView (string-as-view (addr-of lib))
+        libv:StrView (string-as-view &lib)
         nuch:String (try (emit-for-file "" "--emit-nuch" libv))
-        hp:String (try (test-write-file "plib.nuch" (string-as-view (addr-of nuch))))
+        hp:String (try (test-write-file "plib.nuch" (string-as-view &nuch)))
         dir:StrView (try (test-scratch))
         obj:String (str dir "/plib.o")
         usesrc:String (str "(import-use \"stdio.h\")
 (import-use vector)
 (import-use coll)
-(import-use \"" (string-as-view (addr-of hp)) "\")
+(import-use \"" (string-as-view &hp) "\")
 (defn main ():i32
   (with (v:(ref (Vector i32)) (alloca (Vector i32)))
     (vector-init v) (conj v 1) (conj v 2) (conj v 3)
     (printf \"%ld\\n\" (plen v)))
   (return 0))
 ")
-        use:String (try (test-write-file "use.nuc" (string-as-view (addr-of usesrc)))))
-    (try (check-contains (string-as-view (addr-of nuch))
+        use:String (try (test-write-file "use.nuc" (string-as-view &usesrc))))
+    (try (check-contains (string-as-view &nuch)
                          "(deftype (Vec T) (ref (Vector T)))"))
-    (try (compile-object libv (string-as-view (addr-of obj))))
-    (let (linkarg:String (str "--link-arg=" (string-as-view (addr-of obj)))
-          out:String (try (build-run-file "" (string-as-view (addr-of linkarg))
-                                          (string-as-view (addr-of use)))))
-      (try (check-eq (string-as-view (addr-of out)) "3\n"))
-      (drop (addr-of out))
-      (drop (addr-of linkarg)))
-    (drop (addr-of use))
-    (drop (addr-of obj))
-    (drop (addr-of hp))
-    (drop (addr-of nuch))
-    (drop (addr-of lib))))
+    (try (compile-object libv (string-as-view &obj)))
+    (let (linkarg:String (str "--link-arg=" (string-as-view &obj))
+          out:String (try (build-run-file "" (string-as-view &linkarg)
+                                          (string-as-view &use))))
+      (try (check-eq (string-as-view &out) "3\n"))
+      (drop &out)
+      (drop &linkarg))
+    (drop &use)
+    (drop &obj)
+    (drop &hp)
+    (drop &nuch)
+    (drop &lib)))
 
 ; The C header has no spelling for an alias, parametric or not, so it must show
 ; the expansion.
@@ -1124,17 +1124,17 @@ map=2
 (import-use coll)
 (defn plen (v:(ref (Vector i32))):i64 (return (as i64 (count v))))
 ")))
-    (try (check-golden (string-as-view (addr-of a)) (string-as-view (addr-of b))))
-    (drop (addr-of a))
-    (drop (addr-of b))))
+    (try (check-golden (string-as-view &a) (string-as-view &b)))
+    (drop &a)
+    (drop &b)))
 
 (deftest s16-deftype-parametric-repl
   (let (out:String (try (repl-session "(deftype (Pair T) (ptr T))
 (defn takes (p:(Pair i32)):i32 (return (aref p 0)))
 (let (a:ptr:i32 (array i32 41 42)) (takes a))
 ")))
-    (try (check-contains (string-as-view (addr-of out)) "41"))
-    (drop (addr-of out))))
+    (try (check-contains (string-as-view &out) "41"))
+    (drop &out)))
 
 ; ---------------------------------------------------------------------------
 ; Types stamped inside a `compile-time` body (Stage 16 D9, repl-libraries.md §3.3)
@@ -1155,31 +1155,31 @@ map=2
 ; not a REPL one -- the design note framed it as REPL-only.
 (deftest s16-d9-ct-body-stamp
   (let (c:Compiled (try (compile-source (d9-ct-stamp-src)))
-        raw:StrView (string-as-view (addr-of c 'raw)))
+        raw:StrView (string-as-view (ref c 'raw)))
     (try (check-contains raw "d9 ct some 7"))
     (try (check-not-contains raw "IR parse error"))
-    (drop (addr-of c))))
+    (drop &c)))
 
 ; The drain that fixes the above writes into the PROGRAM's type buffer, and the
 ; final drain runs over the same queue -- so the line must arrive exactly once.
 ; A count, not a presence test: a double emit is what a re-drain gets wrong.
 (deftest s16-d9-ct-type-once
   (let (ir:String (try (source-ir (d9-ct-stamp-src))))
-    (try (check-eq-int (count-lines-with-prefix (string-as-view (addr-of ir))
+    (try (check-eq-int (count-lines-with-prefix (string-as-view &ir)
                                                 "%Maybe.i32 = type")
                        1 "%Maybe.i32 definitions"))
-    (drop (addr-of ir))))
+    (drop &ir)))
 
 ; `emit-defstruct` queues every StructDef it writes, so the shared drain sees
 ; types whose line is already in the buffer. `sdef-in-module` is what keeps that
 ; inert; assert it over a program with several structs.
 (deftest s16-d9-no-duplicate-type-lines
   (let (c:Compiled (try (compile-path "examples/struct.nuc"))
-        ir:StrView (string-as-view (addr-of c 'ir))
+        ir:StrView (string-as-view (ref c 'ir))
         dup:StrView (duplicate-type-name ir))
     (try (check-non-empty ir))
     (when (not (= dup "")) (fail! "type defined twice: " dup))
-    (drop (addr-of c))))
+    (drop &c)))
 
 ; The ruling: a `defstruct` inside a `compile-time` body defines a PROGRAM type,
 ; so its line goes to the module's own type buffer rather than the CT module's.
@@ -1196,14 +1196,14 @@ map=2
 (defn main ():i32 (printf \"%d\\n\" (d9-sum 3 4)) (return 0))
 ")
     (let (c:Compiled (try (compile-source src)))
-      (try (check-not-contains (string-as-view (addr-of c 'raw)) "IR parse error"))
-      (try (check-eq-int (count-lines-with-prefix (string-as-view (addr-of c 'ir))
+      (try (check-not-contains (string-as-view (ref c 'raw)) "IR parse error"))
+      (try (check-eq-int (count-lines-with-prefix (string-as-view (ref c 'ir))
                                                   "%D9P = type")
                          1 "%D9P definitions"))
-      (drop (addr-of c)))
+      (drop &c))
     (let (out:String (try (build-run-source src)))
-      (try (check-eq (string-as-view (addr-of out)) "7\n"))
-      (drop (addr-of out)))))
+      (try (check-eq (string-as-view &out) "7\n"))
+      (drop &out))))
 
 ; D9 residue: the same type named in a SIGNATURE. This failed EARLIER -- before
 ; any emission -- because `prescan-struct-names` was a flat walk over the
@@ -1219,15 +1219,15 @@ map=2
 (defn d9-byref (p:(ref D9V)):i32 (return (* (p 'x) (p 'y))))
 (defn main ():i32
   (let (q:D9V (D9V 3 4))
-    (printf \"%d %d\\n\" (d9-byval q) (d9-byref (as ref:D9V (addr-of q)))))
+    (printf \"%d %d\\n\" (d9-byval q) (d9-byref (as ref:D9V &q))))
   (return 0))
 ")
     (let (ir:String (try (source-ir src)))
-      (try (check-match (string-as-view (addr-of ir)) "define i32 @d9-byval(i64 *"))
-      (drop (addr-of ir)))
+      (try (check-match (string-as-view &ir) "define i32 @d9-byval(i64 *"))
+      (drop &ir))
     (let (out:String (try (build-run-source src)))
-      (try (check-eq (string-as-view (addr-of out)) "7 12\n"))
-      (drop (addr-of out)))))
+      (try (check-eq (string-as-view &out) "7 12\n"))
+      (drop &out))))
 
 ; The same, one level in: `emit-compile-time` runs its own defn-signature
 ; prescan BEFORE its body-form loop, so a `defn` in the block naming a
@@ -1242,10 +1242,10 @@ map=2
     (printf \"d9 ct inner %d\\n\" (d9-ct-sum (as ref:D9Q q)))))
 (defn main ():i32 (return 0))
 "))
-        raw:StrView (string-as-view (addr-of c 'raw)))
+        raw:StrView (string-as-view (ref c 'raw)))
     (try (check-contains raw "d9 ct inner 11"))
     (try (check-not-contains raw "IR parse error"))
-    (drop (addr-of c))))
+    (drop &c)))
 
 ; The descent mirrors `emit-compile-time`'s SKIPS, not just its walk. That loop
 ; has an arm for `defstruct` and for nothing else this prescan registers, so a
@@ -1294,9 +1294,9 @@ map=2
 (defn tot (v:ref:(Vector ref:Pt)):i32
   (let (s:i32 0) (dotimes (i (count v)) (set! s (+ s (s1 (v i))))) (return s)))
 ")))
-    (try (check-golden (string-as-view (addr-of a)) (string-as-view (addr-of b))))
-    (drop (addr-of a))
-    (drop (addr-of b))))
+    (try (check-golden (string-as-view &a) (string-as-view &b)))
+    (drop &a)
+    (drop &b)))
 
 ; The sigil is only a *leading* `&`, so a mid-token `&` (as in `a&b`, and in the
 ; compiler) keeps its name, and the two spellings compose in one file.
@@ -1304,16 +1304,16 @@ map=2
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
 (defstruct Pt x:i32 y:i32)
 (defn bump (p:&Pt):i32
-  (let (xp:&i32 (addr-of p 'x))
+  (let (xp:&i32 (ref p 'x))
     (set! (deref xp) (+ (deref xp) 1))
     (return (p 'x))))
 (defn main ():i32
-  (let (a:Pt (Pt 1 2) ap:&Pt (addr-of a))
+  (let (a:Pt (Pt 1 2) ap:&Pt &a)
     (printf \"%d\\n\" (bump ap))
     (return 0)))
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "2\n"))
-    (drop (addr-of out))))
+    (try (check-eq (string-as-view &out) "2\n"))
+    (drop &out)))
 
 ; `&T` IS `(ref T)`, so it carries `ref`'s non-null obligation, and the
 ; whitespace near-miss is the same reader error `name: (T)` gets.
@@ -1334,47 +1334,47 @@ map=2
 ; all, or an importer re-reads a form the exporter never meant.
 (deftest s16-ref-sigil-nuch-roundtrip
   (let (libdir:String (try (test-scratch-sub "lib"))
-        dirv:StrView (string-as-view (addr-of libdir))
+        dirv:StrView (string-as-view &libdir)
         src:String (try (test-write-file "siglib.nuc" "(defstruct Pt x:i32 y:i32)
 (defn pt-sum (p:&Pt):i32 (return (+ (p 'x) (p 'y))))
 (defn pt-id (p:&Pt):&Pt (return p))
 "))
-        nuch:String (try (emit-for-file "" "--emit-nuch" (string-as-view (addr-of src))))
-        hp:String (try (test-write-file "lib/siglib.nuch" (string-as-view (addr-of nuch))))
+        nuch:String (try (emit-for-file "" "--emit-nuch" (string-as-view &src)))
+        hp:String (try (test-write-file "lib/siglib.nuch" (string-as-view &nuch)))
         use:String (try (test-write-file "siguse.nuc" "(import-use \"stdio.h\")
 (import-use siglib)
 (defn main ():i32
-  (let (a:Pt (Pt 4 5) ap:&Pt (addr-of a))
+  (let (a:Pt (Pt 4 5) ap:&Pt &a)
     (printf \"%d\\n\" (pt-sum (pt-id ap)))
     (return 0)))
 "))
-        nv:StrView (string-as-view (addr-of nuch)))
+        nv:StrView (string-as-view &nuch))
     (try (check-contains nv "((p (ref Pt)))"))
     (try (check-contains nv ":ref:Pt"))
     (try (check-not-contains nv "&"))
-    (let (out:String (try (build-run-file dirv "" (string-as-view (addr-of use)))))
-      (try (check-eq (string-as-view (addr-of out)) "9\n"))
-      (drop (addr-of out)))
-    (drop (addr-of use))
-    (drop (addr-of hp))
-    (drop (addr-of nuch))
-    (drop (addr-of src))
-    (drop (addr-of libdir))))
+    (let (out:String (try (build-run-file dirv "" (string-as-view &use))))
+      (try (check-eq (string-as-view &out) "9\n"))
+      (drop &out))
+    (drop &use)
+    (drop &hp)
+    (drop &nuch)
+    (drop &src)
+    (drop &libdir)))
 
 ; A `&` that starts a token is the address-of reader macro, and it is sugar in
-; the same strict sense: identical IR to the `(addr-of x)` it stands for.
-(deftest s16-ref-sigil-addr-of-ir-identical
+; the same strict sense: identical IR to the `(ref x)` it reads as.
+(deftest s16-ref-sigil-ref-ir-identical
   (let (a:String (try (source-ir "(defstruct Pt x:i32 y:i32)
 (defn s1 (p:&Pt):i32 (return (+ (p 'x) (p 'y))))
 (defn go ():i32 (let (a:Pt (Pt 1 2)) (return (s1 &a))))
 "))
         b:String (try (source-ir "(defstruct Pt x:i32 y:i32)
 (defn s1 (p:&Pt):i32 (return (+ (p 'x) (p 'y))))
-(defn go ():i32 (let (a:Pt (Pt 1 2)) (return (s1 (addr-of a)))))
+(defn go ():i32 (let (a:Pt (Pt 1 2)) (return (s1 (ref a)))))
 ")))
-    (try (check-golden (string-as-view (addr-of a)) (string-as-view (addr-of b))))
-    (drop (addr-of a))
-    (drop (addr-of b))))
+    (try (check-golden (string-as-view &a) (string-as-view &b)))
+    (drop &a)
+    (drop &b)))
 
 ; The two meanings are split by token position, not by context, so they have to
 ; compose: `(as &Pt &p)` is a type and an operator in one form, and a standalone
@@ -1389,8 +1389,8 @@ map=2
     (printf \"%d %d %d\\n\" ((as &Pt &a) 'x) (unsafe/cast i32 (sizeof &Pt)) ((deref &ap) 'y))
     (return 0)))
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "3 8 4\n"))
-    (drop (addr-of out))))
+    (try (check-eq (string-as-view &out) "3 8 4\n"))
+    (drop &out)))
 
 ; ---------------------------------------------------------------------------
 ; `:noreturn` / `:returns-twice` (Stage 16 §DA)
@@ -1410,7 +1410,7 @@ map=2
 (defn main ():i32 (printf \"%d\\n\" (sj null)) (return 0))
 ")
     (let (ir:String (try (source-ir src))
-          iv:StrView (string-as-view (addr-of ir)))
+          iv:StrView (string-as-view &ir))
       ; Anchored at the start of the line, since a `define` also carries its
       ; `section`.
       (try (check-match iv "define i32 @sj(ptr %b.arg) returns_twice *"))
@@ -1419,21 +1419,21 @@ map=2
       ; A function with no attribute must gain none.
       (try (check-not-contains iv "define i32 @plain(i32 %x.arg) noreturn"))
       (try (check-not-contains iv "define i32 @plain(i32 %x.arg) returns_twice"))
-      (drop (addr-of ir)))
+      (drop &ir))
     (let (out:String (try (build-run-source src)))
-      (try (check-eq (string-as-view (addr-of out)) "0\n"))
-      (drop (addr-of out))))
+      (try (check-eq (string-as-view &out) "0\n"))
+      (drop &out)))
   ; 2. A top-level `(declare … :noreturn)` still drives `terminate-after-noreturn`
   ;    (the one Nucleus-side consumer), and `:returns-twice` rides the declare.
   (let (ir:String (try (source-ir "(declare my_abort ():void :noreturn)
 (declare my_sj (b:ptr):i32 :returns-twice)
 (defn main ():i32 (my_abort) (return 0))
 "))
-        iv:StrView (string-as-view (addr-of ir)))
+        iv:StrView (string-as-view &ir))
     (try (check-line iv "declare void @my_abort() noreturn"))
     (try (check-line iv "declare i32 @my_sj(ptr) returns_twice"))
     (try (check-line iv "  unreachable"))
-    (drop (addr-of ir)))
+    (drop &ir))
   ; 3. `.nuch` round-trip, solitary AND overloaded -- the exporter and the two
   ;    importers are three separate dispatch sites, and a missing one is silent.
   ;    `resolve-import` tries `.nuc` everywhere before any `.nuch`, so the source
@@ -1446,28 +1446,28 @@ map=2
 (defn sj (b:ptr n:i32):i32 :returns-twice (return n))
 (defn nope (m:CStr):void :noreturn (printf \"%s\\n\" m) (exit 3))
 "))
-        nuch:String (try (emit-for-file "" "--emit-nuch" (string-as-view (addr-of lib))))
-        hp:String (try (test-write-file "lib/atlib.nuch" (string-as-view (addr-of nuch))))
+        nuch:String (try (emit-for-file "" "--emit-nuch" (string-as-view &lib)))
+        hp:String (try (test-write-file "lib/atlib.nuch" (string-as-view &nuch)))
         use:String (try (test-write-file "u.nuc" "(import-use \"stdio.h\")
 (import-use atlib)
 (defn main ():i32 (printf \"%d\\n\" (sj null)) (nope \"bye\") (return 0))
 "))
-        nv:StrView (string-as-view (addr-of nuch)))
+        nv:StrView (string-as-view &nuch))
     (try (check-contains nv "(declare nope ((m CStr)) :void :noreturn)"))
     (try (check-contains nv ":i32 :returns-twice)"))
-    (let (c:Compiled (try (compile-path-in (string-as-view (addr-of libdir))
-                                           (string-as-view (addr-of use))))
-          iv:StrView (string-as-view (addr-of c 'ir)))
+    (let (c:Compiled (try (compile-path-in (string-as-view &libdir)
+                                           (string-as-view &use)))
+          iv:StrView (string-as-view (ref c 'ir)))
       (try (check-line iv "declare i32 @sj.ptr(ptr) returns_twice"))
       (try (check-line iv "declare i32 @sj.ptr.i32(ptr, i32) returns_twice"))
       (try (check-line iv "declare void @nope(ptr) noreturn"))
-      (drop (addr-of c)))
-    (drop (addr-of use))
-    (drop (addr-of hp))
-    (drop (addr-of nuch))
-    (drop (addr-of lib))
-    (drop (addr-of srcdir))
-    (drop (addr-of libdir)))
+      (drop &c))
+    (drop &use)
+    (drop &hp)
+    (drop &nuch)
+    (drop &lib)
+    (drop &srcdir)
+    (drop &libdir))
   ; 4. The retired bare spellings each name their replacement. Without this they
   ;    fall through as ordinary symbols -- a body expression, or (in a declare) a
   ;    phantom trailing operand -- and fail somewhere unrelated.
@@ -1487,11 +1487,11 @@ map=2
 (defn main ():i32 (printf \"%d\\n\" (if (= (kw) :noreturn) 1 0)) (return 0))
 ")
     (let (ir:String (try (source-ir src)))
-      (try (check-not-match (string-as-view (addr-of ir)) "*@kw(*) noreturn*"))
-      (drop (addr-of ir)))
+      (try (check-not-match (string-as-view &ir) "*@kw(*) noreturn*"))
+      (drop &ir))
     (let (out:String (try (build-run-source src)))
-      (try (check-eq (string-as-view (addr-of out)) "1\n"))
-      (drop (addr-of out)))))
+      (try (check-eq (string-as-view &out) "1\n"))
+      (drop &out))))
 
 ; ---------------------------------------------------------------------------
 ; `import-ct` — a library the program uses only at compile time (Stage 16)
@@ -1502,9 +1502,9 @@ map=2
   (let (ir:String (try (source-ir "(import-ct node)
 (defn main ():i32 (return 0))
 ")))
-    (try (check-eq-int (count-lines-with-prefix (string-as-view (addr-of ir)) "define ")
+    (try (check-eq-int (count-lines-with-prefix (string-as-view &ir) "define ")
                        1 "definitions in the module"))
-    (drop (addr-of ir))))
+    (drop &ir)))
 
 ; The promise is kept at the two kinds of use: the compiler-synthesized one (a
 ; quote lowers to @intern-symbol) and the ordinary one (a direct call).
@@ -1526,11 +1526,11 @@ map=2
   (let (p:String (try (test-write-file "t.nuc" "(import-ct node)
 (defn main ():i32 (return (node-len null)))
 "))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         c:Compiled (try (compile-path pv)))
-    (try (check-error-at (addr-of c 'diags) pv 2 "imported compile-time-only"))
-    (drop (addr-of c))
-    (drop (addr-of p))))
+    (try (check-error-at (ref c 'diags) pv 2 "imported compile-time-only"))
+    (drop &c)
+    (drop &p)))
 
 ; Order independence. `lib/error.nuc` does `(import-ct node)`, so a program that
 ; uses error handling AND quotes must get the runtime either way round. Getting
@@ -1540,16 +1540,16 @@ map=2
 (import-use node)
 (defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))
 ")))
-    (try (check-match (string-as-view (addr-of ir)) "define *@intern-symbol(*"))
-    (drop (addr-of ir))))
+    (try (check-match (string-as-view &ir) "define *@intern-symbol(*"))
+    (drop &ir)))
 
 (deftest s16-import-ct-real-import-wins-real-first
   (let (ir:String (try (source-ir "(import-use node)
 (import-use error)
 (defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))
 ")))
-    (try (check-match (string-as-view (addr-of ir)) "define *@intern-symbol(*"))
-    (drop (addr-of ir))))
+    (try (check-match (string-as-view &ir) "define *@intern-symbol(*"))
+    (drop &ir)))
 
 ; The unit-level rule reaches THROUGH a ct-imported library: `ctlib` is
 ; compile-time-only, but the `vector` it pulls in is one the program itself
@@ -1570,13 +1570,13 @@ map=2
     (printf \"%d\\n\" (unsafe/cast i32 (count v))))
   (return 0))
 "))
-        out:String (try (build-run-file (string-as-view (addr-of libdir)) ""
-                                        (string-as-view (addr-of use)))))
-    (try (check-eq (string-as-view (addr-of out)) "3\n"))
-    (drop (addr-of out))
-    (drop (addr-of use))
-    (drop (addr-of lib))
-    (drop (addr-of libdir))))
+        out:String (try (build-run-file (string-as-view &libdir) ""
+                                        (string-as-view &use))))
+    (try (check-eq (string-as-view &out) "3\n"))
+    (drop &out)
+    (drop &use)
+    (drop &lib)
+    (drop &libdir)))
 
 ; What `import-ct` is FOR: the compile-time surface is really registered, so a
 ; macro body may call the library's functions. `with-handler` (lib/error) is the
@@ -1594,15 +1594,15 @@ map=2
   (return 0))
 ")
     (let (out:String (try (build-run-source src)))
-      (try (check-eq (string-as-view (addr-of out)) "7\n"))
-      (drop (addr-of out)))
+      (try (check-eq (string-as-view &out) "7\n"))
+      (drop &out))
     (let (ir:String (try (source-ir src))
-          iv:StrView (string-as-view (addr-of ir)))
+          iv:StrView (string-as-view &ir))
       (try (check-not-match iv "define *@alloc-node(*"))
       (try (check-not-match iv "define *@make-cell(*"))
       (try (check-not-match iv "define *@intern-symbol(*"))
       (try (check-not-match iv "define *@arena-alloc(*"))
-      (drop (addr-of ir)))))
+      (drop &ir))))
 
 ; Arity, so a typo is a diagnostic rather than a silent no-op.
 (deftest s16-import-ct-arity
@@ -1645,8 +1645,8 @@ map=2
     (sum 1 2 3 4) (maxv 3 9) (minv 3 9) (greet 1) (greet 1 2) (twice 5))
   (return (kw-default 0)))
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "10 9 3 8 3 10\n"))
-    (drop (addr-of out))))
+    (try (check-eq (string-as-view &out) "10 9 3 8 3 10\n"))
+    (drop &out)))
 
 ; Every retired `&x` spelling names its replacement, from the definer that owns
 ; it. Without this each one falls through as an ordinary symbol and surfaces as
@@ -1697,25 +1697,25 @@ map=2
 (defn mk-max (a:T b:T :where (Ord2 T)):T (return (if (less2 a b) b a)))
 (defmacro mk-first (x :rest r) `~x)
 "))
-        nuch:String (try (emit-for-file "" "--emit-nuch" (string-as-view (addr-of lib))))
-        hp:String (try (test-write-file "lib/mklib.nuch" (string-as-view (addr-of nuch))))
+        nuch:String (try (emit-for-file "" "--emit-nuch" (string-as-view &lib)))
+        hp:String (try (test-write-file "lib/mklib.nuch" (string-as-view &nuch)))
         use:String (try (test-write-file "use.nuc" "(import-use \"stdio.h\")
 (import-use mklib)
 (defn main ():i32 (printf \"%d\\n\" (mk-max 4 11)) (return 0))
 "))
-        nv:StrView (string-as-view (addr-of nuch)))
+        nv:StrView (string-as-view &nuch))
     (try (check-contains nv ":where (Ord2 T)"))
     (try (check-contains nv "(x :rest r)"))
     (try (check-not-contains nv "&"))
-    (let (out:String (try (build-run-file (string-as-view (addr-of libdir)) ""
-                                          (string-as-view (addr-of use)))))
-      (try (check-eq (string-as-view (addr-of out)) "11\n"))
-      (drop (addr-of out)))
-    (drop (addr-of use))
-    (drop (addr-of hp))
-    (drop (addr-of nuch))
-    (drop (addr-of lib))
-    (drop (addr-of libdir))))
+    (let (out:String (try (build-run-file (string-as-view &libdir) ""
+                                          (string-as-view &use))))
+      (try (check-eq (string-as-view &out) "11\n"))
+      (drop &out))
+    (drop &use)
+    (drop &hp)
+    (drop &nuch)
+    (drop &lib)
+    (drop &libdir)))
 
 ; ---------------------------------------------------------------------------
 ; `macrolet` (macrolet.md)
@@ -1783,7 +1783,7 @@ map=2
 (defstruct Pair x:i64 y:i64)
 
 (defn take6 (p:Pair q:Pair b:Big n:i32 m:i32):i64
-  (let (pp:ptr:Pair (addr-of p) qq:ptr:Pair (addr-of q) bb:ptr:Big (addr-of b))
+  (let (pp:ptr:Pair &p qq:ptr:Pair &q bb:ptr:Big &b)
     (_+ (_+ (pp 'x) (qq 'y)) (_+ (bb 'c) (as i64 (_+ n m))))))
 
 (defn ml-argpos ():i64
@@ -2237,9 +2237,9 @@ map=2
     ; so the mangled spelling is stable. N4's mangling is also why §5.6's
     ; `weak_odr` collision worry cannot arise (L3).
     (let (ir:String (try (source-ir src)))
-      (try (check-line (string-as-view (addr-of ir))
+      (try (check-line (string-as-view &ir)
              "define internal i32 @t_p1__ctm-priv(i32 %n.arg) section \".text.t_p1__ctm-priv\" {"))
-      (drop (addr-of ir))))
+      (drop &ir)))
   (return (ok)))
 
 ; The mode-3 shape in all three of its claims. Three compiles, because the
@@ -2248,22 +2248,22 @@ map=2
                           line:i32):!void
   (try (check-source-exit src 7))
   (let (p:String (try (test-write-file "t.nuc" src))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         needle:String (str verb " '" name
                            "', which is also a symbol exported by the compiler")
         c:Compiled (try (compile-path pv)))
-    (try (check-warning-at (addr-of c 'diags) pv line
-                           (string-as-view (addr-of needle))))
-    (try (check-note-at (addr-of c 'diags) pv line note))
-    (drop (addr-of c))
-    (drop (addr-of needle))
+    (try (check-warning-at (ref c 'diags) pv line
+                           (string-as-view &needle)))
+    (try (check-note-at (ref c 'diags) pv line note))
+    (drop &c)
+    (drop &needle)
     ; `nucleusc-raw`, because the claim is that stderr says NOTHING — which a
     ; sexp-diagnostics run would also satisfy by emitting no records, but this
     ; way the assertion covers any spelling of the message.
     (let (r:Ran (try (nucleusc-raw "--no-warn-ct-shadow" pv)))
-      (try (check-empty (string-as-view (addr-of r 'err))))
-      (drop (addr-of r)))
-    (drop (addr-of p)))
+      (try (check-empty (string-as-view (ref r 'err))))
+      (drop &r))
+    (drop &p))
   (return (ok)))
 
 (defn check-ct-shadow (src:StrView name:StrView line:i32):!void
@@ -2338,11 +2338,11 @@ map=2
 ")))
     ; `nucleusc-raw`: a CT block's stdout is redirected to stderr so it cannot
     ; corrupt the IR, and 42 is not a diagnostic.
-    (let (r:Ran (try (nucleusc-raw "" (string-as-view (addr-of p)))))
+    (let (r:Ran (try (nucleusc-raw "" (string-as-view &p))))
       (try (check (r 'ok?) "a clean compile"))
-      (try (check-eq (string-as-view (addr-of r 'err)) "42\n"))
-      (drop (addr-of r)))
-    (drop (addr-of p)))
+      (try (check-eq (string-as-view (ref r 'err)) "42\n"))
+      (drop &r))
+    (drop &p))
   (return (ok)))
 
 ; L7, the shape L4's one-call probe did not reach: a CT block whose helper
@@ -2355,11 +2355,11 @@ map=2
 (compile-time (printf \"%d\\n\" (fib 10)))
 (defn main ():i32 (return 0))
 ")))
-    (let (r:Ran (try (nucleusc-raw "" (string-as-view (addr-of p)))))
+    (let (r:Ran (try (nucleusc-raw "" (string-as-view &p))))
       (try (check (r 'ok?) "a clean compile"))
-      (try (check-eq (string-as-view (addr-of r 'err)) "55\n"))
-      (drop (addr-of r)))
-    (drop (addr-of p)))
+      (try (check-eq (string-as-view (ref r 'err)) "55\n"))
+      (drop &r))
+    (drop &p))
   (return (ok)))
 
 ; L5's false-positive gate. Each of the four units below reaches
@@ -2407,11 +2407,11 @@ map=2
   (printf \"%d\\n\" (ct-outer 21)))
 (defn main ():i32 (return 0))
 ")))
-    (let (r:Ran (try (nucleusc-raw "" (string-as-view (addr-of p)))))
+    (let (r:Ran (try (nucleusc-raw "" (string-as-view &p))))
       (try (check (r 'ok?) "a clean compile"))
-      (try (check-eq (string-as-view (addr-of r 'err)) "42\n"))
-      (drop (addr-of r)))
-    (drop (addr-of p)))
+      (try (check-eq (string-as-view (ref r 'err)) "42\n"))
+      (drop &r))
+    (drop &p))
   (return (ok)))
 
 ; A macro body may also NAME a program defn rather than call it. That reaches
@@ -2439,7 +2439,7 @@ map=2
 
 ; The sibling with no helper at all. A call records its root at
 ; `macro-jit-ensure-decl`; a global reference has no such site — a read, a
-; `set!`, an `addr-of` and a member GEP each spell `@g` by their own route — so
+; `set!`, a `ref` and a member GEP each spell `@g` by their own route — so
 ; the root comes from the body's own IR text. Before L6 this leaked LLVM's
 ; `use of undefined value '@g-s20k'`.
 (deftest s20-macro-reads-program-global-directly
@@ -2463,11 +2463,11 @@ map=2
 ")
     (try (check-source-exit src 43))
     (let (ir:String (try (source-ir src)))
-      (try (check-line (string-as-view (addr-of ir))
+      (try (check-line (string-as-view &ir)
              "define internal void @__nucleus_init() {"))
-      (try (check-line (string-as-view (addr-of ir))
+      (try (check-line (string-as-view &ir)
              "  store i32 %t1, ptr @g-s20r, align 4"))
-      (drop (addr-of ir))))
+      (drop &ir)))
   (return (ok)))
 
 ; A chain: the mirrored global's initializer reads another global whose own
@@ -2546,11 +2546,11 @@ map=2
 (compile-time (printf \"%d\\n\" g-s20ct))
 (defn main ():i32 (return 0))
 ")))
-    (let (r:Ran (try (nucleusc-raw "" (string-as-view (addr-of p)))))
+    (let (r:Ran (try (nucleusc-raw "" (string-as-view &p))))
       (try (check (r 'ok?) "a clean compile"))
-      (try (check-eq (string-as-view (addr-of r 'err)) "42\n"))
-      (drop (addr-of r)))
-    (drop (addr-of p)))
+      (try (check-eq (string-as-view (ref r 'err)) "42\n"))
+      (drop &r))
+    (drop &p))
   (return (ok)))
 
 ; --- C1/C2: a computed macro argument -----------------------------------------
@@ -2702,7 +2702,7 @@ map=2
 ;
 ; `.` and `.&` are gone and `set!` takes a PLACE. `.` was `_get` verbatim, so
 ; its sites became `get` (or `_get`, where a user override must be bypassed);
-; `.&` became an ARITY OVERLOAD on `addr-of` — 1-arg is a binding's address,
+; `.&` became an ARITY OVERLOAD on `ref` — 1-arg is a binding's address,
 ; 2-arg is a field's, and the two cannot collide because a binding address takes
 ; a bare symbol. `.set!`, `ptr-set!` and `aset!` became places under one `set!`.
 ; Every retired spelling stays RESERVED, so the answer is the replacement rather
@@ -2712,60 +2712,60 @@ map=2
 ; the message alone, which a note at some other location also satisfies.
 (defn check-place-refused (src:StrView line:i32 needle:StrView):!void
   (let (p:String (try (test-write-file "t.nuc" src))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         c:Compiled (try (compile-path pv)))
-    (try (check-error-at (addr-of c 'diags) pv line needle))
-    (drop (addr-of c))
-    (drop (addr-of p)))
+    (try (check-error-at (ref c 'diags) pv line needle))
+    (drop &c)
+    (drop &p))
   (return (ok)))
 
-; The 2-arg `addr-of` covers every shape `.&` did: a plain field, a nested one,
+; The 2-arg `ref` covers every shape `.&` did: a plain field, a nested one,
 ; an array field (which DECAYS to `ptr:elem` — a pointer-to-array is useless), a
 ; union member, and a by-value struct receiver.
-(deftest s16-addr-of-2arg
+(deftest s16-ref-2arg
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
 (defstruct Inner a:i32)
 (defstruct Outer p:Inner cells:(array i32 3) n:i32)
 (defstruct Holder u:(union as-int:i64 as-f:f64))
-(defn by-val (o:Outer):i32 (return (deref (addr-of (addr-of o) 'n))))
+(defn by-val (o:Outer):i32 (return (deref (ref &o 'n))))
 (defn main ():i32
   (let (o:ptr:Outer (alloca Outer)
         h:ptr:Holder (alloca Holder))
-    (set! (deref (addr-of o 'n)) 5)
-    (set! (deref (addr-of (addr-of o 'p) 'a)) 6)
-    (set! (aref (addr-of o 'cells) 1) 7)
-    (set! (deref (addr-of (addr-of h 'u) 'as-int)) 8)
-    (let (c:ptr:i32 (addr-of o 'cells)
-          n:i32 5 q:ptr:i32 (addr-of n))
+    (set! (deref (ref o 'n)) 5)
+    (set! (deref (ref (ref o 'p) 'a)) 6)
+    (set! (aref (ref o 'cells) 1) 7)
+    (set! (deref (ref (ref h 'u) 'as-int)) 8)
+    (let (c:ptr:i32 (ref o 'cells)
+          n:i32 5 q:ptr:i32 &n)
       (printf \"%d %d %d %lld %d %d %d\\n\"
-              (deref (addr-of o 'n)) (deref (addr-of (addr-of o 'p) 'a))
-              (aref c 1) (deref (addr-of (addr-of h 'u) 'as-int))
-              (by-val (deref o)) (deref q) (aref (addr-of o 'cells) 1))))
+              (deref (ref o 'n)) (deref (ref (ref o 'p) 'a))
+              (aref c 1) (deref (ref (ref h 'u) 'as-int))
+              (by-val (deref o)) (deref q) (aref (ref o 'cells) 1))))
   (return 0))
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "5 6 7 8 5 5 7\n"))
-    (drop (addr-of out))))
+    (try (check-eq (string-as-view &out) "5 6 7 8 5 5 7\n"))
+    (drop &out)))
 
 ; `node-type` must split on the same arity the emitter does. Without the mirror
 ; the 2-arg form types as the BINDING's address (`ptr:ptr:Pt`), which only shows
 ; up where the type is load-bearing — an argument position and an annotated
 ; binding, not in the value itself.
-(deftest s16-addr-of-2arg-node-type
+(deftest s16-ref-2arg-node-type
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
 (defstruct Pt x:i32 y:i32)
 (defn takes (q:ptr:i32):i32 (return (deref q)))
 (defn main ():i32
   (let (p:ptr:Pt (alloca Pt))
     (set! (p 'x) 3)
-    (let (q:ptr:i32 (addr-of p 'x))
-      (printf \"%d %d\\n\" (takes (addr-of p 'x)) (deref q))))
+    (let (q:ptr:i32 (ref p 'x))
+      (printf \"%d %d\\n\" (takes (ref p 'x)) (deref q))))
   (return 0))
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "3 3\n"))
-    (drop (addr-of out))))
+    (try (check-eq (string-as-view &out) "3 3\n"))
+    (drop &out)))
 
 ; Both retired spellings answer with the replacement, both stay reserved, and
-; `addr-of`'s own diagnostics name the form the user wrote rather than `.&`.
+; `ref`'s own diagnostics name the form the user wrote rather than `.&`.
 (deftest s16-dot-forms-retired
   (try (check-place-refused "(defstruct Pt x:i32)
 (defn f (p:&Pt):i32 (return (. p 'x)))
@@ -2776,11 +2776,11 @@ map=2
   (try (check-place-refused "(defn . (a:i32):i32 (return a))
 " 1 "'.' already names a special form"))
   (try (check-place-refused "(defstruct Pt x:i32)
-(defn f (p:&Pt):ptr:i32 (return (addr-of p 'z)))
-" 2 "addr-of: no field 'z' on struct 'Pt'"))
+(defn f (p:&Pt):ptr:i32 (return (ref p 'z)))
+" 2 "ref: no field 'z' on struct 'Pt'"))
   (try (check-place-refused "(defstruct Pt x:i32)
-(defn f (p:&Pt):ptr:i32 (return (addr-of p 'x 1)))
-" 2 "addr-of expects 1 or 2 args")))
+(defn f (p:&Pt):ptr:i32 (return (ref p 'x 1)))
+" 2 "ref expects 1 or 2 args")))
 
 ; One program varying one line: a member place in each of its three spellings,
 ; a nested member, a deref, a pointer element and an array-field element.
@@ -2794,8 +2794,8 @@ map=2
   (let (src:String (str "(defstruct Pt x:i32 y:i32)
 (defn f (p:ptr:Pt):i32 " write " (return (_get p 'y)))
 ")
-        ir:String (try (source-ir (string-as-view (addr-of src)))))
-    (drop (addr-of src))
+        ir:String (try (source-ir (string-as-view &src))))
+    (drop &src)
     (return (ok ir))))
 
 (deftest s16-set-places
@@ -2810,28 +2810,28 @@ map=2
     (set! (p 'x) 1)
     (set! (get p 'y) 2)
     (set! (_get p 'y) 3)
-    (set! ((addr-of p 'in) 'a) 4)
-    (set! (deref (addr-of p 'x)) 5)
+    (set! ((ref p 'in) 'a) 4)
+    (set! (deref (ref p 'x)) 5)
     (set! (aref buf 2) 6)
-    (set! (aref (addr-of p 'cells) 1) 9)
+    (set! (aref (ref p 'cells) 1) 9)
     (printf \"%d %d %d %d %d %d\\n\"
-            n (p 'x) (p 'y) ((addr-of p 'in) 'a) (aref buf 2)
-            (aref (addr-of p 'cells) 1)))
+            n (p 'x) (p 'y) ((ref p 'in) 'a) (aref buf 2)
+            (aref (ref p 'cells) 1)))
   (return 0))
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "7 5 3 4 6 9\n"))
-    (drop (addr-of out)))
+    (try (check-eq (string-as-view &out) "7 5 3 4 6 9\n"))
+    (drop &out))
   (let (a:String (try (place-ir "(set! (p 'y) 2)"))
         b:String (try (place-ir "(set! (get p 'y) 2)"))
         c:String (try (place-ir "(set! (_get p 'y) 2)"))
-        d:String (try (place-ir "(set! (deref (addr-of p 'y)) 2)")))
-    (try (check-golden (string-as-view (addr-of b)) (string-as-view (addr-of a))))
-    (try (check-golden (string-as-view (addr-of c)) (string-as-view (addr-of a))))
-    (try (check-golden (string-as-view (addr-of d)) (string-as-view (addr-of a))))
-    (drop (addr-of d))
-    (drop (addr-of c))
-    (drop (addr-of b))
-    (drop (addr-of a))))
+        d:String (try (place-ir "(set! (deref (ref p 'y)) 2)")))
+    (try (check-golden (string-as-view &b) (string-as-view &a)))
+    (try (check-golden (string-as-view &c) (string-as-view &a)))
+    (try (check-golden (string-as-view &d) (string-as-view &a)))
+    (drop &d)
+    (drop &c)
+    (drop &b)
+    (drop &a)))
 
 ; The three retired writers answer with the replacement and stay reserved; a
 ; place that is not assignable is refused by name; and the delegated writers'
@@ -2865,8 +2865,8 @@ map=2
       (printf \"%d\\n\" (+ (invoke f 2) (invoke f 3)))))
   (return 0))
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "7\n"))
-    (drop (addr-of out))))
+    (try (check-eq (string-as-view &out) "7\n"))
+    (drop &out)))
 
 ; A member place whose key is COMPUTED dispatches to a user `set` method on
 ; (recv, key, value), reusing the multimethod machinery rather than a second
@@ -2891,8 +2891,8 @@ map=2
                        (none (printf \"none\\n\")))))
   (return 0))
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "10 99 30\n7 1\n"))
-    (drop (addr-of out))))
+    (try (check-eq (string-as-view &out) "10 99 30\n7 1\n"))
+    (drop &out)))
 
 ; A LITERAL selector is always the field, even on a receiver that HAS a `set`
 ; method — otherwise a collection could no longer write its own fields, which is
@@ -2912,8 +2912,8 @@ map=2
       (printf \"%d %d %d\\n\" r (_get b 'n) (_get b 'hits))))
   (return 0))
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "11 11 1\n"))
-    (drop (addr-of out))))
+    (try (check-eq (string-as-view &out) "11 11 1\n"))
+    (drop &out)))
 
 ; A computed key on a READABLE collection with no `set` method says so. The
 ; field path would answer with a missing-quote note about a non-field.
@@ -2955,8 +2955,8 @@ map=2
 
 (defn check-kwlit (body:StrView needle:StrView):!void
   (let (s:String (kwlit-src body))
-    (try (check-place-refused (string-as-view (addr-of s)) 11 needle))
-    (drop (addr-of s)))
+    (try (check-place-refused (string-as-view &s) 11 needle))
+    (drop &s))
   (return (ok)))
 
 ; A set of `Keyword` will not take a string. The two conflicting types are named
@@ -3015,8 +3015,8 @@ map=2
 
 (defn check-symlit (elems:StrView needle:StrView):!void
   (let (s:String (symlit-src elems))
-    (try (check-place-refused (string-as-view (addr-of s)) 9 needle))
-    (drop (addr-of s)))
+    (try (check-place-refused (string-as-view &s) 9 needle))
+    (drop &s))
   (return (ok)))
 
 (deftest s16-symlit-refused-qlist
@@ -3050,14 +3050,14 @@ map=2
 (import-use hashset)
 (defn main ():i32 (with ((s (ref (HashSet Keyword))) #{:a :b}) 0) 0)
 "))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         c:Compiled (try (compile-path pv)))
-    (try (check-error-at (addr-of c 'diags) pv 6
+    (try (check-error-at (ref c 'diags) pv 6
                          "unknown type: Keyword — not defined anywhere in this compilation unit"))
-    (try (check-note-at (addr-of c 'diags) pv 6
+    (try (check-note-at (ref c 'diags) pv 6
                         "'Keyword' is defined in lib/keyword.nuc, which no import in this unit reaches"))
-    (drop (addr-of c))
-    (drop (addr-of p)))
+    (drop &c)
+    (drop &p))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -3080,8 +3080,8 @@ map=2
   (let (c:Compiled (try (compile-source "(import-use node)
 (defn main ():i32 (let (l:(ref Node) (quote a)) (return 0)))
 ")))
-    (try (check-match (compiled-ir (addr-of c)) "*call ptr @intern-symbol*"))
-    (drop (addr-of c)))
+    (try (check-match (compiled-ir &c) "*call ptr @intern-symbol*"))
+    (drop &c))
   (return (ok)))
 
 ; A quoted LIST stays nullable. If this ever passes, the conditional has been
@@ -3113,15 +3113,15 @@ map=2
 (defn main ():i32
   (let (p:ptr:Pt (alloca Pt))
     (set! (p 'x) 1)
-    (set! (deref (addr-of p 'y)) 2)
+    (set! (deref (ref p 'y)) 2)
     (let (sel:ptr (quote y))
       (printf \"%d %d %d %d\\n\" (_get p 'x) (get p 'y) (p 'x) (p sel))))
   (return 0))
 "))
-        out:String (try (build-run-file "" "" (string-as-view (addr-of p)))))
-    (try (check-eq (string-as-view (addr-of out)) "1 2 1 2\n"))
-    (drop (addr-of out))
-    (drop (addr-of p)))
+        out:String (try (build-run-file "" "" (string-as-view &p))))
+    (try (check-eq (string-as-view &out) "1 2 1 2\n"))
+    (drop &out)
+    (drop &p))
   (return (ok)))
 
 ; A bare symbol is the variable. Unbound, it is refused — and because the
@@ -3141,8 +3141,8 @@ map=2
 (defn f (p:&Pt):i32 (set! (p x) 1) (return 0))
 " 2 ".set!: field name must be a quoted selector -- write 'x"))
   (try (check-place-refused "(defstruct Pt x:i32)
-(defn f (p:&Pt):i32 (let (q:ptr:i32 (addr-of p x)) 0) (return 0))
-" 2 "addr-of: field name must be a quoted selector -- write 'x"))
+(defn f (p:&Pt):i32 (let (q:ptr:i32 (ref p x)) 0) (return 0))
+" 2 "ref: field name must be a quoted selector -- write 'x"))
   (try (check-place-refused "(defstruct Pt x:i32)
 (defn f (p:&Pt):i32 (let (v:i32 (_get p x)) 0) (return 0))
 " 2 "_get: field name must be a quoted selector -- write 'x"))
@@ -3186,11 +3186,11 @@ map=2
 ; else. Absence alone is satisfied by a module that emits nothing at all.
 (deftest s16-prelude-emits-no-node-runtime
   (let (ir:String (try (source-ir (plain-src)))
-        names:String (define-names (string-as-view (addr-of ir))))
-    (try (check-line-set (string-as-view (addr-of names)) "main
+        names:String (define-names (string-as-view &ir)))
+    (try (check-line-set (string-as-view &names) "main
 " "a program that quotes nothing"))
-    (drop (addr-of names))
-    (drop (addr-of ir)))
+    (drop &names)
+    (drop &ir))
   (return (ok)))
 
 ; The premise the design note had to correct: defining a macro costs nothing,
@@ -3199,22 +3199,22 @@ map=2
 (deftest s16-defmacro-costs-no-runtime
   (let (pi:String (try (source-ir (plain-src)))
         mi:String (try (source-ir (macro-src)))
-        pn:String (define-names (string-as-view (addr-of pi)))
-        mn:String (define-names (string-as-view (addr-of mi))))
-    (try (check-line-set (string-as-view (addr-of mn))
-                         (string-as-view (addr-of pn))
+        pn:String (define-names (string-as-view &pi))
+        mn:String (define-names (string-as-view &mi)))
+    (try (check-line-set (string-as-view &mn)
+                         (string-as-view &pn)
                          "defining a macro adds no definition"))
-    (drop (addr-of mn))
-    (drop (addr-of pn))
-    (drop (addr-of mi))
-    (drop (addr-of pi)))
+    (drop &mn)
+    (drop &pn)
+    (drop &mi)
+    (drop &pi))
   (return (ok)))
 
 ; …and it still RUNS, which is the half a definition set cannot see.
 (deftest s16-defmacro-still-expands-without-node
   (let (out:String (try (build-run-source (macro-src))))
-    (try (check-eq (string-as-view (addr-of out)) "42\n"))
-    (drop (addr-of out)))
+    (try (check-eq (string-as-view &out) "42\n"))
+    (drop &out))
   (return (ok)))
 
 ; A quote is a runtime call, so it is refused by NAME rather than left to fail
@@ -3231,9 +3231,9 @@ map=2
   (let (c:Compiled (try (compile-source "(import-use node)
 (defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))
 ")))
-    (try (check-no-errors (addr-of c 'diags)))
-    (try (check-match (compiled-ir (addr-of c)) "*call ptr @intern-symbol(*"))
-    (drop (addr-of c)))
+    (try (check-no-errors (ref c 'diags)))
+    (try (check-match (compiled-ir &c) "*call ptr @intern-symbol(*"))
+    (drop &c))
   (return (ok)))
 
 ; The SECOND emission site, and the one easy to miss: a `:rest` call folds its
@@ -3253,11 +3253,11 @@ map=2
   (let (c:Compiled (try (compile-source "(defn f ((n (raw Node))):i32 (return (n 'kind)))
 (defn main ():i32 (return 0))
 "))
-        iv:StrView (compiled-ir (addr-of c)))
-    (try (check-no-errors (addr-of c 'diags)))
+        iv:StrView (compiled-ir &c))
+    (try (check-no-errors (ref c 'diags)))
     (try (check-match iv "define i32 @f(*"))
     (try (check-not-match iv "*call *"))
-    (drop (addr-of c)))
+    (drop &c))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -3311,8 +3311,8 @@ map=2
     (printf \"%lld\\n\" (takes a)))
   (return 0))
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "1\n"))
-    (drop (addr-of out)))
+    (try (check-eq (string-as-view &out) "1\n"))
+    (drop &out))
   (return (ok)))
 
 ; The rule is about pointees, not templates: two plain structs are the same
@@ -3338,13 +3338,13 @@ map=2
   (try (check-place-refused "(defstruct SA x:i32)
 (defstruct SB y:i64)
 (defvar ga:SA)
-(defvar gp:(ref SB) (addr-of ga))
+(defvar gp:(ref SB) &ga)
 (defn main ():i32 (return 0))
-" 4 "defvar: addr-of: 'ga' has type ptr:SA, which does not match ptr:SB"))
+" 4 "defvar: ref: 'ga' has type ptr:SA, which does not match ptr:SB"))
   (try (check-source-accepts "(defstruct SA x:i32)
 (defvar ga:SA)
-(defvar gq:ptr (addr-of ga))
-(defvar gr:(ref SA) (addr-of ga))
+(defvar gq:ptr &ga)
+(defvar gr:(ref SA) &ga)
 (defn main ():i32 (return 0))
 "))
   (return (ok)))
@@ -3366,14 +3366,14 @@ map=2
       (printf \"%d %lld\\n\" (invoke a i) (invoke b i))))
   (return 0))
 "))
-        iv:StrView (compiled-ir (addr-of c)))
+        iv:StrView (compiled-ir &c))
     (try (check-eq-int
            (count-matching-lines iv "define*@vector_new_in.pAllocHandle.$r.pVector.i32(*")
            1 "one stamp for the i32 instance"))
     (try (check-eq-int
            (count-matching-lines iv "define*@vector_new_in.pAllocHandle.$r.pVector.i64(*")
            1 "one stamp for the i64 instance"))
-    (drop (addr-of c)))
+    (drop &c))
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
 (import-use vector)
 (defn main ():i32
@@ -3384,8 +3384,8 @@ map=2
       (printf \"%d %lld\\n\" (invoke a i) (invoke b i))))
   (return 0))
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "5 7000000000\n"))
-    (drop (addr-of out)))
+    (try (check-eq (string-as-view &out) "5 7000000000\n"))
+    (drop &out))
   (return (ok)))
 
 ; SV-1: a struct VALUE is a receiver. All three read spellings against a
@@ -3401,16 +3401,16 @@ map=2
   (let (v:Pt (mk 3))
     (printf \"%lld %lld %lld %lld\\n\" (sum v) (direct) (get v 'x) (v 'y))
     (set! (v 'x) 40)
-    (printf \"%lld %d\\n\" (get v 'x) (if (= (addr-of v 'y) null) 0 1))
+    (printf \"%lld %d\\n\" (get v 'x) (if (= (ref v 'y) null) 0 1))
     (return 0)))
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "12 10 3 6
+    (try (check-eq (string-as-view &out) "12 10 3 6
 40 1
 "))
-    (drop (addr-of out)))
+    (drop &out))
   (return (ok)))
 
-; The other half: `.set!` and `addr-of` need the receiver's STORAGE, so a
+; The other half: `.set!` and `ref` need the receiver's STORAGE, so a
 ; temporary stays an error rather than a store into something about to be
 ; discarded — which is also what keeps a pointer into that copy from being
 ; returned. Each message is pinned WHOLE: the shell's needles stopped before
@@ -3422,9 +3422,9 @@ map=2
 " 3 ".set!: the receiver is a temporary struct value, so it has no address -- bind it to a name first"))
   (try (check-place-refused "(defstruct Pt x:i64 y:i64)
 (defn mk (n:i64):Pt (return (Pt n n)))
-(defn leak ():ptr:i64 (return (addr-of (mk 1) 'x)))
+(defn leak ():ptr:i64 (return (ref (mk 1) 'x)))
 (defn main ():i32 (return 0))
-" 3 "addr-of: the receiver is a temporary struct value, so it has no address -- bind it to a name first"))
+" 3 "ref: the receiver is a temporary struct value, so it has no address -- bind it to a name first"))
   ; A non-struct receiver is still refused, and the message names BOTH legal
   ; receivers now that a value is one of them.
   (try (check-place-refused "(defstruct Pt x:i64 y:i64)
@@ -3456,11 +3456,11 @@ map=2
     (vector-init v))
   (return 0))
 ")
-        c:Compiled (try (compile-source (string-as-view (addr-of s)))))
-    (try (check-no-errors (addr-of c 'diags)))
-    (try (check-ir-parses (compiled-ir (addr-of c))))
-    (drop (addr-of c))
-    (drop (addr-of s)))
+        c:Compiled (try (compile-source (string-as-view &s))))
+    (try (check-no-errors (ref c 'diags)))
+    (try (check-ir-parses (compiled-ir &c)))
+    (drop &c)
+    (drop &s))
   (return (ok)))
 
 ; The whole builtin set, because it had drifted from `parse-type-name` three
@@ -3500,8 +3500,8 @@ map=2
 (defn early (a:i32 :optional (b:i64 5)):i64 (return b))
 (defn main ():i32 (printf \"%ld\\n\" (caller)) (return 0))
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "5\n"))
-    (drop (addr-of out)))
+    (try (check-eq (string-as-view &out) "5\n"))
+    (drop &out))
   ; Overloaded, so the call resolves through the generic registry rather than
   ; the scope binding; the literal 3 needs widening to i64, which lands it in
   ; the adapt tier — the one gated on has-rest.
@@ -3510,8 +3510,8 @@ map=2
 (defn pick (a:i32):i64 (return (as i64 a)))
 (defn main ():i32 (printf \"%ld %ld\\n\" (pick \"x\" 3) (pick 5)) (return 0))
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "3 5\n"))
-    (drop (addr-of out)))
+    (try (check-eq (string-as-view &out) "3 5\n"))
+    (drop &out))
   ; The second site: the same overload set arriving as `.nuch` `defmethod`
   ; entries. A SOLITARY `:optional` defn exports a `(declare …)` its own
   ; importer refuses, so the overloaded shape is the only round-trip there is.
@@ -3520,31 +3520,31 @@ map=2
   (let (src:String (try (test-scratch-sub "optsrc"))
         hdr:String (try (test-scratch-sub "optlib"))
         use:String (try (test-scratch-sub "optuse"))
-        hv:StrView (string-as-view (addr-of hdr))
-        lib:String (try (write-into (string-as-view (addr-of src)) "optlib.nuc"
+        hv:StrView (string-as-view &hdr)
+        lib:String (try (write-into (string-as-view &src) "optlib.nuc"
                           "(defn pick (a:CStr :optional (b:i64 7)):i64 (return b))
 (defn pick (a:i32):i64 (return (as i64 a)))
 "))
-        u:String (try (write-into (string-as-view (addr-of use)) "u.nuc"
+        u:String (try (write-into (string-as-view &use) "u.nuc"
                         "(import-use \"stdio.h\")
 (import-use optlib)
 (defn main ():i32 (printf \"%ld\\n\" (pick \"x\" 3)) (return 0))
 ")))
-    (let (h:String (try (emit-into "" "--emit-nuch" (string-as-view (addr-of lib))
+    (let (h:String (try (emit-into "" "--emit-nuch" (string-as-view &lib)
                                    hv "optlib.nuch")))
-      (drop (addr-of h)))
-    (let (c:Compiled (try (compile-path-in hv (string-as-view (addr-of u))))
-          iv:StrView (compiled-ir (addr-of c)))
+      (drop &h))
+    (let (c:Compiled (try (compile-path-in hv (string-as-view &u)))
+          iv:StrView (compiled-ir &c))
       ; Both members: the round trip is of the overload SET, and the shell asked
       ; only about the `:optional` one.
       (try (check-line iv "declare i64 @pick.cstr.i64(ptr, i64)"))
       (try (check-line iv "declare i64 @pick.i32(i32)"))
-      (drop (addr-of c)))
-    (drop (addr-of u))
-    (drop (addr-of lib))
-    (drop (addr-of use))
-    (drop (addr-of hdr))
-    (drop (addr-of src)))
+      (drop &c))
+    (drop &u)
+    (drop &lib)
+    (drop &use)
+    (drop &hdr)
+    (drop &src))
   ; The rule the fix must not lose: a real `:rest` defn still registers has-rest
   ; at the prescan, so a forward call folds its tail into a node list.
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
@@ -3558,8 +3558,8 @@ map=2
     total))
 (defn main ():i32 (printf \"%ld\\n\" (caller)) (return 0))
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "10\n"))
-    (drop (addr-of out)))
+    (try (check-eq (string-as-view &out) "10\n"))
+    (drop &out))
   (return (ok)))
 
 ; Stage 14 defn-signature.md S1: the `?`/`!` sugar returns (`:!ptr:T`, `:!i32`,
@@ -3569,11 +3569,11 @@ map=2
 ; not checking the signature.
 (deftest s1-sugar-rets-and-noreturn
   (let (c:Compiled (try (compile-path "tests/fixtures/s1-sugar-rets.nuc"))
-        iv:StrView (compiled-ir (addr-of c)))
-    (try (check-no-errors (addr-of c 'diags)))
+        iv:StrView (compiled-ir &c))
+    (try (check-no-errors (ref c 'diags)))
     (try (check-line iv "define ptr @lookup(ptr %p.arg, i32 %i.arg) section \".text.lookup\" {"))
     (try (check-line iv "define i64 @checked(i32 %x.arg) section \".text.checked\" {"))
     (try (check-line iv "define ptr @maybe-pt(i1 %give.arg, ptr %p.arg) section \".text.maybe-pt\" {"))
     (try (check-line iv "define void @spin(ptr %m.arg) noreturn section \".text.spin\" {"))
-    (drop (addr-of c)))
+    (drop &c))
   (return (ok)))

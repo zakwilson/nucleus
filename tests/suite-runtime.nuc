@@ -21,13 +21,13 @@
 beta
 
 no-newline")))
-    (try (check-golden (string-as-view (addr-of out)) "1: [alpha] len=5
+    (try (check-golden (string-as-view &out) "1: [alpha] len=5
 2: [beta] len=4
 3: [] len=0
 4: [no-newline] len=10
 eof
 "))
-    (drop (addr-of out)))
+    (drop &out))
   (return (ok)))
 
 ; Stage 17 C6: a bare string literal returned from a `StrView` function. The
@@ -37,10 +37,10 @@ eof
   (let (want:String (try (read-file "tests/expected/s17-strview-literal-return.out"))
         got:String (try (build-run-file "" ""
                           "tests/fixtures/s17-strview-literal-return.nuc")))
-    (try (check-golden (string-as-view (addr-of got))
-                       (string-as-view (addr-of want))))
-    (drop (addr-of got))
-    (drop (addr-of want)))
+    (try (check-golden (string-as-view &got)
+                       (string-as-view &want)))
+    (drop &got)
+    (drop &want))
   (return (ok)))
 
 ; Stage 17 C6: string literals meeting at a cond/if/match phi in a StrView slot.
@@ -50,10 +50,10 @@ eof
   (let (want:String (try (read-file "tests/expected/s17-strview-literal-join.out"))
         got:String (try (build-run-file "" ""
                           "tests/fixtures/s17-strview-literal-join.nuc")))
-    (try (check-golden (string-as-view (addr-of got))
-                       (string-as-view (addr-of want))))
-    (drop (addr-of got))
-    (drop (addr-of want)))
+    (try (check-golden (string-as-view &got)
+                       (string-as-view &want)))
+    (drop &got)
+    (drop &want))
   (return (ok)))
 
 ; Stage 17 C7-4b: the null-check trap one level down. A `StrView` is a 16-byte
@@ -78,13 +78,13 @@ eof
 (deftest s19-process-status
   (let (out:String (try (build-run-file "" ""
                           "tests/fixtures/s19-process-status.nuc")))
-    (try (check-golden (string-as-view (addr-of out)) "zero 0
+    (try (check-golden (string-as-view &out) "zero 0
 three 3
 killed 137
 noexec 127
 signal 15
 "))
-    (drop (addr-of out)))
+    (drop &out))
   (return (ok)))
 
 ; P2: capture, including the both-pipes-overflow case. A sequential drain
@@ -94,14 +94,14 @@ signal 15
 (deftest s19-process-capture
   (let (out:String (try (build-run-file "" ""
                           "tests/fixtures/s19-process-capture.nuc")))
-    (try (check-golden (string-as-view (addr-of out)) "code 3
+    (try (check-golden (string-as-view &out) "code 3
 out to-stdout
 err to-stderr
 big-out 1288895 big-err 1288895 code 0
 arg a b \"c\" $d
 env new=yes home=/s19-overridden
 "))
-    (drop (addr-of out)))
+    (drop &out))
   (return (ok)))
 
 ; P3: the job-pool primitives — a non-blocking poll that reports "still
@@ -109,13 +109,13 @@ env new=yes home=/s19-overridden
 (deftest s19-process-pool
   (let (out:String (try (build-run-file "" ""
                           "tests/fixtures/s19-process-pool.nuc")))
-    (try (check-golden (string-as-view (addr-of out)) "try-wait: still running
+    (try (check-golden (string-as-view &out) "try-wait: still running
 reaped 2
 reaped 3
 reaped 1
 killed: signal 9
 "))
-    (drop (addr-of out)))
+    (drop &out))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -133,10 +133,10 @@ killed: signal 9
 (imports)
 (time (zzq 1))
 ")))
-    (let (ov:StrView (string-as-view (addr-of out)))
+    (let (ov:StrView (string-as-view &out))
       (try (check-contains ov "(zzq (n:i32):i32)"))
       (try (check-contains ov "lib/prelude.nuc"))
       (try (check-contains ov "; elapsed: "))
       (try (check-contains ov "  1")))
-    (drop (addr-of out)))
+    (drop &out))
   (return (ok)))

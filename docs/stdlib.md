@@ -137,13 +137,13 @@ The bare struct type is registered in the prelude and so is available everywhere
 
 (defn main ():i32
   ; strview-from-cstr returns by value and allocates nothing; the
-  ; (ref StrView)-taking helpers are reached through addr-of.
+  ; (ref StrView)-taking helpers are reached through `&`.
   (let (av:StrView (strview-from-cstr "hello")
         bv:StrView (strview-from-cstr "hello")
         cv:StrView (strview-from-cstr "world")
-        a:ptr:StrView (addr-of av)
-        b:ptr:StrView (addr-of bv)
-        c:ptr:StrView (addr-of cv))
+        a:ptr:StrView &av
+        b:ptr:StrView &bv
+        c:ptr:StrView &cv)
     (printf "len=%llu\n"  (as ui64 (strview-byte-len a)))  ; 5
     (printf "a=b? %d\n"   (strview-eq a b))              ; 1
     (printf "a=c? %d\n"   (strview-eq a c))              ; 0
@@ -271,7 +271,7 @@ Keywords are written as `:identifier` in source. The compiler requires `(import-
   ; Inspect the keyword name.
   (let (k:Keyword :hello
         nm:StrView (keyword-name k))
-    (printf "name=%s\n" (strview-to-cstr (addr-of nm)))) ; hello
+    (printf "name=%s\n" (strview-to-cstr &nm))) ; hello
   (return 0))
 ```
 

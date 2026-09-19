@@ -73,7 +73,7 @@
 
 ; list-iter — a ListIter positioned at the head of `lst` (null = empty list).
 ; Returned BY VALUE (alloca + set + deref), the value-return convention the
-; other iterators use; drive with (addr-of it) + next, or via doseq-iter.
+; other iterators use; drive with &it + next, or via doseq-iter.
 (defn list-iter (lst:ptr):ListIter
   (let (it:&ListIter (alloca ListIter))
     (set! (it 'cur) lst)

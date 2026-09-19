@@ -33,9 +33,9 @@
 ; regression in that tracking shows up as `:0` rather than degrading silently.
 (deftest w3a-opaque-provenance
   (let (c:Compiled (try (cd-compiled "tests/fixtures/w3a-opaque-sizeof.nuc")))
-    (try (check-error-at (addr-of c 'diags) "tests/fixtures/w3a-opaque-sizeof.nuc" 9
+    (try (check-error-at (ref c 'diags) "tests/fixtures/w3a-opaque-sizeof.nuc" 9
            "sizeof: 'CHOpaque' is an opaque type declared at ./tests/fixtures/cheader-opaque.h:11; only pointers to it are valid"))
-    (drop (addr-of c)))
+    (drop &c))
   (return (ok)))
 
 ; SDL_mixer.h declares `typedef struct Mix_Music Mix_Music;` (opaque — no body in
@@ -46,8 +46,8 @@
   (when (not (have-file? "/usr/include/SDL2/SDL_mixer.h"))
     (skip! "SDL2/SDL_mixer.h is not installed"))
   (let (c:Compiled (try (cd-compiled "tests/fixtures/w3a-sdl-mixer.nuc"))
-        iv:StrView (compiled-ir (addr-of c)))
-    (try (check-silent (addr-of c) "importing SDL_mixer.h"))
+        iv:StrView (compiled-ir &c))
+    (try (check-silent &c "importing SDL_mixer.h"))
     ; `alen` (Uint32) and `volume` (Uint8) are typedefs of builtin integers.
     ; Before the typedef chain was followed they were `ptr`, giving
     ; { i32, ptr, ptr, ptr } — a wrong layout, silently.
@@ -56,7 +56,7 @@
     (try (check-match iv "*call void @Mix_FreeMusic(ptr *"))
     ; The opaque one may only ever be a `ptr`, never an LLVM aggregate.
     (try (check-not-match iv "*%Mix_Music*"))
-    (drop (addr-of c)))
+    (drop &c))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -74,7 +74,7 @@
 ; one for the other.
 (deftest w3b-quals
   (let (ir:String (try (cd-ir "tests/fixtures/w3b-quals.nuc"))
-        iv:StrView (string-as-view (addr-of ir)))
+        iv:StrView (string-as-view &ir))
     ; `--emit-llvm` never reads back what it writes, so a clean exit proves
     ; nothing about validity — this is exactly how `(void, ptr)` survived.
     (try (check-ir-parses iv))
@@ -97,7 +97,7 @@
     (try (check-line iv "declare void @w3b_east_restrict(ptr)"))
     (try (check-line iv "declare i32 @w3b_ret_int(ptr)"))
     (try (check-line iv "declare ptr @w3b_ret_east()"))
-    (drop (addr-of ir)))
+    (drop &ir))
   (return (ok)))
 
 ; All three halves: the representable declaration survives, the three
@@ -105,8 +105,8 @@
 ; header and the declaration's own line — not the .nuc file that imported it.
 (deftest w3b-skip
   (let (c:Compiled (try (cd-compiled "tests/fixtures/w3b-skip.nuc"))
-        iv:StrView (compiled-ir (addr-of c))
-        ds:&(Vector Diagnostic) (addr-of c 'diags))
+        iv:StrView (compiled-ir &c)
+        ds:&(Vector Diagnostic) (ref c 'diags))
     (try (check-line iv "declare void @w3b_keep(ptr)"))
     (try (check-not-match iv "*@w3b_skip_byval*"))
     (try (check-not-match iv "*@w3b_skip_void*"))
@@ -118,7 +118,7 @@
     (try (check-warning-at ds "./tests/fixtures/w3b-skip.h" 29
            "skipping C declaration 'w3b_skip_many': more than 32 parameters"))
     (try (check-ir-parses iv))
-    (drop (addr-of c)))
+    (drop &c))
   (return (ok)))
 
 ; The §1.5 accept criterion. `(import-use "SDL2/SDL.h")` reaches the x86
@@ -132,18 +132,18 @@
   (let (dir:StrView (try (test-scratch))
         bin:String (str dir "/w3b-sdl.bin")
         c:Compiled (try (build-checked dir "tests/fixtures/w3b-sdl.nuc"
-                                       (string-as-view (addr-of bin))))
-        out:String (try (run-stdout (string-as-view (addr-of bin))))
+                                       (string-as-view &bin)))
+        out:String (try (run-stdout (string-as-view &bin)))
         ir:String (try (cd-ir "tests/fixtures/w3b-sdl.nuc")))
-    (try (check-silent (addr-of c) "linking against SDL2/SDL.h"))
-    (try (check-line (string-as-view (addr-of out)) "w3b-sdl ok"))
+    (try (check-silent &c "linking against SDL2/SDL.h"))
+    (try (check-line (string-as-view &out) "w3b-sdl ok"))
     ; Pinned so the gate cannot silently "fix" this by skipping the declaration
     ; instead of parsing it.
-    (try (check-line (string-as-view (addr-of ir)) "declare void @_mm_clflush(ptr)"))
-    (drop (addr-of ir))
-    (drop (addr-of out))
-    (drop (addr-of c))
-    (drop (addr-of bin)))
+    (try (check-line (string-as-view &ir) "declare void @_mm_clflush(ptr)"))
+    (drop &ir)
+    (drop &out)
+    (drop &c)
+    (drop &bin))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -156,8 +156,8 @@
 ; because they are hardcoded.
 (deftest w3c-typedef
   (let (c:Compiled (try (cd-compiled "tests/fixtures/w3c-typedef.nuc"))
-        iv:StrView (compiled-ir (addr-of c)))
-    (try (check-silent (addr-of c) "importing the typedef matrix"))
+        iv:StrView (compiled-ir &c))
+    (try (check-silent &c "importing the typedef matrix"))
     (try (check-ir-parses iv))
     (try (check-line iv "declare i64 @w3c_f_off(i32)"))
     (try (check-line iv "declare i64 @w3c_f_off3()"))
@@ -183,7 +183,7 @@
     ; Struct FIELD types resolve through their typedefs too — the shape W3a
     ; recorded as newly observed (Mix_Chunk.volume, a Uint8, typed as ptr).
     (try (check-line iv "%w3c_fields = type { i8, i32, i64, ptr }"))
-    (drop (addr-of c)))
+    (drop &c))
   (try (w3c-opaqv-use))
   (return (ok)))
 
@@ -207,10 +207,10 @@
 ; STABLE halves of the message are pinned rather than the middle.
 (defn w3c-prec-one (stem:StrView):!void
   (let (p:String (str "tests/fixtures/w3c-prec-" stem ".nuc")
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         c:Compiled (try (cd-compiled pv))
-        iv:StrView (compiled-ir (addr-of c))
-        ds:&(Vector Diagnostic) (addr-of c 'diags))
+        iv:StrView (compiled-ir &c)
+        ds:&(Vector Diagnostic) (ref c 'diags))
     ; Exactly one declaration reaches the IR — LLVM rejects a second `declare`
     ; for the same symbol even when the two agree.
     (try (check-line iv "declare i64 @lseek(i32, i64, i64)"))
@@ -219,8 +219,8 @@
     (try (check-warning-at ds pv 5
            "which declares it as i64 (i32, i64, i32); the explicit declaration wins"))
     (try (check-ir-parses iv))
-    (drop (addr-of c))
-    (drop (addr-of p)))
+    (drop &c)
+    (drop &p))
   (return (ok)))
 
 (deftest w3c-precedence
@@ -230,11 +230,11 @@
   ; explicit signature — which is why the header's copy cannot simply be dropped
   ; and the explicit one left to emit at its own position.
   (let (c:Compiled (try (cd-compiled "tests/fixtures/w3c-prec-use.nuc"))
-        iv:StrView (compiled-ir (addr-of c)))
+        iv:StrView (compiled-ir &c))
     (try (check-line iv "declare ptr @strchr(ptr, i64)"))
     (try (check-match iv "*call ptr @strchr(ptr *, i64 *"))
     (try (check-ir-parses iv))
-    (drop (addr-of c)))
+    (drop &c))
   (return (ok)))
 
 ; A `declare` parameter list's UNNAMED spelling carries types. Every written type
@@ -245,8 +245,8 @@
 ; satisfy both sides of a pair whose named half is already correct.
 (deftest w3c-declare-params
   (let (c:Compiled (try (cd-compiled "tests/fixtures/w3c-declare-params.nuc"))
-        iv:StrView (compiled-ir (addr-of c)))
-    (try (check-silent (addr-of c) "the declare-parameter matrix"))
+        iv:StrView (compiled-ir &c))
+    (try (check-silent &c "the declare-parameter matrix"))
     (try (check-ir-parses iv))
     (try (check-line iv "declare i64 @w3d_bare_1(i64)"))
     (try (check-line iv "declare i64 @w3d_named_1(i64)"))
@@ -271,7 +271,7 @@
     ; to (i64, i64) — never a raw %W3dPair and never the i32 default.
     (try (check-line iv "declare void @w3d_bare_8(i64, i64, i32)"))
     (try (check-line iv "declare void @w3d_named_8(i64, i64, i32)"))
-    (drop (addr-of c)))
+    (drop &c))
   (return (ok)))
 
 ; The precedence interaction the parameter defect broke: a bare-list `declare`
@@ -280,18 +280,18 @@
 ; one that genuinely differs must still warn and still win.
 (deftest w3c-declare-header
   (let (m:Compiled (try (cd-compiled "tests/fixtures/w3c-declare-header-match.nuc"))
-        mv:StrView (compiled-ir (addr-of m)))
-    (try (check-silent (addr-of m) "a declaration matching the header"))
+        mv:StrView (compiled-ir &m))
+    (try (check-silent &m "a declaration matching the header"))
     (try (check-line mv "declare i64 @lseek(i32, i64, i32)"))
     (try (check-ir-parses mv))
-    (drop (addr-of m)))
+    (drop &m))
   (let (k:Compiled (try (cd-compiled "tests/fixtures/w3c-declare-header-conflict.nuc"))
-        kv:StrView (compiled-ir (addr-of k))
-        ds:&(Vector Diagnostic) (addr-of k 'diags))
+        kv:StrView (compiled-ir &k)
+        ds:&(Vector Diagnostic) (ref k 'diags))
     (try (check-warning-at ds "tests/fixtures/w3c-declare-header-conflict.nuc" 6
            "declaration of 'lseek' as i64 (i32, i64, i64) conflicts with "))
     (try (check-warning-at ds "tests/fixtures/w3c-declare-header-conflict.nuc" 6
            "which declares it as i64 (i32, i64, i32); the explicit declaration wins"))
     (try (check-line kv "declare i64 @lseek(i32, i64, i64)"))
-    (drop (addr-of k)))
+    (drop &k))
   (return (ok)))

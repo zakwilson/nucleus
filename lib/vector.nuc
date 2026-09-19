@@ -305,7 +305,7 @@
 
 ; ---------------------------------------------------------------------------
 ; Coll T (VecIter T) conformance. `iter` returns a fresh VecIter BY VALUE
-; (alloca + iter-init + (deref …) — the spike pattern). Consumers `addr-of`
+; (alloca + iter-init + (deref …) — the spike pattern). Consumers `&`
 ; the result to drive `next`. (extend is placed here because (VecIter T) must
 ; be declared before it can name the associated iterator type.)
 ; ---------------------------------------------------------------------------

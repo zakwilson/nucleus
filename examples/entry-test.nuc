@@ -27,7 +27,7 @@
     (assoc m 1 10)
     (assoc m 2 20)
     (assoc m 3 30)
-    ; (iter m) returns a HashMapEntryIter BY VALUE; addr-of to drive next.
+    ; (iter m) returns a HashMapEntryIter BY VALUE; `&` to drive next.
     (let (it:(HashMapEntryIter i32 i32) (iter m)
           ksum:i32 0
           vsum:i32 0

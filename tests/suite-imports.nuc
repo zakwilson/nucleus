@@ -54,8 +54,8 @@
 (import w1-my)
 (defn main ():i32 (return (x-uses)))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 7))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 7))
+    (drop &m))
   (return (ok)))
 
 (deftest w1-mutual-order2
@@ -68,8 +68,8 @@
 (import w1-mx)
 (defn main ():i32 (return (x-uses)))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 7))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 7))
+    (drop &m))
   (return (ok)))
 
 ; The two namespaced files both orders need. `w1-nsa` imports `w1-nsb` because
@@ -93,10 +93,10 @@
 ; define lines are pinned here and the answer confirms they are the ones called.
 (defn w1-ns-check (main:StrView):!void
   (let (s:String (try (w1-ir main))
-        ir:StrView (string-as-view (addr-of s)))
+        ir:StrView (string-as-view &s))
     (try (check-line ir "define weak_odr i32 @w1beta__b-thing() section \".text.w1beta__b-thing\" {"))
     (try (check-line ir "define weak_odr i32 @w1alpha__a-thing() section \".text.w1alpha__a-thing\" {"))
-    (drop (addr-of s)))
+    (drop &s))
   (try (w1-exit main 42))
   (return (ok)))
 
@@ -106,8 +106,8 @@
 (import-use w1-nsb)
 (defn main ():i32 (return (w1alpha/a-thing)))
 ")))
-    (try (w1-ns-check (string-as-view (addr-of m))))
-    (drop (addr-of m)))
+    (try (w1-ns-check (string-as-view &m)))
+    (drop &m))
   (return (ok)))
 
 (deftest w1-ns-order2
@@ -116,8 +116,8 @@
 (import-use w1-nsa)
 (defn main ():i32 (return (w1alpha/a-thing)))
 ")))
-    (try (w1-ns-check (string-as-view (addr-of m))))
-    (drop (addr-of m)))
+    (try (w1-ns-check (string-as-view &m)))
+    (drop &m))
   (return (ok)))
 
 ; The graph shapes that worked before W1a and must keep working. The walk dedups
@@ -135,12 +135,12 @@
 
 (defn w1-check-single-emission (main:StrView):!void
   (let (s:String (try (w1-ir main))
-        ir:StrView (string-as-view (addr-of s))
+        ir:StrView (string-as-view &s)
         dup:StrView (duplicate-define-name ir))
     (when (!= dup "")
       (fail! "the module defines " dup " twice"))
     (try (check-line ir "define weak_odr i32 @w1-leaf() section \".text.w1-leaf\" {"))
-    (drop (addr-of s)))
+    (drop &s))
   (return (ok)))
 
 ; Two importers of one shared leaf.
@@ -153,10 +153,10 @@
 (import w1-dr)
 (defn main ():i32 (return (+ (w1-dl) (w1-dr))))
 ")))
-    (let (mv:StrView (string-as-view (addr-of m)))
+    (let (mv:StrView (string-as-view &m))
       (try (w1-check-single-emission mv))
       (try (w1-exit mv 11)))
-    (drop (addr-of m)))
+    (drop &m))
   (return (ok)))
 
 ; One file reachable both directly and through a chain; neither route may
@@ -167,10 +167,10 @@
 (import w1-leaf)
 (defn main ():i32 (return (+ (w1-dl) (w1-leaf))))
 ")))
-    (let (mv:StrView (string-as-view (addr-of m)))
+    (let (mv:StrView (string-as-view &m))
       (try (w1-check-single-emission mv))
       (try (w1-exit mv 10)))
-    (drop (addr-of m)))
+    (drop &m))
   (return (ok)))
 
 ; A file forward-referencing up into two independent higher files with no
@@ -187,8 +187,8 @@
 (import w1-low)
 (defn main ():i32 (return (w1-low)))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 12))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 12))
+    (drop &m))
   (return (ok)))
 
 ; The first thing W1a must NOT relax: two files defining the same name and
@@ -204,18 +204,18 @@
 (import w1-dup-b)
 (defn main ():i32 (return (w1-dupe 1)))
 "))
-        c:Compiled (try (w1-compile (string-as-view (addr-of m))))
+        c:Compiled (try (w1-compile (string-as-view &m)))
         want:String (str "duplicate definition of 'w1-dupe' — the same parameter types are already defined at "
-                         (string-as-view (addr-of a)) ":1"))
-    (try (check-error-at (addr-of c 'diags) (string-as-view (addr-of b)) 1
-                         (string-as-view (addr-of want))))
-    (try (check-note-at (addr-of c 'diags) (string-as-view (addr-of b)) 1
+                         (string-as-view &a) ":1"))
+    (try (check-error-at (ref c 'diags) (string-as-view &b) 1
+                         (string-as-view &want)))
+    (try (check-note-at (ref c 'diags) (string-as-view &b) 1
            "a public name must be unique across the whole compilation unit"))
-    (drop (addr-of want))
-    (drop (addr-of c))
-    (drop (addr-of m))
-    (drop (addr-of b))
-    (drop (addr-of a)))
+    (drop &want)
+    (drop &c)
+    (drop &m)
+    (drop &b)
+    (drop &a))
   (return (ok)))
 
 ; The second: a name defined nowhere in the graph is still refused, and after
@@ -227,12 +227,12 @@
   (let (m:String (try (test-write-file "w1-missing.nuc" "(import w1-dup-a)
 (defn main ():i32 (return (w1-nowhere)))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         c:Compiled (try (w1-compile mv)))
-    (try (check-error-at (addr-of c 'diags) mv 2
+    (try (check-error-at (ref c 'diags) mv 2
            "unknown: w1-nowhere — not defined anywhere in this compilation unit"))
-    (drop (addr-of c))
-    (drop (addr-of m)))
+    (drop &c)
+    (drop &m))
   (return (ok)))
 
 ; W1e: `(declare f …)` as the cross-file cycle-breaker keeps working. Once the
@@ -252,11 +252,11 @@
 
 (defn w1-declare-check (main:StrView):!void
   (let (s:String (try (w1-ir main))
-        ir:StrView (string-as-view (addr-of s)))
+        ir:StrView (string-as-view &s))
     (try (check-line ir "define weak_odr i32 @w1-a-fn(i32 %n.arg) section \".text.w1-a-fn\" {"))
     (try (check-line ir "define weak_odr i32 @w1-b-fn(i32 %n.arg) section \".text.w1-b-fn\" {"))
     (try (check-not-contains ir "declare i32 @w1-a-fn"))
-    (drop (addr-of s)))
+    (drop &s))
   (try (w1-exit main 2))
   (return (ok)))
 
@@ -265,8 +265,8 @@
   (let (m:String (try (test-write-file "w1-decl1.nuc" "(import w1-af3)
 (defn main ():i32 (return (w1-a-fn 3)))
 ")))
-    (try (w1-declare-check (string-as-view (addr-of m))))
-    (drop (addr-of m)))
+    (try (w1-declare-check (string-as-view &m)))
+    (drop &m))
   (return (ok)))
 
 ; The declare and a reachable defn of the same name coexisting in one unit.
@@ -276,8 +276,8 @@
 (import w1-bf3)
 (defn main ():i32 (return (w1-a-fn 3)))
 ")))
-    (try (w1-declare-check (string-as-view (addr-of m))))
-    (drop (addr-of m)))
+    (try (w1-declare-check (string-as-view &m)))
+    (drop &m))
   (return (ok)))
 
 ; The pre-existing defect W1a fixes with teeth: a function emitted BEFORE a
@@ -302,15 +302,15 @@
         r:ptr (append c c))
     (return 0)))
 "))
-        s:String (try (w1-ir (string-as-view (addr-of m))))
-        ir:StrView (string-as-view (addr-of s)))
+        s:String (try (w1-ir (string-as-view &m)))
+        ir:StrView (string-as-view &s))
     (try (check-line ir "define weak_odr ptr @append.ptr.ptr(ptr %a.arg, ptr %b.arg) section \".text.append.ptr.ptr\" {"))
     (try (check-match ir "  %t* = call ptr @append.ptr.ptr(ptr %t*, ptr %t*)"))
     ; Covers a solitary define and a solitary call at once, and needs no
     ; maintenance when the linkage word or the parameter names change.
     (try (check-not-contains ir "@append("))
-    (drop (addr-of s))
-    (drop (addr-of m)))
+    (drop &s)
+    (drop &m))
   (return (ok)))
 
 ; The deferral defect W1a exposed, fixed in defunion-register (union-registry.nuc)
@@ -329,12 +329,12 @@
 (defn w1-wrap (sv:StrView):!String (return (string-from-view sv)))
 (defn main ():i32 (return 0))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         c:Compiled (try (w1-compile mv)))
-    (try (check-silent (addr-of c) "a compile-time block before an import"))
-    (try (check-ir-parses (compiled-ir (addr-of c))))
-    (drop (addr-of c))
-    (drop (addr-of m)))
+    (try (check-silent &c "a compile-time block before an import"))
+    (try (check-ir-parses (compiled-ir &c)))
+    (drop &c)
+    (drop &m))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -365,8 +365,8 @@
   (let (m:String (try (test-write-file "w1-circ1.nuc" "(import w1-ca)
 (defn main ():i32 (return (w1-ca-fn 3)))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 2))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 2))
+    (drop &m))
   (return (ok)))
 
 (deftest w1d-cycle-order2
@@ -374,8 +374,8 @@
   (let (m:String (try (test-write-file "w1-circ2.nuc" "(import w1-cb)
 (defn main ():i32 (return (w1-cb-fn 3)))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 1))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 1))
+    (drop &m))
   (return (ok)))
 
 ; The flatten spelling reaches the same guard: `import-use` binds no prefix.
@@ -389,8 +389,8 @@
   (let (m:String (try (test-write-file "w1-cu.nuc" "(import-use w1-cua)
 (defn main ():i32 (return (w1-cua)))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 6))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 6))
+    (drop &m))
   (return (ok)))
 
 ; A cycle longer than two files: the skip is on an in-progress PATH, not on a
@@ -408,8 +408,8 @@
   (let (m:String (try (test-write-file "w1-t3.nuc" "(import w1-t3a)
 (defn main ():i32 (return (w1-f3a 5)))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 3))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 3))
+    (drop &m))
   (return (ok)))
 
 ; The degenerate cycle — a file that imports itself — is the same in-progress
@@ -421,8 +421,8 @@
   (let (m:String (try (test-write-file "w1-selfm.nuc" "(import w1-self)
 (defn main ():i32 (return (w1-self-fn)))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 9))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 9))
+    (drop &m))
   (return (ok)))
 
 ; A macro defined by the cycle partner. This is one of the two couplings a
@@ -440,22 +440,22 @@
         b:String (try (test-write-file "w1-mcb.nuc" "(import w1-mca)
 (defn w1-mcb (n:i32):i32 (return (w1-amac n)))
 "))
-        bv:StrView (string-as-view (addr-of b))
+        bv:StrView (string-as-view &b)
         m:String (try (test-write-file "w1-mcm.nuc" "(import w1-mca)
 (defn main ():i32 (return (w1-mcb 5)))
 "))
-        c:Compiled (try (w1-compile (string-as-view (addr-of m))))
-        pair:String (str (string-as-view (addr-of a)) " is in an import cycle with " bv))
-    (try (check-error-at (addr-of c 'diags) bv 2
+        c:Compiled (try (w1-compile (string-as-view &m)))
+        pair:String (str (string-as-view &a) " is in an import cycle with " bv))
+    (try (check-error-at (ref c 'diags) bv 2
            "unknown: w1-amac — defined in a file this unit imports circularly, and not registered yet at this point"))
-    (try (check-note-at (addr-of c 'diags) bv 2 (string-as-view (addr-of pair))))
-    (try (check-note-at (addr-of c 'diags) bv 2
+    (try (check-note-at (ref c 'diags) bv 2 (string-as-view &pair)))
+    (try (check-note-at (ref c 'diags) bv 2
            "a macro, deferror id or extern declaration registers only when its file is emitted"))
-    (drop (addr-of pair))
-    (drop (addr-of c))
-    (drop (addr-of m))
-    (drop (addr-of b))
-    (drop (addr-of a)))
+    (drop &pair)
+    (drop &c)
+    (drop &m)
+    (drop &b)
+    (drop &a))
   (return (ok)))
 
 ; The other coupling: a `deferror` id, whose value `emit-deferror` allocates at
@@ -470,20 +470,20 @@
         b:String (try (test-write-file "w1-dfb.nuc" "(import w1-dfa)
 (defn w1-dfb ():i32 (return (as i32 W1Boom)))
 "))
-        bv:StrView (string-as-view (addr-of b))
+        bv:StrView (string-as-view &b)
         m:String (try (test-write-file "w1-dfm.nuc" "(import w1-dfa)
 (defn main ():i32 (return (w1-dfb)))
 "))
-        c:Compiled (try (w1-compile (string-as-view (addr-of m))))
-        pair:String (str (string-as-view (addr-of a)) " is in an import cycle with " bv))
-    (try (check-error-at (addr-of c 'diags) bv 2
+        c:Compiled (try (w1-compile (string-as-view &m)))
+        pair:String (str (string-as-view &a) " is in an import cycle with " bv))
+    (try (check-error-at (ref c 'diags) bv 2
            "undefined: W1Boom — defined in a file this unit imports circularly, and not registered yet at this point"))
-    (try (check-note-at (addr-of c 'diags) bv 2 (string-as-view (addr-of pair))))
-    (drop (addr-of pair))
-    (drop (addr-of c))
-    (drop (addr-of m))
-    (drop (addr-of b))
-    (drop (addr-of a)))
+    (try (check-note-at (ref c 'diags) bv 2 (string-as-view &pair)))
+    (drop &pair)
+    (drop &c)
+    (drop &m)
+    (drop &b)
+    (drop &a))
   (return (ok)))
 
 ; A field access on a struct the cycle partner defines. This INVERTED in Stage
@@ -505,12 +505,12 @@
   (let (m:String (try (test-write-file "w1-scm.nuc" "(import w1-sca)
 (defn main ():i32 (let (s:ptr:W1SC (alloca W1SC)) (return (w1-scb s))))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         s:String (try (w1-ir mv)))
-    (try (check-line (string-as-view (addr-of s)) "%W1SC = type { i32, i32 }"))
+    (try (check-line (string-as-view &s) "%W1SC = type { i32, i32 }"))
     (try (w1-exit mv 11))
-    (drop (addr-of s))
-    (drop (addr-of m)))
+    (drop &s)
+    (drop &m))
   (return (ok)))
 
 ; A struct literal over the partner's type: the same inversion at the
@@ -523,17 +523,17 @@
 (defn w1-lca ():i32 (return 1))
 "))
   (try (test-write-file "w1-lcb.nuc" "(import w1-lca)
-(defn w1-lcb ():i32 (let (v:W1LC (W1LC 3 4)) (return (+ (_get (addr-of v) 'x) (_get (addr-of v) 'y)))))
+(defn w1-lcb ():i32 (let (v:W1LC (W1LC 3 4)) (return (+ (_get &v 'x) (_get &v 'y)))))
 "))
   (let (m:String (try (test-write-file "w1-lcm.nuc" "(import w1-lca)
 (defn main ():i32 (return (w1-lcb)))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         s:String (try (w1-ir mv)))
-    (try (check-line (string-as-view (addr-of s)) "%W1LC = type { i32, i32 }"))
+    (try (check-line (string-as-view &s) "%W1LC = type { i32, i32 }"))
     (try (w1-exit mv 7))
-    (drop (addr-of s))
-    (drop (addr-of m)))
+    (drop &s)
+    (drop &m))
   (return (ok)))
 
 ; The by-value parameter, and the one whose old failure was a SILENT
@@ -551,18 +551,18 @@
 (defn w1-bca ():i32 (return 1))
 "))
   (try (test-write-file "w1-bcb.nuc" "(import w1-bca)
-(defn w1-bcb (v:W1BC):i32 (return (+ (_get (addr-of v) 'x) (_get (addr-of v) 'w))))
+(defn w1-bcb (v:W1BC):i32 (return (+ (_get &v 'x) (_get &v 'w))))
 "))
   (let (m:String (try (test-write-file "w1-bcm.nuc" "(import w1-bca)
 (defn main ():i32 (let (v:W1BC (W1BC 1 2 3 4)) (return (w1-bcb v))))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         s:String (try (w1-ir mv)))
-    (try (check-line (string-as-view (addr-of s))
+    (try (check-line (string-as-view &s)
            "define weak_odr i32 @w1-bcb(i64 %v.arg.0, i64 %v.arg.1) section \".text.w1-bcb\" {"))
     (try (w1-exit mv 5))
-    (drop (addr-of s))
-    (drop (addr-of m)))
+    (drop &s)
+    (drop &m))
   (return (ok)))
 
 ; A `prefix/name` over a cycle member, which INVERTED in Stage 15 B2b. W1d
@@ -581,8 +581,8 @@
   (let (m:String (try (test-write-file "w1-pcm.nuc" "(import w1-pca)
 (defn main ():i32 (return (w1-pcb 5)))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 6))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 6))
+    (drop &m))
   (return (ok)))
 
 ; The rule the skip must NOT relax: cycle partners defining the same name and
@@ -598,16 +598,16 @@
         m:String (try (test-write-file "w1-dcm.nuc" "(import w1-dca)
 (defn main ():i32 (return (w1-dcdup 1)))
 "))
-        c:Compiled (try (w1-compile (string-as-view (addr-of m))))
+        c:Compiled (try (w1-compile (string-as-view &m)))
         want:String (str "duplicate definition of 'w1-dcdup' — the same parameter types are already defined at "
-                         (string-as-view (addr-of a)) ":2"))
-    (try (check-error-at (addr-of c 'diags) (string-as-view (addr-of b)) 2
-                         (string-as-view (addr-of want))))
-    (drop (addr-of want))
-    (drop (addr-of c))
-    (drop (addr-of m))
-    (drop (addr-of b))
-    (drop (addr-of a)))
+                         (string-as-view &a) ":2"))
+    (try (check-error-at (ref c 'diags) (string-as-view &b) 2
+                         (string-as-view &want)))
+    (drop &want)
+    (drop &c)
+    (drop &m)
+    (drop &b)
+    (drop &a))
   (return (ok)))
 
 ; Two `.nuc` STRING-path imports in one file. Pre-existing bug: every NODE-STR
@@ -628,10 +628,10 @@
 (import \"" dir "/w1-ppb.nuc\")
 (defn main ():i32 (return (+ (w1-ppa/w1-ppa) (w1-ppb/w1-ppb))))
 ")
-        m:String (try (test-write-file "w1-pp.nuc" (string-as-view (addr-of src)))))
-    (try (w1-exit (string-as-view (addr-of m)) 7))
-    (drop (addr-of m))
-    (drop (addr-of src)))
+        m:String (try (test-write-file "w1-pp.nuc" (string-as-view &src))))
+    (try (w1-exit (string-as-view &m) 7))
+    (drop &m)
+    (drop &src))
   (return (ok)))
 
 ; An explicit second operand still wins over the basename default.
@@ -641,10 +641,10 @@
         src:String (str "(import \"" dir "/w1-ppa.nuc\" alpha)
 (defn main ():i32 (return (alpha/w1-ppa)))
 ")
-        m:String (try (test-write-file "w1-ppx.nuc" (string-as-view (addr-of src)))))
-    (try (w1-exit (string-as-view (addr-of m)) 3))
-    (drop (addr-of m))
-    (drop (addr-of src)))
+        m:String (try (test-write-file "w1-ppx.nuc" (string-as-view &src))))
+    (try (w1-exit (string-as-view &m) 3))
+    (drop &m)
+    (drop &src))
   (return (ok)))
 
 ; A C header string path still defaults to `c` — the rule only changed for
@@ -656,10 +656,10 @@
 (defn main ():i32 (c/printf \"w1d\\n\") (return 0))
 "))
         dir:StrView (try (test-scratch))
-        out:String (try (build-run-file dir "" (string-as-view (addr-of m)))))
-    (try (check-eq (string-as-view (addr-of out)) "w1d\n"))
-    (drop (addr-of out))
-    (drop (addr-of m)))
+        out:String (try (build-run-file dir "" (string-as-view &m))))
+    (try (check-eq (string-as-view &out) "w1d\n"))
+    (drop &out)
+    (drop &m))
   (return (ok)))
 
 ; Two different files whose basenames collide is a real conflict, and the
@@ -667,7 +667,7 @@
 (deftest w1d-path-prefix-collision
   (try (w1-pp-files))
   (let (sub:String (try (test-scratch-sub "sub"))
-        p2:String (try (write-into (string-as-view (addr-of sub)) "w1-ppa.nuc"
+        p2:String (try (write-into (string-as-view &sub) "w1-ppa.nuc"
                                    "(defn w1-ppa2 ():i32 (return 5))
 "))
         dir:StrView (try (test-scratch))
@@ -675,17 +675,17 @@
 (import \"" dir "/sub/w1-ppa.nuc\")
 (defn main ():i32 (return 0))
 ")
-        m:String (try (test-write-file "w1-ppdup.nuc" (string-as-view (addr-of src))))
-        mv:StrView (string-as-view (addr-of m))
+        m:String (try (test-write-file "w1-ppdup.nuc" (string-as-view &src)))
+        mv:StrView (string-as-view &m)
         c:Compiled (try (compile-path mv))
         want:String (str "import: prefix 'w1-ppa' is already bound to '" dir "/w1-ppa.nuc'"))
-    (try (check-error-at (addr-of c 'diags) mv 2 (string-as-view (addr-of want))))
-    (drop (addr-of want))
-    (drop (addr-of c))
-    (drop (addr-of m))
-    (drop (addr-of src))
-    (drop (addr-of p2))
-    (drop (addr-of sub)))
+    (try (check-error-at (ref c 'diags) mv 2 (string-as-view &want)))
+    (drop &want)
+    (drop &c)
+    (drop &m)
+    (drop &src)
+    (drop &p2)
+    (drop &sub))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -705,18 +705,18 @@
 "))
         m:String (try (test-write-file "w1c-main.nuc" "(defn main ():i32 (return (w1c-elsewhere)))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         c:Compiled (try (w1-compile mv))
-        want:String (str "'w1c-elsewhere' is defined in " (string-as-view (addr-of o))
+        want:String (str "'w1c-elsewhere' is defined in " (string-as-view &o)
                          ", which no import in this unit reaches"))
-    (try (check-error-at (addr-of c 'diags) mv 1
+    (try (check-error-at (ref c 'diags) mv 1
            "unknown: w1c-elsewhere — not defined anywhere in this compilation unit"))
-    (try (check-note-at (addr-of c 'diags) mv 1 (string-as-view (addr-of want))))
-    (try (check-no-line-zero (addr-of c 'diags)))
-    (drop (addr-of want))
-    (drop (addr-of c))
-    (drop (addr-of m))
-    (drop (addr-of o)))
+    (try (check-note-at (ref c 'diags) mv 1 (string-as-view &want)))
+    (try (check-no-line-zero (ref c 'diags)))
+    (drop &want)
+    (drop &c)
+    (drop &m)
+    (drop &o))
   (return (ok)))
 
 ; The control: adding the import makes it compile, link and run. The note must
@@ -728,8 +728,8 @@
   (let (m:String (try (test-write-file "w1c-fixed.nuc" "(import w1c-other)
 (defn main ():i32 (return (w1c-elsewhere)))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 7))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 7))
+    (drop &m))
   (return (ok)))
 
 ; Tier 4: nothing on the search path defines it. The message must say so
@@ -738,15 +738,15 @@
 (deftest w1c-defined-nowhere
   (let (m:String (try (test-write-file "w1c-none.nuc" "(defn main ():i32 (return (w1c-absent-everywhere)))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         c:Compiled (try (w1-compile mv)))
-    (try (check-error-at (addr-of c 'diags) mv 1
+    (try (check-error-at (ref c 'diags) mv 1
            "unknown: w1c-absent-everywhere — not defined anywhere in this compilation unit"))
-    (let (t:String (diag-list-text (addr-of c 'diags)))
-      (try (check-not-contains (string-as-view (addr-of t)) "note:"))
-      (drop (addr-of t)))
-    (drop (addr-of c))
-    (drop (addr-of m)))
+    (let (t:String (diag-list-text (ref c 'diags)))
+      (try (check-not-contains (string-as-view &t) "note:"))
+      (drop &t))
+    (drop &c)
+    (drop &m))
   (return (ok)))
 
 ; §2.7's TYPE reachability constraint stays a rule; W1c only improves its
@@ -758,18 +758,18 @@
         m:String (try (test-write-file "w1c-tymain.nuc" "(defn w1c-take (w:ptr:W1cWidget):i32 (return 0))
 (defn main ():i32 (return 0))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         c:Compiled (try (w1-compile mv))
-        want:String (str "'W1cWidget' is defined in " (string-as-view (addr-of o))
+        want:String (str "'W1cWidget' is defined in " (string-as-view &o)
                          ", which no import in this unit reaches"))
-    (try (check-error-at (addr-of c 'diags) mv 1
+    (try (check-error-at (ref c 'diags) mv 1
            "unknown type: W1cWidget — not defined anywhere in this compilation unit"))
-    (try (check-note-at (addr-of c 'diags) mv 1 (string-as-view (addr-of want))))
-    (try (check-no-line-zero (addr-of c 'diags)))
-    (drop (addr-of want))
-    (drop (addr-of c))
-    (drop (addr-of m))
-    (drop (addr-of o)))
+    (try (check-note-at (ref c 'diags) mv 1 (string-as-view &want)))
+    (try (check-no-line-zero (ref c 'diags)))
+    (drop &want)
+    (drop &c)
+    (drop &m)
+    (drop &o))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -804,8 +804,8 @@
 
 (deftest w9-root-hoist
   (let (m:String (try (w9-hoist-main)))
-    (try (w1-exit (string-as-view (addr-of m)) 5))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 5))
+    (drop &m))
   (return (ok)))
 
 ; The exit status cannot see a double emission — LLVM would, but only at the
@@ -831,13 +831,13 @@
 
 (deftest w9-root-hoist-single-emission
   (let (m:String (try (w9-hoist-main))
-        s:String (try (w1-ir (string-as-view (addr-of m))))
-        iv:StrView (string-as-view (addr-of s)))
+        s:String (try (w1-ir (string-as-view &m)))
+        iv:StrView (string-as-view &s))
     (try (w9-defined-once iv "root hoist"))
     (try (check-order iv "define i32 @main(" "define weak_odr i32 @lib-fn("
                       "the hoisted root is emitted at the re-entry"))
-    (drop (addr-of s))
-    (drop (addr-of m)))
+    (drop &s)
+    (drop &m))
   (return (ok)))
 
 ; The same cycle with one of the root's own definitions emitted BEFORE the
@@ -858,21 +858,21 @@
 
 (deftest w9-root-cycle-skip
   (let (m:String (try (w9-skip-main)))
-    (try (w1-exit (string-as-view (addr-of m)) 6))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 6))
+    (drop &m))
   (return (ok)))
 
 ; …and the mirror of the order claim: the window being shut means the library is
 ; emitted at the import and the root's `main` follows it.
 (deftest w9-root-cycle-skip-single-emission
   (let (m:String (try (w9-skip-main))
-        s:String (try (w1-ir (string-as-view (addr-of m))))
-        iv:StrView (string-as-view (addr-of s)))
+        s:String (try (w1-ir (string-as-view &m)))
+        iv:StrView (string-as-view &s))
     (try (w9-defined-once iv "cycle skip"))
     (try (check-order iv "define weak_odr i32 @lib-fn(" "define i32 @main("
                       "the shut window takes the ordinary cycle skip"))
-    (drop (addr-of s))
-    (drop (addr-of m)))
+    (drop &s)
+    (drop &m))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -883,13 +883,13 @@
 ; directory of their own so the header is genuinely adjacent to the source.
 (defn w9-sibling-files ():!StrView
   (let (l:String (try (test-scratch-sub "l"))
-        lv:StrView (string-as-view (addr-of l))
+        lv:StrView (string-as-view &l)
         src:String (try (write-into lv "w9sh.nuc" "(ns shn)
 (defstruct W9Rec (n i32))
 (defn w9sh-get ((r (ref W9Rec))):i32 (return (_get r 'n)))
 ")))
-    (try (emit-into lv "--emit-nuch" (string-as-view (addr-of src)) lv "w9sh.nuch"))
-    (drop (addr-of src))
+    (try (emit-into lv "--emit-nuch" (string-as-view &src) lv "w9sh.nuch"))
+    (drop &src)
     (return (ok lv))))
 
 ; The import takes the SOURCE even with a header beside it: an inlined
@@ -899,11 +899,11 @@
         m:String (try (test-write-file "w9shok.nuc" "(import w9sh)
 (defn main ():i32 (return 0))
 "))
-        s:String (try (emit-for-file lv "--emit-llvm" (string-as-view (addr-of m)))))
-    (try (check-line (string-as-view (addr-of s))
+        s:String (try (emit-for-file lv "--emit-llvm" (string-as-view &m))))
+    (try (check-line (string-as-view &s)
                      "define weak_odr i32 @shn__w9sh-get(ptr %r.arg) section \".text.shn__w9sh-get\" {"))
-    (drop (addr-of s))
-    (drop (addr-of m)))
+    (drop &s)
+    (drop &m))
   (return (ok)))
 
 ; The diagnostic side of the same ruling. The bare `W9Rec` is wrong — the file
@@ -916,15 +916,15 @@
 (defn w9-take ((r (ref W9Rec))):i32 (return (w9sh-get r)))
 (defn main ():i32 (return 0))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         c:Compiled (try (compile-path-in lv mv)))
-    (try (check-no-line-zero (addr-of c 'diags)))
-    (try (check-error-at (addr-of c 'diags) mv 2
+    (try (check-no-line-zero (ref c 'diags)))
+    (try (check-error-at (ref c 'diags) mv 2
                          "unknown type: W9Rec — defined in namespace 'shn'"))
-    (try (check-note-at (addr-of c 'diags) mv 2 "write 'shp/W9Rec' here"))
-    (try (check-no-diag-containing (addr-of c 'diags) "w9sh.nuch"))
-    (drop (addr-of c))
-    (drop (addr-of m)))
+    (try (check-note-at (ref c 'diags) mv 2 "write 'shp/W9Rec' here"))
+    (try (check-no-diag-containing (ref c 'diags) "w9sh.nuch"))
+    (drop &c)
+    (drop &m))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -945,29 +945,29 @@
 ; name-vs-layout split, not this item.
 (defn w9-sp-lib ():!String
   (let (sub:String (try (test-scratch-sub "sub"))
-        p:String (try (write-into (string-as-view (addr-of sub)) "sp.nuc" "(defconst SP-K 7)
+        p:String (try (write-into (string-as-view &sub) "sp.nuc" "(defconst SP-K 7)
 (defenum SpColor sp-red sp-green)
 (defstruct SpRec n:i32)
 (defvar sp-gv:i32 30)
 (defn sp-add (a:i32):i32 (return (+ a SP-K)))
 ")))
-    (drop (addr-of sub))
+    (drop &sub)
     (return (ok p))))
 
 (deftest w9-string-path-use-before-import
   (let (p:String (try (w9-sp-lib))
         src:String (str "(defn sp-use (r:ptr:SpRec):i32
   (return (+ (+ (sp-add 5) sp-gv) sp-green)))
-(import-use \"" (string-as-view (addr-of p)) "\")
+(import-use \"" (string-as-view &p) "\")
 (defn main ():i32
   (let (r:ref:SpRec (SpRec 2))
     (return (sp-use (as ptr:SpRec r)))))
 ")
-        m:String (try (test-write-file "spmain.nuc" (string-as-view (addr-of src)))))
-    (try (w1-exit (string-as-view (addr-of m)) 43))
-    (drop (addr-of m))
-    (drop (addr-of src))
-    (drop (addr-of p)))
+        m:String (try (test-write-file "spmain.nuc" (string-as-view &src))))
+    (try (w1-exit (string-as-view &m) 43))
+    (drop &m)
+    (drop &src)
+    (drop &p))
   (return (ok)))
 
 ; The point of the fix is that the two spellings agree: same program, symbol
@@ -986,8 +986,8 @@
   (let (r:ref:SpRec (SpRec 2))
     (return (sp-use (as ptr:SpRec r)))))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 43))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 43))
+    (drop &m))
   (return (ok)))
 
 ; The two spellings must agree on a MISSING file too. The string branch's null
@@ -999,16 +999,16 @@
         src:String (str "(import-use \"" dir "/sub/nosuch.nuc\")
 (defn main ():i32 (return 0))
 ")
-        m:String (try (test-write-file "spbad.nuc" (string-as-view (addr-of src))))
-        mv:StrView (string-as-view (addr-of m))
+        m:String (try (test-write-file "spbad.nuc" (string-as-view &src)))
+        mv:StrView (string-as-view &m)
         c:Compiled (try (w1-compile mv))
         want:String (str "import: cannot find '" dir "/sub/nosuch.nuc'"))
-    (try (check-no-line-zero (addr-of c 'diags)))
-    (try (check-error-at (addr-of c 'diags) mv 1 (string-as-view (addr-of want))))
-    (drop (addr-of want))
-    (drop (addr-of c))
-    (drop (addr-of m))
-    (drop (addr-of src)))
+    (try (check-no-line-zero (ref c 'diags)))
+    (try (check-error-at (ref c 'diags) mv 1 (string-as-view &want)))
+    (drop &want)
+    (drop &c)
+    (drop &m)
+    (drop &src))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -1035,8 +1035,8 @@
 (import-use w5e-pb)
 (defn main ():i32 (return (+ (* 10 (w5e-a)) (w5e-b))))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 12))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 12))
+    (drop &m))
   (return (ok)))
 
 (deftest w5e-private-defn-order2
@@ -1045,8 +1045,8 @@
 (import-use w5e-pa)
 (defn main ():i32 (return (+ (* 10 (w5e-a)) (w5e-b))))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 12))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 12))
+    (drop &m))
   (return (ok)))
 
 ; `defvar-` is the same class with a worse symptom: two `@g` definitions in one
@@ -1062,8 +1062,8 @@
 (import-use w5e-vb)
 (defn main ():i32 (return (+ (* 10 (w5e-va)) (w5e-vb))))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 34))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 34))
+    (drop &m))
   (return (ok)))
 
 ; A file's own private definition shadows a public one of the same name
@@ -1084,8 +1084,8 @@
 (import-use w5e-sc)
 (defn main ():i32 (return (+ (* 100 (w5e-sa)) (+ (* 10 (w5e-sc)) (w5e-s)))))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 199))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 199))
+    (drop &m))
   (return (ok)))
 
 (deftest w5e-private-shadows-public-order2
@@ -1094,8 +1094,8 @@
 (import-use w5e-sa)
 (defn main ():i32 (return (+ (* 100 (w5e-sa)) (+ (* 10 (w5e-sc)) (w5e-s)))))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 199))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 199))
+    (drop &m))
   (return (ok)))
 
 ; Two files each defining TWO private `w5e-o` methods exercises the mangled
@@ -1114,8 +1114,8 @@
 (import-use w5e-ob)
 (defn main ():i32 (return (+ (w5e-oa) (w5e-ob))))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 33))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 33))
+    (drop &m))
   (return (ok)))
 
 ; What W5e must NOT relax. A PUBLIC name is still unique across the whole unit.
@@ -1131,19 +1131,19 @@
 (import-use w5e-cb)
 (defn main ():i32 (return (w5e-pub)))
 "))
-        c:Compiled (try (w1-compile (string-as-view (addr-of m))))
+        c:Compiled (try (w1-compile (string-as-view &m)))
         want:String (str "duplicate definition of 'w5e-pub' — the same parameter types are already defined at "
-                         (string-as-view (addr-of a)) ":1"))
-    (try (check-no-line-zero (addr-of c 'diags)))
-    (try (check-error-at (addr-of c 'diags) (string-as-view (addr-of b)) 1
-                         (string-as-view (addr-of want))))
-    (try (check-note-at (addr-of c 'diags) (string-as-view (addr-of b)) 1
+                         (string-as-view &a) ":1"))
+    (try (check-no-line-zero (ref c 'diags)))
+    (try (check-error-at (ref c 'diags) (string-as-view &b) 1
+                         (string-as-view &want)))
+    (try (check-note-at (ref c 'diags) (string-as-view &b) 1
                         "'w5e-pub' is public, and a public name must be unique across the whole compilation unit"))
-    (drop (addr-of want))
-    (drop (addr-of c))
-    (drop (addr-of m))
-    (drop (addr-of b))
-    (drop (addr-of a)))
+    (drop &want)
+    (drop &c)
+    (drop &m)
+    (drop &b)
+    (drop &a))
   (return (ok)))
 
 ; …and `defn-` in an EXPLICIT namespace is still private to that namespace, so
@@ -1162,19 +1162,19 @@
 (import-use w5e-nb)
 (defn main ():i32 (return 0))
 "))
-        c:Compiled (try (w1-compile (string-as-view (addr-of m))))
+        c:Compiled (try (w1-compile (string-as-view &m)))
         want:String (str "duplicate definition of 'w5e-nsh' — the same parameter types are already defined at "
-                         (string-as-view (addr-of a)) ":2"))
-    (try (check-no-line-zero (addr-of c 'diags)))
-    (try (check-error-at (addr-of c 'diags) (string-as-view (addr-of b)) 2
-                         (string-as-view (addr-of want))))
-    (try (check-note-at (addr-of c 'diags) (string-as-view (addr-of b)) 2
+                         (string-as-view &a) ":2"))
+    (try (check-no-line-zero (ref c 'diags)))
+    (try (check-error-at (ref c 'diags) (string-as-view &b) 2
+                         (string-as-view &want)))
+    (try (check-note-at (ref c 'diags) (string-as-view &b) 2
                         "`defn-` makes a name private to its NAMESPACE, not to its file, and both definitions are in namespace 'w5eg'"))
-    (drop (addr-of want))
-    (drop (addr-of c))
-    (drop (addr-of m))
-    (drop (addr-of b))
-    (drop (addr-of a)))
+    (drop &want)
+    (drop &c)
+    (drop &m)
+    (drop &b)
+    (drop &a))
   (return (ok)))
 
 ; Stage 15 W4a / findings §2.1: the sibling forward reference across two
@@ -1200,11 +1200,11 @@
 (defn main ():i32
   (return (x-uses)))
 "))
-          mv:StrView (string-as-view (addr-of m))
+          mv:StrView (string-as-view &m)
           c:Compiled (try (compile-path-in dir mv)))
-      (try (check-silent (addr-of c) "a sibling forward reference"))
-      (try (check-no-line-zero (addr-of c 'diags)))
-      (drop (addr-of c))
+      (try (check-silent &c "a sibling forward reference"))
+      (try (check-no-line-zero (ref c 'diags)))
+      (drop &c)
       (try (check-file-exit dir mv 7))
-      (drop (addr-of m))))
+      (drop &m)))
   (return (ok)))

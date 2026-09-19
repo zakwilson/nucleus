@@ -32,10 +32,10 @@ f128|__float128|q"))
 ; which is why the separator is written out rather than trimmed away.
 (defn fl-field (row:StrView i:usize):StrView
   (let (bar:StrView "|"
-        it:SplitIter (strview-split (addr-of row) (addr-of bar))
+        it:SplitIter (strview-split &row &bar)
         k:usize 0)
-    (while (not (split-iter-done (addr-of it)))
-      (let (f:StrView (split-iter-next (addr-of it)))
+    (while (not (split-iter-done &it))
+      (let (f:StrView (split-iter-next &it))
         (when (= k i) (return f))
         (set! k (+ k 1))))
     (return "")))
@@ -48,13 +48,13 @@ f128|__float128|q"))
   (let (sp:StrView " "
         kinds:StrView (fl-kinds)
         n:usize start
-        it:SplitIter (strview-split (addr-of lits) (addr-of sp)))
-    (while (not (split-iter-done (addr-of it)))
-      (let (lit:StrView (split-iter-next (addr-of it))
+        it:SplitIter (strview-split &lits &sp))
+    (while (not (split-iter-done &it))
+      (let (lit:StrView (split-iter-next &it)
             ki:usize 0
-            kit:LineIter (strview-lines (addr-of kinds)))
-        (while (and (< ki nkinds) (not (lines-iter-done (addr-of kit))))
-          (let (row:StrView (lines-iter-next (addr-of kit))
+            kit:LineIter (strview-lines &kinds))
+        (while (and (< ki nkinds) (not (lines-iter-done &kit)))
+          (let (row:StrView (lines-iter-next &kit)
                 nk:StrView (fl-field row 0))
             (str-into nuc "(defvar v" n "_" nk ":" nk " " lit ")\n")
             (str-into c "__attribute__((used)) static " (fl-field row 1)
@@ -76,7 +76,7 @@ f128|__float128|q"))
 (defn fl-parse-global (l:StrView (out (ref FlGlobal))):bool
   (when (not (strview-has-prefix l "@")) (return false))
   (let (eq:StrView " = ")
-    (match (strview-find (addr-of l) (addr-of eq))
+    (match (strview-find &l &eq)
       ((some at)
         (set! (out 'name) (strview-drop-bytes (strview-take-bytes l at) 1))
         (let (r:StrView (strview-drop-bytes l (+ at 3)))
@@ -85,19 +85,19 @@ f128|__float128|q"))
           (when (not (strview-has-prefix r "global ")) (return false))
           (set! r (strview-drop-bytes r 7))
           (let (ty:StrView (view-upto-byte r 32)
-                tn:usize (strview-byte-len (addr-of ty)))
-            (when (>= tn (strview-byte-len (addr-of r))) (return false))
+                tn:usize (strview-byte-len &ty))
+            (when (>= tn (strview-byte-len &r)) (return false))
             (let (v:StrView (view-upto-byte (strview-drop-bytes r (+ tn 1)) 44))
               (set! (out 'ty) ty)
-              (set! (out 'val) (strview-trim (addr-of v)))
+              (set! (out 'val) (strview-trim &v))
               (return true)))))
       (none (return false)))))
 
 ; The `@v…` global named `name`, if the module has one.
 (defn fl-find-global (module:StrView name:StrView (out (ref FlGlobal))):bool
-  (let (it:LineIter (strview-lines (addr-of module)))
-    (while (not (lines-iter-done (addr-of it)))
-      (let (l:StrView (lines-iter-next (addr-of it)))
+  (let (it:LineIter (strview-lines &module))
+    (while (not (lines-iter-done &it))
+      (let (l:StrView (lines-iter-next &it))
         (when (and (strview-has-prefix l "@v") (fl-parse-global l out))
           (when (= (out 'name) name) (return true))))))
   (return false))
@@ -117,7 +117,7 @@ f128|__float128|q"))
 ; (`f64-bits`, src/type-utils.nuc; the f64 Hash conformance, lib/hash.nuc).
 (defn fl-f64-bits (d:f64):ui64
   (let (r:f64 d
-        p:ptr:f64 (addr-of r))
+        p:ptr:f64 &r)
     (return (deref (unsafe/cast ptr:ui64 p)))))
 
 ; An f32/f64 constant's 64 bits, from either spelling LLVM uses. The `0x` case
@@ -153,9 +153,9 @@ f128|__float128|q"))
   (let (rows:i64 0
         w:&FlGlobal (alloca FlGlobal)
         g:&FlGlobal (alloca FlGlobal)
-        it:LineIter (strview-lines (addr-of want)))
-    (while (not (lines-iter-done (addr-of it)))
-      (let (l:StrView (lines-iter-next (addr-of it)))
+        it:LineIter (strview-lines &want))
+    (while (not (lines-iter-done &it))
+      (let (l:StrView (lines-iter-next &it))
         (when (and (strview-has-prefix l "@v") (fl-parse-global l w))
           (set! rows (+ rows 1))
           (when (not (fl-find-global got (w 'name) g))
@@ -176,7 +176,7 @@ f128|__float128|q"))
               (= b 95) (= b 46))))
 
 (defn fl-all-digits? (s:StrView):bool
-  (let (n:usize (strview-byte-len (addr-of s))
+  (let (n:usize (strview-byte-len &s)
         i:usize 0)
     (when (= n 0) (return false))
     (while (< i n)
@@ -191,7 +191,7 @@ f128|__float128|q"))
 (defn fl-squeeze (s:StrView):String
   (let (out:String (string-new)
         sp:StrView " "
-        n:usize (strview-byte-len (addr-of s))
+        n:usize (strview-byte-len &s)
         i:usize 0)
     (while (< i n)
       (cond
@@ -201,11 +201,11 @@ f128|__float128|q"))
             (when (and (< j n)
                        (!= (aref (s 'data) (as i64 j)) 44)
                        (!= (aref (s 'data) (as i64 j)) 41))
-              (string-push-str-unchecked (addr-of out) (addr-of sp)))
+              (string-push-str-unchecked &out &sp))
             (set! i j))
         true
           (do
-            (string-push-bytes-raw (addr-of out)
+            (string-push-bytes-raw &out
                                    (unsafe/ptr+ (s 'data) (as i64 i)) 1)
             (set! i (+ i 1)))))
     (return out)))
@@ -215,7 +215,7 @@ f128|__float128|q"))
 ; surviving `%`-token is a TYPE, so it keeps its text and loses its sigil.
 (defn fl-strip-ssa (s:StrView):String
   (let (out:String (string-new)
-        n:usize (strview-byte-len (addr-of s))
+        n:usize (strview-byte-len &s)
         i:usize 0)
     (while (< i n)
       (let (r:StrView (strview-drop-bytes s i))
@@ -229,25 +229,25 @@ f128|__float128|q"))
               (let (tok:StrView (strview (unsafe/ptr+ (s 'data) (as i64 (+ i 1)))
                                          (- j (+ i 1))))
                 (when (not (or (fl-all-digits? tok) (strview-has-suffix tok ".arg")))
-                  (string-push-str-unchecked (addr-of out) (addr-of tok))))
+                  (string-push-str-unchecked &out &tok)))
               (set! i j))
           true
             (do
-              (string-push-bytes-raw (addr-of out)
+              (string-push-bytes-raw &out
                                      (unsafe/ptr+ (s 'data) (as i64 i)) 1)
               (set! i (+ i 1))))))
-    (let (ov:StrView (string-as-view (addr-of out))
+    (let (ov:StrView (string-as-view &out)
           sq:String (fl-squeeze ov))
-      (drop (addr-of out))
+      (drop &out)
       (return sq))))
 
 ; The text between `open` and the LAST `)` of the line. Greedy on purpose:
 ; `byval(%S1)` puts a `)` inside the parameter list.
 (defn fl-arg-list (l:StrView open:StrView):!StrView
-  (match (strview-find (addr-of l) (addr-of open))
+  (match (strview-find &l &open)
     ((some at)
-      (let (rest:StrView (strview-drop-bytes l (+ at (strview-byte-len (addr-of open)))))
-        (match (strview-rfind-byte (addr-of rest) 41)
+      (let (rest:StrView (strview-drop-bytes l (+ at (strview-byte-len &open))))
+        (match (strview-rfind-byte (ref rest) 41)
           ((some close) (return (ok (strview-take-bytes rest close))))
           (none (fail! "unterminated argument list: " (test-show l))))))
     (none (fail! "no " (sexp-quote open) " in " (test-show l)))))
@@ -255,22 +255,22 @@ f128|__float128|q"))
 ; `<ret> (<params>)` for one `define`, with the SSA names gone.
 (defn fl-signature (module:StrView name:StrView):!String
   (let (open:String (str "@" name "(")
-        ov:StrView (string-as-view (addr-of open))
+        ov:StrView (string-as-view &open)
         l:StrView (try (line-with module ov)))
     (when (not (strview-has-prefix l "define "))
       (fail! "not a definition line: " (test-show l)))
     (let (r:StrView (strview-drop-bytes l 7))
       (when (strview-has-prefix r "dso_local ") (set! r (strview-drop-bytes r 10)))
-      (match (strview-find (addr-of r) (addr-of ov))
+      (match (strview-find &r &ov)
         ((some at)
           (let (rt:StrView (strview-take-bytes r at)
-                ret:StrView (strview-trim-end (addr-of rt))
+                ret:StrView (strview-trim-end &rt)
                 params:StrView (try (fl-arg-list r ov))
                 pn:String (fl-strip-ssa params)
-                pv:StrView (string-as-view (addr-of pn))
+                pv:StrView (string-as-view &pn)
                 sig:String (str ret " (" pv ")"))
-            (drop (addr-of pn))
-            (drop (addr-of open))
+            (drop &pn)
+            (drop &open)
             (return (ok sig))))
         (none (fail! "no " (sexp-quote ov) " in " (test-show l)))))))
 
@@ -280,13 +280,13 @@ f128|__float128|q"))
   (let (out:String (string-new)
         sep:StrView ", "
         first:bool true
-        it:SplitIter (strview-split (addr-of args) (addr-of sep)))
-    (while (not (split-iter-done (addr-of it)))
-      (let (a:StrView (split-iter-next (addr-of it)))
-        (when (not first) (string-push-str-unchecked (addr-of out) (addr-of sep)))
+        it:SplitIter (strview-split &args &sep))
+    (while (not (split-iter-done &it))
+      (let (a:StrView (split-iter-next &it))
+        (when (not first) (string-push-str-unchecked &out &sep))
         (set! first false)
         (let (t:StrView (view-upto-byte a 32))
-          (string-push-str-unchecked (addr-of out) (addr-of t)))))
+          (string-push-str-unchecked &out &t))))
     (return out)))
 
 ; ---------------------------------------------------------------------------
@@ -301,10 +301,10 @@ f128|__float128|q"))
                         "__attribute__((used)) static _Float16 h = 1;
 __attribute__((used)) static __float128 q = 1;
 "))
-        r:CcIr (try (cc-emit-llvm (string-as-view (addr-of p))))
+        r:CcIr (try (cc-emit-llvm (string-as-view &p)))
         have:bool (r 'ok?))
-    (drop (addr-of r))
-    (drop (addr-of p))
+    (drop &r)
+    (drop &p)
     (when (not have) (skip! "this clang has no _Float16/__float128")))
   (return (ok)))
 
@@ -316,33 +316,33 @@ __attribute__((used)) static __float128 q = 1;
   (try (require-extended-float-widths))
   (let (nucsrc:String (string-new)
         csrc:String (string-new)
-        nb:ref:String (addr-of nucsrc)
-        cb:ref:String (addr-of csrc)
+        nb:ref:String &nucsrc
+        cb:ref:String &csrc
         n:usize 0)
     (set! n (fl-emit-rows (fl-hex-literals) 5 nb cb n))
     (set! n (fl-emit-rows (fl-decimal-literals) 3 nb cb n))
     (str-into nb "(defn main ():i32 (return 0))\n")
     (let (np:String (try (test-write-file "lit.nuc" (string-as-view nb)))
           cp:String (try (test-write-file "lit.c" (string-as-view cb)))
-          nir:Compiled (try (compile-path (string-as-view (addr-of np))))
-          cir:CcIr (try (cc-emit-llvm (string-as-view (addr-of cp)))))
+          nir:Compiled (try (compile-path (string-as-view &np)))
+          cir:CcIr (try (cc-emit-llvm (string-as-view &cp))))
       (when (not (nir 'ok?))
         (fail! "expected a clean compile\n     "
-               (test-show (string-as-view (addr-of nir 'raw)))))
+               (test-show (string-as-view (ref nir 'raw)))))
       (when (not (cir 'ok?))
         (fail! "clang refused the generated fixture\n     "
-               (test-show (string-as-view (addr-of cir 'err)))))
-      (let (rows:i64 (try (fl-compare-globals (string-as-view (addr-of cir 'ir))
-                                              (string-as-view (addr-of nir 'ir)))))
+               (test-show (string-as-view (ref cir 'err)))))
+      (let (rows:i64 (try (fl-compare-globals (string-as-view (ref cir 'ir))
+                                              (string-as-view (ref nir 'ir)))))
         ; 16 hex literals at five widths and 8 decimal ones at three: a
         ; generator that quietly emitted nothing would otherwise pass.
         (try (check-eq-int rows 104 "constants compared")))
-      (drop (addr-of cir))
-      (drop (addr-of nir))
-      (drop (addr-of cp))
-      (drop (addr-of np)))
-    (drop (addr-of csrc))
-    (drop (addr-of nucsrc))))
+      (drop &cir)
+      (drop &nir)
+      (drop &cp)
+      (drop &np))
+    (drop &csrc)
+    (drop &nucsrc)))
 
 ; ---------------------------------------------------------------------------
 ; FL-4: the aggregate ABI
@@ -377,33 +377,33 @@ struct S3 f3(struct S3 s){return s;}
 (defn f3 (s:S3):S3 (return s))
 (defn main ():i32 (return 0))
 "))
-        cir:CcIr (try (cc-emit-llvm (string-as-view (addr-of cp))))
-        nir:Compiled (try (compile-path (string-as-view (addr-of np)))))
+        cir:CcIr (try (cc-emit-llvm (string-as-view &cp)))
+        nir:Compiled (try (compile-path (string-as-view &np))))
     (when (not (nir 'ok?))
       (fail! "expected a clean compile\n     "
-             (test-show (string-as-view (addr-of nir 'raw)))))
+             (test-show (string-as-view (ref nir 'raw)))))
     (when (not (cir 'ok?))
       (fail! "clang refused the aggregate fixture\n     "
-             (test-show (string-as-view (addr-of cir 'err)))))
-    (let (cv:StrView (string-as-view (addr-of cir 'ir))
-          nv:StrView (string-as-view (addr-of nir 'ir))
+             (test-show (string-as-view (ref cir 'err)))))
+    (let (cv:StrView (string-as-view (ref cir 'ir))
+          nv:StrView (string-as-view (ref nir 'ir))
           i:usize 0)
       (while (< i 6)
         (let (nm:String (str "f" i)
-              fv:StrView (string-as-view (addr-of nm))
+              fv:StrView (string-as-view &nm)
               want:String (try (fl-signature cv fv))
               got:String (try (fl-signature nv fv)))
-          (when (not (= (string-as-view (addr-of got)) (string-as-view (addr-of want))))
-            (fail! fv ": nucleus " (string-as-view (addr-of got))
-                   ", clang " (string-as-view (addr-of want))))
-          (drop (addr-of got))
-          (drop (addr-of want))
-          (drop (addr-of nm)))
+          (when (not (= (string-as-view &got) (string-as-view &want)))
+            (fail! fv ": nucleus " (string-as-view &got)
+                   ", clang " (string-as-view &want)))
+          (drop &got)
+          (drop &want)
+          (drop &nm))
         (set! i (+ i 1))))
-    (drop (addr-of nir))
-    (drop (addr-of cir))
-    (drop (addr-of np))
-    (drop (addr-of cp))))
+    (drop &nir)
+    (drop &cir)
+    (drop &np)
+    (drop &cp)))
 
 ; ---------------------------------------------------------------------------
 ; FL-5: what `...` promotes
@@ -414,22 +414,22 @@ struct S3 f3(struct S3 s){return s;}
 ; f64") would break `half` in exactly this line.
 (deftest s16-fl-vararg-unpromoted
   (let (h:String (try (test-write-file "va.h" "int flp(const char *fmt, ...);\n"))
-        src:String (str "(import-use \"" (string-as-view (addr-of h)) "\")
+        src:String (str "(import-use \"" (string-as-view &h) "\")
 (defn g (h:f16 f:f32 ld:f80 q:f128 dd:f64):void (flp \"\" h f ld q dd))
 (defn main ():i32 (return 0))
 ")
-        ir:String (try (source-ir (string-as-view (addr-of src))))
+        ir:String (try (source-ir (string-as-view &src)))
         open:StrView "@flp("
-        l:StrView (try (line-with (string-as-view (addr-of ir))
+        l:StrView (try (line-with (string-as-view &ir)
                                   "call i32 (ptr, ...) @flp("))
         args:StrView (try (fl-arg-list l open))
         types:String (fl-arg-types args))
-    (try (check-eq (string-as-view (addr-of types))
+    (try (check-eq (string-as-view &types)
                    "ptr, half, double, x86_fp80, fp128, double"))
-    (drop (addr-of types))
-    (drop (addr-of ir))
-    (drop (addr-of src))
-    (drop (addr-of h))))
+    (drop &types)
+    (drop &ir)
+    (drop &src)
+    (drop &h)))
 
 ; ---------------------------------------------------------------------------
 ; FL-6 / FL-7: which widths a target has
@@ -439,30 +439,30 @@ struct S3 f3(struct S3 s){return s;}
   (let (c:Compiled (try (compile-path-for target path)))
     (when (c 'ok?)
       (fail! "expected " target " to reject " path))
-    (try (check-error-anywhere (addr-of c 'diags) needle))
-    (drop (addr-of c))
+    (try (check-error-anywhere (ref c 'diags) needle))
+    (drop &c)
     (return (ok))))
 
 (defn check-target-declares (target:StrView path:StrView want:StrView):!void
   (let (c:Compiled (try (compile-path-for target path)))
     (when (not (c 'ok?))
-      (fail! target ": " (test-show (string-as-view (addr-of c 'raw)))))
-    (try (check-line (string-as-view (addr-of c 'ir)) want))
-    (drop (addr-of c))
+      (fail! target ": " (test-show (string-as-view (ref c 'raw)))))
+    (try (check-line (string-as-view (ref c 'ir)) want))
+    (drop &c)
     (return (ok))))
 
 (defn check-avr-refuses (name:StrView):!void
   (let (src:String (str "(defn f (x:" name "):" name " (return x))
 (defn main ():i32 (return 0))
 ")
-        p:String (try (test-write-file "avr.nuc" (string-as-view (addr-of src))))
+        p:String (try (test-write-file "avr.nuc" (string-as-view &src)))
         want:String (str name " is not supported on AVR"))
     (try (check-target-rejects "avr-unknown-unknown-elf"
-                               (string-as-view (addr-of p))
-                               (string-as-view (addr-of want))))
-    (drop (addr-of want))
-    (drop (addr-of p))
-    (drop (addr-of src))
+                               (string-as-view &p)
+                               (string-as-view &want)))
+    (drop &want)
+    (drop &p)
+    (drop &src)
     (return (ok))))
 
 ; §10 limit 3: a width the emission target has no format for is a located
@@ -472,7 +472,7 @@ struct S3 f3(struct S3 s){return s;}
   (let (p:String (try (test-write-file "w.nuc" "(defn f (x:f80):f80 (return x))
 (defn main ():i32 (return 0))
 "))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         no-x87:StrView "f80 is the x87 80-bit format and exists only on x86")
     (try (check-target-rejects "aarch64-unknown-linux-gnu" pv no-x87))
     (try (check-target-rejects "riscv64-unknown-linux-gnu" pv no-x87))
@@ -482,18 +482,18 @@ struct S3 f3(struct S3 s){return s;}
     (let (c:Compiled (try (compile-path pv)))
       (when (not (c 'ok?))
         (fail! "the host target refused f80\n     "
-               (test-show (string-as-view (addr-of c 'raw)))))
-      (drop (addr-of c)))
-    (drop (addr-of p)))
+               (test-show (string-as-view (ref c 'raw)))))
+      (drop &c))
+    (drop &p))
   ; FL-7: `long double` is whatever the target's C compiler makes it. MSVC
   ; keeps it a plain double even on x86_64, which is why the check for it
   ; cannot be inferred from the architecture.
   (let (h:String (try (test-write-file "ld.h" "long double ldf(long double x);\n"))
-        src:String (str "(import-use \"" (string-as-view (addr-of h)) "\")
+        src:String (str "(import-use \"" (string-as-view &h) "\")
 (defn main ():i32 (return 0))
 ")
-        p:String (try (test-write-file "ld.nuc" (string-as-view (addr-of src))))
-        pv:StrView (string-as-view (addr-of p)))
+        p:String (try (test-write-file "ld.nuc" (string-as-view &src)))
+        pv:StrView (string-as-view &p))
     (try (check-target-declares "aarch64-unknown-linux-gnu" pv
                                 "declare fp128 @ldf(fp128)"))
     (try (check-target-declares "riscv64-unknown-linux-gnu" pv
@@ -502,9 +502,9 @@ struct S3 f3(struct S3 s){return s;}
                                 "declare x86_fp80 @ldf(x86_fp80)"))
     (try (check-target-declares "x86_64-pc-windows-msvc" pv
                                 "declare double @ldf(double)"))
-    (drop (addr-of p))
-    (drop (addr-of src))
-    (drop (addr-of h))))
+    (drop &p)
+    (drop &src)
+    (drop &h)))
 
 ; ---------------------------------------------------------------------------
 ; FL-3 at run time
@@ -520,11 +520,11 @@ struct S3 f3(struct S3 s){return s;}
     (printf \"%.21Lg\\n\" (id80 0x1.921fb54442d18469p+1)))
   (return 0))
 "))
-        ov:StrView (string-as-view (addr-of out)))
-    (try (check-eq (strview-trim-end (addr-of ov))
+        ov:StrView (string-as-view &out))
+    (try (check-eq (strview-trim-end &ov)
                    "3735928559 127 18446744073709551615 -16 12.0000
 3.1415926535897932383"))
-    (drop (addr-of out))))
+    (drop &out)))
 
 ; C requires the binary exponent, so `0x1F` is an integer and `0x1.8` is
 ; neither that nor a float.

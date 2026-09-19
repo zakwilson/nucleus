@@ -13,7 +13,7 @@
 
 (defn main ():i32
   ; 1. By-value constructor + with/Drop — the primary local idiom. T=i32 comes
-  ;    from the declared (ref (Vector i32)); methods take (ref ...) so no addr-of.
+  ;    from the declared (ref (Vector i32)); methods take (ref ...) so no `&`.
   (with (v:&(Vector i32) (vector-new))
     (conj v 10)
     (conj v 20)

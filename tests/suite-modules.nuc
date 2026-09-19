@@ -15,14 +15,14 @@
 ; that used to be a `:0:` substring search.
 (defn check-redefines (src:StrView nm:StrView):!void
   (let (p:String (try (test-write-file "t.nuc" src))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         c:Compiled (try (compile-path pv))
         want:String (str "redefinition of '" nm "'"))
-    (try (check-no-line-zero (addr-of c 'diags)))
-    (try (check-error-at (addr-of c 'diags) pv 2 (string-as-view (addr-of want))))
-    (drop (addr-of want))
-    (drop (addr-of c))
-    (drop (addr-of p))
+    (try (check-no-line-zero (ref c 'diags)))
+    (try (check-error-at (ref c 'diags) pv 2 (string-as-view &want)))
+    (drop &want)
+    (drop &c)
+    (drop &p)
     (return (ok))))
 
 (deftest b4r-struct
@@ -100,14 +100,14 @@
 (import b4r-fb)
 (defn main ():i32 (return 0))
 "))
-        c:Compiled (try (compile-path-in dir (string-as-view (addr-of m))))
-        raw:StrView (string-as-view (addr-of c 'raw)))
-    (try (check-error-anywhere (addr-of c 'diags) "redefinition of 'RdX'"))
-    (try (check-contains raw (string-as-view (addr-of a))))
-    (drop (addr-of c))
-    (drop (addr-of m))
-    (drop (addr-of b))
-    (drop (addr-of a))))
+        c:Compiled (try (compile-path-in dir (string-as-view &m)))
+        raw:StrView (string-as-view (ref c 'raw)))
+    (try (check-error-anywhere (ref c 'diags) "redefinition of 'RdX'"))
+    (try (check-contains raw (string-as-view &a)))
+    (drop &c)
+    (drop &m)
+    (drop &b)
+    (drop &a)))
 
 ; Equal values are NOT an exemption. The first external program to meet R4 — the
 ; Doom port, 2026-08-15 — collided on seven same-valued `defconst`s in five file
@@ -123,14 +123,14 @@
 (import b4r-eqb)
 (defn main ():i32 (return RD-EQ))
 "))
-        c:Compiled (try (compile-path-in dir (string-as-view (addr-of m))))
-        raw:StrView (string-as-view (addr-of c 'raw)))
-    (try (check-error-anywhere (addr-of c 'diags) "redefinition of 'RD-EQ'"))
-    (try (check-contains raw (string-as-view (addr-of a))))
-    (drop (addr-of c))
-    (drop (addr-of m))
-    (drop (addr-of b))
-    (drop (addr-of a))))
+        c:Compiled (try (compile-path-in dir (string-as-view &m)))
+        raw:StrView (string-as-view (ref c 'raw)))
+    (try (check-error-anywhere (ref c 'diags) "redefinition of 'RD-EQ'"))
+    (try (check-contains raw (string-as-view &a)))
+    (drop &c)
+    (drop &m)
+    (drop &b)
+    (drop &a)))
 
 ; …and the fix the diagnostic recommends has to work: one owner, reached by
 ; `import`. This is the migration the port took, and it is the half of the
@@ -145,10 +145,10 @@
 (import b4r-ownb)
 (defn main ():i32 (return (+ RD-OWN (rd-own-b))))
 ")))
-    (try (check-file-exit dir (string-as-view (addr-of m)) 14))
-    (drop (addr-of m))
-    (drop (addr-of b))
-    (drop (addr-of a))))
+    (try (check-file-exit dir (string-as-view &m) 14))
+    (drop &m)
+    (drop &b)
+    (drop &a)))
 
 ; The rule is per compilation unit, so re-importing one file through two paths —
 ; the diamond every non-trivial program has — must stay legal. This is what
@@ -174,11 +174,11 @@
 (import b4r-diamond)
 (defn main ():i32 (return (+ (rd-l) (rd-r))))
 ")))
-    (try (check-file-exit dir (string-as-view (addr-of m)) 3))
-    (drop (addr-of m))
-    (drop (addr-of r))
-    (drop (addr-of l))
-    (drop (addr-of base))))
+    (try (check-file-exit dir (string-as-view &m) 3))
+    (drop &m)
+    (drop &r)
+    (drop &l)
+    (drop &base)))
 
 ; ---------------------------------------------------------------------------
 ; Two namespaces, one name (W9 §9.6)
@@ -192,8 +192,8 @@
         b:String (try (test-write-file "w35qb.nuc" "(ns w35qb)
 (defn w35-desc (x:i32):i32 (return (+ x 2)))
 ")))
-    (drop (addr-of b))
-    (drop (addr-of a))
+    (drop &b)
+    (drop &a)
     (return (ok dir))))
 
 ; Both prefixed, both calls qualified: two definitions, two symbols, and each
@@ -204,8 +204,8 @@
 (import-prefixed w35qb b)
 (defn main ():i32 (return (+ (a/w35-desc 10) (b/w35-desc 20))))
 ")))
-    (try (check-file-exit dir (string-as-view (addr-of m)) 33))
-    (drop (addr-of m))))
+    (try (check-file-exit dir (string-as-view &m) 33))
+    (drop &m)))
 
 (deftest w9-two-ns-distinct-symbols
   (let (dir:StrView (try (w35-write-libs))
@@ -213,12 +213,12 @@
 (import-prefixed w35qb b)
 (defn main ():i32 (return (+ (a/w35-desc 10) (b/w35-desc 20))))
 "))
-        c:Compiled (try (compile-path-in dir (string-as-view (addr-of m))))
-        iv:StrView (string-as-view (addr-of c 'ir)))
+        c:Compiled (try (compile-path-in dir (string-as-view &m)))
+        iv:StrView (string-as-view (ref c 'ir)))
     (try (check-match iv "define *@w35qa__w35-desc(*"))
     (try (check-match iv "define *@w35qb__w35-desc(*"))
-    (drop (addr-of c))
-    (drop (addr-of m))))
+    (drop &c)
+    (drop &m)))
 
 ; Flatten exactly one: the bare call is not ambiguous at all, because only one
 ; candidate is in this file's unqualified space.
@@ -228,8 +228,8 @@
 (import-prefixed w35qb b)
 (defn main ():i32 (return (w35-desc 10)))
 ")))
-    (try (check-file-exit dir (string-as-view (addr-of m)) 11))
-    (drop (addr-of m))))
+    (try (check-file-exit dir (string-as-view &m) 11))
+    (drop &m)))
 
 ; Flatten BOTH: now the bare call really does name two functions, and that is
 ; the use R4 was refusing the definitions to prevent. Located, and both
@@ -240,14 +240,14 @@
 (import-use w35qb)
 (defn main ():i32 (return (w35-desc 10)))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         c:Compiled (try (compile-path-in dir mv))
-        raw:StrView (string-as-view (addr-of c 'raw)))
-    (try (check-error-at (addr-of c 'diags) mv 3 "ambiguous call to 'w35-desc'"))
+        raw:StrView (string-as-view (ref c 'raw)))
+    (try (check-error-at (ref c 'diags) mv 3 "ambiguous call to 'w35-desc'"))
     (try (check-contains raw "'w35qa/w35-desc'"))
     (try (check-contains raw "'w35qb/w35-desc'"))
-    (drop (addr-of c))
-    (drop (addr-of m))))
+    (drop &c)
+    (drop &m)))
 
 ; Neither flattened: the name is not in the unqualified space, and the message
 ; says where it IS and what to write instead of guessing.
@@ -257,12 +257,12 @@
 (import-prefixed w35qb b)
 (defn main ():i32 (return (w35-desc 10)))
 "))
-        c:Compiled (try (compile-path-in dir (string-as-view (addr-of m))))
-        raw:StrView (string-as-view (addr-of c 'raw)))
+        c:Compiled (try (compile-path-in dir (string-as-view &m)))
+        raw:StrView (string-as-view (ref c 'raw)))
     (try (check-contains raw "defined in namespaces 'w35qa' and 'w35qb'"))
     (try (check-contains raw "write 'a/w35-desc' or 'b/w35-desc' here"))
-    (drop (addr-of c))
-    (drop (addr-of m))))
+    (drop &c)
+    (drop &m)))
 
 ; R4's rule survives where its reason does: ONE namespace still may not define
 ; one signature twice, because that pair really would emit a symbol twice. The
@@ -280,11 +280,11 @@
 (import-use w35dupb)
 (defn main ():i32 (return 0))
 ")))
-    (try (check-file-rejects dir (string-as-view (addr-of m))
+    (try (check-file-rejects dir (string-as-view &m)
                              "duplicate definition of 'w35-dup'"))
-    (drop (addr-of m))
-    (drop (addr-of b))
-    (drop (addr-of a))))
+    (drop &m)
+    (drop &b)
+    (drop &a)))
 
 ; ---------------------------------------------------------------------------
 ; `defcast` reach, and the note that names a rule that almost applies (W9)
@@ -312,8 +312,8 @@
       (show (aref (as ptr:ptr arr) 0))))
   (return 0))
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "1 2 3 4 5 6\n"))
-    (drop (addr-of out))))
+    (try (check-eq (string-as-view &out) "1 2 3 4 5 6\n"))
+    (drop &out)))
 
 (defn defcast-nocompose-src ():StrView
   (return "(defn i2p (x:i64):ptr (return (unsafe/cast ptr x)))
@@ -333,9 +333,9 @@
 ; note a field, so this cannot pass on an error that merely says the words.
 (deftest w9-defcast-note-names-rule
   (let (c:Compiled (try (compile-source (defcast-nocompose-src))))
-    (try (check-note-anywhere (addr-of c 'diags) "a defcast rule converts i64 to ptr"))
-    (try (check-note-anywhere (addr-of c 'diags) "(as i64"))
-    (drop (addr-of c))))
+    (try (check-note-anywhere (ref c 'diags) "a defcast rule converts i64 to ptr"))
+    (try (check-note-anywhere (ref c 'diags) "(as i64"))
+    (drop &c)))
 
 ; The `as` position is the one where the bare diagnostic was actively wrong:
 ; "use unsafe/cast" throws away the safety the defcast was written to buy.
@@ -344,8 +344,8 @@
 (defcast i64 ptr i2p)
 (defn main ():int (let (q:ptr (as ptr 0)) (return 0)))
 ")))
-    (try (check-note-anywhere (addr-of c 'diags) "a defcast rule converts i64 to ptr"))
-    (drop (addr-of c))))
+    (try (check-note-anywhere (ref c 'diags) "a defcast rule converts i64 to ptr"))
+    (drop &c)))
 
 ; No rule to that target => no note. Pins the note against firing on every
 ; unrelated type mismatch in a file that happens to contain a defcast.
@@ -356,9 +356,9 @@
 (defn main ():int (take (unsafe/cast ptr 0)) (return 0))
 "))
         ds:(Vector Diagnostic) (c 'diags))
-    (when (= (count (addr-of ds)) 0) (fail! "expected a type error"))
-    (try (check-not-contains (string-as-view (addr-of c 'raw)) "a defcast rule"))
-    (drop (addr-of c))))
+    (when (= (count &ds) 0) (fail! "expected a type error"))
+    (try (check-not-contains (string-as-view (ref c 'raw)) "a defcast rule"))
+    (drop &c)))
 
 ; Built-in coercion still wins: a rule may not be registered for a pair the
 ; compiler already converts, so "which fires first" can never be observed.
@@ -391,7 +391,7 @@
 ; a union built with `make` and taken apart with `match`.
 (defn w9lay-body ():StrView
   (return "(import-use \"stdio.h\")
-(defn w9lay-byval ((v W9LayBox)):i32 (return (+ (_get (addr-of v) 'a) (_get (addr-of v) 'b))))
+(defn w9lay-byval ((v W9LayBox)):i32 (return (+ (_get &v 'a) (_get &v 'b))))
 (defn main ():i32
   (let (bx (W9LayBox 3 4)
         ar:ptr:W9LayArr (alloca W9LayArr)
@@ -409,22 +409,22 @@
   (let (ldir:String (try (test-scratch-sub "l"))
         lib:String (try (test-write-file "l/w9lay.nuc" (w9lay-lib)))
         body:String (str (w9lay-body) "(import-use w9lay)\n")
-        below:String (try (test-write-file "below.nuc" (string-as-view (addr-of body)))))
-    (drop (addr-of below))
-    (drop (addr-of body))
-    (drop (addr-of lib))
+        below:String (try (test-write-file "below.nuc" (string-as-view &body))))
+    (drop &below)
+    (drop &body)
+    (drop &lib)
     (return (ok ldir))))
 
 (deftest w9-layout-below-use-runs
   (let (ldir:String (try (w9lay-setup))
         dir:StrView (try (test-scratch))
         below:String (str dir "/below.nuc")
-        out:String (try (build-run-file (string-as-view (addr-of ldir)) ""
-                                        (string-as-view (addr-of below)))))
-    (try (check-eq (string-as-view (addr-of out)) "3 7 6 7 5\n"))
-    (drop (addr-of out))
-    (drop (addr-of below))
-    (drop (addr-of ldir))))
+        out:String (try (build-run-file (string-as-view &ldir) ""
+                                        (string-as-view &below))))
+    (try (check-eq (string-as-view &out) "3 7 6 7 5\n"))
+    (drop &out)
+    (drop &below)
+    (drop &ldir)))
 
 ; The by-value parameter, read off the IR rather than the exit status: `i0` is
 ; what an unlaid-out struct classified to, and it is the shape LLVM rejects with
@@ -433,19 +433,19 @@
   (let (ldir:String (try (w9lay-setup))
         dir:StrView (try (test-scratch))
         below:String (str dir "/below.nuc")
-        c:Compiled (try (compile-path-in (string-as-view (addr-of ldir))
-                                         (string-as-view (addr-of below)))))
-    (try (check-match (string-as-view (addr-of c 'ir))
+        c:Compiled (try (compile-path-in (string-as-view &ldir)
+                                         (string-as-view &below))))
+    (try (check-match (string-as-view (ref c 'ir))
                       "define i32 @w9lay-byval(i64 *"))
-    (drop (addr-of c))
-    (drop (addr-of below))
-    (drop (addr-of ldir))))
+    (drop &c)
+    (drop &below)
+    (drop &ldir)))
 
 ; The same shape inside ONE file: `(defn f (v:S))` textually above
 ; `(defstruct S …)`. Recorded as latent-and-unfixed since W1d — the layout
 ; prescan closes it with the cross-file case, since neither is about imports.
 (deftest w9-layout-same-file-forward
-  (try (check-source-exit "(defn w9lay-fwd ((v W9LayFwd)):i32 (return (+ (_get (addr-of v) 'p) (_get (addr-of v) 'q))))
+  (try (check-source-exit "(defn w9lay-fwd ((v W9LayFwd)):i32 (return (+ (_get &v 'p) (_get &v 'q))))
 (defstruct W9LayFwd (p i32) (q i32))
 (defn main ():i32 (return (w9lay-fwd (W9LayFwd 2 3))))
 " 5)))
@@ -458,8 +458,8 @@
   (let (ldir:String (try (test-scratch-sub "l"))
         hdir:String (try (test-scratch-sub "h"))
         lib:String (try (test-write-file "l/w9lay.nuc" (w9lay-lib)))
-        nuch:String (try (emit-for-file "" "--emit-nuch" (string-as-view (addr-of lib))))
-        hp:String (try (test-write-file "h/w9lay.nuch" (string-as-view (addr-of nuch))))
+        nuch:String (try (emit-for-file "" "--emit-nuch" (string-as-view &lib)))
+        hp:String (try (test-write-file "h/w9lay.nuch" (string-as-view &nuch)))
         use:String (try (test-write-file "hbelow.nuc" "(import-use \"stdio.h\")
 (defn main ():i32
   (let (bx (W9LayBox 8 9))
@@ -467,16 +467,16 @@
   (return 0))
 (import-use w9lay)
 "))
-        c:Compiled (try (compile-path-in (string-as-view (addr-of hdir))
-                                         (string-as-view (addr-of use)))))
-    (try (check-empty (string-as-view (addr-of c 'raw))))
-    (drop (addr-of c))
-    (drop (addr-of use))
-    (drop (addr-of hp))
-    (drop (addr-of nuch))
-    (drop (addr-of lib))
-    (drop (addr-of hdir))
-    (drop (addr-of ldir))))
+        c:Compiled (try (compile-path-in (string-as-view &hdir)
+                                         (string-as-view &use))))
+    (try (check-empty (string-as-view (ref c 'raw))))
+    (drop &c)
+    (drop &use)
+    (drop &hp)
+    (drop &nuch)
+    (drop &lib)
+    (drop &hdir)
+    (drop &ldir)))
 
 ; Registration moved; EMISSION did not. Each type is DEFINED exactly once — a
 ; prescan that wrote a `%Name = type` line of its own would double it, which the
@@ -484,24 +484,24 @@
 ; top-level definitions, so nothing was gained or lost by moving the import.
 (deftest w9-layout-emission-unmoved
   (let (ldir:String (try (w9lay-setup))
-        ldv:StrView (string-as-view (addr-of ldir))
+        ldv:StrView (string-as-view &ldir)
         dir:StrView (try (test-scratch))
         below:String (str dir "/below.nuc")
         abody:String (str "(import-use w9lay)\n" (w9lay-body))
-        above:String (try (test-write-file "above.nuc" (string-as-view (addr-of abody))))
-        bc:Compiled (try (compile-path-in ldv (string-as-view (addr-of below))))
-        ac:Compiled (try (compile-path-in ldv (string-as-view (addr-of above))))
-        biv:StrView (string-as-view (addr-of bc 'ir)))
+        above:String (try (test-write-file "above.nuc" (string-as-view &abody)))
+        bc:Compiled (try (compile-path-in ldv (string-as-view &below)))
+        ac:Compiled (try (compile-path-in ldv (string-as-view &above)))
+        biv:StrView (string-as-view (ref bc 'ir)))
     (try (check-eq-int (count-lines-with-prefix biv "%W9LayBox = type ") 1 "%W9LayBox"))
     (try (check-eq-int (count-lines-with-prefix biv "%W9LayArr = type ") 1 "%W9LayArr"))
     (try (check-eq-int (count-lines-with-prefix biv "%W9LayOpt = type ") 1 "%W9LayOpt"))
-    (try (check-same-decl-set (string-as-view (addr-of ac 'ir)) biv))
-    (drop (addr-of ac))
-    (drop (addr-of bc))
-    (drop (addr-of above))
-    (drop (addr-of abody))
-    (drop (addr-of below))
-    (drop (addr-of ldir))))
+    (try (check-same-decl-set (string-as-view (ref ac 'ir)) biv))
+    (drop &ac)
+    (drop &bc)
+    (drop &above)
+    (drop &abody)
+    (drop &below)
+    (drop &ldir)))
 
 ; The residue, pinned so it is a decision rather than an oversight: a `defmacro`
 ; is a COMPILED function, not a registration — `emit-defmacro` runs codegen and
@@ -513,12 +513,12 @@
         m:String (try (test-write-file "mac.nuc" "(defn main ():i32 (return (w9lay-mac 1)))
 (import-use w9lay)
 ")))
-    (try (check-file-rejects (string-as-view (addr-of ldir))
-                             (string-as-view (addr-of m))
+    (try (check-file-rejects (string-as-view &ldir)
+                             (string-as-view &m)
                              "unknown: w9lay-mac"))
-    (drop (addr-of m))
-    (drop (addr-of lib))
-    (drop (addr-of ldir))))
+    (drop &m)
+    (drop &lib)
+    (drop &ldir)))
 
 ; ---------------------------------------------------------------------------
 ; The private definers are namespace-private (B5 / B3′)
@@ -534,7 +534,7 @@
 (defstruct B5PublicS n:i32)
 (defn b5-lib-ok ():i32 (return 7))
 ")))
-    (drop (addr-of lib))
+    (drop &lib)
     (return (ok dir))))
 
 ; These spell the private names THROUGH THE PREFIX. Before B3′ a type name was
@@ -546,8 +546,8 @@
 (defn check-b5-private (name:StrView src:StrView needle:StrView):!void
   (let (dir:StrView (try (b5-write-lib))
         p:String (try (test-write-file name src)))
-    (try (check-file-rejects dir (string-as-view (addr-of p)) needle))
-    (drop (addr-of p))
+    (try (check-file-rejects dir (string-as-view &p) needle))
+    (drop &p)
     (return (ok))))
 
 (deftest b5-private-struct
@@ -600,9 +600,9 @@
   (let (p:(ref bp/B5PublicS) (bp/B5PublicS 6))
     (return (+ (bin/b5-inside-sum) (+ (bp/b5-lib-ok) (- (p 'n) 5))))))
 ")))
-    (try (check-file-exit dir (string-as-view (addr-of m)) 15))
-    (drop (addr-of m))
-    (drop (addr-of pin))))
+    (try (check-file-exit dir (string-as-view &m) 15))
+    (drop &m)
+    (drop &pin)))
 
 ; The protocol's positive control is the DIAGNOSTIC, not a run: from inside the
 ; namespace the name resolves, so `extend` gets as far as the conformance check
@@ -622,14 +622,14 @@
         m:String (try (test-write-file "b5-ppm.nuc" "(import-prefixed b5-ppin pi)
 (defn main ():i32 (return 0))
 "))
-        c:Compiled (try (compile-path-in dir (string-as-view (addr-of m))))
-        raw:StrView (string-as-view (addr-of c 'raw)))
+        c:Compiled (try (compile-path-in dir (string-as-view &m)))
+        raw:StrView (string-as-view (ref c 'raw)))
     (try (check-not-contains raw "extend: unknown protocol"))
-    (try (check-error-anywhere (addr-of c 'diags)
+    (try (check-error-anywhere (ref c 'diags)
                                "does not conform to protocol 'b5p/B5HiddenP'"))
-    (drop (addr-of c))
-    (drop (addr-of m))
-    (drop (addr-of pin))))
+    (drop &c)
+    (drop &m)
+    (drop &pin)))
 
 ; ---------------------------------------------------------------------------
 ; A `(fn …)` slot takes what `let` takes, and checks the SIGNATURE (W9 / S16 FP-1)
@@ -655,16 +655,16 @@
                       "    (return (take-fn " spelling "))))\n")
         l:String (str (fnslot-hdr) "(defn main ():i32\n" (fnslot-locals)
                       "    (let (f:(fn i32)(i32) " spelling ") (return 0))))\n")
-        ga:bool (try (source-compiles? (string-as-view (addr-of a))))
-        gl:bool (try (source-compiles? (string-as-view (addr-of l)))))
+        ga:bool (try (source-compiles? (string-as-view &a)))
+        gl:bool (try (source-compiles? (string-as-view &l))))
     (when (!= ga want)
       (fail! spelling " in argument position: compiled=" (if ga "yes" "no")
              ", wanted " (if want "yes" "no")))
     (when (!= gl want)
       (fail! spelling " in a let slot: compiled=" (if gl "yes" "no")
              ", wanted " (if want "yes" "no")))
-    (drop (addr-of l))
-    (drop (addr-of a))
+    (drop &l)
+    (drop &a)
     (return (ok))))
 
 (deftest w9-fnslot-arg-matches-let
@@ -684,9 +684,9 @@
   (let (src:String (str (fnslot-hdr) "(defn main ():i32
   (let (c:CStr \"hi\") (return (take-fn c))))
 "))
-    (try (check-source-rejects (string-as-view (addr-of src))
+    (try (check-source-rejects (string-as-view &src)
            "take-fn: argument 1 has type CStr, which does not match parameter type (i32):i32"))
-    (drop (addr-of src))))
+    (drop &src)))
 
 ; FP-1: a fn-pointer slot checks the SIGNATURE, not just the kind. A matching
 ; signature must still pass at every typed slot.
@@ -696,8 +696,8 @@
 (defn main ():i32
   (let (ok:(fn i32)(i32) fscb) (return (funcall ok 1))))
 "))
-    (try (check-source-accepts (string-as-view (addr-of src))))
-    (drop (addr-of src))))
+    (try (check-source-accepts (string-as-view &src)))
+    (drop &src)))
 
 ; …and each shape of mismatch is refused with both signatures named. Arity and
 ; return type are the two that silently produced wrong values before FP-1.
@@ -712,16 +712,16 @@
 (defn main ():i32
   (let (f:(fn i32)(i32) wrong-arity) (return 0)))
 "))
-    (try (check-source-rejects (string-as-view (addr-of arity))
+    (try (check-source-rejects (string-as-view &arity)
            "has type (i32, i32):i32, which does not match parameter type (i32):i32"))
-    (try (check-source-rejects (string-as-view (addr-of ret))
+    (try (check-source-rejects (string-as-view &ret)
            "has type (i32):i64, which does not match parameter type (i32):i32"))
     ; The `let` slot reaches the same rule through `coerce-int-val`.
-    (try (check-source-rejects (string-as-view (addr-of lets))
+    (try (check-source-rejects (string-as-view &lets)
            "let: init type mismatch for 'f': value is (i32, i32):i32, slot is (i32):i32"))
-    (drop (addr-of lets))
-    (drop (addr-of ret))
-    (drop (addr-of arity)))
+    (drop &lets)
+    (drop &ret)
+    (drop &arity))
   ; The two deliberate relaxations: pointer KIND is not part of a signature, and
   ; a bare elem-less `ptr` is the fn-pointer analogue of `void *`. Without these
   ; the ubiquitous `qsort` comparator shape would stop compiling.
@@ -772,15 +772,15 @@
 
 (extend NuchLib Drop)
 (defn drop ((self (ptr NuchLib))):void
-  (drop (addr-of self 'idir))
-  (drop (addr-of self 'nuch))
-  (drop (addr-of self 'src))
-  (drop (addr-of self 'obj)))
+  (drop (ref self 'idir))
+  (drop (ref self 'nuch))
+  (drop (ref self 'src))
+  (drop (ref self 'obj)))
 
-(defn nuch-idir ((l (ref NuchLib))):StrView (return (string-as-view (addr-of l 'idir))))
-(defn nuch-header ((l (ref NuchLib))):StrView (return (string-as-view (addr-of l 'nuch))))
-(defn nuch-src ((l (ref NuchLib))):StrView (return (string-as-view (addr-of l 'src))))
-(defn nuch-obj ((l (ref NuchLib))):StrView (return (string-as-view (addr-of l 'obj))))
+(defn nuch-idir ((l (ref NuchLib))):StrView (return (string-as-view (ref l 'idir))))
+(defn nuch-header ((l (ref NuchLib))):StrView (return (string-as-view (ref l 'nuch))))
+(defn nuch-src ((l (ref NuchLib))):StrView (return (string-as-view (ref l 'src))))
+(defn nuch-obj ((l (ref NuchLib))):StrView (return (string-as-view (ref l 'obj))))
 
 ; Write the library, emit its header, and compile its object — every unit below
 ; needs all three, and an object no test links is cheaper than three call sites.
@@ -790,22 +790,22 @@
         dir:StrView (try (test-scratch))
         nm:String (str name ".nuc")
         hn:String (str name ".nuch")
-        lib:String (try (write-into (string-as-view (addr-of ldir))
-                                    (string-as-view (addr-of nm)) src))
-        h:String (try (emit-into "" "--emit-nuch" (string-as-view (addr-of lib))
-                                 (string-as-view (addr-of hdir))
-                                 (string-as-view (addr-of hn))))
+        lib:String (try (write-into (string-as-view &ldir)
+                                    (string-as-view &nm) src))
+        h:String (try (emit-into "" "--emit-nuch" (string-as-view &lib)
+                                 (string-as-view &hdir)
+                                 (string-as-view &hn)))
         obj:String (str dir "/" name ".o")
         r:&NuchLib (alloca NuchLib))
-    (try (compile-object (string-as-view (addr-of lib))
-                         (string-as-view (addr-of obj))))
+    (try (compile-object (string-as-view &lib)
+                         (string-as-view &obj)))
     (set! (r 'idir) hdir)
     (set! (r 'nuch) h)
     (set! (r 'src) lib)
     (set! (r 'obj) obj)
-    (drop (addr-of hn))
-    (drop (addr-of nm))
-    (drop (addr-of ldir))
+    (drop &hn)
+    (drop &nm)
+    (drop &ldir)
     (return (ok (deref r)))))
 
 ; Compile `src` against `l`'s header into `<scratch>/<name>.o`, link it with the
@@ -813,16 +813,16 @@
 (defn nuch-link-run ((l (ref NuchLib)) name:StrView src:StrView):!String
   (let (dir:StrView (try (test-scratch))
         nm:String (str name ".nuc")
-        p:String (try (test-write-file (string-as-view (addr-of nm)) src))
+        p:String (try (test-write-file (string-as-view &nm) src))
         obj:String (str dir "/" name ".o"))
-    (try (compile-object-in (nuch-idir l) (string-as-view (addr-of p))
-                            (string-as-view (addr-of obj))))
-    (let (parts:String (str (string-as-view (addr-of obj)) " " (nuch-obj l))
-          out:String (try (link-run (string-as-view (addr-of parts)))))
-      (drop (addr-of parts))
-      (drop (addr-of obj))
-      (drop (addr-of p))
-      (drop (addr-of nm))
+    (try (compile-object-in (nuch-idir l) (string-as-view &p)
+                            (string-as-view &obj)))
+    (let (parts:String (str (string-as-view &obj) " " (nuch-obj l))
+          out:String (try (link-run (string-as-view &parts))))
+      (drop &parts)
+      (drop &obj)
+      (drop &p)
+      (drop &nm)
       (return (ok out)))))
 
 ; ---------------------------------------------------------------------------
@@ -857,33 +857,33 @@
   (let (l:NuchLib (try (nuch-lib "w9nu" (w9nu-lib-src)))
         above:String (str "(import-use w9nu)\n" (w9nu-body))
         below:String (str (w9nu-body) "(import-use w9nu)\n")
-        ao:String (try (nuch-link-run (addr-of l) "above"
-                                      (string-as-view (addr-of above))))
-        bo:String (try (nuch-link-run (addr-of l) "below"
-                                      (string-as-view (addr-of below)))))
-    (try (check-eq (string-as-view (addr-of ao)) "42\n"))
-    (try (check-eq (string-as-view (addr-of bo)) "42\n"))
-    (drop (addr-of bo))
-    (drop (addr-of ao))
-    (drop (addr-of below))
-    (drop (addr-of above))
-    (drop (addr-of l))))
+        ao:String (try (nuch-link-run &l "above"
+                                      (string-as-view &above)))
+        bo:String (try (nuch-link-run &l "below"
+                                      (string-as-view &below))))
+    (try (check-eq (string-as-view &ao) "42\n"))
+    (try (check-eq (string-as-view &bo) "42\n"))
+    (drop &bo)
+    (drop &ao)
+    (drop &below)
+    (drop &above)
+    (drop &l)))
 
 ; The same source compiled against the library's `.nuc` rather than its header
 ; must produce the same answer — the header is the only thing under test.
 (deftest w9-nuch-ns-union-agrees-with-source
   (let (l:NuchLib (try (nuch-lib "w9nu" (w9nu-lib-src)))
         src:String (str "(import-use w9nu)\n" (w9nu-body))
-        p:String (try (test-write-file "above.nuc" (string-as-view (addr-of src))))
+        p:String (try (test-write-file "above.nuc" (string-as-view &src)))
         ldir:String (try (test-scratch-sub "l"))
-        out:String (try (build-run-file (string-as-view (addr-of ldir)) ""
-                                        (string-as-view (addr-of p)))))
-    (try (check-eq (string-as-view (addr-of out)) "42\n"))
-    (drop (addr-of out))
-    (drop (addr-of ldir))
-    (drop (addr-of p))
-    (drop (addr-of src))
-    (drop (addr-of l))))
+        out:String (try (build-run-file (string-as-view &ldir) ""
+                                        (string-as-view &p))))
+    (try (check-eq (string-as-view &out) "42\n"))
+    (drop &out)
+    (drop &ldir)
+    (drop &p)
+    (drop &src)
+    (drop &l)))
 
 ; The arm constructors are the mangling half: `union-ctor-form` is handed the
 ; bare spelling on purpose, and the `declare` it produces must still come out
@@ -892,20 +892,20 @@
 (deftest w9-nuch-ns-union-ctor-symbols
   (let (l:NuchLib (try (nuch-lib "w9nu" (w9nu-lib-src)))
         below:String (str (w9nu-body) "(import-use w9nu)\n")
-        p:String (try (test-write-file "below.nuc" (string-as-view (addr-of below))))
-        c:Compiled (try (compile-path-in (nuch-idir (addr-of l))
-                                         (string-as-view (addr-of p))))
-        ir:StrView (string-as-view (addr-of c 'ir)))
+        p:String (try (test-write-file "below.nuc" (string-as-view &below)))
+        c:Compiled (try (compile-path-in (nuch-idir &l)
+                                         (string-as-view &p)))
+        ir:StrView (string-as-view (ref c 'ir)))
     (when (not (c 'ok?))
-      (fail! (test-show (string-as-view (addr-of c 'raw)))))
+      (fail! (test-show (string-as-view (ref c 'raw)))))
     (try (check-eq-int (count-exact-lines ir "declare i64 @w9nu__Opt-Some(i32)") 1
                        "declares of the Some constructor"))
     (try (check-eq-int (count-exact-lines ir "declare i64 @w9nu__Opt-None()") 1
                        "declares of the None constructor"))
-    (drop (addr-of c))
-    (drop (addr-of p))
-    (drop (addr-of below))
-    (drop (addr-of l))))
+    (drop &c)
+    (drop &p)
+    (drop &below)
+    (drop &l)))
 
 ; A diamond: two headers each importing w9nu, both imported here. The union is
 ; registered once and its arm declares emitted once — the guard that used to key
@@ -913,9 +913,9 @@
 ; drops the declares (link failure) or repeats them (invalid IR).
 (deftest w9-nuch-ns-union-diamond
   (let (l:NuchLib (try (nuch-lib "w9nu" (w9nu-lib-src)))
-        hv:StrView (nuch-idir (addr-of l))
+        hv:StrView (nuch-idir &l)
         ldir:String (try (test-scratch-sub "l"))
-        lv:StrView (string-as-view (addr-of ldir))
+        lv:StrView (string-as-view &ldir)
         dir:StrView (try (test-scratch))
         asrc:String (str "(ns w9nua)
 (import-use w9nu)
@@ -925,11 +925,11 @@
 (import-use w9nu)
 (defn tag-b ():i32 (return (w9nu/opt-or (make w9nu/Opt Some 1) 0)))
 ")
-        ap:String (try (write-into lv "w9nua.nuc" (string-as-view (addr-of asrc))))
-        bp:String (try (write-into lv "w9nub.nuc" (string-as-view (addr-of bsrc))))
-        ah:String (try (emit-into hv "--emit-nuch" (string-as-view (addr-of ap))
+        ap:String (try (write-into lv "w9nua.nuc" (string-as-view &asrc)))
+        bp:String (try (write-into lv "w9nub.nuc" (string-as-view &bsrc)))
+        ah:String (try (emit-into hv "--emit-nuch" (string-as-view &ap)
                                   hv "w9nua.nuch"))
-        bh:String (try (emit-into hv "--emit-nuch" (string-as-view (addr-of bp))
+        bh:String (try (emit-into hv "--emit-nuch" (string-as-view &bp)
                                   hv "w9nub.nuch"))
         aobj:String (str dir "/w9nua.o")
         bobj:String (str dir "/w9nub.o")
@@ -941,32 +941,32 @@
   (return 0))
 "))
         dobj:String (str dir "/diamond.o"))
-    (try (compile-object-in hv (string-as-view (addr-of ap))
-                            (string-as-view (addr-of aobj))))
-    (try (compile-object-in hv (string-as-view (addr-of bp))
-                            (string-as-view (addr-of bobj))))
-    (try (compile-object-in hv (string-as-view (addr-of dp))
-                            (string-as-view (addr-of dobj))))
-    (let (all:String (str (string-as-view (addr-of dobj)) " "
-                          (string-as-view (addr-of aobj)) " "
-                          (string-as-view (addr-of bobj)) " "
-                          (nuch-obj (addr-of l)))
-          out:String (try (link-run (string-as-view (addr-of all)))))
-      (try (check-eq (string-as-view (addr-of out)) "2\n"))
-      (drop (addr-of out))
-      (drop (addr-of all)))
-    (drop (addr-of dobj))
-    (drop (addr-of dp))
-    (drop (addr-of bobj))
-    (drop (addr-of aobj))
-    (drop (addr-of bh))
-    (drop (addr-of ah))
-    (drop (addr-of bp))
-    (drop (addr-of ap))
-    (drop (addr-of bsrc))
-    (drop (addr-of asrc))
-    (drop (addr-of ldir))
-    (drop (addr-of l))))
+    (try (compile-object-in hv (string-as-view &ap)
+                            (string-as-view &aobj)))
+    (try (compile-object-in hv (string-as-view &bp)
+                            (string-as-view &bobj)))
+    (try (compile-object-in hv (string-as-view &dp)
+                            (string-as-view &dobj)))
+    (let (all:String (str (string-as-view &dobj) " "
+                          (string-as-view &aobj) " "
+                          (string-as-view &bobj) " "
+                          (nuch-obj &l))
+          out:String (try (link-run (string-as-view &all))))
+      (try (check-eq (string-as-view &out) "2\n"))
+      (drop &out)
+      (drop &all))
+    (drop &dobj)
+    (drop &dp)
+    (drop &bobj)
+    (drop &aobj)
+    (drop &bh)
+    (drop &ah)
+    (drop &bp)
+    (drop &ap)
+    (drop &bsrc)
+    (drop &asrc)
+    (drop &ldir)
+    (drop &l)))
 
 ; A header with no `(ns …)` keys bare on both sides, which is why the defect was
 ; invisible for so long. Pinned so the fix stays a re-keying, not a rename.
@@ -976,15 +976,15 @@
 (defn w9nu-bare-or (o:W9NuBare d:i32):i32
   (return (match o ((W9NuOne x) x) (W9NuZero d))))
 "))
-        out:String (try (nuch-link-run (addr-of l) "bare" "(import-use \"stdio.h\")
+        out:String (try (nuch-link-run &l "bare" "(import-use \"stdio.h\")
 (import-use w9nub0)
 (defn main ():i32
   (printf \"%d\\n\" (w9nu-bare-or (make W9NuBare W9NuOne 9) 0))
   (return 0))
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "9\n"))
-    (drop (addr-of out))
-    (drop (addr-of l))))
+    (try (check-eq (string-as-view &out) "9\n"))
+    (drop &out)
+    (drop &l)))
 
 ; ---------------------------------------------------------------------------
 ; Item 29: a header resolves on REACHABILITY, not on import position
@@ -1021,16 +1021,16 @@
 (deftest w9-nuch-import-below-use
   (let (l:NuchLib (try (nuch-lib "w9no" (w9no-lib-src)))
         below:String (w9no-below)
-        p:String (try (test-write-file "below.nuc" (string-as-view (addr-of below))))
-        c:Compiled (try (compile-path-in (nuch-idir (addr-of l))
-                                         (string-as-view (addr-of p)))))
+        p:String (try (test-write-file "below.nuc" (string-as-view &below)))
+        c:Compiled (try (compile-path-in (nuch-idir &l)
+                                         (string-as-view &p))))
     (when (not (c 'ok?))
       (fail! "the import below every use did not compile\n     "
-             (test-show (string-as-view (addr-of c 'raw)))))
-    (drop (addr-of c))
-    (drop (addr-of p))
-    (drop (addr-of below))
-    (drop (addr-of l))))
+             (test-show (string-as-view (ref c 'raw)))))
+    (drop &c)
+    (drop &p)
+    (drop &below)
+    (drop &l)))
 
 ; …and LINKS and RUNS against the library's object, which is the only proof that
 ; the `declare` / `external global` lines were still emitted, exactly once, under
@@ -1039,17 +1039,17 @@
   (let (l:NuchLib (try (nuch-lib "w9no" (w9no-lib-src)))
         above:String (str "(import-use w9no)\n" (w9no-body))
         below:String (w9no-below)
-        ao:String (try (nuch-link-run (addr-of l) "above"
-                                      (string-as-view (addr-of above))))
-        bo:String (try (nuch-link-run (addr-of l) "below"
-                                      (string-as-view (addr-of below)))))
-    (try (check-eq (string-as-view (addr-of ao)) "3 40 2 7 42\n"))
-    (try (check-eq (string-as-view (addr-of bo)) "3 40 2 7 42\n"))
-    (drop (addr-of bo))
-    (drop (addr-of ao))
-    (drop (addr-of below))
-    (drop (addr-of above))
-    (drop (addr-of l))))
+        ao:String (try (nuch-link-run &l "above"
+                                      (string-as-view &above)))
+        bo:String (try (nuch-link-run &l "below"
+                                      (string-as-view &below))))
+    (try (check-eq (string-as-view &ao) "3 40 2 7 42\n"))
+    (try (check-eq (string-as-view &bo) "3 40 2 7 42\n"))
+    (drop &bo)
+    (drop &ao)
+    (drop &below)
+    (drop &above)
+    (drop &l)))
 
 ; Emission did not move: one `declare` per function, one `external global` per
 ; variable. The prescan registers without emitting precisely so these stay 1 —
@@ -1057,10 +1057,10 @@
 (deftest w9-nuch-declares-emitted-once
   (let (l:NuchLib (try (nuch-lib "w9no" (w9no-lib-src)))
         below:String (w9no-below)
-        p:String (try (test-write-file "below.nuc" (string-as-view (addr-of below))))
-        c:Compiled (try (compile-path-in (nuch-idir (addr-of l))
-                                         (string-as-view (addr-of p))))
-        ir:StrView (string-as-view (addr-of c 'ir)))
+        p:String (try (test-write-file "below.nuc" (string-as-view &below)))
+        c:Compiled (try (compile-path-in (nuch-idir &l)
+                                         (string-as-view &p)))
+        ir:StrView (string-as-view (ref c 'ir)))
     (try (check-eq-int (count-exact-lines ir "declare i32 @w9no-add(i32, i32)") 1
                        "declares of w9no-add"))
     (try (check-eq-int (count-exact-lines ir "@w9no-counter = external global i32") 1
@@ -1069,10 +1069,10 @@
                        "declares of the i32 overload"))
     (try (check-eq-int (count-exact-lines ir "declare i64 @w9no_two.i64(i64)") 1
                        "declares of the i64 overload"))
-    (drop (addr-of c))
-    (drop (addr-of p))
-    (drop (addr-of below))
-    (drop (addr-of l))))
+    (drop &c)
+    (drop &p)
+    (drop &below)
+    (drop &l)))
 
 ; Two headers declaring ONE global. The prescan registers it for whichever
 ; header it reaches first and skips it for the second, so the emit-only pass
@@ -1080,7 +1080,7 @@
 ; the whole header. Assuming writes `@w9no-shared` twice, which LLVM rejects.
 (deftest w9-nuch-shared-global-declared-once
   (let (hdir:String (try (test-scratch-sub "h"))
-        hv:StrView (string-as-view (addr-of hdir))
+        hv:StrView (string-as-view &hdir)
         a:String (try (write-into hv "w9noa.nuch"
                         "(extern (w9no-shared i32))\n(declare w9no-a ((x i32)) :i32)\n"))
         b:String (try (write-into hv "w9nob.nuch"
@@ -1092,21 +1092,21 @@
 (import-use w9noa)
 (import-use w9nob)
 "))
-        c:Compiled (try (compile-path-in hv (string-as-view (addr-of p))))
-        ir:StrView (string-as-view (addr-of c 'ir)))
+        c:Compiled (try (compile-path-in hv (string-as-view &p)))
+        ir:StrView (string-as-view (ref c 'ir)))
     (when (not (c 'ok?))
-      (fail! (test-show (string-as-view (addr-of c 'raw)))))
+      (fail! (test-show (string-as-view (ref c 'raw)))))
     (try (check-eq-int (count-exact-lines ir "@w9no-shared = external global i32") 1
                        "external globals for the shared name"))
     (try (check-eq-int (count-exact-lines ir "declare i32 @w9no-a(i32)") 1
                        "declares of w9no-a"))
     (try (check-eq-int (count-exact-lines ir "declare i32 @w9no-b(i32)") 1
                        "declares of w9no-b"))
-    (drop (addr-of c))
-    (drop (addr-of p))
-    (drop (addr-of b))
-    (drop (addr-of a))
-    (drop (addr-of hdir))))
+    (drop &c)
+    (drop &p)
+    (drop &b)
+    (drop &a)
+    (drop &hdir)))
 
 ; The case this records rather than endorses: when the unit defines the name a
 ; header declares, the entry used to be dropped whole — one `define`, no
@@ -1120,10 +1120,10 @@
 (defn w9no-add ((a i32) (b i32)):i32 (return (- a b)))
 (defn main ():i32 (printf \"%d\\n\" (w9no-add 5 2)) (return 0))
 ")))
-    (try (check-file-rejects (nuch-idir (addr-of l)) (string-as-view (addr-of p))
+    (try (check-file-rejects (nuch-idir &l) (string-as-view &p)
                              "already defines 'w9no-add'"))
-    (drop (addr-of p))
-    (drop (addr-of l))))
+    (drop &p)
+    (drop &l)))
 
 ; ---------------------------------------------------------------------------
 ; Item 24: a header's `declare` registers as a callable, not just a global
@@ -1163,48 +1163,48 @@
 ; through a header, dispatch through the box, link, run.
 (deftest w9-nuch-declare-dyn-box
   (let (l:NuchLib (try (nuch-lib "w24lib" (w24-lib-src)))
-        src:String (w24-use-src (addr-of l))
-        out:String (try (nuch-link-run (addr-of l) "w24use"
-                                       (string-as-view (addr-of src)))))
-    (try (check-eq (string-as-view (addr-of out)) "d=309\n"))
-    (drop (addr-of out))
-    (drop (addr-of src))
-    (drop (addr-of l))))
+        src:String (w24-use-src &l)
+        out:String (try (nuch-link-run &l "w24use"
+                                       (string-as-view &src))))
+    (try (check-eq (string-as-view &out) "d=309\n"))
+    (drop &out)
+    (drop &src)
+    (drop &l)))
 
 ; …through the symbol the LIBRARY defines, not merely some symbol that resolves.
 ; Slot 0 of the vtable is what the box calls through.
 (deftest w9-nuch-declare-vtable-symbol
   (let (l:NuchLib (try (nuch-lib "w24lib" (w24-lib-src)))
-        src:String (w24-use-src (addr-of l))
-        p:String (try (test-write-file "w24use.nuc" (string-as-view (addr-of src))))
-        c:Compiled (try (compile-path (string-as-view (addr-of p)))))
+        src:String (w24-use-src &l)
+        p:String (try (test-write-file "w24use.nuc" (string-as-view &src)))
+        c:Compiled (try (compile-path (string-as-view &p))))
     (when (not (c 'ok?))
-      (fail! (test-show (string-as-view (addr-of c 'raw)))))
-    (try (check-contains (string-as-view (addr-of c 'ir))
+      (fail! (test-show (string-as-view (ref c 'raw)))))
+    (try (check-contains (string-as-view (ref c 'ir))
                          "internal constant { ptr, ptr } { ptr @w24__describe,"))
-    (drop (addr-of c))
-    (drop (addr-of p))
-    (drop (addr-of src))
-    (drop (addr-of l))))
+    (drop &c)
+    (drop &p)
+    (drop &src)
+    (drop &l)))
 
 ; The other asker, `method-satisfies-sig`: a consumer's own protocol satisfied
 ; by a method it imported.
 (deftest w9-nuch-declare-extend-conforms
   (let (l:NuchLib (try (nuch-lib "w24lib" (w24-lib-src)))
-        src:String (str "(import \"" (nuch-header (addr-of l)) "\" wx)
+        src:String (str "(import \"" (nuch-header &l) "\" wx)
 (defprotocol Show (describe ((self (ref Self))) i32))
 (extend wx/Fox Show)
 (defn main ():i32 (return 0))
 ")
-        p:String (try (test-write-file "w24ext.nuc" (string-as-view (addr-of src))))
-        c:Compiled (try (compile-path (string-as-view (addr-of p)))))
+        p:String (try (test-write-file "w24ext.nuc" (string-as-view &src)))
+        c:Compiled (try (compile-path (string-as-view &p))))
     (when (not (c 'ok?))
       (fail! "an imported method did not satisfy the consumer's protocol\n     "
-             (test-show (string-as-view (addr-of c 'raw)))))
-    (drop (addr-of c))
-    (drop (addr-of p))
-    (drop (addr-of src))
-    (drop (addr-of l))))
+             (test-show (string-as-view (ref c 'raw)))))
+    (drop &c)
+    (drop &p)
+    (drop &src)
+    (drop &l)))
 
 ; Two headers from different namespaces declaring the same signature are two
 ; distinct symbols, not a collision. They meet in one Generic only because the
@@ -1222,27 +1222,27 @@
 "))
         dir:StrView (try (test-scratch))
         src:String (str "(import-use \"stdio.h\")
-(import \"" (nuch-header (addr-of a)) "\")
-(import \"" (nuch-header (addr-of b)) "\")
+(import \"" (nuch-header &a) "\")
+(import \"" (nuch-header &b) "\")
 (defn main ():i32
   (printf \"h=%d\\n\" (+ (w24na/helper 1) (w24nb/helper 20)))
   (return 0))
 ")
-        p:String (try (test-write-file "w24two.nuc" (string-as-view (addr-of src))))
+        p:String (try (test-write-file "w24two.nuc" (string-as-view &src)))
         obj:String (str dir "/w24two.o"))
-    (try (compile-object (string-as-view (addr-of p))
-                         (string-as-view (addr-of obj))))
-    (let (all:String (str (string-as-view (addr-of obj)) " "
-                          (nuch-obj (addr-of a)) " " (nuch-obj (addr-of b)))
-          out:String (try (link-run (string-as-view (addr-of all)))))
-      (try (check-eq (string-as-view (addr-of out)) "h=21\n"))
-      (drop (addr-of out))
-      (drop (addr-of all)))
-    (drop (addr-of obj))
-    (drop (addr-of p))
-    (drop (addr-of src))
-    (drop (addr-of b))
-    (drop (addr-of a))))
+    (try (compile-object (string-as-view &p)
+                         (string-as-view &obj)))
+    (let (all:String (str (string-as-view &obj) " "
+                          (nuch-obj &a) " " (nuch-obj &b))
+          out:String (try (link-run (string-as-view &all))))
+      (try (check-eq (string-as-view &out) "h=21\n"))
+      (drop &out)
+      (drop &all))
+    (drop &obj)
+    (drop &p)
+    (drop &src)
+    (drop &b)
+    (drop &a)))
 
 ; ---------------------------------------------------------------------------
 ; Item 36: a header entry the importing unit also DEFINES
@@ -1278,29 +1278,29 @@
 ; over one stderr blob could not tell it apart from the error.
 (deftest w9-nuch-shadowed-declare-reported
   (let (l:NuchLib (try (nuch-lib "w36lib" (w36-lib-src)))
-        src:String (w36-shadow-src (addr-of l) "(x:i64):i64" "(* 1000 x)")
-        p:String (try (test-write-file "w36diff.nuc" (string-as-view (addr-of src))))
-        c:Compiled (try (compile-path (string-as-view (addr-of p)))))
+        src:String (w36-shadow-src &l "(x:i64):i64" "(* 1000 x)")
+        p:String (try (test-write-file "w36diff.nuc" (string-as-view &src)))
+        c:Compiled (try (compile-path (string-as-view &p))))
     (when (c 'ok?) (fail! "the shadowed declare was accepted"))
-    (try (check-error-anywhere (addr-of c 'diags) "already defines 'helper'"))
-    (try (check-note-anywhere (addr-of c 'diags)
+    (try (check-error-anywhere (ref c 'diags) "already defines 'helper'"))
+    (try (check-note-anywhere (ref c 'diags)
            "the header declares helper(i32):i32, the unit has helper(i64):i64"))
-    (drop (addr-of c))
-    (drop (addr-of p))
-    (drop (addr-of src))
-    (drop (addr-of l))))
+    (drop &c)
+    (drop &p)
+    (drop &src)
+    (drop &l)))
 
 ; The half a signature comparison would miss: same signature, still two
 ; different functions, still nothing that reaches the header's.
 (deftest w9-nuch-shadowed-same-signature-reported
   (let (l:NuchLib (try (nuch-lib "w36lib" (w36-lib-src)))
-        src:String (w36-shadow-src (addr-of l) "(x:i32):i32" "1000")
-        p:String (try (test-write-file "w36same.nuc" (string-as-view (addr-of src)))))
-    (try (check-file-rejects "" (string-as-view (addr-of p))
+        src:String (w36-shadow-src &l "(x:i32):i32" "1000")
+        p:String (try (test-write-file "w36same.nuc" (string-as-view &src))))
+    (try (check-file-rejects "" (string-as-view &p)
                              "already defines 'helper'"))
-    (drop (addr-of p))
-    (drop (addr-of src))
-    (drop (addr-of l))))
+    (drop &p)
+    (drop &src)
+    (drop &l)))
 
 ; The message is located on the HEADER entry and names the definition it
 ; collides with — a bare "duplicate" would leave the author with two files and
@@ -1308,19 +1308,19 @@
 ; the `file:line: error:` prefix and the text as if they were one string.
 (deftest w9-nuch-shadowed-both-sites-named
   (let (l:NuchLib (try (nuch-lib "w36lib" (w36-lib-src)))
-        src:String (w36-shadow-src (addr-of l) "(x:i64):i64" "(* 1000 x)")
-        p:String (try (test-write-file "w36diff.nuc" (string-as-view (addr-of src))))
-        c:Compiled (try (compile-path (string-as-view (addr-of p))))
-        at:String (str (string-as-view (addr-of p)) ":3"))
-    (try (check-error-at (addr-of c 'diags) (nuch-header (addr-of l)) 2
+        src:String (w36-shadow-src &l "(x:i64):i64" "(* 1000 x)")
+        p:String (try (test-write-file "w36diff.nuc" (string-as-view &src)))
+        c:Compiled (try (compile-path (string-as-view &p)))
+        at:String (str (string-as-view &p) ":3"))
+    (try (check-error-at (ref c 'diags) (nuch-header &l) 2
                          "declare 'helper': this compilation unit already defines 'helper'"))
-    (try (check-error-at (addr-of c 'diags) (nuch-header (addr-of l)) 2
-                         (string-as-view (addr-of at))))
-    (drop (addr-of at))
-    (drop (addr-of c))
-    (drop (addr-of p))
-    (drop (addr-of src))
-    (drop (addr-of l))))
+    (try (check-error-at (ref c 'diags) (nuch-header &l) 2
+                         (string-as-view &at)))
+    (drop &at)
+    (drop &c)
+    (drop &p)
+    (drop &src)
+    (drop &l)))
 
 ; Accepting half A: the idempotent re-declaration the skip exists for stays
 ; silent. `strlen` is declared by BOTH string.h and lib/string.nuch.
@@ -1331,24 +1331,24 @@
 ")))
     (when (not (c 'ok?))
       (fail! "an idempotent re-declaration was reported\n     "
-             (test-show (string-as-view (addr-of c 'raw)))))
-    (drop (addr-of c))))
+             (test-show (string-as-view (ref c 'raw)))))
+    (drop &c)))
 
 ; Accepting half B: a name the unit does NOT define is untouched — the library's
 ; other export still declares, links and runs.
 (deftest w9-nuch-unshadowed-declare-runs
   (let (l:NuchLib (try (nuch-lib "w36lib" (w36-lib-src)))
         src:String (str "(import-use \"stdio.h\")
-(import \"" (nuch-header (addr-of l)) "\" lib2)
+(import \"" (nuch-header &l) "\" lib2)
 (defn helper2 (x:i64):i64 (return 1000))
 (defn main ():i32 (printf \"o=%d\\n\" (lib2/only-there 3)) (return 0))
 ")
-        out:String (try (nuch-link-run (addr-of l) "w36ok"
-                                       (string-as-view (addr-of src)))))
-    (try (check-eq (string-as-view (addr-of out)) "o=4\n"))
-    (drop (addr-of out))
-    (drop (addr-of src))
-    (drop (addr-of l))))
+        out:String (try (nuch-link-run &l "w36ok"
+                                       (string-as-view &src))))
+    (try (check-eq (string-as-view &out) "o=4\n"))
+    (drop &out)
+    (drop &src)
+    (drop &l)))
 
 ; The escape route the diagnostic RECOMMENDS has to work, or the note is bad
 ; advice: under an `(ns …)` the header's exports key as `w36n/helper` and link as
@@ -1359,15 +1359,15 @@
 (defn helper (x:i32):i32 (return 30))
 "))
         src:String (str "(import-use \"stdio.h\")
-(import \"" (nuch-header (addr-of l)) "\" nx)
+(import \"" (nuch-header &l) "\" nx)
 (defn helper (x:i64):i64 (return 3000))
 (defn main ():i32
   (printf \"n=%d %d\\n\" (nx/helper 3) (helper (as i64 3)))
   (return 0))
 ")
-        out:String (try (nuch-link-run (addr-of l) "w36nuse"
-                                       (string-as-view (addr-of src)))))
-    (try (check-eq (string-as-view (addr-of out)) "n=30 3000\n"))
-    (drop (addr-of out))
-    (drop (addr-of src))
-    (drop (addr-of l))))
+        out:String (try (nuch-link-run &l "w36nuse"
+                                       (string-as-view &src))))
+    (try (check-eq (string-as-view &out) "n=30 3000\n"))
+    (drop &out)
+    (drop &src)
+    (drop &l)))

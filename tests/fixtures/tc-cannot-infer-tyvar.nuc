@@ -15,4 +15,4 @@
 (defn main ():i32
   ; No declared type on b → no want in scope → T cannot be inferred.
   (let (b (box-empty))
-    (return ((addr-of b) val))))
+    (return (&b val))))

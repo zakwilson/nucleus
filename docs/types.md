@@ -11,7 +11,7 @@ Types are attached to names with `:` syntax: `name:type` (e.g., `x:i32`, `main:i
 
 Pointers to a typed element use the `ptr` constructor: `(ptr T)` is a **non-null** pointer to `T`, and `(ptr ptr T)` chains. Bare `ptr` (with no element) is the opaque `void*` pointer — it carries no element contract, so non-null obligations do not apply to it.
 
-Because bare `ptr` erases the element type, operations that need one (`aref`, `deref`, `unsafe/ptr+`, a `set!` place, field access) reject it. The one place the element type is recovered automatically is an **`(array T …)` initializer**: `(let (a:ptr (array i32 1 2 3)) (aref a 1))` binds `a` as `ptr:i32`, because the element type is spelled in the initializer itself. This is deliberately limited to that syntactic form — a bare `:ptr` bound from anything else (a function result, `alloca`, `addr-of`) stays elem-less, since erasing the element type is exactly what a `void*` annotation is for. Where you want the element type from any other initializer, either spell it (`a:ptr:i32`) or omit the annotation entirely (a bare binding name adopts the initializer's full type).
+Because bare `ptr` erases the element type, operations that need one (`aref`, `deref`, `unsafe/ptr+`, a `set!` place, field access) reject it. The one place the element type is recovered automatically is an **`(array T …)` initializer**: `(let (a:ptr (array i32 1 2 3)) (aref a 1))` binds `a` as `ptr:i32`, because the element type is spelled in the initializer itself. This is deliberately limited to that syntactic form — a bare `:ptr` bound from anything else (a function result, `alloca`, `&x`) stays elem-less, since erasing the element type is exactly what a `void*` annotation is for. Where you want the element type from any other initializer, either spell it (`a:ptr:i32`) or omit the annotation entirely (a bare binding name adopts the initializer's full type).
 
 In inline type positions (the type argument of `as`/`unsafe/cast`, `sizeof`, `alloca`), either the canonical list form or the colon sugar works: `(unsafe/cast (ptr Node) x)` and `(unsafe/cast ptr:Node x)` are equivalent.
 
@@ -286,9 +286,9 @@ pointer, which is why `(sizeof &Pt)`, `(link &Point)` and `(Vector &Point)`
 above are types; in a value slot `(ref x)` is the address-of, whose type is
 `(ref (type-of x))`. Since the node is the canonical one, `--emit-nuch` prints
 `(ref T)` for a standalone `&T` in an exported signature — no spelling leaks
-into a header. (Before Stage 21 PK-1 the reader macro wrote `addr-of`, which the
-type path had to accept as a synonym; `(addr-of T)` in a type slot is no longer
-one.)
+into a header. The older value-form head `addr-of` is retired (Stage 21 PK-5b)
+and reserved: `(addr-of x)`, `(addr-of p 'f)` and `(addr-of T)` in a type slot
+are all refused with one targeted error — see [Special forms](special-forms.md).
 
 Only a **typed** non-null destination adds obligations: a `raw` or `?T` value
 may not flow into a `(ptr T)`/`(ref T)` slot (binding, `set!`, field/element
@@ -299,7 +299,7 @@ assertion; see [Implicit Type Coercion](#implicit-type-coercion)). An elem-less
 bare `ptr` (`void*`) slot carries
 no contract and is exempt. Widening (non-null→raw, non-null→`?T`, raw↔`?T`) is
 always allowed. `none` is the null `?T` literal. Stack addresses are non-null by
-construction: `(addr-of x)`, `(addr-of p 'f)` (the 2-argument arity), `(alloca T)`, `(array T …)`, and a
+construction: `&x`, `(ref p 'f)` (the 2-argument arity), `(alloca T)`, `(array T …)`, and a
 `(S …)` compound literal all yield `(ref T)`.
 
 **A global declared non-null must be initialized.** `(defvar g:ptr:T)` with no
@@ -419,7 +419,7 @@ targets it is simply placed in read-only data.
 
 **A `:const` global's initializer must be a compile-time constant.** The whole
 constant grammar is available — a folded expression, `(as CStr "…")`,
-`(addr-of g)`, an `(array T …)` or `(S …)` literal — but the run-time
+`&g`, an `(array T …)` or `(S …)` literal — but the run-time
 initializer route is not: read-only storage cannot be written at startup, so
 `(defvar :const g:i32 (compute))` is refused with a message saying so rather
 than compiling into a store that would fault. See
@@ -438,7 +438,7 @@ answer:i32 42) ... (set! answer 10)` dies with `set!: cannot assign to
 read-only storage. Reads of a `:const` global (`(return answer)`) are
 unaffected — they go through the normal load path. This check covers the
 direct `set!` mutation syntax only; it is not an aliasing analysis (e.g. a
-raw pointer obtained via `addr-of` and written through a `(deref p)` place is not
+raw pointer obtained via `&x` and written through a `(deref p)` place is not
 tracked).
 
 ## Built-in Types
@@ -758,7 +758,7 @@ The following conversions are applied automatically in assignment contexts (`let
   takes: argument 1 has type ptr:SA, which does not match parameter type ptr:SB
   ```
 
-  This is the same rule at every typed slot — `let`/`with` init, every `set!` place, `return`, a call argument, and a `defvar`'s `(addr-of g)` initializer. Retyping a pointer's element is what `unsafe/cast` is for.
+  This is the same rule at every typed slot — `let`/`with` init, every `set!` place, `return`, a call argument, and a `defvar`'s `&g` initializer. Retyping a pointer's element is what `unsafe/cast` is for.
 - **`StrView` → `CStr` / `ptr`**: takes the view's `data` field — no IR for an unmaterialized string literal (whose value already *is* `data`), one `extractvalue` for a general `StrView` value. Trusts that the buffer is NUL-terminated at `data[len]`, always true for a literal but not guaranteed for an arbitrary sub-slice (see [Strings — Gotchas and constraints](strings.md)).
 - **`ptr:S` → by-value `S`** (`S` a struct): one `load` of the pointee — the implicit form of `(deref p)`. This is what lets a `(S …)` compound literal, which is alloca-backed and evaluates to `(ref S)`, be written directly wherever a by-value `S` is expected: an element of an `(array S …)`, a struct-typed field in another struct literal, a `let`/`with` binding declared `:S`, an element or pointee place store, and an implicit or explicit `return` from an `S`-returning function. Argument positions have always accepted it. The element type must match exactly (a compound literal of a *different* struct is still a type mismatch), and because the conversion is a `deref` it carries `deref`'s obligation: a `?T` source must be narrowed first. The explicit `(deref (S …))` spelling remains valid and emits byte-identical IR.
 - **Integer ↔ integer**:

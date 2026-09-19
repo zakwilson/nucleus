@@ -136,7 +136,7 @@
 ; Eq is by VALUE (the protocol is `(=:bool (a:Self b:Self))`, and collection key
 ; comparison loads two K values and calls `(= k1 k2)`), so the StrView Eq
 ; conformance takes two StrView VALUES. It copies each to a local and takes its
-; address (the same `(addr-of k)` idiom the collections use to call Hash) so the
+; address (the same `&k` idiom the collections use to call Hash) so the
 ; by-reference strview-eq does the actual byte compare without a second copy.
 ; ---------------------------------------------------------------------------
 
@@ -204,7 +204,7 @@
   (return (ok (aref (sv 'data) (as i64 i)))))
 
 ; strview-bytes — return a ByteIter aliasing sv's buffer (by value).
-; Drive with (addr-of it) + next (value-return convention from M2/C2.1).
+; Drive with &it + next (value-return convention from M2/C2.1).
 (defn strview-bytes (sv:&StrView):ByteIter
   (let (it:&ByteIter (alloca ByteIter))
     (set! (it 'buf) (sv 'data))
@@ -404,7 +404,7 @@
     (return (err! str-index-out-of-bounds))))
 
 ; strview-chars — return a CharIter aliasing sv's buffer (by value).
-; Drive with (addr-of it) + next (value-return convention from M2/C2.1).
+; Drive with &it + next (value-return convention from M2/C2.1).
 (defn strview-chars (sv:&StrView):CharIter
   (let (it:&CharIter (alloca CharIter))
     (set! (it 'buf) (sv 'data))

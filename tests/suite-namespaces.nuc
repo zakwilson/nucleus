@@ -34,12 +34,12 @@
 ; reachability message.
 (defn ns-scope-refusal (main:StrView head:StrView note:StrView):!void
   (let (c:Compiled (try (w1-compile main)))
-    (try (check-no-line-zero (addr-of c 'diags)))
-    (try (check-error-at (addr-of c 'diags) main 2 head))
-    (try (check-note-at (addr-of c 'diags) main 2 note))
-    (try (check-no-diag-containing (addr-of c 'diags)
+    (try (check-no-line-zero (ref c 'diags)))
+    (try (check-error-at (ref c 'diags) main 2 head))
+    (try (check-note-at (ref c 'diags) main 2 note))
+    (try (check-no-diag-containing (ref c 'diags)
                                    "not defined anywhere in this compilation unit"))
-    (drop (addr-of c)))
+    (drop &c))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -61,8 +61,8 @@
   (let (p:(ref B0Point) (B0Point 2))
     (return (b0-add b0-base (_get p 'x)))))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 42))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 42))
+    (drop &m))
   (return (ok)))
 
 ; `import-prefixed` resolves `prefix/fn` for a solitary `defn` — the one cell of
@@ -77,13 +77,13 @@
   (let (m:String (try (test-write-file "b0-pfx-ns.nuc" "(import-prefixed b0-nslib zp)
 (defn main ():i32 (return (zp/b0-triple 14)))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         s:String (try (w1-ir mv)))
-    (try (check-line (string-as-view (addr-of s))
+    (try (check-line (string-as-view &s)
                      "define weak_odr i32 @b0ns__b0-triple(i32 %x.arg) section \".text.b0ns__b0-triple\" {"))
     (try (w1-exit mv 42))
-    (drop (addr-of s))
-    (drop (addr-of m)))
+    (drop &s)
+    (drop &m))
   (return (ok)))
 
 ; …and a library without one is reached through a bare symbol, where the alias
@@ -94,13 +94,13 @@
   (let (m:String (try (test-write-file "b0-pfx-plain.nuc" "(import-prefixed b0-plainlib q)
 (defn main ():i32 (return (q/b0-double 21)))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         s:String (try (w1-ir mv)))
-    (try (check-line (string-as-view (addr-of s))
+    (try (check-line (string-as-view &s)
                      "define weak_odr i32 @b0-double(i32 %x.arg) section \".text.b0-double\" {"))
     (try (w1-exit mv 42))
-    (drop (addr-of s))
-    (drop (addr-of m)))
+    (drop &s)
+    (drop &m))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -125,8 +125,8 @@
   (let (m:String (try (test-write-file "b1-ok.nuc" "(import-use b1-mid)
 (defn main ():i32 (return (b1-mid-call 41)))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 42))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 42))
+    (drop &m))
   (return (ok)))
 
 ; The note is the half that carries the fix: it names the file that DOES bind
@@ -136,19 +136,19 @@
   (let (m:String (try (test-write-file "b1-leak.nuc" "(import-use b1-mid)
 (defn main ():i32 (return (zx/b1-inc 41)))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         c:Compiled (try (w1-compile mv)))
-    (try (check-no-line-zero (addr-of c 'diags)))
-    (try (check-error-at (addr-of c 'diags) mv 2
+    (try (check-no-line-zero (ref c 'diags)))
+    (try (check-error-at (ref c 'diags) mv 2
                          "unknown: zx/b1-inc — 'zx' is not in scope in this file"))
-    (try (check-note-at (addr-of c 'diags) mv 2
+    (try (check-note-at (ref c 'diags) mv 2
                         "an import prefix is file-scoped: another file in this unit binds 'zx' to "))
-    (try (check-note-at (addr-of c 'diags) mv 2
+    (try (check-note-at (ref c 'diags) mv 2
                         "This file has no import qualifiers in scope."))
-    (try (check-no-diag-containing (addr-of c 'diags)
+    (try (check-no-diag-containing (ref c 'diags)
                                    "not defined anywhere in this compilation unit"))
-    (drop (addr-of c))
-    (drop (addr-of m)))
+    (drop &c)
+    (drop &m))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -162,16 +162,16 @@
 ; the failure is `extend`'s and not something upstream of it.
 (deftest b2a-scope-diagnostic
   (let (c:Compiled (try (compile-path "tests/fixtures/b2a-ns-not-in-scope.nuc")))
-    (try (check-no-line-zero (addr-of c 'diags)))
-    (try (check-error-at (addr-of c 'diags) "tests/fixtures/b2a-ns-not-in-scope.nuc" 25
+    (try (check-no-line-zero (ref c 'diags)))
+    (try (check-error-at (ref c 'diags) "tests/fixtures/b2a-ns-not-in-scope.nuc" 25
                          "extend: unknown protocol 'dp/Describe'"))
-    (try (check-note-at (addr-of c 'diags) "tests/fixtures/b2a-ns-not-in-scope.nuc" 25
+    (try (check-note-at (ref c 'diags) "tests/fixtures/b2a-ns-not-in-scope.nuc" 25
                         "'dp' is not in scope in this file"))
-    (try (check-note-at (addr-of c 'diags) "tests/fixtures/b2a-ns-not-in-scope.nuc" 25
+    (try (check-note-at (ref c 'diags) "tests/fixtures/b2a-ns-not-in-scope.nuc" 25
                         "In scope here: dpx."))
-    (try (check-no-diag-containing (addr-of c 'diags)
+    (try (check-no-diag-containing (ref c 'diags)
                                    "not defined anywhere in this compilation unit"))
-    (drop (addr-of c)))
+    (drop &c))
   (return (ok)))
 
 ; `import-use` flattens a namespaced library AND binds the namespace's own name
@@ -189,8 +189,8 @@
   (let (a:(dyn dp/Describe) (Cat 2))
     (return (describe a))))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 42))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 42))
+    (drop &m))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -215,8 +215,8 @@
   (return (bv/b2b-fn (+ (+ bv/b2b-gv bv/B2B-K)
                         (+ bv/B2B-A bv/B2B-B)))))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 43))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 43))
+    (drop &m))
   (return (ok)))
 
 ; R3 for the kinds that had no qualified spelling at all before B2b: the
@@ -231,10 +231,10 @@
   (let (m:String (try (test-write-file "b2b-vns.nuc" "(import-prefixed b2b-vlib bv)
 (defn main ():i32 (return b2bns/b2b-gv))
 ")))
-    (try (ns-scope-refusal (string-as-view (addr-of m))
+    (try (ns-scope-refusal (string-as-view &m)
                            "undefined: b2bns/b2b-gv — 'b2bns' is not in scope in this file"
                            "In scope here: bv."))
-    (drop (addr-of m)))
+    (drop &m))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -266,8 +266,8 @@
         q:(ref vb/Vector) (vb/Vector 4 8 16))
     (return (+ (va/sum-a p) (vb/sum-b q)))))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 31))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 31))
+    (drop &m))
   (return (ok)))
 
 ; And they are two TYPES, not one name with two spellings. `type-eq` is
@@ -287,13 +287,13 @@
   (let (q:vb/Vector (va/Vector 1 2))
     (return 0)))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         c:Compiled (try (w1-compile mv)))
-    (try (check-no-line-zero (addr-of c 'diags)))
-    (try (check-error-at (addr-of c 'diags) mv 4
+    (try (check-no-line-zero (ref c 'diags)))
+    (try (check-error-at (ref c 'diags) mv 4
                          "let: init type mismatch for 'q': value is ptr:va/Vector, slot is vb/Vector"))
-    (drop (addr-of c))
-    (drop (addr-of m)))
+    (drop &c)
+    (drop &m))
   (return (ok)))
 
 ; The canonical name reaches diagnostics too: a field of the OTHER `Vector` is
@@ -305,13 +305,13 @@
   (let (p:(ref va/Vector) (va/Vector 1 2))
     (return (_get p 'c))))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         c:Compiled (try (w1-compile mv)))
-    (try (check-no-line-zero (addr-of c 'diags)))
-    (try (check-error-at (addr-of c 'diags) mv 4
+    (try (check-no-line-zero (ref c 'diags)))
+    (try (check-error-at (ref c 'diags) mv 4
                          "_get: no field 'c' on struct 'va/Vector'"))
-    (drop (addr-of c))
-    (drop (addr-of m)))
+    (drop &c)
+    (drop &m))
   (return (ok)))
 
 ; B3′a: a namespaced type must survive every SYNTHESIS region — where the
@@ -340,8 +340,8 @@
         (set! t (+ t (_get (invoke v (as usize i)) 'x))))
       (return (+ t (area a))))))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 20))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 20))
+    (drop &m))
   (return (ok)))
 
 ; A bare type name from a prefixed import: the type is defined, its file is
@@ -349,14 +349,14 @@
 ; namespace and the spelling this file can actually write.
 (deftest b3-type-ns-not-in-scope
   (let (c:Compiled (try (compile-path "tests/fixtures/b3-type-ns-not-in-scope.nuc")))
-    (try (check-no-line-zero (addr-of c 'diags)))
-    (try (check-error-at (addr-of c 'diags) "tests/fixtures/b3-type-ns-not-in-scope.nuc" 18
+    (try (check-no-line-zero (ref c 'diags)))
+    (try (check-error-at (ref c 'diags) "tests/fixtures/b3-type-ns-not-in-scope.nuc" 18
                          "unknown type: Fox — defined in namespace 'dp'"))
-    (try (check-note-at (addr-of c 'diags) "tests/fixtures/b3-type-ns-not-in-scope.nuc" 18
+    (try (check-note-at (ref c 'diags) "tests/fixtures/b3-type-ns-not-in-scope.nuc" 18
                         "write 'dpx/Fox' here"))
-    (try (check-no-diag-containing (addr-of c 'diags)
+    (try (check-no-diag-containing (ref c 'diags)
                                    "not defined anywhere in this compilation unit"))
-    (drop (addr-of c)))
+    (drop &c))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -383,8 +383,8 @@
 (import-prefixed b4-glib-b pb)
 (defn main ():i32 (return (+ (pa/b4-desc 1) (pb/b4-desc 1 2))))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 124))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 124))
+    (drop &m))
   (return (ok)))
 
 ; The filter is real: `pa/` may not reach the arity `b4b` defined. A lookup that
@@ -395,13 +395,13 @@
 (import-prefixed b4-glib-b pb)
 (defn main ():i32 (return (pa/b4-desc 1 2)))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         c:Compiled (try (w1-compile mv)))
-    (try (check-no-line-zero (addr-of c 'diags)))
-    (try (check-error-at (addr-of c 'diags) mv 3
+    (try (check-no-line-zero (ref c 'diags)))
+    (try (check-error-at (ref c 'diags) mv 3
                          "no matching method for overloaded 'b4-desc' with argument types (i32, i32)"))
-    (drop (addr-of c))
-    (drop (addr-of m)))
+    (drop &c)
+    (drop &m))
   (return (ok)))
 
 ; …and R3 still holds for generics. The note lists BOTH prefixes this file bound,
@@ -413,16 +413,16 @@
 (import-prefixed b4-glib-b pb)
 (defn main ():i32 (return (b4a/b4-desc 1)))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         c:Compiled (try (w1-compile mv)))
-    (try (check-no-line-zero (addr-of c 'diags)))
-    (try (check-error-at (addr-of c 'diags) mv 3
+    (try (check-no-line-zero (ref c 'diags)))
+    (try (check-error-at (ref c 'diags) mv 3
                          "unknown: b4a/b4-desc — 'b4a' is not in scope in this file"))
-    (try (check-note-at (addr-of c 'diags) mv 3 "In scope here: pa, pb."))
-    (try (check-no-diag-containing (addr-of c 'diags)
+    (try (check-note-at (ref c 'diags) mv 3 "In scope here: pa, pb."))
+    (try (check-no-diag-containing (ref c 'diags)
                                    "not defined anywhere in this compilation unit"))
-    (drop (addr-of c))
-    (drop (addr-of m)))
+    (drop &c)
+    (drop &m))
   (return (ok)))
 
 ; A bounded-generic TEMPLATE through a prefix, stamped twice for one concrete
@@ -449,16 +449,16 @@
   (let (s:i16 4)
     (return (+ (pg/b4-twice 3) (+ (pg/b4-twice 5) (pg/b4-twice s))))))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         s:String (try (w1-ir mv))
-        iv:StrView (string-as-view (addr-of s)))
+        iv:StrView (string-as-view &s))
     (try (check-eq-int (count-matching-lines iv "define weak_odr i32 @b4g__b4_twice.i32(*") 1
                        "one i32 stamp for two i32 call sites"))
     (try (check-eq-int (count-matching-lines iv "define weak_odr i32 @b4g__b4_twice.i16(*") 1
                        "one i16 stamp"))
     (try (w1-exit mv 24))
-    (drop (addr-of s))
-    (drop (addr-of m)))
+    (drop &s)
+    (drop &m))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -473,13 +473,13 @@
 ; the shell's unordered grep could not distinguish between the two orders.
 (defn b5-kind-clash (name:StrView src:StrView line:i32):!void
   (let (p:String (try (test-write-file name src))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         c:Compiled (try (w1-compile pv)))
-    (try (check-no-line-zero (addr-of c 'diags)))
-    (try (check-error-at (addr-of c 'diags) pv line
+    (try (check-no-line-zero (ref c 'diags)))
+    (try (check-error-at (ref c 'diags) pv line
                          "'B5Shape' already names a protocol — a symbol may name only one kind of thing"))
-    (drop (addr-of c))
-    (drop (addr-of p)))
+    (drop &c)
+    (drop &p))
   (return (ok)))
 
 (deftest b5-protocol-vs-struct
@@ -531,15 +531,15 @@
   (let (m:String (try (test-write-file "b5-sbad.nuc" "(import-prefixed b5-slib sx)
 (defn main ():i32 (return (b5-suggest 1)))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         c:Compiled (try (w1-compile mv)))
-    (try (check-no-line-zero (addr-of c 'diags)))
-    (try (check-error-at (addr-of c 'diags) mv 2
+    (try (check-no-line-zero (ref c 'diags)))
+    (try (check-error-at (ref c 'diags) mv 2
                          "unknown: b5-suggest — defined in namespace 'b5s'"))
-    (try (check-note-at (addr-of c 'diags) mv 2 "write 'sx/b5-suggest' here"))
-    (try (check-no-diag-containing (addr-of c 'diags) "did you mean 'b5-suggest'?"))
-    (drop (addr-of c))
-    (drop (addr-of m)))
+    (try (check-note-at (ref c 'diags) mv 2 "write 'sx/b5-suggest' here"))
+    (try (check-no-diag-containing (ref c 'diags) "did you mean 'b5-suggest'?"))
+    (drop &c)
+    (drop &m))
   (return (ok)))
 
 ; And the suggestion is not merely different — it compiles and runs.
@@ -548,8 +548,8 @@
   (let (m:String (try (test-write-file "b5-sgood.nuc" "(import-prefixed b5-slib sx)
 (defn main ():i32 (return (sx/b5-suggest 41)))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 42))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 42))
+    (drop &m))
   (return (ok)))
 
 (defn b5-export-files ():!void
@@ -577,8 +577,8 @@
   (let (v:(ref fac/B5ExpS) (fac/B5ExpS 40))
     (return (fac/b5-exp-fn v))))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 41))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 41))
+    (drop &m))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -617,14 +617,14 @@
   (let (a:(dyn dpx/Describe) (dpx/make-fox 7))
     (return (+ (dpx/show a) (dpx/show (Cat 5))))))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         s:String (try (w1-ir mv))
-        iv:StrView (string-as-view (addr-of s)))
+        iv:StrView (string-as-view &s))
     (try (check-match iv "*%__dyn.b6dp_Describe*"))
     (try (check-not-match iv "*%__dyn.dpx_Describe*"))
     (try (w1-exit mv 27))
-    (drop (addr-of s))
-    (drop (addr-of m)))
+    (drop &s)
+    (drop &m))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -645,8 +645,8 @@
   (let (m:String (try (test-write-file "b7-mpre.nuc" "(import-prefixed b7-mlib pm)
 (defn main ():i32 (return (pm/b7-twice 21)))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 42))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 42))
+    (drop &m))
   (return (ok)))
 
 ; `import-use` binds both the unqualified name and the library's namespace, for a
@@ -657,8 +657,8 @@
   (let (m:String (try (test-write-file "b7-mflat.nuc" "(import-use b7-mlib)
 (defn main ():i32 (return (+ (b7-twice 20) (b7ns/b7-twice 1))))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 42))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 42))
+    (drop &m))
   (return (ok)))
 
 ; R3 for macros. Before B7 this "worked" for the wrong reason: every macro was
@@ -668,10 +668,10 @@
   (let (m:String (try (test-write-file "b7-mns.nuc" "(import-prefixed b7-mlib pm)
 (defn main ():i32 (return (b7ns/b7-twice 21)))
 ")))
-    (try (ns-scope-refusal (string-as-view (addr-of m))
+    (try (ns-scope-refusal (string-as-view &m)
                            "unknown: b7ns/b7-twice — 'b7ns' is not in scope in this file"
                            "In scope here: pm."))
-    (drop (addr-of m)))
+    (drop &m))
   (return (ok)))
 
 ; The did-you-mean offers a macro spelling that compiles. The macro row was the
@@ -682,13 +682,13 @@
   (let (m:String (try (test-write-file "b7-mbare.nuc" "(import-prefixed b7-mlib pm)
 (defn main ():i32 (return (b7-twice 21)))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         c:Compiled (try (w1-compile mv)))
-    (try (check-no-line-zero (addr-of c 'diags)))
-    (try (check-error-at (addr-of c 'diags) mv 2
+    (try (check-no-line-zero (ref c 'diags)))
+    (try (check-error-at (ref c 'diags) mv 2
                          "unknown: b7-twice (did you mean 'pm/b7-twice'?)"))
-    (drop (addr-of c))
-    (drop (addr-of m)))
+    (drop &c)
+    (drop &m))
   (return (ok)))
 
 ; Three macro sources at once from inside a namespace: the prelude's `when`
@@ -709,8 +709,8 @@
   (let (m:String (try (test-write-file "b7-mmm.nuc" "(import-prefixed b7-mmid md)
 (defn main ():i32 (return (md/b7-mid 20)))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 41))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 41))
+    (drop &m))
   (return (ok)))
 
 ; Two namespaces may each declare a macro of one bare name — the thing a single
@@ -725,8 +725,8 @@
 (import-prefixed b7-mlib2 pb)
 (defn main ():i32 (return (+ (pa/b7-twice 10) (pb/b7-twice 7))))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 41))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 41))
+    (drop &m))
   (return (ok)))
 
 ; A macro re-exports through a facade and EXPANDS through the facade's prefix.
@@ -743,8 +743,8 @@
   (let (m:String (try (test-write-file "b5-emm.nuc" "(import-prefixed b5-emac fac2)
 (defn main ():i32 (return (fac2/b5-exp-mac 41)))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 41))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 41))
+    (drop &m))
   (return (ok)))
 
 ; What genuinely stays unexportable, for a reason that is true: an OVERLOADED
@@ -764,15 +764,15 @@
         m:String (try (test-write-file "b5-eovm.nuc" "(import-use b5-eovfac)
 (defn main ():i32 (return 0))
 "))
-        c:Compiled (try (w1-compile (string-as-view (addr-of m)))))
-    (try (check-no-line-zero (addr-of c 'diags)))
-    (try (check-error-at (addr-of c 'diags) (string-as-view (addr-of f)) 3
+        c:Compiled (try (w1-compile (string-as-view &m))))
+    (try (check-no-line-zero (ref c 'diags)))
+    (try (check-error-at (ref c 'diags) (string-as-view &f) 3
                          "export: 'b5-exp-ov' is a function — that kind is not keyed by namespace, so a re-export would not change how it resolves"))
-    (try (check-note-at (addr-of c 'diags) (string-as-view (addr-of f)) 3
+    (try (check-note-at (ref c 'diags) (string-as-view &f) 3
                         "an overloaded name is deliberately merged across namespaces"))
-    (drop (addr-of c))
-    (drop (addr-of m))
-    (drop (addr-of f)))
+    (drop &c)
+    (drop &m)
+    (drop &f))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -799,8 +799,8 @@
   (let (m:String (try (test-write-file "w43alone.nuc" "(defn w43-helper (x:i64):i32 (return (unsafe/cast i32 (+ x 7))))
 (defn main ():i32 (return (w43-helper 3)))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 10))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 10))
+    (drop &m))
   (return (ok)))
 
 ; Plus a PREFIXED import of a library that also exports the name. The unchanged
@@ -811,8 +811,8 @@
 (defn w43-helper (x:i64):i32 (return (unsafe/cast i32 (+ x 7))))
 (defn main ():i32 (return (w43-helper 3)))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 10))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 10))
+    (drop &m))
   (return (ok)))
 
 ; …and the prefix still reaches the library's, so nothing was hidden — only the
@@ -823,8 +823,8 @@
 (defn w43-helper (x:i64):i32 (return (unsafe/cast i32 (+ x 7))))
 (defn main ():i32 (return (wx/w43-helper 3)))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 103))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 103))
+    (drop &m))
   (return (ok)))
 
 ; `import-use` FLATTENS, which is R2's escape hatch: there the two overloads
@@ -836,8 +836,8 @@
 (defn w43-helper (x:i64):i32 (return (unsafe/cast i32 (+ x 7))))
 (defn main ():i32 (return (w43-helper 3)))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 103))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 103))
+    (drop &m))
   (return (ok)))
 
 ; The emitted call names the file's own symbol, which is the artefact the row
@@ -850,12 +850,12 @@
 (defn w43-helper (x:i64):i32 (return (unsafe/cast i32 (+ x 7))))
 (defn main ():i32 (return (w43-helper 3)))
 "))
-        s:String (try (w1-ir (string-as-view (addr-of m))))
-        iv:StrView (string-as-view (addr-of s)))
+        s:String (try (w1-ir (string-as-view &m)))
+        iv:StrView (string-as-view &s))
     (try (check-match iv "*call i32 @w43-helper(i64 *"))
     (try (check-not-match iv "*call*@w43n__w43-helper(*"))
-    (drop (addr-of s))
-    (drop (addr-of m)))
+    (drop &s)
+    (drop &m))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -887,8 +887,8 @@
   (let (m:String (try (test-write-file "w43tuse.nuc" "(import-prefixed w43tlib pg)
 (defn main ():i32 (return (pg/w43t-twice 3)))
 ")))
-    (try (w1-exit (string-as-view (addr-of m)) 35))
-    (drop (addr-of m)))
+    (try (w1-exit (string-as-view &m) 35))
+    (drop &m))
   (return (ok)))
 
 ; A genuine error in a template body is reported against the LIBRARY's file, to
@@ -913,18 +913,18 @@
         m:String (try (test-write-file "w43buse.nuc" "(import-prefixed w43blib pg)
 (defn main ():i32 (return (pg/w43b-tw 3)))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         c:Compiled (try (w1-compile mv))
         want:String (str "while instantiating @w43b__w43b_tw.i32 (requested at " mv ":2)"))
-    (try (check-no-line-zero (addr-of c 'diags)))
-    (try (check-error-at (addr-of c 'diags) (string-as-view (addr-of l)) 7
+    (try (check-no-line-zero (ref c 'diags)))
+    (try (check-error-at (ref c 'diags) (string-as-view &l) 7
                          "w43b/w43b-take: argument 1 has type StrView, which does not match parameter type i32"))
-    (try (check-note-at (addr-of c 'diags) (string-as-view (addr-of l)) 7
-                        (string-as-view (addr-of want))))
-    (drop (addr-of want))
-    (drop (addr-of c))
-    (drop (addr-of m))
-    (drop (addr-of l)))
+    (try (check-note-at (ref c 'diags) (string-as-view &l) 7
+                        (string-as-view &want)))
+    (drop &want)
+    (drop &c)
+    (drop &m)
+    (drop &l))
   (return (ok)))
 
 ; The realistic library shape: the template is declared in a generated `.nuch`
@@ -948,32 +948,32 @@
 (defn w43z-solo (x:i32):i32 (return (* x 10)))
 (defn w43z-tw (x:T :where (W43Z T)):i32 (return (w43z-solo (w43z-zero x))))
 "))
-        lv:StrView (string-as-view (addr-of lib))
+        lv:StrView (string-as-view &lib)
         nuch:String (try (emit-for-file "" "--emit-nuch" lv))
-        hp:String (try (write-into (string-as-view (addr-of hdir)) "w43ntl.nuch"
-                                   (string-as-view (addr-of nuch))))
+        hp:String (try (write-into (string-as-view &hdir) "w43ntl.nuch"
+                                   (string-as-view &nuch)))
         use:String (try (test-write-file "w43ntu.nuc" "(import w43ntl w43p)
 (defn main ():i32 (return (w43p/w43z-tw 3)))
 "))
-        uobj:String (str (string-as-view (addr-of hdir)) "/w43ntu.o")
-        lobj:String (str (string-as-view (addr-of ldir)) "/w43ntl.o"))
-    (try (compile-object-in (string-as-view (addr-of hdir))
-                            (string-as-view (addr-of use))
-                            (string-as-view (addr-of uobj))))
-    (try (compile-object-in "" lv (string-as-view (addr-of lobj))))
-    (let (parts:String (str (string-as-view (addr-of uobj)) " "
-                            (string-as-view (addr-of lobj)))
-          got:i32 (try (cc-link-exit (string-as-view (addr-of parts)))))
+        uobj:String (str (string-as-view &hdir) "/w43ntu.o")
+        lobj:String (str (string-as-view &ldir) "/w43ntl.o"))
+    (try (compile-object-in (string-as-view &hdir)
+                            (string-as-view &use)
+                            (string-as-view &uobj)))
+    (try (compile-object-in "" lv (string-as-view &lobj)))
+    (let (parts:String (str (string-as-view &uobj) " "
+                            (string-as-view &lobj))
+          got:i32 (try (cc-link-exit (string-as-view &parts))))
       (try (check-eq-int got 30 "the header-declared template stamps and links"))
-      (drop (addr-of parts)))
-    (drop (addr-of lobj))
-    (drop (addr-of uobj))
-    (drop (addr-of use))
-    (drop (addr-of hp))
-    (drop (addr-of nuch))
-    (drop (addr-of lib))
-    (drop (addr-of hdir))
-    (drop (addr-of ldir)))
+      (drop &parts))
+    (drop &lobj)
+    (drop &uobj)
+    (drop &use)
+    (drop &hp)
+    (drop &nuch)
+    (drop &lib)
+    (drop &hdir)
+    (drop &ldir))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -996,12 +996,12 @@
 ; hazard. The three boxed dispatches are required by count first.
 (deftest w9-dyn-solitary-dispatches-indirectly
   (let (c:Compiled (try (compile-path "tests/fixtures/w9-dyn-solitary.nuc"))
-        iv:StrView (compiled-ir (addr-of c)))
+        iv:StrView (compiled-ir &c))
     (try (check-eq-int (count-matching-lines iv "  %* = call i32 %*(ptr *") 3
                        "three boxed dispatches, all through a vtable slot"))
     (try (check-not-match iv "*call i32 @add-k(*"))
     (try (check-not-match iv "*call i32 @name-of(*"))
-    (drop (addr-of c)))
+    (drop &c))
   (return (ok)))
 
 ; The QUALIFIED spelling of a namespaced protocol's method reaches its slot,
@@ -1020,48 +1020,48 @@
 "))
   (let (dir:StrView (try (test-scratch))
         lib:String (str dir "/w41lib.nuc")
-        nuch:String (try (emit-into "" "--emit-nuch" (string-as-view (addr-of lib))
+        nuch:String (try (emit-into "" "--emit-nuch" (string-as-view &lib)
                                     dir "w41lib.nuch"))
         src:String (str "(import-use \"stdio.h\")
 (import-use allocator)
-(import \"" (string-as-view (addr-of nuch)) "\" wx)
+(import \"" (string-as-view &nuch) "\" wx)
 (defn main ():i32
   (let (b:(dyn wx/Describe) (wx/Fox 309))
     (printf \"d=%d\\n\" (wx/describe b)))
   (return 0))
 "))
-    (drop (addr-of nuch))
-    (drop (addr-of lib))
-    (return (test-write-file "w41use.nuc" (string-as-view (addr-of src))))))
+    (drop &nuch)
+    (drop &lib)
+    (return (test-write-file "w41use.nuc" (string-as-view &src)))))
 
 (deftest w9-dyn-solitary-qualified-reaches-slot
   (let (u:String (try (w41-files))
-        s:String (try (w1-ir (string-as-view (addr-of u))))
-        iv:StrView (string-as-view (addr-of s)))
+        s:String (try (w1-ir (string-as-view &u)))
+        iv:StrView (string-as-view &s))
     ; An empty module would pass a purely negative assertion, so the indirect
     ; call is required as well as the direct one refused.
     (try (check-match iv "  %* = call i32 %*(ptr *"))
     (try (check-not-match iv "*call i32 @w41__describe(*"))
-    (drop (addr-of s))
-    (drop (addr-of u)))
+    (drop &s)
+    (drop &u))
   (return (ok)))
 
 (deftest w9-dyn-solitary-qualified-runs
   (let (u:String (try (w41-files))
         dir:StrView (try (test-scratch))
         lib:String (str dir "/w41lib.nuc")
-        lll:String (try (emit-into "" "--emit-llvm" (string-as-view (addr-of lib))
+        lll:String (try (emit-into "" "--emit-llvm" (string-as-view &lib)
                                    dir "w41lib.ll"))
-        ull:String (try (emit-into "" "--emit-llvm" (string-as-view (addr-of u))
+        ull:String (try (emit-into "" "--emit-llvm" (string-as-view &u)
                                    dir "w41use.ll"))
-        parts:String (str (string-as-view (addr-of lll)) " "
-                          (string-as-view (addr-of ull)))
-        out:String (try (cc-link-run "" (string-as-view (addr-of parts)))))
-    (try (check-eq (string-as-view (addr-of out)) "d=309\n"))
-    (drop (addr-of out))
-    (drop (addr-of parts))
-    (drop (addr-of ull))
-    (drop (addr-of lll))
-    (drop (addr-of lib))
-    (drop (addr-of u)))
+        parts:String (str (string-as-view &lll) " "
+                          (string-as-view &ull))
+        out:String (try (cc-link-run "" (string-as-view &parts))))
+    (try (check-eq (string-as-view &out) "d=309\n"))
+    (drop &out)
+    (drop &parts)
+    (drop &ull)
+    (drop &lll)
+    (drop &lib)
+    (drop &u))
   (return (ok)))
