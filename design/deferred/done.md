@@ -83,7 +83,16 @@ every program in the tree, so it wants its own gate and its own commit rather
 than riding along with a feature.
 
 
-### Pointer-kind spellings: make the sugar general, or ban the ambiguous half — **no longer deferred**
+### Pointer-kind spellings: make the sugar general, or ban the ambiguous half — **closed**
+
+Closed 2026-09-19: PK-1 … PK-6 all landed (PK-6 last, with
+`examples/type-sugar.nuc` — the §1.1 matrix as one golden — and the
+`s21-matrix-compiles` / `s21-nuch-roundtrip` / `s21-ir-identical` /
+`s21-match-ref-binder` units). `&` is `ref` in both worlds, the sigil-paren
+forms read in every position, a sigil over a type variable is a wrapper, and
+`addr-of` is retired; what stays open is the sweep's 14 `lib/` `(Maybe E)`
+sites, boot-gated until the next refresh, and the template stamp's lost pointer
+kind, which is its own entry in [overview.md](overview.md).
 
 Taken up 2026-09-16 as
 [stage21-cleanup/pointer-kind-spellings.md](../stage21-cleanup/pointer-kind-spellings.md),

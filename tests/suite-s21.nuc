@@ -670,3 +670,201 @@ foo:(bar)
     (try (check-probe-refused "(defn f ((x (addr-of i32))):i32 (return 0))" msg))
     (try (s21-type-refused "(defn addr-of (x:i32):i32 (return x))" 3 "'addr-of' already names a special form")))
   (return (ok)))
+
+; ---------------------------------------------------------------------------
+; PK-6: the matrix as one program, and the properties the design states of it
+; ---------------------------------------------------------------------------
+
+; `examples/type-sugar.nuc` is the §1.1 matrix and runs as a golden; here it
+; is the header modes' input too, since a signature both readers accept is the
+; whole point. A header prints the canonical node -- `(ref Pt)`, `(? (Vector
+; i32))` -- and nothing the reader would not produce.
+(deftest s21-matrix-compiles
+  (let (path:StrView "examples/type-sugar.nuc"
+        ll:Compiled (try (emit-checked "" "--emit-llvm" path))
+        nuch:Compiled (try (emit-checked "" "--emit-nuch" path))
+        ch:Compiled (try (emit-checked "" "--emit-cheader" path)))
+    (when (not (ll 'ok?)) (fail! "--emit-llvm refused the matrix"))
+    (when (not (nuch 'ok?)) (fail! "--emit-nuch refused the matrix"))
+    (when (not (ch 'ok?)) (fail! "--emit-cheader refused the matrix"))
+    (try (check-silent &ll "--emit-llvm"))
+    (try (check-silent &nuch "--emit-nuch"))
+    (try (check-silent &ch "--emit-cheader"))
+    (try (check-ir-parses (compiled-ir &ll)))
+    (let (nv:StrView (compiled-ir &nuch))
+      (try (check-not-contains nv "addr-of"))
+      (try (check-not-contains nv "&"))
+      (try (check-line nv "(defstruct Holder (mv (? (Vector i32))) (rv (! (Vector i32))) (link (ref Pt)) (qr (?! (Vector i32))))"))
+      (try (check-line nv "(defunion Slot (held (p (?ref (Vector i32)))) (listed (q (?ref Pt))) empty)"))
+      (try (check-line nv "(deftype MV (? (Vector i32)))"))
+      (try (check-line nv "(deftype PtRef (ref Pt))"))
+      (try (check-line nv "(extern (g-mv (? (Vector i32))))"))
+      (try (check-line nv "(declare give-rv ((n i32)) (! (Vector i32)))"))
+      (try (check-line nv "(declare ref-len ((p (ref (? (Vector i32))))) :i32)"))
+      (try (check-line nv "(defprotocol Spread (spread ((self (ref Self)) n:i32) (? (Vector i32))))"))
+      (try (check-line nv "(defn count-q ((v (ref (Vector ?T)))) :i32 (return (unsafe/cast i32 (count v))))")))
+    (drop &ch)
+    (drop &nuch)
+    (drop &ll))
+  (return (ok)))
+
+; The round trip §5 promises, over every exporter at once: a protocol with
+; `&Self` / `?(Vector i32)`, a generic template (printed verbatim) with
+; `(Vector ?T)` and `&Pt`, a concrete `(Vector ?Pt)`, a `deftype`, a
+; `(link &Pt)` field and a `defvar` (an `extern` in the header). The header
+; lives in `h/` alone so `resolve-import` cannot find the source first, and the
+; consumer stamps the template from the header's text. `import-use`, not a
+; prefix: a template's own signature resolves `Pt` in the INSTANTIATING file's
+; environment, so a prefixed importer cannot stamp it (overview.md, rough edges).
+(deftest s21-nuch-roundtrip
+  (let (ldir:String (try (test-scratch-sub "l"))
+        hdir:String (try (test-scratch-sub "h"))
+        lib:String (try (test-write-file "l/s21rt.nuc" "(ns s21rt)
+(import-use vector)
+(defstruct Pt x:i32 y:i32)
+(defstruct Holder (link &Pt) tag:i32)
+(deftype MV ?(Vector i32))
+(defvar g-last:?(Vector i32))
+(defprotocol Spread (spread ((self &Self) n:i32):?(Vector i32)))
+(defn give-mv (n:i32):MV
+  (when (< n 0) (return none))
+  (let (v:(Vector i32) (vector-new))
+    (dotimes (i n) (conj &v i))
+    (set! g-last (some v))
+    (return (some v))))
+(defn spread (p:&Pt n:i32):?(Vector i32) (return (give-mv (+ n (p 'x)))))
+(extend Pt Spread)
+(defn mv-len (m:?(Vector i32)):i32
+  (match m ((some v) (return (unsafe/cast i32 (count &v)))) (none (return -1))))
+(defn count-some ((v (ref (Vector ?T))) q:&Pt):i32
+  (let (n:i32 (q 'y))
+    (dotimes (i (count v))
+      (match (invoke v i) ((some x) (set! n (+ n 1))) (none 0)))
+    (return n)))
+(defn count-qpt ((v (ref (Vector ?Pt)))):i32 (return (unsafe/cast i32 (count v))))
+(defn link-x (h:&Holder):i32 (return ((h 'link) 'x)))
+"))
+        lv:StrView (string-as-view &lib)
+        nuch:String (try (emit-for-file "" "--emit-nuch" lv))
+        nv:StrView (string-as-view &nuch)
+        hp:String (try (write-into (string-as-view &hdir) "s21rt.nuch" nv))
+        use:String (try (test-write-file "s21rtu.nuc" "(import-use \"stdio.h\")
+(import-use vector)
+(import-use s21rt)
+(defn main ():i32
+  (let (pt:Pt (Pt 5 6)
+        pp:&Pt &pt
+        h:Holder (Holder pp 1)
+        m:MV (give-mv 3)
+        vi:(Vector ?i32) (vector-new)
+        vq:(Vector ?Pt) (vector-new)
+        s1:?i32 (some 1)
+        n0:?i32 none
+        mp:?Pt (some pt))
+    (conj &vi s1)
+    (conj &vi n0)
+    (conj &vq mp)
+    (printf \"%d %d %d %d %d %d\\n\" (mv-len m) (mv-len (spread &pt 2)) (mv-len g-last)
+            (count-some &vi &pt) (count-qpt &vq) (link-x &h))
+    (return 0)))
+"))
+        uobj:String (str (string-as-view &hdir) "/s21rtu.o")
+        lobj:String (str (string-as-view &ldir) "/s21rt.o"))
+    (try (check-not-contains nv "addr-of"))
+    (try (check-not-contains nv "&"))
+    (try (check-line nv "(defstruct Holder (link (ref Pt)) (tag i32))"))
+    (try (check-line nv "(deftype MV (? (Vector i32)))"))
+    (try (check-line nv "(extern (g-last (? (Vector i32))))"))
+    (try (check-line nv "(defprotocol Spread (spread ((self (ref Self)) n:i32) (? (Vector i32))))"))
+    (try (check-line nv "(declare spread ((p (ref Pt)) (n i32)) (? (Vector i32)))"))
+    (try (check-line nv "(declare count-qpt ((v (ref (Vector ?Pt)))) :i32)"))
+    (try (check-contains nv "(defn count-some ((v (ref (Vector ?T))) (q (ref Pt))) :i32 "))
+    (try (compile-object-in (string-as-view &hdir)
+                            (string-as-view &use)
+                            (string-as-view &uobj)))
+    (try (compile-object-in "" lv (string-as-view &lobj)))
+    (let (parts:String (str (string-as-view &uobj) " "
+                            (string-as-view &lobj))
+          got:String (try (cc-link-run "" (string-as-view &parts))))
+      (try (check-golden (string-as-view &got) "3 7 7 7 1 5\n"))
+      (drop &got)
+      (drop &parts))
+    (drop &lobj)
+    (drop &uobj)
+    (drop &use)
+    (drop &hp)
+    (drop &nuch)
+    (drop &lib)
+    (drop &hdir)
+    (drop &ldir))
+  (return (ok)))
+
+; Sugar in the strict sense: `?(V)`, `&(V)` and `&x` against `(Maybe (V))`,
+; `(ref (V))` and `(ref x)`, one program each, whole-module identity (both are
+; written to the same `t.nuc`, so the module header is equal too).
+(deftest s21-ir-identical
+  (let (a:String (try (source-ir "(import-use vector)
+(defstruct Pt x:i32 y:i32)
+(defstruct Holder mv:?(Vector i32) (vp &(Vector i32)))
+(defn mv-len (m:?(Vector i32)):i32
+  (match m ((some v) (return (unsafe/cast i32 (count &v)))) (none (return -1))))
+(defn vp-len (p:&(Vector i32)):i32 (return (unsafe/cast i32 (count p))))
+(defn go ():i32
+  (let (v:(Vector i32) (vector-new)
+        m:?(Vector i32) (some v)
+        vp:&(Vector i32) &v
+        h:Holder (Holder m vp)
+        s:&?(Vector i32) (alloca ?(Vector i32)))
+    (set! @s m)
+    (return (+ (mv-len (as ?(Vector i32) m)) (+ (vp-len &v) (+ (mv-len (h 'mv)) (unsafe/cast i32 (sizeof ?(Vector i32)))))))))
+"))
+        b:String (try (source-ir "(import-use vector)
+(defstruct Pt x:i32 y:i32)
+(defstruct Holder (mv (Maybe (Vector i32))) (vp (ref (Vector i32))))
+(defn mv-len ((m (Maybe (Vector i32)))):i32
+  (match m ((some v) (return (unsafe/cast i32 (count (ref v))))) (none (return -1))))
+(defn vp-len ((p (ref (Vector i32)))):i32 (return (unsafe/cast i32 (count p))))
+(defn go ():i32
+  (let (v:(Vector i32) (vector-new)
+        (m (Maybe (Vector i32))) (some v)
+        (vp (ref (Vector i32))) (ref v)
+        h:Holder (Holder m vp)
+        (s (ref (Maybe (Vector i32)))) (alloca (Maybe (Vector i32))))
+    (set! (deref s) m)
+    (return (+ (mv-len (as (Maybe (Vector i32)) m)) (+ (vp-len (ref v)) (+ (mv-len (h 'mv)) (unsafe/cast i32 (sizeof (Maybe (Vector i32))))))))))
+")))
+    (try (check-golden (string-as-view &a) (string-as-view &b)))
+    (drop &a)
+    (drop &b))
+  (return (ok)))
+
+; `&` reads as `ref` everywhere, and the one place `ref` already had a reading
+; of its own is a `match` pattern: a `(ref name)` binder aliases the payload
+; field in place through a pointer scrutinee (`examples/unions.nuc`'s
+; `scale-by`). Still so, and the binder is a `&T` a callee can take.
+(deftest s21-match-ref-binder
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defunion Shape (circle r:i32) (rect w:i32 h:i32) point)
+(defn bump (p:&i32):void (set! @p (+ @p 1)))
+(defn scale (s:&Shape k:i32):void
+  (match s
+    ((circle (ref r)) (set! @r (* @r k)))
+    ((rect (ref w) (ref h)) (do (set! @w (* @w k)) (bump h)))
+    (point 0)))
+(defn show (s:&Shape):void
+  (match s
+    ((circle r) (printf \"circle %d\\n\" r))
+    ((rect w h) (printf \"rect %d %d\\n\" w h))
+    (point (printf \"point\\n\"))))
+(defn main ():i32
+  (let (c:Shape (make Shape circle 3)
+        r:Shape (make Shape rect 2 5))
+    (scale &c 4)
+    (scale &r 3)
+    (show &c)
+    (show &r)
+    (return 0)))
+")))
+    (try (check-golden (string-as-view &out) "circle 12\nrect 6 6\n"))
+    (drop &out))
+  (return (ok)))

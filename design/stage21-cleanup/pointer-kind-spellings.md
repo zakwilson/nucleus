@@ -54,7 +54,13 @@ refusal is lifted from the sweep and the two sites swept, byte-identical; the
 tyvar refusal **stays** — not for the substituter now, but because the boot
 compiler that builds `nucleusc` predates PK-4b and compiles the five `lib/`
 files those 14 sites live in (`lib/iterator.nuc:41: unknown type: E` on the
-first attempt) — lift at the next boot refresh. PK-6's remaining docs rows are not built. Every claim in
+first attempt) — lift at the next boot refresh. **PK-6 built 2026-09-19** (§8
+"as built"): `examples/type-sugar.nuc` is the matrix as one golden, four units
+were still missing (three of §8's table were already pinned by earlier
+milestones' units), the docs table was audited row by row, and two matrix rows
+are excluded from the example for the pre-existing defects overview.md records.
+**Item closed**: commits `6b19f46` (PK-1, 2026-09-18) … `a62eab1` (PK-4b,
+2026-09-19) and PK-6's, the one after it. Every claim in
 §1 was reproduced against `build/nucleusc` on 2026-09-16 (probe generator and
 full run kept beside this document's research pass; the 437-row matrix is
 summarised in §1.1). Milestones are **PK-1 … PK-6**; §9 sequences them across
@@ -733,6 +739,48 @@ PK-1 (their fixtures still pass) and are renamed/re-spelled in PK-5.
 | `context/macros-jit.md:13` | the `~sym:type` note gains the `~sym:(Type)` reading |
 | `design/stage16-ergonomics/ref-sigil.md` §6 | an **Update** line pointing here (original text kept) |
 | `design/stage14/colon-paren-types.md` §2 "out of scope" | an **Update** line: the `!`/`?` + paren case and the `~sym:(Type)` reading are settled here |
+
+**As built (2026-09-19).** No compiler change. The example is
+`examples/type-sugar.nuc` + `tests/expected/type-sugar.out` (auto-registered:
+`tests/nuctests.nuc`'s `register-golden` runs every `examples/X.nuc` with a
+`tests/expected/X.out`). It covers the sigil-paren class in `let`/`with`, a
+`defn` parameter (colon and list), both return spellings, `defvar`, a
+`defstruct` field (colon, list, and `(link &Pt)`), a `defunion` arm (colon and
+list, niche pointers), `defprotocol` + `extend` with `&Self` / `?(Vector i32)`,
+a lambda, `as` / `unsafe/cast` / `sizeof` / `alloca`, a template argument in
+`let` / `sizeof` / a generic pattern, `deftype`, a macro argument, `(as &Pt
+&pt)` / `(sizeof &Pt)`, and PK-4b's `(Vector ?T)` / `(Vector !T)` / `!T :where`.
+**Two matrix rows are excluded**, each a pre-existing defect recorded in
+[overview.md](overview.md) and re-probed on this binary: a lambda whose declared
+return is a nullable pointer kind (`):?&Pt` / `):?&(V)` returning `null` is
+`return: raw pointer where non-null (ref ...) is required` — the lambda loses
+the kind; a `defn` with the same signature is fine, and a lambda returning
+`?(Vector i32)` is in), and a `defunion` arm holding a value-`?`/`!` over a
+struct (`use of undefined type named 'Maybe.Vector.i32'` in the compile-time
+module; the example's arms hold `?&(Vector i32)` and `(?ref Pt)` instead). The
+example also binds pointer arguments before a struct literal because
+`(Holder &pt)` is misread as a designated initializer (the third rough edge).
+
+The units table, audited against what earlier milestones had already pinned:
+
+| Unit | Disposition |
+| --- | --- |
+| `s21-matrix-compiles` | **built** — the example under all three emit modes, silent, IR parsed by `llvm-as`; the `.nuch` has no `addr-of` and no `&`, and prints `(link (ref Pt))`, `(? (Vector i32))`, `(?! (Vector i32))`, `(?ref …)`, the `defprotocol`, the `extern` and the verbatim `(Vector ?T)` template |
+| `s21-nuch-roundtrip` | **built** — protocol (`&Self`, `?(Vector i32)`), a generic template with `(Vector ?T)` and `&Pt` stamped by the consumer from the header text, a concrete `(Vector ?Pt)` declare, `deftype`, `(link &Pt)`, a `defvar` (`extern` in the header); header in `h/` only, two objects linked, output pinned. The consumer uses `import-use`, not a prefix — a template's own *signature* resolves its concrete types in the instantiating file's environment, so `(import lib k)` cannot stamp a template whose signature names the library's own `Pt` (found here; a namespace defect independent of spelling, recorded in overview.md) |
+| `s21-ir-identical` | **built** — `?(V)` / `&(V)` / `&x` (field, parameter, `let`, `alloca`, `as`, `sizeof`) against `(Maybe (V))` / `(ref (V))` / `(ref x)`, whole-`.ll` `check-golden`; `s16-ref-sigil-ir-identical` (`&Pt` vs `ref:Pt`) and `s16-ref-sigil-ref-ir-identical` (`&a` vs `(ref a)`) stay as the atom-form halves |
+| `s21-diagnostics` | **already pinned, not added** — the `? (Vector i32)` near-miss at a parameter, a field, a `defvar`, `alloca` (line 3, i.e. the form's line and not 0), `sizeof`, `as`, and `(? A B)` / `(?)` / `(!)` / `(?! A B)` are `s21-pk3-diagnostics`; H5 (`(Vector i32)` for `(Vector ?Pt)` → a type error) is `s21-pk4a-h5` and the `(Vector ?T)` negative in `s21-pk4b-sigil-tyvar`; the retirement message is `s21-addr-of-retired` (eight probes, one under all three modes) |
+| `s21-value-annotation` | built with PK-4a |
+| `s21-match-ref-binder` | **built** — `(circle (ref r))` / `(rect (ref w) (ref h))` through a pointer scrutinee mutate in place and the binder is a `&i32` a callee takes |
+| `s21-macrolet-ref-refused` | **already pinned, not added** — probe 3 of `s21-pk1-ref-head` |
+
+Arithmetic: 1060 + 1 (the example golden) + 4 = **1065**. The docs table held
+as written, most rows having landed with their code; this milestone added the
+`:where (Any T)` escape for a pointer wrapper under a template argument to
+`docs/generics.md` (probed: `(defn f ((v (ref (Vector &T))) :where (Any T)) …)`
+collects and binds), the two **Update** lines, and re-spelled the one
+`(addr-of it)` left in `design/deferred/overview.md`. `context/conventions.md`'s
+old `(addr-of T)` entry had already been replaced by PK-5b; the reader-mirror
+sentence §8 prescribed for it is moot since item 2 (one reader).
 
 ---
 

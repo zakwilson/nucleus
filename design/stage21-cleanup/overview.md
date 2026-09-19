@@ -1,6 +1,6 @@
 # Stage 21 — cleanup
 
-**Status:** opened 2026-09-16. Two items designed, none built.
+**Status:** opened 2026-09-16. Two items designed; both built (item 2 on 2026-09-18, item 1 on 2026-09-19).
 
 **Goal.** Close the deferred items and rough edges the prior stages left behind
 — the ones recorded in [deferred/overview.md](../deferred/overview.md) and the
@@ -11,7 +11,7 @@ fewer "convention, not a rule" edges in it.
 
 ## Items
 
-1. **Pointer-kind and type-sigil spellings** — **PK-1 … PK-4a, PK-5a, PK-5b built 2026-09-18** —
+1. **Pointer-kind and type-sigil spellings** — **built 2026-09-19** (PK-1 … PK-4a, PK-5a, PK-5b 2026-09-18; PK-4b and PK-6 2026-09-19) —
    [pointer-kind-spellings.md](pointer-kind-spellings.md) (designed 2026-09-16,
    PK-1 … PK-6). `&` becomes `ref` in both the type and the value world, so a
    standalone `&T` is the same node the type path already canonicalises and
@@ -40,8 +40,14 @@ fewer "convention, not a rule" edges in it.
    the sweep's paren-operand refusal is lifted; its tyvar refusal stays until
    the next boot refresh, because the boot compiler builds `nucleusc` from the
    `lib/` files those sites live in (pointer-kind-spellings.md §6 "as
-   built"). PK-6's remaining docs rows (`generics.md`, `errors.md`,
-   `macros.md`, `toplevel.md`'s reader-macro table) are what is left.
+   built"). PK-6 (built 2026-09-19, §8 "as built") closes the item with no
+   compiler change: `examples/type-sugar.nuc` is the §1.1 matrix as one golden
+   (two rows excluded for the lambda-return and `defunion`-arm defects below),
+   four units that no earlier milestone had pinned (`s21-matrix-compiles`,
+   `s21-nuch-roundtrip`, `s21-ir-identical`, `s21-match-ref-binder`), and the
+   docs table audited row by row. The item moves to
+   [deferred/done.md](../deferred/done.md); the boot-gated `lib/` re-sweep is
+   the one loose end, lifted at the next boot refresh.
 2. **There are two readers** — **built 2026-09-18** —
    [one-reader.md](one-reader.md) (designed 2026-09-16, R-1 … R-4).
    `lib/read.nuc` and `src/reader.nuc` contain significant duplicated work
@@ -88,7 +94,7 @@ Item 2 lands between item 1's PK-1 and PK-2: **PK-1 → R-1, R-2 (R-3 optional)
 → PK-2, PK-3, PK-4a → delete the gensym walk → boot refresh → PK-5 →
 PK-4b, PK-6.** Everything up to and including the boot refresh landed
 2026-09-18 (progress.md, "Boot refresh for Stage 21"), then PK-5a and PK-5b
-the same day and PK-4b on 2026-09-19; PK-6 is next.
+the same day and PK-4b and PK-6 on 2026-09-19 — the sequence is complete.
 PK-1 is one line in each reader and stops the header leak now;
 PK-2 is structural in the reader and would otherwise be written twice; R is
 fixed-point-preserving on its own, so its gensym walk can be deleted as the last
@@ -119,6 +125,18 @@ twin edits pointer-kind-spellings.md §4 specifies. Rationale in
   in one is reported at the conformer — a parameter type at line 0, a return
   type at the `extend`'s line. This is why the two `defprotocol` rows are the
   only ones the failing spellings "pass".
+- **A generic template's SIGNATURE resolves its concrete types in the
+  instantiating file's environment** (found building PK-6's round-trip unit).
+  W9 item 43 gave a stamped *body* the library's environment, but a template
+  in `(ns lib)` whose signature names the library's own type — `(defn
+  count-some ((v (ref (Vector ?T))) q:&Pt) …)`, or a plain `(defn g (x:T q:&Pt
+  :where (Any T)) …)` — cannot be stamped from `(import lib k)`: `unknown type:
+  Pt — defined in namespace 'lib'`, `note: write 'k/Pt' here`, reported at the
+  caller's line (and, through a `.nuch`, at the caller's *file* with the
+  header's line). `import-use`, which makes `Pt` spellable bare, stamps it;
+  the source import and the `.nuch` import fail alike, so it is the signature
+  walk, not the header replay. Independent of spelling — `(ref Pt)` and
+  `(Vector T)` reproduce it.
 - **Receiver-inferred tyvar collection stops at a wrapper inside a template
   argument.** `(defn f (v:(ref (Vector (ref T)))):usize …)` fails `unknown type:
   T` at the definition unless `T` is declared with `:where (Any T)`; the bare
