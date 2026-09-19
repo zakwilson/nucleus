@@ -387,7 +387,12 @@ transform that walks a `defn` form sees the *desugared* shapes in the signature
 (`(a T)`, `(maxv T)`) but the *raw colon* shapes in the body (`r:T`). The Stage 9
 generic monomorphizer (`subst-tyvars-node`) therefore substitutes at the
 colon-*segment* level (like `subst-self-node` for protocols), not by matching
-standalone symbol nodes — that handles both shapes uniformly.
+standalone symbol nodes — that handles both shapes uniformly. A segment may
+carry a **type-sigil run** (`?E`, `!E`, `?!E`) that is part of the same atom, so
+`subst-tyvar-segment` (`src/type-mangle.nuc`, PK-4b) strips the run before the
+lookup and re-prefixes it to the binding's spelling; a walker that compares a
+segment to a tyvar name whole will miss `?E` — read it through `sigil-split`
+(`src/generics.nuc`), as the eight pattern walkers do.
 
 **In value position that annotation is an `as` CAST, applied in exactly one
 place — and that placement is load-bearing.** Stage 16
@@ -2253,6 +2258,15 @@ constructor is lenient. Found by Stage 21 R-1: the memo key is
 `type-mangle-token` (`pNode` for both kinds), so the first stamp of either kind
 answers for both — do not "fix" `type-spelling` locally; every stamped `pkind`
 in `src/` moves with it (it belongs with the pointer-kind item).
+
+The same fact reaches the generic-pattern unifier: `Vector.pPt`'s recorded
+`origin-args[0]` is the pointer type of whichever `(Vector &Pt)` /
+`(Vector ?&Pt)` / `(Vector raw:Pt)` stamped first, so a pattern rule that
+inspects a stamp argument's `pkind` is declaration-order-dependent. PK-4b's
+`sigil-unwrap-type` (`src/generics.nuc`) therefore peels `?`/`!` off any
+`TY-PTR` by shape (as `type-eq` ignores the kind); a stamped `Maybe`/`Result`
+*instance* is recognised through `UnionDef.origin-template`/`origin-args`,
+which every union stamp now records as `StructDef` does.
 
 Until then, a raw payload in a sum with a non-`Err` error arm is a **named**
 union with the same arms — `(defunion ReadResult (ok v:raw:Node) (err
@@ -6257,16 +6271,18 @@ form, `(ref s 'field)` — there is no
 `x:?(Vector i32)`, `):!(Vector i32)` (PK-2's open-segment fuse).
 
 `scripts/stage21/sugar-sweep.py` (Stage 21 PK-5a) rewrites a tree to these
-spellings and is idempotent; rerun it after adding code in the old ones. Four
+spellings and is idempotent; rerun it after adding code in the old ones. Three
 shapes it refuses on purpose, and which stay in the list form: **a sigil over
-a type variable** (`(Maybe E)` — `?E` is one symbol, and tyvar substitution
-walks colon segments, so it would never be substituted; `?&T` and `?(Vector T)`
-are fine); **`(Maybe (raw T))`** (a value-Maybe; `?raw:T` is the niche pointer);
-**a paren operand in an exported signature** (`(Result (Vector D) Err)` in a
-public `defn` — the `--emit-cheader` classifiers read a `(Maybe …)`/`(Result …)`
-head and not a `(? X)`/`(! X)` cell, so the `!(…)` spelling exports an ABI-wrong
-`void*`); and **an `extend` subject** (`(extend ptr:Cents Ord)` — `extend` reads
-a cell subject as a template application, so `&Cents` is refused there).
+a type variable** (`(Maybe E)`) — the compiler has read `?E` as `(Maybe E)`
+everywhere since PK-4b, but the 14 sites are in `lib/` files the **boot**
+compiler builds into `nucleusc` (`coll`, `iterator`, `vector`, `hashmap`,
+`hashset`), and the boot predates PK-4b, so the refusal is lifted at the next
+boot refresh, not before; **`(Maybe (raw T))`** (a value-Maybe; `?raw:T` is the
+niche pointer); and **an `extend` subject** (`(extend ptr:Cents Ord)` — `extend`
+reads a cell subject as a template application, so `&Cents` is refused there).
+The paren operand in an exported signature (`(Result (Vector D) Err)`) was a
+fourth until PK-4b taught the `--emit-cheader` classifiers the `(? X)`/`(! X)`
+cell; `):!(Vector D)` now classifies as `(Result (Vector D) Err)` does.
 
 Since Stage 17, a struct **value** in a binding also reaches a `&T` parameter
 with no `&` at all (lvalue-only implicit address-of, borrow-conventions.md

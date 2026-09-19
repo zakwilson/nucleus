@@ -4,8 +4,9 @@
 ; Design: design/stage11/collections.md §"M2 — Iteration".
 ;
 ; NOTES:
-;   - `(Maybe E)` over a type variable stays the list form: `?E` is a bare
-;     symbol, which tyvar substitution does not enter (PK-5a refusal class).
+;   - `(Maybe E)` over a type variable stays the list form until the next boot
+;     refresh: this file is compiled into nucleusc by the boot, which predates
+;     PK-4b's `?E` substitution (the sweep script's tyvar refusal).
 ;   - Protocol names are NOT usable as concrete type names (only struct/union
 ;     names are in the type table).
 ;   - (Maybe ptr) is niche-encoded (nullable pointer, not a tagged struct).

@@ -469,7 +469,7 @@
 
 (extend (HashMapEntryIter K V) (Iterator (Entry K V)))
 
-(defn next (self:&(HashMapEntryIter K V)) (Maybe (Entry K V))
+(defn next (self:&(HashMapEntryIter K V)):?(Entry K V)
   (let (kbuf:&K (as &K (self 'kbuf))
         vbuf:&V (as &V (self 'vbuf))
         sbuf:&ui8 (as &ui8 (self 'sbuf)))

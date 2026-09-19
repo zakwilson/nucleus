@@ -31,19 +31,21 @@ else is refused and listed.
 Refusals the design table does not spell out, each a meaning the rewrite
 would change (the PK-5a entry in design/progress.md records the counts):
   * R6/R7 over a bare symbol that is neither a builtin nor a `defstruct`/
-    `defunion`/`deftype`/`defenum` name in the swept tree — a type variable:
-    `subst-tyvars-sym` substitutes colon SEGMENTS, so `?T` never stamps.
+    `defunion`/`deftype`/`defenum` name in the swept tree — a type variable.
+    PK-4b's compiler stamps `?T` (sigil run stripped per segment), but the
+    committed boot compiler predates it and compiles `lib/coll`, `iterator`,
+    `vector`, `hashmap`, `hashset` into `nucleusc`; lift at the next boot
+    refresh (the PK-4b entry in design/progress.md).
   * R6 over `(raw T)` / `raw:T`: `(Maybe (raw T))` is the value-Maybe,
     `?raw:T` the niche pointer.
-  * R6/R7 over a PAREN operand outside a let/with binding or a cast operand:
-    `cheader-template-instance` / `cheader-niche-no-c` (src/cheader.nuc) key on
-    the `(Maybe …)`/`(Result …)` cell and do not read `(? X)`/`(! X)`, so a
-    public `!(Vector D)` would export an ABI-wrong `void*` declaration.
   * R1/R3 whose operand is a legacy marker name (`&rest` reads as the marker).
   * a form with a comment inside it (collapsing it would drop the comment).
   * R1/R2 under `quote` (a literal).  Under `quasiquote` only R1, R2, R3 and
     R5 run — the node-identical rules plus the two `addr-of` rules, which
     reach macro bodies (JIT-only) — and an `unquote` operand is code again.
+PK-5a also refused R6/R7 over a paren operand in an exported slot (the
+C-header classifiers did not read a `(? X)` cell); PK-4b taught them to, and
+that refusal went with it.
 
 Usage:
     sugar-sweep.py --dry-run FILE ...     # histogram + refusals, no writes
@@ -318,7 +320,6 @@ class Rewriter:
         self.rules_on = rules
         self.tyvars = []          # one set per enclosing definer
         self.in_params = 0        # >0 inside a parameter list (a generic PATTERN)
-        self.local_slot = 0       # >0 inside a let/with binding list or a cast operand
         self.changed = 0
 
     # -- helpers ------------------------------------------------------------
@@ -380,7 +381,7 @@ class Rewriter:
         """A bare symbol operand of R6/R7 that an enclosing definer declares
         as a type variable, or that names no known type.  Inside a parameter
         list — a generic PATTERN — a list operand mentioning one is refused
-        too: the pattern walkers do not descend a `(? X)` cell until PK-4b."""
+        too: the boot compiler's pattern walkers do not descend a `(? X)` cell."""
         if opnode.kind == "atom":
             t = opnode.text
             if ":" in t or t.startswith(("?", "!")):
@@ -513,10 +514,7 @@ class Rewriter:
             tv = where_tyvars(ch[1])
         self.tyvars.append(tv)
         self.in_params += role == PL
-        local = role == BL or (role == V and h in TYPE_OPERAND_HEADS)
-        self.local_slot += local
         texts = [self.rw(c, r) for c, r in zip(ch, roles)]
-        self.local_slot -= local
         self.in_params -= role == PL
         self.tyvars.pop()
 
@@ -601,9 +599,7 @@ class Rewriter:
             elif not self.gaps_clean(n):
                 self.refuse(n, "R6: comment inside the form")
             elif self.maybe_tyvar(op):
-                self.refuse(n, "R6: operand `%s` names no known type (a type variable?)" % op.text)
-            elif op.kind != "atom" and not self.local_slot:
-                self.refuse(n, "R6: paren operand in an exported slot (the C-header classifiers do not read a (? X) cell)")
+                self.refuse(n, "R6: operand `%s` names no known type (a type variable? the boot compiler predates PK-4b)" % op.text)
             elif self.raw_operand(op):
                 self.refuse(n, "R6: (Maybe (raw T)) is the value-Maybe, ?raw:T the niche")
             else:
@@ -617,9 +613,7 @@ class Rewriter:
                 elif not self.gaps_clean(n):
                     self.refuse(n, "R7: comment inside the form")
                 elif self.maybe_tyvar(op):
-                    self.refuse(n, "R7: operand `%s` names no known type (a type variable?)" % op.text)
-                elif op.kind != "atom" and not self.local_slot:
-                    self.refuse(n, "R7: paren operand in an exported slot (the C-header classifiers do not read a (! X) cell)")
+                    self.refuse(n, "R7: operand `%s` names no known type (a type variable? the boot compiler predates PK-4b)" % op.text)
                 else:
                     self.hit("R7 (Result X Err) -> !X")
                     return "!" + texts[1]

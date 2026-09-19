@@ -407,7 +407,7 @@
 ; One diagnostic is one LINE -- the writer escapes every newline inside a
 ; string -- so a line that is not one is skipped rather than failing the parse,
 ; which is what lets output from a tool `nucleusc` invoked ride along.
-(defn read-diagnostics (text:StrView) (Result (Vector Diagnostic) Err)
+(defn read-diagnostics (text:StrView):!(Vector Diagnostic)
   (let (out:(Vector Diagnostic) (vector-new)
         it:LineIter (strview-lines &text))
     (while (not (lines-iter-done &it))

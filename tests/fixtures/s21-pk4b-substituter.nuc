@@ -1,0 +1,57 @@
+; Stage 21 PK-4b (design/stage21-cleanup/pointer-kind-spellings.md §6): `?E` is
+; one symbol, and `subst-tyvars-sym` used to substitute whole colon SEGMENTS, so
+; `(Maybe E)` stamped in a template body and `?E` never did (`unknown type: E`
+; at the defstruct). The sigil run is now stripped from each segment before the
+; tyvar lookup and re-prefixed: `?E` → `?i32`, `?&E` → `?ptr:Pt`, and `?E` with
+; `E` a stamped union → `?Maybe.Pt`, in a protocol signature, a parametric
+; struct's fields and a parametric union's arm alike.
+(import-use "stdio.h")
+(defstruct Pt x:i32 y:i32)
+
+(defprotocol (Peek E)
+  (peek (self:&Self):?E)
+  (peek-ptr (self:&Self):?&E))
+
+(defstruct (Slot E) v:?E p:?&E q:!E)
+
+(defunion (Held E)
+  (one x:?E)
+  nothing)
+
+(extend (Slot E) (Peek E))
+(defn peek (self:&(Slot E)):?E (return (self 'v)))
+(defn peek-ptr (self:&(Slot E)):?&E (return (self 'p)))
+
+(defn show-i (m:?i32):void
+  (match m ((some x) (printf "some %d\n" x)) (none (printf "none\n"))))
+(defn show-pt (m:?Pt):void
+  (match m ((some x) (printf "some Pt %d\n" (x 'x))) (none (printf "none\n"))))
+
+(defn main ():i32
+  (let (pt:Pt (Pt 5 6)
+        m7:?i32 (some 7)
+        mp:?Pt (some pt)
+        pp:&Pt &pt
+        mmp:??Pt (some mp)
+        o1:!i32 (ok 1)
+        opt:!Pt (ok pt)
+        om:!?Pt (ok mp)
+        m3:?i32 (some 3)
+        s:(Slot i32) ((Slot i32) m7 none o1)
+        sp:(Slot Pt) ((Slot Pt) mp pp opt)
+        sm:(Slot ?Pt) ((Slot ?Pt) mmp none om)
+        h:(Held i32) (make (Held i32) one m3))
+    (show-i (peek &s))
+    (show-pt (peek &sp))
+    (if-some (p (peek-ptr &sp)) (printf "ptr %d\n" (p 'y)) (printf "no ptr\n"))
+    (if-some (p (peek-ptr &s)) (printf "ptr %d\n" @p) (printf "no ptr\n"))
+    (match (peek &sm)
+      ((some inner) (show-pt inner))
+      (none (printf "none outer\n")))
+    (match (s 'q)
+      ((ok x) (printf "ok %d\n" x))
+      ((err e) (printf "err\n")))
+    (match h
+      ((one x) (show-i x))
+      (nothing (printf "nothing\n")))
+    (return 0)))

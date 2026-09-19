@@ -443,7 +443,12 @@
   ; type is registered" and "its constructors are compiled"; the layout prescan
   ; separates them, and `emit-defunion` reads this to tell its own prescan entry
   ; (register, keep going) from a REPL re-emission of the same form (no-op).
-  ctors-emitted:i32)
+  ctors-emitted:i32
+  ; Stage 21 PK-4b: the stamping origin, as StructDef's, so the pattern
+  ; unifier can peel a `?T` / `!T` sigil off a stamped `Maybe.X` / `Result.X.Err`.
+  (origin-template (raw UnionTemplate))
+  origin-args:ptr
+  origin-nargs:i32)
 
 ; A parameterized defunion template: `(defunion (Result T E) ...)`. Defines no
 ; type itself; a fully-applied use `(Result A B)` stamps a concrete instance.

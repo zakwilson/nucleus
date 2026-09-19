@@ -145,8 +145,10 @@
 (deftest w9-cheader-global-skips-unspellable
   (let (l:CLib (try (c-lib "clib" (globals-lib)))
         h:StrView (c-lib-text &l))
+    ; `(Maybe i32)` classifies as `?i32` since Stage 21 PK-4b: the niche
+    ; classifier answers, not the template-instance one.
     (try (check-contains
-           h "/* m-skip: uses a defunion-template instance type; not exported */"))
+           h "/* m-skip: uses an error-union or option type; not exported */"))
     (try (check-contains
            h "/* arr-skip: type has no C spelling here; not exported */"))
     (drop &l)

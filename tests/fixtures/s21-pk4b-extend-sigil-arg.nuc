@@ -1,0 +1,30 @@
+; Stage 21 PK-4b (design/stage21-cleanup/pointer-kind-spellings.md §6): a type
+; sigil over a type variable in an `extend`'s protocol application — an adapter
+; whose element is a Maybe over its source's element — mentions the variable a
+; `:where` constraint determines. The PK-5b compiler refused the extend:
+; `extend: protocol parameter '?E' is not determined by the subject or any
+; :where constraint` (the sigil made `?E` a different symbol to `E`).
+(import-use "stdio.h")
+(import-use vector)
+(import-use iterator)
+
+(defstruct (Wrap I) source:I)
+(extend (Wrap I) (Iterator ?E) :where ((Iterator E) I))
+(defn next (self:&(Wrap I) :where ((Iterator E) I)):??E
+  (let ((r (Maybe E)) (next (ref self 'source)))
+    (match r
+      ((some v) (let (inner:?E (some v)) (return (some inner))))
+      (none (return none)))))
+
+(defn main ():i32
+  (let (v:(Vector i32) (vector-new))
+    (conj &v 7)
+    (let (it:VecIter.i32 (iter &v)
+          w:(Wrap VecIter.i32) ((Wrap VecIter.i32) it))
+      (match (next &w)
+        ((some m) (match m ((some x) (printf "some some %d\n" x)) (none (printf "some none\n"))))
+        (none (printf "none\n")))
+      (match (next &w)
+        ((some m) (printf "some\n"))
+        (none (printf "none\n"))))
+    (return 0)))

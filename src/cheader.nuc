@@ -3426,6 +3426,13 @@
               (let (c:StrView (type-node-to-c (as ptr ex)))
                 (set! g-type-alias-depth (- g-type-alias-depth 1))
                 (return c))))
+          ; PK-4b: `(? (ref T))` / `(?ref T)` / `(Maybe &T)` are the niche
+          ; pointer niche-sym-to-c spells for `?ref:T`; any other operand was
+          ; refused by cheader-niche-no-c before rendering.
+          (let (op:raw:Node (cheader-sigil-operand (as raw:Node tn)))
+            (when (and (!= op null) (!= (cheader-ref-ptr-cell op) 0))
+              (return (fstr (type-node-to-c (as ptr op))
+                            " /* niche: reserved top page = error/none */"))))
           ; `ref` is `ptr`'s synonym (types.md §Pointer kinds), so both spell
           ; the same `T*`; without this the element type was lost to `void*`.
           (when (and (!= head null)
@@ -3689,6 +3696,9 @@
 ; so the declare can be skipped honestly.
 (defn cheader-template-instance (tn:(raw Node)):i32
   (when (= tn null) (return 0))
+  ; PK-4b: `(Maybe X)` / `(Result X Err)` are `?X` / `!X`, and the niche
+  ; classifier below rules on those — a pointer operand IS exported.
+  (when (!= (cheader-sigil-operand tn) null) (return 0))
   (let (n:ptr:Node (unsafe/cast &Node tn))
     (when (!= (n 'kind) NODE-CELL) (return 0))
     (let (head:ptr:Node (unsafe/cast &Node (n 'car)))
@@ -3755,8 +3765,33 @@
 ; pointer, ABI-identical to a C `T*`, and niche-sym-to-c spells it as one.
 ; Unwraps `(ptr T)` / `(ref T)` exactly as cheader-mentions-closure does, so
 ; `ptr:!ui8` — which rendered `struct _BANGui8*` — is refused with the rest.
+;
+; PK-4b: the sigil is read through `sigil-split` (src/generics.nuc), so `?X`,
+; `(? X)`, `(?ref X)` and `(Maybe X)` are one question with one answer.
+(defn cheader-sigil-operand (tn:(raw Node)):(raw Node)
+  (let (run:StrView "" op:raw:Node (sigil-split tn (node-line (as ptr tn) 0) &run))
+    (when (= op null) (return null))
+    ; `(Maybe ptr:Pt)`: the operand is the cell the type parser makes of it.
+    (when (and (= (op 'kind) NODE-SYM) (symbol-contains-byte (op 's) 58))
+      (return (split-colon-segments (op 's) (node-line (as ptr tn) 0))))
+    (return op)))
+
+; A `(ref X)` / `(ptr X)` cell — the operand shape a sigil may wrap and still
+; be a C pointer. `raw` is excluded as niche-sym-to-c excludes `?raw:T`.
+(defn cheader-ref-ptr-cell (op:(raw Node)):i32
+  (when (or (= op null) (!= (op 'kind) NODE-CELL)) (return 0))
+  (let (h:raw:Node (op 'car))
+    (when (or (= h null) (!= (h 'kind) NODE-SYM)) (return 0))
+    (if (or (= (h 's) "ptr") (= (h 's) "ref")) (return 1) (return 0))))
+
 (defn cheader-niche-no-c (tn:(raw Node)):i32
   (when (= tn null) (return 0))
+  (let (op:raw:Node (cheader-sigil-operand tn))
+    (when (!= op null)
+      ; Through the pointer, so `?&!i32` is refused for its pointee.
+      (if (!= (cheader-ref-ptr-cell op) 0)
+        (return (cheader-niche-no-c op))
+        (return 1))))
   ; Stage 18 TF-4: a `(fn RET)` / `((fn RET) (P…))` carries RET and its parameters
   ; one level down, where the ptr/ref unwrapping below never looked — which is how
   ; a `!void` callback reached lib/test.h as an undefined `struct _BANGvoid` tag.
@@ -3954,6 +3989,8 @@
   (let (n:ptr:Node (unsafe/cast &Node tn))
     (when (= (n 'kind) NODE-SYM) (return 0))
     (when (!= (n 'kind) NODE-CELL) (return 1))
+    ; PK-4b: a niche pointer in list form is a pointer under a fourth spelling.
+    (when (!= (cheader-ref-ptr-cell (cheader-sigil-operand (as raw:Node tn))) 0) (return 0))
     (let (head:ptr (n 'car))
       (when (= head null) (return 1))
       (when (!= ((unsafe/cast &Node head) 'kind) NODE-SYM) (return 1))

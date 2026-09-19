@@ -59,7 +59,7 @@ typedef struct Diagnostic {
 void* diag_entry(void* body, struct StrView name) asm("diag-entry");
 struct StrView diag_text(void* n) asm("diag-text");
 /* diag-of-node: uses an error-union or option type; not exported */
-/* read-diagnostics: uses a defunion-template instance type; not exported */
+/* read-diagnostics: uses an error-union or option type; not exported */
 struct String diag_list_text(void** ds) asm("diag-list-text");
 bool diag_matches(struct Diagnostic* d, struct StrView severity, struct StrView file, int32_t line, struct StrView needle) asm("diag-matches");
 /* check-diagnostic: uses an error-union or option type; not exported */

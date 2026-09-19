@@ -1219,7 +1219,11 @@
   (let (n:raw:Node node)
     (case (n 'kind)
       NODE-SYM
-        (if (>= (tyvar-index-of (n 's) tyvars ntv) 0) (return 1) (return 0))
+        (do
+          ; PK-4b: `?T` mentions T.
+          (let (run:StrView "" op:raw:Node (sigil-split node 0 &run))
+            (when (!= op null) (return (node-mentions-tyvar op tyvars ntv))))
+          (if (>= (tyvar-index-of (n 's) tyvars ntv) 0) (return 1) (return 0)))
       NODE-CELL
         (do
           (when (!= (node-mentions-tyvar (n 'car) tyvars ntv) 0) (return 1))
@@ -1315,6 +1319,78 @@
       (when (or (= head null) (!= (head 'kind) NODE-SYM)) (return null))
       (return (struct-template-lookup-ref (head 's))))))
 
+; PK-4b (pointer-kind-spellings.md §6): to the pattern walkers a type sigil is
+; a WRAPPER under every spelling — `?X` / `?ref:T` (symbol), `(? X)` (PK-3's
+; list form), `(?ref X)` (glued head) and the list spellings `(Maybe X)` /
+; `(Result X Err)`. Writes the sigil run to *out-run and returns the operand
+; under the whole run, or null (run "") for anything else. A colon remainder is
+; split as the type parser splits it, so `?ref:T` is seen as `(ref T)`.
+(defn sigil-split (node:raw:Node line:i32 out-run:&StrView):raw:Node
+  (set! (aref out-run 0) "")
+  (when (= node null) (return null))
+  (let (n:raw:Node node)
+    (when (= (n 'kind) NODE-SYM)
+      (let (s:Symbol (n 's)
+            run:usize (type-sigil-run s))
+        (when (or (= run 0) (= run (symbol-len s))) (return null))
+        (let (sv:StrView (symbol-as-view s)
+              rest:Symbol (symbol-intern (strview-drop-bytes sv run)))
+          (set! (aref out-run 0) (strview-take-bytes sv run))
+          (when (symbol-contains-byte rest 58)
+            (return (split-colon-segments rest line)))
+          (return (intern-node rest)))))
+    (when (!= (n 'kind) NODE-CELL) (return null))
+    (let (head:raw:Node (n 'car)
+          rest:raw:Node (n 'cdr))
+      (when (or (= head null) (!= (head 'kind) NODE-SYM) (= rest null)) (return null))
+      (let (hs:Symbol (head 's)
+            hv:StrView (symbol-as-view hs)
+            run:usize (type-sigil-run hs)
+            one:i32 (if (= (rest 'cdr) null) 1 0))
+        ; `(? X)`: a head that is nothing but sigils takes exactly one operand.
+        (when (and (> run 0) (= run (hv 'len)))
+          (when (= one 0) (return null))
+          (set! (aref out-run 0) hv)
+          (return (rest 'car)))
+        ; `(?ref X)`: the sigils are glued to a wrapper head; peel them off it.
+        (when (> run 0)
+          (set! (aref out-run 0) (strview-take-bytes hv run))
+          (return (make-cell (intern-node (symbol-intern (strview-drop-bytes hv run))) rest line)))
+        ; A several-element tail is the colon-sugar shape `(Maybe Vector T)`,
+        ; read as `(Maybe (Vector T))` — the same rule wrapper-inner-pattern uses.
+        (when (= hs "Maybe")
+          (set! (aref out-run 0) "?")
+          (return (if (!= one 0) (rest 'car) rest)))
+        (when (and (= hs "Result") (= (node-len node) 3))
+          (let (e:raw:Node (node-at node 2))
+            (when (and (!= e null) (= (e 'kind) NODE-SYM) (= (e 's) "Err"))
+              (set! (aref out-run 0) "!")
+              (return (rest 'car)))))
+        (return null)))))
+
+; The concrete type under one sigil of `at` (`?` = 63, `!` = 33), or null when
+; `at` is not that wrapper: a niche pointer relabels to PTR-REF, a stamped
+; `Maybe.X` / `Result.X.Err` unwraps to `X` through the origin the stamp
+; recorded. A pointer unwraps by SHAPE, not by kind: a template stamp records
+; whichever pointer kind stamped it first (`(Vector &Pt)` and `(Vector ?&Pt)`
+; are one instance), and `type-eq` ignores the kind for the same reason.
+(defn sigil-unwrap-type (sigil:i32 at:raw:Type):raw:Type
+  (when (= at null) (return null))
+  (let (tt:raw:Type at)
+    (when (= (tt 'kind) TY-PTR) (return (type-as-pkind at PTR-REF)))
+    (let (ud:?&UnionDef (uniondef-for-type at))
+      (when (= ud null) (return null))
+      (let (udd:raw:UnionDef ud
+            tname:StrView (if (= sigil 63) "Maybe" "Result")
+            ut:?&UnionTemplate (union-template-lookup-ref (symbol-intern tname)))
+        (when (or (= ut null) (!= (udd 'origin-template) ut)) (return null))
+        (when (= sigil 63)
+          (when (!= (udd 'origin-nargs) 1) (return null))
+          (return (aref (as &ptr (udd 'origin-args)) 0)))
+        (when (!= (udd 'origin-nargs) 2) (return null))
+        (when (= (type-eq (aref (as &ptr (udd 'origin-args)) 1) ty-err) 0) (return null))
+        (return (aref (as &ptr (udd 'origin-args)) 0))))))
+
 ; True if `node` is a pointer-wrapper list head: (ptr ...) / (raw ...) / (ref ...).
 (defn node-is-ptr-wrapper (node:raw:Node):i32
   (when (= node null) (return 0))
@@ -1376,6 +1452,15 @@
             (collect-pattern-tyvars ex out-tyvars io-ntv)
             (set! g-type-alias-depth (- g-type-alias-depth 1))
             (return)))
+        ; PK-4b: a sigil is a wrapper, whatever its spelling — `?(Vector T)` and
+        ; `(Maybe (Vector T))` collect what `(Vector T)` collects. Ahead of the
+        ; template arm, which knows struct templates only (Maybe/Result are
+        ; union templates it never sees).
+        (let (run:StrView ""
+              op:raw:Node (sigil-split node (node-line (as ptr node) 0) &run))
+          (when (!= op null)
+            (collect-pattern-tyvars op out-tyvars io-ntv)
+            (return)))
         ; Template application: each unresolvable symbol arg is a tyvar; recurse
         ; into list args (e.g. (HashMap K (Vector V))).
         (let (st:?ptr:StructTemplate (node-template-of node))
@@ -1385,29 +1470,31 @@
             ; symbols become tyvars and the defn silently vanishes as an
             ; uninstantiable template (container-type-sugar.md §1.2).
             (let (stt:raw:StructTemplate st
-                  nargs:i32 (- (node-len (as ptr node)) 1))
+                  nargs:i32 (- (node-len (as ptr node)) 1)
+                  aline:i32 (node-line (as ptr node) 0))
               (let (it:ListIter (list-iter (n 'cdr)))
                 (doseq-iter (cur &it)
                   (let (arg:ptr cur
                         an:ptr:Node (unsafe/cast &Node arg))
+                    ; PK-4b: `?T` collects `T`; `?(Vector T)` recurses on the
+                    ; operand. Peeled to a fixpoint, so `(Maybe !T)` reaches `T`.
+                    (let (run:StrView "" op:raw:Node (sigil-split arg aline &run))
+                      (while (!= op null)
+                        (set! arg op)
+                        (set! an (unsafe/cast &Node op))
+                        (set! op (sigil-split arg aline &run))))
                     (if (= (an 'kind) NODE-SYM)
                       (do
                         ; Bare `ptr`/`raw` are types, so they reach the arity check
                         ; below; bare `ref` is not, and would be collected instead.
                         (when (= (an 's) "ref")
-                          (die-at (node-line (as ptr an) (node-line (as ptr node) 0))
+                          (die-at (node-line (as ptr an) aline)
                             (fstr (stt 'name)
                                   ": 'ref' is a pointer kind, not a type argument -- a colon chain cannot nest, so parenthesize the inner type: ref:("
                                   (stt 'name) " (ref X))")))
                         (when (= (tyname-resolvable (an 's)) 0)
-                          ; PK-4a: collected as `?T`, the unifier would never bind
-                          ; it; refused until PK-4b makes the sigil a wrapper.
-                          (when (> (type-sigil-run (an 's)) 0)
-                            (let (aline:i32 (node-line (as ptr an) (node-line (as ptr node) 0)))
-                              (reject-bare-sigil (an 's) aline)
-                              (die-at aline
-                                (fstr (stt 'name) ": '" (an 's)
-                                      "' -- a type sigil over a type variable is not supported in a generic pattern yet; write the concrete type"))))
+                          ; A lone `?` (PK-3's near-miss) is not a tyvar either.
+                          (reject-bare-sigil (an 's) (node-line (as ptr an) aline))
                           (tyvars-add (an 's) out-tyvars io-ntv)))
                       (collect-pattern-tyvars arg out-tyvars io-ntv)))))
               (when (!= nargs (stt 'ntv))
@@ -1431,14 +1518,20 @@
 ; delegate to collect-pattern-tyvars, which already finds their nested tyvars.
 (defn collect-constraint-arg-tyvars (node:raw:Node out-tyvars:ptr io-ntv:ptr):void
   (when (= node null) (return))
-  (let (n:raw:Node node)
+  (let (n:raw:Node node
+        run:StrView ""
+        op:raw:Node (sigil-split node (node-line (as ptr node) 0) &run))
+    ; PK-4b: `?E` / `(Maybe E)` is the tyvar `E` under a wrapper.
+    (while (!= op null)
+      (set! n op)
+      (set! op (sigil-split n (node-line (as ptr node) 0) &run)))
     (when (= (n 'kind) NODE-SYM)
       ; A colon-sugared symbol (`ptr:Foo`) is a concrete type, never a tyvar.
       (when (= (symbol-contains-byte (n 's) 58) false)
         (when (= (tyname-resolvable (n 's)) 0)
           (tyvars-add (n 's) out-tyvars io-ntv)))
       (return))
-    (collect-pattern-tyvars node out-tyvars io-ntv)))
+    (collect-pattern-tyvars n out-tyvars io-ntv)))
 
 ; Structurally unify a type-pattern node `pat` against a concrete argument Type*
 ; `at`, binding each tyvar (by index in `tyvars`) into out-bound. Returns 1 on a
@@ -1461,6 +1554,16 @@
       (let (r:i32 (unify-tpat ex at tyvars ntv out-bound line))
         (set! g-type-alias-depth (- g-type-alias-depth 1))
         (return r))))
+  ; PK-4b: a sigil pattern unifies its operand against the type UNDER the
+  ; sigils, peeled outermost first as the parser applies them (`?!T`: the
+  ; Maybe, then the Result). A type that is not that wrapper is a mismatch.
+  (let (run:StrView "" op:raw:Node (sigil-split pat line &run))
+    (when (!= op null)
+      (let (cur:raw:Type at)
+        (dotimes (i (unsafe/cast i32 (run 'len)))
+          (set! cur (sigil-unwrap-type (as i32 (aref (run 'data) i)) cur))
+          (when (= cur null) (return 0)))
+        (return (unify-tpat op cur tyvars ntv out-bound line)))))
   (let (pn:raw:Node pat)
     (case (pn 'kind)
       NODE-SYM
@@ -1560,6 +1663,9 @@
 ; is determined by some parameter.
 (defn pattern-determines-tyvar (pat:raw:Node tvname:Symbol):i32
   (when (= pat null) (return 0))
+  ; PK-4b: the unifier binds through a sigil, so this mirror must too.
+  (let (run:StrView "" op:raw:Node (sigil-split pat (node-line (as ptr pat) 0) &run))
+    (when (!= op null) (return (pattern-determines-tyvar op tvname))))
   (let (n:raw:Node pat)
     (case (n 'kind)
       NODE-SYM
@@ -1670,7 +1776,11 @@
   (let (n:raw:Node node)
     (case (n 'kind)
       NODE-SYM
-        (if (and (= (symbol-contains-byte (n 's) 58) false) (= (n 's) tvname)) (return 1) (return 0))
+        (do
+          ; PK-4b: `?E` mentions E.
+          (let (run:StrView "" op:raw:Node (sigil-split node 0 &run))
+            (when (!= op null) (return (node-mentions-tyvar-named op tvname))))
+          (if (and (= (symbol-contains-byte (n 's) 58) false) (= (n 's) tvname)) (return 1) (return 0)))
       NODE-CELL
         (do
           (when (!= (node-mentions-tyvar-named (n 'car) tvname) 0) (return 1))
@@ -2926,9 +3036,11 @@
         np:i32 (mm 'num-params))
     (dotimes (i np)
       (let (ptn:raw:Node (binding-type-node (node-at params-node i)))
+        ; PK-4b: a sigil symbol `?T` is the wrapper `(Maybe T)` — nested too.
         (when (and (!= ptn null)
-                   (and (= (ptn 'kind) NODE-CELL)
-                        (!= (node-mentions-tyvar ptn (mm 'tyvars) (mm 'num-tyvars)) 0)))
+                   (or (= (ptn 'kind) NODE-CELL)
+                       (and (= (ptn 'kind) NODE-SYM) (> (type-sigil-run (ptn 's)) 0)))
+                   (!= (node-mentions-tyvar ptn (mm 'tyvars) (mm 'num-tyvars)) 0))
           (return 1))))
     (return 0)))
 

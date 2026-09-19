@@ -160,22 +160,32 @@
 ; "x:ptr:T" → "x:ptr:Circle").
 (defn subst-tyvars-sym (s:Symbol tyvars:ptr spellings:ptr ntv:i32 line:i32):Symbol
   (when (= (symbol-contains-byte s 58) false)
-    (let (idx:i32 (tyvar-index-of s tyvars ntv))
-      (when (>= idx 0) (return (aref (as &Symbol spellings) idx)))
-      (return s)))
+    (return (subst-tyvar-segment s tyvars spellings ntv)))
   (let (segs:ptr (split-colon-segments s line)
         acc:String (string-new)
         any:i32 0)
     (let (it:ListIter (list-iter segs))
       (doseq-iter (e &it)
         (let (seg:Symbol ((as &Node e) 's)
-              idx:i32 (tyvar-index-of seg tyvars ntv)
-              piece:Symbol (if (>= idx 0) (aref (as &Symbol spellings) idx) seg))
+              piece:Symbol (subst-tyvar-segment seg tyvars spellings ntv))
           (when (!= any 0) (str-into &acc ":"))
           (str-into &acc piece)
           (set! any 1))))
     (when (= any 0) (return s))
     (return (symbol-intern (string-as-view &acc)))))
+
+; One colon segment. PK-4b: a leading `?`/`!` run is a wrapper over the name,
+; so `?E` substitutes as `?` + E's spelling — the tyvar table holds no sigils.
+(defn subst-tyvar-segment (seg:Symbol tyvars:ptr spellings:ptr ntv:i32):Symbol
+  (let (idx:i32 (tyvar-index-of seg tyvars ntv))
+    (when (>= idx 0) (return (aref (as &Symbol spellings) idx)))
+    (let (run:usize (type-sigil-run seg))
+      (when (or (= run 0) (= run (symbol-len seg))) (return seg))
+      (let (sv:StrView (symbol-as-view seg)
+            inner:i32 (tyvar-index-of (symbol-intern (strview-drop-bytes sv run)) tyvars ntv))
+        (when (< inner 0) (return seg))
+        (return (symbol-intern (fstr (strview-take-bytes sv run)
+                                     (aref (as &Symbol spellings) inner))))))))
 
 ; Deep-copy a node, substituting type variables (by colon-spelling) in every
 ; symbol. Used to stamp a concrete instance from a generic template.
