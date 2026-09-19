@@ -45,7 +45,7 @@
 (declare diag-entry ((body (raw Node)) (name StrView)) :raw:Node)
 (declare diag-text ((n (raw Node))) :StrView)
 (declare diag-of-node ((form (raw Node))) :!Diagnostic)
-(declare read-diagnostics ((text StrView)) (Result (Vector Diagnostic) Err))
+(declare read-diagnostics ((text StrView)) (! (Vector Diagnostic)))
 (declare diag-list-text ((ds (ref (Vector Diagnostic)))) :String)
 (declare diag-matches ((d (ref Diagnostic)) (severity StrView) (file StrView) (line i32) (needle StrView)) :bool)
 (declare check-diagnostic ((ds (ref (Vector Diagnostic))) (severity StrView) (file StrView) (line i32) (needle StrView)) :!void)

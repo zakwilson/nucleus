@@ -179,16 +179,37 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
 - **Type variables are declared-only:** a name is a type variable iff it is bound
   in a `:where` constraint. Any other unknown type identifier is still an
   `unknown type` error, so typos stay caught.
-- **A sigil over a concrete type is concrete.** In a receiver-inferred pattern
-  (a template argument such as `(Vector ?Pt)`, `(Vector !i32)`, `(Vector ?&Pt)`),
-  `?X`/`!X` is a type variable only if `X` is; `?Pt` over a struct `Pt` is the
-  ordinary `(Maybe Pt)` and the parameter accepts exactly that, so passing a
-  `(Vector i32)` where `(Vector ?Pt)` was declared is a type error. (Before Stage
-  21 PK-4a the sigil made the name unresolvable, so `?Pt` was silently collected
-  as a type *variable* and any vector was accepted.) A sigil over a real type
-  variable — `(Vector ?T)` with `T` inferred from the receiver — is refused for
-  now: `Vector: '?T' -- a type sigil over a type variable is not supported in a
-  generic pattern yet; write the concrete type` (PK-4b lifts this).
+- **A type sigil is a wrapper in a pattern, under every spelling.** In a
+  receiver-inferred pattern, `?X` / `!X` / `?!X`, the list forms `(? X)` /
+  `(! X)` / `(?ref X)`, and the long forms `(Maybe X)` / `(Result X Err)` are
+  one shape: the sigil is peeled and `X` is matched against the type under it —
+  a value-`Maybe`/`Result` instance's payload, or the pointer a `?&X` / `!&X`
+  niche wraps. So `(Vector ?T)`, `(Vector !T)`, `?(Vector T)` and
+  `(Vector (Maybe T))` all collect `T` and bind it from the argument
+  (`(Vector ?Pt)` → `T = Pt`, `(Vector ?&Pt)` → `T = &Pt`, `(Vector !i32)` →
+  `T = i32`), and two spellings of one argument type — a `(Vector ?i32)` and a
+  `(Vector (Maybe i32))` — reach one instantiation. A sigil
+  over a **concrete** type is concrete: `?Pt` over a struct `Pt` is the ordinary
+  `(Maybe Pt)` and the parameter accepts exactly that, so passing a
+  `(Vector i32)` where `(Vector ?Pt)` — or `(Vector ?T)` — was declared is
+  `no matching method`, not a silent match. The same peeling applies to a
+  protocol application's argument in an `extend … :where` — `(extend (Wrap I)
+  (Iterator ?E) :where ((Iterator E) I))` mentions `E`, which the constraint
+  determines — and when a template body, protocol signature or method is
+  **stamped**: `?E` becomes `?i32`, `?&E` becomes `?&Pt`, and `?E` with
+  `E = ?Pt` becomes a `Maybe` over `Maybe.Pt` — the sigil run is stripped from
+  each colon segment before the variable is looked up and put back after. (A
+  `:where` constraint's *own* argument is still recovered only when it is a
+  bare variable, as [below](#associated-type-bounds-where-protocol-arg--var);
+  `((Peek ?E) S)` is a concrete pattern there.)
+  Two shapes are out of scope, as before: a **`defunion` template other than
+  `Maybe`/`Result`** inside a template argument — `(Vector (Either T))` — does
+  not collect `T` (the pattern walkers know struct templates and the two sigil
+  unions; `(Vector (Box T))` over a `defstruct` template is fine), and a
+  **pointer wrapper** inside a template argument — `(Vector &T)`,
+  `(Vector ref:T)`, `(Vector ?&T)` — does not bind `T` either (`unknown type:
+  T`); the variable must be bare under the sigil, and a pointer element binds
+  through it (`(Vector ?T)` accepts a `(Vector ?&Pt)` with `T = &Pt`).
 - **Binding** gathers the concrete type at every bare occurrence of a variable
   among the arguments and requires they agree; the bound type must conform
   (nominally, via `extend`) to the variable's protocol(s). There is no unifier:

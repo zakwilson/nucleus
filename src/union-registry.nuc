@@ -1556,7 +1556,15 @@
         (return (union-instance-type ud))
         (let (arms:ptr (-> (unsafe/cast &Node (utt 'form)) (_ 'cdr) (unsafe/cast &Node _) (_ 'cdr))
               arms-subst:ptr (subst-tyvars-node arms (utt 'tyvars) spellings (utt 'ntv))
-              ud2:&UnionDef (defunion-register iname arms-subst line))
+              ud2:&UnionDef (defunion-register iname arms-subst line)
+              ; Copied, as struct-template-stamp-types-in does: the caller's
+              ; `argts` may be reused.
+              origin-args:ptr (arena-alloc (* (if (> nargs 0) nargs 1) (ptr-bytes))))
+          (dotimes (oi nargs)
+            (set! (aref (as &ptr origin-args) oi) (aref (as &ptr argts) oi)))
+          (set! (ud2 'origin-template) ut)
+          (set! (ud2 'origin-args) origin-args)
+          (set! (ud2 'origin-nargs) nargs)
           (return (union-instance-type ud2)))))))
 
 ; Stage 11: stamp (and memoize) a concrete instance of a defstruct template

@@ -1,0 +1,45 @@
+; Stage 21 PK-4b (design/stage21-cleanup/pointer-kind-spellings.md §6): a type
+; sigil over a type VARIABLE is a wrapper in a generic pattern, under every
+; spelling. `(Vector ?T)`, `(Vector !T)`, `?(Vector T)`, `(Vector (Maybe T))` and
+; `(Vector (Result T Err))` all collect `T` and unify it against the type under
+; the sigil; a `(Vector i32)` where `(Vector ?T)` was declared is no match. The
+; PK-4a compiler refused the first three at the definition (`a type sigil over a
+; type variable is not supported in a generic pattern yet`) and never collected
+; `T` from the list spellings (`unknown type: T`).
+(import-use "stdio.h")
+(import-use vector)
+(defstruct Pt x:i32 y:i32)
+
+(defn n-q ((v (ref (Vector ?T)))):i32 (return (unsafe/cast i32 (count v))))
+(defn n-b ((v (ref (Vector !T)))):i32 (return (unsafe/cast i32 (count v))))
+(defn n-qv (v:?(Vector T)):i32
+  (match v ((some vv) (return (unsafe/cast i32 (count &vv)))) (none (return -1))))
+(defn n-m ((v (ref (Vector (Maybe T))))):i32 (return (unsafe/cast i32 (count v))))
+(defn n-r ((v (ref (Vector (Result T Err))))):i32 (return (unsafe/cast i32 (count v))))
+
+(defn main ():i32
+  (let (pt:Pt (Pt 5 6)
+        v:(Vector ?Pt) (vector-new)
+        w:(Vector ?&Pt) (vector-new)
+        b:(Vector !i32) (vector-new)
+        m:(Vector (Maybe i32)) (vector-new)
+        m2:(Vector ?i32) (vector-new)
+        mv:?(Vector i32) none
+        mp:?Pt (some pt)
+        ok3:!i32 (ok 3)
+        ok4:!i32 (ok 4)
+        m9:?i32 (some 9))
+    (conj &v mp)
+    (conj &w &pt)
+    (conj &b ok3)
+    (conj &b ok4)
+    (conj &m m9)
+    (printf "%d %d %d %d %d\n" (n-q &v) (n-q &w) (n-b &b) (n-q &m) (n-q &m2))
+    (printf "%d %d\n" (n-m &m) (n-r &b))
+    (printf "%d\n" (n-qv mv))
+    (let (vv:(Vector i32) (vector-new))
+      (conj &vv 1)
+      (conj &vv 2)
+      (let (mv2:?(Vector i32) (some vv))
+        (printf "%d\n" (n-qv mv2))))
+    (return 0)))

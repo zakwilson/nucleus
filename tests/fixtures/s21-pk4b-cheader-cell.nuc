@@ -1,0 +1,33 @@
+; Stage 21 PK-4b (design/stage21-cleanup/pointer-kind-spellings.md §6): the
+; `--emit-cheader` classifiers read a `(? X)` / `(! X)` cell as they read `?X`
+; and `(Maybe X)`. Before, `!(Vector Diagnostic)` in a public signature exported
+; `void* r_cell(...)` — a by-value tagged struct declared as a pointer — and the
+; niche pointer `?&Pt` rendered `void*` outside a struct field while
+; `(Maybe &Pt)` was refused as a template instance. One question, one answer.
+(import-use vector)
+(defstruct Pt x:i32 y:i32)
+(defstruct Diagnostic line:i32)
+
+(defn r-sym (n:i32):!(Vector Diagnostic)
+  (let (v:(Vector Diagnostic) (vector-new)) (return (ok v))))
+(defn r-cell (n:i32) (! (Vector Diagnostic))
+  (let (v:(Vector Diagnostic) (vector-new)) (return (ok v))))
+(defn r-list (n:i32) (Result (Vector Diagnostic) Err)
+  (let (v:(Vector Diagnostic) (vector-new)) (return (ok v))))
+
+(defn q-sym (q:?&Pt):?&Pt (return q))
+(defn q-cell ((q (? (ref Pt)))) (? (ref Pt)) (return q))
+(defn q-list ((q (Maybe &Pt))) (Maybe (ref Pt)) (return q))
+
+(defn v-sym (m:?i32):i32 (return 0))
+(defn v-cell ((m (? i32))):i32 (return 0))
+(defn v-list ((m (Maybe i32))):i32 (return 0))
+
+(defn e-other (n:i32):(Result i32 i32) (return (ok 1)))
+(defn deep ((q (? (ref !i32)))):i32 (return 0))
+
+(defvar g-sym:?&Pt none)
+(defvar g-cell:(? (ref Pt)) none)
+(defvar g-list:(Maybe &Pt) none)
+
+(defstruct Holder a:?&Pt (b (? (ref Pt))) (c (Maybe &Pt)))

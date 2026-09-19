@@ -818,12 +818,23 @@ these declarations means exporting template instances in general, not
 special-casing the sugar.
 
 The rule applies to every signature position: a `!T` **parameter**, or a `defvar`
-of `!T`, refuses the declaration exactly as a return type does.
+of `!T`, refuses the declaration exactly as a return type does — and to every
+**spelling** of the type: the symbol `!T` / `?T`, the list form `(! T)` /
+`(? T)` (which is what `!(Vector D)` reads as, and what a `q:?&Pt` parameter
+desugars to), and the long form `(Result T Err)` / `(Maybe T)` are one question
+with one answer. A `(Result T E)` with `E` other than `Err` is a template
+instance and is refused under that reason instead.
 
 **Pointer niches are exempt and stay callable.** `!ptr:T` / `!ref:T` are
 niche-encoded *in the pointer itself* — `(ok p)` is `p`, an error is a sentinel
 in the reserved top page — so the whole value is a bare pointer, ABI-identical to
-a C `T*`, and it is declared as one.
+a C `T*`, and it is declared as one, in every position and under every spelling:
+a `?&Pt` parameter, return or `defvar`, a `(? (ref Pt))` field and a
+`(Maybe &Pt)` field all render `struct Pt* /* niche: reserved top page =
+error/none */`. (Before Stage 21 PK-4b only the struct field did; a parameter or
+return rendered `void*` and `(Maybe &Pt)` was refused as a template instance.)
+A pointer *to* a value niche — `&?String`, `&!i32` — is refused for its
+pointee.
 
 The escape route for a C caller is a companion function that cannot fail:
 `lib/string.h` omits `string-from-cstr` (`:!String`) and declares

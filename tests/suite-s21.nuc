@@ -483,9 +483,8 @@ foo:(bar)
 
 ; H5 (pointer-kind-spellings.md §1.4): the fixture's `(Vector ?Pt)` was a fake
 ; type variable, so the pre-PK-4a compiler stamped `f_qpt.pVector.i32` from a
-; `(Vector i32)` argument and the program printed 1. A sigil over a type
-; variable is refused until PK-4b, rather than collected under a spelling the
-; unifier never binds.
+; `(Vector i32)` argument and the program printed 1. A sigil over a concrete
+; type is concrete; a sigil over a type variable is PK-4b's, below.
 (deftest s21-pk4a-h5
   (let (path:StrView "tests/fixtures/s21-pk4a-h5.nuc"
         c:Compiled (try (compile-path path)))
@@ -496,10 +495,113 @@ foo:(bar)
   (let (out:String (try (build-run-file "" "" "tests/fixtures/s21-pk4a-sigil-concrete.nuc")))
     (try (check-golden (string-as-view &out) "0 0 0\n1 0 1\n"))
     (drop &out))
-  (try (s21-type-refused "(defn f-qt ((v (ref (Vector ?T)))):i32 (return 1))" 3
-                         "Vector: '?T' -- a type sigil over a type variable is not supported in a generic pattern yet; write the concrete type"))
-  (try (s21-type-refused "(defn f-bt ((v (ref (Vector !T)))):i32 (return 1))" 3
-                         "Vector: '!T' -- a type sigil over a type variable is not supported in a generic pattern yet; write the concrete type"))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; PK-4b: a sigil over a type variable is a wrapper, under every spelling
+; ---------------------------------------------------------------------------
+
+; `(Vector ?T)`, `(Vector !T)` and `?(Vector T)` collect `T` and bind it to the
+; type UNDER the sigil (pointer-kind-spellings.md §6). One instantiation per
+; type, however the argument was spelled -- `(Vector ?i32)` and
+; `(Vector (Maybe i32))` reach one `define` -- and the H5 negative keeps its
+; shape one level up: a `(Vector i32)` is no match for `(Vector ?T)`.
+(deftest s21-pk4b-sigil-tyvar
+  (let (path:StrView "tests/fixtures/s21-pk4b-sigil-tyvar.nuc"
+        out:String (try (build-run-file "" "" path)))
+    (try (check-golden (string-as-view &out) "1 1 2 1 0\n1 2\n-1\n2\n"))
+    (drop &out)
+    (let (c:Compiled (try (compile-path path))
+          iv:StrView (string-as-view (ref c 'ir)))
+      (try (check-eq-int (count-lines-with-prefix iv "define weak_odr i32 @n_q.pVector.Maybe.i32(") 1
+                         "instantiations of n-q over (Vector ?i32)"))
+      (try (check-eq-int (count-lines-with-prefix iv "define weak_odr i32 @n_q.pVector.Maybe.Pt(") 1
+                         "instantiations of n-q over (Vector ?Pt)"))
+      (try (check-eq-int (count-lines-with-prefix iv "define weak_odr i32 @n_q.pVector.pPt(") 1
+                         "instantiations of n-q over (Vector ?&Pt)"))
+      (try (check-eq-int (count-lines-with-prefix iv "define weak_odr i32 @n_b.pVector.Result.i32.Err(") 1
+                         "instantiations of n-b over (Vector !i32)"))
+      (try (check-eq-int (count-lines-with-prefix iv "define weak_odr i32 @n_qv.Maybe.Vector.i32(") 1
+                         "instantiations of n-qv over ?(Vector i32)"))
+      (drop &c)))
+  (try (s21-type-refused "(defn n-q ((v (ref (Vector ?T)))):i32 (return 1)) (defn g ():i32 (let (v:(Vector i32) (vector-new)) (return (n-q &v))))" 3
+                         "no matching method for overloaded 'n-q' with argument types (ptr:Vector.i32)"))
+  (return (ok)))
+
+; The list spellings are the same wrapper: `(Vector (Maybe T))` stamps the body
+; `(Vector ?T)` stamps, and `(Vector (Result T Err))` the body `(Vector !T)`
+; stamps -- `define` for `define`, the way s16-ref-sigil-ref-ir-identical
+; compares `&a` with `(ref a)`.
+(deftest s21-pk4b-list-spellings-identical
+  (let (c:Compiled (try (compile-path "tests/fixtures/s21-pk4b-sigil-tyvar.nuc"))
+        iv:StrView (string-as-view (ref c 'ir))
+        q:StrView (try (s21-define-body iv "n_q.pVector.Maybe.i32"))
+        m:StrView (try (s21-define-body iv "n_m.pVector.Maybe.i32"))
+        b:StrView (try (s21-define-body iv "n_b.pVector.Result.i32.Err"))
+        r:StrView (try (s21-define-body iv "n_r.pVector.Result.i32.Err")))
+    (try (check-eq m q))
+    (try (check-eq r b))
+    (drop &c))
+  (return (ok)))
+
+; `?E` in a `defprotocol` signature, a parametric struct's fields and a
+; parametric union's arm stamps as `(Maybe E)` does: the substituter strips the
+; sigil run from each colon segment before the tyvar lookup and re-prefixes it,
+; so `?E` -> `?i32`, `?&E` -> `?ptr:Pt`, and `?E` over a stamped `?Pt` ->
+; `?Maybe.Pt`. The PK-5b compiler died `unknown type: E` at the defstruct.
+(deftest s21-pk4b-substituter
+  (let (out:String (try (build-run-file "" "" "tests/fixtures/s21-pk4b-substituter.nuc")))
+    (try (check-golden (string-as-view &out)
+                       "some 7\nsome Pt 5\nptr 6\nno ptr\nsome Pt 5\nok 1\nsome 3\n"))
+    (drop &out))
+  (return (ok)))
+
+; `(extend (Wrap I) (Iterator ?E) :where ((Iterator E) I))`: the protocol
+; application's `?E` mentions `E`, so the constraint determines it and the
+; stamped `next` returns `??i32`. The PK-5b compiler refused the extend
+; (`protocol parameter '?E' is not determined`).
+(deftest s21-pk4b-extend-sigil-arg
+  (let (out:String (try (build-run-file "" "" "tests/fixtures/s21-pk4b-extend-sigil-arg.nuc")))
+    (try (check-golden (string-as-view &out) "some some 7\nnone\n"))
+    (drop &out))
+  (return (ok)))
+
+; The C-header classifiers read the `(? X)` / `(! X)` cell as the symbol and
+; the `(Maybe X)` / `(Result X Err)` spellings: a struct operand is refused with
+; ONE reason and no `void*` declaration, a `ref`/`ptr` operand is the pointer
+; niche in every position (parameter, return, `defvar`, field), a `(Result X E)`
+; with `E` /= `Err` is still the template instance, and a niche over a pointer
+; to a niche is refused for its pointee.
+(deftest s21-pk4b-cheader-cell
+  (let (h:String (try (emit-for-file "" "--emit-cheader" "tests/fixtures/s21-pk4b-cheader-cell.nuc"))
+        hv:StrView (string-as-view &h)
+        niche:StrView "struct Pt* /* niche: reserved top page = error/none */")
+    (try (check-line hv "/* r-sym: uses an error-union or option type; not exported */"))
+    (try (check-line hv "/* r-cell: uses an error-union or option type; not exported */"))
+    (try (check-line hv "/* r-list: uses an error-union or option type; not exported */"))
+    (try (check-line hv "/* v-sym: uses an error-union or option type; not exported */"))
+    (try (check-line hv "/* v-cell: uses an error-union or option type; not exported */"))
+    (try (check-line hv "/* v-list: uses an error-union or option type; not exported */"))
+    (try (check-line hv "/* e-other: uses a defunion-template instance type; not exported */"))
+    (try (check-line hv "/* deep: uses an error-union or option type; not exported */"))
+    (try (check-not-contains hv "void*"))
+    (try (s21-check-line-4 hv niche " q_sym(" niche " q) asm(\"q-sym\");"))
+    (try (s21-check-line-4 hv niche " q_cell(" niche " q) asm(\"q-cell\");"))
+    (try (s21-check-line-4 hv niche " q_list(" niche " q) asm(\"q-list\");"))
+    (try (s21-check-line-4 hv "extern " niche " g_sym asm(\"g-sym\");" ""))
+    (try (s21-check-line-4 hv "extern " niche " g_cell asm(\"g-cell\");" ""))
+    (try (s21-check-line-4 hv "extern " niche " g_list asm(\"g-list\");" ""))
+    (try (s21-check-line-4 hv "    " niche " a;" ""))
+    (try (s21-check-line-4 hv "    " niche " b;" ""))
+    (try (s21-check-line-4 hv "    " niche " c;" ""))
+    (drop &h))
+  (return (ok)))
+
+; `check-line` over a line assembled from four pieces.
+(defn s21-check-line-4 (hay:StrView a:StrView b:StrView c:StrView d:StrView):!void
+  (let (want:String (str a b c d))
+    (try (check-line hay (string-as-view &want)))
+    (drop &want))
   (return (ok)))
 
 ; The IR of a `define`, header line dropped, so two functions can be compared

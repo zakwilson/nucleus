@@ -42,7 +42,19 @@ unknown-function site consults it too, since a generic body reaches `gcheck`
 before `emit-list` (`.&` had the same hole); `tests/` was swept with the
 script's new `--rules R1,R2` plus a string-literal pass for embedded programs;
 `ir-snapshot.sh` moved exactly one `.err`, `dump-ast-corpus.sh` only edited
-inputs (progress.md). PK-4b and PK-6's remaining docs rows are not built. Every claim in
+inputs (progress.md). **PK-4b built 2026-09-19** (§6 "as built"): `sigil-split`
+in `src/generics.nuc` is the one reader of every sigil spelling and eight
+walkers consult it, not the four §6 named; the unifier peels a `TY-PTR` by
+**shape**, not by `PTR-MAYBE` (a template stamp loses the pointer kind, so the
+recorded origin argument is whichever pointer kind stamped first); the
+substituter strips the sigil run per colon segment; the cheader classifiers
+read the cell, which also exported the `?&T` *parameter* and *return*
+positions the symbol form had been rendering `void*`; the paren-operand
+refusal is lifted from the sweep and the two sites swept, byte-identical; the
+tyvar refusal **stays** — not for the substituter now, but because the boot
+compiler that builds `nucleusc` predates PK-4b and compiles the five `lib/`
+files those 14 sites live in (`lib/iterator.nuc:41: unknown type: E` on the
+first attempt) — lift at the next boot refresh. PK-6's remaining docs rows are not built. Every claim in
 §1 was reproduced against `build/nucleusc` on 2026-09-16 (probe generator and
 full run kept beside this document's research pass; the 437-row matrix is
 summarised in §1.1). Milestones are **PK-1 … PK-6**; §9 sequences them across
@@ -487,6 +499,72 @@ receiver-inferred collection stops at a wrapper *inside* a template argument
 form `(Vector ref:T)` is collected under the spelling `ref:T`, which the
 unifier never binds — the same collect-but-never-bind shape as H5, on the
 pointer prefixes rather than the sigils.
+
+**PK-4b as built (2026-09-19).** The helper is as specified — `sigil-split`
+(`src/generics.nuc`, beside `node-template-of`) reads the five spellings and
+returns the run and the operand; `(Result X E)` is a sigil only when `E` is
+literally `Err`, and a multi-character run is unwrapped one sigil at a time,
+outer to inner, by `sigil-unwrap-type`. Five claims above were one step off:
+
+1. **The `?` unwrap of a pointer cannot require `PTR-MAYBE`.** A template
+   stamp's name is `type-mangle-token`'s, which spells every pointer kind
+   `pPt`, so `(Vector &Pt)`, `(Vector ?&Pt)` and `(Vector raw:Pt)` are **one**
+   stamp `Vector.pPt` whose `origin-args[0]` is whichever pointer type stamped
+   first. A strict `PTR-MAYBE` test would make `(n-q &w)` succeed or fail by
+   declaration order. The unwrap is by **shape**: any `TY-PTR` peels to the same
+   pointer relabelled `PTR-REF` (`type-eq` already ignores the kind for the same
+   reason); a non-pointer must be a stamped `Maybe`/`Result` instance, checked
+   through the new `UnionDef.origin-template` / `origin-args` / `origin-nargs`
+   (mirroring `StructDef`, set in `union-template-stamp-types-in`) — for `!`,
+   `origin-args[1]` must `type-eq` `ty-err`.
+2. **Eight walkers, not four.** Beyond `collect-pattern-tyvars`,
+   `collect-constraint-arg-tyvars`, `unify-tpat` and the substituter,
+   `pattern-determines-tyvar`, `node-mentions-tyvar`,
+   `node-mentions-tyvar-named` and `method-has-nested-tyvar` each mirror the
+   collector's notion of "mentions a tyvar", and each had to peel the sigil or
+   the collected `T` was found by one walker and lost by the next: a protocol
+   parameter `?E` "not determined" at the `extend` (`node-mentions-tyvar-named`),
+   a `T` bound only under a sigil judged return-only (`pattern-determines-tyvar`
+   feeds `tyvars-determined`), a receiver-inferred `x:?T` method sent to the
+   flat abstract interface check (`method-has-nested-tyvar`).
+   `cheader-defvar-type-ok` was a ninth: a `defvar` of `?&Pt` reached "type
+   has no C spelling" before the classifiers ran.
+3. **The substituter** (`subst-tyvar-segment` in `src/type-mangle.nuc`) is the
+   segment rule stated in §2: strip the leading sigil run, look the remainder
+   up, re-prefix the run to the binding's spelling — `?E` → `?i32`, `?ptr:E` →
+   `?ptr:Pt`, and `?E` with `E = ?Pt` → `?Maybe.Pt` (the stamped union's name,
+   which the type parser reads back). In a `defprotocol` signature, a
+   parametric struct's fields and a parametric union's arm alike.
+4. **"The symbol form renders `Pt*`" held for a struct field only.** A `q:?&Pt`
+   parameter or return desugars to the glued-head cell `(?ref Pt)`, which
+   `type-node-to-c` did not read and rendered `void*` — every `?&T` parameter
+   and return in the tree's headers (`lib/node.h`'s `node_at`, three example
+   headers, six fixture headers) moved to the niche spelling when the
+   classifiers learned the cell. `(Maybe &Pt)` in a signature had been refused as a
+   *template instance*; it is exported now. The three `!`-spellings over a
+   struct operand are one "uses an error-union or option type" comment and no
+   `void*`; a pointer to a value niche (`&?(Vector i32)`) is refused for its
+   pointee, as `ptr:!ui8` already was.
+5. **The tyvar re-sweep is boot-gated, not language-gated.** The 14 `lib/`
+   sites compile under `build/nucleusc`, but `make` builds `nucleusc` with the
+   committed boot, which compiles `lib/coll`, `iterator`, `vector`, `hashmap`
+   and `hashset` and has no PK-4b (`lib/iterator.nuc:41: error: unknown type:
+   E`). Per the gate the sites were restored by hand, the tyvar refusal stays
+   in `sugar-sweep.py` with the reason rewritten, and the next boot refresh
+   lifts it (`context/build.md`, "the boot compiler gates what src/ may use").
+   The paren-operand refusal is lifted: `lib/test.nuc:410` and
+   `lib/hashmap.nuc:472` are swept, `build/nucleusc.ll` byte-identical.
+
+Out of scope, confirmed by probe against the built compiler: a `defunion`
+template other than `Maybe`/`Result` inside a template argument
+(`(Vector (Either T))`) does not collect `T` — `node-template-of` knows struct
+templates; a pointer wrapper inside a template argument (`(Vector &T)`,
+`(Vector ref:T)`, `(Vector ?&T)`) fails `unknown type: T` under both compilers;
+and a `:where` constraint's *own* argument is recovered only when it is a bare
+tyvar (`recover-one-constraint` parses any other arg concretely), so
+`((Peek ?E) S)` is not a recovery — while `(extend (Wrap I) (Iterator ?E)
+:where ((Iterator E) I))`, where `?E` is the protocol application's argument,
+now determines `E` (unit `s21-pk4b-extend-sigil-arg`).
 
 ---
 

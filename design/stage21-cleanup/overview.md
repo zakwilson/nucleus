@@ -33,9 +33,15 @@ fewer "convention, not a rule" edges in it.
    cell-building sites mint `ref`, every reading arm is gone, the name stays
    reserved and answers `'addr-of' was retired: write &x, or (ref x) /
    (ref p 'field)` on the value path, in `gcheck`, and from the type parser's
-   fall-through, and `tests/` was swept with R1/R2 (`--rules`). PK-4b and
-   PK-6's remaining docs rows (`generics.md`, `errors.md`, `macros.md`,
-   `toplevel.md`'s reader-macro table) are what is left.
+   fall-through, and `tests/` was swept with R1/R2 (`--rules`). Then a sigil
+   over a type *variable* is a wrapper under every spelling (PK-4b, built
+   2026-09-19): one `sigil-split` feeds eight pattern walkers, the substituter
+   strips the run per colon segment, the cheader classifiers read the cell,
+   the sweep's paren-operand refusal is lifted; its tyvar refusal stays until
+   the next boot refresh, because the boot compiler builds `nucleusc` from the
+   `lib/` files those sites live in (pointer-kind-spellings.md §6 "as
+   built"). PK-6's remaining docs rows (`generics.md`, `errors.md`,
+   `macros.md`, `toplevel.md`'s reader-macro table) are what is left.
 2. **There are two readers** — **built 2026-09-18** —
    [one-reader.md](one-reader.md) (designed 2026-09-16, R-1 … R-4).
    `lib/read.nuc` and `src/reader.nuc` contain significant duplicated work
@@ -82,7 +88,7 @@ Item 2 lands between item 1's PK-1 and PK-2: **PK-1 → R-1, R-2 (R-3 optional)
 → PK-2, PK-3, PK-4a → delete the gensym walk → boot refresh → PK-5 →
 PK-4b, PK-6.** Everything up to and including the boot refresh landed
 2026-09-18 (progress.md, "Boot refresh for Stage 21"), then PK-5a and PK-5b
-the same day; PK-4b and PK-6 are next.
+the same day and PK-4b on 2026-09-19; PK-6 is next.
 PK-1 is one line in each reader and stops the header leak now;
 PK-2 is structural in the reader and would otherwise be written twice; R is
 fixed-point-preserving on its own, so its gensym walk can be deleted as the last
@@ -120,7 +126,10 @@ twin edits pointer-kind-spellings.md §4 specifies. Rationale in
   ref:T)` is collected as a tyvar under the spelling `ref:T`, which the unifier
   never binds — the same collect-but-never-bind shape as item 1's H5, on the
   pointer prefixes rather than the sigils (`src/generics.nuc:1363`, `:1400`,
-  `:1459`).
+  `:1459`). Still so after PK-4b (probed: `(Vector &T)`, `(Vector ref:T)` and
+  `(Vector ?&T)` all `unknown type: T`); a `defunion` template other than
+  `Maybe`/`Result` inside a template argument (`(Vector (Either T))`) is the
+  same shape — `node-template-of` knows struct templates only.
 - **A `deftype` alias or C typedef name in a template argument is a fake
   tyvar** (found building PK-4a). `tyname-resolvable` mirrors
   `parse-type-name`'s acceptance set without its alias and C-typedef arms, so
@@ -136,25 +145,34 @@ twin edits pointer-kind-spellings.md §4 specifies. Rationale in
   nothing in the compiler is missing. What *is* missing is on the compiler's
   side: `context/macros-jit.md:16` — a macro body cannot raise a diagnostic at
   all.
-- **The C-header classifiers do not read a `(? X)` / `(! X)` cell** (found
-  building PK-5a). `cheader-template-instance` (`src/cheader.nuc:3690`) keys on
-  a cell whose *head* is a union template — `(Maybe …)`, `(Result …)` — and
-  `cheader-niche-no-c` (`:3758`) on a sigil-led *symbol*; the PK-3 list form
-  `(! (Vector Diagnostic))` is neither, so a public `(defn read-diagnostics
-  (…):!(Vector Diagnostic) …)` exports `void* read_diagnostics(...)` — a
+- ~~**The C-header classifiers do not read a `(? X)` / `(! X)` cell**~~ (found
+  building PK-5a; **fixed by PK-4b, 2026-09-19**). `cheader-template-instance` keyed
+  on a cell whose *head* is a union template — `(Maybe …)`, `(Result …)` — and
+  `cheader-niche-no-c` on a sigil-led *symbol*; the PK-3 list form
+  `(! (Vector Diagnostic))` was neither, so a public `(defn read-diagnostics
+  (…):!(Vector Diagnostic) …)` exported `void* read_diagnostics(...)` — a
   by-value tagged struct declared as a pointer, the ABI-wrong declaration both
-  classifiers exist to refuse. PK-3's "the cheader walkers need no change" held
-  for the *pointer* walkers only. The sweep refuses the paren operand in an
-  exported slot (`lib/test.nuc:410`, `lib/hashmap.nuc:472`) until an arm for the
-  sigil-head cell is added beside the two existing ones.
+  classifiers exist to refuse. Both now read the cell through `sigil-split`
+  (`cheader-sigil-operand`), which also caught the *symbol* form's hole: a
+  `q:?&Pt` parameter desugars to the glued-head cell `(?ref Pt)` and rendered
+  `void*` where a field rendered `struct Pt*`. The two swept sites are in.
 - **`extend` reads a cell subject as a template application**, so
   `(extend &Cents Ord)` — `(ref Cents)` after PK-1 — is refused where
   `(extend ptr:Cents Ord)` conforms the pointer type (`examples/operators.nuc:34`).
   Either the subject parser peels `ref`/`ptr`/`raw` heads before the template
   lookup, or the colon spelling stays the one way to conform a pointer type.
-- **A sigil over a type variable is a different symbol to `subst-tyvars-sym`.**
-  `?E` in a protocol signature or template body is one bare symbol and
-  substitution walks colon *segments*, so `(Maybe E)` substitutes and `?E` does
-  not — the same collect-but-never-bind family as H5/PK-4b, on the substituter
-  rather than the unifier. PK-5a refuses R6/R7 over a tyvar (14 sites, all in
-  `lib/`); PK-4b's walker change should take the substituter with it.
+- ~~**A sigil over a type variable is a different symbol to `subst-tyvars-sym`.**~~
+  (**fixed by PK-4b, 2026-09-19**.) `?E` in a protocol signature or template
+  body is one bare symbol and substitution walked colon *segments*, so
+  `(Maybe E)` substituted and `?E` did not. `subst-tyvar-segment`
+  (`src/type-mangle.nuc`) strips the sigil run, looks the remainder up and
+  re-prefixes. The sweep's 14 tyvar sites **stay refused** for a different
+  reason: the boot compiler that builds `nucleusc` compiles the `lib/` files
+  they live in and predates the fix — lift at the next boot refresh.
+- **A sigil over a type variable in an `extend`'s protocol application** —
+  `(extend (Wrap I) (Iterator ?E) :where ((Iterator E) I))` — was refused
+  `protocol parameter '?E' is not determined` (found building PK-4b;
+  **fixed by it**: `collect-constraint-arg-tyvars` and `node-mentions-tyvar-named`
+  peel the sigil). A `:where` constraint's *own* compound argument
+  (`((Peek ?E) S)`) is still a concrete pattern, not a recovery —
+  `recover-one-constraint` recovers a bare tyvar only; pre-existing, recorded.
