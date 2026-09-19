@@ -50,7 +50,7 @@
 ;   byte-at    — i-th byte, O(1).  Errors str-index-out-of-bounds when i >=
 ;                byte-len.
 ;   bytes      — return a fresh byte iterator by VALUE (associated type ByteI).
-;                Drive with (addr-of it) + next (the value-return convention
+;                Drive with &it + next (the value-return convention
 ;                from examples/assoc-iter-return.nuc and coll.nuc C2.1).
 ;   as-view    — borrow the entire content as a StrView (two-word value, no
 ;                copy).  The bridge to all StrView byte ops.
@@ -90,7 +90,7 @@
 ;   char-at      — nth codepoint, O(n).  Errors str-index-out-of-bounds when
 ;                  i is past the last codepoint.
 ;   chars        — return a fresh char iterator by VALUE (associated type
-;                  CharI).  Drive with (addr-of it) + next.
+;                  CharI).  Drive with &it + next.
 ;   starts-with? — true when self begins with the given prefix StrView.
 ;   ends-with?   — true when self ends with the given suffix StrView.
 ;   contains-str?— true when self contains the given needle StrView.

@@ -301,7 +301,7 @@ not supported in v1.
 
   ; Repairing handler bound for (config-missing, i64): err → (ok 777).
   (let (fixed:i64 777)
-    (with-handler (config-missing i64 repair-from-ctx (as ptr (addr-of fixed)))
+    (with-handler (config-missing i64 repair-from-ctx (as ptr &fixed))
       (match (load-num 0)
         ((ok v)  (printf "repaired: %lld\n" v))   ; prints: repaired: 777
         ((err e) (printf "err: %s\n" (err-name e))))))
@@ -334,7 +334,7 @@ behavior if policy declines:
 (deferror out-of-memory "allocation grow needs a policy decision")
 
 (defn grow (need:i64):i64
-  (match (signal out-of-memory i64 (as ptr (addr-of need)))
+  (match (signal out-of-memory i64 (as ptr &need))
     ((some sz) sz)               ; a handler supplied a size: continue
     (none      0)))              ; declined / no handler: the fallback
 

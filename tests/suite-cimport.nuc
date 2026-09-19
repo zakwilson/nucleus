@@ -32,18 +32,18 @@
 ; located half is the point — the defect this replaced was silent.
 (defn check-opaque-at (header:StrView name:StrView line:StrView):!void
   (let (src:String (sizeof-probe header name)
-        sv:StrView (string-as-view (addr-of src))
+        sv:StrView (string-as-view &src)
         c:Compiled (try (compile-source sv))
         want:String (str "'" name "' is an opaque type declared at ./" header
                          ":" line "; only pointers to it are valid")
         tl:String (str "%" name " = type"))
     (when (c 'ok?) (fail! name " was accepted, but it is opaque"))
-    (try (check-error-anywhere (addr-of c 'diags) (string-as-view (addr-of want))))
-    (try (check-not-contains (compiled-ir (addr-of c)) (string-as-view (addr-of tl))))
-    (drop (addr-of tl))
-    (drop (addr-of want))
-    (drop (addr-of c))
-    (drop (addr-of src))
+    (try (check-error-anywhere (ref c 'diags) (string-as-view &want)))
+    (try (check-not-contains (compiled-ir &c) (string-as-view &tl)))
+    (drop &tl)
+    (drop &want)
+    (drop &c)
+    (drop &src)
     (return (ok))))
 
 ; ---------------------------------------------------------------------------
@@ -82,8 +82,8 @@
 ; still works.
 (deftest l1-member-fails-safe
   (let (c:Compiled (try (compile-source (l1-safe-src)))
-        ir:StrView (compiled-ir (addr-of c)))
-    (try (check-no-errors (addr-of c 'diags)))
+        ir:StrView (compiled-ir &c))
+    (try (check-no-errors (ref c 'diags)))
     (try (check-not-contains ir "%l1_m_wide_int = type"))
     (try (check-not-contains ir "%l1_m_unrep_typedef = type"))
     (try (check-not-contains ir "%l1_m_opaque_tag = type"))
@@ -95,7 +95,7 @@
     (try (check-contains ir "define i32 @t4(ptr "))
     (try (check-contains ir "define i32 @t5(ptr "))
     (try (check-ir-parses ir))
-    (drop (addr-of c))
+    (drop &c)
     (return (ok))))
 
 ; The positive controls, so a future "fix" cannot pass the two above by making
@@ -104,10 +104,10 @@
 ; it is representable now and must carry the extent.
 (deftest l1-member-controls
   (let (c:Compiled (try (compile-source (l1-safe-src)))
-        ir:StrView (compiled-ir (addr-of c)))
+        ir:StrView (compiled-ir &c))
     (try (check-line ir "%l1_ok_plain = type { i32, i32 }"))
     (try (check-line ir "%l1_ok_hidden_array = type { [4 x i32], i32 }"))
-    (drop (addr-of c))
+    (drop &c)
     (return (ok))))
 
 ; ---------------------------------------------------------------------------
@@ -136,8 +136,8 @@
 ; so these hold on any target with a 4-byte int.
 (deftest l2-layout-types
   (let (c:Compiled (try (compile-source (l2-matrix-src)))
-        ir:StrView (compiled-ir (addr-of c)))
-    (try (check-no-errors (addr-of c 'diags)))
+        ir:StrView (compiled-ir &c))
+    (try (check-no-errors (ref c 'diags)))
     (try (check-line ir "%l2_lit = type { [4 x i32], i32 }"))
     (try (check-line ir "%l2_multi = type { [2 x [3 x i32]], i32 }"))
     (try (check-line ir "%l2_macro = type { [6 x i8], i32 }"))
@@ -145,7 +145,7 @@
     (try (check-line ir "%l2_shift = type { [8 x i8], i16 }"))
     (try (check-line ir "%l2_chararr = type { i16, [14 x i8] }"))
     (try (check-ir-parses ir))
-    (drop (addr-of c))
+    (drop &c)
     (return (ok))))
 
 ; `sizeof` against the values the fixture states, and against cc built from the
@@ -153,7 +153,7 @@
 (deftest l2-layout-sizeof
   (try (require-cc))
   (let (got:String (try (build-run-source (l2-matrix-src))))
-    (try (check-golden (string-as-view (addr-of got))
+    (try (check-golden (string-as-view &got)
 "l2_lit 20
 l2_multi 28
 l2_macro 12
@@ -161,7 +161,7 @@ l2_sizeof 28
 l2_shift 10
 l2_chararr 16
 "))
-    (drop (addr-of got)))
+    (drop &got))
   (try (check-agrees-with-cc "l2m" "." (l2-matrix-src)
 "#include <stdio.h>
 #include \"tests/fixtures/l2-arrays.h\"
@@ -196,9 +196,9 @@ int main(void){
 (defn main ():i32 (printf \"%ld\\n\" (sizeof l2_unfoldable_flex)) (return 0))
 "
         c:Compiled (try (compile-source src)))
-    (try (check-line (compiled-ir (addr-of c))
+    (try (check-line (compiled-ir &c)
                      "%l2_unfoldable_flex = type { i32, [0 x i32] }"))
-    (drop (addr-of c))
+    (drop &c)
     (try (check-agrees-with-cc "l2fx" "." src
 "#include <stdio.h>
 #include \"tests/fixtures/l2-arrays.h\"
@@ -326,56 +326,56 @@ int main(void){
 (defn main ():i32
   (let (s:ptr:__jmp_buf_tag (alloca __jmp_buf_tag) a:ptr:AP1 (alloca AP1))
     (printf \"__jmp_buf_tag size=%lld align=%lld __jmpbuf=%lld __mask_was_saved=%lld __saved_mask=%lld\\n\"
-      (as i64 (sizeof __jmp_buf_tag)) (off a (addr-of a 'v))
-      (off s (addr-of s '__jmpbuf)) (off s (addr-of s '__mask_was_saved)) (off s (addr-of s '__saved_mask))))
+      (as i64 (sizeof __jmp_buf_tag)) (off a (ref a 'v))
+      (off s (ref s '__jmpbuf)) (off s (ref s '__mask_was_saved)) (off s (ref s '__saved_mask))))
   (let (s:ptr:timespec (alloca timespec) a:ptr:AP2 (alloca AP2))
     (printf \"timespec size=%lld align=%lld tv_sec=%lld tv_nsec=%lld\\n\"
-      (as i64 (sizeof timespec)) (off a (addr-of a 'v)) (off s (addr-of s 'tv_sec)) (off s (addr-of s 'tv_nsec))))
+      (as i64 (sizeof timespec)) (off a (ref a 'v)) (off s (ref s 'tv_sec)) (off s (ref s 'tv_nsec))))
   (let (s:ptr:itimerspec (alloca itimerspec) a:ptr:AP3 (alloca AP3))
     (printf \"itimerspec size=%lld align=%lld it_interval=%lld it_value=%lld\\n\"
-      (as i64 (sizeof itimerspec)) (off a (addr-of a 'v)) (off s (addr-of s 'it_interval)) (off s (addr-of s 'it_value))))
+      (as i64 (sizeof itimerspec)) (off a (ref a 'v)) (off s (ref s 'it_interval)) (off s (ref s 'it_value))))
   (let (s:ptr:stat (alloca stat) a:ptr:AP4 (alloca AP4))
     (printf \"stat size=%lld align=%lld st_dev=%lld st_ino=%lld st_mode=%lld st_uid=%lld st_size=%lld st_mtim=%lld\\n\"
-      (as i64 (sizeof stat)) (off a (addr-of a 'v)) (off s (addr-of s 'st_dev)) (off s (addr-of s 'st_ino))
-      (off s (addr-of s 'st_mode)) (off s (addr-of s 'st_uid)) (off s (addr-of s 'st_size)) (off s (addr-of s 'st_mtim))))
+      (as i64 (sizeof stat)) (off a (ref a 'v)) (off s (ref s 'st_dev)) (off s (ref s 'st_ino))
+      (off s (ref s 'st_mode)) (off s (ref s 'st_uid)) (off s (ref s 'st_size)) (off s (ref s 'st_mtim))))
   (let (s:ptr:dirent (alloca dirent) a:ptr:AP5 (alloca AP5))
     (printf \"dirent size=%lld align=%lld d_ino=%lld d_off=%lld d_reclen=%lld d_type=%lld d_name=%lld\\n\"
-      (as i64 (sizeof dirent)) (off a (addr-of a 'v)) (off s (addr-of s 'd_ino)) (off s (addr-of s 'd_off))
-      (off s (addr-of s 'd_reclen)) (off s (addr-of s 'd_type)) (off s (addr-of s 'd_name))))
+      (as i64 (sizeof dirent)) (off a (ref a 'v)) (off s (ref s 'd_ino)) (off s (ref s 'd_off))
+      (off s (ref s 'd_reclen)) (off s (ref s 'd_type)) (off s (ref s 'd_name))))
   (let (s:ptr:termios (alloca termios) a:ptr:AP6 (alloca AP6))
     (printf \"termios size=%lld align=%lld c_iflag=%lld c_oflag=%lld c_cflag=%lld c_lflag=%lld c_line=%lld c_cc=%lld c_ispeed=%lld c_ospeed=%lld\\n\"
-      (as i64 (sizeof termios)) (off a (addr-of a 'v)) (off s (addr-of s 'c_iflag)) (off s (addr-of s 'c_oflag))
-      (off s (addr-of s 'c_cflag)) (off s (addr-of s 'c_lflag)) (off s (addr-of s 'c_line)) (off s (addr-of s 'c_cc))
-      (off s (addr-of s 'c_ispeed)) (off s (addr-of s 'c_ospeed))))
+      (as i64 (sizeof termios)) (off a (ref a 'v)) (off s (ref s 'c_iflag)) (off s (ref s 'c_oflag))
+      (off s (ref s 'c_cflag)) (off s (ref s 'c_lflag)) (off s (ref s 'c_line)) (off s (ref s 'c_cc))
+      (off s (ref s 'c_ispeed)) (off s (ref s 'c_ospeed))))
   (let (a:ptr:AP7 (alloca AP7))
-    (printf \"fd_set size=%lld align=%lld\\n\" (as i64 (sizeof fd_set)) (off a (addr-of a 'v))))
+    (printf \"fd_set size=%lld align=%lld\\n\" (as i64 (sizeof fd_set)) (off a (ref a 'v))))
   (let (s:ptr:sockaddr (alloca sockaddr) a:ptr:AP8 (alloca AP8))
     (printf \"sockaddr size=%lld align=%lld sa_family=%lld sa_data=%lld\\n\"
-      (as i64 (sizeof sockaddr)) (off a (addr-of a 'v)) (off s (addr-of s 'sa_family)) (off s (addr-of s 'sa_data))))
+      (as i64 (sizeof sockaddr)) (off a (ref a 'v)) (off s (ref s 'sa_family)) (off s (ref s 'sa_data))))
   (let (s:ptr:in6_addr (alloca in6_addr) a:ptr:AP9 (alloca AP9))
     (printf \"in6_addr size=%lld align=%lld __in6_u=%lld\\n\"
-      (as i64 (sizeof in6_addr)) (off a (addr-of a 'v)) (off s (addr-of s '__in6_u))))
+      (as i64 (sizeof in6_addr)) (off a (ref a 'v)) (off s (ref s '__in6_u))))
   (let (a:ptr:AP10 (alloca AP10))
-    (printf \"sigset_t size=%lld align=%lld\\n\" (as i64 (sizeof sigset_t)) (off a (addr-of a 'v))))
+    (printf \"sigset_t size=%lld align=%lld\\n\" (as i64 (sizeof sigset_t)) (off a (ref a 'v))))
   (let (a:ptr:AP11 (alloca AP11))
-    (printf \"pthread_mutex_t size=%lld align=%lld\\n\" (as i64 (sizeof pthread_mutex_t)) (off a (addr-of a 'v))))
+    (printf \"pthread_mutex_t size=%lld align=%lld\\n\" (as i64 (sizeof pthread_mutex_t)) (off a (ref a 'v))))
   (let (s:ptr:sigaction (alloca sigaction) a:ptr:AP12 (alloca AP12))
     (printf \"sigaction size=%lld align=%lld sa_mask=%lld sa_flags=%lld sa_restorer=%lld\\n\"
-      (as i64 (sizeof sigaction)) (off a (addr-of a 'v)) (off s (addr-of s 'sa_mask))
-      (off s (addr-of s 'sa_flags)) (off s (addr-of s 'sa_restorer))))
+      (as i64 (sizeof sigaction)) (off a (ref a 'v)) (off s (ref s 'sa_mask))
+      (off s (ref s 'sa_flags)) (off s (ref s 'sa_restorer))))
   (let (s:ptr:sigevent_t (alloca sigevent_t) a:ptr:AP13 (alloca AP13))
     (printf \"sigevent_t size=%lld align=%lld sigev_signo=%lld sigev_notify=%lld\\n\"
-      (as i64 (sizeof sigevent_t)) (off a (addr-of a 'v)) (off s (addr-of s 'sigev_signo))
-      (off s (addr-of s 'sigev_notify))))
+      (as i64 (sizeof sigevent_t)) (off a (ref a 'v)) (off s (ref s 'sigev_signo))
+      (off s (ref s 'sigev_notify))))
   (return 0))
 "))
 
 (deftest l2-libc-layouts
   (try (require-cc))
   (let (nuc:String (str (libc-nuc-decls) (libc-nuc-main)))
-    (try (check-agrees-with-cc "l2libc" "" (string-as-view (addr-of nuc))
+    (try (check-agrees-with-cc "l2libc" "" (string-as-view &nuc)
                                (libc-c-src)))
-    (drop (addr-of nuc)))
+    (drop &nuc))
   (return (ok)))
 
 ; `FILE` was the last of §1.5's rows still opaque after L1/L2, and it was opaque
@@ -389,8 +389,8 @@ int main(void){
 (defn main ():i32
   (let (f:ptr:FILE (alloca FILE))
     (printf \"%ld %ld %ld\\n\" (sizeof FILE)
-      (- (unsafe/cast i64 (addr-of f '_flags)) (unsafe/cast i64 f))
-      (- (unsafe/cast i64 (addr-of f '_lock)) (unsafe/cast i64 f))))
+      (- (unsafe/cast i64 (ref f '_flags)) (unsafe/cast i64 f))
+      (- (unsafe/cast i64 (ref f '_lock)) (unsafe/cast i64 f))))
   (return 0))
 "
 "#include <stdio.h>
@@ -416,8 +416,8 @@ int main(void){printf(\"%zu %zu %zu\\n\",sizeof(FILE),offsetof(FILE,_flags),offs
 ; attribute comes from a roster and not from the spelling.
 (deftest l3-setjmp-decay
   (let (c:Compiled (try (compile-source (setjmp-import)))
-        ir:StrView (compiled-ir (addr-of c)))
-    (try (check-no-errors (addr-of c 'diags)))
+        ir:StrView (compiled-ir &c))
+    (try (check-no-errors (ref c 'diags)))
     (try (check-line ir "declare i32 @setjmp(ptr) returns_twice"))
     (try (check-line ir "declare i32 @__sigsetjmp(ptr, i32) returns_twice"))
     (try (check-line ir "declare i32 @_setjmp(ptr) returns_twice"))
@@ -428,7 +428,7 @@ int main(void){printf(\"%zu %zu %zu\\n\",sizeof(FILE),offsetof(FILE,_flags),offs
     ; convention, which no layout gate would catch.
     (try (check-not-contains ir "byval"))
     (try (check-ir-parses ir))
-    (drop (addr-of c))
+    (drop &c)
     (return (ok))))
 
 ; The negative: the pre-existing SYNTACTIC decay path, which consumes `[N]`
@@ -437,10 +437,10 @@ int main(void){printf(\"%zu %zu %zu\\n\",sizeof(FILE),offsetof(FILE,_flags),offs
 (deftest l3-syntactic-decay
   (let (c:Compiled (try (compile-source
                           "(import-use \"sys/stat.h\")\n(defn main ():i32 (return 0))\n"))
-        ir:StrView (compiled-ir (addr-of c)))
+        ir:StrView (compiled-ir &c))
     (try (check-line ir "declare i32 @utimensat(i32, ptr, ptr, i32)"))
     (try (check-line ir "declare i32 @futimens(i32, ptr)"))
-    (drop (addr-of c))
+    (drop &c)
     (return (ok))))
 
 ; ---------------------------------------------------------------------------
@@ -457,15 +457,15 @@ int main(void){printf(\"%zu %zu %zu\\n\",sizeof(FILE),offsetof(FILE,_flags),offs
 ; follows a roster of names and not the `setjmp` spelling.
 (deftest l4-returns-twice-declares
   (let (c:Compiled (try (compile-source (setjmp-import)))
-        ir:StrView (compiled-ir (addr-of c)))
+        ir:StrView (compiled-ir &c))
     (try (check-line ir "declare i32 @setjmp(ptr) returns_twice"))
     (try (check-line ir "declare i32 @__sigsetjmp(ptr, i32) returns_twice"))
     (try (check-line ir "declare i32 @_setjmp(ptr) returns_twice"))
-    (drop (addr-of c)))
+    (drop &c))
   (let (p:Compiled (try (compile-path "examples/cheader-posix.nuc")))
-    (try (check-line (compiled-ir (addr-of p))
+    (try (check-line (compiled-ir &p)
                      "declare i32 @vfork() returns_twice"))
-    (drop (addr-of p)))
+    (drop &p))
   (return (ok)))
 
 ; The attribute is only worth having if it changes what the optimizer does.
@@ -475,22 +475,22 @@ int main(void){printf(\"%zu %zu %zu\\n\",sizeof(FILE),offsetof(FILE,_flags),offs
 (deftest l4-no-tail-call
   (when (not (have-program? "opt")) (skip! "no llvm opt on PATH"))
   (let (c:Compiled (try (compile-path "examples/setjmp-guard.nuc"))
-        ir:StrView (compiled-ir (addr-of c))
+        ir:StrView (compiled-ir &c)
         o:String (try (opt-o2 "sjg" ir))
-        ov:StrView (string-as-view (addr-of o))
+        ov:StrView (string-as-view &o)
         call:StrView (try (line-with ov "call i32 @_setjmp(")))
     (when (strview-contains call "tail call")
       (fail! "opt -O2 tail-called _setjmp: " (test-show call)))
-    (drop (addr-of o))
+    (drop &o)
     ; Strip the attribute and the same pipeline tail-calls it. Without this the
     ; assertion above would hold on an -O2 that never tail-calls anything.
     (let (bare:String (drop-suffix-on-lines ir " returns_twice")
-          n:String (try (opt-o2 "sjgn" (string-as-view (addr-of bare))))
-          nv:StrView (string-as-view (addr-of n)))
+          n:String (try (opt-o2 "sjgn" (string-as-view &bare)))
+          nv:StrView (string-as-view &n))
       (try (check-contains nv "tail call i32 @_setjmp("))
-      (drop (addr-of n))
-      (drop (addr-of bare)))
-    (drop (addr-of c))
+      (drop &n)
+      (drop &bare))
+    (drop &c)
     (return (ok))))
 
 ; `text` with `suffix` cut from every line that ends in it — how the negative
@@ -499,15 +499,15 @@ int main(void){printf(\"%zu %zu %zu\\n\",sizeof(FILE),offsetof(FILE,_flags),offs
 (defn drop-suffix-on-lines (text:StrView suffix:StrView):String
   (let (out:String (string-new)
         nl:StrView "\n"
-        it:SplitIter (strview-split (addr-of text) (addr-of nl)))
-    (while (not (split-iter-done (addr-of it)))
-      (let (l:StrView (split-iter-next (addr-of it)))
+        it:SplitIter (strview-split &text &nl))
+    (while (not (split-iter-done &it))
+      (let (l:StrView (split-iter-next &it))
         (if (strview-has-suffix l suffix)
-          (str-into (addr-of out)
-                    (strview-take-bytes l (- (strview-byte-len (addr-of l))
-                                             (strview-byte-len (addr-of suffix))))
+          (str-into &out
+                    (strview-take-bytes l (- (strview-byte-len &l)
+                                             (strview-byte-len &suffix)))
                     "\n")
-          (str-into (addr-of out) l "\n"))))
+          (str-into &out l "\n"))))
     (return out)))
 
 ; ---------------------------------------------------------------------------
@@ -527,9 +527,9 @@ int main(void){printf(\"%zu %zu %zu\\n\",sizeof(FILE),offsetof(FILE,_flags),offs
 "(import-use \"sys/types.h\")
 (defn f (x:off_t):off_t (return (+ x 1)))
 ")))
-    (try (check-no-errors (addr-of c 'diags)))
-    (try (check-match (compiled-ir (addr-of c)) "define i64 @f(i64 *"))
-    (drop (addr-of c))
+    (try (check-no-errors (ref c 'diags)))
+    (try (check-match (compiled-ir &c) "define i64 @f(i64 *"))
+    (drop &c)
     (return (ok))))
 
 ; Transparency's sharpest evidence: `off_t` and `i64` are `type-eq`, mangle
@@ -543,10 +543,10 @@ int main(void){printf(\"%zu %zu %zu\\n\",sizeof(FILE),offsetof(FILE,_flags),offs
 "))
         p:String (try (scratch-file "t.nuc")))
     (when (c 'ok?) (fail! "off_t and i64 did not collide as one overload"))
-    (try (check-error-at (addr-of c 'diags) (string-as-view (addr-of p)) 3
+    (try (check-error-at (ref c 'diags) (string-as-view &p) 3
                          "duplicate definition of 'f'"))
-    (drop (addr-of p))
-    (drop (addr-of c))
+    (drop &p)
+    (drop &c)
     (return (ok))))
 
 ; `type-name-collision` gains a C-typedef arm: a `deftype` over an imported
@@ -559,12 +559,12 @@ int main(void){printf(\"%zu %zu %zu\\n\",sizeof(FILE),offsetof(FILE,_flags),offs
 "))
         p:String (try (scratch-file "t.nuc")))
     (when (c 'ok?) (fail! "a deftype over an imported typedef was accepted"))
-    (try (check-error-at (addr-of c 'diags) (string-as-view (addr-of p)) 2
+    (try (check-error-at (ref c 'diags) (string-as-view &p) 2
                          "deftype: 'off_t' already names a C typedef imported from"))
-    (try (check-error-anywhere (addr-of c 'diags)
+    (try (check-error-anywhere (ref c 'diags)
            "sys/types.h — an alias of an existing type name would never resolve"))
-    (drop (addr-of p))
-    (drop (addr-of c))
+    (drop &p)
+    (drop &c)
     (return (ok))))
 
 ; A recorded-NULL entry gets its own message, distinct from "not defined
@@ -575,19 +575,19 @@ int main(void){printf(\"%zu %zu %zu\\n\",sizeof(FILE),offsetof(FILE,_flags),offs
 (deftest l5-unrepresentable-message
   (let (dir:StrView (try (test-scratch))
         h:String (try (test-write-file "l5.h" "typedef __int128 l5_wi_t;\n"))
-        src:String (str "(import-use \"" (string-as-view (addr-of h)) "\")\n"
+        src:String (str "(import-use \"" (string-as-view &h) "\")\n"
                         "(defn f ():i32 (let (x:l5_wi_t 0) (return 0)))\n")
-        c:Compiled (try (compile-source (string-as-view (addr-of src))))
+        c:Compiled (try (compile-source (string-as-view &src)))
         ; `./`: an import path is reported as the compiler resolved it, and it
         ; resolves a project-relative path against the working directory.
         want:String (str "'l5_wi_t' names a C type this compiler cannot represent (./"
-                         (string-as-view (addr-of h)) ":1)"))
+                         (string-as-view &h) ":1)"))
     (when (c 'ok?) (fail! "an unrepresentable C typedef was accepted"))
-    (try (check-error-anywhere (addr-of c 'diags) (string-as-view (addr-of want))))
-    (drop (addr-of want))
-    (drop (addr-of c))
-    (drop (addr-of src))
-    (drop (addr-of h))
+    (try (check-error-anywhere (ref c 'diags) (string-as-view &want)))
+    (drop &want)
+    (drop &c)
+    (drop &src)
+    (drop &h)
     (return (ok))))
 
 ; `jmp_buf` after L3 is a `TY-ARRAY`, so the probe has to answer the
@@ -601,9 +601,9 @@ int main(void){printf(\"%zu %zu %zu\\n\",sizeof(FILE),offsetof(FILE,_flags),offs
 (defn g (x:jmp_buf):i32 (return 0))
 ")))
     (when (c 'ok?) (fail! "jmp_buf was accepted as a parameter"))
-    (try (check-error-anywhere (addr-of c 'diags)
+    (try (check-error-anywhere (ref c 'diags)
                                "(array T N) is a storage type"))
-    (drop (addr-of c)))
+    (drop &c))
   (try (check-agrees-with-cc "l5jb" ""
 "(import-use \"stdio.h\")
 (import-use \"setjmp.h\")
@@ -629,16 +629,16 @@ int main(void){printf(\"%zu\\n\", sizeof(jmp_buf));return 0;}
 (defvar gbuf:Buf)
 (defn main ():i32 (printf \"%lld %lld\\n\" (as i64 (sizeof Buf)) (as i64 (sizeof Holder))) (return 0))
 ")))
-    (try (check-eq (string-as-view (addr-of got)) "16 20\n"))
-    (drop (addr-of got)))
+    (try (check-eq (string-as-view &got) "16 20\n"))
+    (drop &got))
   (let (c:Compiled (try (compile-source
 "(deftype Buf (array i32 4))
 (defn f (x:Buf):i32 (return 0))
 ")))
     (when (c 'ok?) (fail! "an array alias was accepted as a parameter"))
-    (try (check-error-anywhere (addr-of c 'diags)
+    (try (check-error-anywhere (ref c 'diags)
                                "(array T N) is a storage type"))
-    (drop (addr-of c)))
+    (drop &c))
   (return (ok)))
 
 ; REPL rollback. Once a C typedef is a user-visible type name, a half-loaded
@@ -649,21 +649,21 @@ int main(void){printf(\"%zu\\n\", sizeof(jmp_buf));return 0;}
 ; next form dies — because the REPL snapshots per form.
 (deftest l5-repl-rollback
   (let (sub:String (try (test-scratch-sub "lib"))
-        dir:StrView (string-as-view (addr-of sub))
+        dir:StrView (string-as-view &sub)
         hdr:String (try (write-into dir "hdr.h"
 "typedef long rl_scalar_t;
 struct RLTag { long a; long b; };
 typedef struct RLTag rl_arr_t[1];
 "))
-        half-src:String (str "(import-use \"" (string-as-view (addr-of hdr)) "\")\n"
+        half-src:String (str "(import-use \"" (string-as-view &hdr) "\")\n"
                              "(defn rl-broken ():i32 (return (rl-no-such-function 1)))\n")
         half:String (try (write-into dir "half.nuc"
-                                     (string-as-view (addr-of half-src))))
-        session:String (str "(import-use \"" (string-as-view (addr-of half)) "\")\n"
+                                     (string-as-view &half-src)))
+        session:String (str "(import-use \"" (string-as-view &half) "\")\n"
                             "(defvar rv:rl_scalar_t)\n(defvar ra:rl_arr_t)\n"
                             "(defn rl-alive ():i32 (return 7))\n(rl-alive)\n")
-        out:String (try (repl-session (string-as-view (addr-of session))))
-        ov:StrView (string-as-view (addr-of out)))
+        out:String (try (repl-session (string-as-view &session)))
+        ov:StrView (string-as-view &out))
     ; Both names gone, the session alive, and nothing reaching LLVM: an entry
     ; that outlived the rollback shows up as an IR parse error about an unsized
     ; type, not as a diagnostic.
@@ -672,23 +672,23 @@ typedef struct RLTag rl_arr_t[1];
     (try (check-not-contains ov "IR parse error"))
     (try (check-not-contains ov "must be sized"))
     (try (check-line ov "nuc>   7"))
-    (drop (addr-of out))
+    (drop &out)
     ; Positive control: the SAME header, imported successfully, resolves both
     ; names — otherwise this passes on a REPL that never learned them at all.
-    (let (ctl:String (str "(import-use \"" (string-as-view (addr-of hdr)) "\")\n"
+    (let (ctl:String (str "(import-use \"" (string-as-view &hdr) "\")\n"
                           "(defvar rv2:rl_scalar_t)\n(defvar ra2:rl_arr_t)\n"
                           "(defn rl-alive2 ():i32 (return 9))\n(rl-alive2)\n")
-          co:String (try (repl-session (string-as-view (addr-of ctl))))
-          cv:StrView (string-as-view (addr-of co)))
+          co:String (try (repl-session (string-as-view &ctl)))
+          cv:StrView (string-as-view &co))
       (try (check-not-contains cv "unknown type:"))
       (try (check-line cv "nuc>   9"))
-      (drop (addr-of co))
-      (drop (addr-of ctl)))
-    (drop (addr-of session))
-    (drop (addr-of half))
-    (drop (addr-of half-src))
-    (drop (addr-of hdr))
-    (drop (addr-of sub))
+      (drop &co)
+      (drop &ctl))
+    (drop &session)
+    (drop &half)
+    (drop &half-src)
+    (drop &hdr)
+    (drop &sub)
     (return (ok))))
 
 ; `type-name-to-c` used to render any unmapped name `struct %s`, so
@@ -700,10 +700,10 @@ typedef struct RLTag rl_arr_t[1];
 "(import-use \"sys/types.h\")
 (defn f (x:off_t):off_t (return (+ x 1)))
 "))
-        hv:StrView (string-as-view (addr-of h)))
+        hv:StrView (string-as-view &h))
     (try (check-line hv "#include <sys/types.h>"))
     (try (check-line hv "off_t f(off_t x);"))
-    (drop (addr-of h))
+    (drop &h)
     (return (ok))))
 
 ; ---------------------------------------------------------------------------
@@ -761,10 +761,10 @@ int main(void){
   (let (c:Compiled (try (compile-source "(import-use \"tests/fixtures/s16-unsigned.h\")
 (defn main ():i32 (s16u_f) (s16u_g 1 2) (return 0))
 "))
-        iv:StrView (compiled-ir (addr-of c)))
+        iv:StrView (compiled-ir &c))
     (try (check-line iv "declare i32 @s16u_f()"))
     (try (check-line iv "declare i32 @s16u_g(i32, i32)"))
-    (drop (addr-of c)))
+    (drop &c))
   (return (ok)))
 
 ; C2: the use site names the header, the LINE and a reason. Pinned as one

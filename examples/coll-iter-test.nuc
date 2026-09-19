@@ -2,7 +2,7 @@
 ;
 ; `(iter coll)` returns the collection's iterator BY VALUE (alloca + set +
 ; (deref …), the spike pattern); `doseq` dispatches generically over any
-; (Coll E It) by calling `iter` and `addr-of`-ing the result internally.
+; (Coll E It) by calling `iter` and `&`-ing the result internally.
 ;
 ; Exercises:
 ;   1. doseq generically over a Vector i32 (sum is order-preserving).

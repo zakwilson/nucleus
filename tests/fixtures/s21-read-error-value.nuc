@@ -14,9 +14,9 @@
     ((ok forms) (print label ": ok " (node-len forms) " form(s)\n"))
     ((err e)
       (print label ": " (err-name (e 'code)) " line=" (e 'line)
-             " msg=[" (e 'msg) "] note=" (if (strview-empty (addr-of e 'note)) "none" "some")
+             " msg=[" (e 'msg) "] note=" (if (strview-empty (ref e 'note)) "none" "some")
              "\n")
-      (when (not (strview-empty (addr-of e 'note)))
+      (when (not (strview-empty (ref e 'note)))
         (print "  note: " (e 'note) "\n")))))
 
 (defn read-through (text:StrView):!void

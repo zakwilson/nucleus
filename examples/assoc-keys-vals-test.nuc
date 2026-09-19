@@ -21,7 +21,7 @@
     (assoc m 3 30)
 
     ; --- sum keys via (keys m) returning HashMapKeyIter i32 i32 by value ---
-    ; Bind the returned iterator to a typed local; addr-of to drive doseq-iter.
+    ; Bind the returned iterator to a typed local; `&` to drive doseq-iter.
     (let (ki:(HashMapKeyIter i32 i32) (keys m))
       (let (key-sum:i32 0)
         (doseq-iter (k &ki)

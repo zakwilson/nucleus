@@ -276,9 +276,9 @@ When the bound names a **parametric protocol**, the constraint head is a protoco
 (defn next ((self (ref (MapIter I F)))
                         :where ((Iterator S) I)      ; recover S := I's element
                                ((UnaryFn S E) F)) (Maybe E)    ; check S, recover E := F's result
-  (let ((res (Maybe S)) (next (addr-of self 'source)))
+  (let ((res (Maybe S)) (next (ref self 'source)))
     (match res
-      ((some v) (return (some (apply (addr-of self 'f) v))))
+      ((some v) (return (some (apply (ref self 'f) v))))
       (none (return none)))))
 ```
 
@@ -711,7 +711,7 @@ Note the surface difference: a `BoxedFn` is dispatched as a **callable value**
 (vector-push v (dyn Describe) (Cat "Felix"))
 (vector-push v (dyn Describe) (Dog "Buddy"))
 ; iterate and dispatch:
-(doseq (a v) (describe (addr-of a)))
+(doseq (a v) (describe &a))
 ```
 
 See `examples/dyn-protocol.nuc` for the full working example.

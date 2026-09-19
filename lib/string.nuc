@@ -282,7 +282,7 @@
 ; Drop conformance — String owns its Vector, so Drop delegates to Vector drop.
 ;
 ; NOTE: Drop protocol signature is `(drop:void (self:ptr:Self))` — ptr, not ref.
-; The `with` machinery calls `(drop (addr-of binding))` which gives ptr:String.
+; The `with` machinery calls `(drop &binding)` which gives ptr:String.
 ; ---------------------------------------------------------------------------
 (extend String Drop)
 (defn drop (self:&String):void

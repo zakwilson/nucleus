@@ -35,7 +35,7 @@
 (defn main ():i32
   ; local slot
   (let (loc:(fn i32)(i32) twice
-        hp:ptr:Hooks (addr-of hooks)
+        hp:ptr:Hooks &hooks
         total:i32 0)
     (set! fn-global thrice)
     (set! (hp 'before) twice)

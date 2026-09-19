@@ -11,7 +11,7 @@ fewer "convention, not a rule" edges in it.
 
 ## Items
 
-1. **Pointer-kind and type-sigil spellings** — **PK-1 … PK-4a built 2026-09-18** —
+1. **Pointer-kind and type-sigil spellings** — **PK-1 … PK-4a, PK-5a, PK-5b built 2026-09-18** —
    [pointer-kind-spellings.md](pointer-kind-spellings.md) (designed 2026-09-16,
    PK-1 … PK-6). `&` becomes `ref` in both the type and the value world, so a
    standalone `&T` is the same node the type path already canonicalises and
@@ -28,7 +28,14 @@ fewer "convention, not a rule" edges in it.
    over a real tyvar is refused until PK-4b); after one boot refresh a paren-aware sweep
    script (`scripts/stage21/sugar-sweep.py`, eight rules, refuses what it
    cannot classify) retires `addr-of` and adopts the sugar across `src/`,
-   `lib/` and `examples/`, gated byte-identical by `ir-snapshot.sh`.
+   `lib/` and `examples/`, gated byte-identical by `ir-snapshot.sh` (PK-5a);
+   then the compiler stops reading `addr-of` at all (PK-5b): the four
+   cell-building sites mint `ref`, every reading arm is gone, the name stays
+   reserved and answers `'addr-of' was retired: write &x, or (ref x) /
+   (ref p 'field)` on the value path, in `gcheck`, and from the type parser's
+   fall-through, and `tests/` was swept with R1/R2 (`--rules`). PK-4b and
+   PK-6's remaining docs rows (`generics.md`, `errors.md`, `macros.md`,
+   `toplevel.md`'s reader-macro table) are what is left.
 2. **There are two readers** — **built 2026-09-18** —
    [one-reader.md](one-reader.md) (designed 2026-09-16, R-1 … R-4).
    `lib/read.nuc` and `src/reader.nuc` contain significant duplicated work
@@ -74,7 +81,8 @@ fewer "convention, not a rule" edges in it.
 Item 2 lands between item 1's PK-1 and PK-2: **PK-1 → R-1, R-2 (R-3 optional)
 → PK-2, PK-3, PK-4a → delete the gensym walk → boot refresh → PK-5 →
 PK-4b, PK-6.** Everything up to and including the boot refresh landed
-2026-09-18 (progress.md, "Boot refresh for Stage 21"); PK-5 is next.
+2026-09-18 (progress.md, "Boot refresh for Stage 21"), then PK-5a and PK-5b
+the same day; PK-4b and PK-6 are next.
 PK-1 is one line in each reader and stops the header leak now;
 PK-2 is structural in the reader and would otherwise be written twice; R is
 fixed-point-preserving on its own, so its gensym walk can be deleted as the last

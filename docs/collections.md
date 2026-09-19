@@ -23,11 +23,11 @@ These collections are **mutable and in-place** in the STL spirit — `conj`, `as
 | `empty?` | Returns `1` when `count = 0`, else `0`. |
 | `iter` | Returns a fresh iterator over the collection's elements **by value**. The return type is the associated iterator type `It`, which must conform to `(Iterator E)`. |
 
-`It` is the associated iterator type parameter (C2.1). `iter` returns an `It` by value using the alloca + set + `(deref …)` convention. Because `let` bindings require an explicit type and `addr-of` only takes the address of a named local (not an rvalue), callers must bind the returned iterator to a typed local before driving `next`:
+`It` is the associated iterator type parameter (C2.1). `iter` returns an `It` by value using the alloca + set + `(deref …)` convention. Because `let` bindings require an explicit type and `&` only takes the address of a named local (not an rvalue), callers must bind the returned iterator to a typed local before driving `next`:
 
 ```lisp
 (let (it:(VecIter i32) (iter v))
-  (match (next (addr-of it)) ...))
+  (match (next &it) ...))
 ```
 
 In practice, `doseq` handles this automatically — see [Macros](macros.md) for the `(doseq (var coll IterType) …)` form. The fill-in-place helpers (`iter-init`, `hashset-iter`, `hmap-iter-entries`) remain available as internal helpers that the value-returning `iter` methods wrap; the documented protocol surface is value-return only.
@@ -76,7 +76,7 @@ In practice, `doseq` handles this automatically — see [Macros](macros.md) for 
 
 ```lisp
 (let (kit:(HashMapKeyIter CStr i32) (keys m))
-  (doseq-iter (k (addr-of kit))
+  (doseq-iter (k &kit)
     (printf "key=%s\n" k)))
 ```
 
@@ -135,7 +135,7 @@ Every owning collection conforms to `Drop` so a `with`-bound value frees its buf
 
 ```lisp
 (let (k:K key)
-  (let (h:usize (hash (addr-of k))) ...))
+  (let (h:usize (hash &k)) ...))
 ```
 
 **Built-in conformances** (FNV-1a, 64-bit):
@@ -282,7 +282,7 @@ Both are a single bulk copy rather than `conj` in a loop, which costs a bounds t
   (printf "elem=%d\n" x))
 ```
 
-`doseq` calls `(iter v)` internally to obtain a fresh `VecIter i32` by value, binds it to a typed local, and drives `(next (addr-of it))` per step. The internal helper `iter-init` (fills a caller-allocated `VecIter`) is still available but is not the recommended surface for new code.
+`doseq` calls `(iter v)` internally to obtain a fresh `VecIter i32` by value, binds it to a typed local, and drives `(next &it)` per step. The internal helper `iter-init` (fills a caller-allocated `VecIter`) is still available but is not the recommended surface for new code.
 
 See [Iterators](iterators.md) for `doseq` / `doseq-iter` and the `Iterator` protocol.
 
@@ -385,10 +385,10 @@ See [Iterators](iterators.md) for `doseq` / `doseq-iter` and the `Iterator` prot
 
 ```lisp
 (doseq (e m (HashMapEntryIter CStr i32))
-  (printf "key=%s val=%d\n" ((addr-of e) key) ((addr-of e) val)))
+  (printf "key=%s val=%d\n" (&e key) (&e val)))
 ```
 
-`doseq` calls `(iter m)` to get a fresh `HashMapEntryIter` by value, binds it to a typed local, and drives `(next (addr-of it))`. Each element `e` is yielded by value; use `(addr-of e)` to access its fields.
+`doseq` calls `(iter m)` to get a fresh `HashMapEntryIter` by value, binds it to a typed local, and drives `(next &it)`. Each element `e` is yielded by value; use `&e` to access its fields.
 
 Iteration order is hash-dependent and unspecified.
 
@@ -406,7 +406,7 @@ Iteration order is hash-dependent and unspecified.
 
 ```lisp
 (let (kit:(HashMapKeyIter CStr i32) (keys m))
-  (doseq-iter (k (addr-of kit))
+  (doseq-iter (k &kit)
     (printf "key=%s\n" k)))
 ```
 
@@ -426,7 +426,7 @@ The lower-level fill helper `hmap-iter-keys` (fills a caller-allocated `HashMapK
 
 ```lisp
 (let (vit:(HashMapValIter CStr i32) (vals m))
-  (doseq-iter (v (addr-of vit))
+  (doseq-iter (v &vit)
     (printf "val=%d\n" v)))
 ```
 
@@ -515,7 +515,7 @@ Iteration order is hash-dependent and unspecified for both `keys` and `vals`.
   (printf "member=%d\n" x))
 ```
 
-`doseq` calls `(iter s)` to get a fresh `HashSetIter i32` by value and drives `(next (addr-of it))` per step. The internal helper `hashset-iter` (fills a caller-allocated `HashSetIter`) is still available but is not the recommended surface for new code.
+`doseq` calls `(iter s)` to get a fresh `HashSetIter i32` by value and drives `(next &it)` per step. The internal helper `hashset-iter` (fills a caller-allocated `HashSetIter`) is still available but is not the recommended surface for new code.
 
 Iteration order is hash-dependent and unspecified.
 

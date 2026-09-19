@@ -7,12 +7,12 @@ read a typed exit status.
 (import-use process)
 
 (let (c:Command (command "git"))
-  (command-arg (addr-of c) "rev-parse")
-  (command-arg (addr-of c) "HEAD")
-  (match (run (addr-of c))
-    ((ok o)  (print "sha: " (string-as-view (addr-of o 'out))) (drop (addr-of o)))
+  (command-arg &c "rev-parse")
+  (command-arg &c "HEAD")
+  (match (run &c)
+    ((ok o)  (print "sha: " (string-as-view (ref o 'out))) (drop &o))
     ((err e) (eprint "could not run git\n")))
-  (drop (addr-of c)))
+  (drop &c))
 ```
 
 A `Command` is an **argv, not a command line**. Nothing goes through a shell, so

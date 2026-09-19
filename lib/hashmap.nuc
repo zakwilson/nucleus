@@ -330,7 +330,7 @@
   (return (= (self 'count) 0)))
 
 ; conj: insert an entry. The Entry is passed by value; bind it to a local and
-; `addr-of` to read its fields (the `(hash &k)` idiom), then assoc.
+; `&` to read its fields (the `(hash &k)` idiom), then assoc.
 (defn conj (self:&(HashMap K V) elem:(Entry K V)):void
   (let (e:(Entry K V) elem)
     (assoc self (&e 'key) (&e 'val))))
@@ -501,7 +501,7 @@
 ; Coll (Entry K V) (HashMapEntryIter K V) conformance — the extend + value-
 ; returning `iter` (count/empty?/conj are above). `iter` returns a fresh
 ; HashMapEntryIter BY VALUE (alloca + hmap-iter-entries + (deref …)); consumers
-; `addr-of` the result to drive `next`. (Placed here because HashMapEntryIter
+; `&` the result to drive `next`. (Placed here because HashMapEntryIter
 ; must be declared before it can name the associated iterator type.)
 ; ---------------------------------------------------------------------------
 (extend (HashMap K V) (Coll (Entry K V) (HashMapEntryIter K V)))

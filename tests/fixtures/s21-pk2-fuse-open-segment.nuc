@@ -15,8 +15,8 @@
   (match (read-all text)
     ((ok forms)
       (let (s:String (node-str forms))
-        (print text " => " (string-as-view (addr-of s)) "\n")
-        (drop (addr-of s))))
+        (print text " => " (string-as-view &s) "\n")
+        (drop &s)))
     ((err e) (print text " => error line " (e 'line) ": " (e 'msg) "\n"))))
 
 (defn main ():i32

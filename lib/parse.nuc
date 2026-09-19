@@ -17,7 +17,7 @@
 ;   - `?` and `!` must NOT appear in plain defn names.
 ;   - strtol / strtoll / strtod: brought in by `(import-use "stdlib.h")`.
 ;   - Endptr pattern: `(let (ep:ptr null) (strtod cs &ep) ...)`.
-;     `addr-of` requires a named local symbol; field expressions don't work.
+;     `&` requires a named local symbol; field expressions don't work.
 ;   - NUL-terminated copy: StrView bytes are not guaranteed NUL-terminated,
 ;     so we malloc(n+1), memcpy, set buf[n]=0, call libc, then free.
 ;   - `(defprotocol (FromStr R) ...)` with R as a type parameter: the

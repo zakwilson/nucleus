@@ -2,7 +2,7 @@
 ; `mfn` consumes the source, so any later use is a use-after-move error.
 ; Compiling this must FAIL (the positive `examples/ce3-owning-closure.nuc` run
 ; covers the move/drop path; this proves the consume is enforced — including
-; through `addr-of`, the only way to read a struct value's field).
+; through `&x`, the only way to read a struct value's field).
 
 (import-use "stdlib.h")
 
@@ -22,5 +22,5 @@
 
 (defn use-after-move ():i32
   (with (r (make-res 7))
-    (with (f (mfn ():i32 (return (get (addr-of r) id))))   ; mfn moves r in
-      (return (get (addr-of r) id)))))                     ; use after move -> error
+    (with (f (mfn ():i32 (return (get &r id))))   ; mfn moves r in
+      (return (get &r id)))))                     ; use after move -> error

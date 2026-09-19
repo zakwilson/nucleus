@@ -7,10 +7,10 @@
 
 (defn spawn-sh (script:StrView):!Process
   (let (c:Command (command "sh"))
-    (command-arg (addr-of c) "-c")
-    (command-arg (addr-of c) script)
-    (let (r:!Process (spawn (addr-of c)))
-      (drop (addr-of c))
+    (command-arg &c "-c")
+    (command-arg &c script)
+    (let (r:!Process (spawn &c))
+      (drop &c)
       (return r))))
 
 (defn main ():i32
@@ -18,24 +18,24 @@
         b:Process (unwrap (spawn-sh "sleep 0.2; exit 2"))
         c:Process (unwrap (spawn-sh "sleep 0.4; exit 3")))
     ; b is still running: try-wait must say so rather than block.
-    (if (unwrap (process-try-wait (addr-of b)))
+    (if (unwrap (process-try-wait &b))
       (print "try-wait: unexpectedly done\n")
       (print "try-wait: still running\n"))
     (let (i:i32 0)
       (while (< i 3)
         (match (wait-any)
-          ((ok ce) (print "reaped " (exit-code (addr-of ce 'status)) "\n"))
+          ((ok ce) (print "reaped " (exit-code (ref ce 'status)) "\n"))
           ((err e) (print "wait-any failed\n")))
         (set! i (+ i 1))))
     ; All three are gone; the handles must not try to reap them again.
-    (process-detach (addr-of a))
-    (process-detach (addr-of b))
-    (process-detach (addr-of c)))
+    (process-detach &a)
+    (process-detach &b)
+    (process-detach &c))
   ; kill: a child that would otherwise outlive the test.
   (let (p:Process (unwrap (spawn-sh "sleep 30")))
-    (match (process-kill (addr-of p) 9)
+    (match (process-kill &p 9)
       (ok
-       (match (process-wait (addr-of p))
+       (match (process-wait &p)
          ((ok st)
           (match st
             ((exited code) (print "killed: exited " code "\n"))

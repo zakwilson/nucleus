@@ -185,7 +185,7 @@ Manual construction via a struct literal is still valid, and was the only way be
 
 ### Iterators
 
-Both iterators are returned **by value** and alias the StrView's buffer. They must not outlive the StrView that produced them. Drive with `(addr-of it)` + `next`.
+Both iterators are returned **by value** and alias the StrView's buffer. They must not outlive the StrView that produced them. Drive with `&it` + `next`.
 
 | Function | Return type | Description |
 |----------|-------------|-------------|
@@ -194,7 +194,7 @@ Both iterators are returned **by value** and alias the StrView's buffer. They mu
 
 ```lisp
 (let (it:ByteIter (strview-bytes sv))
-  (doseq-iter (b (addr-of it))
+  (doseq-iter (b &it)
     (printf "%d\n" b)))
 ```
 
@@ -246,7 +246,7 @@ for otherwise; it validates both ends and returns a `!StrView`.
 | `strview-contains` | `(sv:StrView needle:StrView) → bool` | By-value `strview-contains-str`. |
 
 **Use the by-value forms with a literal.** Address-of is lvalue-only and a string
-literal is not an lvalue, so `(strview-starts-with (addr-of sv) "avr")` does not
+literal is not an lvalue, so `(strview-starts-with &sv "avr")` does not
 compile — the three by-reference predicates require the pattern to be a named
 local. `(strview-has-prefix sv "avr")` is the same test with the literal written
 where it reads. The by-reference forms remain the right choice when the caller
@@ -304,7 +304,7 @@ Two read-only protocol layers define the public string surface.
 |--------|-------------|
 | `byte-len` | Byte length. O(1) for `StrView`/`String`. |
 | `byte-at` | i-th byte, O(1). Errors `str-index-out-of-bounds` when `i ≥ byte-len`. |
-| `bytes` | Fresh byte iterator by value (associated type `ByteI`). Drive with `(addr-of it)` + `next`. |
+| `bytes` | Fresh byte iterator by value (associated type `ByteI`). Drive with `&it` + `next`. |
 | `as-view` | Borrow entire content as a `StrView` (two-word value, no copy). The bridge to all StrView helpers. |
 | `sub-bytes` | Sub-slice `[start, end)` as a borrowed `!StrView` (by value). See §3 for error conditions. |
 | `byte-find` | First byte index of a substring, or `none`. |
@@ -329,7 +329,7 @@ Two read-only protocol layers define the public string surface.
 | `char-count` | O(n) codepoint count. Never an unqualified `count` (byte vs. codepoint ambiguity). |
 | `str-empty?` | 1 when `byte-len = 0`, else 0. Cheap: no codepoint walk. |
 | `char-at` | nth codepoint, O(n). Errors `str-index-out-of-bounds` when `i ≥ char-count`. |
-| `chars` | Fresh char iterator by value (associated type `CharI`). Drive with `(addr-of it)` + `next`. |
+| `chars` | Fresh char iterator by value (associated type `CharI`). Drive with `&it` + `next`. |
 | `starts-with?` | 1 when self begins with the given `StrView` prefix (byte-level). |
 | `ends-with?` | 1 when self ends with the given `StrView` suffix (byte-level). |
 | `contains-str?` | 1 when self contains the given `StrView` needle. |
@@ -415,9 +415,9 @@ Two read-only protocol layers define the public string surface.
 
 (defn main ():i32
   (with (s:String (string-new))
-    (string-push-char (addr-of s) \H)
-    (string-push-char (addr-of s) \i)
-    (let (sv:StrView (string-as-view (addr-of s)))
+    (string-push-char &s \H)
+    (string-push-char &s \i)
+    (let (sv:StrView (string-as-view &s))
       (printf "%.*s\n" (unsafe/cast i32 (sv 'len)) (sv 'data))))
   0)
 ```
@@ -466,9 +466,9 @@ Constructs a `LineIter` that splits `sv` on `\n`, stripping any trailing `\r` fr
 
 ```lisp
 (let (sep:StrView ...)
-  (let (it:SplitIter (strview-split sv (addr-of sep)))
-    (while (not (split-iter-done (addr-of it)))
-      (let (seg:StrView (split-iter-next (addr-of it)))
+  (let (it:SplitIter (strview-split sv &sep))
+    (while (not (split-iter-done &it))
+      (let (seg:StrView (split-iter-next &it))
         (printf "%.*s\n" (unsafe/cast i32 (seg 'len)) (seg 'data))))))
 ```
 
@@ -480,7 +480,7 @@ Constructs a `LineIter` that splits `sv` on `\n`, stripping any trailing `\r` fr
 
 ```lisp
 (let (it:SplitIter (strview-split sv sep))
-  (doseq-iter (seg (addr-of it))
+  (doseq-iter (seg &it)
     (printf "%.*s\n" (unsafe/cast i32 (seg 'len)) (seg 'data))))
 ```
 
@@ -488,7 +488,7 @@ Before Stage 17 A3 they conformed to `(Iterator ptr)`, yielding a pointer into
 a `cur` scratch field, because `(Maybe StrView)` was believed uncompilable in
 the macro-expansion JIT module. It compiles; the scratch field, the niche
 encoding and the `doseq-split` macro that decoded it are all gone. `seg` is now
-a value, so a function taking `(ref StrView)` needs `(addr-of seg)`.
+a value, so a function taking `(ref StrView)` needs `&seg`.
 
 The done-flag API (`split-iter-done`/`split-iter-next`, `lines-iter-done`/
 `lines-iter-next`) is retained and yields identical segments. See
@@ -742,7 +742,7 @@ stripped) and `file-read-to-string` (`!String`, bytes, no UTF-8 validation).
 - **A `Symbol` is never freed, and interning costs a hash.** The table has no eviction, so a `Symbol` per line of input is a leak with a nice type. Intern names; view or copy everything else. A spelling test needs no intern at all — `(= sym "defstruct")` compares against the literal directly.
 - **`string-as-cstr` writes into the String.** It appends a NUL *past* `len` (reserving if needed) without counting it, so the String is unchanged for every other operation and repeated calls are free — but the returned `CStr` is invalidated by any subsequent append.
 - **`sub-bytes` and `strview-from-cstr` return by value.** Both returned heap-allocated `ptr:StrView` wrappers before Stage 17 A2, when returning a struct payload through `!T` was believed impossible; it is not. Neither allocates now, and neither needs freeing. Their `data` still borrows the source buffer, which must outlive the view.
-- **`SplitIter`/`LineIter` yield segments by value.** They conform to `(Iterator StrView)` since Stage 17 A3, so `doseq-iter` binds each segment as a `StrView` value — pass `(addr-of seg)` to anything taking `(ref StrView)`. The `*-iter-done`/`*-iter-next` pair is still available.
+- **`SplitIter`/`LineIter` yield segments by value.** They conform to `(Iterator StrView)` since Stage 17 A3, so `doseq-iter` binds each segment as a `StrView` value — pass `&seg` to anything taking `(ref StrView)`. The `*-iter-done`/`*-iter-next` pair is still available.
 - **`string-new-alloc` takes `(ref AllocHandle)`.** It copies the handle in; the caller retains ownership of the original.
 - **`CharIter` is lossless but substitutes U+FFFD.** Invalid UTF-8 bytes are never skipped silently — iteration always advances by at least one byte. Invalid bytes produce U+FFFD (the Unicode replacement character) as the yield value rather than an error, so iterating over a `CharIter` always terminates without an error path.
 - **Borrow lifetimes are unchecked.** `ByteIter`, `CharIter`, `SplitIter`, `LineIter`, and sub-views returned by `strview-sub-bytes` all hold raw pointers into their source buffer. There is no compile-time lifetime enforcement — the caller is responsible for keeping the source alive.

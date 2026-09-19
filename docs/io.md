@@ -199,7 +199,7 @@ the memcpy would buy no syscall.
   (dotimes (i n)
     (let (line:String (str "line " i \newline))
       (try (write-str bw (string-as-view line)))
-      (drop (addr-of line))))
+      (drop &line)))
   (return (buf-writer-close bw)))
 ```
 

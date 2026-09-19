@@ -110,7 +110,7 @@ Prefer the REPL when iteration speed matters more than reproducibility:
 - Redefining a `defn` is supported. The new body wins for every caller —
   including ones JIT'd before the redefinition — because calls go through a
   stable thunk that dispatches to the latest impl. The REPL prints
-  `redefined` to confirm. Captured pointers from `(addr-of foo)` also see
+  `redefined` to confirm. Captured pointers from `&foo` also see
   the latest. Redefining with a different signature is unsafe (existing
   callers were compiled against the old type); restart the session if the
   signature changes.

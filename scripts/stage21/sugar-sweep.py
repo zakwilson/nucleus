@@ -48,6 +48,7 @@ would change (the PK-5a entry in design/progress.md records the counts):
 Usage:
     sugar-sweep.py --dry-run FILE ...     # histogram + refusals, no writes
     sugar-sweep.py FILE ...               # rewrite in place
+    sugar-sweep.py --rules R1,R2 FILE ... # a subset (PK-5b's tests/ sweep)
 
 Idempotent: every output spelling is one no rule matches, and a form is
 rewritten bottom-up, so one pass is a fixed point; run twice to prove it.
@@ -304,19 +305,26 @@ def where_tyvars(params):
     return out
 
 
+ALL_RULES = frozenset("R1 R2 R3 R4 R5 R6 R7 R8".split())
+
+
 class Rewriter:
-    def __init__(self, src, path, stats, refusals, known):
+    def __init__(self, src, path, stats, refusals, known, rules=ALL_RULES):
         self.s = src
         self.path = path
         self.stats = stats
         self.refusals = refusals
         self.known = known
+        self.rules_on = rules
         self.tyvars = []          # one set per enclosing definer
         self.in_params = 0        # >0 inside a parameter list (a generic PATTERN)
         self.local_slot = 0       # >0 inside a let/with binding list or a cast operand
         self.changed = 0
 
     # -- helpers ------------------------------------------------------------
+
+    def on(self, rule):
+        return rule in self.rules_on
 
     def refuse(self, node, why):
         self.refusals.append((self.path, node.line, why))
@@ -415,6 +423,8 @@ class Rewriter:
 
     def r5(self, text, role, node):
         """R5 on one atom spelling; None when it does not apply."""
+        if not self.on("R5"):
+            return None
         m = PREFIX_RE.match(text)
         if not m:
             return None
@@ -513,7 +523,7 @@ class Rewriter:
         # R8 for the return slot: `(params) ?X` -> `(params):?X` when adjacent.
         gaps = {}
         for i, r in enumerate(roles):
-            if r == RET and i > 0 and texts[i] != self.orig(ch[i]) \
+            if r == RET and i > 0 and self.on("R8") and texts[i] != self.orig(ch[i]) \
                     and self.sigil_form(texts[i]):
                 gap = self.s[ch[i - 1].end:ch[i].start]
                 if gap.strip() == "":
@@ -522,7 +532,7 @@ class Rewriter:
         if role in STRUCTURAL:
             return self.splice(n, texts, gaps)
         if role == BINDER:
-            if len(ch) == 2 and self.is_plain_symbol(ch[0]) \
+            if len(ch) == 2 and self.on("R8") and self.is_plain_symbol(ch[0]) \
                     and texts[1] != self.orig(ch[1]) and self.sigil_form(texts[1]) \
                     and self.gaps_clean(n):
                 self.hit("R8 (name T) -> name:T")
@@ -538,8 +548,12 @@ class Rewriter:
         nargs = len(ch) - 1
         op = ch[1] if nargs >= 1 else None
 
-        if h == "addr-of":
-            if nargs == 1:
+        if h == "addr-of" and (self.on("R1") or self.on("R2")):
+            if nargs == 1 and not self.on("R1"):
+                pass
+            elif nargs == 2 and not self.on("R2"):
+                pass
+            elif nargs == 1:
                 if not self.gaps_clean(n):
                     self.refuse(n, "R1: comment inside the form")
                 elif op.kind == "atom" and op.text in LEGACY_MARKERS:
@@ -553,7 +567,7 @@ class Rewriter:
             else:
                 self.refuse(n, "R1/R2: addr-of with %d operands" % nargs)
 
-        if h == "ref" and nargs == 1 and not self.is_keyword(op):
+        if h == "ref" and nargs == 1 and self.on("R3") and not self.is_keyword(op):
             if op.kind == "rmacro" and op.prefix == "~@":
                 self.refuse(n, "R3: splice operand")
             elif not self.gaps_clean(n):
@@ -569,7 +583,7 @@ class Rewriter:
         if role == QQ:
             return self.splice(n, texts, gaps)
 
-        if h == "ptr" and nargs == 1 and not self.is_keyword(op) \
+        if h == "ptr" and nargs == 1 and self.on("R4") and not self.is_keyword(op) \
                 and op.kind in ("atom", "list", "rmacro", "fused"):
             if role != T:
                 self.refuse(n, "R4: (ptr X) outside a type slot")
@@ -581,7 +595,7 @@ class Rewriter:
         elif h == "ptr" and nargs >= 2 and not self.is_keyword(op):
             self.stats["skip: (ptr ptr …) multi-operand"] += 1
 
-        if h == "Maybe" and nargs == 1:
+        if h == "Maybe" and nargs == 1 and self.on("R6"):
             if role != T:
                 self.refuse(n, "R6: (Maybe X) outside a type slot")
             elif not self.gaps_clean(n):
@@ -596,7 +610,7 @@ class Rewriter:
                 self.hit("R6 (Maybe X) -> ?X")
                 return "?" + texts[1]
 
-        if h == "Result" and nargs == 2:
+        if h == "Result" and nargs == 2 and self.on("R7"):
             if ch[2].kind == "atom" and ch[2].text == "Err":
                 if role != T:
                     self.refuse(n, "R7: (Result X Err) outside a type slot")
@@ -766,7 +780,7 @@ class Rewriter:
             # `extend` reads a cell subject as a template application, so
             # `(extend ptr:Cents Ord)` must keep the colon spelling.
             roles[1] = NAME
-            if m > 1 and ch[1].kind == "atom" and PREFIX_RE.match(ch[1].text):
+            if m > 1 and self.on("R5") and ch[1].kind == "atom" and PREFIX_RE.match(ch[1].text):
                 self.refuse(ch[1], "R5: extend reads a cell subject as a template application")
         return roles
 
@@ -779,11 +793,11 @@ def parse_file(path, refusals):
         return None
 
 
-def rewrite_file(path, src, stats, refusals, known):
+def rewrite_file(path, src, stats, refusals, known, rules=ALL_RULES):
     tree = parse_file(path, refusals)
     if tree is None:
         return src, 0
-    rw = Rewriter(src, path, stats, refusals, known | defined_types(tree))
+    rw = Rewriter(src, path, stats, refusals, known | defined_types(tree), rules)
     out = []
     prev = 0
     for n in tree:
@@ -802,7 +816,16 @@ def main():
                     help="path prefix whose type definitions every swept file may "
                          "name (default: src/ and lib/); a file elsewhere knows "
                          "only its own definitions and the builtins")
+    ap.add_argument("--rules", default=None,
+                    help="comma-separated subset of R1..R8 to apply (default: all); "
+                         "PK-5b sweeps tests/ with R1,R2 so fixture spellings stay")
     a = ap.parse_args()
+    rules = ALL_RULES
+    if a.rules is not None:
+        rules = frozenset(r.strip().upper() for r in a.rules.split(","))
+        bad = rules - ALL_RULES
+        if bad:
+            sys.exit("unknown rule(s): %s" % ", ".join(sorted(bad)))
 
     stats = Counter()
     refusals = []
@@ -818,7 +841,7 @@ def main():
     total = 0
     for path in a.files:
         src = open(path).read()
-        new, changed = rewrite_file(path, src, stats, refusals, known)
+        new, changed = rewrite_file(path, src, stats, refusals, known, rules)
         total += changed
         if not a.dry_run and new != src:
             open(path, "w").write(new)

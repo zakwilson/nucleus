@@ -30,7 +30,7 @@
 ; operator. The C twin uses memcpy for the same reason.
 (defn f32-bits (x:f32):ui32
   (let (v:f32 x
-        p:ptr:f32 (addr-of v))
+        p:ptr:f32 &v)
     (return (deref (unsafe/cast ptr:ui32 p)))))
 
 ; A float literal at a `return` (the position that used to die "return type

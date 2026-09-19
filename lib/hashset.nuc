@@ -411,7 +411,7 @@
 ; ---------------------------------------------------------------------------
 ; Coll T (HashSetIter T) conformance. `iter` returns a fresh HashSetIter BY
 ; VALUE (alloca + hashset-iter + (deref …) — the spike pattern). Consumers
-; `addr-of` the result to drive `next`. (extend is placed here because
+; `&` the result to drive `next`. (extend is placed here because
 ; (HashSetIter T) must be declared before it can name the associated iterator.)
 ; ---------------------------------------------------------------------------
 (extend (HashSet T) (Coll T (HashSetIter T)))

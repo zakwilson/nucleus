@@ -1,7 +1,7 @@
 ; Stage 21 PK-1 (design/stage21-cleanup/pointer-kind-spellings.md §3): `&` reads
 ; as `ref` in both worlds. A standalone `&T` in a type slot is the canonical
 ; `(ref T)`; a value-position `&x` / `(ref x)` is the address-of and `(ref p 'f)`
-; the field address; the written-out `addr-of` still works until PK-5.
+; the field address; the written-out `addr-of` is retired (PK-5b).
 (import-use "stdio.h")
 (import-use vector)
 
@@ -32,7 +32,7 @@
     (conj v &a)
     (cb &n)
     (printf "%d %d %d %d\n" (hx &h) (via-alias ap) (unsafe/cast i32 (sizeof &Pt)) (area &a))
-    (printf "%d %d %d\n" (deref (ref a 'x)) (deref (ref a 'y)) (deref (addr-of a 'y)))
+    (printf "%d %d %d\n" (deref (ref a 'x)) (deref (ref a 'y)) (deref (ref a 'y)))
     (printf "%d %d %d\n" n ((as &Pt &a) 'x) (first-x v))
     (set! (deref (ref h 'tag)) 9)
     (printf "%d %d\n" (h 'tag) ((deref &ap) 'x))

@@ -97,17 +97,17 @@
     (return 0)))
 ")))
     (try (check (c 'ok?) "the literal-free program to compile"))
-    (try (check-not-contains (compiled-ir (addr-of c)) "@.str"))
-    (drop (addr-of c)))
+    (try (check-not-contains (compiled-ir &c) "@.str"))
+    (drop &c))
   ; The control. Without it the claim above is also satisfied by a compiler that
   ; emits no string table at all, which is the other way to get this wrong.
   (let (c:Compiled (try (compile-source "(import-use \"stdio.h\")
 (defn main ():i32 (return (puts c\"x\")))
 ")))
     (try (check (c 'ok?) "the one-literal program to compile"))
-    (try (check-contains (compiled-ir (addr-of c))
+    (try (check-contains (compiled-ir &c)
                          "@.str.0 = private unnamed_addr constant [2 x i8] c\"x\\00\""))
-    (drop (addr-of c)))
+    (drop &c))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -140,12 +140,12 @@
 ; content of some other constant.
 (defn str-table-marks (ir:StrView (marks (ref (Vector i32)))):void
   (let (needle:StrView "@.str."
-        n:usize (strview-byte-len (addr-of ir))
+        n:usize (strview-byte-len &ir)
         off:usize 0
         more:bool true)
     (while more
       (let (rest:StrView (strview-drop-bytes ir off))
-        (match (strview-find (addr-of rest) (addr-of needle))
+        (match (strview-find (ref rest) &needle)
           ((some at)
             (let (start:usize (+ off at)
                   a:usize (+ start 6)
@@ -172,16 +172,16 @@
   (let ((marks (Vector i32)) (vector-new)
         dead:i64 0
         first:i64 -1)
-    (str-table-marks ir (addr-of marks))
-    (let (n:usize (count (addr-of marks))
+    (str-table-marks ir &marks)
+    (let (n:usize (count &marks)
           i:usize 0)
       (while (< i n)
         ; Defined (bit 1) and named nowhere else (no bit 2).
-        (when (= (invoke (addr-of marks) i) 1)
+        (when (= (invoke &marks i) 1)
           (set! dead (+ dead 1))
           (when (< first 0) (set! first (as i64 i))))
         (set! i (+ i 1))))
-    (drop (addr-of marks))
+    (drop &marks)
     (when (> dead 0)
       (fail! path ": " dead " @.str constant(s) defined and referenced nowhere"
              ", first @.str." first)))
@@ -191,22 +191,22 @@
 ; module and says nothing about this, so the population is not the file count.
 (defn str-table-live-over (dir:StrView):!i64
   (let (d:DirEntries (try (read-dir dir))
-        n:usize (dir-count (addr-of d))
+        n:usize (dir-count &d)
         i:usize 0
         seen:i64 0)
     (while (< i n)
-      (let (nm:StrView (dir-name (addr-of d) i))
+      (let (nm:StrView (dir-name &d i))
         (when (strview-has-suffix nm ".nuc")
           (let (p:String (str dir "/" nm)
-                pv:StrView (string-as-view (addr-of p))
+                pv:StrView (string-as-view &p)
                 c:Compiled (try (compile-path pv)))
             (when (c 'ok?)
-              (try (check-str-table-live pv (compiled-ir (addr-of c))))
+              (try (check-str-table-live pv (compiled-ir &c)))
               (set! seen (+ seen 1)))
-            (drop (addr-of c))
-            (drop (addr-of p)))))
+            (drop &c)
+            (drop &p))))
       (set! i (+ i 1)))
-    (drop (addr-of d))
+    (drop &d)
     (return (ok seen))))
 
 ; One unit per directory: each is a ~40s corpus compile, and the suite shards
@@ -238,20 +238,20 @@
 ; containing them also satisfies; `check-no-line-zero` reads the `line` field.
 (deftest w4a-no-line-zero
   (let (d:DirEntries (try (read-dir "tests/fixtures"))
-        n:usize (dir-count (addr-of d))
+        n:usize (dir-count &d)
         i:usize 0
         seen:i64 0)
     (while (< i n)
-      (let (nm:StrView (dir-name (addr-of d) i))
+      (let (nm:StrView (dir-name &d i))
         (when (strview-has-suffix nm ".nuc")
           (let (p:String (str "tests/fixtures/" nm)
-                c:Compiled (try (compile-path (string-as-view (addr-of p)))))
-            (try (check-no-line-zero (addr-of c 'diags)))
+                c:Compiled (try (compile-path (string-as-view &p))))
+            (try (check-no-line-zero (ref c 'diags)))
             (set! seen (+ seen 1))
-            (drop (addr-of c))
-            (drop (addr-of p)))))
+            (drop &c)
+            (drop &p))))
       (set! i (+ i 1)))
-    (drop (addr-of d))
+    (drop &d)
     ; A sweep that swept nothing passes every assertion it never made.
     (try (check (> seen 0) "tests/fixtures to hold at least one .nuc")))
   (return (ok)))
@@ -283,19 +283,19 @@
     (while (!= cur null)
       (let (form:raw:Node (cur 'car)
             text:String (node-str form))
-        (match (read-all (string-as-view (addr-of text)))
+        (match (read-all (string-as-view &text))
           ((ok back)
             (when (or (= back null) (!= (back 'cdr) null))
               (fail! path ": form " k " printed as "
-                     (test-show (string-as-view (addr-of text)))
+                     (test-show (string-as-view &text))
                      "\n     which reads back as " (node-len back) " form(s), not 1"))
             (when (not (node-eq form (back 'car)))
               (fail! path ": form " k " does not survive print and re-read\n     "
-                     (test-show (string-as-view (addr-of text))))))
+                     (test-show (string-as-view &text)))))
           ((err e)
             (fail! path ": form " k " printed as text the reader refuses ("
-                   (e 'msg) ")\n     " (test-show (string-as-view (addr-of text))))))
-        (drop (addr-of text)))
+                   (e 'msg) ")\n     " (test-show (string-as-view &text)))))
+        (drop &text))
       (set! k (+ k 1))
       (set! cur (cur 'cdr))))
   (return (ok)))
@@ -304,16 +304,16 @@
 ; `refused` only when it is one of the six above, with the right code.
 (defn roundtrip-over (dir:StrView (refused (ref i64))):!i64
   (let (d:DirEntries (try (read-dir dir))
-        n:usize (dir-count (addr-of d))
+        n:usize (dir-count &d)
         i:usize 0
         seen:i64 0)
     (while (< i n)
-      (let (nm:StrView (dir-name (addr-of d) i))
+      (let (nm:StrView (dir-name &d i))
         (when (strview-has-suffix nm ".nuc")
           (let (p:String (str dir "/" nm)
-                pv:StrView (string-as-view (addr-of p))
+                pv:StrView (string-as-view &p)
                 text:String (try (read-file pv)))
-            (match (read-all (string-as-view (addr-of text)))
+            (match (read-all (string-as-view &text))
               ((ok forms)
                 (when (!= (reader-error-code-for nm) "")
                   (fail! pv ": expected the reader to refuse it with "
@@ -329,18 +329,18 @@
                     (fail! pv ": expected " want ", got " (err-name (e 'code))
                            " (line " (e 'line) ": " (e 'msg) ")"))
                   (set! (aref refused 0) (+ (aref refused 0) 1)))))
-            (drop (addr-of text))
-            (drop (addr-of p)))))
+            (drop &text)
+            (drop &p))))
       (set! i (+ i 1)))
-    (drop (addr-of d))
+    (drop &d)
     (return (ok seen))))
 
 (deftest reader-printer-roundtrip
   (let (refused:i64 0
-        a:i64 (try (roundtrip-over "tests/fixtures" (addr-of refused)))
-        b:i64 (try (roundtrip-over "examples" (addr-of refused)))
-        c:i64 (try (roundtrip-over "lib" (addr-of refused)))
-        d:i64 (try (roundtrip-over "src" (addr-of refused))))
+        a:i64 (try (roundtrip-over "tests/fixtures" &refused))
+        b:i64 (try (roundtrip-over "examples" &refused))
+        c:i64 (try (roundtrip-over "lib" &refused))
+        d:i64 (try (roundtrip-over "src" &refused)))
     ; A sweep that swept nothing passes every assertion it never made -- and the
     ; six refusals are part of what it must have reached.
     (try (check (> (+ a (+ b (+ c d))) 200) "the corpus to hold more than 200 readable files"))
@@ -368,29 +368,29 @@
 (defn f ((p (ref Pt))):i32 (return (p 'z)))
 (defn main ():i32 (return 0))
 "))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         sexp:String (str "(diagnostic (severity error) (file \"" pv "\") (line 2)"
                          " (message \"get: no field 'z' on struct 'Pt'\") (notes))\n")
         text:String (str pv ":2: error: get: no field 'z' on struct 'Pt'\n")
         s:Ran (try (nucleusc-raw "--diagnostics=sexp" pv))
         a:Ran (try (nucleusc-raw "" pv))
         b:Ran (try (nucleusc-raw "--diagnostics=text" pv)))
-    (try (check-golden (string-as-view (addr-of s 'err)) (string-as-view (addr-of sexp))))
-    (try (check-golden (string-as-view (addr-of a 'err)) (string-as-view (addr-of text))))
-    (try (check-golden (string-as-view (addr-of b 'err)) (string-as-view (addr-of text))))
-    (drop (addr-of b)) (drop (addr-of a)) (drop (addr-of s))
-    (drop (addr-of text)) (drop (addr-of sexp)) (drop (addr-of p)))
+    (try (check-golden (string-as-view (ref s 'err)) (string-as-view &sexp)))
+    (try (check-golden (string-as-view (ref a 'err)) (string-as-view &text)))
+    (try (check-golden (string-as-view (ref b 'err)) (string-as-view &text)))
+    (drop &b) (drop &a) (drop &s)
+    (drop &text) (drop &sexp) (drop &p))
 
   ; 2. A note is a FIELD. The text mode prints it as a `  note: ` line, which is
   ;    where it lives inside the message today — the split is the whole point,
   ;    and the note is checked against the record it belongs to rather than
   ;    found somewhere in the blob.
   (let (c:Compiled (try (compile-path "tests/fixtures/g5-noinit-ref.nuc")))
-    (try (check-note-at (addr-of c 'diags) "tests/fixtures/g5-noinit-ref.nuc" 12
+    (try (check-note-at (ref c 'diags) "tests/fixtures/g5-noinit-ref.nuc" 12
                         "give it an initializer, or declare it nullable"))
-    (try (check-eq-int (count-matching-lines (string-as-view (addr-of c 'raw)) "?*")
+    (try (check-eq-int (count-matching-lines (string-as-view (ref c 'raw)) "?*")
                        1 "a diagnostic on exactly one line"))
-    (drop (addr-of c)))
+    (drop &c))
 
   ; 3. Warnings are diagnostics too — a mode that structured only errors would
   ;    hand a reader a stream it cannot parse.
@@ -398,35 +398,35 @@
 (ns beta)
 (defn main ():i32 (return 0))
 "))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         c:Compiled (try (compile-path pv)))
-    (try (check-diagnostic (addr-of c 'diags) "warning" pv 2
+    (try (check-diagnostic (ref c 'diags) "warning" pv 2
                            "second ns directive"))
-    (drop (addr-of c))
-    (drop (addr-of p)))
+    (drop &c)
+    (drop &p))
 
   ; 4. A field carrying a `"` survives the round trip. The path is the reachable
   ;    one — a filename may hold any byte — and it exercises the same escaper
   ;    every field uses. `node-str` reprints the canonical form, so the check is
   ;    that lib/read.nuc read back the bytes the compiler wrote.
   (let (p:String (try (test-write-file "a\"b.nuc" "(defn main ():i32 (return (nope 1)))\n"))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         r:Ran (try (nucleusc-raw "--diagnostics=sexp" pv))
-        ev:StrView (string-as-view (addr-of r 'err)))
+        ev:StrView (string-as-view (ref r 'err)))
     (try (check-contains ev "a\\\"b.nuc"))
     (match (read-all ev)
       ((ok forms)
         (let (back:String (string-new)
               cur:raw:Node forms)
           (while (!= cur null)
-            (node-write (addr-of back) (cur 'car))
-            (str-into (addr-of back) "\n")
+            (node-write &back (cur 'car))
+            (str-into &back "\n")
             (set! cur (cur 'cdr)))
-          (try (check-golden (string-as-view (addr-of back)) ev))
-          (drop (addr-of back))))
+          (try (check-golden (string-as-view &back) ev))
+          (drop &back)))
       ((err e)
         (fail! "lib/read.nuc could not read the sexp diagnostic\n     line "
                (e 'line) ": " (e 'msg))))
-    (drop (addr-of r))
-    (drop (addr-of p)))
+    (drop &r)
+    (drop &p))
   (return (ok)))

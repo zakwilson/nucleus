@@ -30,30 +30,30 @@
   (let (c:Compiled (try (emit-checked dir flag path)))
     (when (!= (c 'exit) 1)
       (fail! flag " exited " (as i64 (c 'exit)) ", not 1\n     "
-             (test-show (string-as-view (addr-of c 'raw)))))
+             (test-show (string-as-view (ref c 'raw)))))
     ; A header mode that refuses must print no header: a consumer that reads
     ; stdout regardless would otherwise commit a file describing nothing.
-    (try (check-empty (compiled-ir (addr-of c))))
-    (let (a:String (diag-list-text (addr-of want 'diags))
-          b:String (diag-list-text (addr-of c 'diags)))
-      (when (!= (string-as-view (addr-of a)) (string-as-view (addr-of b)))
+    (try (check-empty (compiled-ir &c)))
+    (let (a:String (diag-list-text (ref want 'diags))
+          b:String (diag-list-text (ref c 'diags)))
+      (when (!= (string-as-view &a) (string-as-view &b))
         (fail! flag " and --emit-llvm disagree.\n     --emit-llvm:"
-               (string-as-view (addr-of a)) "\n     " flag ":"
-               (string-as-view (addr-of b))))
-      (drop (addr-of b))
-      (drop (addr-of a)))
-    (drop (addr-of c)))
+               (string-as-view &a) "\n     " flag ":"
+               (string-as-view &b)))
+      (drop &b)
+      (drop &a))
+    (drop &c))
   (return (ok)))
 
 (defn check-refused-alike (dir:StrView path:StrView line:i32 msg:StrView):!void
   (let (c:Compiled (try (emit-checked dir "--emit-llvm" path)))
     (when (!= (c 'exit) 1)
       (fail! "--emit-llvm exited " (as i64 (c 'exit)) ", not 1\n     "
-             (test-show (string-as-view (addr-of c 'raw)))))
-    (try (check-error-at (addr-of c 'diags) path line msg))
-    (try (check-header-mode-agrees dir path (addr-of c) "--emit-cheader"))
-    (try (check-header-mode-agrees dir path (addr-of c) "--emit-nuch"))
-    (drop (addr-of c)))
+             (test-show (string-as-view (ref c 'raw)))))
+    (try (check-error-at (ref c 'diags) path line msg))
+    (try (check-header-mode-agrees dir path &c "--emit-cheader"))
+    (try (check-header-mode-agrees dir path &c "--emit-nuch"))
+    (drop &c))
   (return (ok)))
 
 ; A one-form probe. Both tables below are a head and a shape, so the fixture is
@@ -61,8 +61,8 @@
 (defn check-probe-refused (src:StrView msg:StrView):!void
   (let (dir:StrView (try (test-scratch))
         p:String (try (test-write-file "probe.nuc" src)))
-    (try (check-refused-alike dir (string-as-view (addr-of p)) 1 msg))
-    (drop (addr-of p)))
+    (try (check-refused-alike dir (string-as-view &p) 1 msg))
+    (drop &p))
   (return (ok)))
 
 ; The boundary: a head `--emit-llvm` refuses that the header modes are right to
@@ -71,22 +71,22 @@
 (defn check-probe-llvm-only (src:StrView msg:StrView):!void
   (let (dir:StrView (try (test-scratch))
         p:String (try (test-write-file "probe.nuc" src))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         c:Compiled (try (emit-checked dir "--emit-llvm" pv)))
     (when (!= (c 'exit) 1)
       (fail! "--emit-llvm exited " (as i64 (c 'exit)) ", not 1"))
-    (try (check-error-at (addr-of c 'diags) pv 1 msg))
+    (try (check-error-at (ref c 'diags) pv 1 msg))
     (let (h:Compiled (try (emit-checked dir "--emit-cheader" pv))
           n:Compiled (try (emit-checked dir "--emit-nuch" pv)))
-      (try (check-silent (addr-of h) "--emit-cheader"))
-      (try (check-silent (addr-of n) "--emit-nuch"))
+      (try (check-silent &h "--emit-cheader"))
+      (try (check-silent &n "--emit-nuch"))
       (when (not (and (h 'ok?) (n 'ok?)))
         (fail! "the header modes must still succeed: cheader exit "
                (as i64 (h 'exit)) ", nuch exit " (as i64 (n 'exit))))
-      (drop (addr-of n))
-      (drop (addr-of h)))
-    (drop (addr-of c))
-    (drop (addr-of p)))
+      (drop &n)
+      (drop &h))
+    (drop &c)
+    (drop &p))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -217,11 +217,11 @@
 (deftest w9-header-validation-passes-valid-unit
   (let (dir:StrView (try (test-scratch))
         p:String (try (test-write-file "w38ok.nuc" (w38-ok-src)))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         h:String (try (emit-for-file dir "--emit-cheader" pv))
         n:String (try (emit-for-file dir "--emit-nuch" pv))
-        hv:StrView (string-as-view (addr-of h))
-        nv:StrView (string-as-view (addr-of n)))
+        hv:StrView (string-as-view &h)
+        nv:StrView (string-as-view &n))
     (try (check-line hv "int32_t w38z_zero(int32_t x) asm(\"w38z-zero\");"))
     (try (check-line hv "/* w38-tw: generic template; not exported */"))
     (try (check-line hv "typedef struct W38Box {"))
@@ -237,9 +237,9 @@
     (try (check-line nv "(defstruct W38Box (v (union as-int:i64 as-ptr:ptr)))"))
     (try (check-line nv "(declare w38-plain ((b (ptr W38Box))) :i64)"))
     (try (check-line nv "(declare main () :i32)"))
-    (drop (addr-of n))
-    (drop (addr-of h))
-    (drop (addr-of p)))
+    (drop &n)
+    (drop &h)
+    (drop &p))
   (return (ok)))
 
 ; And the boundary, asserted rather than assumed: a BODY error is out of scope by
@@ -431,11 +431,11 @@
   (try (check-source-accepts (w45-ok-src)))
   (let (dir:StrView (try (test-scratch))
         p:String (try (test-write-file "w45ok.nuc" (w45-ok-src)))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         h:String (try (emit-for-file dir "--emit-cheader" pv))
         n:String (try (emit-for-file dir "--emit-nuch" pv))
-        hv:StrView (string-as-view (addr-of h))
-        nv:StrView (string-as-view (addr-of n)))
+        hv:StrView (string-as-view &h)
+        nv:StrView (string-as-view &n))
     (try (check-line hv "    W45E_W45A = 0,"))
     (try (check-line hv "} w45ns__W45Pt;"))
     (try (check-line hv "    w45ns__W45U_w45_some = 0,"))
@@ -448,9 +448,9 @@
     (try (check-line nv "(defunion W45U (w45-some v:i32) w45-none)"))
     (try (check-line nv "(extern (w45-g i32))"))
     (try (check-line nv "(declare w45-add ((a i32) (b i32)) :i32)"))
-    (drop (addr-of n))
-    (drop (addr-of h))
-    (drop (addr-of p)))
+    (drop &n)
+    (drop &h)
+    (drop &p))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -468,31 +468,31 @@
 (defn check-ct-refused (src:StrView line:i32 msg:StrView note:StrView):!void
   (let (dir:StrView (try (test-scratch))
         p:String (try (test-write-file "probe.nuc" src))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         c:Compiled (try (emit-checked dir "--emit-llvm" pv)))
     (when (!= (c 'exit) 1)
       (fail! "--emit-llvm exited " (as i64 (c 'exit)) ", not 1\n     "
-             (test-show (string-as-view (addr-of c 'raw)))))
-    (try (check-error-at (addr-of c 'diags) pv line msg))
-    (try (check-note-at (addr-of c 'diags) pv line note))
+             (test-show (string-as-view (ref c 'raw)))))
+    (try (check-error-at (ref c 'diags) pv line msg))
+    (try (check-note-at (ref c 'diags) pv line note))
     ; The whole point of the located message is that it replaced LLVM's, so the
     ; raw output is asserted clean of it rather than merely "an error happened".
-    (let (raw:StrView (string-as-view (addr-of c 'raw)))
+    (let (raw:StrView (string-as-view (ref c 'raw)))
       (when (contains? raw "use of undefined value")
         (fail! "LLVM's own diagnostic still leaks:\n     " (test-show raw)))
       (when (contains? raw "IR parse error")
         (fail! "LLVM's own diagnostic still leaks:\n     " (test-show raw))))
     (let (h:Compiled (try (emit-checked dir "--emit-cheader" pv))
           n:Compiled (try (emit-checked dir "--emit-nuch" pv)))
-      (try (check-silent (addr-of h) "--emit-cheader"))
-      (try (check-silent (addr-of n) "--emit-nuch"))
+      (try (check-silent &h "--emit-cheader"))
+      (try (check-silent &n "--emit-nuch"))
       (when (not (and (h 'ok?) (n 'ok?)))
         (fail! "the header modes must still succeed: cheader exit "
                (as i64 (h 'exit)) ", nuch exit " (as i64 (n 'exit))))
-      (drop (addr-of n))
-      (drop (addr-of h)))
-    (drop (addr-of c))
-    (drop (addr-of p)))
+      (drop &n)
+      (drop &h))
+    (drop &c)
+    (drop &p))
   (return (ok)))
 
 ; §1.2, mode 2 verbatim.
@@ -527,31 +527,31 @@
 (defmacro xt (k) (if (= (xt-helper 3) 6) `(_* ~k 2) `0))
 (defn main ():i32 (return (xt 21)))
 "))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         c:Compiled (try (compile-path-for "riscv64-unknown-linux-gnu" pv)))
     (when (c 'ok?)
       (fail! "the cross-target compile succeeded\n     "
-             (test-show (string-as-view (addr-of c 'raw)))))
+             (test-show (string-as-view (ref c 'raw)))))
     (let (lowered:String (str "macro 'xt' needs the program's own 'xt-helper' at compile"
                               " time, and the program is lowered for"
                               " 'riscv64-unknown-linux-gnu'"))
-      (try (check-error-at (addr-of c 'diags) pv 3 (string-as-view (addr-of lowered))))
-      (drop (addr-of lowered)))
+      (try (check-error-at (ref c 'diags) pv 3 (string-as-view &lowered)))
+      (drop &lowered))
     (let (h:String (try (host-triple))
           want:String (str "while a macro body runs on the host, '"
-                           (string-as-view (addr-of h)) "'"))
-      (try (check-error-at (addr-of c 'diags) pv 3 (string-as-view (addr-of want))))
-      (drop (addr-of want))
-      (drop (addr-of h)))
-    (try (check-note-at (addr-of c 'diags) pv 3
+                           (string-as-view &h) "'"))
+      (try (check-error-at (ref c 'diags) pv 3 (string-as-view &want)))
+      (drop &want)
+      (drop &h))
+    (try (check-note-at (ref c 'diags) pv 3
            "a compile-time body may call only the compiler's own library"))
     ; The refusal replaced nothing here — it replaced a silent wrong answer — so
     ; what the raw stream must be clean of is LLVM, as for every unit above.
-    (let (raw:StrView (string-as-view (addr-of c 'raw)))
+    (let (raw:StrView (string-as-view (ref c 'raw)))
       (when (contains? raw "use of undefined value")
         (fail! "LLVM's own diagnostic leaked:\n     " (test-show raw))))
-    (drop (addr-of c))
-    (drop (addr-of p)))
+    (drop &c)
+    (drop &p))
   (return (ok)))
 
 ; The other half of §5.9: only a FLUSH is refused. A macro body whose every name
@@ -563,18 +563,18 @@
 (defmacro pick (xs) (node-at xs (as usize 1)))
 (defn main ():i32 (return (pick (_+ 7 0))))
 "))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         c:Compiled (try (compile-path-for "riscv64-unknown-linux-gnu" pv)))
     ; Not `check-silent`: a cross target with no sysroot warns about C header
     ; widths, which is suite-target's subject and not this one's.
-    (try (check-no-errors (addr-of c 'diags)))
+    (try (check-no-errors (ref c 'diags)))
     (when (not (c 'ok?))
       (fail! "a host-resolved macro body must still cross-compile\n     "
-             (test-show (string-as-view (addr-of c 'raw)))))
-    (try (check-line (compiled-ir (addr-of c))
+             (test-show (string-as-view (ref c 'raw)))))
+    (try (check-line (compiled-ir &c)
                      "target triple = \"riscv64-unknown-linux-gnu\""))
-    (drop (addr-of c))
-    (drop (addr-of p)))
+    (drop &c)
+    (drop &p))
   (return (ok)))
 
 ; L6 retired this refusal: a mirrored global is legal, and the unit that used to
@@ -711,18 +711,18 @@
 (macmap ((n v) `(defn ~n ():i32 (return ~v))) ~(s20-xrows))
 (defn main ():i32 (return (a)))
 "))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         c:Compiled (try (compile-path-for "riscv64-unknown-linux-gnu" pv)))
     (when (c 'ok?)
       (fail! "the cross-target compile succeeded\n     "
-             (test-show (string-as-view (addr-of c 'raw)))))
+             (test-show (string-as-view (ref c 'raw)))))
     (let (lowered:String (str "the computed argument '~(s20-xrows)' needs the program's own"
                               " 's20-xrows' at compile time, and the program is lowered for"
                               " 'riscv64-unknown-linux-gnu'"))
-      (try (check-error-at (addr-of c 'diags) pv 3 (string-as-view (addr-of lowered))))
-      (drop (addr-of lowered)))
-    (drop (addr-of c))
-    (drop (addr-of p)))
+      (try (check-error-at (ref c 'diags) pv 3 (string-as-view &lowered)))
+      (drop &lowered))
+    (drop &c)
+    (drop &p))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------

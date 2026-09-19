@@ -35,7 +35,7 @@
 
 ; Stage 13 CE-3: moving a struct-VALUE Drop binding into an `mfn` consumes the
 ; source, so a later use must be rejected as use-after-move — including through
-; `addr-of` (the only way to read a struct value's field). Compiling the fixture
+; `&x` (the only way to read a struct value's field). Compiling the fixture
 ; must FAIL with the use-after-move error. (The `examples/ce3-owning-closure.nuc`
 ; run covers the positive move/drop-once path; this proves the consume.)
 (reject "ce3-use-after-move-rejected" (file "tests/fixtures/ce3-use-after-move.nuc")
@@ -562,7 +562,7 @@
 (reject "g1-as-null-launder" (file "tests/fixtures/g1-as-null-launder.nuc") (line 7)
         (message "defvar: raw pointer where non-null (ref ...) is required"))
 (reject "g1-addr-of-const" (file "tests/fixtures/g1-addr-of-const.nuc") (line 4)
-        (message "defvar: addr-of: 'G1K' is a compile-time constant and has no address"))
+        (message "defvar: ref: 'G1K' is a compile-time constant and has no address"))
 (reject "g1-not-constant" (file "tests/fixtures/g1-not-constant.nuc") (line 5)
         (message "defvar: init must be a compile-time constant"))
 (accept "g2-anon-struct-field" (file "tests/fixtures/g2-anon-struct-field.nuc"))
@@ -633,7 +633,7 @@
 
 ; The two carve-outs, pinned as ACCEPTING here as well as by value above: a
 ; later, stricter walk that swallowed either would break programs that compile
-; today (examples/g1-const-init.nuc's forward `(addr-of g-later-target)` is the
+; today (examples/g1-const-init.nuc's forward `&g-later-target` is the
 ; in-tree instance of the first).
 (accept "g4-addr-of-forward-clean" (file "tests/fixtures/g4-addr-of-forward.nuc"))
 (accept "g4-laundered-call-clean" (file "tests/fixtures/g4-laundered-call.nuc"))

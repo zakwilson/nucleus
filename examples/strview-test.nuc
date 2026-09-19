@@ -13,7 +13,7 @@
   ; Build three views: two with identical content, one different.
   ; strview-from-cstr returns the view BY VALUE and allocates nothing (Stage 17
   ; A2), so these are plain `let` bindings — nothing to free — and the
-  ; (ref StrView)-taking helpers below are reached through `addr-of`.
+  ; (ref StrView)-taking helpers below are reached through `&`.
   (let (av:StrView (strview-from-cstr "hello")
         bv:StrView (strview-from-cstr "hello")
         cv:StrView (strview-from-cstr "world")

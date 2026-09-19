@@ -69,7 +69,7 @@ For tooling and interactive use, the REPL recognizes these forms in addition to 
 | `(forget sym)` / `(reset! sym)` | Drop a REPL-local definition so the name becomes unbound. For functions, also tears down the impl resource-tracker; the thunk module persists, so the function's signature is locked for the rest of the session (a redefinition with a different signature still requires a session restart). |
 | `(trace fn)` / `(untrace fn)` | Toggle entry/exit logging for a function. `trace` JITs a `@<name>.trace` shim with the same ABI, copies the current impl pointer into `@<name>.trace.impl`, and repoints `@<name>.tgt` at the shim. Args/returns are not pretty-printed — only `[trace] enter <name>` / `[trace] exit <name>`. Redefining a traced function silently disables tracing (the redef path overwrites `@<name>.tgt` with the new impl directly). |
 
-Functions can be redefined. Redefining a `defn` confirms with `redefined` (vs. `defined` for first sight) and the new body wins for **all** callers, including ones JIT'd before the redefinition. This is implemented by routing every call through a stable `@<name>` thunk that loads the latest impl pointer from `@<name>.tgt`; each definition is JIT'd as `@<name>.impl.<N>` under its own LLVM ORC resource tracker, and the previous tracker is removed on redefinition. `(addr-of foo)` returns the thunk address, so captured pointers also see the latest impl.
+Functions can be redefined. Redefining a `defn` confirms with `redefined` (vs. `defined` for first sight) and the new body wins for **all** callers, including ones JIT'd before the redefinition. This is implemented by routing every call through a stable `@<name>` thunk that loads the latest impl pointer from `@<name>.tgt`; each definition is JIT'd as `@<name>.impl.<N>` under its own LLVM ORC resource tracker, and the previous tracker is removed on redefinition. `&foo` returns the thunk address, so captured pointers also see the latest impl.
 
 Limitations:
 - Functions need explicit `(return ...)` to return values (same as batch mode).
@@ -104,7 +104,7 @@ Importing a `.nuch` with `defmethod` forms registers the methods for dispatch in
 | `defn` | Define a function. Supports `:rest` for variadic functions: `(defn name (a:t :rest xs:elem) ...)`. The rest parameter receives a `Node*` cons-list head built at the call site (so each call site emits `@make-cell` calls and the program must define a compatible `make-cell`). The element type annotation is documentation only — non-`ptr` args are `inttoptr`'d into `Node.car`. `:rest` functions are not directly C-callable; calling through a function pointer requires manually constructing the rest list. `:rest` must be the second-to-last param. Supports `:optional` for trailing parameters with defaults: `(defn name (a:t :optional (b:t default) ...) ...)`. Each `:optional` param must be a 2-element list `(name:type default-expr)`. Defaults are evaluated at the call site in the caller's scope (Common Lisp semantics), so non-constant defaults like `(next-counter)` produce a fresh value per call. Implicit casts apply to defaults. The compiled function has fixed maximum arity at the LLVM/C ABI level — calling through a function pointer or from C requires supplying every argument including the optional ones. `:optional` cannot be combined with `:rest`. A struct-by-value parameter or return is lowered to the platform C ABI (see [Passing and returning structs by value](#passing-and-returning-structs-by-value)). **Docstring**: if the first body form is a string literal AND there is at least one more form after it, that string is captured as the function's docstring (visible via `(doc fn)` and `(apropos)`); a function whose body is a single string literal is treated as returning the string, not as having a docstring. The same convention applies to `defmacro`. **Overloadable:** defining `defn` again with the same name but different parameter types adds a method — see [Polymorphism](#polymorphism-overloaded-defn-multimethods). | function definition |
 | `defconst` | Define a compile-time constant. The name behaves exactly like the integer literal it stands for: typed by its value (`i32`, or `i64` when it does not fit), adapting to the other operand of a binary operator, and rejected rather than wrapped where the value does not fit its slot. See [`defconst`](toplevel.md) and [Integer literals](types.md#integer-literals). | `#define` / `enum` constant |
 | `defenum` | Define an enumeration. Each member is a named integer literal (its 0-based ordinal) and adapts at a use site exactly as `defconst` does. | `enum` |
-| `defvar` | Define a global variable `(defvar name:type [init])`. The optional init is preferably a **compile-time constant**: a literal, a name bound by `defconst` / `defenum`, or a constant *expression* over them (arithmetic and bit operations, `(sizeof T)`, `(as T x)` including `(as CStr "…")`, `(char "x")`, `(addr-of other-global)`, and constant array/struct aggregates) — see [Global initializers](toplevel.md#global-initializers) for the full grammar, the overflow / divide-by-zero rules, and what is still refused. An initializer the compiler cannot fold runs at **startup, before `main`**, as an ordinary assignment — see [Run-time initializers](toplevel.md#run-time-initializers). An integer initializer, literal, named or folded, that does not fit the declared type is a compile-time error rather than a silent truncation. Omitted inits default to zero / `null` / `false`; a global of **aggregate** type (struct or union) with no init is zero-filled (`zeroinitializer`), so e.g. `(defvar g:MyStruct)` is valid. `set!` works on the result. The symbol is exported with default linkage and is visible to C consumers (`extern T name;`) and other Nucleus modules (`(extern name:type)`). Storage class specifiers (`static`, `register`, `thread_local`) are deferred — see `design/stage888-deferred.md`. | global variable definition |
+| `defvar` | Define a global variable `(defvar name:type [init])`. The optional init is preferably a **compile-time constant**: a literal, a name bound by `defconst` / `defenum`, or a constant *expression* over them (arithmetic and bit operations, `(sizeof T)`, `(as T x)` including `(as CStr "…")`, `(char "x")`, `&other-global`, and constant array/struct aggregates) — see [Global initializers](toplevel.md#global-initializers) for the full grammar, the overflow / divide-by-zero rules, and what is still refused. An initializer the compiler cannot fold runs at **startup, before `main`**, as an ordinary assignment — see [Run-time initializers](toplevel.md#run-time-initializers). An integer initializer, literal, named or folded, that does not fit the declared type is a compile-time error rather than a silent truncation. Omitted inits default to zero / `null` / `false`; a global of **aggregate** type (struct or union) with no init is zero-filled (`zeroinitializer`), so e.g. `(defvar g:MyStruct)` is valid. `set!` works on the result. The symbol is exported with default linkage and is visible to C consumers (`extern T name;`) and other Nucleus modules (`(extern name:type)`). Storage class specifiers (`static`, `register`, `thread_local`) are deferred — see `design/stage888-deferred.md`. | global variable definition |
 | `defstruct` | Define a struct type, or a parametric struct template when the name is a list: `(defstruct (Name T ...) ...)`. See [Parametric struct templates](#parametric-struct-templates-defstruct-name-t-). | `struct` |
 | `defunion` | Define a tagged sum `(defunion Name (arm field:type ...) ... bare-arm)` or a template `(defunion (Name T ...) ...)`. See [Unions and tagged sums](#unions-and-tagged-sums). | tagged `struct {int tag; union {...} payload;}` |
 | `defprotocol` | Define a protocol: a named set of required method signatures (types may mention `Self` and extra element parameters). Compile-time only; emits no code. See [Protocols](#protocols-defprotocol-and-extend) and [Parametric protocols](#parametric-protocols). | — (concept: interface/trait) |
@@ -158,7 +158,7 @@ store, argument, return) — narrow first, or assert with `(cast ref:T x)` (the
 audited C-boundary escape hatch). An elem-less bare `ptr` (`void*`) slot carries
 no contract and is exempt. Widening (non-null→raw, non-null→`?T`, raw↔`?T`) is
 always allowed. `none` is the null `?T` literal. Stack addresses are non-null by
-construction: `(addr-of x)`, `(addr-of p 'f)` (the 2-argument arity), `(alloca T)`, `(array T …)`, and a
+construction: `&x`, `(ref p 'f)` (the 2-argument arity), `(alloca T)`, `(array T …)`, and a
 `(S …)` compound literal all yield `(ref T)`.
 
 **Uniform `?` (Maybe)** (Stage 10 Phase F): `?T` ≡ `(Maybe T)` with no
@@ -222,11 +222,11 @@ Examples:
 - `(defstruct Outer (pt (struct x:i32 y:i32)) tag:i32)` — nested by value
 - `(defn take ((p (ptr (struct x:i32)))):i32  ...)` — parameter typed as anonymous struct pointer
 
-Use `(addr-of obj 'field)` to obtain a pointer to a field without loading it. Result is typed `(ptr field-type)`, so it composes with a `set!` place, `deref`, and further `addr-of` calls — e.g. `(set! ((addr-of o 'point) 'x) 10)` writes through a value-typed nested struct field.
+Use `(ref obj 'field)` to obtain a pointer to a field without loading it. Result is typed `(ptr field-type)`, so it composes with a `set!` place, `deref`, and further `ref` calls — e.g. `(set! ((ref o 'point) 'x) 10)` writes through a value-typed nested struct field.
 
 ### Passing and returning structs by value
 
-A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or return type is passed/returned per the **platform C ABI**, so it interoperates correctly with C functions compiled by the system `cc`. On x86_64 System V this means small structs are coerced into registers (e.g. `{i32,i32}` → one `i64`; a struct with a `float` field whose eightbyte also holds an integer → `i64`), and structs larger than 16 bytes are passed `byval` / returned via a hidden `sret` pointer. Other targets' ABIs are not yet implemented (see `design/stage8/platform.md`). A struct value is produced by dereferencing a pointer (`@p`) and consumed by storing the call result (`(set! (deref q) (make ...))`). Reading a field needs no pointer: `(get p 'f)`, `(p 'f)` and `(_get p 'f)` all accept a struct **value** — a by-value parameter, a `let`-bound struct local, or a call result read in place (`(get (mk 3) 'f)`). Writing one does: a member place and the 2-argument `addr-of` need the receiver's storage, so they take the same receivers 1-argument `addr-of` does — a binding, not a temporary (`(set! ((mk 3) 'f) 1)` is an error; bind it first). A function may take or return a struct defined anywhere in the same compilation unit or an import — struct definitions are registered before function signatures are resolved.
+A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or return type is passed/returned per the **platform C ABI**, so it interoperates correctly with C functions compiled by the system `cc`. On x86_64 System V this means small structs are coerced into registers (e.g. `{i32,i32}` → one `i64`; a struct with a `float` field whose eightbyte also holds an integer → `i64`), and structs larger than 16 bytes are passed `byval` / returned via a hidden `sret` pointer. Other targets' ABIs are not yet implemented (see `design/stage8/platform.md`). A struct value is produced by dereferencing a pointer (`@p`) and consumed by storing the call result (`(set! (deref q) (make ...))`). Reading a field needs no pointer: `(get p 'f)`, `(p 'f)` and `(_get p 'f)` all accept a struct **value** — a by-value parameter, a `let`-bound struct local, or a call result read in place (`(get (mk 3) 'f)`). Writing one does: a member place and the 2-argument `ref` need the receiver's storage, so they take the same receivers `&x` does — a binding, not a temporary (`(set! ((mk 3) 'f) 1)` is an error; bind it first). A function may take or return a struct defined anywhere in the same compilation unit or an import — struct definitions are registered before function signatures are resolved.
 
 ### C header struct ingestion
 
@@ -260,7 +260,7 @@ reinterpretation, exactly `cast`'s contract (no checking; the raw frontier):
 ```lisp
 (defstruct Scalar kind:i32 (data (union as-int:i64 as-float:f64)))
 (let (s:ptr:Scalar (alloca Scalar)
-      (d (ptr (union as-int:i64 as-float:f64))) (addr-of s 'data))
+      (d (ptr (union as-int:i64 as-float:f64))) (ref s 'data))
   (set! (d 'as-int) (cast i64 42))
   (d 'as-int))
 ```
@@ -777,7 +777,7 @@ not supported in v1.
 
   ; Repairing handler bound for (config-missing, i64): err → (ok 777).
   (let (fixed:i64 (cast i64 777))
-    (with-handler (config-missing i64 repair-from-ctx (cast ptr (addr-of fixed)))
+    (with-handler (config-missing i64 repair-from-ctx (cast ptr &fixed))
       (match (load-num (cast i64 0))
         ((ok v)  (printf "repaired: %lld\n" v))   ; prints: repaired: 777
         ((err e) (printf "err: %s\n" (err-name e))))))
@@ -810,7 +810,7 @@ behavior if policy declines:
 (deferror out-of-memory "allocation grow needs a policy decision")
 
 (defn grow (need:i64):i64
-  (match (signal out-of-memory i64 (cast ptr (addr-of need)))
+  (match (signal out-of-memory i64 (cast ptr &need))
     ((some sz) sz)               ; a handler supplied a size: continue
     (none      (cast i64 0))))   ; declined / no handler: the fallback
 
@@ -946,12 +946,13 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `and` | Short-circuit logical AND | `&&` |
 | `or` | Short-circuit logical OR | `\|\|` |
 | `cast` | Type cast | `(type)x` |
-| `ref` / `addr-of` | Take the address of a **variable** (`(ref x)`, which is what `&x` reads as) or of a **field** (`(ref s 'field)`, the 2-argument arity that replaced `.&`). One head in both worlds: `(ref T)` in a type slot is the non-null pointer type, and the type of `(ref x)` is `(ref (type-of x))`. `addr-of` is the older spelling, still accepted (Stage 21 PK-1). The two cannot collide: a variable address takes a bare symbol, a field address a receiver plus a quoted selector. | `&x` / `&s.field` |
+| `ref` | Take the address of a **variable** (`(ref x)`, which is what `&x` reads as) or of a **field** (`(ref s 'field)`, the 2-argument arity that replaced `.&`). One head in both worlds: `(ref T)` in a type slot is the non-null pointer type, and the type of `(ref x)` is `(ref (type-of x))`. The older spelling `addr-of` is retired and reserved — see [Special forms](special-forms.md). The two cannot collide: a variable address takes a bare symbol, a field address a receiver plus a quoted selector. | `&x` / `&s.field` |
 | `deref` | Dereference a pointer (reader sugar: `@p` → `(deref p)`) | `*p` |
 | `ptr-set!` | **Retired in Stage 16** — a targeted hard error: `'ptr-set!' was retired in Stage 16: set! takes a place`. Write `(set! (deref p) v)`. | — |
 | `ptr+` | Pointer arithmetic | `p + n` |
 | `.` | **Retired in Stage 16** — a targeted hard error: `'.' was retired in Stage 16: use 'get'`. Write `(get s 'field)`, or head position `(s 'field)`. | — |
 | `.&` | **Retired in Stage 16** — a targeted hard error naming the 2-argument `ref`: `(ref s 'field)`. | — |
+| `addr-of` | **Retired in Stage 21** (PK-5b) — a targeted hard error naming `&x` / `(ref x)` / `(ref p 'field)`, in the type slot too; see [Special forms](special-forms.md). | — |
 | `_get` | Low-level struct field read (compiler-internal primitive; bypasses any user `get` override). Prefer head position `(s 'field)` in ordinary code; use `_get` only where head position would dispatch wrongly (a user `get` method reading its own field, or a struct held in a special-form-named variable). | `s.field` |
 | `.set!` | **Retired in Stage 16** — a targeted hard error: `'.set!' was retired in Stage 16: set! takes a place`. Write `(set! (s 'field) v)`. | — |
 | `get` | Member access / field read: `(get s 'field)` ≡ `(s 'field)`; for a plain struct this lowers to the `_get` primitive (zero-overhead), overridable per type. See [Callable values](#callable-values-non-function-call-position) | `s.field` |
@@ -993,7 +994,7 @@ dangle. The compiler tracks aliases (its **taint**) at compile time and rejects
 escapes (see `design/stage10/lifecycle.md`):
 
 - Taint follows pointer **identity**: binding a tainted value (`let`/`with`/
-  `set!`), `cast`, `ptr+`, `addr-of`, and control-flow joins keep it.
+  `set!`), `cast`, `ptr+`, `ref`, and control-flow joins keep it.
   Copying the pointee **value** out (`deref`, field loads) clears it — so
   `(return (deref p))` and `(return (p 'count))` are fine.
 - **Escape sinks** (compile errors on tainted operands): `return` (explicit or
@@ -1603,7 +1604,7 @@ protocol system is static-only (no vtables) and `funcall-ptr-*` cannot call a
 | `libc-allocator` | `((h (ref AllocHandle))) -> (ref AllocHandle)` | initialise a caller-owned slot as a libc handle |
 | `arena-allocator` | `((h (ref AllocHandle))) -> (ref AllocHandle)` | initialise a caller-owned slot as an arena handle (state lives in `lib/arena.nuc`'s globals) |
 
-A collection stores the `AllocHandle` by value; use `(addr-of coll 'alloc-field)` to get
+A collection stores the `AllocHandle` by value; use `(ref coll 'alloc-field)` to get
 a `(ref AllocHandle)` into it for the helpers. Example: `examples/allocator-test.nuc`.
 
 **Why no static `(extend MyAlloc Allocator)` in the library.** A generic method

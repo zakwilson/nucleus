@@ -16,17 +16,17 @@
 ; The `asm("…")` label on `l`, or an empty view when the line carries none.
 (defn asm-label (l:StrView):StrView
   (let (m:StrView "asm(\"")
-    (match (strview-find (addr-of l) (addr-of m))
+    (match (strview-find &l &m)
       ((some at) (return (view-upto-byte (strview-drop-bytes l (+ at 5)) 34)))
       (none (return "")))))
 
 ; A name made only of punctuation is an operator that reached the C side; one
 ; ASCII letter is enough to say the emitter produced a name rather than a symbol.
 (defn has-ascii-letter? (sv:StrView):bool
-  (let (n:usize (strview-byte-len (addr-of sv))
+  (let (n:usize (strview-byte-len &sv)
         i:usize 0)
     (while (< i n)
-      (let (b:ui8 (test-byte-at (addr-of sv) i))
+      (let (b:ui8 (test-byte-at &sv i))
         (when (or (and (>= b 65) (<= b 90)) (and (>= b 97) (<= b 122)))
           (return true)))
       (set! i (+ i 1)))
@@ -36,7 +36,7 @@
 ; comes before it is the whole of what has to be legal C.
 (defn line-before-label (l:StrView):StrView
   (let (m:StrView " asm(\"")
-    (match (strview-find (addr-of l) (addr-of m))
+    (match (strview-find &l &m)
       ((some at) (return (strview-take-bytes l at)))
       (none (return l)))))
 
@@ -44,12 +44,12 @@
 ; hyphenated symbol — no hyphen may reach a C header.
 (defn check-no-stray-hyphen (text:StrView):!void
   (let (nl:StrView "\n"
-        it:SplitIter (strview-split (addr-of text) (addr-of nl)))
-    (while (not (split-iter-done (addr-of it)))
-      (let (l:StrView (split-iter-next (addr-of it)))
+        it:SplitIter (strview-split &text &nl))
+    (while (not (split-iter-done &it))
+      (let (l:StrView (split-iter-next &it))
         (when (not (strview-has-prefix l "/* Generated from"))
           (let (bare:StrView (line-before-label l))
-            (match (strview-find-byte (addr-of bare) 45)
+            (match (strview-find-byte &bare 45)
               ((some at) (fail! "hyphen survives into C: " (test-show l)))
               (none 0))))))
     (return (ok))))
@@ -59,16 +59,16 @@
 ; the mangling changes — which is the only way it can outlast the defect.
 (defn check-labels-defined ((l (ref CLib))):!void
   (let (syms:String (try (nm-defined (c-lib-obj l)))
-        sv:StrView (string-as-view (addr-of syms))
+        sv:StrView (string-as-view &syms)
         text:StrView (c-lib-text l)
         nl:StrView "\n"
-        it:SplitIter (strview-split (addr-of text) (addr-of nl)))
-    (while (not (split-iter-done (addr-of it)))
-      (let (lab:StrView (asm-label (split-iter-next (addr-of it))))
+        it:SplitIter (strview-split &text &nl))
+    (while (not (split-iter-done &it))
+      (let (lab:StrView (asm-label (split-iter-next &it)))
         (when (and (not (= lab "")) (not (has-line? sv lab)))
           (fail! "the header binds " (test-show lab)
                  ", which the object does not define\n     " (test-show sv)))))
-    (drop (addr-of syms))
+    (drop &syms)
     (return (ok))))
 
 ; ---------------------------------------------------------------------------
@@ -80,36 +80,36 @@
 ; the right thing once.
 (defn check-lib-headers-lack (needle:StrView):!void
   (let (d:DirEntries (try (read-dir "lib"))
-        n:usize (dir-count (addr-of d))
+        n:usize (dir-count &d)
         i:usize 0)
     (while (< i n)
-      (let (nm:StrView (dir-name (addr-of d) i))
+      (let (nm:StrView (dir-name &d i))
         (when (strview-has-suffix nm ".h")
           (let (p:String (str "lib/" nm)
-                t:String (try (read-file (string-as-view (addr-of p)))))
-            (when (strview-contains (string-as-view (addr-of t)) needle)
+                t:String (try (read-file (string-as-view &p))))
+            (when (strview-contains (string-as-view &t) needle)
               (fail! "lib/" nm " contains " (test-show needle)))
-            (drop (addr-of t))
-            (drop (addr-of p)))))
+            (drop &t)
+            (drop &p))))
       (set! i (+ i 1)))
-    (drop (addr-of d))
+    (drop &d)
     (return (ok))))
 
 ; Each of the space-separated `stems` names a committed `lib/<stem>.h` that a C
 ; program can include on its own.
 (defn check-lib-headers-compile (stems:StrView):!void
   (let (sp:StrView " "
-        it:SplitIter (strview-split (addr-of stems) (addr-of sp)))
-    (while (not (split-iter-done (addr-of it)))
-      (let (stem:StrView (split-iter-next (addr-of it))
+        it:SplitIter (strview-split &stems &sp))
+    (while (not (split-iter-done &it))
+      (let (stem:StrView (split-iter-next &it)
             src:String (str "#include \"" stem ".h\"\nint main(void){return 0;}\n")
             r:CcCheck (try (c-consumer-syntax
-                             "lib" (string-as-view (addr-of src)))))
+                             "lib" (string-as-view &src))))
         (when (not (r 'ok?))
           (fail! "lib/" stem ".h does not compile\n     "
-                 (test-show (string-as-view (addr-of r 'err)))))
-        (drop (addr-of r))
-        (drop (addr-of src))))
+                 (test-show (string-as-view (ref r 'err)))))
+        (drop &r)
+        (drop &src)))
     (return (ok))))
 
 ; ---------------------------------------------------------------------------
@@ -130,13 +130,13 @@
 
 (deftest w9-cheader-global-lines
   (let (l:CLib (try (c-lib "clib" (globals-lib)))
-        h:StrView (c-lib-text (addr-of l)))
+        h:StrView (c-lib-text &l))
     (try (check-line h "extern int32_t counter;"))
     (try (check-line h "extern const int32_t limit;"))
     (try (check-line h "extern int64_t tick_count asm(\"tick-count\");"))
     (try (check-line h "extern struct CRec rec_val asm(\"rec-val\");"))
     (try (check-not-contains h "hidden"))
-    (drop (addr-of l))
+    (drop &l)
     (return (ok))))
 
 ; A declaration the C compiler trusts and gets wrong is worse than an omission:
@@ -144,12 +144,12 @@
 ; would declare a pointer-sized object over a `(Maybe i32)` or an array.
 (deftest w9-cheader-global-skips-unspellable
   (let (l:CLib (try (c-lib "clib" (globals-lib)))
-        h:StrView (c-lib-text (addr-of l)))
+        h:StrView (c-lib-text &l))
     (try (check-contains
            h "/* m-skip: uses a defunion-template instance type; not exported */"))
     (try (check-contains
            h "/* arr-skip: type has no C spelling here; not exported */"))
-    (drop (addr-of l))
+    (drop &l)
     (return (ok))))
 
 ; The whole point, end to end: a C program reads the globals BY VALUE, calls in
@@ -159,7 +159,7 @@
 ; struct, and an incomplete tag then.
 (deftest w9-cheader-c-consumer-reads-globals
   (let (l:CLib (try (c-lib "clib" (globals-lib)))
-        out:String (try (c-lib-run (addr-of l)
+        out:String (try (c-lib-run &l
 "#include <stdio.h>
 #include \"clib.h\"
 int main(void) {
@@ -168,9 +168,9 @@ int main(void) {
     return 0;
 }
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "8 99 41 8 0\n"))
-    (drop (addr-of out))
-    (drop (addr-of l))
+    (try (check-eq (string-as-view &out) "8 99 41 8 0\n"))
+    (drop &out)
+    (drop &l)
     (return (ok))))
 
 ; A private global must not be reachable from C at all — asserted by a consumer
@@ -181,9 +181,9 @@ int main(void) {
                          (try (test-scratch))
                          "#include \"clib.h\"\nint main(void){ return hidden; }\n")))
     (when (r 'ok?) (fail! "a defvar- reached C"))
-    (try (check-contains (string-as-view (addr-of r 'err)) "hidden"))
-    (drop (addr-of r))
-    (drop (addr-of l))
+    (try (check-contains (string-as-view (ref r 'err)) "hidden"))
+    (drop &r)
+    (drop &l)
     (return (ok))))
 
 ; usize/ssize map to size_t/ptrdiff_t. Before W9 item 3 they fell through the
@@ -195,11 +195,11 @@ int main(void) {
 "(defvar kc:usize 3)
 (defn take (n:usize):ssize (return (as ssize n)))
 ")))
-    (let (h:StrView (string-as-view (addr-of t)))
+    (let (h:StrView (string-as-view &t))
       (try (check-line h "extern size_t kc;"))
       (try (check-line h "ptrdiff_t take(size_t n);"))
       (try (check-not-contains h "struct usize")))
-    (drop (addr-of t))
+    (drop &t)
     (return (ok))))
 
 ; ---------------------------------------------------------------------------
@@ -225,22 +225,22 @@ int main(void) {
 
 (deftest w9-cheader-no-stray-hyphen
   (let (l:CLib (try (c-lib "hlib" (idents-lib))))
-    (try (check-no-stray-hyphen (c-lib-text (addr-of l))))
-    (drop (addr-of l))
+    (try (check-no-stray-hyphen (c-lib-text &l)))
+    (drop &l)
     (return (ok))))
 
 ; A label appears only where it is load-bearing, so a C-legal library still gets
 ; a portable header: `plain` has none, `my-bump` does.
 (deftest w9-cheader-label-only-where-needed
   (let (l:CLib (try (c-lib "hlib" (idents-lib)))
-        h:StrView (c-lib-text (addr-of l)))
+        h:StrView (c-lib-text &l))
     (try (check-line h "int32_t my_bump(int32_t n_arg) asm(\"my-bump\");"))
     (try (check-line h "int32_t plain(int32_t n);"))
     (try (check-line h "#define BUF_LEN 4"))
     (try (check-contains h "int32_t xs[BUF_LEN];"))
     (try (check-contains h "My_Uni_uni_b = 1"))
     (try (check-contains h "My_Col_my_green = 1"))
-    (drop (addr-of l))
+    (drop &l)
     (return (ok))))
 
 ; End to end. Every sanitized kind goes through a real link: the label on a call
@@ -249,7 +249,7 @@ int main(void) {
 ; and an enum member.
 (deftest w9-cheader-c-consumer-hyphenated-names
   (let (l:CLib (try (c-lib "hlib" (idents-lib)))
-        out:String (try (c-lib-run (addr-of l)
+        out:String (try (c-lib-run &l
 "#include <stdio.h>
 #include \"hlib.h\"
 int main(void) {
@@ -262,23 +262,23 @@ int main(void) {
     return 0;
 }
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "2 105 41 1 3 9 7\n"))
-    (drop (addr-of out))
-    (drop (addr-of l))
+    (try (check-eq (string-as-view &out) "2 105 41 1 3 9 7\n"))
+    (drop &out)
+    (drop &l)
     (return (ok))))
 
 ; The label must name what the object actually defines — the reason a sanitized
 ; name alone is not enough.
 (deftest w9-cheader-symbols-keep-hyphens
   (let (l:CLib (try (c-lib "hlib" (idents-lib)))
-        syms:String (try (nm-defined (c-lib-obj (addr-of l))))
-        sv:StrView (string-as-view (addr-of syms)))
+        syms:String (try (nm-defined (c-lib-obj &l)))
+        sv:StrView (string-as-view &syms))
     (try (check-line sv "my-bump"))
     (try (check-line sv "my-count"))
     (try (check-not-contains sv "my_bump"))
-    (try (check-labels-defined (addr-of l)))
-    (drop (addr-of syms))
-    (drop (addr-of l))
+    (try (check-labels-defined &l))
+    (drop &syms)
+    (drop &l)
     (return (ok))))
 
 ; ---------------------------------------------------------------------------
@@ -337,11 +337,11 @@ int main(void) {
     (set! (p 'x) n)
     (return (p 'x))))
 ")))
-    (try (check-line (string-as-view (addr-of use)) "#include \"w37base.h\""))
-    (try (check-not-contains (string-as-view (addr-of quiet)) "w37base.h"))
-    (drop (addr-of quiet))
-    (drop (addr-of use))
-    (drop (addr-of base))
+    (try (check-line (string-as-view &use) "#include \"w37base.h\""))
+    (try (check-not-contains (string-as-view &quiet) "w37base.h"))
+    (drop &quiet)
+    (drop &use)
+    (drop &base)
     (return (ok))))
 
 ; The include is load-bearing, not decorative: the same consumer against a
@@ -352,26 +352,26 @@ int main(void) {
         use:CLib (try (c-lib "w37use" (w37-use)))
         stripped:String (string-new)
         nl:StrView "\n"
-        text:StrView (c-lib-text (addr-of use))
-        it:SplitIter (strview-split (addr-of text) (addr-of nl)))
-    (while (not (split-iter-done (addr-of it)))
-      (let (l:StrView (split-iter-next (addr-of it)))
+        text:StrView (c-lib-text &use)
+        it:SplitIter (strview-split &text &nl))
+    (while (not (split-iter-done &it))
+      (let (l:StrView (split-iter-next &it))
         (when (not (strview-contains l "w37base.h"))
-          (str-into (addr-of stripped) l "\n"))))
+          (str-into &stripped l "\n"))))
     (let (sp:String (try (write-into dir "stripped.h"
-                                     (string-as-view (addr-of stripped))))
+                                     (string-as-view &stripped)))
           r:CcCheck (try (c-consumer-syntax dir
 "#include \"stripped.h\"
 int main(void) { Seg s = seg_make(5); struct Pt p = s.a; return p.x; }
 ")))
       (when (r 'ok?) (fail! "stripping the include did not break the consumer"))
-      (try (check-contains (string-as-view (addr-of r 'err))
+      (try (check-contains (string-as-view (ref r 'err))
                            "field has incomplete type 'struct Pt'"))
-      (drop (addr-of r))
-      (drop (addr-of sp)))
-    (drop (addr-of stripped))
-    (drop (addr-of use))
-    (drop (addr-of base))
+      (drop &r)
+      (drop &sp))
+    (drop &stripped)
+    (drop &use)
+    (drop &base)
     (return (ok))))
 
 ; End to end, which is the only thing that can tell a correct include from a
@@ -380,14 +380,14 @@ int main(void) { Seg s = seg_make(5); struct Pt p = s.a; return p.x; }
 (deftest w9-cheader-imported-type-c-consumer
   (let (base:CLib (try (c-lib "w37base" (w37-base)))
         use:CLib (try (c-lib "w37use" (w37-use)))
-        parts:String (str (c-lib-obj (addr-of use)) " " (c-lib-obj (addr-of base)))
+        parts:String (str (c-lib-obj &use) " " (c-lib-obj &base))
         out:String (try (c-consumer-run (w37-main)
-                                        (string-as-view (addr-of parts)))))
-    (try (check-eq (string-as-view (addr-of out)) "5 1 2\n"))
-    (drop (addr-of out))
-    (drop (addr-of parts))
-    (drop (addr-of use))
-    (drop (addr-of base))
+                                        (string-as-view &parts))))
+    (try (check-eq (string-as-view &out) "5 1 2\n"))
+    (drop &out)
+    (drop &parts)
+    (drop &use)
+    (drop &base)
     (return (ok))))
 
 ; The reported artifact itself: a COMMITTED header that names an imported user
@@ -406,8 +406,8 @@ int main(void) {
 ")))
     (when (not (r 'ok?))
       (fail! "lib/string.h is not usable\n     "
-             (test-show (string-as-view (addr-of r 'err)))))
-    (drop (addr-of r))
+             (test-show (string-as-view (ref r 'err)))))
+    (drop &r)
     (return (ok))))
 
 ; ---------------------------------------------------------------------------
@@ -441,7 +441,7 @@ int main(void) {
 ; is decodable.
 (deftest w9-cheader-niche-scalar-not-declared
   (let (l:CLib (try (c-lib "w44niche" (w44-lib)))
-        h:StrView (c-lib-text (addr-of l)))
+        h:StrView (c-lib-text &l))
     (try (check-not-contains h "struct _BANG"))
     (try (check-not-contains h "struct _QMARK"))
     (try (check-contains
@@ -450,7 +450,7 @@ int main(void) {
            h "/* w44-takes: uses an error-union or option type; not exported */"))
     (try (check-contains
            h "/* g-w44-flag: uses an error-union or option type; not exported */"))
-    (drop (addr-of l))
+    (drop &l)
     (return (ok))))
 
 ; The other side of the ruling: a pointer niche is ABI-identical to a C `T*`
@@ -459,7 +459,7 @@ int main(void) {
 ; plausible one.
 (deftest w9-cheader-niche-pointer-still-callable
   (let (l:CLib (try (c-lib "w44niche" (w44-lib)))
-        out:String (try (c-lib-run (addr-of l)
+        out:String (try (c-lib-run &l
 "#include <stdio.h>
 #include \"w44niche.h\"
 int main(void) {
@@ -469,9 +469,9 @@ int main(void) {
     return 0;
 }
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "7 9 7\n"))
-    (drop (addr-of out))
-    (drop (addr-of l))
+    (try (check-eq (string-as-view &out) "7 9 7\n"))
+    (drop &out)
+    (drop &l)
     (return (ok))))
 
 ; Item 37 interaction: a type named ONLY by a refused declaration is not a
@@ -488,11 +488,11 @@ int main(void) {
   (when (< (p 'x) 0) (return (err w44-only-bad)))
   (return (ok (unsafe/cast ui8 1))))
 ")))
-    (let (h:StrView (string-as-view (addr-of t)))
+    (let (h:StrView (string-as-view &t))
       (try (check-not-contains h "w44base.h"))
       (try (check-not-contains h "struct W44Only")))
-    (drop (addr-of t))
-    (drop (addr-of base))
+    (drop &t)
+    (drop &base)
     (return (ok))))
 
 ; The reported artefact: 14 declarations across 5 committed headers carried the
@@ -502,9 +502,9 @@ int main(void) {
   (try (check-lib-headers-lack "struct _BANG"))
   (try (check-lib-headers-lack "struct _QMARK"))
   (let (t:String (try (read-file "lib/string.h")))
-    (try (check-contains (string-as-view (addr-of t))
+    (try (check-contains (string-as-view &t)
                          "struct String string_from_cstr_unchecked"))
-    (drop (addr-of t)))
+    (drop &t))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -537,21 +537,21 @@ int main(void) {
 ; same reason: `type-name-to-c` answers `struct NAME` for a union name too.
 (deftest w9-cheader-struct-tagged
   (let (l:CLib (try (c-lib "tlib" (tag-lib)))
-        h:StrView (c-lib-text (addr-of l)))
+        h:StrView (c-lib-text &l))
     (try (check-line h "typedef struct Rec {"))
     (try (check-line h "typedef struct Holder {"))
     (try (check-line h "typedef struct Shape {"))
-    (drop (addr-of l))
+    (drop &l)
     (return (ok))))
 
 ; A builtin scalar is not a struct. `Char` lowers to i32, so the C spelling is
 ; uint32_t.
 (deftest w9-cheader-builtin-scalar-not-struct
   (let (l:CLib (try (c-lib "tlib" (tag-lib)))
-        h:StrView (c-lib-text (addr-of l)))
+        h:StrView (c-lib-text &l))
     (try (check-line h "uint32_t ch_echo(uint32_t c) asm(\"ch-echo\");"))
     (try (check-not-contains h "struct Char"))
-    (drop (addr-of l))
+    (drop &l)
     (return (ok))))
 
 ; A header that merely parses could still disagree about layout, and `sum`/
@@ -559,7 +559,7 @@ int main(void) {
 ; nested field and passes one by value.
 (deftest w9-cheader-struct-by-value-c-consumer
   (let (l:CLib (try (c-lib "tlib" (tag-lib)))
-        out:String (try (c-lib-run (addr-of l)
+        out:String (try (c-lib-run &l
 "#include <stdio.h>
 #include \"tlib.h\"
 int main(void) {
@@ -570,10 +570,10 @@ int main(void) {
     return 0;
 }
 ")))
-    (try (check-eq (string-as-view (addr-of out))
+    (try (check-eq (string-as-view &out)
                    "sum=107 hold=309 ch=128512\n"))
-    (drop (addr-of out))
-    (drop (addr-of l))
+    (drop &out)
+    (drop &l)
     (return (ok))))
 
 ; No committed header may reintroduce an anonymous typedef, which is the defect
@@ -604,8 +604,8 @@ int main(void) {
 (defn scale (a:i32 k:i32):i32 (return (* a k)))
 (defn = (a:Pt b:Pt):bool
   (let (la:Pt a lb:Pt b)
-    (return (if (and (= ((addr-of la) 'x) ((addr-of lb) 'x))
-                     (= ((addr-of la) 'y) ((addr-of lb) 'y))) true false))))
+    (return (if (and (= (&la 'x) (&lb 'x))
+                     (= (&la 'y) (&lb 'y))) true false))))
 (defn solo (n:i32):i32 (return (+ n 1)))
 "))
 
@@ -613,7 +613,7 @@ int main(void) {
 ; bare name and needs no label at all.
 (deftest w9-cheader-overload-distinct-symbols
   (let (l:CLib (try (c-lib "ovlib" (ovl-lib)))
-        h:StrView (c-lib-text (addr-of l)))
+        h:StrView (c-lib-text &l))
     (try (check-line
            h "int32_t scale_pPt_i32(struct Pt* p, int32_t k) asm(\"scale.pPt.i32\");"))
     (try (check-line
@@ -621,18 +621,18 @@ int main(void) {
     (try (check-line
            h "bool eq_Pt_Pt(struct Pt a, struct Pt b) asm(\"eq.Pt.Pt\");"))
     (try (check-line h "int32_t solo(int32_t n);"))
-    (drop (addr-of l))
+    (drop &l)
     (return (ok))))
 
 (deftest w9-cheader-symbol-defined
   (let (l:CLib (try (c-lib "ovlib" (ovl-lib))))
-    (try (check-labels-defined (addr-of l)))
-    (drop (addr-of l))
+    (try (check-labels-defined &l))
+    (drop &l)
     (return (ok))))
 
 (deftest w9-cheader-overload-c-consumer
   (let (l:CLib (try (c-lib "ovlib" (ovl-lib)))
-        out:String (try (c-lib-run (addr-of l)
+        out:String (try (c-lib-run &l
 "#include <stdio.h>
 #include \"ovlib.h\"
 int main(void) {
@@ -643,9 +643,9 @@ int main(void) {
     return 0;
 }
 ")))
-    (try (check-eq (string-as-view (addr-of out)) "a=70 b=42 eq=1 solo=42\n"))
-    (drop (addr-of out))
-    (drop (addr-of l))
+    (try (check-eq (string-as-view &out) "a=70 b=42 eq=1 solo=42\n"))
+    (drop &out)
+    (drop &l)
     (return (ok))))
 
 ; An operator's C name sanitized to `_` is the defect's signature — two of them
@@ -655,25 +655,25 @@ int main(void) {
 (deftest w9-cheader-no-operator-c-name
   (try (check-lib-headers-lack " _("))
   (let (d:DirEntries (try (read-dir "lib"))
-        n:usize (dir-count (addr-of d))
+        n:usize (dir-count &d)
         i:usize 0
         nl:StrView "\n")
     (while (< i n)
-      (let (nm:StrView (dir-name (addr-of d) i))
+      (let (nm:StrView (dir-name &d i))
         (when (strview-has-suffix nm ".h")
           (let (p:String (str "lib/" nm)
-                t:String (try (read-file (string-as-view (addr-of p))))
-                tv:StrView (string-as-view (addr-of t))
-                it:SplitIter (strview-split (addr-of tv) (addr-of nl)))
-            (while (not (split-iter-done (addr-of it)))
-              (let (lab:StrView (asm-label (split-iter-next (addr-of it))))
+                t:String (try (read-file (string-as-view &p)))
+                tv:StrView (string-as-view &t)
+                it:SplitIter (strview-split &tv &nl))
+            (while (not (split-iter-done &it))
+              (let (lab:StrView (asm-label (split-iter-next &it)))
                 (when (and (not (= lab "")) (not (has-ascii-letter? lab)))
                   (fail! "lib/" nm " binds the operator label "
                          (test-show lab)))))
-            (drop (addr-of t))
-            (drop (addr-of p)))))
+            (drop &t)
+            (drop &p))))
       (set! i (+ i 1)))
-    (drop (addr-of d)))
+    (drop &d))
   (return (ok)))
 
 ; The four headers this item takes from broken to compiling.
@@ -702,7 +702,7 @@ int main(void) {
 (defn plain (b:(ref Box)):i32 (return (+ (b 'class) (b 'signed))))
 (defn bump (v:class):class
   (let (l:class v)
-    (set! ((addr-of l) 'x) (+ ((addr-of l) 'x) 1))
+    (set! (&l 'x) (+ (&l 'x) 1))
     (return l)))
 "))
 
@@ -724,7 +724,7 @@ int main(void) {
 ; parses and then names a type it never defines.
 (deftest w9-cheader-reserved-escaped
   (let (l:CLib (try (c-lib "kwlib" (kw-lib)))
-        h:StrView (c-lib-text (addr-of l)))
+        h:StrView (c-lib-text &l))
     (try (check-line h "    int32_t class_;"))
     (try (check-line h "    int32_t signed_;"))
     (try (check-line h "typedef struct class_ {"))
@@ -733,37 +733,37 @@ int main(void) {
     (try (check-line h "int32_t union_(int32_t a, int32_t b) asm(\"union\");"))
     (try (check-line h "int32_t xor_(int32_t a, int32_t default_) asm(\"xor\");"))
     (try (check-line h "int32_t plain(struct Box* b);"))
-    (drop (addr-of l))
+    (drop &l)
     (return (ok))))
 
 ; A prefixed member is already an identifier; escaping the fragment would rename
 ; `Kind_default` for no reason. The escape belongs on the join.
 (deftest w9-cheader-reserved-join-not-fragment
   (let (l:CLib (try (c-lib "kwlib" (kw-lib))))
-    (try (check-line (c-lib-text (addr-of l)) "    Kind_default = 2"))
-    (drop (addr-of l))
+    (try (check-line (c-lib-text &l) "    Kind_default = 2"))
+    (drop &l)
     (return (ok))))
 
 ; Renaming the C identifier must not move the symbol.
 (deftest w9-cheader-reserved-symbol-defined
   (let (l:CLib (try (c-lib "kwlib" (kw-lib)))
-        syms:String (try (nm-defined (c-lib-obj (addr-of l)))))
-    (try (check-line (string-as-view (addr-of syms)) "delete"))
-    (try (check-labels-defined (addr-of l)))
-    (drop (addr-of syms))
-    (drop (addr-of l))
+        syms:String (try (nm-defined (c-lib-obj &l))))
+    (try (check-line (string-as-view &syms) "delete"))
+    (try (check-labels-defined &l))
+    (drop &syms)
+    (drop &l)
     (return (ok))))
 
 (deftest w9-cheader-reserved-c-consumer
   (let (l:CLib (try (c-lib "kwlib" (kw-lib)))
         src:String (kw-consumer "#include \"kwlib.h\"\n")
-        out:String (try (c-lib-run (addr-of l)
-                                   (string-as-view (addr-of src)))))
-    (try (check-eq (string-as-view (addr-of out))
+        out:String (try (c-lib-run &l
+                                   (string-as-view &src))))
+    (try (check-eq (string-as-view &out)
                    "u=9 x=5 p=7 n=9 k=2 d=41 s=7\n"))
-    (drop (addr-of out))
-    (drop (addr-of src))
-    (drop (addr-of l))
+    (drop &out)
+    (drop &src)
+    (drop &l)
     (return (ok))))
 
 ; Why the table carries C++'s keywords too: a generated header is routinely read
@@ -774,17 +774,17 @@ int main(void) {
   (let (dir:StrView (try (test-scratch))
         l:CLib (try (c-lib "kwlib" (kw-lib)))
         src:String (kw-consumer "extern \"C\" {\n#include \"kwlib.h\"\n}")
-        p:String (try (write-into dir "main.cpp" (string-as-view (addr-of src))))
-        parts:String (str (string-as-view (addr-of p)) " "
-                          (c-lib-obj (addr-of l)))
-        out:String (try (cxx-link-run dir (string-as-view (addr-of parts)))))
-    (try (check-eq (string-as-view (addr-of out))
+        p:String (try (write-into dir "main.cpp" (string-as-view &src)))
+        parts:String (str (string-as-view &p) " "
+                          (c-lib-obj &l))
+        out:String (try (cxx-link-run dir (string-as-view &parts))))
+    (try (check-eq (string-as-view &out)
                    "u=9 x=5 p=7 n=9 k=2 d=41 s=7\n"))
-    (drop (addr-of out))
-    (drop (addr-of parts))
-    (drop (addr-of p))
-    (drop (addr-of src))
-    (drop (addr-of l))
+    (drop &out)
+    (drop &parts)
+    (drop &p)
+    (drop &src)
+    (drop &l)
     (return (ok))))
 
 ; ---------------------------------------------------------------------------
@@ -809,22 +809,22 @@ int main(void) {
 ; a purely negative check.
 (deftest l8-cheader-omits-closure
   (let (h:String (try (fixture-cheader (closure-fixture)))
-        hv:StrView (string-as-view (addr-of h)))
+        hv:StrView (string-as-view &h))
     (try (check-line hv "} __vfn_env_0;"))
     (try (check-line hv
       "/* apply-closure: exposes a closure or type-erased box type; not C-callable, omitted */"))
     (try (check-not-match hv "*apply-closure(*"))
     (try (check-not-match hv "*apply_closure(*"))
-    (drop (addr-of h)))
+    (drop &h))
   (return (ok)))
 
 ; The plain fn-pointer defn IS emitted, under its sanitized C name and with the
 ; asm label binding it back to `@plain-fn` (W9 item 4).
 (deftest l8-cheader-emits-fnptr
   (let (h:String (try (fixture-cheader (closure-fixture))))
-    (try (check-line (string-as-view (addr-of h))
+    (try (check-line (string-as-view &h)
                      "int32_t plain_fn(int32_t x, int32_t y) asm(\"plain-fn\");"))
-    (drop (addr-of h)))
+    (drop &h))
   (return (ok)))
 
 ; The definition site warns, at its own line and with nothing else to say. The
@@ -832,37 +832,37 @@ int main(void) {
 ; run could have supplied.
 (deftest l8-cheader-warns
   (let (c:Compiled (try (compile-path (closure-fixture))))
-    (try (check-warning-at (addr-of c 'diags) (closure-fixture) 18
+    (try (check-warning-at (ref c 'diags) (closure-fixture) 18
       "'apply-closure' exposes a closure or type-erased box type and will be excluded from generated C headers"))
-    (try (check-no-errors (addr-of c 'diags)))
-    (drop (addr-of c)))
+    (try (check-no-errors (ref c 'diags)))
+    (drop &c))
   (return (ok)))
 
 (deftest l13-cheader-omits-boxedfn
   (let (h:String (try (fixture-cheader (box-fixture)))
-        hv:StrView (string-as-view (addr-of h)))
+        hv:StrView (string-as-view &h))
     (try (check-line hv
       "/* make-boxed: exposes a closure or type-erased box type; not C-callable, omitted */"))
     (try (check-not-match hv "*make-boxed(*"))
     (try (check-not-match hv "*make_boxed(*"))
-    (drop (addr-of h)))
+    (drop &h))
   (return (ok)))
 
 (deftest l13-cheader-omits-dyn
   (let (h:String (try (fixture-cheader (box-fixture)))
-        hv:StrView (string-as-view (addr-of h)))
+        hv:StrView (string-as-view &h))
     (try (check-line hv
       "/* use-dyn: exposes a closure or type-erased box type; not C-callable, omitted */"))
     (try (check-not-match hv "*use-dyn(*"))
     (try (check-not-match hv "*use_dyn(*"))
-    (drop (addr-of h)))
+    (drop &h))
   (return (ok)))
 
 (deftest l13-cheader-emits-fnptr
   (let (h:String (try (fixture-cheader (box-fixture))))
-    (try (check-line (string-as-view (addr-of h))
+    (try (check-line (string-as-view &h)
                      "int32_t plain_fn(int32_t x, int32_t y) asm(\"plain-fn\");"))
-    (drop (addr-of h)))
+    (drop &h))
   (return (ok)))
 
 ; Only ONE of the fixture's two box-typed defns warns, and the shell's needle
@@ -873,11 +873,11 @@ int main(void) {
 ; design/stage888-deferred.md.
 (deftest l13-cheader-warns
   (let (c:Compiled (try (compile-path (box-fixture))))
-    (try (check-warning-at (addr-of c 'diags) (box-fixture) 19
+    (try (check-warning-at (ref c 'diags) (box-fixture) 19
       "'make-boxed' exposes a closure or type-erased box type and will be excluded from generated C headers"))
-    (try (check-error-at (addr-of c 'diags) (box-fixture) 20
+    (try (check-error-at (ref c 'diags) (box-fixture) 20
       "BoxedFn: can only box a closure value (a capturing closure's (ref Env), or a bare `fn`)"))
-    (drop (addr-of c)))
+    (drop &c))
   (return (ok)))
 
 ; c-header-layout.md §6: a public signature naming a C typedef renders the name
@@ -888,7 +888,7 @@ int main(void) {
   (let (h:String (try (c-header "o" "(import-use \"unistd.h\")
 (defn seek (fd:i32 off:off_t):off_t (return off))
 "))
-        hv:StrView (string-as-view (addr-of h))
+        hv:StrView (string-as-view &h)
         dir:StrView (try (test-scratch)))
     (try (check-line hv "#include <unistd.h>"))
     (try (check-line hv "off_t seek(int32_t fd, off_t off);"))
@@ -902,9 +902,9 @@ int main(void){return 0;}
 ")))
       (when (not (r 'ok?))
         (fail! "the generated header does not compile\n     "
-               (test-show (string-as-view (addr-of r 'err)))))
-      (drop (addr-of r)))
-    (drop (addr-of h)))
+               (test-show (string-as-view (ref r 'err)))))
+      (drop &r))
+    (drop &h))
   (return (ok)))
 
 ; A header naming NO C typedef gains no include — the list is the types the
@@ -914,8 +914,8 @@ int main(void){return 0;}
   (let (h:String (try (c-header "p" "(import-use \"unistd.h\")
 (defn plain (x:i32):i32 (return x))
 "))
-        hv:StrView (string-as-view (addr-of h)))
+        hv:StrView (string-as-view &h))
     (try (check-line hv "int32_t plain(int32_t x);"))
     (try (check-not-match hv "*<unistd.h>*"))
-    (drop (addr-of h)))
+    (drop &h))
   (return (ok)))

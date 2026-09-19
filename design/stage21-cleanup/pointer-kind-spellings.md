@@ -32,7 +32,17 @@ variable** (`?E` is a bare symbol; `subst-tyvars-sym` walks colon segments),
 `(Maybe (raw T))` (value-Maybe ≠ `?raw:T`), a paren operand in an **exported**
 slot (the cheader classifiers read a `(Maybe …)`/`(Result …)` head, not a
 `(? X)`/`(! X)` cell — §5's "walkers need no change" was one face), and an
-`extend` subject — are in §7. PK-4b, PK-5b, PK-6 not built. Every claim in
+`extend` subject — are in §7. **PK-5b built 2026-09-18**: the four cell-building
+sites mint `ref`; every `addr-of` reading arm is gone (`emit-list`, `node-type`,
+`fn-rewrite-captures`, `defvar-init-ir`, `defvar-check-init-order`,
+`gcheck-special-form`); `emit-addr-of`/`node-type-addr-of`/`defvar-addr-of-ir`
+are `emit-ref`/`node-type-ref`/`defvar-ref-ir` and their nouns say `ref`;
+`retired-form-message` has the row, and — beyond §7's list — `gcheck`'s
+unknown-function site consults it too, since a generic body reaches `gcheck`
+before `emit-list` (`.&` had the same hole); `tests/` was swept with the
+script's new `--rules R1,R2` plus a string-literal pass for embedded programs;
+`ir-snapshot.sh` moved exactly one `.err`, `dump-ast-corpus.sh` only edited
+inputs (progress.md). PK-4b and PK-6's remaining docs rows are not built. Every claim in
 §1 was reproduced against `build/nucleusc` on 2026-09-16 (probe generator and
 full run kept beside this document's research pass; the 437-row matrix is
 summarised in §1.1). Milestones are **PK-1 … PK-6**; §9 sequences them across

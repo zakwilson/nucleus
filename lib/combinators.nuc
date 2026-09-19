@@ -8,7 +8,7 @@
 ; closure, or a hand-written conformer — conformance is type-keyed, never literal.
 ;
 ; A `(Coll E It)` is reached the same way `reduce` reaches one: materialise its
-; iterator with `(iter coll)`, bind it to a typed local, and pass `(addr-of it)`.
+; iterator with `(iter coll)`, bind it to a typed local, and pass `&it`.
 ;
 ; ELEMENT-TYPE CONVENTION (carried from R1-iter): the pointer/struct iterators
 ; (ListIter / SplitIter / LineIter) yield each element as `ptr` (niche-encoded
@@ -18,7 +18,7 @@
 ;
 ; OWNING RETURNS: `map`/`filter`/`remove-if`/`flat-map`/`join` build and RETURN a
 ; fresh owning value (a `(Vector E)` or a `String`) by value. The caller owns the
-; result and must `(drop (addr-of result))` exactly once — the same discipline a
+; result and must `(drop &result)` exactly once — the same discipline a
 ; returned `BoxedFn` follows. A `let`-bound result is NOT auto-dropped (only
 ; `with` bindings are), so the explicit drop is the contract.
 
@@ -427,7 +427,7 @@
 ; plain by-value scalar).
 ;
 ; Each returned box is an owning `Drop` value: the caller must drop it exactly
-; once (`(drop (addr-of e))` for a let-bound box, or a `with` binding's scope-
+; once (`(drop &e)` for a let-bound box, or a `with` binding's scope-
 ; exit drop), following examples/boxedfn.nuc.
 ;
 ; NOTE on vfn return annotations: the closure's return type is spelled as a bare

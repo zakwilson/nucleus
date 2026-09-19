@@ -3,7 +3,7 @@
 ; behavior against the done-flag loop.
 ;
 ; Each segment is yielded as a StrView BY VALUE in a (Maybe StrView), so a
-; consumer taking (ref StrView) needs (addr-of seg). Stage 17 A3.
+; consumer taking (ref StrView) needs &seg. Stage 17 A3.
 
 (import-use "stdio.h")
 (import-use "stdlib.h")

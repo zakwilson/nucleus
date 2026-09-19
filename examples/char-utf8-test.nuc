@@ -17,7 +17,7 @@
 ; Encodes c to a temporary buffer, then decodes from that buffer and prints
 ; the results. Verifies ok=1, nbytes matches the expected count, and ch is
 ; identical to the original.
-; Access DecodeResult fields via addr-of (field access requires a pointer).
+; Access DecodeResult fields via `&` (field access requires a pointer).
 (defn test-roundtrip ((label CStr) (c Char) (expected-bytes usize)):void
   (with (buf:ptr (malloc 4)
          p:&ui8 (as &ui8 buf)

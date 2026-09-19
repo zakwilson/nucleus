@@ -588,7 +588,7 @@
   ; --- Stage 10 safety (lifecycle + nullability) ---
   (home (raw Scope))  ; defining Scope* (escape analysis compares scope nesting)
   (taint (raw Scope)) ; owning with-Scope* (or, Stage 13 L1, frame-region Scope*) this value aliases (null = clean)
-  taint-frame:i32   ; Stage 13 L1: 1 = `taint` is a frame-region (addr-of of a plain local), not a with-resource
+  taint-frame:i32   ; Stage 13 L1: 1 = `taint` is a frame-region (`&x` of a plain local), not a with-resource
   owns:i32          ; 1 = this binding armed a `with` cleanup (owning binding)
   moved:i32         ; 1 = consumed by (move ...); any further use is an error
   cslot:StrView     ; cleanup slot IR name when owns=1 (move disarms by storing null)
@@ -709,7 +709,7 @@
   (taint (raw Scope))
   ; Stage 13 L1 (lambda.md §"Lifetime and escape analysis"): 1 when `taint` is a
   ; *frame-region* — the scope of a plain let/with/param storage whose address
-  ; was taken (emit-addr-of's new source) — rather than a `with`-OWNED resource.
+  ; was taken (emit-ref's new source) — rather than a `with`-OWNED resource.
   ; Both kinds escape via `return` (the function-frame boundary, enforced now);
   ; but a frame-region pointer stored into other frame memory is an intra-frame
   ; borrow, so the *store* sinks enforce only with-taint (taint-frame == 0).

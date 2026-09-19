@@ -55,8 +55,8 @@
 (import g0-ca)
 (defn main ():i32 (return (g0-use-const)))
 ")))
-    (try (g-exit (string-as-view (addr-of m)) 42))
-    (drop (addr-of m)))
+    (try (g-exit (string-as-view &m) 42))
+    (drop &m))
   (return (ok)))
 
 (deftest g0-defconst-order2
@@ -65,8 +65,8 @@
 (import g0-cb)
 (defn main ():i32 (return (g0-use-const)))
 ")))
-    (try (g-exit (string-as-view (addr-of m)) 42))
-    (drop (addr-of m)))
+    (try (g-exit (string-as-view &m) 42))
+    (drop &m))
   (return (ok)))
 
 (defn g0-enum-files ():!void
@@ -84,8 +84,8 @@
 (import g0-ea)
 (defn main ():i32 (return (g0-use-enum)))
 ")))
-    (try (g-exit (string-as-view (addr-of m)) 1))
-    (drop (addr-of m)))
+    (try (g-exit (string-as-view &m) 1))
+    (drop &m))
   (return (ok)))
 
 (deftest g0-defenum-order2
@@ -94,8 +94,8 @@
 (import g0-eb)
 (defn main ():i32 (return (g0-use-enum)))
 ")))
-    (try (g-exit (string-as-view (addr-of m)) 1))
-    (drop (addr-of m)))
+    (try (g-exit (string-as-view &m) 1))
+    (drop &m))
   (return (ok)))
 
 (defn g0-var-files ():!void
@@ -114,8 +114,8 @@
 (import g0-va)
 (defn main ():i32 (return (g0-use-var)))
 ")))
-    (try (g-exit (string-as-view (addr-of m)) 37))
-    (drop (addr-of m)))
+    (try (g-exit (string-as-view &m) 37))
+    (drop &m))
   (return (ok)))
 
 (deftest g0-defvar-order2
@@ -124,8 +124,8 @@
 (import g0-vb)
 (defn main ():i32 (return (g0-use-var)))
 ")))
-    (try (g-exit (string-as-view (addr-of m)) 37))
-    (drop (addr-of m)))
+    (try (g-exit (string-as-view &m) 37))
+    (drop &m))
   (return (ok)))
 
 ; W1b's half of G-0: `scope-define` qualifies a global's key against
@@ -149,8 +149,8 @@
 (import-use g0-nsa)
 (defn main ():i32 (return (g0-ns-user)))
 ")))
-    (try (g-exit (string-as-view (addr-of m)) 55))
-    (drop (addr-of m)))
+    (try (g-exit (string-as-view &m) 55))
+    (drop &m))
   (return (ok)))
 
 (deftest g0-ns-internal-forward
@@ -159,8 +159,8 @@
 (import-use g0-nsa)
 (defn main ():i32 (return (g0alpha/g0-ns-get)))
 ")))
-    (try (g-exit (string-as-view (addr-of m)) 55))
-    (drop (addr-of m)))
+    (try (g-exit (string-as-view &m) 55))
+    (drop &m))
   (return (ok)))
 
 ; …and the key really is namespace-qualified: the bare spelling must not leak
@@ -173,12 +173,12 @@
   (let (m:String (try (test-write-file "g0-ns3.nuc" "(import g0-nsa)
 (defn main ():i32 (return G0-NSK))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         c:Compiled (try (g-compile mv)))
-    (try (check-error-at (addr-of c 'diags) mv 2
+    (try (check-error-at (ref c 'diags) mv 2
            "undefined: G0-NSK (did you mean 'g0-nsa/G0-NSK'?)"))
-    (drop (addr-of c))
-    (drop (addr-of m)))
+    (drop &c)
+    (drop &m))
   (return (ok)))
 
 ; A private constant forward-referenced from earlier in its OWN file: the
@@ -197,8 +197,8 @@
 (import g0-pa)
 (defn main ():i32 (return (g0-priv-get)))
 ")))
-    (try (g-exit (string-as-view (addr-of m)) 61))
-    (drop (addr-of m)))
+    (try (g-exit (string-as-view &m) 61))
+    (drop &m))
   (return (ok)))
 
 ; …and it stays private: another file may not see it, and gets the
@@ -211,12 +211,12 @@
   (let (m:String (try (test-write-file "g0-p3.nuc" "(import g0-pc)
 (defn main ():i32 (return G0-OTHER-SECRET))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         c:Compiled (try (g-compile mv)))
-    (try (check-error-at (addr-of c 'diags) mv 2
+    (try (check-error-at (ref c 'diags) mv 2
            "undefined: G0-OTHER-SECRET — not defined anywhere in this compilation unit"))
-    (drop (addr-of c))
-    (drop (addr-of m)))
+    (drop &c)
+    (drop &m))
   (return (ok)))
 
 ; The positive replacements for the retired `w1d-cycle-defconst-diagnosed` and
@@ -236,8 +236,8 @@
   (let (m:String (try (test-write-file "g0-kcm.nuc" "(import g0-kca)
 (defn main ():i32 (return (g0-kcb)))
 ")))
-    (try (g-exit (string-as-view (addr-of m)) 42))
-    (drop (addr-of m)))
+    (try (g-exit (string-as-view &m) 42))
+    (drop &m))
   (return (ok)))
 
 (deftest g0-cycle-defenum
@@ -251,8 +251,8 @@
   (let (m:String (try (test-write-file "g0-ecm.nuc" "(import g0-eca)
 (defn main ():i32 (return (g0-ecb)))
 ")))
-    (try (g-exit (string-as-view (addr-of m)) 2))
-    (drop (addr-of m)))
+    (try (g-exit (string-as-view &m) 2))
+    (drop &m))
   (return (ok)))
 
 (deftest g0-cycle-defvar
@@ -266,8 +266,8 @@
   (let (m:String (try (test-write-file "g0-vcm.nuc" "(import g0-vca)
 (defn main ():i32 (return (g0-vcb)))
 ")))
-    (try (g-exit (string-as-view (addr-of m)) 77))
-    (drop (addr-of m)))
+    (try (g-exit (string-as-view &m) 77))
+    (drop &m))
   (return (ok)))
 
 ; What G-0 must NOT relax. The message it removes is a FALSE one — a name that
@@ -276,15 +276,15 @@
 (deftest g0-value-defined-nowhere
   (let (m:String (try (test-write-file "g0-none.nuc" "(defn main ():i32 (return g0-absent-everywhere))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         c:Compiled (try (g-compile mv)))
-    (try (check-error-at (addr-of c 'diags) mv 1
+    (try (check-error-at (ref c 'diags) mv 1
            "undefined: g0-absent-everywhere — not defined anywhere in this compilation unit"))
-    (let (t:String (diag-list-text (addr-of c 'diags)))
-      (try (check-not-contains (string-as-view (addr-of t)) "note:"))
-      (drop (addr-of t)))
-    (drop (addr-of c))
-    (drop (addr-of m)))
+    (let (t:String (diag-list-text (ref c 'diags)))
+      (try (check-not-contains (string-as-view &t) "note:"))
+      (drop &t))
+    (drop &c)
+    (drop &m))
   (return (ok)))
 
 ; W1c tier 2 for a VALUE: defined in a sibling file nothing imports. This is
@@ -294,18 +294,18 @@
 "))
         m:String (try (test-write-file "g0-farmain.nuc" "(defn main ():i32 (return G0-UNREACHED))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         c:Compiled (try (g-compile mv))
-        want:String (str "'G0-UNREACHED' is defined in " (string-as-view (addr-of o))
+        want:String (str "'G0-UNREACHED' is defined in " (string-as-view &o)
                          ", which no import in this unit reaches"))
-    (try (check-error-at (addr-of c 'diags) mv 1
+    (try (check-error-at (ref c 'diags) mv 1
            "undefined: G0-UNREACHED — not defined anywhere in this compilation unit"))
-    (try (check-note-at (addr-of c 'diags) mv 1 (string-as-view (addr-of want))))
-    (try (check-no-line-zero (addr-of c 'diags)))
-    (drop (addr-of want))
-    (drop (addr-of c))
-    (drop (addr-of m))
-    (drop (addr-of o)))
+    (try (check-note-at (ref c 'diags) mv 1 (string-as-view &want)))
+    (try (check-no-line-zero (ref c 'diags)))
+    (drop &want)
+    (drop &c)
+    (drop &m)
+    (drop &o))
   (return (ok)))
 
 ; Two files, one global name — still rejected, and since Stage 15 B4 (R4) by the
@@ -318,22 +318,22 @@
 "))
         b:String (try (test-write-file "g0-db.nuc" "(defvar g0-dupg:i32 2)
 "))
-        bv:StrView (string-as-view (addr-of b))
+        bv:StrView (string-as-view &b)
         m:String (try (test-write-file "g0-dm.nuc" "(import g0-da)
 (import g0-db)
 (defn main ():i32 (return g0-dupg))
 "))
-        c:Compiled (try (g-compile (string-as-view (addr-of m))))
+        c:Compiled (try (g-compile (string-as-view &m)))
         want:String (str "redefinition of 'g0-dupg' — it already names a value defined at "
-                         (string-as-view (addr-of a)) ":1"))
-    (try (check-error-at (addr-of c 'diags) bv 1 (string-as-view (addr-of want))))
-    (try (check-note-at (addr-of c 'diags) bv 1
+                         (string-as-view &a) ":1"))
+    (try (check-error-at (ref c 'diags) bv 1 (string-as-view &want)))
+    (try (check-note-at (ref c 'diags) bv 1
            "a name may be defined only once in a compilation unit"))
-    (drop (addr-of want))
-    (drop (addr-of c))
-    (drop (addr-of m))
-    (drop (addr-of b))
-    (drop (addr-of a)))
+    (drop &want)
+    (drop &c)
+    (drop &m)
+    (drop &b)
+    (drop &a))
   (return (ok)))
 
 ; A value name and a function name still may not collide, in either order — the
@@ -358,12 +358,12 @@
 (import g0-kb)
 (defn main ():i32 (return 0))
 "))
-        c:Compiled (try (g-compile (string-as-view (addr-of m)))))
-    (try (check-error-at (addr-of c 'diags) (string-as-view (addr-of a)) 1
+        c:Compiled (try (g-compile (string-as-view &m))))
+    (try (check-error-at (ref c 'diags) (string-as-view &a) 1
            "'g0-collide' already names a function — a symbol may name only one kind of thing"))
-    (drop (addr-of c))
-    (drop (addr-of m))
-    (drop (addr-of a)))
+    (drop &c)
+    (drop &m)
+    (drop &a))
   (return (ok)))
 
 (deftest g0-value-fn-collision-order2
@@ -374,19 +374,19 @@
 (import g0-ka)
 (defn main ():i32 (return 0))
 "))
-        c:Compiled (try (g-compile (string-as-view (addr-of m)))))
-    (try (check-error-at (addr-of c 'diags) (string-as-view (addr-of b)) 1
+        c:Compiled (try (g-compile (string-as-view &m))))
+    (try (check-error-at (ref c 'diags) (string-as-view &b) 1
            "'g0-collide' already names a value — a symbol may name only one kind of thing"))
-    (drop (addr-of c))
-    (drop (addr-of m))
-    (drop (addr-of b)))
+    (drop &c)
+    (drop &m)
+    (drop &b))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
 ; G-1: constant expressions in a global initializer
 ; ---------------------------------------------------------------------------
 ;
-; The shape matrix (arithmetic, bit ops, sizeof, `as`, `(char "x")`, `addr-of`,
+; The shape matrix (arithmetic, bit ops, sizeof, `as`, `(char "x")`, `&g`,
 ; a same-file forward constant) is examples/g1-const-init.nuc, which prints
 ; every folded value — a folder's characteristic failure is the WRONG NUMBER.
 ; What needs more than one file is here, and all of it reads W2b's `const-lit`
@@ -410,8 +410,8 @@
 (import g1-xb)
 (defn main ():i32 (return (g1-xget)))
 ")))
-    (try (g-exit (string-as-view (addr-of m)) 42))
-    (drop (addr-of m)))
+    (try (g-exit (string-as-view &m) 42))
+    (drop &m))
   (return (ok)))
 
 (deftest g1-fold-cross-order2
@@ -420,8 +420,8 @@
 (import g1-xa)
 (defn main ():i32 (return (g1-xget)))
 ")))
-    (try (g-exit (string-as-view (addr-of m)) 42))
-    (drop (addr-of m)))
+    (try (g-exit (string-as-view &m) 42))
+    (drop &m))
   (return (ok)))
 
 ; W5e's private key one level down: the folded initializer sits EARLIER in the
@@ -439,11 +439,11 @@
 (import g1-pa)
 (defn main ():i32 (return (g1-pget)))
 ")))
-    (try (g-exit (string-as-view (addr-of m)) 45))
-    (drop (addr-of m)))
+    (try (g-exit (string-as-view &m) 45))
+    (drop &m))
   (return (ok)))
 
-; `(addr-of g)` across files, where the target is defined in a file emitted
+; `&g` across files, where the target is defined in a file emitted
 ; AFTER the initializer that takes its address: the emitted `@g1-atgt` is a
 ; forward reference LLVM resolves at end of module, and the symbol spelling
 ; comes from G-0's prescan. The emitted initializer is pinned beside the value,
@@ -452,7 +452,7 @@
 (deftest g1-addr-of-cross-file
   (try (test-write-file "g1-aa.nuc" "(defvar g1-atgt:i32 88)
 "))
-  (try (test-write-file "g1-ab.nuc" "(defvar g1-aptr:ptr:i32 (addr-of g1-atgt))
+  (try (test-write-file "g1-ab.nuc" "(defvar g1-aptr:ptr:i32 &g1-atgt)
 (defn g1-aget ():i32 (return (deref g1-aptr)))
 "))
   (let (dir:StrView (try (test-scratch))
@@ -460,18 +460,18 @@
 (import g1-aa)
 (defn main ():i32 (return (g1-aget)))
 "))
-        mv:StrView (string-as-view (addr-of m))
+        mv:StrView (string-as-view &m)
         s:String (try (emit-for-file dir "--emit-llvm" mv)))
     ; `weak_odr` on both: each is defined in a file this unit imports, so W9
     ; item 2 owns the linkage word. The pointer's line comes FIRST, which is
     ; what makes the forward reference visible in the artifact.
-    (try (check-line (string-as-view (addr-of s))
+    (try (check-line (string-as-view &s)
            "@g1-aptr = weak_odr global ptr @g1-atgt, section \".data.g1-aptr\", align 8"))
-    (try (check-line (string-as-view (addr-of s))
+    (try (check-line (string-as-view &s)
            "@g1-atgt = weak_odr global i32 88, section \".data.g1-atgt\", align 4"))
     (try (g-exit mv 88))
-    (drop (addr-of s))
-    (drop (addr-of m)))
+    (drop &s)
+    (drop &m))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -491,11 +491,11 @@
         src:String (str "(defconst G2N 3)
 (defstruct G2Rec tag:i8 (cells (array i32 4)) (names (array CStr G2N)) mark:i8)
 ")
-        p:String (try (test-write-file "g2h.nuc" (string-as-view (addr-of src))))
-        h:String (try (emit-into "" "--emit-cheader" (string-as-view (addr-of p))
+        p:String (try (test-write-file "g2h.nuc" (string-as-view &src)))
+        h:String (try (emit-into "" "--emit-cheader" (string-as-view &p)
                                  dir "g2h.h"))
-        ht:String (try (read-file (string-as-view (addr-of h))))
-        hv:StrView (string-as-view (addr-of ht)))
+        ht:String (try (read-file (string-as-view &h)))
+        hv:StrView (string-as-view &ht))
     ; The whole record, so a declarator that moved rather than changed shape is
     ; also caught. `G2N` survives as the NAME, which is why the header exports
     ; `#define G2N 3` beside it.
@@ -518,20 +518,20 @@ int main(void){ printf(\"%zu %zu %zu %zu\\n\", sizeof(G2Rec), offsetof(G2Rec,cel
 (defn main ():i32
   (let (s:ptr:G2Rec (alloca G2Rec))
     (printf \"%lld %lld %lld %lld\\n\" (as i64 (sizeof G2Rec))
-      (g2off s (addr-of s 'cells)) (g2off s (addr-of s 'names)) (g2off s (addr-of s 'mark))))
+      (g2off s (ref s 'cells)) (g2off s (ref s 'names)) (g2off s (ref s 'mark))))
   (return 0))
 "))
-          want:String (try (cc-link-run dir (string-as-view (addr-of cp))))
-          got:String (try (build-run-file dir "" (string-as-view (addr-of np)))))
-      (try (check-eq (string-as-view (addr-of got)) (string-as-view (addr-of want))))
-      (drop (addr-of got))
-      (drop (addr-of want))
-      (drop (addr-of np))
-      (drop (addr-of cp)))
-    (drop (addr-of ht))
-    (drop (addr-of h))
-    (drop (addr-of p))
-    (drop (addr-of src)))
+          want:String (try (cc-link-run dir (string-as-view &cp)))
+          got:String (try (build-run-file dir "" (string-as-view &np))))
+      (try (check-eq (string-as-view &got) (string-as-view &want)))
+      (drop &got)
+      (drop &want)
+      (drop &np)
+      (drop &cp))
+    (drop &ht)
+    (drop &h)
+    (drop &p)
+    (drop &src))
   (return (ok)))
 
 ; A `.nuch` must round-trip an array field: emit it, import it back, use the
@@ -550,10 +550,10 @@ int main(void){ printf(\"%zu %zu %zu %zu\\n\", sizeof(G2Rec), offsetof(G2Rec,cel
 (defstruct G2Box (slots (array i32 G2K)) n:i32)
 (defvar g2tab:(array i32 4) (array i32 100 200 300 400))
 "))
-        h:String (try (emit-into "" "--emit-nuch" (string-as-view (addr-of lib))
-                                 (string-as-view (addr-of inc)) "g2lib.nuch"))
-        ht:String (try (read-file (string-as-view (addr-of h))))
-        hv:StrView (string-as-view (addr-of ht)))
+        h:String (try (emit-into "" "--emit-nuch" (string-as-view &lib)
+                                 (string-as-view &inc) "g2lib.nuch"))
+        ht:String (try (read-file (string-as-view &h)))
+        hv:StrView (string-as-view &ht))
     (try (check-line hv "(defconst G2K 3)"))
     (try (check-line hv "(defstruct G2Box (slots (array i32 G2K)) (n i32))"))
     (try (check-line hv "(extern (g2tab (array i32 4)))"))
@@ -564,12 +564,12 @@ int main(void){ printf(\"%zu %zu %zu %zu\\n\", sizeof(G2Rec), offsetof(G2Rec,cel
     (set! (b 'n) 9)
     (return (+ (aref (b 'slots) 2) (+ (b 'n) (+ (unsafe/cast i32 (sizeof G2Box)) (aref g2tab 1)))))))
 ")))
-      (try (check-file-exit (string-as-view (addr-of inc)) (string-as-view (addr-of u)) 232))
-      (drop (addr-of u)))
-    (drop (addr-of ht))
-    (drop (addr-of h))
-    (drop (addr-of lib))
-    (drop (addr-of inc)))
+      (try (check-file-exit (string-as-view &inc) (string-as-view &u) 232))
+      (drop &u))
+    (drop &ht)
+    (drop &h)
+    (drop &lib)
+    (drop &inc))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -594,7 +594,7 @@ int main(void){ printf(\"%zu %zu %zu %zu\\n\", sizeof(G2Rec), offsetof(G2Rec,cel
 (defvar g3-lit:i32 41)
 (defvar g3-fold:i32 (* G3K 7))
 (defvar g3-str:CStr (as CStr \"zero-cost\"))
-(defvar g3-addr:ptr:i32 (addr-of g3-lit))
+(defvar g3-addr:ptr:i32 &g3-lit)
 (defvar g3-arr:(array i32 3) (array i32 1 2 3))
 (defvar g3-zeros:(array i32 4))
 (defvar g3-struct:G3P (G3P 1 2))
@@ -620,13 +620,13 @@ int main(void){ printf(\"%zu %zu %zu %zu\\n\", sizeof(G2Rec), offsetof(G2Rec,cel
 (deftest g3-zero-cost
   (let (src:String (str (g3-const-src) "(defn main ():i32 (return (+ g3-lit (+ g3-fold (aref g3-arr 0)))))
 ")
-        s:String (try (source-ir (string-as-view (addr-of src))))
-        ir:StrView (string-as-view (addr-of s)))
+        s:String (try (source-ir (string-as-view &src)))
+        ir:StrView (string-as-view &s))
     (try (g3-check-constants ir))
     (try (check-not-contains ir "__nucleus_init"))
     (try (check-not-contains ir "global_ctors"))
-    (drop (addr-of s))
-    (drop (addr-of src)))
+    (drop &s)
+    (drop &src))
   ; The complement, in the same unit so the two can never drift apart: add ONE
   ; runtime initializer and both artefacts must appear — without this half,
   ; deleting the whole feature would still pass the tripwire. The nine constants
@@ -636,14 +636,14 @@ int main(void){ printf(\"%zu %zu %zu %zu\\n\", sizeof(G2Rec), offsetof(G2Rec,cel
 (defn g3-call ():i32 (return 5))
 (defn main ():i32 (return (+ g3-lit (+ g3-fold (aref g3-arr 0)))))
 ")
-        s:String (try (source-ir (string-as-view (addr-of src))))
-        ir:StrView (string-as-view (addr-of s)))
+        s:String (try (source-ir (string-as-view &src)))
+        ir:StrView (string-as-view &s))
     (try (g3-check-constants ir))
     (try (check-line ir "@g3-rt = global i32 0, section \".bss.g3-rt\", align 4"))
     (try (check-line ir "define internal void @__nucleus_init() {"))
     (try (check-line ir "@llvm.global_ctors = appending global [1 x { i32, ptr, ptr }] [{ i32, ptr, ptr } { i32 65535, ptr @__nucleus_init, ptr null }]"))
-    (drop (addr-of s))
-    (drop (addr-of src)))
+    (drop &s)
+    (drop &src))
   (return (ok)))
 
 ; The multi-TU case, and the one that justifies `llvm.global_ctors` over every
@@ -664,28 +664,28 @@ int main(void){ printf(\"%zu %zu %zu %zu\\n\", sizeof(G2Rec), offsetof(G2Rec,cel
   (let (libsrc:String (try (test-scratch-sub "libsrc"))
         inc:String (try (test-scratch-sub "inc"))
         dir:StrView (try (test-scratch))
-        lib:String (try (write-into (string-as-view (addr-of libsrc)) "g3lib.nuc"
+        lib:String (try (write-into (string-as-view &libsrc) "g3lib.nuc"
                                     "(exclude-prelude)
 (defvar g3-lib-n:i32 (g3-lib-compute))
 (defn g3-lib-compute ():i32 (return 42))
 (defn g3-lib-get ():i32 (return g3-lib-n))
 "))
-        libv:StrView (string-as-view (addr-of lib))
-        h:String (try (emit-into "" "--emit-nuch" libv (string-as-view (addr-of inc))
+        libv:StrView (string-as-view &lib)
+        h:String (try (emit-into "" "--emit-nuch" libv (string-as-view &inc)
                                  "g3lib.nuch"))
-        ht:String (try (read-file (string-as-view (addr-of h)))))
-    (try (check-line (string-as-view (addr-of ht)) "(extern (g3-lib-n i32))"))
+        ht:String (try (read-file (string-as-view &h))))
+    (try (check-line (string-as-view &ht) "(extern (g3-lib-n i32))"))
     (let (obj:String (str dir "/g3lib.o")
-          objv:StrView (string-as-view (addr-of obj)))
+          objv:StrView (string-as-view &obj))
       (try (compile-object libv objv))
       (let (syms:String (try (nm-typed objv)))
-        (try (check-line-set (string-as-view (addr-of syms))
+        (try (check-line-set (string-as-view &syms)
                              "t __nucleus_init
 T g3-lib-compute
 T g3-lib-get
 B g3-lib-n
 " "the library object"))
-        (drop (addr-of syms)))
+        (drop &syms))
       (let (u:String (try (test-write-file "g3user.nuc" "(import g3lib)
 (defn main ():i32
   (when (!= g3-lib-n 42) (return 1))
@@ -693,24 +693,24 @@ B g3-lib-n
   (return 0))
 "))
             uobj:String (str dir "/g3user.o")
-            uobjv:StrView (string-as-view (addr-of uobj))
+            uobjv:StrView (string-as-view &uobj)
             parts:String (str uobjv " " objv))
-        (try (compile-object-in (string-as-view (addr-of inc))
-                                (string-as-view (addr-of u)) uobjv))
-        (let (bin:String (try (driver-link "clang" "" (string-as-view (addr-of parts))))
-              got:i32 (try (run-exit (string-as-view (addr-of bin)))))
+        (try (compile-object-in (string-as-view &inc)
+                                (string-as-view &u) uobjv))
+        (let (bin:String (try (driver-link "clang" "" (string-as-view &parts)))
+              got:i32 (try (run-exit (string-as-view &bin))))
           (when (!= got 0)
             (fail! "the library initializer did not run: exit " (as i64 got)))
-          (drop (addr-of bin)))
-        (drop (addr-of parts))
-        (drop (addr-of uobj))
-        (drop (addr-of u)))
-      (drop (addr-of obj)))
-    (drop (addr-of ht))
-    (drop (addr-of h))
-    (drop (addr-of lib))
-    (drop (addr-of inc))
-    (drop (addr-of libsrc)))
+          (drop &bin))
+        (drop &parts)
+        (drop &uobj)
+        (drop &u))
+      (drop &obj))
+    (drop &ht)
+    (drop &h)
+    (drop &lib)
+    (drop &inc)
+    (drop &libsrc))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -731,8 +731,8 @@ B g3-lib-n
 (defvar g4-a:i32 (+ g4-b 1))
 (defn main ():i32 (return g4-a))
 ")))
-    (try (g-exit (string-as-view (addr-of m)) 42))
-    (drop (addr-of m)))
+    (try (g-exit (string-as-view &m) 42))
+    (drop &m))
   (return (ok)))
 
 (defn g4-cross-files ():!void
@@ -751,8 +751,8 @@ B g3-lib-n
 (import g4xb)
 (defn main ():i32 (return (g4-xget)))
 ")))
-    (try (g-exit (string-as-view (addr-of m)) 42))
-    (drop (addr-of m)))
+    (try (g-exit (string-as-view &m) 42))
+    (drop &m))
   (return (ok)))
 
 ; …and the reversed one is refused. Only a cross-FILE case can check that the
@@ -768,22 +768,22 @@ B g3-lib-n
 (import g4xa)
 (defn main ():i32 (return (g4-xget)))
 "))
-        c:Compiled (try (g-compile (string-as-view (addr-of m))))
-        note:String (str "'g4-xbase' is declared at " (string-as-view (addr-of a)) ":2"))
-    (try (check-error-at (addr-of c 'diags) (string-as-view (addr-of b)) 1
+        c:Compiled (try (g-compile (string-as-view &m)))
+        note:String (str "'g4-xbase' is declared at " (string-as-view &a) ":2"))
+    (try (check-error-at (ref c 'diags) (string-as-view &b) 1
            "defvar: the initializer for 'g4-xderived' names global 'g4-xbase', whose own defvar has not been reached yet -- it still holds its zero at this point"))
-    (try (check-note-at (addr-of c 'diags) (string-as-view (addr-of b)) 1
-                        (string-as-view (addr-of note))))
-    (try (check-note-at (addr-of c 'diags) (string-as-view (addr-of b)) 1
+    (try (check-note-at (ref c 'diags) (string-as-view &b) 1
+                        (string-as-view &note)))
+    (try (check-note-at (ref c 'diags) (string-as-view &b) 1
            "initializers run in the order their defvars are reached (source order within a file, import order across files)"))
-    (drop (addr-of note))
-    (drop (addr-of c))
-    (drop (addr-of m))
-    (drop (addr-of a))
-    (drop (addr-of b)))
+    (drop &note)
+    (drop &c)
+    (drop &m)
+    (drop &a)
+    (drop &b))
   (return (ok)))
 
-; `(addr-of g)` forward, on the RUN-TIME path — the decision this step had to
+; `&g` forward, on the RUN-TIME path — the decision this step had to
 ; make, asserted by dereferencing the pointer rather than by compiling.
 (deftest g4-addr-of-forward
   (try (check-file-exit "" "tests/fixtures/g4-addr-of-forward.nuc" 7))

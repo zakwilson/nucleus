@@ -2681,7 +2681,7 @@
 (defn gcheck-special-form (hp:raw:Node):bool
   (if-some (head (as-ref hp))
            (contains? #{'let 'with 'do 'cond 'return 'while 'set! 'inc! 'quote 'quasiquote
-                        'not '_and '_or 'cast 'addr-of 'ref 'deref 'ptr+ '_get
+                        'not '_and '_or 'cast 'ref 'deref 'ptr+ '_get
                         'sizeof 'source-file 'source-line 'alloca 'char 'aref 'gensym 'macro-error
                         'funcall 'funcall-void
                         'funcall-ptr-1 'funcall-ptr-i32 'funcall-ptr-i64 'funcall-ptr-ptr
@@ -2860,8 +2860,10 @@
                   (when (!= ((m0 'binop) 'is-cmp) 0) (return ty-bool))
                   (return (gcheck (node-at n 1) scope m)))))
             ; A name that is neither a generic nor scope-bound is a typo — error
-            ; whether or not an argument is abstract.
+            ; whether or not an argument is abstract. A retired reserved head
+            ; (`addr-of`, `.&`) keeps its exact answer here as on the emit path.
             (when (and (= g null) (= (scope-lookup scope h) null))
+              (match (retired-form-message h) (none 0) ((some retired) (die-at (nn 'line) retired)))
               (die-at (nn 'line) (fstr "in generic body: unknown function '" h "'")))
             ; Known name, unresolved here: defer to stamp-time. Concrete calls get
             ; a best-effort type; abstract ones stay unknown (null).
@@ -4848,8 +4850,8 @@
       (set! (pt 'pkind) PTR-REF)
       (return pt))))
 
-; Lockstep with emit-addr-of's arity overload. Without this the 2-arg form would
-; fall into the 1-arg path and type `(addr-of p 'f)` as `ptr:ptr:Point` -- the
+; Lockstep with emit-ref's arity overload. Without this the 2-arg form would
+; fall into the 1-arg path and type `(ref p 'f)` as `ptr:ptr:Point` -- the
 ; address of the BINDING, not of the field (dot-forms.md §3).
 (defn node-type-field-addr (n:raw:Node scope:ref:Scope):?&Type
   (let (t:ptr (node-type (node-at n 1) scope))
@@ -4872,7 +4874,7 @@
               (set! (pt 'pkind) PTR-REF)
               (return (as ptr pt)))))))))
 
-(defn node-type-addr-of (n:raw:Node scope:ref:Scope):?&Type
+(defn node-type-ref (n:raw:Node scope:ref:Scope):?&Type
   (when (= (node-len n) 3) (return (node-type-field-addr n scope)))
   (let (target:ptr:Node (unsafe/cast &Node (node-at n 1)))
     (when (!= (target 'kind) NODE-SYM) (return null))
@@ -4880,7 +4882,7 @@
       (when (= sym null) (return null))
       (let (pt:ptr:Type (as &Type (make-type TY-PTR)))
         (set! (pt 'elem) (sym 'type))
-        ; Mirror emit-addr-of: a binding's address is non-null (ref T).
+        ; Mirror emit-ref: a binding's address is non-null (ref T).
         (set! (pt 'pkind) PTR-REF)
         (return (as ptr pt))))))
 
@@ -5248,7 +5250,7 @@
         (when (= hp 'unsafe/cast) (return (node-type-cast n)))
         (when (= hp 'as) (return (node-type-as n)))
         ; Lockstep with emit-list: `ref` is the value-world address-of head too.
-        (when (or (= hp 'ref) (= hp 'addr-of)) (return (node-type-addr-of n scope)))
+        (when (= hp 'ref) (return (node-type-ref n scope)))
         (when (= hp 'funcall-void) (return ty-void))
         (when (= hp 'funcall) (return (node-type-funcall n scope)))
         (when (= hp 'deref) (return (node-type-deref-elem n scope)))

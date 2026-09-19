@@ -204,12 +204,12 @@
 ; (HashMap K V)) / …); IterType is its associated iterator type — the It in
 ; (Coll E It) — e.g. (VecIter i32), (HashSetIter i32), (HashMapEntryIter K V).
 ; `doseq` calls the protocol `iter` to get a fresh iterator BY VALUE, binds it
-; to a typed local, then drives it via (next (addr-of it)) — the value-return +
-; addr-of convention (C2.1, design/stage11/cleanup2.md). It dispatches
+; to a typed local, then drives it via (next &it) — the value-return +
+; `&` convention (C2.1, design/stage11/cleanup2.md). It dispatches
 ; generically over any (Coll E It).
 ;
 ; Why IterType must be named: the language has no type inference for `let`
-; bindings (every binding needs an explicit type) and `addr-of` only takes the
+; bindings (every binding needs an explicit type) and `&` only takes the
 ; address of a named local (not an rvalue), so the value-returned iterator must
 ; live in a typed binding we can address. The binding's THIRD element supplies
 ; that type; the macro emits `(let (it:IterType (iter coll)) …)`.
@@ -226,7 +226,7 @@
 ;     (doseq (x v (VecIter i32)) (printf "%d\n" x)))
 (defmacro doseq (binding :rest body)
   ; binding is (var coll-expr IterType). (iter coll-expr) yields an IterType
-  ; value bound to a fresh typed local `it`; drive (next (addr-of it)) per step.
+  ; value bound to a fresh typed local `it`; drive (next &it) per step.
   ; The (sym type) list-binding form lets the done-flag gensym skip a colon type.
   (let (done-sym:ptr  (gensym)
         it-sym:ptr    (gensym)
@@ -268,7 +268,7 @@
 ; calls the protocol `iter` on src-coll and folds every element into dest-coll
 ; via (conj dest-coll elem). Dispatches generically over any source Coll (C2.1).
 ; Requires dest-coll to implement `conj` over E. IterType is named for the same
-; reason as in `doseq` (no let-binding inference; addr-of needs a named local).
+; reason as in `doseq` (no let-binding inference; `&` needs a named local).
 ;
 ; Example:
 ;   (into dest src (VecIter i32))   ; copy every element of src into dest

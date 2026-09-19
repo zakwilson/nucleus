@@ -61,15 +61,15 @@ int main(void){
 ; is a loop. Empty stderr rather than a zero exit, so a warning trips it too.
 (deftest cd1-multi-declarator-types
   (let (c:Compiled (try (compile-source (cd-main-src)))
-        ir:StrView (compiled-ir (addr-of c)))
-    (try (check-empty (string-as-view (addr-of c 'raw))))
+        ir:StrView (compiled-ir &c))
+    (try (check-empty (string-as-view (ref c 'raw))))
     (try (check-line ir "%cd_plain = type { i32, i32 }"))
     (try (check-line ir "%cd_ptrs = type { ptr, ptr, i32 }"))
     (try (check-line ir "%cd_arrays = type { i32, [3 x i32] }"))
     (try (check-line ir "%cd_bits = type { [1 x i8], i32 }"))
     (try (check-line ir "%cd_three = type { i16, i16, i16, i32 }"))
     (try (check-ir-parses ir))
-    (drop (addr-of c)))
+    (drop &c))
   (return (ok)))
 
 ; CD-1's residue fails SAFE. Declarators that disagree in pointer depth leave
@@ -89,11 +89,11 @@ int main(void){
 ; its type is still a parameter of some type.
 (deftest cd2-typedef-list
   (let (c:Compiled (try (compile-source (cd-main-src)))
-        ir:StrView (compiled-ir (addr-of c)))
+        ir:StrView (compiled-ir &c))
     (try (check-line ir "define i32 @f_ta(i32 %x.arg) section \".text.f_ta\" {"))
     (try (check-line ir "define i32 @f_tb(ptr %x.arg) section \".text.f_tb\" {"))
     (try (check-line ir "define i32 @f_tc(i64 %x.arg) section \".text.f_tc\" {"))
-    (drop (addr-of c)))
+    (drop &c))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -107,14 +107,14 @@ int main(void){
 ; body, and a tagged one must anchor on the tag the whole-unit prescan saw.
 (deftest cd3-array-typedef-body
   (let (c:Compiled (try (compile-source (cd-main-src)))
-        ir:StrView (compiled-ir (addr-of c)))
+        ir:StrView (compiled-ir &c))
     (try (check-line ir "%cd_tag = type { i32, i32 }"))
     (try (check-line ir "%__carr.cd_anonarr = type { i32, i32 }"))
     (try (check-line ir "@tv = global [2 x %cd_tag] zeroinitializer, section \".bss.tv\", align 8"))
     (try (check-line ir "@av = global [3 x %__carr.cd_anonarr] zeroinitializer, section \".bss.av\", align 8"))
     (try (check-line ir "declare void @cd_take_tagarr(ptr)"))
     (try (check-line ir "declare void @cd_take_anonarr(ptr)"))
-    (drop (addr-of c)))
+    (drop &c))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -142,11 +142,11 @@ int main(void){
   (let (a:ptr:TAlign (alloca TAlign)
         t:ptr:tcp_info (alloca tcp_info))
     (printf \"tcp_info %lld %lld\\n\" (as i64 (sizeof tcp_info))
-      (- (unsafe/cast i64 (addr-of a 'v)) (unsafe/cast i64 a)))
+      (- (unsafe/cast i64 (ref a 'v)) (unsafe/cast i64 a)))
     (printf \"tcpi_options %lld\\n\"
-      (- (unsafe/cast i64 (addr-of t 'tcpi_options)) (unsafe/cast i64 t)))
+      (- (unsafe/cast i64 (ref t 'tcpi_options)) (unsafe/cast i64 t)))
     (printf \"tcpi_rto %lld\\n\"
-      (- (unsafe/cast i64 (addr-of t 'tcpi_rto)) (unsafe/cast i64 t))))
+      (- (unsafe/cast i64 (ref t 'tcpi_rto)) (unsafe/cast i64 t))))
   (return 0))
 "))
 
@@ -166,10 +166,10 @@ int main(void){
 (deftest cd-libc-tcp-info
   (try (require-cc))
   (let (p:String (try (test-write-file "tcp-probe.c" (tcp-c-src)))
-        r:CcCheck (try (cc-syntax-only-in "" (string-as-view (addr-of p))))
+        r:CcCheck (try (cc-syntax-only-in "" (string-as-view &p)))
         have:bool (r 'ok?))
-    (drop (addr-of r))
-    (drop (addr-of p))
+    (drop &r)
+    (drop &p)
     (when (not have) (skip! "no netinet/tcp.h to take the witness from")))
   (try (check-agrees-with-cc "cdtcp" "" (tcp-nuc-src) (tcp-c-src)))
   (return (ok)))
@@ -220,8 +220,8 @@ int main(void){
 ; left for the function-declaration parser to read from the wrong offset.
 (deftest cd4-declarator-list
   (let (c:Compiled (try (compile-source (cd4-main-src)))
-        ir:StrView (compiled-ir (addr-of c)))
-    (try (check-empty (string-as-view (addr-of c 'raw))))
+        ir:StrView (compiled-ir &c))
+    (try (check-empty (string-as-view (ref c 'raw))))
     (try (check-line ir "%cd4_A = type { i32, i32 }"))
     (try (check-line ir "%cd4_B = type { i32, i32 }"))
     (try (check-line ir "%cd4_C = type { i32, i32 }"))
@@ -237,7 +237,7 @@ int main(void){
     (try (check-line ir "define i32 @f_ep(ptr %p.arg) section \".text.f_ep\" {"))
     (try (check-line ir "@gv = global [3 x %__carr.cd4_G] zeroinitializer, section \".bss.gv\", align 8"))
     (try (check-ir-parses ir))
-    (drop (addr-of c)))
+    (drop &c))
   (return (ok)))
 
 (deftest cd4-sizeof-vs-cc

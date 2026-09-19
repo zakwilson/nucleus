@@ -30,13 +30,13 @@
 
 (deftest w9-fnptr-compare-ir
   (let (ir:String (try (fp-ir "tests/fixtures/w9-fnptr-compare.nuc"))
-        iv:StrView (string-as-view (addr-of ir)))
+        iv:StrView (string-as-view &ir))
     (try (check-ir-parses iv))
     ; The two shapes no other lowering produces: identity against a function
     ; symbol, and a null test with the literal on the left.
     (try (check-match iv "  %t* = icmp eq ptr %t*, @twice"))
     (try (check-match iv "  %t* = icmp ne ptr null, %t*"))
-    (drop (addr-of ir)))
+    (drop &ir))
   (return (ok)))
 
 ; The exit code is the sum of six comparisons across all four positions a
@@ -56,7 +56,7 @@
 ; `store i1 %x, ptr %y, align 1` out of it, which is correct at one byte.
 (deftest w9-fnptr-align-ir
   (let (ir:String (try (fp-ir "tests/fixtures/w9-fnptr-align.nuc"))
-        iv:StrView (string-as-view (addr-of ir)))
+        iv:StrView (string-as-view &ir))
     (try (check-ir-parses iv))
     (try (check-not-match iv "*alloca ptr, align 1"))
     (try (check-not-match iv "*load ptr, ptr*, align 1"))
@@ -65,18 +65,18 @@
     (try (check-line iv "@fn-global = global ptr null, section \".bss.fn-global\", align 8"))
     (try (check-line iv "  %h.addr = alloca ptr, align 8"))
     (try (check-match iv "  %loc.addr.* = alloca ptr, align 8"))
-    (drop (addr-of ir)))
+    (drop &ir))
   (return (ok)))
 
 ; Item 15's rule on item 19's operand: the width is the TARGET's, not 8.
 (deftest w9-fnptr-align-target-width
   (let (c:Compiled (try (target-emit "i386-unknown-linux-gnu" ""
                                      "tests/fixtures/w9-fnptr-align.nuc"))
-        iv:StrView (compiled-ir (addr-of c)))
-    (try (check-no-errors (addr-of c 'diags)))
+        iv:StrView (compiled-ir &c))
+    (try (check-no-errors (ref c 'diags)))
     (try (check-line iv "@fn-global = global ptr null, section \".bss.fn-global\", align 4"))
     (try (check-match iv "  %loc.addr.* = alloca ptr, align 4"))
-    (drop (addr-of c)))
+    (drop &c))
   (return (ok)))
 
 (deftest w9-fnptr-align-run
@@ -90,12 +90,12 @@
 ; field store is a plain `store ptr null` and the return a plain `ret ptr null`.
 (deftest w9-fnptr-null-init-ir
   (let (ir:String (try (fp-ir "tests/fixtures/w9-fnptr-null-init.nuc"))
-        iv:StrView (string-as-view (addr-of ir)))
+        iv:StrView (string-as-view &ir))
     (try (check-ir-parses iv))
     (try (check-line iv "@g-hook = global ptr null, section \".bss.g-hook\", align 8"))
     (try (check-match iv "  store ptr null, ptr %loc.addr.*, align 8"))
     (try (check-line iv "  ret ptr null"))
-    (drop (addr-of ir)))
+    (drop &ir))
   (return (ok)))
 
 (deftest w9-fnptr-null-init-run
@@ -110,7 +110,7 @@
 (defstruct Pt x:i64 y:i64)
 (defstruct Big a:i64 b:i64 c:i64)
 (defn sum-pt (p:Pt):i64
-  (let (q:ptr:Pt (addr-of p)) (return (+ (q 'x) (q 'y)))))
+  (let (q:ptr:Pt &p) (return (+ (q 'x) (q 'y)))))
 (defn make-big (n:i64):Big (return (Big n (+ n 1) (+ n 2))))
 (defn addl (a:i64):i64 (return (+ a 1)))
 (defn main ():i32
@@ -119,7 +119,7 @@
         h:(fn i64)(i64) addl)
     (printf \"%lld\\n\" (funcall f (Pt 3 4)))
     (let (b:Big (funcall g 10)
-          bp:ptr:Big (addr-of b))
+          bp:ptr:Big &b)
       (printf \"%lld\\n\" (bp 'c)))
     (printf \"%lld\\n\" (funcall h 5))
     (return 0)))
@@ -133,18 +133,18 @@
 ; literal widens to the i64 parameter exactly as it does on the direct path.
 (deftest s16-fp2-indirect-call-abi
   (let (ir:String (try (source-ir (fp2-src)))
-        iv:StrView (string-as-view (addr-of ir)))
+        iv:StrView (string-as-view &ir))
     (try (check-match iv "*= call i64 %t*(i64 %t*, i64 %t*)"))
     (try (check-match iv "*call void %t*(ptr sret(%Big) align 8 *"))
     (try (check-match iv "*= call i64 %t*(i64 %t*)"))
-    (drop (addr-of ir)))
+    (drop &ir))
   (return (ok)))
 
 (deftest s16-fp2-indirect-call-runs
   (let (p:String (try (test-write-file "fp2.nuc" (fp2-src)))
         dir:StrView (try (test-scratch)))
-    (try (check-file-exit dir (string-as-view (addr-of p)) 0))
-    (drop (addr-of p)))
+    (try (check-file-exit dir (string-as-view &p) 0))
+    (drop &p))
   (return (ok)))
 
 ; A variadic fn pointer keeps its `(ptr, ...)` call signature and promotes f32 to
@@ -157,9 +157,9 @@
     (funcall p \"%s %d %.1f\\n\" \"x\" 7 fv)
     (return 0)))
 "))
-        iv:StrView (string-as-view (addr-of ir)))
+        iv:StrView (string-as-view &ir))
     (try (check-match iv "*call i32 (ptr, ...) %t*double %t*)"))
-    (drop (addr-of ir)))
+    (drop &ir))
   (return (ok)))
 
 ; And the argument check itself now reaches indirect calls — the `funcall` twin
@@ -189,8 +189,8 @@
     (atexit bye)
     (return 0)))
 ")))
-    (try (check-silent (addr-of c) "importing qsort and atexit"))
-    (drop (addr-of c)))
+    (try (check-silent &c "importing qsort and atexit"))
+    (drop &c))
   (return (ok)))
 
 (defn fp4-src ():StrView
@@ -212,19 +212,19 @@
 ; `int (*s16_get(void))(int,int)` were skipped entirely.
 (deftest s16-fp4-declarator-positions
   (let (ir:String (try (source-ir (fp4-src)))
-        iv:StrView (string-as-view (addr-of ir)))
+        iv:StrView (string-as-view &ir))
     (try (check-contains iv "%S16Hold = type { ptr, i32 }"))
     (try (check-line iv "declare ptr @s16_signal(i32, ptr)"))
     (try (check-line iv "declare ptr @s16_get()"))
     (try (check-line iv "declare i32 @s16_nest(ptr)"))
-    (drop (addr-of ir)))
+    (drop &ir))
   (return (ok)))
 
 (deftest s16-fp4-callbacks-run
   (let (p:String (try (test-write-file "fp4.nuc" (fp4-src)))
         dir:StrView (try (test-scratch)))
-    (try (check-file-exit dir (string-as-view (addr-of p)) 0))
-    (drop (addr-of p)))
+    (try (check-file-exit dir (string-as-view &p) 0))
+    (drop &p))
   (return (ok)))
 
 ; The recovered type is a CHECKED type — the point of doing this after FP-1. Each
@@ -264,14 +264,14 @@
 ; pointer and `void *`, so a conforming compiler may diagnose every call site.
 (deftest s16-fp5-cheader-declarators
   (let (l:CLib (try (c-lib "lib" (fp5-lib-src)))
-        hv:StrView (c-lib-text (addr-of l)))
+        hv:StrView (c-lib-text &l))
     (try (check-line hv "    int32_t (*cb)(int32_t, int32_t);"))
     (try (check-line hv "int32_t use2(int32_t (*f)(int32_t, int32_t));"))
     ; A function RETURNING a function pointer wraps its own declarator.
     (try (check-line hv "int32_t (*getf(void))(int32_t, int32_t);"))
     ; The array declarator still comes out of the same renderer unchanged.
     (try (check-line hv "    int32_t xs[4];"))
-    (drop (addr-of l)))
+    (drop &l))
   (return (ok)))
 
 ; Asserted against a real C consumer, built with `-Werror`, rather than against
@@ -280,7 +280,7 @@
 (deftest s16-fp5-c-consumer
   (when (not (have-cc?)) (skip! "no cc to build the C consumer with"))
   (let (l:CLib (try (c-lib "lib" (fp5-lib-src)))
-        out:String (try (c-lib-run (addr-of l) "#include <stdio.h>
+        out:String (try (c-lib-run &l "#include <stdio.h>
 #include \"lib.h\"
 static int times(int a, int b) { return a * b; }
 int main(void) {
@@ -289,7 +289,7 @@ int main(void) {
   return 0;
 }
 ")))
-    (try (check-line (string-as-view (addr-of out)) "use2=2 getf=7 hold=36"))
-    (drop (addr-of out))
-    (drop (addr-of l)))
+    (try (check-line (string-as-view &out) "use2=2 getf=7 hold=36"))
+    (drop &out)
+    (drop &l))
   (return (ok)))

@@ -43,14 +43,14 @@
   (let (a:i8 5)
     (return (as i32 a))))
 "))
-        iv:StrView (string-as-view (addr-of ir))
-        pv:StrView (string-as-view (addr-of imp)))
+        iv:StrView (string-as-view &ir)
+        pv:StrView (string-as-view &imp))
     (try (check-match iv "  %t* = trunc i32 5 to i8"))
     (try (check-line iv "@w9as-g = global i8 9, section \".data.w9as-g\", align 1"))
     ; The same instruction from the implicit spelling: the two halves of the rule.
     (try (check-match pv "  %t* = trunc i32 5 to i8"))
-    (drop (addr-of imp))
-    (drop (addr-of ir)))
+    (drop &imp)
+    (drop &ir))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -70,8 +70,8 @@
   (let (a:f32 1.5)
     (return 0)))
 "))
-        iv:StrView (string-as-view (addr-of ir))
-        pv:StrView (string-as-view (addr-of imp)))
+        iv:StrView (string-as-view &ir)
+        pv:StrView (string-as-view &imp))
     (try (check-line iv "@w9asf-g = global float 0x3FF8000000000000, section \".data.w9asf-g\", align 4"))
     (try (check-line iv "@w9asf-gd = global double 3.5, section \".data.w9asf-gd\", align 8"))
     (try (check-match iv "  store float 0x3FF8000000000000, ptr %a.addr.*, align 4"))
@@ -79,8 +79,8 @@
     (try (check-not-match iv "*fptrunc*"))
     (try (check-match pv "  store float 0x3FF8000000000000, ptr %a.addr.*, align 4"))
     (try (check-not-match pv "*fptrunc*"))
-    (drop (addr-of imp))
-    (drop (addr-of ir)))
+    (drop &imp)
+    (drop &ir))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@
 ; That is exactly why the defect survived every bootstrap until it was measured.
 (deftest w9-bool-unsigned-picks-unsigned-instructions
   (let (ir:String (try (cv-ir "tests/fixtures/w9-bool-unsigned.nuc"))
-        iv:StrView (string-as-view (addr-of ir)))
+        iv:StrView (string-as-view &ir))
     (try (check-not-match iv "*sext i1*"))
     (try (check-not-match iv "*icmp slt i1*"))
     (try (check-not-match iv "*icmp sgt i1*"))
@@ -116,7 +116,7 @@
     ; A computed bool widens the same way a named one does.
     (try (check-match iv "  %t* = zext i1 %t* to i32"))
     (try (check-match iv "  %t* = uitofp i1 1 to double"))
-    (drop (addr-of ir)))
+    (drop &ir))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -130,21 +130,21 @@
 ; pinned here too, so a fixture that stopped indexing at all cannot pass.
 (deftest w9-unsigned-index-widens-unsigned-with-zext
   (let (ir:String (try (cv-ir "tests/fixtures/w9-unsigned-index.nuc"))
-        iv:StrView (string-as-view (addr-of ir)))
+        iv:StrView (string-as-view &ir))
     (try (check-not-match iv "*sext i8 *"))
     (try (check-not-match iv "*sext i16 *"))
     (try (check-match iv "  %t* = zext i8 %t* to i64"))
     (try (check-match iv "  %t* = zext i16 %t* to i64"))
-    (drop (addr-of ir)))
+    (drop &ir))
   (return (ok)))
 
 ; The fix is signedness-directed, not a blanket zext: a negative i32 index still
 ; has to reach backwards, so `(aref p -1)` keeps its sign extension.
 (deftest w9-unsigned-index-keeps-sext-for-signed
   (let (ir:String (try (cv-ir "tests/fixtures/w9-unsigned-index.nuc"))
-        iv:StrView (string-as-view (addr-of ir)))
+        iv:StrView (string-as-view &ir))
     (try (check-match iv "  %t* = sext i32 %t* to i64"))
-    (drop (addr-of ir)))
+    (drop &ir))
   (return (ok)))
 
 ; The case the item was filed from, which only the IR can witness: four billion
@@ -154,10 +154,10 @@
 (defn f (p:ptr:i32 i:ui32):i32 (return (aref p i)))
 (defn main ():i32 (return 0))
 "))
-        iv:StrView (string-as-view (addr-of ir)))
+        iv:StrView (string-as-view &ir))
     (try (check-match iv "  %t* = zext i32 %t* to i64"))
     (try (check-not-match iv "*sext i32 *"))
-    (drop (addr-of ir)))
+    (drop &ir))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -205,15 +205,15 @@
 (defn main ():i32 (f 3)
   (return 0))
 "))
-        pv:StrView (string-as-view (addr-of p))
+        pv:StrView (string-as-view &p)
         c:Compiled (try (compile-path-in dir pv)))
     (when (c 'ok?)
       (fail! "expected the int-into-float call to be refused"))
-    (try (check-error-at (addr-of c 'diags) pv 2
+    (try (check-error-at (ref c 'diags) pv 2
            "f: argument 1 has type i32, which does not match parameter type f64"))
-    (try (check-no-line-zero (addr-of c 'diags)))
-    (drop (addr-of c))
-    (drop (addr-of p)))
+    (try (check-no-line-zero (ref c 'diags)))
+    (drop &c)
+    (drop &p))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
@@ -235,18 +235,18 @@
 (deftest w2a-operand-order-identical
   (let (a:Compiled (try (compile-path "tests/fixtures/w2a-order-lit-first.nuc"))
         b:Compiled (try (compile-path "tests/fixtures/w2a-order-lit-second.nuc")))
-    (try (check-silent (addr-of a) "the literal-first spelling"))
-    (try (check-silent (addr-of b) "the literal-second spelling"))
-    (let (na:String (normalize-commutative (compiled-ir (addr-of a)))
-          nb:String (normalize-commutative (compiled-ir (addr-of b))))
+    (try (check-silent &a "the literal-first spelling"))
+    (try (check-silent &b "the literal-second spelling"))
+    (let (na:String (normalize-commutative (compiled-ir &a))
+          nb:String (normalize-commutative (compiled-ir &b)))
       ; Presence, so two modules that both failed to emit cannot agree trivially.
-      (try (check-match (string-as-view (addr-of na)) "*mul*"))
-      (try (check-golden (string-as-view (addr-of nb))
-                         (string-as-view (addr-of na))))
-      (drop (addr-of nb))
-      (drop (addr-of na)))
-    (drop (addr-of b))
-    (drop (addr-of a)))
+      (try (check-match (string-as-view &na) "*mul*"))
+      (try (check-golden (string-as-view &nb)
+                         (string-as-view &na)))
+      (drop &nb)
+      (drop &na))
+    (drop &b)
+    (drop &a))
   (return (ok)))
 
 ; Stage 15 W2d: a `float`-typed DSP kernel written with bare float literals — no
@@ -264,8 +264,8 @@
   (let (got:String (try (build-run-file "" "" "tests/fixtures/w2d-dsp-biquad.nuc"))
         want:String (try (clang-run-file "-O2 -ffp-contract=off"
                                          "tests/fixtures/w2d-dsp-biquad.c")))
-    (try (check-golden (string-as-view (addr-of got))
-                       (string-as-view (addr-of want))))
-    (drop (addr-of want))
-    (drop (addr-of got)))
+    (try (check-golden (string-as-view &got)
+                       (string-as-view &want)))
+    (drop &want)
+    (drop &got))
   (return (ok)))
