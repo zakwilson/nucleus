@@ -113,6 +113,15 @@ mechanical rewrite can then emit `):(…)` uniformly).
 
 ### Explicitly out of scope
 
+**Update (2026-09-19):** the second and third items are settled by
+[stage21-cleanup/pointer-kind-spellings.md](../stage21-cleanup/pointer-kind-spellings.md)
+PK-2/PK-3: the fuse gates on an *open* final segment (a trailing sigil run
+keeps it open) and fires in `rd-form` on every atom, so `h:!(Vector i32)`
+reads as `(h (! (Vector i32)))` in every position, and `~sym:(Type)` reads as
+`(unquote (sym (Type)))` — a call at expansion time, so the list form stays
+the template idiom (docs/macros.md). The first item is documented in
+docs/types.md ("Quoted-data caveat"). The text below is kept as written.
+
 - **Fusing inside quoted data is unchanged** (pre-existing): the fuse fires
   syntactically, quote or no quote — `'(foo:(bar))` reads as `'((foo (bar)))`
   today and after this work. Quoted-data authors space the paren. Document

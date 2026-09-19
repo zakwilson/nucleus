@@ -207,9 +207,12 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
   not collect `T` (the pattern walkers know struct templates and the two sigil
   unions; `(Vector (Box T))` over a `defstruct` template is fine), and a
   **pointer wrapper** inside a template argument — `(Vector &T)`,
-  `(Vector ref:T)`, `(Vector ?&T)` — does not bind `T` either (`unknown type:
-  T`); the variable must be bare under the sigil, and a pointer element binds
-  through it (`(Vector ?T)` accepts a `(Vector ?&Pt)` with `T = &Pt`).
+  `(Vector ref:T)`, `(Vector ?&T)` — is not *collected* from the receiver
+  (`unknown type: T` at the definition); the variable must be bare under the
+  sigil, and a pointer element binds through it (`(Vector ?T)` accepts a
+  `(Vector ?&Pt)` with `T = &Pt`). The escape is to declare the variable:
+  `(defn f ((v (ref (Vector &T))) :where (Any T)):i32 …)` collects `T` from
+  the `:where` clause and then binds it through the wrapper as usual.
 - **Binding** gathers the concrete type at every bare occurrence of a variable
   among the arguments and requires they agree; the bound type must conform
   (nominally, via `extend`) to the variable's protocol(s). There is no unifier:

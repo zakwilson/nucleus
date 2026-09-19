@@ -89,8 +89,8 @@ Unicode-tables library.
 
 I really want strings to be Seq, or to add another protocol. It should be
 possible to `doseq` a string. (Today it takes an explicit iterator binding
-plus `doseq-iter` + `addr-of` ceremony: bind `(chars sv)` or `(bytes sv)`,
-then `(doseq-iter (c (addr-of it)) …)` — see examples/strview-read-test.nuc.)
+plus `doseq-iter` + `&it` ceremony: bind `(chars sv)` or `(bytes sv)`,
+then `(doseq-iter (c &it) …)` — see examples/strview-read-test.nuc.)
 
 ## Variadic declare
 
@@ -184,11 +184,16 @@ template stamp loses the pointer KIND"): `lib/read.nuc`'s own error value
 could not be `(Result raw:Node ReadError)` for exactly this reason, and is a
 hand-written structural `defunion` instead (`ReadResult`, which `try`/`match`/
 `unwrap` treat as a Result because `result-union-of` is structural rather than
-template-instance-only). Already in scope for
+template-instance-only). **Not closed by Stage 21 item 1** (2026-09-19):
 [stage21-cleanup/pointer-kind-spellings.md](../stage21-cleanup/pointer-kind-spellings.md)
-PK-5/PK-6 — every stamped `pkind` in `src/` has to move together, since the
-memo key (`type-mangle-token`) does not distinguish pointer kinds and the
-first stamp of either kind answers for both.
+changed spellings and the pattern walkers, not the stamp — PK-4b found the
+stamp still loses `pkind` and built around it (`sigil-unwrap-type` peels a
+`TY-PTR` by *shape*, since a `(Vector &Pt)` / `(Vector ?&Pt)` /
+`(Vector raw:Pt)` are one stamp whose recorded origin argument is whichever
+kind stamped first; §6 "as built", and `context/conventions.md` "A template
+stamp loses the pointer KIND"). Still deferred: every stamped `pkind` in
+`src/` has to move together, since the memo key (`type-mangle-token`) does not
+distinguish pointer kinds and the first stamp of either kind answers for both.
 
 ## A string-literal receiver in head position mis-parses a struct member access
 

@@ -128,6 +128,15 @@ change, which is the proof that the two spellings only ever differed as text.
 
 ## 6. `&x` is `(addr-of x)`
 
+**Update (2026-09-19):** superseded by
+[stage21-cleanup/pointer-kind-spellings.md](../stage21-cleanup/pointer-kind-spellings.md)
+(PK-1, PK-5b). The reader-macro row now writes `ref`, not `addr-of`, so a
+standalone `&T` in a type slot and `&x` in a value slot are one `(ref …)` node
+— the "value-side changes cost zero" argument below held for `addr-of` only
+because `addr-of` was already a value head; `ref` needed the arms §3 there
+lists — and `addr-of` itself is retired and reserved. The text below is kept
+as written.
+
 `(addr-of x)` is written ~854 times in the tree (530 `src/`, 198 `examples/`,
 109 `lib/`, 17 fixtures) and it is the most verbose thing in ordinary Nucleus
 code. `&x` is the C++/Go/Rust/Zig spelling for it, and it is now the Nucleus

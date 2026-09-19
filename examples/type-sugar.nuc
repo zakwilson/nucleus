@@ -1,0 +1,159 @@
+; Stage 21 — type-sigil and pointer-kind spellings mean one thing in every slot
+; (design/stage21-cleanup/pointer-kind-spellings.md §1.1, §8).
+;   ?(V)  !(V)  ?!(V)  &?(V)   the sigil-paren class, read as (? (V)) etc. —
+;                              before Stage 21 it parsed in no position at all
+;   &Pt                        (ref Pt) standalone or attached; (as &Pt &p) is
+;                              a type and an operator in one form
+;   (Vector ?T)  (Vector !T)   a sigil over a type variable is a wrapper in a
+;                              generic pattern
+; in each position the matrix names: let / with, defn parameter (colon and
+; list), return `):S` and `) S`, defvar, defstruct field, defunion arm,
+; defprotocol + extend, lambda, as / unsafe/cast / sizeof / alloca, template
+; argument, deftype, and a macro argument. Two rows are left out for defects
+; outside this design (overview.md, "Candidate rough edges"): a lambda's declared
+; return loses its pointer kind, and a defunion arm holding a value-?/! over a
+; struct dies in the compile-time module — the arms below hold niche pointers.
+(import-use "stdio.h")
+(import-use vector)
+
+(defstruct Pt x:i32 y:i32)
+
+; defstruct field: colon form, list form, and the standalone `(link &Pt)`.
+(defstruct Holder
+  mv:?(Vector i32)
+  (rv (! (Vector i32)))
+  (link &Pt)
+  qr:?!(Vector i32))
+
+; defunion arm: colon form and list form, both niche-encoded nullable pointers.
+(defunion Slot
+  (held p:?&(Vector i32))
+  (listed (q (?ref Pt)))
+  empty)
+
+; deftype.
+(deftype MV ?(Vector i32))
+(deftype PtRef &Pt)
+
+; defvar.
+(defvar g-mv:?(Vector i32))
+(defvar g-rv:!(Vector i32))
+
+; defn parameter (colon and list form); return as `):S` and as `) S`.
+(defn mv-len (m:?(Vector i32)):i32
+  (match m ((some v) (return (unsafe/cast i32 (count &v)))) (none (return -1))))
+(defn mv-len-list ((m (? (Vector i32)))):i32 (return (mv-len m)))
+(defn rv-len (r:!(Vector i32)):i32
+  (match r ((ok v) (return (unsafe/cast i32 (count &v)))) ((err e) (return -9))))
+(defn qr-len (q:?!(Vector i32)):i32
+  (match q ((some r) (return (rv-len r))) (none (return -1))))
+(defn give-mv (n:i32):?(Vector i32)
+  (when (< n 0) (return none))
+  (let (v:(Vector i32) (vector-new))
+    (dotimes (i n) (conj &v i))
+    (return (some v))))
+(defn give-rv (n:i32) !(Vector i32)
+  (let (v:(Vector i32) (vector-new))
+    (dotimes (i n) (conj &v i))
+    (return (ok v))))
+(defn give-qr (n:i32):?!(Vector i32)
+  (when (< n 0) (return none))
+  (let (r:!(Vector i32) (give-rv n))
+    (return (some r))))
+
+; `&?(V)`: a reader-macro operand fuses too, so this is `(ref (? (Vector i32)))`.
+(defn ref-len (p:&?(Vector i32)):i32 (return (mv-len @p)))
+(defn ref-len-list ((p (ref (? (Vector i32))))):i32 (return (mv-len @p)))
+
+; defprotocol signature and its conformer: `&Self` and `?(Vector i32)`.
+(defprotocol Spread (spread ((self &Self) n:i32):?(Vector i32)))
+(defn spread (p:&Pt n:i32):?(Vector i32) (return (give-mv (+ n (p 'x)))))
+(extend Pt Spread)
+
+; A sigil over a type variable: `(Vector ?T)` and `(Vector !T)` are receiver-
+; inferred patterns that bind `T` to the type under the sigil; a bare `!T`
+; parameter needs its `:where` like any other top-level type variable.
+(defn count-q ((v (ref (Vector ?T)))):i32 (return (unsafe/cast i32 (count v))))
+(defn count-b ((v (ref (Vector !T)))):i32 (return (unsafe/cast i32 (count v))))
+(defn unwrap-or ((r !T) (d T) :where (Any T)):T
+  (match r ((ok v) (return v)) ((err e) (return d))))
+
+; A macro takes the sigil-paren type as one argument, `(? (Vector i32))`, and
+; splices it in the list form — `~name:(T)` would read as `(unquote (name (T)))`.
+(defmacro let-typed (name ty init :rest body)
+  `(let ((~name ~ty) ~init) ~@body))
+
+(defn main ():i32
+  ; let, colon and list form.
+  (let (a:?(Vector i32) (give-mv 3)
+        b:(? (Vector i32)) (give-mv -1)
+        r:!(Vector i32) (give-rv 2)
+        q:?!(Vector i32) (give-qr 4)
+        pt:Pt (Pt 5 6))
+    (printf "let: %d %d %d %d\n" (mv-len a) (mv-len b) (mv-len-list a) (rv-len r))
+    (printf "?!: %d %d\n" (qr-len q) (qr-len (give-qr -1)))
+    (with (w:?(Vector i32) (give-mv 1))
+      (printf "with: %d\n" (mv-len w)))
+    (printf "&?: %d %d\n" (ref-len &a) (ref-len-list &a))
+    ; as, sizeof (one type, so one size), alloca, unsafe/cast.
+    (printf "as sizeof: %d %d\n" (mv-len (as ?(Vector i32) a))
+            (if (= (sizeof ?(Vector i32)) (sizeof (? (Vector i32)))) 1 0))
+    (let (s:&?(Vector i32) (alloca ?(Vector i32))
+          erased:ptr (unsafe/cast ptr s))
+      (set! @s (give-mv 2))
+      (printf "alloca cast: %d %d\n" (ref-len s) (ref-len (unsafe/cast &?(Vector i32) erased))))
+    ; defvar.
+    (set! g-mv (give-mv 4))
+    (set! g-rv (give-rv 2))
+    (printf "defvar: %d %d\n" (mv-len g-mv) (rv-len g-rv))
+    ; defstruct fields.
+    (let (hm:?(Vector i32) (give-mv 1)
+          hr:!(Vector i32) (give-rv 2)
+          hq:?!(Vector i32) (give-qr 3)
+          pp:&Pt &pt
+          h:Holder (Holder hm hr pp hq))
+      (printf "field: %d %d %d %d\n" (mv-len (h 'mv)) (rv-len (h 'rv)) ((h 'link) 'y) (qr-len (h 'qr))))
+    ; defunion arms.
+    (let (v0:(Vector i32) (vector-new)
+          s1:Slot (make Slot held &v0)
+          s2:Slot (make Slot listed (as-ref &pt))
+          s3:Slot (make Slot empty))
+      (match s1
+        ((held p) (if-some (vp p) (printf "arm: held %d\n" (unsafe/cast i32 (count vp))) (printf "arm: held none\n")))
+        ((listed p) (printf "arm: listed\n"))
+        (empty (printf "arm: empty\n")))
+      (match s2
+        ((held p) (printf "arm: held\n"))
+        ((listed p) (if-some (qp p) (printf "arm: listed %d\n" (qp 'x)) (printf "arm: listed none\n")))
+        (empty (printf "arm: empty\n")))
+      (match s3
+        ((held p) (printf "arm: held\n"))
+        ((listed p) (printf "arm: listed\n"))
+        (empty (printf "arm: empty\n"))))
+    ; deftype.
+    (let (m:MV (give-mv 6) pr:PtRef &pt)
+      (printf "deftype: %d %d\n" (mv-len m) (pr 'x)))
+    ; protocol dispatch through the conformer.
+    (printf "protocol: %d\n" (mv-len (spread &pt 2)))
+    ; lambda parameter and return.
+    (let ((f (fn ?(Vector i32)) (?(Vector i32))) (fn (m:?(Vector i32)):?(Vector i32) (return m)))
+      (printf "lambda: %d\n" (mv-len (f a))))
+    ; template argument in let, in sizeof, and in a generic defn's pattern.
+    (let (vv:(Vector ?(Vector i32)) (vector-new)
+          vb:(Vector !(Vector i32)) (vector-new)
+          vq:(Vector ?Pt) (vector-new)
+          mp:?Pt (some pt))
+      (conj &vv (give-mv 1))
+      (conj &vv (give-mv -1))
+      (conj &vb (give-rv 1))
+      (conj &vq mp)
+      (printf "template: %d %d %d %d\n" (count-q &vv) (count-b &vb) (count-q &vq)
+              (if (= (sizeof (Vector ?(Vector i32))) (sizeof (Vector i32))) 1 0))
+      (let (o3:!i32 (ok 3) e4:!i32 (err 4))
+        (printf "!T: %d %d\n" (unwrap-or o3 9) (unwrap-or e4 9))))
+    ; Both meanings of `&` in one form: `(as &Pt &pt)`, and `(sizeof &Pt)`.
+    (printf "both: %d %d\n" ((as &Pt &pt) 'x) (unsafe/cast i32 (sizeof &Pt)))
+    ; A macro argument.
+    (let-typed lm ?(Vector i32) (give-mv 5)
+      (printf "macro: %d\n" (mv-len lm)))
+    (return 0)))
