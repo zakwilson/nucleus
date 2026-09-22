@@ -338,6 +338,15 @@ not against whatever the expansion happened to lower to.
   user's line. A `null` node reports at line 0.
 * **It aborts the expansion**, so nothing after it in the macro body runs. In the
   REPL it returns to the prompt rather than ending the session.
+* **Check the shape before you walk it.** A macro body runs inside the
+  compiler, and `Node.car`/`Node.cdr` are `(raw Node)` — unchecked, so `(x 'car)`
+  on a null node is a null dereference that kills `nucleusc` with a segfault and
+  no diagnostic, before any `macro-error` it was about to raise. Guard each step
+  in a short-circuit chain — `(or (= b null) (!= (b 'kind) NODE-CELL) (= (b 'cdr)
+  null) …)` — and only then destructure. The prelude's `doseq`, `doseq-iter` and
+  `dotimes` do not yet guard their binding list, so `(doseq item v (VecIter i32)
+  …)` — the list unparenthesised — currently crashes the compiler rather than
+  reporting the shape (Stage 21 rough edges).
 
 ## `macrolet` — lexically scoped macros
 

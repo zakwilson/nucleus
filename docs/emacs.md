@@ -55,6 +55,13 @@ JSON error frames written to stderr are recognized by
 `compilation-shell-minor-mode` (regex matches `"file":"…","line":N`),
 so error lines are clickable and `M-g M-n` / `M-g M-p` walks them.
 
+`nucleus-repl-program-args` is a single global list — deliberately so, since a
+per-project build line (a GTK demo's `-I`s and `-l`s, say) does not belong on
+it. Add such a line as `(cflag ...)` / `(pkg-config ...)` / `(load-library
+...)` forms instead, kept in a scratch buffer and sent to the running session
+with `C-c C-k` (`nucleus-load-buffer`) — see [Using a C library at the
+prompt](compiler.md#using-a-c-library-at-the-prompt).
+
 ## Source-buffer keys (`nucleus-interaction-mode`)
 
 | Key                    | Command                       | What it does                                                                 |

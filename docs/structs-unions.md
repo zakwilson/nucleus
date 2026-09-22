@@ -437,7 +437,11 @@ typedef struct Foo   *FooPtr;    /* -> ptr  */
 Resolution happens where the `typedef` is parsed, so a chain costs one lookup at
 each use and a self-referential typedef cannot loop. `enum` is understood as a
 declaration specifier too, tagged (`enum Tag e`) or inline (`enum { A, B } e`),
-and lowers to `i32`. A `typedef` of a struct or union keeps going through the
+and lowers to `i32`; an attribute run between the body and the declarator —
+`typedef enum { … } __attribute__((flag_enum)) GApplicationFlags;`, which GLib
+writes for every flags enum under clang — is consumed like a struct's trailing
+`__attribute__((packed))`, so the declarator that follows it is the name
+recorded. A `typedef` of a struct or union keeps going through the
 struct registry, so it can be used as `ptr:Name` and — when its layout is known —
 by value.
 

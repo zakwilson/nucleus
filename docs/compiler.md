@@ -9,7 +9,7 @@ By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` un
 | `-o <path>` | Output path. For binary mode the default is `a.out`; with `-c` the default is `out.o`; with `--emit-llvm` output still goes to stdout. |
 | `-c` | Emit a `.o` object file instead of linking a binary. |
 | `--emit-llvm` / `-S` | Output textual LLVM IR to stdout (the legacy default). Required when the consumer wants `.ll` text — bootstrap, library `.ll` rules, and the `make bootstrap` fixed-point check all pass this flag. |
-| `-l<lib>` / `-L<dir>` | Forwarded to `clang` at the link step. |
+| `-l<lib>` / `-L<dir>` | Forwarded to `clang` at the link step. Under `-i`, loaded into the session instead — see [Using a C library at the prompt](#using-a-c-library-at-the-prompt). |
 | `-O0` / `-O1` / `-O2` / `-O3` (or bare `-O` = `-O2`) | Optimization level. Default is `-O0`. At `-O1` and above the LLVM **middle-end pass pipeline** (`default<O`N`>` — mem2reg, instcombine, LICM, GVN, LoopVectorize, SLPVectorize, …) runs on the module before codegen, in addition to setting the backend `CodeGenOptLevel`. At `-O0` neither runs (straight to `LLVMTargetMachineEmitToFile`). Only affects the object/binary path; `--emit-llvm` always emits unoptimized textual IR. Higher levels make the build noticeably slower. |
 | `-Ofast` | `-O3` plus `-ffast-math`. |
 | `-ffast-math` | Emit `fast` flags on floating-point arithmetic (`fadd`/`fsub`/`fmul`/`fdiv`/`frem`), permitting reassociation, contraction, and no-signed-zero/no-NaN assumptions. This is what lets the optimizer vectorize FP **reductions** (e.g. `pi += …`); without it an FP reduction stays scalar even at `-O3` because reordering would change results. Comparisons are left unflagged. Changes numerical results — opt-in only. |
@@ -26,8 +26,9 @@ By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` un
 | `--mcpu=<cpu>` | The target CPU/device passed to LLVM's `TargetMachine` (e.g. `--target=avr --mcpu=attiny1634`). Only meaningful with `--target=`; the host target always uses the empty (generic) CPU. For AVR, use the device name when LLVM lists it (`attiny1634`) or the family core for a device LLVM doesn't know (`avrxmega3` covers the AVR-Dx parts). Currently the datalayout for a given triple is CPU-independent, so `--mcpu` selects the codegen ISA, not the ABI. For `riscv64`, `--mcpu` overrides only the CPU (default `generic-rv64`); the `+m,+a,+f,+d,+c` features and `lp64d` ABI module flag are fixed per-triple defaults, unaffected by `--mcpu`. |
 | `--mmcu=<device>` | The AVR device name passed to the link driver as `-mmcu=<device>` (e.g. `--target=avr --mcpu=avrxmega3 --mmcu=avr32dd20`). Only consulted on an AVR triple; ignored otherwise. Distinct from `--mcpu`: `--mcpu` picks the LLVM codegen ISA/family (`avrxmega3` covers a whole AVR-Dx family core), while `--mmcu` picks the exact device for avr-gcc's device-specific linker script and startup code. When `--mmcu` is not given, the link step falls back to the `--mcpu` value — sufficient when `--mcpu` already names an exact device (e.g. `attiny1634`), but a bare family core like `avrxmega3` still links (a generic family layout) rather than erroring, so pass `--mmcu=<device>` explicitly whenever the target is a specific chip. |
 | `--sysroot=<path>` | The sysroot passed to the `clang -E` that reads a C header import (`--sysroot=<path>`), so a cross-compile reads the **target's** headers rather than the host's. Only the preprocessor consults it — pass `--link-arg=--sysroot=<path>` to give the link step the same root. Independent of `--target=`: with no `--target=` it overrides the host's own header search. See [C headers under `--target=`](#c-headers-under---target). |
+| `--cflag=<arg>` | Pass one verbatim argument to the `clang -E` that reads a C header import, so a header outside clang's default search path can be imported: `--cflag=-I/usr/include/gtk-4.0`. Repeatable, one argument per occurrence (a directory with a space in it is one argument, never re-split); only the preprocessor consults it, exactly like `--sysroot=`, so a `-D` given this way gates the header's `#if`s but is not itself admitted as a constant. The twin of `--link-arg=<arg>` for the other end of the build. **`-I` is the Nucleus import path and is not forwarded**: a directory of `.nuc` modules routinely carries generated `.h` files named after them (`lib/string.h` is one), and a clang `-I` precedes the system directories, so forwarding it would have the prelude's `(import-use "string.h")` read the wrong file. See [C headers outside the default search path](#c-headers-outside-the-default-search-path). |
 | `--linker=<cmd>` | Override the link-driver command/path used for the final link step. Wins over the triple-based default (`clang` for hosted targets, `avr-gcc` for an AVR `--target=`, `riscv64-linux-gnu-gcc` for a `riscv64` `--target=` **when cross-compiling**) regardless of triple. On a riscv64 *host* the sysroot is `/`, so a `riscv64` target keeps the plain `clang` default rather than reaching for the triplet-prefixed cross driver — the latter is a Debian-family naming convention that other riscv64 distros do not ship. Pass `--linker=cc` (or `--linker=gcc`) if the native host has no `clang`. |
-| `--link-arg=<arg>` | Pass one verbatim argument to the link driver, appended after the object file — and after the compiler's own `-Wl,--gc-sections` (see [Separate compilation and symbol linkage](#separate-compilation-and-symbol-linkage)), so `--link-arg=-Wl,--no-gc-sections` turns that off. Generalizes `-l<lib>`/`-L<dir>` (which route through the same mechanism) to arbitrary linker flags. |
+| `--link-arg=<arg>` | Pass one verbatim argument to the link driver, appended after the object file — and after the compiler's own `-Wl,--gc-sections` (see [Separate compilation and symbol linkage](#separate-compilation-and-symbol-linkage)), so `--link-arg=-Wl,--no-gc-sections` turns that off. Generalizes `-l<lib>`/`-L<dir>` (which route through the same mechanism) to arbitrary linker flags. Ignored under `-i` — the REPL never links. |
 
 ## Diagnostics
 
@@ -331,13 +332,13 @@ shape.
 
 Start with `nucleusc -i`. The REPL reads one form at a time, JIT-compiles it, and prints the result. Multi-line input is supported (the REPL detects unbalanced parentheses and prompts for continuation lines with `...>`).
 
-Supported top-level forms in the REPL: `ns`, `defn`, `defvar`, `defconst`, `defenum`, `defstruct`, `defunion`, `deftype`, `extern`, `import`, `import-use`, `import-prefixed`, `import-only`, `import-ct`, `unsafe/import-private`, `defmacro`, `def-rmacro`, `compile-time`, `macroexpand`, `macroexpand-1`, `macroexpand-all`. Any other form (including bare symbols, integers, and function calls) is evaluated as an expression.
+Supported top-level forms in the REPL: `ns`, `defn`, `defvar`, `defconst`, `defenum`, `defstruct`, `defunion`, `deftype`, `extern`, `import`, `import-use`, `import-prefixed`, `import-only`, `import-ct`, `unsafe/import-private`, `defmacro`, `def-rmacro`, `compile-time`, `macroexpand`, `macroexpand-1`, `macroexpand-all`. Any other form (including bare symbols, integers, and function calls) is evaluated as an expression. A void-typed expression is evaluated for its effect and prints nothing — a `printf` inside a void `defn`'s body runs, `(dotimes ...)` runs, `(gtk_init)` runs.
 
 Result printing is type-aware: integer kinds print as decimal, string literals print as `"..."` with escapes, quoted forms (`'foo`, `(quote ...)`) print using the AST printer, and other pointer values print as `#<ptr 0x...>`. That spelling is not special syntax the reader recognizes — `#`, `<` and `>` are all ordinary symbol characters, so `#<ptr 0x...>` reads back as plain symbols with no error — it exists only to make an unreadable value visibly distinct from one that does, not to round-trip as input.
 
 `macroexpand` / `macroexpand-1` print the expansion of a quoted form. `(macroexpand '(when c b))` expands to fixpoint; `(macroexpand-1 '(when c b))` expands one step. An optional integer second arg overrides the depth: `(macroexpand 'form 2)` expands at most twice; `(macroexpand 'form -1)` expands to fixpoint. Subforms are not recursed into (matches Common Lisp `macroexpand`). If the form is not a macro call (head is missing or not a registered macro), the REPL prints `not a macro call: <form>` rather than echoing the input unchanged. `macroexpand-all` expands the head to fixpoint and then recursively expands every subform; quoted/quasiquoted forms are left untouched.
 
-Functions defined in the REPL persist across inputs and can call each other. All libc functions (stdio, stdlib, string, ctype, unistd) are pre-loaded — no `(import-use ...)` needed.
+Functions defined in the REPL persist across inputs and can call each other. All libc functions (stdio, stdlib, string, ctype, unistd) are pre-loaded — no `(import-use ...)` needed. Any other C library needs its header imported and its shared object loaded into the session before its functions are callable — see [Using a C library at the prompt](#using-a-c-library-at-the-prompt).
 
 Imported libraries work, in every spelling a source file may use: `(import-use mathlib)` makes `square`, `cube`, etc. available; `(import nsgeom)` and `(import-prefixed nsgeom g)` bind `nsgeom/area` and `g/area`; `(import-ct lib)` registers a library's compile-time surface only, so a reference to one of its functions is refused as compile-time-only; `(unsafe/import-private lib p)` also reaches the library's private symbols. Each import prints what it did — `  imported mathlib`, or `  mathlib already imported` when the form was a no-op, so a retry that is deduplicated away is distinguishable from one that loaded. The REPL boots by importing the standard prelude, exactly as a batch compile does, so `Node`, the `NODE-*` constants, `StrView`, `(Maybe T)`/`?T`, `(Result T E)`/`!T`, `Clone` and the standard macros (`if`, `when`, `unless`, `for`, `dotimes`, `->`) are all in scope without an explicit import, and mean the same thing they mean in a batch compile.
 
@@ -366,6 +367,11 @@ For tooling and interactive use, the REPL recognizes these forms in addition to 
 | `(locate sym)` | Print `<file>:<line>` of the symbol's definition. Reports `<unbound>` or `(no source recorded)` for built-in primitives and prelude-registered struct/consts. |
 | `(forget sym)` / `(reset! sym)` | Drop a REPL-local definition so the name becomes unbound. For functions, also tears down the impl resource-tracker; the thunk module persists, so the function's signature is locked for the rest of the session (a redefinition with a different signature still requires a session restart). |
 | `(trace fn)` / `(untrace fn)` | Toggle entry/exit logging for a function. `trace` JITs a `@<name>.trace` shim with the same ABI, copies the current impl pointer into `@<name>.trace.impl`, and repoints `@<name>.tgt` at the shim. Args/returns are not pretty-printed — only `[trace] enter <name>` / `[trace] exit <name>`. Redefining a traced function silently disables tracing (the redef path overwrites `@<name>.tgt` with the new impl directly). |
+| `(cflag "<arg>" ...)` | Add a preprocessor argument — the prompt-time form of `--cflag=<arg>`. Every argument is validated before any is applied, then each is reported `  cflag: <arg>`; also empties the C-header preprocess cache and re-arms the `-dM` macro baseline, so a header import that failed for want of a flag is retryable in the same session, and a prompt-time `-D` is baseline-subtracted like a command-line one. `(cflag)` lists the flags in force, one per line, `  (none)` when empty. |
+| `(import-path "<dir>" ...)` | Add a directory to the Nucleus import search path — the prompt-time form of `-I<dir>`. Each directory is checked to exist (`import-path: no such directory '<dir>'` if not) before any argument is applied; a success is reported `  import path: <dir>`. `(import-path)` lists. |
+| `(library-path "<dir>" ...)` | Add a directory to the shared-library search path — the prompt-time form of `-L<dir>`, consulted by `load-library`. Arguments are validated as `import-path`'s are. Reported `  library path: <dir>`; `(library-path)` lists. |
+| `(load-library "<lib>" ...)` | Load a shared library into the compiler process (`LLVMLoadLibraryPermanently`, i.e. `dlopen` `RTLD_GLOBAL`) — the prompt-time form of `-l<lib>` — making its C functions callable from JIT'd code (see [Using a C library at the prompt](#using-a-c-library-at-the-prompt)). A bare name becomes `lib<name>.so` (`.dylib`/`.dll` by host), searched under the library paths then the loader's own search; a name containing `/` or `.` is taken verbatim. Loads each argument in order, stopping at the first failure; a spelling already loaded answers `  <spelling> already loaded`; a failure reports `load-library: cannot load '<name>' (tried <a>, <b>, ...)`, since the LLVM C API does not surface `dlerror`. `(load-library)` lists what has been loaded. |
+| `(pkg-config "<pkg>" ...)` | Run `pkg-config --cflags` and `--libs` for the given packages and apply the result: `--cflags` words go to `cflag`, `-L`/`-l` words go to `library-path`/`load-library`, anything else is reported `  skipped: <word>` (e.g. `-pthread`, `-Wl,...`). A missing package applies nothing and reports pkg-config's own diagnosis (`pkg-config: <first stderr line>`); `PKG_CONFIG_PATH` is inherited. |
 
 Functions can be redefined. Redefining a `defn` confirms with `redefined` (vs. `defined` for first sight) and the new body wins for **all** callers, including ones JIT'd before the redefinition. This is implemented by routing every call through a stable `@<name>` thunk that loads the latest impl pointer from `@<name>.tgt`; each definition is JIT'd as `@<name>.impl.<N>` under its own LLVM ORC resource tracker, and the previous tracker is removed on redefinition. `&foo` returns the thunk address, so captured pointers also see the latest impl.
 
@@ -374,6 +380,38 @@ Limitations:
 - Redefining a function with a different signature is allowed by the REPL but existing callers were compiled against the old signature; calls through them have undefined behavior. Restart the session if the type changes.
 - `(import-use node)` brings in the AST utilities (`make-cell`, `node-int`, `node-at`, `node-len`, `node-is-list`, `node-line`, `node-kind`); they allocate via `arena-alloc` and the arena initializes lazily on first call. `node-at` returns a *nullable* node — `()` reads as null (see [Empty lists in a declaration](#empty-lists-in-a-declaration)) — so read its result's kind with `node-kind`, which answers `NODE-NIL` instead of faulting, and its line with `node-line`. `node-int` builds the `NODE-INT` leaf a quasiquote needs when what is interpolated is a computed number (see [Interpolating a computed number](macros.md#interpolating-a-computed-number)).
 - stdout from JIT'd code is line-buffered (`setvbuf(stdout, NULL, _IOLBF, 0)` is called on REPL startup) so printf output appears immediately in both terminal and pipe-driven sessions.
+
+### Using a C library at the prompt
+
+`(pkg-config ...)` is the shape a GTK session takes — this is not a captured transcript (the container has no GTK):
+
+```
+nuc> (pkg-config "gtk4")
+  cflag: -I/usr/include/gtk-4.0
+  cflag: -I/usr/include/glib-2.0
+  ...
+  loaded libgtk-4.so
+  loaded libpangocairo-1.0.so
+  ...
+nuc> (import-use "gtk/gtk.h")
+  imported gtk/gtk.h
+nuc> (gtk_init)
+nuc>
+```
+
+`(gtk_init)` is `void`; it runs and prints nothing (see above). A distribution's `gtk4.pc` names no `-L` (its libraries are on the loader's default path), so `loaded libgtk-4.so` is the bare spelling the loader resolved; a `.pc` that does name one prints `  library path: <dir>` first and the load then reports the path it found, `loaded <dir>/libgtk-4.so`. The same build line assembled by hand, one flag at a time:
+
+```
+nuc> (cflag "-I/usr/include/gtk-4.0" "-I/usr/include/glib-2.0")
+  cflag: -I/usr/include/gtk-4.0
+  cflag: -I/usr/include/glib-2.0
+nuc> (load-library "gtk-4")
+  loaded libgtk-4.so
+nuc> (import-use "gtk/gtk.h")
+  imported gtk/gtk.h
+```
+
+The flag vectors and the loaded libraries are **session configuration**, not definitions: a failed `import-use` afterward does not roll back a `cflag`/`import-path`/`library-path`/`load-library` typed before it, and none of the four forms — nor `pkg-config` — ever reaches a batch build; `main`'s own flag parser is untouched. A header already imported is not re-read after a later `cflag`; retrying `(import-use "x.h")` for an `x.h` already imported answers `already imported` regardless of what flags changed since. `LD_LIBRARY_PATH` is read once, at process start, by the loader — `library-path` is the prompt-time equivalent for a library `load-library` searches for by bare name. `PKG_CONFIG_PATH` is inherited from the environment the REPL was started in, exactly as a shell's `pkg-config` would read it. A GTK main loop (`(g_application_run app 0 null)`) blocks the prompt until the last window closes, since a session is one thread — build and present widgets without entering it. There is no unloading a library once `load-library` succeeds, and a loaded library shares the compiler's own process: a crash inside it is a crash of the session, with no fault boundary. A bare name resolves to the development symlink `lib<name>.so`, and on glibc a few of those (`libm.so`, `libc.so`) are linker scripts, which `dlopen` refuses — for those, name the soname: `(load-library "libm.so.6")` (a name containing `.` is taken verbatim).
 
 ## .nuch Header Format
 
@@ -663,6 +701,58 @@ That is the pre-existing behaviour, now announced rather than silent; the
 declarations it produces have the host's widths and are only as correct as the
 two data models happen to agree. A header that exists on **no** search path is a
 hard, located error at the import, with clang's own diagnosis beneath it.
+
+## C headers outside the default search path
+
+The `clang -E` above carries no include directory of its own, so a library
+whose headers live outside clang's default search path — GTK 4, spread over
+`/usr/include/gtk-4.0`, `/usr/include/glib-2.0`, `/usr/lib/<multiarch>/glib-2.0/include`
+and more, the reason `pkg-config --cflags` exists — fails at the import:
+
+```
+  note: clang -E -x c -include gtk/gtk.h /dev/null
+<built-in>:1:10: fatal error: 'gtk/gtk.h' file not found
+app.nuc:1: error: c-include: failed to preprocess 'gtk/gtk.h'
+```
+
+`--cflag=<arg>` hands the preprocessor one verbatim argument; repeat it for
+each. The `note:` shows the flags that were passed, in the position they were
+passed, so a failure can be reproduced by hand:
+
+```
+$ nucleusc --cflag=-I/usr/include/gtk-4.0 --cflag=-I/usr/include/glib-2.0 … app.nuc -o app $(pkg-config --libs gtk4)
+```
+
+`pkg-config` prints its flags space-separated, and each becomes one
+`--cflag=`; in a Makefile that is one `addprefix`:
+
+```make
+GTK_CFLAGS := $(addprefix --cflag=,$(shell pkg-config --cflags gtk4))
+app: app.nuc
+	nucleusc $(GTK_CFLAGS) $< -o $@ $(shell pkg-config --libs gtk4)
+```
+
+An absolute header path (`(import-use "/usr/include/gtk-4.0/gtk/gtk.h")`) is
+not a substitute: clang opens that file and then fails at its first nested
+`#include`, which needs the search path. `nucleusc -I<dir>` is not one either —
+it is the *Nucleus* import path (where `name.nuc` / `name.nuch` are looked
+up) and is deliberately never forwarded to clang: a directory of Nucleus
+modules routinely carries generated C headers named after them (`lib/string.h`,
+`lib/error.h`, `lib/io.h`, …), and a clang `-I` precedes the system
+directories, so `-I ../nucleus/lib` would have the prelude read the C header of
+`lib/string.nuc` in place of libc's `<string.h>`. The child `clang` also
+inherits the environment, so `CPATH` reaches it; prefer the flag, which is
+visible in the build line and carries no such shadowing surprise.
+
+Only the preprocessor consults `--cflag=`. A `-D` given this way gates the
+header's `#if`s — a declaration or `#define` behind `#ifdef X` appears with
+`--cflag=-DX=1` and not without — but `X` itself is not admitted as an
+[integer constant](#integer-constants-from-a-c-header): a command-line macro is
+clang's predefine, not the header's. The link step sees none of it; give it
+`--link-arg=` or bare `-l`/`-L` as before.
+
+At the REPL, `--cflag=`, `-I`, `-L` and `-l` are all prompt-time forms instead
+of command-line ones — see [Using a C library at the prompt](#using-a-c-library-at-the-prompt).
 
 ## Integer constants from a C header
 

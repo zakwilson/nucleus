@@ -133,6 +133,14 @@ Prefer the REPL when iteration speed matters more than reproducibility:
   symbols: `(locate 'foo)` is rejected, because the parsed argument is a cell.
   `kind-of`/`defined?` also take a string, which is the only way to ask about a
   reader macro — `(kind-of "'")`.
+- A C library outside the compiler's own link line needs `(load-library ...)`
+  (or `-l<lib>` on the argv, which now loads under `-i` too) before its first
+  call, else `JIT session error: Symbols not found: [ ... ]`. `(cflag ...)`,
+  `(import-path ...)`, `(library-path ...)` and `(load-library ...)` are how a
+  heredoc session gets its build line without editing the launch command; see
+  [docs/compiler.md](../docs/compiler.md#using-a-c-library-at-the-prompt).
+  `(cflag ...)` also empties the header preprocess cache, so a header import
+  that failed for want of a flag is retryable in the same session.
 
 ## Importing a library the compiler itself links
 

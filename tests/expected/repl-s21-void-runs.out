@@ -1,0 +1,9 @@
+Nucleus REPL (type Ctrl-D to exit)
+nuc>   defined
+nuc>   defined
+nuc> nuc> nuc>   2
+nuc>   defined
+nuc> hello from void
+nuc> after
+  6
+nuc> 

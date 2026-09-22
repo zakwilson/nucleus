@@ -1,28 +1,38 @@
 # Stage 21 — Pointer-kind and type-sigil spellings: make the sugar general
 
-**Status:** designed 2026-09-16; **PK-1 built 2026-09-18** (after item 2, so
+**Status:** designed 2026-09-16; 
+
+**PK-1 built 2026-09-18** (after item 2, so
 the reader edit is the one `&` row in `lib/read.nuc`'s `read-macro-table-new`
 and there is no twin; `.ll` artifacts that *contain* the reader — `lib/read.nuc`,
 `lib/test.nuc` and their importers — move by that one string constant, which §9
 step 1's "no `.ll` differs" did not foresee; the value-path reach list needed one
 site §3 missed, `emit-callable-value`'s `q:(ref T)` annotation guard, which
-`(cb &x)` now reaches; see progress.md). **PK-2 built 2026-09-18**, made once in
+`(cb &x)` now reaches; see progress.md). 
+
+**PK-2 built 2026-09-18**, made once in
 `lib/read.nuc` (the only reader since item 2): `rd-open-segment?` is the gate,
 the split strips one trailing `:`, and the call moved from `rd-list` into
 `rd-form` (`rd-atom-form`); `dump-ast-corpus.sh verify` moved no input but
-`lib/read.nuc` itself, confirming §1.5's census. **PK-3 and PK-4a built
+`lib/read.nuc` itself, confirming §1.5's census. 
+
+**PK-3 and PK-4a built
 2026-09-18** (§5, §6a; the near-miss and the line-0 discipline reached five
 emitters and three `node-type` mirrors, not `emit-alloca-form` alone — `as`,
 `cast`, `sizeof` and `array` passed the interned atom's line too; `tyname-resolvable`
 still does not consult `deftype` aliases or C typedefs, so a bare alias name in a
 template argument is the same fake-tyvar shape as H5, out of this item's scope —
-see progress.md). **§9 step 2 done 2026-09-18**: `mint-collection-gensyms`
+see progress.md). 
+
+**§9 step 2 done 2026-09-18**: `mint-collection-gensyms`
 deleted (one-reader.md §4f, §10), the `__gs_N`-normalised identity gate held
 with `ir-snapshot.sh` moving nothing, and `make update-bootstrap` taken —
 `boot/nucleusc.ll` and both Windows boot IRs now read `(ref x)`, `(ref p 'f)`
 and the sigil-paren forms, so PK-5 may rewrite `src/`; the step-2
 `build/nucleusc.ll` is PK-5a's byte-identical baseline (progress.md, "Boot
-refresh for Stage 21"). **PK-5a built 2026-09-18**: `scripts/stage21/sugar-sweep.py`
+refresh for Stage 21"). 
+
+**PK-5a built 2026-09-18**: `scripts/stage21/sugar-sweep.py`
 swept 134 files to a fixed point (4,985 rewrites, 18 refusals); the compiler's
 `.ll` is byte-identical modulo the two prescribed local renames (a local's name
 is its alloca's name — §7's "byte-identical" holds only after the rename is
@@ -32,7 +42,9 @@ variable** (`?E` is a bare symbol; `subst-tyvars-sym` walks colon segments),
 `(Maybe (raw T))` (value-Maybe ≠ `?raw:T`), a paren operand in an **exported**
 slot (the cheader classifiers read a `(Maybe …)`/`(Result …)` head, not a
 `(? X)`/`(! X)` cell — §5's "walkers need no change" was one face), and an
-`extend` subject — are in §7. **PK-5b built 2026-09-18**: the four cell-building
+`extend` subject — are in §7. 
+
+**PK-5b built 2026-09-18**: the four cell-building
 sites mint `ref`; every `addr-of` reading arm is gone (`emit-list`, `node-type`,
 `fn-rewrite-captures`, `defvar-init-ir`, `defvar-check-init-order`,
 `gcheck-special-form`); `emit-addr-of`/`node-type-addr-of`/`defvar-addr-of-ir`
@@ -42,7 +54,9 @@ unknown-function site consults it too, since a generic body reaches `gcheck`
 before `emit-list` (`.&` had the same hole); `tests/` was swept with the
 script's new `--rules R1,R2` plus a string-literal pass for embedded programs;
 `ir-snapshot.sh` moved exactly one `.err`, `dump-ast-corpus.sh` only edited
-inputs (progress.md). **PK-4b built 2026-09-19** (§6 "as built"): `sigil-split`
+inputs (progress.md). 
+
+**PK-4b built 2026-09-19** (§6 "as built"): `sigil-split`
 in `src/generics.nuc` is the one reader of every sigil spelling and eight
 walkers consult it, not the four §6 named; the unifier peels a `TY-PTR` by
 **shape**, not by `PTR-MAYBE` (a template stamp loses the pointer kind, so the
@@ -54,7 +68,9 @@ refusal is lifted from the sweep and the two sites swept, byte-identical; the
 tyvar refusal **stays** — not for the substituter now, but because the boot
 compiler that builds `nucleusc` predates PK-4b and compiles the five `lib/`
 files those 14 sites live in (`lib/iterator.nuc:41: unknown type: E` on the
-first attempt) — lift at the next boot refresh. **PK-6 built 2026-09-19** (§8
+first attempt) — lift at the next boot refresh. 
+
+**PK-6 built 2026-09-19** (§8
 "as built"): `examples/type-sugar.nuc` is the matrix as one golden, four units
 were still missing (three of §8's table were already pinned by earlier
 milestones' units), the docs table was audited row by row, and two matrix rows

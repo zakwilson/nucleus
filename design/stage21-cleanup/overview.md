@@ -1,6 +1,6 @@
 # Stage 21 — cleanup
 
-**Status:** opened 2026-09-16. Two items designed; both built (item 2 on 2026-09-18, item 1 on 2026-09-19).
+**Status:** opened 2026-09-16. Four items designed and built (item 2 on 2026-09-18, items 1 and 3 on 2026-09-19, item 4 on 2026-09-21).
 
 **Goal.** Close the deferred items and rough edges the prior stages left behind
 — the ones recorded in [deferred/overview.md](../deferred/overview.md) and the
@@ -87,6 +87,68 @@ fewer "convention, not a rule" edges in it.
    `mint-collection-gensyms` (`src/nucleusc.nuc`) is deleted,
    `emit-collection-lit` mints the gensym itself, and the `__gs_N`
    renumbering was absorbed by that one refresh (one-reader.md §10).
+3. **A C header outside the default search path cannot be imported** —
+   **built 2026-09-19** —
+   [c-header-include-paths.md](c-header-include-paths.md) (CF-1 … CF-4).
+   `(import-use "gtk/gtk.h")` is fatal wherever GTK 4 is installed: the
+   `clang -E` that reads a header import (`cheader-cpp-command`,
+   `src/cheader.nuc:1399`) carries no include directory and nothing on the
+   compiler's command line can add one — `-I` is the Nucleus module search
+   path and never reaches clang, and an absolute header path dies at the
+   header's own first nested `#include`. Found through a GTK demo beside the
+   checkout, not on the deferred list. The fix is `--cflag=<arg>`: one
+   verbatim argument to the preprocessor, repeatable, the twin of
+   `--link-arg=<arg>`. Forwarding `-I` itself is rejected with a proof, not an
+   argument: `lib/` holds 44 generated C headers including `lib/string.h`, and
+   `clang -E -I lib -include string.h` opens that one, so every out-of-tree
+   build (`-I ../nucleus/lib`) would have the prelude read the C header of
+   `lib/string.nuc` in place of libc's. `CPATH` already works (the child
+   inherits the environment) and stays documented as a fact, not the answer.
+   Five units, no boot refresh, byte-identical `.ll` for the compiler's own
+   build. **As built** (c-header-include-paths.md §10): as designed, 1071
+   tests, `make bootstrap` converged; one pre-existing finding recorded below
+   — the header modes swallow an unpreprocessable header — and two walls the
+   GTK probes on the host hit: `MAX-STRUCTS` 1024 → 16384 (a guard, not a
+   size; GTK's dependency tree registers thousands), and an attribute run
+   between an enum body and its declarator (`} __attribute__((flag_enum))
+   Name;`, GLib 2.86's spelling of every flags enum), which the typedef parser
+   read as the declarator. The demo now compiles against the host's exact
+   `clang -E` stream, 13,233 declarations imported (1072 tests).
+4. **The REPL has no build line** — **designed and built 2026-09-21** —
+   [repl-build-line.md](repl-build-line.md) (RC-0 … RC-6). Item 3's flag
+   reaches a session only from argv, and an editor launches the REPL from one
+   global argument list (`nucleus-repl-program-args`), so a per-project GTK
+   build line has nowhere to go. Four gaps compound: no prompt-time spelling
+   for `--cflag=`, `-I` or a library; `-l`/`-L` under `-i` are **silently
+   nothing** (`g-link-args` is the link step's, and the REPL never links —
+   `Symbols not found` at the first call, probed); a header import that failed
+   for want of a flag is **cached as a failure** (`cheader-preprocess-mode`
+   parks a null buffer, keyed on path + mode because item 3 took flags to be
+   process-constant), so a retry after any fix is served the old answer; and
+   the `-dM` baseline is latched once at startup, so a later `-D` would be
+   admitted as a constant. Verdict: four meta forms mirroring four flags —
+   `(cflag …)`, `(import-path …)`, `(library-path …)`, `(load-library …)` —
+   each adding with arguments and reporting with none, arguments validated
+   before any is applied; `cheader-flags-changed` empties the cache and re-arms
+   the baseline; `-l`/`-L` under `-i` load through `LLVMLoadLibraryPermanently`
+   (already declared, `src/llvm.nuch:45`; `RTLD_GLOBAL` joins the process
+   scope LLJIT's `<Process Symbols>` dylib already searches — pinned by a C
+   probe against LLVM 19: `Symbols not found` before the load, `41` after,
+   no generator, and the failed module does not poison the later one); an
+   optional `(pkg-config "gtk4")` composes them from
+   pkg-config's two outputs. The flag vectors and loaded libraries stay
+   outside `ReplState` by design. **Prerequisite found on the first probe
+   (RC-0):** a void-typed expression at the prompt is compiled, JITed and
+   **never called** — `(bump)` twice leaves `counter` at 0 — because the
+   eval path's `TY-VOID` arm and fall-through are `(do)`; every GTK setup call
+   is void. No boot refresh; batch neutrality by construction and by
+   `ir-snapshot.sh verify`. **As built** (repl-build-line.md §12): as
+   designed, 1079 tests (six units + the void-runs golden), `make bootstrap`
+   converged, roster clean, 2780 snapshot artifacts byte-identical; the
+   directory test is `dir-exists?` not `read-dir`, `pkg-config: not found`
+   also covers a silent exit 127, glibc's `libm.so` is a linker script so the
+   soname is the spelling to load, and freedesktop pkg-config prints its
+   missing-package line unquoted.
 
 ## Sequencing
 
@@ -102,9 +164,12 @@ commit before the refresh and that one refresh absorbs the renumbering (deleting
 it after would leave the bootstrap diverged until the next); and R-4's `--dump-ast` corpus gate is
 the instrument PK-2 wants. If R-2 stalls, PK-2 proceeds in both readers with the
 twin edits pointer-kind-spellings.md §4 specifies. Rationale in
-[one-reader.md](one-reader.md) §8.
+[one-reader.md](one-reader.md) §8. Item 3 is independent of both and of the
+boot: a `defvar`, a `cond` arm and two loops in `src/`, no new spelling, so it
+lands whenever. Item 4 is independent of all three the same way (REPL-only
+reach, no new spelling); its RC-0 may land alone.
 
-## Candidate rough edges (found while probing items 1 and 2; recorded, not designed)
+## Candidate rough edges (found while probing items 1–3; recorded, not designed)
 
 - **A lambda's declared return type loses its pointer kind.** `(fn
   (x:raw:Pt):raw:Pt (return x))` is refused `return: raw pointer where non-null
@@ -161,8 +226,9 @@ twin edits pointer-kind-spellings.md §4 specifies. Rationale in
   type, and `defcast E Err` is the bridge that lets `try` propagate a typed
   error into a `!T` caller (item 2 §1.7 probes). Item 2 rewrites that section;
   nothing in the compiler is missing. What *is* missing is on the compiler's
-  side: `context/macros-jit.md:16` — a macro body cannot raise a diagnostic at
-  all.
+  side: a macro body can raise a located diagnostic (`macro-error`, Stage 20
+  M3) but not a formatted one — the message must be a string literal
+  (`context/conventions.md` §"Member access on a null node…").
 - ~~**The C-header classifiers do not read a `(? X)` / `(! X)` cell**~~ (found
   building PK-5a; **fixed by PK-4b, 2026-09-19**). `cheader-template-instance` keyed
   on a cell whose *head* is a union template — `(Maybe …)`, `(Result …)` — and
@@ -194,3 +260,71 @@ twin edits pointer-kind-spellings.md §4 specifies. Rationale in
   peel the sigil). A `:where` constraint's *own* compound argument
   (`((Peek ?E) S)`) is still a concrete pattern, not a recovery —
   `recover-one-constraint` recovers a bare tyvar only; pre-existing, recorded.
+- **`--emit-nuch` and `--emit-cheader` swallow an unpreprocessable C header**
+  (found gating item 3). `(import-use "no-such.h")` under `--emit-llvm` is
+  `exit 1` with the located `c-include: failed to preprocess` error; under
+  either header mode the `note:` and clang's `file not found` go to stderr and
+  the mode **exits 0**, emitting a header with none of that import's names.
+  The `die-at` (`src/cheader.nuc:2963`) is on the emit-time import path, which
+  the header modes never reach; they run only the prescans, and the W3a name
+  pre-scan (`:2766`) tolerates a null buffer. The fix is the prescan refusing
+  what the emitter refuses — "What a header mode checks" (`docs/compiler.md`)
+  extended from declarations to imports.
+- **C enumerators are not imported as constants** (found walking the GTK demo
+  through item 3). Stage 17 admits an object-like `#define` whose body folds to
+  an integer; an `enum { G_APPLICATION_DEFAULT_FLAGS = 0, … }` enumerator is
+  consumed by `c-parse-type` (`src/cheader.nuc:684`, the inline body) and
+  registers nothing, so `G_APPLICATION_DEFAULT_FLAGS` is `undefined:` and the
+  demo keeps a hand `defconst`. GTK's flags, signal-connect options and every
+  `Gtk*Type` are enums, so this is the next wall a real GTK program meets after
+  the include path and the struct cap. The shape is Stage 17's: the enumerator
+  list is a sequence of `NAME [= const-expr]` with an implicit `+1`, foldable by
+  the same `c-cexpr` evaluator, registered under the same `is-const` symbol
+  path, and subject to the same predefine/private-name filters.
+- **A mis-shaped `doseq`/`doseq-iter`/`dotimes` call segfaults the compiler**
+  (found when the GTK demo grew a combo box, 2026-09-20). The demo wrote
+  `(doseq item v (VecIter i32) …)` — the `(var coll IterType)` binding list
+  unparenthesised — and `nucleusc` died with SIGSEGV (exit 139), no diagnostic,
+  no line. Not the import: it reproduces against the stand-in header and with
+  no `import-use` at all, and the minimal form is ``(defmacro m (b :rest r) (let
+  (a:ptr ((b 'cdr) 'car)) `(do ~a ~@r)))`` called `(m x 1)`. `doseq`
+  (`lib/macros.nuc:234`), `doseq-iter` (`:257`) and `dotimes` (`:194`)
+  destructure a binding list the *user* writes by member access with no shape
+  guard; a symbol's `cdr` is null, and `(null 'car)` dereferences null inside
+  `@__macro_doseq`, which `expand-macro-call` (`src/nucleusc.nuc:11449`) runs
+  in the compiler's own process through `unsafe/funcall-ptr-1` with no fault
+  boundary — it checks a null *result* (`:11451`) and nothing guards the call.
+  `(dotimes i 3 …)`, `(doseq-iter x it …)`, `(doseq (x) …)` and `(dotimes (i)
+  …)` all exit 139 the same way. This is the hazard `context/conventions.md`
+  §"Member access on a null node in a macro body kills the COMPILER" recorded
+  when Stage 20 M3 gave `macmap` its guard chain; the three prelude macros whose
+  first argument is a user-written list never got theirs (the operator folds,
+  `->` and `case` walk compiler-built `:rest` lists behind null/kind tests and
+  are safe). Two fixes, both real: **library** — the convention's guard chain
+  plus `macro-error` in the three bodies (`doseq: the first argument must be
+  (var coll IterType)`), which is what says what was wrong; **compiler** — a
+  fault boundary at the chokepoint, a SIGSEGV/SIGBUS handler armed for the
+  duration of the JIT call (and of `ct-eval-node`'s and `compile-time`'s) that
+  reports `macro 'doseq': crashed while expanding` at the call-site line and
+  exits 1, so no macro body, a user's included, can take the compiler down
+  without a located diagnostic — the one that makes "the compiler never
+  segfaults" a property rather than a discipline. Past the shape, the demo's
+  next wall is the known one: `(iter options)` on a by-value `(Vector i32)` is
+  `no matching method for overloaded 'iter'` (template-tier methods never
+  adapt a by-value receiver, Stage 14 LW), so the binding is `&options`.
+- ~~**A void-typed expression at the prompt is never called**~~ (found probing
+  item 4, 2026-09-21; **fixed by its RC-0 the same day**). The expression arm of
+  `repl-eval-form` emits `__repl_eval_N`, JITs it and looks it up, then
+  dispatches on the result kind to call-and-print (`src/repl.nuc:1180–1209`);
+  the `TY-VOID` arm and the fall-through — every kind the return-emitting
+  `cond` lowers to `ret void`, so a struct- or `String`-valued expression too
+  — are `(do)`. `(defn bump ():void (set! counter (+ counter 1)) (return))`
+  then `(bump)` twice leaves `counter` at `0`; a void `defn` with a `printf`
+  prints nothing; `(dotimes (i 2) (printf "hi\n"))` prints nothing. Every
+  value-returning kind is called, which is why no golden pins it. The fix is
+  `funcall-void` (what `repl-run-init-fn` already uses, `:610`) in both arms.
+- ~~**`-l<lib>` / `-L<dir>` under `-i` are silently ignored**~~ (same probe;
+  **fixed by item 4's RC-3, 2026-09-21**). They land in `g-link-args`, which only the link step
+  reads, and the REPL never links, so `nucleusc -i -lfoo` then a call into
+  `libfoo` is `JIT session error: Symbols not found`. `--link-arg=` is ignored
+  the same way and stays so — it has no REPL meaning — but `-l`/`-L` do.
