@@ -1175,7 +1175,13 @@ Not rolled back, deliberately, each with its reason:
   they are keyed by name and a stale entry is simply re-derived.
 * **`g-binops`, `g-blanket`, `g-binding-kinds`, `g-deferror-*`,
   `g-include-paths`, `g-link-args`.** Built at startup or from argv; an import
-  does not append to them.
+  does not append to them. Since Stage 21 item 4 the prompt *can* append to
+  `g-include-paths` — and to `g-cflags`, `g-library-paths` and
+  `g-loaded-libraries` — through the `cflag`/`import-path`/`library-path`/
+  `load-library` meta forms, and they stay out of the roster on purpose: they
+  are session configuration, a failed import must not un-set the flag typed
+  before it, and a meta form never throws
+  ([stage21-cleanup/repl-build-line.md](../stage21-cleanup/repl-build-line.md) §2).
 * **The JIT session.** A module that parsed and loaded before the form died stays
   loaded. This is not reachable today (every `repl_throw` on the JIT path fires
   *before* the module is added), but it is the shape to check when R3 adds a

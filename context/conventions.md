@@ -2624,7 +2624,11 @@ line source.
 program defines"; since W3a registers every C header type name it bounds "types
 every imported header names". Measured: `SDL2/SDL.h` + `SDL2/SDL_mixer.h` +
 `png.h` in one unit needs between 200 and 256 slots — the old 256 was one umbrella
-header from breaking. Now 1024.
+header from breaking; 1024 was `nucleusc: too many structs` for `gtk/gtk.h`
+(GLib + GObject + GIO + GDK + Pango + Cairo + HarfBuzz behind it, each type,
+opaque forward decl and typedef alias a slot). Now 16384; 4,000 synthetic
+registrations compile in ~0.5 s (`s21-thousands-of-c-structs`), so the linear
+`lookup-struct` scan is not the wall either.
 
 ## A dangling `true` clause is the tell for a `cond` that closed one paren early
 

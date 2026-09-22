@@ -688,6 +688,10 @@
       (let (look:i64 (c-skip-ws buf pos len))
         (when (and (< look len) (= (cstr-byte-at buf look) 123))
           (set! look (cheader-skip-braces buf look len))
+          ; `} __attribute__((flag_enum)) GApplicationFlags;` — GLib ≥ 2.86
+          ; under clang; read as the declarator, it recorded a typedef named
+          ; `__attribute__` and lost the real one.
+          (set! look (c-skip-attributes buf look len))
           (set! look (c-skip-type-quals buf look len))
           (while (and (< look len) (= (cstr-byte-at buf look) 42))
             (inc! ptr-depth)
@@ -1406,6 +1410,10 @@
         (command-arg &c (fstr "--target=" g-target-triple)))
       (when (not (symbol-none? g-sysroot-override))
         (command-arg &c (fstr "--sysroot=" g-sysroot-override))))
+    ; The user's `--cflag=`s ride every run, the host fallback included: they
+    ; name the user's directories, not the target's.
+    (dotimes (j (unsafe/cast i32 (count g-cflags)))
+      (command-arg &c (symbol-as-view (invoke g-cflags j:usize))))
     (command-arg &c "-x")
     (command-arg &c "c")
     (when (not (symbol-none? header-path))
@@ -1425,6 +1433,8 @@
         (set! out (fstr out " --target=" g-target-triple)))
       (when (not (symbol-none? g-sysroot-override))
         (set! out (fstr out " --sysroot=" g-sysroot-override))))
+    (dotimes (j (unsafe/cast i32 (count g-cflags)))
+      (set! out (fstr out " " (invoke g-cflags j:usize))))
     (set! out (fstr out " -x c"))
     (when (not (symbol-none? header-path))
       (set! out (fstr out " -include " header-path)))
@@ -1497,6 +1507,8 @@
   (let (cur:ptr g-cheader-cache)
     (while (!= cur null)
       (let (e:ptr:Node (unsafe/cast &Node cur))
+        ; `--cflag=`s are not in the key: fixed for a batch process, and at the
+        ; prompt `(cflag …)` empties the cache instead of joining the key.
         (when (and (= (e 's) header-path) (= (e 'line) dump-macros))
           (set! @out-len (e 'i))
           (return (as ptr (e 'car))))
@@ -2923,6 +2935,12 @@
       (let (m:ref:CMacro (invoke g-cmacros i:usize))
         (insert g-cmacro-baseline (m 'name))))
     (cheader-macro-reset)))
+
+; REPL only: `(cflag …)` moved what both caches took as fixed. The buffers
+; outlive the records and the baseline SET keeps its names (repl-build-line.md §4).
+(defn cheader-flags-changed ():void
+  (set! g-cheader-cache null)
+  (set! g-cmacro-baseline-ready 0))
 
 ; Called at the END of an import: a body may cast through a typedef
 ; (`CLOCKS_PER_SEC` is `((__clock_t) 1000000)`) that only the declaration pass

@@ -244,3 +244,39 @@ int main(void){
   (try (require-cc))
   (try (check-agrees-with-cc "cd4sz" "." (cd4-main-src) (cd4-c-src)))
   (return (ok)))
+
+; Stage 21 item 3, found on the GTK demo (c-header-include-paths.md §10): an
+; attribute run between an ENUM body and its declarator. GLib ≥ 2.86 under
+; clang writes `typedef enum { … } __attribute__((flag_enum)) GApplicationFlags;`
+; for every flags enum — 70 typedefs in one `gtk/gtk.h` stream — and the enum
+; branch of `c-parse-type` stopped at the `}`, so the declarator read was
+; `__attribute__`: a phantom typedef of that name was recorded and the real one
+; was not, and every function taking the enum by value was skipped as `unknown
+; type`. The struct branch already consumed the run; this pins the enum branch
+; over the shapes GLib and glibc actually write, each through a by-value use.
+(deftest s21-enum-trailing-attribute
+  (let (h:String (try (test-write-file "flagenum.h"
+"typedef enum { FE_A = 0, FE_B = (1 << 0) } __attribute__((flag_enum)) FeFlags;
+typedef enum { FE_C } __attribute__((__deprecated__(\"gone\"))) __attribute__((flag_enum)) FeTwo;
+typedef enum { FE_D } __attribute__((flag_enum)) const FeConst;
+typedef enum { FE_E } __attribute__((flag_enum)) *FePtr;
+typedef enum { FE_F } FePlain;
+int fe_flags(FeFlags f); int fe_two(FeTwo f); int fe_const(FeConst f);
+int fe_ptr(FePtr p); int fe_plain(FePlain p);
+"))
+        src:String (str "(import-use \"" (string-as-view &h) "\")
+(defn main ():i32
+  (return (+ (fe_flags 1) (fe_two 0) (fe_const 0) (fe_ptr null) (fe_plain 0))))
+")
+        c:Compiled (try (compile-source (string-as-view &src)))
+        ir:StrView (compiled-ir &c))
+    (try (check-no-errors (ref c 'diags)))
+    (try (check-line ir "declare i32 @fe_flags(i32)"))
+    (try (check-line ir "declare i32 @fe_two(i32)"))
+    (try (check-line ir "declare i32 @fe_const(i32)"))
+    (try (check-line ir "declare i32 @fe_ptr(ptr)"))
+    (try (check-line ir "declare i32 @fe_plain(i32)"))
+    (drop &c)
+    (drop &src)
+    (drop &h))
+  (return (ok)))

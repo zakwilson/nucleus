@@ -1,0 +1,8 @@
+(defvar counter:i32 0)
+(defn bump ():void (set! counter (+ counter 1)) (return))
+(bump)
+(bump)
+counter
+(defn sayhi ():void (printf "hello from void\n") (return))
+(sayhi)
+(printf "after\n")

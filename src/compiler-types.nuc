@@ -4,12 +4,10 @@
 ; Constants
 ; ============================================================
 
-; Stage 15 W3a: opaque forward declarations from a C header now each take a
-; registry slot (a mainstream umbrella header such as SDL2/SDL.h carries ~21
-; `struct X;` forward decls plus their typedef aliases), so the cap is no longer
-; bounded by the number of *Nucleus* types in a program. g-structs is a Vector,
-; so the cap is purely a runaway-growth guard, not a preallocation size.
-(defconst MAX-STRUCTS 1024)
+; A runaway-growth guard, not a preallocation size (g-structs is a Vector).
+; Every C struct, opaque forward decl and typedef alias takes a slot, and
+; `gtk/gtk.h` alone brings in thousands — 1024 was "too many structs" for it.
+(defconst MAX-STRUCTS 16384)
 (defconst MAX-CAST-RULES 256)
 ; Stage 10 unions (design/stage10/unions.md)
 (defconst MAX-UNIONS 128)

@@ -622,6 +622,13 @@
 ; load-time-constant arena handle, so it is arena-backed like everything else
 ; (it used to be lazily malloc-backed — see add-link-arg).
 (defvar g-link-args:&(Vector Symbol) (vector-new-in &g-arena-alloc))
+; `-L`/`-l` under `-i`: the directories searched and the spelling each load
+; opened. Session configuration, outside ReplState (repl-build-line.md §6).
+(defvar g-library-paths:&(Vector Symbol) (vector-new-in &g-arena-alloc))
+(defvar g-loaded-libraries:&(Vector Symbol) (vector-new-in &g-arena-alloc))
+; `--cflag=<arg>`: verbatim args for the `clang -E` that reads C header imports.
+; Never fed by `-I` — design/stage21-cleanup/c-header-include-paths.md §1.4.
+(defvar g-cflags:&(Vector Symbol) (vector-new-in &g-arena-alloc))
 ; Owns the preprocessed-header text `cheader-capture` hands out as bare pointers:
 ; the cheader cache never frees an entry, so the Strings must outlive every
 ; reader. Arena-backed, so the vector itself is a no-op to drop.
@@ -19909,6 +19916,9 @@
 (defn add-link-arg (arg:Symbol):void
   (conj g-link-args arg))
 
+(defn add-cflag (arg:Symbol):void
+  (conj g-cflags arg))
+
 (defn main (argc:i32 argv:ptr):int
   (let (source-file:Symbol (symbol-none)
         i:i32 1)
@@ -19966,6 +19976,10 @@
                 (set! g-sysroot-override (symbol-intern (strview-drop-bytes argview 10)))
               (strview-has-prefix argview "--link-arg=")
                 (add-link-arg (symbol-intern (strview-drop-bytes argview 11)))
+              (strview-has-prefix argview "--cflag=")
+                (do (when (<= (byte-len &argview) 8)
+                      (do (eprint "--cflag= requires an argument\n") (return 2)))
+                    (add-cflag (symbol-intern (strview-drop-bytes argview 8))))
               (strview-has-prefix argview "-I")
                 (if (> (byte-len &argview) 2)
                   ; -I/path/to/dir (no space)
@@ -19993,7 +20007,7 @@
 
     ; Batch mode — require source file
     (when (symbol-none? source-file)
-       (eprint "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [--mmcu=<device>] [--sysroot=<path>] [--linker=<cmd>] [--link-arg=<arg>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
+       (eprint "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [--mmcu=<device>] [--sysroot=<path>] [--cflag=<arg>] [--linker=<cmd>] [--link-arg=<arg>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
     (set! g-source-path source-file)
     (let (src:String (read-file g-source-path))
       ; G-5: `compiler-init` is gone. Every global it used to build is now built

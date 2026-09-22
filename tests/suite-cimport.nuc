@@ -776,3 +776,34 @@ int main(void){
 (defn main ():i32 (return (s16u_odd 1)))
 " 2 "unknown: 's16u_odd' — its C header declaration was skipped (./tests/fixtures/s16-unsigned.h:21: a declaration shape the C header parser does not recognize)"))
   (return (ok)))
+
+; Stage 21 item 3 (design/stage21-cleanup/c-header-include-paths.md §10): the
+; `MAX-STRUCTS` guard is not a size. `gtk/gtk.h` registers thousands of C
+; structs, opaque forward declarations and typedef aliases, and the 1024 that
+; sufficed for SDL's umbrella header was `nucleusc: too many structs` for it.
+; This header registers 4,000 (2,000 each of the two shapes), which is above
+; the old cap and below the guard, and the LAST of each must be usable.
+(deftest s21-thousands-of-c-structs
+  (let (h:String (string-new)
+        i:i64 0)
+    (while (< i 2000)
+      (str-into &h "typedef struct _Big" i " Big" i "; struct _Big" i
+                   " { int a; void* p; }; Big" i "* big" i "_new(int a);\n"
+                   "typedef struct _Op" i " Op" i "; void op" i "_free(Op" i "* o);\n")
+      (set! i (+ i 1)))
+    (let (p:String (try (test-write-file "many.h" (string-as-view &h)))
+          src:String (str "(import-use \"" (string-as-view &p) "\")
+(defn main ():i32
+  (let (b:ptr (big1999_new 1))
+    (op1999_free null)
+    (return 0)))
+")
+          c:Compiled (try (compile-source (string-as-view &src))))
+      (try (check-no-errors (ref c 'diags)))
+      (try (check-line (compiled-ir &c) "declare ptr @big1999_new(i32)"))
+      (try (check-line (compiled-ir &c) "declare void @op1999_free(ptr)"))
+      (drop &c)
+      (drop &src)
+      (drop &p))
+    (drop &h))
+  (return (ok)))

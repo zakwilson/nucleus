@@ -142,6 +142,310 @@
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
+; Stage 21 item 3: `--cflag=<arg>` reaches the `clang -E` that reads a header
+; (design/stage21-cleanup/c-header-include-paths.md §5)
+; ---------------------------------------------------------------------------
+
+; `nucleusc [a] [b] --diagnostics=sexp --emit-llvm <path>`; an empty slot adds
+; nothing. Two slots because the verbatim unit passes `-I` AND `-D`.
+(defn cflag-emit (a:StrView b:StrView path:StrView):!Compiled
+  (let (c:Command (command (compiler-path)))
+    (when (not (= a "")) (command-arg &c a))
+    (when (not (= b "")) (command-arg &c b))
+    (command-arg &c "--diagnostics=sexp")
+    (command-arg &c "--emit-llvm")
+    (command-arg &c path)
+    (let (r:Compiled (try (compiled-run &c)))
+      (drop &c)
+      (return (ok r)))))
+
+; `--cflag=-I<dir>` for a scratch subdirectory `name`, created on first ask.
+(defn cflag-include (name:StrView):!String
+  (let (dir:String (try (test-scratch-sub name))
+        flag:String (str "--cflag=-I" (string-as-view &dir)))
+    (drop &dir)
+    (return (ok flag))))
+
+; A stand-in for GTK's layout: `inc/gtk/gtk.h` includes `<glib/glib.h>`, so an
+; absolute path to gtk.h is no substitute for the search path — the NESTED
+; include is what needs `-I`.
+(defn cflag-stand-in ():!void
+  (let (inc:String (try (test-scratch-sub "inc"))
+        gtk:String (try (test-scratch-sub "inc/gtk"))
+        glib:String (try (test-scratch-sub "inc/glib"))
+        h1:String (try (test-write-file "inc/glib/glib.h"
+                        "typedef void* gpointer;\nvoid g_object_unref(gpointer object);\n"))
+        h2:String (try (test-write-file "inc/gtk/gtk.h"
+                        "#include <glib/glib.h>\ntypedef struct _GtkWidget GtkWidget;\nGtkWidget* gtk_label_new(const char* text);\n")))
+    (drop &h1) (drop &h2) (drop &glib) (drop &gtk) (drop &inc)
+    (return (ok))))
+
+; The flag is the whole difference: the same source declares the stand-in's
+; two functions with it and is the C4 fatal error without it.
+(deftest s21-cflag-include-dir
+  (let (flag:String (try (cflag-include "inc"))
+        p:String (try (test-write-file "cf.nuc" "(import-use \"gtk/gtk.h\")
+(defn main ():i32
+  (let (w:ptr (gtk_label_new \"hi\"))
+    (g_object_unref w)
+    (return 0)))
+"))
+        pv:StrView (string-as-view &p))
+    (try (cflag-stand-in))
+    (let (with:Compiled (try (cflag-emit (string-as-view &flag) "" pv))
+          without:Compiled (try (cflag-emit "" "" pv)))
+      (try (check-no-errors (ref with 'diags)))
+      (try (check-line (compiled-ir &with) "declare ptr @gtk_label_new(ptr)"))
+      (try (check-line (compiled-ir &with) "declare void @g_object_unref(ptr)"))
+      (when (without 'ok?) (fail! "the flag-free compile must fail"))
+      (try (check-error-at (ref without 'diags) pv 1
+             "c-include: failed to preprocess 'gtk/gtk.h'"))
+      (drop &with)
+      (drop &without))
+    (drop &p) (drop &flag))
+  (return (ok)))
+
+; The failure `note:` is what a user copies to reproduce, so it must show the
+; flags that were passed, where they were passed. It is the compiler's own
+; text, not a structured diagnostic, hence `raw`.
+(deftest s21-cflag-in-note
+  (let (inc:String (try (test-scratch-sub "inc"))
+        flag:String (try (cflag-include "inc"))
+        want:String (str "  note: clang -E -I" (string-as-view &inc)
+                         " -x c -include no-such-header-s21.h /dev/null")
+        p:String (try (test-write-file "note.nuc" "(import-use \"no-such-header-s21.h\")
+(defn main ():i32 (return 0))
+"))
+        pv:StrView (string-as-view &p)
+        c:Compiled (try (cflag-emit (string-as-view &flag) "" pv)))
+    (when (c 'ok?) (fail! "the compile must fail"))
+    (try (check-line (string-as-view (ref c 'raw)) (string-as-view &want)))
+    (try (check-error-at (ref c 'diags) pv 1
+           "c-include: failed to preprocess 'no-such-header-s21.h'"))
+    (drop &c) (drop &p) (drop &want) (drop &flag) (drop &inc))
+  (return (ok)))
+
+; Verbatim, not `-I`-only: a `-D` gates both a declaration and a Stage 17
+; constant, so the `-dM` run carries the flags too. The define itself is
+; baseline-subtracted, never admitted as a constant — a command-line macro is
+; not a header's.
+(deftest s21-cflag-verbatim
+  (let (inc:String (try (test-scratch-sub "cfd"))
+        flag:String (try (cflag-include "cfd"))
+        h:String (try (test-write-file "cfd/cf.h"
+                       "#ifdef NUC_CF_ON\nint nuc_cf_gated(int x);\n#define NUC_CF_CONST 42\n#endif\n"))
+        p:String (try (test-write-file "cfd.nuc" "(import-use \"cf.h\")
+(defn main ():i32 (return (+ NUC_CF_CONST (nuc_cf_gated 1))))
+"))
+        pv:StrView (string-as-view &p)
+        q:String (try (test-write-file "cfd2.nuc" "(import-use \"cf.h\")
+(defn main ():i32 (return NUC_CF_ON))
+"))
+        qv:StrView (string-as-view &q)
+        on:Compiled (try (cflag-emit (string-as-view &flag) "--cflag=-DNUC_CF_ON=1" pv))
+        off:Compiled (try (cflag-emit (string-as-view &flag) "" pv))
+        self:Compiled (try (cflag-emit (string-as-view &flag) "--cflag=-DNUC_CF_ON=1" qv)))
+    (try (check-no-errors (ref on 'diags)))
+    (try (check-line (compiled-ir &on) "declare i32 @nuc_cf_gated(i32)"))
+    (try (check-contains (compiled-ir &on) "add nsw i32 42, "))
+    (when (off 'ok?) (fail! "without -D the gated names must not exist"))
+    (try (check-error-at (ref off 'diags) pv 2 "undefined: NUC_CF_CONST"))
+    (when (self 'ok?) (fail! "the -D itself must not be admitted as a constant"))
+    (try (check-error-at (ref self 'diags) qv 2 "undefined: NUC_CF_ON"))
+    (drop &on) (drop &off) (drop &self)
+    (drop &q) (drop &p) (drop &h) (drop &flag) (drop &inc))
+  (return (ok)))
+
+; `-I` is the Nucleus import path and never reaches clang. The bait is real:
+; `lib/` holds a generated `lib/string.h`, and a clang `-I` precedes the system
+; directories, so a forwarded `-I lib` would have the prelude read the C header
+; of `lib/string.nuc` in place of libc's. The scratch `string.h` here declares
+; only a marker; if it were ever read, `strlen` would be unknown.
+(deftest s21-dash-i-not-forwarded
+  (let (dir:String (try (test-scratch-sub "shadow"))
+        h:String (try (test-write-file "shadow/string.h" "void nuc_shadow_marker(void);\n"))
+        p:String (try (test-write-file "sl.nuc"
+                       "(defn main ():i32 (return (unsafe/cast i32 (strlen \"abc\"))))\n"))
+        c:Compiled (try (compile-path-in (string-as-view &dir) (string-as-view &p))))
+    (try (check-no-errors (ref c 'diags)))
+    (try (check-line (compiled-ir &c) "declare i64 @strlen(ptr)"))
+    (try (check-not-contains (compiled-ir &c) "nuc_shadow_marker"))
+    (drop &c) (drop &p) (drop &h) (drop &dir))
+  (return (ok)))
+
+; An empty value is refused like `-o`'s and `-I`'s, not handed to clang as an
+; empty argv entry.
+(deftest s21-cflag-empty-refused
+  (let (p:String (try (test-write-file "empty.nuc" "(defn main ():i32 (return 0))\n"))
+        c:Compiled (try (cflag-emit "--cflag=" "" (string-as-view &p))))
+    (when (!= (c 'exit) 2) (fail! "expected exit 2, got " (as i64 (c 'exit))))
+    (try (check-contains (string-as-view (ref c 'raw)) "--cflag= requires an argument"))
+    (drop &c) (drop &p))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; Stage 21 item 4: the REPL's build line — `(cflag …)`, `(import-path …)`,
+; `(library-path …)`, `(load-library …)`, `(pkg-config …)` and `-l`/`-L`
+; under `-i` (design/stage21-cleanup/repl-build-line.md §8.1)
+; ---------------------------------------------------------------------------
+
+; A failed header import is cached as a failure; `imported` on the retry after
+; `(cflag …)` is the claim that a flag change empties the cache (§1.2).
+(deftest s21-repl-cflag
+  (let (inc:String (try (test-scratch-sub "inc"))
+        iv:StrView (string-as-view &inc)
+        text:String (str "(import-use \"gtk/gtk.h\")\n(cflag \"-I" iv "\")\n"
+                         "(import-use \"gtk/gtk.h\")\n(import-use \"no-such-s21.h\")\n(cflag)\n")
+        flagged:String (str "nuc>   cflag: -I" iv "\nnuc>   imported gtk/gtk.h\n")
+        note2:String (str " -I" iv " -x c -include no-such-s21.h")
+        listed:String (str "nuc>   -I" iv "\nnuc>"))
+    (try (cflag-stand-in))
+    (let (t:String (try (repl-session (string-as-view &text)))
+          tv:StrView (string-as-view &t))
+      (try (check-contains tv "  note: clang -E -x c -include gtk/gtk.h /dev/null\n"))
+      (try (check-contains tv "error: c-include: failed to preprocess 'gtk/gtk.h'"))
+      (try (check-contains tv (string-as-view &flagged)))
+      (try (check-contains tv (string-as-view &note2)))
+      (try (check-contains tv (string-as-view &listed)))
+      (drop &t))
+    (drop &listed) (drop &note2) (drop &flagged) (drop &text) (drop &inc))
+  (return (ok)))
+
+; A prompt-time `-D` re-arms the macro baseline: the constant it gates is
+; admitted and the define itself is still subtracted, as for a command-line `-D`.
+(deftest s21-repl-cflag-define
+  (let (cfd:String (try (test-scratch-sub "cfd"))
+        cv:StrView (string-as-view &cfd)
+        h:String (try (test-write-file "cfd/cf.h"
+                       "#ifdef NUC_CF_ON\nint nuc_cf_gated(int x);\n#define NUC_CF_CONST 42\n#endif\n"))
+        text:String (str "(cflag \"-I" cv "\" \"-DNUC_CF_ON=1\")\n(import-use \"cf.h\")\n"
+                         "NUC_CF_CONST\nNUC_CF_ON\n")
+        t:String (try (repl-session (string-as-view &text)))
+        tv:StrView (string-as-view &t))
+    (try (check-contains tv "nuc>   imported cf.h\nnuc>   42\n"))
+    (try (check-contains tv "undefined: NUC_CF_ON"))
+    (drop &t) (drop &text) (drop &h) (drop &cfd))
+  (return (ok)))
+
+; The import path is read at resolution time, so the import that failed before
+; `(import-path …)` succeeds after it; a missing directory is refused, adds nothing.
+(deftest s21-repl-import-path
+  (let (ip:String (try (test-scratch-sub "ip"))
+        iv:StrView (string-as-view &ip)
+        z:String (try (test-write-file "ip/zz.nuc" "(defn zz-answer ():i32 (return 7))\n"))
+        text:String (str "(import-use zz)\n(import-path \"" iv "\")\n(import-use zz)\n(zz-answer)\n"
+                         "(import-path \"" iv "/nope\")\n(import-path)\n")
+        added:String (str "nuc>   import path: " iv "\nnuc>   imported zz\nnuc>   7\n")
+        listed:String (str "no such directory '" iv "/nope'\nnuc>   " iv "\nnuc>")
+        t:String (try (repl-session (string-as-view &text)))
+        tv:StrView (string-as-view &t))
+    (try (check-contains tv "cannot find 'zz'"))
+    (try (check-contains tv (string-as-view &added)))
+    (try (check-contains tv (string-as-view &listed)))
+    (drop &t) (drop &listed) (drop &added) (drop &text) (drop &z) (drop &ip))
+  (return (ok)))
+
+; The one-function shared library the load units open: `libnucprobe.so` in the
+; test's scratch directory, its header under `pinc/`. Answers the directory.
+(defn probe-library ():!String
+  (try (require-cc))
+  (let (dir:StrView (try (test-scratch))
+        src:String (try (test-write-file "nucprobe.c"
+                         "int nuc_probe_answer(void) { return 41; }\n"))
+        pinc:String (try (test-scratch-sub "pinc"))
+        h:String (try (test-write-file "pinc/nucprobe.h" "int nuc_probe_answer(void);\n"))
+        so:String (str dir "/libnucprobe.so")
+        cc:Command (command "cc"))
+    (command-arg &cc "-shared")
+    (command-arg &cc "-fPIC")
+    (command-arg &cc "-o")
+    (command-arg &cc (string-as-view &so))
+    (command-arg &cc (string-as-view &src))
+    (command-capture &cc true)
+    (command-stderr-to-stdout &cc true)
+    (match (run &cc)
+      ((ok o)
+        (let (built:bool (success? (ref o 'status)))
+          (when (not built)
+            (fail! "cc refused the probe library\n     "
+                   (test-show (string-as-view (ref o 'out)))))
+          (drop &o)))
+      ((err e) (return (err e))))
+    (drop &cc) (drop &so) (drop &h) (drop &pinc) (drop &src)
+    (let (d:String (str dir))
+      (return (ok d)))))
+
+; A library the compiler was not linked against is invisible to the JIT until
+; `(load-library …)` opens it; a load is reported once under the spelling opened.
+(deftest s21-repl-load-library
+  (let (dir:String (try (probe-library))
+        dv:StrView (string-as-view &dir)
+        text:String (str "(cflag \"-I" dv "/pinc\")\n(import-use \"nucprobe.h\")\n(nuc_probe_answer)\n"
+                         "(load-library \"" dv "/libnucprobe.so\")\n(nuc_probe_answer)\n"
+                         "(load-library \"" dv "/libnucprobe.so\")\n(library-path \"" dv "\")\n"
+                         "(load-library \"nucprobe\")\n(load-library \"no-such-lib-s21\")\n(+ 1 2)\n")
+        loaded:String (str "nuc>   loaded " dv "/libnucprobe.so\nnuc>   41\n")
+        again:String (str "nuc>   " dv "/libnucprobe.so already loaded\nnuc>   library path: " dv
+                          "\nnuc>   " dv "/libnucprobe.so already loaded\n")
+        missing:String (str "  error: load-library: cannot load 'no-such-lib-s21' (tried " dv
+                            "/libno-such-lib-s21.so, libno-such-lib-s21.so)\nnuc>   3\n")
+        t:String (try (repl-session (string-as-view &text)))
+        tv:StrView (string-as-view &t))
+    (try (check-contains tv "nuc>   imported nucprobe.h\nnuc> JIT session error: Symbols not found: [ nuc_probe_answer ]\n"))
+    (try (check-contains tv (string-as-view &loaded)))
+    (try (check-contains tv (string-as-view &again)))
+    (try (check-contains tv (string-as-view &missing)))
+    (drop &t) (drop &missing) (drop &again) (drop &loaded) (drop &text) (drop &dir))
+  (return (ok)))
+
+; `-L`/`-l` under `-i` load at startup instead of being silently dropped, and a
+; wrong `-l` is a dead session rather than one that fails at the first call.
+(deftest s21-repl-argv-libs
+  (let (dir:String (try (probe-library))
+        dv:StrView (string-as-view &dir)
+        ldir:String (str "-L" dv)
+        cflag:String (str "--cflag=-I" dv "/pinc")
+        text:StrView "(import-use \"nucprobe.h\")\n(nuc_probe_answer)\n"
+        want:String (str "  loaded " dv "/libnucprobe.so\nnuc>   imported nucprobe.h\nnuc>   41\n")
+        good:String (try (repl-session-with (string-as-view &ldir) "-lnucprobe"
+                                            (string-as-view &cflag) "" "" text))
+        bad:String (try (repl-session-with "-lno-such-lib-s21" "" "" "" "" text)))
+    (try (check-contains (string-as-view &good) (string-as-view &want)))
+    (try (check-contains (string-as-view &bad)
+           "error: -lno-such-lib-s21: cannot load 'no-such-lib-s21'"))
+    (try (check-not-contains (string-as-view &bad) "nuc>"))
+    (drop &bad) (drop &good) (drop &want) (drop &cflag) (drop &ldir) (drop &dir))
+  (return (ok)))
+
+; `(pkg-config …)` routes one tool's two outputs onto the four forms: an escaped
+; space is one flag, `-pthread` is skipped by name, an unknown package applies nothing.
+(deftest s21-repl-pkg-config
+  (when (not (have-program? "pkg-config")) (skip! "pkg-config is not installed"))
+  (let (dir:String (try (probe-library))
+        dv:StrView (string-as-view &dir)
+        pc:String (try (test-scratch-sub "pc"))
+        sp:String (try (test-scratch-sub "with space"))
+        pcf:String (str "Name: nucprobe\nDescription: the load units' probe\nVersion: 1\n"
+                        "Cflags: -I" dv "/pinc -I" dv "/with\\ space -DNUC_PC=1\n"
+                        "Libs: -L" dv " -lnucprobe -pthread\n")
+        f:String (try (test-write-file "pc/nucprobe.pc" (string-as-view &pcf)))
+        text:StrView "(pkg-config \"nucprobe\")\n(import-use \"nucprobe.h\")\n(nuc_probe_answer)\nNUC_PC\n(pkg-config \"no-such-pkg-s21\")\n(cflag)\n"
+        report:String (str "nuc>   cflag: -I" dv "/pinc\n  cflag: -I" dv "/with space\n"
+                           "  cflag: -DNUC_PC=1\n  library path: " dv "\n  loaded " dv
+                           "/libnucprobe.so\n  skipped: -pthread\nnuc>   imported nucprobe.h\nnuc>   41\n")
+        listed:String (str "nuc>   -I" dv "/pinc\n  -I" dv "/with space\n  -DNUC_PC=1\nnuc>")
+        t:String (try (repl-session-with "" "" "" "PKG_CONFIG_PATH" (string-as-view &pc) text))
+        tv:StrView (string-as-view &t))
+    (try (check-contains tv (string-as-view &report)))
+    (try (check-contains tv "undefined: NUC_PC"))
+    (try (check-contains tv
+           "  error: pkg-config: Package no-such-pkg-s21 was not found in the pkg-config search path"))
+    (try (check-contains tv (string-as-view &listed)))
+    (drop &t) (drop &listed) (drop &report) (drop &f) (drop &pcf)
+    (drop &sp) (drop &pc) (drop &dir))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
 ; Stage 17: object-like `#define`s as untyped integer constants
 ; ---------------------------------------------------------------------------
 

@@ -1062,24 +1062,34 @@
     (return (ok out))))
 
 ; A REPL session: `text` is the child's stdin and the transcript is the answer.
-(defn repl-session (text:StrView):!String
+; Up to three extra argv words after `-i` (an empty slot adds nothing, as in
+; `cflag-emit`) and one environment binding (an empty key sets nothing).
+(defn repl-session-with (a:StrView b:StrView c:StrView
+                         env-k:StrView env-v:StrView text:StrView):!String
   (let (p:String (try (test-write-file "repl.in" text))
-        c:Command (command (compiler-path)))
-    (command-arg &c "-i")
-    (command-stdin-path &c (string-as-view &p))
-    (command-capture &c true)
-    (command-stderr-to-stdout &c true)
-    (match (run &c)
+        cmd:Command (command (compiler-path)))
+    (command-arg &cmd "-i")
+    (when (not (= a "")) (command-arg &cmd a))
+    (when (not (= b "")) (command-arg &cmd b))
+    (when (not (= c "")) (command-arg &cmd c))
+    (when (not (= env-k "")) (command-env &cmd env-k env-v))
+    (command-stdin-path &cmd (string-as-view &p))
+    (command-capture &cmd true)
+    (command-stderr-to-stdout &cmd true)
+    (match (run &cmd)
       ((ok o)
         (let (ov:StrView (string-as-view (ref o 'out))
               out:String (try (string-from-view &ov)))
           (drop &o)
-          (drop &c)
+          (drop &cmd)
           (drop &p)
           (return (ok out))))
       ((err e)
-        (drop &c)
+        (drop &cmd)
         (return (err e))))))
+
+(defn repl-session (text:StrView):!String
+  (return (repl-session-with "" "" "" "" "" text)))
 
 ; Build `path`, feed the program `input` on stdin, and answer its output. An
 ; example cannot ask this: the golden-output loop hands a child the harness's
