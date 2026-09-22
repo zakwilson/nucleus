@@ -1,0 +1,7 @@
+; A join of two frame addresses is a frame address: the flag travels through
+; cond's phi, so the message names frame storage, not a `with` resource.
+(defstruct Box n:i32)
+(defn f (c:i32):&Box
+  (let (a:Box (Box 1) b:Box (Box 2))
+    (return (if (!= c 0) &a &b))))
+(defn main ():i32 (return 0))

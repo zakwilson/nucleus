@@ -219,7 +219,7 @@ struct F { int8_t c; struct A inner; int32_t i; };
 (defstruct Q c:i8 i:i32)
 (defn rd (p:ptr:P):i32 (return (get p 'i)))
 (defn wr (p:ptr:P):void (set! (p 'i) 7))
-(defn lit ():ptr:P (return (P 1 2)))
+(defn lit ():i32 (let (p:ptr:P (P 1 2)) (return (get p 'i))))
 (defn rdq (q:ptr:Q):i32 (return (get q 'i)))
 "))
         m:StrView (string-as-view &ir))

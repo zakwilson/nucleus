@@ -257,18 +257,28 @@ analysis"):
 2. **Frame-local storage** — taking the address of a plain `let`/`with` value
    binding or a **by-value parameter** (all of which live in a stack frame
    alloca) yields a pointer into the frame, which is reclaimed when the function
-   returns. (Concern: pointer provenance only — `let` runs **no** drop and
-   confers **no** ownership; this is purely a use-after-free check.)
+   returns. So does every form that **produces** a fresh stack slot and hands
+   back its address: `(alloca T)`, a struct compound literal `(S …)`, an array
+   literal `(array T …)`, and a collection literal `[…]`/`#{…}`/`{…}` (whose
+   `(ref (Vector T))` is a stack header — only the elements are on the heap).
+   (Concern: pointer provenance only — `let` runs **no** drop and confers
+   **no** ownership; this is purely a use-after-free check.)
 
 Both share one mechanism:
 
 - Taint follows pointer **identity**: binding a tainted value (`let`/`with`/
   `set!`), `as`/`unsafe/cast`, `unsafe/ptr+`, `ref`, and control-flow
-  joins keep it.
+  joins keep it (a join of frame addresses stays a frame address; one
+  `with`-owned contributor makes the whole join `with`-owned).
   Copying the pointee **value** out (`deref`, field loads) clears it — so
-  `(return (deref p))` and `(return (p count))` are fine.
-- `ref` (`&x`) is the **frame-local taint source** — in both arities. It does
-  **not** taint:
+  `(return (deref p))` and `(return (p count))` are fine. The same holds for
+  the implicit load into a **by-value struct slot**: frame taint is a property
+  of an address, so `(defn make ():Pt (Pt 1 2))`, `(defvar g:Pt (Pt 1 2))` and
+  `(defvar opts:(Vector i32) [1 2 3])` are all fine — the struct (and, for a
+  `Vector`, the ownership of its heap buffer) is copied out of the frame slot,
+  and the taint is **discharged** at that store rather than carried.
+- `ref` (`&x`) and the slot producers above (`alloca`, the literals) are the
+  **frame-local taint sources**. `ref` does **not** taint:
   - the address of a **global** (`defvar`/`defconst`) — it outlives any frame;
   - the address of a **reference/pointer parameter** or any pointer-typed local
     — the slot holds a pointer whose pointee is caller-owned, so a value
@@ -276,16 +286,28 @@ Both share one mechanism:
     imprecision boundary). So `(ref v 'field)` through a `(ref T)` parameter
     still returns fine.
 - **Escape sinks** (compile errors on tainted operands):
-  - **`return`** rejects *any* tainted value — both a `with`-owned alias and a
+  - **`return`** (explicit, and the implicit fall-off value of a non-`void`
+    function) rejects *any* tainted value — both a `with`-owned alias and a
     pointer into frame-local storage. This is the function-frame boundary, and
-    it catches the classic `(return &x)` / `return &local` bug.
+    it catches the classic `(return &x)` / `return &local` bug, and with the
+    slot producers `(return (alloca T))`, `(defn f ():&Pt (Pt 1 2))` and
+    `(defn f ():&(Vector i32) [1 2 3])`. A `void` function's last form is not
+    a sink — nothing leaves it.
+  - **A `defvar` initializer.** A run-time initializer executes in the
+    program's startup function, whose frame is gone before `main`, so a frame
+    address stored into the global there is refused — `(defvar g:&Box (alloca
+    Box))` and `(defvar opts:&(Vector i32) [1 2 3])` both die with
+    `defvar: the initializer of 'opts' is the address of frame-local storage`.
+    Store the value itself (`(defvar opts:(Vector i32) […])`, then `&opts` at
+    the use sites) or place it with an allocator (`vector-new-in`).
   - **Stores into longer-lived memory** (`set!` to an outer binding;
     a `set!` place (member, element, or pointee) into memory not owned by the same or an inner
     `with`) reject **`with`-owned** taint only. A frame-local pointer stored
-    into other frame memory is an intra-frame borrow; full nested-region store
-    precision is deferred, so the first cut enforces the frame boundary at
-    `return`. Manually calling `free`/`drop` on an owning binding is a
-    double-free error.
+    into other frame memory — or into a global from an ordinary function, the
+    scoped push/pop shape `with-handler` uses — is an intra-frame borrow; full
+    nested-region store precision is deferred, so the frame boundary is
+    enforced at `return` and at the initializer function only. Manually
+    calling `free`/`drop` on an owning binding is a double-free error.
 - **`(move b)`** is the sanctioned way out of a `with` scope: it disarms the
   cleanup, clears the taint, and consumes the binding.
 - Passing a tainted value as a **function argument** is allowed — downward flow

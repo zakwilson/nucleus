@@ -1,0 +1,5 @@
+; The shape that motivated the guard: a (ref (Vector T)) global initialized
+; from a collection literal reads a reclaimed header (len 0) at run time.
+(import-use vector)
+(defvar options:&(Vector i32) [500 1000 1500 2000 2500])
+(defn main ():i32 (return 0))

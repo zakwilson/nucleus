@@ -1,6 +1,6 @@
 # Stage 21 — cleanup
 
-**Status:** opened 2026-09-16. Four items designed and built (item 2 on 2026-09-18, items 1 and 3 on 2026-09-19, item 4 on 2026-09-21).
+**Status:** opened 2026-09-16. Five items designed and built (item 2 on 2026-09-18, items 1 and 3 on 2026-09-19, item 4 on 2026-09-21, item 5 on 2026-09-22).
 
 **Goal.** Close the deferred items and rough edges the prior stages left behind
 — the ones recorded in [deferred/overview.md](../deferred/overview.md) and the
@@ -149,6 +149,32 @@ fewer "convention, not a rule" edges in it.
    also covers a silent exit 127, glibc's `libm.so` is a linker script so the
    soname is the spelling to load, and freedesktop pkg-config prints its
    missing-package line unquoted.
+5. **Frame storage could escape through `alloca`, the literals and a `defvar`
+   initializer** — **designed and built 2026-09-22** —
+   [frame-storage-escape.md](frame-storage-escape.md) (FS-1 … FS-5). The GTK
+   demo's `(defvar options:&(Vector i32) [500 …])` read `len 0` at run time:
+   the literal is a stack header (only the elements are on the heap), a
+   run-time initializer executes in `@__nucleus_init`, and the global kept
+   that frame's address. Nothing refused it because `&x` was the only
+   frame-taint source; `(return (alloca Box))`, `(defn f ():&Pt (Pt 1 2))` and
+   `(defvar g:&Box (alloca Box))` were all silent. Every producer of a stack
+   slot — `alloca`, the struct/array literals, the TC-3 materialization —
+   now taints its address (FS-1); a by-value struct slot **discharges** frame
+   taint, since the load copies through the address (FS-2, the rule that
+   keeps `(defvar opts:(Vector i32) […])` and `(defn mk ():Pt (return
+   (alloca-backed p)))` legal, consulted at every sink and adoption); the
+   `defvar` initializer becomes the one global-store sink, and the implicit
+   return stops firing in a `void` function (FS-3); and the frame flag now
+   travels through every join — `cond`, both `match` shapes, `unwrap`,
+   `unwrap-or`, `if-some`, `some`/`ok`, union construction — and through
+   `emit-set`'s result and `binding-address-val`, three sites that copied the
+   scope without the flag and so reported a frame address as a `with` resource
+   (FS-4). Chosen by measurement: tainting `alloca` alone costs one fixture
+   (the by-value shape FS-2 fixes) across the self-compile and 1079 tests;
+   making *every* global store a sink trips 17 scoped push/pop sites (the
+   `with-handler` shape, the compiler's own `g-out` save/restore) with no
+   launder to offer. 1087 tests, bootstrap converged, no boot refresh; two
+   fixtures that had used a dangling return as scaffolding were repaired.
 
 ## Sequencing
 
@@ -167,7 +193,9 @@ twin edits pointer-kind-spellings.md §4 specifies. Rationale in
 [one-reader.md](one-reader.md) §8. Item 3 is independent of both and of the
 boot: a `defvar`, a `cond` arm and two loops in `src/`, no new spelling, so it
 lands whenever. Item 4 is independent of all three the same way (REPL-only
-reach, no new spelling); its RC-0 may land alone.
+reach, no new spelling); its RC-0 may land alone. Item 5 touches only `Val`
+bookkeeping and diagnostics — the compiler's own IR is byte-identical — so it
+is independent of everything above.
 
 ## Candidate rough edges (found while probing items 1–3; recorded, not designed)
 
