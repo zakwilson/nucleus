@@ -1,0 +1,5 @@
+; A compound literal is alloca-backed, so returning it by reference dangles;
+; the implicit (fall-off) return is the same sink as the explicit one.
+(defstruct Pt x:i32 y:i32)
+(defn f ():&Pt (Pt 1 2))
+(defn main ():i32 (return 0))

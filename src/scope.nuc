@@ -236,6 +236,7 @@
   (set! g-fn-ret-abi null)
   (set! g-fn-sret-name "")
   (set! g-fn-ret-type null)
+  (set! g-init-fn-active 0)
   (set! g-loop-depth 0)
   (set! g-nundo (vector-new-in &g-arena-alloc))
   (ensure-emit-buffers)

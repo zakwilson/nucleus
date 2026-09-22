@@ -868,6 +868,22 @@ in one operation.
 (defvar bad:ptr:Thing (mkraw))    ; error: raw pointer where non-null (ref ...) is required
 ```
 
+**The initializer's frame is gone before `main`.** `@__nucleus_init` is an
+ordinary function, so anything it stack-allocates is reclaimed when it
+returns — and an `(alloca T)`, a struct or array literal, or a collection
+literal `[…]` evaluated as an initializer lives in that frame. Storing such an
+address into the global is refused (the escape sink of
+[Pointer lifecycle](special-forms.md#pointer-lifecycle-escape-analysis)):
+
+```lisp
+(defvar opts:&(Vector i32) [1 2 3])   ; error: defvar: the initializer of 'opts' is the
+                                       ;   address of frame-local storage, reclaimed when
+                                       ;   the initializer function returns
+(defvar opts:(Vector i32) [1 2 3])    ; fine — the header is copied into the global and
+                                       ;   the copy owns the heap buffer; use &opts at call sites
+(defvar opts:&(Vector i32) (vector-new-in (default-allocator)))  ; fine — heap-placed header
+```
+
 ### A non-null global must be initialized
 
 Because there is now a way to write the initializer, **there is no longer a way

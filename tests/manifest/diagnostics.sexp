@@ -543,7 +543,7 @@
 ;    bound from an `alloca` must stay elem-less.
 (reject "w5d-array-wrong-struct" (file "tests/fixtures/w5d-array-wrong-struct.nuc") (line 9)
         (message "array: type mismatch in positional initializer"))
-(reject "w5d-struct-slot-maybe-null" (file "tests/fixtures/w5d-struct-slot-maybe-null.nuc") (line 12)
+(reject "w5d-struct-slot-maybe-null" (file "tests/fixtures/w5d-struct-slot-maybe-null.nuc") (line 13)
         (message "assignment: value may be null"))
 (reject "w5d-elemless-not-inferred" (file "tests/fixtures/w5d-elemless-not-inferred.nuc") (line 13)
         (message "aref: operand must be typed pointer"))
@@ -823,3 +823,24 @@
         (message "'Colour' already names an enumeration — a symbol may name only one kind of thing"))
 (reject "b4-enum-vs-defvar" (file "tests/fixtures/b4-enum-vs-defvar.nuc") (line 6)
         (message "'Colour' already names an enumeration — a symbol may name only one kind of thing"))
+
+; Stage 21 (design/stage21-cleanup/frame-storage-escape.md): every producer of
+; a fresh stack slot — `alloca`, the struct/array/collection literals — hands
+; back a frame-tainted address, so the existing return sinks refuse it, and a
+; defvar initializer (run in @__nucleus_init, whose frame is gone before main)
+; is the one global store that is provably an escape. The accept fixture pins
+; the discharge rule: a by-value slot loads through the address, so the taint
+; is dropped there rather than carried.
+(reject "s21-frame-alloca-return" (file "tests/fixtures/s21-frame-alloca-return.nuc") (line 7)
+        (message "address of frame-local storage escapes via return"))
+(reject "s21-frame-literal-implicit-return" (file "tests/fixtures/s21-frame-literal-implicit-return.nuc") (line 4)
+        (message "address of frame-local storage escapes via implicit return"))
+(reject "s21-frame-vector-literal-return" (file "tests/fixtures/s21-frame-vector-literal-return.nuc") (line 6)
+        (message "address of frame-local storage escapes via return"))
+(reject "s21-frame-defvar-alloca" (file "tests/fixtures/s21-frame-defvar-alloca.nuc") (line 4)
+        (message "defvar: the initializer of 'gb' is the address of frame-local storage"))
+(reject "s21-frame-defvar-vector-literal" (file "tests/fixtures/s21-frame-defvar-vector-literal.nuc") (line 4)
+        (message "defvar: the initializer of 'options' is the address of frame-local storage"))
+(reject "s21-frame-cond-join" (file "tests/fixtures/s21-frame-cond-join.nuc") (line 6)
+        (message "address of frame-local storage escapes via return"))
+(accept "s21-frame-discharge-accepts" (file "tests/fixtures/s21-frame-discharge-accepts.nuc"))

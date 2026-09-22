@@ -1,0 +1,5 @@
+; A defvar's run-time initializer executes in @__nucleus_init, whose frame is
+; gone before main, so a frame address stored into the global always dangles.
+(defstruct Box n:i32)
+(defvar gb:&Box (alloca Box))
+(defn main ():i32 (return 0))

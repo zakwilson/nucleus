@@ -1,0 +1,8 @@
+; A bare (alloca X) is frame storage like any let binding's slot; its address
+; may not leave the frame through an explicit return.
+(defstruct Box n:i32)
+(defn f ():&Box
+  (let (b:&Box (alloca Box))
+    (set! (b 'n) 1)
+    (return b)))
+(defn main ():i32 (return 0))

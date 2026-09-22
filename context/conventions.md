@@ -6999,3 +6999,20 @@ compiler's own module already had zero of the thing being dropped, the filter is
 a **no-op on it**, and `make bootstrap` must stay byte-identical with no boot
 convergence. That prediction is also the sharpest correctness test on offer — IR
 that moves means the filter is dropping something live.
+
+## Escape taint is TWO fields — copy the scope without the flag and a frame address becomes a `with` resource
+
+A `Val`/`Sym` carries `taint` (a `Scope*`) and `taint-frame` (0 = `with`-owned
+resource, 1 = address of frame storage). The sinks branch on the flag: `with`
+taint is refused at `return` *and* at every store into longer-lived memory;
+frame taint only at `return` and the `defvar` initializer. So `(set! (dst
+'taint) (src 'taint))` on its own silently reclassifies a frame address as a
+`with` resource — which is what `emit-set`'s result value, `binding-address-val`
+and every control-flow join (`cond`, `match`, `unwrap-or`, …) did until Stage 21
+item 5, producing "resource bound by `with` escapes" for `(set! g &b)` at the
+end of a `void` function. Use the helpers, never a bare field copy:
+`val-copy-taint` (identity), `sym-adopt-taint` (a binding adopting a stored
+value — applies the by-value discharge), `taint-join-frame`/`taint-acc-join` (a
+phi or payload join: frame only if every tainted contributor is). And every form
+that hands out the address of a fresh stack slot calls `val-taint-frame`; the
+four producers are listed in design/stage21-cleanup/frame-storage-escape.md §2.

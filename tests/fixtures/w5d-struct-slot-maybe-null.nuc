@@ -3,10 +3,11 @@
 ; must be narrowed first. Without this the sugar would be a silent hole in the
 ; nullability system that the explicit `(deref m)` spelling does not have.
 (defstruct P (x i32) (y i32))
+(defvar gp:P (P 1 2))
 
 (defn pick (c:i32):?ptr:P
   (when (= c 0) (return null))
-  (return (P 1 2)))
+  (return &gp))
 
 (defn main ():i32
   (let (m:?ptr:P (pick 1)

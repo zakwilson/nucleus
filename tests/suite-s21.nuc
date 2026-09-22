@@ -168,6 +168,20 @@ ok void
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
+; Frame-storage escape: the discharge rule holds at run time
+; ---------------------------------------------------------------------------
+
+; The accept fixture of design/stage21-cleanup/frame-storage-escape.md, run: a
+; by-value defvar from a collection literal owns the heap buffer (len 5, not the
+; reclaimed header's 0), and every by-value copy out of an alloca'd or
+; literal-backed pointer reads the stored fields.
+(deftest s21-frame-discharge-runs
+  (let (out:String (try (build-run-file "" "" "tests/fixtures/s21-frame-discharge-accepts.nuc")))
+    (try (check-golden (string-as-view &out) "1500 5 3 8 5 1 6 7\n"))
+    (drop &out))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
 ; A read failure is a value
 ; ---------------------------------------------------------------------------
 

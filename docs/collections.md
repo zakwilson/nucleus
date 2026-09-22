@@ -649,6 +649,13 @@ and hashing is a cached load, both cheaper than a byte walk.
   to `ptr:T` and cannot spell an array or function type at all. Declare the
   collection's type and the element type comes from there instead.
 - **Odd map element count** (`{"a" 1 "b"}`) — keys and values must pair up.
+- **The `(ref Coll)` escaping its frame** — the header is a stack slot, so
+  `(defn f ():&(Vector i32) [1 2 3])` and `(defvar g:&(Vector i32) [1 2 3])`
+  are refused as escapes (the global's initializer runs in a startup function
+  whose frame is gone before `main`). Declare the slot **by value** instead —
+  `(defvar g:(Vector i32) [1 2 3])`, `(defn f ():(Vector i32) [1 2 3])` — which
+  copies the header out; the copy owns the heap buffer. See
+  [Pointer lifecycle](special-forms.md#pointer-lifecycle-escape-analysis).
 
 A bare `a` in a literal is a **variable reference**, as everywhere else; it is
 not a symbol value. A symbol element is written `'a`, and its near neighbours

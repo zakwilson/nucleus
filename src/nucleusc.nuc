@@ -313,6 +313,9 @@
 ; g-init-drained is a persistent cursor, mirroring g-mono-drained.
 (defvar g-init-worklist:&(Vector &InitJob) (vector-new-in &g-arena-alloc))
 (defvar g-init-drained:usize 0)
+; 1 while the initializer function's body is being emitted: a global assigned
+; there outlives that frame, so emit-set treats it as an escape sink.
+(defvar g-init-fn-active:i32 0)
 
 ; Stage 15 B6 (name-resolution.md §9.5): deferred `(dyn P)` annotation-site
 ; admission. Same worklist+cursor shape as the two above and for the same reason
@@ -2919,6 +2922,42 @@
 (defn val-copy-taint (dst:(raw Val) src:(raw Val)):void
   (set! (dst 'taint) (src 'taint))
   (set! (dst 'taint-frame) (src 'taint-frame)))
+
+; Every producer of a fresh stack slot marks its address here
+; (design/stage21-cleanup/frame-storage-escape.md §2 lists the four).
+(defn val-taint-frame (rv:(raw Val) scope:&Scope):void
+  (set! (rv 'taint) (as raw:Scope scope))
+  (set! (rv 'taint-frame) 1))
+
+; Frame taint is a property of an address: a by-value struct slot loads through
+; the pointer, so it discharges the taint (frame-storage-escape.md §3).
+(defn frame-taint-survives (v:(raw Val) dst:(raw Type)):i32
+  (when (or (= (v 'taint) null) (= (v 'taint-frame) 0)) (return 0))
+  (when (and (!= dst null) (= (dst 'kind) TY-STRUCT)
+             (= ((v 'type) 'kind) TY-PTR))
+    (return 0))
+  (return 1))
+
+; A binding adopts the stored value's taint, minus a frame taint the store
+; discharged — else `&binding` would hand the dead address back out.
+(defn sym-adopt-taint (sym:&Sym v:(raw Val) dst:(raw Type)):void
+  (if (and (!= (v 'taint-frame) 0) (= (frame-taint-survives v dst) 0))
+    (do (set! (sym 'taint) null)
+        (set! (sym 'taint-frame) 0))
+    (do (set! (sym 'taint) (v 'taint))
+        (set! (sym 'taint-frame) (v 'taint-frame)))))
+
+; A join's frame flag after folding `v` in (call BEFORE taint-merge moves
+; `acc`): frame only if every tainted contributor is — one with-taint wins.
+(defn taint-join-frame (acc:(raw Scope) acc-frame:i32 v:(raw Val)):i32
+  (when (= (v 'taint) null) (return acc-frame))
+  (when (= acc null) (return (v 'taint-frame)))
+  (if (and (!= acc-frame 0) (!= (v 'taint-frame) 0)) 1 0))
+
+; The same join over a Val accumulator.
+(defn taint-acc-join (acc:(raw Val) bv:(raw Val)):void
+  (set! (acc 'taint-frame) (taint-join-frame (acc 'taint) (acc 'taint-frame) bv))
+  (set! (acc 'taint) (taint-merge (acc 'taint) (bv 'taint))))
 
 ; Escape sink for a store through a pointer (a `set!` place, lifecycle.md §2.3):
 ; a tainted value may only be stored into memory that provably dies no later
@@ -5952,14 +5991,8 @@
       (let (rt:&Type (make-type TY-PTR))
         (set! (rt 'elem) pt)
         (set! (rt 'pkind) PTR-REF)
-        (let (mv:ptr:Val (as &Val (tc3-materialize (as raw:Val p) (as raw:Type rt)
-                                                      (as raw:Type pt) line)))
-          ; The copy is frame storage, so a pointer into it must not outlive the
-          ; frame — the rule emit-ref applies to any alloca it hands out.
-          (when (= (mv 'taint) null)
-            (set! (mv 'taint) (as raw:Scope scope))
-            (set! (mv 'taint-frame) 1))
-          (return (as &Val mv)))))))
+        (return (tc3-materialize (as raw:Val p) (as raw:Type rt) (as raw:Type pt)
+                                 scope line))))))
 
 ; SV-1's other half. A member place and `ref` need the receiver's own STORAGE, not a
 ; copy, so they take exactly what `ref` takes — a binding, whose slot is
@@ -6551,7 +6584,9 @@
                   ", align " (abi-slot-align ty) "\n"))
           (emit g-entry-stream "  " slot " = alloca " (type-to-ir ty) ", align "
                 (abi-slot-align ty) "\n"))
-        (return (alloc-val pt slot))))))
+        (let (rv:&Val (alloc-val pt slot))
+          (val-taint-frame rv scope)
+          (return rv))))))
 
 ; Coerce an integer index register to the target's pointer-sized integer and
 ; return its name, ready to be paired with `(ptr-int-ir)` as the GEP index.
@@ -6702,8 +6737,9 @@
     (let (rv:&Val (alloc-val pt (sym 'ir-name))
           sym-kind:i32 ((sym 'type) 'kind))
       ; The slot address reaches the same resource the binding does, so it
-      ; inherits the binding's existing (with-owned) escape taint, if any.
+      ; inherits the binding's existing escape taint (with or frame), if any.
       (set! (rv 'taint) (sym 'taint))
+      (set! (rv 'taint-frame) (sym 'taint-frame))
       ; Stage 13 L1 (lambda.md §"Lifetime and escape analysis"):
       ; taking the address of *frame-local storage* taints the resulting
       ; pointer with the region (Scope*) the storage lives in, so it
@@ -9890,9 +9926,10 @@
       ; (Stage 13 L1, taint-frame) — dangles past its storage. `return` is the
       ; outermost (function-frame) sink and rejects both.
       (when (!= (v 'taint) null)
-        (if (= (v 'taint-frame) 0)
+        (when (= (v 'taint-frame) 0)
           (die-at (cc 'line)
-            "resource bound by `with` escapes via return — use (move ...) to transfer ownership")
+            "resource bound by `with` escapes via return — use (move ...) to transfer ownership"))
+        (when (!= (frame-taint-survives v g-fn-ret-type) 0)
           (die-at (cc 'line)
             "address of frame-local storage escapes via return — the pointed-to storage is reclaimed when this function returns")))
       ; Stage 10 nullability: a declared (ref T) return requires a ref value.
@@ -9999,7 +10036,7 @@
 ; so `with` ownership drops it through the EXISTING with-drop-method TY-PTR arm
 ; — no new drop logic. Used by tc3-emit-binding-init when a declared `(ref S)`
 ; binding is initialized with a by-value `S`.
-(defn tc3-materialize (v:(raw Val) ty:(raw Type) pointee:(raw Type) line:i32):&Val
+(defn tc3-materialize (v:(raw Val) ty:(raw Type) pointee:(raw Type) scope:&Scope line:i32):&Val
   (let (vv:ptr:Val (unsafe/cast &Val v)
         slot:StrView (fstr "%tc3.mat." g-tmp))
     (inc! g-tmp)
@@ -10008,8 +10045,10 @@
     (emit g-body-stream "  store " (type-to-ir pointee) " " (vv 'val) ", ptr " slot ", align "
           (type-size pointee) "\n")
     (let (rv:ptr:Val (as &Val (alloc-val ty slot)))
-      (set! (rv 'taint) (vv 'taint))
-      (set! (rv 'taint-frame) (vv 'taint-frame))
+      ; A with-owned value keeps its with-taint; anything else is now frame storage.
+      (if (and (!= (vv 'taint) null) (= (vv 'taint-frame) 0))
+        (val-copy-taint (as raw:Val rv) vv)
+        (val-taint-frame (as raw:Val rv) scope))
       (return (as &Val rv)))))
 
 ; TC-3: emit a let/with binding init with target-typed materialization. For a
@@ -10084,7 +10123,7 @@
             (when (and (!= vt null)
                        (= (-> vt (unsafe/cast &Type _) (_ 'kind)) TY-STRUCT)
                        (!= (type-eq vt pointee) 0))
-              (return (tc3-materialize vv ty pointee line))))
+              (return (tc3-materialize vv ty pointee scope line))))
           (return vv))))))
 
 (defn emit-let (call:(raw Node) scope:&Scope):&Val
@@ -10165,8 +10204,7 @@
                       ; Stage 10 escape analysis: a binding initialized from a
                       ; tainted value aliases the same resource (§2.2). Stage 13
                       ; L1: also inherit the frame-region flag.
-                      (set! (sym 'taint) ((as &Val v) 'taint))
-                      (set! (sym 'taint-frame) ((as &Val v) 'taint-frame))
+                      (sym-adopt-taint sym (as raw:Val v) ty)
                       ; Narrowing: a ?T binding initialized with a known
                       ; non-null value starts narrowed (parity with set!).
                       (when (and (= (ptr-pkind ty) PTR-MAYBE)
@@ -10319,9 +10357,7 @@
                           ; Non-owning with-binding: behaves like let (adopts
                           ; the init value's taint and frame-region flag).
                         true
-                          (do
-                            (set! (sym 'taint) ((as &Val v) 'taint))
-                            (set! (sym 'taint-frame) ((as &Val v) 'taint-frame)))))
+                          (sym-adopt-taint sym (as raw:Val v) ty)))
                     (when (and (= (ptr-pkind ty) PTR-MAYBE)
                                (= (ptr-pkind ((as &Val v) 'type)) PTR-REF))
                       (narrow-apply inner name)))))))
@@ -10367,6 +10403,7 @@
           result-type:ptr null
           result-lit:i32 0
           result-taint:ptr null
+          result-frame:i32 0
           has-fallthrough:i32 0
           ; Stage 10 narrowing: `acc` holds names proven non-null for every
           ; subsequent pair (a failed null-test); `after` holds names to
@@ -10434,6 +10471,7 @@
                     (set! result-lit (if (and (!= result-lit 0) (!= (bv 'is-lit) 0)) 1 0))))
                 (when (= ((as &Type bty) 'kind) TY-VOID)
                   (set! result-type ty-void))
+                (set! result-frame (taint-join-frame result-taint result-frame bv))
                 (set! result-taint (taint-merge result-taint (bv 'taint)))
                 (emit g-body-stream "  br label %" join-lbl "\n")
                 (emit g-body-stream join-lbl ":\n")
@@ -10481,6 +10519,7 @@
           (emit g-body-stream "\n")
           (let (rv:&Val (alloc-val result-type tmp))
             (set! (rv 'taint) result-taint)
+            (set! (rv 'taint-frame) result-frame)
             (return rv)))))))
 
 (defn emit-while (call:(raw Node) scope:&Scope):&Val
@@ -10700,6 +10739,13 @@
                   (die-at (cc 'line)
                     (fstr "resource bound by `with` escapes via assignment to longer-lived '"
                           (target 's) "' — use (move ...) to transfer ownership"))))
+              ; @__nucleus_init's frame is gone before main, so this is the one
+              ; global store that is provably an escape (frame-storage-escape.md §4).
+              (when (and (!= g-init-fn-active 0) (= (sym 'home) g-globals)
+                         (!= (frame-taint-survives v (sym 'type)) 0))
+                (die-at (cc 'line)
+                  (fstr "defvar: the initializer of '" (target 's)
+                        "' is the address of frame-local storage, reclaimed when the initializer function returns — store the value itself, or place it with an allocator")))
               (let (cv:ptr:Val (unsafe/cast &Val coerced))
                 (emit-store (type-to-ir (sym 'type)) (cv 'val) (sym 'ir-name) (sym 'type))
                 ; An owning binding's slot stays armed whatever is stored, so
@@ -10707,8 +10753,7 @@
                 ; taint and frame-region flag. Either way a reassignment revives
                 ; a moved-out binding.
                 (when (= (sym 'owns) 0)
-                  (set! (sym 'taint) vtaint)
-                  (set! (sym 'taint-frame) (v 'taint-frame)))
+                  (sym-adopt-taint sym (as raw:Val v) (sym 'type)))
                 (set! (sym 'moved) 0)
                 ; Narrowing: reassignment kills the dominating test's fact.
                 ; Inside a loop, a narrow established outside the loop has
@@ -10725,7 +10770,8 @@
                     (narrow-apply scope set-name)))
                 ; set! yields the assigned value (so the REPL echoes it).
                 (let (rv:&Val (alloc-val (sym 'type) (cv 'val)))
-                  (set! (rv 'taint) vtaint)
+                  (set! (rv 'taint) (sym 'taint))
+                  (set! (rv 'taint-frame) (sym 'taint-frame))
                   (return rv))))))
           (die-at (node-line (as ptr target) (cc 'line)) (fstr "set!: undefined local '"
                                                                (target 's) "'"))))))))
@@ -11157,7 +11203,9 @@
                 (set! (pt 'elem) etype)
                 ; A stack array literal is a valid, non-null address (ref T).
                 (set! (pt 'pkind) PTR-REF)
-                (return (alloc-val (as ptr pt) slot))))))))))
+                (let (rv:&Val (alloc-val (as ptr pt) slot))
+                  (val-taint-frame rv scope)
+                  (return rv))))))))))
 
 ; (S e0 e1 ... | (field v) ...) -> &S compound literal (struct-name head).
 (defn emit-struct-lit (call:(raw Node) scope:&Scope sd:(raw StructDef)):&Val
@@ -11257,7 +11305,9 @@
           (set! (pt 'elem) (as ptr st))
           ; A stack compound literal is a valid, non-null address (ref T).
           (set! (pt 'pkind) PTR-REF)
-          (return (alloc-val (as ptr pt) slot)))))))
+          (let (rv:&Val (alloc-val (as ptr pt) slot))
+            (val-taint-frame rv scope)
+            (return rv)))))))
 
 ; ============================================================
 ; Macro expansion (calls JIT-compiled macro functions at compiler runtime)
@@ -15007,10 +15057,16 @@
               (when (= g-block-term 0)
                 ; Stage 10: the implicit return is a return — same escape sink
                 ; as the explicit one (the (ref T) kind check runs inside
-                ; coerce-int-val below).
-                (when (!= ((as &Val last-val) 'taint) null)
-                  (die-at (cc 'line)
-                    "resource bound by `with` escapes via implicit return — use (move ...) to transfer ownership"))
+                ; coerce-int-val below). Nothing leaves a void function, so its
+                ; last value is not a sink.
+                (when (and (!= ((as &Val last-val) 'taint) null)
+                           (!= ((as &Type ret) 'kind) TY-VOID))
+                  (when (= ((as &Val last-val) 'taint-frame) 0)
+                    (die-at (cc 'line)
+                      "resource bound by `with` escapes via implicit return — use (move ...) to transfer ownership"))
+                  (when (!= (frame-taint-survives last-val ret) 0)
+                    (die-at (cc 'line)
+                      "address of frame-local storage escapes via implicit return — the pointed-to storage is reclaimed when this function returns")))
                 (if (!= ((unsafe/cast &AbiInfo g-fn-ret-abi) 'kind) ABI-DIRECT)
                   ; Struct return via the aggregate ABI. A void last expression
                   ; (degenerate fall-off) returns a zeroed struct.
@@ -18060,13 +18116,15 @@
         save-path:Symbol g-source-path
         save-line:i32 g-form-line)
     (let (fn-scope:&Scope (scope-new g-globals))
+      (set! g-init-fn-active 1)
       (while (< g-init-drained (count g-init-worklist))
         (let (job:ptr:InitJob (as &InitJob (invoke g-init-worklist g-init-drained)))
           (inc! g-init-drained)
           (set! g-current-ns (job 'ns))
           (set! g-source-path (job 'path))
           (set! g-form-line (job 'line))
-          (emit-node (as ptr (job 'form)) fn-scope))))
+          (emit-node (as ptr (job 'form)) fn-scope)))
+      (set! g-init-fn-active 0))
     (set! g-current-ns save-ns)
     (set! g-source-path save-path)
     (set! g-form-line save-line))
