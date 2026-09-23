@@ -130,7 +130,7 @@ The 8 rows outside that class are three pre-existing defects, not spelling:
 
 | Rows | Symptom | Disposition |
 | --- | --- | --- |
-| `?&Pt`, `raw:Pt`, `?&(V)`, `raw:(V)`, `?ptr:(V)` at lambda return | `return: raw pointer where non-null (ref ...) is required` — a lambda's declared return type loses its pointer kind; `defn` with the same signature is fine | side finding, [overview.md](overview.md) |
+| `?&Pt`, `raw:Pt`, `?&(V)`, `raw:(V)`, `?ptr:(V)` at lambda return | `return: raw pointer where non-null (ref ...) is required` — a lambda's declared return type loses its pointer kind; `defn` with the same signature is fine | side finding, [overview.md](overview.md); **fixed 2026-09-23** |
 | `?Pt` in a `defunion` arm (both forms) | `use of undefined type named 'Maybe.Pt'` in the compile-time module | side finding |
 | `?&Pt` as a generic-`defn` template argument | `cannot infer type variable '?ref:Pt'` — §1.4 | **in scope: PK-4** |
 
@@ -776,6 +776,9 @@ struct (`use of undefined type named 'Maybe.Vector.i32'` in the compile-time
 module; the example's arms hold `?&(Vector i32)` and `(?ref Pt)` instead). The
 example also binds pointer arguments before a struct literal because
 `(Holder &pt)` is misread as a designated initializer (the third rough edge).
+**Update (2026-09-23):** the lambda-return defect is fixed (the lift re-spelled the
+return through `type-spelling`; it now reuses the source operand), and its rows
+are in the example as `lambda return:`. The `defunion`-arm row is still out.
 
 The units table, audited against what earlier milestones had already pinned:
 

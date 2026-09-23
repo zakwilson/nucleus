@@ -7881,16 +7881,10 @@
             (set! (ft 'nopt) 0)
             (set! (ft 'opt-defaults) null)
             (let (irn:Symbol (defn-ir-name lifted param-types nparams ret))
-              ; Synthesize the new-style (defn <lifted> (params) <ret> body…) by
-              ; consing the defn keyword, the bare lifted name, the params node,
-              ; and the return operand onto the fn form's body tail. The return
-              ; type is a standalone NODE-SYM operand (`fn-parse-ret-type` accepts
-              ; a bare type name); its spelling is exactly `(type-spelling ret)`.
-              ; Body tail: the cons cell whose car is the first body form. The fn
-              ; form is (fn . (params . (ret . body…))), so the body sublist is
-              ; the cdr of the cdr of the cdr of the head cell.
+              ; (defn <lifted> (params) <ret> body…). The return is the source
+              ; operand, not `type-spelling ret`, which drops the pointer kind.
               (let (body-list:ptr (-> cc (node-rest _) (node-rest _) (node-rest _))
-                    after-ret:ptr (node-cons (intern-node (type-spelling ret)) body-list line)
+                    after-ret:ptr (node-cons ret-node body-list line)
                     after-params:ptr (node-cons params-node after-ret line)
                     after-name:ptr (node-cons (intern-node lifted) after-params line)
                     defn-form:ptr (node-cons 'defn after-name line))
@@ -8280,7 +8274,8 @@
 ; generic-instantiate). `params-node` is the lambda's param list; the env type
 ; is prepended as the `self` receiver. Returns nothing — the caller already has
 ; the env value.
-(defn fn-make-invoke-method (env-sd:(raw StructDef) caps:(raw Node) params-node:(raw Node) ret:(raw Type)
+(defn fn-make-invoke-method (env-sd:(raw StructDef) caps:(raw Node) params-node:(raw Node)
+                                  ret-node:(raw Node) ret:(raw Type)
                                   param-types:ptr param-names:ptr nparams:i32
                                   body-list:(raw Node) line:i32 mode:i32):void
   ; Receiver-extended param Type* array: [(ref Env), p0, p1, …]. This is the
@@ -8308,9 +8303,8 @@
             ; NODE-LIST whose own spine is the original params; cons self in front.
             new-params:ptr (node-cons self-spec params-node line)
             name-sym:ptr (as ptr (intern-node (symbol-intern "invoke")))
-            ret-node:ptr (as ptr (intern-node (type-spelling ret)))
             defn-sym:ptr (as ptr (intern-node (symbol-intern "defn")))
-            ; New-style: (defn invoke (params) <ret> body…).
+            ; New-style: (defn invoke (params) <ret> body…), `ret-node` as in emit-fn.
             after-ret:ptr (node-cons ret-node body2 line)
             after-params:ptr (node-cons new-params after-ret line)
             after-name:ptr (node-cons name-sym after-params line)
@@ -9578,7 +9572,7 @@
                 body-list:ptr (-> cc (node-rest _) (unsafe/cast &Node _) (node-rest _)
                                      (unsafe/cast &Node _) (node-rest _))
                 owns-drop:i32 0)
-            (fn-make-invoke-method env-sd caps-head params-node ret
+            (fn-make-invoke-method env-sd caps-head params-node ret-node ret
                                    param-types param-names nparams body-list line 0)
             ; Determine ownership up front by scanning the env field types: if any
             ; field is a Drop type, the closure owns its cloned resources, so
@@ -9659,7 +9653,7 @@
                 body-list:ptr (-> cc (node-rest _) (unsafe/cast &Node _) (node-rest _)
                                      (unsafe/cast &Node _) (node-rest _))
                 owns-drop:i32 0)
-            (fn-make-invoke-method env-sd caps-head params-node ret
+            (fn-make-invoke-method env-sd caps-head params-node ret-node ret
                                    param-types param-names nparams body-list line 1)
             ; Pre-scan env field types: if any field is a Drop type, the closure
             ; owns the moved resource, so synthesize its `drop` + record the
@@ -9758,7 +9752,7 @@
             (let (env-sd:ptr (fn-make-env-struct caps-head scope line 2 (alloc-val 'type))
                   body-list:ptr (-> cc (node-rest _) (unsafe/cast &Node _) (node-rest _)
                                      (unsafe/cast &Node _) (node-rest _) (unsafe/cast &Node _) (node-rest _)))
-              (fn-make-invoke-method env-sd caps-head params-node ret
+              (fn-make-invoke-method env-sd caps-head params-node ret-node ret
                                      param-types param-names nparams body-list line 2)
               ; A cfn always owns its (heap) env storage, so it always conforms to
               ; Drop and gets a synthesized drop that frees the env via the stored
