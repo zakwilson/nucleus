@@ -5,8 +5,6 @@ target triple = "x86_64-pc-windows-msvc"
 
 %Result.i32.Err = type { i32, %__anon_union_hc1b7e9eee1bdc26a }
 
-%__anon_struct_hcdd6acf60960fd74 = type { %StrView, %Symbol, ptr }
-
 %__anon_struct_h2a7cd166bcfa6159 = type { ptr, ptr }
 
 %Maybe.i32 = type { i32, %__anon_union_hf7e5ef537741123f }
@@ -53,6 +51,8 @@ target triple = "x86_64-pc-windows-msvc"
 
 %__anon_union_hc1b7e9eee1bdc26a = type { i32 }
 
+%__anon_struct_hcdd6acf60960fd74 = type { %StrView, %Symbol, ptr }
+
 %__anon_union_hbfa808d22771aee3 = type { %StrView, [16 x i8] }
 
 %Cleanup = type { i32, %__anon_union_hbfa808d22771aee3 }
@@ -94,8 +94,6 @@ target triple = "x86_64-pc-windows-msvc"
 %__anon_struct_hd094cc0c755ce1f2 = type { [2 x i32] }
 
 %__fsid_t = type { [2 x i32] }
-
-%__anon_struct_h8a0d620a321a6344 = type { i32, %__anon_union_h9c72200229432b6f }
 
 %__mbstate_t = type { i32, %__anon_union_h9c72200229432b6f }
 
@@ -261,6 +259,8 @@ target triple = "x86_64-pc-windows-msvc"
 
 %__anon_union_h9c72200229432b6f = type { i32 }
 
+%__anon_struct_h8a0d620a321a6344 = type { i32, %__anon_union_h9c72200229432b6f }
+
 %__anon_union_ha710c9ef4b0d959e = type { i64 }
 
 %__atomic_wide_counter = type { i64 }
@@ -313,27 +313,17 @@ target triple = "x86_64-pc-windows-msvc"
 
 %__anon_struct_h3e8bce130b6a2cf0 = type { i32, i32 }
 
-%__anon_struct_h8ed954200f5c8598 = type { i32, i32, %__sigval_t }
-
-%__anon_struct_h43883c39001b1d67 = type { i32, i32, %__sigval_t }
-
 %__anon_struct_h9d2d51eeac85bda9 = type { i32, i32, i32, i32, i32 }
 
 %__anon_struct_hf0ca960fd634550c = type { ptr, ptr }
-
-%__anon_struct_h062791b97b96317a = type { ptr, i16, %__anon_union_h7d11434b800b3abe }
 
 %__anon_struct_hd6e6b0295601673a = type { i32, i32 }
 
 %__anon_struct_hc8e19c54ab4ad424 = type { ptr, i32, i32 }
 
-%__anon_struct_h2dbfba06fbd57d25 = type { i32, i32, i32, i32, %__anon_union_hbaa38a12ae3a6ceb }
-
 %siginfo_t = type { i32, i32, i32, i32, %__anon_union_hbaa38a12ae3a6ceb }
 
 %__anon_struct_h4989c456c1df95a8 = type { ptr, ptr }
-
-%__anon_struct_h19a47ae769635ac5 = type { %__sigval_t, i32, i32, %__anon_union_h7e09f470a527bdf7 }
 
 %sigevent_t = type { %__sigval_t, i32, i32, %__anon_union_h7e09f470a527bdf7 }
 
@@ -585,11 +575,21 @@ target triple = "x86_64-pc-windows-msvc"
 
 %__sigval_t = type { ptr }
 
+%__anon_struct_h8ed954200f5c8598 = type { i32, i32, %__sigval_t }
+
+%__anon_struct_h43883c39001b1d67 = type { i32, i32, %__sigval_t }
+
 %__anon_union_h7d11434b800b3abe = type { %__anon_struct_hf0ca960fd634550c }
+
+%__anon_struct_h062791b97b96317a = type { ptr, i16, %__anon_union_h7d11434b800b3abe }
 
 %__anon_union_hbaa38a12ae3a6ceb = type { %__anon_struct_h8ed954200f5c8598, [96 x i8] }
 
+%__anon_struct_h2dbfba06fbd57d25 = type { i32, i32, i32, i32, %__anon_union_hbaa38a12ae3a6ceb }
+
 %__anon_union_h7e09f470a527bdf7 = type { %__anon_struct_h4989c456c1df95a8, [32 x i8] }
+
+%__anon_struct_h19a47ae769635ac5 = type { %__sigval_t, i32, i32, %__anon_union_h7e09f470a527bdf7 }
 
 %__anon_union_ha765454821c56f0a = type { ptr }
 
@@ -64059,33 +64059,44 @@ cond.then0.0:
   br i1 %t92, label %cond.then1.0, label %cond.fall1
 cond.then1.0:
   %t93 = load ptr, ptr %sd2.addr.73, align 8
-  call void @sdef-note-emitted(ptr %t93, ptr @g-type-stream)
-  %t94 = load ptr, ptr %sd2.addr.73, align 8
-  call void @emit-struct-type-line(ptr @g-type-stream, ptr %t94)
-  %t95 = load ptr, ptr @g-pending-unions, align 8
+  %t94 = call i32 @pending-union-deps-ready(ptr %t93)
+  %t95 = icmp ne i32 %t94, 0
+  br i1 %t95, label %cond.then2.0, label %cond.fall2
+cond.then2.0:
   %t96 = load ptr, ptr %sd2.addr.73, align 8
-  call void @conj.pVector.pStructDef.pStructDef(ptr %t95, ptr %t96)
+  call void @sdef-note-emitted(ptr %t96, ptr @g-type-stream)
+  %t97 = load ptr, ptr %sd2.addr.73, align 8
+  call void @emit-struct-type-line(ptr @g-type-stream, ptr %t97)
+  br label %cond.join2.0
+cond.join2.0:
+  br label %cond.end2
+cond.fall2:
+  br label %cond.end2
+cond.end2:
+  %t98 = load ptr, ptr @g-pending-unions, align 8
+  %t99 = load ptr, ptr %sd2.addr.73, align 8
+  call void @conj.pVector.pStructDef.pStructDef(ptr %t98, ptr %t99)
   br label %cond.join1.0
 cond.join1.0:
   br label %cond.end1
 cond.fall1:
   br label %cond.end1
 cond.end1:
-  %t97 = load ptr, ptr %sd2.addr.73, align 8
-  %t98 = load %Symbol, ptr @g-source-path, align 8
-  %t99 = getelementptr inbounds %StructDef, ptr %t97, i32 0, i32 10
-  store %Symbol %t98, ptr %t99, align 8
   %t100 = load ptr, ptr %sd2.addr.73, align 8
-  %t101 = getelementptr inbounds %StructDef, ptr %t100, i32 0, i32 11
-  store i32 0, ptr %t101, align 4
+  %t101 = load %Symbol, ptr @g-source-path, align 8
+  %t102 = getelementptr inbounds %StructDef, ptr %t100, i32 0, i32 10
+  store %Symbol %t101, ptr %t102, align 8
+  %t103 = load ptr, ptr %sd2.addr.73, align 8
+  %t104 = getelementptr inbounds %StructDef, ptr %t103, i32 0, i32 11
+  store i32 0, ptr %t104, align 4
   br label %cond.join0.0
 cond.join0.0:
   br label %cond.end0
 cond.fall0:
   br label %cond.end0
 cond.end0:
-  %t102 = load ptr, ptr %sd.addr.62, align 8
-  ret ptr %t102
+  %t105 = load ptr, ptr %sd.addr.62, align 8
+  ret ptr %t105
 }
 
 define weak_odr ptr @lookup-or-make-anon-union(ptr %field-names.arg, ptr %field-types.arg, ptr %faligns.arg, ptr %fbits.arg, i32 %nfields.arg, i32 %packed.arg, i32 %align.arg) {
@@ -194626,33 +194637,31 @@ entry:
   %t226 = alloca %Symbol
   %body-list.addr.228 = alloca ptr, align 8
   %after-ret.addr.233 = alloca ptr, align 8
-  %t236 = alloca %Symbol
-  %t238 = alloca %Symbol
-  %after-params.addr.244 = alloca ptr, align 8
-  %after-name.addr.249 = alloca ptr, align 8
-  %t251 = alloca %Symbol
-  %defn-form.addr.257 = alloca ptr, align 8
-  %__gs_1599.addr.264 = alloca %String, align 8
-  %__gs_1600.addr.265 = alloca %String, align 8
-  %t267 = alloca %String
-  %t273 = alloca %StrView
-  %t278 = alloca %Result.void.Err
-  %t282 = alloca %Symbol
-  %t285 = alloca %Result.void.Err
-  %t291 = alloca %StrView
-  %t296 = alloca %Result.void.Err
-  %t300 = alloca %Symbol
-  %t303 = alloca %Result.void.Err
-  %t309 = alloca %StrView
-  %t314 = alloca %Result.void.Err
-  %t319 = alloca %Result.void.Err
-  %t325 = alloca %StrView
-  %t330 = alloca %Result.void.Err
-  %t335 = alloca %StrView
-  %t340 = alloca %StrView
-  %t347 = alloca %Symbol
-  %t350 = alloca %StrView
-  %t355 = alloca %StrView
+  %after-params.addr.238 = alloca ptr, align 8
+  %after-name.addr.243 = alloca ptr, align 8
+  %t245 = alloca %Symbol
+  %defn-form.addr.251 = alloca ptr, align 8
+  %__gs_1599.addr.258 = alloca %String, align 8
+  %__gs_1600.addr.259 = alloca %String, align 8
+  %t261 = alloca %String
+  %t267 = alloca %StrView
+  %t272 = alloca %Result.void.Err
+  %t276 = alloca %Symbol
+  %t279 = alloca %Result.void.Err
+  %t285 = alloca %StrView
+  %t290 = alloca %Result.void.Err
+  %t294 = alloca %Symbol
+  %t297 = alloca %Result.void.Err
+  %t303 = alloca %StrView
+  %t308 = alloca %Result.void.Err
+  %t313 = alloca %Result.void.Err
+  %t319 = alloca %StrView
+  %t324 = alloca %Result.void.Err
+  %t329 = alloca %StrView
+  %t334 = alloca %StrView
+  %t341 = alloca %Symbol
+  %t344 = alloca %StrView
+  %t349 = alloca %StrView
   %t1 = load ptr, ptr %call.addr, align 8
   store ptr %t1, ptr %cc.addr.0, align 8
   %t3 = load ptr, ptr %call.addr, align 8
@@ -194944,137 +194953,131 @@ while.end4:
   %t231 = call ptr @node-rest(ptr %t230)
   %t232 = call ptr @node-rest(ptr %t231)
   store ptr %t232, ptr %body-list.addr.228, align 8
-  %t234 = load ptr, ptr %ret.addr.53, align 8
-  %t235 = call i64 @type-spelling(ptr %t234)
-  store i64 %t235, ptr %t236
-  %t237 = load %Symbol, ptr %t236
-  store %Symbol %t237, ptr %t238
-  %t239 = load i64, ptr %t238
-  %t240 = call ptr @intern-node(i64 %t239)
-  %t241 = load ptr, ptr %body-list.addr.228, align 8
-  %t242 = load i32, ptr %line.addr.2, align 4
-  %t243 = call ptr @node-cons(ptr %t240, ptr %t241, i32 %t242)
-  store ptr %t243, ptr %after-ret.addr.233, align 8
-  %t245 = load ptr, ptr %params-node.addr.17, align 8
-  %t246 = load ptr, ptr %after-ret.addr.233, align 8
-  %t247 = load i32, ptr %line.addr.2, align 4
-  %t248 = call ptr @node-cons(ptr %t245, ptr %t246, i32 %t247)
-  store ptr %t248, ptr %after-params.addr.244, align 8
-  %t250 = load %Symbol, ptr %lifted.addr.153, align 8
-  store %Symbol %t250, ptr %t251
-  %t252 = load i64, ptr %t251
-  %t253 = call ptr @intern-node(i64 %t252)
-  %t254 = load ptr, ptr %after-params.addr.244, align 8
-  %t255 = load i32, ptr %line.addr.2, align 4
-  %t256 = call ptr @node-cons(ptr %t253, ptr %t254, i32 %t255)
-  store ptr %t256, ptr %after-name.addr.249, align 8
-  %t258 = call ptr @intern-symbol(ptr getelementptr inbounds ([5 x i8], ptr @.str.3354, i64 0, i64 0))
-  %t259 = load ptr, ptr %after-name.addr.249, align 8
-  %t260 = load i32, ptr %line.addr.2, align 4
-  %t261 = call ptr @node-cons(ptr %t258, ptr %t259, i32 %t260)
-  store ptr %t261, ptr %defn-form.addr.257, align 8
-  %t262 = load ptr, ptr @g-mono-worklist, align 8
-  %t263 = load ptr, ptr %defn-form.addr.257, align 8
-  %t266 = call ptr @strfmt-alloc()
-  call void @string-new-alloc(ptr sret(%String) align 8 %t267, ptr %t266)
-  %t268 = load %String, ptr %t267
-  store %String %t268, ptr %__gs_1600.addr.265, align 8
-  %t269 = getelementptr inbounds [23 x i8], ptr @.str.3355, i64 0, i64 0
-  %t270 = load %String, ptr %__gs_1600.addr.265, align 8
-  %t271 = insertvalue %StrView undef, ptr %t269, 0
-  %t272 = insertvalue %StrView %t271, i64 22, 1
-  store %StrView %t272, ptr %t273
-  %t274 = load i64, ptr %t273
-  %t275 = getelementptr i8, ptr %t273, i64 8
-  %t276 = load i64, ptr %t275
-  %t277 = call i64 @to_str.StrView.pString(i64 %t274, i64 %t276, ptr %__gs_1600.addr.265)
-  store i64 %t277, ptr %t278
-  %t279 = load %Result.void.Err, ptr %t278
-  %t280 = load %Symbol, ptr %lifted.addr.153, align 8
-  %t281 = load %String, ptr %__gs_1600.addr.265, align 8
-  store %Symbol %t280, ptr %t282
-  %t283 = load i64, ptr %t282
-  %t284 = call i64 @to_str.Symbol.pString(i64 %t283, ptr %__gs_1600.addr.265)
-  store i64 %t284, ptr %t285
-  %t286 = load %Result.void.Err, ptr %t285
-  %t287 = getelementptr inbounds [14 x i8], ptr @.str.3356, i64 0, i64 0
-  %t288 = load %String, ptr %__gs_1600.addr.265, align 8
-  %t289 = insertvalue %StrView undef, ptr %t287, 0
-  %t290 = insertvalue %StrView %t289, i64 13, 1
-  store %StrView %t290, ptr %t291
-  %t292 = load i64, ptr %t291
-  %t293 = getelementptr i8, ptr %t291, i64 8
-  %t294 = load i64, ptr %t293
-  %t295 = call i64 @to_str.StrView.pString(i64 %t292, i64 %t294, ptr %__gs_1600.addr.265)
-  store i64 %t295, ptr %t296
-  %t297 = load %Result.void.Err, ptr %t296
-  %t298 = load %Symbol, ptr @g-source-path, align 8
-  %t299 = load %String, ptr %__gs_1600.addr.265, align 8
-  store %Symbol %t298, ptr %t300
-  %t301 = load i64, ptr %t300
-  %t302 = call i64 @to_str.Symbol.pString(i64 %t301, ptr %__gs_1600.addr.265)
-  store i64 %t302, ptr %t303
-  %t304 = load %Result.void.Err, ptr %t303
-  %t305 = getelementptr inbounds [2 x i8], ptr @.str.3357, i64 0, i64 0
-  %t306 = load %String, ptr %__gs_1600.addr.265, align 8
-  %t307 = insertvalue %StrView undef, ptr %t305, 0
-  %t308 = insertvalue %StrView %t307, i64 1, 1
-  store %StrView %t308, ptr %t309
-  %t310 = load i64, ptr %t309
-  %t311 = getelementptr i8, ptr %t309, i64 8
-  %t312 = load i64, ptr %t311
-  %t313 = call i64 @to_str.StrView.pString(i64 %t310, i64 %t312, ptr %__gs_1600.addr.265)
-  store i64 %t313, ptr %t314
-  %t315 = load %Result.void.Err, ptr %t314
-  %t316 = load i32, ptr %line.addr.2, align 4
-  %t317 = load %String, ptr %__gs_1600.addr.265, align 8
-  %t318 = call i64 @to_str.i32.pString(i32 %t316, ptr %__gs_1600.addr.265)
-  store i64 %t318, ptr %t319
-  %t320 = load %Result.void.Err, ptr %t319
-  %t321 = getelementptr inbounds [2 x i8], ptr @.str.3358, i64 0, i64 0
-  %t322 = load %String, ptr %__gs_1600.addr.265, align 8
-  %t323 = insertvalue %StrView undef, ptr %t321, 0
-  %t324 = insertvalue %StrView %t323, i64 1, 1
-  store %StrView %t324, ptr %t325
-  %t326 = load i64, ptr %t325
-  %t327 = getelementptr i8, ptr %t325, i64 8
-  %t328 = load i64, ptr %t327
-  %t329 = call i64 @to_str.StrView.pString(i64 %t326, i64 %t328, ptr %__gs_1600.addr.265)
-  store i64 %t329, ptr %t330
-  %t331 = load %Result.void.Err, ptr %t330
-  %t332 = load %String, ptr %__gs_1600.addr.265, align 8
-  store %String %t332, ptr %__gs_1599.addr.264, align 8
-  %t333 = load %String, ptr %__gs_1599.addr.264, align 8
-  %t334 = call { i64, i64 } @string-as-view(ptr %__gs_1599.addr.264)
-  %t336 = extractvalue { i64, i64 } %t334, 0
-  store i64 %t336, ptr %t335
-  %t337 = getelementptr i8, ptr %t335, i64 8
-  %t338 = extractvalue { i64, i64 } %t334, 1
-  store i64 %t338, ptr %t337
-  %t339 = load %StrView, ptr %t335
-  store %StrView %t339, ptr %t340
-  %t341 = load i64, ptr %t340
-  %t342 = getelementptr i8, ptr %t340, i64 8
-  %t343 = load i64, ptr %t342
-  %t344 = call ptr @mono-job-here(ptr %t263, i64 %t341, i64 %t343)
-  call void @conj.pVector.pMonoJob.pMonoJob(ptr %t262, ptr %t344)
-  %t345 = load ptr, ptr %ft.addr.202, align 8
-  %t346 = load %Symbol, ptr %irn.addr.218, align 8
-  store %Symbol %t346, ptr %t347
-  %t348 = load i64, ptr %t347
-  %t349 = call { i64, i64 } @symbol-as-view(i64 %t348)
-  %t351 = extractvalue { i64, i64 } %t349, 0
-  store i64 %t351, ptr %t350
-  %t352 = getelementptr i8, ptr %t350, i64 8
-  %t353 = extractvalue { i64, i64 } %t349, 1
-  store i64 %t353, ptr %t352
-  %t354 = load %StrView, ptr %t350
-  store %StrView %t354, ptr %t355
-  %t356 = load i64, ptr %t355
-  %t357 = getelementptr i8, ptr %t355, i64 8
-  %t358 = load i64, ptr %t357
-  %t359 = call ptr @alloc-val(ptr %t345, i64 %t356, i64 %t358)
-  ret ptr %t359
+  %t234 = load ptr, ptr %ret-node.addr.20, align 8
+  %t235 = load ptr, ptr %body-list.addr.228, align 8
+  %t236 = load i32, ptr %line.addr.2, align 4
+  %t237 = call ptr @node-cons(ptr %t234, ptr %t235, i32 %t236)
+  store ptr %t237, ptr %after-ret.addr.233, align 8
+  %t239 = load ptr, ptr %params-node.addr.17, align 8
+  %t240 = load ptr, ptr %after-ret.addr.233, align 8
+  %t241 = load i32, ptr %line.addr.2, align 4
+  %t242 = call ptr @node-cons(ptr %t239, ptr %t240, i32 %t241)
+  store ptr %t242, ptr %after-params.addr.238, align 8
+  %t244 = load %Symbol, ptr %lifted.addr.153, align 8
+  store %Symbol %t244, ptr %t245
+  %t246 = load i64, ptr %t245
+  %t247 = call ptr @intern-node(i64 %t246)
+  %t248 = load ptr, ptr %after-params.addr.238, align 8
+  %t249 = load i32, ptr %line.addr.2, align 4
+  %t250 = call ptr @node-cons(ptr %t247, ptr %t248, i32 %t249)
+  store ptr %t250, ptr %after-name.addr.243, align 8
+  %t252 = call ptr @intern-symbol(ptr getelementptr inbounds ([5 x i8], ptr @.str.3354, i64 0, i64 0))
+  %t253 = load ptr, ptr %after-name.addr.243, align 8
+  %t254 = load i32, ptr %line.addr.2, align 4
+  %t255 = call ptr @node-cons(ptr %t252, ptr %t253, i32 %t254)
+  store ptr %t255, ptr %defn-form.addr.251, align 8
+  %t256 = load ptr, ptr @g-mono-worklist, align 8
+  %t257 = load ptr, ptr %defn-form.addr.251, align 8
+  %t260 = call ptr @strfmt-alloc()
+  call void @string-new-alloc(ptr sret(%String) align 8 %t261, ptr %t260)
+  %t262 = load %String, ptr %t261
+  store %String %t262, ptr %__gs_1600.addr.259, align 8
+  %t263 = getelementptr inbounds [23 x i8], ptr @.str.3355, i64 0, i64 0
+  %t264 = load %String, ptr %__gs_1600.addr.259, align 8
+  %t265 = insertvalue %StrView undef, ptr %t263, 0
+  %t266 = insertvalue %StrView %t265, i64 22, 1
+  store %StrView %t266, ptr %t267
+  %t268 = load i64, ptr %t267
+  %t269 = getelementptr i8, ptr %t267, i64 8
+  %t270 = load i64, ptr %t269
+  %t271 = call i64 @to_str.StrView.pString(i64 %t268, i64 %t270, ptr %__gs_1600.addr.259)
+  store i64 %t271, ptr %t272
+  %t273 = load %Result.void.Err, ptr %t272
+  %t274 = load %Symbol, ptr %lifted.addr.153, align 8
+  %t275 = load %String, ptr %__gs_1600.addr.259, align 8
+  store %Symbol %t274, ptr %t276
+  %t277 = load i64, ptr %t276
+  %t278 = call i64 @to_str.Symbol.pString(i64 %t277, ptr %__gs_1600.addr.259)
+  store i64 %t278, ptr %t279
+  %t280 = load %Result.void.Err, ptr %t279
+  %t281 = getelementptr inbounds [14 x i8], ptr @.str.3356, i64 0, i64 0
+  %t282 = load %String, ptr %__gs_1600.addr.259, align 8
+  %t283 = insertvalue %StrView undef, ptr %t281, 0
+  %t284 = insertvalue %StrView %t283, i64 13, 1
+  store %StrView %t284, ptr %t285
+  %t286 = load i64, ptr %t285
+  %t287 = getelementptr i8, ptr %t285, i64 8
+  %t288 = load i64, ptr %t287
+  %t289 = call i64 @to_str.StrView.pString(i64 %t286, i64 %t288, ptr %__gs_1600.addr.259)
+  store i64 %t289, ptr %t290
+  %t291 = load %Result.void.Err, ptr %t290
+  %t292 = load %Symbol, ptr @g-source-path, align 8
+  %t293 = load %String, ptr %__gs_1600.addr.259, align 8
+  store %Symbol %t292, ptr %t294
+  %t295 = load i64, ptr %t294
+  %t296 = call i64 @to_str.Symbol.pString(i64 %t295, ptr %__gs_1600.addr.259)
+  store i64 %t296, ptr %t297
+  %t298 = load %Result.void.Err, ptr %t297
+  %t299 = getelementptr inbounds [2 x i8], ptr @.str.3357, i64 0, i64 0
+  %t300 = load %String, ptr %__gs_1600.addr.259, align 8
+  %t301 = insertvalue %StrView undef, ptr %t299, 0
+  %t302 = insertvalue %StrView %t301, i64 1, 1
+  store %StrView %t302, ptr %t303
+  %t304 = load i64, ptr %t303
+  %t305 = getelementptr i8, ptr %t303, i64 8
+  %t306 = load i64, ptr %t305
+  %t307 = call i64 @to_str.StrView.pString(i64 %t304, i64 %t306, ptr %__gs_1600.addr.259)
+  store i64 %t307, ptr %t308
+  %t309 = load %Result.void.Err, ptr %t308
+  %t310 = load i32, ptr %line.addr.2, align 4
+  %t311 = load %String, ptr %__gs_1600.addr.259, align 8
+  %t312 = call i64 @to_str.i32.pString(i32 %t310, ptr %__gs_1600.addr.259)
+  store i64 %t312, ptr %t313
+  %t314 = load %Result.void.Err, ptr %t313
+  %t315 = getelementptr inbounds [2 x i8], ptr @.str.3358, i64 0, i64 0
+  %t316 = load %String, ptr %__gs_1600.addr.259, align 8
+  %t317 = insertvalue %StrView undef, ptr %t315, 0
+  %t318 = insertvalue %StrView %t317, i64 1, 1
+  store %StrView %t318, ptr %t319
+  %t320 = load i64, ptr %t319
+  %t321 = getelementptr i8, ptr %t319, i64 8
+  %t322 = load i64, ptr %t321
+  %t323 = call i64 @to_str.StrView.pString(i64 %t320, i64 %t322, ptr %__gs_1600.addr.259)
+  store i64 %t323, ptr %t324
+  %t325 = load %Result.void.Err, ptr %t324
+  %t326 = load %String, ptr %__gs_1600.addr.259, align 8
+  store %String %t326, ptr %__gs_1599.addr.258, align 8
+  %t327 = load %String, ptr %__gs_1599.addr.258, align 8
+  %t328 = call { i64, i64 } @string-as-view(ptr %__gs_1599.addr.258)
+  %t330 = extractvalue { i64, i64 } %t328, 0
+  store i64 %t330, ptr %t329
+  %t331 = getelementptr i8, ptr %t329, i64 8
+  %t332 = extractvalue { i64, i64 } %t328, 1
+  store i64 %t332, ptr %t331
+  %t333 = load %StrView, ptr %t329
+  store %StrView %t333, ptr %t334
+  %t335 = load i64, ptr %t334
+  %t336 = getelementptr i8, ptr %t334, i64 8
+  %t337 = load i64, ptr %t336
+  %t338 = call ptr @mono-job-here(ptr %t257, i64 %t335, i64 %t337)
+  call void @conj.pVector.pMonoJob.pMonoJob(ptr %t256, ptr %t338)
+  %t339 = load ptr, ptr %ft.addr.202, align 8
+  %t340 = load %Symbol, ptr %irn.addr.218, align 8
+  store %Symbol %t340, ptr %t341
+  %t342 = load i64, ptr %t341
+  %t343 = call { i64, i64 } @symbol-as-view(i64 %t342)
+  %t345 = extractvalue { i64, i64 } %t343, 0
+  store i64 %t345, ptr %t344
+  %t346 = getelementptr i8, ptr %t344, i64 8
+  %t347 = extractvalue { i64, i64 } %t343, 1
+  store i64 %t347, ptr %t346
+  %t348 = load %StrView, ptr %t344
+  store %StrView %t348, ptr %t349
+  %t350 = load i64, ptr %t349
+  %t351 = getelementptr i8, ptr %t349, i64 8
+  %t352 = load i64, ptr %t351
+  %t353 = call ptr @alloc-val(ptr %t339, i64 %t350, i64 %t352)
+  ret ptr %t353
 }
 
 @g-vfn-env-id = global i32 0, align 4
@@ -196970,7 +196973,7 @@ cond.end5:
   ret ptr %t216
 }
 
-define void @fn-make-invoke-method(ptr %env-sd.arg, ptr %caps.arg, ptr %params-node.arg, ptr %ret.arg, ptr %param-types.arg, ptr %param-names.arg, i32 %nparams.arg, ptr %body-list.arg, i32 %line.arg, i32 %mode.arg) {
+define void @fn-make-invoke-method(ptr %env-sd.arg, ptr %caps.arg, ptr %params-node.arg, ptr %ret-node.arg, ptr %ret.arg, ptr %param-types.arg, ptr %param-names.arg, i32 %nparams.arg, ptr %body-list.arg, i32 %line.arg, i32 %mode.arg) {
 entry:
   %env-sd.addr = alloca ptr, align 8
   store ptr %env-sd.arg, ptr %env-sd.addr, align 8
@@ -196978,6 +196981,8 @@ entry:
   store ptr %caps.arg, ptr %caps.addr, align 8
   %params-node.addr = alloca ptr, align 8
   store ptr %params-node.arg, ptr %params-node.addr, align 8
+  %ret-node.addr = alloca ptr, align 8
+  store ptr %ret-node.arg, ptr %ret-node.addr, align 8
   %ret.addr = alloca ptr, align 8
   store ptr %ret.arg, ptr %ret.addr, align 8
   %param-types.addr = alloca ptr, align 8
@@ -197016,50 +197021,47 @@ entry:
   %t108 = alloca %StrView
   %t113 = alloca %Symbol
   %t115 = alloca %Symbol
-  %ret-node.addr.118 = alloca ptr, align 8
-  %t121 = alloca %Symbol
-  %t123 = alloca %Symbol
-  %defn-sym.addr.126 = alloca ptr, align 8
-  %t130 = alloca %StrView
-  %t135 = alloca %Symbol
-  %t137 = alloca %Symbol
-  %after-ret.addr.140 = alloca ptr, align 8
-  %after-params.addr.145 = alloca ptr, align 8
-  %after-name.addr.150 = alloca ptr, align 8
-  %defn-form.addr.155 = alloca ptr, align 8
-  %newm.addr.160 = alloca ptr, align 8
-  %t164 = alloca %StrView
-  %t169 = alloca %Symbol
-  %t175 = alloca %Symbol
-  %mangled.addr.178 = alloca %Symbol, align 8
-  %t182 = alloca %StrView
-  %t187 = alloca %Symbol
-  %t192 = alloca %StrView
-  %t197 = alloca %Symbol
-  %t201 = alloca %Symbol
-  %t203 = alloca %Symbol
-  %t206 = alloca %Symbol
-  %t214 = alloca %StrView
-  %t219 = alloca %Symbol
-  %t221 = alloca %Symbol
-  %__gs_1605.addr.225 = alloca %String, align 8
-  %__gs_1606.addr.226 = alloca %String, align 8
-  %t228 = alloca %String
-  %t234 = alloca %StrView
-  %t239 = alloca %Result.void.Err
-  %t243 = alloca %Symbol
-  %t246 = alloca %Result.void.Err
-  %t252 = alloca %StrView
-  %t257 = alloca %Result.void.Err
-  %t261 = alloca %Symbol
-  %t264 = alloca %Result.void.Err
-  %t270 = alloca %StrView
-  %t275 = alloca %Result.void.Err
-  %t280 = alloca %Result.void.Err
-  %t286 = alloca %StrView
-  %t291 = alloca %Result.void.Err
-  %t296 = alloca %StrView
-  %t301 = alloca %StrView
+  %defn-sym.addr.118 = alloca ptr, align 8
+  %t122 = alloca %StrView
+  %t127 = alloca %Symbol
+  %t129 = alloca %Symbol
+  %after-ret.addr.132 = alloca ptr, align 8
+  %after-params.addr.137 = alloca ptr, align 8
+  %after-name.addr.142 = alloca ptr, align 8
+  %defn-form.addr.147 = alloca ptr, align 8
+  %newm.addr.152 = alloca ptr, align 8
+  %t156 = alloca %StrView
+  %t161 = alloca %Symbol
+  %t167 = alloca %Symbol
+  %mangled.addr.170 = alloca %Symbol, align 8
+  %t174 = alloca %StrView
+  %t179 = alloca %Symbol
+  %t184 = alloca %StrView
+  %t189 = alloca %Symbol
+  %t193 = alloca %Symbol
+  %t195 = alloca %Symbol
+  %t198 = alloca %Symbol
+  %t206 = alloca %StrView
+  %t211 = alloca %Symbol
+  %t213 = alloca %Symbol
+  %__gs_1605.addr.217 = alloca %String, align 8
+  %__gs_1606.addr.218 = alloca %String, align 8
+  %t220 = alloca %String
+  %t226 = alloca %StrView
+  %t231 = alloca %Result.void.Err
+  %t235 = alloca %Symbol
+  %t238 = alloca %Result.void.Err
+  %t244 = alloca %StrView
+  %t249 = alloca %Result.void.Err
+  %t253 = alloca %Symbol
+  %t256 = alloca %Result.void.Err
+  %t262 = alloca %StrView
+  %t267 = alloca %Result.void.Err
+  %t272 = alloca %Result.void.Err
+  %t278 = alloca %StrView
+  %t283 = alloca %Result.void.Err
+  %t288 = alloca %StrView
+  %t293 = alloca %StrView
   %t1 = load ptr, ptr %env-sd.addr, align 8
   %t2 = call ptr @fn-env-ref-type(ptr %t1)
   store ptr %t2, ptr %self-ty.addr.0, align 8
@@ -197187,198 +197189,190 @@ while.end0:
   %t116 = load i64, ptr %t115
   %t117 = call ptr @intern-node(i64 %t116)
   store ptr %t117, ptr %name-sym.addr.104, align 8
-  %t119 = load ptr, ptr %ret.addr, align 8
-  %t120 = call i64 @type-spelling(ptr %t119)
-  store i64 %t120, ptr %t121
-  %t122 = load %Symbol, ptr %t121
-  store %Symbol %t122, ptr %t123
-  %t124 = load i64, ptr %t123
-  %t125 = call ptr @intern-node(i64 %t124)
-  store ptr %t125, ptr %ret-node.addr.118, align 8
-  %t127 = getelementptr inbounds [5 x i8], ptr @.str.3393, i64 0, i64 0
-  %t128 = insertvalue %StrView undef, ptr %t127, 0
-  %t129 = insertvalue %StrView %t128, i64 4, 1
-  store %StrView %t129, ptr %t130
-  %t131 = load i64, ptr %t130
-  %t132 = getelementptr i8, ptr %t130, i64 8
-  %t133 = load i64, ptr %t132
-  %t134 = call i64 @symbol_intern.StrView(i64 %t131, i64 %t133)
-  store i64 %t134, ptr %t135
-  %t136 = load %Symbol, ptr %t135
-  store %Symbol %t136, ptr %t137
-  %t138 = load i64, ptr %t137
-  %t139 = call ptr @intern-node(i64 %t138)
-  store ptr %t139, ptr %defn-sym.addr.126, align 8
-  %t141 = load ptr, ptr %ret-node.addr.118, align 8
-  %t142 = load ptr, ptr %body2.addr.64, align 8
-  %t143 = load i32, ptr %line.addr, align 4
-  %t144 = call ptr @node-cons(ptr %t141, ptr %t142, i32 %t143)
-  store ptr %t144, ptr %after-ret.addr.140, align 8
-  %t146 = load ptr, ptr %new-params.addr.99, align 8
-  %t147 = load ptr, ptr %after-ret.addr.140, align 8
-  %t148 = load i32, ptr %line.addr, align 4
-  %t149 = call ptr @node-cons(ptr %t146, ptr %t147, i32 %t148)
-  store ptr %t149, ptr %after-params.addr.145, align 8
-  %t151 = load ptr, ptr %name-sym.addr.104, align 8
-  %t152 = load ptr, ptr %after-params.addr.145, align 8
-  %t153 = load i32, ptr %line.addr, align 4
-  %t154 = call ptr @node-cons(ptr %t151, ptr %t152, i32 %t153)
-  store ptr %t154, ptr %after-name.addr.150, align 8
-  %t156 = load ptr, ptr %defn-sym.addr.126, align 8
-  %t157 = load ptr, ptr %after-name.addr.150, align 8
-  %t158 = load i32, ptr %line.addr, align 4
-  %t159 = call ptr @node-cons(ptr %t156, ptr %t157, i32 %t158)
-  store ptr %t159, ptr %defn-form.addr.155, align 8
-  %t161 = getelementptr inbounds [7 x i8], ptr @.str.3394, i64 0, i64 0
-  %t162 = insertvalue %StrView undef, ptr %t161, 0
-  %t163 = insertvalue %StrView %t162, i64 6, 1
-  store %StrView %t163, ptr %t164
-  %t165 = load i64, ptr %t164
-  %t166 = getelementptr i8, ptr %t164, i64 8
-  %t167 = load i64, ptr %t166
-  %t168 = call i64 @symbol_intern.StrView(i64 %t165, i64 %t167)
-  store i64 %t168, ptr %t169
-  %t170 = load %Symbol, ptr %t169
-  %t171 = load ptr, ptr %ret.addr, align 8
-  %t172 = load ptr, ptr %mtypes.addr.6, align 8
-  %t173 = load i32, ptr %total.addr.3, align 4
-  %t174 = load ptr, ptr %defn-form.addr.155, align 8
-  store %Symbol %t170, ptr %t175
-  %t176 = load i64, ptr %t175
-  %t177 = call ptr @generic-register-method(i64 %t176, ptr %t171, ptr %t172, i32 %t173, i32 0, i32 0, ptr %t174)
-  store ptr %t177, ptr %newm.addr.160, align 8
-  %t179 = getelementptr inbounds [1 x i8], ptr @.str.3395, i64 0, i64 0
-  %t180 = insertvalue %StrView undef, ptr %t179, 0
-  %t181 = insertvalue %StrView %t180, i64 0, 1
-  store %StrView %t181, ptr %t182
-  %t183 = load i64, ptr %t182
-  %t184 = getelementptr i8, ptr %t182, i64 8
+  %t119 = getelementptr inbounds [5 x i8], ptr @.str.3393, i64 0, i64 0
+  %t120 = insertvalue %StrView undef, ptr %t119, 0
+  %t121 = insertvalue %StrView %t120, i64 4, 1
+  store %StrView %t121, ptr %t122
+  %t123 = load i64, ptr %t122
+  %t124 = getelementptr i8, ptr %t122, i64 8
+  %t125 = load i64, ptr %t124
+  %t126 = call i64 @symbol_intern.StrView(i64 %t123, i64 %t125)
+  store i64 %t126, ptr %t127
+  %t128 = load %Symbol, ptr %t127
+  store %Symbol %t128, ptr %t129
+  %t130 = load i64, ptr %t129
+  %t131 = call ptr @intern-node(i64 %t130)
+  store ptr %t131, ptr %defn-sym.addr.118, align 8
+  %t133 = load ptr, ptr %ret-node.addr, align 8
+  %t134 = load ptr, ptr %body2.addr.64, align 8
+  %t135 = load i32, ptr %line.addr, align 4
+  %t136 = call ptr @node-cons(ptr %t133, ptr %t134, i32 %t135)
+  store ptr %t136, ptr %after-ret.addr.132, align 8
+  %t138 = load ptr, ptr %new-params.addr.99, align 8
+  %t139 = load ptr, ptr %after-ret.addr.132, align 8
+  %t140 = load i32, ptr %line.addr, align 4
+  %t141 = call ptr @node-cons(ptr %t138, ptr %t139, i32 %t140)
+  store ptr %t141, ptr %after-params.addr.137, align 8
+  %t143 = load ptr, ptr %name-sym.addr.104, align 8
+  %t144 = load ptr, ptr %after-params.addr.137, align 8
+  %t145 = load i32, ptr %line.addr, align 4
+  %t146 = call ptr @node-cons(ptr %t143, ptr %t144, i32 %t145)
+  store ptr %t146, ptr %after-name.addr.142, align 8
+  %t148 = load ptr, ptr %defn-sym.addr.118, align 8
+  %t149 = load ptr, ptr %after-name.addr.142, align 8
+  %t150 = load i32, ptr %line.addr, align 4
+  %t151 = call ptr @node-cons(ptr %t148, ptr %t149, i32 %t150)
+  store ptr %t151, ptr %defn-form.addr.147, align 8
+  %t153 = getelementptr inbounds [7 x i8], ptr @.str.3394, i64 0, i64 0
+  %t154 = insertvalue %StrView undef, ptr %t153, 0
+  %t155 = insertvalue %StrView %t154, i64 6, 1
+  store %StrView %t155, ptr %t156
+  %t157 = load i64, ptr %t156
+  %t158 = getelementptr i8, ptr %t156, i64 8
+  %t159 = load i64, ptr %t158
+  %t160 = call i64 @symbol_intern.StrView(i64 %t157, i64 %t159)
+  store i64 %t160, ptr %t161
+  %t162 = load %Symbol, ptr %t161
+  %t163 = load ptr, ptr %ret.addr, align 8
+  %t164 = load ptr, ptr %mtypes.addr.6, align 8
+  %t165 = load i32, ptr %total.addr.3, align 4
+  %t166 = load ptr, ptr %defn-form.addr.147, align 8
+  store %Symbol %t162, ptr %t167
+  %t168 = load i64, ptr %t167
+  %t169 = call ptr @generic-register-method(i64 %t168, ptr %t163, ptr %t164, i32 %t165, i32 0, i32 0, ptr %t166)
+  store ptr %t169, ptr %newm.addr.152, align 8
+  %t171 = getelementptr inbounds [1 x i8], ptr @.str.3395, i64 0, i64 0
+  %t172 = insertvalue %StrView undef, ptr %t171, 0
+  %t173 = insertvalue %StrView %t172, i64 0, 1
+  store %StrView %t173, ptr %t174
+  %t175 = load i64, ptr %t174
+  %t176 = getelementptr i8, ptr %t174, i64 8
+  %t177 = load i64, ptr %t176
+  %t178 = call i64 @symbol_intern.StrView(i64 %t175, i64 %t177)
+  store i64 %t178, ptr %t179
+  %t180 = load %Symbol, ptr %t179
+  %t181 = getelementptr inbounds [7 x i8], ptr @.str.3396, i64 0, i64 0
+  %t182 = insertvalue %StrView undef, ptr %t181, 0
+  %t183 = insertvalue %StrView %t182, i64 6, 1
+  store %StrView %t183, ptr %t184
   %t185 = load i64, ptr %t184
-  %t186 = call i64 @symbol_intern.StrView(i64 %t183, i64 %t185)
-  store i64 %t186, ptr %t187
-  %t188 = load %Symbol, ptr %t187
-  %t189 = getelementptr inbounds [7 x i8], ptr @.str.3396, i64 0, i64 0
-  %t190 = insertvalue %StrView undef, ptr %t189, 0
-  %t191 = insertvalue %StrView %t190, i64 6, 1
-  store %StrView %t191, ptr %t192
-  %t193 = load i64, ptr %t192
-  %t194 = getelementptr i8, ptr %t192, i64 8
-  %t195 = load i64, ptr %t194
-  %t196 = call i64 @symbol_intern.StrView(i64 %t193, i64 %t195)
-  store i64 %t196, ptr %t197
-  %t198 = load %Symbol, ptr %t197
-  %t199 = load ptr, ptr %mtypes.addr.6, align 8
-  %t200 = load i32, ptr %total.addr.3, align 4
-  store %Symbol %t188, ptr %t201
-  %t202 = load i64, ptr %t201
-  store %Symbol %t198, ptr %t203
-  %t204 = load i64, ptr %t203
-  %t205 = call i64 @mangle-fn-name(i64 %t202, i64 %t204, ptr %t199, i32 %t200)
-  store i64 %t205, ptr %t206
-  %t207 = load %Symbol, ptr %t206
-  store %Symbol %t207, ptr %mangled.addr.178, align 8
-  %t208 = load ptr, ptr %newm.addr.160, align 8
-  %t209 = load %Symbol, ptr %mangled.addr.178, align 8
-  %t210 = getelementptr inbounds %Method, ptr %t208, i32 0, i32 6
-  store %Symbol %t209, ptr %t210, align 8
-  %t211 = getelementptr inbounds [7 x i8], ptr @.str.3397, i64 0, i64 0
-  %t212 = insertvalue %StrView undef, ptr %t211, 0
-  %t213 = insertvalue %StrView %t212, i64 6, 1
-  store %StrView %t213, ptr %t214
-  %t215 = load i64, ptr %t214
-  %t216 = getelementptr i8, ptr %t214, i64 8
-  %t217 = load i64, ptr %t216
-  %t218 = call i64 @symbol_intern.StrView(i64 %t215, i64 %t217)
-  store i64 %t218, ptr %t219
-  %t220 = load %Symbol, ptr %t219
-  store %Symbol %t220, ptr %t221
-  %t222 = load i64, ptr %t221
-  call void @fn-force-generic-mangled(i64 %t222)
-  %t223 = load ptr, ptr @g-mono-worklist, align 8
-  %t224 = load ptr, ptr %defn-form.addr.155, align 8
-  %t227 = call ptr @strfmt-alloc()
-  call void @string-new-alloc(ptr sret(%String) align 8 %t228, ptr %t227)
-  %t229 = load %String, ptr %t228
-  store %String %t229, ptr %__gs_1606.addr.226, align 8
-  %t230 = getelementptr inbounds [31 x i8], ptr @.str.3398, i64 0, i64 0
-  %t231 = load %String, ptr %__gs_1606.addr.226, align 8
-  %t232 = insertvalue %StrView undef, ptr %t230, 0
-  %t233 = insertvalue %StrView %t232, i64 30, 1
-  store %StrView %t233, ptr %t234
-  %t235 = load i64, ptr %t234
-  %t236 = getelementptr i8, ptr %t234, i64 8
-  %t237 = load i64, ptr %t236
-  %t238 = call i64 @to_str.StrView.pString(i64 %t235, i64 %t237, ptr %__gs_1606.addr.226)
-  store i64 %t238, ptr %t239
-  %t240 = load %Result.void.Err, ptr %t239
-  %t241 = load %Symbol, ptr %mangled.addr.178, align 8
-  %t242 = load %String, ptr %__gs_1606.addr.226, align 8
-  store %Symbol %t241, ptr %t243
-  %t244 = load i64, ptr %t243
-  %t245 = call i64 @to_str.Symbol.pString(i64 %t244, ptr %__gs_1606.addr.226)
-  store i64 %t245, ptr %t246
-  %t247 = load %Result.void.Err, ptr %t246
-  %t248 = getelementptr inbounds [14 x i8], ptr @.str.3399, i64 0, i64 0
-  %t249 = load %String, ptr %__gs_1606.addr.226, align 8
-  %t250 = insertvalue %StrView undef, ptr %t248, 0
-  %t251 = insertvalue %StrView %t250, i64 13, 1
-  store %StrView %t251, ptr %t252
-  %t253 = load i64, ptr %t252
-  %t254 = getelementptr i8, ptr %t252, i64 8
-  %t255 = load i64, ptr %t254
-  %t256 = call i64 @to_str.StrView.pString(i64 %t253, i64 %t255, ptr %__gs_1606.addr.226)
-  store i64 %t256, ptr %t257
-  %t258 = load %Result.void.Err, ptr %t257
-  %t259 = load %Symbol, ptr @g-source-path, align 8
-  %t260 = load %String, ptr %__gs_1606.addr.226, align 8
-  store %Symbol %t259, ptr %t261
-  %t262 = load i64, ptr %t261
-  %t263 = call i64 @to_str.Symbol.pString(i64 %t262, ptr %__gs_1606.addr.226)
-  store i64 %t263, ptr %t264
-  %t265 = load %Result.void.Err, ptr %t264
-  %t266 = getelementptr inbounds [2 x i8], ptr @.str.3400, i64 0, i64 0
-  %t267 = load %String, ptr %__gs_1606.addr.226, align 8
-  %t268 = insertvalue %StrView undef, ptr %t266, 0
-  %t269 = insertvalue %StrView %t268, i64 1, 1
-  store %StrView %t269, ptr %t270
-  %t271 = load i64, ptr %t270
-  %t272 = getelementptr i8, ptr %t270, i64 8
-  %t273 = load i64, ptr %t272
-  %t274 = call i64 @to_str.StrView.pString(i64 %t271, i64 %t273, ptr %__gs_1606.addr.226)
-  store i64 %t274, ptr %t275
-  %t276 = load %Result.void.Err, ptr %t275
-  %t277 = load i32, ptr %line.addr, align 4
-  %t278 = load %String, ptr %__gs_1606.addr.226, align 8
-  %t279 = call i64 @to_str.i32.pString(i32 %t277, ptr %__gs_1606.addr.226)
-  store i64 %t279, ptr %t280
-  %t281 = load %Result.void.Err, ptr %t280
-  %t282 = getelementptr inbounds [2 x i8], ptr @.str.3401, i64 0, i64 0
-  %t283 = load %String, ptr %__gs_1606.addr.226, align 8
-  %t284 = insertvalue %StrView undef, ptr %t282, 0
-  %t285 = insertvalue %StrView %t284, i64 1, 1
-  store %StrView %t285, ptr %t286
-  %t287 = load i64, ptr %t286
-  %t288 = getelementptr i8, ptr %t286, i64 8
-  %t289 = load i64, ptr %t288
-  %t290 = call i64 @to_str.StrView.pString(i64 %t287, i64 %t289, ptr %__gs_1606.addr.226)
-  store i64 %t290, ptr %t291
-  %t292 = load %Result.void.Err, ptr %t291
-  %t293 = load %String, ptr %__gs_1606.addr.226, align 8
-  store %String %t293, ptr %__gs_1605.addr.225, align 8
-  %t294 = load %String, ptr %__gs_1605.addr.225, align 8
-  %t295 = call { i64, i64 } @string-as-view(ptr %__gs_1605.addr.225)
-  %t297 = extractvalue { i64, i64 } %t295, 0
-  store i64 %t297, ptr %t296
-  %t298 = getelementptr i8, ptr %t296, i64 8
-  %t299 = extractvalue { i64, i64 } %t295, 1
-  store i64 %t299, ptr %t298
-  %t300 = load %StrView, ptr %t296
-  store %StrView %t300, ptr %t301
-  %t302 = load i64, ptr %t301
-  %t303 = getelementptr i8, ptr %t301, i64 8
-  %t304 = load i64, ptr %t303
-  %t305 = call ptr @mono-job-here(ptr %t224, i64 %t302, i64 %t304)
-  call void @conj.pVector.pMonoJob.pMonoJob(ptr %t223, ptr %t305)
+  %t186 = getelementptr i8, ptr %t184, i64 8
+  %t187 = load i64, ptr %t186
+  %t188 = call i64 @symbol_intern.StrView(i64 %t185, i64 %t187)
+  store i64 %t188, ptr %t189
+  %t190 = load %Symbol, ptr %t189
+  %t191 = load ptr, ptr %mtypes.addr.6, align 8
+  %t192 = load i32, ptr %total.addr.3, align 4
+  store %Symbol %t180, ptr %t193
+  %t194 = load i64, ptr %t193
+  store %Symbol %t190, ptr %t195
+  %t196 = load i64, ptr %t195
+  %t197 = call i64 @mangle-fn-name(i64 %t194, i64 %t196, ptr %t191, i32 %t192)
+  store i64 %t197, ptr %t198
+  %t199 = load %Symbol, ptr %t198
+  store %Symbol %t199, ptr %mangled.addr.170, align 8
+  %t200 = load ptr, ptr %newm.addr.152, align 8
+  %t201 = load %Symbol, ptr %mangled.addr.170, align 8
+  %t202 = getelementptr inbounds %Method, ptr %t200, i32 0, i32 6
+  store %Symbol %t201, ptr %t202, align 8
+  %t203 = getelementptr inbounds [7 x i8], ptr @.str.3397, i64 0, i64 0
+  %t204 = insertvalue %StrView undef, ptr %t203, 0
+  %t205 = insertvalue %StrView %t204, i64 6, 1
+  store %StrView %t205, ptr %t206
+  %t207 = load i64, ptr %t206
+  %t208 = getelementptr i8, ptr %t206, i64 8
+  %t209 = load i64, ptr %t208
+  %t210 = call i64 @symbol_intern.StrView(i64 %t207, i64 %t209)
+  store i64 %t210, ptr %t211
+  %t212 = load %Symbol, ptr %t211
+  store %Symbol %t212, ptr %t213
+  %t214 = load i64, ptr %t213
+  call void @fn-force-generic-mangled(i64 %t214)
+  %t215 = load ptr, ptr @g-mono-worklist, align 8
+  %t216 = load ptr, ptr %defn-form.addr.147, align 8
+  %t219 = call ptr @strfmt-alloc()
+  call void @string-new-alloc(ptr sret(%String) align 8 %t220, ptr %t219)
+  %t221 = load %String, ptr %t220
+  store %String %t221, ptr %__gs_1606.addr.218, align 8
+  %t222 = getelementptr inbounds [31 x i8], ptr @.str.3398, i64 0, i64 0
+  %t223 = load %String, ptr %__gs_1606.addr.218, align 8
+  %t224 = insertvalue %StrView undef, ptr %t222, 0
+  %t225 = insertvalue %StrView %t224, i64 30, 1
+  store %StrView %t225, ptr %t226
+  %t227 = load i64, ptr %t226
+  %t228 = getelementptr i8, ptr %t226, i64 8
+  %t229 = load i64, ptr %t228
+  %t230 = call i64 @to_str.StrView.pString(i64 %t227, i64 %t229, ptr %__gs_1606.addr.218)
+  store i64 %t230, ptr %t231
+  %t232 = load %Result.void.Err, ptr %t231
+  %t233 = load %Symbol, ptr %mangled.addr.170, align 8
+  %t234 = load %String, ptr %__gs_1606.addr.218, align 8
+  store %Symbol %t233, ptr %t235
+  %t236 = load i64, ptr %t235
+  %t237 = call i64 @to_str.Symbol.pString(i64 %t236, ptr %__gs_1606.addr.218)
+  store i64 %t237, ptr %t238
+  %t239 = load %Result.void.Err, ptr %t238
+  %t240 = getelementptr inbounds [14 x i8], ptr @.str.3399, i64 0, i64 0
+  %t241 = load %String, ptr %__gs_1606.addr.218, align 8
+  %t242 = insertvalue %StrView undef, ptr %t240, 0
+  %t243 = insertvalue %StrView %t242, i64 13, 1
+  store %StrView %t243, ptr %t244
+  %t245 = load i64, ptr %t244
+  %t246 = getelementptr i8, ptr %t244, i64 8
+  %t247 = load i64, ptr %t246
+  %t248 = call i64 @to_str.StrView.pString(i64 %t245, i64 %t247, ptr %__gs_1606.addr.218)
+  store i64 %t248, ptr %t249
+  %t250 = load %Result.void.Err, ptr %t249
+  %t251 = load %Symbol, ptr @g-source-path, align 8
+  %t252 = load %String, ptr %__gs_1606.addr.218, align 8
+  store %Symbol %t251, ptr %t253
+  %t254 = load i64, ptr %t253
+  %t255 = call i64 @to_str.Symbol.pString(i64 %t254, ptr %__gs_1606.addr.218)
+  store i64 %t255, ptr %t256
+  %t257 = load %Result.void.Err, ptr %t256
+  %t258 = getelementptr inbounds [2 x i8], ptr @.str.3400, i64 0, i64 0
+  %t259 = load %String, ptr %__gs_1606.addr.218, align 8
+  %t260 = insertvalue %StrView undef, ptr %t258, 0
+  %t261 = insertvalue %StrView %t260, i64 1, 1
+  store %StrView %t261, ptr %t262
+  %t263 = load i64, ptr %t262
+  %t264 = getelementptr i8, ptr %t262, i64 8
+  %t265 = load i64, ptr %t264
+  %t266 = call i64 @to_str.StrView.pString(i64 %t263, i64 %t265, ptr %__gs_1606.addr.218)
+  store i64 %t266, ptr %t267
+  %t268 = load %Result.void.Err, ptr %t267
+  %t269 = load i32, ptr %line.addr, align 4
+  %t270 = load %String, ptr %__gs_1606.addr.218, align 8
+  %t271 = call i64 @to_str.i32.pString(i32 %t269, ptr %__gs_1606.addr.218)
+  store i64 %t271, ptr %t272
+  %t273 = load %Result.void.Err, ptr %t272
+  %t274 = getelementptr inbounds [2 x i8], ptr @.str.3401, i64 0, i64 0
+  %t275 = load %String, ptr %__gs_1606.addr.218, align 8
+  %t276 = insertvalue %StrView undef, ptr %t274, 0
+  %t277 = insertvalue %StrView %t276, i64 1, 1
+  store %StrView %t277, ptr %t278
+  %t279 = load i64, ptr %t278
+  %t280 = getelementptr i8, ptr %t278, i64 8
+  %t281 = load i64, ptr %t280
+  %t282 = call i64 @to_str.StrView.pString(i64 %t279, i64 %t281, ptr %__gs_1606.addr.218)
+  store i64 %t282, ptr %t283
+  %t284 = load %Result.void.Err, ptr %t283
+  %t285 = load %String, ptr %__gs_1606.addr.218, align 8
+  store %String %t285, ptr %__gs_1605.addr.217, align 8
+  %t286 = load %String, ptr %__gs_1605.addr.217, align 8
+  %t287 = call { i64, i64 } @string-as-view(ptr %__gs_1605.addr.217)
+  %t289 = extractvalue { i64, i64 } %t287, 0
+  store i64 %t289, ptr %t288
+  %t290 = getelementptr i8, ptr %t288, i64 8
+  %t291 = extractvalue { i64, i64 } %t287, 1
+  store i64 %t291, ptr %t290
+  %t292 = load %StrView, ptr %t288
+  store %StrView %t292, ptr %t293
+  %t294 = load i64, ptr %t293
+  %t295 = getelementptr i8, ptr %t293, i64 8
+  %t296 = load i64, ptr %t295
+  %t297 = call ptr @mono-job-here(ptr %t216, i64 %t294, i64 %t296)
+  call void @conj.pVector.pMonoJob.pMonoJob(ptr %t215, ptr %t297)
   ret void
 }
 
@@ -209323,10 +209317,10 @@ entry:
   %env-sd.addr.159 = alloca ptr, align 8
   %body-list.addr.164 = alloca ptr, align 8
   %owns-drop.addr.169 = alloca i32, align 4
-  %nf.addr.179 = alloca i32, align 4
-  %fi.addr.185 = alloca i32, align 4
-  %chk.addr.205 = alloca i32, align 4
-  %t213 = alloca %StrView
+  %nf.addr.180 = alloca i32, align 4
+  %fi.addr.186 = alloca i32, align 4
+  %chk.addr.206 = alloca i32, align 4
+  %t214 = alloca %StrView
   %t1 = load ptr, ptr %call.addr, align 8
   store ptr %t1, ptr %cc.addr.0, align 8
   %t3 = load ptr, ptr %call.addr, align 8
@@ -209555,37 +209549,38 @@ while.end5:
   %t170 = load ptr, ptr %env-sd.addr.159, align 8
   %t171 = load ptr, ptr %caps-head.addr.37, align 8
   %t172 = load ptr, ptr %params-node.addr.17, align 8
-  %t173 = load ptr, ptr %ret.addr.59, align 8
-  %t174 = load ptr, ptr %param-types.addr.63, align 8
-  %t175 = load ptr, ptr %param-names.addr.64, align 8
-  %t176 = load i32, ptr %nparams.addr.56, align 4
-  %t177 = load ptr, ptr %body-list.addr.164, align 8
-  %t178 = load i32, ptr %line.addr.2, align 4
-  call void @fn-make-invoke-method(ptr %t170, ptr %t171, ptr %t172, ptr %t173, ptr %t174, ptr %t175, i32 %t176, ptr %t177, i32 %t178, i32 0)
-  %t180 = load ptr, ptr %env-sd.addr.159, align 8
-  %t181 = getelementptr inbounds %StructDef, ptr %t180, i32 0, i32 4
-  %t182 = load i32, ptr %t181, align 4
-  store i32 %t182, ptr %nf.addr.179, align 4
-  %t183 = load i32, ptr %nf.addr.179, align 4
-  %t184 = mul nsw i32 %t183, 0
-  store i32 %t184, ptr %fi.addr.185, align 4
+  %t173 = load ptr, ptr %ret-node.addr.20, align 8
+  %t174 = load ptr, ptr %ret.addr.59, align 8
+  %t175 = load ptr, ptr %param-types.addr.63, align 8
+  %t176 = load ptr, ptr %param-names.addr.64, align 8
+  %t177 = load i32, ptr %nparams.addr.56, align 4
+  %t178 = load ptr, ptr %body-list.addr.164, align 8
+  %t179 = load i32, ptr %line.addr.2, align 4
+  call void @fn-make-invoke-method(ptr %t170, ptr %t171, ptr %t172, ptr %t173, ptr %t174, ptr %t175, ptr %t176, i32 %t177, ptr %t178, i32 %t179, i32 0)
+  %t181 = load ptr, ptr %env-sd.addr.159, align 8
+  %t182 = getelementptr inbounds %StructDef, ptr %t181, i32 0, i32 4
+  %t183 = load i32, ptr %t182, align 4
+  store i32 %t183, ptr %nf.addr.180, align 4
+  %t184 = load i32, ptr %nf.addr.180, align 4
+  %t185 = mul nsw i32 %t184, 0
+  store i32 %t185, ptr %fi.addr.186, align 4
   br label %while.cond7
 while.cond7:
-  %t186 = load i32, ptr %fi.addr.185, align 4
-  %t187 = load i32, ptr %nf.addr.179, align 4
-  %t188 = icmp slt i32 %t186, %t187
-  br i1 %t188, label %while.body7, label %while.end7
+  %t187 = load i32, ptr %fi.addr.186, align 4
+  %t188 = load i32, ptr %nf.addr.180, align 4
+  %t189 = icmp slt i32 %t187, %t188
+  br i1 %t189, label %while.body7, label %while.end7
 while.body7:
-  %t189 = load ptr, ptr %env-sd.addr.159, align 8
-  %t190 = getelementptr inbounds %StructDef, ptr %t189, i32 0, i32 3
-  %t191 = load ptr, ptr %t190, align 8
-  %t192 = load i32, ptr %fi.addr.185, align 4
-  %t193 = call ptr @field-at(ptr %t191, i32 %t192)
-  %t194 = getelementptr inbounds %Field, ptr %t193, i32 0, i32 1
-  %t195 = load ptr, ptr %t194, align 8
-  %t196 = call i32 @type-conforms-drop(ptr %t195)
-  %t197 = icmp ne i32 %t196, 0
-  br i1 %t197, label %cond.then8.0, label %cond.fall8
+  %t190 = load ptr, ptr %env-sd.addr.159, align 8
+  %t191 = getelementptr inbounds %StructDef, ptr %t190, i32 0, i32 3
+  %t192 = load ptr, ptr %t191, align 8
+  %t193 = load i32, ptr %fi.addr.186, align 4
+  %t194 = call ptr @field-at(ptr %t192, i32 %t193)
+  %t195 = getelementptr inbounds %Field, ptr %t194, i32 0, i32 1
+  %t196 = load ptr, ptr %t195, align 8
+  %t197 = call i32 @type-conforms-drop(ptr %t196)
+  %t198 = icmp ne i32 %t197, 0
+  br i1 %t198, label %cond.then8.0, label %cond.fall8
 cond.then8.0:
   store i32 1, ptr %owns-drop.addr.169, align 4
   br label %cond.join8.0
@@ -209594,39 +209589,39 @@ cond.join8.0:
 cond.fall8:
   br label %cond.end8
 cond.end8:
-  %t198 = phi i32 [ 1, %cond.join8.0 ], [ undef, %cond.fall8 ]
-  %t199 = load i32, ptr %fi.addr.185, align 4
-  %t200 = add nsw i32 %t199, 1
-  store i32 %t200, ptr %fi.addr.185, align 4
+  %t199 = phi i32 [ 1, %cond.join8.0 ], [ undef, %cond.fall8 ]
+  %t200 = load i32, ptr %fi.addr.186, align 4
+  %t201 = add nsw i32 %t200, 1
+  store i32 %t201, ptr %fi.addr.186, align 4
   br label %while.cond7
 while.end7:
-  %t201 = load i32, ptr %owns-drop.addr.169, align 4
-  %t202 = icmp ne i32 %t201, 0
-  br i1 %t202, label %cond.then9.0, label %cond.fall9
+  %t202 = load i32, ptr %owns-drop.addr.169, align 4
+  %t203 = icmp ne i32 %t202, 0
+  br i1 %t203, label %cond.then9.0, label %cond.fall9
 cond.then9.0:
-  %t203 = load ptr, ptr %env-sd.addr.159, align 8
-  %t204 = load i32, ptr %line.addr.2, align 4
-  call void @fn-make-drop-method(ptr %t203, i32 %t204, i32 0)
+  %t204 = load ptr, ptr %env-sd.addr.159, align 8
+  %t205 = load i32, ptr %line.addr.2, align 4
+  call void @fn-make-drop-method(ptr %t204, i32 %t205, i32 0)
   br label %cond.join9.0
 cond.join9.0:
   br label %cond.end9
 cond.fall9:
   br label %cond.end9
 cond.end9:
-  store i32 0, ptr %chk.addr.205, align 4
-  %t206 = load ptr, ptr %env-sd.addr.159, align 8
-  %t207 = load ptr, ptr %caps-head.addr.37, align 8
-  %t208 = load ptr, ptr %scope.addr, align 8
-  %t209 = load i32, ptr %line.addr.2, align 4
-  %t210 = getelementptr inbounds [1 x i8], ptr @.str.3729, i64 0, i64 0
-  %t211 = insertvalue %StrView undef, ptr %t210, 0
-  %t212 = insertvalue %StrView %t211, i64 0, 1
-  store %StrView %t212, ptr %t213
-  %t214 = load i64, ptr %t213
-  %t215 = getelementptr i8, ptr %t213, i64 8
-  %t216 = load i64, ptr %t215
-  %t217 = call ptr @fn-emit-env-value(ptr %t206, ptr %t207, ptr %t208, ptr %chk.addr.205, i32 %t209, i32 0, i64 %t214, i64 %t216)
-  ret ptr %t217
+  store i32 0, ptr %chk.addr.206, align 4
+  %t207 = load ptr, ptr %env-sd.addr.159, align 8
+  %t208 = load ptr, ptr %caps-head.addr.37, align 8
+  %t209 = load ptr, ptr %scope.addr, align 8
+  %t210 = load i32, ptr %line.addr.2, align 4
+  %t211 = getelementptr inbounds [1 x i8], ptr @.str.3729, i64 0, i64 0
+  %t212 = insertvalue %StrView undef, ptr %t211, 0
+  %t213 = insertvalue %StrView %t212, i64 0, 1
+  store %StrView %t213, ptr %t214
+  %t215 = load i64, ptr %t214
+  %t216 = getelementptr i8, ptr %t214, i64 8
+  %t217 = load i64, ptr %t216
+  %t218 = call ptr @fn-emit-env-value(ptr %t207, ptr %t208, ptr %t209, ptr %chk.addr.206, i32 %t210, i32 0, i64 %t215, i64 %t217)
+  ret ptr %t218
 }
 
 define ptr @emit-mfn(ptr %call.arg, ptr %scope.arg) {
@@ -209666,10 +209661,10 @@ entry:
   %env-sd.addr.159 = alloca ptr, align 8
   %body-list.addr.164 = alloca ptr, align 8
   %owns-drop.addr.169 = alloca i32, align 4
-  %nf.addr.179 = alloca i32, align 4
-  %fi.addr.185 = alloca i32, align 4
-  %chk.addr.205 = alloca i32, align 4
-  %t213 = alloca %StrView
+  %nf.addr.180 = alloca i32, align 4
+  %fi.addr.186 = alloca i32, align 4
+  %chk.addr.206 = alloca i32, align 4
+  %t214 = alloca %StrView
   %t1 = load ptr, ptr %call.addr, align 8
   store ptr %t1, ptr %cc.addr.0, align 8
   %t3 = load ptr, ptr %call.addr, align 8
@@ -209898,37 +209893,38 @@ while.end5:
   %t170 = load ptr, ptr %env-sd.addr.159, align 8
   %t171 = load ptr, ptr %caps-head.addr.37, align 8
   %t172 = load ptr, ptr %params-node.addr.17, align 8
-  %t173 = load ptr, ptr %ret.addr.59, align 8
-  %t174 = load ptr, ptr %param-types.addr.63, align 8
-  %t175 = load ptr, ptr %param-names.addr.64, align 8
-  %t176 = load i32, ptr %nparams.addr.56, align 4
-  %t177 = load ptr, ptr %body-list.addr.164, align 8
-  %t178 = load i32, ptr %line.addr.2, align 4
-  call void @fn-make-invoke-method(ptr %t170, ptr %t171, ptr %t172, ptr %t173, ptr %t174, ptr %t175, i32 %t176, ptr %t177, i32 %t178, i32 1)
-  %t180 = load ptr, ptr %env-sd.addr.159, align 8
-  %t181 = getelementptr inbounds %StructDef, ptr %t180, i32 0, i32 4
-  %t182 = load i32, ptr %t181, align 4
-  store i32 %t182, ptr %nf.addr.179, align 4
-  %t183 = load i32, ptr %nf.addr.179, align 4
-  %t184 = mul nsw i32 %t183, 0
-  store i32 %t184, ptr %fi.addr.185, align 4
+  %t173 = load ptr, ptr %ret-node.addr.20, align 8
+  %t174 = load ptr, ptr %ret.addr.59, align 8
+  %t175 = load ptr, ptr %param-types.addr.63, align 8
+  %t176 = load ptr, ptr %param-names.addr.64, align 8
+  %t177 = load i32, ptr %nparams.addr.56, align 4
+  %t178 = load ptr, ptr %body-list.addr.164, align 8
+  %t179 = load i32, ptr %line.addr.2, align 4
+  call void @fn-make-invoke-method(ptr %t170, ptr %t171, ptr %t172, ptr %t173, ptr %t174, ptr %t175, ptr %t176, i32 %t177, ptr %t178, i32 %t179, i32 1)
+  %t181 = load ptr, ptr %env-sd.addr.159, align 8
+  %t182 = getelementptr inbounds %StructDef, ptr %t181, i32 0, i32 4
+  %t183 = load i32, ptr %t182, align 4
+  store i32 %t183, ptr %nf.addr.180, align 4
+  %t184 = load i32, ptr %nf.addr.180, align 4
+  %t185 = mul nsw i32 %t184, 0
+  store i32 %t185, ptr %fi.addr.186, align 4
   br label %while.cond7
 while.cond7:
-  %t186 = load i32, ptr %fi.addr.185, align 4
-  %t187 = load i32, ptr %nf.addr.179, align 4
-  %t188 = icmp slt i32 %t186, %t187
-  br i1 %t188, label %while.body7, label %while.end7
+  %t187 = load i32, ptr %fi.addr.186, align 4
+  %t188 = load i32, ptr %nf.addr.180, align 4
+  %t189 = icmp slt i32 %t187, %t188
+  br i1 %t189, label %while.body7, label %while.end7
 while.body7:
-  %t189 = load ptr, ptr %env-sd.addr.159, align 8
-  %t190 = getelementptr inbounds %StructDef, ptr %t189, i32 0, i32 3
-  %t191 = load ptr, ptr %t190, align 8
-  %t192 = load i32, ptr %fi.addr.185, align 4
-  %t193 = call ptr @field-at(ptr %t191, i32 %t192)
-  %t194 = getelementptr inbounds %Field, ptr %t193, i32 0, i32 1
-  %t195 = load ptr, ptr %t194, align 8
-  %t196 = call i32 @type-conforms-drop(ptr %t195)
-  %t197 = icmp ne i32 %t196, 0
-  br i1 %t197, label %cond.then8.0, label %cond.fall8
+  %t190 = load ptr, ptr %env-sd.addr.159, align 8
+  %t191 = getelementptr inbounds %StructDef, ptr %t190, i32 0, i32 3
+  %t192 = load ptr, ptr %t191, align 8
+  %t193 = load i32, ptr %fi.addr.186, align 4
+  %t194 = call ptr @field-at(ptr %t192, i32 %t193)
+  %t195 = getelementptr inbounds %Field, ptr %t194, i32 0, i32 1
+  %t196 = load ptr, ptr %t195, align 8
+  %t197 = call i32 @type-conforms-drop(ptr %t196)
+  %t198 = icmp ne i32 %t197, 0
+  br i1 %t198, label %cond.then8.0, label %cond.fall8
 cond.then8.0:
   store i32 1, ptr %owns-drop.addr.169, align 4
   br label %cond.join8.0
@@ -209937,39 +209933,39 @@ cond.join8.0:
 cond.fall8:
   br label %cond.end8
 cond.end8:
-  %t198 = phi i32 [ 1, %cond.join8.0 ], [ undef, %cond.fall8 ]
-  %t199 = load i32, ptr %fi.addr.185, align 4
-  %t200 = add nsw i32 %t199, 1
-  store i32 %t200, ptr %fi.addr.185, align 4
+  %t199 = phi i32 [ 1, %cond.join8.0 ], [ undef, %cond.fall8 ]
+  %t200 = load i32, ptr %fi.addr.186, align 4
+  %t201 = add nsw i32 %t200, 1
+  store i32 %t201, ptr %fi.addr.186, align 4
   br label %while.cond7
 while.end7:
-  %t201 = load i32, ptr %owns-drop.addr.169, align 4
-  %t202 = icmp ne i32 %t201, 0
-  br i1 %t202, label %cond.then9.0, label %cond.fall9
+  %t202 = load i32, ptr %owns-drop.addr.169, align 4
+  %t203 = icmp ne i32 %t202, 0
+  br i1 %t203, label %cond.then9.0, label %cond.fall9
 cond.then9.0:
-  %t203 = load ptr, ptr %env-sd.addr.159, align 8
-  %t204 = load i32, ptr %line.addr.2, align 4
-  call void @fn-make-drop-method(ptr %t203, i32 %t204, i32 0)
+  %t204 = load ptr, ptr %env-sd.addr.159, align 8
+  %t205 = load i32, ptr %line.addr.2, align 4
+  call void @fn-make-drop-method(ptr %t204, i32 %t205, i32 0)
   br label %cond.join9.0
 cond.join9.0:
   br label %cond.end9
 cond.fall9:
   br label %cond.end9
 cond.end9:
-  store i32 0, ptr %chk.addr.205, align 4
-  %t206 = load ptr, ptr %env-sd.addr.159, align 8
-  %t207 = load ptr, ptr %caps-head.addr.37, align 8
-  %t208 = load ptr, ptr %scope.addr, align 8
-  %t209 = load i32, ptr %line.addr.2, align 4
-  %t210 = getelementptr inbounds [1 x i8], ptr @.str.3734, i64 0, i64 0
-  %t211 = insertvalue %StrView undef, ptr %t210, 0
-  %t212 = insertvalue %StrView %t211, i64 0, 1
-  store %StrView %t212, ptr %t213
-  %t214 = load i64, ptr %t213
-  %t215 = getelementptr i8, ptr %t213, i64 8
-  %t216 = load i64, ptr %t215
-  %t217 = call ptr @fn-emit-env-value(ptr %t206, ptr %t207, ptr %t208, ptr %chk.addr.205, i32 %t209, i32 1, i64 %t214, i64 %t216)
-  ret ptr %t217
+  store i32 0, ptr %chk.addr.206, align 4
+  %t207 = load ptr, ptr %env-sd.addr.159, align 8
+  %t208 = load ptr, ptr %caps-head.addr.37, align 8
+  %t209 = load ptr, ptr %scope.addr, align 8
+  %t210 = load i32, ptr %line.addr.2, align 4
+  %t211 = getelementptr inbounds [1 x i8], ptr @.str.3734, i64 0, i64 0
+  %t212 = insertvalue %StrView undef, ptr %t211, 0
+  %t213 = insertvalue %StrView %t212, i64 0, 1
+  store %StrView %t213, ptr %t214
+  %t215 = load i64, ptr %t214
+  %t216 = getelementptr i8, ptr %t214, i64 8
+  %t217 = load i64, ptr %t216
+  %t218 = call ptr @fn-emit-env-value(ptr %t207, ptr %t208, ptr %t209, ptr %chk.addr.206, i32 %t210, i32 1, i64 %t215, i64 %t217)
+  ret ptr %t218
 }
 
 define ptr @emit-cfn(ptr %call.arg, ptr %scope.arg) {
@@ -210019,8 +210015,8 @@ entry:
   %t207 = alloca %StrView
   %env-sd.addr.223 = alloca ptr, align 8
   %body-list.addr.231 = alloca ptr, align 8
-  %chk.addr.248 = alloca i32, align 4
-  %t256 = alloca %StrView
+  %chk.addr.249 = alloca i32, align 4
+  %t257 = alloca %StrView
   %t1 = load ptr, ptr %call.addr, align 8
   store ptr %t1, ptr %cc.addr.0, align 8
   %t3 = load ptr, ptr %call.addr, align 8
@@ -210335,30 +210331,31 @@ while.end8:
   %t237 = load ptr, ptr %env-sd.addr.223, align 8
   %t238 = load ptr, ptr %caps-head.addr.40, align 8
   %t239 = load ptr, ptr %params-node.addr.20, align 8
-  %t240 = load ptr, ptr %ret.addr.123, align 8
-  %t241 = load ptr, ptr %param-types.addr.127, align 8
-  %t242 = load ptr, ptr %param-names.addr.128, align 8
-  %t243 = load i32, ptr %nparams.addr.120, align 4
-  %t244 = load ptr, ptr %body-list.addr.231, align 8
-  %t245 = load i32, ptr %line.addr.2, align 4
-  call void @fn-make-invoke-method(ptr %t237, ptr %t238, ptr %t239, ptr %t240, ptr %t241, ptr %t242, i32 %t243, ptr %t244, i32 %t245, i32 2)
-  %t246 = load ptr, ptr %env-sd.addr.223, align 8
-  %t247 = load i32, ptr %line.addr.2, align 4
-  call void @fn-make-drop-method(ptr %t246, i32 %t247, i32 2)
-  store i32 0, ptr %chk.addr.248, align 4
-  %t249 = load ptr, ptr %env-sd.addr.223, align 8
-  %t250 = load ptr, ptr %caps-head.addr.40, align 8
-  %t251 = load ptr, ptr %scope.addr, align 8
-  %t252 = load i32, ptr %line.addr.2, align 4
-  %t253 = load ptr, ptr %alloc-val.addr.88, align 8
-  %t254 = getelementptr inbounds %Val, ptr %t253, i32 0, i32 1
-  %t255 = load %StrView, ptr %t254, align 8
-  store %StrView %t255, ptr %t256
-  %t257 = load i64, ptr %t256
-  %t258 = getelementptr i8, ptr %t256, i64 8
-  %t259 = load i64, ptr %t258
-  %t260 = call ptr @fn-emit-env-value(ptr %t249, ptr %t250, ptr %t251, ptr %chk.addr.248, i32 %t252, i32 2, i64 %t257, i64 %t259)
-  ret ptr %t260
+  %t240 = load ptr, ptr %ret-node.addr.23, align 8
+  %t241 = load ptr, ptr %ret.addr.123, align 8
+  %t242 = load ptr, ptr %param-types.addr.127, align 8
+  %t243 = load ptr, ptr %param-names.addr.128, align 8
+  %t244 = load i32, ptr %nparams.addr.120, align 4
+  %t245 = load ptr, ptr %body-list.addr.231, align 8
+  %t246 = load i32, ptr %line.addr.2, align 4
+  call void @fn-make-invoke-method(ptr %t237, ptr %t238, ptr %t239, ptr %t240, ptr %t241, ptr %t242, ptr %t243, i32 %t244, ptr %t245, i32 %t246, i32 2)
+  %t247 = load ptr, ptr %env-sd.addr.223, align 8
+  %t248 = load i32, ptr %line.addr.2, align 4
+  call void @fn-make-drop-method(ptr %t247, i32 %t248, i32 2)
+  store i32 0, ptr %chk.addr.249, align 4
+  %t250 = load ptr, ptr %env-sd.addr.223, align 8
+  %t251 = load ptr, ptr %caps-head.addr.40, align 8
+  %t252 = load ptr, ptr %scope.addr, align 8
+  %t253 = load i32, ptr %line.addr.2, align 4
+  %t254 = load ptr, ptr %alloc-val.addr.88, align 8
+  %t255 = getelementptr inbounds %Val, ptr %t254, i32 0, i32 1
+  %t256 = load %StrView, ptr %t255, align 8
+  store %StrView %t256, ptr %t257
+  %t258 = load i64, ptr %t257
+  %t259 = getelementptr i8, ptr %t257, i64 8
+  %t260 = load i64, ptr %t259
+  %t261 = call ptr @fn-emit-env-value(ptr %t250, ptr %t251, ptr %t252, ptr %chk.addr.249, i32 %t253, i32 2, i64 %t258, i64 %t260)
+  ret ptr %t261
 }
 
 define ptr @emit-move(ptr %call.arg, ptr %scope.arg) {
