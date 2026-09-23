@@ -4,9 +4,9 @@
 ;   - `usize` / `sizeof`  → ptr-int-ir/ptr-int-type resolve to i16 on AVR
 ;     (Task 1), so size_t-typed values and sizeof results are 16-bit.
 ;   - a tagged `defunion` + `match` round-trip (plain union, no error niche).
-;   - a runtime quasiquote list, which forces emit-qq-helpers (Task 2): on AVR
-;     the Node cell is `malloc(i64 22)` (16 + 3*2) with every store `align 1`,
-;     not the host `malloc(i64 40)` / `align 8`.
+;   - a runtime quasiquote list, which pulls in the node runtime (Task 2): on
+;     AVR its element array is indexed by i16 and its Node is sized from a
+;     16-bit pointer, not the host's i64 / 8-byte one.
 ;
 ; Round-trips through `llc` for both reference devices (attiny1634, avrxmega3).
 ;
@@ -30,7 +30,7 @@
         lst:(raw Node) `(1 2 3))
     ; Consume sz (usize) via a binop against a bare literal — the literal adapts
     ; to usize with no cross-target-lossy narrowing `as` (usize is i16 on AVR,
-    ; i64 on hosts). lst's quasiquote init is what forces emit-qq-helpers
+    ; i64 on hosts). lst's quasiquote init is what pulls in the node runtime
     ; regardless of whether lst is read.
     (if (and (> sz 0) (!= lst null))
       (return area)

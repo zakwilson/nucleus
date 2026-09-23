@@ -17,31 +17,28 @@
 ; defined below them is callable from these bodies yet, and `cond` is a special
 ; form. Same reason the `case` macro further down says so.
 (defmacro macfoldr (op unit :rest args)
-  (let ((rev (raw Node)) null
-        (a (raw Node)) args)
-    (while (!= a null)
-      (set! rev `(~(a 'car) ~@rev))
-      (set! a (a 'cdr)))
-    (cond (= rev null)
+  (let (n:i32 (ast-len args))
+    (cond (= n 0)
             unit
           true
-            (let ((acc (raw Node)) (rev 'car)
-                  (r (raw Node)) (rev 'cdr))
-              (while (!= r null)
-                (set! acc `(~op ~(r 'car) ~acc))
-                (set! r (r 'cdr)))
+            (let ((acc (raw Node)) (ast-at args (_- n 1))
+                  i:i32 (_- n 1))
+              (while (!= i 0)
+                (set! i (_- i 1))
+                (set! acc `(~op ~(ast-at args i) ~acc)))
               acc))))
 
 (defmacro macfoldl (op unit :rest args)
-  (cond (= args null)
-          unit
-        true
-          (let ((acc (raw Node)) (args 'car)
-                (a (raw Node)) (args 'cdr))
-            (while (!= a null)
-              (set! acc `(~op ~acc ~(a 'car)))
-              (set! a (a 'cdr)))
-            acc)))
+  (let (n:i32 (ast-len args))
+    (cond (= n 0)
+            unit
+          true
+            (let ((acc (raw Node)) (ast-at args 0)
+                  i:i32 1)
+              (while (< i n)
+                (set! acc `(~op ~acc ~(ast-at args i)))
+                (set! i (_+ i 1)))
+              acc))))
 
 ; variadic math
 ;   (+)            => 0
@@ -54,46 +51,46 @@
 ; 3,103 operator call sites in this tree are binary
 ; (design/stage20-macros/overview.md §3.1).
 (defmacro + (:rest args)
-  (cond (= args null)                `0
-        (= (args 'cdr) null)         (args 'car)
-        (= ((args 'cdr) 'cdr) null)  `(_+ ~(args 'car) ~((args 'cdr) 'car))
-        true                         `(macfoldr _+ 0 ~@args)))
+  (cond (= (ast-len args) 0)  `0
+        (= (ast-len args) 1)  (ast-at args 0)
+        (= (ast-len args) 2)  `(_+ ~(ast-at args 0) ~(ast-at args 1))
+        true                  `(macfoldr _+ 0 ~@args)))
 
 (defmacro * (:rest args)
-  (cond (= args null)                `1
-        (= (args 'cdr) null)         (args 'car)
-        (= ((args 'cdr) 'cdr) null)  `(_* ~(args 'car) ~((args 'cdr) 'car))
-        true                         `(macfoldr _* 1 ~@args)))
+  (cond (= (ast-len args) 0)  `1
+        (= (ast-len args) 1)  (ast-at args 0)
+        (= (ast-len args) 2)  `(_* ~(ast-at args 0) ~(ast-at args 1))
+        true                  `(macfoldr _* 1 ~@args)))
 
 ; Subtraction: unary negates; n-ary left-folds (matches Common Lisp).
 (defmacro - (:rest args)
-  (cond (= args null)                `0
-        (= (args 'cdr) null)         `(_- 0 ~(args 'car))
-        (= ((args 'cdr) 'cdr) null)  `(_- ~(args 'car) ~((args 'cdr) 'car))
-        true                         `(macfoldl _- 0 ~@args)))
+  (cond (= (ast-len args) 0)  `0
+        (= (ast-len args) 1)  `(_- 0 ~(ast-at args 0))
+        (= (ast-len args) 2)  `(_- ~(ast-at args 0) ~(ast-at args 1))
+        true                  `(macfoldl _- 0 ~@args)))
 
 ; Division: unary is reciprocal (integer: 1/x); n-ary left-folds.
 (defmacro / (:rest args)
-  (cond (= args null)                `1
-        (= (args 'cdr) null)         `(_/ 1 ~(args 'car))
-        (= ((args 'cdr) 'cdr) null)  `(_/ ~(args 'car) ~((args 'cdr) 'car))
-        true                         `(macfoldl _/ 1 ~@args)))
+  (cond (= (ast-len args) 0)  `1
+        (= (ast-len args) 1)  `(_/ 1 ~(ast-at args 0))
+        (= (ast-len args) 2)  `(_/ ~(ast-at args 0) ~(ast-at args 1))
+        true                  `(macfoldl _/ 1 ~@args)))
 
 ; variadic logic
 ;   (and)         => true
 ;   (and x)       => x
 ;   (and x y z..) => (_and x (_and y z..))  [right-fold; short-circuits]
 (defmacro and (:rest args)
-  (cond (= args null)                `true
-        (= (args 'cdr) null)         (args 'car)
-        (= ((args 'cdr) 'cdr) null)  `(_and ~(args 'car) ~((args 'cdr) 'car))
-        true                         `(macfoldr _and true ~@args)))
+  (cond (= (ast-len args) 0)  `true
+        (= (ast-len args) 1)  (ast-at args 0)
+        (= (ast-len args) 2)  `(_and ~(ast-at args 0) ~(ast-at args 1))
+        true                  `(macfoldr _and true ~@args)))
 
 (defmacro or (:rest args)
-  (cond (= args null)                `false
-        (= (args 'cdr) null)         (args 'car)
-        (= ((args 'cdr) 'cdr) null)  `(_or ~(args 'car) ~((args 'cdr) 'car))
-        true                         `(macfoldr _or false ~@args)))
+  (cond (= (ast-len args) 0)  `false
+        (= (ast-len args) 1)  (ast-at args 0)
+        (= (ast-len args) 2)  `(_or ~(ast-at args 0) ~(ast-at args 1))
+        true                  `(macfoldr _or false ~@args)))
 
 (defmacro bit-not (x)
   `(bit-xor ~x -1))
@@ -117,41 +114,41 @@
 ; it should be a pure, side-effect-free expression.
 (defmacro case (form :rest clauses)
   (let ((acc (raw Node)) null
-        (cur (raw Node)) clauses)
-    (while (!= cur null)
-      (let ((rest (raw Node)) (cur 'cdr))
-        (if (= rest null)
-          ; Lone trailing element: the default arm.
-          (do
-            (set! acc `(~@acc true ~(cur 'car)))
-            (set! cur null))
-          ; A value/result pair.
-          (do
-            (let ((val (raw Node)) (cur 'car)
-                  alt-list:i32 0)
-              ; `when` is defined below this macro, so it is not yet callable
-              ; from this body; `cond` is a special form and always is.
-              (let ((head (raw Node)) (val 'car))
-                (cond (and (= (val 'kind) NODE-CELL)
-                           (!= head null)
-                           (= (head 'kind) NODE-KEYWORD)
-                           ; Reaching through `Symbol.p` because the prelude
-                           ; cannot import `lib/intern.nuc`, where `=` on two
-                           ; `Symbol`s lives. One byte table, so this is the
-                           ; identity compare that overload would do.
-                           (= (as ptr ((head 's) 'p)) (as ptr (('or 's) 'p))))
-                        (set! alt-list 1)))
-              (let ((test (raw Node)) null)
-                (if (!= alt-list 0)
-                  (let ((tests (raw Node)) null
-                        (alt (raw Node)) (val 'cdr))
-                    (while (!= alt null)
-                      (set! tests `(~@tests (= ~form ~(alt 'car))))
-                      (set! alt (alt 'cdr)))
-                    (set! test `(or ~@tests)))
-                  (set! test `(= ~form ~val)))
-                (set! acc `(~@acc ~test ~(rest 'car)))))
-            (set! cur (rest 'cdr))))))
+        i:i32 0
+        n:i32 (ast-len clauses))
+    (while (< i n)
+      (if (= i (- n 1))
+        ; Lone trailing element: the default arm.
+        (do
+          (set! acc `(~@acc true ~(ast-at clauses i)))
+          (set! i n))
+        ; A value/result pair.
+        (do
+          (let ((val (raw Node)) (ast-at clauses i)
+                alt-list:i32 0)
+            ; `when` is defined below this macro, so it is not yet callable
+            ; from this body; `cond` is a special form and always is.
+            (let ((head (raw Node)) (ast-first val))
+              (cond (and (!= head null)
+                         (= (head 'kind) NODE-KEYWORD)
+                         ; Reaching through `Symbol.p` because the prelude
+                         ; cannot import `lib/intern.nuc`, where `=` on two
+                         ; `Symbol`s lives. One byte table, so this is the
+                         ; identity compare that overload would do.
+                         (= (as ptr ((head 's) 'p)) (as ptr (('or 's) 'p))))
+                      (set! alt-list 1)))
+            (let ((test (raw Node)) null)
+              (if (!= alt-list 0)
+                (let ((tests (raw Node)) null
+                      k:i32 1
+                      m:i32 (ast-len val))
+                  (while (< k m)
+                    (set! tests `(~@tests (= ~form ~(ast-at val k))))
+                    (set! k (+ k 1)))
+                  (set! test `(or ~@tests)))
+                (set! test `(= ~form ~val)))
+              (set! acc `(~@acc ~test ~(ast-at clauses (+ i 1))))))
+          (set! i (+ i 2)))))
     `(cond ~@acc)))
 
 ; (when condition body) — one-armed conditional; body only if condition is true.
@@ -187,11 +184,11 @@
 ; var:type is the loop variable with type annotation; n is the upper bound.
 ; Expands to a for loop initialised to 0, incrementing by 1 each iteration.
 ; Example: (dotimes (i:i32 n) (process (node-at items i:i32)))
-; Uses struct field access to extract elements from spec so this macro works
-; even in programs that have not yet included stdlib (no node-at dependency).
+; `ast-at` is a compiler special form, so this macro works even in programs that
+; have not imported the node runtime.
 (defmacro dotimes (spec :rest body)
-  (let ((var-node (raw Node)) (spec 'car)
-        (n-node (raw Node)) ((spec 'cdr) 'car))
+  (let ((var-node (raw Node)) (ast-at spec 0)
+        (n-node (raw Node)) (ast-at spec 1))
     `(let (~var-node (* ~n-node 0)) ; adopt the count's type for the index
        (while (< ~var-node ~n-node)
          (do ~@body)
@@ -230,9 +227,9 @@
   ; The (sym type) list-binding form lets the done-flag gensym skip a colon type.
   (let (done-sym:ptr  (gensym)
         it-sym:ptr    (gensym)
-        var-sym:ptr   (binding 'car)
-        coll-expr:ptr ((binding 'cdr) 'car)
-        it-type:ptr   (((binding 'cdr) 'cdr) 'car))
+        var-sym:ptr   (ast-at binding 0)
+        coll-expr:ptr (ast-at binding 1)
+        it-type:ptr   (ast-at binding 2))
     `(let ((~it-sym ~it-type) (iter ~coll-expr))
        (let ((~done-sym i32) 0)
          (while (= ~done-sym 0)
@@ -253,8 +250,8 @@
 ;     (doseq-iter (x r) (printf "%d\n" x)))
 (defmacro doseq-iter (binding :rest body)
   (let (done-sym:ptr  (gensym)
-        var-sym:ptr   (binding 'car)
-        iter-ref:ptr  ((binding 'cdr) 'car))
+        var-sym:ptr   (ast-at binding 0)
+        iter-ref:ptr  (ast-at binding 1))
     `(let ((~done-sym i32) 0)
        (while (= ~done-sym 0)
          (match (next ~iter-ref)
@@ -310,47 +307,42 @@
 ;   (-> x)                     expands to x                      [identity]
 (defmacro -> (x :rest forms)
   (let ((result (raw Node)) x
-        (current (raw Node)) forms)
-    (while (!= current null)
-      (let ((form (raw Node)) (current 'car))
-        (if (= (form 'kind) NODE-CELL)
+        i:i32 0
+        nforms:i32 (ast-len forms))
+    (while (< i nforms)
+      (let ((form (raw Node)) (ast-at forms i)
+            n:i32 (ast-len form))
+        (if (= (form 'kind) NODE-LIST)
           (do
             ; Scan the whole form (head + args) for the _ placeholder. Scanning
             ; the head lets a threaded value land in call position, e.g.
             ; (-> s (_ field)) => (s field) — head-position member access.
             (let (has-placeholder:i32 0
-                  (scan (raw Node)) form)
-              (while (!= scan null)
-                (let ((child (raw Node)) (scan 'car))
-                  ; `_` is reader-interned, so identity IS the spelling test —
-                  ; and the prelude cannot call `symbol-is`, which is a library.
-                  (when (= child '_)
-                    (set! has-placeholder 1)))
-                (set! scan (scan 'cdr)))
+                  k:i32 0)
+              (while (< k n)
+                ; `_` is reader-interned, so identity IS the spelling test —
+                ; and the prelude cannot call `symbol-is`, which is a library.
+                (when (= (ast-at form k) '_)
+                  (set! has-placeholder 1))
+                (set! k (+ k 1)))
               (if (!= has-placeholder 0)
-                ; Has _: rebuild list, substituting result for each _.
-                ; Pass 1: build reversed list with substitutions.
-                (let ((rev (raw Node)) null
-                      (src (raw Node)) form)
-                  (while (!= src null)
-                    (let ((elem (raw Node)) (src 'car)
+                ; Has _: rebuild the form, substituting result for each _.
+                (let ((out (raw Node)) null
+                      j:i32 0)
+                  (while (< j n)
+                    (let ((elem (raw Node)) (ast-at form j)
                           replacement:ptr elem)
                       (when (= elem '_)
                         (set! replacement result))
-                      (set! rev `(~replacement ~@rev)))
-                    (set! src (src 'cdr)))
-                  ; Pass 2: reverse to restore order.
-                  (let (final:ptr null)
-                    (while (!= rev null)
-                      (set! final `(~(rev 'car) ~@final))
-                      (set! rev (rev 'cdr)))
-                    (set! result final)))
+                      (set! out `(~@out ~replacement)))
+                    (set! j (+ j 1)))
+                  (set! result out))
                 ; No _: thread-first (insert after head).
-                (let (head:ptr (form 'car)
-                      tail:ptr (form 'cdr))
+                (let (head:ptr (ast-first form)
+                      tail:ptr (ast-rest form))
                   (set! result `(~head ~result ~@tail))))))
           (set! result `(~form ~result))))
-      (set! current (current 'cdr)))
+      (set! i (+ i 1)))
     result))
 
 ; (macmap ((param ...) template) (row ...)) — expand one template once per row
@@ -371,9 +363,9 @@
 ; numbers, its diagnostics and its `gensym` are whatever `macrolet` already
 ; gives. design/stage20-macros/overview.md §2.1.
 ;
-; Member access rather than `node-at`/`node-len`: the prelude registers the Node
-; TYPE but imports no node runtime, so a signature from lib/node.nuc is not in
-; scope here even though the JIT'd body could resolve one.
+; `ast-at`/`ast-len` rather than `node-at`/`node-len`: the prelude registers the
+; Node TYPE but imports no node runtime, so a signature from lib/node.nuc is not
+; in scope here even though the JIT'd body could resolve one.
 ;
 ; The binding is the fixed name `__macmap`, not a `gensym`: gensym'd names are
 ; numbered from one global counter, so a gensym here renumbers every `__gs_N` in
@@ -386,13 +378,12 @@
   ; dereferences — it would segfault the COMPILER, at expansion time, before any
   ; diagnostic could be raised. Every chain below is reached only past its guard.
   (when (or (= spec null)
-            (!= (spec 'kind) NODE-CELL)
-            (= (spec 'cdr) null)
-            (= ((spec 'cdr) 'car) null))
+            (!= (spec 'kind) NODE-LIST)
+            (< (ast-len spec) 2))
     (macro-error (if (= spec null) rows spec)
       "macmap: the first argument must be ((param ...) template)"))
-  (let ((params (raw Node)) (spec 'car)
-        (tmpl (raw Node))   ((spec 'cdr) 'car)
+  (let ((params (raw Node)) (ast-at spec 0)
+        (tmpl (raw Node))   (ast-at spec 1)
         ntotal:i32          0
         nfixed:i32          0
         variadic:i32        0
@@ -402,36 +393,35 @@
     ; longer. The keyword test reaches through `Symbol.p` for the same reason
     ; `case` does — the prelude cannot import `lib/intern.nuc`, where `=` on two
     ; Symbols lives, and one byte table makes identity the same question.
-    (let ((p (raw Node)) params)
-      (while (!= p null)
-        (let ((e (raw Node)) (p 'car))
+    (let (pi:i32 0
+          np:i32 (ast-len params))
+      (while (< pi np)
+        (let ((e (raw Node)) (ast-at params pi))
           (when (and (!= e null) (= (e 'kind) NODE-KEYWORD)
                      (= (as ptr ((e 's) 'p)) (as ptr (('rest 's) 'p))))
             (set! variadic 1))
           (when (= variadic 0) (set! nfixed (+ nfixed 1))))
         (set! ntotal (+ ntotal 1))
-        (set! p (p 'cdr))))
-    (let ((row (raw Node)) rows)
-      (while (!= row null)
-        (let ((r (raw Node)) (row 'car))
+        (set! pi (+ pi 1))))
+    (let (ri:i32 0
+          nrows:i32 (ast-len rows))
+      (while (< ri nrows)
+        (let ((r (raw Node)) (ast-at rows ri))
           (if (= ntotal 1)
             (set! calls `(~@calls (__macmap ~r)))
             (do
-              (when (or (= r null) (!= (r 'kind) NODE-CELL))
+              (when (or (= r null) (!= (r 'kind) NODE-LIST))
                 (macro-error rows
                   "macmap: a row must be a list, one element per template parameter"))
-              (let (n:i32 0
-                    (e (raw Node)) r)
-                (while (!= e null)
-                  (set! n (+ n 1))
-                  (set! e (e 'cdr)))
+              (let (n:i32 (ast-len r))
                 (when (if (= variadic 0) (!= n ntotal) (< n nfixed))
                   (macro-error r
                     "macmap: this row's length does not match the template's parameter list")))
               (set! calls `(~@calls (__macmap ~@r))))))
-        (set! row (row 'cdr))))
+        (set! ri (+ ri 1))))
     ; An empty table is `(do)`, not a `macrolet` with an empty body: the lowering
     ; may not surface as a diagnostic about a form the caller never wrote.
     (if (= calls null)
       `(do)
       `(macrolet ((__macmap ~params ~tmpl)) ~@calls))))
+

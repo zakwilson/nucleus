@@ -241,17 +241,9 @@
 ; nullable pointer, null until a module opens, exactly as the `FILE*` was.
 (defvar g-out:raw:String)
 (defvar g-decl-out:raw:String)
-; "This body built a list with the __cons/__append helpers." Gates emitting
-; those helper definitions (emit-qq-helpers into the program module,
-; `define private` into a CT/macro JIT module). Set by emit-qq-list only.
-(defvar g-qq-used:i32 0)
-; "This body called the node constructors." Distinct from g-qq-used because
-; `emit-quote-tree` — reached by a plain `'x` and by a quasiquote of an ATOM
-; (`` `1 ``, `` `foo ``) — emits @alloc-node / @make-cell / @intern-symbol
-; without ever touching __cons/__append. Gating their `declare`s on g-qq-used
-; left a macro body whose whole expansion is an atom emitting calls to symbols
-; the JIT module never declared ("use of undefined value '@alloc-node'"); the
-; program module is unaffected either way, since it *defines* all three.
+; "This body called the node runtime." Gates the `declare`s a CT/macro JIT module
+; needs for @alloc-node / @node-list-new / @node-push / @node-extend /
+; @intern-symbol; the program module is unaffected, since it *defines* them.
 (defvar g-node-ctor-used:i32 0)
 
 ; Main module streams (global so emit-compile-time can access them mid-compilation)
@@ -580,7 +572,6 @@
 (defvar g-ctm-defs:&(Vector &ProgDefn) (vector-new-in &g-arena-alloc))
 (defvar g-ctm-decls:&(Vector &ProgDefn) (vector-new-in &g-arena-alloc))
 (defvar g-ctm-seen:&(Vector Symbol) (vector-new-in &g-arena-alloc))
-(defvar g-ctm-qq:i32 0)
 ; L6 (§5.7): the same split for program globals — copied into the mirror, or
 ; declared because the host owns them (§3.2) or an earlier flush defined them.
 (defvar g-ctm-globals:&(Vector &ProgGlobal) (vector-new-in &g-arena-alloc))
@@ -1430,6 +1421,14 @@
   (conj g-macro-decls irn)
   (emit out proto))
 
+; The host's list reads, for a CT module: `ast-first`/`ast-rest`/`ast-at`/
+; `ast-len` lower to calls on the RUNNING compiler's own implementations.
+(defn macro-jit-ast-read-decls ((out (raw String))):void
+  (macro-jit-declare-raw out (symbol-intern "@node-first") (symbol-intern "declare ptr @node-first(ptr)\n"))
+  (macro-jit-declare-raw out (symbol-intern "@node-rest") (symbol-intern "declare ptr @node-rest(ptr)\n"))
+  (macro-jit-declare-raw out (symbol-intern "@node-at") (symbol-intern "declare ptr @node-at(ptr, i32)\n"))
+  (macro-jit-declare-raw out (symbol-intern "@node-len") (symbol-intern "declare i32 @node-len(ptr)\n")))
+
 ; The macro/CT body being compiled, as a diagnostic subject.
 (defn ct-body-who ():StrView
   ; C1: a computed argument's fault is in the CALLER's text, so the subject is
@@ -1481,8 +1480,8 @@
     (let (en:(raw Node) e)
       (when (= (en 'kind) NODE-SYM) (return (symbol-intern (fstr pfx (en 's)))))
       (when (= (en 'kind) NODE-INT) (return (symbol-intern (fstr pfx (en 'i)))))
-      (when (= (en 'kind) NODE-CELL)
-        (let (h:(raw Node) (en 'car))
+      (when (= (en 'kind) NODE-LIST)
+        (let (h:(raw Node) (node-first en))
           (when (and (!= h null) (= (h 'kind) NODE-SYM))
             (when (= (node-len e) 1) (return (symbol-intern (fstr pfx "(" (h 's) ")"))))
             (return (symbol-intern (fstr pfx "(" (h 's) " ...)"))))))
@@ -1504,19 +1503,15 @@
         (fstr "the unquote operand '" (ct-eval-arg-spelling e splice)
               "' must evaluate to (raw Node), not " (type-display t))))))
 
-; Stage 20 C3: `~@e` contributes N arguments, so its value must be a proper list
-; — null splices none. The type check above already required a node; this is the
-; shape, and a dotted tail fails it at the cell that has one rather than being
-; dropped. The spelling is computed only on the error path.
+; Stage 20 C3: `~@e` contributes N arguments, so its value must be a list —
+; null splices none. The type check above already required a node; this is the
+; shape. The spelling is computed only on the error path.
 (defn ct-eval-require-list (v:(raw Node) e:(raw Node) line:i32):void
-  (let (it:(raw Node) v)
-    (while (!= it null)
-      (when (!= (it 'kind) NODE-CELL)
-        (diag-stage-note (fstr "`~@` splices its result in as N arguments, so it must"
-                               " evaluate to a list — `~` substitutes a single node"))
-        (die-at line (fstr "the computed argument '" (ct-eval-arg-spelling e 1)
-                           "' must evaluate to a list of nodes")))
-      (set! it (it 'cdr)))))
+  (when (node-is-list v) (return))
+  (diag-stage-note (fstr "`~@` splices its result in as N arguments, so it must"
+                         " evaluate to a list — `~` substitutes a single node"))
+  (die-at line (fstr "the computed argument '" (ct-eval-arg-spelling e 1)
+                     "' must evaluate to a list of nodes")))
 
 ; §1.3's shape, doing the right thing at last: the program's own definition wins
 ; over a compiler symbol it collides with. Worth saying out loud because the same
@@ -1632,12 +1627,12 @@
 ; annotated. It is a no-op for a CELL name (a legitimate template head, or
 ; handled by the caller) and for a plain symbol with no colon.
 (defn reject-colon-in-def-name (name:(raw Node) word:StrView fallback-line:i32):void
-  ; W9 item 45: `()` in the name position is a NULL node (W5f), and every caller
-  ; reaches this before it touches its name — so this is where the five heads
-  ; that route through it are refused rather than segfaulting. The wording
+  ; W9 item 45: a name position that is absent or `()` carries no name, and every
+  ; caller reaches this before it touches its name — so this is where the five
+  ; heads that route through it are refused rather than segfaulting. The wording
   ; matches `defstruct`/`defenum`'s own arity guards, which say exactly this for
   ; the name that is absent instead of empty.
-  (when (= name null)
+  (when (node-empty? name)
     (die-at fallback-line (fstr word ": missing name")))
   (let (nn:(raw Node) name)
     (when (= (nn 'kind) NODE-SYM)
@@ -1664,33 +1659,33 @@
     ; `(:volatile field:type)` and re-derive the inner name / type-name. Validation
     ; already happened at declaration time (extract-name-and-type), so this is a
     ; structural skip only — a keyword head never appears in a pre-AT-1 declaration.
-    (when (and (= (n 'kind) NODE-CELL)
-               (!= (n 'car) null)
-               (= (-> n (_ 'car) (unsafe/cast &Node _) (_ 'kind)) NODE-KEYWORD))
+    (when (and (= (n 'kind) NODE-LIST)
+               (!= (node-first n) null)
+               (= (-> n (node-first _) (unsafe/cast &Node _) (_ 'kind)) NODE-KEYWORD))
       (let (rest:(raw Node) node)
         (while (and (!= rest null)
-                    (!= ((unsafe/cast &Node rest) 'car) null)
-                    (= (-> rest (_ 'car) (unsafe/cast &Node _) (_ 'kind)) NODE-KEYWORD))
-          (set! rest (as raw:Node ((unsafe/cast &Node rest) 'cdr))))
+                    (!= (node-first (unsafe/cast &Node rest)) null)
+                    (= (-> rest (node-first _) (unsafe/cast &Node _) (_ 'kind)) NODE-KEYWORD))
+          (set! rest (as raw:Node (node-rest (unsafe/cast &Node rest)))))
         (when (= rest null)
           (set! @out-name (symbol-none))
           (set! @out-type-name (symbol-none))
           (return))
-        (let (inner:(raw Node) (if (= ((unsafe/cast &Node rest) 'cdr) null)
-                                 (as raw:Node ((unsafe/cast &Node rest) 'car))
+        (let (inner:(raw Node) (if (= (node-rest (unsafe/cast &Node rest)) null)
+                                 (as raw:Node (node-first (unsafe/cast &Node rest)))
                                  rest))
           (extract-name-type inner out-name out-type-name)
           (return))))
     (when (= (n 'kind) NODE-SYM)
       (split-typed (n 's) out-name out-type-name)
       (return))
-    (when (= (n 'kind) NODE-CELL)
-      (let (car-node:(raw Node) (n 'car))
+    (when (= (n 'kind) NODE-LIST)
+      (let (car-node:(raw Node) (node-first n))
         (when (and (!= car-node null) (= (car-node 'kind) NODE-SYM))
           (set! @out-name (car-node 's))
-          (let (rest:(raw Node) (n 'cdr))
+          (let (rest:(raw Node) (node-rest n))
             (if (!= rest null)
-                (let (type-node:(raw Node) (rest 'car))
+                (let (type-node:(raw Node) (node-first rest))
                   (when (and (!= type-node null) (= (type-node 'kind) NODE-SYM))
                     (set! @out-type-name (type-node 's)))
                   (return))
@@ -1747,13 +1742,12 @@
   (die-at line "expected a name:type declaration, found the empty list '()'"))
 
 (defn extract-name-and-type (node:(raw Node) out-name:ptr:Symbol line:i32):(raw Type)
-  ; W5f: an empty list `()` in a declaration position reads as a NULL node
-  ; (read-list returns null for a zero-element list, and read-list then wraps it
-  ; in a cell whose car is null). Every caller — `(struct …)`/`(union …)` members,
-  ; defstruct fields, defn params, let/with bindings, defunion arm fields — reaches
-  ; this shared chokepoint, and each would otherwise dereference the null here.
-  ; Diagnose with the enclosing form's line instead of faulting.
-  (when (= node null)
+  ; W5f: an empty list `()` in a declaration position names nothing. Every
+  ; caller — `(struct …)`/`(union …)` members, defstruct fields, defn params,
+  ; let/with bindings, defunion arm fields — reaches this shared chokepoint, and
+  ; each would otherwise read a name off a node that has none. Diagnose with the
+  ; enclosing form's line instead of faulting.
+  (when (node-empty? node)
     (set! @out-name (symbol-none))
     (die-empty-decl line))
   (let (n:(raw Node) node)
@@ -1766,9 +1760,9 @@
     ; `:volatile` lowers to the is-volatile Type flag (type-with-volatile) exactly as
     ; the postfix `(T volatile)`/`T:volatile` spellings do. Only fires on a
     ; keyword-headed cell, which no pre-AT-1 declaration ever is, so byte-identical.
-    (when (and (= (n 'kind) NODE-CELL)
-               (!= (n 'car) null)
-               (= (-> n (_ 'car) (unsafe/cast &Node _) (_ 'kind)) NODE-KEYWORD))
+    (when (and (= (n 'kind) NODE-LIST)
+               (!= (node-first n) null)
+               (= (-> n (node-first _) (unsafe/cast &Node _) (_ 'kind)) NODE-KEYWORD))
       (let (flags:i32 0
             rest:(raw Node) (as raw:Node (parse-decl-attrs (as ptr node)
                                            (as &i32 &flags) line)))
@@ -1780,8 +1774,8 @@
         (reject-decl-attr-const flags line "a field, parameter, or binding")
         (when (= rest null)
           (die-at line "declaration attribute must be followed by a name:type"))
-        (let (inner:(raw Node) (if (= ((unsafe/cast &Node rest) 'cdr) null)
-                                 (as raw:Node ((unsafe/cast &Node rest) 'car))
+        (let (inner:(raw Node) (if (= (node-rest (unsafe/cast &Node rest)) null)
+                                 (as raw:Node (node-first (unsafe/cast &Node rest)))
                                  rest)
               base:(raw Type) (extract-name-and-type inner out-name line))
           (when (= base null) (return null))
@@ -1814,8 +1808,8 @@
             (return (parse-type-name tname line)))
           (return null))))
     ; List node from desugar: (name type-info...)
-    (when (= (n 'kind) NODE-CELL)
-      (let (car-node:(raw Node) (n 'car))
+    (when (= (n 'kind) NODE-LIST)
+      (let (car-node:(raw Node) (node-first n))
         (when (and (!= car-node null) (= (car-node 'kind) NODE-SYM))
           ; CP-3: a field whose name cell is a trailing-colon symbol (e.g. `(f: (raw Node))`
           ; written with a space) — field CELLs bypass colon desugar, so reject here.
@@ -1824,9 +1818,9 @@
               (die-at line (fstr "binding name ends in ':' (" cs
                                  ") -- write name:(Type) with no space, or (name Type)"))))
          (set! @out-name (car-node 's))
-         (let (rest:(raw Node) (n 'cdr))
+         (let (rest:(raw Node) (node-rest n))
            (when (= rest null) (return null))
-           (let (type-node:(raw Node) (rest 'car))
+           (let (type-node:(raw Node) (node-first rest))
              (when (= type-node null) (return null))
               ; If type is a symbol, parse it — parse-type-from-node also handles
               ; colon-sugar (`ptr:M7`), which arises when a generic instantiation
@@ -1836,8 +1830,8 @@
               ; If type is a list — (ptr T) or function-pointer type.
               ; Legacy fn-pointer form ((fn ret) (params)) was spread across
               ; the rest; for that case we still pass the whole rest.
-              (when (= (type-node 'kind) NODE-CELL)
-                (let (inner-head:(raw Node) (type-node 'car)
+              (when (= (type-node 'kind) NODE-LIST)
+                (let (inner-head:(raw Node) (node-first type-node)
                       is-fn:i32 0)
                   (when (and (!= inner-head null)
                              (= (inner-head 'kind) NODE-SYM)
@@ -1869,7 +1863,7 @@
 (defn sig-name-is-bare (name-node:(raw Node)):i32
   (when (= name-node null) (return 0))
   (let (nn:(raw Node) name-node)
-    (when (= (nn 'kind) NODE-CELL) (return 0))
+    (when (= (nn 'kind) NODE-LIST) (return 0))
     (when (and (= (nn 'kind) NODE-SYM) (symbol-contains-byte (nn 's) 58)) (return 0))
     (when (= (nn 'kind) NODE-SYM) (return 1))
     (return 0)))
@@ -1884,14 +1878,14 @@
   ; `sig-name-is-bare` above already has, and for the same callers.
   (when (= name-node null) (return null))
   (let (nn:(raw Node) name-node)
-    (when (= (nn 'kind) NODE-CELL) (return (binding-type-node name-node)))
+    (when (= (nn 'kind) NODE-LIST) (return (binding-type-node name-node)))
     (when (and (= (nn 'kind) NODE-SYM) (symbol-contains-byte (nn 's) 58))
       (return (binding-type-node (desugar-symbol name-node (nn 'line)))))
     (return null)))
 
 ; Central signature accessor for a full defn form `(defn NAME …)`. Detects style,
 ; writes the bare function name, the *raw* return-type node (a NODE-KEYWORD /
-; NODE-SYM / NODE-CELL, left unparsed — the generic-template path must not eagerly
+; NODE-SYM / NODE-LIST, left unparsed — the generic-template path must not eagerly
 ; parse a free-tyvar return, per the TY-TYVAR confinement rule), the parameter
 ; list node, and the index of the first body form. Returns 1 for new style, 0 for
 ; legacy. Diagnostics use the *form's* line (interned name/keyword nodes carry 0).
@@ -1899,10 +1893,10 @@
                           out-params:ptr:ptr out-body-start:ptr:i32):i32
   (let (ff:(raw Node) form
         name-node:(raw Node) (node-at form 1))
-    ; W9 item 45: `()` in the name position is a NULL node (W5f). It is not a
-    ; legacy signature — the S4 message below would quote it as '(null)' — it is
-    ; no name at all, so it gets the wording every other definer uses for that.
-    (when (= name-node null) (die-at (ff 'line) "defn: missing name"))
+    ; W9 item 45: an absent or `()` name is not a legacy signature — the S4
+    ; message below would quote it as '(null)' — it is no name at all, so it gets
+    ; the wording every other definer uses for that.
+    (when (node-empty? name-node) (die-at (ff 'line) "defn: missing name"))
     (set! @out-params (node-at form 2))
     (if (!= (sig-name-is-bare name-node) 0)
       ; New style: bare name, ret at index 3, body at 4.
@@ -2002,7 +1996,7 @@
     (die-at (node-line (as ptr arg) line) "export: each argument must be a symbol")))
 
 (defn require-declare-name (name:(raw Node) line:i32):void
-  (when (= name null) (die-at line "declare: missing name")))
+  (when (node-empty? name) (die-at line "declare: missing name")))
 
 ; The two `extend` operand questions. The subject guard carries the general test
 ; because `emit-extend` asks it in a position a template head has already left;
@@ -2014,7 +2008,7 @@
       "extend: subject must be a symbol or struct template")))
 
 (defn require-extend-protocol (pn:(raw Node) line:i32):void
-  (when (= pn null)
+  (when (node-empty? pn)
     (die-at line "extend: protocol must be a symbol or (Protocol args...)")))
 
 (defn require-defcast-form (form:ptr):void
@@ -2041,7 +2035,7 @@
 ; Normalize a return-type node so a new-style NODE-KEYWORD ret (`:T`, `:i32`)
 ; reads as the equivalent NODE-SYM — making it structurally identical to a legacy
 ; desugared return, which the generic type-resolution machinery expects (bare-tyvar
-; detection, tyvar collection, parse-type-from-node). NODE-SYM / NODE-CELL rets and
+; detection, tyvar collection, parse-type-from-node). NODE-SYM / NODE-LIST rets and
 ; null pass through unchanged, so legacy forms are byte-identical.
 (defn normalize-ret-node (rn:(raw Node)):(raw Node)
   (when (= rn null) (return null))
@@ -2098,7 +2092,7 @@
 (defn node-is-label-form (n:(raw Node)):i32
   (when (= n null) (return 0))
   (let (nn:(raw Node) n)
-    (when (!= (nn 'kind) NODE-CELL) (return 0))
+    (when (!= (nn 'kind) NODE-LIST) (return 0))
     (when (< (node-len n) 1) (return 0))
     (let (head:(raw Node) (node-at n 0))
       (when (!= (head 'kind) NODE-SYM) (return 0))
@@ -2119,12 +2113,10 @@
   (when (!= g-block-term 0)
     (when (= (node-is-label-form n) 0)
       (return (alloc-val ty-void ""))))
-  ; W5f: `()` in expression position reads as a NULL node (read-list returns null
-  ; for a zero-element list), and every line/kind read below dereferences it. No
-  ; working program can reach here with null — this deref has always faulted — so
-  ; diagnosing is strictly an improvement over the segfault. The ambient
-  ; g-form-line is the enclosing form's, which is the only location `()` has.
-  (when (= n null)
+  ; W5f: `()` in expression position, and an absent operand, have no value. The
+  ; ambient g-form-line is the enclosing form's, which is the only location `()`
+  ; has of its own once a macro has synthesized it.
+  (when (node-empty? n)
     (die-at g-form-line "'()' is not an expression -- the empty list has no value"))
   (let (nn:(raw Node) n
         ; Stage 15 W4a: adopt this node's line as the ambient diagnostic line for
@@ -2144,7 +2136,7 @@
     (when (= (nn 'kind) NODE-STR)   (set! v (emit-string n null)))
     (when (= (nn 'kind) NODE-SYM)   (set! v (emit-symbol-ref n scope g-form-line)))
     (when (= (nn 'kind) NODE-KEYWORD) (set! v (emit-keyword n scope)))
-    (when (= (nn 'kind) NODE-CELL)  (set! v (emit-list n scope)))
+    (when (= (nn 'kind) NODE-LIST)  (set! v (emit-list n scope)))
     ; Rung 3: the type a node contributes to its parent is the shared node-type
     ; rule's answer, so codegen and the (non-emitting) type pass cannot drift —
     ; a mismatch corrupts the next bootstrap and is caught at once. node-type
@@ -2395,9 +2387,8 @@
     (set! (strnode 'line) line)
     (set! (strnode 's) (nn 's))
     ; (keyword-intern "name")
-    (let (call:ptr (make-cell 'keyword-intern
-                     (make-cell strnode null line)
-                     line))
+    (let (call:ptr (node-list2 'keyword-intern
+                     strnode line))
       (return (emit-node call scope)))))
 
 ; Is the IR being written now going to reach the linked program? A macro/CT JIT
@@ -2463,14 +2454,14 @@
 ; unit. The prelude registers the `Node` TYPE but no longer emits the runtime
 ; (design/stage16-ergonomics/compile-time-imports.md §4b).
 ;
-; A ct-only `make-cell` does not count: it is registered and undefined, which is
-; the promise §4a says the form must be held to.
+; A ct-only `node-list-new` does not count: it is registered and undefined,
+; which is the promise §4a says the form must be held to.
 ;
 ; Exempt: the REPL's quote handling is independently broken (same doc §7).
 (defn require-node-runtime (line:i32 what:StrView):void
   (when (= (emitting-program-ir) 0) (return))
   (when (!= g-interactive 0) (return))
-  (let (mc:?ptr:Sym (scope-lookup g-globals (symbol-intern "make-cell")))
+  (let (mc:?ptr:Sym (scope-lookup g-globals (symbol-intern "node-list-new")))
     (when (!= (as ptr mc) null)
       (let (ms:(raw Sym) (as (raw Sym) mc))
         (when (= (ms 'ct-only) 0) (return)))))
@@ -2480,7 +2471,7 @@
 ; identity with reader-produced ones. Returns a body-stream tmp ref.
 ;
 ; - NODE-SYM:   call ptr @intern-symbol(spelling)
-; - NODE-CELL:  recurse on car/cdr, then call ptr @make-cell(car, cdr, line)
+; - NODE-LIST:  recurse on car/cdr, then call ptr @make-cell(car, cdr, line)
 ; - NODE-INT/STR/FLOAT: alloc-node, then store the relevant fields
 (defn emit-quote-tree (n:(raw Node)):StrView
   (when (= n null) (return "null"))
@@ -2495,12 +2486,12 @@
         (emit g-body-stream "  " tmp " = call ptr @intern-symbol(ptr getelementptr inbounds (["
               ir-len " x i8], ptr @.str." sid ", i64 0, i64 0))\n")
         (return tmp)))
-    (when (= (nn 'kind) NODE-CELL)
-      (let (car-ref:StrView (emit-quote-tree (nn 'car))
-            cdr-ref:StrView (emit-quote-tree (nn 'cdr))
-            tmp:StrView (new-tmp))
-        (emit g-body-stream "  " tmp " = call ptr @make-cell(ptr " car-ref ", ptr " cdr-ref
-              ", i32 " (nn 'line) ")\n")
+    (when (= (nn 'kind) NODE-LIST)
+      (let (tmp:StrView (new-tmp))
+        (emit g-body-stream "  " tmp " = call ptr @node-list-new(i32 " (nn 'line) ")\n")
+        (dotimes (i (node-len nn))
+          (let (e:StrView (emit-quote-tree (node-at nn i)))
+            (emit g-body-stream "  call void @node-push(ptr " tmp ", ptr " e ")\n")))
         (return tmp)))
     ; NODE-INT / NODE-STR / NODE-FLOAT / NODE-KEYWORD / NODE-CHAR — runtime alloc
     ; + fill. NODE-KEYWORD (Stage 11 cleanup §2) stores its name in `s` like
@@ -2515,18 +2506,18 @@
                 (= (nn 'kind) NODE-KEYWORD) (= (nn 'kind) NODE-CHAR))
         (let (kp:StrView (new-tmp))
           (emit g-body-stream "  " kp
-                " = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr " tmp
+                " = getelementptr inbounds { i32, i32, i64, ptr, ptr, i32, i32 }, ptr " tmp
                 ", i32 0, i32 0\n")
           (emit g-body-stream "  store i32 " (nn 'kind) ", ptr " kp ", align 4\n")))
       (let (lp:StrView (new-tmp))
         (emit g-body-stream "  " lp
-              " = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr " tmp
+              " = getelementptr inbounds { i32, i32, i64, ptr, ptr, i32, i32 }, ptr " tmp
               ", i32 0, i32 1\n")
         (emit g-body-stream "  store i32 " (nn 'line) ", ptr " lp ", align 4\n"))
       (when (or (= (nn 'kind) NODE-INT) (= (nn 'kind) NODE-CHAR))
         (let (ip:StrView (new-tmp))
           (emit g-body-stream "  " ip
-                " = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr " tmp
+                " = getelementptr inbounds { i32, i32, i64, ptr, ptr, i32, i32 }, ptr " tmp
                 ", i32 0, i32 2\n")
           (emit g-body-stream "  store i64 " (nn 'i) ", ptr " ip ", align 8\n")))
       (when (or (= (nn 'kind) NODE-STR)
@@ -2543,7 +2534,7 @@
                 " = call i64 @symbol-intern-bytes(ptr getelementptr inbounds ([" ir-len
                 " x i8], ptr @.str." sid ", i64 0, i64 0), i64 " (unsafe/cast i64 slen) ")\n")
           (emit g-body-stream "  " sp
-                " = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr " tmp
+                " = getelementptr inbounds { i32, i32, i64, ptr, ptr, i32, i32 }, ptr " tmp
                 ", i32 0, i32 3\n")
           (emit g-body-stream "  store i64 " sym ", ptr " sp ", align 8\n")))
       (return tmp))))
@@ -2599,12 +2590,38 @@
     (let (tree:StrView (emit-quote-tree (node-at call 1)))
       (return (alloc-val (quoted-datum-type (node-at call 1)) tree)))))
 
+; The list reads a MACRO BODY compiles to. A special form is lowered by whichever
+; compiler is running, so it reaches that compiler's own Node layout across the
+; relayout — design/stage21-cleanup/ast-as-collection.md §8.2.
+; op: 0 ast-first, 1 ast-rest, 2 ast-at, 3 ast-len.
+(defn emit-ast-read (call:(raw Node) scope:&Scope op:i32):&Val
+  (let (cc:(raw Node) call
+        want:i32 (if (= op 2) 3 2))
+    (when (!= (node-len call) want)
+      (die-at (cc 'line) "an ast list read takes the list, plus an index for ast-at"))
+    (set! g-node-ctor-used 1)
+    (require-node-runtime (cc 'line) "an ast list read")
+    (let (nv:&Val (emit-node (node-at call 1) scope))
+      (when (= op 2)
+        (let (iv:&Val (emit-node (node-at call 2) scope)
+              ta:StrView (new-tmp))
+          (emit g-body-stream "  " ta " = call ptr @node-at(ptr " (nv 'val)
+                ", i32 " (iv 'val) ")\n")
+          (return (alloc-val (ty-raw-node) ta))))
+      (let (t:StrView (new-tmp))
+        (when (= op 3)
+          (emit g-body-stream "  " t " = call i32 @node-len(ptr " (nv 'val) ")\n")
+          (return (alloc-val ty-i32 t)))
+        (emit g-body-stream "  " t " = call ptr @node-"
+              (if (= op 0) "first" "rest") "(ptr " (nv 'val) ")\n")
+        (return (alloc-val (ty-raw-node) t))))))
+
 (defn qq-is-tagged (n:(raw Node) tag:(raw Node)):i32
   (when (= n null) (return 0))
   (let (nn:(raw Node) n)
-    (when (!= (nn 'kind) NODE-CELL) (return 0))
+    (when (!= (nn 'kind) NODE-LIST) (return 0))
     (when (!= (node-len n) 2) (return 0))
-    (let (h:(raw Node) (nn 'car))
+    (let (h:(raw Node) (node-first nn))
       (when (= h null) (return 0))
       (when (!= (h 'kind) NODE-SYM) (return 0))
       (when (= h tag) (return 1))
@@ -2614,46 +2631,42 @@
 ; `(unquote-splice X)` — as DATA, walking X at `inner` rather than at the level
 ; the tag was seen at. design/stage20-macros/quasiquote-levels.md §2.
 (defn emit-qq-tagged (form:(raw Node) scope:&Scope inner:i32):&Val
-  ; Builds cells without going through emit-qq-list, which is the other setter.
-  (set! g-qq-used 1)
+  (set! g-node-ctor-used 1)
+  (require-node-runtime (node-line (as ptr form) g-form-line) "quasiquote")
   (let (fc:(raw Node) form
-        tag:StrView (emit-quote-tree (fc 'car))
+        tag:StrView (emit-quote-tree (node-first fc))
         val:&Val (emit-qq-form (node-at form 1) scope inner)
-        t1:StrView (new-tmp))
-    (emit g-body-stream "  " t1 " = call ptr @__cons(ptr " (val 'val) ", ptr null)\n")
-    (let (t2:StrView (new-tmp))
-      (emit g-body-stream "  " t2 " = call ptr @__cons(ptr " tag ", ptr " t1 ")\n")
-      (return (alloc-val (ty-raw-node) t2)))))
+        t:StrView (new-tmp))
+    (emit g-body-stream "  " t " = call ptr @node-list-new(i32 0)\n")
+    (emit g-body-stream "  call void @node-push(ptr " t ", ptr " tag ")\n")
+    (emit g-body-stream "  call void @node-push(ptr " t ", ptr " (val 'val) ")\n")
+    (return (alloc-val (ty-raw-node) t))))
 
+; One list, built left to right. A level-1 `~@` appends its operand's elements;
+; everything else is one element. Line 0, not the macro body's: `node-line`
+; falls back to the enclosing form, which is the CALL site.
 (defn emit-qq-list (list:(raw Node) scope:&Scope level:i32):&Val
   (when (= list null) (return (alloc-val (ty-raw-node) "null")))
-  (set! g-qq-used 1)
-  ; `__cons` calls @malloc; the element path may or may not reach
-  ; emit-quote-tree (`` `(~x) `` never does), so the two flags are independent.
+  (set! g-node-ctor-used 1)
+  (require-node-runtime (node-line (as ptr list) g-form-line) "quasiquote")
   (let (lc:(raw Node) list
-        elem:(raw Node) (lc 'car))
-    ; Only a level-1 splice splices; deeper it is data, and emit-qq-form rebuilds
-    ; it as one ordinary element.
-    (when (and (= level 1) (!= (qq-is-tagged elem 'unquote-splice) 0))
-      (let (inner:(raw Node) (node-at elem 1)
-            a:&Val (emit-node inner scope))
-        (qq-require-node-operand (as raw:Val a) inner 1 (node-line elem (lc 'line)))
-        (let (rest:&Val (emit-qq-list (lc 'cdr) scope level)
-              tmp:StrView (new-tmp))
-          (emit g-body-stream "  " tmp " = call ptr @__append(ptr " (a 'val) ", ptr " (rest 'val)
-                ")\n")
-          (return (alloc-val (ty-raw-node) tmp)))))
-    (let (head:&Val (emit-qq-form elem scope level)
-          tail:&Val (emit-qq-list (lc 'cdr) scope level)
-          tmp:StrView (new-tmp))
-      (emit g-body-stream "  " tmp " = call ptr @__cons(ptr " (head 'val) ", ptr " (tail 'val)
-            ")\n")
-      (return (alloc-val (ty-raw-node) tmp)))))
+        acc:StrView (new-tmp))
+    (emit g-body-stream "  " acc " = call ptr @node-list-new(i32 0)\n")
+    (dotimes (i (node-len lc))
+      (let (elem:(raw Node) (node-at lc i))
+        (if (and (= level 1) (!= (qq-is-tagged elem 'unquote-splice) 0))
+          (let (inner:(raw Node) (node-at elem 1)
+                a:&Val (emit-node inner scope))
+            (qq-require-node-operand (as raw:Val a) inner 1 (node-line elem (lc 'line)))
+            (emit g-body-stream "  call void @node-extend(ptr " acc ", ptr " (a 'val) ")\n"))
+          (let (head:&Val (emit-qq-form elem scope level))
+            (emit g-body-stream "  call void @node-push(ptr " acc ", ptr " (head 'val) ")\n")))))
+    (return (alloc-val (ty-raw-node) acc))))
 
 (defn emit-qq-form (form:(raw Node) scope:&Scope level:i32):&Val
   (when (= form null) (return (alloc-val (ty-raw-node) "null")))
   (let (fn:(raw Node) form)
-    (when (!= (fn 'kind) NODE-CELL)
+    (when (!= (fn 'kind) NODE-LIST)
       (let (tree:StrView (emit-quote-tree form))
         (return (alloc-val (ty-raw-node) tree))))
     ; An inner backtick is data at every level, and raises the level its operand
@@ -2814,7 +2827,7 @@
       (let (bn:Symbol (node-binding-name test))
         (when (not (symbol-none? bn)) (conj out bn)))
       (return))
-    (when (!= (nn 'kind) NODE-CELL) (return))
+    (when (!= (nn 'kind) NODE-LIST) (return))
     (let (head:(raw Node) (node-at test 0))
       (when (or (= head null) (!= (head 'kind) NODE-SYM)) (return))
       (let (h:Symbol (head 's))
@@ -2844,7 +2857,7 @@
 (defn test-false-nonnull (test:(raw Node) out:&(Vector Symbol)):void
   (when (= test null) (return))
   (let (nn:(raw Node) test)
-    (when (!= (nn 'kind) NODE-CELL) (return))
+    (when (!= (nn 'kind) NODE-LIST) (return))
     (let (head:(raw Node) (node-at test 0))
       (when (or (= head null) (!= (head 'kind) NODE-SYM)) (return))
       (let (h:Symbol (head 's))
@@ -2881,7 +2894,7 @@
 (defn prescan-kill-sets (n:(raw Node) scope:&Scope):void
   (when (= n null) (return))
   (let (nn:(raw Node) n)
-    (when (!= (nn 'kind) NODE-CELL) (return))
+    (when (!= (nn 'kind) NODE-LIST) (return))
     (let (head:(raw Node) (node-at n 0))
       (when (and (!= head null)
                  (= (head 'kind) NODE-SYM) (= (head 's) "set!"))
@@ -2892,9 +2905,9 @@
                 (when (and (!= sym null) (!= (sym 'ntype) null))
                   (narrow-kill sym))))))))
     (let (cur:(raw Node) n)
-      (while (!= cur null)
-        (prescan-kill-sets (cur 'car) scope)
-        (set! cur (cur 'cdr))))))
+      (while (> (node-len cur) 0)
+        (prescan-kill-sets (node-first cur) scope)
+        (set! cur (node-rest cur))))))
 
 ; --- escape analysis helpers (lifecycle.md §2–3) ---
 
@@ -3861,7 +3874,7 @@
   (when (= n null) (return 0))
   (let (nn:(raw Node) n)
     (when (= (nn 'kind) NODE-INT) (return 1))
-    (when (= (nn 'kind) NODE-CELL)
+    (when (= (nn 'kind) NODE-LIST)
       (let (e:(raw Node) (macroexpand-form n -1))
         (when (and (!= e null) (= (e 'kind) NODE-INT)) (return 1))))
     (return 0)))
@@ -3877,7 +3890,7 @@
   (when (= n null) (return 0))
   (let (nn:(raw Node) n)
     (when (= (nn 'kind) NODE-FLOAT) (return 1))
-    (when (= (nn 'kind) NODE-CELL)
+    (when (= (nn 'kind) NODE-LIST)
       (let (e:(raw Node) (macroexpand-form n -1))
         (when (and (!= e null) (= (e 'kind) NODE-FLOAT)) (return 1))))
     (return 0)))
@@ -3904,9 +3917,9 @@
     ; cell `(* K)`, never the bare symbol. Without this the fix worked in
     ; operand-1 position and silently did not in operand-2 position, exactly
     ; the order-dependence W2a existed to remove.
-    (when (= (nn 'kind) NODE-CELL)
+    (when (= (nn 'kind) NODE-LIST)
       (let (e:(raw Node) (macroexpand-form n -1))
-        (when (or (= e null) (= (e 'kind) NODE-CELL)) (return 0))
+        (when (or (= e null) (= (e 'kind) NODE-LIST)) (return 0))
         (set! nn e)))
     (when (!= (nn 'kind) NODE-SYM) (return 0))
     ; Strip a trailing :type annotation the same way emit-symbol-ref does, so
@@ -4857,11 +4870,11 @@
 ; file list (`s` = prefix, `car` = path).
 (defn unit-prefix-path (spelling:Symbol n:usize):Symbol
   (let (cur:ptr g-import-prefixes)
-    (while (!= cur null)
-      (let (e:ptr:Node (unsafe/cast &Node cur))
+    (while (> (node-len cur) 0)
+      (let (e:ptr:Node (unsafe/cast &Node (node-first (unsafe/cast &Node cur))))
         (when (!= (qualifier-eq spelling (symbol-as-view (e 's)) n) 0)
           (return (cell-aux e)))
-        (set! cur (e 'cdr)))))
+        (set! cur (node-rest (unsafe/cast &Node cur))))))
   (return (symbol-none)))
 
 ; Record what one import form bound in the file that wrote it. `prefix` is null
@@ -6097,7 +6110,7 @@
 (defn selector-literal-sym (node:(raw Node)):(raw Node)
   (when (= node null) (return null))
   (let (nn:(raw Node) node)
-    (when (and (= (nn 'kind) NODE-CELL) (= (node-len node) 2))
+    (when (and (= (nn 'kind) NODE-LIST) (= (node-len node) 2))
       (when (= (node-at node 0) 'quote)
         (let (inner:(raw Node) (node-at node 1))
           (when (= (inner 'kind) NODE-SYM) (return inner)))))
@@ -6469,6 +6482,16 @@
 ; else a single literal-symbol arg is the raw `_get` field intrinsic. A plain
 ; struct (no invoke, no custom get) therefore lands on the field intrinsic with the
 ; same IR as before this change.
+; Does this selector name a field of the callee's struct? Side-effect-free, and
+; asked before any argument is emitted, like `generic-has-receiver-method`.
+(defn callee-selects-field (ct:(raw Type) sel-node:(raw Node)):i32
+  (let (sym:(raw Node) (selector-literal-sym sel-node))
+    (when (= sym null) (return 0))
+    (let (sd:?ptr:StructDef (access-receiver-sdef ct))
+      (when (= sd null) (return 0))
+      (when (= (struct-field-ref (as ptr sd) (sym 's)) null) (return 0))
+      (return 1))))
+
 (defn emit-callable-value (n:(raw Node) scope:&Scope callee-val:(raw Val)):&Val
   (let (nargs:i32 (- (node-len n) 1)
         ct:(raw Type) (callee-val 'type))
@@ -6481,7 +6504,7 @@
     ; function or a binding anywhere, so a real call can never take this shape.
     (when (= nargs 1)
       (let (a:(raw Node) (node-at n 1))
-        (when (and (!= a null) (= (a 'kind) NODE-CELL))
+        (when (and (!= a null) (= (a 'kind) NODE-LIST))
           (let (ah:(raw Node) (node-at (as ptr a) 0))
             (when (and (!= ah null)
                        (= (ah 'kind) NODE-SYM)
@@ -6501,6 +6524,12 @@
     ; otherwise — the compiler has no box value.
     (when (!= (boxedfn-canonical ct) null)
       (return (emit-invoke-with-callee n scope callee-val 1 nargs)))
+    ; A LITERAL selector naming a field of the receiver is a field access even
+    ; when the type also has an `invoke`: `Node` conforms to `Seq`, so `(n i)`
+    ; indexes while `(n 'kind)` must still read the field
+    ; (design/stage21-cleanup/ast-as-collection.md §8.4).
+    (when (and (= nargs 1) (!= (callee-selects-field ct (node-at n 1)) 0))
+      (return (emit-get-with-callee n scope callee-val (node-at n 1))))
     ; invoke takes precedence: any callee whose type has an `invoke` method treats
     ; the arg(s) as values (so `(v idx)` indexes, not a field-named-`idx` get).
     (when (!= (generic-has-receiver-method (generic-lookup (symbol-intern "invoke")) ct) 0)
@@ -7334,13 +7363,13 @@
           (when (< nargs fixed)
             (die-at (cc 'line)
               (fstr (ss 'name) ": too few args for :rest function")))
-          ; Build list right-to-left: prev = null; for i = nargs-1..fixed:
-          ;   cell = make-cell(arg-as-ptr, prev, 0); prev = cell.
+          ; Build the list left to right: node-list-new, then one node-push per
+          ; trailing argument, its value widened to a pointer.
           (require-node-runtime (cc 'line) "a :rest call")
-          (let (prev-name:StrView "null"
-                ri:i32 nargs)
-            (while (> ri fixed)
-              (set! ri (- ri 1))
+          (let (lst-name:StrView (new-tmp)
+                ri:i32 fixed)
+            (emit g-body-stream "  " lst-name " = call ptr @node-list-new(i32 0)\n")
+            (while (< ri nargs)
               (let (av:ptr:Val (as &Val (unsafe/ptr+ (as &Val args) ri))
                     av-val:StrView (av 'val)
                     aty:ptr:Type (unsafe/cast &Type (av 'type)))
@@ -7369,14 +7398,12 @@
                     (emit g-body-stream "  " tmp " = inttoptr " (type-to-ir (as ptr aty)) " "
                           av-val " to ptr\n")
                     (set! av-val tmp)))
-                (let (cell:StrView (new-tmp))
-                  (emit g-body-stream "  " cell " = call ptr @make-cell(ptr " av-val ", ptr "
-                        prev-name ", i32 0)\n")
-                  (set! prev-name cell))))
+                (emit g-body-stream "  call void @node-push(ptr " lst-name ", ptr " av-val ")\n"))
+              (inc! ri))
             ; Place list ptr as the trailing arg slot at index `fixed`.
             (let (slot:ptr:Val (as &Val (unsafe/ptr+ (as &Val args) fixed)))
               (set! (slot 'type) ty-ptr)
-              (set! (slot 'val) prev-name))
+              (set! (slot 'val) lst-name))
             (set! eff-nargs (+ fixed 1)))))
       ; Stage 8 implicit casts: coerce each fixed argument whose IR type differs
       ; from its parameter's via safe-coerce-val (int widen, f32→f64, defcast).
@@ -7496,7 +7523,7 @@
 (defn is-libc-alloc (node:(raw Node)):i32
   (when (= node null) (return 0))
   (let (n:(raw Node) node)
-    (when (!= (n 'kind) NODE-CELL) (return 0))
+    (when (!= (n 'kind) NODE-LIST) (return 0))
     (when (< (node-len node) 1) (return 0))
     (let (head:(raw Node) (node-at node 0))
       (when (!= (head 'kind) NODE-SYM) (return 0))
@@ -7633,10 +7660,10 @@
 ; by strcmp rather than the pointer `=` import-list-has uses.
 (defn fn-bound-has (list:(raw Node) name:Symbol):i32
   (let (cur:(raw Node) list)
-    (while (!= cur null)
-      (let (entry:(raw Node) cur)
+    (while (> (node-len cur) 0)
+      (let (entry:(raw Node) (node-first cur))
         (when (= (entry 's) (symbol-as-view name)) (return 1))
-        (set! cur (entry 'cdr))))
+        (set! cur (node-rest cur))))
     (return 0)))
 
 ; Add every binding name introduced by a let/with binding list (the even-indexed
@@ -7721,7 +7748,7 @@
                   (set! @cap-box (import-list-push head name))))))
           0))
       (return))
-    (when (!= (nn 'kind) NODE-CELL) (return))
+    (when (!= (nn 'kind) NODE-LIST) (return))
     (let (hd:ptr:Node (unsafe/cast &Node (node-at node 0)))
       ; A non-symbol head (e.g. ((mk) 3)) — walk every element generically.
       (when (or (= (as ptr hd) null) (!= (hd 'kind) NODE-SYM))
@@ -7787,7 +7814,7 @@
   (let (nn:(raw Node) node)
     (when (= (nn 'kind) NODE-KEYWORD) (return (parse-type-name (nn 's) line)))
     (when (= (nn 'kind) NODE-SYM) (return (parse-type-from-node node line)))
-    (when (= (nn 'kind) NODE-CELL) (return (parse-type-from-node node line)))
+    (when (= (nn 'kind) NODE-LIST) (return (parse-type-from-node node line)))
     (die-at line "fn: malformed return type")))
 
 ; Stage 13 L3: emit an anonymous function `(fn (params):ret body…)`.
@@ -7862,11 +7889,11 @@
               ; Body tail: the cons cell whose car is the first body form. The fn
               ; form is (fn . (params . (ret . body…))), so the body sublist is
               ; the cdr of the cdr of the cdr of the head cell.
-              (let (body-list:ptr (-> cc (_ 'cdr) (_ 'cdr) (_ 'cdr))
-                    after-ret:ptr (make-cell (intern-node (type-spelling ret)) body-list line)
-                    after-params:ptr (make-cell params-node after-ret line)
-                    after-name:ptr (make-cell (intern-node lifted) after-params line)
-                    defn-form:ptr (make-cell 'defn after-name line))
+              (let (body-list:ptr (-> cc (node-rest _) (node-rest _) (node-rest _))
+                    after-ret:ptr (node-cons (intern-node (type-spelling ret)) body-list line)
+                    after-params:ptr (node-cons params-node after-ret line)
+                    after-name:ptr (node-cons (intern-node lifted) after-params line)
+                    defn-form:ptr (node-cons 'defn after-name line))
                 (conj g-mono-worklist
                       (mono-job-here defn-form
                         (fstr "while emitting lambda " lifted " (defined at " g-source-path ":"
@@ -7913,9 +7940,9 @@
 (defn fn-caps-count (caps:(raw Node)):i32
   (let (n:i32 0
         cur:(raw Node) caps)
-    (while (!= cur null)
+    (while (> (node-len cur) 0)
       (inc! n)
-      (set! cur (cur 'cdr)))
+      (set! cur (node-rest cur)))
     (return n)))
 
 ; Depth of a Scope* in the lexical chain (root = 1). Used by the cfn region
@@ -7953,18 +7980,18 @@
 ; bare symbol there is what dot-forms.md is retiring, and no source migration
 ; can reach a cell that is built rather than read.
 (defn quoted-selector (sym:ptr line:i32):ptr
-  (return (make-cell (as ptr (intern-node (symbol-intern "quote")))
-                     (make-cell sym null line) line)))
+  (return (node-list2 (as ptr (intern-node (symbol-intern "quote")))
+            sym line)))
 
 ; `(set! <place> <v>)`. A synthesized write goes back through emit-node, so it
 ; has to be spelled the way source is now that the three writers are retired.
 (defn set-place-cell (place:ptr v:ptr line:i32):ptr
-  (return (make-cell (as ptr (intern-node (symbol-intern "set!")))
-                     (make-cell place (make-cell v null line) line) line)))
+  (return (node-list3 (as ptr (intern-node (symbol-intern "set!")))
+            place v line)))
 
 ; `(recv 'f)` — head position, the member place `.set!` used to take apart.
 (defn member-place-cell (recv:ptr sel:ptr line:i32):ptr
-  (return (make-cell recv (make-cell sel null line) line)))
+  (return (node-list2 recv sel line)))
 
 (defn fn-rewrite-captures (node:(raw Node) caps:(raw Node) bound:(raw Node) self-sym:(raw Node) line:i32 mode:i32):ptr
   (when (= node null) (return null))
@@ -7983,21 +8010,16 @@
           ; (vfn/mfn): the field holds the value — (_get self 'name).
           (if (= mode 2)
             (let (field-access:ptr
-                    (make-cell (intern-node (symbol-intern "_get"))
-                      (make-cell self-sym
-                        (make-cell (quoted-selector (as ptr (intern-node name)) line) null line)
-                        line)
-                      line))
-              (return (make-cell (intern-node (symbol-intern "deref"))
-                        (make-cell field-access null line)
-                        line)))
-            (return (make-cell (intern-node (symbol-intern "_get"))
-                      (make-cell self-sym
-                        (make-cell (quoted-selector (as ptr (intern-node name)) line) null line)
-                        line)
-                      line)))))
+                    (node-list3 (intern-node (symbol-intern "_get"))
+                      self-sym
+                      (quoted-selector (as ptr (intern-node name)) line) line))
+              (return (node-list2 (intern-node (symbol-intern "deref"))
+                        field-access line)))
+            (return (node-list3 (intern-node (symbol-intern "_get"))
+                      self-sym
+                      (quoted-selector (as ptr (intern-node name)) line) line)))))
       (return node))
-    (when (!= (nn 'kind) NODE-CELL) (return node))
+    (when (!= (nn 'kind) NODE-LIST) (return node))
     (let (hd:ptr:Node (unsafe/cast &Node (node-at node 0)))
       ; Non-symbol head — rewrite every element.
       (when (or (= (as ptr hd) null) (!= (hd 'kind) NODE-SYM))
@@ -8023,25 +8045,19 @@
                            (= (fn-bound-has bound oname) 0)
                            (!= (fn-bound-has caps oname) 0))
                   (if (= mode 2)
-                    (return (make-cell (intern-node (symbol-intern "_get"))
-                              (make-cell self-sym
-                                (make-cell (quoted-selector (as ptr (intern-node oname)) line) null line)
-                                line)
-                              line))
-                    (return (make-cell (intern-node (symbol-intern "ref"))
-                              (make-cell self-sym
-                                (make-cell (quoted-selector (as ptr (intern-node oname)) line) null line)
-                                line)
-                              line))))))))
+                    (return (node-list3 (intern-node (symbol-intern "_get"))
+                              self-sym
+                              (quoted-selector (as ptr (intern-node oname)) line) line))
+                    (return (node-list3 (intern-node (symbol-intern "ref"))
+                              self-sym
+                              (quoted-selector (as ptr (intern-node oname)) line) line))))))))
         ; Field access: index-2 operand is a literal field name; rewrite only the
         ; subject (index 1) and rebuild around the verbatim field name.
         (when (= h "_get")
           (let (subj:ptr (fn-rewrite-captures (node-at node 1) caps bound self-sym line mode))
-            (return (make-cell hd
-                      (make-cell subj
-                        (make-cell (node-at node 2) null line)
-                        line)
-                      line))))
+            (return (node-list3 hd
+                      subj
+                      (node-at node 2) line))))
         ; set! on a captured name: rewrite to a field store so that mutations
         ; of the capture persist across invoke calls (mode 0/1) or write back
         ; through the captured pointer (mode 2 cfn).
@@ -8063,15 +8079,13 @@
                   (let (val-rw:ptr (fn-rewrite-captures (node-at node 2) caps bound self-sym line mode)
                         cname-sym:ptr (as ptr (intern-node cname))
                         field-access:ptr
-                          (make-cell (intern-node (symbol-intern "_get"))
-                            (make-cell self-sym
-                              (make-cell (quoted-selector cname-sym line) null line)
-                              line)
-                            line))
+                          (node-list3 (intern-node (symbol-intern "_get"))
+                            self-sym
+                            (quoted-selector cname-sym line) line))
                     (if (= mode 2)
                       (return (set-place-cell
-                                (make-cell (intern-node (symbol-intern "deref"))
-                                  (make-cell field-access null line) line)
+                                (node-list2 (intern-node (symbol-intern "deref"))
+                                  field-access line)
                                 val-rw line))
                       (return (set-place-cell
                                 (member-place-cell self-sym
@@ -8099,43 +8113,32 @@
                         cname-sym:ptr (as ptr (intern-node cname)))
                     (if (= mode 2)
                       (let (fa1:ptr
-                              (make-cell (intern-node (symbol-intern "_get"))
-                                (make-cell self-sym
-                                  (make-cell (quoted-selector cname-sym line) null line)
-                                  line)
-                                line)
+                              (node-list3 (intern-node (symbol-intern "_get"))
+                                self-sym
+                                (quoted-selector cname-sym line) line)
                             fa2:ptr
-                              (make-cell (intern-node (symbol-intern "_get"))
-                                (make-cell self-sym
-                                  (make-cell (quoted-selector cname-sym line) null line)
-                                  line)
-                                line)
+                              (node-list3 (intern-node (symbol-intern "_get"))
+                                self-sym
+                                (quoted-selector cname-sym line) line)
                             deref-node:ptr
-                              (make-cell (intern-node (symbol-intern "deref"))
-                                (make-cell fa2 null line)
-                                line)
+                              (node-list2 (intern-node (symbol-intern "deref"))
+                                fa2 line)
                             arith:ptr
-                              (make-cell op-sym
-                                (make-cell deref-node
-                                  (make-cell (fn-make-int-node 1) null line)
-                                  line)
-                                line))
+                              (node-list3 op-sym
+                                deref-node
+                                (fn-make-int-node 1) line))
                         (return (set-place-cell
-                                  (make-cell (intern-node (symbol-intern "deref"))
-                                    (make-cell fa1 null line) line)
+                                  (node-list2 (intern-node (symbol-intern "deref"))
+                                    fa1 line)
                                   arith line)))
                       (let (read-field:ptr
-                              (make-cell (intern-node (symbol-intern "_get"))
-                                (make-cell self-sym
-                                  (make-cell (quoted-selector cname-sym line) null line)
-                                  line)
-                                line)
+                              (node-list3 (intern-node (symbol-intern "_get"))
+                                self-sym
+                                (quoted-selector cname-sym line) line)
                             arith:ptr
-                              (make-cell op-sym
-                                (make-cell read-field
-                                  (make-cell (fn-make-int-node 1) null line)
-                                  line)
-                                line))
+                              (node-list3 op-sym
+                                read-field
+                                (fn-make-int-node 1) line))
                         (return (set-place-cell
                                   (member-place-cell self-sym
                                     (quoted-selector cname-sym line) line)
@@ -8148,9 +8151,8 @@
               (let (inner-bound:ptr (fn-bind-let-names binds bound)
                     new-binds:ptr (fn-rewrite-let-binds binds caps bound self-sym line mode)
                     new-body:ptr (fn-rewrite-list-from node 2 caps inner-bound self-sym line mode))
-                (return (make-cell hd
-                          (make-cell new-binds new-body line)
-                          line))))
+                (return (node-cons hd
+                          (node-cons new-binds new-body line) line))))
             ; A malformed binding list is left to the real emit to diagnose.
             (return node)))
         ; Nested lambda: rewrite its body with the inner params added to `bound`
@@ -8161,9 +8163,8 @@
             (when (node-is-list params)
               (let (inner-bound:ptr (fn-bind-param-names params bound)
                     new-body:ptr (fn-rewrite-list-from node 2 caps inner-bound self-sym line mode))
-                (return (make-cell hd
-                          (make-cell params new-body line)
-                          line))))
+                (return (node-cons hd
+                          (node-cons params new-body line) line))))
             (return node)))
         ; Ordinary form. The head is rewritten too, for the reason fn-capture-walk
         ; walks it: head position is a value position (member-access receiver,
@@ -8174,16 +8175,12 @@
 ; returning a fresh spine. Used for non-symbol-head forms.
 (defn fn-rewrite-list (node:(raw Node) start:i32 caps:(raw Node) bound:(raw Node) self-sym:(raw Node) line:i32 mode:i32):ptr
   (let (n:i32 (node-len node)
-        head:ptr null
-        tail:ptr null
+        b:&Node (node-list-new line)
         i:i32 start)
     (while (< i n)
-      (let (e:ptr (fn-rewrite-captures (node-at node i) caps bound self-sym line mode)
-            cell:ptr (make-cell e null line))
-        (if (= head null) (set! head cell) (set! ((unsafe/cast &Node tail) 'cdr) cell))
-        (set! tail cell))
+      (node-push b (fn-rewrite-captures (node-at node i) caps bound self-sym line mode))
       (inc! i))
-    (return head)))
+    (return (as ptr (node-list-done b)))))
 
 ; A fresh body spine from index `start` (used for let/with/nested-lambda bodies).
 (defn fn-rewrite-list-from (node:(raw Node) start:i32 caps:(raw Node) bound:(raw Node) self-sym:(raw Node) line:i32 mode:i32):ptr
@@ -8194,16 +8191,12 @@
 ; the pre-binding `bound` set, matching fn-capture-walk's init handling).
 (defn fn-rewrite-let-binds (binds:(raw Node) caps:(raw Node) bound:(raw Node) self-sym:(raw Node) line:i32 mode:i32):ptr
   (let (n:i32 (node-len binds)
-        head:ptr null
-        tail:ptr null)
+        b:&Node (node-list-new line))
     (dotimes (i n)
-      (let (e:ptr (if (= (% i 2) 0)
-                    (unsafe/cast ptr (node-at binds i))
-                    (fn-rewrite-captures (node-at binds i) caps bound self-sym line mode))
-            cell:ptr (as ptr (make-cell e null line)))
-        (if (= head null) (set! head cell) (set! ((unsafe/cast &Node tail) 'cdr) cell))
-        (set! tail cell)))
-    (return head)))
+      (node-push b (if (= (% i 2) 0)
+                     (unsafe/cast ptr (node-at binds i))
+                     (fn-rewrite-captures (node-at binds i) caps bound self-sym line mode))))
+    (return (as ptr (node-list-done b)))))
 
 ; Build a `(ref <Env>)` Type from the env StructDef.
 (defn fn-env-ref-type (sd:(raw StructDef)):ptr
@@ -8250,10 +8243,9 @@
       (when (!= has-alloc 0)
         (set! (aref (as &Symbol fnm) 0) (symbol-intern "__alloc"))
         (set! (aref (as &ptr ftp) 0) alloc-field-ty))
-      (let (i:i32 0
-            cur:(raw Node) caps)
-        (while (!= cur null)
-          (let (cname:Symbol (cur 's))
+      (dotimes (i ncaps)
+        (let (crec:ptr:Node (unsafe/cast &Node (node-at caps i)))
+          (let (cname:Symbol (crec 's))
             (if-some (csym (scope-lookup scope cname))
               (do
                 (let (fty:ptr (sym-effective-type csym))
@@ -8267,9 +8259,7 @@
                       (set! fty (as ptr pt))))
                   (set! (aref (as &Symbol fnm) (+ off i)) cname)
                   (set! (aref (as &ptr ftp) (+ off i)) fty)))
-              (die-at line (fstr "vfn: internal — capture '" cname "' not in scope")))
-            (inc! i)
-            (set! cur (cur 'cdr)))))
+              (die-at line (fstr "vfn: internal — capture '" cname "' not in scope"))))))
       (struct-set-fields sd fnm ftp nf)
       ; R4: under the REPL the type buffer is what the session carries forward,
       ; and the `invoke` body naming this env is drained into a LATER module
@@ -8309,25 +8299,22 @@
       ; Synthesized params: (self (ref Env)) prepended to the original param
       ; specs. The receiver uses the list form so the env name (which never
       ; contains a colon) is parsed as a type node, not colon-sugar.
-      (let (env-ref-node:ptr (make-cell (intern-node (symbol-intern "ref"))
-                               (make-cell (intern-node (env-sd 'name))
-                                 null line)
-                               line)
-            self-spec:ptr (make-cell self-sym
-                            (make-cell env-ref-node null line)
-                            line)
+      (let (env-ref-node:ptr (node-list2 (intern-node (symbol-intern "ref"))
+                               (intern-node (env-sd 'name)) line)
+            self-spec:ptr (node-list2 self-sym
+                            env-ref-node line)
             ; Prepend the `self` spec to the ENTIRE original param spine, so the
             ; synthesized params are ((self (ref Env)) p0 p1 …). params-node is a
-            ; NODE-CELL whose own spine is the original params; cons self in front.
-            new-params:ptr (make-cell self-spec params-node line)
+            ; NODE-LIST whose own spine is the original params; cons self in front.
+            new-params:ptr (node-cons self-spec params-node line)
             name-sym:ptr (as ptr (intern-node (symbol-intern "invoke")))
             ret-node:ptr (as ptr (intern-node (type-spelling ret)))
             defn-sym:ptr (as ptr (intern-node (symbol-intern "defn")))
             ; New-style: (defn invoke (params) <ret> body…).
-            after-ret:ptr (make-cell ret-node body2 line)
-            after-params:ptr (make-cell new-params after-ret line)
-            after-name:ptr (make-cell name-sym after-params line)
-            defn-form:ptr (make-cell defn-sym after-name line))
+            after-ret:ptr (node-cons ret-node body2 line)
+            after-params:ptr (node-cons new-params after-ret line)
+            after-name:ptr (node-cons name-sym after-params line)
+            defn-form:ptr (node-cons defn-sym after-name line))
         ; Register the method (METHOD-USER on the `invoke` generic) and assign a
         ; deterministic mangled ir-name. defn-ir-name finds this method at emit
         ; time and returns the same name, so the define and the call agree.
@@ -8371,75 +8358,58 @@
       ; cfn: free the env block through the stored allocator handle.
       (let (alloc-sym:ptr (as ptr (intern-node (symbol-intern "__alloc")))
             ; (_get self '__alloc) → the stored (ref AllocHandle).
-            handle-access:ptr (make-cell (intern-node (symbol-intern "_get"))
-                                  (make-cell self-sym
-                                    (make-cell (quoted-selector alloc-sym line) null line)
-                                    line)
-                                  line)
+            handle-access:ptr (node-list3 (intern-node (symbol-intern "_get"))
+                                self-sym
+                                (quoted-selector alloc-sym line) line)
             ; (unsafe/cast (raw ui8) self) — self is (ptr Env); reinterpret as
             ; (raw ui8) (both lower to ptr; unsafe/cast is a no-IR reinterpret).
-            raw-ty:ptr (make-cell (intern-node (symbol-intern "raw"))
-                          (make-cell (intern-node (symbol-intern "ui8")) null line)
-                          line)
+            raw-ty:ptr (node-list2 (intern-node (symbol-intern "raw"))
+                         (intern-node (symbol-intern "ui8")) line)
             ; Stage 14 UN-5: bare "cast" is retired — synthesize the
             ; `unsafe/cast` spelling instead (D2 Class 1: identical emitter).
-            raw-self:ptr (make-cell (intern-node (symbol-intern "unsafe/cast"))
-                            (make-cell raw-ty
-                              (make-cell self-sym null line)
-                              line)
-                            line)
+            raw-self:ptr (node-list3 (intern-node (symbol-intern "unsafe/cast"))
+                           raw-ty
+                           self-sym line)
             ; (sizeof Env) — the block size, matching the alloc-handle-alloc call.
-            sizeof-node:ptr (make-cell (intern-node (symbol-intern "sizeof"))
-                              (make-cell (intern-node (sd 'name)) null line)
-                              line)
+            sizeof-node:ptr (node-list2 (intern-node (symbol-intern "sizeof"))
+                              (intern-node (sd 'name)) line)
             ; 8 — pointer alignment of the env block. Stage 14 UN-5: bare "cast"
             ; is retired — synthesize `unsafe/cast` (same emitter as before).
-            align-node:ptr (make-cell (intern-node (symbol-intern "unsafe/cast"))
-                            (make-cell (intern-node (symbol-intern "usize"))
-                              (make-cell (fn-make-int-node 8) null line)
-                              line)
-                            line)
-            freecall:ptr (make-cell (intern-node (symbol-intern "alloc-handle-free"))
-                            (make-cell handle-access
-                              (make-cell raw-self
-                                (make-cell sizeof-node
-                                  (make-cell align-node null line)
-                                  line)
-                                line)
-                              line)
-                            line))
-        (set! body (make-cell freecall null line)))
+            align-node:ptr (node-list3 (intern-node (symbol-intern "unsafe/cast"))
+                             (intern-node (symbol-intern "usize"))
+                             (fn-make-int-node 8) line)
+            freecall:ptr (node-list5 (intern-node (symbol-intern "alloc-handle-free"))
+                           handle-access
+                           raw-self
+                           sizeof-node
+                           align-node line))
+        (set! body (node-list1 freecall line)))
       ; vfn/mfn: reverse-order (drop (ref self 'fK)) over the Drop fields. Built
       ; head-first by prepending in forward order → final spine is reverse order.
       (dotimes (k nf)
         (let (fty:ptr ((field-at (sd 'fields) k) 'type))
           (when (!= (type-conforms-drop fty) 0)
                 (let (fname:Symbol ((field-at (sd 'fields) k) 'name)
-                                addr:ptr (make-cell (intern-node (symbol-intern "ref"))
-                                                    (make-cell self-sym
-                                                               (make-cell (quoted-selector (as ptr (intern-node fname)) line) null line)
-                                                               line)
-                                                    line)
-                                dropcall:ptr (make-cell (intern-node (symbol-intern "drop"))
-                                                        (make-cell addr null line)
-                                                        line))
-                  (set! body (make-cell dropcall body line)))))))
+                                addr:ptr (node-list3 (intern-node (symbol-intern "ref"))
+                                           self-sym
+                                           (quoted-selector (as ptr (intern-node fname)) line) line)
+                                dropcall:ptr (node-list2 (intern-node (symbol-intern "drop"))
+                                               addr line))
+                  (set! body (node-cons dropcall body line)))))))
     ; Synthesize (defn drop:void ((self (ptr Env))) body…).
-    (let (env-ptr-node:ptr (make-cell (intern-node (symbol-intern "ptr"))
-                             (make-cell (intern-node (sd 'name)) null line)
-                             line)
-          self-spec:ptr (make-cell self-sym
-                           (make-cell env-ptr-node null line)
-                           line)
-          new-params:ptr (make-cell self-spec null line)
+    (let (env-ptr-node:ptr (node-list2 (intern-node (symbol-intern "ptr"))
+                             (intern-node (sd 'name)) line)
+          self-spec:ptr (node-list2 self-sym
+                          env-ptr-node line)
+          new-params:ptr (node-list1 self-spec line)
           name-sym:ptr (as ptr (intern-node (symbol-intern "drop")))
           ret-node:ptr (as ptr (intern-node (symbol-intern "void")))
           defn-sym:ptr (as ptr (intern-node (symbol-intern "defn")))
           ; New-style: (defn drop (params) void body…).
-          after-ret:ptr (make-cell ret-node body line)
-          after-params:ptr (make-cell new-params after-ret line)
-          after-name:ptr (make-cell name-sym after-params line)
-          defn-form:ptr (make-cell defn-sym after-name line)
+          after-ret:ptr (node-cons ret-node body line)
+          after-params:ptr (node-cons new-params after-ret line)
+          after-name:ptr (node-cons name-sym after-params line)
+          defn-form:ptr (node-cons defn-sym after-name line)
           self-ptr-ty:ptr (fn-env-ptr-type env-sd)
           mtypes:ptr (arena-alloc (ptr-bytes)))
       (set! (aref (as &ptr mtypes) 0) self-ptr-ty)
@@ -8940,7 +8910,7 @@
       (let (ahsym:?ptr:Sym (scope-lookup scope (symbol-intern "alloc-handle-alloc")))
         (when (= ahsym null)
           (die-at line "BoxedFn: boxing a function requires (import-use allocator)"))
-        (let (da-node:ptr (make-cell (intern-node (symbol-intern "default-allocator")) null line)
+        (let (da-node:ptr (node-list1 (intern-node (symbol-intern "default-allocator")) line)
               hv:&Val (emit-node da-node scope)
               blk:StrView (new-tmp))
           (emit g-body-stream "  " blk " = call ptr " ((unsafe/cast &Sym ahsym) 'ir-name)
@@ -9016,11 +8986,10 @@
     (let (ahsym:?ptr:Sym (scope-lookup scope (symbol-intern "alloc-handle-alloc")))
       (when (= ahsym null)
         (die-at line "type-erasure: boxing a value requires (import-use allocator)"))
-      (let (da-node:ptr (make-cell (intern-node (symbol-intern "default-allocator")) null line)
+      (let (da-node:ptr (node-list1 (intern-node (symbol-intern "default-allocator")) line)
             hv:&Val (emit-node da-node scope)
-            sz-node:ptr (make-cell (intern-node (symbol-intern "sizeof"))
-                          (make-cell (intern-node struct-name) null line)
-                          line)
+            sz-node:ptr (node-list2 (intern-node (symbol-intern "sizeof"))
+                          (intern-node struct-name) line)
             saved-key-ok:i32 g-type-key-ok
             sz-val:&Val (do (set! g-type-key-ok 1)
                                (let (t:&Val (emit-node sz-node scope))
@@ -9426,9 +9395,8 @@
           (die-at line "cfn: 'alloc-handle-alloc' not in scope — (import-use allocator) is required to use cfn"))
         (let (ah-ir:StrView (ahsym 'ir-name)
               ; sizeof Env as a runtime usize (mirrors emit-sizeof).
-              sz-node:ptr (make-cell (intern-node (symbol-intern "sizeof"))
-                              (make-cell (intern-node (sd 'name)) null line)
-                              line)
+              sz-node:ptr (node-list2 (intern-node (symbol-intern "sizeof"))
+                            (intern-node (sd 'name)) line)
               sz-val:&Val (emit-node sz-node scope)
               blk:StrView (new-tmp))
           ; Allocate the env block through the handle. alloc-handle-alloc is
@@ -9449,14 +9417,13 @@
             ; Per-capture: store `&cap` into field k+1; join the address taints.
             (let (k:i32 0
                   cur:ptr caps)
-              (while (!= cur null)
-                (let (cname:Symbol ((unsafe/cast &Node cur) 's)
+              (while (> (node-len cur) 0)
+                (let (cname:Symbol ((unsafe/cast &Node (node-first cur)) 's)
                       gep:StrView (new-tmp))
                   (emit g-body-stream "  " gep " = getelementptr inbounds %" (sd 'ir-name)
                         ", ptr " blk ", i32 0, i32 " (+ k 1) "\n")
-                  (let (addr-node:ptr (make-cell (intern-node (symbol-intern "ref"))
-                                          (make-cell (as ptr (intern-node cname)) null line)
-                                          line)
+                  (let (addr-node:ptr (node-list2 (intern-node (symbol-intern "ref"))
+                                        (as ptr (intern-node cname)) line)
                         av:&Val (emit-node addr-node scope))
                     (emit g-body-stream "  store ptr " (av 'val) ", ptr " gep ", align 8\n")
                     ; Join the address taint (L1 region inheritance).
@@ -9477,7 +9444,7 @@
                             (set! join-frame 1)
                             (set! join-depth d)))))))
                 (inc! k)
-                (set! cur ((unsafe/cast &Node cur) 'cdr))))
+                (set! cur (node-rest (unsafe/cast &Node cur)))))
             ; The closure value: a (ref Env) into the heap block, carrying the
             ; joined taint so returning it past a captured frame/with local's
             ; scope is rejected at the existing escape sinks.
@@ -9495,8 +9462,8 @@
         (emit g-entry-stream "  " slot " = alloca %" (sd 'ir-name) "\n")
         (let (k:i32 0
               cur:ptr caps)
-          (while (!= cur null)
-            (let (cname:Symbol ((unsafe/cast &Node cur) 's)
+          (while (> (node-len cur) 0)
+            (let (cname:Symbol ((unsafe/cast &Node (node-first cur)) 's)
                   fty:ptr ((field-at (sd 'fields) k) 'type)
                   fty-ir:StrView (type-to-ir fty)
                   gep:StrView (new-tmp))
@@ -9521,12 +9488,9 @@
                         (fstr "vfn cannot clone-capture '" cname "' (type " (type-spelling fty)
                               " is Drop with no Clone); use mfn to move it instead")))
                     (set! @out-owns-drop 1)
-                    (let (clone-node:ptr (make-cell (intern-node (symbol-intern "clone"))
-                                           (make-cell (make-cell (intern-node (symbol-intern "ref"))
-                                                        (make-cell (intern-node cname) null line)
-                                                        line)
-                                                     null line)
-                                           line)
+                    (let (clone-node:ptr (node-list2 (intern-node (symbol-intern "clone"))
+                                           (node-list2 (intern-node (symbol-intern "ref"))
+                                             (intern-node cname) line) line)
                           v:&Val (emit-node clone-node scope)
                           coerced:ptr (coerce-int-val v fty line))
                       (when (= coerced null)
@@ -9552,9 +9516,8 @@
                           (die-at line (fstr "mfn: capture '" cname "' value type mismatch")))
                         (emit g-body-stream "  store " fty-ir " "
                               (-> coerced (as &Val _) (_ 'val)) ", ptr " gep "\n"))
-                      (let (move-node:ptr (make-cell (intern-node (symbol-intern "move"))
-                                              (make-cell (intern-node cname) null line)
-                                              line)
+                      (let (move-node:ptr (node-list2 (intern-node (symbol-intern "move"))
+                                            (intern-node cname) line)
                             v:&Val (emit-move move-node scope)
                             coerced:ptr (coerce-int-val v fty line))
                         (when (= coerced null)
@@ -9563,7 +9526,7 @@
                               (-> coerced (as &Val _) (_ 'val)) ", ptr " gep "\n")))
                     (die-at line (fstr "mfn: internal — capture '" cname "' not in scope"))))))
             (inc! k)
-            (set! cur ((unsafe/cast &Node cur) 'cdr))))
+            (set! cur (node-rest (unsafe/cast &Node cur)))))
         ; A stack compound literal is a valid, non-null (ref Env) address.
         (let (pt:ptr:Type (as &Type (make-type TY-PTR))
               st:ptr:Type (as &Type (make-type TY-STRUCT)))
@@ -9612,8 +9575,8 @@
               (set! (aref (as &Symbol param-names) pi) pname)))
           ; --- Env struct + invoke method ---
           (let (env-sd:ptr (fn-make-env-struct caps-head scope line 0 (as ptr null))
-                body-list:ptr (-> cc (_ 'cdr) (unsafe/cast &Node _) (_ 'cdr)
-                                     (unsafe/cast &Node _) (_ 'cdr))
+                body-list:ptr (-> cc (node-rest _) (unsafe/cast &Node _) (node-rest _)
+                                     (unsafe/cast &Node _) (node-rest _))
                 owns-drop:i32 0)
             (fn-make-invoke-method env-sd caps-head params-node ret
                                    param-types param-names nparams body-list line 0)
@@ -9693,8 +9656,8 @@
               (set! (aref (as &Symbol param-names) pi) pname)))
           ; --- Env struct + invoke method (reused from L4 as-is) ---
           (let (env-sd:ptr (fn-make-env-struct caps-head scope line 1 (as ptr null))
-                body-list:ptr (-> cc (_ 'cdr) (unsafe/cast &Node _) (_ 'cdr)
-                                     (unsafe/cast &Node _) (_ 'cdr))
+                body-list:ptr (-> cc (node-rest _) (unsafe/cast &Node _) (node-rest _)
+                                     (unsafe/cast &Node _) (node-rest _))
                 owns-drop:i32 0)
             (fn-make-invoke-method env-sd caps-head params-node ret
                                    param-types param-names nparams body-list line 1)
@@ -9760,14 +9723,12 @@
         ; rebuild an fn-shaped node (fn params ret body…) and delegate to emit-fn.
         (when (= caps-head null)
           (let (fn-sym:ptr (as ptr (intern-node (symbol-intern "fn")))
-                body-list:ptr (-> cc (_ 'cdr) (unsafe/cast &Node _) (_ 'cdr)
-                                     (unsafe/cast &Node _) (_ 'cdr) (unsafe/cast &Node _) (_ 'cdr)))
+                body-list:ptr (-> cc (node-rest _) (unsafe/cast &Node _) (node-rest _)
+                                     (unsafe/cast &Node _) (node-rest _) (unsafe/cast &Node _) (node-rest _)))
             (return (emit-fn
-                      (make-cell fn-sym
-                        (make-cell params-node
-                          (make-cell ret-node body-list line)
-                          line)
-                        line)
+                      (node-cons fn-sym
+                        (node-cons params-node
+                          (node-cons ret-node body-list line) line) line)
                       scope))))
         ; --- Emit the allocator operand once; validate it is a (ref AllocHandle) ---
         (let (alloc-val:&Val (emit-node alloc-node scope)
@@ -9795,8 +9756,8 @@
                 (set! (aref (as &Symbol param-names) pi) pname)))
             ; --- Env struct (mode 2: __alloc + ptr fields) + invoke (mode 2) ---
             (let (env-sd:ptr (fn-make-env-struct caps-head scope line 2 (alloc-val 'type))
-                  body-list:ptr (-> cc (_ 'cdr) (unsafe/cast &Node _) (_ 'cdr)
-                                     (unsafe/cast &Node _) (_ 'cdr) (unsafe/cast &Node _) (_ 'cdr)))
+                  body-list:ptr (-> cc (node-rest _) (unsafe/cast &Node _) (node-rest _)
+                                     (unsafe/cast &Node _) (node-rest _) (unsafe/cast &Node _) (node-rest _)))
               (fn-make-invoke-method env-sd caps-head params-node ret
                                      param-types param-names nparams body-list line 2)
               ; A cfn always owns its (heap) env storage, so it always conforms to
@@ -9985,8 +9946,8 @@
   ; the binding list's own opening line.
   (let (encl:i32 (node-line (as ptr binds) 0)
         cur:ptr binds)
-    (while (!= cur null)
-      (let (e:ptr ((unsafe/cast &Node cur) 'car))
+    (while (> (node-len cur) 0)
+      (let (e:ptr (node-first (unsafe/cast &Node cur)))
         (when (!= e null)
           (let (en:ptr:Node (unsafe/cast &Node e))
             (when (= (en 'kind) NODE-SYM)
@@ -9995,7 +9956,7 @@
                 (when (and (> elen 0) (= (symbol-byte-at es (as usize (- elen 1))) 58))
                   (die-at (node-line (as ptr en) encl) (fstr "binding name ends in ':' (" es
                                                              ") -- write name:(Type) with no space, or (name Type)"))))))))
-      (set! cur ((unsafe/cast &Node cur) 'cdr)))))
+      (set! cur (node-rest (unsafe/cast &Node cur))))))
 
 ; Stage 15 W4c (design/stage15-stress-test/diagnostics.md §W4c): a let/with BODY
 ; form that is a bare colon-typed symbol is never a meaningful expression — it is
@@ -10128,7 +10089,7 @@
 
 (defn emit-let (call:(raw Node) scope:&Scope):&Val
   (let (cc:ptr:Node (unsafe/cast &Node call))
-    (when (or (< (node-len cc) 2) (-> cc (node-at _ 1) (unsafe/cast &Node _) (_ 'kind) (!= _ NODE-CELL)))
+    (when (or (< (node-len cc) 2) (-> cc (node-at _ 1) (unsafe/cast &Node _) (_ 'kind) (!= _ NODE-LIST)))
       (die-at (cc 'line) "let: bad form"))
     ; AT-1: normalize a leading `:volatile` (etc.) into a wrapped binding name so
     ; the (name value) pairing survives; attribute-free lists pass through
@@ -10237,7 +10198,7 @@
 ; via emit-walk-cleanups in emit-return.
 (defn emit-with (call:(raw Node) scope:&Scope):&Val
   (let (cc:ptr:Node (unsafe/cast &Node call))
-    (when (or (< (node-len cc) 2) (-> cc (node-at _ 1) (unsafe/cast &Node _) (_ 'kind) (!= _ NODE-CELL)))
+    (when (or (< (node-len cc) 2) (-> cc (node-at _ 1) (unsafe/cast &Node _) (_ 'kind) (!= _ NODE-LIST)))
       (die-at (cc 'line) "with: bad form"))
     ; AT-1: normalize the attribute slot (see emit-let); byte-identical when absent.
     (let (binds:ptr:Node (unsafe/cast &Node
@@ -10567,16 +10528,14 @@
 ; The cell the three member-access places delegate on. Its head is only ever a
 ; diagnostic label: emit-field-set is called directly, never through dispatch.
 (defn field-set-cell (recv:(raw Node) sel:(raw Node) v:(raw Node) line:i32):ptr
-  (return (make-cell (intern-node (symbol-intern ".set!"))
-            (make-cell recv (make-cell sel (make-cell v null line) line) line)
-            line)))
+  (return (node-list4 (intern-node (symbol-intern ".set!"))
+            recv sel v line)))
 
 ; `(set recv key v)` — an ordinary call, so a writable collection extends `set!`
 ; through the multimethod machinery rather than a second protocol (dot-forms.md §3).
 (defn set-call-cell (recv:(raw Node) key:(raw Node) v:(raw Node) line:i32):ptr
-  (return (make-cell (intern-node (symbol-intern "set"))
-            (make-cell recv (make-cell key (make-cell v null line) line) line)
-            line)))
+  (return (node-list4 (intern-node (symbol-intern "set"))
+            recv key v line)))
 
 ; The `(set recv key v)` call a member place becomes, or null when the place is a
 ; storage place, or `_get` (the override bypass, which must stay a raw field
@@ -10587,7 +10546,7 @@
 (defn set-place-call (place:(raw Node) v:(raw Node) line:i32 scope:&Scope):ptr
   (when (= place null) (return null))
   (let (pc:ptr:Node (unsafe/cast &Node place))
-    (when (!= (pc 'kind) NODE-CELL) (return null))
+    (when (!= (pc 'kind) NODE-LIST) (return null))
     (let (plen:i32 (node-len place)
           hd:(raw Node) (node-at place 0)
           recv:ptr null
@@ -10627,7 +10586,7 @@
         v:(raw Node) (node-at cc 2))
     ; `()` reads as a null node, so the place judgement has to precede any deref.
     (when (= place null) (die-nonplace place line))
-    (when (!= (pc 'kind) NODE-CELL) (die-nonplace place line))
+    (when (!= (pc 'kind) NODE-LIST) (die-nonplace place line))
     ; A writable collection takes precedence over the field write, which is the
     ; read path's rule with `set` in place of `get`/`invoke`.
     (let (sc:ptr (set-place-call place v line scope))
@@ -10638,17 +10597,14 @@
         (let (h:Symbol ((unsafe/cast &Node hd) 's))
           (when (and (= h "deref") (= plen 2))
             (return (emit-ptr-set
-                      (make-cell (intern-node (symbol-intern "ptr-set!"))
-                        (make-cell (node-at place 1) (make-cell v null line) line)
-                        line)
+                      (node-list3 (intern-node (symbol-intern "ptr-set!"))
+                        (node-at place 1) v line)
                       scope)))
           (when (and (= h "aref") (= plen 3))
             (return (emit-aset
-                      (make-cell (intern-node (symbol-intern "aset!"))
-                        (make-cell (node-at place 1)
-                          (make-cell (node-at place 2) (make-cell v null line) line)
-                          line)
-                        line)
+                      (node-list4 (intern-node (symbol-intern "aset!"))
+                        (node-at place 1)
+                        (node-at place 2) v line)
                       scope)))
           (when (and (or (= h "_get") (= h "get")) (= plen 3))
             (return (emit-member-place (node-at place 1) (node-at place 2) v line scope)))))
@@ -10926,7 +10882,7 @@
 (defn prescan-labels (form:(raw Node)):void
   (when (= form null) (return))
   (let (n:ptr:Node (unsafe/cast &Node form))
-    (when (!= (n 'kind) NODE-CELL) (return))
+    (when (!= (n 'kind) NODE-LIST) (return))
     (when (= (node-len n) 0) (return))
     (let (head:ptr:Node (unsafe/cast &Node (node-at n 0)))
       (when (= (head 'kind) NODE-SYM)
@@ -10939,9 +10895,9 @@
             (when (= (nm 'kind) NODE-SYM)
               (lbl-add-occurrence (nm 's)))))))
     (let (it:ptr:Node n)
-      (while (and (!= (as ptr it) null) (= (it 'kind) NODE-CELL))
-        (prescan-labels (it 'car))
-        (set! it (unsafe/cast &Node (it 'cdr)))))))
+      (while (and (!= (as ptr it) null) (= (it 'kind) NODE-LIST))
+        (prescan-labels (node-first it))
+        (set! it (unsafe/cast &Node (node-rest it)))))))
 
 (defn emit-label (call:(raw Node) scope:&Scope):&Val
   (let (cc:ptr:Node (unsafe/cast &Node call))
@@ -11126,7 +11082,7 @@
         (dotimes (i ninits)
           (let (arg:ptr:Node (unsafe/cast &Node (node-at cc (+ 2 i)))
                 is-designated:i32 0)
-            (when (and (= (arg 'kind) NODE-CELL)
+            (when (and (= (arg 'kind) NODE-LIST)
                        (= (node-len arg) 2)
                        (= ((unsafe/cast &Node (node-at arg 0)) 'kind) NODE-INT))
               (set! is-designated 1))
@@ -11231,7 +11187,7 @@
       (while (< i nargs)
         (let (arg:ptr:Node (unsafe/cast &Node (node-at cc (+ 1 i)))
               is-designated:i32 0)
-          (when (= (arg 'kind) NODE-CELL)
+          (when (= (arg 'kind) NODE-LIST)
             (when (and (= (node-len arg) 2)
                        (= ((unsafe/cast &Node (node-at arg 0)) 'kind) NODE-SYM))
               (set! is-designated 1)))
@@ -11373,8 +11329,8 @@
 ; Run one expansion of a macro call: invoke the JIT-compiled macro function
 ; and return the resulting (ptr Node). Does not desugar or emit IR.
 ; Attribute macro-generated nodes to the call site. Nodes synthesized during
-; expansion (the cons cells built by the __cons/__append quasiquote helpers)
-; carry line 0; spliced user arguments keep their real reader line. Stamping
+; expansion (the lists the quasiquote lowering builds) carry line 0; spliced
+; user arguments keep their real reader line. Stamping
 ; only line-0 nodes fills in the macro's own structure with the call-site line
 ; so downstream errors (e.g. a malformed `cond` from a bad `case`/`if`) point at
 ; the user's code instead of line 0. A non-zero line means the whole subtree is
@@ -11393,9 +11349,11 @@
     (when (= (n 'kind) NODE-SYM) (return))
     (when (!= (n 'line) 0) (return))
     (set! (n 'line) ln)
-    (when (= (n 'kind) NODE-CELL)
-      (stamp-macro-lines (n 'car) ln)
-      (stamp-macro-lines (n 'cdr) ln))))
+    ; By index, not `node-rest`: a rest is a fresh view whose line this walk
+    ; would stamp and then discard, leaving every element past the first unseen.
+    (when (= (n 'kind) NODE-LIST)
+      (dotimes (i (node-len n))
+        (stamp-macro-lines (node-at n i) ln)))))
 
 ; Stage 20 C2/C3 (computed-macro-arguments.md §4.2): `~e` and `~@e` are
 ; evaluations only at the TOP LEVEL of a macro argument. Nested inside one, or
@@ -11416,38 +11374,30 @@
     (when (= found 0) (return call))
     (let (cc:(raw Node) call
           encl:i32 (cc 'line)
-          out:ptr null
-          tail:ptr null
+          out:&Node (node-list-new (cc 'line))
           it:(raw Node) call
           idx:i32 0)
-      (while (and (!= it null) (= (it 'kind) NODE-CELL))
+      (while (and (> (node-len it) 0) (= (it 'kind) NODE-LIST))
         ; What this input cell contributes: one element normally, and for `~@e`
         ; the evaluated list entire — which may be empty, so the arity check in
         ; expand-macro-call counts what the macro really receives. Copied rather
         ; than linked in: the computed list is the program's value, and a cached
         ; one spliced twice would otherwise be relinked under its owner.
-        (let (sub:(raw Node) (as raw:Node (make-cell (it 'car) null (it 'line))))
+        (let (sub:(raw Node) (as raw:Node (node-list1 (node-first it) (it 'line))))
           (when (> idx 0)
-            (let (ln:i32 (node-line (it 'car) encl))
-              (when (!= (qq-is-tagged (it 'car) 'unquote) 0)
+            (let (ln:i32 (node-line (node-first it) encl))
+              (when (!= (qq-is-tagged (node-first it) 'unquote) 0)
                 (set! sub (as raw:Node
-                            (make-cell (ct-eval-node (node-at (it 'car) 1) ln 0)
-                                       null (it 'line)))))
-              (when (!= (qq-is-tagged (it 'car) 'unquote-splice) 0)
-                (let (arg:(raw Node) (as raw:Node (node-at (it 'car) 1))
-                      v:ptr (ct-eval-node (node-at (it 'car) 1) ln 1))
+                            (node-list1 (ct-eval-node (node-at (node-first it) 1) ln 0) (it 'line)))))
+              (when (!= (qq-is-tagged (node-first it) 'unquote-splice) 0)
+                (let (arg:(raw Node) (as raw:Node (node-at (node-first it) 1))
+                      v:ptr (ct-eval-node (node-at (node-first it) 1) ln 1))
                   (ct-eval-require-list (as raw:Node v) arg ln)
                   (set! sub (as raw:Node v))))))
-          (while (!= sub null)
-            (let (new:ptr (make-cell (sub 'car) null (it 'line)))
-              (if (= out null)
-                (do (set! out new) (set! tail new))
-                (do (set! ((unsafe/cast &Node tail) 'cdr) new)
-                    (set! tail new))))
-            (set! sub (sub 'cdr))))
-        (set! it (it 'cdr))
+          (node-extend out sub))
+        (set! it (node-rest it))
         (inc! idx))
-      (return (as raw:Node out)))))
+      (return (node-list-done out)))))
 
 (defn expand-macro-call (call:(raw Node) macro-def:(raw MacroDef)):ptr
   ; C2: before the arity checks, so "expects N args, got M" counts what the
@@ -11482,7 +11432,7 @@
               rj:i32 nargs)
           (while (> rj regular-params)
             (set! rj (- rj 1))
-            (set! rest-list (make-cell (node-at (unsafe/cast &Node call) (+ rj 1)) rest-list 0)))
+            (set! rest-list (node-cons (node-at (unsafe/cast &Node call) (+ rj 1)) rest-list 0)))
           (set! (aref (as &ptr args-arr) regular-params) rest-list)))
       ; §5.5: the program definitions this body calls must be in the JITDylib
       ; before the lookup below materialises the macro module — and not at
@@ -11520,7 +11470,7 @@
     (while (!= keep-going 0)
       (set! keep-going 0)
       (when (and (!= cur null)
-                 (= ((unsafe/cast &Node cur) 'kind) NODE-CELL)
+                 (= ((unsafe/cast &Node cur) 'kind) NODE-LIST)
                  (!= (node-len (unsafe/cast &Node cur)) 0))
         (let (head:ptr:Node (unsafe/cast &Node (node-at (unsafe/cast &Node cur) 0)))
           (when (= (head 'kind) NODE-SYM)
@@ -11537,7 +11487,7 @@
 (defn macroexpand-all-form (form:(raw Node)):ptr
   (let (cur:ptr (macroexpand-form form -1))
     (when (or (= cur null)
-              (!= ((unsafe/cast &Node cur) 'kind) NODE-CELL))
+              (!= ((unsafe/cast &Node cur) 'kind) NODE-LIST))
       (return cur))
     (when (= (node-len (unsafe/cast &Node cur)) 0) (return cur))
     (let (head:ptr:Node (unsafe/cast &Node (node-at (unsafe/cast &Node cur) 0)))
@@ -11545,18 +11495,12 @@
                  (or (= (head 's) "quote")
                      (= (head 's) "quasiquote")))
         (return cur)))
-    (let (out:ptr null
-          tail:ptr null
+    (let (b:&Node (node-list-new ((unsafe/cast &Node cur) 'line))
           it:ptr:Node (unsafe/cast &Node cur))
-      (while (and (!= (as ptr it) null) (= (it 'kind) NODE-CELL))
-        (let (child:ptr (macroexpand-all-form (it 'car))
-              new:ptr (make-cell child null (it 'line)))
-          (if (= out null)
-            (do (set! out new) (set! tail new))
-            (do (set! ((unsafe/cast &Node tail) 'cdr) new)
-                (set! tail new))))
-        (set! it (unsafe/cast &Node (it 'cdr))))
-      (return out))))
+      (while (and (!= (as ptr it) null) (= (it 'kind) NODE-LIST))
+        (node-push b (macroexpand-all-form (node-first it)))
+        (set! it (unsafe/cast &Node (node-rest it))))
+      (return (as ptr (node-list-done b))))))
 
 (defn emit-macro-expand (call:(raw Node) scope:&Scope macro-def:(raw MacroDef)):&Val
   (let (result:ptr (expand-macro-call call macro-def))
@@ -12156,11 +12100,11 @@
 
 ; Build the node list `( <a> <b> )`.
 (defn lit-list2 (a:ptr b:ptr line:i32):ptr
-  (return (as ptr (make-cell a (make-cell b null line) line))))
+  (return (as ptr (node-list2 a b line))))
 
 ; Build the node list `( <a> <b> <c> )`.
 (defn lit-list3 (a:ptr b:ptr c:ptr line:i32):ptr
-  (return (as ptr (make-cell a (make-cell b (make-cell c null line) line) line))))
+  (return (as ptr (node-list3 a b c line))))
 
 ; Build `(ref <ty>)` where <ty> is an already-built type node.
 (defn lit-ref (ty:ptr line:i32):ptr
@@ -12177,7 +12121,7 @@
 (defn lit-is-quoted-sym (n:ptr):i32
   (when (= n null) (return 0))
   (let (nn:ptr:Node (as &Node n))
-    (when (!= (nn 'kind) NODE-CELL) (return 0))
+    (when (!= (nn 'kind) NODE-LIST) (return 0))
     (when (!= (node-len n) 2) (return 0))
     (let (h:ptr (node-at n 0)
           a:ptr (node-at n 1))
@@ -12261,7 +12205,7 @@
         fixed-ty:ptr null)
     (while (!= cur null)
       (when (and (>= idx start) (= (% (- idx start) stride) 0))
-        (let (e:ptr ((as &Node cur) 'car)
+        (let (e:ptr (node-first (as &Node cur))
               k:i32 (lit-elem-kind e))
           (if (or (= k 1) (= k 2))
             ; Adaptable — but two adaptable elements must still agree with each
@@ -12291,7 +12235,7 @@
                           (type-spelling (as raw:Type fixed-ty)) "' and '"
                           (type-spelling (as raw:Type ty)) "'")))))))))
       (set! idx (+ idx 1))
-      (set! cur (as ptr ((as &Node cur) 'cdr))))
+      (set! cur (as ptr (node-rest (as &Node cur)))))
     ; A numeric literal adapts to a fixed element only when that element is a
     ; number. `["a" 1]` has no join and stays the error it has always been.
     (when (and (!= fixed null) (!= lit-kind 0))
@@ -12332,7 +12276,7 @@
 (defn emit-collection-lit (n:(raw Node) scope:&Scope tmpl:Symbol what:StrView
                            init-fn:StrView add-fn:StrView is-map:i32 empty-msg:StrView):&Val
   (let (line:i32 (node-line (as ptr n) g-form-line)
-        head:ptr (as ptr ((unsafe/cast &Node n) 'cdr))
+        head:ptr (as ptr (node-rest (unsafe/cast &Node n)))
         want:ptr (collection-lit-want-node tmpl))
     (when (and (= head null) (= want null)) (die-at line empty-msg))
     (let (kk:i32 0  vk:i32 0
@@ -12366,42 +12310,38 @@
       ; Body, forward: (init g) (add g e …) … g. The hygiene symbol is minted
       ; here, not by the reader, so `__gs_N` is numbered in emission order.
       (let (gs:ptr (as ptr (nucleus_gensym))
-            chead:ptr null
-            ctail:ptr null
+            cb:&Node (node-list-new line)
             cur:ptr head)
         (while (!= cur null)
-          (let (a:ptr ((as &Node cur) 'car)
+          (let (a:ptr (node-first (as &Node cur))
                 form:ptr null)
             (if (!= is-map 0)
               ; pairs: the odd-count refusal in the reader guarantees a value
-              (let (vcell:ptr:Node (unsafe/cast &Node ((as &Node cur) 'cdr)))
-                (set! form (as ptr (make-cell (lit-sym add-fn)
-                             (make-cell gs (make-cell a
-                               (make-cell (vcell 'car) null line) line) line) line)))
-                (set! cur (as ptr (vcell 'cdr))))
+              (let (vcell:ptr:Node (unsafe/cast &Node (node-rest (as &Node cur))))
+                (set! form (as ptr (node-list4 (lit-sym add-fn)
+                                     gs a
+                                     (node-first vcell) line)))
+                (set! cur (as ptr (node-rest vcell))))
               (do (set! form (lit-list3 (lit-sym add-fn) gs a line))
-                  (set! cur (as ptr ((as &Node cur) 'cdr)))))
-            (let (cell:ptr (make-cell form null line))
-              (when (= ctail null) (set! chead cell))
-              (when (!= ctail null) (set! ((as &Node ctail) 'cdr) cell))
-              (set! ctail cell))))
-        (let (gscell:ptr (make-cell gs null line))
-          (when (= ctail null) (set! chead gscell))
-          (when (!= ctail null) (set! ((as &Node ctail) 'cdr) gscell))
-          (let (decl:ptr (lit-list2 gs (lit-ref coll1 line) line)
-                bindings:ptr (lit-list2 decl (lit-alloca coll2 line) line)
-                init-form:ptr (lit-list2 (lit-sym init-fn) gs line)
-                full-body:ptr (make-cell init-form chead line)
-                form:ptr (as ptr (make-cell (lit-sym "let")
-                                   (make-cell bindings full-body line) line)))
-            ; The want belongs to the literal, not to the `let` it expands into —
-            ; leaving it armed hands a `(ref (Vector i64))` want down to the
-            ; binding init `(alloca …)` underneath it.
-            (let (saved:ptr g-want-type)
-              (set! g-want-type null)
-              (let (v:&Val (emit-node form scope))
-                (set! g-want-type saved)
-                (return v)))))))))
+                  (set! cur (as ptr (node-rest (as &Node cur))))))
+            (node-push cb form)))
+        ; The gensym is the literal's value, so the `let` body ends with it.
+        (node-push cb gs)
+        (let (chead:ptr (as ptr (node-list-done cb))
+              decl:ptr (lit-list2 gs (lit-ref coll1 line) line)
+              bindings:ptr (lit-list2 decl (lit-alloca coll2 line) line)
+              init-form:ptr (lit-list2 (lit-sym init-fn) gs line)
+              full-body:ptr (node-cons init-form chead line)
+              form:ptr (as ptr (node-cons (lit-sym "let")
+                                 (node-cons bindings full-body line) line)))
+          ; The want belongs to the literal, not to the `let` it expands into —
+          ; leaving it armed hands a `(ref (Vector i64))` want down to the
+          ; binding init `(alloca …)` underneath it.
+          (let (saved:ptr g-want-type)
+            (set! g-want-type null)
+            (let (v:&Val (emit-node form scope))
+              (set! g-want-type saved)
+              (return v))))))))
 
 (defn emit-list (n:(raw Node) scope:&Scope):&Val
   (let (nn:ptr:Node (unsafe/cast &Node n))
@@ -12415,8 +12355,8 @@
       ; stamp (or look up) the concrete instance; the outer form is then an ordinary
       ; compound literal over that StructDef (parametric-structs.md §6).
       (when (!= (head 'kind) NODE-SYM)
-        (when (= (head 'kind) NODE-CELL)
-          (let (hcar:ptr (head 'car))
+        (when (= (head 'kind) NODE-LIST)
+          (let (hcar:ptr (node-first head))
             (when (!= hcar null)
               (let (hcar-node:ptr:Node (unsafe/cast &Node hcar))
                 (when (= (hcar-node 'kind) NODE-SYM)
@@ -12471,6 +12411,10 @@
         (when (= hp 'cond) (return (emit-cond n scope)))
         (when (= hp 'quote) (return (emit-quote n)))
         (when (= hp 'quasiquote) (return (emit-quasiquote n scope)))
+        (when (= hp 'ast-first) (return (emit-ast-read n scope 0)))
+        (when (= hp 'ast-rest) (return (emit-ast-read n scope 1)))
+        (when (= hp 'ast-at) (return (emit-ast-read n scope 2)))
+        (when (= hp 'ast-len) (return (emit-ast-read n scope 3)))
         ; Reached only with no enclosing quasiquote to consume it — inside one,
         ; emit-qq-form takes these. An arm here and not in the reader, because
         ; `'(a ~b)` is legitimate data. quasiquote-levels.md §6 Q2.
@@ -12959,7 +12903,7 @@
               (set! (aref out 0) (sym 'const-lit-i64))
               (return 1))))
         (return 0))
-      (when (!= (ee 'kind) NODE-CELL) (return 0))
+      (when (!= (ee 'kind) NODE-LIST) (return 0))
       (let (nargs:i32 (- (node-len (as ptr ee)) 1)
             hd:ptr (node-at (as ptr ee) 0))
         (when (= hd null) (return 0))
@@ -13091,7 +13035,7 @@
 (defn const-array-lit? (n:(raw Node)):i32
   (when (= n null) (return 0))
   (let (nn:(raw Node) n)
-    (when (!= (nn 'kind) NODE-CELL) (return 0))
+    (when (!= (nn 'kind) NODE-LIST) (return 0))
     (when (< (node-len (as ptr nn)) 2) (return 0))
     (when (= (node-at (as ptr nn) 0) 'array) (return 1))
     (return 0)))
@@ -13100,7 +13044,7 @@
 (defn const-struct-lit? (n:(raw Node) sd:(raw StructDef)):i32
   (when (or (= n null) (= sd null)) (return 0))
   (let (nn:(raw Node) n)
-    (when (!= (nn 'kind) NODE-CELL) (return 0))
+    (when (!= (nn 'kind) NODE-LIST) (return 0))
     (when (< (node-len (as ptr nn)) 1) (return 0))
     (let (hd:(raw Node) (node-at (as ptr nn) 0))
       (when (or (= hd null) (!= (hd 'kind) NODE-SYM)) (return 0))
@@ -13120,7 +13064,7 @@
     (dotimes (i ninits)
       (let (arg:(raw Node) (node-at (as ptr cc) (+ 2 i))
             aline:i32 (node-line (as ptr arg) encl))
-        (when (and (!= arg null) (= (arg 'kind) NODE-CELL) (= (node-len (as ptr arg)) 2)
+        (when (and (!= arg null) (= (arg 'kind) NODE-LIST) (= (node-len (as ptr arg)) 2)
                    (!= (node-at (as ptr arg) 0) null)
                    (= (-> (node-at (as ptr arg) 0) (unsafe/cast &Node _) (_ 'kind)) NODE-INT))
           (let (k:i64 (-> (node-at (as ptr arg) 0) (unsafe/cast &Node _) (_ 'i)))
@@ -13139,7 +13083,7 @@
       (let (arg:(raw Node) (node-at (as ptr cc) (+ 2 i))
             aline:i32 (node-line (as ptr arg) encl)
             designated:i32 0)
-        (when (and (!= arg null) (= (arg 'kind) NODE-CELL) (= (node-len (as ptr arg)) 2)
+        (when (and (!= arg null) (= (arg 'kind) NODE-LIST) (= (node-len (as ptr arg)) 2)
                    (!= (node-at (as ptr arg) 0) null)
                    (= (-> (node-at (as ptr arg) 0) (unsafe/cast &Node _) (_ 'kind)) NODE-INT))
           (set! designated 1))
@@ -13169,7 +13113,7 @@
           pos:i32 0)
       (dotimes (i ninits)
         (let (arg:(raw Node) (node-at (as ptr cc) (+ 2 i)))
-          (if (and (!= arg null) (= (arg 'kind) NODE-CELL) (= (node-len (as ptr arg)) 2)
+          (if (and (!= arg null) (= (arg 'kind) NODE-LIST) (= (node-len (as ptr arg)) 2)
                    (!= (node-at (as ptr arg) 0) null)
                    (= (-> (node-at (as ptr arg) 0) (unsafe/cast &Node _) (_ 'kind)) NODE-INT))
             (let (k:i64 (-> (node-at (as ptr arg) 0) (unsafe/cast &Node _) (_ 'i)))
@@ -13217,7 +13161,7 @@
                 (emit g-out (type-zero-const-ir ety))
                 ; A designated element is the cell `(index value)`; a positional
                 ; one is the value itself.
-                (if (and (= (slot 'kind) NODE-CELL) (= (node-len (as ptr slot)) 2)
+                (if (and (= (slot 'kind) NODE-LIST) (= (node-len (as ptr slot)) 2)
                          (!= (node-at (as ptr slot) 0) null)
                          (= (-> (node-at (as ptr slot) 0) (unsafe/cast &Node _) (_ 'kind)) NODE-INT))
                   (defvar-write-const (as raw:Node (node-at (as ptr slot) 1)) ety encl)
@@ -13248,7 +13192,7 @@
           (dotimes (i nargs)
             (let (arg:(raw Node) (node-at (as ptr init) (+ 1 i))
                   aline:i32 (node-line (as ptr arg) encl))
-              (when (and (!= arg null) (= (arg 'kind) NODE-CELL) (= (node-len (as ptr arg)) 2)
+              (when (and (!= arg null) (= (arg 'kind) NODE-LIST) (= (node-len (as ptr arg)) 2)
                          (!= (node-at (as ptr arg) 0) null)
                          (= (-> (node-at (as ptr arg) 0) (unsafe/cast &Node _) (_ 'kind)) NODE-SYM))
                 (let (fnn:ptr:Node (unsafe/cast &Node (node-at (as ptr arg) 0))
@@ -13263,7 +13207,7 @@
             (let (arg:(raw Node) (node-at (as ptr init) (+ 1 i))
                   aline:i32 (node-line (as ptr arg) encl)
                   designated:i32 0)
-              (when (and (!= arg null) (= (arg 'kind) NODE-CELL) (= (node-len (as ptr arg)) 2)
+              (when (and (!= arg null) (= (arg 'kind) NODE-LIST) (= (node-len (as ptr arg)) 2)
                          (!= (node-at (as ptr arg) 0) null)
                          (= (-> (node-at (as ptr arg) 0) (unsafe/cast &Node _) (_ 'kind)) NODE-SYM))
                 (set! designated 1))
@@ -13284,7 +13228,7 @@
               (let (slot:(raw Node) (as raw:Node (aref (as &ptr slots) i)))
                 (if (= slot null)
                   (emit g-out (type-zero-const-ir ftype))
-                  (if (and (= (slot 'kind) NODE-CELL) (= (node-len (as ptr slot)) 2)
+                  (if (and (= (slot 'kind) NODE-LIST) (= (node-len (as ptr slot)) 2)
                            (!= (node-at (as ptr slot) 0) null)
                            (= (-> (node-at (as ptr slot) 0) (unsafe/cast &Node _) (_ 'kind)) NODE-SYM))
                     (defvar-write-const (as raw:Node (node-at (as ptr slot) 1)) ftype encl)
@@ -13503,7 +13447,7 @@
       (when (!= g-defvar-soft 0) (return ""))
       (die-at (node-line init encl) (fstr "defvar: unsupported init symbol '" (nn 's) "'")))
     ; (char "x") — char literal, one byte stored in an int field.
-    (when (and (= (nn 'kind) NODE-CELL) (= (node-len nn) 2))
+    (when (and (= (nn 'kind) NODE-LIST) (= (node-len nn) 2))
       (let (head:ptr:Node (unsafe/cast &Node (node-at nn 0)))
         (when (and (= (head 'kind) NODE-SYM) (= (head 's) "char"))
           (let (arg:ptr:Node (unsafe/cast &Node (node-at nn 1)))
@@ -13517,7 +13461,7 @@
     ; Every shape below dies today with "init must be a literal", so no program
     ; that compiles now can have its IR moved by adding them — which is why the
     ; design predicts a byte-identical bootstrap for this step.
-    (when (= (nn 'kind) NODE-CELL)
+    (when (= (nn 'kind) NODE-LIST)
       (let (nargs0:i32 (- (node-len (as ptr nn)) 1)
             hd0:ptr (node-at (as ptr nn) 0))
         (when (and (!= hd0 null) (= ((unsafe/cast &Node hd0) 'kind) NODE-SYM))
@@ -13643,7 +13587,7 @@
       ; from another global, which `set!` would accept. Deliberate: it is worth
       ; less than the diagnostic, and the explicit spelling is one `set!` in an
       ; init function.
-      (when (!= ((unsafe/cast &Node init) 'kind) NODE-CELL) (return 1))
+      (when (!= ((unsafe/cast &Node init) 'kind) NODE-LIST) (return 1))
       (return 0))
     (let (saved:i32 g-defvar-soft
           rendered:StrView "")
@@ -13668,10 +13612,9 @@
 ; interned symbols (the `set!` head and the target name) have no line of their
 ; own (context/conventions.md).
 (defn defvar-queue-init (name:Symbol irn:Symbol init:(raw Node) line:i32):void
-  (let (args:ptr (as ptr (make-cell (intern-node name)
-                                    (as ptr (make-cell init null line))
-                                    line))
-        form:ptr (as ptr (make-cell (intern-node (symbol-intern "set!")) args line))
+  (let (args:ptr (as ptr (node-list2 (intern-node name)
+                           init line))
+        form:ptr (as ptr (node-cons (intern-node (symbol-intern "set!")) args line))
         job:ptr:InitJob (new InitJob))
     (set! (job 'form) (as raw:Node form))
     (set! (job 'ns) g-current-ns)
@@ -13773,7 +13716,7 @@
     (when (= (nn 'kind) NODE-SYM)
       (defvar-blame-forward-ref (nn 's) self encl)
       (return))
-    (when (!= (nn 'kind) NODE-CELL) (return))
+    (when (!= (nn 'kind) NODE-LIST) (return))
     ; Three heads whose operands are not value reads, skipped subtree and all:
     ;   `ref` — an address, not a value (see the decision above);
     ;   `quote` /     — the symbols inside are DATA. Walking them would reject
@@ -13826,14 +13769,14 @@
     ; validate leading keywords, then read the name/init off the advanced cursor.
     ; No keyword => decl == (cc cdr), name/init unchanged => byte-identical.
     (let (attr-flags:i32 0
-          decl:ptr (parse-decl-attrs (as ptr (cc 'cdr)) (as &i32 &attr-flags) (cc 'line)))
+          decl:ptr (parse-decl-attrs (as ptr (node-rest cc)) (as &i32 &attr-flags) (cc 'line)))
       (when (= decl null)
         (die-at (cc 'line) "defvar: expects name and optional init"))
       (let (declc:ptr:Node (unsafe/cast &Node decl)
-            name-node:ptr (declc 'car)
-            init-cell:ptr (declc 'cdr))
+            name-node:ptr (node-first declc)
+            init-cell:ptr (node-rest declc))
         ; name + optional init; nothing may follow the init.
-        (when (and (!= init-cell null) (!= ((unsafe/cast &Node init-cell) 'cdr) null))
+        (when (and (!= init-cell null) (!= (node-rest (unsafe/cast &Node init-cell)) null))
           (die-at (cc 'line) "defvar: expects name and optional init"))
         (let (name:Symbol (symbol-none)
               ; W4b sibling sweep: `name-node` is frequently a bare NODE-SYM
@@ -13902,7 +13845,7 @@
             ; being compiled already lives in that module.
             (ct-module-defn-note (symbol-intern ir-name))
             (when (!= init-cell null)
-              (set! init-node (as raw:Node ((unsafe/cast &Node init-cell) 'car))))
+              (set! init-node (as raw:Node (node-first (unsafe/cast &Node init-cell)))))
             ; G-2 shape 4: a pointer-typed global initialized with an array
             ; literal gets a `@g.data` backing global and points at it.
             (when (and (!= init-node null)
@@ -14029,8 +13972,8 @@
             (die-at (cc 'line)
               (fstr "defconst: takes no type annotation; write (defconst " base " "
                     (if (= (node-kind (as ptr val)) NODE-INT) (unsafe/cast i32 (val 'i)) 0) ")")))))
-      (when (= (node-kind (as ptr name)) NODE-CELL)
-        (let (base-node:(raw Node) (name 'car))
+      (when (= (node-kind (as ptr name)) NODE-LIST)
+        (let (base-node:(raw Node) (node-first name))
           (when (and (!= base-node null) (= (base-node 'kind) NODE-SYM))
             (die-at (node-line (as ptr name) (cc 'line))
               (fstr "defconst: takes no type annotation; write (defconst " (base-node 's) " "
@@ -14180,8 +14123,8 @@
       ; mistake was invisible unless the enum's own type name was later
       ; referenced (e.g. as a generic receiver's tyvar-vs-concrete-type check
       ; in generics.nuc's tyname-resolvable).
-      (when (= (enum-name-node 'kind) NODE-CELL)
-        (let (base-node:(raw Node) (enum-name-node 'car))
+      (when (= (enum-name-node 'kind) NODE-LIST)
+        (let (base-node:(raw Node) (node-first enum-name-node))
           (when (and (!= base-node null) (= (base-node 'kind) NODE-SYM))
             (die-at (node-line (as ptr enum-name-node) (cc 'line))
               (fstr "defenum: takes no type annotation; write (defenum " (base-node 's) " ...)")))))
@@ -14303,20 +14246,20 @@
       (set! more 0)
       (when (= cur null) (return cur))
       (let (fn2:ptr:Node (unsafe/cast &Node cur))
-        (when (!= (fn2 'kind) NODE-CELL) (return cur))
-        (when (= (fn2 'car) null) (return cur))
-        (let (hd:ptr:Node (unsafe/cast &Node (fn2 'car)))
+        (when (!= (fn2 'kind) NODE-LIST) (return cur))
+        (when (= (node-first fn2) null) (return cur))
+        (let (hd:ptr:Node (unsafe/cast &Node (node-first fn2)))
           (when (!= (hd 'kind) NODE-KEYWORD) (return cur))
           (let (is-align:i32 (if (= (hd 's) "align") 1 0)
                 is-bits:i32 (if (= (hd 's) "bits") 1 0))
             (when (= (+ is-align is-bits) 0) (return cur))
             (let (kw:StrView (if (!= is-align 0) ":align" ":bits")
-                  rest:ptr (fn2 'cdr))
+                  rest:ptr (node-rest fn2))
               (when (= rest null)
                 (when (!= strict 0)
                   (die-at line (fstr "'" kw "' takes an integer")))
                 (return cur))
-              (let (av:ptr:Node (unsafe/cast &Node ((unsafe/cast &Node rest) 'car)))
+              (let (av:ptr:Node (unsafe/cast &Node (node-first (unsafe/cast &Node rest))))
                 (when (or (= (as ptr av) null) (!= (av 'kind) NODE-INT))
                   (when (!= strict 0)
                     (die-at line (fstr "'" kw "' takes an integer")))
@@ -14335,7 +14278,7 @@
                       ; 0 means "not a bitfield" in the Field slot, so C's
                       ; zero-width boundary member is carried as -1.
                       (set! (aref out-bits 0) (if (= v 0) -1 v)))))
-                (let (tail:ptr ((unsafe/cast &Node rest) 'cdr))
+                (let (tail:ptr (node-rest (unsafe/cast &Node rest)))
                   (when (= tail null)
                     (when (!= strict 0)
                       (die-at line (fstr "'" kw "' must be followed by a name:type")))
@@ -14343,8 +14286,8 @@
                   ; One declaration left → hand back the declaration itself, the
                   ; same unwrap extract-decl-name-and-type performs for
                   ; `(:volatile x:i32)`; otherwise keep peeling.
-                  (if (= ((unsafe/cast &Node tail) 'cdr) null)
-                    (return ((unsafe/cast &Node tail) 'car))
+                  (if (= (node-rest (unsafe/cast &Node tail)) null)
+                    (return (node-first (unsafe/cast &Node tail)))
                     (do (set! cur tail) (set! more 1))))))))))
     (return cur)))
 
@@ -14364,7 +14307,7 @@
 (defn field-anon-type-node (field:ptr):ptr
   (when (= field null) (return null))
   (let (fn2:ptr:Node (unsafe/cast &Node field))
-    (when (!= (fn2 'kind) NODE-CELL) (return null))
+    (when (!= (fn2 'kind) NODE-LIST) (return null))
     (when (!= (node-len field) 2) (return null))
     (let (hd:ptr (node-at field 0))
       (when (= hd null) (return null))
@@ -14479,14 +14422,14 @@
       ; Stage 11: a parameterized head — `(defstruct (Vector T) ...)` — is a
       ; template; defines no type, emits no IR (parametric-structs.md §2). A use
       ; `(Vector i32)` in type position stamps a concrete instance.
-      (when (= (name-node 'kind) NODE-CELL)
+      (when (= (name-node 'kind) NODE-LIST)
         (register-struct-template (as ptr cc))
         ; Stage 15 B5: `defstruct-`'s privacy for a template. The registration
         ; above is a no-op when prescan-struct-names already created the entry,
         ; and that prescan runs under the wrong namespace (see its note), so the
         ; provenance is written here, where `g-current-ns` is the defining file's.
         (when (!= g-defining-private 0)
-          (let (base:(raw Node) (name-node 'car))
+          (let (base:(raw Node) (node-first name-node))
             (when (and (!= base null) (= ((unsafe/cast &Node base) 'kind) NODE-SYM))
               (if-some (st (struct-template-lookup (qualify-name ((unsafe/cast &Node base) 's))))
                 (do (set! (st 'priv) 1)
@@ -14552,49 +14495,36 @@
   (let (an:ptr:Node (unsafe/cast &Node arm)
         aname:Symbol (if (= (an 'kind) NODE-SYM) (an 's)
                        (-> an (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
-        fields:ptr (if (= (an 'kind) NODE-SYM) null (as ptr ((unsafe/cast &Node arm) 'cdr)))
+        fields:ptr (if (= (an 'kind) NODE-SYM) null (as ptr (node-rest (unsafe/cast &Node arm))))
         name-node:ptr (intern-node (symbol-intern (fstr uname "-" aname))))
     ; (make uname aname f1 f2 ...) — args are the field names.
-    (let (make-args:ptr null
-          make-tail:ptr null
+    (let (margs:&Node (node-list-new line)
           fcur:ptr fields)
-      (while (!= fcur null)
+      (while (> (node-len fcur) 0)
         (let (fname:Symbol (symbol-none)
               tname:Symbol (symbol-none))
-          (extract-name-type ((unsafe/cast &Node fcur) 'car)
+          (extract-name-type (node-first (unsafe/cast &Node fcur))
                              (as &Symbol &fname) (as &Symbol &tname))
-          (let (cell:ptr (make-cell (intern-node fname) null line))
-            (when (= make-args null) (set! make-args cell))
-            (when (!= make-tail null) (set! ((unsafe/cast &Node make-tail) 'cdr) cell))
-            (set! make-tail cell)))
-        (set! fcur ((unsafe/cast &Node fcur) 'cdr)))
-      (let (body:ptr (make-cell 'make
-                       (make-cell (intern-node uname)
-                         (make-cell (intern-node aname) make-args line)
-                         line)
-                       line)
-            params:ptr null
-            ptail:ptr null)
+          (node-push margs (as raw:Node (intern-node fname))))
+        (set! fcur (node-rest (unsafe/cast &Node fcur))))
+      (let (make-args:ptr (as ptr (node-list-done margs))
+            body:ptr (node-cons 'make
+                       (node-cons (intern-node uname)
+                         (node-cons (intern-node aname) make-args line) line) line)
+            pb:&Node (node-list-new line))
         ; Fresh param list re-using the arm's field spec nodes verbatim.
         (set! fcur fields)
-        (while (!= fcur null)
-          (let (cell:ptr (make-cell ((unsafe/cast &Node fcur) 'car) null line))
-            (when (= params null) (set! params cell))
-            (when (!= ptail null) (set! ((unsafe/cast &Node ptail) 'cdr) cell))
-            (set! ptail cell))
-          (set! fcur ((unsafe/cast &Node fcur) 'cdr)))
+        (while (> (node-len fcur) 0)
+          (node-push pb (node-first (unsafe/cast &Node fcur)))
+          (set! fcur (node-rest (unsafe/cast &Node fcur))))
         ; An empty params list is null — node-is-list treats null as a list.
         ; New-style: the return operand (the union type name) sits between the
         ; params and the body.
-        (return (make-cell 'defn
-                  (make-cell name-node
-                    (make-cell params
-                      (make-cell (intern-node uname)
-                        (make-cell body null line)
-                        line)
-                      line)
-                    line)
-                  line))))))
+        (return (node-list5 'defn
+                  name-node
+                  (as ptr (node-list-done pb))
+                  (intern-node uname)
+                  body line))))))
 
 ; (defunion Name arms...) | (defunion (Name T ...) arms...) — register the
 ; tagged sum (or template) and emit the per-arm constructor functions
@@ -14609,12 +14539,12 @@
       ; under that literal, unlookupable key — the same defconst-shaped bug.
       (reject-colon-in-def-name (as raw:Node name-node) "defunion" (cc 'line))
       ; Parameterized head — a template; defines no type, emits no code.
-      (when (= (name-node 'kind) NODE-CELL)
+      (when (= (name-node 'kind) NODE-LIST)
         (register-union-template (as ptr cc))
         ; Stage 15 B5: `defunion-`'s privacy for a template — see the identical
         ; note in emit-defstruct's template branch.
         (when (!= g-defining-private 0)
-          (let (base:(raw Node) (name-node 'car))
+          (let (base:(raw Node) (node-first name-node))
             (when (and (!= base null) (= ((unsafe/cast &Node base) 'kind) NODE-SYM))
               (if-some (ut (union-template-lookup (qualify-name ((unsafe/cast &Node base) 's))))
                 (do (set! (ut 'priv) 1)
@@ -14646,10 +14576,10 @@
       ; bare name resolves.
       (let (repr-box:i32 REPR-AUTO
             ud:&UnionDef (defunion-register (qualify-name (name-node 's))
-                              (-> cc (_ 'cdr) (unsafe/cast &Node _) (_ 'cdr)) (cc 'line))
+                              (-> cc (node-rest _) (unsafe/cast &Node _) (node-rest _)) (cc 'line))
             ; Strip :repr before generating constructors: it is a layout marker,
             ; not an arm (defunion-register strips it for layout independently).
-            arms:ptr (defunion-strip-repr (-> cc (_ 'cdr) (unsafe/cast &Node _) (_ 'cdr))
+            arms:ptr (defunion-strip-repr (-> cc (node-rest _) (unsafe/cast &Node _) (node-rest _))
                        (as &i32 &repr-box) (cc 'line))
             saved-out:raw:String g-out)
         ; Constructors are ordinary functions; their signatures were
@@ -14658,9 +14588,9 @@
         ; niche encoding via `make`, which is layout-aware (no struct).
         (set! g-out g-def-stream)
         (let (cur:ptr arms)
-          (while (!= cur null)
-            (emit-defn (union-ctor-form (name-node 's) ((unsafe/cast &Node cur) 'car) (cc 'line)))
-            (set! cur ((unsafe/cast &Node cur) 'cdr))))
+          (while (> (node-len cur) 0)
+            (emit-defn (union-ctor-form (name-node 's) (node-first (unsafe/cast &Node cur)) (cc 'line)))
+            (set! cur (node-rest (unsafe/cast &Node cur)))))
         (set! (ud 'ctors-emitted) 1)
         (set! g-out saved-out)))))
 
@@ -15308,12 +15238,6 @@
   (let (v:StrView (symbol-as-view irn))
     ; The string table is emitted into the mirror, so these are already there.
     (when (strview-has-prefix v "@.str.") (return 1)))
-  ; §5.4 calls these "already in the module"; they are not. `emit-qq-helpers`
-  ; runs at `flush-module-ir`, long after any expansion, so at flush time the
-  ; program's own `@__cons` does not exist yet — the mirror emits its own.
-  (when (or (= irn "@__cons") (= irn "@__append"))
-    (set! g-ctm-qq 1)
-    (return 1))
   (let (pd:?ptr:ProgDefn (program-defn-lookup irn))
     (when (!= (as ptr pd) null)
       (let (p:&ProgDefn (unsafe/cast &ProgDefn pd))
@@ -15532,10 +15456,6 @@
       (ct-mirror-put-global-span &mdef (invoke g-ctm-globals i:usize)))
     (dotimes (i (unsafe/cast i32 (count g-ctm-defs)))
       (ct-mirror-put-span &mdef (invoke g-ctm-defs i:usize)))
-    ; `private`, so two mirrors never collide on one helper, and host-sized,
-    ; because a mirror module is always built for the host.
-    (when (!= g-ctm-qq 0)
-      (emit-qq-helpers &mdecl &mdef g-host-target "private "))
     (let ((irs String) (string-new))
       (emit irs "; ModuleID = '<ct-mirror " g-ct-mirror-count ">'\n")
       (emit irs "target triple = \"" ((as &Target g-host-target) 'triple) "\"\n\n")
@@ -15580,7 +15500,6 @@
   (set! g-ctm-seen (unsafe/cast &(Vector Symbol) (vector-new-in &g-arena-alloc)))
   (set! g-ctm-globals (unsafe/cast &(Vector &ProgGlobal) (vector-new-in &g-arena-alloc)))
   (set! g-ctm-gdecls (unsafe/cast &(Vector &ProgGlobal) (vector-new-in &g-arena-alloc)))
-  (set! g-ctm-qq 0)
   (dotimes (i (unsafe/cast i32 (count roots)))
     (when (= (ct-mirror-classify (invoke roots i:usize)) 0) (return 0)))
   ; The worklists ARE the chosen lists, and the initializer IR is more text to
@@ -15655,14 +15574,12 @@
         ss:&(Vector Symbol) g-ctm-seen
         sg:&(Vector &ProgGlobal) g-ctm-globals
         sgd:&(Vector &ProgGlobal) g-ctm-gdecls
-        sq:i32 g-ctm-qq
         r:i32 (ct-mirror-flush-1 roots line))
     (set! g-ctm-defs sd)
     (set! g-ctm-decls sdc)
     (set! g-ctm-seen ss)
     (set! g-ctm-globals sg)
     (set! g-ctm-gdecls sgd)
-    (set! g-ctm-qq sq)
     (return r)))
 
 ; Stage 20 L5: `ct-mirror-flush` records a reason rather than raising, so
@@ -15728,18 +15645,18 @@
       ; Redirect global state to CT streams.
       (let (saved-g-out:raw:String g-out
             saved-decl-out:raw:String g-decl-out
-            saved-qq-used:i32 g-qq-used
             ; S1: a watermark, not a swap — a nested `ct-mirror-flush` still has
             ; to see the program's ids (string-table-per-module.md §3, as built).
             ct-str-base:i32 (unsafe/cast i32 (count g-strs))
             saved-ct-roots:&(Vector Symbol) g-ct-roots
             saved-ct-defns:&(Vector Symbol) g-ct-module-defns
             saved-ct-name:Symbol g-ct-body-name
+            saved-macro-decls:&(Vector Symbol) g-macro-decls
             saved-node-ctor:i32 g-node-ctor-used)
-        (set! g-qq-used 0)
         (set! g-node-ctor-used 0)
         (set! g-decl-out &ct-decl)
-        ; Fresh per-module declare set (see emit-defmacro / macro-jit-ensure-decl).
+        ; Fresh per-module declare set, restored below (see emit-defmacro /
+        ; macro-jit-ensure-decl).
         (set! g-macro-decls (unsafe/cast &(Vector Symbol) (vector-new-in &g-arena-alloc)))
         ; L5: and a fresh set of the names this module defines itself.
         (set! g-ct-module-defns (unsafe/cast &(Vector Symbol) (vector-new-in &g-arena-alloc)))
@@ -15752,15 +15669,15 @@
         ; this body's own `defstruct`s must be registered first. Idempotent under
         ; batch (the unit prescan already descended); the REPL reaches this
         ; function with no unit prescan at all, so here is the only registration.
-        (prescan-struct-names-mode (ff 'cdr) 1)
-        (prescan-struct-layouts-mode (ff 'cdr) 1)
+        (prescan-struct-names-mode (node-rest ff) 1)
+        (prescan-struct-layouts-mode (node-rest ff) 1)
 
         ; Pre-scan: register defn signatures from CT body.
         (let (bi:i32 1)
           (while (< bi nforms)
             (let (bf:ptr:Node (unsafe/cast &Node (node-at ff bi)))
               (when (and (!= (as ptr bf) null)
-                         (= (bf 'kind) NODE-CELL)
+                         (= (bf 'kind) NODE-LIST)
                          (>= (node-len bf) 4)
                          (-> bf (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM))
                          (-> bf (node-at _ 0) (unsafe/cast &Node _) (_ 's) (= _ "defn")))
@@ -15812,7 +15729,7 @@
             (let (bf:ptr:Node (unsafe/cast &Node (node-at ff bi))
                   is-tl:i32 0)
               (when (and (!= (as ptr bf) null)
-                          (= (bf 'kind) NODE-CELL)
+                          (= (bf 'kind) NODE-LIST)
                           (!= (node-len bf) 0)
                           (-> bf (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
                 (let (bh:Symbol (-> bf (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
@@ -15863,64 +15780,33 @@
             (emit-all ct-decl gdecl)
             (drop &gdecl))
 
-          (let (ct-qq:i32 g-qq-used
-                ct-nodes:i32 g-node-ctor-used
+          (let (                ct-nodes:i32 g-node-ctor-used
                 ; Captured before the restore below; the flush needs it at the
                 ; lookup, which happens after this block (§5.3).
                 ct-roots:&(Vector Symbol) g-ct-roots)
             ; Restore global state.
             (set! g-out saved-g-out)
             (set! g-decl-out saved-decl-out)
-            (set! g-qq-used saved-qq-used)
             (set! g-node-ctor-used saved-node-ctor)
             (set! g-ct-roots saved-ct-roots)
             (set! g-ct-module-defns saved-ct-defns)
             (set! g-ct-body-name saved-ct-name)
             (ct-block-note ct-sym ct-roots)
 
-            ; Declare the host-defined node constructors if the body built any
-            ; node at all — a plain `'x` or a quasiquoted atom reaches
-            ; emit-quote-tree without ever setting ct-qq.
+            ; Declare the host-defined node runtime if the body built any node.
             (when (!= ct-nodes 0)
               (macro-jit-declare-raw ct-decl (symbol-intern "@alloc-node") (symbol-intern "declare ptr @alloc-node()\n"))
-              (macro-jit-declare-raw ct-decl (symbol-intern "@make-cell") (symbol-intern "declare ptr @make-cell(ptr, ptr, i32)\n"))
+              (macro-jit-declare-raw ct-decl (symbol-intern "@node-list-new") (symbol-intern "declare ptr @node-list-new(i32)\n"))
+              (macro-jit-declare-raw ct-decl (symbol-intern "@node-push") (symbol-intern "declare void @node-push(ptr, ptr)\n"))
+              (macro-jit-declare-raw ct-decl (symbol-intern "@node-extend") (symbol-intern "declare void @node-extend(ptr, ptr)\n"))
               (macro-jit-declare-raw ct-decl (symbol-intern "@intern-symbol") (symbol-intern "declare ptr @intern-symbol(ptr)\n"))
+              (macro-jit-ast-read-decls ct-decl)
               (macro-jit-declare-raw ct-decl (symbol-intern "@symbol-intern-bytes")
                                      (symbol-intern "declare i64 @symbol-intern-bytes(ptr, i64)\n")))
-            ; If CT used quasiquote LISTS, add the private __cons/__append
-            ; helpers; only they need @malloc.
-            (when (!= ct-qq 0)
-               (macro-jit-declare-raw ct-decl (symbol-intern "@malloc") (symbol-intern "declare ptr @malloc(i64)\n"))
-                  (emit ct-def "define private ptr @__cons(ptr %a, ptr %b) {\n")
-                  (emit ct-def "  %c = call ptr @malloc(i64 40)\n")
-                  (emit ct-def
-                        "  %p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %c, i32 0, i32 0\n")
-                  (emit ct-def "  store i32 3, ptr %p0, align 8\n")
-                  (emit ct-def
-                        "  %p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %c, i32 0, i32 4\n")
-                  (emit ct-def "  store ptr %a, ptr %p4, align 8\n")
-                  (emit ct-def
-                        "  %p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %c, i32 0, i32 5\n")
-                  (emit ct-def "  store ptr %b, ptr %p5, align 8\n")
-                  (emit ct-def "  ret ptr %c\n")
-                  (emit ct-def "}\n\n")
-                  (emit ct-def "define private ptr @__append(ptr %a, ptr %b) {\n")
-                  (emit ct-def "entry:\n")
-                  (emit ct-def "  %z = icmp eq ptr %a, null\n")
-                  (emit ct-def "  br i1 %z, label %nil, label %rec\n")
-                  (emit ct-def "nil:\n")
-                  (emit ct-def "  ret ptr %b\n")
-                  (emit ct-def "rec:\n")
-                  (emit ct-def
-                        "  %p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %a, i32 0, i32 4\n")
-                  (emit ct-def "  %car = load ptr, ptr %p4, align 8\n")
-                  (emit ct-def
-                        "  %p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %a, i32 0, i32 5\n")
-                  (emit ct-def "  %cdr = load ptr, ptr %p5, align 8\n")
-                  (emit ct-def "  %rest = call ptr @__append(ptr %cdr, ptr %b)\n")
-                  (emit ct-def "  %c = call ptr @__cons(ptr %car, ptr %rest)\n")
-                  (emit ct-def "  ret ptr %c\n")
-                  (emit ct-def "}\n\n"))
+            ; Restored only now: every `macro-jit-declare-raw` above writes into
+            ; THIS module's `ct-decl`, so the set it consults must be this
+            ; module's until the last of them has run.
+            (set! g-macro-decls saved-macro-decls)
 
 
             ; Stage 20 M3: reachable from a CT body as from a macro body — the
@@ -16118,16 +16004,15 @@
             ; Redirect global state
             (let (saved-g-out:raw:String g-out
                   saved-decl-out:raw:String g-decl-out
-                  saved-qq-used:i32 g-qq-used
-                  ; S1: a watermark, not a swap — see `emit-compile-time`.
+                        ; S1: a watermark, not a swap — see `emit-compile-time`.
                   macro-str-base:i32 (unsafe/cast i32 (count g-strs))
                   saved-ct-roots:&(Vector Symbol) g-ct-roots
                   saved-ct-defns:&(Vector Symbol) g-ct-module-defns
                   saved-ct-name:Symbol g-ct-body-name
                   saved-ct-arg:i32 g-ct-body-arg
+                  saved-macro-decls:&(Vector Symbol) g-macro-decls
                   saved-node-ctor:i32 g-node-ctor-used)
-              (set! g-qq-used 0)
-              (set! g-node-ctor-used 0)
+                    (set! g-node-ctor-used 0)
               (set! g-decl-out &ct-decl)
               (set! g-out &ct-def)
               ; Fresh per-module declare set: macro bodies that call ordinary
@@ -16210,17 +16095,11 @@
                   (emit-all ct-decl gdecl)
                   (drop &gdecl))
 
-                (let (macro-qq:i32 g-qq-used
-                      macro-nodes:i32 g-node-ctor-used)
+                (let (                      macro-nodes:i32 g-node-ctor-used)
                   ; Restore global state
                   (set! g-out saved-g-out)
                   (set! g-decl-out saved-decl-out)
-                  (set! g-qq-used saved-qq-used)
-                  (set! g-node-ctor-used saved-node-ctor)
-                  ; NOT the `g-macro-decls` idiom beside it: that one is reset
-                  ; and never restored, and copying it here loses the outer
-                  ; body's roots to a nested `macrolet` (macro-call-linking.md
-                  ; §5.3, corrected).
+                        (set! g-node-ctor-used saved-node-ctor)
                   (set! g-ct-roots saved-ct-roots)
                   (set! g-ct-module-defns saved-ct-defns)
                   (set! g-ct-body-name saved-ct-name)
@@ -16235,62 +16114,24 @@
                   (string-clear g-entry-stream)
                   (string-clear g-body-stream)
 
-                  ; Declare the host-defined node constructors if the body built
-                  ; any node. Keyed on macro-nodes, NOT macro-qq: a body whose
-                  ; whole expansion is an atom (`` `1 ``, `` `foo ``, `'x`) goes
-                  ; through emit-quote-tree and never sets macro-qq, and used to
+                  ; Declare the host-defined node runtime if the body built any
+                  ; node — a body whose whole expansion is an atom (`` `1 ``,
+                  ; `` `foo ``, `'x`) goes through emit-quote-tree, and used to
                   ; emit `call @alloc-node` into a module that declared nothing.
                   (when (!= macro-nodes 0)
                     (macro-jit-declare-raw ct-decl (symbol-intern "@alloc-node") (symbol-intern "declare ptr @alloc-node()\n"))
-                    (macro-jit-declare-raw ct-decl (symbol-intern "@make-cell") (symbol-intern "declare ptr @make-cell(ptr, ptr, i32)\n"))
+                    (macro-jit-declare-raw ct-decl (symbol-intern "@node-list-new") (symbol-intern "declare ptr @node-list-new(i32)\n"))
+                    (macro-jit-declare-raw ct-decl (symbol-intern "@node-push") (symbol-intern "declare void @node-push(ptr, ptr)\n"))
+                    (macro-jit-declare-raw ct-decl (symbol-intern "@node-extend") (symbol-intern "declare void @node-extend(ptr, ptr)\n"))
                     (macro-jit-declare-raw ct-decl (symbol-intern "@intern-symbol") (symbol-intern "declare ptr @intern-symbol(ptr)\n"))
-              (macro-jit-declare-raw ct-decl (symbol-intern "@symbol-intern-bytes")
-                                     (symbol-intern "declare i64 @symbol-intern-bytes(ptr, i64)\n")))
-                  ; Add QQ list helpers if needed. Only these need @malloc, and
-                  ; only if it is not already in g-decl-stream (e.g. from an
-                  ; earlier (import-use "stdlib.h")).
-                  (when (!= macro-qq 0)
-                     (when (= g-malloc-decl-done 0)
-                          (macro-jit-declare-raw ct-decl (symbol-intern "@malloc") (symbol-intern "declare ptr @malloc(i64)\n")))
-                        (emit ct-def "define private ptr @__cons(ptr %a, ptr %b) {\n")
-                        (emit ct-def "  %c = call ptr @malloc(i64 40)\n")
-                        (emit ct-def
-                              "  %p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %c, i32 0, i32 0\n")
-                        (emit ct-def "  store i32 3, ptr %p0, align 8\n")
-                        (emit ct-def
-                              "  %p1 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %c, i32 0, i32 1\n")
-                        (emit ct-def "  store i32 0, ptr %p1, align 4\n")
-                        (emit ct-def
-                              "  %p2 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %c, i32 0, i32 2\n")
-                        (emit ct-def "  store i64 0, ptr %p2, align 8\n")
-                        (emit ct-def
-                              "  %p3 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %c, i32 0, i32 3\n")
-                        (emit ct-def "  store ptr null, ptr %p3, align 8\n")
-                        (emit ct-def
-                              "  %p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %c, i32 0, i32 4\n")
-                        (emit ct-def "  store ptr %a, ptr %p4, align 8\n")
-                        (emit ct-def
-                              "  %p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %c, i32 0, i32 5\n")
-                        (emit ct-def "  store ptr %b, ptr %p5, align 8\n")
-                        (emit ct-def "  ret ptr %c\n")
-                        (emit ct-def "}\n\n")
-                        (emit ct-def "define private ptr @__append(ptr %a, ptr %b) {\n")
-                        (emit ct-def "entry:\n")
-                        (emit ct-def "  %z = icmp eq ptr %a, null\n")
-                        (emit ct-def "  br i1 %z, label %nil, label %rec\n")
-                        (emit ct-def "nil:\n")
-                        (emit ct-def "  ret ptr %b\n")
-                        (emit ct-def "rec:\n")
-                        (emit ct-def
-                              "  %p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %a, i32 0, i32 4\n")
-                        (emit ct-def "  %car = load ptr, ptr %p4, align 8\n")
-                        (emit ct-def
-                              "  %p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %a, i32 0, i32 5\n")
-                        (emit ct-def "  %cdr = load ptr, ptr %p5, align 8\n")
-                        (emit ct-def "  %rest = call ptr @__append(ptr %cdr, ptr %b)\n")
-                        (emit ct-def "  %c = call ptr @__cons(ptr %car, ptr %rest)\n")
-                        (emit ct-def "  ret ptr %c\n")
-                        (emit ct-def "}\n\n"))
+                    (macro-jit-ast-read-decls ct-decl)
+                    (macro-jit-declare-raw ct-decl (symbol-intern "@symbol-intern-bytes")
+                                           (symbol-intern "declare i64 @symbol-intern-bytes(ptr, i64)\n")))
+                  ; Restored only now, and restored at all: every declare above
+                  ; writes into THIS module's `ct-decl`, and a nested `macrolet`
+                  ; leaves its own set behind — which would make this module skip
+                  ; a declare the inner one emitted into its own IR.
+                  (set! g-macro-decls saved-macro-decls)
 
                   ; Always declare nucleus_gensym
                   (emit ct-decl "declare ptr @nucleus_gensym()\n")
@@ -16347,8 +16188,8 @@
     ; body-start 1 over a synthetic `(<nothing> e)`, so the body loop compiles
     ; exactly `e`. The bracket is `macrolet-bind`'s: a macro call is expanded
     ; mid-function, and `compile-macro-body` calls `reset-function-state`.
-    (let (inner:(raw Node) (as raw:Node (make-cell e null line))
-          form:(raw Node) (as raw:Node (make-cell null inner line))
+    (let (inner:(raw Node) (as raw:Node (node-list1 e line))
+          form:(raw Node) (as raw:Node (node-cons null inner line))
           saved:&FnState (push-function-state))
       (compile-macro-body mdef jit-name who null 0 form 1 1)
       (pop-function-state saved))
@@ -16380,7 +16221,7 @@
     (die-at encl "macrolet: binding must be (name (params) body...)"))
   (let (bline:i32 (node-line (as ptr b) encl)
         bn:ptr:Node (unsafe/cast &Node b))
-    (when (or (!= (bn 'kind) NODE-CELL) (< (node-len (as ptr b)) 3))
+    (when (or (!= (bn 'kind) NODE-LIST) (< (node-len (as ptr b)) 3))
       (die-at bline "macrolet: binding must be (name (params) body...)"))
     (let (name-node:(raw Node) (as raw:Node (node-at bn 0))
           params-node:ptr (node-at bn 1))
@@ -16648,8 +16489,7 @@
 ; "ptr:Node" → (ptr Node), "ptr:ptr:Node" → (ptr ptr Node).
 (defn split-colon-segments (s:Symbol line:i32):ptr
   (let (sv:StrView (symbol-as-view s)
-        result:ptr null
-        tail:ptr null
+        result:&Node (node-list-new line)
         start:usize 0
         i:usize 0
         slen:usize (symbol-len s))
@@ -16662,13 +16502,10 @@
       (when (or (= i slen) (= (as i32 (aref (sv 'data) (as i64 i))) 58))
          (let (seg:StrView (strview-take-bytes (strview-drop-bytes sv start) (- i start))
                n:ptr (as ptr (intern-node (symbol-intern seg))))
-              (let (cell:ptr (make-cell n null line))
-                (when (= tail null) (set! result cell))
-                (when (!= tail null) (set! ((unsafe/cast &Node tail) 'cdr) cell))
-                (set! tail cell)))
+              (node-push result n))
             (set! start (+ i 1)))
       (set! i (+ i 1)))
-    (return result)))
+    (return (as ptr (node-list-done result)))))
 
 ; Desugar a colon-typed symbol into a binding list:
 ;   "foo:int"        → (foo int)
@@ -16679,10 +16516,10 @@
     ; If 3+ segments (name + multi-symbol type), wrap the type tail
     ; in a sublist so the binding becomes (name (seg1 seg2 ...)).
     (when (!= result null)
-      (let (rest:ptr ((unsafe/cast &Node result) 'cdr))
-        (when (and (!= rest null) (!= ((unsafe/cast &Node rest) 'cdr) null))
-          (let (wrap:ptr (make-cell rest null line))
-            (set! ((unsafe/cast &Node result) 'cdr) wrap)))))
+      (let (rest:ptr (node-rest (unsafe/cast &Node result)))
+        (when (and (!= rest null) (!= (node-rest (unsafe/cast &Node rest)) null))
+          (return (as ptr (node-list2 (node-first (unsafe/cast &Node result))
+                                      rest line))))))
     (return result)))
 
 ; Desugar a single typed-name node (symbol with :).
@@ -16710,45 +16547,37 @@
 (defn desugar-params (params:(raw Node) encl:i32):ptr
   (when (= params null) (return null))
   (let (n:ptr:Node (unsafe/cast &Node params))
-    (when (!= (n 'kind) NODE-CELL) (return params))
-    (reject-legacy-marker (n 'car) (node-line (as ptr params) encl))
-    (let (new-car:ptr (desugar-typed (n 'car) (node-line (as ptr params) encl))
-          new-cdr:ptr (desugar-params (n 'cdr) encl))
-      (when (and (= new-car (n 'car)) (= new-cdr (n 'cdr)))
+    (when (!= (n 'kind) NODE-LIST) (return params))
+    (reject-legacy-marker (node-first n) (node-line (as ptr params) encl))
+    (let (new-car:ptr (desugar-typed (node-first n) (node-line (as ptr params) encl))
+          new-cdr:ptr (desugar-params (node-rest n) encl))
+      (when (and (= new-car (node-first n)) (= new-cdr (node-rest n)))
         (return params))
-      (let (c:ptr:Node (as &Node (alloc-node)))
-        (set! (c 'kind) NODE-CELL)
-        (set! (c 'line) (n 'line))
-        (set! (c 'car) new-car)
-        (set! (c 'cdr) new-cdr)
-        (return (as ptr c))))))
+      (return (as ptr (node-cons new-car new-cdr (n 'line)))))))
 
 ; Desugar a let binding list: pairs of (name val) where name may be typed.
 (defn desugar-let-bindings (binds:(raw Node) encl:i32):ptr
   (when (= binds null) (return null))
   (let (n:ptr:Node (unsafe/cast &Node binds))
-    (when (!= (n 'kind) NODE-CELL) (return binds))
+    (when (!= (n 'kind) NODE-LIST) (return binds))
     ; Even-indexed children are binding names, odd are values — desugar names only.
-    (let (result:ptr null
-          tail:ptr null
+    (let (result:&Node (node-list-new (n 'line))
           cur:ptr binds
           idx:i32 0
           changed:i32 0)
-      (while (!= cur null)
+      (while (> (node-len cur) 0)
         (let (cn:ptr:Node (unsafe/cast &Node cur)
-              elem:ptr (cn 'car)
+              elem:ptr (node-first cn)
               new-elem:ptr elem)
           (when (= (% idx 2) 0)
             (set! new-elem (desugar-typed elem (node-line cur encl))))
           (when (!= new-elem elem) (set! changed 1))
-          (let (cell:ptr (make-cell new-elem null (cn 'line)))
-            (when (= tail null) (set! result cell))
-            (when (!= tail null) (set! ((unsafe/cast &Node tail) 'cdr) cell))
-            (set! tail cell)))
-        (set! cur ((unsafe/cast &Node cur) 'cdr))
+          (set! (result 'line) (cn 'line))
+          (node-push result new-elem))
+        (set! cur (node-rest (unsafe/cast &Node cur)))
         (inc! idx))
       (when (= changed 0) (return binds))
-      (return result))))
+      (return (as ptr (node-list-done result))))))
 
 ; Desugar a top-level form list.  Recognises defn, defvar, defstruct,
 ; extern, declare, and let, and desugars only the binding-position symbols.
@@ -16757,23 +16586,18 @@
 (defn desugar (forms:(raw Node)):ptr
   (when (= forms null) (return null))
   (let (n:ptr:Node (unsafe/cast &Node forms))
-    (when (!= (n 'kind) NODE-CELL) (return forms))
-    (let (new-car:ptr (desugar-form (n 'car))
-          new-cdr:ptr (desugar (n 'cdr)))
-      (when (and (= new-car (n 'car)) (= new-cdr (n 'cdr)))
+    (when (!= (n 'kind) NODE-LIST) (return forms))
+    (let (new-car:ptr (desugar-form (node-first n))
+          new-cdr:ptr (desugar (node-rest n)))
+      (when (and (= new-car (node-first n)) (= new-cdr (node-rest n)))
         (return forms))
-      (let (c:ptr:Node (as &Node (alloc-node)))
-        (set! (c 'kind) NODE-CELL)
-        (set! (c 'line) (n 'line))
-        (set! (c 'car) new-car)
-        (set! (c 'cdr) new-cdr)
-        (return (as ptr c))))))
+      (return (as ptr (node-cons new-car new-cdr (n 'line)))))))
 
 ; Desugar a single form.  Only touches binding positions of known forms.
 (defn desugar-form (form:(raw Node)):ptr
   (when (= form null) (return null))
   (let (f:ptr:Node (unsafe/cast &Node form))
-    (when (!= (f 'kind) NODE-CELL) (return form))
+    (when (!= (f 'kind) NODE-LIST) (return form))
     (when (= (node-len form) 0) (return form))
     (let (head:ptr:Node (unsafe/cast &Node (node-at form 0)))
       (when (!= (head 'kind) NODE-SYM) (return form))
@@ -16787,43 +16611,35 @@
                          (= new-params (node-at form 2)))
                 (return form))
               ; Rebuild: (defn new-name new-params body...)
-              (return (make-cell head
-                       (make-cell new-name
-                         (make-cell new-params
-                           ((unsafe/cast &Node ((unsafe/cast &Node (f 'cdr)) 'cdr)) 'cdr)
-                           (f 'line))
-                         (f 'line))
-                       (f 'line))))))
+              (return (node-cons head
+                        (node-cons new-name
+                         (node-cons new-params
+                           (node-rest (unsafe/cast &Node (node-rest (unsafe/cast &Node (node-rest f))))) (f 'line)) (f 'line)) (f 'line))))))
         ; (defvar name:type [init])
         (when (= h "defvar")
           (when (>= (node-len form) 2)
             (let (new-name:ptr (desugar-typed (node-at form 1) (f 'line)))
               (when (= new-name (node-at form 1)) (return form))
-              (return (make-cell head
-                       (make-cell new-name
-                         ((unsafe/cast &Node (f 'cdr)) 'cdr)
-                         (f 'line))
-                       (f 'line))))))
+              (return (node-cons head
+                        (node-cons new-name
+                         (node-rest (unsafe/cast &Node (node-rest f))) (f 'line)) (f 'line))))))
         ; (defstruct name field:type ...)
         (when (= h "defstruct")
           (when (>= (node-len form) 2)
             ; Desugar fields (positions 2+)
-            (let (new-rest:ptr (desugar-params ((unsafe/cast &Node (f 'cdr)) 'cdr) (f 'line)))
-              (when (= new-rest ((unsafe/cast &Node (f 'cdr)) 'cdr))
+            (let (new-rest:ptr (desugar-params (node-rest (unsafe/cast &Node (node-rest f))) (f 'line)))
+              (when (= new-rest (node-rest (unsafe/cast &Node (node-rest f))))
                 (return form))
-              (return (make-cell head
-                       (make-cell (node-at form 1)
-                         new-rest
-                         (f 'line))
-                       (f 'line))))))
+              (return (node-cons head
+                        (node-cons (node-at form 1)
+                         new-rest (f 'line)) (f 'line))))))
         ; (extern name:type)
         (when (= h "extern")
           (when (= (node-len form) 2)
             (let (new-name:ptr (desugar-typed (node-at form 1) (f 'line)))
               (when (= new-name (node-at form 1)) (return form))
-              (return (make-cell head
-                       (make-cell new-name null (f 'line))
-                       (f 'line))))))
+              (return (node-list2 head
+                        new-name (f 'line))))))
         ; (declare name:type (params...))            — legacy
         ; (declare name (params...) ret)             — new style (S1)
         ; Desugar the name (index 1) and, when present, the param list (index 2);
@@ -16837,36 +16653,31 @@
             (let (new-name:ptr (desugar-typed (node-at form 1) (f 'line)))
               (if (>= (node-len form) 3)
                 (let (new-params:ptr (desugar-params (node-at form 2) (f 'line))
-                      tail3:ptr (-> f (_ 'cdr) (unsafe/cast &Node _) (_ 'cdr)
-                                      (unsafe/cast &Node _) (_ 'cdr)))
+                      tail3:ptr (-> f (node-rest _) (unsafe/cast &Node _) (node-rest _)
+                                      (unsafe/cast &Node _) (node-rest _)))
                   (when (and (= new-name (node-at form 1)) (= new-params (node-at form 2)))
                     (return form))
-                  (return (make-cell head
-                           (make-cell new-name
-                             (make-cell new-params tail3 (f 'line))
-                             (f 'line))
-                           (f 'line))))
+                  (return (node-cons head
+                            (node-cons new-name
+                             (node-cons new-params tail3 (f 'line)) (f 'line)) (f 'line))))
                 (do
                   (when (= new-name (node-at form 1)) (return form))
-                  (return (make-cell head
-                           (make-cell new-name null (f 'line))
-                           (f 'line))))))))
+                  (return (node-list2 head
+                            new-name (f 'line))))))))
         ; (let (bindings...) body...) — desugar binding names
         ; (with (bindings...) body...) — same shape; auto-frees libc-alloc'd bindings
         (when (or (= h "let") (= h "with"))
           (when (>= (node-len form) 2)
             (let (new-binds:ptr (desugar-let-bindings (node-at form 1) (f 'line)))
               (when (= new-binds (node-at form 1)) (return form))
-              (return (make-cell head
-                       (make-cell new-binds
-                         ((unsafe/cast &Node (f 'cdr)) 'cdr)
-                         (f 'line))
-                       (f 'line))))))
+              (return (node-cons head
+                        (node-cons new-binds
+                         (node-rest (unsafe/cast &Node (node-rest f))) (f 'line)) (f 'line))))))
         ; Recurse into body of compile-time and do blocks
         (when (or (= h "compile-time") (= h "do"))
-          (let (new-body:ptr (desugar (f 'cdr)))
-            (when (= new-body (f 'cdr)) (return form))
-            (return (make-cell head new-body (f 'line)))))
+          (let (new-body:ptr (desugar (node-rest f)))
+            (when (= new-body (node-rest f)) (return form))
+            (return (node-cons head new-body (f 'line)))))
         (return form)))))
 
 ; Pre-register the names of all top-level structs so that defn signatures
@@ -16901,9 +16712,9 @@
 ; prescan ahead of the root's own, is not needed for this.
 (defn prescan-file-imports (forms:(raw Node)):void
   (let (fc:ptr forms)
-    (while (!= fc null)
-      (let (f:ptr:Node (unsafe/cast &Node ((unsafe/cast &Node fc) 'car)))
-        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-CELL)
+    (while (> (node-len fc) 0)
+      (let (f:ptr:Node (unsafe/cast &Node (node-first (unsafe/cast &Node fc))))
+        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST)
                    (>= (node-len (as ptr f)) 2)
                    (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
           (let (ph:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's))
@@ -16947,7 +16758,7 @@
                   ; form's own line. Staying silent here keeps one diagnosis.
                   (let (path:Symbol (resolve-import (nn 's) 0))
                     (when (not (symbol-none? path)) (file-import-record prefix path)))))))))
-      (set! fc ((unsafe/cast &Node fc) 'cdr)))))
+      (set! fc (node-rest (unsafe/cast &Node fc))))))
 
 ; Stage 15 W9 item 6: the file path an import form names, for the two prescan
 ; passes below — or null when this pass has nothing to walk.
@@ -17012,12 +16823,12 @@
 ; guards each emitter now calls — never from a copy of the words here.
 ; ============================================================
 
-; A declaration node the reader gave as NULL is the empty list `()`. Recurses
-; into the type, because an inline `(union …)` / `(struct …)` member is itself a
+; A declaration node that is absent or `()` declares nothing. Recurses into the
+; type, because an inline `(union …)` / `(struct …)` member is itself a
 ; declaration and reaches `extract-name-and-type` on the same terms in emission —
 ; with the FIELD's own line, which is what `--emit-llvm` reports for it.
 (defn validate-decl-node (node:ptr line:i32):void
-  (when (= node null) (die-empty-decl line))
+  (when (node-empty? node) (die-empty-decl line))
   (let (own:i32 (node-line node line))
     (validate-type-node (extract-type-node node own) own)))
 
@@ -17030,18 +16841,18 @@
 (defn validate-type-node (tn:ptr line:i32):void
   (when (= tn null) (return))
   (let (n:ptr:Node (unsafe/cast &Node tn))
-    (when (!= (n 'kind) NODE-CELL) (return))
-    (let (head:ptr:Node (unsafe/cast &Node (n 'car))
+    (when (!= (n 'kind) NODE-LIST) (return))
+    (let (head:ptr:Node (unsafe/cast &Node (node-first n))
           agg:i32 0)
       (when (!= (as ptr head) null)
         (when (= (head 'kind) NODE-SYM)
           (when (or (= (head 's) "union") (= (head 's) "struct")) (set! agg 1))))
-      (let (cur:ptr (n 'cdr))
-        (while (!= cur null)
+      (let (cur:ptr (node-rest n))
+        (while (> (node-len cur) 0)
           (if (!= agg 0)
-            (validate-decl-node ((unsafe/cast &Node cur) 'car) line)
-            (validate-type-node ((unsafe/cast &Node cur) 'car) line))
-          (set! cur ((unsafe/cast &Node cur) 'cdr)))))))
+            (validate-decl-node (node-first (unsafe/cast &Node cur)) line)
+            (validate-type-node (node-first (unsafe/cast &Node cur)) line))
+          (set! cur (node-rest (unsafe/cast &Node cur))))))))
 
 ; A `defn` / `defn-`, validated exactly as far as `emit-defn` validates it before
 ; reading a body: the S1 arity check and the params-is-list check, then each
@@ -17091,11 +16902,11 @@
 ; what `--emit-llvm` does with the same input.
 (defn validate-header-forms (forms:(raw Node)):void
   (let (fc:ptr forms)
-    (while (!= fc null)
-      (let (f:ptr:Node (unsafe/cast &Node ((unsafe/cast &Node fc) 'car)))
+    (while (> (node-len fc) 0)
+      (let (f:ptr:Node (unsafe/cast &Node (node-first (unsafe/cast &Node fc))))
         ; Length 1 is enough to reach here: `(defn)` names a definer and carries
         ; nothing else, and refusing it is the whole point.
-        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-CELL)
+        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST)
                    (>= (node-len (as ptr f)) 1)
                    (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
           (let (ph:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
@@ -17138,7 +16949,7 @@
               ; quote the constant's VALUE in the message — so asking the general
               ; kind question here would answer a shape they own with different
               ; words. `()` is not a shape they recognize.
-              (when (= (node-at (as ptr f) 1) null)
+              (when (node-empty? (node-at (as ptr f) 1))
                 (require-defconst-name null (f 'line))))
             (when (or (= ph "defenum") (= ph "defenum-"))
               (require-defenum-form (as ptr f))
@@ -17164,11 +16975,11 @@
               ; a non-null operand is left alone, because resolving a type here
               ; would ask a question this pass has no import environment for.
               (dotimes (i 2)
-                (when (= (node-at (as ptr f) (+ i 1)) null)
+                (when (node-empty? (node-at (as ptr f) (+ i 1)))
                   (parse-type-from-node null (f 'line)))))
             (when (= ph "extend")
               (require-extend-form (as ptr f))
-              (when (= (node-at (as ptr f) 1) null)
+              (when (node-empty? (node-at (as ptr f) 1))
                 (require-extend-subject null (f 'line)))
               (require-extend-protocol (as raw:Node (node-at (as ptr f) 2)) (f 'line)))
             (when (= ph "extern")
@@ -17184,12 +16995,12 @@
                 (require-export-arg (as raw:Node (node-at (as ptr f) (+ i 1))) (f 'line))))
             (when (= ph "declare")
               (require-declare-name (as raw:Node (node-at (as ptr f) 1)) (f 'line))))))
-      (set! fc ((unsafe/cast &Node fc) 'cdr)))))
+      (set! fc (node-rest (unsafe/cast &Node fc))))))
 
 (defn prescan-imported-types (forms:(raw Node)):void
   (let (fc:ptr forms)
-    (while (!= fc null)
-      (let (f:ptr:Node (unsafe/cast &Node ((unsafe/cast &Node fc) 'car)))
+    (while (> (node-len fc) 0)
+      (let (f:ptr:Node (unsafe/cast &Node (node-first (unsafe/cast &Node fc))))
         ; Stage 12: every import form carries the library at index 1 — the legacy
         ; flatten `(import LIB)` plus the new `import-use`/`import-only`/
         ; `import-prefixed`/`unsafe-import-private`. The prescan only needs the
@@ -17197,7 +17008,7 @@
         ; signatures); the prefix/symbol-list tail is irrelevant here. The legacy
         ; `import` keeps the node-len==2 guard so its byte-identical path is
         ; untouched; the new heads accept a longer tail.
-        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-CELL)
+        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST)
                    (>= (node-len (as ptr f)) 2)
                    (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
           (let (ph:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
@@ -17262,7 +17073,7 @@
                       (set! g-current-ns save-ns)
                       (set! g-ns-seen save-ns-seen)
                       (set! g-file-imports save-file-imports))))))))))
-      (set! fc ((unsafe/cast &Node fc) 'cdr)))))
+      (set! fc (node-rest (unsafe/cast &Node fc))))))
 
 (defn prescan-struct-names (forms:(raw Node)):void
   (prescan-struct-names-mode forms 0))
@@ -17280,9 +17091,9 @@
 ; no `%Name = type` line is written, and `--emit-llvm` exits 0 on invalid IR.
 (defn prescan-struct-names-mode (forms:(raw Node) in-ct:i32):void
   (let (fc:ptr forms)
-    (while (!= fc null)
-      (let (f:ptr:Node (unsafe/cast &Node ((unsafe/cast &Node fc) 'car)))
-        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-CELL)
+    (while (> (node-len fc) 0)
+      (let (f:ptr:Node (unsafe/cast &Node (node-first (unsafe/cast &Node fc))))
+        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST)
                    (>= (node-len (as ptr f)) 2)
                    (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
           (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
@@ -17317,7 +17128,7 @@
                   ; Stage 11: a parameterized head — (defstruct (Vector T) ...) —
                   ; registers a template here so defn signatures naming
                   ; (Vector i32) resolve in the signature prescan that follows.
-                  (when (= (node-kind (as ptr nn)) NODE-CELL)
+                  (when (= (node-kind (as ptr nn)) NODE-LIST)
                     (register-struct-template (as ptr f))))))
             ; Stage 16 (container-type-sugar.md §3.5): register the alias NAME and
             ; body here, so defn signatures naming it resolve in the signature
@@ -17335,14 +17146,14 @@
                     (let (sd:&StructDef (register-struct (qualify-name (nn 's))))
                       (set! (sd 'src-file) g-source-path)
                       (set! (sd 'src-line) (f 'line))))
-                  (when (= (node-kind (as ptr nn)) NODE-CELL)
+                  (when (= (node-kind (as ptr nn)) NODE-LIST)
                     (register-union-template (as ptr f))))))
             ; The descent. A CT body defines PROGRAM types (D9's ruling), so its
             ; names have to be visible to this unit's signature prescan, which
             ; runs next. Same walk, one level down — not a second one.
             (when (and (= in-ct 0) (= h "compile-time"))
-              (prescan-struct-names-mode (f 'cdr) 1)))))
-      (set! fc ((unsafe/cast &Node fc) 'cdr)))))
+              (prescan-struct-names-mode (node-rest f) 1)))))
+      (set! fc (node-rest (unsafe/cast &Node fc))))))
 
 ; Stage 15 W9 item 40: give every `defstruct` in this form list its LAYOUT.
 ; `prescan-struct-names` (above) registers the NAME; this registers the fields, so
@@ -17372,9 +17183,9 @@
 ; unlaid-out struct is sized 0 rather than diagnosed (W9 item 40's finding).
 (defn prescan-struct-layouts-mode (forms:(raw Node) in-ct:i32):void
   (let (fc:ptr forms)
-    (while (!= fc null)
-      (let (f:ptr:Node (unsafe/cast &Node ((unsafe/cast &Node fc) 'car)))
-        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-CELL)
+    (while (> (node-len fc) 0)
+      (let (f:ptr:Node (unsafe/cast &Node (node-first (unsafe/cast &Node fc))))
+        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST)
                    (>= (node-len (as ptr f)) 2)
                    (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
           (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
@@ -17388,8 +17199,8 @@
                       (defstruct-fill-layout (as raw:StructDef sd) (as raw:Node f) 0))
                     0))))
             (when (and (= in-ct 0) (= h "compile-time"))
-              (prescan-struct-layouts-mode (f 'cdr) 1)))))
-      (set! fc ((unsafe/cast &Node fc) 'cdr)))))
+              (prescan-struct-layouts-mode (node-rest f) 1)))))
+      (set! fc (node-rest (unsafe/cast &Node fc))))))
 
 ; Stage 15 W9 item 40: may the layout prescan hand this `defunion` form to
 ; `defunion-register`, or must it leave the whole thing to `emit-defunion`?
@@ -17406,15 +17217,15 @@
     (split-typed (-> (unsafe/cast &Node form) (node-at _ 1) (unsafe/cast &Node _) (_ 's))
                  (as &Symbol &base) (as &Symbol &tyname))
     (when (not (symbol-none? tyname)) (return 1)))
-  (let (cur:ptr (-> (unsafe/cast &Node form) (_ 'cdr) (unsafe/cast &Node _) (_ 'cdr))
+  (let (cur:ptr (-> (unsafe/cast &Node form) (node-rest _) (unsafe/cast &Node _) (node-rest _))
         repr-box:i32 REPR-AUTO)
     (set! cur (defunion-strip-repr cur (as &i32 &repr-box) line))
     (when (= cur null) (return 1))
-    (while (!= cur null)
-      (let (arm:ptr:Node (unsafe/cast &Node ((unsafe/cast &Node cur) 'car)))
+    (while (> (node-len cur) 0)
+      (let (arm:ptr:Node (unsafe/cast &Node (node-first (unsafe/cast &Node cur))))
         (when (= (as ptr arm) null) (return 1))
         (when (!= (arm 'kind) NODE-SYM)
-          (when (or (!= (arm 'kind) NODE-CELL) (= (node-len (as ptr arm)) 0)) (return 1))
+          (when (or (!= (arm 'kind) NODE-LIST) (= (node-len (as ptr arm)) 0)) (return 1))
           (when (!= (node-kind (node-at (as ptr arm) 0)) NODE-SYM) (return 1))
           (dotimes (fi (- (node-len (as ptr arm)) 1))
             (let (field:ptr (node-at (as ptr arm) (+ fi 1))
@@ -17425,7 +17236,7 @@
                 (when (= fty null) (return 1))
                 (when (!= (opaque-sdef-of fty) null) (return 1))
                 (when (!= (cycle-pending-sdef fty) null) (return 1)))))))
-      (set! cur ((unsafe/cast &Node cur) 'cdr))))
+      (set! cur (node-rest (unsafe/cast &Node cur)))))
   (return 0))
 
 ; Stage 15 W9 item 40: give every monomorphic `defunion` in this form list its
@@ -17445,9 +17256,9 @@
 ; probes, so the header path takes struct layouts only.
 (defn prescan-union-layouts (forms:(raw Node)):void
   (let (fc:ptr forms)
-    (while (!= fc null)
-      (let (f:ptr:Node (unsafe/cast &Node ((unsafe/cast &Node fc) 'car)))
-        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-CELL)
+    (while (> (node-len fc) 0)
+      (let (f:ptr:Node (unsafe/cast &Node (node-first (unsafe/cast &Node fc))))
+        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST)
                    (>= (node-len (as ptr f)) 3)
                    (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
           (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
@@ -17464,9 +17275,9 @@
                   (let (save-priv:i32 g-defining-private)
                     (set! g-defining-private (if (= h "defunion-") 1 0))
                     (defunion-register (qualify-name (nn 's))
-                      (-> f (_ 'cdr) (unsafe/cast &Node _) (_ 'cdr)) (f 'line))
+                      (-> f (node-rest _) (unsafe/cast &Node _) (node-rest _)) (f 'line))
                     (set! g-defining-private save-priv))))))))
-      (set! fc ((unsafe/cast &Node fc) 'cdr)))))
+      (set! fc (node-rest (unsafe/cast &Node fc))))))
 
 ; Register the constructor signatures of a (monomorphic) defunion form:
 ; per arm, `Name-arm : Name (field types...)`. Runs in the signature prescan,
@@ -17491,19 +17302,19 @@
       ; rewrite, not the named constructor).
       (let (repr-box:i32 REPR-AUTO
             ret:ptr (as ptr (type-for-sdef sd))
-            cur:ptr (defunion-strip-repr (-> ff (_ 'cdr) (unsafe/cast &Node _) (_ 'cdr))
+            cur:ptr (defunion-strip-repr (-> ff (node-rest _) (unsafe/cast &Node _) (node-rest _))
                       (as &i32 &repr-box) (ff 'line)))
-        (while (!= cur null)
-          (let (arm:ptr:Node (unsafe/cast &Node ((unsafe/cast &Node cur) 'car))
+        (while (> (node-len cur) 0)
+          (let (arm:ptr:Node (unsafe/cast &Node (node-first (unsafe/cast &Node cur)))
                 aname:Symbol (symbol-none)
                 fields:ptr null
                 nf:i32 0)
             (if (= (arm 'kind) NODE-SYM)
               (set! aname (arm 's))
-              (when (and (= (arm 'kind) NODE-CELL)
+              (when (and (= (arm 'kind) NODE-LIST)
                          (-> arm (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
                 (set! aname (-> arm (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
-                (set! fields ((unsafe/cast &Node arm) 'cdr))
+                (set! fields (node-rest (unsafe/cast &Node arm)))
                 (set! nf (- (node-len (as ptr arm)) 1))))
             (when (not (symbol-none? aname))
               (let (ptypes:ptr null)
@@ -17511,33 +17322,33 @@
                   (set! ptypes (arena-alloc (* nf (ptr-bytes))))
                   (let (fi:i32 0
                         fcur:ptr fields)
-                    (while (!= fcur null)
+                    (while (> (node-len fcur) 0)
                       (let (fname:Symbol (symbol-none)
-                            fty:ptr (extract-name-and-type ((unsafe/cast &Node fcur) 'car)
+                            fty:ptr (extract-name-and-type (node-first (unsafe/cast &Node fcur))
                                                             (as &Symbol &fname)
                                                             (ff 'line)))
                         (when (= fty null) (set! fty (as ptr ty-i32)))
                         (set! (aref (as &ptr ptypes) fi) fty))
                       (inc! fi)
-                      (set! fcur ((unsafe/cast &Node fcur) 'cdr)))))
+                      (set! fcur (node-rest (unsafe/cast &Node fcur))))))
                 (generic-register-method (symbol-intern (fstr (name-node 's) "-" aname))
                                          ret ptypes nf 0 0 null))))
-          (set! cur ((unsafe/cast &Node cur) 'cdr)))))))
+          (set! cur (node-rest (unsafe/cast &Node cur))))))))
 
 ; Pre-scan a form list and forward-declare all defn signatures in g-globals.
 (defn prescan-defn-signatures (forms:(raw Node)):void
   (let (fc:ptr forms)
-    (while (!= fc null)
-      (let (f:ptr:Node (unsafe/cast &Node ((unsafe/cast &Node fc) 'car)))
+    (while (> (node-len fc) 0)
+      (let (f:ptr:Node (unsafe/cast &Node (node-first (unsafe/cast &Node fc))))
         ; defunion/defunion-: pre-register the arm constructors' signatures so
         ; defns earlier in the unit can call them (mirrors the defn prescan below).
-        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-CELL)
+        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST)
                    (>= (node-len (as ptr f)) 3)
                    (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
           (let (ph2:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
             (when (or (= ph2 "defunion") (= ph2 "defunion-"))
               (prescan-union-ctors (as ptr f)))))
-        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-CELL)
+        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST)
                    (>= (node-len (as ptr f)) 4)
                    (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
           (let (ph3:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
@@ -17586,7 +17397,7 @@
                       (defn-params-set-opt (as raw:Node params-node)
                         (unsafe/cast &Type ((as &Method pm) 'fn-type)))))))))
             (set! g-defining-private save-priv))))))
-      (set! fc ((unsafe/cast &Node fc) 'cdr)))
+      (set! fc (node-rest (unsafe/cast &Node fc))))
     (finalize-generics)))
 
 ; ============================================================
@@ -17644,11 +17455,11 @@
   (let (cc:ptr:Node (unsafe/cast &Node form))
     (when (< (node-len cc) 2) (return))
     (let (attr-flags:i32 0
-          decl:ptr (parse-decl-attrs (as ptr (cc 'cdr))
+          decl:ptr (parse-decl-attrs (as ptr (node-rest cc))
                      (as &i32 &attr-flags) (cc 'line)))
       (when (= decl null) (return))
       (let (declc:ptr:Node (unsafe/cast &Node decl)
-            name-node:ptr (declc 'car)
+            name-node:ptr (node-first declc)
             name:Symbol (symbol-none)
             name-line:i32 (node-line (as ptr name-node) (cc 'line))
             ; G-2: the prescan resolves the very same type node and must not
@@ -17735,9 +17546,9 @@
 ; (repl-libraries.md §3.3, "which prescans share the defect").
 (defn prescan-value-names (forms:(raw Node)):void
   (let (fc:ptr forms)
-    (while (!= fc null)
-      (let (f:ptr:Node (unsafe/cast &Node ((unsafe/cast &Node fc) 'car)))
-        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-CELL)
+    (while (> (node-len fc) 0)
+      (let (f:ptr:Node (unsafe/cast &Node (node-first (unsafe/cast &Node fc))))
+        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST)
                    (>= (node-len (as ptr f)) 2)
                    (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
           (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's))
@@ -17758,7 +17569,7 @@
                   true
                     (prescan-defenum-names (as ptr f)))
                 (set! g-defining-private save-priv))))))
-      (set! fc ((unsafe/cast &Node fc) 'cdr)))))
+      (set! fc (node-rest (unsafe/cast &Node fc))))))
 
 ; Stage 15 W1a/W1b (design/stage15-stress-test/resolution.md) — the second
 ; whole-graph prescan pass. `prescan-imported-types` (pass 1, above) has already
@@ -17806,9 +17617,9 @@
 ; `.nuc` STRING path used to be silently skipped here and in pass 1.
 (defn prescan-imported-signatures (forms:(raw Node)):void
   (let (fc:ptr forms)
-    (while (!= fc null)
-      (let (f:ptr:Node (unsafe/cast &Node ((unsafe/cast &Node fc) 'car)))
-        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-CELL)
+    (while (> (node-len fc) 0)
+      (let (f:ptr:Node (unsafe/cast &Node (node-first (unsafe/cast &Node fc))))
+        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST)
                    (>= (node-len (as ptr f)) 2)
                    (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
           (let (ph:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
@@ -17877,7 +17688,7 @@
                       (set! g-current-ns save-ns)
                       (set! g-ns-seen save-ns-seen)
                       (set! g-file-imports save-file-imports))))))))))
-      (set! fc ((unsafe/cast &Node fc) 'cdr)))))
+      (set! fc (node-rest (unsafe/cast &Node fc))))))
 
 ; Stage 12 namespaces. Validate an `(ns NAME)` form and set the current
 ; namespace. `ns` is deliberately minimal — it sets the namespace and nothing
@@ -18056,8 +17867,8 @@
 ; second one) is left for the dispatch loop, which routes it back to emit-ns.
 (defn apply-leading-ns (forms:(raw Node)):(raw Node)
   (when (= (is-leading-ns forms) 0) (return forms))
-  (emit-ns ((unsafe/cast &Node forms) 'car))
-  (return ((unsafe/cast &Node forms) 'cdr)))
+  (emit-ns (node-first (unsafe/cast &Node forms)))
+  (return (node-rest (unsafe/cast &Node forms))))
 
 ; Stage 12 N4: scan forms for the first `set-ir-prefix` that appears before any
 ; defining form (`defn`, `defvar`, `defstruct`, etc.) and apply it now, before
@@ -18069,10 +17880,10 @@
 ; the first definer so a mid-file `set-ir-prefix` retains in-order semantics.
 (defn apply-early-set-ir-prefix (forms:(raw Node)):void
   (let (fc:ptr forms)
-    (while (!= fc null)
-      (let (f:ptr:Node (unsafe/cast &Node ((unsafe/cast &Node fc) 'car)))
+    (while (> (node-len fc) 0)
+      (let (f:ptr:Node (unsafe/cast &Node (node-first (unsafe/cast &Node fc))))
         (when (and (!= (as ptr f) null)
-                   (= (f 'kind) NODE-CELL)
+                   (= (f 'kind) NODE-LIST)
                    (> (node-len (as ptr f)) 0)
                    (= (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind)) NODE-SYM))
           (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
@@ -18086,7 +17897,7 @@
                   (= h "defvar")
                   (= h "defvar-"))
                 (return)))))
-      (set! fc ((unsafe/cast &Node fc) 'cdr)))))
+      (set! fc (node-rest (unsafe/cast &Node fc))))))
 
 ; ============================================================
 ; Stage 15 W8 G-3 — @__nucleus_init (design/global-init.md §5, §4.8)
@@ -18222,33 +18033,13 @@
 
 ; Stage 18 TF-4: a user macro in top-level position. Reached only from the
 ; dispatch loop's default arm, so the built-in forms still win their own names.
-; Rewrites `cell` in place and returns 1 for "dispatch this cell again"; a `do`
-; expansion is spliced so each child becomes a top-level form of its own.
-; design/stage18-tooling/overview.md §T6.
-; Splice `body` (plus `extra`, when non-null) into the dispatch list in place of
-; the form `cell` currently holds, keeping the rest of the list after it. The
-; caller returns 1 so the loop dispatches `cell` again, now holding the first
-; spliced form. Copies the spine rather than relinking the source's own cells: a
-; template returning a quoted constant hands out a shared subtree.
-(defn toplevel-splice (cell:ptr:Node body:(raw Node) extra:(raw Node)):void
-  (let (first:ptr null
-        tail:ptr null
-        it:ptr body)
-    (while (!= it null)
-      (let (nc:ptr (make-cell ((unsafe/cast &Node it) 'car) null
-                              ((unsafe/cast &Node it) 'line)))
-        (if (= first null)
-          (do (set! first nc) (set! tail nc))
-          (do (set! ((unsafe/cast &Node tail) 'cdr) nc) (set! tail nc))))
-      (set! it ((unsafe/cast &Node it) 'cdr)))
-    (when (!= extra null)
-      (let (nc:ptr (make-cell extra null ((unsafe/cast &Node extra) 'line)))
-        (if (= first null)
-          (do (set! first nc) (set! tail nc))
-          (do (set! ((unsafe/cast &Node tail) 'cdr) nc) (set! tail nc)))))
-    (set! ((unsafe/cast &Node tail) 'cdr) (cell 'cdr))
-    (set! (cell 'car) ((unsafe/cast &Node first) 'car))
-    (set! (cell 'cdr) ((unsafe/cast &Node first) 'cdr))))
+; Both of these rewrite element `i` of the dispatch list and return 1 for
+; "dispatch that position again" — a mutation, because the loop and its caller
+; hold the list. `node-splice-at` copies what it splices rather than relinking
+; the source's own list: a template returning a quoted constant hands out a
+; shared subtree. design/stage18-tooling/overview.md §T6.
+(defn toplevel-splice (forms:(raw Node) i:i32 body:(raw Node) extra:(raw Node)):void
+  (node-splice-at (unsafe/cast &Node forms) i body extra))
 
 ; Stage 20 M2: `macrolet` in top-level position (design/stage20-macros/overview.md
 ; §2.2), which is what lets `macmap` stand where a definition stands. The
@@ -18260,7 +18051,7 @@
 ;
 ; Body definitions are invisible to the pre-scans, exactly as macro-produced ones
 ; are (docs/macros.md) — the scans walk the top-level list and see the `macrolet`.
-(defn emit-toplevel-macrolet (cell:ptr:Node f:ptr:Node):i32
+(defn emit-toplevel-macrolet (forms:(raw Node) i:i32 f:ptr:Node):i32
   (when (< (node-len (as ptr f)) 3)
     (die-at (f 'line) "macrolet: expects a binding list and at least one body form"))
   (let (binds:ptr (node-at f 1))
@@ -18273,30 +18064,29 @@
         (set! (cnt 'kind) NODE-INT)
         (set! (cnt 'line) (f 'line))
         (set! (cnt 'i) (as i64 nb))
-        (toplevel-splice cell
-                         ((f 'cdr) 'cdr)
+        (toplevel-splice forms i
+                         (node-rest (node-rest f))
                          (as raw:Node
-                             (make-cell (as raw:Node (intern-node (symbol-intern "__macrolet-end")))
-                                        (make-cell (as raw:Node cnt) null (f 'line))
-                                        (f 'line)))))))
+                             (node-list2 (as raw:Node (intern-node (symbol-intern "__macrolet-end")))
+                               (as raw:Node cnt) (f 'line)))))))
   (return 1))
 
-(defn toplevel-expand-macro (cell:ptr:Node f:ptr:Node h:Symbol):i32
+(defn toplevel-expand-macro (forms:(raw Node) i:i32 f:ptr:Node h:Symbol):i32
   (when (= (find-macro h) null)
     (die-at (f 'line) (fstr "unknown top-level form: " h)))
   (let (ex:ptr (desugar-form (macroexpand-form (as raw:Node f) -1)))
     (when (or (= ex null)
-              (!= ((unsafe/cast &Node ex) 'kind) NODE-CELL)
+              (!= ((unsafe/cast &Node ex) 'kind) NODE-LIST)
               (= (node-len ex) 0))
       (die-at (f 'line) (fstr "top-level macro '" h "' did not expand to a form")))
     (let (head:ptr:Node (unsafe/cast &Node (node-at ex 0)))
       (when (and (= (head 'kind) NODE-SYM) (= (head 's) "do"))
-        (let (body:ptr ((unsafe/cast &Node ex) 'cdr))
+        (let (body:ptr (node-rest (unsafe/cast &Node ex)))
           (when (= body null)
             (die-at (f 'line) (fstr "top-level macro '" h "' expanded to an empty (do)")))
-          (toplevel-splice cell body null)
+          (toplevel-splice forms i body null)
           (return 1))))
-    (set! (cell 'car) ex)
+    (node-set-at (unsafe/cast &Node forms) i ex)
     (return 1)))
 
 ; Emit a list of top-level forms (pre-scan + dispatch loop).
@@ -18415,16 +18205,17 @@
   ; `sigs-done`: an imported file re-entered at depth 2 finds its layouts done.
   (prescan-struct-layouts forms)
   (prescan-union-layouts forms)
-  (let (fc:ptr forms
+  (let (fi:i32 0
+        nforms:i32 (node-len forms)
         redo:i32 0)
-    (while (!= fc null)
+    (while (< fi nforms)
       (set! redo 0)
-      (let (f:ptr:Node (unsafe/cast &Node ((unsafe/cast &Node fc) 'car)))
+      (let (f:ptr:Node (unsafe/cast &Node (node-at forms fi)))
         (when (or (= (as ptr f) null)
-                  (!= (f 'kind) NODE-CELL)
+                  (!= (f 'kind) NODE-LIST)
                   (= (node-len (as ptr f)) 0)
                   (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (!= _ NODE-SYM)))
-              (die-at (node-line (as ptr f) ((unsafe/cast &Node fc) 'line))
+              (die-at (node-line (as ptr f) ((unsafe/cast &Node forms) 'line))
                       "top-level form must be a list starting with a symbol"))
         (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's))
               hp:ptr (-> f (node-at _ 0)))
@@ -18566,7 +18357,7 @@
             'declare
               (do (set! g-out &g-decl-stream) (emit-nuch-declare-import (as ptr f)))
             'macrolet
-              (set! redo (emit-toplevel-macrolet (unsafe/cast &Node fc) (as &Node f)))
+              (set! redo (emit-toplevel-macrolet forms fi (as &Node f)))
             '__macrolet-end
               ; The scope closer emit-toplevel-macrolet spliced after the body.
               ; Innermost-first, so a nested binding of the same name restores
@@ -18577,22 +18368,24 @@
                 (when (!= (count g-macrolet-stack) 0)
                   (remove-at g-macrolet-stack
                              (as usize (- (unsafe/cast i32 (count g-macrolet-stack)) 1)))))
-            (set! redo (toplevel-expand-macro (unsafe/cast &Node fc) (as &Node f) h)))))
-      ; `redo` means the cell was rewritten by a top-level macro expansion:
-      ; dispatch the same cell again instead of advancing past it.
-      (when (= redo 0)
-        (set! fc ((unsafe/cast &Node fc) 'cdr))
-        ; Stage 15 W9 item 1. Two things, both only for the unit's root frame:
-        ; close the hoist window (one form of the root has now been emitted, so a
-        ; hoist from here on would duplicate it), and stop if the hoist actually
-        ; happened — `g-imported` carrying our own path means an import read and
-        ; emitted this very file, so the forms left in this list are the ones it
-        ; already emitted.
-        (when (= g-toplevel-depth 1)
-          (set! g-root-hoist-ok 0)
-          (when (and (not (symbol-none? g-unit-entry-path))
-                     (!= (import-list-has g-imported g-unit-entry-path) 0))
-            (set! fc null))))))
+            (set! redo (toplevel-expand-macro forms fi (as &Node f) h)))))
+      ; `redo` means a top-level macro expansion rewrote this position: dispatch
+      ; it again instead of advancing past it. The list grew, so re-measure.
+      (if (!= redo 0)
+        (set! nforms (node-len forms))
+        (do
+          (inc! fi)
+          ; Stage 15 W9 item 1. Two things, both only for the unit's root frame:
+          ; close the hoist window (one form of the root has now been emitted, so a
+          ; hoist from here on would duplicate it), and stop if the hoist actually
+          ; happened — `g-imported` carrying our own path means an import read and
+          ; emitted this very file, so the forms left in this list are the ones it
+          ; already emitted.
+          (when (= g-toplevel-depth 1)
+            (set! g-root-hoist-ok 0)
+            (when (and (not (symbol-none? g-unit-entry-path))
+                       (!= (import-list-has g-imported g-unit-entry-path) 0))
+              (set! fi nforms)))))))
   ; A2: type-check generic template bodies against their abstract protocol
   ; interface. Only at the outermost level — every import has now registered its
   ; names/protocols/conformances and g-source-path is back to this unit — and
@@ -18620,14 +18413,16 @@
     (set! g-importing (import-list-pop g-importing)))
   (set! g-toplevel-depth (- g-toplevel-depth 1))))
 
-; Check if a path is in a Node-based string list.
+; Check if a path is in a Node-based string list. Stage 21: a real list whose
+; ELEMENTS are the NODE-STR records, not a chain threaded through their own
+; `cdr` — the records outlive any one representation of the list.
 (defn import-list-has (list:(raw Node) path:Symbol):i32
   (let (cur:ptr list)
-    (while (!= cur null)
-      (let (entry:ptr:Node (unsafe/cast &Node cur))
+    (while (> (node-len cur) 0)
+      (let (entry:ptr:Node (unsafe/cast &Node (node-first (unsafe/cast &Node cur))))
         (when (= (entry 's) path)
           (return 1))
-        (set! cur (entry 'cdr))))
+        (set! cur (node-rest (unsafe/cast &Node cur)))))
     (return 0)))
 
 ; Stage 12: find a path's record in a Node-based string list, or null. The
@@ -18637,11 +18432,11 @@
 ; without re-emitting the file's code.
 (defn import-list-find (list:(raw Node) path:Symbol):ptr
   (let (cur:ptr list)
-    (while (!= cur null)
-      (let (entry:ptr:Node (unsafe/cast &Node cur))
+    (while (> (node-len cur) 0)
+      (let (entry:ptr:Node (unsafe/cast &Node (node-first (unsafe/cast &Node cur))))
         (when (= (entry 's) path)
-          (return cur))
-        (set! cur (entry 'cdr))))
+          (return (as ptr entry)))
+        (set! cur (node-rest (unsafe/cast &Node cur)))))
     (return null)))
 
 ; Push a path onto a Node-based string list, return new head.
@@ -18654,9 +18449,7 @@
     (set! (n 'line) 0)
     (set! (n 'i) 0)
     (set! (n 's) path)
-    (set! (n 'car) null)
-    (set! (n 'cdr) list)
-    (return n)))
+    (return (node-cons (as raw:Node n) list 0))))
 
 ; Stage 12: push a loaded-file record that also carries the [start, end) slice of
 ; the global scope the file contributed (start in `i`, end in `line`). A later
@@ -18668,14 +18461,12 @@
     (set! (n 'line) end)
     (set! (n 'i) (as i64 start))
     (set! (n 's) path)
-    (set! (n 'car) null)
-    (set! (n 'cdr) list)
-    (return n)))
+    (return (node-cons (as raw:Node n) list 0))))
 
 ; Remove the head of a Node-based string list, return new head.
 (defn import-list-pop (list:(raw Node)):ptr
   (when (= list null) (return null))
-  (return ((unsafe/cast &Node list) 'cdr)))
+  (return (node-rest (unsafe/cast &Node list))))
 
 ; Stage 15 W1d (Option 2). Record a circular import that was *skipped* rather
 ; than rejected: `path` is the cycle partner that is already mid-import, and the
@@ -18696,8 +18487,7 @@
     (set! (n 'i) 0)
     (set! (n 's) path)
     (cell-aux-set n g-source-path)
-    (set! (n 'cdr) g-import-cycles)
-    (set! g-import-cycles (as ptr n))))
+    (set! g-import-cycles (as ptr (node-cons (as raw:Node n) g-import-cycles line)))))
 
 ; Stage 15 W9 item 1. `path` is already on `g-importing`, so it is a cycle
 ; re-entry. Answer whether it is the ONE re-entry that must be emitted rather
@@ -18722,34 +18512,37 @@
 ; `(raw Node)` slot, because a `Symbol` is one word and the cell has no other.
 ; Both halves of that reinterpretation live here so no caller repeats it — the
 ; `g-import-cycles` and `g-import-prefixes` lists are the only two users.
+; The second Symbol of a two-field record node. It rides in `i` — the one slot
+; every record kind here leaves free — because the record is an ELEMENT of a
+; list now, not a cell of one.
 (defn cell-aux-set (n:&Node p:Symbol):void
-  (set! (n 'car) (unsafe/cast &Node (as ptr (p 'p)))))
+  (set! (n 'i) (unsafe/cast i64 (as ptr (p 'p)))))
 
 (defn cell-aux (e:ptr:Node):Symbol
-  (when (= (as ptr (e 'car)) null) (return (symbol-none)))
-  (return (symbol-from-cstr-unchecked (as CStr (as ptr (e 'car))))))
+  (when (= (e 'i) 0) (return (symbol-none)))
+  (return (symbol-from-cstr-unchecked (as CStr (unsafe/cast ptr (e 'i))))))
 
 ; Is `path` a member of some import cycle this unit skipped? (Either end of the
 ; edge counts — a cycle is symmetric, and the diagnostics want to know "is this
 ; file entangled", not "which way did the skip point".)
 (defn path-in-import-cycle (path:Symbol):i32
   (let (cur:ptr g-import-cycles)
-    (while (!= cur null)
-      (let (e:ptr:Node (unsafe/cast &Node cur))
+    (while (> (node-len cur) 0)
+      (let (e:ptr:Node (unsafe/cast &Node (node-first (unsafe/cast &Node cur))))
         (when (= (e 's) path) (return 1))
         (when (= (cell-aux e) path) (return 1))
-        (set! cur (e 'cdr)))))
+        (set! cur (node-rest (unsafe/cast &Node cur))))))
   (return 0))
 
 ; The cycle partner recorded for `path`, i.e. the other file of the edge — used
 ; to name both files in a diagnostic. Null when `path` is in no skipped cycle.
 (defn import-cycle-partner (path:Symbol):Symbol
   (let (cur:ptr g-import-cycles)
-    (while (!= cur null)
-      (let (e:ptr:Node (unsafe/cast &Node cur))
+    (while (> (node-len cur) 0)
+      (let (e:ptr:Node (unsafe/cast &Node (node-first (unsafe/cast &Node cur))))
         (when (= (e 's) path) (return (cell-aux e)))
         (when (= (cell-aux e) path) (return (e 's)))
-        (set! cur (e 'cdr)))))
+        (set! cur (node-rest (unsafe/cast &Node cur))))))
   (return (symbol-none)))
 
 ; Search every skipped-cycle file for a top-level definer of `name`, using the
@@ -18758,15 +18551,15 @@
 ; `unreachable-definer-file`.
 (defn cycle-definer-file (name:Symbol want-type:i32):Symbol
   (let (cur:ptr g-import-cycles)
-    (while (!= cur null)
-      (let (e:ptr:Node (unsafe/cast &Node cur))
+    (while (> (node-len cur) 0)
+      (let (e:ptr:Node (unsafe/cast &Node (node-first (unsafe/cast &Node cur))))
         (when (!= (file-defines-name (e 's) name want-type) 0)
           (return (e 's)))
         (let (aux:Symbol (cell-aux e))
           (when (and (not (symbol-none? aux))
                      (!= (file-defines-name aux name want-type) 0))
             (return aux)))
-        (set! cur (e 'cdr)))))
+        (set! cur (node-rest (unsafe/cast &Node cur))))))
   (return (symbol-none)))
 
 ; Test whether a file exists by attempting to open it.
@@ -19010,11 +18803,10 @@
                   (let (pn:&Node (new Node))
                     (set! (pn 'kind) NODE-STR)
                     (set! (pn 'line) 0)
-                    (set! (pn 'i) 0)
                     (set! (pn 's) prefix)
                     (cell-aux-set pn path)
-                    (set! (pn 'cdr) g-import-prefixes)
-                    (set! g-import-prefixes (as ptr pn))))))
+                    (set! g-import-prefixes
+                          (as ptr (node-cons (as raw:Node pn) g-import-prefixes 0)))))))
             (return)))
         ; Not a Nucleus file — treat as C header.
         ; A C header is re-preprocessed on each import; the extern registrar only
@@ -19137,11 +18929,10 @@
             (let (pn:&Node (new Node))
               (set! (pn 'kind) NODE-STR)
               (set! (pn 'line) 0)
-              (set! (pn 'i) 0)
               (set! (pn 's) prefix)
               (cell-aux-set pn path)
-              (set! (pn 'cdr) g-import-prefixes)
-              (set! g-import-prefixes (as ptr pn)))))))))
+              (set! g-import-prefixes
+                    (as ptr (node-cons (as raw:Node pn) g-import-prefixes 0))))))))))
 
 ; `import-use` — the flatten-everything import (design decision 5). The old
 ; `import`/`include` behavior, factored out so the legacy keywords can keep
@@ -19642,95 +19433,6 @@
 ; configuration, not construction.
 
 ; ============================================================
-; Emit quasiquote helpers (__cons / __append) into the given streams
-; ============================================================
-
-; The alignment to annotate on a store/load at byte `offset` into the __cons
-; Node cell, given the target's maximum allocator/ABI pointer alignment `pa`
-; (Target.ptr-align — 8 on hosts, 1 on AVR). This is gcd(offset, pa), with
-; gcd(0, pa) := pa (the malloc base is pa-aligned). `pa` is always a power of
-; two in practice, so for a non-zero offset the gcd is the largest power of two
-; dividing `offset`, capped at `pa`. For pa=8 the six cell offsets 0,4,8,16,24,32
-; give 8,4,8,8,8,8 — the historical hand-written literals — so hosted output is
-; byte-identical; for pa=1 every field becomes align 1 (AVR, byte-addressable).
-(defn qq-cell-align (offset:i32 pa:i32):i32
-  (when (= offset 0) (return pa))
-  (let (a:i32 1)
-    (while (and (< a pa) (= (% offset (* a 2)) 0))
-      (set! a (* a 2)))
-    (return a)))
-
-; Emit the quasiquote runtime helpers @__cons / @__append into the *target*
-; module streams. The Node cell layout is the fixed literal struct
-; { i32, i32, i64, ptr, ptr, ptr }; LLVM resolves each field's byte offset from
-; that type against the module's target datalayout, so the getelementptr index
-; lines are target-independent. Only two things are target-derived (Stage 14
-; AVR-2): the malloc byte size and the per-store/load `align`. The i32/i32/i64
-; header is a fixed 16 bytes on every target (4+4, then i64 at offset 8, no
-; padding under any datalayout that aligns i64 at ≤8 bytes), and the three
-; trailing pointer fields each add ptr-size bytes → total = 16 + 3*ptr-size
-; (40 on 8-byte hosts, 22 on AVR). Alignments come from qq-cell-align at the six
-; field offsets (0,4,8, then 16, 16+ptr-size, 16+2*ptr-size). Hosted output is
-; byte-identical (malloc 40, align 8/4/8/8/8/8); this closes the long-standing
-; 32-bit/16-bit target blocker (stage9/cleanup.md).
-;
-; Stage 20 L3: `tgt` and `vis` are parameters because the compile-time mirror
-; needs a HOST-sized copy at `private` linkage, where the program module needs a
-; target-sized one at external; every pre-L3 caller passes `g-target` and `""`
-; (design/stage20-macros/macro-call-linking.md §5.4).
-(defn emit-qq-helpers ((decl (raw String)) (def (raw String)) tgt:ptr vis:StrView):void
-  (when (= g-malloc-decl-done 0)
-    (emit decl "declare ptr @malloc(i64)\n"))
-  (let (psize:i32 ((as &Target tgt) 'ptr-size)
-        pa:i32    ((as &Target tgt) 'ptr-align)
-        cell-size:i32 (+ 16 (* 3 psize))
-        a0:i32 (qq-cell-align 0 pa)
-        a1:i32 (qq-cell-align 4 pa)
-        a2:i32 (qq-cell-align 8 pa)
-        a3:i32 (qq-cell-align 16 pa)
-        a4:i32 (qq-cell-align (+ 16 psize) pa)
-        a5:i32 (qq-cell-align (+ 16 (* 2 psize)) pa))
-    (emit def "define " vis "ptr @__cons(ptr %a, ptr %b) {\n")
-    (emit def "  %c = call ptr @malloc(i64 " cell-size ")\n")
-    (emit def
-          "  %p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %c, i32 0, i32 0\n")
-    (emit def "  store i32 3, ptr %p0, align " a0 "\n")
-    (emit def
-          "  %p1 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %c, i32 0, i32 1\n")
-    (emit def "  store i32 0, ptr %p1, align " a1 "\n")
-    (emit def
-          "  %p2 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %c, i32 0, i32 2\n")
-    (emit def "  store i64 0, ptr %p2, align " a2 "\n")
-    (emit def
-          "  %p3 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %c, i32 0, i32 3\n")
-    (emit def "  store ptr null, ptr %p3, align " a3 "\n")
-    (emit def
-          "  %p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %c, i32 0, i32 4\n")
-    (emit def "  store ptr %a, ptr %p4, align " a4 "\n")
-    (emit def
-          "  %p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %c, i32 0, i32 5\n")
-    (emit def "  store ptr %b, ptr %p5, align " a5 "\n")
-    (emit def "  ret ptr %c\n")
-    (emit def "}\n\n")
-    (emit def "define " vis "ptr @__append(ptr %a, ptr %b) {\n")
-    (emit def "entry:\n")
-    (emit def "  %z = icmp eq ptr %a, null\n")
-    (emit def "  br i1 %z, label %nil, label %rec\n")
-    (emit def "nil:\n")
-    (emit def "  ret ptr %b\n")
-    (emit def "rec:\n")
-    (emit def
-          "  %p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %a, i32 0, i32 4\n")
-    (emit def "  %car = load ptr, ptr %p4, align " a4 "\n")
-    (emit def
-          "  %p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %a, i32 0, i32 5\n")
-    (emit def "  %cdr = load ptr, ptr %p5, align " a5 "\n")
-    (emit def "  %rest = call ptr @__append(ptr %cdr, ptr %b)\n")
-    (emit def "  %c = call ptr @__cons(ptr %car, ptr %rest)\n")
-    (emit def "  ret ptr %c\n")
-    (emit def "}\n\n")))
-
-; ============================================================
 ; Start a fresh compilation unit
 ; ============================================================
 
@@ -19894,8 +19596,6 @@
 
 ; Close module streams; emit either textual IR (--emit-llvm) or an object/binary.
 (defn flush-module-ir (source-file:Symbol):void
-  (when (!= g-qq-used 0)
-    (emit-qq-helpers &g-decl-stream g-def-stream g-target ""))
   (drain-pending-union-irs)
   (let ((ir String) (assemble-module-ir source-file)
         v:StrView (string-as-view ir))
@@ -19917,25 +19617,25 @@
 ; presence anywhere else is treated as a normal (and unknown) top-level form.
 (defn strip-exclude-prelude (forms:(raw Node)):ptr
   (when (= forms null) (return null))
-  (let (first:ptr ((unsafe/cast &Node forms) 'car))
+  (let (first:ptr (node-first (unsafe/cast &Node forms)))
     (when (= first null) (return null))
-    (when (!= ((unsafe/cast &Node first) 'kind) NODE-CELL) (return null))
+    (when (!= ((unsafe/cast &Node first) 'kind) NODE-LIST) (return null))
     (when (!= (node-len first) 1) (return null))
     (let (head:ptr (node-at first 0))
       (when (= head null) (return null))
       (when (!= ((unsafe/cast &Node head) 'kind) NODE-SYM) (return null))
       (when (!= ((unsafe/cast &Node head) 's) "exclude-prelude")
         (return null))
-      (return ((unsafe/cast &Node forms) 'cdr)))))
+      (return (node-rest (unsafe/cast &Node forms))))))
 
 ; True if the first form is a leading `(ns NAME)` directive. Stage 12: the
 ; prelude import is spliced AFTER such a directive so that `ns` stays the unit's
 ; first form (apply-leading-ns then consumes it before the prescans).
 (defn is-leading-ns (forms:(raw Node)):i32
   (when (= forms null) (return 0))
-  (let (first:ptr ((unsafe/cast &Node forms) 'car))
+  (let (first:ptr (node-first (unsafe/cast &Node forms)))
     (when (= first null) (return 0))
-    (when (!= ((unsafe/cast &Node first) 'kind) NODE-CELL) (return 0))
+    (when (!= ((unsafe/cast &Node first) 'kind) NODE-LIST) (return 0))
     (let (head:ptr (node-at first 0))
       (when (= head null) (return 0))
       (when (!= ((unsafe/cast &Node head) 'kind) NODE-SYM) (return 0))
@@ -19950,15 +19650,14 @@
 (defn prepend-prelude-import (forms:(raw Node)):ptr
   (let (import-sym:ptr (intern-node (symbol-intern "import-use"))
         name-sym:ptr   (intern-node (symbol-intern "prelude"))
-        name-cell:ptr  (make-cell name-sym null 0)
-        import-form:ptr (make-cell import-sym name-cell 0))
+        name-cell:ptr  (node-list1 name-sym 0)
+        import-form:ptr (node-cons import-sym name-cell 0))
     (when (!= (is-leading-ns forms) 0)
       ; forms = (ns ...) . rest ; result = (ns ...) . (import-use prelude) . rest
-      (let (ns-cell:ptr forms
-            rest:ptr ((unsafe/cast &Node forms) 'cdr))
-        (set! ((unsafe/cast &Node ns-cell) 'cdr) (make-cell import-form rest 0))
-        (return ns-cell)))
-    (return (make-cell import-form forms 0))))
+      (return (node-cons (node-first (unsafe/cast &Node forms))
+                (node-cons import-form
+                  (node-rest (unsafe/cast &Node forms)) 0) 0)))
+    (return (node-cons import-form forms 0))))
 
 ; Called from argv parsing in `main`. These used to be lazily constructed here,
 ; which — because argv parsing ran before `compiler-init` armed the allocator —
@@ -20082,10 +19781,10 @@
         ; alone produced, one top-level form per line.
         (when (!= g-dump-ast 0)
           (let (cur:(raw Node) raw-forms)
-            (while (!= cur null)
-              (print-node (cur 'car))
+            (while (> (node-len cur) 0)
+              (print-node (node-first cur))
               (emit (as ptr stdout) "\n")
-              (set! cur (cur 'cdr))))
+              (set! cur (node-rest cur))))
           (return 0))
 
       (let (forms:ptr (desugar raw-forms))

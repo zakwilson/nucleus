@@ -13,6 +13,6 @@
     (show "let-bound 'bar pair " (= a b)))
   (show "'foo = 'bar"           (= 'foo 'bar))
   (let (xs:ptr '(foo bar)
-        head:ptr ((as &Node xs) 'car))
-    (show "(car '(foo bar)) = 'foo" (= head 'foo)))
+        head:ptr (node-first xs))
+    (show "(first '(foo bar)) = 'foo" (= head 'foo)))
   0)

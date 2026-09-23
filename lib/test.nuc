@@ -359,14 +359,14 @@
 ; The operands of the `(key …)` entry named `name`, or null.
 (defn diag-entry (body:raw:Node name:StrView):raw:Node
   (let (cur:raw:Node body)
-    (while (!= cur null)
-      (let (e:raw:Node (cur 'car))
-        (when (and (!= e null) (= (e 'kind) NODE-CELL))
-          (let (h:raw:Node (e 'car))
+    (while (> (node-len cur) 0)
+      (let (e:raw:Node (node-first cur))
+        (when (and (!= e null) (= (e 'kind) NODE-LIST))
+          (let (h:raw:Node (node-first e))
             (when (and (!= h null) (= (h 'kind) NODE-SYM)
                        (= (symbol-as-view (h 's)) name))
-              (return (e 'cdr))))))
-      (set! cur (cur 'cdr)))
+              (return (node-rest e))))))
+      (set! cur (node-rest cur)))
     (return null)))
 
 ; A kind check, not a null check: `Node.s` is null on an INT or a FLOAT, and
@@ -378,9 +378,9 @@
   (return (symbol-as-view (n 's))))
 
 (defn diag-of-node (form:raw:Node):!Diagnostic
-  (when (or (= form null) (!= (form 'kind) NODE-CELL))
+  (when (or (= form null) (!= (form 'kind) NODE-LIST))
     (return (err! test-bad-args)))
-  (let (body:raw:Node (form 'cdr)
+  (let (body:raw:Node (node-rest form)
         d:&Diagnostic (alloca Diagnostic)
         sev:raw:Node (diag-entry body "severity")
         file:raw:Node (diag-entry body "file")
@@ -389,18 +389,18 @@
         notes:raw:Node (diag-entry body "notes"))
     (when (or (= sev null) (= file null) (= line null) (= msg null))
       (return (err! test-bad-args)))
-    (let (sn:raw:Node (sev 'car)
-          ln:raw:Node (line 'car))
+    (let (sn:raw:Node (node-first sev)
+          ln:raw:Node (node-first line))
       (when (or (= sn null) (= ln null)) (return (err! test-bad-args)))
       (set! (d 'severity) (sn 's))
       (set! (d 'line) (unsafe/cast i32 (ln 'i))))
-    (set! (d 'file) (diag-text (file 'car)))
-    (set! (d 'message) (diag-text (msg 'car)))
+    (set! (d 'file) (diag-text (node-first file)))
+    (set! (d 'message) (diag-text (node-first msg)))
     (set! (d 'notes) (vector-new-in (arena-allocator &g-test-alloc)))
     (let (cur:raw:Node notes)
-      (while (!= cur null)
-        (conj (d 'notes) (diag-text (cur 'car)))
-        (set! cur (cur 'cdr))))
+      (while (> (node-len cur) 0)
+        (conj (d 'notes) (diag-text (node-first cur)))
+        (set! cur (node-rest cur))))
     (return (ok @d))))
 
 ; Reads every diagnostic in `text`, which may be the compiler's raw stderr.
@@ -414,7 +414,7 @@
       (let (line:StrView (lines-iter-next &it))
         (when (strview-has-prefix line "(diagnostic ")
           (let (forms:raw:Node (try (read-all line)))
-            (conj &out (try (diag-of-node (forms 'car))))))))
+            (conj &out (try (diag-of-node (node-first forms))))))))
     (return (ok out))))
 
 ; Every diagnostic, one per line, for a failure message.

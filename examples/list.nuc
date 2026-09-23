@@ -1,46 +1,33 @@
 ; Demonstrates list manipulation primitives over the unified Node type.
 ;
-; Stage 15 B4 (name-resolution.md §11.1/§11.7): this file used to carry its own
-; `(defstruct Node kind:i32 line:i32 i:i64 s:ptr car:ptr cdr:ptr)`, shadowing the
-; prelude's — which declares `car`/`cdr` as `(raw Node)` rather than `ptr`. The
-; two are ABI-identical (six slots; a `(raw Node)` is a pointer) and the prelude
-; already won on import order, so the duplicate only ever decided declared
-; nullability. R4 makes two definitions of one name an error, so it is gone; the
-; prelude's `Node` is the one type.
+; A list Node is a header over an array of element pointers, so `cons` builds a
+; fresh list rather than a cell (design/stage21-cleanup/ast-as-collection.md §5).
 
 (import-use "stdio.h")
 (import-use "stdlib.h")
 (import-use iterator)
-(import-use node)   ; '(a b c) below builds cells at run time
+(import-use node)   ; '(a b c) below builds lists at run time
 
-; calloc, not malloc: `s` is a Symbol, which has no null value to assign — a
-; cell simply has no name, and zeroed is what the arena's nodes are too.
 (defn cons (car:ptr cdr:ptr):ptr
-  (let (c:&Node (as &Node (calloc 1 (sizeof Node))))
-    (set! (c 'kind) 3)
-    (set! (c 'line) 0)
-    (set! (c 'i) 0)
-    (set! (c 'car) car)
-    (set! (c 'cdr) cdr)
-    (return (as ptr c))))
+  (return (as ptr (node-cons car cdr 0))))
 
 (defn first (n:ptr):ptr
-  (cond (= n null) (return null))
-  (return ((as &Node n) 'car)))
+  (return (node-first n)))
 
 (defn rest (n:ptr):ptr
-  (cond (= n null) (return null))
-  (return ((as &Node n) 'cdr)))
+  (return (node-rest n)))
 
 (defn append (a:ptr b:ptr):ptr
-  (cond (= a null) (return b))
-  (return (cons (first a) (append (rest a) b))))
+  (let (out:&Node (node-list-new 0))
+    (node-extend out a)
+    (node-extend out b)
+    (return (node-list-done out))))
 
 (defstruct ListIter cur:ptr)
 (extend ListIter (Iterator ptr))
 (defn next (self:&ListIter):?ptr
   (let (c:ptr (self 'cur))
-    (when (= c null) (return none))
+    (when (= (node-len c) 0) (return none))
     (set! (self 'cur) (rest c))
     (return (some (first c)))))
 

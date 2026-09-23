@@ -1,22 +1,18 @@
 ; Quasiquote / unquote / unquote-splice demo.
-; Under the hood these use builtin @__cons and @__append runtime helpers.
+; Under the hood these build a list Node with the node runtime's list builders.
 
-; Stage 15 B4 (name-resolution.md §11.1/§11.7): the local `(defstruct Node …)`
-; that used to sit here shadowed the prelude's, differing only in declaring
-; `car`/`cdr` as `ptr` instead of `(raw Node)`. The prelude's already won on
-; import order; R4 makes the duplicate an error rather than a coin flip.
 (import-use "stdio.h")
 (import-use iterator)
-(import-use node)   ; a runtime quasiquote calls intern-symbol/make-cell
+(import-use node)   ; a runtime quasiquote calls intern-symbol and node-push
 
-(defn first (n:ptr):ptr (return ((as &Node n) 'car)))
-(defn rest  (n:ptr):ptr (return ((as &Node n) 'cdr)))
+(defn first (n:ptr):ptr (return (node-first n)))
+(defn rest  (n:ptr):ptr (return (node-rest n)))
 
 (defstruct ListIter cur:ptr)
 (extend ListIter (Iterator ptr))
 (defn next (self:&ListIter):?ptr
   (let (c:ptr (self 'cur))
-    (when (= c null) (return none))
+    (when (= (node-len c) 0) (return none))
     (set! (self 'cur) (rest c))
     (return (some (first c)))))
 

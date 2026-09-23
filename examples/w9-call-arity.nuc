@@ -15,7 +15,7 @@
 ; is pinned separately by `tests/fixtures/w9-declare-open-tail.nuc`.
 (import-use "stdio.h")
 (import-use allocator)
-(import-use node)   ; count-rest is :rest — the call builds Node cells
+(import-use node)   ; count-rest is :rest — the call builds a Node list
 
 ; --- 1: :optional — 1, 2 or 3 arguments are all legal -------------------------
 (defn opt3 (a:i32 :optional (b:i32 20) (c:i32 300)):i32
@@ -23,12 +23,7 @@
 
 ; --- 2: :rest — the fixed prefix is num-params-1, the tail folds --------------
 (defn count-rest (base:i32 :rest xs:i64):i32
-  (let (n:i32 0
-        cur:ptr xs)
-    (while (!= cur null)
-      (inc! n)
-      (set! cur ((as &Node cur) 'cdr)))
-    (return (+ base n))))
+  (return (+ base (node-len xs))))
 
 ; --- 3: overloaded `defn` (multimethod) — resolved by argument TYPE, not name -
 (defn kind-of (x:i32):i32 (return 1))

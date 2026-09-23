@@ -364,7 +364,7 @@ conservatively (`raw` beats `Maybe` beats `ref`).
 > **⚠ Sharp edge — branch *element* types must match.** The conservative meet
 > above reconciles the pointer *kind*, but the branch **element** types must
 > still be `type-eq`. Two pointer branches with *different element types* —
-> e.g. `(raw Node)` (the type of `Node.car`/`Node.cdr` and of macro parameters)
+> e.g. `(raw Node)` (the type of a `Node` list's elements and of macro parameters)
 > versus a bare `ptr`, a `ptr:i8`, or a quasiquoted `` `(...) `` (bare `ptr`) —
 > do **not** unify; the `cond`/`if` collapses to `void`. That then fails
 > wherever a value was expected (`let`/`set!` `init type mismatch`; a macro

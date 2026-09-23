@@ -72,6 +72,7 @@ failure.
 | `array` | `(array ElemType init...)` — array compound literal. Each `init` is either `(index val)` (designated) or a bare value (positional). Length is implicit: `max(positional-count, max-designated-index + 1)`. Unspecified slots are zero-initialized (including struct and `CStr` element types). Yields `ptr:ElemType`, alloca-backed. When `ElemType` is a struct, an element may be written as a bare `(ElemType …)` compound literal — it is loaded into the slot, so the older `(deref (ElemType …))` spelling is no longer required (both are accepted and emit the same IR). A binding annotated with the bare, elem-less `:ptr` takes `ptr:ElemType` from the literal, so `(aref a i)` works without a cast. **Not to be confused with the `(array T N)` *type*** ([Fixed-size arrays](types.md#fixed-size-arrays--array-t-n)): the two are told apart by position, and `(array i32 4)` means a one-element array holding `4` here but a four-element array type in a type annotation. | `(T[]){1, 2, [3] = 99}` |
 | `quote` | Yields its argument as a `Node*` (reader sugar: `'x` → `(quote x)`). Quoted symbols are interned — see [Symbols](types.md#symbols). | — |
 | `quasiquote` | Like `quote` but `~expr` splices a runtime value and `~@list` splices a list (reader: `` `x ``, `~x`, `~@x`). Nests: a backtick raises the level and an unquote lowers it, so only a level-1 unquote is code — see [Nesting levels](macros.md#nesting-levels) | — |
+| `ast-first` `ast-rest` `ast-at` `ast-len` | Read a list `Node`: the first element, the elements after the first, element *i*, the element count. **This is the spelling a macro body uses** — each is lowered by whichever compiler is running, so a body reaches that compiler's own `Node` layout across a relayout (design/stage21-cleanup/ast-as-collection.md §8.2). Ordinary code calls `node-first`/`node-rest`/`node-at`/`node-len` from `(import-use node)` instead, or treats the list as a [collection](collections.md). | — |
 | `compile-time` | Execute body forms at compile time via LLVM JIT; output goes to stderr. A `defstruct` in the body defines a **program** type, not a compile-time-private one: its definition is emitted into the program module and the type is usable by ordinary code — in a *body*, in a *signature*, by value or by reference, anywhere in the unit including **above** the block, and at a later REPL entry. `defstruct` is the only definer the body registers for the program this way: a `defvar`, `defconst`, `defenum` or `defn` in a `compile-time` body belongs to the compile-time module, and naming one from ordinary code is an error. | — |
 | `funcall` | Call a typed function pointer: `(funcall fn args...)`. The function pointer must have a `TY-FN` type with known return type and parameter types. | `fn(args...)` |
 | `funcall-void` | Call a function pointer with no arguments and no return value | `fn()` |
@@ -383,17 +384,20 @@ routes **`invoke → get → _get`** by the callee's *type*:
 
 | precedence | condition on the callee type | desugars to | meaning |
 |---|---|---|---|
-| 1 | has an `invoke` method | `(invoke s arg…)` | indexing / general call (arg is a **value**) |
-| 2 | has a custom `get` method | `(get s arg)` | value-keyed or symbol member access |
-| 3 | otherwise (plain struct) | `(get s 'field)` → `_get` | raw field access (**quoted** symbol; any other selector is computed) |
+| 1 | the argument is a **quoted symbol naming a field** of the callee's struct | `(get s 'field)` | field access |
+| 2 | has an `invoke` method | `(invoke s arg…)` | indexing / general call (arg is a **value**) |
+| 3 | has a custom `get` method | `(get s arg)` | value-keyed or symbol member access |
+| 4 | otherwise (plain struct) | `(get s 'field)` → `_get` | raw field access (**quoted** symbol; any other selector is computed) |
 
-Because **`invoke` takes precedence**, a type that defines `invoke` indexes/applies
-its argument as a *value* — so `(v idx)` evaluates the local `idx` and indexes,
-rather than reading a field named `idx`. The consequence is that such a type can no
-longer use the callable form for field access: read its fields with `_get`/`.field`
-(`(_get v 'len)`), not `(v 'len)`. A **plain struct** (no `invoke`, no custom `get`)
-takes a quoted-symbol argument as a field selector via the raw `_get` intrinsic, so
-`(p 'x)` ≡ `(_get p 'x)` and is zero-overhead.
+Row 1 is what lets one type have both: `Node` conforms to `Seq`, so `(xs i)`
+indexes an AST list while `(xs 'kind)` still reads its `kind` field. It fires only
+on a **literal** quoted symbol that the receiver really has a field for; a selector
+that names no field falls through, so a type whose `invoke` takes a symbol is
+unaffected. Otherwise **`invoke` takes precedence**, and a type that defines it
+indexes/applies its argument as a *value* — `(v idx)` evaluates the local `idx` and
+indexes, rather than reading a field named `idx`. A **plain struct** (no `invoke`,
+no custom `get`) takes a quoted-symbol argument as a field selector via the raw
+`_get` intrinsic, so `(p 'x)` ≡ `(_get p 'x)` and is zero-overhead.
 
 **A field name is quoted; a bare symbol is a variable.** `(p 'x)` reads the field
 `x`; `(p x)` evaluates `x` like a symbol anywhere else and uses the result as a

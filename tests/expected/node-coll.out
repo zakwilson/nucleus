@@ -1,0 +1,6 @@
+count=3 kind=3
+second=20
+contains-second=1
+after conj/append/insert: 5 10 20 30 40 50
+vector-count=6
+round-tripped: 5 10 20 30 40 50

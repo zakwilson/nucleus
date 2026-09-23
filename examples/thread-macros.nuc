@@ -1,6 +1,6 @@
 ; Threading macro examples.
 ;
-; The -> macro inspects AST Node types (NODE-CELL, NODE-SYM) to decide how
+; The -> macro inspects AST Node types (NODE-LIST, NODE-SYM) to decide how
 ; to thread the value, so it can only be used in programs that define the
 ; Node type — currently just the compiler itself.
 ;

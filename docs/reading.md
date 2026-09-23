@@ -14,7 +14,7 @@ code.
 (import-use read)
 
 (match (read-all "(port 8080)")
-  ((ok forms) (let (s:String (node-str (forms 'car)))
+  ((ok forms) (let (s:String (node-str (node-first forms)))
                 (print (string-as-view &s) "\n")
                 (drop &s)))
   ((err e)    (eprint "bad input, line " (e 'line) ": " (e 'msg) "\n")))

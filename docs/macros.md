@@ -334,16 +334,16 @@ not against whatever the expansion happened to lower to.
   available to it anyway, and a literal keeps the call free of any by-value
   aggregate: it passes as a pointer and a length, both constants.
 * **`NODE` is any `(raw Node)` expression** — ordinarily one of the macro's own
-  parameters, or a piece reached through `'car`/`'cdr`, which is what carries the
-  user's line. A `null` node reports at line 0.
+  parameters, or a piece reached through `ast-at`/`ast-first`, which is what
+  carries the user's line. A `null` node reports at line 0.
 * **It aborts the expansion**, so nothing after it in the macro body runs. In the
   REPL it returns to the prompt rather than ending the session.
-* **Check the shape before you walk it.** A macro body runs inside the
-  compiler, and `Node.car`/`Node.cdr` are `(raw Node)` — unchecked, so `(x 'car)`
-  on a null node is a null dereference that kills `nucleusc` with a segfault and
-  no diagnostic, before any `macro-error` it was about to raise. Guard each step
-  in a short-circuit chain — `(or (= b null) (!= (b 'kind) NODE-CELL) (= (b 'cdr)
-  null) …)` — and only then destructure. The prelude's `doseq`, `doseq-iter` and
+* **Check the shape before you walk it.** `ast-at`/`ast-first` answer `null`
+  rather than faulting, and `ast-len` answers 0 for anything that is not a list,
+  so `(< (ast-len x) 2)` is the guard — but a *field* read is unchecked, and
+  `(x 'kind)` on a null node is a null dereference that kills `nucleusc` with a
+  segfault and no diagnostic, before any `macro-error` it was about to raise.
+  Ask `ast-len` first, and only then destructure. The prelude's `doseq`, `doseq-iter` and
   `dotimes` do not yet guard their binding list, so `(doseq item v (VecIter i32)
   …)` — the list unparenthesised — currently crashes the compiler rather than
   reporting the shape (Stage 21 rough edges).
@@ -497,8 +497,9 @@ necessity*, because the compiler allocates, interns and reads the nodes the macr
 returns. Concretely, a call resolves to the compiler's own copy when **both** of
 these hold: the callee's defining file is under the library root this compilation
 resolved `lib/prelude.nuc` through, **and** the compiler binary exports that
-symbol. `alloc-node`, `make-cell`, `node-int`, `intern-symbol` and `node-at` are
-this set.
+symbol. `alloc-node`, `node-int`, `intern-symbol` and the list API
+(`node-first`, `node-rest`, `node-at`, `node-len`, `node-list-new`, `node-push`,
+`node-extend`) are this set.
 
 Everything else — your own `defn`s, and a `lib/` module the compiler does not
 itself link — resolves to **your** definition, which the compiler JIT-compiles on
@@ -689,12 +690,61 @@ the natural way to write the producer for a spliced argument list:
   (let ((acc (raw Node)) null
         i:i64 4)
     (while (> i 0)
-      (set! acc (as raw:Node (make-cell (as raw:Node (node-int i)) acc 0)))
+      (set! acc (as raw:Node (node-cons (as raw:Node (node-int i)) acc 0)))
       (set! i (- i 1)))
     (return acc)))
 
 (defn main ():i32 (return (macfoldr _+ 0 ~@(range-nodes))))   ; => 10
 ```
+
+## A form is a collection
+
+A list `Node` is a **header over an array of elements** — `elems`, with `len` of
+`cap` used — rather than a chain of cons cells, so it has an identity of its own.
+Three things follow.
+
+**`()` is a value, not `null`.** The empty list is a length-0 `NODE-LIST`, so
+`'(a () b)` really has three elements and the middle one is a list you can ask
+`count` of. `null` keeps exactly one meaning — *absent* — which is what an
+out-of-range `node-at` or a missing operand answers. The rule when walking a
+form is therefore **never compare a list to `null` to mean "empty"; ask
+`node-len`** (or `ast-len` in a macro body). `node-empty?` answers yes to both,
+and is what a definer asks to refuse `()` where a name belongs.
+
+**`Node` conforms to `Coll` and `Seq`.** A form answers the same protocol
+surface a `Vector` does, with `(ref Node)` as the element type:
+
+```lisp
+(import-use node)
+(import-use coll)
+(import-use iterator)
+
+(let (xs:&Node (unsafe/cast &Node `(10 20 30))
+      i1:usize 1)
+  (count xs)              ; 3
+  (xs i1)                 ; the node `20` — Seq's `invoke`
+  (xs 'kind)              ; NODE-LIST — a field, not an index
+  (conj xs (node-int 40))
+  (insert xs i1 (node-int 15))
+  (doseq (e xs NodeIter)
+    (printf " %ld" (e 'i))))
+```
+
+`(xs i)` indexes and `(xs 'kind)` reads a field because a **literal selector
+that names a field wins over the index method** — see
+[Callable values](special-forms.md#callable-values-non-function-call-position).
+`iter` yields a `NodeIter`, which is a *view*: the list must outlive it.
+`examples/node-coll.nuc` runs the whole surface, `into` both ways included.
+
+**`node-rest` is an O(1) view that copies before it diverges.** It shares the
+parent's array (`cap` 0) and reallocates on its first push, so appending to a
+rest cannot overwrite the element after it in the parent.
+
+The builders are `node-list-new` / `node-push` / `node-extend` /
+`node-list-done` (the last is the identity — a builder *is* a finished list),
+with `node-cons` and the fixed-arity `node-list1`…`node-list5` over them, and
+`node-set-at` / `node-splice-at` for in-place edits. All of them come from
+`(import-use node)`.
 
 ## The type of a quoted form
 
@@ -703,7 +753,7 @@ the natural way to write the producer for a spliced argument list:
 | Quoted | Type | Why |
 |---|---|---|
 | a symbol — `'foo` | `(ref Node)` | Lowers to `intern-symbol`, whose signature returns `ref:Node`. One canonical node per spelling, so the value is non-null *and* an identity. |
-| anything else — `'(a b)`, `'1`, `'()` | `(raw Node)` | Built by `make-cell`/`alloc-node`, and `'()` **is** null. |
+| anything else — `'(a b)`, `'1`, `'()` | `(raw Node)` | Built by `node-list-new`/`node-push`/`alloc-node`. `'()` is a length-0 list, **not** null — see [A form is a collection](#a-form-is-a-collection). |
 
 The distinction is load-bearing, not cosmetic: because `'foo` is non-null and
 interned, symbols work directly as collection elements and keys — see
@@ -724,16 +774,20 @@ See [The node runtime is a library](toplevel.md#the-node-runtime-is-a-library).
 
 Macro parameters are typed `(raw Node)` — the macro sees AST. Because the
 parameter is a typed (nullable, unchecked) pointer to `Node`, a macro can walk
-the argument's structure with member access **without casting**: `(p 'car)`,
-`(p 'cdr)`, and chains such as `((p 'cdr) 'car)` type-check directly — `car`/`cdr`
-are themselves `(raw Node)`, so they chain. Use `(p 'kind)` / `(p 's)` / `(p 'i)`
-/ `(p 'line)` for the other `Node` fields. The selector is **quoted**: a bare
-symbol in that position is an ordinary variable reference (see
-[Member access](special-forms.md#member-access)). (Historically these required
-`((cast ptr:Node p) car)` because `car`/`cdr` were untyped `ptr`; that cast is
-now redundant. If written today it would be `((as ptr:Node p) 'car)` — bare
-`cast` is a Stage 14 hard error — but there's no need to write it at all:
-`ptr`↔`(raw Node)` is a no-op reinterpret the compiler already performs.)
+the argument's structure **without casting**. Read a list with the `ast-*`
+special forms — `(ast-len p)`, `(ast-at p 1)`, `(ast-first p)`, `(ast-rest p)` —
+each of which yields `(raw Node)` (an `i32` for `ast-len`) and so chains:
+`(ast-first (ast-at p 1))`. Use `(p 'kind)` / `(p 's)` / `(p 'i)` / `(p 'line)`
+for the `Node` fields; the selector is **quoted**, because a bare symbol in that
+position is an ordinary variable reference (see
+[Member access](special-forms.md#member-access)).
+
+Why special forms rather than calls to `node-at`/`node-len`: a macro body is
+compiled from *your* program's prelude but is handed the *running compiler's*
+nodes, so a body that reads the layout directly would break the moment the two
+disagree. An `ast-*` form is lowered by whichever compiler is running, so it
+always matches that compiler's own `Node`
+(design/stage21-cleanup/ast-as-collection.md §8.2).
 
 When the macro splices a parameter into its expansion via `~param`, the
 resulting form is compiled as if the user had written that expression directly
@@ -788,23 +842,23 @@ with a **bare, elem-less** `ptr` branch is *not* a collapse case — the join
 absorbs the bare side into the typed side's element type, producing
 `(raw ElemType)`, with no cast required. This matters constantly in macro
 bodies: quasiquote (`` `(...) ``), `(gensym)`, and the `null` literal are all
-bare `ptr`, so they join freely with a `(raw Node)` branch such as `car`/`cdr`
-or a macro parameter:
+bare `ptr`, so they join freely with a `(raw Node)` branch such as an `ast-*`
+read or a macro parameter:
 
 ```lisp
 ; joins to (raw Node) automatically — no cast needed
-(let (rest (if (= (n 'kind) NODE-CELL) (n 'cdr) null)) ...)
+(let (rest (if (= (n 'kind) NODE-LIST) (ast-rest n) null)) ...)
 
 ; A variadic-operator macro: the single-arg branch returns the element node,
 ; the others are quasiquoted forms — both join to (raw Node).
 (defmacro * (:rest args)
-  (cond (= args null)
+  (cond (= (ast-len args) 0)
           `1
-        (= (args 'cdr) null)
-          (args 'car)
+        (= (ast-len args) 1)
+          (ast-at args 0)
         true
-          `(_* ~(args 'car)
-                (* ~@(args 'cdr)))))
+          `(_* ~(ast-at args 0)
+                (* ~@(ast-rest args)))))
 ```
 
 Pointer *kind* (`raw` vs. `ref`) is never itself a source of collapse —

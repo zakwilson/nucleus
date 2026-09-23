@@ -11,7 +11,6 @@
 ; lowering, and the namespace machinery) — this dependence is intentional, since
 ; the .nuch round-trip mirrors the same emit/register paths the batch driver uses.
 
-(import-use list)
 
 ; ============================================================
 ; .nuch header emission
@@ -32,14 +31,14 @@
 ; Emit a new-style return operand for a .nuch declare/defmethod entry: ` :spell`
 ; for a scalar / colon-chain type (a NODE-SYM after defn-ret-node normalization,
 ; whose `s` carries the full colon spelling), or ` (T…)` for a parenthesised list
-; type (NODE-CELL). The leading space keeps it space-separated from the params —
+; type (NODE-LIST). The leading space keeps it space-separated from the params —
 ; exactly as the verbatim template export space-separates its ` :T` via print-node.
 ; Style-agnostic: defn-ret-node recovers the return from either signature style.
 (defn emit-nuch-ret (form:ptr):void
   (let (rn:ptr (defn-ret-node form))
     (when (= rn null) (return))
     (let (rnn:ptr:Node (as &Node rn))
-      (if (= (rnn 'kind) NODE-CELL)
+      (if (= (rnn 'kind) NODE-LIST)
         (do (emit (as ptr stdout) " ") (print-node rn))
         (emit (as ptr stdout) " :" (rnn 's))))))
 
@@ -209,11 +208,11 @@
     (let (override:Symbol (ns-ir-prefix-get g-current-ns))
       (when (not (symbol-none? override))
         (emit (as ptr stdout) "(set-ir-prefix \"" override "\")\n"))))
-  (let (it:ListIter (list-iter forms))
-    (doseq-iter (fc &it)
+  (dotimes (fi (node-len forms))
+    (let (fc:raw:Node (as raw:Node (node-at forms fi)))
       (let (f:ptr:Node (unsafe/cast &Node fc))
         (when (and (!= f null)
-                   (= (f 'kind) NODE-CELL)
+                   (= (f 'kind) NODE-LIST)
                    (> (node-len (as ptr f)) 0)
                    (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
           (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
@@ -651,7 +650,7 @@
     (require-defunion-form (as ptr ff))
     (let (name-node:ptr:Node (unsafe/cast &Node (node-at form 1)))
       (case (name-node 'kind)
-        NODE-CELL
+        NODE-LIST
           (do (register-union-template (as ptr ff)) (return))
         NODE-SYM
           (do
@@ -671,14 +670,14 @@
               (when (!= (prev 'ctors-emitted) 0) (return))
               0)
             (guard-name-kind (name-node 's) (ff 'line) NK-TYPE)
-            (let (arms:ptr (-> ff (_ 'cdr) (unsafe/cast &Node _) (_ 'cdr))
+            (let (arms:ptr (-> ff (node-rest _) (unsafe/cast &Node _) (node-rest _))
                   ud:&UnionDef (defunion-register (qualify-name (name-node 's))
                                     arms (ff 'line)))
               ; Constructor declares: (declare Name-arm:Name (fields...)).
               (let (saved-out:raw:String g-out)
                 (set! g-out &g-decl-stream)
-                (let (it:ListIter (list-iter arms))
-                  (doseq-iter (cur &it)
+                (dotimes (ai (node-len arms))
+                  (let (cur:raw:Node (as raw:Node (node-at arms ai)))
                     (let (ctor:ptr:Node (as &Node
                                            (union-ctor-form (name-node 's)
                                                             cur (ff 'line))))
@@ -686,13 +685,10 @@
                       ; same bare name (1), same params (2), same return operand (3), no
                       ; body — `(declare NAME (params) RET)`.
                       (emit-nuch-declare-import
-                        (make-cell (as ptr 'declare)
-                          (make-cell (node-at (as ptr ctor) 1)
-                            (make-cell (node-at (as ptr ctor) 2)
-                              (make-cell (node-at (as ptr ctor) 3) null (ff 'line))
-                              (ff 'line))
-                            (ff 'line))
-                          (ff 'line))))))
+                        (node-list4 (as ptr 'declare)
+                          (node-at (as ptr ctor) 1)
+                          (node-at (as ptr ctor) 2)
+                          (node-at (as ptr ctor) 3) (ff 'line))))))
                 (set! (ud 'ctors-emitted) 1)
                 (set! g-out saved-out))))
         (die-at (name-node 'line) "defunion: name must be a symbol")))))
@@ -707,10 +703,10 @@
   (let (mode:i32 (if (and (not (symbol-none? g-source-path))
                           (!= (import-list-has g-prescan-sigs g-source-path) 0))
                    NUCH-AFTER NUCH-BOTH))
-  (let (it:ListIter (list-iter forms))
-    (doseq-iter (fc &it)
+  (dotimes (fi (node-len forms))
+    (let (fc:raw:Node (as raw:Node (node-at forms fi)))
       (let (f:ptr:Node (unsafe/cast &Node fc))
-        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-CELL)
+        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST)
                    (> (node-len (as ptr f)) 0)
                    (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
           (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
@@ -780,10 +776,10 @@
 ; correct under `--emit-nuch` / `--emit-cheader`, which return before
 ; `open-module-streams`.
 (defn prescan-nuch-signatures (forms:(raw Node)):void
-  (let (it:ListIter (list-iter forms))
-    (doseq-iter (fc &it)
+  (dotimes (fi (node-len forms))
+    (let (fc:raw:Node (as raw:Node (node-at forms fi)))
       (let (f:ptr:Node (unsafe/cast &Node fc))
-        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-CELL)
+        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST)
                    (> (node-len (as ptr f)) 0)
                    (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
           (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))

@@ -434,7 +434,7 @@
 ; symbol (e.g. `(vfn (x:A) C …)`, not `(vfn (x:A):C …)`) when it is a tyvar. A
 ; `:Tyvar` keyword return annotation is a NODE-KEYWORD, and the generic
 ; monomorphizer's `subst-tyvars-node` (lib/type-mangle.nuc) only substitutes
-; NODE-SYM/NODE-CELL — a keyword tyvar would survive unstamped into the nested
+; NODE-SYM/NODE-LIST — a keyword tyvar would survive unstamped into the nested
 ; closure stamping and report "unknown type". A bare-symbol return is a NODE-SYM
 ; and substitutes correctly. Concrete returns (`i32`) may use either spelling.
 ;

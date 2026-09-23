@@ -921,3 +921,15 @@ int main(void){return 0;}
     (try (check-not-match hv "*<unistd.h>*"))
     (drop &h))
   (return (ok)))
+
+; FP-5: a function-pointer RETURN spells its own empty parameter list `(void)`.
+; Bare `()` in C declares unspecified arguments, a different declaration — and
+; is what `(fn RET)()` rendered as for as long as `()` read as a null node
+; (design/stage21-cleanup/ast-as-collection.md §8.4). The IR-snapshot gate is
+; what caught it; this is the unit that keeps it caught.
+(deftest fp5-cheader-fnptr-return-takes-void
+  (let (h:String (try (fixture-cheader "examples/fnptr-global.nuc")))
+    (try (check-line (string-as-view &h)
+                     "int32_t (*pick_hook(void))(void) asm(\"pick-hook\");"))
+    (drop &h))
+  (return (ok)))

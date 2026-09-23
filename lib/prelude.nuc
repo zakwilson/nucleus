@@ -24,13 +24,16 @@
 ; and every method; this is only the bare data definition.
 (defstruct Symbol p:&ui8)
 
+; A list Node is a header over an array of element pointers: `elems` with `len`
+; used of `cap` allocated (design/stage21-cleanup/ast-as-collection.md §5).
 (defstruct Node
   kind:i32
   line:i32
   i:i64
   s:Symbol
-  (car (raw Node))
-  (cdr (raw Node)))
+  (elems (raw (raw Node)))
+  len:i32
+  cap:i32)
 
 ; NODE-KEYWORD (Stage 11 cleanup §2): a `:foo` keyword literal. Carries the name
 ; (without the leading colon) in the `s` field. Lowered by the compiler to a
@@ -40,7 +43,7 @@
 ; Carries the Unicode scalar value in the `i` field (like NODE-INT) and self-
 ; evaluates to a `Char`-typed constant. Appended last so existing NODE-* ordinals
 ; are unchanged (byte-identical for programs with no char literals).
-(defenum NodeKind NODE-INT NODE-STR NODE-SYM NODE-CELL NODE-FLOAT NODE-KEYWORD NODE-CHAR)
+(defenum NodeKind NODE-INT NODE-STR NODE-SYM NODE-LIST NODE-FLOAT NODE-KEYWORD NODE-CHAR)
 
 ; Stage 14 NS-1 (design/stage14/native-strings.md): StrView — a length-
 ; prefixed, non-owning view over UTF-8 bytes, `{ data, len }`. Promoted here

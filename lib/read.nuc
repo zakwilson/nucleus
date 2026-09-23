@@ -642,8 +642,8 @@
 
 (defn rd-def-rmacro-form? (form:raw:Node):bool
   (when (= form null) (return false))
-  (when (!= (form 'kind) NODE-CELL) (return false))
-  (let (h:raw:Node (form 'car))
+  (when (!= (form 'kind) NODE-LIST) (return false))
+  (let (h:raw:Node (node-first form))
     (when (= h null) (return false))
     (when (!= (h 'kind) NODE-SYM) (return false))
     (return (= (h 's) "def-rmacro"))))
@@ -668,8 +668,8 @@
 ; function-pointer type.
 (defn rd-fn-type-form? (form:raw:Node):bool
   (when (= form null) (return false))
-  (when (!= (form 'kind) NODE-CELL) (return false))
-  (let (h:raw:Node (form 'car))
+  (when (!= (form 'kind) NODE-LIST) (return false))
+  (let (h:raw:Node (node-first form))
     (when (= h null) (return false))
     (when (!= (h 'kind) NODE-SYM) (return false))
     (return (= (h 's) "fn"))))
@@ -683,9 +683,8 @@
   (when (not (rd-fn-type-form? paren-form)) (return (ok paren-form)))
   (when (!= (rd-peek self) 40) (return (ok paren-form)))
   (let (plist:raw:Node (try (rd-form self)))
-    (return (ok (as raw:Node (make-cell paren-form
-                                        (as raw:Node (make-cell plist null line))
-                                        line))))))
+    (return (ok (as raw:Node (node-list2 paren-form
+                               plist line))))))
 
 ; The final chain segment is still open (`x:`, `?`, `x:?`, `?!` -- not `foo?`,
 ; `!=`): the fuse gate of pointer-kind-spellings.md §4, on the `&`-sigil machine.
@@ -754,20 +753,17 @@
             (while (> i start)
               (set! i (- i 1))
               (set! result (as raw:Node
-                             (make-cell (as raw:Node (intern-node (invoke &segs i)))
-                                        (as raw:Node (make-cell result null line))
-                                        line))))
+                             (node-list2 (as raw:Node (intern-node (invoke &segs i)))
+                               result line))))
             (when have-name
               (set! result (as raw:Node
-                             (make-cell (as raw:Node (intern-node name))
-                                        (as raw:Node (make-cell result null line))
-                                        line))))
+                             (node-list2 (as raw:Node (intern-node name))
+                               result line))))
             (drop &segs)
             (return (ok result))))))))
 
 (defn rd-list (self:&Reader open-line:i32):ReadResult
-  (let (head:raw:Node null
-        tail:raw:Node null)
+  (let (b:&Node (node-list-new open-line))
     (while true
       (rd-skip-ws self)
       (let (c:i32 (rd-peek self))
@@ -776,18 +772,14 @@
         (when (= c 41)
           (rd-close-bracket self)
           (rd-next self)
-          (return (ok head)))
-        (let (child:raw:Node (try (rd-form self))
-              cell:raw:Node (as raw:Node (make-cell child null open-line)))
-          (when (= tail null) (set! head cell))
-          (when (!= tail null) (set! (tail 'cdr) cell))
-          (set! tail cell))))
-    (return (ok head))))
+          (return (ok (node-list-done b))))
+        (let (child:raw:Node (try (rd-form self)))
+          (node-push b child))))
+    (return (ok (node-list-done b)))))
 
 ; The elements of a `[…]`/`{…}`/`#{…}` literal up to `closer`.
 (defn rd-lit-elems (self:&Reader what:StrView closer:i32 open-line:i32):ReadResult
-  (let (head:raw:Node null
-        tail:raw:Node null)
+  (let (b:&Node (node-list-new open-line))
     (while true
       (rd-skip-ws self)
       (let (c:i32 (rd-peek self))
@@ -798,19 +790,16 @@
         (when (= c closer)
           (rd-close-bracket self)
           (rd-next self)
-          (return (ok head)))
-        (let (child:raw:Node (try (rd-form self))
-              cell:raw:Node (as raw:Node (make-cell child null open-line)))
-          (when (= tail null) (set! head cell))
-          (when (!= tail null) (set! (tail 'cdr) cell))
-          (set! tail cell))))
-    (return (ok head))))
+          (return (ok (node-list-done b))))
+        (let (child:raw:Node (try (rd-form self)))
+          (node-push b child))))
+    (return (ok (node-list-done b)))))
 
 ; `(vector-lit e…)` / `(hashmap-lit k v…)` / `(hashset-lit e…)` -- no gensym
 ; element; the compiler mints its own after reading.
 (defn rd-lit-cell (name:StrView elems:raw:Node line:i32):raw:Node
-  (return (as raw:Node (make-cell (as raw:Node (intern-node (symbol-intern name)))
-                                  elems line))))
+  (return (as raw:Node (node-cons (as raw:Node (intern-node (symbol-intern name)))
+                         elems line))))
 
 ; The fuse lives here, not in `rd-list`, so it fires wherever an atom is read:
 ; a reader-macro operand, a literal element, a top-level form.
@@ -882,9 +871,8 @@
           (let (inner:raw:Node (try (rd-form self))
                 sym:raw:Node (as raw:Node (intern-node (rm 'wrap))))
             (return (ok (as raw:Node
-                          (make-cell sym
-                                     (as raw:Node (make-cell inner null line))
-                                     line))))))))
+                          (node-list2 sym
+                            inner line))))))))
     ; `c"…"` -- a `c` glued to an opening quote -- is an explicit CStr literal.
     (when (and (= c 99) (= (rd-peek1 self) 34))
       (rd-next self)
@@ -919,8 +907,7 @@
 ; table (a REPL session). Each spine cell carries the line the form started on.
 (defn read-all-with-macros (src:StrView table:&(Vector RMacro)):ReadResult
   (let (r:Reader (reader-with-macros src table)
-        head:raw:Node null
-        tail:raw:Node null)
+        b:&Node (node-list-new 0))
     (while (not (reader-eof? &r))
       (let (start-line:i32 (r 'line)
             form:raw:Node (try (read-one &r))
@@ -928,11 +915,8 @@
         (when (!= form null)
           (let (fl:i32 (form 'line))
             (when (!= fl 0) (set! line fl))))
-        (let (cell:raw:Node (as raw:Node (make-cell form null line)))
-          (when (= tail null) (set! head cell))
-          (when (!= tail null) (set! (tail 'cdr) cell))
-          (set! tail cell))))
-    (return (ok head))))
+        (node-push-line b form line)))
+    (return (ok (node-list-done b)))))
 
 ; The same over a fresh table: a `def-rmacro` in `src` is scoped to `src`.
 (defn read-all (src:StrView):ReadResult
@@ -1006,15 +990,15 @@
                 (write-str out "\"")
                 (rd-write-escaped out (symbol-as-view (n 's)))
                 (write-str out "\""))
-          (= k NODE-CELL)
+          (= k NODE-LIST)
             (do (write-str out "(")
                 (let (cur:raw:Node n
                       first:bool true)
-                  (while (and (!= cur null) (= (cur 'kind) NODE-CELL))
+                  (while (and (> (node-len cur) 0) (= (cur 'kind) NODE-LIST))
                     (when (not first) (write-str out " "))
                     (set! first false)
-                    (node-write out (cur 'car))
-                    (set! cur (cur 'cdr))))
+                    (node-write out (node-first cur))
+                    (set! cur (node-rest cur))))
                 (write-str out ")"))
           true (do))))
 
@@ -1036,7 +1020,7 @@
       (return (and (= (a 'i) (b 'i)) (= (a 's) (b 's)))))
     (when (or (= k NODE-SYM) (or (= k NODE-FLOAT) (= k NODE-KEYWORD)))
       (return (= (a 's) (b 's))))
-    (when (= k NODE-CELL)
-      (when (not (node-eq (a 'car) (b 'car))) (return false))
-      (return (node-eq (a 'cdr) (b 'cdr))))
+    (when (= k NODE-LIST)
+      (when (not (node-eq (node-first a) (node-first b))) (return false))
+      (return (node-eq (node-rest a) (node-rest b))))
     (return false)))

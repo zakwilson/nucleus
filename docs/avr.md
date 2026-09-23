@@ -169,8 +169,9 @@ example — behaviorally verified under `simavr`.
 - `f32` arithmetic (`__addsf3`-class libcalls, confirmed working).
 - `i64` arithmetic (costly — links libgcc's `__muldi3`-class 64-bit software
   routines — but correct).
-- Runtime quasiquote, if you accept the cost: the qq cons-cell allocator
-  (`__cons`/`__append`) is 16-bit-correct on AVR and only needs `malloc`
+- Runtime quasiquote, if you accept the cost: since Stage 21 a quasiquote list
+  is built by the ordinary `node-list-new`/`node-push` library, compiled FOR the
+  target, so it is 16-bit-correct on AVR by construction and only needs `malloc`
   (avr-libc provides it). A quasiquote that constructs *quoted-symbol*
   leaves additionally pulls in the interning/arena runtime (which needs
   `perror`, unavailable freestanding). Since Stage 16 that is an explicit

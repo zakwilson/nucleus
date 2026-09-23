@@ -13,7 +13,7 @@
   (`printf`), but cannot `defn` a variadic function using `va_list` /
   `va_start` / `va_arg`. `&rest` is macro-level, not C ABI.
 - **`&rest` functions are not C-callable** — fixed at the ABI boundary;
-  rest args are built as a `Node*` cons list at the call site.
+  rest args are built into a list `Node` at the call site.
 - **`--emit-cheader` skips template-instance signatures** — exported
   functions whose return/param types include a stamped template instance
   (e.g. `(Result Config Err)` from `!Config`) are silently omitted from
@@ -289,24 +289,33 @@ threads worth more than processes.
 
 Found while porting the AVR units into `tests/suite-target.nuc` (Stage 18 TF-6,
 2026-09-10). Stage 14 AVR-2 fixed the quasiquote helper's Node cell — 22 bytes,
-`align 1` — and `tests/fixtures/avr2-16bit.nuc` pins it. But the same module,
-emitted for `attiny1634`, still carries 93 `align 8` operands, and three of them
-are on POINTER slots:
+`align 1` — and `tests/fixtures/avr2-16bit.nuc` pinned it. The same module,
+emitted for `attiny1634`, then still carried 93 `align 8` operands, three of
+them on POINTER slots:
 
     store ptr %t12, ptr %nnn.addr.14, align 8
     store ptr %t0, ptr %nn.addr.2, align 8
 
 A pointer is two bytes there, so eight is not merely generous: on a
 strict-alignment backend an over-claimed alignment is a promise the emitter has
-no way to keep, and LLVM is entitled to use it. The `i64` slots (`alloca i64,
-align 8`) are a separate and milder question — legal, but AVR's preferred
-alignment for every type is 1.
+no way to keep, and LLVM is entitled to use it.
 
-Not fixed here because it is a codegen change, not a test change, and the unit
-that would gate it is the one being ported. `avr2-16bit-attiny1634` /
-`avr2-16bit-avrxmega3` pin the qq-helper's `align 1` by presence, so the fix has
-somewhere to land; add the pointer-slot absence to those two units once the
-alignment comes from the datalayout rather than the host default.
+**Re-measured 2026-09-23, after Stage 21 item 6:** the pointer-slot half is
+**gone** — that module now emits **zero** `store ptr …, align 8`. It was never a
+general codegen fault; all three came from the hand-written `@__cons`/`@__append`
+IR in `emit-qq-helpers`, and the AST-as-a-collection relayout deleted that
+runtime outright (quasiquote calls `lib/node.nuc`, which is compiled *for* the
+target like any other library code). What remains is the milder half named
+above: 98 `align 8` operands, all on `i64` slots and the arena's `i64` globals —
+legal, but AVR's preferred alignment for every type is 1.
+
+Still not fixed, and still a codegen change rather than a test change: the
+alignment on those slots comes from the host default instead of the target's
+datalayout. `avr2-16bit-one` is the unit the fix lands in — it was rewritten
+with item 6 around i16 pointer arithmetic (`ptrtoint … to i16`, no `to i64`,
+`declare ptr @malloc(i16)`, an i16-indexed GEP) now that there is no
+hand-emitted helper to pin, and an `i64`-slot absence assertion belongs beside
+those once the alignment is datalayout-derived.
 
 ## Mixed-literal diagnostics name their types inconsistently
 

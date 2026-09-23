@@ -23,7 +23,6 @@
 (defn int-node (val:i64):ptr
   (let (c:&Node (as &Node (calloc 1 (sizeof Node))))
     (set! (c 'kind) 0) (set! (c 'line) 0) (set! (c 'i) val)
-    (set! (c 'car) null) (set! (c 'cdr) null)
     (return (as ptr c))))
 
 (defn main ():i32

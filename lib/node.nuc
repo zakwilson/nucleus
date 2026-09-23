@@ -9,14 +9,6 @@
 (defn alloc-node ():&Node
   (return (as &Node (arena-alloc (sizeof Node)))))
 
-(defn make-cell (car:raw:Node cdr:raw:Node line:i32):&Node
-  (let (c:&Node (alloc-node))
-    (set! (c 'kind) NODE-CELL)
-    (set! (c 'line) line)
-    (set! (c 'car) car)
-    (set! (c 'cdr) cdr)
-    (return c)))
-
 ; An integer leaf, which is what `~` wants when what a macro computed is a
 ; number. No line: a synthesized node has no source position, and `node-line`'s
 ; fallback to the enclosing form is what reads it.
@@ -27,27 +19,13 @@
     (return n)))
 
 (defn node-at (n:raw:Node i:i32):?&Node
-  (match (as-ref n)
-    ((some nn)
-     (while (and (= (nn 'kind) NODE-CELL) (> i 0))
-       (match (as-ref (nn 'cdr))
-         ((some nnn)
-          (set! n nnn)
-          (set! nn nnn))
-         (none (return none)))
-       (set! i (- i 1)))
-     (when (= (nn 'kind) NODE-CELL)
-       (return (as-ref (nn 'car)))))
-    (none (return none))))
+  (when (or (< i 0) (>= i (node-len n))) (return none))
+  (return (as-ref (aref (n 'elems) i))))
 
 (defn node-len (n:raw:Node):i32
-  (let (k:i32 0
-        nn:raw:Node n)
-    (while (and (!= n null) (= (nn 'kind) NODE-CELL))
-      (set! k (+ k 1))
-      (set! n (nn 'cdr))
-      (set! nn n))
-    (return k)))
+  (when (= n null) (return 0))
+  (when (!= (n 'kind) NODE-LIST) (return 0))
+  (return (n 'len)))
 
 ; Source line to blame for a diagnostic about `n`, given the line of the
 ; enclosing form.
@@ -55,7 +33,7 @@
 ; A bare symbol node is an *interned singleton* shared by every occurrence of
 ; that spelling in the whole program (see intern-symbol above and read-form's
 ; TOK-SYMBOL branch), so it cannot carry a per-occurrence line — `(sym line)` is
-; always 0. Every other node kind (cells, ints, strings, chars, floats,
+; always 0. Every other node kind (lists, ints, strings, chars, floats,
 ; keywords) is freshly allocated per occurrence and does carry its reader line.
 ;
 ; So a diagnostic whose subject is (or may be) a symbol must borrow the line of
@@ -70,23 +48,150 @@
 
 (defn node-is-list (n:raw:Node):bool
   (when (= n null) (return true))
-  (when (= (n 'kind) NODE-CELL) (return true))
+  (when (= (n 'kind) NODE-LIST) (return true))
   (return false))
 
-; The kind of a NULL node. Deliberately outside NodeKind's 0..n range, so a
-; `(= (node-kind x) NODE-SYM)` test answers false rather than matching a real
-; kind by accident.
+; Absent (null) or the empty list `()` — the two ways a form can have nothing
+; where an operand belongs. A definer that refuses `()` asks this, not `= null`.
+(defn node-empty? (n:raw:Node):bool
+  (when (= n null) (return true))
+  (return (and (= (n 'kind) NODE-LIST) (= (n 'len) 0))))
+
+; The kind of a node that is not there. Deliberately outside NodeKind's 0..n
+; range, so a `(= (node-kind x) NODE-SYM)` test answers false rather than
+; matching a real kind by accident.
 (defconst NODE-NIL -1)
 
-; `(n kind)`, null-safe. `()` reads as a NULL node — `read-list` returns null for
-; a zero-element list (W5f) — so every `(x kind)` on a node a program may spell
-; `()` is a null dereference. That was W9 item 45: the diagnostic each site wants
-; ("name must be a symbol") already existed at the site, and the kind test that
-; would have fired it crashed first. Use this wherever the node came from
-; `node-at`, whose return type is `?ptr:Node` and says so.
+; `(n kind)` for a node that may be absent — null, or the empty list `()`, which
+; carries no name, no head and no operand. That is W9 item 45: the diagnostic
+; each site wants ("name must be a symbol") already existed there, and the kind
+; test that would have fired it crashed on the null first. Use this wherever the
+; node came from `node-at`, whose return type is `?ref:Node` and says so; a site
+; that means to walk a list whether or not it is empty reads `(n 'kind)`.
 (defn node-kind (n:raw:Node):i32
-  (when (= n null) (return NODE-NIL))
+  (when (node-empty? n) (return NODE-NIL))
   (return (n 'kind)))
+
+; ============================================================
+; The list API (design/stage21-cleanup/ast-as-collection.md §8)
+; ============================================================
+;
+; Every consumer of a list reads it through these and builds one through
+; `node-list-new`/`node-push`/`node-list-done` (or the fixed-arity
+; `node-listN`), never through the cell fields: the representation behind
+; them is what §8's second step replaces. Null is "absent" — an out-of-range
+; `node-at`, a missing form — and every reader below treats it as empty.
+
+; The first element, or null when `n` is null, empty, or not a list.
+(defn node-first (n:raw:Node):raw:Node
+  (when (= (node-len n) 0) (return null))
+  (return (aref (n 'elems) 0)))
+
+; A fresh array of `n` element slots.
+(defn node-elems-alloc (n:i32):(raw (raw Node))
+  (return (unsafe/cast (raw (raw Node)) (arena-alloc (* (as i64 n) (sizeof (raw Node)))))))
+
+; A list under construction — the same thing as a finished list, so
+; `node-list-done` is the identity and a builder may be handed out as it is.
+(defn node-list-new (line:i32):&Node
+  (let (b:&Node (alloc-node))
+    (set! (b 'kind) NODE-LIST)
+    (set! (b 'line) line)
+    (return b)))
+
+; The elements after the first, or null when there are none. A `cap` of 0 over a
+; non-null `elems` is a BORROWED view: it shares the parent's array and copies on
+; its first push, which is what keeps `node-rest` O(1).
+(defn node-rest (n:raw:Node):raw:Node
+  (when (<= (node-len n) 1) (return null))
+  (let (v:&Node (node-list-new (n 'line)))
+    (set! (v 'elems) (unsafe/ptr+ (n 'elems) 1))
+    (set! (v 'len) (- (n 'len) 1))
+    (return (as raw:Node v))))
+
+; Room for one more element, owned. Growth is amortized doubling from 4.
+(defn node-reserve (b:&Node):void
+  (when (< (b 'len) (b 'cap)) (return))
+  (let (want:i32 (if (< (b 'cap) 4) (+ (b 'len) 4) (* (b 'cap) 2))
+        fresh:(raw (raw Node)) null)
+    (set! fresh (node-elems-alloc want))
+    (dotimes (i (b 'len))
+      (set! (aref fresh i) (aref (b 'elems) i)))
+    (set! (b 'elems) fresh)
+    (set! (b 'cap) want)))
+
+(defn node-push (b:&Node x:raw:Node):void
+  (node-reserve b)
+  (set! (aref (b 'elems) (b 'len)) x)
+  (set! (b 'len) (+ (b 'len) 1)))
+
+; The list's line is its FIRST element's: the top-level dispatcher blames the
+; unit's opening form for a form that carries no line of its own (a symbol).
+(defn node-push-line (b:&Node x:raw:Node line:i32):void
+  (when (= (b 'len) 0) (set! (b 'line) line))
+  (node-push b x))
+
+; Append every element of `lst` (null = nothing; a non-list is one element).
+(defn node-extend (b:&Node lst:raw:Node):void
+  (when (= lst null) (return))
+  (when (!= (lst 'kind) NODE-LIST)
+    (node-push b lst)
+    (return))
+  (dotimes (i (lst 'len))
+    (node-push b (aref (lst 'elems) i))))
+
+(defn node-list-done (b:&Node):raw:Node
+  (return (as raw:Node b)))
+
+(defn node-cons (x:raw:Node lst:raw:Node line:i32):&Node
+  (let (b:&Node (node-list-new line))
+    (node-push b x)
+    (node-extend b lst)
+    (return b)))
+
+; Replace element `i` of `lst` in place.
+(defn node-set-at (lst:&Node i:i32 x:raw:Node):void
+  (when (or (< i 0) (>= i (lst 'len))) (return))
+  (set! (aref (lst 'elems) i) x))
+
+; Replace element `i` with the elements of `items`, followed by `extra` when it
+; is non-null — the top-level dispatcher's splice, which must be a MUTATION so
+; that a list the caller already holds keeps its identity.
+(defn node-splice-at (lst:&Node i:i32 items:raw:Node extra:raw:Node):void
+  (when (or (< i 0) (>= i (lst 'len))) (return))
+  (let (b:&Node (node-list-new (lst 'line)))
+    (dotimes (k i)
+      (node-push b (aref (lst 'elems) k)))
+    (node-extend b items)
+    (when (!= extra null) (node-push b extra))
+    (let (k:i32 (+ i 1))
+      (while (< k (lst 'len))
+        (node-push b (aref (lst 'elems) k))
+        (inc! k)))
+    (set! (lst 'elems) (b 'elems))
+    (set! (lst 'len) (b 'len))
+    (set! (lst 'cap) (b 'cap))))
+
+(defn node-list1 (a:raw:Node line:i32):&Node
+  (let (b:&Node (node-list-new line))
+    (node-push b a)
+    (return b)))
+(defn node-list2 (a:raw:Node b:raw:Node line:i32):&Node
+  (let (n:&Node (node-list1 a line))
+    (node-push n b)
+    (return n)))
+(defn node-list3 (a:raw:Node b:raw:Node c:raw:Node line:i32):&Node
+  (let (n:&Node (node-list2 a b line))
+    (node-push n c)
+    (return n)))
+(defn node-list4 (a:raw:Node b:raw:Node c:raw:Node d:raw:Node line:i32):&Node
+  (let (n:&Node (node-list3 a b c line))
+    (node-push n d)
+    (return n)))
+(defn node-list5 (a:raw:Node b:raw:Node c:raw:Node d:raw:Node e:raw:Node line:i32):&Node
+  (let (n:&Node (node-list4 a b c d line))
+    (node-push n e)
+    (return n)))
 
 ; `intern` is imported HERE, not at the top: it reaches `lib/error.nuc`
 ; transitively, whose `with-handler` macro body calls `node-at` — and a macro
@@ -183,3 +288,76 @@
 ; Nucleus source interns through `(intern-node (symbol-intern …))`.
 (defn intern-symbol (s:CStr):&Node
   (return (intern-node (symbol-from-cstr s))))
+
+; ============================================================
+; A list Node as a collection
+; ============================================================
+;
+; The point of the header layout: a list answers `count`, `(n i)`, `conj`,
+; `doseq` and the combinators like any other collection
+; (design/stage21-cleanup/ast-as-collection.md §1).
+;
+; Imported here rather than at the top for the same reason `intern` is: a macro
+; body sees only what precedes it, and `lib/coll.nuc` reaches macros of its own.
+(import-use coll)
+(import-use iterator)
+
+; LIFETIME: a view, not an owner — the list must outlive the iterator.
+(defstruct NodeIter
+  lst:raw:Node
+  pos:i32)
+
+; The element type is `&Node`, not `(raw Node)`: `some` takes a non-null ref, and
+; a null element is not one. Only the `:rest` lowering stores a null (an
+; `inttoptr` of a small integer), and it builds through `node-push`, not `conj`.
+(extend NodeIter (Iterator (ref Node)))
+
+(defn next (self:&NodeIter):?&Node
+  (when (>= (self 'pos) (node-len (self 'lst))) (return none))
+  (let (e:raw:Node (aref ((self 'lst) 'elems) (self 'pos)))
+    (set! (self 'pos) (+ (self 'pos) 1))
+    (return (as-ref e))))
+
+(extend Node (Coll (ref Node) NodeIter))
+
+(defn count (self:&Node):usize
+  (return (unsafe/cast usize (node-len self))))
+
+(defn conj (self:&Node elem:&Node):void
+  (node-push self (as raw:Node elem)))
+
+(defn empty? (self:&Node):bool
+  (return (= (node-len self) 0)))
+
+(defn iter (self:&Node):NodeIter
+  (let (it:&NodeIter (alloca NodeIter))
+    (set! (it 'lst) (as raw:Node self))
+    (set! (it 'pos) 0)
+    (return @it)))
+
+; `invoke`, not `get`: an integer index `(n i)` routes to `invoke`, which keeps
+; index access and field access distinct (lib/coll.nuc §Seq). `(n 'kind)` still
+; reads the field — the router prefers a selector that names one.
+(extend Node (Seq (ref Node)))
+
+(defn invoke (self:&Node i:usize):&Node
+  (return (unsafe/cast &Node (node-at self (unsafe/cast i32 i)))))
+
+(defn append (self:&Node elem:&Node):void
+  (node-push self (as raw:Node elem)))
+
+(defn contains? (self:&Node elem:&Node):bool
+  (dotimes (i (node-len self))
+    (when (= (aref (self 'elems) i) (as raw:Node elem)) (return true)))
+  (return false))
+
+(defn insert (self:&Node i:usize elem:&Node):void
+  (let (at:i32 (unsafe/cast i32 i))
+    (when (or (< at 0) (> at (self 'len))) (return))
+    (node-reserve self)
+    (let (k:i32 (self 'len))
+      (while (> k at)
+        (set! (aref (self 'elems) k) (aref (self 'elems) (- k 1)))
+        (set! k (- k 1))))
+    (set! (aref (self 'elems) at) (as raw:Node elem))
+    (set! (self 'len) (+ (self 'len) 1))))
