@@ -298,7 +298,7 @@
 (import-use vector)
 (import-use node)
 (defn main ():i32
-  (let (c:ptr (make-cell null null 0)
+  (let (c:ptr (as ptr (node-list-new 0))
         r:ptr (append c c))
     (return 0)))
 "))

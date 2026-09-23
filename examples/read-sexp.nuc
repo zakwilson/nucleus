@@ -22,17 +22,15 @@
 
 ; The first element of `(key value)` whose key is `name`, searched under `form`.
 (defn field (form:raw:Node name:StrView):raw:Node
-  (let (cur:raw:Node form)
-    (while (!= cur null)
-      (let (entry:raw:Node (cur 'car))
-        (when (and (!= entry null) (= (entry 'kind) NODE-CELL))
-          (let (head:raw:Node (entry 'car))
-            (when (and (!= head null)
-                       (= (head 'kind) NODE-SYM)
-                       (= (symbol-as-view (head 's)) name))
-              (return ((entry 'cdr) 'car))))))
-      (set! cur (cur 'cdr)))
-    (return null)))
+  (dotimes (i (node-len form))
+    (let (entry:raw:Node (node-at form i))
+      (when (node-is-list entry)
+        (let (head:raw:Node (node-first entry))
+          (when (and (!= head null)
+                     (= (head 'kind) NODE-SYM)
+                     (= (symbol-as-view (head 's)) name))
+            (return (node-at entry 1)))))))
+  (return null))
 
 (defn show (label:StrView n:raw:Node):void
   (let (s:String (node-str n))
@@ -46,9 +44,9 @@
       (return 1))
     ((ok forms)
       ; One top-level form, `(server …)`; its body is everything after the head.
-      (let (server:raw:Node (forms 'car))
+      (let (server:raw:Node (node-first forms))
         (print "kind=" (node-kind server) " len=" (node-len server) "\n")
-        (let (body:raw:Node (server 'cdr))
+        (let (body:raw:Node (node-rest server))
           (show "host"  (field body "host"))
           (show "port"  (field body "port"))
           (show "tags"  (field body "tags"))
@@ -60,9 +58,9 @@
         ((ok again) (print "reread-equal=" (node-eq forms again) "\n"))
         ((err e2) (print "reread-failed\n")))
       ; Reading what we printed gives the same tree back.
-      (let (text:String (node-str (forms 'car)))
+      (let (text:String (node-str (node-first forms)))
         (match (read-all (string-as-view &text))
-          ((ok round) (print "roundtrip-equal=" (node-eq (forms 'car) (round 'car)) "\n"))
+          ((ok round) (print "roundtrip-equal=" (node-eq (node-first forms) (node-first round)) "\n"))
           ((err e3) (print "roundtrip-failed\n")))
         (drop &text))
       (return 0))))

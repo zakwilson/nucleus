@@ -1,6 +1,6 @@
 # Collections (`lib/coll.nuc`, `lib/hash.nuc`, `lib/vector.nuc`, `lib/hashmap.nuc`, `lib/hashset.nuc`, Stage 11)
 
-`(import-use coll)` provides the core collection protocols (`Coll`, `Seq`, `Assoc`, `Set`, `Drop`) that every owning collection conforms to. The concrete types (`Vector`, `HashMap`, `HashSet`) are separate libraries and must be imported individually.
+`(import-use coll)` provides the core collection protocols (`Coll`, `Seq`, `Assoc`, `Set`, `Drop`) that every owning collection conforms to. The concrete types (`Vector`, `HashMap`, `HashSet`, and the AST's own `Node`) are separate libraries and must be imported individually.
 
 These collections are **mutable and in-place** in the STL spirit — `conj`, `assoc`, and the set-algebra operations mutate the receiver. They own heap memory through a stored `AllocHandle` and free it via `Drop` at `with`-scope exit. See [Allocators](allocators.md) for the allocator protocol and handle type.
 
@@ -550,6 +550,53 @@ Iteration order is hash-dependent and unspecified.
       (printf "union count: %llu\n" (as ui64 (count a))))) ; 6
   (return 0))
 ```
+
+---
+
+## `Node` (`lib/node.nuc`)
+
+`(import-use node)` provides the compiler's own AST type. A list `Node` is a
+header over an array of element pointers — the same shape as a `Vector` — so it
+conforms to `(Coll (ref Node) NodeIter)` and `(Seq (ref Node))`. A form read
+from source is an ordinary collection: `count`, `(xs i)`, `conj`, `append`,
+`insert`, `contains?`, `doseq` and `into` all work on it.
+
+```lisp
+(import-use node)
+(import-use coll)
+(import-use iterator)
+
+(let (xs:&Node (unsafe/cast &Node `(10 20 30))
+      i:usize 1)
+  (count xs)             ; 3
+  ((xs i) 'i)            ; 20 — index, then read a field of the element
+  (xs 'kind)             ; NODE-LIST — a selector naming a field wins over `invoke`
+  (conj xs (node-int 40))
+  (doseq (e xs NodeIter)
+    (printf " %ld" (e 'i))))
+```
+
+The element type is `(ref Node)`, not `(raw Node)`: `iter` yields non-null
+references, so `next` can answer `none` at the end. `NodeIter` borrows the
+list's array and must not outlive it.
+
+Two differences from the other collections:
+
+- **`(xs 'kind)` is a field read, not an index.** A quoted selector naming a
+  field of the receiver takes precedence over the `Seq` `invoke` method, so the
+  struct fields (`kind`, `line`, `i`, `s`, `len`) stay reachable on a type that
+  is also indexable. See [Callable values](special-forms.md#callable-values-non-function-call-position).
+- **`Node` does not conform to `Drop`.** Nodes live in the compiler's arena and
+  are freed wholesale, so a `Node` is never `with`-bound.
+
+`Node` is not a *replacement* for `Vector`: it stores `(raw Node)` elements
+only, it grows through `node-push` rather than a generic element store, and it
+has no parametric element type. It is a collection so that macro and tooling
+code can treat a form the way it treats any other sequence. See
+[Macros](macros.md#a-form-is-a-collection) for the macro-body spelling
+(`ast-first` / `ast-rest` / `ast-at` / `ast-len`), which differs because a macro
+body is compiled against the *program's* prelude but handed the *compiler's*
+nodes.
 
 ---
 

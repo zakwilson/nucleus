@@ -110,7 +110,7 @@ function-pointer types and other sources without preserved names fall
 back to positional `pN`. Docstrings are also matched by `apropos`.
 
 The argument is a bare symbol, not a quoted form — `(doc 'malloc)` is
-rejected by `repl-meta-sym-arg` because the parsed argument is a cell
+rejected by `repl-meta-sym-arg` because the parsed argument is a list
 `(quote malloc)`, not a symbol node. The same applies to `kind-of`,
 `type-of`, `locate`, `defined?`, `forget`, `trace`, `untrace`.
 

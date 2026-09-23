@@ -1,64 +1,38 @@
-; List manipulation primitives over the unified Node/cons-cell type.
+; List manipulation primitives over the AST `Node` type.
 ;
-; Every value the reader/compiler produces is a Node with one of four kinds:
-;   0 = INT   (leaf, value in .i)
-;   1 = STR   (leaf, bytes in .s)
-;   2 = SYM   (leaf, name in .s)
-;   3 = CELL  (pair, .car and .cdr)
-;
-; A "list" is a chain of CELL nodes terminated by null. The empty list is null.
-;
-; These functions allocate with malloc. Cleanup is the caller's responsibility.
-; Programs that don't use lists don't pay for them.
-;
-; `Node` itself comes from the prelude. This file used to redeclare it — with
-; `car:ptr`/`cdr:ptr` where the prelude has `(car (raw Node))`/`(cdr (raw Node))`
-; — which was silently discarded by `emit-defstruct`'s "already emitted" guard in
-; every build that had both (the compiler's own: src/type-mangle.nuc and
-; src/nuch.nuc `import-use` this file). Which declaration won was decided by
-; import order; the layouts happened to be ABI-identical, so nothing broke. See
-; design/stage15-stress-test/name-resolution.md §11.1 — it is the one casualty
-; eager collision reporting turns up in the whole tree.
+; A list Node is a header over an array of element pointers (see lib/node.nuc);
+; `cons` prepends, `first`/`rest` read. Retained for the examples that still
+; spell a list this way — `Node` conforms to `Coll`/`Seq` directly now, so this
+; layer is scheduled for retirement
+; (design/stage21-cleanup/ast-as-collection.md §8.5).
 
-(import-use "stdlib.h")
+(import-use node)
 (import-use iterator)
 
 (defn cons (car:ptr cdr:ptr):ptr
-  ; calloc, not malloc: `s` is a Symbol, which has no null value to assign —
-  ; a cell simply has no name, and zeroed is what the arena's nodes are too.
-  (let (c:&Node (as &Node (calloc 1 (sizeof Node))))
-    (set! (c 'kind) 3)
-    (set! (c 'line) 0)
-    (set! (c 'i) 0)
-    (set! (c 'car) car)
-    (set! (c 'cdr) cdr)
-    (return (as ptr c))))
+  (return (as ptr (node-cons car cdr 0))))
 
 (defn first (n:ptr):ptr
-  (cond (= n null) (return null))
-  (return ((as &Node n) 'car)))
+  (return (node-first n)))
 
 (defn rest (n:ptr):ptr
-  (cond (= n null) (return null))
-  (return ((as &Node n) 'cdr)))
+  (return (node-rest n)))
 
 (defn append (a:ptr b:ptr):ptr
-  (cond (= a null) (return b))
-  (return (cons (first a) (append (rest a) b))))
+  (let (out:&Node (node-list-new 0))
+    (node-extend out a)
+    (node-extend out b)
+    (return (node-list-done out))))
 
 ; ---------------------------------------------------------------------------
-; ListIter — drive a cons-cell list (a chain of CELL Nodes terminated by null)
-; as an Iterator, yielding each element (the `car` / `first` of each cell).
+; ListIter — drive a Node list as an Iterator, yielding each element.
 ;
 ; The element is a Node* (a `ptr`). Since niche-encoded `(Maybe ptr)` is now
 ; matchable, the iterator yields `ptr` directly. Recover each element in a
 ; consumer with (cast ptr:Node elem).
 ;
-; This is the iterator that lets element combinators reach AST `Node` cdr-lists
-; without changing the cons-cell representation.
-;
-; LIFETIME: the iterator holds the current cell pointer and does NOT own the
-; list; the list must outlive the iterator.
+; LIFETIME: the iterator holds a view of the list and does NOT own it; the list
+; must outlive the iterator.
 ; ---------------------------------------------------------------------------
 (defstruct ListIter
   cur:ptr)
@@ -67,7 +41,7 @@
 
 (defn next (self:&ListIter):?ptr
   (let (c:ptr (self 'cur))
-    (when (= c null) (return none))
+    (when (= (node-len c) 0) (return none))
     (set! (self 'cur) (rest c))
     (return (some (first c)))))
 

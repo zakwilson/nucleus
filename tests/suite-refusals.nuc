@@ -678,8 +678,7 @@
 
 ; C3's own diagnostic. The type check `~` already had says the value is a node;
 ; this says it is a node of the right SHAPE, because `~@` substitutes N arguments
-; and only a list has N elements. A dotted tail fails at the cell that has one
-; rather than being silently dropped — the list is walked, not just its head.
+; and only a list has N elements.
 (deftest s20-computed-arg-splice-not-a-list
   (try (check-ct-refused "(import-use node)
 (defn s20-atom ():(raw Node) (return `7))
@@ -687,12 +686,12 @@
 (defn main ():i32 (return (two 1 ~@(s20-atom))))
 " 4 "the computed argument '~@(s20-atom)' must evaluate to a list of nodes"
     "`~@` splices its result in as N arguments, so it must evaluate to a list"))
+  ; Through a `:rest` macro, whose splice walks a second path.
   (try (check-ct-refused "(import-use node)
-(defn s20-dotted ():(raw Node)
-  (return (as raw:Node (make-cell (as raw:Node `1) (as raw:Node `2) 0))))
+(defn s20-sym ():(raw Node) (return `abc))
 (defmacro s20-sum2 (:rest args) `(macfoldr _+ 0 ~@args))
-(defn main ():i32 (return (s20-sum2 ~@(s20-dotted))))
-" 5 "the computed argument '~@(s20-dotted)' must evaluate to a list of nodes"
+(defn main ():i32 (return (s20-sum2 ~@(s20-sym))))
+" 4 "the computed argument '~@(s20-sym)' must evaluate to a list of nodes"
     "`~@` splices its result in as N arguments, so it must evaluate to a list"))
   ; Not a node at all: C2's type check owns this one, and it names `~@`.
   (try (check-ct-refused "(defmacro two (a b) `(_+ ~a ~b))

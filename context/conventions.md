@@ -1964,6 +1964,30 @@ Two consequences worth knowing:
 `_get` never dispatches (it is the override bypass), and neither do the storage
 places `(deref p)` / `(aref a i)`.
 
+## A type that is BOTH indexable and a struct: a literal selector naming a field outranks `invoke`
+
+`(s i)` on a `Seq` conformer routes to `invoke`, and `(s 'field)` is member
+access — two rules that never met until `Node` conformed to `Seq` while keeping
+`kind`/`line`/`i`/`s`/`len` as real fields. The moment `invoke` existed for
+`(ref Node)`, every `(n 'kind)` in `lib/macros.nuc` became
+`no matching method for overloaded 'invoke' with argument types (ptr:Node, ptr:Node)`.
+
+The fix is a precedence-1 branch in `emit-callable-value`, ahead of the invoke
+check: `callee-selects-field` asks whether the one argument is a **literal**
+quoted symbol naming a field of the callee's struct, and routes to
+`emit-get-with-callee` if so. It must be side-effect-free and asked *before any
+argument is emitted*, like `generic-has-receiver-method` — the same discipline
+as the `set` place route two sections up, for the same reason.
+
+**This is the shape of every future "collection with fields".** A computed index
+still reaches `invoke`, a literal selector still reaches the field, and the two
+never overlap because a field name is not an integer. What it costs is a
+**bootstrap staging**: the boot compiler has no such branch, so the conformance
+and the router fix cannot land in one step. Land `Coll` plus the router fix,
+`make update-bootstrap`, *then* add `Seq` — `invoke` is the method that
+collides, and holding it back for one bootstrap is what lets the tree compile
+throughout.
+
 ## Reading a struct value's field is direct; writing one needs a binding
 
 Since Stage 16 SV-1 a struct **value** is a legal member-access receiver, so
@@ -4506,7 +4530,7 @@ Two structural traps in this area:
 - **A `die-at` at the end of a `case` is the label-less DEFAULT arm, not a
   fall-through of the arm above it.** `parse-type-from-node`'s trailing "unable
   to parse type expression" reads like the catch-all for a failed parse; it is
-  reachable only for a `NodeKind` outside `{NODE-SYM, NODE-CELL}`, so a
+  reachable only for a `NodeKind` outside `{NODE-SYM, NODE-LIST}`, so a
   malformed *list* — the common case — flowed past it and off the end of the
   function. Check which arm a terminal raise actually belongs to before trusting
   it to cover anything.
@@ -4516,24 +4540,41 @@ Two structural traps in this area:
   writing a second copy of the built-in list that will drift. Keep side effects
   like `avr-reject-f64` in the resolver — a probe must answer, not raise.
 
-## `()` is not an empty node — it is NO node, and `(x kind)` on it is a null deref
+## Never ask a list whether it is null to mean "empty" — ask `node-len`
 
-`read-list` returns null for a zero-element list, so `()` anywhere in a program
-arrives as a null `Node*` (W5f). `node-at` says so in its type — it returns
-`?ptr:Node` — and nearly every caller launders that with
-`(unsafe/cast ptr:Node (node-at form 1))` and then reads `kind` or `s` off it.
-Every one of those is a segfault on `()`, which was W9 item 45: twenty-three
-shapes across the three modes, from `(defstruct ())` to `(ns ())` to
-`(defenum E A () B)`.
+Since Stage 21 O3 a list `Node` is a header over an array, so `()` reads as a
+**non-null** `NODE-LIST` of length 0 and null means only "no node at all"
+(absent). The two are now different facts and the test that conflates them is
+wrong in one direction or the other: `(= lst null)` misses `()`, and a spine
+walk that stops at null never runs. Write `(= (node-len lst) 0)` for "empty",
+`(= lst null)` for "absent", and `node-empty?` for "either" — which is what a
+definer refusing an operand actually means. Two live bugs this caused: a C
+function-pointer return type emitted `()` instead of `(void)` because
+`type-node-to-c-decl` tested `(= plist null)` (only the IR-snapshot gate caught
+it), and `ct-eval-require-list` became vacuous because its walk started at a
+node that is no longer a cons chain.
 
-**Use the null-safe accessors, which is what they are for.** `lib/node.nuc` has
-three: `node-line` (borrows the enclosing line), `node-is-list`, and — since
-item 45 — `node-kind`, which answers `NODE-NIL` (−1, deliberately outside
-`NodeKind`'s range) for a null node. Write `(= (node-kind x) NODE-SYM)`, never
+**The null-safe accessors still carry the diagnostics.** `lib/node.nuc` has
+`node-line` (borrows the enclosing line), `node-is-list`, `node-empty?`, and —
+since W9 item 45 — `node-kind`, which answers `NODE-NIL` (−1, deliberately
+outside `NodeKind`'s range) for a null node **and for `()`**. That second half
+is the whole reason item 45's twenty-three diagnostics (`(defstruct ())`,
+`(ns ())`, `(defenum E A () B)`) survived O3 unchanged: a definer asks
+`node-kind`, gets `NODE-NIL` either way, and raises the same "must be a symbol"
+message it always did. Write `(= (node-kind x) NODE-SYM)`, never
 `(= (x kind) NODE-SYM)`, for anything that came out of `node-at`. Same for the
 line in a `die-at` argument: `(node-line x (encl line))`, not `(x line)` — the
 argument is evaluated before the call, so a `die-at` whose *line* dereferences
 the node crashes on exactly the input it exists to diagnose.
+
+**`node-rest` is a borrowed view, not a node you may keep.** It returns a fresh
+header whose `elems` points *into* the parent's array with `cap` 0, so it is
+O(1) but it copies on its first push. That makes it wrong as a mutation target
+(the write lands in the copy) and wrong as a recursion spine when the walk
+writes anything per step — `stamp-macro-lines` stamped a rest's line and then
+discarded it, leaving every element past the first unstamped and breaking line
+attribution tree-wide. Recurse by index (`node-at` over `node-len`) whenever the
+walk touches the node.
 
 Two things this makes easy to get wrong:
 
@@ -6184,23 +6225,32 @@ a diagnostic — `(:or)` in `case` is `false`, like `(or)`.
 ## Member access on a null node in a macro body kills the COMPILER, before any diagnostic
 
 The section above on `()` applies here with the stakes raised: a macro body runs
-inside the compiler process, at expansion time, so `(x 'car)` on a null
+inside the compiler process, at expansion time, so `(x 'kind)` on a null
 `(raw Node)` is not a crash in the program being compiled — it is exit 139 from
 `nucleusc` itself, with no diagnostic, whatever `macro-error` the next line was
 about to raise. And `lib/macros.nuc` cannot reach `node-kind`: the prelude
 registers the `Node` type and imports no node runtime, so a body has member
-access and nothing else.
+access, the `ast-*` special forms, and nothing else.
+
+**A macro body reads a list through `ast-first` / `ast-rest` / `ast-at` /
+`ast-len`, never the `node-*` functions.** They are special forms for a
+bootstrap reason, not a stylistic one: a macro body is compiled from the
+*program's* prelude but handed the *running compiler's* nodes, so a call to
+`node-at` would resolve against a signature the prelude does not import. A
+special form is lowered by whichever compiler is running, which is the only
+spelling that is correct under both layouts at once.
 
 So a shape check is a short-circuit chain whose every term is reached past its
 own guard, and the order is load-bearing:
 
 ```lisp
-(when (or (= spec null) (!= (spec 'kind) NODE-CELL)
-          (= (spec 'cdr) null) (= ((spec 'cdr) 'car) null))
+(when (or (= spec null) (!= (spec 'kind) NODE-LIST) (< (ast-len spec) 2))
   (macro-error … ))
 ```
 
-Swap the last two and `(macmap (x) (1 2))` segfaults. Write the comment — the
+Reorder it and `(macmap (x) (1 2))` segfaults. The arity test is `ast-len`
+rather than a chain of null checks precisely because an array has a length to
+ask for — which is the ergonomic O3 bought. Write the comment — the
 ordering reads as arbitrary and a later edit will otherwise "tidy" it. Second
 trap in the same breath: `macro-error` on a node with no line reports at line 0,
 which `w4a-no-line-zero` exists to catch, so blame a node the user actually

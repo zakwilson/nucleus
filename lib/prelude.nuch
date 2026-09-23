@@ -1,7 +1,7 @@
 ; .nuch header for lib/prelude.nuc
 (defstruct Symbol (p (ref ui8)))
-(defstruct Node (kind i32) (line i32) (i i64) (s Symbol) (car (raw Node)) (cdr (raw Node)))
-(defenum NodeKind NODE-INT NODE-STR NODE-SYM NODE-CELL NODE-FLOAT NODE-KEYWORD NODE-CHAR)
+(defstruct Node (kind i32) (line i32) (i i64) (s Symbol) (elems (raw (raw Node))) (len i32) (cap i32))
+(defenum NodeKind NODE-INT NODE-STR NODE-SYM NODE-LIST NODE-FLOAT NODE-KEYWORD NODE-CHAR)
 (defstruct StrView (data (ref ui8)) (len usize))
 (defprotocol Clone (clone (self:ref:Self) Self))
 (defunion (Result T E) (ok v:T) (err e:E))

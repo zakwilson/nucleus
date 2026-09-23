@@ -306,21 +306,17 @@
   (open-module-streams)
   (set! g-out g-def-stream)
   (reset-function-state)
-  ; `emit-node` sets g-qq-used on a quasiquoting form. Left set, the next real
-  ; module emits quasiquote helpers it never uses.
-  (let (saved-qq:i32 g-qq-used
-        fn-scope:&Scope (scope-new g-globals)
+  (let (fn-scope:&Scope (scope-new g-globals)
         result:?ptr:Val (as ?&Val (emit-node (unsafe/cast &Node arg) fn-scope)))
     (when (!= result null)
-      (emit stderr "  " (repl-type-to-nuc (result 'type)) "\n"))
-    (set! g-qq-used saved-qq))
+      (emit stderr "  " (repl-type-to-nuc (result 'type)) "\n")))
   (reset-function-state)
   (clear-module-buffers))
 
 ; Try `form` as a meta form. 1 = handled (including handled-and-errored).
 (defn repl-handle-builtin (form:(raw Node)):i32
   (let (f:ptr:Node (unsafe/cast &Node form))
-    (when (or (!= (f 'kind) NODE-CELL) (= (node-len f) 0)) (return 0))
+    (when (or (!= (f 'kind) NODE-LIST) (= (node-len f) 0)) (return 0))
     (let (h0:ptr:Node (unsafe/cast &Node (node-at f 0)))
       (when (!= (h0 'kind) NODE-SYM) (return 0))
       (let (h:Symbol (h0 's))
@@ -488,13 +484,11 @@
                   (emit stderr "  line " g-last-error-line ": " g-last-error-msg "\n"))
           (return 1))
         (when (= h "imports")
-          (let (cur:ptr g-imported any:i32 0)
-            (while (!= cur null)
-              (let (e:ptr:Node (unsafe/cast &Node cur))
-                (emit stderr "  " (e 's) "\n")
-                (set! any 1)
-                (set! cur (e 'cdr))))
-            (when (= any 0) (emit stderr "  (none)\n")))
+          (let (n:i32 (node-len g-imported))
+            (dotimes (i n)
+              (let (e:ptr:Node (unsafe/cast &Node (node-at g-imported i)))
+                (emit stderr "  " (e 's) "\n")))
+            (when (= n 0) (emit stderr "  (none)\n")))
           (return 1))
         (when (= h "casts")
           (when (= (count g-cast-rules) 0) (emit stderr "  (none)\n"))
@@ -681,7 +675,7 @@
       (emit stderr "\n")
       (return))
     ; Short-circuit: '(form) — print the quoted AST without JIT.
-    (when (and (= (f 'kind) NODE-CELL)
+    (when (and (= (f 'kind) NODE-LIST)
                 (!= (node-len form) 0)
                 (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM))
                 (= (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)) "quote"))
@@ -692,7 +686,7 @@
     ; Check if it's a list starting with a known keyword
     (let (h:Symbol (symbol-none)
           is-expr:i32 1)
-      (when (and (= (f 'kind) NODE-CELL)
+      (when (and (= (f 'kind) NODE-LIST)
                  (!= (node-len (as ptr f)) 0)
                  (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
         (set! h (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's))))
@@ -819,7 +813,7 @@
                   ; whichever entry first calls it.
                   (!= (defn-is-generic-template (as raw:Node f)) 0)
                     (do (open-module-streams)
-                        (let (one-form:ptr (make-cell form null (f 'line)))
+                        (let (one-form:ptr (node-list1 form (f 'line)))
                           (prescan-defn-signatures one-form))
                         (set! g-out g-def-stream)
                         (emit-defn (as ptr f))
@@ -879,12 +873,10 @@
                                     (generic-remove-matching-user-method
                                       old-g oparr onp)))))))
                         (open-module-streams)
-                        (let (one-form:ptr (make-cell form null (f 'line)))
+                        (let (one-form:ptr (node-list1 form (f 'line)))
                           (prescan-defn-signatures one-form))
                         (set! g-out g-def-stream)
                         (emit-defn (as ptr f))
-                        (when (!= g-qq-used 0)
-                          (emit-qq-helpers &g-decl-stream g-def-stream g-target ""))
                         (jit-ensure-init (f 'line))
                         ; First definition: JIT the thunk module and add a
                         ; declare for @fname-ir to the preamble so subsequent
@@ -935,7 +927,6 @@
                         ; the captured "@fname-ir(" to "@impl-name(".
                         (let (rt:ptr (LLVMOrcJITDylibCreateResourceTracker g-jit-dylib))
                           (repl-jit-module-rt-rewrite (f 'line) rt fname-ir impl-name)
-                          (set! g-qq-used 0)
                           ; Patch @fname-ir.tgt to point at @impl-name. Stash
                           ; the tracker on the latest Sym for the next
                           ; redefinition to remove.
@@ -991,7 +982,7 @@
                     (let (arg:ptr (node-at form 1))
                       ; Peel a leading (quote X) so the user can write 'form.
                       (when (and (!= arg null)
-                                 (= ((as &Node arg) 'kind) NODE-CELL)
+                                 (= ((as &Node arg) 'kind) NODE-LIST)
                                  (!= (node-len (as &Node arg)) 0))
                         (let (qh:ptr:Node (unsafe/cast &Node (node-at (as &Node arg) 0)))
                           (when (and (= (qh 'kind) NODE-SYM)
@@ -1004,7 +995,7 @@
                       ; explicitly so the user isn't misled.
                       (let (head-name:Symbol (symbol-none))
                         (when (and (!= arg null)
-                                   (= ((as &Node arg) 'kind) NODE-CELL)
+                                   (= ((as &Node arg) 'kind) NODE-LIST)
                                    (!= (node-len (as &Node arg)) 0))
                           (let (ah:ptr:Node (unsafe/cast &Node (node-at (as &Node arg) 0)))
                             (when (= (ah 'kind) NODE-SYM)
@@ -1203,14 +1194,11 @@
                         (string-clear g-entry-stream)
                         (string-clear g-body-stream)
                         ; Build and JIT module
-                        (when (!= g-qq-used 0)
-                          (emit-qq-helpers &g-decl-stream g-def-stream g-target ""))
                         ; R3: the expression may have stamped a generic, lifted
                         ; a lambda or built a closure — their bodies and the
                         ; preamble `declare`s this module needs come from here.
                         (repl-flush-mono (f 'line))
                         (repl-jit-module (f 'line))
-                        (set! g-qq-used 0)
                         ; Look up and call the eval function
                         (let (addr:i64 0)
                           (let (err:ptr (LLVMOrcLLJITLookup g-jit (as ptr &addr) (symbol-as-cstr eval-sym)))
@@ -1913,9 +1901,9 @@
   (match (read-source-or-report "(import-use prelude)" repl-rmacros)
     ((ok raw)
       (let (fc:ptr (desugar raw))
-        (while (!= fc null)
-          (repl-eval-form ((unsafe/cast &Node fc) 'car))
-          (set! fc ((unsafe/cast &Node fc) 'cdr)))))
+        (while (> (node-len fc) 0)
+          (repl-eval-form (node-first (unsafe/cast &Node fc)))
+          (set! fc (node-rest (unsafe/cast &Node fc))))))
     ((err e) (do)))
   (return))
 
@@ -2201,12 +2189,12 @@
                     ; One snapshot per form, so a form that dies rolls back only
                     ; its own registrations.
                     (let (fc:ptr g-repl-forms)
-                      (while (!= fc null)
-                        (let (f:ptr ((unsafe/cast &Node fc) 'car))
+                      (while (> (node-len fc) 0)
+                        (let (f:ptr (node-first (unsafe/cast &Node fc)))
                           (repl-snapshot &g-repl-saved)
                           (when (!= (repl-protect repl-protect-eval f) 0)
                             (repl-restore &g-repl-saved)
                             (repl-error (node-line f 0) "error (recovered)")))
-                        (set! fc ((unsafe/cast &Node fc) 'cdr))))))
+                        (set! fc (node-rest (unsafe/cast &Node fc)))))))
                 ((err e) (do)))
               (drop &text)))))))

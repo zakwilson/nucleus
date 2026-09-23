@@ -1599,7 +1599,7 @@ map=2
     (let (ir:String (try (source-ir src))
           iv:StrView (string-as-view &ir))
       (try (check-not-match iv "define *@alloc-node(*"))
-      (try (check-not-match iv "define *@make-cell(*"))
+      (try (check-not-match iv "define *@node-list-new(*"))
       (try (check-not-match iv "define *@intern-symbol(*"))
       (try (check-not-match iv "define *@arena-alloc(*"))
       (drop &ir))))
@@ -1630,10 +1630,10 @@ map=2
 (defstruct Point x:i32 y:i32)
 (defunion Shape (circle p:(ref Point)) none :repr tagged)
 (defn sum (:rest args:i64):i64
-  (let (total:i64 0)
-    (while (!= args null)
-      (set! total (+ total (unsafe/cast i64 ((unsafe/cast ptr:Node args) 'car))))
-      (set! args ((unsafe/cast ptr:Node args) 'cdr)))
+  (let (lst:raw:Node (unsafe/cast raw:Node args)
+        total:i64 0)
+    (dotimes (i (node-len lst))
+      (set! total (+ total (unsafe/cast i64 (node-at lst i)))))
     total))
 (defn maxv (a:T b:T :where (Ord3 T)):T (return (if (less3 a b) b a)))
 (defn minv (a:T b:T :where(Ord3 T)):T (return (if (less3 b a) b a)))
@@ -1812,11 +1812,11 @@ map=2
 
 ; A macrolet inside a `defmacro` BODY: one macro JIT module compiled while
 ; another is compiling. The hoist-to-a-pre-pass alternative could not do this;
-; `push-function-state` can. `(a car)` on the INT node `5` is null, so `pick`
+; `push-function-state` can. `ast-first` of the INT node `5` is null, so `pick`
 ; expands to its second argument.
 (deftest s16-macrolet-in-defmacro
   (try (check-source-exit "(defmacro pick (a b)
-  (macrolet ((first-of (x) `(~x 'car)))
+  (macrolet ((first-of (x) `(ast-first ~x)))
     (if (= (first-of a) null) b a)))
 (defn main ():i32 (return (pick 5 6)))
 " 6)))
@@ -2197,8 +2197,8 @@ map=2
 (deftest s20-macro-calls-recursive-helper
   (try (check-source-exit "(import-use node)
 (defn depth (n:(raw Node)):i32
-  (if (= n null) (return 0)
-      (return (_+ 1 (depth ((unsafe/cast ref:Node n) 'cdr))))))
+  (if (= (node-len n) 0) (return 0)
+      (return (_+ 1 (depth (node-rest n))))))
 (defn mk-int (v:i64):(raw Node)
   (let (n:&Node (alloc-node))
     (set! (n 'kind) NODE-INT)
@@ -2632,7 +2632,7 @@ map=2
 (defmacro s20-count (:rest args)
   (let ((acc (raw Node)) `0
         (a (raw Node)) args)
-    (while (!= a null) (set! acc `(_+ 1 ~acc)) (set! a (a 'cdr)))
+    (while (> (ast-len a) 0) (set! acc `(_+ 1 ~acc)) (set! a (ast-rest a)))
     acc))
 (defn main ():i32 (return (s20-count ~@(s20-nums3))))
 " 4)))
@@ -2689,7 +2689,7 @@ map=2
   (let ((acc (raw Node)) null
         i:i64 4)
     (while (> i 0)
-      (set! acc (as raw:Node (make-cell (as raw:Node (node-int i)) acc 0)))
+      (set! acc (as raw:Node (node-cons (as raw:Node (node-int i)) acc 0)))
       (set! i (- i 1)))
     (return acc)))
 (defn main ():i32 (return (macfoldr _+ 0 ~@(s20-range))))
@@ -3158,8 +3158,8 @@ map=2
 ; ---------------------------------------------------------------------------
 ;
 ; Design: design/stage16-ergonomics/compile-time-imports.md §4b. `lib/prelude.nuc`
-; had `(import-use node)`, so EVERY program carried alloc-node / make-cell /
-; intern-symbol / the intern table and the arena behind them — sixteen
+; had `(import-use node)`, so EVERY program carried alloc-node / the list
+; builders / intern-symbol / the intern table and the arena behind them — sixteen
 ; definitions and 4569 bytes of .text for a program reaching none of it, and an
 ; unlinkable one for freestanding AVR. The prelude now holds only forms that
 ; emit no IR and the runtime is a library like any other.
@@ -3551,10 +3551,10 @@ map=2
 (import-use node)
 (defn caller ():i64 (return (sum 1 2 3 4)))
 (defn sum (:rest args:i64):i64
-  (let (total:i64 0)
-    (while (!= args null)
-      (set! total (+ total (unsafe/cast i64 ((unsafe/cast ptr:Node args) 'car))))
-      (set! args ((unsafe/cast ptr:Node args) 'cdr)))
+  (let (lst:raw:Node (unsafe/cast raw:Node args)
+        total:i64 0)
+    (dotimes (i (node-len lst))
+      (set! total (+ total (unsafe/cast i64 (node-at lst i)))))
     total))
 (defn main ():i32 (printf \"%ld\\n\" (caller)) (return 0))
 ")))

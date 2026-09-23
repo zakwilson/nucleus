@@ -915,15 +915,20 @@ int main(void) {
   (return (ok)))
 
 ; AVR-2: 16-bit correctness where llc cannot see it. A wrong-but-well-formed
-; `malloc` size lowers perfectly — the quasiquote helper's Node cell is 16 + 3*2
-; on a 16-bit pointer, and was the host's 40 with `align 8`.
+; pointer width lowers perfectly, so each of these is a silent miscompile rather
+; than a build failure. Since Stage 21 the quasiquote list runtime is an ordinary
+; library compiled FOR the target (it was a helper the emitter spliced in at a
+; fixed host width), so its own element index and allocation are the subject.
 (defn avr2-16bit-one (cpu:StrView):!void
   (let (s:String (try (avr-ir cpu "tests/fixtures/avr2-16bit.nuc"))
         ir:StrView (string-as-view &s))
     (try (check-match ir "*ptrtoint ptr %t* to i16"))
-    (try (check-match ir "*call ptr @malloc(i64 22)"))
-    (try (check-match ir "  store ptr %a, ptr %p4, align 1"))
-    (try (check-not-match ir "*call ptr @malloc(i64 40)"))
+    (try (check-not-match ir "*ptrtoint ptr %t* to i64"))
+    ; size_t is 16-bit there, so the allocator under the node runtime takes i16.
+    (try (check-line ir "declare ptr @malloc(i16)"))
+    ; `(aref (b 'elems) (b 'len))` — a pointer-sized index into the element array.
+    (try (check-match ir "*getelementptr inbounds ptr, ptr %t*, i16 %t*"))
+    (try (check-not-match ir "*getelementptr inbounds ptr, ptr %t*, i64 %t*"))
     (drop &s))
   (return (ok)))
 

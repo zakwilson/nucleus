@@ -122,7 +122,7 @@ Additional libraries available via `import-use`:
 - `(import-use macros)` — standard macros (already in prelude)
 - `(import-use numeric)` — `Eq`, `Ord`, `Num` protocols for operators
 - `(import-use error)` — `try`, `with-handler`, `signal`, `err-find-handler`
-- `(import-use node)` — `alloc-node`, `make-cell`, `node-int`, `intern-symbol`: the runtime behind `'sym`, `` `(…) `` and a `:rest` call
+- `(import-use node)` — `alloc-node`, `node-int`, `intern-symbol`, the list API and `Node`'s `Coll`/`Seq` conformances: the runtime behind `'sym`, `` `(…) `` and a `:rest` call
 - `(import-use arena)` — arena allocator + `(new T)` convenience macro
 - `(import-use allocator)` — `Allocator` protocol and `AllocHandle`
 - `(import-use iterator)` — `Iterator` protocol and concrete iterators

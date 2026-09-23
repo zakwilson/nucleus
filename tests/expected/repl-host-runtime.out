@@ -8,7 +8,7 @@ nuc> nuc>   3
 nuc>   0
 nuc> nuc>   202
 nuc> nuc> nuc> nuc> nuc> nuc> nuc> nuc> nuc>   defined
-nuc> <repl>:1: error: unknown: cond — not defined anywhere in this compilation unit
+nuc> <repl>:1: error: unknown: cond (did you mean 'conj'?)
   error: error (recovered)
 nuc> nuc> nuc>   defined
 nuc>   42

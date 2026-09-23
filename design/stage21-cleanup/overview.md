@@ -176,6 +176,24 @@ fewer "convention, not a rule" edges in it.
    launder to offer. 1087 tests, bootstrap converged, no boot refresh; two
    fixtures that had used a dangling return as scaffolding were repaired.
 
+6. **The AST as a collection** — **built 2026-09-23** —
+   [ast-as-collection.md](ast-as-collection.md) (options examined 2026-09-22,
+   O3 chosen and built the next day). A list `Node` is a header over an array
+   (`elems`/`len`/`cap` replacing `car`/`cdr`, `NODE-CELL` → `NODE-LIST`), so
+   it conforms to `(Coll (ref Node) NodeIter)` and `(Seq (ref Node))` and a
+   form is an ordinary collection: `count`, `(xs i)`, `conj`, `append`,
+   `insert`, `contains?`, `doseq`, `into`. `()` stops being `null` — null now
+   means only "absent" — and the sweep rule is **never compare a list to null
+   to mean empty; ask `node-len`**. Built in two boot refreshes behind a
+   layout-neutral list API (§8.2), with `ast-first`/`ast-rest`/`ast-at`/
+   `ast-len` as special forms so a macro body reads a list under either layout.
+   Two mechanisms it cost: `node-kind` answers `NODE-NIL` for `()` as well as
+   for null, which is what preserved the twenty W9-item-45 diagnostics
+   unchanged; and a literal quoted selector naming a field of the receiver now
+   outranks `invoke` in the callable-value router, which is what lets a type be
+   both indexable and a struct. 1094 tests, bootstrap converged, both gates
+   re-baselined. Outcome and the six surprises in §8.6.
+
 ## Sequencing
 
 Item 2 lands between item 1's PK-1 and PK-2: **PK-1 → R-1, R-2 (R-3 optional)
@@ -196,6 +214,27 @@ lands whenever. Item 4 is independent of all three the same way (REPL-only
 reach, no new spelling); its RC-0 may land alone. Item 5 touches only `Val`
 bookkeeping and diagnostics — the compiler's own IR is byte-identical — so it
 is independent of everything above.
+
+## Item 6 in full: the AST as a collection
+
+[ast-as-collection.md](ast-as-collection.md); **built 2026-09-23**, the options
+below are the 2026-09-22 examination that chose O3. An AST list could not conform to
+`Coll`/`Seq` as it stands — not for want of a protocol, but because a cons
+list has no object of its own (nothing to mutate when empty), `()` is `null`,
+and that `null` also means "absent" in every node API (`node-at`, `ListIter`,
+a macro's return, `node-kind`'s `NODE-NIL`). Three real options, all needing a
+boot refresh: a `nil` sentinel with a read-only protocol split (small; the AST
+stays a source-only collection), a header over the cons spine (same sweep as
+the next with worse asymptotics and a tail-sharing hazard), or a header over an
+array — `Node`'s tail relaid as `elems/len/cap`, O(1) `count`/index, `~@` as an
+extend, `rest` as a view — which is recommended: it is the shape the compiler's
+own access pattern already has (1,146 `node-at`/`node-len` against 454
+`car`/`cdr` walks), it makes `Node` literally `Vector`-shaped, and it unblocks
+the deferred `&Node` AST API. Companion, still open: `(= r null)` on a non-null
+ref compiles silently today and should not — as is the rest of §8.5's ergonomic
+list (`node-push` → `conj`, `node-at` → `(x i)` in the compiler's own reads, the
+`&Node` promotion, retiring `lib/list.nuc`), which O3 unblocked rather than
+did.
 
 ## Candidate rough edges (found while probing items 1–3; recorded, not designed)
 
@@ -309,21 +348,27 @@ is independent of everything above.
   list is a sequence of `NAME [= const-expr]` with an implicit `+1`, foldable by
   the same `c-cexpr` evaluator, registered under the same `is-const` symbol
   path, and subject to the same predefine/private-name filters.
-- **A mis-shaped `doseq`/`doseq-iter`/`dotimes` call segfaults the compiler**
-  (found when the GTK demo grew a combo box, 2026-09-20). The demo wrote
-  `(doseq item v (VecIter i32) …)` — the `(var coll IterType)` binding list
-  unparenthesised — and `nucleusc` died with SIGSEGV (exit 139), no diagnostic,
-  no line. Not the import: it reproduces against the stand-in header and with
-  no `import-use` at all, and the minimal form is ``(defmacro m (b :rest r) (let
-  (a:ptr ((b 'cdr) 'car)) `(do ~a ~@r)))`` called `(m x 1)`. `doseq`
-  (`lib/macros.nuc:234`), `doseq-iter` (`:257`) and `dotimes` (`:194`)
-  destructure a binding list the *user* writes by member access with no shape
-  guard; a symbol's `cdr` is null, and `(null 'car)` dereferences null inside
-  `@__macro_doseq`, which `expand-macro-call` (`src/nucleusc.nuc:11449`) runs
-  in the compiler's own process through `unsafe/funcall-ptr-1` with no fault
-  boundary — it checks a null *result* (`:11451`) and nothing guards the call.
-  `(dotimes i 3 …)`, `(doseq-iter x it …)`, `(doseq (x) …)` and `(dotimes (i)
-  …)` all exit 139 the same way. This is the hazard `context/conventions.md`
+- **A mis-shaped `doseq`/`doseq-iter`/`dotimes` call is still unguarded; one
+  shape of four still segfaults the compiler** (found when the GTK demo grew a
+  combo box, 2026-09-20; **re-measured after item 6, 2026-09-23**). The demo
+  wrote `(doseq item v (VecIter i32) …)` — the `(var coll IterType)` binding
+  list unparenthesised — and `nucleusc` died with SIGSEGV (exit 139), no
+  diagnostic, no line. `doseq` (`lib/macros.nuc:224`), `doseq-iter` (`:251`)
+  and `dotimes` (`:189`) destructure a binding list the *user* writes with no
+  shape guard.
+
+  Item 6 changed the symptom, not the bug. The three bodies now read through
+  `ast-at`, which is null-safe, so a mis-shaped spec yields **null operands**
+  rather than a null dereference inside the macro body, and the crash moved
+  from the body to whatever the emitter does with a null element in the
+  expansion. Measured today: `(doseq item v (VecIter i32) …)` and
+  `(doseq (x) …)` exit 1 with `let: missing :type on '__gs_1'`;
+  `(dotimes (i) …)` exits 1 with `'()' is not an expression`; `(doseq-iter x it
+  …)` exits 1 with `unknown: next` followed by **garbage bytes** (a null
+  symbol formatted into the message); and `(dotimes i 3 …)` **still exits
+  139**. So four of five shapes now get a located line and a message that does
+  not say what was wrong, and one still takes the compiler down. This is the
+  hazard `context/conventions.md`
   §"Member access on a null node in a macro body kills the COMPILER" recorded
   when Stage 20 M3 gave `macmap` its guard chain; the three prelude macros whose
   first argument is a user-written list never got theirs (the operator folds,

@@ -278,26 +278,22 @@
 ; One print must read back as exactly one form, or a printer that dropped a
 ; bracket would still pass on a prefix.
 (defn check-forms-roundtrip (path:StrView forms:raw:Node):!void
-  (let (cur:raw:Node forms
-        k:i64 0)
-    (while (!= cur null)
-      (let (form:raw:Node (cur 'car)
-            text:String (node-str form))
-        (match (read-all (string-as-view &text))
-          ((ok back)
-            (when (or (= back null) (!= (back 'cdr) null))
-              (fail! path ": form " k " printed as "
-                     (test-show (string-as-view &text))
-                     "\n     which reads back as " (node-len back) " form(s), not 1"))
-            (when (not (node-eq form (back 'car)))
-              (fail! path ": form " k " does not survive print and re-read\n     "
-                     (test-show (string-as-view &text)))))
-          ((err e)
-            (fail! path ": form " k " printed as text the reader refuses ("
-                   (e 'msg) ")\n     " (test-show (string-as-view &text)))))
-        (drop &text))
-      (set! k (+ k 1))
-      (set! cur (cur 'cdr))))
+  (dotimes (k (node-len forms))
+    (let (form:raw:Node (node-at forms k)
+          text:String (node-str form))
+      (match (read-all (string-as-view &text))
+        ((ok back)
+          (when (!= (node-len back) 1)
+            (fail! path ": form " k " printed as "
+                   (test-show (string-as-view &text))
+                   "\n     which reads back as " (node-len back) " form(s), not 1"))
+          (when (not (node-eq form (node-at back 0)))
+            (fail! path ": form " k " does not survive print and re-read\n     "
+                   (test-show (string-as-view &text)))))
+        ((err e)
+          (fail! path ": form " k " printed as text the reader refuses ("
+                 (e 'msg) ")\n     " (test-show (string-as-view &text)))))
+      (drop &text)))
   (return (ok)))
 
 ; Returns the number of files that round-tripped; a refused file counts in
@@ -416,12 +412,10 @@
     (try (check-contains ev "a\\\"b.nuc"))
     (match (read-all ev)
       ((ok forms)
-        (let (back:String (string-new)
-              cur:raw:Node forms)
-          (while (!= cur null)
-            (node-write &back (cur 'car))
-            (str-into &back "\n")
-            (set! cur (cur 'cdr)))
+        (let (back:String (string-new))
+          (dotimes (i (node-len forms))
+            (node-write &back (node-at forms i))
+            (str-into &back "\n"))
           (try (check-golden (string-as-view &back) ev))
           (drop &back)))
       ((err e)

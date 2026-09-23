@@ -7,7 +7,6 @@
 ; the whole-unit prescan) lets union-registry import before generics cleanly.
 ; Extracted from nucleusc.nuc → generics.nuc → here (Stage 12 N8).
 
-(import-use list)
 (import-use hashmap)
 
 ; A short, dot-free token naming a type for use in mangled symbols. Pointers
@@ -164,13 +163,13 @@
   (let (segs:ptr (split-colon-segments s line)
         acc:String (string-new)
         any:i32 0)
-    (let (it:ListIter (list-iter segs))
-      (doseq-iter (e &it)
-        (let (seg:Symbol ((as &Node e) 's)
-              piece:Symbol (subst-tyvar-segment seg tyvars spellings ntv))
-          (when (!= any 0) (str-into &acc ":"))
-          (str-into &acc piece)
-          (set! any 1))))
+    (dotimes (i (node-len segs))
+      (let (e:raw:Node (as raw:Node (node-at segs i))
+            seg:Symbol ((unsafe/cast &Node e) 's)
+            piece:Symbol (subst-tyvar-segment seg tyvars spellings ntv))
+        (when (!= any 0) (str-into &acc ":"))
+        (str-into &acc piece)
+        (set! any 1)))
     (when (= any 0) (return s))
     (return (symbol-intern (string-as-view &acc)))))
 
@@ -215,8 +214,7 @@
             (set! (new 'line) (n 'line))
             (set! (new 's) ns)
             (return new)))
-      NODE-CELL
-        (return (make-cell (subst-tyvars-node (n 'car) tyvars spellings ntv)
-                           (subst-tyvars-node (n 'cdr) tyvars spellings ntv)
-                           (n 'line)))
+      NODE-LIST
+        (return (node-cons (subst-tyvars-node (node-first n) tyvars spellings ntv)
+                  (subst-tyvars-node (node-rest n) tyvars spellings ntv) (n 'line)))
       (return node))))

@@ -42,7 +42,7 @@ Both conform to `(Iterator i32)` / `(Iterator i64)` respectively.
 
 ## More concrete iterators (Stage 13 R1)
 
-These conformers let `reduce` / `doseq-iter` reach cons-cell lists, C strings,
+These conformers let `reduce` / `doseq-iter` reach AST `Node` lists, C strings,
 and string segments. `(Maybe StrView)` and other struct-payload Maybes fail to
 compile in the macro-expansion JIT module (see [strings](strings.md) and
 `context/build.md`), so an iterator whose logical element is a pointer or a
@@ -57,13 +57,17 @@ typed pointer is `as`'s elem-less-`ptr` "void*" hatch).
 |------------|-------------|---------------|--------------|
 | `ByteIter` (`strview`) | `(Iterator ui8)` | each byte | — (scalar) |
 | `CharIter` (`strview`) | `(Iterator Char)` | each UTF-8 codepoint | — (scalar) |
-| `ListIter` (`list`) | `(Iterator ptr)` | each cons element as a bare `Node*` | `(as ptr:Node e)` |
+| `ListIter` (`list`) | `(Iterator ptr)` | each list element as a bare `Node*` | `(as ptr:Node e)` |
 | `SplitIter` (`string-split`) | `(Iterator ptr)` | each segment as a `(ref StrView)` into the iterator's `cur` slot, yielded as a bare `ptr` | `(as ptr:StrView e)` |
 | `LineIter` (`string-split`) | `(Iterator ptr)` | each line (same encoding as `SplitIter`) | `(as ptr:StrView e)` |
 
-**Cons-cell lists — `ListIter`.** `(list-iter lst)` returns a `ListIter` by
-value positioned at the head of a cons-cell list (`null` = empty). Drive it with
-`doseq-iter` or `reduce`; each element arrives as a bare `Node*` pointer.
+**`Node` lists — `ListIter`.** `(list-iter lst)` returns a `ListIter` by value
+positioned at the head of a `Node` list. Drive it with `doseq-iter` or `reduce`;
+each element arrives as a bare `Node*` pointer. Prefer `NodeIter` in new code —
+`Node` conforms to `(Coll (ref Node) NodeIter)` directly, so `doseq` works on a
+form with no wrapper and yields typed `(ref Node)` elements
+(see [Collections](collections.md#node-libnodenuc)); `ListIter` is kept for the
+examples that still spell a list through `lib/list.nuc`.
 
 ```lisp
 (let (it:ListIter (list-iter lst))

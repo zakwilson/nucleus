@@ -229,7 +229,7 @@ is redundant for this shape (kept as the general invariant, measured inert). See
 D9a closed the shape D9 left open — a CT-defined type named in a *signature*,
 which the prescan refused before any emission. `prescan-struct-names` and
 `prescan-struct-layouts` now **descend** into a `compile-time` body (their walk
-one level down; the body's `cdr` is a top-level-shaped chain), and
+one level down; the body's elements past the head are top-level forms), and
 `emit-compile-time` runs both over its own body before its defn-signature loop,
 which is the only registration the REPL gets. The descent registers `defstruct`
 and nothing else, because that is the only definer `emit-compile-time` emits —

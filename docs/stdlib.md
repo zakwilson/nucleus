@@ -199,7 +199,7 @@ building the interner on one would be circular.
 
 A `Symbol` is never *constructed* null: `p` is a non-null pointer type, so there
 is no null to assign. A zeroed struct reads back as one, though — an arena `Node`
-that is an `INT` or a `CELL` has no name — so a cell is allocated with `calloc`
+that is an `INT` or a `LIST` has no name — so a node is allocated with `calloc`
 and tested with `symbol-none?`. Where the absent case has to be *written* rather
 than only recognised — an out-parameter a parser leaves unset, a struct field
 that means "no annotation" — `symbol-none` mints it.
