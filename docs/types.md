@@ -335,10 +335,10 @@ auto-`ref` injection. For a **pointer** operand it niche-encodes
 **value** operand (`?i64`, `?SomeStruct`) it stamps the two-arm `{tag, T}` value
 union from the prelude template. One spelling, two layouts. A nullable pointer
 written `?ptr:Foo` makes the niche-encoding explicit. The value `(Maybe T)` is
-built with `make` / return-position target typing (bare `none` / `(some v)`
-resolve against a `(Maybe T)` return) and eliminated with `match`
+built with `make` / target typing (bare `none` / `(some v)` resolve against a
+`(Maybe T)` return, typed binding, `make` field or parameter) and eliminated with `match`
 (`((some v) …)` / `(none …)`). The pointer relabels (`some`/`none`/`as-ref`
-outside return position, `if-some`/`when-some`/`unwrap`/`unwrap-or`) stay
+where no value `(Maybe T)` is wanted, `if-some`/`when-some`/`unwrap`/`unwrap-or`) stay
 pointer-only. `?!T` ≡ `(Maybe (Result T Err))` is the value-Maybe-over-Result
 sugar (a fallible result that may be absent). Over a parenthesised type the
 sigil is written attached — `?(Vector i32)`, `?!(Vector i32)` — which reads as

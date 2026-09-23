@@ -168,10 +168,10 @@ auto-`ref` injection. For a **pointer** operand it niche-encodes
 **value** operand (`?i64`, `?SomeStruct`) it stamps the two-arm `{tag, T}` value
 union from the prelude template. One spelling, two layouts. A nullable pointer
 written `?ptr:Foo` makes the niche-encoding explicit. The value `(Maybe T)` is
-built with `make` / return-position target typing (bare `none` / `(some v)`
-resolve against a `(Maybe T)` return) and eliminated with `match`
+built with `make` / target typing (bare `none` / `(some v)` resolve against a
+`(Maybe T)` return, typed binding, `make` field or parameter) and eliminated with `match`
 (`((some v) …)` / `(none …)`). The pointer relabels (`some`/`none`/`as-ref`
-outside return position, `if-some`/`when-some`/`unwrap`/`unwrap-or`) stay
+where no value `(Maybe T)` is wanted, `if-some`/`when-some`/`unwrap`/`unwrap-or`) stay
 pointer-only. `?!T` ≡ `(Maybe (Result T Err))` is the value-Maybe-over-Result
 sugar (a fallible result that may be absent).
 
@@ -342,11 +342,16 @@ fully-applied use stamps and memoizes a concrete instance:
 ```
 
 Substitution is purely syntactic (use sites are explicit; no inference).
-Construction is via `(make (Result i64 i32) ok v)` or **target typing**: in
-`return` position of a function declared to return a `defunion` (or template
-instance), a bare `(arm args...)` resolves against the declared type. The
-rewrite applies only to the directly returned form, not through `if`/`cond`
-branches. The `name:(Type ...)` colon-paren sugar works for parenthesized
+Construction is via `(make (Result i64 i32) ok v)` or **target typing**:
+wherever a typed value is wanted — `return` (and the implicit-return tail) of a
+function declared to return a `defunion` (or template instance), a typed
+`let`/`with` binding init, a `set!`/`.set!` value — a bare `(arm args...)`
+resolves against that type, and the want carries into the value tails of
+`if`/`cond`/`do`/`let`/`with`/`match`. A call or `make` argument is narrower:
+only the built-in `(some v)`/`none`/`(ok v)`/`(err e)`/`(err! e)`, as the
+argument itself, against the `make` field, a single-definition function's
+parameter, or the type every same-arity overload agrees on — see
+[structs-unions.md](structs-unions.md). The `name:(Type ...)` colon-paren sugar works for parenthesized
 types — `r:(Result i64 i32)` (and the chain form `r:ref:(…)`) read directly
 in binding positions, equivalent to the list form `(name (Result i64 i32))`.
 
@@ -637,8 +642,11 @@ function declared `!T`, bare `(ok v)` / `(err E)` resolve against the return
 type (the union target-typing rule). **Reading rule:** `(err E)` means "give up
 unless a bound handler repairs"; `(err! E)` means "give up unconditionally" —
 it bypasses the handler chain and returns the error value. Use `err!` when you
-want an unconditional error return regardless of any bound handlers. Elsewhere
-(non-return positions, custom `(Result T MyErrStruct)` types), use
+want an unconditional error return regardless of any bound handlers. Away from
+`return` the bare forms construct against a typed binding, `set!` target,
+`make` field or call argument; only a binding or `set!` of exactly the return
+type negotiates with handlers, and anywhere else `err` builds the error value
+as `err!` does. With no type to construct against, use
 `(make (Result T Err) ok v)`; stored Results are plain data with no handler
 machinery.
 

@@ -7163,7 +7163,7 @@
     (let (args:ptr (arena-alloc (* (+ max-args 1) (sizeof Val)))
           i:i32 0)
       (while (< i nargs)
-        (let (v:&Val (emit-node (node-at cc (+ i 1)) scope))
+        (let (v:&Val (emit-node (arg-target-rewrite (node-at cc (+ i 1)) (fn-param-type ft0 i)) scope))
           (memcpy (unsafe/ptr+ (as &Val args) i) v (sizeof Val)))
         (inc! i))
       ; Fill defaults for missing trailing :optional args, emitting each default
@@ -11554,6 +11554,27 @@
 
 ; Emit a call to an overloaded generic: emit the arguments, resolve the method
 ; from their concrete types, then emit the call to the selected mangled symbol.
+; Parameter `i`'s declared type in a TY-FN callee, or null past its end.
+(defn fn-param-type (ft:(raw Type) i:i32):(raw Type)
+  (when (or (= ft null) (!= (ft 'kind) TY-FN) (>= i (ft 'num-params))) (return null))
+  (return ((field-at (ft 'params) i) 'type)))
+
+; The type every `nargs`-ary method of `g` declares at `i`, or null when two
+; differ or a template, intrinsic or `:rest`/`:optional` one could take anything
+; — so target-typing argument `i` can never change which method wins.
+(defn generic-arg-target (g:&Generic nargs:i32 i:i32):(raw Type)
+  (let (t:(raw Type) null)
+    (dotimes (k (unsafe/cast i32 (count (g 'methods))))
+      (let (m:&Method (invoke (g 'methods) k:usize))
+        (when (or (!= (m 'kind) METHOD-USER) (!= (m 'has-rest) 0) (!= (m 'variadic) 0)
+                  (and (!= (m 'fn-type) null) (!= (-> (m 'fn-type) (_ 'nopt)) 0)))
+          (return null))
+        (when (= (m 'num-params) nargs)
+          (let (pt:(raw Type) (aref (as &ptr (m 'param-types)) i))
+            (cond (= t null) (set! t pt)
+                  (= (type-eq t pt) 0) (return null))))))
+    (return t)))
+
 (defn emit-generic-call (n:(raw Node) scope:&Scope g:&Generic):&Val
   (let (nn:ptr:Node (unsafe/cast &Node n)
         nargs:i32 (- (node-len nn) 1)
@@ -11571,11 +11592,13 @@
     (let (want:ptr g-want-type)
       (set! g-want-type null)
       (dotimes (i nargs)
-        (let (anode:ptr (node-at nn (+ i 1))
-              v:&Val (emit-node anode scope))
-          (memcpy (unsafe/ptr+ (as &Val args) i) v (sizeof Val))
-          (set! (aref (as &ptr argtypes) i) ((as &Val v) 'type))
-          (set! (aref (as &ptr arg-nodes) i) anode)))
+        (let (anode:ptr (node-at nn (+ i 1)))
+          (when (!= (arg-sum-ctor anode) 0)
+            (set! anode (arg-target-rewrite anode (generic-arg-target g nargs i))))
+          (let (v:&Val (emit-node anode scope))
+            (memcpy (unsafe/ptr+ (as &Val args) i) v (sizeof Val))
+            (set! (aref (as &ptr argtypes) i) ((as &Val v) 'type))
+            (set! (aref (as &ptr arg-nodes) i) anode))))
       ; Stage 13 TE-6: `(dyn P)` method dispatch. When the first argument is a
       ; `(dyn P)` box and this generic names one of P's methods, the box has no
       ; concrete receiver method to resolve — forward through the vtable slot instead
@@ -14476,11 +14499,14 @@
         (set! (sd 'src-line) (cc 'line))
         (check-ir-name-legal (name-node 'line) (name-node 's) (symbol-as-view (sd 'ir-name)))
         (let (ftp:ptr (defstruct-fill-layout (as raw:StructDef sd) (as raw:Node cc) 1))
-          (emit-struct-type-line g-out (as raw:StructDef sd))
-          (sdef-note-emitted (as raw:StructDef sd) g-out)
+          ; A field naming a LATER struct by value leaves the line to the drain.
+          (if (!= (type-line-resolves (as raw:StructDef sd)) 0)
+            (do (emit-struct-type-line g-out (as raw:StructDef sd))
+                (sdef-note-emitted (as raw:StructDef sd) g-out))
+            (set! (sd 'emitted) 1))
           ; D9: queued as well, so the line replays into a later module; inert
           ; where the eager write landed. repl-libraries.md §3.3.
-          (conj g-pending-unions sd)))))))
+          (queue-type-line sd)))))))
 
 ; The synthesized constructor defn for one defunion arm (new-style signature):
 ;   (defn Shape-circle (r:f64) Shape (make Shape circle r))

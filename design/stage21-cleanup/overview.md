@@ -258,23 +258,36 @@ did.
   multi-field arm with a by-value struct field (`a:Pt b:i32`), and a
   `(struct a:Pt …)` signature preceding `Pt`'s definition. The payload is an
   anonymous struct, made at the prescan, and `lookup-or-make-anon-struct` wrote
-  its type line before `%Pt` existed; it now writes only when every by-value
-  field is in the module, and otherwise leaves the line to the queue.
-- **A `defstruct` naming a *later* struct by value dies the same way when a
-  macro module is built between them** (found auditing the fix above;
+  its type line before `%Pt` existed; it now writes only when
+  `type-line-resolves` (every by-value field is in the module or queued and
+  itself resolvable), and otherwise leaves the line to the queue.
+- ~~**A `defstruct` naming a *later* struct by value dies the same way when a
+  macro module is built between them**~~ (**fixed 2026-09-23**, progress.md; found auditing the fix above;
   pre-existing): `(defstruct A (b B) x:i32)`, a `defmacro` used, then
   `(defstruct B …)` → `use of undefined type named 'B'` in the compile-time
-  module, because the defstruct emitter's eager `%A = type { %B, i32 }` has no
-  readiness check. Not the one-line fix above: `StructDef.emitted` doubles as
-  the redefinition tell for `defstruct` and `defunion` (`src/nucleusc.nuc`,
-  `src/union-registry.nuc`), so deferring the write needs "defined" separated
-  from "written" first.
-- **`some`/`none` do not target-type in argument position.** `(make U mk
+  module, because the defstruct emitter's eager `%A = type { %B, i32 }` had no
+  readiness check. It now asks `type-line-resolves` like the anonymous-struct
+  writer; `emitted` stays the "defined" tell, and a `queued` flag plus a
+  fixed-point drain let the check see types that will be written later.
+- ~~**`some`/`none` do not target-type in argument position.**~~ (**fixed
+  2026-09-23**, progress.md) `(make U mk
   (some pt) 7)` and a plain `(f (some pt) 7)` against a `?Pt` field or
   parameter are refused (`some: value must be non-null (ref ...)`; `none` is
   `argument 1 has type ptr`), where `(let (m:?Pt (some pt)) …)` then passing
   `m` works. `some` defaults to the pointer niche with no target in scope.
-  Found testing the `defunion` fix above.
+  Found testing the `defunion` fix above. Now `some`/`none`/`ok`/`err`/`err!`
+  are target-typed as `make`/constructor/call arguments when the slot type is
+  known without resolving the overload (a `make` field, a single-definition
+  parameter, or a type every same-arity overload agrees on). Still untyped:
+  struct-literal arguments (the designated-initializer misread below), user arm
+  names, and overloads that disagree at the position.
+- ~~**A bare `(err E)` bound or `set!` with the error library imported dies**~~
+  (**fixed 2026-09-23**, found documenting the item above; pre-existing): `(let
+  (r:!i32 (err bad)) …)` in a function not returning `!i32` →
+  `__err-handled: enclosing return type is not a Result`, since the rewrite
+  chose handler negotiation, which builds a return-typed value, for any `!T`
+  want. Negotiation now needs the want to be the return type; elsewhere `err`
+  is `err!`.
 - **`emit-struct-lit` reads any 2-element `(sym x)` argument as a designated
   `(field value)` initializer** (`src/nucleusc.nuc:11236–11239`), so `(H &a)`
   fails `no field 'addr-of'` (after item 1: `no field 'ref'`), and any
