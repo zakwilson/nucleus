@@ -12,6 +12,7 @@ arm: empty
 deftype: 6 5
 protocol: 7
 lambda: 3
+lambda return: 1 5 1 1 1
 template: 2 1 1 1
 !T: 3 9
 both: 5 8

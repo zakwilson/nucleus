@@ -883,6 +883,31 @@ foo:(bar)
     (drop &out))
   (return (ok)))
 
+; A lambda's declared return keeps its pointer kind through the lift to a
+; `defn` (overview.md, rough edges). The matrix golden holds the `fn` rows; these
+; are the closures' `invoke` path, and a non-null return still refuses a raw one.
+(deftest s21-lambda-return-pointer-kind
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use allocator)
+(defstruct Pt x:i32 y:i32)
+(defn main ():i32
+  (let (pt:Pt (Pt 3 4)
+        q:raw:Pt null
+        v (vfn (b:i32):raw:Pt (if (= b 0) q &pt))
+        m (mfn (b:i32):?&Pt (if (= b 0) q (as raw:Pt &pt)))
+        c (cfn (default-allocator) (b:i32):?ptr:Pt (if (= b 0) q &pt)))
+    (printf \"%d %d %d %d %d %d\\n\" (if (= (v 0) null) 1 0) (if (= (v 1) null) 0 1)
+            (if (= (m 0) null) 1 0) (if (= (m 1) null) 0 1)
+            (if (= (c 0) null) 1 0) (if (= (c 1) null) 0 1))
+    (return 0)))
+")))
+    (try (check-golden (string-as-view &out) "1 1 1 1 1 1\n"))
+    (drop &out))
+  (let (msg:StrView "raw pointer where non-null (ref ...) is required")
+    (try (s21-type-refused "(defstruct Pt x:i32) (defn f ():i32 (let (g (fn (x:raw:Pt):&Pt (return x))) (return 0)))" 3 msg))
+    (try (s21-type-refused "(defstruct Pt x:i32) (defn f (q:raw:Pt):i32 (let (g (vfn (b:i32):&Pt (return q))) (return 0)))" 3 msg)))
+  (return (ok)))
+
 ; ---------------------------------------------------------------------------
 ; The AST as a collection (design/stage21-cleanup/ast-as-collection.md)
 ; ---------------------------------------------------------------------------

@@ -42,7 +42,8 @@ fewer "convention, not a rule" edges in it.
    `lib/` files those sites live in (pointer-kind-spellings.md §6 "as
    built"). PK-6 (built 2026-09-19, §8 "as built") closes the item with no
    compiler change: `examples/type-sugar.nuc` is the §1.1 matrix as one golden
-   (two rows excluded for the lambda-return and `defunion`-arm defects below),
+   (two rows excluded for the lambda-return and `defunion`-arm defects below;
+   the lambda rows went back in when that defect was fixed, 2026-09-23),
    four units that no earlier milestone had pinned (`s21-matrix-compiles`,
    `s21-nuch-roundtrip`, `s21-ir-identical`, `s21-match-ref-binder`), and the
    docs table audited row by row. The item moves to
@@ -238,12 +239,17 @@ did.
 
 ## Candidate rough edges (found while probing items 1–3; recorded, not designed)
 
-- **A lambda's declared return type loses its pointer kind.** `(fn
+- ~~**A lambda's declared return type loses its pointer kind.**~~ (**fixed
+  2026-09-23**, progress.md.) `(fn
   (x:raw:Pt):raw:Pt (return x))` is refused `return: raw pointer where non-null
   (ref ...) is required`, and `?&Pt` / `?ptr:(V)` returns are refused the same
   way (`value may be null where non-null (ref ...) is required`); a `defn` with
   the identical signature is fine. Five rows of the spelling matrix fail only
-  for this.
+  for this. Cause: the lift to a synthesized `defn` (`emit-fn`, and
+  `fn-make-invoke-method` for `vfn`/`mfn`/`cfn`, which had it too) re-spelled
+  the return through `type-spelling`, which writes every pointer as `ptr:`;
+  both now reuse the lambda's own return operand, and the five rows are back in
+  `examples/type-sugar.nuc`.
 - **A `defunion` arm carrying a value-`Maybe`/`Result` field of a struct dies
   in the compile-time module**: `(defunion U (mk a:?Pt b:i32) …)` → `use of
   undefined type named 'Maybe.Pt'` reported at `lib/macros.nuc:19`. The list

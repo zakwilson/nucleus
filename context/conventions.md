@@ -2283,6 +2283,10 @@ constructor is lenient. Found by Stage 21 R-1: the memo key is
 answers for both — do not "fix" `type-spelling` locally; every stamped `pkind`
 in `src/` moves with it (it belongs with the pointer-kind item).
 
+**When synthesizing a form, carry the source type node, not `(type-spelling t)`.**
+The lambda lift (`emit-fn`, `fn-make-invoke-method`) re-spelled its return that
+way, so every `raw`/`?` lambda return refused `null` until 2026-09-23.
+
 The same fact reaches the generic-pattern unifier: `Vector.pPt`'s recorded
 `origin-args[0]` is the pointer type of whichever `(Vector &Pt)` /
 `(Vector ?&Pt)` / `(Vector raw:Pt)` stamped first, so a pattern rule that

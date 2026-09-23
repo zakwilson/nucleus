@@ -9,10 +9,10 @@
 ; in each position the matrix names: let / with, defn parameter (colon and
 ; list), return `):S` and `) S`, defvar, defstruct field, defunion arm,
 ; defprotocol + extend, lambda, as / unsafe/cast / sizeof / alloca, template
-; argument, deftype, and a macro argument. Two rows are left out for defects
-; outside this design (overview.md, "Candidate rough edges"): a lambda's declared
-; return loses its pointer kind, and a defunion arm holding a value-?/! over a
-; struct dies in the compile-time module — the arms below hold niche pointers.
+; argument, deftype, and a macro argument. One row is left out for a defect
+; outside this design (overview.md, "Candidate rough edges"): a defunion arm
+; holding a value-?/! over a struct dies in the compile-time module — the arms
+; below hold niche pointers.
 (import-use "stdio.h")
 (import-use vector)
 
@@ -138,6 +138,17 @@
     ; lambda parameter and return.
     (let ((f (fn ?(Vector i32)) (?(Vector i32))) (fn (m:?(Vector i32)):?(Vector i32) (return m)))
       (printf "lambda: %d\n" (mv-len (f a))))
+    ; lambda return of each nullable pointer kind: null, or the argument back.
+    (let (v1:(Vector i32) (vector-new)
+          nq (fn (p:&Pt):?&Pt (return null))
+          rp (fn (p:&Pt):raw:Pt (return p))
+          nv (fn (p:&(Vector i32)):?&(Vector i32) (return null))
+          rv (fn (p:&(Vector i32)):raw:(Vector i32) (return p))
+          qv (fn (p:&(Vector i32)):?ptr:(Vector i32) (return null)))
+      (if-some (rq (as-ref (rp &pt)))
+        (printf "lambda return: %d %d %d %d %d\n" (if (= (nq &pt) null) 1 0) (rq 'x)
+                (if (= (nv &v1) null) 1 0) (if (= (rv &v1) null) 0 1) (if (= (qv &v1) null) 1 0))
+        (printf "lambda return: none\n")))
     ; template argument in let, in sizeof, and in a generic defn's pattern.
     (let (vv:(Vector ?(Vector i32)) (vector-new)
           vb:(Vector !(Vector i32)) (vector-new)
