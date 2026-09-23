@@ -817,7 +817,9 @@ Representation: a struct `{tag:i32, payload:(union ...)}`. Tags are assigned
 in declaration order from 0 and are part of the C contract (`--emit-cheader`
 exports the tagged struct plus an `enum Shape_tag` of constants). Each arm's
 payload is the single field's type, or a memoized anonymous struct of the
-fields. By-value passing/returning rides the stage-8 struct ABI.
+fields. An arm field may be any type a `defstruct` field may be, beside other
+fields or alone — a struct by value, `?Pt`, `!Pt`, `(Result Pt i32)`.
+By-value passing/returning rides the stage-8 struct ABI.
 
 **Constructors** are generated ordinary functions named `Union-arm`:
 `(Shape-circle 2.0)`, `(Shape-point)` — value-returning, no allocation.

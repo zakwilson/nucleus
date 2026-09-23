@@ -710,6 +710,7 @@ foo:(bar)
       (try (check-not-contains nv "&"))
       (try (check-line nv "(defstruct Holder (mv (? (Vector i32))) (rv (! (Vector i32))) (link (ref Pt)) (qr (?! (Vector i32))))"))
       (try (check-line nv "(defunion Slot (held (p (?ref (Vector i32)))) (listed (q (?ref Pt))) empty)"))
+      (try (check-line nv "(defunion Pair (both (m (? (Vector i32))) (q (? Pt))) neither)"))
       (try (check-line nv "(deftype MV (? (Vector i32)))"))
       (try (check-line nv "(deftype PtRef (ref Pt))"))
       (try (check-line nv "(extern (g-mv (? (Vector i32))))"))
@@ -906,6 +907,48 @@ foo:(bar)
   (let (msg:StrView "raw pointer where non-null (ref ...) is required")
     (try (s21-type-refused "(defstruct Pt x:i32) (defn f ():i32 (let (g (fn (x:raw:Pt):&Pt (return x))) (return 0)))" 3 msg))
     (try (s21-type-refused "(defstruct Pt x:i32) (defn f (q:raw:Pt):i32 (let (g (vfn (b:i32):&Pt (return q))) (return 0)))" 3 msg)))
+  (return (ok)))
+
+; An anonymous struct is written when its by-value fields are in the module, not
+; before. A multi-field arm's payload is one, made at the prescan before `Pt` is
+; emitted, so the first macro module read `{ %Pt, i32 }` with no `%Pt` -- for a
+; plain struct field and a value `?`/`!`/`Result` over one alike, and for a
+; `(struct …)` signature that precedes the definition it names.
+(deftest s21-anon-struct-waits-for-fields
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defn take-anon (s:&(struct a:Pt b:i32)):i32 (return (+ ((s 'a) 'x) (s 'b))))
+(defstruct Pt x:i32 y:i32)
+(defunion U
+  (plain a:Pt b:i32)
+  (maybe (m (? Pt)) b:i32)
+  (res r:!Pt b:i32)
+  (full (r (Result Pt i32)) b:i32))
+(defn show (u:U):void
+  (match u
+    ((plain a b) (printf \"plain %d %d\\n\" (a 'x) b))
+    ((maybe m b) (match m ((some p) (printf \"maybe %d %d\\n\" (p 'y) b)) (none (printf \"maybe none %d\\n\" b))))
+    ((res r b) (match r ((ok p) (printf \"res %d %d\\n\" (p 'x) b)) ((err e) (printf \"res err %d\\n\" b))))
+    ((full r b) (match r ((ok p) (printf \"full %d %d\\n\" (p 'y) b)) ((err e) (printf \"full err %d %d\\n\" e b))))))
+(defn main ():i32
+  (let (pt:Pt (Pt 1 2)
+        m:?Pt (some pt)
+        n:?Pt none
+        r:!Pt (ok pt)
+        f:(Result Pt i32) (err 9)
+        s:&(struct a:Pt b:i32) (alloca (struct a:Pt b:i32)))
+    (show (make U plain pt 3))
+    (show (make U maybe m 4))
+    (show (make U maybe n 5))
+    (show (make U res r 6))
+    (show (make U full f 7))
+    (set! (s 'a) pt)
+    (set! (s 'b) 40)
+    (printf \"anon %d\\n\" (take-anon s))
+    (return 0)))
+")))
+    (try (check-golden (string-as-view &out)
+                       "plain 1 3\nmaybe 2 4\nmaybe none 5\nres 1 6\nfull err 9 7\nanon 41\n"))
+    (drop &out))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------

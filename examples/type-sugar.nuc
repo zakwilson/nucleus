@@ -9,10 +9,7 @@
 ; in each position the matrix names: let / with, defn parameter (colon and
 ; list), return `):S` and `) S`, defvar, defstruct field, defunion arm,
 ; defprotocol + extend, lambda, as / unsafe/cast / sizeof / alloca, template
-; argument, deftype, and a macro argument. One row is left out for a defect
-; outside this design (overview.md, "Candidate rough edges"): a defunion arm
-; holding a value-?/! over a struct dies in the compile-time module — the arms
-; below hold niche pointers.
+; argument, deftype, and a macro argument.
 (import-use "stdio.h")
 (import-use vector)
 
@@ -30,6 +27,12 @@
   (held p:?&(Vector i32))
   (listed (q (?ref Pt)))
   empty)
+
+; defunion arm of value sums, colon and list form: the payload is an anonymous
+; struct of both fields.
+(defunion Pair
+  (both m:?(Vector i32) (q (? Pt)))
+  neither)
 
 ; deftype.
 (deftype MV ?(Vector i32))
@@ -130,6 +133,13 @@
         ((held p) (printf "arm: held\n"))
         ((listed p) (printf "arm: listed\n"))
         (empty (printf "arm: empty\n"))))
+    (let (qp:?Pt (some pt)
+          pr:Pair (make Pair both a qp))
+      (match pr
+        ((both m q) (match q
+                      ((some p) (printf "value arm: %d %d\n" (mv-len m) (p 'y)))
+                      (none (printf "value arm: none\n"))))
+        (neither (printf "value arm: neither\n"))))
     ; deftype.
     (let (m:MV (give-mv 6) pr:PtRef &pt)
       (printf "deftype: %d %d\n" (mv-len m) (pr 'x)))
