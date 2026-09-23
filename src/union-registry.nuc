@@ -98,15 +98,15 @@
         ; nothing may be recorded as written. Same guard the `!T` payload path at
         ; the bottom of this file already uses.
         (when (!= g-module-open 0)
-          ; A field type not yet in the module (a prescanned defunion arm's `Pt`)
-          ; must wait for the drain, or a macro module inherits a dangling `%Pt`.
-          (when (!= (pending-union-deps-ready (as raw:StructDef sd2)) 0)
+          ; A prescanned defunion arm's payload can name `Pt` before `%Pt` exists;
+          ; then the drain writes it, or a macro module inherits a dangling `%Pt`.
+          (when (!= (type-line-resolves (as raw:StructDef sd2)) 0)
             (sdef-note-emitted (as raw:StructDef sd2) &g-type-stream)
             (emit-struct-type-line &g-type-stream (as raw:StructDef sd2)))
           ; R4: queue it too, so this eager write is replayable into a later
           ; module like every other type. Inert wherever the eager write already
           ; landed — the drain re-checks `sdef-in-module` — so the IR is unmoved.
-          (conj g-pending-unions sd2))
+          (queue-type-line sd2))
         (set! (sd2 'src-file) g-source-path)
         (set! (sd2 'src-line) 0)))
     ; Both arms leave sd non-null, but the set!-kill is sticky across the join
@@ -142,7 +142,7 @@
         (set! (sd2 'emitted) 0)
         (set! (sd2 'src-file) g-source-path)
         (set! (sd2 'src-line) 0)
-        (conj g-pending-unions sd2)))
+        (queue-type-line sd2)))
     (return (as &StructDef sd))))
 
 ; The member a union's IR wrapper struct holds: the first member with maximal
@@ -223,10 +223,47 @@
 ; JIT, macro JIT, REPL).
 (defn drain-pending-union-irs ():void
   (when (= g-pending-unions null) (return))
-  (dotimes (i (unsafe/cast i32 (count g-pending-unions)))
-    (let (sd:ptr (invoke g-pending-unions i:usize))
-      (when (!= (pending-union-deps-ready sd) 0)
-        (emit-union-ir-type sd)))))
+  ; To a fixed point: a deferred type can sit in the queue after one naming it,
+  ; and `type-line-resolves` promises everything resolvable is written here.
+  (let (again:bool true)
+    (while again
+      (let (wrote:bool false
+            skipped:bool false)
+        (dotimes (i (unsafe/cast i32 (count g-pending-unions)))
+          (let (sd:ptr (invoke g-pending-unions i:usize))
+            (when (= (sdef-in-module sd) 0)
+              (if (!= (pending-union-deps-ready sd) 0)
+                (do (emit-union-ir-type sd)
+                    (set! wrote true))
+                (set! skipped true)))))
+        (set! again (and wrote skipped))))))
+
+; Put `sd`'s type line on the queue the drains write from.
+(defn queue-type-line (sd:&StructDef):void
+  (set! (sd 'queued) 1)
+  (conj g-pending-unions sd))
+
+; Will every by-value named type `sd`'s line mentions be in the module by the
+; next drain — already there, or queued and resolvable itself? An eager writer
+; may write when this holds; otherwise its line would dangle in a macro module.
+(defn type-line-resolves (sd:raw:StructDef):i32
+  (return (type-line-resolves-at sd 0)))
+
+(defn type-line-resolves-at (sd:raw:StructDef depth:i32):i32
+  ; By-value types cannot nest cyclically; the bound only stops a malformed one.
+  (when (> depth 64) (return 0))
+  (let (sdd:raw:StructDef sd)
+    (dotimes (i (sdd 'num-fields))
+      (let (ft:raw:Type ((field-at (sdd 'fields) i) 'type))
+        (while (and (!= ft null) (= (ft 'kind) TY-ARRAY))
+          (set! ft (ft 'elem)))
+        (when (and (!= ft null) (or (= (ft 'kind) TY-STRUCT) (= (ft 'kind) TY-UNION)))
+          (let (dep:raw:StructDef (ft 'sdef))
+            (when (= dep null) (return 0))
+            (when (= (sdef-in-module dep) 0)
+              (when (= (dep 'queued) 0) (return 0))
+              (when (= (type-line-resolves-at dep (+ depth 1)) 0) (return 0))))))))
+  (return 1))
 
 ; Stage 15 B5: the visibility conjunct on this and the three lookups below is
 ; the enforcement of `defstruct-`/`defunion-` privacy. `g-priv-bindings` is 0
@@ -527,7 +564,7 @@
       (struct-set-fields sd fnm fty 2))
     (set! (sd 'src-file) g-source-path)
     (set! (sd 'src-line) 0)
-    (conj g-pending-unions sd)
+    (queue-type-line sd)
     (set! g-fatptr-sdef (as ptr sd))
     (return g-fatptr-sdef)))
 
@@ -604,7 +641,7 @@
         (struct-set-fields sd fnm fty 2))
       (set! (sd 'src-file) g-source-path)
       (set! (sd 'src-line) 0)
-      (conj g-pending-unions sd)
+      (queue-type-line sd)
       (let (t:&Type (type-for-sdef (as ptr sd)))
         ; Carry the Fn signature on the struct Type for invoke-forwarding / boxing.
         ; Reuse the `pvec` built above (immutable after build) as the param list.
@@ -704,7 +741,7 @@
         (struct-set-fields sd fnm fty 2))
       (set! (sd 'src-file) g-source-path)
       (set! (sd 'src-line) 0)
-      (conj g-pending-unions sd)
+      (queue-type-line sd)
       (let (t:&Type (type-for-sdef (as ptr sd)))
         (dyn-memo-put key (as ptr t) proto)
         (return (as ptr t))))))
@@ -1148,7 +1185,7 @@
                        (!= union-sd null)
                        (= (sdef-in-module (as raw:StructDef union-sd)) 0)
                        (= (pending-union-deps-ready union-sd) 0))
-                (conj g-pending-unions sd)
+                (queue-type-line sd)
                 (do
                   (when (and (!= g-module-open 0)
                              (!= layout LAYOUT-NICHE-MAYBE) (!= layout LAYOUT-NICHE-ERRPTR))
@@ -1642,7 +1679,7 @@
         ; `sdef-in-module` guards double-emit. Deferring (rather than emitting
         ; inline) keeps a mid-function stamp from interleaving into a def-stream
         ; body, the same discipline unions use.
-        (conj g-pending-unions sd)
+        (queue-type-line sd)
         ; Stage 11 T4: per-instance protocol conformance check. For each template
         ; conformance recorded via `(extend (Vector T) (Seq T))`, substitute this
         ; instance's concrete args into the protocol bindings and confirm every

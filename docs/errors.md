@@ -71,10 +71,14 @@ Use `err!` when you want an unconditional error return regardless of any
 bound handlers; with a custom `E` there is no handler chain to bypass (only
 the builtin `Err` gets one — [Handler-aware `err` and
 `with-handler`](#handler-aware-err-and-with-handler-e3) below), so `err` and
-`err!` behave alike there. Outside return position — a stored value, a
-`Result` built as data rather than returned — construct explicitly with
-`(make (Result T E) ok v)`; stored Results are plain data with no handler
-machinery either way.
+`err!` behave alike there. Away from `return`, the same bare forms construct
+against a typed binding, a `set!` target, a `make` field or a call argument
+(target typing — see [Templates](structs-unions.md#templates-defunion-result-t-e-)).
+Handler negotiation yields a value of the function's return type, so only a
+binding or `set!` of exactly that type negotiates as a return would; any other
+slot, and every call or `make` argument, builds the error value as `err!` does.
+With no type to construct against, write `(make (Result T E) ok v)`; stored
+Results are plain data with no handler machinery either way.
 
 **Elimination.**
 

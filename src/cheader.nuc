@@ -1608,7 +1608,7 @@
     ; until member layouts are final (drain-pending-union-irs).
     (do
       (set! (sd 'is-union) 1)
-      (conj g-pending-unions sd))
+      (queue-type-line sd))
     (do
       (emit-struct-type-line &g-type-stream (as raw:StructDef sd))
       ; W3c: pending-union-deps-ready consults this before writing a queued union
@@ -1635,7 +1635,7 @@
     ; Union: same deferred-definition path as the tag (drain-pending-union-irs).
     (do
       (set! (dst 'is-union) 1)
-      (conj g-pending-unions dst))
+      (queue-type-line dst))
     (do
       (emit-struct-type-line &g-type-stream (as raw:StructDef dst))
       ; W3c: see cheader-struct-define — the alias's definition is now in this

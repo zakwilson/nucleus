@@ -338,13 +338,14 @@
   ; `num-fields`-bounded loops, so field-at's raw→ref assertion is sound.
   (fields (raw (Vector &Field)))
   num-fields:i32    ; == (count fields); cached length for i32 loops (hot: struct-field-index/ABI)
-  emitted:i32       ; type definition already written to IR (vs. name-only pre-registration)
+  emitted:i32       ; defined: its line is written or queued (vs. name-only pre-registration)
   ; Stage 16 R4 (design/stage16-ergonomics/repl-libraries.md §3.3): WHICH buffer
   ; holds that line. `emitted` cannot answer "is it in the module being assembled"
   ; once a process assembles more than one module.
   emit-epoch:i32    ; g-module-epoch when the line was written; 0 = never written
   in-type-buf:i32   ; it went to the module's TYPE buffer, the one the REPL carries forward
   in-preamble:i32   ; it is in g-repl-preamble, so it is in every module from here on
+  queued:i32        ; on g-pending-unions, so a drain will write it once its fields are in
   ; Stage 15 W9 item 40: the field table has been populated. `emitted` used to
   ; answer this too, because the two happened in one statement; the layout
   ; prescan separates them (it lays a struct out and writes no IR), so "has a

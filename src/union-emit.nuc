@@ -474,7 +474,7 @@
                 (union-payload-off ud) "\n")
           (dotimes (fi:i32 nf)
             (let (ftype:ptr (aref (as &ptr ftypes) fi)
-                  v:&Val (emit-node (node-at cc (+ argi fi)) scope)
+                  v:&Val (emit-node (arg-target-rewrite (node-at cc (+ argi fi)) ftype) scope)
                   coerced:ptr (coerce-int-val v ftype (cc 'line)))
               (when (= coerced null)
                 (die-at (cc 'line)
@@ -934,7 +934,10 @@
         ; through to the plain `(make … err …)` construct below (== err!).
         ; A payload-less `ok` arm (`!void`) is excluded: §11's negotiation repairs
         ; by supplying the ok VALUE, and there is none, so `err` there is `err!`.
+        ; The negotiation builds a return-typed value, so a want of any other type
+        ; (a binding, a `set!`) takes `err` as `err!`.
         (when (and (= (head 's) "err")
+                   (!= (type-eq target g-fn-ret-type) 0)
                    (= (result-err-arm-is-err (as ptr udd)) 1)
                    (!= (as ptr (result-ok-type target)) null)
                    (= (error-lib-in-scope) 1))
@@ -942,6 +945,29 @@
         (when (< (union-arm-index (as ptr udd) (head 's)) 0) (return form))
         (return (node-cons 'make
                   (node-cons (intern-node (udd 'name)) (as ptr n) ln) ln))))))
+
+; A call/`make` argument is not a want position (its type may pick the overload),
+; so only the built-in sum constructors are target-typed there, against a slot
+; type the caller already knows; `err` constructs as `err!`, since handler
+; negotiation belongs to a return site.
+(defn arg-target-rewrite (form:ptr target:raw:Type):ptr
+  (when (or (= target null) (= (arg-sum-ctor form) 0)) (return form))
+  (let (n:ptr:Node (unsafe/cast &Node form))
+    (when (and (= (n 'kind) NODE-LIST)
+               (= (-> (node-at form 0) (unsafe/cast &Node _) (_ 's)) "err"))
+      (return (union-target-rewrite (node-cons 'err! (node-rest n) (n 'line)) target))))
+  (return (union-target-rewrite form target)))
+
+; `none`, or a list headed by `some`/`ok`/`err`/`err!`.
+(defn arg-sum-ctor (form:ptr):i32
+  (when (= form null) (return 0))
+  (let (n:ptr:Node (unsafe/cast &Node form))
+    (when (= (n 'kind) NODE-SYM) (return (if (= (n 's) "none") 1 0)))
+    (when (or (!= (n 'kind) NODE-LIST) (= (node-len form) 0)) (return 0))
+    (let (h:ptr:Node (unsafe/cast &Node (node-at form 0)))
+      (when (!= (h 'kind) NODE-SYM) (return 0))
+      (let (s:Symbol (h 's))
+        (return (if (or (= s "some") (= s "ok") (= s "err") (= s "err!")) 1 0))))))
 
 ; The EnumDef that owns `member`, or null. Member names are searched across
 ; every registered defenum; the first hit wins (defenum members are global

@@ -3025,15 +3025,26 @@ Two things to carry forward:
   unconditionally deferring would have reordered every `%Result.*` line in the
   compiler's own IR for no benefit.
 
-**The second writer, `lookup-or-make-anon-struct`, defers uniformly** (2026-09-23):
-it writes only when `pending-union-deps-ready`, else leaves the line to the queue.
-A multi-field `defunion` arm's payload struct is made at the prescan, before
-`%Pt`, so its eager line dangled in every macro module. The narrow rule above
-was not available: `StructDef` cannot tell a queued stamp from an unemitted
-`defstruct`. The price was a one-time reorder (glibc's `__mbstate_t` over its
-queued union) and a boot refresh. **Still open, same hole:** `defstruct`'s own
-eager write (`%A = type { %B, i32 }` before `B`), where `emitted` is also the
-redefinition tell, so it cannot simply be deferred.
+**Every eager writer asks `type-line-resolves` first** (2026-09-23). `emit-defstruct`
+and `lookup-or-make-anon-struct` both wrote lines naming types defined later (`%A =
+type { %B, i32 }`; a multi-field `defunion` arm's payload made at the prescan,
+before `%Pt`). Now each writes only when every by-value named type in the line is
+in the module *or queued and itself resolvable*, and otherwise leaves it to the
+drain — the narrow rule above, generalized. Three pieces make it work; keep them:
+
+- **Queue only through `queue-type-line`**, never a bare `conj` onto
+  `g-pending-unions`: it sets `StructDef.queued`, which is how the predicate tells
+  a type the drain *will* write from an unemitted `defstruct` it never will.
+- **The drain runs to a fixed point.** A deferred line can sit in the queue after
+  a line naming it; one pass skipped it and left the type missing outright (4
+  artifacts in the first attempt). "Resolvable" is a promise the loop keeps.
+- **`emitted` means "defined — written or queued"**, not "in the buffer", so a
+  deferred `defstruct` still sets it: it is the redefinition tell for
+  `defstruct`/`defunion`. `sdef-in-module` answers the buffer question.
+
+Deferring *uniformly* (the first fix for the anonymous struct) reordered 275
+artifacts; the narrow rule moved them back, so only programs with a real forward
+reference emit differently.
 
 ## Front-loading a prescan reorders the type section — and that is the whole `make bootstrap` diff
 
