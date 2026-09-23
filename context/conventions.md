@@ -3025,6 +3025,16 @@ Two things to carry forward:
   unconditionally deferring would have reordered every `%Result.*` line in the
   compiler's own IR for no benefit.
 
+**The second writer, `lookup-or-make-anon-struct`, defers uniformly** (2026-09-23):
+it writes only when `pending-union-deps-ready`, else leaves the line to the queue.
+A multi-field `defunion` arm's payload struct is made at the prescan, before
+`%Pt`, so its eager line dangled in every macro module. The narrow rule above
+was not available: `StructDef` cannot tell a queued stamp from an unemitted
+`defstruct`. The price was a one-time reorder (glibc's `__mbstate_t` over its
+queued union) and a boot refresh. **Still open, same hole:** `defstruct`'s own
+eager write (`%A = type { %B, i32 }` before `B`), where `emitted` is also the
+redefinition tell, so it cannot simply be deferred.
+
 ## Front-loading a prescan reorders the type section — and that is the whole `make bootstrap` diff
 
 Stage 15 W1a registers every reachable file's defn signatures before any form is

@@ -43,7 +43,7 @@ fewer "convention, not a rule" edges in it.
    built"). PK-6 (built 2026-09-19, §8 "as built") closes the item with no
    compiler change: `examples/type-sugar.nuc` is the §1.1 matrix as one golden
    (two rows excluded for the lambda-return and `defunion`-arm defects below;
-   the lambda rows went back in when that defect was fixed, 2026-09-23),
+   both went back in when those defects were fixed, 2026-09-23),
    four units that no earlier milestone had pinned (`s21-matrix-compiles`,
    `s21-nuch-roundtrip`, `s21-ir-identical`, `s21-match-ref-binder`), and the
    docs table audited row by row. The item moves to
@@ -250,11 +250,31 @@ did.
   the return through `type-spelling`, which writes every pointer as `ptr:`;
   both now reuse the lambda's own return operand, and the five rows are back in
   `examples/type-sugar.nuc`.
-- **A `defunion` arm carrying a value-`Maybe`/`Result` field of a struct dies
-  in the compile-time module**: `(defunion U (mk a:?Pt b:i32) …)` → `use of
+- ~~**A `defunion` arm carrying a value-`Maybe`/`Result` field of a struct dies
+  in the compile-time module**~~ (**fixed 2026-09-23**, progress.md): `(defunion U (mk a:?Pt b:i32) …)` → `use of
   undefined type named 'Maybe.Pt'` reported at `lib/macros.nuc:19`. The list
   form fails identically, so it is not a spelling issue — the stamped union type
-  is missing from the CT module's type stream.
+  is missing from the CT module's type stream. Wider than recorded: *any*
+  multi-field arm with a by-value struct field (`a:Pt b:i32`), and a
+  `(struct a:Pt …)` signature preceding `Pt`'s definition. The payload is an
+  anonymous struct, made at the prescan, and `lookup-or-make-anon-struct` wrote
+  its type line before `%Pt` existed; it now writes only when every by-value
+  field is in the module, and otherwise leaves the line to the queue.
+- **A `defstruct` naming a *later* struct by value dies the same way when a
+  macro module is built between them** (found auditing the fix above;
+  pre-existing): `(defstruct A (b B) x:i32)`, a `defmacro` used, then
+  `(defstruct B …)` → `use of undefined type named 'B'` in the compile-time
+  module, because the defstruct emitter's eager `%A = type { %B, i32 }` has no
+  readiness check. Not the one-line fix above: `StructDef.emitted` doubles as
+  the redefinition tell for `defstruct` and `defunion` (`src/nucleusc.nuc`,
+  `src/union-registry.nuc`), so deferring the write needs "defined" separated
+  from "written" first.
+- **`some`/`none` do not target-type in argument position.** `(make U mk
+  (some pt) 7)` and a plain `(f (some pt) 7)` against a `?Pt` field or
+  parameter are refused (`some: value must be non-null (ref ...)`; `none` is
+  `argument 1 has type ptr`), where `(let (m:?Pt (some pt)) …)` then passing
+  `m` works. `some` defaults to the pointer niche with no target in scope.
+  Found testing the `defunion` fix above.
 - **`emit-struct-lit` reads any 2-element `(sym x)` argument as a designated
   `(field value)` initializer** (`src/nucleusc.nuc:11236–11239`), so `(H &a)`
   fails `no field 'addr-of'` (after item 1: `no field 'ref'`), and any

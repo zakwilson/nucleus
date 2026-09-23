@@ -9,6 +9,7 @@ field: 1 2 6 3
 arm: held 0
 arm: listed 5
 arm: empty
+value arm: 3 6
 deftype: 6 5
 protocol: 7
 lambda: 3

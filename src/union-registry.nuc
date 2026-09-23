@@ -98,8 +98,11 @@
         ; nothing may be recorded as written. Same guard the `!T` payload path at
         ; the bottom of this file already uses.
         (when (!= g-module-open 0)
-          (sdef-note-emitted (as raw:StructDef sd2) &g-type-stream)
-          (emit-struct-type-line &g-type-stream (as raw:StructDef sd2))
+          ; A field type not yet in the module (a prescanned defunion arm's `Pt`)
+          ; must wait for the drain, or a macro module inherits a dangling `%Pt`.
+          (when (!= (pending-union-deps-ready (as raw:StructDef sd2)) 0)
+            (sdef-note-emitted (as raw:StructDef sd2) &g-type-stream)
+            (emit-struct-type-line &g-type-stream (as raw:StructDef sd2)))
           ; R4: queue it too, so this eager write is replayable into a later
           ; module like every other type. Inert wherever the eager write already
           ; landed — the drain re-checks `sdef-in-module` — so the IR is unmoved.
