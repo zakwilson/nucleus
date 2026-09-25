@@ -3464,8 +3464,7 @@ int main(void) {
   (return (ok)))
 
 ; Each refusal comes after a struct the header had already started writing. A
-; length the compile refuses is refused in its words; a macro the header mode
-; cannot run is named.
+; length the compile refuses is refused in its words; a user macro length folds.
 (deftest s21-cheader-refusal-leaves-no-header
   (let (neg:StrView "(defstruct S21Ok x:i32)\n(defstruct S21R (a (array i8 (- 10))))\n")
     (try (s21-header-refused neg 2 "(array T N): length must be positive, got -10"))
@@ -3478,7 +3477,12 @@ int main(void) {
         c:Compiled (try (compile-source mac)))
     (when (!= (c 'exit) 0) (fail! "the compile refused a macro extent"))
     (drop &c)
-    (try (s21-header-refused mac 3 "'s21three' is not folded in a header mode, which registers no macros")))
+    (let (p:String (try (test-write-file "t.nuc" mac))
+          h:Compiled (try (emit-checked "" "--emit-cheader" (string-as-view &p))))
+      (when (!= (h 'exit) 0) (fail! "--emit-cheader refused a macro extent"))
+      (try (check-contains (compiled-ir &h) "int8_t a[3];"))
+      (drop &h)
+      (drop &p)))
   (try (s21-header-refused "(defstruct S21In a:i32)
 (defstruct S21R x:i32 (:anon S21In))
 " 2 "a ':anon' member has no standard C spelling"))
@@ -3918,4 +3922,218 @@ int main(void) {
     (drop &c)
     (drop &p)
     (drop &src))
+  (return (ok)))
+
+(deftest s21-declare-unnamed-compound-param
+  (let (vec:StrView "(declare f ((Vector i32)):i32) (defn g ():i32 (return (f 1)))"
+        pt:StrView "(declare f ((ptr i8)):i32) (defn g ():i32 (return (f 1)))"
+        sig:StrView "(declare f (?ptr:i8):i32) (defn g ():i32 (return (f 1)))"
+        named:StrView "(declare f (ptr:i8):i32) (defn g ():i32 (return (f null)))"
+        bad:StrView "(declare f ((\"q\" i32)):i32)")
+    (try (s21-type-refused vec 3 "f: argument 1 has type i32, which does not match parameter type (Vector i32)"))
+    (try (s21-type-refused pt 3 "f: argument 1 has type i32, which does not match parameter type &i8"))
+    (try (s21-type-refused sig 3 "f: argument 1 has type i32, which does not match parameter type ?&i8"))
+    (try (s21-type-refused named 3 "does not match parameter type i8"))
+    (try (s21-type-refused bad 3 "a declared name must be a symbol, found '\"q\"'")))
+  ; A parameter named like a type constructor exports under `_`, so it reads back as a name.
+  (let (p:String (try (test-write-file "s21-decl-names.nuc"
+                        "(defn f (raw:i32 fn:i64 x:i8):i32 (return raw))\n"))
+        nuch:String (try (emit-for-file "" "--emit-nuch" (string-as-view &p)))
+        nv:StrView (string-as-view &nuch))
+    (try (check-line nv "(declare f ((_ i32) (_ i64) (x i8)) :i32)"))
+    (drop &nuch)
+    (drop &p))
+  (return (ok)))
+
+(deftest s21-protocol-sig-shape
+  (try (s21-type-refused "(defprotocol P (x y))" 3
+                         "protocol method 'x': expected (x (params) ret), found (x y)"))
+  (try (s21-type-refused "(defprotocol P (x))" 3 "found (x)"))
+  (try (s21-type-refused "(defprotocol P (x (a:&Self)))" 3 "found (x (a:ref:Self))"))
+  (try (s21-type-refused "(defprotocol P (x (a:&Self) :i32 extra))" 3 "found (x (a:ref:Self) :i32 extra)"))
+  (return (ok)))
+
+; Both header modes refuse `src` at `line` with `msg`, as a compile does.
+(defn s21-headers-refused (src:StrView line:i32 msg:StrView):!void
+  (try (s21-header-refused src line msg))
+  (let (p:String (try (test-write-file "t.nuc" src))
+        pv:StrView (string-as-view &p)
+        c:Compiled (try (emit-checked "" "--emit-nuch" pv)))
+    (when (!= (c 'exit) 1)
+      (fail! "expected --emit-nuch to exit 1, got " (as i64 (c 'exit))))
+    (try (check-error-at (ref c 'diags) pv line msg))
+    (drop &c)
+    (drop &p))
+  (try (s21-exit1-at src line msg))
+  (return (ok)))
+
+(deftest s21-header-modes-check-declarations
+  (try (s21-headers-refused "(defn f ():i32 (return 0))\n(defunion U (a x) b)\n" 2
+                            "defunion: field 'x' missing :type"))
+  (try (s21-headers-refused "(defstruct S x)\n" 1 "defstruct: field 'x' missing :type"))
+  (try (s21-headers-refused "(defn f (x):i32 (return 0))\n" 1 "defn: missing :type on param 'x'"))
+  (try (s21-headers-refused "(defstruct S (u (union x)))\n" 1 "union: member 'x' missing :type"))
+  (try (s21-headers-refused "(extern x)\n" 1 "extern: missing :type on 'x'"))
+  (try (s21-headers-refused "(declare f ((1 i32)):i32)\n" 1 "a declared name must be a symbol, found '1'"))
+  (try (s21-headers-refused "(declare f (:rest):i32)\n" 1 "declare: ':rest' is not supported in a declaration"))
+  (return (ok)))
+
+(deftest s21-anon-aggregate-display
+  (try (s21-type-refused "(defn getb (x:i32):i32 (return x)) (defn getb (x:i64):i32 (return 0)) (defn f (p:(struct a:i32 b:(union c:i8 d:&i32))):i32 (return (getb p)))" 3
+                         "no matching method for overloaded 'getb' with argument types ((struct a:i32 b:(union c:i8 d:&i32)))"))
+  (return (ok)))
+
+; A by-value template instance is defined, guarded, before its first use, so C
+; reads the layout the object was built with; a defunion instance has none to give.
+(deftest s21-cheader-template-instance
+  (let (l:CLib (try (c-lib "s21ti" "(import-use vector)
+(defunion (S21E A) (l a:A) (r b:i64))
+(deftype S21EI (S21E i32))
+(defstruct S21TI v:(Vector i32) w:(Vector (Vector i32)) k:i32)
+(defstruct S21TU e:S21EI)
+(defn s21ti-size ():i64 (return (as i64 (sizeof S21TI))))
+(defn s21ti-k (s:&S21TI):i32 (return (s 'k)))
+(defn s21ti-alias (e:S21EI):i32 (return 0))
+"))
+        h:StrView (c-lib-text &l))
+    (try (check-line h "#ifndef NUC_INST_Vector_i32"))
+    (try (check-line h "    struct Vector_i32 v;"))
+    (try (check-line h "    struct Vector_Vector_i32 w;"))
+    (try (check-line h "/* S21TU: a field uses a defunion-template instance type; not exported */"))
+    (try (check-line h "/* s21ti-alias: uses a defunion-template instance type; not exported */"))
+    ; The header includes `lib/allocator.h` by its path from the repository root.
+    (let (parts:String (str "-I. " (c-lib-obj &l))
+          out:String (try (c-consumer-run "#include <stdio.h>
+#include \"s21ti.h\"
+int main(void) {
+    S21TI s = {0};
+    s.k = 41;
+    printf(\"%d %lld %d\\n\", (int)sizeof(S21TI), (long long)s21ti_size(), s21ti_k(&s));
+    return 0;
+}
+" (string-as-view &parts))))
+      (try (check-eq (string-as-view &out) "88 88 41\n"))
+      (drop &out)
+      (drop &parts))
+    (drop &l))
+  (return (ok)))
+
+; An inline aggregate in a signature is named, so a caller can spell a value of it.
+(deftest s21-cheader-inline-aggregate-param
+  (let (l:CLib (try (c-lib "s21ag" "(defn s21ag-sum (p:(struct a:i32 b:i32)):i32 (return (+ (p 'a) (p 'b))))
+(defn s21ag-same (p:(struct a:i32 b:i32)):i32 (return (p 'a)))
+"))
+        h:StrView (c-lib-text &l))
+    (try (check-contains h "typedef struct nuc_anon_struct_h"))
+    (try (check-contains h "int32_t s21ag_sum(struct nuc_anon_struct_h"))
+    (try (check-not-contains h "struct {"))
+    (let (out:String (try (c-lib-run &l "#include <stdio.h>
+#include \"s21ag.h\"
+int main(void) {
+    __typeof__(s21ag_sum) *f = s21ag_same;
+    printf(\"%d\\n\", f != 0);
+    return 0;
+}
+")))
+      (try (check-eq (string-as-view &out) "1\n"))
+      (drop &out))
+    (drop &l))
+  (return (ok)))
+
+; An intrinsic that takes the operands exactly outranks a user method that
+; would widen them; the user method still takes its own pair and a widened one.
+(deftest s21-operator-intrinsic-before-widen
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defn >= (a:i64 b:f64):bool (return false))
+(defn main ():i32
+  (let (x:i32 5 y:i32 3 p:i64 5 q:f64 3.0)
+    (printf \"%d %d %d\\n\" (as i32 (>= x y)) (as i32 (>= p q)) (as i32 (>= x q))))
+  (return 0))
+")))
+    (try (check-golden (string-as-view &out) "1 0 0\n"))
+    (drop &out))
+  (return (ok)))
+
+; A user method the intrinsic already covers would replace it everywhere,
+; the prelude's own macros included.
+(deftest s21-operator-builtin-not-redefined
+  (try (s21-type-refused "(defn = (a:i32 b:i32):bool (return false))" 3
+                         "'=' on (i32, i32) is built in and cannot be redefined -- define it over a type of your own"))
+  (try (s21-type-refused "(defn < (a:f64 b:f64):bool (return false))" 3
+                         "'<' on (f64, f64) is built in"))
+  (return (ok)))
+
+; A private template is callable in its own file, and binds its variables from a
+; `name:T` parameter as a public one does.
+(deftest s21-private-template-callable
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defn- inner (x:T :where (Any T)):i32 (return 7))
+(defn- pick (a:T b:T :where (Any T)):T (return b))
+(defn main ():i32
+  (let (a:i32 5)
+    (printf \"%d %d\\n\" (inner a) (pick a 9)))
+  (return 0))
+")))
+    (try (check-golden (string-as-view &out) "7 9\n"))
+    (drop &out))
+  (return (ok)))
+
+; A local annotated over a type variable inside a compound is checked at the
+; stamp; its spelling is still checked at the definition.
+(deftest s21-generic-local-nested-tyvar
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use vector)
+(defn wrap (x:T :where (Any T)):i32
+  (let (o:?T (some x)
+        v:(Vector T) (vector-new))
+    (conj &v x)
+    (return (unsafe/cast i32 (count &v)))))
+(defn main ():i32 (printf \"%d\\n\" (wrap 5)) (return 0))
+")))
+    (try (check-golden (string-as-view &out) "1\n"))
+    (drop &out))
+  (try (s21-type-refused "(defn wrap (x:T :where (Any T)):i32 (let (o:(Vectr T) 0) (return 0)))" 3
+                         "unknown type: Vectr"))
+  (return (ok)))
+
+; A defunion template applied to a type variable is a type in a generic body, as
+; a struct template's application is.
+(deftest s21-generic-make-union-template
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defunion (Either A B) (l a:A) (r b:B))
+(defn mk (x:T :where (Any T)):(Either T i32)
+  (return (make (Either T i32) l x)))
+(defn mk2 (x:T :where (Any T)):(Either T T)
+  (let (e:(Either T T) (make (Either T T) r x))
+    (return e)))
+(defn main ():i32
+  (match (mk 5) ((l a) (printf \"l %d\\n\" a)) ((r b) (printf \"r\\n\")))
+  (match (mk2 6) ((l a) (printf \"l\\n\")) ((r b) (printf \"r %d\\n\" b)))
+  (return 0))
+")))
+    (try (check-golden (string-as-view &out) "l 5\nr 6\n"))
+    (drop &out))
+  (return (ok)))
+
+; A header mode compiles first: a top-level macro's defn is exported in both
+; modes, and a global named by `gensym` is not.
+(deftest s21-header-after-compile-expansions
+  (let (src:StrView "(defmacro s21-mk (n) `(defn ~n ():i32 (return 7)))
+(s21-mk s21-made)
+(defmacro s21-hidden () `(defvar (~(gensym) i32) 3))
+(s21-hidden)
+"
+        p:String (try (test-write-file "t.nuc" src))
+        pv:StrView (string-as-view &p)
+        h:Compiled (try (emit-checked "" "--emit-cheader" pv))
+        n:Compiled (try (emit-checked "" "--emit-nuch" pv)))
+    (when (not (and (h 'ok?) (n 'ok?)))
+      (fail! "header modes exited " (as i64 (h 'exit)) ", " (as i64 (n 'exit))))
+    (try (check-contains (compiled-ir &h) "int32_t s21_made(void) asm(\"s21-made\");"))
+    (try (check-not-contains (compiled-ir &h) "__gs_"))
+    (try (check-contains (compiled-ir &n) "(declare s21-made () :i32)"))
+    (try (check-not-contains (compiled-ir &n) "__gs_"))
+    (drop &n)
+    (drop &h)
+    (drop &p))
   (return (ok)))

@@ -2,14 +2,24 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include "prelude.h"
 #include "allocator.h"
+#include "prelude.h"
 #include "strview.h"
 
 /* Generated from lib/string.nuc by nucleusc --emit-cheader */
 
+#ifndef NUC_INST_Vector_u8
+#define NUC_INST_Vector_u8
+typedef struct Vector_u8 {
+    uint8_t* data;
+    size_t len;
+    size_t cap;
+    struct AllocHandle alloc;
+} Vector_u8;
+#endif
+
 typedef struct String {
-    void* bytes;
+    struct Vector_u8 bytes;
 } String;
 
 struct StrView string_as_view(struct String* self) asm("string-as-view");

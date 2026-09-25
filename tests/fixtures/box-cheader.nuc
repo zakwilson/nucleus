@@ -8,8 +8,10 @@
 ;
 ; (BoxedFn …) and (dyn P) are type-parser surface available at prescan, so
 ; they can be spelled directly in signatures (unlike the L8 closure fixture,
-; which needs a hand-defined __vfn_env_N struct). This file is not a runnable
-; program (no main).
+; which needs a hand-defined __vfn_env_N struct). The header mode compiles it
+; first, so every body is valid; there is no main.
+
+(import-use allocator)
 
 ; Minimal protocol for the dyn test case.
 (defprotocol Showable
@@ -17,7 +19,7 @@
 
 ; Exposes a BoxedFn return type -> omitted from the C header, warned at definition.
 (defn make-boxed () (BoxedFn (i32) i32)
-  (return 0))
+  (return (fn (x:i32):i32 (+ x 1))))
 
 ; Exposes a dyn parameter -> omitted from the C header, warned at definition.
 (defn use-dyn ((s (dyn Showable))):i32

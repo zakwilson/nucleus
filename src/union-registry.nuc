@@ -1100,7 +1100,6 @@
       (set! scur (node-rest (unsafe/cast &Node scur))))
     (return (as ptr (node-list-done b)))))
 
-; An arm's shape; shared with the header modes' `validate-header-forms`.
 (defn require-defunion-arm (arm:(raw Node) line:i32):void
   (when (= (node-kind (as ptr arm)) NODE-SYM) (return))
   (when (or (!= (node-kind (as ptr arm)) NODE-LIST) (= (node-len arm) 0))
@@ -2221,6 +2220,23 @@
 ;   - symbol node: delegates to parse-type-name
 ;   - list node (ptr T) or (ptr ptr ... T): builds TY-PTR
 ;   - list node ((fn ret-type) (param-types...)) or (fn ret-type): builds TY-FN
+; A list whose head is a type constructor parse-type-from-node reads — the
+; test that tells an unnamed `(Vector i32)` from a `(name type)` cell.
+(defn type-form-list? (n:(raw Node)):bool
+  (when (or (= n null) (!= (node-kind (as ptr n)) NODE-LIST)) (return false))
+  (let (h:(raw Node) (node-first n))
+    (when (or (= h null) (!= (h 'kind) NODE-SYM)) (return false))
+    (let (hp:ptr (as ptr h)
+          hs:Symbol (h 's)
+          hv:StrView (symbol-as-view hs)
+          c0:i32 (if (> (hv 'len) 0) (as i32 (aref (hv 'data) 0)) 0))
+      (return (or (= c0 63) (= c0 33)
+                  (= hp 'ptr) (= hp 'raw) (= hp 'ref) (= hp 'array) (= hp 'fn)
+                  (= hp 'struct) (= hp 'union) (= hp 'dyn) (= hp 'BoxedFn) (= hp 'Maybe)
+                  (!= (struct-template-lookup-ref hs) null)
+                  (!= (union-template-lookup-ref hs) null)
+                  (!= (type-alias-app-of n) null))))))
+
 (defn parse-type-from-node (node:ptr line:i32):&Type
   ; W9 item 45: `()` in a type position is a NULL node (W5f), and it names no
   ; type — the same answer this function gives any other node it cannot read,

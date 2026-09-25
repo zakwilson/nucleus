@@ -359,6 +359,11 @@ them.
 
 ## `tests/fixtures/box-cheader.nuc` does not compile, so half of it is unreachable
 
+**Resolved 2026-09-25.** A header mode now compiles first, so the fixture had to
+compile: `make-boxed` returns a boxed `fn` (with `(import-use allocator)`), and
+`l13-cheader-warns` asserts both warnings, at lines 21 and 25. See
+design/progress.md.
+
 The fixture's own comment says both box-typed defns are "warned at definition".
 Only `make-boxed` is. `--emit-llvm` on the fixture exits 1:
 

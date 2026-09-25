@@ -511,7 +511,7 @@
                           "  (return 0))\n")
           c:Consumer (try (consumer "w23l" (string-as-view &src))))
       (try (check-line (exports-nuch &e) "(ns w23b)"))
-      (try (check-line (exports-nuch &e) "(declare describe ((x i64)) :i64)"))
+      (try (check-line (exports-nuch &e) "(defmethod \"@w23b__describe\" describe ((x i64)) :i64)"))
       (try (check-links-and-prints &e &c "d=22"))
       (drop &c)
       (drop &src)

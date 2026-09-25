@@ -9,7 +9,7 @@
 (defconst PROC-CHUNK 65536)
 (defconst PROC-MODE-644 420)
 (defunion ExitStatus (exited code:i32) (signaled sig:i32))
-(declare wait-status-decode ((raw i32)) :ExitStatus)
+(declare wait-status-decode ((_ i32)) :ExitStatus)
 (declare success? ((self (ref ExitStatus))) :bool)
 (declare exit-code ((self (ref ExitStatus))) :i32)
 (defstruct Command (buf String) (offs (Vector usize)) (envs (Vector usize)) (cwd-off i64) (search bool) (capture bool) (out-path-off i64) (in-path-off i64) (merge-err bool))

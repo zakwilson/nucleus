@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "string.h"
+#include "allocator.h"
 #include "prelude.h"
 
 /* Generated from lib/process.nuc by nucleusc --emit-cheader */
@@ -26,10 +27,20 @@ enum ExitStatus_tag {
 struct ExitStatus wait_status_decode(int32_t raw) asm("wait-status-decode");
 bool success_QMARK(struct ExitStatus* self);
 int32_t exit_code(struct ExitStatus* self) asm("exit-code");
+#ifndef NUC_INST_Vector_usize
+#define NUC_INST_Vector_usize
+typedef struct Vector_usize {
+    uint8_t* data;
+    size_t len;
+    size_t cap;
+    struct AllocHandle alloc;
+} Vector_usize;
+#endif
+
 typedef struct Command {
     struct String buf;
-    void* offs;
-    void* envs;
+    struct Vector_usize offs;
+    struct Vector_usize envs;
     int64_t cwd_off;
     bool search;
     bool capture;
@@ -49,9 +60,19 @@ void command_stdout_path(struct Command* self, struct StrView path) asm("command
 void command_stdin_path(struct Command* self, struct StrView path) asm("command-stdin-path");
 void command_stderr_to_stdout(struct Command* self, bool on) asm("command-stderr-to-stdout");
 void drop_pCommand(struct Command* self) asm("drop.pCommand");
-void command_argv(struct Command* self, void** out) asm("command-argv");
+#ifndef NUC_INST_Vector_ptr
+#define NUC_INST_Vector_ptr
+typedef struct Vector_ptr {
+    uint8_t* data;
+    size_t len;
+    size_t cap;
+    struct AllocHandle alloc;
+} Vector_ptr;
+#endif
+
+void command_argv(struct Command* self, struct Vector_ptr* out) asm("command-argv");
 struct StrView env_key(uint8_t* e) asm("env-key");
-void command_envp(struct Command* self, void** out) asm("command-envp");
+void command_envp(struct Command* self, struct Vector_ptr* out) asm("command-envp");
 typedef struct Process {
     int32_t pid;
     int32_t out_fd;

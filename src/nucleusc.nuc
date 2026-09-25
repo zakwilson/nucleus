@@ -613,6 +613,8 @@
 ; agreement with THIS reader, and there is no other way to see what it produced.
 (defvar g-dump-ast:i32 0)
 (defvar g-emit-cheader:i32 0) ; when 1, output C header instead of LLVM IR
+; The header flag asked for; the g-emit- flag is raised only once the compile is done.
+(defvar g-header-request:i32 0) ; 1 --emit-nuch, 2 --emit-cheader
 (defvar g-emit-llvm:i32 0)    ; when 1, output textual LLVM IR to stdout instead of a binary
 (defvar g-emit-obj:i32 0)     ; when 1 (-c), emit a .o file instead of linking a binary
 (defvar g-output-path:Symbol) ; -o <path>; `symbol-none` = default ("a.out")
@@ -1101,6 +1103,16 @@
       (set! (n 'kind) NODE-SYM:i32)
       (set! (n 's) (symbol-intern (fstr "__gs_" id)))
       (return (as ptr n)))))
+
+; A top-level form defining a name `nucleus_gensym` made, which no importer can mean.
+(defn gensym-definition? (f:(raw Node)):bool
+  (when (< (node-len f) 2) (return false))
+  (let (n:(raw Node) (node-at f 1))
+    (when (and (= (node-kind n) NODE-LIST) (> (node-len n) 0)) (set! n (node-at n 0)))
+    (when (!= (node-kind n) NODE-SYM) (return false))
+    (let (sv:StrView (symbol-as-view (n 's))
+          pfx:StrView "__gs_")
+      (return (strview-starts-with &sv &pfx)))))
 
 ; Stage 20 M3: the diagnostic a macro body raises about its own call site
 ; (design/stage20-macros/overview.md §2.5). Reached only from a macro/CT JIT
@@ -1977,22 +1989,8 @@
         (return 0)))))
 
 ; ============================================================
-; The guards each top-level definer runs before it dereferences a node position:
-; the leading arity test (W9 item 38) and, below them, the name/member/operand
-; tests (W9 item 45). Each was a single line at the top of its own emitter; they
-; live here because the HEADER modes — which run the prescans and no emitter at
-; all — must make the identical refusal in the identical words. A copied message
-; is a chance to drift, which is the failure this codebase keeps re-learning
-; (`--emit-cheader` declaring a symbol no object defines, item 26). The emitter
-; and `validate-header-forms` are the callers; `defunion` has two emitter
-; callers, `emit-defunion` and the `.nuch` replay path `emit-defunion-import`,
-; which carried its own copy of the check until item 38.
-;
-; `deferror` is deliberately absent: its checks `report-at` and return `!i32`
-; rather than dying, so it is a recoverable path with a different contract.
-; `emit-defvar`'s two OTHER uses of its message also stay put — they ask different
-; questions (a null declaration after attribute stripping, trailing junk after
-; the init), and only the leading arity test belongs here.
+; The guards each top-level definer runs before it dereferences a node position.
+; `deferror` is absent: its checks `report-at` and recover, a different contract.
 ; ============================================================
 
 (defn require-defvar-form (form:ptr):void
@@ -3541,11 +3539,22 @@
                          (import-cycle-advice)))
       (return (some (fstr head "\n" note))))))
 
+; The name a struct's definer declares: a stamped instance's template.
+(defn sdef-definer-name (sd:(raw StructDef)):Symbol
+  (let (s:(raw StructDef) sd
+        st:raw:StructTemplate (s 'origin-template)
+        u:raw:UnionDef (s 'udef))
+    (when (!= st null) (return (st 'name)))
+    (when (and (!= u null) (!= (u 'origin-template) null))
+      (return (-> (u 'origin-template) (unsafe/cast &UnionTemplate _) (_ 'name))))
+    (return (s 'name))))
+
 ; The layout message, used by reject-cycle-pending-layout (src/type-utils.nuc).
 ; `what` names the construct that needed the layout ("defn parameter",
 ; "field access", "struct literal", …), matching reject-opaque-type's wording.
-(defn cycle-layout-message (sname:Symbol what:StrView):StrView
-  (let (defpath:Symbol (cycle-definer-file sname 1)
+(defn cycle-layout-message (sd:(raw StructDef) what:StrView):StrView
+  (let (sname:StrView (sdef-display sd)
+        defpath:Symbol (cycle-definer-file (sdef-definer-name sd) 1)
         where:StrView "it is defined in a file this unit imports circularly")
     (when (not (symbol-none? defpath))
       (set! where (import-cycle-note defpath)))
@@ -13176,64 +13185,6 @@
     (reject-cycle-pending-layout ty tl "sizeof")
     (return (abi-sizeof ty))))
 
-(defn header-mode? ():bool
-  (return (or (!= g-emit-cheader 0) (!= g-emit-nuch 0))))
-
-; A header mode emits nothing, so no macro is ever registered: the variadic
-; arithmetic macros are expanded here as lib/macros.nuc writes them.
-(defn header-stock-op-expand (e:ptr):ptr
-  (when (or (not (header-mode?)) (!= (node-kind e) NODE-LIST)) (return e))
-  (let (hd:ptr (node-at e 0))
-    (when (!= (node-kind hd) NODE-SYM) (return e))
-    (let (h:Symbol ((as raw:Node hd) 's)
-          n:i32 (- (node-len e) 1)
-          line:i32 (node-line e 0))
-      (when (= h "bit-not")
-        (when (!= n 1) (return e))
-        (return (as ptr (node-list3 'bit-xor (node-at e 1) (node-int -1) line))))
-      (let (right:bool (or (= h "+") (= h "*"))
-            left:bool (or (= h "-") (= h "/")))
-        (when (not (or right left)) (return e))
-        (let (op:raw:Node (cond (= h "+") '_+ (= h "*") '_* (= h "-") '_- true '_/)
-              unit:i64 (if (or (= h "+") (= h "-")) 0 1))
-          (when (= n 0) (return (as ptr (node-int unit))))
-          (when (= n 1)
-            (if right
-              (return (header-stock-op-expand (node-at e 1)))
-              (return (as ptr (node-list3 op (node-int unit) (node-at e 1) line)))))
-          ; `+`/`*` fold right (macfoldr), `-`/`/` left (macfoldl).
-          (if right
-            (let (acc:raw:Node (node-at e n)
-                  i:i32 (- n 1))
-              (while (>= i 1)
-                (set! acc (node-list3 op (node-at e i) acc line))
-                (set! i (- i 1)))
-              (return (as ptr acc)))
-            (let (acc:raw:Node (node-at e 1)
-                  i:i32 2)
-              (while (<= i n)
-                (set! acc (node-list3 op acc (node-at e i) line))
-                (inc! i))
-              (return (as ptr acc)))))))))
-
-; In a header mode only the prescans lay a struct out, so one they deferred has
-; no size yet: abi-sizeof would answer 0 rather than refuse.
-(defn header-layout-unknown? (tn:ptr line:i32):bool
-  (when (not (header-mode?)) (return false))
-  (set! g-array-ok 1)
-  (return (type-layout-unknown? (parse-type-from-node tn (node-line tn line)))))
-
-(defn type-layout-unknown? (t:(raw Type)):bool
-  (when (= t null) (return false))
-  (when (= (t 'kind) TY-ARRAY) (return (type-layout-unknown? (t 'elem))))
-  (when (and (or (= (t 'kind) TY-STRUCT) (= (t 'kind) TY-UNION)) (!= (t 'sdef) null))
-    (let (sd:(raw StructDef) (t 'sdef))
-      (when (!= (sd 'opaque) 0) (return false))
-      (when (= (sd 'laid-out) 0) (return true))
-      (dotimes (i (sd 'num-fields))
-        (when (type-layout-unknown? ((field-at (sd 'fields) i) 'type)) (return true)))))
-  (return false))
-
 ; Evaluate `n` as an integer constant expression. Returns 1 and stores the value
 ; through `out` on success; 0 when `n` is simply not a constant expression (the
 ; caller then reports the whole initializer). A *malformed* constant expression —
@@ -13249,7 +13200,7 @@
   ; the tail-wrapping expansion means an operand is frequently a CELL rather than
   ; the bare operand (`(* v K)` → `(_* v (* K))`). This is the same expander
   ; `node-is-int-literal` uses, for the same reason.
-  (let (e:ptr (header-stock-op-expand (macroexpand-form n -1)))
+  (let (e:ptr (macroexpand-form n -1))
     (when (= e null) (return 0))
     (let (ee:ptr:Node (unsafe/cast &Node e)
           nl:i32 (node-line e encl))
@@ -13279,7 +13230,6 @@
         (when (!= ((unsafe/cast &Node hd) 'kind) NODE-SYM) (return 0))
         ; (sizeof T)
         (when (and (= hd 'sizeof) (= nargs 1))
-          (when (header-layout-unknown? (node-at (as ptr ee) 1) nl) (return 0))
           (set! (aref out 0) (cfold-sizeof (node-at (as ptr ee) 1) nl))
           (return 1))
         ; (char "x") — the same one-byte literal defvar-init-ir renders directly,
@@ -16926,6 +16876,16 @@
         (return params))
       (return (as ptr (node-cons new-car new-cdr (n 'line)))))))
 
+; A declare's parameter list, checked for retired markers as desugar-params
+; does but left undesugared.
+(defn declare-params-checked (params:(raw Node) encl:i32):ptr
+  (when (or (= params null) (!= (node-kind (as ptr params)) NODE-LIST)) (return params))
+  (let (cur:ptr params)
+    (while (> (node-len cur) 0)
+      (reject-legacy-marker (node-first (as raw:Node cur)) (node-line (as ptr params) encl))
+      (set! cur (node-rest (as raw:Node cur)))))
+  (return params))
+
 ; Desugar a let binding list: pairs of (name val) where name may be typed.
 (defn desugar-let-bindings (binds:(raw Node) encl:i32):ptr
   (when (= binds null) (return null))
@@ -16974,7 +16934,7 @@
       (when (!= (head 'kind) NODE-SYM) (return form))
       (let (h:Symbol (head 's))
         ; (defn name:type (params...) body...)
-        (when (= h "defn")
+        (when (or (= h "defn") (= h "defn-"))
           (when (>= (node-len form) 3)
             (let (new-name:ptr (desugar-typed (node-at form 1) (f 'line))
                   new-params:ptr (desugar-params (node-at form 2) (f 'line)))
@@ -16987,7 +16947,7 @@
                          (node-cons new-params
                            (node-rest (unsafe/cast &Node (node-rest (unsafe/cast &Node (node-rest f))))) (f 'line)) (f 'line)) (f 'line))))))
         ; (defvar name:type [init])
-        (when (= h "defvar")
+        (when (or (= h "defvar") (= h "defvar-"))
           (when (>= (node-len form) 2)
             (let (new-name:ptr (desugar-typed (node-at form 1) (f 'line)))
               (when (= new-name (node-at form 1)) (return form))
@@ -16995,7 +16955,7 @@
                         (node-cons new-name
                          (node-rest (unsafe/cast &Node (node-rest f))) (f 'line)) (f 'line))))))
         ; (defstruct name field:type ...)
-        (when (= h "defstruct")
+        (when (or (= h "defstruct") (= h "defstruct-"))
           (when (>= (node-len form) 2)
             ; Desugar fields (positions 2+)
             (let (new-rest:ptr (desugar-params (node-rest (unsafe/cast &Node (node-rest f))) (f 'line)))
@@ -17023,7 +16983,9 @@
           (when (>= (node-len form) 2)
             (let (new-name:ptr (desugar-typed (node-at form 1) (f 'line)))
               (if (>= (node-len form) 3)
-                (let (new-params:ptr (desugar-params (node-at form 2) (f 'line))
+                ; Params stay as written: `ptr:FILE` desugared is `(ptr FILE)`, which
+                ; declare-param-types must read as a type, not a name.
+                (let (new-params:ptr (declare-params-checked (node-at form 2) (f 'line))
                       tail3:ptr (-> f (node-rest _) (unsafe/cast &Node _) (node-rest _)
                                       (unsafe/cast &Node _) (node-rest _)))
                   (when (and (= new-name (node-at form 1)) (= new-params (node-at form 2)))
@@ -17185,223 +17147,6 @@
 ; mode never runs `do-import` and so never asked.
 (defn die-import-not-found (name:Symbol line:i32):void
   (die-at line (fstr "import: cannot find '" name "'")))
-
-; ============================================================
-; Stage 15 W9 item 38 — declaration validation for the header modes.
-;
-; `--emit-cheader` and `--emit-nuch` run the compiler's PRESCAN layer and never
-; its EMISSION layer, and every prescan deliberately defers its diagnosis to
-; emission: `defn-params-to-types` says "the located diagnostic is emit-defn's
-; job", `prescan-file-imports` says "a missing library is diagnosed by
-; do-import". With no emitter downstream nothing ever asked, so a malformed
-; declaration reached a raw `(node-at form N)` dereference and the compiler died
-; with SIGSEGV and no output — the worst diagnosis of a syntax error available —
-; while an unresolvable import exited 0 and printed a header that silently
-; omitted everything the library would have supplied.
-;
-; The rule these functions restore: a header mode refuses every program whose
-; DECLARATIONS the real pipeline refuses. Not every program the real pipeline
-; refuses — a body type error (`examples/comb-shapes.nuc`) is out of scope by
-; construction, since no body is read here, and closing that gap would mean
-; running the emitter. Declarations are exactly what a header describes, so that
-; is the honest line, and it is the one that makes the four measured symptoms of
-; this item a single defect rather than four.
-;
-; Every message comes from the chokepoint the real pipeline uses —
-; `die-empty-decl`, `die-import-not-found`, and the nine `require-<head>-form`
-; guards each emitter now calls — never from a copy of the words here.
-; ============================================================
-
-; A declaration node that is absent or `()` declares nothing. Recurses into the
-; type, because an inline `(union …)` / `(struct …)` member is itself a
-; declaration and reaches `extract-name-and-type` on the same terms in emission —
-; with the FIELD's own line, which is what `--emit-llvm` reports for it.
-(defn validate-decl-node (node:ptr line:i32):void
-  (when (node-empty? node) (die-empty-decl line))
-  (require-decl-name (as raw:Node node) line)
-  (let (own:i32 (node-line node line))
-    (validate-type-node (extract-type-node node own) own)))
-
-; Walk a type node for inline aggregates. Under a `(union …)` / `(struct …)` head
-; every tail element is a DECLARATION; under any other head it is another type
-; node, which is what reaches the members of `(ptr (union … ()))` — measured
-; segfaulting when this walk only looked at the outermost head. Recursing costs
-; nothing on a non-aggregate: only a null under a union/struct head is ever
-; refused, so `(array T N)`, `(fn …)` and a template instance pass through.
-(defn validate-type-node (tn:ptr line:i32):void
-  (when (= tn null) (return))
-  (let (n:ptr:Node (unsafe/cast &Node tn))
-    (when (!= (n 'kind) NODE-LIST) (return))
-    (let (head:ptr:Node (unsafe/cast &Node (node-first n))
-          agg:i32 0)
-      (when (!= (as ptr head) null)
-        (when (= (head 'kind) NODE-SYM)
-          (when (or (= (head 's) "union") (= (head 's) "struct")) (set! agg 1))))
-      (let (cur:ptr (node-rest n))
-        (while (> (node-len cur) 0)
-          (if (!= agg 0)
-            (validate-decl-node (node-first (unsafe/cast &Node cur)) line)
-            (validate-type-node (node-first (unsafe/cast &Node cur)) line))
-          (set! cur (node-rest (unsafe/cast &Node cur))))))))
-
-; A `defn` / `defn-`, validated exactly as far as `emit-defn` validates it before
-; reading a body: the S1 arity check and the params-is-list check, then each
-; parameter as a declaration.
-(defn validate-header-defn (form:ptr):void
-  ; Skip what the emitters skip. A bounded-generic template exports verbatim
-  ; (.nuch) or not at all (C), and `--emit-llvm` only checks its body when a call
-  ; site stamps it — so refusing one here would be STRICTER than the real
-  ; pipeline, which is the one way this walk could do harm.
-  ; Arity first: `(defn)` has no name node at all, so `defn-parse-sig` below would
-  ; take its legacy branch and dereference the null.
-  (require-defn-form form)
-  (when (!= (defn-is-generic-template form) 0) (return))
-  (let (ff:ptr:Node (unsafe/cast &Node form)
-        fname:Symbol (symbol-none)
-        vd-ret:ptr null
-        vd-params:ptr null
-        vd-bstart:i32 3)
-    (defn-parse-sig form (as &Symbol &fname) (as &ptr &vd-ret)
-                    (as &ptr &vd-params) (as &i32 &vd-bstart))
-    (let (params:ptr (node-at form 2))
-      (when (not (node-is-list params))
-        (die-at (node-line (node-at form 1) (ff 'line)) "defn: params must be list"))
-      (dotimes (i (node-len params))
-        ; A `:rest`/`:optional` marker is not a declaration.
-        (when (!= (node-kind (node-at params i)) NODE-KEYWORD)
-          (validate-decl-node (node-at params i) (ff 'line))))
-      ; The return operand is a type position too: `:(union a:i32 ())`.
-      (validate-type-node vd-ret (ff 'line)))))
-
-(defn validate-header-defstruct (form:ptr):void
-  (require-defstruct-form form)
-  ; W9 item 45: the name position, asked through the chokepoint `emit-defstruct`
-  ; asks it at — so `()` (and a colon-typed name) is refused here in the words the
-  ; real pipeline uses. Before this the header emitters skipped a name they could
-  ; not read and wrote a header for a program that does not compile.
-  (let (ff:ptr:Node (unsafe/cast &Node form)
-        aflags:i32 0
-        aalign:i32 0
-        ; The name follows any `:packed`/`:align N`, as in `emit-defstruct`.
-        at:i32 (+ 1 (struct-attr-scan (as raw:Node form) (as &i32 &aflags)
-                                      (as &i32 &aalign) 1 (ff 'line))))
-    (reject-colon-in-def-name (as raw:Node (node-at form at)) "defstruct" (ff 'line))
-    ; A parametric template — a list in the name position — defines no concrete
-    ; type; both header emitters skip it and its fields are checked when stamped.
-    (when (!= (node-kind (node-at form at)) NODE-SYM) (return))
-    (dotimes (i (- (node-len form) (+ at 1)))
-      (validate-decl-node (node-at form (+ i (+ at 1))) (ff 'line)))))
-
-; Run by `emit-cheader-header` and `emit-nuch-header` after the prescans and
-; BEFORE any output, so a refused program produces no partial header — which is
-; what `--emit-llvm` does with the same input.
-(defn validate-header-forms (forms:(raw Node)):void
-  (let (fc:ptr forms)
-    (while (> (node-len fc) 0)
-      (let (f:ptr:Node (unsafe/cast &Node (node-first (unsafe/cast &Node fc))))
-        ; Length 1 is enough to reach here: `(defn)` names a definer and carries
-        ; nothing else, and refusing it is the whole point.
-        (when (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST)
-                   (>= (node-len (as ptr f)) 1)
-                   (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
-          (let (ph:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
-            ; An import that names nothing changes what every declaration below it
-            ; means, so it is a declaration error in the strongest sense. The head
-            ; set is `prescan-imported-types`', which is the pass that would have
-            ; supplied those names. A C-header string import is left alone —
-            ; `cheader-prescan-opaque` refuses one that does not preprocess.
-            (when (>= (node-len (as ptr f)) 2)
-              (when (import-head? ph)
-                (let (nn:ptr:Node (unsafe/cast &Node (node-at (as ptr f) 1)))
-                  ; W9 item 45: `(import ())` names no library. Asked through
-                  ; `do-import`'s own guard, which a header mode never reaches.
-                  (require-import-name (as raw:Node nn) (f 'line))
-                  (when (= (node-kind (as ptr nn)) NODE-SYM)
-                    (when (symbol-none? (import-form-path (as raw:Node nn) (f 'line)))
-                      (die-import-not-found (nn 's) (f 'line))))
-                  (when (= ph "import-only")
-                    (require-import-listed-names (as raw:Node f) 2 "import-only: a listed name")))))
-            (when (or (= ph "defn") (= ph "defn-"))
-              (validate-header-defn (as ptr f)))
-            (when (or (= ph "defstruct") (= ph "defstruct-"))
-              (validate-header-defstruct (as ptr f)))
-            ; The rest need their own arity guard, and — W9 item 45 — the name
-            ; position each of their emitters reads first. Their emitters do not
-            ; walk a declaration list the header pass re-walks, so nothing deeper
-            ; is asked here; the one exception is a `defvar`'s type, which may be
-            ; an inline aggregate exactly as a field's may, and which
-            ; `validate-decl-node` covers together with the name.
-            (when (or (= ph "defvar") (= ph "defvar-"))
-              (require-defvar-form (as ptr f))
-              ; Past the leading `:const`/`:volatile`, which `emit-defvar` strips.
-              (let (at:i32 1)
-                (while (= (node-kind (node-at (as ptr f) at)) NODE-KEYWORD) (inc! at))
-                (when (< at (node-len (as ptr f)))
-                  (validate-decl-node (node-at (as ptr f) at) (f 'line)))))
-            (when (or (= ph "defconst") (= ph "defconst-"))
-              (require-defconst-form (as ptr f))
-              ; Only the NULL case. `emit-defconst` asks two narrower questions
-              ; first — a colon-typed and a colon-paren-fused name, both of which
-              ; quote the constant's VALUE in the message — so asking the general
-              ; kind question here would answer a shape they own with different
-              ; words. `()` is not a shape they recognize.
-              (when (node-empty? (node-at (as ptr f) 1))
-                (require-defconst-name null (f 'line))))
-            (when (or (= ph "defenum") (= ph "defenum-"))
-              (require-defenum-form (as ptr f))
-              (reject-colon-in-def-name (as raw:Node (node-at (as ptr f) 1))
-                                        "defenum" (f 'line))
-              (dotimes (i (- (node-len (as ptr f)) 2))
-                (require-defenum-member (as raw:Node (node-at (as ptr f) (+ i 2)))
-                                        (f 'line))))
-            (when (or (= ph "defunion") (= ph "defunion-"))
-              (require-defunion-form (as ptr f))
-              (reject-colon-in-def-name (as raw:Node (node-at (as ptr f) 1))
-                                        "defunion" (f 'line))
-              (when (= (node-kind (node-at (as ptr f) 1)) NODE-SYM)
-                (let (box:i32 0
-                      arms:ptr (defunion-strip-repr (-> f (node-rest _) (unsafe/cast &Node _) (node-rest _))
-                                                    (as ptr &box) (f 'line)))
-                  (dotimes (i (node-len arms))
-                    (let (arm:(raw Node) (node-at arms i))
-                      (require-defunion-arm arm (f 'line))
-                      (when (= (node-kind (as ptr arm)) NODE-LIST)
-                        (dotimes (fi (- (node-len arm) 1))
-                          (validate-decl-node (node-at (as ptr arm) (+ fi 1)) (f 'line)))))))))
-            ; W9 item 45: `defmacro-` too — the private spelling is a separate
-            ; head, and every other arm here already names both.
-            (when (or (= ph "defmacro") (= ph "defmacro-"))
-              (require-defmacro-form (as ptr f))
-              (reject-colon-in-def-name (as raw:Node (node-at (as ptr f) 1))
-                                        "defmacro" (f 'line)))
-            (when (= ph "defcast")
-              (require-defcast-form (as ptr f))
-              ; Both operands are type positions. Asked by handing the null to the
-              ; type parser — the owner of the words — rather than repeating them;
-              ; a non-null operand is left alone, because resolving a type here
-              ; would ask a question this pass has no import environment for.
-              (dotimes (i 2)
-                (when (node-empty? (node-at (as ptr f) (+ i 1)))
-                  (parse-type-from-node null (f 'line)))))
-            (when (= ph "extend")
-              (require-extend-form (as ptr f))
-              (when (node-empty? (node-at (as ptr f) 1))
-                (require-extend-subject null (f 'line)))
-              (require-extend-protocol (as raw:Node (node-at (as ptr f) 2)) (f 'line)))
-            (when (= ph "extern")
-              (require-extern-form (as ptr f))
-              (validate-decl-node (node-at (as ptr f) 1) (f 'line)))
-            ; `export`'s SHAPE only. Whether the name it re-exports resolves is a
-            ; whole-unit registry question, and answering it here would need the
-            ; emitter this mode does not run — so `(export nosuch)` still reaches
-            ; a header, exactly as a body error does.
-            (when (= ph "export")
-              (require-export-form (as ptr f))
-              (dotimes (i (- (node-len (as ptr f)) 1))
-                (require-export-arg (as raw:Node (node-at (as ptr f) (+ i 1))) (f 'line))))
-            (when (= ph "declare")
-              (require-declare-name (as raw:Node (node-at (as ptr f) 1)) (f 'line))))))
-      (set! fc (node-rest (unsafe/cast &Node fc))))))
 
 (defn prescan-imported-types (forms:(raw Node)):void
   (let (fc:ptr forms)
@@ -20126,11 +19871,11 @@
       ; is the compiler reading it, so it reads a view.
       (let (argview:StrView (strview-from-cstr (as CStr (aref (as &ptr argv) i))))
         (cond (= argview "--emit-nuch")
-                (set! g-emit-nuch 1)
+                (set! g-header-request 1)
               (= argview "--dump-ast")
                 (set! g-dump-ast 1)
               (= argview "--emit-cheader")
-                (set! g-emit-cheader 1)
+                (set! g-header-request 2)
               (or (= argview "--emit-llvm") (= argview "-S"))
                 (set! g-emit-llvm 1)
               (= argview "-c")
@@ -20233,39 +19978,10 @@
 
         ; Apply the standard prelude unless the source begins with
         ; (exclude-prelude).
-        ;
-        ; Stage 15 W9 item 1: `--emit-nuch` is NOT exempt. A `.nuch` exports the
-        ; file's signatures, and a signature names types — `Node`, `StrView`,
-        ; `(Maybe T)`, the `!T` sugar's `(Result T E)` — that only the prelude
-        ; defines, so skipping it made `--emit-nuch` fail on nine of the library's
-        ; own files. `emit-nuch-header` ignores an `import-use` form, so the
-        ; prepended import costs one prescan and exports nothing extra.
-        ;
-        ; Stage 15 W9 item 26: `--emit-cheader` is not exempt either. Its
-        ; exemption rested on "it exports the C-representable subset, which cannot
-        ; name a prelude type in the first place" — false as written (`lib/parse.h`
-        ; declares the `!i32` Result struct, `lib/string-split.h` a `StrView`), and
-        ; irrelevant to why the prelude is needed here: a C header must name the
-        ; symbol each `defn` actually links as, which only the generic registry
-        ; knows, and populating it means resolving every signature's types.
         (let (after:ptr (strip-exclude-prelude forms))
           (if (!= after null)
             (set! forms after)
             (set! forms (prepend-prelude-import forms))))
-
-        ; .nuch header mode — emit declarations and exit
-        (when (!= g-emit-nuch 0)
-           (header-out-open)
-           (emit-nuch-header forms source-file)
-           (header-out-close)
-              (return 0))
-
-        ; C header mode — emit C declarations and exit
-        (when (!= g-emit-cheader 0)
-           (header-out-open)
-           (emit-cheader-header forms source-file)
-           (header-out-close)
-              (return 0))
 
         ; Open module streams and compile
         (open-module-streams)
@@ -20280,5 +19996,15 @@
                   (unsafe/cast i32 (- (count g-dyn-annots) g-dyn-annots-drained))
                   " (dyn P) annotation checks were never drained\n")
           (exit 1))
+        ; A header describes the program the compile accepted, read from the
+        ; registries it filled; its IR is discarded.
+        (when (!= g-header-request 0)
+          (if (= g-header-request 1) (set! g-emit-nuch 1) (set! g-emit-cheader 1))
+          (header-out-open)
+          (if (= g-header-request 1)
+            (emit-nuch-header forms source-file)
+            (emit-cheader-header forms source-file))
+          (header-out-close)
+          (return 0))
         (flush-module-ir source-file))))
     (return 0)))

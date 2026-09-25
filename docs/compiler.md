@@ -14,8 +14,8 @@ By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` un
 | `-Ofast` | `-O3` plus `-ffast-math`. |
 | `-ffast-math` | Emit `fast` flags on floating-point arithmetic (`fadd`/`fsub`/`fmul`/`fdiv`/`frem`), permitting reassociation, contraction, and no-signed-zero/no-NaN assumptions. This is what lets the optimizer vectorize FP **reductions** (e.g. `pi += …`); without it an FP reduction stays scalar even at `-O3` because reordering would change results. Comparisons are left unflagged. Changes numerical results — opt-in only. |
 | `-march=native` | Target the host CPU and its full feature set (via `LLVMGetHostCPUName` / `LLVMGetHostCPUFeatures`) instead of the generic baseline, so vectorized loops use the widest available registers (e.g. 256-bit AVX rather than 128-bit SSE2). Host-only — do not combine with `--target=`. Produces non-portable objects. |
-| `--emit-nuch` | Output a `.nuch` header instead of compiling. Extracts function signatures, struct definitions, constants, enums, and macros. The prelude and the file's own imports are prescanned first (types only — nothing is emitted), so an exported signature may name an imported type: `Node`, `StrView`, `String`, `(Maybe T)`, the `!T` sugar. Declarations are validated before anything is written (see [What a header mode checks](#what-a-header-mode-checks)). |
-| `--emit-cheader` | Output a C header (`.h`) instead of compiling. Emits `#pragma once`, `#include <stdint.h>` / `<stdbool.h>` / `<stddef.h>`, tagged typedefs for structs and unions (`typedef struct Pt { … } Pt;`, so both `Pt` and `struct Pt` work), extern function declarations, `extern` declarations for public `defvar` globals (see [Reaching a library's globals from C](#reaching-a-librarys-globals-from-c)), `#define` constants, and enums. For a namespaced library, function declarations use the C-legal mangled link name (`geom__area`, not the Nucleus name `geom/area`), so a C consumer links against the same symbol the library emits — and a struct's typedef name is mangled the same way (`} gt__Pt;`, not `} Pt;`), since two namespaces may each define a `Pt` and an unprefixed typedef would collide if both headers were included together. A `user`-namespace library's header is unaffected. An **overloaded** or **operator-named** function is declared under the per-signature symbol it really links as, each method with its own C name (see [Overloaded and operator-named functions in a C header](#overloaded-and-operator-named-functions-in-a-c-header)). A name that is a **word C or C++ reserves** (`union`, `signed`, `class`, `delete`) is renamed with a trailing `_` and re-bound with an `asm` label, so only its C spelling moves (see [Names C reserves](#names-c-reserves)). A name beginning with a **digit** takes a leading `_` — C identifiers may not start with one — and needs no label, because the emitted symbol takes the same escape (see [Hyphenated names in a C header](#hyphenated-names-in-a-c-header)). A type defined in **another** unit gets an `#include` of that unit's generated header, so a by-value use of it compiles (see [Types a header borrows from another unit](#types-a-header-borrows-from-another-unit)). A signature naming a **C typedef** (e.g. `off_t`, see [A C typedef is a Nucleus type name](structs-unions.md#a-c-typedef-is-a-nucleus-type-name)) renders the name bare — `struct off_t` names nothing — and gets an `#include` of the C header the source imported to reach it (`#include <unistd.h>`), so the generated header still compiles on its own (see [C typedefs a header borrows](#c-typedefs-a-header-borrows)). A signature mentioning an **error-union or option type over a non-pointer payload** (`:!i32`, `?Char`) is not declared at all — the value is niche-encoded, not a struct — and a comment says so in its place; the pointer niches `!ptr:T` / `!ref:T` are bare pointers and stay declared (see [Error-union and option types in a C header](#error-union-and-option-types-in-a-c-header)). Header emission resolves the whole unit's signatures and validates its **declarations**, so a source whose declarations do not compile produces the compiler's ordinary error — the same message at the same line an ordinary compile gives — rather than a header (see [What a header mode checks](#what-a-header-mode-checks)). See [Namespaced type names](types.md#namespaced-type-names). |
+| `--emit-nuch` | Output a `.nuch` header instead of compiling. Extracts function signatures, struct definitions, constants, enums, and macros. The unit is compiled first, prelude and imports included, so an exported signature may name an imported type (`Node`, `StrView`, `String`, `(Maybe T)`, the `!T` sugar), and a unit the compile refuses gets no header (see [What a header mode checks](#what-a-header-mode-checks)). |
+| `--emit-cheader` | Output a C header (`.h`) instead of compiling. Emits `#pragma once`, `#include <stdint.h>` / `<stdbool.h>` / `<stddef.h>`, tagged typedefs for structs and unions (`typedef struct Pt { … } Pt;`, so both `Pt` and `struct Pt` work), extern function declarations, `extern` declarations for public `defvar` globals (see [Reaching a library's globals from C](#reaching-a-librarys-globals-from-c)), `#define` constants, and enums. For a namespaced library, function declarations use the C-legal mangled link name (`geom__area`, not the Nucleus name `geom/area`), so a C consumer links against the same symbol the library emits — and a struct's typedef name is mangled the same way (`} gt__Pt;`, not `} Pt;`), since two namespaces may each define a `Pt` and an unprefixed typedef would collide if both headers were included together. A `user`-namespace library's header is unaffected. An **overloaded** or **operator-named** function is declared under the per-signature symbol it really links as, each method with its own C name (see [Overloaded and operator-named functions in a C header](#overloaded-and-operator-named-functions-in-a-c-header)). A name that is a **word C or C++ reserves** (`union`, `signed`, `class`, `delete`) is renamed with a trailing `_` and re-bound with an `asm` label, so only its C spelling moves (see [Names C reserves](#names-c-reserves)). A name beginning with a **digit** takes a leading `_` — C identifiers may not start with one — and needs no label, because the emitted symbol takes the same escape (see [Hyphenated names in a C header](#hyphenated-names-in-a-c-header)). A type defined in **another** unit gets an `#include` of that unit's generated header, so a by-value use of it compiles (see [Types a header borrows from another unit](#types-a-header-borrows-from-another-unit)). A signature naming a **C typedef** (e.g. `off_t`, see [A C typedef is a Nucleus type name](structs-unions.md#a-c-typedef-is-a-nucleus-type-name)) renders the name bare — `struct off_t` names nothing — and gets an `#include` of the C header the source imported to reach it (`#include <unistd.h>`), so the generated header still compiles on its own (see [C typedefs a header borrows](#c-typedefs-a-header-borrows)). A signature mentioning an **error-union or option type over a non-pointer payload** (`:!i32`, `?Char`) is not declared at all — the value is niche-encoded, not a struct — and a comment says so in its place; the pointer niches `!ptr:T` / `!ref:T` are bare pointers and stay declared (see [Error-union and option types in a C header](#error-union-and-option-types-in-a-c-header)). The unit is compiled first, so a source that does not compile produces the compiler's ordinary errors rather than a header (see [What a header mode checks](#what-a-header-mode-checks)). See [Namespaced type names](types.md#namespaced-type-names). |
 | `--dump-ast` | Print the file's own top-level forms — the reader's output, before `desugar` and before the prelude is prepended — one form per line to stdout, then exit 0. A collection literal prints as the reader produced it — `[1 2]` is `(vector-lit 1 2)` — with no hygiene gensym: the compiler mints that at emit time, so it is not part of the tree. |
 | `-i` / `--interactive` | Start the REPL (interactive Read-Eval-Print Loop). |
 | `-I<path>` / `-I <path>` | Add a directory to the import search path. Searched after the source file's directory and `lib/`. |
@@ -489,33 +489,28 @@ nsgfacade.nuch:4: error: export: symbol not found: 'geom/area'
 
 ## What a header mode checks
 
-`--emit-nuch` and `--emit-cheader` read a whole compilation unit but emit no function bodies, so they check the unit exactly as far as a header describes it: the **declarations**. A declaration error is reported with the same message, at the same line, that an ordinary compile gives, and nothing is written — a header mode never writes a partial header for a program it is about to refuse.
+`--emit-nuch` and `--emit-cheader` compile the unit first, exactly as an ordinary compile does, then discard the object and write the header from what that compile resolved. A header mode therefore refuses every program an ordinary compile refuses, whether the error is in a declaration or a function body. It gives the same diagnostics at the same lines, prints the same warnings, exits 1, and writes nothing to stdout:
 
 ```
-$ nucleusc --emit-cheader bad.nuc
-bad.nuc:4: error: defn 'foo': expected return type after the parameter list, e.g. (defn foo (params):i32 …)
-$ nucleusc --emit-llvm bad.nuc
-bad.nuc:4: error: defn 'foo': expected return type after the parameter list, e.g. (defn foo (params):i32 …)
+$ nucleusc --emit-cheader body.nuc
+body.nuc:2: error: as: lossy conversion from i64 to i32 -- use unsafe/cast
+$ nucleusc --emit-llvm body.nuc
+body.nuc:2: error: as: lossy conversion from i64 to i32 -- use unsafe/cast
 ```
 
-That covers these kinds of mistake:
+A header describes only a unit that builds, and it names each symbol exactly as the object defines it. Some consequences:
 
-- **A definer that stops too early** — `(defn f (x:i32))` with no return operand, `(defstruct)`, `(defunion U)`, `(defconst K)`, and the same for `defvar`, `defenum`, `defmacro`, `defcast` and `extend`. Each gets the message its own emitter gives.
-- **An empty list `()` where a declaration belongs** — a parameter, a struct field, a member of an inline `(union …)` / `(struct …)`, or a `defvar`'s type, at any nesting depth: `(ptr (union a:i32 ()))` is caught as readily as a bare field.
-- **An empty list `()` where a name belongs** — `(defstruct ())`, `(defenum ())`, `(defn () (x:i32):i32 …)`, `(ns ())`, `(import ())`, an `extend` operand, an enum member, a `defprotocol` method signature, a template head. `()` reads as *no node at all* (see [Empty lists in a declaration](#empty-lists-in-a-declaration) below), so each of these gets the message that position already gives a name of the wrong kind — `(defstruct ())` and `(defstruct 5 …)` differ only in whether the message says "missing name" or "name must be a symbol".
-- **A name that is not a symbol** — a number, string, keyword or list where a definer, parameter, field, binding, method signature, union arm or `import-only` list wants a name: `(defstruct 5 x:i32)`, `(defn f ((3 i32)):i32 0)`, `(let (("s" i32) 1) …)`, `(defprotocol P (:m (x:&Self):i32))`. The message names the position and quotes what was found (`defstruct: name must be a symbol, found '5'`, `a declared name must be a symbol, found '"s"'`), at the line of the offending form.
-- **An `import` naming a library that does not resolve.** This one matters most in a header mode: a missing import supplies no names, so *every* declaration below it would be described against the wrong information — and before this was checked, the header was emitted anyway, silently missing whatever the library would have contributed.
-- **A C header that does not preprocess** — `(import-use "no-such.h")`, or a header `clang -E` rejects. The same holds: all three modes print clang's own report once, then `c-include: failed to preprocess 'no-such.h'` at the import's line (in the file that wrote it, when a library does), and exit 1. A C import that a `.nuch` carries only binds a prefix and is never read, so it is not checked.
-- **A `defvar` whose type is not one.** Global values are prescanned as in an ordinary compile, so an array type nested where storage cannot go (`(Vector (array i32 2))`, `ptr:(array i32 4)`) or a type used as a constructor (`x:i32:i32`) is refused with the compile's message.
-- **An array length the compile refuses** — zero, negative, or not a constant, such as `(array i8 (- 10))` or a length naming a `defvar`. The message is the compile's own.
+- **Top-level macros are expanded.** A `defn`, `defstruct` or `defmacro` that a top-level macro call produces is exported like a handwritten one. A definition whose name came from `gensym` is not exported, because no importer can mean it; the registration global `deftest` makes is one such definition.
+- **Compile-time code runs.** A `(compile-time …)` block or a macro body runs during a header mode, as it does in a compile, and its output is printed.
+- **A header mode costs a compile.** The unit's IR is generated and then thrown away.
 
-The header is written to stdout only once it is complete, so any refusal, including one found part-way through, leaves stdout empty.
+The header is written to stdout only once it is complete.
 
 ### Array lengths in a C header
 
 `--emit-cheader` accepts every array length a compile accepts. It writes the folded value: `(array i8 (+ 1 2 3))` becomes `int8_t a[6];`, and the same goes for `(- 20 3 2)`, `(* K 2)`, `(bit-not -10)` and a `(sizeof T)` of a struct defined later in the file. A bare `defconst` of the file's own keeps its name (`a[K]`), because the header defines `K` too. A `defenum` member or an imported C constant is written as its value, because the header has no `#define` of that name.
 
-A header mode registers no macros. It folds the arithmetic macros from `lib/macros.nuc` itself (`+`, `-`, `*`, `/` and `bit-not`), but it refuses a length computed by a macro of your own, naming the macro. A compile accepts that length.
+A length computed by a macro of your own folds too.
 
 ### Inline structs, unions and array aliases in a C header
 
@@ -539,21 +534,33 @@ typedef struct S {
 } S;
 ```
 
-An `:anon` member over an inline body is written as C's own anonymous member. An `:anon` member naming a declared type is still refused (see [Anonymous members](structs-unions.md#anonymous-members--anon-t)).
+An `:anon` member over an inline body is written as C's own anonymous member. An `:anon` member naming a declared type is still refused (see [Anonymous members](structs-unions.md#anonymous-members--anon-t)). A `(:volatile name:T)` field is written `volatile T name;`, and a `(ptr :volatile T)` is `volatile T*`.
+
+### Template instances and inline aggregates in a C header
+
+A struct-template instance, such as `(Vector i32)`, by value or behind a pointer, is a C struct named after its stamp. The header defines it just before the first declaration that uses it, after any struct of the file it holds by value. The definition is guarded, so two headers that both use `(Vector i32)` can be included together:
+
+```c
+#ifndef NUC_INST_Vector_i32
+#define NUC_INST_Vector_i32
+typedef struct Vector_i32 {
+    uint8_t* data;
+    size_t len;
+    size_t cap;
+    struct AllocHandle alloc;
+} Vector_i32;
+#endif
+
+typedef struct H {
+    struct Vector_i32 v;
+} H;
+```
+
+An inline `(struct …)` or `(union …)` in a function's signature is named the same way (`struct nuc_anon_struct_h…`), so a caller can declare a value of it. Two signatures with the same shape share one type. As a field it stays inline, because the enclosing struct is the name.
+
+A defunion-template instance, such as `(Either i32 i64)` or an alias to one, has no C layout the header writes. A declaration that uses one is omitted with a comment, as a `?T`/`!T` one is. A struct or `defunion` with a field of one is omitted too, but its tag is still declared (`struct S;`), so a pointer to it in a signature names one type.
 
 A header mode reads the file's C imports as a compile does, so it also prints the same warnings for C declarations it skips, and knows the header's integer constants (see [Integer constants from a C header](#integer-constants-from-a-c-header)).
-
-What is *not* checked here, deliberately: `deferror`, whose checks report and recover rather than abort (a different contract the header validation does not join); `def-rmacro`, a reader directive rather than a declaration a header describes; and whether an `(export sym)` names something that exists, which is a whole-unit registry question the emitter answers — `(export nosuch)` still reaches a header, exactly as a body error does.
-
-A **body** is not read here, so an error inside a function body is not detected and the header is still written:
-
-```
-$ nucleusc --emit-cheader body.nuc     # succeeds, writes the header
-$ nucleusc --emit-llvm body.nuc
-body.nuc:2: error: as: lossy conversion from i64 to i32 -- use unsafe/cast
-```
-
-This is a property of the mode, not an oversight: emitting a header does not emit bodies, and checking them would mean compiling the unit twice. Run an ordinary compile to check a unit completely; a successful header emission says the unit's interface is well-formed, not that the unit builds.
 
 ### Empty lists in a declaration
 
@@ -690,7 +697,7 @@ Only the solitary non-operator function keeps its bare name and needs no label.
 The C identifier is the mangled symbol with its dots sanitized, so it is distinct
 for each method by construction, and the label is the symbol verbatim. Whether a
 name is overloaded is a property of the whole compilation unit rather than of the
-file, so header emission runs the same signature prescan a real compilation does
+file, so header emission reads it from the compile it runs first
 — a library that contributes one `hash` to a name the prelude also defines still
 exports it as `hash.pString`, which is what its object file defines.
 
