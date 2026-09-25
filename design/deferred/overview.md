@@ -148,6 +148,24 @@ That gate is not a spelling problem and no selector syntax removes it: iterating
 Until one is chosen, computed field access stays what it is today: correct, and
 available only where every field has the same type.
 
+## Derived structural equality
+
+A struct has no `=` unless its author defines one (conforming `Eq`,
+`lib/numeric.nuc`). A literal operand compares by value only through that
+definition (Stage 21, 2026-09-25); with none, the comparison is refused.
+Having the compiler *derive* `=` field by field is its own decision, not taken:
+
+- **Padding** — a byte-wise compare reads indeterminate bytes, so a derived `=`
+  must compare field by field (bit-fields included), never `memcmp`.
+- **Floats** — a field-wise `=` inherits IEEE (`NaN ≠ NaN`, `-0.0 = 0.0`), which
+  breaks reflexivity; a bitwise compare breaks `-0.0 = 0.0` instead.
+- **Pointer fields** — identity or pointee? Neither is right for every type
+  (`&Node` wants identity; a `String`'s buffer wants content).
+- **Unions and tagged sums** — compare the tag, then only the live arm.
+- **Opt-in or automatic** — an explicit `(derive Eq S)`-style form, or implicit
+  for every all-scalar struct; and whether `Hash` must be derived with it so a
+  derived-`Eq` key works in a `HashMap`.
+
 ## Struct packing
  
  remains deferred — it wants a layout-attribute

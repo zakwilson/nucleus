@@ -4408,6 +4408,67 @@
         (return d)))
     (return (vv 'val))))
 
+; The protocol an operator belongs to (lib/numeric.nuc), or "" for `%` and the bit ops.
+(defn operator-protocol (op:(raw BinOp)):StrView
+  (let (name:Symbol (op 'name))
+    (when (!= (op 'is-cmp) 0)
+      (if (or (= name "=") (= name "!=")) (return "Eq") (return "Ord")))
+    (when (or (= name "_+") (= name "_-") (= name "_*") (= name "_/")) (return "Num"))
+    (return "")))
+
+; Can the operator's intrinsic take an operand of type `t` at all?
+(defn operator-intrinsic-takes (op:(raw BinOp) t:(raw Type)):bool
+  (when (= t null) (return false))
+  (when (!= (op 'is-cmp) 0)
+    (return (or (!= (is-int-or-bool t) 0) (!= (is-float-type t) 0) (!= (is-ptr-repr t) 0))))
+  (let (proto:StrView (operator-protocol op))
+    ; What remains beside `%` and Num is the bit operators, which take integers only.
+    (when (and (!= (op 'name) "%") (str-empty? &proto))
+      (return (!= (is-int-type t) 0))))
+  (return (or (!= (is-int-type t) 0) (!= (is-float-type t) 0))))
+
+; The "no matching method" refusal for an operator: it names the protocol the
+; operand type fails, or what the operator takes when it belongs to none.
+(defn operator-refusal (op:(raw BinOp) at:(raw Type) bt:(raw Type) literal:bool):StrView
+  (let (name:Symbol (op 'name)
+        proto:StrView (operator-protocol op)
+        bad:(raw Type) null
+        pair:ptr (arena-alloc (* (as i64 2) (ptr-bytes)))
+        (msg String) (str-alloc (strfmt-alloc) "no matching method for '" name "'"))
+    (when (= (operator-intrinsic-takes op at) false) (set! bad at))
+    (when (and (= bad null) (= (operator-intrinsic-takes op bt) false)) (set! bad bt))
+    ; A type that already has the method fails only by the pairing, so blame no protocol.
+    (when (!= bad null)
+      (set! (aref (as &ptr pair) 0) bad)
+      (set! (aref (as &ptr pair) 1) bad)
+      (when-some (g (generic-lookup name))
+        (when (!= (generic-find-method-exact g pair 2) null) (set! bad null))))
+    (when (or (= (type-eq at bt) 0) (= bad null))
+      (str-into msg " with operand types (" (type-display at) ", " (type-display bt) ")"))
+    (when (!= bad null)
+      (let (bd:StrView (type-display bad))
+        (cond (not (str-empty? &proto)) (str-into msg ": " bd " does not conform to " proto)
+              (= name "%") (str-into msg ": " bd " is not a number, and '%' takes integers or floats")
+              true (str-into msg ": " bd " is not an integer, and '" name "' takes integers"))))
+    (when literal
+      (if (!= (op 'is-cmp) 0)
+        (str-into msg "\n  note: a struct literal compares by value, never by address")
+        (str-into msg "\n  note: a struct literal is an operand by value, never by address"))
+      (dotimes (i 2)
+        (let (t:(raw Type) (if (= i 0) at bt))
+          (when (and (= (t 'kind) TY-PTR) (!= (t 'pkind) PTR-REF) (!= (t 'elem) null)
+                     (= (-> (t 'elem) (unsafe/cast &Type _) (_ 'kind)) TY-STRUCT))
+            (str-into msg "\n  note: a " (type-display t)
+                      " operand is not read through, since it may be null — narrow it first")))))
+    (when (and (!= bad null) (!= (bad 'kind) TY-VOID))
+      (let (bd:StrView (type-display bad)
+            rt:StrView (if (!= (op 'is-cmp) 0) "bool" bd))
+        (str-into msg "\n  note: define (defn " name " (a:" bd " b:" bd "):" rt " …) to give " bd " '" name "'")
+        (when (not (str-empty? &proto))
+          (str-into msg "; to conform to " proto ", define its methods and assert (extend " bd " " proto
+                    ") after (import-use numeric)"))))
+    (return (string-as-view msg))))
+
 ; Emit an operator's inline instruction given already-emitted operand Vals. This
 ; is the front-end inline peephole (§10.3): a built-in numeric/pointer operator
 ; lowers to a single `add nsw`/`icmp slt`/`fadd`/… instruction, never a call.
@@ -4567,7 +4628,7 @@
     ; above refused everything else), and `is-unsigned` answers 1 for bool, so
     ; the unsigned instruction selection below is already the right one.
     (when (or (= (is-int-or-bool (av 'type)) 0) (= (is-int-or-bool (bv 'type)) 0))
-      (die-at line (fstr (bop 'name) " expects integer operands")))
+      (die-at line (operator-refusal op (a 'type) (b 'type) false)))
     (when (!= (is-unsigned (av 'type)) (is-unsigned (bv 'type)))
       (die-at line (fstr (bop 'name) ": mixed signed/unsigned operands — use explicit cast")))
     (when (!= ((av 'type) 'kind)
@@ -4588,7 +4649,17 @@
     (when (!= (node-len cc) 3)
       (die-at (cc 'line) (fstr (bop 'name) " expects 2 args")))
     (let (a:&Val (emit-node (node-at cc 1) scope)
-          b:&Val (emit-node (node-at cc 2) scope))
+          b:&Val (emit-node (node-at cc 2) scope)
+          ts:ptr (arena-alloc (* (as i64 2) (ptr-bytes)))
+          ns:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
+      ; No overload exists here, so a struct-literal operand has nothing to compare it by value.
+      (set! (aref (as &ptr ts) 0) (a 'type))
+      (set! (aref (as &ptr ts) 1) (b 'type))
+      (set! (aref (as &ptr ns) 0) (node-at cc 1))
+      (set! (aref (as &ptr ns) 1) (node-at cc 2))
+      (let (vt:ptr (operator-value-types ts ns 2 scope))
+        (when (!= vt null)
+          (die-at (cc 'line) (operator-refusal op (aref (as &ptr vt) 0) (aref (as &ptr vt) 1) true))))
       (return (emit-binop-vals a b (node-at cc 1) (node-at cc 2) op scope (cc 'line))))))
 
 ; ============================================================
@@ -11835,10 +11906,13 @@
         (memcpy (unsafe/ptr+ (as &Val args) i) v (sizeof Val))
         (set! (aref (as &ptr argtypes) i) ((as &Val v) 'type))
         (set! (aref (as &ptr arg-nodes) i) anode)))
-    (let (m:?ptr:Method (operator-user-resolve g argtypes arg-nodes nargs))
+    (let (vt:ptr null
+          m:?ptr:Method (operator-resolve g argtypes arg-nodes nargs scope &vt))
       (when (!= m null)
         (return (emit-resolved-call n scope (g 'name) m
                                     args nargs (nn 'line))))
+      (when (and (!= vt null) (= nargs 2))
+        (die-at (nn 'line) (operator-refusal binop (aref (as &ptr vt) 0) (aref (as &ptr vt) 1) true)))
       (when (!= nargs 2)
         (die-at (nn 'line) (fstr ((unsafe/cast &BinOp binop) 'name) " expects 2 args")))
       (return (emit-binop-vals (unsafe/ptr+ (as &Val args) 0) (unsafe/ptr+ (as &Val args) 1)

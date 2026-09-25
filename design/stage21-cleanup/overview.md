@@ -875,11 +875,24 @@ did.
   does not load it for a by-value `S` as a plain call does
   (docs/structs-unions.md "Compound literals in by-value struct positions").
   `(let (p:Pt (Pt 1 2)) …)` then `p` works.
-- **A user operator overload does not take a struct literal** (found fixing the
-  struct-literal item). With `(defn = (a:Pt b:Pt):bool …)`, `(= p (Pt 1 9))` is
+- ~~**A user operator overload does not take a struct literal**~~ (**fixed
+  2026-09-25**, progress.md). A literal operand is a value: once no method takes
+  the operands as written, `operator-resolve` reads them by value (an `&S` loaded
+  through) and emit refuses rather than take the intrinsic. (Found fixing the
+  struct-literal item.) With `(defn = (a:Pt b:Pt):bool …)`, `(= p (Pt 1 9))` is
   `= expects integer operands`, and `(= (Pt 1 2) (Pt 1 3))` compares two stack
   addresses. `operator-user-resolve` falls back to the intrinsic, so reading the
   literal as `Pt` there would change what the second form means.
+- **A user operator overload on a built-in type captures narrower operands**
+  (found fixing the operator-literal item; pre-existing). With `(defn >= (a:i64
+  b:i64):bool …)`, `(>= x y)` over two `i32` calls it: `operator-user-resolve`'s
+  widen tier runs before the intrinsic, which answers `(i32, i32)` exactly. The
+  Valid walk (`valid-resolve-type`) asks the intrinsic first, so the two disagree.
+- **A user `=` over a built-in type stops the prelude compiling** (found
+  alongside; pre-existing). `(defn = (a:i64 b:i64):bool …)` is refused at
+  `lib/macros.nuc:21`: `macro 'macfoldr' calls '=', which is defined later in
+  this unit`. The macro's `=` is the intrinsic, but once `=` has a user method
+  the call counts as one to a later definition.
 - **A message names an anonymous aggregate by its registry name** (found
   alongside). `no matching method for overloaded 'getb' with argument types
   (&__anon_struct_h62122248fcf3e9a2)`: `sdef-display` prints a stamped instance

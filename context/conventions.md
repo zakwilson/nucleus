@@ -6561,6 +6561,15 @@ fine. That is invisible until something *reads* the type: `emit-try` sizes its
 value receiver built a one-binder match against `!void`'s payload-less arm. Add
 the pass to both; keep the definition-side lookup exact.
 
+**Operators have their own resolver, with three askers.** An operator carrying
+user methods resolves through `operator-resolve` (`generics.nuc`), not
+`generic-resolve`. It is called from `emit-operator-dispatch`, `node-type-call`
+and `valid-resolve-type`, so a relaxation goes into that one function. An operator
+with no user methods skips it and goes to `emit-binop`, so a rule that must
+refuse there (a struct-literal operand) needs a check in `emit-binop` as well. An
+operator's refusal text comes from `operator-refusal`. Do not write a new
+`die-at` with its own wording.
+
 ## The boot compiler gates what `src/` may use
 
 `make` compiles `src/nucleusc.nuc` with `bin/nucleusc`, the **committed boot

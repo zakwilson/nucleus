@@ -813,6 +813,24 @@ Four items from the stage overview's list. The rule for all four is that a priva
 
 ---
 
+## Stage 21 — a struct literal compares by value; operators name the protocol a type fails
+
+One item from the stage overview's list (2026-09-25), plus the message every operator gave when its intrinsic could not answer.
+
+  **A struct literal operand is a value.** `operator-resolve` (`src/generics.nuc`) asks `operator-user-resolve` first, so every existing resolution stands. When nothing matches and an operand is a struct literal, `operator-value-types` reads the operands by value. It uses `literal-arg-types` for the literals and reads a non-null `&S` through to `S`, then resolves again. `emit-operator-dispatch` calls the method this finds. The CE-3 load in `coerce-call-argument` turns each `&S` into the value, so the call needs nothing new. With no by-value method it refuses rather than fall back to the intrinsic. `emit-binop`, the path taken when an operator has no user methods, refuses a literal operand the same way. `node-type-call` and `valid-resolve-type` (which now takes a `scope`) call the same `operator-resolve`, so the lockstep is one function. The rule covers all six comparisons. Arithmetic and bit operators follow it too, because a literal operand there was always an error, so no resolution moves. A `?&S` or `(raw S)` operand is not read through, since it may be null.
+
+  **The message.** `= expects integer operands` was false for floats, pointers and overloaded types. `operator-refusal` (`src/nucleusc.nuc`) now serves both that site in `emit-binop-vals` and the two literal refusals: `no matching method for '=': Pt does not conform to Eq`, with `Ord` for the orderings and `Num` for `_+ _- _* _/`. `%` says `Pt is not a number, and '%' takes integers or floats`, and the bit operators say `… is not an integer, and 'bit-and' takes integers`. Mixed operand types add `with operand types (Pt, i32)`, and the protocol clause is dropped when the type already has the method. A note gives the `defn` to write and the `(extend Pt Eq)` after `(import-use numeric)`. A literal adds `a struct literal compares by value, never by address`, and a nullable operand adds its own note. Types are printed with `type-display`. No golden or manifest pinned the old text (0 updated). One fixture comment quotes it as history (`tests/fixtures/w9-fnptr-compare.nuc`) and was left alone.
+
+  **The corpus.** No program compared a struct literal's address. The refusal is the measurement here, and it did not fire in `ir-snapshot.sh` (every fixture, example and `lib/` file), in `make bootstrap` (the compiler), or in the suite's embedded programs. The Doom port was not re-run.
+
+  **Gates.** `make test` **1168 / 0 / 0**. Two new units: `s21-struct-literal-compares-by-value` covers literal against literal, `&Pt` and value, `!=`, a user `<`, `(= p p)`/`(= p q)` identity, and plain int/float comparisons. `s21-operator-names-protocol` covers nine refusals with their notes. `make bootstrap` **PASS**, no boot refresh. `ir-snapshot.sh verify` **PASS**, 2,828 byte-identical, so no `.err` changed. `dump-ast-corpus.sh` differed in exactly the two edited sources (`generics`, `nucleusc`), and each changed top-level form was one this work touched. The reader did not change, so the corpus was re-taken (1,428). `make check-headers` 87/87.
+
+  **Found, recorded, not fixed** (stage overview):
+  - a user operator overload on a built-in type captures narrower operands through widening, and the Valid walk disagrees;
+  - a user `=` over a built-in type stops `lib/macros.nuc` compiling.
+
+---
+
 ## `&`/`@` adoption in `lib/` and `examples/` (2026-09-06)
 
 The sweep [ref-sigil.md](stage16-ergonomics/ref-sigil.md) §5 deferred, following the `src/` adoption in `a15f38e`: `(addr-of x)` → `&x`, `(deref p)` → `@p`, and `ref:`/`ptr:` → `&` at an **interior** colon-chain segment (`out-end:ptr:i64` → `out-end:&i64`, `?ptr:Val` → `?&Val`, `):ptr:Box` → `):&Box`). 105 files, output-identical, bootstrap converged. `examples/ptr.nuc`, `ref-sigil.nuc`, `colon-paren-types.nuc` and `errptr.nuc` are left in their canonical spellings — each exists to exercise one.

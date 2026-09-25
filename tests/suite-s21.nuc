@@ -3849,3 +3849,73 @@ int main(void) {
   (try (s21-type-refused "(defstruct Pt (x i32) (y i32)) (defn g ():i32 (let (v:(Vector Pt) (vector-new) p:&Pt (Pt 1 2)) (conj &v p) (return 0)))" 3
                          "no matching method for overloaded 'conj' with argument types (&(Vector Pt), &Pt)"))
   (return (ok)))
+
+; A struct literal is a value, so a comparison with one goes to the by-value
+; overload, reading an `&Pt` on the other side through. It compared the literal's
+; address, so `(= (Pt 1 2) (Pt 1 2))` was false. Two references stay identity.
+(deftest s21-struct-literal-compares-by-value
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Pt (x i32) (y i32))
+(defn = (a:Pt b:Pt):bool (return (and (= (a 'x) (b 'x)) (= (a 'y) (b 'y)))))
+(defn != (a:Pt b:Pt):bool (return (not (= a b))))
+(defn < (a:Pt b:Pt):bool (return (< (a 'x) (b 'x))))
+(defn b2i (b:bool):i32 (return (if b 1 0)))
+(defn main ():i32
+  (let (a:Pt (Pt 1 2) p:&Pt (Pt 1 2) q:&Pt (Pt 1 2) f:f64 1.5 n:i32 4)
+    (printf \"%d %d %d %d %d\\n\" (b2i (= (Pt 1 2) (Pt 1 2))) (b2i (= (Pt 1 2) (Pt 1 3)))
+            (b2i (= p (Pt 1 2))) (b2i (= (Pt 1 2) a)) (b2i (= a (Pt 9 2))))
+    (printf \"%d %d %d %d\\n\" (b2i (!= (Pt 1 2) (Pt 1 3))) (b2i (!= q (Pt 1 2)))
+            (b2i (< (Pt 1 2) (Pt 2 0))) (b2i (< (Pt 3 0) p)))
+    (printf \"%d %d %d %d %d %d\\n\" (b2i (= p p)) (b2i (= p q)) (b2i (!= p q))
+            (b2i (= n 4)) (b2i (< f 2.5)) (b2i (= a a))))
+  (return 0))
+")))
+    (try (check-golden (string-as-view &out) "1 0 1 1 0\n1 0 1 0\n1 0 1 1 1 1\n"))
+    (drop &out))
+  (return (ok)))
+
+; `= expects integer operands` named none of the types an operator takes. Every
+; operator the intrinsic cannot answer now says which protocol the type fails
+; and how to conform; a struct-literal operand with no overload is refused.
+(deftest s21-operator-names-protocol
+  (let (lit:StrView "(defstruct Pt (x i32) (y i32)) (defn f ():bool (let (p:&Pt (Pt 1 2)) (return (= p (Pt 1 2)))))"
+        both:StrView "(defstruct Pt (x i32) (y i32)) (defn f ():bool (return (= (Pt 1 2) (Pt 1 2))))"
+        val:StrView "(defstruct Pt (x i32) (y i32)) (defn f (a:Pt b:Pt):bool (return (= a b)))"
+        ord:StrView "(defstruct Pt (x i32) (y i32)) (defn f (a:Pt b:Pt):bool (return (< a b)))"
+        num:StrView "(defstruct Pt (x i32) (y i32)) (defn f (a:Pt b:Pt):Pt (return (+ a b)))"
+        rem:StrView "(defstruct Pt (x i32) (y i32)) (defn f (a:Pt b:Pt):Pt (return (% a b)))"
+        bits:StrView "(defstruct Pt (x i32) (y i32)) (defn f (a:Pt b:Pt):Pt (return (bit-and a b)))"
+        mixed:StrView "(defstruct Pt (x i32) (y i32)) (defn = (a:Pt b:Pt):bool (return true)) (defn f (a:Pt):bool (return (= a 1)))"
+        maybe:StrView "(defstruct Pt (x i32) (y i32)) (defn = (a:Pt b:Pt):bool (return true)) (defn f (q:?&Pt):bool (return (= q (Pt 1 2))))")
+    (try (s21-op-refused lit "no matching method for '=': Pt does not conform to Eq"
+                         "a struct literal compares by value, never by address"))
+    (try (s21-op-refused both "no matching method for '=': Pt does not conform to Eq"
+                         "define (defn = (a:Pt b:Pt):bool …) to give Pt '='; to conform to Eq, define its methods and assert (extend Pt Eq) after (import-use numeric)"))
+    (try (s21-op-refused val "no matching method for '=': Pt does not conform to Eq"
+                         "define (defn = (a:Pt b:Pt):bool …)"))
+    (try (s21-op-refused ord "no matching method for '<': Pt does not conform to Ord"
+                         "(extend Pt Ord)"))
+    (try (s21-op-refused num "no matching method for '_+': Pt does not conform to Num"
+                         "define (defn _+ (a:Pt b:Pt):Pt …)"))
+    (try (s21-op-refused rem "no matching method for '%': Pt is not a number, and '%' takes integers or floats"
+                         "define (defn % (a:Pt b:Pt):Pt …)"))
+    (try (s21-op-refused bits "no matching method for 'bit-and': Pt is not an integer, and 'bit-and' takes integers"
+                         "define (defn bit-and (a:Pt b:Pt):Pt …)"))
+    (try (s21-type-refused mixed 3 "no matching method for '=' with operand types (Pt, i32)"))
+    (try (s21-op-refused maybe "no matching method for '=' with operand types (?&Pt, Pt)"
+                         "a ?&Pt operand is not read through, since it may be null — narrow it first")))
+  (return (ok)))
+
+; One refusal at line 3 of `s21-type-refused`'s source, with a note alongside.
+(defn s21-op-refused (form:StrView msg:StrView note:StrView):!void
+  (let (src:String (str "(import-use vector)\n\n" form "\n(defn main ():i32 (return 0))\n")
+        p:String (try (test-write-file "t.nuc" (string-as-view &src)))
+        pv:StrView (string-as-view &p)
+        c:Compiled (try (compile-path pv)))
+    (when (c 'ok?) (fail! "expected a refusal of " (test-show form)))
+    (try (check-error-at (ref c 'diags) pv 3 msg))
+    (try (check-note-at (ref c 'diags) pv 3 note))
+    (drop &c)
+    (drop &p)
+    (drop &src))
+  (return (ok)))

@@ -375,6 +375,18 @@ The rule is **symmetric in operand order** and the operator's *result type* is t
 
 A user operator method is emitted under a mangled symbol (`@add.pV2.pV2`, `@eq.pV2.pV2` — the symbols `+`/`=` are mapped to IR-safe mnemonics). A call with operand types that match no user method falls back to the built-in inline peephole.
 
+**A struct literal compares by value.** A `(S …)` literal is a value, so a comparison with one — this is the rule for every comparison operator, `= != < <= > >=` — never compares its address. When no user method takes the operands as written, both are read as `S`: the literal as its struct, and a non-null `&S` on the other side loaded through. The by-value method (`(defn = (a:S b:S):bool …)`) then answers, and with none the comparison is refused. A `?&S` or `(raw S)` operand is not read through, since it may be null; narrow it first. An arithmetic or bit operator reads a literal operand the same way; such a call was always an error before, so nothing that compiled changes. `=` on two references, neither a literal, is still pointer identity: `(= p q)` asks whether `p` and `q` are the same struct. A method written for the operands as written (`(defn = (a:&S b:&S):bool …)`) still wins over the by-value reading. A struct has no `=` unless its author defines one; the compiler does not derive one ([Derived structural equality](../design/deferred/overview.md#derived-structural-equality)).
+
+**An operator that no method answers** is refused in the `no matching method` family, naming the protocol that the operand type does not conform to:
+
+```
+t.nuc:9: error: no matching method for '=': Pt does not conform to Eq
+  note: a struct literal compares by value, never by address
+  note: define (defn = (a:Pt b:Pt):bool …) to give Pt '='; to conform to Eq, define its methods and assert (extend Pt Eq) after (import-use numeric)
+```
+
+`= !=` name `Eq`, `< <= > >=` name `Ord` and `_+ _- _* _/` name `Num`. `%` (integers or floats) and the bit operators (integers) belong to no protocol, so the message names what they take instead. When the operands have two different types, both are listed: `no matching method for '=' with operand types (Pt, i32)`. That form has no protocol clause when `Pt` already has its `=`, because the pairing is what fails.
+
 The **standard numeric protocols** live in `lib/numeric.nuc`: `Eq` (`= !=`), `Ord` (`< <= > >=`, a superset of `Eq` via `(extend Ord Eq)`), and `Num` (`_+ _- _* _/`). Built-in numeric types conform automatically (their intrinsic operators satisfy the requirements); a user type conforms by defining the methods and asserting `(extend &MyType Ord)` — any pointer spelling of the subject (`(ref MyType)`, `ptr:MyType`, `raw:MyType`, …) is the same conformance ([pointer subjects](generics.md#protocols-defprotocol-and-extend)). See [Bounded generic `defn`](generics.md#bounded-generic-defn).
 
 ## Callable values (non-function call position)
