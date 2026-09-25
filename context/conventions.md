@@ -1175,6 +1175,16 @@ the reader also wrote `addr-of` for a standalone `&T`). It named only `ptr` unti
 `w9-cheader-*` goldens had the `void*` spelling written into them. `raw` still
 widens deliberately. Docs: `docs/compiler.md` §C headers.
 
+## A header mode has no macros and only prescanned layouts
+
+`--emit-cheader`/`--emit-nuch` never emit, so no `defmacro` is registered, not even
+the stock `+`/`-`/`*`/`/` from `lib/macros.nuc`. `const-fold-int` covers those
+through `header-stock-op-expand`, which mirrors the stock macros, so keep it in step
+with `lib/macros.nuc`. Struct layouts come only from `prescan-struct-layouts`, and
+`abi-sizeof` of a struct not yet laid out answers **0 without complaint**. Any
+header-path code that sizes a type has to ask `type-layout-unknown?` first. Header
+output goes to `g-hdr`, never `stdout`, so that a refusal leaves no partial header.
+
 ## A standalone `&T` in a type slot is a `(ref T)` node — the same head as the value form
 
 `&` at a token boundary is the `ref` reader macro (`read-macro-table-new`,
@@ -2365,12 +2375,22 @@ namespace-free program, the compiler included, byte-identical.
 **A key carries no permission, so it fails for private types.** `resolve-spelling`
 re-asks visibility against `g-current-ns`, which after the swap is the
 library's namespace. A caller's `defstruct-` spelled as `user/app/Foo` is then
-invisible (still true of template stamping: stage21 overview). Aliases and
+invisible. Aliases and
 protocols substitute an `#env-arg-N` marker (`env-arg-sym`) instead. It records
 the node and the caller's `NameEnv`, and `resolve-type-name` reads it back
 *there*. Use a marker for any new reader that splices the caller's text into
 another file's. The marker also runs under its own `g-mono-context` and line,
-and restores both.
+and restores both. A stamp passes a private argument as a *type* marker
+(`env-arg-of-type`), and a foreign alias body spliced by a pattern walker marks
+its own names (`alias-own-body`). A reader that looks a head up by name must go
+through a `-lookup-ref` resolver, which reads through both kinds.
+
+**`g-globals` can hold a stale row for a generic that is now mangled.** A `defn`
+emitted while its generic was solitary binds a global Sym. Later overloads mangle
+the generic but leave that row: `iter` still has node.nuc's, typed `NodeIter`.
+Never fall from an unresolved mangled generic to the next binding row. In
+`node-type-call` that typed a `(VecIter &Method)` doseq as `NodeIter`. Stage 1
+passed and only stage 2 failed.
 
 ## `macros.nuc` is auto-imported — adding macros shifts the string pool
 
@@ -7240,6 +7260,28 @@ written, and the FP-3 function signature. Never change `type-spelling` or
 `type-mangle-token` for a message — both feed IR names and registry lookups.
 Where a message only has a stored KEY (a conformance's `type-name`, a retained
 argument), `key-display`/`conf-arg-display` (`src/generics.nuc`) re-read it
-first. A stamped template instance still prints its registry name
-(`&Vector.i32`): a `StructDef` does not record its template and arguments.
+first. A struct or union goes through `sdef-display`, which prints a stamped
+instance from `origin-template`/`origin-args` (`&(Vector ?Pt)`); a message that
+prints `(sd 'name)` instead shows the key `Vector.Maybe.Pt`.
 
+## A name is read by `require-name-slot`, never by `(n 's)` on trust
+
+A non-symbol in a name position reads as a none `Symbol`, and the first
+`to_str.Symbol` that prints or mangles it segfaults (exit 139), often far from
+the form. Any new code that takes a name from a form asks `require-name-slot`
+(one node), `require-sig-name` (a signature's name, or a legacy `(name ret)`
+head) or `require-decl-name` (`name:type` or `(name type…)`; it skips a
+keyword-headed attribute cell) in `src/nucleusc.nuc`. The header modes'
+`validate-header-forms` must ask the same reader for any name it writes into a
+header, or the header gets `int32_t;`. Attribute keywords (`:const`, `:packed`,
+`:align N`, `:bits N`, `:rest`) come before or around a name, so strip them
+before asking (`struct-attr-scan`, `parse-decl-attrs`).
+
+## `(Maybe X)` is a sigil to the pattern walkers — collect a template application argument by argument
+
+`sigil-split` reads `(Maybe X)` and `(Result X Err)` as `?X` / `!X`, and a sigil
+keeps its operand's position. So `collect-pattern-tyvars` over a whole
+`(Maybe X)` sees a top-level `X` and collects nothing, where `(Either X)` collects
+`X`. A caller asking "does this application mention a variable?" must walk the
+arguments with the head as `in-tmpl` (`extend-subject-over-tyvars`), or a union
+subject over `Maybe` silently takes the concrete path and dies `unknown type: X`.

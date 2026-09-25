@@ -837,6 +837,9 @@
 ; and every program in `lib/`, `examples/` and `tests/`, exactly as
 ; `g-priv-files == null` short-circuits the W5e machinery.
 (defvar g-priv-bindings:i32 0)
+; The namespace whose private names the probe in progress may see: the one an
+; `unsafe/import-private` prefix names, armed only by `priv-reach-enter`.
+(defvar g-priv-reach-ns:Symbol (symbol-none))
 ; Stage 12 N3: set to 1 by `unsafe-import-private` so inject-import-aliases
 ; includes private symbols in the alias walk. Cleared after the import.
 (defvar g-import-include-private:i32 0)
@@ -1656,6 +1659,9 @@
   (when (node-empty? name)
     (die-at fallback-line (fstr word ": missing name")))
   (let (nn:(raw Node) name)
+    ; A list is a template head, which the caller reads.
+    (when (!= (nn 'kind) NODE-LIST)
+      (require-name-slot nn (fstr word ": name") fallback-line))
     (when (= (nn 'kind) NODE-SYM)
       (let (base:Symbol (symbol-none) tyname:Symbol (symbol-none))
         (split-typed (nn 's) (as &Symbol &base) (as &Symbol &tyname))
@@ -1762,6 +1768,30 @@
 (defn die-empty-decl (line:i32):void
   (die-at line "expected a name:type declaration, found the empty list '()'"))
 
+; Every position a user writes a name in asks this: a non-symbol used to flow on
+; as a none Symbol and crash the first message that printed it.
+(defn require-name-slot (nm:(raw Node) what:StrView line:i32):void
+  (when (!= (node-kind (as ptr nm)) NODE-SYM)
+    (let (s:String (node-str nm))
+      (die-at (node-line (as ptr nm) line)
+        (fstr what " must be a symbol, found '" (string-as-view &s) "'")))))
+
+; A signature's name: a symbol, or the head of a legacy `(name ret)` cell (which
+; its reader refuses by name).
+(defn require-sig-name (name:(raw Node) what:StrView line:i32):void
+  (require-name-slot (if (= (node-kind (as ptr name)) NODE-LIST) (node-first name) name)
+                     what line))
+
+; The name slot of a `name:type` declaration — the node, or the head of its
+; `(name type…)` cell. An attribute-headed cell is asked again once its reader
+; has stripped the attributes, whose arities differ (`:volatile`, `:bits 4`).
+(defn require-decl-name (node:(raw Node) line:i32):void
+  (when (node-empty? node) (die-empty-decl line))
+  (if (= (node-kind (as ptr node)) NODE-LIST)
+    (when (!= (node-kind (as ptr (node-first node))) NODE-KEYWORD)
+      (require-name-slot (node-first node) "a declared name" line))
+    (require-name-slot node "a declared name" line)))
+
 (defn extract-name-and-type (node:(raw Node) out-name:ptr:Symbol line:i32):(raw Type)
   ; W5f: an empty list `()` in a declaration position names nothing. Every
   ; caller — `(struct …)`/`(union …)` members, defstruct fields, defn params,
@@ -1771,6 +1801,7 @@
   (when (node-empty? node)
     (set! @out-name (symbol-none))
     (die-empty-decl line))
+  (require-decl-name node line)
   (let (n:(raw Node) node)
     ; AT-1 (design/stage14/attributes.md): an attribute-annotated declaration is a
     ; cell whose head is a keyword literal — `(:volatile status:i32)` for a struct
@@ -1918,6 +1949,7 @@
     ; message below would quote it as '(null)' — it is no name at all, so it gets
     ; the wording every other definer uses for that.
     (when (node-empty? name-node) (die-at (ff 'line) "defn: missing name"))
+    (require-sig-name name-node "defn: name" (ff 'line))
     (set! @out-params (node-at form 2))
     (if (!= (sig-name-is-bare name-node) 0)
       ; New style: bare name, ret at index 3, body at 4.
@@ -2017,7 +2049,8 @@
     (die-at (node-line (as ptr arg) line) "export: each argument must be a symbol")))
 
 (defn require-declare-name (name:(raw Node) line:i32):void
-  (when (node-empty? name) (die-at line "declare: missing name")))
+  (when (node-empty? name) (die-at line "declare: missing name"))
+  (require-sig-name name "declare: name" line))
 
 ; The two `extend` operand questions. The subject guard carries the general test
 ; because `emit-extend` asks it in a position a template head has already left;
@@ -3584,8 +3617,52 @@
     (return (some "'aset!' was retired in Stage 16: set! takes a place -- (set! (aref a i) v)")))
   (return (none)))
 
+; A qualified spelling whose key names another namespace's private definition.
+; A bare one is asked of each namespace this file flattened.
+(defn private-name-message (verb:StrView name:Symbol):?StrView
+  (let (ns:Symbol (symbol-none))
+    (if (> (qualifier-len name) 0)
+      (let (r:&NameRef (resolve-spelling name))
+        (when (and (= (r 'status) NR-QUALIFIED) (!= (r 'ns) g-current-ns)
+                   (key-names-private? (r 'canonical) (r 'bare) (r 'ns)))
+          (set! ns (r 'ns))))
+      (dotimes (i (file-imports-count))
+        (match (file-flattened-ns-at i)
+          ((some fns)
+            (when (and (symbol-none? ns) (!= fns g-current-ns) (!= fns "user")
+                       (key-names-private? (ns-qualify-in fns name) name fns))
+              (set! ns fns)))
+          (none 0))))
+    (when (symbol-none? ns) (return (none)))
+    (return (some (fstr (fstr verb ": " name " — private to namespace '" ns "'")
+                        "\n  note: another namespace reaches a private name only through unsafe/import-private")))))
+
+(defn key-names-private? (key:Symbol bare:Symbol ns:Symbol):bool
+  (let (s:?ptr:Sym (scope-frame-find g-globals key))
+    (when (and (!= s null) (!= ((unsafe/cast &Sym s) 'sym-private) 0)) (return true)))
+  (let (g:?ptr:Generic (generic-lookup-exact bare))
+    (when (!= g null)
+      (doseq (m ((unsafe/cast &Generic g) 'methods) (VecIter &Method))
+        (when (and (= (m 'src-ns) ns) (!= (m 'priv) 0)) (return true)))))
+  (doseq (sd g-structs (VecIter &StructDef))
+    (when (and (= (sd 'name) key) (!= (sd 'priv) 0)) (return true)))
+  (doseq (ud g-uniondefs (VecIter &UnionDef))
+    (when (and (= (ud 'name) key) (!= (ud 'priv) 0)) (return true)))
+  (doseq (st g-struct-templates (VecIter &StructTemplate))
+    (when (and (= (st 'name) key) (!= (st 'priv) 0)) (return true)))
+  (doseq (ut g-union-templates (VecIter &UnionTemplate))
+    (when (and (= (ut 'name) key) (!= (ut 'priv) 0)) (return true)))
+  (doseq (ta g-type-aliases (VecIter &TypeAlias))
+    (when (and (= (ta 'name) key) (!= (ta 'priv) 0)) (return true)))
+  (doseq (md g-macros (VecIter &MacroDef))
+    (when (and (= (md 'name) key) (!= (md 'priv) 0)) (return true)))
+  (doseq (p g-protocols (VecIter &Protocol))
+    (when (and (= (p 'name) key) (!= (p 'priv) 0)) (return true)))
+  (return false))
+
 (defn unresolved-name-message (verb:StrView name:Symbol):StrView
   (match (retired-form-message name) (none 0) ((some dot-note) (return dot-note)))
+  (match (private-name-message verb name) (none 0) ((some priv-note) (return priv-note)))
   ; Stage 15 B2b: the retired bare `unsafe/` spellings first — the roster names
   ; are reserved, so this cannot shadow a user name, and its answer is exact
   ; where every tier below is a guess.
@@ -3742,6 +3819,7 @@
   ; An out-of-scope qualifier is not a reachability failure, so it precedes
   ; every reachability tier — B2b's ordering rule, applied to the type side.
   (match (qualifier-scope-message "unknown type" name) (none 0) ((some unbound) (return unbound)))
+  (match (private-name-message "unknown type" name) (none 0) ((some priv-note) (return priv-note)))
   ; Stage 16 L5 (c-header-layout.md §3.5): the C typedef table is the one
   ; registry that distinguishes "declared, and we have no type for it" from
   ; "absent", and this is the only consumer of that distinction. Ahead of every
@@ -5247,9 +5325,10 @@
     (let (r:&NameRef (resolve-spelling name))
       (when (= (r 'status) NR-UNBOUND) (return null))
       (let (hit:?ptr:Sym null)
-        ; A file naming its own namespace sees its own private names; a name
-        ; reached through anyone else's does not.
-        (if (= (r 'ns) g-current-ns)
+        ; A file naming its own namespace sees its own private names, as does one
+        ; that imported the namespace with `unsafe/import-private`; no other does.
+        (if (or (= (r 'ns) g-current-ns)
+                (not (symbol-none? (file-prefix-private-path name n))))
           (set! hit (scope-frame-find sc (r 'canonical)))
           (set! hit (scope-frame-find-public sc (r 'canonical))))
         (when (!= hit null) (return hit)))
@@ -5823,7 +5902,7 @@
 (defn union-field-guard (sd:(raw StructDef) line:i32 op:StrView):void
   (when (!= (sd 'udef) null)
     (die-at line
-      (fstr op ": '" (sd 'name)
+      (fstr op ": '" (sdef-display sd)
             "' is a tagged union — eliminate with (match ...), construct with (make ...) or an arm constructor; raw access requires an explicit cast"))))
 
 (defn struct-field-index (sd:(raw StructDef) fname:Symbol):i32
@@ -5940,10 +6019,10 @@
 
 ; AN-2: C's rule for a name two anonymous members both supply. Called by the
 ; emit sites right after a successful struct-field-ref, which is where a line is.
-(defn reject-anon-ambiguous (fname:Symbol sname:Symbol line:i32 op:StrView):void
+(defn reject-anon-ambiguous (fname:Symbol sd:(raw StructDef) line:i32 op:StrView):void
   (when (= g-anon-ambig 0) (return))
   (die-at line
-    (fstr op ": '" fname "' is ambiguous in '" sname
+    (fstr op ": '" fname "' is ambiguous in '" (sdef-display sd)
           "' -- more than one anonymous member supplies it, which C rejects too; give the member you mean a name")))
 
 ; Emit the GEP chain that addresses `fr`'s storage from the struct pointer
@@ -6147,11 +6226,11 @@
             ; member supplies, which is how C11 spells the common case.
             (let (afr:?ptr:FieldRef (struct-field-ref sd (fn-node 's)))
               (when (!= afr null)
-                (reject-anon-ambiguous (fn-node 's) (sd 'name)
+                (reject-anon-ambiguous (fn-node 's) sd
                                        (node-line (as ptr fn-node) (cc 'line)) "_get")
                 (return (emit-field-load p afr))))
             (die-at (node-line (as ptr fn-node) (cc 'line))
-              (fstr "_get: no field '" (fn-node 's) "' on struct '" (sd 'name) "'")))
+              (fstr "_get: no field '" (fn-node 's) "' on struct '" (sdef-display sd) "'")))
           ; Union member: every member sits at offset 0, so the access is a
           ; typed load straight through the pointer — no GEP, no checks (raw
           ; reinterpretation, exactly cast's contract).
@@ -6243,7 +6322,7 @@
       (dotimes (fi nf)
         (when (= (type-eq ((field-at (sdd 'fields) fi) 'type) ftype) 0)
           (die-at line
-            (fstr "get: computed field access requires a homogeneous struct, but '" (sdd 'name)
+            (fstr "get: computed field access requires a homogeneous struct, but '" (sdef-display sdd)
                   "' has fields of differing types"))))
       (let (cv:(raw Val) callee-val
             sel:&Val (emit-node sel-node scope))
@@ -6305,12 +6384,12 @@
           ; AN-2: an anonymous member's own field, same rule as `_get`.
           (let (afr:?ptr:FieldRef (struct-field-ref sd (lit 's)))
             (when (!= afr null)
-              (reject-anon-ambiguous (lit 's) (sd 'name) line "get")
+              (reject-anon-ambiguous (lit 's) sd line "get")
               (return (emit-field-load cv afr))))
           ; The selector was explicitly quoted, so this is a plain miss: since
           ; step 3 a bare symbol would have been the by-value reading instead.
           (die-at line
-            (fstr "get: no field '" (lit 's) "' on struct '" (sd 'name) "'")))
+            (fstr "get: no field '" (lit 's) "' on struct '" (sdef-display sd) "'")))
         ; Union member: typed load at offset 0 (mirrors emit-field-get).
         (when (= ek TY-UNION)
           (let (ftype:ptr ((field-at (sd 'fields) idx) 'type)
@@ -6536,7 +6615,7 @@
           (match (case-clause-hint head-node)
             ((some hint) (die-at line hint))
             (none (die-at line "value is not callable: no `invoke` method is defined for this type")))))
-      (let (m:&Method (generic-resolve g argtypes arg-nodes total line null))
+      (let (m:&Method (generic-resolve g argtypes arg-nodes total line null scope))
         (return (emit-resolved-call n scope (symbol-intern "invoke") m args total line))))))
 
 ; Is `a` a `(ref …)` cell that is a VALUE address — `&x` on a binding, or the
@@ -7164,8 +7243,8 @@
             (set! afr (struct-field-ref sd (fn-node 's)))
             (when (= afr null)
               (die-at (node-line (as ptr fn-node) (cc 'line))
-                (fstr "set!: no field '" (fn-node 's) "' on struct '" (sd 'name) "'")))
-            (reject-anon-ambiguous (fn-node 's) (sd 'name)
+                (fstr "set!: no field '" (fn-node 's) "' on struct '" (sdef-display sd) "'")))
+            (reject-anon-ambiguous (fn-node 's) sd
                                    (node-line (as ptr fn-node) (cc 'line)) ".set!"))
           ; Stage 15 W8 G-2: an array field is not assignable as a whole, exactly
           ; as in C (`s.xs = …` is not an expression there either). Refuse here,
@@ -7685,7 +7764,7 @@
           ; Parametric drop (METHOD-GENERIC): resolve+instantiate for this
           ; concrete instance. The conformance check above guarantees a drop
           ; exists, so generic-resolve will not die.
-          (return (generic-resolve g argtypes null 1 0 null)))))))
+          (return (generic-resolve g argtypes null 1 0 null null)))))))
 
 ; unions.md §7: the name of the first defunion arm holding a Drop-conforming
 ; payload field (a pointer to a struct that conforms to Drop), or null.
@@ -11122,15 +11201,15 @@
             (set! afr (struct-field-ref (as ptr sd) (fn-node 's)))
             (when (= afr null)
               (die-at (node-line (as ptr fn-node) (cc 'line))
-                (fstr "ref: no field '" (fn-node 's) "' on struct '" (sd 'name) "'")))
-            (reject-anon-ambiguous (fn-node 's) (sd 'name)
+                (fstr "ref: no field '" (fn-node 's) "' on struct '" (sdef-display sd) "'")))
+            (reject-anon-ambiguous (fn-node 's) sd
                                    (node-line (as ptr fn-node) (cc 'line)) "ref"))
           ; BF-2: a bit-field has no address — it shares its bytes with its
           ; neighbours. This is C's own rule (`&s.bits` is ill-formed there too),
           ; so it is a faithful diagnostic rather than a Nucleus limitation.
           (when (!= (if (!= afr null) (afr 'bit-width) ((field-at (sd 'fields) idx) 'bit-width)) 0)
             (die-at (node-line (as ptr fn-node) (cc 'line))
-              (fstr "ref: '" (fn-node 's) "' is a bit-field of '" (sd 'name)
+              (fstr "ref: '" (fn-node 's) "' is a bit-field of '" (sdef-display sd)
                     "', and a bit-field has no address -- read it by value")))
           (let (ftype:ptr (if (!= afr null) (afr 'type) ((field-at (sd 'fields) idx) 'type))
                 gep:StrView (p 'val))
@@ -11278,7 +11357,7 @@
     ; look like one too many. Say what actually went wrong.
     (reject-cycle-pending-sdef sd (cc 'line) "struct literal")
     (when (> nargs nfields)
-      (die-at (cc 'line) (fstr "struct literal: too many initializers for struct '" (sdef 'name)
+      (die-at (cc 'line) (fstr "struct literal: too many initializers for struct '" (sdef-display sdef)
                                "'")))
     (let (vals:ptr (arena-alloc (* nfields 8))
           seen:ptr (arena-alloc (* nfields 4))
@@ -11420,7 +11499,9 @@
   (dotimes (i (name-ref-key-count spelling))
     (match (name-ref-key-at spelling i)
       ((some k)
-        (let (hit:?ptr:MacroDef (find-macro-exact k))
+        (let (reach:Symbol (priv-reach-enter spelling)
+              hit:?ptr:MacroDef (find-macro-exact k))
+          (set! g-priv-reach-ns reach)
           (when (!= hit null) (return hit))))
       (none 0)))
   (let (al:ptr (binding-alias-find spelling BK-MACRO))
@@ -11733,7 +11814,7 @@
             (let (slot:i32 (dyn-method-slot dbox (g 'name)))
               (when (>= slot 0)
                 (return (emit-dyn-forward dbox args nargs slot (nn 'line))))))))
-      (let (m:&Method (generic-resolve g argtypes arg-nodes nargs (nn 'line) want))
+      (let (m:&Method (generic-resolve g argtypes arg-nodes nargs (nn 'line) want scope))
         (return (emit-resolved-call n scope (g 'name) m
                                     args nargs (nn 'line)))))))
 
@@ -11886,7 +11967,20 @@
   (when (= priv 0) (return 1))
   (when (symbol-none? src-ns) (return 1))
   (when (= src-ns g-current-ns) (return 1))
+  (when (= src-ns g-priv-reach-ns) (return 1))
   (return 0))
+
+; Arms `g-priv-reach-ns` for `spelling`'s probe and returns the value to restore:
+; its qualifier's namespace when that is an `unsafe/import-private` prefix, else none.
+(defn priv-reach-enter (spelling:Symbol):Symbol
+  (let (saved:Symbol g-priv-reach-ns
+        n:i64 (qualifier-len spelling))
+    (set! g-priv-reach-ns (symbol-none))
+    (when (> n 0)
+      (let (pp:Symbol (file-prefix-private-path spelling n))
+        (when (not (symbol-none? pp))
+          (set! g-priv-reach-ns (import-path-ns pp)))))
+    (return saved)))
 
 ; The namespace part of an already-composed registry key (`zn/zfun` → `zn`), or
 ; `user` when the key is bare. `g-globals`, `g-protocols` and (since B3′) the six
@@ -12183,9 +12277,11 @@
           ; g-globals under the same name, and that binding is what carries the
           ; callable Sym — so this row falls through to the next one exactly as
           ; the pre-B5 ladder did.
+          ; …unless no global is spelled here: a conformer's method reached through
+          ; its protocol (`method-reachable-as`) is dispatched like an overload.
           (if-some (h2 (binding-find h scope (+ BK-GENERIC 1) BINDING-KIND-COUNT 0 NK-NONE))
             (return (emit-dispatch-hit n scope h h2 head))
-            (die-at (node-line head ((unsafe/cast &Node n) 'line)) (unknown-name-message h)))))
+            (return (emit-generic-call n scope g)))))
       (return (emit-dispatch-hit n scope h hit head)))
     (die-at (node-line head ((unsafe/cast &Node n) 'line)) (unknown-name-message h))))
 
@@ -13006,6 +13102,64 @@
     (reject-cycle-pending-layout ty tl "sizeof")
     (return (abi-sizeof ty))))
 
+(defn header-mode? ():bool
+  (return (or (!= g-emit-cheader 0) (!= g-emit-nuch 0))))
+
+; A header mode emits nothing, so no macro is ever registered: the variadic
+; arithmetic macros are expanded here as lib/macros.nuc writes them.
+(defn header-stock-op-expand (e:ptr):ptr
+  (when (or (not (header-mode?)) (!= (node-kind e) NODE-LIST)) (return e))
+  (let (hd:ptr (node-at e 0))
+    (when (!= (node-kind hd) NODE-SYM) (return e))
+    (let (h:Symbol ((as raw:Node hd) 's)
+          n:i32 (- (node-len e) 1)
+          line:i32 (node-line e 0))
+      (when (= h "bit-not")
+        (when (!= n 1) (return e))
+        (return (as ptr (node-list3 'bit-xor (node-at e 1) (node-int -1) line))))
+      (let (right:bool (or (= h "+") (= h "*"))
+            left:bool (or (= h "-") (= h "/")))
+        (when (not (or right left)) (return e))
+        (let (op:raw:Node (cond (= h "+") '_+ (= h "*") '_* (= h "-") '_- true '_/)
+              unit:i64 (if (or (= h "+") (= h "-")) 0 1))
+          (when (= n 0) (return (as ptr (node-int unit))))
+          (when (= n 1)
+            (if right
+              (return (header-stock-op-expand (node-at e 1)))
+              (return (as ptr (node-list3 op (node-int unit) (node-at e 1) line)))))
+          ; `+`/`*` fold right (macfoldr), `-`/`/` left (macfoldl).
+          (if right
+            (let (acc:raw:Node (node-at e n)
+                  i:i32 (- n 1))
+              (while (>= i 1)
+                (set! acc (node-list3 op (node-at e i) acc line))
+                (set! i (- i 1)))
+              (return (as ptr acc)))
+            (let (acc:raw:Node (node-at e 1)
+                  i:i32 2)
+              (while (<= i n)
+                (set! acc (node-list3 op acc (node-at e i) line))
+                (inc! i))
+              (return (as ptr acc)))))))))
+
+; In a header mode only the prescans lay a struct out, so one they deferred has
+; no size yet: abi-sizeof would answer 0 rather than refuse.
+(defn header-layout-unknown? (tn:ptr line:i32):bool
+  (when (not (header-mode?)) (return false))
+  (set! g-array-ok 1)
+  (return (type-layout-unknown? (parse-type-from-node tn (node-line tn line)))))
+
+(defn type-layout-unknown? (t:(raw Type)):bool
+  (when (= t null) (return false))
+  (when (= (t 'kind) TY-ARRAY) (return (type-layout-unknown? (t 'elem))))
+  (when (and (or (= (t 'kind) TY-STRUCT) (= (t 'kind) TY-UNION)) (!= (t 'sdef) null))
+    (let (sd:(raw StructDef) (t 'sdef))
+      (when (!= (sd 'opaque) 0) (return false))
+      (when (= (sd 'laid-out) 0) (return true))
+      (dotimes (i (sd 'num-fields))
+        (when (type-layout-unknown? ((field-at (sd 'fields) i) 'type)) (return true)))))
+  (return false))
+
 ; Evaluate `n` as an integer constant expression. Returns 1 and stores the value
 ; through `out` on success; 0 when `n` is simply not a constant expression (the
 ; caller then reports the whole initializer). A *malformed* constant expression —
@@ -13021,7 +13175,7 @@
   ; the tail-wrapping expansion means an operand is frequently a CELL rather than
   ; the bare operand (`(* v K)` → `(_* v (* K))`). This is the same expander
   ; `node-is-int-literal` uses, for the same reason.
-  (let (e:ptr (macroexpand-form n -1))
+  (let (e:ptr (header-stock-op-expand (macroexpand-form n -1)))
     (when (= e null) (return 0))
     (let (ee:ptr:Node (unsafe/cast &Node e)
           nl:i32 (node-line e encl))
@@ -13051,6 +13205,7 @@
         (when (!= ((unsafe/cast &Node hd) 'kind) NODE-SYM) (return 0))
         ; (sizeof T)
         (when (and (= hd 'sizeof) (= nargs 1))
+          (when (header-layout-unknown? (node-at (as ptr ee) 1) nl) (return 0))
           (set! (aref out 0) (cfold-sizeof (node-at (as ptr ee) 1) nl))
           (return 1))
         ; (char "x") — the same one-byte literal defvar-init-ir renders directly,
@@ -13313,7 +13468,7 @@
       (let (sd:(raw StructDef) (tt 'sdef))
         (when (= (const-struct-lit? init sd) 0)
           (die-at (node-line init encl)
-            (fstr "defvar: a " (sd 'name) " slot must be initialized with a (" (sd 'name)
+            (fstr "defvar: a " (sdef-display sd) " slot must be initialized with a (" (sdef-display sd)
                   " ...) compound literal")))
         (when (!= (sd 'is-union) 0)
           (die-at (node-line init encl)
@@ -13337,7 +13492,7 @@
                 (let (fnn:ptr:Node (unsafe/cast &Node (node-at (as ptr arg) 0))
                       fidx:i32 (struct-field-idx (as ptr sd) (fnn 's)))
                   (when (< fidx 0)
-                    (die-at aline (fstr "defvar: no field '" (fnn 's) "' on struct '" (sd 'name)
+                    (die-at aline (fstr "defvar: no field '" (fnn 's) "' on struct '" (sdef-display sd)
                                         "'")))
                   (when (!= (aref (as &ptr slots) fidx) null)
                     (die-at aline (fstr "defvar: field '" (fnn 's) "' specified twice")))
@@ -13351,7 +13506,7 @@
                   (inc! pos-idx))
                 (when (>= pos-idx nfields)
                   (die-at aline
-                    (fstr "defvar: too many positional initializers for struct '" (sd 'name) "'")))
+                    (fstr "defvar: too many positional initializers for struct '" (sdef-display sd) "'")))
                 (set! (aref (as &ptr slots) pos-idx) (as ptr arg))
                 (inc! pos-idx))))
           (emit g-out "{")
@@ -16989,6 +17144,7 @@
 ; with the FIELD's own line, which is what `--emit-llvm` reports for it.
 (defn validate-decl-node (node:ptr line:i32):void
   (when (node-empty? node) (die-empty-decl line))
+  (require-decl-name (as raw:Node node) line)
   (let (own:i32 (node-line node line))
     (validate-type-node (extract-type-node node own) own)))
 
@@ -17037,7 +17193,9 @@
       (when (not (node-is-list params))
         (die-at (node-line (node-at form 1) (ff 'line)) "defn: params must be list"))
       (dotimes (i (node-len params))
-        (validate-decl-node (node-at params i) (ff 'line)))
+        ; A `:rest`/`:optional` marker is not a declaration.
+        (when (!= (node-kind (node-at params i)) NODE-KEYWORD)
+          (validate-decl-node (node-at params i) (ff 'line))))
       ; The return operand is a type position too: `:(union a:i32 ())`.
       (validate-type-node vd-ret (ff 'line)))))
 
@@ -17047,15 +17205,18 @@
   ; asks it at — so `()` (and a colon-typed name) is refused here in the words the
   ; real pipeline uses. Before this the header emitters skipped a name they could
   ; not read and wrote a header for a program that does not compile.
-  (reject-colon-in-def-name (as raw:Node (node-at form 1)) "defstruct"
-                            ((unsafe/cast &Node form) 'line))
-  ; A parametric template — a list at position 1 — defines no concrete type; both
-  ; header emitters skip it and its fields are checked when it is stamped.
-  (let (nn:ptr (node-at form 1))
-    (when (!= ((unsafe/cast &Node nn) 'kind) NODE-SYM) (return)))
-  (let (ff:ptr:Node (unsafe/cast &Node form))
-    (dotimes (i (- (node-len form) 2))
-      (validate-decl-node (node-at form (+ i 2)) (ff 'line)))))
+  (let (ff:ptr:Node (unsafe/cast &Node form)
+        aflags:i32 0
+        aalign:i32 0
+        ; The name follows any `:packed`/`:align N`, as in `emit-defstruct`.
+        at:i32 (+ 1 (struct-attr-scan (as raw:Node form) (as &i32 &aflags)
+                                      (as &i32 &aalign) 1 (ff 'line))))
+    (reject-colon-in-def-name (as raw:Node (node-at form at)) "defstruct" (ff 'line))
+    ; A parametric template — a list in the name position — defines no concrete
+    ; type; both header emitters skip it and its fields are checked when stamped.
+    (when (!= (node-kind (node-at form at)) NODE-SYM) (return))
+    (dotimes (i (- (node-len form) (+ at 1)))
+      (validate-decl-node (node-at form (+ i (+ at 1))) (ff 'line)))))
 
 ; Run by `emit-cheader-header` and `emit-nuch-header` after the prescans and
 ; BEFORE any output, so a refused program produces no partial header — which is
@@ -17083,7 +17244,9 @@
                   (require-import-name (as raw:Node nn) (f 'line))
                   (when (= (node-kind (as ptr nn)) NODE-SYM)
                     (when (symbol-none? (import-form-path (as raw:Node nn) (f 'line)))
-                      (die-import-not-found (nn 's) (f 'line)))))))
+                      (die-import-not-found (nn 's) (f 'line))))
+                  (when (= ph "import-only")
+                    (require-import-listed-names (as raw:Node f) 2 "import-only: a listed name")))))
             (when (or (= ph "defn") (= ph "defn-"))
               (validate-header-defn (as ptr f)))
             (when (or (= ph "defstruct") (= ph "defstruct-"))
@@ -17096,7 +17259,11 @@
             ; `validate-decl-node` covers together with the name.
             (when (or (= ph "defvar") (= ph "defvar-"))
               (require-defvar-form (as ptr f))
-              (validate-decl-node (node-at (as ptr f) 1) (f 'line)))
+              ; Past the leading `:const`/`:volatile`, which `emit-defvar` strips.
+              (let (at:i32 1)
+                (while (= (node-kind (node-at (as ptr f) at)) NODE-KEYWORD) (inc! at))
+                (when (< at (node-len (as ptr f)))
+                  (validate-decl-node (node-at (as ptr f) at) (f 'line)))))
             (when (or (= ph "defconst") (= ph "defconst-"))
               (require-defconst-form (as ptr f))
               ; Only the NULL case. `emit-defconst` asks two narrower questions
@@ -17116,7 +17283,17 @@
             (when (or (= ph "defunion") (= ph "defunion-"))
               (require-defunion-form (as ptr f))
               (reject-colon-in-def-name (as raw:Node (node-at (as ptr f) 1))
-                                        "defunion" (f 'line)))
+                                        "defunion" (f 'line))
+              (when (= (node-kind (node-at (as ptr f) 1)) NODE-SYM)
+                (let (box:i32 0
+                      arms:ptr (defunion-strip-repr (-> f (node-rest _) (unsafe/cast &Node _) (node-rest _))
+                                                    (as ptr &box) (f 'line)))
+                  (dotimes (i (node-len arms))
+                    (let (arm:(raw Node) (node-at arms i))
+                      (require-defunion-arm arm (f 'line))
+                      (when (= (node-kind (as ptr arm)) NODE-LIST)
+                        (dotimes (fi (- (node-len arm) 1))
+                          (validate-decl-node (node-at (as ptr arm) (+ fi 1)) (f 'line)))))))))
             ; W9 item 45: `defmacro-` too — the private spelling is a separate
             ; head, and every other arm here already names both.
             (when (or (= ph "defmacro") (= ph "defmacro-"))
@@ -19271,10 +19448,17 @@
 ; per-import visibility gate until N3's privacy layer), so this currently behaves
 ; like `import-use`: the listed symbols are guaranteed available; the restriction
 ; to *only* those becomes enforceable when N3 adds private/visibility filtering.
+; The symbol list after an import's library (and prefix), which nothing reads yet.
+(defn require-import-listed-names (form:(raw Node) from:i32 what:StrView):void
+  (let (ff:(raw Node) form)
+    (dotimes (i (- (node-len form) from))
+      (require-name-slot (node-at form (+ i from)) what (ff 'line)))))
+
 (defn emit-import-only (form:(raw Node)):void
   (let (ff:ptr:Node (unsafe/cast &Node form))
     (when (< (node-len form) 2)
       (die-at (ff 'line) "import-only: expected (import-only lib sym...)"))
+    (require-import-listed-names form 2 "import-only: a listed name")
     ; Process the library with flatten semantics; the explicit symbol list is the
     ; documented intent (and the N3 visibility filter's input).
     (do-import form (node-at form 1) (symbol-none) (ff 'line))))
@@ -19297,6 +19481,7 @@
         (die-at (ff 'line) "unsafe-import-private: prefix must be a symbol"))
       (when (symbol-contains-byte (pn 's) 47)
         (die-at (ff 'line) "unsafe-import-private: prefix may not contain a slash"))
+      (require-import-listed-names form 3 "unsafe/import-private: a listed name")
       (let (save-include-private:i32 g-import-include-private)
         (set! g-import-include-private 1)
         (do-import form (as ptr name-node) (pn 's) (ff 'line))
@@ -19996,12 +20181,16 @@
 
         ; .nuch header mode — emit declarations and exit
         (when (!= g-emit-nuch 0)
+           (header-out-open)
            (emit-nuch-header forms source-file)
+           (header-out-close)
               (return 0))
 
         ; C header mode — emit C declarations and exit
         (when (!= g-emit-cheader 0)
+           (header-out-open)
            (emit-cheader-header forms source-file)
+           (header-out-close)
               (return 0))
 
         ; Open module streams and compile

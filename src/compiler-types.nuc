@@ -1049,7 +1049,7 @@
 ; tyvars introduced by the :where clause), needed to size A4.2's recovery bound
 ; array; for a :where-free extend it equals the template's own tyvar count.
 (defstruct TmplConformance
-  (template (raw StructTemplate))
+  template:ptr      ; a StructTemplate or a UnionTemplate; compared by identity only
   (proto (raw Protocol))
   bindings:ptr      ; ptr array of Node* (the proto-app args), or null if none
   nbindings:i32
@@ -1256,11 +1256,13 @@
 
 ; A spelling substituted into another file's text (an alias argument, a protocol's
 ; `Self`) as the marker `#env-arg-N`, which the parser reads back in `env` (`env-arg-type`).
+; A `type` marker carries a type already resolved, so it is read back as that type.
 (defstruct EnvArg
   (node (raw Node))
   env:NameEnv
   line:i32
-  ctx:StrView)
+  ctx:StrView
+  (type (raw Type)))
 
 ; The dry type parse's state, saved by `dry-parse-enter`.
 (defstruct DryParse

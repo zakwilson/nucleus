@@ -226,7 +226,41 @@
     (when (= k TY-PTR) (return (ptr-type-display (tt 'pkind) (tt 'elem))))
     (when (= k TY-ARRAY)
       (return (fstr "(array " (type-display (tt 'elem)) " " (tt 'arr-len) ")")))
+    (when (or (= k TY-STRUCT) (= k TY-UNION)) (return (sdef-display (tt 'sdef))))
     (return (symbol-as-view (type-spelling t)))))
+
+; A struct or union name for a message. A stamped instance is printed from the
+; origin its stamp recorded, not by its mangled registry name (`Vector.pPt`).
+(defn sdef-display (sd:raw:StructDef):StrView
+  (let (s:raw:StructDef sd
+        st:raw:StructTemplate (s 'origin-template)
+        u:raw:UnionDef (s 'udef))
+    (when (!= st null)
+      (return (template-app-display (st 'name) (s 'origin-args) (s 'origin-nargs))))
+    (when (!= u null)
+      (let (ut:raw:UnionTemplate (u 'origin-template))
+        (when (!= ut null)
+          (return (template-app-display (ut 'name) (u 'origin-args) (u 'origin-nargs))))))
+    (return (symbol-as-view (s 'name)))))
+
+; A union by its instance type, so a niche `Maybe` reads `?&T` like its values.
+(defn udef-display (ud:raw:UnionDef):StrView
+  (return (type-display (union-instance-type ud))))
+
+; `(Name A …)`, except the prelude's `(Maybe T)` and `(Result T Err)`, whose
+; canonical spellings are the sigils `?T` and `!T` (docs/types.md).
+(defn template-app-display (name:Symbol args:ptr n:i32):StrView
+  (let (a0:raw:Type (if (> n 0) (unsafe/cast raw:Type (aref (as &ptr args) 0)) null))
+    (when (and (= n 1) (= name "Maybe"))
+      (return (fstr "?" (type-display a0))))
+    (when (and (= n 2) (= name "Result")
+               (= (-> (aref (as &ptr args) 1) (unsafe/cast &Type _) (_ 'kind)) TY-ERR))
+      (return (fstr "!" (type-display a0))))
+    (let ((acc String) (str-alloc (strfmt-alloc) "(" name))
+      (dotimes (i n)
+        (str-into acc " " (type-display (unsafe/cast raw:Type (aref (as &ptr args) i)))))
+      (str-into acc ")")
+      (return (string-as-view acc)))))
 
 ; The pointer-kind spellings of docs/types.md; an elem-less pointer is `void*`.
 (defn ptr-type-display (pk:i32 e:raw:Type):StrView
