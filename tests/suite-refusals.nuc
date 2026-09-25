@@ -3,20 +3,10 @@
 ; Design: design/stage18-tooling/overview.md §T6.6; W9 items 38 and 45 in
 ; design/stage15-stress-test/progress.md.
 ;
-; `--emit-cheader` and `--emit-nuch` run the compiler's PRESCAN layer and never
-; its EMISSION layer, and every prescan defers its diagnosis to emission
-; (`defn-params-to-types`: "the located diagnostic is emit-defn's job";
-; `prescan-file-imports`: "a missing library is diagnosed by do-import"). With no
-; emitter downstream nothing ever asked, so a truncated definer reached a raw
-; `(node-at form N)` dereference and the compiler died with SIGSEGV and no output
-; — the worst diagnosis of a syntax error available — while an unresolvable
-; import exited 0 and printed a header that silently omitted its every name.
-;
-; So each unit asks the same two questions of one file: `--emit-llvm` refuses it
-; at a located error, and each header mode produces the IDENTICAL diagnostic
-; list, no output, and exit 1. Exit 1 rather than merely nonzero is the half that
-; was the bug: a segfault also produces no output, so only the status separates
-; "refused" from "crashed".
+; A header mode runs the compile first, so each unit asks one file two
+; questions: `--emit-llvm` refuses it at a located error, and each header mode
+; produces the IDENTICAL diagnostic list, no output, and exit 1 (not merely
+; nonzero: a segfault also produces no output).
 
 ; ---------------------------------------------------------------------------
 ; The three modes on one file
@@ -62,30 +52,6 @@
   (let (dir:StrView (try (test-scratch))
         p:String (try (test-write-file "probe.nuc" src)))
     (try (check-refused-alike dir (string-as-view &p) 1 msg))
-    (drop &p))
-  (return (ok)))
-
-; The boundary: a head `--emit-llvm` refuses that the header modes are right to
-; pass. Asserted rather than assumed, so a later reader cannot take it for a
-; regression — and so that a crash in either mode is still a failure.
-(defn check-probe-llvm-only (src:StrView msg:StrView):!void
-  (let (dir:StrView (try (test-scratch))
-        p:String (try (test-write-file "probe.nuc" src))
-        pv:StrView (string-as-view &p)
-        c:Compiled (try (emit-checked dir "--emit-llvm" pv)))
-    (when (!= (c 'exit) 1)
-      (fail! "--emit-llvm exited " (as i64 (c 'exit)) ", not 1"))
-    (try (check-error-at (ref c 'diags) pv 1 msg))
-    (let (h:Compiled (try (emit-checked dir "--emit-cheader" pv))
-          n:Compiled (try (emit-checked dir "--emit-nuch" pv)))
-      (try (check-silent &h "--emit-cheader"))
-      (try (check-silent &n "--emit-nuch"))
-      (when (not (and (h 'ok?) (n 'ok?)))
-        (fail! "the header modes must still succeed: cheader exit "
-               (as i64 (h 'exit)) ", nuch exit " (as i64 (n 'exit))))
-      (drop &n)
-      (drop &h))
-    (drop &c)
     (drop &p))
   (return (ok)))
 
@@ -242,12 +208,9 @@
     (drop &p))
   (return (ok)))
 
-; And the boundary, asserted rather than assumed: a BODY error is out of scope by
-; construction — no body is read — so the header modes still succeed where
-; `--emit-llvm` fails. Stating it here is what stops a later reader from taking
-; the residue for a regression.
-(deftest w9-header-validation-body-error-out-of-scope
-  (try (check-probe-llvm-only "(defn w38-body (x:i64):i32 (return (as i32 x)))"
+; A body error is refused too: the header describes only a program that compiles.
+(deftest w9-header-validation-body-error-refused
+  (try (check-probe-refused "(defn w38-body (x:i64):i32 (return (as i32 x)))"
          "as: lossy conversion from i64 to i32 -- use unsafe/cast"))
   (return (ok)))
 
@@ -391,11 +354,8 @@
          "defunion: arm cannot be the empty list '()' -- write `name` or `(name field:type ...)`"))
   (return (ok)))
 
-; THE BOUNDARY. `deferror` is refused by `--emit-llvm` and stays silent in the
-; header modes: its checks `report-at` and return `!i32`, a recoverable
-; contract the validation deliberately does not join.
 (deftest w45-empty-name-deferror
-  (try (check-probe-llvm-only "(deferror () \"boom\")"
+  (try (check-probe-refused "(deferror () \"boom\")"
          "deferror: name must be a symbol"))
   (return (ok)))
 
@@ -462,9 +422,7 @@
 ; reached yet has no `declare` and the JIT module is malformed. Every unit below
 ; used to surface LLVM's own parse error — `<compile-time>:189:18: error: use of
 ; undefined value '@helper'` — against generated text the author never wrote and
-; at a line number from a file that does not exist. The header modes never
-; compile a macro body, so they are right to pass: this is `check-probe-llvm-
-; only`'s shape with a line and a note.
+; at a line number from a file that does not exist.
 (defn check-ct-refused (src:StrView line:i32 msg:StrView note:StrView):!void
   (let (dir:StrView (try (test-scratch))
         p:String (try (test-write-file "probe.nuc" src))
@@ -482,15 +440,8 @@
         (fail! "LLVM's own diagnostic still leaks:\n     " (test-show raw)))
       (when (contains? raw "IR parse error")
         (fail! "LLVM's own diagnostic still leaks:\n     " (test-show raw))))
-    (let (h:Compiled (try (emit-checked dir "--emit-cheader" pv))
-          n:Compiled (try (emit-checked dir "--emit-nuch" pv)))
-      (try (check-silent &h "--emit-cheader"))
-      (try (check-silent &n "--emit-nuch"))
-      (when (not (and (h 'ok?) (n 'ok?)))
-        (fail! "the header modes must still succeed: cheader exit "
-               (as i64 (h 'exit)) ", nuch exit " (as i64 (n 'exit))))
-      (drop &n)
-      (drop &h))
+    (try (check-header-mode-agrees dir pv &c "--emit-cheader"))
+    (try (check-header-mode-agrees dir pv &c "--emit-nuch"))
     (drop &c)
     (drop &p))
   (return (ok)))

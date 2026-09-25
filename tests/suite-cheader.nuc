@@ -867,18 +867,13 @@ int main(void) {
     (drop &h))
   (return (ok)))
 
-; Only ONE of the fixture's two box-typed defns warns, and the shell's needle
-; ("at least one fires", per its own comment) was written to accept that rather
-; than ask why. The reason is on the next line: `(return 0)` cannot produce a
-; `(BoxedFn (i32) i32)`, the compile stops there, and `use-dyn` at line 23 is
-; never reached. Both halves are pinned so the fixture defect is visible; see
-; design/stage888-deferred.md.
+; Both box-typed defns warn at their definitions, and the fixture compiles.
 (deftest l13-cheader-warns
   (let (c:Compiled (try (compile-path (box-fixture))))
-    (try (check-warning-at (ref c 'diags) (box-fixture) 19
+    (try (check-warning-at (ref c 'diags) (box-fixture) 21
       "'make-boxed' exposes a closure or type-erased box type and will be excluded from generated C headers"))
-    (try (check-error-at (ref c 'diags) (box-fixture) 20
-      "BoxedFn: can only box a closure value (a capturing closure's (ref Env), or a bare `fn`)"))
+    (try (check-warning-at (ref c 'diags) (box-fixture) 25
+      "'use-dyn' exposes a closure or type-erased box type and will be excluded from generated C headers"))
     (drop &c))
   (return (ok)))
 

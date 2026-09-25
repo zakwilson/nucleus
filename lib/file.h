@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "string.h"
+#include "allocator.h"
 #include "prelude.h"
 
 /* Generated from lib/file.nuc by nucleusc --emit-cheader */
@@ -36,9 +37,19 @@ struct BufWriter buf_writer(struct File f) asm("buf-writer");
 /* buf-writer-close: uses an error-union or option type; not exported */
 void drop_pBufWriter(struct BufWriter* self) asm("drop.pBufWriter");
 #define DIRENT_D_NAME_OFFSET 19
+#ifndef NUC_INST_Vector_usize
+#define NUC_INST_Vector_usize
+typedef struct Vector_usize {
+    uint8_t* data;
+    size_t len;
+    size_t cap;
+    struct AllocHandle alloc;
+} Vector_usize;
+#endif
+
 typedef struct DirEntries {
     struct String buf;
-    void* offs;
+    struct Vector_usize offs;
 } DirEntries;
 
 size_t dir_count(struct DirEntries* self) asm("dir-count");

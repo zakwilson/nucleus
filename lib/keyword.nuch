@@ -7,6 +7,6 @@
 (defmethod "@eq.Keyword.Keyword" = ((a Keyword) (b Keyword)) :bool)
 (defmethod "@ne.Keyword.Keyword" != ((a Keyword) (b Keyword)) :bool)
 (extend Keyword Hash)
-(declare hash ((self (ref Keyword))) :usize)
+(defmethod "@hash.pKeyword" hash ((self (ref Keyword))) :usize)
 (extend Keyword ToStr)
-(declare to-str ((self Keyword) (out (ref String))) :!void)
+(defmethod "@to_str.Keyword.pString" to-str ((self Keyword) (out (ref String))) :!void)

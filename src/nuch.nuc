@@ -72,7 +72,18 @@
   (let (params:ptr (node-at form 2))
     (dotimes (i (node-len params))
       (when (!= i 0) (emit g-hdr " "))
-      (header-print-node (node-at params i))))
+      (let (p:ptr (node-at params i))
+        ; A cell named like a type constructor (`raw`, `Vector`) would read back as
+        ; that type (declare-param-types), so it exports under `_`.
+        (if (type-form-list? (as raw:Node p))
+          (do (emit g-hdr "(_")
+              (let (cur:ptr (node-rest (as raw:Node p)))
+                (while (> (node-len cur) 0)
+                  (emit g-hdr " ")
+                  (header-print-node (node-first (unsafe/cast &Node cur)))
+                  (set! cur (node-rest (unsafe/cast &Node cur)))))
+              (emit g-hdr ")"))
+          (header-print-node p)))))
   (emit g-hdr ")")
   (emit-nuch-ret form)
   (emit-nuch-fn-attrs form)
@@ -214,41 +225,9 @@
         (dotimes (j (node-len e)) (nuch-cconst-values e j))
       true 0)))
 
+; Run after the compile, whose registries it reads; its `(ns …)` was applied there.
 (defn emit-nuch-header (forms:ptr source-file:Symbol):void
-  ; Stage 12 N6: a leading `(ns NAME)` / `set-ir-prefix` must take effect BEFORE
-  ; the prescans, exactly as emit-toplevel-forms does it, so finalize-generics
-  ; (called at the end of prescan-defn-signatures) bakes the namespace-mangled
-  ; ir-name (`@geom__area.tok`) into each overloaded method's `defmethod` symbol.
-  ; Without this the producer would emit bare `@area.tok` while the object file
-  ; carries `@geom__area.tok` — a link mismatch. apply-leading-ns consumes the
-  ; directive and sets g-current-ns; apply-early-set-ir-prefix applies a leading
-  ; override (left in the list, but the prescans don't process set-ir-prefix).
-  (set! forms (apply-leading-ns forms))
-  (apply-early-set-ir-prefix forms)
-  ; Stage 15 W9 item 1: this file's import environment and the type names its
-  ; imports (the auto-prepended prelude included) contribute. `emit-toplevel-forms`
-  ; runs both before its own prescans for the same reason — a `defn` signature is
-  ; the first place an imported or namespaced type is named, and the signature
-  ; prescan below is what resolves it. Without them every library whose exported
-  ; signatures mention `Node`/`StrView`/`String`/`(Maybe T)`/`!T` produced no
-  ; header at all.
-  (prescan-file-imports forms)
-  (prescan-imported-types forms)
-  ; Populate the registries so overloaded names, mangled symbols, and protocols
-  ; are known before emitting declarations.
-  (prescan-struct-names forms)
-  (prescan-protocols forms)
-  (prescan-defn-signatures forms)
-  ; The C constants an array extent may name, which the header writes as values.
-  (prescan-value-names forms)
-  (cheader-import-constants forms)
-  ; W9 item 38: the same validation `emit-cheader-header` runs, for the same
-  ; reason — this mode runs the prescans and never the emitter they defer their
-  ; diagnoses to. It does not crash where the C header does (it `print-node`s a
-  ; parameter rather than walking it), which is worse rather than better: it
-  ; exported `(declare foo ((x i32)))` — a declaration with no return type — for
-  ; a program that does not compile, and a consumer would link against it.
-  (validate-header-forms forms)
+  (when (!= (is-leading-ns forms) 0) (set! forms (node-rest forms)))
   (emit g-hdr "; .nuch header for " source-file "\n")
   ; Stage 12 N6: a namespaced library carries its namespace into the header so an
   ; importer's do-import re-runs the SAME ns-ir-base computation when it
@@ -269,7 +248,8 @@
         (when (and (!= f null)
                    (= (f 'kind) NODE-LIST)
                    (> (node-len (as ptr f)) 0)
-                   (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
+                   (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM))
+                   (not (gensym-definition? fc)))
           (nuch-extent-values fc)
           (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
             (case h
@@ -307,6 +287,22 @@
     (when (strview-ends-with &sv &suffix) (return 1))
     (return 0)))
 
+; `:rest`/`:optional` are defn-only, and a declaration has no machinery for
+; them; a C variadic tail needs no marker, since a declared signature is open-tailed.
+(defn reject-declare-marker (n:(raw Node) line:i32):void
+  (when (or (!= (marker-named n "rest") 0) (!= (marker-named n "optional") 0))
+    (die-at line
+      (fstr "declare: '" (marker-spelling n)
+            "' is not supported in a declaration -- declare the fixed parameters only (extra arguments are passed positionally at the call site)"))))
+
+; A `declare` parameter as it reads before types resolve.
+(defn declare-param-named? (p:ptr):bool
+  (return (or (node-empty? (as raw:Node p))
+              (and (= (node-kind p) NODE-SYM) (= (type-sigil-run (-> p (unsafe/cast &Node _) (_ 's))) 0))
+              (and (= (node-kind p) NODE-LIST)
+                   (not (type-form-list? (as raw:Node p)))
+                   (!= (node-kind (as ptr (node-first (as raw:Node p)))) NODE-LIST)))))
+
 ; Stage 15 W3c fallout (cheader.md, "Unnamed `declare` parameters carry types"):
 ; a `declare` parameter list admits an UNNAMED parameter written as its bare type
 ; — `(declare lseek (i32 i64 i32):i64)` — alongside the named `name:type` form
@@ -328,23 +324,8 @@
 (defn declare-param-type (node:(raw Node) line:i32):(raw Type)
   (when (= node null) (die-at line "declare: empty parameter"))
   (let (n:(raw Node) node)
-    ; `:rest`/`:optional` are defn-only, and none of the machinery a declaration
-    ; would need exists: `variadic` is hardcoded 0 here and `has-rest` is never
-    ; set, so the marker was simply counted as an ordinary (i32) parameter —
-    ; `(declare myfn (a:i32 :rest xs:ptr):i32)` emitted
-    ; `declare i32 @myfn(i32, i32, ptr)`, two phantom parameters and no rest
-    ; folding at any call site. Refuse it rather than mistype it. (A C variadic
-    ; function needs no marker: a DECLARED signature is open-tailed — Stage 15
-    ; W9 defect 12's call-arity check requires the fixed parameters and admits
-    ; any number of extra arguments after them, which is how the C ABI passes
-    ; them anyway. Importing the function's header is the precise route: it
-    ; carries a real `variadic` flag, so the fixed prefix is checked exactly.)
-    ; Must precede the NODE-KEYWORD arm below, which would otherwise read
-    ; `:rest` as a type spelling and report `unknown type: rest`.
-    (when (or (!= (marker-named n "rest") 0) (!= (marker-named n "optional") 0))
-      (die-at line
-        (fstr "declare: '" (marker-spelling n)
-              "' is not supported in a declaration -- declare the fixed parameters only (extra arguments are passed positionally at the call site)")))
+    ; Before the keyword arm, which would read `:rest` as `unknown type: rest`.
+    (reject-declare-marker n line)
     ; A keyword operand (`:i64`) carries the spelling without the colon, exactly
     ; as a return operand does (fn-parse-ret-type).
     (when (= (n 'kind) NODE-KEYWORD) (return (parse-type-name (n 's) line)))
@@ -368,12 +349,9 @@
         (let (p:ptr (node-at params-node j)
               pn:Symbol (symbol-none)
               pline:i32 (node-line p line)
-              ; Only a name-shaped parameter may be named; `:i64` and `((fn …) …)` are types.
-              named:bool (or (node-empty? (as raw:Node p)) (= (node-kind p) NODE-SYM)
-                             (and (= (node-kind p) NODE-LIST)
-                                  (case (node-kind (as ptr (node-first (as raw:Node p))))
-                                    (:or NODE-SYM NODE-KEYWORD) true
-                                    false)))
+              ; `:i64`, `((fn …) …)` and a type-constructor list are types; any
+              ; other list is a `(name type)` cell, whose reader diagnoses a bad name.
+              named:bool (declare-param-named? p)
               pty:ptr (if named (extract-name-and-type p (as &Symbol &pn) pline) null))
           (when (= pty null)
             (set! pty (declare-param-type (as raw:Node p) pline)))

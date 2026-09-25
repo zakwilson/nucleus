@@ -380,7 +380,9 @@ byte-identical across the flip — verify with a before/after `--emit-llvm` diff
 
 `desugar` only rewrites **binding positions** of known forms: the `defn` name and
 param list, `defvar`/`extern`/`declare` names, `defstruct` fields, and `let`/`with`
-binding *names*. A `defn`'s **body is left untouched**, so a colon-typed symbol in
+binding *names*. The `-` definers (`defn-`/`defvar-`/`defstruct-`) are
+desugared too (before 2026-09-25 they were not, so a private template's `x:T` never
+split). A `declare`'s params are **not**: `ptr:FILE` must stay one symbol there. A `defn`'s **body is left untouched**, so a colon-typed symbol in
 the body (`r:T`, `x:ptr:Node`, `(cast i32 …)`) stays a single `NODE-SYM` —
 `split-typed`/`extract-name-and-type` parse it lazily in value position. So an AST
 transform that walks a `defn` form sees the *desugared* shapes in the signature
@@ -1174,16 +1176,6 @@ the reader also wrote `addr-of` for a standalone `&T`). It named only `ptr` unti
 — pointer-sized and ABI-correct, which is why it survived, and why two
 `w9-cheader-*` goldens had the `void*` spelling written into them. `raw` still
 widens deliberately. Docs: `docs/compiler.md` §C headers.
-
-## A header mode has no macros and only prescanned layouts
-
-`--emit-cheader`/`--emit-nuch` never emit, so no `defmacro` is registered, not even
-the stock `+`/`-`/`*`/`/` from `lib/macros.nuc`. `const-fold-int` covers those
-through `header-stock-op-expand`, which mirrors the stock macros, so keep it in step
-with `lib/macros.nuc`. Struct layouts come only from `prescan-struct-layouts`, and
-`abi-sizeof` of a struct not yet laid out answers **0 without complaint**. Any
-header-path code that sizes a type has to ask `type-layout-unknown?` first. Header
-output goes to `g-hdr`, never `stdout`, so that a refusal leaves no partial header.
 
 ## A standalone `&T` in a type slot is a `(ref T)` node — the same head as the value form
 
@@ -4754,11 +4746,7 @@ Two things this makes easy to get wrong:
   fall-through quoted the null as `'(null)'`).
 - **A prescan must SKIP, not die.** `prescan-struct-names` and friends already
   ignore every name kind they cannot use; `node-kind` makes a null one more of
-  those, and the emitter still diagnoses it in source order. See "A prescan is
-  DELIBERATELY permissive" above — and remember its consequence: if the prescan
-  stops crashing, a header mode that runs no emitter goes *silent* rather than
-  refusing, which item 38 rates as worse than the crash. Fixing a prescan crash
-  means re-asking the question in `validate-header-forms` in the same breath.
+  those, and the emitter still diagnoses it in source order.
 
 ## An IR type written as a literal in a format string is a target assumption in disguise
 
@@ -4983,74 +4971,22 @@ it — which is why recording it at pre-registration moved 0 diagnostics across 
 programs. Had a consumer read it for ordinary types, filling it in earlier would
 have changed messages.
 
-## A prescan is DELIBERATELY permissive — so a mode that runs prescans and no emitter inherits none of the diagnoses
+## A non-emitting mode runs the compile first — never the prescans alone
 
-The sibling of the rule above, and the more dangerous one. Provenance being null
-in a non-emitting mode is a *missing answer*; validation being absent is a
-*missing refusal*, and the failure mode is a crash or a confident wrong output.
-
-The compiler has two validation layers and the deferral between them is
-deliberate, documented, and correct — for `--emit-llvm`:
-
-| prescan | what it tolerates | its own comment |
-|---|---|---|
-| `defn-params-to-types` / `defn-params-count` | a NULL (`()`) parameter | *"the located diagnostic is emit-defn's job"* |
-| `prescan-defn-signatures` | a `defn` of fewer than 4 nodes (skipped silently) | — |
-| `prescan-file-imports` | an import that resolves to nothing | *"a missing library is diagnosed by `do-import` … Staying silent here keeps one diagnosis"* |
-
-`--emit-cheader` and `--emit-nuch` run the first layer and never the second, so
-**nothing downstream ever asks**. Before W9 item 38 that was three SIGSEGVs with
-no output at all (a missing return operand, an empty-list parameter, an
-empty-list inline-union member — each a raw `(node-at form N)` deref on a shape
-the prescan waved through) and one silent wrong answer (an unresolvable import
-exited 0 and printed a header describing a unit the compiler could not see).
-`--emit-nuch` was the worse half precisely because it did *not* crash: it
-`print-node`s a parameter rather than walking it, so it wrote
-`(declare foo ((x i32)))` — a declaration with no return type — for a program
-that does not compile, and that file gets committed and linked against.
-
-Four things follow.
-
-**Adding the prescans to a non-emitting mode does not make it strict** — it adds
-the layer that defers. Item 26 gave `--emit-cheader` the real prescan sequence
-and closed 29 of these; the remainder were structurally out of its reach.
-
-**The refusal scope must be stated, because "refuse whatever the compiler
-refuses" is not implementable here.** The line that *is*: a non-emitting mode
-refuses every program whose **declarations** the real pipeline refuses. A body
-error is out of scope by construction — no body is read — and closing it would
-mean compiling the unit twice. Measure the residue rather than implying there is
-none: 136 → 133 disagreements over the 396-program corpus, all 133 body errors.
-
-**Never re-copy the message.** Route each check through the chokepoint that owns
-it — `die-empty-decl` split out of `extract-name-and-type`'s null arm,
-`die-import-not-found` shared with `do-import`'s two call sites, and nine
-`require-<head>-form` guards each moved verbatim out of the top of its own
-emitter (`emit-defvar`, `emit-defconst`, `emit-defenum`, `emit-defstruct`,
-`emit-defunion`, `emit-defmacro`, `emit-defcast`, `emit-extend`, `emit-defn`),
-which now call them. Then identical output is a property of the construction. The
-corresponding test asserts stderr **equality between the modes**, never a quoted
-string — a copied message drifts and a quoted assertion does not notice.
-(`emit-deferror` is the one to leave alone: its guard `report-at`s and returns
-`!i32` instead of dying, a different contract.)
-
-**Probe the set of POSITIONS that never ask, not the set of bug reports.** This is
-the part that cost a rewrite. Item 38 named three crashing fixtures; a fix that
-closed exactly those three passed 644 tests, a byte-identical bootstrap, 69/69
-headers and a 0-diff 396-program corpus sweep — and was still substantially
-wrong. Probing every head the header emitters dispatch on found **ten** crashing
-shapes, including a truncated form of five different definers and an inline
-aggregate reached through a pointer, an array or a `defvar` type rather than a
-struct field (the first walk inspected only the *outermost* head of a type node).
-When the defect is "this pass never asks", the corpus cannot scope it: the corpus
-only contains shapes somebody already wrote down.
-
-Two skips keep such a walk from being *stricter* than the compiler, which is the
-only way it can do harm: a bounded-generic template (its body is checked when a
-call site stamps it) and a parametric `defstruct` (its fields are checked at
-stamp time). Both are predicates the emitters already skip on. The gate that
-proves no over-reach is `make check-headers` — 69/69 unchanged means every real
-library still emits an identical `.nuch` *and* `.h`.
+Prescans deliberately defer every diagnosis to the emitter (`defn-params-to-types`:
+"the located diagnostic is emit-defn's job"), so a mode that runs prescans and no
+emitter inherits no refusals — that was SIGSEGVs and silently wrong headers, then
+a hand-mirrored validation layer (`validate-header-forms`, deleted 2026-09-25).
+The header modes now run `emit-toplevel-forms` with the IR discarded and walk the
+forms afterwards (`main` in `src/nucleusc.nuc`). Three rules for that walk:
+- **Never re-run a prescan or registration** after the compile: registration is not
+  idempotent (a second `prescan-defn-signatures` is a duplicate-overload error, a
+  second `emit-ns` warns). Read the registries; skip a leading `(ns …)` with `is-leading-ns`.
+- The forms are **post-expansion**: `toplevel-expand-macro` rewrites cells in
+  place, so a macro-generated definition is walked like a handwritten one;
+  `gensym-definition?` keeps `__gs_N` names out.
+- `g-emit-cheader`/`g-emit-nuch` are raised only after the compile, so the compile
+  inside a header mode behaves exactly as `--emit-llvm` does (`g-header-request` holds the flag).
 
 ## A pre-pass that mirrors an emitter must mirror its SKIPS, not just its walk
 
@@ -7280,9 +7216,7 @@ A non-symbol in a name position reads as a none `Symbol`, and the first
 the form. Any new code that takes a name from a form asks `require-name-slot`
 (one node), `require-sig-name` (a signature's name, or a legacy `(name ret)`
 head) or `require-decl-name` (`name:type` or `(name type…)`; it skips a
-keyword-headed attribute cell) in `src/nucleusc.nuc`. The header modes'
-`validate-header-forms` must ask the same reader for any name it writes into a
-header, or the header gets `int32_t;`. Attribute keywords (`:const`, `:packed`,
+keyword-headed attribute cell) in `src/nucleusc.nuc`. Attribute keywords (`:const`, `:packed`,
 `:align N`, `:bits N`, `:rest`) come before or around a name, so strip them
 before asking (`struct-attr-scan`, `parse-decl-attrs`).
 

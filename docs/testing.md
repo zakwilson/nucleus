@@ -278,7 +278,6 @@ include directory, and one about the REPL needs a session:
 | `(check-same-decl-set a b)` | Two modules carry the same `type`/`define`/`declare` lines, as a set. |
 | `(check-refused-alike dir path line msg)` | `--emit-llvm` refuses `path` at `line` with `msg`, and both header modes exit **1** with no output and the identical diagnostic list. |
 | `(check-probe-refused src msg)` | The same for a one-form fixture, whose error is always at line 1. |
-| `(check-probe-llvm-only src msg)` | The boundary: `--emit-llvm` refuses and both header modes still succeed, silently. |
 
 A generated C header is only right if a real consumer links against the object
 the same compile produced, so that whole shape is one machine:

@@ -241,7 +241,16 @@
       (let (ut:raw:UnionTemplate (u 'origin-template))
         (when (!= ut null)
           (return (template-app-display (ut 'name) (u 'origin-args) (u 'origin-nargs))))))
-    (return (symbol-as-view (s 'name)))))
+    (let (nv:StrView (symbol-as-view (s 'name))
+          st?:bool (strview-has-prefix nv "__anon_struct_h"))
+      (when (or st? (strview-has-prefix nv "__anon_union_h"))
+        (let ((acc String) (str-alloc (strfmt-alloc) (if st? "(struct" "(union")))
+          (dotimes (i (s 'num-fields))
+            (let (f:&Field (field-at (s 'fields) i))
+              (str-into acc " " (f 'name) ":" (type-display (f 'type)))))
+          (str-into acc ")")
+          (return (string-as-view acc))))
+      (return nv))))
 
 ; A union by its instance type, so a niche `Maybe` reads `?&T` like its values.
 (defn udef-display (ud:raw:UnionDef):StrView

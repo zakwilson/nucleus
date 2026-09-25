@@ -48,7 +48,7 @@ A **protocol** names a capability — a set of required method signatures — an
   (label (self:&Self):ptr))
 ```
 
-**Signatures are checked at the `defprotocol`.** Each method signature's parameter and return types are parsed when the protocol is declared, just as a `defn` signature is. A type that does not exist or is malformed is an error at that signature's line, even if nothing ever `extend`s the protocol. `(defprotocol P (m (x:&Self q:Nope):i32))` fails with `unknown type: Nope`, and `(Vector E E)` fails with the template's arity error. The check treats `Self`, the protocol's own parameters (`E` in `(defprotocol (Seq E) …)`) and any `:where` variables in the signature as type variables. It resolves names the same way a `defn` signature does, so a type defined later in the file, or brought in by a later import, is accepted. The check registers nothing: a template application in a signature is stamped only when an `extend` substitutes concrete types into it.
+**Signatures are checked at the `defprotocol`.** A signature has exactly the shape `(name (params) ret)`; `(m y)`, `(m)`, a missing return and a trailing extra element are each refused at the signature's line (`protocol method 'm': expected (m (params) ret), found (m y)`). Each method signature's parameter and return types are parsed when the protocol is declared, just as a `defn` signature is. A type that does not exist or is malformed is an error at that signature's line, even if nothing ever `extend`s the protocol. `(defprotocol P (m (x:&Self q:Nope):i32))` fails with `unknown type: Nope`, and `(Vector E E)` fails with the template's arity error. The check treats `Self`, the protocol's own parameters (`E` in `(defprotocol (Seq E) …)`) and any `:where` variables in the signature as type variables. It resolves names the same way a `defn` signature does, so a type defined later in the file, or brought in by a later import, is accepted. The check registers nothing: a template application in a signature is stamped only when an `extend` substitutes concrete types into it.
 
 `extend Type Protocol` is a **checked, code-free conformance assertion**. It runs after the whole-file prescan: for each required signature it substitutes `Self → Type` and requires that a concrete method already resolves at the exact tier (the implementations are ordinary overloaded `defn`s). It records the `(Type, Protocol)` fact and emits nothing.
 
@@ -277,7 +277,11 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
   yields `i64`; a parameter or return that nests one (`?E`, `&Self`) is left to
   the stamp. A struct constructor (`(Pt 1 2)`, `(Pt (y 5) (x 4))`) is read as it
   is in any body: each initializer is checked, a designated `(field v)` as its
-  value `v`. The check is **lenient**: the only hard def-time error is a
+  value `v`. A template application over a variable is a type, not a call:
+  `(make (Either T i32) l x)` and `(Vector T)` alike. A local annotated over a
+  variable inside a compound (`o:?T`, `v:(Vector T)`) has its spelling checked
+  (a misspelled `(Vectr T)` is `unknown type`) and its type left to the stamp;
+  a bare `y:T` is typed abstractly. The check is **lenient**: the only hard def-time error is a
   genuinely unknown function name (a typo) —
   ```lisp
   (defn maxv (a:T b:T :where (Ord T)):T

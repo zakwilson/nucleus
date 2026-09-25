@@ -234,13 +234,13 @@
 (defn reject-cycle-pending-layout (t:raw:Type line:i32 what:StrView):void
   (let (sd:(raw StructDef) (cycle-pending-sdef t))
     (when (!= sd null)
-      (die-at line (cycle-layout-message (sd 'name) what)))))
+      (die-at line (cycle-layout-message sd what)))))
 
 ; The same rejection where the caller already holds the StructDef (field access
 ; and struct-literal sites, which resolve the struct before they resolve a type).
 (defn reject-cycle-pending-sdef (sd:(raw StructDef) line:i32 what:StrView):void
   (when (!= (sdef-layout-pending sd) 0)
-    (die-at line (cycle-layout-message (sd 'name) what))))
+    (die-at line (cycle-layout-message sd what))))
 
 (defn type-to-ir (t:raw:Type):StrView
   ; W3a backstop: an opaque type has no LLVM definition, so printing `%Foo` here

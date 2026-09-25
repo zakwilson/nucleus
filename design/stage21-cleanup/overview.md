@@ -413,7 +413,7 @@ did.
   re-prefixes. The sweep's 14 tyvar sites stayed refused until the boot
   carried the fix; they were swept 2026-09-23 (progress.md), and the boot
   compiled them.
-- **A sigil over a type variable in an `extend`'s protocol application** —
+- ~~**A sigil over a type variable in an `extend`'s protocol application**~~ —
   `(extend (Wrap I) (Iterator ?E) :where ((Iterator E) I))` — was refused
   `protocol parameter '?E' is not determined` (found building PK-4b;
   **fixed by it**: `collect-constraint-arg-tyvars` and `node-mentions-tyvar-named`
@@ -790,19 +790,26 @@ did.
   `(defstruct T (blk Blk) (u (struct x:(array i16 4))))` exports `void* blk;` and
   `void* u;`: a silently wrong layout. A `defvar` of array type is not exported
   either ("type has no C spelling here").
-- **`--emit-cheader` exports a non-pointer template instance as `void*`** (found
-  fixing the item above; pre-existing). A field or signature of `(Vector ui8)`
+- ~~**`--emit-cheader` exports a non-pointer template instance as `void*`**~~
+  (**fixed 2026-09-25**, progress.md). A struct-template instance is a guarded `typedef struct Vector_i32`,
+  defined before the first form that names it (`cheader-inst-c`); a
+  defunion-template field omits its struct (tag still declared); the skip
+  reason unaliases. (Found fixing the item above; pre-existing.) A field or signature of `(Vector ui8)`
   by value is `void*`, a silently wrong layout: `lib/string.h` writes
   `String { void* bytes; }`, and `Command`'s `offs`/`envs` in `lib/process.h`
   and `lib/file.h` are the same. A `defn` taking an alias to `(Maybe i32)` is
   declared with a `void*` parameter, where one taking `(Maybe i32)` itself is
   skipped, because `cheader-defn-skip-reason` does not unalias.
-- **A header mode refuses an array length computed by a user macro** (found
-  alongside). A compile accepts `(array i8 (three))`, but header modes register
-  no macros, and running one needs its callees JIT-emitted. The refusal names the
-  macro and leaves no output. The stock arithmetic macros are mirrored instead.
-- **A by-value inline-struct parameter is declared with an anonymous struct**
-  (found alongside; minor). `(defn f (p:(struct a:i32)):i32 …)` declares
+- ~~**A header mode refuses an array length computed by a user macro**~~
+  (**fixed 2026-09-25**, progress.md). A header mode now runs the compile first,
+  IR discarded, and walks the forms against the registries it filled; the
+  header-only validation layer and the stock-macro mirror are deleted. (Found
+  alongside.) A compile accepts `(array i8 (three))`, but header modes
+  registered no macros, and running one needs its callees JIT-emitted.
+- ~~**A by-value inline-struct parameter is declared with an anonymous struct**~~
+  (**fixed 2026-09-25**, progress.md). A signature's inline aggregate is a guarded, named
+  `nuc_anon_struct_h…` typedef, shared by every signature of that shape. (Found
+  alongside; minor.) `(defn f (p:(struct a:i32)):i32 …)` declares
   `f(struct { int32_t a; } p)`. That is valid C, but no caller can name a
   compatible type.
 - ~~**A declaration whose name is not a symbol crashes the compiler**~~ (**fixed
@@ -825,18 +832,28 @@ did.
   type &Vector.pPt` — the pointer kind is now spelled, but `Vector.pPt` is the
   mangled stamp name, not `(Vector &Pt)`. A `StructDef` records no template and
   arguments to print from.
-- **An unnamed compound `declare` parameter is read as `(name type)`** (found
-  fixing the name item; pre-existing). `(declare f ((Vector i32)):i32)` declares
+- ~~**An unnamed compound `declare` parameter is read as `(name type)`**~~
+  (**fixed 2026-09-25**, progress.md). A list whose head is a type constructor (`type-form-list?`) is a
+  type; `declare` params skip the colon desugar, so `ptr:FILE` is still a name;
+  `--emit-nuch` exports a cell named like a constructor under `_`. (Found
+  fixing the name item; pre-existing.) `(declare f ((Vector i32)):i32)` declares
   `@f(i32)`, and `((ptr i8))` declares `i8`: docs/toplevel.md says an unnamed
   parameter is a type. `(("q" i32))` is then "unable to parse type expression".
-- **A `defprotocol` signature whose parameters are not a list is accepted**
-  (found alongside). `(defprotocol P (x y))` registers; nothing reads the
+- ~~**A `defprotocol` signature whose parameters are not a list is accepted**~~
+  (**fixed 2026-09-25**, progress.md). A signature must be `(name (params) ret)` at registration. (Found
+  alongside.) `(defprotocol P (x y))` registers; nothing reads the
   signature until an `extend`.
-- **A header mode accepts a union arm field with no type** (found alongside).
+- ~~**A header mode accepts a union arm field with no type**~~ (**fixed 2026-09-25**, progress.md).
+  `require-decl-type` asks each declaration site in the compile's words, and
+  `validate-header-declare-params` checks a `declare`'s parameter shapes. (Found
+  alongside.)
   `(defunion U (a x) b)` is "defunion: field 'x' missing :type" in a compile;
   `--emit-cheader` and `--emit-nuch` exit 0. Header modes also check no
   `declare` parameter.
-- **The cycle-layout message prints a registry name** (found alongside).
+- ~~**The cycle-layout message prints a registry name**~~ (**fixed 2026-09-25**, progress.md).
+  `cycle-layout-message` takes the StructDef: `sdef-display` for the text,
+  the template's name for the definer lookup. Still no reproduction. (Found
+  alongside.)
   `cycle-layout-message` takes `(sd 'name)` for both the definer lookup and the
   text, so a stamped instance pending layout across a cycle would print
   `Vector.Pt` and advise `&Vector.Pt`. No reproduction was built.
@@ -883,32 +900,59 @@ did.
   `= expects integer operands`, and `(= (Pt 1 2) (Pt 1 3))` compares two stack
   addresses. `operator-user-resolve` falls back to the intrinsic, so reading the
   literal as `Pt` there would change what the second form means.
-- **A user operator overload on a built-in type captures narrower operands**
-  (found fixing the operator-literal item; pre-existing). With `(defn >= (a:i64
+- ~~**A user operator overload on a built-in type captures narrower operands**~~
+  (**fixed 2026-09-25**, progress.md). `operator-user-resolve` yields to an exact intrinsic before its
+  widen tier. (Found fixing the operator-literal item; pre-existing.) With `(defn >= (a:i64
   b:i64):bool …)`, `(>= x y)` over two `i32` calls it: `operator-user-resolve`'s
   widen tier runs before the intrinsic, which answers `(i32, i32)` exactly. The
   Valid walk (`valid-resolve-type`) asks the intrinsic first, so the two disagree.
-- **A user `=` over a built-in type stops the prelude compiling** (found
-  alongside; pre-existing). `(defn = (a:i64 b:i64):bool …)` is refused at
+- ~~**A user `=` over a built-in type stops the prelude compiling**~~ (**fixed 2026-09-25**, progress.md).
+  A user method on one built-in non-pointer type the intrinsic takes is refused
+  at its definition; widened pairs go to the intrinsic (item above). (Found
+  alongside; pre-existing.) `(defn = (a:i64 b:i64):bool …)` is refused at
   `lib/macros.nuc:21`: `macro 'macfoldr' calls '=', which is defined later in
   this unit`. The macro's `=` is the intrinsic, but once `=` has a user method
   the call counts as one to a later definition.
-- **A message names an anonymous aggregate by its registry name** (found
-  alongside). `no matching method for overloaded 'getb' with argument types
+- ~~**A message names an anonymous aggregate by its registry name**~~ (**fixed 2026-09-25**, progress.md).
+  `sdef-display` prints it inline, `(struct a:i32 …)`. (Found alongside.) `no matching method for overloaded 'getb' with argument types
   (&__anon_struct_h62122248fcf3e9a2)`: `sdef-display` prints a stamped instance
   from its origin but an inline `(struct …)` from its hash name.
-- **A `defn-` template cannot be called, even in its own file** (found fixing the
-  private-reach item; pre-existing, no namespace needed). `(defn- inner (x:T
+- ~~**A `defn-` template cannot be called, even in its own file**~~ (**fixed 2026-09-25**, progress.md).
+  The real cause: `desugar-form` skipped `defn-`/`defvar-`/`defstruct-`, so a
+  template's `x:T` never split. Also keyed and marked private as
+  `generic-register-method` does. (Found fixing the private-reach item;
+  pre-existing, no namespace needed.) `(defn- inner (x:T
   :where (Any T)):i32 …)` then `(inner a)` is `cannot infer type variable 'T' for
   'inner'`; the public spelling works. `register-generic-defn` keys it under the
   public name and never sets `Method.priv`, so the privacy rules do not reach a
   private template either.
-- **A generic body cannot annotate a local over its variable** (found writing the
-  private-argument units; pre-existing). `(let (o:?T (some x)) …)` or `(let
+- ~~**A generic body cannot annotate a local over its variable**~~ (**fixed 2026-09-25**, progress.md).
+  `gbind-nested-tyvar?` dry-parses the spelling and leaves the local to the
+  stamp. (Found writing the private-argument units; pre-existing.) `(let (o:?T (some x)) …)` or `(let
   (v:(Vector T) (vector-new)) …)` in a `:where (Any T)` template is `unknown type:
   T` at the A2 check: `gbind-decl-type` parses any annotation that is not bare
   `T`. `y:T` works.
-- **`(make (U T) arm x)` in a generic body is refused** (found alongside;
-  pre-existing). The A2 check reads `(Either T)` as a call, `in generic body:
+- ~~**`(make (U T) arm x)` in a generic body is refused**~~ (**fixed 2026-09-25**, progress.md). `gcheck`
+  skips a union-template application as it does a struct template's; `make`
+  then passes. (Found alongside; pre-existing.) The A2 check reads `(Either T)` as a call, `in generic body:
   unknown function 'Either'`. Skipping it the way `node-template-of` skips a
   struct template then fails at `make`'s node-type, `unknown type: T`.
+- **A name private to an imported file is called "not defined anywhere"**
+  (found fixing the `defn-` template item; pre-existing). With `(defn- inner …)`
+  in `pa.nuc`, a call from a file that imports `pa` is `unknown: inner — not
+  defined anywhere in this compilation unit`, which is false. The
+  namespaced case says `private to namespace 'n'` (`private-name-message`); the
+  file-private case has no such message.
+- **`lib/node.h` declares `conj`, which C's `<complex.h>` also declares** (found
+  compiling every generated header; pre-existing). clang warns `incompatible
+  redeclaration of library function 'conj'`. It is a warning, but a program
+  that includes both headers cannot compile.
+- **A `defunion` arm field in a C header is not a declarator** (found fixing the
+  template-instance item; pre-existing). `emit-cheader-defunion` writes
+  `type-node-to-c` then the name, so an array or function-pointer arm field is
+  written wrong; `emit-cheader-defstruct` uses `type-node-to-c-decl`.
+- **A defunion-template instance inside a struct-template instance is spelled by
+  its registry name in a C header** (found alongside; minor). `cheader-type-c`
+  renders an instance's fields from Types, and a `(Maybe i32)` element by value
+  reaches `type-name-to-c` as `Maybe.i32`, an incomplete C type. The C compile
+  fails, so nothing silent.

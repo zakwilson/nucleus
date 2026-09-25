@@ -19,7 +19,7 @@ int32_t read_error_code(struct ReadError e) asm("read-error-code");
 typedef struct ReadResult {
     int32_t tag;
     union {
-        struct raw_Node ok;
+        void* ok;
         struct ReadError err;
     } payload;
 } ReadResult;
@@ -37,9 +37,19 @@ typedef struct RMacro {
 } RMacro;
 
 extern struct AllocHandle g_read_alloc asm("g-read-alloc");
-void rd_macro_add(void** tbl, struct StrView prefix, struct Symbol wrap) asm("rd-macro-add");
-int32_t rd_macro_find(void** tbl, struct StrView prefix) asm("rd-macro-find");
-void** read_macro_table_new(void) asm("read-macro-table-new");
+#ifndef NUC_INST_Vector_RMacro
+#define NUC_INST_Vector_RMacro
+typedef struct Vector_RMacro {
+    uint8_t* data;
+    size_t len;
+    size_t cap;
+    struct AllocHandle alloc;
+} Vector_RMacro;
+#endif
+
+void rd_macro_add(struct Vector_RMacro* tbl, struct StrView prefix, struct Symbol wrap) asm("rd-macro-add");
+int32_t rd_macro_find(struct Vector_RMacro* tbl, struct StrView prefix) asm("rd-macro-find");
+struct Vector_RMacro* read_macro_table_new(void) asm("read-macro-table-new");
 typedef struct Reader {
     struct StrView src;
     size_t pos;
@@ -48,10 +58,10 @@ typedef struct Reader {
     int32_t form_open_line;
     int32_t col0_open_line;
     int32_t col0_open_depth;
-    void** macros;
+    struct Vector_RMacro* macros;
 } Reader;
 
-struct Reader reader_with_macros(struct StrView src, void** table) asm("reader-with-macros");
+struct Reader reader_with_macros(struct StrView src, struct Vector_RMacro* table) asm("reader-with-macros");
 struct Reader reader(struct StrView src);
 int32_t rd_at(struct Reader* self, size_t i) asm("rd-at");
 int32_t rd_peek(struct Reader* self) asm("rd-peek");
@@ -97,7 +107,7 @@ struct ReadResult rd_atom_form(struct Reader* self, int32_t line) asm("rd-atom-f
 struct ReadResult rd_form(struct Reader* self) asm("rd-form");
 bool reader_eof_QMARK(struct Reader* self) asm("reader-eof_QMARK");
 struct ReadResult read_one(struct Reader* self) asm("read-one");
-struct ReadResult read_all_with_macros(struct StrView src, void** table) asm("read-all-with-macros");
+struct ReadResult read_all_with_macros(struct StrView src, struct Vector_RMacro* table) asm("read-all-with-macros");
 struct ReadResult read_all(struct StrView src) asm("read-all");
 void rd_write_escaped(struct String* out, struct StrView sv) asm("rd-write-escaped");
 void rd_write_hex(struct String* out, uint64_t v) asm("rd-write-hex");

@@ -707,6 +707,14 @@
   (let (key:Symbol (priv-key-define fname)
         g:ptr (generic-lookup-exact key))
     (when (= g null) (set! g (generic-new key)))
+    ; It would replace the intrinsic everywhere, the prelude's macros included.
+    ; Pointers are exempt: ordering a type through `&T` is how it conforms to Ord.
+    (when (and (!= (builtin-op-result-type g param-types nparams) null)
+               (!= (-> (aref (as &ptr param-types) 0) (unsafe/cast &Type _) (_ 'kind)) TY-PTR))
+      (die-at (node-line (as ptr body) 0)
+        (fstr "'" fname "' on (" (type-display (aref (as &ptr param-types) 0)) ", "
+              (type-display (aref (as &ptr param-types) 1))
+              ") is built in and cannot be redefined -- define it over a type of your own")))
     (let (ft:ptr:Type (as &Type (make-type TY-FN)))
       (set! (ft 'ret) ret)
       (type-set-params ft param-types nparams)
@@ -1194,6 +1202,8 @@
                    (= (m 'num-params) nargs)
                    (!= (params-type-eq (m 'param-types) argtypes nargs) 0))
           (return (as ptr m)))))
+    ; An exact intrinsic outranks a widened user method, as in valid-resolve-type.
+    (when (!= (builtin-op-result-type g argtypes nargs) null) (return null))
     (let (wcand:ptr null
           wn:i32 0)
       (dotimes (k (unsafe/cast i32 (count (gg 'methods))))
@@ -2217,9 +2227,12 @@
             (dotimes (ci nc)
               (where-check-later (constraints-at constraints ci) (ff 'line) "defn")))
           ; Register the template.
-          (let (g:ptr (generic-lookup fname))
-            (when (= g null) (set! g (generic-new fname)))
+          ; Keyed and marked as generic-register-method does a `defn-`.
+          (let (key:Symbol (priv-key-define fname)
+                g:ptr (generic-lookup-exact key))
+            (when (= g null) (set! g (generic-new key)))
             (let (m:ptr:Method (new Method))
+              (set! (m 'priv) g-defining-private)
               (set! (m 'param-types) null)
               (set! (m 'num-params) nparams)
               (set! (m 'ret-type) null)
@@ -3252,6 +3265,15 @@
 ; Declared type of a let/with binding name in a generic body. Handles both the
 ; un-desugared colon symbol ("r:T") and the desugared (name type) cell. Returns
 ; null for an untyped binding (caller infers from the value).
+; An annotation over a type variable inside a compound (`?T`, `(Vector T)`) has
+; no abstract model: it is spelled-checked dry and left to the stamp's check.
+(defn gbind-nested-tyvar? (tn:raw:Node m:raw:Method line:i32):bool
+  (when (= (node-mentions-tyvar tn (m 'tyvars) (m 'num-tyvars)) 0) (return false))
+  (let (saved:DryParse (dry-parse-enter (m 'tyvars) (m 'num-tyvars)))
+    (parse-type-from-node (as ptr tn) line)
+    (dry-parse-leave saved))
+  (return true))
+
 (defn gbind-decl-type (bind-node:raw:Node m:raw:Method line:i32):ptr
   (let (n:raw:Node bind-node)
     (case (n 'kind)
@@ -3260,6 +3282,7 @@
           (when (symbol-none? tail) (return null))
           (let (idx:i32 (tyvar-index-of tail (m 'tyvars) (m 'num-tyvars)))
             (when (>= idx 0) (return (make-tyvar-type m idx)))
+            (when (gbind-nested-tyvar? (as raw:Node (intern-node tail)) m line) (return null))
             (return (parse-type-spelling-str tail line))))
       NODE-LIST
         (let (tnode:ptr (node-at bind-node 1))
@@ -3268,6 +3291,7 @@
             (let (idx:i32 (tyvar-index-of (-> tnode (unsafe/cast &Node _) (_ 's))
                                           (m 'tyvars) (m 'num-tyvars)))
               (when (>= idx 0) (return (make-tyvar-type m idx)))))
+          (when (gbind-nested-tyvar? (as raw:Node tnode) m line) (return null))
           (return (parse-type-from-node tnode line)))
       0)
     (return null)))
@@ -3323,6 +3347,7 @@
         ; head is the CELL ((Vector i32) v0 ...) has a non-SYM head and never
         ; reaches here (node-template-of checks head kind == NODE-SYM).
         (when (!= (as ptr (node-template-of n)) null) (return null))
+        (when (!= (as ptr (node-union-template-of n)) null) (return null))
         ; TC-4: a type-wrapper keyword head (ref/raw/ptr) is likewise a type
         ; spelling — e.g. (ref (Vector T)), (raw Node) — never a call. Without
         ; this the heap `-in` constructor body `(cast (ref (Vector T)) …)` dies
@@ -4607,6 +4632,12 @@
                   (fstr "protocol method '" (defn-name-only snn)
                         "': legacy 'name:ret' syntax is no longer supported — write ("
                         (defn-name-only snn) " (params):ret)")))
+              (when (or (!= (node-len sig) 3) (not (node-is-list (node-at sig 1))))
+                (let (s:String (node-str (as raw:Node sig)))
+                  (die-at (node-line sig (ff 'line))
+                    (fstr "protocol method '" (defn-name-only snn)
+                          "': expected (" (defn-name-only snn)
+                          " (params) ret), found " (string-as-view &s)))))
               (set! (aref (as &ptr sigs) i) sig))))
         (let (p:ref:Protocol (protocol-new pname sigs nsigs))
           ; Stage 15 B4 (R4): the defining site, which is both the redefinition

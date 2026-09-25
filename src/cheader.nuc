@@ -3297,33 +3297,6 @@
     (cheader-macro-register)
     (cheader-macro-reset)))
 
-; The header modes never reach the emitter's imports, so they run this file's C
-; imports here, once its own names exist, for the constants an extent may name.
-; The IR the import writes goes to buffers no module assembles.
-(defn cheader-import-constants (forms:ptr):void
-  (ensure-emit-buffers)
-  (let (save-out:raw:String g-out
-        fc:ptr forms)
-    (set! g-out &g-decl-stream)
-    (while (> (node-len fc) 0)
-      (let (f:raw:Node (node-first fc))
-        (when (and (= (node-kind f) NODE-LIST) (>= (node-len f) 2)
-                   (= (node-kind (node-at f 0)) NODE-SYM)
-                   (= (node-kind (node-at f 1)) NODE-STR))
-          (let (h:Symbol ((as raw:Node (node-at f 0)) 's)
-                path:Symbol ((as raw:Node (node-at f 1)) 's)
-                priv:i32 (if (or (= h "unsafe-import-private") (= h "unsafe/import-private")) 1 0))
-            (when (and (import-head? h)
-                       (= (str-ends-with path ".nuc") 0)
-                       (= (str-ends-with path ".nuch") 0))
-              (let (save-priv:i32 g-import-include-private)
-                (set! g-import-include-private priv)
-                (emit-c-include path (f 'line))
-                (set! g-import-include-private save-priv))))))
-      (set! fc (node-rest fc)))
-    (set! g-out save-out)
-    (clear-module-buffers)))
-
 (defn emit-c-include (header-path:Symbol line:i32):void
   ; W3a: reset the linemarker provenance for this header. Until the first
   ; `# N "file"` marker is seen, attribute declarations to the header we were
@@ -3809,6 +3782,8 @@
           (match (niche-sym-to-c (n 's))
             ((some nc) (return nc))
             (none 0))
+          (when (symbol-contains-byte (n 's) 58)
+            (return (type-node-to-c (split-colon-segments (n 's) (n 'line)))))
           ; Stage 16: an alias has no C spelling of its own — it is a second
           ; spelling for its body (container-type-sugar.md §3.2), so the header
           ; must show the body's C type. Without this the alias name leaked out
@@ -3848,6 +3823,9 @@
             (when (and (!= op null) (!= (cheader-ref-ptr-cell op) 0))
               (return (fstr (type-node-to-c (as ptr op))
                             " /* niche: reserved top page = error/none */"))))
+          (when (and (!= head null) (= (node-kind head) NODE-SYM)
+                     (!= (struct-template-lookup-ref ((as raw:Node head) 's)) null))
+            (return (cheader-type-c (parse-type-from-node tn (n 'line)))))
           ; `ref` is `ptr`'s synonym (types.md §Pointer kinds), so both spell
           ; the same `T*`; without this the element type was lost to `void*`.
           (when (and (!= head null)
@@ -3855,6 +3833,13 @@
                           (or (= ((unsafe/cast &Node head) 's) "ptr")
                               (= ((unsafe/cast &Node head) 's) "ref"))))
             (when (= rest null) (return "void*"))
+            ; AT-1: `(ptr :volatile T)` is C's `volatile T*`.
+            (when (and (= (node-kind (node-first (as raw:Node rest))) NODE-KEYWORD)
+                       (= ((as raw:Node (node-first (as raw:Node rest))) 's) "volatile"))
+              (let (vr:ptr (node-rest (as raw:Node rest)))
+                (return (fstr "volatile "
+                              (type-node-to-c (if (= (node-len vr) 1) (node-first (as raw:Node vr)) vr))
+                              "*"))))
             (let (inner:StrView "")
               (if (= (node-rest (unsafe/cast &Node rest)) null)
                 (set! inner (type-node-to-c (node-first (unsafe/cast &Node rest))))
@@ -3885,6 +3870,115 @@
               (return (string-as-view acc)))))
       0)
     (return "void*")))
+
+; A struct-template instance the header names: its C tag, its guarded
+; definition, and the instances that definition needs first.
+(defstruct CheaderInst
+  sd:(raw StructDef)
+  kw:StrView
+  cname:StrView
+  text:StrView
+  deps:&(Vector &CheaderInst)
+  busy:bool
+  emitted:bool)
+
+(defvar g-cheader-insts:&(Vector &CheaderInst) (vector-new-in &g-arena-alloc))
+; The instances the form being emitted names, defined just before it.
+(defvar g-cheader-inst-want:&(Vector &CheaderInst) (vector-new-in &g-arena-alloc))
+; The entry whose fields are being rendered, which collects them as deps.
+(defvar g-cheader-inst-cur:?&CheaderInst null)
+
+(defn cheader-inst-find (sd:(raw StructDef)):?&CheaderInst
+  (dotimes (i (unsafe/cast i32 (count g-cheader-insts)))
+    (let (e:&CheaderInst (invoke g-cheader-insts i:usize))
+      (when (= (e 'sd) sd) (return e))))
+  (return null))
+
+; A struct-template instance as C: `struct Vector_ui8`, noted for definition.
+(defn cheader-inst-c (sd:(raw StructDef)):StrView
+  (let (e:&CheaderInst (cheader-inst-entry sd))
+    (if-some (cur g-cheader-inst-cur)
+      (when (not (e 'busy)) (conj (cur 'deps) e))
+      (conj g-cheader-inst-want e))
+    (return (fstr (e 'kw) " " (e 'cname)))))
+
+; `busy` while its fields render, so a pointer back to it names only the tag.
+(defn cheader-inst-entry (sd:(raw StructDef)):&CheaderInst
+  (if-some (hit (cheader-inst-find sd)) (return hit) 0)
+  (let (e:&CheaderInst (as &CheaderInst (arena-alloc (sizeof CheaderInst)))
+        s:raw:StructDef sd
+        saved:?&CheaderInst g-cheader-inst-cur)
+    (set! (e 'sd) sd)
+    (set! (e 'kw) (if (!= (s 'is-union) 0) "union" "struct"))
+    ; `__anon_…` is a reserved C identifier.
+    (set! (e 'cname) (let (nv:StrView (symbol-as-view (s 'name)))
+                       (if (strview-has-prefix nv "__anon_")
+                         (fstr "nuc" (strview-drop-bytes nv 1))
+                         (cheader-c-ident-view (s 'name)))))
+    (set! (e 'deps) (vector-new-in &g-arena-alloc))
+    (set! (e 'busy) true)
+    (set! (e 'emitted) false)
+    (conj g-cheader-insts e)
+    (let ((acc String) (str-alloc (strfmt-alloc) "#ifndef NUC_INST_" (e 'cname)
+                                  "\n#define NUC_INST_" (e 'cname)
+                                  "\ntypedef " (e 'kw) " " (e 'cname) " {\n"))
+      (set! g-cheader-inst-cur e)
+      (dotimes (i (s 'num-fields))
+        (let (f:&Field (field-at (s 'fields) i))
+          (str-into acc "    " (cheader-type-c-decl (f 'type) (cheader-c-ident-view (f 'name))) ";\n")))
+      (set! g-cheader-inst-cur saved)
+      (str-into acc "} " (e 'cname) ";\n#endif\n\n")
+      (set! (e 'text) (string-as-view acc))
+      (set! (e 'busy) false))
+    (return e)))
+
+(defn cheader-inst-emit (e:&CheaderInst):void
+  (when (e 'emitted) (return))
+  (set! (e 'emitted) true)
+  (dotimes (i (unsafe/cast i32 (count (e 'deps))))
+    (cheader-inst-emit (invoke (e 'deps) i:usize)))
+  (emit g-hdr (e 'text)))
+
+; A resolved type as a C declarator, for an instance's fields, which exist
+; only as Types.
+(defn cheader-type-c-decl (t:raw:Type name:StrView):StrView
+  (let (tt:raw:Type t)
+    (when (= (tt 'kind) TY-ARRAY)
+      (return (cheader-type-c-decl (tt 'elem) (fstr name "[" (tt 'arr-len) "]"))))
+    (let (c:StrView (cheader-type-c t))
+      (when (= (strview-byte-len name) 0) (return c))
+      (return (fstr c " " name)))))
+
+(defn cheader-type-c (t:raw:Type):StrView
+  (let (tt:raw:Type t
+        k:i32 (tt 'kind))
+    (when (= k TY-PTR)
+      (let (e:raw:Type (tt 'elem))
+        (when (or (= e null) (= (e 'kind) TY-FN)) (return "void*"))
+        (return (fstr (cheader-type-c e) "*"))))
+    (when (or (= k TY-STRUCT) (= k TY-UNION))
+      (let (sd:raw:StructDef (tt 'sdef))
+        (when (!= (sd 'origin-template) null) (return (cheader-inst-c sd)))
+        (let (nv:StrView (symbol-as-view (sd 'name)))
+          (when (or (strview-has-prefix nv "__anon_struct_h") (strview-has-prefix nv "__anon_union_h"))
+            (let ((acc String) (str-alloc (strfmt-alloc) (if (= k TY-STRUCT) "struct { " "union { ")))
+              (dotimes (i (sd 'num-fields))
+                (let (f:&Field (field-at (sd 'fields) i))
+                  (str-into acc (cheader-type-c-decl (f 'type) (cheader-c-ident-view (f 'name))) "; ")))
+              (str-into acc "}")
+              (return (string-as-view acc)))))
+        (return (type-name-to-c (sd 'name)))))
+    (return (type-to-c t))))
+
+; A signature's type, where an inline `(struct …)`/`(union …)` is named so a
+; caller can spell a value of it.
+(defn cheader-sig-type-c-decl (tn:ptr name:StrView line:i32):StrView
+  (when (= (cheader-inline-aggregate? (cheader-unalias tn)) 0)
+    (return (type-node-to-c-decl tn name line)))
+  (let (t:raw:Type (as raw:Type (parse-type-from-node (cheader-unalias tn) line))
+        c:StrView (cheader-inst-c (t 'sdef)))
+    (when (= (strview-byte-len name) 0) (return c))
+    (return (fstr c " " name))))
 
 (defn cheader-inline-aggregate? (tn:ptr):i32
   (when (!= (node-kind tn) NODE-LIST) (return 0))
@@ -3971,13 +4065,7 @@
   (let (len:i64 0
         lnn:ptr (node-at an 2)
         lline:i32 (node-line lnn encl))
-    (when (= (const-fold-int (as raw:Node lnn) (as &i64 &len) lline) 0)
-      (let (e:ptr (header-stock-op-expand lnn))
-        (when (and (= (node-kind e) NODE-LIST) (= (node-kind (node-at e 0)) NODE-SYM))
-          (let (h:Symbol ((as raw:Node (node-at e 0)) 's))
-            (when (and (= (cfold-op-code h) 0) (!= h "sizeof") (!= h "char") (!= h "as"))
-              (die-at lline (fstr "--emit-cheader: (array T N): '" h
-                                  "' is not folded in a header mode, which registers no macros -- spell the length with constants and arithmetic")))))))
+    (const-fold-int (as raw:Node lnn) (as &i64 &len) lline)
     (set! g-array-ok 1)
     (parse-type-from-node an (node-line an encl))
     ; W9 item 4: sanitized, to match the `#define` emit-cheader-defconst writes.
@@ -4069,12 +4157,21 @@
   (when (= (strview-byte-len name) 0) (return (type-node-to-c tn)))
   (return (fstr (type-node-to-c tn) " " name)))
 
+; AT-1: a `(:volatile name:T)` field, and the declaration inside it.
+(defn cheader-volatile-cell? (f:ptr):bool
+  (return (and (= (node-kind f) NODE-LIST) (> (node-len f) 1)
+               (= (node-kind (node-at f 0)) NODE-KEYWORD)
+               (= ((as raw:Node (node-at f 0)) 's) "volatile"))))
+
+(defn cheader-strip-volatile (f:ptr):ptr
+  (when (not (cheader-volatile-cell? f)) (return f))
+  (let (r:ptr (node-rest (as raw:Node f)))
+    (return (if (= (node-len r) 1) (node-first (as raw:Node r)) r))))
+
 (defn emit-cheader-defstruct (form:ptr):void
   ; Skip parametric templates: (defstruct (Name T...) ...) has a list at
   ; position 1, not a sym. Templates define no concrete C type.
-  ; W9 item 45: `node-kind`, so a name spelled `()` — a NULL node (W5f) — is
-  ; skipped here too rather than dereferenced. `validate-header-forms` is what
-  ; refuses the form, before any output.
+  ; A name spelled `()` is a NULL node; the compile, run first, has refused it.
   (let (aflags:i32 0
         aalign:i32 0
         nattrs:i32 (struct-attr-scan (as raw:Node form)
@@ -4112,12 +4209,10 @@
     ; one names an undefined tag. Refuse the WHOLE struct — dropping just the
     ; field would hand C a layout that silently disagrees with Nucleus.
     (dotimes (i nfields)
-      (let (field:ptr (node-at form (+ (+ i 2) nattrs)))
-        (when (!= (cheader-niche-no-c
-                    (cheader-unalias
-                      (extract-type-node field ((unsafe/cast &Node field) 'line)))) 0)
-          (emit g-hdr "/* " name
-                ": a field uses an error-union or option type; not exported */\n")
+      (let (why:StrView (cheader-field-no-c (node-at form (+ (+ i 2) nattrs))))
+        (when (> (strview-byte-len why) 0)
+          ; Still declared, so a pointer to it in a signature names one type.
+          (emit g-hdr "/* " name ": a field uses " why "; not exported */\nstruct " name ";\n")
           (return))))
     ; Stage 15 W9 item 25: TAG the struct. `type-name-to-c` spells every reference
     ; to a user type `struct NAME`, so an anonymous typedef leaves `struct NAME` a
@@ -4128,9 +4223,10 @@
     ; reference spelling needs no special case.
     (emit g-hdr "typedef struct " name " {\n")
     (dotimes (i nfields)
-      (let (falign:i32 0
+      (let (vol:bool (cheader-volatile-cell? (node-at form (+ (+ i 2) nattrs)))
+            falign:i32 0
             fbits:i32 0
-            field:ptr (field-peel-attrs (node-at form (+ (+ i 2) nattrs))
+            field:ptr (field-peel-attrs (cheader-strip-volatile (node-at form (+ (+ i 2) nattrs)))
                                         (as &i32 &falign)
                                         (as &i32 &fbits) 0
                                         ((unsafe/cast &Node form) 'line))
@@ -4155,7 +4251,7 @@
                 (set! fal (fstr " __attribute__((aligned(" falign ")))")))
               ; FP-5: array and function-pointer members are both postfix
               ; declarators; type-node-to-c-decl is the single renderer for them.
-              (emit g-hdr "    "
+              (emit g-hdr "    " (if vol "volatile " "")
                     (type-node-to-c-decl tnode (cheader-c-ident-view fname)
                                      ((unsafe/cast &Node field) 'line))
                     bits fal ";\n"))))))
@@ -4312,10 +4408,7 @@
 ; type node for type-node-to-c.
 (defn cheader-defn-ret-node (form:(raw Node)):ptr
   (let (name-node:ptr (node-at form 1))
-    ; W9 item 45: `node-line`/`node-kind` — a name or a return operand spelled
-    ; `()` is a NULL node (W5f), and this accessor answers with the null node
-    ; itself rather than dereferencing it; the form is refused by
-    ; `validate-header-forms`, which runs before any of this.
+    ; A `()` name or return operand is a NULL node, answered as itself, not read.
     (when (= (sig-name-is-bare name-node) 0)
       (return (extract-type-node name-node
                 (node-line name-node ((unsafe/cast &Node form) 'line)))))
@@ -4356,13 +4449,14 @@
     ; form's shape. A null ret reads as "no return type", which every check below
     ; already answers 0 for.
     (when (or (= (sig-name-is-bare (node-at form 1)) 0) (>= (node-len form) 4))
-      (set! ret (cheader-defn-ret-node form)))
+      (set! ret (cheader-unalias (cheader-defn-ret-node form))))
     ; Signatures mentioning template-instance types (no C spelling yet).
     (let (skip:i32 (cheader-template-instance ret))
       (dotimes (pi np)
         (when (!= (cheader-template-instance
-                    (extract-type-node (node-at params pi)
-                                       ((unsafe/cast &Node (node-at params pi)) 'line))) 0)
+                    (cheader-unalias
+                      (extract-type-node (node-at params pi)
+                                         ((unsafe/cast &Node (node-at params pi)) 'line)))) 0)
           (set! skip 1)))
       (when (!= skip 0) (return 2)))
     ; L8: a signature exposing a capturing-closure env type (__vfn_env_N) or a
@@ -4370,16 +4464,18 @@
     (let (skip-cl:i32 (cheader-mentions-closure ret))
       (dotimes (clpi np)
         (when (!= (cheader-mentions-closure
-                    (extract-type-node (node-at params clpi)
-                                       ((unsafe/cast &Node (node-at params clpi)) 'line))) 0)
+                    (cheader-unalias
+                      (extract-type-node (node-at params clpi)
+                                         ((unsafe/cast &Node (node-at params clpi)) 'line)))) 0)
           (set! skip-cl 1)))
       (when (!= skip-cl 0) (return 3)))
     ; W9 item 44: a niche-encoded `!T` / `?T` over a non-pointer payload.
     (let (skip-ni:i32 (cheader-niche-no-c ret))
       (dotimes (nipi np)
         (when (!= (cheader-niche-no-c
-                    (extract-type-node (node-at params nipi)
-                                       ((unsafe/cast &Node (node-at params nipi)) 'line))) 0)
+                    (cheader-unalias
+                      (extract-type-node (node-at params nipi)
+                                         ((unsafe/cast &Node (node-at params nipi)) 'line)))) 0)
           (set! skip-ni 1)))
       (when (!= skip-ni 0) (return 4)))
     (return 0)))
@@ -4438,14 +4534,14 @@
             (let (ptnode:ptr (extract-type-node p ((unsafe/cast &Node p) 'line))
                   pc:StrView (cheader-c-ident-view pname))
               (if (!= ptnode null)
-                (str-into acc (type-node-to-c-decl ptnode pc
-                                                   ((unsafe/cast &Node p) 'line)))
+                (str-into acc (cheader-sig-type-c-decl ptnode pc
+                                                       ((unsafe/cast &Node p) 'line)))
                 ; No type node at all — a shape this pass cannot read.
                 (when (not (symbol-none? pname))
                   (str-into acc "void* " pc))))))
         (let (rtnode:ptr (cheader-defn-ret-node form))
           (emit g-hdr
-                (type-node-to-c-decl rtnode
+                (cheader-sig-type-c-decl rtnode
                   (fstr cname "(" (string-as-view acc) ")")
                   (node-line (as raw:Node form) 0))
                 (cheader-asm-label link cname) ";\n"))))))
@@ -4563,8 +4659,7 @@
 ; sanitized spelling is the whole answer. `cheader-array-extent` emits the same
 ; spelling for a symbolic `(array T N)` length, which is what keeps the two agreeing.
 (defn emit-cheader-defconst (form:ptr):void
-  ; W9 item 45: a name spelled `()` is a NULL node (W5f) and defines no macro;
-  ; `validate-header-forms` refuses the form before this emitter is reached.
+  ; A name spelled `()` is a NULL node (W5f) and defines no macro.
   (when (!= (node-kind (node-at form 1)) NODE-SYM) (return))
   (let (name:StrView (cheader-c-ident-view ((unsafe/cast &Node (node-at form 1)) 's))
         val-node:ptr:Node (unsafe/cast &Node (node-at form 2)))
@@ -4577,10 +4672,7 @@
 ; neither is a link name (a `defenum` member is a compile-time integer, not a
 ; symbol), so no asm label applies to either.
 (defn emit-cheader-defenum (form:ptr):void
-  ; W9 item 45: a name spelled `()` is a NULL node (W5f) and names no C enum.
-  ; `validate-header-forms` refuses the form before any output; this guard is what
-  ; keeps the emitter from reading the name to find that out — the same guard
-  ; `emit-cheader-defunion` below already has.
+  ; A name spelled `()` is a NULL node (W5f) and names no C enum.
   (when (!= (node-kind (node-at form 1)) NODE-SYM) (return))
   (dotimes (mi (- (node-len form) 2))
     (when (!= (node-kind (node-at form (+ mi 2))) NODE-SYM) (return)))
@@ -4597,10 +4689,17 @@
 ; Export a defunion as its C view (unions.md §3): the tagged struct plus an
 ; enum of tag constants, fully legible and constructible from C. Templates
 ; define no type and are skipped.
+; Why a field's type has no C layout to write, or "" when it has one. Dropping
+; just the field would hand C a layout that silently disagrees with Nucleus.
+(defn cheader-field-no-c (field:ptr):StrView
+  (let (tn:ptr (cheader-unalias (extract-type-node (as raw:Node field) (node-line field 0))))
+    (when (!= (cheader-niche-no-c (as raw:Node tn)) 0) (return "an error-union or option type"))
+    (when (!= (cheader-template-instance (as raw:Node tn)) 0) (return "a defunion-template instance type"))
+    (return "")))
+
 (defn emit-cheader-defunion (form:ptr):void
   (let (name-node:ptr:Node (unsafe/cast &Node (node-at form 1)))
-    ; W9 item 45: `node-kind` — a name spelled `()` is a NULL node (W5f), skipped
-    ; here as a template name is; `validate-header-forms` refuses the form.
+    ; A name spelled `()` is a NULL node (W5f), skipped as a template name is.
     (when (!= (node-kind (as ptr name-node)) NODE-SYM) (return))
     ; ir-name-token first (`?`→_QMARK / `!`→_BANG), then the blanket C sanitize; see
     ; type-name-to-c. A no-op for names without `?`/`!`, so headers stay byte-identical.
@@ -4613,6 +4712,14 @@
           narms:i32 (- (node-len form) 2)
           npay:i32 0)
       (check-ir-name-legal (name-node 'line) (name-node 's) name)
+      (dotimes (i narms)
+        (let (arm:ptr (node-at form (+ i 2)))
+          (when (= (node-kind arm) NODE-LIST)
+            (dotimes (fi (- (node-len arm) 1))
+              (let (why:StrView (cheader-field-no-c (node-at arm (+ fi 1))))
+                (when (> (strview-byte-len why) 0)
+                  (emit g-hdr "/* " name ": a field uses " why "; not exported */\nstruct " name ";\n")
+                  (return)))))))
       ; Any payload-bearing arm?
       (dotimes (i narms)
         (when (= ((unsafe/cast &Node (node-at form (+ i 2))) 'kind) NODE-LIST)
@@ -4669,6 +4776,11 @@
 ; never emitted, so a type reachable only through one is not a dependency of this
 ; header. Without them `lib/combinators.h` — which spells no `struct` at all —
 ; picked up an include for the `String` return type of a generic template.
+(defn cheader-scan-sig-node (tn:ptr line:i32):void
+  (if (and (!= tn null) (!= (cheader-inline-aggregate? (cheader-unalias tn)) 0))
+    (cheader-sig-type-c-decl tn "" line)
+    (cheader-scan-type-node tn)))
+
 (defn cheader-scan-type-node (tn:ptr):void
   (set! tn (cheader-unalias tn))
   (when (= tn null) (return))
@@ -4710,22 +4822,19 @@
               (when (and (!= (as ptr params) null) (= (params 'kind) NODE-LIST))
                 (dotimes (i (node-len (as ptr params)))
                   (let (p:ptr:Node (unsafe/cast &Node (node-at (as ptr params) i)))
-                    (cheader-scan-type-node
-                      (extract-type-node (as raw:Node p) (node-line (as ptr p) (f 'line))))))))
+                    (cheader-scan-sig-node
+                      (extract-type-node (as raw:Node p) (node-line (as ptr p) (f 'line))) (f 'line))))))
             ; Guarded exactly as cheader-defn-ret-node dereferences: the legacy
             ; spelling reads the name node, the S1 spelling index 3.
             (when (or (= (sig-name-is-bare (node-at form 1)) 0) (>= (node-len form) 4))
-              (cheader-scan-type-node (cheader-defn-ret-node (as raw:Node form)))))
+              (cheader-scan-sig-node (cheader-defn-ret-node (as raw:Node form)) (f 'line))))
           (return))
         (when (= h "defstruct")
           ; A parametric head — `(defstruct (Vector T) …)` — defines no concrete
           ; C type and is skipped by the emitter at its first line, so its fields
           ; name no dependency either. Without this, `lib/vector.h` (which spells
           ; no `struct` at all) took an include for the template's allocator field.
-          ; W9 item 45: `node-kind`/`node-line` throughout this scan — every
-          ; position it walks may be spelled `()`, which is a NULL node (W5f), and
-          ; a scan that only collects include dependencies has nothing to say
-          ; about one. `validate-header-forms` is what refuses the form.
+          ; Any position may be `()`, a NULL node (W5f); this scan only collects includes.
           (when (!= (node-kind (node-at form 1)) NODE-SYM) (return))
           (dotimes (i (- (node-len form) 2))
             (let (fl:ptr:Node (unsafe/cast &Node (node-at form (+ i 2))))
@@ -4752,55 +4861,10 @@
               (cheader-scan-type-node
                 (extract-type-node (as raw:Node op) (node-line (as ptr op) (f 'line)))))))))))
 
+; Run after the compile, whose registries it reads; its `(ns …)` was applied there.
 (defn emit-cheader-header (forms:ptr source-file:Symbol):void
-  ; Stage 12 N6: a namespaced library's public symbols carry a mangled link name
-  ; (`@geom__area`), so the C declarations must use that C-legal spelling — never
-  ; the Nucleus source name `geom/area` (not a C identifier). Apply a leading
-  ; `(ns NAME)` / `set-ir-prefix` so g-current-ns is set; emit-cheader-declare
-  ; then composes the namespace ir-prefix onto each function name via ns-ir-base.
-  ; Identity under `user`, so an un-namespaced library's header is byte-identical.
-  (set! forms (apply-leading-ns forms))
-  (apply-early-set-ir-prefix forms)
-  ; Stage 15 W9 item 26: the same prescan sequence `emit-nuch-header` runs, and
-  ; for the same reason — the symbol a `defn` links as is decided by
-  ; `finalize-generics` (at the end of prescan-defn-signatures), not by its
-  ; spelling. Without this the header could only guess, and it guessed the
-  ; solitary non-operator form for every function: an operator or an overload was
-  ; declared under a symbol no object defines. Emission still walks THIS file's
-  ; forms only, so nothing an import contributes is exported.
-  ; Protocols before struct names, per B5 — the reverse order reports a
-  ; `defprotocol`/`defstruct` name clash at the wrong line.
-  ;
-  ; `prescan-imported-signatures` is not optional here: whether a name is
-  ; overloaded is a property of the whole compilation unit, and a library's own
-  ; file usually contributes ONE method to a name the prelude also defines
-  ; (`hash`, `drop`, `next`). Prescanning this file alone makes every such name
-  ; look solitary, and the header would declare `@hash` where the object defines
-  ; `hash.pString`. This file's own path goes on `g-prescan-sigs` first — the list
-  ; that walk guards on — so an import cycle back to it is skipped rather than
-  ; re-read.
-  (prescan-file-imports forms)
-  (prescan-imported-types forms)
-  (prescan-protocols forms)
-  (prescan-struct-names forms)
-  (prescan-defn-signatures forms)
-  ; So a C constant yields to this file's own value names, as it does when compiled.
-  ; `cheader-array-extent` still writes a local constant by name.
-  (prescan-value-names forms)
-  (when (not (symbol-none? g-source-path))
-    (set! g-prescan-sigs (import-list-push g-prescan-sigs g-source-path)))
-  (prescan-imported-signatures forms)
-  (cheader-import-constants forms)
-  ; W9 item 38: ask the questions the prescans deferred to an emitter this mode
-  ; never runs. Before any output, so a refused program produces no partial
-  ; header — three fixtures used to segfault here with no output at all, and an
-  ; unresolvable import printed a header that silently omitted its every name.
-  (validate-header-forms forms)
+  (when (!= (is-leading-ns forms) 0) (set! forms (node-rest forms)))
   (cheader-note-own-consts forms)
-  ; This file's layouts, as the compile prescans them, so an extent's `sizeof`
-  ; folds to the size the compile uses; imported files' ran in the walk above.
-  (prescan-struct-layouts forms)
-  (prescan-union-layouts forms)
   ; W9 item 37: discover the cross-unit type references BEFORE the preamble, so
   ; the `#include` that completes each one can precede it. A header that names a
   ; type it does not define is not merely untidy — a by-value field of one does
@@ -4822,27 +4886,21 @@
   (cheader-emit-includes)
   (emit g-hdr "\n")
   (emit g-hdr "/* Generated from " source-file " by nucleusc --emit-cheader */\n\n")
-  ; Register defunion templates first so declares can recognize (and skip)
-  ; signatures that mention template-instance types.
-  (let (fc0:ptr forms)
-    (while (> (node-len fc0) 0)
-      (let (f:ptr:Node (unsafe/cast &Node (node-first (unsafe/cast &Node fc0))))
-        (when (and (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST))
-                   (and (> (node-len (as ptr f)) 1)
-                        (and (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM))
-                             (and (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's) (= _ "defunion"))
-                                  ; W9 item 45: `node-kind` — a name spelled `()`
-                                  ; registers no template here.
-                                  (= (node-kind (node-at (as ptr f) 1)) NODE-LIST)))))
-          (register-union-template (as ptr f))))
-      (set! fc0 (node-rest (unsafe/cast &Node fc0)))))
   (let (fc:ptr forms)
     (while (> (node-len fc) 0)
       (let (f:ptr:Node (unsafe/cast &Node (node-first (unsafe/cast &Node fc))))
         (when (and (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST))
                    (and (> (node-len (as ptr f)) 0)
-                        (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM))))
-          (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
+                        (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
+                   (not (gensym-definition? (as raw:Node f))))
+          (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's))
+                mark:usize (count g-cheader-inst-want))
+            ; Each instance is defined before the first form that names it, and
+            ; after this file's structs it holds by value.
+            (cheader-scan-form-types (as ptr f))
+            (while (< mark (count g-cheader-inst-want))
+              (cheader-inst-emit (invoke g-cheader-inst-want mark))
+              (inc! mark))
             (case h
                   "defstruct" (emit-cheader-defstruct (as ptr f))
                   "defunion"  (emit-cheader-defunion (as ptr f))

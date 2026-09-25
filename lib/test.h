@@ -16,8 +16,19 @@ enum TestStatus {
 
 extern bool g_test_no_skip asm("g-test-no-skip");
 /* TestCase: a field uses an error-union or option type; not exported */
+struct TestCase;
 extern struct AllocHandle g_test_alloc asm("g-test-alloc");
-extern void** g_tests asm("g-tests");
+#ifndef NUC_INST_Vector_TestCase
+#define NUC_INST_Vector_TestCase
+typedef struct Vector_TestCase {
+    uint8_t* data;
+    size_t len;
+    size_t cap;
+    struct AllocHandle alloc;
+} Vector_TestCase;
+#endif
+
+extern struct Vector_TestCase* g_tests asm("g-tests");
 extern struct String g_fail_buf asm("g-fail-buf");
 extern int32_t g_fail_ready asm("g-fail-ready");
 /* test-add: uses an error-union or option type; not exported */
@@ -48,19 +59,39 @@ bool has_matching_line_QMARK(struct StrView hay, struct StrView pat) asm("has-ma
 /* ir-define: uses an error-union or option type; not exported */
 /* check-in-define: uses an error-union or option type; not exported */
 /* check-not-in-define: uses an error-union or option type; not exported */
+#ifndef NUC_INST_Vector_StrView
+#define NUC_INST_Vector_StrView
+typedef struct Vector_StrView {
+    uint8_t* data;
+    size_t len;
+    size_t cap;
+    struct AllocHandle alloc;
+} Vector_StrView;
+#endif
+
 typedef struct Diagnostic {
     struct Symbol severity;
     struct StrView file;
     int32_t line;
     struct StrView message;
-    void** notes;
+    struct Vector_StrView* notes;
 } Diagnostic;
 
 void* diag_entry(void* body, struct StrView name) asm("diag-entry");
 struct StrView diag_text(void* n) asm("diag-text");
 /* diag-of-node: uses an error-union or option type; not exported */
 /* read-diagnostics: uses an error-union or option type; not exported */
-struct String diag_list_text(void** ds) asm("diag-list-text");
+#ifndef NUC_INST_Vector_Diagnostic
+#define NUC_INST_Vector_Diagnostic
+typedef struct Vector_Diagnostic {
+    uint8_t* data;
+    size_t len;
+    size_t cap;
+    struct AllocHandle alloc;
+} Vector_Diagnostic;
+#endif
+
+struct String diag_list_text(struct Vector_Diagnostic* ds) asm("diag-list-text");
 bool diag_matches(struct Diagnostic* d, struct StrView severity, struct StrView file, int32_t line, struct StrView needle) asm("diag-matches");
 /* check-diagnostic: uses an error-union or option type; not exported */
 /* check-error-at: uses an error-union or option type; not exported */

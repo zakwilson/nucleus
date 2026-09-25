@@ -35,7 +35,7 @@
 (declare intern-symbol ((s CStr)) :ref:Node)
 (defstruct NodeIter (lst (raw Node)) (pos i32))
 (extend NodeIter (Iterator (ref Node)))
-(declare next ((self (ref NodeIter))) :?ref:Node)
+(defmethod "@next.pNodeIter" next ((self (ref NodeIter))) :?ref:Node)
 (extend Node (Coll (ref Node) NodeIter))
 (declare count ((self (ref Node))) :usize)
 (declare conj ((self (ref Node)) (elem (ref Node))) :void)
