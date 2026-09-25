@@ -291,10 +291,25 @@
 ; synthesized-spelling key fallback (`g-type-key-ok`). A unit that declares no
 ; namespace runs exactly one probe with exactly the key the pre-B3′ code used.
 (defn struct-lookup-ref (spelling:Symbol):?&StructDef
+  (if-some (a (env-arg-of spelling))
+    (do
+      (when (!= (a 'type) null)
+        (let (t:raw:Type (a 'type))
+          (when (or (= (t 'kind) TY-STRUCT) (= (t 'kind) TY-UNION)) (return (t 'sdef)))
+          (return null)))
+      (let (here:NameEnv (name-env-here)
+            nm:Symbol (env-arg-name-enter a &here))
+        (when (symbol-none? nm) (return null))
+        (let (r:?ptr:StructDef (struct-lookup-ref nm))
+          (name-env-set here)
+          (return r))))
+    0)
   (dotimes (i (name-ref-key-count spelling))
     (match (name-ref-key-at spelling i)
       ((some k)
-        (let (hit:?ptr:StructDef (lookup-struct k))
+        (let (reach:Symbol (priv-reach-enter spelling)
+              hit:?ptr:StructDef (lookup-struct k))
+          (set! g-priv-reach-ns reach)
           (when (!= hit null) (return hit))))
       (none 0)))
   (let (al:ptr (binding-alias-find spelling BK-STRUCT))
@@ -801,10 +816,22 @@
   (return null))
 
 (defn uniondef-lookup-ref (spelling:Symbol):?&UnionDef
+  (if-some (a (env-arg-of spelling))
+    (do
+      (when (!= (a 'type) null) (return (uniondef-for-type (a 'type))))
+      (let (here:NameEnv (name-env-here)
+            nm:Symbol (env-arg-name-enter a &here))
+        (when (symbol-none? nm) (return null))
+        (let (r:?ptr:UnionDef (uniondef-lookup-ref nm))
+          (name-env-set here)
+          (return r))))
+    0)
   (dotimes (i (name-ref-key-count spelling))
     (match (name-ref-key-at spelling i)
       ((some k)
-        (let (hit:?ptr:UnionDef (uniondef-lookup k))
+        (let (reach:Symbol (priv-reach-enter spelling)
+              hit:?ptr:UnionDef (uniondef-lookup k))
+          (set! g-priv-reach-ns reach)
           (when (!= hit null) (return hit))))
       (none 0)))
   (let (al:ptr (binding-alias-find spelling BK-UNION))
@@ -820,10 +847,20 @@
   (return null))
 
 (defn union-template-lookup-ref (spelling:Symbol):?&UnionTemplate
+  (if-some (a (env-arg-of spelling))
+    (let (here:NameEnv (name-env-here)
+          nm:Symbol (env-arg-name-enter a &here))
+      (when (symbol-none? nm) (return null))
+      (let (r:?ptr:UnionTemplate (union-template-lookup-ref nm))
+        (name-env-set here)
+        (return r)))
+    0)
   (dotimes (i (name-ref-key-count spelling))
     (match (name-ref-key-at spelling i)
       ((some k)
-        (let (hit:?ptr:UnionTemplate (union-template-lookup k))
+        (let (reach:Symbol (priv-reach-enter spelling)
+              hit:?ptr:UnionTemplate (union-template-lookup k))
+          (set! g-priv-reach-ns reach)
           (when (!= hit null) (return hit))))
       (none 0)))
   (let (al:ptr (binding-alias-find spelling BK-UNION-TEMPLATE))
@@ -842,10 +879,20 @@
   (return null))
 
 (defn struct-template-lookup-ref (spelling:Symbol):?&StructTemplate
+  (if-some (a (env-arg-of spelling))
+    (let (here:NameEnv (name-env-here)
+          nm:Symbol (env-arg-name-enter a &here))
+      (when (symbol-none? nm) (return null))
+      (let (r:?ptr:StructTemplate (struct-template-lookup-ref nm))
+        (name-env-set here)
+        (return r)))
+    0)
   (dotimes (i (name-ref-key-count spelling))
     (match (name-ref-key-at spelling i)
       ((some k)
-        (let (hit:?ptr:StructTemplate (struct-template-lookup k))
+        (let (reach:Symbol (priv-reach-enter spelling)
+              hit:?ptr:StructTemplate (struct-template-lookup k))
+          (set! g-priv-reach-ns reach)
           (when (!= hit null) (return hit))))
       (none 0)))
   (let (al:ptr (binding-alias-find spelling BK-STRUCT-TEMPLATE))
@@ -864,10 +911,20 @@
   (return null))
 
 (defn type-alias-lookup-ref (spelling:Symbol):?&TypeAlias
+  (if-some (a (env-arg-of spelling))
+    (let (here:NameEnv (name-env-here)
+          nm:Symbol (env-arg-name-enter a &here))
+      (when (symbol-none? nm) (return null))
+      (let (r:?ptr:TypeAlias (type-alias-lookup-ref nm))
+        (name-env-set here)
+        (return r)))
+    0)
   (dotimes (i (name-ref-key-count spelling))
     (match (name-ref-key-at spelling i)
       ((some k)
-        (let (hit:?ptr:TypeAlias (type-alias-lookup k))
+        (let (reach:Symbol (priv-reach-enter spelling)
+              hit:?ptr:TypeAlias (type-alias-lookup k))
+          (set! g-priv-reach-ns reach)
           (when (!= hit null) (return hit))))
       (none 0)))
   (let (al:ptr (binding-alias-find spelling BK-TYPE-ALIAS))
@@ -1043,6 +1100,14 @@
       (set! scur (node-rest (unsafe/cast &Node scur))))
     (return (as ptr (node-list-done b)))))
 
+; An arm's shape; shared with the header modes' `validate-header-forms`.
+(defn require-defunion-arm (arm:(raw Node) line:i32):void
+  (when (= (node-kind (as ptr arm)) NODE-SYM) (return))
+  (when (or (!= (node-kind (as ptr arm)) NODE-LIST) (= (node-len arm) 0))
+    (die-at (node-line (as ptr arm) line) "defunion: arm must be `name` or `(name field:type ...)`"))
+  (when (!= (node-kind (as ptr (node-first arm))) NODE-SYM)
+    (die-at (node-line (as ptr (node-first arm)) line) "defunion: arm name must be a symbol")))
+
 (defn defunion-register (name:Symbol arms-raw:ptr line:i32):&UnionDef
   (let (existing:?ptr:UnionDef (uniondef-lookup name))
     (when (!= existing null) (return existing)))
@@ -1065,14 +1130,11 @@
               fnames:ptr null
               ftypes:ptr null
               nf:i32 0)
+          (require-defunion-arm (as raw:Node arm) line)
           (if (= (arm 'kind) NODE-SYM)
             (set! aname (arm 's))
             (do
-              (when (or (!= (arm 'kind) NODE-LIST) (= (node-len (as ptr arm)) 0))
-                (die-at (node-line (as ptr arm) line) "defunion: arm must be `name` or `(name field:type ...)`"))
               (let (an:&Node (unsafe/cast &Node (node-at (as ptr arm) 0)))
-                (when (!= (an 'kind) NODE-SYM)
-                  (die-at (node-line (as ptr an) line) "defunion: arm name must be a symbol"))
                 (set! aname (an 's)))
               (set! nf (- (node-len (as ptr arm)) 1))
               (when (> nf 0)
@@ -1445,9 +1507,100 @@
 ; `g-type-alias-depth`, exactly as the plain-alias path in parse-type-name does.
 (defn type-alias-apply (node:raw:Node line:i32):raw:Node
   (if-some (ta (type-alias-app-of node))
-    (return (type-alias-subst ta node line false))
+    (return (type-alias-subst ta (alias-own-body ta line) node line false))
     0)
   (return null))
+
+; A pattern walker reads a foreign alias's body in the caller's file, so each name
+; there that means something else here goes in as a marker read back in the alias's.
+(defn alias-own-body (ta:&TypeAlias line:i32):raw:Node
+  (when (not (alias-foreign? ta)) (return (ta 'body)))
+  (let (prev:StrView (foreign-read-context (ta 'src-file) "type alias" (ta 'name) line)
+        body:raw:Node (alias-mark-node ta (ta 'body)))
+    (set! g-mono-context prev)
+    (return body)))
+
+; Rebuilt only where a name changed, so an alias whose names read alike stays shared.
+(defn alias-mark-node (ta:&TypeAlias n:raw:Node):raw:Node
+  (case (node-kind n)
+    NODE-SYM (return (alias-mark-sym ta n 0))
+    NODE-LIST
+      (do
+        (when (= (node-inline-aggregate n) 0) (return (alias-mark-list ta n 0)))
+        ; A member's own name is not a type: `a:T` from its second segment, `(a T)` from its second element.
+        (let (out:&Node (node-list-new (n 'line))
+              changed:bool false)
+          (dotimes (i (node-len (as ptr n)))
+            (let (e:raw:Node (as raw:Node (node-at (as ptr n) i))
+                  m:raw:Node e)
+              (when (> i 0)
+                (case (node-kind e)
+                  NODE-SYM (set! m (alias-mark-sym ta e 1))
+                  NODE-LIST (set! m (alias-mark-list ta e 1))
+                  0))
+              (when (!= m e) (set! changed true))
+              (node-push out (as ptr m))))
+          (return (if changed (as raw:Node (node-list-done out)) n))))
+    (return n)))
+
+(defn alias-mark-list (ta:&TypeAlias n:raw:Node from:i32):raw:Node
+  (let (out:&Node (node-list-new (n 'line))
+        changed:bool false)
+    (dotimes (i (node-len (as ptr n)))
+      (let (e:raw:Node (as raw:Node (node-at (as ptr n) i))
+            m:raw:Node (if (< i from) e (alias-mark-node ta e)))
+        (when (!= m e) (set! changed true))
+        (node-push out (as ptr m))))
+    (return (if changed (as raw:Node (node-list-done out)) n))))
+
+; Segment-wise, so a colon chain or sigil keeps its spelling: `ref:Pt` → `ref:#env-arg-N`.
+(defn alias-mark-sym (ta:&TypeAlias n:raw:Node skip:i32):raw:Node
+  (let (s:Symbol (n 's)
+        segs:ptr (if (symbol-contains-byte s 58) (split-colon-segments s (n 'line)) (as ptr (node-list1 (as ptr n) (n 'line))))
+        acc:StrView ""
+        changed:bool false)
+    (dotimes (i (node-len segs))
+      (let (seg:Symbol ((unsafe/cast &Node (node-at segs i)) 's)
+            piece:Symbol seg)
+        (when (>= i skip)
+          (let (run:usize (type-sigil-run seg)
+                sv:StrView (symbol-as-view seg)
+                name:Symbol (symbol-intern (strview-drop-bytes sv run))
+                own:Symbol (alias-own-name ta name))
+            (when (!= own name)
+              (set! changed true)
+              (set! piece (symbol-intern (fstr (strview-take-bytes sv run) own))))))
+        (set! acc (if (= i 0) (symbol-as-view piece) (fstr acc ":" piece)))))
+    (when (not changed) (return n))
+    (return (intern-node (symbol-intern acc)))))
+
+; `name` as the alias's file reads it: itself where it means the same definition here.
+(defn alias-own-name (ta:&TypeAlias name:Symbol):Symbol
+  (when (or (= (symbol-len name) 0)
+            (>= (tyvar-index-of name (ta 'tyvars) (ta 'ntv)) 0)
+            (!= (as ptr (builtin-type-name name)) null))
+    (return name))
+  (let (mine:ptr (type-name-def name)
+        saved:NameEnv (name-env-enter (ta 'src-ns) (ta 'src-file) (ta 'src-imports))
+        theirs:ptr (type-name-def name))
+    (when (or (= theirs null) (= theirs mine))
+      (name-env-set saved)
+      (return name))
+    (let (m:Symbol (env-arg-sym (as ptr (intern-node name)) (ta 'src-line)))
+      (name-env-set saved)
+      (return m))))
+
+; The definition a type name reads as in the current file, or null.
+(defn type-name-def (name:Symbol):ptr
+  (let (p:ptr (as ptr (struct-lookup-ref name)))
+    (when (!= p null) (return p))
+    (set! p (as ptr (struct-template-lookup-ref name)))
+    (when (!= p null) (return p))
+    (set! p (as ptr (union-template-lookup-ref name)))
+    (when (!= p null) (return p))
+    (set! p (as ptr (enumdef-lookup-ref name)))
+    (when (!= p null) (return p))
+    (return (as ptr (type-alias-lookup-ref name)))))
 
 ; The parametric alias `node` applies, or null when it is not an application of one.
 (defn type-alias-app-of (node:raw:Node):?&TypeAlias
@@ -1461,7 +1614,7 @@
 
 ; `mark`: the body is another file's text, so each argument goes in as a marker
 ; the parser reads back in this file (`env-arg-sym`).
-(defn type-alias-subst (ta:&TypeAlias n:raw:Node line:i32 mark:bool):raw:Node
+(defn type-alias-subst (ta:&TypeAlias body:raw:Node n:raw:Node line:i32 mark:bool):raw:Node
   (let (nargs:i32 (- (node-len (as ptr n)) 1))
     (when (!= nargs (ta 'ntv))
       (die-at line
@@ -1475,7 +1628,7 @@
                 (if (and mark (!= (node-kind a) NODE-INT))
                   (as ptr (intern-node (env-arg-sym a line)))
                   a))))
-      (return (subst-alias-args (ta 'body) (ta 'tyvars) args nargs line)))))
+      (return (subst-alias-args body (ta 'tyvars) args nargs line)))))
 
 (defn alias-foreign? (ta:&TypeAlias):bool
   (return (and (not (symbol-none? (ta 'src-file))) (!= (ta 'src-file) g-source-path))))
@@ -1499,12 +1652,26 @@
     (set! (rec 'env) (name-env-here))
     (set! (rec 'line) line)
     (set! (rec 'ctx) g-mono-context)
-    (conj g-env-args rec)
-    (let (idx:i32 (- (unsafe/cast i32 (count g-env-args)) 1))
-      (return (symbol-intern (fstr "#env-arg-" idx))))))
+    (set! (rec 'type) null)
+    (return (env-arg-push rec))))
 
-; A marker is parsed as its writer spelled it, in its writer's file; `#` is unspellable.
-(defn env-arg-type (name:Symbol array-ok:i32):?&Type
+; The marker for a type already resolved. A stamp substitutes one where the type's
+; spelling would be refused in the template's file (`stamp-key-spelling`).
+(defn env-arg-of-type (t:&Type):Symbol
+  (let (rec:&EnvArg (new EnvArg))
+    (set! (rec 'node) null)
+    (set! (rec 'env) (name-env-here))
+    (set! (rec 'ctx) g-mono-context)
+    (set! (rec 'type) t)
+    (return (env-arg-push rec))))
+
+(defn env-arg-push (rec:&EnvArg):Symbol
+  (conj g-env-args rec)
+  (let (idx:i32 (- (unsafe/cast i32 (count g-env-args)) 1))
+    (return (symbol-intern (fstr "#env-arg-" idx)))))
+
+; The record behind marker `name`, or null for any other symbol; `#` is unspellable.
+(defn env-arg-of (name:Symbol):?&EnvArg
   (when (!= (symbol-byte-at name 0) 35) (return null))
   (let (sv:StrView (symbol-as-view name))
     (when (not (strview-has-prefix sv "#env-arg-")) (return null))
@@ -1513,8 +1680,14 @@
       (while (< i (sv 'len))
         (set! idx (+ (* idx 10) (as usize (- (as i32 (aref (sv 'data) (as i64 i))) 48))))
         (set! i (+ i 1)))
-      (let (a:&EnvArg (invoke g-env-args idx)
-            here:NameEnv (name-env-here)
+      (return (invoke g-env-args idx)))))
+
+; A marker is parsed as its writer spelled it, in its writer's file.
+(defn env-arg-type (name:Symbol array-ok:i32):?&Type
+  (if-some (a (env-arg-of name))
+    (do
+      (when (!= (a 'type) null) (return (a 'type)))
+      (let (here:NameEnv (name-env-here)
             ctx:StrView g-mono-context)
         (name-env-set (a 'env))
         (set! g-mono-context (a 'ctx))
@@ -1522,7 +1695,16 @@
         (let (t:&Type (parse-type-from-node (as ptr (a 'node)) (a 'line)))
           (name-env-set here)
           (set! g-mono-context ctx)
-          (return t))))))
+          (return t))))
+    (return null)))
+
+; The name a node marker stands for, entered in its writer's environment; the
+; caller looks it up and restores the returned environment. None for a type marker.
+(defn env-arg-name-enter (a:&EnvArg out-here:&NameEnv):Symbol
+  (when (!= (node-kind (a 'node)) NODE-SYM) (return (symbol-none)))
+  (set! (aref out-here 0) (name-env-here))
+  (name-env-set (a 'env))
+  (return ((a 'node) 's)))
 
 ; Stage 16: register `(deftype Name Type)` / `(deftype- Name Type)`
 ; (container-type-sugar.md §3.4). Defines no type and emits no IR — a use of
@@ -1685,8 +1867,26 @@
 (defn stamp-key-spellings (argts:ptr nargs:i32):ptr
   (let (out:ptr (arena-alloc (* (if (> nargs 0) nargs 1) (ptr-bytes))))
     (dotimes (i nargs)
-      (set! (aref (as &Symbol out) i) (spelling-as-key (type-spelling (aref (as &ptr argts) i)))))
+      (set! (aref (as &Symbol out) i) (stamp-key-spelling (aref (as &ptr argts) i))))
     (return out)))
+
+; A private type's key is refused in the template's file, so it goes in as itself:
+; the caller already resolved it, and visibility governs spelling, not identity.
+(defn stamp-key-spelling (t:&Type):Symbol
+  (when (type-names-private? t) (return (env-arg-of-type t)))
+  (return (spelling-as-key (type-spelling t))))
+
+(defn type-names-private? (t:raw:Type):bool
+  (when (or (= t null) (= g-priv-bindings 0)) (return false))
+  (case (t 'kind)
+    TY-PTR (return (type-names-private? (t 'elem)))
+    (:or TY-STRUCT TY-UNION)
+      (let (sd:raw:StructDef (t 'sdef))
+        (when (= sd null) (return false))
+        (when (!= (sd 'priv) 0) (return true))
+        (let (ud:raw:UnionDef (sd 'udef))
+          (return (and (!= ud null) (!= (ud 'priv) 0)))))
+    (return false)))
 
 ; Stamp (and memoize) a concrete instance of a defunion template from a type
 ; use `(Name A B)`. The instance is an ordinary defunion named
@@ -1749,6 +1949,7 @@
           (set! (ud2 'origin-template) ut)
           (set! (ud2 'origin-args) origin-args)
           (set! (ud2 'origin-nargs) nargs)
+          (tmpl-conformance-check-union (as ptr ut) (as raw:UnionDef ud2) line)
           (return (union-instance-type ud2)))))))
 
 ; Stage 11: stamp (and memoize) a concrete instance of a defstruct template
@@ -2241,7 +2442,7 @@
       ; consulted, so the alias name never reaches type identity or mangling —
       ; the same transparency the plain form has in parse-type-name.
       (if-some (ta (type-alias-app-of (as raw:Node n)))
-        (let (ex:raw:Node (type-alias-subst ta (as raw:Node n) line (alias-foreign? ta)))
+        (let (ex:raw:Node (type-alias-subst ta (ta 'body) (as raw:Node n) line (alias-foreign? ta)))
           (when (>= g-type-alias-depth MAX-TYPE-ALIAS-DEPTH)
             (die-at line "type alias expands into a cycle"))
           (set! g-type-alias-depth (+ g-type-alias-depth 1))

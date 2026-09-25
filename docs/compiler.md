@@ -184,6 +184,16 @@ cannot reach at all — including a private definition in another namespace — 
 not offered. So a library function imported as `(import-prefixed lib zx)` is
 suggested as `zx/zfun`, not as the bare `zfun` that just failed.
 
+**A private name says it is private.** When the spelling does reach an entry —
+`p/name` through a prefix, or a bare name through a flattened namespace — and
+that entry is another namespace's private definition, the message names the
+namespace instead of claiming the name is undefined:
+
+```
+t.nuc:2: error: unknown: p/secret — private to namespace 'hid'
+  note: another namespace reaches a private name only through unsafe/import-private
+```
+
 ### Not a function
 
 A name that *is* defined, but in a registry with no head-position meaning, says
@@ -492,10 +502,44 @@ That covers these kinds of mistake:
 
 - **A definer that stops too early** — `(defn f (x:i32))` with no return operand, `(defstruct)`, `(defunion U)`, `(defconst K)`, and the same for `defvar`, `defenum`, `defmacro`, `defcast` and `extend`. Each gets the message its own emitter gives.
 - **An empty list `()` where a declaration belongs** — a parameter, a struct field, a member of an inline `(union …)` / `(struct …)`, or a `defvar`'s type, at any nesting depth: `(ptr (union a:i32 ()))` is caught as readily as a bare field.
-- **An empty list `()` where a name belongs** — `(defstruct ())`, `(defenum ())`, `(defn () (x:i32):i32 …)`, `(ns ())`, `(import ())`, an `extend` operand, an enum member, a `defprotocol` method signature, a template head. `()` reads as *no node at all* (see [Empty lists in a declaration](#empty-lists-in-a-declaration) below), so each of these gets the message that position already gives a name of the wrong kind — `(defstruct ())` and `(defstruct 5 …)` differ only in whether the message says "missing name" or "name must be symbol".
+- **An empty list `()` where a name belongs** — `(defstruct ())`, `(defenum ())`, `(defn () (x:i32):i32 …)`, `(ns ())`, `(import ())`, an `extend` operand, an enum member, a `defprotocol` method signature, a template head. `()` reads as *no node at all* (see [Empty lists in a declaration](#empty-lists-in-a-declaration) below), so each of these gets the message that position already gives a name of the wrong kind — `(defstruct ())` and `(defstruct 5 …)` differ only in whether the message says "missing name" or "name must be a symbol".
+- **A name that is not a symbol** — a number, string, keyword or list where a definer, parameter, field, binding, method signature, union arm or `import-only` list wants a name: `(defstruct 5 x:i32)`, `(defn f ((3 i32)):i32 0)`, `(let (("s" i32) 1) …)`, `(defprotocol P (:m (x:&Self):i32))`. The message names the position and quotes what was found (`defstruct: name must be a symbol, found '5'`, `a declared name must be a symbol, found '"s"'`), at the line of the offending form.
 - **An `import` naming a library that does not resolve.** This one matters most in a header mode: a missing import supplies no names, so *every* declaration below it would be described against the wrong information — and before this was checked, the header was emitted anyway, silently missing whatever the library would have contributed.
 - **A C header that does not preprocess** — `(import-use "no-such.h")`, or a header `clang -E` rejects. The same holds: all three modes print clang's own report once, then `c-include: failed to preprocess 'no-such.h'` at the import's line (in the file that wrote it, when a library does), and exit 1. A C import that a `.nuch` carries only binds a prefix and is never read, so it is not checked.
 - **A `defvar` whose type is not one.** Global values are prescanned as in an ordinary compile, so an array type nested where storage cannot go (`(Vector (array i32 2))`, `ptr:(array i32 4)`) or a type used as a constructor (`x:i32:i32`) is refused with the compile's message.
+- **An array length the compile refuses** — zero, negative, or not a constant, such as `(array i8 (- 10))` or a length naming a `defvar`. The message is the compile's own.
+
+The header is written to stdout only once it is complete, so any refusal, including one found part-way through, leaves stdout empty.
+
+### Array lengths in a C header
+
+`--emit-cheader` accepts every array length a compile accepts. It writes the folded value: `(array i8 (+ 1 2 3))` becomes `int8_t a[6];`, and the same goes for `(- 20 3 2)`, `(* K 2)`, `(bit-not -10)` and a `(sizeof T)` of a struct defined later in the file. A bare `defconst` of the file's own keeps its name (`a[K]`), because the header defines `K` too. A `defenum` member or an imported C constant is written as its value, because the header has no `#define` of that name.
+
+A header mode registers no macros. It folds the arithmetic macros from `lib/macros.nuc` itself (`+`, `-`, `*`, `/` and `bit-not`), but it refuses a length computed by a macro of your own, naming the macro. A compile accepts that length.
+
+### Inline structs, unions and array aliases in a C header
+
+A field is written as a C declarator matching the compiler's layout. That holds when the type is an inline `(struct …)` or `(union …)`, an array, or a `deftype` alias of any of these:
+
+```lisp
+(deftype Blk (array i8 12))
+(defstruct S
+  (blk Blk)
+  (u (struct x:(array i16 3) y:i8))
+  (w (union b:(array i8 5) f:(fn i32)(ptr)))
+  (:anon (struct p:i16 r:i64)))
+```
+
+```c
+typedef struct S {
+    int8_t blk[12];
+    struct { int16_t x[3]; int8_t y; } u;
+    union { int8_t b[5]; int32_t (*f)(void*); } w;
+    struct { int16_t p; int64_t r; };
+} S;
+```
+
+An `:anon` member over an inline body is written as C's own anonymous member. An `:anon` member naming a declared type is still refused (see [Anonymous members](structs-unions.md#anonymous-members--anon-t)).
 
 A header mode reads the file's C imports as a compile does, so it also prints the same warnings for C declarations it skips, and knows the header's integer constants (see [Integer constants from a C header](#integer-constants-from-a-c-header)).
 
@@ -555,13 +599,25 @@ Three rules are worth knowing:
 * **`:const` becomes C's `const`.** It is the same read-only-storage guarantee.
 * **`defvar-` is not exported**, the same as every other private definer.
 
+An array global is declared with its length, and a global of an inline `(struct …)` or `(union …)` type is declared with that body:
+
+```lisp
+(defvar table:(array i32 4))
+(defvar pair:(struct lo:i16 hi:(array i8 3)))
+```
+
+```c
+extern int32_t table[4];
+extern struct { int16_t lo; int8_t hi[3]; } pair;
+```
+
 A global whose type has no faithful C spelling is **omitted with a comment** rather than declared:
 
 ```c
 /* m-skip: type has no C spelling here; not exported */
 ```
 
-This covers `(array T N)`, union-template instances like `(Maybe i32)`, closure and type-erased box types. The reason it is an omission rather than a best effort is that the fallback spelling would be `void*` — pointer-sized, which is right for a pointer and silently wrong for anything else, and a declaration the C compiler trusts and gets wrong is worse than one that is missing. Pointer-typed globals *are* exported under all three spellings (`ptr:T`, `raw:T`, `ref:T`); `ptr:T` and `ref:T` (and so `&T`) spell the element out, while `raw:T` currently widens to `void*`, as it already does in function signatures.
+This covers union-template instances like `(Maybe i32)`, closure and type-erased box types. The reason it is an omission rather than a best effort is that the fallback spelling would be `void*` — pointer-sized, which is right for a pointer and silently wrong for anything else, and a declaration the C compiler trusts and gets wrong is worse than one that is missing. Pointer-typed globals *are* exported under all three spellings (`ptr:T`, `raw:T`, `ref:T`); `ptr:T` and `ref:T` (and so `&T`) spell the element out, while `raw:T` currently widens to `void*`, as it already does in function signatures.
 
 ## Hyphenated names in a C header
 
@@ -824,8 +880,11 @@ depends on whether the target's `char` is signed).
 
 **Every operation is typed as C types it.** A literal takes the first of `int`,
 `long`, `long long` that holds it — with the `unsigned` twin of each in between
-when it is hex or octal, and only the unsigned ones when it carries `u` — and
-each operator converts its operands to the wider of their two types (unsigned
+when it is hex or octal, and only the unsigned ones when it carries `u`. A
+decimal literal that no signed type holds, such as `18446744073709551615` or
+`9223372036854775808`, is `unsigned long long`, which is how clang reads it.
+A literal past `UINT64_MAX` has no C type in any base and is skipped. Each
+operator converts its operands to the wider of their two types (unsigned
 winning a tie) and wraps its result to that type. So `(0u - 1) / 2` is
 `2147483647`, `~0u` is `4294967295`, and `0xffffffff + 1` is `0` while `0xffffffffl + 1` is `4294967296` on a 64-bit
 `long`. The widths are the **target's**: `int` is 16 bits and `long` 32 on
@@ -887,7 +946,7 @@ array extent, the one place a header can — is written with its **value**:
 `(array i32 PATH_MAX)` becomes `int32_t a[4096];` in `--emit-cheader` and
 `(array i32 4096)` in `--emit-nuch`, since the header's consumer need not import
 that C header. An extent naming the file's own `defconst` keeps its name, which
-the header also defines. At the REPL an imported constant is a prompt expression
+the header also defines (see [Array lengths in a C header](#array-lengths-in-a-c-header)). At the REPL an imported constant is a prompt expression
 like any other.
 
 ## Types a header borrows from another unit

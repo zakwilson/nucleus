@@ -251,9 +251,9 @@ consumer's own `Pt` (arguments stay the caller's) and a `b` that points at
 definition for a source library, and at the first use for a header's alias, with a
 `while reading type alias 'shapes/Two' (requested at …)` note. See [A template
 is read as the file that wrote it](toplevel.md#a-template-is-read-as-the-file-that-wrote-it).
-One place does not follow this rule yet. When another file's parametric alias
-appears in a generic method's receiver pattern (`(defn f (b:&(sh/PBox T)) …)`),
-its body is still expanded in the file that wrote the pattern.
+This includes a generic method's receiver pattern (`(defn f (b:&(sh/PBox T)) …)`),
+where the body is matched rather than parsed. `PBox`'s `Box` is still `shapes/Box`
+there, even in a file that defines a `Box` of its own.
 
 **Not a newtype.** An alias creates no distinct identity, so it cannot be used
 to give an existing type separate dispatch or to prevent implicit conversion
@@ -282,8 +282,11 @@ slots but not into a non-null `(ptr T)`/`(ref T)` slot.
 (non-null), `(raw T)`, `?&T` (nullable-checked), `!&T` (a niche `!` pointer) or
 bare `ptr`, nesting as written (`&&T`, `&(raw T)`) — so `argument 1 has type
 (raw Pt), which does not match parameter type &Pt`. The REPL's `type-of` prints
-the same spelling. A stamped template instance is still named by its registry
-name (`&Vector.i32`).
+the same spelling. A stamped template instance is printed as its source
+application, `&(Vector i32)`, from the arguments its stamp recorded; the prelude's
+`(Maybe T)` and `(Result T Err)` print as `?T` and `!T`. A stamp keeps the pointer
+kind of whichever spelling stamped it first, so `(Vector &Pt)` and
+`(Vector (raw Pt))` print as the one that came first.
 
 **`&T` is sugar for `ref:T`.** The reader expands a `&` that begins a type
 chain segment into `ref:`, so `&T` and `ref:T` are the same spelling — same
@@ -782,7 +785,7 @@ The following conversions are applied automatically in assignment contexts (`let
 - **Pointer ↔ pointer, when the pointees agree**: identity, no IR. Two things are *not* part of the question and so never block it — the pointer **kind** — `ptr:Node`, `(ref Node)`, `(raw Node)` and `?Node` are one type to *this* question, and nullability is judged separately by the non-null contract, which still refuses a `raw`/`?` source into a `(ref T)` slot (see [Pointer kinds](#pointer-kinds-ptr-t-raw-t-and-t)) — and an **elem-less bare `ptr`**, which is `void *` and matches any pointer in either direction. Everything else must match: `ptr:i32` into a `ptr:Node` slot, or `(ref (Vector i32))` into a `(ref (Vector i64))` slot, is a compile-time error naming both types.
 
   ```
-  let: init type mismatch for 'b': value is &Vector.i32, slot is &Vector.i64
+  let: init type mismatch for 'b': value is &(Vector i32), slot is &(Vector i64)
   takes: argument 1 has type &SA, which does not match parameter type &SB
   ```
 

@@ -458,7 +458,7 @@
         tframe:i32 0)
     (when (!= nargs nf)
       (die-at (cc 'line)
-        (fstr (udd 'name) ": arm '" (arm-rec 'name) "' takes a different number of fields")))
+        (fstr (udef-display udd) ": arm '" (arm-rec 'name) "' takes a different number of fields")))
     (let (base:StrView (new-tmp))
       (emit g-entry-stream "  " base " = alloca %" (sd 'ir-name) ", align "
             (abi-struct-align sd) "\n")
@@ -478,7 +478,7 @@
                   coerced:ptr (coerce-int-val v ftype (cc 'line)))
               (when (= coerced null)
                 (die-at (cc 'line)
-                  (fstr (udd 'name) ": type mismatch for a field of arm '" (arm-rec 'name) "'")))
+                  (fstr (udef-display udd) ": type mismatch for a field of arm '" (arm-rec 'name) "'")))
               ; A by-value payload field loads through a frame address — discharged.
               (when (or (= (v 'taint-frame) 0) (!= (frame-taint-survives v ftype) 0))
                 (set! tframe (taint-join-frame taint tframe v))
@@ -615,7 +615,7 @@
                 ai:i32 (union-arm-index (as ptr udd) (arm-node 's)))
             (when (< ai 0)
               (die-at (node-line (as ptr arm-node) (cc 'line))
-                (fstr "make: no arm '" (arm-node 's) "' on '" (udd 'name) "'")))
+                (fstr "make: no arm '" (arm-node 's) "' on '" (udef-display udd) "'")))
             (return (emit-union-construct (as ptr udd) ai call 3 scope))))))))
 
 ; emit-handler-call — the shared chain-walk core of the handler negotiation
@@ -1602,7 +1602,7 @@
                     (let (ai:i32 (union-arm-index (as ptr udd) (pat 's)))
                       (when (< ai 0)
                         (die-at (node-line (as ptr pat) (clause 'line))
-                          (fstr "match: no arm '" (pat 's) "' on '" (udd 'name) "'")))
+                          (fstr "match: no arm '" (pat 's) "' on '" (udef-display udd) "'")))
                       (when (!= ((invoke (udd 'arms) ai:usize) 'nfields) 0)
                         (die-at (node-line (as ptr pat) (clause 'line))
                           (fstr "match: arm '" (pat 's)
@@ -1617,7 +1617,7 @@
                       (let (ai:i32 (union-arm-index (as ptr udd) (an 's)))
                         (when (< ai 0)
                           (die-at (node-line (as ptr an) (clause 'line))
-                            (fstr "match: no arm '" (an 's) "' on '" (udd 'name) "'")))
+                            (fstr "match: no arm '" (an 's) "' on '" (udef-display udd) "'")))
                         (when (!= (- (node-len (as ptr pat)) 1)
                                   ((invoke (udd 'arms) ai:usize) 'nfields))
                           (die-at (node-line (as ptr pat) (clause 'line))

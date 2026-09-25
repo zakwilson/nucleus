@@ -17,7 +17,7 @@
 | `import-prefixed` | Explicit spelling of the prefix-qualified `import` above: `(import-prefixed lib [prefix])`. Identical to `import`. | — |
 | `import-only` | Import a concrete list of symbols: `(import-only lib sym1 sym2 ...)`. The listed symbols are brought in under their bare names. *(Currently flattens like `import-use`; the restriction to only the listed symbols is enforced once private/visibility filtering lands.)* | — |
 | `unsafe-import-private` | **Retired in Stage 14** — bare `unsafe-import-private` is now a targeted hard error: `'unsafe-import-private' was split in Stage 14: use 'unsafe/import-private'`. | — |
-| `unsafe/import-private` | Prefix-qualified import that also reaches a library's private (`defn-`/`defvar-`/etc.) symbols: `(unsafe/import-private lib prefix sym...)`. Discouraged; for breaking encapsulation deliberately. The listed symbols are advisory (not yet filtered) — every private symbol from the library is aliased under the prefix. This holds for a library with no `(ns …)`, whose private names are file-private. A namespaced library's private names are not reached yet. A `.nuch` header carries the form verbatim, so a template in the header that uses the prefix keeps its access. The access stays with the header's text; it does not pass to the file importing the header (see [The imports a header carries](compiler.md#the-imports-a-header-carries)). See [Special Forms](special-forms.md#special-forms). | — |
+| `unsafe/import-private` | Prefix-qualified import that also reaches a library's private (`defn-`/`defvar-`/etc.) symbols: `(unsafe/import-private lib prefix sym...)`. Discouraged; for breaking encapsulation deliberately. The listed symbols are advisory (not yet filtered) — every private symbol from the library is reachable under the prefix. This holds for a library with no `(ns …)`, whose private names are file-private, and for a namespaced one, where `p/name` reaches each private kind (`defn-`, `defvar-`, `defconst-`, `defenum-` and its members, `defstruct-`, `defunion-`, a private template, `deftype-`, `defmacro-`, `defprotocol-`). Only the prefixed spelling reaches them: the permission belongs to that one qualifier, never to a bare name. A `.nuch` header carries the form verbatim, so a template in the header that uses the prefix keeps its access. The access stays with the header's text; it does not pass to the file importing the header (see [The imports a header carries](compiler.md#the-imports-a-header-carries)). See [Special Forms](special-forms.md#special-forms). | — |
 | `declare` | Declare an external function signature `(declare name (params...) :rettype)`. Used in `.nuch` header files and at the top level. **Parameters carry their types in both spellings.** A parameter may be written *named* — `(declare lseek (fd:i32 off:i64 whence:i32):i64)` — or *unnamed*, as its bare type — `(declare lseek (i32 i64 i32):i64)`; the two produce the same signature, and a list may mix them. In a declaration the name is documentation only (nothing binds it), so an unnamed parameter is a **type operand**: any type spelling works there, including a keyword (`:i64`), a compound (`(Vector i32)`), and a struct name (passed by value under the platform C ABI). A spelling that names no type is a compile-time error — there is no default. **An element carrying a `name:type` annotation is a named parameter**, exactly as in a `defn`, so `(declare f (ptr:FILE):void)` declares a parameter *named* `ptr` of type `FILE` (by value), not a pointer to `FILE` — write `p:ptr:FILE`, or a bare `ptr`, for a pointer parameter. `:rest` / `:optional` are `defn`-only and are rejected here; a C variadic function needs no marker, because **a declared signature is open-tailed** — [call arity](compiler.md#call-arity) requires the declared (fixed) parameters and admits any number of extra arguments after them, so the variadic tail simply rides the call site. Too *few* arguments is still an error. Importing the function's C header is the precise route: the header carries a real variadic flag, so the fixed prefix is checked exactly. A declaration of a name that is already declared is a no-op — a diamond import, a top-level `declare` used as a [cycle-breaker](#cross-file-resolution-reachability-not-import-order), or one libc function named by both a C header and a `.nuch`; but a **`.nuch`** entry for a name the importing unit *defines* is a conflict, not a re-declaration, and is reported. A `declare` may carry the same [declaration attributes](#declaration-attributes) a `defn` does, written after the return type: `(declare my_abort ():void :noreturn)`. See also [Declaration precedence](structs-unions.md#declaration-precedence-an-explicit-declare-wins). | function prototype |
 | `extern` | Declare a foreign global variable `(extern name:type)`. The compiler emits `@name = external global T`, leaving storage and initialization to the linker. Works for both C-defined and Nucleus-defined producers; the matching `defvar` may live in another `.o` file. | `extern` declaration |
 | `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)`. The name takes **no** type annotation — `(defmacro m:i32 (x) x)` is rejected (`defmacro: takes no type annotation; write (defmacro m ...)`) rather than silently compiling and failing at the call site. Supports `:rest` for variadic macros: `(defmacro name (a b :rest rest) ...)` — `rest` receives a list `Node` holding the remaining args — the empty list `()`, never null, when there are none. Parameters (and the `:rest` list) are typed `(raw Node)` inside the body, so `(p 'kind)` and `(p 's)` read fields directly with no `(as ptr:Node ...)` — the selector is quoted, a bare symbol there being an ordinary variable. Elements come out through the `ast-first` / `ast-rest` / `ast-at` / `ast-len` special forms, which a macro body must use in place of the `node-*` functions (see [A form is a collection](macros.md#a-form-is-a-collection)). The macro can splice a parameter into a quasiquote regardless of the value type the user-supplied expression evaluates to at the call site — see [Macros and pass-through arguments](macros.md#macros-and-pass-through-arguments). | macro |
@@ -106,9 +106,13 @@ The rule and its edges:
   protocols*, which have no per-file key space — `(ns …)` is what makes their
   privacy mean anything — so in the default `user` namespace they are visible
   to the whole unit, and a file that declares `(ns …)` is what actually hides
-  them. Reaching one from outside its namespace is an error at the reference —
-  a type reports `unknown type: Name`, a macro or value `unknown: name`, and a
-  protocol `extend: unknown protocol 'Name'`. **For a type**, since type
+  them. Reaching one from outside its namespace is an error at the reference.
+  A spelling that reaches the entry says so: `unknown type: p/Name — private to
+  namespace 'n'`, and `unknown: p/name` / `undefined: p/name` with the same
+  tail for a function, macro or value (a bare name through `import-use` alike).
+  A protocol reports `extend: unknown protocol 'Name'`. The rule covers a namespaced
+  `defn-` too, solitary or overloaded: neither a prefixed nor a flattened import
+  reaches it. **For a type**, since type
   identity is namespaced (see
   [Namespaced type names](types.md#namespaced-type-names)), that failure comes
   in two tiers rather than one: a *bare* reference to a private type in another
@@ -116,14 +120,19 @@ The rule and its edges:
   *public* type in an unimported namespace gets, since the bare spelling was
   never in scope to begin with — and only a *qualified* reference spelled
   through a prefix that actually reaches the namespace gets as far as finding
-  the (hidden) entry, where privacy then refuses it: `unknown type: p/Name`,
-  using the qualified spelling. A macro behaves the same way as of the macro
+  the (hidden) entry, where privacy then refuses it, using the qualified
+  spelling. A macro behaves the same way as of the macro
   cut-over: a bare reference to a private macro in another namespace fails for
   the ordinary scope reason, and only a prefixed spelling reaches the privacy
   check.
 * Privacy affects only the *name*. The emitted symbol still exists (with internal
   linkage); it is simply spelled per-file, so nothing outside the file can name
-  it and nothing collides at link time.
+  it and nothing collides at link time. A private definition that reaches another
+  file by *identity* rather than by spelling therefore still works there. A
+  `defstruct-` type handed to another namespace's template stamps it (`(k/Box Foo)`,
+  `(k/sz &f)`). A private conformer's method answers a library generic's call to
+  the protocol method. A private template behind a public alias expands wherever
+  the alias is used.
 * A namespace name may not begin with `#` — that shape is reserved for the
   implicit per-file scope this rule is built on.
 
@@ -293,7 +302,10 @@ be stamped from a prefixed importer:
 ```
 
 The type *arguments* are the caller's and stay the caller's: `(sh/Box Pt)` holds
-the consumer's three-field `Pt`, although `shapes` has a `Pt` of its own. A call
+the consumer's three-field `Pt`, although `shapes` has a `Pt` of its own. An
+argument may be a type the template's file cannot spell at all — the consumer's
+private `defstruct-` — and still stamps, since the instance carries the type
+itself rather than a spelling for `shapes` to look up. A call
 that does not fit — `(sh/nudge 3 &mine)` — is refused at the call's line with
 `no matching method …`. A mistake in the template's own text is reported at the
 template's file and line; when it surfaces while a call is being bound or the
@@ -307,7 +319,14 @@ consumer's `(sh/Two Pt)` has an `a` that is the consumer's `Pt` and a `b` that
 points at `shapes/Pt`. `(extend Foo sh/Probe)` asks for a `probe` taking
 `&Foo` and `&shapes/Pt`. `Self` and the protocol's type arguments are the
 extending file's, and so are the methods that answer. A private `defstruct-` conformer, or one that shares a name
-with a type of the protocol's library, is found. A mistake in the body or
+with a type of the protocol's library, is found. A generic in `shapes` that calls
+`(probe x q)` under `:where (Probe T)` reaches the conformer's `probe` in the
+extending file's namespace, solitary, overloaded or `defn-`, although `shapes`
+imports nothing of it: dispatch finds a conformance wherever it is defined. A
+method that answers no protocol the calling file can name gets no such pass.
+An alias applied in a generic method's receiver pattern (`(defn f (b:&(sh/PBox
+T)) …)`) is matched, not parsed, and its body still names `shapes`' types: the
+consumer's own `Box` does not capture `PBox`'s. A mistake in the body or
 signature is reported at the defining file's line. A source library's is found
 at the definition; a header's is trusted until a use reads it, and then carries a
 `while reading type alias 'shapes/Two'` or `while reading protocol

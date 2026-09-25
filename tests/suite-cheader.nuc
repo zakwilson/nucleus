@@ -124,7 +124,7 @@
 (defstruct CRec (a i32))
 (defvar rec-val:CRec)
 (defvar m-skip:(Maybe i32) (none))
-(defvar arr-skip:(array i32 4))
+(defvar arr-val:(array i32 4))
 (defn bump ():i32 (set! counter (+ counter 1)) (return counter))
 "))
 
@@ -135,13 +135,15 @@
     (try (check-line h "extern const int32_t limit;"))
     (try (check-line h "extern int64_t tick_count asm(\"tick-count\");"))
     (try (check-line h "extern struct CRec rec_val asm(\"rec-val\");"))
+    (try (check-line h "extern int32_t arr_val[4] asm(\"arr-val\");"))
     (try (check-not-contains h "hidden"))
     (drop &l)
     (return (ok))))
 
 ; A declaration the C compiler trusts and gets wrong is worse than an omission:
 ; `type-node-to-c` answers `void*` for any cell head it does not know, which
-; would declare a pointer-sized object over a `(Maybe i32)` or an array.
+; would declare a pointer-sized object over a `(Maybe i32)`. An array is spelled
+; (`arr_val` above).
 (deftest w9-cheader-global-skips-unspellable
   (let (l:CLib (try (c-lib "clib" (globals-lib)))
         h:StrView (c-lib-text &l))
@@ -149,8 +151,6 @@
     ; classifier answers, not the template-instance one.
     (try (check-contains
            h "/* m-skip: uses an error-union or option type; not exported */"))
-    (try (check-contains
-           h "/* arr-skip: type has no C spelling here; not exported */"))
     (drop &l)
     (return (ok))))
 
@@ -166,11 +166,11 @@
 #include \"clib.h\"
 int main(void) {
     int b = bump();
-    printf(\"%d %d %lld %d %d\\n\", counter, limit, (long long)tick_count, b, rec_val.a);
+    printf(\"%d %d %lld %d %d %d\\n\", counter, limit, (long long)tick_count, b, rec_val.a, (int)sizeof arr_val);
     return 0;
 }
 ")))
-    (try (check-eq (string-as-view &out) "8 99 41 8 0\n"))
+    (try (check-eq (string-as-view &out) "8 99 41 8 0 16\n"))
     (drop &out)
     (drop &l)
     (return (ok))))

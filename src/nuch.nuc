@@ -18,15 +18,15 @@
 
 (defn emit-nuch-list (form:ptr):void
   (dotimes (i (node-len form))
-    (when (!= i 0) (emit (as ptr stdout) " "))
-    (print-node (node-at form i))))
+    (when (!= i 0) (emit g-hdr " "))
+    (header-print-node (node-at form i))))
 
 (defn emit-nuch-defstruct (form:ptr):void
-  (emit (as ptr stdout) "(defstruct ")
+  (emit g-hdr "(defstruct ")
   (dotimes (i (- (node-len form) 1))
-    (when (!= i 0) (emit (as ptr stdout) " "))
-    (print-node (node-at form (+ i 1))))
-  (emit (as ptr stdout) ")\n"))
+    (when (!= i 0) (emit g-hdr " "))
+    (header-print-node (node-at form (+ i 1))))
+  (emit g-hdr ")\n"))
 
 ; Emit a new-style return operand for a .nuch declare/defmethod entry: ` :spell`
 ; for a scalar / colon-chain type (a NODE-SYM after defn-ret-node normalization,
@@ -39,8 +39,8 @@
     (when (= rn null) (return))
     (let (rnn:ptr:Node (as &Node rn))
       (if (= (rnn 'kind) NODE-LIST)
-        (do (emit (as ptr stdout) " ") (print-node rn))
-        (emit (as ptr stdout) " :" (rnn 's))))))
+        (do (emit g-hdr " ") (header-print-node rn))
+        (emit g-hdr " :" (rnn 's))))))
 
 ; A `defn`'s declaration attributes ride the exported entry, after the return
 ; operand — they are a property of the signature, so the importing unit's
@@ -60,55 +60,55 @@
         body:i32 (defn-scan-attrs (as raw:Node form) bstart
                    (as &i32 &nr) (as &i32 &rt)
                    (node-line (as raw:Node form) 0)))
-    (when (!= nr 0) (emit (as ptr stdout) " :noreturn"))
-    (when (!= rt 0) (emit (as ptr stdout) " :returns-twice"))))
+    (when (!= nr 0) (emit g-hdr " :noreturn"))
+    (when (!= rt 0) (emit g-hdr " :returns-twice"))))
 
 ; S3: a .nuch header names functions in the new signature style — `NAME (params)
 ; :ret` — matching every rewritten source form. Both signature styles funnel
 ; through the bare name (defn-name-only) + normalized return (emit-nuch-ret), so a
 ; still-legacy source (e.g. an unmigrated import) exports the same new-style entry.
 (defn emit-nuch-declare (form:ptr):void
-  (emit (as ptr stdout) "(declare " (defn-name-only (node-at form 1)) " (")
+  (emit g-hdr "(declare " (defn-name-only (node-at form 1)) " (")
   (let (params:ptr (node-at form 2))
     (dotimes (i (node-len params))
-      (when (!= i 0) (emit (as ptr stdout) " "))
-      (print-node (node-at params i))))
-  (emit (as ptr stdout) ")")
+      (when (!= i 0) (emit g-hdr " "))
+      (header-print-node (node-at params i))))
+  (emit g-hdr ")")
   (emit-nuch-ret form)
   (emit-nuch-fn-attrs form)
-  (emit (as ptr stdout) ")\n"))
+  (emit g-hdr ")\n"))
 
 (defn emit-nuch-defconst (form:ptr):void
-  (emit (as ptr stdout) "(defconst ")
-  (print-node (node-at form 1))
-  (emit (as ptr stdout) " ")
-  (print-node (node-at form 2))
-  (emit (as ptr stdout) ")\n"))
+  (emit g-hdr "(defconst ")
+  (header-print-node (node-at form 1))
+  (emit g-hdr " ")
+  (header-print-node (node-at form 2))
+  (emit g-hdr ")\n"))
 
 (defn emit-nuch-defenum (form:ptr):void
-  (emit (as ptr stdout) "(defenum")
+  (emit g-hdr "(defenum")
   (dotimes (i (- (node-len form) 1))
-    (emit (as ptr stdout) " ")
-    (print-node (node-at form (+ i 1))))
-  (emit (as ptr stdout) ")\n"))
+    (emit g-hdr " ")
+    (header-print-node (node-at form (+ i 1))))
+  (emit g-hdr ")\n"))
 
 (defn emit-nuch-defmacro (form:ptr):void
-  (print-node form)
-  (emit (as ptr stdout) "\n"))
+  (header-print-node form)
+  (emit g-hdr "\n"))
 
 ; Export one overloaded method, carrying its mangled symbol explicitly so the
 ; importer can declare it and register it for dispatch (new-style signature):
 ;   (defmethod "@area.pCircle" area ((c (ptr Circle))) :i32)
 (defn emit-nuch-defmethod (form:ptr mangled:Symbol):void
-  (emit (as ptr stdout) "(defmethod \"" mangled "\" " (defn-name-only (node-at form 1)) " (")
+  (emit g-hdr "(defmethod \"" mangled "\" " (defn-name-only (node-at form 1)) " (")
   (let (params:ptr (node-at form 2))
     (dotimes (i (node-len params))
-      (when (!= i 0) (emit (as ptr stdout) " "))
-      (print-node (node-at params i))))
-  (emit (as ptr stdout) ")")
+      (when (!= i 0) (emit g-hdr " "))
+      (header-print-node (node-at params i))))
+  (emit g-hdr ")")
   (emit-nuch-ret form)
   (emit-nuch-fn-attrs form)
-  (emit (as ptr stdout) ")\n"))
+  (emit g-hdr ")\n"))
 
 ; A solitary function exports as a plain (declare ...); an overloaded one
 ; exports a (defmethod ...) per method so each keeps its distinct symbol. A
@@ -120,8 +120,8 @@
 ; and emit-defn skip consult, so the three never disagree.
 (defn emit-nuch-defn (form:ptr):void
   (when (!= (defn-is-generic-template form) 0)
-    (print-node form)
-    (emit (as ptr stdout) "\n")
+    (header-print-node form)
+    (emit g-hdr "\n")
     (return))
   (let (mangled:Symbol (defn-form-mangled-name form))
     (if (not (symbol-none? mangled))
@@ -131,8 +131,8 @@
 ; Protocols and conformances export verbatim — the importer re-registers them
 ; (and trusts the recorded conformance rather than re-checking).
 (defn emit-nuch-defprotocol (form:ptr):void
-  (print-node form)
-  (emit (as ptr stdout) "\n"))
+  (header-print-node form)
+  (emit g-hdr "\n"))
 
 ; Export every node of the form, not just the subject (1) and protocol (2). A
 ; template-subject extend may carry a trailing `:where` clause (assoc-types-
@@ -143,25 +143,25 @@
 ; extend (node-len == 3) this prints `(extend Subject Protocol)`, byte-identical
 ; to the previous subject+protocol-only emission.
 (defn emit-nuch-extend (form:ptr):void
-  (emit (as ptr stdout) "(extend")
+  (emit g-hdr "(extend")
   (dotimes (i (- (node-len form) 1))
-    (emit (as ptr stdout) " ")
-    (print-node (node-at form (+ i 1))))
-  (emit (as ptr stdout) ")\n"))
+    (emit g-hdr " ")
+    (header-print-node (node-at form (+ i 1))))
+  (emit g-hdr ")\n"))
 
 ; Cast rules export verbatim (the conv-fn is exported separately as a declare,
 ; which must precede this form in the header). The importer re-runs emit-defcast.
 (defn emit-nuch-defcast (form:ptr):void
-  (print-node form)
-  (emit (as ptr stdout) "\n"))
+  (header-print-node form)
+  (emit g-hdr "\n"))
 
 ; A module's top-level globals export as `extern` so importers see the symbol
 ; without its initializer (the producing module owns the definition). Index 1 is
 ; the desugared name:type node; any initializer is intentionally dropped.
 (defn emit-nuch-extern (form:ptr):void
-  (emit (as ptr stdout) "(extern ")
-  (print-node (node-at form 1))
-  (emit (as ptr stdout) ")\n"))
+  (emit g-hdr "(extern ")
+  (header-print-node (node-at form 1))
+  (emit g-hdr ")\n"))
 
 ; The import forms that bind a name in this file's environment — a prefix, or a
 ; flattened namespace other than `user` (which every file already sees) — so the
@@ -178,17 +178,17 @@
               ; Spelled explicitly: the prefix may have been a derived default.
               (let (prefix:Symbol (import-form-prefix f (f 'line)))
                 (when (not (symbol-none? prefix))
-                  (emit (as ptr stdout) "(import-prefixed ")
-                  (print-node lib)
-                  (emit (as ptr stdout) " " prefix ")\n")))
+                  (emit g-hdr "(import-prefixed ")
+                  (header-print-node lib)
+                  (emit g-hdr " " prefix ")\n")))
             (or (= h "import-use") (= h "import-only"))
               (let (path:Symbol (import-form-path lib (f 'line)))
                 (when (and (not (symbol-none? path)) (!= (import-path-ns path) "user"))
-                  (print-node f)
-                  (emit (as ptr stdout) "\n")))
+                  (header-print-node f)
+                  (emit g-hdr "\n")))
             ; Always a prefix, and the one binding that reaches private names.
             (and (= h "unsafe/import-private") (>= (node-len f) 3))
-              (do (print-node f) (emit (as ptr stdout) "\n"))
+              (do (header-print-node f) (emit g-hdr "\n"))
             true 0))))))
 
 ; A C header's constant in an array extent is written as its value: the importer
@@ -249,7 +249,7 @@
   ; exported `(declare foo ((x i32)))` — a declaration with no return type — for
   ; a program that does not compile, and a consumer would link against it.
   (validate-header-forms forms)
-  (emit (as ptr stdout) "; .nuch header for " source-file "\n")
+  (emit g-hdr "; .nuch header for " source-file "\n")
   ; Stage 12 N6: a namespaced library carries its namespace into the header so an
   ; importer's do-import re-runs the SAME ns-ir-base computation when it
   ; re-resolves the symbols — a solitary `(declare area:i32 ...)` then rebinds to
@@ -258,10 +258,10 @@
   ; prefix (so the importer mangles identically). Under `user` neither is emitted,
   ; so existing libraries' headers stay byte-identical.
   (when (!= g-current-ns "user")
-    (emit (as ptr stdout) "(ns " g-current-ns ")\n")
+    (emit g-hdr "(ns " g-current-ns ")\n")
     (let (override:Symbol (ns-ir-prefix-get g-current-ns))
       (when (not (symbol-none? override))
-        (emit (as ptr stdout) "(set-ir-prefix \"" override "\")\n"))))
+        (emit g-hdr "(set-ir-prefix \"" override "\")\n"))))
   (emit-nuch-import-env forms)
   (dotimes (fi (node-len forms))
     (let (fc:raw:Node (as raw:Node (node-at forms fi)))
@@ -276,7 +276,7 @@
               "defstruct"    (emit-nuch-defstruct (as ptr f))
               ; defunion exports verbatim (template or monomorphic); the
               ; importer registers the type and declares the constructors.
-              "defunion"     (do (print-node (as ptr f)) (emit (as ptr stdout) "\n"))
+              "defunion"     (do (header-print-node (as ptr f)) (emit g-hdr "\n"))
               "defn"         (emit-nuch-defn (as ptr f))
               "defprotocol"  (emit-nuch-defprotocol (as ptr f))
               "extend"       (emit-nuch-extend (as ptr f))
@@ -291,7 +291,7 @@
               ; `export`: a facade's re-exports are its interface; the importer
               ; re-runs them against the imports the header carries.
               (:or "deferror" "deftype" "export")
-                             (do (print-node (as ptr f)) (emit (as ptr stdout) "\n"))
+                             (do (header-print-node (as ptr f)) (emit g-hdr "\n"))
               "defenum"      (emit-nuch-defenum (as ptr f))
               "defmacro"     (emit-nuch-defmacro (as ptr f))
               0)))))))
@@ -368,7 +368,13 @@
         (let (p:ptr (node-at params-node j)
               pn:Symbol (symbol-none)
               pline:i32 (node-line p line)
-              pty:ptr (extract-name-and-type p (as &Symbol &pn) pline))
+              ; Only a name-shaped parameter may be named; `:i64` and `((fn …) …)` are types.
+              named:bool (or (node-empty? (as raw:Node p)) (= (node-kind p) NODE-SYM)
+                             (and (= (node-kind p) NODE-LIST)
+                                  (case (node-kind (as ptr (node-first (as raw:Node p))))
+                                    (:or NODE-SYM NODE-KEYWORD) true
+                                    false)))
+              pty:ptr (if named (extract-name-and-type p (as &Symbol &pn) pline) null))
           (when (= pty null)
             (set! pty (declare-param-type (as raw:Node p) pline)))
           (set! (aref (as &ptr ptypes) j) pty)))

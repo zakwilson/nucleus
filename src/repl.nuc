@@ -801,7 +801,8 @@
               ; new impl transparently.
               (let (name-node:ptr (node-at form 1)
                     fname:Symbol (symbol-none)  ret-name:Symbol (symbol-none))
-                (when (!= name-node null)
+                (when (not (node-empty? (as raw:Node name-node)))
+                  (require-sig-name (as raw:Node name-node) "defn: name" (f 'line))
                   (extract-name-type name-node (as &Symbol &fname)
                                                (as &Symbol &ret-name)))
                 (cond

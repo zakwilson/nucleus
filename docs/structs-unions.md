@@ -149,9 +149,11 @@ through it, at any depth, including through an anonymous union. A name supplied
 by **two** anonymous members is ambiguous and refused, as C refuses it; give the
 member you mean a name.
 
-`T` must be a struct or a union. `--emit-cheader` **refuses** an `:anon` member:
-C writes an anonymous member by inlining its body, so a member naming a declared
-type has no standard C spelling.
+`T` must be a struct or a union. `--emit-cheader` writes an `:anon` member over
+an inline body as C's own anonymous member (`struct { int32_t a; int32_t b; };`).
+It **refuses** an `:anon` member that names a declared type, directly or through a
+`deftype`. C writes an anonymous member by inlining its body, so that member has
+no standard C spelling.
 
 **On import**, `struct { … };` and `union { … };` with no declarator are read as
 anonymous members, which is how `sigcontext` and `rusage` are written.
@@ -233,7 +235,12 @@ can be written directly:
 ```
 
 The same applies to every `set!` place, union-variant construction, and
-call arguments (which have always accepted it). Two constraints:
+call arguments (which have always accepted it). An overloaded or generic call
+counts the literal as a by-value `S` too: `(conj &v (Pt 1 2))` on a
+`(Vector Pt)` binds `T = Pt`, and `(rq &v (Pt 3 4))` reaches a `p:Pt` overload.
+That reading is tried only when the literal's own `&S` finds no method, so an
+`&S` overload still wins and `(idt (Pt 1 2))` over `(x:T)` still binds
+`T = &Pt`. A user operator overload does not take it yet. Two constraints:
 
 * The struct type must match exactly — a compound literal of a *different*
   struct in an `S` slot is still a type mismatch.

@@ -80,6 +80,7 @@
 ; Is `m` reachable through the spelling that asked for it? `ns` names the one
 ; namespace a QUALIFIED spelling denotes; the none-Symbol asks the bare question.
 (defn method-visible-as (m:ptr:Method ns:Symbol):i32
+  (when (= (binding-visible (m 'priv) (m 'src-ns)) 0) (return 0))
   (when (= (symbol-none? ns) false) (return (method-in-ns m ns)))
   (let (s:Symbol (m 'src-ns))
     ; An intrinsic operator seed belongs to no file, so no import can put it out
@@ -104,7 +105,7 @@
         n:i32 (unsafe/cast i32 (count (gg 'methods)))
         keep:i32 0)
     (dotimes (i n)
-      (when (!= (method-visible-as (as &Method (invoke (gg 'methods) i:usize)) ns) 0)
+      (when (method-reachable-as (as &Method (invoke (gg 'methods) i:usize)) ns (gg 'name))
         (inc! keep)))
     (when (= keep 0) (return null))
     (when (= keep n) (return (as ptr gg)))
@@ -114,8 +115,49 @@
       (set! (f 'ir-prefix) (gg 'ir-prefix))
       (dotimes (i n)
         (let (m:ptr:Method (as &Method (invoke (gg 'methods) i:usize)))
-          (when (!= (method-visible-as m ns) 0) (conj (f 'methods) (as &Method m)))))
+          (when (method-reachable-as m ns (gg 'name)) (conj (f 'methods) (as &Method m)))))
       (return (as ptr f)))))
+
+; A method this spelling reaches: through its namespace, or as a conformer's answer
+; to a protocol method this file can name, which dispatch finds wherever it is defined.
+(defn method-reachable-as (m:ptr:Method ns:Symbol name:Symbol):bool
+  (when (!= (method-visible-as m ns) 0) (return true))
+  (return (method-answers-protocol-here m ns name)))
+
+; Does `m` answer method `name` of a protocol whose methods this spelling names —
+; bare, or through namespace `ns` — for a type that conforms to it?
+(defn method-answers-protocol-here (m:ptr:Method ns:Symbol name:Symbol):bool
+  (when (or (!= (m 'kind) METHOD-USER) (= (m 'param-types) null)) (return false))
+  (doseq (p g-protocols (VecIter &Protocol))
+    (when (and (proto-declares-method? p name)
+               (!= (binding-visible (p 'priv) (p 'src-ns)) 0)
+               (if (symbol-none? ns)
+                 (!= (ns-reachable-bare (p 'src-ns)) 0)
+                 (= (p 'src-ns) ns)))
+      (dotimes (i (m 'num-params))
+        (let (pt:raw:Type (aref (as &ptr (m 'param-types)) i))
+          (when (conformance-exact? pt (p 'name)) (return true))
+          (when (and (!= pt null) (= (pt 'kind) TY-PTR)
+                     (conformance-exact? (pt 'elem) (p 'name)))
+            (return true))))))
+  (return false))
+
+(defn proto-declares-method? (p:&Protocol name:Symbol):bool
+  (dotimes (i (p 'num-sigs))
+    (let (hd:raw:Node (node-first (as raw:Node (aref (as &ptr (p 'sigs)) i))))
+      (when (= (node-kind hd) NODE-SYM)
+        (let (nm:Symbol (symbol-none) tail:Symbol (symbol-none))
+          (split-typed (hd 's) (as &Symbol &nm) (as &Symbol &tail))
+          (when (= nm name) (return true))))))
+  (return false))
+
+; A recorded conformance of `t`, by the key dispatch asks (`type-spelling`).
+(defn conformance-exact? (t:raw:Type proto:Symbol):bool
+  (when (= t null) (return false))
+  (let (key:Symbol (type-spelling t))
+    (doseq (c g-conformances (VecIter &Conformance))
+      (when (and (= (c 'type-name) key) (= (c 'proto-name) proto)) (return true))))
+  (return false))
 
 ; Stage 15 B4 — resolve a generic REFERENCE (a source spelling) through the
 ; file's import environment (name-resolution.md §8.2's R2; defect #5, "generics
@@ -159,7 +201,10 @@
     (when (= (r 'status) NR-UNBOUND) (return null))
     (let (g:?ptr:Generic (generic-lookup-exact (r 'bare)))
       (when (= g null) (return null))
-      (return (generic-filter-by-ns (unsafe/cast &Generic g) (r 'ns))))))
+      (let (reach:Symbol (priv-reach-enter spelling)
+            f:?ptr:Generic (generic-filter-by-ns (unsafe/cast &Generic g) (r 'ns)))
+        (set! g-priv-reach-ns reach)
+        (return f)))))
 
 ; Allocate + initialise a Generic WITHOUT registering it. Split out in Stage 15
 ; W8 G-5 because `build-generics` — which is `g-generics`' own initializer —
@@ -837,7 +882,8 @@
                     (set! (m0 'ir-name) (symbol-intern (fstr "@"
                                               (ns-compose (method-ir-prefix gg (as raw:Method m0))
                                                      (ir-name-token (symbol-as-view (strip-priv-qualifier (gg 'name))))))))
-                    (scope-define g-globals (gg 'name) (m0 'fn-type) (symbol-as-view (m0 'ir-name)) 0)))
+                    (let (fs:&Sym (scope-define g-globals (gg 'name) (m0 'fn-type) (symbol-as-view (m0 'ir-name)) 0))
+                      (when (!= (m0 'priv) 0) (set! (fs 'sym-private) 1)))))
                 (do
                   (set! (gg 'mangled) 1)
                   (let (i:i32 0)
@@ -986,7 +1032,71 @@
 ; a safe widen / untyped-int-literal adaptation on every argument (§10.3); the
 ; caller (emit-generic-call) coerces the args to the chosen params. arg-nodes is
 ; the parallel array of argument source nodes (or null) used to spot literals.
-(defn generic-resolve (g:raw:Generic argtypes:ptr arg-nodes:ptr nargs:i32 line:i32 want:raw:Type):&Method
+(defn generic-resolve (g:raw:Generic argtypes:ptr arg-nodes:ptr nargs:i32 line:i32 want:raw:Type
+                       scope:raw:Scope):&Method
+  (let (gg:raw:Generic g
+        infer-tyvar:Symbol (symbol-none)
+        constraint-fail:i32 0)
+    (when-some (m (generic-resolve-tiers g argtypes arg-nodes nargs line want
+                                         &infer-tyvar &constraint-fail))
+      (return m))
+    ; Asked only once the `&S` reading has failed, so no resolving call moves.
+    (let (lt:ptr (literal-arg-types argtypes arg-nodes nargs scope)
+          i2:Symbol (symbol-none)
+          c2:i32 0)
+      (when (!= lt null)
+        (when-some (m (generic-resolve-tiers g lt arg-nodes nargs line want &i2 &c2))
+          (return m))))
+    (let (bsaved:BindCall (bind-call-arm (gg 'name) line))
+      (refuse-unknown-where gg nargs)
+      (set! g-bind-call bsaved))
+    (when (= (symbol-none? infer-tyvar) false)
+      (die-at line
+        (fstr "cannot infer type variable '" infer-tyvar "' for '" (gg 'name)
+              "': no expected type at this position — annotate the binding")))
+    (when (!= constraint-fail 0)
+      (die-at line
+        (fstr "no matching method for '" (gg 'name)
+              "': arguments do not satisfy the required protocol constraint")))
+    (die-at line (fstr "no matching method for overloaded '" (gg 'name)
+                       "' with argument types (" (arg-type-spellings argtypes nargs) ")"))))
+
+; A `(S …)` literal argument is `(ref S)` over a stack slot, so a by-value `S`
+; parameter may take it, as a plain call's does. Resolved as `emit-dispatch` resolves the head.
+(defn arg-struct-literal? (n:raw:Node at:raw:Type scope:raw:Scope):bool
+  (when (or (= n null) (= at null) (!= (node-kind n) NODE-LIST) (= (node-len (as ptr n)) 0))
+    (return false))
+  (when (or (!= (at 'kind) TY-PTR) (= (at 'elem) null)
+            (!= (-> (at 'elem) (unsafe/cast &Type _) (_ 'kind)) TY-STRUCT))
+    (return false))
+  (let (head:raw:Node (node-first n)
+        sd:ptr (-> (at 'elem) (unsafe/cast &Type _) (_ 'sdef)))
+    (when (= (node-kind head) NODE-LIST)
+      (let (hcar:raw:Node (node-first head))
+        (return (and (= (node-kind hcar) NODE-SYM)
+                     (!= (as ptr (struct-template-lookup-ref (hcar 's))) null)))))
+    (when (or (!= (node-kind head) NODE-SYM) (!= (find-macro (head 's)) null)) (return false))
+    (if-some (hit (binding-find (head 's) scope BK-DISPATCH-FIRST BINDING-KIND-COUNT 0 NK-NONE))
+      (return (and (= (hit 'kind) BK-STRUCT) (= (hit 'payload) sd)))
+      (return false))))
+
+; `argtypes` with each struct-literal argument read as its struct, or null when none is one.
+(defn literal-arg-types (argtypes:ptr arg-nodes:ptr nargs:i32 scope:raw:Scope):ptr
+  (when (= arg-nodes null) (return null))
+  (let (out:ptr null)
+    (dotimes (i nargs)
+      (let (at:raw:Type (aref (as &ptr argtypes) i))
+        (when (arg-struct-literal? (aref (as &ptr arg-nodes) i) at scope)
+          (when (= out null)
+            (set! out (arena-alloc (* (as i64 (+ nargs 1)) (ptr-bytes))))
+            (dotimes (k nargs) (set! (aref (as &ptr out) k) (aref (as &ptr argtypes) k))))
+          (set! (aref (as &ptr out) i) (at 'elem)))))
+    (return out)))
+
+; generic-resolve's three tiers; null when none resolves, with the reason a
+; diagnostic needs left in `out-infer` / `out-cfail`.
+(defn generic-resolve-tiers (g:raw:Generic argtypes:ptr arg-nodes:ptr nargs:i32 line:i32 want:raw:Type
+                             out-infer:&Symbol out-cfail:&i32):?&Method
   (let (gg:raw:Generic g
         found:?ptr:Method null)
     ; Pass 0 is strict type-eq; pass 1 additionally lets a struct value reach a
@@ -1067,19 +1177,9 @@
         (when (= r 2)
           (return (generic-instantiate g wmethod wbound
                     (subst-param-types-bound wmethod wbound line) nargs line))))
-      (bind-call-arm (gg 'name) line)
-      (refuse-unknown-where gg nargs)
-      (set! g-bind-call bsaved)
-      (when (= (symbol-none? infer-tyvar) false)
-        (die-at line
-          (fstr "cannot infer type variable '" infer-tyvar "' for '" (gg 'name)
-                "': no expected type at this position — annotate the binding")))
-      (when (!= constraint-fail 0)
-        (die-at line
-          (fstr "no matching method for '" (gg 'name)
-                "': arguments do not satisfy the required protocol constraint")))
-      (die-at line (fstr "no matching method for overloaded '" (gg 'name)
-                         "' with argument types (" (arg-type-spellings argtypes nargs) ")")))))
+      (set! @out-infer infer-tyvar)
+      (set! @out-cfail constraint-fail)
+      (return null))))
 
 ; Resolve an operator call to a USER overload (exact, then a unique widen/literal
 ; match), or null to fall back to the built-in numeric/pointer peephole. Unlike
@@ -1278,6 +1378,8 @@
   ; extracted from parse-type-name, the set this mirrors (context/conventions.md,
   ; "A concrete type read as a TYVAR silently drops a whole instantiation").
   (when (!= (as ptr (builtin-type-name name)) null) (return 1))
+  ; A marker is a type some other file already wrote, never a variable of this one.
+  (when (!= (as ptr (env-arg-of name)) null) (return 1))
   (when (!= (as ptr (struct-lookup-ref name)) null) (return 1))
   (when (!= (as ptr (struct-template-lookup-ref name)) null) (return 1))
   (when (!= (as ptr (union-template-lookup-ref name)) null) (return 1))
@@ -1493,6 +1595,30 @@
 (defn collect-pattern-tyvars (node:raw:Node out-tyvars:ptr io-ntv:ptr):void
   (collect-tyvars-at node (symbol-none) 0 out-tyvars io-ntv))
 
+; 1 for an inline `(struct …)`, 2 for an inline `(union …)`, else 0.
+(defn node-inline-aggregate (node:raw:Node):i32
+  (when (!= (node-kind node) NODE-LIST) (return 0))
+  (let (head:raw:Node (node-first node))
+    (when (!= (node-kind head) NODE-SYM) (return 0))
+    (when (= (head 's) "struct") (return 1))
+    (when (= (head 's) "union") (return 2))
+    (return 0)))
+
+; An inline aggregate's member `a:T` or `(a T)`: its type node, name in *out-name.
+; Null for any other shape (an attributed member), which no pattern walker reads.
+(defn aggregate-member-split (mem:raw:Node out-name:&Symbol line:i32):raw:Node
+  (when (= (node-kind mem) NODE-SYM)
+    (let (nm:Symbol (symbol-none) tail:Symbol (symbol-none))
+      (split-typed (mem 's) (as &Symbol &nm) (as &Symbol &tail))
+      (when (symbol-none? tail) (return null))
+      (set! (aref out-name 0) nm)
+      (return (intern-node tail))))
+  (when (and (= (node-kind mem) NODE-LIST) (= (node-len (as ptr mem)) 2)
+             (= (node-kind (node-first mem)) NODE-SYM))
+    (set! (aref out-name 0) ((node-first mem) 's))
+    (return (node-at (as ptr mem) 1)))
+  (return null))
+
 ; `in-tmpl` names the template `node` is an argument of (none at the top level),
 ; and `line` is the enclosing form's. A sigil, a pointer wrapper in either
 ; spelling (`(ref T)`, `ref:T`) and an alias all leave their operand in that
@@ -1532,9 +1658,18 @@
         (when (>= g-type-alias-depth MAX-TYPE-ALIAS-DEPTH)
           (die-at nline "type alias expands into a cycle"))
         (set! g-type-alias-depth (+ g-type-alias-depth 1))
-        (collect-tyvars-at ex in-tmpl nline out-tyvars io-ntv)
+        ; An aggregate body's members are the alias's arguments, so they are
+        ; template-argument positions, as `(Vector T)`'s are.
+        (collect-tyvars-at ex (if (!= (node-inline-aggregate ex) 0) ((node-first n) 's) in-tmpl)
+                           nline out-tyvars io-ntv)
         (set! g-type-alias-depth (- g-type-alias-depth 1))
         (return)))
+    (when (!= (node-inline-aggregate node) 0)
+      (dotimes (mi (- (node-len (as ptr node)) 1))
+        (let (mname:Symbol (symbol-none))
+          (collect-tyvars-at (aggregate-member-split (node-at (as ptr node) (+ mi 1)) &mname nline)
+                             in-tmpl nline out-tyvars io-ntv)))
+      (return))
     (let (nargs:i32 (- (node-len (as ptr node)) 1))
       ; CT-D: a colon chain that nests (x:ref:Vector:ref:Node) lands here as an
       ; over-long argument list; without the arity guards its surplus symbols
@@ -1663,10 +1798,32 @@
                   (return 1))
                 (return 0)))
             0)
+          ; An inline aggregate over a tyvar vs the anonymous one it built: field by field.
+          (let (agg:i32 (node-inline-aggregate pat))
+            (when (and (!= agg 0) (!= (node-mentions-tyvar pat tyvars ntv) 0))
+              (return (unify-aggregate pat agg at tyvars ntv out-bound line))))
           ; Any other compound type (anonymous struct, fn pointer): parse concretely.
           (return (type-eq (parse-type-from-node pat line) at)))
       0)
     (return 0)))
+
+; The anonymous StructDef's own registry name says which constructor built it.
+(defn unify-aggregate (pat:raw:Node agg:i32 at:raw:Type tyvars:ptr ntv:i32 out-bound:ptr line:i32):i32
+  (when (!= (at 'kind) (if (= agg 1) TY-STRUCT TY-UNION)) (return 0))
+  (let (sd:raw:StructDef (at 'sdef)
+        nmem:i32 (- (node-len (as ptr pat)) 1))
+    (when (or (= sd null) (!= (sd 'num-fields) nmem)
+              (not (strview-has-prefix (symbol-as-view (sd 'name))
+                                       (if (= agg 1) "__anon_struct_h" "__anon_union_h"))))
+      (return 0))
+    (dotimes (i nmem)
+      (let (mname:Symbol (symbol-none)
+            mty:raw:Node (aggregate-member-split (node-at (as ptr pat) (+ i 1)) &mname line)
+            f:&Field (field-at (sd 'fields) i))
+        (when (or (= mty null) (!= mname (f 'name))
+                  (= (unify-tpat mty (f 'type) tyvars ntv out-bound line) 0))
+          (return 0))))
+    (return 1)))
 
 ; Does this defn signature mention a registered struct template applied to free
 ; (tyvar) symbols in any parameter or return type? If so it is a receiver-inferred
@@ -1750,6 +1907,15 @@
             (dotimes (ai (- (node-len (as ptr pat)) 1))
               (when (!= (pattern-determines-tyvar (node-at (as ptr pat) (+ ai 1)) tvname) 0)
                 (return 1)))
+            (return 0))
+          (when (!= (node-inline-aggregate pat) 0)
+            (dotimes (mi (- (node-len (as ptr pat)) 1))
+              (let (mname:Symbol (symbol-none))
+                (when (!= (pattern-determines-tyvar
+                            (aggregate-member-split (node-at (as ptr pat) (+ mi 1)) &mname
+                                                    (node-line (as ptr pat) 0))
+                            tvname) 0)
+                  (return 1))))
             (return 0)))
       0)
     (return 0)))
@@ -2091,10 +2257,12 @@
 (defn conf-arg-display (spelling:Symbol line:i32):StrView
   (return (type-display (conf-arg-to-type spelling line))))
 
-; A conformance key in a message: a pointer key (`ptr:T`) is re-read and spelled;
-; a struct, template or scalar key already is its spelling.
+; A conformance key in a message: a pointer key (`ptr:T`) is re-read and spelled,
+; a stamped instance's (`Vector.pPt`) printed from its origin; any other already
+; is its spelling.
 (defn key-display (key:Symbol line:i32):StrView
   (when (symbol-contains-byte key 58) (return (conf-arg-display key line)))
+  (when-some (sd (lookup-struct key)) (return (sdef-display sd)))
   (return (symbol-as-view key)))
 
 ; Assoc-types A2 (§3.5): after the positional unifier has bound the parameter
@@ -3721,7 +3889,9 @@
     ; Stage 15 B5: `defprotocol-`'s privacy is enforced HERE, in the reference
     ; resolver, and not in `protocol-lookup-exact` — that one is the KEY lookup
     ; registration itself uses, and a define must always find its own entry.
-    (let (hit:?ptr:Protocol (protocol-visible (protocol-lookup-exact (r 'canonical))))
+    (let (reach:Symbol (priv-reach-enter name)
+          hit:?ptr:Protocol (protocol-visible (protocol-lookup-exact (r 'canonical))))
+      (set! g-priv-reach-ns reach)
       (when (!= hit null) (return hit))
       ; A qualified reference names exactly one namespace: no fallback.
       (when (= (r 'status) NR-QUALIFIED) (return null))
@@ -4395,6 +4565,8 @@
               (when (!= (node-kind sig) NODE-LIST)
                 (die-at (node-line sig (ff 'line))
                   "defprotocol: method signature must be a list, e.g. (name (params):ret)"))
+              (require-sig-name (as raw:Node snn) "defprotocol: method name"
+                                (node-line sig (ff 'line)))
               ; S4: reject a legacy `name:ret` / list-head `(name ret)` method sig
               ; at registration (protocol sigs are stored verbatim and parsed
               ; lazily, so this is the one def-time chokepoint). New-style sigs put
@@ -4708,6 +4880,10 @@
                 null
                 (gbind-decl-type pn (as raw:Method m) line)))))
     (set! (m 'param-types) ptypes)
+    ; The protocol's file, so `generic-sig-satisfied` reads a nested parameter there.
+    (set! (m 'src-ns) g-current-ns)
+    (set! (m 'src-file) g-source-path)
+    (set! (m 'src-imports) g-file-imports)
     (let (rn:raw:Node (node-at csig 2))
       (when (and (!= rn null) (= (node-kind rn) NODE-SYM))
         (let (idx:i32 (tyvar-index-of (rn 's) tyvars ntv))
@@ -4718,6 +4894,135 @@
             true 0))))
     (return m)))
 
+(defn canon-list (head:StrView items:ptr n:i32 line:i32):raw:Node
+  (let (acc:raw:Node null
+        i:i32 (- n 1))
+    (while (>= i 0)
+      (set! acc (node-cons (aref (as &ptr items) i) acc line))
+      (set! i (- i 1)))
+    (return (node-cons (as ptr (intern-node (symbol-intern head))) acc line))))
+
+; A pattern as one shape whatever its spelling, read in the current file; null if
+; unmodelled. Shapes: design/progress.md, "a nested signature parameter matched by shape".
+(defn tpat-canon (node:raw:Node tyvars:ptr ntv:i32 line:i32):raw:Node
+  (when (= node null) (return null))
+  (let (nline:i32 (node-line (as ptr node) line)
+        items:ptr (arena-alloc (* (as i64 (+ (node-len (as ptr node)) 2)) (ptr-bytes))))
+    (when (= (node-mentions-tyvar node tyvars ntv) 0)
+      (set! (aref (as &ptr items) 0)
+            (as ptr (intern-node (type-spelling (parse-type-from-node (as ptr node) nline)))))
+      (return (canon-list "#ty" items 1 nline)))
+    (let (ex:raw:Node (type-alias-apply node nline))
+      (when (!= ex null)
+        (when (>= g-type-alias-depth MAX-TYPE-ALIAS-DEPTH)
+          (die-at nline "type alias expands into a cycle"))
+        (set! g-type-alias-depth (+ g-type-alias-depth 1))
+        (let (r:raw:Node (tpat-canon ex tyvars ntv nline))
+          (set! g-type-alias-depth (- g-type-alias-depth 1))
+          (return r))))
+    (let (run:StrView "" op:raw:Node (sigil-split node nline &run))
+      (when (!= op null)
+        (let (c:raw:Node (tpat-canon op tyvars ntv nline))
+          (when (= c null) (return null))
+          (set! (aref (as &ptr items) 0) (as ptr (intern-node (symbol-intern run))))
+          (set! (aref (as &ptr items) 1) (as ptr c))
+          (return (canon-list "#sig" items 2 nline)))))
+    (when (= (node-kind node) NODE-SYM)
+      (let (split:raw:Node (colon-spelling-node node nline))
+        (when (!= split null) (return (tpat-canon split tyvars ntv nline))))
+      (when (< (tyvar-index-of (node 's) tyvars ntv) 0) (return null))
+      (set! (aref (as &ptr items) 0) (as ptr node))
+      (return (canon-list "#tv" items 1 nline)))
+    (when (!= (node-kind node) NODE-LIST) (return null))
+    (when (!= (node-is-ptr-wrapper node) 0)
+      (let (c:raw:Node (tpat-canon (wrapper-inner-pattern node) tyvars ntv nline))
+        (when (= c null) (return null))
+        (set! (aref (as &ptr items) 0) (as ptr c))
+        (return (canon-list "#ref" items 1 nline))))
+    (let (nargs:i32 (- (node-len (as ptr node)) 1)
+          key:Symbol (symbol-none)
+          agg:i32 (node-inline-aggregate node))
+      (if-some (st (node-template-of node))
+        (when (= nargs (st 'ntv)) (set! key (st 'name)))
+        (if-some (ut (node-union-template-of node))
+          (when (= nargs (ut 'ntv)) (set! key (ut 'name)))
+          0))
+      (when (and (symbol-none? key) (= agg 0)) (return null))
+      (when (not (symbol-none? key))
+        (set! (aref (as &ptr items) 0) (as ptr (intern-node key))))
+      (dotimes (i nargs)
+        (let (arg:raw:Node (node-at (as ptr node) (+ i 1))
+              mname:Symbol (symbol-none)
+              sub:raw:Node (if (= agg 0) arg (aggregate-member-split arg &mname nline))
+              c:raw:Node (tpat-canon sub tyvars ntv nline))
+          (when (= c null) (return null))
+          (if (= agg 0)
+            (set! (aref (as &ptr items) (+ i 1)) (as ptr c))
+            (let (pair:ptr (arena-alloc (* 2 (ptr-bytes))))
+              (set! (aref (as &ptr pair) 0) (as ptr c))
+              (set! (aref (as &ptr items) i)
+                    (as ptr (canon-list (symbol-as-view mname) pair 1 nline)))))))
+      (return (if (= agg 0)
+                (canon-list "#app" items (+ nargs 1) nline)
+                (canon-list (if (= agg 1) "#struct" "#union") items nargs nline))))))
+
+(defn canon-sym-at (n:raw:Node i:i32):Symbol
+  (return (-> (node-at (as ptr n) i) (unsafe/cast &Node _) (_ 's))))
+
+; Does canonical pattern `p` match `s`, both from `tpat-canon`? With `bind`, a
+; `(#tv U)` in `p` stands for whatever `s` has there, recorded in `pb` by U's index.
+(defn tpat-match (p:raw:Node s:raw:Node bind:bool ptv:ptr pntv:i32 pb:ptr):bool
+  (let (ph:Symbol ((node-first p) 's))
+    (when (and bind (= ph "#tv"))
+      (let (idx:i32 (tyvar-index-of (canon-sym-at p 1) ptv pntv)
+            cur:raw:Node (aref (as &ptr pb) idx))
+        (when (= cur null)
+          (set! (aref (as &ptr pb) idx) (as ptr s))
+          (return true))
+        (return (tpat-match cur s false ptv pntv pb))))
+    (when (or (!= ph ((node-first s) 's)) (!= (node-len (as ptr p)) (node-len (as ptr s))))
+      (return false))
+    (dotimes (i (- (node-len (as ptr p)) 1))
+      (let (pc:raw:Node (node-at (as ptr p) (+ i 1))
+            sc:raw:Node (node-at (as ptr s) (+ i 1)))
+        (when (!= (node-kind pc) (node-kind sc)) (return false))
+        (if (= (node-kind pc) NODE-SYM)
+          (when (!= (pc 's) (sc 's)) (return false))
+          (when (not (tpat-match pc sc bind ptv pntv pb)) (return false)))))
+    (return true)))
+
+; Does generic `m2` take every argument list `scanon` (the signature's parameters,
+; canonical) admits, under the constraints signature `gm` states?
+(defn generic-pat-admits (m2:raw:Method scanon:ptr np:i32 gm:&Method line:i32):bool
+  (let (ntv:i32 (m2 'num-tyvars)
+        pb:ptr (arena-alloc (* (as i64 (+ ntv 1)) (ptr-bytes)))
+        params:ptr (node-at (m2 'body) 2)
+        here:NameEnv (method-env-enter m2)
+        ok:bool true)
+    (dotimes (k ntv) (set! (aref (as &ptr pb) k) null))
+    (dotimes (i np)
+      (when ok
+        (let (pc:raw:Node (tpat-canon (binding-type-node (node-at params i)) (m2 'tyvars) ntv line))
+          ; An unmodelled conformer parameter keeps the arity-only answer.
+          (when (= pc null) (name-env-set here) (return true))
+          (when (not (tpat-match pc (aref (as &ptr scanon) i) true (m2 'tyvars) ntv pb))
+            (set! ok false)))))
+    (name-env-set here)
+    (when (not ok) (return false))
+    (dotimes (ci (m2 'num-constraints))
+      (let (crec:ref:Constraint (constraints-at (m2 'constraints) ci)
+            uidx:i32 (tyvar-index-of (crec 'var) (m2 'tyvars) ntv)
+            proto:Symbol (constraint-proto crec)
+            b:raw:Node (if (>= uidx 0) (aref (as &ptr pb) uidx) null))
+        (when (and (!= b null) (!= proto "Any"))
+          (let (bh:Symbol ((node-first b) 's)
+                bs:Symbol (canon-sym-at b 1))
+            (when (and (= bh "#tv") (= (caller-has-constraint (as raw:Method gm) bs proto) 0))
+              (return false))
+            (when (and (= bh "#ty") (= (conformance-lookup bs proto) 0))
+              (return false))))))
+    (return true)))
+
 ; Does the conformer's `mname` satisfy generic signature `gm`? Its generic method
 ; must bind for `gm`'s abstract parameters, under constraints `gm` implies.
 (defn generic-sig-satisfied (mname:Symbol gm:&Method check-ret:bool line:i32):bool
@@ -4726,11 +5031,25 @@
     (dotimes (i np)
       (when (= (aref (as &ptr (gm 'param-types)) i) null) (set! exact false)))
     (when (not exact)
-      ; A parameter nesting a variable is not modelled: a generic of that arity must exist.
-      (let (g:ptr (generic-lookup mname))
+      ; A parameter nesting a variable is matched pattern against pattern.
+      (let (g:ptr (generic-lookup mname)
+            scanon:ptr (arena-alloc (* (as i64 (+ np 1)) (ptr-bytes)))
+            modelled:bool true)
         (when (= g null) (return false))
+        (let (here:NameEnv (method-env-enter (as raw:Method gm)))
+          (dotimes (i np)
+            (let (pn:raw:Node (node-at (node-at (gm 'body) 1) i)
+                  tn:raw:Node (if (= (node-kind pn) NODE-LIST)
+                                (binding-type-node pn)
+                                (intern-node (colon-tail (pn 's))))
+                  c:raw:Node (tpat-canon tn (gm 'tyvars) (gm 'num-tyvars) line))
+              (when (= c null) (set! modelled false))
+              (set! (aref (as &ptr scanon) i) (as ptr c))))
+          (name-env-set here))
         (doseq (m2 (-> g (as &Generic _) (_ 'methods)) (VecIter &Method))
-          (when (and (= (m2 'kind) METHOD-GENERIC) (= (m2 'num-params) np)) (return true)))
+          (when (and (= (m2 'kind) METHOD-GENERIC) (= (m2 'num-params) np)
+                     (or (not modelled) (generic-pat-admits (as raw:Method m2) scanon np gm line)))
+            (return true)))
         (return false)))
     (let (rt:ptr (abstract-call-via-generic mname (gm 'param-types) np (as raw:Method gm) line))
       (when (= rt null) (return false))
@@ -4802,7 +5121,7 @@
 ; (tyvars/num-tyvars + the constraints Vector + num-constraints).
 ; A :where-free extend passes the template's own tyvars/ntv, null constraint
 ; arrays, and num-constraints = 0 — identical downstream behaviour to T4.
-(defn tmpl-conformance-add (template:raw:StructTemplate proto:raw:Protocol bindings:ptr nbindings:i32
+(defn tmpl-conformance-add (template:ptr proto:raw:Protocol bindings:ptr nbindings:i32
                                  tyvars:ptr num-tyvars:i32
                                  constraints:raw:ConstraintVec
                                  num-constraints:i32 depth:i32):void
@@ -4852,15 +5171,14 @@
 ; reference in the stamping file and is refused, i.e. no namespaced type could be a
 ; type argument to any template carrying a parametric-protocol `extend`. See
 ; `g-type-key-ok` (src/nucleusc.nuc).
-(defn tmpl-conformance-check-one (c:raw:TmplConformance st:raw:StructTemplate iname:Symbol arg-spellings:ptr nargs:i32 line:i32):void
+(defn tmpl-conformance-check-one (c:raw:TmplConformance st:ptr iname:Symbol arg-spellings:ptr nargs:i32 line:i32):void
   (let (saved:i32 g-type-key-ok)
     (set! g-type-key-ok 1)
     (tmpl-conformance-check-one-in c st iname arg-spellings nargs line)
     (set! g-type-key-ok saved)))
 
-(defn tmpl-conformance-check-one-in (c:raw:TmplConformance st:raw:StructTemplate iname:Symbol arg-spellings:ptr nargs:i32 line:i32):void
+(defn tmpl-conformance-check-one-in (c:raw:TmplConformance st:ptr iname:Symbol arg-spellings:ptr nargs:i32 line:i32):void
   (let (cc:raw:TmplConformance c
-        stt:raw:StructTemplate st
         proto:raw:Protocol (cc 'proto)
         nb:i32 (cc 'nbindings)
         pspellings:ptr null
@@ -4938,11 +5256,11 @@
 
 ; A template subject names every instance: one distinct type variable per
 ; template parameter (`(Wrap X)`), which the extend's other clauses then name.
-(defn extend-subject-tyvar-args (app:raw:Node ntv:i32 line:i32):ptr
+(defn extend-subject-tyvar-args (app:raw:Node ntv:i32 definer:StrView line:i32):ptr
   (let (out:ptr (arena-alloc (* (as i64 (if (> ntv 0) ntv 1)) (ptr-bytes)))
         head:Symbol ((node-first app) 's))
     (when (!= (- (node-len app) 1) ntv)
-      (die-at line (fstr head ": wrong number of type arguments for defstruct template ("
+      (die-at line (fstr head ": wrong number of type arguments for " definer " template ("
                          (- (node-len app) 1) " given)")))
     (dotimes (i ntv)
       (let (a:raw:Node (node-at app (+ i 1)))
@@ -4960,19 +5278,45 @@
 ; `st` (arg spellings `arg-spellings`, length `nargs`). Check every template-level
 ; conformance recorded for `st`, recording the concrete per-instance conformance
 ; (and erroring, naming the missing method, if a required method does not resolve).
-(defn tmpl-conformance-check-instance (st:raw:StructTemplate iname:Symbol arg-spellings:ptr nargs:i32 line:i32):void
+(defn tmpl-conformance-check-instance (st:ptr iname:Symbol arg-spellings:ptr nargs:i32 line:i32):void
   (dotimes (i (unsafe/cast i32 (count g-tmpl-conformances)))
     (let (c:ptr:TmplConformance (as &TmplConformance
                                   (invoke g-tmpl-conformances i:usize)))
       (when (= (c 'template) st)
         (tmpl-conformance-check-one c st iname arg-spellings nargs line)))))
 
+(defn origin-arg-spellings (args:ptr n:i32):ptr
+  (let (out:ptr (arena-alloc (* (as i64 (if (> n 0) n 1)) (ptr-bytes))))
+    (dotimes (k n)
+      (set! (aref (as &Symbol out) k) (type-spelling (aref (as &ptr args) k))))
+    (return out)))
+
+; A niche instance is a bare pointer, so its dispatch key is the pointer's own:
+; a template conformance leaves it out rather than conform every `&T`.
+(defn union-instance-keyed? (u:raw:UnionDef):bool
+  (return (and (!= (u 'layout) LAYOUT-NICHE-MAYBE) (!= (u 'layout) LAYOUT-NICHE-ERRPTR))))
+
+; The stamp-time hook's union twin, called from the union stamp.
+(defn tmpl-conformance-check-union (ut:ptr ud:raw:UnionDef line:i32):void
+  (when (not (union-instance-keyed? ud)) (return))
+  (dotimes (i (unsafe/cast i32 (count g-tmpl-conformances)))
+    (let (c:ptr:TmplConformance (as &TmplConformance (invoke g-tmpl-conformances i:usize)))
+      (when (= (c 'template) ut)
+        (tmpl-conformance-check-one c ut (type-spelling (union-instance-type ud))
+                                    (origin-arg-spellings (ud 'origin-args) (ud 'origin-nargs))
+                                    (ud 'origin-nargs) line)))))
+
 ; Retroactively check a newly-recorded template conformance against every
 ; instance of the template already stamped before the `extend` was processed
 ; (a `(Vector i32)` use earlier in the file may stamp the instance before the
 ; `extend` form is reached). Recovers each instance's (template, args) from its
 ; StructDef origin fields (T2) and runs the per-instance check.
-(defn tmpl-conformance-recheck-stamped (c:raw:TmplConformance st:raw:StructTemplate line:i32):void
+(defn tmpl-conformance-recheck-stamped (c:raw:TmplConformance st:ptr line:i32):void
+  (doseq (u g-uniondefs (VecIter &UnionDef))
+    (when (and (= (as ptr (u 'origin-template)) st) (union-instance-keyed? u))
+      (tmpl-conformance-check-one c st (type-spelling (union-instance-type u))
+                                  (origin-arg-spellings (u 'origin-args) (u 'origin-nargs))
+                                  (u 'origin-nargs) line)))
   (dotimes (i (unsafe/cast i32 (count g-structs)))
     (let (sd:ptr:StructDef (as &StructDef (invoke g-structs i:usize)))
       (when (= (sd 'origin-template) st)
@@ -5021,13 +5365,15 @@
     (die-at (pn 'line) "extend: protocol must be a symbol or (Protocol args...)")
     (return null)))
 
-; The struct-template application under a subject's pointer wrappers and
+; The struct- or union-template application under a subject's pointer wrappers and
 ; parametric aliases, or null; `depth` counts the pointers peeled.
 (defn extend-subject-template-app (n:raw:Node line:i32 depth:&i32):raw:Node
   (let (cur:raw:Node n
         steps:i32 0)
     (while (< steps MAX-TYPE-ALIAS-DEPTH)
-      (when (!= (as ptr (node-template-of cur)) null) (return cur))
+      (when (or (!= (as ptr (node-template-of cur)) null)
+                (!= (as ptr (node-union-template-of cur)) null))
+        (return cur))
       (cond
         (!= (node-is-ptr-wrapper cur) 0)
         (do (set! cur (wrapper-inner-pattern cur))
@@ -5052,9 +5398,12 @@
                        (= (tyname-resolvable (a 's)) 0))
               (return true)))))
       (return false))
+    ; Argument by argument: the pattern walk reads `(Maybe X)` as the sigil `?X`.
     (let (tv:ptr (arena-alloc (* (as i64 (+ (count-pattern-nodes app) 1)) (ptr-bytes)))
-          ntv:i32 0)
-      (collect-pattern-tyvars app tv (as &i32 &ntv))
+          ntv:i32 0
+          head:Symbol ((node-first app) 's))
+      (dotimes (i (- (node-len (as ptr app)) 1))
+        (collect-tyvars-at (node-at (as ptr app) (+ i 1)) head line tv (as &i32 &ntv)))
       (return (> ntv 0)))))
 
 ; An alias or C typedef is not a new type, and an application over concrete types
@@ -5134,12 +5483,15 @@
             ; Stage 12 N4: a qualified template head (`coll/Vector`) resolves to the
             ; bare-keyed template registry. Identity under `user`.
             (let (app:raw:Node (extend-subject-template-app (as raw:Node type-node) sline &depth)
-                  st:?ptr:StructTemplate (if (= app null) null (node-template-of app)))
-              (when (= st null)
+                  st:ptr (if (= app null) null (as ptr (node-template-of app)))
+                  ut:ptr (if (= app null) null (as ptr (node-union-template-of app))))
+              (when (and (= st null) (= ut null))
                 (die-at sline
-                  (fstr "extend: '" (thead 's) "' is not a struct template")))
+                  (fstr "extend: '" (thead 's) "' is not a struct or union template")))
               (let (proto:?ptr:Protocol proto-rec
-                    sargs:ptr (extend-subject-tyvar-args app (-> st (unsafe/cast &StructTemplate _) (_ 'ntv)) sline))
+                    tmpl:ptr (if (!= st null) st ut)
+                    base-ntv:i32 (if (!= st null) ((as &StructTemplate st) 'ntv) ((as &UnionTemplate ut) 'ntv))
+                    sargs:ptr (extend-subject-tyvar-args app base-ntv (if (!= st null) "defstruct" "defunion") sline))
                 (when (= proto null)
                   (die-at (node-line (as ptr proto-node) (ff 'line))
                     (with-qualifier-note
@@ -5159,9 +5511,7 @@
                 ; Arg…) :where C…)`: node 0 = `extend`, 1 = subject, 2 = proto app,
                 ; 3 = `:where` marker, 4… = constraints. A :where-free extend
                 ; (node-len <= 3) keeps num-constraints = 0 and behaves exactly as T4.
-                (let (stt:ptr:StructTemplate (unsafe/cast &StructTemplate st)
-                      base-ntv:i32 (stt 'ntv)
-                      nc:i32 0
+                (let (nc:i32 0
                       where-i:i32 -1)
                   ; Detect the trailing :where marker at node 3.
                   (when (> (node-len form) 3)
@@ -5179,7 +5529,7 @@
                       (dotimes (pci proto-nargs)
                         (extend-arg-determined (aref (as &ptr proto-args) pci) proto-spelling
                                                sargs base-ntv (node-line (as ptr proto-node) (ff 'line))))
-                      (tmpl-conformance-add (as ptr st) (as ptr proto) proto-args proto-nargs
+                      (tmpl-conformance-add tmpl (as ptr proto) proto-args proto-nargs
                                             sargs base-ntv null 0 depth))
                     ; --- :where-bearing extend: parse + determine (A4.1) ---
                     (do
@@ -5264,14 +5614,14 @@
                                       (fstr "extend: protocol parameter '"
                                             (aref (as &Symbol tyvars) ti)
                                             "' is not determined by the subject or any :where constraint")))))))
-                          (tmpl-conformance-add (as ptr st) (as ptr proto) proto-args proto-nargs
+                          (tmpl-conformance-add tmpl (as ptr proto) proto-args proto-nargs
                                                 tyvars ntv constraints nc depth))))))
                 ; Retroactively check instances stamped before this extend was seen.
                 ; The just-added conformance is the last element of g-tmpl-conformances.
                 (let (ntc:i32 (unsafe/cast i32 (count g-tmpl-conformances))
                       c:ptr:TmplConformance (as &TmplConformance
                                               (invoke g-tmpl-conformances (as usize (- ntc 1)))))
-                  (tmpl-conformance-recheck-stamped (as ptr c) (as ptr st) (ff 'line)))
+                  (tmpl-conformance-recheck-stamped (as ptr c) tmpl (ff 'line)))
                 (return))))
         0)
         ; --- subject is a concrete type (symbol) ---
@@ -5771,6 +6121,49 @@
 ; mirroring the logic drifts, mirroring a call cannot). The window stops at
 ; BK-GLOBAL because those are the rows that yield a type; beyond it emit only
 ; produces a diagnostic.
+; The result type of a call to overloaded `g` over `argtypes`, as emit's tiers
+; would resolve it, or null.
+(defn node-type-mangled-call (g:raw:Generic h:Symbol n:raw:Node argtypes:ptr arg-nodes:ptr
+                              nargs:i32 want:raw:Type):?&Type
+    ; First try METHOD-USER (exact match), then the same tier-0 second
+    ; pass generic-resolve runs — without it a call whose receiver is a
+    ; struct VALUE meeting a `(ref T)` parameter types as unknown here
+    ; while emit resolves it, which mis-sized `try`'s ok arm.
+    (let (m:?ptr:Method (generic-find-method-exact g argtypes nargs))
+      (when (!= m null) (return (m 'ret-type))))
+    (let (m:?ptr:Method (generic-find-method-accepting g argtypes nargs))
+      (when (!= m null) (return (m 'ret-type))))
+    ; Then try METHOD-GENERIC (parametric match with tyvar substitution).
+    (let (out-ret:ptr (arena-alloc (ptr-bytes))
+          bsaved:BindCall (bind-call-arm h (node-line n 0))
+          bound:i32 (generic-binds-for g argtypes nargs (as &ptr out-ret) 0 arg-nodes))
+      (set! g-bind-call bsaved)
+      (when (!= bound 0)
+        (return (aref (as &ptr out-ret) 0))))
+    ; Stage 14 LW-2: mirror emit's generic-resolve tier-2 so a widened
+    ; template/plain call types correctly (the node-type↔emit lockstep).
+    ; Return null (the escape hatch) on ambiguity/no-match — node-type is
+    ; allowed to not-know a type, and must never die here.
+    ; TC-3: when no explicit want was passed (the normal node-type entry
+    ; points hand null here), fall back to the downward want channel
+    ; g-want-type so a non-emitting probe run from a let/with binding
+    ; init (tc3-emit-binding-init) can fill a return-only tyvar exactly
+    ; as emit would. Safe under the consume-once discipline: g-want-type
+    ; is armed only around a binding-init probe/emit and is null in every
+    ; other node-type context (gcheck/valid-walk run def-time; the Rung-3
+    ; cross-check runs after emit-generic-call already consumed it), so
+    ; self-compilation — which has no return-only generics — is unaffected.
+    (let (wmethod:ptr null
+          wbound:ptr null
+          bsaved2:BindCall (bind-call-arm h (node-line n 0))
+          r:i32 (generic-resolve-adapt-tier g argtypes arg-nodes nargs 0
+                  (as &ptr &wmethod) (as &ptr &wbound)
+                  (if (!= want null) want g-want-type)))
+      (set! g-bind-call bsaved2)
+      (when (= r 1) (return (-> wmethod (unsafe/cast &Method _) (_ 'ret-type))))
+      (when (= r 2) (return (method-bound-ret-type wmethod wbound 0)))
+    (return null)))
+
 (defn node-type-call (n:raw:Node scope:ref:Scope h:Symbol want:raw:Type):?&Type
   (let (ghit:?ref:BindingHit (binding-find h scope BK-DISPATCH-FIRST (+ BK-GLOBAL 1) 0 NK-NONE))
     (when (= ghit null) (return null))
@@ -5816,60 +6209,45 @@
                                          (node-type b-node scope)
                                          a-node b-node scope)))))
         (when (!= (g 'mangled) 0)
-          (let (nargs:i32 (- (node-len n) 1)
-                argtypes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
-                arg-nodes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
-                ok:i32 1)
-            (dotimes (i nargs)
-              (let (anode:ptr (node-at n (+ i 1))
-                    at:ptr (node-type anode scope))
-                (when (= at null) (set! ok 0))
-                (set! (aref (as &ptr argtypes) i) at)
-                (set! (aref (as &ptr arg-nodes) i) anode)))
-            (when (= ok 0) (return null))
-            ; First try METHOD-USER (exact match), then the same tier-0 second
-            ; pass generic-resolve runs — without it a call whose receiver is a
-            ; struct VALUE meeting a `(ref T)` parameter types as unknown here
-            ; while emit resolves it, which mis-sized `try`'s ok arm.
-            (let (m:?ptr:Method (generic-find-method-exact g argtypes nargs))
-              (when (!= m null) (return (m 'ret-type))))
-            (let (m:?ptr:Method (generic-find-method-accepting g argtypes nargs))
-              (when (!= m null) (return (m 'ret-type))))
-            ; Then try METHOD-GENERIC (parametric match with tyvar substitution).
-            (let (out-ret:ptr (arena-alloc (ptr-bytes))
-                  bsaved:BindCall (bind-call-arm h (node-line n 0))
-                  bound:i32 (generic-binds-for g argtypes nargs (as &ptr out-ret) 0 arg-nodes))
-              (set! g-bind-call bsaved)
-              (when (!= bound 0)
-                (return (aref (as &ptr out-ret) 0))))
-            ; Stage 14 LW-2: mirror emit's generic-resolve tier-2 so a widened
-            ; template/plain call types correctly (the node-type↔emit lockstep).
-            ; Return null (the escape hatch) on ambiguity/no-match — node-type is
-            ; allowed to not-know a type, and must never die here.
-            ; TC-3: when no explicit want was passed (the normal node-type entry
-            ; points hand null here), fall back to the downward want channel
-            ; g-want-type so a non-emitting probe run from a let/with binding
-            ; init (tc3-emit-binding-init) can fill a return-only tyvar exactly
-            ; as emit would. Safe under the consume-once discipline: g-want-type
-            ; is armed only around a binding-init probe/emit and is null in every
-            ; other node-type context (gcheck/valid-walk run def-time; the Rung-3
-            ; cross-check runs after emit-generic-call already consumed it), so
-            ; self-compilation — which has no return-only generics — is unaffected.
-            (let (wmethod:ptr null
-                  wbound:ptr null
-                  bsaved2:BindCall (bind-call-arm h (node-line n 0))
-                  r:i32 (generic-resolve-adapt-tier g argtypes arg-nodes nargs 0
-                          (as &ptr &wmethod) (as &ptr &wbound)
-                          (if (!= want null) want g-want-type)))
-              (set! g-bind-call bsaved2)
-              (when (= r 1) (return (-> wmethod (unsafe/cast &Method _) (_ 'ret-type))))
-              (when (= r 2) (return (method-bound-ret-type wmethod wbound 0)))))))))
+          (let (untyped:bool false)
+            (when-some (t (node-type-registry-call g h n scope want &untyped))
+              (return t))
+            ; An argument this pass cannot type leaves the call unknown, not a global's.
+            (when untyped (return null)))))))
     ; A solitary (unmangled, non-intrinsic) generic — or a mangled one whose
     ; resolution did not settle — falls through to the next table row, exactly
-    ; as emit-dispatch's own fall-through does.
+    ; as emit-dispatch's own fall-through does, and to the registry when none.
     (if-some (h2 (binding-find h scope (+ BK-GENERIC 1) (+ BK-GLOBAL 1) 0 NK-NONE))
       (return (node-type-binding h2 n scope))
-      (return null))))
+      (let (g:?ptr:Generic (as &Generic ((unsafe/cast &BindingHit ghit) 'payload)))
+        (when (and (!= g null) (= (g 'mangled) 0))
+          (let (untyped:bool false)
+            (return (node-type-registry-call g h n scope want &untyped))))
+        (return null)))))
+
+(defn node-type-registry-call (g:raw:Generic h:Symbol n:raw:Node scope:ref:Scope want:raw:Type
+                               out-untyped:&bool):?&Type
+  (let (nargs:i32 (- (node-len n) 1)
+        argtypes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
+        arg-nodes:ptr (arena-alloc (* (+ nargs 1) (ptr-bytes)))
+        ok:i32 1)
+    (dotimes (i nargs)
+      (let (anode:ptr (node-at n (+ i 1))
+            at:ptr (node-type anode scope))
+        (when (= at null) (set! ok 0))
+        (set! (aref (as &ptr argtypes) i) at)
+        (set! (aref (as &ptr arg-nodes) i) anode)))
+    (when (= ok 0)
+      (set! @out-untyped true)
+      (return null))
+    (when-some (t (node-type-mangled-call g h n argtypes arg-nodes nargs want))
+      (return t))
+    ; generic-resolve's struct-literal retry, in lockstep.
+    (let (lt:ptr (literal-arg-types argtypes arg-nodes nargs scope))
+      (when (!= lt null)
+        (when-some (t (node-type-mangled-call g h n lt arg-nodes nargs want))
+          (return t))))
+    (return null)))
 
 (defn node-type (n:raw:Node scope:ref:Scope):?&Type
   (when (= n null) (return ty-void))

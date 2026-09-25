@@ -3277,20 +3277,20 @@ map=2
   (with ((a (ref (Vector i32))) [1 2 3])
     (printf \"%lld\\n\" (takes a)))
   (return 0))
-" 6 "takes: argument 1 has type &Vector.i32, which does not match parameter type &Vector.i64"))
+" 6 "takes: argument 1 has type &(Vector i32), which does not match parameter type &(Vector i64)"))
   (try (check-place-refused "(import-use \"stdio.h\")
 (import-use vector)
 (defn main ():i32
   (with ((a (ref (Vector i32))) [1 2 3])
     (let (b:(ref (Vector i64)) a) (return 0))))
-" 5 "let: init type mismatch for 'b': value is &Vector.i32, slot is &Vector.i64"))
+" 5 "let: init type mismatch for 'b': value is &(Vector i32), slot is &(Vector i64)"))
   (try (check-place-refused "(import-use \"stdio.h\")
 (import-use vector)
 (defn main ():i32
   (with ((a (ref (Vector i32))) [1 2 3]
          (b (ref (Vector i64))) [4 5 6])
     (set! b a) (return 0)))
-" 6 "set!: type mismatch for 'b': value is &Vector.i32, slot is &Vector.i64"))
+" 6 "set!: type mismatch for 'b': value is &(Vector i32), slot is &(Vector i64)"))
   (return (ok)))
 
 ; The runtime shape §6.1 measured: a correctly-typed literal reads element 0 as
