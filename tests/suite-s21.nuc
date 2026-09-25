@@ -504,7 +504,7 @@ foo:(bar)
         c:Compiled (try (compile-path path)))
     (when (c 'ok?) (fail! "expected (Vector i32) to be refused where (Vector ?Pt) was declared"))
     (try (check-error-at (ref c 'diags) path 15
-                         "f-qpt: argument 1 has type ptr:Vector.i32, which does not match parameter type ptr:Vector.Maybe.Pt"))
+                         "f-qpt: argument 1 has type &Vector.i32, which does not match parameter type &Vector.Maybe.Pt"))
     (drop &c))
   (let (out:String (try (build-run-file "" "" "tests/fixtures/s21-pk4a-sigil-concrete.nuc")))
     (try (check-golden (string-as-view &out) "0 0 0\n1 0 1\n"))
@@ -539,7 +539,7 @@ foo:(bar)
                          "instantiations of n-qv over ?(Vector i32)"))
       (drop &c)))
   (try (s21-type-refused "(defn n-q ((v (ref (Vector ?T)))):i32 (return 1)) (defn g ():i32 (let (v:(Vector i32) (vector-new)) (return (n-q &v))))" 3
-                         "no matching method for overloaded 'n-q' with argument types (ptr:Vector.i32)"))
+                         "no matching method for overloaded 'n-q' with argument types (&Vector.i32)"))
   (return (ok)))
 
 ; The list spellings are the same wrapper: `(Vector (Maybe T))` stamps the body
@@ -663,6 +663,149 @@ foo:(bar)
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
+; A template argument's operand is still a template argument (rough edges)
+; ---------------------------------------------------------------------------
+
+; A pointer wrapper inside a template argument, in every spelling, collects
+; `T` with no `:where` and binds it to the POINTEE -- `(sizeof T)` is 12 for
+; `P3` and 2 for `i16`, one stamp each. `(Vector ref:T)` used to be collected
+; as the fake tyvar `ref:T`; the others died `unknown type: T` at the defn.
+(deftest s21-targ-wrapper-tyvar
+  (let (src:StrView "(import-use \"stdio.h\")
+(import-use vector)
+(defstruct P3 x:i32 y:i32 z:i32)
+(defn sz-list ((v (ref (Vector (ref T))))):i32 (return (unsafe/cast i32 (sizeof T))))
+(defn sz-amp ((v (ref (Vector &T)))):i32 (return (unsafe/cast i32 (sizeof T))))
+(defn sz-colon ((v (ref (Vector ref:T)))):i32 (return (unsafe/cast i32 (sizeof T))))
+(defn sz-raw ((v (ref (Vector raw:T)))):i32 (return (unsafe/cast i32 (sizeof T))))
+(defn sz-ptr ((v (ref (Vector (ptr T))))):i32 (return (unsafe/cast i32 (sizeof T))))
+(defn sz-q ((v (ref (Vector ?&T)))):i32 (return (unsafe/cast i32 (sizeof T))))
+(defn main ():i32
+  (let (p:P3 (P3 1 2 3)
+        w:(Vector &P3) (vector-new)
+        s:(Vector &i16) (vector-new))
+    (conj &w &p)
+    (printf \"%d %d %d %d %d %d %d\\n\" (sz-list &w) (sz-amp &w) (sz-colon &w)
+            (sz-raw &w) (sz-ptr &w) (sz-q &w) (sz-colon &s))
+    (return 0)))
+"
+        out:String (try (build-run-source src)))
+    (try (check-golden (string-as-view &out) "12 12 12 12 12 12 2\n"))
+    (drop &out)
+    (let (ir:String (try (source-ir src))
+          iv:StrView (string-as-view &ir))
+      (try (check-eq-int (count-lines-with-prefix iv "define weak_odr i32 @sz_colon.pVector.pP3(") 1
+                         "instantiations of sz-colon over (Vector &P3)"))
+      (try (check-eq-int (count-lines-with-prefix iv "define weak_odr i32 @sz_colon.pVector.pi16(") 1
+                         "instantiations of sz-colon over (Vector &i16)"))
+      (drop &ir)))
+  (let (msg:StrView "no matching method for overloaded 'n' with argument types (&Vector.i32)")
+    (try (s21-type-refused "(defn n ((v (ref (Vector (ref T))))):i32 (return 1)) (defn g ():i32 (let (v:(Vector i32) (vector-new)) (return (n &v))))" 3 msg))
+    (try (s21-type-refused "(defn n ((v (ref (Vector ref:T)))):i32 (return 1)) (defn g ():i32 (let (v:(Vector i32) (vector-new)) (return (n &v))))" 3 msg)))
+  (return (ok)))
+
+; A `defunion` template is a template application to the pattern walkers as a
+; struct template is: inside a template argument, as the receiver, over a
+; niche instance (a bare pointer, found among the stamps by shape) and as a
+; `(Result T E)` whose `E` is not `Err`. Each died `unknown type: T`.
+(deftest s21-targ-union-template
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use vector)
+(defstruct P3 x:i32 y:i32 z:i32)
+(defunion (Either T) (left l:T) (right r:i32))
+(defunion (Opt T) (some v:&T) none)
+(defn sz-e ((v (ref (Vector (Either T))))):i32 (return (unsafe/cast i32 (sizeof T))))
+(defn sz-er ((v (ref (Vector (Either ref:T))))):i32 (return (unsafe/cast i32 (sizeof T))))
+(defn tag-of (e:(Either T)):i32
+  (match e ((left l) (return (unsafe/cast i32 (sizeof T)))) ((right r) (return r))))
+(defn opt-size (o:(Opt T)):i32
+  (match o ((some p) (return (unsafe/cast i32 (sizeof T)))) (none (return 0))))
+(defn code-of (r:(Result T i32)):i32
+  (match r ((ok v) (return (unsafe/cast i32 (sizeof T)))) ((err e) (return e))))
+(defn main ():i32
+  (let (p:P3 (P3 1 2 3)
+        ve:(Vector (Either P3)) (vector-new)
+        vr:(Vector (Either &P3)) (vector-new)
+        l:(Either P3) (make (Either P3) left p)
+        r:(Either i64) (make (Either i64) right 7)
+        o:(Opt P3) (some &p)
+        c1:(Result P3 i32) (ok p)
+        c2:(Result i16 i32) (err 9))
+    (printf \"%d %d %d %d %d %d %d\\n\" (sz-e &ve) (sz-er &vr) (tag-of l) (tag-of r)
+            (opt-size o) (code-of c1) (code-of c2))
+    (return 0)))
+")))
+    (try (check-golden (string-as-view &out) "12 12 12 7 12 12 9\n"))
+    (drop &out))
+  (try (s21-type-refused "(defunion (Either T) (left l:T) (right r:i32)) (defn n ((v (ref (Vector (Either T))))):i32 (return 1)) (defn g ():i32 (let (v:(Vector i32) (vector-new)) (return (n &v))))"
+                         3 "no matching method for overloaded 'n' with argument types (&Vector.i32)"))
+  (return (ok)))
+
+; H5 with the sigil replaced by a name: a `deftype` alias or a C typedef in a
+; template argument is the concrete type it names, so `f` and `w` are plain
+; defns that refuse `(Vector i32)` -- both were fake tyvars that accepted it --
+; and `q:PtRef` in value position is the annotation cast it always spelled.
+(deftest s21-targ-alias-typedef
+  (let (h:String (try (test-write-file "s21td.h" "typedef long long s21_wide_t;\n"))
+        hv:StrView (string-as-view &h)
+        run:String (str "(import-use \"stdio.h\")
+(import-use \"" hv "\")
+(import-use vector)
+(defstruct Pt x:i32 y:i32)
+(deftype PtRef &Pt)
+(defn f ((v (ref (Vector PtRef)))):i32 (return (unsafe/cast i32 (count v))))
+(defn w ((v (ref (Vector s21_wide_t)))):i32 (return (unsafe/cast i32 (count v))))
+(defn via (q:&Pt):i32 (let (r:PtRef q:PtRef) (return (r 'y))))
+(defn main ():i32
+  (let (pt:Pt (Pt 5 6)
+        vp:(Vector &Pt) (vector-new)
+        vw:(Vector i64) (vector-new))
+    (conj &vp &pt)
+    (conj &vw 5)
+    (conj &vw 6)
+    (printf \"%d %d %d\\n\" (f &vp) (w &vw) (via &pt))
+    (return 0)))
+")
+        out:String (try (build-run-source (string-as-view &run)))
+        ir:String (try (source-ir (string-as-view &run)))
+        iv:StrView (string-as-view &ir))
+    (try (check-golden (string-as-view &out) "1 2 6\n"))
+    (try (check-eq-int (count-lines-with-prefix iv "define i32 @f(") 1 "a concrete f"))
+    (try (check-eq-int (count-lines-with-prefix iv "define i32 @w(") 1 "a concrete w"))
+    (let (c:Compiled (try (compile-source "(import-use vector)
+(defstruct Pt x:i32 y:i32)
+(deftype PtRef &Pt)
+(defn f ((v (ref (Vector PtRef)))):i32 (return 1))
+(defn g ():i32 (let (v:(Vector i32) (vector-new)) (return (f &v))))
+"))
+          p:String (try (scratch-file "t.nuc"))
+          pv:StrView (string-as-view &p))
+      (when (c 'ok?) (fail! "expected (Vector i32) to be refused where (Vector PtRef) was declared"))
+      (try (check-error-at (ref c 'diags) pv 5
+                           "f: argument 1 has type &Vector.i32, which does not match parameter type &Vector.pPt"))
+      (drop &p)
+      (drop &c))
+    (let (bad:String (str "(import-use \"" hv "\")
+(import-use vector)
+(defn w ((v (ref (Vector s21_wide_t)))):i32 (return 1))
+(defn g ():i32 (let (v:(Vector i32) (vector-new)) (return (w &v))))
+")
+          c:Compiled (try (compile-source (string-as-view &bad)))
+          p:String (try (scratch-file "t.nuc"))
+          pv:StrView (string-as-view &p))
+      (when (c 'ok?) (fail! "expected (Vector i32) to be refused where (Vector s21_wide_t) was declared"))
+      (try (check-error-at (ref c 'diags) pv 4
+                           "w: argument 1 has type &Vector.i32, which does not match parameter type &Vector.i64"))
+      (drop &p)
+      (drop &c)
+      (drop &bad))
+    (drop &ir)
+    (drop &out)
+    (drop &run)
+    (drop &h))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
 ; PK-5b: `addr-of` is retired, and stays reserved
 ; ---------------------------------------------------------------------------
 
@@ -728,9 +871,7 @@ foo:(bar)
 ; `(Vector ?T)` and `&Pt`, a concrete `(Vector ?Pt)`, a `deftype`, a
 ; `(link &Pt)` field and a `defvar` (an `extern` in the header). The header
 ; lives in `h/` alone so `resolve-import` cannot find the source first, and the
-; consumer stamps the template from the header's text. `import-use`, not a
-; prefix: a template's own signature resolves `Pt` in the INSTANTIATING file's
-; environment, so a prefixed importer cannot stamp it (overview.md, rough edges).
+; consumer stamps the template from the header's text.
 (deftest s21-nuch-roundtrip
   (let (ldir:String (try (test-scratch-sub "l"))
         hdir:String (try (test-scratch-sub "h"))
@@ -810,6 +951,427 @@ foo:(bar)
     (drop &hp)
     (drop &nuch)
     (drop &lib)
+    (drop &hdir)
+    (drop &ldir))
+  (return (ok)))
+
+; A template's signature is its file's text and reads as that file, as its body
+; does: a function, struct or union template naming the library's own `Pt`
+; stamps from a prefixed importer, and the caller's own `Pt` (three i64s) stays
+; the caller's — `(Box Pt)`'s `v` is 24 bytes wide and `(Vector ?Pt)` counts it.
+(deftest s21-template-sig-env
+  (try (test-write-file "s21sglib.nuc" "(ns s21sg)
+(import-use vector)
+(defstruct Pt x:i32 y:i32)
+(defstruct (Box T) v:T q:&Pt)
+(defunion (Either T) (left v:T) (right p:&Pt))
+(defn count-some ((v (ref (Vector ?T))) q:&Pt):i32
+  (let (n:i32 (q 'y))
+    (dotimes (i (count v))
+      (match (invoke v i) ((some x) (set! n (+ n 1))) (none 0)))
+    (return n)))
+(defn g (x:T q:&Pt :where (Any T)):i32 (return (q 'x)))
+(defn gr (x:T q:&Pt :where (Any T)):&Pt (return q))
+(defn box-y (b:&(Box T)):i32 (return ((b 'q) 'y)))
+"))
+  (let (m:String (try (test-write-file "s21sg-imp.nuc" "(import-use vector)
+(import s21sglib k)
+(defstruct Pt a:i64 b:i64 c:i64)
+(defn main ():i32
+  (let (pt:k/Pt (k/Pt 5 6)
+        mine:Pt (Pt 7 8 9)
+        vi:(Vector ?i32) (vector-new)
+        vp:(Vector ?Pt) (vector-new)
+        s1:?i32 (some 1)
+        sp:?Pt (some mine)
+        b:(k/Box Pt) ((k/Box Pt) mine &pt)
+        e:(k/Either i32) (make (k/Either i32) right &pt))
+    (conj &vi s1)
+    (conj &vp sp)
+    (return (+ (k/count-some &vi &pt) (k/count-some &vp &pt) (k/g mine &pt)
+               ((k/gr 1 &pt) 'y) (k/box-y &b) (unsafe/cast i32 ((b 'v) 'c))
+               (match e ((right p) (p 'x)) ((left v) v))))))
+")))
+    (try (w1-exit (string-as-view &m) 45))
+    (drop &m))
+  (let (m:String (try (test-write-file "s21sg-pfx.nuc" "(import-use vector)
+(import-prefixed s21sglib q)
+(defn main ():i32
+  (let (pt:q/Pt (q/Pt 2 3)
+        vi:(Vector ?i64) (vector-new)
+        n0:?i64 none
+        b:(q/Box i64) ((q/Box i64) 4 &pt))
+    (conj &vi n0)
+    (return (+ (q/count-some &vi &pt) (q/g 1 &pt) (q/box-y &b)))))
+")))
+    (try (w1-exit (string-as-view &m) 8))
+    (drop &m))
+  ; The library's `Pt` is not the caller's: refused where the caller wrote it.
+  (let (m:String (try (test-write-file "s21sg-bad.nuc" "(import-use vector)
+(import s21sglib k)
+(defstruct Pt a:i64 b:i64 c:i64)
+(defn main ():i32
+  (let (mine:Pt (Pt 7 8 9))
+    (return (k/g 1 &mine))))
+"))
+        mv:StrView (string-as-view &m)
+        c:Compiled (try (w1-compile mv)))
+    (try (check-error-at (ref c 'diags) mv 6
+                         "no matching method for overloaded 'g' with argument types (i32, &Pt)"))
+    (drop &c)
+    (drop &m))
+  ; A mistake in the template's own text is the library's, at its line, called or not.
+  (let (tl:String (try (test-write-file "s21sgt.nuc" "(ns s21sgt)
+(defstruct Pt x:i32 y:i32)
+(defn bad-param (x:T y:Nope :where (Any T)):i32 (return 0))
+"))
+        rl:String (try (test-write-file "s21sgr.nuc" "(ns s21sgr)
+(defstruct Pt x:i32 y:i32)
+(defn bad-ret (x:T :where (Any T)):Nope (return 0))
+"))
+        m1:String (try (test-write-file "s21sgt-p.nuc" "(import s21sgt k)
+(defn main ():i32 (return (k/bad-param 1 2)))
+"))
+        m2:String (try (test-write-file "s21sgt-r.nuc" "(import s21sgr k)
+(defn main ():i32 (return 0))
+"))
+        c1:Compiled (try (w1-compile (string-as-view &m1)))
+        c2:Compiled (try (w1-compile (string-as-view &m2))))
+    (try (check-error-at (ref c1 'diags) (string-as-view &tl) 3 "unknown type: Nope"))
+    (try (check-error-at (ref c2 'diags) (string-as-view &rl) 3 "unknown type: Nope"))
+    (drop &c2)
+    (drop &c1)
+    (drop &m2)
+    (drop &m1)
+    (drop &rl)
+    (drop &tl))
+  (return (ok)))
+
+; The same through `.nuch` headers, and a header now carries the imports its text
+; resolves through: `(import s21gv)` as `(import-prefixed s21gv s21gv)`, the
+; namespaced `(import-use s21gw)` verbatim, the `user` library's not at all.
+; They bind and load nothing, so the consumer imports what it uses, as for any
+; other name a header mentions.
+(deftest s21-template-sig-nuch
+  (let (ldir:String (try (test-scratch-sub "l"))
+        hdir:String (try (test-scratch-sub "h"))
+        lv:StrView (string-as-view &ldir)
+        hv:StrView (string-as-view &hdir)
+        gv:String (try (test-write-file "l/s21gv.nuc" "(ns s21gv)
+(defstruct Pt x:i32 y:i32)
+(defprotocol Show (show ((self &Self)):i32))
+"))
+        gw:String (try (test-write-file "l/s21gw.nuc" "(ns s21gw)
+(defn gw-one ():i32 (return 1))
+"))
+        gl:String (try (test-write-file "l/s21gl.nuc" "(ns s21gl)
+(import-use vector)
+(import s21gv)
+(import-use s21gw)
+(defstruct Pt x:i32 y:i32)
+(defn f (x:&T :where (s21gv/Show T)):i32 (return (+ (show x) (gw-one))))
+(defn px (p:&s21gv/Pt):i32 (return (p 'x)))
+(defn pg (x:T p:&s21gv/Pt q:&Pt :where (Any T)):i32 (return (+ (p 'y) (q 'y))))
+(defn count-some ((v (ref (Vector ?T))) q:&Pt):i32
+  (let (n:i32 (q 'y))
+    (dotimes (i (count v))
+      (match (invoke v i) ((some x) (set! n (+ n 1))) (none 0)))
+    (return n)))
+"))
+        hgv:String (try (emit-into "" "--emit-nuch" (string-as-view &gv) hv "s21gv.nuch"))
+        hgw:String (try (emit-into "" "--emit-nuch" (string-as-view &gw) hv "s21gw.nuch"))
+        nuch:String (try (emit-for-file "" "--emit-nuch" (string-as-view &gl)))
+        nv:StrView (string-as-view &nuch)
+        hgl:String (try (write-into hv "s21gl.nuch" nv))
+        use:String (try (test-write-file "s21glu.nuc" "(import-use \"stdio.h\")
+(import-use vector)
+(import-prefixed s21gv gv)
+(import-prefixed s21gw w)
+(import-prefixed s21gl k)
+(defstruct Pt a:i64 b:i64 c:i64)
+(defstruct Cat n:i32)
+(defn show (c:&Cat):i32 (return (c 'n)))
+(extend Cat gv/Show)
+(defn main ():i32
+  (let (c:Cat (Cat 41)
+        p:gv/Pt (gv/Pt 3 4)
+        q:k/Pt (k/Pt 5 6)
+        mine:Pt (Pt 7 8 9)
+        vp:(Vector ?Pt) (vector-new)
+        sp:?Pt (some mine))
+    (conj &vp sp)
+    (printf \"%d %d %d %d\\n\" (k/f &c) (k/px &p) (k/pg mine &p &q) (k/count-some &vp &q))
+    (return 0)))
+"))
+        uobj:String (str hv "/s21glu.o")
+        lobj:String (str lv "/s21gl.o")
+        wobj:String (str lv "/s21gw.o"))
+    (try (check-line nv "(import-prefixed s21gv s21gv)"))
+    (try (check-line nv "(import-use s21gw)"))
+    (try (check-not-contains nv "(import-use vector)"))
+    (try (check-line nv "(defn pg ((x T) (p (ref s21gv/Pt)) (q (ref Pt)) :where (Any T)) :i32 (return (+ (p (quote y)) (q (quote y)))))"))
+    (try (compile-object-in hv (string-as-view &use) (string-as-view &uobj)))
+    (try (compile-object-in "" (string-as-view &gl) (string-as-view &lobj)))
+    (try (compile-object-in "" (string-as-view &gw) (string-as-view &wobj)))
+    (let (parts:String (str (string-as-view &uobj) " " (string-as-view &lobj) " "
+                            (string-as-view &wobj))
+          got:String (try (cc-link-run "" (string-as-view &parts))))
+      (try (check-golden (string-as-view &got) "42 3 10 7\n"))
+      (drop &got)
+      (drop &parts))
+    (drop &wobj)
+    (drop &lobj)
+    (drop &uobj)
+    (drop &use)
+    (drop &hgl)
+    (drop &nuch)
+    (drop &hgw)
+    (drop &hgv)
+    (drop &gl)
+    (drop &gw)
+    (drop &gv)
+    (drop &hdir)
+    (drop &ldir))
+  (return (ok)))
+
+; `(import lib k)` is walked by both import prescans, as `import-prefixed` is:
+; the library's signature names its own `Vector`, the root's names `k/T3`.
+(deftest s21-import-three-element
+  (try (test-write-file "s21i3lib.nuc" "(ns s21i3)
+(import-use vector)
+(defstruct T3 a:i32)
+(defn total (v:&(Vector i32)):i32
+  (let (n:i32 0)
+    (dotimes (i (count v)) (set! n (+ n (invoke v i))))
+    (return n)))
+"))
+  (let (m:String (try (test-write-file "s21i3.nuc" "(import-use vector)
+(import s21i3lib k)
+(defn get-a (t:&k/T3):i32 (return (t 'a)))
+(defn main ():i32
+  (let (t:k/T3 (k/T3 5)
+        v:(Vector i32) (vector-new))
+    (conj &v 1)
+    (conj &v 2)
+    (return (+ (get-a &t) (k/total &v)))))
+")))
+    (try (w1-exit (string-as-view &m) 8))
+    (drop &m))
+  (return (ok)))
+
+; A `deftype` body is its file's text and reads as that file: `(k/Two Pt)` takes
+; the caller's `Pt` (three i64s) as `T` while its `b` stays the library's `&Pt`.
+(deftest s21-alias-body-env
+  (let (lib:String (try (test-write-file "s21allib.nuc" "(ns s21al)
+(import-use vector)
+(defstruct Pt x:i32 y:i32)
+(deftype PtRef &Pt)
+(deftype (Two T) (struct a:T b:&Pt))
+(deftype (RefTo T) ref:T)
+(deftype (Opt T) (Maybe T))
+(defn mk (x:i32):Pt (return (Pt x 2)))
+"))
+        bl:String (try (test-write-file "s21albad.nuc" "(ns s21alb)
+(import-use vector)
+(deftype Bad (Vector Nope))
+"))
+        m:String (try (test-write-file "s21al.nuc" "(import-use arena)
+(import-prefixed s21allib k)
+(defstruct Pt a:i64 b:i64 c:i64)
+(defn getx (q:k/PtRef):i32 (return (q 'x)))
+(defn main ():i32
+  (let (p:k/Pt (k/mk 5)
+        mine:Pt (Pt 7 8 9)
+        t:&(k/Two Pt) (new (k/Two Pt))
+        r:(k/RefTo Pt) &mine
+        o:(k/Opt k/Pt) (some p))
+    (set! (t 'a) mine)
+    (set! (t 'b) &p)
+    (return (+ (getx &p) (unsafe/cast i32 ((t 'a) 'c)) ((t 'b) 'x) (unsafe/cast i32 (r 'b))
+               (unsafe/cast i32 (sizeof (k/Two Pt))) (match o ((some v) (v 'y)) (none 0))))))
+"))
+        b:String (try (test-write-file "s21al-bad.nuc" "(import-prefixed s21albad k)
+(defn main ():i32 (return 0))
+"))
+        c:Compiled (try (w1-compile (string-as-view &b))))
+    (try (w1-exit (string-as-view &m) 61))
+    ; A mistake in the body is the library's, at its line, used or not.
+    (try (check-error-at (ref c 'diags) (string-as-view &bl) 3 "unknown type: Nope"))
+    (drop &c)
+    (drop &b)
+    (drop &bl)
+    (drop &m)
+    (drop &lib))
+  (return (ok)))
+
+; A protocol's signatures read as the file that wrote them, and the conformer's
+; methods as the `extend`'s: a private conformer in another namespace, a `Self`
+; that is the caller's own `Pt`, a parametric protocol, `dyn` and an abstract call.
+(deftest s21-protocol-sig-env
+  (let (lib:String (try (test-write-file "s21pllib.nuc" "(ns s21pl)
+(defstruct Pt x:i32 y:i32)
+(defprotocol Probe (probe (x:&Self q:&Pt):i32))
+(defprotocol (Getp E) (getp (x:&Self):E) (other (x:&Self q:&Pt):i32))
+(defn mk (x:i32):Pt (return (Pt x 2)))
+(defn use-probe (x:&T q:&Pt :where (Probe T)):i32 (return (probe x q)))
+"))
+        ml:String (try (test-write-file "s21pmlib.nuc" "(ns s21pm)
+(defprotocol M
+  (mapx (self:&Self v:T :where (Nope T)):T))
+"))
+        app:String (try (test-write-file "s21plapp.nuc" "(ns s21app)
+(import-prefixed s21pllib k)
+(import-use allocator)
+(defstruct Pt a:i64 b:i64 c:i64)
+(defstruct- Foo n:i32)
+(defn probe (x:&Pt q:&k/Pt):i32 (return (+ (unsafe/cast i32 (x 'c)) (q 'x))))
+(defn probe (x:&Foo q:&k/Pt):i32 (return (+ (x 'n) (q 'y))))
+(defn getp (x:&Pt):i64 (return (x 'a)))
+(defn other (x:&Pt q:&k/Pt):i32 (return 1))
+(extend Pt k/Probe)
+(extend Foo k/Probe)
+(extend Pt (k/Getp i64))
+(defn twice (x:&T q:&k/Pt :where (k/Probe T)):i32 (return (* 2 (probe x q))))
+(defn run ():i32
+  (let (p:k/Pt (k/mk 4) mine:Pt (Pt 7 8 9) f:Foo (Foo 3) d:(dyn k/Probe) &mine)
+    (return (+ (twice &f &p) (probe d &p)))))
+"))
+        m:String (try (test-write-file "s21pl.nuc" "(import-prefixed s21plapp a)
+(defn main ():i32 (return (a/run)))
+"))
+        u:String (try (test-write-file "s21pm.nuc" "(import-prefixed s21pmlib k)
+(defstruct Foo n:i32)
+(defn mapx (self:&Foo v:i32):i32 (return v))
+(extend Foo k/M)
+(defn main ():i32 (return 0))
+"))
+        mv:StrView (string-as-view &ml)
+        c:Compiled (try (w1-compile (string-as-view &u))))
+    (try (w1-exit (string-as-view &m) 23))
+    ; The signature's own mistake is reported where it is written.
+    (try (check-error-at (ref c 'diags) mv 3 "defprotocol: :where names unknown protocol 'Nope'"))
+    (try (check-note-at (ref c 'diags) mv 3 "while reading protocol 's21pm/M' (requested at "))
+    (drop &c)
+    (drop &u)
+    (drop &m)
+    (drop &app)
+    (drop &ml)
+    (drop &lib))
+  (return (ok)))
+
+; The same through a `.nuch`: the header's `deftype` and `defprotocol` lines are
+; the library's text, read as the library read them.
+(deftest s21-alias-protocol-nuch
+  (let (ldir:String (try (test-scratch-sub "l"))
+        hdir:String (try (test-scratch-sub "h"))
+        hv:StrView (string-as-view &hdir)
+        al:String (try (test-write-file "l/s21al.nuc" "(ns s21al)
+(defstruct Pt x:i32 y:i32)
+(deftype PtRef &Pt)
+(deftype (Two T) (struct a:T b:&Pt))
+(defprotocol Probe (probe (x:&Self q:&Pt):i32))
+(defn mk (x:i32):Pt (return (Pt x 2)))
+(defn getx (q:PtRef):i32 (return (q 'x)))
+(defn use-probe (x:&T q:&Pt :where (Probe T)):i32 (return (probe x q)))
+"))
+        nuch:String (try (emit-for-file "" "--emit-nuch" (string-as-view &al)))
+        nv:StrView (string-as-view &nuch)
+        hal:String (try (write-into hv "s21al.nuch" nv))
+        use:String (try (test-write-file "s21alu.nuc" "(import-use \"stdio.h\")
+(import-use arena)
+(import-prefixed s21al k)
+(defstruct Pt a:i64 b:i64 c:i64)
+(defstruct Foo n:i32)
+(defn probe (x:&Foo q:&k/Pt):i32 (return (+ (x 'n) (q 'x))))
+(extend Foo k/Probe)
+(defn main ():i32
+  (let (p:k/Pt (k/mk 5)
+        mine:Pt (Pt 7 8 9)
+        r:k/PtRef &p
+        f:Foo (Foo 3)
+        t:&(k/Two Pt) (new (k/Two Pt)))
+    (set! (t 'a) mine)
+    (set! (t 'b) &p)
+    (printf \"%d %d %d %d %d\\n\" (k/getx r) (unsafe/cast i32 ((t 'a) 'c)) ((t 'b) 'x)
+            (unsafe/cast i32 (sizeof (k/Two Pt))) (k/use-probe &f &p))
+    (return 0)))
+"))
+        uobj:String (str hv "/s21alu.o")
+        lobj:String (str (string-as-view &ldir) "/s21al.o"))
+    (try (check-line nv "(deftype (Two T) (struct a:T b:ref:Pt))"))
+    (try (check-line nv "(defprotocol Probe (probe (x:ref:Self q:ref:Pt) :i32))"))
+    (try (compile-object-in hv (string-as-view &use) (string-as-view &uobj)))
+    (try (compile-object-in "" (string-as-view &al) (string-as-view &lobj)))
+    (let (parts:String (str (string-as-view &uobj) " " (string-as-view &lobj))
+          got:String (try (cc-link-run "" (string-as-view &parts))))
+      (try (check-golden (string-as-view &got) "5 9 5 32 8\n"))
+      (drop &got)
+      (drop &parts))
+    (drop &lobj)
+    (drop &uobj)
+    (drop &use)
+    (drop &hal)
+    (drop &nuch)
+    (drop &al)
+    (drop &hdir)
+    (drop &ldir))
+  (return (ok)))
+
+; A header carries its file's `export` re-exports and `unsafe/import-private`
+; binding. Like every carried import they load nothing: the consumer imports
+; the libraries, and a re-export whose library it did not import is refused.
+(deftest s21-nuch-export-private
+  (let (ldir:String (try (test-scratch-sub "l"))
+        hdir:String (try (test-scratch-sub "h"))
+        hv:StrView (string-as-view &hdir)
+        fb:String (try (write-into hv "s21fb.nuc" "(ns s21fb)
+(defn one ():i32 (return 1))
+"))
+        hid:String (try (write-into hv "s21hid.nuc" "(defconst- K 30)
+(defn- secret ():i32 (return 4))
+"))
+        fx:String (try (test-write-file "l/s21fx.nuc" "(ns s21fx)
+(import-prefixed s21fb b)
+(unsafe/import-private s21hid p)
+(export b/one)
+(defn peek (x:T :where (Any T)):i32 (return (+ p/K (p/secret) (b/one))))
+"))
+        nuch:String (try (emit-for-file hv "--emit-nuch" (string-as-view &fx)))
+        nv:StrView (string-as-view &nuch)
+        hfx:String (try (write-into hv "s21fx.nuch" nv))
+        use:String (try (test-write-file "s21fxu.nuc" "(import-use \"stdio.h\")
+(import-prefixed s21fb fb)
+(import-use s21hid)
+(import-prefixed s21fx k)
+(defn main ():i32
+  (printf \"%d %d\\n\" (k/one) (k/peek 1))
+  (return 0))
+"))
+        bad:String (try (test-write-file "s21fxb.nuc" "(import-use s21hid)
+(import-prefixed s21fx k)
+(defn main ():i32 (return (k/one)))
+"))
+        c:Compiled (try (compile-path-in hv (string-as-view &bad)))
+        uobj:String (str hv "/s21fxu.o"))
+    (try (check-line nv "(unsafe/import-private s21hid p)"))
+    (try (check-line nv "(export b/one)"))
+    (try (compile-object-in hv (string-as-view &use) (string-as-view &uobj)))
+    (let (got:String (try (cc-link-run "" (string-as-view &uobj))))
+      (try (check-golden (string-as-view &got) "1 35\n"))
+      (drop &got))
+    (try (check-error-at (ref c 'diags) (string-as-view &hfx) 5
+                         "export: symbol not found: 'b/one'"))
+    (try (check-note-at (ref c 'diags) (string-as-view &hfx) 5
+                        "loads nothing -- import that library as well"))
+    (drop &uobj)
+    (drop &c)
+    (drop &bad)
+    (drop &use)
+    (drop &hfx)
+    (drop &nuch)
+    (drop &fx)
+    (drop &hid)
+    (drop &fb)
     (drop &hdir)
     (drop &ldir))
   (return (ok)))
@@ -1008,6 +1570,42 @@ foo:(bar)
                          3 "some: value must be non-null"))
   (return (ok)))
 
+; A `(name v)` struct-literal argument is designated only when `name` is a
+; field: `&a`, one-argument calls (a function, a local lambda), a one-field
+; nested literal and a sum constructor are values, in a body and in a `defvar`.
+; A field name still wins over a same-named function, and a name that is
+; nothing at all is still a misspelt field.
+(deftest s21-struct-lit-call-args
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Pt x:i32 y:i32)
+(defstruct One v:i32)
+(defstruct H addr:&i32 n:i32)
+(defstruct W o:One k:i32)
+(defstruct M m:?i32 k:i32)
+(defn twice (x:i32):i32 (return (* 2 x)))
+(defn y (v:i32):i32 (return (* 100 v)))
+(defvar g-w:W (W (One 7) 8))
+(defn main ():i32
+  (let (a:i32 5
+        h:&H (H &a 1)
+        p:&Pt (Pt (twice 3) 4)
+        w:&W (W (One 2) 3)
+        f (fn (i:i32):i32 (return (+ i 1)))
+        q:&Pt (Pt (f 10) (y 9))
+        m:&M (M (some 6) 1)
+        n:&M (M (m none) (k 2)))
+    (printf \"%d %d %d %d %d %d %d %d %d %d\\n\" @(h 'addr) (h 'n) (p 'x) (p 'y)
+            ((w 'o) 'v) (w 'k) (q 'x) (q 'y) ((g-w 'o) 'v) (g-w 'k))
+    (match (m 'm) ((some v) (printf \"some %d\\n\" v)) (none (printf \"none\\n\")))
+    (match (n 'm) ((some v) (printf \"some %d\\n\" v)) (none (printf \"none %d\\n\" (n 'k)))))
+  (return 0))
+")))
+    (try (check-golden (string-as-view &out) "5 1 6 4 2 3 11 9 7 8\nsome 6\nnone 2\n"))
+    (drop &out))
+  (try (s21-type-refused "(defstruct Pt x:i32 y:i32)\n(defn f ():i32 (let (p:&Pt (Pt (z 1))) (return (p 'x))))"
+                         4 "struct literal: no field 'z'"))
+  (return (ok)))
+
 ; With the error library in scope, a bare `err` bound or `set!` in a function
 ; that does not return that Result builds the error value (it used to die
 ; negotiating handlers against the return type).
@@ -1027,6 +1625,336 @@ foo:(bar)
   (return 0))
 ")))
     (try (check-golden (string-as-view &out) "err bad-thing\nerr worse-thing\nerr bad-thing\n"))
+    (drop &out))
+  (return (ok)))
+
+; An `extend` subject in any pointer spelling or kind conforms the one
+; kind-erased pointer type, as `ptr:Cents` always did: each spelling carries its
+; own protocol, so a spelling that recorded a key dispatch never asks fails the
+; call. A value sigil (`?Cents`) conforms its union the same way; a `.nuch`
+; round-trips `&Cents` as `(ref Cents)`; a bad pointer subject is located.
+(deftest s21-extend-pointer-subject
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Cents v:i32)
+(defprotocol PA (fa (x:Self):i32))
+(defprotocol PB (fb (x:Self):i32))
+(defprotocol PC (fc (x:Self):i32))
+(defprotocol PD (fd (x:Self):i32))
+(defprotocol PE (fe (x:Self):i32))
+(defprotocol PF (fef (x:Self):i32))
+(defprotocol PG (fg (x:Self):i32))
+(defprotocol PH (fh (x:Self):i32))
+(defprotocol PI (fi (x:Self):i32))
+(defprotocol PV (fv (x:Self):i32))
+(defn fa (c:&Cents):i32 (return (+ (c 'v) 1)))
+(defn fb (c:&Cents):i32 (return (+ (c 'v) 2)))
+(defn fc (c:&Cents):i32 (return (+ (c 'v) 3)))
+(defn fd (c:&Cents):i32 (return (+ (c 'v) 4)))
+(defn fe (c:&Cents):i32 (return (+ (c 'v) 5)))
+(defn fef (c:&Cents):i32 (return (+ (c 'v) 6)))
+(defn fg (c:&Cents):i32 (return (+ (c 'v) 7)))
+(defn fh (c:&Cents):i32 (return (+ (c 'v) 8)))
+(defn fi (c:&Cents):i32 (return (+ (c 'v) 9)))
+(defn fv (m:?Cents):i32 (match m ((some c) (return (c 'v))) (none (return -1))))
+(extend ptr:Cents PA)
+(extend &Cents PB)
+(extend ref:Cents PC)
+(extend raw:Cents PD)
+(extend (ptr Cents) PE)
+(extend (raw Cents) PF)
+(extend ?&Cents PG)
+(extend ?(ref Cents) PH)
+(extend (Maybe &Cents) PI)
+(extend ?Cents PV)
+(defn all (x:T :where (PA T) (PB T) (PC T) (PD T) (PE T) (PF T) (PG T) (PH T) (PI T)):i32
+  (return (+ (fa x) (fb x) (fc x) (fd x) (fef x) (fe x) (fg x) (fh x) (fi x))))
+(defn val (x:T :where (PV T)):i32 (return (fv x)))
+(defn main ():i32
+  (let (c:Cents (Cents 10)
+        m:?Cents (some c)
+        n:?Cents none)
+    (printf \"%d %d %d\\n\" (all &c) (val m) (val n)))
+  (return 0))
+")))
+    (try (check-golden (string-as-view &out) "135 10 -1\n"))
+    (drop &out))
+
+  (let (ldir:String (try (test-scratch-sub "l"))
+        hdir:String (try (test-scratch-sub "h"))
+        lib:String (try (test-write-file "l/s21xpl.nuc" "(defstruct Cents v:i32)
+(defprotocol Worth (worth (x:Self):i32))
+(defn worth (c:&Cents):i32 (return (* (c 'v) 3)))
+(extend &Cents Worth)
+"))
+        lv:StrView (string-as-view &lib)
+        nuch:String (try (emit-for-file "" "--emit-nuch" lv))
+        nv:StrView (string-as-view &nuch)
+        hp:String (try (write-into (string-as-view &hdir) "s21xpl.nuch" nv))
+        use:String (try (test-write-file "s21xpu.nuc" "(import-use \"stdio.h\")
+(import-use s21xpl)
+(defn w (x:T :where (Worth T)):i32 (return (worth x)))
+(defn main ():i32
+  (let (c:Cents (Cents 7))
+    (printf \"%d\\n\" (w &c)))
+  (return 0))
+"))
+        uobj:String (str (string-as-view &hdir) "/s21xpu.o")
+        lobj:String (str (string-as-view &ldir) "/s21xpl.o"))
+    (try (check-line nv "(extend (ref Cents) Worth)"))
+    (try (compile-object-in (string-as-view &hdir)
+                            (string-as-view &use)
+                            (string-as-view &uobj)))
+    (try (compile-object-in "" lv (string-as-view &lobj)))
+    (let (parts:String (str (string-as-view &uobj) " "
+                            (string-as-view &lobj))
+          got:String (try (cc-link-run "" (string-as-view &parts))))
+      (try (check-golden (string-as-view &got) "21\n"))
+      (drop &got)
+      (drop &parts))
+    (drop &lobj)
+    (drop &uobj)
+    (drop &use)
+    (drop &hp)
+    (drop &nuch)
+    (drop &lib)
+    (drop &hdir)
+    (drop &ldir))
+
+  (try (s21-type-refused "(defprotocol Q (q (x:Self):i32)) (extend &Nope Q)" 3 "unknown type: Nope"))
+  (try (s21-type-refused "(defprotocol Q (q (x:Self):i32)) (extend ptr:Nope Q)" 3 "unknown type: Nope"))
+  (return (ok)))
+
+; A `deftype` alias or C typedef subject conforms its target type — the alias is
+; not a new type, so a second `extend` through the target is a same-type
+; re-extend — and `Vector:i32`, `(Vector i16)` and an alias of an instance each
+; conform that one stamped instance, not the template. Each used to record a
+; key dispatch never asks; the list form conformed every `Vector`.
+(deftest s21-extend-alias-subject
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use \"stdint.h\")
+(import-use vector)
+(defprotocol Descr (descr (x:Self):i32))
+(defprotocol Twice (twice (x:Self):i32))
+(defprotocol Wid (wid (x:Self):i32))
+(defprotocol Sized (sz (v:&Self):i32))
+(defprotocol Big (big (v:&Self):i32))
+(defprotocol Small (small (v:&Self):i32))
+(deftype Money i32)
+(deftype Wide (Vector i64))
+(defn descr (x:i32):i32 (return (+ x 100)))
+(defn twice (x:i32):i32 (return (* x 2)))
+(defn wid (x:i32):i32 (return 4))
+(defn sz (v:&(Vector i32)):i32 (return 32))
+(defn big (v:&(Vector i64)):i32 (return 64))
+(defn small (v:&(Vector i16)):i32 (return 16))
+(extend Money Descr)
+(extend Money Twice)
+(extend i32 Twice)
+(extend int32_t Wid)
+(extend Vector:i32 Sized)
+(extend Wide Big)
+(extend (Vector i16) Small)
+(defn d (x:T :where (Descr T)):i32 (return (descr x)))
+(defn t (x:T :where (Twice T)):i32 (return (twice x)))
+(defn w (x:T :where (Wid T)):i32 (return (wid x)))
+(defn s (v:&T :where (Sized T)):i32 (return (sz v)))
+(defn bg (v:&T :where (Big T)):i32 (return (big v)))
+(defn sm (v:&T :where (Small T)):i32 (return (small v)))
+(defn main ():i32
+  (let (m:Money 5
+        a:(Vector i32) (vector-new)
+        b:(Vector i64) (vector-new)
+        c:(Vector i16) (vector-new))
+    (printf \"%d %d %d %d %d %d %d\\n\" (d m) (d 7) (t m) (w 7) (s &a) (bg &b) (sm &c)))
+  (return 0))
+")))
+    (try (check-golden (string-as-view &out) "105 107 10 4 32 64 16\n"))
+    (drop &out))
+
+  (let (ldir:String (try (test-scratch-sub "l"))
+        hdir:String (try (test-scratch-sub "h"))
+        lib:String (try (test-write-file "l/s21xal.nuc" "(defprotocol Worth (worth (x:Self):i32))
+(deftype Money i32)
+(defn worth (c:i32):i32 (return (* c 3)))
+(extend Money Worth)
+"))
+        lv:StrView (string-as-view &lib)
+        nuch:String (try (emit-for-file "" "--emit-nuch" lv))
+        nv:StrView (string-as-view &nuch)
+        hp:String (try (write-into (string-as-view &hdir) "s21xal.nuch" nv))
+        use:String (try (test-write-file "s21xau.nuc" "(import-use \"stdio.h\")
+(import-use s21xal)
+(defn w (x:T :where (Worth T)):i32 (return (worth x)))
+(defn main ():i32
+  (printf \"%d\\n\" (w 7))
+  (return 0))
+"))
+        uobj:String (str (string-as-view &hdir) "/s21xau.o")
+        lobj:String (str (string-as-view &ldir) "/s21xal.o"))
+    (try (check-line nv "(extend Money Worth)"))
+    (try (compile-object-in (string-as-view &hdir)
+                            (string-as-view &use)
+                            (string-as-view &uobj)))
+    (try (compile-object-in "" lv (string-as-view &lobj)))
+    (let (parts:String (str (string-as-view &uobj) " "
+                            (string-as-view &lobj))
+          got:String (try (cc-link-run "" (string-as-view &parts))))
+      (try (check-golden (string-as-view &got) "21\n"))
+      (drop &got)
+      (drop &parts))
+    (drop &lobj)
+    (drop &uobj)
+    (drop &use)
+    (drop &hp)
+    (drop &nuch)
+    (drop &lib)
+    (drop &hdir)
+    (drop &ldir))
+
+  (let (miss:StrView "no matching method for 'f': arguments do not satisfy the required protocol constraint")
+    (try (s21-type-refused "(defprotocol P (p (x:Self):i32)) (deftype Cents i64) (defn p (x:i64):i32 (return 1)) (defn p (x:i32):i32 (return 2)) (extend Cents P) (defn f (x:T :where (P T)):i32 (return (p x))) (defn g ():i32 (let (k:i32 3) (return (f k))))" 3 miss))
+    (try (s21-type-refused "(defprotocol P (p (v:&Self):i32)) (defn p (v:&(Vector i32)):i32 (return 1)) (extend (Vector i32) P) (defn f (v:&T :where (P T)):i32 (return 1)) (defn g ():i32 (let (v:(Vector i64) (vector-new)) (return (f &v))))" 3 miss)))
+  (try (s21-type-refused "(defprotocol (Tag E) (tag (x:Self):E)) (deftype Money i32) (defn tag (x:i32):i64 (return 1)) (extend Money (Tag i64)) (extend i32 (Tag i32))" 3
+                         "type 'i32' re-extends protocol 'Tag' with different associated arguments"))
+  (return (ok)))
+
+; A `:where` names an imported namespaced protocol the way every other reference
+; does: bare under `import-use`, through the local prefix under `import-prefixed`,
+; and a protocol-template application alike. It is parsed before the imported
+; protocol is registered, so the constraint keeps its file's environment and
+; resolves once the protocol exists. A bare `(dyn P)` under `import-use` is the
+; library's own box. The library's namespace is not in scope under a prefix.
+(deftest s21-where-imported-protocol
+  (try (test-write-file "s21wlib.nuc" "(ns s21geom)
+(import-use allocator)
+(defstruct Pt x:i32 y:i32)
+(defprotocol Show (show (x:Self):i32))
+(defprotocol Area (area (x:&Self):i32))
+(defprotocol (Peek E) (peek (x:&Self):E))
+(defn show (p:&Pt):i32 (return (+ (p 'x) (p 'y))))
+(defn area (p:&Pt):i32 (return (* (p 'x) (p 'y))))
+(defn peek (p:&Pt):i32 (return (p 'x)))
+(extend &Pt Show)
+(extend Pt Area)
+(extend Pt (Peek i32))
+(defn via-dyn (d:(dyn Area)):i32 (return (area d)))
+"))
+  (let (m:String (try (test-write-file "s21w-use.nuc" "(import-use allocator)
+(import-use s21wlib)
+(defn f (x:T :where (Show T)):i32 (return (show x)))
+(defn g (x:T :where (s21geom/Show T)):i32 (return (show x)))
+(defn pk (s:&S :where ((Peek E) S)):E (return (peek s)))
+(defn main ():i32
+  (let (p:Pt (Pt 10 2)
+        a:(dyn Area) (Pt 2 3))
+    (return (+ (f &p) (g &p) (pk &p) (via-dyn a)))))
+")))
+    (try (w1-exit (string-as-view &m) 40))
+    (drop &m))
+  (let (m:String (try (test-write-file "s21w-pfx.nuc" "(import-prefixed s21wlib gx)
+(defn f (x:T :where (gx/Show T)):i32 (return (gx/show x)))
+(defn pk (s:&S :where ((gx/Peek E) S)):E (return (gx/peek s)))
+(defn main ():i32
+  (let (p:gx/Pt (gx/Pt 30 2))
+    (return (+ (f &p) (pk &p)))))
+")))
+    (try (w1-exit (string-as-view &m) 62))
+    (drop &m))
+  (let (m:String (try (test-write-file "s21w-ns.nuc" "(import-prefixed s21wlib gx)
+(defn f (x:T :where (s21geom/Show T)):i32 (return 1))
+(defn main ():i32 (return 0))
+"))
+        mv:StrView (string-as-view &m)
+        c:Compiled (try (w1-compile mv)))
+    (try (check-error-at (ref c 'diags) mv 2 "defn: :where names unknown protocol 's21geom/Show'"))
+    (try (check-note-at (ref c 'diags) mv 2 "'s21geom' is not in scope in this file"))
+    (drop &c)
+    (drop &m))
+  (let (m:String (try (test-write-file "s21w-bare.nuc" "(import-prefixed s21wlib gx)
+(defn f (x:T :where (Show T)):i32 (return 1))
+(defn main ():i32 (return 0))
+"))
+        mv:StrView (string-as-view &m)
+        c:Compiled (try (w1-compile mv)))
+    (try (check-error-at (ref c 'diags) mv 2 "defn: :where names unknown protocol 'Show'"))
+    (drop &c)
+    (drop &m))
+  (return (ok)))
+
+; A `:where` constraint's own compound argument recovers the type variable under
+; it, as a bare one does: `?E` from a stored `?i32`, `&E` from `&Pt` and
+; `(Vector E)` from `(Vector i64)`. It used to be parsed as a concrete type and
+; die `unknown type: E`. A stored argument of another shape is refused.
+(deftest s21-where-compound-constraint-arg
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use vector)
+(defstruct Pt x:i32 y:i32)
+(defstruct Box p:?i32)
+(defstruct Holder q:&Pt)
+(defstruct Bag v:(Vector i64))
+(defprotocol (Peek E) (peek (x:&Self):E))
+(defn peek (b:&Box):?i32 (return (b 'p)))
+(defn peek (h:&Holder):&Pt (return (h 'q)))
+(defn peek (b:&Bag):(Vector i64) (return (b 'v)))
+(extend Box (Peek ?i32))
+(extend Holder (Peek &Pt))
+(extend Bag (Peek (Vector i64)))
+(defn first-or (s:&S d:E :where ((Peek ?E) S)):E
+  (match (peek s) ((some v) (return v)) (none (return d))))
+(defn px (s:&S :where ((Peek &E) S)):&E (return (peek s)))
+(defn width (s:&S :where ((Peek (Vector E)) S)):usize (return (sizeof E)))
+(defn main ():i32
+  (let (b:Box (Box (some 41))
+        n:Box (Box none)
+        pt:Pt (Pt 7 8)
+        h:Holder (Holder &pt)
+        v:(Vector i64) (vector-new)
+        g:Bag (Bag v))
+    (printf \"%d %d %d %d\\n\" (first-or &b 0) (first-or &n -1) ((px &h) 'y)
+            (unsafe/cast i32 (width &g))))
+  (return 0))
+")))
+    (try (check-golden (string-as-view &out) "41 -1 8 8\n"))
+    (drop &out))
+  (try (s21-type-refused "(defstruct H q:i32) (defprotocol (Peek E) (peek (x:&Self):E)) (defn peek (h:&H):i32 (return 1)) (extend H (Peek i32)) (defn w (s:&S :where ((Peek (Vector E)) S)):i32 (return 0)) (defn g ():i32 (let (h:H (H 1)) (return (w &h))))" 3
+                         "constraint 'Peek' parameter mismatch: expected (Vector E), found i32"))
+  (return (ok)))
+
+; A `defprotocol` signature is parsed at the `defprotocol`, as a `defn`'s is, so
+; a bad type is refused at its own signature's line with nothing extending the
+; protocol. It used to surface only at an `extend`, a parameter at line 0.
+(deftest s21-protocol-sig-checked
+  (try (s21-type-refused "(defprotocol P\n  (fine (x:&Self):i32)\n  (bad (x:&Self q:Nope):i32))" 5
+                         "unknown type: Nope"))
+  (try (s21-type-refused "(defprotocol P\n  (bad (x:&Self):Nope))" 4 "unknown type: Nope"))
+  (try (s21-type-refused "(defprotocol (P E)\n  (bad (x:&Self v:&(Vector E E)):?E))" 4
+                         "Vector: wrong number of type arguments for defstruct template"))
+  (return (ok)))
+
+; Its type variables and forward references still resolve: `Self`, the
+; protocol's parameter under a sigil and a template, and a struct defined below
+; — in a protocol that is extended and in one that never is.
+(deftest s21-protocol-sig-forward-type
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use vector)
+(defprotocol (Holds E)
+  (held (h:&Self):?E)
+  (tag (h:&Self l:&Later):i32))
+(defprotocol (Unused E)
+  (unused (h:&Self v:&(Vector Later) e:?&E):Later))
+(defstruct Later n:i32)
+(defstruct Cell v:i32)
+(defn held (c:&Cell):?i32 (return (some (c 'v))))
+(defn tag (c:&Cell l:&Later):i32 (return (+ (c 'v) (l 'n))))
+(extend Cell (Holds i32))
+(defn main ():i32
+  (let (c:Cell (Cell 40) l:Later (Later 2))
+    (match (held &c)
+      ((some v) (printf \"%d %d\\n\" v (tag &c &l)))
+      (none (printf \"none\\n\"))))
+  (return 0))
+")))
+    (try (check-golden (string-as-view &out) "40 42\n"))
     (drop &out))
   (return (ok)))
 
@@ -1116,4 +2044,1034 @@ foo:(bar)
   (try (check-source-rejects "(defmacro nothing () `())
 (defn main ():i32 (nothing) (return 0))
 " "'()' is not an expression -- the empty list has no value"))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; A mis-shaped loop binding is refused by name, and a crash in compile-time
+; code is a located error exiting 1, never the compiler's own SIGSEGV (139).
+; ---------------------------------------------------------------------------
+
+; Exit 1 exactly, and the error at `line`: a printed diagnostic followed by a
+; crash would satisfy the location check alone.
+(defn s21-exit1-at (src:StrView line:i32 msg:StrView):!void
+  (let (p:String (try (test-write-file "t.nuc" src))
+        pv:StrView (string-as-view &p)
+        c:Compiled (try (compile-path pv)))
+    (when (!= (c 'exit) 1)
+      (fail! "expected exit 1, got " (as i64 (c 'exit)) " for " (test-show src)))
+    (try (check-error-at (ref c 'diags) pv line msg))
+    (drop &c)
+    (drop &p))
+  (return (ok)))
+
+(defn s21-loop-refused (form:StrView msg:StrView):!void
+  (let (src:String (str "(import-use vector)\n\n" form "\n(defn main ():i32 (return 0))\n"))
+    (try (s21-exit1-at (string-as-view &src) 3 msg))
+    (drop &src))
+  (return (ok)))
+
+; A bare-symbol binding blames the call's line: the symbol has none of its own.
+(deftest s21-loop-binding-shapes
+  (let (seq:StrView "doseq: the first argument must be (var coll IterType)"
+        it:StrView "doseq-iter: the first argument must be (var iter-ref)"
+        tms:StrView "dotimes: the first argument must be (var count)")
+    (try (s21-loop-refused "(defn f (v:&(Vector i32)):void (doseq item v (VecIter i32) (conj v item)))" seq))
+    (try (s21-loop-refused "(defn f (v:&(Vector i32)):void (doseq (x) (conj v x)))" seq))
+    (try (s21-loop-refused "(defn f (v:&(Vector i32)):void (doseq ((x) v (VecIter i32)) (conj v 1)))" seq))
+    (try (s21-loop-refused "(defn f (v:&(Vector i32)):void (doseq () (conj v 1)))" seq))
+    (try (s21-loop-refused "(defn f (v:&(VecIter i32)):void (doseq-iter x v (next v)))" it))
+    (try (s21-loop-refused "(defn f (v:&(VecIter i32)):void (doseq-iter (x) (next v)))" it))
+    (try (s21-loop-refused "(defn f (v:&(VecIter i32)):void (doseq-iter (x v w) (next v)))" it))
+    (try (s21-loop-refused "(defn f (n:i32):i32 (dotimes (i) (+ i n)) (return 0))" tms))
+    (try (s21-loop-refused "(defn f (n:i32):i32 (dotimes i n (+ i n)) (return 0))" tms))
+    (try (s21-loop-refused "(defn f (n:i32):i32 (dotimes () (+ n 1)) (return 0))" tms)))
+  (return (ok)))
+
+; The one shape with a likelier intent gets it as a note.
+(deftest s21-doseq-two-element-binding-notes-doseq-iter
+  (let (p:String (try (test-write-file "t.nuc" "(import-use vector)
+
+(defn f (it:&(VecIter i32)):void (doseq (x it) (next it)))
+"))
+        pv:StrView (string-as-view &p)
+        c:Compiled (try (compile-path pv)))
+    (try (check-error-at (ref c 'diags) pv 3 "doseq: the first argument must be (var coll IterType)"))
+    (try (check-note-at (ref c 'diags) pv 3 "use (doseq-iter (var iter-ref) ...)"))
+    (drop &c)
+    (drop &p))
+  (return (ok)))
+
+; Every JIT'd entry the compiler calls: a macro body (a null dereference, and a
+; recursion off the end of the stack), a `~e` argument, and a `compile-time` block.
+(deftest s21-ct-fault-boundary
+  (try (s21-exit1-at "(defmacro boom (x)
+  (let ((n (raw Node)) null)
+    (when (= (n 'kind) 0) (return x))
+    x))
+
+(defn main ():i32
+  (return (boom 1)))
+" 7 "macro 'boom': crashed while expanding"))
+  (try (s21-exit1-at "(defn spin (n:i64):i64
+  (let (buf:&i64 (alloca (array i64 64)))
+    (set! (aref buf 0) n)
+    (return (+ (spin (+ n 1)) (aref buf 0)))))
+(defmacro deep (x) (spin 0) x)
+(defn main ():i32
+  (return (deep 1)))
+" 7 "macro 'deep': crashed while expanding"))
+  (try (s21-exit1-at "(defmacro m (x) x)
+(defn main ():i32
+  (return (m ~(let ((n (raw Node)) null) (if (= (n 'kind) 0) n n)))))
+" 3 "the computed argument '~(let ...)': crashed while evaluating"))
+  (try (s21-exit1-at "(defn main ():i32 (return 0))
+
+(compile-time
+  (let (p:(raw i32) null)
+    (set! (deref p) 1)))
+" 3 "compile-time block: crashed while running"))
+  (return (ok)))
+
+; The REPL does not resume after a crash -- the fault may have struck mid-
+; allocation -- but a `macro-error` before it must have left no frame armed.
+(deftest s21-ct-fault-ends-repl-session
+  (let (p:String (try (test-write-file "repl.in" "(defmacro bad (x) (macro-error x \"bad: refused\") x)
+(defmacro boom (x) (let ((n (raw Node)) null) (when (= (n 'kind) 0) (return x)) x))
+(bad (f 1))
+(+ 1 2)
+(boom 1)
+(+ 3 4)
+"))
+        cmd:Command (command (compiler-path)))
+    (command-arg &cmd "-i")
+    (command-stdin-path &cmd (string-as-view &p))
+    (command-capture &cmd true)
+    (command-stderr-to-stdout &cmd true)
+    (let (o:Output (try (run &cmd))
+          out:StrView (string-as-view (ref o 'out)))
+      (try (check-eq-int (as i64 (exit-code (ref o 'status))) 1 "REPL exit status"))
+      (try (check-contains out "bad: refused"))
+      (try (check-contains out "  3\n"))
+      (try (check-contains out "<repl>:1: error: macro 'boom': crashed while expanding"))
+      (try (check-not-contains out "  7\n"))
+      (drop &o))
+    (drop &cmd)
+    (drop &p))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; `macro-error`'s message is any string value: a String a macro body built with
+; `str` reports its text at the call's line; a literal needs no import.
+; ---------------------------------------------------------------------------
+
+(defn s21-only-ints-src (arg:StrView):String
+  (return (str "(import-use fmt)
+(import-use read)
+
+(defmacro only-ints (x)
+  (when (!= (x 'kind) NODE-INT)
+    (let (t:String (node-str x))
+      (macro-error x (str \"only-ints: got \" (string-as-view &t) \", not an integer\"))))
+  x)
+
+(defn main ():i32
+  (return (only-ints " arg ")))
+")))
+
+; A list argument carries its own line; a symbol has none and blames the call.
+(deftest s21-macro-error-formatted
+  (let (a:String (s21-only-ints-src "(+ 1 2)")
+        b:String (s21-only-ints-src "zed"))
+    (try (s21-exit1-at (string-as-view &a) 11 "only-ints: got (+ 1 2), not an integer"))
+    (try (s21-exit1-at (string-as-view &b) 11 "only-ints: got zed, not an integer"))
+    (drop &a)
+    (drop &b))
+  (return (ok)))
+
+(deftest s21-macro-error-formatted-symbol-name
+  (try (s21-exit1-at "(import-use fmt)
+(import-use intern-str)
+
+(defmacro no-sym (x)
+  (when (= (x 'kind) NODE-SYM)
+    (macro-error x (str \"no-sym: '\" (x 's) \"' is a symbol, node kind \" (x 'kind))))
+  x)
+
+(defn main ():i32
+  (return (no-sym zed)))
+" 10 "no-sym: 'zed' is a symbol, node kind 2"))
+  (return (ok)))
+
+(deftest s21-macro-error-literal-unchanged
+  (try (s21-exit1-at "(defmacro only-ints (x)
+  (when (!= (x 'kind) NODE-INT)
+    (macro-error x \"only-ints: the argument must be an integer literal\"))
+  x)
+
+(defn main ():i32
+  (return (only-ints (f 1))))
+" 7 "only-ints: the argument must be an integer literal"))
+  (return (ok)))
+
+(deftest s21-macro-error-message-not-a-string
+  (try (s21-exit1-at "(defmacro m (x) (macro-error x 42) `0)
+(defn main ():i32 (m 1))
+" 1 "macro-error: the message must be a string (a StrView or a String), not i32"))
+  (try (s21-exit1-at "(defmacro m (x) (macro-error x x) `0)
+(defn main ():i32 (m 1))
+" 1 "macro-error: the message must be a string (a StrView or a String), not "))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; A C header that does not preprocess is refused in every mode
+; ---------------------------------------------------------------------------
+
+(defn s21-cpp-msg ():StrView
+  (return "c-include: failed to preprocess 's21-no-such.h'"))
+
+; The header modes run only the prescans, so the refusal lives there too: one
+; diagnostic at the import's line, and clang's own report printed once.
+(deftest s21-cheader-unpreprocessable-refused
+  (let (dir:StrView (try (test-scratch))
+        p:String (try (test-write-file "probe.nuc" "(defn f ():i32 (return 1))
+
+(import-use \"s21-no-such.h\")
+(defn main ():i32 (return 0))
+"))
+        pv:StrView (string-as-view &p))
+    (try (check-refused-alike dir pv 3 (s21-cpp-msg)))
+    (let (c:Compiled (try (emit-checked dir "--emit-nuch" pv)))
+      (try (check-eq-int (count-matching-lines (string-as-view (ref c 'raw)) "*note: clang -E*")
+                         1 "clang's report, printed once"))
+      (drop &c))
+    (drop &p))
+  (return (ok)))
+
+; Reached through a library: located in the library, in all three modes.
+(deftest s21-cheader-unpreprocessable-in-library
+  (let (dir:StrView (try (test-scratch))
+        lib:String (try (test-write-file "s21badc.nuc" "(defn s21-g ():i32 (return 2))
+(import-use \"s21-no-such.h\")
+"))
+        p:String (try (test-write-file "probe.nuc" "(import-use s21badc)
+(defn main ():i32 (return (s21-g)))
+"))
+        pv:StrView (string-as-view &p)
+        c:Compiled (try (emit-checked dir "--emit-llvm" pv)))
+    (when (!= (c 'exit) 1)
+      (fail! "--emit-llvm exited " (as i64 (c 'exit)) ", not 1"))
+    (try (check-error-at (ref c 'diags) (string-as-view &lib) 2 (s21-cpp-msg)))
+    (try (check-header-mode-agrees dir pv &c "--emit-cheader"))
+    (try (check-header-mode-agrees dir pv &c "--emit-nuch"))
+    (drop &c)
+    (drop &p)
+    (drop &lib))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; C enumerators are integer constants, as a folded `#define` is
+; ---------------------------------------------------------------------------
+
+(defn s21-enum-header ():StrView
+  (return "#define S21E_BASE 40
+enum s21e_color { S21E_RED, S21E_GREEN, S21E_BLUE = 10, S21E_CYAN, };
+enum { S21E_NEG = -3, S21E_NEG_NEXT, S21E_DERIVED = S21E_NEG_NEXT * 4 };
+typedef enum { S21E_HEX = 0x10, S21E_SHL = S21E_HEX << 2, S21E_OR = S21E_HEX | S21E_SHL } s21e_td;
+typedef enum s21e_flags {
+  S21E_NONE __attribute__((__deprecated__(\"use S21E_DEFAULT\"))),
+  S21E_DEFAULT = 0,
+  S21E_A = 1 << 0,
+  S21E_B = 1 << 1,
+  S21E_AB = S21E_A | S21E_B,
+  S21E_MASK = ~S21E_AB,
+  S21E_TOP = 1 << 31,
+  S21E_UTOP = 1u << 31,
+  S21E_CAST = (int)(1u << 31)
+} s21e_flags;
+enum { S21E_FROM_DEFINE = S21E_BASE + 2, S21E_CHAR = 'x', S21E_AFTER_CHAR };
+enum { S21E_WIDE = 0x100000000, S21E_WIDE_NEXT, S21E_EDGE = 0x7fffffff, S21E_PAST_EDGE };
+enum { _S21E_PRIVATE = 5, S21E_FROM_PRIVATE = _S21E_PRIVATE + 1 };
+enum { S21E_TERNARY = 1 ? 2 : 3, S21E_AFTER_TERNARY, S21E_RESYNC = 9, S21E_AFTER_RESYNC };
+struct s21e_holder { enum { S21E_IN_STRUCT = 100, S21E_IN_STRUCT_NEXT } kind; int v; };
+#define S21E_VIA_ENUM (S21E_CYAN + 1)
+#define S21E_M_TOP (1 << 31)
+#define S21E_M_NOTU (~0u)
+#define S21E_M_NEGU (0u - 1)
+#define S21E_M_CAST ((unsigned short)-1)
+#define S21E_M_CHAR '\\n'
+enum s21e_color s21e_pick(enum s21e_flags f);
+"))
+
+(defn s21-enum-names ():StrView
+  (return "S21E_RED S21E_GREEN S21E_BLUE S21E_CYAN S21E_NEG S21E_NEG_NEXT S21E_DERIVED S21E_HEX S21E_SHL S21E_OR S21E_NONE S21E_DEFAULT S21E_A S21E_B S21E_AB S21E_MASK S21E_TOP S21E_UTOP S21E_CAST S21E_FROM_DEFINE S21E_CHAR S21E_AFTER_CHAR S21E_WIDE S21E_WIDE_NEXT S21E_EDGE S21E_PAST_EDGE S21E_FROM_PRIVATE S21E_RESYNC S21E_AFTER_RESYNC S21E_IN_STRUCT S21E_IN_STRUCT_NEXT S21E_VIA_ENUM S21E_M_TOP S21E_M_NOTU S21E_M_NEGU S21E_M_CAST S21E_M_CHAR"))
+
+; Every name in `names`, printed by clang and by nucleusc reading the header
+; written to scratch as `file`.
+(defn s21-check-cconsts-vs-clang (file:StrView text:StrView names:StrView):!void
+  (let (h:String (try (test-write-file file text))
+        sp:StrView " "
+        it:SplitIter (strview-split &names &sp)
+        csrc:String (str "#pragma clang diagnostic ignored \"-Weverything\"
+#include <stdio.h>
+#include \"" file "\"
+int main(void) {
+")
+        nsrc:String (str "(import-use \"" (string-as-view &h) "\")
+(import-use io)
+(defn main ():i32
+"))
+    (while (not (split-iter-done &it))
+      (let (n:StrView (split-iter-next &it))
+        (str-into &csrc "  printf(\"" n " %lld\\n\", (long long)" n ");\n")
+        (str-into &nsrc "  (print \"" n " \" " n " \"\\n\")\n")))
+    (str-into &csrc "  return 0;\n}\n")
+    (str-into &nsrc "  (return 0))\n")
+    (let (cp:String (try (test-write-file "ref.c" (string-as-view &csrc)))
+          want:String (try (cc-link-run "" (string-as-view &cp)))
+          got:String (try (build-run-source (string-as-view &nsrc))))
+      (try (check-eq (string-as-view &got) (string-as-view &want)))
+      (drop &got)
+      (drop &want)
+      (drop &cp))
+    (drop &nsrc)
+    (drop &csrc)
+    (drop &h))
+  (return (ok)))
+
+; The reference is clang reading the same header, as for `#define`s: C decides
+; what `1 << 31` and an implicit step past INT_MAX are, not a number written here.
+; The `S21E_M_` rows are `#define`s through the same evaluator.
+(deftest s21-cenum-values
+  (try (s21-check-cconsts-vs-clang "s21e.h" (s21-enum-header) (s21-enum-names)))
+  (return (ok)))
+
+; An array extent, a narrowing into a slot, and the unit's own names first.
+(deftest s21-cenum-uses
+  (let (h:String (try (test-write-file "s21e.h" (s21-enum-header)))
+        hv:StrView (string-as-view &h)
+        a:String (try (test-write-file "s21ea.h" "enum { S21D_SAME = 5, S21D_CONFLICT = 1 };\n"))
+        b:String (try (test-write-file "s21eb.h" "enum { S21D_SAME = 5, S21D_CONFLICT = 2, S21D_ONLY_B };\n"))
+        src:String (str "(defconst S21E_RED 99)
+(import-use \"" hv "\")
+(import-use \"" (string-as-view &a) "\")
+(import-use \"" (string-as-view &b) "\")
+(import-use io)
+(defn S21E_GREEN ():i32 (return 98))
+(defvar S21E_BLUE:i32 97)
+(defvar table:(array i32 S21E_CYAN))
+(defn take8 (x:ui8):i32 (return (as i32 x)))
+(defn main ():i32
+  (let (flags:ui32 (bit-or S21E_A S21E_B))
+    (print (sizeof (array i32 S21E_OR)) \" \" (take8 S21E_CHAR) \" \" (as i64 flags) \" \"
+           S21E_RED \" \" (S21E_GREEN) \" \" S21E_BLUE \" \"
+           S21D_SAME \" \" S21D_CONFLICT \" \" S21D_ONLY_B \"\\n\")
+    (return 0)))
+")
+        out:String (try (build-run-source (string-as-view &src))))
+    (try (check-golden (string-as-view &out) "320 120 3 99 98 97 5 1 3\n"))
+    (drop &out)
+    (drop &src)
+    (drop &b)
+    (drop &a)
+    (drop &h))
+  (return (ok)))
+
+; What does not fold is not a name: the ternary, the implicit step after it, and
+; the reserved name, which `unsafe/import-private` still reaches.
+(deftest s21-cenum-refused
+  (let (h:String (try (test-write-file "s21e.h" (s21-enum-header)))
+        hv:StrView (string-as-view &h))
+    (let (a:String (str "(import-use \"" hv "\")\n(defn main ():i32 (return S21E_TERNARY))\n"))
+      (try (s21-exit1-at (string-as-view &a) 2 "undefined: S21E_TERNARY"))
+      (drop &a))
+    (let (a:String (str "(import-use \"" hv "\")\n(defn main ():i32 (return S21E_AFTER_TERNARY))\n"))
+      (try (s21-exit1-at (string-as-view &a) 2 "undefined: S21E_AFTER_TERNARY"))
+      (drop &a))
+    (let (a:String (str "(import-use \"" hv "\")\n(defn main ():i32 (return _S21E_PRIVATE))\n"))
+      (try (s21-exit1-at (string-as-view &a) 2 "undefined: _S21E_PRIVATE"))
+      (drop &a))
+    (let (a:String (str "(unsafe/import-private \"" hv "\" e)
+(import-use io)
+(defn main ():i32 (print _S21E_PRIVATE \" \" (take-i16 S21E_NEG) \"\\n\") (return 0))
+(defn take-i16 (x:i16):i32 (return (as i32 x)))
+")
+          out:String (try (build-run-source (string-as-view &a))))
+      (try (check-golden (string-as-view &out) "5 -3\n"))
+      (drop &out)
+      (drop &a))
+    (let (a:String (str "(import-use \"" hv "\")
+(defn take8 (x:ui8):i32 (return (as i32 x)))
+(defn main ():i32 (return (take8 S21E_TOP)))
+"))
+      (try (s21-exit1-at (string-as-view &a) 3 "integer literal -2147483648 does not fit ui8"))
+      (drop &a))
+    (drop &h))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; A C constant yields to any Nucleus definition of its name; a header mode
+; writes one as its value; each C operation has its operands' type
+; ---------------------------------------------------------------------------
+
+(defn s21-yield-header ():StrView
+  (return "#define S21K_M 7
+enum { S21K_A = 1, S21K_B, S21K_C, S21K_D, S21K_E };
+"))
+
+; A struct before the import used to lose head position to the constant, and
+; every kind after it was refused as `already names a value`. The macro is the
+; case no prescan registers first.
+(deftest s21-cconst-user-definitions-win
+  (let (h:String (try (test-write-file "s21k.h" (s21-yield-header)))
+        src:String (str "(defstruct S21K_M v:i32)
+(import-use \"" (string-as-view &h) "\")
+(import-use io)
+(defstruct S21K_A v:i32)
+(defmacro S21K_B () (quote 20))
+(deftype S21K_D i64)
+(defunion S21K_E (e1 x:i32) (e2))
+(defn main ():i32
+  (let (m:S21K_M (S21K_M 5)
+        a:S21K_A (S21K_A 6)
+        d:S21K_D 40)
+    (print (m 'v) \" \" (a 'v) \" \" (S21K_B) \" \" S21K_C \" \" d \"\\n\")
+    (return 0)))
+")
+        out:String (try (build-run-source (string-as-view &src))))
+    (try (check-golden (string-as-view &out) "5 6 20 3 40\n"))
+    (drop &out)
+    (drop &src)
+    (drop &h))
+  (return (ok)))
+
+; At the prompt every definition comes after the import.
+(deftest s21-cconst-user-definitions-win-repl
+  (let (h:String (try (test-write-file "s21k.h" (s21-yield-header)))
+        text:String (str "(import-use \"" (string-as-view &h) "\")
+S21K_A
+(defstruct S21K_A v:i32)
+(let (a:S21K_A (S21K_A 6)) (a 'v))
+(defmacro S21K_B () (quote 20))
+(S21K_B)
+S21K_C
+")
+        t:String (try (repl-session (string-as-view &text))))
+    (try (check-contains (string-as-view &t)
+           "nuc>   1\nnuc>   defined\nnuc>   6\nnuc>   defined\nnuc>   20\nnuc>   3\n"))
+    (drop &t)
+    (drop &text)
+    (drop &h))
+  (return (ok)))
+
+; The header's own C import binds and is never read, so neither header could
+; define `S21H_N`; the file's own `S21H_OWN` keeps its name over the C one.
+(deftest s21-cconst-header-modes-write-values
+  (let (ch:String (try (test-write-file "s21hc.h" "#define S21H_N 6
+enum { S21H_E = 3 };
+#define S21H_OWN 99
+"))
+        ldir:String (try (test-scratch-sub "l"))
+        hdir:String (try (test-scratch-sub "h"))
+        lv:StrView (string-as-view &ldir)
+        hv:StrView (string-as-view &hdir)
+        libsrc:String (str "(import-use \"" (string-as-view &ch) "\")
+(defconst S21H_OWN 2)
+(defstruct S21HBox (a (array i32 S21H_N)) (b (array i8 S21H_E)) (c (array i16 S21H_OWN)) (k i32))
+(defn s21h-k (b:&S21HBox):i32 (return (b 'k)))
+")
+        lib:String (try (write-into lv "s21hlib.nuc" (string-as-view &libsrc)))
+        libv:StrView (string-as-view &lib)
+        viatext:String (str "(import-use \"" libv "\")
+(import-use io)
+(defn main ():i32 (print (sizeof S21HBox) \"\\n\") (return 0))
+")
+        cheader:String (try (emit-into "" "--emit-cheader" libv hv "s21hlib.h"))
+        nuch:String (try (emit-into "" "--emit-nuch" libv hv "s21hlib.nuch"))
+        chv:String (try (emit-for-file "" "--emit-cheader" libv))
+        nhv:String (try (emit-for-file "" "--emit-nuch" libv))
+        csrc:String (try (test-write-file "use.c" "#include <stdio.h>
+#include \"s21hlib.h\"
+int main(void) { printf(\"%d\\n\", (int)sizeof(S21HBox)); return 0; }
+"))
+        viasrc:String (try (test-write-file "via-src.nuc" (string-as-view &viatext)))
+        vianuch:String (try (test-write-file "via-nuch.nuc" "(import-use s21hlib)
+(import-use io)
+(defn main ():i32 (print (sizeof S21HBox) \"\\n\") (return 0))
+")))
+    (try (check-line (string-as-view &chv) "    int32_t a[6];"))
+    (try (check-line (string-as-view &chv) "    int8_t b[3];"))
+    (try (check-line (string-as-view &chv) "    int16_t c[S21H_OWN];"))
+    (try (check-line (string-as-view &chv) "#define S21H_OWN 2"))
+    (try (check-line (string-as-view &nhv)
+           "(defstruct S21HBox (a (array i32 6)) (b (array i8 3)) (c (array i16 S21H_OWN)) (k i32))"))
+    (let (a:String (try (cc-link-run hv (string-as-view &csrc)))
+          b:String (try (build-run-file "" "" (string-as-view &viasrc)))
+          c:String (try (build-run-file hv "" (string-as-view &vianuch))))
+      (try (check-golden (string-as-view &a) "36\n"))
+      (try (check-golden (string-as-view &b) "36\n"))
+      (try (check-golden (string-as-view &c) "36\n"))
+      (drop &c) (drop &b) (drop &a))
+    (drop &vianuch) (drop &viasrc) (drop &csrc) (drop &nhv) (drop &chv)
+    (drop &nuch) (drop &cheader) (drop &viatext) (drop &lib) (drop &libsrc)
+    (drop &hdir) (drop &ldir) (drop &ch))
+  (return (ok)))
+
+; Each operator converts its operands to their common type and wraps its result
+; there, as C does; the fold used to apply one type to the whole expression.
+(defn s21-ops-header ():StrView
+  (return "#define S21O_DIV_U ((0u - 1) / 2)
+#define S21O_REM_U ((0u - 1) % 7)
+#define S21O_SHR_U ((0u - 1) >> 1)
+#define S21O_NEG_DIV_U (-1 / 2u)
+#define S21O_INT_SHR ((1 << 31) >> 31)
+#define S21O_U_TO_LONG ((0u - 1) + 1L)
+#define S21O_UL_DIV ((0ul - 1) / 2)
+#define S21O_HEX64_DIV (0xffffffffffffffff / 2)
+#define S21O_HEX64_SHR (0x8000000000000000 >> 63)
+#define S21O_UCHAR ((unsigned char)200 + 100)
+#define S21O_SUB_U_DIV ((3 - 5u) / 2)
+#define S21O_REM_NEG_U ((-1) % 3u)
+#define S21O_SIZEOF_DIV ((sizeof(int) - 5) / 2)
+#define S21O_CAST_US ((unsigned short)-1 / 2)
+#define S21O_NEG_U (-(1u) / 3)
+#define S21O_XOR_DIV (((1u ^ 3) - 4) / 2)
+#define S21O_AND_DIV ((-1 & 0xffffffffu) / 2)
+#define S21O_SIGNED (-7 / 2 + -7 % 2)
+#define S21O_LL_MIX (-1LL / 2u)
+#define S21O_L_MIX (-1L / 2u)
+#define S21O_ULL (0xffffffffffffffffull / 3)
+#define S21O_VIA_MACRO (S21O_SUB_U_DIV / 2)
+#define S21O_VIA_ENUM (S21O_E_NEG / 2u)
+#define S21O_SHIFT_WIDE (1 << 32)
+enum { S21O_E_NEG = -2, S21O_E_DIV = (0u - 1) / 2, S21O_E_SHR = (0u - 2) >> 1,
+       S21O_E_CAST = (int)((0u - 1) / 2) };
+"))
+
+(defn s21-ops-names ():StrView
+  (return "S21O_DIV_U S21O_REM_U S21O_SHR_U S21O_NEG_DIV_U S21O_INT_SHR S21O_U_TO_LONG S21O_UL_DIV S21O_HEX64_DIV S21O_HEX64_SHR S21O_UCHAR S21O_SUB_U_DIV S21O_REM_NEG_U S21O_SIZEOF_DIV S21O_CAST_US S21O_NEG_U S21O_XOR_DIV S21O_AND_DIV S21O_SIGNED S21O_LL_MIX S21O_L_MIX S21O_ULL S21O_VIA_MACRO S21O_VIA_ENUM S21O_E_NEG S21O_E_DIV S21O_E_SHR S21O_E_CAST"))
+
+(deftest s21-cconst-per-operation
+  (try (s21-check-cconsts-vs-clang "s21o.h" (s21-ops-header) (s21-ops-names)))
+  ; C says a shift past the width is not a constant, so it is not a name.
+  (let (h:String (try (test-write-file "s21o.h" (s21-ops-header)))
+        a:String (str "(import-use \"" (string-as-view &h) "\")\n(defn main ():i32 (return S21O_SHIFT_WIDE))\n"))
+    (try (s21-exit1-at (string-as-view &a) 2 "undefined: S21O_SHIFT_WIDE"))
+    (drop &a)
+    (drop &h))
+  (return (ok)))
+
+; `name` = the i64 initializer of `@v_<name>` in `ir`.
+(defn s21-init-value (ir:StrView name:StrView):!String
+  (let (key:String (str "@v_" name " = ")
+        l:StrView (try (line-with ir (string-as-view &key)))
+        k:StrView "i64 ")
+    (drop &key)
+    (match (strview-find &l &k)
+      ((some i)
+        (let (v:StrView (view-upto-byte (strview-drop-bytes l (+ i 4)) (as ui8 44)))
+          (return (ok (str name " = " v "\n")))))
+      (none (fail! "no i64 initializer in " (test-show l))))))
+
+(defn s21-clang-avr-ir (path:StrView):!String
+  (let (c:Command (command "clang"))
+    (command-arg &c "--target=avr")
+    (command-arg &c "-mmcu=atmega328p")
+    (command-arg &c "-w")
+    (command-arg &c "-S")
+    (command-arg &c "-emit-llvm")
+    (command-arg &c "-o")
+    (command-arg &c "-")
+    (command-arg &c path)
+    (command-capture &c true)
+    (match (run &c)
+      ((ok o)
+        (when (not (success? (ref o 'status)))
+          (fail! "clang --target=avr refused the reference\n     "
+                 (test-show (string-as-view (ref o 'err)))))
+        (let (ov:StrView (string-as-view (ref o 'out))
+              out:String (try (string-from-view &ov)))
+          (drop &o)
+          (drop &c)
+          (return (ok out))))
+      ((err e)
+        (drop &c)
+        (return (err e))))))
+
+; AVR's `int` is 16 bits and its `long` 32, so the same header folds to other
+; values there; clang's global initializers are the reference. The 31-bit shift
+; is past a 16-bit `int` and so not a constant on AVR.
+(deftest s21-cconst-per-operation-avr
+  (let (h:String (try (test-write-file "s21o.h" (s21-ops-header)))
+        names:StrView (s21-ops-names)
+        sp:StrView " "
+        csrc:String (str "#include \"s21o.h\"\n")
+        nsrc:String (str "(import-use \"" (string-as-view &h) "\")\n"))
+    (let (it:SplitIter (strview-split &names &sp))
+      (while (not (split-iter-done &it))
+        (let (n:StrView (split-iter-next &it))
+          (when (not (= n "S21O_INT_SHR"))
+            (str-into &csrc "long long v_" n " = " n ";\n")
+            (str-into &nsrc "(defvar v_" n ":i64 " n ")\n")))))
+    (str-into &nsrc "(defn main ():i32 (return 0))\n")
+    (let (cp:String (try (test-write-file "ref-avr.c" (string-as-view &csrc)))
+          np:String (try (test-write-file "t-avr.nuc" (string-as-view &nsrc)))
+          cir:String (try (s21-clang-avr-ir (string-as-view &cp)))
+          c:Compiled (try (target-emit "avr" "--mcpu=atmega328p" (string-as-view &np)))
+          want:String (string-new)
+          got:String (string-new)
+          it:SplitIter (strview-split &names &sp))
+      (when (not (c 'ok?))
+        (fail! "nucleusc --target=avr refused the header\n     " (test-show (string-as-view (ref c 'raw)))))
+      (while (not (split-iter-done &it))
+        (let (n:StrView (split-iter-next &it))
+          (when (not (= n "S21O_INT_SHR"))
+            (let (w:String (try (s21-init-value (string-as-view &cir) n))
+                  g:String (try (s21-init-value (string-as-view (ref c 'ir)) n)))
+              (str-into &want (string-as-view &w))
+              (str-into &got (string-as-view &g))
+              (drop &g)
+              (drop &w)))))
+      (try (check-eq (string-as-view &got) (string-as-view &want)))
+      (drop &got) (drop &want) (drop &c) (drop &cir) (drop &np) (drop &cp))
+    (drop &nsrc)
+    (drop &csrc)
+    (drop &h))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; Rough edges: the REPL rolls back every scoped depth and mode, a message spells
+; a pointer's kind, and a null element in an expansion is refused, not a crash.
+; ---------------------------------------------------------------------------
+
+; Each failed alias use dies inside the expansion, past the depth decrement; 32
+; of them used to leave every later alias refused as a cycle.
+(deftest s21-repl-alias-depth-rolled-back
+  (let (text:String (str "(deftype (A T) (ref T))\n"))
+    (dotimes (i 40) (str-into &text "(let (x:(A Nope) 0) 0)\n"))
+    (str-into &text "(deftype B i32)\n(let (b:B 5) b)\n")
+    (let (t:String (try (repl-session (string-as-view &text))))
+      (try (check-contains (string-as-view &t) "nuc>   defined\nnuc>   5\n"))
+      (try (check-not-contains (string-as-view &t) "expands into a cycle"))
+      (drop &t))
+    (drop &text))
+  (return (ok)))
+
+(defn s21-arg-type-shown (ptype:StrView shown:StrView):!void
+  (let (src:String (str "(defstruct Pt x:i32)\n(defn f (b:i32):i32 (return b))\n(defn g (p:"
+                        ptype "):i32 (return (f p)))\n(defn main ():i32 (return 0))\n")
+        msg:String (str "f: argument 1 has type " shown ", which does not match parameter type i32"))
+    (try (s21-exit1-at (string-as-view &src) 3 (string-as-view &msg)))
+    (drop &msg)
+    (drop &src))
+  (return (ok)))
+
+; The registry key writes every pointer as `ptr:T`, which reads as non-null.
+(deftest s21-type-display-pointer-kinds
+  (try (s21-arg-type-shown "&Pt" "&Pt"))
+  (try (s21-arg-type-shown "ptr:Pt" "&Pt"))
+  (try (s21-arg-type-shown "(raw Pt)" "(raw Pt)"))
+  (try (s21-arg-type-shown "?&Pt" "?&Pt"))
+  (try (s21-arg-type-shown "!&Pt" "!&Pt"))
+  (try (s21-arg-type-shown "&&Pt" "&&Pt"))
+  (try (s21-arg-type-shown "&raw:Pt" "&(raw Pt)"))
+  (try (s21-arg-type-shown "(raw &Pt)" "(raw &Pt)"))
+  (try (s21-arg-type-shown "ptr" "ptr"))
+  (try (s21-arg-type-shown "?ptr" "?ptr"))
+  (try (s21-exit1-at "(defstruct Pt x:i32)
+(defn g (p:(raw Pt)):&Pt (return (as &Pt p)))
+(defn main ():i32 (return 0))
+" 2 "as: raw pointer (raw Pt) where non-null &Pt is required"))
+  (try (s21-exit1-at "(defstruct Cents v:i32)
+(defprotocol Shw (shw (x:Self):i32))
+(extend &Cents Shw)
+(defn main ():i32 (return 0))
+" 3 "type '&Cents' does not conform to protocol 'Shw'"))
+  (let (c:Compiled (try (compile-source "(defstruct Cents v:i32)
+(defprotocol Shw (shw (x:Self):i32))
+(extend &Cents Shw)
+(defn main ():i32 (return 0))
+")))
+    (try (check-note-anywhere (ref c 'diags) "&Cents does not implement Shw.shw"))
+    (drop &c))
+  (return (ok)))
+
+(deftest s21-repl-type-of-pointer-kinds
+  (let (t:String (try (repl-session "(defvar g1:i32 1)
+(defvar gp:(raw i32))
+(defvar gq:?&i32)
+(type-of &g1)
+(type-of gp)
+(type-of gq)
+")))
+    (try (check-contains (string-as-view &t) "nuc>   &i32\nnuc>   (raw i32)\nnuc>   ?&i32\n"))
+    (drop &t))
+  (return (ok)))
+
+; Null means absent since `()` is a node, so no source spells a null element and
+; every consumer of a form would dereference one.
+(deftest s21-macro-null-element-refused
+  (try (s21-exit1-at "(defmacro bump (x) (let (z:(raw Node) null) `(inc! ~z)))
+(defn main ():i32
+  (let (a:i32 1)
+    (bump a)
+    (return a)))
+" 4 "macro 'bump': the expansion has an empty element at position 1 of (inc! …)"))
+  (try (s21-exit1-at "(defmacro binder (x) (let (z:(raw Node) null) `(let (~z 0) 1)))
+(defn main ():i32
+  (return (binder q)))
+" 3 "macro 'binder': the expansion has an empty element at position 0 of a list"))
+  (let (t:String (try (repl-session "(defmacro bump (x) (let (z:(raw Node) null) `(inc! ~z)))
+(bump 1)
+(+ 1 2)
+")))
+    (try (check-contains (string-as-view &t) "the expansion has an empty element"))
+    (try (check-contains (string-as-view &t) "nuc>   3\n"))
+    (drop &t))
+  (return (ok)))
+
+; An empty `:rest` is the empty list, present: `(str)` unquotes it into `macmap`.
+(deftest s21-macro-empty-rest-is-a-list
+  (try (check-source-exit "(defmacro rest-present (:rest xs) (cond (= xs null) `0 true `1))
+(defn main ():i32 (return (rest-present)))
+" 1))
+  (try (check-source-exit "(import-use fmt)
+(defn main ():i32 (let (s:String (str)) (return (if (= (byte-len &s) 0) 0 1))))
+" 0))
+  (return (ok)))
+
+; A flat type-variable receiver calls a parametric protocol's method whose
+; parameter or return is a protocol parameter: the A2 check reads that parameter
+; as the constraint's argument (a type variable, or `i64`). It died `unknown
+; type: E`; a name no constraint provides is still refused.
+(deftest s21-flat-tyvar-protocol-param
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defprotocol (Peek E) (peek (x:Self):E))
+(defprotocol (Put E) (put (x:Self v:E):E))
+(defstruct Cell v:i32)
+(defstruct Acc n:i64)
+(defn peek (c:Cell):i32 (return (c 'v)))
+(defn put (a:Acc v:i64):i64 (return (+ (a 'n) v)))
+(extend Cell (Peek i32))
+(extend Acc (Put i64))
+(defn pk (s:S :where ((Peek E) S)):E (return (peek s)))
+(defn pk2 (s:S :where ((Peek E) S)):E (let (z:E (peek s)) (return z)))
+(defn put2 (s:S v:E :where ((Put E) S)):E (let (r:E (put s v)) (return (put s r))))
+(defn put-i (s:S :where ((Put i64) S)):i64 (return (put s 1)))
+(defn main ():i32
+  (let (c:Cell (Cell 41)
+        a:Acc (Acc 10))
+    (printf \"%d %d %ld %ld\\n\" (pk c) (pk2 c) (put2 a (as i64 1)) (put-i a)))
+  (return 0))
+")))
+    (try (check-golden (string-as-view &out) "41 41 21 11\n"))
+    (drop &out))
+  (try (s21-type-refused "(defprotocol (Peek E) (peek (x:Self):E)) (defn pk (s:S :where ((Peek E) S)):E (return (poke s)))" 3
+                         "in generic body: unknown function 'poke'"))
+  (return (ok)))
+
+; A template subject may sit under pointers, directly or through a parametric
+; alias: `&(Vector T)` and `(Vec T)` over `(ref (Vector T))` conform every
+; `&(Vector X)`, and `(Lst U)` over `(Vector U)` every instance. The alias was
+; `not a struct template` and the pointer `unknown type: T`.
+(deftest s21-extend-pointer-template-subject
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(import-use vector)
+(defprotocol (Firsty T) (firsty (x:Self):T))
+(defprotocol (Seconds T) (seconds (x:Self):T))
+(defprotocol (Lasty T) (lasty (x:&Self):T))
+(deftype (Vec T) (ref (Vector T)))
+(deftype (Lst T) (Vector T))
+(defn firsty (v:&(Vector T) :where (Any T)):T (return (v 0)))
+(defn seconds (v:(Vec T) :where (Any T)):T (return (v 1)))
+(defn lasty (v:&(Vector T) :where (Any T)):T (return (v (- (count v) 1))))
+(extend &(Vector T) (Firsty T))
+(extend (Vec T) (Seconds T))
+(extend (Lst U) (Lasty U))
+(defn f1 (s:S :where ((Firsty E) S)):E (return (firsty s)))
+(defn f2 (s:S :where ((Seconds E) S)):E (return (seconds s)))
+(defn l1 (s:&S :where ((Lasty E) S)):E (return (lasty s)))
+(defn main ():i32
+  (let (v:(Vector i32) (vector-new)
+        w:(Vector i64) (vector-new))
+    (conj &v 7) (conj &v 8) (conj &v 9) (conj &w 5) (conj &w 6)
+    (printf \"%d %d %d %ld %ld\\n\" (f1 &v) (f2 &v) (l1 &v) (f1 &w) (l1 &w)))
+  (return 0))
+")))
+    (try (check-golden (string-as-view &out) "7 8 9 5 6\n"))
+    (drop &out))
+  (let (fs:StrView "(defprotocol (Firsty T) (firsty (x:Self):T)) (defn firsty (v:&(Vector T) :where (Any T)):T (return (v 0))) (extend &(Vector T) (Firsty T)) (defn f1 (s:S :where ((Firsty E) S)):E (return (firsty s)))"
+        byval:String (str fs " (defn g ():i32 (let (v:(Vector i32) (vector-new)) (return (f1 v))))"))
+    ; The pointer conforms, not the struct.
+    (try (s21-type-refused (string-as-view &byval) 3 "no matching method for overloaded 'f1'"))
+    (drop &byval))
+  (try (s21-type-refused "(defprotocol (Firsty T) (firsty (x:Self):T)) (extend &(Vector T) (Firsty T)) (defn g ():i32 (let (v:(Vector i32) (vector-new)) (conj &v 1) (return 0)))" 3
+                         "type '&Vector.i32' does not conform to protocol 'Firsty'"))
+  (try (s21-type-refused "(defprotocol (Inner E) (inner (x:&Self):E)) (deftype (Opt T) (Maybe T)) (extend (Opt X) (Inner X))" 3
+                         "extend: 'Opt' is not a struct template"))
+  (return (ok)))
+
+; A template subject names its parameters: `(Wrap X)` binds `X` for the
+; protocol arguments and the `:where`, whatever the `defstruct` called it. It
+; used to bind the template's own names. So each argument is a distinct type
+; variable, and a protocol argument names only those.
+(deftest s21-extend-subject-arg-names
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defprotocol (Inner E) (inner (x:&Self):E))
+(defstruct (Wrap T) v:T)
+(defstruct (Two A B) a:A b:B)
+(defstruct (Pipe T) w:T)
+(defn inner (w:&(Wrap T) :where (Any T)):T (return (w 'v)))
+(defn inner (w:&(Two A B) :where (Any A) (Any B)):B (return (w 'b)))
+(defn inner (p:&(Pipe T) :where ((Inner E) T)):E (return (inner (ref p 'w))))
+(extend (Wrap X) (Inner X))
+(extend (Two P Q) (Inner Q))
+(extend (Pipe J) (Inner F) :where ((Inner F) J))
+(defn gi (s:&S :where ((Inner E) S)):E (return (inner s)))
+(defn main ():i32
+  (let (w:(Wrap i32) ((Wrap i32) 5)
+        t:(Two i8 i64) ((Two i8 i64) 1 77)
+        p:(Pipe (Wrap i32)) ((Pipe (Wrap i32)) w))
+    (printf \"%d %ld %d\\n\" (gi &w) (gi &t) (gi &p)))
+  (return 0))
+")))
+    (try (check-golden (string-as-view &out) "5 77 5\n"))
+    (drop &out))
+  (let (two:StrView "(defprotocol (Inner E) (inner (x:&Self):E)) (defstruct (Two A B) a:A b:B) (defn inner (w:&(Two A B) :where (Any A) (Any B)):B (return (w 'b)))"
+        part:String (str two " (extend (Two P i32) (Inner P))")
+        diag:String (str two " (extend (Two P P) (Inner P))")
+        free:String (str two " (extend (Two P Q) (Inner B))"))
+    (try (s21-type-refused (string-as-view &part) 3
+                           "extend: a template subject's arguments must be distinct type variables, one per parameter of 'Two' -- (Two P i32) names only some of its instances"))
+    (try (s21-type-refused (string-as-view &diag) 3 "(Two P P) names only some of its instances"))
+    (try (s21-type-refused (string-as-view &free) 3
+                           "extend: protocol parameter 'B' is not determined by the subject or any :where constraint"))
+    (drop &free)
+    (drop &diag)
+    (drop &part))
+  (try (s21-type-refused "(defprotocol (Inner E) (inner (x:&Self):E)) (defstruct (Wrap T) v:T) (extend (Wrap X Y) (Inner X))" 3
+                         "Wrap: wrong number of type arguments for defstruct template (2 given)"))
+  (return (ok)))
+
+; A protocol signature with its own `:where` is a generic requirement: the
+; conformer's method must bind for every type the `:where` admits, checked as a
+; generic body's call is. It died `unknown type: T` at every `extend`. A
+; concrete-only or narrower conformer is refused, and `(dyn P)` cannot hold one.
+(deftest s21-protocol-sig-where
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defprotocol Show (show (x:Self):i32))
+(defprotocol M (mapx (self:&Self v:T :where (Any T)):T))
+(defprotocol (Tagd K) (tagd (self:&Self k:K v:T :where (Show T)):K))
+(defstruct Box n:i32)
+(defn show (x:i32):i32 (return x))
+(extend i32 Show)
+(defn mapx (self:&Box v:T :where (Any T)):T (return v))
+(defn tagd (self:&Box k:i64 v:T :where (Any T)):i64 (return (+ k (self 'n))))
+(extend Box M)
+(extend Box (Tagd i64))
+(defn use-m (s:&S :where (M S)):i64 (return (mapx s (as i64 5))))
+(defn main ():i32
+  (let (b:Box (Box 3))
+    (printf \"%d %ld %ld\\n\" (mapx &b 9) (use-m &b) (tagd &b (as i64 4) 1)))
+  (return 0))
+")))
+    (try (check-golden (string-as-view &out) "9 5 7\n"))
+    (drop &out))
+  (let (m:StrView "(defprotocol Show (show (x:Self):i32)) (defprotocol M (mapx (self:&Self v:T :where (Any T)):T)) (defstruct Box n:i32)"
+        conc:String (str m " (defn mapx (self:&Box v:i32):i32 (return v)) (extend Box M)")
+        narrow:String (str m " (defn mapx (self:&Box v:T :where (Show T)):T (return v)) (extend Box M)")
+        boxed:String (str m " (defn mapx (self:&Box v:T :where (Any T)):T (return v)) (extend Box M) (defn g ():i32 (let (b:Box (Box 1) d:(dyn M) &b) (return 0)))"))
+    (try (s21-type-refused (string-as-view &conc) 3 "type 'Box' does not conform to protocol 'M'"))
+    (try (s21-type-refused (string-as-view &narrow) 3 "type 'Box' does not conform to protocol 'M'"))
+    (try (s21-type-refused (string-as-view &boxed) 3
+                           "(dyn M): method 'mapx' is generic (its signature has a :where), so no vtable can hold it"))
+    (drop &boxed)
+    (drop &narrow)
+    (drop &conc))
+  (return (ok)))
+
+; The three `extend` shapes above survive a `.nuch`: the header replays them, and
+; a consumer compiled against it links and runs.
+(deftest s21-extend-shapes-nuch
+  (let (ldir:String (try (test-scratch-sub "l"))
+        hdir:String (try (test-scratch-sub "h"))
+        lib:String (try (test-write-file "l/s21xsl.nuc" "(import-use vector)
+(defprotocol (Firsty T) (firsty (x:Self):T))
+(deftype (Vec T) (ref (Vector T)))
+(defn firsty (v:(Vec T) :where (Any T)):T (return (v 0)))
+(extend (Vec T) (Firsty T))
+(defprotocol (Inner E) (inner (x:&Self):E))
+(defstruct (Wrap T) v:T)
+(defn inner (w:&(Wrap T) :where (Any T)):T (return (w 'v)))
+(extend (Wrap X) (Inner X))
+(defprotocol M (mapx (self:&Self v:T :where (Any T)):T))
+(defstruct Box n:i32)
+(defn mapx (self:&Box v:T :where (Any T)):T (return (+ v (self 'n))))
+(extend Box M)
+"))
+        lv:StrView (string-as-view &lib)
+        nuch:String (try (emit-for-file "" "--emit-nuch" lv))
+        nv:StrView (string-as-view &nuch)
+        hp:String (try (write-into (string-as-view &hdir) "s21xsl.nuch" nv))
+        use:String (try (test-write-file "s21xsu.nuc" "(import-use \"stdio.h\")
+(import-use vector)
+(import-use s21xsl)
+(defn f1 (s:S :where ((Firsty E) S)):E (return (firsty s)))
+(defn gi (s:&S :where ((Inner E) S)):E (return (inner s)))
+(defn um (s:&S :where (M S)):i32 (return (mapx s 30)))
+(defn main ():i32
+  (let (v:(Vector i32) (vector-new)
+        w:(Wrap i64) ((Wrap i64) 5)
+        b:Box (Box 2))
+    (conj &v 7)
+    (printf \"%d %ld %d\\n\" (f1 &v) (gi &w) (um &b)))
+  (return 0))
+"))
+        uobj:String (str (string-as-view &hdir) "/s21xsu.o")
+        lobj:String (str (string-as-view &ldir) "/s21xsl.o"))
+    (try (check-line nv "(extend (Vec T) (Firsty T))"))
+    (try (check-line nv "(extend (Wrap X) (Inner X))"))
+    (try (check-line nv "(defprotocol M (mapx (self:ref:Self v:T :where (Any T)) :T))"))
+    (try (compile-object-in (string-as-view &hdir)
+                            (string-as-view &use)
+                            (string-as-view &uobj)))
+    (try (compile-object-in "" lv (string-as-view &lobj)))
+    (let (parts:String (str (string-as-view &uobj) " "
+                            (string-as-view &lobj))
+          got:String (try (cc-link-run "" (string-as-view &parts))))
+      (try (check-golden (string-as-view &got) "7 5 32\n"))
+      (drop &got)
+      (drop &parts))
+    (drop &lobj)
+    (drop &uobj)
+    (drop &use)
+    (drop &hp)
+    (drop &nuch)
+    (drop &lib)
+    (drop &hdir)
+    (drop &ldir))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; Rough edges: a generic signature is checked where it is written, and an error
+; found while binding a call names the call.
+; ---------------------------------------------------------------------------
+
+; A `:where` naming no protocol is the definition's mistake. A call reached it
+; first and was refused `no matching method`; it now reports the definition.
+(deftest s21-where-unknown-before-call
+  (let (p:String (try (test-write-file "t.nuc" "(import-use vector)
+(defn f (x:T :where (Nope T)):i32 (return 0))
+(defn main ():i32
+  (return (f 1)))
+"))
+        pv:StrView (string-as-view &p)
+        note:String (str "while binding a call to 'f' (at " pv ":4)")
+        c:Compiled (try (compile-path pv)))
+    (try (check-error-at (ref c 'diags) pv 2 "defn: :where names unknown protocol 'Nope'"))
+    (try (check-note-at (ref c 'diags) pv 2 (string-as-view &note)))
+    (drop &c)
+    (drop &note)
+    (drop &p))
+  (try (s21-type-refused "(defn f (x:T :where (Nope T)):i32 (return 0))" 3
+                         "defn: :where names unknown protocol 'Nope'"))
+  (try (s21-type-refused "(defprotocol M (m (x:&Self v:T :where (Nope T)):T))" 3
+                         "defprotocol: :where names unknown protocol 'Nope'"))
+  (return (ok)))
+
+; A type that does not meet a constraint's parameter is the call's mistake: it
+; is reported there, with a note naming the constraint.
+(deftest s21-where-mismatch-at-call
+  (let (p:String (try (test-write-file "t.nuc" "(import-use \"stdio.h\")
+(defprotocol (Peek E) (peek (x:&Self):E))
+(defstruct Bx v:i64)
+(extend Bx (Peek i64))
+(defn peek (x:&Bx):i64 (return (x 'v)))
+(defn pk (s:&S :where ((Peek i32) S)):i32
+  (return 1))
+(defn main ():i32
+  (let (b:Bx (Bx 3))
+    (printf \"%d\\n\" (pk &b)))
+  (return 0))
+"))
+        pv:StrView (string-as-view &p)
+        note:String (str "required by the :where constraint at " pv ":6")
+        c:Compiled (try (compile-path pv)))
+    (try (check-error-at (ref c 'diags) pv 10
+                         "constraint 'Peek' parameter mismatch: expected i32, found i64"))
+    (try (check-note-at (ref c 'diags) pv 10 (string-as-view &note)))
+    (drop &c)
+    (drop &note)
+    (drop &p))
+  (return (ok)))
+
+; An unused alias, a flat template's return and a receiver-inferred template's
+; signature are read at definition, as a used one's always were.
+(deftest s21-sig-checked-unused
+  (try (s21-type-refused "(deftype A (Vector Nope))" 3 "unknown type: Nope"))
+  (try (s21-type-refused "(deftype B Nope)" 3 "unknown type: Nope"))
+  (try (s21-type-refused "(deftype (C T) (Vector Nope))" 3 "unknown type: Nope"))
+  (try (s21-type-refused "(defn gr (x:T :where (Any T)):Nope (return 0))" 3 "unknown type: Nope"))
+  (try (s21-type-refused "(defn nq (v:&(Vector T) y:Nope):i32 (return 0))" 3 "unknown type: Nope"))
+  (try (s21-type-refused "(defn nr (v:&(Vector T)):Nope (return 0))" 3 "unknown type: Nope"))
+  ; What the check must not refuse: a later alias or struct, storage, a sub-struct.
+  (let (out:String (try (build-run-source "(import-use vector)
+(import-use \"stdio.h\")
+(deftype A B)
+(deftype B (Vector Pt))
+(deftype (W T) (array T 3))
+(deftype Ar (array Pt 2))
+(deftype (Two T) (struct a:T b:&Pt))
+(defstruct Pt x:i32 y:i32)
+(defn rq (v:&(Vector T) p:Pt):Pt (return p))
+(defn main ():i32
+  (let (a:A (vector-new) p:Pt (Pt 1 2))
+    (conj &a p)
+    (printf \"%d\\n\" ((rq &a p) 'y))
+    (return 0)))
+")))
+    (try (check-golden (string-as-view &out) "2\n"))
+    (drop &out))
+  (return (ok)))
+
+; A generic body constructs a struct as any body does, positionally or by field;
+; a call inside an initializer is still checked (`(nope 1)` would be a field).
+(deftest s21-generic-body-struct-literal
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Pt x:i32 y:i32)
+(defn mk (x:T :where (Any T)):i32
+  (let (p (Pt 1 2)
+        q:Pt (Pt (y 5) (x 4)))
+    (return (+ (p 'x) (q 'x) (q 'y)))))
+(defn main ():i32
+  (printf \"%d\\n\" (mk 7))
+  (return 0))
+")))
+    (try (check-golden (string-as-view &out) "10\n"))
+    (drop &out))
+  (try (s21-type-refused "(defstruct Pt x:i32 y:i32) (defn mk (x:T :where (Any T)):i32 (let (p:Pt (Pt (nope 1 2) 2)) (return 0)))"
+                         3 "in generic body: unknown function 'nope'"))
+  (return (ok)))
+
+; A header's template is trusted, so its text is first read while binding a
+; call: the refusal is the header's, and a note names the call.
+(deftest s21-bind-error-names-call
+  (let (hdir:String (try (test-scratch-sub "h"))
+        hp:String (try (write-into (string-as-view &hdir) "s21bzh.nuch"
+                                   "(defn bq ((v (ref (Vector T))) (y Nope)) :i32 (return 0))\n"))
+        use:String (try (test-write-file "s21bzu.nuc" "(import-use vector)
+(import-use s21bzh)
+(defn main ():i32
+  (let (v:(Vector i32) (vector-new))
+    (return (bq &v 3))))
+"))
+        uv:StrView (string-as-view &use)
+        note:String (str "while binding a call to 'bq' (at " uv ":5)")
+        c:Compiled (try (compile-path-in (string-as-view &hdir) uv)))
+    (try (check-error-at (ref c 'diags) (string-as-view &hp) 1 "unknown type: Nope"))
+    (try (check-note-at (ref c 'diags) (string-as-view &hp) 1 (string-as-view &note)))
+    (drop &c)
+    (drop &note)
+    (drop &use)
+    (drop &hp)
+    (drop &hdir))
   (return (ok)))

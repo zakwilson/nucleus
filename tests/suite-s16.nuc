@@ -440,7 +440,7 @@ mval 29 25 10 2
 (defn f (p:(ref Pt)):i32 (when p (return 1)) (return 0))
 (defn main ():i32 (return 0))
 "
-         "ptr:Pt is non-null, so this test is always true"))
+         "&Pt is non-null, so this test is always true"))
   (try (check-source-rejects "(defn f (p:ptr):i32 (when p (return 1)) (return 0))
 (defn main ():i32 (return 0))
 "
@@ -462,7 +462,7 @@ mval 29 25 10 2
 (defn g (p:(raw Pt)):i32 (return (f p)))
 (defn main ():i32 (return 0))
 "
-         "f: argument 1 has type ptr:Pt, which does not match parameter type bool"))
+         "f: argument 1 has type (raw Pt), which does not match parameter type bool"))
   (try (check-source-rejects "(defstruct Pt x:i32)
 (defn g (p:(raw Pt)):i32 (let (b:bool p) (return 0)))
 (defn main ():i32 (return 0))
@@ -473,7 +473,7 @@ mval 29 25 10 2
 (defn g (p:(raw Pt)):i32 (let (s:(ref S) (alloca S)) (set! (s 'flag) p)) (return 0))
 (defn main ():i32 (return 0))
 "
-         "set!: type mismatch for field 'flag': value is ptr:Pt, field is bool")))
+         "set!: type mismatch for field 'flag': value is (raw Pt), field is bool")))
 
 ; ---------------------------------------------------------------------------
 ; Variables as collection-literal elements (Stage 16, collection-literal-variables.md)
@@ -609,7 +609,7 @@ map=2
 (deftest s16-litvar-refused-unspellable
   (try (check-litvar-rejects
          "(defstruct P x:i32) (defn main ():i32 (let (p:(ref P) (alloca P)) (let (v [p p]) (return 0))))"
-         "cannot infer an element type from a value of type 'ptr:P'")))
+         "cannot infer an element type from a value of type '&P'")))
 (deftest s16-litvar-refused-shadow-head
   (try (check-litvar-rejects
          "(defn vector-lit (x:i32):i32 (return x)) (defn main ():i32 (return 0))"
@@ -2036,17 +2036,11 @@ map=2
 "
          "macro-error: only available inside a defmacro, macrolet or compile-time body")))
 
-(deftest s20-macro-error-refused-nonliteral
-  (try (check-source-rejects "(defmacro m (x) (macro-error x (some-expr)) `0)
-(defn main ():i32 (m 1))
-"
-         "macro-error: the message must be a string literal")))
-
 (deftest s20-macro-error-refused-arity
   (try (check-source-rejects "(defmacro m (x) (macro-error x) `0)
 (defn main ():i32 (m 1))
 "
-         "macro-error: expects a node and a string literal")))
+         "macro-error: expects a node and a message")))
 
 ; A `macrolet` body reaches it too -- the guard is `in-jit-module`, which a
 ; macrolet's body module satisfies exactly as a defmacro's does.
@@ -2924,7 +2918,7 @@ map=2
   (let (r:ref:Ro (alloca Ro) k:i32 0)
     (set! (r k) 5))
   (return 0))
-" 5 "ptr:Ro has no `set` method -- a computed key writes through the `set` generic")))
+" 5 "&Ro has no `set` method -- a computed key writes through the `set` generic")))
 
 ; ---------------------------------------------------------------------------
 ; Keyword and symbol elements in container literals
@@ -2988,7 +2982,7 @@ map=2
 ; refusal reported over the two lowered types.
 (deftest s16-kwlit-refused-mix-sym
   (try (check-kwlit "(defn main ():i32 (with ((s (ref (HashSet (ref Node)))) #{'a \"b\"}) 0) 0)"
-                    "set literal: mixed element types -- 'ptr:Node' and 'StrView'"))
+                    "set literal: mixed element types -- '&Node' and 'StrView'"))
   (return (ok)))
 
 ; Element kinds still refused at a `(HashSet (ref Node))`. These used to share
@@ -3283,20 +3277,20 @@ map=2
   (with ((a (ref (Vector i32))) [1 2 3])
     (printf \"%lld\\n\" (takes a)))
   (return 0))
-" 6 "takes: argument 1 has type ptr:Vector.i32, which does not match parameter type ptr:Vector.i64"))
+" 6 "takes: argument 1 has type &Vector.i32, which does not match parameter type &Vector.i64"))
   (try (check-place-refused "(import-use \"stdio.h\")
 (import-use vector)
 (defn main ():i32
   (with ((a (ref (Vector i32))) [1 2 3])
     (let (b:(ref (Vector i64)) a) (return 0))))
-" 5 "let: init type mismatch for 'b': value is ptr:Vector.i32, slot is ptr:Vector.i64"))
+" 5 "let: init type mismatch for 'b': value is &Vector.i32, slot is &Vector.i64"))
   (try (check-place-refused "(import-use \"stdio.h\")
 (import-use vector)
 (defn main ():i32
   (with ((a (ref (Vector i32))) [1 2 3]
          (b (ref (Vector i64))) [4 5 6])
     (set! b a) (return 0)))
-" 6 "set!: type mismatch for 'b': value is ptr:Vector.i32, slot is ptr:Vector.i64"))
+" 6 "set!: type mismatch for 'b': value is &Vector.i32, slot is &Vector.i64"))
   (return (ok)))
 
 ; The runtime shape §6.1 measured: a correctly-typed literal reads element 0 as
@@ -3326,7 +3320,7 @@ map=2
 (defn takes (b:(ref SB)):i64 (return (b 'y)))
 (defn main ():i32
   (let (a:(ref SA) (SA 7)) (return (as i32 (takes a)))))
-" 5 "takes: argument 1 has type ptr:SA, which does not match parameter type ptr:SB"))
+" 5 "takes: argument 1 has type &SA, which does not match parameter type &SB"))
   (try (check-source-accepts "(defstruct SA x:i32)
 (defn takes (b:(ref SA)):i32 (return (b 'x)))
 (defn wild (p:ptr):i32 (return 0))
@@ -3340,7 +3334,7 @@ map=2
 (defvar ga:SA)
 (defvar gp:(ref SB) &ga)
 (defn main ():i32 (return 0))
-" 4 "defvar: ref: 'ga' has type ptr:SA, which does not match ptr:SB"))
+" 4 "defvar: ref: 'ga' has type &SA, which does not match &SB"))
   (try (check-source-accepts "(defstruct SA x:i32)
 (defvar ga:SA)
 (defvar gq:ptr &ga)

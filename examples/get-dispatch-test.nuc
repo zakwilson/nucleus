@@ -25,7 +25,7 @@
 
 ; Value-keyed lookup: a parametric (METHOD-GENERIC) `get` returning (Maybe V).
 ; Reached only for computed/value selectors via emit-get-with-callee Branch B.
-(defn get (self:&(Bag K V) key:K) (Maybe V)
+(defn get (self:&(Bag K V) key:K):?V
   (if (and (!= (self 'has) 0) (= (self 'key) key))
     (return (some (self 'val)))
     (return none)))

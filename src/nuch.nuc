@@ -163,6 +163,57 @@
   (print-node (node-at form 1))
   (emit (as ptr stdout) ")\n"))
 
+; The import forms that bind a name in this file's environment — a prefix, or a
+; flattened namespace other than `user` (which every file already sees) — so the
+; importer reads the header's templates and signatures as this file read them.
+(defn emit-nuch-import-env (forms:ptr):void
+  (dotimes (fi (node-len forms))
+    (let (f:raw:Node (as raw:Node (node-at forms fi)))
+      (when (and (= (node-kind f) NODE-LIST) (>= (node-len f) 2)
+                 (= (node-kind (node-at f 0)) NODE-SYM))
+        (let (h:Symbol ((as raw:Node (node-at f 0)) 's)
+              lib:raw:Node (as raw:Node (node-at f 1)))
+          (cond
+            (or (= h "import") (= h "import-prefixed"))
+              ; Spelled explicitly: the prefix may have been a derived default.
+              (let (prefix:Symbol (import-form-prefix f (f 'line)))
+                (when (not (symbol-none? prefix))
+                  (emit (as ptr stdout) "(import-prefixed ")
+                  (print-node lib)
+                  (emit (as ptr stdout) " " prefix ")\n")))
+            (or (= h "import-use") (= h "import-only"))
+              (let (path:Symbol (import-form-path lib (f 'line)))
+                (when (and (not (symbol-none? path)) (!= (import-path-ns path) "user"))
+                  (print-node f)
+                  (emit (as ptr stdout) "\n")))
+            ; Always a prefix, and the one binding that reaches private names.
+            (and (= h "unsafe/import-private") (>= (node-len f) 3))
+              (do (print-node f) (emit (as ptr stdout) "\n"))
+            true 0))))))
+
+; A C header's constant in an array extent is written as its value: the importer
+; binds this header's C imports but never reads them.
+(defn nuch-extent-values (n:raw:Node):void
+  (when (!= (node-kind n) NODE-LIST) (return))
+  (let (arr:bool (and (= (node-len n) 3) (= (node-kind (node-at n 0)) NODE-SYM)
+                      (= ((as raw:Node (node-at n 0)) 's) "array")))
+    (dotimes (i (node-len n))
+      (if (and arr (= i 2))
+        (nuch-cconst-values n i)
+        (nuch-extent-values (as raw:Node (node-at n i)))))))
+
+(defn nuch-cconst-values (lst:raw:Node i:i32):void
+  (let (e:raw:Node (as raw:Node (node-at lst i)))
+    (cond
+      (= (node-kind e) NODE-SYM)
+        (if-some (s (scope-lookup g-globals (e 's)))
+          (when (!= (s 'c-const) 0)
+            (node-set-at (unsafe/cast &Node lst) i (node-int (s 'const-lit-i64))))
+          0)
+      (= (node-kind e) NODE-LIST)
+        (dotimes (j (node-len e)) (nuch-cconst-values e j))
+      true 0)))
+
 (defn emit-nuch-header (forms:ptr source-file:Symbol):void
   ; Stage 12 N6: a leading `(ns NAME)` / `set-ir-prefix` must take effect BEFORE
   ; the prescans, exactly as emit-toplevel-forms does it, so finalize-generics
@@ -188,6 +239,9 @@
   (prescan-struct-names forms)
   (prescan-protocols forms)
   (prescan-defn-signatures forms)
+  ; The C constants an array extent may name, which the header writes as values.
+  (prescan-value-names forms)
+  (cheader-import-constants forms)
   ; W9 item 38: the same validation `emit-cheader-header` runs, for the same
   ; reason — this mode runs the prescans and never the emitter they defer their
   ; diagnoses to. It does not crash where the C header does (it `print-node`s a
@@ -208,6 +262,7 @@
     (let (override:Symbol (ns-ir-prefix-get g-current-ns))
       (when (not (symbol-none? override))
         (emit (as ptr stdout) "(set-ir-prefix \"" override "\")\n"))))
+  (emit-nuch-import-env forms)
   (dotimes (fi (node-len forms))
     (let (fc:raw:Node (as raw:Node (node-at forms fi)))
       (let (f:ptr:Node (unsafe/cast &Node fc))
@@ -215,6 +270,7 @@
                    (= (f 'kind) NODE-LIST)
                    (> (node-len (as ptr f)) 0)
                    (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
+          (nuch-extent-values fc)
           (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
             (case h
               "defstruct"    (emit-nuch-defstruct (as ptr f))
@@ -232,7 +288,9 @@
               ; `deftype` (Stage 16): a type alias has to be carried — a `defn`
               ; exported below may name it in its signature, and the importer
               ; resolves that spelling in its own unit.
-              (:or "deferror" "deftype")
+              ; `export`: a facade's re-exports are its interface; the importer
+              ; re-runs them against the imports the header carries.
+              (:or "deferror" "deftype" "export")
                              (do (print-node (as ptr f)) (emit (as ptr stdout) "\n"))
               "defenum"      (emit-nuch-defenum (as ptr f))
               "defmacro"     (emit-nuch-defmacro (as ptr f))
@@ -333,8 +391,8 @@
   (let (acc:StrView "(")
     (dotimes (j nparams)
       (when (!= j 0) (set! acc (fstr acc ", ")))
-      (set! acc (fstr acc (type-spelling (unsafe/cast raw:Type (aref (as &ptr ptypes) j))))))
-    (return (fstr acc "):" (type-spelling (unsafe/cast raw:Type ret))))))
+      (set! acc (fstr acc (type-display (unsafe/cast raw:Type (aref (as &ptr ptypes) j))))))
+    (return (fstr acc "):" (type-display (unsafe/cast raw:Type ret))))))
 
 ; `file:line` of a DEFINITION of `fname` in this unit, or null if it has none —
 ; the second of the two questions the skip below asks (Stage 15 W9 item 36). Only
@@ -722,6 +780,15 @@
                 (emit-ns (as ptr f))
               "set-ir-prefix"
                 (emit-set-ir-prefix (as ptr f))
+              ; The source file's bindings (emit-nuch-import-env): they name what
+              ; its text was written against and load nothing, like its `declare`s.
+              (:or "import" "import-prefixed" "import-use" "import-only" "unsafe/import-private")
+                (when (not (import-form-bind (as raw:Node f)))
+                  (die-import-not-found (-> f (node-at _ 1) (unsafe/cast &Node _) (_ 's))
+                                        (f 'line)))
+              ; A facade's re-exports, from the libraries the lines above bind.
+              "export"
+                (emit-export (as raw:Node f))
               "defstruct"
                 (do (set! g-out &g-type-stream) (emit-defstruct (as ptr f)))
               "defunion"

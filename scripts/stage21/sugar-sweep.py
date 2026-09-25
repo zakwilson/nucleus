@@ -30,12 +30,6 @@ else is refused and listed.
 
 Refusals the design table does not spell out, each a meaning the rewrite
 would change (the PK-5a entry in design/progress.md records the counts):
-  * R6/R7 over a bare symbol that is neither a builtin nor a `defstruct`/
-    `defunion`/`deftype`/`defenum` name in the swept tree — a type variable.
-    PK-4b's compiler stamps `?T` (sigil run stripped per segment), but the
-    committed boot compiler predates it and compiles `lib/coll`, `iterator`,
-    `vector`, `hashmap`, `hashset` into `nucleusc`; lift at the next boot
-    refresh (the PK-4b entry in design/progress.md).
   * R6 over `(raw T)` / `raw:T`: `(Maybe (raw T))` is the value-Maybe,
     `?raw:T` the niche pointer.
   * R1/R3 whose operand is a legacy marker name (`&rest` reads as the marker).
@@ -43,9 +37,9 @@ would change (the PK-5a entry in design/progress.md records the counts):
   * R1/R2 under `quote` (a literal).  Under `quasiquote` only R1, R2, R3 and
     R5 run — the node-identical rules plus the two `addr-of` rules, which
     reach macro bodies (JIT-only) — and an `unquote` operand is code again.
-PK-5a also refused R6/R7 over a paren operand in an exported slot (the
-C-header classifiers did not read a `(? X)` cell); PK-4b taught them to, and
-that refusal went with it.
+Three refusals are gone with the defects behind them: a paren operand in an
+exported slot (PK-4b), R6/R7 over a type variable (the boot predated PK-4b),
+and R5 on an `extend` subject (fixed 2026-09-23; design/progress.md).
 
 Usage:
     sugar-sweep.py --dry-run FILE ...     # histogram + refusals, no writes
@@ -257,69 +251,18 @@ TYPE_OPERAND_HEADS = {"as", "unsafe/cast", "cast", "sizeof", "alloca", "make"}
 LAMBDA_HEADS = {"fn", "vfn", "mfn", "cfn"}
 DEFN_HEADS = {"defn", "defn-", "declare"}
 
-BUILTIN_TYPES = {
-    "i8", "i16", "i32", "i64", "ui8", "ui16", "ui32", "ui64", "f16", "f32",
-    "f64", "f80", "f128", "usize", "ssize", "bool", "void", "ptr", "Char",
-    "CStr", "Symbol", "Err", "int", "float", "double", "char", "long",
-}
-
 PREFIX_RE = re.compile(r"^(:?)([?!]*)((?:(?:ref|ptr):)+)(.*)$")
-DEFINERS = ("defstruct", "defunion", "deftype", "defenum")
-
-
-def defined_types(tree):
-    """Names a file's defstruct/defunion/deftype/defenum forms define."""
-    out = set()
-    for n in tree:
-        if n.kind == "list" and n.head() in DEFINERS and len(n.children) >= 2:
-            nm = n.children[1]
-            if nm.kind == "list" and nm.children and nm.children[0].kind == "atom":
-                out.add(nm.children[0].text)
-            elif nm.kind == "atom":
-                out.add(nm.text)
-    return out
-
-
-def template_tyvars(name_node):
-    """`(Name A B …)` at a definer's name position declares A, B, … ."""
-    if name_node.kind == "list" and len(name_node.children) > 1:
-        return {c.text for c in name_node.children[1:] if c.kind == "atom"}
-    return set()
-
-
-def where_tyvars(params):
-    """Every plain symbol inside the `:where` constraints of a parameter list."""
-    out = set()
-    if params.kind != "list":
-        return out
-    seen = False
-    for c in params.children:
-        if c.kind == "atom" and c.text == ":where":
-            seen = True
-        elif seen and c.kind == "list":
-            stack = [c]
-            while stack:
-                x = stack.pop()
-                if x.kind == "atom" and ":" not in x.text:
-                    out.add(x.text)
-                elif x.kind == "list":
-                    stack.extend(x.children)
-    return out
-
 
 ALL_RULES = frozenset("R1 R2 R3 R4 R5 R6 R7 R8".split())
 
 
 class Rewriter:
-    def __init__(self, src, path, stats, refusals, known, rules=ALL_RULES):
+    def __init__(self, src, path, stats, refusals, rules=ALL_RULES):
         self.s = src
         self.path = path
         self.stats = stats
         self.refusals = refusals
-        self.known = known
         self.rules_on = rules
-        self.tyvars = []          # one set per enclosing definer
-        self.in_params = 0        # >0 inside a parameter list (a generic PATTERN)
         self.changed = 0
 
     # -- helpers ------------------------------------------------------------
@@ -373,34 +316,6 @@ class Rewriter:
     @staticmethod
     def sigil_form(text):
         return text.startswith(("&", "?", "!"))
-
-    def unknown_name(self, t):
-        return any(t in tv for tv in self.tyvars) or t not in self.known
-
-    def maybe_tyvar(self, opnode):
-        """A bare symbol operand of R6/R7 that an enclosing definer declares
-        as a type variable, or that names no known type.  Inside a parameter
-        list — a generic PATTERN — a list operand mentioning one is refused
-        too: the boot compiler's pattern walkers do not descend a `(? X)` cell."""
-        if opnode.kind == "atom":
-            t = opnode.text
-            if ":" in t or t.startswith(("?", "!")):
-                return False
-            return self.unknown_name(t)
-        if self.in_params and opnode.kind in ("list", "rmacro", "fused"):
-            stack = [opnode]
-            while stack:
-                x = stack.pop()
-                if x.kind == "atom" and ":" not in x.text and x.text[0].isupper() \
-                        and self.unknown_name(x.text):
-                    return True
-                if x.kind == "list":
-                    stack.extend(x.children[1:] if x.open == "(" else x.children)
-                elif x.kind == "rmacro":
-                    stack.append(x.operand)
-                elif x.kind == "fused":
-                    stack.append(x.form)
-        return False
 
     @staticmethod
     def raw_operand(opnode):
@@ -504,19 +419,7 @@ class Rewriter:
             return self.rules(n, QQ, texts)
 
         roles = self.child_roles(n, role)
-        h = n.head()
-        tv = set()
-        if role == V and h in ("defprotocol", "defstruct", "defunion", "deftype") and len(ch) > 1:
-            tv = template_tyvars(ch[1])
-        elif role == V and h in DEFN_HEADS and len(ch) > 2:
-            tv = where_tyvars(ch[2])
-        elif role == V and h in LAMBDA_HEADS and len(ch) > 1:
-            tv = where_tyvars(ch[1])
-        self.tyvars.append(tv)
-        self.in_params += role == PL
         texts = [self.rw(c, r) for c, r in zip(ch, roles)]
-        self.in_params -= role == PL
-        self.tyvars.pop()
 
         # R8 for the return slot: `(params) ?X` -> `(params):?X` when adjacent.
         gaps = {}
@@ -598,8 +501,6 @@ class Rewriter:
                 self.refuse(n, "R6: (Maybe X) outside a type slot")
             elif not self.gaps_clean(n):
                 self.refuse(n, "R6: comment inside the form")
-            elif self.maybe_tyvar(op):
-                self.refuse(n, "R6: operand `%s` names no known type (a type variable? the boot compiler predates PK-4b)" % op.text)
             elif self.raw_operand(op):
                 self.refuse(n, "R6: (Maybe (raw T)) is the value-Maybe, ?raw:T the niche")
             else:
@@ -612,8 +513,6 @@ class Rewriter:
                     self.refuse(n, "R7: (Result X Err) outside a type slot")
                 elif not self.gaps_clean(n):
                     self.refuse(n, "R7: comment inside the form")
-                elif self.maybe_tyvar(op):
-                    self.refuse(n, "R7: operand `%s` names no known type (a type variable? the boot compiler predates PK-4b)" % op.text)
                 else:
                     self.hit("R7 (Result X Err) -> !X")
                     return "!" + texts[1]
@@ -771,11 +670,8 @@ class Rewriter:
                 if ch[i].kind == "list":
                     roles[i] = MATCHARM
         elif h == "extend":
-            # `extend` reads a cell subject as a template application, so
-            # `(extend ptr:Cents Ord)` must keep the colon spelling.
-            roles[1] = NAME
-            if m > 1 and self.on("R5") and ch[1].kind == "atom" and PREFIX_RE.match(ch[1].text):
-                self.refuse(ch[1], "R5: extend reads a cell subject as a template application")
+            if m > 1:
+                roles[1] = T
         return roles
 
 
@@ -787,11 +683,11 @@ def parse_file(path, refusals):
         return None
 
 
-def rewrite_file(path, src, stats, refusals, known, rules=ALL_RULES):
+def rewrite_file(path, src, stats, refusals, rules=ALL_RULES):
     tree = parse_file(path, refusals)
     if tree is None:
         return src, 0
-    rw = Rewriter(src, path, stats, refusals, known | defined_types(tree), rules)
+    rw = Rewriter(src, path, stats, refusals, rules)
     out = []
     prev = 0
     for n in tree:
@@ -806,10 +702,6 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("files", nargs="+")
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--shared", action="append", default=["src/", "lib/"],
-                    help="path prefix whose type definitions every swept file may "
-                         "name (default: src/ and lib/); a file elsewhere knows "
-                         "only its own definitions and the builtins")
     ap.add_argument("--rules", default=None,
                     help="comma-separated subset of R1..R8 to apply (default: all); "
                          "PK-5b sweeps tests/ with R1,R2 so fixture spellings stay")
@@ -823,19 +715,10 @@ def main():
 
     stats = Counter()
     refusals = []
-    # The concrete-type roster R6/R7 consult: builtins, the shared trees'
-    # definers, and — per file — its own.  Global would let an example's
-    # `(defstruct P …)` make `(Maybe P)` concrete in a library template.
-    known = set(BUILTIN_TYPES)
-    for path in a.files:
-        if any(path.startswith(pre) for pre in a.shared):
-            tree = parse_file(path, refusals)
-            if tree is not None:
-                known |= defined_types(tree)
     total = 0
     for path in a.files:
         src = open(path).read()
-        new, changed = rewrite_file(path, src, stats, refusals, known, rules)
+        new, changed = rewrite_file(path, src, stats, refusals, rules)
         total += changed
         if not a.dry_run and new != src:
             open(path, "w").write(new)

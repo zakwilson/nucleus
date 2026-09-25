@@ -132,3 +132,13 @@
 **Large or multi-phase tasks must be split up and delegated to subagents** to keep this (the orchestrating) session's context below 100K tokens. If you catch yourself acknowledging that a task is large, complex, or multi-step, that acknowledgement *is* the signal to delegate — plan the split before writing or reading code yourself. Working a large task directly in the main thread is a mistake, even if it feels faster.
 
 **Dispatch only one implementation subagent at a time** even when tasks seem like they should not conflict.
+
+
+
+## Subagents
+
+Workflow:
+
+1. Plan the work as a sequence of chunks, each scoped to fit well under 100K tokens.
+2. Dispatch each chunk to the appropriate agent (below). Ask agents to return concise summaries, not full file dumps. **When a chunk involves writing or modifying compiler code, the delegation prompt must instruct the agent to read `context/conventions.md` first** — the agent starts cold and will otherwise re-hit the documented traps (node-type/emit-node cross-file lockstep, format-helper segfaults, field interning, CStr ABI, bootstrap convergence).
+3. Keep the main thread for planning and integration. Avoid reading large files or running builds directly here when an agent can do it and report back.

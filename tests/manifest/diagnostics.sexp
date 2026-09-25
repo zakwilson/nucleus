@@ -92,7 +92,7 @@
 (reject "s17-dup-struct-field-rejected" (file "tests/fixtures/s17-dup-struct-field.nuc")
         (message "defstruct: duplicate field 'x'"))
 (reject "s17-rvalue-addr-of-rejected" (file "tests/fixtures/s17-rvalue-addr-of.nuc")
-        (message "show: argument 1 has type StrView, which does not match parameter type ptr:StrView"))
+        (message "show: argument 1 has type StrView, which does not match parameter type &StrView"))
 
 ; Stage 14 unsafe-namespace.md UN-1 — the `(as TYPE expr)` statically-safe
 ; conversion form. Its three rejection categories each route to the right tool:
@@ -103,9 +103,9 @@
 (reject "as-lossy-rejected" (file "tests/fixtures/as-lossy.nuc")
         (message "as: lossy conversion from i32 to i8 -- use unsafe/cast"))
 (reject "as-raw-to-ref-rejected" (file "tests/fixtures/as-raw-to-ref.nuc")
-        (message "where non-null ptr:Rec is required -- use as-ref (checked) or unsafe/cast"))
+        (message "raw pointer (raw Rec) where non-null &Rec is required -- use as-ref (checked) or unsafe/cast"))
 (reject "as-reinterpret-rejected" (file "tests/fixtures/as-reinterpret.nuc")
-        (message "as: reinterpretation from ptr:Sym to ptr:Rec -- use unsafe/cast"))
+        (message "as: reinterpretation from &Sym to &Rec -- use unsafe/cast"))
 
 ; Stage 16 as-sugar.md — a value-position `:type` annotation is that same `as`
 ; cast (`baz:CStr` == `(as CStr baz)`), so the first three pin that it inherits
@@ -466,7 +466,7 @@
 (reject "w9-cstr-into-ref-let" (file "tests/fixtures/w9-cstr-into-ref-let.nuc") (line 8)
         (message "assignment: raw pointer where non-null (ref ...) is required"))
 (reject "w9-cstr-as-typed-ptr" (file "tests/fixtures/w9-cstr-as-typed-ptr.nuc") (line 16)
-        (message "as: raw pointer CStr where non-null ptr:W9C7A is required"))
+        (message "as: raw pointer CStr where non-null &W9C7A is required"))
 
 ; ...but it is NOT admitted to the strcmp lowering. This is the tripwire against
 ; "fixing" item 18 by widening `is-ptr-like` to contain TY-FN, which would turn

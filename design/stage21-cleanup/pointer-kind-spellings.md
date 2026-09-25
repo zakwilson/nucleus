@@ -113,7 +113,7 @@ arm colon/list, `defprotocol` param/return, lambda param/return, `as`, `sizeof`,
 | Spelling class | Node the reader gives | Result |
 | --- | --- | --- |
 | every atom form; `&(V)`, `?&(V)`, `&&(V)`, `ptr:(V)`, `raw:(V)`, `?ptr:(V)` | attached: the lexer rewrites `&`→`ref:`, the atom ends in `:`, the fuse fires. Standalone `&Pt` / `&(V)`: `(addr-of Pt)` / `(addr-of (V))` | **23/23**, except the 8 rows in the table below |
-| **`?(V)`, `!(V)`, `?!(V)`, `&?(V)`** | `x:?(V)` → `x:? (V)`; `x:&?(V)` → `x:ref:? (V)`; `(as &?(V) v)` → `(as (addr-of ?) (V) v)`; `):?(V)` → keyword `:?` then `(V)` | **fail in 21/23** — every position but the two `defprotocol` slots, whose signatures are not parsed until an `extend` |
+| **`?(V)`, `!(V)`, `?!(V)`, `&?(V)`** | `x:?(V)` → `x:? (V)`; `x:&?(V)` → `x:ref:? (V)`; `(as &?(V) v)` → `(as (addr-of ?) (V) v)`; `):?(V)` → keyword `:?` then `(V)` | **fail in 21/23** — every position but the two `defprotocol` slots, whose signatures are not parsed until an `extend` (until 2026-09-23, progress.md: a signature is now parsed at its `defprotocol`, so a spelling that fails elsewhere fails there too) |
 
 The failing class fails in one of five ways, all consequences of the atom `x:?`
 not ending in `:` so the fuse never fires and the paren form dangles as a
@@ -576,6 +576,8 @@ outer to inner, by `sigil-unwrap-type`. Five claims above were one step off:
    lifts it (`context/build.md`, "the boot compiler gates what src/ may use").
    The paren-operand refusal is lifted: `lib/test.nuc:410` and
    `lib/hashmap.nuc:472` are swept, `build/nucleusc.ll` byte-identical.
+   **Lifted 2026-09-23**: the boot carries PK-4b, the 14 sites are swept and
+   compiled by it, `build/nucleusc.ll` byte-identical (progress.md).
 
 Out of scope, confirmed by probe against the built compiler: a `defunion`
 template other than `Maybe`/`Result` inside a template argument
@@ -667,10 +669,10 @@ script cannot classify", each proved on the compiler, not assumed:
 
 | refused | why the rewrite would not be meaning-preserving |
 | --- | --- |
-| R6/R7 whose operand is a **type variable** of the enclosing template/protocol/`:where` (`(Maybe E)`, 14 sites) | `?E` is one bare symbol; `subst-tyvars-sym` substitutes by colon **segment**, so `?E` is never substituted while `(Maybe E)`, `?&E` and `?(Vector E)` are |
+| ~~R6/R7 whose operand is a **type variable** of the enclosing template/protocol/`:where` (`(Maybe E)`, 14 sites)~~ (lifted 2026-09-23) | `?E` is one bare symbol; `subst-tyvars-sym` substitutes by colon **segment**, so `?E` is never substituted while `(Maybe E)`, `?&E` and `?(Vector E)` are |
 | R6 over **`(raw T)`** | `(Maybe (raw T))` is a value-Maybe; `?raw:T` is the niche-encoded nullable pointer |
 | R6/R7 with a **paren operand in an exported slot** (a public `defn`/`declare`/`defprotocol` signature, a field; 2 sites) | `cheader-template-instance` / `cheader-niche-no-c` key on the `(Maybe …)`/`(Result …)` head and do not read a `(? X)`/`(! X)` cell, so `!(Vector D)` exported `void* read_diagnostics(...)` — an ABI-wrong C declaration; local slots (`let`, `as`, `sizeof`, …) are fine |
-| R5 on an **`extend` subject** (`(extend ptr:Cents Ord)`, 2 sites) | `extend` reads a cell subject as a template application; `&Cents` is `(ref Cents)` |
+| ~~R5 on an **`extend` subject** (`(extend ptr:Cents Ord)`, 2 sites)~~ (lifted 2026-09-23) | `extend` reads a cell subject as a template application; `&Cents` is `(ref Cents)` |
 | R1/R2/R4/R6/R7 under **`quote`**; a comment **inside** the form | quoted data is a literal; a comment would be lost or moved by the reprint |
 
 Two of the design's gate claims were one step off. (1) "byte-identical against

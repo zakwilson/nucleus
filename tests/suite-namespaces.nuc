@@ -291,7 +291,7 @@
         c:Compiled (try (w1-compile mv)))
     (try (check-no-line-zero (ref c 'diags)))
     (try (check-error-at (ref c 'diags) mv 4
-                         "let: init type mismatch for 'q': value is ptr:va/Vector, slot is vb/Vector"))
+                         "let: init type mismatch for 'q': value is &va/Vector, slot is vb/Vector"))
     (drop &c)
     (drop &m))
   (return (ok)))

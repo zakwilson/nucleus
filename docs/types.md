@@ -177,7 +177,10 @@ it and an alias may name another alias:
 Everything else composes without special cases — the `?`/`!` sigils (`?PtRef`),
 pointer-kind chains (`ref:P`), template arguments (`(ref (Vector Count))`), and
 a **forward reference** (the body is re-parsed on use, so an alias may be
-declared below the signature that names it).
+declared below the signature that names it). The body is also checked where it
+is written, after every file's types are known, so `(deftype A (Vector Nope))` is
+`unknown type: Nope` at its line even if nothing uses `A`; whether an
+`(array T N)` body is storage is decided at each use.
 
 **`deftype-`** is the private variant, like `defstruct-`/`defunion-`. Privacy is
 per *namespace*: a private alias is invisible to a consumer outside the
@@ -199,6 +202,10 @@ demo.nuc:2: error: deftype: 'off_t' already names a C typedef imported from /usr
 See [A C typedef is a Nucleus type name](structs-unions.md#a-c-typedef-is-a-nucleus-type-name)
 for the reverse direction — a C typedef is itself usable as a type name with no
 `deftype` at all, transparently, the same way an alias's body is.
+
+Both are types in a **generic pattern** too: `(defn f ((v (ref (Vector PtRef))))
+…)` is a plain function over `(Vector &Pt)`, not a template whose argument is a
+type variable named `PtRef` (see [Generics](generics.md#bounded-generic-defn)).
 
 An alias that expands into a cycle (`(deftype A B)` + `(deftype B A)`) is
 refused when it is used.
@@ -236,9 +243,23 @@ Three rules follow from the substitution being positional:
   nowhere to put a paren form. Write the body in list form — `(ref T)` — where
   an argument may be compound.
 
+**An alias's body is its file's text.** A library's alias names that
+library's types however it is imported. With `(deftype (Two T) (struct a:T
+b:&Pt))` in `(ns shapes)`, a consumer's `(sh/Two Pt)` has an `a` that is the
+consumer's own `Pt` (arguments stay the caller's) and a `b` that points at
+`shapes/Pt`. A mistake in the body is reported at the library's line: at the
+definition for a source library, and at the first use for a header's alias, with a
+`while reading type alias 'shapes/Two' (requested at …)` note. See [A template
+is read as the file that wrote it](toplevel.md#a-template-is-read-as-the-file-that-wrote-it).
+One place does not follow this rule yet. When another file's parametric alias
+appears in a generic method's receiver pattern (`(defn f (b:&(sh/PBox T)) …)`),
+its body is still expanded in the file that wrote the pattern.
+
 **Not a newtype.** An alias creates no distinct identity, so it cannot be used
 to give an existing type separate dispatch or to prevent implicit conversion
-between the two spellings.
+between the two spellings. The same holds for protocol conformance:
+`(extend Money P)` over `(deftype Money i32)` conforms `i32` (see
+[Protocols](generics.md#protocols-defprotocol-and-extend)).
 
 ## Pointer kinds: `(ptr T)`, `(raw T)`, and `?T`
 
@@ -256,6 +277,13 @@ The safe default is **on**: a typed `(ptr T)` is non-null.
 the explicit, greppable spelling. A genuinely nullable pointer is spelled
 `(raw T)` / `raw:T`. The `null` literal is `raw`, so it flows into `raw`/`?`
 slots but not into a non-null `(ptr T)`/`(ref T)` slot.
+
+**A diagnostic spells the kind.** Every message names a pointer type as `&T`
+(non-null), `(raw T)`, `?&T` (nullable-checked), `!&T` (a niche `!` pointer) or
+bare `ptr`, nesting as written (`&&T`, `&(raw T)`) — so `argument 1 has type
+(raw Pt), which does not match parameter type &Pt`. The REPL's `type-of` prints
+the same spelling. A stamped template instance is still named by its registry
+name (`&Vector.i32`).
 
 **`&T` is sugar for `ref:T`.** The reader expands a `&` that begins a type
 chain segment into `ref:`, so `&T` and `ref:T` are the same spelling — same
@@ -754,8 +782,8 @@ The following conversions are applied automatically in assignment contexts (`let
 - **Pointer ↔ pointer, when the pointees agree**: identity, no IR. Two things are *not* part of the question and so never block it — the pointer **kind** — `ptr:Node`, `(ref Node)`, `(raw Node)` and `?Node` are one type to *this* question, and nullability is judged separately by the non-null contract, which still refuses a `raw`/`?` source into a `(ref T)` slot (see [Pointer kinds](#pointer-kinds-ptr-t-raw-t-and-t)) — and an **elem-less bare `ptr`**, which is `void *` and matches any pointer in either direction. Everything else must match: `ptr:i32` into a `ptr:Node` slot, or `(ref (Vector i32))` into a `(ref (Vector i64))` slot, is a compile-time error naming both types.
 
   ```
-  let: init type mismatch for 'b': value is ptr:Vector.i32, slot is ptr:Vector.i64
-  takes: argument 1 has type ptr:SA, which does not match parameter type ptr:SB
+  let: init type mismatch for 'b': value is &Vector.i32, slot is &Vector.i64
+  takes: argument 1 has type &SA, which does not match parameter type &SB
   ```
 
   This is the same rule at every typed slot — `let`/`with` init, every `set!` place, `return`, a call argument, and a `defvar`'s `&g` initializer. Retyping a pointer's element is what `unsafe/cast` is for.
@@ -938,7 +966,7 @@ not become a dispatch candidate for every call.
 ```lisp
 (defn g (b:bool):i32 …)
 (when p …)      ; fine — p is a condition
-(g p)           ; error: argument 1 has type ptr:Pt, which does not match
+(g p)           ; error: argument 1 has type (raw Pt), which does not match
                 ;        parameter type bool
 (let (b:bool p) …)   ; error: let: init type mismatch for 'b'
 ```

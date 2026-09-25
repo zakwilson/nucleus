@@ -37,18 +37,18 @@ fewer "convention, not a rule" edges in it.
    over a type *variable* is a wrapper under every spelling (PK-4b, built
    2026-09-19): one `sigil-split` feeds eight pattern walkers, the substituter
    strips the run per colon segment, the cheader classifiers read the cell,
-   the sweep's paren-operand refusal is lifted; its tyvar refusal stays until
-   the next boot refresh, because the boot compiler builds `nucleusc` from the
+   the sweep's paren-operand refusal is lifted; its tyvar refusal stayed until
+   the boot carried PK-4b, because the boot compiler builds `nucleusc` from the
    `lib/` files those sites live in (pointer-kind-spellings.md §6 "as
-   built"). PK-6 (built 2026-09-19, §8 "as built") closes the item with no
+   built"; lifted and swept 2026-09-23). PK-6 (built 2026-09-19, §8 "as built") closes the item with no
    compiler change: `examples/type-sugar.nuc` is the §1.1 matrix as one golden
    (two rows excluded for the lambda-return and `defunion`-arm defects below;
    both went back in when those defects were fixed, 2026-09-23),
    four units that no earlier milestone had pinned (`s21-matrix-compiles`,
    `s21-nuch-roundtrip`, `s21-ir-identical`, `s21-match-ref-binder`), and the
    docs table audited row by row. The item moves to
-   [deferred/done.md](../deferred/done.md); the boot-gated `lib/` re-sweep is
-   the one loose end, lifted at the next boot refresh.
+   [deferred/done.md](../deferred/done.md); the boot-gated `lib/` re-sweep, its
+   one loose end, was done 2026-09-23 (progress.md).
 2. **There are two readers** — **built 2026-09-18** —
    [one-reader.md](one-reader.md) (designed 2026-09-16, R-1 … R-4).
    `lib/read.nuc` and `src/reader.nuc` contain significant duplicated work
@@ -278,9 +278,9 @@ did.
   Found testing the `defunion` fix above. Now `some`/`none`/`ok`/`err`/`err!`
   are target-typed as `make`/constructor/call arguments when the slot type is
   known without resolving the overload (a `make` field, a single-definition
-  parameter, or a type every same-arity overload agrees on). Still untyped:
-  struct-literal arguments (the designated-initializer misread below), user arm
-  names, and overloads that disagree at the position.
+  parameter, or a type every same-arity overload agrees on). Struct-literal
+  arguments followed with the misread below. Still untyped: user arm names, and
+  overloads that disagree at the position.
 - ~~**A bare `(err E)` bound or `set!` with the error library imported dies**~~
   (**fixed 2026-09-23**, found documenting the item above; pre-existing): `(let
   (r:!i32 (err bad)) …)` in a function not returning `!i32` →
@@ -288,16 +288,31 @@ did.
   chose handler negotiation, which builds a return-typed value, for any `!T`
   want. Negotiation now needs the want to be the return type; elsewhere `err`
   is `err!`.
-- **`emit-struct-lit` reads any 2-element `(sym x)` argument as a designated
-  `(field value)` initializer** (`src/nucleusc.nuc:11236–11239`), so `(H &a)`
+- ~~**`emit-struct-lit` reads any 2-element `(sym x)` argument as a designated
+  `(field value)` initializer**~~ (**fixed 2026-09-23**, progress.md) (`src/nucleusc.nuc:11236–11239`), so `(H &a)`
   fails `no field 'addr-of'` (after item 1: `no field 'ref'`), and any
   one-argument call `(H (f x))` in a compound literal is mis-read the same way.
-- **`defprotocol` signatures are not parsed until an `extend`**, so a bad type
-  in one is reported at the conformer — a parameter type at line 0, a return
-  type at the `extend`'s line. This is why the two `defprotocol` rows are the
-  only ones the failing spellings "pass".
-- **A generic template's SIGNATURE resolves its concrete types in the
-  instantiating file's environment** (found building PK-6's round-trip unit).
+  So was a one-field nested literal `(W (One 2) 3)`, in a body and in a
+  `defvar`. Now `struct-lit-designated` decides for both: designated only when
+  `x`'s head is a field of the struct (which still wins over a same-named
+  function), or names nothing at all (still reported as a missing field).
+  Struct-literal field values are target-typed like `make` fields.
+- ~~**`defprotocol` signatures are not parsed until an `extend`**~~ (**fixed
+  2026-09-23**, progress.md), so a bad type in one is reported at the conformer
+  — a parameter type at line 0, a return type at the `extend`'s line. This is
+  why the two `defprotocol` rows are the only ones the failing spellings
+  "pass". `prescan-defn-signatures` now parses each signature where it parses a
+  `defn`'s (`proto-sigs-check-form`), in a dry mode of the type parser
+  (`g-dry-parse-ntv`) that reads `Self`, the protocol's parameters and a
+  `:where`'s variables as type variables and stamps or registers nothing — so
+  the error lands on the signature's line with no `extend`, and no valid
+  program's IR moves.
+- ~~**A generic template's SIGNATURE resolves its concrete types in the
+  instantiating file's environment**~~ (**fixed 2026-09-23**, progress.md): a
+  generic `defn`'s signature and `:where`, and a struct or union template's
+  fields and arms, are now read under the defining file's namespace and imports
+  (`name-env-enter`), with the substituted type arguments marked as registry
+  keys (`spelling-as-key`) so they stay the caller's. (Found building PK-6's round-trip unit.)
   W9 item 43 gave a stamped *body* the library's environment, but a template
   in `(ns lib)` whose signature names the library's own type — `(defn
   count-some ((v (ref (Vector ?T))) q:&Pt) …)`, or a plain `(defn g (x:T q:&Pt
@@ -308,8 +323,8 @@ did.
   the source import and the `.nuch` import fail alike, so it is the signature
   walk, not the header replay. Independent of spelling — `(ref Pt)` and
   `(Vector T)` reproduce it.
-- **Receiver-inferred tyvar collection stops at a wrapper inside a template
-  argument.** `(defn f (v:(ref (Vector (ref T)))):usize …)` fails `unknown type:
+- ~~**Receiver-inferred tyvar collection stops at a wrapper inside a template
+  argument.**~~ (**fixed 2026-09-23**, progress.md) `(defn f (v:(ref (Vector (ref T)))):usize …)` fails `unknown type:
   T` at the definition unless `T` is declared with `:where (Any T)`; the bare
   argument form `(Vector T)` needs no `:where`. And the colon form `(Vector
   ref:T)` is collected as a tyvar under the spelling `ref:T`, which the unifier
@@ -318,15 +333,29 @@ did.
   `:1459`). Still so after PK-4b (probed: `(Vector &T)`, `(Vector ref:T)` and
   `(Vector ?&T)` all `unknown type: T`); a `defunion` template other than
   `Maybe`/`Result` inside a template argument (`(Vector (Either T))`) is the
-  same shape — `node-template-of` knows struct templates only.
-- **A `deftype` alias or C typedef name in a template argument is a fake
-  tyvar** (found building PK-4a). `tyname-resolvable` mirrors
+  same shape — `node-template-of` knows struct templates only. The collector
+  (`collect-tyvars-at`) now carries "this is a template argument" through a
+  sigil, a pointer wrapper in either spelling and an alias, and reads an
+  unresolvable `ref:T` as `(ref T)`; a `defunion` template application is a
+  template application to it, `unify-tpat` and `pattern-determines-tyvar`
+  alike, and the two mention walkers split a colon spelling the same way.
+- ~~**A `deftype` alias or C typedef name in a template argument is a fake
+  tyvar**~~ (**fixed 2026-09-23**, progress.md) (found building PK-4a). `tyname-resolvable` mirrors
   `parse-type-name`'s acceptance set without its alias and C-typedef arms, so
   `(deftype PtRef &Pt)` then `(defn f ((v (ref (Vector PtRef)))) …)` is silently
   a template that accepts `(Vector i32)` — H5 with the sigil replaced by an
   alias; `q:PtRef` in value position is refused as an unknown annotation for
   the same reason. Two arms in one function, gated like PK-4a's H5 unit.
-- **The error docs hide the payload tier.** `docs/errors.md:10` presents
+  `tyname-resolvable` answers yes for any alias or C typedef the unit knows,
+  of any arity or representability, so `parse-type-name` reports what is
+  wrong with one instead of a tyvar binding anything.
+- ~~**The error docs hide the payload tier.**~~ (**fixed 2026-09-24**,
+  progress.md) `docs/errors.md`'s introduction now names both tiers of `E` and
+  points at the payload section item 2 wrote; `emit-macro-error` takes any
+  `StrView`/`String` message, extracting the view's two fields for the same
+  `nucleus_macro_error(ptr, ptr, i64)` call a literal makes, so a body that
+  imports `fmt`/`read` can say `(str "m: got " (string-as-view &t))`.
+  `docs/errors.md:10` presented
   `Err` as *the* error type and its `(Result T E)` section says a custom `E`
   needs `make` — stale: bare `err`/`err!`/`ok` target-type against any return
   type, and `defcast E Err` is the bridge that lets `try` propagate a typed
@@ -346,28 +375,106 @@ did.
   (`cheader-sigil-operand`), which also caught the *symbol* form's hole: a
   `q:?&Pt` parameter desugars to the glued-head cell `(?ref Pt)` and rendered
   `void*` where a field rendered `struct Pt*`. The two swept sites are in.
-- **`extend` reads a cell subject as a template application**, so
+- ~~**`extend` reads a cell subject as a template application**~~ (**fixed
+  2026-09-23**, progress.md), so
   `(extend &Cents Ord)` — `(ref Cents)` after PK-1 — is refused where
   `(extend ptr:Cents Ord)` conforms the pointer type (`examples/operators.nuc:34`).
-  Either the subject parser peels `ref`/`ptr`/`raw` heads before the template
-  lookup, or the colon spelling stays the one way to conform a pointer type.
+  Worse, `ref:Cents`, `raw:Cents` and `?&Cents` were accepted and recorded under
+  their verbatim spelling, a key dispatch never asks. `extend-subject-typed`
+  (`src/generics.nuc`) now sends every pointer and sigil spelling past the
+  template path to `extend-subject-key` — `type-spelling` of the parsed type,
+  the dispatch key — so each conforms the kind-erased `ptr:Cents`; the `.nuch`
+  replay (`register-imported-conformance`) does the same.
+- ~~**An alias or colon-template `extend` subject is recorded and never matched**~~
+  (**fixed 2026-09-23**, progress.md) (found fixing the item above). `(deftype Money i32) (extend Money P)` keys
+  `Money` and `(extend Vector:i32 P)` keys `Vector:i32`, while dispatch asks
+  `i32` and the stamped struct's name; both compile and fail at a `:where` call as `no
+  matching method … required protocol constraint`. `extend-subject-typed` now
+  sends an alias or C typedef name, a colon spelling and a template application
+  over concrete types to `extend-subject-key`, so an alias conforms its target
+  (a second extend through the target is a same-type re-extend) and
+  `(Vector i32)` conforms one instance instead of the template.
+- ~~**A `:where` names an imported namespaced protocol only by its canonical key**~~
+  (**fixed 2026-09-23**, progress.md) (found fixing the item above; pre-existing, the boot fails alike). A library in
+  `(ns geom)` defining `Show` and `(extend Pt Show)`: under `(import-use geoval)`
+  the consumer calls `show` bare, but `(defn f (x:T :where (Show T)) …)` dies
+  `defn: :where names unknown protocol 'Show'`, and under `(import-prefixed geoval
+  gx)` `(gx/Show T)` dies the same way. Only `(geom/Show T)` resolves, under
+  either import — the `:where` lookup skips the file's import environment. A
+  `Constraint` now keeps the writing file's environment and resolves through
+  `protocol-lookup` when first read (`constraint-settle`), after the imported
+  protocols exist. The sibling bare `(dyn Show)` under `import-use` now keys the
+  library's `geom/Show` through a prescan table of imported protocol names.
 - ~~**A sigil over a type variable is a different symbol to `subst-tyvars-sym`.**~~
   (**fixed by PK-4b, 2026-09-19**.) `?E` in a protocol signature or template
   body is one bare symbol and substitution walked colon *segments*, so
   `(Maybe E)` substituted and `?E` did not. `subst-tyvar-segment`
   (`src/type-mangle.nuc`) strips the sigil run, looks the remainder up and
-  re-prefixes. The sweep's 14 tyvar sites **stay refused** for a different
-  reason: the boot compiler that builds `nucleusc` compiles the `lib/` files
-  they live in and predates the fix — lift at the next boot refresh.
+  re-prefixes. The sweep's 14 tyvar sites stayed refused until the boot
+  carried the fix; they were swept 2026-09-23 (progress.md), and the boot
+  compiled them.
 - **A sigil over a type variable in an `extend`'s protocol application** —
   `(extend (Wrap I) (Iterator ?E) :where ((Iterator E) I))` — was refused
   `protocol parameter '?E' is not determined` (found building PK-4b;
   **fixed by it**: `collect-constraint-arg-tyvars` and `node-mentions-tyvar-named`
-  peel the sigil). A `:where` constraint's *own* compound argument
+  peel the sigil). ~~A `:where` constraint's *own* compound argument
   (`((Peek ?E) S)`) is still a concrete pattern, not a recovery —
-  `recover-one-constraint` recovers a bare tyvar only; pre-existing, recorded.
-- **`--emit-nuch` and `--emit-cheader` swallow an unpreprocessable C header**
-  (found gating item 3). `(import-use "no-such.h")` under `--emit-llvm` is
+  `recover-one-constraint` recovers a bare tyvar only; pre-existing, recorded.~~
+  (**fixed 2026-09-23**, progress.md): a compound argument over tyvars (`?E`,
+  `&E`, `(Vector E)`) is unified against the recorded argument
+  (`unify-tpat`), and the collector walks it as a template argument.
+- ~~**A flat type-variable parameter cannot call a parametric protocol method that
+  returns a protocol parameter**~~ (**fixed 2026-09-24**, progress.md). The A2
+  check's `sig-provides-call` reads a protocol parameter in the signature as the
+  constraint's argument (`sig-spelling-type`): a type variable of the template,
+  a concrete type read in the template's file, or, for a pattern over variables,
+  left to the stamp. (Found testing the item above; pre-existing.)
+  `(defn pk (s:S :where ((Peek E) S)):E (return (peek s)))` over
+  `(defprotocol (Peek E) (peek (x:Self):E))` dies `unknown type: E` at the
+  `defn`; the same body with `s:&S` and `(x:&Self)` compiles. `lib/` uses
+  `&I` receivers throughout, which is why nothing there meets it.
+- ~~**A parametric-alias `extend` subject is refused**~~ (**fixed 2026-09-24**,
+  progress.md). `extend-subject-template-app` peels pointers and parametric
+  aliases down to the struct-template application; a `TmplConformance` records
+  how many pointers it peeled (`ptr-depth`), and each stamp conforms that many
+  `ptr:` over the instance, so `&(Vector T)` is a template subject too. (Found
+  fixing the alias item; pre-existing.) `(deftype (Vec T) (ref (Vector T)))` then
+  `(extend (Vec T) (Firsty T))` is `extend: 'Vec' is not a struct template`.
+  A plain alias of an instance (`(deftype Wide (Vector i64))`) works.
+- ~~**A template-level `extend` ignores its subject's argument names**~~
+  (**fixed 2026-09-24**, progress.md). The conformance's variables are the
+  subject's arguments (`extend-subject-tyvar-args`), which must be distinct type
+  variables, one per template parameter; a `:where`-free extend's protocol
+  arguments may name only those. (Found alongside; pre-existing.) `(defstruct (Wrap T) v:T)` then
+  `(extend (Wrap X) (Inner X))` records `(Inner X)` against the template's own
+  `T`, so a `:where ((Inner E) S)` call dies `unknown type: X` when it stamps.
+  Spelling the subject with the template's own name works.
+- ~~**A `.nuch` drops its file's imports**~~ (**fixed 2026-09-23**, progress.md;
+  the header-side face of the item above): a header now carries its source's
+  prefixed imports and non-`user` flattening imports (`emit-nuch-import-env`),
+  which the importer binds but does not load (`import-form-bind`), so the
+  template text resolves as it did in its source. (Found probing item 2; pre-existing.)
+  An exported generic that spells a prefixed name —
+  `(defn f (x:T :where (gx/Show T)) …)` under `(import-prefixed geoval gx)` —
+  is written verbatim, and the header carries no `import-prefixed`, so an
+  importer's call is refused `no matching method … required protocol
+  constraint`.
+- ~~**A `:where` refusal reaches the author late**~~ (**fixed 2026-09-24**,
+  progress.md). A failing call first asks its candidates' `:where`s
+  (`refuse-unknown-where`), reporting the `defn` with a `while binding a call`
+  note, and a `parameter mismatch` found binding a call is reported at the call
+  with a note naming the constraint. (Found probing item 2;
+  pre-existing ordering.) A `:where` naming an invisible protocol is diagnosed
+  by the A2 pass, which runs after emission, so when the file also calls the
+  generic the first error is the call's `no matching method`, not
+  `defn: :where names unknown protocol`. Likewise a `parameter mismatch` is
+  reported at the constraint's line, not the call that bound it.
+- ~~**`--emit-nuch` and `--emit-cheader` swallow an unpreprocessable C header**~~
+  (**fixed 2026-09-24**, progress.md). `cheader-prescan-opaque` now refuses a
+  null buffer with the emitter's own `die-at` at the import form's line, so all
+  three modes print clang's report once and the same located error, exit 1; a
+  `.nuch`-carried C import, which only binds, is exempt.
+  (Found gating item 3.) `(import-use "no-such.h")` under `--emit-llvm` is
   `exit 1` with the located `c-include: failed to preprocess` error; under
   either header mode the `note:` and clang's `file not found` go to stderr and
   the mode **exits 0**, emitting a header with none of that import's names.
@@ -376,8 +483,14 @@ did.
   pre-scan (`:2766`) tolerates a null buffer. The fix is the prescan refusing
   what the emitter refuses — "What a header mode checks" (`docs/compiler.md`)
   extended from declarations to imports.
-- **C enumerators are not imported as constants** (found walking the GTK demo
-  through item 3). Stage 17 admits an object-like `#define` whose body folds to
+- ~~**C enumerators are not imported as constants**~~ (**fixed 2026-09-24**,
+  progress.md). `c-parse-type`'s enum body is now `c-parse-enum-body`, which
+  folds each initializer through `c-cexpr` and registers it through the one
+  `cheader-define-int-const` the `#define`s use; the evaluator gained C's
+  integer typing (a rank per expression, casts that convert, `~`, character
+  constants, enumerator references), and matches clang on all 4,648 enumerators
+  and 1,538 folded macros of a GTK 4 and a 17-header system probe.
+  (Found walking the GTK demo through item 3.) Stage 17 admits an object-like `#define` whose body folds to
   an integer; an `enum { G_APPLICATION_DEFAULT_FLAGS = 0, … }` enumerator is
   consumed by `c-parse-type` (`src/cheader.nuc:684`, the inline body) and
   registers nothing, so `G_APPLICATION_DEFAULT_FLAGS` is `undefined:` and the
@@ -387,8 +500,15 @@ did.
   list is a sequence of `NAME [= const-expr]` with an implicit `+1`, foldable by
   the same `c-cexpr` evaluator, registered under the same `is-const` symbol
   path, and subject to the same predefine/private-name filters.
-- **A mis-shaped `doseq`/`doseq-iter`/`dotimes` call is still unguarded; one
-  shape of four still segfaults the compiler** (found when the GTK demo grew a
+- ~~**A mis-shaped `doseq`/`doseq-iter`/`dotimes` call is still unguarded; one
+  shape of four still segfaults the compiler**~~ (**fixed 2026-09-23**,
+  progress.md): the three bodies now carry the guard chain and name the shape
+  they want at the call's line (a symbol or null `macro-error` subject now blames
+  the call being expanded, not line 0). `src/ct-fault.nuc` arms a SIGSEGV/SIGBUS
+  handler around every JIT call, so a crash in any macro body, `~e` or
+  `compile-time` block is `macro 'm': crashed while expanding` at the call's line
+  and exit 1. The REPL exits there too. The "garbage bytes" were an em dash seen
+  through `cat -v`. (Found when the GTK demo grew a
   combo box, 2026-09-20; **re-measured after item 6, 2026-09-23**). The demo
   wrote `(doseq item v (VecIter i32) …)` — the `(var coll IterType)` binding
   list unparenthesised — and `nucleusc` died with SIGSEGV (exit 139), no
@@ -424,6 +544,24 @@ did.
   next wall is the known one: `(iter options)` on a by-value `(Vector i32)` is
   `no matching method for overloaded 'iter'` (template-tier methods never
   adapt a by-value receiver, Stage 14 LW), so the binding is `&options`.
+- ~~**A null element in a macro's expansion still crashes the emitter**~~
+  (**fixed 2026-09-24**, progress.md). `stamp-macro-lines`, which walks exactly
+  the macro-built cells, refuses a null element at the call's line — `macro 'm':
+  the expansion has an empty element at position 1 of (inc! …)` — and an empty
+  `:rest` is `()`, so `(str)`'s pass-through is an empty list, not an absent
+  element. (Found
+  fixing the item above; pre-existing.) A body that unquotes a null node into a
+  binding position — `` `(let (~z 0) 1) `` or `` `(inc! ~z) `` with `z` null —
+  makes `nucleusc` exit 139, no diagnostic. The crash comes after the JIT call
+  has returned, so the fault boundary does not see it; in an expression
+  position the same null is already `'()' is not an expression`. It is how
+  `(dotimes i 3 …)` crashed before the guards. `stamp-macro-lines` visits
+  exactly the macro-built cells, so it is the chokepoint. A warn-only sweep
+  (461 files, positive control firing) found one existing null element: `(str)`
+  (`examples/fmt-test.nuc:50`) hands its empty `:rest`, which is null, to
+  `macmap`. Refusing a null element outright would break it. The fix is
+  probably an empty `:rest` becoming `()` (`context/macros-jit.md` records the
+  null as a leftover), then a located refusal of any remaining null element there.
 - ~~**A void-typed expression at the prompt is never called**~~ (found probing
   item 4, 2026-09-21; **fixed by its RC-0 the same day**). The expression arm of
   `repl-eval-form` emits `__repl_eval_N`, JITs it and looks it up, then
@@ -440,3 +578,228 @@ did.
   reads, and the REPL never links, so `nucleusc -i -lfoo` then a call into
   `libfoo` is `JIT session error: Symbols not found`. `--link-arg=` is ignored
   the same way and stays so — it has no REPL meaning — but `-l`/`-L` do.
+- ~~**A `:where` inside a protocol signature is refused at every `extend`**~~
+  (**fixed 2026-09-24**, progress.md). Such a signature is a generic
+  requirement: `proto-sig-generic-method` reads it as a template with abstract
+  variables, and the conformer's generic method must bind for it under
+  constraints it implies, through the A2 checker's `abstract-call-via-generic`.
+  `(dyn P)` refuses one. (Found fixing the `defprotocol` item; pre-existing.)
+  `(defprotocol M (mapx (self:&Self v:T :where (Any T)):T))` passes its
+  `defprotocol`, whose check reads `T` as a type variable, but `extend` dies
+  `unknown type: T` at the `extend`'s line: `proto-sigs-resolve-in`
+  substitutes only `Self` and the protocol's parameters, then parses the whole
+  parameter list, `:where` included, as concrete types. Nothing in the tree
+  writes one.
+- ~~**Two other signatures are still checked only when used**~~ (**fixed
+  2026-09-24**, progress.md). `prescan-defn-signatures` dry-parses a `deftype`
+  body (`alias-body-check`) and a source template's parameters, return and
+  constraint arguments (`generic-sig-check`) with their type variables.
+  (Found alongside; pre-existing.) An unused `deftype` with an unknown body —
+  `(deftype A (Vector Nope))`, `(deftype B Nope)`, a parametric `(deftype (C T)
+  (Vector Nope))` — compiles, because the body is re-parsed on use
+  (`docs/types.md` says so). The same goes for a generic template's signature
+  before it is stamped. A flat `:where` template's parameters are checked by the
+  A2 pass, but its return type is not: `(defn gr (x:T :where (Any T)):Nope …)`
+  compiles. A receiver-inferred template checks neither:
+  `(defn nq (v:&(Vector T) y:Nope):i32 …)` compiles, since
+  `method-has-nested-tyvar` skips A2. The `defprotocol` fix's dry parse, armed
+  with the alias's or template's type variables, answers all three at the
+  prescan.
+- ~~**The REPL does not roll back `g-type-alias-depth`**~~ (**fixed
+  2026-09-24**, progress.md). Both globals are on the `ReplState` roster, with
+  every other scoped depth or mode an audit of the compiler's `defvar`s found
+  (`g-array-ok`, `g-want-type`, `g-decl-out`, the C importer's folding flags, …;
+  context/conventions.md lists them and what is deliberately left off). (Found
+  adding the dry
+  parse's globals to the roster; pre-existing, the pre-change compiler fails
+  alike.) A `die-at`
+  inside an alias expansion unwinds past the decrement, and the roster
+  (`ReplState`) does not carry the counter. After 32 failed uses of
+  `(deftype A (Vector Nope))` at the prompt, a valid `(deftype B i32)` is
+  refused `type alias 'B' expands into a cycle` for the rest of the session.
+  `g-type-key-ok` is not on the roster either, so a die inside a stamp would
+  leave the exact-key fallback armed.
+- ~~**A three-element `(import lib k)` is invisible to the import prescans**~~
+  (**fixed 2026-09-24**, progress.md). Every walk that follows imports asks
+  one predicate, `import-head?`, of the head alone, so the two prescans,
+  header validation and the C-constant pass read `(import lib k)` as they read
+  `import-prefixed`. (Found fixing the template-environment item; pre-existing, the pre-change
+  compiler fails alike.) `prescan-imported-types` and
+  `prescan-imported-signatures` accept `import` only at `node-len` 2, so a
+  library imported as `(import imp3lib k)` whose own signature names a type its
+  `(import-use vector)` brings in dies `unknown type: Vector … which no import in
+  this unit reaches` unless the root imports `vector` too; a root signature
+  naming `k/T` fails the same way. `(import-prefixed imp3lib k)` works, and
+  `--emit-nuch` already writes that spelling.
+- ~~**A `deftype` alias body and a protocol signature are still read in the
+  user's environment**~~ (**fixed 2026-09-24**, progress.md). `TypeAlias` and
+  `Protocol` record their file's imports. The alias's body and the protocol's
+  signatures are read under that file's `NameEnv`, the environment the
+  dry-parse check already used.
+  A spelling from the caller — an alias argument, `Self`, a protocol parameter —
+  is substituted as an `#env-arg-N` marker, which reads it back in the caller's
+  environment (`EnvArg`). It is not a `spelling-as-key` key, which a private conformer
+  would fail. A body's mistake is reported at its own line with a `while reading …` note.
+  (Found alongside; pre-existing.) `(ns alib) (deftype PtRef &Pt)`
+  used as `k/PtRef` from `(import alib k)` dies `unknown type: Pt — defined in
+  namespace 'alib'`; `(defprotocol Probe (probe (x:&Self q:&Pt):i32))` in
+  `(ns plib)` dies at `(extend Foo k/Probe)` as `u.nuc:0: unknown type: Pt`.
+  The protocol fix is this one's (the `NameEnv` swap plus `spelling-as-key` on
+  `Self` and the parameters) at the six readers of `Protocol.sigs`; the Protocol
+  does not yet record its file's environment. A *parametric* alias splices the
+  caller's nodes into the library's text, so it needs the keys marked first.
+- ~~**A generic body cannot construct a struct positionally**~~ (**fixed
+  2026-09-24**, progress.md). `gcheck` finds a struct head through the binding
+  table as `emit-dispatch` does, checks each initializer (a designated one's
+  value) and types the literal `&S`. (Found writing this
+  item's units; pre-existing, no namespace needed.) `(defn mk (x:T :where (Any
+  T)):i32 (let (p:Pt (Pt 1 2)) …))` is refused by the A2 check as `in generic
+  body: unknown function 'Pt'`; `make` or a receiver-inferred template works.
+- ~~**An error in a template's own text found while binding a call has no
+  call-site note**~~ (**fixed 2026-09-24**, progress.md). The resolvers arm
+  `g-bind-call` (name, file, line) around their candidate loops, and
+  `diag-error` builds `while binding a call to …` from it only when an error is
+  emitted. Since source templates are now checked at the prescan, this reaches
+  a header's trusted template. (Found alongside.) Instantiation and stamping add `while
+  instantiating …` / `while stamping …`; a parameter type that fails in
+  `generic-method-bind` (`y:Nope`) is reported at the template's file and line
+  alone. The bind runs once per candidate, so the note wants building lazily.
+- ~~**A `.nuch` does not carry `export` re-exports or `unsafe/import-private`**~~
+  (**fixed 2026-09-24**, progress.md). The header writes both verbatim and replays `export`
+  through `emit-export`. The private import binds with its permission, for the
+  header's text alone. An export whose library the consumer did not import is
+  refused at the header's line with a note saying the carried import loads
+  nothing. (Found alongside; pre-existing for `export`.) `lib/nsgfacade.nuch` has no
+  `export` line, so `(import-prefixed "lib/nsgfacade.nuch" g)` then `g/area` is
+  `unknown: g/area`; only the `.nuc` route re-exports. A private import binds
+  names the header's declarations could name; neither is written yet.
+- **A template stamped with a private type argument from another namespace
+  cannot see it** (found fixing the alias item; follows from the
+  template-environment fix). `spelling-as-key` marks the argument
+  `user/app/Foo`. That key is then re-resolved in the template's namespace,
+  where `binding-visible` hides a `defstruct-`. `(k/use-probe &f &p)` with `f` a
+  `defstruct- Foo` in `(ns app)` dies `unknown type: user/app/Foo` at the
+  library's line. The alias and protocol readers use an `#env-arg-N` marker
+  instead; template stamping wants the same.
+- **A library generic cannot call a protocol method whose conformer is in a
+  namespaced file** (found alongside; pre-existing, the pre-change compiler
+  fails identically). `(defn use-probe (x:&T :where (Probe T)) … (probe x))` in
+  `(ns plb)`, instantiated from `(ns app)` whose `probe` conforms, dies
+  `unknown: probe — defined in namespace 'app', which this file does not
+  import`. The stamped body resolves the method in the library's environment.
+  This happens whether `probe` is solitary or overloaded.
+- **A foreign parametric alias in a receiver pattern still expands in the
+  pattern's file** (found alongside). `collect-tyvars-at`, `unify-tpat`,
+  `pattern-determines-tyvar` and cheader's `type-node-to-c` expand through
+  `type-alias-apply`, with no environment. They are syntactic and resolve the
+  expansion's names where they stand. `(defn bw (b:&(k/PBox T) :where (Any T)) …)` over `blib`'s
+  `(deftype (PBox T) (Box T))` then binds the consumer's own `Box`, or none.
+  Marking the *body's* names — the inverse of the argument markers — would
+  need `node-template-of` and friends to read through a marker.
+- **`unsafe/import-private` of a namespaced library reaches none of its private
+  names** (found alongside; pre-existing). `globals-lookup-ref` reaches the
+  file-private key space (`#pN/name`) of a `user` library only. A `defconst-`,
+  `defn-` or `defstruct-` in `(ns hid)` is `undefined: p/K` or `unknown type:
+  p/Hidden — defined in namespace 'hid', which this file does not import`.
+  `docs/toplevel.md` states the limit.
+- **A type variable through an anonymous-struct alias body is not collected**
+  (found alongside; pre-existing). `(deftype (Two T) (struct a:T b:&Pt))` then
+  `(defn bx (t:&(Two T) :where (Any T)) …)` dies `unknown type: T` at the
+  `defn`, even in one file.
+- ~~**A diagnostic names a pointer type by its registry key**~~ (**fixed
+  2026-09-24**, progress.md). `type-display` prints `&T`, `(raw T)`, `?&T`,
+  `!&T` and bare `ptr`, and every message that spelled a type through
+  `type-spelling` (57 calls) or printed a stored conformance key
+  (`key-display`/`conf-arg-display`, 9 calls) now goes through it; the REPL's `type-of` too. The key and
+  the mangling are untouched, so no IR moved. (Found writing the
+  `macro-error` message check, 2026-09-24.) `type-display` (`src/abi.nuc`) is
+  `type-spelling`, the conformance key, so a `(raw Node)` prints `ptr:Node`: the
+  retired spelling, and one that now reads as the non-null kind. Every
+  diagnostic built on `type-display` does the same; it wants a renderer that
+  prints the PK spellings (`(raw T)`, `&T`, `?&T`).
+- ~~**A `defstruct` after a C import cannot reuse an imported constant's name**~~
+  (**fixed 2026-09-24**, progress.md). An imported constant is marked `c-const`,
+  and `guard-name-kind` — every definer's first step — moves one out of the
+  name's way (`cconst-yield`), so any Nucleus definition wins before or after the
+  import and at the REPL; `cheader-define-int-const` also skips a name any
+  colliding binding row holds, except a C header's own struct tag (`from-c`).
+  (Found testing the enumerator item, 2026-09-24; pre-existing for `#define`s.)
+  `(import-use "fcntl.h")` then `(defstruct O_CREAT …)` is refused `'O_CREAT'
+  already names a value`; the same `defstruct` *before* the import compiles,
+  since `cheader-define-int-const` skips a name `g-globals` already holds but not
+  one only the struct registry holds. Enumerators make it likelier — GTK alone
+  brings 3,462 names — though C's UPPER_CASE convention keeps it rare.
+- ~~**A header mode writes an imported C constant with nothing to define it**~~
+  (**fixed 2026-09-24**, progress.md). Both header modes now run
+  `prescan-value-names` and the file's C imports (`cheader-import-constants`), and
+  write an extent naming an imported constant as its value — `int32_t a[64];`,
+  `(array i32 64)` — while one naming the file's own `defconst` keeps its name.
+  (Found alongside; pre-existing for `#define`s.) `(defstruct S (a (array i32
+  O_CREAT)))` exports `int32_t a[O_CREAT];` with no `#include <fcntl.h>`, and
+  the `.nuch` copy `(array i32 O_CREAT)` with no `(import-use "fcntl.h")`, so
+  neither header compiles on its own. The C-typedef case already borrows its
+  header (`cheader-note-c-include`); a constant wants the same, or its value.
+- ~~**The C constant evaluator types the result, not each operation**~~
+  (**fixed 2026-09-24**, progress.md). A rank is now a C type (`bits*2 +
+  unsigned`), set per literal by C11's suffix/base table with the target's `int`
+  and `long` widths; each operator converts to the larger rank and wraps its
+  result (`c-arith`, `c-shift`), and an over-wide shift or `/0` does not fold.
+  Matches clang on 40 edge probes (38 on AVR) and every enumerator and macro of
+  the GTK and system probes. (Found alongside.) `g-cexpr-rank` is the widest operand's C type, applied once by
+  `c-int-result`, so `/`, `%` and `>>` over a value that crossed the
+  `int`/`unsigned` line mid-expression can differ from C: `(0u - 1) / 2` folds
+  to 0, clang says 2147483647 (the plain i64 fold said 0 too). No instance in
+  the 6,186 names measured; `?:` and comparisons are not folded at all.
+- **The C constant evaluator refuses a decimal literal above `INT64_MAX`** (found
+  fixing the item above; pre-existing). `18446744073709551615ull` is
+  `unsigned long long` in C and clang folds it; `c-cexpr-number` still refuses any
+  decimal that overflows an `i64`, `u` or not. `?:` and comparisons, above, remain.
+- **`--emit-cheader` refuses an expression extent a compile accepts** (found
+  fixing the header-mode constant item; pre-existing). `(array i32 (+ 2 1))`
+  compiles, but a header mode registers no macros, so `const-fold-int` fails on
+  `+` — and the header written so far is left on stdout.
+- **`--emit-cheader` writes a by-value array alias or inline struct field as
+  `void*`** (found alongside; pre-existing). `(deftype Blk (array i8 512))` then
+  `(defstruct T (blk Blk) (u (struct x:(array i16 4))))` exports `void* blk;` and
+  `void* u;`: a silently wrong layout. A `defvar` of array type is not exported
+  either ("type has no C spelling here").
+- **A declaration whose name is not a symbol crashes the compiler** (found
+  auditing the REPL roster, 2026-09-24; pre-existing, the boot fails alike).
+  `(defstruct S (1 i32))`, `(defstruct S 1)`, `(defstruct S ("a" i32))`,
+  `(defn f ((1 i32)):i32 …)`, `(let ((1 i32) 0) …)` and `(defvar (1 i32) 0)` all
+  exit 139 with no diagnostic, in batch and at the prompt (where it ends the
+  session); `(defstruct S (x 1))` is diagnosed. The fault is before
+  `extract-name-and-type`'s `()` guard — probably a prescan or the desugar
+  reading `(n 's)` off a non-symbol — so a macro that builds such a binding
+  crashes the same way.
+- **A message names a stamped template instance by its registry name** (found
+  alongside). `argument 1 has type &Vector.i32, which does not match parameter
+  type &Vector.pPt` — the pointer kind is now spelled, but `Vector.pPt` is the
+  mangled stamp name, not `(Vector &Pt)`. A `StructDef` records no template and
+  arguments to print from.
+- **A `defunion` template cannot be a template `extend` subject** (found fixing
+  the parametric-alias item; pre-existing). `(extend (Either T) P)`, or an
+  alias to `(Maybe T)`, is `extend: 'Either' is not a struct template`: only
+  `struct-template-stamp-types-in` runs the stamp-time conformance hook
+  (`g-tmpl-conf-check-hook`), so a union stamp has nothing to check against.
+- ~~**An unknown protocol in a protocol signature's `:where` is caught only at an
+  `extend`**~~ (**fixed 2026-09-24**, progress.md). `proto-sig-check` queues each
+  constraint on `g-where-checks`, drained before the A2 pass once every file's
+  protocols (`.nuch` ones register at emission) exist. (Found alongside.) The `defprotocol` dry parse reads the
+  constraint's variables but never asks whether its protocol exists, so
+  `(defprotocol M (m (x:&Self v:T :where (Nope T)):T))` compiles until
+  something extends `M`, then fails at the signature's line. `defn` checks
+  the same thing in its A2 pass.
+- **A generic signature's parameter that nests its variable is checked by
+  arity only** (found alongside). For `(m (x:&Self v:(Vector T) :where (Any
+  T)):i32)`, any generic `m` of two parameters conforms; the A2 model types only
+  a bare variable or a concrete type (`proto-sig-generic-method`). Left open on
+  2026-09-24: not the dry-parse mechanism. It needs pattern-against-pattern
+  binding (or a skolem stamp) in `abstract-call-via-generic`.
+- **A struct literal is not an argument where its struct is expected** (found
+  probing the struct-literal item; pre-existing). `(conj &v (Pt 1 2))` on a
+  `(Vector Pt)`, or `(rq &v (Pt 3 4))` for a `p:Pt` parameter, is `no matching
+  method … (&Vector.Pt, &Pt)`: a literal types as `&S`, and a generic's bind
+  does not load it for a by-value `S` as a plain call does
+  (docs/structs-unions.md "Compound literals in by-value struct positions").
+  `(let (p:Pt (Pt 1 2)) …)` then `p` works.

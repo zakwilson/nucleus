@@ -365,8 +365,18 @@
       (die-at line (fstr "a type sigil must be attached to its type -- write "
                          name "T or " name "(T ...) with no space")))))
 
+; A dry parse (`g-dry-parse-ntv`) answers with this for a type variable and for
+; anything it would otherwise have to stamp or register.
+(defn dry-parse-type ():&Type
+  (return (make-type TY-TYVAR)))
+
+(defn dry-parse-tyvar (name:Symbol):i32
+  (when (= g-dry-parse-ntv 0) (return 0))
+  (if (>= (tyvar-index-of name g-dry-parse-tyvars g-dry-parse-ntv) 0) (return 1) (return 0)))
+
 (defn resolve-type-name (name:Symbol line:i32 array-ok:i32):&Type
   (let (sv:StrView (symbol-as-view name))
+  (if-some (at (env-arg-type name array-ok)) (return at) 0)
   (reject-bare-sigil name line)
   ; Stage 10 errors sugar: ?!T => (Maybe (Result T Err)) — a fallible result
   ; that may be absent. The leading ?! reads as a *value* Maybe over the Result
@@ -417,6 +427,7 @@
   ; inert for the existing flow.
   (when (symbol-contains-byte name 58)
     (return (parse-type-from-node (split-colon-segments name line) line)))
+  (when (!= (dry-parse-tyvar name) 0) (return (dry-parse-type)))
   ; Stage 14 AVR-7: an explicit `:f64`/`double` annotation is a compile-time
   ; error on AVR (no hardware double). Checked before the resolution below so an
   ; annotated f64 never reaches codegen; the bare-float-literal default is caught
@@ -473,7 +484,7 @@
       ; inherits the array permission — `(deftype Buf (array i32 4))` must name
       ; storage wherever `(array i32 4)` itself can, and nowhere else.
       (set! g-array-ok array-ok)
-      (let (t:&Type (parse-type-from-node (as ptr (ta 'body)) line))
+      (let (t:&Type (alias-body-type ta (as ptr (ta 'body)) line))
         (set! g-type-alias-depth (- g-type-alias-depth 1))
         (return t)))
     0)
@@ -1271,6 +1282,8 @@
       (if-some (prevt (union-template-lookup key))
         (do
           (when (!= (same-definition-site (prevt 'src-file) (prevt 'src-line) (ff 'line)) 0)
+            ; An earlier pass may have registered it before the file's imports were read.
+            (when (= (prevt 'src-imports) null) (set! (prevt 'src-imports) g-file-imports))
             (return))
           (die-redefinition name (ff 'line) BK-UNION-TEMPLATE
                             (prevt 'src-file) (prevt 'src-line)))
@@ -1297,6 +1310,7 @@
           ; Stage 15 B4 (R4): the defining site — see `same-definition-site`.
           (set! (ut 'src-file) g-source-path)
           (set! (ut 'src-line) (ff 'line))
+          (set! (ut 'src-imports) g-file-imports)
           (when (!= g-defining-private 0) (set! g-priv-bindings 1)))))))
 
 ; Stage 11: register `(defstruct (Name T ...) field-specs...)` as a template.
@@ -1334,6 +1348,7 @@
       (if-some (prevt (struct-template-lookup key))
         (do
           (when (!= (same-definition-site (prevt 'src-file) (prevt 'src-line) (ff 'line)) 0)
+            (when (= (prevt 'src-imports) null) (set! (prevt 'src-imports) g-file-imports))
             (return))
           (die-redefinition name (ff 'line) BK-STRUCT-TEMPLATE
                             (prevt 'src-file) (prevt 'src-line)))
@@ -1359,6 +1374,7 @@
           ; Stage 15 B4 (R4): the defining site — see `same-definition-site`.
           (set! (st 'src-file) g-source-path)
           (set! (st 'src-line) (ff 'line))
+          (set! (st 'src-imports) g-file-imports)
           (when (!= g-defining-private 0) (set! g-priv-bindings 1)))))))
 
 ; What `name` already names as a TYPE, as a noun for a diagnostic, or null.
@@ -1428,25 +1444,85 @@
 ; null when `node` is not one. Callers guard the recursion with
 ; `g-type-alias-depth`, exactly as the plain-alias path in parse-type-name does.
 (defn type-alias-apply (node:raw:Node line:i32):raw:Node
-  (when (= node null) (return null))
-  (let (n:raw:Node node)
-    (when (!= (n 'kind) NODE-LIST) (return null))
-    (let (head:raw:Node (node-first n))
-      (when (or (= head null) (!= (head 'kind) NODE-SYM)) (return null))
-      (if-some (ta (type-alias-lookup-ref (head 's)))
-        (do
-          (when (= (ta 'ntv) 0) (return null))
-          (let (nargs:i32 (- (node-len (as ptr n)) 1))
-            (when (!= nargs (ta 'ntv))
-              (die-at line
-                (fstr (ta 'name) ": wrong number of type arguments for type alias (" nargs
-                      " given)")))
-            (let (args:ptr (arena-alloc (* nargs (ptr-bytes))))
-              (dotimes (i nargs)
-                (set! (aref (as &ptr args) i) (node-at (as ptr n) (+ i 1))))
-              (return (subst-alias-args (ta 'body) (ta 'tyvars) args nargs line)))))
-        0)
-      (return null))))
+  (if-some (ta (type-alias-app-of node))
+    (return (type-alias-subst ta node line false))
+    0)
+  (return null))
+
+; The parametric alias `node` applies, or null when it is not an application of one.
+(defn type-alias-app-of (node:raw:Node):?&TypeAlias
+  (when (!= (node-kind node) NODE-LIST) (return null))
+  (let (head:raw:Node (node-first node))
+    (when (!= (node-kind head) NODE-SYM) (return null))
+    (if-some (ta (type-alias-lookup-ref (head 's)))
+      (when (!= (ta 'ntv) 0) (return ta))
+      0)
+    (return null)))
+
+; `mark`: the body is another file's text, so each argument goes in as a marker
+; the parser reads back in this file (`env-arg-sym`).
+(defn type-alias-subst (ta:&TypeAlias n:raw:Node line:i32 mark:bool):raw:Node
+  (let (nargs:i32 (- (node-len (as ptr n)) 1))
+    (when (!= nargs (ta 'ntv))
+      (die-at line
+        (fstr (ta 'name) ": wrong number of type arguments for type alias (" nargs
+              " given)")))
+    (let (args:ptr (arena-alloc (* nargs (ptr-bytes))))
+      (dotimes (i nargs)
+        (let (a:ptr (node-at (as ptr n) (+ i 1)))
+          ; An integer argument (an extent) names nothing, so it needs no marker.
+          (set! (aref (as &ptr args) i)
+                (if (and mark (!= (node-kind a) NODE-INT))
+                  (as ptr (intern-node (env-arg-sym a line)))
+                  a))))
+      (return (subst-alias-args (ta 'body) (ta 'tyvars) args nargs line)))))
+
+(defn alias-foreign? (ta:&TypeAlias):bool
+  (return (and (not (symbol-none? (ta 'src-file))) (!= (ta 'src-file) g-source-path))))
+
+; An alias body is its file's text: another file's is read there, blamed at its own line.
+(defn alias-body-type (ta:&TypeAlias body:ptr line:i32):&Type
+  (when (not (alias-foreign? ta)) (return (parse-type-from-node body line)))
+  (let (array-ok:i32 g-array-ok
+        ctx:StrView (foreign-read-context (ta 'src-file) "type alias" (ta 'name) line)
+        here:NameEnv (name-env-enter (ta 'src-ns) (ta 'src-file) (ta 'src-imports)))
+    (set! g-array-ok array-ok)
+    (let (t:&Type (parse-type-from-node body (ta 'src-line)))
+      (name-env-set here)
+      (set! g-mono-context ctx)
+      (return t))))
+
+; The marker for type node `a`, read back in this file at `line`.
+(defn env-arg-sym (a:ptr line:i32):Symbol
+  (let (rec:&EnvArg (new EnvArg))
+    (set! (rec 'node) (as raw:Node a))
+    (set! (rec 'env) (name-env-here))
+    (set! (rec 'line) line)
+    (set! (rec 'ctx) g-mono-context)
+    (conj g-env-args rec)
+    (let (idx:i32 (- (unsafe/cast i32 (count g-env-args)) 1))
+      (return (symbol-intern (fstr "#env-arg-" idx))))))
+
+; A marker is parsed as its writer spelled it, in its writer's file; `#` is unspellable.
+(defn env-arg-type (name:Symbol array-ok:i32):?&Type
+  (when (!= (symbol-byte-at name 0) 35) (return null))
+  (let (sv:StrView (symbol-as-view name))
+    (when (not (strview-has-prefix sv "#env-arg-")) (return null))
+    (let (idx:usize 0
+          i:usize 9)
+      (while (< i (sv 'len))
+        (set! idx (+ (* idx 10) (as usize (- (as i32 (aref (sv 'data) (as i64 i))) 48))))
+        (set! i (+ i 1)))
+      (let (a:&EnvArg (invoke g-env-args idx)
+            here:NameEnv (name-env-here)
+            ctx:StrView g-mono-context)
+        (name-env-set (a 'env))
+        (set! g-mono-context (a 'ctx))
+        (set! g-array-ok array-ok)
+        (let (t:&Type (parse-type-from-node (as ptr (a 'node)) (a 'line)))
+          (name-env-set here)
+          (set! g-mono-context ctx)
+          (return t))))))
 
 ; Stage 16: register `(deftype Name Type)` / `(deftype- Name Type)`
 ; (container-type-sugar.md §3.4). Defines no type and emits no IR — a use of
@@ -1502,6 +1578,7 @@
           (do
             (when (!= (same-definition-site (prev 'src-file) (prev 'src-line) (ff 'line)) 0)
               (do (set! (prev 'priv) is-priv)
+                  (when (= (prev 'src-imports) null) (set! (prev 'src-imports) g-file-imports))
                   (when (!= is-priv 0)
                     (do (set! (prev 'src-ns) g-current-ns)
                         (set! g-priv-bindings 1)))
@@ -1523,9 +1600,9 @@
           ; Stage 15 B4 (R4): the defining site — see `same-definition-site`.
           (set! (ta 'src-file) g-source-path)
           (set! (ta 'src-line) (ff 'line))
+          (set! (ta 'src-imports) g-file-imports)
           (when (!= is-priv 0) (set! g-priv-bindings 1)))))))
 
-; Stamp (and memoize) a concrete instance of a defunion template from a type
 ; The Type a defunion instance resolves to. For a niche layout (unions.md §6
 ; rules 2/3) this is a bare pointer carrying the niche pkind and elem=T — the
 ; same TY-PTR the parser's `(Maybe (ref T))` / `!T` fast paths yield, so a
@@ -1548,6 +1625,70 @@
           (return pt))
       (return (type-for-sdef (udd 'sdef))))))
 
+(defn name-env-here ():NameEnv
+  (return (NameEnv g-current-ns g-source-path g-file-imports)))
+
+(defn name-env-set (e:NameEnv):void
+  (set! g-current-ns (e 'ns))
+  (set! g-source-path (e 'path))
+  (set! g-file-imports (e 'imports)))
+
+; Read a definition's own text as the file that wrote it; returns what to restore.
+; A definition that recorded no namespace (compiler-minted) keeps the current file's.
+(defn name-env-enter (ns:Symbol path:Symbol imports:raw:ImportVec):NameEnv
+  (let (saved:NameEnv (name-env-here))
+    (when (not (symbol-none? ns))
+      (set! g-current-ns ns)
+      (when (not (symbol-none? path)) (set! g-source-path path))
+      (set! g-file-imports imports))
+    (return saved)))
+
+; A substituted `type-spelling` is a registry KEY read in the template's file, where
+; bare `Pt` would mean that file's own; `user/` makes `resolve-spelling` answer the key.
+(defn spelling-as-key (s:Symbol):Symbol
+  (when (or (= g-ns-declared 0) (symbol-contains-byte s 40)) (return s))
+  (let (sv:StrView (symbol-as-view s)
+        acc:String (string-new)
+        start:usize 0
+        i:usize 0
+        slen:usize (symbol-len s))
+    (while (<= i slen)
+      (when (or (= i slen) (= (as i32 (aref (sv 'data) (as i64 i))) 58))
+        (let (seg:Symbol (symbol-intern (strview-take-bytes (strview-drop-bytes sv start) (- i start)))
+              keep:bool (!= (builtin-type-name seg) null))
+          (if-some (ft (fnty-resolve seg)) (set! keep true) 0)
+          (when (> start 0) (str-into &acc ":"))
+          (when (not keep) (str-into &acc "user/"))
+          (str-into &acc (symbol-as-view seg)))
+        (set! start (+ i 1)))
+      (set! i (+ i 1)))
+    (return (symbol-intern (string-as-view &acc)))))
+
+; Name the use that asked for a stamp of another file's template, for errors raised
+; while reading that file's text. Returns the context to restore.
+(defn template-stamp-context (tfile:Symbol iname:Symbol line:i32):StrView
+  (let (prev:StrView g-mono-context)
+    (when (and (not (symbol-none? tfile)) (!= tfile g-source-path))
+      (set! g-mono-context (fstr "while stamping " iname " (requested at " g-source-path ":" line ")")))
+    (return prev)))
+
+; Name the use that read another file's definition, for errors raised in its text.
+; Returns the context to restore.
+(defn foreign-read-context (dfile:Symbol kind:StrView name:Symbol line:i32):StrView
+  (let (prev:StrView g-mono-context)
+    (when (and (not (symbol-none? dfile)) (!= dfile g-source-path))
+      (set! g-mono-context (fstr "while reading " kind " '" name "' (requested at "
+                                 g-source-path ":" line ")")))
+    (return prev)))
+
+; The spellings a stamp substitutes for a template's type parameters.
+(defn stamp-key-spellings (argts:ptr nargs:i32):ptr
+  (let (out:ptr (arena-alloc (* (if (> nargs 0) nargs 1) (ptr-bytes))))
+    (dotimes (i nargs)
+      (set! (aref (as &Symbol out) i) (spelling-as-key (type-spelling (aref (as &ptr argts) i)))))
+    (return out)))
+
+; Stamp (and memoize) a concrete instance of a defunion template from a type
 ; use `(Name A B)`. The instance is an ordinary defunion named
 ; `Name.<tok>.<tok>` (type-mangle-token per argument, the generic-fn scheme);
 ; construction is via `make` / return-position target typing — no per-instance
@@ -1580,20 +1721,29 @@
     (when (!= nargs (utt 'ntv))
       (die-at line
         (fstr (utt 'name) ": wrong number of type arguments for defunion template")))
-    (let (spellings:ptr (arena-alloc (* nargs (ptr-bytes)))
-          iname:Symbol (utt 'name))
+    (when (> g-dry-parse-ntv 0) (return (dry-parse-type)))
+    (let (iname:Symbol (utt 'name))
       (dotimes (i nargs)
-        (let (at:ptr (aref (as &ptr argts) i))
-          (set! (aref (as &Symbol spellings) i) (type-spelling at))
-          (set! iname (symbol-intern (fstr iname "." (type-mangle-token at))))))
+        (set! iname (symbol-intern (fstr iname "." (type-mangle-token (aref (as &ptr argts) i))))))
       (if-some (ud (uniondef-lookup iname))
         (return (union-instance-type ud))
         (let (arms:ptr (-> (unsafe/cast &Node (utt 'form)) (node-rest _) (unsafe/cast &Node _) (node-rest _))
-              arms-subst:ptr (subst-tyvars-node arms (utt 'tyvars) spellings (utt 'ntv))
+              arms-subst:ptr (subst-tyvars-node arms (utt 'tyvars) (stamp-key-spellings argts nargs)
+                                                (utt 'ntv))
+              ctx:StrView (template-stamp-context (utt 'src-file) iname line)
+              here:NameEnv (name-env-enter (utt 'src-ns) (utt 'src-file) (utt 'src-imports))
               ud2:&UnionDef (defunion-register iname arms-subst line)
               ; Copied, as struct-template-stamp-types-in does: the caller's
               ; `argts` may be reused.
               origin-args:ptr (arena-alloc (* (if (> nargs 0) nargs 1) (ptr-bytes))))
+          (name-env-set here)
+          (set! g-mono-context ctx)
+          ; The instance itself belongs where it was asked for, as a struct stamp does.
+          (let (usd:raw:StructDef (ud2 'sdef))
+            (set! (usd 'src-file) g-source-path)
+            (set! (usd 'src-ns) g-current-ns)
+            (set! (ud2 'src-file) g-source-path)
+            (set! (ud2 'src-ns) g-current-ns))
           (dotimes (oi nargs)
             (set! (aref (as &ptr origin-args) oi) (aref (as &ptr argts) oi)))
           (set! (ud2 'origin-template) ut)
@@ -1625,6 +1775,7 @@
     (when (!= nargs (stt 'ntv))
       (die-at line
         (fstr (stt 'name) ": wrong number of type arguments for defstruct template")))
+    (when (> g-dry-parse-ntv 0) (return (dry-parse-type)))
     (let (spellings:ptr (arena-alloc (* nargs (ptr-bytes)))
           iname:Symbol (stt 'name))
       (dotimes (i nargs)
@@ -1642,7 +1793,8 @@
             ; The template form's field specs are everything after the (Name T...)
             ; head: (defstruct (Name T..) f0 f1 ...) → cdr-cdr.
             fields-tmpl:ptr (-> (unsafe/cast &Node (stt 'form)) (node-rest _) (unsafe/cast &Node _) (node-rest _))
-            fields:ptr (subst-tyvars-node fields-tmpl (stt 'tyvars) spellings (stt 'ntv))
+            fields:ptr (subst-tyvars-node fields-tmpl (stt 'tyvars) (stamp-key-spellings argts nargs)
+                                          (stt 'ntv))
             nfields:i32 (node-len fields)
             cur:ptr fields)
         ; Record the stamping origin (T2): the method unifier recovers
@@ -1659,7 +1811,9 @@
               ftp:ptr (arena-alloc (* nfields (ptr-bytes))))
           (set! (sd 'src-file) g-source-path)
           (set! (sd 'src-line) line)
-          (let (fi:i32 0)
+          (let (fi:i32 0
+                ctx:StrView (template-stamp-context (stt 'src-file) iname line)
+                here:NameEnv (name-env-enter (stt 'src-ns) (stt 'src-file) (stt 'src-imports)))
             (set! cur fields)
             (while (> (node-len cur) 0)
               (let (field:ptr (node-first (unsafe/cast &Node cur))
@@ -1672,7 +1826,9 @@
                 (set! (aref (as &Symbol fnm) fi) fname)
                 (set! (aref (as &ptr ftp) fi) fty))
               (inc! fi)
-              (set! cur (node-rest (unsafe/cast &Node cur)))))
+              (set! cur (node-rest (unsafe/cast &Node cur))))
+            (name-env-set here)
+            (set! g-mono-context ctx))
           (struct-set-fields sd fnm ftp nfields))
         ; Queue the `%name = type {…}` IR on the shared deferred queue. emit-pending
         ; -struct-ir-type writes the plain struct line at drain time, and
@@ -1970,6 +2126,8 @@
                 lline:i32 (node-line lnn line)
                 et:ptr (as ptr (parse-type-from-node etn (node-line etn line)))
                 len:i64 0)
+            ; A dry parse runs before layouts and macros: the use settles the rest.
+            (when (> g-dry-parse-ntv 0) (return (dry-parse-type)))
             ; Mode 3 = W9 item 40's layout prescan, which must diagnose nothing
             ; and must never guess a length: report "not settled yet" and let
             ; `defstruct-fill-layout` abandon the struct, so `emit-defstruct`
@@ -2039,6 +2197,7 @@
                   (set! (aref (as &ptr ftypes) i) fty))
                 (inc! i)
                 (set! cur (node-rest (unsafe/cast &Node cur))))
+              (when (> g-dry-parse-ntv 0) (return (dry-parse-type)))
               (let (sd:ptr (lookup-or-make-anon-struct fnames ftypes null null nfields 0 0)
                     t:&Type (make-type TY-STRUCT))
                 (set! (t 'sdef) sd)
@@ -2073,6 +2232,7 @@
                   (set! (aref (as &ptr ftypes) i) fty))
                 (inc! i)
                 (set! cur (node-rest (unsafe/cast &Node cur))))
+              (when (> g-dry-parse-ntv 0) (return (dry-parse-type)))
               (let (sd:ptr (lookup-or-make-anon-union fnames ftypes null null nfields 0 0)
                     t:&Type (make-type TY-UNION))
                 (set! (t 'sdef) sd)
@@ -2080,14 +2240,15 @@
       ; §3.7: a parametric alias application expands before any registry is
       ; consulted, so the alias name never reaches type identity or mangling —
       ; the same transparency the plain form has in parse-type-name.
-      (let (ex:raw:Node (type-alias-apply (as raw:Node n) line))
-        (when (!= ex null)
+      (if-some (ta (type-alias-app-of (as raw:Node n)))
+        (let (ex:raw:Node (type-alias-subst ta (as raw:Node n) line (alias-foreign? ta)))
           (when (>= g-type-alias-depth MAX-TYPE-ALIAS-DEPTH)
             (die-at line "type alias expands into a cycle"))
           (set! g-type-alias-depth (+ g-type-alias-depth 1))
-          (let (t:&Type (parse-type-from-node (as ptr ex) line))
+          (let (t:&Type (alias-body-type ta (as ptr ex) line))
             (set! g-type-alias-depth (- g-type-alias-depth 1))
-            (return t))))
+            (return t)))
+        0)
       ; Stage 11: a parameterized defstruct use — (Vector i32), (HashMap K V) —
       ; in type position stamps (and memoizes) a concrete monomorphic instance
       ; (parametric-structs.md §3). The colon-sugar composes for free: &T and
@@ -2231,6 +2392,7 @@
                   (inc! pi)
                   (set! cur (node-rest (unsafe/cast &Node cur))))
                 (let (ret-ty:ptr (parse-type-from-node ret-node line))
+                  (when (> g-dry-parse-ntv 0) (return (dry-parse-type)))
                   (return (boxedfn-type param-arr num-p ret-ty line))))))))
       ; Stage 13 TE-6: (dyn P) — the shared fat pointer (TE-1) erasing a value of
       ; an arbitrary single user protocol P via nominal `extend` conformance
@@ -2248,6 +2410,10 @@
             (let (pnode:&Node (unsafe/cast &Node (node-first (unsafe/cast &Node rest))))
               (when (!= (pnode 'kind) NODE-SYM)
                 (die-at line "(dyn P): protocol must be a bare symbol (parametric protocols are not boxable)"))
+              ; Admission is still asked: it is the one check `dyn-type` makes.
+              (when (> g-dry-parse-ntv 0)
+                (dyn-annot-record (pnode 's) line)
+                (return (dry-parse-type)))
               (return (dyn-type (pnode 's) line))))))
       ; Check for function pointer type: ((fn ret) (param-types...))
       (let (head:ptr (node-first n))
@@ -2328,7 +2494,8 @@
                    (= (-> head (unsafe/cast &Node _) (_ 'kind)) NODE-SYM))
           (let (hs:Symbol (-> head (unsafe/cast &Node _) (_ 's)))
             (when (or (!= (builtin-type-name hs) null)
-                      (!= (struct-lookup-ref hs) null))
+                      (!= (struct-lookup-ref hs) null)
+                      (!= (dry-parse-tyvar hs) 0))
               (die-at line
                 (fstr "'" hs "' is a type, not a type constructor -- (" hs
                       " ...) is not a type; a doubled annotation like x:T:T desugars to exactly this")))

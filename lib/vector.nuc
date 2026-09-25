@@ -272,7 +272,7 @@
 ;
 ;   (let ((it (ref (VecIter i32))) (alloca (VecIter i32)))
 ;     (iter-init it v)
-;     (doseq (x it) ...))          ; doseq advances `it` via (next it)
+;     (doseq-iter (x it) ...))     ; doseq-iter advances `it` via (next it)
 ;
 ; The iterator BORROWS the buffer (raw element pointer); it does not own it and
 ; must not outlive the Vector.
@@ -290,7 +290,7 @@
 
 (extend (VecIter T) (Iterator T))
 
-(defn next (self:&(VecIter T)) (Maybe T)
+(defn next (self:&(VecIter T)):?T
   (when (>= (self 'pos) (self 'len)) (return none))
   (let (v:T (aref (as &T (self 'data)) (as i64 (self 'pos))))
     (set! (self 'pos) (+ (self 'pos) 1))

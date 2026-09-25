@@ -8,8 +8,8 @@
 ; variadic `+ - * /` macros fold to) and asserting conformance with `extend`.
 ;
 ; A protocol's `Self` is substituted wholesale, so by-value types extend by name
-; (`(extend i32 Ord)`) and by-pointer types extend their pointer spelling
-; (`(extend ptr:MyStruct Ord)`).
+; (`(extend i32 Ord)`) and by-pointer types extend the pointer type
+; (`(extend &MyStruct Ord)`, in any pointer spelling).
 
 ; Equality.
 (defprotocol Eq

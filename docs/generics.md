@@ -44,22 +44,30 @@ A **protocol** names a capability — a set of required method signatures — an
 
 ```lisp
 (defprotocol Shape
-  (area:i32  (self:ptr:Self))
-  (label:ptr (self:ptr:Self)))
+  (area  (self:&Self):i32)
+  (label (self:&Self):ptr))
 ```
+
+**Signatures are checked at the `defprotocol`.** Each method signature's parameter and return types are parsed when the protocol is declared, just as a `defn` signature is. A type that does not exist or is malformed is an error at that signature's line, even if nothing ever `extend`s the protocol. `(defprotocol P (m (x:&Self q:Nope):i32))` fails with `unknown type: Nope`, and `(Vector E E)` fails with the template's arity error. The check treats `Self`, the protocol's own parameters (`E` in `(defprotocol (Seq E) …)`) and any `:where` variables in the signature as type variables. It resolves names the same way a `defn` signature does, so a type defined later in the file, or brought in by a later import, is accepted. The check registers nothing: a template application in a signature is stamped only when an `extend` substitutes concrete types into it.
 
 `extend Type Protocol` is a **checked, code-free conformance assertion**. It runs after the whole-file prescan: for each required signature it substitutes `Self → Type` and requires that a concrete method already resolves at the exact tier (the implementations are ordinary overloaded `defn`s). It records the `(Type, Protocol)` fact and emits nothing.
 
 ```lisp
-(defn area (s:ptr:Circle):i32 (return (* (* (s 'rad) (s 'rad)) 3)))
-(defn label (s:ptr:Circle):ptr (return "circle"))
+(defn area (s:&Circle):i32 (return (* (* (s 'rad) (s 'rad)) 3)))
+(defn label (s:&Circle):ptr (return "circle"))
 
 (extend Circle Shape)   ; OK — both methods exist for Circle
 ```
 
 If a required method is missing, compilation fails with a diagnostic naming each absent method (e.g. `Square does not implement Shape.label`) — the precise error an overload set alone cannot give.
 
-**`Self` and pointer-ness.** Conformance matching is by exact type, so the protocol signature's pointer-ness must match the implementation's. Since structs are conventionally passed by pointer, write `(self:ptr:Self)` to match `(defn … (s:ptr:Circle) …)`; a by-value `(self:Self)` would require a by-value `(s:Circle)` implementation.
+**A generic requirement.** A signature with its own `:where` asks for a method generic over that variable: `(defprotocol M (mapx (self:&Self v:T :where (Any T)):T))` is satisfied by `(defn mapx (self:&Box v:T :where (Any T)):T …)`, not by a `mapx` over `i32` alone. At the `extend`, the conformer's generic method must bind for the signature's parameters with its variables left abstract, and every constraint it places on them must be one the signature's `:where` states (`Any` always holds), exactly as the A2 check reads a call inside a generic body. A concrete-only or narrower conformer is `does not implement M.mapx for every type its :where admits`. A parameter that nests a variable (`v:(Vector T)`) is not modelled, so there any generic `mapx` of the right arity counts. An unknown protocol in the signature's `:where` is `defprotocol: :where names unknown protocol '…'` at the signature's line, whether or not the protocol is ever extended. Such a method cannot be boxed in a `(dyn M)`.
+
+**`Self` and pointer-ness.** Conformance matching is by exact type, so the protocol signature's pointer-ness must match the implementation's. Since structs are conventionally passed by pointer, write `(self:&Self)` to match `(defn … (s:&Circle) …)`; a by-value `(self:Self)` would require a by-value `(s:Circle)` implementation.
+
+**A pointer type as the subject.** With a by-value `(self:Self)` signature, the other way to conform a by-pointer implementation is to extend the pointer type itself: `(extend &Cents Ord)` over `(defn < (a:&Cents b:&Cents):bool …)`. Every pointer spelling works and they all mean the same thing — `&Cents`, `(ref Cents)`, `ptr:Cents`, `(ptr Cents)`, `ref:Cents`, `raw:Cents`, `(raw Cents)`, `?&Cents`, `(Maybe &Cents)` — because the conformance registry ignores the pointer kind, as `type-eq` does: each records the one pointer-to-`Cents` conformance. A sigil over a value type (`(extend ?Cents P)`) conforms that `Maybe` type. A struct template application over type variables (`(extend (Vector T) P)`) is still read as a template, and so is a pointer to one: `(extend &(Vector T) P)` conforms `&(Vector X)` for every stamped `X` (and not the by-value `(Vector X)`). An unknown operand (`(extend &Nope P)`) is `unknown type: Nope` at the form's line.
+
+**An alias is not a new type.** A `deftype` alias or C typedef subject conforms the type it names: `(deftype Money i32)` then `(extend Money P)` is `(extend i32 P)`, so every `i32` conforms, and `(extend int32_t P)` does the same. Extending both the alias and its target is one type extended twice, so a parametric protocol extended with different arguments through each (`(extend Money (Tag i64))` then `(extend i32 (Tag i32))`) is the ordinary `re-extends protocol 'Tag' with different associated arguments` error. A template application over **concrete** types conforms that one stamped instance, not the template: `(extend (Vector i32) P)`, `(extend Vector:i32 P)` and `(deftype Wide (Vector i64))` then `(extend Wide P)` each conform only their instance, and a `(Vector i64)` passed where `P` is required is still refused at the call. (Each of these used to record its conformance under a name that dispatch never looks up. The list form conformed every `Vector` instead.) A **parametric** alias over type variables is expanded and read as what it names: `(deftype (Vec T) (ref (Vector T)))` then `(extend (Vec T) P)` is `(extend &(Vector T) P)`, and `(deftype (Lst T) (Vector T))` then `(extend (Lst U) P)` is `(extend (Vector U) P)`. An alias that does not name a struct template under its pointers (`(deftype (Opt T) (Maybe T))`) is `extend: 'Opt' is not a struct template`.
 
 **No code, multiple protocols per implementation.** Because `extend` adds no methods, one concrete function can satisfy several protocols at once — the protocol is a *predicate over the method set*, not the owner of an implementation.
 
@@ -97,6 +105,10 @@ Four rules cover every spelling:
 * **A prefixed import does *not* put the library's own namespace in scope.** With `(import-prefixed shapes sh)`, `shapes/Shape` is an error: the prefix is the whole of what the import bound. The diagnostic says so and lists what *is* in scope.
 * **A bare name falls back to the default `user` namespace.** That is why a file with an `(ns …)` of its own can still write `(extend MyType Clone)` against the prelude's protocols with no qualifier. If two namespaces each declare a `Describe` and neither is flattened into this file, a bare `Describe` names neither and is an error — qualify it.
 
+A protocol's method signatures are the declaring file's text, so they name that file's types however the protocol is reached. `Self`, the protocol's type arguments and the conformer's methods belong to the file that writes the `extend`. A private `defstruct-` conformer in another namespace, or a conformer named like one of the protocol library's own types, therefore conforms. See [A template is read as the file that wrote it](toplevel.md#a-template-is-read-as-the-file-that-wrote-it).
+
+The rules are the same in every position that names a protocol: `extend`'s protocol operand, `(dyn P)`, and a `:where` constraint, including a protocol application such as `((sh/Peek E) S)`. A `:where` is read before an imported library's protocols are registered, so the constraint keeps the environment of the file that wrote it and is resolved against that file's imports once the protocol exists. A name the file cannot spell is still `defn: :where names unknown protocol '…'` at the `defn`, with the same scope note, and so is a library namespace named through a prefixed import (`shapes/Shape` under `(import-prefixed shapes sh)`). A call that reaches such a template before the check does is refused the same way, at the `defn`, with `note: while binding a call to 'f' (at file:line)`, rather than as the call's `no matching method`.
+
 Two namespaces may therefore each declare a protocol of the same name without colliding, and one type may conform to both:
 
 ```lisp
@@ -106,7 +118,7 @@ Two namespaces may therefore each declare a protocol of the same name without co
 
 **One `(dyn P)` box type per protocol, not per spelling.** A `(dyn P)` box's type identity is the protocol's **canonical name**, so every spelling a file may legally write denotes the one box type: `(dyn Describe)` written inside `(ns dp)` and `(dyn dpx/Describe)` written in a file that imported that library as `dpx` are the same type. A library may therefore take and return `(dyn P)` across the import boundary. (Before this was fixed the two were distinct types and the mismatch surfaced only at IR assembly, with no source location.)
 
-**Limitation — a bare, `import-use`-flattened spelling of a *namespaced* protocol is still keyed bare.** If a library declares `(ns dp) (defprotocol Describe …)` and a consumer writes `(import-use thatlib)` followed by a bare `(dyn Describe)`, the consumer's box type is keyed `Describe` while the library's own is keyed `dp/Describe`, and the two do not type-check against each other. The reason is that resolving a bare name to *which* flattened namespace declares it needs the protocol registry, which is not yet complete when a `defn` signature is first read. Passing one where the other is expected is now a located error rather than a silent failure, but it is a confusing one (both boxes print as `(dyn Describe)`). **Use `(import-prefixed thatlib p)` and spell `p/Describe`** — the prefixed spelling resolves through the import environment alone and is folded correctly.
+This includes a bare, `import-use`-flattened spelling. If a library declares `(ns dp) (defprotocol Describe …)` and a consumer writes `(import-use thatlib)` followed by a bare `(dyn Describe)`, the consumer's box is the library's `dp/Describe` box. Every imported file's protocol names are collected before any signature is read, so the bare name resolves to the flattened namespace that declares it. (It used to be keyed `Describe`, and the two boxes did not type-check against each other.)
 
 **`(dyn P)` is checked against `(dyn Q)`.** A box of one protocol used where a box of another is required is rejected with a located `type mismatch: a (dyn P) value cannot be used where (dyn Q) is required`, at a binding, a `return` and a call argument alike.
 
@@ -124,8 +136,8 @@ typed collection protocols without full associated types.
 
 ```lisp
 (defprotocol (Seq E)
-  (get:E ((self (ref Self)) i:usize))
-  (len:usize ((self (ref Self)))))
+  (get (self:&Self i:usize):E)
+  (len (self:&Self):usize))
 ```
 
 The element parameter `E` is a free symbol in the protocol's required-method
@@ -134,6 +146,15 @@ signatures. At the `extend` site, bind it to the conforming type's element:
 ```lisp
 (extend (Vector T) (Seq T))   ; binds E := T for each stamped Vector instance
 ```
+
+**The subject names the parameters.** `(extend (Wrap X) (Inner X))` over
+`(defstruct (Wrap T) v:T)` binds `X` to each instance's argument; the names in
+the subject, not the `defstruct`'s, are the ones the protocol application and a
+`:where` may use. So each subject argument must be a distinct type variable, one
+per template parameter — `(extend (Two P i32) Q)` and `(extend (Two P P) Q)` are
+refused (`… names only some of its instances`) — and a protocol argument naming
+any other variable is `extend: protocol parameter 'B' is not determined by the
+subject or any :where constraint`.
 
 Conformance is checked **at stamp time**: when `Vector.i32` is stamped, the
 protocol's required methods (with `Self → Vector.i32` and `E → i32`) must
@@ -198,21 +219,32 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
   determines — and when a template body, protocol signature or method is
   **stamped**: `?E` becomes `?i32`, `?&E` becomes `?&Pt`, and `?E` with
   `E = ?Pt` becomes a `Maybe` over `Maybe.Pt` — the sigil run is stripped from
-  each colon segment before the variable is looked up and put back after. (A
-  `:where` constraint's *own* argument is still recovered only when it is a
-  bare variable, as [below](#associated-type-bounds-where-protocol-arg--var);
-  `((Peek ?E) S)` is a concrete pattern there.)
-  Two shapes are out of scope, as before: a **`defunion` template other than
-  `Maybe`/`Result`** inside a template argument — `(Vector (Either T))` — does
-  not collect `T` (the pattern walkers know struct templates and the two sigil
-  unions; `(Vector (Box T))` over a `defstruct` template is fine), and a
-  **pointer wrapper** inside a template argument — `(Vector &T)`,
-  `(Vector ref:T)`, `(Vector ?&T)` — is not *collected* from the receiver
-  (`unknown type: T` at the definition); the variable must be bare under the
-  sigil, and a pointer element binds through it (`(Vector ?T)` accepts a
-  `(Vector ?&Pt)` with `T = &Pt`). The escape is to declare the variable:
-  `(defn f ((v (ref (Vector &T))) :where (Any T)):i32 …)` collects `T` from
-  the `:where` clause and then binds it through the wrapper as usual.
+  each colon segment before the variable is looked up and put back after. A
+  `:where` constraint's *own* argument is a pattern too:
+  `((Peek ?E) S)` recovers `E` from a recorded `?i32`, as
+  [below](#associated-type-bounds-where-protocol-arg--var).
+- **A pointer wrapper and a `defunion` template are wrappers too.** A template
+  argument's operand is still a template argument, so `(Vector (ref T))`,
+  `(Vector &T)`, `(Vector ref:T)`, `(Vector raw:T)`, `(Vector (ptr T))` and
+  `(Vector ?&T)` all collect `T` with no `:where` and bind it to the
+  **pointee** — a `(Vector &Pt)` argument gives `T = Pt`, where
+  `(Vector T)` would give `T = &Pt` — and a `(Vector i32)` argument is
+  `no matching method`. The colon spelling `ref:T` is read as `(ref T)` by
+  every pattern walker (it used to be collected as a variable named `ref:T`
+  that nothing could bind). A **`defunion` template** application is a
+  template application like a `defstruct` one, inside an argument —
+  `(Vector (Either T))` — and as the receiver itself — `(e (Either T))`,
+  `(r (Result T i32))`; a niche instance (a template with one `&T` arm and one
+  empty arm, which is a bare pointer) is found among the stamped instances by
+  shape, as `?` is.
+- **A type name is never a type variable.** A `deftype` alias and an imported
+  C typedef in a template argument name the type they alias:
+  `(deftype PtRef &Pt)` then `(defn f ((v (ref (Vector PtRef)))) …)` is a
+  plain function over `(Vector &Pt)` that refuses a `(Vector i32)`, and
+  `(Vector off_t)` is `(Vector i64)` on LP64. (Both used to be read as a
+  variable that bound anything.) A receiver pattern collects only a name that
+  is none of a built-in type, struct, union, template, enum, alias or C
+  typedef.
 - **Binding** gathers the concrete type at every bare occurrence of a variable
   among the arguments and requires they agree; the bound type must conform
   (nominally, via `extend`) to the variable's protocol(s). There is no unifier:
@@ -232,7 +264,13 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
   of type variable `T` is typed abstractly; a call on it that resolves to a method
   of `T`'s `:where` protocols (with `Self → T`), or to another generic whose
   constraints `T`'s constraints satisfy, is checked precisely (and yields a precise
-  result type). The check is **lenient**: the only hard def-time error is a
+  result type). A parametric protocol's own parameter in that signature reads as
+  the constraint's argument: under `:where ((Peek E) S)`, `(peek (x:Self):E)`
+  called on an `s:S` yields the variable `E`, and under `((Peek i64) S)` it
+  yields `i64`; a parameter or return that nests one (`?E`, `&Self`) is left to
+  the stamp. A struct constructor (`(Pt 1 2)`, `(Pt (y 5) (x 4))`) is read as it
+  is in any body: each initializer is checked, a designated `(field v)` as its
+  value `v`. The check is **lenient**: the only hard def-time error is a
   genuinely unknown function name (a typo) —
   ```lisp
   (defn maxv (a:T b:T :where (Ord T)):T
@@ -248,12 +286,21 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
   file:NN: error: no matching method for overloaded 'dbl' with given argument types
     note: while instantiating @weird.f64.f64 (requested at file:12)
   ```
-  The constraint protocol's existence is also checked at the `defn`.
+  The constraint protocol's existence is also checked at the `defn`, and so is
+  the whole signature — parameter, return and constraint-argument types — whether
+  or not anything calls the template, for a `:where` template and a
+  receiver-inferred one alike. (A name nested in a receiver pattern, like `E` in
+  `v:&(Vector E)`, is a type variable there, not an unknown type.) An error found
+  while a call is being bound — in a header's template, which is trusted and so
+  first read there — carries `note: while binding a call to 'f' (at file:line)`.
 - **Cross-unit.** A generic template exports verbatim through `.nuch`
   (`(defn maxv ((a T) (b T) :where (Ord T)) :T …)`); an importing unit
   re-registers it (trusting the exporter's A2 check) and stamps its own
   instantiations locally, calling the exporter's concrete protocol methods by
-  their mangled symbols.
+  their mangled symbols. Whether the template comes from a `.nuc` or a `.nuch`,
+  its signature, `:where` clause and body resolve names in the **defining**
+  file's namespace and imports, while its type arguments stay the caller's (see
+  [A template is read as the file that wrote it](toplevel.md#a-template-is-read-as-the-file-that-wrote-it)).
 
 - **A type variable may be determined by the *expected* type alone.** The usual
   case binds every variable from the arguments, but a constructor like
@@ -311,7 +358,14 @@ When the bound names a **parametric protocol**, the constraint head is a protoco
   value the conforming type's conformance recorded. An argument that is concrete
   (`((Iterator i32) I)`) or already bound is **constrained** — required to equal
   the recorded value, else a `constraint 'P' parameter mismatch: expected …,
-  found …` error.
+  found …` error at the call that bound it, with `note: required by the :where
+  constraint at file:line`.
+- **A compound argument recovers the variables under it.** `((Peek ?E) S)`,
+  `((Peek &E) S)` and `((Peek (Vector E)) S)` match the pattern against the
+  recorded argument, the way a receiver pattern matches an argument type:
+  `?E` against `?i32` gives `E = i32`, `&E` against `&Pt` gives `E = Pt`, and
+  `(Vector E)` against `(Vector i64)` gives `E = i64`. A recorded argument of
+  another shape is the same `parameter mismatch` error.
 - **Recovery is a fixpoint.** A variable recovered by one constraint (`S` from
   `((Iterator S) I)`) can be the input of another (`((UnaryFn S E) F)`), so the
   constraints are resolved repeatedly until no new variable binds — regardless of
@@ -367,8 +421,8 @@ identical spelling used on `defn`. A `:where`-free `extend` is unchanged:
 **Determination.** Every type variable appearing in the protocol application or
 in any `:where` constraint must be *determined*:
 
-1. **Seed.** The subject template's own parameters (`I`, `F`) are always
-   determined — they are the stamp arguments.
+1. **Seed.** The subject's arguments (`I`, `F`, as the `extend` spells them) are
+   always determined — they are the stamp arguments.
 2. **Step (repeat to fixpoint).** For each constraint `((Proto Arg…) V)` whose
    conforming variable `V` is determined, every tyvar in an `Arg` position
    becomes determined.
@@ -477,7 +531,7 @@ and typos caught):
   ```lisp
   (defn twice (x:T :where (Valid T)):T (+ x x))
   (twice 21)        ; ok — i32 supports +
-  (twice some-ptr)  ; error at this call: 'ptr:Blob' does not satisfy the Valid bound of 'twice'
+  (twice some-ptr)  ; error at this call: '&Blob' does not satisfy the Valid bound of 'twice'
   ```
   `Valid` is itself written explicitly (it *nominates* structural checking); a bare
   `:where (T)` with no protocol remains an error.
@@ -772,6 +826,9 @@ compile-time diagnostics:
 - **Object-safety.** Protocol methods whose non-receiver parameters or return type
   mention `Self` cannot be placed in a vtable (the concrete `Self` is erased). The
   parser rejects them with a clear error.
+- **Generic methods.** A method whose signature has its own `:where` has no
+  single implementation to put in a slot: `(dyn M): method 'mapx' is generic
+  (its signature has a :where), so no vtable can hold it`.
 - **Multi-protocol boxes** (`(dyn (Show Eq))`). Not supported; v1 is
   single-protocol.
 - **No `clone`.** Boxes are move-only.

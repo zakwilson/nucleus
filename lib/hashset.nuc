@@ -370,7 +370,7 @@
 ;
 ;   (let ((it (ref (HashSetIter i32))) (alloca (HashSetIter i32)))
 ;     (hashset-iter it s)
-;     (doseq (x it) ...))
+;     (doseq-iter (x it) ...))
 ;
 ; `hashset-iter` fills a caller-provided (ref (HashSetIter T)) from a
 ; (ref (HashSet T)); the fill-in-place form mirrors vector.nuc's `iter-init`.
@@ -383,7 +383,7 @@
 
 (extend (HashSetIter T) (Iterator T))
 
-(defn next (self:&(HashSetIter T)) (Maybe T)
+(defn next (self:&(HashSetIter T)):?T
   (let (kptr:&T (as &T (self 'kbuf))
         sptr:&ui8 (as &ui8 (self 'sbuf))
         done:i32 0
