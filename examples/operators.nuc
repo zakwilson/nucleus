@@ -31,8 +31,8 @@
 (defn != (a:&Cents b:&Cents):bool (return (!= (a 'v) (b 'v))))
 
 ; Cents satisfies the library protocols; both assertions are code-free checks.
-(extend ptr:Cents Ord)
-(extend ptr:Cents Num)
+(extend &Cents Ord)
+(extend &Cents Num)
 
 ; ---- Generics bounded by the standard protocols, using operators directly. ----
 

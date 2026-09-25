@@ -28,7 +28,7 @@
 (defn drop ((self (ref (Vector T)))) :void (when (!= (as ptr (_get self (quote data))) null) (alloc-handle-free (ref self (quote alloc)) (_get self (quote data)) (* (_get self (quote cap)) (as usize (sizeof T))) 8)) (set! (self (quote data)) null) (set! (self (quote len)) 0) (set! (self (quote cap)) 0))
 (defstruct (VecIter T) (data ptr) (pos usize) (len usize))
 (extend (VecIter T) (Iterator T))
-(defn next ((self (ref (VecIter T)))) (Maybe T) (when (>= (self (quote pos)) (self (quote len))) (return none)) (let (v:T (aref (as (ref T) (self (quote data))) (as i64 (self (quote pos))))) (set! (self (quote pos)) (+ (self (quote pos)) 1)) (return (some v))))
+(defn next ((self (ref (VecIter T)))) :?T (when (>= (self (quote pos)) (self (quote len))) (return none)) (let (v:T (aref (as (ref T) (self (quote data))) (as i64 (self (quote pos))))) (set! (self (quote pos)) (+ (self (quote pos)) 1)) (return (some v))))
 (defn iter-init ((it (ref (VecIter T))) (v (ref (Vector T)))) :void (set! (it (quote data)) (as ptr (_get v (quote data)))) (set! (it (quote pos)) 0) (set! (it (quote len)) (_get v (quote len))))
 (extend (Vector T) (Coll T (VecIter T)))
 (defn iter ((self (ref (Vector T)))) (VecIter T) (let ((it (ref (VecIter T))) (alloca (VecIter T))) (iter-init it self) (return (deref it))))

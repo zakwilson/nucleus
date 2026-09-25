@@ -97,6 +97,8 @@ Supported forms: `declare` (function signatures), `defstruct`, `defconst`, `defe
 
 Importing a `.nuch` with `defmethod` forms registers the methods for dispatch in the importing unit and emits an LLVM `declare` under each mangled symbol (resolved at link time). Imported `defprotocol` forms re-register the protocol; imported `extend` forms record the conformance fact without re-checking it (the exporting unit already verified it). Imported `defcast` forms re-register the cast rule; imported `extern` forms emit an `external global`. See [Polymorphism](#polymorphism-overloaded-defn-multimethods) and [Protocols](#protocols-defprotocol-and-extend).
 
+A header also carries its source's name-binding imports (a prefixed import as `(import-prefixed lib p)`, a non-`user` `import-use` / `import-only` verbatim), so its templates and signatures resolve as their file resolved them. There they bind and load nothing; see [The imports a header carries](compiler.md#the-imports-a-header-carries).
+
 
 ## Top-Level Forms
 
@@ -347,9 +349,9 @@ wherever a typed value is wanted — `return` (and the implicit-return tail) of 
 function declared to return a `defunion` (or template instance), a typed
 `let`/`with` binding init, a `set!`/`.set!` value — a bare `(arm args...)`
 resolves against that type, and the want carries into the value tails of
-`if`/`cond`/`do`/`let`/`with`/`match`. A call or `make` argument is narrower:
+`if`/`cond`/`do`/`let`/`with`/`match`. A call, `make` or struct-literal argument is narrower:
 only the built-in `(some v)`/`none`/`(ok v)`/`(err e)`/`(err! e)`, as the
-argument itself, against the `make` field, a single-definition function's
+argument itself, against the `make` or struct-literal field, a single-definition function's
 parameter, or the type every same-arity overload agrees on — see
 [structs-unions.md](structs-unions.md). The `name:(Type ...)` colon-paren sugar works for parenthesized
 types — `r:(Result i64 i32)` (and the chain form `r:ref:(…)`) read directly
@@ -515,10 +517,13 @@ colon-paren fuse closed that gap.)
 
 ### Methods over a template
 
-A `defn` whose parameter or return type mentions a registered struct template
-applied to free symbols infers those symbols as the method's type variables —
-bound by the parametric receiver, not by `:where`. The body is monomorphized
-once per distinct concrete receiver type, reusing the rung-4 monomorphizer.
+A `defn` whose parameter or return type mentions a registered struct or
+`defunion` template applied to free symbols infers those symbols as the method's
+type variables — bound by the parametric receiver, not by `:where`. The body is
+monomorphized once per distinct concrete receiver type, reusing the rung-4
+monomorphizer. A free symbol may sit under a pointer wrapper or a sigil inside
+the argument — `(Vector &T)`, `(Vector ref:T)`, `(Vector (Either T))` — and a
+`deftype` alias or C typedef name is a type, never a free symbol.
 
 ```lisp
 (defn count (self:(ref (Vector T))):usize
@@ -644,7 +649,7 @@ unless a bound handler repairs"; `(err! E)` means "give up unconditionally" —
 it bypasses the handler chain and returns the error value. Use `err!` when you
 want an unconditional error return regardless of any bound handlers. Away from
 `return` the bare forms construct against a typed binding, `set!` target,
-`make` field or call argument; only a binding or `set!` of exactly the return
+`make` or struct-literal field or call argument; only a binding or `set!` of exactly the return
 type negotiates with handlers, and anywhere else `err` builds the error value
 as `err!` does. With no type to construct against, use
 `(make (Result T Err) ok v)`; stored Results are plain data with no handler
@@ -973,7 +978,7 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `char` | `(char "x")` — a `Char` value (codepoint) from a single-byte string; sugar for the `\x` char literal. See [Char literals](types.md#char-literals--a). | `(Char)'c'` |
 | `aref` | Array element access. The index may be any integer type; it is converted to the target's pointer-int width (`usize`) for the address computation, so no cast is needed on a 16- or 32-bit target. The conversion follows the index type's own signedness — `zext` for an unsigned index, `sext` for a signed one — so a `ui8` at 200 or a `ui32` at 2^31 indexes forward, and a negative signed index still reaches backwards. | `arr[i]` |
 | `aset!` | **Retired in Stage 16** — a targeted hard error: `'aset!' was retired in Stage 16: set! takes a place`. Write `(set! (aref a i) v)`; the index rule is `aref`'s. | — |
-| `(StructName init...)` | Compound struct literal. Each `init` is either `(field val)` for a designated initializer or a bare value for a positional one (positional inits fill the next field that has not been designated). Unspecified fields are zero-initialized. Yields `ptr:StructName`, alloca-backed (stack lifetime is the enclosing function). Defining a function with the same name as a struct is a compile-time error (the function would shadow the constructor). | `(struct S){.f = v, ...}` |
+| `(StructName init...)` | Compound struct literal. Each `init` is either `(field val)` for a designated initializer or a value for a positional one (positional inits fill the next field that has not been designated). A two-element `(name x)` is designated only when `name` is a field of the struct, so `(S &a)`, `(S (f x))` and `(S (Inner 1))` are positional values; a field name wins over a function of the same name (bind the call first to pass it positionally), and a `name` that names nothing is reported as a missing field. A `(some v)`/`none`/`(ok v)`/`(err e)` init constructs against the field's type. Unspecified fields are zero-initialized. Yields `ptr:StructName`, alloca-backed (stack lifetime is the enclosing function). Defining a function with the same name as a struct is a compile-time error (the function would shadow the constructor). | `(struct S){.f = v, ...}` |
 | `array` | `(array ElemType init...)` — array compound literal. Each `init` is either `(index val)` (designated) or a bare value (positional). Length is implicit: `max(positional-count, max-designated-index + 1)`. Unspecified slots are zero-initialized (including struct and `CStr` element types). Yields `ptr:ElemType`, alloca-backed. When `ElemType` is a struct, an element may be written as a bare `(ElemType …)` compound literal — it is loaded into the slot, so the older `(deref (ElemType …))` spelling is no longer required (both are accepted and emit the same IR). A binding annotated with the bare, elem-less `:ptr` takes `ptr:ElemType` from the literal, so `(aref a i)` works without a cast. | `(T[]){1, 2, [3] = 99}` |
 | `quote` | Yields its argument as a `Node*` (reader sugar: `'x` → `(quote x)`). Quoted symbols are interned — see [Symbols](#symbols). | — |
 | `quasiquote` | Like `quote` but `~expr` splices a runtime value and `~@list` splices a list (reader: `` `x ``, `~x`, `~@x`) | — |
@@ -985,7 +990,7 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `funcall-ptr-i64` | Call a `ptr` function pointer with no arguments, returning `i64` | `((long(*)())fn)()` |
 | `funcall-ptr-ptr` | Call a `ptr` function pointer with no arguments, returning `ptr` | `((void*(*)())fn)()` |
 | `gensym` | Return a fresh unique symbol `Node*` (e.g. `__gs_0`); for use in macro bodies to avoid variable capture | — |
-| `macro-error` | `(macro-error node "message")` — report `message` at `node`'s line and abort the expansion. Only inside a `defmacro`/`macrolet`/`compile-time` body; the message must be a string literal. See [Macros](macros.md#macro-error--a-macro-rejecting-its-own-call-site). | — |
+| `macro-error` | `(macro-error node message)` — report `message` at `node`'s line and abort the expansion. Only inside a `defmacro`/`macrolet`/`compile-time` body; the message is a literal, a `StrView` or a `String` (so a body that imports `fmt` can build one with `str`). See [Macros](macros.md#macro-error--a-macro-rejecting-its-own-call-site). | — |
 | `some` | `(some r)` — wrap a non-null `(ref T)` as `?T` / `(Maybe (ref T))`. Pure relabel, no IR. | — |
 | `as-ref` | `(as-ref p)` — launder a raw pointer into `?T` (null stays none). Pure relabel, no IR; narrow before use. | — |
 | `unwrap` | `(unwrap m)` — the `(ref T)` inside a `?T`, or trap (`llvm.trap`) if none. The one runtime branch nullability costs, paid only where written. | `assert(p); p` |
@@ -1109,7 +1114,7 @@ The rule is **symmetric in operand order** and the operator's *result type* is t
 
 A user operator method is emitted under a mangled symbol (`@add.pV2.pV2`, `@eq.pV2.pV2` — the symbols `+`/`=` are mapped to IR-safe mnemonics). A call with operand types that match no user method falls back to the built-in inline peephole.
 
-The **standard numeric protocols** live in `lib/numeric.nuc`: `Eq` (`= !=`), `Ord` (`< <= > >=`, a superset of `Eq` via `(extend Ord Eq)`), and `Num` (`_+ _- _* _/`). Built-in numeric types conform automatically (their intrinsic operators satisfy the requirements); a user type conforms by defining the methods and asserting `(extend ptr:MyType Ord)`. See [Bounded generic `defn`](#bounded-generic-defn).
+The **standard numeric protocols** live in `lib/numeric.nuc`: `Eq` (`= !=`), `Ord` (`< <= > >=`, a superset of `Eq` via `(extend Ord Eq)`), and `Num` (`_+ _- _* _/`). Built-in numeric types conform automatically (their intrinsic operators satisfy the requirements); a user type conforms by defining the methods and asserting `(extend &MyType Ord)` — any pointer spelling of the subject (`(ref MyType)`, `ptr:MyType`, `raw:MyType`, …) is the same conformance ([pointer subjects](generics.md#protocols-defprotocol-and-extend)). See [Bounded generic `defn`](#bounded-generic-defn).
 
 ## Polymorphism: overloaded `defn` (multimethods)
 
@@ -1233,12 +1238,17 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
   file:NN: error: no matching method for overloaded 'dbl' with given argument types
     note: while instantiating @weird.f64.f64 (requested at file:12)
   ```
-  The constraint protocol's existence is also checked at the `defn`.
+  The constraint protocol's existence is also checked at the `defn`, and so is
+  the whole signature, whether or not anything calls the template. A struct
+  constructor in the body (`(Pt 1 2)`) is checked as in any body. See
+  [Generics](generics.md) for the notes a call-time refusal carries.
 - **Cross-unit.** A generic template exports verbatim through `.nuch`
   (`(defn maxv ((a T) (b T) :where (Ord T)) T …)`); an importing unit
   re-registers it (trusting the exporter's A2 check) and stamps its own
   instantiations locally, calling the exporter's concrete protocol methods by
-  their mangled symbols.
+  their mangled symbols. The template resolves names in its defining file's
+  environment, not the caller's (see
+  [A template is read as the file that wrote it](toplevel.md#a-template-is-read-as-the-file-that-wrote-it)).
 
 Implementation: templates are registered as `METHOD-GENERIC` in `g-generics`
 (retaining the body); `generic-resolve` adds the protocol-bound tier and, on a
@@ -1278,7 +1288,7 @@ and typos caught):
   ```lisp
   (defn twice (x:T :where (Valid T)):T (+ x x))
   (twice 21)        ; ok — i32 supports +
-  (twice some-ptr)  ; error at this call: 'ptr:Blob' does not satisfy the Valid bound of 'twice'
+  (twice some-ptr)  ; error at this call: '&Blob' does not satisfy the Valid bound of 'twice'
   ```
   `Valid` is itself written explicitly (it *nominates* structural checking); a bare
   `:where (T)` with no protocol remains an error.

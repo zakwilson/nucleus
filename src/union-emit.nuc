@@ -1706,7 +1706,7 @@
                 ": a Result (!T) is neither true nor false -- eliminate it with match, try or unwrap")))
       (when (and (= (tt 'kind) TY-PTR) (= (tt 'pkind) PTR-REF))
         (die-at line
-          (fstr ctx ": " (type-spelling t)
+          (fstr ctx ": " (type-display t)
                 " is non-null, so this test is always true -- spell the value (raw T) or ?T if it can be null")))
       (let (ud:?ptr:UnionDef (value-maybe-union-of t))
         (when (!= ud null)
@@ -1718,7 +1718,7 @@
             (emit g-body-stream "  " tmp " = icmp eq i32 " tag ", " si "\n")
             (return (alloc-val ty-bool tmp)))))
       (die-at line
-        (fstr ctx ": condition must be bool, not " (type-spelling t) " -- compare explicitly"))
+        (fstr ctx ": condition must be bool, not " (type-display t) " -- compare explicitly"))
       (return v))))
 
 (defn emit-not (call:ptr scope:&Scope):&Val

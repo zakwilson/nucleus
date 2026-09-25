@@ -38,7 +38,7 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 | `null?` | `(null? x)` | `(= x null)` |
 | `bit-not` | `(bit-not x)` | `(bit-xor x -1)` — unary bitwise complement, correct at any width in two's complement |
 | `for` | `(for (var:type init) test step body)` | `(let (var:type init) (while test body step))` |
-| `dotimes` | `(dotimes (var:type n) body)` | `(let (var:type 0) (while (< var n) body (inc! var)))` |
+| `dotimes` | `(dotimes (var n) body...)` | `(let (var (* n 0)) (while (< var n) body... (inc! var)))` — the index takes the count's type unless `var` is annotated (`i:i32`) |
 | `doseq` | `(doseq (var coll-expr IterType) body...)` | Iterate a **collection** conforming to `(Coll E It)`: calls `(iter coll-expr)` to get a fresh `IterType` by value, binds it to a typed local, and drives `(next &it)` each step, binding each element to `var`. `IterType` must be named explicitly because `let` bindings have no type inference and `&` requires a named local (not an rvalue). `IterType` examples: `(VecIter i32)`, `(HashSetIter i32)`, `(HashMapEntryIter CStr i32)`. See [Iterators](iterators.md). |
 | `doseq-iter` | `(doseq-iter (var iter-ref) body...)` | Iterate a **bare iterator reference**: calls `(next iter-ref)` each step, binding each element to `var`. Use for types that conform to `(Iterator E)` but are not a `Coll` — e.g. `IntRangeIter`, `MapIter`, `FilterIter`, `HashMapKeyIter`. `iter-ref` must be a `(ref IterType)` already materialised by the caller. |
 | `into` | `(into dest-coll src-coll IterType)` | Drain a **collection** `src-coll` into `dest-coll`: calls `(iter src-coll)` to get a fresh `IterType` by value, then `(conj dest-coll elem)` for each element. `IterType` is the associated iterator type of `src-coll`. |
@@ -47,6 +47,13 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 | `macmap` | `(macmap ((param ...) template) (row ...))` | Expands `template` once per row, binding the parameters to the row, and splices the results in sequence. See [`macmap`](#macmap--one-template-over-a-table-of-rows) below. |
 | `macfoldr` | `(macfoldr op unit a b c)` | `(op a (op b c))` — right-nested fold over a variadic argument list. No args → `unit`; one arg → that arg. See [`macfoldl`/`macfoldr`](#macfoldl--macfoldr--a-template-over-a-variadic-argument-list). |
 | `macfoldl` | `(macfoldl op unit a b c)` | `(op (op a b) c)` — the left-nested counterpart. |
+
+The binding list of `dotimes`, `doseq` and `doseq-iter` must have exactly the
+shape shown, with a symbol first. Anything else is refused at the call's line —
+`dotimes: the first argument must be (var count)`, `doseq: the first argument
+must be (var coll IterType)`, `doseq-iter: the first argument must be (var
+iter-ref)` — and a two-element `doseq` binding, `(doseq (x it) …)`, adds a note
+pointing at `doseq-iter`.
 
 Two notes on the `:type` annotation inside these expansions. `for` and `dotimes`
 splice the annotated loop variable into the body, so `(dotimes (i:i32 n) (foo
@@ -307,10 +314,10 @@ what `e` may call. Two things are its own:
 ## `macro-error` — a macro rejecting its own call site
 
 ```
-(macro-error NODE "message")
+(macro-error NODE MESSAGE)
 ```
 
-Report `message` at `NODE`'s line and abort the expansion, with the same
+Report `MESSAGE` at `NODE`'s line and abort the expansion, with the same
 formatting as any other compiler diagnostic. The point is *where* it lands: at
 the call site the macro is objecting to, not at the macro's own definition and
 not against whatever the expansion happened to lower to.
@@ -330,23 +337,93 @@ not against whatever the expansion happened to lower to.
 * **Only inside a `defmacro`, `macrolet` or `compile-time` body.** Elsewhere it
   is refused (`macro-error: only available inside a defmacro, macrolet or
   compile-time body`) rather than emitted as a call a program could not link.
-* **The message is a string literal.** A library macro has no string formatting
-  available to it anyway, and a literal keeps the call free of any by-value
-  aggregate: it passes as a pointer and a length, both constants.
+* **The message is any string value** — a literal, a `StrView`, or a `String`
+  (read through its view). Anything else is refused:
+  `macro-error: the message must be a string (a StrView or a String), not i32`.
+  The prelude brings no string runtime, so a literal is what a macro can say
+  with no imports; to *format* one, import the pieces the body calls, exactly
+  as a program would:
+
+  ```lisp
+  (import-use fmt)    ; str — any ToStr piece: text, integers, Char, bool
+  (import-use read)   ; node-str — a node's source text
+
+  (defmacro only-ints (x)
+    (when (!= (x 'kind) NODE-INT)
+      (let (t:String (node-str x))
+        (macro-error x (str "only-ints: got " (string-as-view &t) ", not an integer"))))
+    x)
+
+  (only-ints (+ 1 2))
+  ; error: only-ints: got (+ 1 2), not an integer
+  ```
+
+  A symbol's name is a `ToStr` piece once `intern-str` is imported —
+  `(str "m: '" (x 's) "' is reserved")`. `node-str` returns a `String`, which is
+  not itself a piece (a by-value `String` would be a move), so pass its
+  `string-as-view`. The message is rendered before the expansion is abandoned,
+  so a `String` the body built needs no lifetime care.
 * **`NODE` is any `(raw Node)` expression** — ordinarily one of the macro's own
   parameters, or a piece reached through `ast-at`/`ast-first`, which is what
-  carries the user's line. A `null` node reports at line 0.
+  carries the user's line. A node with no line of its own — a symbol (symbols
+  are interned, so no occurrence has a line) or `null` — reports at the line of
+  the call being expanded.
+* **A message may carry notes.** `\n  note: ` inside the message starts one, as
+  in any other diagnostic, and `--diagnostics=sexp` lists it under `notes`.
 * **It aborts the expansion**, so nothing after it in the macro body runs. In the
   REPL it returns to the prompt rather than ending the session.
 * **Check the shape before you walk it.** `ast-at`/`ast-first` answer `null`
   rather than faulting, and `ast-len` answers 0 for anything that is not a list,
   so `(< (ast-len x) 2)` is the guard — but a *field* read is unchecked, and
-  `(x 'kind)` on a null node is a null dereference that kills `nucleusc` with a
-  segfault and no diagnostic, before any `macro-error` it was about to raise.
-  Ask `ast-len` first, and only then destructure. The prelude's `doseq`, `doseq-iter` and
-  `dotimes` do not yet guard their binding list, so `(doseq item v (VecIter i32)
-  …)` — the list unparenthesised — currently crashes the compiler rather than
-  reporting the shape (Stage 21 rough edges).
+  `(x 'kind)` on a null node is a null dereference. Test in a short-circuit
+  `or` whose every term is reached only past its own guard, then destructure:
+
+  ```lisp
+  (when (or (= spec null) (!= (spec 'kind) NODE-LIST) (!= (ast-len spec) 2))
+    (macro-error spec "m: the first argument must be (a b)"))
+  ```
+
+  The prelude's `dotimes`, `doseq`, `doseq-iter` and `macmap` guard their
+  user-written lists this way, so `(doseq item v (VecIter i32) …)` — the binding
+  list unparenthesised — is `doseq: the first argument must be (var coll
+  IterType)` at the call's line. A guard is what says *what* was wrong; the
+  fault boundary below only says *that* the body crashed.
+
+## When a macro body crashes
+
+A macro body — and a `~e` argument, a `compile-time` block, and the program
+globals a macro body reads — runs inside the compiler process. A null
+dereference or a stack overflow there is caught: the compiler reports it at the
+call's line and exits 1, instead of dying with `SIGSEGV`:
+
+```
+t.nuc:7: error: macro 'boom': crashed while expanding
+t.nuc:3: error: the computed argument '~(let ...)': crashed while evaluating
+t.nuc:3: error: compile-time block: crashed while running
+```
+
+The handler (`SIGSEGV` and `SIGBUS`, on its own stack so a runaway recursion
+is reported too) is installed only while that code runs, and the previous one
+is restored after it. A crash anywhere else in the compiler is not caught.
+
+**In the REPL a crash ends the session**, with the same diagnostic and exit
+status 1. The fault may have struck halfway through an allocation, so there is
+no known-good state to return to the prompt in. A `macro-error` still returns to
+the prompt.
+
+**A null element in the expansion is refused at the call.** Null means *absent*
+(`()` is a node), so no source text can put one in a form, and a body that
+unquotes a null value — `` `(inc! ~z) `` with `z` null — would hand every consumer
+of that form an element it cannot read. The expansion is checked when the macro
+returns, and the error names the macro, the position and the list's head:
+
+```
+t.nuc:4: error: macro 'bump': the expansion has an empty element at position 1 of (inc! …) -- a value unquoted into it was null
+```
+
+An empty `:rest` list is `()`, so passing one on — `(str)` hands its empty
+`parts` to `macmap` — is an empty list, not an absent element. In the REPL this
+refusal returns to the prompt.
 
 ## `macrolet` — lexically scoped macros
 

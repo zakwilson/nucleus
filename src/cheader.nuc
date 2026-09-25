@@ -687,7 +687,7 @@
     (when (!= is-enum 0)
       (let (look:i64 (c-skip-ws buf pos len))
         (when (and (< look len) (= (cstr-byte-at buf look) 123))
-          (set! look (cheader-skip-braces buf look len))
+          (set! look (c-parse-enum-body buf look len))
           ; `} __attribute__((flag_enum)) GApplicationFlags;` — GLib ≥ 2.86
           ; under clang; read as the declarator, it recorded a typedef named
           ; `__attribute__` and lost the real one.
@@ -1668,6 +1668,7 @@
     (set! (sd 'alias-of) (as raw:StructDef alias-of-sd))
     (set! (sd 'src-file) g-cheader-file)
     (set! (sd 'src-line) line)
+    (set! (sd 'from-c) 1)
     (return (as ptr sd))))
 
 ; ============================================================
@@ -1733,15 +1734,17 @@
       (when (= p start) (set! @ok 0))
       ; A decimal literal that does not fit i64 is not a value. Hex and octal are
       ; bit patterns, so `0xffffffffffffffff` keeps wrapping to -1.
-      (when (and (!= over 0) (= base 10)) (set! @ok 0)))
-    (let (more:i32 1)
-      (while (!= more 0)
-        (set! more 0)
-        (when (< p len)
-          (let (c:i32 (cstr-byte-at buf p))
-            (when (or (or (= c 117) (= c 85)) (or (= c 108) (= c 76)))
-              (set! p (+ p 1))
-              (set! more 1))))))
+      (when (and (!= over 0) (= base 10)) (set! @ok 0))
+      (let (more:i32 1
+            has-u:i32 0
+            nl:i32 0)
+        (while (!= more 0)
+          (set! more 0)
+          (when (< p len)
+            (let (c:i32 (cstr-byte-at buf p))
+              (when (or (= c 117) (= c 85)) (set! has-u 1) (set! p (+ p 1)) (set! more 1))
+              (when (or (= c 108) (= c 76)) (inc! nl) (set! p (+ p 1)) (set! more 1)))))
+        (set! g-cexpr-rank (c-literal-rank v (or (!= over 0) (< v 0)) (= base 10) has-u nl))))
     (set! @out-end p)
     (return v)))
 
@@ -1767,7 +1770,88 @@
       (set! @ok 0))
     (set! @out-end te)
     (when (!= ty null) (set! n (as i64 (abi-sizeof ty))))
+    ; size_t: unsigned, pointer-wide.
+    (set! g-cexpr-rank (c-rank (as i64 (* ((as &Target g-target) 'ptr-size) 8)) 1))
     (return n)))
+
+; A one-character constant, `'x'` or a simple escape. Refused past 0x7f, where
+; the value depends on the target's `char` signedness, and when multi-character.
+(defn c-cexpr-char (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
+  (let (p:i64 (+ pos 1)
+        v:i64 -1)
+    (when (< p len)
+      (let (c:i32 (cstr-byte-at buf p))
+        (if (!= c 92)
+          (when (!= c 39) (set! v (as i64 c)) (set! p (+ p 1)))
+          (when (< (+ p 1) len)
+            (let (d:i32 (cstr-byte-at buf (+ p 1)))
+              (set! p (+ p 2))
+              (case d
+                110 (set! v 10)
+                116 (set! v 9)
+                114 (set! v 13)
+                97  (set! v 7)
+                98  (set! v 8)
+                102 (set! v 12)
+                118 (set! v 11)
+                (:or 92 39 34 63) (set! v (as i64 d))
+                120 (let (more:i32 1)
+                      (set! v 0)
+                      (while (and (!= more 0) (< p len) (<= v 255))
+                        (let (h:i32 (cstr-byte-at buf p)
+                              hv:i32 -1)
+                          (when (and (>= h 48) (<= h 57)) (set! hv (- h 48)))
+                          (when (and (>= h 97) (<= h 102)) (set! hv (- h 87)))
+                          (when (and (>= h 65) (<= h 70)) (set! hv (- h 55)))
+                          (if (< hv 0)
+                            (set! more 0)
+                            (do (set! v (+ (* v 16) (as i64 hv)))
+                                (set! p (+ p 1)))))))
+                (when (and (>= d 48) (<= d 55))
+                  (set! v (as i64 (- d 48)))
+                  (dotimes (k 2)
+                    (when (and (< p len) (and (>= (cstr-byte-at buf p) 48)
+                                              (<= (cstr-byte-at buf p) 55)))
+                      (set! v (+ (* v 8) (as i64 (- (cstr-byte-at buf p) 48))))
+                      (set! p (+ p 1)))))))))))
+    (if (and (< p len) (= (cstr-byte-at buf p) 39))
+      (set! p (+ p 1))
+      (set! @ok 0))
+    (when (or (< v 0) (> v 127)) (set! @ok 0))
+    (set! g-cexpr-rank (c-rank-int))
+    (set! @out-end p)
+    (return v)))
+
+; The type a cast names, or null when it does not resolve.
+(defn c-cexpr-cast-type (buf:ptr pos:i64 stop:i64):ptr
+  (let (save-unrep:i32 g-cheader-unrep
+        save-why:StrView g-cheader-unrep-why
+        save-quiet:i32 g-cheader-unrep-quiet
+        te:i64 0
+        ty:ptr null)
+    (set! g-cheader-unrep 0)
+    (set! ty (c-parse-type buf pos stop (as &i64 &te)))
+    (when (!= g-cheader-unrep 0) (set! ty null))
+    (set! g-cheader-unrep save-unrep)
+    (set! g-cheader-unrep-why save-why)
+    (set! g-cheader-unrep-quiet save-quiet)
+    (return ty)))
+
+; C's conversion of `v` to the integer type a cast names: `(gint)(1u << 31)` is
+; INT_MIN. A pointer or unresolved type leaves the value alone.
+(defn c-cexpr-convert (v:i64 ty:ptr):i64
+  (set! g-cexpr-rank (c-rank-int))
+  (when (= ty null) (set! g-cexpr-rank (c-rank 64 0)) (return v))
+  (let (t:raw:Type (as raw:Type ty))
+    (when (= (t 'kind) TY-BOOL)
+      (when (!= v 0) (return 1))
+      (return 0))
+    (when (= (is-int-type t) 0) (set! g-cexpr-rank (c-rank 64 0)) (return v))
+    (let (w:i64 (as i64 (int-width t))
+          r:i32 (c-rank w (if (!= (is-unsigned t) 0) 1 0)))
+      ; Narrower than `int` promotes to `int`.
+      (when (>= w (c-int-bits)) (set! g-cexpr-rank r))
+      (return (c-norm v r)))))
 
 (defn c-cexpr-primary (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
   (let (p:i64 (c-skip-body-ws buf pos len))
@@ -1775,11 +1859,14 @@
     (let (c:i32 (cstr-byte-at buf p))
       (when (!= (isdigit c) 0)
         (return (c-cexpr-number buf p len out-end ok)))
+      (when (and (= c 39) (or (!= g-cmacro-folding 0) (!= g-cenum-folding 0)))
+        (return (c-cexpr-char buf p len out-end ok)))
       (when (= c 40)
-        ; A cast's own width is discarded: `(int)` in front of a `sizeof` cannot
-        ; narrow an extent that has to fit an array bound anyway.
         (when (!= (c-cexpr-type-ahead buf (+ p 1) len) 0)
-          (return (c-cexpr-unary buf (c-skip-parens buf p len) len out-end ok)))
+          (let (close:i64 (c-skip-parens buf p len)
+                cty:ptr (c-cexpr-cast-type buf (+ p 1) (- close 1))
+                v:i64 (c-cexpr-unary buf close len out-end ok))
+            (return (c-cexpr-convert v cty))))
         (let (e:i64 0
               v:i64 (c-cexpr-top buf (+ p 1) len (as &i64 &e) ok))
           (set! e (c-skip-body-ws buf e len))
@@ -1802,7 +1889,15 @@
           (let (mv:i64 0)
             (when (!= (cmacro-value tok (as &i64 &mv)) 0)
               (set! @out-end e)
-              (return mv)))))
+              (return mv))))
+        ; Enumerators too, but not in an array extent: that would lay out structs
+        ; that were opaque, as c-cexpr-top's bitwise levels would.
+        (when (or (!= g-cmacro-folding 0) (!= g-cenum-folding 0))
+          (let (ev:i64 0)
+            (when (!= (cenum-value tok (as &i64 &ev)) 0)
+              (set! g-cexpr-rank (c-value-rank ev))
+              (set! @out-end e)
+              (return ev)))))
       (set! @ok 0)
       (set! @out-end p)
       (return 0))))
@@ -1813,7 +1908,12 @@
     (let (c:i32 (cstr-byte-at buf p))
       (when (= c 43) (return (c-cexpr-unary buf (+ p 1) len out-end ok)))
       (when (= c 45)
-        (return (- 0 (c-cexpr-unary buf (+ p 1) len out-end ok))))
+        (let (v:i64 (c-cexpr-unary buf (+ p 1) len out-end ok))
+          (return (c-norm (- 0 v) g-cexpr-rank))))
+      ; `~` flips the operand's own width: `~0u` is 4294967295, not -1.
+      (when (and (= c 126) (or (!= g-cmacro-folding 0) (!= g-cenum-folding 0)))
+        (let (v:i64 (c-cexpr-unary buf (+ p 1) len out-end ok))
+          (return (c-norm (bit-xor v -1) g-cexpr-rank))))
       (return (c-cexpr-primary buf p len out-end ok)))))
 
 (defn c-cexpr-mul (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
@@ -1826,14 +1926,10 @@
         (when (< p len)
           (let (c:i32 (cstr-byte-at buf p))
             (when (or (= c 42) (or (= c 47) (= c 37)))
-              (let (e2:i64 0
+              (let (lr:i32 g-cexpr-rank
+                    e2:i64 0
                     r:i64 (c-cexpr-unary buf (+ p 1) len (as &i64 &e2) ok))
-                ; Executing the division would SIGFPE the compiler itself.
-                (when (and (!= c 42) (= r 0)) (set! @ok 0) (set! r 1))
-                (cond
-                  (= c 42) (set! v (* v r))
-                  (= c 47) (set! v (/ v r))
-                  true     (set! v (% v r)))
+                (set! v (c-arith c v lr r g-cexpr-rank ok))
                 (set! e e2)
                 (set! more 1)))))))
     (set! @out-end e)
@@ -1849,9 +1945,10 @@
         (when (< p len)
           (let (c:i32 (cstr-byte-at buf p))
             (when (or (= c 43) (= c 45))
-              (let (e2:i64 0
+              (let (lr:i32 g-cexpr-rank
+                    e2:i64 0
                     r:i64 (c-cexpr-mul buf (+ p 1) len (as &i64 &e2) ok))
-                (if (= c 43) (set! v (+ v r)) (set! v (- v r)))
+                (set! v (c-arith c v lr r g-cexpr-rank ok))
                 (set! e e2)
                 (set! more 1)))))))
     (set! @out-end e)
@@ -1867,11 +1964,10 @@
         (when (< (+ p 1) len)
           (let (c:i32 (cstr-byte-at buf p))
             (when (and (or (= c 60) (= c 62)) (= (cstr-byte-at buf (+ p 1)) c))
-              (let (e2:i64 0
+              (let (lr:i32 g-cexpr-rank
+                    e2:i64 0
                     r:i64 (c-cexpr-add buf (+ p 2) len (as &i64 &e2) ok))
-                ; A count outside [0,64) is poison, not a value.
-                (when (or (< r 0) (>= r 64)) (set! @ok 0) (set! r 0))
-                (if (= c 60) (set! v (bit-shl v r)) (set! v (bit-shr v r)))
+                (set! v (c-shift (= c 60) v lr r ok))
                 (set! e e2)
                 (set! more 1)))))))
     (set! @out-end e)
@@ -1889,9 +1985,10 @@
       (let (p:i64 (c-skip-body-ws buf e len))
         (when (and (< p len) (= (cstr-byte-at buf p) 38))
           (when (or (>= (+ p 1) len) (!= (cstr-byte-at buf (+ p 1)) 38))
-            (let (e2:i64 0
+            (let (lr:i32 g-cexpr-rank
+                  e2:i64 0
                   r:i64 (c-cexpr-shift buf (+ p 1) len (as &i64 &e2) ok))
-              (set! v (bit-and v r))
+              (set! v (c-arith 38 v lr r g-cexpr-rank ok))
               (set! e e2)
               (set! more 1))))))
     (set! @out-end e)
@@ -1905,9 +2002,10 @@
       (set! more 0)
       (let (p:i64 (c-skip-body-ws buf e len))
         (when (and (< p len) (= (cstr-byte-at buf p) 94))
-          (let (e2:i64 0
+          (let (lr:i32 g-cexpr-rank
+                e2:i64 0
                 r:i64 (c-cexpr-bitand buf (+ p 1) len (as &i64 &e2) ok))
-            (set! v (bit-xor v r))
+            (set! v (c-arith 94 v lr r g-cexpr-rank ok))
             (set! e e2)
             (set! more 1)))))
     (set! @out-end e)
@@ -1922,9 +2020,10 @@
       (let (p:i64 (c-skip-body-ws buf e len))
         (when (and (< p len) (= (cstr-byte-at buf p) 124))
           (when (or (>= (+ p 1) len) (!= (cstr-byte-at buf (+ p 1)) 124))
-            (let (e2:i64 0
+            (let (lr:i32 g-cexpr-rank
+                  e2:i64 0
                   r:i64 (c-cexpr-bitxor buf (+ p 1) len (as &i64 &e2) ok))
-              (set! v (bit-or v r))
+              (set! v (c-arith 124 v lr r g-cexpr-rank ok))
               (set! e e2)
               (set! more 1))))))
     (set! @out-end e)
@@ -1934,7 +2033,8 @@
 ; `c-array-extent` still enters at `c-cexpr-shift`, so no struct that was opaque
 ; before suddenly lays out and no emitted byte moves.
 (defn c-cexpr-top (buf:ptr pos:i64 len:i64 out-end:ptr:i64 ok:ptr:i32):i64
-  (when (= g-cmacro-folding 0) (return (c-cexpr-shift buf pos len out-end ok)))
+  (when (and (= g-cmacro-folding 0) (= g-cenum-folding 0))
+    (return (c-cexpr-shift buf pos len out-end ok)))
   (return (c-cexpr-bitor buf pos len out-end ok)))
 
 ; One `[ … ]` extent, `pos` at the `[`. Sets out-end past the `]`; clears `ok`
@@ -2228,6 +2328,7 @@
     (let (sd:ptr:StructDef (register-struct tag-name))
       (set! (sd 'src-file) g-cheader-file)
       (set! (sd 'src-line) decl-line)
+      (set! (sd 'from-c) 1)
       (cheader-struct-define sd fnames ftypes faligns fbits nfields is-union packed align)
       (return sd)))))
 
@@ -2291,6 +2392,7 @@
             (set! (alias 'alias-of) (as raw:StructDef sd))
             (set! (alias 'src-file) g-cheader-file)
             (set! (alias 'src-line) tag-line)
+            (set! (alias 'from-c) 1)
             (cheader-adopt-shape alias (as &StructDef sd)))
           (let (psd:ptr:StructDef (as &StructDef prior))
             (when (!= (psd 'opaque) 0)
@@ -2772,13 +2874,18 @@
             (cheader-register-opaque tag decl-line is-union null))))
       (return (cheader-skip-to-semi buf p len)))))
 
-; Pre-register a C header's opaque type names. Never emits IR, never registers a
-; function, and never reports an error: a header that fails to preprocess here
-; fails again (with a diagnostic) at the real import.
-(defn cheader-prescan-opaque (header-path:Symbol):void
+; Pre-register a C header's opaque type names. Never emits IR and never registers
+; a function. It refuses a header that does not preprocess, in `emit-c-include`'s
+; words: the header modes run this pass and never the import.
+(defn cheader-prescan-opaque (header-path:Symbol line:i32):void
   (let (buf-len:i64 0
         buf:ptr (cheader-preprocess header-path (as &i64 &buf-len)))
-    (when (= buf null) (return))
+    (when (= buf null)
+      ; A `.nuch`'s C import only binds a prefix; the import never reads it.
+      (let (src:StrView (symbol-as-view g-source-path)
+            ext:StrView ".nuch")
+        (when (strview-ends-with &src &ext) (return)))
+      (die-at line (fstr "c-include: failed to preprocess '" header-path "'")))
     (set! g-cheader-file header-path)
     (set! g-cheader-import-header header-path)
     (set! g-cheader-dline 1)
@@ -2818,7 +2925,9 @@
   body-start:i64
   body-end:i64
   val:i64
-  folded:i32)
+  folded:i32
+  ; The C type of the folded body (a `c-rank`), which an expression using it takes.
+  rank:i32)
 
 (defvar g-cmacros:&(Vector &CMacro) (vector-new-in &g-arena-alloc))
 (defvar g-cmacro-index:&(HashMap Symbol &CMacro)
@@ -2842,6 +2951,7 @@
 (defn cmacro-value (name:Symbol out:ptr:i64):i32
   (when-some (m (get g-cmacro-index name))
     (when (!= (m 'folded) 0)
+      (set! g-cexpr-rank (m 'rank))
       (set! @out (m 'val))
       (return 1)))
   (return 0))
@@ -2851,6 +2961,233 @@
         pfx:StrView "_")
     (when (strview-starts-with &sv &pfx) (return 1))
     (return 0)))
+
+; §3.1: `_`-prefixed names out unless the import is `unsafe/import-private`, and
+; never over a name that already resolves — a header's constant must not displace
+; what this unit defined. The Sym is a `defconst`'s: an untyped integer literal.
+(defn cheader-define-int-const (name:Symbol val:i64):void
+  (let (priv:i32 (cmacro-private-name? name))
+    (when (and (or (= priv 0) (!= g-import-include-private 0))
+               (= (scope-lookup-key g-globals name) null)
+               (not (cconst-name-taken? name)))
+      (let (sym:ref:Sym (scope-define g-globals name
+                          (as ptr (int-literal-type val)) "" 0))
+        (set! (sym 'is-const) 1)
+        (set! (sym 'const-val) (fstr val))
+        (set! (sym 'const-lit) 1)
+        (set! (sym 'const-lit-i64) val)
+        (set! (sym 'c-const) 1)
+        (when (!= priv 0) (set! (sym 'sym-private) 1))))))
+
+; Does a Nucleus definition other than a value hold `name`? A C header's own tag
+; does not count: C keeps tags apart from constants.
+(defn cconst-name-taken? (name:Symbol):bool
+  (let (i:i32 0)
+    (while (< i BINDING-KIND-COUNT)
+      (when (and (!= i BK-SPECIAL) (!= i BK-PRIMITIVE) (!= i BK-GLOBAL)
+                 (!= ((binding-row i) 'collides) 0))
+        (let (p:ptr (binding-probe i name null))
+          (when (and (!= p null)
+                     (or (!= i BK-STRUCT) (= ((as &StructDef p) 'from-c) 0)))
+            (return true))))
+      (inc! i)))
+  (return false))
+
+; A Nucleus definition of `name` displaces the C constant it would collide with,
+; defined later (a macro, or at the REPL). Re-keyed under `#c/`, which nothing spells.
+(defn cconst-yield (name:Symbol):void
+  (let (more:bool true)
+    (while more
+      (set! more false)
+      (if-some (s (scope-lookup g-globals name))
+        (when (!= (s 'c-const) 0)
+          (set! (s 'name) (symbol-intern (fstr "#c/" (s 'name))))
+          (set! more true))
+        0))))
+
+; ============================================================
+; C enumerators (stage21-cleanup/overview.md, rough edges): imported like a
+; folded `#define`. The table keeps every enumerator seen, private names too, so
+; a later initializer or `#define` can be written in terms of one.
+; ============================================================
+
+(defvar g-cenum-index:&(HashMap Symbol &CMacro) (hashmap-new-in &g-arena-alloc))
+(defvar g-cenum-folding:i32 0)
+; The C type of the (sub)expression just evaluated, as a `c-rank`. Every value the
+; evaluator returns is already converted to it (`c-norm`).
+(defvar g-cexpr-rank:i32 0)
+
+; A promoted C integer type: width times two, plus one when unsigned. The larger
+; of two ranks is then exactly C's usual arithmetic conversion.
+(defn c-rank (bits:i64 uns:i32):i32
+  (return (unsafe/cast i32 (+ (* bits 2) (as i64 uns)))))
+
+(defn c-rank-bits (r:i32):i64
+  (return (as i64 (/ r 2))))
+
+(defn c-rank-unsigned? (r:i32):bool
+  (return (!= (bit-and r 1) 0)))
+
+; The emission target's C `int`, which is 16 bits on AVR.
+(defn c-int-bits ():i64
+  (return (as i64 (int-width (c-int-type 0)))))
+
+(defn c-rank-int ():i32
+  (return (c-rank (c-int-bits) 0)))
+
+(defn c-rank-uint ():i32
+  (return (c-rank (c-int-bits) 1)))
+
+; `v` converted to the type `r` names: wrapped to its width, then zero- or
+; sign-extended. A 64-bit unsigned value is kept as its bit pattern.
+(defn c-norm (v:i64 r:i32):i64
+  (let (bits:i64 (c-rank-bits r)
+        one:i64 1)
+    (when (>= bits 64) (return v))
+    (let (u:i64 (bit-and v (- (bit-shl one bits) 1)))
+      (when (c-rank-unsigned? r) (return u))
+      (when (>= u (bit-shl one (- bits 1))) (return (- u (bit-shl one bits))))
+      (return u))))
+
+(defn cenum-value (name:Symbol out:ptr:i64):i32
+  (when-some (m (get g-cenum-index name))
+    (when (!= (m 'folded) 0)
+      (set! @out (m 'val))
+      (return 1)))
+  (return 0))
+
+; An enumerator's type, by its value (clang's, for one that does not fit `int`).
+(defn c-value-rank (v:i64):i32
+  (when (= (c-norm v (c-rank-int)) v) (return (c-rank-int)))
+  (when (= (c-norm v (c-rank-uint)) v) (return (c-rank-uint)))
+  (return (c-rank 64 0)))
+
+; Does a literal's value fit type `r`? `wrapped` is a hex or octal value past
+; INT64_MAX, held as its bit pattern.
+(defn c-literal-fits? (v:i64 wrapped:bool r:i32):bool
+  (when wrapped (return (and (c-rank-unsigned? r) (>= (c-rank-bits r) 64))))
+  (when (>= (c-rank-bits r) 64) (return true))
+  (return (= (c-norm v r) v)))
+
+; C's literal typing: the first of int, long, long long (from the `l` count) that
+; holds the value, each followed by its unsigned twin unless the literal is an
+; unsuffixed decimal, and only the twins under a `u`.
+(defn c-literal-rank (v:i64 wrapped:bool decimal:bool nu:i32 nl:i32):i32
+  (let (lvl:i32 (if (> nl 2) 2 nl))
+    (while (<= lvl 2)
+      (let (bits:i64 (cond (= lvl 0) (c-int-bits)
+                           (= lvl 1) (as i64 (* (target-long-size) 8))
+                           true 64))
+        (when (and (= nu 0) (c-literal-fits? v wrapped (c-rank bits 0)))
+          (return (c-rank bits 0)))
+        (when (and (or (!= nu 0) (not decimal)) (c-literal-fits? v wrapped (c-rank bits 1)))
+          (return (c-rank bits 1))))
+      (inc! lvl)))
+  (return (c-rank 64 1)))
+
+; One binary operator (its character) over two operands of their own ranks, at
+; their common type. Clears `ok` where C has no value or the host would trap.
+(defn c-arith (op:i32 a:i64 ra:i32 b:i64 rb:i32 ok:ptr:i32):i64
+  (let (r:i32 (if (> ra rb) ra rb)
+        x:i64 (c-norm a r)
+        y:i64 (c-norm b r)
+        one:i64 1
+        v:i64 0)
+    (set! g-cexpr-rank r)
+    (when (and (or (= op 47) (= op 37)) (= y 0)) (set! @ok 0) (return 0))
+    (let (u64:bool (and (c-rank-unsigned? r) (>= (c-rank-bits r) 64)))
+      (cond
+        (= op 42)  (set! v (* x y))
+        (= op 43)  (set! v (+ x y))
+        (= op 45)  (set! v (- x y))
+        (= op 38)  (set! v (bit-and x y))
+        (= op 94)  (set! v (bit-xor x y))
+        (= op 124) (set! v (bit-or x y))
+        u64 (if (= op 47)
+              (set! v (unsafe/cast i64 (/ (unsafe/cast ui64 x) (unsafe/cast ui64 y))))
+              (set! v (unsafe/cast i64 (% (unsafe/cast ui64 x) (unsafe/cast ui64 y)))))
+        (and (= x (bit-shl one 63)) (= y -1)) (set! @ok 0)
+        (= op 47)  (set! v (/ x y))
+        true       (set! v (% x y))))
+    (return (c-norm v r))))
+
+; `<<`/`>>` take the left operand's type. A count past its width has no value.
+(defn c-shift (left:bool a:i64 ra:i32 n:i64 ok:ptr:i32):i64
+  (set! g-cexpr-rank ra)
+  (when (or (< n 0) (>= n 64) (>= n (c-rank-bits ra))) (set! @ok 0) (return 0))
+  (when left (return (c-norm (bit-shl a n) ra)))
+  (when (c-rank-unsigned? ra) (return (u64-shr (c-norm a ra) n)))
+  (return (bit-shr (c-norm a ra) n)))
+
+; End of one enumerator's initializer: the `,` or `}` at paren depth 0.
+(defn c-enum-value-end (buf:ptr pos:i64 len:i64):i64
+  (let (p:i64 pos
+        depth:i32 0)
+    (while (< p len)
+      (let (c:i32 (cstr-byte-at buf p))
+        (cond
+          (and (= depth 0) (or (= c 44) (= c 125))) (return p)
+          (or (= c 40) (= c 91) (= c 123)) (do (inc! depth) (set! p (+ p 1)))
+          (or (= c 41) (= c 93) (= c 125)) (do (set! depth (- depth 1)) (set! p (+ p 1)))
+          ; A linemarker, or a character literal that may hold a `,`.
+          (= c 35) (while (and (< p len) (!= (cstr-byte-at buf p) 10)) (set! p (+ p 1)))
+          (= c 39) (do (set! p (+ p 1))
+                       (while (and (< p len) (!= (cstr-byte-at buf p) 39))
+                         (when (= (cstr-byte-at buf p) 92) (set! p (+ p 1)))
+                         (set! p (+ p 1)))
+                       (set! p (+ p 1)))
+          true (set! p (+ p 1)))))
+    (return len)))
+
+; One initializer on [pos,stop), or ok=0.
+(defn c-enum-fold (buf:ptr pos:i64 stop:i64 ok:ptr:i32):i64
+  (let (e:i64 0
+        v:i64 0)
+    (set! g-cenum-folding 1)
+    (set! v (c-cexpr-top buf pos stop (as &i64 &e) ok))
+    (set! g-cenum-folding 0)
+    (when (!= (c-skip-body-ws buf e stop) stop) (set! @ok 0))
+    (return v)))
+
+(defn c-enum-record (name:Symbol val:i64 known:i32):void
+  (let (m:ref:CMacro (new CMacro))
+    (set! (m 'name) name)
+    (set! (m 'val) val)
+    (set! (m 'folded) known)
+    (assoc g-cenum-index name m))
+  (when (!= known 0) (cheader-define-int-const name val)))
+
+; The `{ … }` list at `pos`: `NAME [attributes] [= const-expr]`, an omitted value
+; being the previous one plus one. Returns what `cheader-skip-braces` would.
+(defn c-parse-enum-body (buf:ptr pos:i64 len:i64):i64
+  (let (end:i64 (cheader-skip-braces buf pos len))
+    ; Registering at the prescan would outrun this unit's own definitions.
+    (when (!= g-cheader-typedef-provisional 0) (return end))
+    (let (p:i64 (+ pos 1)
+          stop:i64 (- end 1)
+          next:i64 0
+          known:i32 1)
+      (while (< p stop)
+        (set! p (c-skip-body-ws buf p stop))
+        (when (< p stop)
+          (let (ne:i64 0
+                name:Symbol (c-read-ident buf p stop (as &i64 &ne)))
+            (when (= (symbol-len name) 0) (return end))
+            (set! p (c-skip-body-ws buf (c-skip-attributes buf ne stop) stop))
+            (when (and (< p stop) (= (cstr-byte-at buf p) 61))
+              (let (ve:i64 (c-enum-value-end buf (+ p 1) stop)
+                    ok:i32 1
+                    v:i64 (c-enum-fold buf (+ p 1) ve (as &i32 &ok)))
+                (set! known ok)
+                (when (!= ok 0) (set! next v))
+                (set! p ve)))
+            (c-enum-record name next known)
+            (set! next (+ next 1))
+            (set! p (c-skip-body-ws buf p stop))
+            (when (< p stop)
+              (when (!= (cstr-byte-at buf p) 44) (return end))
+              (set! p (+ p 1))))))
+      (return end))))
 
 ; `#define NAME body` on [start,line-end). A `(` immediately after NAME makes it
 ; function-like, which stays out (§3.2).
@@ -2896,38 +3233,28 @@
           (when (= (m 'folded) 0)
             (let (ok:i32 1
                   e:i64 0
-                  v:i64 (c-cexpr-top g-cmacro-buf (m 'body-start) (m 'body-end)
-                                     (as &i64 &e) (as &i32 &ok)))
+                  v:i64 0)
+              (set! v (c-cexpr-top g-cmacro-buf (m 'body-start) (m 'body-end)
+                                   (as &i64 &e) (as &i32 &ok)))
               ; The body must consume itself: `3.14159` folds its leading `3` and
               ; stops at the `.`, which would register M_PI as 3.
               (set! e (c-skip-ws g-cmacro-buf e (m 'body-end)))
               (when (and (!= ok 0) (= e (m 'body-end)))
                 (set! (m 'val) v)
+                (set! (m 'rank) g-cexpr-rank)
                 (set! (m 'folded) 1)
                 (set! more 1)))))))
     (set! g-cmacro-folding 0)
     (set! g-cheader-unrep-quiet save-quiet)))
 
-; §3.1: names verbatim, predefines out, `_`-prefixed names out unless the import
-; is `unsafe/import-private`, and never over a name that already resolves — a
-; header's macro must not displace what this unit defined. The Sym is a
-; `defconst`'s: an untyped integer literal, so it widens at a use site.
+; §3.1: names verbatim, predefines out, then the rules every imported constant
+; follows (cheader-define-int-const).
 (defn cheader-macro-register ():void
   (dotimes (i (unsafe/cast i32 (count g-cmacros)))
     (let (m:ref:CMacro (invoke g-cmacros i:usize))
-      (when (!= (m 'folded) 0)
-        (let (name:Symbol (m 'name)
-              priv:i32 (cmacro-private-name? name))
-          (when (and (not (contains? g-cmacro-baseline name))
-                     (or (= priv 0) (!= g-import-include-private 0)))
-            (when (= (scope-lookup-key g-globals name) null)
-              (let (sym:ref:Sym (scope-define g-globals name
-                                  (as ptr (int-literal-type (m 'val))) "" 0))
-                (set! (sym 'is-const) 1)
-                (set! (sym 'const-val) (fstr (m 'val)))
-                (set! (sym 'const-lit) 1)
-                (set! (sym 'const-lit-i64) (m 'val))
-                (when (!= priv 0) (set! (sym 'sym-private) 1))))))))))
+      (when (and (!= (m 'folded) 0)
+                 (not (contains? g-cmacro-baseline (m 'name))))
+        (cheader-define-int-const (m 'name) (m 'val))))))
 
 (defn cheader-macro-baseline-load ():void
   (when (!= g-cmacro-baseline-ready 0) (return))
@@ -2965,6 +3292,33 @@
     (cheader-macro-fold)
     (cheader-macro-register)
     (cheader-macro-reset)))
+
+; The header modes never reach the emitter's imports, so they run this file's C
+; imports here, once its own names exist, for the constants an extent may name.
+; The IR the import writes goes to buffers no module assembles.
+(defn cheader-import-constants (forms:ptr):void
+  (ensure-emit-buffers)
+  (let (save-out:raw:String g-out
+        fc:ptr forms)
+    (set! g-out &g-decl-stream)
+    (while (> (node-len fc) 0)
+      (let (f:raw:Node (node-first fc))
+        (when (and (= (node-kind f) NODE-LIST) (>= (node-len f) 2)
+                   (= (node-kind (node-at f 0)) NODE-SYM)
+                   (= (node-kind (node-at f 1)) NODE-STR))
+          (let (h:Symbol ((as raw:Node (node-at f 0)) 's)
+                path:Symbol ((as raw:Node (node-at f 1)) 's)
+                priv:i32 (if (or (= h "unsafe-import-private") (= h "unsafe/import-private")) 1 0))
+            (when (and (import-head? h)
+                       (= (str-ends-with path ".nuc") 0)
+                       (= (str-ends-with path ".nuch") 0))
+              (let (save-priv:i32 g-import-include-private)
+                (set! g-import-include-private priv)
+                (emit-c-include path (f 'line))
+                (set! g-import-include-private save-priv))))))
+      (set! fc (node-rest fc)))
+    (set! g-out save-out)
+    (clear-module-buffers)))
 
 (defn emit-c-include (header-path:Symbol line:i32):void
   ; W3a: reset the linemarker provenance for this header. Until the first
@@ -3545,19 +3899,20 @@
 
 ; The extent text of an `(array T N)` node, for the C declarator's `[...]`.
 ;
-; Tries the SAME constant folder the type parser uses, so a literal (and any
-; constant that is registered by the time the header is emitted) exports as a
-; number. A bare NAME that does not fold is exported VERBATIM rather than
-; refused: this file's own `defconst`s are deliberately not prescanned into the
-; value scope (see emit-cheader-header), and each IS exported as a `#define` by
-; emit-cheader-defconst, so `int32_t names[N];` is correct C and keeps the
-; symbolic size the source wrote. An imported constant does fold, which is the
-; right answer for one this header cannot `#define`. Anything else (a computed
-; length whose constants this pass cannot see) is a located error, never a guess.
+; This file's own `defconst` is written by name, since emit-cheader-defconst
+; `#define`s it. Anything else goes through the type parser's constant folder, so
+; an imported constant — a library's or a C header's, neither of which this header
+; can `#define` — is written as its value. What does not fold is a located error.
 (defn cheader-array-extent (an:ptr encl:i32):StrView
   (let (len:i64 0
         lnn:ptr (node-at an 2)
         lline:i32 (node-line lnn encl))
+    ; This file's own constant keeps its name, which the header `#define`s.
+    (when (= (node-kind lnn) NODE-SYM)
+      (if-some (s (scope-lookup g-globals ((as raw:Node lnn) 's)))
+        (when (and (= (s 'c-const) 0) (= (s 'src-file) g-source-path))
+          (return (cheader-c-ident-view ((as raw:Node lnn) 's))))
+        0))
     (when (!= (const-fold-int (as raw:Node lnn)
                               (as &i64 &len)
                               lline) 0)
@@ -4343,16 +4698,13 @@
   (prescan-protocols forms)
   (prescan-struct-names forms)
   (prescan-defn-signatures forms)
-  ; NOT `prescan-value-names` for this file. Nothing here emits a body, so the
-  ; only thing it would change is `cheader-array-extent`'s constant fold: a local
-  ; `(array i32 BUF-LEN)` would export as `xs[4]` instead of `xs[BUF_LEN]`, losing
-  ; the symbolic size against the `#define BUF_LEN` this same header emits beside
-  ; it. An IMPORTED constant still folds — `prescan-imported-signatures` registers
-  ; those — which is right, since the header cannot `#define` a name it does not
-  ; export.
+  ; So a C constant yields to this file's own value names, as it does when compiled.
+  ; `cheader-array-extent` still writes a local constant by name.
+  (prescan-value-names forms)
   (when (not (symbol-none? g-source-path))
     (set! g-prescan-sigs (import-list-push g-prescan-sigs g-source-path)))
   (prescan-imported-signatures forms)
+  (cheader-import-constants forms)
   ; W9 item 38: ask the questions the prescans deferred to an emitter this mode
   ; never runs. Before any output, so a refused program produces no partial
   ; header — three fixtures used to segfault here with no output at all, and an

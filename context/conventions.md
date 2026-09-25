@@ -568,6 +568,34 @@ lockstep is not at risk because the abstract scope exists only inside the A2 wal
 during real emission no scope binding is `TY-TYVAR`. If you add a new place that
 manufactures or stores types, keep `TY-TYVAR` confined to the checker.
 
+## A type-parser arm that stamps or registers must return early under the dry parse
+
+`defprotocol` signatures are checked at the prescan by the real type parser, with
+`g-dry-parse-ntv` armed (`proto-sig-check`). While it is armed, every arm of
+`parse-type-from-node`/`resolve-type-name` that would stamp a template, register
+a `StructDef` or queue a type line returns `dry-parse-type` once its operands
+are parsed. Those arms are the two `*-stamp-types-in`, `(struct …)`,
+`(union …)`, `BoxedFn` and `dyn`. A new arm of that kind that skips the early
+return still passes every test. What it does instead is register while the
+prescan is checking signatures, so a valid program that spells the new
+constructor in a protocol signature has its IR moved, or gets an instance
+stamped over a placeholder type variable. The IR snapshot catches this only if
+some example uses that spelling.
+
+The dry parse now also runs on `deftype` bodies and source template signatures,
+and `(array T N)` joins the early-return list: it returns before folding the
+length, because macros are not registered at the prescan.
+
+## A `:where` protocol's existence cannot be asked at the prescan
+
+The root file's `prescan-defn-signatures` runs before `prescan-imported-signatures`
+registers imported protocols, and a `.nuch` protocol registers only at emission
+(`emit-nuch-import-forms`). A "does this protocol exist" check placed at the
+prescan refuses a valid program that constrains on a header's protocol
+(`s21-extend-shapes-nuch`). Instead, queue the constraint with
+`where-check-later`, which `drain-where-checks` asks after emission. A call that
+fails earlier asks its own candidates (`refuse-unknown-where`).
+
 ## `gcheck` recognizes type-spelling cells in generic bodies (TC-4a + TC-4b)
 
 A cell whose head names a **registered struct template** — `(Box T)`, `(Vector i32)`,
@@ -1903,10 +1931,13 @@ FROM `parse-type-name` precisely to be asked without dying — rather than
 `g-primitive-type-set`, which answers a different question (the
 one-symbol-one-kind rule) and omits `Char`/`usize`/`ssize`/`raw`. When adding a
 built-in type, `builtin-type-name` is the one list that matters here; adding it
-only to `g-primitive-type-set` leaves generics over it silently broken. **Two
-arms are still missing**: `deftype` aliases and C typedefs (both resolve in
-`parse-type-name`, neither here), so a bare alias name in a template argument is
-the same accept-anything shape — recorded in stage21-cleanup/overview.md.
+only to `g-primitive-type-set` leaves generics over it silently broken. Its
+question is "does the type namespace know this name", not "does it parse": a
+`deftype` alias or C typedef of any arity or representability answers 1 (fixed
+2026-09-23; they were the fifth drift), so `parse-type-name` names the real
+problem instead of a tyvar binding anything. A colon spelling that does not
+resolve (`ref:T`) is collected as its split list, and every walker that mirrors
+the collector must split it too — `colon-spelling-node` is the one splitter.
 
 **An arity overload still needs a `node-type` mirror.** `(ref x)` is a
 binding's address and `(ref p 'f)` is a field's — one emitter, split on
@@ -2308,6 +2339,38 @@ plain function instead; and a `defcast` whose `From` is a struct used to emit th
 conversion call with the aggregate passed first-class, which a 16-byte struct
 survived by register coincidence and a larger one segfaulted on — `coerce-via-cast-rule`
 now goes through `abi-arg-frag`/`abi-emit-struct-call` like every other call.
+
+## A template's text reads in ITS file's environment — but a substituted type argument is the CALLER's
+
+A generic `defn`'s signature, a struct template's fields and a union template's
+arms are read under the defining file's namespace and imports
+(`name-env-enter`, `method-env-enter`; `docs/toplevel.md` "A template is read as
+the file that wrote it"). The trap is the substitution: a type argument arrives as
+its `type-spelling`, the *caller's* registry key (`Pt` for the root's `user/Pt`).
+Parsed in the library's file, bare `Pt` would resolve to the library's own `Pt`,
+silently: same arity, wrong layout. So every spelling substituted into template
+text goes through `spelling-as-key` (`stamp-key-spellings`), which prefixes
+`user/` so `resolve-spelling` answers the key itself. Three exceptions:
+- a **conformance key** (the struct-template hook's spellings,
+  `conformance-lookup`) must stay plain `type-spelling`: it is looked up, not parsed;
+- a stamp's `StructDef`/`UnionDef` **`src-file` stays the caller's**, set before
+  the swap: `cheader-note-type-file` reads it, so the library's path there adds
+  `#include`s to the caller's C header;
+- a `Valid` check runs with the caller's path and mono-context restored, so its
+  refusal lands on the call's line.
+
+Marking is the identity while `g-ns-declared` is 0, which keeps every
+namespace-free program, the compiler included, byte-identical.
+
+**A key carries no permission, so it fails for private types.** `resolve-spelling`
+re-asks visibility against `g-current-ns`, which after the swap is the
+library's namespace. A caller's `defstruct-` spelled as `user/app/Foo` is then
+invisible (still true of template stamping: stage21 overview). Aliases and
+protocols substitute an `#env-arg-N` marker (`env-arg-sym`) instead. It records
+the node and the caller's `NameEnv`, and `resolve-type-name` reads it back
+*there*. Use a marker for any new reader that splices the caller's text into
+another file's. The marker also runs under its own `g-mono-context` and line,
+and restores both.
 
 ## `macros.nuc` is auto-imported — adding macros shifts the string pool
 
@@ -2782,6 +2845,25 @@ failure the same way you cache the text (a null buffer in the same record), or
 the pre-scan and the real import each print the diagnosis. This tightening also
 surfaces a latent class: **a string import not ending in `.nuc`/`.nuch` routes to
 the C-header path**, so `(import "prelude")` had always been a silent no-op.
+
+## A C constant expression has a TYPE — folding it in i64 is not C's answer
+
+`c-cexpr-*` (`src/cheader.nuc`) computes in i64, but C types every operand
+(`int`, `unsigned int`, wider) and the result wraps at that width: `1 << 31` is
+INT_MIN, `~0u` is 4294967295, `((Uint32)-1)` is 4294967295. The plain i64 fold
+got all three wrong. It had registered `PNG_UINT_32_MAX` as -1 and discarded
+every cast. `g-cexpr-rank` is the current value's C type (`c-rank bits uns`,
+so the larger rank IS the usual arithmetic conversion); a macro records its rank
+(`CMacro.rank`). Typing the result alone is not enough — `(0u - 1) / 2` needs
+each operation typed. `int` and `long` are the target's widths (16/32 on AVR).
+Three rules when extending the evaluator: SET the rank at every new leaf,
+capture the left rank before evaluating the right operand and combine through
+`c-arith`/`c-shift` (they normalise with `c-norm`), and
+keep a new operator or leaf out of `c-array-extent` (gate it on
+`g-cmacro-folding`/`g-cenum-folding`), or a struct that was opaque lays out and
+IR moves. Check a change the way it was checked: print every folded name from a
+REPL session and diff against a C program reading the same header
+(progress.md, the 2026-09-24 rough-edges entry).
 
 ## An unreachable code path is not a correct one — two cheader defects that only became reachable in W3c
 
@@ -3955,6 +4037,43 @@ Three things about it that a future session will otherwise re-learn the hard way
   also the better diagnostic. This is §9.2's "resolve once, at the reference,
   then carry the record", and it is not protocol-shaped.
 
+## A conformance is recorded under the key dispatch ASKS, not the spelling written
+
+Dispatch asks `(conformance-lookup (type-spelling t) proto)`, and `type-spelling`
+erases the pointer kind (`ptr:Cents` for `&Cents`, `raw:Cents`, `?&Cents`, …).
+`type-canon-name` only canonicalises a struct *name*, so any other subject it
+passes through verbatim becomes a key nothing ever asks for — the conformance is
+silently never matched, and the failure surfaces far away as `no matching
+method … do not satisfy the required protocol constraint` at the call.
+`emit-extend` and `register-imported-conformance` (`src/generics.nuc`) therefore
+route every subject that is a type spelling (`extend-subject-typed`: a pointer or
+sigil, a colon spelling, an alias or C typedef name, an application over concrete
+types) through `extend-subject-key` = `type-spelling` of the parsed type. Only a
+struct name, a protocol and an application over tyvars take the name/template
+paths. When you add a subject spelling, probe it through a `:where` call, not
+through a bare overload — the bare overload resolves without the conformance
+record and hides a dead key.
+
+## A `:where` constraint's protocol is read through `constraint-proto`, never `(crec 'proto)`
+
+`parse-where-constraints` runs in the signature prescan, before an imported
+file's protocols are registered, so the name often cannot resolve yet. A
+`Constraint` keeps the raw spelling plus the writing file's `ns`/`path`/`imports`,
+and `constraint-settle` retries `protocol-lookup` in that environment on each read
+until it lands. A new reader that takes the field directly gets an unresolved
+spelling (`Show`, `gx/Show`) where a registry key (`geom/Show`) is needed, and
+the constraint silently never matches. Only `Valid` and the blanket bounds may be
+compared raw; they settle as written at parse.
+
+## A template conformance's variables are the SUBJECT's names, not the template's
+
+`TmplConformance.tyvars` begins with the `extend` subject's arguments (`X` in
+`(extend (Wrap X) …)`), which need not be the `defstruct`'s `T`; substitute
+through `(cc 'tyvars)`, never `(StructTemplate 'tyvars)`. Its key is the stamp
+name under `ptr-depth` pointers (`ptr-key`), since `&(Vector T)` is a template
+subject too. Probe a new reader with a renamed subject: same-name probes pass by
+accident, which is how the template's names went unnoticed until 2026-09-24.
+
 ## A memo key computed during a prescan may consult only what a prescan has
 
 Stage 15 B6 (`design/stage15-stress-test/name-resolution.md` §9.5) fixed the
@@ -3981,7 +4100,10 @@ by `prescan-imported-types`' recursion through `apply-leading-ns` → `emit-ns`)
 The one registry probe `dyn-proto-key` keeps is `protocol-lookup-exact` on the
 **current namespace's** key only — phase-stable for a different and narrower
 reason, that a file's own `prescan-protocols` precedes its own
-`prescan-defn-signatures` everywhere. Anything wider is unsound here.
+`prescan-defn-signatures` everywhere. Anything wider is unsound here. To resolve
+a bare name to a *flattened* namespace it consults **`g-proto-decl-keys`**
+instead: a names-only table of imported protocol keys that pass 1 fills
+(`prescan-protocol-keys`) and nothing grows later.
 
 Two structural consequences worth keeping:
 
@@ -5756,6 +5878,20 @@ because a field added with no row still compiles and still leaks that global
 between prompts — `scripts/check-repl-roster.py` (unit `repl-roster`) is the
 other half, and a new field must go in a table or that unit fails.
 
+**The script checks the tables against the struct, not the struct against the
+compiler's globals** — so a new scoped global with no field leaks silently, which
+is how `g-type-alias-depth` did (32 failed alias uses, then every alias a
+"cycle"). Any global that is incremented/decremented around a recursion, or
+saved-set-restored around a region (`(let (saved g-x) (set! g-x 1) … (set! g-x
+saved))`), belongs on the roster. Audited 2026-09-24 by scanning every `defvar`
+for those two shapes: the alias depth, `g-type-key-ok`, `g-array-ok`,
+`g-want-type`, `g-defvar-soft`, `g-emitting-copy`, `g-ct-body-name`/`-arg`,
+`g-decl-out` and the C importer's modes are on it. Deliberately not: the
+fault-boundary depth (`repl-protect` unwinds it with `ct-fault-unwind-to`), what
+`reset-function-state` or `open-module-streams` resets before any read, and a
+flag every reader writes first (`g-layout-defer`, `g-anon-ambig`,
+`g-cheader-unrep`).
+
 ## A `case` arm takes exactly one expression — inserting a second silently reparses
 
 Adding a form to the top of an existing `case` arm in the compiler's own source
@@ -6241,19 +6377,25 @@ macro into scope, because the same edit moves every other body's horizon.
 This is the same rule that keeps `die-at`/`report-at` out of macro bodies
 (`case-clause-hint`, `src/nucleusc.nuc`) — a body is compiled in the user's
 scope, not the compiler's. Stage 20 gave it the one thing it was missing:
-`(macro-error node "literal")`, a special form that lowers to a call the JIT
-module resolves from the compiler binary. A *located* error is available now;
-what is still unavailable is a formatted one (the message must be a literal), so
-a degenerate case with nothing to say still needs a defensible value rather than
-a diagnostic — `(:or)` in `case` is `false`, like `(or)`.
+`(macro-error node message)`, a special form that lowers to a call the JIT
+module resolves from the compiler binary. Since 2026-09-24 the message may be
+any `StrView`/`String`, but a *prelude* macro still has only literals — it
+imports no `fmt` — so a degenerate case with nothing to say still needs a
+defensible value rather than a diagnostic — `(:or)` in `case` is `false`, like `(or)`.
 
 ## Member access on a null node in a macro body kills the COMPILER, before any diagnostic
 
 The section above on `()` applies here with the stakes raised: a macro body runs
 inside the compiler process, at expansion time, so `(x 'kind)` on a null
-`(raw Node)` is not a crash in the program being compiled — it is exit 139 from
-`nucleusc` itself, with no diagnostic, whatever `macro-error` the next line was
-about to raise. And `lib/macros.nuc` cannot reach `node-kind`: the prelude
+`(raw Node)` is not a crash in the program being compiled — it is a crash of
+`nucleusc` itself, whatever `macro-error` the next line was about to raise.
+Since 2026-09-23 a fault boundary (`src/ct-fault.nuc`, armed around each JIT
+call) turns that into `macro 'm': crashed while expanding` at the call's line and
+exit 1, rather than exit 139 with nothing — but it says only *that* the body
+crashed, never what the user wrote wrong, so the guard below is still the
+discipline. The boundary covers the JIT call only; a null ELEMENT the body puts
+into its expansion is refused afterwards by `stamp-macro-lines`, which walks
+exactly the macro-built cells. And `lib/macros.nuc` cannot reach `node-kind`: the prelude
 registers the `Node` type and imports no node runtime, so a body has member
 access, the `ast-*` special forms, and nothing else.
 
@@ -6273,13 +6415,14 @@ own guard, and the order is load-bearing:
   (macro-error … ))
 ```
 
-Reorder it and `(macmap (x) (1 2))` segfaults. The arity test is `ast-len`
+Reorder it and `(macmap (x) (1 2))` crashes. The arity test is `ast-len`
 rather than a chain of null checks precisely because an array has a length to
 ask for — which is the ergonomic O3 bought. Write the comment — the
-ordering reads as arbitrary and a later edit will otherwise "tidy" it. Second
-trap in the same breath: `macro-error` on a node with no line reports at line 0,
-which `w4a-no-line-zero` exists to catch, so blame a node the user actually
-wrote (`macmap` blames the *rows* when the spec is the empty `()`).
+ordering reads as arbitrary and a later edit will otherwise "tidy" it. `dotimes`,
+`doseq` and `doseq-iter` carry the same chain for their binding list. A node
+with no line (a symbol, null) makes `macro-error` blame the line of the call
+being expanded (`ct-fault-call-line`); before 2026-09-23 it reported line 0,
+so a boot older than that prints `:0:` for those guards.
 
 ## A form whose SHAPE depends on its operand's type cannot be a macro
 
@@ -6350,18 +6493,12 @@ form, `(ref s 'field)` — there is no
 `x:?(Vector i32)`, `):!(Vector i32)` (PK-2's open-segment fuse).
 
 `scripts/stage21/sugar-sweep.py` (Stage 21 PK-5a) rewrites a tree to these
-spellings and is idempotent; rerun it after adding code in the old ones. Three
-shapes it refuses on purpose, and which stay in the list form: **a sigil over
-a type variable** (`(Maybe E)`) — the compiler has read `?E` as `(Maybe E)`
-everywhere since PK-4b, but the 14 sites are in `lib/` files the **boot**
-compiler builds into `nucleusc` (`coll`, `iterator`, `vector`, `hashmap`,
-`hashset`), and the boot predates PK-4b, so the refusal is lifted at the next
-boot refresh, not before; **`(Maybe (raw T))`** (a value-Maybe; `?raw:T` is the
-niche pointer); and **an `extend` subject** (`(extend ptr:Cents Ord)` — `extend`
-reads a cell subject as a template application, so `&Cents` is refused there).
-The paren operand in an exported signature (`(Result (Vector D) Err)`) was a
-fourth until PK-4b taught the `--emit-cheader` classifiers the `(? X)`/`(! X)`
-cell; `):!(Vector D)` now classifies as `(Result (Vector D) Err)` does.
+spellings and is idempotent; rerun it after adding code in the old ones. The type
+it refuses by design, and which stays in the list form, is **`(Maybe (raw T))`**
+(a value-Maybe; `?raw:T` is the niche pointer). A sigil over a type variable and
+an `extend` subject are swept since 2026-09-23: the boot reads `?E` as
+`(Maybe E)`, and `(extend &Cents Ord)` conforms the pointer type as
+`ptr:Cents` does.
 
 Since Stage 17, a struct **value** in a binding also reaches a `&T` parameter
 with no `&` at all (lvalue-only implicit address-of, borrow-conventions.md
@@ -7091,3 +7228,18 @@ value — applies the by-value discharge), `taint-join-frame`/`taint-acc-join` (
 phi or payload join: frame only if every tainted contributor is). And every form
 that hands out the address of a fresh stack slot calls `val-taint-frame`; the
 four producers are listed in design/stage21-cleanup/frame-storage-escape.md §2.
+
+## A message spells a type with `type-display`; a key with `type-spelling`
+
+`type-spelling` is the conformance/dispatch key and the substitution text, so
+it erases the pointer kind and writes every pointer as `ptr:T` — which since
+Phase F reads as *non-null*, so `as: raw pointer ptr:Rec where non-null ptr:Rec
+is required` named one type twice. `type-display` (`src/abi.nuc`) is the one
+user-facing renderer: `&T`, `(raw T)`, `?&T`, `!&T`, bare `ptr`, nesting as
+written, and the FP-3 function signature. Never change `type-spelling` or
+`type-mangle-token` for a message — both feed IR names and registry lookups.
+Where a message only has a stored KEY (a conformance's `type-name`, a retained
+argument), `key-display`/`conf-arg-display` (`src/generics.nuc`) re-read it
+first. A stamped template instance still prints its registry name
+(`&Vector.i32`): a `StructDef` does not record its template and arguments.
+

@@ -441,7 +441,9 @@ and lowers to `i32`; an attribute run between the body and the declarator —
 `typedef enum { … } __attribute__((flag_enum)) GApplicationFlags;`, which GLib
 writes for every flags enum under clang — is consumed like a struct's trailing
 `__attribute__((packed))`, so the declarator that follows it is the name
-recorded. A `typedef` of a struct or union keeps going through the
+recorded. The enumerators themselves (`A`, `B`) become integer constants, as a
+folded `#define` does — see [Integer constants from a C
+header](compiler.md#integer-constants-from-a-c-header). A `typedef` of a struct or union keeps going through the
 struct registry, so it can be used as `ptr:Name` and — when its layout is known —
 by value.
 
@@ -883,11 +885,11 @@ wherever a typed value is wanted — `return` (and the implicit-return tail) of 
 function declared to return a `defunion` (or template instance), a typed
 `let`/`with` binding init, a `set!`/`.set!` value — a bare `(arm args...)`
 resolves against that type, and the want carries into the value tails of
-`if`/`cond`/`do`/`let`/`with`/`match`. A **call or `make` argument** is
-narrower, because its type can pick the overload: only the built-in `(some v)`,
+`if`/`cond`/`do`/`let`/`with`/`match`. A **call, `make` or struct-literal
+argument** is narrower, because its type can pick the overload: only the built-in `(some v)`,
 `none`, `(ok v)`, `(err e)` and `(err! e)` are target-typed there, and only as
 the argument itself (not through an `if`). The type comes from the `make`
-field, the parameter of a function with one definition, or the type every
+or struct-literal field, the parameter of a function with one definition, or the type every
 same-arity overload declares at that position — when overloads disagree the
 constructor stays untyped. An argument `(err e)` builds the error value, as
 `err!` does. The `name:(Type ...)` colon-paren sugar works for parenthesized
@@ -898,7 +900,8 @@ in binding positions, equivalent to the list form `(name (Result i64 i32))`.
 importers re-register the type — under the header's own namespace, so a union
 declared in `(ns shapes)` is imported as `shapes/Opt` and its arm constructors
 link against `@shapes__Opt-Some`, exactly as compiling that library's `.nuc`
-source would give you — and stamp their own instances. `--emit-cheader`
+source would give you — and stamp their own instances, reading a template's arms
+in the library's own namespace and imports. `--emit-cheader`
 exports monomorphic defunions as the tagged struct + tag enum; functions whose
 signatures mention template instances are skipped with a comment (no C
 spelling for instances yet).
@@ -1057,10 +1060,14 @@ colon-paren fuse closed that gap.)
 
 ### Methods over a template
 
-A `defn` whose parameter or return type mentions a registered struct template
-applied to free symbols infers those symbols as the method's type variables —
-bound by the parametric receiver, not by `:where`. The body is monomorphized
-once per distinct concrete receiver type, reusing the rung-4 monomorphizer.
+A `defn` whose parameter or return type mentions a registered struct or
+`defunion` template applied to free symbols infers those symbols as the method's
+type variables — bound by the parametric receiver, not by `:where`. The body is
+monomorphized once per distinct concrete receiver type, reusing the rung-4
+monomorphizer. A free symbol may sit under a pointer wrapper or a sigil inside
+the argument — `(Vector &T)`, `(Vector ref:T)`, `(Vector ?&T)`,
+`(Vector (Either T))` — and binds to what is under it; a `deftype` alias or C
+typedef name is a type, never a free symbol ([Generics](generics.md#bounded-generic-defn)).
 
 ```lisp
 (defn count (self:(ref (Vector T))):usize
@@ -1111,7 +1118,11 @@ values work with no special handling.
 importers re-register the template and re-stamp instances on demand. Concrete
 instances are not serialized into the header (same precedent as union templates;
 re-stamping reproduces an identical layout). Methods export through the existing
-rung-4 generic `defmethod` / monomorphization machinery.
+rung-4 generic `defmethod` / monomorphization machinery. An importer stamps the
+fields as the template's own file wrote them, so a namespaced library's
+`(defstruct (Box T) v:T at:&Pt)` means its own `Pt` from any importer, while
+`T` stays the importer's type (see
+[A template is read as the file that wrote it](toplevel.md#a-template-is-read-as-the-file-that-wrote-it)).
 
 C-legible names: `--emit-cheader` maps dots (and any non-`[A-Za-z0-9_]`
 character) to `_` via `sanitize-for-c` (`src/cheader.nuc`), so `Vector.i32`

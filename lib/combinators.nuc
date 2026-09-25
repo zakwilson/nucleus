@@ -137,7 +137,7 @@
 ; pred : (UnaryFn S bool). Returns (Maybe S) (S must be a matchable scalar).
 (defn find (pred:&P it:&I
                         :where ((Iterator S) I)
-                               ((UnaryFn S bool) P)) (Maybe S)
+                               ((UnaryFn S bool) P)):?S
   (let (done:i32 0)
     (while (= done 0)
       (match (next it)

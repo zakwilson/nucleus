@@ -181,7 +181,7 @@ cases they can't, and the error hints get retargeted in TC-4.
   resolution; explicitly out of scope for this stage. **Update (2026-09-23,
   Stage 21):** a narrow exception needs no resolution. The built-in `some`/
   `none`/`ok`/`err`/`err!`, as the argument itself, construct against a type
-  known up front: a `make` field, a single-definition callee's parameter, or
+  known up front: a `make` or struct-literal field, a single-definition callee's parameter, or
   the type every same-arity overload declares there (`arg-target-rewrite`,
   `generic-arg-target`). The type can only turn a refusal into a construction,
   so it never picks the method; general want in arguments stays out.

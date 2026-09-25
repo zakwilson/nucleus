@@ -29,7 +29,7 @@
 ; advances the iterator and returns the next element, or none when exhausted.
 ; ---------------------------------------------------------------------------
 (defprotocol (Iterator E)
-  (next (self:&Self) (Maybe E)))
+  (next (self:&Self):?E))
 
 ; ---------------------------------------------------------------------------
 ; 2. IntRangeIter — iterates i32 values in [start, end).
@@ -89,8 +89,8 @@
 
 (defn next (self:&(MapIter I F)
                         :where ((Iterator S) I)
-                               ((UnaryFn S E) F)) (Maybe E)
-  (let ((res (Maybe S)) (next (ref self 'source)))
+                               ((UnaryFn S E) F)):?E
+  (let (res:?S (next (ref self 'source)))
     (match res
       ((some v) (return (some (apply (ref self 'f) v))))
       (none (return none)))))
@@ -109,10 +109,10 @@
 
 (defn next (self:&(FilterIter I F)
                         :where ((Iterator S) I)
-                               ((UnaryFn S i32) F)) (Maybe S)
+                               ((UnaryFn S i32) F)):?S
   (let (done:i32 0)
     (while (= done 0)
-      (let ((item (Maybe S)) (next (ref self 'source)))
+      (let (item:?S (next (ref self 'source)))
         (match item
           ((some v)
            (when (!= (apply (ref self 'pred) v) 0)
@@ -133,7 +133,7 @@
   (let (acc:Acc init)
     (let (done:i32 0)
       (while (= done 0)
-        (let ((item (Maybe S)) (next it))
+        (let (item:?S (next it))
           (match item
             ((some v) (set! acc (fold g acc v)))
             (none (set! done 1))))))

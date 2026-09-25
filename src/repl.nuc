@@ -23,7 +23,8 @@
 ; Run `(body ctx)`: 0 if it returned normally, 1 if `repl-throw` unwound out.
 (defn repl-protect (body:(fn void)(ptr) ctx:ptr):i32
   ; `d` is read after the jump, and a longjmp does not restore registers.
-  (let (:volatile d:i32 g-repl-depth)
+  (let (:volatile d:i32 g-repl-depth
+        :volatile fd:i32 g-fault-depth)
     (when (>= d REPL-MAX-PROTECT)
       (emit stderr "nucleus: repl-protect nested deeper than " REPL-MAX-PROTECT "\n")
       (exit 1))
@@ -37,6 +38,8 @@
             (set! g-repl-depth d)
             (return 0))
         (do (set! g-repl-depth d)
+            ; A `macro-error` jumps out of an armed JIT call.
+            (ct-fault-unwind-to fd)
             (return 1))))))
 
 ; Unwind to the innermost `repl-protect`. Never returns.
@@ -126,12 +129,11 @@
 ; restored here against the registries as they now are.
 ; ---------------------------------------------------------------------------
 
-; The type printer `type-of` and `dir` need. `type-spelling` is the general
-; answer for every kind but TY-FN, which it spells as the interned `__fnty_N`
-; conformance key — correct there, useless to a reader.
+; The type printer `type-of` and `dir` need: `type-display`, but a function type
+; prints as the `(fn ret p0:T …)` a prompt user would write.
 (defn repl-type-to-nuc (t:(raw Type)):StrView
   (when (= t null) (return "?"))
-  (when (!= (t 'kind) TY-FN) (return (symbol-as-view (type-spelling t))))
+  (when (!= (t 'kind) TY-FN) (return (type-display t)))
   (let ((out String) (string-new-alloc (strfmt-alloc))
         np:i32 (t 'num-params))
     (str-into &out "(fn " (repl-type-to-nuc (t 'ret)))
@@ -742,6 +744,7 @@
             ; registering it is the whole job (container-type-sugar.md §3.2).
             (and (not (symbol-none? h)) (or (= h "deftype") (= h "deftype-")))
               (do (register-type-alias (as ptr f) (if (= h "deftype-") 1 0))
+                  (alias-body-check (as raw:Node f))
                   (emit stderr "  defined\n"))
             (and (not (symbol-none? h)) (= h "defstruct"))
               (do (open-module-streams)
@@ -815,6 +818,7 @@
                     (do (open-module-streams)
                         (let (one-form:ptr (node-list1 form (f 'line)))
                           (prescan-defn-signatures one-form))
+                        (drain-where-checks)
                         (set! g-out g-def-stream)
                         (emit-defn (as ptr f))
                         (drain-pending-union-irs)
@@ -1734,7 +1738,25 @@
   out:ptr
   def-stream:ptr
   def-stream-program:ptr
+  decl-out:ptr
   ct-emitting:i32
+  ; --- scoped modes and depths: a die inside one would leave it armed ---
+  dry-parse-tyvars:ptr
+  dry-parse-ntv:i32
+  type-alias-depth:i32
+  type-key-ok:i32
+  array-ok:i32
+  want-type:ptr
+  defvar-soft:i32
+  emitting-copy:i32
+  ct-body-name:Symbol
+  ct-body-arg:i32
+  cheader-unrep-quiet:i32
+  cheader-typedef-provisional:i32
+  cmacro-folding:i32
+  cenum-folding:i32
+  bind-call:BindCall
+  where-checked:i32
   ; --- registry watermarks ---
   globals-len:i32
   n-structs:i32
@@ -1758,7 +1780,8 @@
   n-dyns:i32
   n-mono:i32
   n-init:i32
-  n-dyn-annots:i32)
+  n-dyn-annots:i32
+  n-where-checks:i32)
 
 ; Truncating `g-generics` recovers only the generics a died import CREATED; a
 ; method appended to a pre-existing one needs this per-entry watermark instead.
@@ -1814,7 +1837,24 @@
                  (out g-out)
                  (def-stream g-def-stream)
                  (def-stream-program g-def-stream-program)
-                 (ct-emitting g-ct-emitting))))
+                 (decl-out g-decl-out)
+                 (ct-emitting g-ct-emitting)
+                 (dry-parse-tyvars g-dry-parse-tyvars)
+                 (dry-parse-ntv g-dry-parse-ntv)
+                 (type-alias-depth g-type-alias-depth)
+                 (type-key-ok g-type-key-ok)
+                 (array-ok g-array-ok)
+                 (want-type g-want-type)
+                 (defvar-soft g-defvar-soft)
+                 (emitting-copy g-emitting-copy)
+                 (ct-body-name g-ct-body-name)
+                 (ct-body-arg g-ct-body-arg)
+                 (cheader-unrep-quiet g-cheader-unrep-quiet)
+                 (cheader-typedef-provisional g-cheader-typedef-provisional)
+                 (cmacro-folding g-cmacro-folding)
+                 (cenum-folding g-cenum-folding)
+                 (bind-call g-bind-call)
+                 (where-checked g-where-checked))))
            (over-repl-registries (spec)
              `(macmap ~spec
                 ((n-structs g-structs)
@@ -1841,7 +1881,8 @@
                  (n-dyns g-dyn-table)
                  (n-mono g-mono-worklist)
                  (n-init g-init-worklist)
-                 (n-dyn-annots g-dyn-annots)))))
+                 (n-dyn-annots g-dyn-annots)
+                 (n-where-checks g-where-checks)))))
 
   (defn repl-snapshot (st:&ReplState):void
     (over-repl-globals ((f g) `(set! (st '~f) ~g)))

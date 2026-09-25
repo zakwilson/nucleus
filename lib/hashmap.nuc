@@ -284,7 +284,7 @@
 ; Assoc K V — get: lookup by key, returns (Maybe V).
 ; V is a protocol parameter of Assoc so (Maybe V) is expressible directly.
 ; ---------------------------------------------------------------------------
-(defn get (self:&(HashMap K V) key:K) (Maybe V)
+(defn get (self:&(HashMap K V) key:K):?V
   (let (mask:usize (- (self 'cap) 1)
         kbuf:&K (as &K (as ptr (self 'keys)))
         vbuf:&V (as &V (as ptr (self 'vals)))
@@ -369,7 +369,7 @@
 
 (extend (HashMapKeyIter K V) (Iterator K))
 
-(defn next (self:&(HashMapKeyIter K V)) (Maybe K)
+(defn next (self:&(HashMapKeyIter K V)):?K
   (let (kbuf:&K (as &K (self 'kbuf))
         sbuf:&ui8 (as &ui8 (self 'sbuf)))
     (while (< (self 'pos) (self 'cap))
@@ -411,7 +411,7 @@
 
 (extend (HashMapValIter K V) (Iterator V))
 
-(defn next (self:&(HashMapValIter K V)) (Maybe V)
+(defn next (self:&(HashMapValIter K V)):?V
   (let (vbuf:&V (as &V (self 'vbuf))
         sbuf:&ui8 (as &ui8 (self 'sbuf)))
     (while (< (self 'pos) (self 'cap))

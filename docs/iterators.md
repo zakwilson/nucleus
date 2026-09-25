@@ -38,7 +38,7 @@ Both conform to `(Iterator i32)` / `(Iterator i64)` respectively.
     (printf "%d\n" x)))   ; prints 1 2 3 4 5
 ```
 
-**`doseq` vs `doseq-iter`.** Use `(doseq (var coll IterType) body...)` when the thing you are iterating is a **collection** conforming to `(Coll E It)` — `doseq` calls `(iter coll)` to get a fresh iterator by value. Use `(doseq-iter (var iter-ref) body...)` when you already hold a **bare iterator reference** — a `(ref IterType)` for a type that conforms to `(Iterator E)` but is not itself a `Coll` (e.g. `IntRangeIter`, `MapIter`, `FilterIter`, `HashMapKeyIter`). `doseq-iter` calls `(next iter-ref)` directly without going through `iter`. See [Macros](macros.md) for full signatures and the rationale for the explicit `IterType` argument.
+**`doseq` vs `doseq-iter`.** Use `(doseq (var coll IterType) body...)` when the thing you are iterating is a **collection** conforming to `(Coll E It)` — `doseq` calls `(iter coll)` to get a fresh iterator by value. Use `(doseq-iter (var iter-ref) body...)` when you already hold a **bare iterator reference** — a `(ref IterType)` for a type that conforms to `(Iterator E)` but is not itself a `Coll` (e.g. `IntRangeIter`, `MapIter`, `FilterIter`, `HashMapKeyIter`). `doseq-iter` calls `(next iter-ref)` directly without going through `iter`. Mixing the two up is refused at the call: `(doseq (x it) …)` is `doseq: the first argument must be (var coll IterType)`, with a note naming `doseq-iter`. See [Macros](macros.md) for full signatures and the rationale for the explicit `IterType` argument.
 
 ## More concrete iterators (Stage 13 R1)
 

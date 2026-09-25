@@ -1,2 +1,4 @@
 ; .nuch header for lib/nsgfacade.nuc
 (ns gfacade)
+(import-prefixed nsgeom geom)
+(export geom/area geom/perimeter)

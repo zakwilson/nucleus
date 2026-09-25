@@ -1,0 +1,92 @@
+; A SIGSEGV/SIGBUS handler armed only while JIT'd compile-time code runs, which
+; turns its crash into a located error (docs/macros.md, "When a macro body crashes").
+
+(import-use "signal.h")
+
+(defconst CT-FAULT-MAX 16)
+(defconst CT-FAULT-ALTSTACK 65536)
+
+; Frame `i`'s diagnostic is bytes [lo[i], hi[i]) of one buffer, rendered at arm
+; time because the handler may not allocate; an unwind is a truncation.
+(defvar g-fault-depth:i32 0)
+(defvar g-fault-text:String)
+(defvar g-fault-msg:String)
+(defvar g-fault-data:(raw ui8) null)
+(defvar g-fault-lo:(array usize CT-FAULT-MAX))
+(defvar g-fault-hi:(array usize CT-FAULT-MAX))
+(defvar g-fault-line:(array i32 CT-FAULT-MAX))
+(defvar g-fault-altstack:ptr null)
+(defvar g-fault-old-segv:sigaction)
+(defvar g-fault-old-bus:sigaction)
+
+; Async-signal-safe: global reads, write(2), sigaction(2), _exit(2) only.
+(defn ct-fault-handler (sig:i32):void
+  (let (d:i32 g-fault-depth)
+    (when (= d 0)
+      ; Not ours: put the previous action back and let the fault re-raise into it.
+      (sigaction SIGSEGV &g-fault-old-segv null)
+      (sigaction SIGBUS &g-fault-old-bus null)
+      (return))
+    (let (lo:usize (aref g-fault-lo (- d 1)))
+      (write 2 (unsafe/ptr+ g-fault-data (as i64 lo)) (- (aref g-fault-hi (- d 1)) lo))))
+  (_exit 1))
+
+; On an alternate stack, so a macro that recursed off the end of the main one is
+; reported too; SA_RESETHAND so a fault inside the handler is the default death.
+(defn ct-fault-install ():void
+  (when (= g-fault-altstack null)
+    (set! g-fault-altstack (malloc CT-FAULT-ALTSTACK))
+    (let (ss:&stack_t (alloca stack_t))
+      (memset (as ptr ss) 0 (sizeof stack_t))
+      (set! (ss 'ss_sp) g-fault-altstack)
+      (set! (ss 'ss_size) CT-FAULT-ALTSTACK)
+      (sigaltstack ss null)))
+  (let (sa:&sigaction (alloca sigaction))
+    (memset (as ptr sa) 0 (sizeof sigaction))
+    (sigemptyset (ref sa 'sa_mask))
+    (set! ((ref sa '__sigaction_handler) 'sa_handler) ct-fault-handler)
+    (set! (sa 'sa_flags) (bit-or SA_ONSTACK SA_RESETHAND))
+    (sigaction SIGSEGV sa &g-fault-old-segv)
+    (sigaction SIGBUS sa &g-fault-old-bus)))
+
+(defn ct-fault-uninstall ():void
+  (sigaction SIGSEGV &g-fault-old-segv null)
+  (sigaction SIGBUS &g-fault-old-bus null))
+
+; Arm for one call at `line`, reporting `head name tail` if it faults. Only the
+; outermost arm touches the signal actions; a nested one only pushes a message.
+(defn ct-fault-arm (line:i32 head:StrView name:StrView tail:StrView):void
+  (let (d:i32 g-fault-depth)
+    (when (>= d CT-FAULT-MAX)
+      (die-at line (fstr "compile-time code nested " CT-FAULT-MAX
+                         " calls deep -- a macro body expanding macros without end?")))
+    (string-clear &g-fault-msg)
+    (str-into &g-fault-msg head name tail)
+    (when (not (str-empty? &g-mono-context))
+      (str-into &g-fault-msg "\n  note: " g-mono-context))
+    (let (lo:usize (byte-len &g-fault-text))
+      (diag-render &g-fault-text "error" g-source-path line (string-as-view &g-fault-msg))
+      ; After the render: it may have moved the buffer under every frame.
+      (set! g-fault-data ((string-as-view &g-fault-text) 'data))
+      (set! (aref g-fault-lo d) lo)
+      (set! (aref g-fault-hi d) (byte-len &g-fault-text))
+      (set! (aref g-fault-line d) line))
+    (when (= d 0) (ct-fault-install))
+    (set! g-fault-depth (+ d 1))))
+
+; Pop frames down to depth `d`: the matching disarm, and also what a `die-at`
+; exit and a REPL longjmp do for the frames they abandon.
+(defn ct-fault-unwind-to (d:i32):void
+  (when (or (< d 0) (>= d g-fault-depth)) (return))
+  (when (= d 0) (ct-fault-uninstall))
+  (set! g-fault-depth d)
+  (string-truncate-unchecked &g-fault-text (aref g-fault-lo d)))
+
+(defn ct-fault-disarm ():void
+  (ct-fault-unwind-to (- g-fault-depth 1)))
+
+; The line of the call being run, for a `macro-error` whose node has none (a
+; symbol, or null); 0 outside any.
+(defn ct-fault-call-line ():i32
+  (when (= g-fault-depth 0) (return 0))
+  (return (aref g-fault-line (- g-fault-depth 1))))

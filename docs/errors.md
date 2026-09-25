@@ -1,9 +1,20 @@
 # Error Handling (Stage 10)
 
 Recoverable errors are ordinary return values (`design/stage10/errors.md`). A
-fallible function returns `(Result T Err)`, written with the sugar `!T`. The
-caller must `match`, `try`, or `unwrap` before using the value. The
-unrecoverable tier is unchanged: `die`/`die-at` still abort.
+fallible function returns a `(Result T E)` — `ok` with a `T`, or `err` with an
+`E` — and the caller must `match`, `try`, or `unwrap` before using the value.
+`E` comes in two tiers:
+
+- **the code tier**: the builtin `Err`, a C-legible `i32` named by `deferror`.
+  `(Result T Err)` is common enough to have the sugar `!T`, and only it gets
+  the handler chain ([below](#handler-aware-err-and-with-handler-e3)).
+- **the payload tier**: any type of your own, when a failure must carry data —
+  a line, a formatted message. It is built and eliminated exactly like `!T`
+  (bare `ok`/`err`/`err!` target-type against the declared return, no `make`),
+  and one `defcast E Err` lets `try` carry it into a plain `!T` caller. See
+  [`Err` is the code; `(Result T E)` is the payload](#err-is-the-code-result-t-e-is-the-payload).
+
+The unrecoverable tier is unchanged: `die`/`die-at` still abort.
 
 ## `Err`, `deferror`, and `!T`
 
@@ -72,11 +83,12 @@ bound handlers; with a custom `E` there is no handler chain to bypass (only
 the builtin `Err` gets one — [Handler-aware `err` and
 `with-handler`](#handler-aware-err-and-with-handler-e3) below), so `err` and
 `err!` behave alike there. Away from `return`, the same bare forms construct
-against a typed binding, a `set!` target, a `make` field or a call argument
+against a typed binding, a `set!` target, a `make` or struct-literal field or a
+call argument
 (target typing — see [Templates](structs-unions.md#templates-defunion-result-t-e-)).
 Handler negotiation yields a value of the function's return type, so only a
 binding or `set!` of exactly that type negotiates as a return would; any other
-slot, and every call or `make` argument, builds the error value as `err!` does.
+slot, and every call, `make` or struct-literal argument, builds the error value as `err!` does.
 With no type to construct against, write `(make (Result T E) ok v)`; stored
 Results are plain data with no handler machinery either way.
 

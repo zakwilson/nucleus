@@ -405,7 +405,9 @@
   ; deliberate split: a type name is bare-keyed and globally identified
   ; (Stage 12 decision 9), so file-scoping it is a separate, larger question.
   priv:i32
-  src-ns:Symbol)
+  src-ns:Symbol
+  ; Declared by a C header, so its tag does not displace a same-named C constant.
+  from-c:i32)
 
 ; One arm of a defunion (Stage 14 §14.4). Replaces UnionDef's five parallel
 ; arm arrays (arm-names/arm-ptypes/arm-fnames/arm-ftypes/arm-nfields, formerly
@@ -462,7 +464,8 @@
   ; definition it collides with. Zero/null when the record was minted by
   ; something other than a source definer, which `die-redefinition` handles.
   src-file:Symbol
-  src-line:i32)
+  src-line:i32
+  src-imports:raw:ImportVec) ; the arms are this file's text — see NameEnv
 
 ; A parameterized defstruct template: `(defstruct (Vector T) ...)`. Defines no
 ; type itself; a fully-applied use `(Vector i32)` in type position stamps a
@@ -476,7 +479,8 @@
   priv:i32          ; Stage 15 B5 — see StructDef.priv
   src-ns:Symbol
   src-file:Symbol     ; Stage 15 B4 — see UnionTemplate.src-file
-  src-line:i32)
+  src-line:i32
+  src-imports:raw:ImportVec) ; see UnionTemplate.src-imports
 
 ; Stage 16: `(deftype Name Type)` — a second spelling for one type, not a new
 ; one (container-type-sugar.md §3.2). `body` is the retained type expression,
@@ -493,7 +497,8 @@
   priv:i32          ; Stage 15 B5 — see StructDef.priv
   src-ns:Symbol
   src-file:Symbol     ; Stage 15 B4 — see UnionTemplate.src-file
-  src-line:i32)
+  src-line:i32
+  src-imports:raw:ImportVec) ; the body is this file's text — see NameEnv
 
 ; A defenum's member table, recorded so `match` can check exhaustiveness over
 ; enum constants (the §4 freebie). Member i's value is i.
@@ -642,6 +647,9 @@
   ; process. Set only in `scope-define`, read only by `reject-ct-only`.
   ; design/stage16-ergonomics/compile-time-imports.md §4a.
   ct-only:i32
+  ; A C header's integer constant, which any Nucleus definition of the name
+  ; displaces (`cheader-define-int-const`, `cconst-yield`).
+  c-const:i32
   ; Appended at the END deliberately: inserting a field mid-struct shifts the
   ; GEP index of every field after it in every function that touches one, which
   ; would bury this change's real bootstrap diff under hundreds of unrelated
@@ -888,10 +896,15 @@
 ; count; null/0 for a plain `(Proto V)` constraint (a ragged sub-array, like
 ; Arm.fnames/ftypes).
 (defstruct Constraint
-  proto:Symbol      ; protocol name
+  proto:Symbol      ; protocol name: canonical once `settled`, else as written
   var:Symbol        ; conforming type-variable name
   args:ptr          ; ptr array of Node* (proto-application Args), or null
-  nargs:i32)        ; count of Arg nodes (0 for a plain constraint)
+  nargs:i32         ; count of Arg nodes (0 for a plain constraint)
+  settled:bool
+  ; The writing file's name environment, to resolve an unsettled `proto` in.
+  ns:Symbol
+  path:Symbol
+  imports:raw:ImportVec)
 
 ; The pointer kind is left OUTSIDE this alias because a constraint clause is
 ; genuinely held both ways — `raw:` on a struct field (null for no :where),
@@ -998,7 +1011,8 @@
   priv:i32
   src-ns:Symbol
   src-file:Symbol     ; Stage 15 B4 — see UnionTemplate.src-file
-  src-line:i32)
+  src-line:i32
+  src-imports:raw:ImportVec) ; the signatures are this file's text — see NameEnv
 
 ; A recorded (Type, Protocol) conformance fact. No code; consulted by the
 ; resolver (protocol-bound tier, later) and exported in .nuch.
@@ -1045,7 +1059,8 @@
   ; Stage 14 §14.4: the parsed :where clause as a (Vector (ref Constraint)),
   ; mirroring Method; null for a :where-free extend (num-constraints = 0).
   constraints:raw:ConstraintVec
-  num-constraints:i32)  ; 0 for a :where-free extend
+  num-constraints:i32   ; 0 for a :where-free extend
+  ptr-depth:i32)        ; pointers over the template in the subject (`&(Vector T)`)
 
 ; A queued generic instantiation: the stamped concrete defn form awaiting body
 ; emission, plus a human-readable context ("while instantiating @name.toks…
@@ -1231,6 +1246,38 @@
 ; saved copies of it are `raw:` (null before the first import), the locals that
 ; index the table are `ref:`.
 (deftype ImportVec (Vector &ImportBind))
+
+; A file's name environment — the three globals `resolve-spelling` reads — held
+; so a definition's own text is re-read the way its file read it.
+(defstruct NameEnv
+  ns:Symbol
+  path:Symbol
+  imports:raw:ImportVec)
+
+; A spelling substituted into another file's text (an alias argument, a protocol's
+; `Self`) as the marker `#env-arg-N`, which the parser reads back in `env` (`env-arg-type`).
+(defstruct EnvArg
+  (node (raw Node))
+  env:NameEnv
+  line:i32
+  ctx:StrView)
+
+; The dry type parse's state, saved by `dry-parse-enter`.
+(defstruct DryParse
+  tyvars:ptr
+  ntv:i32)
+
+; A `:where` whose protocol must exist, asked once every file's are registered.
+(defstruct WhereCheck
+  (crec &Constraint)
+  line:i32
+  who:StrView)
+
+; The call whose candidate templates are being bound; `name` is none outside one.
+(defstruct BindCall
+  name:Symbol
+  path:Symbol
+  line:i32)
 
 ; The namespace one source file declared. Stage 17 C7-4a gave this its own
 ; record: it was a `Node` cell abusing `s` for the path and `car` — a

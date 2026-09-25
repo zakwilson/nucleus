@@ -38,8 +38,9 @@ Every compiler error is printed as
 <path>:<line>: error: <message>
 ```
 
-on stderr, optionally followed by an indented `  note:` line (used to point a
-monomorphization failure back at the instantiation that requested it).
+on stderr, optionally followed by indented `  note:` lines (used, among other
+things, to point a failure in a template's text back at the call being bound or
+the instantiation that requested it).
 
 **Every diagnostic names a real line.** This is a guarantee, not a
 best-effort: the test suite compiles every fixture and fails if any diagnostic
@@ -83,9 +84,12 @@ diagnostic is exactly one line**, which is what lets a reader skip a line that
 is not a diagnostic. A tool the compiler shells out to (the `clang -E` that
 reads a C header import) still writes its own text to the same stream.
 
-The two forms come from one record, split into fields at one point, so they
-cannot drift: the text form is the fields rejoined, byte for byte what the
-compiler printed before the record existed.
+The two forms come from one renderer (`diag-render`, `src/diagnostics.nuc`),
+which splits the notes out at one point, so they cannot drift: the text form is
+the fields rejoined, byte for byte what the compiler printed before the sexp form
+existed. The same renderer writes a crash in a macro body or `compile-time`
+block ([Macros](macros.md#when-a-macro-body-crashes)), so that diagnostic takes
+whichever form was asked for too.
 
 Reading it back is `lib/test.nuc`'s `read-diagnostics` — see
 [Testing](testing.md#compiler-diagnostics). That is what makes an assertion
@@ -344,7 +348,7 @@ Imported libraries work, in every spelling a source file may use: `(import-use m
 
 Every library in `lib/` imports at the prompt, including `node`, and a library the compiler itself links is no exception: the session compiles and uses **its own** copy, which is why a REPL-defined function may shadow a name the compiler happens to export. One consequence is worth knowing. `lib/node.nuc` carries the symbol intern table, and the compiler compares symbols by pointer, so after `(import-use node)` a macro **first expanded after** that import mints its symbols from the session's table and a special-form head in its expansion is not recognized — `(mc 9)` reports `unknown: cond`. It always fails loudly, never silently; it does not affect a macro whose expansion has a function head; and a macro already expanded *before* the import keeps working. Expand the macros you need before importing `node`.
 
-Errors in the REPL are caught and recovered; the REPL continues after an error (including source syntax errors, IR parse errors, and JIT errors). Source syntax errors recover as an ordinary value path: the reader hands back a value rather than aborting (Stage 10 E4; [Reading s-expressions](reading.md#readresult-and-readerror)), so an unbalanced `)` or an unterminated form reports its diagnostic and the session keeps going — including one found while reading a file the prompt's own input `import`s: a syntax error inside an imported file used to kill the session outright, and now recovers exactly like a failure the importer itself reports. Every other error unwinds to the top of the current form, prints `  error: error (recovered)` after the diagnostic, and **rolls the session back to the state it had before that form** — so a failed `import` restores the source path used to attribute later diagnostics, leaves nothing half-registered from the library it could not load, and can be retried; retrying reports the same diagnostic again, and an unrelated import afterward still works. With `--repl-format=json`, each REPL-level error (missing form arg, JIT lookup failure, recovered error) is emitted as a single-line JSON object on stderr.
+Errors in the REPL are caught and recovered; the REPL continues after an error (including source syntax errors, IR parse errors, and JIT errors). Source syntax errors recover as an ordinary value path: the reader hands back a value rather than aborting (Stage 10 E4; [Reading s-expressions](reading.md#readresult-and-readerror)), so an unbalanced `)` or an unterminated form reports its diagnostic and the session keeps going — including one found while reading a file the prompt's own input `import`s: a syntax error inside an imported file used to kill the session outright, and now recovers exactly like a failure the importer itself reports. Every other error unwinds to the top of the current form, prints `  error: error (recovered)` after the diagnostic, and **rolls the session back to the state it had before that form** — so a failed `import` restores the source path used to attribute later diagnostics, leaves nothing half-registered from the library it could not load, and can be retried; retrying reports the same diagnostic again, and an unrelated import afterward still works. The rollback covers the compiler's scoped depths and modes too, so an error inside a type-alias expansion, a template stamp or a C header import leaves none of them armed — thirty-two failed uses of a `deftype` no longer leave every later alias refused as a cycle. With `--repl-format=json`, each REPL-level error (missing form arg, JIT lookup failure, recovered error) is emitted as a single-line JSON object on stderr.
 
 ### REPL meta forms
 
@@ -423,14 +427,14 @@ A `.nuch` file is an S-expression file containing declarations extracted from a 
 (declare cube (x:i32) :i32)
 ```
 
-Supported forms: `declare` (function signatures), `defstruct`, `defconst`, `defenum`, `defmacro` (full body preserved), `defmethod` (one overloaded method, carrying its mangled symbol explicitly), `defprotocol` / `extend` (protocol definitions and conformance facts, exported verbatim), `defcast` (full form preserved — the conv-fn must already be `declare`d earlier in the same header), and a producing module's `defvar` globals (re-emitted as `extern` so importers see the symbol without its initializer). A solitary function exports as `declare`; an overloaded one exports a `defmethod` per method so each keeps its distinct symbol:
+Supported forms: `declare` (function signatures), `defstruct`, `defconst`, `defenum`, `defmacro` (full body preserved), `defmethod` (one overloaded method, carrying its mangled symbol explicitly), `defprotocol` / `extend` (protocol definitions and conformance facts, exported verbatim), `defcast` (full form preserved — the conv-fn must already be `declare`d earlier in the same header), a producing module's `defvar` globals (re-emitted as `extern` so importers see the symbol without its initializer), and `export` re-exports together with the import forms they name through (see [The imports a header carries](#the-imports-a-header-carries)). A solitary function exports as `declare`; an overloaded one exports a `defmethod` per method so each keeps its distinct symbol:
 
 ```lisp
 (defmethod "@area.pCircle" (area i32) ((c (ptr Circle))))
 (defmethod "@area.pRect"   (area i32) ((s (ptr Rect))))
 ```
 
-Importing a `.nuch` with `declare` or `defmethod` forms registers the function both as a global binding (so it can be called) and as a method in the overload registry (so it can be *resolved by signature* — a protocol conformance the importing unit asserts, a `(dyn P)` vtable slot). This is the same pair of registrations a local `defn` makes. The one difference is that the imported method's symbol is a fact, not a decision: the defining unit emitted it, so the importing unit's mangling never renames it, however many local overloads of the name join the set. Imported `defprotocol` forms re-register the protocol; imported `extend` forms with a *concrete* subject record the conformance fact without re-checking it (the exporting unit already verified it). An imported `extend` whose subject is a struct *template* (`(extend (Vector T) (Seq T))`, or an associated-type combinator `(extend (MapIter I F) (Iterator E) :where …)`) is re-run as a template conformance: the exporter cannot serialize the recovered args for instances it never stamped, so the importer re-registers the template conformance (carrying any `:where` clause, which is exported verbatim on the `extend` form) and recovers the per-instance args at stamp time when it stamps a concrete instance locally. Imported `defcast` forms re-register the cast rule; imported `extern` forms emit an `external global`. See [Polymorphism](generics.md#polymorphism-overloaded-defn-multimethods) and [Protocols](generics.md#protocols-defprotocol-and-extend).
+Importing a `.nuch` with `declare` or `defmethod` forms registers the function both as a global binding (so it can be called) and as a method in the overload registry (so it can be *resolved by signature* — a protocol conformance the importing unit asserts, a `(dyn P)` vtable slot). This is the same pair of registrations a local `defn` makes. The one difference is that the imported method's symbol is a fact, not a decision: the defining unit emitted it, so the importing unit's mangling never renames it, however many local overloads of the name join the set. Imported `defprotocol` forms re-register the protocol; imported `extend` forms with a *concrete* subject record the conformance fact without re-checking it (the exporting unit already verified it). An imported `extend` whose subject is a struct *template* — possibly under pointers or through a parametric alias the header also carries — (`(extend (Vector T) (Seq T))`, or an associated-type combinator `(extend (MapIter I F) (Iterator E) :where …)`) is re-run as a template conformance: the exporter cannot serialize the recovered args for instances it never stamped, so the importer re-registers the template conformance (carrying any `:where` clause, which is exported verbatim on the `extend` form) and recovers the per-instance args at stamp time when it stamps a concrete instance locally. Imported `defcast` forms re-register the cast rule; imported `extern` forms emit an `external global`. See [Polymorphism](generics.md#polymorphism-overloaded-defn-multimethods) and [Protocols](generics.md#protocols-defprotocol-and-extend).
 
 Registration and emission happen at different moments, and the split is what makes a header import order-free. The whole-graph prescan registers the header's `declare`s, `extern`s, `defconst`s, `defenum` members and `defmethod`s before any form of the unit is emitted — so they resolve on [reachability, not import order](toplevel.md#cross-file-resolution-reachability-not-import-order), exactly as a `.nuc` library's `defn`s do — while the `declare` / `external global` lines are still written where the import form sits, so a program's IR does not depend on it either. A name the prescan does *not* claim, because something else in the unit already bound it, keeps the older rule: the header's entry is dropped whole, definition and declaration together.
 
@@ -449,6 +453,30 @@ Importing this with `(import-prefixed "nsgeom.nuch" g)` makes `g/area` resolve t
 
 The same round trip applies to a namespaced **type**: the header's `(defstruct Pt ...)` line is unqualified, as it always was, but the leading `(ns gt)` directive tells the importer to re-register it as `gt/Pt` — so `(import-prefixed "nsgeom.nuch" g)` makes `g/Pt` resolve to the library's `%gt__Pt` LLVM type and, for `--emit-cheader`, its `gt__Pt` C typedef, exactly as `g/area` resolves to `@geom__area`. See [Namespaced type names](types.md#namespaced-type-names).
 
+### The imports a header carries
+
+A header's templates and signatures are its source file's text, so the importer reads them [as that file read them](toplevel.md#a-template-is-read-as-the-file-that-wrote-it). A library that wrote `(import geomv)` and names `geomv/Pt` in a generic's signature therefore needs that binding in its header too. The header carries every import form that *binds a name* in its source's environment, right after the `(ns …)` line:
+
+```lisp
+; .nuch header for lib/nsgfacade.nuc, which wrote (import-prefixed nsgeom geom)
+(ns gfacade)
+(import-prefixed nsgeom geom)
+(export geom/area geom/perimeter)
+```
+
+- A prefixed import — `(import lib p)`, `(import-prefixed lib p)`, or `(import lib)` with its derived prefix — is written as `(import-prefixed lib p)`, with the prefix spelled out.
+- An `import-use` / `import-only` of a namespace other than `user` is written verbatim. One of a `user`-namespace library is not written: every file already sees `user`, so it binds nothing.
+- `unsafe/import-private` is written verbatim, of any library: its prefix reaches that library's private names, which a template in the header may use.
+
+In a header these forms **bind names and load nothing**. They are resolved on the include path as usual (a library that cannot be found is an error at the header's line), but no source or header is read in, just as a `declare` defines nothing. The binding is the header's own: it does not reach the importing file, and a private binding lets only the header's own text past the library's privacy. A consumer still imports every library it uses and links its object.
+
+A facade's `(export …)` forms are written after the imports, verbatim, and re-export through the header exactly as through the source: `(import-prefixed "nsgfacade.nuch" g)` binds `g/area`. Because the carried import loaded nothing, the re-exported name exists only if the consumer imported its library too — here `(import-use nsgeom)`, or any other import of `nsgeom`. Without one the export is refused at the header's line, with a note naming the missing library:
+
+```
+nsgfacade.nuch:4: error: export: symbol not found: 'geom/area'
+  note: this header binds 'geom' to lib/nsgeom.nuc and, like every import a header carries, loads nothing -- import that library as well
+```
+
 ## What a header mode checks
 
 `--emit-nuch` and `--emit-cheader` read a whole compilation unit but emit no function bodies, so they check the unit exactly as far as a header describes it: the **declarations**. A declaration error is reported with the same message, at the same line, that an ordinary compile gives, and nothing is written — a header mode never writes a partial header for a program it is about to refuse.
@@ -460,12 +488,16 @@ $ nucleusc --emit-llvm bad.nuc
 bad.nuc:4: error: defn 'foo': expected return type after the parameter list, e.g. (defn foo (params):i32 …)
 ```
 
-That covers four kinds of mistake:
+That covers these kinds of mistake:
 
 - **A definer that stops too early** — `(defn f (x:i32))` with no return operand, `(defstruct)`, `(defunion U)`, `(defconst K)`, and the same for `defvar`, `defenum`, `defmacro`, `defcast` and `extend`. Each gets the message its own emitter gives.
 - **An empty list `()` where a declaration belongs** — a parameter, a struct field, a member of an inline `(union …)` / `(struct …)`, or a `defvar`'s type, at any nesting depth: `(ptr (union a:i32 ()))` is caught as readily as a bare field.
 - **An empty list `()` where a name belongs** — `(defstruct ())`, `(defenum ())`, `(defn () (x:i32):i32 …)`, `(ns ())`, `(import ())`, an `extend` operand, an enum member, a `defprotocol` method signature, a template head. `()` reads as *no node at all* (see [Empty lists in a declaration](#empty-lists-in-a-declaration) below), so each of these gets the message that position already gives a name of the wrong kind — `(defstruct ())` and `(defstruct 5 …)` differ only in whether the message says "missing name" or "name must be symbol".
 - **An `import` naming a library that does not resolve.** This one matters most in a header mode: a missing import supplies no names, so *every* declaration below it would be described against the wrong information — and before this was checked, the header was emitted anyway, silently missing whatever the library would have contributed.
+- **A C header that does not preprocess** — `(import-use "no-such.h")`, or a header `clang -E` rejects. The same holds: all three modes print clang's own report once, then `c-include: failed to preprocess 'no-such.h'` at the import's line (in the file that wrote it, when a library does), and exit 1. A C import that a `.nuch` carries only binds a prefix and is never read, so it is not checked.
+- **A `defvar` whose type is not one.** Global values are prescanned as in an ordinary compile, so an array type nested where storage cannot go (`(Vector (array i32 2))`, `ptr:(array i32 4)`) or a type used as a constructor (`x:i32:i32`) is refused with the compile's message.
+
+A header mode reads the file's C imports as a compile does, so it also prints the same warnings for C declarations it skips, and knows the header's integer constants (see [Integer constants from a C header](#integer-constants-from-a-c-header)).
 
 What is *not* checked here, deliberately: `deferror`, whose checks report and recover rather than abort (a different contract the header validation does not join); `def-rmacro`, a reader directive rather than a declaration a header describes; and whether an `(export sym)` names something that exists, which is a whole-unit registry question the emitter answers — `(export nosuch)` still reaches a header, exactly as a body error does.
 
@@ -757,8 +789,8 @@ of command-line ones — see [Using a C library at the prompt](#using-a-c-librar
 ## Integer constants from a C header
 
 A C header's **object-like `#define`s whose replacement list is an integer
-constant expression** are imported alongside its declarations, under their C
-names, spelled exactly as C spells them:
+constant expression**, and its **enumerators**, are imported alongside its
+declarations, under their C names, spelled exactly as C spells them:
 
 ```lisp
 (import-use "fcntl.h")
@@ -778,13 +810,55 @@ its use site, so `O_CREAT` meeting an `i32` parameter and `INT64_MAX` meeting an
 than a silent wrap.
 
 **What is imported.** Only what folds. The evaluator handles literals (decimal,
-octal, `0x`, with `u`/`U`/`l`/`L` suffixes), unary `+`/`-`, `* / %`, `+ -`,
-`<< >>`, `& ^ |`, parentheses, casts, `sizeof`, and references to other macros
-from the same header — so `S_IRWXU`, written `(__S_IREAD|__S_IWRITE|__S_IEXEC)`,
-folds even though none of its three parts is importable. Anything else is
-skipped silently: function-like macros (`#define MAX(a,b) …`), string bodies,
-floating-point bodies, `&&`/`||`, and a body that references a macro that did not
-itself fold.
+octal, `0x`, with `u`/`U`/`l`/`L` suffixes), character constants (`'x'`, `'\n'`,
+`'\x41'`), unary `+`/`-`/`~`, `* / %`, `+ -`, `<< >>`, `& ^ |`, parentheses,
+casts, `sizeof`, references to other macros from the same header, and
+references to the header's enumerators — so `S_IRWXU`, written
+`(__S_IREAD|__S_IWRITE|__S_IEXEC)`, folds even though none of its three parts is
+importable. A cast to an integer type converts as C does: `((Uint32)-1)` is
+`4294967295` and `(gint)(1u << 31)` is `-2147483648`. Anything else is skipped
+silently: function-like macros (`#define MAX(a,b) …`), string bodies,
+floating-point bodies, `&&`/`||`, `?:`, comparisons, a body that references a
+macro that did not itself fold, and a character constant above `0x7f` (its value
+depends on whether the target's `char` is signed).
+
+**Every operation is typed as C types it.** A literal takes the first of `int`,
+`long`, `long long` that holds it — with the `unsigned` twin of each in between
+when it is hex or octal, and only the unsigned ones when it carries `u` — and
+each operator converts its operands to the wider of their two types (unsigned
+winning a tie) and wraps its result to that type. So `(0u - 1) / 2` is
+`2147483647`, `~0u` is `4294967295`, and `0xffffffff + 1` is `0` while `0xffffffffl + 1` is `4294967296` on a 64-bit
+`long`. The widths are the **target's**: `int` is 16 bits and `long` 32 on
+`avr`. A shift has its left operand's type; a shift by a negative count or by at
+least that type's width is not a constant expression in C (clang refuses it
+too), so such a macro is skipped, as is a division by zero.
+
+**Enumerators.** Every enumerator of a C `enum` is imported the same way, under
+the same rules — named or anonymous, in a `typedef enum { … } T;`, or in an enum
+body nested in a struct or a declaration:
+
+```lisp
+(import-use "gio/gio.h")
+(g_application_new "com.example.App" G_APPLICATION_DEFAULT_FLAGS)
+```
+
+An enumerator with no `= value` is the previous one plus one; an initializer may
+name earlier enumerators and the header's `#define`s (`clang -E` has expanded
+those already); a trailing comma and an attribute after the name
+(`A __attribute__((deprecated))`) are accepted. An initializer that does not fold
+leaves that enumerator out, and every implicit one after it until the next
+explicit value that folds.
+
+The value is the one clang gives, typed per operation as above, so `1 << 31`
+wraps to `-2147483648`, while `1u << 31`,
+`0x80000000` and an implicit step past `INT_MAX` keep their value. Like any
+imported constant the name is then an untyped literal: `i32` when the value fits,
+`i64` when it does not.
+
+The constants arrive while the import's declarations are read; its `#define`s
+follow at its end. So when an enumerator and a `#define` share a name —
+glibc writes `#define SHUT_RD SHUT_RD` beside the enum — the enumerator is the
+one registered. The rules below apply to both.
 
 **What is skipped.**
 
@@ -796,11 +870,25 @@ itself fold.
   `__GNUC__` for every header; importing any header would otherwise define
   `linux` as a global constant. They are still available for *folding* a
   header's own macros.
-- **Any name the compilation unit already defines.** A header's macro never
-  displaces a `defn`, `defconst`, or type of yours.
+- **Any name the compilation unit defines.** Your definition always wins: a
+  `defn`, `defconst`, `defvar`, `defstruct`, `deftype`, `defunion`, `defenum`,
+  `defmacro` or any other definer of yours takes the name whether it comes
+  before or after the import, and so does one typed at the REPL after an
+  imported constant was already used. The constant is simply not there under
+  that name. A C struct or union *tag* of the same name displaces nothing —
+  only a Nucleus definition does.
+- **A name an earlier header already defined.** The first definition wins,
+  silently, whether the later one agrees or not.
 
 Reading a header therefore costs two `clang` runs (`-E` and `-E -dM`), both
-cached per header path for the whole compilation.
+cached per header path for the whole compilation. The header modes read the
+file's C imports too, so a declaration that names an imported constant — an
+array extent, the one place a header can — is written with its **value**:
+`(array i32 PATH_MAX)` becomes `int32_t a[4096];` in `--emit-cheader` and
+`(array i32 4096)` in `--emit-nuch`, since the header's consumer need not import
+that C header. An extent naming the file's own `defconst` keeps its name, which
+the header also defines. At the REPL an imported constant is a prompt expression
+like any other.
 
 ## Types a header borrows from another unit
 

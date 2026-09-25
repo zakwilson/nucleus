@@ -216,12 +216,28 @@
     (str-into acc "):" (type-display (f 'ret)))
     (return (string-as-view acc))))
 
+; The user's spelling of a type, for every message. `type-spelling` is the
+; registry key: it writes each pointer as the kind-erased `ptr:T`.
 (defn type-display (t:raw:Type):StrView
   (when (= t null) (return "<none>"))
-  (when (= (t 'kind) TY-FN) (return (fn-type-spelling t)))
-  ; C6/C7 seam: `type-spelling` is a conformance-registry KEY, compared by
-  ; identity, so it stays a C string until the substrate moves.
-  (return (symbol-as-view (type-spelling t))))
+  (let (tt:raw:Type t
+        k:i32 (tt 'kind))
+    (when (= k TY-FN) (return (fn-type-spelling t)))
+    (when (= k TY-PTR) (return (ptr-type-display (tt 'pkind) (tt 'elem))))
+    (when (= k TY-ARRAY)
+      (return (fstr "(array " (type-display (tt 'elem)) " " (tt 'arr-len) ")")))
+    (return (symbol-as-view (type-spelling t)))))
+
+; The pointer-kind spellings of docs/types.md; an elem-less pointer is `void*`.
+(defn ptr-type-display (pk:i32 e:raw:Type):StrView
+  (when (= e null)
+    (when (= pk PTR-MAYBE) (return "?ptr"))
+    (when (= pk PTR-ERRPTR) (return "!ptr"))
+    (return "ptr"))
+  (when (= pk PTR-RAW) (return (fstr "(raw " (type-display e) ")")))
+  (when (= pk PTR-MAYBE) (return (fstr "?&" (type-display e))))
+  (when (= pk PTR-ERRPTR) (return (fstr "!&" (type-display e))))
+  (return (fstr "&" (type-display e))))
 
 ; Populate a StructDef's `fields` Vector from parallel name/type arrays and set
 ; the cached `num-fields` count. Names are already interned by the caller (the
@@ -1208,8 +1224,8 @@
       (let (e:(raw Type) ((vv 'type) 'elem))
         (when (or (= e null) (= (type-eq e g-fn-ret-type) 0))
           (die-at g-form-line
-            (fstr "internal: aggregate return of a " (type-spelling (vv 'type))
-                  " where the declared return type is " (type-spelling g-fn-ret-type)))))
+            (fstr "internal: aggregate return of a " (type-display (vv 'type))
+                  " where the declared return type is " (type-display g-fn-ret-type)))))
       (let (ty:StrView (type-to-ir g-fn-ret-type)
             src:StrView (vv 'val))
         (when (= k ABI-MEMORY)
@@ -1565,7 +1581,7 @@
                  (= (int-literal-fits (vv 'lit-i64) target) 0))
         (die-at line
           (fstr "integer literal " (fstr (vv 'lit-i64)) " does not fit "
-                (type-spelling target))))
+                (type-display target))))
       (let (sw:i32 (int-width src) dw:i32 (int-width target))
         (when (= sw dw)
           ; Same width, different signedness — reinterpret (no IR needed)

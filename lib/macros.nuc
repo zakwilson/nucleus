@@ -189,6 +189,11 @@
 (defmacro dotimes (spec :rest body)
   (let ((var-node (raw Node)) (ast-at spec 0)
         (n-node (raw Node)) (ast-at spec 1))
+    ; Order matters: member access on a null node crashes this body
+    ; (context/conventions.md), so each test is reached only past its guard.
+    (when (or (= spec null) (!= (spec 'kind) NODE-LIST) (!= (ast-len spec) 2)
+              (= var-node null) (!= (var-node 'kind) NODE-SYM))
+      (macro-error spec "dotimes: the first argument must be (var count)"))
     `(let (~var-node (* ~n-node 0)) ; adopt the count's type for the index
        (while (< ~var-node ~n-node)
          (do ~@body)
@@ -225,6 +230,13 @@
   ; binding is (var coll-expr IterType). (iter coll-expr) yields an IterType
   ; value bound to a fresh typed local `it`; drive (next &it) per step.
   ; The (sym type) list-binding form lets the done-flag gensym skip a colon type.
+  (let ((v (raw Node)) (ast-at binding 0))
+    ; Guarded in the order `dotimes` explains.
+    (when (or (= binding null) (!= (binding 'kind) NODE-LIST) (!= (ast-len binding) 3)
+              (= v null) (!= (v 'kind) NODE-SYM))
+      (if (= (ast-len binding) 2)
+        (macro-error binding "doseq: the first argument must be (var coll IterType)\n  note: to walk an iterator you already hold, use (doseq-iter (var iter-ref) ...)")
+        (macro-error binding "doseq: the first argument must be (var coll IterType)"))))
   (let (done-sym:ptr  (gensym)
         it-sym:ptr    (gensym)
         var-sym:ptr   (ast-at binding 0)
@@ -249,6 +261,11 @@
 ;     (set! (r 'start) 0) (set! (r 'end) 5)
 ;     (doseq-iter (x r) (printf "%d\n" x)))
 (defmacro doseq-iter (binding :rest body)
+  (let ((v (raw Node)) (ast-at binding 0))
+    ; Guarded in the order `dotimes` explains.
+    (when (or (= binding null) (!= (binding 'kind) NODE-LIST) (!= (ast-len binding) 2)
+              (= v null) (!= (v 'kind) NODE-SYM))
+      (macro-error binding "doseq-iter: the first argument must be (var iter-ref)")))
   (let (done-sym:ptr  (gensym)
         var-sym:ptr   (ast-at binding 0)
         iter-ref:ptr  (ast-at binding 1))

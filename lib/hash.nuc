@@ -95,9 +95,8 @@
 ; `hash` was missing. Folded rather than returned raw: arena nodes sit a fixed
 ; stride apart and the table masks on low bits, so raw pointers would cluster.
 ;
-; No `(extend (ref Node) Hash)` — `extend` takes a struct template, not a pointer
-; type. The bare overload resolves on its own; the conformance record only feeds
-; `:where` bounds, which nothing here needs.
+; No `(extend &Node Hash)`: the bare overload resolves on its own, and the
+; conformance record only feeds `:where` bounds, which nothing here needs.
 (defn hash (self:&&Node):usize
   (let (h:i64 -3750763034362895579)
     (return (as usize (fnv1a-int h (unsafe/cast i64 (as ptr @self)) 8)))))

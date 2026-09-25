@@ -93,7 +93,7 @@
 (defprotocol (Assoc K V Ki Vi)
   (assoc        (self:&Self key:K val:V):void)
   (dissoc       (self:&Self key:K):void)
-  (get   (self:&Self key:K) (Maybe V))
+  (get   (self:&Self key:K):?V)
   (keys           (self:&Self):Ki)
   (vals           (self:&Self):Vi))
 

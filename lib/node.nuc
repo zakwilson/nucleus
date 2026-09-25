@@ -310,7 +310,7 @@
 ; The element type is `&Node`, not `(raw Node)`: `some` takes a non-null ref, and
 ; a null element is not one. Only the `:rest` lowering stores a null (an
 ; `inttoptr` of a small integer), and it builds through `node-push`, not `conj`.
-(extend NodeIter (Iterator (ref Node)))
+(extend NodeIter (Iterator &Node))
 
 (defn next (self:&NodeIter):?&Node
   (when (>= (self 'pos) (node-len (self 'lst))) (return none))
@@ -318,7 +318,7 @@
     (set! (self 'pos) (+ (self 'pos) 1))
     (return (as-ref e))))
 
-(extend Node (Coll (ref Node) NodeIter))
+(extend Node (Coll &Node NodeIter))
 
 (defn count (self:&Node):usize
   (return (unsafe/cast usize (node-len self))))
@@ -338,7 +338,7 @@
 ; `invoke`, not `get`: an integer index `(n i)` routes to `invoke`, which keeps
 ; index access and field access distinct (lib/coll.nuc §Seq). `(n 'kind)` still
 ; reads the field — the router prefers a selector that names one.
-(extend Node (Seq (ref Node)))
+(extend Node (Seq &Node))
 
 (defn invoke (self:&Node i:usize):&Node
   (return (unsafe/cast &Node (node-at self (unsafe/cast i32 i)))))
