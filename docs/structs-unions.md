@@ -240,7 +240,13 @@ counts the literal as a by-value `S` too: `(conj &v (Pt 1 2))` on a
 `(Vector Pt)` binds `T = Pt`, and `(rq &v (Pt 3 4))` reaches a `p:Pt` overload.
 That reading is tried only when the literal's own `&S` finds no method, so an
 `&S` overload still wins and `(idt (Pt 1 2))` over `(x:T)` still binds
-`T = &Pt`. A user operator overload does not take it yet. Two constraints:
+`T = &Pt`. A comparison always reads the literal by value: `(= (Pt 1 2) p)`
+reaches a by-value `=` for `Pt`, with an `&Pt` operand loaded through, or is
+refused. It never compares the literal's address, and a struct has no `=`
+unless one is defined
+([operators](special-forms.md#binary-operators),
+[Derived structural equality](../design/deferred/overview.md#derived-structural-equality)).
+Two constraints:
 
 * The struct type must match exactly — a compound literal of a *different*
   struct in an `S` slot is still a type mismatch.

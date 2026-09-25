@@ -1218,6 +1218,29 @@
       (when (= wn 1) (return wcand)))
     (return null)))
 
+; An operator's operands read by value when one is a struct literal: each literal
+; as its struct, and a non-null `&S` operand read through to `S`. Null when none is.
+(defn operator-value-types (argtypes:ptr arg-nodes:ptr nargs:i32 scope:raw:Scope):ptr
+  (let (vt:ptr (literal-arg-types argtypes arg-nodes nargs scope))
+    (when (= vt null) (return null))
+    (dotimes (i nargs)
+      (let (t:raw:Type (aref (as &ptr vt) i))
+        (when (and (!= t null) (= (ptr-pkind t) PTR-REF) (!= (t 'elem) null)
+                   (= (-> (t 'elem) (unsafe/cast &Type _) (_ 'kind)) TY-STRUCT))
+          (set! (aref (as &ptr vt) i) (t 'elem)))))
+    (return vt)))
+
+; operator-user-resolve, retried by value (`out-vt`) when an operand is a struct
+; literal; emit then refuses rather than compare the literal's address.
+(defn operator-resolve (g:raw:Generic argtypes:ptr arg-nodes:ptr nargs:i32 scope:raw:Scope
+                        out-vt:&ptr):?&Method
+  (set! @out-vt null)
+  (when-some (m (operator-user-resolve g argtypes arg-nodes nargs)) (return m))
+  (let (vt:ptr (operator-value-types argtypes arg-nodes nargs scope))
+    (when (= vt null) (return null))
+    (set! @out-vt vt)
+    (return (operator-user-resolve g vt arg-nodes nargs))))
+
 ; The emitted symbol for a defn being codegen'd: the mangled name for an
 ; overloaded method, else the unmangled @name (also the fallback when no
 ; generic was registered, e.g. compile-time/REPL defns).
@@ -3551,10 +3574,17 @@
 ; result type if it resolves (exact method, built-in operator, user-operator or
 ; user-method widen, or a bounded-generic template), else null. The Valid walk
 ; turns a null here into a localized call-site error.
-(defn valid-resolve-type (g:raw:Generic argtypes:ptr arg-nodes:ptr nargs:i32 line:i32):ptr
+(defn valid-resolve-type (g:raw:Generic argtypes:ptr arg-nodes:ptr nargs:i32 line:i32
+                          scope:raw:Scope):ptr
   (let (gg:raw:Generic g)
     (let (m:ptr (generic-find-method-exact g argtypes nargs))
       (when (!= m null) (return (-> m (unsafe/cast &Method _) (_ 'ret-type)))))
+    (when (and (> (count (gg 'methods)) 0)
+               (= (-> (as &Method (invoke (gg 'methods) 0)) (_ 'kind)) METHOD-INTRINSIC))
+      (let (vt:ptr null
+            um:?ptr:Method (operator-resolve g argtypes arg-nodes nargs scope &vt))
+        (when (!= vt null)
+          (if (!= um null) (return (um 'ret-type)) (return null)))))
     (let (rt:ptr (builtin-op-result-type g argtypes nargs))
       (when (!= rt null) (return rt)))
     (let (m:ptr (operator-user-resolve g argtypes arg-nodes nargs))
@@ -3676,7 +3706,7 @@
               ; Only verify when every argument type is known; an unknown
               ; (e.g. a macro/cond result) defers, matching node-type's frontier.
               (when (!= all-known 0)
-                (let (rt:ptr (valid-resolve-type g argtypes arg-nodes nargs line))
+                (let (rt:ptr (valid-resolve-type g argtypes arg-nodes nargs line scope))
                   (when (!= rt null) (return rt))
                   (die-at line
                     (fstr "type '" (key-display cty line) "' does not satisfy the Valid bound of '" gname "'"))))
@@ -6186,7 +6216,8 @@
                   (set! (aref (as &ptr argtypes) i) at)
                   (set! (aref (as &ptr arg-nodes) i) anode)))
               (when (!= ok 0)
-                (let (um:?ptr:Method (operator-user-resolve g argtypes arg-nodes nargs))
+                (let (vt:ptr null
+                      um:?ptr:Method (operator-resolve g argtypes arg-nodes nargs scope &vt))
                   (when (!= um null) (return (um 'ret-type)))))))
           (let (bop:ptr:BinOp (unsafe/cast &BinOp (m0 'binop)))
             (when (!= (bop 'is-cmp) 0) (return ty-bool))
