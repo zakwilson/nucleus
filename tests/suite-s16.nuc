@@ -3391,11 +3391,11 @@ map=2
   (let (v:Pt (mk 3))
     (printf \"%lld %lld %lld %lld\\n\" (sum v) (direct) (get v 'x) (v 'y))
     (set! (v 'x) 40)
-    (printf \"%lld %d\\n\" (get v 'x) (if (= (ref v 'y) null) 0 1))
+    (printf \"%lld %lld\\n\" (get v 'x) @(ref v 'y))
     (return 0)))
 ")))
     (try (check-eq (string-as-view &out) "12 10 3 6
-40 1
+40 6
 "))
     (drop &out))
   (return (ok)))

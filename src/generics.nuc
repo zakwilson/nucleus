@@ -587,8 +587,7 @@
                 ; (mirrors abstract-call-via-generic): a bare tyvar return picks
                 ; its bound Type*, otherwise parse the (already-concrete) spelling.
                 ; Shared with the adapted-template path (LW-2) via method-bound-ret-type.
-                (when (!= out-ret null)
-                  (set! @out-ret (method-bound-ret-type (as ptr m) bound line)))
+                (set! @out-ret (method-bound-ret-type (as ptr m) bound line))
                 (return 1)))))))
     (return 0)))
 
@@ -1643,7 +1642,7 @@
       (return (intern-node tail))))
   (when (and (= (node-kind mem) NODE-LIST) (= (node-len (as ptr mem)) 2)
              (= (node-kind (node-first mem)) NODE-SYM))
-    (set! (aref out-name 0) ((node-first mem) 's))
+    (set! (aref out-name 0) (node-head-sym mem))
     (return (node-at (as ptr mem) 1)))
   (return null))
 
@@ -1688,7 +1687,7 @@
         (set! g-type-alias-depth (+ g-type-alias-depth 1))
         ; An aggregate body's members are the alias's arguments, so they are
         ; template-argument positions, as `(Vector T)`'s are.
-        (collect-tyvars-at ex (if (!= (node-inline-aggregate ex) 0) ((node-first n) 's) in-tmpl)
+        (collect-tyvars-at ex (if (!= (node-inline-aggregate ex) 0) (node-head-sym n) in-tmpl)
                            nline out-tyvars io-ntv)
         (set! g-type-alias-depth (- g-type-alias-depth 1))
         (return)))
@@ -3296,7 +3295,7 @@
         (let (nm:Symbol (symbol-none) tail:Symbol (symbol-none))
           (split-typed (n 's) (as &Symbol &nm) (as &Symbol &tail))
           (return nm))
-      NODE-LIST (return ((node-first n) 's))
+      NODE-LIST (return (node-head-sym n))
       0)
     (return (symbol-none))))
 
@@ -4323,7 +4322,7 @@
         (let (imp:&Method (unsafe/cast &Method imp-src)
               ; B2a: `proto` arrives from a `(dyn P)` box, downstream of the
               ; box-construction scope gate — see `protocol-resolve-any`.
-              pp:&Protocol (unsafe/cast &Protocol (protocol-resolve-any proto)))
+              pp:?&Protocol (protocol-resolve-any proto))
           (when (= pp null) (return 0))
           (when (!= (pp 'num-sigs) 1) (return 0))
         (let (sig:ptr (aref (unsafe/cast &ptr (pp 'sigs)) 0)
@@ -5026,7 +5025,7 @@
 ; Does canonical pattern `p` match `s`, both from `tpat-canon`? With `bind`, a
 ; `(#tv U)` in `p` stands for whatever `s` has there, recorded in `pb` by U's index.
 (defn tpat-match (p:?&Node s:?&Node bind:bool ptv:ptr pntv:i32 pb:ptr):bool
-  (let (ph:Symbol ((node-first p) 's))
+  (let (ph:Symbol (node-head-sym p))
     (when (and bind (= ph "#tv"))
       (let (idx:i32 (tyvar-index-of (canon-sym-at p 1) ptv pntv)
             cur:?&Node (aref (unsafe/cast &ptr pb) idx))
@@ -5034,7 +5033,7 @@
           (set! (aref (unsafe/cast &ptr pb) idx) (as ptr s))
           (return true))
         (return (tpat-match cur s false ptv pntv pb))))
-    (when (or (!= ph ((node-first s) 's)) (!= (node-len (as ptr p)) (node-len (as ptr s))))
+    (when (or (!= ph (node-head-sym s)) (!= (node-len (as ptr p)) (node-len (as ptr s))))
       (return false))
     (dotimes (i (- (node-len (as ptr p)) 1))
       (let (pc:ptr:Node (node-at (as ptr p) (+ i 1))
@@ -5069,7 +5068,7 @@
             proto:Symbol (constraint-proto crec)
             b:?&Node (if (>= uidx 0) (aref (unsafe/cast &ptr pb) uidx) null))
         (when (and (!= b null) (!= proto "Any"))
-          (let (bh:Symbol ((node-first b) 's)
+          (let (bh:Symbol (node-head-sym b)
                 bs:Symbol (canon-sym-at b 1))
             (when (and (= bh "#tv") (= (caller-has-constraint gm bs proto) 0))
               (return false))
@@ -5312,7 +5311,7 @@
 ; template parameter (`(Wrap X)`), which the extend's other clauses then name.
 (defn extend-subject-tyvar-args (app:?&Node ntv:i32 definer:StrView line:i32):ptr
   (let (out:ptr (arena-alloc (* (as i64 (if (> ntv 0) ntv 1)) (ptr-bytes)))
-        head:Symbol ((node-first app) 's))
+        head:Symbol (node-head-sym app))
     (when (!= (- (node-len app) 1) ntv)
       (die-at line (fstr head ": wrong number of type arguments for " definer " template ("
                          (- (node-len app) 1) " given)")))
@@ -5455,7 +5454,7 @@
     ; Argument by argument: the pattern walk reads `(Maybe X)` as the sigil `?X`.
     (let (tv:ptr (arena-alloc (* (as i64 (+ (count-pattern-nodes app) 1)) (ptr-bytes)))
           ntv:i32 0
-          head:Symbol ((node-first app) 's))
+          head:Symbol (node-head-sym app))
       (dotimes (i (- (node-len (as ptr app)) 1))
         (collect-tyvars-at (node-at (as ptr app) (+ i 1)) head line tv (as &i32 &ntv)))
       (return (> ntv 0)))))
@@ -5921,9 +5920,8 @@
   ; normalize a leading `:volatile` (etc.) into a wrapped binding name so the
   ; (name value) pairing survives and the binding types register at the right
   ; slots. Attribute-free lists pass through unchanged.
-  (let (binds:&Node (unsafe/cast &Node
-                         (attrs-normalize-bindings (as ptr (node-at n 1))
-                           ((unsafe/cast &Node n) 'line))))
+  (let (binds:?&Node (attrs-normalize-bindings (as ptr (node-at n 1))
+                        ((unsafe/cast &Node n) 'line)))
     (when (or (= binds null)
               (!= (binds 'kind) NODE-LIST))
       (return null))
@@ -6223,7 +6221,7 @@
     (when (= ghit null) (return null))
     (when (!= ((unsafe/cast &BindingHit ghit) 'kind) BK-GENERIC)
       (return (node-type-binding (unsafe/cast &BindingHit ghit) n scope)))
-  (let (g:?&Generic (unsafe/cast &Generic ((unsafe/cast &BindingHit ghit) 'payload)))
+  (let (g:?&Generic (as ?&Generic ((unsafe/cast &BindingHit ghit) 'payload)))
     (when (!= g null)
       (let (m0:&Method (as &Method (invoke (g 'methods) 0)))
         (when (= (m0 'kind) METHOD-INTRINSIC)
@@ -6274,7 +6272,7 @@
     ; as emit-dispatch's own fall-through does, and to the registry when none.
     (if-some (h2 (binding-find h scope (+ BK-GENERIC 1) (+ BK-GLOBAL 1) 0 NK-NONE))
       (return (node-type-binding h2 n scope))
-      (let (g:?&Generic (unsafe/cast &Generic ((unsafe/cast &BindingHit ghit) 'payload)))
+      (let (g:?&Generic (as ?&Generic ((unsafe/cast &BindingHit ghit) 'payload)))
         (when (and (!= g null) (= (g 'mangled) 0))
           (let (untyped:bool false)
             (return (node-type-registry-call g h n scope want &untyped))))

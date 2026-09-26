@@ -83,7 +83,7 @@
 ; `node-at`, a missing form — and every reader below treats it as empty.
 
 ; The first element, or null when `n` is null, empty, or not a list.
-(defn node-first (n:ptr:Node):ptr:Node
+(defn node-first (n:ptr:Node):?&Node
   (when (= (node-len n) 0) (return null))
   (return (aref (n 'elems) 0)))
 
@@ -199,6 +199,10 @@
 ; would compile that macro before `node-at` is a registered program defn, and
 ; the JIT module would reference an undeclared `@node-at`.
 (import-use intern)
+
+; A form's head symbol, or none for an empty list or a leaf.
+(defn node-head-sym (n:ptr:Node):Symbol
+  (if-some (h (node-first n)) (return (h 's)) (return (symbol-none))))
 
 ; ============================================================
 ; Symbol intern table

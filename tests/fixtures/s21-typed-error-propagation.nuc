@@ -2,7 +2,7 @@
 ; function with a custom `E` builds it with bare `ok`/`err`/`err!` in return
 ; position, `match` binds the whole struct, `try` keeps it into a same-`E`
 ; caller and converts it through the `defcast E Err` rule into `!i32` and
-; `!void` callers. `E` is 48 bytes -- wider than the two-register SysV class,
+; `!void` callers, and into a `!&T` caller, whose niche err arm is a pointer. `E` is 48 bytes -- wider than the two-register SysV class,
 ; which is the case that once mis-lowered the cast's byval argument.
 (import-use error)
 (import-use strview)
@@ -31,6 +31,12 @@
 (defn s21-into-void (n:i32):!void
   (try (s21-p n))
   (return (ok)))
+
+(defvar s21-cell:i32 0)
+(defn s21-into-ptr (n:i32):!&i32
+  (let (v:i32 (try (s21-p n)))
+    (set! s21-cell v)
+    (return (ok &s21-cell))))
 
 (defn show-e (e:S21Err):void
   (print "err " (err-name (e 'code)) " line=" (e 'line) " msg=[" (e 'msg)
@@ -67,5 +73,12 @@
     ((err e) (print "err " (err-name e) "\n")))
   (match (s21-into-void 3)
     ((ok) (print "ok void\n"))
+    ((err e) (print "err " (err-name e) "\n")))
+  (print "into-ptr\n")
+  (match (s21-into-ptr 200)
+    ((ok p) (print "ok " @p "\n"))
+    ((err e) (print "err " (err-name e) "\n")))
+  (match (s21-into-ptr 4)
+    ((ok p) (print "ok " @p "\n"))
     ((err e) (print "err " (err-name e) "\n")))
   (return 0))

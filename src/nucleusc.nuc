@@ -228,6 +228,10 @@
 (defvar g-want-type:ptr)
 (defvar g-loop-depth:i32 0)
 (defvar g-nundo:&(Vector &NarrowUndo) (vector-new-in &g-arena-alloc))
+; The function being emitted; never reused, so a restored outer function cannot
+; match a narrow left behind by an earlier one.
+(defvar g-narrow-gen:i32 0)
+(defvar g-narrow-gen-next:i32 0)
 (defvar g-trap-declared:i32 0)
 
 ; Current output buffer for top-level emission. An ALIAS — it is re-pointed at
@@ -2812,7 +2816,7 @@
 
 (defn sym-effective-type (sym:&Sym):?&Type
   (let (ss:&Sym sym)
-    (when (!= (ss 'ntype) null) (return (ss 'ntype)))
+    (when (and (!= (ss 'ntype) null) (= (ss 'ngen) g-narrow-gen)) (return (ss 'ntype)))
     (return (ss 'type))))
 
 (defn narrow-mark ():i32
@@ -2832,10 +2836,12 @@
         (set! (u 'scope) scope)
         (set! (u 'old-ntype) (sym 'ntype))
         (set! (u 'old-ndepth) (sym 'ndepth))
+        (set! (u 'old-ngen) (sym 'ngen))
         (set! (u 'stamp) (sym 'kstamp))
         (conj g-nundo u))
       (set! (sym 'ntype) (type-as-pkind eff PTR-REF))
-      (set! (sym 'ndepth) g-loop-depth))))
+      (set! (sym 'ndepth) g-loop-depth)
+      (set! (sym 'ngen) g-narrow-gen))))
 
 ; Undo narrows back to `mark` (a branch/region boundary). Entries whose
 ; binding was killed after the push are skipped.
@@ -2850,7 +2856,8 @@
         (when (!= sym null)
           (when (= (u 'stamp) (sym 'kstamp))
             (set! (sym 'ntype) (u 'old-ntype))
-            (set! (sym 'ndepth) (u 'old-ndepth)))))
+            (set! (sym 'ndepth) (u 'old-ndepth))
+            (set! (sym 'ngen) (u 'old-ngen)))))
       (set! (g-nundo 'len) (- (_get g-nundo 'len) 1)))))
 
 ; Kill a binding's narrow: reassignment invalidates the dominating test.
@@ -2861,7 +2868,6 @@
 
 ; Kill every live narrow (label join points — a backward goto re-enters).
 (defn narrow-kill-all ():void
-  (when (= g-nundo null) (return))
   (doseq (n g-nundo (VecIter &NarrowUndo))
     (let (u:&NarrowUndo n
           sym:?&Sym (scope-lookup (u 'scope) (u 'name)))
@@ -4538,6 +4544,10 @@
                 (and (!= b-null 0) (!= av-sv 0)))
         (die-at line (fstr (bop 'name)
                            ": a StrView is never null — use (str-empty? &v) to test for the empty view")))
+      (let (other:(ptr Type) (if (!= a-null 0) (bv 'type) (av 'type)))
+        (when (and (!= null-cmp 0) (= (other 'kind) TY-PTR) (= (other 'pkind) PTR-REF))
+          (die-at line (fstr (bop 'name) ": " (type-display other)
+                             " is non-null, so comparing it with null is constant -- spell the value ?T if it can be null"))))
       (when (and (= null-cmp 0)
                  (or av-cstr bv-cstr (!= av-sv 0) (!= bv-sv 0)))
         ; Each operand must be a comparable string kind: ptr-like (ptr/CStr) or a
@@ -7953,7 +7963,7 @@
 ; or quoted datum that happens to collide with an enclosing local is not
 ; mis-flagged: quoted forms, and the field-name operand of `.`/`_get`/`.&`/
 ; `.set!`.
-(defn fn-capture-walk (node:?&Node scope:&Scope bound:?&Node cap-box:&ptr line:i32):void
+(defn fn-capture-walk (node:?&Node scope:&Scope bound:?&Node cap-box:?&ptr line:i32):void
   (when (= node null) (return))
   (let (nn:?&Node node)
     ; A bare symbol in value position: classify it.
@@ -8882,7 +8892,7 @@
         (die-at line (fstr "(dyn " proto "): parametric protocols are not boxable in v1")))
       (let (s0:?&Node (aref (unsafe/cast &ptr (ppp 'sigs)) 0))
         (when (>= (params-where-index (node-at s0 1)) 0)
-          (die-at line (fstr "(dyn " proto "): method '" ((node-first s0) 's)
+          (die-at line (fstr "(dyn " proto "): method '" (node-head-sym s0)
                              "' is generic (its signature has a :where), so no vtable can hold it"))))
       (let (foreign:bool (protocol-foreign? ppp)
             typename:Symbol (type-spelling concrete-ty)

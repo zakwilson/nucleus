@@ -381,18 +381,20 @@ the list form `(? (Vector i32))` / `(?! (Vector i32))`, the canonical node
 **A nullable value is a condition.** `ptr`, `(ptr T)`, `CStr`, `?T` and a value
 `(Maybe T)` may be written bare at a condition site — `(when m …)` means
 `(when (!= m null) …)` — while `&T` may not, because a non-null pointer's test
-is a constant. See
+is a constant. For the same reason `(= p null)` and `(!= p null)` on a `&T` are
+refused: `=: &T is non-null, so comparing it with null is constant`. See
 [Condition position](special-forms.md#condition-position-a-nullable-value-is-a-condition).
 
 **Flow narrowing**: inside a region dominated by a successful non-null test, a
-local `?&T` binding reads as `&T`. The compiler's own guard idioms are
+`?&T` binding (a local or a global) reads as `&T`. The compiler's own guard idioms are
 the mechanism — `(when (= m null) (return …))`, `(if (!= m null) … …)`,
 `(and (!= m null) (m field))`, and the bare `(when m …)` above all narrow, as do
 `if-some`/`when-some`/`unwrap`. An unchecked `(ptr T)` does **not** narrow: its
 deref is already allowed, and turning it into `&T` is `as-ref` plus a narrow.
 A reassignment kills the narrow (sticky across joins); loop bodies drop narrows
 established outside the loop for any binding the body assigns; `label` kills
-all narrows (unknown predecessors). Kind mismatches at a `cond`/`if` join meet
+all narrows (unknown predecessors). A narrowed global reads as `&T` only to the
+end of the function that tested it. Kind mismatches at a `cond`/`if` join meet
 conservatively (unchecked beats `Maybe` beats `ref`).
 
 > **⚠ Sharp edge — branch *element* types must match.** The conservative meet

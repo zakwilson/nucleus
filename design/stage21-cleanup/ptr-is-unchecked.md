@@ -286,12 +286,30 @@ promoted four such fields to `&T`. They were demoted by hand:
 - The `Allocator` protocol's `alloc`/`realloc` results and pointer parameters
   are `?&ui8`.
 
-**Found, not fixed.**
-- **Vacuous null-compares.** Twelve `&T` values that predate this item are
-  compared against `null` as a defensive check, which can never succeed. Among
-  them are `g-boxedfn-table`, `g-dyn-table`, three in generics.nuc and two in
-  examples/colon-paren-types.nuc. The `(= r null)` refusal (above) would flag
-  them.
-- **A `try` defcast gap.** docs/reading.md's `load` example fails with "err
-  expects an Err (i32) value". A `defcast` is not applied on `try`'s error
-  path. The failure predates this item and reproduces on the old boot.
+**Found, then fixed (2026-09-26, after the item-7 commit).**
+- **`(= r null)` on a `&T` is refused** (`emit-binop-vals`), with the same
+  wording as `cond`'s check. The compiler had 12 vacuous checks:
+  - Dead checks on initialised globals were deleted.
+  - Values that really are nullable were retyped `?&`: the reject-mode
+    `cap-box`, `protocol-resolve-any`'s result, `attrs-normalize-bindings`'
+    result, and two `BindingHit` payloads.
+  - Three tests asserted a constant. They now assert what they meant.
+- **Narrowing a global leaked into later functions.** Narrows live on the `Sym`,
+  and `reset-function-state` dropped the undo stack without undoing them. So
+  after `(when (= g null) (return …))` in one function, every later function
+  read `g` as `&T` and could dereference it unchecked. Found because the new
+  refusal fired on a correct guard.
+  - Each narrow now records `g-narrow-gen`. `sym-effective-type` ignores a
+    narrow from another generation.
+  - The generation comes from a counter that never reuses a value, and
+    push/pop-function-state save and restore it, so `macrolet`'s nested
+    emission neither sees nor clears the outer function's narrows.
+- **`try` into a `!&T` caller skipped `defcast`.** The niche `err` arm accepted
+  only an integer. It now tries `coerce-via-cast-rule` to `Err` first, which
+  fixes docs/reading.md's `load` example.
+- **`node-first` is `?&Node`.** Instrumenting it over the suite and the
+  bootstrap showed 241k calls on empty lists: `desugar` alone makes ~100k and
+  relies on the null. So a non-null, trapping `node-first` was ruled out.
+  Measured, the checked type costs 9 dereferences. All nine read the head
+  symbol and now call `node-head-sym`, which returns none for an empty list.
+- docs/builtins.md's examples no longer use the retired `cast`.

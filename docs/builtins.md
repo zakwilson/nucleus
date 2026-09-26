@@ -75,7 +75,7 @@ Functions can be redefined. Redefining a `defn` confirms with `redefined` (vs. `
 Limitations:
 - Functions need explicit `(return ...)` to return values (same as batch mode).
 - Redefining a function with a different signature is allowed by the REPL but existing callers were compiled against the old signature; calls through them have undefined behavior. Restart the session if the type changes.
-- `(import-use node)` brings in the AST utilities — the readers `node-len`, `node-at`, `node-first`, `node-rest`, `node-kind`, `node-is-list`, `node-empty?`, `node-line`; the builders `node-list-new`, `node-push`, `node-extend`, `node-list-done`, `node-cons`, `node-list1`…`node-list5`, `node-set-at`, `node-splice-at`; and `alloc-node` / `node-int` / `intern-symbol`. They allocate via `arena-alloc` and the arena initializes lazily on first call. `node-at` returns a *nullable* node (out of range answers `none`), so read its result's kind with `node-kind` — which answers `NODE-NIL` both for a null node and for `()`, the two ways a form can have nothing where an operand belongs — and its line with `node-line`. `node-int` builds the `NODE-INT` leaf a quasiquote needs when what is interpolated is a computed number (see [Interpolating a computed number](macros.md#interpolating-a-computed-number)). The same import carries the `Coll`/`Seq` conformances, so a list `Node` answers `count`, `(xs i)`, `conj` and `doseq` — see [A form is a collection](macros.md#a-form-is-a-collection).
+- `(import-use node)` brings in the AST utilities — the readers `node-len`, `node-at`, `node-first`, `node-rest`, `node-kind`, `node-is-list`, `node-empty?`, `node-line`; the builders `node-list-new`, `node-push`, `node-extend`, `node-list-done`, `node-cons`, `node-list1`…`node-list5`, `node-set-at`, `node-splice-at`; and `alloc-node` / `node-int` / `intern-symbol`. They allocate via `arena-alloc` and the arena initializes lazily on first call. `node-at` and `node-first` return a *nullable* `?&Node` (out of range or an empty list answers `none`); `node-head-sym` reads a form's head symbol, or none. Read either result's kind with `node-kind` — which answers `NODE-NIL` both for a null node and for `()`, the two ways a form can have nothing where an operand belongs — and its line with `node-line`. `node-int` builds the `NODE-INT` leaf a quasiquote needs when what is interpolated is a computed number (see [Interpolating a computed number](macros.md#interpolating-a-computed-number)). The same import carries the `Coll`/`Seq` conformances, so a list `Node` answers `count`, `(xs i)`, `conj` and `doseq` — see [A form is a collection](macros.md#a-form-is-a-collection).
 - stdout from JIT'd code is line-buffered (`setvbuf(stdout, NULL, _IOLBF, 0)` is called on REPL startup) so printf output appears immediately in both terminal and pipe-driven sessions.
 
 ## .nuch Header Format
@@ -194,7 +194,7 @@ A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or ret
 
 C headers consumed via `(import-use "foo.h")` or `(import "foo.h" prefix)` now register their `struct Foo { ... };` and `typedef struct { ... } Bar;` definitions as Nucleus structs with the same name. Anonymous inline struct fields are registered as memoized anonymous structs (same `__anon_struct_h<hex>` machinery). Pass-by-value parameters typed as a C struct work through this path. `union { ... }` fields, named unions, and `typedef union` are registered as untagged union types (stage 10 — see [Unions and tagged sums](#unions-and-tagged-sums)); headers like SDL's or pthread's no longer degrade over them. Bit-fields, C11 anonymous members, multi-declarator field lines (`int a, b;`) and flexible array members are all represented; see [Bit-fields](structs-unions.md#bit-fields--bits-w-namet) and [Anonymous members](structs-unions.md#anonymous-members--anon-t). Field types the parser still cannot represent (an array extent that does not fold, a declarator list of mixed pointer depth like `int *p, q;`) cause the whole struct to be skipped — registered as opaque `ptr` at use sites — rather than registering a layout-incompatible partial struct.
 
-In inline type positions (the type argument of `cast`, `sizeof`, `alloca`), either the canonical list form or the colon sugar works: `(cast (ptr Node) x)` and `(cast ptr:Node x)` are equivalent.
+In inline type positions (the type argument of `as`, `unsafe/cast`, `sizeof`, `alloca`), either the canonical list form or the colon sugar works: `(as (ptr Node) x)` and `(as ptr:Node x)` are equivalent.
 
 Desugar operates on binding positions in `defn`, `defvar`, `defstruct`, `extern`, `declare`, and `let`. Expression bodies are not desugared; typed symbols in value position (e.g., from macro expansion) are handled by the compiler directly.
 
@@ -217,13 +217,13 @@ from C headers; Nucleus code wraps the anonymous form in a `defstruct` field.
 
 Member access goes through a pointer to the union and is a typed load/store at
 offset 0 — reading a member other than the one last written is a
-reinterpretation, exactly `cast`'s contract (no checking; the raw frontier):
+reinterpretation, exactly `unsafe/cast`'s contract (no checking):
 
 ```lisp
 (defstruct Scalar kind:i32 (data (union as-int:i64 as-float:f64)))
 (let (s:ptr:Scalar (alloca Scalar)
       (d (ptr (union as-int:i64 as-float:f64))) (ref s 'data))
-  (set! (d 'as-int) (cast i64 42))
+  (set! (d 'as-int) 42)
   (d 'as-int))
 ```
 
@@ -254,7 +254,7 @@ bound (one-symbol-one-kind); only the prefixed constructors are.
 
 **No raw access outside `match`**: the tag and payload are not readable as
 fields (`(s 'tag)` is an error directing you to `match`); the escape hatch is
-an explicit `cast` to the representation struct.
+an explicit `unsafe/cast` to the representation struct.
 
 ### `match`
 
@@ -292,7 +292,7 @@ fully-applied use stamps and memoizes a concrete instance:
   (err e:E))
 
 (defn try-div (a:i64 b:i64) (Result i64 i32)
-  (when (= b (cast i64 0))
+  (when (= b 0)
     (return (err 1)))          ; return-position target typing
   (return (ok (/ a b))))
 
@@ -386,13 +386,13 @@ applies.
 (defstruct Pt x:i32 y:i32)
 (deferror not-found "point not found")
 
-; !ptr:Pt is (Result (ref Pt) Err) via rule 3: pointer-sized, no struct.
-(defn lookup (p:ptr:Pt good:i32):!ptr:Pt
+; !&Pt is (Result (ref Pt) Err) via rule 3: pointer-sized, no struct.
+(defn lookup (p:&Pt good:i32):!&Pt
   (when (= good 0) (return (err not-found)))
-  (return (ok (cast ref:Pt p))))
+  (return (ok p)))
 
 (defn main ():i32
-  (let (pt:ptr:Pt (cast ptr:Pt (malloc (sizeof Pt))))
+  (let (pt:&Pt (unsafe/cast &Pt (malloc (sizeof Pt))))
     (set! (pt 'x) 42)
     (match (lookup pt 1)
       ((ok q)  (printf "ok x=%d\n" (q 'x)))
@@ -436,7 +436,7 @@ instances and overloaded-fn mangling). Stamping is memoized: `(Vector i32)` in
 multiple locations produces the same `StructDef`.
 
 Type application is recognized in type position only — after `:`, in field
-types, `defn` parameter and return types, `cast` targets, `sizeof` operands, and
+types, `defn` parameter and return types, `as`/`unsafe/cast` targets, `sizeof` operands, and
 `alloca`/`array` element types. The colon sugar composes:
 
 ```lisp
@@ -630,12 +630,12 @@ machinery.
 (deferror parse-failed "could not parse value")
 
 (defn checked (n:i64):!i64
-  (when (< n (cast i64 0)) (return (err parse-failed)))
+  (when (< n 0) (return (err parse-failed)))
   (return (ok n)))
 
 (defn doubled (n:i64):!i64
   (let (v:i64 (try (checked n)))          ; propagate on err
-    (return (ok (* v (cast i64 2))))))
+    (return (ok (* v 2)))))
 
 (match (checked x)
   ((ok v)  ...)
@@ -734,24 +734,24 @@ not supported in v1.
 ; A fallible function. (err config-missing) consults bound handlers first.
 ; err! would bypass them unconditionally.
 (defn load-num (n:i64):!i64
-  (when (= n (cast i64 0))
+  (when (= n 0)
     (return (err config-missing)))    ; handler may repair → (ok v)
-  (return (ok (* n (cast i64 10)))))
+  (return (ok (* n 10))))
 
 ; A repairing handler: (some v) repairs, none declines.
-(defn repair-from-ctx (ctx:ptr detail:ptr) (Maybe i64)
-  (return (some (deref (cast ptr:i64 ctx)))))
+(defn repair-from-ctx (ctx:ptr detail:ptr):?i64
+  (return (some (deref (unsafe/cast &i64 ctx)))))
 
 (defn main ():i32
   ; No handler bound: (err config-missing) returns the error value.
-  (match (load-num (cast i64 0))
+  (match (load-num 0)
     ((ok v)  (printf "ok %lld\n" v))
     ((err e) (printf "err: %s\n" (err-name e))))
 
   ; Repairing handler bound for (config-missing, i64): err → (ok 777).
-  (let (fixed:i64 (cast i64 777))
-    (with-handler (config-missing i64 repair-from-ctx (cast ptr &fixed))
-      (match (load-num (cast i64 0))
+  (let (fixed:i64 777)
+    (with-handler (config-missing i64 repair-from-ctx (as ptr &fixed))
+      (match (load-num 0)
         ((ok v)  (printf "repaired: %lld\n" v))   ; prints: repaired: 777
         ((err e) (printf "err: %s\n" (err-name e))))))
   0)
@@ -783,15 +783,15 @@ behavior if policy declines:
 (deferror out-of-memory "allocation grow needs a policy decision")
 
 (defn grow (need:i64):i64
-  (match (signal out-of-memory i64 (cast ptr &need))
+  (match (signal out-of-memory i64 (as ptr &need))
     ((some sz) sz)               ; a handler supplied a size: continue
-    (none      (cast i64 0))))   ; declined / no handler: the fallback
+    (none      0)))              ; declined / no handler: the fallback
 
-(defn grant-double (ctx:ptr detail:ptr) (Maybe i64)
-  (return (some (* (deref (cast ptr:i64 detail)) (cast i64 2)))))
+(defn grant-double (ctx:ptr detail:ptr):?i64
+  (return (some (* (deref (unsafe/cast &i64 detail)) 2))))
 
 (with-handler (out-of-memory i64 grant-double null)
-  (grow (cast i64 8)))           ; → 16
+  (grow 8))                      ; → 16
 ```
 
 `signal` requires `(import-use error)` (it references the handler chain). Its result
@@ -903,7 +903,7 @@ expression yields `void` (e.g., a side-effect or no-return call like
 |------|-------------|--------------|
 | `do` | Sequence multiple expressions; yields the last | `{ ... }` block |
 | `let` | Bind local variables; yields the body's last expression | local variable declaration |
-| `with` | Like `let`, but **owns** any binding whose init is a libc allocator (`malloc`/`calloc`/`realloc`/`strdup`, possibly through `cast`) or whose declared type conforms to the `Drop` protocol. Owned bindings are released at scope exit (libc → `free`; Drop → statically dispatched `(drop b)`, null-guarded) in reverse binding order, on fall-through and on early `return`. The compiler verifies at compile time that an owned resource does not **escape** the scope — see [Pointer lifecycle](#pointer-lifecycle-with-escape-analysis). Use `(move b)` to transfer ownership out. | `let` + scoped `free` / RAII |
+| `with` | Like `let`, but **owns** any binding whose init is a libc allocator (`malloc`/`calloc`/`realloc`/`strdup`, possibly through `as` or `unsafe/cast`) or whose declared type conforms to the `Drop` protocol. Owned bindings are released at scope exit (libc → `free`; Drop → statically dispatched `(drop b)`, null-guarded) in reverse binding order, on fall-through and on early `return`. The compiler verifies at compile time that an owned resource does not **escape** the scope — see [Pointer lifecycle](#pointer-lifecycle-with-escape-analysis). Use `(move b)` to transfer ownership out. | `let` + scoped `free` / RAII |
 | `cond` | Multi-way conditional; yields the matched branch's value (strict-typed across branches) | `if` / `else if` / `else` chain |
 | `case` | Integer-keyed dispatch; lowers to LLVM `switch`. Each clause is `(KEY body...)` where KEY is an integer literal, a list of integer literals, or the symbol `_` (default). With no `_` clause, an unmatched scrutinee hits `unreachable` (UB). Yields the matched branch's value (strict-typed across branches), like `cond`. | `switch` / `default:` |
 | `match` | Eliminate a `defunion` value (or a `defenum` integer) by arm, with exhaustiveness checking. See [Unions and tagged sums](#unions-and-tagged-sums). | `switch` on the tag |
@@ -920,7 +920,7 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `not` | Logical negation | `!x` |
 | `and` | Short-circuit logical AND | `&&` |
 | `or` | Short-circuit logical OR | `\|\|` |
-| `cast` | Type cast | `(type)x` |
+| `as` / `unsafe/cast` | Conversion: `as` is checked, `unsafe/cast` asserts (see [Special forms](special-forms.md)) | `(type)x` |
 | `ref` | Take the address of a **variable** (`(ref x)`, which is what `&x` reads as) or of a **field** (`(ref s 'field)`, the 2-argument arity that replaced `.&`). One head in both worlds: `(ref T)` in a type slot is the non-null pointer type, and the type of `(ref x)` is `(ref (type-of x))`. The older spelling `addr-of` is retired and reserved — see [Special forms](special-forms.md). The two cannot collide: a variable address takes a bare symbol, a field address a receiver plus a quoted selector. | `&x` / `&s.field` |
 | `deref` | Dereference a pointer (reader sugar: `@p` → `(deref p)`) | `*p` |
 | `ptr-set!` | **Retired in Stage 16** — a targeted hard error: `'ptr-set!' was retired in Stage 16: set! takes a place`. Write `(set! (deref p) v)`. | — |
@@ -969,7 +969,7 @@ dangle. The compiler tracks aliases (its **taint**) at compile time and rejects
 escapes (see `design/stage10/lifecycle.md`):
 
 - Taint follows pointer **identity**: binding a tainted value (`let`/`with`/
-  `set!`), `cast`, `ptr+`, `ref`, and control-flow joins keep it.
+  `set!`), `as`, `unsafe/cast`, `unsafe/ptr+`, `ref`, and control-flow joins keep it.
   Copying the pointee **value** out (`deref`, field loads) clears it — so
   `(return (deref p))` and `(return (p 'count))` are fine.
 - **Escape sinks** (compile errors on tainted operands): `return` (explicit or
@@ -1438,7 +1438,7 @@ Pointer size and the target are not hardcoded as `i64`/`8` throughout codegen: a
 
 **`usize` and `ssize`** are the portable index and length types for pointer-sized arithmetic. They resolve to the target's pointer-width integer at compile time: `i32` on ILP32 (4-byte pointer) targets and `i64` on LP64 (8-byte pointer) targets. `usize` is unsigned; `ssize` is signed. They are valid in any type position and are handled correctly by `sizeof`, type mangling, `type-eq`, and arithmetic operators. Use `usize` for lengths, counts, and non-negative offsets; use `ssize` for signed differences or offsets that may be negative. Both participate in the standard numeric promotions and are mangled distinctly (e.g. `usize`, `ssize`) in method symbols and stamped struct names.
 
-`CStr` is the type of a string literal — a C `char*`. It lowers to `ptr` (same ABI) and flows into any `ptr`-typed C function with no cast, but it is a **distinct type for operator dispatch**: `=` / `!=` on two `CStr` do a `strcmp` **content** comparison (so equal text compares equal across distinct buffers), whereas `=` on two raw `ptr` is pointer identity. `CStr` conforms to the `Eq` protocol (`lib/numeric.nuc`), so it works in an `Eq`-bounded generic; it is not `Ord` (no ordering — out of scope here, along with Unicode). Only `=` / `!=` are defined; other operators on `CStr` are an error. A `CStr` and a `ptr` are freely interconvertible with `cast` (no IR) and coerce automatically in value positions (assignment, return, field/array store); a string literal also passes directly to a plain `ptr` parameter. (Multimethod dispatch treats `CStr` as distinct — overload on `CStr` explicitly, or `cast` to `ptr`.) `strcmp` must be declared, which the prelude's `(import-use "string.h")` provides. Example: `examples/cstr.nuc`.
+`CStr` is the type of a string literal — a C `char*`. It lowers to `ptr` (same ABI) and flows into any `ptr`-typed C function with no cast, but it is a **distinct type for operator dispatch**: `=` / `!=` on two `CStr` do a `strcmp` **content** comparison (so equal text compares equal across distinct buffers), whereas `=` on two raw `ptr` is pointer identity. `CStr` conforms to the `Eq` protocol (`lib/numeric.nuc`), so it works in an `Eq`-bounded generic; it is not `Ord` (no ordering — out of scope here, along with Unicode). Only `=` / `!=` are defined; other operators on `CStr` are an error. A `CStr` and a `ptr` are freely interconvertible with `as` (no IR) and coerce automatically in value positions (assignment, return, field/array store); a string literal also passes directly to a plain `ptr` parameter. (Multimethod dispatch treats `CStr` as distinct — overload on `CStr` explicitly, or `as` to `ptr`.) `strcmp` must be declared, which the prelude's `(import-use "string.h")` provides. Example: `examples/cstr.nuc`.
 
 Float literals: `1.5`, `-0.25`, `1e10`, `1.5e-3`, `.5`. Special values use Scheme syntax: `+inf.0`, `-inf.0`, `+nan.0`. Float arithmetic uses `+ - * / %` and comparisons use `= != < <= > >=` (LLVM `fadd`/`fcmp`).
 

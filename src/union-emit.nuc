@@ -561,15 +561,17 @@
           (do
             (when (!= (node-len cc) (+ argi 1))
               (die-at line "make: err takes one Err field"))
-            (let (ev:&Val (emit-node (node-at cc argi) scope))
-              (when (= (is-int-type (ev 'type)) 0)
+            (let (ev0:&Val (emit-node (node-at cc argi) scope)
+                  evc:?&Val (if (!= (is-int-type (ev0 'type)) 0) ev0
+                              (coerce-via-cast-rule ev0 ty-err)))
+              (when (= evc null)
                 (die-at line "make: err expects an Err (i32) value"))
               ; (err E) = inttoptr(0 - zext(E to iptr)). Id 0 ("no error") maps to
               ; null, which is never a valid (ok) either, so it is a safe sentinel.
               (let (eid64:StrView (new-tmp)
                     neg:StrView (new-tmp)
                     pres:StrView (new-tmp))
-                (emit g-body-stream "  " eid64 " = zext i32 " (ev 'val) " to " (ptr-int-ir) "\n")
+                (emit g-body-stream "  " eid64 " = zext i32 " (evc 'val) " to " (ptr-int-ir) "\n")
                 (emit g-body-stream "  " neg " = sub " (ptr-int-ir) " 0, " eid64 "\n")
                 (emit g-body-stream "  " pres " = inttoptr " (ptr-int-ir) " " neg " to ptr\n")
                 (return (alloc-val (type-as-pkind ty PTR-ERRPTR) pres)))))

@@ -239,6 +239,8 @@
   (set! g-init-fn-active 0)
   (set! g-loop-depth 0)
   (set! g-nundo (vector-new-in &g-arena-alloc))
+  (inc! g-narrow-gen-next)
+  (set! g-narrow-gen g-narrow-gen-next)
   (ensure-emit-buffers)
   (string-clear g-entry-stream)
   (string-clear g-body-stream))
@@ -267,6 +269,7 @@
     (set! (s 'fn-ret-type) g-fn-ret-type)
     (set! (s 'loop-depth) g-loop-depth)
     (set! (s 'nundo) g-nundo)
+    (set! (s 'narrow-gen) g-narrow-gen)
     ; A MOVE, not a copy: the nested emission calls `reset-function-state`,
     ; which would clear the outer function's buffer if it were still installed.
     (set! (s 'entry-stream) (string-box g-entry-stream))
@@ -295,6 +298,7 @@
   (set! g-fn-ret-type (s 'fn-ret-type))
   (set! g-loop-depth (s 'loop-depth))
   (set! g-nundo (s 'nundo))
+  (set! g-narrow-gen (s 'narrow-gen))
   (drop &g-entry-stream)
   (drop &g-body-stream)
   (set! g-entry-stream (deref (unsafe/cast &String (s 'entry-stream))))
