@@ -2,4 +2,4 @@
 ; signature must die at registration (protocol-register-form) with the targeted
 ; diagnostic; the new spelling is (area (params):ret).
 (defprotocol Shape
-  (area:i32 (self:ptr:Self)))
+  (area:i32 (self:&Self)))

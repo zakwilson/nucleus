@@ -63,7 +63,7 @@
   ;    `(s21-w s21-x)`, and the directive itself is printed as data.
   (let (ast:String (try (emit-for-file "" "--dump-ast" "tests/fixtures/s21-def-rmacro.nuc"))
         av:StrView (string-as-view &ast))
-    (try (check-line av "(defn s21-before () :raw:Node (return (quote $s21-x)))"))
+    (try (check-line av "(defn s21-before () :ptr:Node (return (quote $s21-x)))"))
     (try (check-line av "(def-rmacro \"$\" s21-w)"))
     (try (check-line av "(defn s21-after () :i32 (return (s21-w s21-x)))"))
     (drop &ast))
@@ -231,7 +231,7 @@ read-through: ok
         c:Compiled (try (compile-path-in dir impv)))
     (when (!= (c 'exit) 1)
       (fail! "expected exit 1 for a syntax error in an imported file, got "
-             (as i64 (c 'exit)) "\n     " (test-show (string-as-view (ref c 'raw)))))
+             (as i64 (c 'exit)) "\n     " (test-show (string-as-view (ref c 'raw-text)))))
     (try (check-error-at (ref c 'diags) badv 3 "unknown escape \\q"))
     (try (s21-check-no-diag-in (ref c 'diags) impv))
     (try (check-eq-int (as i64 (count (ref c 'diags))) 1 "diagnostics"))
@@ -589,7 +589,7 @@ foo:(bar)
 (deftest s21-pk4b-cheader-cell
   (let (h:String (try (emit-for-file "" "--emit-cheader" "tests/fixtures/s21-pk4b-cheader-cell.nuc"))
         hv:StrView (string-as-view &h)
-        niche:StrView "struct Pt* /* niche: reserved top page = error/none */")
+        niche:StrView "struct Pt* /* nullable */")
     (try (check-line hv "/* r-sym: uses an error-union or option type; not exported */"))
     (try (check-line hv "/* r-cell: uses an error-union or option type; not exported */"))
     (try (check-line hv "/* r-list: uses an error-union or option type; not exported */"))
@@ -599,6 +599,7 @@ foo:(bar)
     (try (check-line hv "/* e-other: uses a defunion-template instance type; not exported */"))
     (try (check-line hv "/* deep: uses an error-union or option type; not exported */"))
     (try (check-not-contains hv "void*"))
+    (try (check-line hv "struct Pt* /* niche: reserved top page = error */ e_ptr(struct Pt* q) asm(\"e-ptr\");"))
     (try (s21-check-line-4 hv niche " q_sym(" niche " q) asm(\"q-sym\");"))
     (try (s21-check-line-4 hv niche " q_cell(" niche " q) asm(\"q-cell\");"))
     (try (s21-check-line-4 hv niche " q_list(" niche " q) asm(\"q-list\");"))
@@ -677,8 +678,8 @@ foo:(bar)
 (defn sz-list ((v (ref (Vector (ref T))))):i32 (return (unsafe/cast i32 (sizeof T))))
 (defn sz-amp ((v (ref (Vector &T)))):i32 (return (unsafe/cast i32 (sizeof T))))
 (defn sz-colon ((v (ref (Vector ref:T)))):i32 (return (unsafe/cast i32 (sizeof T))))
-(defn sz-raw ((v (ref (Vector raw:T)))):i32 (return (unsafe/cast i32 (sizeof T))))
-(defn sz-ptr ((v (ref (Vector (ptr T))))):i32 (return (unsafe/cast i32 (sizeof T))))
+(defn sz-raw ((v (ref (Vector ptr:T)))):i32 (return (unsafe/cast i32 (sizeof T))))
+(defn sz-ptr ((v (ref (Vector &T)))):i32 (return (unsafe/cast i32 (sizeof T))))
 (defn sz-q ((v (ref (Vector ?&T)))):i32 (return (unsafe/cast i32 (sizeof T))))
 (defn main ():i32
   (let (p:P3 (P3 1 2 3)
@@ -1744,10 +1745,10 @@ foo:(bar)
 (defstruct Pt x:i32 y:i32)
 (defn main ():i32
   (let (pt:Pt (Pt 3 4)
-        q:raw:Pt null
-        v (vfn (b:i32):raw:Pt (if (= b 0) q &pt))
-        m (mfn (b:i32):?&Pt (if (= b 0) q (as raw:Pt &pt)))
-        c (cfn (default-allocator) (b:i32):?ptr:Pt (if (= b 0) q &pt)))
+        q:ptr:Pt null
+        v (vfn (b:i32):ptr:Pt (if (= b 0) q &pt))
+        m (mfn (b:i32):?&Pt (if (= b 0) q (as ptr:Pt &pt)))
+        c (cfn (default-allocator) (b:i32):?&Pt (if (= b 0) q &pt)))
     (printf \"%d %d %d %d %d %d\\n\" (if (= (v 0) null) 1 0) (if (= (v 1) null) 0 1)
             (if (= (m 0) null) 1 0) (if (= (m 1) null) 0 1)
             (if (= (c 0) null) 1 0) (if (= (c 1) null) 0 1))
@@ -1755,9 +1756,9 @@ foo:(bar)
 ")))
     (try (check-golden (string-as-view &out) "1 1 1 1 1 1\n"))
     (drop &out))
-  (let (msg:StrView "raw pointer where non-null (ref ...) is required")
-    (try (s21-type-refused "(defstruct Pt x:i32) (defn f ():i32 (let (g (fn (x:raw:Pt):&Pt (return x))) (return 0)))" 3 msg))
-    (try (s21-type-refused "(defstruct Pt x:i32) (defn f (q:raw:Pt):i32 (let (g (vfn (b:i32):&Pt (return q))) (return 0)))" 3 msg)))
+  (let (msg:StrView "unchecked pointer where non-null (ref ...) is required")
+    (try (s21-type-refused "(defstruct Pt x:i32) (defn f ():i32 (let (g (fn (x:ptr:Pt):&Pt (return x))) (return 0)))" 3 msg))
+    (try (s21-type-refused "(defstruct Pt x:i32) (defn f (q:ptr:Pt):i32 (let (g (vfn (b:i32):&Pt (return q))) (return 0)))" 3 msg)))
   (return (ok)))
 
 ; An anonymous struct is written when its by-value fields are in the module, not
@@ -1945,12 +1946,12 @@ foo:(bar)
 (defn fh (c:&Cents):i32 (return (+ (c 'v) 8)))
 (defn fi (c:&Cents):i32 (return (+ (c 'v) 9)))
 (defn fv (m:?Cents):i32 (match m ((some c) (return (c 'v))) (none (return -1))))
-(extend ptr:Cents PA)
+(extend &Cents PA)
 (extend &Cents PB)
 (extend ref:Cents PC)
-(extend raw:Cents PD)
-(extend (ptr Cents) PE)
-(extend (raw Cents) PF)
+(extend ptr:Cents PD)
+(extend &Cents PE)
+(extend (ptr Cents) PF)
 (extend ?&Cents PG)
 (extend ?(ref Cents) PH)
 (extend (Maybe &Cents) PI)
@@ -2010,7 +2011,7 @@ foo:(bar)
     (drop &ldir))
 
   (try (s21-type-refused "(defprotocol Q (q (x:Self):i32)) (extend &Nope Q)" 3 "unknown type: Nope"))
-  (try (s21-type-refused "(defprotocol Q (q (x:Self):i32)) (extend ptr:Nope Q)" 3 "unknown type: Nope"))
+  (try (s21-type-refused "(defprotocol Q (q (x:Self):i32)) (extend &Nope Q)" 3 "unknown type: Nope"))
   (return (ok)))
 
 ; A `deftype` alias or C typedef subject conforms its target type — the alias is
@@ -2320,7 +2321,7 @@ foo:(bar)
 ; `~@` of a view splices the VIEW's elements, not the array behind it.
 (deftest s21-node-splice-a-rest-view
   (try (check-source-exit "(import-use node)
-(defn tail3 ():(raw Node) (return (node-rest `(1 2 3 4))))
+(defn tail3 ():(ptr Node) (return (node-rest `(1 2 3 4))))
 (defmacro sum-of (:rest args) `(macfoldr _+ 0 ~@args))
 (defn main ():i32 (return (sum-of ~@(tail3))))
 " 9))
@@ -2394,7 +2395,7 @@ foo:(bar)
 ; recursion off the end of the stack), a `~e` argument, and a `compile-time` block.
 (deftest s21-ct-fault-boundary
   (try (s21-exit1-at "(defmacro boom (x)
-  (let ((n (raw Node)) null)
+  (let ((n (ptr Node)) null)
     (when (= (n 'kind) 0) (return x))
     x))
 
@@ -2411,12 +2412,12 @@ foo:(bar)
 " 7 "macro 'deep': crashed while expanding"))
   (try (s21-exit1-at "(defmacro m (x) x)
 (defn main ():i32
-  (return (m ~(let ((n (raw Node)) null) (if (= (n 'kind) 0) n n)))))
+  (return (m ~(let ((n (ptr Node)) null) (if (= (n 'kind) 0) n n)))))
 " 3 "the computed argument '~(let ...)': crashed while evaluating"))
   (try (s21-exit1-at "(defn main ():i32 (return 0))
 
 (compile-time
-  (let (p:(raw i32) null)
+  (let (p:(ptr i32) null)
     (set! (deref p) 1)))
 " 3 "compile-time block: crashed while running"))
   (return (ok)))
@@ -2425,7 +2426,7 @@ foo:(bar)
 ; allocation -- but a `macro-error` before it must have left no frame armed.
 (deftest s21-ct-fault-ends-repl-session
   (let (p:String (try (test-write-file "repl.in" "(defmacro bad (x) (macro-error x \"bad: refused\") x)
-(defmacro boom (x) (let ((n (raw Node)) null) (when (= (n 'kind) 0) (return x)) x))
+(defmacro boom (x) (let ((n (ptr Node)) null) (when (= (n 'kind) 0) (return x)) x))
 (bad (f 1))
 (+ 1 2)
 (boom 1)
@@ -2530,7 +2531,7 @@ foo:(bar)
         pv:StrView (string-as-view &p))
     (try (check-refused-alike dir pv 3 (s21-cpp-msg)))
     (let (c:Compiled (try (emit-checked dir "--emit-nuch" pv)))
-      (try (check-eq-int (count-matching-lines (string-as-view (ref c 'raw)) "*note: clang -E*")
+      (try (check-eq-int (count-matching-lines (string-as-view (ref c 'raw-text)) "*note: clang -E*")
                          1 "clang's report, printed once"))
       (drop &c))
     (drop &p))
@@ -2910,7 +2911,7 @@ enum { S21O_E_NEG = -2, S21O_E_DIV = (0u - 1) / 2, S21O_E_SHR = (0u - 2) >> 1,
           got:String (string-new)
           it:SplitIter (strview-split &names &sp))
       (when (not (c 'ok?))
-        (fail! "nucleusc --target=avr refused the header\n     " (test-show (string-as-view (ref c 'raw)))))
+        (fail! "nucleusc --target=avr refused the header\n     " (test-show (string-as-view (ref c 'raw-text)))))
       (while (not (split-iter-done &it))
         (let (n:StrView (split-iter-next &it))
           (when (not (= n "S21O_INT_SHR"))
@@ -2954,22 +2955,22 @@ enum { S21O_E_NEG = -2, S21O_E_DIV = (0u - 1) / 2, S21O_E_SHR = (0u - 2) >> 1,
     (drop &src))
   (return (ok)))
 
-; The registry key writes every pointer as `ptr:T`, which reads as non-null.
+; The registry key writes every pointer as `ref:T`; a message spells the real kind.
 (deftest s21-type-display-pointer-kinds
   (try (s21-arg-type-shown "&Pt" "&Pt"))
-  (try (s21-arg-type-shown "ptr:Pt" "&Pt"))
-  (try (s21-arg-type-shown "(raw Pt)" "(raw Pt)"))
+  (try (s21-arg-type-shown "ptr:Pt" "(ptr Pt)"))
+  (try (s21-arg-type-shown "(ptr Pt)" "(ptr Pt)"))
   (try (s21-arg-type-shown "?&Pt" "?&Pt"))
   (try (s21-arg-type-shown "!&Pt" "!&Pt"))
   (try (s21-arg-type-shown "&&Pt" "&&Pt"))
-  (try (s21-arg-type-shown "&raw:Pt" "&(raw Pt)"))
-  (try (s21-arg-type-shown "(raw &Pt)" "(raw &Pt)"))
+  (try (s21-arg-type-shown "&ptr:Pt" "&(ptr Pt)"))
+  (try (s21-arg-type-shown "(ptr &Pt)" "(ptr &Pt)"))
   (try (s21-arg-type-shown "ptr" "ptr"))
   (try (s21-arg-type-shown "?ptr" "?ptr"))
   (try (s21-exit1-at "(defstruct Pt x:i32)
-(defn g (p:(raw Pt)):&Pt (return (as &Pt p)))
+(defn g (p:(ptr Pt)):&Pt (return (as &Pt p)))
 (defn main ():i32 (return 0))
-" 2 "as: raw pointer (raw Pt) where non-null &Pt is required"))
+" 2 "as: unchecked pointer (ptr Pt) where non-null &Pt is required"))
   (try (s21-exit1-at "(defstruct Cents v:i32)
 (defprotocol Shw (shw (x:Self):i32))
 (extend &Cents Shw)
@@ -2986,30 +2987,30 @@ enum { S21O_E_NEG = -2, S21O_E_DIV = (0u - 1) / 2, S21O_E_SHR = (0u - 2) >> 1,
 
 (deftest s21-repl-type-of-pointer-kinds
   (let (t:String (try (repl-session "(defvar g1:i32 1)
-(defvar gp:(raw i32))
+(defvar gp:(ptr i32))
 (defvar gq:?&i32)
 (type-of &g1)
 (type-of gp)
 (type-of gq)
 ")))
-    (try (check-contains (string-as-view &t) "nuc>   &i32\nnuc>   (raw i32)\nnuc>   ?&i32\n"))
+    (try (check-contains (string-as-view &t) "nuc>   &i32\nnuc>   (ptr i32)\nnuc>   ?&i32\n"))
     (drop &t))
   (return (ok)))
 
 ; Null means absent since `()` is a node, so no source spells a null element and
 ; every consumer of a form would dereference one.
 (deftest s21-macro-null-element-refused
-  (try (s21-exit1-at "(defmacro bump (x) (let (z:(raw Node) null) `(inc! ~z)))
+  (try (s21-exit1-at "(defmacro bump (x) (let (z:(ptr Node) null) `(inc! ~z)))
 (defn main ():i32
   (let (a:i32 1)
     (bump a)
     (return a)))
 " 4 "macro 'bump': the expansion has an empty element at position 1 of (inc! …)"))
-  (try (s21-exit1-at "(defmacro binder (x) (let (z:(raw Node) null) `(let (~z 0) 1)))
+  (try (s21-exit1-at "(defmacro binder (x) (let (z:(ptr Node) null) `(let (~z 0) 1)))
 (defn main ():i32
   (return (binder q)))
 " 3 "macro 'binder': the expansion has an empty element at position 0 of a list"))
-  (let (t:String (try (repl-session "(defmacro bump (x) (let (z:(raw Node) null) `(inc! ~z)))
+  (let (t:String (try (repl-session "(defmacro bump (x) (let (z:(ptr Node) null) `(inc! ~z)))
 (bump 1)
 (+ 1 2)
 ")))
@@ -3926,8 +3927,8 @@ int main(void) {
 
 (deftest s21-declare-unnamed-compound-param
   (let (vec:StrView "(declare f ((Vector i32)):i32) (defn g ():i32 (return (f 1)))"
-        pt:StrView "(declare f ((ptr i8)):i32) (defn g ():i32 (return (f 1)))"
-        sig:StrView "(declare f (?ptr:i8):i32) (defn g ():i32 (return (f 1)))"
+        pt:StrView "(declare f (&i8):i32) (defn g ():i32 (return (f 1)))"
+        sig:StrView "(declare f (?&i8):i32) (defn g ():i32 (return (f 1)))"
         named:StrView "(declare f (ptr:i8):i32) (defn g ():i32 (return (f null)))"
         bad:StrView "(declare f ((\"q\" i32)):i32)")
     (try (s21-type-refused vec 3 "f: argument 1 has type i32, which does not match parameter type (Vector i32)"))
@@ -4266,4 +4267,79 @@ int main(void) { printf(\"%d %d\\n\", s21or_add(1, 2), s21or_rest(7, 0)); return
       (try (check-eq (string-as-view &out) "3 7\n"))
       (drop &out))
     (drop &l))
+  (return (ok)))
+
+; `ptr` is the one untyped pointer, so a `void` pointee has no spelling.
+(deftest s21-void-pointee-refused
+  (try (s21-type-refused "(defn s21vp (p:&void):i32 (return 0))" 3
+                         "void has no pointee: write ptr for an untyped pointer"))
+  (try (s21-type-refused "(defn s21vp (p:(ptr void)):i32 (return 0))" 3
+                         "void has no pointee"))
+  (try (s21-type-refused "(defn s21vp (p:?&void):i32 (return 0))" 3
+                         "void has no pointee"))
+  (return (ok)))
+
+; A bare `ptr` holds `null` and every C pointer, so it is a condition.
+(deftest s21-cond-bare-ptr
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defn main ():i32
+  (let (x:i32 5 p:ptr null q:ptr &x t:ptr:i32 &x u:ptr:i32 null)
+    (when p (return 1))
+    (when (not q) (return 2))
+    (when u (return 3))
+    (printf \"%s\\n\" (if (and q t (not p)) \"ok\" \"no\"))
+    (return 0)))
+")))
+    (try (check-eq (string-as-view &out) "ok\n"))
+    (drop &out))
+  (return (ok)))
+
+; `raw` was the unchecked kind's old name; `ptr` holds it now.
+(deftest s21-raw-retired
+  (try (s21-type-refused "(defn s21rr (p:raw):i32 (return 0))" 3
+                         "'raw' was retired: write ptr for an untyped pointer, (ptr T) for a typed unchecked one"))
+  (try (s21-type-refused "(defn s21rr (p:(raw i32)):i32 (return 0))" 3 "'raw' was retired"))
+  (try (s21-type-refused "(defn s21rr (p:raw:i32):i32 (return 0))" 3 "'raw' was retired"))
+  (return (ok)))
+
+; A bare `ptr` is unchecked, so it no longer reaches a `&T` slot unasserted.
+(deftest s21-bare-ptr-null-hole-closed
+  (try (s21-type-refused "(defstruct S21Nh x:i32)
+(defn s21nh-f (p:&S21Nh):i32 (return (p 'x)))
+(defn s21nh-g ():i32 (let (q:ptr null) (return (s21nh-f q))))" 5
+                         "argument: unchecked pointer where non-null (ref ...) is required"))
+  (try (s21-type-refused "(defstruct S21Nh x:i32)
+(defn s21nh-g (q:ptr):i32 (let (r:&S21Nh (as &S21Nh q)) (return (r 'x))))" 4
+                         "as: unchecked pointer ptr where non-null &S21Nh is required"))
+  (try (s21-type-refused "(defstruct S21Nh x:i32)
+(defn s21nh-g (q:ptr:S21Nh):i32 (let (r:&S21Nh (as &S21Nh q)) (return (r 'x))))" 4
+                         "as: unchecked pointer (ptr S21Nh) where non-null &S21Nh is required"))
+  (return (ok)))
+
+; A macro's arguments are arity-checked and `&rest` is `()`, so its parameters,
+; like a `gensym`, are `&Node`: they bind to non-null slots, and testing one is refused.
+(deftest s21-macro-params-are-ref
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defmacro s21mp-twice (x)
+  (let (y:&Node x g:&Node (gensym))
+    `(let ((~g i32) ~y) (printf \"%d\\n\" (+ ~g ~g)))))
+(defn main ():i32 (s21mp-twice 21) (return 0))
+")))
+    (try (check-eq (string-as-view &out) "42\n"))
+    (drop &out))
+  (try (s21-type-refused "(defmacro s21mp-bad (x) (if x `1 `0))" 3
+                         "is non-null, so this test is always true"))
+  (return (ok)))
+
+; `Maybe` over any plain pointer is the one-pointer niche.
+(deftest s21-maybe-over-unchecked-is-niche
+  (try (s21-arg-type-shown "?ptr:Pt" "?&Pt"))
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defstruct Pt x:i32)
+(defn main ():i32
+  (printf \"%ld %ld\\n\" (sizeof ?ptr) (sizeof ?ptr:Pt))
+  (return 0))
+")))
+    (try (check-eq (string-as-view &out) "8 8\n"))
+    (drop &out))
   (return (ok)))

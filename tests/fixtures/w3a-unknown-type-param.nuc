@@ -3,7 +3,7 @@
 ; NODE-SYM whose own line is always 0 (the W4a class of bug). The parameter list
 ; and the return operand carry real lines; borrow them.
 (defn takes-missing
-      (m:ptr:NoSuchTypeHere):i32
+      (m:&NoSuchTypeHere):i32
   (return 0))
 
 (defn main ():i32 (return 0))

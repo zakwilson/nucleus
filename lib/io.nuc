@@ -151,7 +151,7 @@
         (when (= (io-in-fill) 0)
           (when (= any 0) (return (none)))
           (return (some out))))
-      (let (c:Char (as Char (as ui32 (aref (as &ui8 g-in-buf)
+      (let (c:Char (as Char (as ui32 (aref (unsafe/cast &ui8 g-in-buf)
                                            (as i64 g-in-pos)))))
         (set! g-in-pos (+ g-in-pos 1))
         (set! any 1)

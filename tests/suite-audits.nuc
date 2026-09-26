@@ -277,9 +277,9 @@
 
 ; One print must read back as exactly one form, or a printer that dropped a
 ; bracket would still pass on a prefix.
-(defn check-forms-roundtrip (path:StrView forms:raw:Node):!void
+(defn check-forms-roundtrip (path:StrView forms:?&Node):!void
   (dotimes (k (node-len forms))
-    (let (form:raw:Node (node-at forms k)
+    (let (form:?&Node (node-at forms k)
           text:String (node-str form))
       (match (read-all (string-as-view &text))
         ((ok back)
@@ -384,7 +384,7 @@
   (let (c:Compiled (try (compile-path "tests/fixtures/g5-noinit-ref.nuc")))
     (try (check-note-at (ref c 'diags) "tests/fixtures/g5-noinit-ref.nuc" 12
                         "give it an initializer, or declare it nullable"))
-    (try (check-eq-int (count-matching-lines (string-as-view (ref c 'raw)) "?*")
+    (try (check-eq-int (count-matching-lines (string-as-view (ref c 'raw-text)) "?*")
                        1 "a diagnostic on exactly one line"))
     (drop &c))
 

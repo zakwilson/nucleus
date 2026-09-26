@@ -27,7 +27,7 @@
   (let (sz:usize    (as usize (sizeof Shape))
         sh:Shape    (square 4)
         area:i32    (shape-measure sh)
-        lst:(raw Node) `(1 2 3))
+        lst:(ptr Node) `(1 2 3))
     ; Consume sz (usize) via a binop against a bare literal — the literal adapts
     ; to usize with no cross-target-lossy narrowing `as` (usize is i16 on AVR,
     ; i64 on hosts). lst's quasiquote init is what pulls in the node runtime

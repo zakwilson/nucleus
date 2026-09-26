@@ -13,5 +13,5 @@
 
 (defn main ():i32
   (let (e:CStr (getenv "W9_ITEM7_NOT_SET")
-        p:ptr:W9C7A (as ptr:W9C7A e))
+        p:&W9C7A (as &W9C7A e))
     (return (p n))))

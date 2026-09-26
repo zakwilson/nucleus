@@ -59,7 +59,7 @@
 ;   cap   : total allocated element slots.
 ;   alloc : the allocator handle the buffer is owned through (by value).
 (defstruct (Vector T)
-  (data (raw ui8))   ; list-form: (raw ui8) is a parenthesised type
+  (data ?&ui8)   ; list-form: (ptr ui8) is a parenthesised type
   len:usize
   cap:usize
   alloc:AllocHandle)
@@ -125,7 +125,7 @@
     (let (old-bytes:usize (* (_get v 'cap) elem-size)
           new-bytes:usize (* new-cap elem-size)
           ah:&AllocHandle (ref v 'alloc))
-      (let ((new-data (raw ui8))
+      (let ((new-data ?&ui8)
             (alloc-handle-realloc ah (_get v 'data) old-bytes new-bytes 8))
         (when (= (as ptr new-data) null) (vector-oom))
         (set! (v 'data) new-data)
@@ -142,7 +142,7 @@
 ; conj: append an element at the back, growing if needed.
 (defn conj (self:&(Vector T) elem:T):void
   (when (>= (_get self 'len) (_get self 'cap)) (vector-grow self))
-  (set! (aref (as &T (as ptr (_get self 'data))) (as i64 (_get self 'len))) elem)
+  (set! (aref (unsafe/cast &T (as ptr (_get self 'data))) (as i64 (_get self 'len))) elem)
   (set! (self 'len) (+ (_get self 'len) 1)))
 
 ; empty? -> true when len = 0.
@@ -157,14 +157,14 @@
 ; invoke: index access `(v i)` -> element. Panics on out-of-bounds.
 (defn invoke (self:&(Vector T) i:usize):T
   (when (>= i (_get self 'len)) (vector-bounds "get" i (_get self 'len)))
-  (return (aref (as &T (as ptr (_get self 'data))) (as i64 i))))
+  (return (aref (unsafe/cast &T (as ptr (_get self 'data))) (as i64 i))))
 
 ; set: index assignment `(set! (v i) x)` — the write side of `invoke`
 ; (dot-forms.md §3). Panics out-of-bounds exactly as `invoke` does; growing on a
 ; write would make a typo silently extend the vector.
 (defn set (self:&(Vector T) i:usize elem:T):void
   (when (>= i (_get self 'len)) (vector-bounds "set" i (_get self 'len)))
-  (set! (aref (as &T (as ptr (_get self 'data))) (as i64 i)) elem))
+  (set! (aref (unsafe/cast &T (as ptr (_get self 'data))) (as i64 i)) elem))
 
 ; append: add at the back (same as conj for a vector).
 (defn append (self:&(Vector T) elem:T):void
@@ -174,7 +174,7 @@
 (defn contains? (self:&(Vector T) elem:T):bool
   (let (i:usize 0)
     (while (< i (_get self 'len))
-      (when (= (aref (as &T (as ptr (_get self 'data))) (as i64 i)) elem)
+      (when (= (aref (unsafe/cast &T (as ptr (_get self 'data))) (as i64 i)) elem)
         (return true))
       (set! i (+ i 1)))
     (return false)))
@@ -184,7 +184,7 @@
 (defn insert (self:&(Vector T) i:usize elem:T):void
   (when (> i (_get self 'len)) (vector-bounds "insert" i (_get self 'len)))
   (when (>= (_get self 'len) (_get self 'cap)) (vector-grow self))
-  (let (buf:&T (as &T (as ptr (_get self 'data)))
+  (let (buf:&T (unsafe/cast &T (as ptr (_get self 'data)))
         j:usize (_get self 'len))
     (while (> j i)
       (set! (aref buf (as i64 j)) (aref buf (as i64 (- j 1))))
@@ -196,7 +196,7 @@
 ; i must be < len (i = len-1 removes the last element). Panics out-of-bounds.
 (defn remove-at (self:&(Vector T) i:usize):void
   (when (>= i (_get self 'len)) (vector-bounds "remove-at" i (_get self 'len)))
-  (let (buf:&T (as &T (as ptr (_get self 'data)))
+  (let (buf:&T (unsafe/cast &T (as ptr (_get self 'data)))
         j:usize i)
     (while (< (+ j 1) (_get self 'len))
       (set! (aref buf (as i64 j)) (aref buf (as i64 (+ j 1))))
@@ -236,7 +236,7 @@
   (let (len:usize (_get self 'len)
         esz:usize (as usize (sizeof T)))
     (reserve self (+ len n))
-    (memcpy (as ptr (unsafe/ptr+ (as &ui8 (as ptr (_get self 'data)))
+    (memcpy (as ptr (unsafe/ptr+ (unsafe/cast &ui8 (as ptr (_get self 'data)))
                                  (as i64 (* len esz))))
             (as ptr p)
             (as i64 (* n esz)))
@@ -245,7 +245,7 @@
 ; vector-extend: append every element of `other`, which is left unchanged.
 (defn vector-extend (self:&(Vector T) other:&(Vector T)):void
   (vector-extend-raw self
-                     (as &T (as ptr (_get other 'data)))
+                     (unsafe/cast &T (as ptr (_get other 'data)))
                      (_get other 'len)))
 
 ; ---------------------------------------------------------------------------
@@ -274,7 +274,7 @@
 ;     (iter-init it v)
 ;     (doseq-iter (x it) ...))     ; doseq-iter advances `it` via (next it)
 ;
-; The iterator BORROWS the buffer (raw element pointer); it does not own it and
+; The iterator BORROWS the buffer (ptr element pointer); it does not own it and
 ; must not outlive the Vector.
 ;
 ; NOTE: `iter-init` is the internal fill-in-place helper. The protocol surface
@@ -292,7 +292,7 @@
 
 (defn next (self:&(VecIter T)):?T
   (when (>= (self 'pos) (self 'len)) (return none))
-  (let (v:T (aref (as &T (self 'data)) (as i64 (self 'pos))))
+  (let (v:T (aref (unsafe/cast &T (self 'data)) (as i64 (self 'pos))))
     (set! (self 'pos) (+ (self 'pos) 1))
     (return (some v))))
 

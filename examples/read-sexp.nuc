@@ -21,18 +21,18 @@
 "))
 
 ; The first element of `(key value)` whose key is `name`, searched under `form`.
-(defn field (form:raw:Node name:StrView):raw:Node
+(defn field (form:?&Node name:StrView):?&Node
   (dotimes (i (node-len form))
-    (let (entry:raw:Node (node-at form i))
+    (let (entry:?&Node (node-at form i))
       (when (node-is-list entry)
-        (let (head:raw:Node (node-first entry))
+        (let (head:?&Node (node-first entry))
           (when (and (!= head null)
                      (= (head 'kind) NODE-SYM)
                      (= (symbol-as-view (head 's)) name))
             (return (node-at entry 1)))))))
   (return null))
 
-(defn show (label:StrView n:raw:Node):void
+(defn show (label:StrView n:?&Node):void
   (let (s:String (node-str n))
     (print label "=" (string-as-view &s) "\n")
     (drop &s)))
@@ -44,9 +44,9 @@
       (return 1))
     ((ok forms)
       ; One top-level form, `(server …)`; its body is everything after the head.
-      (let (server:raw:Node (node-first forms))
+      (let (server:?&Node (node-first forms))
         (print "kind=" (node-kind server) " len=" (node-len server) "\n")
-        (let (body:raw:Node (node-rest server))
+        (let (body:?&Node (node-rest server))
           (show "host"  (field body "host"))
           (show "port"  (field body "port"))
           (show "tags"  (field body "tags"))

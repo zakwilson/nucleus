@@ -24,7 +24,7 @@ enum ExitStatus_tag {
     ExitStatus_signaled = 1
 };
 
-struct ExitStatus wait_status_decode(int32_t raw) asm("wait-status-decode");
+struct ExitStatus wait_status_decode(int32_t wstatus) asm("wait-status-decode");
 bool success_QMARK(struct ExitStatus* self);
 int32_t exit_code(struct ExitStatus* self) asm("exit-code");
 #ifndef NUC_INST_Vector_usize

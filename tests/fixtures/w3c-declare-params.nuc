@@ -51,9 +51,9 @@
 ; --- DECIDED (docs/toplevel.md): an element carrying a `name:type` annotation is
 ; --- a NAMED parameter, exactly as in a `defn`. `ptr:W3dPair` is therefore a
 ; --- parameter *named* `ptr` whose type is `W3dPair`, passed by value — not a
-; --- pointer to W3dPair. Write `p:ptr:W3dPair` (or a bare `ptr`) for a pointer.
+; --- pointer to W3dPair. Write `p:&W3dPair` (or a bare `ptr`) for a pointer.
 ; --- Pinned so the reading stays a decision rather than an accident.
 (declare w3d_annot (ptr:W3dPair):void)
-(declare w3d_ptr_named (p:ptr:W3dPair):void)
+(declare w3d_ptr_named (p:&W3dPair):void)
 
 (defn main ():i32 (return 0))

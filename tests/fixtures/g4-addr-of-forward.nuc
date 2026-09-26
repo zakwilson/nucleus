@@ -16,9 +16,9 @@
 ;
 ; The dereference in `main` is what makes the pointer's correctness observable;
 ; `g4-addr-of-forward` links and runs this shape and asserts the value.
-(defn g4-ao-wrap (p:ptr:i32):ptr:i32 (return p))
+(defn g4-ao-wrap (p:&i32):&i32 (return p))
 
-(defvar g4-ao-p:ptr:i32 (g4-ao-wrap &g4-ao-target))
+(defvar g4-ao-p:&i32 (g4-ao-wrap &g4-ao-target))
 (defvar g4-ao-target:i32 7)
 
 (defn main ():i32 (return (deref g4-ao-p)))

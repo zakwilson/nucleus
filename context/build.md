@@ -208,6 +208,24 @@ new spelling, not still accept the old one.
 
 When `make` can't bridge, do a **2-stage manual bootstrap** (no edit to the converge cycle needed once converged): (1) temporarily elide the offending construct from the source and `make` — the OLD boot builds an intermediate compiler C0 that has the new dispatch but not the clashing defmacro; (2) restore the full source and compile it *with C0* (`build/nucleusc --emit-llvm src/nucleusc.nuc > build/c1.ll`), link that into `build/nucleusc` (=C1), then regenerate `boot/nucleusc.ll` + `bin/nucleusc` (+ Windows IRs via `--target=`) from C1. Then the normal `make clean && make && make bootstrap` holds the fixed point. Confirmed for the variadic-`and`/`or` change: post-convergence `build/nucleusc.ll == build/stage2.ll` byte-identical, `make test` green.
 
+## Measuring a typing sweep with an instrumented compiler
+
+Stage 21 item 7 classified 2,294 pointer declarations this way (ptr-is-unchecked.md §7):
+
+- Copy `src/` into the scratchpad and patch the refusal sites to print
+  `MEASURE <kind> file:line` and carry on. Build the copy with
+  `build/nucleusc --emit-llvm`, then
+  `clang … -lLLVM-19 -ldl -rdynamic -O1`.
+- Write one output file per target when measuring in parallel. Shared stderr
+  interleaves.
+- A diagnostic line is the form's **first** line. A `let` or `defstruct`
+  binder can sit lines below it, so the resolver must search the whole form.
+- **Apply a measured rewrite exactly once, to the tree it measured.** A second
+  pass matches forms it has already rewritten.
+- Gate every step on `build/nucleusc.ll` against a saved copy, then on
+  `ir-snapshot.sh verify`. Never run `make` while a verify is running, because
+  it reads `build/nucleusc`.
+
 ## Import system
 
 - The compiler auto-imports `lib/prelude.nuc` at the top of every batch compilation. The prelude provides the `Node` and `StrView` structs, the `NODE-*` enum, `Clone`/`Result`/`Maybe`, and `(import macros)`, so variadic `+ - * /`, `if`, `when`, `dotimes`, etc. are available without explicit imports. To opt out, make `(exclude-prelude)` the first top-level form in the file.

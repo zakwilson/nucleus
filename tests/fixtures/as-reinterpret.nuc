@@ -7,8 +7,8 @@
 (defstruct Rec kind:i32)
 (defstruct Sym name:i32)
 
-(defn retype (s:ptr:Sym):i32
-  (let (r:ptr:Rec (as ptr:Rec s))
+(defn retype (s:&Sym):i32
+  (let (r:&Rec (as &Rec s))
     (return (r kind))))
 
 (defn main ():i32

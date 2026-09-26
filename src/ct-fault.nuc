@@ -11,7 +11,7 @@
 (defvar g-fault-depth:i32 0)
 (defvar g-fault-text:String)
 (defvar g-fault-msg:String)
-(defvar g-fault-data:(raw ui8) null)
+(defvar g-fault-data:?&ui8 null)
 (defvar g-fault-lo:(array usize CT-FAULT-MAX))
 (defvar g-fault-hi:(array usize CT-FAULT-MAX))
 (defvar g-fault-line:(array i32 CT-FAULT-MAX))

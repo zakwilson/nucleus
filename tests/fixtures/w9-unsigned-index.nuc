@@ -13,8 +13,8 @@
 
 (defn main ():i32
   ; --- ui8 index, 200: sext reads it as -56 ---------------------------------
-  (let (b:ptr:i32 (unsafe/cast ptr:i32 (malloc (_* 300 4))))
-    (let (p:ptr:i32 (unsafe/ptr+ b 60))
+  (let (b:&i32 (unsafe/cast &i32 (malloc (_* 300 4))))
+    (let (p:&i32 (unsafe/ptr+ b 60))
       (set! (aref p 200) 12345)       ; b[260] -- where an UNSIGNED 200 lands
       (set! (aref p -56) 999)         ; b[4]   -- where a SIGNED 200 lands
       (let (i:ui8 200)
@@ -24,13 +24,13 @@
         (when (!= (aref p 200) 54321) (return 2))
         (when (!= (aref p -56) 999) (return 3))
         ; ...and so must unsafe/ptr+, the third caller of gep-index-ir.
-        (let (q:ptr:i32 (unsafe/ptr+ p i))
+        (let (q:&i32 (unsafe/ptr+ p i))
           (when (!= (aref q 0) 54321) (return 4))))
       (free (unsafe/cast ptr b))))
 
   ; --- ui16 index, 40000: sext reads it as -25536 ---------------------------
-  (let (b:ptr:ui8 (unsafe/cast ptr:ui8 (malloc 70000)))
-    (let (p:ptr:ui8 (unsafe/ptr+ b 25600))
+  (let (b:&ui8 (unsafe/cast &ui8 (malloc 70000)))
+    (let (p:&ui8 (unsafe/ptr+ b 25600))
       (set! (aref p 40000) 77)        ; b[65600] -- unsigned
       (set! (aref p -25536) 33)       ; b[64]    -- signed
       (let (i:ui16 40000)
@@ -40,8 +40,8 @@
   ; --- a SIGNED index must still sign-extend --------------------------------
   ; The fix is signedness-directed, not a blanket zext: a negative i32 index
   ; still has to reach backwards.
-  (let (b:ptr:i32 (unsafe/cast ptr:i32 (malloc (_* 8 4))))
-    (let (p:ptr:i32 (unsafe/ptr+ b 4))
+  (let (b:&i32 (unsafe/cast &i32 (malloc (_* 8 4))))
+    (let (p:&i32 (unsafe/ptr+ b 4))
       (set! (aref b 1) 4242)
       (let (i:i32 -3)
         (when (!= (aref p i) 4242) (return 6)))
@@ -50,7 +50,7 @@
   ; --- a pointer-width index is untouched -----------------------------------
   ; usize already matches the pointer, so gep-index-ir emits no instruction at
   ; all for it; this only guards that the new branch did not disturb that.
-  (let (b:ptr:i32 (unsafe/cast ptr:i32 (malloc (_* 8 4))))
+  (let (b:&i32 (unsafe/cast &i32 (malloc (_* 8 4))))
     (set! (aref b 3) 7)
     (let (i:usize 3)
       (when (!= (aref b i) 7) (return 7)))

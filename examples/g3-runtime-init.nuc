@@ -29,7 +29,7 @@
 ; --- a non-null pointer global, filled at startup -----------------------------
 ; `&Pt` is non-null under the Phase-F regime, and this typechecks because the
 ; initializer lowers to an ordinary `set!` — §2.8's `pkind-flow-check` applies
-; with no second nullability rule. Returning `(raw Pt)` here is rejected.
+; with no second nullability rule. Returning `(ptr Pt)` here is rejected.
 (defvar g-pt:&Pt (make-pt 3 4))
 
 ; --- a by-value struct global -------------------------------------------------
@@ -57,7 +57,7 @@
 (defn compute ():i32 (return (* BASE 5)))
 
 (defn make-pt (x:i32 y:i32):&Pt
-  (let (p:&Pt (as &Pt (malloc (sizeof Pt))))
+  (let (p:&Pt (unsafe/cast &Pt (malloc (sizeof Pt))))
     (set! (p 'x) x)
     (set! (p 'y) y)
     (return p)))

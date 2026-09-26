@@ -51,15 +51,15 @@
 
 (defn main ():i32
   ; Member access by call — the Struct default. (p x) == (_get p x).
-  (let (p:&Point (as &Point (malloc (as i64 (sizeof Point)))))
+  (let (p:&Point (unsafe/cast &Point (malloc (as i64 (sizeof Point)))))
     (set! (p 'x) 3)
     (set! (p 'y) 4)
     (printf "point: x=%d y=%d\n" (p 'x) (p 'y)))
 
   ; invoke takes precedence: (v i) indexes (literal OR a local index symbol);
   ; the field `len` is read with `_get` since Vec has an `invoke` method.
-  (let (v:&Vec (as &Vec (malloc (as i64 (sizeof Vec))))
-        arr:&i32 (as &i32 (malloc 12)))
+  (let (v:&Vec (unsafe/cast &Vec (malloc (as i64 (sizeof Vec))))
+        arr:&i32 (unsafe/cast &i32 (malloc 12)))
     (set! (aref arr 0) 10)
     (set! (aref arr 1) 20)
     (set! (aref arr 2) 30)
@@ -81,7 +81,7 @@
     (printf "fold: 1*2*3*4=%d\n" (fold mul (fold mul (fold mul 1 2) 3) 4)))
 
   ; User get override beats the intrinsic; 'f is synthetic, 'c delegates to the field.
-  (let (t:&Temp (as &Temp (malloc (as i64 (sizeof Temp)))))
+  (let (t:&Temp (unsafe/cast &Temp (malloc (as i64 (sizeof Temp)))))
     (set! (t 'c) 20)
     (printf "temp: c=%d f=%d\n" (t 'c) (t 'f)))
   (return 0))

@@ -303,7 +303,7 @@
 (defn sort (cmp:&C v:&(Vector T)
                  :where ((BinaryFn T i32) C)):void
   (let (n:usize (count v)
-        buf:&T (as &T (as ptr (_get v 'data))))
+        buf:&T (unsafe/cast &T (as ptr (_get v 'data))))
     (let (i:usize 1)
       (while (< i n)
         (let (key:T (aref buf (as i64 i))
@@ -319,7 +319,7 @@
 (defn sort-by (keyf:&F v:&(Vector T)
                     :where ((UnaryFn T K) F)):void
   (let (n:usize (count v)
-        buf:&T (as &T (as ptr (_get v 'data))))
+        buf:&T (unsafe/cast &T (as ptr (_get v 'data))))
     (let (i:usize 1)
       (while (< i n)
         (let (key:T (aref buf (as i64 i))

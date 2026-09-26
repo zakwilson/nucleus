@@ -13,23 +13,23 @@
 
 ; Exactly the target pointer width on AVR (i16) — the everyday spelling, and the
 ; one the old code broke: no widening happened, so `i64 %t` named an i16.
-(defn at-usize (p:ptr:ui8 i:usize):ui8
+(defn at-usize (p:&ui8 i:usize):ui8
   (return (aref p i)))
 
 ; Wider than an AVR pointer — must narrow (trunc), a branch unreachable on LP64.
-(defn at-i32 (p:ptr:ui8 i:i32):ui8
+(defn at-i32 (p:&ui8 i:i32):ui8
   (return (aref p i)))
 
 ; Narrower than an AVR pointer — must widen to i16 there, i64 on a host.
-(defn at-i8 (p:ptr:ui8 i:i8):ui8
+(defn at-i8 (p:&ui8 i:i8):ui8
   (return (aref p i)))
 
-(defn store-usize (p:ptr:ui8 i:usize v:ui8):void
+(defn store-usize (p:&ui8 i:usize v:ui8):void
   (set! (aref p i) v))
 
-(defn store-i32 (p:ptr:ui8 i:i32 v:ui8):void
+(defn store-i32 (p:&ui8 i:i32 v:ui8):void
   (set! (aref p i) v))
 
 ; `unsafe/ptr+` shares the same rule via gep-index-ir; it had its own copy.
-(defn bump-i32 (p:ptr:ui8 i:i32):ptr:ui8
+(defn bump-i32 (p:&ui8 i:i32):&ui8
   (return (unsafe/ptr+ p i)))

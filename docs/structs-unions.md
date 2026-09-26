@@ -354,7 +354,7 @@ typedef struct Mix_Music Mix_Music;       /* opaque handle typedef  */
 This is C's standard opaque-handle idiom, and `FILE` is an instance of it on
 glibc. Nucleus registers the **name** with no layout, so:
 
-* **`ptr:Foo` / `(ref Foo)` / `(raw Foo)` are legal** — everywhere, including in
+* **`&Foo` / `?&Foo` / `ptr:Foo` are legal** — everywhere, including in
   a `defn` signature. That is all a handle needs, and it is exactly what C
   permits.
 * **Every by-value use is refused**, with the source location of the misuse *and*

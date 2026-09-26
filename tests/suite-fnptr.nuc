@@ -110,7 +110,7 @@
 (defstruct Pt x:i64 y:i64)
 (defstruct Big a:i64 b:i64 c:i64)
 (defn sum-pt (p:Pt):i64
-  (let (q:ptr:Pt &p) (return (+ (q 'x) (q 'y)))))
+  (let (q:&Pt &p) (return (+ (q 'x) (q 'y)))))
 (defn make-big (n:i64):Big (return (Big n (+ n 1) (+ n 2))))
 (defn addl (a:i64):i64 (return (+ a 1)))
 (defn main ():i32
@@ -119,7 +119,7 @@
         h:(fn i64)(i64) addl)
     (printf \"%lld\\n\" (funcall f (Pt 3 4)))
     (let (b:Big (funcall g 10)
-          bp:ptr:Big &b)
+          bp:&Big &b)
       (printf \"%lld\\n\" (bp 'c)))
     (printf \"%lld\\n\" (funcall h 5))
     (return 0)))
@@ -199,7 +199,7 @@
 (defn cmpv (a:ptr b:ptr):i32 (return 0))
 (defn ten (a:i32):i32 (return (* a 10)))
 (defn main ():i32
-  (let (h:ptr:S16Hold (S16Hold ten 5)
+  (let (h:&S16Hold (S16Hold ten 5)
         c:s16_cmp cmpv)
     (printf \"member=%d field=%d\\n\" (funcall (h 'cb) 4) (h 'n))
     (set! (h 'cb) ten)
@@ -238,7 +238,7 @@
   (try (check-source-rejects "(import-use \"tests/fixtures/s16-fnptr.h\")
 (defn one (a:i32):i32 (return a))
 (defn main ():i32
-  (let (h:ptr:S16Hold (S16Hold one 5))
+  (let (h:&S16Hold (S16Hold one 5))
     (return (funcall (h 'cb) 1 2))))
 " "expected 1 args, got 2"))
   (try (check-source-rejects "(import-use \"tests/fixtures/s16-fnptr.h\")
@@ -256,7 +256,7 @@
 (defn addem (a:i32 b:i32):i32 (return (+ a b)))
 (defn use2 (f:(fn i32)(i32 i32)):i32 (return (funcall f 1 2)))
 (defn getf ():(fn i32)(i32 i32) (return addem))
-(defn holdsum (h:ptr:Hold):i32 (return (funcall (h 'cb) (h 'n) (h 'n))))
+(defn holdsum (h:&Hold):i32 (return (funcall (h 'cb) (h 'n) (h 'n))))
 "))
 
 ; Every function-pointer type used to render as `void*` — not merely unchecked

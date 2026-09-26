@@ -59,8 +59,8 @@
 ; HashSet T — open-addressing hash set.
 ; ---------------------------------------------------------------------------
 (defstruct (HashSet T)
-  (keys (raw ui8))      ; element buffer: cap * sizeof(T) bytes
-  (states (raw ui8))    ; state buffer: cap bytes (0=empty, 1=occupied, 2=tomb)
+  (keys ?&ui8)      ; element buffer: cap * sizeof(T) bytes
+  (states ?&ui8)    ; state buffer: cap bytes (0=empty, 1=occupied, 2=tomb)
   count:usize
   cap:usize
   alloc:AllocHandle)
@@ -74,12 +74,12 @@
   (let (init-cap:usize 8
         elem-size:usize (as usize (sizeof T)))
     (libc-allocator (ref s 'alloc))
-    (let ((kbuf (raw ui8))
+    (let ((kbuf ?&ui8)
           (alloc-handle-alloc (ref s 'alloc)
                               (* init-cap elem-size)
                               8))
       (when (= (as ptr kbuf) null) (hashset-oom))
-      (let ((sbuf (raw ui8))
+      (let ((sbuf ?&ui8)
             (alloc-handle-alloc (ref s 'alloc) init-cap 1))
         (when (= (as ptr sbuf) null) (hashset-oom))
         (memset (as ptr sbuf) 0 (as i64 init-cap))
@@ -96,12 +96,12 @@
   (let (init-cap:usize 8
         elem-size:usize (as usize (sizeof T)))
     (set! (s 'alloc) @a)
-    (let ((kbuf (raw ui8))
+    (let ((kbuf ?&ui8)
           (alloc-handle-alloc (ref s 'alloc)
                               (* init-cap elem-size)
                               8))
       (when (= (as ptr kbuf) null) (hashset-oom))
-      (let ((sbuf (raw ui8))
+      (let ((sbuf ?&ui8)
             (alloc-handle-alloc (ref s 'alloc) init-cap 1))
         (when (= (as ptr sbuf) null) (hashset-oom))
         (memset (as ptr sbuf) 0 (as i64 init-cap))
@@ -141,21 +141,21 @@
 ; ---------------------------------------------------------------------------
 (defn hashset-resize (s:&(HashSet T) new-cap:usize):void
   (let (elem-size:usize (as usize (sizeof T)))
-    (let ((new-keys (raw ui8))
+    (let ((new-keys ?&ui8)
           (alloc-handle-alloc (ref s 'alloc)
                               (* new-cap elem-size)
                               8))
       (when (= (as ptr new-keys) null) (hashset-oom))
-      (let ((new-states (raw ui8))
+      (let ((new-states ?&ui8)
             (alloc-handle-alloc (ref s 'alloc) new-cap 1))
         (when (= (as ptr new-states) null) (hashset-oom))
         (memset (as ptr new-states) 0 (as i64 new-cap))
         (let (new-mask:usize (- new-cap 1)
               old-cap:usize (s 'cap)
-              old-kbuf:&T (as &T (as ptr (s 'keys)))
-              old-sbuf:&ui8 (as &ui8 (as ptr (s 'states)))
-              new-kbuf:&T (as &T (as ptr new-keys))
-              new-sbuf:&ui8 (as &ui8 (as ptr new-states))
+              old-kbuf:&T (unsafe/cast &T (as ptr (s 'keys)))
+              old-sbuf:&ui8 (unsafe/cast &ui8 (as ptr (s 'states)))
+              new-kbuf:&T (unsafe/cast &T (as ptr new-keys))
+              new-sbuf:&ui8 (unsafe/cast &ui8 (as ptr new-states))
               i:usize 0)
           ; Rehash every occupied bucket from the old table.
           (while (< i old-cap)
@@ -195,8 +195,8 @@
   (when (>= (* (self 'count) 4)
             (* (self 'cap)   3))
     (hashset-resize self (* (self 'cap) 2)))
-  (let (kbuf:&T (as &T (as ptr (self 'keys)))
-        sbuf:&ui8 (as &ui8 (as ptr (self 'states)))
+  (let (kbuf:&T (unsafe/cast &T (as ptr (self 'keys)))
+        sbuf:&ui8 (unsafe/cast &ui8 (as ptr (self 'states)))
         mask:usize (- (self 'cap) 1)
         k:T elem
         idx:usize (bit-and (hash &k) mask)
@@ -231,8 +231,8 @@
 ; Set conformance.
 ; ---------------------------------------------------------------------------
 (defn contains? (self:&(HashSet T) elem:T):bool
-  (let (kbuf:&T (as &T (as ptr (self 'keys)))
-        sbuf:&ui8 (as &ui8 (as ptr (self 'states)))
+  (let (kbuf:&T (unsafe/cast &T (as ptr (self 'keys)))
+        sbuf:&ui8 (unsafe/cast &ui8 (as ptr (self 'states)))
         mask:usize (- (self 'cap) 1)
         k:T elem
         idx:usize (bit-and (hash &k) mask)
@@ -257,8 +257,8 @@
 ; Named `set-remove` rather than `remove` to avoid shadowing libc `remove`.
 ; ---------------------------------------------------------------------------
 (defn set-remove (self:&(HashSet T) elem:T):void
-  (let (kbuf:&T (as &T (as ptr (self 'keys)))
-        sbuf:&ui8 (as &ui8 (as ptr (self 'states)))
+  (let (kbuf:&T (unsafe/cast &T (as ptr (self 'keys)))
+        sbuf:&ui8 (unsafe/cast &ui8 (as ptr (self 'states)))
         mask:usize (- (self 'cap) 1)
         k:T elem
         idx:usize (bit-and (hash &k) mask)
@@ -302,8 +302,8 @@
 
 ; union: add every occupied member of `other` into self.
 (defn union (self:&(HashSet T) other:&(HashSet T)):void
-  (let (kbuf:&T (as &T (as ptr (other 'keys)))
-        sbuf:&ui8 (as &ui8 (as ptr (other 'states)))
+  (let (kbuf:&T (unsafe/cast &T (as ptr (other 'keys)))
+        sbuf:&ui8 (unsafe/cast &ui8 (as ptr (other 'states)))
         cap:usize (other 'cap)
         i:usize 0)
     (while (< i cap)
@@ -313,8 +313,8 @@
 
 ; difference: remove from self every member that is also in other.
 (defn difference (self:&(HashSet T) other:&(HashSet T)):void
-  (let (kbuf:&T (as &T (as ptr (self 'keys)))
-        sbuf:&ui8 (as &ui8 (as ptr (self 'states)))
+  (let (kbuf:&T (unsafe/cast &T (as ptr (self 'keys)))
+        sbuf:&ui8 (unsafe/cast &ui8 (as ptr (self 'states)))
         cap:usize (self 'cap)
         i:usize 0)
     (while (< i cap)
@@ -326,8 +326,8 @@
 
 ; intersection: keep in self only members also in other.
 (defn intersection (self:&(HashSet T) other:&(HashSet T)):void
-  (let (kbuf:&T (as &T (as ptr (self 'keys)))
-        sbuf:&ui8 (as &ui8 (as ptr (self 'states)))
+  (let (kbuf:&T (unsafe/cast &T (as ptr (self 'keys)))
+        sbuf:&ui8 (unsafe/cast &ui8 (as ptr (self 'states)))
         cap:usize (self 'cap)
         i:usize 0)
     (while (< i cap)
@@ -376,16 +376,16 @@
 ; (ref (HashSet T)); the fill-in-place form mirrors vector.nuc's `iter-init`.
 ; ---------------------------------------------------------------------------
 (defstruct (HashSetIter T)
-  kbuf:ptr        ; cast to ptr:T on read (raw pointer to element buffer)
-  sbuf:ptr        ; cast to ptr:ui8 on read (raw pointer to state buffer)
+  kbuf:ptr        ; cast to ptr:T on read (ptr pointer to element buffer)
+  sbuf:ptr        ; cast to ptr:ui8 on read (ptr pointer to state buffer)
   pos:usize
   cap:usize)
 
 (extend (HashSetIter T) (Iterator T))
 
 (defn next (self:&(HashSetIter T)):?T
-  (let (kptr:&T (as &T (self 'kbuf))
-        sptr:&ui8 (as &ui8 (self 'sbuf))
+  (let (kptr:&T (unsafe/cast &T (self 'kbuf))
+        sptr:&ui8 (unsafe/cast &ui8 (self 'sbuf))
         done:i32 0
         result:i32 0)
     (while (= done 0)

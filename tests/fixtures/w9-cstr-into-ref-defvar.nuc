@@ -14,7 +14,7 @@
 ; a null INTO a `CStr` slot is ordinary C.
 (defstruct W9C7 n:i32)
 
-(defvar g-bad:ptr:W9C7 (as CStr null))
+(defvar g-bad:&W9C7 (as CStr null))
 
 (defn main ():i32
   (return (g-bad n)))

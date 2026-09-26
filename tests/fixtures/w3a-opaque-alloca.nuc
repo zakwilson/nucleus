@@ -2,6 +2,6 @@
 (import-use "tests/fixtures/cheader-opaque.h")
 
 (defn main ():i32
-  (let (p:ptr:CHOpaque
+  (let (p:&CHOpaque
           (alloca CHOpaque))
     (return 0)))

@@ -77,8 +77,8 @@ typedef struct Diagnostic {
     struct Vector_StrView* notes;
 } Diagnostic;
 
-void* diag_entry(void* body, struct StrView name) asm("diag-entry");
-struct StrView diag_text(void* n) asm("diag-text");
+struct Node* /* nullable */ diag_entry(struct Node* /* nullable */ body, struct StrView name) asm("diag-entry");
+struct StrView diag_text(struct Node* /* nullable */ n) asm("diag-text");
 /* diag-of-node: uses an error-union or option type; not exported */
 /* read-diagnostics: uses an error-union or option type; not exported */
 #ifndef NUC_INST_Vector_Diagnostic

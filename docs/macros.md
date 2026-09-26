@@ -78,7 +78,7 @@ A value may be written `(:or v ...)`, which matches any one of the listed values
 
 The **keyword head is what marks the list** — a plain parenthesised value stays an ordinary expression, evaluated and compared like any other, so `(case x (f y) r d)` still calls `f`. That is why the marker exists at all: the values people group are overwhelmingly bare enum constants (`TY-STRUCT`, `NODE-SYM`), which are indistinguishable from a call's head, so nothing about the elements themselves can decide it ([case-alternatives.md](../design/stage16-ergonomics/case-alternatives.md)). Alternatives are ordinary expressions, each compared with the same `=`; `form` is re-evaluated once per alternative, and an empty `(:or)` is false, matching no value.
 
-`(import-use arena)` additionally provides `(new T)` — allocate one zeroed `T` from the arena, typed `(ref T)` (non-null: `arena-alloc` aborts on exhaustion rather than returning null). It expands to `(as (ref T) (arena-alloc (sizeof T)))`, collapsing the `as` + `sizeof` boilerplate for the common "allocate a single struct" case (`arena-alloc` returns bare `ptr`; retyping it to a non-null `(ref T)` is exactly the elem-less-`ptr` `void*` hatch `as` accepts). It is **not** in the prelude (it depends on `arena-alloc`), so it requires an explicit `(import-use arena)`.
+`(import-use arena)` additionally provides `(new T)` — allocate one zeroed `T` from the arena, typed `(ref T)` (non-null: `arena-alloc` aborts on exhaustion rather than returning null). It expands to `(unsafe/cast &T (arena-alloc (sizeof T)))`, collapsing the cast + `sizeof` boilerplate for the common "allocate a single struct" case. `arena-alloc` returns an unchecked bare `ptr`, and `as` refuses to make that non-null, so the macro asserts it with `unsafe/cast` — true because `arena-alloc` aborts rather than return null. It is **not** in the prelude (it depends on `arena-alloc`), so it requires an explicit `(import-use arena)`.
 
 ## Variadic Arithmetic
 
@@ -123,7 +123,7 @@ The resulting form is identical either way.
 | `(or a b)`        | `(_or a b)`                                          |
 | `(or a b c ...)`  | `(macfoldr _or false a b c ...)` — right-fold        |
 
-The binary `_and`/`_or` eliminate both operands to `bool` at each condition site (not just `bool` itself — a nullable `raw`/`CStr`/`?T` or a value `Maybe` is punned too, and a non-null `ptr`/`(ref T)` or a `!T` gets its own diagnostic; see [Condition position](types.md#condition-position-is-an-elimination-not-a-coercion)) and short-circuit left-to-right (`_and` stops at the first false, `_or` at the first true). Because the macro right-nests, each operand in an N-ary chain narrows under all prior ones (cumulative narrowing — a later `(m field)` typechecks after an earlier `(!= m null)`). See the [`and`/`or`/`_and`/`_or`](special-forms.md#special-forms) rows for the full short-circuit and narrowing semantics.
+The binary `_and`/`_or` eliminate both operands to `bool` at each condition site (not just `bool` itself — a nullable `ptr`/`(ptr T)`/`CStr`/`?T` or a value `Maybe` is punned too, and a non-null `&T` or a `!T` gets its own diagnostic; see [Condition position](types.md#condition-position-is-an-elimination-not-a-coercion)) and short-circuit left-to-right (`_and` stops at the first false, `_or` at the first true). Because the macro right-nests, each operand in an N-ary chain narrows under all prior ones (cumulative narrowing — a later `(m field)` typechecks after an earlier `(!= m null)`). See the [`and`/`or`/`_and`/`_or`](special-forms.md#special-forms) rows for the full short-circuit and narrowing semantics.
 
 ## `macfoldl` / `macfoldr` — a template over a variadic argument list
 
@@ -235,7 +235,7 @@ the compiler compiles `e` into its compile-time JIT, runs it, and substitutes th
 node it returns as if you had typed that node.
 
 ```lisp
-(defn build-rows ():(raw Node) (return `((a 1) (b 2) (c 3))))
+(defn build-rows ():(ptr Node) (return `((a 1) (b 2) (c 3))))
 
 (macmap ((name arity) `(defn ~name ():i32 (return ~arity))) ~(build-rows))
 ```
@@ -246,12 +246,12 @@ variadic operators take a computed argument with no change of their own.
 
 **Rules.**
 
-* **`e` must evaluate to a node** — `(raw Node)`, which is what a quasiquote,
-  `quote`, or a `:(raw Node)`-returning `defn` yields. Anything else is refused
-  at the argument's own line:
+* **`e` must evaluate to a node** — a pointer to `Node` of any kind, which is
+  what a quasiquote, `quote`, or a `:&Node`-returning `defn` yields. Anything
+  else is refused at the argument's own line:
 
   ```
-  probe.nuc:2: error: the computed argument '~5' must evaluate to (raw Node), not i32
+  probe.nuc:2: error: the computed argument '~5' must evaluate to &Node, not i32
   ```
 
 * **Only at the top level of a macro argument.** `~` anywhere else — nested
@@ -283,7 +283,7 @@ variadic operators take a computed argument with no change of their own.
 returns in as **separate arguments**, which is what a `:rest` macro wants:
 
 ```lisp
-(defn nums ():(raw Node) (return `(1 2 3 4)))
+(defn nums ():(ptr Node) (return `(1 2 3 4)))
 
 (defn main ():i32 (return (macfoldr _+ 0 ~@(nums))))   ; => 10
 ```
@@ -363,7 +363,7 @@ not against whatever the expansion happened to lower to.
   not itself a piece (a by-value `String` would be a move), so pass its
   `string-as-view`. The message is rendered before the expansion is abandoned,
   so a `String` the body built needs no lifetime care.
-* **`NODE` is any `(raw Node)` expression** — ordinarily one of the macro's own
+* **`NODE` is any Node-pointer expression** — ordinarily one of the macro's own
   parameters, or a piece reached through `ast-at`/`ast-first`, which is what
   carries the user's line. A node with no line of its own — a symbol (symbols
   are interned, so no occurrence has a line) or `null` — reports at the line of
@@ -727,13 +727,13 @@ two-element list.
 
 **A level-1 operand that is not node-typed is refused at its own line.** The
 same rule as a [computed macro argument](#e--a-computed-macro-argument) — `~` and `~@`
-substitute source, so the operand must be `(raw Node)`, which is what a
+substitute source, so the operand must be a pointer to `Node`, which is what a
 quasiquote, `quote`, [`node-int`](#interpolating-a-computed-number), or a
-`:(raw Node)`-returning `defn` yields:
+`:&Node`-returning `defn` yields:
 
 ```
-probe.nuc:3: error: the unquote operand '~n' must evaluate to (raw Node), not i32
-  note: `~` substitutes its value as source, so it must evaluate to a node — what a quasiquote, `quote`, `node-int` or a ':(raw Node)' function yields
+probe.nuc:3: error: the unquote operand '~n' must evaluate to &Node, not i32
+  note: `~` substitutes its value as source, so it must evaluate to a node — what a quasiquote, `quote`, `node-int` or a ':&Node' function yields
 ```
 
 `~@` gets the same message with its own marker (`'~@n'`) and note (`` `~@`
@@ -741,7 +741,7 @@ splices its value in as source ``).
 
 **A macro body's own value is held to the same rule**, whether or not an
 unquote is what produced it — `(defmacro m () 5)` is
-`macro 'm' must evaluate to (raw Node), not i32`, at the body form's line.
+`macro 'm' must evaluate to &Node, not i32`, at the body form's line.
 
 ### Interpolating a computed number
 
@@ -763,11 +763,11 @@ form's line — the same treatment `node-line` gives any synthesized node. It is
 the natural way to write the producer for a spliced argument list:
 
 ```lisp
-(defn range-nodes ():(raw Node)
-  (let ((acc (raw Node)) null
+(defn range-nodes ():?&Node
+  (let (acc:?&Node null
         i:i64 4)
     (while (> i 0)
-      (set! acc (as raw:Node (node-cons (as raw:Node (node-int i)) acc 0)))
+      (set! acc (node-cons (node-int i) acc 0))
       (set! i (- i 1)))
     (return acc)))
 
@@ -830,15 +830,15 @@ with `node-cons` and the fixed-arity `node-list1`…`node-list5` over them, and
 | Quoted | Type | Why |
 |---|---|---|
 | a symbol — `'foo` | `(ref Node)` | Lowers to `intern-symbol`, whose signature returns `ref:Node`. One canonical node per spelling, so the value is non-null *and* an identity. |
-| anything else — `'(a b)`, `'1`, `'()` | `(raw Node)` | Built by `node-list-new`/`node-push`/`alloc-node`. `'()` is a length-0 list, **not** null — see [A form is a collection](#a-form-is-a-collection). |
+| anything else — `'(a b)`, `'1`, `'()` | `(ptr Node)` | Built by `node-list-new`/`node-push`/`alloc-node`. `'()` is a length-0 list, **not** null — see [A form is a collection](#a-form-is-a-collection). |
 
 The distinction is load-bearing, not cosmetic: because `'foo` is non-null and
 interned, symbols work directly as collection elements and keys — see
 [Symbols as keys](collections.md#symbols-as-keys). A quoted symbol still fits a
-`(raw Node)` slot (non-null narrows into nullable), so nothing written before
+`(ptr Node)` slot (non-null widens into unchecked), so nothing written before
 this rule needs changing.
 
-`quasiquote` stays `(raw Node)` throughout: an unquote can inject any *node*,
+`quasiquote` stays `(ptr Node)` throughout: an unquote can inject any *node*,
 including a null one, so its result type is expansion-dependent.
 
 **In ordinary code a quote is a run-time call**, so a program that writes one
@@ -849,11 +849,14 @@ See [The node runtime is a library](toplevel.md#the-node-runtime-is-a-library).
 
 ## Macros and pass-through arguments
 
-Macro parameters are typed `(raw Node)` — the macro sees AST. Because the
-parameter is a typed (nullable, unchecked) pointer to `Node`, a macro can walk
-the argument's structure **without casting**. Read a list with the `ast-*`
-special forms — `(ast-len p)`, `(ast-at p 1)`, `(ast-first p)`, `(ast-rest p)` —
-each of which yields `(raw Node)` (an `i32` for `ast-len`) and so chains:
+Macro parameters are typed `&Node` — the macro sees AST. An argument is never
+null: the arity is checked before expansion and an empty `:rest` list is `()`.
+So a parameter binds to any `&Node` slot, a test like `(when p …)` is refused
+as always true, and a macro can walk the argument's structure **without
+casting**. Read a list with the `ast-*` special forms — `(ast-len p)`,
+`(ast-at p 1)`, `(ast-first p)`, `(ast-rest p)` — each of which yields
+`(ptr Node)` (an `i32` for `ast-len`), because a read past the end is null, and
+so chains:
 `(ast-first (ast-at p 1))`. Use `(p 'kind)` / `(p 's)` / `(p 'i)` / `(p 'line)`
 for the `Node` fields; the selector is **quoted**, because a bare symbol in that
 position is an ordinary variable reference (see
@@ -891,20 +894,20 @@ only the AST representation is uniform.
 (tprint some-ptr)  ; → (printf "%p\n" some-ptr)  — ptr at the call site
 ```
 
-Inside the macro `x` is `(raw Node)`; the spliced `~x` carries no type
+Inside the macro `x` is `&Node`; the spliced `~x` carries no type
 constraint into the expansion. The host compiler types the resulting form
 using its normal rules.
 
 ### ⚠ Sharp edge: `cond`/`if` branches of genuinely different element types collapse to void
 
 A `cond`/`if` is a *value* expression whose result type is the **join** of its
-branches. Two pointer branches with different *element* types — `(raw Node)`
-vs `i32`, or two different struct types — do not unify, and the whole
+branches. Two pointer branches with different *element* types — `(ptr Node)`
+vs `ptr:i32`, or two different struct types — do not unify, and the whole
 expression collapses to `void`. That failure then surfaces as:
 
 - a `let`/`set!` reporting `init type mismatch` / a type error, and
 - a macro whose entire body is such a `cond` reporting
-  `macro '<name>' must evaluate to (raw Node), not void`, at the body form's
+  `macro '<name>' must evaluate to &Node, not void`, at the body form's
   own line.
 
 This is a genuine type error; there's no shortcut but making the branches
@@ -914,20 +917,19 @@ agree on element type.
 reachable only from a macro whose value is node-*typed* and null at run time —
 a body ending in `'()`, say — never from a type mistake.)
 
-Mixing a **typed** pointer branch (`(raw Node)`, `ptr:Foo`, `ref:Foo`, ...)
+Mixing a **typed** pointer branch (`(ptr Node)`, `&Foo`, `?&Foo`, ...)
 with a **bare, elem-less** `ptr` branch is *not* a collapse case — the join
 absorbs the bare side into the typed side's element type, producing
-`(raw ElemType)`, with no cast required. This matters constantly in macro
-bodies: quasiquote (`` `(...) ``), `(gensym)`, and the `null` literal are all
-bare `ptr`, so they join freely with a `(raw Node)` branch such as an `ast-*`
-read or a macro parameter:
+`(ptr ElemType)`, with no cast required. This matters constantly in macro
+bodies: quasiquote (`` `(...) ``), `(gensym)`, the `null` literal, an `ast-*`
+read and a macro parameter all join freely:
 
 ```lisp
-; joins to (raw Node) automatically — no cast needed
+; joins to (ptr Node) automatically — no cast needed
 (let (rest (if (= (n 'kind) NODE-LIST) (ast-rest n) null)) ...)
 
 ; A variadic-operator macro: the single-arg branch returns the element node,
-; the others are quasiquoted forms — both join to (raw Node).
+; the others are quasiquoted forms — both join to (ptr Node).
 (defmacro * (:rest args)
   (cond (= (ast-len args) 0)
           `1
@@ -938,13 +940,12 @@ read or a macro parameter:
                 (* ~@(ast-rest args)))))
 ```
 
-Pointer *kind* (`raw` vs. `ref`) is never itself a source of collapse —
-kinds meet (`raw` ⊔ anything = `raw`) rather than needing to match. Only a
-genuine element-type mismatch collapses the join to `void`.
+Pointer *kind* (unchecked, `?`, `&`) is never itself a source of collapse —
+kinds meet (unchecked ⊔ anything = unchecked) rather than needing to match.
+Only a genuine element-type mismatch collapses the join to `void`.
 
-Separately: a `(raw Node)` value flows freely into a bare `:ptr` local (exempt
-— bare `ptr` is `void*` and carries no contract), but a **typed** non-null
-`(ptr T)`/`(ref T)` parameter, `return`, or binding still **rejects** a raw
-(nullable) value (`raw pointer where non-null (ref ...) is required`). Bind
-node values to `:ptr` locals, or narrow first, when they meet other pointer
-types.
+Separately: a `(ptr Node)` value flows freely into a bare `:ptr` or a `?&Node`
+local, but a non-null `&Node` parameter, `return`, or binding still **rejects**
+it (`unchecked pointer where non-null (ref ...) is required`). Launder with
+`(as-ref …)` and narrow, or bind to a `?&Node` and narrow, when an `ast-*` read
+meets a `&Node` slot.

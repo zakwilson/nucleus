@@ -226,9 +226,9 @@ whichever of the two definitions is **emitted first**, naming the other one's
 kind. Same-kind reuse stays legal: an overloaded `defn`, a re-imported
 `defstruct`, a redefined macro.
 
-The three [pointer kinds](types.md#pointer-kinds-ptr-t-raw-t-and-t) are
+The [pointer kinds](types.md#pointer-kinds-t-t-and-ptr-t) are
 reserved here too — `'ref' already names a pointer kind` — even though `ref`
-and `raw` are constructors that name no type on their own.
+names no type on its own, and so is the retired `raw`.
 
 The rule governs **top-level definers only**. A `let`/`with` binding or a
 parameter may still take any name, including a type name: `(let (i32:i32 5) …)`
@@ -632,7 +632,7 @@ A global whose type has no faithful C spelling is **omitted with a comment** rat
 /* m-skip: type has no C spelling here; not exported */
 ```
 
-This covers union-template instances like `(Maybe i32)`, closure and type-erased box types. The reason it is an omission rather than a best effort is that the fallback spelling would be `void*` — pointer-sized, which is right for a pointer and silently wrong for anything else, and a declaration the C compiler trusts and gets wrong is worse than one that is missing. Pointer-typed globals *are* exported under all three spellings (`ptr:T`, `raw:T`, `ref:T`); `ptr:T` and `ref:T` (and so `&T`) spell the element out, while `raw:T` currently widens to `void*`, as it already does in function signatures.
+This covers union-template instances like `(Maybe i32)`, closure and type-erased box types. The reason it is an omission rather than a best effort is that the fallback spelling would be `void*` — pointer-sized, which is right for a pointer and silently wrong for anything else, and a declaration the C compiler trusts and gets wrong is worse than one that is missing. Pointer-typed globals *are* exported under every kind (`&T`, `?&T`, `ptr:T`), each spelling its element out as `T*`, as in function signatures; only an untyped `ptr` is `void*`.
 
 ## Hyphenated names in a C header
 
@@ -1091,8 +1091,8 @@ niche-encoded *in the pointer itself* — `(ok p)` is `p`, an error is a sentine
 in the reserved top page — so the whole value is a bare pointer, ABI-identical to
 a C `T*`, and it is declared as one, in every position and under every spelling:
 a `?&Pt` parameter, return or `defvar`, a `(? (ref Pt))` field and a
-`(Maybe &Pt)` field all render `struct Pt* /* niche: reserved top page =
-error/none */`. (Before Stage 21 PK-4b only the struct field did; a parameter or
+`(Maybe &Pt)` field all render `struct Pt* /* nullable */` (null is none), and
+a `!&Pt` renders `struct Pt* /* niche: reserved top page = error */`. (Before Stage 21 PK-4b only the struct field did; a parameter or
 return rendered `void*` and `(Maybe &Pt)` was refused as a template instance.)
 A pointer *to* a value niche — `&?String`, `&!i32` — is refused for its
 pointee.

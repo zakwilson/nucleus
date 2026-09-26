@@ -18,6 +18,7 @@
 (defn q-sym (q:?&Pt):?&Pt (return q))
 (defn q-cell ((q (? (ref Pt)))) (? (ref Pt)) (return q))
 (defn q-list ((q (Maybe &Pt))) (Maybe (ref Pt)) (return q))
+(defn e-ptr (q:&Pt):!&Pt (return (ok q)))
 
 (defn v-sym (m:?i32):i32 (return 0))
 (defn v-cell ((m (? i32))):i32 (return 0))

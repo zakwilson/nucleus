@@ -10,7 +10,7 @@
 ; Symbol table
 ; ============================================================
 
-(defn scope-new (parent:raw:Scope):&Scope
+(defn scope-new (parent:?&Scope):&Scope
   ; The Vector is bound before it is stored rather than written inline through
   ; an `(as (ref (Vector (ref Cleanup))) …)`: a binding is a declared-type
   ; position the want channel has always armed, so `vector-new-in`'s return-only
@@ -24,8 +24,8 @@
     (set! (s 'cleanup-slots) cs)
     (return s)))
 
-(defn scope-define (s:raw:Scope name:Symbol type:raw:Type ir-name:StrView is-local:i32):&Sym
-  (let (sc:raw:Scope s)
+(defn scope-define (s:&Scope name:Symbol type:?&Type ir-name:StrView is-local:i32):&Sym
+  (let (sc:&Scope s)
     ; Stage 12: globals are keyed by their fully-qualified name. The global scope
     ; is the unique null-parent scope; local scopes (params, let bindings) always
     ; have a parent and keep their raw names. Under the default `user` namespace,
@@ -47,14 +47,14 @@
             (memcpy ns (sc 'syms) (* (sc 'len) (sizeof Sym))))
           (set! (sc 'syms) ns)
           (set! (sc 'cap) nc))))
-    (let (sym:ptr:Sym (as &Sym (unsafe/ptr+ (as &Sym (sc 'syms)) (sc 'len))))
+    (let (sym:&Sym (as &Sym (unsafe/ptr+ (unsafe/cast &Sym (sc 'syms)) (sc 'len))))
       (set! (sym 'name) name)
       (set! (sym 'type) type)
       (set! (sym 'ir-name) ir-name)
       (set! (sym 'is-local) is-local)
       (set! (sym 'home) s)
       (set! (sc 'len) (+ (sc 'len) 1))
-      (return (as &Sym sym)))))
+      (return sym))))
 
 ; Where a global was defined, for the REPL's `locate`. Called only by the
 ; Nucleus definers: an `extern`, a C-header import and a prelude registration
@@ -70,10 +70,10 @@
 ; no environment, no privacy rule. Extracted in Stage 15 B2b so the *policy*
 ; (which keys to try, and whether a private symbol counts) lives in one place
 ; and the *scan* in another.
-(defn scope-frame-find (sc:raw:Scope key:Symbol):?&Sym
+(defn scope-frame-find (sc:ptr:Scope key:Symbol):?&Sym
   (let (i:i32 (- (sc 'len) 1))
     (while (>= i 0)
-      (let (sym:ptr:Sym (as &Sym (unsafe/ptr+ (as &Sym (sc 'syms)) i)))
+      (let (sym:&Sym (as &Sym (unsafe/ptr+ (unsafe/cast &Sym (sc 'syms)) i)))
         (when (= (sym 'name) key)
           (return (as ptr sym))))
       (set! i (- i 1))))
@@ -84,10 +84,10 @@
 ; another file's namespace — a bound prefix, or a namespace this file flattened —
 ; must not see that file's private definitions; a name reached through the
 ; file's OWN namespace must.
-(defn scope-frame-find-public (sc:raw:Scope key:Symbol):?&Sym
+(defn scope-frame-find-public (sc:ptr:Scope key:Symbol):?&Sym
   (let (i:i32 (- (sc 'len) 1))
     (while (>= i 0)
-      (let (sym:ptr:Sym (as &Sym (unsafe/ptr+ (as &Sym (sc 'syms)) i)))
+      (let (sym:&Sym (as &Sym (unsafe/ptr+ (unsafe/cast &Sym (sc 'syms)) i)))
         (when (and (= (sym 'name) key) (= (sym 'sym-private) 0))
           (return (as ptr sym))))
       (set! i (- i 1))))
@@ -104,13 +104,13 @@
 ; route an already-canonical `g-globals` key through here — the file that reads
 ; such a key is routinely not the file that wrote it, and a reference resolver
 ; would refuse it.
-(defn scope-lookup (s:raw:Scope name:Symbol):?&Sym
-  (let (cur:raw:Scope s)
+(defn scope-lookup (s:?&Scope name:Symbol):?&Sym
+  (let (cur:?&Scope s)
     (while (!= cur null)
-      (let (sc:raw:Scope cur)
+      (let (sc:?&Scope cur)
         (when (= (sc 'parent) null)
           (return (globals-lookup-ref sc name)))
-        (let (hit:?ptr:Sym (scope-frame-find sc name))
+        (let (hit:?&Sym (scope-frame-find sc name))
           (when (!= hit null) (return hit)))
         (set! cur (sc 'parent)))))
   (return null))
@@ -126,10 +126,10 @@
 ; This is the pre-B1 `scope-lookup` body verbatim: `qualify-name(priv-key-use …)`
 ; on the global frame, the raw name on every inner one. Identity under `user`,
 ; which is why the bootstrap does not move.
-(defn scope-lookup-key (s:raw:Scope name:Symbol):?&Sym
-  (let (cur:raw:Scope s)
+(defn scope-lookup-key (s:&Scope name:Symbol):?&Sym
+  (let (cur:?&Scope s)
     (while (!= cur null)
-      (let (sc:raw:Scope cur
+      (let (sc:?&Scope cur
             ; Stage 12: the global scope (the unique null-parent scope) keys its
             ; symbols by fully-qualified name. Stage 15 W5e: a name this file
             ; declared with a private definer keys under the file's own implicit
@@ -137,7 +137,7 @@
             key:Symbol name)
         (when (= (sc 'parent) null)
           (set! key (qualify-name (priv-key-use name))))
-        (let (hit:?ptr:Sym (scope-frame-find sc key))
+        (let (hit:?&Sym (scope-frame-find sc key))
           (when (!= hit null) (return hit)))
         (set! cur (sc 'parent)))))
   (return null))
@@ -155,9 +155,9 @@
 
 ; Record an armed Cleanup* on a scope, fired at scope exit (and on each early
 ; return that unwinds past it) by emit-scope-cleanups, in reverse order.
-(defn scope-push-cleanup (s:raw:Scope slot:ptr):void
-  (let (sc:raw:Scope s)
-    (conj (sc 'cleanup-slots) (as &Cleanup slot))))
+(defn scope-push-cleanup (s:&Scope slot:ptr):void
+  (let (sc:&Scope s)
+    (conj (sc 'cleanup-slots) (unsafe/cast &Cleanup slot))))
 
 ; ============================================================
 ; String literal table
@@ -166,9 +166,9 @@
 ; The id is the element's position in g-strs; each StrLit is individually
 ; arena-allocated and its pointer appended in order.
 (defn intern-string (sv:StrView):i32
-  (let (p:ptr:StrView &sv
+  (let (p:&StrView &sv
         id:i32 (unsafe/cast i32 (count g-strs))
-        sl:&StrLit (as &StrLit (arena-alloc (sizeof StrLit))))
+        sl:&StrLit (unsafe/cast &StrLit (arena-alloc (sizeof StrLit))))
     (set! (sl 'bytes) (strview (unsafe/cast &ui8
                                  (arena-bytes (as ptr (p 'data)) (p 'len)))
                                (p 'len)))
@@ -206,7 +206,7 @@
 ; Park a `String` in the arena so a `FnState` can hold it — see the field
 ; comment in compiler-types.nuc for why the field cannot be the value itself.
 (defn string-box (v:&String):&String
-  (let (p:&String (as &String (arena-alloc (sizeof String))))
+  (let (p:&String (unsafe/cast &String (arena-alloc (sizeof String))))
     (set! (p 'bytes) (v 'bytes))
     (return p)))
 
@@ -256,7 +256,7 @@
 ; Kept adjacent to `reset-function-state` deliberately — a global added there
 ; and not here is the drift this placement exists to make obvious.
 (defn push-function-state ():&FnState
-  (let (s:&FnState (as &FnState (arena-alloc (sizeof FnState))))
+  (let (s:&FnState (unsafe/cast &FnState (arena-alloc (sizeof FnState))))
     (set! (s 'tmp) g-tmp)
     (set! (s 'label) g-label)
     (set! (s 'block-term) g-block-term)
@@ -359,11 +359,11 @@
 ; record — null whenever it declined, which is exactly when nothing may write
 ; `ir-end` (a second emission of one ir-name must not pair its end with the
 ; first's start).
-(defn program-defn-record (irn:Symbol ret:raw:Type ptypes:ptr nparams:i32 variadic:i32):?&ProgDefn
+(defn program-defn-record (irn:Symbol ret:?&Type ptypes:ptr nparams:i32 variadic:i32):?&ProgDefn
   (when (!= (in-jit-module) 0) (return null))
   (when (symbol-none? irn) (return null))
   (when (!= (as ptr (program-defn-lookup irn)) null) (return null))
-  (let (pd:&ProgDefn (as &ProgDefn (arena-alloc (sizeof ProgDefn))))
+  (let (pd:&ProgDefn (unsafe/cast &ProgDefn (arena-alloc (sizeof ProgDefn))))
     (set! (pd 'ir-name) irn)
     (set! (pd 'ret) ret)
     (set! (pd 'ptypes) ptypes)
@@ -379,7 +379,7 @@
 
 ; Close the span `program-defn-record` opened. Re-asks the guard rather than
 ; testing `ir-start`, which is legitimately 0 for the first defn in the buffer.
-(defn program-defn-note-end (pd:?ptr:ProgDefn):void
+(defn program-defn-note-end (pd:?&ProgDefn):void
   (when (= (as ptr pd) null) (return))
   (when (= (ct-span-recordable) 0) (return))
   (set! ((unsafe/cast &ProgDefn pd) 'ir-end) (byte-len &g-def-buf)))
@@ -398,7 +398,7 @@
   (when (!= (in-jit-module) 0) (return null))
   (when (symbol-none? irn) (return null))
   (when (!= (as ptr (program-global-lookup irn)) null) (return null))
-  (let (pg:&ProgGlobal (as &ProgGlobal (arena-alloc (sizeof ProgGlobal))))
+  (let (pg:&ProgGlobal (unsafe/cast &ProgGlobal (arena-alloc (sizeof ProgGlobal))))
     (set! (pg 'ir-name) irn)
     (set! (pg 'ty-ir) (symbol-none))
     (set! (pg 'is-const) is-const)
@@ -413,7 +413,7 @@
 ; `ty-ir` is taken here rather than at record time because `type-to-ir` may
 ; register a struct body in `g-type-stream`, and calling it early would reorder
 ; that stream against the constant renderer's own types.
-(defn program-global-note-end (pg:?ptr:ProgGlobal ty-ir:StrView):void
+(defn program-global-note-end (pg:?&ProgGlobal ty-ir:StrView):void
   (when (= (as ptr pg) null) (return))
   (set! ((unsafe/cast &ProgGlobal pg) 'ty-ir) (symbol-intern ty-ir))
   (when (= (ct-span-recordable) 0) (return))

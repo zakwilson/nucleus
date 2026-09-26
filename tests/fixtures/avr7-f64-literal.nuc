@@ -4,4 +4,4 @@
 (exclude-prelude)
 (defn go (p:ptr):void
   (let (x 1.5)
-    (set! (aref (as ptr:i8 p) 0) 0)))
+    (set! (aref (unsafe/cast &i8 p) 0) 0)))

@@ -9,7 +9,7 @@
 (defn mk (a:i16 b:i16):Point
   (return (Point a b)))
 (defn sum (p:Point):i16
-  (let (pp:ptr:Point &p)
+  (let (pp:&Point &p)
     (return (_+ (pp 'x) (pp 'y)))))
 (defn main ():i16
   (return (sum (mk 3 4))))

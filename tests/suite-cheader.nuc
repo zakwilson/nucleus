@@ -221,7 +221,7 @@ int main(void) {
 (defunion My-Uni (uni-a x-val:i32) (uni-b p-one:i32 p-two:i32))
 (defvar my-count:i64 41)
 (defn my-bump (n-arg:i32):i32 (return (+ n-arg 1)))
-(defn my-rec-sum (r:ptr:My-Rec):i32 (return (+ (r 'a-field) 100)))
+(defn my-rec-sum (r:&My-Rec):i32 (return (+ (r 'a-field) 100)))
 (defn plain (n:i32):i32 (return n))
 "))
 
@@ -431,10 +431,10 @@ int main(void) {
   (when (< i 0) (return (err w44-range)))
   (return (ok (unsafe/cast ui8 i))))
 (defn w44-takes (b:!ui8):i32 0)
-(defn w44-find (p:ptr:W44Pt i:i32):!ptr:W44Pt
+(defn w44-find (p:&W44Pt i:i32):!&W44Pt
   (when (!= i 0) (return (err w44-range)))
   (return (ok (as ref:W44Pt p))))
-(defn w44-show (r:!ptr:W44Pt):i32
+(defn w44-show (r:!&W44Pt):i32
   (match r ((ok q) (return (q 'x))) ((err e) (return -1))))
 "))
 
@@ -486,7 +486,7 @@ int main(void) {
 (import-use error)
 (import-use w44base)
 (deferror w44-only-bad \"bad\")
-(defn w44-probe (p:ptr:W44Only):!ui8
+(defn w44-probe (p:&W44Only):!ui8
   (when (< (p 'x) 0) (return (err w44-only-bad)))
   (return (ok (unsafe/cast ui8 1))))
 ")))
@@ -524,11 +524,11 @@ int main(void) {
 (defstruct Holder r:Rec n:i32)
 (defunion Shape (circle r:i32) (square s:i32))
 (defn rec-sum (r:Rec):i32
-  (let (q:ptr:Rec (alloca Rec))
+  (let (q:&Rec (alloca Rec))
     (set! (deref q) r)
     (return (+ (q 'a) (q 'b)))))
 (defn holder-sum (h:(ref Holder)):i32
-  (let (q:ptr:Rec (alloca Rec))
+  (let (q:&Rec (alloca Rec))
     (set! (deref q) (h 'r))
     (return (+ (+ (q 'a) (q 'b)) (h 'n)))))
 (defn ch-echo (c:Char):Char (return c))

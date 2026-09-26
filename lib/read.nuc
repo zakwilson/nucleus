@@ -49,10 +49,10 @@
 (defn read-error-code (e:ReadError):Err (return (e 'code)))
 (defcast ReadError Err read-error-code)
 
-; Not `(Result raw:Node ReadError)`: a template stamp re-spells `raw:Node` as
+; Not `(Result ptr:Node ReadError)`: a template stamp re-spells `ptr:Node` as
 ; `ptr:Node`, so that instance could not carry `()`, the null node. Same arms,
 ; so `try`/`unwrap`/`match` treat it as a Result.
-(defunion ReadResult (ok v:raw:Node) (err e:ReadError))
+(defunion ReadResult (ok v:?&Node) (err e:ReadError))
 
 ; A call, not a struct literal: a two-element list in a positional initializer
 ; slot reads as a `(field value)` pair.
@@ -66,7 +66,7 @@
         n:usize (v 'len)
         p:ptr (arena-bytes (v 'data) (as i64 n)))
     (drop s)
-    (return (strview (as &ui8 p) n))))
+    (return (strview (unsafe/cast &ui8 p) n))))
 
 ; ---------------------------------------------------------------------------
 ; Reader macros: `prefix` at a token boundary reads the next form as
@@ -450,7 +450,7 @@
             (set! (n 's) (symbol-intern (string-as-view &buf)))
             (set! (n 'i) (if is-cstr 1 0))
             (drop &buf)
-            (return (ok (as raw:Node n)))))
+            (return (ok n))))
         (when (= c 92)
           (let (e:i32 (rd-next self)
                 handled:bool true)
@@ -524,25 +524,25 @@
         (when (and (>= cp 55296) (<= cp 57343))
           (return (err (rd-error read-bad-char open-line
                                  "invalid-codepoint: surrogate 0xD800..0xDFFF is not a scalar value" ""))))
-        (return (ok (as raw:Node (rd-char-node cp open-line))))))
+        (return (ok (as &Node (rd-char-node cp open-line))))))
     ; A non-symbol character after the backslash is a literal of that byte.
     (when (not (rd-sym-char? c0))
       (rd-next self)
-      (return (ok (as raw:Node (rd-char-node c0 open-line)))))
+      (return (ok (as &Node (rd-char-node c0 open-line)))))
     (let (start:usize (self 'pos))
       (while (rd-sym-char? (rd-peek self))
         (rd-next self))
       (let (tv:StrView (rd-slice self start))
         (when (= (tv 'len) 1)
-          (return (ok (as raw:Node (rd-char-node (rd-tv-at &tv 0) open-line)))))
-        (when (= tv "newline")   (return (ok (as raw:Node (rd-char-node 10 open-line)))))
-        (when (= tv "return")    (return (ok (as raw:Node (rd-char-node 13 open-line)))))
-        (when (= tv "tab")       (return (ok (as raw:Node (rd-char-node 9 open-line)))))
-        (when (= tv "space")     (return (ok (as raw:Node (rd-char-node 32 open-line)))))
-        (when (= tv "nul")       (return (ok (as raw:Node (rd-char-node 0 open-line)))))
-        (when (= tv "escape")    (return (ok (as raw:Node (rd-char-node 27 open-line)))))
-        (when (= tv "backspace") (return (ok (as raw:Node (rd-char-node 8 open-line)))))
-        (when (= tv "delete")    (return (ok (as raw:Node (rd-char-node 127 open-line)))))
+          (return (ok (as &Node (rd-char-node (rd-tv-at &tv 0) open-line)))))
+        (when (= tv "newline")   (return (ok (as &Node (rd-char-node 10 open-line)))))
+        (when (= tv "return")    (return (ok (as &Node (rd-char-node 13 open-line)))))
+        (when (= tv "tab")       (return (ok (as &Node (rd-char-node 9 open-line)))))
+        (when (= tv "space")     (return (ok (as &Node (rd-char-node 32 open-line)))))
+        (when (= tv "nul")       (return (ok (as &Node (rd-char-node 0 open-line)))))
+        (when (= tv "escape")    (return (ok (as &Node (rd-char-node 27 open-line)))))
+        (when (= tv "backspace") (return (ok (as &Node (rd-char-node 8 open-line)))))
+        (when (= tv "delete")    (return (ok (as &Node (rd-char-node 127 open-line)))))
         (let (m:String (str "unknown named char literal '\\" tv "'"))
           (return (err (rd-error read-bad-char open-line (rd-arena-str &m) ""))))))))
 
@@ -553,7 +553,7 @@
       ((err e) (return (err (rd-error read-int-range line "integer literal out of range" "")))))
     (let (n:&Node (rd-node NODE-INT line))
       (set! (n 'i) v)
-      (return (ok (as raw:Node n))))))
+      (return (ok n)))))
 
 (defn rd-atom (self:&Reader):ReadResult
   (let (line:i32 (self 'line)
@@ -568,22 +568,22 @@
         (when (= hk 2)
           (let (n:&Node (rd-node NODE-FLOAT line))
             (set! (n 's) (symbol-intern tv))
-            (return (ok (as raw:Node n)))))
+            (return (ok n))))
         (when (= hk 1)
           (return (rd-int-node tv 16 line))))
       (when (rd-float-atom? tp)
         (let (n:&Node (rd-node NODE-FLOAT line))
           (set! (n 's) (symbol-intern tv))
-          (return (ok (as raw:Node n)))))
+          (return (ok n))))
       ; A leading ':' with a non-empty remainder is a keyword; a lone ':' is a
       ; plain symbol, which is what makes the `):(` return-type sugar lex.
       (when (and (> (tv 'len) 1) (= (rd-tv-at tp 0) 58))
         (let (n:&Node (rd-node NODE-KEYWORD line))
           (set! (n 's) (rd-expand-sigil (strview-drop-bytes tv 1)))
-          (return (ok (as raw:Node n)))))
+          (return (ok n))))
       ; Symbols are interned singletons shared across the whole program, so
       ; they carry no per-occurrence line -- see node-line in lib/node.nuc.
-      (return (ok (as raw:Node (intern-node (rd-expand-sigil tv))))))))
+      (return (ok (as &Node (intern-node (rd-expand-sigil tv))))))))
 
 ; ---------------------------------------------------------------------------
 ; Forms
@@ -630,7 +630,7 @@
 ; form gets. `ok` carries no node.
 (defn reader-register-macro (self:&Reader prefix:StrView wrap:Symbol line:i32):ReadResult
   (let (tbl:&(Vector RMacro) (self 'macros)
-        none:raw:Node null)
+        none:?&Node null)
     (when (>= (rd-macro-find tbl prefix) 0)
       (let (m:String (str "def-rmacro: '" prefix "' is already a reader macro"))
         (return (err (rd-error read-bad-rmacro line (rd-arena-str &m) "")))))
@@ -640,23 +640,23 @@
     (rd-macro-add tbl prefix wrap)
     (return (ok none))))
 
-(defn rd-def-rmacro-form? (form:raw:Node):bool
+(defn rd-def-rmacro-form? (form:?&Node):bool
   (when (= form null) (return false))
   (when (!= (form 'kind) NODE-LIST) (return false))
-  (let (h:raw:Node (node-first form))
+  (let (h:?&Node (node-first form))
     (when (= h null) (return false))
     (when (!= (h 'kind) NODE-SYM) (return false))
     (return (= (h 's) "def-rmacro"))))
 
 ; A top-level `(def-rmacro "p" sym)`, registered as it is read so the forms
 ; after it see the prefix. The first three messages are the compiler's.
-(defn rd-def-rmacro (self:&Reader form:raw:Node):ReadResult
+(defn rd-def-rmacro (self:&Reader form:ptr:Node):ReadResult
   (let (line:i32 (form 'line))
     (when (!= (node-len form) 3)
       (return (err (rd-error read-bad-rmacro line
                              "def-rmacro: expects (def-rmacro \"prefix\" symbol)" ""))))
-    (let (pn:raw:Node (node-at form 1)
-          sn:raw:Node (node-at form 2))
+    (let (pn:ptr:Node (node-at form 1)
+          sn:ptr:Node (node-at form 2))
       (when (!= (node-kind pn) NODE-STR)
         (return (err (rd-error read-bad-rmacro line "def-rmacro: prefix must be a string" ""))))
       (when (!= (node-kind sn) NODE-SYM)
@@ -666,10 +666,10 @@
 
 ; True iff `form` is a `(fn …)`-headed list -- the return-type half of a
 ; function-pointer type.
-(defn rd-fn-type-form? (form:raw:Node):bool
+(defn rd-fn-type-form? (form:?&Node):bool
   (when (= form null) (return false))
   (when (!= (form 'kind) NODE-LIST) (return false))
-  (let (h:raw:Node (node-first form))
+  (let (h:?&Node (node-first form))
     (when (= h null) (return false))
     (when (!= (h 'kind) NODE-SYM) (return false))
     (return (= (h 's) "fn"))))
@@ -679,11 +679,11 @@
 ; `(f ((fn i32) (i32)))`, not as a zero-parameter fn type with a dangling
 ; sibling. Adjacency is required -- a space-separated second group is genuinely
 ; ambiguous with the next binding in the enclosing list.
-(defn rd-fuse-fn-params (self:&Reader paren-form:raw:Node line:i32):ReadResult
+(defn rd-fuse-fn-params (self:&Reader paren-form:?&Node line:i32):ReadResult
   (when (not (rd-fn-type-form? paren-form)) (return (ok paren-form)))
   (when (!= (rd-peek self) 40) (return (ok paren-form)))
-  (let (plist:raw:Node (try (rd-form self)))
-    (return (ok (as raw:Node (node-list2 paren-form
+  (let (plist:?&Node (try (rd-form self)))
+    (return (ok (as &Node (node-list2 paren-form
                                plist line))))))
 
 ; The final chain segment is still open (`x:`, `?`, `x:?`, `?!` -- not `foo?`,
@@ -700,7 +700,7 @@
 ; Colon-paren binding sugar (design/stage11/cleanup.md §1). The colon is an
 ; ordinary symbol char, so `name:(ref (Vector T))` lexes as the atom `name:`
 ; followed by a separate list; fuse them back together.
-(defn rd-fuse-colon-paren (self:&Reader child:raw:Node line:i32):ReadResult
+(defn rd-fuse-colon-paren (self:&Reader child:?&Node line:i32):ReadResult
   (when (= child null) (return (ok child)))
   (when (and (!= (child 'kind) NODE-SYM) (!= (child 'kind) NODE-KEYWORD))
     (return (ok child)))
@@ -708,8 +708,8 @@
         len:usize (symbol-len (child 's)))
     (when (not (rd-open-segment? sv)) (return (ok child)))
     (when (!= (rd-peek self) 40) (return (ok child)))
-    (let (first:raw:Node (try (rd-form self))
-          paren-form:raw:Node (try (rd-fuse-fn-params self first line))
+    (let (first:?&Node (try (rd-form self))
+          paren-form:?&Node (try (rd-fuse-fn-params self first line))
           body:StrView sv)
       ; A bare ':' fuses to the paren form directly, so `(fn (x:i32):(ref T) …)`
       ; reads as `(fn (x:i32) (ref T) …)`.
@@ -748,16 +748,16 @@
             (set! name (invoke &segs 0))
             (set! have-name true)
             (set! start 1))
-          (let (result:raw:Node paren-form
+          (let (result:?&Node paren-form
                 i:usize n)
             (while (> i start)
               (set! i (- i 1))
-              (set! result (as raw:Node
-                             (node-list2 (as raw:Node (intern-node (invoke &segs i)))
+              (set! result (as &Node
+                             (node-list2 (as &Node (intern-node (invoke &segs i)))
                                result line))))
             (when have-name
-              (set! result (as raw:Node
-                             (node-list2 (as raw:Node (intern-node name))
+              (set! result (as &Node
+                             (node-list2 (as &Node (intern-node name))
                                result line))))
             (drop &segs)
             (return (ok result))))))))
@@ -773,7 +773,7 @@
           (rd-close-bracket self)
           (rd-next self)
           (return (ok (node-list-done b))))
-        (let (child:raw:Node (try (rd-form self)))
+        (let (child:?&Node (try (rd-form self)))
           (node-push b child))))
     (return (ok (node-list-done b)))))
 
@@ -791,20 +791,20 @@
           (rd-close-bracket self)
           (rd-next self)
           (return (ok (node-list-done b))))
-        (let (child:raw:Node (try (rd-form self)))
+        (let (child:?&Node (try (rd-form self)))
           (node-push b child))))
     (return (ok (node-list-done b)))))
 
 ; `(vector-lit e…)` / `(hashmap-lit k v…)` / `(hashset-lit e…)` -- no gensym
 ; element; the compiler mints its own after reading.
-(defn rd-lit-cell (name:StrView elems:raw:Node line:i32):raw:Node
-  (return (as raw:Node (node-cons (as raw:Node (intern-node (symbol-intern name)))
+(defn rd-lit-cell (name:StrView elems:?&Node line:i32):?&Node
+  (return (as &Node (node-cons (as &Node (intern-node (symbol-intern name)))
                          elems line))))
 
 ; The fuse lives here, not in `rd-list`, so it fires wherever an atom is read:
 ; a reader-macro operand, a literal element, a top-level form.
 (defn rd-atom-form (self:&Reader line:i32):ReadResult
-  (let (atom:raw:Node (try (rd-atom self)))
+  (let (atom:?&Node (try (rd-atom self)))
     (return (rd-fuse-colon-paren self atom line))))
 
 (defn rd-form (self:&Reader):ReadResult
@@ -833,7 +833,7 @@
     (when (= c 91)
       (rd-open-bracket self line false)
       (rd-next self)
-      (let (elems:raw:Node (try (rd-lit-elems self "vector" 93 line)))
+      (let (elems:?&Node (try (rd-lit-elems self "vector" 93 line)))
         (return (ok (rd-lit-cell "vector-lit" elems line)))))
     (when (= c 93)
       (rd-close-bracket self)
@@ -842,12 +842,12 @@
     (when (and (= c 35) (= (rd-peek1 self) 123))
       (rd-open-bracket self line false)
       (rd-next self) (rd-next self)
-      (let (elems:raw:Node (try (rd-lit-elems self "set" 125 line)))
+      (let (elems:?&Node (try (rd-lit-elems self "set" 125 line)))
         (return (ok (rd-lit-cell "hashset-lit" elems line)))))
     (when (= c 123)
       (rd-open-bracket self line false)
       (rd-next self)
-      (let (elems:raw:Node (try (rd-lit-elems self "map" 125 line)))
+      (let (elems:?&Node (try (rd-lit-elems self "map" 125 line)))
         (when (!= (bit-and (node-len elems) 1) 0)
           (return (err (rd-error read-map-odd line "map literal: odd number of elements" ""))))
         (return (ok (rd-lit-cell "hashmap-lit" elems line)))))
@@ -868,9 +868,9 @@
           (while (< j k)
             (rd-next self)
             (set! j (+ j 1)))
-          (let (inner:raw:Node (try (rd-form self))
-                sym:raw:Node (as raw:Node (intern-node (rm 'wrap))))
-            (return (ok (as raw:Node
+          (let (inner:?&Node (try (rd-form self))
+                sym:&Node (as &Node (intern-node (rm 'wrap))))
+            (return (ok (as &Node
                           (node-list2 sym
                             inner line))))))))
     ; `c"…"` -- a `c` glued to an opening quote -- is an explicit CStr literal.
@@ -897,7 +897,7 @@
 ; null return is a legitimate empty list rather than end of input. A top-level
 ; `def-rmacro` takes effect here, before the form is returned.
 (defn read-one (self:&Reader):ReadResult
-  (let (form:raw:Node (try (rd-form self)))
+  (let (form:?&Node (try (rd-form self)))
     (when (rd-def-rmacro-form? form)
       (try (rd-def-rmacro self form)))
     (return (ok form))))
@@ -910,7 +910,7 @@
         b:&Node (node-list-new 0))
     (while (not (reader-eof? &r))
       (let (start-line:i32 (r 'line)
-            form:raw:Node (try (read-one &r))
+            form:?&Node (try (read-one &r))
             line:i32 start-line)
         (when (!= form null)
           (let (fl:i32 (form 'line))
@@ -969,7 +969,7 @@
 
 ; The canonical text of a node: re-readable, and identical to what the compiler
 ; prints for the same tree.
-(defn node-write (out:&String n:raw:Node):void
+(defn node-write (out:&String n:?&Node):void
   (when (= n null)
     (write-str out "()")
     (return))
@@ -992,7 +992,7 @@
                 (write-str out "\""))
           (= k NODE-LIST)
             (do (write-str out "(")
-                (let (cur:raw:Node n
+                (let (cur:ptr:Node n
                       first:bool true)
                   (while (and (> (node-len cur) 0) (= (cur 'kind) NODE-LIST))
                     (when (not first) (write-str out " "))
@@ -1002,14 +1002,14 @@
                 (write-str out ")"))
           true (do))))
 
-(defn node-str (n:raw:Node):String
+(defn node-str (n:?&Node):String
   (let (s:String (string-new))
     (node-write &s n)
     (return s)))
 
 ; Structural equality: same shape, same kinds, same values. Symbols compare by
 ; interned identity, which is what makes two reads of one spelling equal.
-(defn node-eq (a:raw:Node b:raw:Node):bool
+(defn node-eq (a:?&Node b:?&Node):bool
   (when (and (= a null) (= b null)) (return true))
   (when (or (= a null) (= b null)) (return false))
   (when (!= (a 'kind) (b 'kind)) (return false))

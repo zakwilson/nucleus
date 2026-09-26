@@ -11,7 +11,7 @@
 ; is typed `ty-raw`, and `raw` resolves to that same singleton, so a
 ; type-directed rule admits both or neither.
 
-(defvar r:raw null)
+(defvar r:ptr null)
 
 (defn main ():i32
   (let (f:(fn i32)(i32) r)

@@ -7,7 +7,7 @@ Nucleus is a compiled systems programming language with Lisp-style syntax, a str
 - **Lisp syntax, systems semantics**: parenthesized S-expression syntax; semantics close to C with explicit memory management and no GC
 - **C interop first**: imports C headers directly (`import-use`, `import`), exports C-legible types and functions (`.nuch` headers, `--emit-cheader`)
 - **Zero-cost generics**: multimethods, protocols, and bounded generics resolved entirely at compile time — no vtables, no runtime dispatch objects
-- **Explicit nullability**: `(ptr T)` / `(ref T)` are non-null by default; nullable pointers are `?T` or `(raw T)`, explicit at each declaration
+- **Explicit nullability**: `&T` is non-null, `?&T` is nullable and must be narrowed before use, and `(ptr T)` is the explicit, unchecked escape — the kind is visible at each declaration
 
 ## Quick start
 
@@ -89,7 +89,7 @@ compile-time error naming their replacement.
 |----------|----------|
 | [Compiler](compiler.md) | Flags (`-O`, `--emit-llvm`, `--target`, …), diagnostics (locations, unresolved names, did-you-mean), REPL, `.nuch` header format |
 | [Top-level forms](toplevel.md) | `defn`, `defvar`, `defstruct`, `defunion`, `defprotocol`, `import`, `defmacro`, … |
-| [Types](types.md) | Built-in types, pointer kinds (`ptr`/`ref`/`raw`/`?T`), volatile, function pointer types, coercions, literals, keyword literals (`:foo`), symbols |
+| [Types](types.md) | Built-in types, pointer kinds (`&T`/`?&T`/`(ptr T)`), volatile, function pointer types, coercions, literals, keyword literals (`:foo`), symbols |
 | [Structs and unions](structs-unions.md) | Anonymous structs, passing by value, `defunion`, `match`, niche layout, parametric struct templates, C header struct/array ingestion, opaque types, C typedefs as type names |
 | [Special forms](special-forms.md) | Control flow, memory ops, `with`/`move`/`defer`, binary operators, callable values (`get`/`invoke`) |
 | [Macros](macros.md) | Standard macros (`if`, `when`, `for`, `dotimes`, `->`), variadic arithmetic, writing macros |

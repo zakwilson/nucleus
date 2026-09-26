@@ -8,17 +8,18 @@ brings in the protocol, the handle type, the backends, and a default.
 ## The `Allocator` protocol
 
 The documented contract (Zig-shaped). `align` is part of the contract even where
-a backend ignores it. The byte type is `(raw ui8)` (= C `unsigned char *`):
+a backend ignores it. The byte type is `?&ui8` (= C `unsigned char *`; null is
+an allocation failure, and `free` of null is a no-op, as in C):
 
 ```lisp
 (defprotocol Allocator
-  (alloc   (self:&Self size:usize align:usize) (raw ui8))
-  (realloc (self:&Self (p (raw ui8)) old:usize new:usize align:usize) (raw ui8))
-  (free    (self:&Self (p (raw ui8)) size:usize align:usize):void))
+  (alloc   (self:&Self size:usize align:usize) ?&ui8)
+  (realloc (self:&Self (p ?&ui8) old:usize new:usize align:usize) ?&ui8)
+  (free    (self:&Self (p ?&ui8) size:usize align:usize):void))
 ```
 
-A method's return type follows its parameter list — `(raw ui8)` as a list, or
-attached as `):void` / `):(raw ui8)`; `(p (raw ui8))` and `p:(raw ui8)` are the
+A method's return type follows its parameter list — `?&ui8` as a bare type, or
+attached as `):void` / `):?&ui8`; `(p ?&ui8)` and `p:?&ui8` are the
 same parameter.
 
 ## Runtime dispatch: `AllocHandle`
@@ -35,9 +36,9 @@ protocol system is static-only (no vtables) and `unsafe/funcall-ptr-*` cannot ca
 
 | Helper | Signature | Behaviour |
 |--------|-----------|-----------|
-| `alloc-handle-alloc` | `((h (ref AllocHandle)) size:usize align:usize) -> (raw ui8)` | libc `malloc`, or `arena-alloc`; `kind` selects |
-| `alloc-handle-realloc` | `((h (ref AllocHandle)) (p (raw ui8)) old:usize new:usize align:usize) -> (raw ui8)` | libc `realloc`, or arena fresh-alloc + `memcpy` of `min(old,new)` |
-| `alloc-handle-free` | `((h (ref AllocHandle)) (p (raw ui8)) size:usize align:usize) -> void` | libc `free`, or no-op for the arena |
+| `alloc-handle-alloc` | `((h (ref AllocHandle)) size:usize align:usize) -> ?&ui8` | libc `malloc` (null on OOM), or `arena-alloc`; `kind` selects |
+| `alloc-handle-realloc` | `((h (ref AllocHandle)) (p ?&ui8) old:usize new:usize align:usize) -> ?&ui8` | libc `realloc`, or arena fresh-alloc + `memcpy` of `min(old,new)` |
+| `alloc-handle-free` | `((h (ref AllocHandle)) (p ?&ui8) size:usize align:usize) -> void` | libc `free`, or no-op for the arena |
 
 ## Default and constructors
 

@@ -4,6 +4,6 @@
 (defstruct P (x i32))
 
 (defn main ():i32
-  (let (q (cast ptr:P null))
+  (let (q (cast &P null))
     (set! (q x) 3))
   (return 0))

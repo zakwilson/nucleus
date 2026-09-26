@@ -27,7 +27,7 @@
 
 (defn main ():i32
   (let (loc:(fn i32)(i32) null                ; let init
-        h:ptr:Hooks (alloca Hooks)
+        h:&Hooks (alloca Hooks)
         total:i32 0)
     (set! (h 'before) null)                     ; field store
     (set! (h 'after) twice)

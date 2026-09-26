@@ -115,7 +115,7 @@
 ; does — it must not malloc. design/stage17-native-strings/library-gaps.md #7.
 ; ---------------------------------------------------------------------------
 (defn strview-from-cstr ((cs CStr)):StrView
-  (return (strview (as &ui8 (as ptr cs)) (as usize (strlen (as ptr cs))))))
+  (return (strview (unsafe/cast &ui8 (as ptr cs)) (as usize (strlen (as ptr cs))))))
 
 ; ---------------------------------------------------------------------------
 ; strview-to-cstr — reinterpret the view's bytes as a C string. Only sound when
@@ -229,7 +229,7 @@
 ; cstr-bytes — a ByteIter over the bytes of cs (by value, value-return convention).
 (defn cstr-bytes (cs:CStr):ByteIter
   (let (it:&ByteIter (alloca ByteIter))
-    (set! (it 'buf) (as &ui8 (as ptr cs)))
+    (set! (it 'buf) (unsafe/cast &ui8 (as ptr cs)))
     (set! (it 'pos) 0)
     (set! (it 'len) (as usize (strlen (as ptr cs))))
     (return @it)))
@@ -237,7 +237,7 @@
 ; cstr-chars — a CharIter over the UTF-8 codepoints of cs (by value).
 (defn cstr-chars (cs:CStr):CharIter
   (let (it:&CharIter (alloca CharIter))
-    (set! (it 'buf) (as &ui8 (as ptr cs)))
+    (set! (it 'buf) (unsafe/cast &ui8 (as ptr cs)))
     (set! (it 'pos) 0)
     (set! (it 'len) (as usize (strlen (as ptr cs))))
     (return @it)))

@@ -9,7 +9,7 @@
 (deferror bad "bad")
 
 ; :!ptr:Pt — niche-encoded error-union pointer return, in the new position.
-(defn lookup (p:ptr:Pt i:i32):!ptr:Pt
+(defn lookup (p:&Pt i:i32):!&Pt
   (when (< i 0) (return (err bad)))
   (return (ok (as ref:Pt p))))
 
@@ -19,7 +19,7 @@
   (return (ok x)))
 
 ; :?ptr:Pt — nullable pointer return (Maybe (ref Pt)), new position.
-(defn maybe-pt (give:bool p:ptr:Pt):?ptr:Pt
+(defn maybe-pt (give:bool p:&Pt):?&Pt
   (if give (return (as-ref p)) (return none)))
 
 ; `:noreturn` sits AFTER the ret operand in the new style (it moved from index 3

@@ -5,5 +5,5 @@
 (defstruct W9C7L n:i32)
 
 (defn main ():i32
-  (let (p:ptr:W9C7L (as CStr null))
+  (let (p:&W9C7L (as CStr null))
     (return (p n))))

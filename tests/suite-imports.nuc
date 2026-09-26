@@ -500,10 +500,10 @@
 (defn w1-sca ():i32 (return 1))
 "))
   (try (test-write-file "w1-scb.nuc" "(import w1-sca)
-(defn w1-scb (p:ptr:W1SC):i32 (set! (p 'x) 11) (return (p 'x)))
+(defn w1-scb (p:&W1SC):i32 (set! (p 'x) 11) (return (p 'x)))
 "))
   (let (m:String (try (test-write-file "w1-scm.nuc" "(import w1-sca)
-(defn main ():i32 (let (s:ptr:W1SC (alloca W1SC)) (return (w1-scb s))))
+(defn main ():i32 (let (s:&W1SC (alloca W1SC)) (return (w1-scb s))))
 "))
         mv:StrView (string-as-view &m)
         s:String (try (w1-ir mv)))
@@ -755,7 +755,7 @@
 (deftest w1c-unreachable-type
   (let (o:String (try (test-write-file "w1c-ty.nuc" "(defstruct W1cWidget (a i32))
 "))
-        m:String (try (test-write-file "w1c-tymain.nuc" "(defn w1c-take (w:ptr:W1cWidget):i32 (return 0))
+        m:String (try (test-write-file "w1c-tymain.nuc" "(defn w1c-take (w:&W1cWidget):i32 (return 0))
 (defn main ():i32 (return 0))
 "))
         mv:StrView (string-as-view &m)
@@ -956,12 +956,12 @@
 
 (deftest w9-string-path-use-before-import
   (let (p:String (try (w9-sp-lib))
-        src:String (str "(defn sp-use (r:ptr:SpRec):i32
+        src:String (str "(defn sp-use (r:&SpRec):i32
   (return (+ (+ (sp-add 5) sp-gv) sp-green)))
 (import-use \"" (string-as-view &p) "\")
 (defn main ():i32
   (let (r:ref:SpRec (SpRec 2))
-    (return (sp-use (as ptr:SpRec r)))))
+    (return (sp-use (as &SpRec r)))))
 ")
         m:String (try (test-write-file "spmain.nuc" (string-as-view &src))))
     (try (w1-exit (string-as-view &m) 43))
@@ -979,12 +979,12 @@
 (defvar sp-gv:i32 30)
 (defn sp-add (a:i32):i32 (return (+ a SP-K)))
 "))
-  (let (m:String (try (test-write-file "spsym.nuc" "(defn sp-use (r:ptr:SpRec):i32
+  (let (m:String (try (test-write-file "spsym.nuc" "(defn sp-use (r:&SpRec):i32
   (return (+ (+ (sp-add 5) sp-gv) sp-green)))
 (import-use sp)
 (defn main ():i32
   (let (r:ref:SpRec (SpRec 2))
-    (return (sp-use (as ptr:SpRec r)))))
+    (return (sp-use (as &SpRec r)))))
 ")))
     (try (w1-exit (string-as-view &m) 43))
     (drop &m))

@@ -26,7 +26,7 @@
     (none     (return -1))))
 
 (defn main ():i32
-  (with (p:&Pt (as &Pt (malloc 8)))
+  (with (p:&Pt (unsafe/cast &Pt (malloc 8)))
     (set! (p 'x) 7)
     (printf "guard %d %d\n" (show (lookup true p)) (show (lookup false p)))
     (printf "match %d %d\n" (show-match (lookup true p)) (show-match (lookup false p)))

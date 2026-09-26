@@ -8,7 +8,7 @@
 ; the same predicate, so they reject the same programs with the same wording.
 (defstruct Thing (x i32))
 
-(defvar g:ptr:Thing null)
+(defvar g:&Thing null)
 
 (defn main ():i32
   (return (g x)))

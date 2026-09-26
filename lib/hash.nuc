@@ -120,7 +120,7 @@
 ; There is no error channel on `hash`, so this follows `vector-bounds`: report
 ; the caller's bug and stop, rather than fault on the first `aref`.
 (defn hash (self:&CStr):usize
-  (when (= (as raw:i8 @self) null) (hash-null-cstr))
+  (when (= (as ?&i8 @self) null) (hash-null-cstr))
   (let (h:i64 -3750763034362895579
         s:&i8 (unsafe/cast &i8 @self)
         i:i64 0)

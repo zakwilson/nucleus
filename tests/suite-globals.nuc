@@ -450,7 +450,7 @@
 (deftest g1-addr-of-cross-file
   (try (test-write-file "g1-aa.nuc" "(defvar g1-atgt:i32 88)
 "))
-  (try (test-write-file "g1-ab.nuc" "(defvar g1-aptr:ptr:i32 &g1-atgt)
+  (try (test-write-file "g1-ab.nuc" "(defvar g1-aptr:&i32 &g1-atgt)
 (defn g1-aget ():i32 (return (deref g1-aptr)))
 "))
   (let (dir:StrView (try (test-scratch))
@@ -514,7 +514,7 @@ int main(void){ printf(\"%zu %zu %zu %zu\\n\", sizeof(G2Rec), offsetof(G2Rec,cel
 (defstruct G2Rec tag:i8 (cells (array i32 4)) (names (array CStr G2N)) mark:i8)
 (defn g2off (base:ptr fld:ptr):i64 (return (- (unsafe/cast i64 fld) (unsafe/cast i64 base))))
 (defn main ():i32
-  (let (s:ptr:G2Rec (alloca G2Rec))
+  (let (s:&G2Rec (alloca G2Rec))
     (printf \"%lld %lld %lld %lld\\n\" (as i64 (sizeof G2Rec))
       (g2off s (ref s 'cells)) (g2off s (ref s 'names)) (g2off s (ref s 'mark))))
   (return 0))
@@ -557,7 +557,7 @@ int main(void){ printf(\"%zu %zu %zu %zu\\n\", sizeof(G2Rec), offsetof(G2Rec,cel
     (try (check-line hv "(extern (g2tab (array i32 4)))"))
     (let (u:String (try (write-into dir "g2use.nuc" "(import-use g2lib)
 (defn main ():i32
-  (let (b:ptr:G2Box (alloca G2Box))
+  (let (b:&G2Box (alloca G2Box))
     (set! (aref (b 'slots) 2) 7)
     (set! (b 'n) 9)
     (return (+ (aref (b 'slots) 2) (+ (b 'n) (+ (unsafe/cast i32 (sizeof G2Box)) (aref g2tab 1)))))))
@@ -592,11 +592,11 @@ int main(void){ printf(\"%zu %zu %zu %zu\\n\", sizeof(G2Rec), offsetof(G2Rec,cel
 (defvar g3-lit:i32 41)
 (defvar g3-fold:i32 (* G3K 7))
 (defvar g3-str:CStr (as CStr \"zero-cost\"))
-(defvar g3-addr:ptr:i32 &g3-lit)
+(defvar g3-addr:&i32 &g3-lit)
 (defvar g3-arr:(array i32 3) (array i32 1 2 3))
 (defvar g3-zeros:(array i32 4))
 (defvar g3-struct:G3P (G3P 1 2))
-(defvar g3-tabp:ptr:i32 (array i32 9 8 7))
+(defvar g3-tabp:&i32 (array i32 9 8 7))
 "))
 
 ; The nine, in emission order. `.bss` for the zeroed array is part of the claim:

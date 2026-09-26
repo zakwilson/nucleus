@@ -185,7 +185,7 @@ instead, with `test-add`:
 
 ```lisp
 (defn run-row (data:ptr):!void
-  (let (row:raw:Node (unsafe/cast raw:Node data))
+  (let (row:&Node (unsafe/cast &Node data))
     …))
 
 (test-add name file line run-row row)
@@ -226,7 +226,7 @@ not the library's, because they run `./build/nucleusc`.
 
 | Form | Meaning |
 | --- | --- |
-| `(compile-source src)` | `!Compiled` — `ok?`, `exit`, `ir`, `raw` stderr, and `diags`. `exit` is 128+signal for a signalled child, so a crash is distinguishable from a refusal. |
+| `(compile-source src)` | `!Compiled` — `ok?`, `exit`, `ir`, `raw-text` (the stderr), and `diags`. `exit` is 128+signal for a signalled child, so a crash is distinguishable from a refusal. |
 | `(compile-path path)` | The same for a file. |
 | `(check-source-rejects src needle)` | The compile must fail, and some error must contain `needle`. |
 | `(check-file-rejects dir path needle)` | The same for a file, resolving imports under `-I dir`. |

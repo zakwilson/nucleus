@@ -39,7 +39,7 @@
 
 ; Repairs config-missing with a fixed value carried in ctx (an i64*).
 (defn repair-from-ctx (ctx:ptr detail:ptr):?i64
-  (return (some (deref (as &i64 ctx)))))
+  (return (some (deref (unsafe/cast &i64 ctx)))))
 
 ; Declines (returns none) — the error propagates unchanged.
 (defn decline (ctx:ptr detail:ptr):?i64
@@ -47,7 +47,7 @@
 
 ; Reads the i64 that `detail` points at and repairs with it doubled.
 (defn repair-from-detail (ctx:ptr detail:ptr):?i64
-  (return (some (* (deref (as &i64 detail)) 2))))
+  (return (some (* (deref (unsafe/cast &i64 detail)) 2))))
 
 ; Re-raises inside the handler: per the CL unbind rule (§11.4), the handler runs
 ; with the chain unbound past itself, so this inner err finds only OUTER

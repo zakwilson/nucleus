@@ -576,7 +576,7 @@ from source is an ordinary collection: `count`, `(xs i)`, `conj`, `append`,
     (printf " %ld" (e 'i))))
 ```
 
-The element type is `(ref Node)`, not `(raw Node)`: `iter` yields non-null
+The element type is `(ref Node)`, not `(ptr Node)`: `iter` yields non-null
 references, so `next` can answer `none` at the end. `NodeIter` borrows the
 list's array and must not outlive it.
 
@@ -589,7 +589,7 @@ Two differences from the other collections:
 - **`Node` does not conform to `Drop`.** Nodes live in the compiler's arena and
   are freed wholesale, so a `Node` is never `with`-bound.
 
-`Node` is not a *replacement* for `Vector`: it stores `(raw Node)` elements
+`Node` is not a *replacement* for `Vector`: it stores `(ptr Node)` elements
 only, it grows through `node-push` rather than a generic element store, and it
 has no parametric element type. It is a collection so that macro and tooling
 code can treat a form the way it treats any other sequence. See
@@ -707,7 +707,7 @@ and hashing is a cached load, both cheaper than a byte walk.
 A bare `a` in a literal is a **variable reference**, as everywhere else; it is
 not a symbol value. A symbol element is written `'a`, and its near neighbours
 are still refused because they are not `(ref Node)`: `'(a b)` is a quoted list
-and `'1` a quoted int, both `(raw Node)`.
+and `'1` a quoted int, both `(ptr Node)`.
 
 Success paths live in `examples/{vector,hashmap,hashset,keyword}-lit-test.nuc`;
 the refusals are covered by the `s16-kwlit-refused-*` and
