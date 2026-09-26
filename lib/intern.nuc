@@ -139,7 +139,7 @@
   (let (hdrsz:i64 (as i64 (sizeof SymHeader))
         base:?ptr (malloc (+ hdrsz (as i64 (+ n 1)))))
     (when (= base null) (intern-oom))
-    (let (p:&ui8 (as &ui8 (unsafe/ptr+ (as &ui8 base) hdrsz))
+    (let (p:&ui8 (as &ui8 (unsafe/ptr+ (unsafe/cast &ui8 base) hdrsz))
           hdr:&SymHeader (unsafe/cast &SymHeader base))
       (set! (hdr 'hash) h)
       (set! (hdr 'len) n)
@@ -152,9 +152,9 @@
 (defn intern-place (tbl:ptr cap:usize p:&ui8 h:usize):void
   (let (mask:usize (- cap 1)
         i:usize (bit-and h mask))
-    (while (!= (aref (as &ptr tbl) (as i64 i)) null)
+    (while (!= (aref (unsafe/cast &ptr tbl) (as i64 i)) null)
       (set! i (bit-and (+ i 1) mask)))
-    (set! (aref (as &ptr tbl) (as i64 i)) (as ptr p))))
+    (set! (aref (unsafe/cast &ptr tbl) (as i64 i)) (as ptr p))))
 
 (defn intern-grow (newcap:usize):void
   (let (nt:?ptr (calloc (as i64 newcap) (sizeof ptr)))
@@ -162,7 +162,7 @@
     (when (!= g-sym-table null)
       (let (i:usize 0)
         (while (< i g-sym-cap)
-          (let (e:?ptr (aref (as &ptr g-sym-table) (as i64 i)))
+          (let (e:?ptr (aref (unsafe/cast &ptr g-sym-table) (as i64 i)))
             (when (!= e null)
               (let (ep:&ui8 (as &ui8 e)
                     es:&Symbol (alloca Symbol))
@@ -185,7 +185,7 @@
         i:usize (bit-and h mask)
         s:&Symbol (alloca Symbol))
     (while true
-      (let (e:?ptr (aref (as &ptr g-sym-table) (as i64 i)))
+      (let (e:?ptr (aref (unsafe/cast &ptr g-sym-table) (as i64 i)))
         (when (= e null)
           (let (p:&ui8 (intern-alloc-bytes src n h))
             (intern-place g-sym-table g-sym-cap p h)
@@ -211,7 +211,7 @@
   (return (symbol-intern &sv)))
 
 (defn symbol-from-cstr ((cs CStr)):Symbol
-  (return (symbol-intern-bytes (as &ui8 (as ptr cs))
+  (return (symbol-intern-bytes (unsafe/cast &ui8 (as ptr cs))
                                (as usize (strlen (as ptr cs))))))
 
 ; The exact inverse of `symbol-as-cstr`, for a `Symbol` parked in a

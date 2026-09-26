@@ -5,7 +5,7 @@
 ; correctly; Stage 16 added the missing `hash` and stopped over-typing the quote.
 ;
 ; A quoted SYMBOL types `(ref Node)` — non-null, because it lowers to an
-; `intern-symbol` call whose signature says so. A quoted LIST stays `(raw Node)`:
+; `intern-symbol` call whose signature says so. A quoted LIST stays `(ptr Node)`:
 ; it builds cells, and `'()` IS null.
 ;
 ; The `Node` TYPE comes from lib/prelude.nuc, but `'alpha` calls `intern-symbol`
@@ -66,8 +66,8 @@
       (conj s2 'alpha)
       (printf "interned=%d\n" (contains? s2 k))))         ; interned=1
 
-  ; A quoted list is still (raw Node) — nullable, and not an interned identity.
-  (let (l:(raw Node) '(a b))
+  ; A quoted list is still (ptr Node) — nullable, and not an interned identity.
+  (let (l:?&Node '(a b))
     (printf "list-nonnull=%d\n" (if (= (as ptr l) null) 0 1)))
 
   ; Container literals take quoted symbols, inferring `(ref Node)` the way an

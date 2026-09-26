@@ -24,7 +24,7 @@
 ; Policy bound near the top of the program: grant twice what was asked, reading
 ; the borrowed `detail`. Returns (Maybe i64); `none` would decline.
 (defn grant-double (ctx:ptr detail:ptr):?i64
-  (return (some (* (deref (as &i64 detail)) 2))))
+  (return (some (* (deref (unsafe/cast &i64 detail)) 2))))
 
 ; Policy that always declines.
 (defn always-decline (ctx:ptr detail:ptr):?i64

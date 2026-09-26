@@ -151,7 +151,7 @@
 ; elements is not addressable, so a ui32 at 2^31 cannot be run into.
 (deftest w9-unsigned-index-ui32
   (let (ir:String (try (source-ir "(import prelude)
-(defn f (p:ptr:i32 i:ui32):i32 (return (aref p i)))
+(defn f (p:&i32 i:ui32):i32 (return (aref p i)))
 (defn main ():i32 (return 0))
 "))
         iv:StrView (string-as-view &ir))
@@ -173,7 +173,7 @@
 
 (deftest w9-arg-coerce-rejects-int-into-ptr
   (try (check-source-rejects "(defstruct W9S a:i32)
-(defn f (p:ptr:W9S):i32 (return 1))
+(defn f (p:&W9S):i32 (return 1))
 (defn main ():i32 (return (f 7)))
 " "does not match parameter type")))
 

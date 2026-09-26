@@ -20,7 +20,7 @@
 ; Access DecodeResult fields via `&` (field access requires a pointer).
 (defn test-roundtrip ((label CStr) (c Char) (expected-bytes usize)):void
   (with (buf:ptr (malloc 4)
-         p:&ui8 (as &ui8 buf)
+         p:&ui8 (unsafe/cast &ui8 buf)
          written:usize (char-encode-utf8 c p)
          dr:DecodeResult (char-decode-utf8 p written))
     (printf "%s: len=%llu write=%llu ok=%d decoded=%u match=%d\n"
@@ -37,7 +37,7 @@
 ; --- Check that decoding invalid/truncated bytes returns ok=0 ---
 (defn test-decode-invalid ((label CStr) (b0 ui8) (b1 ui8) (b2 ui8) (len usize)):void
   (with (buf:ptr (malloc 4)
-         p:&ui8 (as &ui8 buf))
+         p:&ui8 (unsafe/cast &ui8 buf))
     (set! (aref p 0) b0)
     (set! (aref p 1) b1)
     (set! (aref p 2) b2)

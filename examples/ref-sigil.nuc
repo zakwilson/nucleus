@@ -6,7 +6,7 @@
 ;   x:&T        -> x:ref:T      -> (x (ref T))
 ;   x:&(T …)    -> x:ref:(T …)  -> (x (ref (T …)))   [via the colon-paren fuse]
 ;   ):&T        -> ):ref:T      [return position, keyword-led spelling too]
-;   &&T         -> ref:ref:T    and  ?&T -> ?ref:T,  &raw:T -> ref:raw:T
+;   &&T         -> ref:ref:T    and  ?&T -> ?ref:T,  &ptr:T -> ref:ptr:T
 ;
 ; `&` at the start of a token is the reader macro `&x -> (ref x)`. It runs before
 ; the token is lexed, so it takes the standalone spelling and the sigil keeps the

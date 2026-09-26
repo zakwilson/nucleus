@@ -58,13 +58,13 @@
 
 ; The operands of the `(key …)` entry named `name`, or null. Rows are the same
 ; shape a diagnostic is, so they are read the same way.
-(defn row-entry (row:raw:Node name:StrView):raw:Node
+(defn row-entry (row:&Node name:StrView):?&Node
   (let (n:i32 (node-len row)
         i:i32 1)
     (while (< i n)
-      (let (e:raw:Node (node-at row i))
+      (let (e:?&Node (node-at row i))
         (when (node-is-list e)
-          (let (h:raw:Node (node-first e))
+          (let (h:?&Node (node-first e))
             (when (and (!= h null) (= (h 'kind) NODE-SYM)
                        (= (symbol-as-view (h 's)) name))
               (return (node-rest e))))))
@@ -73,28 +73,28 @@
 
 ; A kind check, not a null check: `Node.s` is null on an INT or a FLOAT, and
 ; `symbol-as-view` of null is a segfault, not an empty view.
-(defn row-text (n:raw:Node):StrView
+(defn row-text (n:?&Node):StrView
   (when (= n null) (return ""))
   (let (k:i32 (n 'kind))
     (when (and (!= k NODE-SYM) (!= k NODE-STR) (!= k NODE-KEYWORD)) (return "")))
   (return (symbol-as-view (n 's))))
 
 ; A row's Nth positional operand, counting the head as 0.
-(defn row-at (row:raw:Node i:i32):raw:Node
+(defn row-at (row:&Node i:i32):?&Node
   (return (node-at row i)))
 
-(defn row-head (row:raw:Node):StrView
+(defn row-head (row:&Node):StrView
   (return (row-text (row-at row 0))))
 
-(defn row-name (row:raw:Node):StrView
+(defn row-name (row:&Node):StrView
   (return (row-text (row-at row 1))))
 
-(defn row-file (row:raw:Node):StrView
+(defn row-file (row:&Node):StrView
   (return (row-text (node-first (row-entry row "file")))))
 
 ; The pinned line, or -1 when the row does not pin one.
-(defn row-line (row:raw:Node):i32
-  (let (e:raw:Node (row-entry row "line"))
+(defn row-line (row:&Node):i32
+  (let (e:?&Node (row-entry row "line"))
     (when (= e null) (return -1))
     (return (unsafe/cast i32 ((node-first e) 'i)))))
 
@@ -114,13 +114,13 @@
   ok?:bool
   exit:i32
   ir:String
-  raw:String
+  raw-text:String
   diags:(Vector Diagnostic))
 
 (extend Compiled Drop)
-(defn drop ((self (ptr Compiled))):void
+(defn drop ((self &Compiled)):void
   (drop (ref self 'ir))
-  (drop (ref self 'raw))
+  (drop (ref self 'raw-text))
   (drop (ref self 'diags)))
 
 ; One prepared `nucleusc` command, run. Every builder below differs from the
@@ -136,7 +136,7 @@
         (set! (r 'ok?) (success? (ref o 'status)))
         (set! (r 'exit) (exit-code (ref o 'status)))
         (set! (r 'ir) (try (string-from-view &ov)))
-        (set! (r 'raw) (try (string-from-view &ev)))
+        (set! (r 'raw-text) (try (string-from-view &ev)))
         (set! (r 'diags) (try (read-diagnostics ev)))
         (drop &o)
         (return (ok (deref r)))))
@@ -149,7 +149,7 @@
 (defstruct Ran ok?:bool out:String err:String)
 
 (extend Ran Drop)
-(defn drop ((self (ptr Ran))):void
+(defn drop ((self &Ran)):void
   (drop (ref self 'out))
   (drop (ref self 'err)))
 
@@ -406,8 +406,8 @@
   (let (r:Compiled (try (compile-source src)))
     (when (not (r 'ok?))
       (fail! "expected a clean compile\n     "
-             (test-show (string-as-view (ref r 'raw)))))
-    (try (check-empty (string-as-view (ref r 'raw))))
+             (test-show (string-as-view (ref r 'raw-text)))))
+    (try (check-empty (string-as-view (ref r 'raw-text))))
     (drop &r)
     (return (ok))))
 
@@ -416,7 +416,7 @@
   (let (r:Compiled (try (compile-source src)))
     (when (not (r 'ok?))
       (fail! "expected a clean compile\n     "
-             (test-show (string-as-view (ref r 'raw)))))
+             (test-show (string-as-view (ref r 'raw-text)))))
     (let (iv:StrView (string-as-view (ref r 'ir))
           out:String (try (string-from-view &iv)))
       (drop &r)
@@ -844,7 +844,7 @@
 (defstruct CcIr ok?:bool ir:String err:String)
 
 (extend CcIr Drop)
-(defn drop ((self (ptr CcIr))):void
+(defn drop ((self &CcIr)):void
   (drop (ref self 'ir))
   (drop (ref self 'err)))
 
@@ -883,7 +883,7 @@
 (defstruct CcCheck ok?:bool err:String)
 
 (extend CcCheck Drop)
-(defn drop ((self (ptr CcCheck))):void
+(defn drop ((self &CcCheck)):void
   (drop (ref self 'err)))
 
 (defn cc-check-run ((c (ref Command))):!CcCheck
@@ -1155,7 +1155,7 @@
 ; Writes `l` with its two operands in a canonical order and answers true, or
 ; answers false having written nothing. Only a `  %t = <commutative> a, b` line
 ; with exactly one comma qualifies.
-(defn write-canonical-binop (l:StrView (out (ptr String))):bool
+(defn write-canonical-binop (l:StrView (out &String)):bool
   (when (not (strview-has-prefix l "  %")) (return false))
   (let (eq:StrView " = "
         comma:StrView ", "
@@ -1363,7 +1363,7 @@
 (defstruct CLib obj:String text:String)
 
 (extend CLib Drop)
-(defn drop ((self (ptr CLib))):void
+(defn drop ((self &CLib)):void
   (drop (ref self 'obj))
   (drop (ref self 'text)))
 
@@ -1442,7 +1442,7 @@
 ; location, and each `(note …)` in a note of a diagnostic there. That pairing is
 ; the whole upgrade: eight rows of this table asserted a location that was only
 ; ever on a NOTE, which two independent greps over one blob cannot tell apart.
-(defn run-reject-row (row:raw:Node):!void
+(defn run-reject-row (row:&Node):!void
   (let (fixture:StrView (row-file row)
         line:i32 (row-line row)
         c:Compiled (try (compile-path fixture))
@@ -1455,7 +1455,7 @@
     (let (n:i32 (node-len row)
           i:i32 1)
       (while (< i n)
-        (let (e:raw:Node (node-at row i))
+        (let (e:?&Node (node-at row i))
           (when (node-is-list e)
             (let (k:StrView (row-text (node-first e))
                   v:StrView (row-text (node-at e 1)))
@@ -1470,7 +1470,7 @@
         (set! i (+ i 1))))
     (return (ok))))
 
-(defn run-accept-row (row:raw:Node):!void
+(defn run-accept-row (row:&Node):!void
   (let (fixture:StrView (row-file row)
         c:Compiled (try (compile-path fixture))
         ds:(Vector Diagnostic) (c 'diags))
@@ -1478,11 +1478,11 @@
       (try (check-no-errors &ds)))
     ; A diagnostic-free compile is the claim, so anything on stderr is a failure
     ; -- including something the sexp reader skipped.
-    (try (check-empty (string-as-view (ref c 'raw))))
+    (try (check-empty (string-as-view (ref c 'raw-text))))
     (return (ok))))
 
 (defn run-manifest-row (data:ptr):!void
-  (let (row:raw:Node (unsafe/cast raw:Node data))
+  (let (row:&Node (unsafe/cast &Node data))
     (when (= (row-head row) "accept") (return (run-accept-row row)))
     (return (run-reject-row row))))
 
@@ -1494,10 +1494,10 @@
 ; interned symbol NODE for the same reason a manifest row is carried as one:
 ; `data` is a bare pointer, and an interned node outlives registration.
 (defn data-name (data:ptr):StrView
-  (return (symbol-as-view ((unsafe/cast raw:Node data) 's))))
+  (return (symbol-as-view ((unsafe/cast &Node data) 's))))
 
-(defn name-node (nm:StrView):raw:Node
-  (return (as raw:Node (intern-node (symbol-intern nm)))))
+(defn name-node (nm:StrView):&Node
+  (return (intern-node (symbol-intern nm))))
 
 ; Compile, then run, comparing the program's own output against its golden file.
 ; Both captures merge stderr into stdout on ONE pipe: the golden file recorded
@@ -1597,7 +1597,7 @@
                 tname:String (str name-prefix base))
             (when (have-file? (string-as-view &exp))
               (test-add (string-as-view &tname) dir 0 f
-                        (as raw (name-node base))))
+                        (as ptr (name-node base))))
             (drop &exp)
             (drop &tname))))
       (set! i (+ i 1)))
@@ -1606,9 +1606,9 @@
 
 (defn register-manifest ():!void
   (let (text:String (try (read-file (manifest-path)))
-        forms:raw:Node (try (read-all (string-as-view &text))))
+        forms:?&Node (try (read-all (string-as-view &text))))
     (dotimes (i (node-len forms))
-      (let (row:raw:Node (node-at forms i))
+      (when-some (row (node-at forms i))
         (when (node-is-list row)
           (test-add (row-name row) (manifest-path) 0 run-manifest-row row))))
     (return (ok))))

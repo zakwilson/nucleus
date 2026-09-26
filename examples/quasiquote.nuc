@@ -14,7 +14,7 @@
   (let (c:ptr (self 'cur))
     (when (= (node-len c) 0) (return none))
     (set! (self 'cur) (rest c))
-    (return (some (first c)))))
+    (return (as-ref (first c)))))
 
 (defn print-list (n:ptr):void
   (let (lit:&ListIter (alloca ListIter))

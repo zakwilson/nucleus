@@ -119,7 +119,7 @@ A header also carries its source's name-binding imports (a prefixed import as `(
 | `unsafe-import-private` | Prefix-qualified import that also reaches a library's private symbols: `(unsafe-import-private lib prefix sym...)`. | — |
 | `declare` | Declare an external function signature `(declare name (params...) :rettype)`. Used in `.nuch` header files and at the top level. A parameter may be written named (`fd:i32`) or unnamed, as its bare type (`i32`) — both carry the type, and a list may mix them. See [Top-level forms](toplevel.md) for the full parameter grammar. | function prototype |
 | `extern` | Declare a foreign global variable `(extern name:type)`. The compiler emits `@name = external global T`, leaving storage and initialization to the linker. Works for both C-defined and Nucleus-defined producers; the matching `defvar` may live in another `.o` file. | `extern` declaration |
-| `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)`. Supports `:rest` for variadic macros: `(defmacro name (a b :rest rest) ...)` — `rest` receives a list `Node` holding the remaining args. Parameters (and the `:rest` list) are typed `(raw Node)` inside the body, so `(p 'kind)` and `(p 's)` read fields directly with no `(cast ptr:Node ...)`; elements come out through the `ast-first` / `ast-rest` / `ast-at` / `ast-len` special forms (see [A form is a collection](macros.md#a-form-is-a-collection)). The macro can splice a parameter into a quasiquote regardless of the value type the user-supplied expression evaluates to at the call site — see [Macros and pass-through arguments](#macros-and-pass-through-arguments) below (note the `cond`/`if` branch-unification sharp edge). | macro |
+| `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)`. Supports `:rest` for variadic macros: `(defmacro name (a b :rest rest) ...)` — `rest` receives a list `Node` holding the remaining args. Parameters (and the `:rest` list) are typed `&Node` inside the body — never null — so `(p 'kind)` and `(p 's)` read fields directly with no cast; elements come out through the `ast-first` / `ast-rest` / `ast-at` / `ast-len` special forms (see [A form is a collection](macros.md#a-form-is-a-collection)). The macro can splice a parameter into a quasiquote regardless of the value type the user-supplied expression evaluates to at the call site — see [Macros and pass-through arguments](#macros-and-pass-through-arguments) below (note the `cond`/`if` branch-unification sharp edge). | macro |
 | `defcast` | Register an implicit conversion `(defcast From To conv-fn)`. `conv-fn` must be a unary function with signature `To (From)` already in scope; the compiler emits a call to it whenever an arg of `From` is supplied where `To` is expected. Pairs already covered by built-in coercion (identity, int↔int, `f32`→`f64`) are rejected at registration. Rules are unidirectional and non-transitive — declare each direction explicitly, and chain through an intermediate type by writing the chain yourself. Exported in `.nuch` headers. | implicit conversion |
 | `def-rmacro` | Define a reader macro `(def-rmacro "prefix" symbol)`. When `prefix` appears at the start of a token, the reader wraps the next form: `(symbol form)`. The reader registers the macro **as it reads it**, so it takes effect only for the forms after it — in its own file (a different file never sees it; a REPL session keeps one table across prompts, so a `def-rmacro` at one prompt is visible at the next). Refused if `prefix` is already registered, or begins with a byte that can start an atom — a prefix may open only with one of `` $ ' , @ ^ ` \| ~ ``. Built-in reader macros: `'` (quote), `` ` `` (quasiquote), `~` (unquote), `~@` (unquote-splice), `@` (deref), `&` (ref). See [Reading s-expressions](reading.md#def-rmacro). | — |
 | `exclude-prelude` | Suppress the implicit `(import-use prelude)` for this source file. Must be the first top-level form; takes no arguments. Use when a file should compile against the bare language without the standard macros, `Node` struct, or `(import-use "string.h")` declarations. The directive applies to the **compilation unit's entry file only** — the prelude is a property of the unit, not of a file — so a copy of it in a file that is *imported* is ignored rather than being an error. | — |
@@ -133,58 +133,17 @@ A symbol may name only **one** kind of thing: a special form, a built-in type (`
 Types are attached to names with `:` syntax: `name:type` (e.g., `x:i32`, `main:int`). A desugar pass runs before compilation, splitting colon-typed symbols in binding positions into canonical list form:
 
 - `foo:int` → `(foo int)` — name and type as separate symbols
-- `node:ptr:Node` → `(node (ptr Node))` — pointer-to-Node
-- `pp:ptr:ptr:Node` → `(pp (ptr ptr Node))` — pointer-to-pointer-to-Node
+- `node:&Node` → `(node (ref Node))` — a non-null pointer to Node
+- `node:ptr:Node` → `(node (ptr Node))` — an unchecked pointer to Node
 
-Pointers to a typed element use the `ptr` constructor: `(ptr T)` is a **non-null** pointer to `T`, and `(ptr ptr T)` chains. Bare `ptr` (with no element) is the opaque `void*` pointer — it carries no element contract, so non-null obligations do not apply to it.
+### Pointer kinds
 
-### Pointer kinds: `(ptr T)`, `(raw T)`, and `?T` (Stage 10, flipped)
-
-Typed pointers carry a compile-time **kind**; all three lower to the same IR
-`ptr` and are ABI-identical to a C `T*` (see `design/stage10/nullability.md`).
-The safe default is **on**: a typed `(ptr T)` is non-null.
-
-| Surface | Meaning | Deref | Null? |
-|---|---|---|---|
-| `(ptr T)` / `ptr:T`, `(ref T)` / `ref:T` | **non-null** — always a valid `T` (the default) | always safe | no |
-| `(raw T)` / `raw:T`, bare `ptr` | **raw** — unchecked, the C-boundary / `void*` escape | allowed (your problem) | yes |
-| `?T` ≡ `(Maybe T)` | **nullable-checked** — may be none | **compile error** until narrowed (pointer `T`) | yes |
-
-`(ptr T)` and `(ref T)` are now synonyms (both non-null); `(ref T)` remains as
-the explicit, greppable spelling. A genuinely nullable pointer is spelled
-`(raw T)` / `raw:T`. The `null` literal is `raw`, so it flows into `raw`/`?`
-slots but not into a non-null `(ptr T)`/`(ref T)` slot.
-
-Only a **typed** non-null destination adds obligations: a `raw` or `?T` value
-may not flow into a `(ptr T)`/`(ref T)` slot (binding, `set!`, field/element
-store, argument, return) — narrow first, or assert with `(cast ref:T x)` (the
-audited C-boundary escape hatch). An elem-less bare `ptr` (`void*`) slot carries
-no contract and is exempt. Widening (non-null→raw, non-null→`?T`, raw↔`?T`) is
-always allowed. `none` is the null `?T` literal. Stack addresses are non-null by
-construction: `&x`, `(ref p 'f)` (the 2-argument arity), `(alloca T)`, `(array T …)`, and a
-`(S …)` compound literal all yield `(ref T)`.
-
-**Uniform `?` (Maybe)** (Stage 10 Phase F): `?T` ≡ `(Maybe T)` with no
-auto-`ref` injection. For a **pointer** operand it niche-encodes
-(`?ptr:T` / `?ref:T` ≡ `(Maybe (ref T))`, one pointer, `null` = none); for a
-**value** operand (`?i64`, `?SomeStruct`) it stamps the two-arm `{tag, T}` value
-union from the prelude template. One spelling, two layouts. A nullable pointer
-written `?ptr:Foo` makes the niche-encoding explicit. The value `(Maybe T)` is
-built with `make` / target typing (bare `none` / `(some v)` resolve against a
-`(Maybe T)` return, typed binding, `make` field or parameter) and eliminated with `match`
-(`((some v) …)` / `(none …)`). The pointer relabels (`some`/`none`/`as-ref`
-where no value `(Maybe T)` is wanted, `if-some`/`when-some`/`unwrap`/`unwrap-or`) stay
-pointer-only. `?!T` ≡ `(Maybe (Result T Err))` is the value-Maybe-over-Result
-sugar (a fallible result that may be absent).
-
-**Flow narrowing**: inside a region dominated by a successful non-null test, a
-local `?ptr:T` binding reads as `(ref T)`. The compiler's own guard idioms are
-the mechanism — `(when (= m null) (return …))`, `(if (!= m null) … …)`,
-`(and (!= m null) (m 'field))` all narrow, as do `if-some`/`when-some`/`unwrap`.
-A reassignment kills the narrow (sticky across joins); loop bodies drop narrows
-established outside the loop for any binding the body assigns; `label` kills
-all narrows (unknown predecessors). Kind mismatches at a `cond`/`if` join meet
-conservatively (`raw` beats `Maybe` beats `ref`).
+A typed pointer is `&T` (non-null), `?&T` (nullable, checked: narrow before
+deref) or `(ptr T)` (unchecked). Bare `ptr` is the untyped, unchecked `void*`
+and the type of `null`. Write `&T` or `?&T` wherever you can; `(ptr T)` is for
+code where the unchecked form saves real structure. `raw` is the retired name of
+the unchecked kind and is refused. The full rules — flow, narrowing, conditions,
+diagnostics — are in [Pointer kinds](types.md#pointer-kinds-t-t-and-ptr-t).
 
 ### Volatile qualifier
 
@@ -192,7 +151,7 @@ Volatility is declared through the **keyword-attribute slot**: a leading
 `:volatile` keyword immediately before the declared name of a variable,
 global, struct/union field, or `defn` param. For a pointer *target* (C's
 `volatile T *`, the MMIO case), the keyword instead moves inside the pointer
-constructor — `(ptr :volatile T)` / `(raw :volatile T)` / `(ref :volatile T)`
+constructor — `(ptr :volatile T)` / `(ref :volatile T)`
 — since pointee volatility must travel with the pointer through params and
 fields. Loads and stores of a value held at a volatile-qualified storage site
 are emitted as `load volatile` / `store volatile` in LLVM IR; the compiler
@@ -861,15 +820,16 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 
 `case` is multi-way equality dispatch: it compares `form` against each value `vi` with `=` and yields the first matching result `ri`. The final unpaired argument is the **required** default. Because `=` is overloadable, `case` works over any type with an equality (integers, enum constants, symbols, C strings). `form` is re-evaluated per comparison, so it should be side-effect free.
 
-`(import-use arena)` additionally provides `(new T)` — allocate one zeroed `T` from the arena, typed `(ref T)` (non-null: `arena-alloc` aborts on exhaustion rather than returning null). It expands to `(cast (ref T) (arena-alloc (sizeof T)))`, collapsing the cast + `sizeof` boilerplate for the common "allocate a single struct" case. It is **not** in the prelude (it depends on `arena-alloc`), so it requires an explicit `(import-use arena)`.
+`(import-use arena)` additionally provides `(new T)` — allocate one zeroed `T` from the arena, typed `(ref T)` (non-null: `arena-alloc` aborts on exhaustion rather than returning null). It expands to `(unsafe/cast &T (arena-alloc (sizeof T)))`, collapsing the cast + `sizeof` boilerplate for the common "allocate a single struct" case. It is **not** in the prelude (it depends on `arena-alloc`), so it requires an explicit `(import-use arena)`.
 
 ## Macros and pass-through arguments
 
-Macro parameters are typed `(raw Node)` — the macro sees AST. A macro walks the
+Macro parameters are typed `&Node` — the macro sees AST, and an argument is never
+null (arity is checked, and an empty `:rest` is `()`). A macro walks the
 argument's structure **without casting**, reading lists with the `ast-*` special
 forms and fields with a quoted selector: `(ast-len p)`, `(ast-at p 1)`,
 `(ast-first p)`, `(ast-rest p)`, `(p 'kind)`, `(p 's)` all type-check directly,
-and the `ast-*` reads chain because each yields `(raw Node)`. When the macro splices a parameter into its
+and the `ast-*` reads chain because each yields `(ptr Node)`. When the macro splices a parameter into its
 expansion via `~param`, the resulting form is compiled as if the user had
 written that expression directly at the call site, so the *value* type the
 parameter evaluates to in the expansion is whatever the user wrote — `i32`,
@@ -895,16 +855,16 @@ only the AST representation is uniform.
 (tprint some-ptr)  ; → (printf "%p\n" some-ptr)  — ptr at the call site
 ```
 
-Inside the macro `x` is `(raw Node)`; the spliced `~x` carries no type
+Inside the macro `x` is `&Node`; the spliced `~x` carries no type
 constraint into the expansion. The host compiler types the resulting form
 using its normal rules.
 
-> **⚠ Sharp edge:** since macro params and `ast-first`/`ast-rest`/`ast-at` are
-> `(raw Node)`, a `cond`/`if`
-> whose branches mix a `(raw Node)` value with a bare `ptr`/`null`/quasiquote
-> (bare `ptr`) fails to unify and collapses to `void` — which makes a macro
-> silently `return null`. Cast the odd branch to a bare pointer so all branches
-> agree. Full detail in [macros.md](macros.md).
+> **⚠ Sharp edge:** a `cond`/`if` whose branches are pointers to *different
+> element types* — a Node value and a `ptr:i8`, say — fails to unify and
+> collapses to `void`, which makes a macro silently `return null`. The pointer
+> kinds meet on their own (`&Node`, `(ptr Node)` and a quasiquote result join
+> freely); cast the odd branch to a bare `ptr` when the elements differ. Full
+> detail in [macros.md](macros.md).
 
 ## Variadic Arithmetic
 
@@ -992,7 +952,7 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `gensym` | Return a fresh unique symbol `Node*` (e.g. `__gs_0`); for use in macro bodies to avoid variable capture | — |
 | `macro-error` | `(macro-error node message)` — report `message` at `node`'s line and abort the expansion. Only inside a `defmacro`/`macrolet`/`compile-time` body; the message is a literal, a `StrView` or a `String` (so a body that imports `fmt` can build one with `str`). See [Macros](macros.md#macro-error--a-macro-rejecting-its-own-call-site). | — |
 | `some` | `(some r)` — wrap a non-null `(ref T)` as `?T` / `(Maybe (ref T))`. Pure relabel, no IR. | — |
-| `as-ref` | `(as-ref p)` — launder a raw pointer into `?T` (null stays none). Pure relabel, no IR; narrow before use. | — |
+| `as-ref` | `(as-ref p)` — launder an unchecked pointer (`(ptr T)`) into `?&T` (null stays none). Pure relabel, no IR; narrow before use. | — |
 | `unwrap` | `(unwrap m)` — the `(ref T)` inside a `?T`, or trap (`llvm.trap`) if none. The one runtime branch nullability costs, paid only where written. | `assert(p); p` |
 | `unwrap-or` | `(unwrap-or m default)` — the `(ref T)` inside, or `default` (evaluated only on the none path; must itself be `(ref ...)`-compatible). | `p ? p : d` |
 | `if-some` | `(if-some (x m) then else)` — if `m` is non-null, bind `x:(ref T)` in `then`; else evaluate `else`. Desugars to `cond`, so its value/typing rules match `if`. **`m` must be a nullable *pointer* (`?T`).** A value `(Maybe T)` over a non-pointer — `(Maybe StrView)`, `(Maybe i32)` — is eliminated with `match`; `if-some` refuses it with "value must be (Maybe (ref ...))". | `if ((x = m)) … else …` |
@@ -1055,7 +1015,7 @@ The full roster:
 
 | Form | Contract it waives |
 |---|---|
-| `unsafe/cast` | Full reinterpretation: same-kind, `ptr`↔`ptr` (any element, including `raw`→`ref` laundering with no null check), `ptr`↔`int`, `fn`↔`ptr`, int narrow/widen, `float`↔`float`, `int`↔`float`. See [Special Forms](special-forms.md#special-forms). |
+| `unsafe/cast` | Full reinterpretation: same-kind, `ptr`↔`ptr` (any element, including unchecked→`&T` laundering with no null check), `ptr`↔`int`, `fn`↔`ptr`, int narrow/widen, `float`↔`float`, `int`↔`float`. See [Special Forms](special-forms.md#special-forms). |
 | `unsafe/funcall-ptr-1` / `-i32` / `-i64` / `-ptr` | Calls a `ptr` function pointer under a signature asserted out of thin air — no arity or type check against the actual callee. |
 | `unsafe/ptr+` | Pointer arithmetic — manufactures a new pointer at an unchecked offset; the result carries no bounds guarantee. |
 | `unsafe/import-private` | Reaches past a library's visibility boundary to import its private (`defn-`/`defvar-`/etc.) symbols. |
@@ -1116,7 +1076,7 @@ A user operator method is emitted under a mangled symbol (`@add.pV2.pV2`, `@eq.p
 
 **A built-in operator cannot be redefined, and it outranks widening.** A method whose two operands are one built-in non-pointer type the intrinsic already takes — `(defn = (a:i32 b:i32):bool …)` — is refused: `'=' on (i32, i32) is built in and cannot be redefined -- define it over a type of your own`. It would replace the intrinsic everywhere, the prelude's own macros included. Pointer operands are exempt, since ordering a type through `&T` is how it conforms to `Ord`. Resolution order is: a user method that takes the operands exactly; the intrinsic when it takes them exactly; then a user method that takes them by widening. So with `(defn >= (a:i64 b:f64):bool …)`, `(>= x y)` over two `i32` values is the intrinsic comparison, and `(>= x q)` with `x:i32 q:f64` widens into the user method.
 
-**A struct literal compares by value.** A `(S …)` literal is a value, so a comparison with one — this is the rule for every comparison operator, `= != < <= > >=` — never compares its address. When no user method takes the operands as written, both are read as `S`: the literal as its struct, and a non-null `&S` on the other side loaded through. The by-value method (`(defn = (a:S b:S):bool …)`) then answers, and with none the comparison is refused. A `?&S` or `(raw S)` operand is not read through, since it may be null; narrow it first. An arithmetic or bit operator reads a literal operand the same way; such a call was always an error before, so nothing that compiled changes. `=` on two references, neither a literal, is still pointer identity: `(= p q)` asks whether `p` and `q` are the same struct. A method written for the operands as written (`(defn = (a:&S b:&S):bool …)`) still wins over the by-value reading. A struct has no `=` unless its author defines one; the compiler does not derive one ([Derived structural equality](../design/deferred/overview.md#derived-structural-equality)).
+**A struct literal compares by value.** A `(S …)` literal is a value, so a comparison with one — this is the rule for every comparison operator, `= != < <= > >=` — never compares its address. When no user method takes the operands as written, both are read as `S`: the literal as its struct, and a non-null `&S` on the other side loaded through. The by-value method (`(defn = (a:S b:S):bool …)`) then answers, and with none the comparison is refused. A `?&S` or `(ptr S)` operand is not read through, since it may be null; narrow it first. An arithmetic or bit operator reads a literal operand the same way; such a call was always an error before, so nothing that compiled changes. `=` on two references, neither a literal, is still pointer identity: `(= p q)` asks whether `p` and `q` are the same struct. A method written for the operands as written (`(defn = (a:&S b:&S):bool …)`) still wins over the by-value reading. A struct has no `=` unless its author defines one; the compiler does not derive one ([Derived structural equality](../design/deferred/overview.md#derived-structural-equality)).
 
 **An operator that no method answers** is refused in the `no matching method` family, naming the protocol that the operand type does not conform to:
 
@@ -1128,7 +1088,7 @@ t.nuc:9: error: no matching method for '=': Pt does not conform to Eq
 
 `= !=` name `Eq`, `< <= > >=` name `Ord` and `_+ _- _* _/` name `Num`. `%` (integers or floats) and the bit operators (integers) belong to no protocol, so the message names what they take instead. When the operands have two different types, both are listed: `no matching method for '=' with operand types (Pt, i32)`. That form has no protocol clause when `Pt` already has its `=`, because the pairing is what fails.
 
-The **standard numeric protocols** live in `lib/numeric.nuc`: `Eq` (`= !=`), `Ord` (`< <= > >=`, a superset of `Eq` via `(extend Ord Eq)`), and `Num` (`_+ _- _* _/`). Built-in numeric types conform automatically (their intrinsic operators satisfy the requirements); a user type conforms by defining the methods and asserting `(extend &MyType Ord)` — any pointer spelling of the subject (`(ref MyType)`, `ptr:MyType`, `raw:MyType`, …) is the same conformance ([pointer subjects](generics.md#protocols-defprotocol-and-extend)). See [Bounded generic `defn`](#bounded-generic-defn).
+The **standard numeric protocols** live in `lib/numeric.nuc`: `Eq` (`= !=`), `Ord` (`< <= > >=`, a superset of `Eq` via `(extend Ord Eq)`), and `Num` (`_+ _- _* _/`). Built-in numeric types conform automatically (their intrinsic operators satisfy the requirements); a user type conforms by defining the methods and asserting `(extend &MyType Ord)` — any pointer spelling of the subject (`(ref MyType)`, `ptr:MyType`, `?&MyType`, …) is the same conformance ([pointer subjects](generics.md#protocols-defprotocol-and-extend)). See [Bounded generic `defn`](#bounded-generic-defn).
 
 ## Polymorphism: overloaded `defn` (multimethods)
 
@@ -1513,7 +1473,7 @@ A `defn` function name used in value position decays to a function pointer, matc
 
 The following conversions are applied automatically in assignment contexts (`let`, every `set!` place, implicit and explicit `return`) **and at function call sites** (both direct calls and `funcall`):
 
-- **Pointer ↔ pointer, when the pointees agree**: identity, no IR. The pointer *kind* is not part of the question (`ptr:Node`, `(ref Node)`, `(raw Node)` and `?Node` are one type here — nullability is a separate contract), and an elem-less bare `ptr` is `void *` and matches any pointer in either direction. Everything else must match: `ptr:i32` into a `ptr:Node` slot, or `(ref (Vector i32))` into a `(ref (Vector i64))` slot, is a compile-time error naming both types. Retyping a pointer's element is `unsafe/cast`'s job. See [types.md](types.md#implicit-type-coercion).
+- **Pointer ↔ pointer, when the pointees agree**: identity, no IR. The pointer *kind* is not part of the question (`(ref Node)`, `?&Node` and `ptr:Node` are one type here — nullability is a separate contract), and an elem-less bare `ptr` is `void *` and matches any pointer in either direction. Everything else must match: `ptr:i32` into a `ptr:Node` slot, or `(ref (Vector i32))` into a `(ref (Vector i64))` slot, is a compile-time error naming both types. Retyping a pointer's element is `unsafe/cast`'s job. See [types.md](types.md#implicit-type-coercion).
 - **`ptr:S` → by-value `S`** (`S` a struct): one `load` — the implicit form of `(deref p)`, which is what lets an alloca-backed `(S …)` compound literal be written wherever a by-value `S` is expected (an `(array S …)` element, a struct-typed field of another struct literal, a `:S` binding, an element place store, a `return`). Exact element type required; a `?T` source must be narrowed first. See [Types — Implicit Type Coercion](types.md#implicit-type-coercion).
 - **Integer ↔ integer**:
   - Same width, different sign (e.g. `i32` ↔ `ui32`): reinterpret, no IR.
@@ -1599,17 +1559,18 @@ brings in the protocol, the handle type, the backends, and a default.
 ### The `Allocator` protocol
 
 The documented contract (Zig-shaped). `align` is part of the contract even where
-a backend ignores it. The byte type is `(raw ui8)` (= C `unsigned char *`):
+a backend ignores it. The byte type is `?&ui8` (= C `unsigned char *`; null is
+an allocation failure, and `free` of null is a no-op, as in C):
 
 ```lisp
 (defprotocol Allocator
-  (alloc   (self:&Self size:usize align:usize) (raw ui8))
-  (realloc (self:&Self (p (raw ui8)) old:usize new:usize align:usize) (raw ui8))
-  (free    (self:&Self (p (raw ui8)) size:usize align:usize):void))
+  (alloc   (self:&Self size:usize align:usize) ?&ui8)
+  (realloc (self:&Self (p ?&ui8) old:usize new:usize align:usize) ?&ui8)
+  (free    (self:&Self (p ?&ui8) size:usize align:usize):void))
 ```
 
-A method's return type follows its parameter list — `(raw ui8)` as a list, or
-attached as `):void` / `):(raw ui8)`; `(p (raw ui8))` and `p:(raw ui8)` are the
+A method's return type follows its parameter list — `?&ui8` as a bare type, or
+attached as `):void` / `):?&ui8`; `(p ?&ui8)` and `p:?&ui8` are the
 same parameter.
 
 ### Runtime dispatch: `AllocHandle`
@@ -1626,9 +1587,9 @@ protocol system is static-only (no vtables) and `funcall-ptr-*` cannot call a
 
 | Helper | Signature | Behaviour |
 |--------|-----------|-----------|
-| `alloc-handle-alloc` | `((h (ref AllocHandle)) size:usize align:usize) -> (raw ui8)` | libc `malloc`, or `arena-alloc`; `kind` selects |
-| `alloc-handle-realloc` | `((h (ref AllocHandle)) (p (raw ui8)) old:usize new:usize align:usize) -> (raw ui8)` | libc `realloc`, or arena fresh-alloc + `memcpy` of `min(old,new)` |
-| `alloc-handle-free` | `((h (ref AllocHandle)) (p (raw ui8)) size:usize align:usize) -> void` | libc `free`, or no-op for the arena |
+| `alloc-handle-alloc` | `((h (ref AllocHandle)) size:usize align:usize) -> ?&ui8` | libc `malloc` (null on OOM), or `arena-alloc`; `kind` selects |
+| `alloc-handle-realloc` | `((h (ref AllocHandle)) (p ?&ui8) old:usize new:usize align:usize) -> ?&ui8` | libc `realloc`, or arena fresh-alloc + `memcpy` of `min(old,new)` |
+| `alloc-handle-free` | `((h (ref AllocHandle)) (p ?&ui8) size:usize align:usize) -> void` | libc `free`, or no-op for the arena |
 
 ### Default and constructors
 

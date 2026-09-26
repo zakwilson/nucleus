@@ -117,8 +117,8 @@ f128|__float128|q"))
 ; (`f64-bits`, src/type-utils.nuc; the f64 Hash conformance, lib/hash.nuc).
 (defn fl-f64-bits (d:f64):ui64
   (let (r:f64 d
-        p:ptr:f64 &r)
-    (return (deref (unsafe/cast ptr:ui64 p)))))
+        p:&f64 &r)
+    (return (deref (unsafe/cast &ui64 p)))))
 
 ; An f32/f64 constant's 64 bits, from either spelling LLVM uses. The `0x` case
 ; needs its own branch and not just `strtod`: a hex float's binary exponent is
@@ -328,7 +328,7 @@ __attribute__((used)) static __float128 q = 1;
           cir:CcIr (try (cc-emit-llvm (string-as-view &cp))))
       (when (not (nir 'ok?))
         (fail! "expected a clean compile\n     "
-               (test-show (string-as-view (ref nir 'raw)))))
+               (test-show (string-as-view (ref nir 'raw-text)))))
       (when (not (cir 'ok?))
         (fail! "clang refused the generated fixture\n     "
                (test-show (string-as-view (ref cir 'err)))))
@@ -381,7 +381,7 @@ struct S3 f3(struct S3 s){return s;}
         nir:Compiled (try (compile-path (string-as-view &np))))
     (when (not (nir 'ok?))
       (fail! "expected a clean compile\n     "
-             (test-show (string-as-view (ref nir 'raw)))))
+             (test-show (string-as-view (ref nir 'raw-text)))))
     (when (not (cir 'ok?))
       (fail! "clang refused the aggregate fixture\n     "
              (test-show (string-as-view (ref cir 'err)))))
@@ -446,7 +446,7 @@ struct S3 f3(struct S3 s){return s;}
 (defn check-target-declares (target:StrView path:StrView want:StrView):!void
   (let (c:Compiled (try (compile-path-for target path)))
     (when (not (c 'ok?))
-      (fail! target ": " (test-show (string-as-view (ref c 'raw)))))
+      (fail! target ": " (test-show (string-as-view (ref c 'raw-text)))))
     (try (check-line (string-as-view (ref c 'ir)) want))
     (drop &c)
     (return (ok))))
@@ -482,7 +482,7 @@ struct S3 f3(struct S3 s){return s;}
     (let (c:Compiled (try (compile-path pv)))
       (when (not (c 'ok?))
         (fail! "the host target refused f80\n     "
-               (test-show (string-as-view (ref c 'raw)))))
+               (test-show (string-as-view (ref c 'raw-text)))))
       (drop &c))
     (drop &p))
   ; FL-7: `long double` is whatever the target's C compiler makes it. MSVC

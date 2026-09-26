@@ -6,8 +6,8 @@
 ; failed with the unrelated "unknown protocol 'P'". Now rejected at the
 ; `defprotocol` line.
 (defstruct Foo (x i32))
-(defprotocol P:i32 (bar (self:ptr:Self):i32))
-(defn bar (f:ptr:Foo):i32 (return (f x)))
+(defprotocol P:i32 (bar (self:&Self):i32))
+(defn bar (f:&Foo):i32 (return (f x)))
 (extend Foo P)
 
 (defn main ():i32 0)

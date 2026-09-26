@@ -20,7 +20,7 @@
   (let (c:Compiled (try (emit-checked dir flag path)))
     (when (!= (c 'exit) 1)
       (fail! flag " exited " (as i64 (c 'exit)) ", not 1\n     "
-             (test-show (string-as-view (ref c 'raw)))))
+             (test-show (string-as-view (ref c 'raw-text)))))
     ; A header mode that refuses must print no header: a consumer that reads
     ; stdout regardless would otherwise commit a file describing nothing.
     (try (check-empty (compiled-ir &c)))
@@ -39,7 +39,7 @@
   (let (c:Compiled (try (emit-checked dir "--emit-llvm" path)))
     (when (!= (c 'exit) 1)
       (fail! "--emit-llvm exited " (as i64 (c 'exit)) ", not 1\n     "
-             (test-show (string-as-view (ref c 'raw)))))
+             (test-show (string-as-view (ref c 'raw-text)))))
     (try (check-error-at (ref c 'diags) path line msg))
     (try (check-header-mode-agrees dir path &c "--emit-cheader"))
     (try (check-header-mode-agrees dir path &c "--emit-nuch"))
@@ -133,7 +133,7 @@
   (return (ok)))
 
 (deftest w9-header-union-under-ptr
-  (try (check-probe-refused "(defstruct A (f (ptr (union a:i32 ()))))"
+  (try (check-probe-refused "(defstruct A (f &(union a:i32 ())))"
          "expected a name:type declaration, found the empty list '()'"))
   (return (ok)))
 
@@ -167,7 +167,7 @@
 (extend i32 W38Z)
 (defn w38-tw (x:T :where (W38Z T)):i32 (return (+ (w38z-zero x) 1)))
 (defstruct W38Box (v (union as-int:i64 as-ptr:ptr)))
-(defn w38-plain (b:ptr:W38Box):i64 (return 7))
+(defn w38-plain (b:&W38Box):i64 (return 7))
 (defn main ():i32 (return (w38-tw 41)))
 "))
 
@@ -201,7 +201,7 @@
     (try (check-line nv
            "(defn w38-tw ((x T) :where (W38Z T)) :i32 (return (+ (w38z-zero x) 1)))"))
     (try (check-line nv "(defstruct W38Box (v (union as-int:i64 as-ptr:ptr)))"))
-    (try (check-line nv "(declare w38-plain ((b (ptr W38Box))) :i64)"))
+    (try (check-line nv "(declare w38-plain ((b (ref W38Box))) :i64)"))
     (try (check-line nv "(declare main () :i32)"))
     (drop &n)
     (drop &h)
@@ -430,16 +430,16 @@
         c:Compiled (try (emit-checked dir "--emit-llvm" pv)))
     (when (!= (c 'exit) 1)
       (fail! "--emit-llvm exited " (as i64 (c 'exit)) ", not 1\n     "
-             (test-show (string-as-view (ref c 'raw)))))
+             (test-show (string-as-view (ref c 'raw-text)))))
     (try (check-error-at (ref c 'diags) pv line msg))
     (try (check-note-at (ref c 'diags) pv line note))
     ; The whole point of the located message is that it replaced LLVM's, so the
     ; raw output is asserted clean of it rather than merely "an error happened".
-    (let (raw:StrView (string-as-view (ref c 'raw)))
-      (when (contains? raw "use of undefined value")
-        (fail! "LLVM's own diagnostic still leaks:\n     " (test-show raw)))
-      (when (contains? raw "IR parse error")
-        (fail! "LLVM's own diagnostic still leaks:\n     " (test-show raw))))
+    (let (raw-text:StrView (string-as-view (ref c 'raw-text)))
+      (when (contains? raw-text "use of undefined value")
+        (fail! "LLVM's own diagnostic still leaks:\n     " (test-show raw-text)))
+      (when (contains? raw-text "IR parse error")
+        (fail! "LLVM's own diagnostic still leaks:\n     " (test-show raw-text))))
     (try (check-header-mode-agrees dir pv &c "--emit-cheader"))
     (try (check-header-mode-agrees dir pv &c "--emit-nuch"))
     (drop &c)
@@ -482,7 +482,7 @@
         c:Compiled (try (compile-path-for "riscv64-unknown-linux-gnu" pv)))
     (when (c 'ok?)
       (fail! "the cross-target compile succeeded\n     "
-             (test-show (string-as-view (ref c 'raw)))))
+             (test-show (string-as-view (ref c 'raw-text)))))
     (let (lowered:String (str "macro 'xt' needs the program's own 'xt-helper' at compile"
                               " time, and the program is lowered for"
                               " 'riscv64-unknown-linux-gnu'"))
@@ -498,9 +498,9 @@
            "a compile-time body may call only the compiler's own library"))
     ; The refusal replaced nothing here — it replaced a silent wrong answer — so
     ; what the raw stream must be clean of is LLVM, as for every unit above.
-    (let (raw:StrView (string-as-view (ref c 'raw)))
-      (when (contains? raw "use of undefined value")
-        (fail! "LLVM's own diagnostic leaked:\n     " (test-show raw))))
+    (let (raw-text:StrView (string-as-view (ref c 'raw-text)))
+      (when (contains? raw-text "use of undefined value")
+        (fail! "LLVM's own diagnostic leaked:\n     " (test-show raw-text))))
     (drop &c)
     (drop &p))
   (return (ok)))
@@ -521,7 +521,7 @@
     (try (check-no-errors (ref c 'diags)))
     (when (not (c 'ok?))
       (fail! "a host-resolved macro body must still cross-compile\n     "
-             (test-show (string-as-view (ref c 'raw)))))
+             (test-show (string-as-view (ref c 'raw-text)))))
     (try (check-line (compiled-ir &c)
                      "target triple = \"riscv64-unknown-linux-gnu\""))
     (drop &c)
@@ -545,12 +545,12 @@
 (deftest s20-computed-arg-not-a-node
   (try (check-ct-refused "(defmacro two (a b) `(_+ ~a ~b))
 (defn main ():i32 (return (two 1 ~5)))
-" 2 "the computed argument '~5' must evaluate to (raw Node), not i32"
+" 2 "the computed argument '~5' must evaluate to &Node, not i32"
     "a computed macro argument is substituted as source, so it must evaluate to a node"))
   (try (check-ct-refused "(defn s20-cs ():CStr (return \"hi\"))
 (defmacro two (a b) `(_+ ~a ~b))
 (defn main ():i32 (return (two 1 ~(s20-cs))))
-" 3 "the computed argument '~(s20-cs)' must evaluate to (raw Node), not CStr"
+" 3 "the computed argument '~(s20-cs)' must evaluate to &Node, not CStr"
     "a computed macro argument is substituted as source, so it must evaluate to a node"))
   (return (ok)))
 
@@ -561,7 +561,7 @@
   (try (check-ct-refused "(import-use node)
 (defmacro one (x) x)
 (defn main ():i32 (return (one ~(s20-later))))
-(defn s20-later ():(raw Node) (return `7))
+(defn s20-later ():(ptr Node) (return `7))
 " 3 "the computed argument '~(s20-later)' calls 's20-later', which is defined later in this unit"
     "a computed macro argument may only call functions defined above it — move 's20-later' above the call"))
   (return (ok)))
@@ -577,7 +577,7 @@
 (defn main ():i32 (return (s20-f ~(_+ 1 2))))
 " "unquote outside quasiquote"))
   (try (check-source-rejects "(import-use node)
-(defn s20-v ():(raw Node) (return `1))
+(defn s20-v ():(ptr Node) (return `1))
 (defmacro one (x) x)
 (defn main ():i32 (return (one (_+ 1 ~(s20-v)))))
 " "unquote outside quasiquote"))
@@ -591,7 +591,7 @@
 (defn main ():i32 (return (s20-g ~@(_+ 1 2))))
 " "unquote-splice outside quasiquote"))
   (try (check-source-rejects "(import-use node)
-(defn s20-w ():(raw Node) (return `1))
+(defn s20-w ():(ptr Node) (return `1))
 (defmacro one (x) x)
 (defn main ():i32 (return (one (_+ 1 ~@(s20-w)))))
 " "unquote-splice outside quasiquote"))
@@ -606,22 +606,22 @@
 ; has to report rather than seeing one null argument.
 (deftest s20-computed-arg-arity-counts-substitution
   (try (check-source-rejects "(import-use node)
-(defn s20-one ():(raw Node) (return `1))
+(defn s20-one ():(ptr Node) (return `1))
 (defmacro two (a b) `(_+ ~a ~b))
 (defn main ():i32 (return (two ~(s20-one))))
 " "macro 'two': expects 2 args, got 1"))
   (try (check-source-rejects "(import-use node)
-(defn s20-pair ():(raw Node) (return `(1 2)))
+(defn s20-pair ():(ptr Node) (return `(1 2)))
 (defmacro three (a b c) `(_+ ~a (_+ ~b ~c)))
 (defn main ():i32 (return (three ~@(s20-pair))))
 " "macro 'three': expects 3 args, got 2"))
   (try (check-source-rejects "(import-use node)
-(defn s20-trio ():(raw Node) (return `(1 2 3)))
+(defn s20-trio ():(ptr Node) (return `(1 2 3)))
 (defmacro two2 (a b) `(_+ ~a ~b))
 (defn main ():i32 (return (two2 ~@(s20-trio))))
 " "macro 'two2': expects 2 args, got 3"))
   (try (check-source-rejects "(import-use node)
-(defn s20-empty ():(raw Node) (return null))
+(defn s20-empty ():(ptr Node) (return null))
 (defmacro one2 (x) x)
 (defn main ():i32 (return (one2 ~@(s20-empty))))
 " "macro 'one2': expects 1 args, got 0"))
@@ -632,14 +632,14 @@
 ; and only a list has N elements.
 (deftest s20-computed-arg-splice-not-a-list
   (try (check-ct-refused "(import-use node)
-(defn s20-atom ():(raw Node) (return `7))
+(defn s20-atom ():(ptr Node) (return `7))
 (defmacro two (a b) `(_+ ~a ~b))
 (defn main ():i32 (return (two 1 ~@(s20-atom))))
 " 4 "the computed argument '~@(s20-atom)' must evaluate to a list of nodes"
     "`~@` splices its result in as N arguments, so it must evaluate to a list"))
   ; Through a `:rest` macro, whose splice walks a second path.
   (try (check-ct-refused "(import-use node)
-(defn s20-sym ():(raw Node) (return `abc))
+(defn s20-sym ():(ptr Node) (return `abc))
 (defmacro s20-sum2 (:rest args) `(macfoldr _+ 0 ~@args))
 (defn main ():i32 (return (s20-sum2 ~@(s20-sym))))
 " 4 "the computed argument '~@(s20-sym)' must evaluate to a list of nodes"
@@ -647,7 +647,7 @@
   ; Not a node at all: C2's type check owns this one, and it names `~@`.
   (try (check-ct-refused "(defmacro two (a b) `(_+ ~a ~b))
 (defn main ():i32 (return (two 1 ~@5)))
-" 2 "the computed argument '~@5' must evaluate to (raw Node), not i32"
+" 2 "the computed argument '~@5' must evaluate to &Node, not i32"
     "a computed macro argument is substituted as source, so it must evaluate to a node"))
   (return (ok)))
 
@@ -657,7 +657,7 @@
 (deftest s20-computed-arg-cross-target
   (let (p:String (try (test-write-file "probe-carg.nuc"
                         "(import-use node)
-(defn s20-xrows ():(raw Node) (return `((a 1))))
+(defn s20-xrows ():(ptr Node) (return `((a 1))))
 (macmap ((n v) `(defn ~n ():i32 (return ~v))) ~(s20-xrows))
 (defn main ():i32 (return (a)))
 "))
@@ -665,7 +665,7 @@
         c:Compiled (try (compile-path-for "riscv64-unknown-linux-gnu" pv)))
     (when (c 'ok?)
       (fail! "the cross-target compile succeeded\n     "
-             (test-show (string-as-view (ref c 'raw)))))
+             (test-show (string-as-view (ref c 'raw-text)))))
     (let (lowered:String (str "the computed argument '~(s20-xrows)' needs the program's own"
                               " 's20-xrows' at compile time, and the program is lowered for"
                               " 'riscv64-unknown-linux-gnu'"))
@@ -693,21 +693,21 @@
   (let (n:i32 5)
     `(_+ 0 ~n)))
 (defn main ():i32 (return (m)))
-" 3 "the unquote operand '~n' must evaluate to (raw Node), not i32"
+" 3 "the unquote operand '~n' must evaluate to &Node, not i32"
     "`~` substitutes its value as source, so it must evaluate to a node"))
   ; bare — the same branch, and the `returned null` face
   (try (check-ct-refused "(defmacro m ()
   (let (n:i32 5)
     `~n))
 (defn main ():i32 (return (m)))
-" 3 "the unquote operand '~n' must evaluate to (raw Node), not i32"
+" 3 "the unquote operand '~n' must evaluate to &Node, not i32"
     "`~` substitutes its value as source, so it must evaluate to a node"))
   ; splice — the third manifestation, against `@__append` rather than `@__cons`
   (try (check-ct-refused "(defmacro m ()
   (let (n:i32 5)
     `(_+ 0 ~@n)))
 (defn main ():i32 (return (m)))
-" 3 "the unquote operand '~@n' must evaluate to (raw Node), not i32"
+" 3 "the unquote operand '~@n' must evaluate to &Node, not i32"
     "`~@` splices its value in as source, so it must evaluate to a node"))
   (return (ok)))
 
@@ -718,12 +718,12 @@
 (deftest s20-macro-body-not-a-node
   (try (check-ct-refused "(defmacro m () 5)
 (defn main ():i32 (return (m)))
-" 1 "macro 'm' must evaluate to (raw Node), not i32"
+" 1 "macro 'm' must evaluate to &Node, not i32"
     "a macro body's value is substituted as source, so it must evaluate to a node"))
   (try (check-ct-refused "(defmacro m ()
   `1
   5)
 (defn main ():i32 (return (m)))
-" 3 "macro 'm' must evaluate to (raw Node), not i32"
+" 3 "macro 'm' must evaluate to &Node, not i32"
     "a macro body's value is substituted as source, so it must evaluate to a node"))
   (return (ok)))

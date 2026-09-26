@@ -19,7 +19,7 @@
 ;     call site. The protocol system is static-only (no vtables), and the
 ;     `funcall-ptr-*` builtins only call function pointers of arity 0/1 with
 ;     ptr/i32/i64 results (src/nucleusc.nuc §funcall-ptr-*), so a C-style vtable
-;     whose entries take (data size align) -> (raw ui8) cannot be called at all.
+;     whose entries take (data size align) -> ?&ui8 cannot be called at all.
 ;
 ;  2. The libc-name collision. A generic method literally named `free` (or
 ;     `realloc`/`malloc`) lowers to LLVM `@free` and *shadows libc `@free` for the
@@ -67,9 +67,9 @@
 ; the contract so an allocator that needs it has it.
 ; ---------------------------------------------------------------------------
 (defprotocol Allocator
-  (alloc   (self:&Self size:usize align:usize) (raw ui8))
-  (realloc (self:&Self (p (raw ui8)) old:usize new:usize align:usize) (raw ui8))
-  (free           (self:&Self (p (raw ui8)) size:usize align:usize):void))
+  (alloc   (self:&Self size:usize align:usize) ?&ui8)
+  (realloc (self:&Self (p ?&ui8) old:usize new:usize align:usize) ?&ui8)
+  (free    (self:&Self (p ?&ui8) size:usize align:usize):void))
 
 ; ---------------------------------------------------------------------------
 ; 2. AllocKind — the runtime discriminant for AllocHandle dispatch.
@@ -91,16 +91,16 @@
 ;    coerces i64 -> size_t, exactly as lib/arena.nuc does.
 ; ---------------------------------------------------------------------------
 
-; (alloc-handle-alloc h size align) -> (raw ui8). Returns null on libc OOM (the
+; (alloc-handle-alloc h size align) -> ?&ui8. Returns null on libc OOM (the
 ; caller checks); the arena arm aborts internally rather than returning null.
-(defn alloc-handle-alloc (h:&AllocHandle size:usize align:usize) (raw ui8)
+(defn alloc-handle-alloc (h:&AllocHandle size:usize align:usize) ?&ui8
   (when (= (h 'kind) ALLOC-ARENA)
-    (return (as (raw ui8) (arena-alloc (as i64 size)))))
-  (return (as (raw ui8) (malloc (as i64 size)))))
+    (return (as ?&ui8 (arena-alloc (as i64 size)))))
+  (return (as ?&ui8 (malloc (as i64 size)))))
 
-; (alloc-handle-realloc h p old new align) -> (raw ui8).
+; (alloc-handle-realloc h p old new align) -> ?&ui8.
 (defn alloc-handle-realloc
-    (h:&AllocHandle (p (raw ui8)) old:usize new:usize align:usize) (raw ui8)
+    (h:&AllocHandle (p ?&ui8) old:usize new:usize align:usize) ?&ui8
   (when (= (h 'kind) ALLOC-ARENA)
     ; The arena cannot grow a prior allocation in place, so allocate fresh and
     ; copy the smaller of old/new bytes. The old block is abandoned (released
@@ -109,13 +109,13 @@
       (when (!= (as ptr p) null)
         (let (n:usize (if (< old new) old new))
           (memcpy np (as ptr p) (as i64 n))))
-      (return (as (raw ui8) np))))
+      (return (as ?&ui8 np))))
   ; realloc(NULL, n) behaves as malloc(n).
-  (return (as (raw ui8) (realloc (as ptr p) (as i64 new)))))
+  (return (as ?&ui8 (realloc (as ptr p) (as i64 new)))))
 
 ; (alloc-handle-free h p size align) -> void.
 (defn alloc-handle-free
-    (h:&AllocHandle (p (raw ui8)) size:usize align:usize):void
+    (h:&AllocHandle (p ?&ui8) size:usize align:usize):void
   ; The arena frees nothing per-allocation; the whole arena is released at once.
   (when (= (h 'kind) ALLOC-ARENA)
     (return))

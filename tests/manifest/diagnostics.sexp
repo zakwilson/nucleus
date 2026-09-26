@@ -103,7 +103,7 @@
 (reject "as-lossy-rejected" (file "tests/fixtures/as-lossy.nuc")
         (message "as: lossy conversion from i32 to i8 -- use unsafe/cast"))
 (reject "as-raw-to-ref-rejected" (file "tests/fixtures/as-raw-to-ref.nuc")
-        (message "raw pointer (raw Rec) where non-null &Rec is required -- use as-ref (checked) or unsafe/cast"))
+        (message "unchecked pointer (ptr Rec) where non-null &Rec is required -- use as-ref (checked) or unsafe/cast"))
 (reject "as-reinterpret-rejected" (file "tests/fixtures/as-reinterpret.nuc")
         (message "as: reinterpretation from &Sym to &Rec -- use unsafe/cast"))
 
@@ -251,7 +251,7 @@
 (reject "w4a-suggest-spelling" (file "tests/fixtures/w4a-suggest-spelling.nuc") (line 6)
         (message "unknown: printfx (did you mean 'printf'?)"))
 (reject "w4a-let-null-ref" (file "tests/fixtures/w4a-let-null-ref.nuc") (line 7)
-        (message "raw pointer where non-null (ref ...) is required"))
+        (message "unchecked pointer where non-null (ref ...) is required"))
 (reject "w4a-bare-cast-head" (file "tests/fixtures/w4a-bare-cast-head.nuc") (line 7)
         (message "'cast' was split in Stage 14"))
 
@@ -449,9 +449,9 @@
 ; whose own line is always 0 -- the diagnostic has to borrow the enclosing
 ; `defvar` form's line via `node-line`, and a regression there reports `:0:`.
 (reject "w6-defvar-null-ptr-elem" (file "tests/fixtures/w6-defvar-null-ptr-elem.nuc") (line 11)
-        (message "defvar: raw pointer where non-null (ref ...) is required"))
+        (message "defvar: unchecked pointer where non-null (ref ...) is required"))
 (reject "w6-defvar-null-ref" (file "tests/fixtures/w6-defvar-null-ref.nuc") (line 8)
-        (message "defvar: raw pointer where non-null (ref ...) is required"))
+        (message "defvar: unchecked pointer where non-null (ref ...) is required"))
 
 ;
 ; Stage 15 W9 item 7: the same rule, for the source kind it never reached. A
@@ -462,11 +462,11 @@
 ; segfaulted; the corpus contained exactly ONE conversion that this rejects
 ; (lib/hash.nuc's CStr Hash conformance), now null-guarded.
 (reject "w9-cstr-into-ref-defvar" (file "tests/fixtures/w9-cstr-into-ref-defvar.nuc") (line 17)
-        (message "defvar: raw pointer where non-null (ref ...) is required"))
+        (message "defvar: unchecked pointer where non-null (ref ...) is required"))
 (reject "w9-cstr-into-ref-let" (file "tests/fixtures/w9-cstr-into-ref-let.nuc") (line 8)
-        (message "assignment: raw pointer where non-null (ref ...) is required"))
+        (message "assignment: unchecked pointer where non-null (ref ...) is required"))
 (reject "w9-cstr-as-typed-ptr" (file "tests/fixtures/w9-cstr-as-typed-ptr.nuc") (line 16)
-        (message "as: raw pointer CStr where non-null &W9C7A is required"))
+        (message "as: unchecked pointer CStr where non-null &W9C7A is required"))
 
 ; ...but it is NOT admitted to the strcmp lowering. This is the tripwire against
 ; "fixing" item 18 by widening `is-ptr-like` to contain TY-FN, which would turn
@@ -504,7 +504,7 @@
 ; gate still refuses `null` there. The location is pinned for the same reason
 ; W6's are -- the init node is the interned symbol `null`, whose own line is 0.
 (reject "w8-fnptr-null-still-gated" (file "tests/fixtures/w8-fnptr-null-still-gated.nuc") (line 12)
-        (message "defvar: raw pointer where non-null (ref ...) is required"))
+        (message "defvar: unchecked pointer where non-null (ref ...) is required"))
 
 ; Second, the `is-local` conjunct must not silence a real cross-kind collision.
 ; g0-value-fn-collision-order1/2 pin the plain (i32-typed) shape; this is the
@@ -560,7 +560,7 @@
 (reject "g1-as-lossy" (file "tests/fixtures/g1-as-lossy.nuc") (line 5)
         (message "as: lossy conversion from i64 to i32 -- use unsafe/cast"))
 (reject "g1-as-null-launder" (file "tests/fixtures/g1-as-null-launder.nuc") (line 7)
-        (message "defvar: raw pointer where non-null (ref ...) is required"))
+        (message "defvar: unchecked pointer where non-null (ref ...) is required"))
 (reject "g1-addr-of-const" (file "tests/fixtures/g1-addr-of-const.nuc") (line 4)
         (message "defvar: ref: 'G1K' is a compile-time constant and has no address"))
 (reject "g1-not-constant" (file "tests/fixtures/g1-not-constant.nuc") (line 5)
@@ -611,7 +611,7 @@
 ; for combining declaration with initialization. Pinned at the `defvar`, not at
 ; some synthesized set! the user never wrote.
 (reject "g3-init-raw-into-ref" (file "tests/fixtures/g3-init-raw-into-ref.nuc") (line 9)
-        (message "raw pointer where non-null (ref ...) is required"))
+        (message "unchecked pointer where non-null (ref ...) is required"))
 (reject "g3-init-type-mismatch" (file "tests/fixtures/g3-init-type-mismatch.nuc") (line 6)
         (message "set!: type mismatch for 'g3-bad'"))
 
@@ -653,7 +653,7 @@
 ; rule is tolerable at all.
 (reject "g5-noinit-ref-note" (file "tests/fixtures/g5-noinit-ref.nuc") (line 12)
         (message "has a non-null pointer type but no initializer")
-        (note "declare it nullable with `raw`"))
+        (note "declare it nullable (`?&T`)"))
 
 ; The carve-outs the flip must NOT swallow, all four in one fixture: `raw`, `?T`,
 ; an elem-less bare `ptr` (~1550 of them in this compiler's own source), and

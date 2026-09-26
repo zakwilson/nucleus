@@ -4,7 +4,7 @@
 ; lib/allocator provides the tagged AllocHandle a collection stores and calls
 ; through, plus the libc and arena backends behind the alloc-handle-* helpers.
 ;
-; NOTE (tokenizer): a binding whose type is parenthesised, e.g. (raw ui8) or
+; NOTE (tokenizer): a binding whose type is parenthesised, e.g. (ptr ui8) or
 ; (ref AllocHandle), uses the list binding form `(name (type))`; the colon sugar
 ; `name:(...)` does not tokenise for a parenthesised RHS.
 
@@ -22,7 +22,7 @@
 (defn main ():i32
   ; ---- 1. Default (libc) allocator: alloc then free. ----
   (let (d:&AllocHandle (default-allocator))
-    (let ((p (raw ui8)) (alloc-handle-alloc d 32 8))
+    (let ((p ?&ui8) (alloc-handle-alloc d 32 8))
       (if (= (as ptr p) null)
         (printf "default: alloc failed\n")
         (printf "default: alloc ok (kind=%d)\n" (d 'kind)))
@@ -32,7 +32,7 @@
   ; ---- 2. Arena allocator (via a stack handle): alloc only (free is a no-op). ----
   (let (ah:&AllocHandle (alloca AllocHandle))
     (arena-allocator ah)
-    (let ((q (raw ui8)) (alloc-handle-alloc ah 64 8))
+    (let ((q ?&ui8) (alloc-handle-alloc ah 64 8))
       (if (= (as ptr q) null)
         (printf "arena: alloc failed\n")
         (printf "arena: alloc ok (kind=%d)\n" (ah 'kind)))
@@ -49,13 +49,13 @@
     (let (sa:&AllocHandle (ref s 'alloc))
       (libc-allocator sa)
       ; Allocate 4 i32 (16 bytes) through the stored handle.
-      (let ((raw (raw ui8)) (alloc-handle-alloc sa 16 4))
-        (set! (s 'data) (as ptr raw))
-        (let (arr:&i32 (as &i32 (s 'data)))
+      (let ((blk ?&ui8) (alloc-handle-alloc sa 16 4))
+        (set! (s 'data) (as ptr blk))
+        (let (arr:&i32 (unsafe/cast &i32 (s 'data)))
           (set! (aref arr 0) 10) (set! (aref arr 1) 20) (set! (aref arr 2) 30) (set! (aref arr 3) 40)
           (printf "intbuf: cap=%llu v0=%d v3=%d\n"
             (as ui64 (s 'cap)) (aref arr 0) (aref arr 3)))
-        (alloc-handle-free sa raw 16 4)
+        (alloc-handle-free sa blk 16 4)
         (printf "intbuf: freed via stored handle\n"))))
 
   (return 0))

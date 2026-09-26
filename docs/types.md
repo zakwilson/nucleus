@@ -5,11 +5,11 @@
 Types are attached to names with `:` syntax: `name:type` (e.g., `x:i32`, `main:int`). A desugar pass runs before compilation, splitting colon-typed symbols in binding positions into canonical list form:
 
 - `foo:int` → `(foo int)` — name and type as separate symbols
-- `node:ptr:Node` → `(node (ptr Node))` — pointer-to-Node
-- `pp:ptr:ptr:Node` → `(pp (ptr ptr Node))` — pointer-to-pointer-to-Node
-- `node:&Node` → `(node (ref Node))` — `&` is sugar for `ref:` (see [Pointer kinds](#pointer-kinds-ptr-t-raw-t-and-t))
+- `node:&Node` → `(node (ref Node))` — a non-null pointer to Node; `&` is sugar for `ref:` (see [Pointer kinds](#pointer-kinds-t-t-and-ptr-t))
+- `pp:&&Node` → `(pp (ref (ref Node)))` — pointer-to-pointer-to-Node
+- `node:ptr:Node` → `(node (ptr Node))` — an *unchecked* pointer to Node
 
-Pointers to a typed element use the `ptr` constructor: `(ptr T)` is a **non-null** pointer to `T`, and `(ptr ptr T)` chains. Bare `ptr` (with no element) is the opaque `void*` pointer — it carries no element contract, so non-null obligations do not apply to it.
+A typed pointer is normally `&T` (non-null) or `?&T` (nullable, checked). `(ptr T)` is the unchecked pointer, and `(ptr ptr T)` chains. Bare `ptr` (with no element) is the opaque, unchecked `void*` — the type of `null` and of an imported C pointer.
 
 Because bare `ptr` erases the element type, operations that need one (`aref`, `deref`, `unsafe/ptr+`, a `set!` place, field access) reject it. The one place the element type is recovered automatically is an **`(array T …)` initializer**: `(let (a:ptr (array i32 1 2 3)) (aref a 1))` binds `a` as `ptr:i32`, because the element type is spelled in the initializer itself. This is deliberately limited to that syntactic form — a bare `:ptr` bound from anything else (a function result, `alloca`, `&x`) stays elem-less, since erasing the element type is exactly what a `void*` annotation is for. Where you want the element type from any other initializer, either spell it (`a:ptr:i32`) or omit the annotation entirely (a bare binding name adopts the initializer's full type).
 
@@ -26,13 +26,13 @@ In inline type positions (the type argument of `as`/`unsafe/cast`, `sizeof`, `al
 
 In a binding list the two readings alternate, as above: the name slot declares, the initializer slot casts.
 
-The conversion is exactly `as` (see [Implicit Type Coercion](#implicit-type-coercion) and the `as` form): widening is free, a narrowing or a reinterpretation is refused and routed to `unsafe/cast`, the pointer-kind flow rule applies (`p:ref:T` on a `raw` pointer is a laundering error, not a silent promotion), and a `defcast` rule extends the set. There is deliberately **no** sugar for `unsafe/cast`: the short spelling is the safe one.
+The conversion is exactly `as` (see [Implicit Type Coercion](#implicit-type-coercion) and the `as` form): widening is free, a narrowing or a reinterpretation is refused and routed to `unsafe/cast`, the pointer-kind flow rule applies (`p:ref:T` on an unchecked `ptr` is a laundering error, not a silent promotion), and a `defcast` rule extends the set. There is deliberately **no** sugar for `unsafe/cast`: the short spelling is the safe one.
 
 Three limits follow from the spelling rather than the rule:
 
 - **It attaches to a name.** A computed operand has nowhere to hang the colon — `(f x):CStr` lexes `:CStr` as a keyword — so spell those `(as CStr (f x))`.
 - **A parenthesised type is not a cast.** `q:(ref Rec)` in value position is claimed by the colon-paren fuse below and reads as the *call* `(q (ref Rec))`; the compiler says so. Give the type a name with [`deftype`](#type-aliases--deftype) and the annotation works: `q:RecRef`.
-- **`null`, `true`, `false` and `none` take no annotation** — they are matched by name before the split, so `null:raw:T` is an undefined name. Write `(as raw:T null)`.
+- **`null`, `true`, `false` and `none` take no annotation** — they are matched by name before the split, so `null:ptr:T` is an undefined name. Write `(as ptr:T null)`.
 
 An annotation whose type does not exist is an error (`unknown type 'Foo' in the annotation 'x:Foo'`); it is not ignored.
 
@@ -69,7 +69,7 @@ For a container type you write more than once, prefer naming it with [`deftype`]
 
 **Return-position lone-colon fuse.** A bare `:` immediately before `(` fuses to the paren form itself, with no name, so a parenthesised return type in `fn`/`defn`/lambda position may be written `):(T …)`. Thus `(fn (x:i32):(ref T) …)` reads as `(fn (x:i32) (ref T) …)`, and a keyword whose body is open, followed by `(`, fuses too (`:ptr:(Vector T)` → `(ptr (Vector T))`, `:?(Vector T)` → `(? (Vector T))`). This makes parenthesised returns use the same colon discipline as scalar returns — no space-separated exception is required.
 
-**Whitespace near-miss.** Adjacency remains **required**: the sigil binds tight (matching `:keyword` lexing; fusing across whitespace could rewrite quoted data at a distance). If a binding name ends in `:` but is *not* adjacent to `(` — e.g. `x: (raw Node)` — the compiler reports a clear fatal error: `binding name ends in ':' (<atom>) -- write name:(Type) with no space, or (name Type)`. Write `name:(Type …)` with no space, or the canonical list form `(name Type …)`. A trailing-colon symbol in value or quoted positions stays legal.
+**Whitespace near-miss.** Adjacency remains **required**: the sigil binds tight (matching `:keyword` lexing; fusing across whitespace could rewrite quoted data at a distance). If a binding name ends in `:` but is *not* adjacent to `(` — e.g. `x: (ptr Node)` — the compiler reports a clear fatal error: `binding name ends in ':' (<atom>) -- write name:(Type) with no space, or (name Type)`. Write `name:(Type …)` with no space, or the canonical list form `(name Type …)`. A trailing-colon symbol in value or quoted positions stays legal.
 
 **Quoted-data caveat.** The fuse fires syntactically, whether or not the form is quoted — so `'(foo:(bar))` reads as `'((foo (bar)))`, and the quote's own operand is no exception: `'foo:(bar)` is `(quote (foo (bar)))`. Authors of quoted data (or data that will be `read` at runtime) should space the paren: `'(foo: (bar))` or `'(foo (bar))`.
 
@@ -261,32 +261,40 @@ between the two spellings. The same holds for protocol conformance:
 `(extend Money P)` over `(deftype Money i32)` conforms `i32` (see
 [Protocols](generics.md#protocols-defprotocol-and-extend)).
 
-## Pointer kinds: `(ptr T)`, `(raw T)`, and `?T`
+## Pointer kinds: `&T`, `?&T`, and `(ptr T)`
 
-Typed pointers carry a compile-time **kind**; all three lower to the same IR
-`ptr` and are ABI-identical to a C `T*` (see `design/stage10/nullability.md`).
-The safe default is **on**: a typed `(ptr T)` is non-null.
+Typed pointers carry a compile-time **kind**; all of them lower to the same IR
+`ptr` and are ABI-identical to a C `T*` (see `design/stage10/nullability.md` and
+`design/stage21-cleanup/ptr-is-unchecked.md`). The name says whether a pointer
+is checked: `&`/`ref` is non-null, `?` is checked, and `ptr` in any form is
+unchecked.
 
 | Surface | Meaning | Deref | Null? |
 |---|---|---|---|
-| `(ptr T)` / `ptr:T`, `(ref T)` / `ref:T` / `&T` | **non-null** — always a valid `T` (the default) | always safe | no |
-| `(raw T)` / `raw:T`, bare `ptr` | **raw** — unchecked, the C-boundary / `void*` escape | allowed (your problem) | yes |
-| `?T` ≡ `(Maybe T)` | **nullable-checked** — may be none | **compile error** until narrowed (pointer `T`) | yes |
+| `&T` ≡ `(ref T)` ≡ `ref:T` | **non-null** — always a valid `T` | always safe | no |
+| `?&T` ≡ `(Maybe (ref T))` | **nullable, checked** — may be none | **compile error** until narrowed | yes |
+| `(ptr T)` ≡ `ptr:T` | **unchecked** — the C-boundary escape | allowed (your problem) | yes |
+| bare `ptr` | **untyped, unchecked** — C's `void*`, the type of `null` and of an imported C `T*` | no pointee | yes |
 
-`(ptr T)` and `(ref T)` are now synonyms (both non-null); `(ref T)` remains as
-the explicit, greppable spelling. A genuinely nullable pointer is spelled
-`(raw T)` / `raw:T`. The `null` literal is `raw`, so it flows into `raw`/`?`
-slots but not into a non-null `(ptr T)`/`(ref T)` slot.
+Unchecked pointers are unsafe, so write `&T` or `?&T` wherever you can, and keep
+`(ptr T)` for code where the unchecked form saves real structure. The compiler's
+own source follows that rule (the census is in the design doc above).
+
+`raw` was the unchecked kind's old name. It is retired: `raw`, `(raw T)` and
+`raw:T` are refused with `'raw' was retired: write ptr for an untyped pointer,
+(ptr T) for a typed unchecked one`. A pointer to `void` is refused too —
+`(ptr void)`, `&void` and `?&void` say `void has no pointee: write ptr for an
+untyped pointer`.
 
 **A diagnostic spells the kind.** Every message names a pointer type as `&T`
-(non-null), `(raw T)`, `?&T` (nullable-checked), `!&T` (a niche `!` pointer) or
-bare `ptr`, nesting as written (`&&T`, `&(raw T)`) — so `argument 1 has type
-(raw Pt), which does not match parameter type &Pt`. The REPL's `type-of` prints
-the same spelling. A stamped template instance is printed as its source
-application, `&(Vector i32)`, from the arguments its stamp recorded; the prelude's
-`(Maybe T)` and `(Result T Err)` print as `?T` and `!T`. A stamp keeps the pointer
-kind of whichever spelling stamped it first, so `(Vector &Pt)` and
-`(Vector (raw Pt))` print as the one that came first.
+(non-null), `?&T` (nullable-checked), `(ptr T)` (unchecked), `!&T` (a niche `!`
+pointer) or bare `ptr`, nesting as written (`&&T`, `&(ptr T)`) — so `argument 1
+has type (ptr Pt), which does not match parameter type &Pt`. The REPL's
+`type-of` prints the same spelling. A stamped template instance is printed as
+its source application, `&(Vector i32)`, from the arguments its stamp recorded;
+the prelude's `(Maybe T)` and `(Result T Err)` print as `?T` and `!T`. A stamp
+keeps the pointer kind of whichever spelling stamped it first, so `(Vector &Pt)`
+and `(Vector (ptr Pt))` print as the one that came first.
 
 **`&T` is sugar for `ref:T`.** The reader expands a `&` that begins a type
 chain segment into `ref:`, so `&T` and `ref:T` are the same spelling — same
@@ -297,7 +305,7 @@ the colon chain composes with:
 (defn shift (p:&Point d:i32):&Point …)   ; param and return
 (defstruct Holder (link &Point))         ; field, list form
 (let (v:&(Vector &Point) …) …)           ; colon-paren fuse, template argument
-pp:&&Point   q:?&Point   r:&raw:Point    ; ref:ref:T, ?ref:T, ref:raw:T
+pp:&&Point   q:?&Point   r:&ptr:Point    ; ref:ref:T, ?ref:T, ref:ptr:T
 ```
 
 The sigil is only a `&` at the *start* of a segment — offset 0, after a `:`,
@@ -321,19 +329,19 @@ into a header. The older value-form head `addr-of` is retired (Stage 21 PK-5b)
 and reserved: `(addr-of x)`, `(addr-of p 'f)` and `(addr-of T)` in a type slot
 are all refused with one targeted error — see [Special forms](special-forms.md).
 
-Only a **typed** non-null destination adds obligations: a `raw` or `?T` value
-may not flow into a `(ptr T)`/`(ref T)` slot (binding, `set!`, field/element
-store, argument, return) — narrow first, or assert with `(unsafe/cast ref:T x)`
-(the audited C-boundary escape hatch — `as` refuses this exact conversion,
-routing to `as-ref` for a checked launder or `unsafe/cast` for the unchecked
-assertion; see [Implicit Type Coercion](#implicit-type-coercion)). An elem-less
-bare `ptr` (`void*`) slot carries
-no contract and is exempt. Widening (non-null→raw, non-null→`?T`, raw↔`?T`) is
-always allowed. `none` is the null `?T` literal. Stack addresses are non-null by
-construction: `&x`, `(ref p 'f)` (the 2-argument arity), `(alloca T)`, `(array T …)`, and a
-`(S …)` compound literal all yield `(ref T)`.
+Only a **non-null** destination adds obligations: an unchecked (`ptr`,
+`(ptr T)`, `CStr`) or `?T` value may not flow into a `&T` slot (binding,
+`set!`, field/element store, argument, return). Narrow a `?&T` first; launder an
+unchecked pointer with `(as-ref p)`, which gives a `?&T` to narrow; or assert
+with `(unsafe/cast &T p)`. `as` refuses the conversion and names those two
+routes (see [Implicit Type Coercion](#implicit-type-coercion)). Widening
+(`&T`→`(ptr T)`, `&T`→`?&T`, `(ptr T)`↔`?&T`, anything→`ptr`) is always
+allowed, and `null` flows into any nullable slot. `none` is the null `?T`
+literal. Stack addresses are non-null by construction: `&x`, `(ref p 'f)` (the
+2-argument arity), `(alloca T)`, `(array T …)`, and a `(S …)` compound literal
+all yield `&T`.
 
-**A global declared non-null must be initialized.** `(defvar g:ptr:T)` with no
+**A global declared non-null must be initialized.** `(defvar g:&T)` with no
 initializer is a compile-time error: with no initializer the slot takes the
 type's zero, which for a pointer is `null` — exactly the value the type says it
 can never hold. The rule is the same one every other position enforces, and it
@@ -341,31 +349,25 @@ applies at a global only because there is now a way to write the initializer
 (see [Run-time initializers](toplevel.md#run-time-initializers)).
 
 ```lisp
-(defvar g:ptr:Thing)              ; error: non-null pointer type but no initializer
-(defvar g:ptr:Thing (make-thing)) ; fine — the run-time initializer runs before main
-(defvar g:(raw Thing))            ; fine — `raw` is honestly nullable
-(defvar g:?ptr:Thing)             ; fine — a Maybe pointer may be none
-(defvar g:ptr)                    ; fine — an elem-less bare `ptr` names no pointee
+(defvar g:&Thing)                 ; error: non-null pointer type but no initializer
+(defvar g:&Thing (make-thing))    ; fine — the run-time initializer runs before main
+(defvar g:?&Thing)                ; fine — a Maybe pointer may be none
+(defvar g:ptr:Thing)              ; fine — an unchecked pointer is nullable
+(defvar g:ptr)                    ; fine — bare `ptr` is nullable
 (defvar g:CStr)                   ; fine — CStr is not a typed pointer kind
 ```
 
-The two carve-outs in that list are `pkind-flow-check`'s own, not extra
-exceptions invented for globals: a bare `ptr` (`void*`) carries no non-null
-contract because it names no pointee, and `CStr` is its own type kind.
-
-Both are about the **destination**. A `CStr` *source* carries no non-null
-contract either, so it may **not** flow into a typed non-null slot — `(defvar
-g:ptr:T (as CStr null))` and `(as ptr:T (getenv "X"))` are both errors, for the
-same reason a `raw` is. Use `as-ref` and narrow, or `unsafe/cast` to assert. This
-is not a special case for `CStr`: it is the ordinary rule, which `CStr` used to
-escape.
+A `CStr` *source* carries no non-null contract, so it may **not** flow into a
+non-null slot — `(defvar g:&T (as CStr null))` and `(as &i8 (getenv "X"))` are
+both errors, for the same reason an unchecked pointer is. Use `as-ref` and
+narrow, or `unsafe/cast` to assert.
 
 **Uniform `?` (Maybe)**: `?T` ≡ `(Maybe T)` with no
 auto-`ref` injection. For a **pointer** operand it niche-encodes
-(`?ptr:T` / `?ref:T` ≡ `(Maybe (ref T))`, one pointer, `null` = none); for a
+(`?&T` ≡ `(Maybe (ref T))`, one pointer, `null` = none; `?ptr:T` and `?ptr`
+are the same niche); for a
 **value** operand (`?i64`, `?SomeStruct`) it stamps the two-arm `{tag, T}` value
-union from the prelude template. One spelling, two layouts. A nullable pointer
-written `?ptr:Foo` makes the niche-encoding explicit. The value `(Maybe T)` is
+union from the prelude template. One spelling, two layouts. The value `(Maybe T)` is
 built with `make` / target typing (bare `none` / `(some v)` resolve against a
 `(Maybe T)` return, typed binding, `make` field or parameter) and eliminated with `match`
 (`((some v) …)` / `(none …)`). The pointer relabels (`some`/`none`/`as-ref`
@@ -376,31 +378,31 @@ sigil is written attached — `?(Vector i32)`, `?!(Vector i32)` — which reads 
 the list form `(? (Vector i32))` / `(?! (Vector i32))`, the canonical node
 (see [Sigil-paren forms](#type-syntax-and-desugar)).
 
-**A nullable value is a condition.** `raw`, `CStr`, `?T` and a value `(Maybe T)`
-may be written bare at a condition site — `(when m …)` means `(when (!= m null)
-…)` — while `ptr`/`(ref T)` may not, because a non-null pointer's test is a
-constant. See
+**A nullable value is a condition.** `ptr`, `(ptr T)`, `CStr`, `?T` and a value
+`(Maybe T)` may be written bare at a condition site — `(when m …)` means
+`(when (!= m null) …)` — while `&T` may not, because a non-null pointer's test
+is a constant. See
 [Condition position](special-forms.md#condition-position-a-nullable-value-is-a-condition).
 
 **Flow narrowing**: inside a region dominated by a successful non-null test, a
-local `?ptr:T` binding reads as `(ref T)`. The compiler's own guard idioms are
+local `?&T` binding reads as `&T`. The compiler's own guard idioms are
 the mechanism — `(when (= m null) (return …))`, `(if (!= m null) … …)`,
 `(and (!= m null) (m field))`, and the bare `(when m …)` above all narrow, as do
-`if-some`/`when-some`/`unwrap`.
+`if-some`/`when-some`/`unwrap`. An unchecked `(ptr T)` does **not** narrow: its
+deref is already allowed, and turning it into `&T` is `as-ref` plus a narrow.
 A reassignment kills the narrow (sticky across joins); loop bodies drop narrows
 established outside the loop for any binding the body assigns; `label` kills
 all narrows (unknown predecessors). Kind mismatches at a `cond`/`if` join meet
-conservatively (`raw` beats `Maybe` beats `ref`).
+conservatively (unchecked beats `Maybe` beats `ref`).
 
 > **⚠ Sharp edge — branch *element* types must match.** The conservative meet
 > above reconciles the pointer *kind*, but the branch **element** types must
 > still be `type-eq`. Two pointer branches with *different element types* —
-> e.g. `(raw Node)` (the type of a `Node` list's elements and of macro parameters)
-> versus a bare `ptr`, a `ptr:i8`, or a quasiquoted `` `(...) `` (bare `ptr`) —
-> do **not** unify; the `cond`/`if` collapses to `void`. That then fails
+> e.g. `(ptr Node)` (the type of an `ast-first` read) versus a `ptr:i8` — do
+> **not** unify; the `cond`/`if` collapses to `void`. That then fails
 > wherever a value was expected (`let`/`set!` `init type mismatch`; a macro
 > body returns `null`). Make the branches agree — usually `(as ptr <branch>)`
-> the odd one (`ptr` ↔ `(raw Node)` is a no-op reinterpret — exactly the
+> the odd one (`ptr` ↔ `(ptr Node)` is a no-op reinterpret — exactly the
 > pointer-contract weakening `as` accepts). This bites most
 > often in macros and AST-walking code; see the "Sharp edge" section in
 > [macros.md](macros.md).
@@ -411,7 +413,7 @@ Volatility is declared through the **keyword-attribute slot**: a leading
 `:volatile` keyword immediately before the declared name of a variable,
 global, struct/union field, or `defn` param. For a pointer *target* (C's
 `volatile T *`, the MMIO case), the keyword instead moves inside the pointer
-constructor — `(ptr :volatile T)` / `(raw :volatile T)` / `(ref :volatile T)`
+constructor — `(ptr :volatile T)` / `(ref :volatile T)`
 — since pointee volatility must travel with the pointer through params and
 fields. Loads and stores of a value held at a volatile-qualified storage site
 are emitted as `load volatile` / `store volatile` in LLVM IR; the compiler
@@ -469,7 +471,7 @@ answer:i32 42) ... (set! answer 10)` dies with `set!: cannot assign to
 read-only storage. Reads of a `:const` global (`(return answer)`) are
 unaffected — they go through the normal load path. This check covers the
 direct `set!` mutation syntax only; it is not an aliasing analysis (e.g. a
-raw pointer obtained via `&x` and written through a `(deref p)` place is not
+pointer obtained via `&x` and written through a `(deref p)` place is not
 tracked).
 
 ## Built-in Types
@@ -663,8 +665,8 @@ let: init type mismatch for 'f': value is (i32, i32):i32, slot is (i32):i32
 
 Two relaxations, both matching C:
 
-- **Pointer *kind* is not part of a signature.** `ptr:i32`, `(ref i32)` and
-  `raw:i32` are interchangeable in a parameter or return position, so the
+- **Pointer *kind* is not part of a signature.** `ptr:i32` and `(ref i32)`
+  are interchangeable in a parameter or return position, so the
   `qsort` comparator shape (`(fn i32) (ptr ptr))` accepts
   `(defn cmp (a:ptr:i32 b:(ref i32)):i32 …)`.
 - **A bare elem-less `ptr` is the function-pointer analogue of `void *`.** It
@@ -720,11 +722,11 @@ slot is declared once and filled in later:
 ```
 
 **A function pointer is nullable and carries no non-null contract.** The pointer
-kinds (`ref`/`raw`/`?T`) apply to `ptr`, not to `(fn ret)(params)`, so `null` is
-a fn pointer's ordinary "not wired yet" value — the same status `CStr` and an
-elem-less bare `ptr` have. Note the distinction from the *wrapper* spellings:
-`ptr:(fn ret)(params)` and `(ref (fn ret)(params))` are pointers **to** a
-function pointer, are non-null like any other typed pointer, and reject a `null`
+kinds (`&`/`?&`/`ptr`) apply to data pointers, not to `(fn ret)(params)`, so `null` is
+a fn pointer's ordinary "not wired yet" value — the same status `CStr` and
+bare `ptr` have. Note the distinction from the *wrapper* spellings:
+`&(fn ret)(params)` and `ptr:(fn ret)(params)` are pointers **to** a function
+pointer; the first is non-null like any other `&T` and rejects a `null`
 initializer.
 
 `null` initializes or assigns a function-pointer slot in **every** position — a
@@ -743,13 +745,13 @@ initializer.
     (return 0)))
 ```
 
-Only the **literal** does this. A `raw`/`ptr`/`CStr` *value* is refused, because
+Only the **literal** does this. A `ptr`/`(ptr T)`/`CStr` *value* is refused, because
 turning an arbitrary data pointer into something callable is `unsafe/cast`'s job
 — spell the function type in an extra pair of parentheses so it is a single
 form:
 
 ```lisp
-(let (f:(fn i32)(i32) (unsafe/cast ((fn i32)(i32)) some-raw-pointer)) …)
+(let (f:(fn i32)(i32) (unsafe/cast ((fn i32)(i32)) some-pointer)) …)
 ```
 
 A hook filled by a [run-time initializer](toplevel.md#run-time-initializers) is
@@ -773,7 +775,7 @@ function-pointer value, or a `defn` name used as a value.
 A function pointer is deliberately **not** admitted to the `CStr` content
 comparison: `(= g-hook some-cstr)` is a compile error rather than a `strcmp` of
 a function's machine code. Ordering (`<`, `<=`, …) is permitted and compares
-addresses, as it does for `raw`.
+addresses, as it does for data pointers.
 
 A function-pointer slot is one target pointer wide, like any other pointer: a
 global, a local, a parameter and a struct field each get the target's pointer
@@ -782,9 +784,9 @@ alignment (`align 8` on x86-64, `align 4` on a 32-bit target), and it is the
 
 ## Implicit Type Coercion
 
-The following conversions are applied automatically in assignment contexts (`let`, every `set!` place, implicit and explicit `return`) **and at function call sites** (both direct calls and `funcall`). This is exactly the safe set `as` (see [Special Forms](special-forms.md#special-forms)) also accepts when written explicitly, plus `as`'s own pointer-contract-weakening allowance; `unsafe/cast` accepts this same set **and** everything lossy or contract-manufacturing besides (narrowing, `float`↔`int`, `ptr`↔`int`, `fn`↔`ptr`, element-retyping pointers, and laundering a `raw`/nullable pointer into a non-null slot):
+The following conversions are applied automatically in assignment contexts (`let`, every `set!` place, implicit and explicit `return`) **and at function call sites** (both direct calls and `funcall`). This is exactly the safe set `as` (see [Special Forms](special-forms.md#special-forms)) also accepts when written explicitly, plus `as`'s own pointer-contract-weakening allowance; `unsafe/cast` accepts this same set **and** everything lossy or contract-manufacturing besides (narrowing, `float`↔`int`, `ptr`↔`int`, `fn`↔`ptr`, element-retyping pointers, and laundering an unchecked or nullable pointer into a non-null slot):
 
-- **Pointer ↔ pointer, when the pointees agree**: identity, no IR. Two things are *not* part of the question and so never block it — the pointer **kind** — `ptr:Node`, `(ref Node)`, `(raw Node)` and `?Node` are one type to *this* question, and nullability is judged separately by the non-null contract, which still refuses a `raw`/`?` source into a `(ref T)` slot (see [Pointer kinds](#pointer-kinds-ptr-t-raw-t-and-t)) — and an **elem-less bare `ptr`**, which is `void *` and matches any pointer in either direction. Everything else must match: `ptr:i32` into a `ptr:Node` slot, or `(ref (Vector i32))` into a `(ref (Vector i64))` slot, is a compile-time error naming both types.
+- **Pointer ↔ pointer, when the pointees agree**: identity, no IR. Two things are *not* part of the question and so never block it — the pointer **kind** — `(ref Node)`, `?&Node` and `ptr:Node` are one type to *this* question, and nullability is judged separately by the non-null contract, which still refuses an unchecked or `?` source into a `&T` slot (see [Pointer kinds](#pointer-kinds-t-t-and-ptr-t)) — and an **elem-less bare `ptr`**, which is `void *` and matches any pointer in either direction. Everything else must match: `ptr:i32` into a `ptr:Node` slot, or `(ref (Vector i32))` into a `(ref (Vector i64))` slot, is a compile-time error naming both types.
 
   ```
   let: init type mismatch for 'b': value is &(Vector i32), slot is &(Vector i64)
@@ -872,13 +874,13 @@ The check is on the **types**, not on what they lower to. That distinction is
 the whole of it for pointers, since `ptr`, `ptr:T`, `CStr` and `(fn …)` are one
 `ptr` register apiece: the pointer family stays freely interconvertible as the
 bullets above say, and `fn` ↔ `ptr` stays `unsafe/cast`'s job — so a `CStr`, a
-`raw`, a `(ref T)`, an int literal or a string literal in a `(fn …)` parameter
+`(ptr T)`, a `(ref T)`, an int literal or a string literal in a `(fn …)` parameter
 is refused, exactly as it is in a `let`, a `set!` and a `return`. The literal
 `null` is the one spelling a function-pointer slot takes, in every position.
 (Until Stage 15 the argument position compared *lowered* types, so all of those
 compared equal to a function pointer, nothing was checked, and the callee called
 whatever arrived.) Nullability is checked separately, before the type identity,
-and reports the `raw`/`?T`-into-`(ref T)` case in its own words.
+and reports the unchecked/`?T`-into-`&T` case in its own words.
 
 **Binary operators unify their two operands** by exactly one rule, and the
 result type is that unified type (a comparison always yields `bool`). The rule is
@@ -961,7 +963,7 @@ tail contributes just its `data` pointer — see [Strings](strings.md).
 
 ### Condition position is an elimination, not a coercion
 
-A nullable value — `(raw T)`, `CStr`, `?T`, or a value `(Maybe T)` — is accepted
+A nullable value — `ptr`, `(ptr T)`, `CStr`, `?T`, or a value `(Maybe T)` — is accepted
 directly as a condition at the six condition sites and eliminated to `bool`
 there. That rule is **not** part of the coercion set above, and `bool` is not a
 universal sink: a `bool` parameter, `defstruct` field, `let`/`with` slot,
@@ -971,7 +973,7 @@ not become a dispatch candidate for every call.
 ```lisp
 (defn g (b:bool):i32 …)
 (when p …)      ; fine — p is a condition
-(g p)           ; error: argument 1 has type (raw Pt), which does not match
+(g p)           ; error: argument 1 has type (ptr Pt), which does not match
                 ;        parameter type bool
 (let (b:bool p) …)   ; error: let: init type mismatch for 'b'
 ```
@@ -1124,7 +1126,7 @@ A `Keyword` has static type `Keyword` and conforms to both `Hash` and `Eq`, maki
 - **Colon-paren binding sugar** (`name:(ref T)`) — the colon is trailing on the name token; the paren that follows is read as a type expression.
 - A bare `:` by itself remains a plain symbol.
 
-The [`&` type sigil](#pointer-kinds-ptr-t-raw-t-and-t) *does* apply inside a
+The [`&` type sigil](#pointer-kinds-t-t-and-ptr-t) *does* apply inside a
 keyword's name, which is what makes the keyword-led return spelling `):&T` work
 (the body `&T` expands to `ref:T` exactly as the bare symbol would). The
 consequence to know: a keyword **value** written `:&x` reads as `:ref:x`.

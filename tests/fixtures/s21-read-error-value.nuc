@@ -20,7 +20,7 @@
         (print "  note: " (e 'note) "\n")))))
 
 (defn read-through (text:StrView):!void
-  (let (forms:raw:Node (try (read-all text)))
+  (let (forms:ptr:Node (try (read-all text)))
     (print "read-through: ok " (node-len forms) " form(s)\n")
     (return (ok))))
 

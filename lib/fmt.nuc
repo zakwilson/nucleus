@@ -169,7 +169,7 @@
   (let (buf:&i8 (alloca i8 64))
     (let (n:i32 (snprintf buf 64 prec v))
       (when (> n 0)
-        (string-push-bytes-raw out (as &ui8 (as ptr buf)) (as usize n))))))
+        (string-push-bytes-raw out (unsafe/cast &ui8 (as ptr buf)) (as usize n))))))
 
 (extend f64 ToStr)
 (defn to-str (self:f64 out:&String):!void

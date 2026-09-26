@@ -2,7 +2,7 @@
 ; would be a misleading answer.
 (import-use "tests/fixtures/cheader-opaque.h")
 
-(defn peek (h:ptr:CHOpaque):i32
+(defn peek (h:&CHOpaque):i32
   (return
     (h 'x)))
 

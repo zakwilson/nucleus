@@ -5,12 +5,12 @@
 (defstruct P (x i32) (y i32))
 (defvar gp:P (P 1 2))
 
-(defn pick (c:i32):?ptr:P
+(defn pick (c:i32):?&P
   (when (= c 0) (return null))
   (return &gp))
 
 (defn main ():i32
-  (let (m:?ptr:P (pick 1)
+  (let (m:?&P (pick 1)
         v:P m)
     (printf "%d\n" (&v x)))
   (return 0))

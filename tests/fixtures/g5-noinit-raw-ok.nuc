@@ -4,9 +4,9 @@
 (defstruct Thing v:i32)
 
 ; 1. `raw` — honestly nullable. This is the escape hatch the diagnostic names.
-(defvar (g5r-raw (raw Thing)))
+(defvar (g5r-raw (ptr Thing)))
 ; 2. `?T` — a Maybe pointer is nullable by construction.
-(defvar g5r-maybe:?ptr:Thing)
+(defvar g5r-maybe:?&Thing)
 ; 3. an elem-less bare `ptr` — names no pointee, so it carries no non-null
 ;    contract (pkind-flow-check's own carve-out, inherited rather than copied;
 ;    ~1550 of these exist in this compiler's source).

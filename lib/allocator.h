@@ -15,9 +15,9 @@ typedef struct AllocHandle {
     void* data;
 } AllocHandle;
 
-void* alloc_handle_alloc(struct AllocHandle* h, size_t size, size_t align) asm("alloc-handle-alloc");
-void* alloc_handle_realloc(struct AllocHandle* h, void* p, size_t old, size_t new_, size_t align) asm("alloc-handle-realloc");
-void alloc_handle_free(struct AllocHandle* h, void* p, size_t size, size_t align) asm("alloc-handle-free");
+uint8_t* /* nullable */ alloc_handle_alloc(struct AllocHandle* h, size_t size, size_t align) asm("alloc-handle-alloc");
+uint8_t* /* nullable */ alloc_handle_realloc(struct AllocHandle* h, uint8_t* /* nullable */ p, size_t old, size_t new_, size_t align) asm("alloc-handle-realloc");
+void alloc_handle_free(struct AllocHandle* h, uint8_t* /* nullable */ p, size_t size, size_t align) asm("alloc-handle-free");
 extern struct AllocHandle g_default_alloc asm("g-default-alloc");
 struct AllocHandle* default_allocator(void) asm("default-allocator");
 struct AllocHandle* libc_allocator(struct AllocHandle* h) asm("libc-allocator");

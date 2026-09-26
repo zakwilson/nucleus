@@ -261,8 +261,8 @@
          "'ref' already names a pointer kind"))
   ; Unchanged: the kinds are still type syntax...
   (try (check-source-accepts "(defstruct Pt x:i32)
-(defn f (a:ref:Pt b:raw:Pt c:ptr:Pt):i32 (return (a 'x)))
-(defn g (v:(ref Pt) w:(raw Pt)):i32 (return (v 'x)))
+(defn f (a:ref:Pt b:ptr:Pt c:&Pt):i32 (return (a 'x)))
+(defn g (v:(ref Pt) w:(ptr Pt)):i32 (return (v 'x)))
 "))
   ; ...and `ref` is still not a resolvable type NAME, so a bare one in a
   ; template argument is reported rather than collected as a tyvar.
@@ -290,13 +290,13 @@
 
 (defstruct Pt x:i32)
 
-(defn probe-raw (p:(raw Pt) q:(raw Pt)):i32
+(defn probe-raw (p:(ptr Pt) q:(ptr Pt)):i32
   (let (n:i32 0)
     (when p (set! n (+ n 1)))
     (when (not p) (set! n (+ n 2)))
     (when (and p q) (set! n (+ n 4)))
     (when (or p q) (set! n (+ n 8)))
-    (let (c:(raw Pt) p)
+    (let (c:(ptr Pt) p)
       (while c (set! n (+ n 16)) (set! c null)))
     (return n)))
 
@@ -310,13 +310,13 @@
       (while c (set! n (+ n 16)) (set! c null)))
     (return n)))
 
-(defn probe-maybe-ptr (p:?ptr:Pt q:?ptr:Pt):i32
+(defn probe-maybe-ptr (p:?&Pt q:?&Pt):i32
   (let (n:i32 0)
     (when p (set! n (+ n 1)))
     (when (not p) (set! n (+ n 2)))
     (when (and p q) (set! n (+ n 4)))
     (when (or p q) (set! n (+ n 8)))
-    (let (c:?ptr:Pt p)
+    (let (c:?&Pt p)
       (while c (set! n (+ n 16)) (set! c null)))
     (return n)))
 
@@ -339,9 +339,9 @@
         sm:(Maybe i64) (make (Maybe i64) some 5)
         nm:(Maybe i64) (make (Maybe i64) none))
     (printf \"raw %d %d %d %d\\n\"
-      (probe-raw (as (raw Pt) a) (as (raw Pt) b))
-      (probe-raw (as (raw Pt) a) null)
-      (probe-raw null (as (raw Pt) b))
+      (probe-raw (as (ptr Pt) a) (as (ptr Pt) b))
+      (probe-raw (as (ptr Pt) a) null)
+      (probe-raw null (as (ptr Pt) b))
       (probe-raw null null))
     (printf \"cstr %d %d %d %d\\n\"
       (probe-cstr s t) (probe-cstr s nc) (probe-cstr nc t) (probe-cstr nc nc))
@@ -378,19 +378,19 @@ mval 29 25 10 2
 
 (defstruct Pt x:i32)
 
-(defn f-when (m:?ptr:Pt):i32
+(defn f-when (m:?&Pt):i32
   (when m (return (m 'x)))
   (return -1))
 
-(defn f-and (m:?ptr:Pt):i32
+(defn f-and (m:?&Pt):i32
   (when (and m (> (m 'x) 0)) (return (m 'x)))
   (return -1))
 
-(defn f-guard (m:?ptr:Pt):i32
+(defn f-guard (m:?&Pt):i32
   (when (not m) (return -1))
   (return (m 'x)))
 
-(defn f-while (m:?ptr:Pt):i32
+(defn f-while (m:?&Pt):i32
   (let (n:i32 -1)
     (while m
       (set! n (m 'x))
@@ -441,14 +441,10 @@ mval 29 25 10 2
 (defn main ():i32 (return 0))
 "
          "&Pt is non-null, so this test is always true"))
-  (try (check-source-rejects "(defn f (p:ptr):i32 (when p (return 1)) (return 0))
-(defn main ():i32 (return 0))
-"
-         "ptr is non-null, so this test is always true"))
   (try (check-source-rejects "(defstruct Pt x:i32)
 (deferror Boom \"boom\")
-(defn g ():!ptr:Pt (return (err Boom)))
-(defn f ():i32 (let (r:!ptr:Pt (g)) (when r (return 1))) (return 0))
+(defn g ():!&Pt (return (err Boom)))
+(defn f ():i32 (let (r:!&Pt (g)) (when r (return 1))) (return 0))
 (defn main ():i32 (return 0))
 "
          "a Result (!T) is neither true nor false")))
@@ -459,21 +455,21 @@ mval 29 25 10 2
 (deftest s16-truthiness-is-not-a-coercion
   (try (check-source-rejects "(defstruct Pt x:i32)
 (defn f (b:bool):i32 (return 0))
-(defn g (p:(raw Pt)):i32 (return (f p)))
+(defn g (p:(ptr Pt)):i32 (return (f p)))
 (defn main ():i32 (return 0))
 "
-         "f: argument 1 has type (raw Pt), which does not match parameter type bool"))
+         "f: argument 1 has type (ptr Pt), which does not match parameter type bool"))
   (try (check-source-rejects "(defstruct Pt x:i32)
-(defn g (p:(raw Pt)):i32 (let (b:bool p) (return 0)))
+(defn g (p:(ptr Pt)):i32 (let (b:bool p) (return 0)))
 (defn main ():i32 (return 0))
 "
          "let: init type mismatch for 'b'"))
   (try (check-source-rejects "(defstruct Pt x:i32)
 (defstruct S flag:bool)
-(defn g (p:(raw Pt)):i32 (let (s:(ref S) (alloca S)) (set! (s 'flag) p)) (return 0))
+(defn g (p:(ptr Pt)):i32 (let (s:(ref S) (alloca S)) (set! (s 'flag) p)) (return 0))
 (defn main ():i32 (return 0))
 "
-         "set!: type mismatch for field 'flag': value is (raw Pt), field is bool")))
+         "set!: type mismatch for field 'flag': value is (ptr Pt), field is bool")))
 
 ; ---------------------------------------------------------------------------
 ; Variables as collection-literal elements (Stage 16, collection-literal-variables.md)
@@ -923,8 +919,8 @@ map=2
 "))
         bad:Compiled (try (compile-path-in dir (string-as-view &outp)))
         good:Compiled (try (compile-path-in dir (string-as-view &pubp))))
-    (try (check-contains (string-as-view (ref bad 'raw)) "T16Hidden"))
-    (try (check-empty (string-as-view (ref good 'raw))))
+    (try (check-contains (string-as-view (ref bad 'raw-text)) "T16Hidden"))
+    (try (check-empty (string-as-view (ref good 'raw-text))))
     (try (check-not-contains (string-as-view &nuch) "T16Hidden"))
     (try (check-contains (string-as-view &nuch) "T16Public"))
     (drop &good)
@@ -1129,9 +1125,9 @@ map=2
     (drop &b)))
 
 (deftest s16-deftype-parametric-repl
-  (let (out:String (try (repl-session "(deftype (Pair T) (ptr T))
+  (let (out:String (try (repl-session "(deftype (Pair T) &T)
 (defn takes (p:(Pair i32)):i32 (return (aref p 0)))
-(let (a:ptr:i32 (array i32 41 42)) (takes a))
+(let (a:&i32 (array i32 41 42)) (takes a))
 ")))
     (try (check-contains (string-as-view &out) "41"))
     (drop &out)))
@@ -1155,9 +1151,9 @@ map=2
 ; not a REPL one -- the design note framed it as REPL-only.
 (deftest s16-d9-ct-body-stamp
   (let (c:Compiled (try (compile-source (d9-ct-stamp-src)))
-        raw:StrView (string-as-view (ref c 'raw)))
-    (try (check-contains raw "d9 ct some 7"))
-    (try (check-not-contains raw "IR parse error"))
+        raw-text:StrView (string-as-view (ref c 'raw-text)))
+    (try (check-contains raw-text "d9 ct some 7"))
+    (try (check-not-contains raw-text "IR parse error"))
     (drop &c)))
 
 ; The drain that fixes the above writes into the PROGRAM's type buffer, and the
@@ -1191,12 +1187,12 @@ map=2
   (let (src:StrView "(import-use \"stdio.h\")
 (compile-time (defstruct D9P x:i32 y:i32))
 (defn d9-sum (a:i32 b:i32):i32
-  (let (q:ptr:D9P (as ptr:D9P (alloca D9P)))
+  (let (q:&D9P (as &D9P (alloca D9P)))
     (set! (q 'x) a) (set! (q 'y) b) (return (+ (q 'x) (q 'y)))))
 (defn main ():i32 (printf \"%d\\n\" (d9-sum 3 4)) (return 0))
 ")
     (let (c:Compiled (try (compile-source src)))
-      (try (check-not-contains (string-as-view (ref c 'raw)) "IR parse error"))
+      (try (check-not-contains (string-as-view (ref c 'raw-text)) "IR parse error"))
       (try (check-eq-int (count-lines-with-prefix (string-as-view (ref c 'ir))
                                                   "%D9P = type")
                          1 "%D9P definitions"))
@@ -1237,14 +1233,14 @@ map=2
 (compile-time
   (defstruct D9Q x:i32 y:i32)
   (defn d9-ct-sum (p:(ref D9Q)):i32 (return (+ (p 'x) (p 'y))))
-  (let (q:ptr:D9Q (as ptr:D9Q (alloca D9Q)))
+  (let (q:&D9Q (as &D9Q (alloca D9Q)))
     (set! (q 'x) 5) (set! (q 'y) 6)
     (printf \"d9 ct inner %d\\n\" (d9-ct-sum (as ref:D9Q q)))))
 (defn main ():i32 (return 0))
 "))
-        raw:StrView (string-as-view (ref c 'raw)))
-    (try (check-contains raw "d9 ct inner 11"))
-    (try (check-not-contains raw "IR parse error"))
+        raw-text:StrView (string-as-view (ref c 'raw-text)))
+    (try (check-contains raw-text "d9 ct inner 11"))
+    (try (check-not-contains raw-text "IR parse error"))
     (drop &c)))
 
 ; The descent mirrors `emit-compile-time`'s SKIPS, not just its walk. That loop
@@ -1320,11 +1316,11 @@ map=2
 (deftest s16-ref-sigil-rules-preserved
   (try (check-source-rejects "(defstruct Pt x:i32)
 (defvar p:&Pt null)
-" "defvar: raw pointer where non-null (ref ...) is required"))
+" "defvar: unchecked pointer where non-null (ref ...) is required"))
   (try (check-source-rejects "(defstruct Pt x:i32)
 (defn f (p:&Pt):i32 (return 0))
-(defn g (q:raw:Pt):i32 (return (f q)))
-" "argument: raw pointer where non-null (ref ...) is required"))
+(defn g (q:ptr:Pt):i32 (return (f q)))
+" "argument: unchecked pointer where non-null (ref ...) is required"))
   (try (check-source-rejects "(defstruct Pt x:i32)
 (defn f (p:& Pt):i32 (return 0))
 " "binding name ends in ':'")))
@@ -1630,7 +1626,7 @@ map=2
 (defstruct Point x:i32 y:i32)
 (defunion Shape (circle p:(ref Point)) none :repr tagged)
 (defn sum (:rest args:i64):i64
-  (let (lst:raw:Node (unsafe/cast raw:Node args)
+  (let (lst:ptr:Node (unsafe/cast ptr:Node args)
         total:i64 0)
     (dotimes (i (node-len lst))
       (set! total (+ total (unsafe/cast i64 (node-at lst i)))))
@@ -1783,7 +1779,7 @@ map=2
 (defstruct Pair x:i64 y:i64)
 
 (defn take6 (p:Pair q:Pair b:Big n:i32 m:i32):i64
-  (let (pp:ptr:Pair &p qq:ptr:Pair &q bb:ptr:Big &b)
+  (let (pp:&Pair &p qq:&Pair &q bb:&Big &b)
     (_+ (_+ (pp 'x) (qq 'y)) (_+ (bb 'c) (as i64 (_+ n m))))))
 
 (defn ml-argpos ():i64
@@ -2180,7 +2176,7 @@ map=2
 ; `define` was text in g-def-buf that nothing compiled until after expansion.
 (deftest s20-macro-calls-own-defn
   (try (check-source-exit "(import-use node)
-(defn my-ident (n:(raw Node)):(raw Node) (return n))
+(defn my-ident (n:(ptr Node)):(ptr Node) (return n))
 (defmacro ident (x) (my-ident x))
 (defn main ():i32 (return (ident 7)))
 " 7)))
@@ -2190,14 +2186,14 @@ map=2
 ; answered 4 for this file while the batch compiler said `Symbols not found`.
 (deftest s20-macro-calls-recursive-helper
   (try (check-source-exit "(import-use node)
-(defn depth (n:(raw Node)):i32
+(defn depth (n:(ptr Node)):i32
   (if (= (node-len n) 0) (return 0)
       (return (_+ 1 (depth (node-rest n))))))
-(defn mk-int (v:i64):(raw Node)
+(defn mk-int (v:i64):(ptr Node)
   (let (n:&Node (alloc-node))
     (set! (n 'kind) NODE-INT)
     (set! (n 'i) v)
-    (return (as raw:Node n))))
+    (return (as ptr:Node n))))
 (defmacro dep (:rest xs) (mk-int (as i64 (depth xs))))
 (defn main ():i32 (return (dep 1 2 3 4)))
 " 4)))
@@ -2208,11 +2204,11 @@ map=2
 ; expansions survive to runtime.
 (deftest s20-macro-helper-shares-arena
   (try (check-source-exit "(import-use node)
-(defn mk (v:i64):(raw Node)
+(defn mk (v:i64):(ptr Node)
   (let (n:&Node (alloc-node))
     (set! (n 'kind) NODE-INT)
     (set! (n 'i) v)
-    (return (as raw:Node n))))
+    (return (as ptr:Node n))))
 (defmacro a () (mk 3))
 (defmacro b () (mk 4))
 (defn main ():i32 (return (_+ (a) (b))))
@@ -2299,11 +2295,11 @@ map=2
 ; fails with `Symbols not found: [ mk, base ]` (measured).
 (deftest s20-macro-roots-survive-nested-macrolet
   (try (check-source-exit "(import-use node)
-(defn mk (v:i64):(raw Node)
+(defn mk (v:i64):(ptr Node)
   (let (n:&Node (alloc-node))
     (set! (n 'kind) NODE-INT)
     (set! (n 'i) v)
-    (return (as raw:Node n))))
+    (return (as ptr:Node n))))
 (defn base ():i64 (return 5))
 (defmacro outer ()
   (macrolet ((inner (k) `(mk (_+ (base) ~k))))
@@ -2559,7 +2555,7 @@ map=2
 ; `unquote outside quasiquote`.
 (deftest s20-computed-arg-macmap
   (try (check-source-exit "(import-use node)
-(defn s20-rows ():(raw Node) (return `((a 1) (b 2) (c 3))))
+(defn s20-rows ():(ptr Node) (return `((a 1) (b 2) (c 3))))
 (macmap ((name arity) `(defn ~name ():i32 (return ~arity))) ~(s20-rows))
 (defn main ():i32 (return (_+ (a) (_+ (b) (c)))))
 " 6)))
@@ -2568,8 +2564,8 @@ map=2
 ; a program `defn` that calls another, so BOTH spans have to reach the mirror.
 (deftest s20-computed-arg-calls-helper
   (try (check-source-exit "(import-use node)
-(defn s20-leaf ():(raw Node) (return `(_* 4 3)))
-(defn s20-rows2 ():(raw Node) (return `((p ~(s20-leaf)) (q 5))))
+(defn s20-leaf ():(ptr Node) (return `(_* 4 3)))
+(defn s20-rows2 ():(ptr Node) (return `((p ~(s20-leaf)) (q 5))))
 (macmap ((name v) `(defn ~name ():i32 (return ~v))) ~(s20-rows2))
 (defn main ():i32 (return (_+ (p) (q))))
 " 17)))
@@ -2581,7 +2577,7 @@ map=2
 ; does: without it the enclosing `main`'s entry/body streams are reset under it.
 (deftest s20-computed-arg-macrolet
   (try (check-source-exit "(import-use node)
-(defn s20-val ():(raw Node) (return `(_* 6 7)))
+(defn s20-val ():(ptr Node) (return `(_* 6 7)))
 (defn main ():i32
   (macrolet ((one (x) x))
     (return (one ~(s20-val)))))
@@ -2608,11 +2604,11 @@ map=2
 ; above two arguments, so the two units together cover both of that macro's arms.
 (deftest s20-computed-arg-splice
   (try (check-source-exit "(import-use node)
-(defn s20-nums ():(raw Node) (return `(1 2 3 4)))
+(defn s20-nums ():(ptr Node) (return `(1 2 3 4)))
 (defn main ():i32 (return (macfoldr _+ 0 ~@(s20-nums))))
 " 10))
   (try (check-source-exit "(import-use node)
-(defn s20-nums2 ():(raw Node) (return `(1 2 3 4)))
+(defn s20-nums2 ():(ptr Node) (return `(1 2 3 4)))
 (defn main ():i32 (return (+ ~@(s20-nums2))))
 " 10))
   (return (ok)))
@@ -2622,10 +2618,10 @@ map=2
 ; sees is four arguments and not one list.
 (deftest s20-computed-arg-splice-rest-macro
   (try (check-source-exit "(import-use node)
-(defn s20-nums3 ():(raw Node) (return `(1 2 3 4)))
+(defn s20-nums3 ():(ptr Node) (return `(1 2 3 4)))
 (defmacro s20-count (:rest args)
-  (let ((acc (raw Node)) `0
-        (a (raw Node)) args)
+  (let ((acc (ptr Node)) `0
+        (a (ptr Node)) args)
     (while (> (ast-len a) 0) (set! acc `(_+ 1 ~acc)) (set! a (ast-rest a)))
     acc))
 (defn main ():i32 (return (s20-count ~@(s20-nums3))))
@@ -2636,11 +2632,11 @@ map=2
 ; args is its unit, so 7 says the argument list really is empty.
 (deftest s20-computed-arg-splice-empty
   (try (check-source-exit "(import-use node)
-(defn s20-nothing ():(raw Node) (return null))
+(defn s20-nothing ():(ptr Node) (return null))
 (defn main ():i32 (return (macfoldr _+ 7 ~@(s20-nothing))))
 " 7))
   (try (check-source-exit "(import-use node)
-(defn s20-nothing2 ():(raw Node) (return null))
+(defn s20-nothing2 ():(ptr Node) (return null))
 (defmacro s20-sum (:rest args) `(macfoldr _+ 100 ~@args))
 (defn main ():i32 (return (s20-sum ~@(s20-nothing2))))
 " 100))
@@ -2651,8 +2647,8 @@ map=2
 ; arity check rejects the call. 1+2+3+4+5.
 (deftest s20-computed-arg-splice-mixed
   (try (check-source-exit "(import-use node)
-(defn s20-mid ():(raw Node) (return `(2 3)))
-(defn s20-one ():(raw Node) (return `4))
+(defn s20-mid ():(ptr Node) (return `(2 3)))
+(defn s20-one ():(ptr Node) (return `4))
 (defmacro s20-five (a b c d e) `(_+ ~a (_+ ~b (_+ ~c (_+ ~d ~e)))))
 (defn main ():i32 (return (s20-five 1 ~@(s20-mid) ~(s20-one) 5)))
 " 15)))
@@ -2661,7 +2657,7 @@ map=2
 ; §4.4 asked for and C2 made for `~`.
 (deftest s20-computed-arg-splice-macrolet
   (try (check-source-exit "(import-use node)
-(defn s20-pair ():(raw Node) (return `(6 7)))
+(defn s20-pair ():(ptr Node) (return `(6 7)))
 (defn main ():i32
   (macrolet ((s20-mul (a b) `(_* ~a ~b)))
     (return (s20-mul ~@(s20-pair)))))
@@ -2679,11 +2675,11 @@ map=2
 (defn main ():i32 (return (s20-double)))
 " 42))
   (try (check-source-exit "(import-use node)
-(defn s20-range ():(raw Node)
-  (let ((acc (raw Node)) null
+(defn s20-range ():(ptr Node)
+  (let ((acc (ptr Node)) null
         i:i64 4)
     (while (> i 0)
-      (set! acc (as raw:Node (node-cons (as raw:Node (node-int i)) acc 0)))
+      (set! acc (as ptr:Node (node-cons (as ptr:Node (node-int i)) acc 0)))
       (set! i (- i 1)))
     (return acc)))
 (defn main ():i32 (return (macfoldr _+ 0 ~@(s20-range))))
@@ -2723,14 +2719,14 @@ map=2
 (defstruct Holder u:(union as-int:i64 as-f:f64))
 (defn by-val (o:Outer):i32 (return (deref (ref &o 'n))))
 (defn main ():i32
-  (let (o:ptr:Outer (alloca Outer)
-        h:ptr:Holder (alloca Holder))
+  (let (o:&Outer (alloca Outer)
+        h:&Holder (alloca Holder))
     (set! (deref (ref o 'n)) 5)
     (set! (deref (ref (ref o 'p) 'a)) 6)
     (set! (aref (ref o 'cells) 1) 7)
     (set! (deref (ref (ref h 'u) 'as-int)) 8)
-    (let (c:ptr:i32 (ref o 'cells)
-          n:i32 5 q:ptr:i32 &n)
+    (let (c:&i32 (ref o 'cells)
+          n:i32 5 q:&i32 &n)
       (printf \"%d %d %d %lld %d %d %d\\n\"
               (deref (ref o 'n)) (deref (ref (ref o 'p) 'a))
               (aref c 1) (deref (ref (ref h 'u) 'as-int))
@@ -2747,11 +2743,11 @@ map=2
 (deftest s16-ref-2arg-node-type
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
 (defstruct Pt x:i32 y:i32)
-(defn takes (q:ptr:i32):i32 (return (deref q)))
+(defn takes (q:&i32):i32 (return (deref q)))
 (defn main ():i32
-  (let (p:ptr:Pt (alloca Pt))
+  (let (p:&Pt (alloca Pt))
     (set! (p 'x) 3)
-    (let (q:ptr:i32 (ref p 'x))
+    (let (q:&i32 (ref p 'x))
       (printf \"%d %d\\n\" (takes (ref p 'x)) (deref q))))
   (return 0))
 ")))
@@ -2765,15 +2761,15 @@ map=2
 (defn f (p:&Pt):i32 (return (. p 'x)))
 " 2 "'.' was retired in Stage 16: use 'get' -- (get p 'field), or head position (p 'field)"))
   (try (check-place-refused "(defstruct Pt x:i32)
-(defn f (p:&Pt):ptr:i32 (return (.& p 'x)))
+(defn f (p:&Pt):&i32 (return (.& p 'x)))
 " 2 "'.&' was retired in Stage 16: use the 2-argument 'ref' -- (ref p 'field)"))
   (try (check-place-refused "(defn . (a:i32):i32 (return a))
 " 1 "'.' already names a special form"))
   (try (check-place-refused "(defstruct Pt x:i32)
-(defn f (p:&Pt):ptr:i32 (return (ref p 'z)))
+(defn f (p:&Pt):&i32 (return (ref p 'z)))
 " 2 "ref: no field 'z' on struct 'Pt'"))
   (try (check-place-refused "(defstruct Pt x:i32)
-(defn f (p:&Pt):ptr:i32 (return (ref p 'x 1)))
+(defn f (p:&Pt):&i32 (return (ref p 'x 1)))
 " 2 "ref expects 1 or 2 args")))
 
 ; One program varying one line: a member place in each of its three spellings,
@@ -2786,7 +2782,7 @@ map=2
 ; that should agree agree byte for byte.
 (defn place-ir (write:StrView):!String
   (let (src:String (str "(defstruct Pt x:i32 y:i32)
-(defn f (p:ptr:Pt):i32 " write " (return (_get p 'y)))
+(defn f (p:&Pt):i32 " write " (return (_get p 'y)))
 ")
         ir:String (try (source-ir (string-as-view &src))))
     (drop &src)
@@ -2797,8 +2793,8 @@ map=2
 (defstruct Inner a:i32)
 (defstruct Pt x:i32 y:i32 in:Inner cells:(array i32 3))
 (defn main ():i32
-  (let (p:ptr:Pt (alloca Pt)
-        buf:ptr:i32 (alloca i32 4)
+  (let (p:&Pt (alloca Pt)
+        buf:&i32 (alloca i32 4)
         n:i32 0)
     (set! n 7)
     (set! (p 'x) 1)
@@ -2835,9 +2831,9 @@ map=2
   (try (check-place-refused "(defstruct Pt x:i32)
 (defn f (p:&Pt):i32 (.set! p 'x 1) (return 0))
 " 2 "'.set!' was retired in Stage 16: set! takes a place -- (set! (p 'field) v)"))
-  (try (check-place-refused "(defn f (p:ptr:i32):i32 (ptr-set! p 1) (return 0))
+  (try (check-place-refused "(defn f (p:&i32):i32 (ptr-set! p 1) (return 0))
 " 1 "'ptr-set!' was retired in Stage 16: set! takes a place -- (set! (deref p) v)"))
-  (try (check-place-refused "(defn f (a:ptr:i32):i32 (aset! a 0 1) (return 0))
+  (try (check-place-refused "(defn f (a:&i32):i32 (aset! a 0 1) (return 0))
 " 1 "'aset!' was retired in Stage 16: set! takes a place -- (set! (aref a i) v)"))
   (try (check-place-refused "(defn aset! (a:i32):i32 (return a))
 " 1 "'aset!' already names a special form"))
@@ -2900,7 +2896,7 @@ map=2
   (set! (self 'n) (+ (_get self 'n) x))
   (return (_get self 'n)))
 (defn main ():i32
-  (let (b:ptr:Box (alloca Box) k:i32 0)
+  (let (b:&Box (alloca Box) k:i32 0)
     (set! (b 'n) 1) (set! (b 'hits) 0)
     (let (r:i32 (set! (b k) 10))
       (printf \"%d %d %d\\n\" r (_get b 'n) (_get b 'hits))))
@@ -2989,7 +2985,7 @@ map=2
 ; one blanket "must be scalar literals" message; the collection-literal-variables
 ; item removed that refusal, so each now fails for its own reason — and those
 ; reasons are what the shape check always meant. A quoted LIST or INT is
-; `(raw Node)`, not the `(ref Node)` a quoted symbol lowers to, so nullability
+; `(ptr Node)`, not the `(ref Node)` a quoted symbol lowers to, so nullability
 ; refuses it; a bare symbol is a variable reference, now admitted as an element,
 ; so it reports the missing variable instead. Losing the blanket message is the
 ; feature; losing the refusals would be the bug.
@@ -3015,12 +3011,12 @@ map=2
 
 (deftest s16-symlit-refused-qlist
   (try (check-symlit "#{'(a b) '(c d)}"
-                     "argument: raw pointer where non-null (ref ...) is required"))
+                     "argument: unchecked pointer where non-null (ref ...) is required"))
   (return (ok)))
 
 (deftest s16-symlit-refused-qint
   (try (check-symlit "#{'1 '2}"
-                     "argument: raw pointer where non-null (ref ...) is required"))
+                     "argument: unchecked pointer where non-null (ref ...) is required"))
   (return (ok)))
 
 (deftest s16-symlit-refused-bare
@@ -3083,13 +3079,13 @@ map=2
 (deftest s16-quoted-list-stays-raw
   (try (check-place-refused "(import-use node)
 (defn main ():i32 (let (l:(ref Node) (quote (a b))) (return 0)))
-" 2 "raw pointer where non-null (ref ...) is required"))
+" 2 "unchecked pointer where non-null (ref ...) is required"))
   (return (ok)))
 
 ; Non-null narrows into a nullable slot, so pre-Stage-16 spellings still build.
 (deftest s16-quoted-symbol-still-fits-raw
   (try (check-source-accepts "(import-use node)
-(defn main ():i32 (let (l:(raw Node) (quote a)) (return 0)))
+(defn main ():i32 (let (l:(ptr Node) (quote a)) (return 0)))
 "))
   (return (ok)))
 
@@ -3105,7 +3101,7 @@ map=2
 (import-use node)
 (defstruct Pt x:i32 y:i32)
 (defn main ():i32
-  (let (p:ptr:Pt (alloca Pt))
+  (let (p:&Pt (alloca Pt))
     (set! (p 'x) 1)
     (set! (deref (ref p 'y)) 2)
     (let (sel:ptr (quote y))
@@ -3135,7 +3131,7 @@ map=2
 (defn f (p:&Pt):i32 (set! (p x) 1) (return 0))
 " 2 ".set!: field name must be a quoted selector -- write 'x"))
   (try (check-place-refused "(defstruct Pt x:i32)
-(defn f (p:&Pt):i32 (let (q:ptr:i32 (ref p x)) 0) (return 0))
+(defn f (p:&Pt):i32 (let (q:&i32 (ref p x)) 0) (return 0))
 " 2 "ref: field name must be a quoted selector -- write 'x"))
   (try (check-place-refused "(defstruct Pt x:i32)
 (defn f (p:&Pt):i32 (let (v:i32 (_get p x)) 0) (return 0))
@@ -3244,7 +3240,7 @@ map=2
 ; half is what the shell's comment claimed and its exit-status check could not
 ; see.
 (deftest s16-node-type-survives-without-runtime
-  (let (c:Compiled (try (compile-source "(defn f ((n (raw Node))):i32 (return (n 'kind)))
+  (let (c:Compiled (try (compile-source "(defn f ((n (ptr Node))):i32 (return (n 'kind)))
 (defn main ():i32 (return 0))
 "))
         iv:StrView (compiled-ir &c))
@@ -3325,7 +3321,7 @@ map=2
 (defn takes (b:(ref SA)):i32 (return (b 'x)))
 (defn wild (p:ptr):i32 (return 0))
 (defn main ():i32
-  (let (a:ptr:SA (SA 7) q:ptr (unsafe/cast ptr (SA 1)))
+  (let (a:&SA (SA 7) q:ptr (unsafe/cast ptr (SA 1)))
     (let (r:(ref SA) (unsafe/cast (ref SA) q) w:ptr a)
       (return (+ (takes a) (+ (wild a) (takes r)))))))
 "))
@@ -3416,7 +3412,7 @@ map=2
 " 3 ".set!: the receiver is a temporary struct value, so it has no address -- bind it to a name first"))
   (try (check-place-refused "(defstruct Pt x:i64 y:i64)
 (defn mk (n:i64):Pt (return (Pt n n)))
-(defn leak ():ptr:i64 (return (ref (mk 1) 'x)))
+(defn leak ():&i64 (return (ref (mk 1) 'x)))
 (defn main ():i32 (return 0))
 " 3 "ref: the receiver is a temporary struct value, so it has no address -- bind it to a name first"))
   ; A non-struct receiver is still refused, and the message names BOTH legal
@@ -3458,10 +3454,7 @@ map=2
   (return (ok)))
 
 ; The whole builtin set, because it had drifted from `parse-type-name` three
-; times (__fnty_N, ptr:X, and `Char`). `raw` is included: the shell listed it,
-; said it was the point of listing it, then `continue`d past it before writing
-; a file — so the one name singled out was the one never exercised, and it
-; stamps and parses like the rest.
+; times (__fnty_N, ptr:X, and `Char`).
 (deftest builtin-tyname-resolvable
   (try (check-tyname-stamps "Char"))
   (try (check-tyname-stamps "usize"))
@@ -3473,7 +3466,6 @@ map=2
   (try (check-tyname-stamps "ptr"))
   (try (check-tyname-stamps "CStr"))
   (try (check-tyname-stamps "Err"))
-  (try (check-tyname-stamps "raw"))
   (return (ok)))
 
 ; keyword-markers.md §7, follow-up 1: the two signature-registration sites
@@ -3545,7 +3537,7 @@ map=2
 (import-use node)
 (defn caller ():i64 (return (sum 1 2 3 4)))
 (defn sum (:rest args:i64):i64
-  (let (lst:raw:Node (unsafe/cast raw:Node args)
+  (let (lst:ptr:Node (unsafe/cast ptr:Node args)
         total:i64 0)
     (dotimes (i (node-len lst))
       (set! total (+ total (unsafe/cast i64 (node-at lst i)))))

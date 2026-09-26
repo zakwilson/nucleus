@@ -157,11 +157,11 @@ bolted onto some other value.
 A `defunion` with an `ok` arm and an `err` arm is eliminated as a Result by
 `match`/`try`/`unwrap`/`unwrap-or` **structurally** — it need not be a
 `(Result T E)` template instance. `lib/read.nuc`'s `ReadResult` relies on
-this: a template instance stamped over a `raw` (nullable) pointer payload
+this: a template instance stamped over a nullable pointer payload
 loses that pointer kind (`type-spelling` re-spells every stamped pointer as
-non-null `ref:`), so `(Result raw:Node ReadError)` would refuse to hold a
+non-null `ref:`), so `(Result ?&Node ReadError)` would refuse to hold a
 null node, and `ReadResult` is a hand-written `(defunion ReadResult (ok
-v:raw:Node) (err e:ReadError))` instead. See [Unions and tagged
+v:?&Node) (err e:ReadError))` instead. See [Unions and tagged
 sums](structs-unions.md#unions-and-tagged-sums).
 
 ## `!void` — a Result with no `ok` payload

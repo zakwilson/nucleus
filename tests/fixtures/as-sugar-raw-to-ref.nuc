@@ -6,7 +6,7 @@
 
 (defn use-ref (r:ref:Rec):i32 (return (r 'k)))
 
-(defn launder (p:raw:Rec):i32
+(defn launder (p:ptr:Rec):i32
   (return (use-ref p:ref:Rec)))
 
 (defn main ():i32

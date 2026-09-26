@@ -43,18 +43,17 @@
   (set! n (bit-and (+ n 7) -8))
   (when (> (+ g-arena-used n) g-arena-cap)
     (arena-grow n))
-  (let (p:ptr (unsafe/ptr+ (as &i8 g-arena) g-arena-used))
+  (let (p:ptr (unsafe/ptr+ (unsafe/cast &i8 g-arena) g-arena-used))
     (set! g-arena-used (+ g-arena-used n))
     (memset p 0 n)
     (return p)))
 
 ; (new T) — allocate one zeroed T from the arena, typed (ref T).
-;   (new Scope)  =>  (cast (ref Scope) (arena-alloc (sizeof Scope)))
-; arena-alloc zero-fills and aborts on exhaustion (never returns null), so the
-; result is a valid, zero-initialised T* — hence the non-null (ref T). Collapses
-; the cast + sizeof boilerplate for the common "allocate a single struct" case.
+;   (new Scope)  =>  (unsafe/cast &Scope (arena-alloc (sizeof Scope)))
+; arena-alloc aborts on exhaustion rather than return null, which is the
+; assertion the cast makes.
 (defmacro new (T)
-  `(as &~T (arena-alloc (sizeof ~T))))
+  `(unsafe/cast &~T (arena-alloc (sizeof ~T))))
 
 ; `n` bytes copied into the arena, so a borrowed buffer's contents can outlive
 ; it. Was `arena-strndup`, which also wrote a NUL its one caller never read.

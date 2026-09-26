@@ -14,7 +14,7 @@ typedef struct Node {
     int32_t line;
     int64_t i;
     struct Symbol s;
-    void* elems;
+    struct Node** elems;
     int32_t len;
     int32_t cap;
 } Node;

@@ -49,7 +49,7 @@
   ; TF-6: `run` takes a `ptr` and `data` supplies it, so a test can come from a
   ; TABLE as well as from a `deftest`. A `deftest` ignores both.
   run:(fn !void)(ptr)
-  data:raw)
+  data:ptr)
 
 ; Process-lifetime state, so it is built through the arena: its `drop` is a
 ; no-op and nothing here is ever torn down.
@@ -63,7 +63,7 @@
 
 ; Register a test by name. The data-driven entry point: a suite that reads its
 ; cases from a table calls this once per row, before `test-main`.
-(defn test-add (name:StrView file:StrView line:i32 (f (fn !void) (ptr)) data:raw):void
+(defn test-add (name:StrView file:StrView line:i32 (f (fn !void) (ptr)) data:ptr):void
   (let (tc:&TestCase (alloca TestCase))
     (set! (tc 'name) (symbol-intern name))
     (set! (tc 'file) file)
@@ -74,7 +74,7 @@
 
 ; Called by `deftest`'s expansion from a global initializer, which is why it
 ; returns an `i32` -- it needs a value for the slot it is initialising.
-(defn test-register (name:raw:Node file:StrView line:i32 (f (fn !void) (ptr))):i32
+(defn test-register (name:&Node file:StrView line:i32 (f (fn !void) (ptr))):i32
   (test-add (symbol-as-view (name 's)) file line f null)
   (return 0))
 
@@ -357,12 +357,12 @@
   notes:&(Vector StrView))
 
 ; The operands of the `(key …)` entry named `name`, or null.
-(defn diag-entry (body:raw:Node name:StrView):raw:Node
-  (let (cur:raw:Node body)
+(defn diag-entry (body:?&Node name:StrView):?&Node
+  (let (cur:?&Node body)
     (while (> (node-len cur) 0)
-      (let (e:raw:Node (node-first cur))
+      (let (e:?&Node (node-first cur))
         (when (and (!= e null) (= (e 'kind) NODE-LIST))
-          (let (h:raw:Node (node-first e))
+          (let (h:?&Node (node-first e))
             (when (and (!= h null) (= (h 'kind) NODE-SYM)
                        (= (symbol-as-view (h 's)) name))
               (return (node-rest e))))))
@@ -371,33 +371,33 @@
 
 ; A kind check, not a null check: `Node.s` is null on an INT or a FLOAT, and
 ; `symbol-as-view` of null is a segfault, not an empty view.
-(defn diag-text (n:raw:Node):StrView
+(defn diag-text (n:?&Node):StrView
   (when (= n null) (return ""))
   (let (k:i32 (n 'kind))
     (when (and (!= k NODE-SYM) (!= k NODE-STR) (!= k NODE-KEYWORD)) (return "")))
   (return (symbol-as-view (n 's))))
 
-(defn diag-of-node (form:raw:Node):!Diagnostic
+(defn diag-of-node (form:?&Node):!Diagnostic
   (when (or (= form null) (!= (form 'kind) NODE-LIST))
     (return (err! test-bad-args)))
-  (let (body:raw:Node (node-rest form)
+  (let (body:?&Node (node-rest form)
         d:&Diagnostic (alloca Diagnostic)
-        sev:raw:Node (diag-entry body "severity")
-        file:raw:Node (diag-entry body "file")
-        line:raw:Node (diag-entry body "line")
-        msg:raw:Node (diag-entry body "message")
-        notes:raw:Node (diag-entry body "notes"))
+        sev:?&Node (diag-entry body "severity")
+        file:?&Node (diag-entry body "file")
+        line:?&Node (diag-entry body "line")
+        msg:?&Node (diag-entry body "message")
+        notes:?&Node (diag-entry body "notes"))
     (when (or (= sev null) (= file null) (= line null) (= msg null))
       (return (err! test-bad-args)))
-    (let (sn:raw:Node (node-first sev)
-          ln:raw:Node (node-first line))
+    (let (sn:?&Node (node-first sev)
+          ln:?&Node (node-first line))
       (when (or (= sn null) (= ln null)) (return (err! test-bad-args)))
       (set! (d 'severity) (sn 's))
       (set! (d 'line) (unsafe/cast i32 (ln 'i))))
     (set! (d 'file) (diag-text (node-first file)))
     (set! (d 'message) (diag-text (node-first msg)))
     (set! (d 'notes) (vector-new-in (arena-allocator &g-test-alloc)))
-    (let (cur:raw:Node notes)
+    (let (cur:?&Node notes)
       (while (> (node-len cur) 0)
         (conj (d 'notes) (diag-text (node-first cur)))
         (set! cur (node-rest cur))))
@@ -413,7 +413,7 @@
     (while (not (lines-iter-done &it))
       (let (line:StrView (lines-iter-next &it))
         (when (strview-has-prefix line "(diagnostic ")
-          (let (forms:raw:Node (try (read-all line)))
+          (let (forms:?&Node (try (read-all line)))
             (conj &out (try (diag-of-node (node-first forms))))))))
     (return (ok out))))
 
@@ -715,7 +715,7 @@
         shard:usize 0
         nshards:usize 1)
     (while (< i argc)
-      (let (a:StrView (strview-from-cstr (as CStr (aref (as &ptr argv) i))))
+      (let (a:StrView (strview-from-cstr (as CStr (aref (unsafe/cast &ptr argv) i))))
         (cond
           (= a "--no-skip") (set! g-test-no-skip true)
           (= a "--list")    (set! mode "list")
@@ -726,7 +726,7 @@
                 (return 2))
               (set! mode "run")
               (set! i (+ i 1))
-              (set! want (strview-from-cstr (as CStr (aref (as &ptr argv) i)))))
+              (set! want (strview-from-cstr (as CStr (aref (unsafe/cast &ptr argv) i)))))
           (= a "--shard")
             (do
               (when (>= (+ i 1) argc)
@@ -734,7 +734,7 @@
                 (return 2))
               (set! i (+ i 1))
               (match (test-parse-shard
-                       (strview-from-cstr (as CStr (aref (as &ptr argv) i)))
+                       (strview-from-cstr (as CStr (aref (unsafe/cast &ptr argv) i)))
                        &shard &nshards)
                 (ok 0)
                 ((err e)

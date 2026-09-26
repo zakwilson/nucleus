@@ -219,7 +219,7 @@
         pv:StrView (string-as-view &p)
         c:Compiled (try (cflag-emit (string-as-view &flag) "" pv)))
     (when (c 'ok?) (fail! "the compile must fail"))
-    (try (check-line (string-as-view (ref c 'raw)) (string-as-view &want)))
+    (try (check-line (string-as-view (ref c 'raw-text)) (string-as-view &want)))
     (try (check-error-at (ref c 'diags) pv 1
            "c-include: failed to preprocess 'no-such-header-s21.h'"))
     (drop &c) (drop &p) (drop &want) (drop &flag) (drop &inc))
@@ -279,7 +279,7 @@
   (let (p:String (try (test-write-file "empty.nuc" "(defn main ():i32 (return 0))\n"))
         c:Compiled (try (cflag-emit "--cflag=" "" (string-as-view &p))))
     (when (!= (c 'exit) 2) (fail! "expected exit 2, got " (as i64 (c 'exit))))
-    (try (check-contains (string-as-view (ref c 'raw)) "--cflag= requires an argument"))
+    (try (check-contains (string-as-view (ref c 'raw-text)) "--cflag= requires an argument"))
     (drop &c) (drop &p))
   (return (ok)))
 

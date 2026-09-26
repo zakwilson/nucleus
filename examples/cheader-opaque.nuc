@@ -17,11 +17,11 @@
   (return (fprintf f "%s\n" s)))
 
 ; A never-defined tag and a typedef alias of one, both pointer-only.
-(defn handles-null (p:raw:CHOpaque h:raw:CHHandle):i32
+(defn handles-null (p:?&CHOpaque h:?&CHHandle):i32
   (return (+ (if (= p null) 1 0) (if (= h null) 10 0))))
 
 (defn main ():i32
-  (let (f:&FILE (tmpfile))
+  (let (f:?&FILE (tmpfile))
     (when (= f null)
       (printf "tmpfile failed\n")
       (return 1))

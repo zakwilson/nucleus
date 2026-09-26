@@ -25,13 +25,13 @@
     (drop &hello))
 
   ; An argument the shell would have mangled: quotes, a space, and a $.
-  (let (raw:Command (command "sh"))
-    (command-arg &raw "-c")
-    (command-arg &raw "printf '%s\n' \"$1\"")
-    (command-arg &raw "sh")
-    (command-arg &raw "a \"quoted\" $ARG")
-    (show "argv:" &raw)
-    (drop &raw))
+  (let (sh-cmd:Command (command "sh"))
+    (command-arg &sh-cmd "-c")
+    (command-arg &sh-cmd "printf '%s\n' \"$1\"")
+    (command-arg &sh-cmd "sh")
+    (command-arg &sh-cmd "a \"quoted\" $ARG")
+    (show "argv:" &sh-cmd)
+    (drop &sh-cmd))
 
   ; Failure is a value, not a message on stderr.
   (let (bad:Command (command "sh"))

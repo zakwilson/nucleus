@@ -39,7 +39,6 @@
     (set! (f 'fd) fd)
     (return @f)))
 
-; NOTE: Drop's receiver is `(ptr Self)`, not `(ref Self)`.
 (extend File Drop)
 (defn drop (self:&File):void
   (when (>= (self 'fd) 0)
@@ -194,7 +193,7 @@
 (defn dir-name (self:&DirEntries i:usize):StrView
   (let (v:StrView (string-as-view (ref self 'buf)))
     (return (strview-from-cstr
-              (as CStr (unsafe/ptr+ (as &i8 (as ptr (v 'data)))
+              (as CStr (unsafe/ptr+ (unsafe/cast &i8 (as ptr (v 'data)))
                                     (as i64 (invoke (ref self 'offs) i))))))))
 
 (extend DirEntries Drop)
@@ -254,7 +253,7 @@
       (vector-init (ref e 'offs))
       (while (!= ent null)
         (let (nm:StrView (strview-from-cstr
-                           (as CStr (unsafe/ptr+ (as &i8 ent) DIRENT-D-NAME-OFFSET))))
+                           (as CStr (unsafe/ptr+ (unsafe/cast &i8 ent) DIRENT-D-NAME-OFFSET))))
           (if (= nm ".")
             (set! seen (bit-or seen 1))
             (if (= nm "..")

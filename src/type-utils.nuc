@@ -47,12 +47,12 @@
 ; The opaque StructDef behind `t`, or null. Only a by-value struct/union type
 ; qualifies: a POINTER to an opaque type is exactly what is legal, and its own
 ; kind is TY-PTR, so it never matches here.
-(defn opaque-sdef-of (t:raw:Type):(raw StructDef)
+(defn opaque-sdef-of (t:?&Type):?&StructDef
   (when (= t null) (return null))
-  (let (tt:raw:Type t)
+  (let (tt:?&Type t)
     (when (and (!= (tt 'kind) TY-STRUCT) (!= (tt 'kind) TY-UNION)) (return null))
     (when (= (tt 'sdef) null) (return null))
-    (let (sd:(raw StructDef) (tt 'sdef))
+    (let (sd:(ptr StructDef) (tt 'sdef))
       (when (= (sd 'opaque) 0) (return null))
       (return sd))))
 
@@ -60,8 +60,8 @@
 ; use ("sizeof", "alloca", "field access", "defn parameter", …) so the message
 ; says which rule was broken as well as which type broke it. No-op for every
 ; non-opaque type, so this is free to call from any type-consuming site.
-(defn reject-opaque-type (t:raw:Type line:i32 what:StrView):void
-  (let (sd:(raw StructDef) (opaque-sdef-of t))
+(defn reject-opaque-type (t:?&Type line:i32 what:StrView):void
+  (let (sd:?&StructDef (opaque-sdef-of t))
     (when (!= sd null)
       (let (loc:StrView (fstr (sd 'src-file) ":" (sd 'src-line)))
         (die-at line
@@ -103,7 +103,7 @@
   ; an `icmp`. `file`/`hdr` are Symbols too — both are source paths (C7-5).
   name:Symbol
   ; The resolved type, or null = "known C type name, no Nucleus representation".
-  (ty (raw Type))
+  (ty (ptr Type))
   ; Where the typedef was declared, for the L5 diagnostics.
   file:Symbol
   line:i32
@@ -114,9 +114,9 @@
   ; 1 = written by the signature prescan, which resolves types with every C
   ; struct still opaque. A real import overwrites it; see c-typedef-record.
   provisional:i32
-  (next (raw CTypedef)))
+  (next ?&CTypedef))
 
-(defvar (g-cheader-typedefs (raw CTypedef)))
+(defvar (g-cheader-typedefs ?&CTypedef))
 ; Armed for the duration of `cheader-prescan-opaque` (src/cheader.nuc). A global
 ; rather than a parameter because the prescan reaches c-typedef-record through
 ; the whole real declaration parser, which has no business knowing which pass it
@@ -133,7 +133,7 @@
 (defn c-typedef-find (name:Symbol):?&CTypedef
   (let (cur:ptr g-cheader-typedefs)
     (while (!= cur null)
-      (let (e:ptr:CTypedef (as &CTypedef cur))
+      (let (e:&CTypedef (unsafe/cast &CTypedef cur))
         (when (= (e 'name) name) (return e))
         (set! cur (e 'next)))))
   (return null))
@@ -152,22 +152,22 @@
     (do
       (when (or (= (prev 'provisional) 0) (!= g-cheader-typedef-provisional 0))
         (return))
-      (set! (prev 'ty) (as raw:Type ty))
+      (set! (prev 'ty) (as ?&Type ty))
       (set! (prev 'file) file)
       (set! (prev 'line) line)
       (set! (prev 'hdr) g-cheader-import-header)
       (set! (prev 'provisional) 0)
       (return))
     0)
-  (let (e:ptr:CTypedef (new CTypedef))
+  (let (e:&CTypedef (new CTypedef))
     (set! (e 'name) name)
-    (set! (e 'ty) (as raw:Type ty))
+    (set! (e 'ty) (as ?&Type ty))
     (set! (e 'file) file)
     (set! (e 'line) line)
     (set! (e 'hdr) g-cheader-import-header)
     (set! (e 'provisional) g-cheader-typedef-provisional)
     (set! (e 'next) g-cheader-typedefs)
-    (set! g-cheader-typedefs (as raw:CTypedef e))))
+    (set! g-cheader-typedefs e)))
 
 ; ---- Stage 15 W1d: a layout that has not been emitted yet ------------------
 ; W1d makes a circular `(import)` legal — `do-import` skips the re-entry rather
@@ -190,7 +190,7 @@
 ; above and is left to it. The `g-import-cycles` gate makes the whole check dead
 ; code for any unit without a skipped cycle — i.e. for every program that
 ; compiled before W1d, since a cycle was a hard error.
-(defn sdef-layout-pending (sd:(raw StructDef)):i32
+(defn sdef-layout-pending (sd:?&StructDef):i32
   (when (= g-import-cycles null) (return 0))
   (when (= sd null) (return 0))
   (when (!= (sd 'opaque) 0) (return 0))
@@ -204,45 +204,45 @@
 
 ; Is `sd`'s definition present in the module currently being assembled? Outside
 ; the REPL there is one epoch and no preamble, so this is exactly `emitted`.
-(defn sdef-in-module (sd:(raw StructDef)):i32
+(defn sdef-in-module (sd:?&StructDef):i32
   (when (= sd null) (return 0))
   (when (!= (sd 'in-preamble) 0) (return 1))
   (when (= (sd 'emit-epoch) g-module-epoch) (return 1))
   (return 0))
 
 ; Record that `sd`'s definition line was just written into `out`.
-(defn sdef-note-emitted (sd:(raw StructDef) (out (raw String))):void
+(defn sdef-note-emitted (sd:(ptr StructDef) (out ?&String)):void
   (set! (sd 'emitted) 1)
   (set! (sd 'emit-epoch) g-module-epoch)
   ; Only the type buffer is carried into the REPL preamble at module close; a
   ; line in a def or compile-time buffer dies with its module.
   (set! (sd 'in-type-buf) (if (= (as ptr out) (as ptr &g-type-stream)) 1 0)))
 
-(defn cycle-pending-sdef (t:raw:Type):(raw StructDef)
+(defn cycle-pending-sdef (t:?&Type):?&StructDef
   (when (= g-import-cycles null) (return null))
   (when (= t null) (return null))
-  (let (tt:raw:Type t)
+  (let (tt:?&Type t)
     (when (and (!= (tt 'kind) TY-STRUCT) (!= (tt 'kind) TY-UNION)) (return null))
     (when (= (tt 'sdef) null) (return null))
-    (let (sd:(raw StructDef) (tt 'sdef))
+    (let (sd:?&StructDef (tt 'sdef))
       (when (= (sdef-layout-pending sd) 0) (return null))
       (return sd))))
 
 ; Reject a by-value use of a type whose layout the cycle has not produced yet.
 ; Mirrors reject-opaque-type exactly — same `what` vocabulary, same no-op-for-
 ; everything-else contract — so the two can sit side by side at each site.
-(defn reject-cycle-pending-layout (t:raw:Type line:i32 what:StrView):void
-  (let (sd:(raw StructDef) (cycle-pending-sdef t))
+(defn reject-cycle-pending-layout (t:?&Type line:i32 what:StrView):void
+  (let (sd:?&StructDef (cycle-pending-sdef t))
     (when (!= sd null)
       (die-at line (cycle-layout-message sd what)))))
 
 ; The same rejection where the caller already holds the StructDef (field access
 ; and struct-literal sites, which resolve the struct before they resolve a type).
-(defn reject-cycle-pending-sdef (sd:(raw StructDef) line:i32 what:StrView):void
+(defn reject-cycle-pending-sdef (sd:?&StructDef line:i32 what:StrView):void
   (when (!= (sdef-layout-pending sd) 0)
     (die-at line (cycle-layout-message sd what))))
 
-(defn type-to-ir (t:raw:Type):StrView
+(defn type-to-ir (t:?&Type):StrView
   ; W3a backstop: an opaque type has no LLVM definition, so printing `%Foo` here
   ; would produce IR the LLVM parser rejects with no source location at all.
   ; Every site that can reasonably name a by-value opaque type checks first with
@@ -250,7 +250,7 @@
   ; params + return / defstruct fields); this catches the remainder — a `let`
   ; binding, a store, a .nuch declare — using the ambient innermost-form line.
   (reject-opaque-type t g-form-line "type")
-  (let (tt:raw:Type t)
+  (let (tt:ptr:Type t)
     (case (tt 'kind)
       TY-VOID   (return "void")
       ; bool still lowers to i1: the Stage 16 divorce is source-level, so no
@@ -303,7 +303,7 @@
 
 ; Build the `(array T N)` type. The single constructor, so `arr-len` can never
 ; be left at 0 by a caller that forgot it.
-(defn array-type (elem:(raw Type) n:i32):&Type
+(defn array-type (elem:?&Type n:i32):&Type
   (let (t:&Type (make-type TY-ARRAY))
     (set! (t 'elem) elem)
     (set! (t 'arr-len) n)
@@ -315,20 +315,20 @@
 ; An array is a *storage* type: it exists in a `defvar` slot and in a
 ; `defstruct` field, and nowhere else. Read in any value position it yields the
 ; ADDRESS of element 0, typed `(ref T)` — C's array-to-pointer decay. `(ref …)`
-; and not `(raw …)` because the address of a global or of a field inside a live
+; and not `(ptr …)` because the address of a global or of a field inside a live
 ; struct is never null, which is what lets `(defvar g:ptr:T (array T …))` (§2.7's
 ; `@g = global ptr @g.data`) satisfy the Phase-F non-null contract with no
 ; runtime code.
 ;
 ; Identity for every other kind, so callers can apply it unconditionally.
-(defn array-decay (t:(raw Type)):(raw Type)
+(defn array-decay (t:(ptr Type)):(ptr Type)
   (when (= t null) (return t))
-  (let (tt:(raw Type) t)
+  (let (tt:(ptr Type) t)
     (when (!= (tt 'kind) TY-ARRAY) (return t))
     (let (pt:&Type (make-type TY-PTR))
       (set! (pt 'elem) (tt 'elem))
       (set! (pt 'pkind) PTR-REF)
-      (return (as raw:Type pt)))))
+      (return pt))))
 
 ; The zero-value constant text for a global initializer slot of type `ty`.
 ; Three buckets, exactly as context/conventions.md's TY-PTR-vs-is-ptr-like note
@@ -348,7 +348,7 @@
 ; hex-float syntax for the bit-exact spelling in the meantime.
 (defn f64-bits (d:f64):i64
   (let (r:f64 d
-        p:ptr:f64 &r)
+        p:&f64 &r)
     (return (deref (unsafe/cast &i64 p)))))
 
 ; `0xK` is 4 hex digits of sign|exponent followed by 16 of the significand —
@@ -504,7 +504,7 @@
   (when (!= lo 0) (return 1))
   (if (!= (bit-and hi (u64-mask (- n 64))) 0) (return 1) (return 0)))
 
-(defn u128-set-bit (n:i64 out-hi:ptr:i64 out-lo:ptr:i64):void
+(defn u128-set-bit (n:i64 out-hi:&i64 out-lo:&i64):void
   (set! (aref out-hi 0) 0)
   (set! (aref out-lo 0) 0)
   (if (>= n 64)
@@ -514,8 +514,8 @@
 ; A C hex-float lexeme -> sign, the significand normalized so bit 127 is set
 ; (both limbs zero for a zero), the unbiased exponent OF THAT BIT, and whether
 ; a nonzero digit fell off the low end. Returns 0 when `lex` is not one.
-(defn hexfloat-parse (lex:StrView out-sign:ptr:i64 out-hi:ptr:i64 out-lo:ptr:i64
-                      out-exp:ptr:i64 out-sticky:ptr:i64):i32
+(defn hexfloat-parse (lex:StrView out-sign:&i64 out-hi:&i64 out-lo:&i64
+                      out-exp:&i64 out-sticky:&i64):i32
   (let (len:i64 (as i64 (lex 'len))
         i:i64 0
         sign:i64 0)
@@ -600,7 +600,7 @@
 ; significand with the leading bit included; every format but f80 drops it.
 (defn hexfloat-fit (hi:i64 lo:i64 sticky:i64 ue:i64
                     p:i64 emin:i64 emax:i64 bias:i64
-                    out-hi:ptr:i64 out-lo:ptr:i64):i64
+                    out-hi:&i64 out-lo:&i64):i64
   (set! (aref out-hi 0) 0)
   (set! (aref out-lo 0) 0)
   (when (and (= hi 0) (= lo 0)) (return 0))
@@ -673,8 +673,8 @@
                                  (as &i64 &ue)
                                  (as &i64 &sticky)) 0)
       (return (none)))
-    (let (rhp:ptr:i64 (as &i64 &rhi)
-          rlp:ptr:i64 (as &i64 &rlo))
+    (let (rhp:&i64 (as &i64 &rhi)
+          rlp:&i64 (as &i64 &rlo))
       (when (= tk TY-F16)
         (let (be:i64 (hexfloat-fit hi lo sticky ue 11 -14 15 15 rhp rlp))
           (return (some (fstr "0xH"
@@ -699,8 +699,8 @@
                         (hexu (bit-or (bit-shl sign 63)
                   (bit-or (bit-shl be 52) (bit-and rlo 4503599627370495))) 16))))))))
 
-(defn type-zero-const-ir (ty:(raw Type)):StrView
-  (let (tt:(raw Type) ty
+(defn type-zero-const-ir (ty:?&Type):StrView
+  (let (tt:(ptr Type) ty
         tk:i32 (tt 'kind))
     (when (!= (is-ptr-repr ty) 0) (return "null"))
     ; f32/f64 take the decimal spelling LLVM accepts for them; the three wide
@@ -717,9 +717,9 @@
 ; Refuse an `(array T N)` where only a first-class value type is meaningful.
 ; Backstop for the positions parse-type-from-node's g-array-ok gate cannot see
 ; because the Type arrives already parsed (the ABI classifier, a `set!` target).
-(defn reject-array-type (t:(raw Type) line:i32 what:StrView):void
+(defn reject-array-type (t:?&Type line:i32 what:StrView):void
   (when (= t null) (return))
-  (let (tt:(raw Type) t)
+  (let (tt:?&Type t)
   (when (= (tt 'kind) TY-ARRAY)
     (die-at line
       (fstr what
@@ -736,11 +736,11 @@
 ; compiler's own compilation → the new paths stay inert and the bootstrap is
 ; byte-identical. Identity is by the interned struct-name pointer, exactly how
 ; lookup-struct keys the registry.
-(defn type-is-strview (t:raw:Type):i32
+(defn type-is-strview (t:?&Type):i32
   (when (= t null) (return 0))
-  (let (tt:raw:Type t)
+  (let (tt:?&Type t)
     (when (!= (tt 'kind) TY-STRUCT) (return 0))
-    (let (sd:raw:StructDef (tt 'sdef))
+    (let (sd:?&StructDef (tt 'sdef))
       (when (= sd null) (return 0))
       (when (= (sd 'name) "StrView")
         (return 1))
@@ -756,8 +756,8 @@
 ; CStr literal did before the flip — a plain pointer. A genuine (materialized)
 ; StrView value (is-lit=0), whose `val` is a real first-class struct, is left
 ; untouched. Returns 1 if it collapsed the Val, else 0.
-(defn collapse-strlit-cstr (v:raw:Val):i32
-  (let (vv:raw:Val v)
+(defn collapse-strlit-cstr (v:?&Val):i32
+  (let (vv:ptr:Val v)
     (when (and (!= (vv 'is-lit) 0) (!= (type-is-strview (vv 'type)) 0))
       (set! (vv 'type) ty-cstr)
       (return 1))
@@ -767,8 +767,8 @@
 ; For function pointer types, returns a simplified "void*" — the full
 ; C function pointer syntax (with return type and params) is handled
 ; separately in emit-cheader-declare where we have the param names.
-(defn type-to-c (t:raw:Type):StrView
-  (let (tt:raw:Type t)
+(defn type-to-c (t:?&Type):StrView
+  (let (tt:ptr:Type t)
     (case (tt 'kind)
       TY-VOID   (return "void")
       ; `bool`, not `_Bool`: the generated preamble already includes
@@ -842,8 +842,8 @@
 ; one `ldr` becomes four `ldrb` plus three `orr` on armv7, eight `lbu` plus
 ; shifts on rv64. `abi-alignof`/`abi-sizeof` had each been given their own
 ; hand-written TY-FN arm instead; both now fall through to here.
-(defn type-size (t:raw:Type):i32
-  (let (tt:raw:Type t)
+(defn type-size (t:?&Type):i32
+  (let (tt:ptr:Type t)
     (when (!= (is-ptr-repr tt) 0) (return g-target-ptr-bytes))
     (case (tt 'kind)
       TY-BOOL (return 1)
@@ -881,7 +881,7 @@
 ; (design/stage16-ergonomics/bool-type-plan.md): bool has two values, no
 ; arithmetic and no implicit conversion. Ask `is-int-or-bool` below for the
 ; representation question instead.
-(defn is-int-type (t:raw:Type):i32
+(defn is-int-type (t:ptr:Type):i32
   (let (k:i32 (t 'kind))
     (case k
       (:or TY-I8 TY-I16 TY-I32 TY-I64
@@ -896,7 +896,7 @@
       TY-CHAR  (return 1)
       (return 0))))
 
-(defn is-float-type (t:raw:Type):i32
+(defn is-float-type (t:ptr:Type):i32
   (let (k:i32 (t 'kind))
     (case k
       (:or TY-F16 TY-F32 TY-F64 TY-F80 TY-F128) (return 1)
@@ -907,7 +907,7 @@
 ; storage on i386 and narrower in precision everywhere, so a width comparison
 ; over `type-size` would pick `fptrunc` where `fpext` is meant. Zero for a
 ; non-float, so a caller must have asked `is-float-type` first.
-(defn float-rank (t:raw:Type):i32
+(defn float-rank (t:ptr:Type):i32
   (case (t 'kind)
     TY-F16  (return 11)
     TY-F32  (return 24)
@@ -916,7 +916,7 @@
     TY-F128 (return 113)
     (return 0)))
 
-(defn is-bool-type (t:raw:Type):i32
+(defn is-bool-type (t:ptr:Type):i32
   (when (= (t 'kind) TY-BOOL) (return 1))
   (return 0))
 
@@ -926,7 +926,7 @@
 ; widening, literal adoption) bool must never acquire. Ask THIS one where the
 ; question is which instruction to emit: `unsafe/cast`'s selection ladder and
 ; the binop operand gate.
-(defn is-int-or-bool (t:raw:Type):i32
+(defn is-int-or-bool (t:?&Type):i32
   (when (!= (is-int-type t) 0) (return 1))
   (return (is-bool-type t)))
 
@@ -934,7 +934,7 @@
 ; TY-PTR and TY-CSTR (a C-string is a `char*`). They are interconvertible with
 ; no IR and zero-initialise to `null`. (TY-FN is deliberately excluded — its
 ; existing call-position handling is unchanged by CStr.)
-(defn is-ptr-like (t:raw:Type):i32
+(defn is-ptr-like (t:ptr:Type):i32
   (let (k:i32 (t 'kind))
     (case k
       (:or TY-PTR TY-CSTR) (return 1)
@@ -953,12 +953,12 @@
 ; each of its three storage sites (`type-zero-const-ir` below, `emit-zero-store`
 ; and `defvar-init-ir`), and the comparison sites in `emit-binop-vals` were
 ; simply missing it — the shape W9 item 15 found for the GEP index width.
-(defn is-ptr-repr (t:raw:Type):i32
+(defn is-ptr-repr (t:ptr:Type):i32
   (when (!= (is-ptr-like t) 0) (return 1))
   (when (= (t 'kind) TY-FN) (return 1))
   (return 0))
 
-(defn int-width (t:raw:Type):i32
+(defn int-width (t:ptr:Type):i32
   (let (k:i32 (t 'kind))
     (case k
       TY-BOOL (return 1)
@@ -979,12 +979,12 @@
 ; pointer: a typed `ptr:S` target used to take the borrow too, so a `(ref
 ; StrView)` parameter silently received `.data` (design/stage17-native-strings/
 ; library-gaps.md #25).
-(defn strview-borrow-target (target:raw:Type):i32
+(defn strview-borrow-target (target:?&Type):i32
   (when (= target null) (return 0))
-  (let (tt:raw:Type target)
+  (let (tt:?&Type target)
     (when (= (tt 'kind) TY-CSTR) (return 1))
     (when (!= (tt 'kind) TY-PTR) (return 0))
-    (let (e:raw:Type (tt 'elem))
+    (let (e:?&Type (tt 'elem))
       (when (= e null) (return 1))
       (when (and (!= (is-int-type e) 0) (= (int-width e) 8)) (return 1))
       (return 0))))
@@ -993,7 +993,7 @@
 ; that is what picks the instruction: `zext`/`icmp u*` so `true` widens to 1 and
 ; `false < true`. Reading it as signed (Stage 15 W9 item 31) made `(as i32 true)`
 ; -1 and `(< false true)` and `(> true false)` both false.
-(defn is-unsigned (t:raw:Type):i32
+(defn is-unsigned (t:ptr:Type):i32
   (let (k:i32 (t 'kind))
     (case k
       (:or TY-BOOL TY-UI8 TY-UI16 TY-UI32 TY-UI64 TY-USIZE) (return 1)
@@ -1010,7 +1010,7 @@
 ; large decimal literals so this predicate stays a bootstrap fixed point (a
 ; literal above i32 range in its own source would be wrapped by the old boot
 ; compiler before LW-4's widening lands).
-(defn int-literal-fits (v:i64 t:raw:Type):i32
+(defn int-literal-fits (v:i64 t:?&Type):i32
   (let (w:i32 (int-width t))
     (when (>= w 64) (return 1))
     (let (wi:i64 w
@@ -1044,7 +1044,7 @@
 ; W2d's standing constraint that `build/nucleusc` is never built with
 ; `-ffast-math`: FTZ/DAZ would flush a denormal single to zero and this would
 ; then call the conversion exact.
-(defn float-literal-fits (d:f64 t:raw:Type):i32
+(defn float-literal-fits (d:f64 t:ptr:Type):i32
   (let (k:i32 (t 'kind))
     (when (= k TY-F64) (return 1))
     ; Stage 16 FL-1: f80 and f128 carry every f64 exactly — the widening is what
@@ -1081,7 +1081,7 @@
 ; range predicate `coerce-int-val` gates the implicit path with, so the two
 ; paths now accept exactly the same set. Pass `is-lit` 0 to ask about the widths
 ; alone.
-(defn as-int-narrowing (src:raw:Type dst:raw:Type is-lit:i32 lit:i64):i32
+(defn as-int-narrowing (src:?&Type dst:?&Type is-lit:i32 lit:i64):i32
   (when (>= (int-width dst) (int-width src)) (return 0))
   (when (and (!= is-lit 0) (!= (int-literal-fits lit dst) 0)) (return 0))
   (return 1))
@@ -1105,7 +1105,7 @@
 ; `float-width` lives in nucleusc.nuc; calling *up* into it from an imported
 ; module is the ordinary direction (abi.nuc's float branch does the same).
 ; Pass `is-flit` 0 to ask about the widths alone.
-(defn as-float-narrowing (src:raw:Type dst:raw:Type is-flit:i32 lit:f64):i32
+(defn as-float-narrowing (src:?&Type dst:?&Type is-flit:i32 lit:f64):i32
   (when (>= (float-width dst) (float-width src)) (return 0))
   (when (and (!= is-flit 0) (!= (float-literal-fits lit dst) 0)) (return 0))
   (return 1))
@@ -1115,16 +1115,16 @@
 
 ; The pointer kind of a type: the Stage 10 contract for TY-PTR, PTR-RAW for
 ; everything else (including non-pointers, so callers can probe freely).
-(defn ptr-pkind (t:raw:Type):i32
+(defn ptr-pkind (t:?&Type):i32
   (when (= t null) (return PTR-RAW))
-  (let (tt:raw:Type t)
+  (let (tt:?&Type t)
     (when (!= (tt 'kind) TY-PTR) (return PTR-RAW))
     (return (tt 'pkind))))
 
 ; Clone `t` with pkind=k. Typed-pointer Types may be shared (and bare ptr is a
 ; singleton), so relabeling/narrowing never mutates. Identity when k matches.
-(defn type-as-pkind (t:raw:Type k:i32):raw:Type
-  (let (src:raw:Type t)
+(defn type-as-pkind (t:?&Type k:i32):?&Type
+  (let (src:ptr:Type t)
     (when (= (src 'pkind) k) (return t))
     (let (dst:&Type (alloc-type))
       (set! (dst 'kind) (src 'kind))
@@ -1142,7 +1142,7 @@
       (return dst))))
 
 ; The conservative meet of two pointer kinds for a control-flow join (cond /
-; if-some phi): raw if either side waived the checks, else Maybe if either
+; if-some phi): unchecked if either side waived the checks, else Maybe if either
 ; side may be null, else ref.
 (defn pkind-meet (a:i32 b:i32):i32
   (when (or (= a PTR-RAW) (= b PTR-RAW)) (return PTR-RAW))
@@ -1151,35 +1151,21 @@
 
 ; Enforce pointer-kind flow into a declared slot (binding init, set!, field /
 ; element store, argument, return). Only a non-null (ref T) destination adds an
-; obligation: the source must itself be ref. Widening (ref→raw, ref→Maybe,
-; raw→Maybe, Maybe→raw) is always allowed; the existing kind/elem rules are
-; unchanged. `unsafe/cast` does not pass through here, so
-; (unsafe/cast (ref T) raw) remains the explicit, audited assertion.
+; obligation: the source must itself be ref. Widening (ref→ptr, ref→Maybe,
+; ptr↔Maybe) is always allowed. `unsafe/cast` does not pass through here, so
+; (unsafe/cast (ref T) p) remains the explicit, audited assertion.
 ;
 ; CStr (string-literal / C-string type) is treated as ref-compatible: string
 ; literals are non-null constants, the overwhelmingly common CStr source, and
 ; flagging "foo" into a (ref ...)/ptr param would bury the flip under thousands
-; of false positives. A genuinely nullable C string is spelled `raw` (the
+; of false positives. A genuinely nullable C string is spelled `ptr` (the
 ; audited edge), not CStr.
 ;
-; Untyped-pointer refinement (Phase F): a non-null obligation is only meaningful
-; on a *typed* destination. An elem-less bare `ptr` slot is the compiler's `void*`
-; escape hatch: it names no pointee, cannot be deref'd (`aref`/field access dies
-; with "operand must be typed pointer"), so a non-null contract on it protects
-; nothing. Enforcing it would bury the flip under ~343 contractless flows where a
-; (now-`?T`) `node-at`/`scope-lookup`/coercer result feeds an untyped local or
-; param. So an elem-less destination is exempt; the flip's teeth stay on typed
-; (ref T)/(ptr T) slots, where `null`/raw/Maybe into a (ref T) is still an error
-; and a typed raw/Maybe source into a typed ref slot is still checked. Direct
-; analogue of the CStr refinement above; deref safety is enforced separately by
-; `require-derefable`.
-(defn pkind-flow-check (src:raw:Type dst:raw:Type line:i32 ctx:StrView):void
+(defn pkind-flow-check (src:?&Type dst:?&Type line:i32 ctx:StrView):void
   (when (or (= src null) (= dst null)) (return))
   (when (!= (ptr-pkind dst) PTR-REF) (return))
   (when (= (ptr-pkind src) PTR-REF) (return))
-  ; Untyped (void*) destination carries no non-null contract: an elem-less bare
-  ; `ptr` slot names no pointee and cannot be deref'd, so a non-null obligation
-  ; on it protects nothing. The flip's teeth stay on typed (ref T)/(ptr T) slots.
+  ; A narrowed `?ptr` is the one elem-less ref; with no pointee, non-null protects nothing.
   (when (= (dst 'elem) null) (return))
   ; Stage 15 W9 item 7: every POINTER-LIKE source, not `TY-PTR` alone. A `CStr`
   ; is `TY-CSTR`, so `ptr-pkind` answers PTR-RAW for it and it used to fall out
@@ -1188,7 +1174,7 @@
   ;
   ; The exemption was recorded as "CStr is ref-compatible (a C string is a
   ; non-null constant)" and as the analogue of the elem-less-destination
-  ; refinement above. Neither holds. It is true of a string LITERAL and false of
+  ; refinement. Neither holds. It is true of a string LITERAL and false of
   ; the type: `getenv` returns `CStr` and returns null. And the void* refinement
   ; is sound for the opposite reason — an elem-less destination cannot be
   ; dereferenced, so a non-null obligation on it protects nothing, whereas the
@@ -1200,11 +1186,11 @@
         (die-at line (fstr ctx
                            ": value may be null where non-null (ref ...) is required — narrow with if-some/when-some, unwrap, or a null guard"))
         (die-at line (fstr ctx
-                           ": raw pointer where non-null (ref ...) is required — launder with (as-ref ...) + narrowing, or assert with (unsafe/cast (ref T) ...)"))))))
+                           ": unchecked pointer where non-null (ref ...) is required — launder with (as-ref ...) + narrowing, or assert with (unsafe/cast (ref T) ...)"))))))
 
 ; Deref/field/index gate: a (Maybe (ref T)) value cannot be accessed until
 ; narrowed. Raw stays unchecked (the signed waiver); ref is always safe.
-(defn require-derefable (t:raw:Type line:i32 op:StrView):void
+(defn require-derefable (t:?&Type line:i32 op:StrView):void
   (when (= (ptr-pkind t) PTR-MAYBE)
     (die-at line (fstr op
                        ": value may be null — narrow with if-some/when-some, unwrap, or a (when (= x null) ...) guard before use"))))

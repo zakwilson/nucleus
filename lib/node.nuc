@@ -7,7 +7,7 @@
 
 ; arena-alloc aborts on exhaustion, so node allocation never yields null.
 (defn alloc-node ():&Node
-  (return (as &Node (arena-alloc (sizeof Node)))))
+  (return (unsafe/cast &Node (arena-alloc (sizeof Node)))))
 
 ; An integer leaf, which is what `~` wants when what a macro computed is a
 ; number. No line: a synthesized node has no source position, and `node-line`'s
@@ -18,11 +18,11 @@
     (set! (n 'i) v)
     (return n)))
 
-(defn node-at (n:raw:Node i:i32):?&Node
+(defn node-at (n:ptr:Node i:i32):?&Node
   (when (or (< i 0) (>= i (node-len n))) (return none))
   (return (as-ref (aref (n 'elems) i))))
 
-(defn node-len (n:raw:Node):i32
+(defn node-len (n:?&Node):i32
   (when (= n null) (return 0))
   (when (!= (n 'kind) NODE-LIST) (return 0))
   (return (n 'len)))
@@ -40,20 +40,20 @@
 ; the enclosing form, which its emitter has in hand. Writing a line *into* a
 ; symbol node is never correct: it would be observed by every other occurrence
 ; of the same spelling anywhere in the program.
-(defn node-line (n:raw:Node encl:i32):i32
+(defn node-line (n:?&Node encl:i32):i32
   (when (= n null) (return encl))
   (let (ln:i32 (n 'line))
     (when (= ln 0) (return encl))
     (return ln)))
 
-(defn node-is-list (n:raw:Node):bool
+(defn node-is-list (n:?&Node):bool
   (when (= n null) (return true))
   (when (= (n 'kind) NODE-LIST) (return true))
   (return false))
 
 ; Absent (null) or the empty list `()` — the two ways a form can have nothing
 ; where an operand belongs. A definer that refuses `()` asks this, not `= null`.
-(defn node-empty? (n:raw:Node):bool
+(defn node-empty? (n:?&Node):bool
   (when (= n null) (return true))
   (return (and (= (n 'kind) NODE-LIST) (= (n 'len) 0))))
 
@@ -68,7 +68,7 @@
 ; test that would have fired it crashed on the null first. Use this wherever the
 ; node came from `node-at`, whose return type is `?ref:Node` and says so; a site
 ; that means to walk a list whether or not it is empty reads `(n 'kind)`.
-(defn node-kind (n:raw:Node):i32
+(defn node-kind (n:ptr:Node):i32
   (when (node-empty? n) (return NODE-NIL))
   (return (n 'kind)))
 
@@ -83,13 +83,13 @@
 ; `node-at`, a missing form — and every reader below treats it as empty.
 
 ; The first element, or null when `n` is null, empty, or not a list.
-(defn node-first (n:raw:Node):raw:Node
+(defn node-first (n:ptr:Node):ptr:Node
   (when (= (node-len n) 0) (return null))
   (return (aref (n 'elems) 0)))
 
 ; A fresh array of `n` element slots.
-(defn node-elems-alloc (n:i32):(raw (raw Node))
-  (return (unsafe/cast (raw (raw Node)) (arena-alloc (* (as i64 n) (sizeof (raw Node)))))))
+(defn node-elems-alloc (n:i32):?&?&Node
+  (return (unsafe/cast (ptr (ptr Node)) (arena-alloc (* (as i64 n) (sizeof &Node))))))
 
 ; A list under construction — the same thing as a finished list, so
 ; `node-list-done` is the identity and a builder may be handed out as it is.
@@ -102,37 +102,37 @@
 ; The elements after the first, or null when there are none. A `cap` of 0 over a
 ; non-null `elems` is a BORROWED view: it shares the parent's array and copies on
 ; its first push, which is what keeps `node-rest` O(1).
-(defn node-rest (n:raw:Node):raw:Node
+(defn node-rest (n:ptr:Node):ptr:Node
   (when (<= (node-len n) 1) (return null))
   (let (v:&Node (node-list-new (n 'line)))
     (set! (v 'elems) (unsafe/ptr+ (n 'elems) 1))
     (set! (v 'len) (- (n 'len) 1))
-    (return (as raw:Node v))))
+    (return v)))
 
 ; Room for one more element, owned. Growth is amortized doubling from 4.
 (defn node-reserve (b:&Node):void
   (when (< (b 'len) (b 'cap)) (return))
   (let (want:i32 (if (< (b 'cap) 4) (+ (b 'len) 4) (* (b 'cap) 2))
-        fresh:(raw (raw Node)) null)
+        fresh:(ptr ?&Node) null)
     (set! fresh (node-elems-alloc want))
     (dotimes (i (b 'len))
       (set! (aref fresh i) (aref (b 'elems) i)))
     (set! (b 'elems) fresh)
     (set! (b 'cap) want)))
 
-(defn node-push (b:&Node x:raw:Node):void
+(defn node-push (b:&Node x:?&Node):void
   (node-reserve b)
   (set! (aref (b 'elems) (b 'len)) x)
   (set! (b 'len) (+ (b 'len) 1)))
 
 ; The list's line is its FIRST element's: the top-level dispatcher blames the
 ; unit's opening form for a form that carries no line of its own (a symbol).
-(defn node-push-line (b:&Node x:raw:Node line:i32):void
+(defn node-push-line (b:&Node x:?&Node line:i32):void
   (when (= (b 'len) 0) (set! (b 'line) line))
   (node-push b x))
 
 ; Append every element of `lst` (null = nothing; a non-list is one element).
-(defn node-extend (b:&Node lst:raw:Node):void
+(defn node-extend (b:&Node lst:?&Node):void
   (when (= lst null) (return))
   (when (!= (lst 'kind) NODE-LIST)
     (node-push b lst)
@@ -140,24 +140,24 @@
   (dotimes (i (lst 'len))
     (node-push b (aref (lst 'elems) i))))
 
-(defn node-list-done (b:&Node):raw:Node
-  (return (as raw:Node b)))
+(defn node-list-done (b:&Node):&Node
+  (return b))
 
-(defn node-cons (x:raw:Node lst:raw:Node line:i32):&Node
+(defn node-cons (x:?&Node lst:?&Node line:i32):&Node
   (let (b:&Node (node-list-new line))
     (node-push b x)
     (node-extend b lst)
     (return b)))
 
 ; Replace element `i` of `lst` in place.
-(defn node-set-at (lst:&Node i:i32 x:raw:Node):void
+(defn node-set-at (lst:&Node i:i32 x:?&Node):void
   (when (or (< i 0) (>= i (lst 'len))) (return))
   (set! (aref (lst 'elems) i) x))
 
 ; Replace element `i` with the elements of `items`, followed by `extra` when it
 ; is non-null — the top-level dispatcher's splice, which must be a MUTATION so
 ; that a list the caller already holds keeps its identity.
-(defn node-splice-at (lst:&Node i:i32 items:raw:Node extra:raw:Node):void
+(defn node-splice-at (lst:&Node i:i32 items:?&Node extra:?&Node):void
   (when (or (< i 0) (>= i (lst 'len))) (return))
   (let (b:&Node (node-list-new (lst 'line)))
     (dotimes (k i)
@@ -172,23 +172,23 @@
     (set! (lst 'len) (b 'len))
     (set! (lst 'cap) (b 'cap))))
 
-(defn node-list1 (a:raw:Node line:i32):&Node
+(defn node-list1 (a:?&Node line:i32):&Node
   (let (b:&Node (node-list-new line))
     (node-push b a)
     (return b)))
-(defn node-list2 (a:raw:Node b:raw:Node line:i32):&Node
+(defn node-list2 (a:?&Node b:?&Node line:i32):&Node
   (let (n:&Node (node-list1 a line))
     (node-push n b)
     (return n)))
-(defn node-list3 (a:raw:Node b:raw:Node c:raw:Node line:i32):&Node
+(defn node-list3 (a:?&Node b:?&Node c:?&Node line:i32):&Node
   (let (n:&Node (node-list2 a b line))
     (node-push n c)
     (return n)))
-(defn node-list4 (a:raw:Node b:raw:Node c:raw:Node d:raw:Node line:i32):&Node
+(defn node-list4 (a:?&Node b:?&Node c:?&Node d:?&Node line:i32):&Node
   (let (n:&Node (node-list3 a b c line))
     (node-push n d)
     (return n)))
-(defn node-list5 (a:raw:Node b:raw:Node c:raw:Node d:raw:Node e:raw:Node line:i32):&Node
+(defn node-list5 (a:?&Node b:?&Node c:?&Node d:?&Node e:?&Node line:i32):&Node
   (let (n:&Node (node-list4 a b c d line))
     (node-push n e)
     (return n)))
@@ -234,7 +234,7 @@
         j:i64 (bit-and h mask))
     (while (!= 0 1)
       (let (e:&InternEntry (as &InternEntry
-                                    (unsafe/ptr+ (as &InternEntry table) (unsafe/cast i32 j))))
+                                    (unsafe/ptr+ (unsafe/cast &InternEntry table) (unsafe/cast i32 j))))
         (when (symbol-none? (e 'spelling))
           (set! (e 'spelling) sp)
           (set! (e 'node) nd)
@@ -252,7 +252,7 @@
     (let (i:i32 0)
       (while (< i old-cap)
         (let (e:&InternEntry (as &InternEntry
-                                      (unsafe/ptr+ (as &InternEntry old-table) i)))
+                                      (unsafe/ptr+ (unsafe/cast &InternEntry old-table) i)))
           (when (not (symbol-none? (e 'spelling)))
             (sym-node-place new-table new-cap (e 'spelling) (e 'node)
                             (unsafe/cast i64 (symbol-cached-hash (e 'spelling))))))
@@ -269,7 +269,7 @@
         j:i64 (bit-and (unsafe/cast i64 (symbol-cached-hash sym)) mask))
     (while (!= 0 1)
       (let (e:&InternEntry (as &InternEntry
-                                    (unsafe/ptr+ (as &InternEntry g-intern-table) (unsafe/cast i32 j))))
+                                    (unsafe/ptr+ (unsafe/cast &InternEntry g-intern-table) (unsafe/cast i32 j))))
         (when (symbol-none? (e 'spelling))
           (let (nd:&Node (alloc-node))
             (set! (nd 'kind) NODE-SYM)
@@ -304,17 +304,17 @@
 
 ; LIFETIME: a view, not an owner — the list must outlive the iterator.
 (defstruct NodeIter
-  lst:raw:Node
+  lst:&Node
   pos:i32)
 
-; The element type is `&Node`, not `(raw Node)`: `some` takes a non-null ref, and
+; The element type is `&Node`, not `(ptr Node)`: `some` takes a non-null ref, and
 ; a null element is not one. Only the `:rest` lowering stores a null (an
 ; `inttoptr` of a small integer), and it builds through `node-push`, not `conj`.
 (extend NodeIter (Iterator &Node))
 
 (defn next (self:&NodeIter):?&Node
   (when (>= (self 'pos) (node-len (self 'lst))) (return none))
-  (let (e:raw:Node (aref ((self 'lst) 'elems) (self 'pos)))
+  (let (e:?&Node (aref ((self 'lst) 'elems) (self 'pos)))
     (set! (self 'pos) (+ (self 'pos) 1))
     (return (as-ref e))))
 
@@ -324,14 +324,14 @@
   (return (unsafe/cast usize (node-len self))))
 
 (defn conj (self:&Node elem:&Node):void
-  (node-push self (as raw:Node elem)))
+  (node-push self elem))
 
 (defn empty? (self:&Node):bool
   (return (= (node-len self) 0)))
 
 (defn iter (self:&Node):NodeIter
   (let (it:&NodeIter (alloca NodeIter))
-    (set! (it 'lst) (as raw:Node self))
+    (set! (it 'lst) self)
     (set! (it 'pos) 0)
     (return @it)))
 
@@ -344,11 +344,11 @@
   (return (unsafe/cast &Node (node-at self (unsafe/cast i32 i)))))
 
 (defn append (self:&Node elem:&Node):void
-  (node-push self (as raw:Node elem)))
+  (node-push self elem))
 
 (defn contains? (self:&Node elem:&Node):bool
   (dotimes (i (node-len self))
-    (when (= (aref (self 'elems) i) (as raw:Node elem)) (return true)))
+    (when (= (aref (self 'elems) i) elem) (return true)))
   (return false))
 
 (defn insert (self:&Node i:usize elem:&Node):void
@@ -359,5 +359,5 @@
       (while (> k at)
         (set! (aref (self 'elems) k) (aref (self 'elems) (- k 1)))
         (set! k (- k 1))))
-    (set! (aref (self 'elems) at) (as raw:Node elem))
+    (set! (aref (self 'elems) at) elem)
     (set! (self 'len) (+ (self 'len) 1))))

@@ -6,6 +6,6 @@
 (defstruct Q (a i32))
 
 (defn main ():i32
-  (let (tbl:ptr:P (array P (P 1 2) (Q 3)))
+  (let (tbl:&P (array P (P 1 2) (Q 3)))
     (printf "%d\n" ((unsafe/ptr+ tbl 0) x)))
   (return 0))

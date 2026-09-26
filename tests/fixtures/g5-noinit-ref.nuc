@@ -9,7 +9,7 @@
 ; was no way to write the initializer at all (G-1/G-2/G-3 supplied one).
 (defstruct Thing v:i32)
 
-(defvar g5-thing:ptr:Thing)
+(defvar g5-thing:&Thing)
 
 (defn main ():i32
   (return (g5-thing v)))

@@ -45,10 +45,10 @@ Nodes come from the arena, so nothing here is owned and nothing is dropped.
 ## `ReadResult` and `ReadError`
 
 `read-one`/`read-all` (and their `-with-macros` twins) return a `ReadResult`,
-not a plain `!raw:Node`:
+not a plain `!ptr:Node`:
 
 ```lisp
-(defunion ReadResult (ok v:raw:Node) (err e:ReadError))
+(defunion ReadResult (ok v:?&Node) (err e:ReadError))
 (defstruct ReadError code:Err line:i32 msg:StrView note:StrView)
 (defcast ReadError Err read-error-code)
 ```
@@ -84,15 +84,15 @@ alone, converted automatically through the `defcast` at the `(return (err!
 e))` `try` expands to:
 
 ```lisp
-(defn load (src:StrView):!raw:Node
+(defn load (src:StrView):!ptr:Node
   (return (ok (try (read-all src)))))    ; on err, ReadError -> Err via the defcast
 ```
 
 This is the general shape a library with a rich error returns, not a reader
 special case — see [Error Handling](errors.md#err-is-the-code-result-t-e-is-the-payload).
 
-`ReadResult` is a hand-written `defunion`, not a `(Result raw:Node ReadError)`
-instance: a template stamped over a `raw` (nullable) pointer payload loses
+`ReadResult` is a hand-written `defunion`, not a `(Result ?&Node ReadError)`
+instance: a template stamped over a nullable pointer payload loses
 that pointer kind (`type-spelling` re-spells every stamped pointer as `ref:`,
 non-null), so the template's `ok` arm would refuse a null node. `try`, `match`
 and `unwrap` do not care — a `defunion` with an `ok` arm and an `err` arm is

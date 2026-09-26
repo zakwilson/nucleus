@@ -12,7 +12,7 @@
 
 ; The spec's own two-line probe (cheader.md "Verified repro"): an opaque handle
 ; type in a `defn` signature.
-(defn f (w:ptr:SDL_Window):i32 (return 0))
+(defn f (w:&SDL_Window):i32 (return 0))
 
 (defn main ():i32
   (printf "w3b-sdl ok\n")

@@ -48,7 +48,7 @@
         (printf "pos %lld\n" pos))
       (let (buf:ptr (alloca i8 32)
             got:i64 (read rfd buf (as ui64 6)))
-        (set! (deref (as &i8 (unsafe/ptr+ (as &i8 buf) got))) 0)
+        (set! (deref (as &i8 (unsafe/ptr+ (unsafe/cast &i8 buf) got))) 0)
         (printf "read %lld '%s'\n" got buf))
       (close rfd))
     (unlink path)

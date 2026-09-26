@@ -19,14 +19,14 @@
 (defstruct SumNodeI dummy:i32)
 (extend SumNodeI (FoldFn i64 ptr))
 (defn fold (self:&SumNodeI (acc i64) (x ptr)) i64
-  (let (n:&Node (as &Node x))
+  (let (n:&Node (unsafe/cast &Node x))
     (return (+ acc (n 'i)))))
 
 ; int-node — a fresh INT node carrying value v.
 ; calloc, not malloc: `s` is a Symbol, which has no null value to assign — a
 ; node with no name is simply a zeroed one.
 (defn int-node (v:i64):ptr
-  (let (c:&Node (as &Node (calloc 1 (sizeof Node))))
+  (let (c:&Node (unsafe/cast &Node (calloc 1 (sizeof Node))))
     (set! (c 'kind) 0)
     (set! (c 'line) 0)
     (set! (c 'i) v)

@@ -21,7 +21,7 @@
     (cond (= n 0)
             unit
           true
-            (let ((acc (raw Node)) (ast-at args (_- n 1))
+            (let ((acc ?&Node) (ast-at args (_- n 1))
                   i:i32 (_- n 1))
               (while (!= i 0)
                 (set! i (_- i 1))
@@ -33,7 +33,7 @@
     (cond (= n 0)
             unit
           true
-            (let ((acc (raw Node)) (ast-at args 0)
+            (let ((acc ?&Node) (ast-at args 0)
                   i:i32 1)
               (while (< i n)
                 (set! acc `(~op ~acc ~(ast-at args i)))
@@ -113,7 +113,7 @@
 ; enum constants, symbols, C strings). `form` is re-evaluated per comparison, so
 ; it should be a pure, side-effect-free expression.
 (defmacro case (form :rest clauses)
-  (let ((acc (raw Node)) null
+  (let ((acc ?&Node) null
         i:i32 0
         n:i32 (ast-len clauses))
     (while (< i n)
@@ -124,11 +124,11 @@
           (set! i n))
         ; A value/result pair.
         (do
-          (let ((val (raw Node)) (ast-at clauses i)
+          (let ((val ?&Node) (ast-at clauses i)
                 alt-list:i32 0)
             ; `when` is defined below this macro, so it is not yet callable
             ; from this body; `cond` is a special form and always is.
-            (let ((head (raw Node)) (ast-first val))
+            (let ((head ?&Node) (ast-first val))
               (cond (and (!= head null)
                          (= (head 'kind) NODE-KEYWORD)
                          ; Reaching through `Symbol.p` because the prelude
@@ -137,9 +137,9 @@
                          ; identity compare that overload would do.
                          (= (as ptr ((head 's) 'p)) (as ptr (('or 's) 'p))))
                       (set! alt-list 1)))
-            (let ((test (raw Node)) null)
+            (let ((test ?&Node) null)
               (if (!= alt-list 0)
-                (let ((tests (raw Node)) null
+                (let ((tests ?&Node) null
                       k:i32 1
                       m:i32 (ast-len val))
                   (while (< k m)
@@ -187,11 +187,11 @@
 ; `ast-at` is a compiler special form, so this macro works even in programs that
 ; have not imported the node runtime.
 (defmacro dotimes (spec :rest body)
-  (let ((var-node (raw Node)) (ast-at spec 0)
-        (n-node (raw Node)) (ast-at spec 1))
+  (let ((var-node ?&Node) (ast-at spec 0)
+        (n-node ?&Node) (ast-at spec 1))
     ; Order matters: member access on a null node crashes this body
     ; (context/conventions.md), so each test is reached only past its guard.
-    (when (or (= spec null) (!= (spec 'kind) NODE-LIST) (!= (ast-len spec) 2)
+    (when (or (!= (spec 'kind) NODE-LIST) (!= (ast-len spec) 2)
               (= var-node null) (!= (var-node 'kind) NODE-SYM))
       (macro-error spec "dotimes: the first argument must be (var count)"))
     `(let (~var-node (* ~n-node 0)) ; adopt the count's type for the index
@@ -230,9 +230,9 @@
   ; binding is (var coll-expr IterType). (iter coll-expr) yields an IterType
   ; value bound to a fresh typed local `it`; drive (next &it) per step.
   ; The (sym type) list-binding form lets the done-flag gensym skip a colon type.
-  (let ((v (raw Node)) (ast-at binding 0))
+  (let ((v ?&Node) (ast-at binding 0))
     ; Guarded in the order `dotimes` explains.
-    (when (or (= binding null) (!= (binding 'kind) NODE-LIST) (!= (ast-len binding) 3)
+    (when (or (!= (binding 'kind) NODE-LIST) (!= (ast-len binding) 3)
               (= v null) (!= (v 'kind) NODE-SYM))
       (if (= (ast-len binding) 2)
         (macro-error binding "doseq: the first argument must be (var coll IterType)\n  note: to walk an iterator you already hold, use (doseq-iter (var iter-ref) ...)")
@@ -261,9 +261,9 @@
 ;     (set! (r 'start) 0) (set! (r 'end) 5)
 ;     (doseq-iter (x r) (printf "%d\n" x)))
 (defmacro doseq-iter (binding :rest body)
-  (let ((v (raw Node)) (ast-at binding 0))
+  (let ((v ?&Node) (ast-at binding 0))
     ; Guarded in the order `dotimes` explains.
-    (when (or (= binding null) (!= (binding 'kind) NODE-LIST) (!= (ast-len binding) 2)
+    (when (or (!= (binding 'kind) NODE-LIST) (!= (ast-len binding) 2)
               (= v null) (!= (v 'kind) NODE-SYM))
       (macro-error binding "doseq-iter: the first argument must be (var iter-ref)")))
   (let (done-sym:ptr  (gensym)
@@ -323,11 +323,11 @@
 ;   (-> x f g)                 expands to (g (f x))              [bare symbols]
 ;   (-> x)                     expands to x                      [identity]
 (defmacro -> (x :rest forms)
-  (let ((result (raw Node)) x
+  (let ((result ?&Node) x
         i:i32 0
         nforms:i32 (ast-len forms))
     (while (< i nforms)
-      (let ((form (raw Node)) (ast-at forms i)
+      (let ((form (ptr Node)) (ast-at forms i)
             n:i32 (ast-len form))
         (if (= (form 'kind) NODE-LIST)
           (do
@@ -344,10 +344,10 @@
                 (set! k (+ k 1)))
               (if (!= has-placeholder 0)
                 ; Has _: rebuild the form, substituting result for each _.
-                (let ((out (raw Node)) null
+                (let ((out ?&Node) null
                       j:i32 0)
                   (while (< j n)
-                    (let ((elem (raw Node)) (ast-at form j)
+                    (let ((elem ?&Node) (ast-at form j)
                           replacement:ptr elem)
                       (when (= elem '_)
                         (set! replacement result))
@@ -391,16 +391,14 @@
 ; are the applications built below, an inner `macrolet` shadows an outer binding
 ; of the same name and restores it on pop, and `__` is reserved.
 (defmacro macmap (spec rows)
-  ; Order matters: `or` short-circuits, and member access on a null (raw Node)
-  ; dereferences — it would segfault the COMPILER, at expansion time, before any
-  ; diagnostic could be raised. Every chain below is reached only past its guard.
-  (when (or (= spec null)
-            (!= (spec 'kind) NODE-LIST)
+  ; Order matters: member access on a null node would segfault the COMPILER at
+  ; expansion time. Every chain below is reached only past its guard.
+  (when (or (!= (spec 'kind) NODE-LIST)
             (< (ast-len spec) 2))
-    (macro-error (if (= spec null) rows spec)
+    (macro-error spec
       "macmap: the first argument must be ((param ...) template)"))
-  (let ((params (raw Node)) (ast-at spec 0)
-        (tmpl (raw Node))   (ast-at spec 1)
+  (let ((params ?&Node) (ast-at spec 0)
+        (tmpl ?&Node)   (ast-at spec 1)
         ntotal:i32          0
         nfixed:i32          0
         variadic:i32        0
@@ -413,7 +411,7 @@
     (let (pi:i32 0
           np:i32 (ast-len params))
       (while (< pi np)
-        (let ((e (raw Node)) (ast-at params pi))
+        (let ((e ?&Node) (ast-at params pi))
           (when (and (!= e null) (= (e 'kind) NODE-KEYWORD)
                      (= (as ptr ((e 's) 'p)) (as ptr (('rest 's) 'p))))
             (set! variadic 1))
@@ -423,7 +421,7 @@
     (let (ri:i32 0
           nrows:i32 (ast-len rows))
       (while (< ri nrows)
-        (let ((r (raw Node)) (ast-at rows ri))
+        (let ((r ?&Node) (ast-at rows ri))
           (if (= ntotal 1)
             (set! calls `(~@calls (__macmap ~r)))
             (do

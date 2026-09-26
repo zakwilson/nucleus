@@ -62,7 +62,7 @@ int main(void){
 (deftest cd1-multi-declarator-types
   (let (c:Compiled (try (compile-source (cd-main-src)))
         ir:StrView (compiled-ir &c))
-    (try (check-empty (string-as-view (ref c 'raw))))
+    (try (check-empty (string-as-view (ref c 'raw-text))))
     (try (check-line ir "%cd_plain = type { i32, i32 }"))
     (try (check-line ir "%cd_ptrs = type { ptr, ptr, i32 }"))
     (try (check-line ir "%cd_arrays = type { i32, [3 x i32] }"))
@@ -139,8 +139,8 @@ int main(void){
 (import-use \"netinet/tcp.h\")
 (defstruct TAlign pad:i8 v:tcp_info)
 (defn main ():i32
-  (let (a:ptr:TAlign (alloca TAlign)
-        t:ptr:tcp_info (alloca tcp_info))
+  (let (a:&TAlign (alloca TAlign)
+        t:&tcp_info (alloca tcp_info))
     (printf \"tcp_info %lld %lld\\n\" (as i64 (sizeof tcp_info))
       (- (unsafe/cast i64 (ref a 'v)) (unsafe/cast i64 a)))
     (printf \"tcpi_options %lld\\n\"
@@ -221,7 +221,7 @@ int main(void){
 (deftest cd4-declarator-list
   (let (c:Compiled (try (compile-source (cd4-main-src)))
         ir:StrView (compiled-ir &c))
-    (try (check-empty (string-as-view (ref c 'raw))))
+    (try (check-empty (string-as-view (ref c 'raw-text))))
     (try (check-line ir "%cd4_A = type { i32, i32 }"))
     (try (check-line ir "%cd4_B = type { i32, i32 }"))
     (try (check-line ir "%cd4_C = type { i32, i32 }"))

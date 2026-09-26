@@ -18,7 +18,7 @@
 
 ; A fallible lookup returning a niche-encoded pointer-or-error. (ok p) / (err E)
 ; resolve against the declared return type in return position (target typing).
-(defn lookup (p:ptr:Pt i:i32):!ptr:Pt
+(defn lookup (p:&Pt i:i32):!&Pt
   (when (< i 0)
     (return (err bad-index)))
   (when (> i 0)
@@ -26,17 +26,17 @@
   (return (ok (as ref:Pt p))))
 
 ; Propagation with `try`: yields the ok pointer or re-returns the error.
-(defn lookup-x (p:ptr:Pt i:i32):!i32
+(defn lookup-x (p:&Pt i:i32):!i32
   (let (q:ref:Pt (try (lookup p i)))
     (return (ok (q 'x)))))
 
-(defn show (r:!ptr:Pt):void
+(defn show (r:!&Pt):void
   (match r
     ((ok q)  (printf "ok x=%d\n" (q 'x)))
     ((err e) (printf "err %s: %s\n" (err-name e) (err-message e)))))
 
 (defn main ():i32
-  (with (p:ptr:Pt (as ptr:Pt (malloc 8)))
+  (with (p:&Pt (unsafe/cast &Pt (malloc 8)))
     (set! (p 'x) 7)
 
     ; match on a niche Result value, both arms.

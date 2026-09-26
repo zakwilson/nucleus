@@ -151,10 +151,10 @@
     ; lambda return of each nullable pointer kind: null, or the argument back.
     (let (v1:(Vector i32) (vector-new)
           nq (fn (p:&Pt):?&Pt (return null))
-          rp (fn (p:&Pt):raw:Pt (return p))
+          rp (fn (p:&Pt):&Pt (return p))
           nv (fn (p:&(Vector i32)):?&(Vector i32) (return null))
-          rv (fn (p:&(Vector i32)):raw:(Vector i32) (return p))
-          qv (fn (p:&(Vector i32)):?ptr:(Vector i32) (return null)))
+          rv (fn (p:&(Vector i32)):?&(Vector i32) (return p))
+          qv (fn (p:&(Vector i32)):?&(Vector i32) (return null)))
       (if-some (rq (as-ref (rp &pt)))
         (printf "lambda return: %d %d %d %d %d\n" (if (= (nq &pt) null) 1 0) (rq 'x)
                 (if (= (nv &v1) null) 1 0) (if (= (rv &v1) null) 0 1) (if (= (qv &v1) null) 1 0))

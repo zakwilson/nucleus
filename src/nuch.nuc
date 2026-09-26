@@ -37,7 +37,7 @@
 (defn emit-nuch-ret (form:ptr):void
   (let (rn:ptr (defn-ret-node form))
     (when (= rn null) (return))
-    (let (rnn:ptr:Node (as &Node rn))
+    (let (rnn:&Node (unsafe/cast &Node rn))
       (if (= (rnn 'kind) NODE-LIST)
         (do (emit g-hdr " ") (header-print-node rn))
         (emit g-hdr " :" (rnn 's))))))
@@ -52,14 +52,14 @@
         rn:ptr null
         ps:ptr null
         bstart:i32 3
-        style:i32 (defn-parse-sig (as raw:Node form) (as &Symbol &fname)
+        style:i32 (defn-parse-sig (as ?&Node form) (as &Symbol &fname)
                     (as &ptr &rn) (as &ptr &ps)
                     (as &i32 &bstart))
         nr:i32 0
         rt:i32 0
-        body:i32 (defn-scan-attrs (as raw:Node form) bstart
+        body:i32 (defn-scan-attrs (as ?&Node form) bstart
                    (as &i32 &nr) (as &i32 &rt)
-                   (node-line (as raw:Node form) 0)))
+                   (node-line (as ?&Node form) 0)))
     (when (!= nr 0) (emit g-hdr " :noreturn"))
     (when (!= rt 0) (emit g-hdr " :returns-twice"))))
 
@@ -73,11 +73,11 @@
     (dotimes (i (node-len params))
       (when (!= i 0) (emit g-hdr " "))
       (let (p:ptr (node-at params i))
-        ; A cell named like a type constructor (`raw`, `Vector`) would read back as
+        ; A cell named like a type constructor (`ptr`, `Vector`) would read back as
         ; that type (declare-param-types), so it exports under `_`.
-        (if (type-form-list? (as raw:Node p))
+        (if (type-form-list? (as ?&Node p))
           (do (emit g-hdr "(_")
-              (let (cur:ptr (node-rest (as raw:Node p)))
+              (let (cur:ptr (node-rest (as ?&Node p)))
                 (while (> (node-len cur) 0)
                   (emit g-hdr " ")
                   (header-print-node (node-first (unsafe/cast &Node cur)))
@@ -179,11 +179,11 @@
 ; importer reads the header's templates and signatures as this file read them.
 (defn emit-nuch-import-env (forms:ptr):void
   (dotimes (fi (node-len forms))
-    (let (f:raw:Node (as raw:Node (node-at forms fi)))
+    (let (f:ptr:Node (as ptr:Node (node-at forms fi)))
       (when (and (= (node-kind f) NODE-LIST) (>= (node-len f) 2)
                  (= (node-kind (node-at f 0)) NODE-SYM))
-        (let (h:Symbol ((as raw:Node (node-at f 0)) 's)
-              lib:raw:Node (as raw:Node (node-at f 1)))
+        (let (h:Symbol ((as ptr:Node (node-at f 0)) 's)
+              lib:?&Node (as ?&Node (node-at f 1)))
           (cond
             (or (= h "import") (= h "import-prefixed"))
               ; Spelled explicitly: the prefix may have been a derived default.
@@ -204,17 +204,17 @@
 
 ; A C header's constant in an array extent is written as its value: the importer
 ; binds this header's C imports but never reads them.
-(defn nuch-extent-values (n:raw:Node):void
+(defn nuch-extent-values (n:?&Node):void
   (when (!= (node-kind n) NODE-LIST) (return))
   (let (arr:bool (and (= (node-len n) 3) (= (node-kind (node-at n 0)) NODE-SYM)
-                      (= ((as raw:Node (node-at n 0)) 's) "array")))
+                      (= ((as ptr:Node (node-at n 0)) 's) "array")))
     (dotimes (i (node-len n))
       (if (and arr (= i 2))
         (nuch-cconst-values n i)
-        (nuch-extent-values (as raw:Node (node-at n i)))))))
+        (nuch-extent-values (as ?&Node (node-at n i)))))))
 
-(defn nuch-cconst-values (lst:raw:Node i:i32):void
-  (let (e:raw:Node (as raw:Node (node-at lst i)))
+(defn nuch-cconst-values (lst:?&Node i:i32):void
+  (let (e:ptr:Node (as ptr:Node (node-at lst i)))
     (cond
       (= (node-kind e) NODE-SYM)
         (if-some (s (scope-lookup g-globals (e 's)))
@@ -243,8 +243,8 @@
         (emit g-hdr "(set-ir-prefix \"" override "\")\n"))))
   (emit-nuch-import-env forms)
   (dotimes (fi (node-len forms))
-    (let (fc:raw:Node (as raw:Node (node-at forms fi)))
-      (let (f:ptr:Node (unsafe/cast &Node fc))
+    (let (fc:?&Node (as ?&Node (node-at forms fi)))
+      (let (f:&Node (unsafe/cast &Node fc))
         (when (and (!= f null)
                    (= (f 'kind) NODE-LIST)
                    (> (node-len (as ptr f)) 0)
@@ -289,7 +289,7 @@
 
 ; `:rest`/`:optional` are defn-only, and a declaration has no machinery for
 ; them; a C variadic tail needs no marker, since a declared signature is open-tailed.
-(defn reject-declare-marker (n:(raw Node) line:i32):void
+(defn reject-declare-marker (n:?&Node line:i32):void
   (when (or (!= (marker-named n "rest") 0) (!= (marker-named n "optional") 0))
     (die-at line
       (fstr "declare: '" (marker-spelling n)
@@ -297,11 +297,11 @@
 
 ; A `declare` parameter as it reads before types resolve.
 (defn declare-param-named? (p:ptr):bool
-  (return (or (node-empty? (as raw:Node p))
+  (return (or (node-empty? (as ?&Node p))
               (and (= (node-kind p) NODE-SYM) (= (type-sigil-run (-> p (unsafe/cast &Node _) (_ 's))) 0))
               (and (= (node-kind p) NODE-LIST)
-                   (not (type-form-list? (as raw:Node p)))
-                   (!= (node-kind (as ptr (node-first (as raw:Node p)))) NODE-LIST)))))
+                   (not (type-form-list? (as ?&Node p)))
+                   (!= (node-kind (as ptr (node-first (as ?&Node p)))) NODE-LIST)))))
 
 ; Stage 15 W3c fallout (cheader.md, "Unnamed `declare` parameters carry types"):
 ; a `declare` parameter list admits an UNNAMED parameter written as its bare type
@@ -321,9 +321,9 @@
 ; A spelling that does not name a type raises the ordinary located
 ; `unknown type: …` through parse-type-name / parse-type-from-node. Defaulting is
 ; what produced the defect; there is nothing to fall back to.
-(defn declare-param-type (node:(raw Node) line:i32):(raw Type)
+(defn declare-param-type (node:?&Node line:i32):&Type
   (when (= node null) (die-at line "declare: empty parameter"))
-  (let (n:(raw Node) node)
+  (let (n:?&Node node)
     ; Before the keyword arm, which would read `:rest` as `unknown type: rest`.
     (reject-declare-marker n line)
     ; A keyword operand (`:i64`) carries the spelling without the colon, exactly
@@ -335,7 +335,7 @@
 ; through `io-n`. Extracted from nuch-declare-import so item 36's conflict message
 ; can render the declared signature by calling the very parse the import runs,
 ; rather than a second copy of it.
-(defn declare-param-types (params-node:ptr line:i32 io-n:ptr:i32):ptr
+(defn declare-param-types (params-node:ptr line:i32 io-n:&i32):ptr
   (let (nparams:i32 0)
     (when (!= params-node null) (set! nparams (node-len params-node)))
     (set! (aref io-n 0) nparams)
@@ -354,17 +354,17 @@
               named:bool (declare-param-named? p)
               pty:ptr (if named (extract-name-and-type p (as &Symbol &pn) pline) null))
           (when (= pty null)
-            (set! pty (declare-param-type (as raw:Node p) pline)))
-          (set! (aref (as &ptr ptypes) j) pty)))
+            (set! pty (declare-param-type (as ?&Node p) pline)))
+          (set! (aref (unsafe/cast &ptr ptypes) j) pty)))
       (return ptypes))))
 
 ; A function type's parameter Types as the flat array `fn-sig-spelling` takes —
 ; the same shape `declare-param-types` builds from source.
-(defn fn-type-param-array (ft:ptr:Type):ptr
+(defn fn-type-param-array (ft:&Type):ptr
   (when (<= (ft 'num-params) 0) (return null))
   (let (a:ptr (arena-alloc (* (ft 'num-params) (ptr-bytes))))
     (dotimes (j (ft 'num-params))
-      (set! (aref (as &ptr a) j) (unsafe/cast ptr ((field-at (ft 'params) j) 'type))))
+      (set! (aref (unsafe/cast &ptr a) j) (unsafe/cast ptr ((field-at (ft 'params) j) 'type))))
     (return a)))
 
 ; `(i32):i32` — a signature in SOURCE spellings, for a diagnostic. Deliberately
@@ -375,8 +375,8 @@
   (let (acc:StrView "(")
     (dotimes (j nparams)
       (when (!= j 0) (set! acc (fstr acc ", ")))
-      (set! acc (fstr acc (type-display (unsafe/cast raw:Type (aref (as &ptr ptypes) j))))))
-    (return (fstr acc "):" (type-display (unsafe/cast raw:Type ret))))))
+      (set! acc (fstr acc (type-display (unsafe/cast ptr:Type (aref (unsafe/cast &ptr ptypes) j))))))
+    (return (fstr acc "):" (type-display (unsafe/cast ptr:Type ret))))))
 
 ; `file:line` of a DEFINITION of `fname` in this unit, or null if it has none —
 ; the second of the two questions the skip below asks (Stage 15 W9 item 36). Only
@@ -384,12 +384,12 @@
 ; and an imported `declare` both answer null, which is the case the skip is FOR.
 ; Same provenance `duplicate-signature-message` uses.
 (defn nuch-definition-site (fname:Symbol):StrView
-  (let (g:?ptr:Generic (generic-lookup fname))
+  (let (g:?&Generic (generic-lookup fname))
     (when (= g null) (return ""))
-    (let (gg:ptr:Generic (as &Generic g)
+    (let (gg:&Generic g
           i:i32 0)
       (while (< i (unsafe/cast i32 (count (gg 'methods))))
-        (let (mi:ptr:Method (as &Method (invoke (gg 'methods) i:usize)))
+        (let (mi:&Method (as &Method (invoke (gg 'methods) i:usize)))
           (when (and (= (mi 'kind) METHOD-USER) (!= (as ptr (mi 'body)) null))
             (let (f:Symbol (mi 'src-file))
               (when (symbol-none? f) (set! f (symbol-intern "<unknown file>")))
@@ -411,9 +411,9 @@
         prev:ptr (as ptr (scope-lookup-key g-globals fname))
         theirs:StrView "a value of another kind")
     (when (!= prev null)
-      (let (pt:raw:Type ((as &Sym prev) 'type))
+      (let (pt:?&Type ((unsafe/cast &Sym prev) 'type))
         (when (!= pt null)
-          (let (ft:ptr:Type (unsafe/cast &Type pt))
+          (let (ft:&Type (unsafe/cast &Type pt))
             (when (= (ft 'kind) TY-FN)
               (set! theirs (fstr fname
                                  (fn-sig-spelling (unsafe/cast ptr (ft 'ret))
@@ -426,14 +426,14 @@
                   (fn-sig-spelling ret ptypes nparams) ", the unit has " theirs
                   ". One name is one key here, so nothing — not even a qualified call — would reach the header's. Rename one, or give the library an (ns ...) so its exports key and link under it.")))))
 
-(defn emit-nuch-declare-import (form:(raw Node)):void
+(defn emit-nuch-declare-import (form:?&Node):void
   (nuch-declare-import form NUCH-BOTH))
 
 ; Stage 15 W9 item 29: split by NUCH-* mode. The prescan registers a header's
 ; declares (NUCH-REG) so they resolve on reachability; the import emits their
 ; LLVM `declare` lines (NUCH-AFTER) from exactly where it always has.
-(defn nuch-declare-import (form:(raw Node) mode:i32):void
-  (let (ff:ptr:Node (unsafe/cast &Node form))
+(defn nuch-declare-import (form:?&Node mode:i32):void
+  (let (ff:&Node (unsafe/cast &Node form))
     ; Trailing declaration attributes (`:noreturn`, `:returns-twice`), carried
     ; verbatim by desugar — e.g. (declare abort () :void :noreturn).
     ; eff-len is the length with the run stripped, so the param-list index logic
@@ -458,7 +458,7 @@
         ; W9 item 45: a name spelled `()` is a NULL node (W5f). It is not a legacy
         ; signature — the message below would quote it as '(null)' — it is no name
         ; at all, so it gets the wording every other definer uses for that.
-        (require-declare-name (as raw:Node name-node) (ff 'line))
+        (require-declare-name (as ?&Node name-node) (ff 'line))
         (if (!= ndi-new 0)
           (do
             (when (!= eff-len 4)
@@ -472,10 +472,10 @@
               ret:ptr (if (!= ndi-new 0)
                         (fn-parse-ret-type (node-at form 3) (ff 'line))
                         (extract-name-and-type name-node (as &Symbol &fname)
-                                               ((as &Node name-node) 'line))))
+                                               ((unsafe/cast &Node name-node) 'line))))
           (when (!= ndi-new 0) (set! fname (-> name-node (unsafe/cast &Node _) (_ 's))))
           (when (= ret null)
-            (die-at ((as &Node name-node) 'line) (fstr "declare: missing :type on '" fname
+            (die-at ((unsafe/cast &Node name-node) 'line) (fstr "declare: missing :type on '" fname
                                                           "'")))
           ; W9 item 29: emit-only is a promise the prescan registered THIS name
           ; from THIS header. It registers nothing the skip below already
@@ -537,15 +537,15 @@
             ; unaffected.
             (let (site:ptr (as ptr (cheader-explicit-declare-site fname)))
               (when (!= site null)
-                (let (msig:StrView (c-fn-sig-render (as raw:Type ret) ptypes nparams 0)
+                (let (msig:StrView (c-fn-sig-render (as ?&Type ret) ptypes nparams 0)
                       shadow:ptr (as ptr (cdecl-site-find g-cheader-shadowed
                                                           fname)))
-                  (set! ((as &CDeclSite site) 'sig) msig)
+                  (set! ((unsafe/cast &CDeclSite site) 'sig) msig)
                   (when (and (!= shadow null)
-                             (!= ((as &CDeclSite shadow) 'sig) msig))
-                    (cheader-warn-decl-conflict (as raw:CDeclSite site)
-                                                (as raw:CDeclSite shadow))))))
-            (let (ft:ptr:Type (as &Type (make-type TY-FN)))
+                             (!= ((unsafe/cast &CDeclSite shadow) 'sig) msig))
+                    (cheader-warn-decl-conflict (as ?&CDeclSite site)
+                                                (as ?&CDeclSite shadow))))))
+            (let (ft:&Type (as &Type (make-type TY-FN)))
               (set! (ft 'ret) ret)
               (type-set-params ft ptypes nparams)
               (set! (ft 'variadic) 0)
@@ -556,10 +556,10 @@
                 ; arguments a C variadic call needs — the idiom this very file's
                 ; `:rest`-in-a-declaration diagnostic points users at, and which
                 ; `docs/toplevel.md` documents. Too few arguments is still refused.
-                (set! ((as &Sym dsym) 'extern-decl) 1)
-                (when (!= is-noreturn 0) (set! ((as &Sym dsym) 'noreturn) 1))
+                (set! (dsym 'extern-decl) 1)
+                (when (!= is-noreturn 0) (set! (dsym 'noreturn) 1))
                 (when (!= is-returns-twice 0)
-                  (set! ((as &Sym dsym) 'returns-twice) 1))))
+                  (set! (dsym 'returns-twice) 1))))
             ; Stage 15 W9 item 24: and in the generic registry, which is where
             ; every OTHER producer of a callable name puts it — `emit-defn`
             ; registers even a solitary function, and that is why a protocol
@@ -573,8 +573,8 @@
             ; defined and linkable). `ir-fixed` because the producing unit
             ; already chose this symbol — see finalize-generics.
             (let (dm:ptr (generic-register-method fname ret ptypes nparams 0 0 null))
-              (set! ((as &Method dm) 'ir-name) link-ir)
-              (set! ((as &Method dm) 'ir-fixed) 1))
+              (set! ((unsafe/cast &Method dm) 'ir-name) link-ir)
+              (set! ((unsafe/cast &Method dm) 'ir-fixed) 1))
             (when (= m NUCH-REG)
               (set! g-nuch-registered
                     (import-list-push g-nuch-registered
@@ -582,12 +582,12 @@
           (when (!= m NUCH-REG)
             ; Emit LLVM declare, lowering struct-by-value params/return to the
             ; platform C ABI (sret / byval / register coercion) just like a defn.
-            (let (ret-info:ptr:AbiInfo (unsafe/cast &AbiInfo (abi-classify ret)))
+            (let (ret-info:&AbiInfo (unsafe/cast &AbiInfo (abi-classify ret)))
               (emit g-out "declare " (abi-ret-ir ret-info ret) " " link-ir "(")
               (let (need-comma:i32 0)
-                (when (= ((as &AbiInfo ret-info) 'kind) ABI-MEMORY)
+                (when (= (ret-info 'kind) ABI-MEMORY)
                   (emit g-out "ptr sret(" (type-to-ir ret) ") align "
-                        ((as &AbiInfo ret-info) 'align))
+                        (ret-info 'align))
                   (set! need-comma 1))
                 ; RV-6c: one walk over this declare's parameters — reset the
                 ; riscv64 register budget (design/stage14/riscv-fp-abi.md §4).
@@ -595,8 +595,8 @@
                 (dotimes (j nparams)
                   (when (!= need-comma 0) (emit g-out ", "))
                   (abi-print-param
-                   (abi-classify-arg (aref (as &ptr ptypes) j))
-                   (aref (as &ptr ptypes) j)
+                   (abi-classify-arg (aref (unsafe/cast &ptr ptypes) j))
+                   (aref (unsafe/cast &ptr ptypes) j)
                    (symbol-none))
                   (set! need-comma 1)))
               ; Trailing LLVM function attributes, additive so a `declare` and the
@@ -609,14 +609,14 @@
 ; Import one exported overloaded method: register it (with its mangled symbol)
 ; in the generic registry so calls in the importing unit dispatch to it, and
 ; emit an LLVM declare under the mangled symbol (resolved at link time).
-(defn emit-nuch-defmethod-import (form:(raw Node)):void
+(defn emit-nuch-defmethod-import (form:&Node):void
   (nuch-defmethod-import form NUCH-BOTH))
 
 ; Stage 15 W9 item 29: split by NUCH-* mode, as nuch-declare-import. This one
 ; needs no per-name list — it has no "already defined" skip, so the prescan
 ; registers every `defmethod` in the header and the import emits every one.
-(defn nuch-defmethod-import (form:(raw Node) mode:i32):void
-  (let (ff:ptr:Node (unsafe/cast &Node form))
+(defn nuch-defmethod-import (form:?&Node mode:i32):void
+  (let (ff:&Node (unsafe/cast &Node form))
     ; S3: new-style entry `(defmethod "@sym" NAME (params) :ret)` — the mangled
     ; symbol (1), a bare name (2), the params (3) and the return operand (4),
     ; plus any trailing declaration attributes.
@@ -628,8 +628,8 @@
                         (ff 'line)))
     (when (!= eff-len 5)
       (die-at (ff 'line) "defmethod: expected (defmethod \"@sym\" name (params...) :ret)"))
-    (let (sym-node:ptr:Node (unsafe/cast &Node (node-at form 1))
-          name-node:ptr:Node (unsafe/cast &Node (node-at form 2))
+    (let (sym-node:&Node (unsafe/cast &Node (node-at form 1))
+          name-node:&Node (unsafe/cast &Node (node-at form 2))
           params-node:ptr (node-at form 3))
       (when (!= (sym-node 'kind) NODE-STR)
         (die-at (sym-node 'line) "defmethod: first element must be the mangled symbol string"))
@@ -643,18 +643,18 @@
               has-rest:i32 (defn-params-has-rest params-node))
           (when (!= mode NUCH-AFTER)
             (let (m:ptr (generic-register-method fname ret ptypes nparams has-rest 0 null))
-              (defn-params-set-opt (as raw:Node params-node)
-                (unsafe/cast &Type ((as &Method m) 'fn-type)))
-              (set! ((as &Method m) 'ir-name) mangled)
+              (defn-params-set-opt (as ?&Node params-node)
+                (unsafe/cast &Type ((unsafe/cast &Method m) 'fn-type)))
+              (set! ((unsafe/cast &Method m) 'ir-name) mangled)
               ; Stage 15 W9 item 24: the producing unit emitted this symbol, so
               ; finalize-generics may not rename it. Until now that held only by
               ; coincidence — a re-mangle recomputed the same string — and stopped
               ; holding the moment a local overload joined the set and shifted the
               ; per-prefix count.
-              (set! ((as &Method m) 'ir-fixed) 1))
+              (set! ((unsafe/cast &Method m) 'ir-fixed) 1))
             (let (g:ptr (generic-lookup fname))
-              (set! ((as &Generic g) 'mangled) 1)
-              (set! ((as &Generic g) 'finalized) 1)))
+              (set! ((unsafe/cast &Generic g) 'mangled) 1)
+              (set! ((unsafe/cast &Generic g) 'finalized) 1)))
           (when (!= mode NUCH-REG)
           ; Lower struct-by-value params/return to the platform C ABI exactly as
           ; emit-nuch-declare-import (above) and emit-defn do. Emitting raw
@@ -662,12 +662,12 @@
           ; while the defining unit's `define` lowered it (sret / byval /
           ; register coercion), so the two disagreed on EVERY target — an
           ; imported overloaded method taking or returning a struct by value.
-          (let (ret-info:ptr:AbiInfo (unsafe/cast &AbiInfo (abi-classify ret)))
+          (let (ret-info:&AbiInfo (unsafe/cast &AbiInfo (abi-classify ret)))
             (emit g-out "declare " (abi-ret-ir ret-info ret) " " mangled "(")
             (let (need-comma:i32 0)
-              (when (= ((as &AbiInfo ret-info) 'kind) ABI-MEMORY)
+              (when (= (ret-info 'kind) ABI-MEMORY)
                 (emit g-out "ptr sret(" (type-to-ir ret) ") align "
-                      ((as &AbiInfo ret-info) 'align))
+                      (ret-info 'align))
                 (set! need-comma 1))
               ; RV-6c: one walk over this declare's parameters — reset the
               ; riscv64 register budget (design/stage14/riscv-fp-abi.md §4).
@@ -675,8 +675,8 @@
               (dotimes (j nparams)
                 (when (!= need-comma 0) (emit g-out ", "))
                 (abi-print-param
-                  (abi-classify-arg (aref (as &ptr ptypes) j))
-                  (aref (as &ptr ptypes) j)
+                  (abi-classify-arg (aref (unsafe/cast &ptr ptypes) j))
+                  (aref (unsafe/cast &ptr ptypes) j)
                   (symbol-none))
                 (set! need-comma 1)))
             (emit g-out ")")
@@ -687,10 +687,10 @@
 ; A defunion arriving via .nuch: register the type (or template) exactly as
 ; the defining unit did, but emit `declare`s for the arm constructors — their
 ; definitions live in the exporting unit's object file.
-(defn emit-defunion-import (form:(raw Node)):void
-  (let (ff:ptr:Node (unsafe/cast &Node form))
+(defn emit-defunion-import (form:?&Node):void
+  (let (ff:&Node (unsafe/cast &Node form))
     (require-defunion-form (as ptr ff))
-    (let (name-node:ptr:Node (unsafe/cast &Node (node-at form 1)))
+    (let (name-node:&Node (unsafe/cast &Node (node-at form 1)))
       (case (name-node 'kind)
         NODE-LIST
           (do (register-union-template (as ptr ff)) (return))
@@ -716,11 +716,11 @@
                   ud:&UnionDef (defunion-register (qualify-name (name-node 's))
                                     arms (ff 'line)))
               ; Constructor declares: (declare Name-arm:Name (fields...)).
-              (let (saved-out:raw:String g-out)
+              (let (saved-out:?&String g-out)
                 (set! g-out &g-decl-stream)
                 (dotimes (ai (node-len arms))
-                  (let (cur:raw:Node (as raw:Node (node-at arms ai)))
-                    (let (ctor:ptr:Node (as &Node
+                  (let (cur:?&Node (as ?&Node (node-at arms ai)))
+                    (let (ctor:&Node (unsafe/cast &Node
                                            (union-ctor-form (name-node 's)
                                                             cur (ff 'line))))
                       ; Reshape the synthesized new-style defn into a new-style declare:
@@ -735,7 +735,7 @@
                 (set! g-out saved-out))))
         (die-at (name-node 'line) "defunion: name must be a symbol")))))
 
-(defn emit-nuch-import-forms (forms:(raw Node)):void
+(defn emit-nuch-import-forms (forms:?&Node):void
   ; Stage 15 W9 item 29: did the whole-graph prescan already register this
   ; header? It keys on the SAME list `emit-toplevel-forms` reads for a `.nuc`
   ; file, and `do-import` has set g-source-path to the header's own path. When it
@@ -746,8 +746,8 @@
                           (!= (import-list-has g-prescan-sigs g-source-path) 0))
                    NUCH-AFTER NUCH-BOTH))
   (dotimes (fi (node-len forms))
-    (let (fc:raw:Node (as raw:Node (node-at forms fi)))
-      (let (f:ptr:Node (unsafe/cast &Node fc))
+    (let (fc:?&Node (as ?&Node (node-at forms fi)))
+      (let (f:&Node (unsafe/cast &Node fc))
         (when (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST)
                    (> (node-len (as ptr f)) 0)
                    (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))
@@ -767,12 +767,12 @@
               ; The source file's bindings (emit-nuch-import-env): they name what
               ; its text was written against and load nothing, like its `declare`s.
               (:or "import" "import-prefixed" "import-use" "import-only" "unsafe/import-private")
-                (when (not (import-form-bind (as raw:Node f)))
+                (when (not (import-form-bind f))
                   (die-import-not-found (-> f (node-at _ 1) (unsafe/cast &Node _) (_ 's))
                                         (f 'line)))
               ; A facade's re-exports, from the libraries the lines above bind.
               "export"
-                (emit-export (as raw:Node f))
+                (emit-export f)
               "defstruct"
                 (do (set! g-out &g-type-stream) (emit-defstruct (as ptr f)))
               "defunion"
@@ -826,10 +826,10 @@
 ; known moves. It also means this pass needs no output stream, so it is equally
 ; correct under `--emit-nuch` / `--emit-cheader`, which return before
 ; `open-module-streams`.
-(defn prescan-nuch-signatures (forms:(raw Node)):void
+(defn prescan-nuch-signatures (forms:?&Node):void
   (dotimes (fi (node-len forms))
-    (let (fc:raw:Node (as raw:Node (node-at forms fi)))
-      (let (f:ptr:Node (unsafe/cast &Node fc))
+    (let (fc:?&Node (as ?&Node (node-at forms fi)))
+      (let (f:&Node (unsafe/cast &Node fc))
         (when (and (!= (as ptr f) null) (= (f 'kind) NODE-LIST)
                    (> (node-len (as ptr f)) 0)
                    (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM)))

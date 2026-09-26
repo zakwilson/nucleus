@@ -1,6 +1,6 @@
 # Stage 21 — cleanup
 
-**Status:** opened 2026-09-16. Five items designed and built (item 2 on 2026-09-18, items 1 and 3 on 2026-09-19, item 4 on 2026-09-21, item 5 on 2026-09-22).
+**Status:** opened 2026-09-16. Item 7 designed and built 2026-09-26 (1,192 tests, boot refreshed). Earlier items designed and built (item 2 on 2026-09-18, items 1 and 3 on 2026-09-19, item 4 on 2026-09-21, item 5 on 2026-09-22).
 
 **Goal.** Close the deferred items and rough edges the prior stages left behind
 — the ones recorded in [deferred/overview.md](../deferred/overview.md) and the
@@ -195,6 +195,25 @@ fewer "convention, not a rule" edges in it.
    both indexable and a struct. 1094 tests, bootstrap converged, both gates
    re-baselined. Outcome and the six surprises in §8.6.
 
+7. **`ptr` is the unchecked pointer; `raw` is retired** — **designed and
+   built 2026-09-26** — [ptr-is-unchecked.md](ptr-is-unchecked.md) (BP-1 … BP-7).
+   The typed spellings never drifted. The untyped pointer did: bare `ptr` is
+   typed non-null yet holds `null` and every C `T*`, which leaves a null hole
+   into `&T` slots and makes `cond` refuse to test it. Bare `raw` is a second
+   `void*` and `&void` a third. After: `ptr` is the untyped unchecked pointer
+   and `(ptr T)` the typed one, taking over everything `(raw T)` does; `&T` is
+   non-null; `?&T` is checked; `raw` is reserved. Unchecked pointers are
+   unsafe, so a final sweep makes most of them `&T`/`?&T`, keeping `(ptr T)`
+   only where it saves significant complexity. Measured with an instrumented
+   compiler: ~840 bare-`ptr` sites and ≤1,130 unchecked derefs in `src/`. Every
+   step is IR-neutral, with one boot refresh mid-way (BP-3), because
+   `(ptr T)` changes meaning. As built: of 2,294 unchecked occurrences, 410
+   became `&T`, ~1,505 `?&T` and 377 stay `(ptr T)`. The classification was
+   measured by fixed-point rounds of an instrumented compiler. Four
+   zero-initialised struct fields had to be demoted by hand, since a `&T`
+   field a constructor forgets holds null. Macro parameters and `gensym` are
+   `&Node`. 1,192 tests (ptr-is-unchecked.md §7).
+
 ## Sequencing
 
 Item 2 lands between item 1's PK-1 and PK-2: **PK-1 → R-1, R-2 (R-3 optional)
@@ -215,6 +234,9 @@ lands whenever. Item 4 is independent of all three the same way (REPL-only
 reach, no new spelling); its RC-0 may land alone. Item 5 touches only `Val`
 bookkeeping and diagnostics — the compiler's own IR is byte-identical — so it
 is independent of everything above.
+Item 7 runs BP-1 → BP-7 in order: the non-null `(ptr T)` uses become `&T`
+before the compiler changes the spelling's meaning, and a boot refresh sits
+between that change and moving `raw` onto it (ptr-is-unchecked.md §5).
 
 ## Item 6 in full: the AST as a collection
 

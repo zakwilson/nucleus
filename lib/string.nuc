@@ -13,7 +13,7 @@
 ;   - `?` and `!` must NOT appear in plain defn names (LLVM IR rejects them).
 ;     They are fine in generic protocol method names (sanitize-for-ir strips them).
 ;   - The byte element type is `ui8`; `u8` is not a Nucleus type name.
-;   - Vector fields: data:(raw ui8), len:usize, cap:usize, alloc:AllocHandle.
+;   - Vector fields: data:(ptr ui8), len:usize, cap:usize, alloc:AllocHandle.
 ;   - Field access uses the raw `_get` intrinsic: `(_get v len)` reads field `len`
 ;     from `(ref (Vector T))`. The callable form `(v idx)` indexes (invoke), so a
 ;     literal field name like `(v len)` would mis-route to invoke — use `_get`.
@@ -54,7 +54,7 @@
 (defn string-as-view (self:&String):StrView
   (let (v:&(Vector ui8) (ref self 'bytes)
         len:usize (_get v 'len)
-        data:&ui8 (as &ui8 (as ptr (_get v 'data))))
+        data:&ui8 (unsafe/cast &ui8 (as ptr (_get v 'data))))
     (let (sv:&StrView (alloca StrView))
       (set! (sv 'data) data)
       (set! (sv 'len) len)
@@ -103,7 +103,7 @@
     ; Ensure capacity for clen more bytes (reserve takes total slots needed).
     (reserve v (+ (_get v 'len) clen))
     ; Write directly into the raw buffer at offset len.
-    (let (dst:&ui8 (unsafe/ptr+ (as &ui8 (as ptr (_get v 'data))) (as i64 (_get v 'len))))
+    (let (dst:&ui8 (unsafe/ptr+ (unsafe/cast &ui8 (as ptr (_get v 'data))) (as i64 (_get v 'len))))
       (char-encode-utf8 c dst)
       ; Bump len by clen.
       (set! (v 'len) (+ (_get v 'len) clen)))))
@@ -140,7 +140,7 @@
     ; Walk backward to find the start of the last codepoint.
     ; A continuation byte has pattern 10xxxxxx: (b & 0xC0) == 0x80.
     ; The last codepoint start is the last non-continuation byte.
-    (let (p:&ui8 (as &ui8 (as ptr (_get v 'data)))
+    (let (p:&ui8 (unsafe/cast &ui8 (as ptr (_get v 'data)))
           i:usize (- len 1))
       ; Skip continuation bytes backward.
       (while (and (> i 0)
@@ -171,7 +171,7 @@
     ; Check byte boundary: byte_len must not fall on a continuation byte.
     ; A continuation byte has pattern 10xxxxxx (bit-and b 0xC0) == 0x80.
     (when (and (> byte-len 0) (< byte-len cur-len))
-      (let (b:ui8 (aref (as &ui8 (as ptr (_get v 'data))) (as i64 byte-len)))
+      (let (b:ui8 (aref (unsafe/cast &ui8 (as ptr (_get v 'data))) (as i64 byte-len)))
         (when (= (bit-and (as ui32 b) 192) 128)
           (return (err! invalid-char-boundary)))))
     (set! (v 'len) byte-len)
@@ -201,7 +201,7 @@
   (let (v:&(Vector ui8) (ref self 'bytes)
         len:usize (_get v 'len))
     (reserve v (+ len 1))
-    (let (p:&ui8 (as &ui8 (as ptr (_get v 'data))))
+    (let (p:&ui8 (unsafe/cast &ui8 (as ptr (_get v 'data))))
       (set! (aref p (as i64 len)) 0)
       (return (as CStr (as ptr p))))))
 
@@ -218,7 +218,7 @@
       (set! (v 'cap) 0)
       (return))
     ; Reallocate to exactly cur-len bytes.
-    (let ((new-data (raw ui8))
+    (let ((new-data ?&ui8)
           (alloc-handle-realloc (ref v 'alloc) (_get v 'data) (_get v 'cap) cur-len 8))
       (when (= (as ptr new-data) null)
         (fprintf stderr "string: out of memory in shrink-to-fit\n")
@@ -252,7 +252,7 @@
 ; string-from-cstr-unchecked — copy a CStr's bytes into a new String (no validation).
 ; The caller must ensure the bytes are valid UTF-8.
 (defn string-from-cstr-unchecked ((cs CStr)):String
-  (let (p:&ui8 (as &ui8 (as ptr cs))
+  (let (p:&ui8 (unsafe/cast &ui8 (as ptr cs))
         n:usize (as usize (strlen (as ptr cs))))
     (let (s:&String (alloca String))
       (vector-init (ref s 'bytes))
@@ -262,7 +262,7 @@
 ; string-from-cstr — copy a CStr's bytes into a new String, validating UTF-8.
 ; Returns !String: err invalid-utf8 if the bytes are not valid UTF-8.
 (defn string-from-cstr ((cs CStr)):!String
-  (let (p:&ui8 (as &ui8 (as ptr cs))
+  (let (p:&ui8 (unsafe/cast &ui8 (as ptr cs))
         n:usize (as usize (strlen (as ptr cs))))
     ; Validate UTF-8.
     (let (pos:usize 0)

@@ -101,9 +101,9 @@
 (defn main ():i32 (return 0))
 "))
         c:Compiled (try (compile-path-in dir (string-as-view &m)))
-        raw:StrView (string-as-view (ref c 'raw)))
+        raw-text:StrView (string-as-view (ref c 'raw-text)))
     (try (check-error-anywhere (ref c 'diags) "redefinition of 'RdX'"))
-    (try (check-contains raw (string-as-view &a)))
+    (try (check-contains raw-text (string-as-view &a)))
     (drop &c)
     (drop &m)
     (drop &b)
@@ -124,9 +124,9 @@
 (defn main ():i32 (return RD-EQ))
 "))
         c:Compiled (try (compile-path-in dir (string-as-view &m)))
-        raw:StrView (string-as-view (ref c 'raw)))
+        raw-text:StrView (string-as-view (ref c 'raw-text)))
     (try (check-error-anywhere (ref c 'diags) "redefinition of 'RD-EQ'"))
-    (try (check-contains raw (string-as-view &a)))
+    (try (check-contains raw-text (string-as-view &a)))
     (drop &c)
     (drop &m)
     (drop &b)
@@ -242,10 +242,10 @@
 "))
         mv:StrView (string-as-view &m)
         c:Compiled (try (compile-path-in dir mv))
-        raw:StrView (string-as-view (ref c 'raw)))
+        raw-text:StrView (string-as-view (ref c 'raw-text)))
     (try (check-error-at (ref c 'diags) mv 3 "ambiguous call to 'w35-desc'"))
-    (try (check-contains raw "'w35qa/w35-desc'"))
-    (try (check-contains raw "'w35qb/w35-desc'"))
+    (try (check-contains raw-text "'w35qa/w35-desc'"))
+    (try (check-contains raw-text "'w35qb/w35-desc'"))
     (drop &c)
     (drop &m)))
 
@@ -258,9 +258,9 @@
 (defn main ():i32 (return (w35-desc 10)))
 "))
         c:Compiled (try (compile-path-in dir (string-as-view &m)))
-        raw:StrView (string-as-view (ref c 'raw)))
-    (try (check-contains raw "defined in namespaces 'w35qa' and 'w35qb'"))
-    (try (check-contains raw "write 'a/w35-desc' or 'b/w35-desc' here"))
+        raw-text:StrView (string-as-view (ref c 'raw-text)))
+    (try (check-contains raw-text "defined in namespaces 'w35qa' and 'w35qb'"))
+    (try (check-contains raw-text "write 'a/w35-desc' or 'b/w35-desc' here"))
     (drop &c)
     (drop &m)))
 
@@ -303,13 +303,13 @@
 (defn main ():int
   (let (a:i64 (show (as i64 1))
         l:ptr (as i64 2)
-        b:ptr:Bx (alloca Bx)
+        b:&Bx (alloca Bx)
         arr:ptr (alloca ptr 2))
     (set! (b 'p) (as i64 5))
-    (set! (aref (as ptr:ptr arr) 0) (as i64 6))
+    (set! (aref (unsafe/cast &ptr arr) 0) (as i64 6))
     (printf \"%lld %lld %lld %lld %lld %lld\\n\"
       a (show l) (show (mk)) (show (mk2)) (show (b 'p))
-      (show (aref (as ptr:ptr arr) 0))))
+      (show (aref (unsafe/cast &ptr arr) 0))))
   (return 0))
 ")))
     (try (check-eq (string-as-view &out) "1 2 3 4 5 6\n"))
@@ -357,7 +357,7 @@
 "))
         ds:(Vector Diagnostic) (c 'diags))
     (when (= (count &ds) 0) (fail! "expected a type error"))
-    (try (check-not-contains (string-as-view (ref c 'raw)) "a defcast rule"))
+    (try (check-not-contains (string-as-view (ref c 'raw-text)) "a defcast rule"))
     (drop &c)))
 
 ; Built-in coercion still wins: a rule may not be registered for a pair the
@@ -394,7 +394,7 @@
 (defn w9lay-byval ((v W9LayBox)):i32 (return (+ (_get &v 'a) (_get &v 'b))))
 (defn main ():i32
   (let (bx (W9LayBox 3 4)
-        ar:ptr:W9LayArr (alloca W9LayArr)
+        ar:&W9LayArr (alloca W9LayArr)
         u (make W9LayOpt W9LaySome 5))
     (set! (aref (ar 'xs) 2) 6)
     (set! (ar 'n) 7)
@@ -469,7 +469,7 @@
 "))
         c:Compiled (try (compile-path-in (string-as-view &hdir)
                                          (string-as-view &use))))
-    (try (check-empty (string-as-view (ref c 'raw))))
+    (try (check-empty (string-as-view (ref c 'raw-text))))
     (drop &c)
     (drop &use)
     (drop &hp)
@@ -558,7 +558,7 @@
 
 (deftest b5-private-union
   (try (check-b5-private "b5-cu.nuc" "(import-prefixed b5-plib bp)
-(defn b5-take ((u (raw bp/B5HiddenU))):i32 (return 0))
+(defn b5-take ((u (ptr bp/B5HiddenU))):i32 (return 0))
 (defn main ():i32 (return 0))
 " "unknown type: bp/B5HiddenU")))
 
@@ -623,8 +623,8 @@
 (defn main ():i32 (return 0))
 "))
         c:Compiled (try (compile-path-in dir (string-as-view &m)))
-        raw:StrView (string-as-view (ref c 'raw)))
-    (try (check-not-contains raw "extend: unknown protocol"))
+        raw-text:StrView (string-as-view (ref c 'raw-text)))
+    (try (check-not-contains raw-text "extend: unknown protocol"))
     (try (check-error-anywhere (ref c 'diags)
                                "does not conform to protocol 'b5p/B5HiddenP'"))
     (drop &c)
@@ -645,7 +645,7 @@
 "))
 
 (defn fnslot-locals ():StrView
-  (return "  (let (c:CStr \"hi\" p:ptr (unsafe/cast ptr c) r:raw (unsafe/cast raw c) rf:ptr:RS (RS 1) g:(fn i32)(i32) fscb)
+  (return "  (let (c:CStr \"hi\" p:ptr (unsafe/cast ptr c) r:ptr (unsafe/cast ptr c) rf:&RS (RS 1) g:(fn i32)(i32) fscb)
 "))
 
 ; `null` and a real fn value are the two a fn slot takes; the argument position
@@ -726,7 +726,7 @@
   ; a bare elem-less `ptr` is the fn-pointer analogue of `void *`. Without these
   ; the ubiquitous `qsort` comparator shape would stop compiling.
   (try (check-source-accepts "(declare qs ((cmp (fn i32) (ptr ptr))) :void)
-(defn c1 (a:ptr:i32 b:(ref i32)):i32 (return 0))
+(defn c1 (a:&i32 b:(ref i32)):i32 (return 0))
 (defn main ():i32 (qs c1) (return 0))
 "))
   ; …but a bare ptr is NOT a wildcard for a function pointer: that would
@@ -738,8 +738,8 @@
     (when wild (fail! "a bare ptr was accepted as a function-pointer wildcard")))
   ; …and two different pointee types stay a refusal.
   (let (elem:bool (try (source-compiles? "(defstruct N a:i32)
-(declare qs3 ((cmp (fn i32) (ptr:N))) :void)
-(defn c3 (p:ptr:i32):i32 (return 0))
+(declare qs3 ((cmp (fn i32) (&N))) :void)
+(defn c3 (p:&i32):i32 (return 0))
 (defn main ():i32 (qs3 c3) (return 0))
 ")))
     (when elem (fail! "two different pointee types were accepted"))))
@@ -771,7 +771,7 @@
 (defstruct NuchLib idir:String nuch:String src:String obj:String)
 
 (extend NuchLib Drop)
-(defn drop ((self (ptr NuchLib))):void
+(defn drop ((self &NuchLib)):void
   (drop (ref self 'idir))
   (drop (ref self 'nuch))
   (drop (ref self 'src))
@@ -897,7 +897,7 @@
                                          (string-as-view &p)))
         ir:StrView (string-as-view (ref c 'ir)))
     (when (not (c 'ok?))
-      (fail! (test-show (string-as-view (ref c 'raw)))))
+      (fail! (test-show (string-as-view (ref c 'raw-text)))))
     (try (check-eq-int (count-exact-lines ir "declare i64 @w9nu__Opt-Some(i32)") 1
                        "declares of the Some constructor"))
     (try (check-eq-int (count-exact-lines ir "declare i64 @w9nu__Opt-None()") 1
@@ -1026,7 +1026,7 @@
                                          (string-as-view &p))))
     (when (not (c 'ok?))
       (fail! "the import below every use did not compile\n     "
-             (test-show (string-as-view (ref c 'raw)))))
+             (test-show (string-as-view (ref c 'raw-text)))))
     (drop &c)
     (drop &p)
     (drop &below)
@@ -1095,7 +1095,7 @@
         c:Compiled (try (compile-path-in hv (string-as-view &p)))
         ir:StrView (string-as-view (ref c 'ir)))
     (when (not (c 'ok?))
-      (fail! (test-show (string-as-view (ref c 'raw)))))
+      (fail! (test-show (string-as-view (ref c 'raw-text)))))
     (try (check-eq-int (count-exact-lines ir "@w9no-shared = external global i32") 1
                        "external globals for the shared name"))
     (try (check-eq-int (count-exact-lines ir "declare i32 @w9no-a(i32)") 1
@@ -1179,7 +1179,7 @@
         p:String (try (test-write-file "w24use.nuc" (string-as-view &src)))
         c:Compiled (try (compile-path (string-as-view &p))))
     (when (not (c 'ok?))
-      (fail! (test-show (string-as-view (ref c 'raw)))))
+      (fail! (test-show (string-as-view (ref c 'raw-text)))))
     (try (check-contains (string-as-view (ref c 'ir))
                          "internal constant { ptr, ptr } { ptr @w24__describe,"))
     (drop &c)
@@ -1200,7 +1200,7 @@
         c:Compiled (try (compile-path (string-as-view &p))))
     (when (not (c 'ok?))
       (fail! "an imported method did not satisfy the consumer's protocol\n     "
-             (test-show (string-as-view (ref c 'raw)))))
+             (test-show (string-as-view (ref c 'raw-text)))))
     (drop &c)
     (drop &p)
     (drop &src)
@@ -1331,7 +1331,7 @@
 ")))
     (when (not (c 'ok?))
       (fail! "an idempotent re-declaration was reported\n     "
-             (test-show (string-as-view (ref c 'raw)))))
+             (test-show (string-as-view (ref c 'raw-text)))))
     (drop &c)))
 
 ; Accepting half B: a name the unit does NOT define is untouched — the library's

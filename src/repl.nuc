@@ -17,7 +17,7 @@
 ; A jump buffer belongs in the frame the jump returns into, so each protected
 ; frame allocas its own and publishes the pointer here. (A `defvar` could not
 ; hold them anyway: c-header-layout.md §11.2.)
-(defvar g-repl-jmpbufs:(array raw REPL-MAX-PROTECT))
+(defvar g-repl-jmpbufs:(array ptr REPL-MAX-PROTECT))
 (defvar g-repl-depth:i32 0)
 
 ; Run `(body ctx)`: 0 if it returned normally, 1 if `repl-throw` unwound out.
@@ -131,7 +131,7 @@
 
 ; The type printer `type-of` and `dir` need: `type-display`, but a function type
 ; prints as the `(fn ret p0:T …)` a prompt user would write.
-(defn repl-type-to-nuc (t:(raw Type)):StrView
+(defn repl-type-to-nuc (t:?&Type):StrView
   (when (= t null) (return "?"))
   (when (!= (t 'kind) TY-FN) (return (type-display t)))
   (let ((out String) (string-new-alloc (strfmt-alloc))
@@ -162,10 +162,10 @@
   (when (!= (find-macro name) null) (return "macro"))
   (when (>= (rd-macro-find repl-rmacros (symbol-as-view name)) 0) (return "rmacro"))
   (when (!= (lookup-struct name) null) (return "struct"))
-  (let (sym:?ptr:Sym (scope-lookup g-globals name))
+  (let (sym:?&Sym (scope-lookup g-globals name))
     (when (!= sym null)
       (when (!= (sym 'is-const) 0) (return "const"))
-      (let (ty:(raw Type) (sym 'type))
+      (let (ty:?&Type (sym 'type))
         (when (and (!= ty null) (= (ty 'kind) TY-FN)) (return "fn")))
       (return "var")))
   (return ""))
@@ -174,12 +174,12 @@
 ; A string is accepted beside a symbol because a reader-macro prefix is not a
 ; symbol — `(kind-of "'")` is the only way to reach the documented `rmacro`
 ; answer, and the quote would be consumed by the reader if written bare.
-(defn repl-meta-sym-arg (form:(raw Node) cmd:StrView):Symbol
-  (let (f:ptr:Node (unsafe/cast &Node form))
+(defn repl-meta-sym-arg (form:?&Node cmd:StrView):Symbol
+  (let (f:&Node (unsafe/cast &Node form))
     (when (< (node-len f) 2)
       (repl-error (f 'line) (fstr cmd ": missing symbol argument"))
       (return (symbol-none)))
-    (let (a:ptr:Node (unsafe/cast &Node (node-at f 1)))
+    (let (a:&Node (unsafe/cast &Node (node-at f 1)))
       (when (and (!= (a 'kind) NODE-SYM) (!= (a 'kind) NODE-STR))
         (repl-error (f 'line) (fstr cmd ": argument must be a symbol or string"))
         (return (symbol-none)))
@@ -188,7 +188,7 @@
 ; One line describing a bound name, for `dir`. Functions print the signature in
 ; the spelling a `defn` would take; everything else prints kind and type.
 (defn repl-print-name-info (name:Symbol):void
-  (let (mdef:?ptr:MacroDef (find-macro name))
+  (let (mdef:?&MacroDef (find-macro name))
     (when (!= mdef null)
       (emit stderr "  (" name " (")
       (let (np:i32 (mdef 'num-params)
@@ -197,15 +197,15 @@
           (when (!= i 0) (emit stderr " "))
           (if (= pn null)
             (emit stderr "p" i)
-            (emit stderr (aref (as &Symbol pn) i))))
+            (emit stderr (aref (unsafe/cast &Symbol pn) i))))
         (when (!= (mdef 'variadic) 0)
           (when (!= np 0) (emit stderr " "))
           (emit stderr ":rest")))
       (emit stderr ")) : macro\n")
       (return)))
-  (let (sym:?ptr:Sym (scope-lookup g-globals name))
+  (let (sym:?&Sym (scope-lookup g-globals name))
     (when (!= sym null)
-      (let (ty:(raw Type) (sym 'type))
+      (let (ty:?&Type (sym 'type))
         (cond (and (!= ty null) (= (ty 'kind) TY-FN))
                 (do (emit stderr "  (" name " (")
                     (dotimes (i (ty 'num-params))
@@ -224,14 +224,14 @@
               true
                 (emit stderr "  " name " : " (repl-type-to-nuc ty) "\n")))
       (return)))
-  (let (sd:?ptr:StructDef (lookup-struct name))
+  (let (sd:?&StructDef (lookup-struct name))
     (when (!= sd null) (emit stderr "  " name " : struct\n"))))
 
 ; A name's docstring, or `symbol-none`. Macros win, matching `repl-classify`.
 (defn repl-docstring-of (name:Symbol):Symbol
-  (let (mdef:?ptr:MacroDef (find-macro name))
+  (let (mdef:?&MacroDef (find-macro name))
     (when (!= mdef null) (return (mdef 'docstring))))
-  (let (sym:?ptr:Sym (scope-lookup g-globals name))
+  (let (sym:?&Sym (scope-lookup g-globals name))
     (when (!= sym null) (return (sym 'docstring))))
   (return (symbol-none)))
 
@@ -280,9 +280,9 @@
 ; deliberately absent — they are keyed by prefix, not by name, so they have
 ; nothing to list under.
 (defn repl-walk-names (mode:i32):void
-  (let (sc:ptr:Scope (as &Scope g-globals))
+  (let (sc:&Scope g-globals)
     (dotimes (i (sc 'len))
-      (let (sym:ptr:Sym (as &Sym (unsafe/ptr+ (as &Sym (sc 'syms)) i)))
+      (let (sym:&Sym (as &Sym (unsafe/ptr+ (unsafe/cast &Sym (sc 'syms)) i)))
         ; A name can hold several frame entries — prescan and emit-defn both
         ; register a `defn`, and a redefinition appends. `scope-frame-find`
         ; scans backwards, so the entry it returns is the live one and every
@@ -304,22 +304,22 @@
 ; module streams are opened only to satisfy `emit-node`'s writers and are
 ; cleared unparsed, so `(type-of (launch-missiles))` types the call and runs
 ; nothing.
-(defn repl-type-of (arg:(raw Node)):void
+(defn repl-type-of (arg:?&Node):void
   (open-module-streams)
   (set! g-out g-def-stream)
   (reset-function-state)
   (let (fn-scope:&Scope (scope-new g-globals)
-        result:?ptr:Val (as ?&Val (emit-node (unsafe/cast &Node arg) fn-scope)))
+        result:?&Val (as ?&Val (emit-node (unsafe/cast &Node arg) fn-scope)))
     (when (!= result null)
       (emit stderr "  " (repl-type-to-nuc (result 'type)) "\n")))
   (reset-function-state)
   (clear-module-buffers))
 
 ; Try `form` as a meta form. 1 = handled (including handled-and-errored).
-(defn repl-handle-builtin (form:(raw Node)):i32
-  (let (f:ptr:Node (unsafe/cast &Node form))
+(defn repl-handle-builtin (form:?&Node):i32
+  (let (f:&Node (unsafe/cast &Node form))
     (when (or (!= (f 'kind) NODE-LIST) (= (node-len f) 0)) (return 0))
-    (let (h0:ptr:Node (unsafe/cast &Node (node-at f 0)))
+    (let (h0:&Node (unsafe/cast &Node (node-at f 0)))
       (when (!= (h0 'kind) NODE-SYM) (return 0))
       (let (h:Symbol (h0 's))
         (when (= h "defined?")
@@ -371,17 +371,17 @@
           (let (n:Symbol (repl-meta-sym-arg form "locate"))
             (when (not (symbol-none? n))
               (let (file:Symbol (symbol-none) ln:i32 0 found:i32 0)
-                (let (sym:?ptr:Sym (scope-lookup g-globals n))
+                (let (sym:?&Sym (scope-lookup g-globals n))
                   (when (!= sym null)
                     (set! file (sym 'src-file)) (set! ln (sym 'src-line))
                     (set! found 1)))
                 (when (= found 0)
-                  (let (md:?ptr:MacroDef (find-macro n))
+                  (let (md:?&MacroDef (find-macro n))
                     (when (!= md null)
                       (set! file (md 'src-file)) (set! ln (md 'src-line))
                       (set! found 1))))
                 (when (= found 0)
-                  (let (sd:?ptr:StructDef (lookup-struct n))
+                  (let (sd:?&StructDef (lookup-struct n))
                     (when (!= sd null)
                       (set! file (sd 'src-file)) (set! ln (sd 'src-line))
                       (set! found 1))))
@@ -392,7 +392,7 @@
         (when (= h "trace")
           (let (n:Symbol (repl-meta-sym-arg form "trace"))
             (when (not (symbol-none? n))
-              (let (sym:?ptr:Sym (scope-lookup g-globals n))
+              (let (sym:?&Sym (scope-lookup g-globals n))
                 (cond (= sym null)
                         (emit stderr "  trace: <unbound>\n")
                       (or (= (sym 'type) null) (!= ((sym 'type) 'kind) TY-FN))
@@ -418,7 +418,7 @@
         (when (= h "untrace")
           (let (n:Symbol (repl-meta-sym-arg form "untrace"))
             (when (not (symbol-none? n))
-              (let (sym:?ptr:Sym (scope-lookup g-globals n))
+              (let (sym:?&Sym (scope-lookup g-globals n))
                 (cond (= sym null)
                         (emit stderr "  untrace: <unbound>\n")
                       (= (sym 'trace-tracker) null)
@@ -443,12 +443,12 @@
                 ; Every frame entry, not just the live one: prescan and emit-defn
                 ; both register, so unnaming only the latest leaves an earlier
                 ; copy findable.
-                (let (sc:ptr:Scope (as &Scope g-globals))
+                (let (sc:&Scope g-globals)
                   (dotimes (i (sc 'len))
-                    (let (sym:ptr:Sym (as &Sym (unsafe/ptr+ (as &Sym (sc 'syms)) i)))
+                    (let (sym:&Sym (as &Sym (unsafe/ptr+ (unsafe/cast &Sym (sc 'syms)) i)))
                       (when (= (sym 'name) n)
                         (set! handled 1)
-                        (let (ty:(raw Type) (sym 'type))
+                        (let (ty:?&Type (sym 'type))
                           (when (and (!= ty null) (= (ty 'kind) TY-FN))
                             (let (rt:ptr (sym 'tracker))
                               (when (!= rt null)
@@ -459,12 +459,12 @@
                             (set! warn-thunk 1)))
                         (set! (sym 'name) (symbol-none))))))
                 (when (= handled 0)
-                  (let (md:?ptr:MacroDef (find-macro n))
+                  (let (md:?&MacroDef (find-macro n))
                     (when (!= md null)
                       (set! (md 'name) (symbol-none))
                       (set! handled 1))))
                 (when (= handled 0)
-                  (let (sd:?ptr:StructDef (lookup-struct n))
+                  (let (sd:?&StructDef (lookup-struct n))
                     (when (!= sd null)
                       (set! (sd 'name) (symbol-none))
                       (set! handled 1))))
@@ -488,7 +488,7 @@
         (when (= h "imports")
           (let (n:i32 (node-len g-imported))
             (dotimes (i n)
-              (let (e:ptr:Node (unsafe/cast &Node (node-at g-imported i)))
+              (let (e:&Node (unsafe/cast &Node (node-at g-imported i)))
                 (emit stderr "  " (e 's) "\n")))
             (when (= n 0) (emit stderr "  (none)\n")))
           (return 1))
@@ -588,7 +588,7 @@
               ; Scan the line for paren balance, respecting strings and comments
               (let (li:i64 0)
                 (while (< li line-len)
-                  (let (c:i32 (bit-and (as i32 (aref (as &i8 line-buf) li)) 255))
+                  (let (c:i32 (bit-and (as i32 (aref (unsafe/cast &i8 line-buf) li)) 255))
                     (cond (!= in-comment 0)
                             (when (= c 10) (set! in-comment 0))
                           (!= in-string 0)
@@ -655,7 +655,7 @@
 
 ; Confirm what an import form did. Success and the dedup no-op were both silent,
 ; so a swallowed retry looked exactly like a fresh import (repl-libraries.md §3.5).
-(defn repl-report-import (form:(raw Node) fresh:i32):void
+(defn repl-report-import (form:?&Node fresh:i32):void
   (when (!= g-repl-booting 0) (return))
   (let (nn:ptr (node-at form 1)
         k:i32 (node-kind nn))
@@ -667,8 +667,8 @@
 
 ; Process a single REPL form: parse, compile to IR, JIT, and call.
 ; Returns the result type kind (TY-VOID, TY-I32, etc.) or -1 on error.
-(defn repl-eval-form (form:(raw Node)):void
-  (let (f:ptr:Node (unsafe/cast &Node form))
+(defn repl-eval-form (form:?&Node):void
+  (let (f:&Node (unsafe/cast &Node form))
     (when (= (as ptr f) null) (return))
     ; Short-circuit: a bare string literal prints as itself.
     (when (= (f 'kind) NODE-STR)
@@ -725,7 +725,7 @@
                             ; line is never written and the next form dies
                             ; "use of undefined value '@g'".
                             vty:ptr (extract-decl-name-and-type var-node (as &Symbol &vname)
-                                                            ((as &Node var-node) 'line)))
+                                                            ((unsafe/cast &Node var-node) 'line)))
                         (when (!= vty null)
                           ; Derive the IR name the same way emit-defvar does
                           ; (ns-ir-base → ir-name-token), so a hyphenated or
@@ -744,7 +744,7 @@
             ; registering it is the whole job (container-type-sugar.md §3.2).
             (and (not (symbol-none? h)) (or (= h "deftype") (= h "deftype-")))
               (do (register-type-alias (as ptr f) (if (= h "deftype-") 1 0))
-                  (alias-body-check (as raw:Node f))
+                  (alias-body-check f)
                   (emit stderr "  defined\n"))
             (and (not (symbol-none? h)) (= h "defstruct"))
               (do (open-module-streams)
@@ -765,7 +765,7 @@
                   ; the bare name would mint a second StructDef the moment a REPL
                   ; session declares a namespace. Identity in `user`, which is
                   ; every session that does not.
-                  (let (nn:ptr:Node (unsafe/cast &Node (node-at form 1)))
+                  (let (nn:&Node (unsafe/cast &Node (node-at form 1)))
                     (when (and (= (nn 'kind) NODE-SYM)
                                (= (as ptr (lookup-struct (qualify-name (nn 's)))) null))
                       (register-struct (qualify-name (nn 's)))))
@@ -776,12 +776,12 @@
                   (drain-pending-union-irs)
                   (repl-flush-mono (f 'line))
                   (repl-jit-module (f 'line))
-                  (let (nn:ptr:Node (unsafe/cast &Node (node-at form 1)))
+                  (let (nn:&Node (unsafe/cast &Node (node-at form 1)))
                     (when (= (nn 'kind) NODE-SYM)
                       (repl-declare-union-ctors (nn 's))))
                   (emit stderr "  defined\n"))
             (and (not (symbol-none? h)) (= h "extern"))
-              (let (pre-len:i32 ((as &Scope g-globals) 'len))
+              (let (pre-len:i32 (g-globals 'len))
                   (open-module-streams)
                   (set! g-out &g-decl-stream)
                   (emit-extern (as ptr f))
@@ -801,8 +801,8 @@
               ; new impl transparently.
               (let (name-node:ptr (node-at form 1)
                     fname:Symbol (symbol-none)  ret-name:Symbol (symbol-none))
-                (when (not (node-empty? (as raw:Node name-node)))
-                  (require-sig-name (as raw:Node name-node) "defn: name" (f 'line))
+                (when (not (node-empty? (as ?&Node name-node)))
+                  (require-sig-name (as ?&Node name-node) "defn: name" (f 'line))
                   (extract-name-type name-node (as &Symbol &fname)
                                                (as &Symbol &ret-name)))
                 (cond
@@ -815,7 +815,7 @@
                   ; `lookup of <name>.impl.0 failed`. Registering it is the
                   ; whole job; the stamps are drained by repl-flush-mono at
                   ; whichever entry first calls it.
-                  (!= (defn-is-generic-template (as raw:Node f)) 0)
+                  (!= (defn-is-generic-template f) 0)
                     (do (open-module-streams)
                         (let (one-form:ptr (node-list1 form (f 'line)))
                           (prescan-defn-signatures one-form))
@@ -842,7 +842,7 @@
                           is-redef:i32 0
                           ; B2b: definition-side (is this a redefinition?), so
                           ; the KEY lookup — same question `scope-define` answers.
-                          old-sym:?ptr:Sym (scope-lookup-key g-globals fname))
+                          old-sym:?&Sym (scope-lookup-key g-globals fname))
                       (when (!= old-sym null)
                         (set! is-redef 1)
                         (let (old-rt:ptr (old-sym 'tracker))
@@ -862,9 +862,9 @@
                         ; generic before prescan adds the new one.
                         ; Otherwise finalize-generics sees a duplicate signature.
                         (when (and (!= is-redef 0) (!= old-sym null))
-                          (let (old-g:?ptr:Generic (generic-lookup fname))
+                          (let (old-g:?&Generic (generic-lookup fname))
                             (when (!= old-g null)
-                              (let (old-ft:ptr:Type (unsafe/cast &Type (old-sym 'type)))
+                              (let (old-ft:&Type (unsafe/cast &Type (old-sym 'type)))
                                 (when (= (old-ft 'kind) TY-FN)
                                   ; §14.4: materialize the fn Type's param Vector back
                                   ; into a raw Type*[] — generic-remove-matching-user-method
@@ -874,7 +874,7 @@
                                                     (arena-alloc (* onp (ptr-bytes)))
                                                     null))
                                     (dotimes (ok onp)
-                                      (set! (aref (as &ptr oparr) ok) (as ptr ((field-at (old-ft 'params) ok) 'type))))
+                                      (set! (aref (unsafe/cast &ptr oparr) ok) (as ptr ((field-at (old-ft 'params) ok) 'type))))
                                     (generic-remove-matching-user-method
                                       old-g oparr onp)))))))
                         (open-module-streams)
@@ -889,23 +889,23 @@
                         (when (= is-redef 0)
                           ; B2b: reads back the Sym `emit-defn` just wrote — a
                           ; KEY, not a reference.
-                          (let (sym:?ptr:Sym (scope-lookup-key g-globals fname))
+                          (let (sym:?&Sym (scope-lookup-key g-globals fname))
                             (when (!= sym null)
-                              (let (ft:ptr:Type (unsafe/cast &Type (sym 'type)))
+                              (let (ft:&Type (unsafe/cast &Type (sym 'type)))
                                 (when (= (ft 'kind) TY-FN)
                                   (jit-thunk-module (f 'line) fname-ir (as ptr ft))
                                   ; ABI-lower the preamble declare the same way
                                   ; emit-defn lowered the define it names — raw
                                   ; type-to-ir disagreed on any by-value struct
                                   ; param/return, on every target.
-                                  (let (rinfo:ptr:AbiInfo
+                                  (let (rinfo:&AbiInfo
                                           (unsafe/cast &AbiInfo (abi-classify (ft 'ret))))
                                     (emit g-repl-preamble "declare "
                                           (abi-ret-ir rinfo (ft 'ret)) " @" fname-ir "(")
                                     (let (need-comma:i32 0)
-                                      (when (= ((as &AbiInfo rinfo) 'kind) ABI-MEMORY)
+                                      (when (= (rinfo 'kind) ABI-MEMORY)
                                         (emit g-repl-preamble "ptr sret(" (type-to-ir (ft 'ret))
-                                              ") align " ((as &AbiInfo rinfo) 'align))
+                                              ") align " (rinfo 'align))
                                         (set! need-comma 1))
                                       (abi-args-begin rinfo)
                                       (dotimes (pi (ft 'num-params))
@@ -936,7 +936,7 @@
                           ; the tracker on the latest Sym for the next
                           ; redefinition to remove.
                           (when (= (update-fn-tgt (f 'line) fname-ir impl-name) 0)
-                            (let (sym:?ptr:Sym (scope-lookup-key g-globals fname))
+                            (let (sym:?&Sym (scope-lookup-key g-globals fname))
                               (when (!= sym null)
                                 (set! (sym 'tracker) rt))))))
                       (if (!= is-redef 0)
@@ -978,7 +978,7 @@
                     (when (= h "macroexpand-1") (set! depth 1))
                     ; Optional second arg overrides the default depth.
                     (when (>= (node-len f) 3)
-                      (let (d-node:ptr:Node (unsafe/cast &Node (node-at form 2)))
+                      (let (d-node:&Node (unsafe/cast &Node (node-at form 2)))
                         (when (= (d-node 'kind) NODE-INT)
                           (set! depth (unsafe/cast i32 (d-node 'i))))))
                     (when (< (node-len f) 2)
@@ -987,12 +987,12 @@
                     (let (arg:ptr (node-at form 1))
                       ; Peel a leading (quote X) so the user can write 'form.
                       (when (and (!= arg null)
-                                 (= ((as &Node arg) 'kind) NODE-LIST)
-                                 (!= (node-len (as &Node arg)) 0))
-                        (let (qh:ptr:Node (unsafe/cast &Node (node-at (as &Node arg) 0)))
+                                 (= ((unsafe/cast &Node arg) 'kind) NODE-LIST)
+                                 (!= (node-len (unsafe/cast &Node arg)) 0))
+                        (let (qh:&Node (unsafe/cast &Node (node-at (unsafe/cast &Node arg) 0)))
                           (when (and (= (qh 'kind) NODE-SYM)
                                      (= (qh 's) "quote"))
-                            (set! arg (node-at (as &Node arg) 1)))))
+                            (set! arg (node-at (unsafe/cast &Node arg) 1)))))
                       ; Detect whether the form is actually a macro call. If
                       ; not, macroexpand-form would silently return the input
                       ; unchanged, which looks identical to a successful
@@ -1000,9 +1000,9 @@
                       ; explicitly so the user isn't misled.
                       (let (head-name:Symbol (symbol-none))
                         (when (and (!= arg null)
-                                   (= ((as &Node arg) 'kind) NODE-LIST)
-                                   (!= (node-len (as &Node arg)) 0))
-                          (let (ah:ptr:Node (unsafe/cast &Node (node-at (as &Node arg) 0)))
+                                   (= ((unsafe/cast &Node arg) 'kind) NODE-LIST)
+                                   (!= (node-len (unsafe/cast &Node arg)) 0))
+                          (let (ah:&Node (unsafe/cast &Node (node-at (unsafe/cast &Node arg) 0)))
                             (when (= (ah 'kind) NODE-SYM)
                               (set! head-name (ah 's)))))
                         (if (and (not is-all)
@@ -1023,7 +1023,7 @@
                  (or (or (= h "import-use") (= h "import-only"))
                      (or (or (= h "import") (= h "import-prefixed"))
                          (or (= h "import-ct") (= h "unsafe/import-private")))))
-              (do (let (pre-len:i32 ((as &Scope g-globals) 'len)
+              (do (let (pre-len:i32 (g-globals 'len)
                         pre-imported:ptr g-imported
                         pre-ct-imported:ptr g-ct-imported
                         pre-aliased:ptr g-import-aliased)
@@ -1065,15 +1065,15 @@
                     ; Add declares for newly imported functions to preamble
                     ; Skip duplicate scope entries (prescan + emit-defn both register)
                     (let (si:i32 pre-len)
-                      (while (< si ((as &Scope g-globals) 'len))
-                        (let (sym:ptr:Sym (as &Sym (unsafe/ptr+ (as &Sym ((as &Scope g-globals) 'syms)) si))
-                              ft:ptr:Type (unsafe/cast &Type (sym 'type)))
+                      (while (< si (g-globals 'len))
+                        (let (sym:&Sym (as &Sym (unsafe/ptr+ (unsafe/cast &Sym (g-globals 'syms)) si))
+                              ft:&Type (unsafe/cast &Type (sym 'type)))
                           (when (= (ft 'kind) TY-FN)
                             ; Only emit if no later entry has the same name (dedup)
                             (let (is-dup:i32 0
                                   dj:i32 (+ si 1))
-                              (while (< dj ((as &Scope g-globals) 'len))
-                                (let (nxt:ptr:Sym (as &Sym (unsafe/ptr+ (as &Sym ((as &Scope g-globals) 'syms)) dj)))
+                              (while (< dj (g-globals 'len))
+                                (let (nxt:&Sym (as &Sym (unsafe/ptr+ (unsafe/cast &Sym (g-globals 'syms)) dj)))
                                   (when (= (nxt 'name) (sym 'name))
                                     (set! is-dup 1)))
                                 (inc! dj))
@@ -1089,14 +1089,14 @@
                                 ; rather than `pi != 0` / `num-params != 0`
                                 ; because an sret prefix already occupies the
                                 ; first operand slot even at zero parameters.
-                                (let (rinfo:ptr:AbiInfo
+                                (let (rinfo:&AbiInfo
                                         (unsafe/cast &AbiInfo (abi-classify (ft 'ret))))
                                   (emit g-repl-preamble "declare " (abi-ret-ir rinfo (ft 'ret))
                                         " " (sym 'ir-name) "(")
                                   (let (need-comma:i32 0)
-                                    (when (= ((as &AbiInfo rinfo) 'kind) ABI-MEMORY)
+                                    (when (= (rinfo 'kind) ABI-MEMORY)
                                       (emit g-repl-preamble "ptr sret(" (type-to-ir (ft 'ret))
-                                            ") align " ((as &AbiInfo rinfo) 'align))
+                                            ") align " (rinfo 'align))
                                       (set! need-comma 1))
                                     (abi-args-begin rinfo)
                                     (dotimes (pi (ft 'num-params))
@@ -1118,7 +1118,7 @@
                       (when (!= g-imported pre-imported) (set! fresh 1))
                       (when (!= g-ct-imported pre-ct-imported) (set! fresh 1))
                       (when (!= g-import-aliased pre-aliased) (set! fresh 1))
-                      (when (> ((as &Scope g-globals) 'len) pre-len) (set! fresh 1))
+                      (when (> (g-globals 'len) pre-len) (set! fresh 1))
                       (repl-report-import form fresh))))
             (and (not (symbol-none? h)) (= h "time"))
               ; Not in `repl-handle-builtin`: it re-enters the evaluator, and
@@ -1137,7 +1137,7 @@
                     (set! g-out g-def-stream)
                     (reset-function-state)
                     (let (fn-scope:&Scope (scope-new g-globals)
-                          result:ptr:Val (as &Val (emit-node (as ptr f) fn-scope))
+                          result:&Val (as &Val (emit-node (as ptr f) fn-scope))
                           result-kind:i32 ((result 'type) 'kind))
                       ; Generate the return based on result type
                       (when (= g-block-term 0)
@@ -1275,7 +1275,7 @@
 ; `&foo`) bind to; the tgt global is updated on every redefinition so
 ; callers transparently dispatch to the latest implementation.
 ;
-; ft is a (raw Type) with kind=TY-FN; type-to-ir handles each parameter and return.
+; ft is a (ptr Type) with kind=TY-FN; type-to-ir handles each parameter and return.
 ; The thunk's signature must be the SAME ABI lowering emit-defn gave the impl it
 ; forwards to — raw type-to-ir declared a by-value struct as its aggregate type
 ; (`define i32 @area(%Pt %a0)`), which disagreed with the impl's lowered
@@ -1285,19 +1285,19 @@
 ; same in the signature and in the forwarded call — so it is built ONCE and
 ; printed twice. byval/sret attributes are legal on a call operand, which is
 ; what makes the verbatim reuse correct for the MEMORY cases too.
-(defn emit-fn-thunk (out:&String fname:Symbol ft:(raw Type)):void
-  (let (ftt:(raw Type) ft
+(defn emit-fn-thunk (out:&String fname:Symbol ft:?&Type):void
+  (let (ftt:(ptr Type) ft
         nparams:i32 (ftt 'num-params)
-        ret-info:ptr:AbiInfo (unsafe/cast &AbiInfo (abi-classify (ftt 'ret)))
+        ret-info:&AbiInfo (unsafe/cast &AbiInfo (abi-classify (ftt 'ret)))
         ret-ir:StrView (abi-ret-ir ret-info (ftt 'ret)))
     ; Global pointer holding the address of the current implementation.
     (emit out "@" fname ".tgt = global ptr null\n")
     (let ((ob String) (string-new)
           os:&String &ob)
       (let (need-comma:i32 0)
-        (when (= ((as &AbiInfo ret-info) 'kind) ABI-MEMORY)
+        (when (= (ret-info 'kind) ABI-MEMORY)
           (emit os "ptr sret(" (type-to-ir (ftt 'ret)) ") align "
-                ((as &AbiInfo ret-info) 'align) " %sret.arg")
+                (ret-info 'align) " %sret.arg")
           (set! need-comma 1))
         ; RV-6c: one walk over this signature's parameters.
         (abi-args-begin ret-info)
@@ -1314,7 +1314,7 @@
         ; A MEMORY return lowers to `void` + the sret operand, so it takes the
         ; same no-result path a genuinely void function does.
         (if (or (= ((ftt 'ret) 'kind) TY-VOID)
-                (= ((as &AbiInfo ret-info) 'kind) ABI-MEMORY))
+                (= (ret-info 'kind) ABI-MEMORY))
           (emit out "  call void %fp(" obuf ")\n  ret void\n}\n\n")
           (emit out "  %r = call " ret-ir " %fp(" obuf ")\n  ret " ret-ir " %r\n}\n\n"))
         (drop &ob)))))
@@ -1326,10 +1326,10 @@
 ; same reason — a per-param `type-to-ir` (which is what the 2026-05 original did)
 ; gets an aggregate's lowering wrong and names a `%Struct` this module never
 ; defined.
-(defn emit-fn-trace-shim (out:&String fname:Symbol ft:(raw Type)):void
-  (let (ftt:(raw Type) ft
+(defn emit-fn-trace-shim (out:&String fname:Symbol ft:?&Type):void
+  (let (ftt:(ptr Type) ft
         nparams:i32 (ftt 'num-params)
-        ret-info:ptr:AbiInfo (unsafe/cast &AbiInfo (abi-classify (ftt 'ret)))
+        ret-info:&AbiInfo (unsafe/cast &AbiInfo (abi-classify (ftt 'ret)))
         ret-ir:StrView (abi-ret-ir ret-info (ftt 'ret))
         nlen:i32 (unsafe/cast i32 (symbol-len fname)))
     (emit out "@" fname ".trace.impl = global ptr null\n")
@@ -1345,9 +1345,9 @@
     (let (ob:String (string-new)
           os:&String &ob)
       (let (need-comma:i32 0)
-        (when (= ((as &AbiInfo ret-info) 'kind) ABI-MEMORY)
+        (when (= (ret-info 'kind) ABI-MEMORY)
           (emit os "ptr sret(" (type-to-ir (ftt 'ret)) ") align "
-                ((as &AbiInfo ret-info) 'align) " %sret.arg")
+                (ret-info 'align) " %sret.arg")
           (set! need-comma 1))
         (abi-args-begin ret-info)
         (dotimes (i nparams)
@@ -1362,7 +1362,7 @@
         (emit out "  call i32 (ptr, ...) @printf(ptr @" fname ".trace.enter)\n")
         (emit out "  %fp = load ptr, ptr @" fname ".trace.impl, align 8\n")
         (if (or (= ((ftt 'ret) 'kind) TY-VOID)
-                (= ((as &AbiInfo ret-info) 'kind) ABI-MEMORY))
+                (= (ret-info 'kind) ABI-MEMORY))
           (do (emit out "  call void %fp(" obuf ")\n")
               (emit out "  call i32 (ptr, ...) @printf(ptr @" fname ".trace.exit)\n")
               (emit out "  ret void\n}\n\n"))
@@ -1374,18 +1374,18 @@
 ; A JIT'd symbol's address, or 0. The error is consumed rather than reported —
 ; each caller tests the address and names what it was looking for.
 (defn jit-lookup-addr (name:StrView out:ptr):void
-  (set! (aref (as &i64 out) 0) 0)
+  (set! (aref (unsafe/cast &i64 out) 0) 0)
   (let (err:ptr (LLVMOrcLLJITLookup g-jit out (symbol-as-cstr (symbol-intern name))))
     (when (!= err null)
       (LLVMConsumeError err)
-      (set! (aref (as &i64 out) 0) 0))))
+      (set! (aref (unsafe/cast &i64 out) 0) 0))))
 
 ; The shim under its own resource tracker, returned so `untrace` can remove it.
-(defn jit-trace-module (line:i32 fname-ir:Symbol ft:(raw Type)):ptr
+(defn jit-trace-module (line:i32 fname-ir:Symbol ft:?&Type):ptr
   (let (rt:ptr (LLVMOrcJITDylibCreateResourceTracker g-jit-dylib)
         (s String) (string-new))
     (emit s "; ModuleID = '<repl-trace>'\n")
-    (emit s "target triple = \"" ((as &Target g-host-target) 'triple) "\"\n\n")
+    (emit s "target triple = \"" ((unsafe/cast &Target g-host-target) 'triple) "\"\n\n")
     (repl-put-preamble s (symbol-none))
     (emit-fn-trace-shim s fname-ir ft)
     (let (v:StrView (string-as-view s))
@@ -1399,10 +1399,10 @@
 ; Build a tiny module containing the @fname thunk + @fname.tgt global, and add
 ; it to the JIT permanently (no resource tracker). This is the stable public
 ; symbol callers see; on each redefinition, only @fname.tgt is updated.
-(defn jit-thunk-module (line:i32 fname-ir:Symbol ft:(raw Type)):void
+(defn jit-thunk-module (line:i32 fname-ir:Symbol ft:?&Type):void
   (let ((s String) (string-new))
     (emit s "; ModuleID = '<repl-thunk>'\n")
-    (emit s "target triple = \"" ((as &Target g-host-target) 'triple) "\"\n\n")
+    (emit s "target triple = \"" ((unsafe/cast &Target g-host-target) 'triple) "\"\n\n")
     ; The accumulated preamble carries the `%Name = type {…}` lines for every
     ; struct defined so far in the session. A thunk whose lowered signature
     ; names one (an sret/byval aggregate) is otherwise emitted into a module
@@ -1435,7 +1435,7 @@
         (repl-error line (fstr "redefinition: lookup of " tgt-name " failed: "
                                (as CStr (LLVMGetErrorMessage err2))))
         (return -1)))
-    (set! (aref (as &ptr (unsafe/cast ptr tgt-addr)) 0) (unsafe/cast ptr impl-addr))
+    (set! (aref (unsafe/cast &ptr (unsafe/cast ptr tgt-addr)) 0) (unsafe/cast ptr impl-addr))
     (return 0)))
 
 ; Append ABI-lowered `declare`s for a defunion's arm constructors to the REPL
@@ -1444,7 +1444,7 @@
   (if-some (ud (uniondef-lookup uname))
     (let (ret:ptr (type-for-sdef (ud 'sdef))
           ret-info:ptr (abi-classify (type-for-sdef (ud 'sdef)))
-          saved-out:raw:String g-out)
+          saved-out:?&String g-out)
       (set! g-out &g-repl-preamble)
       (dotimes (i (ud 'num-arms))
         (let (arm:&Arm (invoke (ud 'arms) i:usize)
@@ -1453,17 +1453,17 @@
               ftypes:ptr (arm 'ftypes))
           (emit g-out "declare " (abi-ret-ir ret-info ret) " @" uname "-" aname "(")
           (let (need-comma:i32 0)
-            (when (= ((as &AbiInfo ret-info) 'kind) ABI-MEMORY)
+            (when (= ((unsafe/cast &AbiInfo ret-info) 'kind) ABI-MEMORY)
               (emit g-out "ptr sret(" (type-to-ir ret) ") align "
-                    ((as &AbiInfo ret-info) 'align))
+                    ((unsafe/cast &AbiInfo ret-info) 'align))
               (set! need-comma 1))
             ; RV-6c: one walk over this constructor's parameters — reset the
             ; riscv64 register budget (design/stage14/riscv-fp-abi.md §4).
-            (abi-args-begin (unsafe/cast raw:AbiInfo ret-info))
+            (abi-args-begin (unsafe/cast ptr:AbiInfo ret-info))
             (dotimes (j nf)
               (when (!= need-comma 0) (emit g-out ", "))
-              (abi-print-param (abi-classify-arg (aref (as &ptr ftypes) j))
-                               (aref (as &ptr ftypes) j) (symbol-none))
+              (abi-print-param (abi-classify-arg (aref (unsafe/cast &ptr ftypes) j))
+                               (aref (unsafe/cast &ptr ftypes) j) (symbol-none))
               (set! need-comma 1)))
           (emit g-out ")\n")
           (repl-preamble-note-decl (symbol-intern (fstr "@" uname "-" aname)))))
@@ -1493,7 +1493,7 @@
   (repl-absorb-type-buf)
   (let ((irs String) (string-new))
     (emit irs "; ModuleID = '<repl>'\n")
-    (emit irs "target triple = \"" ((as &Target g-host-target) 'triple) "\"\n\n")
+    (emit irs "target triple = \"" ((unsafe/cast &Target g-host-target) 'triple) "\"\n\n")
     ; Preamble (accumulated types + declarations from includes), minus any
     ; declare this module defines — see repl-put-preamble. R4: this module's own
     ; types were just absorbed into it, so it is the whole type section.
@@ -1602,9 +1602,9 @@
 ; ABI-lowered line at a time, so the D8 latch still knows what is in there.
 (defn repl-note-globals-decls (from:i32):void
   (let (si:i32 from)
-    (while (< si ((as &Scope g-globals) 'len))
-      (let (sym:ptr:Sym (as &Sym (unsafe/ptr+ (as &Sym ((as &Scope g-globals) 'syms)) si))
-            ft:ptr:Type (unsafe/cast &Type (sym 'type)))
+    (while (< si (g-globals 'len))
+      (let (sym:&Sym (as &Sym (unsafe/ptr+ (unsafe/cast &Sym (g-globals 'syms)) si))
+            ft:&Type (unsafe/cast &Type (sym 'type)))
         (let (irv:StrView (sym 'ir-name))
           (when (and (= (ft 'kind) TY-FN) (not (str-empty? &irv)))
             (repl-preamble-note-decl (symbol-intern irv)))))
@@ -1644,10 +1644,10 @@
         s-epoch:i32 g-module-epoch
         (s-decl String) g-decl-stream
         (s-def-buf String) g-def-buf
-        s-def:raw:String g-def-stream
-        s-def-prog:raw:String g-def-stream-program
-        s-decl-out:raw:String g-decl-out
-        s-out:raw:String g-out
+        s-def:?&String g-def-stream
+        s-def-prog:?&String g-def-stream-program
+        s-decl-out:?&String g-decl-out
+        s-out:?&String g-out
         s-macro-decls:&(Vector Symbol) g-macro-decls
         s-prog-defns:&(Vector &ProgDefn) g-program-defns)
     (set! g-type-stream (string-new))
@@ -1718,19 +1718,19 @@
   nuch-registered:ptr
   import-aliased:ptr
   import-prefixes:ptr
-  (cheader-skipped (raw (Vector &CheaderSkip)))
+  (cheader-skipped ?&(Vector &CheaderSkip))
   ; Stage 16 L5: a C typedef is a Nucleus type NAME now, so a half-loaded header
   ; that leaves one behind is not merely untidy — the entry can hold a Type over
   ; a StructDef `g-structs` just rolled back, and the next module emits a `%X`
   ; reference nothing defines.
-  (cheader-typedefs (raw CTypedef))
+  (cheader-typedefs ?&CTypedef)
   ; --- unit / namespace / privacy ---
   toplevel-depth:i32
   unit-entry-path:Symbol
   root-hoist-ok:i32
   current-ns:Symbol
   ns-seen:i32
-  (file-imports (raw ImportVec))
+  (file-imports ?&ImportVec)
   import-ct:i32
   import-include-private:i32
   defining-private:i32
@@ -1887,7 +1887,7 @@
 
   (defn repl-snapshot (st:&ReplState):void
     (over-repl-globals ((f g) `(set! (st '~f) ~g)))
-    (set! (st 'globals-len) ((as &Scope g-globals) 'len))
+    (set! (st 'globals-len) (g-globals 'len))
     (over-repl-registries ((f g) `(set! (st '~f) (unsafe/cast i32 (count ~g)))))
     ; Per-generic method watermarks, refilled in place.
     (let (n:i32 (unsafe/cast i32 (count g-generics))
@@ -1896,8 +1896,8 @@
       (while (< gi n)
         (when (>= gi have)
           (conj g-repl-generic-marks (new GenericMark)))
-        (let (mk:ptr:GenericMark (as &GenericMark (invoke g-repl-generic-marks gi:usize))
-              gg:ptr:Generic (as &Generic (invoke g-generics gi:usize)))
+        (let (mk:&GenericMark (as &GenericMark (invoke g-repl-generic-marks gi:usize))
+              gg:&Generic (as &Generic (invoke g-generics gi:usize)))
           (set! (mk 'n-methods) (unsafe/cast i32 (count (gg 'methods))))
           (set! (mk 'finalized) (gg 'finalized))
           (set! (mk 'mangled) (gg 'mangled)))
@@ -1913,8 +1913,8 @@
       (when (> n (unsafe/cast i32 (count g-generics)))
         (set! n (unsafe/cast i32 (count g-generics))))
       (while (< gi n)
-        (let (mk:ptr:GenericMark (as &GenericMark (invoke g-repl-generic-marks gi:usize))
-              gg:ptr:Generic (as &Generic (invoke g-generics gi:usize)))
+        (let (mk:&GenericMark (as &GenericMark (invoke g-repl-generic-marks gi:usize))
+              gg:&Generic (as &Generic (invoke g-generics gi:usize)))
           (repl-vec-truncate (gg 'methods) (mk 'n-methods))
           (set! (gg 'finalized) (mk 'finalized))
           (set! (gg 'mangled) (mk 'mangled)))
@@ -1925,7 +1925,7 @@
     (when (> g-init-drained (as usize (st 'n-init))) (set! g-init-drained (as usize (st 'n-init))))
     (when (> g-dyn-annots-drained (as usize (st 'n-dyn-annots)))
       (set! g-dyn-annots-drained (as usize (st 'n-dyn-annots))))
-    (set! ((as &Scope g-globals) 'len) (st 'globals-len))
+    (set! (g-globals 'len) (st 'globals-len))
     (over-repl-globals ((f g) `(set! ~g (st '~f))))))
 
 ; The three protected-callback bodies. `repl-protect` runs them as callbacks so
@@ -1941,8 +1941,8 @@
 ; The body of repl-preload-prelude, as a protected callback.
 (defn repl-protect-preload (ctx:ptr):void
   (match (read-source-or-report "(import-use prelude)" repl-rmacros)
-    ((ok raw)
-      (let (fc:ptr (desugar raw))
+    ((ok parsed)
+      (let (fc:ptr (desugar parsed))
         (while (> (node-len fc) 0)
           (repl-eval-form (node-first (unsafe/cast &Node fc)))
           (set! fc (node-rest (unsafe/cast &Node fc))))))
@@ -1967,8 +1967,8 @@
 
 ; Each argument a string or bare symbol, non-empty — all checked before any is
 ; applied, so a bad third argument adds nothing. 0 = reported.
-(defn repl-build-args (form:(raw Node) cmd:StrView out:&(Vector Symbol)):i32
-  (let (f:ptr:Node (unsafe/cast &Node form)
+(defn repl-build-args (form:?&Node cmd:StrView out:&(Vector Symbol)):i32
+  (let (f:&Node (unsafe/cast &Node form)
         n:i32 (node-len f)
         i:i32 1)
     (while (< i n)
@@ -2015,7 +2015,7 @@
 (defn repl-library-file (name:Symbol):Symbol
   (let (nv:StrView (symbol-as-view name))
     (when (or (strview-contains nv "/") (strview-contains nv ".")) (return name))
-    (let (tv:StrView (symbol-as-view ((as &Target g-host-target) 'triple))
+    (let (tv:StrView (symbol-as-view ((unsafe/cast &Target g-host-target) 'triple))
           suffix:StrView ".so")
       (when (or (strview-contains tv "darwin") (strview-contains tv "apple"))
         (set! suffix ".dylib"))
@@ -2220,12 +2220,12 @@
           (let ((text String) input)
               ; A syntax error has already been reported; nothing to reset.
               (match (read-source-or-report (string-as-view &text) repl-rmacros)
-                ((ok raw)
+                ((ok parsed)
                   (do
                     ; `desugar` can die too, and runs before any form does.
                     (set! g-repl-forms null)
                     (repl-snapshot &g-repl-saved)
-                    (when (!= (repl-protect repl-protect-desugar raw) 0)
+                    (when (!= (repl-protect repl-protect-desugar parsed) 0)
                       (repl-restore &g-repl-saved)
                       (repl-error 0 "error (recovered)"))
                     ; One snapshot per form, so a form that dies rolls back only

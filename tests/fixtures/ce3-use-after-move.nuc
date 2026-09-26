@@ -7,11 +7,11 @@
 (import-use "stdlib.h")
 
 (defprotocol Drop
-  (drop (self:ptr:Self):void))
+  (drop (self:&Self):void))
 
 (defstruct Res id:i32 buf:ptr)
 
-(defn drop (self:ptr:Res):void
+(defn drop (self:&Res):void
   (free (self 'buf)))
 
 (extend Res Drop)

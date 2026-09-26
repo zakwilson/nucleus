@@ -4,7 +4,7 @@
 ; may define its own `$` and sees neither of these (tests/suite-s21.nuc).
 (import-use node)
 (defvar s21-x:i32 4)
-(defn s21-before ():raw:Node (return '$s21-x))
+(defn s21-before ():ptr:Node (return '$s21-x))
 (defn s21-w (v:i32):i32 (return (* v 10)))
 (def-rmacro "$" s21-w)
 (defn s21-after ():i32 (return $s21-x))

@@ -3,6 +3,6 @@
 (import-use "stdio.h")
 (defstruct Point x:i32 y:i32)
 (defn main ():i32
-  (let (p:ptr:Point (alloca Point))
+  (let (p:&Point (alloca Point))
     (printf "%d\n" (p 'zz))
     (return 0)))

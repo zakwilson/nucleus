@@ -29,7 +29,7 @@
 
 (defn take-ptr (p:ptr):i64 (return (unsafe/cast i64 p)))
 (defn take-cstr (s:CStr):i64 (return (as i64 (strlen s))))
-(defn take-rec (r:ptr:FSRec):i32 (return (r 'a)))
+(defn take-rec (r:&FSRec):i32 (return (r 'a)))
 
 (defn main ():i32
   ; A function value reaches a fn parameter, and the callee calls it.
@@ -44,7 +44,7 @@
   ; not `type-eq`, so each one now reaches the coercion and must be admitted.
   (let (c:CStr "abcde"
         p:ptr (unsafe/cast ptr c)
-        r:ptr:FSRec (FSRec 77))
+        r:&FSRec (FSRec 77))
     (when (!= (take-cstr p) 5) (return 5))
     (when (!= (take-ptr c) (take-ptr p)) (return 6))
     ; ptr:FSRec into a bare ptr parameter, and back into its own.

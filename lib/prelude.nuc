@@ -31,7 +31,7 @@
   line:i32
   i:i64
   s:Symbol
-  (elems (raw (raw Node)))
+  (elems (ptr (ptr Node)))
   len:i32
   cap:i32)
 

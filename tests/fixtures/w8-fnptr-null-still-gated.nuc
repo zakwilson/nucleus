@@ -9,7 +9,7 @@
 ; compiles, the TY-FN admission has leaked past the kind it was written for and
 ; re-opened the hole W6 closed.
 
-(defvar hp:ptr:(fn i32)(i32) null)
+(defvar hp:&(fn i32)(i32) null)
 
 (defn main ():i32
   (return (unsafe/cast i32 (deref hp))))

@@ -47,10 +47,10 @@
 ; does not admit (§1.3), so the wait-status layout is written out here — the one
 ; piece of hardcoded platform knowledge in the module, and the reason nothing
 ; outside it sees a raw status.
-(defn wait-status-decode (raw:i32):ExitStatus
-  (let (sig:i32 (bit-and raw 127))
+(defn wait-status-decode (wstatus:i32):ExitStatus
+  (let (sig:i32 (bit-and wstatus 127))
     (when (= sig 0)
-      (return (ExitStatus-exited (bit-and (bit-shr raw 8) 255))))
+      (return (ExitStatus-exited (bit-and (bit-shr wstatus 8) 255))))
     (return (ExitStatus-signaled sig))))
 
 (defn success? (self:&ExitStatus):bool
@@ -191,10 +191,10 @@
   (let (v:StrView (string-as-view (ref self 'buf))
         base:&ui8 (v 'data)
         n:usize (count (ref self 'envs))
-        e:&ptr (as &ptr environ)
+        e:&ptr environ
         i:i64 0)
     (while (!= (aref e i) null)
-      (let (entry:&ui8 (as &ui8 (aref e i))
+      (let (entry:&ui8 (unsafe/cast &ui8 (aref e i))
             ek:StrView (env-key entry)
             shadowed:bool false
             j:usize 0)
@@ -382,10 +382,10 @@
   (when (< (self 'pid) 0) (return (ok (self 'status))))
   ; No retry loop: this module installs no signal handlers (§6), so a `waitpid`
   ; that fails has lost the child rather than been interrupted.
-  (let (raw:i32 0
-        rc:i32 (waitpid (self 'pid) (as &i32 &raw) 0))
+  (let (wstatus:i32 0
+        rc:i32 (waitpid (self 'pid) (as &i32 &wstatus) 0))
     (when (< rc 0) (return (err! process-wait-failed)))
-    (set! (self 'status) (wait-status-decode raw))
+    (set! (self 'status) (wait-status-decode wstatus))
     (set! (self 'pid) -1)
     (return (ok (self 'status)))))
 
@@ -400,11 +400,11 @@
 ; way, so the bool costs the caller nothing.
 (defn process-try-wait (self:&Process):!bool
   (when (< (self 'pid) 0) (return (ok true)))
-  (let (raw:i32 0
-        rc:i32 (waitpid (self 'pid) (as &i32 &raw) WNOHANG))
+  (let (wstatus:i32 0
+        rc:i32 (waitpid (self 'pid) (as &i32 &wstatus) WNOHANG))
     (when (< rc 0) (return (err! process-wait-failed)))
     (when (= rc 0) (return (ok false)))
-    (set! (self 'status) (wait-status-decode raw))
+    (set! (self 'status) (wait-status-decode wstatus))
     (set! (self 'pid) -1)
     (return (ok true))))
 
@@ -432,12 +432,12 @@
   status:ExitStatus)
 
 (defn wait-any ():!ChildExit
-  (let (raw:i32 0
-        rc:i32 (waitpid -1 (as &i32 &raw) 0))
+  (let (wstatus:i32 0
+        rc:i32 (waitpid -1 (as &i32 &wstatus) 0))
     (when (< rc 0) (return (err! process-wait-failed)))
     (let (c:&ChildExit (alloca ChildExit))
       (set! (c 'pid) rc)
-      (set! (c 'status) (wait-status-decode raw))
+      (set! (c 'status) (wait-status-decode wstatus))
       (return (ok @c)))))
 
 ; Give up ownership without waiting. The child becomes the caller's problem (or

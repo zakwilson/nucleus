@@ -29,7 +29,7 @@
 (defstruct Exports ll:String nuch:String h:String llpath:String nuchpath:String)
 
 (extend Exports Drop)
-(defn drop ((self (ptr Exports))):void
+(defn drop ((self &Exports)):void
   (drop (ref self 'll))
   (drop (ref self 'nuch))
   (drop (ref self 'h))
@@ -76,7 +76,7 @@
 (defstruct Consumer ir:String llpath:String)
 
 (extend Consumer Drop)
-(defn drop ((self (ptr Consumer))):void
+(defn drop ((self &Consumer)):void
   (drop (ref self 'ir))
   (drop (ref self 'llpath)))
 

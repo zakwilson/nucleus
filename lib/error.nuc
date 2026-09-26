@@ -61,7 +61,7 @@
 (defn err-find-handler (eid:Err token:ptr):ptr
   (let (h:ptr g-handler-top)
     (while (!= h null)
-      (let (hh:&Handler (as &Handler h))
+      (let (hh:&Handler (unsafe/cast &Handler h))
         (when (and (= (hh 'what) eid)
                    (or (= (hh 'rty) token)
                        (= (strcmp (hh 'rty) token) 0)))
@@ -76,10 +76,10 @@
 ; it matches the token the err site computes for its own T.
 (defmacro with-handler (spec :rest body)
   (let (h:ptr (gensym))
-    ; List binding form `(~h (ptr Handler))`, not `~h:ptr:Handler`: the reader
+    ; List binding form `(~h (ref Handler))`, not `~h:&Handler`: the reader
     ; tokenizes a colon-typed gensym binding as one symbol and the type is lost
     ; (context/macros-jit.md). The body uses ~h only in value position.
-    `(let ((~h (ptr Handler)) (alloca Handler))
+    `(let ((~h (ref Handler)) (alloca Handler))
        (set! (~h 'what) ~(node-at spec 0))
        (set! (~h 'rty) (type-token ~(node-at spec 1)))
        (set! (~h 'hfn) (unsafe/cast ptr ~(node-at spec 2)))

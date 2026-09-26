@@ -71,7 +71,7 @@
 ; ---------------------------------------------------------------------------
 (defn parse-nul-copy (sv:&StrView):&ui8
   (let (n:usize (sv 'len)
-        buf:&ui8 (as &ui8 (malloc (as i64 (+ n 1)))))
+        buf:&ui8 (unsafe/cast &ui8 (malloc (as i64 (+ n 1)))))
     (memcpy (as ptr buf) (as ptr (sv 'data)) (as i64 n))
     (set! (aref buf (as i64 n)) 0)
     (return buf)))

@@ -6,12 +6,12 @@
 (import-use "SDL2/SDL_mixer.h")
 
 ; Opaque handle in a defn signature — all a handle needs.
-(defn free-music (m:ptr:Mix_Music):i32
+(defn free-music (m:&Mix_Music):i32
   (Mix_FreeMusic (as ptr m))
   (return 0))
 
 ; The defined struct from the same header keeps its layout and field access.
-(defn chunk-allocated (c:ptr:Mix_Chunk):i32
+(defn chunk-allocated (c:&Mix_Chunk):i32
   (return (c 'allocated)))
 
 ; Stage 15 W3c (cheader.md §1.4): `Mix_Chunk.volume` is a `Uint8` and `alen` a
@@ -19,10 +19,10 @@
 ; to `ptr`, so `(c volume)` failed a return-type mismatch while the plain `int`
 ; `allocated` beside it worked; this is the rung-3 accept test for the typedef
 ; chain reaching a struct FIELD rather than a return type.
-(defn chunk-volume (c:ptr:Mix_Chunk):ui8
+(defn chunk-volume (c:&Mix_Chunk):ui8
   (return (c 'volume)))
 
-(defn chunk-alen (c:ptr:Mix_Chunk):ui32
+(defn chunk-alen (c:&Mix_Chunk):ui32
   (return (c 'alen)))
 
 (defn main ():i32 (return 0))

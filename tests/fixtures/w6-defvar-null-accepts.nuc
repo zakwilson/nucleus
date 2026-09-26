@@ -18,11 +18,11 @@
 (defvar g-bare-noinit:ptr)
 
 ; `raw` — the nullable pointer kind, in both spellings.
-(defvar g-raw:(raw Thing) null)
-(defvar g-raw-colon:raw:Thing null)
+(defvar g-raw:(ptr Thing) null)
+(defvar g-raw-colon:ptr:Thing null)
 
 ; `?T` — may-be-null, narrowed at use.
-(defvar g-maybe:?ptr:Thing null)
+(defvar g-maybe:?&Thing null)
 
 ; `CStr` — permanently flow-exempt (a null `char*` is ordinary C).
 (defvar g-cstr:CStr null)

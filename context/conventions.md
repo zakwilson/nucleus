@@ -113,7 +113,7 @@ Two follow-on lessons from W2b, which extended that same rule to make a
   free way to avoid threading a scope parameter. It is wrong: a local binding
   shadows the constant, and a shadowed local is an ordinary typed value.
   `binop-result-type`/`binop-coerce`/`emit-binop-vals` each carry a
-  `scope:(raw Scope)` for this; `tests/fixtures/w2b-shadow-local.nuc` is the
+  a `scope` parameter for this; `tests/fixtures/w2b-shadow-local.nuc` is the
   guard. Provenance that depends on *what a name means here* must be looked up
   through the scope chain that emission itself used.
 
@@ -227,7 +227,7 @@ change:
 - **W6, nullability.** `pkind-flow-check` never ran, so
   `(defvar g:ptr:Thing null)` compiled clean and segfaulted on first use while
   `(let (p:ptr:Thing null) …)` was correctly rejected. Fixed by calling
-  `pkind-flow-check` here with `ty-raw` as the source type — exactly what
+  `pkind-flow-check` here with `ty-ptr` as the source type — exactly what
   `emit-symbol-ref` gives the `null` symbol in value position.
 - **W8 G-5, the OTHER half of the same hole: no initializer at all.**
   `(defvar g:ptr:Thing)` took `type-zero-const-ir`'s `null` — the identical
@@ -428,7 +428,7 @@ Two spellings are deliberately outside the sugar. A **parenthesised** type
 as the call `(q (ref P))` — `emit-callable-value` diagnoses that shape by name;
 the fix for a user is `deftype`. And the four self-evaluating names
 (`null`/`true`/`false`/`none`) are matched by interned identity *above* the
-split, so `null:raw:T` is an undefined name, not a cast.
+split, so `null:ptr:T` is an undefined name, not a cast.
 
 ## Colon-binding diagnostics span multiple chokepoints (CP-3)
 
@@ -601,8 +601,8 @@ fails earlier asks its own candidates (`refuse-unknown-where`).
 ## `gcheck` recognizes type-spelling cells in generic bodies (TC-4a + TC-4b)
 
 A cell whose head names a **registered struct template** — `(Box T)`, `(Vector i32)`,
-`(HashMap K V)` — or a **type-wrapper keyword** (`ref`/`raw`/`ptr` — `(ref (Vector T))`,
-`(raw Node)`) appearing in a generic body is a TYPE operand, not a function call.
+`(HashMap K V)` — or a **type-wrapper keyword** (`ref`/`ptr`, plus the retired `raw` so it reaches its refusal — `(ref (Vector T))`,
+`(ptr Node)`) appearing in a generic body is a TYPE operand, not a function call.
 `gcheck` (src/generics.nuc, top of the NODE-CELL symbol-head branch) checks
 `node-template-of` (struct templates) and the `ref`/`raw`/`ptr` keywords, and returns
 null (deferred) instead of falling through to the genuine-call path (which would die
@@ -1174,8 +1174,8 @@ spelling of the same kind: `ptr` and `ref` (its documented synonym; until Stage 
 the reader also wrote `addr-of` for a standalone `&T`). It named only `ptr` until
 2026-09-06, so `(ref T)`/`&T` in an exported signature silently rendered `void*`
 — pointer-sized and ABI-correct, which is why it survived, and why two
-`w9-cheader-*` goldens had the `void*` spelling written into them. `raw` still
-widens deliberately. Docs: `docs/compiler.md` §C headers.
+`w9-cheader-*` goldens had the `void*` spelling written into them. Since Stage 21
+item 7 every kind renders `T*`, with a nullable/niche note after `?&T`/`!&T`. Docs: `docs/compiler.md` §C headers.
 
 ## A standalone `&T` in a type slot is a `(ref T)` node — the same head as the value form
 
@@ -7237,3 +7237,16 @@ keeps its operand's position. So `collect-pattern-tyvars` over a whole
 `X`. A caller asking "does this application mention a variable?" must walk the
 arguments with the head as `in-tmpl` (`extend-subject-over-tyvars`), or a union
 subject over `Maybe` silently takes the concrete path and dies `unknown type: X`.
+
+## Pointer kinds: only `?&T` narrows, and a `&T` field can still hold null
+
+Since Stage 21 item 7 (design/stage21-cleanup/ptr-is-unchecked.md §7):
+- **`(ptr T)` is unchecked and never narrows.** `(when p …)` on it is legal,
+  but the deref inside is unchecked either way. To get checked narrowing,
+  declare `?&T` or convert with `as-ref`.
+- **Struct fields are zero-initialised, and nothing checks a `&T` field.** If
+  one constructor forgets to set it, it holds null. Declare the field `?&T`
+  unless every constructor sets it.
+- **Pointer kind is invisible to stamps.** `type-spelling` writes `ref:` for
+  every kind, so `(Vector ?&T)` and `(Vector &T)` are one stamp. Anything keyed
+  on kind must read the Type, not the spelling.

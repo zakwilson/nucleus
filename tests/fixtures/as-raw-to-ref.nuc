@@ -7,7 +7,7 @@
 ; mentioning "as-ref".
 (defstruct Rec kind:i32)
 
-(defn deref-raw (r:raw:Rec):i32
+(defn deref-raw (r:ptr:Rec):i32
   (let (rf:ref:Rec (as ref:Rec r))
     (return (rf kind))))
 

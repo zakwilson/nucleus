@@ -15,8 +15,8 @@
 ; A `StrView`: a mangled symbol is composed from several of these and interned
 ; once, at the end — interning each fragment would pay a hash per token for an
 ; identity nothing asks about.
-(defn type-mangle-token (t:raw:Type):StrView
-  (let (tt:raw:Type t
+(defn type-mangle-token (t:?&Type):StrView
+  (let (tt:ptr:Type t
         k:i32 (tt 'kind))
     (case k
       TY-VOID (return "void")
@@ -101,10 +101,10 @@
 ; parser. Serves two roles — the key into the conformance registry (matching the
 ; subject spelling of `extend`), and the replacement text when substituting a
 ; concrete type for a type variable's occurrences in a retained generic body.
-; Pointers nest as ptr:elem; structs/primitives are their bare names. A TY-FN
+; Pointers nest as ref:elem; structs/primitives are their bare names. A TY-FN
 ; spells to its interned "__fnty_N" name (above), not "ptr".
-(defn type-spelling (t:raw:Type):Symbol
-  (let (tt:raw:Type t
+(defn type-spelling (t:?&Type):Symbol
+  (let (tt:ptr:Type t
         k:i32 (tt 'kind))
     (case k
       TY-VOID (return (symbol-intern "void"))
@@ -136,7 +136,7 @@
       TY-PTR
         (if (= (tt 'elem) null)
           (return (symbol-intern "ptr"))
-          (return (symbol-intern (fstr "ptr:" (type-spelling (tt 'elem))))))
+          (return (symbol-intern (fstr "ref:" (type-spelling (tt 'elem))))))
       ; Stage 15 W8 G-2. This spelling is DIAGNOSTIC-ONLY and deliberately not
       ; round-trippable through parse-type-name: type-spelling's round-trip
       ; contract exists for conformance keys and generic substitution, and an
@@ -149,7 +149,7 @@
 
 (defn tyvar-index-of (name:Symbol tyvars:ptr ntv:i32):i32
   (dotimes (i ntv)
-    (when (= (aref (as &Symbol tyvars) i) name) (return i)))
+    (when (= (aref (unsafe/cast &Symbol tyvars) i) name) (return i)))
   (return -1))
 
 ; Substitute type variables inside one symbol's colon spelling: split on ':',
@@ -164,7 +164,7 @@
         acc:String (string-new)
         any:i32 0)
     (dotimes (i (node-len segs))
-      (let (e:raw:Node (as raw:Node (node-at segs i))
+      (let (e:?&Node (as ?&Node (node-at segs i))
             seg:Symbol ((unsafe/cast &Node e) 's)
             piece:Symbol (subst-tyvar-segment seg tyvars spellings ntv))
         (when (!= any 0) (str-into &acc ":"))
@@ -177,25 +177,25 @@
 ; so `?E` substitutes as `?` + E's spelling — the tyvar table holds no sigils.
 (defn subst-tyvar-segment (seg:Symbol tyvars:ptr spellings:ptr ntv:i32):Symbol
   (let (idx:i32 (tyvar-index-of seg tyvars ntv))
-    (when (>= idx 0) (return (aref (as &Symbol spellings) idx)))
+    (when (>= idx 0) (return (aref (unsafe/cast &Symbol spellings) idx)))
     (let (run:usize (type-sigil-run seg))
       (when (or (= run 0) (= run (symbol-len seg))) (return seg))
       (let (sv:StrView (symbol-as-view seg)
             inner:i32 (tyvar-index-of (symbol-intern (strview-drop-bytes sv run)) tyvars ntv))
         (when (< inner 0) (return seg))
         (return (symbol-intern (fstr (strview-take-bytes sv run)
-                                     (aref (as &Symbol spellings) inner))))))))
+                                     (aref (unsafe/cast &Symbol spellings) inner))))))))
 
 ; Deep-copy a node, substituting type variables (by colon-spelling) in every
 ; symbol. Used to stamp a concrete instance from a generic template.
-(defn subst-tyvars-node (node:raw:Node tyvars:ptr spellings:ptr ntv:i32):raw:Node
+(defn subst-tyvars-node (node:?&Node tyvars:ptr spellings:ptr ntv:i32):?&Node
   (when (= node null) (return null))
-  (let (n:raw:Node node)
+  (let (n:?&Node node)
     (case (n 'kind)
       NODE-SYM
         (let (ns:Symbol (subst-tyvars-sym (n 's) tyvars spellings ntv (n 'line)))
           (when (= ns (n 's)) (return node))
-          (let (new:ptr:Node (as &Node (alloc-node)))
+          (let (new:&Node (as &Node (alloc-node)))
             (set! (new 'kind) NODE-SYM)
             (set! (new 'line) (n 'line))
             (set! (new 's) ns)
@@ -209,7 +209,7 @@
       NODE-KEYWORD
         (let (ns:Symbol (subst-tyvars-sym (n 's) tyvars spellings ntv (n 'line)))
           (when (= ns (n 's)) (return node))
-          (let (new:ptr:Node (as &Node (alloc-node)))
+          (let (new:&Node (as &Node (alloc-node)))
             (set! (new 'kind) NODE-KEYWORD)
             (set! (new 'line) (n 'line))
             (set! (new 's) ns)

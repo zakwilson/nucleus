@@ -26,7 +26,7 @@
           (return 0)))
 
 (defn main ():i32
-  (with (r:&Rec (as &Rec (malloc (as i64 (sizeof Rec)))))
+  (with (r:&Rec (unsafe/cast &Rec (malloc (as i64 (sizeof Rec)))))
     (set! (r 'kind) 1)
     (set! (r 'x) 42)
     (printf "kind1-big = %d\n" (classify (some (as &Rec r))))

@@ -69,11 +69,11 @@
 (defn l1-safe-src ():StrView
   (return "(import-use \"stdio.h\")
 (import-use \"tests/fixtures/l1-members.h\")
-(defn t1 (p:ptr:l1_m_wide_int):i32 (return 0))
-(defn t2 (p:ptr:l1_m_unrep_typedef):i32 (return 0))
-(defn t3 (p:ptr:l1_m_opaque_tag):i32 (return 0))
-(defn t4 (p:ptr:l1_m_unknown_tag):i32 (return 0))
-(defn t5 (p:ptr:l1_m_bad_body):i32 (return 0))
+(defn t1 (p:&l1_m_wide_int):i32 (return 0))
+(defn t2 (p:&l1_m_unrep_typedef):i32 (return 0))
+(defn t3 (p:&l1_m_opaque_tag):i32 (return 0))
+(defn t4 (p:&l1_m_unknown_tag):i32 (return 0))
+(defn t5 (p:&l1_m_bad_body):i32 (return 0))
 (defn main ():i32 (return 0))
 "))
 
@@ -324,46 +324,46 @@ int main(void){
 (defn libc-nuc-main ():StrView
   (return "
 (defn main ():i32
-  (let (s:ptr:__jmp_buf_tag (alloca __jmp_buf_tag) a:ptr:AP1 (alloca AP1))
+  (let (s:&__jmp_buf_tag (alloca __jmp_buf_tag) a:&AP1 (alloca AP1))
     (printf \"__jmp_buf_tag size=%lld align=%lld __jmpbuf=%lld __mask_was_saved=%lld __saved_mask=%lld\\n\"
       (as i64 (sizeof __jmp_buf_tag)) (off a (ref a 'v))
       (off s (ref s '__jmpbuf)) (off s (ref s '__mask_was_saved)) (off s (ref s '__saved_mask))))
-  (let (s:ptr:timespec (alloca timespec) a:ptr:AP2 (alloca AP2))
+  (let (s:&timespec (alloca timespec) a:&AP2 (alloca AP2))
     (printf \"timespec size=%lld align=%lld tv_sec=%lld tv_nsec=%lld\\n\"
       (as i64 (sizeof timespec)) (off a (ref a 'v)) (off s (ref s 'tv_sec)) (off s (ref s 'tv_nsec))))
-  (let (s:ptr:itimerspec (alloca itimerspec) a:ptr:AP3 (alloca AP3))
+  (let (s:&itimerspec (alloca itimerspec) a:&AP3 (alloca AP3))
     (printf \"itimerspec size=%lld align=%lld it_interval=%lld it_value=%lld\\n\"
       (as i64 (sizeof itimerspec)) (off a (ref a 'v)) (off s (ref s 'it_interval)) (off s (ref s 'it_value))))
-  (let (s:ptr:stat (alloca stat) a:ptr:AP4 (alloca AP4))
+  (let (s:&stat (alloca stat) a:&AP4 (alloca AP4))
     (printf \"stat size=%lld align=%lld st_dev=%lld st_ino=%lld st_mode=%lld st_uid=%lld st_size=%lld st_mtim=%lld\\n\"
       (as i64 (sizeof stat)) (off a (ref a 'v)) (off s (ref s 'st_dev)) (off s (ref s 'st_ino))
       (off s (ref s 'st_mode)) (off s (ref s 'st_uid)) (off s (ref s 'st_size)) (off s (ref s 'st_mtim))))
-  (let (s:ptr:dirent (alloca dirent) a:ptr:AP5 (alloca AP5))
+  (let (s:&dirent (alloca dirent) a:&AP5 (alloca AP5))
     (printf \"dirent size=%lld align=%lld d_ino=%lld d_off=%lld d_reclen=%lld d_type=%lld d_name=%lld\\n\"
       (as i64 (sizeof dirent)) (off a (ref a 'v)) (off s (ref s 'd_ino)) (off s (ref s 'd_off))
       (off s (ref s 'd_reclen)) (off s (ref s 'd_type)) (off s (ref s 'd_name))))
-  (let (s:ptr:termios (alloca termios) a:ptr:AP6 (alloca AP6))
+  (let (s:&termios (alloca termios) a:&AP6 (alloca AP6))
     (printf \"termios size=%lld align=%lld c_iflag=%lld c_oflag=%lld c_cflag=%lld c_lflag=%lld c_line=%lld c_cc=%lld c_ispeed=%lld c_ospeed=%lld\\n\"
       (as i64 (sizeof termios)) (off a (ref a 'v)) (off s (ref s 'c_iflag)) (off s (ref s 'c_oflag))
       (off s (ref s 'c_cflag)) (off s (ref s 'c_lflag)) (off s (ref s 'c_line)) (off s (ref s 'c_cc))
       (off s (ref s 'c_ispeed)) (off s (ref s 'c_ospeed))))
-  (let (a:ptr:AP7 (alloca AP7))
+  (let (a:&AP7 (alloca AP7))
     (printf \"fd_set size=%lld align=%lld\\n\" (as i64 (sizeof fd_set)) (off a (ref a 'v))))
-  (let (s:ptr:sockaddr (alloca sockaddr) a:ptr:AP8 (alloca AP8))
+  (let (s:&sockaddr (alloca sockaddr) a:&AP8 (alloca AP8))
     (printf \"sockaddr size=%lld align=%lld sa_family=%lld sa_data=%lld\\n\"
       (as i64 (sizeof sockaddr)) (off a (ref a 'v)) (off s (ref s 'sa_family)) (off s (ref s 'sa_data))))
-  (let (s:ptr:in6_addr (alloca in6_addr) a:ptr:AP9 (alloca AP9))
+  (let (s:&in6_addr (alloca in6_addr) a:&AP9 (alloca AP9))
     (printf \"in6_addr size=%lld align=%lld __in6_u=%lld\\n\"
       (as i64 (sizeof in6_addr)) (off a (ref a 'v)) (off s (ref s '__in6_u))))
-  (let (a:ptr:AP10 (alloca AP10))
+  (let (a:&AP10 (alloca AP10))
     (printf \"sigset_t size=%lld align=%lld\\n\" (as i64 (sizeof sigset_t)) (off a (ref a 'v))))
-  (let (a:ptr:AP11 (alloca AP11))
+  (let (a:&AP11 (alloca AP11))
     (printf \"pthread_mutex_t size=%lld align=%lld\\n\" (as i64 (sizeof pthread_mutex_t)) (off a (ref a 'v))))
-  (let (s:ptr:sigaction (alloca sigaction) a:ptr:AP12 (alloca AP12))
+  (let (s:&sigaction (alloca sigaction) a:&AP12 (alloca AP12))
     (printf \"sigaction size=%lld align=%lld sa_mask=%lld sa_flags=%lld sa_restorer=%lld\\n\"
       (as i64 (sizeof sigaction)) (off a (ref a 'v)) (off s (ref s 'sa_mask))
       (off s (ref s 'sa_flags)) (off s (ref s 'sa_restorer))))
-  (let (s:ptr:sigevent_t (alloca sigevent_t) a:ptr:AP13 (alloca AP13))
+  (let (s:&sigevent_t (alloca sigevent_t) a:&AP13 (alloca AP13))
     (printf \"sigevent_t size=%lld align=%lld sigev_signo=%lld sigev_notify=%lld\\n\"
       (as i64 (sizeof sigevent_t)) (off a (ref a 'v)) (off s (ref s 'sigev_signo))
       (off s (ref s 'sigev_notify))))
@@ -387,7 +387,7 @@ int main(void){
   (try (check-agrees-with-cc "l2file" ""
 "(import-use \"stdio.h\")
 (defn main ():i32
-  (let (f:ptr:FILE (alloca FILE))
+  (let (f:&FILE (alloca FILE))
     (printf \"%ld %ld %ld\\n\" (sizeof FILE)
       (- (unsafe/cast i64 (ref f '_flags)) (unsafe/cast i64 f))
       (- (unsafe/cast i64 (ref f '_lock)) (unsafe/cast i64 f))))
@@ -752,11 +752,11 @@ int main(void){
 (deftest s16-c1-signedness-and-functions
   (try (check-place-refused "(import-use \"tests/fixtures/s16-unsigned.h\")
 (defn main ():i32
-  (let (p:ptr:S16U01 (alloca S16U01)) (set! (p 'a) -1) (return 0)))
+  (let (p:&S16U01 (alloca S16U01)) (set! (p 'a) -1) (return 0)))
 " 3 "integer literal -1 does not fit ui32"))
   (try (check-source-accepts "(import-use \"tests/fixtures/s16-unsigned.h\")
 (defn main ():i32
-  (let (p:ptr:S16U02 (alloca S16U02)) (set! (p 'a) -1) (return 0)))
+  (let (p:&S16U02 (alloca S16U02)) (set! (p 'a) -1) (return 0)))
 "))
   (let (c:Compiled (try (compile-source "(import-use \"tests/fixtures/s16-unsigned.h\")
 (defn main ():i32 (s16u_f) (s16u_g 1 2) (return 0))
