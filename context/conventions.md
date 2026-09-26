@@ -4971,6 +4971,15 @@ it — which is why recording it at pre-registration moved 0 diagnostics across 
 programs. Had a consumer read it for ordinary types, filling it in earlier would
 have changed messages.
 
+## A C header name at file scope goes through `cheader-c-global-view`
+
+C reserves its library's external names (`conj`, `abs`, `clock`) as well as its
+keywords, but only at file scope. So a new emitter site that writes a function,
+global, typedef or tag, enum constant or `#define` must use `cheader-c-global-view`,
+and a field or parameter must use `cheader-c-ident-view`. A struct's tag and its
+typedef must use the same one (`type-name-to-c` and `emit-cheader-defstruct`), or
+references stop matching the definition.
+
 ## A non-emitting mode runs the compile first — never the prescans alone
 
 Prescans deliberately defer every diagnosis to the emitter (`defn-params-to-types`:

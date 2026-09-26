@@ -3642,9 +3642,23 @@
                        (key-names-private? (ns-qualify-in fns name) name fns))
               (set! ns fns)))
           (none 0))))
+    (when (and (symbol-none? ns) (= (qualifier-len name) 0))
+      (let (owner:Symbol (file-private-owner name))
+        (when (not (symbol-none? owner))
+          (return (some (fstr (fstr verb ": " name " — private to " owner)
+                              "\n  note: another file reaches a private name only through unsafe/import-private"))))))
     (when (symbol-none? ns) (return (none)))
     (return (some (fstr (fstr verb ": " name " — private to namespace '" ns "'")
                         "\n  note: another namespace reaches a private name only through unsafe/import-private")))))
+
+; The other file of this unit whose private definers define `name`, if any.
+(defn file-private-owner (name:Symbol):Symbol
+  (when (= g-priv-files null) (return (symbol-none)))
+  (doseq (pf (unsafe/cast &(Vector &PrivFile) g-priv-files) (VecIter &PrivFile))
+    (when (!= (pf 'path) g-source-path)
+      (doseq (pn (pf 'names) (VecIter &PrivName))
+        (when (= (pn 'bare) name) (return (pf 'path))))))
+  (return (symbol-none)))
 
 (defn key-names-private? (key:Symbol bare:Symbol ns:Symbol):bool
   (let (s:?ptr:Sym (scope-frame-find g-globals key))

@@ -194,7 +194,7 @@
     (try (check-line hv "    union { int64_t as_int; void* as_ptr; } v;"))
     (try (check-line hv "} W38Box;"))
     (try (check-line hv "int64_t w38_plain(struct W38Box* b) asm(\"w38-plain\");"))
-    (try (check-line hv "int32_t main(void);"))
+    (try (check-not-contains hv " main("))
     (try (check-line nv "(defprotocol W38Z (w38z-zero (self:Self) :i32))"))
     (try (check-line nv "(declare w38z-zero ((x i32)) :i32)"))
     (try (check-line nv "(extend i32 W38Z)"))
