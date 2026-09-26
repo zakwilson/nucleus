@@ -937,22 +937,36 @@ did.
   then passes. (Found alongside; pre-existing.) The A2 check reads `(Either T)` as a call, `in generic body:
   unknown function 'Either'`. Skipping it the way `node-template-of` skips a
   struct template then fails at `make`'s node-type, `unknown type: T`.
-- **A name private to an imported file is called "not defined anywhere"**
+- ~~**A name private to an imported file is called "not defined anywhere"**~~ (**fixed 2026-09-25**, progress.md). `private-name-message` asks `file-private-owner`: `unknown: inner — private to pa.nuc`.
   (found fixing the `defn-` template item; pre-existing). With `(defn- inner …)`
   in `pa.nuc`, a call from a file that imports `pa` is `unknown: inner — not
   defined anywhere in this compilation unit`, which is false. The
   namespaced case says `private to namespace 'n'` (`private-name-message`); the
   file-private case has no such message.
-- **`lib/node.h` declares `conj`, which C's `<complex.h>` also declares** (found
+- ~~**`lib/node.h` declares `conj`, which C's `<complex.h>` also declares**~~ (**fixed 2026-09-25**, progress.md). File-scope C names escape C17's library names too (`cheader-c-global-view`); `conj_(…) asm("conj")`.
+  (found
   compiling every generated header; pre-existing). clang warns `incompatible
   redeclaration of library function 'conj'`. It is a warning, but a program
   that includes both headers cannot compile.
-- **A `defunion` arm field in a C header is not a declarator** (found fixing the
+- ~~**A `defunion` arm field in a C header is not a declarator**~~ (**fixed 2026-09-25**, progress.md). Arm fields go through `type-node-to-c-decl`.
+  (found fixing the
   template-instance item; pre-existing). `emit-cheader-defunion` writes
   `type-node-to-c` then the name, so an array or function-pointer arm field is
   written wrong; `emit-cheader-defstruct` uses `type-node-to-c-decl`.
-- **A defunion-template instance inside a struct-template instance is spelled by
-  its registry name in a C header** (found alongside; minor). `cheader-type-c`
+- ~~**A defunion-template instance inside a struct-template instance is spelled by
+  its registry name in a C header**~~ (**fixed 2026-09-25**, progress.md). Such an instance declares only its tag (`cheader-sdef-no-c?`); a by-value use is omitted.
+  (found alongside; minor). `cheader-type-c`
   renders an instance's fields from Types, and a `(Maybe i32)` element by value
   reaches `type-name-to-c` as `Maybe.i32`, an incomplete C type. The C compile
   fails, so nothing silent.
+- ~~**`(fn i32 (i32))` silently types a zero-parameter function pointer**~~
+  (**fixed 2026-09-25**, progress.md). An extra operand in either `fn` shape is
+  refused, naming `(fn i32)(i32 i64)`. (Found fixing the arm-declarator item;
+  pre-existing.)
+- ~~**A C header declares `:optional`/`:rest` functions as invalid C**~~ (**fixed
+  2026-09-25**, progress.md). `int32_t add(int32_t a, , void* b_int);` is now
+  the full arity, and a rest slot is `struct Node*`. (Found by the instance item's
+  parse; pre-existing.)
+- ~~**A C header declares `main`**~~ (**fixed 2026-09-25**, progress.md). It is
+  omitted; `main(int32_t argc, void* argv)` did not compile. (Found compiling every
+  snapshot header; pre-existing.)

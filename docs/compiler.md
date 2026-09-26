@@ -556,7 +556,15 @@ typedef struct H {
 } H;
 ```
 
+A `defunion` arm's field is a declarator, as a struct field is, so `(cb f:(fn i32)(i32))` is `int32_t (*cb)(int32_t);`.
+
+`main` is not declared, since C constrains its signature and a C program has its own.
+
+A function with `:optional` parameters is declared at its full arity, since a C caller passes every argument. A `:rest` slot is `struct Node* name`, the list the call site builds.
+
 An inline `(struct …)` or `(union …)` in a function's signature is named the same way (`struct nuc_anon_struct_h…`), so a caller can declare a value of it. Two signatures with the same shape share one type. As a field it stays inline, because the enclosing struct is the name.
+
+A struct-template instance that holds a defunion-template instance by value, such as `(Box ?i32)`, is declared by its tag only (`struct Box_Maybe_i32;`), with a comment. A pointer to it is still declared, and a declaration that uses it by value is omitted.
 
 A defunion-template instance, such as `(Either i32 i64)` or an alias to one, has no C layout the header writes. A declaration that uses one is omitted with a comment, as a `?T`/`!T` one is. A struct or `defunion` with a field of one is omitted too, but its tag is still declared (`struct S;`), so a pointer to it in a signature names one type.
 
@@ -754,6 +762,15 @@ header is routinely read through `extern "C"` from C++ — where `class` and
 `operator` and `namespace` are all names a Nucleus library plausibly defines.
 The `iso646.h` spellings (`and`, `or`, `not`, `xor`, …) are covered for the same
 reason.
+
+**The C library's function names are reserved at file scope.** C reserves every
+external name its standard library declares, so a function, global, typedef,
+struct tag, enum constant or `#define` spelled `conj`, `abs` or `clock` is
+renamed the same way: `(defn conj …)` in `lib/node.nuc` exports `conj_(…)
+asm("conj")`, and the header can be included beside `<complex.h>`. The list is
+C17's library (from `<complex.h>`, `<math.h>`, `<stdio.h>`, `<stdlib.h>`,
+`<time.h>` and the rest), without POSIX. A struct field or parameter keeps such a
+name, because it is not at file scope.
 
 An identifier built by **joining** two parts is tested as a whole rather than
 part by part, so a `defenum`'s members keep the spelling their prefix already

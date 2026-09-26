@@ -619,6 +619,8 @@ the adjacent parameter-list group (see *Colon-paren binding sugar* above). **Bot
 groups must be adjacent — `f:(fn i32)(i32 i32)`, not `f:(fn i32) (i32 i32)`**; a
 space-separated second group is a separate element of the enclosing list, which
 leaves `f` typed as a *zero-parameter* function pointer.
+The parameters never go inside the head: `(fn i32 (i32))` or `(fn i32 i64)` is
+refused as `fn type: '(fn i32 (i32))' has an extra operand`.
 
 ```lisp
 ; canonical list form

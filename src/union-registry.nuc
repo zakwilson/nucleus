@@ -2237,6 +2237,13 @@
                   (!= (union-template-lookup-ref hs) null)
                   (!= (type-alias-app-of n) null))))))
 
+; A function-pointer type is `(fn RET)` then one parameter list, `(fn i32)(i32 i64)`.
+(defn die-fn-type-shape (n:ptr line:i32):void
+  (let (s:String (node-str (as raw:Node n)))
+    (die-at (node-line n line)
+      (fstr "fn type: '" (string-as-view &s)
+            "' has an extra operand -- the return type goes in the head and the parameters after it, e.g. (fn i32)(i32 i64)"))))
+
 (defn parse-type-from-node (node:ptr line:i32):&Type
   ; W9 item 45: `()` in a type position is a NULL node (W5f), and it names no
   ; type — the same answer this function gives any other node it cannot read,
@@ -2639,6 +2646,8 @@
          (when (= ((unsafe/cast &Node head) 'kind) NODE-LIST)
            (let (fn-head:ptr (node-first (unsafe/cast &Node head)))
              (when (= fn-head 'fn)
+                (when (> (node-len head) 2) (die-fn-type-shape head line))
+                (when (> (node-len n) 2) (die-fn-type-shape n line))
                 ; Parse return type from (fn ret-type)
                 (let (ret-node:ptr (node-rest (unsafe/cast &Node head))
                       ret-type:ptr ty-void)
@@ -2675,6 +2684,7 @@
                       (return ft)))))))
           ; Head is a symbol "fn" — function pointer with no params: (fn ret-type)
          (when (= head 'fn)
+             (when (> (node-len n) 2) (die-fn-type-shape n line))
              (let (ret-node:ptr (node-rest n)
                                 ret-type:ptr ty-void)
                (when (and (!= ret-node null)

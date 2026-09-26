@@ -201,9 +201,7 @@
     (drop &m))
   (return (ok)))
 
-; …and it stays private: another file may not see it, and gets the
-; not-in-the-unit message rather than a suggestion, since there is no spelling
-; that would reach it.
+; …and it stays private: another file may not see it, and is told whose it is.
 (deftest g0-private-const-stays-private
   (try (test-write-file "g0-pc.nuc" "(defconst- G0-OTHER-SECRET 3)
 (defn g0-pc ():i32 (return G0-OTHER-SECRET))
@@ -214,7 +212,7 @@
         mv:StrView (string-as-view &m)
         c:Compiled (try (g-compile mv)))
     (try (check-error-at (ref c 'diags) mv 2
-           "undefined: G0-OTHER-SECRET — not defined anywhere in this compilation unit"))
+           "undefined: G0-OTHER-SECRET — private to "))
     (drop &c)
     (drop &m))
   (return (ok)))

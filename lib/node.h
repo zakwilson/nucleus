@@ -51,7 +51,7 @@ typedef struct NodeIter {
 
 struct Node* /* niche: reserved top page = error/none */ next_pNodeIter(struct NodeIter* self) asm("next.pNodeIter");
 size_t count(struct Node* self);
-void conj(struct Node* self, struct Node* elem);
+void conj_(struct Node* self, struct Node* elem) asm("conj");
 bool empty_QMARK(struct Node* self);
 struct NodeIter iter(struct Node* self);
 struct Node* invoke(struct Node* self, size_t i);

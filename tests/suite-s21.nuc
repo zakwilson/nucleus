@@ -4137,3 +4137,133 @@ int main(void) {
     (drop &h)
     (drop &p))
   (return (ok)))
+
+; Another file's private name is reported as private to that file, not as undefined.
+(deftest s21-file-private-name-message
+  (try (test-write-file "s21pvlib.nuc" "(defn- s21pv-inner (x:i32):i32 (return (+ x 1)))
+(defvar- s21pv-v:i32 5)
+(defn s21pv-outer (x:i32):i32 (return (s21pv-inner x)))
+"))
+  (let (dir:StrView (try (test-scratch))
+        p:String (try (test-write-file "s21pv-use.nuc" "(import-use s21pvlib)
+(defn main ():i32 (return (s21pv-inner 3)))
+(defn f ():i32 (return s21pv-v))
+"))
+        pv:StrView (string-as-view &p)
+        c:Compiled (try (compile-path-in dir pv)))
+    (try (check-error-at (ref c 'diags) pv 2 "unknown: s21pv-inner — private to "))
+    (try (check-note-at (ref c 'diags) pv 2 "another file reaches a private name only through unsafe/import-private"))
+    (drop &c)
+    (drop &p))
+  (let (dir:StrView (try (test-scratch))
+        q:String (try (test-write-file "s21pv-v.nuc" "(import-use s21pvlib)
+(defn main ():i32 (return s21pv-v))
+"))
+        qv:StrView (string-as-view &q)
+        d:Compiled (try (compile-path-in dir qv)))
+    (try (check-error-at (ref d 'diags) qv 2 "undefined: s21pv-v — private to "))
+    (drop &d)
+    (drop &q))
+  (return (ok)))
+
+; A file-scope name C's library reserves takes the `_` and an asm label, so the
+; header can be included beside the C header that declares the original.
+(deftest s21-cheader-c-library-name
+  (let (l:CLib (try (c-lib "s21cl" "(defn conj (a:i32):i32 (return (+ a 1)))
+(defvar clock:i32 7)
+(defstruct S21Cl (abs i32))
+(defn s21cl-abs (s:&S21Cl):i32 (return (s 'abs)))
+"))
+        h:StrView (c-lib-text &l))
+    (try (check-line h "int32_t conj_(int32_t a) asm(\"conj\");"))
+    (try (check-line h "extern int32_t clock_ asm(\"clock\");"))
+    (try (check-line h "    int32_t abs;"))
+    (let (out:String (try (c-lib-run &l "#include <complex.h>
+#include <time.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include \"s21cl.h\"
+int main(void) {
+    S21Cl s = { 5 };
+    printf(\"%d %d %d\\n\", conj_(41), clock_, s21cl_abs(&s));
+    return 0;
+}
+")))
+      (try (check-eq (string-as-view &out) "42 7 5\n"))
+      (drop &out))
+    (drop &l))
+  (return (ok)))
+
+; A defunion arm field is a C declarator, so a function pointer keeps its type,
+; and the layouts agree.
+(deftest s21-cheader-union-arm-declarator
+  (let (l:CLib (try (c-lib "s21ua" "(defunion S21Msg
+  (cb f:(fn i32)(i32))
+  (pair a:i16 g:(fn i32)(i32 i64))
+  none)
+(defn s21ua-size ():i64 (return (as i64 (sizeof S21Msg))))
+"))
+        h:StrView (c-lib-text &l))
+    (try (check-line h "        int32_t (*cb)(int32_t);"))
+    (try (check-line h "        struct { int16_t a; int32_t (*g)(int32_t, int64_t); } pair;"))
+    (let (out:String (try (c-lib-run &l "#include <stdio.h>
+#include \"s21ua.h\"
+int main(void) {
+    printf(\"%d %lld\\n\", (int)sizeof(S21Msg), (long long)s21ua_size());
+    return 0;
+}
+")))
+      (try (check-eq (string-as-view &out) "24 24\n"))
+      (drop &out))
+    (drop &l))
+  (return (ok)))
+
+; A struct-template instance holding a defunion-template stamp by value declares
+; only its tag; a declaration using it by value is omitted, one by pointer kept.
+(deftest s21-cheader-instance-holding-union
+  (let (l:CLib (try (c-lib "s21iu" "(defstruct (S21Box T) v:T n:i32)
+(defn s21iu-n (b:&(S21Box ?i32)):i32 (return (b 'n)))
+(defn s21iu-byval (b:(S21Box ?i32)):i32 (return (b 'n)))
+(defstruct S21IuH (bm (S21Box ?i32)))
+"))
+        h:StrView (c-lib-text &l))
+    (try (check-line h "struct S21Box_Maybe_i32;"))
+    (try (check-line h "int32_t s21iu_n(struct S21Box_Maybe_i32* b) asm(\"s21iu-n\");"))
+    (try (check-line h "/* s21iu-byval: uses a type holding an error-union, option or defunion-template instance by value; not exported */"))
+    (try (check-line h "/* S21IuH: a field uses a type holding an error-union, option or defunion-template instance by value; not exported */"))
+    (try (check-not-contains h "Maybe_i32 v;"))
+    (let (out:String (try (c-lib-run &l "#include <stdio.h>
+#include \"s21iu.h\"
+int main(void) { struct S21Box_Maybe_i32* p = 0; printf(\"%d\\n\", p == 0); return 0; }
+")))
+      (try (check-eq (string-as-view &out) "1\n"))
+      (drop &out))
+    (drop &l))
+  (return (ok)))
+
+; `(fn RET)` takes only the return type; the parameters follow it.
+(deftest s21-fn-type-extra-operand
+  (try (s21-type-refused "(defstruct S21Fh f:(fn i32 (i32)))" 3
+                         "fn type: '(fn i32 (i32))' has an extra operand -- the return type goes in the head and the parameters after it, e.g. (fn i32)(i32 i64)"))
+  (try (s21-type-refused "(defn s21fh (f:(fn i32 i64)):i32 (return 0))" 3
+                         "fn type: '(fn i32 i64)' has an extra operand"))
+  (return (ok)))
+
+; A C header declares the fixed ABI arity: an `:optional` parameter is an
+; ordinary one, and the `:rest` slot is the Node list the call site builds.
+(deftest s21-cheader-optional-rest-params
+  (let (l:CLib (try (c-lib "s21or" "(import-use node)
+(defn s21or-add (a:i32 :optional (b:i32 10)):i32 (return (+ a b)))
+(defn s21or-rest (base:i32 :rest xs:i64):i32 (return base))
+"))
+        h:StrView (c-lib-text &l))
+    (try (check-line h "int32_t s21or_add(int32_t a, int32_t b) asm(\"s21or-add\");"))
+    (try (check-line h "int32_t s21or_rest(int32_t base, struct Node* xs) asm(\"s21or-rest\");"))
+    (let (out:String (try (c-lib-run &l "#include <stdio.h>
+#include \"s21or.h\"
+int main(void) { printf(\"%d %d\\n\", s21or_add(1, 2), s21or_rest(7, 0)); return 0; }
+")))
+      (try (check-eq (string-as-view &out) "3 7\n"))
+      (drop &out))
+    (drop &l))
+  (return (ok)))

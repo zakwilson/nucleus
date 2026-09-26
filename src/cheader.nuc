@@ -3482,6 +3482,20 @@
   (when (= (cheader-reserved-word s) 0) (return s))
   (return (fstr s "_")))
 
+; ISO C reserves its library's external names (C17 7.1.3), so a file-scope name
+; that is one would clash with the C header declaring it; the list is C17's own.
+(defn cheader-c-library-name (s:StrView):i32
+  (when (= (s 'len) 0) (return 0))
+  (let (needle:StrView (fstr " " s " "))
+    (when (strview-contains " abort abs acos acosf acosh acoshf acoshl acosl aligned_alloc asctime asin asinf asinh asinhf asinhl asinl at_quick_exit atan atan2 atan2f atan2l atanf atanh atanhf atanhl atanl atexit atof atoi atol atoll bsearch btowc c16rtomb c32rtomb cabs cabsf cabsl cacos cacosf cacosh cacoshf cacoshl cacosl call_once calloc carg cargf cargl casin casinf casinh casinhf casinhl casinl catan catanf catanh catanhf catanhl catanl cbrt cbrtf cbrtl ccos ccosf ccosh ccoshf ccoshl ccosl ceil ceilf ceill cexp cexpf cexpl cimag cimagf cimagl clearerr clock clog clogf clogl cnd_broadcast cnd_destroy cnd_init cnd_signal cnd_timedwait cnd_wait conj conjf conjl copysign copysignf copysignl cos cosf cosh coshf coshl cosl cpow cpowf cpowl cproj cprojf cprojl creal crealf creall csin csinf csinh csinhf csinhl csinl csqrt csqrtf csqrtl ctan ctanf ctanh ctanhf ctanhl ctanl ctime difftime div erf erfc erfcf erfcl erff erfl exit exp exp2 exp2f exp2l expf expl expm1 expm1f expm1l fabs fabsf fabsl fclose fdim fdimf fdiml feclearexcept fegetenv fegetexceptflag fegetround feholdexcept feof feraiseexcept ferror fesetenv fesetexceptflag fesetround fetestexcept feupdateenv fflush fgetc fgetpos fgets fgetwc fgetws floor floorf floorl fma fmaf fmal fmax fmaxf fmaxl fmin fminf fminl fmod fmodf fmodl fopen fprintf fputc fputs fputwc fputws fread free freopen frexp frexpf frexpl fscanf fseek fsetpos ftell fwide fwprintf fwrite fwscanf getc getchar getenv getwc getwchar gmtime hypot hypotf hypotl ilogb ilogbf ilogbl imaxabs imaxdiv isalnum isalpha isblank iscntrl isdigit isgraph islower isprint ispunct isspace isupper iswalnum iswalpha iswblank iswcntrl iswctype iswdigit iswgraph iswlower iswprint iswpunct iswspace iswupper iswxdigit isxdigit labs ldexp ldexpf ldexpl ldiv lgamma lgammaf lgammal llabs lldiv llrint llrintf llrintl llround llroundf llroundl localeconv localtime log log10 log10f log10l log1p log1pf log1pl log2 log2f log2l logb logbf logbl logf logl longjmp lrint lrintf lrintl lround lroundf lroundl malloc mblen mbrlen mbrtoc16 mbrtoc32 mbrtowc mbsinit mbsrtowcs mbstowcs mbtowc memchr memcmp memcpy memmove memset mktime modf modff modfl mtx_destroy mtx_init mtx_lock mtx_timedlock mtx_trylock mtx_unlock nan nanf nanl nearbyint nearbyintf nearbyintl nextafter nextafterf nextafterl nexttoward nexttowardf nexttowardl perror pow powf powl printf putc putchar puts putwc putwchar qsort quick_exit raise rand realloc remainder remainderf remainderl remove remquo remquof remquol rename rewind rint rintf rintl round roundf roundl scalbln scalblnf scalblnl scalbn scalbnf scalbnl scanf setbuf setjmp setlocale setvbuf signal sin sinf sinh sinhf sinhl sinl snprintf sprintf sqrt sqrtf sqrtl srand sscanf strcat strchr strcmp strcoll strcpy strcspn strerror strftime strlen strncat strncmp strncpy strpbrk strrchr strspn strstr strtod strtof strtoimax strtok strtol strtold strtoll strtoul strtoull strtoumax strxfrm swprintf swscanf system tan tanf tanh tanhf tanhl tanl tgamma tgammaf tgammal thrd_create thrd_current thrd_detach thrd_equal thrd_exit thrd_join thrd_sleep thrd_yield time timespec_get tmpfile tmpnam tolower toupper towctrans towlower towupper trunc truncf truncl tss_create tss_delete tss_get tss_set ungetc ungetwc vfprintf vfscanf vfwprintf vfwscanf vprintf vscanf vsnprintf vsprintf vsscanf vswprintf vswscanf vwprintf vwscanf wcrtomb wcscat wcschr wcscmp wcscoll wcscpy wcscspn wcsftime wcslen wcsncat wcsncmp wcsncpy wcspbrk wcsrchr wcsrtombs wcsspn wcsstr wcstod wcstof wcstoimax wcstok wcstol wcstold wcstoll wcstombs wcstoul wcstoull wcstoumax wcsxfrm wctob wctomb wctrans wctype wmemchr wmemcmp wmemcpy wmemmove wmemset wprintf wscanf " needle)
+      (return 1))
+    (return 0)))
+
+; A file-scope identifier: a reserved word or an ISO C library name takes the `_`.
+(defn cheader-escape-global (s:StrView):StrView
+  (when (and (= (cheader-reserved-word s) 0) (= (cheader-c-library-name s) 0)) (return s))
+  (return (fstr s "_")))
+
 ; `s` with one leading `_` when it begins with a digit. Stage 15 W9 item 39: a C
 ; identifier is `[A-Za-z_][A-Za-z0-9_]*` — the same first-POSITION rule LLVM has,
 ; and `sanitize-for-c`'s per-character map can no more express it than the LLVM
@@ -3526,6 +3540,13 @@
             (cheader-escape-leading-digit
               (sanitize-for-c (symbol-as-view name))))))
 
+; The same for a name declared at file scope, where C's library names are taken too.
+(defn cheader-c-global-view (name:Symbol):StrView
+  (when (symbol-none? name) (return ""))
+  (return (cheader-escape-global
+            (cheader-escape-leading-digit
+              (sanitize-for-c (symbol-as-view name))))))
+
 ; The C spelling of a name that is emitted as one identifier JOINED from two
 ; parts — `enum Color { Color_red }`, and a defunion's `Foo_arm` tag constants.
 ; The escape belongs on the join, not on either part: `Color_default` is a
@@ -3533,7 +3554,7 @@
 ; reason. The join can still land on a keyword (`and` + `eq`), so it is tested.
 (defn cheader-c-ident-join (prefix:StrView member:Symbol):StrView
   (when (symbol-none? member) (return prefix))
-  (return (cheader-escape-reserved
+  (return (cheader-escape-global
             (fstr prefix "_" (sanitize-for-c (symbol-as-view member))))))
 
 ; The `asm("…")` suffix that re-binds a sanitized C declaration to the symbol the
@@ -3752,7 +3773,7 @@
                  (return (symbol-as-view name)))
              0))
          (cheader-note-type-file name)
-         (return (fstr "struct " (cheader-c-ident-view (ns-ir-base name)))))))))
+         (return (fstr "struct " (cheader-c-global-view (ns-ir-base name)))))))))
 
 ; Convert a type AST node to a C type string. Handles SYM types and
 ; (ptr T) / (ptr ptr T) ... lists.
@@ -3919,6 +3940,11 @@
     (set! (e 'busy) true)
     (set! (e 'emitted) false)
     (conj g-cheader-insts e)
+    (when (cheader-sdef-no-c? sd)
+      (set! (e 'text) (fstr "/* " (sdef-display sd) ": holds a type C has no layout for; only its tag is declared */\n"
+                            (e 'kw) " " (e 'cname) ";\n\n"))
+      (set! (e 'busy) false)
+      (return e))
     (let ((acc String) (str-alloc (strfmt-alloc) "#ifndef NUC_INST_" (e 'cname)
                                   "\n#define NUC_INST_" (e 'cname)
                                   "\ntypedef " (e 'kw) " " (e 'cname) " {\n"))
@@ -4074,7 +4100,7 @@
                (contains? g-cheader-own-consts ((as raw:Node lnn) 's)))
       (if-some (s (scope-lookup g-globals ((as raw:Node lnn) 's)))
         (when (and (= (s 'c-const) 0) (= (s 'src-file) g-source-path))
-          (return (cheader-c-ident-view ((as raw:Node lnn) 's))))
+          (return (cheader-c-global-view ((as raw:Node lnn) 's))))
         0))
     (return (fstr len))))
 
@@ -4191,7 +4217,7 @@
   ; W9 item 28: `cheader-c-ident` — the tag and typedef of a struct named `union`
   ; must be escaped, in lockstep with every reference to it (type-name-to-c).
   (let (nn:ptr:Node (unsafe/cast &Node (node-at form (+ 1 nattrs)))
-        name:StrView (cheader-c-ident-view (ns-ir-base (nn 's)))
+        name:StrView (cheader-c-global-view (ns-ir-base (nn 's)))
         nfields:i32 (- (- (node-len form) 2) nattrs)
         ; PK-2: the attribute goes after the closing brace, which is the one
         ; position of the three C honours that needs no tag to attach to.
@@ -4435,6 +4461,14 @@
 ; signature positions would record an `#include` nothing in the file needs.
 ; Asking it in one place is what stops those two from drifting apart, which is
 ; the failure mode item 37 hit when the pre-pass replicated the tests by hand.
+; A parameter's `name:type` node: null for a `:optional`/`:rest` marker, and the
+; declaration half of a `(decl default)` cell after `:optional`.
+(defn cheader-param-decl (p:ptr opt:bool):ptr
+  (when (or (!= (marker-named (as raw:Node p) "optional") 0) (!= (marker-named (as raw:Node p) "rest") 0))
+    (return null))
+  (when (and opt (= (node-kind p) NODE-LIST) (> (node-len p) 0)) (return (node-at p 0)))
+  (return p))
+
 (defn cheader-defn-skip-reason (form:ptr):i32
   ; A generic template (the same predicate the prescan/emit-defn skip already use
   ; — src/generics.nuc): a bare tyvar has no C spelling, so emitting one here
@@ -4478,6 +4512,16 @@
                                          ((unsafe/cast &Node (node-at params nipi)) 'line)))) 0)
           (set! skip-ni 1)))
       (when (!= skip-ni 0) (return 4)))
+    (when (cheader-node-holds-no-c? ret ((unsafe/cast &Node form) 'line)) (return 5))
+    (let (opt:bool false)
+     (dotimes (hpi np)
+      (when (!= (marker-named (as raw:Node (node-at params hpi)) "optional") 0) (set! opt true))
+      (let (pn:ptr (cheader-param-decl (node-at params hpi) opt))
+        (when (and (!= pn null)
+                   (cheader-node-holds-no-c?
+                     (cheader-unalias (extract-type-node pn ((unsafe/cast &Node pn) 'line)))
+                     ((unsafe/cast &Node form) 'line)))
+          (return 5)))))
     (return 0)))
 
 (defn emit-cheader-declare (form:ptr):void
@@ -4486,6 +4530,8 @@
         fname:Symbol (symbol-none)
         ret-name:Symbol (symbol-none))
     (extract-name-type name-node (as &Symbol &fname) (as &Symbol &ret-name))
+    ; C constrains `main`'s signature, and a C consumer has its own.
+    (when (= fname "main") (return))
     (let (why:i32 (cheader-defn-skip-reason form))
       (macmap ((x why-text)
                `(when (= why ~x)
@@ -4494,7 +4540,8 @@
         ((1 ": generic template; not exported")
          (2 ": uses a defunion-template instance type; not exported")
          (3 ": exposes a closure or type-erased box type; not C-callable, omitted")
-         (4 ": uses an error-union or option type; not exported"))))
+         (4 ": uses an error-union or option type; not exported")
+         (5 ": uses a type holding an error-union, option or defunion-template instance by value; not exported"))))
     ; Stage 12 N6: emit the C-legal mangled link name (`geom__area`) for a
     ; namespaced library. ns-ir-base composes g-current-ns's ir-prefix onto the
     ; bare name; identity under `user`, so existing headers are byte-identical.
@@ -4516,7 +4563,7 @@
     (let (link:Symbol (cheader-strip-sigil (defn-form-mangled-name (as raw:Node form)))
           cname:StrView "")
       (when (symbol-none? link) (set! link (ns-ir-base fname)))
-      (set! cname (cheader-c-ident-view link))
+      (set! cname (cheader-c-global-view link))
       ; FP-5: the parameter list is built BEFORE the return type is rendered.
       ; A function returning a function pointer wraps its own declarator —
       ; `int32_t (*getf(void))(int32_t, int32_t);` — so the name and its
@@ -4524,21 +4571,33 @@
       (let ((acc String) (str-alloc (strfmt-alloc) "")
             params:ptr (node-at form 2)
             n:i32 (node-len params))
-        (when (= n 0) (str-into acc "void"))
-        (dotimes (i n)
-          (when (!= i 0) (str-into acc ", "))
-          (let (p:ptr (node-at params i)
-                pname:Symbol (symbol-none)
-                ptname:Symbol (symbol-none))
-            (extract-name-type p (as &Symbol &pname) (as &Symbol &ptname))
-            (let (ptnode:ptr (extract-type-node p ((unsafe/cast &Node p) 'line))
-                  pc:StrView (cheader-c-ident-view pname))
-              (if (!= ptnode null)
-                (str-into acc (cheader-sig-type-c-decl ptnode pc
-                                                       ((unsafe/cast &Node p) 'line)))
-                ; No type node at all — a shape this pass cannot read.
-                (when (not (symbol-none? pname))
-                  (str-into acc "void* " pc))))))
+        (let (emitted:i32 0
+              rest:bool false
+              opt:bool false)
+          (dotimes (i n)
+            (when (!= (marker-named (as raw:Node (node-at params i)) "rest") 0) (set! rest true))
+            (when (!= (marker-named (as raw:Node (node-at params i)) "optional") 0) (set! opt true))
+            (let (p:ptr (cheader-param-decl (node-at params i) opt)
+                  pname:Symbol (symbol-none)
+                  ptname:Symbol (symbol-none))
+              (when (!= p null)
+                (when (!= emitted 0) (str-into acc ", "))
+                (inc! emitted)
+                (extract-name-type p (as &Symbol &pname) (as &Symbol &ptname))
+                (let (ptnode:ptr (extract-type-node p ((unsafe/cast &Node p) 'line))
+                      pc:StrView (cheader-c-ident-view pname))
+                  (cond
+                    ; The rest slot is the Node list the call site builds.
+                    rest (str-into acc "struct Node* " pc)
+                    (!= ptnode null)
+                      (str-into acc (cheader-sig-type-c-decl ptnode pc
+                                                             ((unsafe/cast &Node p) 'line)))
+                    ; No type node at all — a shape this pass cannot read.
+                    (not (symbol-none? pname))
+                      (str-into acc "void* " pc))))))
+          (when (= emitted 0) (str-into acc "void"))
+          ; At file scope, so the parameter's tag is not scoped to the prototype.
+          (when rest (emit g-hdr "struct Node;\n")))
         (let (rtnode:ptr (cheader-defn-ret-node form))
           (emit g-hdr
                 (cheader-sig-type-c-decl rtnode
@@ -4650,7 +4709,7 @@
           ; AVR-6: `:const` selects LLVM `constant` storage, which is C's `const`.
           (let (cst:StrView (if (!= (bit-and attr-flags DECL-ATTR-CONST) 0) "const " "")
                 link:Symbol (ns-ir-base vname))
-            (let (cname (cheader-c-ident-view link))
+            (let (cname (cheader-c-global-view link))
               (emit g-hdr "extern " cst
                     (type-node-to-c-decl tnode cname ((unsafe/cast &Node name-node) 'line))
                     (cheader-asm-label link cname) ";\n"))))))))
@@ -4661,7 +4720,7 @@
 (defn emit-cheader-defconst (form:ptr):void
   ; A name spelled `()` is a NULL node (W5f) and defines no macro.
   (when (!= (node-kind (node-at form 1)) NODE-SYM) (return))
-  (let (name:StrView (cheader-c-ident-view ((unsafe/cast &Node (node-at form 1)) 's))
+  (let (name:StrView (cheader-c-global-view ((unsafe/cast &Node (node-at form 1)) 's))
         val-node:ptr:Node (unsafe/cast &Node (node-at form 2)))
     (case (node-kind (as ptr val-node))
       NODE-INT (emit g-hdr "#define " name " " (val-node 'i) "\n")
@@ -4676,7 +4735,7 @@
   (when (!= (node-kind (node-at form 1)) NODE-SYM) (return))
   (dotimes (mi (- (node-len form) 2))
     (when (!= (node-kind (node-at form (+ mi 2))) NODE-SYM) (return)))
-  (let (name:StrView (cheader-c-ident-view ((unsafe/cast &Node (node-at form 1)) 's))
+  (let (name:StrView (cheader-c-global-view ((unsafe/cast &Node (node-at form 1)) 's))
         n:i32 (- (node-len form) 2))
     (emit g-hdr "enum " name " {\n")
     (dotimes (i n)
@@ -4695,7 +4754,35 @@
   (let (tn:ptr (cheader-unalias (extract-type-node (as raw:Node field) (node-line field 0))))
     (when (!= (cheader-niche-no-c (as raw:Node tn)) 0) (return "an error-union or option type"))
     (when (!= (cheader-template-instance (as raw:Node tn)) 0) (return "a defunion-template instance type"))
+    (when (= (field-anon-type-node field) null)
+      (let (fa:i32 0
+            fb:i32 0
+            pf:ptr (field-peel-attrs (cheader-strip-volatile field) (as &i32 &fa) (as &i32 &fb) 0 (node-line field 0)))
+        (when (cheader-node-holds-no-c? (cheader-unalias (extract-type-node (as raw:Node pf) (node-line pf 0)))
+                                        (node-line field 0))
+          (return "a type holding an error-union, option or defunion-template instance by value"))))
     (return "")))
+
+; A value of `t` holds a defunion-template stamp (`?T`/`!T` over a value
+; included) somewhere by value, and a header writes no layout for one.
+(defn cheader-type-no-c? (t:(raw Type)):bool
+  (when (= t null) (return false))
+  (when (= (t 'kind) TY-ARRAY) (return (cheader-type-no-c? (t 'elem))))
+  (when (and (or (= (t 'kind) TY-STRUCT) (= (t 'kind) TY-UNION)) (!= (t 'sdef) null))
+    (return (cheader-sdef-no-c? (t 'sdef))))
+  (return false))
+
+(defn cheader-sdef-no-c? (sd:(raw StructDef)):bool
+  (let (u:raw:UnionDef (sd 'udef))
+    (when (and (!= u null) (!= (u 'origin-template) null)) (return true)))
+  (dotimes (i (sd 'num-fields))
+    (when (cheader-type-no-c? ((field-at (sd 'fields) i) 'type)) (return true)))
+  (return false))
+
+(defn cheader-node-holds-no-c? (tn:ptr line:i32):bool
+  (when (= tn null) (return false))
+  (set! g-array-ok 1)
+  (return (cheader-type-no-c? (parse-type-from-node tn (node-line tn line)))))
 
 (defn emit-cheader-defunion (form:ptr):void
   (let (name-node:ptr:Node (unsafe/cast &Node (node-at form 1)))
@@ -4708,7 +4795,7 @@
     ; namespaced union's definition and every reference to it spelled different C
     ; identifiers. Identity under `user`.
     ; W9 item 28: `cheader-c-ident`, as emit-cheader-defstruct — see there.
-    (let (name:StrView (cheader-c-ident-view (ns-ir-base (name-node 's)))
+    (let (name:StrView (cheader-c-global-view (ns-ir-base (name-node 's)))
           narms:i32 (- (node-len form) 2)
           npay:i32 0)
       (check-ir-name-legal (name-node 'line) (name-node 's) name)
@@ -4738,7 +4825,7 @@
                   ; One field → the payload is just that field, named by the arm.
                   (let (field:ptr (node-at (as ptr arm) 1)
                         tnode:ptr (extract-type-node field ((unsafe/cast &Node field) 'line)))
-                    (emit g-hdr "        " (type-node-to-c tnode) " " aname ";\n"))
+                    (emit g-hdr "        " (type-node-to-c-decl tnode aname ((unsafe/cast &Node field) 'line)) ";\n"))
                   (do
                     (emit g-hdr "        struct { ")
                     (dotimes (fi nf)
@@ -4748,8 +4835,9 @@
                         (extract-name-type field (as &Symbol &fname)
                                                   (as &Symbol &ftname))
                         (let (tnode:ptr (extract-type-node field ((unsafe/cast &Node field) 'line)))
-                          (emit g-hdr (type-node-to-c tnode) " "
-                                (cheader-c-ident-view fname) "; "))))
+                          (emit g-hdr (type-node-to-c-decl tnode (cheader-c-ident-view fname)
+                                                           ((unsafe/cast &Node field) 'line))
+                                "; "))))
                     (emit g-hdr "} " aname ";\n")))))))
         (emit g-hdr "    } payload;\n"))
       (emit g-hdr "} " name ";\n\n")
