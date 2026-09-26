@@ -7250,3 +7250,14 @@ Since Stage 21 item 7 (design/stage21-cleanup/ptr-is-unchecked.md §7):
 - **Pointer kind is invisible to stamps.** `type-spelling` writes `ref:` for
   every kind, so `(Vector ?&T)` and `(Vector &T)` are one stamp. Anything keyed
   on kind must read the Type, not the spelling.
+
+## A narrow belongs to the function that made it
+
+Narrows live on the `Sym`, so a narrowed **global** keeps its `ntype` after its
+function ends. `sym-effective-type` honours `ntype` only when `Sym.ngen`
+equals `g-narrow-gen`:
+- `reset-function-state` takes a fresh generation from a counter that never
+  repeats a value.
+- `push-function-state` and `pop-function-state` save and restore the
+  generation, as they do `g-nundo`.
+- Anything new that reads `ntype` must check `ngen` too.

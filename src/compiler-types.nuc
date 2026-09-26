@@ -601,6 +601,7 @@
   (ntype ?&Type) ; flow-narrowed type override (?T read as (ref T)); null = none
   ndepth:i32        ; g-loop-depth at which the current narrow was established
   kstamp:i32        ; bumped on each kill (reassignment); stale undo entries skip
+  ngen:i32          ; g-narrow-gen when `ntype` was set: a global's narrow must not outlive its function
   ; Stage 10 Phase F1 (nullability.md §9 finding 1): the callee never returns
   ; (die-at, repl-throw, libc exit/abort). A statement-position call to it
   ; emits `unreachable` and terminates the block, so the (when (= x null)
@@ -686,6 +687,7 @@
   scope:&Scope
   (old-ntype ?&Type)
   old-ndepth:i32
+  old-ngen:i32
   stamp:i32)
 
 (defstruct Scope
@@ -1142,6 +1144,7 @@
   fn-ret-type:ptr
   loop-depth:i32
   nundo:&(Vector &NarrowUndo)
+  narrow-gen:i32
   ; Pointers, not `String` values: this file is imported before `lib/string.nuc`,
   ; so a `%String`-typed field names a type the compile-time module's own type
   ; section does not carry. A pointer field is `ptr` in IR and carries nothing.

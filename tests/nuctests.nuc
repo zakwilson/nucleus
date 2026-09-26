@@ -94,9 +94,9 @@
 
 ; The pinned line, or -1 when the row does not pin one.
 (defn row-line (row:&Node):i32
-  (let (e:?&Node (row-entry row "line"))
-    (when (= e null) (return -1))
-    (return (unsafe/cast i32 ((node-first e) 'i)))))
+  (if-some (v (node-first (row-entry row "line")))
+    (return (unsafe/cast i32 (v 'i)))
+    (return -1)))
 
 ; ---------------------------------------------------------------------------
 ; Running the compiler

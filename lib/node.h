@@ -15,7 +15,7 @@ bool node_is_list(struct Node* /* nullable */ n) asm("node-is-list");
 bool node_empty_QMARK(struct Node* /* nullable */ n) asm("node-empty_QMARK");
 #define NODE_NIL -1
 int32_t node_kind(struct Node* n) asm("node-kind");
-struct Node* node_first(struct Node* n) asm("node-first");
+struct Node* /* nullable */ node_first(struct Node* n) asm("node-first");
 struct Node* /* nullable */* /* nullable */ node_elems_alloc(int32_t n) asm("node-elems-alloc");
 struct Node* node_list_new(int32_t line) asm("node-list-new");
 struct Node* node_rest(struct Node* n) asm("node-rest");
@@ -32,6 +32,7 @@ struct Node* node_list2(struct Node* /* nullable */ a, struct Node* /* nullable 
 struct Node* node_list3(struct Node* /* nullable */ a, struct Node* /* nullable */ b, struct Node* /* nullable */ c, int32_t line) asm("node-list3");
 struct Node* node_list4(struct Node* /* nullable */ a, struct Node* /* nullable */ b, struct Node* /* nullable */ c, struct Node* /* nullable */ d, int32_t line) asm("node-list4");
 struct Node* node_list5(struct Node* /* nullable */ a, struct Node* /* nullable */ b, struct Node* /* nullable */ c, struct Node* /* nullable */ d, struct Node* /* nullable */ e, int32_t line) asm("node-list5");
+struct Symbol node_head_sym(struct Node* n) asm("node-head-sym");
 typedef struct InternEntry {
     struct Symbol spelling;
     struct Node* node;

@@ -163,6 +163,9 @@ ok 10
 into-void
 err s21-worse
 ok void
+into-ptr
+err s21-worse
+ok 8
 "))
     (drop &out))
   (return (ok)))
@@ -3021,9 +3024,9 @@ enum { S21O_E_NEG = -2, S21O_E_DIV = (0u - 1) / 2, S21O_E_SHR = (0u - 2) >> 1,
 
 ; An empty `:rest` is the empty list, present: `(str)` unquotes it into `macmap`.
 (deftest s21-macro-empty-rest-is-a-list
-  (try (check-source-exit "(defmacro rest-present (:rest xs) (cond (= xs null) `0 true `1))
-(defn main ():i32 (return (rest-present)))
-" 1))
+  (try (check-source-exit "(defmacro rest-empty (:rest xs) (cond (= (ast-len xs) 0) `0 true `1))
+(defn main ():i32 (return (rest-empty)))
+" 0))
   (try (check-source-exit "(import-use fmt)
 (defn main ():i32 (let (s:String (str)) (return (if (= (byte-len &s) 0) 0 1))))
 " 0))
@@ -4329,6 +4332,49 @@ int main(void) { printf(\"%d %d\\n\", s21or_add(1, 2), s21or_rest(7, 0)); return
     (drop &out))
   (try (s21-type-refused "(defmacro s21mp-bad (x) (if x `1 `0))" 3
                          "is non-null, so this test is always true"))
+  (return (ok)))
+
+; Comparing a non-null `&T` with `null` is constant, so it is refused on
+; either side; `?&T` and the unchecked kinds still compare.
+(deftest s21-null-compare-on-ref-refused
+  (try (s21-type-refused "(defn f (p:&i32):bool (return (= p null)))" 3
+                         "=: &i32 is non-null, so comparing it with null is constant"))
+  (try (s21-type-refused "(defn f (p:&i32):bool (return (!= null p)))" 3
+                         "!=: &i32 is non-null"))
+  (let (out:String (try (build-run-source "(import-use \"stdio.h\")
+(defn main ():i32
+  (let (a:?&i32 null b:ptr:i32 null c:ptr null)
+    (printf \"%d %d %d\\n\" (= a null) (= b null) (= c null)))
+  (return 0))
+")))
+    (try (check-eq (string-as-view &out) "1 1 1\n"))
+    (drop &out))
+  (return (ok)))
+
+; `node-first` answers null for an empty list, so its result is `?&Node` and
+; must be narrowed; `node-head-sym` is the null-tolerant head read.
+(deftest s21-node-first-is-checked
+  (try (s21-type-refused "(import-use node)
+(defn f (n:&Node):Symbol (return ((node-first n) 's)))" 4 "value may be null"))
+  (let (out:String (try (build-run-source "(import-use node)
+(import-use io)
+(defn main ():i32
+  (println (symbol-none? (node-head-sym '())) \" \" (symbol-as-view (node-head-sym '(a b))))
+  (return 0))
+")))
+    (try (check-eq (string-as-view &out) "true a\n"))
+    (drop &out))
+  (return (ok)))
+
+; A narrow on a global holds for the rest of its function only: a later
+; function reading the global unguarded is refused, not left non-null.
+(deftest s21-global-narrow-ends-with-its-function
+  (try (s21-type-refused "(defstruct S21Gn v:i32)
+(defvar s21-gn:?&S21Gn)
+(defn s21-gn-a ():i32
+  (when (= s21-gn null) (return 0))
+  (return (s21-gn 'v)))
+(defn s21-gn-b ():i32 (return (s21-gn 'v)))" 8 "value may be null"))
   (return (ok)))
 
 ; `Maybe` over any plain pointer is the one-pointer niche.

@@ -56,9 +56,9 @@
       (set! (deref g) 5)
       (printf "with-bind=%d\n" (deref g)))
 
-    ; CP-1 chain in a let binding:  pp:ptr:(ptr i32) -> (pp (ptr (ptr i32)))
-    ; AND a cast whose target type uses the CP-1 spelling: ptr:(ptr i32).
-    (let (pp:&&i32 (unsafe/cast &&i32 null))
+    ; CP-1 chain in a let binding:  pp:ptr:&i32 -> (pp (ptr (ref i32)))
+    ; AND a cast whose target type uses the CP-1 spelling: ptr:&i32.
+    (let (pp:ptr:&i32 (as ptr:&i32 null))
       (printf "holder-is-null=%d\n" (if (= pp null) 1 0)))
 
     ; lambda param (colon-paren) + CP-2 lone-colon return after ')':
@@ -66,8 +66,8 @@
     (let (id (fn (l:&Link):&Link (return l)))
       (printf "id(b)=%d\n" (chain-sum (funcall id b))))
 
-    ; CP-2 keyword-led return spelling: :ptr:(ptr i32) -> (ptr (ptr i32)).
-    (let (nuller (fn (x:i32) :&&i32 (unsafe/cast &&i32 null)))
+    ; CP-2 keyword-led return spelling: :ptr:&i32 -> (ptr (ref i32)).
+    (let (nuller (fn (x:i32) :ptr:&i32 (as ptr:&i32 null)))
       (printf "nuller-is-null=%d\n" (if (= (funcall nuller 0) null) 1 0)))
 
     (printf "chain-sum(a)=%d\n" (chain-sum a))

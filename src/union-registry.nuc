@@ -216,7 +216,6 @@
 ; the next one. Called before each module assembly (batch output, compile-time
 ; JIT, macro JIT, REPL).
 (defn drain-pending-union-irs ():void
-  (when (= g-pending-unions null) (return))
   ; To a fixed point: a deferred type can sit in the queue after one naming it,
   ; and `type-line-resolves` promises everything resolvable is written here.
   (let (again:bool true)
@@ -674,11 +673,9 @@
 ; If `ty` is a BoxedFn instance type, return its canonical box Type* (carrying the
 ; Fn signature in ret/params/num-params); else null. Detection is by StructDef
 ; pointer identity against the memo, so a loaded box value and any re-derived
-; spelling both resolve. INERT until a box type is parsed (g-boxedfn-table stays
-; null in a box-free unit) — the null check short-circuits, so no IR is affected.
+; spelling both resolve.
 (defn boxedfn-canonical (ty:ptr):ptr
   (when (= ty null) (return null))
-  (when (= g-boxedfn-table null) (return null))
   (let (tt:&Type (unsafe/cast &Type ty))
     (when (!= (tt 'kind) TY-STRUCT) (return null))
     (let (sd:ptr (tt 'sdef))
@@ -768,10 +765,9 @@
 
 ; If `ty` is a `(dyn P)` instance type, return its canonical box Type*; else null.
 ; Detection is by StructDef pointer identity against the memo (a loaded box value
-; and any re-derived spelling both resolve). INERT until a `(dyn P)` is parsed.
+; and any re-derived spelling both resolve).
 (defn dyn-canonical (ty:ptr):ptr
   (when (= ty null) (return null))
-  (when (= g-dyn-table null) (return null))
   (let (tt:&Type (unsafe/cast &Type ty))
     (when (!= (tt 'kind) TY-STRUCT) (return null))
     (let (sd:ptr (tt 'sdef))
@@ -785,7 +781,6 @@
 ; usable directly as a `protocol-lookup` key), or null if `ty` is not a dyn box.
 (defn dyn-proto-of (ty:ptr):Symbol
   (when (= ty null) (return (symbol-none)))
-  (when (= g-dyn-table null) (return (symbol-none)))
   (let (tt:&Type (unsafe/cast &Type ty))
     (when (!= (tt 'kind) TY-STRUCT) (return (symbol-none)))
     (let (sd:ptr (tt 'sdef))

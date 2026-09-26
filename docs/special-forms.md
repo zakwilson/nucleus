@@ -228,7 +228,8 @@ the taken branch, inside an `_and`'s right operand, and after a terminating
 - **A non-null pointer.** `&T` is non-null by type, so `(when p …)` on a
   `p:&Node` is a test whose answer is already known. It reports
   `cond: &Node is non-null, so this test is always true -- spell the value ?T
-  if it can be null`.
+  if it can be null`. Writing the test out as `(= p null)` or `(!= p null)` is
+  refused the same way.
 - **`!T` / `Result`.** Neither true nor false: `a Result (!T) is neither true
   nor false -- eliminate it with match, try or unwrap`.
 - **`(dyn P)`, `BoxedFn`, `StrView`, structs.** A fat pointer has two halves and
@@ -375,7 +376,7 @@ The rule is **symmetric in operand order** and the operator's *result type* is t
 
 A user operator method is emitted under a mangled symbol (`@add.pV2.pV2`, `@eq.pV2.pV2` — the symbols `+`/`=` are mapped to IR-safe mnemonics). A call with operand types that match no user method falls back to the built-in inline peephole.
 
-**A struct literal compares by value.** A `(S …)` literal is a value, so a comparison with one — this is the rule for every comparison operator, `= != < <= > >=` — never compares its address. When no user method takes the operands as written, both are read as `S`: the literal as its struct, and a non-null `&S` on the other side loaded through. The by-value method (`(defn = (a:S b:S):bool …)`) then answers, and with none the comparison is refused. A `?&S` or `(raw S)` operand is not read through, since it may be null; narrow it first. An arithmetic or bit operator reads a literal operand the same way; such a call was always an error before, so nothing that compiled changes. `=` on two references, neither a literal, is still pointer identity: `(= p q)` asks whether `p` and `q` are the same struct. A method written for the operands as written (`(defn = (a:&S b:&S):bool …)`) still wins over the by-value reading. A struct has no `=` unless its author defines one; the compiler does not derive one ([Derived structural equality](../design/deferred/overview.md#derived-structural-equality)).
+**A struct literal compares by value.** A `(S …)` literal is a value, so a comparison with one — this is the rule for every comparison operator, `= != < <= > >=` — never compares its address. When no user method takes the operands as written, both are read as `S`: the literal as its struct, and a non-null `&S` on the other side loaded through. The by-value method (`(defn = (a:S b:S):bool …)`) then answers, and with none the comparison is refused. A `?&S` or `(ptr S)` operand is not read through, since it may be null; narrow it first. An arithmetic or bit operator reads a literal operand the same way; such a call was always an error before, so nothing that compiled changes. `=` on two references, neither a literal, is still pointer identity: `(= p q)` asks whether `p` and `q` are the same struct. A method written for the operands as written (`(defn = (a:&S b:&S):bool …)`) still wins over the by-value reading. A struct has no `=` unless its author defines one; the compiler does not derive one ([Derived structural equality](../design/deferred/overview.md#derived-structural-equality)).
 
 **An operator that no method answers** is refused in the `no matching method` family, naming the protocol that the operand type does not conform to:
 
