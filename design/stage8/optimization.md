@@ -72,3 +72,5 @@ Measured on the Leibniz-pi benchmark (2×10⁸ terms, branchless alternating sig
 Disassembly confirms each layer: `-O0` spills locals to the stack each
 iteration, `-O3` keeps them in registers, and the fast build emits packed
 256-bit FP ops with interleaved accumulators.
+
+**Superseded in part (2026-09-28).** All three changes were lost in merge `f065de8a` and restored in [stage21-cleanup/optimization-flags.md](../stage21-cleanup/optimization-flags.md), which moves fast-math from the emitter to the parsed module.

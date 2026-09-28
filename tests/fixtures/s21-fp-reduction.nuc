@@ -1,0 +1,12 @@
+; The Leibniz-pi kernel: an FP reduction only -ffast-math lets the vectorizer
+; reorder. The bound comes from argc so the loop cannot be folded away.
+(import-use "stdio.h")
+
+(defn main (argc:i32 argv:ptr):int
+  (let (pi:f64 1.0
+        n:ui32 (+ 1000001 (unsafe/cast ui32 argc)))
+    (for (i:ui32 2) (< i n) (inc! i)
+      (let (x:f64 (+ -1.0 (* 2.0 (unsafe/cast f64 (bit-and i 1)))))
+        (set! pi (+ pi (/ x (unsafe/cast f64 (- (* 2 i) 1)))))))
+    (printf "%.6f\n" (* pi 4.0))
+    (return 0)))

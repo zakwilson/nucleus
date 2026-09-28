@@ -4389,3 +4389,65 @@ int main(void) { printf(\"%d %d\\n\", s21or_add(1, 2), s21or_rest(7, 0)); return
     (try (check-eq (string-as-view &out) "8 8\n"))
     (drop &out))
   (return (ok)))
+
+; `nucleusc FLAG -c` over the FP-reduction fixture, disassembled.
+(defn s21-fp-reduction-asm (flag:StrView):!String
+  (let (dir:StrView (try (test-scratch))
+        obj:String (str dir "/fp-reduction" flag ".o")
+        ov:StrView (string-as-view &obj)
+        c:Command (command (compiler-path)))
+    (command-arg &c flag)
+    (command-arg &c "--diagnostics=sexp")
+    (command-arg &c "-c")
+    (command-arg &c "tests/fixtures/s21-fp-reduction.nuc")
+    (command-arg &c "-o")
+    (command-arg &c ov)
+    (let (r:Compiled (try (compiled-run &c)))
+      (try (check-no-errors (ref r 'diags)))
+      (drop &r))
+    (drop &c)
+    (let (d:String (try (avr-tool "llvm-objdump" "-d" ov)))
+      (drop &obj)
+      (return (ok d)))))
+
+; Packed `divpd` needs the middle-end's vectorizer AND fast-math flags on the
+; reduction; `-O3` alone must stay scalar, which makes the check discriminating.
+(deftest s21-ofast-vectorizes-fp-reduction
+  (when (not (have-program? "llvm-objdump")) (skip! "llvm-objdump is not installed"))
+  (let (host:String (try (host-triple)))
+    (when (not (strview-has-prefix (string-as-view &host) "x86_64"))
+      (drop &host)
+      (skip! "the packed-double mnemonics are x86-64's"))
+    (drop &host))
+  (let (fast:String (try (s21-fp-reduction-asm "-Ofast"))
+        o3:String (try (s21-fp-reduction-asm "-O3")))
+    (try (check-match (string-as-view &fast) "*divpd*"))
+    (try (check-not-match (string-as-view &o3) "*divpd*"))
+    (drop &fast)
+    (drop &o3))
+  (let (out:String (try (build-run-file "" "-Ofast" "tests/fixtures/s21-fp-reduction.nuc")))
+    (try (check-eq (string-as-view &out) "3.141594\n"))
+    (drop &out))
+  (return (ok)))
+
+(deftest s21-march-native-refuses-target
+  (let (c:Command (command (compiler-path)))
+    (command-arg &c "-march=native")
+    (command-arg &c "--target=x86_64-unknown-linux-gnu")
+    (command-arg &c "tests/fixtures/s21-fp-reduction.nuc")
+    (let (r:Ran (try (ran &c)))
+      (when (r 'ok?) (fail! "-march=native with --target= was accepted"))
+      (try (check-match (string-as-view (ref r 'err)) "*-march=native*--target=*"))
+      (drop &r))
+    (drop &c))
+  (return (ok)))
+
+; GlobalOpt folds `h-init`'s run-time initializer into a constant, so its
+; zero-time `.bss.` section must move to `.data.` or emission fails.
+(deftest s21-optimized-ctor-fold-leaves-bss
+  (let (out:String (try (build-run-file "" "-O2" "examples/fnptr-global.nuc"))
+        want:String (try (read-file "tests/expected/fnptr-global.out")))
+    (try (check-eq (string-as-view &out) (string-as-view &want)))
+    (drop &out)
+    (drop &want))
+  (return (ok)))

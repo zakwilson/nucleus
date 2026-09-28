@@ -1002,6 +1002,31 @@ int main(void) {
   (return (and (have-program? "avr-gcc")
                (and (have-program? "avr-objdump") (have-program? "avr-size")))))
 
+; Skip unless avr-gcc can link a C `main` for `device`: the binaries alone say
+; nothing about avr-libc or the device's startup files, which are packaged apart.
+(defn avr-require-device (device:StrView):!void
+  (when (not (have-avr-toolchain?)) (skip! "the avr-gcc toolchain is not installed"))
+  (let (dir:StrView (try (test-scratch))
+        src:String (try (test-write-file "avr-probe.c" "int main(void) { return 0; }\n"))
+        elf:String (str dir "/avr-probe.elf")
+        mflag:String (str "-mmcu=" device)
+        c:Command (command "avr-gcc"))
+    (command-arg &c (string-as-view &mflag))
+    (command-arg &c (string-as-view &src))
+    (command-arg &c "-o")
+    (command-arg &c (string-as-view &elf))
+    (let (r:Ran (try (ran &c)))
+      (when (not (r 'ok?))
+        (skip! "avr-gcc cannot link a C program for " device
+               " (avr-libc or its device support is missing)\n     "
+               (test-show (string-as-view (ref r 'err)))))
+      (drop &r))
+    (drop &c)
+    (drop &mflag)
+    (drop &elf)
+    (drop &src))
+  (return (ok)))
+
 ; `nucleusc --target=avr --mcpu=<cpu> [--mmcu=<device>] <path> -o <elf>`. No
 ; `-c` and no `--emit-llvm`: the compiler emits the object and shells out to
 ; `avr-gcc`, which is the part under test.
@@ -1021,6 +1046,10 @@ int main(void) {
     (command-arg &c (string-as-view &elf))
     (let (r:Compiled (try (compiled-run &c)))
       (try (check-silent &r (string-as-view &what)))
+      ; A link-step failure is plain text on stderr, not a sexp diagnostic.
+      (when (not (r 'ok?))
+        (fail! (string-as-view &what) " failed (exit " (r 'exit) ")\n     "
+               (test-show (string-as-view (ref r 'raw-text)))))
       (drop &r))
     (drop &c)
     (drop &what)
@@ -1086,7 +1115,7 @@ int main(void) {
 ; `--mcpu`, supplied the device name on the link line. The shell asked `file`
 ; whether the ELF was "Atmel AVR 8-bit", which is the same answer for both.
 (defn avr3-link-one (stem:StrView cpu:StrView mmcu:StrView arch:StrView):!void
-  (when (not (have-avr-toolchain?)) (skip! "the avr-gcc toolchain is not installed"))
+  (try (avr-require-device (if (= mmcu "") cpu mmcu)))
   (let (elf:String (try (avr-link stem cpu mmcu "tests/fixtures/avr3-link.nuc"))
         ev:StrView (string-as-view &elf)
         f:String (try (avr-tool "avr-objdump" "-f" ev))
@@ -1152,7 +1181,7 @@ int main(void) {
 ; avr-libc's weak `__bad_interrupt`, and the attribute reached the backend,
 ; which is the only thing that turns the epilogue from `ret` into `reti`.
 (deftest avr5-isr
-  (when (not (have-avr-toolchain?)) (skip! "the avr-gcc toolchain is not installed"))
+  (try (avr-require-device "atmega328p"))
   (let (elf:String (try (avr-link "avr5-isr" "atmega328p" "" "examples/avr-isr.nuc"))
         ev:StrView (string-as-view &elf)
         f:String (try (avr-tool "avr-objdump" "-f" ev))
@@ -1286,7 +1315,7 @@ int main(void) {
 ; only unit that puts the struct convention through the real assembler and
 ; linker.
 (deftest avr7-struct-link
-  (when (not (have-avr-toolchain?)) (skip! "the avr-gcc toolchain is not installed"))
+  (try (avr-require-device "atmega328p"))
   (let (elf:String (try (avr-link "avr7-struct" "atmega328p" "" "tests/fixtures/avr7-struct.nuc"))
         ev:StrView (string-as-view &elf)
         f:String (try (avr-tool "avr-objdump" "-f" ev))
