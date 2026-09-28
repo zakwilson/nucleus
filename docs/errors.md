@@ -33,7 +33,7 @@ contract; the id is a per-build representation (assigned in definition order,
 capped at 4095). Names are program-global. `.nuch` headers export `deferror`
 verbatim; importers re-register and get their own dense ids.
 
-Like `defconst`, the name takes **no** type annotation — `(deferror MyErr:i32
+The name takes **no** type annotation — `(deferror MyErr:i32
 "bad")` is rejected (`deferror: takes no type annotation; write (deferror
 MyErr "message")`) rather than silently compiling and leaving `MyErr`
 undefined at every use.

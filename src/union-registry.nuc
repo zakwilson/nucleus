@@ -2063,7 +2063,7 @@
 ; typo (`:volatle`) can never silently no-op.
 ;
 ; Stage 16 PK-2: the leading `:keyword` attributes of a `defstruct` form, in the
-; position `defvar`'s `:volatile`/`:const` occupy. Returns how many there were,
+; position `defvar`'s `:volatile` occupies. Returns how many there were,
 ; with their flags through `out-flags`. Positional rather than parse-decl-attrs'
 ; cursor walk because defstruct reads its parts by index. `strict` 0 only counts:
 ; the name prescan needs the count to find the name and must not diagnose, since
@@ -2141,16 +2141,12 @@
     (set! (aref (unsafe/cast &i32 out-flags) 0) flags)
     (return cur)))
 
-; AVR-6: `:const` is meaningful ONLY on a defvar global — a struct/union field,
-; defn param, let/with binding, or pointer target type has no independent
-; global-vs-constant storage class to select, so a stray `:const` at any of those
-; sites is rejected here rather than silently accepted-and-ignored. `where` names
-; the offending declaration site for the diagnostic. Defined in union-registry so
-; it is visible at both the pointer-target sites below and extract-name-and-type
-; (nucleusc.nuc). No-op when the CONST bit is clear, so existing sites are inert.
+; A field, param, binding or pointer target has no storage class to select, so
+; `:const` there is refused rather than ignored.
 (defn reject-decl-attr-const (flags:i32 line:i32 where:StrView):void
   (when (!= (bit-and flags DECL-ATTR-CONST) 0)
-    (die-at line (fstr "':const' applies only to a defvar global, not " where))))
+    (die-at line (fstr "':const' applies only to an extern, not " where
+                       " -- a read-only global is a defconst"))))
 
 ; AT-1: normalize a let/with binding list so a prefix attribute keyword becomes a
 ; wrapped binding-name cell `(:kw... name)`, restoring strict (name value) pairs.

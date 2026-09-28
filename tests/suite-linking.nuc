@@ -477,7 +477,7 @@ w9-own
 (import-use gclib)
 (defvar gc-zero:i32 0)
 (defvar gc-nonzero:i32 5)
-(defvar :const gc-ro:i32 9)
+(defconst gc-ro (array i32 9))
 (defn main ():i32 (printf \"%d\\n\" (gc-used gc-nonzero)) (return gc-zero))
 ")))
 
@@ -494,7 +494,7 @@ w9-own
     (try (check-line iv "@gc-zero = global i32 0, section \".bss.gc-zero\", align 4"))
     (try (check-line iv
       "@gc-nonzero = global i32 5, section \".data.gc-nonzero\", align 4"))
-    (try (check-line iv "@gc-ro = constant i32 9, section \".rodata.gc-ro\", align 4"))
+    (try (check-line iv "@gc-ro = constant [1 x i32] [i32 9], section \".rodata.gc-ro\", align 4"))
     (try (check-match iv "*c\"%d\\0A\\00\", section \".rodata..str.*\", align 1"))
     (try (check-ir-parses iv))
     (drop &c)

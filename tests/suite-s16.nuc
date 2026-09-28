@@ -1528,6 +1528,29 @@ map=2
     (drop &c)
     (drop &p)))
 
+; A withheld GLOBAL is refused at a read, at `&`, and as an aggregate `defconst`;
+; each once emitted a load of an undefined `@name` that LLVM rejected unlocated.
+(defn ct-global-refused (body:StrView):!void
+  (let (l:String (try (test-write-file "ctglib.nuc" "(defstruct Pt x:i32 y:i32)
+(defvar ctg-v:i32 3)
+(defconst ctg-o (Pt 1 2))
+"))
+        src:String (str "(import-ct ctglib)\n(defn main ():i32 " body ")\n")
+        p:String (try (test-write-file "t.nuc" (string-as-view &src)))
+        pv:StrView (string-as-view &p)
+        c:Compiled (try (compile-path pv)))
+    (try (check-error-at (ref c 'diags) pv 2 "imported compile-time-only"))
+    (drop &c)
+    (drop &p)
+    (drop &src)
+    (drop &l)
+    (return (ok))))
+
+(deftest s16-import-ct-global-read-refused
+  (try (ct-global-refused "(return ctg-v)"))
+  (try (ct-global-refused "(let (q:&i32 &ctg-v) (return 0))"))
+  (try (ct-global-refused "(return (ctg-o 'x))")))
+
 ; Order independence. `lib/error.nuc` does `(import-ct node)`, so a program that
 ; uses error handling AND quotes must get the runtime either way round. Getting
 ; this wrong is silent in one order and a refusal in the other.

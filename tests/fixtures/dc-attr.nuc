@@ -1,0 +1,3 @@
+; A constant is read-only already; no attribute applies.
+(defconst :volatile x 1)
+(defn main ():i32 (return x))

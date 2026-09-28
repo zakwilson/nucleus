@@ -4664,7 +4664,7 @@
 (defn emit-cheader-defvar (form:ptr):void
   (let (fc:&Node (unsafe/cast &Node form)
         attr-flags:i32 0)
-    ; The name may be preceded by declaration attributes (`(defvar :const g:i32 1)`),
+    ; The name may be preceded by declaration attributes (`(defvar :volatile g:i32 1)`),
     ; so the name node comes off the advanced cursor rather than a fixed index —
     ; the same chokepoint `emit-defvar` uses, not a second reading of the grammar.
     (let (decl:ptr (parse-decl-attrs (as ptr (node-rest fc))
@@ -4713,11 +4713,9 @@
           (when (!= (cheader-defvar-type-ok tnode) 0)
             (emit g-hdr "/* " vname ": type has no C spelling here; not exported */\n")
             (return))
-          ; AVR-6: `:const` selects LLVM `constant` storage, which is C's `const`.
-          (let (cst:StrView (if (!= (bit-and attr-flags DECL-ATTR-CONST) 0) "const " "")
-                link:Symbol (ns-ir-base vname))
+          (let (link:Symbol (ns-ir-base vname))
             (let (cname (cheader-c-global-view link))
-              (emit g-hdr "extern " cst
+              (emit g-hdr "extern "
                     (type-node-to-c-decl tnode cname ((unsafe/cast &Node name-node) 'line))
                     (cheader-asm-label link cname) ";\n"))))))))
 
@@ -4725,14 +4723,70 @@
 ; sanitized spelling is the whole answer. `cheader-array-extent` emits the same
 ; spelling for a symbolic `(array T N)` length, which is what keeps the two agreeing.
 (defn emit-cheader-defconst (form:ptr):void
-  ; A name spelled `()` is a NULL node (W5f) and defines no macro.
-  (when (!= (node-kind (node-at form 1)) NODE-SYM) (return))
-  (let (name:StrView (cheader-c-global-view ((unsafe/cast &Node (node-at form 1)) 's))
-        val-node:&Node (unsafe/cast &Node (node-at form 2)))
-    (case (node-kind (as ptr val-node))
-      NODE-INT (emit g-hdr "#define " name " " (val-node 'i) "\n")
-      NODE-STR (emit g-hdr "#define " name " \"" (val-node 's) "\"\n")
+  (let (nm:Symbol (defconst-bare-name (node-at form 1)))
+    ; A name spelled `()` is a NULL node (W5f) and defines nothing.
+    (when (symbol-none? nm) (return))
+    (if-some (sym (scope-lookup g-globals nm))
+      (if (= (sym 'is-const) 0)
+        (let (link:Symbol (ns-ir-base nm)
+              cname:StrView (cheader-c-global-view link)
+              ty:ptr:Type (sym 'type)
+              line:i32 ((as ptr:Node form) 'line)
+              tn0:ptr (defconst-type-node form ty)
+              tn:ptr (if (= tn0 null) null (cheader-unalias tn0))
+              ; `const` binds to the pointer itself, not the pointee.
+              decl:StrView (cond
+                             (= tn null) (fstr "const " (cheader-type-c-decl ty cname))
+                             (= (ty 'kind) TY-PTR) (type-node-to-c-decl tn (fstr "const " cname) line)
+                             true (fstr "const " (type-node-to-c-decl tn cname line))))
+          (emit g-hdr "extern " decl (cheader-asm-label link cname) ";\n"))
+        (let (name:StrView (cheader-c-global-view nm)
+              val:StrView (cheader-const-value sym))
+          (cond
+            (= (strview-byte-len val) 0)
+              (emit g-hdr "/* " nm ": no C spelling for this constant; not exported */\n")
+            (!= (sym 'const-annot) 0)
+              (emit g-hdr "#define " name " ((" (cheader-type-c (sym 'type)) ")" val ")\n")
+            true
+              (emit g-hdr "#define " name " " val "\n"))))
       0)))
+
+; A literal constant in C spelling, or "" when C cannot spell it.
+(defn cheader-const-value (sym:&Sym):StrView
+  (let (n:?&Node (sym 'const-node))
+    (when (= n null)
+      (return (if (!= (sym 'const-lit) 0) (fstr (sym 'const-lit-i64)) "")))
+    (when (= n 'true) (return "true"))
+    (when (= n 'false) (return "false"))
+    (when (= n 'null) (return "((void*)0)"))
+    (let (k:i32 (node-kind n)
+          nn:ptr:Node n)
+      (when (= k NODE-CHAR) (return (fstr (nn 'i))))
+      (when (= k NODE-STR) (return (cheader-c-string (nn 's))))
+      (when (and (= k NODE-FLOAT) (cheader-c-float-lexeme? (nn 's))) (return (fstr (nn 's))))
+      (return ""))))
+
+; A decimal float lexeme C reads the same way; `+inf.0` and friends are not.
+(defn cheader-c-float-lexeme? (s:Symbol):bool
+  (let (digit:bool false)
+    (dotimes (i (unsafe/cast i32 (symbol-len s)))
+      (let (b:i32 (symbol-byte-at s (as usize i)))
+        (cond
+          (and (>= b 48) (<= b 57)) (set! digit true)
+          (or (= b 46) (= b 101) (= b 69) (= b 43) (= b 45)) 0
+          true (return false))))
+    (return digit)))
+
+(defn cheader-c-string (s:Symbol):StrView
+  (let (out:StrView "\"")
+    (dotimes (i (unsafe/cast i32 (symbol-len s)))
+      (let (b:i32 (symbol-byte-at s (as usize i))
+            one:StrView (strview-take-bytes (strview-drop-bytes (symbol-as-view s) (as usize i)) 1))
+        (cond
+          (or (= b 34) (= b 92)) (set! out (fstr out "\\" one))
+          (and (>= b 32) (< b 127)) (set! out (fstr out one))
+          true (set! out (fstr out "\\" (bit-and (bit-shr b 6) 7) (bit-and (bit-shr b 3) 7) (bit-and b 7))))))
+    (return (fstr out "\""))))
 
 ; W9 item 4: both the enum tag name and each member constant are sanitized —
 ; neither is a link name (a `defenum` member is a compile-time integer, not a

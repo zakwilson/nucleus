@@ -440,41 +440,23 @@ heading a field cell; `:bits W` and `:anon` head a field cell only. See
 
 ## Const globals
 
-A `defvar` global can be made read-only through the same keyword-attribute
-slot as `:volatile`: a leading `:const` keyword immediately before the
-declared name. `(defvar :const name:type init)` emits an LLVM `constant`
-in place of the default mutable `global` — the value is placed in read-only
-storage instead of writable data. This is a general, target-independent
-feature (not AVR-specific): on a target with separate program/data memory
-(e.g. AVR), a `constant` global can be kept out of RAM entirely; on other
-targets it is simply placed in read-only data.
+A read-only global is a [`defconst`](toplevel.md#constants). An aggregate
+constant such as `(defconst TABLE (array ui8 1 2 4 8))` is emitted as an LLVM
+`constant` rather than a mutable `global`, so it lands in read-only data. On a
+target with separate program and data memory (AVR), that keeps it out of RAM.
+Every write to a constant, whether to the whole name, a field or an element, is
+a compile-time error.
 
-- `(defvar :const answer:i32 42)` — emits `@answer = constant i32 42`
-- `(defvar mutable-count:i32 0)` — unmarked, unchanged — emits `@mutable-count = global i32 0`
+`:const` survives as a declaration attribute only on an `extern`:
+`(extern :const (TABLE (array ui8 4)))` declares that another unit's global is
+read-only, and writes to it are refused the same way. On a field, parameter or
+binding, `:const` is an error (`':const' applies only to an extern, not a
+field, parameter, or binding -- a read-only global is a defconst`), and
+`(defvar :const …)` was retired in favour of `defconst`.
 
-**A `:const` global's initializer must be a compile-time constant.** The whole
-constant grammar is available — a folded expression, `(as CStr "…")`,
-`&g`, an `(array T …)` or `(S …)` literal — but the run-time
-initializer route is not: read-only storage cannot be written at startup, so
-`(defvar :const g:i32 (compute))` is refused with a message saying so rather
-than compiling into a store that would fault. See
-[Global initializers](toplevel.md#global-initializers) for the full grammar.
-
-Unlike `:volatile`, `:const` is meaningful **only** on a `defvar` global — a
-struct/union field, `defn` param, `let`/`with` binding, or pointer target
-type has no independent global-vs-constant storage class to select, and the
-compiler rejects `:const` at any of those sites with a targeted error
-(`':const' applies only to a defvar global, not a field, parameter, or
-binding`).
-
-`set!` against a `:const` global is a compile-time error: `(defvar :const
-answer:i32 42) ... (set! answer 10)` dies with `set!: cannot assign to
-'answer' -- declared :const` instead of compiling into a `store` to
-read-only storage. Reads of a `:const` global (`(return answer)`) are
-unaffected — they go through the normal load path. This check covers the
-direct `set!` mutation syntax only; it is not an aliasing analysis (e.g. a
-pointer obtained via `&x` and written through a `(deref p)` place is not
-tracked).
+The check covers the write syntax only; it is not an aliasing analysis.
+`&TABLE` is an ordinary writable pointer (see the hole noted under
+[Constants](toplevel.md#constants)).
 
 ## Built-in Types
 
@@ -1006,8 +988,8 @@ Coercion*). When a literal's type is not otherwise constrained, it emits as
 `(take-i32 5000000000)` is a compile-time error. (Typed *values*, unlike
 literals, only widen same-sign — see the coercion rules above.)
 
-The same width rule and the same range check apply to a **named** constant. A
-`defconst` is typed by its value, not fixed at `i32`: `(defconst BIG
+The same width rule and the same range check apply to a **named** constant. An
+unannotated `defconst` is typed by its value, not fixed at `i32`: `(defconst BIG
 5000000000)` is `i64`, so `(let (x:i64 BIG) …)` yields `5000000000`, while
 `(let (x:i32 BIG) …)` and `(defvar g:i32 BIG)` are compile-time errors rather
 than a silent 32-bit wrap. Enum members are always small enough to be `i32`.

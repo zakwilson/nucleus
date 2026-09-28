@@ -665,3 +665,82 @@
     (drop &src)
     (drop &nuch))
   (return (ok)))
+
+; ---------------------------------------------------------------------------
+; Stage 21 item 8: defconst on the export surfaces
+; ---------------------------------------------------------------------------
+
+; A literal constant travels as its literal and has no symbol; a stored one is
+; an `extern :const` in `.nuch` and an `extern const` in C, bound to the object's
+; read-only data (design/stage21-cleanup/defconst-values.md).
+(defn dc-lib-src ():StrView
+  (return "(ns dcx)
+(defstruct Pt x:i32 y:i32)
+(defconst PI 3.25)
+(defconst S \"a\\\"b\")
+(defconst K:ui8 200)
+(defconst CH \\a)
+(defconst ORIGIN (Pt 1 2))
+(defconst TABLE (array i32 10 20 30 40))
+"))
+
+(defn dc-exports (stem:StrView):!Exports
+  (let (nn:String (str stem "-dclib.nuc")
+        p:String (try (test-write-file (string-as-view &nn) (dc-lib-src)))
+        e:Exports (try (export-surfaces stem (string-as-view &p))))
+    (drop &p)
+    (drop &nn)
+    (return (ok e))))
+
+(deftest dc-defconst-export-surfaces
+  (let (e:Exports (try (dc-exports "dcs")))
+    (try (check-line (exports-nuch &e) "(defconst PI 3.25)"))
+    (try (check-line (exports-nuch &e) "(defconst S \"a\\\"b\")"))
+    (try (check-line (exports-nuch &e) "(defconst K:ui8 200)"))
+    (try (check-line (exports-nuch &e) "(extern :const (ORIGIN Pt))"))
+    (try (check-line (exports-nuch &e) "(extern :const (TABLE (array i32 4)))"))
+    (try (check-line (exports-h &e) "#define PI 3.25"))
+    (try (check-line (exports-h &e) "#define S \"a\\\"b\""))
+    (try (check-line (exports-h &e) "#define K ((uint8_t)200)"))
+    (try (check-line (exports-h &e) "#define CH 97"))
+    (try (check-line (exports-h &e) "extern const struct dcx__Pt dcx__ORIGIN;"))
+    (try (check-line (exports-h &e) "extern const int32_t dcx__TABLE[4];"))
+    (try (check-line (exports-ll &e)
+      "@dcx__ORIGIN = constant %dcx__Pt { i32 1, i32 2 }, section \".rodata.dcx__ORIGIN\", align 8"))
+    (try (check-not-contains (exports-ll &e) "@dcx__PI"))
+    (drop &e))
+  (return (ok)))
+
+(defn dc-consumer-src (nuch:StrView body:StrView):String
+  (return (str "(exclude-prelude)\n(import-prefixed \"" nuch "\" d)\n"
+               "(declare printf (fmt:CStr):i32)\n"
+               "(defn main () :i32\n" body "\n  (return 0))\n")))
+
+; The consumer reads the stored constants through the library's symbols and
+; substitutes the literal ones, adapting `d/PI` to f32 as a literal would.
+(deftest dc-defconst-nuch-link-and-run
+  (let (e:Exports (try (dc-exports "dcr"))
+        src:String (dc-consumer-src (exports-nuch-path &e)
+"  (let (x:f32 d/PI)
+    (printf \"%f %d %d %d\\n\" (as f64 x) d/K (d/ORIGIN 'y) (aref d/TABLE 3)))")
+        c:Consumer (try (consumer "dcr" (string-as-view &src))))
+    (try (check-contains (consumer-ir &c) "@dcx__ORIGIN = external global %dcx__Pt"))
+    (try (check-links-and-prints &e &c "3.250000 200 2 40"))
+    (drop &c)
+    (drop &src)
+    (drop &e))
+  (return (ok)))
+
+; An imported stored constant is as read-only as a local one.
+(deftest dc-defconst-imported-write-refused
+  (let (e:Exports (try (dc-exports "dcw"))
+        src:String (dc-consumer-src (exports-nuch-path &e) "  (set! (d/ORIGIN 'x) 5)")
+        p:String (try (test-write-file "dcw-main.nuc" (string-as-view &src)))
+        c:Compiled (try (compile-path (string-as-view &p))))
+    (try (check-error-at (ref c 'diags) (string-as-view &p) 5
+           "set!: cannot write into 'd/ORIGIN' -- it is a constant"))
+    (drop &c)
+    (drop &p)
+    (drop &src)
+    (drop &e))
+  (return (ok)))

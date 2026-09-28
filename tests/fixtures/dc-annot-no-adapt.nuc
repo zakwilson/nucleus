@@ -1,0 +1,3 @@
+; An annotated constant has its type and does not adapt like a bare literal.
+(defconst K:ui8 200)
+(defn main ():i32 (let (s:i8 -1) (return (if (< s K) 1 0))))

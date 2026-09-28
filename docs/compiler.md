@@ -437,7 +437,7 @@ A `.nuch` file is an S-expression file containing declarations extracted from a 
 (declare cube (x:i32) :i32)
 ```
 
-Supported forms: `declare` (function signatures), `defstruct`, `defconst`, `defenum`, `defmacro` (full body preserved), `defmethod` (one overloaded method, carrying its mangled symbol explicitly), `defprotocol` / `extend` (protocol definitions and conformance facts, exported verbatim), `defcast` (full form preserved — the conv-fn must already be `declare`d earlier in the same header), a producing module's `defvar` globals (re-emitted as `extern` so importers see the symbol without its initializer), and `export` re-exports together with the import forms they name through (see [The imports a header carries](#the-imports-a-header-carries)). A solitary function exports as `declare`; an overloaded one exports a `defmethod` per method so each keeps its distinct symbol:
+Supported forms: `declare` (function signatures), `defstruct`, `defconst` (a literal constant as `(defconst NAME literal)`; an aggregate one as `(extern :const (NAME Type))`, so importers read the library's read-only symbol and their writes to it are refused), `defenum`, `defmacro` (full body preserved), `defmethod` (one overloaded method, carrying its mangled symbol explicitly), `defprotocol` / `extend` (protocol definitions and conformance facts, exported verbatim), `defcast` (full form preserved — the conv-fn must already be `declare`d earlier in the same header), a producing module's `defvar` globals (re-emitted as `extern` so importers see the symbol without its initializer, keeping any `:volatile`), and `export` re-exports together with the import forms they name through (see [The imports a header carries](#the-imports-a-header-carries)). A solitary function exports as `declare`; an overloaded one exports a `defmethod` per method so each keeps its distinct symbol:
 
 ```lisp
 (defmethod "@area.pCircle" (area i32) ((c (ptr Circle))))
@@ -597,21 +597,24 @@ A public `defvar` is exported to the generated C header as an `extern` declarati
 
 ```lisp
 (defvar counter:i32 7)
-(defvar :const limit:i32 99)
 (defvar tick-count:i64 41)
 (defvar- hidden:i32 5)          ; private — not exported
+(defconst limit:i32 99)
+(defconst origin (CRec 6))
 ```
 
 ```c
 extern int32_t counter;
-extern const int32_t limit;
 extern int64_t tick_count asm("tick-count");
+#define limit ((int32_t)99)
+extern const struct CRec origin;
 ```
 
-Three rules are worth knowing:
+Four rules are worth knowing:
 
 * **A hyphenated name gets an `asm` label.** See [Hyphenated names in a C header](#hyphenated-names-in-a-c-header) below — the rule is the same for a global and a function.
-* **`:const` becomes C's `const`.** It is the same read-only-storage guarantee.
+* **A literal `defconst` is a `#define`**, cast to its C type when annotated. An integer, float, string, character, `true`/`false` or `null` is written as its C spelling. A value C cannot spell the same way is omitted with a comment.
+* **An aggregate `defconst` is an `extern const`** over the library's read-only symbol (see [Constants](toplevel.md#constants)).
 * **`defvar-` is not exported**, the same as every other private definer.
 
 An array global is declared with its length, and a global of an inline `(struct …)` or `(union …)` type is declared with that body:

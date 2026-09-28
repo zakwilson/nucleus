@@ -25,10 +25,10 @@
 
 (defconst BLINKS 3)
 
-; A folded constant expression (G-1) and a constant aggregate (G-2), both in
-; flash-safe `:const` storage, plus an ordinary zero-initialized counter.
-(defvar :const g-limit:ui16 (_* BLINKS 1000))
-(defvar :const g-pattern:(array ui8 4) (array ui8 1 2 4 8))
+; A folded constant expression, a constant aggregate in flash-safe `constant`
+; storage, and an ordinary zero-initialized counter.
+(defconst g-limit:ui16 (_* BLINKS 1000))
+(defconst g-pattern (array ui8 1 2 4 8))
 (defvar g-step:ui8 0)
 
 (defn delay (n:ui16):void

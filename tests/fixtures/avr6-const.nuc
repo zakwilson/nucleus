@@ -1,11 +1,8 @@
-; Stage 14 AVR-6 (design/stage14/avr-targets.md §5) — the `:const` declaration
-; attribute on a defvar global. `(defvar :const name:type init)` emits an LLVM
-; `constant` (read-only linkage) instead of a mutable `global`; on mapped-flash
-; AVR parts a constant table stays in flash (zero RAM). A plain defvar is
-; unchanged, so existing programs are byte-identical. Host-only emission gate.
-(defvar :const answer:i32 42)
+; Stage 14 AVR-6 (design/stage14/avr-targets.md §5): an aggregate `defconst` emits
+; an LLVM `constant`, so a mapped-flash AVR part keeps the table in flash.
+(defconst table (array i32 42 7))
 (defvar mutable-count:i32 0)
 
 (defn main ():i32
-  (set! mutable-count answer)
+  (set! mutable-count (aref table 0))
   (return mutable-count))

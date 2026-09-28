@@ -160,9 +160,9 @@ example — behaviorally verified under `simavr`.
 - ISRs, via the generic `fn-attr` top-level directive (see
   [MMIO/ISR idioms](#mmio-and-isr-idioms) below and the `fn-attr` row in
   [Top-Level Forms](toplevel.md)).
-- `:const` flash-resident globals — `(defvar :const name:type init)` emits an
-  LLVM `constant` instead of `global`; see
-  [Const globals](types.md#const-globals). On a mapped-flash part
+- Flash-resident tables — an aggregate `defconst` such as
+  `(defconst PATTERN (array ui8 1 2 4 8))` emits an LLVM `constant` instead of
+  `global`; see [Constants](toplevel.md#constants). On a mapped-flash part
   (AVR32DD20) this keeps a table out of RAM entirely; on classic AVR it still
   lands in flash as `.rodata` but is copied to RAM at startup by the crt (a
   cost, not a correctness issue — see the rodata-placement note below).
