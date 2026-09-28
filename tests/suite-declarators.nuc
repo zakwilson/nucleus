@@ -280,3 +280,30 @@ int fe_ptr(FePtr p); int fe_plain(FePlain p);
     (drop &src)
     (drop &h))
   (return (ok)))
+
+; A body with more members than any fixed field array: glibc 2.42's `tcp_info`
+; outgrew the parser's old 64 and was left opaque.
+(defn cd-wide-nuc-src ():StrView
+  (return "(import-use \"stdio.h\")
+(import-use \"tests/fixtures/cd-wide-struct.h\")
+(defn main ():i32
+  (let (w:&cd_wide (alloca cd_wide))
+    (printf \"cd_wide %lld\\n\" (as i64 (sizeof cd_wide)))
+    (printf \"last %lld\\n\" (- (unsafe/cast i64 (ref w 'last)) (unsafe/cast i64 w))))
+  (return 0))
+"))
+
+(defn cd-wide-c-src ():StrView
+  (return "#include <stdio.h>
+#include \"tests/fixtures/cd-wide-struct.h\"
+int main(void){
+  printf(\"cd_wide %zu\\n\", sizeof(struct cd_wide));
+  printf(\"last %zu\\n\", __builtin_offsetof(struct cd_wide, last));
+  return 0;
+}
+"))
+
+(deftest cd-wide-struct-over-64-members
+  (try (require-cc))
+  (try (check-agrees-with-cc "cdwide" "." (cd-wide-nuc-src) (cd-wide-c-src)))
+  (return (ok)))

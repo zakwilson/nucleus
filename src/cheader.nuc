@@ -2107,6 +2107,15 @@
   (let (k:i32 (-> fty (unsafe/cast &Type _) (_ 'kind)))
     (return (if (or (= k TY-STRUCT) (= k TY-UNION)) 1 0))))
 
+; Every member declarator ends at a `;` or `,`, so their count bounds the fields.
+(defn c-body-member-bound (buf:ptr pos:i64 end:i64):i32
+  (let (n:i32 1)
+    (while (< pos end)
+      (let (b:i32 (cstr-byte-at buf pos))
+        (when (or (= b 59) (= b 44)) (inc! n)))
+      (set! pos (+ pos 1)))
+    (return n)))
+
 ; Parse a C struct/union body `{ field; field; ... }` into a StructDef.
 ; a zero `tag-name` means anonymous (memoized by shape); is-union selects the
 ; union registration path (members at offset 0, deferred IR type definition).
@@ -2132,16 +2141,16 @@
     (when (< body-end len) (set! body-end (+ body-end 1)))
     (set! @out-end body-end))
   (set! pos (+ pos 1))
-  (let (max-fields:i32 64
-        fnames:ptr (arena-alloc (* 64 8))
-        ftypes:ptr (arena-alloc (* 64 8))
+  (let (max-fields:i32 (c-body-member-bound buf pos (aref out-end 0))
+        fnames:ptr (arena-alloc (* max-fields 8))
+        ftypes:ptr (arena-alloc (* max-fields 8))
         ; PK-3: member `aligned(N)`, parallel to the two arrays above. Zero for
         ; every member without one, which is every member in most bodies.
-        faligns:ptr (arena-alloc (* 64 4))
+        faligns:ptr (arena-alloc (* max-fields 4))
         falign:i32 0
         ; BF-4: `: width`, in the same shape. -1 is C's unnamed zero-width
         ; member, which allocates nothing and forces the next boundary.
-        fbits:ptr (arena-alloc (* 64 4))
+        fbits:ptr (arena-alloc (* max-fields 4))
         fbit:i32 0
         bfseq:i32 0
         ; AN-1: C11 anonymous members, minted in the same shape as `__bf.N`.

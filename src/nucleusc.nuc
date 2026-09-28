@@ -636,7 +636,9 @@
 (defvar g-warn-ct-shadow:i32 1)
 (defvar g-interactive:i32 0)  ; when 1, run in REPL mode (-i / --interactive)
 (defvar g-repl-format:i32 0)  ; 0 = text (default), 1 = json (one JSON object per error)
-(defvar g-opt-level:i32 0)    ; -O0..-O3; LLVMCodeGenOptLevel: None=0, Less=1, Default=2, Aggressive=3
+(defvar g-opt-level:i32 0)    ; -O0..-O3; drives the middle-end pipeline and LLVMCodeGenOptLevel (None=0, Less=1, Default=2, Aggressive=3)
+(defvar g-fast-math:i32 0)    ; -ffast-math / -Ofast: fast-math flags on the OUTPUT module's FP instructions
+(defvar g-march-native:i32 0) ; -march=native: host CPU + features instead of the generic baseline
 
 ; REPL eval counter (for unique __repl_eval_N symbols).
 (defvar g-repl-id:i32 0)
@@ -19870,6 +19872,49 @@
     (drop &refd)
     (return irs)))
 
+; Flags the parsed output module rather than the emitter, so JIT'd compile-time
+; bodies and `--emit-llvm` never see them. Same flag set as clang -ffast-math.
+(defn set-module-fast-math (mod:ptr):void
+  (let (fn:ptr (LLVMGetFirstFunction mod))
+    (while (!= fn null)
+      (let (bb:ptr (LLVMGetFirstBasicBlock fn))
+        (while (!= bb null)
+          (let (inst:ptr (LLVMGetFirstInstruction bb))
+            (while (!= inst null)
+              (when (!= (LLVMCanValueUseFastMathFlags inst) 0)
+                (LLVMSetFastMathFlags inst LLVM-FAST-MATH-ALL))
+              (set! inst (LLVMGetNextInstruction inst))))
+          (set! bb (LLVMGetNextBasicBlock bb))))
+      (set! fn (LLVMGetNextFunction fn)))))
+
+; The middle-end (mem2reg, LICM, GVN, the vectorizers); the TargetMachine's
+; CodeGenOptLevel alone only tunes the backend.
+(defn run-opt-pipeline (mod:ptr tm:ptr):void
+  (let (pbo:ptr (LLVMCreatePassBuilderOptions)
+        pipeline:Symbol (symbol-intern (fstr "default<O" g-opt-level ">"))
+        perr:ptr (LLVMRunPasses mod (symbol-as-cstr pipeline) tm pbo))
+    (LLVMDisposePassBuilderOptions pbo)
+    (when (!= perr null)
+      (let (pmsg:ptr (LLVMGetErrorMessage perr))
+        (eprint "nucleusc: optimization pipeline failed: " (as CStr pmsg) "\n")
+        (LLVMDisposeErrorMessage pmsg)
+        (exit 1)))
+    (rehome-folded-bss mod)))
+
+; GlobalOpt folds `@__nucleus_init`'s stores into initializers, and a non-zero
+; initializer in a `.bss.` (SHT_NOBITS) section is an emission error.
+(defn rehome-folded-bss (mod:ptr):void
+  (let (g:ptr (LLVMGetFirstGlobal mod))
+    (while (!= g null)
+      (let (sec:ptr (LLVMGetSection g)
+            init:ptr (LLVMGetInitializer g))
+        (when (and (!= sec null) (!= init null) (= (LLVMIsNull init) 0))
+          (let (sv:StrView (strview-from-cstr (as CStr sec)))
+            (when (strview-has-prefix sv ".bss.")
+              (let (moved:Symbol (symbol-intern (fstr ".data." (strview-drop-bytes sv 5))))
+                (LLVMSetSection g (symbol-as-cstr moved)))))))
+      (set! g (LLVMGetNextGlobal g)))))
+
 ; Parse the in-memory IR, emit an object file, and (unless -c) invoke clang
 ; to link a final binary. Exits with a non-zero status on failure.
 (defn compile-and-link (ir:ptr ir-len:i64 source-file:Symbol):void
@@ -19898,10 +19943,19 @@
       ; PIC(2) otherwise), CodeModel = Default(0). CPU and features from the Target
       ; descriptor (empty "" for host targets; the effective --mcpu / triple-keyed
       ; features for a cross-target, e.g. generic-rv64 / +m,+a,+f,+d,+c for riscv64).
+      (let (cpu:ptr (symbol-as-cstr ((unsafe/cast &Target g-target) 'cpu))
+            features:ptr (symbol-as-cstr ((unsafe/cast &Target g-target) 'features)))
+        (when (!= g-march-native 0)
+          (set! cpu (LLVMGetHostCPUName))
+          (set! features (LLVMGetHostCPUFeatures)))
       (let (tm:ptr (LLVMCreateTargetMachine target (symbol-as-cstr g-target-triple)
-                     (symbol-as-cstr ((unsafe/cast &Target g-target) 'cpu))
-                     (symbol-as-cstr ((unsafe/cast &Target g-target) 'features)) g-opt-level
+                     cpu features g-opt-level
                      (reloc-for-triple g-target-triple) 0))
+        (when (!= g-march-native 0)
+          (LLVMDisposeMessage cpu)
+          (LLVMDisposeMessage features))
+        (when (!= g-fast-math 0) (set-module-fast-math mod))
+        (when (> g-opt-level 0) (run-opt-pipeline mod tm))
         (let (out-path:Symbol g-output-path
               obj-path:Symbol (symbol-none)
               keep-obj:i32 g-emit-obj)
@@ -19979,7 +20033,7 @@
                   (when (!= rc2 0)
                     (eprint "nucleusc: link step failed (" driver " exit " rc2 ")\n")
                     (exit 1)))))
-            (unlink (symbol-as-cstr obj-path))))))))
+            (unlink (symbol-as-cstr obj-path)))))))))
 
 ; Close module streams; emit either textual IR (--emit-llvm) or an object/binary.
 (defn flush-module-ir (source-file:Symbol):void
@@ -20108,6 +20162,12 @@
                 (set! g-opt-level 2)
               (= argview "-O3")
                 (set! g-opt-level 3)
+              (= argview "-Ofast")
+                (do (set! g-opt-level 3) (set! g-fast-math 1))
+              (= argview "-ffast-math")
+                (set! g-fast-math 1)
+              (= argview "-march=native")
+                (set! g-march-native 1)
               (strview-has-prefix argview "--target=")
                 (set! g-target-triple-override (symbol-intern (strview-drop-bytes argview 9)))
               (strview-has-prefix argview "--mcpu=")
@@ -20145,13 +20205,17 @@
                   (do (eprint "unexpected argument: " argview "\n") (return 2)))))
       (inc! i))
 
+    (when (and (!= g-march-native 0) (not (symbol-none? g-target-triple-override)))
+      (eprint "nucleusc: -march=native describes the host and cannot be combined with --target=\n")
+      (return 2))
+
     ; REPL mode
     (when (!= g-interactive 0)
        (repl-main) (return 0))
 
     ; Batch mode — require source file
     (when (symbol-none? source-file)
-       (eprint "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [--mmcu=<device>] [--sysroot=<path>] [--cflag=<arg>] [--linker=<cmd>] [--link-arg=<arg>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
+       (eprint "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3|-Ofast] [-ffast-math] [-march=native] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [--mmcu=<device>] [--sysroot=<path>] [--cflag=<arg>] [--linker=<cmd>] [--link-arg=<arg>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
     (set! g-source-path source-file)
     (let (src:String (read-file g-source-path))
       ; G-5: `compiler-init` is gone. Every global it used to build is now built

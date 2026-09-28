@@ -233,6 +233,16 @@ fewer "convention, not a rule" edges in it.
    of a global withheld by `import-ct` emitted invalid IR rather than the
    located error; that is fixed too.
 
+9. **Optimization flags restored** — **built 2026-09-28** —
+   [optimization-flags.md](optimization-flags.md). The `-O1`+ middle-end
+   pipeline, `-ffast-math`, `-Ofast` and `-march=native` from stage 8 were
+   lost in merge `f065de8a` while `docs/compiler.md` still documented them.
+   `nucleusc -O3` ran Leibniz-π at `clang -O0` speed, about 10× off
+   `clang -Ofast -march=native`. Fast-math is now applied to the parsed output
+   module, so JIT bodies and `--emit-llvm` stay strict. A `.bss.` global
+   whose ctor store GlobalOpt folds moves to `.data.`. The benchmark is at
+   parity with C at every level. 1214 tests.
+
 ## Sequencing
 
 Item 2 lands between item 1's PK-1 and PK-2: **PK-1 → R-1, R-2 (R-3 optional)

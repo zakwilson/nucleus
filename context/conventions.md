@@ -326,7 +326,14 @@ Two related facts worth having:
   folded every denormal single to zero. It was removed from the Makefile in
   W2d and must not come back; the compiler does no FP work of its own, so it
   bought nothing. Any future compile-time evaluation of target arithmetic
-  inherits this constraint.
+  inherits this constraint. The user-facing `-ffast-math`/`-Ofast` does not
+  conflict with it: `set-module-fast-math` flags only the parsed *output*
+  module in `compile-and-link`, and JIT modules never pass through there.
+- **ELF section names are fixed in the IR before the optimizer runs.**
+  `global-section-prefix` picks `.bss` from the emit-time initializer, and
+  GlobalOpt may later fold a ctor store into it; `rehome-folded-bss` repairs
+  that. Any new post-parse module transform must keep the section name and
+  the initializer in agreement.
 
 ## `defn` signature: return type follows the params (`(defn NAME (params):ret …)`)
 
