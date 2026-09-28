@@ -19,11 +19,11 @@
 ; the `run_reject`/`run_reject_at`/`run_accepts` shell units this table retired.
 
 (reject "avr6-const-on-let-rejected" (file "tests/fixtures/avr6-const-let.nuc")
-        (message "':const' applies only to a defvar global"))
+        (message "':const' applies only to an extern, not a field, parameter, or binding"))
 (reject "avr6-const-on-field-rejected" (file "tests/fixtures/avr6-const-field.nuc")
-        (message "':const' applies only to a defvar global"))
-(reject "avr6-const-mutate-rejected" (file "tests/fixtures/avr6-const-mutate-rejected.nuc")
-        (message "set!: cannot assign to 'answer' -- declared :const"))
+        (message "':const' applies only to an extern, not a field, parameter, or binding"))
+(reject "avr6-const-mutate-rejected" (file "tests/fixtures/avr6-const-mutate-rejected.nuc") (line 5)
+        (message "set!: cannot assign to 'answer' -- it is a constant"))
 
 ; Stage 13 L1: cfn escape analysis. A cfn captures each used local by reference,
 ; so the closure value inherits the captured referent's frame region. Returning
@@ -255,17 +255,16 @@
 (reject "w4a-bare-cast-head" (file "tests/fixtures/w4a-bare-cast-head.nuc") (line 7)
         (message "'cast' was split in Stage 14"))
 
-; --- Stage 15 W4b: defconst annotation rejected + sibling-definer sweep ----
-; design/stage15-stress-test/diagnostics.md §W4b. `defconst` never takes a
-; type annotation (its value is always ty-i32 from an integer literal), so
-; `(defconst K:i32 2)` is rejected at its own line rather than silently
-; registering nothing under the literal key "K:i32". The same silent-
+; --- Stage 15 W4b: annotated definers + sibling-definer sweep ----
+; design/stage15-stress-test/diagnostics.md §W4b. `(defconst K:i32 2)` once
+; registered nothing under the literal key "K:i32"; since Stage 21 item 8 the
+; annotation is the constant's type, and the fused `K:(i32)` is the doubled-
+; annotation mistake, refused at the defconst line. The same silent-
 ; registration bug recurred, unannounced, in every sibling top-level definer
 ; whose own name is never annotated — each is pinned here too.
-(reject "w4a-defconst-annotated" (file "tests/fixtures/w4a-defconst-annotated.nuc") (line 7)
-        (message "defconst: takes no type annotation; write (defconst K 2)"))
-(reject "w4b-defconst-paren" (file "tests/fixtures/w4b-defconst-paren.nuc") (line 7)
-        (message "defconst: takes no type annotation; write (defconst K 2)"))
+(accept "w4a-defconst-annotated" (file "tests/fixtures/w4a-defconst-annotated.nuc"))
+(reject "w4b-defconst-paren" (file "tests/fixtures/w4b-defconst-paren.nuc") (line 3)
+        (message "'i32' is a type, not a type constructor"))
 (reject "w4b-defenum-annotated" (file "tests/fixtures/w4b-defenum-annotated.nuc") (line 9)
         (message "defenum: takes no type annotation; write (defenum E ...)"))
 (reject "w4b-defstruct-annotated" (file "tests/fixtures/w4b-defstruct-annotated.nuc") (line 9)
@@ -619,8 +618,33 @@
 ; located refusal rather than a slot that silently stays zero.
 (reject "g3-init-in-compile-time" (file "tests/fixtures/g3-init-in-compile-time.nuc") (line 6)
         (message "a compile-time or macro body cannot have"))
-(reject "g3-init-const-storage" (file "tests/fixtures/g3-init-const-storage.nuc") (line 6)
-        (message "is :const, so its initializer must be a compile-time constant"))
+(reject "g3-init-const-storage" (file "tests/fixtures/g3-init-const-storage.nuc") (line 4)
+        (message "defconst: 'g3-ro' needs a run-time initializer; a constant's value must be known at compile time -- use defvar"))
+
+; --- Stage 21 item 8: defconst literals and aggregates ---------------------
+; design/stage21-cleanup/defconst-values.md.
+(reject "dc-field-write" (file "tests/fixtures/dc-field-write.nuc") (line 4)
+        (message "set!: cannot write into 'O' -- it is a constant"))
+(reject "dc-aset-write" (file "tests/fixtures/dc-aset-write.nuc") (line 3)
+        (message "set!: cannot write into 'T' -- it is a constant"))
+(reject "dc-whole-assign" (file "tests/fixtures/dc-whole-assign.nuc") (line 4)
+        (message "set!: cannot assign to 'O' -- it is a constant"))
+(reject "dc-inc" (file "tests/fixtures/dc-inc.nuc") (line 3)
+        (message "inc!: cannot assign to 'K' -- it is a constant"))
+(reject "dc-addr" (file "tests/fixtures/dc-addr.nuc") (line 3)
+        (message "ref: constant 'K' has no storage -- bind it with let or defvar to take its address"))
+(reject "dc-runtime" (file "tests/fixtures/dc-runtime.nuc") (line 3)
+        (message "defconst: 'R' needs a run-time initializer; a constant's value must be known at compile time -- use defvar"))
+(reject "dc-defvar-const-retired" (file "tests/fixtures/dc-defvar-const-retired.nuc") (line 2)
+        (message "defvar: ':const' was retired -- write (defconst NAME:T init)"))
+(reject "dc-attr" (file "tests/fixtures/dc-attr.nuc") (line 2)
+        (message "defconst: takes no declaration attributes -- a constant is read-only already"))
+(reject "dc-annot-overflow" (file "tests/fixtures/dc-annot-overflow.nuc") (line 2)
+        (message "defconst: 'K' (300) does not fit ui8"))
+(reject "dc-annot-mismatch" (file "tests/fixtures/dc-annot-mismatch.nuc") (line 2)
+        (message "defconst: 'K' is StrView, which does not fit i32"))
+(reject "dc-annot-no-adapt" (file "tests/fixtures/dc-annot-no-adapt.nuc") (line 3)
+        (message "<: mixed signed/unsigned operands"))
 (reject "g4-forward-ref" (file "tests/fixtures/g4-forward-ref.nuc") (line 12)
         (message "defvar: the initializer for 'g4-fwd-a' names global 'g4-fwd-b', whose own defvar has not been reached yet")
         (note "'g4-fwd-b' is declared at tests/fixtures/g4-forward-ref.nuc:13"))

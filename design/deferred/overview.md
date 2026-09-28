@@ -181,6 +181,18 @@ Having the compiler *derive* `=` field by field is its own decision, not taken:
   
 This could make trouble using libraries with headers only, no source.
 
+## Run-time `defconst`
+
+Stage 21 item 8 ([defconst-values.md](../stage21-cleanup/defconst-values.md))
+gave `defconst` the constant grammar and refuses a run-time initializer.
+
+The shape that was designed and set aside:
+- `defvar`'s G-3 path: `global` storage written once by `@__nucleus_init`,
+  G-4 ordering, refused in a JIT module and on AVR;
+- read-only through `readonly-global`;
+- typed by annotation or by `node-type` of the initializer;
+- shallow constness, like C's `T *const`.
+
 
 ## Compiler types
 

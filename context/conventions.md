@@ -1177,6 +1177,20 @@ the reader also wrote `addr-of` for a standalone `&T`). It named only `ptr` unti
 `w9-cheader-*` goldens had the `void*` spelling written into them. Since Stage 21
 item 7 every kind renders `T*`, with a nullable/niche note after `?&T`/`!&T`. Docs: `docs/compiler.md` §C headers.
 
+A third renderer spells a resolved `Type` for a header: `cheader-type-c`. It
+writes a namespaced struct under its REGISTRY key, so `ns cl`'s `Pt` comes out
+as `struct cl__cl_Pt`. Anything with a source type node (a `defconst`'s
+annotation, `defconst-type-node`) should render the node through
+`type-node-to-c-decl`, as `emit-cheader-defconst` does.
+
+## `is-local` is 1 for a GLOBAL value — "is a value binding", not "is local"
+
+`defvar`, `extern` and a stored `defconst` all register through `scope-define …
+1`. Only a function has `is-local = 0`. A guard written `(when (= (sym 'is-local)
+0) …)` "for globals" therefore sees functions only. That is how
+`reject-ct-only` missed every read of a global withheld by `import-ct` until
+Stage 21 item 8. Ask `(= (sym 'home) g-globals)` for "is a global".
+
 ## A standalone `&T` in a type slot is a `(ref T)` node — the same head as the value form
 
 `&` at a token boundary is the `ref` reader macro (`read-macro-table-new`,

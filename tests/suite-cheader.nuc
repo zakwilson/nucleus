@@ -118,10 +118,11 @@
 
 (defn globals-lib ():StrView
   (return "(defvar counter:i32 7)
-(defvar :const limit:i32 99)
+(defconst limit:i32 99)
 (defvar tick-count:i64 41)
 (defvar- hidden:i32 5)
 (defstruct CRec (a i32))
+(defconst rec-const (CRec 6))
 (defvar rec-val:CRec)
 (defvar m-skip:(Maybe i32) (none))
 (defvar arr-val:(array i32 4))
@@ -132,7 +133,8 @@
   (let (l:CLib (try (c-lib "clib" (globals-lib)))
         h:StrView (c-lib-text &l))
     (try (check-line h "extern int32_t counter;"))
-    (try (check-line h "extern const int32_t limit;"))
+    (try (check-line h "#define limit ((int32_t)99)"))
+    (try (check-line h "extern const struct CRec rec_const asm(\"rec-const\");"))
     (try (check-line h "extern int64_t tick_count asm(\"tick-count\");"))
     (try (check-line h "extern struct CRec rec_val asm(\"rec-val\");"))
     (try (check-line h "extern int32_t arr_val[4] asm(\"arr-val\");"))
@@ -166,11 +168,11 @@
 #include \"clib.h\"
 int main(void) {
     int b = bump();
-    printf(\"%d %d %lld %d %d %d\\n\", counter, limit, (long long)tick_count, b, rec_val.a, (int)sizeof arr_val);
+    printf(\"%d %d %lld %d %d %d %d\\n\", counter, limit, (long long)tick_count, b, rec_val.a, (int)sizeof arr_val, rec_const.a);
     return 0;
 }
 ")))
-    (try (check-eq (string-as-view &out) "8 99 41 8 0 16\n"))
+    (try (check-eq (string-as-view &out) "8 99 41 8 0 16 6\n"))
     (drop &out)
     (drop &l)
     (return (ok))))

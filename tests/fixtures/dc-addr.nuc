@@ -1,0 +1,3 @@
+; A literal constant has no storage, so it has no address.
+(defconst K 5)
+(defn main ():i32 (let (p:&i32 &K) (return (@ p))))

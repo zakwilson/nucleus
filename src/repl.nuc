@@ -164,7 +164,7 @@
   (when (!= (lookup-struct name) null) (return "struct"))
   (let (sym:?&Sym (scope-lookup g-globals name))
     (when (!= sym null)
-      (when (!= (sym 'is-const) 0) (return "const"))
+      (when (or (!= (sym 'is-const) 0) (!= (sym 'readonly-global) 0)) (return "const"))
       (let (ty:?&Type (sym 'type))
         (when (and (!= ty null) (= (ty 'kind) TY-FN)) (return "fn")))
       (return "var")))
@@ -219,8 +219,14 @@
                     (when (!= (ty 'nopt) 0) (emit stderr " :optional"))
                     (when (!= (ty 'variadic) 0) (emit stderr " ..."))
                     (emit stderr "):" (repl-type-to-nuc (ty 'ret)) ")\n"))
+              (and (!= (sym 'is-const) 0) (!= (sym 'const-node) null))
+                (do (emit stderr "  " name " : const = ")
+                    (fprint-node stderr (sym 'const-node))
+                    (emit stderr "\n"))
               (!= (sym 'is-const) 0)
                 (emit stderr "  " name " : const = " (sym 'const-val) "\n")
+              (!= (sym 'readonly-global) 0)
+                (emit stderr "  " name " : const " (repl-type-to-nuc ty) "\n")
               true
                 (emit stderr "  " name " : " (repl-type-to-nuc ty) "\n")))
       (return)))
@@ -649,6 +655,19 @@
     (when (!= addr 0)
       (funcall-void (unsafe/cast ptr addr)))))
 
+; A stored constant is a global: JIT it and declare it to later modules.
+(defn repl-finish-defconst (f:&Node):void
+  (let (nm:Symbol (defconst-bare-name (node-at f 1)))
+    (if-some (sym (scope-lookup g-globals nm))
+      (when (= (sym 'is-const) 0)
+        (repl-flush-mono (f 'line))
+        (repl-jit-module (f 'line))
+        (emit g-repl-preamble (sym 'ir-name) " = external global " (type-to-ir (sym 'type)) "\n")
+        (repl-preamble-note-decl (symbol-intern (sym 'ir-name)))
+        (return))
+      0))
+  (clear-module-buffers))
+
 ; Non-zero while the session boots its own `(import-use prelude)`, which goes
 ; through the ordinary import arm but is not something the user typed.
 (defvar g-repl-booting:i32 0)
@@ -701,7 +720,11 @@
               ; second `ns` under the REPL flag (g-interactive), as designed.
               (do (emit-ns (as ptr f)) (set! is-expr 0))
             (and (not (symbol-none? h)) (= h "defconst"))
-              (do (emit-defconst (as ptr f)) (set! is-expr 0))
+              (do (open-module-streams)
+                  (set! g-out &g-decl-stream)
+                  (emit-defconst (as ptr f))
+                  (repl-finish-defconst f)
+                  (set! is-expr 0))
             (and (not (symbol-none? h)) (= h "defenum"))
               (do (emit-defenum (as ptr f)) (set! is-expr 0))
             (and (not (symbol-none? h)) (= h "defvar"))

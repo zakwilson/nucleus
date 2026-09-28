@@ -1193,13 +1193,12 @@ int main(void) {
     (drop &h))
   (return (ok)))
 
-; `:const` on a defvar global emits an LLVM `constant`, so on a mapped-flash part
-; the table costs no RAM; a plain defvar is unchanged, which is the half that
-; says existing programs stay byte-identical.
+; An aggregate `defconst` emits an LLVM `constant`, so on a mapped-flash part
+; the table costs no RAM; a plain defvar is unchanged.
 (deftest avr6-const-global
   (let (c:Compiled (try (compile-path "tests/fixtures/avr6-const.nuc"))
         iv:StrView (compiled-ir &c))
-    (try (check-line iv "@answer = constant i32 42, section \".rodata.answer\", align 4"))
+    (try (check-line iv "@table = constant [2 x i32] [i32 42, i32 7], section \".rodata.table\", align 4"))
     (try (check-line iv "@mutable-count = global i32 0, section \".bss.mutable-count\", align 4"))
     (drop &c))
   (return (ok)))

@@ -1822,11 +1822,7 @@
       (let (flags:i32 0
             rest:?&Node (as ?&Node (parse-decl-attrs (as ptr node)
                                            (as &i32 &flags) line)))
-        ; AVR-6: `:const` is only valid on a defvar global — every declaration
-        ; that reaches here (struct/union field, defn param, let/with binding) has
-        ; no global-vs-constant storage class to select, so reject rather than
-        ; silently drop the flag. (The defvar path strips `:const` in emit-defvar
-        ; before calling this on the bare name:type, so it never fires there.)
+        ; A field, parameter or binding has no storage class for `:const` to select.
         (reject-decl-attr-const flags line "a field, parameter, or binding")
         (when (= rest null)
           (die-at line "declaration attribute must be followed by a name:type"))
@@ -2026,7 +2022,7 @@
     (die-at line "import: name must be a symbol or string path")))
 
 (defn require-extern-form (form:ptr):void
-  (when (!= (node-len form) 2)
+  (when (< (node-len form) 2)
     (die-at ((unsafe/cast &Node form) 'line) "extern: expects name:type")))
 
 (defn require-export-form (form:ptr):void
@@ -3886,6 +3882,8 @@
         (when (!= (sym 'moved) 0)
           (die-at (node-line n line) (fstr "use after move: '" (nn 's) "'")))
         (when (!= (sym 'is-const) 0)
+          (when (!= (sym 'const-node) null)
+            (return (emit-const-node sym (node-line n line))))
           (let (cv:&Val (alloc-val (sym 'type) (sym 'const-val)))
             ; Stage 15 W2b: a `defconst`/`defenum` name stands for the integer
             ; literal it was defined with, so its Val carries the same
@@ -3895,7 +3893,7 @@
             ; coerce-int-val's LW-4 range check rejects a narrowing the value
             ; does not survive rather than wrapping it silently. `deferror`
             ; constants leave const-lit at 0 — an `Err` is not an int literal.
-            (when (!= (sym 'const-lit) 0)
+            (when (and (!= (sym 'const-lit) 0) (= (sym 'const-annot) 0))
               (set! (cv 'is-lit) 1)
               (set! (cv 'lit-i64) (sym 'const-lit-i64)))
             (return cv)))
@@ -3903,8 +3901,7 @@
         ; compile-time SUBSTITUTION with no storage, so it survives the import
         ; that dropped every definition. Everything below reads a global or
         ; materializes a function — both need a symbol that was emitted.
-        (when (= (sym 'is-local) 0)
-          (reject-ct-only sym (node-line n line)))
+        (reject-ct-only sym (node-line n line))
         (when (= (sym 'is-local) 0)
           (when (-> sym (_ 'type) (unsafe/cast &Type _) (_ 'kind) (= _ TY-FN))
             ; AVR-6 Harvard hazard: on a target whose program memory is a
@@ -4080,8 +4077,25 @@
       (split-typed (nn 's) (as &Symbol &lookup-name)
                           (as &Symbol &ignored-type))
       (if-some (sym (scope-lookup scope lookup-name))
-        (return (sym 'const-lit))
+        (return (if (= (sym 'const-annot) 0) (sym 'const-lit) 0))
         (return 0)))))
+
+; The float counterpart: a name for an untyped float literal.
+(defn node-is-const-float-literal (n:?&Node scope:&Scope):i32
+  (let (nn:?&Node n)
+    (when (= (node-kind nn) NODE-LIST)
+      (set! nn (macroexpand-form n -1)))
+    (when (!= (node-kind nn) NODE-SYM) (return 0))
+    (let (lookup-name:Symbol (symbol-none)
+          ignored-type:Symbol (symbol-none))
+      (split-typed ((as ptr:Node nn) 's) (as &Symbol &lookup-name)
+                                        (as &Symbol &ignored-type))
+      (if-some (sym (scope-lookup scope lookup-name))
+        (when (and (= (sym 'const-annot) 0)
+                   (= (node-kind (sym 'const-node)) NODE-FLOAT))
+          (return 1))
+        0)
+      (return 0))))
 
 ; Stage 15 W2b: THE test for "this binop operand is an untyped integer literal
 ; and may adopt the other operand's type" — a bare literal (W2a) or a name bound
@@ -4345,8 +4359,8 @@
     ; float literal's f64, as today), and only when a float operand is in play.
     (when (and (= a-lit 0) (= b-lit 0)
                (or (!= (is-float-type at) 0) (!= (is-float-type bt) 0)))
-      (let (a-flit:i32 (node-is-float-literal a-node)
-            b-flit:i32 (node-is-float-literal b-node))
+      (let (a-flit:i32 (bit-or (node-is-float-literal a-node) (node-is-const-float-literal a-node scope))
+            b-flit:i32 (bit-or (node-is-float-literal b-node) (node-is-const-float-literal b-node scope)))
         (when (and (!= a-flit 0) (= b-flit 0) (!= (is-float-type bt) 0)) (return bt))
         (when (and (!= b-flit 0) (= a-flit 0) (!= (is-float-type at) 0)) (return at))))
     ; Both typed: int+float (non-literal) needs an explicit cast.
@@ -6903,6 +6917,7 @@
 (defn emit-aset (call:&Node scope:&Scope):&Val
   (let (cc:&Node call)
     (when (!= (node-len cc) 4) (die-at (cc 'line) "set!: (aref a i) place expects an index and a value"))
+    (reject-readonly-place (node-at cc 1) scope (cc 'line))
     (let (p:&Val (emit-node (node-at cc 1) scope))
       (when (or (!= ((p 'type) 'kind) TY-PTR)
               (= ((p 'type) 'elem) null))
@@ -6979,6 +6994,11 @@
         (when (= sym null)
           (die-at (node-line (as ptr target) (cc 'line)) (fstr "ref: undefined '"
                                                                (target 's) "'")))
+        (when (!= (sym 'is-const) 0)
+          (die-at (node-line (as ptr target) (cc 'line))
+            (fstr "ref: constant '" (target 's)
+                  "' has no storage -- bind it with let or defvar to take its address")))
+        (reject-ct-only sym (node-line (as ptr target) (cc 'line)))
         ; CE-3 (closure-enhancements.md §CE-3): a moved-out binding is consumed,
         ; so taking its address is a use-after-move just like reading it
         ; (emit-symbol-ref). Newly reachable now that struct-VALUE with-bindings
@@ -7299,6 +7319,7 @@
   (let (cc:(ptr Node) call)
     (when (!= (node-len cc) 4)
       (die-at (cc 'line) ".set! expects 3 args"))
+    (reject-readonly-place (node-at cc 1) scope (cc 'line))
     (let (p:&Val (emit-lvalue-receiver (node-at cc 1) scope ".set!" (cc 'line))
           pt:(ptr Type) (p 'type)
           ek:i32 (if (and (= (pt 'kind) TY-PTR) (!= (pt 'elem) null))
@@ -10888,6 +10909,34 @@
   (die-at (node-line place line)
     "set!: not an assignable place -- write a name, (deref p), (aref a i), or a member access (r 'field)"))
 
+; The read-only global a write's receiver chain is rooted at, or null. Only the
+; syntax is followed: a write through a pointer taken with `&` is not tracked.
+(defn place-readonly-root (n:?&Node scope:&Scope):?&Node
+  (let (k:i32 (node-kind n))
+    (when (= k NODE-SYM)
+      (let (nm:Symbol (symbol-none)
+            ignored:Symbol (symbol-none))
+        (split-typed ((as ptr:Node n) 's) (as &Symbol &nm) (as &Symbol &ignored))
+        (if-some (sym (scope-lookup scope nm))
+          (when (!= (sym 'readonly-global) 0) (return n))
+          0))
+      (return null))
+    (when (!= k NODE-LIST) (return null))
+    (let (len:i32 (node-len n)
+          hd:?&Node (node-at n 0))
+      (when (= (node-kind hd) NODE-SYM)
+        (let (h:Symbol ((as ptr:Node hd) 's))
+          (when (and (= len 3) (or (= h "_get") (= h "get") (= h "aref")))
+            (return (place-readonly-root (node-at n 1) scope)))))
+      (when (and (= len 2) (!= (selector-literal-sym (node-at n 1)) null))
+        (return (place-readonly-root hd scope)))
+      (return null))))
+
+(defn reject-readonly-place (n:?&Node scope:&Scope line:i32):void
+  (if-some (root (place-readonly-root n scope))
+    (die-at line (fstr "set!: cannot write into '" (root 's) "' -- it is a constant"))
+    0))
+
 (defn emit-set (call:?&Node scope:&Scope):&Val
   (let (cc:&Node (unsafe/cast &Node call))
     (when (!= (node-len cc) 3) (die-at (cc 'line) "set! expects 2 args"))
@@ -10904,18 +10953,14 @@
                      (as &Symbol &set-type-ignored))
         (if-some (sym (scope-lookup scope set-name))
           (do
+          ; A store into `constant` storage faults at run time.
+          (when (or (!= (sym 'readonly-global) 0) (!= (sym 'is-const) 0))
+            (die-at (node-line (as ptr target) (cc 'line)) (fstr "set!: cannot assign to '"
+                                                                 (target 's)
+                                                                 "' -- it is a constant")))
           (when (= (sym 'is-local) 0)
             (die-at (node-line (as ptr target) (cc 'line)) (fstr "set!: undefined local '"
                                                                  (target 's) "'")))
-          ; AVR-6 gap fix: a `:const` defvar's storage is LLVM `constant`
-          ; (read-only) — a `set!` against it would emit a `store` into
-          ; read-only storage (undefined behavior, segfaults at runtime on
-          ; the host). Reject at compile time instead, before the RHS is
-          ; even emitted.
-          (when (!= (sym 'readonly-global) 0)
-            (die-at (node-line (as ptr target) (cc 'line)) (fstr "set!: cannot assign to '"
-                                                                 (target 's)
-                                                                 "' -- declared :const")))
           ; Stage 15 W8 G-2: an `(array T N)` binding names storage, not a
           ; value — assigning a whole array is not an operation (in C either).
           ; Refuse before the RHS is emitted, with a message that says why.
@@ -11090,6 +11135,9 @@
                      (as &Symbol &nm)
                      (as &Symbol &type-ignored))
         (let (sym:?&Sym (scope-lookup scope nm))
+          (when (and (!= sym null) (or (!= (sym 'is-const) 0) (!= (sym 'readonly-global) 0)))
+            (die-at (node-line (as ptr target) (cc 'line))
+              (fstr op-name ": cannot assign to '" nm "' -- it is a constant")))
           (when (or (= sym null) (= (sym 'is-local) 0))
             (die-at (node-line (as ptr target) (cc 'line)) (fstr op-name ": undefined local")))
           (when (= (is-int-type (sym 'type)) 0)
@@ -13735,6 +13783,8 @@
           (die-at (node-line init encl) "defvar: false requires bool type"))
         (return "false"))
       (let (sym:?&Sym (scope-lookup g-globals (nn 's)))
+        (when (and (!= sym null) (!= (sym 'is-const) 0) (!= (sym 'const-node) null))
+          (return (defvar-init-ir (sym 'const-node) ty encl)))
         (when (and (!= sym null) (!= (sym 'is-const) 0))
           (when (= (is-int-type ty) 0)
             (die-at (node-line init encl)
@@ -14082,6 +14132,8 @@
           decl:ptr (parse-decl-attrs (as ptr (node-rest cc)) (as &i32 &attr-flags) (cc 'line)))
       (when (= decl null)
         (die-at (cc 'line) "defvar: expects name and optional init"))
+      (when (!= (bit-and attr-flags DECL-ATTR-CONST) 0)
+        (die-at (cc 'line) "defvar: ':const' was retired -- write (defconst NAME:T init)"))
       (let (declc:&Node (unsafe/cast &Node decl)
             name-node:ptr (node-first declc)
             init-cell:ptr (node-rest declc))
@@ -14108,213 +14160,318 @@
           ; Type flag, identical to the postfix spelling `trap-zero:i32:volatile`).
           (when (!= (bit-and attr-flags DECL-ATTR-VOLATILE) 0)
             (set! ty (as ptr (type-with-volatile (unsafe/cast &Type ty)))))
-          (guard-name-kind name (cc 'line) NK-VALUE)
-          ; Stage 15 B4 (R4): a second `defvar` of one name. The tell here is
-          ; neither existence nor a location — W8 G-0 front-loads every reachable
-          ; file's `defvar` names into this same frame, so a Sym under this key is
-          ; the NORMAL state — it is `defvar-state`: the prescan's Sym says
-          ; DECLARED and only `emit-defvar` promotes one to REACHED, so REACHED
-          ; means another `defvar` form already emitted its `@g = global`. This
-          ; used to reach LLVM's own parser as two `@g = global` lines, which
-          ; reports without a source location at all.
-          ; The probe is the KEY lookup, not the reference resolver: this is the
-          ; key `scope-define` is about to write (conventions.md, "Splitting a
-          ; lookup into reference/key").
-          (if-some (prevv (scope-lookup-key g-globals name))
-            (when (and (= (prevv 'defvar-state) DEFVAR-REACHED)
-                       (= (same-definition-site (prevv 'src-file) (prevv 'src-line) (cc 'line)) 0))
-              (die-redefinition name (cc 'line) BK-GLOBAL
-                                (prevv 'src-file) (prevv 'src-line)))
-            0)
-          ; G-5 step 4: a non-null typed-pointer global must be initialized.
-          (when (= init-cell null)
-            (defvar-require-init name (as ?&Type ty) (cc 'line)))
-          ; Stage 12 N4: a global emits `@name`, prefixed with the namespace
-          ; ir-prefix in a non-`user` namespace (`@foo__name`). Identity under
-          ; `user`, so the bootstrap is byte-identical.
-          ; Stage 15 W5e: def-ir-base is ns-ir-base plus the owning file's
-          ; private prefix when this is a `defvar-` in the default `user`
-          ; namespace — so two files' private `g-counter`s emit two distinct
-          ; `internal` globals instead of two `@g-counter` definitions (which
-          ; LLVM rejected with an unlocated parse error).
-          (let (ir-name:StrView (fstr "@" (def-ir-base name))
-                align:i32 (abi-slot-align ty)
-                init-ir:StrView ""
-                init-node:?&Node null
-                ; G-3: set when the classifier below reports that this
-                ; initializer has no constant rendering. The slot then gets the
-                ; type's zero and the initializer is queued for @__nucleus_init.
-                runtime-init:i32 0)
-            (check-ir-name-legal (cc 'line) name ir-name)
-            ; Stage 20 L6 (§5.7): open the span here, above the array-backing
-            ; global, so `@g.data` is inside the text a mirror copies.
-            (let (pg:?&ProgGlobal
-                   (program-global-record (symbol-intern ir-name)
-                                          (if (!= (bit-and attr-flags DECL-ATTR-CONST) 0) 1 0)))
-            ; L5's fourth condition, for a global: a `defvar` inside the CT block
-            ; being compiled already lives in that module.
-            (ct-module-defn-note (symbol-intern ir-name))
-            (when (!= init-cell null)
-              (set! init-node (as ?&Node (node-first (unsafe/cast &Node init-cell)))))
-            ; G-2 shape 4: a pointer-typed global initialized with an array
-            ; literal gets a `@g.data` backing global and points at it.
-            (when (and (!= init-node null)
-                       (!= (is-ptr-like ty) 0)
-                       (!= (const-array-lit? init-node) 0))
-              (set! init-ir (defvar-emit-array-backing ir-name init-node ty (cc 'line))))
-            ; G-3: ask the classifier ONCE, for every shape shape 4 did not
-            ; already render. A 0 answer is "runtime initializer"; a 1 answer
-            ; with a null string is "constant aggregate — stream it below".
-            (when (and (= (strview-byte-len init-ir) 0) (!= init-node null))
-              (let (rendered:StrView "")
-                (if (= (defvar-const-init-ir init-node ty (cc 'line)
-                         (as ptr &rendered)) 0)
-                  (set! runtime-init 1)
-                  (set! init-ir rendered))))
-            (when (!= runtime-init 0)
-              ; §2.9 / §4.5: a compile-time or macro JIT module has no program
-              ; globals and never reaches a drain point, so an initializer
-              ; queued from one would simply never run. Refuse, located, rather
-              ; than leave a silent zero.
-              (when (!= (in-jit-module) 0)
-                (die-at (cc 'line)
-                  (fstr "defvar: '" name
-                        "' needs a run-time initializer, which a compile-time or macro body cannot have -- that module has no program globals")))
-              ; `:const` storage is LLVM `constant` (read-only), so there is no
-              ; store that could initialize it — `emit-set` refuses one for the
-              ; same reason. Say so here, where the cause is.
-              (when (!= (bit-and attr-flags DECL-ATTR-CONST) 0)
-                (die-at (cc 'line)
-                  (fstr "defvar: '" name
-                        "' is :const, so its initializer must be a compile-time constant -- read-only storage cannot be written at startup")))
-              ; G-4 (§4.2): the ordering diagnostic runs here, on the RUN-TIME
-              ; path only. A constant initializer is folded from literals, named
-              ; constants, `(sizeof T)`, `(as T x)` and addresses — not one of
-              ; which reads a global's value — so there is nothing for it to
-              ; check, and confining it here is also what keeps it free of false
-              ; positives on the constant-aggregate grammar, whose designated
-              ; field names (`(P (y 9))`) and index cells are selectors rather
-              ; than references. An initializer with a non-constant ELEMENT
-              ; inside a constant aggregate never reaches this point either: an
-              ; element must be constant regardless of order, and it keeps the
-              ; better "init must be a compile-time constant" diagnostic.
-              (defvar-check-init-order init-node name (cc 'line))
-              (defvar-queue-init name (symbol-intern ir-name) init-node (cc 'line)))
-            ; No initializer (or a runtime one, whose slot starts at zero and is
-            ; filled by @__nucleus_init): the type's zero. G-2 moved the
-            ; three-bucket rule (pointers `null`, aggregates `zeroinitializer` —
-            ; which now covers `(array T N)` as well — everything else
-            ; `0`/`0.0`/`false`) into `type-zero-const-ir` so the
-            ; constant-aggregate renderer's unspecified slots use the identical
-            ; rule rather than a copy of it.
-            (when (and (= (strview-byte-len init-ir) 0) (or (= init-node null) (!= runtime-init 0)))
-              (set! init-ir (type-zero-const-ir ty)))
-            ; Stage 12 N3 (`internal` for a private defvar) and W9 item 2
-            ; (`weak_odr` for an imported file's global, so two objects that
-            ; both inline it share one) are both `def-linkage`'s answer.
-            ; AVR-6: `:const` selects the LLVM `constant` storage class over
-            ; `global` (read-only; on mapped-flash AVR parts it stays out of RAM).
-            ; Four combinations: private/public × global/constant. `storage` binds
-            ; from an if over two StrView literals (homogeneous join, no collapse);
-            ; when the CONST bit is clear it is "global" and both branches are
-            ; byte-identical to the historical output.
-            ; G-2 split this from one fprintf into three so a constant aggregate
-            ; can be STREAMED between the prefix and the suffix. The bytes are
-            ; identical for every pre-G-2 shape (init-ir non-null → one "%s"),
-            ; which is why the bootstrap does not move; streaming matters because
-            ; a `fmt-*`-accumulated table would silently clamp at ~1KB
-            ; (context/conventions.md, format-helper buffer sizes).
-            (let (storage:StrView (if (!= (bit-and attr-flags DECL-ATTR-CONST) 0) "constant" "global"))
-              (emit g-out ir-name " = " (def-linkage) storage " " (type-to-ir ty) " ")
-              (if (!= (strview-byte-len init-ir) 0)
-                (emit g-out init-ir)
-                (defvar-write-const init-node ty (cc 'line)))
-              (when (!= (ir-sections-on) 0)
-                (emit g-out ",")
-                (write-ir-section g-out
-                  (global-section-prefix (bit-and attr-flags DECL-ATTR-CONST)
-                                         init-ir (as ?&Type ty))
-                  ir-name))
-              (emit g-out ", align " align "\n\n"))
-            (program-global-note-end pg (type-to-ir ty)))
-            (let (vsym:&Sym (scope-define g-globals name ty ir-name 1))
-              (sym-record-src vsym (cc 'line))
-              (when (!= g-ct-emitting 0) (set! ((unsafe/cast &Sym vsym) 'ct-only) 1))
-              (when (!= g-defining-private 0) (set! ((unsafe/cast &Sym vsym) 'sym-private) 1))
-              ; AVR-6 gap fix: mark the Sym so `set!` can reject writes to
-              ; this `constant`-storage global at compile time (emit-set).
-              (when (!= (bit-and attr-flags DECL-ATTR-CONST) 0)
-                (set! ((unsafe/cast &Sym vsym) 'readonly-global) 1))
-              ; G-4: the `@g = global` line is out, so this global's `defvar` has
-              ; now been REACHED — every initializer emitted after this point may
-              ; read its value. A later `scope-lookup` finds this Sym rather than
-              ; the prescan's (backwards scan), which is the whole mechanism.
-              (set! ((unsafe/cast &Sym vsym) 'defvar-state) DEFVAR-REACHED)
-              (sym-set-src-loc (as ptr vsym) (cc 'line)))))))))
+          (emit-global-def cc name ty
+            (if (= init-cell null) null (node-first (unsafe/cast &Node init-cell)))
+            attr-flags))))))
 
+; The storage half of `defvar`, shared with an aggregate `defconst` (DECL-ATTR-CONST).
+(defn emit-global-def (cc:&Node name:Symbol ty:ptr init-node:?&Node attr-flags:i32):void
+  (guard-name-kind name (cc 'line) NK-VALUE)
+  ; Stage 15 B4 (R4): a second `defvar` of one name. The tell here is
+  ; neither existence nor a location — W8 G-0 front-loads every reachable
+  ; file's `defvar` names into this same frame, so a Sym under this key is
+  ; the NORMAL state — it is `defvar-state`: the prescan's Sym says
+  ; DECLARED and only `emit-defvar` promotes one to REACHED, so REACHED
+  ; means another `defvar` form already emitted its `@g = global`. This
+  ; used to reach LLVM's own parser as two `@g = global` lines, which
+  ; reports without a source location at all.
+  ; The probe is the KEY lookup, not the reference resolver: this is the
+  ; key `scope-define` is about to write (conventions.md, "Splitting a
+  ; lookup into reference/key").
+  (if-some (prevv (scope-lookup-key g-globals name))
+    (when (and (= (prevv 'defvar-state) DEFVAR-REACHED)
+               (= (same-definition-site (prevv 'src-file) (prevv 'src-line) (cc 'line)) 0))
+      (die-redefinition name (cc 'line) BK-GLOBAL
+                        (prevv 'src-file) (prevv 'src-line)))
+    0)
+  ; G-5 step 4: a non-null typed-pointer global must be initialized.
+  (when (= init-node null)
+    (defvar-require-init name (as ?&Type ty) (cc 'line)))
+  ; Stage 12 N4: a global emits `@name`, prefixed with the namespace
+  ; ir-prefix in a non-`user` namespace (`@foo__name`). Identity under
+  ; `user`, so the bootstrap is byte-identical.
+  ; Stage 15 W5e: def-ir-base is ns-ir-base plus the owning file's
+  ; private prefix when this is a `defvar-` in the default `user`
+  ; namespace — so two files' private `g-counter`s emit two distinct
+  ; `internal` globals instead of two `@g-counter` definitions (which
+  ; LLVM rejected with an unlocated parse error).
+  (let (ir-name:StrView (fstr "@" (def-ir-base name))
+        align:i32 (abi-slot-align ty)
+        init-ir:StrView ""
+        ; G-3: set when the classifier below reports that this
+        ; initializer has no constant rendering. The slot then gets the
+        ; type's zero and the initializer is queued for @__nucleus_init.
+        runtime-init:i32 0)
+    (check-ir-name-legal (cc 'line) name ir-name)
+    ; Stage 20 L6 (§5.7): open the span here, above the array-backing
+    ; global, so `@g.data` is inside the text a mirror copies.
+    (let (pg:?&ProgGlobal
+           (program-global-record (symbol-intern ir-name)
+                                  (if (!= (bit-and attr-flags DECL-ATTR-CONST) 0) 1 0)))
+    ; L5's fourth condition, for a global: a `defvar` inside the CT block
+    ; being compiled already lives in that module.
+    (ct-module-defn-note (symbol-intern ir-name))
+    ; G-2 shape 4: a pointer-typed global initialized with an array
+    ; literal gets a `@g.data` backing global and points at it.
+    (when (and (!= init-node null)
+               (!= (is-ptr-like ty) 0)
+               (!= (const-array-lit? init-node) 0))
+      (set! init-ir (defvar-emit-array-backing ir-name init-node ty (cc 'line))))
+    ; G-3: ask the classifier ONCE, for every shape shape 4 did not
+    ; already render. A 0 answer is "runtime initializer"; a 1 answer
+    ; with a null string is "constant aggregate — stream it below".
+    (when (and (= (strview-byte-len init-ir) 0) (!= init-node null))
+      (let (rendered:StrView "")
+        (if (= (defvar-const-init-ir init-node ty (cc 'line)
+                 (as ptr &rendered)) 0)
+          (set! runtime-init 1)
+          (set! init-ir rendered))))
+    (when (!= runtime-init 0)
+      ; Read-only storage cannot be written at startup.
+      (when (!= (bit-and attr-flags DECL-ATTR-CONST) 0)
+        (die-at (cc 'line)
+          (fstr "defconst: '" name
+                "' needs a run-time initializer; a constant's value must be known at compile time -- use defvar")))
+      ; §2.9 / §4.5: a compile-time or macro JIT module has no program
+      ; globals and never reaches a drain point, so an initializer
+      ; queued from one would simply never run. Refuse, located, rather
+      ; than leave a silent zero.
+      (when (!= (in-jit-module) 0)
+        (die-at (cc 'line)
+          (fstr "defvar: '" name
+                "' needs a run-time initializer, which a compile-time or macro body cannot have -- that module has no program globals")))
+      ; G-4 (§4.2): the ordering diagnostic runs here, on the RUN-TIME
+      ; path only. A constant initializer is folded from literals, named
+      ; constants, `(sizeof T)`, `(as T x)` and addresses — not one of
+      ; which reads a global's value — so there is nothing for it to
+      ; check, and confining it here is also what keeps it free of false
+      ; positives on the constant-aggregate grammar, whose designated
+      ; field names (`(P (y 9))`) and index cells are selectors rather
+      ; than references. An initializer with a non-constant ELEMENT
+      ; inside a constant aggregate never reaches this point either: an
+      ; element must be constant regardless of order, and it keeps the
+      ; better "init must be a compile-time constant" diagnostic.
+      (defvar-check-init-order init-node name (cc 'line))
+      (defvar-queue-init name (symbol-intern ir-name) init-node (cc 'line)))
+    ; No initializer (or a runtime one, whose slot starts at zero and is
+    ; filled by @__nucleus_init): the type's zero. G-2 moved the
+    ; three-bucket rule (pointers `null`, aggregates `zeroinitializer` —
+    ; which now covers `(array T N)` as well — everything else
+    ; `0`/`0.0`/`false`) into `type-zero-const-ir` so the
+    ; constant-aggregate renderer's unspecified slots use the identical
+    ; rule rather than a copy of it.
+    (when (and (= (strview-byte-len init-ir) 0) (or (= init-node null) (!= runtime-init 0)))
+      (set! init-ir (type-zero-const-ir ty)))
+    ; Stage 12 N3 (`internal` for a private defvar) and W9 item 2
+    ; (`weak_odr` for an imported file's global, so two objects that
+    ; both inline it share one) are both `def-linkage`'s answer.
+    ; DECL-ATTR-CONST selects `constant`, which on mapped-flash AVR stays out of RAM.
+    ; G-2 split this from one fprintf into three so a constant aggregate
+    ; can be STREAMED between the prefix and the suffix. The bytes are
+    ; identical for every pre-G-2 shape (init-ir non-null → one "%s"),
+    ; which is why the bootstrap does not move; streaming matters because
+    ; a `fmt-*`-accumulated table would silently clamp at ~1KB
+    ; (context/conventions.md, format-helper buffer sizes).
+    (let (storage:StrView (if (!= (bit-and attr-flags DECL-ATTR-CONST) 0) "constant" "global"))
+      (emit g-out ir-name " = " (def-linkage) storage " " (type-to-ir ty) " ")
+      (if (!= (strview-byte-len init-ir) 0)
+        (emit g-out init-ir)
+        (defvar-write-const init-node ty (cc 'line)))
+      (when (!= (ir-sections-on) 0)
+        (emit g-out ",")
+        (write-ir-section g-out
+          (global-section-prefix (bit-and attr-flags DECL-ATTR-CONST)
+                                 init-ir (as ?&Type ty))
+          ir-name))
+      (emit g-out ", align " align "\n\n"))
+    (program-global-note-end pg (type-to-ir ty)))
+    (let (vsym:&Sym (scope-define g-globals name ty ir-name 1))
+      (sym-record-src vsym (cc 'line))
+      (when (!= g-ct-emitting 0) (set! ((unsafe/cast &Sym vsym) 'ct-only) 1))
+      (when (!= g-defining-private 0) (set! ((unsafe/cast &Sym vsym) 'sym-private) 1))
+      (when (!= (bit-and attr-flags DECL-ATTR-CONST) 0)
+        (set! ((unsafe/cast &Sym vsym) 'readonly-global) 1))
+      ; G-4: the `@g = global` line is out, so this global's `defvar` has
+      ; now been REACHED — every initializer emitted after this point may
+      ; read its value. A later `scope-lookup` finds this Sym rather than
+      ; the prescan's (backwards scan), which is the whole mechanism.
+      (set! ((unsafe/cast &Sym vsym) 'defvar-state) DEFVAR-REACHED)
+      (sym-set-src-loc (as ptr vsym) (cc 'line)))))
+
+; A `defconst` takes `defvar`'s constant grammar. A value that folds to one
+; literal is substituted at each use; an aggregate or address gets read-only
+; storage (design/stage21-cleanup/defconst-values.md).
 (defn emit-defconst (call:?&Node):void
-  (let (cc:&Node (unsafe/cast &Node call))
+  (let (cc:&Node (unsafe/cast &Node call)
+        line:i32 (cc 'line))
+    (when (= (node-kind (node-at cc 1)) NODE-KEYWORD)
+      (die-at line "defconst: takes no declaration attributes -- a constant is read-only already"))
     (require-defconst-form call)
-    (let (name:&Node (unsafe/cast &Node (node-at cc 1))
-          val:&Node (unsafe/cast &Node (node-at cc 2)))
-      ; W4b (design/stage15-stress-test/diagnostics.md): `defconst` takes no
-      ; type annotation -- its value is always ty-i32 from an integer literal,
-      ; so there is nothing an annotation could mean. Before this check, a
-      ; colon-typed name silently registered under the WRONG key: `desugar`
-      ; never rewrites a `defconst` name (only defn/defvar/extern/declare
-      ; names, defstruct fields, and let/with binding names are desugared —
-      ; see context/conventions.md), so `K:i32` arrived as one undesugared
-      ; NODE-SYM whose spelling is literally "K:i32", passed the old
-      ; `(!= (name kind) NODE-SYM)` check unchanged, and got registered under
-      ; that literal, unlookupable name -- every later use of `K` then died
-      ; `undefined: K` with no diagnostic at the definition. Reject both
-      ; surface shapes: a bare symbol whose spelling embeds ':' ("K:i32"), and
-      ; the colon-paren-fused CELL shape ("K:(i32)" -> (K (i32)), produced by
-      ; `fuse-colon-paren` in lib/reader.nuc) which would otherwise fall into
-      ; the generic, misleading "name must be symbol" die below.
-      ; W9 item 45: every kind test here is `node-kind`, so a name or a value
-      ; spelled `()` — a NULL node (W5f) — reaches the two refusals below instead
-      ; of being dereferenced by the first test that looks at it.
-      (when (= (node-kind (as ptr name)) NODE-SYM)
-        (let (base:Symbol (symbol-none) tyname:Symbol (symbol-none))
-          (split-typed (name 's) (as &Symbol &base) (as &Symbol &tyname))
-          (when (not (symbol-none? tyname))
-            (die-at (cc 'line)
-              (fstr "defconst: takes no type annotation; write (defconst " base " "
-                    (if (= (node-kind (as ptr val)) NODE-INT) (unsafe/cast i32 (val 'i)) 0) ")")))))
-      (when (= (node-kind (as ptr name)) NODE-LIST)
-        (let (base-node:?&Node (node-first name))
-          (when (and (!= base-node null) (= (base-node 'kind) NODE-SYM))
-            (die-at (node-line (as ptr name) (cc 'line))
-              (fstr "defconst: takes no type annotation; write (defconst " (base-node 's) " "
-                    (if (= (node-kind (as ptr val)) NODE-INT) (unsafe/cast i32 (val 'i)) 0) ")")))))
-      (require-defconst-name name (cc 'line))
-      (when (!= (node-kind (as ptr val)) NODE-INT)
-        (die-at (node-line (as ptr val) (cc 'line)) "defconst: value must be integer literal"))
-      (guard-name-kind (name 's) (cc 'line) NK-VALUE)
-      (guard-const-redefinition (name 's) (cc 'line))
-      ; Stage 15 W2b: the constant's type is the literal's *truthful* width
-      ; (int-literal-type — emit-int's LW-4 rule, shared, not re-derived). This
-      ; was hardcoded `ty-i32` while `const-val` carried the full decimal string,
-      ; so `(defconst BIG 5000000000)` emitted the i32 constant `5000000000` and
-      ; `(let (x:i64 BIG) …)` printed 705032704 — the exact silent wrap LW-4 had
-      ; already fixed for inline literals. (The spec doc's premise that such
-      ; constants "are stored i64 today" was wrong; measured.)
-      (let (sym:&Sym (scope-define g-globals (name 's)
-                          (as ptr (int-literal-type (val 'i))) "" 0))
-        (sym-record-src sym (cc 'line))
-        (set! (sym 'is-const) 1)
-        (set! (sym 'const-val) (fstr (val 'i)))
-        ; W2b: the name stands for the literal — carry the VALUE, not just a
-        ; flag, so a reference adapts at a use site (binop-result-type) and an
-        ; out-of-range narrowing is caught (coerce-int-val) rather than wrapped.
-        (set! (sym 'const-lit) 1)
-        (set! (sym 'const-lit-i64) (val 'i))
-        ; Stage 12 N3: mark private when defined via `defconst-`.
-        (when (!= g-defining-private 0) (set! (sym 'sym-private) 1))
-        ; Stage 15 B4 (R4): the defining site, which `guard-const-redefinition`
-        ; reads to tell this form's own prescan Sym from a second `defconst`.
-        (sym-set-src-loc (as ptr sym) (cc 'line))))))
+    (let (name-node:?&Node (node-at cc 1)
+          val:?&Node (node-at cc 2)
+          name:Symbol (defconst-bare-name name-node)
+          annot:?&Type null)
+      (when (symbol-none? name)
+        (die-at (node-line name-node line) "defconst: name must be symbol"))
+      (when (defconst-annotated? name-node)
+        (set! annot (extract-decl-name-and-type name-node (as &Symbol &name) (node-line name-node line))))
+      ; `(as T v)` is the annotation spelled on the value.
+      (when (and (= annot null) (= (node-kind val) NODE-LIST) (= (node-len val) 3)
+                 (= (node-at val 0) 'as))
+        (set! annot (parse-type-from-node (node-at val 1) (node-line val line)))
+        (set! val (node-at val 2)))
+      ; A constant naming a typed constant keeps its type.
+      (when (and (= annot null) (= (node-kind val) NODE-SYM))
+        (if-some (vs (scope-lookup g-globals ((as ptr:Node val) 's)))
+          (when (and (!= (vs 'is-const) 0) (!= (vs 'const-annot) 0))
+            (set! annot (vs 'type)))
+          0))
+      (guard-name-kind name line NK-VALUE)
+      (let (lit:?&Node (defconst-literal val line))
+        (if (!= lit null)
+          (defconst-define-literal name lit annot line)
+          (let (ty:?&Type (if (!= annot null) annot (defconst-value-type val line)))
+            (when (= ty null)
+              (die-at line
+                (fstr "defconst: '" name
+                      "' needs a run-time initializer; a constant's value must be known at compile time -- use defvar")))
+            (emit-global-def cc name ty val DECL-ATTR-CONST)))))))
+
+; A defconst's name without its annotation, from any spelling a defvar name takes.
+(defn defconst-bare-name (n:?&Node):Symbol
+  (let (k:i32 (node-kind n))
+    (when (= k NODE-SYM)
+      (let (base:Symbol (symbol-none)
+            tyname:Symbol (symbol-none))
+        (split-typed ((as ptr:Node n) 's) (as &Symbol &base) (as &Symbol &tyname))
+        (return base)))
+    (when (= k NODE-LIST)
+      (let (hd:?&Node (node-at n 0))
+        (when (= (node-kind hd) NODE-SYM) (return ((as ptr:Node hd) 's))))))
+  (return (symbol-none)))
+
+(defn defconst-annotated? (n:?&Node):bool
+  (when (= (node-kind n) NODE-LIST) (return true))
+  (when (= (node-kind n) NODE-SYM)
+    (return (symbol-contains-byte ((as ptr:Node n) 's) 58)))
+  (return false))
+
+; The single literal a defconst's value stands for, or null when it has none.
+(defn defconst-literal (v:?&Node line:i32):?&Node
+  (let (k:i32 (node-kind v))
+    (when (or (= k NODE-INT) (= k NODE-FLOAT) (= k NODE-STR) (= k NODE-CHAR))
+      (return v))
+    (when (= k NODE-SYM)
+      (when (or (= v 'true) (= v 'false) (= v 'null)) (return v))
+      (if-some (sym (scope-lookup g-globals ((as ptr:Node v) 's)))
+        (when (!= (sym 'is-const) 0)
+          (when (!= (sym 'const-node) null) (return (sym 'const-node)))
+          (when (!= (sym 'const-lit) 0) (return (node-int (sym 'const-lit-i64)))))
+        0)
+      (return null))
+    (when (= k NODE-LIST)
+      (let (folded:i64 0)
+        (when (!= (const-fold-int v (as &i64 &folded) line) 0)
+          (return (node-int folded)))))
+    (return null)))
+
+; The type of a stored constant's value, read off its head, or null.
+(defn defconst-value-type (v:?&Node line:i32):?&Type
+  (when (!= (node-kind v) NODE-LIST) (return null))
+  (let (hd:?&Node (node-at v 0))
+    (when (!= (node-kind hd) NODE-SYM) (return null))
+    (when (= hd 'array)
+      (let (n:i32 0
+            ety:&Type (const-array-lit-etype v (as &i32 &n) line))
+        (return (array-type ety n))))
+    (when (and (= hd 'ref) (= (node-len v) 2))
+      (return (node-type v g-globals)))
+    (let (sd:?&StructDef (struct-lookup-ref ((as ptr:Node hd) 's)))
+      (when (!= sd null) (return (type-for-sdef sd)))))
+  (return null))
+
+; The type node a stored constant's source spells, so a header names it the way
+; `defvar` would: the annotation, or the struct or array literal's own head.
+(defn defconst-type-node (form:ptr ty:ptr:Type):ptr
+  (let (name-node:?&Node (node-at form 1)
+        val:?&Node (node-at form 2)
+        line:i32 ((as ptr:Node form) 'line))
+    (when (defconst-annotated? name-node)
+      (return (extract-type-node name-node line)))
+    (when (!= (node-kind val) NODE-LIST) (return null))
+    (let (hd:?&Node (node-at val 0))
+      (when (and (= hd 'array) (= (ty 'kind) TY-ARRAY))
+        (return (node-list3 (intern-node (symbol-intern "array")) (node-at val 1)
+                            (node-int (as i64 (ty 'arr-len))) line)))
+      (when (or (= (ty 'kind) TY-STRUCT) (= (ty 'kind) TY-UNION))
+        (return hd))
+      (return null))))
+
+; An annotated literal must be one the annotation's slot would accept.
+(defn defconst-check-literal (name:Symbol lit:&Node ty:&Type line:i32):void
+  (let (lt:?&Type (node-type lit g-globals)
+        k:i32 (lit 'kind))
+    (when (and (!= lt null) (!= (type-eq lt ty) 0)) (return))
+    (when (and (= k NODE-INT) (!= (is-int-type ty) 0))
+      (when (= (int-literal-fits (lit 'i) ty) 0)
+        (die-at line (fstr "defconst: '" name "' (" (fstr (lit 'i)) ") does not fit "
+                           (type-display ty))))
+      (return))
+    (when (and (or (= k NODE-INT) (= k NODE-FLOAT)) (!= (is-float-type ty) 0)) (return))
+    (when (and (= k NODE-STR)
+               (or (!= (is-ptr-like ty) 0)
+                   (and (= (lit 'i) 0) (!= (type-is-strview ty) 0))))
+      (return))
+    (when (and (= lit 'null) (!= (is-ptr-repr ty) 0))
+      (pkind-flow-check ty-ptr ty line "defconst")
+      (return))
+    (die-at line (fstr "defconst: '" name "' is " (type-display lt) ", which does not fit "
+                       (type-display ty)))))
+
+(defn defconst-define-literal (name:Symbol lit:&Node annot:?&Type line:i32):void
+  (guard-const-redefinition name line)
+  (when (!= annot null) (defconst-check-literal name lit annot line))
+  (let (sym:&Sym (defconst-literal-sym name lit annot))
+    (sym-record-src sym line)
+    (prescan-const-finish sym line)))
+
+; An integer that keeps an integer type substitutes its IR text, as before
+; non-integer constants existed; anything else re-emits its literal.
+(defn defconst-literal-sym (name:Symbol lit:&Node annot:?&Type):&Sym
+  (let (int-path:bool (and (= (lit 'kind) NODE-INT)
+                           (or (= annot null) (!= (is-int-type annot) 0)))
+        ty:?&Type annot)
+    (when (= ty null)
+      (set! ty (if (= (lit 'kind) NODE-INT)
+                 (as ?&Type (int-literal-type (lit 'i)))
+                 (node-type lit g-globals))))
+    (let (sym:&Sym (scope-define g-globals name ty "" 0))
+      (set! (sym 'is-const) 1)
+      (when (!= annot null) (set! (sym 'const-annot) 1))
+      (if int-path
+        (do (set! (sym 'const-val) (fstr (lit 'i)))
+            (set! (sym 'const-lit) 1)
+            (set! (sym 'const-lit-i64) (lit 'i)))
+        (set! (sym 'const-node) (defconst-node-copy lit)))
+      (return sym))))
+
+; Without its line, so a use's diagnostics blame the use.
+(defn defconst-node-copy (lit:&Node):&Node
+  (when (= (lit 'kind) NODE-SYM) (return lit))
+  (let (c:&Node (alloc-node))
+    (set! (c 'kind) (lit 'kind))
+    (set! (c 'i) (lit 'i))
+    (set! (c 's) (lit 's))
+    (return c)))
+
+; A substituted constant: its literal, emitted here and put at its annotated type.
+(defn emit-const-node (sym:&Sym line:i32):&Val
+  (let (v:&Val (emit-node (sym 'const-node) g-globals))
+    (when (= (sym 'const-annot) 0) (return v))
+    (let (cv:?&Val (coerce-int-val v (sym 'type) line))
+      (when (= cv null)
+        (die-at line (fstr "constant '" (sym 'name) "' does not fit " (type-display (sym 'type)))))
+      (return (unsafe/cast &Val cv)))))
 
 ; Stage 10 errors (design/stage10/errors.md §8). (deferror name "message")
 ; binds `name` as a compile-time Err constant whose value is a dense id (from 1)
@@ -14916,10 +15073,14 @@
 (defn emit-extern-mode (call:?&Node mode:i32):void
   (let (cc:&Node (unsafe/cast &Node call))
     (require-extern-form (as ptr call))
-    (let (arg1:ptr (node-at cc 1)
+    (let (attr-flags:i32 0
+          decl:ptr (parse-decl-attrs (as ptr (node-rest cc)) (as &i32 &attr-flags) (cc 'line))
+          arg1:ptr (node-first decl)
           name:Symbol (symbol-none)
           m:i32 mode
           ty:ptr null)
+      (when (!= (node-len decl) 1)
+        (die-at (cc 'line) "extern: expects name:type"))
       ; G-2: `--emit-nuch` exports an array-typed `defvar` as
       ; `(extern (g (array i32 3)))`, so this — the import side of that export —
       ; is a declaration position and grants the same permission emit-defvar
@@ -14934,6 +15095,8 @@
       (when (= ty null)
         (die-at (node-line arg1 (cc 'line))
           (fstr "extern: missing :type on '" name "'")))
+      (when (!= (bit-and attr-flags DECL-ATTR-VOLATILE) 0)
+        (set! ty (as ptr (type-with-volatile (unsafe/cast &Type ty)))))
       (guard-name-kind name (cc 'line) NK-VALUE)
       ; W9 item 29: emit-only is a promise the prescan registered THIS name from
       ; THIS header. It registers nothing the dedup below already refused, so ask
@@ -14972,7 +15135,9 @@
               (emit g-repl-preamble ir-name " = external global " (type-to-ir ty) "\n\n"))
             (emit g-out ir-name " = external global " (type-to-ir ty) "\n\n")))
         (when (!= m NUCH-AFTER)
-          (scope-define g-globals name ty ir-name 1)
+          (let (esym:&Sym (scope-define g-globals name ty ir-name 1))
+            (when (!= (bit-and attr-flags DECL-ATTR-CONST) 0)
+              (set! (esym 'readonly-global) 1)))
           (when (= m NUCH-REG)
             (set! g-nuch-registered
                   (import-list-push g-nuch-registered
@@ -16056,7 +16221,7 @@
                      ; line belongs in the module's own buffer, not ct-type.
                      (set! is-tl 1) (set! g-out &g-type-stream) (emit-defstruct (as ptr bf)))
                   (when (= bh "defconst")
-                     (set! is-tl 1) (emit-defconst (as ptr bf)))
+                     (set! is-tl 1) (set! g-out &ct-decl) (emit-defconst (as ptr bf)))
                   (when (= bh "defenum")
                      (set! is-tl 1) (emit-defenum (as ptr bf)))
                   (when (= bh "defvar")
@@ -17634,6 +17799,7 @@
             ty:ptr (extract-decl-name-and-type-provisional name-node (as &Symbol &name) name-line))
         ; No type annotation: `(defvar x 0)` is an error emit-defvar reports.
         (when (or (= ty null) (symbol-none? name)) (return))
+        (when (!= (bit-and attr-flags DECL-ATTR-CONST) 0) (return))
         (when (!= (bit-and attr-flags DECL-ATTR-VOLATILE) 0)
           (set! ty (as ptr (type-with-volatile (unsafe/cast &Type ty)))))
         (let (vsym:&Sym (scope-define g-globals name ty
@@ -17641,10 +17807,6 @@
           (when (!= g-ct-emitting 0) (set! ((unsafe/cast &Sym vsym) 'ct-only) 1))
           (when (!= g-defining-private 0)
             (set! ((unsafe/cast &Sym vsym) 'sym-private) 1))
-          ; AVR-6: a `:const` global is not assignable; emit-set reads this flag,
-          ; and a `set!` emitted before the defvar's own file must see it too.
-          (when (!= (bit-and attr-flags DECL-ATTR-CONST) 0)
-            (set! ((unsafe/cast &Sym vsym) 'readonly-global) 1))
           ; G-4: this Sym is the "declared, not yet reached" half of the pair.
           ; `emit-defvar` appends a second Sym for the same key with
           ; DEFVAR-REACHED, and scope-lookup's backwards scan is what makes the
@@ -17652,31 +17814,70 @@
           (set! ((unsafe/cast &Sym vsym) 'defvar-state) DEFVAR-DECLARED)
           (sym-set-src-loc (as ptr vsym) (cc 'line)))))))
 
-; The `defconst`/`defconst-` half. The value is an integer literal and is
-; therefore available here, so the constant carries its full W2b provenance
-; (`int-literal-type`'s truthful width plus `const-lit`/`const-lit-i64`) rather
-; than only its name — a forward reference must type exactly as a backward one.
+; The `defconst`/`defconst-` half: a literal value carries its full provenance,
+; so a forward reference types exactly as a backward one. A folded value is
+; registered only when reached; an aggregate registers its storage here.
 (defn prescan-defconst-name (form:?&Node):void
   (let (cc:&Node (unsafe/cast &Node form))
     (when (!= (node-len cc) 3) (return))
-    (let (name:&Node (unsafe/cast &Node (node-at cc 1))
-          val:&Node (unsafe/cast &Node (node-at cc 2)))
-      (when (or (= (as ptr name) null) (= (as ptr val) null)) (return))
-      (when (!= (name 'kind) NODE-SYM) (return))
-      (when (!= (val 'kind) NODE-INT) (return))
-      ; A colon-typed name ("K:i32") is W4b's rejected shape; leave it to
-      ; emit-defconst, which explains it.
-      (when (symbol-contains-byte (name 's) 58) (return))
-      (let (sym:&Sym (scope-define g-globals (name 's)
-                          (as ptr (int-literal-type (val 'i))) "" 0))
-        (set! (sym 'is-const) 1)
-        (set! (sym 'const-val) (fstr (val 'i)))
-        (set! (sym 'const-lit) 1)
-        (set! (sym 'const-lit-i64) (val 'i))
-        (when (!= g-defining-private 0) (set! (sym 'sym-private) 1))
-        ; Stage 15 B4 (R4): the site, so the emitter's own check can recognise
-        ; this prescan Sym as the same definition rather than an earlier one.
-        (sym-set-src-loc (as ptr sym) (cc 'line))))))
+    (let (name:?&Node (node-at cc 1)
+          val:?&Node (node-at cc 2)
+          vk:i32 (node-kind val))
+      (when (= (node-kind name) NODE-LIST)
+        (prescan-defconst-stored cc name val)
+        (return))
+      (when (!= (node-kind name) NODE-SYM) (return))
+      (when (symbol-contains-byte ((as ptr:Node name) 's) 58)
+        (prescan-defconst-stored cc name val)
+        (return))
+      (when (= vk NODE-LIST)
+        (prescan-defconst-stored cc name val)
+        (return))
+      (let (nm:Symbol ((as ptr:Node name) 's)
+            lit:&Node (unsafe/cast &Node val))
+        (when (!= (prescan-literal-kind? val) 0)
+          (prescan-const-finish (defconst-literal-sym nm lit null) (cc 'line)))))))
+
+(defn prescan-literal-kind? (v:?&Node):i32
+  (let (k:i32 (node-kind v))
+    (when (or (= k NODE-INT) (= k NODE-FLOAT) (= k NODE-STR) (= k NODE-CHAR)
+              (= v 'true) (= v 'false) (= v 'null))
+      (return 1))
+    (return 0)))
+
+(defn prescan-const-finish (sym:&Sym line:i32):void
+  (when (!= g-defining-private 0) (set! (sym 'sym-private) 1))
+  ; Stage 15 B4 (R4): the site, so the emitter's own check can recognise
+  ; this prescan Sym as the same definition rather than an earlier one.
+  (sym-set-src-loc (as ptr sym) line))
+
+; A stored constant's storage, when its type is known this early: an annotation
+; on a compound value, or a struct literal's head.
+(defn prescan-defconst-stored (cc:&Node name:?&Node val:?&Node):void
+  (when (!= (prescan-literal-kind? val) 0)
+    (let (nm:Symbol (symbol-none)
+          ty:?&Type (extract-decl-name-and-type-provisional name (as &Symbol &nm)
+                      (node-line name (cc 'line))))
+      (when (or (= ty null) (symbol-none? nm)) (return))
+      (prescan-const-finish (defconst-literal-sym nm (unsafe/cast &Node val) ty) (cc 'line))
+      (return)))
+  (when (!= (node-kind val) NODE-LIST) (return))
+  (let (hd:?&Node (node-at val 0))
+    (when (!= (node-kind hd) NODE-SYM) (return))
+    (let (sd:?&StructDef (struct-lookup-ref ((as ptr:Node hd) 's)))
+      (when (and (= sd null) (!= hd 'array) (!= hd 'ref)) (return))
+      (let (nm:Symbol (defconst-bare-name name)
+            ty:?&Type null)
+        (if (defconst-annotated? name)
+          (set! ty (extract-decl-name-and-type-provisional name (as &Symbol &nm)
+                     (node-line name (cc 'line))))
+          (when (!= sd null) (set! ty (type-for-sdef sd))))
+        (when (or (= ty null) (symbol-none? nm)) (return))
+        (let (vsym:&Sym (scope-define g-globals nm ty (fstr "@" (def-ir-base nm)) 1))
+          (when (!= g-ct-emitting 0) (set! (vsym 'ct-only) 1))
+          (set! (vsym 'readonly-global) 1)
+          (set! (vsym 'defvar-state) DEFVAR-DECLARED)
+          (prescan-const-finish vsym (cc 'line)))))))
 
 ; The `defenum`/`defenum-` half: the MEMBER names (the enum's own type name is a
 ; type, and W1c deliberately keeps type reachability as it is). The EnumDef table
@@ -18421,7 +18622,7 @@
               ; Stage 12 N5: re-export symbols under the host namespace's name.
               (emit-export (as ptr f))
             'defconst
-              (emit-defconst (as ptr f))
+              (do (set! g-out g-def-stream) (emit-defconst (as ptr f)))
             'defenum
               (emit-defenum (as ptr f))
             'deferror
@@ -18476,6 +18677,7 @@
             ; (defstruct-/defunion-/defmacro-/defprotocol-).
             'defconst-
               (do (set! g-defining-private 1)
+                  (set! g-out g-def-stream)
                   (emit-defconst (as ptr f))
                   (set! g-defining-private 0))
             'defenum-

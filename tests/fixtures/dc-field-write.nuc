@@ -1,0 +1,4 @@
+; A field write into constant storage faults at run time; refuse it.
+(defstruct Pt x:i32 y:i32)
+(defconst O (Pt 1 2))
+(defn main ():i32 (set! (O 'x) 5) (return 0))

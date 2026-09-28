@@ -1,6 +1,6 @@
 # Stage 21 — cleanup
 
-**Status:** opened 2026-09-16. Item 7 designed and built 2026-09-26 (1,192 tests, boot refreshed). Earlier items designed and built (item 2 on 2026-09-18, items 1 and 3 on 2026-09-19, item 4 on 2026-09-21, item 5 on 2026-09-22).
+**Status:** opened 2026-09-16. Item 8 designed and built 2026-09-28 (1,211 tests). Item 7 designed and built 2026-09-26 (1,192 tests, boot refreshed). Earlier items designed and built (item 2 on 2026-09-18, items 1 and 3 on 2026-09-19, item 4 on 2026-09-21, item 5 on 2026-09-22).
 
 **Goal.** Close the deferred items and rough edges the prior stages left behind
 — the ones recorded in [deferred/overview.md](../deferred/overview.md) and the
@@ -213,6 +213,25 @@ fewer "convention, not a rule" edges in it.
    zero-initialised struct fields had to be demoted by hand, since a `&T`
    field a constructor forgets holds null. Macro parameters and `gensym` are
    `&Node`. 1,192 tests (ptr-is-unchecked.md §7).
+
+8. **`defconst` takes literals and constant aggregates** — **designed and
+   built 2026-09-28** — [defconst-values.md](defconst-values.md) (DC-0 … DC-3
+   and DC-5 done; DC-4, float folding, not built; §8 is the as-built record).
+   `defconst` used to accept only an integer literal, refusing even `(+ 2 3)`
+   and any annotation. Nothing blocked the change. The value's shape picks a
+   tier:
+   - **L** — a literal, re-emitted at each use and so adapting like the
+     literal, with no storage and no address;
+   - **A** — an aggregate or address, in `constant` storage; `&NAME` is
+     writable and documented as such.
+
+   An annotation is legal and stops adaptation. A run-time initializer is
+   refused and deferred. Two `defvar :const` defects found by the probe were
+   fixed first (DC-0): a field `set!` through a `:const` global compiled and
+   segfaulted, and `.nuch` exported one as `(extern :const)`. Then
+   `defvar :const` was retired (DC-5). Found while building: a program read
+   of a global withheld by `import-ct` emitted invalid IR rather than the
+   located error; that is fixed too.
 
 ## Sequencing
 

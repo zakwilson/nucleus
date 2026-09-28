@@ -1,0 +1,54 @@
+; defconst takes any literal and any constant aggregate (Stage 21 item 8,
+; design/stage21-cleanup/defconst-values.md).
+(import-use "stdio.h")
+(import-use strview)
+
+(defstruct Pt x:i32 y:i32)
+
+; A constant defined further down the file is usable here.
+(defn early ():f64 (return PI))
+(defn early-y ():i32 (return (ORIGIN 'y)))
+
+; Literals: no storage; each use is the literal itself, so an unannotated one
+; adapts like the literal would (PI is f32 in `x`, f64 as a printf argument).
+(defconst PI 3.25)
+(defconst S "hello")
+(defconst CS c"raw")
+(defconst CH \a)
+(defconst YES true)
+(defconst NOTHING null)
+(defconst FIVE (+ 2 3))
+(defconst KK K)
+
+; An annotation fixes the type; `(as T v)` is the same thing.
+(defconst K:ui8 200)
+(defconst SEVEN (as ui8 7))
+(defconst F32:f32 1.5)
+
+; Aggregates: read-only storage, readable like any global.
+(defconst ORIGIN (Pt 1 2))
+(defconst TABLE (array i32 10 20 30 40))
+
+(defvar g:f32 PI)
+
+(defn sum (t:&i32 n:i32):i32
+  (let (acc:i32 0)
+    (dotimes (i n) (set! acc (+ acc (aref t i))))
+    (return acc)))
+
+(defn main ():i32
+  (let (x:f32 PI
+        y:f32 (* x PI)
+        v:StrView S
+        p:?&Pt NOTHING
+        o:Pt ORIGIN)
+    ; `o` is a copy; the constant is untouched.
+    (set! (o 'x) 9)
+    (printf "%f %f %f %f\n" (as f64 x) (as f64 y) PI (as f64 g))
+    (printf "%s %s %d %d %c\n" S CS (unsafe/cast i32 (strview-byte-len &v)) (if YES 1 0)
+      (unsafe/cast i32 CH))
+    (printf "%d %d %d %d %d\n" FIVE K SEVEN KK (as i32 (+ K 1)))
+    (printf "%f %d %d %d %d\n" (as f64 F32) (o 'x) (ORIGIN 'x) (aref TABLE 2) (sum TABLE 4))
+    (printf "%f %d %d %d\n" (early) (early-y) (if (= p null) 1 0)
+      (unsafe/cast i32 (sizeof (array i32 FIVE)))))
+  (return 0))

@@ -1,0 +1,3 @@
+; An element write into a constant table is refused like a field write.
+(defconst T (array i32 1 2 3))
+(defn main ():i32 (set! (aref T 0) 5) (return 0))

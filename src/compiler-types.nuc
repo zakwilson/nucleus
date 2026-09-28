@@ -238,13 +238,8 @@
 ; type-with-volatile); `:thread-local` is reserved-with-error (§5). Room for
 ; future valued attributes (`:align 64`) is left in the registry, none implemented.
 ;
-; `:const` (Stage 14 AVR-6, DECL-ATTR-CONST) is meaningful ONLY on a `defvar`
-; global — `(defvar :const name:type init)` emits an LLVM `constant` instead of a
-; `global`, keeping the table out of RAM entirely on mapped-flash AVR parts (and
-; read-only-linkable on every target). Unlike `:volatile` it has no meaning on a
-; let/with binding, struct/union field, defn param, or pointer target type (no
-; independent global-vs-constant storage class to select there); every such site
-; rejects it via reject-decl-attr-const rather than silently ignoring it.
+; `:const` (DECL-ATTR-CONST) is written only on an `extern`; an aggregate
+; `defconst` sets it internally. Every other site refuses it (reject-decl-attr-const).
 (defconst DECL-ATTR-VOLATILE 1)
 (defconst DECL-ATTR-CONST 2)
 
@@ -579,6 +574,10 @@
   ; instead of silently wrapping it.
   const-lit:i32
   const-lit-i64:i64
+  ; A non-integer `defconst`'s literal, re-emitted at each use (stage21-cleanup/defconst-values.md).
+  (const-node ?&Node)
+  ; An annotated `defconst` has its annotation's type and never adapts.
+  const-annot:i32
   tracker:ptr
   ; --- Stage 8 / REPL introspection additions ---
   src-file:Symbol     ; source file where defined (null if unknown)
@@ -615,14 +614,8 @@
   ; Set by `defn-`, `defvar-`, `defconst-`, `defenum-` (private member values).
   ; For link-emitting forms, also implies internal LLVM linkage.
   sym-private:i32
-  ; Stage 14 AVR-6 gap fix: this global's storage is LLVM `constant` (a
-  ; `:const` defvar, DECL-ATTR-CONST) — `set!` against it must be rejected at
-  ; compile time. Distinct from `is-const`/`const-val`, which is the UNRELATED
-  ; `defconst` mechanism (a compile-time-substituted literal VALUE with no
-  ; storage at all — see emit-symbol-ref's is-const branch). A `:const` defvar
-  ; is a real global read through the normal load path, just not writable;
-  ; reusing `is-const` here would misroute its reads through the defconst
-  ; inline-substitution branch. 0 = ordinary mutable global (the default).
+  ; Read-only storage: an aggregate `defconst` or an `extern :const`. Not
+  ; `is-const`, which means substitution with no storage at all.
   readonly-global:i32
   ; Stage 15 W8 G-4: DEFVAR-DECLARED / DEFVAR-REACHED / 0 — see the comment at
   ; those two constants. Written only by `prescan-defvar-name` (1) and

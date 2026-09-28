@@ -1,0 +1,3 @@
+; An annotated literal must fit its type.
+(defconst K:ui8 300)
+(defn main ():i32 (return 0))

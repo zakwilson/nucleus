@@ -89,12 +89,30 @@
   (emit-nuch-fn-attrs form)
   (emit g-hdr ")\n"))
 
+; A literal constant exports its folded value; a stored one, its storage.
 (defn emit-nuch-defconst (form:ptr):void
-  (emit g-hdr "(defconst ")
-  (header-print-node (node-at form 1))
-  (emit g-hdr " ")
-  (header-print-node (node-at form 2))
-  (emit g-hdr ")\n"))
+  (let (name-node:?&Node (node-at form 1)
+        sym:?&Sym (scope-lookup g-globals (defconst-bare-name name-node)))
+    (when (and (!= sym null) (= (sym 'is-const) 0))
+      (emit g-hdr "(extern :const ")
+      (if (defconst-annotated? name-node)
+        (header-print-node name-node)
+        (let (tn:ptr (defconst-type-node form (sym 'type)))
+          (emit g-hdr "(" (defconst-bare-name name-node) " ")
+          (if (= tn null)
+            (emit g-hdr (type-spelling (sym 'type)))
+            (header-print-node tn))
+          (emit g-hdr ")")))
+      (emit g-hdr ")\n")
+      (return))
+    (emit g-hdr "(defconst ")
+    (header-print-node name-node)
+    (emit g-hdr " ")
+    (cond
+      (= sym null) (header-print-node (node-at form 2))
+      (!= (sym 'const-node) null) (header-print-node (sym 'const-node))
+      true (emit g-hdr (sym 'const-lit-i64)))
+    (emit g-hdr ")\n")))
 
 (defn emit-nuch-defenum (form:ptr):void
   (emit g-hdr "(defenum")
@@ -170,8 +188,14 @@
 ; without its initializer (the producing module owns the definition). Index 1 is
 ; the desugared name:type node; any initializer is intentionally dropped.
 (defn emit-nuch-extern (form:ptr):void
-  (emit g-hdr "(extern ")
-  (header-print-node (node-at form 1))
+  (emit g-hdr "(extern")
+  (let (i:i32 1)
+    (while (= (node-kind (node-at form i)) NODE-KEYWORD)
+      (emit g-hdr " ")
+      (header-print-node (node-at form i))
+      (inc! i))
+    (emit g-hdr " ")
+    (header-print-node (node-at form i)))
   (emit g-hdr ")\n"))
 
 ; The import forms that bind a name in this file's environment — a prefix, or a
@@ -794,7 +818,7 @@
               "extern"
                 (do (set! g-out &g-decl-stream) (emit-extern-mode (as ptr f) mode))
               "defconst"
-                (emit-defconst (as ptr f))
+                (do (set! g-out g-def-stream) (emit-defconst (as ptr f)))
               "defenum"
                 (emit-defenum (as ptr f))
               ; Stage 16: re-register the alias in this unit. Emits nothing —

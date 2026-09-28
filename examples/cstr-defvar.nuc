@@ -34,7 +34,7 @@
 (defvar g-plain:CStr "world")           ; plain "…" literal (StrView → CStr)
 (defvar g-null:CStr null)               ; explicit null
 (defvar g-noinit:CStr)                  ; no init → null (already worked)
-(defvar :const g-const:CStr c"frozen")  ; :const storage class
+(defconst g-const c"frozen")             ; a literal constant
 (defvar- g-priv:CStr c"private")        ; private definer — findings §3.7
 (defvar g-mut:CStr null)                ; written by set! below
 

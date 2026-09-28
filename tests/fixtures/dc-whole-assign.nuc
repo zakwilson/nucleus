@@ -1,0 +1,4 @@
+; A stored constant cannot be reassigned whole.
+(defstruct Pt x:i32 y:i32)
+(defconst O (Pt 1 2))
+(defn main ():i32 (set! O (Pt 3 4)) (return 0))

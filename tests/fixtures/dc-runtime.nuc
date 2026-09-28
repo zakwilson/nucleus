@@ -1,0 +1,4 @@
+; A call is a run-time value; a constant must be known at compile time.
+(defn f ():i32 (return 1))
+(defconst R (f))
+(defn main ():i32 (return R))
