@@ -1,0 +1,26 @@
+(defvar g:i32 5)
+(defn h ():i32 (+ g 1))
+(h)
+(defvar g:i32 7)
+(h)
+(defvar g:i32 (+ (h) 100))
+g
+(defvar g:i32)
+(h)
+(defvar g:i32 (undefined-thing))
+g
+(defvar g:i64 9000000000)
+g
+(h)
+(defvar a:(array i32 3) (array i32 1 2 3))
+(defn a1 ():i32 (aref a 1))
+(defvar a:(array i32 3) (array i32 4 5 6))
+(a1)
+(defstruct Pt x:i32 y:i32)
+(defvar p:Pt (Pt (x 1) (y 2)))
+(defn py ():i32 (p 'y))
+(defvar p:Pt (Pt (x 3) (y 4)))
+(py)
+(defvar ready?:i32 1)
+(defvar ready?:i32 2)
+ready?

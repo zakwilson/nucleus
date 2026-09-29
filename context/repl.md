@@ -33,6 +33,8 @@ registered before dying no longer resolves. See
 §3.4 for what is *not* rolled back (the preamble, the string pool, the JIT
 session) and why.
 
+Prompts depend on stdin. On a tty, `nuc> `/`...> ` are printed only when no line is already waiting (`repl-input-waiting`). On a pipe, one is printed per read, which the `tests/expected/repl-*.out` transcripts rely on. To see what the Emacs buffer shows, drive `editor/nucleus-repl.el` with `emacs --batch`, not a pipe.
+
 stdio.h, stdlib.h, string.h, ctype.h, and unistd.h are pre-loaded at startup,
 so libc functions are available without an explicit `(include ...)`.
 

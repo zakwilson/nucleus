@@ -5,6 +5,7 @@
 ; since the REPL needs the full compiler API to evaluate forms incrementally.
 
 (import-use "setjmp.h")
+(import-use "poll.h")
 
 ; ============================================================
 ; Non-local exit — the protected call and its throw. The callback shape and the
@@ -560,6 +561,19 @@
           (return 1))
         (return 0)))))
 
+; A prompt for a line that has already arrived only stacks up ahead of the output,
+; e.g. when an editor sends a multi-line form. Piped stdin keeps every prompt:
+; the REPL tests' expected output is separated by them.
+(defn repl-input-waiting ():i32
+  (when (= (isatty 0) 0) (return 0))
+  (when (< g-in-pos g-in-len) (return 1))
+  (let (pf:&pollfd (as &pollfd (alloca pollfd 1)))
+    (set! (pf 'fd) 0)
+    (set! (pf 'events) POLLIN)
+    (set! (pf 'revents) 0)
+    (when (> (poll pf 1 0) 0) (return 1))
+    (return 0)))
+
 ; Read lines from stdin until parens are balanced, return the accumulated buffer,
 ; or `none` at EOF.
 (defn repl-read-input ():?String
@@ -571,9 +585,10 @@
         first-line:i32 1
         done:i32 0)
     (while (= done 0)
-      (if (!= first-line 0)
-        (emit stderr "nuc> ")
-        (emit stderr "...> "))
+      (when (= (repl-input-waiting) 0)
+        (if (!= first-line 0)
+          (emit stderr "nuc> ")
+          (emit stderr "...> ")))
       (match (read-line)
         (none
           (if (= got-input 0)
@@ -672,6 +687,41 @@
 ; through the ordinary import arm but is not something the user typed.
 (defvar g-repl-booting:i32 0)
 
+; A second `defvar` (docs/compiler.md): same type reuses the storage so compiled
+; code sees the new value; a new type gets fresh storage only later code sees.
+(defvar g-repl-global-redef:i32 0)  ; 0 defined, 1 value replaced, 2 retyped
+(defvar g-repl-redef-id:i32 0)
+(defvar g-repl-retype-suffix:StrView)
+
+(defn repl-redefine-global (cc:&Node name:Symbol ty:?&Type init-node:?&Node attr-flags:i32):bool
+  (when (or (= g-interactive 0) (!= (in-jit-module) 0)
+            (!= (bit-and attr-flags DECL-ATTR-CONST) 0))
+    (return false))
+  (if-some (prev (scope-lookup-key g-globals name))
+    (do
+      (when (or (!= (prev 'defvar-state) DEFVAR-REACHED) (!= (prev 'readonly-global) 0))
+        (return false))
+      (inc! g-repl-redef-id)
+      (when (= (type-eq (as ?&Type (prev 'type)) ty) 0)
+        (set! g-repl-global-redef 2)
+        (set! g-repl-retype-suffix (fstr "." g-repl-redef-id))
+        (return false))
+      ; The ordinary path builds the new value in a scratch global of every
+      ; initializer shape; the init function then copies it in.
+      (let (tmp:Symbol (symbol-intern (fstr "__repl-redef-" g-repl-redef-id "-" name))
+            line:i32 (cc 'line))
+        (emit-global-def cc tmp (as ptr ty) init-node attr-flags)
+        ; An array is storage, which `set!` refuses.
+        (init-queue-form
+          (if (= ((unsafe/cast &Type ty) 'kind) TY-ARRAY)
+            (node-list4 (intern-node (symbol-intern "memcpy")) (intern-node name) (intern-node tmp)
+                        (node-int (as i64 (abi-sizeof (as ptr ty)))) line)
+            (node-list3 (intern-node (symbol-intern "set!")) (intern-node name) (intern-node tmp) line))
+          name (symbol-intern (prev 'ir-name)) line)
+        (set! g-repl-global-redef 1)
+        (return true)))
+    (return false)))
+
 ; Confirm what an import form did. Success and the dedup no-op were both silent,
 ; so a swallowed retry looked exactly like a fresh import (repl-libraries.md §3.5).
 (defn repl-report-import (form:?&Node fresh:i32):void
@@ -732,6 +782,8 @@
               ; initializer runs immediately — see repl-emit-init-fn above.
               (do (open-module-streams)
                   (set! g-out &g-decl-stream)
+                  (set! g-repl-global-redef 0)
+                  (set! g-repl-retype-suffix "")
                   (emit-defvar (as ptr f))
                   (let (init-sym:Symbol (repl-emit-init-fn))
                     (repl-flush-mono (f 'line))
@@ -740,28 +792,25 @@
                   ; Add external global reference to preamble AFTER successful JIT
                   (let (var-node:ptr (node-at form 1))
                     (when (!= var-node null)
-                      (let (vname:Symbol (symbol-none)
-                            ; G-2: this re-resolves the SAME defvar type node
-                            ; emit-defvar just resolved, so it needs the same
-                            ; `(array T N)` permission — otherwise an array
-                            ; global JITs but its `external global` preamble
-                            ; line is never written and the next form dies
-                            ; "use of undefined value '@g'".
-                            vty:ptr (extract-decl-name-and-type var-node (as &Symbol &vname)
-                                                            ((unsafe/cast &Node var-node) 'line)))
-                        (when (!= vty null)
-                          ; Derive the IR name the same way emit-defvar does
-                          ; (ns-ir-base → ir-name-token), so a hyphenated or
-                          ; `?`/`!`-named REPL global's `external global` decl
-                          ; matches the symbol emit-defvar emitted (SM-2). Raw
-                          ; sanitize-for-ir would drop hyphens (arena-alloc →
-                          ; arena_alloc) and mis-map `?`/`!` (full? → full_ vs
-                          ; batch full_QMARK).
-                          (emit g-repl-preamble "@" (ns-ir-base vname) " = external global "
-                                (type-to-ir vty) "\n")
-                          (repl-preamble-note-decl
-                            (symbol-intern (fstr "@" (ns-ir-base vname))))))))
-                  (emit stderr "  defined\n"))
+                      (let (vname:Symbol (symbol-none))
+                        ; G-2: this re-resolves the SAME defvar type node
+                        ; emit-defvar just resolved, so it needs the same
+                        ; `(array T N)` permission.
+                        (extract-decl-name-and-type var-node (as &Symbol &vname)
+                                                    ((unsafe/cast &Node var-node) 'line))
+                        ; The Sym's IR name, not a re-derivation: a retyped
+                        ; global's carries a suffix.
+                        (if-some (vs (scope-lookup-key g-globals vname))
+                          (let (irn:Symbol (symbol-intern (vs 'ir-name)))
+                            (when (= (repl-preamble-has-decl irn) 0)
+                              (emit g-repl-preamble irn " = external global "
+                                    (type-to-ir (vs 'type)) "\n")
+                              (repl-preamble-note-decl irn)))
+                          0))))
+                  (cond (= g-repl-global-redef 1) (emit stderr "  redefined\n")
+                        (= g-repl-global-redef 2)
+                          (emit stderr "  redefined with a new type; code compiled earlier still uses the old storage\n")
+                        true (emit stderr "  defined\n")))
             ; Stage 16: an alias emits no IR and defines no layout, so unlike
             ; defstruct it has no module to open and no preamble to push —
             ; registering it is the whole job (container-type-sugar.md §3.2).

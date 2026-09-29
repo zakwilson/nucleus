@@ -1,0 +1,29 @@
+Nucleus REPL (type Ctrl-D to exit)
+nuc>   defined
+nuc>   defined
+nuc>   6
+nuc>   redefined
+nuc>   8
+nuc>   redefined
+nuc>   108
+nuc>   redefined
+nuc>   1
+nuc> <repl>:1: error: unknown: undefined-thing — not defined anywhere in this compilation unit
+  error: error (recovered)
+nuc>   0
+nuc>   redefined with a new type; code compiled earlier still uses the old storage
+nuc>   9000000000
+nuc>   1
+nuc>   defined
+nuc>   defined
+nuc>   redefined
+nuc>   5
+nuc>   defined
+nuc>   defined
+nuc>   defined
+nuc>   redefined
+nuc>   4
+nuc>   defined
+nuc>   redefined
+nuc>   2
+nuc> 
