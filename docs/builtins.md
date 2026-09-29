@@ -34,7 +34,7 @@ By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` un
 
 ## REPL
 
-Start with `nucleusc -i`. The REPL reads one form at a time, JIT-compiles it, and prints the result. Multi-line input is supported (the REPL detects unbalanced parentheses and prompts for continuation lines with `...>`).
+Start with `nucleusc -i`. The REPL reads one form at a time, JIT-compiles it, and prints the result. Multi-line input is supported (the REPL detects unbalanced parentheses and prompts for continuation lines with `...>`). On a terminal, a prompt is printed only when the REPL is about to wait for input, so a multi-line form pasted or sent from an editor doesn't print a `...>` per line. Piped input still gets a prompt for every line.
 
 Supported top-level forms in the REPL: `defn`, `defvar`, `defconst`, `defenum`, `defstruct`, `extern`, `import`, `import-use`, `import-prefixed`, `import-only`, `unsafe-import-private`, `defmacro`, `def-rmacro`, `compile-time`, `macroexpand`, `macroexpand-1`, `macroexpand-all`. Any other form (including bare symbols, integers, and function calls) is evaluated as an expression.
 
@@ -71,6 +71,8 @@ For tooling and interactive use, the REPL recognizes these forms in addition to 
 | `(trace fn)` / `(untrace fn)` | Toggle entry/exit logging for a function. `trace` JITs a `@<name>.trace` shim with the same ABI, copies the current impl pointer into `@<name>.trace.impl`, and repoints `@<name>.tgt` at the shim. Args/returns are not pretty-printed — only `[trace] enter <name>` / `[trace] exit <name>`. Redefining a traced function silently disables tracing (the redef path overwrites `@<name>.tgt` with the new impl directly). |
 
 Functions can be redefined. Redefining a `defn` confirms with `redefined` (vs. `defined` for first sight) and the new body wins for **all** callers, including ones JIT'd before the redefinition. This is implemented by routing every call through a stable `@<name>` thunk that loads the latest impl pointer from `@<name>.tgt`; each definition is JIT'd as `@<name>.impl.<N>` under its own LLVM ORC resource tracker, and the previous tracker is removed on redefinition. `&foo` returns the thunk address, so captured pointers also see the latest impl.
+
+Globals can be redefined too. A second `defvar` of the same name and type confirms with `redefined` and replaces the value in the existing storage, so functions compiled before it see the new value. The new initializer can take any form a first `defvar` accepts, and with no initializer the global is reset to zero. A `defvar` with a different type allocates new storage under a suffixed IR name and confirms with `redefined with a new type; code compiled earlier still uses the old storage`: code compiled from then on uses the new global, but functions compiled earlier keep reading and writing the old one until they are redefined. A redefinition that fails leaves the previous global and its value unchanged.
 
 Limitations:
 - Functions need explicit `(return ...)` to return values (same as batch mode).

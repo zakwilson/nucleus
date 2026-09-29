@@ -13974,11 +13974,12 @@
 ; interned symbols (the `set!` head and the target name) have no line of their
 ; own (context/conventions.md).
 (defn defvar-queue-init (name:Symbol irn:Symbol init:?&Node line:i32):void
-  (let (args:ptr (as ptr (node-list2 (intern-node name)
-                           init line))
-        form:ptr (as ptr (node-cons (intern-node (symbol-intern "set!")) args line))
-        job:&InitJob (new InitJob))
-    (set! (job 'form) (as ?&Node form))
+  (init-queue-form (node-list3 (intern-node (symbol-intern "set!")) (intern-node name) init line)
+                   name irn line))
+
+(defn init-queue-form (form:?&Node name:Symbol irn:Symbol line:i32):void
+  (let (job:&InitJob (new InitJob))
+    (set! (job 'form) form)
     (set! (job 'ns) g-current-ns)
     (set! (job 'path) g-source-path)
     (set! (job 'line) line)
@@ -14169,6 +14170,7 @@
 ; The storage half of `defvar`, shared with an aggregate `defconst` (DECL-ATTR-CONST).
 (defn emit-global-def (cc:&Node name:Symbol ty:ptr init-node:?&Node attr-flags:i32):void
   (guard-name-kind name (cc 'line) NK-VALUE)
+  (when (repl-redefine-global cc name (as ?&Type ty) init-node attr-flags) (return))
   ; Stage 15 B4 (R4): a second `defvar` of one name. The tell here is
   ; neither existence nor a location — W8 G-0 front-loads every reachable
   ; file's `defvar` names into this same frame, so a Sym under this key is
@@ -14197,7 +14199,7 @@
   ; namespace — so two files' private `g-counter`s emit two distinct
   ; `internal` globals instead of two `@g-counter` definitions (which
   ; LLVM rejected with an unlocated parse error).
-  (let (ir-name:StrView (fstr "@" (def-ir-base name))
+  (let (ir-name:StrView (fstr "@" (def-ir-base name) g-repl-retype-suffix)
         align:i32 (abi-slot-align ty)
         init-ir:StrView ""
         ; G-3: set when the classifier below reports that this
@@ -14205,6 +14207,7 @@
         ; type's zero and the initializer is queued for @__nucleus_init.
         runtime-init:i32 0)
     (check-ir-name-legal (cc 'line) name ir-name)
+    (set! g-repl-retype-suffix "")
     ; Stage 20 L6 (§5.7): open the span here, above the array-backing
     ; global, so `@g.data` is inside the text a mirror copies.
     (let (pg:?&ProgGlobal

@@ -919,6 +919,22 @@ The four items the compile-first batch left, plus three found fixing them. The s
 
 ---
 
+## REPL: globals can be redefined (2026-09-29)
+
+A second `defvar` of a name at the prompt used to fail with LLVM's unlocated `redefinition of global '@g'`, because the new module defined `@g` over the preamble's `external global`. `repl-redefine-global` (`src/repl.nuc`, called at the top of `emit-global-def`) now handles two cases:
+- **Same type (by `type-eq`):** the new value is built in a scratch global `__repl-redef-N-<name>` by the ordinary path, so every initializer shape works: constant, aggregate, run-time and zero. A queued init job then copies it into the live slot: `set!` for most types and `memcpy` for an `(array T N)`, which `set!` refuses. Code compiled earlier sees the new value.
+- **Different type:** the global gets fresh storage at `@<name>.<N>` (`g-repl-retype-suffix`), and the new `Sym` shadows the old one. Functions compiled earlier keep the old storage, and the confirmation says so.
+
+`defvar-queue-init` was split so `init-queue-form` queues any form. The `defvar` arm now writes the preamble's `external global` line from the `Sym`'s own IR name, once per name. `defconst` storage (`DECL-ATTR-CONST`), compile-time modules and batch compiles are untouched. New golden: `tests/repl/global-redefinition.in`. `make test` 1216/0/0, `make bootstrap` PASS.
+
+---
+
+## REPL: no prompt for input that has already arrived (2026-09-29)
+
+Sending a multi-line form from an Emacs source buffer (`C-M-x`, `C-c C-k`) filled `*nucleus-repl*` with prompts: `repl-read-input` printed `...> ` for every line and `nuc> ` for every form, though the whole text was already waiting on the pty. `src/repl.nuc`'s `repl-input-waiting` now skips the prompt when stdin is a terminal and a line is already buffered or `poll` reports one ready. Emacs puts the pty in canonical mode, so each `read` returns one line and only `poll` can see the rest. Piped stdin keeps every prompt, because the REPL tests' expected output relies on them to separate entries. Checked with `emacs --batch` driving `nucleus-load-buffer`: the buffer now shows `nuc>   defined` / `  3` / `  4` / `nuc> `. `make test` 1215/0/0.
+
+---
+
 ## Stage 21 item 9 — optimization flags restored (2026-09-28)
 
 - `docs/compiler.md` documented `-Ofast`, `-ffast-math` and `-march=native`,
