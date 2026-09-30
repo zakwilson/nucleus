@@ -13048,20 +13048,19 @@
   (when (and (= prev-line line) (= prev-file g-source-path)) (return 1))
   (return 0))
 
-; Stage 15 B4 (R4) — the value row's same-kind check for the two definers whose
-; binding is a compile-time CONSTANT: `defconst` and a `defenum` member. A
-; `defvar` has a stronger tell of its own (`Sym.defvar-state`, checked inline in
-; `emit-defvar`); a constant has none, because W8 G-0's prescan registers exactly
-; the Sym the emitter goes on to register — so the discriminator is the defining
-; site, as it is for the protocol / template / macro registrars.
+; Stage 15 B4 (R4) — the value row's same-kind check, for `defvar`, `defconst`
+; and a `defenum` member. A constant's prescan Sym is the one its emitter goes on
+; to register, so the discriminator is the defining site; a `defvar`'s is
+; `Sym.defvar-state`, since only an emitted one is REACHED.
 ;
-; Restricted to `is-const` hits on purpose. `guard-name-kind` has already refused
+; Restricted to those two tells on purpose. `guard-name-kind` has already refused
 ; a function, and an `extern`/`declare`/C-header global is a declaration of
-; storage that lives elsewhere, not a second definition of this constant.
-(defn guard-const-redefinition (name:Symbol line:i32):void
+; storage that lives elsewhere, not a second definition of this value.
+(defn guard-value-redefinition (name:Symbol line:i32):void
   (if-some (prev (scope-lookup-key g-globals name))
     (do
-      (when (= (prev 'is-const) 0) (return))
+      ; An emitted `defvar` is a value definition too, in either order.
+      (when (and (= (prev 'is-const) 0) (!= (prev 'defvar-state) DEFVAR-REACHED)) (return))
       (when (!= (same-definition-site (prev 'src-file) (prev 'src-line) line) 0) (return))
       ; Blame the SECOND definition. W8 G-0's prescan registers every form's Sym
       ; before any form is emitted, so `scope-lookup-key`'s backwards scan can
@@ -13538,6 +13537,11 @@
                   (defvar-write-const (as ?&Node (node-at (as ptr slot) 1)) ety encl)
                   (defvar-write-const slot ety encl)))))
           (emit g-out "]"))
+        (return)))
+    (when (and (!= (type-is-strview ty) 0) (= (node-kind init) NODE-STR)
+               (= ((unsafe/cast &Node init) 'i) 0))
+      (let (id:i32 (intern-string (symbol-as-view ((unsafe/cast &Node init) 's))))
+        (emit g-out "{ ptr @.str." id ", " (ptr-int-ir) " " ((invoke g-strs (as usize id)) 'len) " }")
         (return)))
     (when (or (= tk TY-STRUCT) (= tk TY-UNION))
       (let (sd:(ptr StructDef) (tt 'sdef))
@@ -14171,23 +14175,7 @@
 (defn emit-global-def (cc:&Node name:Symbol ty:ptr init-node:?&Node attr-flags:i32):void
   (guard-name-kind name (cc 'line) NK-VALUE)
   (when (repl-redefine-global cc name (as ?&Type ty) init-node attr-flags) (return))
-  ; Stage 15 B4 (R4): a second `defvar` of one name. The tell here is
-  ; neither existence nor a location — W8 G-0 front-loads every reachable
-  ; file's `defvar` names into this same frame, so a Sym under this key is
-  ; the NORMAL state — it is `defvar-state`: the prescan's Sym says
-  ; DECLARED and only `emit-defvar` promotes one to REACHED, so REACHED
-  ; means another `defvar` form already emitted its `@g = global`. This
-  ; used to reach LLVM's own parser as two `@g = global` lines, which
-  ; reports without a source location at all.
-  ; The probe is the KEY lookup, not the reference resolver: this is the
-  ; key `scope-define` is about to write (conventions.md, "Splitting a
-  ; lookup into reference/key").
-  (if-some (prevv (scope-lookup-key g-globals name))
-    (when (and (= (prevv 'defvar-state) DEFVAR-REACHED)
-               (= (same-definition-site (prevv 'src-file) (prevv 'src-line) (cc 'line)) 0))
-      (die-redefinition name (cc 'line) BK-GLOBAL
-                        (prevv 'src-file) (prevv 'src-line)))
-    0)
+  (guard-value-redefinition name (cc 'line))
   ; G-5 step 4: a non-null typed-pointer global must be initialized.
   (when (= init-node null)
     (defvar-require-init name (as ?&Type ty) (cc 'line)))
@@ -14434,7 +14422,7 @@
                        (type-display ty)))))
 
 (defn defconst-define-literal (name:Symbol lit:&Node annot:?&Type line:i32):void
-  (guard-const-redefinition name line)
+  (guard-value-redefinition name line)
   (when (!= annot null) (defconst-check-literal name lit annot line))
   (let (sym:&Sym (defconst-literal-sym name lit annot))
     (sym-record-src sym line)
@@ -14624,7 +14612,7 @@
           ; name check cannot see — two differently-named enums that both declare
           ; the member, which used to define it twice with the second's ordinal
           ; silently winning at every use site.
-          (guard-const-redefinition (name 's) (cc 'line))
+          (guard-value-redefinition (name 's) (cc 'line))
           (let (sym:&Sym (scope-define g-globals (name 's) ty-i32 "" 0))
             (sym-record-src sym (cc 'line))
             (set! (sym 'is-const) 1)
@@ -14640,7 +14628,7 @@
             (set! (sym 'const-lit-i64) (as i64 (- i 2)))
             ; Stage 12 N3: mark private when defined via `defenum-`.
             (when (!= g-defining-private 0) (set! (sym 'sym-private) 1))
-            ; Stage 15 B4 (R4): the defining site — see `guard-const-redefinition`.
+            ; Stage 15 B4 (R4): the defining site — see `guard-value-redefinition`.
             (sym-set-src-loc (as ptr sym) (cc 'line))))
         (inc! i)))
     ; Record the member table so `match` can check exhaustiveness over the
@@ -17902,7 +17890,7 @@
               (set! (sym 'const-lit) 1)
               (set! (sym 'const-lit-i64) (as i64 (- i 2)))
               (when (!= g-defining-private 0) (set! (sym 'sym-private) 1))
-              ; Stage 15 B4 (R4): the site — see `guard-const-redefinition`.
+              ; Stage 15 B4 (R4): the site — see `guard-value-redefinition`.
               (sym-set-src-loc (as ptr sym) (cc 'line)))))
         (inc! i)))))
 

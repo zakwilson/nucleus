@@ -426,7 +426,8 @@ file can see.
 A name may be defined **once** in a compilation unit. A second `defstruct`,
 `defunion`, `defprotocol`, `defmacro`, `defenum`, `defvar`, `defconst`, enum
 member or `defstruct`/`defunion` template of the same name is an error that
-names both definitions:
+names both definitions. The value definers share one name space, so a `defvar`
+and a `defconst` of one name collide in either order:
 
 ```
 b.nuc:1: error: redefinition of 'Node' — it already names a type defined at a.nuc:13

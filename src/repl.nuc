@@ -687,23 +687,23 @@
 ; through the ordinary import arm but is not something the user typed.
 (defvar g-repl-booting:i32 0)
 
-; A second `defvar` (docs/compiler.md): same type reuses the storage so compiled
-; code sees the new value; a new type gets fresh storage only later code sees.
+; Redefining a global (docs/compiler.md): same type reuses the storage so compiled
+; code sees the new value; otherwise fresh storage that only later code sees.
 (defvar g-repl-global-redef:i32 0)  ; 0 defined, 1 value replaced, 2 retyped
 (defvar g-repl-redef-id:i32 0)
 (defvar g-repl-retype-suffix:StrView)
 
 (defn repl-redefine-global (cc:&Node name:Symbol ty:?&Type init-node:?&Node attr-flags:i32):bool
-  (when (or (= g-interactive 0) (!= (in-jit-module) 0)
-            (!= (bit-and attr-flags DECL-ATTR-CONST) 0))
-    (return false))
+  (when (or (= g-interactive 0) (!= (in-jit-module) 0)) (return false))
   (if-some (prev (scope-lookup-key g-globals name))
-    (do
-      (when (or (!= (prev 'defvar-state) DEFVAR-REACHED) (!= (prev 'readonly-global) 0))
-        (return false))
+    (let (stored:bool (= (prev 'defvar-state) DEFVAR-REACHED))
+      (when (and (not stored) (= (prev 'is-const) 0)) (return false))
       (inc! g-repl-redef-id)
-      (when (= (type-eq (as ?&Type (prev 'type)) ty) 0)
-        (set! g-repl-global-redef 2)
+      ; Storage that cannot take the value: the old name is in the preamble.
+      (when (or (not stored) (!= (prev 'readonly-global) 0)
+                (!= (bit-and attr-flags DECL-ATTR-CONST) 0)
+                (= (type-eq (as ?&Type (prev 'type)) ty) 0))
+        (set! g-repl-global-redef (if stored 2 1))
         (set! g-repl-retype-suffix (fstr "." g-repl-redef-id))
         (return false))
       ; The ordinary path builds the new value in a scratch global of every
@@ -772,6 +772,7 @@
             (and (not (symbol-none? h)) (= h "defconst"))
               (do (open-module-streams)
                   (set! g-out &g-decl-stream)
+                  (set! g-repl-retype-suffix "")
                   (emit-defconst (as ptr f))
                   (repl-finish-defconst f)
                   (set! is-expr 0))
@@ -1210,7 +1211,11 @@
                     (reset-function-state)
                     (let (fn-scope:&Scope (scope-new g-globals)
                           result:&Val (as &Val (emit-node (as ptr f) fn-scope))
-                          result-kind:i32 ((result 'type) 'kind))
+                          result-kind:i32 ((result 'type) 'kind)
+                          ; Returned as i64, printed by signedness.
+                          wide-int:bool (or (= result-kind TY-UI8) (= result-kind TY-UI16)
+                                            (= result-kind TY-UI32) (= result-kind TY-UI64)
+                                            (= result-kind TY-USIZE) (= result-kind TY-SSIZE)))
                       ; Generate the return based on result type
                       (when (= g-block-term 0)
                         (cond (= result-kind TY-VOID)
@@ -1235,6 +1240,15 @@
                                       (emit g-body-stream "  ret i32 " ret-val "\n")))
                               (= result-kind TY-I64)
                                 (emit g-body-stream "  ret i64 " (result 'val) "\n")
+                              wide-int
+                                (let (irt:StrView (type-to-ir (result 'type))
+                                      rv:StrView (result 'val))
+                                  (when (!= irt "i64")
+                                    (set! rv (new-tmp))
+                                    (emit g-body-stream "  " rv " = "
+                                          (if (!= (is-unsigned (result 'type)) 0) "zext " "sext ")
+                                          irt " " (result 'val) " to i64\n"))
+                                  (emit g-body-stream "  ret i64 " rv "\n"))
                               (= result-kind TY-PTR)
                                 (emit g-body-stream "  ret ptr " (result 'val) "\n")
                               (= result-kind TY-F32)
@@ -1256,7 +1270,7 @@
                                   (= result-kind TY-I8)
                                   (= result-kind TY-I16))
                           (set! ret-ir "i32"))
-                        (when (= result-kind TY-I64) (set! ret-ir "i64"))
+                        (when (or (= result-kind TY-I64) wide-int) (set! ret-ir "i64"))
                         (when (= result-kind TY-PTR) (set! ret-ir "ptr"))
                         (when (= result-kind TY-F32) (set! ret-ir "float"))
                         (when (= result-kind TY-F64) (set! ret-ir "double"))
@@ -1297,6 +1311,11 @@
                                       (let (fn:ptr (unsafe/cast ptr addr)
                                             rv:i64 (unsafe/funcall-ptr-i64 fn))
                                         (emit stderr "  " rv "\n"))
+                                    wide-int
+                                      (let (rv:i64 (unsafe/funcall-ptr-i64 (unsafe/cast ptr addr)))
+                                        (if (!= (is-unsigned (result 'type)) 0)
+                                          (emit stderr "  " (unsafe/cast ui64 rv) "\n")
+                                          (emit stderr "  " rv "\n")))
                                     (= result-kind TY-PTR)
                                       (let (fn:ptr (unsafe/cast ptr addr)
                                             rv:ptr (unsafe/funcall-ptr-ptr fn))

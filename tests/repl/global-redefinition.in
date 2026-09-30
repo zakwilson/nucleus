@@ -24,3 +24,15 @@ g
 (defvar ready?:i32 1)
 (defvar ready?:i32 2)
 ready?
+(defvar s:StrView "abc")
+(defvar s:StrView "hello")
+(s 'len)
+(defconst K 3)
+(defvar K:i32 4)
+K
+(defconst K:(array i32 1) (array i32 9))
+(aref K 0)
+(defvar K:i32 6)
+K
+(unsafe/cast ui64 -1)
+(unsafe/cast ssize -5)
