@@ -26,4 +26,14 @@ nuc>   4
 nuc>   defined
 nuc>   redefined
 nuc>   2
+nuc>   defined
+nuc>   redefined
+nuc>   5
+nuc> nuc>   redefined
+nuc>   4
+nuc> nuc>   9
+nuc>   redefined with a new type; code compiled earlier still uses the old storage
+nuc>   6
+nuc>   18446744073709551615
+nuc>   -5
 nuc> 

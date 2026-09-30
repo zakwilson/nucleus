@@ -87,6 +87,25 @@
 (defn main ():i32 (return RD-K))
 " "RD-K")))
 
+; A literal constant has no storage, so neither order used to see the other.
+(deftest b4r-const-then-var
+  (try (check-redefines "(defconst RD-CV 1)
+(defvar RD-CV:i32 2)
+(defn main ():i32 (return RD-CV))
+" "RD-CV")))
+
+(deftest b4r-var-then-const
+  (try (check-redefines "(defvar RD-VC:i32 2)
+(defconst RD-VC 1)
+(defn main ():i32 (return RD-VC))
+" "RD-VC")))
+
+(deftest b4r-var-then-enum-member
+  (try (check-redefines "(defvar rd-vm:i32 2)
+(defenum RdVm rd-vm)
+(defn main ():i32 (return rd-vm))
+" "rd-vm")))
+
 ; The shape R4 was actually written for (§11.1): the two definitions are in two
 ; different FILES and neither file can see the other. `lib/prelude.nuc` and
 ; `lib/list.nuc` both defining `Node` with different field nullability was this,

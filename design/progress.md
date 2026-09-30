@@ -919,6 +919,17 @@ The four items the compile-first batch left, plus three found fixing them. The s
 
 ---
 
+## Value-name clashes, `StrView` globals, unsigned REPL results (2026-09-29)
+
+Three bugs found while building REPL global redefinition:
+- **A literal `defconst` and a `defvar` of one name compiled silently, in either order, and the later one won.** A literal constant has no storage, so neither the `defvar` check (earlier `Sym` REACHED) nor the constant check (earlier `Sym` `is-const`) saw the other. `guard-const-redefinition` is now `guard-value-redefinition`: it fires on either tell and is the only check, called from `emit-global-def` as well. A `defenum` member after a `defvar` is caught by the same change. At the prompt the mixes are redefinitions: `repl-redefine-global` gives any earlier non-reusable definition (a constant, `defconst` storage, a new type) fresh suffixed storage, so an aggregate `defconst` after a `defvar`, or a `defvar` after one, no longer collides with the preamble's `external global`.
+- **`(defvar s:StrView "abc")` was refused** as "a StrView slot must be initialized with a (StrView ...) compound literal". `defvar-write-const` now writes a plain literal as `{ ptr @.str.N, <int> len }`, which also covers `StrView` fields and elements of constant aggregates. A `c"…"` literal is still refused, because it is a `CStr`.
+- **The REPL printed nothing for an unsigned integer, `usize` or `ssize` result.** These now return through the eval function as a zero- or sign-extended `i64`, and unsigned values print as `ui64`.
+
+Tests: `b4r-const-then-var`, `b4r-var-then-const` and `b4r-var-then-enum-member` (`tests/suite-modules.nuc`), `strview-global-literal` (`tests/suite-globals.nuc`), and the REPL golden extended. `make test` 1220/0/0, `make bootstrap` PASS.
+
+---
+
 ## REPL: globals can be redefined (2026-09-29)
 
 A second `defvar` of a name at the prompt used to fail with LLVM's unlocated `redefinition of global '@g'`, because the new module defined `@g` over the preamble's `external global`. `repl-redefine-global` (`src/repl.nuc`, called at the top of `emit-global-def`) now handles two cases:

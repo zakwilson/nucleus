@@ -793,3 +793,18 @@ B g3-lib-n
 (deftest g4-laundered-gap
   (try (check-file-exit "" "tests/fixtures/g4-laundered-call.nuc" 10))
   (return (ok)))
+
+; A plain string literal is a StrView global's constant, bare and inside an aggregate.
+(deftest strview-global-literal
+  (let (m:String (try (test-write-file "sv-glob.nuc" "(defstruct SvNamed name:StrView n:i32)
+(defvar sv-g:StrView \"hello\")
+(defvar sv-e:StrView \"\")
+(defvar sv-nm:SvNamed (SvNamed (name \"ab\\n\") (n 2)))
+(defvar sv-tab:(array StrView 2) (array StrView \"x\" \"yz\"))
+(defn main ():i32
+  (return (unsafe/cast i32 (+ (sv-g 'len) (sv-e 'len) (* 10 ((sv-nm 'name) 'len))
+                              (* 100 ((aref sv-tab 1) 'len))))))
+")))
+    (try (g-exit (string-as-view &m) 235))
+    (drop &m))
+  (return (ok)))

@@ -868,7 +868,7 @@
               ; the very one a `.nuc` file's own `defconst`/`defenum` gets. The
               ; full emitters still run at import time and must: only
               ; `emit-defenum` builds the EnumDef table `match` exhaustiveness
-              ; reads, and `guard-const-redefinition` recognises this prescan's
+              ; reads, and `guard-value-redefinition` recognises this prescan's
               ; Sym as the same definition by its site.
               "defconst"
                 (prescan-defconst-name (as ptr f))
