@@ -1,0 +1,10 @@
+; A branch with no value makes the whole cond void; the error says which one.
+(defn note-it ():void (return))
+
+(defn f (c:bool):i32
+  (let (t:i32 (cond c 1
+                    true (note-it)))
+    (return t)))
+
+(defn main ():i32
+  (return 0))

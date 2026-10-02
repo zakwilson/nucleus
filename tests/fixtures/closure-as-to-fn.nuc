@@ -1,0 +1,10 @@
+; `as` refuses a closure-to-function-pointer conversion with the closure
+; diagnostic, not its generic "use unsafe/cast" advice, which cannot help.
+;
+; Compiling this must FAIL with:
+;   "as: a capturing closure cannot be used as a function pointer"
+(defn main ():i32
+  (let (k:i32 2
+        h (vfn (x:i32):i32 (return (* x k))))
+    (let (f:(fn i32)(i32) (as ((fn i32) (i32)) h))
+      (return (funcall f 21)))))

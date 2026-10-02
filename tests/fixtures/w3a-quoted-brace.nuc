@@ -1,0 +1,10 @@
+; A C type declared after a `'{'` literal is visible to defn signatures and to
+; defvars, both of which resolve during the prescan.
+(import-use "tests/fixtures/w3a-quoted-brace.h")
+
+(defvar g-later:?&QBLater null)
+
+(defn take (p:?&QBLater):i32
+  (return 0))
+
+(defn main ():i32 (return (take g-later)))

@@ -1,0 +1,11 @@
+; Every overload that takes the first argument gets a note; one that does not
+; (`(scale i32 i32)`) is left out.
+(defstruct Pt x:i32 y:i32)
+
+(defn scale (p:&Pt k:ui8):i32 (return 0))
+(defn scale (p:&Pt k:f32 extra:i32):i32 (return 0))
+(defn scale (p:i32 k:i32):i32 (return 0))
+
+(defn main ():i32
+  (let (p:Pt (Pt 1 2) big:i64 5)
+    (return (scale &p big))))

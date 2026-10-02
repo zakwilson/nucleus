@@ -1070,7 +1070,244 @@
         (fstr "no matching method for '" (gg 'name)
               "': arguments do not satisfy the required protocol constraint")))
     (die-at line (fstr "no matching method for overloaded '" (gg 'name)
-                       "' with argument types (" (arg-type-spellings argtypes nargs) ")"))))
+                       "' with argument types (" (arg-type-spellings argtypes nargs) ")"
+                       (candidate-notes gg argtypes arg-nodes nargs line)))))
+
+; ============================================================
+; The no-match diagnostic's notes: the overloads that take the first argument,
+; and why the rest do not fit (design/stage21-cleanup/no-match-candidates.md).
+; ============================================================
+
+; `&t` for a by-value struct `t`, else null.
+(defn struct-value-ref-type (t:ptr:Type):?&Type
+  (when (or (= t null) (!= (t 'kind) TY-STRUCT)) (return null))
+  (let (pt:&Type (make-ptr-type PTR-REF))
+    (set! (pt 'elem) t)
+    (return pt)))
+
+; Does template `m`'s receiver pattern unify with `ct`? Writes only `bound`.
+(defn template-receiver-binds (m:&Method ct:?&Type bound:ptr):i32
+  (let (ptn:?&Node (binding-type-node (node-at (node-at (m 'body) 2) 0)))
+    (when (= ptn null) (return 0))
+    (dotimes (k (m 'num-tyvars)) (set! (aref (unsafe/cast &ptr bound) k) null))
+    (let (here:NameEnv (method-env-enter m)
+          hit:i32 (unify-tpat ptn ct (m 'tyvars) (m 'num-tyvars) bound ((m 'body) 'line)))
+      (name-env-set here)
+      (return hit))))
+
+; How `m` takes the first argument: 1 as given (a concrete method's implicit
+; address-of included), 2 only as `&` of it, else 0. Fills `bound` for a template.
+(defn method-receiver-fit (m:&Method argtypes:ptr bound:ptr):i32
+  (when (= (m 'num-params) 0) (return 0))
+  (when (= (m 'kind) METHOD-USER)
+    (return (params-accept-args (m 'param-types) argtypes 1)))
+  (when (!= (m 'kind) METHOD-GENERIC) (return 0))
+  (let (ct:ptr (aref (unsafe/cast &ptr argtypes) 0))
+    (when (!= (template-receiver-binds m ct bound) 0) (return 1))
+    (let (rt:?&Type (struct-value-ref-type ct))
+      (when (and (!= rt null) (!= (template-receiver-binds m rt bound) 0)) (return 2))))
+  (return 0))
+
+(defn arg-node-at (arg-nodes:ptr i:i32):?&Node
+  (when (= arg-nodes null) (return null))
+  (return (as ?&Node (aref (unsafe/cast &ptr arg-nodes) i))))
+
+; Only a binding has an address to take (borrow-conventions.md §3.4).
+(defn address-hint (arg:?&Node):StrView
+  (when (and (!= arg null) (= (arg 'kind) NODE-SYM))
+    (return (fstr "pass &" (arg 's))))
+  (return "bind it to a name and pass &name"))
+
+; Why an argument of type `at` does not reach parameter type `pt`, which
+; `arg-adapts` has already refused, with the fix when there is one.
+(defn arg-mismatch-reason (at:ptr:Type pt:ptr:Type arg:?&Node):StrView
+  (let (a:StrView (type-display at)
+        p:StrView (type-display pt))
+    (when (and (!= (is-int-type at) 0) (!= (is-int-type pt) 0))
+      (when (< (int-width pt) (int-width at))
+        (return (fstr a " is wider than " p " -- narrow it with (unsafe/cast " p " ...)")))
+      (return (fstr a " does not convert to " p " implicitly ("
+                    (if (!= (is-unsigned at) 0) "unsigned to signed" "signed to unsigned")
+                    ") -- use (as " p " ...)")))
+    (when (and (!= (is-float-type at) 0) (!= (is-float-type pt) 0))
+      (return (fstr a " is wider than " p " -- narrow it with (unsafe/cast " p " ...)")))
+    (when (or (and (!= (is-int-type at) 0) (!= (is-float-type pt) 0))
+              (and (!= (is-float-type at) 0) (!= (is-int-type pt) 0)))
+      (return (fstr a " does not convert to " p " implicitly -- use (unsafe/cast " p " ...)")))
+    (when (and (= (at 'kind) TY-STRUCT) (= (pt 'kind) TY-PTR) (!= (pt 'elem) null)
+               (!= (type-eq (pt 'elem) at) 0))
+      (return (fstr "takes " p ", not a " a " value -- " (address-hint arg))))
+    (return (fstr a " is not " p))))
+
+(defn arg-adapts-at (at:ptr:Type pt:ptr:Type arg:?&Node):i32
+  (let (is-lit:i32 (node-is-int-literal arg)
+        is-flit:i32 (if (= is-lit 0) (node-is-float-literal arg) 0))
+    (return (arg-adapts at pt is-lit is-flit))))
+
+(defn arity-reason (m:&Method nargs:i32):StrView
+  (when (or (!= (m 'has-rest) 0) (= (m 'num-params) nargs)) (return ""))
+  (return (fstr "takes " (m 'num-params) " arguments, not " nargs)))
+
+; A concrete method's reasons for the arguments after the first. Its implicit
+; address-of is tier 0's exact pass, so it cannot combine with a widening.
+(defn user-method-reasons (m:&Method argtypes:ptr arg-nodes:ptr nargs:i32):StrView
+  (let (ar:StrView (arity-reason m nargs))
+    (when (not (str-empty? &ar)) (return ar)))
+  (let ((acc String) (str-alloc (strfmt-alloc) "")
+        addr:i32 -1
+        widened:ptr (arena-alloc (* (+ nargs 1) 4)))
+    (dotimes (i nargs)
+      (let (at:ptr (aref (unsafe/cast &ptr argtypes) i)
+            pt:ptr (aref (unsafe/cast &ptr (m 'param-types)) i)
+            arg:?&Node (arg-node-at arg-nodes i))
+        (set! (aref (unsafe/cast &i32 widened) i) 0)
+        (cond
+          (!= (type-eq at pt) 0) 0
+          (!= (params-accept-args (unsafe/ptr+ (unsafe/cast &ptr (m 'param-types)) i)
+                                  (unsafe/ptr+ (unsafe/cast &ptr argtypes) i) 1) 0)
+            (when (< addr 0) (set! addr i))
+          (!= (arg-adapts-at at pt arg) 0) (set! (aref (unsafe/cast &i32 widened) i) 1)
+          (> i 0)
+            (str-into acc (fstr (if (str-empty? &acc) "" "; ") "argument " (+ i 1) ": "
+                                (arg-mismatch-reason at pt arg))))))
+    (when (and (str-empty? &acc) (>= addr 0))
+      (dotimes (i nargs)
+        (when (!= (aref (unsafe/cast &i32 widened) i) 0)
+          (let (p:StrView (type-display (aref (unsafe/cast &ptr (m 'param-types)) i)))
+            (str-into acc (fstr (if (str-empty? &acc) "" "; ") "argument " (+ i 1) ": must be exactly "
+                                p " while argument " (+ addr 1) " is passed by address -- use (as "
+                                p " ...), or " (address-hint (arg-node-at arg-nodes addr))))))))
+    (return (string-as-view acc))))
+
+(defn unify-or-restore (ptn:?&Node at:?&Type m:&Method bound:ptr saved:ptr line:i32):i32
+  (let (ntv:i32 (m 'num-tyvars))
+    (dotimes (k ntv) (set! (aref (unsafe/cast &ptr saved) k) (aref (unsafe/cast &ptr bound) k)))
+    (when (!= (unify-tpat ptn at (m 'tyvars) ntv bound line) 0) (return 1))
+    (dotimes (k ntv) (set! (aref (unsafe/cast &ptr bound) k) (aref (unsafe/cast &ptr saved) k)))
+    (return 0)))
+
+; A template's reasons: bind the type variables as generic-method-bind-adapt's
+; pass 1 does — literals never bind — then name each argument that neither
+; unifies nor adapts. A struct value may bind as its `&`, so the reason can say
+; to take its address. Empty when the binding stays incomplete.
+(defn template-method-reasons (m:&Method argtypes:ptr arg-nodes:ptr nargs:i32
+                                         bound:ptr line:i32):StrView
+  (let (ar:StrView (arity-reason m nargs))
+    (when (not (str-empty? &ar)) (return ar)))
+  (let ((acc String) (str-alloc (strfmt-alloc) "")
+        params-node:?&Node (node-at (m 'body) 2)
+        ntv:i32 (m 'num-tyvars)
+        tl:i32 (method-text-line m line)
+        ; 0 unmatched, 1 unified, 2 unified only as `&` of a struct value
+        matched:ptr (arena-alloc (* (+ nargs 1) 4))
+        saved:ptr (arena-alloc (* (+ ntv 1) (ptr-bytes)))
+        here:NameEnv (method-env-enter m))
+    (dotimes (i nargs)
+      (let (arg:?&Node (arg-node-at arg-nodes i)
+            at:ptr (aref (unsafe/cast &ptr argtypes) i)
+            lit:bool (or (!= (node-is-int-literal arg) 0) (!= (node-is-float-literal arg) 0))
+            ptn:?&Node (binding-type-node (node-at params-node i))
+            rt:?&Type (struct-value-ref-type at))
+        (set! (aref (unsafe/cast &i32 matched) i) 0)
+        (cond
+          ; The receiver fit already bound from it, unless it was a literal.
+          (= i 0) (if lit
+                    (dotimes (k ntv) (set! (aref (unsafe/cast &ptr bound) k) null))
+                    (set! (aref (unsafe/cast &i32 matched) i) 1))
+          lit 0
+          (!= (unify-or-restore ptn at m bound saved tl) 0)
+            (set! (aref (unsafe/cast &i32 matched) i) 1)
+          (and (!= rt null) (!= (unify-or-restore ptn rt m bound saved tl) 0))
+            (set! (aref (unsafe/cast &i32 matched) i) 2))))
+    (when (= (count-bound bound ntv) ntv)
+      (dotimes (i nargs)
+        (when (!= (aref (unsafe/cast &i32 matched) i) 1)
+          (let (at:ptr (aref (unsafe/cast &ptr argtypes) i)
+                pt:?&Type (resolve-param-type-bound (binding-type-node (node-at params-node i))
+                                                    (m 'tyvars) bound ntv tl)
+                arg:?&Node (arg-node-at arg-nodes i))
+            (when (and (!= pt null) (= (arg-adapts-at at pt arg) 0))
+              (str-into acc (fstr (if (str-empty? &acc) "" "; ") "argument " (+ i 1) ": "
+                                  (arg-mismatch-reason at pt arg))))))))
+    (name-env-set here)
+    (return (string-as-view acc))))
+
+(defn param-name-display (pn:?&Node):StrView
+  (when (and (!= pn null) (= (pn 'kind) NODE-LIST))
+    (let (h:?&Node (node-at pn 0))
+      (when (and (!= h null) (= (h 'kind) NODE-SYM)) (return (symbol-as-view (h 's))))))
+  (return "_"))
+
+; `(name T …):R` for a concrete method; a template's `(name p:T …):R`, with the
+; types `bound` fixes when it fixes every type variable, else as written.
+(defn method-signature-display (gname:Symbol m:&Method bound:ptr line:i32):StrView
+  (let ((acc String) (str-alloc (strfmt-alloc) "(" gname))
+    (if (= (m 'kind) METHOD-USER)
+      (do
+        (dotimes (i (m 'num-params))
+          (str-into acc " " (type-display (aref (unsafe/cast &ptr (m 'param-types)) i))))
+        (str-into acc "):" (type-display (m 'ret-type))))
+      (let (params-node:?&Node (node-at (m 'body) 2)
+            ntv:i32 (m 'num-tyvars)
+            all:bool (= (count-bound bound ntv) ntv)
+            tl:i32 (method-text-line m line)
+            here:NameEnv (method-env-enter m))
+        (dotimes (i (m 'num-params))
+          (let (pn:?&Node (node-at params-node i)
+                tn:?&Node (binding-type-node pn))
+            (str-into acc " " (param-name-display pn) ":")
+            (if all
+              (str-into acc (type-display (resolve-param-type-bound tn (m 'tyvars) bound ntv tl)))
+              (let (s:String (node-str tn)) (str-into acc (string-as-view &s))))))
+        (name-env-set here)
+        (if all
+          (str-into acc "):" (type-display (method-bound-ret-type m bound line)))
+          (let (rn:?&Node (defn-ret-node (m 'body)))
+            (if (= rn null)
+              (str-into acc "):void")
+              (let (s:String (node-str rn)) (str-into acc "):" (string-as-view &s))))))))
+    (return (string-as-view acc))))
+
+(defn method-site (m:&Method):StrView
+  (when (!= (m 'body) null) (return (method-def-site m)))
+  (when (symbol-none? (m 'src-file)) (return "<unknown file>"))
+  (return (symbol-as-view (m 'src-file))))
+
+; Notes for a failed overloaded call: each method that takes the first argument
+; and why the rest do not fit; failing any, one that takes it only by address.
+(defn candidate-notes (g:ptr:Generic argtypes:ptr arg-nodes:ptr nargs:i32 line:i32):StrView
+  (when (= nargs 0) (return ""))
+  (let ((acc String) (str-alloc (strfmt-alloc) "")
+        shown:i32 0
+        more:i32 0
+        by-ref:?&Method null
+        by-ref-bound:ptr null)
+    (dotimes (k (unsafe/cast i32 (count (g 'methods))))
+      (let (m:&Method (as &Method (invoke (g 'methods) k:usize)))
+        (when (= (m 'origin-template) null)
+          (let (bound:ptr (arena-alloc (* (+ (m 'num-tyvars) 1) (ptr-bytes)))
+                fit:i32 (method-receiver-fit m argtypes bound))
+            (when (and (= fit 2) (= by-ref null))
+              (set! by-ref m)
+              (set! by-ref-bound bound))
+            (when (= fit 1)
+              (if (>= shown 8)
+                (inc! more)
+                (let (why:StrView (if (= (m 'kind) METHOD-USER)
+                                    (user-method-reasons m argtypes arg-nodes nargs)
+                                    (template-method-reasons m argtypes arg-nodes nargs bound line)))
+                  (str-into acc "\n  note: " (method-site m) ": "
+                            (method-signature-display (g 'name) m bound line))
+                  (when (not (str-empty? &why)) (str-into acc " -- " why))
+                  (inc! shown))))))))
+    (when (> more 0) (str-into acc (fstr "\n  note: and " more " more")))
+    (when (and (= shown 0) (!= by-ref null))
+      (let (bm:&Method (unsafe/cast &Method by-ref))
+        (str-into acc "\n  note: " (method-site bm) ": "
+                  (method-signature-display (g 'name) bm by-ref-bound line)
+                  " takes the first argument by reference -- "
+                  (address-hint (arg-node-at arg-nodes 0)))))
+    (return (string-as-view acc))))
 
 ; A `(S …)` literal argument is `(ref S)` over a stack slot, so a by-value `S`
 ; parameter may take it, as a plain call's does. Resolved as `emit-dispatch` resolves the head.

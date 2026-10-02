@@ -1,0 +1,10 @@
+; The implicit address-of on a struct argument is an exact-match rule, so it
+; cannot combine with widening another argument; the note says which to change.
+(defstruct Pt x:i32 y:i32)
+
+(defn scale (p:&Pt k:i64):i32 (return 0))
+(defn scale (p:i32 k:i32):i32 (return 0))
+
+(defn main ():i32
+  (let (p:Pt (Pt 1 2) w:i32 3)
+    (return (scale p w))))

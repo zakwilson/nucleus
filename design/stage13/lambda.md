@@ -344,6 +344,10 @@ parameter type — is not C-representable, so:
   C headers** (`--emit-cheader`), and
 * the compiler **warns** at the definition site.
 
+* `unsafe/cast` and `as` **refuse** a closure value to a function-pointer type
+  (`refuse-closure-as-fn`): the value is a `(ref Env)` and `invoke` takes it as a
+  hidden first argument, so the result could only ever jump into heap data.
+
 A function that merely *takes* a closure but is only called internally is
 unaffected. A non-capturing `fn` decays to a plain function pointer and is fully
 C-callable, so it is emitted to headers normally.

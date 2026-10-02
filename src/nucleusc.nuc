@@ -4693,6 +4693,19 @@
 ; Cast
 ; ============================================================
 
+; A closure value is a (ref Env) and its code takes that env as a hidden first
+; argument, so no reinterpretation makes it callable as a function pointer.
+(defn refuse-closure-as-fn (src:(ptr Type) dst:(ptr Type) form:StrView line:i32):void
+  (when (!= (dst 'kind) TY-FN) (return))
+  (let (s:(ptr Type) src)
+    (when (and (= (s 'kind) TY-PTR) (!= (s 'elem) null))
+      (set! s (s 'elem)))
+    (when (and (= (s 'kind) TY-STRUCT) (!= (s 'sdef) null)
+               (strview-has-prefix (symbol-as-view ((s 'sdef) 'name)) "__vfn_env_"))
+      (die-at line
+        (fstr form ": a capturing closure cannot be used as a function pointer"
+              " -- use a non-capturing fn and pass its state through the callback's user-data argument")))))
+
 (defn emit-cast (call:?&Node scope:&Scope):&Val
   (let (cc:(ptr Node) call)
     (when (!= (node-len cc) 3)
@@ -4701,6 +4714,7 @@
       (let (dst:(ptr Type) (parse-type-from-node type-node (node-line (as ptr type-node) (cc 'line)))
             v:&Val (emit-node (node-at cc 2) scope)
             src:(ptr Type) (v 'type))
+        (refuse-closure-as-fn src dst "unsafe/cast" (cc 'line))
         ; Stage 14 NS-3 (design/stage14/native-strings.md): a StrView chameleon
         ; literal's kind is TY-STRUCT, so the same-kind identity fast path below
         ; would fire for BOTH `(cast StrView "…")` and `(cast OtherStruct "…")`,
@@ -4877,6 +4891,7 @@
 ; conventions.md prescribes. `line` is what every refusal below blames.
 (defn as-convert (v:&Val dst:&Type line:i32):&Val
   (let (src:?&Type (v 'type))
+    (refuse-closure-as-fn src dst "as" line)
     ; 1. StrView source (chameleon literal or value): the coercer collapses a
     ; literal to ptr/CStr with no IR, materializes a StrView target, or returns
     ; null for an unrelated struct target (a reinterpretation).
@@ -6392,7 +6407,8 @@
 ; struct (all fields one type) so the result type is well-defined. Emits a
 ; bounded branch comparing the selector against each interned field symbol
 ; (pointer identity), then an array-style GEP+load at the matched index.
-(defn emit-computed-field (n:(ptr Node) scope:&Scope callee-val:?&Val sd:?&StructDef sel-node:(ptr Node) line:i32):&Val
+(defn emit-computed-field (n:(ptr Node) scope:&Scope callee-val:?&Val sd:?&StructDef sel-node:(ptr Node) line:i32
+                           hint:StrView):&Val
   (let (sdd:(ptr StructDef) sd
         nf:i32 (sdd 'num-fields))
     ; Since step 3 a bare symbol here is an ordinary variable, so an UNBOUND one
@@ -6419,12 +6435,14 @@
       (dotimes (fi nf)
         (when (= (type-eq ((field-at (sdd 'fields) fi) 'type) ftype) 0)
           (die-at line
-            (fstr "get: computed field access requires a homogeneous struct, but '" (sdef-display sdd)
-                  "' has fields of differing types"))))
+            (if (str-empty? &hint)
+              (fstr "get: computed field access requires a homogeneous struct, but '" (sdef-display sdd)
+                    "' has fields of differing types")
+              hint))))
       (let (cv:(ptr Val) callee-val
             sel:&Val (emit-node sel-node scope))
         (when (!= ((sel 'type) 'kind) TY-PTR)
-          (die-at line "get: computed selector must evaluate to a symbol (ptr)"))
+          (die-at line (if (str-empty? &hint) "get: computed selector must evaluate to a symbol (ptr)" hint)))
         ; Build the field index by a chain of select instructions, innermost
         ; default 0: idx = (sel==f0)?0 : (sel==f1)?1 : … : 0.
         (let (idx:StrView "0"
@@ -6475,7 +6493,8 @@
       (when (= lit null)
         (when (= ek TY-UNION)
           (die-at line "get: computed member access on a union is not supported"))
-        (return (emit-computed-field n scope cv sd sel-node line)))
+        (return (emit-computed-field n scope cv sd sel-node line
+                                     (invoke-address-hint n sel-node (callee-val 'type)))))
       (let (idx:i32 (struct-field-index sd (lit 's)))
         (when (< idx 0)
           ; AN-2: an anonymous member's own field, same rule as `_get`.
@@ -6564,19 +6583,24 @@
           (if (= (m 'kind) METHOD-USER)
             (when (!= (type-eq (aref (unsafe/cast &ptr (m 'param-types)) 0) ct) 0)
               (return 1))
-            ; METHOD-GENERIC: unify the receiver pattern against ct. The unifier
-            ; only writes the scratch bound array, so this is side-effect-free.
-            (let (params-node:?&Node (node-at (m 'body) 2)
-                  ntv:i32 (m 'num-tyvars)
-                  bound:ptr (arena-alloc (* (+ ntv 1) (ptr-bytes)))
-                  ptn:?&Node (binding-type-node (node-at params-node 0)))
-              (when (!= ptn null)
-                (dotimes (k ntv) (set! (aref (unsafe/cast &ptr bound) k) null))
-                (let (here:NameEnv (method-env-enter m)
-                      hit:i32 (unify-tpat ptn ct (m 'tyvars) ntv bound ((m 'body) 'line)))
-                  (name-env-set here)
-                  (when (!= hit 0) (return 1)))))))))
+            ; METHOD-GENERIC: the unifier only writes the scratch bound array.
+            (when (!= (template-receiver-binds m ct (arena-alloc (* (+ (m 'num-tyvars) 1) (ptr-bytes)))) 0)
+              (return 1))))))
     (return 0)))
+
+; For `(v i)` on a by-value struct whose `invoke` takes it only by reference:
+; the message naming `&v`, which computed field access would otherwise bury.
+(defn invoke-address-hint (n:?&Node sel-node:?&Node ct:?&Type):StrView
+  (let (rt:?&Type (struct-value-ref-type ct))
+    (when (or (= rt null)
+              (= (generic-has-receiver-method (generic-lookup (symbol-intern "invoke")) rt) 0))
+      (return ""))
+    (let (recv:?&Node (if (= (node-at n 1) sel-node) (node-at n 0) (node-at n 1))
+          fix:StrView "bind it to a name and write (&name ...)")
+      (when (and (!= recv null) (= (recv 'kind) NODE-SYM))
+        (set! fix (fstr "write (&" (recv 's) " ...)")))
+      (return (fstr "'" (type-display ct) "' is indexed through invoke, which takes "
+                    (type-display rt) ", not a value -- " fix)))))
 
 ; Resolve `(get callee selector)` for an already-emitted callee value, splitting
 ; on the selector kind (callable-values.md §3.2/§3.3).
@@ -6657,9 +6681,9 @@
 (defn case-clause-hint (head-node:(ptr Node)):?StrView
   (when (= (head-node 'kind) NODE-INT)
     (return (some (fstr (head-node 'i)
-                  " is not callable -- an integer literal can never appear in call position; if you meant a `case` clause: case takes flat value/result pairs, not clauses: (case x 1 \"one\" 2 \"two\" \"other\")"))))
+                  " is not callable"))))
   (when (and (= (head-node 'kind) NODE-SYM) (= (head-node 's) "_"))
-    (return (some "'_' is not callable in this position; if you meant a `case` clause: case takes flat value/result pairs, not clauses: (case x 1 \"one\" 2 \"two\" \"other\")")))
+    (return (some "'_' is not callable in this position")))
   (return (none)))
 
 ; Resolve `(invoke callee arg…)` for an already-emitted callee value. The callee
@@ -6679,7 +6703,10 @@
       (return (emit-box-invoke n scope callee-val arg-start nargs)))
     (memcpy (unsafe/ptr+ (unsafe/cast &Val args) 0) cv (sizeof Val))
     (set! (aref (unsafe/cast &ptr argtypes) 0) (cv 'type))
-    (set! (aref (unsafe/cast &ptr arg-nodes) 0) null)
+    ; The callee's name, for a diagnostic's `&` hint. Never a literal, so no tier reads it.
+    (set! (aref (unsafe/cast &ptr arg-nodes) 0)
+          (let (h:?&Node (node-at n (- arg-start 1)))
+            (if (and (!= h null) (= (h 'kind) NODE-SYM)) (as ptr h) null)))
     (dotimes (i nargs)
       (let (anode:?&Node (node-at n (+ arg-start i))
                       v:&Val (emit-node anode scope))
@@ -6707,11 +6734,15 @@
             (let (gm:?&Method (generic-resolve-nullable gg argtypes total line))
               (when (!= gm null)
                 (return (emit-resolved-call n scope (symbol-intern "get") gm args total line)))))))
+      ; Any program importing a collection has `invoke` methods, so the hint must
+      ; ask whether one takes this head, not whether the generic exists.
+      (match (case-clause-hint (node-at n (- arg-start 1)))
+        ((some hint)
+          (when (or (= g null) (= (generic-has-receiver-method g (cv 'type)) 0))
+            (die-at line hint)))
+        (none 0))
       (when (= g null)
-        (let (head-node:?&Node (node-at n (- arg-start 1)))
-          (match (case-clause-hint head-node)
-            ((some hint) (die-at line hint))
-            (none (die-at line "value is not callable: no `invoke` method is defined for this type")))))
+        (die-at line "value is not callable: no `invoke` method is defined for this type"))
       (let (m:&Method (generic-resolve g argtypes arg-nodes total line null scope))
         (return (emit-resolved-call n scope (symbol-intern "invoke") m args total line))))))
 
@@ -7372,7 +7403,7 @@
             (when (= coerced null)
               (die-at (cc 'line)
                 (fstr "set!: type mismatch for field '" (fn-node 's) "': value is "
-                      (type-display (v 'type)) ", field is " (type-display ftype))))
+                      (value-type-display v) ", field is " (type-display ftype))))
             (taint-store-check p v (cc 'line) ".set!")
             (let (cv:&Val (unsafe/cast &Val coerced))
               ; Union member: typed store at offset 0, straight through the pointer.
@@ -10190,7 +10221,7 @@
             (when (= coerced null)
               (note-cast-rule-near-miss (v 'type) g-fn-ret-type)
               (die-at (cc 'line)
-                (fstr "return type mismatch — returned value of type " (type-display (v 'type))
+                (fstr "return type mismatch — returned value of type " (value-type-display v)
                       " does not match declared return type " (type-display g-fn-ret-type))))
             (let (cv:&Val (unsafe/cast &Val coerced))
               (emit g-body-stream "  ret " (type-to-ir (cv 'type)) " " (cv 'val) "\n")))))
@@ -10433,7 +10464,7 @@
                       ; which binding failed leaves nothing to act on, and the
                       ; fn-pointer signature check (FP-1) newly reaches here.
                       (fstr "let: init type mismatch for '" name "': value is "
-                            (type-display (v 'type)) ", slot is " (type-display ty))))
+                            (value-type-display v) ", slot is " (type-display ty))))
                   (let (cv:&Val (unsafe/cast &Val coerced))
                     (emit g-body-stream "  store " (type-to-ir ty) " " (cv 'val) ", ptr " slot
                           ", align " align "\n")
@@ -10528,7 +10559,7 @@
                   (note-cast-rule-near-miss (v 'type) ty)
                   (die-at (node-line bval-node (cc 'line))
                           (fstr "with: init type mismatch for '" name "': value is "
-                                (type-display (v 'type)) ", slot is " (type-display ty))))
+                                (value-type-display v) ", slot is " (type-display ty))))
                 (let (cv:&Val (unsafe/cast &Val coerced))
                   (emit g-body-stream "  store " (type-to-ir ty) " " (cv 'val) ", ptr " slot
                         ", align " align "\n")
@@ -10641,6 +10672,11 @@
           result-lit:i32 0
           result-taint:ptr null
           result-frame:i32 0
+          why:StrView ""
+          first-line:i32 0
+          void-line:i32 0
+          void-seen:i32 0
+          any-value:i32 0
           has-fallthrough:i32 0
           ; Stage 10 narrowing: `acc` holds names proven non-null for every
           ; subsequent pair (a failed null-test); `after` holds names to
@@ -10693,21 +10729,29 @@
           (let (bv:&Val (emit-node body-node scope)
                 bterm:i32 g-block-term)
             (when (= bterm 0)
-              ; Stage 14 NS-3: a string-literal cond/if branch collapses to CStr
-              ; (no IR) so the branch join and phi stay a plain pointer — unless
-              ; the join is known to want a view, when it materializes instead.
+              ; A string-literal branch joins as a StrView, or as CStr under a CStr want.
               (set! bv (join-strlit-branch bv my-want (cc 'line)))
               (let (join-lbl:StrView (fstr "cond.join" id "." i)
-                    bty:ptr (bv 'type))
+                    bty:ptr (bv 'type)
+                    bline:i32 (node-line body-node 0))
                 (if (= result-type null)
-                  (do (set! result-type bty) (set! result-lit (bv 'is-lit)))
+                  (do (set! result-type bty) (set! result-lit (bv 'is-lit))
+                      (set! first-line bline))
                   ; MC-1: shared join (absorbs bare-vs-typed ptr to (ptr E);
                   ; LW-6: literal branches widen to a typed int sibling).
-                  (do
+                  (let (prev:ptr result-type)
                     (set! result-type (type-join result-type bty result-lit (bv 'is-lit)))
-                    (set! result-lit (if (and (!= result-lit 0) (!= (bv 'is-lit) 0)) 1 0))))
-                (when (= ((unsafe/cast &Type bty) 'kind) TY-VOID)
-                  (set! result-type ty-void))
+                    (set! result-lit (if (and (!= result-lit 0) (!= (bv 'is-lit) 0)) 1 0))
+                    (when (and (str-empty? &why)
+                               (!= ((unsafe/cast &Type prev) 'kind) TY-VOID)
+                               (!= ((unsafe/cast &Type bty) 'kind) TY-VOID)
+                               (= ((unsafe/cast &Type result-type) 'kind) TY-VOID))
+                      (set! why (fstr "either " (branch-type-display prev first-line)
+                                      " or " (branch-type-display bty bline))))))
+                (if (= ((unsafe/cast &Type bty) 'kind) TY-VOID)
+                  (do (set! result-type ty-void)
+                      (when (= void-seen 0) (set! void-seen 1) (set! void-line bline)))
+                  (set! any-value 1))
                 (set! result-frame (taint-join-frame result-taint result-frame bv))
                 (set! result-taint (taint-merge result-taint (bv 'taint)))
                 (emit g-body-stream "  br label %" join-lbl "\n")
@@ -10744,7 +10788,13 @@
         (set! g-block-term 1))
       (if (or (= result-type null)
               (= ((unsafe/cast &Type result-type) 'kind) TY-VOID))
-        (return (alloc-val ty-void ""))
+        (let (vv:&Val (alloc-val ty-void ""))
+          (when (and (str-empty? &why) (!= any-value 0) (!= void-seen 0))
+            (set! why (if (= void-line 0)
+                        "void (one branch has no value)"
+                        (fstr "void (the branch at line " void-line " has no value)"))))
+          (set! (vv 'join-why) why)
+          (return vv))
         (let (tmp:StrView (new-tmp)
               ty-ir:StrView (type-to-ir result-type))
           (emit g-body-stream "  " tmp " = phi " ty-ir " ")
@@ -10981,7 +11031,7 @@
             (when (= coerced null)
               (die-at (cc 'line)
                 (fstr "set!: type mismatch for '" (target 's) "': value is "
-                      (type-display (v 'type)) ", slot is " (type-display (sym 'type)))))
+                      (value-type-display v) ", slot is " (type-display (sym 'type)))))
             ; Stage 10 escape analysis: a with-owned resource may only be
             ; stored into a binding that lives no longer than the resource
             ; (same-or-inner scope relative to the owning with). Stage 13 L1:

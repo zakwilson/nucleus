@@ -1,0 +1,7 @@
+; No method takes the first argument as given, but one takes it by reference.
+(import-use vector)
+
+(defvar options:(Vector i32) [500 1000 1500])
+
+(defn main ():i32
+  (return (as i32 (count options))))

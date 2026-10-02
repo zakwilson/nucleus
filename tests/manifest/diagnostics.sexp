@@ -137,7 +137,43 @@
 ; decide and the original rule stands), and `-global-inexact` pins that
 ; `defvar-init-ir`'s fold reaches the same verdict with the same wording -- a
 ; second asker that re-derives the rule.
-(reject "w9-as-literal-too-big" (file "tests/fixtures/w9-as-literal-too-big.nuc")
+; An overloaded call that fails after its first argument lists each method that
+; takes the first argument and why the rest do not fit
+; (design/stage21-cleanup/no-match-candidates.md).
+(reject "nomatch-invoke-sign" (file "tests/fixtures/nomatch-invoke-sign.nuc") (line 8)
+        (message "no matching method for overloaded 'invoke' with argument types (&(Vector i32), i32)")
+        (note "(invoke self:&(Vector i32) i:usize):i32 -- argument 2: i32 does not convert to usize implicitly (signed to unsigned) -- use (as usize ...)"))
+(reject "nomatch-overloads" (file "tests/fixtures/nomatch-overloads.nuc") (line 11)
+        (message "no matching method for overloaded 'scale' with argument types (&Pt, i64)")
+        (note "nomatch-overloads.nuc:5: (scale &Pt ui8):i32 -- argument 2: i64 is wider than ui8 -- narrow it with (unsafe/cast ui8 ...)")
+        (note "nomatch-overloads.nuc:6: (scale &Pt f32 i32):i32 -- takes 3 arguments, not 2"))
+(reject "nomatch-addr-widen" (file "tests/fixtures/nomatch-addr-widen.nuc") (line 10)
+        (message "no matching method for overloaded 'scale' with argument types (Pt, i32)")
+        (note "argument 2: must be exactly i64 while argument 1 is passed by address -- use (as i64 ...), or pass &p"))
+(reject "nomatch-template-addr" (file "tests/fixtures/nomatch-template-addr.nuc") (line 10)
+        (message "no matching method for overloaded 'tag' with argument types (i32, (Vector ui8))")
+        (note "(tag n:i32 x:&(Vector ui8)):i32 -- argument 2: takes &(Vector ui8), not a (Vector ui8) value -- pass &v"))
+(reject "nomatch-by-ref-receiver" (file "tests/fixtures/nomatch-by-ref-receiver.nuc") (line 7)
+        (message "no matching method for overloaded 'count' with argument types ((Vector i32))")
+        (note "(count self:&(Vector i32)):usize takes the first argument by reference -- pass &options"))
+(reject "callable-by-value-invoke" (file "tests/fixtures/callable-by-value-invoke.nuc") (line 8)
+        (message "'(Vector i32)' is indexed through invoke, which takes &(Vector i32), not a value -- write (&options ...)"))
+(accept "callable-homogeneous-by-value" (file "tests/fixtures/callable-homogeneous-by-value.nuc"))
+
+; A cond/if whose branches disagree is void; its consumer names the branch types.
+(accept "cond-strlit-cstr-want" (file "tests/fixtures/cond-strlit-cstr-want.nuc"))
+(reject "cond-branch-mismatch" (file "tests/fixtures/cond-branch-mismatch.nuc") (line 6)
+        (message "with: init type mismatch for 't': value is either CStr (line 7) or String (line 8), slot is CStr"))
+(reject "cond-void-branch" (file "tests/fixtures/cond-void-branch.nuc") (line 5)
+        (message "let: init type mismatch for 't': value is void (the branch at line 6 has no value), slot is i32"))
+
+; A capturing closure is not C-callable: its code takes the env as a hidden first
+; argument, so a cast to a function-pointer type can never yield a callable value.
+(reject "closure-cast-to-fn-rejected" (file "tests/fixtures/closure-cast-to-fn.nuc") (line 15)
+        (message "unsafe/cast: a capturing closure cannot be used as a function pointer"))
+(reject "closure-as-to-fn-rejected" (file "tests/fixtures/closure-as-to-fn.nuc") (line 9)
+        (message "as: a capturing closure cannot be used as a function pointer"))
+(reject "w9-as-literal-too-big"(file "tests/fixtures/w9-as-literal-too-big.nuc")
         (message "as: lossy conversion from i32 to i8 -- use unsafe/cast"))
 (reject "w9-as-literal-signed-into-unsigned" (file "tests/fixtures/w9-as-literal-signed-into-unsigned.nuc")
         (message "as: lossy conversion from i32 to ui8 -- use unsafe/cast"))
@@ -347,7 +383,13 @@
 ; user program's macro expansions (confirmed empirically -- a `defmacro` body
 ; calling `die-at` fails `unknown: die-at`).
 (reject "w4d-case-clause-form" (file "tests/fixtures/w4d-case-clause-form.nuc") (line 16)
-        (message "case takes flat value/result pairs, not clauses: (case x 1 \"one\" 2 \"two\" \"other\")"))
+        (message "0 is not callable"))
+; The hint asks whether an `invoke` method takes the literal, not whether any
+; exists: importing a collection defines some, which used to hide it.
+(reject "w4d-case-clause-with-invoke" (file "tests/fixtures/w4d-case-clause-with-invoke.nuc") (line 6)
+        (message "0 is not callable"))
+(reject "arrow-bare-literal" (file "tests/fixtures/arrow-bare-literal.nuc") (line 9)
+        (message "0 is not callable"))
 
 ; examples/case.nuc (the real flat syntax) is covered as a regression by the
 ; ordinary examples/*.nuc + tests/expected/case.out loop above -- no separate
@@ -395,6 +437,9 @@
         (message "unknown type: NoSuchTypeHere"))
 (reject "w3a-unknown-type-return" (file "tests/fixtures/w3a-unknown-type-return.nuc") (line 3)
         (message "unknown type: AlsoNoSuchType"))
+; A `'{'` in a header used to desync the prescan's brace count, hiding every
+; later C type from defn signatures (GLib's GVariantClass hid all of GTK).
+(accept "w3a-quoted-brace" (file "tests/fixtures/w3a-quoted-brace.nuc"))
 
 ; A parameter spelling that names no type is a located error, not a default —
 ; and `:rest`/`:optional` are defn-only (the marker used to be counted as an

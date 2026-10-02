@@ -940,6 +940,41 @@ A second `defvar` of a name at the prompt used to fail with LLVM's unlocated `re
 
 ---
 
+## `cond`/`if` mismatches name their branch types; literal joins a CStr want (2026-10-01)
+
+`(with (txt:CStr (if c "Unset" (… string-as-cstr))) …)` failed with `value is void, slot is CStr`. There were two problems.
+
+1. `join-strlit-branch` (`src/abi.nuc`) made a `StrView` of the literal arm even when the want was `CStr`, so the arm never met its `CStr` sibling. Under a `CStr` want the literal now collapses to `CStr`.
+2. A mismatched join yielded a bare void. `emit-cond` now records why on the void `Val`, in the new `join-why` field, either `either A (line m) or B (line n)` or `void (the branch at line n has no value)`. The let/with/set!/field-set!/return mismatch messages print it through `value-type-display`.
+
+Only `emit-cond` records the reason; the joins in `union-emit.nuc` (`match`, `if-some`) still report a bare void. New rows `cond-strlit-cstr-want`, `cond-branch-mismatch` and `cond-void-branch`; bootstrap fixed point holds.
+
+The `w4d-case-clause-form`, `w4d-case-clause-with-invoke` and `arrow-bare-literal` rows now expect the shortened `case-clause-hint` text, `0 is not callable`.
+
+---
+
+## Integer-literal call hint restored; `->` bare literal steps (2026-10-01)
+
+`(-> &options 0 str)` threads as `(0 &options)`, and failed with `no matching method for overloaded 'invoke' with argument types (i32, &(Vector i32))`. W4d's integer-literal hint (`case-clause-hint`) only fired when no `invoke` generic existed, so any program importing a collection got the no-match message instead, W4d's own `case` mistake included. `emit-invoke-with-callee` now gives the hint when no `invoke` method takes the literal, which still allows a user-defined `invoke` on an integer. The hint was later shortened to `N is not callable`; `docs/macros.md` and `docs/builtins.md` say that a bare `->` step `N` means `(N value)` and to index with `(_ N)`. New rows `w4d-case-clause-with-invoke` and `arrow-bare-literal`; 1227 pass, the same 5 datalayout failures, bootstrap fixed point holds.
+
+---
+
+## No-match errors name the candidates (2026-10-01)
+
+[stage21-cleanup/no-match-candidates.md](stage21-cleanup/no-match-candidates.md). `generic-resolve`'s no-match error now has a note per method that takes the first argument: definition site, signature, and a reason per argument that does not fit (signedness, narrowing, int↔float, value where `&` is expected, arity), with the fix. A template's reasons bind type variables as tier 2 does, so literals never bind them. When no method takes the first argument but one takes its address, the note says `pass &name`. `(v i)` on a by-value struct whose `invoke` wants `&S` now says so instead of reporting computed field access. Seven new manifest rows; built and tested in the scratch copy: 1225 pass, the same 5 datalayout failures as below, bootstrap fixed point holds. Not done: implicit address-of for template methods and `(v i)` routing.
+
+---
+
+## Closure → function-pointer casts refused; C header prescan quote fix (2026-10-01)
+
+`(unsafe/cast GCallback cur-handler)` on a capturing `cfn` compiled and produced a pointer to the heap env; GTK called it and the program segfaulted. A closure value is a `(ref Env)` whose `invoke` takes the env as a hidden first argument, so no conversion to a function-pointer type can work. `refuse-closure-as-fn` (`src/nucleusc.nuc`) now rejects that pair in `emit-cast` and `as-convert`, recognizing the env by its compiler-minted `__vfn_env_` name, as `cheader-mentions-closure` already does. Casting a closure to bare `ptr`, e.g. to pass as user data, is still allowed. New rows `closure-cast-to-fn-rejected` and `closure-as-to-fn-rejected` in `tests/manifest/diagnostics.sexp`.
+
+**C header prescan: braces inside quotes.** The same file then reported `unknown type: GtkWidget` for a `defn` parameter. The signature prescan (`cheader-prescan-opaque`) skips declarations it does not model by counting braces, and GLib's `GVariantClass` enum has `'{'` and `'('` values. The count never returned to zero, so every later type — `GObject`, all of GTK — went unregistered. A `defvar` type fails the same way; the `defn` error is just reported first. `cheader-skip-to-semi`, `cheader-skip-braces` and `c-enum-value-end` now step over literals with `c-skip-quoted`, and `cheader-skip-braces` steps over linemarkers too. New fixture `w3a-quoted-brace`.
+
+Both changes were built in a scratch copy against Debian's libLLVM 22.1.8 (see `context/local.md`): `make bootstrap`'s fixed point holds and the suite is 1218 pass / 5 fail. The 5 are `target-aarch64-*`/AVR datalayout checks that fail the same way with the unmodified compiler, because that LLVM build prints different datalayout strings than the host's.
+
+---
+
 ## REPL: no prompt for input that has already arrived (2026-09-29)
 
 Sending a multi-line form from an Emacs source buffer (`C-M-x`, `C-c C-k`) filled `*nucleus-repl*` with prompts: `repl-read-input` printed `...> ` for every line and `nuc> ` for every form, though the whole text was already waiting on the pty. `src/repl.nuc`'s `repl-input-waiting` now skips the prompt when stdin is a terminal and a line is already buffered or `poll` reports one ready. Emacs puts the pty in canonical mode, so each `read` returns one line and only `poll` can see the rest. Piped stdin keeps every prompt, because the REPL tests' expected output relies on them to separate entries. Checked with `emacs --batch` driving `nucleus-load-buffer`: the buffer now shows `nuc>   defined` / `  3` / `  4` / `nuc> `. `make test` 1215/0/0.

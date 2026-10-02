@@ -1,0 +1,16 @@
+; A capturing closure is a (ref Env) whose code takes the env as a hidden first
+; argument, so `unsafe/cast` to a function-pointer type yields a pointer to heap
+; data that segfaults when C calls it (a GTK signal handler, here in miniature).
+;
+; Compiling this must FAIL with:
+;   "unsafe/cast: a capturing closure cannot be used as a function pointer"
+(import-use allocator)
+
+(defn connect (cb:(fn void)(ptr ptr)):void
+  (return))
+
+(defn main ():i32
+  (let (n:i32 0
+        h (cfn (default-allocator) (a:ptr b:ptr):void (set! n 1)))
+    (connect (unsafe/cast ((fn void) (ptr ptr)) h))
+    (return n)))

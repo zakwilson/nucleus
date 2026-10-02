@@ -1,0 +1,9 @@
+; A bare literal step in `->` calls the literal with the threaded value:
+; (-> &options 0) is (0 &options), not indexing. Importing `vector` defines
+; `invoke` methods, which used to hide this hint behind a no-match error.
+(import-use vector)
+
+(defvar options:(Vector i32) [500 1000 1500])
+
+(defn main ():i32
+  (return (-> &options 0)))
