@@ -242,6 +242,11 @@ fewer "convention, not a rule" edges in it.
    module, so JIT bodies and `--emit-llvm` stay strict. A `.bss.` global
    whose ctor store GlobalOpt folds moves to `.data.`. The benchmark is at
    parity with C at every level. 1214 tests.
+10. **No-match errors name the candidates** — **built 2026-10-01** —
+   [no-match-candidates.md](no-match-candidates.md). An overload no-match
+   lists each method that takes the first argument and why the rest do not
+   fit; `(v i)` on a by-value struct says to write `(&v i)`. Extending implicit
+   address-of to templates is recorded there, not done.
 
 ## Sequencing
 

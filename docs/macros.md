@@ -43,7 +43,7 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 | `doseq-iter` | `(doseq-iter (var iter-ref) body...)` | Iterate a **bare iterator reference**: calls `(next iter-ref)` each step, binding each element to `var`. Use for types that conform to `(Iterator E)` but are not a `Coll` — e.g. `IntRangeIter`, `MapIter`, `FilterIter`, `HashMapKeyIter`. `iter-ref` must be a `(ref IterType)` already materialised by the caller. |
 | `into` | `(into dest-coll src-coll IterType)` | Drain a **collection** `src-coll` into `dest-coll`: calls `(iter src-coll)` to get a fresh `IterType` by value, then `(conj dest-coll elem)` for each element. `IterType` is the associated iterator type of `src-coll`. |
 | `into-iter` | `(into-iter dest-coll iter-ref)` | Drain a **bare iterator reference** `iter-ref` into `dest-coll`: calls `(next iter-ref)` each step and `(conj dest-coll elem)` for each element. The pre-Coll form, kept for pure iterators that have no `iter`. |
-| `->` | `(-> x form ...)` | Threads `x` through each form. If a form contains `_`, the value replaces `_`; otherwise inserts as first arg (thread-first). Bare symbols wrap as `(sym value)`. `_` is only special inside `->`. |
+| `->` | `(-> x form ...)` | Threads `x` through each form. If a form contains `_`, the value replaces `_`; otherwise inserts as first arg (thread-first). Bare symbols wrap as `(sym value)`, and so does any other bare step: `(-> v 0)` is `(0 v)`, not indexing — write `(-> v (_ 0))`. `_` is only special inside `->`. |
 | `macmap` | `(macmap ((param ...) template) (row ...))` | Expands `template` once per row, binding the parameters to the row, and splices the results in sequence. See [`macmap`](#macmap--one-template-over-a-table-of-rows) below. |
 | `macfoldr` | `(macfoldr op unit a b c)` | `(op a (op b c))` — right-nested fold over a variadic argument list. No args → `unit`; one arg → that arg. See [`macfoldl`/`macfoldr`](#macfoldl--macfoldr--a-template-over-a-variadic-argument-list). |
 | `macfoldl` | `(macfoldl op unit a b c)` | `(op (op a b) c)` — the left-nested counterpart. |
@@ -905,7 +905,10 @@ branches. Two pointer branches with different *element* types — `(ptr Node)`
 vs `ptr:i32`, or two different struct types — do not unify, and the whole
 expression collapses to `void`. That failure then surfaces as:
 
-- a `let`/`set!` reporting `init type mismatch` / a type error, and
+- a `let`/`with`/`set!`/`return` reporting a type mismatch whose value names
+  the branches: `value is either CStr (line 7) or String (line 8)`, or
+  `value is void (the branch at line 6 has no value)` when one branch has no
+  value (a symbol branch carries no line, so it shows its type alone), and
 - a macro whose entire body is such a `cond` reporting
   `macro '<name>' must evaluate to &Node, not void`, at the body form's
   own line.

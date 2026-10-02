@@ -227,6 +227,17 @@
     (when (or (= k TY-STRUCT) (= k TY-UNION)) (return (sdef-display (tt 'sdef))))
     (return (symbol-as-view (type-spelling t)))))
 
+; A value's type for a message: a cond/if that lost its value names its branches.
+(defn value-type-display (v:&Val):StrView
+  (let (why:StrView (v 'join-why))
+    (when (> (why 'len) 0) (return why)))
+  (return (type-display (v 'type))))
+
+; Line 0 is a symbol branch: interned nodes carry no line of their own.
+(defn branch-type-display (t:?&Type line:i32):StrView
+  (when (= line 0) (return (type-display t)))
+  (return (fstr (type-display t) " (line " line ")")))
+
 ; A struct or union name for a message. A stamped instance is printed from the
 ; origin its stamp recorded, not by its mangled registry name (`Vector.pPt`).
 (defn sdef-display (sd:?&StructDef):StrView
@@ -1700,6 +1711,10 @@
 ; A string literal feeding a phi materializes HERE — the only place a phi operand
 ; may be defined — unconditionally since C8, so `(if c "a" "b")` is a `StrView`.
 (defn join-strlit-branch (v:ref:Val want:ptr line:i32):&Val
+  ; A CStr slot takes a literal directly, so a view here would only fail the join.
+  (when (and (!= want null) (= ((unsafe/cast &Type want) 'kind) TY-CSTR))
+    (collapse-strlit-cstr (as ptr v))
+    (return v))
   (let (tgt:ptr want)
     (when (or (= tgt null) (= (type-is-strview tgt) 0)) (set! tgt (strview-type)))
     (when (and (!= tgt null) (!= (v 'is-lit) 0) (!= (type-is-strview (v 'type)) 0))

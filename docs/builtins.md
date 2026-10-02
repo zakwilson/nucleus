@@ -818,7 +818,7 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 | `dotimes` | `(dotimes (var:type n) body)` | `(let (var:type 0) (while (< var n) body (inc! var)))` |
 | `doseq` | `(doseq (var iter-ref) body...)` | Loop over an iterator: calls `(next iter-ref)` each step, binds the element to `var`, and runs `body...`; stops on `none`. `iter-ref` must be a `(ref IterType)` where `IterType` conforms to `(Iterator E)`. See [Iterators](#iterators-libiteratornuc-stage-11). |
 | `into` | `(into coll-sym iter-ref)` | Drain an iterator into a collection: calls `(next iter-ref)` each step and `(conj coll-sym elem)` for each element; stops on `none`. Requires `coll-sym` to be a `(ref CollType)` with a `conj` method. See [Iterators](#iterators-libiteratornuc-stage-11). |
-| `->` | `(-> x form ...)` | Threads `x` through each form. If a form contains `_`, the value replaces `_`; otherwise inserts as first arg (thread-first). Bare symbols wrap as `(sym value)`. `_` is only special inside `->`. |
+| `->` | `(-> x form ...)` | Threads `x` through each form. If a form contains `_`, the value replaces `_`; otherwise inserts as first arg (thread-first). Bare symbols wrap as `(sym value)`, and so does any other bare step: `(-> v 0)` is `(0 v)`, not indexing — write `(-> v (_ 0))`. `_` is only special inside `->`. |
 
 `case` is multi-way equality dispatch: it compares `form` against each value `vi` with `=` and yields the first matching result `ri`. The final unpaired argument is the **required** default. Because `=` is overloadable, `case` works over any type with an equality (integers, enum constants, symbols, C strings). `form` is re-evaluated per comparison, so it should be side-effect free.
 
@@ -1017,7 +1017,7 @@ The full roster:
 
 | Form | Contract it waives |
 |---|---|
-| `unsafe/cast` | Full reinterpretation: same-kind, `ptr`↔`ptr` (any element, including unchecked→`&T` laundering with no null check), `ptr`↔`int`, `fn`↔`ptr`, int narrow/widen, `float`↔`float`, `int`↔`float`. See [Special Forms](special-forms.md#special-forms). |
+| `unsafe/cast` | Full reinterpretation: same-kind, `ptr`↔`ptr` (any element, including unchecked→`&T` laundering with no null check), `ptr`↔`int`, `fn`↔`ptr`, int narrow/widen, `float`↔`float`, `int`↔`float`. Refuses a capturing closure to a function-pointer type. See [Special Forms](special-forms.md#special-forms). |
 | `unsafe/funcall-ptr-1` / `-i32` / `-i64` / `-ptr` | Calls a `ptr` function pointer under a signature asserted out of thin air — no arity or type check against the actual callee. |
 | `unsafe/ptr+` | Pointer arithmetic — manufactures a new pointer at an unchecked offset; the result carries no bounds guarantee. |
 | `unsafe/import-private` | Reaches past a library's visibility boundary to import its private (`defn-`/`defvar-`/etc.) symbols. |

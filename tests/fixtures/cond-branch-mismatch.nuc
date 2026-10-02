@@ -1,0 +1,12 @@
+; An `if` whose branches disagree has no value; the error names both branch types.
+(import-use string)
+(import-use fmt)
+
+(defn describe (c:bool):CStr
+  (with (t:CStr (if c
+                  "unset"
+                  (str "n=" 3)))
+    (return t)))
+
+(defn main ():i32
+  (return 0))

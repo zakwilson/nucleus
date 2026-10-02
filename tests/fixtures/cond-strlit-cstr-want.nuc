@@ -1,0 +1,7 @@
+; A string-literal branch joins a CStr branch when the slot wants CStr.
+(defn pick (c:bool cs:CStr):CStr
+  (with (t:CStr (if c "lit" cs))
+    (return t)))
+
+(defn main ():i32
+  (return 0))

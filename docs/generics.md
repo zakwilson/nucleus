@@ -30,6 +30,15 @@ A `defn` whose name already exists but whose **parameter types differ** does not
 
 **Resolution (tiers).** A call resolves in order: **(0)** an exact match (structural type equality: primitives by identity, structs by definition, pointers by pointee); **(1)** a bounded-generic template whose constraints the arguments satisfy; **(2)** a safe **widen / untyped-int-literal** adaptation — an `i32` argument supplied where an `i64` method exists, or a literal `1` supplied where the parameter is `i8`/`f64` (the chosen arguments are coerced to the parameter types). A unique match wins; an ambiguous or absent match is a compile error listing the offending name. *(A `defcast`-based coercion tier is not implemented — no cast-rule registry exists in-tree.)*
 
+**When nothing matches.** The error names the argument types. If some methods take the first argument, each gets a note: where it is defined, its signature (a template's type variables bound from the arguments where they can be), and why each remaining argument does not fit, with the fix when there is one. A typed value widens only within its signedness, so an `i32` variable passed where `usize` is expected gets a note saying to use `(as usize …)`. Wrong argument counts and by-value structs where a reference is expected are named too:
+
+```
+main.nuc:26: error: no matching method for overloaded 'invoke' with argument types (&(Vector i32), i32)
+  note: lib/vector.nuc:158: (invoke self:&(Vector i32) i:usize):i32 -- argument 2: i32 does not convert to usize implicitly (signed to unsigned) -- use (as usize ...)
+```
+
+Taking a binding's address implicitly for a concrete method's `&S` parameter is an exact-match rule, so it cannot combine with widening another argument; the note names the argument to convert. If no method takes the first argument but one would take its address, a note says to pass `&name`. If no method takes the first argument at all, there are no notes. At most eight methods are listed.
+
 **Return types may differ per method** (`(defn parse (…):i32)` vs `(defn parse (…):f64)` is fine since they dispatch on arguments). A return type bound only by no argument (no way to choose from the call) is out of scope.
 
 **Cross-unit.** Overloaded functions export through `.nuch` as `defmethod` forms and dispatch correctly from an importing translation unit (link the importer against the library's `.o`). See [.nuch Header Format](compiler.md#nuch-header-format).

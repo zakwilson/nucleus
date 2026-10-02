@@ -1,0 +1,12 @@
+; A homogeneous struct read by value with a computed selector still takes the
+; field path, even though its `invoke` (taking `&V3`) would supply the hint.
+(import-use node)
+
+(defstruct V3 x:i32 y:i32 z:i32)
+
+(defn invoke (self:&V3 i:usize):i32 (return (self 'x)))
+
+(defn main ():i32
+  (let (v:V3 (V3 1 2 3)
+        s:ptr 'y)
+    (return (v s))))

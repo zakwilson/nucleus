@@ -2710,6 +2710,7 @@
     (while (and (= done 0) (< p len))
       (let (c:i32 (cstr-byte-at buf p))
         (case c
+          (:or 34 39) (set! p (c-skip-quoted buf p len))
           123 (do (inc! depth) (set! p (+ p 1)))
           125 (do (when (> depth 0) (set! depth (- depth 1)))
                         (set! p (+ p 1)))
@@ -2729,10 +2730,24 @@
         depth:i32 1)
     (while (and (< p len) (> depth 0))
       (let (c:i32 (cstr-byte-at buf p))
-        (when (= c 123) (inc! depth))
-        (when (= c 125) (set! depth (- depth 1))))
-      (set! p (+ p 1)))
+        (cond
+          (or (= c 34) (= c 39)) (set! p (c-skip-quoted buf p len))
+          ; A linemarker's file name may hold a quote.
+          (= c 35) (while (and (< p len) (!= (cstr-byte-at buf p) 10)) (set! p (+ p 1)))
+          true (do (when (= c 123) (inc! depth))
+                   (when (= c 125) (set! depth (- depth 1)))
+                   (set! p (+ p 1))))))
     (return p)))
+
+; Position past the character or string literal whose opening quote is at `pos`.
+; A `'{'` (GLib's GVariantClass) must not count toward brace depth.
+(defn c-skip-quoted (buf:ptr pos:i64 len:i64):i64
+  (let (q:i32 (cstr-byte-at buf pos)
+        p:i64 (+ pos 1))
+    (while (and (< p len) (!= (cstr-byte-at buf p) q))
+      (when (= (cstr-byte-at buf p) 92) (set! p (+ p 1)))
+      (set! p (+ p 1)))
+    (return (if (< p len) (+ p 1) len))))
 
 ; Scan one top-level construct at `pos`, registering the type NAME it introduces.
 ; Returns the position to resume from.
@@ -3144,11 +3159,7 @@
           (or (= c 41) (= c 93) (= c 125)) (do (set! depth (- depth 1)) (set! p (+ p 1)))
           ; A linemarker, or a character literal that may hold a `,`.
           (= c 35) (while (and (< p len) (!= (cstr-byte-at buf p) 10)) (set! p (+ p 1)))
-          (= c 39) (do (set! p (+ p 1))
-                       (while (and (< p len) (!= (cstr-byte-at buf p) 39))
-                         (when (= (cstr-byte-at buf p) 92) (set! p (+ p 1)))
-                         (set! p (+ p 1)))
-                       (set! p (+ p 1)))
+          (or (= c 34) (= c 39)) (set! p (c-skip-quoted buf p len))
           true (set! p (+ p 1)))))
     (return len)))
 
