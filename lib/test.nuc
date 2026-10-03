@@ -25,6 +25,8 @@
 (import-use file)
 (import-use allocator)
 (import-use read)
+(import-use keyword)
+(import-use edn)
 
 (deferror test-failed "assertion failed")
 (deferror test-skipped "test skipped")
@@ -201,30 +203,30 @@
 ; 1. contains-substring
 (defn check-contains (hay:StrView needle:StrView):!void
   (when (contains? hay needle) (return (ok)))
-  (fail! "expected to contain " (sexp-quote needle) "\n     in: " (test-show hay)))
+  (fail! "expected to contain " (quoted needle) "\n     in: " (test-show hay)))
 
 (defn check-not-contains (hay:StrView needle:StrView):!void
   (when (not (contains? hay needle)) (return (ok)))
-  (fail! "expected NOT to contain " (sexp-quote needle) "\n     in: " (test-show hay)))
+  (fail! "expected NOT to contain " (quoted needle) "\n     in: " (test-show hay)))
 
 ; 2. contains-whole-line
 (defn check-line (hay:StrView want:StrView):!void
   (when (has-line? hay want) (return (ok)))
-  (fail! "expected a line " (sexp-quote want) "\n     in: " (test-show hay)))
+  (fail! "expected a line " (quoted want) "\n     in: " (test-show hay)))
 
 ; 3. equals-string
 (defn check-eq (got:StrView want:StrView):!void
   (when (= got want) (return (ok)))
-  (fail! "expected " (sexp-quote want) "\n     got " (sexp-quote (test-show got))))
+  (fail! "expected " (quoted want) "\n     got " (quoted (test-show got))))
 
 ; 4. matches-with-wildcards -- some line matches the glob in full
 (defn check-match (hay:StrView pat:StrView):!void
   (when (has-matching-line? hay pat) (return (ok)))
-  (fail! "expected a line matching " (sexp-quote pat) "\n     in: " (test-show hay)))
+  (fail! "expected a line matching " (quoted pat) "\n     in: " (test-show hay)))
 
 (defn check-not-match (hay:StrView pat:StrView):!void
   (when (not (has-matching-line? hay pat)) (return (ok)))
-  (fail! "expected NO line matching " (sexp-quote pat) "\n     in: " (test-show hay)))
+  (fail! "expected NO line matching " (quoted pat) "\n     in: " (test-show hay)))
 
 ; 5. files-identical
 (defn read-file (path:StrView):!String
@@ -247,15 +249,15 @@
             wd:bool (lines-iter-done &wi))
         (when gd
           (fail! "output ends at line " (- n 1) "; expected line " n ": "
-                 (sexp-quote (lines-iter-next &wi))))
+                 (quoted (lines-iter-next &wi))))
         (when wd
           (fail! "expected output ends at line " (- n 1) "; got line " n ": "
-                 (sexp-quote (lines-iter-next &gi))))
+                 (quoted (lines-iter-next &gi))))
         (let (g:StrView (lines-iter-next &gi)
               w:StrView (lines-iter-next &wi))
           (when (!= g w)
-            (fail! "line " n " differs\n     want " (sexp-quote w)
-                   "\n     got  " (sexp-quote g)))))))
+            (fail! "line " n " differs\n     want " (quoted w)
+                   "\n     got  " (quoted g)))))))
   ; Equal line by line but not byte for byte: a trailing newline, which a
   ; line iterator cannot see and a golden file records.
   (fail! "output differs only in trailing bytes (want " (as i64 (strview-byte-len &want))
@@ -273,7 +275,7 @@
 ; 6. output-empty / non-empty
 (defn check-empty (s:StrView):!void
   (when (= (s 'len) 0) (return (ok)))
-  (fail! "expected empty, got " (sexp-quote (test-show s))))
+  (fail! "expected empty, got " (quoted (test-show s))))
 
 (defn check-non-empty (s:StrView):!void
   (when (> (s 'len) 0) (return (ok)))
@@ -325,23 +327,23 @@
 ; A glob that must match a line INSIDE one function's body.
 (defn check-in-define (module:StrView fname:StrView pat:StrView):!void
   (match (ir-define module fname)
-    (none (fail! "no `define` for " (sexp-quote fname) " in the module"))
+    (none (fail! "no `define` for " (quoted fname) " in the module"))
     ((some body)
       (when (has-matching-line? body pat) (return (ok)))
-      (fail! "in @" fname ": expected a line matching " (sexp-quote pat)
+      (fail! "in @" fname ": expected a line matching " (quoted pat)
              "\n     body: " (test-show body)))))
 
 (defn check-not-in-define (module:StrView fname:StrView pat:StrView):!void
   (match (ir-define module fname)
-    (none (fail! "no `define` for " (sexp-quote fname) " in the module"))
+    (none (fail! "no `define` for " (quoted fname) " in the module"))
     ((some body)
       (when (not (has-matching-line? body pat)) (return (ok)))
-      (fail! "in @" fname ": expected NO line matching " (sexp-quote pat)))))
+      (fail! "in @" fname ": expected NO line matching " (quoted pat)))))
 
 ; ---------------------------------------------------------------------------
 ; Compiler diagnostics (§T4.2)
 ;
-; `nucleusc --diagnostics=sexp` writes one form per diagnostic. Reading them
+; `nucleusc --diagnostics=edn` writes one map per diagnostic. Reading them
 ; back makes an assertion about a diagnostic ONE comparison against ONE record.
 ; The shell suite greps stderr twice, once for the location and once for the
 ; message, and never checks that the two came from the same diagnostic -- and
@@ -350,57 +352,30 @@
 ; ---------------------------------------------------------------------------
 
 (defstruct Diagnostic
-  severity:Symbol
+  severity:Keyword
   file:StrView
   line:i32
   message:StrView
   notes:&(Vector StrView))
 
-; The operands of the `(key …)` entry named `name`, or null.
-(defn diag-entry (body:?&Node name:StrView):?&Node
-  (let (cur:?&Node body)
-    (while (> (node-len cur) 0)
-      (let (e:?&Node (node-first cur))
-        (when (and (!= e null) (= (e 'kind) NODE-LIST))
-          (let (h:?&Node (node-first e))
-            (when (and (!= h null) (= (h 'kind) NODE-SYM)
-                       (= (symbol-as-view (h 's)) name))
-              (return (node-rest e))))))
-      (set! cur (node-rest cur)))
-    (return null)))
-
-; A kind check, not a null check: `Node.s` is null on an INT or a FLOAT, and
-; `symbol-as-view` of null is a segfault, not an empty view.
-(defn diag-text (n:?&Node):StrView
-  (when (= n null) (return ""))
-  (let (k:i32 (n 'kind))
-    (when (and (!= k NODE-SYM) (!= k NODE-STR) (!= k NODE-KEYWORD)) (return "")))
-  (return (symbol-as-view (n 's))))
-
-(defn diag-of-node (form:?&Node):!Diagnostic
-  (when (or (= form null) (!= (form 'kind) NODE-LIST))
-    (return (err! test-bad-args)))
-  (let (body:?&Node (node-rest form)
-        d:&Diagnostic (alloca Diagnostic)
-        sev:?&Node (diag-entry body "severity")
-        file:?&Node (diag-entry body "file")
-        line:?&Node (diag-entry body "line")
-        msg:?&Node (diag-entry body "message")
-        notes:?&Node (diag-entry body "notes"))
-    (when (or (= sev null) (= file null) (= line null) (= msg null))
+; A `nil` file reads as "" and a `nil` line as -1, the compiler's own spelling
+; of "no location".
+(defn diag-of-node (m:?&Node):!Diagnostic
+  (when (!= (edn-kind m) EDN-MAP) (return (err! test-bad-args)))
+  (let (d:&Diagnostic (alloca Diagnostic)
+        sev:?&Node (edn-get m "severity")
+        file:?&Node (edn-get m "file")
+        line:?&Node (edn-get m "line")
+        notes:?&Node (edn-get m "notes"))
+    (when (or (= file null) (= line null) (!= (edn-kind notes) EDN-VECTOR))
       (return (err! test-bad-args)))
-    (let (sn:?&Node (node-first sev)
-          ln:?&Node (node-first line))
-      (when (or (= sn null) (= ln null)) (return (err! test-bad-args)))
-      (set! (d 'severity) (sn 's))
-      (set! (d 'line) (unsafe/cast i32 (ln 'i))))
-    (set! (d 'file) (diag-text (node-first file)))
-    (set! (d 'message) (diag-text (node-first msg)))
+    (set! (d 'severity) (try (edn-keyword sev)))
+    (set! (d 'file) (if (= (edn-kind file) EDN-NIL) "" (try (edn-str file))))
+    (set! (d 'line) (if (= (edn-kind line) EDN-NIL) -1 (unsafe/cast i32 (try (edn-int line)))))
+    (set! (d 'message) (try (edn-str (edn-get m "message"))))
     (set! (d 'notes) (vector-new-in (arena-allocator &g-test-alloc)))
-    (let (cur:?&Node notes)
-      (while (> (node-len cur) 0)
-        (conj (d 'notes) (diag-text (node-first cur)))
-        (set! cur (node-rest cur))))
+    (dotimes (i (edn-count notes))
+      (conj (d 'notes) (try (edn-str (edn-nth notes (as usize i))))))
     (return (ok @d))))
 
 ; Reads every diagnostic in `text`, which may be the compiler's raw stderr.
@@ -412,9 +387,8 @@
         it:LineIter (strview-lines &text))
     (while (not (lines-iter-done &it))
       (let (line:StrView (lines-iter-next &it))
-        (when (strview-has-prefix line "(diagnostic ")
-          (let (forms:?&Node (try (read-all line)))
-            (conj &out (try (diag-of-node (node-first forms))))))))
+        (when (strview-has-prefix line "{:severity ")
+          (conj &out (try (diag-of-node (try (edn-parse line))))))))
     (return (ok out))))
 
 ; Every diagnostic, one per line, for a failure message.
@@ -425,7 +399,7 @@
     (when (= n 0) (str-into &s "\n     (no diagnostics)"))
     (while (< i n)
       (let (d:Diagnostic (invoke ds i))
-        (str-into &s "\n     " (symbol-as-view (d 'severity)) " "
+        (str-into &s "\n     " (keyword-name (d 'severity)) " "
                   (d 'file) ":" (d 'line) ": " (d 'message))
         (let (m:usize (count (d 'notes))
               j:usize 0)
@@ -436,7 +410,7 @@
     (return s)))
 
 (defn diag-matches (d:&Diagnostic severity:StrView file:StrView line:i32 needle:StrView):bool
-  (return (and (= (symbol-as-view (d 'severity)) severity)
+  (return (and (= (keyword-name (d 'severity)) severity)
                (= (d 'file) file)
                (= (d 'line) line)
                (contains? (d 'message) needle))))
@@ -453,7 +427,7 @@
         (when (diag-matches &d severity file line needle) (return (ok))))
       (set! i (+ i 1))))
   (let (l:String (diag-list-text ds))
-    (fail! "expected " severity " at " file ":" line " containing " (sexp-quote needle)
+    (fail! "expected " severity " at " file ":" line " containing " (quoted needle)
            "\n     got:" (string-as-view &l))))
 
 (defn check-error-at (ds:&(Vector Diagnostic) file:StrView line:i32 needle:StrView):!void
@@ -469,12 +443,12 @@
         i:usize 0)
     (while (< i n)
       (let (d:Diagnostic (invoke ds i))
-        (when (and (= (symbol-as-view (d 'severity)) "error")
+        (when (and (= (keyword-name (d 'severity)) "error")
                    (contains? (d 'message) needle))
           (return (ok))))
       (set! i (+ i 1))))
   (let (l:String (diag-list-text ds))
-    (fail! "expected an error containing " (sexp-quote needle)
+    (fail! "expected an error containing " (quoted needle)
            "\n     got:" (string-as-view &l))))
 
 ; A note on a diagnostic at that same location -- the pairing the two-grep
@@ -492,7 +466,7 @@
               (set! j (+ j 1))))))
       (set! i (+ i 1))))
   (let (l:String (diag-list-text ds))
-    (fail! "expected a note at " file ":" line " containing " (sexp-quote needle)
+    (fail! "expected a note at " file ":" line " containing " (quoted needle)
            "\n     got:" (string-as-view &l))))
 
 ; No location pinned: some diagnostic carries a note containing `needle`.
@@ -508,7 +482,7 @@
           (set! j (+ j 1))))
       (set! i (+ i 1))))
   (let (l:String (diag-list-text ds))
-    (fail! "expected a note containing " (sexp-quote needle)
+    (fail! "expected a note containing " (quoted needle)
            "\n     got:" (string-as-view &l))))
 
 ; Stage 15 W4a's accept criterion, as a field check: the shell version greps
@@ -530,42 +504,40 @@
         i:usize 0)
     (while (< i n)
       (let (d:Diagnostic (invoke ds i))
-        (when (= (symbol-as-view (d 'severity)) "error")
+        (when (= (keyword-name (d 'severity)) "error")
           (let (l:String (diag-list-text ds))
             (fail! "expected no errors, got:" (string-as-view &l)))))
       (set! i (+ i 1))))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
-; Reporting -- s-expression result records (§T8.5)
+; Reporting -- EDN result records (design/stage22-edn/test-records.md)
 ; ---------------------------------------------------------------------------
 
-; A `StrView` wrapper that renders as an s-expression string literal, so a
-; message containing a quote or a newline survives being written and read back.
-(defstruct SexpStr v:StrView)
+; A `StrView` that renders as an EDN string literal, so a message containing a
+; quote or a newline survives being written and read back.
+(defstruct Quoted v:StrView)
 
-(defn sexp-quote (v:StrView):SexpStr
-  (let (q:&SexpStr (alloca SexpStr))
+(defn quoted (v:StrView):Quoted
+  (let (q:&Quoted (alloca Quoted))
     (set! (q 'v) v)
     (return @q)))
 
-(extend SexpStr ToStr)
-(defn to-str (self:SexpStr out:&String):!void
-  (sexp-write-string out (self 'v))
+(extend Quoted ToStr)
+(defn to-str (self:Quoted out:&String):!void
+  (edn-write-string out (self 'v))
   (return (ok)))
 
+; `:status` leads, so `make test` counts verdicts by a line's first bytes.
 (defn test-report (tc:&TestCase status:i32):void
   (let (b:&String (io-buf-begin))
-    (str-into b "(test (name " (sexp-quote (symbol-as-view (tc 'name)))
-              ") (file " (sexp-quote (tc 'file))
-              ") (line " (tc 'line) ") (status ")
-    (cond
-      (= status TEST-PASS) (str-into b "pass)")
-      (= status TEST-SKIP) (str-into b "skip) (message "
-                                     (sexp-quote (test-failure-text)) ")")
-      true                 (str-into b "fail) (message "
-                                     (sexp-quote (test-failure-text)) ")"))
-    (str-into b ")\n")
+    (str-into b "{:status " (case status TEST-PASS ":pass" TEST-SKIP ":skip" ":fail")
+              " :name " (quoted (symbol-as-view (tc 'name)))
+              " :file " (quoted (tc 'file))
+              " :line " (tc 'line))
+    (when (!= status TEST-PASS)
+      (str-into b " :message " (quoted (test-failure-text))))
+    (str-into b "}\n")
     (io-buf-end 1)))
 
 ; ---------------------------------------------------------------------------

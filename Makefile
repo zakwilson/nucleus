@@ -118,11 +118,11 @@ NUCTESTS := $(BUILD)/nuctests
 # for a run that cannot accept one.
 NUCTESTS_ARGS :=
 
-$(NUCTESTS): tests/nuctests.nuc $(wildcard tests/suite-*.nuc) tests/manifest/diagnostics.sexp $(wildcard lib/*.nuc) $(BIN) | $(BUILD)
+$(NUCTESTS): tests/nuctests.nuc $(wildcard tests/suite-*.nuc) tests/manifest/diagnostics.edn $(wildcard lib/*.nuc) $(BIN) | $(BUILD)
 	$(BIN) tests/nuctests.nuc -o $@
 
-# The suite's stdout is a machine-readable record stream, so the human summary
-# is made here rather than by polluting it.
+# The suite's stdout is a stream of EDN records, one per line with `:status`
+# first, so the human summary is made here by matching line starts.
 #
 # Shards are processes, not threads: each test owns a scratch directory keyed by
 # its name, so the split needs no locking. NUCTESTS_JOBS=1 restores a serial run.
@@ -140,9 +140,9 @@ run-nuctests: $(NUCTESTS)
 	    cat $(BUILD)/nuctests.out.$$i >> $(BUILD)/nuctests.out; \
 	    rm -f $(BUILD)/nuctests.out.$$i; i=$$(($$i+1)); \
 	  done; \
-	  grep -F '(status fail)' $(BUILD)/nuctests.out || true; \
-	  grep -F '(status skip)' $(BUILD)/nuctests.out || true; \
-	  echo "nuctests: $$(grep -cF '(status pass)' $(BUILD)/nuctests.out) passed, $$(grep -cF '(status fail)' $(BUILD)/nuctests.out) failed, $$(grep -cF '(status skip)' $(BUILD)/nuctests.out) skipped"; \
+	  grep '^{:status :fail ' $(BUILD)/nuctests.out || true; \
+	  grep '^{:status :skip ' $(BUILD)/nuctests.out || true; \
+	  echo "nuctests: $$(grep -c '^{:status :pass ' $(BUILD)/nuctests.out) passed, $$(grep -c '^{:status :fail ' $(BUILD)/nuctests.out) failed, $$(grep -c '^{:status :skip ' $(BUILD)/nuctests.out) skipped"; \
 	  exit $$s
 
 

@@ -25,7 +25,7 @@
         flag:String (str "--target=" target))
     (command-arg &c (string-as-view &flag))
     (when (not (= extra "")) (command-arg &c extra))
-    (command-arg &c "--diagnostics=sexp")
+    (command-arg &c "--diagnostics=edn")
     (command-arg &c "--emit-llvm")
     (command-arg &c path)
     (let (r:Compiled (try (compiled-run &c)))
@@ -146,13 +146,13 @@
 ; (design/stage21-cleanup/c-header-include-paths.md §5)
 ; ---------------------------------------------------------------------------
 
-; `nucleusc [a] [b] --diagnostics=sexp --emit-llvm <path>`; an empty slot adds
+; `nucleusc [a] [b] --diagnostics=edn --emit-llvm <path>`; an empty slot adds
 ; nothing. Two slots because the verbatim unit passes `-I` AND `-D`.
 (defn cflag-emit (a:StrView b:StrView path:StrView):!Compiled
   (let (c:Command (command (compiler-path)))
     (when (not (= a "")) (command-arg &c a))
     (when (not (= b "")) (command-arg &c b))
-    (command-arg &c "--diagnostics=sexp")
+    (command-arg &c "--diagnostics=edn")
     (command-arg &c "--emit-llvm")
     (command-arg &c path)
     (let (r:Compiled (try (compiled-run &c)))
@@ -1040,13 +1040,13 @@ int main(void) {
     (command-arg &c "--target=avr")
     (command-arg &c (string-as-view &cflag))
     (when (not (= mmcu "")) (command-arg &c (string-as-view &mflag)))
-    (command-arg &c "--diagnostics=sexp")
+    (command-arg &c "--diagnostics=edn")
     (command-arg &c path)
     (command-arg &c "-o")
     (command-arg &c (string-as-view &elf))
     (let (r:Compiled (try (compiled-run &c)))
       (try (check-silent &r (string-as-view &what)))
-      ; A link-step failure is plain text on stderr, not a sexp diagnostic.
+      ; A link-step failure is plain text on stderr, not an EDN diagnostic.
       (when (not (r 'ok?))
         (fail! (string-as-view &what) " failed (exit " (r 'exit) ")\n     "
                (test-show (string-as-view (ref r 'raw-text)))))
@@ -1091,7 +1091,7 @@ int main(void) {
         (let (tail:StrView (strview-drop-bytes rest k))
           (set! rest (strview-trim-start &tail)))
         (set! i (+ i 1)))))
-  (fail! "no field " n " in " (sexp-quote l)))
+  (fail! "no field " n " in " (quoted l)))
 
 ; The `text` and `data` columns of `avr-size`. A freestanding program is tens of
 ; bytes; a pulled-in host runtime is kilobytes and brings initialized data with
@@ -1370,7 +1370,7 @@ int main(void) {
         ov:StrView (string-as-view &obj)
         c:Command (command (compiler-path)))
     (command-arg &c "--target=riscv64-unknown-linux-gnu")
-    (command-arg &c "--diagnostics=sexp")
+    (command-arg &c "--diagnostics=edn")
     (command-arg &c "-c")
     (command-arg &c "tests/fixtures/riscv-features.nuc")
     (command-arg &c "-o")

@@ -626,11 +626,11 @@ foo:(bar)
 ; body for body.
 (defn s21-define-body (ir:StrView name:StrView):!StrView
   (match (ir-define ir name)
-    (none (fail! "no `define` for " (sexp-quote name)))
+    (none (fail! "no `define` for " (quoted name)))
     ((some block)
       (match (strview-find-byte &block (as ui8 10))
         ((some i) (return (ok (strview-drop-bytes block (+ i 1)))))
-        (none (fail! "a one-line `define` for " (sexp-quote name)))))))
+        (none (fail! "a one-line `define` for " (quoted name)))))))
 
 ; The second face of H5: `value-annot-type` gates the value-position annotation
 ; on the same predicate, so `q:?&Pt` used to be refused as an unknown type while
@@ -4397,7 +4397,7 @@ int main(void) { printf(\"%d %d\\n\", s21or_add(1, 2), s21or_rest(7, 0)); return
         ov:StrView (string-as-view &obj)
         c:Command (command (compiler-path)))
     (command-arg &c flag)
-    (command-arg &c "--diagnostics=sexp")
+    (command-arg &c "--diagnostics=edn")
     (command-arg &c "-c")
     (command-arg &c "tests/fixtures/s21-fp-reduction.nuc")
     (command-arg &c "-o")

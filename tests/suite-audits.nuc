@@ -17,7 +17,7 @@
 ;     requires exit 0. Reimplementing them here would buy a different spelling
 ;     of the same `spawn` and a second thing to keep in step.
 ;
-; `s18-diagnostics-sexp` is neither, but it belongs beside them: it is the one
+; `s18-diagnostics-edn` is neither, but it belongs beside them: it is the one
 ; unit that asserts about the diagnostic *stream* rather than about a
 ; diagnostic, so it is the only caller of `nucleusc-raw`.
 
@@ -345,7 +345,7 @@
   (return (ok)))
 
 ; ---------------------------------------------------------------------------
-; Stage 18 TF-5: --diagnostics=sexp
+; Stage 18 TF-5: --diagnostics=edn
 ; ---------------------------------------------------------------------------
 
 ; The structured back-end must carry exactly what the text one prints, and carry
@@ -356,8 +356,8 @@
 ; The text back-end's byte-identity is not asserted here beyond claim 5: the IR
 ; snapshot's `.ll.err` artifacts compare every fixture's diagnostic text byte
 ; for byte.
-(deftest s18-diagnostics-sexp
-  ; 1. An error: one form, on one line, with an empty `notes`. 5. `text` is the
+(deftest s18-diagnostics-edn
+  ; 1. An error: one map, on one line, with an empty `:notes`. 5. `text` is the
   ;    default, and naming it explicitly is a no-op — asserted against the same
   ;    file so "the location the text mode printed" is a comparison rather than
   ;    a remark, and pinned, because two empty streams are also equal.
@@ -366,17 +366,17 @@
 (defn main ():i32 (return 0))
 "))
         pv:StrView (string-as-view &p)
-        sexp:String (str "(diagnostic (severity error) (file \"" pv "\") (line 2)"
-                         " (message \"get: no field 'z' on struct 'Pt'\") (notes))\n")
+        edn:String (str "{:severity :error :file \"" pv "\" :line 2"
+                        " :message \"get: no field 'z' on struct 'Pt'\" :notes []}\n")
         text:String (str pv ":2: error: get: no field 'z' on struct 'Pt'\n")
-        s:Ran (try (nucleusc-raw "--diagnostics=sexp" pv))
+        s:Ran (try (nucleusc-raw "--diagnostics=edn" pv))
         a:Ran (try (nucleusc-raw "" pv))
         b:Ran (try (nucleusc-raw "--diagnostics=text" pv)))
-    (try (check-golden (string-as-view (ref s 'err)) (string-as-view &sexp)))
+    (try (check-golden (string-as-view (ref s 'err)) (string-as-view &edn)))
     (try (check-golden (string-as-view (ref a 'err)) (string-as-view &text)))
     (try (check-golden (string-as-view (ref b 'err)) (string-as-view &text)))
     (drop &b) (drop &a) (drop &s)
-    (drop &text) (drop &sexp) (drop &p))
+    (drop &text) (drop &edn) (drop &p))
 
   ; 2. A note is a FIELD. The text mode prints it as a `  note: ` line, which is
   ;    where it lives inside the message today — the split is the whole point,
@@ -402,25 +402,18 @@
     (drop &c)
     (drop &p))
 
-  ; 4. A field carrying a `"` survives the round trip. The path is the reachable
-  ;    one — a filename may hold any byte — and it exercises the same escaper
-  ;    every field uses. `node-str` reprints the canonical form, so the check is
-  ;    that lib/read.nuc read back the bytes the compiler wrote.
-  (let (p:String (try (test-write-file "a\"b.nuc" "(defn main ():i32 (return (nope 1)))\n"))
+  ; 4. A field carrying a `"` and a control byte survives the round trip. The
+  ;    path is the reachable one -- a filename may hold any byte but NUL -- and
+  ;    it exercises the same escaper every field uses.
+  (let (p:String (try (test-write-file "a\"b\u0001.nuc" "(defn main ():i32 (return (nope 1)))\n"))
         pv:StrView (string-as-view &p)
-        r:Ran (try (nucleusc-raw "--diagnostics=sexp" pv))
+        r:Ran (try (nucleusc-raw "--diagnostics=edn" pv))
         ev:StrView (string-as-view (ref r 'err)))
-    (try (check-contains ev "a\\\"b.nuc"))
-    (match (read-all ev)
-      ((ok forms)
-        (let (back:String (string-new))
-          (dotimes (i (node-len forms))
-            (node-write &back (node-at forms i))
-            (str-into &back "\n"))
-          (try (check-golden (string-as-view &back) ev))
-          (drop &back)))
+    (try (check-contains ev "a\\\"b\\u0001.nuc"))
+    (match (edn-parse ev)
+      ((ok m) (try (check-eq (try (edn-str (edn-get m "file"))) pv)))
       ((err e)
-        (fail! "lib/read.nuc could not read the sexp diagnostic\n     line "
+        (fail! "lib/edn.nuc could not read the diagnostic\n     line "
                (e 'line) ": " (e 'msg))))
     (drop &r)
     (drop &p))

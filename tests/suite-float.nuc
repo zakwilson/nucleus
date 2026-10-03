@@ -250,7 +250,7 @@ f128|__float128|q"))
         (match (strview-rfind-byte (ref rest) 41)
           ((some close) (return (ok (strview-take-bytes rest close))))
           (none (fail! "unterminated argument list: " (test-show l))))))
-    (none (fail! "no " (sexp-quote open) " in " (test-show l)))))
+    (none (fail! "no " (quoted open) " in " (test-show l)))))
 
 ; `<ret> (<params>)` for one `define`, with the SSA names gone.
 (defn fl-signature (module:StrView name:StrView):!String
@@ -272,7 +272,7 @@ f128|__float128|q"))
             (drop &pn)
             (drop &open)
             (return (ok sig))))
-        (none (fail! "no " (sexp-quote ov) " in " (test-show l)))))))
+        (none (fail! "no " (quoted ov) " in " (test-show l)))))))
 
 ; The types of a call's arguments, `, `-joined: each is `<type> <ssa name>`,
 ; and the type is the claim the shell made with five `[^,]*` wildcards.

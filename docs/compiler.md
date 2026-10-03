@@ -19,7 +19,7 @@ By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` un
 | `--dump-ast` | Print the file's own top-level forms — the reader's output, before `desugar` and before the prelude is prepended — one form per line to stdout, then exit 0. A collection literal prints as the reader produced it — `[1 2]` is `(vector-lit 1 2)` — with no hygiene gensym: the compiler mints that at emit time, so it is not part of the tree. |
 | `-i` / `--interactive` | Start the REPL (interactive Read-Eval-Print Loop). |
 | `-I<path>` / `-I <path>` | Add a directory to the import search path. Searched after the source file's directory and `lib/`. |
-| `--diagnostics=text\|sexp` | Format for compiler diagnostics on stderr. Default `text` (`path:line: error: msg` plus indented `  note:` lines). With `sexp`, each diagnostic is one s-expression on one line, read back by `lib/read.nuc` — see [Structured diagnostics](#structured-diagnostics). |
+| `--diagnostics=text\|edn` | Format for compiler diagnostics on stderr. Default `text` (`path:line: error: msg` plus indented `  note:` lines). With `edn`, each diagnostic is one EDN map on one line, read back by `lib/edn.nuc` — see [Structured diagnostics](#structured-diagnostics). |
 | `--warn-ct-shadow` / `--no-warn-ct-shadow` | Warn when a macro or `(compile-time …)` body calls one of the program's own `defn`s — or reads one of its own `defvar` globals — whose name the compiler binary also exports. **On by default.** The program's is the one that runs — see [What a macro body may call](macros.md#what-a-macro-body-may-call) — but before this rule existed the compiler's ran instead, silently, so the collision is worth naming once. Nothing in `lib/`, `src/` or `examples/` raises it; rename to silence it, or pass `--no-warn-ct-shadow`. |
 | `--repl-format=text\|json` | Format for REPL error output. Default `text` (legacy `  error: <msg>` lines). With `json`, each error is emitted as a single-line JSON object: `{"file":..,"line":..,"message":..}`. Suitable for agent-driven REPL sessions. |
 | `--target=<triple>` | Cross-compile: set the output module's target triple and datalayout (sourced from LLVM) instead of the host's. In-process JIT modules (compile-time bodies, `defmacro`, REPL) always stay on the host — so a macro or `(compile-time …)` body that calls **the program's own** code is refused under a `--target=` that differs from the host triple, naming both (see [Cross-compiling a macro body](macros.md#-sharp-edge-cross-compiling-a-macro-body)). A body that calls only the compile-time runtime (`node-at`, `intern-symbol`, …) cross-compiles unaffected, which is every macro in `lib/` and `examples/`. Registered backends: X86 (`x86_64`/`i386`), AArch64 (`aarch64`), ARM (`arm`), AVR (`avr`), RISCV (`riscv64`); Linux, Darwin, and Windows (msvc/gnu) triples all resolve. Pointer size, `size_t`, and struct layout follow the selected target — and so do the C headers an `(import-use "…")` reads, since the `clang -E` that reads them is given the same triple (see [C headers under `--target=`](#c-headers-under---target)). The reloc model is chosen per target (static for `avr`, PIC otherwise). A `riscv64` triple additionally defaults CPU/features/ABI to `generic-rv64` / `+m,+a,+f,+d,+c` / `lp64d` (RV64GC, the glibc-compatible baseline) — LLVM's own empty-features default is bare RV64I with a soft-float ABI, silently incompatible with a real riscv64 Linux target, so a correct default (not a user-supplied flag) is load-bearing here. When the resolved ABI is non-empty, `--emit-llvm` output carries a `!llvm.module.flags` block pinning `target-abi` (e.g. `!"lp64d"`); every other target emits no module-flags block at all. On `riscv64`, struct-by-value follows the lp64d **hard-float** calling convention: an aggregate is first flattened (nested structs and arrays expand into their scalar members; a union never flattens), and a flattened list of exactly one FP real, two FP reals, or one FP real plus one integer — in either order — travels in FP registers (`float`, `{double,double}`, `{i32,float}`, `{float,i32}`) as long as the registers it needs are still free at that argument position. Anything else — three or more members, a union, an over-wide member, a **variadic** argument, or exhausted registers (fa0-fa7 / a0-a7, with a hidden `sret` pointer spending one of the latter) — takes the integer convention, coercing a struct ≤ 16 bytes to `i64`/`{i64,i64}`; a struct over 16 bytes passes as a plain pointer / returns via `sret` (no `byval`). A return is classified against a0/a1/fa0/fa1, which are always available, so a return never falls back for want of registers — see [Passing and returning structs by value](structs-unions.md#passing-and-returning-structs-by-value). On `avr`, every struct/union passed or returned by value (any size) uses the aarch64-style plain-pointer `ABI-MEMORY` convention — no `byval`, since the SysV eightbyte register-chunk model that other targets use doesn't fit an 8-bit target with no such registers (see [Passing and returning structs by value](structs-unions.md#passing-and-returning-structs-by-value)) — and `f64`/`double` is a compile-time error (no hardware double), both as an explicit annotation and as a bare float literal's default type; `f32` and `i64` remain fully supported (see [Built-in Types](types.md#built-in-types)). |
@@ -60,33 +60,33 @@ the ambient enclosing line for the one site that cannot be handed a node
 
 ### Structured diagnostics
 
-`--diagnostics=sexp` writes each diagnostic as one s-expression, on one line,
-on stderr — the same stream and the same order as the text form, so a caller's
-`2>&1 >/dev/null` is unchanged:
+`--diagnostics=edn` writes each diagnostic as one [EDN](edn.md) map, on one
+line, on stderr — the same stream and the same order as the text form, so a
+caller's `2>&1 >/dev/null` is unchanged:
 
-```lisp
-(diagnostic (severity error) (file "src/x.nuc") (line 12)
-            (message "get: no field 'z' on struct 'Pt'") (notes))
+```clojure
+{:severity :error :file "src/x.nuc" :line 12 :message "get: no field 'z' on struct 'Pt'" :notes []}
 ```
 
-| Field | |
+| Key | |
 | --- | --- |
-| `severity` | `error` or `warning` — a bare symbol, so it compares by interned identity after a read. |
-| `file` | The path, as a string. Empty when there is none. |
-| `line` | The line. `-1` when the message is about the toolchain rather than about your source. |
-| `message` | The first line of the diagnostic — never a note. |
-| `notes` | Zero or more strings. What the text form prints as indented `  note:` lines. |
+| `:severity` | `:error` or `:warning`. It comes first, so a line that is a diagnostic starts with `{:severity `. |
+| `:file` | The path, as a string. `nil` when there is none. |
+| `:line` | The line. `nil` when the message is about the toolchain rather than about your source. |
+| `:message` | The first line of the diagnostic — never a note. |
+| `:notes` | A vector of zero or more strings. What the text form prints as indented `  note:` lines. |
 
-Every field is always present, so a reader never has to ask whether a key is
-there. Strings are escaped for `lib/read.nuc`, so a message containing a quote
-or a newline survives the round trip — and because newlines are escaped, **one
-diagnostic is exactly one line**, which is what lets a reader skip a line that
-is not a diagnostic. A tool the compiler shells out to (the `clang -E` that
-reads a C header import) still writes its own text to the same stream.
+Every key is always present, so a reader never has to ask whether a key is
+there. Strings use EDN's escapes (`\uXXXX` for a control character), so a
+message containing a quote or a newline survives the round trip — and because
+newlines are escaped, **one diagnostic is exactly one line**, which is what
+lets a reader skip a line that is not a diagnostic. A tool the compiler shells
+out to (the `clang -E` that reads a C header import) still writes its own text
+to the same stream.
 
 The two forms come from one renderer (`diag-render`, `src/diagnostics.nuc`),
 which splits the notes out at one point, so they cannot drift: the text form is
-the fields rejoined, byte for byte what the compiler printed before the sexp form
+the fields rejoined, byte for byte what the compiler printed before the structured form
 existed. The same renderer writes a crash in a macro body or `compile-time`
 block ([Macros](macros.md#when-a-macro-body-crashes)), so that diagnostic takes
 whichever form was asked for too.

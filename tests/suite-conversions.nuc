@@ -14,7 +14,7 @@
 ; it must hold and returns a distinct code per mismatch — so they are RUN, and
 ; the exit status names which claim broke. The refusing complement is already
 ; native: `w9-as-literal-too-big`, `w9-as-literal-signed-into-unsigned` and
-; `w9-as-float-inexact` are rows of tests/manifest/diagnostics.sexp. This module
+; `w9-as-float-inexact` are rows of tests/manifest/diagnostics.edn. This module
 ; owns the accepting side and the artifact.
 
 (defn cv-exit (path:StrView want:i32):!void

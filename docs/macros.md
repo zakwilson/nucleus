@@ -368,7 +368,7 @@ not against whatever the expansion happened to lower to.
   are interned, so no occurrence has a line) or `null` — reports at the line of
   the call being expanded.
 * **A message may carry notes.** `\n  note: ` inside the message starts one, as
-  in any other diagnostic, and `--diagnostics=sexp` lists it under `notes`.
+  in any other diagnostic, and `--diagnostics=edn` lists it under `:notes`.
 * **It aborts the expansion**, so nothing after it in the macro body runs. In the
   REPL it returns to the prompt rather than ending the session.
 * **Check the shape before you walk it.** `ast-at`/`ast-first` answer `null`

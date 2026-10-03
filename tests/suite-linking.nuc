@@ -91,7 +91,7 @@
         i:usize 0)
     (while (< i n)
       (let (d:Diagnostic (invoke ds i))
-        (when (and (= (symbol-as-view (d 'severity)) "warning")
+        (when (and (= (keyword-name (d 'severity)) "warning")
                    (contains? (d 'message) needle))
           (return true)))
       (set! i (+ i 1)))

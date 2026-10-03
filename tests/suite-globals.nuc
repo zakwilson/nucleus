@@ -716,7 +716,7 @@ B g3-lib-n
 ; ---------------------------------------------------------------------------
 ;
 ; design/global-init.md §4.2. The rejections are rows of
-; tests/manifest/diagnostics.sexp; these are the other half — every shape the
+; tests/manifest/diagnostics.edn; these are the other half — every shape the
 ; check must keep ACCEPTING, linked, run and asserted by value. "It compiles"
 ; cannot tell an initializer that ran from one that silently kept its zero,
 ; which is the exact failure the diagnostic exists to prevent.

@@ -3323,6 +3323,9 @@ independent of this choice.
 
 ### T8.5 Structured data crosses process boundaries as s-expressions
 
+*Superseded in Stage 22: all three formats are now EDN maps
+([test-records.md](../stage22-edn/test-records.md)).*
+
 Both uses: the suite's per-unit result records, and `nucleusc`'s
 `--diagnostics=sexp`.
 

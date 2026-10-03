@@ -21,7 +21,9 @@ ED-5 tests and ED-6 docs (§7 "As built"). Q1, Q2, Q7 and Q8 decided 2026-10-02
 (§6). Q3–Q6 were decided at the checkpoint, 2026-10-02. **ED-4 is built**
 (2026-10-03): [ed4-struct-codecs.md](ed4-struct-codecs.md) §6, with ED-4.1 in
 [macro-definitions.md](macro-definitions.md) §6. Q8's non-interning follow-up is
-deferred within the stage.
+deferred within the stage. **Follow-on built 2026-10-03:** the test suite's
+reports, `--diagnostics=edn` and the rejection manifest are EDN maps,
+[test-records.md](test-records.md) §7.
 
 ## Decisions (2026-10-02)
 

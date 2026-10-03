@@ -7,7 +7,7 @@
 ; the suite across cores. A shard is a process and each test owns a scratch
 ; directory keyed by its name, so the split needs no locking.
 ;
-; Category (a) is a TABLE (`tests/manifest/diagnostics.sexp`), not 168 hand
+; Category (a) is a TABLE (`tests/manifest/diagnostics.edn`), not 168 hand
 ; written units: every row says the same thing about a different fixture, and
 ; the thing it says is now a comparison against one `Diagnostic` record rather
 ; than two greps over one stderr blob.
@@ -24,6 +24,8 @@
 (import-use node)
 (import-use parse)
 (import-use read)
+(import-use keyword)
+(import-use edn)
 (import-use test)
 (import-use suite-s16)
 (import-use suite-modules)
@@ -50,54 +52,88 @@
 
 
 
-(defn manifest-path ():StrView (return "tests/manifest/diagnostics.sexp"))
+(defn manifest-path ():StrView (return "tests/manifest/diagnostics.edn"))
 (defn compiler-path ():StrView (return "./build/nucleusc"))
 
 ; ---------------------------------------------------------------------------
 ; Reading a row
 ; ---------------------------------------------------------------------------
 
-; The operands of the `(key …)` entry named `name`, or null. Rows are the same
-; shape a diagnostic is, so they are read the same way.
-(defn row-entry (row:&Node name:StrView):?&Node
-  (let (n:i32 (node-len row)
-        i:i32 1)
-    (while (< i n)
-      (let (e:?&Node (node-at row i))
-        (when (node-is-list e)
-          (let (h:?&Node (node-first e))
-            (when (and (!= h null) (= (h 'kind) NODE-SYM)
-                       (= (symbol-as-view (h 's)) name))
-              (return (node-rest e))))))
-      (set! i (+ i 1)))
-    (return null)))
+; Rows are EDN maps (design/stage22-edn/test-records.md §2). Each accessor
+; answers for a row `manifest-rows` has already checked.
+(defn row-str (row:?&Node key:StrView):StrView
+  (match (edn-str (edn-get row key))
+    ((ok v) (return v))
+    ((err e) (return ""))))
 
-; A kind check, not a null check: `Node.s` is null on an INT or a FLOAT, and
-; `symbol-as-view` of null is a segfault, not an empty view.
-(defn row-text (n:?&Node):StrView
-  (when (= n null) (return ""))
-  (let (k:i32 (n 'kind))
-    (when (and (!= k NODE-SYM) (!= k NODE-STR) (!= k NODE-KEYWORD)) (return "")))
-  (return (symbol-as-view (n 's))))
-
-; A row's Nth positional operand, counting the head as 0.
-(defn row-at (row:&Node i:i32):?&Node
-  (return (node-at row i)))
-
-(defn row-head (row:&Node):StrView
-  (return (row-text (row-at row 0))))
-
-(defn row-name (row:&Node):StrView
-  (return (row-text (row-at row 1))))
-
-(defn row-file (row:&Node):StrView
-  (return (row-text (node-first (row-entry row "file")))))
+(defn row-name (row:?&Node):StrView (return (row-str row "name")))
+(defn row-file (row:?&Node):StrView (return (row-str row "file")))
 
 ; The pinned line, or -1 when the row does not pin one.
-(defn row-line (row:&Node):i32
-  (if-some (v (node-first (row-entry row "line")))
-    (return (unsafe/cast i32 (v 'i)))
-    (return -1)))
+(defn row-line (row:?&Node):i32
+  (match (edn-int (edn-get row "line"))
+    ((ok v) (return (unsafe/cast i32 v)))
+    ((err e) (return -1))))
+
+(defn row-expects (row:?&Node):StrView
+  (match (edn-keyword (edn-get row "expect"))
+    ((ok k) (return (keyword-name k)))
+    ((err e) (return ""))))
+
+; Absent, or a vector of strings.
+(defn row-strings? (v:?&Node):bool
+  (when (= v null) (return true))
+  (when (!= (edn-kind v) EDN-VECTOR) (return false))
+  (dotimes (i (edn-count v))
+    (when (!= (edn-kind (edn-nth v (as usize i))) EDN-STR) (return false)))
+  (return true))
+
+(defn row-key-known? (k:?&Node):bool
+  (when (or (= k null) (!= (edn-kind k) EDN-KEYWORD)) (return false))
+  (let (nm:StrView (symbol-as-view (k 's)))
+    (return (or (= nm "name") (= nm "expect") (= nm "file") (= nm "line")
+                (= nm "messages") (= nm "notes")))))
+
+(defn row-check (row:?&Node):!void
+  (when (or (= row null) (!= (edn-kind row) EDN-MAP))
+    (fail! "manifest: a row is a map, not " (edn-kind-name (edn-kind row))))
+  (let (ln:i32 (row 'line)
+        line:?&Node (edn-get row "line")
+        msgs:?&Node (edn-get row "messages")
+        notes:?&Node (edn-get row "notes")
+        expects:StrView (row-expects row))
+    (dotimes (i (edn-count row))
+      (let (k:?&Node (edn-key row (as usize i)))
+        (when (not (row-key-known? k))
+          (let (t:String (string-new))
+            (edn-write &t k)
+            (fail! "manifest line " ln ": unknown key " (string-as-view &t))))))
+    (when (or (!= (edn-kind (edn-get row "name")) EDN-STR)
+              (!= (edn-kind (edn-get row "file")) EDN-STR))
+      (fail! "manifest line " ln ": :name and :file are strings"))
+    (when (and (!= line null) (!= (edn-kind line) EDN-INT))
+      (fail! "manifest line " ln ": :line is an integer"))
+    (when (not (and (row-strings? msgs) (row-strings? notes)))
+      (fail! "manifest line " ln ": :messages and :notes are vectors of strings"))
+    (cond (= expects "accept")
+            (when (or (!= line null) (!= msgs null) (!= notes null))
+              (fail! "manifest line " ln ": an :accept row has only :name and :file"))
+          (= expects "reject")
+            (when (= (+ (edn-count msgs) (edn-count notes)) 0)
+              (fail! "manifest line " ln ": a :reject row names a message or a note"))
+          true
+            (fail! "manifest line " ln ": :expect is :reject or :accept")))
+  (return (ok)))
+
+; Every row of a manifest's text, each checked, so a malformed row fails the
+; registration of the whole table rather than its own test.
+(defn manifest-rows (text:StrView):!?&Node
+  (match (edn-parse-all text)
+    ((err e) (fail! "manifest line " (e 'line) ": " (e 'msg)))
+    ((ok forms)
+      (dotimes (i (node-len forms))
+        (try (row-check (node-at forms i))))
+      (return (ok forms)))))
 
 ; ---------------------------------------------------------------------------
 ; Running the compiler
@@ -143,7 +179,7 @@
         (return (ok (deref r)))))
     ((err e) (return (err e)))))
 
-; What one command that is not `nucleusc --diagnostics=sexp` did. `Compiled`
+; What one command that is not `nucleusc --diagnostics=edn` did. `Compiled`
 ; reads its stderr as structured diagnostics, which only the compiler in that
 ; mode emits; a unit spawning an audit script or the compiler's own text
 ; back-end needs the two streams themselves.
@@ -177,7 +213,7 @@
 
 ; `nucleusc [flag] --emit-llvm <path>`, with nothing else added. The units that
 ; assert about the diagnostic FORMAT cannot use the builders above: every one of
-; them passes `--diagnostics=sexp`, which is the thing under test.
+; them passes `--diagnostics=edn`, which is the thing under test.
 (defn nucleusc-raw (flag:StrView path:StrView):!Ran
   (let (c:Command (command (compiler-path)))
     (when (not (= flag "")) (command-arg &c flag))
@@ -194,7 +230,7 @@
     (when (not (= dir ""))
       (command-arg &c "-I")
       (command-arg &c dir))
-    (command-arg &c "--diagnostics=sexp")
+    (command-arg &c "--diagnostics=edn")
     (command-arg &c "--emit-llvm")
     (command-arg &c path)
     (let (r:Compiled (try (compiled-run &c)))
@@ -211,7 +247,7 @@
     (when (not (= dir ""))
       (command-arg &c "-I")
       (command-arg &c dir))
-    (command-arg &c "--diagnostics=sexp")
+    (command-arg &c "--diagnostics=edn")
     (command-arg &c flag)
     (command-arg &c path)
     (let (r:Compiled (try (compiled-run &c)))
@@ -226,7 +262,7 @@
     (when (not (= dir ""))
       (command-arg &c "-I")
       (command-arg &c dir))
-    (command-arg &c "--diagnostics=sexp")
+    (command-arg &c "--diagnostics=edn")
     (command-arg &c "-c")
     (command-arg &c path)
     (command-arg &c "-o")
@@ -241,7 +277,7 @@
     (when (not (= dir ""))
       (command-arg &c "-I")
       (command-arg &c dir))
-    (command-arg &c "--diagnostics=sexp")
+    (command-arg &c "--diagnostics=edn")
     (command-arg &c path)
     (command-arg &c "-o")
     (command-arg &c bin)
@@ -258,7 +294,7 @@
     (when (not (= dir ""))
       (command-arg &c "-I")
       (command-arg &c dir))
-    (command-arg &c "--diagnostics=sexp")
+    (command-arg &c "--diagnostics=edn")
     (when (not (= extra "")) (command-arg &c extra))
     (command-arg &c path)
     (command-arg &c "-o")
@@ -291,7 +327,7 @@
   (let (c:Command (command (compiler-path))
         flag:String (str "--target=" target))
     (command-arg &c (string-as-view &flag))
-    (command-arg &c "--diagnostics=sexp")
+    (command-arg &c "--diagnostics=edn")
     (command-arg &c "--emit-llvm")
     (command-arg &c path)
     (let (r:Compiled (try (compiled-run &c)))
@@ -357,7 +393,7 @@
 (defn check-file-rejects (dir:StrView path:StrView needle:StrView):!void
   (let (r:Compiled (try (compile-path-in dir path)))
     (when (r 'ok?)
-      (fail! "expected a rejection containing " (sexp-quote needle)
+      (fail! "expected a rejection containing " (quoted needle)
              ", but it compiled"))
     (try (check-error-anywhere (ref r 'diags) needle))
     (drop &r)
@@ -368,7 +404,7 @@
 ; all: they fire while rendering the header, which that run never does.
 (defn check-emit-rejects (flag:StrView path:StrView needle:StrView):!void
   (let (c:Command (command (compiler-path)))
-    (command-arg &c "--diagnostics=sexp")
+    (command-arg &c "--diagnostics=edn")
     (command-arg &c flag)
     (command-arg &c path)
     (command-capture &c true)
@@ -690,14 +726,14 @@
       (let (d:Diagnostic (invoke ds i))
         (when (contains? (d 'message) needle)
           (let (l:String (diag-list-text ds))
-            (fail! "no diagnostic may contain " (sexp-quote needle) "\n     got:"
+            (fail! "no diagnostic may contain " (quoted needle) "\n     got:"
                    (string-as-view &l))))
         (let (m:usize (count (d 'notes))
               j:usize 0)
           (while (< j m)
             (when (contains? (invoke (d 'notes) j) needle)
               (let (l:String (diag-list-text ds))
-                (fail! "no note may contain " (sexp-quote needle) "\n     got:"
+                (fail! "no note may contain " (quoted needle) "\n     got:"
                        (string-as-view &l))))
             (set! j (+ j 1)))))
       (set! i (+ i 1))))
@@ -814,7 +850,7 @@
         (when (!= l "")
           (set! nw (+ nw 1))
           (when (not (has-line? got l))
-            (fail! what ": missing " (sexp-quote l) "\n     got:\n" got)))))
+            (fail! what ": missing " (quoted l) "\n     got:\n" got)))))
     (when (!= ng nw)
       (fail! what ": expected " nw " line(s), got " ng "\n     got:\n" got)))
   (return (ok)))
@@ -1123,7 +1159,7 @@
     (while (not (lines-iter-done &it))
       (let (l:StrView (lines-iter-next &it))
         (when (contains? l needle) (return (ok l))))))
-  (fail! "no line containing " (sexp-quote needle) "\n     in: " (test-show hay)))
+  (fail! "no line containing " (quoted needle) "\n     in: " (test-show hay)))
 
 ; The prefix of `sv` before the first `b`, or all of it.
 (defn view-upto-byte (sv:StrView b:ui8):StrView
@@ -1281,7 +1317,7 @@
         (when (decl-line? l)
           (when (!= (count-exact-lines a l) (count-exact-lines b l))
             (fail! "the two modules' definition sets differ at "
-                   (sexp-quote l)))))))
+                   (quoted l)))))))
   (return (ok)))
 
 ; Two modules must carry the same top-level definitions, as a SET: position
@@ -1446,6 +1482,8 @@
 (defn run-reject-row (row:&Node):!void
   (let (fixture:StrView (row-file row)
         line:i32 (row-line row)
+        msgs:?&Node (edn-get row "messages")
+        notes:?&Node (edn-get row "notes")
         c:Compiled (try (compile-path fixture))
         ds:(Vector Diagnostic) (c 'diags))
     (when (= (count &ds) 0)
@@ -1453,22 +1491,16 @@
     ; With no pinned line the old shell unit only swept for a `:0:` substring.
     ; The record makes that a field.
     (when (< line 0) (try (check-no-line-zero &ds)))
-    (let (n:i32 (node-len row)
-          i:i32 1)
-      (while (< i n)
-        (let (e:?&Node (node-at row i))
-          (when (node-is-list e)
-            (let (k:StrView (row-text (node-first e))
-                  v:StrView (row-text (node-at e 1)))
-              (when (= k "message")
-                (if (< line 0)
-                  (try (check-error-anywhere &ds v))
-                  (try (check-error-at &ds fixture line v))))
-              (when (= k "note")
-                (if (< line 0)
-                  (try (check-note-anywhere &ds v))
-                  (try (check-note-at &ds fixture line v)))))))
-        (set! i (+ i 1))))
+    (dotimes (i (edn-count msgs))
+      (let (v:StrView (try (edn-str (edn-nth msgs (as usize i)))))
+        (if (< line 0)
+          (try (check-error-anywhere &ds v))
+          (try (check-error-at &ds fixture line v)))))
+    (dotimes (i (edn-count notes))
+      (let (v:StrView (try (edn-str (edn-nth notes (as usize i)))))
+        (if (< line 0)
+          (try (check-note-anywhere &ds v))
+          (try (check-note-at &ds fixture line v)))))
     (return (ok))))
 
 (defn run-accept-row (row:&Node):!void
@@ -1478,13 +1510,13 @@
     (when (> (count &ds) 0)
       (try (check-no-errors &ds)))
     ; A diagnostic-free compile is the claim, so anything on stderr is a failure
-    ; -- including something the sexp reader skipped.
+    ; -- including something the diagnostics reader skipped.
     (try (check-empty (string-as-view (ref c 'raw-text))))
     (return (ok))))
 
 (defn run-manifest-row (data:ptr):!void
   (let (row:&Node (unsafe/cast &Node data))
-    (when (= (row-head row) "accept") (return (run-accept-row row)))
+    (when (= (row-expects row) "accept") (return (run-accept-row row)))
     (return (run-reject-row row))))
 
 ; ---------------------------------------------------------------------------
@@ -1607,11 +1639,10 @@
 
 (defn register-manifest ():!void
   (let (text:String (try (read-file (manifest-path)))
-        forms:?&Node (try (read-all (string-as-view &text))))
+        forms:?&Node (try (manifest-rows (string-as-view &text))))
     (dotimes (i (node-len forms))
       (when-some (row (node-at forms i))
-        (when (node-is-list row)
-          (test-add (row-name row) (manifest-path) 0 run-manifest-row row))))
+        (test-add (row-name row) (manifest-path) (row 'line) run-manifest-row row)))
     (return (ok))))
 
 (defn register-all ():!void
@@ -1624,6 +1655,8 @@
   (match (register-all)
     (ok 0)
     ((err e)
-      (eprint "nuctests: registration failed: " (err-message e) "\n")
+      (if (> (test-failure-len) 0)
+        (eprint "nuctests: registration failed: " (test-failure-text) "\n")
+        (eprint "nuctests: registration failed: " (err-message e) "\n"))
       (return 2)))
   (return (as int (test-main argc argv))))

@@ -24,10 +24,10 @@
 ; (design/stage18-tooling/overview.md §T4.2). `line` -1 means no location — a
 ; message about the toolchain rather than the source.
 
-; 0 = the human rendering (`path:line: error: msg`), 1 = `--diagnostics=sexp`.
+; 0 = the human rendering (`path:line: error: msg`), 1 = `--diagnostics=edn`.
 ; Both write to stderr: the flag changes the shape, never the stream, so a
 ; caller's `2>&1 >/dev/null` keeps working.
-(defvar g-diag-sexp:i32 0)
+(defvar g-diag-edn:i32 0)
 
 ; W9 item 42, generalized: a note the diagnosing site stages before calling,
 ; because `die-at` is noreturn and there is no "and also" after it. Appending
@@ -40,7 +40,7 @@
 ; The index at or after `from` where a `\n  note: ` marker starts, else the end.
 ; Notes reach here inside the message because that is how the diagnosing sites
 ; build them (`(fstr "…" "\n  note: " …)`, 20-odd sites); splitting here is what
-; gives the sexp form a `notes` field without touching any of them.
+; gives the EDN form a `:notes` vector without touching any of them.
 (defn diag-note-start (s:StrView from:i64):i64
   (let (n:i64 (as i64 (s 'len))
         i:i64 from)
@@ -58,8 +58,8 @@
   (let (digits:StrView "0123456789abcdef")
     (return (strview (unsafe/ptr+ (digits 'data) (as i64 v)) 1))))
 
-; An s-expression string literal, escaped so `lib/read.nuc` reads back exactly
-; these bytes. The escape set is that reader's, not C's.
+; An EDN string, escaped as lib/edn's `edn-write-string` does; src/ cannot import
+; lib/edn (design/stage22-edn/test-records.md §1).
 (defn diag-write-string (out:&String sv:StrView):void
   (str-into out "\"")
   (let (n:i64 (as i64 (sv 'len))
@@ -71,9 +71,8 @@
               (= c 10) (str-into out "\\n")
               (= c 9)  (str-into out "\\t")
               (= c 13) (str-into out "\\r")
-              (= c 0)  (str-into out "\\0")
               (or (< c 32) (= c 127))
-                (str-into out "\\x" (diag-hex-digit (bit-shr c 4)) (diag-hex-digit (bit-and c 15)))
+                (str-into out "\\u00" (diag-hex-digit (bit-shr c 4)) (diag-hex-digit (bit-and c 15)))
               true (str-into out (strview (unsafe/ptr+ (sv 'data) i) 1))))
       (set! i (+ i 1))))
   (str-into out "\""))
@@ -81,28 +80,33 @@
 ; Render one diagnostic onto `out`, allocating nothing but `out`'s growth: the
 ; fault boundary (src/ct-fault.nuc) renders one per macro expansion.
 ; `msg` carries its notes as `\n  note: ` markers, so the text form is `msg`
-; verbatim. The sexp form is one line; `severity` is a bare symbol so it compares
-; by identity after a read, and an absent location is file "" and line -1.
+; verbatim. The EDN form is one map per line, `:severity` first so a line is
+; recognised by its opening bytes; an absent location is `nil`.
 (defn diag-render (out:&String severity:StrView path:Symbol line:i32 msg:StrView):void
-  (when (= g-diag-sexp 0)
+  (when (= g-diag-edn 0)
     (when (>= line 0) (str-into out path ":" line ": "))
     (str-into out severity ": " msg "\n")
     (return))
   (let (n:i64 (as i64 (msg 'len))
         head:i64 (diag-note-start msg 0))
-    (str-into out "(diagnostic (severity " severity ") (file ")
-    (diag-write-string out (if (symbol-none? path) "" (symbol-as-view path)))
-    (str-into out ") (line " line ") (message ")
+    (str-into out "{:severity :" severity " :file ")
+    (if (symbol-none? path)
+      (str-into out "nil")
+      (diag-write-string out (symbol-as-view path)))
+    (if (< line 0)
+      (str-into out " :line nil")
+      (str-into out " :line " line))
+    (str-into out " :message ")
     (diag-write-string out (strview (msg 'data) (as usize head)))
-    (str-into out ") (notes")
+    (str-into out " :notes [")
     (let (i:i64 head)
       (while (< i n)
         (let (start:i64 (+ i 9)
               stop:i64 (diag-note-start msg start))
-          (str-into out " ")
+          (when (> i head) (str-into out " "))
           (diag-write-string out (strview (unsafe/ptr+ (msg 'data) start) (as usize (- stop start))))
           (set! i stop))))
-    (str-into out "))\n")))
+    (str-into out "]}\n")))
 
 ; The one point a diagnostic becomes bytes. Every staged note is folded in here
 ; and the stage cleared, so an interactive session — where `repl-throw` unwinds
