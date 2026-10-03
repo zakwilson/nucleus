@@ -1249,6 +1249,18 @@
   path:Symbol
   imports:?&ImportVec)
 
+; What a quasiquote tag `#h<N>/name` resolves in: the environment of the file whose
+; template wrote it, and the body that did, for the binder refusal (quasiquote-resolution.md §3.3).
+; A `defmacro` a file defines, known before its forms emit (quasiquote-resolution.md §3.10).
+(defstruct FileMacro
+  path:Symbol
+  name:Symbol)
+
+(defstruct HygEnv
+  env:NameEnv
+  who:Symbol
+  kind:i32)
+
 ; A spelling substituted into another file's text (an alias argument, a protocol's
 ; `Self`) as the marker `#env-arg-N`, which the parser reads back in `env` (`env-arg-type`).
 ; A `type` marker carries a type already resolved, so it is read back as that type.

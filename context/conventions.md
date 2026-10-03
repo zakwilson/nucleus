@@ -7303,11 +7303,25 @@ equals `g-narrow-gen`:
   generation, as they do `g-nundo`.
 - Anything new that reads `ntype` must check `ngen` too.
 
+## Every reference resolver unwraps a quasiquote tag (`#h<N>/name`)
+
+Since Stage 22 HY-3 a `defmacro`/`~e`/`compile-time` quasiquote rewrites a
+symbol that names a global of its file to `#h<N>/name`
+(design/stage22-edn/quasiquote-resolution.md). Every **reference** resolver
+starts with the `hyg-of` branch: enter `(hyg-enter h)`, resolve `(hyg-inner s)`,
+then `name-env-set` back. Key lookups never see a tag. A new reference resolver
+without the branch fails loudly: `resolve-spelling` raises "internal error: the
+quasiquote name tag … reached resolve-spelling unwrapped". A printer whose text
+is read back must re-spell tags (`.nuch`: `nuch-respell-since` per form). A
+binder that registers a name must go through `scope-define` or `guard-name-kind`,
+which refuse a tag. A lookup by spelling of something that is never a global
+(a union arm: `arm-spelling`) strips the tag instead.
+
 ## A leading `#` is reader syntax — synthesized `#` names rely on it
 
 Since Stage 22 a token-initial `#` is dispatch (`#{`, `#_`, `#tag`), so no
 source spelling produces a symbol that begins with `#`. The compiler's own
-synthesized names — W5e's `#pN` namespaces, `#env-arg-N`, `#c/…`, `#dry` — are
+synthesized names — W5e's `#pN` namespaces, `#env-arg-N`, `#c/…`, `#dry`, `#h<N>/` — are
 collision-free because of it. Never print one into text that is read back
 (`--emit-nuch`, `--dump-ast`, a REPL echo): it will not read
 (design/stage22-edn/overview.md §1.5).

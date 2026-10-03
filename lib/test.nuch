@@ -1,4 +1,5 @@
 ; .nuch header for lib/test.nuc
+(import-use edn)
 (deferror test-failed "assertion failed")
 (deferror test-skipped "test skipped")
 (deferror test-unknown "no such test")

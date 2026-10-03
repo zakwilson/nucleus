@@ -110,7 +110,8 @@ The compiler synthesizes names that begin with `#` and relies on source being
 unable to collide with them: W5e private namespaces `#pN`
 (`src/compiler-types.nuc:1317`; `src/nucleusc.nuc:18129` refuses `(ns #…)`),
 `#env-arg-N` (`src/union-registry.nuc:1659`), `#c/` (`src/cheader.nuc:3031`),
-`#dry` (`src/generics.nuc:4949`). Today a source `#foo` reads as a symbol and
+`#dry` (`src/generics.nuc:4949`), and since HY-3 the quasiquote tag `#h<N>/`
+(quasiquote-resolution.md §3.3). Today a source `#foo` reads as a symbol and
 only the `ns` check guards it. After ED-1 a leading `#` is reader syntax, which
 makes these names unspellable — stronger hygiene — **provided none of them is
 ever printed by `node-write` and read back** (a `--dump-ast` corpus, an emitted

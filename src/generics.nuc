@@ -28,6 +28,11 @@
   (return null))
 
 (defn generic-lookup (name:Symbol):?&Generic
+  (when-some (h (hyg-of name))
+    (let (here:NameEnv (hyg-enter h)
+          r:?&Generic (generic-lookup (hyg-inner name)))
+      (name-env-set here)
+      (return r)))
   ; Stage 15 W5e: a name this file declared with `defn-` is keyed under the
   ; file's implicit namespace, and shadows a public generic of the same name.
   ; priv-key-use is the identity for every other name, so this is one extra
@@ -185,6 +190,11 @@
 ; for a bare one — which is what makes a prefix bind names under the prefix and
 ; under nothing else, for a generic as for every other kind (R3).
 (defn generic-lookup-ref (spelling:Symbol):?&Generic
+  (when-some (h (hyg-of spelling))
+    (let (here:NameEnv (hyg-enter h)
+          r:?&Generic (generic-lookup-ref (hyg-inner spelling)))
+      (name-env-set here)
+      (return r)))
   (when (<= (qualifier-len spelling) 0)
     (let (g:?&Generic (generic-lookup spelling))
       (when (= g null) (return null))
@@ -4184,6 +4194,11 @@
 ; `a/Describe` and `b/Describe` registered and neither namespace flattened, bare
 ; `Describe` resolves to neither and the caller must qualify.
 (defn protocol-lookup (name:Symbol):?&Protocol
+  (when-some (h (hyg-of name))
+    (let (here:NameEnv (hyg-enter h)
+          r:?&Protocol (protocol-lookup (hyg-inner name)))
+      (name-env-set here)
+      (return r)))
   (let (r:ref:NameRef (resolve-spelling name))
     (when (= (r 'status) NR-UNBOUND) (return null))
     ; Stage 15 B5: `defprotocol-`'s privacy is enforced HERE, in the reference

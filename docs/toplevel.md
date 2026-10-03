@@ -231,7 +231,10 @@ its qualifier in scope in exactly the way a global or protocol reference does.
 [Qualifying an overloaded function](#qualifying-an-overloaded-function) below.
 **Macros** are on it as well: `p/my-macro` resolves through an import prefix,
 the defining namespace does not, and two namespaces may each declare a macro of
-the same name. Every name-keyed kind now answers the same scope question.
+the same name. The names *inside* a macro's quasiquote are resolved in the
+macro's own file, so the caller needs to reach only the macro (see
+[A template's names mean the macro file's names](macros.md#a-templates-names-mean-the-macro-files-names)).
+Every name-keyed kind now answers the same scope question.
 
 Two namespaces may therefore each define a type of the same name — they are
 genuinely distinct types, with distinct layouts and distinct conformances —

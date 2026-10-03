@@ -10,6 +10,9 @@ collections are the reader's lists, and strings, symbols and keywords are
 interned for the life of the process, so a `StrView` taken from a value never
 dangles. That suits configuration-sized input; nothing is ever freed.
 
+The library declares `(ns edn)`. `(import-use edn)` names everything bare;
+`(import edn e)` names it `e/edn-parse`, `e/derive-edn` and so on.
+
 ```lisp
 (import-use read)
 (import-use edn)
@@ -146,8 +149,10 @@ of conforming types and any struct given a derived codec. `edn-read` and
 
 `(derive-edn T …)` gives each named struct `T` an `EdnCodec` conformance. It is
 a top-level macro, so its call has to come before any use of the codecs. Its
-expansion names `lib/edn` functions bare, so the calling file needs
-`(import-use edn)`.
+expansion's names [resolve in `lib/edn`](macros.md#a-templates-names-mean-the-macro-files-names),
+so the calling file only has to reach `derive-edn` itself, through
+`(import-use edn)` or `(import edn e)` and `(e/derive-edn T)`. A caller's own
+`edn-put`, or a local with the same name, does not capture the derived code.
 
 - **Written as a tagged map:** `#ns/T {:field value …}`, keys in declaration
   order. The tag is `T`'s qualified name: `#geom/Point` for a struct defined

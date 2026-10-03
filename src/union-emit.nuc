@@ -879,6 +879,13 @@
 ; return positions, or the declared slot type at any want position (let/with
 ; binding init, set! RHS, .set! value — design/stage14/target-typed-
 ; constructors.md §TC-5). A null/non-union target leaves `form` unchanged.
+; How a rewrite names the target union: by its key, unless the key is namespaced,
+; which the current file may reach only through a prefix -- then by the resolved type.
+(defn union-target-spelling (udd:&UnionDef target:&Type):&Node
+  (if (> (qualifier-len (udd 'name)) 0)
+    (intern-node (env-arg-of-type target))
+    (intern-node (udd 'name))))
+
 (defn union-target-rewrite (form:ptr target:?&Type):ptr
   (when (= form null) (return form))
   (when (= target null) (return form))
@@ -914,7 +921,7 @@
                  (>= (union-arm-index (as ptr udd) (symbol-intern "none")) 0))
         (let (ln:i32 (n 'line))
           (return (node-list3 'make
-                    (intern-node (udd 'name))
+                    (union-target-spelling udd (unsafe/cast &Type target))
                     'none ln))))
       (when (!= (n 'kind) NODE-LIST) (return form))
       (when (= (node-len form) 0) (return form))
@@ -926,7 +933,7 @@
         (when (= (head 's) "err!")
           (when (< (union-arm-index (as ptr udd) (symbol-intern "err")) 0) (return form))
           (return (node-cons 'make
-                    (node-cons (intern-node (udd 'name))
+                    (node-cons (union-target-spelling udd (unsafe/cast &Type target))
                       (node-cons 'err (node-rest n) ln) ln) ln)))
         ; Plain `err` at an `!T` (err arm = Err) return site, with the error
         ; library in scope: emit the handler negotiation (errors.md §11). The
@@ -946,7 +953,7 @@
           (return (node-cons '__err-handled (node-rest n) ln)))
         (when (< (union-arm-index (as ptr udd) (head 's)) 0) (return form))
         (return (node-cons 'make
-                  (node-cons (intern-node (udd 'name)) (as ptr n) ln) ln))))))
+                  (node-cons (union-target-spelling udd (unsafe/cast &Type target)) (as ptr n) ln) ln))))))
 
 ; A call/`make` argument is not a want position (its type may pick the overload),
 ; so only the built-in sum constructors are target-typed there, against a slot
