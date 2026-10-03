@@ -23,7 +23,7 @@ A test suite is an ordinary Nucleus program. `deftest` registers each test befor
 
 ```
 $ ./suite
-(test (name "greeting-is-friendly") (file "suite.nuc") (line 7) (status pass))
+{:status :pass :name "greeting-is-friendly" :file "suite.nuc" :line 7}
 ```
 
 See `examples/self-test.nuc` for a worked suite, two of whose tests do not pass
@@ -63,7 +63,7 @@ A skip is a **third verdict**, not a quiet pass. It emits its own record with
 its reason, it is counted separately, and the run still exits 0 for it:
 
 ```
-(test (name "…") (file "…") (line N) (status skip) (message "…"))
+{:status :skip :name "…" :file "…" :line N :message "…"}
 ```
 
 The reason is required, for the same reason a failure's is: a skip nobody can
@@ -143,7 +143,7 @@ the module whenever any function returns void.
 
 ## Compiler diagnostics
 
-`nucleusc --diagnostics=sexp` writes each diagnostic as an s-expression rather
+`nucleusc --diagnostics=edn` writes each diagnostic as an EDN map rather
 than as text ([Structured diagnostics](compiler.md#structured-diagnostics)).
 `read-diagnostics` reads them back, and the assertions then compare **fields**.
 
@@ -165,8 +165,9 @@ than as text ([Structured diagnostics](compiler.md#structured-diagnostics)).
 | `(check-no-line-zero ds)` | No diagnostic reports line 0. |
 | `(check-diagnostic ds severity file line needle)` | The general form the located three call. |
 
-A `Diagnostic` has `severity` (a `Symbol`), `file`, `line`, `message`, and
-`notes` (a `(Vector StrView)`).
+A `Diagnostic` has `severity` (a `Keyword`), `file`, `line`, `message`, and
+`notes` (a `(Vector StrView)`). A `nil` file reads as `""` and a `nil` line as
+`-1`.
 
 The point of matching four fields against one record is that **the alternative
 cannot express the assertion at all.** Grepping stderr for a location and then
@@ -201,10 +202,21 @@ the directory with `read-dir` — so a new example is a new test with no edit
 anywhere.
 
 `tests/nuctests.nuc` is the worked example: it reads
-`tests/manifest/diagnostics.sexp` with `lib/read.nuc` and registers one test per
-row. Each row names a fixture, an optional line, and the messages and notes the
-compiler must produce for it — the whole of the compiler's rejection suite as
-data rather than as control flow.
+`tests/manifest/diagnostics.edn` with `edn-parse-all` ([EDN](edn.md)) and
+registers one test per row. Each row is a map naming a fixture, an optional
+line, and the messages and notes the compiler must produce for it — the whole
+of the compiler's rejection suite as data rather than as control flow:
+
+```clojure
+{:name "nomatch-overloads" :expect :reject
+ :file "tests/fixtures/nomatch-overloads.nuc" :line 11
+ :messages ["no matching method for overloaded 'scale' with argument types (&Pt, i64)"]
+ :notes ["nomatch-overloads.nuc:6: (scale &Pt f32 i32):i32 -- takes 3 arguments, not 2"]}
+```
+
+Every row is checked before any becomes a test: an unknown key, a `:reject`
+row with no message or note, or an `:accept` row with more than `:name` and
+`:file` fails the registration with the row's line.
 
 ## Source fixtures
 
@@ -391,8 +403,8 @@ site. To write an assertion of your own, use `fail!`:
 
 `fail!` renders its pieces with `str-into` and returns `(err! test-failed)`, so
 it is a `return`: nothing after it in the assertion runs. Pieces are anything
-with a `ToStr` conformance. `(sexp-quote s)` renders a `StrView` as a quoted
-s-expression string, and `(test-show s)` truncates a long haystack to 400 bytes,
+with a `ToStr` conformance. `(quoted s)` renders a `StrView` as a quoted
+EDN string, and `(test-show s)` truncates a long haystack to 400 bytes,
 which is enough to recognise what was actually there.
 
 A test that returns an error which is *not* an assertion failure — a file that
@@ -402,15 +414,18 @@ would not open, say — still produces a failure record, naming the error.
 
 Every run emits one record per test, on stdout, one line each:
 
-```
-(test (name "…") (file "…") (line N) (status pass))
-(test (name "…") (file "…") (line N) (status fail) (message "…"))
-(test (name "…") (file "…") (line N) (status skip) (message "…"))
+```clojure
+{:status :pass :name "…" :file "…" :line N}
+{:status :fail :name "…" :file "…" :line N :message "…"}
+{:status :skip :name "…" :file "…" :line N :message "…"}
 ```
 
-The record is an s-expression, so `lib/read.nuc` reads it back: a tool that
-collects results across suites parses them rather than scraping them. Strings are
-escaped, so a message containing a quote or a newline survives the round trip.
+The record is an [EDN](edn.md) map, so `edn-parse` reads it back: a tool that
+collects results across suites parses them rather than scraping them. Strings
+are escaped, so a message containing a quote or a newline survives the round
+trip — and so a record is always one line. `:status` comes first, so a line's
+opening bytes say what it is: `make test` counts verdicts with
+`grep '^{:status :pass '`, which no message can fake.
 
 `test-main` exits 0 when everything passed or skipped and 1 when anything
 failed; under `--no-skip` a skip is one of the things that failed. `--list`

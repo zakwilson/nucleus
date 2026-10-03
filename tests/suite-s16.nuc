@@ -2271,7 +2271,7 @@ map=2
     (drop &c)
     (drop &needle)
     ; `nucleusc-raw`, because the claim is that stderr says NOTHING — which a
-    ; sexp-diagnostics run would also satisfy by emitting no records, but this
+    ; `--diagnostics=edn` run would also satisfy by emitting no records, but this
     ; way the assertion covers any spelling of the message.
     (let (r:Ran (try (nucleusc-raw "--no-warn-ct-shadow" pv)))
       (try (check-empty (string-as-view (ref r 'err))))

@@ -896,3 +896,79 @@ user/Here
   (return 0))
 " "6 8\n"))
   (return (ok)))
+
+; ---------------------------------------------------------------------------
+; Test reporting in EDN (design/stage22-edn/test-records.md)
+; ---------------------------------------------------------------------------
+
+; Each result line parses as a map, and a message that mentions a record's
+; opening bytes cannot be counted as one by the Makefile's line-start grep.
+(deftest s22-test-records
+  (let (out:String (try (build-run-source "(import-use error)
+(import-use strview)
+(import-use string)
+(import-use vector)
+(import-use io)
+(import-use test)
+(deftest passes (try (check-eq \"a\" \"a\")))
+(deftest fails (try (check-eq \"say \\\"hi\\\"\\n{:status :pass \" \"b\")))
+(defn main (argc:i32 argv:ptr):int (return (as int (test-main argc argv))))
+"))
+        v:StrView (string-as-view &out)
+        it:LineIter (strview-lines &v)
+        n:i32 0
+        passes:i32 0)
+    (while (not (lines-iter-done &it))
+      (let (ln:StrView (lines-iter-next &it))
+        (when (strview-has-prefix ln "{:status ")
+          (set! n (+ n 1))
+          (match (edn-parse ln)
+            ((err e) (try (check false "a result line parses")))
+            ((ok m)
+              (try (check-contains (try (edn-str (edn-get m "file"))) "t.nuc"))
+              (let (name:StrView (try (edn-str (edn-get m "name"))))
+                (when (= name "passes")
+                  (try (check (= (edn-get m "message") null) "a pass has no message")))
+                (when (= name "fails")
+                  (try (check-eq-int (try (edn-int (edn-get m "line"))) 8 "line"))
+                  (try (check-contains (try (edn-str (edn-get m "message")))
+                                       "got \"say \\\"hi\\\"\\n{:status :pass \"")))))))
+        (when (strview-has-prefix ln "{:status :pass ")
+          (set! passes (+ passes 1)))))
+    (try (check-eq-int (as i64 n) 2 "records"))
+    (try (check-eq-int (as i64 passes) 1 "passes counted by the line-start grep"))
+    (drop &out))
+  (return (ok)))
+
+; A malformed manifest row fails registration with its line, before any row
+; becomes a test.
+(defn s22-check-refused (text:StrView want:StrView):!void
+  (match (manifest-rows text)
+    ((ok forms) (fail! "a malformed manifest was accepted"))
+    ((err e)
+      (let (fv:StrView (test-failure-text)
+            got:String (try (string-from-view &fv)))
+        (try (check-eq (string-as-view &got) want))
+        (drop &got))))
+  (return (ok)))
+
+(deftest s22-manifest-row-refused
+  (try (s22-check-refused "{:name \"a\" :expect :accept :file \"f.nuc\"}
+{:name \"b\" :expect :reject :file \"f.nuc\" :mesages [\"x\"]}
+" "manifest line 2: unknown key :mesages"))
+  (try (s22-check-refused "
+{:name \"b\" :expect :reject :file \"f.nuc\" :line 3}
+" "manifest line 2: a :reject row names a message or a note"))
+  (try (s22-check-refused "{:name \"a\" :expect :accept :file \"f.nuc\" :notes [\"n\"]}"
+                          "manifest line 1: an :accept row has only :name and :file"))
+  (try (s22-check-refused "{:name \"a\" :expect :maybe :file \"f.nuc\"}"
+                          "manifest line 1: :expect is :reject or :accept"))
+  (try (s22-check-refused "{:name a :expect :accept :file \"f.nuc\"}"
+                          "manifest line 1: :name and :file are strings"))
+  (try (s22-check-refused "{:name \"a\" :expect :reject :file \"f.nuc\" :messages [1]}"
+                          "manifest line 1: :messages and :notes are vectors of strings"))
+  (try (s22-check-refused "{:name \"a\" :expect :accept :file \"f.nuc\"} [1]"
+                          "manifest: a row is a map, not a vector"))
+  (let (forms:?&Node (try (manifest-rows "{:name \"a\" :expect :reject :file \"f.nuc\" :line 4 :notes [\"n\"]}")))
+    (try (check-eq-int (as i64 (node-len forms)) 1 "rows")))
+  (return (ok)))

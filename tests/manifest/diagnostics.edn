@@ -1,0 +1,1164 @@
+; Stage 18 TF-6 category (a): the compiler's rejection and acceptance table.
+;
+; Each row is one test. `tests/nuctests.nuc` reads this file, registers a test
+; per row, and runs `nucleusc --diagnostics=edn` on the fixture -- so `:line`
+; and `:messages` are matched against ONE diagnostic record rather than
+; grepped independently out of one stderr blob. See design/stage18-tooling/
+; overview.md T4.2 and T6.6, and design/stage22-edn/test-records.md.
+;
+;   {:name N :expect :reject :file F [:line L] [:messages [M ...]] [:notes [M ...]]}
+;     compiling F must fail; every message must appear in the message of a
+;     diagnostic at F:L, and every note in a note of a diagnostic there.
+;     With no :line, a message need only appear in some error, and the
+;     old ":0: is a regression" guard becomes "no diagnostic has line 0".
+;     A reject row names at least one message or note.
+;
+;   {:name N :expect :accept :file F}
+;     compiling F must produce no diagnostic at all.
+;
+; Any other key is refused when the table is registered.
+;
+; A `;` block above a row is that row's rationale, carried over verbatim from
+; the `run_reject`/`run_reject_at`/`run_accepts` shell units this table retired.
+
+{:name "avr6-const-on-let-rejected" :expect :reject
+ :file "tests/fixtures/avr6-const-let.nuc"
+ :messages ["':const' applies only to an extern, not a field, parameter, or binding"]}
+{:name "avr6-const-on-field-rejected" :expect :reject
+ :file "tests/fixtures/avr6-const-field.nuc"
+ :messages ["':const' applies only to an extern, not a field, parameter, or binding"]}
+{:name "avr6-const-mutate-rejected" :expect :reject
+ :file "tests/fixtures/avr6-const-mutate-rejected.nuc" :line 5
+ :messages ["set!: cannot assign to 'answer' -- it is a constant"]}
+
+; Stage 13 L1: cfn escape analysis. A cfn captures each used local by reference,
+; so the closure value inherits the captured referent's frame region. Returning
+; it out of that scope would dangle, so compiling the fixture must FAIL with the
+; frame-region escape error. (The `examples/closures.nuc` run covers the positive
+; cfn case; this proves the escape rejection.)
+{:name "closure-escape-rejected" :expect :reject
+ :file "tests/fixtures/closure-escape.nuc"
+ :messages ["address of frame-local storage escapes via return"]}
+
+; Stage 13 CE-3: moving a struct-VALUE Drop binding into an `mfn` consumes the
+; source, so a later use must be rejected as use-after-move — including through
+; `&x` (the only way to read a struct value's field). Compiling the fixture
+; must FAIL with the use-after-move error. (The `examples/ce3-owning-closure.nuc`
+; run covers the positive move/drop-once path; this proves the consume.)
+{:name "ce3-use-after-move-rejected" :expect :reject
+ :file "tests/fixtures/ce3-use-after-move.nuc"
+ :messages ["use after move: 'r'"]}
+
+; Stage 14 LW-1/LW-2: an overload set with no i32 candidate (x:i64 / x:ui8)
+; called with a bare literal reaches the tier-2 widen/untyped-int-literal
+; adaptation pool on both candidates, so the call is genuinely ambiguous.
+; Compiling the fixture must FAIL with the widening-ambiguity error. (The
+; positive `examples/int-widening.nuc` run covers the unique-widen case; this
+; proves the ambiguity accounting still dies.)
+{:name "lw-ambiguous-widening-rejected" :expect :reject
+ :file "tests/fixtures/lw-ambiguous-widening.nuc"
+ :messages ["ambiguous overload for 'f' under argument widening"]}
+
+; Stage 14 LW-4: an out-of-range literal (300 does not fit ui8) must be a
+; compile-time error instead of the old silent trunc-and-wrap. Compiling the
+; fixture must FAIL with the representability error.
+{:name "lw-literal-range-rejected" :expect :reject
+ :file "tests/fixtures/lw-literal-range.nuc"
+ :messages ["integer literal 300 does not fit ui8"]}
+
+; Stage 14 SM-5: a name containing a character that is legal in a Nucleus
+; symbol but illegal in an unquoted LLVM identifier (ir-name-token only maps
+; `?`/`!`; the solitary defn path applies no other sanitizing) must be a
+; source-level compiler error, not a raw LLVM parse error at link/verify time.
+{:name "sm5-illegal-char-rejected" :expect :reject
+ :file "tests/fixtures/sm5-illegal-char.nuc"
+ :messages ["illegal character '%' in generated symbol for 'weird%name'"]}
+
+; Stage 14 TC-1: a zero-arg return-only-tyvar generic called with no expected
+; type (no declared binding → no want) must FAIL with the dedicated diagnostic,
+; not the misleading "no matching method".
+{:name "tc-cannot-infer-tyvar" :expect :reject
+ :file "tests/fixtures/tc-cannot-infer-tyvar.nuc"
+ :messages ["cannot infer type variable 'T' for 'box-empty'"]}
+
+; 2. A bare-name new-style defn missing its mandatory return operand dies cleanly
+;    with the targeted diagnostic (the same message a stale legacy spelling gets
+;    in Phase S4), not a crash or a remote type error.
+{:name "s1-missing-ret-diagnostic" :expect :reject
+ :file "tests/fixtures/s1-missing-ret.nuc"
+ :messages ["expected return type after the parameter list"]}
+
+; Stage 14 defn-signature.md S4 — the legacy `name:ret` return-in-the-name signature
+; is retired. A colon-bearing (or list-head) defn / declare / protocol-method /
+; generic-template signature must now die with the targeted "legacy 'name:ret'
+; syntax is no longer supported" diagnostic, quoting the offending name, at each
+; chokepoint (defn-parse-sig, emit-nuch-declare-import, protocol-register-form,
+; register-generic-defn).
+{:name "s4-legacy-defn-rejected" :expect :reject
+ :file "tests/fixtures/s4-legacy-defn.nuc"
+ :messages ["defn 'foo': legacy 'name:ret' syntax is no longer supported"]}
+{:name "s4-legacy-declare-rejected" :expect :reject
+ :file "tests/fixtures/s4-legacy-declare.nuc"
+ :messages ["declare 'bar': legacy 'name:ret' syntax is no longer supported"]}
+{:name "s4-legacy-proto-rejected" :expect :reject
+ :file "tests/fixtures/s4-legacy-proto.nuc"
+ :messages ["protocol method 'area': legacy 'name:ret' syntax is no longer supported"]}
+{:name "s4-legacy-template-rejected" :expect :reject
+ :file "tests/fixtures/s4-legacy-template.nuc"
+ :messages ["defn 'gmax': legacy 'name:ret' syntax is no longer supported"]}
+{:name "s17-dup-struct-field-rejected" :expect :reject
+ :file "tests/fixtures/s17-dup-struct-field.nuc"
+ :messages ["defstruct: duplicate field 'x'"]}
+{:name "s17-rvalue-addr-of-rejected" :expect :reject
+ :file "tests/fixtures/s17-rvalue-addr-of.nuc"
+ :messages ["show: argument 1 has type StrView, which does not match parameter type &StrView"]}
+
+; Stage 14 unsafe-namespace.md UN-1 — the `(as TYPE expr)` statically-safe
+; conversion form. Its three rejection categories each route to the right tool:
+;   lossy/narrowing  -> "use unsafe/cast"
+;   raw->ref launder -> mentions "as-ref" (honors pkind-flow-check, which `cast`
+;                       bypasses)
+;   reinterpretation -> "use unsafe/cast"
+{:name "as-lossy-rejected" :expect :reject
+ :file "tests/fixtures/as-lossy.nuc"
+ :messages ["as: lossy conversion from i32 to i8 -- use unsafe/cast"]}
+{:name "as-raw-to-ref-rejected" :expect :reject
+ :file "tests/fixtures/as-raw-to-ref.nuc"
+ :messages ["unchecked pointer (ptr Rec) where non-null &Rec is required -- use as-ref (checked) or unsafe/cast"]}
+{:name "as-reinterpret-rejected" :expect :reject
+ :file "tests/fixtures/as-reinterpret.nuc"
+ :messages ["as: reinterpretation from &Sym to &Rec -- use unsafe/cast"]}
+
+; Stage 16 as-sugar.md — a value-position `:type` annotation is that same `as`
+; cast (`baz:CStr` == `(as CStr baz)`), so the first three pin that it inherits
+; `as`'s refusals rather than getting a laxer path of its own; the accept side
+; runs as examples/as-sugar.nuc. The first is also the WART being closed: the
+; annotation used to be discarded unread, so `x:NoSuchType` compiled silently.
+; The fourth holds the excluded spelling: a parenthesised type is claimed by the
+; reader's colon-paren fuse in every list context, so it reads as a call and
+; must SAY so instead of reporting `unknown: ref`.
+{:name "as-sugar-unknown-type" :expect :reject
+ :file "tests/fixtures/as-sugar-unknown-type.nuc"
+ :messages ["unknown type 'NoSuchType' in the annotation 'x:NoSuchType'"]}
+{:name "as-sugar-lossy" :expect :reject
+ :file "tests/fixtures/as-sugar-lossy.nuc"
+ :messages ["as: lossy conversion from i64 to i32 -- use unsafe/cast"]}
+{:name "as-sugar-raw-to-ref" :expect :reject
+ :file "tests/fixtures/as-sugar-raw-to-ref.nuc"
+ :messages ["use as-ref (checked) or unsafe/cast (unchecked assertion)"]}
+{:name "as-sugar-paren" :expect :reject
+ :file "tests/fixtures/as-sugar-paren.nuc"
+ :messages ["'q:(ref ...)' reads as a call here"]}
+; Stage 15 W9 items 8 and 30 refine the narrowing rule for LITERALS only: an
+; operand that provably fits its destination is not lossy, so `as` stops being
+; stricter than the implicit coercion at the same slot. `as-lossy.nuc` above
+; narrows a parameter -- an unknown runtime value -- and is unaffected, which is
+; the distinction these five hold. The accept side is the `w9-as-literal-*` and
+; `w9-as-float-literal-*` units of tests/suite-conversions.nuc.
+;
+; The integer pair holds the boundary at magnitude and at sign. The float trio
+; holds two different edges: `-inexact` is the VALUE edge (3.14 is a literal that
+; does not round-trip, and admitting it would make `as` round silently),
+; `-runtime` is the KNOWLEDGE edge (a parameter is unknown, so the widths alone
+; decide and the original rule stands), and `-global-inexact` pins that
+; `defvar-init-ir`'s fold reaches the same verdict with the same wording -- a
+; second asker that re-derives the rule.
+; An overloaded call that fails after its first argument lists each method that
+; takes the first argument and why the rest do not fit
+; (design/stage21-cleanup/no-match-candidates.md).
+{:name "nomatch-invoke-sign" :expect :reject
+ :file "tests/fixtures/nomatch-invoke-sign.nuc" :line 8
+ :messages ["no matching method for overloaded 'invoke' with argument types (&(Vector i32), i32)"]
+ :notes ["(invoke self:&(Vector i32) i:usize):i32 -- argument 2: i32 does not convert to usize implicitly (signed to unsigned) -- use (as usize ...)"]}
+{:name "nomatch-overloads" :expect :reject
+ :file "tests/fixtures/nomatch-overloads.nuc" :line 11
+ :messages ["no matching method for overloaded 'scale' with argument types (&Pt, i64)"]
+ :notes ["nomatch-overloads.nuc:5: (scale &Pt ui8):i32 -- argument 2: i64 is wider than ui8 -- narrow it with (unsafe/cast ui8 ...)"
+          "nomatch-overloads.nuc:6: (scale &Pt f32 i32):i32 -- takes 3 arguments, not 2"]}
+{:name "nomatch-addr-widen" :expect :reject
+ :file "tests/fixtures/nomatch-addr-widen.nuc" :line 10
+ :messages ["no matching method for overloaded 'scale' with argument types (Pt, i32)"]
+ :notes ["argument 2: must be exactly i64 while argument 1 is passed by address -- use (as i64 ...), or pass &p"]}
+{:name "nomatch-template-addr" :expect :reject
+ :file "tests/fixtures/nomatch-template-addr.nuc" :line 10
+ :messages ["no matching method for overloaded 'tag' with argument types (i32, (Vector ui8))"]
+ :notes ["(tag n:i32 x:&(Vector ui8)):i32 -- argument 2: takes &(Vector ui8), not a (Vector ui8) value -- pass &v"]}
+{:name "nomatch-by-ref-receiver" :expect :reject
+ :file "tests/fixtures/nomatch-by-ref-receiver.nuc" :line 7
+ :messages ["no matching method for overloaded 'count' with argument types ((Vector i32))"]
+ :notes ["(count self:&(Vector i32)):usize takes the first argument by reference -- pass &options"]}
+{:name "callable-by-value-invoke" :expect :reject
+ :file "tests/fixtures/callable-by-value-invoke.nuc" :line 8
+ :messages ["'(Vector i32)' is indexed through invoke, which takes &(Vector i32), not a value -- write (&options ...)"]}
+{:name "callable-homogeneous-by-value" :expect :accept
+ :file "tests/fixtures/callable-homogeneous-by-value.nuc"}
+
+; A cond/if whose branches disagree is void; its consumer names the branch types.
+{:name "cond-strlit-cstr-want" :expect :accept
+ :file "tests/fixtures/cond-strlit-cstr-want.nuc"}
+{:name "cond-branch-mismatch" :expect :reject
+ :file "tests/fixtures/cond-branch-mismatch.nuc" :line 6
+ :messages ["with: init type mismatch for 't': value is either CStr (line 7) or String (line 8), slot is CStr"]}
+{:name "cond-void-branch" :expect :reject
+ :file "tests/fixtures/cond-void-branch.nuc" :line 5
+ :messages ["let: init type mismatch for 't': value is void (the branch at line 6 has no value), slot is i32"]}
+
+; A capturing closure is not C-callable: its code takes the env as a hidden first
+; argument, so a cast to a function-pointer type can never yield a callable value.
+{:name "closure-cast-to-fn-rejected" :expect :reject
+ :file "tests/fixtures/closure-cast-to-fn.nuc" :line 15
+ :messages ["unsafe/cast: a capturing closure cannot be used as a function pointer"]}
+{:name "closure-as-to-fn-rejected" :expect :reject
+ :file "tests/fixtures/closure-as-to-fn.nuc" :line 9
+ :messages ["as: a capturing closure cannot be used as a function pointer"]}
+{:name "w9-as-literal-too-big" :expect :reject
+ :file "tests/fixtures/w9-as-literal-too-big.nuc"
+ :messages ["as: lossy conversion from i32 to i8 -- use unsafe/cast"]}
+{:name "w9-as-literal-signed-into-unsigned" :expect :reject
+ :file "tests/fixtures/w9-as-literal-signed-into-unsigned.nuc"
+ :messages ["as: lossy conversion from i32 to ui8 -- use unsafe/cast"]}
+{:name "w9-as-float-inexact" :expect :reject
+ :file "tests/fixtures/w9-as-float-inexact.nuc"
+ :messages ["as: lossy conversion from f64 to f32 -- use unsafe/cast"]}
+{:name "w9-as-float-runtime" :expect :reject
+ :file "tests/fixtures/w9-as-float-runtime.nuc"
+ :messages ["as: lossy conversion from f64 to f32 -- use unsafe/cast"]}
+{:name "w9-as-float-global-inexact" :expect :reject
+ :file "tests/fixtures/w9-as-float-global-inexact.nuc"
+ :messages ["as: lossy conversion from f64 to f32 -- use unsafe/cast"]}
+
+; W9 item 13: an unrecognized list head in type position used to fall out of
+; `parse-type-from-node` as null, which every caller reads as "no annotation was
+; written". Four positions, one shared fall-through — if a future change patches
+; a single caller instead of the predicate, the other three fixtures fail. The
+; `-unimported` case is the everyday one (a forgotten `import-use`) and pins
+; that the fix reuses `unknown-type-message`'s tiers rather than a local string;
+; the `-return` case pins the `:0:` half, which `run_reject` checks on its own.
+{:name "w9-unknown-type-ctor-field" :expect :reject
+ :file "tests/fixtures/w9-unknown-type-ctor-field.nuc"
+ :messages ["unknown type: nosuch — not defined anywhere in this compilation unit"]}
+{:name "w9-unknown-type-ctor-param" :expect :reject
+ :file "tests/fixtures/w9-unknown-type-ctor-param.nuc"
+ :messages ["unknown type: nosuch — not defined anywhere in this compilation unit"]}
+{:name "w9-unknown-type-ctor-return" :expect :reject
+ :file "tests/fixtures/w9-unknown-type-ctor-return.nuc"
+ :messages ["unknown type: nosuch — not defined anywhere in this compilation unit"]}
+{:name "w9-unknown-type-ctor-unimported" :expect :reject
+ :file "tests/fixtures/w9-unknown-type-ctor-unimported.nuc" :line 12
+ :messages ["unknown type: Vector"]
+ :notes ["'Vector' is defined in lib/vector.nuc, which no import in this unit reaches"]}
+
+; The other mistake class at the same fall-through: a head that IS a type. One
+; message for both would lie about this one.
+{:name "w9-type-ctor-doubled-annotation" :expect :reject
+ :file "tests/fixtures/w9-type-ctor-doubled-annotation.nuc"
+ :messages ["'i32' is a type, not a type constructor"]}
+
+; Stage 14 unsafe-namespace.md UN-2 — `unsafe` is a reserved pseudo-namespace
+; (D1): no user code may declare `(ns unsafe)`, which would make `unsafe/foo`
+; ambiguous between a reserved op and a real namespace member. (The positive
+; `examples/unsafe-spellings.nuc` run — dispatched via the examples/*.nuc loop
+; above — covers `as` and the unsafe/cast, unsafe/ptr+, unsafe/funcall-ptr-i32,
+; and unsafe/import-private routes.)
+{:name "unsafe-ns-reserved-rejected" :expect :reject
+ :file "tests/fixtures/unsafe-ns-reserved.nuc"
+ :messages ["'unsafe' is a reserved namespace name"]}
+
+; Stage 14 unsafe-namespace.md UN-5 — the bare legacy spellings (`cast`,
+; `funcall-ptr-*`, `ptr+`, `unsafe-import-private`) are retired: each dispatch
+; site now dies with a targeted error naming its replacement instead of
+; silently working as an alias (D6).
+{:name "un5-bare-cast-rejected" :expect :reject
+ :file "tests/fixtures/un5-bare-cast.nuc"
+ :messages ["'cast' was split in Stage 14: use 'as' (safe) or 'unsafe/cast' (unchecked)"]}
+{:name "un5-bare-ptr-plus-rejected" :expect :reject
+ :file "tests/fixtures/un5-bare-ptr-plus.nuc"
+ :messages ["'ptr+' was split in Stage 14: use 'unsafe/ptr+'"]}
+{:name "un5-bare-funcall-ptr-rejected" :expect :reject
+ :file "tests/fixtures/un5-bare-funcall-ptr.nuc"
+ :messages ["'funcall-ptr-i32' was split in Stage 14: use 'unsafe/funcall-ptr-i32'"]}
+{:name "un5-bare-import-private-rejected" :expect :reject
+ :file "tests/fixtures/un5-bare-import-private.nuc"
+ :messages ["'unsafe-import-private' was split in Stage 14: use 'unsafe/import-private'"]}
+
+; Stage 14 attributes.md AT-3 — the old postfix volatile spellings are retired:
+; both the list form `(T volatile)` and the colon-sugared `T:volatile` (which
+; reduces to the same trailing-symbol shape via split-colon-segments) now die
+; with a targeted error naming the `:volatile` attribute-slot replacement,
+; instead of silently stripping the trailing symbol and calling
+; type-with-volatile as before AT-3.
+{:name "at3-postfix-volatile-rejected" :expect :reject
+ :file "tests/fixtures/at3-postfix-volatile.nuc"
+ :messages ["postfix 'volatile' is retired: use the ':volatile' attribute"]}
+{:name "at3-colon-volatile-rejected" :expect :reject
+ :file "tests/fixtures/at3-colon-volatile.nuc"
+ :messages ["postfix 'volatile' is retired: use the ':volatile' attribute"]}
+
+; --- Stage 15 W5a: `\x` string escapes --------------------------------------
+; design/stage15-stress-test/ergonomics.md §W5a. A `\x` escape with no
+; following hex digit is a reader error. The pattern includes the `:6:` line
+; prefix on purpose: the diagnostic must be attributed to the literal's own
+; line, never line 0 (cf. run_no_line_zero).
+{:name "w5a-hex-escape-no-digit-rejected" :expect :reject
+ :file "tests/fixtures/w5a-hex-escape-no-digit.nuc" :line 6
+ :messages ["\\x escape needs at least one hex digit"]}
+{:name "w2a-mixed-sign" :expect :reject
+ :file "tests/fixtures/w2a-mixed-sign.nuc" :line 10
+ :messages ["mixed signed/unsigned operands — use explicit cast"]}
+{:name "w2a-mixed-sign-cmp" :expect :reject
+ :file "tests/fixtures/w2a-mixed-sign-cmp.nuc" :line 11
+ :messages [">: mixed signed/unsigned operands — use explicit cast"]}
+
+; --- Stage 15 W2b: a named integer constant behaves like the literal ---------
+; design/stage15-stress-test/literal-typing.md section W2b. The positive matrix
+; (a defconst against {i32, i64, ui32, ui64} in both operand orders, each line
+; paired with the identical inline-literal spelling; the enum-member case; the
+; BIG-value case; the vararg path) is examples/defconst-literal-typing.nuc, run
+; by the examples/*.nuc loop above. The committed boot compiler FAILS to compile
+; that file, which is the teeth.
+;
+; Here: the negative half. Two properties must survive the fix -- the provenance
+; is read through the SCOPE (so a shadowing local is not a literal), and it
+; carries the VALUE (so an out-of-range narrowing is rejected rather than
+; wrapped, at both the coerce-int-val chokepoint and the global-initializer
+; path, and for a named constant exactly as for the literal it names).
+{:name "w2b-shadow-local" :expect :reject
+ :file "tests/fixtures/w2b-shadow-local.nuc" :line 12
+ :messages ["<: mixed signed/unsigned operands — use explicit cast"]}
+{:name "w2b-const-narrow" :expect :reject
+ :file "tests/fixtures/w2b-const-narrow.nuc" :line 10
+ :messages ["integer literal 5000000000 does not fit i32"]}
+{:name "w2b-defvar-const-narrow" :expect :reject
+ :file "tests/fixtures/w2b-defvar-const-narrow.nuc" :line 7
+ :messages ["defvar: constant 'BIG' (5000000000) does not fit i32"]}
+{:name "w2b-defvar-lit-narrow" :expect :reject
+ :file "tests/fixtures/w2b-defvar-lit-narrow.nuc" :line 5
+ :messages ["defvar: integer literal 5000000000 does not fit i32"]}
+{:name "w2d-float-into-int" :expect :reject
+ :file "tests/fixtures/w2d-float-into-int.nuc" :line 9
+ :messages ["let: init type mismatch for 'a'"]}
+{:name "w2d-mixed-float-int-binop" :expect :reject
+ :file "tests/fixtures/w2d-mixed-float-int-binop.nuc" :line 9
+ :messages ["mixed float and non-float operands — use explicit cast"]}
+{:name "w2d-dispatch-no-narrow" :expect :reject
+ :file "tests/fixtures/w2d-dispatch-no-narrow.nuc" :line 15
+ :messages ["no matching method for overloaded 'tk' with argument types (f64)"]}
+
+; --- Stage 15 W4a: located diagnostics --------------------------------------
+; design/stage15-stress-test/diagnostics.md §W4a. Every entry below reported
+; `:0:` before W4a. The location is part of the assertion, not decoration.
+{:name "w4a-undefined-value" :expect :reject
+ :file "tests/fixtures/w4a-undefined-value.nuc" :line 8
+ :messages ["undefined: missing-thing"]}
+{:name "w4a-suggest-spelling" :expect :reject
+ :file "tests/fixtures/w4a-suggest-spelling.nuc" :line 6
+ :messages ["unknown: printfx (did you mean 'printf'?)"]}
+{:name "w4a-let-null-ref" :expect :reject
+ :file "tests/fixtures/w4a-let-null-ref.nuc" :line 7
+ :messages ["unchecked pointer where non-null (ref ...) is required"]}
+{:name "w4a-bare-cast-head" :expect :reject
+ :file "tests/fixtures/w4a-bare-cast-head.nuc" :line 7
+ :messages ["'cast' was split in Stage 14"]}
+
+; --- Stage 15 W4b: annotated definers + sibling-definer sweep ----
+; design/stage15-stress-test/diagnostics.md §W4b. `(defconst K:i32 2)` once
+; registered nothing under the literal key "K:i32"; since Stage 21 item 8 the
+; annotation is the constant's type, and the fused `K:(i32)` is the doubled-
+; annotation mistake, refused at the defconst line. The same silent-
+; registration bug recurred, unannounced, in every sibling top-level definer
+; whose own name is never annotated — each is pinned here too.
+{:name "w4a-defconst-annotated" :expect :accept
+ :file "tests/fixtures/w4a-defconst-annotated.nuc"}
+{:name "w4b-defconst-paren" :expect :reject
+ :file "tests/fixtures/w4b-defconst-paren.nuc" :line 3
+ :messages ["'i32' is a type, not a type constructor"]}
+{:name "w4b-defenum-annotated" :expect :reject
+ :file "tests/fixtures/w4b-defenum-annotated.nuc" :line 9
+ :messages ["defenum: takes no type annotation; write (defenum E ...)"]}
+{:name "w4b-defstruct-annotated" :expect :reject
+ :file "tests/fixtures/w4b-defstruct-annotated.nuc" :line 9
+ :messages ["defstruct: takes no type annotation; write (defstruct S ...)"]}
+{:name "w4b-defprotocol-annotated" :expect :reject
+ :file "tests/fixtures/w4b-defprotocol-annotated.nuc" :line 9
+ :messages ["defprotocol: takes no type annotation; write (defprotocol P ...)"]}
+{:name "w4b-defmacro-annotated" :expect :reject
+ :file "tests/fixtures/w4b-defmacro-annotated.nuc" :line 7
+ :messages ["defmacro: takes no type annotation; write (defmacro m ...)"]}
+{:name "w4b-defunion-annotated" :expect :reject
+ :file "tests/fixtures/w4b-defunion-annotated.nuc" :line 6
+ :messages ["defunion: takes no type annotation; write (defunion U ...)"]}
+{:name "w4b-deferror-annotated" :expect :reject
+ :file "tests/fixtures/w4b-deferror-annotated.nuc" :line 7
+ :messages ["deferror: takes no type annotation; write (deferror MyErr \"message\")"]}
+
+; Found (not silent, but wrong location) while sweeping defvar the same way:
+; `(defvar x 3)` -- no annotation at all -- already died with the right
+; message but at line 0 (name-node is a bare interned NODE-SYM).
+{:name "w4b-defvar-missing-type" :expect :reject
+ :file "tests/fixtures/w4b-defvar-missing-type.nuc" :line 9
+ :messages ["defvar: missing :type on 'x'"]}
+
+; --- Stage 15 W5f: an empty list `()` never segfaults ------------------------
+; design/stage15-stress-test/ergonomics.md §W5f. `()` reads as a NULL node (an
+; empty cons list), and a raw `(n kind)` / `(n line)` on it faults. Each fixture
+; below was a confirmed SIGSEGV-with-no-output before W5f; run_reject_at fails on
+; a crash too (no message to grep), so these double as segfault regressions.
+{:name "w5f-empty-union-member" :expect :reject
+ :file "tests/fixtures/w5f-empty-union-member.nuc" :line 11
+ :messages ["expected a name:type declaration, found the empty list '()'"]}
+{:name "w5f-empty-param" :expect :reject
+ :file "tests/fixtures/w5f-empty-param.nuc" :line 7
+ :messages ["expected a name:type declaration, found the empty list '()'"]}
+{:name "w5f-empty-expr" :expect :reject
+ :file "tests/fixtures/w5f-empty-expr.nuc" :line 6
+ :messages ["'()' is not an expression -- the empty list has no value"]}
+{:name "w5f-empty-defunion-arm" :expect :reject
+ :file "tests/fixtures/w5f-empty-defunion-arm.nuc" :line 4
+ :messages ["defunion: arm cannot be the empty list '()'"]}
+
+; --- Stage 15 W4c: unterminated forms point at the imbalance -----------------
+; design/stage15-stress-test/diagnostics.md §W4c. The reader already reported the
+; innermost unclosed form's OPENING line; what it lacked was the second number --
+; the first line that opens a new form in column 0 while a form is still open,
+; which is where an earlier missing `)` first became observable. Each entry below
+; pins BOTH: the `loc` argument carries the primary `path:line: error: message`
+; and the `pattern` argument carries the note with the second number, so a
+; regression in either half fails the test. (run_reject_at's loc is a literal
+; grep -F, so it can pin the message text as well as the location.)
+{:name "w4c-unterminated-deep" :expect :reject
+ :file "tests/fixtures/w4c-unterminated-deep.nuc" :line 12
+ :messages ["unterminated list"]
+ :notes ["line 23 starts a new form in column 0 while 1 form(s) are still open"]}
+{:name "w4c-unterminated-deep-many" :expect :reject
+ :file "tests/fixtures/w4c-unterminated-deep-many.nuc" :line 12
+ :messages ["unterminated list"]
+ :notes ["line 18 starts a new form in column 0 while 6 form(s) are still open"]}
+
+; No column-0 candidate exists (the imbalance is in the file's last form): the
+; alternative note must appear, and since the two notes are the arms of one
+; if/else, pinning this one also asserts no bogus second number is invented.
+{:name "w4c-unterminated-last-form" :expect :reject
+ :file "tests/fixtures/w4c-unterminated-last-form.nuc" :line 9
+ :messages ["unterminated list"]
+ :notes ["end of file reached with 3 form(s) still open"]}
+
+; A bracket kind other than `(`: depth tracking spans ( [ { #{ , and the note
+; names the closer the form is actually waiting for.
+{:name "w4c-unterminated-bracket" :expect :reject
+ :file "tests/fixtures/w4c-unterminated-bracket.nuc" :line 7
+ :messages ["unterminated vector literal"]
+ :notes ["line 9 starts a new form in column 0 while 4 form(s) are still open -- a ']' is probably missing"]}
+
+; The extra-`)`-in-a-let-binding-list shape, both ways it can land: still
+; balanced (caught at emit, in emit-let) and no longer balanced (caught by the
+; reader at the excess `)`, with the note bounding the search to one form).
+{:name "w4c-let-extra-paren" :expect :reject
+ :file "tests/fixtures/w4c-let-extra-paren.nuc" :line 11
+ :messages ["let: 'b:i32' is a body form, not a binding -- an extra ')' probably ended the binding list early"]}
+{:name "w4c-stray-close-paren" :expect :reject
+ :file "tests/fixtures/w4c-stray-close-paren.nuc" :line 13
+ :messages ["unexpected )"]
+ :notes ["the form opened at line 10 is already closed -- look for an extra ')' between lines 10 and 13"]}
+
+; --- Stage 15 W4d: errors that name the macro instead of the mistake ---------
+; design/stage15-stress-test/diagnostics.md §W4d. `case`'s documented-but-wrong
+; nested-clause shape used to die with the opaque "value is not callable: no
+; `invoke` method is defined for this type" -- naming the mechanism (an int
+; literal in call position), not the mistake. Fixed at the one chokepoint every
+; non-callable head funnels through (emit-invoke-with-callee), not inside the
+; `case` macro body: a macro body is ordinary user-scope Nucleus code and
+; `die-at`/`report-at` are only in scope for the compiler's own source, not a
+; user program's macro expansions (confirmed empirically -- a `defmacro` body
+; calling `die-at` fails `unknown: die-at`).
+{:name "w4d-case-clause-form" :expect :reject
+ :file "tests/fixtures/w4d-case-clause-form.nuc" :line 16
+ :messages ["0 is not callable"]}
+; The hint asks whether an `invoke` method takes the literal, not whether any
+; exists: importing a collection defines some, which used to hide it.
+{:name "w4d-case-clause-with-invoke" :expect :reject
+ :file "tests/fixtures/w4d-case-clause-with-invoke.nuc" :line 6
+ :messages ["0 is not callable"]}
+{:name "arrow-bare-literal" :expect :reject
+ :file "tests/fixtures/arrow-bare-literal.nuc" :line 9
+ :messages ["0 is not callable"]}
+
+; examples/case.nuc (the real flat syntax) is covered as a regression by the
+; ordinary examples/*.nuc + tests/expected/case.out loop above -- no separate
+; fixture needed here.
+;
+; One-armed `if` used to die with the generic, unlocated-by-name
+; `macro: wrong number of args`. `if` is a fixed 3-arg macro
+; (test/then/else); there is no one-armed `if`, only `when`/`unless`.
+{:name "w4d-if-one-armed" :expect :reject
+ :file "tests/fixtures/w4d-if-one-armed.nuc" :line 11
+ :messages ["if requires an else branch; use (when test then…) for a guard"]}
+
+; The generic arg-count messages themselves, now naming the macro and both
+; counts instead of the bare "macro: wrong number of args" / "macro: not
+; enough args".
+{:name "w4d-macro-too-many-args" :expect :reject
+ :file "tests/fixtures/w4d-macro-too-many-args.nuc" :line 11
+ :messages ["macro 'for': expects 4 args, got 5"]}
+{:name "w4d-macro-too-few-args" :expect :reject
+ :file "tests/fixtures/w4d-macro-too-few-args.nuc" :line 12
+ :messages ["macro 'case': expects at least 1 args, got 0"]}
+
+; --- Stage 15 W3a: opaque forward-declared C types ---------------------------
+; design/stage15-stress-test/cheader.md §1.6. `struct Foo;` used to be skipped
+; outright, so the type never registered and any later `ptr:Foo` died
+; `unknown type: Foo` — C's standard opaque-handle idiom (FILE, SDL_Window,
+; Mix_Music) was simply unusable. It now registers layout-less, is legal behind
+; a pointer, and every by-value use is refused at its own line naming the header
+; declaration. The runnable half is examples/cheader-opaque.nuc (a real
+; fopen/fprintf/fgets round trip through `ptr:FILE`, plus forward-declaration-
+; then-definition upgrades); the rejections are pinned here.
+{:name "w3a-opaque-sizeof" :expect :reject
+ :file "tests/fixtures/w3a-opaque-sizeof.nuc" :line 9
+ :messages ["sizeof: 'CHOpaque' is an opaque type declared at "]}
+{:name "w3a-opaque-alloca" :expect :reject
+ :file "tests/fixtures/w3a-opaque-alloca.nuc" :line 6
+ :messages ["alloca: 'CHOpaque' is an opaque type declared at "]}
+{:name "w3a-opaque-field" :expect :reject
+ :file "tests/fixtures/w3a-opaque-field.nuc" :line 7
+ :messages ["field access: 'CHOpaque' is an opaque type declared at "]}
+{:name "w3a-opaque-param" :expect :reject
+ :file "tests/fixtures/w3a-opaque-param.nuc" :line 6
+ :messages ["defn parameter: 'CHOpaque' is an opaque type declared at "]}
+{:name "w3a-opaque-return" :expect :reject
+ :file "tests/fixtures/w3a-opaque-return.nuc" :line 5
+ :messages ["defn return type: 'CHOpaque' is an opaque type declared at "]}
+
+; W3a also gave `unknown type:` a location: resolving a defn signature used to
+; blame the defn's NAME node, an interned NODE-SYM whose line is always 0. Both
+; halves (parameter, return) are pinned, and both fixtures also feed the
+; run_no_line_zero sweep above.
+{:name "w3a-unknown-type-param" :expect :reject
+ :file "tests/fixtures/w3a-unknown-type-param.nuc" :line 6
+ :messages ["unknown type: NoSuchTypeHere"]}
+{:name "w3a-unknown-type-return" :expect :reject
+ :file "tests/fixtures/w3a-unknown-type-return.nuc" :line 3
+ :messages ["unknown type: AlsoNoSuchType"]}
+; A `'{'` in a header used to desync the prescan's brace count, hiding every
+; later C type from defn signatures (GLib's GVariantClass hid all of GTK).
+{:name "w3a-quoted-brace" :expect :accept
+ :file "tests/fixtures/w3a-quoted-brace.nuc"}
+
+; A parameter spelling that names no type is a located error, not a default —
+; and `:rest`/`:optional` are defn-only (the marker used to be counted as an
+; extra i32 parameter, so the declared arity silently disagreed).
+{:name "w3c-declare-unknown-type" :expect :reject
+ :file "tests/fixtures/w3c-declare-unknown-type.nuc" :line 4
+ :messages ["unknown type: NoSuchDeclParamType"]}
+{:name "w3c-declare-rest" :expect :reject
+ :file "tests/fixtures/w3c-declare-rest.nuc" :line 6
+ :messages ["declare: ':rest' is not supported in a declaration"]}
+
+; --- Stage 15 W5c: a `defvar` global may be typed CStr ----------------------
+; design/stage15-stress-test/ergonomics.md §W5c (findings §3.7). The positive
+; matrix -- both literal spellings (plain "…" and c"…"), explicit `null`, no
+; init, `:const`, the private `defvar-`, `set!`, and every global handed to a
+; libc function declared `const char *` -- is examples/cstr-defvar.nuc, run by
+; the examples/*.nuc loop above against tests/expected/cstr-defvar.out. It is
+; checked BY VALUE (strlen/strcmp results, %s output) rather than by exit code,
+; because "it compiles" was never the question: the pre-W5c workaround compiled
+; too. That example also pins the segfault W5c fixed -- `(= cstr null)` lowered
+; to `strcmp(ptr, null)`, undefined behaviour in C and a crash under glibc.
+;
+; Here: the boundary the widened gate must NOT cross. `defvar-init-ir` now gates
+; a string literal and `null` on `is-ptr-like` instead of a bare `TY-PTR` kind,
+; which admits `CStr` -- and must still admit nothing else. (The `null` gate also
+; admits TY-FN by name since the fn-pointer-global fix below, which is why its
+; message names three admissible spellings; a string literal still does not.)
+{:name "w5c-string-into-int" :expect :reject
+ :file "tests/fixtures/w5c-string-into-int.nuc" :line 5
+ :messages ["defvar: string literal requires ptr or CStr type, not i32"]}
+{:name "w5c-null-into-int" :expect :reject
+ :file "tests/fixtures/w5c-null-into-int.nuc" :line 4
+ :messages ["defvar: null requires ptr, CStr or a function-pointer type, not i32"]}
+
+;
+; The carve-out, pinned in the other direction. `CStr` is flow-exempt (a null
+; `char*` is ordinary C), and `defvar-init-ir` states that exemption as its own
+; early return rather than letting it ride on `is-ptr-like`. W6 (below) has since
+; added a `pkind-flow-check` to the `TY-PTR` path beside it; this test is what
+; fails if `CStr` ever gets swept up with `ptr`.
+{:name "w5c-cstr-null-exempt" :expect :accept
+ :file "tests/fixtures/w5c-cstr-null-exempt.nuc"}
+
+; --- Stage 15 W6: null into a non-null global -------------------------------
+; `defvar-init-ir` is a CONSTANT RENDERER: it never routes through
+; `coerce-int-val` (src/abi.nuc), the chokepoint every value-position assignment
+; passes for its Phase-F `pkind-flow-check`. So `(defvar g:ptr:Thing null)`
+; compiled clean and segfaulted on first use, while the identical local
+; `(let (p:ptr:Thing null) …)` was correctly rejected -- one rule living in one
+; path and not the other. The fix calls the SAME predicate from the global path
+; (source type = `ty-raw`, exactly what `emit-symbol-ref` gives the `null`
+; symbol), so the two cannot drift; these tests pin both directions.
+;
+; Rejections: a TYPED non-null pointer, in both spellings. The location is pinned
+; (not just the message) because the init node is the interned symbol `null`,
+; whose own line is always 0 -- the diagnostic has to borrow the enclosing
+; `defvar` form's line via `node-line`, and a regression there reports `:0:`.
+{:name "w6-defvar-null-ptr-elem" :expect :reject
+ :file "tests/fixtures/w6-defvar-null-ptr-elem.nuc" :line 11
+ :messages ["defvar: unchecked pointer where non-null (ref ...) is required"]}
+{:name "w6-defvar-null-ref" :expect :reject
+ :file "tests/fixtures/w6-defvar-null-ref.nuc" :line 8
+ :messages ["defvar: unchecked pointer where non-null (ref ...) is required"]}
+
+;
+; Stage 15 W9 item 7: the same rule, for the source kind it never reached. A
+; `CStr` is `TY-CSTR`, so `pkind-flow-check`'s `TY-PTR`-only guard let it launder
+; a null into a typed non-null slot — global and local alike, since the defvar
+; renderer calls the same predicate — and `as-ptr-convert` carried a second copy
+; of the premise. Measured before the fix: all three of these compiled clean and
+; segfaulted; the corpus contained exactly ONE conversion that this rejects
+; (lib/hash.nuc's CStr Hash conformance), now null-guarded.
+{:name "w9-cstr-into-ref-defvar" :expect :reject
+ :file "tests/fixtures/w9-cstr-into-ref-defvar.nuc" :line 17
+ :messages ["defvar: unchecked pointer where non-null (ref ...) is required"]}
+{:name "w9-cstr-into-ref-let" :expect :reject
+ :file "tests/fixtures/w9-cstr-into-ref-let.nuc" :line 8
+ :messages ["assignment: unchecked pointer where non-null (ref ...) is required"]}
+{:name "w9-cstr-as-typed-ptr" :expect :reject
+ :file "tests/fixtures/w9-cstr-as-typed-ptr.nuc" :line 16
+ :messages ["as: unchecked pointer CStr where non-null &W9C7A is required"]}
+
+; ...but it is NOT admitted to the strcmp lowering. This is the tripwire against
+; "fixing" item 18 by widening `is-ptr-like` to contain TY-FN, which would turn
+; the line below into strcmp(hook, msg) — a function's code read as text.
+{:name "w9-fnptr-cstr-compare" :expect :reject
+ :file "tests/fixtures/w9-fnptr-cstr-compare.nuc" :line 15
+ :messages ["=: a CStr compares only with a CStr or pointer"]}
+
+; ...but ONLY the literal. Gating item 20 on `is-ptr-repr` instead of on
+; Val.is-nlit would compile the line below and make any data pointer callable.
+{:name "w9-fnptr-null-launder" :expect :reject
+ :file "tests/fixtures/w9-fnptr-null-launder.nuc" :line 17
+ :messages ["let: init type mismatch for 'f'"]}
+
+;
+; Acceptances: every NULLABLE or contract-free pointer destination stays legal --
+; elem-less bare `ptr` (with and without an init), `(raw T)` / `raw:T`, `?ptr:T`,
+; and `CStr`. The bare-`ptr` cases are the load-bearing ones: `ptr` is PTR-REF
+; since the Phase-F flip, so only `pkind-flow-check`'s untyped-destination
+; refinement keeps them compiling, and this compiler's own source has ~1550 such
+; bindings -- narrowing that refinement would take the bootstrap with it.
+{:name "w6-defvar-null-accepts" :expect :accept
+ :file "tests/fixtures/w6-defvar-null-accepts.nuc"}
+
+; --- Stage 15 W8: a function-pointer-typed global ---------------------------
+; `(defvar h:(fn ret)(params) …)` could not be declared at all. Two stacked
+; defects: `name-existing-kind` called any TY-FN-typed global Sym "a function",
+; so once G-0's prescan defined that Sym the `defvar` collided with itself; and
+; behind it `defvar-init-ir`'s `null` gate tested `is-ptr-like`, which excludes
+; TY-FN by design. The positive matrix -- explicit `null`, no init, a runtime
+; initializer, `set!`, both call spellings, and reassignment -- is
+; examples/fnptr-global.nuc, run by the examples/*.nuc loop above against
+; tests/expected/fnptr-global.out and checked BY VALUE: a hook wired to the
+; wrong symbol, or an @__nucleus_init that never ran, links and exits 0.
+;
+; The two boundaries that must hold. First, the null admission is TY-FN-only:
+; `ptr:(fn …)` is a pointer TO a function pointer, an ordinary PTR-REF, and W6's
+; gate still refuses `null` there. The location is pinned for the same reason
+; W6's are -- the init node is the interned symbol `null`, whose own line is 0.
+{:name "w8-fnptr-null-still-gated" :expect :reject
+ :file "tests/fixtures/w8-fnptr-null-still-gated.nuc" :line 12
+ :messages ["defvar: unchecked pointer where non-null (ref ...) is required"]}
+
+; Second, the `is-local` conjunct must not silence a real cross-kind collision.
+; g0-value-fn-collision-order1/2 pin the plain (i32-typed) shape; this is the
+; fn-typed one, i.e. exactly the shape the new conjunct changes the answer for.
+;
+; Stage 15 B5 re-pointed the LOCATION and the noun, not the verdict. The guard
+; now asks the shared binding table for the first binding whose kind is NOT the
+; one being defined (name-resolution.md §13.3), so the collision is reported at
+; whichever definer is EMITTED first — here the `defn`, naming the
+; `defvar` — instead of only at the second one. Before B5 the first definer's
+; own guard was silently masked by its own prescan registration, which is the
+; same class of hole this chunk exists to close; the pair is still refused, and
+; `run_reject_at` still proves no binary is produced.
+{:name "w8-fnptr-global-name-collision" :expect :reject
+ :file "tests/fixtures/w8-fnptr-global-name-collision.nuc" :line 19
+ :messages ["'f' already names a value — a symbol may name only one kind of thing"]}
+
+; --- Stage 15 W5d: array literal ergonomics ---------------------------------
+; design/stage15-stress-test/ergonomics.md §3.9 + §3.10. The positive matrix is
+; examples/array-literal-ergonomics.nuc, run by the examples/*.nuc loop above:
+; bare struct compound literals as array elements (positional, designated and
+; mixed with the old `(deref …)` spelling), the zero-fill of an unspecified
+; struct/CStr slot, the same relaxation at the sibling typed slots (local, field,
+; aset!, by-value return), and the §3.10 `:ptr` bindings. The committed boot
+; compiler FAILS on that file (`array: type mismatch in positional initializer`),
+; which is the teeth.
+;
+; Here: the three boundaries the relaxations must NOT cross.
+; 1. §3.9 stays type-directed — a compound literal of a DIFFERENT struct is
+;    still a mismatch (the load is gated on the pointee's StructDef).
+; 2. The implicit load is a `deref`, so it inherits `deref`'s Stage 10
+;    obligation: a `?T` source must be narrowed first, or the sugar would be a
+;    nullability hole the explicit spelling does not have.
+; 3. §3.10 is SYNTACTIC (an `(array T …)` init and nothing else). A bare `:ptr`
+;    is the void*-style erasure hatch; inferring the element type generally
+;    would re-route multimethod dispatch across every such binding, so a `:ptr`
+;    bound from an `alloca` must stay elem-less.
+{:name "w5d-array-wrong-struct" :expect :reject
+ :file "tests/fixtures/w5d-array-wrong-struct.nuc" :line 9
+ :messages ["array: type mismatch in positional initializer"]}
+{:name "w5d-struct-slot-maybe-null" :expect :reject
+ :file "tests/fixtures/w5d-struct-slot-maybe-null.nuc" :line 13
+ :messages ["assignment: value may be null"]}
+{:name "w5d-elemless-not-inferred" :expect :reject
+ :file "tests/fixtures/w5d-elemless-not-inferred.nuc" :line 13
+ :messages ["aref: operand must be typed pointer"]}
+{:name "g1-fold-range" :expect :reject
+ :file "tests/fixtures/g1-fold-range.nuc" :line 5
+ :messages ["defvar: constant expression value 6000000000 does not fit i32"]}
+{:name "g1-fold-overflow" :expect :reject
+ :file "tests/fixtures/g1-fold-overflow.nuc" :line 3
+ :messages ["defvar: constant initializer overflows 64-bit signed integer arithmetic"]}
+{:name "g1-div-zero" :expect :reject
+ :file "tests/fixtures/g1-div-zero.nuc" :line 4
+ :messages ["defvar: division by zero in constant initializer"]}
+{:name "g1-rem-zero" :expect :reject
+ :file "tests/fixtures/g1-rem-zero.nuc" :line 2
+ :messages ["defvar: remainder by zero in constant initializer"]}
+{:name "g1-shift-range" :expect :reject
+ :file "tests/fixtures/g1-shift-range.nuc" :line 3
+ :messages ["defvar: shift amount 64 out of range in constant initializer"]}
+{:name "g1-as-lossy" :expect :reject
+ :file "tests/fixtures/g1-as-lossy.nuc" :line 5
+ :messages ["as: lossy conversion from i64 to i32 -- use unsafe/cast"]}
+{:name "g1-as-null-launder" :expect :reject
+ :file "tests/fixtures/g1-as-null-launder.nuc" :line 7
+ :messages ["defvar: unchecked pointer where non-null (ref ...) is required"]}
+{:name "g1-addr-of-const" :expect :reject
+ :file "tests/fixtures/g1-addr-of-const.nuc" :line 4
+ :messages ["defvar: ref: 'G1K' is a compile-time constant and has no address"]}
+{:name "g1-not-constant" :expect :reject
+ :file "tests/fixtures/g1-not-constant.nuc" :line 5
+ :messages ["defvar: init must be a compile-time constant"]}
+{:name "g2-anon-struct-field" :expect :accept
+ :file "tests/fixtures/g2-anon-struct-field.nuc"}
+{:name "g2-array-param" :expect :reject
+ :file "tests/fixtures/g2-array-param.nuc" :line 4
+ :messages ["(array T N) is a storage type"]}
+{:name "g2-array-return" :expect :reject
+ :file "tests/fixtures/g2-array-return.nuc" :line 3
+ :messages ["(array T N) is a storage type"]}
+{:name "g2-array-let" :expect :reject
+ :file "tests/fixtures/g2-array-let.nuc" :line 4
+ :messages ["(array T N) is a storage type"]}
+{:name "g2-array-ptr-elem" :expect :reject
+ :file "tests/fixtures/g2-array-ptr-elem.nuc" :line 4
+ :messages ["(array T N) is a storage type"]}
+{:name "g2-array-nested" :expect :reject
+ :file "tests/fixtures/g2-array-nested.nuc" :line 3
+ :messages ["(array T N) is a storage type"]}
+{:name "g2-array-generic-arg" :expect :reject
+ :file "tests/fixtures/g2-array-generic-arg.nuc" :line 5
+ :messages ["(array T N) is a storage type"]}
+{:name "g2-len-nonconst" :expect :reject
+ :file "tests/fixtures/g2-len-nonconst.nuc" :line 4
+ :messages ["(array T N): length must be a compile-time integer constant"]}
+{:name "g2-len-zero" :expect :reject
+ :file "tests/fixtures/g2-len-zero.nuc" :line 4
+ :messages ["(array T N): length must be positive, got 0"]}
+{:name "g2-index-range" :expect :reject
+ :file "tests/fixtures/g2-index-range.nuc" :line 3
+ :messages ["index 5 is out of range for a 3-element array"]}
+{:name "g2-index-twice" :expect :reject
+ :file "tests/fixtures/g2-index-twice.nuc" :line 3
+ :messages ["index 1 specified twice"]}
+{:name "g2-too-many" :expect :reject
+ :file "tests/fixtures/g2-too-many.nuc" :line 3
+ :messages ["too many initializers for a 2-element array"]}
+{:name "g2-elem-mismatch" :expect :reject
+ :file "tests/fixtures/g2-elem-mismatch.nuc" :line 3
+ :messages ["array initializer element type i64 does not match the declared element type i32"]}
+{:name "g2-elem-range" :expect :reject
+ :file "tests/fixtures/g2-elem-range.nuc" :line 4
+ :messages ["defvar: constant expression value 6000000000 does not fit i32"]}
+{:name "g2-scalar-init" :expect :reject
+ :file "tests/fixtures/g2-scalar-init.nuc" :line 2
+ :messages ["slot must be initialized with an (array T ...) literal"]}
+{:name "g2-struct-scalar-init" :expect :reject
+ :file "tests/fixtures/g2-struct-scalar-init.nuc" :line 5
+ :messages ["a P slot must be initialized with a (P ...) compound literal"]}
+{:name "g2-struct-field-twice" :expect :reject
+ :file "tests/fixtures/g2-struct-field-twice.nuc" :line 3
+ :messages ["defvar: field 'x' specified twice"]}
+{:name "g2-struct-no-field" :expect :reject
+ :file "tests/fixtures/g2-struct-no-field.nuc" :line 3
+ :messages ["defvar: no field 'z' on struct 'P'"]}
+{:name "g2-field-assign" :expect :reject
+ :file "tests/fixtures/g2-field-assign.nuc" :line 5
+ :messages ["set!: field 'xs': an (array T N) is storage, not a value"]}
+{:name "g2-set-global" :expect :reject
+ :file "tests/fixtures/g2-set-global.nuc" :line 4
+ :messages ["set!: 'g': an (array T N) is storage, not a value"]}
+
+; The queue predicate is `defvar-init-ir`'s own answer, so a runtime initializer
+; inherits every check the constant renderer already applied at the same slot —
+; §2.8's `pkind-flow-check` most of all, which is the whole acceptance argument
+; for combining declaration with initialization. Pinned at the `defvar`, not at
+; some synthesized set! the user never wrote.
+{:name "g3-init-raw-into-ref" :expect :reject
+ :file "tests/fixtures/g3-init-raw-into-ref.nuc" :line 9
+ :messages ["unchecked pointer where non-null (ref ...) is required"]}
+{:name "g3-init-type-mismatch" :expect :reject
+ :file "tests/fixtures/g3-init-type-mismatch.nuc" :line 6
+ :messages ["set!: type mismatch for 'g3-bad'"]}
+
+; Positions where a runtime initializer has nowhere to run. Each must be a
+; located refusal rather than a slot that silently stays zero.
+{:name "g3-init-in-compile-time" :expect :reject
+ :file "tests/fixtures/g3-init-in-compile-time.nuc" :line 6
+ :messages ["a compile-time or macro body cannot have"]}
+{:name "g3-init-const-storage" :expect :reject
+ :file "tests/fixtures/g3-init-const-storage.nuc" :line 4
+ :messages ["defconst: 'g3-ro' needs a run-time initializer; a constant's value must be known at compile time -- use defvar"]}
+
+; --- Stage 21 item 8: defconst literals and aggregates ---------------------
+; design/stage21-cleanup/defconst-values.md.
+{:name "dc-field-write" :expect :reject
+ :file "tests/fixtures/dc-field-write.nuc" :line 4
+ :messages ["set!: cannot write into 'O' -- it is a constant"]}
+{:name "dc-aset-write" :expect :reject
+ :file "tests/fixtures/dc-aset-write.nuc" :line 3
+ :messages ["set!: cannot write into 'T' -- it is a constant"]}
+{:name "dc-whole-assign" :expect :reject
+ :file "tests/fixtures/dc-whole-assign.nuc" :line 4
+ :messages ["set!: cannot assign to 'O' -- it is a constant"]}
+{:name "dc-inc" :expect :reject
+ :file "tests/fixtures/dc-inc.nuc" :line 3
+ :messages ["inc!: cannot assign to 'K' -- it is a constant"]}
+{:name "dc-addr" :expect :reject
+ :file "tests/fixtures/dc-addr.nuc" :line 3
+ :messages ["ref: constant 'K' has no storage -- bind it with let or defvar to take its address"]}
+{:name "dc-runtime" :expect :reject
+ :file "tests/fixtures/dc-runtime.nuc" :line 3
+ :messages ["defconst: 'R' needs a run-time initializer; a constant's value must be known at compile time -- use defvar"]}
+{:name "dc-defvar-const-retired" :expect :reject
+ :file "tests/fixtures/dc-defvar-const-retired.nuc" :line 2
+ :messages ["defvar: ':const' was retired -- write (defconst NAME:T init)"]}
+{:name "dc-attr" :expect :reject
+ :file "tests/fixtures/dc-attr.nuc" :line 2
+ :messages ["defconst: takes no declaration attributes -- a constant is read-only already"]}
+{:name "dc-annot-overflow" :expect :reject
+ :file "tests/fixtures/dc-annot-overflow.nuc" :line 2
+ :messages ["defconst: 'K' (300) does not fit ui8"]}
+{:name "dc-annot-mismatch" :expect :reject
+ :file "tests/fixtures/dc-annot-mismatch.nuc" :line 2
+ :messages ["defconst: 'K' is StrView, which does not fit i32"]}
+{:name "dc-annot-no-adapt" :expect :reject
+ :file "tests/fixtures/dc-annot-no-adapt.nuc" :line 3
+ :messages ["<: mixed signed/unsigned operands"]}
+{:name "g4-forward-ref" :expect :reject
+ :file "tests/fixtures/g4-forward-ref.nuc" :line 12
+ :messages ["defvar: the initializer for 'g4-fwd-a' names global 'g4-fwd-b', whose own defvar has not been reached yet"]
+ :notes ["'g4-fwd-b' is declared at tests/fixtures/g4-forward-ref.nuc:13"]}
+{:name "g4-init-cycle" :expect :reject
+ :file "tests/fixtures/g4-init-cycle.nuc" :line 10
+ :messages ["defvar: the initializer for 'g4-cyc-a' names global 'g4-cyc-b'"]
+ :notes ["'g4-cyc-b' is declared at tests/fixtures/g4-init-cycle.nuc:11"]}
+{:name "g4-self-ref" :expect :reject
+ :file "tests/fixtures/g4-self-ref.nuc" :line 6
+ :messages ["defvar: the initializer for 'g4-self' names 'g4-self' itself"]
+ :notes ["a global's initializer runs at the point its own defvar is reached, so it cannot read the global it is initializing"]}
+
+; The two carve-outs, pinned as ACCEPTING here as well as by value above: a
+; later, stricter walk that swallowed either would break programs that compile
+; today (examples/g1-const-init.nuc's forward `&g-later-target` is the
+; in-tree instance of the first).
+{:name "g4-addr-of-forward-clean" :expect :accept
+ :file "tests/fixtures/g4-addr-of-forward.nuc"}
+{:name "g4-laundered-call-clean" :expect :accept
+ :file "tests/fixtures/g4-laundered-call.nuc"}
+
+; --- Stage 15 W8 G-5: eliminate compiler-init, then flip ---------------------
+; design/global-init.md §5 "G-5". The migration itself is verified by the whole
+; suite (the compiler that runs every test below IS the migrated compiler), plus
+; `assert-compiler-arena-backed`, which main/repl-main call on every invocation.
+;
+; The FLIP (acceptance criterion (B)): a `defvar` whose type is a non-null typed
+; pointer must be initialized. This closes nullability.md §1.5's remaining half
+; and makes `ptr:T` mean non-null at a global as it does everywhere else.
+{:name "g5-noinit-ref" :expect :reject
+ :file "tests/fixtures/g5-noinit-ref.nuc" :line 12
+ :messages ["defvar: 'g5-thing' has a non-null pointer type but no initializer"]}
+
+; ...and the note that tells you the two ways out, which is the whole reason the
+; rule is tolerable at all.
+{:name "g5-noinit-ref-note" :expect :reject
+ :file "tests/fixtures/g5-noinit-ref.nuc" :line 12
+ :messages ["has a non-null pointer type but no initializer"]
+ :notes ["declare it nullable (`?&T`)"]}
+
+; The carve-outs the flip must NOT swallow, all four in one fixture: `raw`, `?T`,
+; an elem-less bare `ptr` (~1550 of them in this compiler's own source), and
+; CStr. These are pkind-flow-check's own exemptions, inherited by calling it
+; rather than re-derived — a hand-written `(= (ty pkind) PTR-REF)` here would
+; have broken every bare `:ptr` global in the tree.
+{:name "g5-noinit-carve-outs" :expect :accept
+ :file "tests/fixtures/g5-noinit-raw-ok.nuc"}
+{:name "w5e-ns-hash-reserved" :expect :reject
+ :file "tests/fixtures/w5e-ns-hash-reserved.nuc"
+ :messages ["tagged literal '#p1' has no value"]}
+
+; --- Stage 15 W7: a bare selector symbol may be a value ---------------------
+; design/stage15-stress-test/selector-ambiguity.md. The positive matrix is
+; examples/selector-value.nuc, run by the examples/*.nuc loop above against
+; tests/expected/selector-value.out: a local key in head position, through
+; `get`, and through `invoke` (which now falls back to `get`); a string-literal
+; key; an absent key; plain field access with a same-named local in scope; and
+; the collision case where the local names a REAL field, which still resolves to
+; the field with `invoke` as the escape hatch. Checked by value, not by exit
+; code — "it compiles" was never the question for the field-access half.
+;
+; Since step 3 the selector IS the local: `(p k)` reads `k` as a computed
+; selector, and an i32 is not one. The old W7 demotion this pinned is gone --
+; there is nothing left to demote when a bare symbol was never a field.
+{:name "w7-local-not-a-field" :expect :reject
+ :file "tests/fixtures/w7-local-not-a-field.nuc" :line 9
+ :messages ["computed selector must evaluate to a symbol (ptr)"]}
+
+; And the hint must not leak onto an ordinary typo — no local named `zz`, so the
+; message stays the plain unadorned one.
+{:name "w7-plain-typo" :expect :reject
+ :file "tests/fixtures/w7-plain-typo.nuc" :line 7
+ :messages ["get: no field 'zz' on struct 'Point'"]}
+
+; --- Stage 15 W9 defects 11 + 12 -----------------------------------------------
+; design/stage15-stress-test/progress.md, W9 rows 11 and 12 — a matched pair.
+;
+; Defect 11: FOUR call sites passed more substitutions than their fixed-arity
+; format helper takes (context/conventions.md opens with this trap), so snprintf
+; read a garbage vararg. The two `%d %d` sites printed a garbage COUNT rather
+; than crashing ("got 100", "got 115"), which is why nobody noticed; the two
+; `%s %s` sites dereferenced the garbage and SEGFAULTED the compiler with no
+; output at all. All four were cold paths a green suite had never executed, so
+; the durable half of the fix is that each now HAS a test: a corrected format
+; string nothing runs is one edit away from regressing.
+{:name "w9-fnptr-arity" :expect :reject
+ :file "tests/fixtures/w9-fnptr-arity.nuc" :line 12
+ :messages ["call: expected 2 args, got 1"]}
+{:name "w9-boxedfn-arity" :expect :reject
+ :file "tests/fixtures/w9-boxedfn-arity.nuc" :line 9
+ :messages ["BoxedFn call: expected 1 args, got 2"]}
+
+; The two that SEGFAULTED before the fix (both substitutions are `%s`).
+; w9-dyn-not-protocol was RE-POINTED by defect 21 (see the fixture's own header):
+; it used to reach this message by exploiting the protocol/conformance key
+; mismatch that defect 21 fixed, and now reaches it the honest way — a `dyn`
+; position naming a protocol nothing declared. The `(extend Cat dp/Describe)`
+; above it now succeeds, which is the fix.
+{:name "w9-dyn-not-protocol" :expect :reject
+ :file "tests/fixtures/w9-dyn-not-protocol.nuc" :line 36
+ :messages ["(dyn dp/Missing): 'dp/Missing' is not a declared protocol"]}
+{:name "w9-extend-super-not-protocol" :expect :reject
+ :file "tests/fixtures/w9-extend-super-not-protocol.nuc" :line 11
+ :messages ["extend: 'Describe' is a protocol, so its supertype 'Plain' must be a protocol too"]}
+
+; Defect 12: a wrong-arity call to a SOLITARY `defn` was not diagnosed at all —
+; `(f 1 2)` against a one-parameter `f` emitted `call i32 @f(i32 1, i32 2)`,
+; linked and ran. The rule now lives in ONE function (`call-arity-ok` /
+; `check-call-arity`, src/nucleusc.nuc) that the direct, indirect and BoxedFn
+; paths all CALL, so they cannot drift. Both directions are errors.
+{:name "w9-call-too-many" :expect :reject
+ :file "tests/fixtures/w9-call-too-many.nuc" :line 9
+ :messages ["call to 'f': expected 1 args, got 2"]}
+{:name "w9-call-too-few" :expect :reject
+ :file "tests/fixtures/w9-call-too-few.nuc" :line 9
+ :messages ["call to 'f': expected 2 args, got 1"]}
+
+; The legitimately variable arities: `:optional` is a band, `:rest` is a floor.
+{:name "w9-optional-too-many" :expect :reject
+ :file "tests/fixtures/w9-optional-too-many.nuc" :line 7
+ :messages ["call to 'opt': expected at most 2 args, got 3"]}
+{:name "w9-rest-too-few" :expect :reject
+ :file "tests/fixtures/w9-rest-too-few.nuc" :line 7
+ :messages ["call to 'r': expected at least 2 args, got 1"]}
+
+; A `declare`d signature is OPEN-TAILED: Nucleus has no `...` spelling, so the
+; documented way to call a C variadic function is to declare its fixed
+; parameters and let the extras ride the call site. This is the carve-out the
+; check must not swallow — three tests above (n6/sm3/s1) already depend on it.
+{:name "w9-declare-open-tail" :expect :accept
+ :file "tests/fixtures/w9-declare-open-tail.nuc"}
+
+; ...but the fixed prefix is still asserted, so too FEW is an error.
+{:name "w9-declare-too-few" :expect :reject
+ :file "tests/fixtures/w9-declare-too-few.nuc" :line 9
+ :messages ["call to 'some-c-fn': expected at least 2 args, got 1"]}
+
+; --- Stage 15 W9 defect 21: protocols are namespaced entities -------------------
+; design/stage15-stress-test/progress.md W9 row 21; the ruling is recorded as a
+; dated supersession of Stage 12 decision 9 in design/stage12/namespaces.md.
+;
+; `(dyn ns/Proto)` was unusable across a namespace: the conformance registry
+; stripped the qualifier off BOTH the type and the protocol while
+; `protocol-lookup` matched the raw spelling, so `(extend Cat dp/Describe)`
+; recorded a fact `(dyn dp/Describe)` could never find. The fix keeps the strip
+; for the TYPE half (Stage 12's actual claim — a qualified type reference must
+; resolve to the same StructDef from any namespace) and replaces it for the
+; PROTOCOL half with resolution through the namespaced protocol registry.
+;
+; The positive, link-AND-RUN half is examples/w9-dyn-ns.nuc (dispatched by the
+; examples/*.nuc loop above against tests/expected/w9-dyn-ns.out): it asserts the
+; dispatched RESULTS 105/207/309, not an exit-0 compile. It pins all three halves
+; of the ruling at once — a qualified reference resolving cross-namespace under a
+; DIFFERENT import prefix, a bare reference inside its own namespace naming the
+; same identity, and two namespaces declaring a `Describe` apiece without
+; colliding. The committed pre-fix compiler rejects that program outright.
+;
+; The negative halves: conformance is still checked (and now names the protocol
+; by its namespaced identity, so a failure says *which* Describe), and a bare
+; reference that names no protocol in scope is still an error rather than
+; silently picking one.
+{:name "w9-ns-proto-nonconform" :expect :reject
+ :file "tests/fixtures/w9-ns-proto-nonconform.nuc" :line 18
+ :messages ["type 'Bad' does not conform to protocol 'dp/Describe'"]}
+{:name "w9-ns-proto-ambiguous" :expect :reject
+ :file "tests/fixtures/w9-ns-proto-ambiguous.nuc" :line 17
+ :messages ["extend: unknown protocol 'Describe'"]}
+{:name "b2a-extend-ns-not-in-scope" :expect :reject
+ :file "tests/fixtures/b2a-ns-not-in-scope.nuc" :line 25
+ :messages ["extend: unknown protocol 'dp/Describe'"]}
+{:name "b2a-dyn-ns-not-in-scope" :expect :reject
+ :file "tests/fixtures/b2a-dyn-ns-not-in-scope.nuc" :line 27
+ :messages ["(dyn dp/Describe): 'dp/Describe' is not a declared protocol"]}
+
+; Defect #7's other half, and defect #4. `strip-ns-qualifier` used to discard a
+; type spelling's qualifier without checking it, so a type was reachable from
+; anywhere under any qualifier — including one naming no namespace at all.
+{:name "b3-type-bogus-qualifier" :expect :reject
+ :file "tests/fixtures/b3-type-bogus-qualifier.nuc" :line 14
+ :messages ["'nope' is not in scope in this file"]}
+
+; B3′ gave `unknown-type-message` the did-you-mean tier `unresolved-name-message`
+; already had. The tier is a COLD error path, so it needs a test that EXECUTES it
+; — the first cut called `fmt-3s` with two arguments, which conventions.md's
+; fixed-arity rule says is invisible until something runs the line.
+{:name "b3-type-typo" :expect :reject
+ :file "tests/fixtures/b3-type-typo.nuc" :line 12
+ :messages ["unknown type: Widgat (did you mean 'Widget'?)"]}
+
+; `unsafe` is a namespace now, not seven strings in the special-form set. The
+; positive half (unsafe/cast, unsafe/ptr+, unsafe/funcall-ptr-i32 and
+; unsafe/import-private all compiling and RUNNING, the last of them reaching a
+; `defn-` through the prefix) is examples/unsafe-spellings.nuc, dispatched by
+; the examples loop above; the four `un5-bare-*` rejections above still pin the
+; retired bare spellings, which are now refused because the namespace is bound
+; PREFIXED and never flattened rather than by a hard-coded arm in the dispatch
+; ladder. This is the third half: the qualified spellings stay RESERVED even
+; though they left `g-special-form-set`.
+{:name "b2b-unsafe-reserved" :expect :reject
+ :file "tests/fixtures/b2b-unsafe-reserved.nuc"
+ :messages ["'unsafe/cast' already names a special form"]}
+
+; The tenth defect (`protocol-dyn-annot`). An annotation naming a protocol that
+; exists nowhere used to compile and fabricate a box type; admission now happens
+; at the annotation site, deferred to `drain-dyn-annots`. Nothing in this fixture
+; constructs a box, so only the annotation path can reach it.
+{:name "b6-dyn-annot-unknown" :expect :reject
+ :file "tests/fixtures/b6-dyn-annot-unknown.nuc" :line 17
+ :messages ["(dyn nope/Wholly-Absent): 'nope/Wholly-Absent' is not a declared protocol"]}
+
+; The erased-slot coercion's missing identity check, pinned at BOTH of its call
+; sites: the argument position (its own blocks in emit-call-with-args) and the
+; binding position (maybe-box-into-slot). The argument one is the one that
+; mattered — the SysV ABI splits the fat pointer into two i64s at the call, so
+; LLVM never saw the mismatch and the program linked and ran against the wrong
+; vtable.
+{:name "b6-dyn-box-mismatch-arg" :expect :reject
+ :file "tests/fixtures/b6-dyn-box-mismatch-arg.nuc" :line 30
+ :messages ["type mismatch: a (dyn Pp) value cannot be used where (dyn Qq) is required"]}
+{:name "b6-dyn-box-mismatch-let" :expect :reject
+ :file "tests/fixtures/b6-dyn-box-mismatch-let.nuc" :line 29
+ :messages ["type mismatch: a (dyn Pp) value cannot be used where (dyn Qq) is required"]}
+
+; The per-kind collision rule (§8.2's table, §14.2's `collides` column). Of the
+; three rows that were 0, only `BK-ENUM` hid a real hole: a `defunion` also
+; registers a backing StructDef under the same key so `BK-STRUCT` already
+; answered for it, and `__fnty_N` has no source spelling — but an enum registers
+; only its MEMBERS, so its own name collided with nothing.
+{:name "b4-enum-vs-defn" :expect :reject
+ :file "tests/fixtures/b4-enum-vs-defn.nuc" :line 13
+ :messages ["'Colour' already names an enumeration — a symbol may name only one kind of thing"]}
+{:name "b4-enum-vs-defvar" :expect :reject
+ :file "tests/fixtures/b4-enum-vs-defvar.nuc" :line 6
+ :messages ["'Colour' already names an enumeration — a symbol may name only one kind of thing"]}
+
+; Stage 21 (design/stage21-cleanup/frame-storage-escape.md): every producer of
+; a fresh stack slot — `alloca`, the struct/array/collection literals — hands
+; back a frame-tainted address, so the existing return sinks refuse it, and a
+; defvar initializer (run in @__nucleus_init, whose frame is gone before main)
+; is the one global store that is provably an escape. The accept fixture pins
+; the discharge rule: a by-value slot loads through the address, so the taint
+; is dropped there rather than carried.
+{:name "s21-frame-alloca-return" :expect :reject
+ :file "tests/fixtures/s21-frame-alloca-return.nuc" :line 7
+ :messages ["address of frame-local storage escapes via return"]}
+{:name "s21-frame-literal-implicit-return" :expect :reject
+ :file "tests/fixtures/s21-frame-literal-implicit-return.nuc" :line 4
+ :messages ["address of frame-local storage escapes via implicit return"]}
+{:name "s21-frame-vector-literal-return" :expect :reject
+ :file "tests/fixtures/s21-frame-vector-literal-return.nuc" :line 6
+ :messages ["address of frame-local storage escapes via return"]}
+{:name "s21-frame-defvar-alloca" :expect :reject
+ :file "tests/fixtures/s21-frame-defvar-alloca.nuc" :line 4
+ :messages ["defvar: the initializer of 'gb' is the address of frame-local storage"]}
+{:name "s21-frame-defvar-vector-literal" :expect :reject
+ :file "tests/fixtures/s21-frame-defvar-vector-literal.nuc" :line 4
+ :messages ["defvar: the initializer of 'options' is the address of frame-local storage"]}
+{:name "s21-frame-cond-join" :expect :reject
+ :file "tests/fixtures/s21-frame-cond-join.nuc" :line 6
+ :messages ["address of frame-local storage escapes via return"]}
+{:name "s21-frame-discharge-accepts" :expect :accept
+ :file "tests/fixtures/s21-frame-discharge-accepts.nuc"}
+
+; Stage 22 ED-1: a tagged literal is data syntax with no reader in source.
+{:name "s22-tagged-lit-source" :expect :reject
+ :file "tests/fixtures/s22-tagged-lit-source.nuc" :line 4
+ :messages ["tagged literal '#inst' is data syntax: Nucleus source has no reader for it"]}
+
+; Stage 22 ED-4.1: macro-produced definitions are registered like written ones
+; (design/stage22-edn/macro-definitions.md), so a repeated one is a duplicate and
+; an extend still needs its method.
+{:name "s22-macro-dup-defn" :expect :reject
+ :file "tests/fixtures/s22-macro-dup-defn.nuc" :line 8
+ :messages ["duplicate definition of 'area'"]}
+{:name "s22-macro-extend-missing" :expect :reject
+ :file "tests/fixtures/s22-macro-extend-missing.nuc" :line 6
+ :messages ["type 'Sq' does not conform to protocol 'Shape'"]
+ :notes ["Sq does not implement Shape.area"]}
+
+; Stage 22 ED-4.2: `struct-fields` / `type-name` refuse what has no
+; `(name type)` list or no name (design/stage22-edn/ed4-struct-codecs.md §2.1).
+{:name "s22-struct-fields-not-struct" :expect :reject
+ :file "tests/fixtures/s22-struct-fields-not-struct.nuc" :line 4
+ :messages ["struct-fields: U is not a struct"]}
+{:name "s22-struct-fields-template" :expect :reject
+ :file "tests/fixtures/s22-struct-fields-template.nuc" :line 4
+ :messages ["struct-fields: Vector is a template"]}
+{:name "s22-struct-fields-instance" :expect :reject
+ :file "tests/fixtures/s22-struct-fields-instance.nuc" :line 4
+ :messages ["struct-fields: (Vector i32) is a template instance"]}
+{:name "s22-struct-fields-bitfield" :expect :reject
+ :file "tests/fixtures/s22-struct-fields-bitfield.nuc" :line 4
+ :messages ["struct-fields: Flags field 'mode' is a bit-field"]}
+{:name "s22-struct-fields-runtime" :expect :reject
+ :file "tests/fixtures/s22-struct-fields-runtime.nuc" :line 4
+ :messages ["struct-fields: only available inside a defmacro, macrolet or compile-time body"]}
+{:name "s22-type-name-anon" :expect :reject
+ :file "tests/fixtures/s22-type-name-anon.nuc" :line 3
+ :messages ["type-name: an anonymous struct has no name"]}
+
+; Stage 22 ED-4.3/4.4: a pointer field and a leaking key type have no codec.
+{:name "s22-derive-edn-pointer" :expect :reject
+ :file "tests/fixtures/s22-derive-edn-pointer.nuc" :line 5
+ :messages ["derive-edn: field 'next' is a pointer, which EDN cannot spell"]}
+{:name "s22-edn-key-type" :expect :reject
+ :file "tests/fixtures/s22-edn-key-type.nuc" :line 9
+ :messages ["no matching method for 'edn-read'"]}

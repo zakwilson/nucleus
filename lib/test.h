@@ -5,6 +5,7 @@
 #include "prelude.h"
 #include "allocator.h"
 #include "string.h"
+#include "keyword.h"
 
 /* Generated from lib/test.nuc by nucleusc --emit-cheader */
 
@@ -70,15 +71,13 @@ typedef struct Vector_StrView {
 #endif
 
 typedef struct Diagnostic {
-    struct Symbol severity;
+    struct Keyword severity;
     struct StrView file;
     int32_t line;
     struct StrView message;
     struct Vector_StrView* notes;
 } Diagnostic;
 
-struct Node* /* nullable */ diag_entry(struct Node* /* nullable */ body, struct StrView name) asm("diag-entry");
-struct StrView diag_text(struct Node* /* nullable */ n) asm("diag-text");
 /* diag-of-node: uses an error-union or option type; not exported */
 /* read-diagnostics: uses an error-union or option type; not exported */
 #ifndef NUC_INST_Vector_Diagnostic
@@ -101,11 +100,11 @@ bool diag_matches(struct Diagnostic* d, struct StrView severity, struct StrView 
 /* check-note-anywhere: uses an error-union or option type; not exported */
 /* check-no-line-zero: uses an error-union or option type; not exported */
 /* check-no-errors: uses an error-union or option type; not exported */
-typedef struct SexpStr {
+typedef struct Quoted {
     struct StrView v;
-} SexpStr;
+} Quoted;
 
-struct SexpStr sexp_quote(struct StrView v) asm("sexp-quote");
+struct Quoted quoted(struct StrView v);
 /* to-str: uses an error-union or option type; not exported */
 void test_report(struct TestCase* tc, int32_t status) asm("test-report");
 extern struct StrView g_test_scratch asm("g-test-scratch");

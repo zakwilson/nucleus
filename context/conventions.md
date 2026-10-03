@@ -2541,9 +2541,9 @@ That identity is what makes the change gateable, and the gate is not a new test:
 Two rules that fall out and are easy to get wrong:
 
 - **A note printed AFTER the call is not a field.** Three sites did exactly that (`report-unterminated`, the stray-`)` note in `read-form`, the preprocessor's sysroot advice) because `die-at` is `:noreturn` and there is no "and also" after it. They stage the note first with `diag-stage-note`, which **appends** rather than overwrites — a site that clobbers `g-diag-note` silently drops whatever another site had to say about the same error.
-- **One diagnostic is one line** in `--diagnostics=sexp`, because the writer escapes every newline inside a string. That invariant is load-bearing on the reader side: `read-diagnostics` (`lib/test.nuc`) skips any line that is not a diagnostic, which it must, since the `clang -E` a C-header import shells out to writes its own text to the same stream. Do not add a sexp field that can span lines.
+- **One diagnostic is one line** in `--diagnostics=edn`, because the writer escapes every newline inside a string. That invariant is load-bearing on the reader side: `read-diagnostics` (`lib/test.nuc`) skips any line that is not a diagnostic, which it must, since the `clang -E` a C-header import shells out to writes its own text to the same stream. Do not add a field that can span lines.
 
-A message with no source location (a toolchain message, not one about the user's file) passes `line` -1: the text back-end omits the `path:line: ` prefix, the sexp one writes `(file "")` and `(line -1)`. Absence is spelled, never omitted — a reader that has to ask whether a key is present is a reader that will get it wrong.
+A message with no source location (a toolchain message, not one about the user's file) passes `line` -1: the text back-end omits the `path:line: ` prefix, the EDN one writes `:file nil :line nil`. Absence is spelled, never omitted — a reader that has to ask whether a key is present is a reader that will get it wrong.
 
 ## Scanning an LLVM datalayout string for a token requires boundary checks, not a bare substring search
 
