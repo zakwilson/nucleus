@@ -1,0 +1,922 @@
+; edn.nuc: EDN data as a typed view over the reader's `Node` tree.
+;
+; Design: design/stage22-edn/overview.md. See docs/edn.md.
+;
+; The reader does the reading (in EDN mode, `reader-edn`); this file classifies
+; what it read, checks the rules the reader leaves to it, converts values to
+; Nucleus scalars and writes EDN back. Nothing is copied: a value is the `Node`
+; the reader built, and its strings are interned for the life of the process.
+
+(import-use error)
+(import-use strview)
+(import-use string)
+(import-use fmt)
+(import-use char)
+(import-use keyword)
+(import-use parse)
+(import-use node)
+(import-use read)
+(import-use vector)
+(import-use hashset)
+(import-use hashmap)
+
+(deferror edn-type "EDN value of the wrong kind")
+(deferror edn-range "EDN value out of range")
+(deferror edn-dup-key "EDN map with a duplicate key")
+(deferror edn-dup-elem "EDN set with a duplicate element")
+(deferror edn-bad-symbol "not a legal EDN symbol")
+(deferror edn-no-value "EDN text holds no value")
+(deferror edn-trailing "EDN text holds more than one value")
+(deferror edn-wrong-tag "EDN value without the destination's tag")
+(deferror edn-missing-key "EDN map without a key a struct field needs")
+(deferror edn-unknown-key "EDN map key that names no struct field")
+
+(defenum EdnKind EDN-NIL EDN-BOOL EDN-INT EDN-FLOAT EDN-STR EDN-CHAR EDN-SYM
+  EDN-KEYWORD EDN-LIST EDN-VECTOR EDN-MAP EDN-SET EDN-TAGGED)
+
+; ---------------------------------------------------------------------------
+; Classification
+; ---------------------------------------------------------------------------
+
+; Null is nil: the reader never produces one, and a missing value reads as one.
+(defn edn-kind (n:?&Node):i32
+  (when (= n null) (return EDN-NIL))
+  (return (case (n 'kind)
+            NODE-INT     EDN-INT
+            NODE-FLOAT   EDN-FLOAT
+            NODE-STR     EDN-STR
+            NODE-CHAR    EDN-CHAR
+            NODE-KEYWORD EDN-KEYWORD
+            NODE-SYM     (cond (= (n 's) "nil") EDN-NIL
+                               (or (= (n 's) "true") (= (n 's) "false")) EDN-BOOL
+                               true EDN-SYM)
+            (case (n 'i)
+              LIT-VECTOR EDN-VECTOR
+              LIT-MAP    EDN-MAP
+              LIT-SET    EDN-SET
+              LIT-TAGGED EDN-TAGGED
+              EDN-LIST))))
+
+(defn edn-kind-name (k:i32):StrView
+  (return (case k
+            EDN-NIL     "nil"
+            EDN-BOOL    "a boolean"
+            EDN-INT     "an integer"
+            EDN-FLOAT   "a float"
+            EDN-STR     "a string"
+            EDN-CHAR    "a character"
+            EDN-SYM     "a symbol"
+            EDN-KEYWORD "a keyword"
+            EDN-LIST    "a list"
+            EDN-VECTOR  "a vector"
+            EDN-MAP     "a map"
+            EDN-SET     "a set"
+            "a tagged value")))
+
+; A literal cell's first element is its head symbol (`vector-lit`, …), not data.
+(defn edn-skip (n:?&Node):i32
+  (when (= n null) (return 0))
+  (return (if (= (n 'i) LIT-NONE) 0 1)))
+
+; ---------------------------------------------------------------------------
+; Collections
+; ---------------------------------------------------------------------------
+
+; Elements of a list, vector or set; entries (key-value pairs) of a map; 0 for
+; anything else, a tagged value included.
+(defn edn-count (n:?&Node):usize
+  (let (k:i32 (edn-kind n))
+    (cond (= k EDN-MAP)
+            (return (as usize (/ (- (node-len n) 1) 2)))
+          (or (= k EDN-LIST) (= k EDN-VECTOR) (= k EDN-SET))
+            (return (as usize (- (node-len n) (edn-skip n))))
+          true (return 0))))
+
+; Element `i` of a list, vector or set, or null.
+(defn edn-nth (n:?&Node i:usize):?&Node
+  (let (k:i32 (edn-kind n))
+    (when (not (or (= k EDN-LIST) (= k EDN-VECTOR) (= k EDN-SET)))
+      (return null))
+    (return (node-at n (+ (unsafe/cast i32 i) (edn-skip n))))))
+
+; The elements of a list, vector or set as a plain list -- what `doseq` walks
+; with `NodeIter`. A view: it shares the collection's storage.
+(defn edn-elems (n:?&Node):?&Node
+  (let (k:i32 (edn-kind n))
+    (when (not (or (= k EDN-LIST) (= k EDN-VECTOR) (= k EDN-SET)))
+      (return null))
+    (when (= (edn-skip n) 0) (return n))
+    (return (as-ref (node-rest n)))))
+
+; The key and the value of map entry `i`, or null.
+(defn edn-key (m:?&Node i:usize):?&Node
+  (when (!= (edn-kind m) EDN-MAP) (return null))
+  (return (node-at m (+ 1 (* 2 (unsafe/cast i32 i))))))
+
+(defn edn-val (m:?&Node i:usize):?&Node
+  (when (!= (edn-kind m) EDN-MAP) (return null))
+  (return (node-at m (+ 2 (* 2 (unsafe/cast i32 i))))))
+
+; EDN equality over two views: like `node-eq`, but a vector is not a list.
+; Maps and sets compare in written order.
+(defn edn-eq (a:?&Node b:?&Node):bool
+  (let (ka:i32 (edn-kind a))
+    (cond (!= ka (edn-kind b)) (return false)
+          (= ka EDN-NIL) (return true)
+          (or (= a null) (= b null)) (return false)
+          (or (= ka EDN-INT) (= ka EDN-CHAR)) (return (= (a 'i) (b 'i)))
+          (or (= ka EDN-BOOL) (= ka EDN-FLOAT) (= ka EDN-STR) (= ka EDN-SYM) (= ka EDN-KEYWORD))
+            (return (= (a 's) (b 's))))
+    (let (n:i32 (node-len a))
+      (when (!= n (node-len b)) (return false))
+      (dotimes (i n)
+        (when (not (edn-eq (node-at a i) (node-at b i))) (return false)))
+      (return true))))
+
+; The value under `key` in map `m`, or null.
+(defn edn-lookup (m:?&Node key:?&Node):?&Node
+  (let (n:usize (edn-count m))
+    (dotimes (i n)
+      (when (edn-eq (edn-key m (as usize i)) key) (return (edn-val m (as usize i)))))
+    (return null)))
+
+; The value under the keyword named `name` (no colon) in map `m`, or null.
+(defn edn-get (m:?&Node name:StrView):?&Node
+  (let (n:usize (edn-count m))
+    (dotimes (i n)
+      (let (k:?&Node (edn-key m (as usize i)))
+        (when (and (!= k null) (= (k 'kind) NODE-KEYWORD) (= (k 's) name))
+          (return (edn-val m (as usize i))))))
+    (return null)))
+
+; The tag of a tagged value, without the `#`.
+(defn edn-tag (n:?&Node):!StrView
+  (when (!= (edn-kind n) EDN-TAGGED) (return (err! edn-type)))
+  (return (ok (symbol-as-view (node-head-sym (node-rest n))))))
+
+; The value a tag applies to, or null when `n` is not tagged.
+(defn edn-tagged-value (n:?&Node):?&Node
+  (when (!= (edn-kind n) EDN-TAGGED) (return null))
+  (return (node-at n 2)))
+
+; ---------------------------------------------------------------------------
+; Scalars
+; ---------------------------------------------------------------------------
+
+(defn edn-bool (n:?&Node):!bool
+  (when (or (= n null) (!= (edn-kind n) EDN-BOOL)) (return (err! edn-type)))
+  (return (ok (= (n 's) "true"))))
+
+(defn edn-int (n:?&Node):!i64
+  (when (or (= n null) (!= (edn-kind n) EDN-INT)) (return (err! edn-type)))
+  (return (ok (n 'i))))
+
+; An integer is accepted too. A float's `M` suffix is dropped.
+(defn edn-float (n:?&Node):!f64
+  (let (k:i32 (edn-kind n))
+    (cond (= n null) (return (err! edn-type))
+          (= k EDN-INT) (return (ok (unsafe/cast f64 (n 'i))))
+          (!= k EDN-FLOAT) (return (err! edn-type)))
+    (let (tv:StrView (symbol-as-view (n 's)))
+      (when (strview-has-suffix tv "M")
+        (set! tv (strview-take-bytes tv (- (tv 'len) 1))))
+      (match (parse f64 &tv)
+        ((ok v) (return (ok v)))
+        ((err e) (return (err! edn-range)))))))
+
+(defn edn-str (n:?&Node):!StrView
+  (when (or (= n null) (!= (edn-kind n) EDN-STR)) (return (err! edn-type)))
+  (return (ok (symbol-as-view (n 's)))))
+
+(defn edn-char (n:?&Node):!Char
+  (when (or (= n null) (!= (edn-kind n) EDN-CHAR)) (return (err! edn-type)))
+  (return (char-from-u32 (unsafe/cast ui32 (n 'i)))))
+
+(defn edn-symbol (n:?&Node):!StrView
+  (when (or (= n null) (!= (edn-kind n) EDN-SYM)) (return (err! edn-type)))
+  (return (ok (symbol-as-view (n 's)))))
+
+(defn edn-keyword (n:?&Node):!Keyword
+  (when (or (= n null) (!= (edn-kind n) EDN-KEYWORD)) (return (err! edn-type)))
+  (return (ok (keyword-intern (symbol-as-view (n 's))))))
+
+; ---------------------------------------------------------------------------
+; Validation: what the reader accepts that EDN does not
+; ---------------------------------------------------------------------------
+
+(defn edn-err (code:Err line:i32 msg:&String):ReadResult
+  (return (err (rd-error code line (rd-arena-str msg) ""))))
+
+(defn edn-sym-byte? (c:i32):bool
+  (when (or (>= c 128) (rd-letter? c) (rd-digit? c)) (return true))
+  (let (allowed:StrView ".*+!-_?$%&=<>:#/")
+    (dotimes (i (allowed 'len))
+      (when (= c (rd-tv-at &allowed (as usize i))) (return true))))
+  (return false))
+
+; One `/`-separated part: begins with no digit, `:` or `#`, and a leading
+; `+`, `-` or `.` is not followed by a digit.
+(defn edn-sym-part? (sv:StrView):bool
+  (let (n:usize (sv 'len)
+        c0:i32 (rd-tv-at &sv 0))
+    (when (or (= n 0) (rd-digit? c0) (= c0 58) (= c0 35)
+              (and (or (= c0 43) (= c0 45) (= c0 46)) (rd-digit? (rd-tv-at &sv 1))))
+      (return false))
+    (dotimes (i n)
+      (let (c:i32 (rd-tv-at &sv (as usize i)))
+        (when (or (= c 47) (not (edn-sym-byte? c))) (return false))))
+    (return true)))
+
+(defn edn-symbol-ok? (sv:StrView):bool
+  (when (= sv "/") (return true))
+  (match (strview-find-byte &sv 47)
+    ((some at)
+      (return (and (edn-sym-part? (strview-take-bytes sv at))
+                   (edn-sym-part? (strview-drop-bytes sv (+ at 1))))))
+    (none (return (edn-sym-part? sv)))))
+
+; Rejects what EDN forbids and the reader allows: an illegal symbol, keyword
+; or tag, and a duplicate map key or set element. `line` is the enclosing
+; form's, for a symbol, which carries none of its own.
+(defn edn-validate (n:?&Node line:i32):ReadResult
+  (when (= n null) (return (ok n)))
+  (let (k:i32 (edn-kind n)
+        here:i32 (node-line n line))
+    (cond (= k EDN-SYM)
+            (when (not (edn-symbol-ok? (symbol-as-view (n 's))))
+              (let (m:String (str "'" (n 's) "' is not a legal EDN symbol"))
+                (return (edn-err edn-bad-symbol here &m))))
+          (= k EDN-KEYWORD)
+            (when (not (edn-symbol-ok? (symbol-as-view (n 's))))
+              (let (m:String (str "':" (n 's) "' is not a legal EDN keyword"))
+                (return (edn-err edn-bad-symbol here &m))))
+          (= k EDN-TAGGED)
+            (let (tag:Symbol (node-head-sym (node-rest n)))
+              (when (not (edn-symbol-ok? (symbol-as-view tag)))
+                (let (m:String (str "'#" tag "' is not a legal EDN tag"))
+                  (return (edn-err edn-bad-symbol here &m))))
+              (try (edn-validate (node-at n 2) here)))
+          (or (= k EDN-LIST) (= k EDN-VECTOR) (= k EDN-SET) (= k EDN-MAP))
+            (let (start:i32 (edn-skip n)
+                  len:i32 (node-len n)
+                  step:i32 (if (= k EDN-MAP) 2 1))
+              (let (i:i32 start)
+                (while (< i len)
+                  (try (edn-validate (node-at n i) here))
+                  (inc! i)))
+              (when (or (= k EDN-SET) (= k EDN-MAP))
+                (let (i:i32 start)
+                  (while (< i len)
+                    (let (j:i32 (+ i step))
+                      (while (< j len)
+                        (when (edn-eq (node-at n i) (node-at n j))
+                          (let (s:String (string-new))
+                            (edn-write &s (node-at n i))
+                            (let (m:String (if (= k EDN-MAP)
+                                             (str "duplicate map key " (string-as-view &s))
+                                             (str "duplicate set element " (string-as-view &s))))
+                              (drop &s)
+                              (return (edn-err (if (= k EDN-MAP) edn-dup-key edn-dup-elem)
+                                               (node-line (node-at n j) here) &m)))))
+                        (set! j (+ j step))))
+                    (set! i (+ i step))))))
+          true (do))
+    (return (ok n))))
+
+; ---------------------------------------------------------------------------
+; Reading text
+; ---------------------------------------------------------------------------
+
+; Exactly one value: nothing but whitespace, comments and discards around it.
+(defn edn-parse (src:StrView):ReadResult
+  (let (r:Reader (reader-edn src))
+    (when (reader-eof? &r)
+      (let (m:String (str "EDN text holds no value"))
+        (return (edn-err edn-no-value (r 'line) &m))))
+    (let (v:?&Node (try (read-one &r)))
+      (when (not (reader-eof? &r))
+        (let (m:String (str "EDN text holds more than one value"))
+          (return (edn-err edn-trailing (r 'line) &m))))
+      (return (edn-validate v (r 'line))))))
+
+; Every value in `src`, as a list.
+(defn edn-parse-all (src:StrView):ReadResult
+  (let (forms:?&Node (try (read-all-edn src)))
+    (dotimes (i (node-len forms))
+      (try (edn-validate (node-at forms i) 1)))
+    (return (ok forms))))
+
+; ---------------------------------------------------------------------------
+; Writing
+; ---------------------------------------------------------------------------
+
+(defn edn-write-hex4 (out:&String cp:i32):void
+  (write-str out "\\u")
+  (let (digits:StrView "0123456789abcdef"
+        shift:i32 12)
+    (while (>= shift 0)
+      (let (d:i32 (bit-and (bit-shr cp shift) 15))
+        (string-push-bytes-raw out (as &ui8 (unsafe/ptr+ (digits 'data) d)) 1))
+      (set! shift (- shift 4)))))
+
+(defn edn-write-string (out:&String sv:StrView):void
+  (write-str out "\"")
+  (let (one:&ui8 (as &ui8 (alloca ui8 1)))
+    (dotimes (i (sv 'len))
+      (let (c:i32 (rd-tv-at &sv (as usize i)))
+        (cond (= c 34) (write-str out "\\\"")
+              (= c 92) (write-str out "\\\\")
+              (= c 10) (write-str out "\\n")
+              (= c 9)  (write-str out "\\t")
+              (= c 13) (write-str out "\\r")
+              (or (< c 32) (= c 127)) (edn-write-hex4 out c)
+              true (do (set! (aref one 0) (unsafe/cast ui8 c))
+                       (string-push-bytes-raw out one 1))))))
+  (write-str out "\""))
+
+; A character outside the Basic Multilingual Plane has no `\uXXXX` spelling;
+; it is written `\u{…}`, which this reader accepts and EDN does not.
+(defn edn-write-char (out:&String cp:i32):void
+  (cond (= cp 10) (write-str out "\\newline")
+        (= cp 13) (write-str out "\\return")
+        (= cp 32) (write-str out "\\space")
+        (= cp 9)  (write-str out "\\tab")
+        (and (> cp 32) (< cp 127))
+          (do (write-str out "\\")
+              (string-push-char out (as Char (as ui32 cp))))
+        (> cp 65535)
+          (do (write-str out "\\u{")
+              (rd-write-hex out (unsafe/cast ui64 (as i64 cp)))
+              (write-str out "}"))
+        true (edn-write-hex4 out cp)))
+
+(defn edn-write-elems (out:&String n:&Node start:i32):void
+  (let (i:i32 start)
+    (while (< i (node-len n))
+      (when (> i start) (write-str out " "))
+      (edn-write out (node-at n i))
+      (inc! i))))
+
+; Canonical single-line EDN for any value the reader built.
+(defn edn-write (out:&String n:?&Node):void
+  (when (= n null)
+    (write-str out "nil")
+    (return))
+  (let (k:i32 (edn-kind n))
+    (cond (= k EDN-INT) (str-into out (n 'i))
+          (or (= k EDN-NIL) (= k EDN-BOOL) (= k EDN-FLOAT) (= k EDN-SYM))
+            (write-str out (symbol-as-view (n 's)))
+          (= k EDN-KEYWORD)
+            (do (write-str out ":") (write-str out (symbol-as-view (n 's))))
+          (= k EDN-STR) (edn-write-string out (symbol-as-view (n 's)))
+          (= k EDN-CHAR) (edn-write-char out (unsafe/cast i32 (n 'i)))
+          (= k EDN-VECTOR)
+            (do (write-str out "[") (edn-write-elems out n 1) (write-str out "]"))
+          (= k EDN-MAP)
+            (do (write-str out "{") (edn-write-elems out n 1) (write-str out "}"))
+          (= k EDN-SET)
+            (do (write-str out "#{") (edn-write-elems out n 1) (write-str out "}"))
+          (= k EDN-TAGGED)
+            (do (write-str out "#")
+                (write-str out (symbol-as-view (node-head-sym (node-rest n))))
+                (write-str out " ")
+                (edn-write out (node-at n 2)))
+          true
+            (do (write-str out "(") (edn-write-elems out n 0) (write-str out ")")))))
+
+(defn edn-text (n:?&Node):String
+  (let (s:String (string-new))
+    (edn-write &s n)
+    (return s)))
+
+; ---------------------------------------------------------------------------
+; Scalar writers. Each takes the value; floats fail on a non-finite value,
+; which EDN cannot spell, so every writer answers `!void` alike.
+; ---------------------------------------------------------------------------
+
+(defn edn-write (out:&String v:i8):!void (str-into out (as i64 v)) (return (ok)))
+(defn edn-write (out:&String v:i16):!void (str-into out (as i64 v)) (return (ok)))
+(defn edn-write (out:&String v:i32):!void (str-into out (as i64 v)) (return (ok)))
+(defn edn-write (out:&String v:i64):!void (str-into out v) (return (ok)))
+(defn edn-write (out:&String v:ui8):!void (str-into out (as i64 v)) (return (ok)))
+(defn edn-write (out:&String v:ui16):!void (str-into out (as i64 v)) (return (ok)))
+(defn edn-write (out:&String v:ui32):!void (str-into out (as i64 v)) (return (ok)))
+
+; EDN integers are signed 64-bit, so a larger value has no spelling.
+(defn edn-write (out:&String v:ui64):!void
+  (when (> v 9223372036854775807) (return (err! edn-range)))
+  (str-into out v)
+  (return (ok)))
+
+(defn edn-float-text-ok? (out:&String from:usize):bool
+  (let (sv:StrView (string-as-view out)
+        i:usize from)
+    (while (< i (sv 'len))
+      (let (c:i32 (rd-tv-at &sv i))
+        (when (or (= c 46) (= c 101) (= c 69)) (return true)))
+      (set! i (+ i 1)))
+    (return false)))
+
+; The shortest of %.15g / %.17g that reads back as `v`, with a `.0` added when
+; the digits alone would read as an integer.
+(defn edn-write (out:&String v:f64):!void
+  (when (or (not (= v v)) (> v 1.7976931348623157e308) (< v -1.7976931348623157e308))
+    (return (err! edn-range)))
+  (let (from:usize (byte-len out)
+        s:String (string-new))
+    (string-push-f64 &s v c"%.15g")
+    (let (sv:StrView (string-as-view &s)
+          back:f64 0.0)
+      (match (parse f64 &sv)
+        ((ok b) (set! back b))
+        ((err e) (do)))
+      (if (= back v)
+        (string-push-str-unchecked out &sv)
+        (string-push-f64 out v c"%.17g")))
+    (drop &s)
+    (when (not (edn-float-text-ok? out from)) (write-str out ".0"))
+    (return (ok))))
+
+(defn edn-write (out:&String v:f32):!void
+  (when (or (not (= v v)) (> v 3.4028234663852886e38) (< v -3.4028234663852886e38))
+    (return (err! edn-range)))
+  (let (from:usize (byte-len out)
+        s:String (string-new))
+    (string-push-f64 &s (as f64 v) c"%.7g")
+    (let (sv:StrView (string-as-view &s)
+          back:f64 0.0)
+      (match (parse f64 &sv)
+        ((ok b) (set! back b))
+        ((err e) (do)))
+      (let (narrow:f32 back)
+        (if (= narrow v)
+          (string-push-str-unchecked out &sv)
+          (string-push-f64 out (as f64 v) c"%.9g"))))
+    (drop &s)
+    (when (not (edn-float-text-ok? out from)) (write-str out ".0"))
+    (return (ok))))
+
+(defn edn-write (out:&String v:bool):!void
+  (write-str out (if v "true" "false"))
+  (return (ok)))
+
+(defn edn-write (out:&String v:Char):!void
+  (edn-write-char out (as i32 v))
+  (return (ok)))
+
+(defn edn-write (out:&String v:StrView):!void
+  (edn-write-string out v)
+  (return (ok)))
+
+(defn edn-write (out:&String v:&String):!void
+  (edn-write-string out (string-as-view v))
+  (return (ok)))
+
+(defn edn-write (out:&String v:Keyword):!void
+  (write-str out ":")
+  (write-str out (keyword-name v))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; Scalar readers: convert the value `n` into `dst`. `ok` carries `n`.
+; ---------------------------------------------------------------------------
+
+(defn edn-expected (what:StrView n:?&Node):ReadResult
+  (let (m:String (str "expected " what ", got " (edn-kind-name (edn-kind n))))
+    (return (edn-err edn-type (node-line n 0) &m))))
+
+(defn edn-out-of-range (n:?&Node what:StrView):ReadResult
+  (let (s:String (edn-text n))
+    (let (m:String (str (string-as-view &s) " is out of range for " what))
+      (drop &s)
+      (return (edn-err edn-range (node-line n 0) &m)))))
+
+; The integer in `n`, checked against [lo, hi], into `v`.
+(defn edn-int-in (n:?&Node lo:i64 hi:i64 what:StrView v:&i64):ReadResult
+  (when (or (= n null) (!= (edn-kind n) EDN-INT)) (return (edn-expected "an integer" n)))
+  (when (or (< (n 'i) lo) (> (n 'i) hi)) (return (edn-out-of-range n what)))
+  (set! @v (n 'i))
+  (return (ok n)))
+
+(defn edn-read (dst:&i8 n:?&Node):ReadResult
+  (let (v:i64 0)
+    (try (edn-int-in n -128 127 "i8" &v))
+    (set! @dst v)
+    (return (ok n))))
+
+(defn edn-read (dst:&i16 n:?&Node):ReadResult
+  (let (v:i64 0)
+    (try (edn-int-in n -32768 32767 "i16" &v))
+    (set! @dst v)
+    (return (ok n))))
+
+(defn edn-read (dst:&i32 n:?&Node):ReadResult
+  (let (v:i64 0)
+    (try (edn-int-in n -2147483648 2147483647 "i32" &v))
+    (set! @dst v)
+    (return (ok n))))
+
+(defn edn-read (dst:&i64 n:?&Node):ReadResult
+  (let (v:i64 0)
+    (try (edn-int-in n -9223372036854775808 9223372036854775807 "i64" &v))
+    (set! @dst v)
+    (return (ok n))))
+
+(defn edn-read (dst:&ui8 n:?&Node):ReadResult
+  (let (v:i64 0)
+    (try (edn-int-in n 0 255 "ui8" &v))
+    (set! @dst v)
+    (return (ok n))))
+
+(defn edn-read (dst:&ui16 n:?&Node):ReadResult
+  (let (v:i64 0)
+    (try (edn-int-in n 0 65535 "ui16" &v))
+    (set! @dst v)
+    (return (ok n))))
+
+(defn edn-read (dst:&ui32 n:?&Node):ReadResult
+  (let (v:i64 0)
+    (try (edn-int-in n 0 4294967295 "ui32" &v))
+    (set! @dst v)
+    (return (ok n))))
+
+(defn edn-read (dst:&ui64 n:?&Node):ReadResult
+  (let (v:i64 0)
+    (try (edn-int-in n 0 9223372036854775807 "ui64" &v))
+    (set! @dst (unsafe/cast ui64 v))
+    (return (ok n))))
+
+(defn edn-read (dst:&f64 n:?&Node):ReadResult
+  (match (edn-float n)
+    ((ok v) (do (set! @dst v) (return (ok n))))
+    ((err e)
+      (when (= e edn-type) (return (edn-expected "a number" n)))
+      (return (edn-out-of-range n "f64")))))
+
+; An f64 value too large for f32 is out of range; precision loss is not.
+(defn edn-read (dst:&f32 n:?&Node):ReadResult
+  (let (d:f64 0.0)
+    (try (edn-read &d n))
+    (when (or (> d 3.4028234663852886e38) (< d -3.4028234663852886e38))
+      (return (edn-out-of-range n "f32")))
+    (set! @dst d)
+    (return (ok n))))
+
+(defn edn-read (dst:&bool n:?&Node):ReadResult
+  (when (or (= n null) (!= (edn-kind n) EDN-BOOL)) (return (edn-expected "a boolean" n)))
+  (set! @dst (= (n 's) "true"))
+  (return (ok n)))
+
+(defn edn-read (dst:&Char n:?&Node):ReadResult
+  (when (or (= n null) (!= (edn-kind n) EDN-CHAR)) (return (edn-expected "a character" n)))
+  (set! @dst (as Char (unsafe/cast ui32 (n 'i))))
+  (return (ok n)))
+
+; Borrows the interned text, which lives as long as the process.
+(defn edn-read (dst:&StrView n:?&Node):ReadResult
+  (when (or (= n null) (!= (edn-kind n) EDN-STR)) (return (edn-expected "a string" n)))
+  (set! @dst (symbol-as-view (n 's)))
+  (return (ok n)))
+
+; `dst` is uninitialized storage, as for every owning destination.
+(defn edn-read (dst:&String n:?&Node):ReadResult
+  (when (or (= n null) (!= (edn-kind n) EDN-STR)) (return (edn-expected "a string" n)))
+  (let (sv:StrView (symbol-as-view (n 's)))
+    (set! @dst (string-new))
+    (string-push-str-unchecked dst &sv))
+  (return (ok n)))
+
+(defn edn-read (dst:&Keyword n:?&Node):ReadResult
+  (when (or (= n null) (!= (edn-kind n) EDN-KEYWORD)) (return (edn-expected "a keyword" n)))
+  (set! @dst (keyword-intern (symbol-as-view (n 's))))
+  (return (ok n)))
+
+; ---------------------------------------------------------------------------
+; EdnCodec: the codec generic and derived code dispatch on.
+; Design: design/stage22-edn/ed4-struct-codecs.md §2.3.
+; ---------------------------------------------------------------------------
+
+; `dst` is uninitialized storage: on `ok` it owns what the decode built, on
+; `err` nothing. `edn-release` frees a decoded value deeply.
+(defprotocol EdnCodec
+  (edn-decode (dst:&Self n:?&Node):ReadResult)
+  (edn-encode (out:&String v:&Self):!void)
+  (edn-release (v:&Self):void))
+
+(defmacro- edn-scalar-codec (t)
+  `(do (defn edn-decode (dst:(ref ~t) n:?&Node):ReadResult (return (edn-read dst n)))
+       (defn edn-encode (out:&String v:(ref ~t)):!void (return (edn-write out @v)))
+       (defn edn-release (v:(ref ~t)):void (return))
+       (extend ~t EdnCodec)))
+
+(edn-scalar-codec i8)
+(edn-scalar-codec i16)
+(edn-scalar-codec i32)
+(edn-scalar-codec i64)
+(edn-scalar-codec ui8)
+(edn-scalar-codec ui16)
+(edn-scalar-codec ui32)
+(edn-scalar-codec ui64)
+(edn-scalar-codec f32)
+(edn-scalar-codec f64)
+(edn-scalar-codec bool)
+(edn-scalar-codec Char)
+(edn-scalar-codec StrView)
+(edn-scalar-codec Keyword)
+
+(defn edn-decode (dst:&String n:?&Node):ReadResult (return (edn-read dst n)))
+(defn edn-encode (out:&String v:&String):!void (return (edn-write out v)))
+(defn edn-release (v:&String):void (drop v))
+(extend String EdnCodec)
+
+; Hashable and owning nothing, so a HashMap that never drops its keys leaks none.
+(defprotocol EdnKey)
+(extend Keyword EdnKey)
+(extend StrView EdnKey)
+(extend i32 EdnKey)
+(extend i64 EdnKey)
+
+(defn edn-failed? (r:&ReadResult):bool
+  (match @r
+    ((ok v) (return false))
+    ((err e) (return true))))
+
+; The generic entry points; a scalar's own overload outranks them.
+(defn edn-read (dst:&T n:?&Node :where (EdnCodec T)):ReadResult
+  (return (edn-decode dst n)))
+
+(defn edn-write (out:&String v:&T :where (EdnCodec T)):!void
+  (return (edn-encode out v)))
+
+; Vector: `[…]` only; a list is a different EDN value.
+(extend (Vector T) EdnCodec :where (EdnCodec T))
+
+(defn edn-decode (dst:&(Vector T) n:?&Node :where (EdnCodec T)):ReadResult
+  (when (!= (edn-kind n) EDN-VECTOR) (return (edn-expected "a vector" n)))
+  (vector-init dst)
+  (let (xp:&T (alloca T)
+        len:usize (edn-count n)
+        i:usize 0)
+    (while (< i len)
+      (let (r:ReadResult (edn-decode xp (edn-nth n i)))
+        (when (edn-failed? &r)
+          (edn-release dst)
+          (return r)))
+      (conj dst @xp)
+      (set! i (+ i 1))))
+  (return (ok n)))
+
+(defn edn-encode (out:&String v:&(Vector T) :where (EdnCodec T)):!void
+  (write-str out "[")
+  (let (len:usize (count v)
+        i:usize 0)
+    (while (< i len)
+      (when (> i 0) (write-str out " "))
+      (let (e:T (v i))
+        (try (edn-encode out &e)))
+      (set! i (+ i 1))))
+  (write-str out "]")
+  (return (ok)))
+
+(defn edn-release (v:&(Vector T) :where (EdnCodec T)):void
+  (let (i:usize (count v))
+    (while (> i 0)
+      (set! i (- i 1))
+      (let (e:T (v i))
+        (edn-release &e))))
+  (drop v))
+
+; HashSet: `#{…}` of a key type. Its elements own nothing, so release is a drop.
+(extend (HashSet T) EdnCodec :where (EdnCodec T) (EdnKey T))
+
+(defn edn-decode (dst:&(HashSet T) n:?&Node :where (EdnCodec T) (EdnKey T)):ReadResult
+  (when (!= (edn-kind n) EDN-SET) (return (edn-expected "a set" n)))
+  (hashset-init dst)
+  (let (xp:&T (alloca T)
+        len:usize (edn-count n)
+        i:usize 0)
+    (while (< i len)
+      (let (r:ReadResult (edn-decode xp (edn-nth n i)))
+        (when (edn-failed? &r)
+          (drop dst)
+          (return r)))
+      (conj dst @xp)
+      (set! i (+ i 1))))
+  (return (ok n)))
+
+(defn edn-encode (out:&String v:&(HashSet T) :where (EdnCodec T) (EdnKey T)):!void
+  (write-str out "#{")
+  (let (first:bool true)
+    (doseq (x v (HashSetIter T))
+      (when (not first) (write-str out " "))
+      (set! first false)
+      (let (e:T x)
+        (try (edn-encode out &e)))))
+  (write-str out "}")
+  (return (ok)))
+
+(defn edn-release (v:&(HashSet T) :where (EdnCodec T) (EdnKey T)):void
+  (drop v))
+
+; HashMap: an untagged `{…}` with keys of a key type.
+(extend (HashMap K V) EdnCodec :where (EdnCodec K) (EdnKey K) (EdnCodec V))
+
+(defn edn-decode (dst:&(HashMap K V) n:?&Node :where (EdnCodec K) (EdnKey K) (EdnCodec V)):ReadResult
+  (when (!= (edn-kind n) EDN-MAP) (return (edn-expected "a map" n)))
+  (hashmap-init dst)
+  (let (kp:&K (alloca K)
+        vp:&V (alloca V)
+        len:usize (edn-count n)
+        i:usize 0)
+    (while (< i len)
+      (let (r:ReadResult (edn-decode kp (edn-key n i)))
+        (when (edn-failed? &r)
+          (edn-release dst)
+          (return r)))
+      (let (r:ReadResult (edn-decode vp (edn-val n i)))
+        (when (edn-failed? &r)
+          (edn-release dst)
+          (return r)))
+      (match (get dst @kp)
+        ((some old)
+          (edn-release vp)
+          (edn-release dst)
+          (let (s:String (edn-text (edn-key n i)))
+            (let (m:String (str "duplicate map key " (string-as-view &s)))
+              (drop &s)
+              (return (edn-err edn-dup-key (node-line (edn-key n i) (node-line n 0)) &m)))))
+        (none (assoc dst @kp @vp)))
+      (set! i (+ i 1))))
+  (return (ok n)))
+
+(defn edn-encode (out:&String v:&(HashMap K V) :where (EdnCodec K) (EdnKey K) (EdnCodec V)):!void
+  (write-str out "{")
+  (let (first:bool true)
+    (doseq (en v (HashMapEntryIter K V))
+      (when (not first) (write-str out " "))
+      (set! first false)
+      (let (k:K (en 'key)
+            x:V (en 'val))
+        (try (edn-encode out &k))
+        (write-str out " ")
+        (try (edn-encode out &x)))))
+  (write-str out "}")
+  (return (ok)))
+
+(defn edn-release (v:&(HashMap K V) :where (EdnCodec K) (EdnKey K) (EdnCodec V)):void
+  (doseq (en v (HashMapEntryIter K V))
+    (let (x:V (en 'val))
+      (edn-release &x)))
+  (drop v))
+
+; ---------------------------------------------------------------------------
+; Derived struct codecs. Design: design/stage22-edn/ed4-struct-codecs.md §2.5.
+; Expansions call only these helpers and the EdnCodec methods.
+; ---------------------------------------------------------------------------
+
+(defn edn-put (out:&String s:StrView):void
+  (write-str out s))
+
+; The map inside `#tag {…}`, or why `n` is not one.
+(defn edn-struct-map (n:?&Node tag:StrView):ReadResult
+  (when (!= (edn-kind n) EDN-TAGGED)
+    (let (m:String (str "expected #" tag ", got " (edn-kind-name (edn-kind n))))
+      (return (edn-err edn-wrong-tag (node-line n 0) &m))))
+  (let (t:StrView (symbol-as-view (node-head-sym (node-rest n))))
+    (when (!= t tag)
+      (let (m:String (str "expected #" tag ", got #" t))
+        (return (edn-err edn-wrong-tag (node-line n 0) &m)))))
+  (let (v:?&Node (node-at n 2))
+    (when (!= (edn-kind v) EDN-MAP) (return (edn-expected "a map" v)))
+    (return (ok v))))
+
+; Whether `name` is one of the space-separated words in `fields`.
+(defn edn-field-listed? (fields:StrView name:StrView):bool
+  (let (left:StrView fields)
+    (while (> (left 'len) 0)
+      (match (strview-find-byte &left 32)
+        ((some at)
+          (when (= (strview-take-bytes left at) name) (return true))
+          (set! left (strview-drop-bytes left (+ at 1))))
+        (none (return (= left name))))))
+  (return false))
+
+; Strict keys: each is a keyword naming a field, and each field has one.
+(defn edn-struct-keys (m:?&Node tag:StrView fields:StrView):ReadResult
+  (let (len:usize (edn-count m)
+        i:usize 0)
+    (while (< i len)
+      (let (k:?&Node (edn-key m i))
+        (when (or (= k null) (!= (edn-kind k) EDN-KEYWORD)
+                  (not (edn-field-listed? fields (symbol-as-view (k 's)))))
+          (let (s:String (edn-text k))
+            (let (msg:String (str "unknown key " (string-as-view &s) " for #" tag))
+              (drop &s)
+              (return (edn-err edn-unknown-key (node-line k (node-line m 0)) &msg))))))
+      (set! i (+ i 1))))
+  (let (left:StrView fields)
+    (while (> (left 'len) 0)
+      (let (word:StrView left)
+        (match (strview-find-byte &left 32)
+          ((some at)
+            (set! word (strview-take-bytes left at))
+            (set! left (strview-drop-bytes left (+ at 1))))
+          (none (set! left (strview-drop-bytes left (left 'len)))))
+        (when (= (edn-get m word) null)
+          (let (msg:String (str "missing key :" word " for #" tag))
+            (return (edn-err edn-missing-key (node-line m 0) &msg)))))))
+  (return (ok m)))
+
+; A field's failure, with its key prefixed onto the path.
+(defn edn-at-key (r:ReadResult key:StrView):ReadResult
+  (match r
+    ((ok v) (return r))
+    ((err e)
+      (let (msg:StrView (e 'msg)
+            m:String (if (strview-has-prefix msg ":")
+                       (str ":" key " " msg)
+                       (str ":" key ": " msg)))
+        (return (edn-err (e 'code) (e 'line) &m))))))
+
+; A string literal node with `sym`'s text. Public because the exported
+; `edn-derive-struct` expands it in the importer.
+(defmacro edn-str-node (sym)
+  `(let (sn:&Node (alloc-node))
+     (set! (sn 'kind) NODE-STR)
+     (set! (sn 's) ~sym)
+     sn))
+
+; One struct's three codec functions, named `enc`/`dec`/`rel`. An anonymous
+; struct field gets gensym-named codecs of its own, tagged `#nucleus/struct`.
+(defmacro edn-derive-struct (t tag enc dec rel)
+  (let (fields:&Node (struct-fields t)
+        out:&Node (node-list-new (t 'line))
+        encb:&Node (node-list-new (t 'line))
+        decb:&Node (node-list-new (t 'line))
+        undo:&Node (node-list-new (t 'line))
+        names:String (string-new)
+        tags:&Node (edn-str-node (tag 's)))
+    (node-push out 'do)
+    (dotimes (i (ast-len fields))
+      (let (f:ptr:Node (ast-at fields i)
+            fname:ptr:Node (ast-at f 0)
+            ftype:ptr:Node (ast-at f 1)
+            fe:ptr:Node 'edn-encode
+            fd:ptr:Node 'edn-decode
+            fr:ptr:Node 'edn-release
+            key:&Node (edn-str-node (fname 's))
+            place:ptr:Node `(ref dst '~fname))
+        (let (hd:ptr:Node ftype)
+          (when (= (ftype 'kind) NODE-LIST) (set! hd (ast-at ftype 0)))
+          (let (hv:StrView (if (and (!= hd null) (= (hd 'kind) NODE-SYM)) (symbol-as-view (hd 's)) ""))
+            (when (or (= hv "ptr") (= hv "CStr") (= hv "ref") (= hv "?ref")
+                      (strview-has-prefix hv "ref:") (strview-has-prefix hv "?ref:")
+                      (strview-has-prefix hv "ptr:") (strview-has-prefix hv "&")
+                      (strview-has-prefix hv "?&"))
+              (let (m:String (str "derive-edn: field '" (symbol-as-view (fname 's))
+                                  "' is a pointer, which EDN cannot spell"))
+                (macro-error t (string-as-view &m))))
+            (when (and (= (ftype 'kind) NODE-LIST) (= hv "struct"))
+              (set! fe (gensym))
+              (set! fd (gensym))
+              (set! fr (gensym))
+              (node-push out `(edn-derive-struct ~ftype nucleus/struct ~fe ~fd ~fr)))))
+        (when (> i 0) (str-into &names " "))
+        (str-into &names (symbol-as-view (fname 's)))
+        (let (kt:String (str (if (= i 0) ":" " :") (symbol-as-view (fname 's)) " "))
+          (node-push encb `(edn-put out ~(edn-str-node (symbol-intern (string-as-view &kt))))))
+        (node-push encb `(try (~fe out ~place)))
+        (let (prior:&Node undo)
+          (node-push decb `(let (r:ReadResult (edn-at-key (~fd ~place (edn-get m ~key)) ~key))
+                             (when (edn-failed? &r) ~@prior (return r))))
+          (set! undo (node-list-new (t 'line)))
+          (node-push undo `(~fr ~place))
+          (doseq (u prior NodeIter) (node-push undo u)))))
+    (let (fstr-node:&Node (edn-str-node (symbol-intern (string-as-view &names))))
+      (node-push out
+        `(defn ~enc (out:&String dst:(ref ~t)):!void
+           (edn-put out "#")
+           (edn-put out ~tags)
+           (edn-put out " {")
+           ~@encb
+           (edn-put out "}")
+           (return (ok))))
+      (node-push out
+        `(defn ~dec (dst:(ref ~t) n:?&Node):ReadResult
+           (let (m:?&Node (try (edn-struct-map n ~tags)))
+             (try (edn-struct-keys m ~tags ~fstr-node))
+             ~@decb
+             (return (ok n)))))
+      (node-push out
+        `(defn ~rel (dst:(ref ~t)):void ~@undo (return))))
+    out))
+
+; `(derive-edn T …)`: an EdnCodec conformance for each named struct `T`,
+; written as `#ns/T {:field value …}`. The caller needs `(import-use edn)`.
+(defmacro derive-edn (:rest types)
+  (let (out:&Node (node-list-new (types 'line)))
+    (node-push out 'do)
+    (doseq (t types NodeIter)
+      (node-push out `(edn-derive-struct ~t ~(type-name t) edn-encode edn-decode edn-release))
+      (node-push out `(extend ~t EdnCodec)))
+    out))

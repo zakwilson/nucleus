@@ -201,9 +201,8 @@ destructures** the row, which must then be a list of that many elements:
 * **The table may be computed** rather than written out, by marking it `~`. See
   [`~e` — a computed macro argument](#e--a-computed-macro-argument).
 * **Top-level position works**, so a `macmap` may generate a family of
-  definitions. The pre-scan limit on any macro-produced definition applies
-  unchanged: they are not forward-referenceable, and the family cannot include
-  an `extend` with its methods. See
+  definitions: overloads, templates, and `extend`s with their methods. Like any
+  macro-produced definition, they are not forward-referenceable. See
   [Macros in top-level position](#macros-in-top-level-position).
 * **A `macmap` inside a `defmacro` or `macrolet` body is a nested quasiquote**,
   and is compiled as one — the inner `~param` belongs to the inner template. See
@@ -389,6 +388,46 @@ not against whatever the expansion happened to lower to.
   IterType)` at the call's line. A guard is what says *what* was wrong; the
   fault boundary below only says *that* the body crashed.
 
+## `struct-fields` and `type-name` — a struct's shape at expansion time
+
+Two forms let a macro body read a struct's definition, so that a macro can
+derive code from it: a serializer, a printer, a comparison. `lib/edn`'s
+`derive-edn` is built on them ([edn.md](edn.md#derive-edn)).
+
+| Form | Returns |
+| --- | --- |
+| `(struct-fields t)` | one `(name type)` list per field, in declaration order: `((x i32) (pts (Vector i64)) (box (struct w:f64 h:f64)))` |
+| `(type-name t)` | the struct's qualified name as a symbol: `geom/Point`, or `user/Point` in a file with no `(ns …)` |
+
+```lisp
+(import-ct node)     ; node-int, at expansion time only
+(defmacro field-count (t)
+  (node-int (as i64 (ast-len (struct-fields t)))))
+
+(defstruct P x:i32 y:i32)
+(field-count P)      ; => 2
+```
+
+- **`t` is a type as the macro's caller spelled it**, and it resolves in the
+  caller's file: through its imports and prefixes (`g/Point` after
+  `(import geom g)`), and wherever in that file the struct is defined, above or
+  below the call.
+- **Types in the result are spelled for inspection,** in their canonical form:
+  another namespace's struct is `geom/Point` whatever prefix the caller used,
+  and a nullable pointer reads as `?ref:geom/Point`. Derived code does not need
+  to spell a field's type: `(ref dst 'x)` reaches the field, and overloading
+  picks the code for it.
+- **An anonymous struct is accepted** by `struct-fields`, so a field of type
+  `(struct w:f64 h:f64)` can be walked by passing that type back in. It has no
+  name, so `type-name` refuses it.
+- **Refused, at the macro's call site:** a type that is not a struct (a union, a
+  scalar, a pointer); a template (`Vector`) or a template instance
+  (`(Vector i32)`); a struct with a bit-field or an anonymous member, which have
+  no `(name type)` spelling.
+- **Only in a macro body** (or a `macrolet`/`compile-time` body): there is no
+  run-time reflection, so a derived serializer costs nothing in a program that
+  does not derive one.
+
 ## When a macro body crashes
 
 A macro body — and a `~e` argument, a `compile-time` block, and the program
@@ -551,15 +590,40 @@ after the pre-scans have already walked the file:
 - The macro must be **defined before the call**, in file order. There is no
   pre-scan for macro definitions, so `(import-use …)` for a library's macros
   belongs at the top of the file, where it already is.
-- A definition that only a macro produces is invisible to the pre-scans, so it
-  is not forward-referenceable: a `defn` produced by an expansion on line 90
-  cannot be called from a `defn` written on line 10. Ordinary definition order
-  applies to it, not the file-wide visibility the pre-scans give hand-written
-  ones. For the same reason a macro cannot produce an `extend` together with
-  the methods that satisfy it — the conformance check reads the pre-scanned
-  method registry, which the spliced `defn`s are not in, whichever order they
-  are spliced in. Write the `extend` by hand, or have the macro produce only
-  the methods.
+- A definition that only a macro produces is **not forward-referenceable**: a
+  `defn` produced by an expansion on line 90 cannot be called from a `defn`
+  written on line 10. Ordinary definition order applies to it, not the
+  file-wide visibility the pre-scans give hand-written ones.
+
+Otherwise a macro-produced definition is registered exactly like a written one.
+The expansion's protocols, struct names, `defn` signatures and values are
+registered when it is spliced, before any of its forms is compiled. So:
+
+- A macro-produced `defn` **overloads** a written one of the same name, or one
+  another expansion produced, and a macro-produced template is stamped like any
+  other.
+- One expansion may define a protocol, a struct, the methods, and the `extend`
+  that conforms the struct, in any order. This is what lets a library *derive*
+  a protocol's methods for a type:
+
+  ```lisp
+  (defmacro derive-enc (t)
+    `(do (extend ~t Enc)
+         (defn enc (v:(ref ~t)):i32 (return (v 'n)))))
+  (derive-enc geom/Pt)
+  ```
+
+- The same overload produced twice is a `duplicate definition` error.
+- A written method that code above the expansion already calls keeps its
+  symbol. When a macro adds an overload to a name that had one method, that
+  method stays `@area` and the new one is mangled (`@area.pSq`). Two written
+  overloads would both be mangled. Generated headers record the real symbols,
+  so this is invisible to a caller.
+- Once overloaded, the name has no plain function-pointer value, as with
+  written overloads.
+- The same applies to the body of a top-level `macrolet`.
+- The REPL does not yet accept a top-level macro that expands to a definition
+  ([deferred](../design/deferred/overview.md)).
 
 ## What a macro body may call
 

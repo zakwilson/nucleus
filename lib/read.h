@@ -8,6 +8,14 @@
 
 /* Generated from lib/read.nuc by nucleusc --emit-cheader */
 
+enum LitMark {
+    LitMark_LIT_NONE = 0,
+    LitMark_LIT_VECTOR = 1,
+    LitMark_LIT_MAP = 2,
+    LitMark_LIT_SET = 3,
+    LitMark_LIT_TAGGED = 4
+};
+
 typedef struct ReadError {
     int32_t code;
     int32_t line;
@@ -59,10 +67,12 @@ typedef struct Reader {
     int32_t col0_open_line;
     int32_t col0_open_depth;
     struct Vector_RMacro* macros;
+    bool edn;
 } Reader;
 
 struct Reader reader_with_macros(struct StrView src, struct Vector_RMacro* table) asm("reader-with-macros");
 struct Reader reader(struct StrView src);
+struct Reader reader_edn(struct StrView src) asm("reader-edn");
 int32_t rd_at(struct Reader* self, size_t i) asm("rd-at");
 int32_t rd_peek(struct Reader* self) asm("rd-peek");
 int32_t rd_peek1(struct Reader* self) asm("rd-peek1");
@@ -86,10 +96,15 @@ bool rd_legacy_marker_QMARK(struct StrView sv) asm("rd-legacy-marker_QMARK");
 struct Symbol rd_expand_sigil(struct StrView tv) asm("rd-expand-sigil");
 bool rd_at_legacy_marker(struct Reader* self) asm("rd-at-legacy-marker");
 struct Node* rd_node(int32_t kind, int32_t line) asm("rd-node");
+int32_t rd_hex4(struct Reader* self) asm("rd-hex4");
+bool rd_surrogate_QMARK(int32_t cp) asm("rd-surrogate_QMARK");
 struct ReadResult rd_string(struct Reader* self, int32_t open_line, bool is_cstr) asm("rd-string");
 struct Node* rd_char_node(int32_t cp, int32_t line) asm("rd-char-node");
 struct ReadResult rd_char(struct Reader* self, int32_t open_line) asm("rd-char");
 struct ReadResult rd_int_node(struct StrView tv, int32_t radix, int32_t line) asm("rd-int-node");
+struct Node* rd_float_node(struct StrView tv, int32_t line) asm("rd-float-node");
+struct ReadResult rd_edn_int(struct StrView tv, int32_t line) asm("rd-edn-int");
+struct ReadResult rd_edn_atom(struct StrView tv, int32_t line) asm("rd-edn-atom");
 struct ReadResult rd_atom(struct Reader* self) asm("rd-atom");
 int32_t rd_macro_match(struct Reader* self) asm("rd-macro-match");
 bool rd_atom_start_QMARK(int32_t c) asm("rd-atom-start_QMARK");
@@ -100,15 +115,19 @@ bool rd_fn_type_form_QMARK(struct Node* /* nullable */ form) asm("rd-fn-type-for
 struct ReadResult rd_fuse_fn_params(struct Reader* self, struct Node* /* nullable */ paren_form, int32_t line) asm("rd-fuse-fn-params");
 bool rd_open_segment_QMARK(struct StrView sv) asm("rd-open-segment_QMARK");
 struct ReadResult rd_fuse_colon_paren(struct Reader* self, struct Node* /* nullable */ child, int32_t line) asm("rd-fuse-colon-paren");
+struct ReadResult rd_skip_discard(struct Reader* self) asm("rd-skip-discard");
 struct ReadResult rd_list(struct Reader* self, int32_t open_line) asm("rd-list");
 struct ReadResult rd_lit_elems(struct Reader* self, struct StrView what, int32_t closer, int32_t open_line) asm("rd-lit-elems");
-struct Node* /* nullable */ rd_lit_cell(struct StrView name, struct Node* /* nullable */ elems, int32_t line) asm("rd-lit-cell");
+struct Node* rd_lit_cell(struct StrView name, struct Node* /* nullable */ elems, int32_t line, int32_t mark) asm("rd-lit-cell");
+struct ReadResult rd_tagged(struct Reader* self, int32_t line) asm("rd-tagged");
+bool rd_letter_QMARK(int32_t c) asm("rd-letter_QMARK");
 struct ReadResult rd_atom_form(struct Reader* self, int32_t line) asm("rd-atom-form");
 struct ReadResult rd_form(struct Reader* self) asm("rd-form");
 bool reader_eof_QMARK(struct Reader* self) asm("reader-eof_QMARK");
 struct ReadResult read_one(struct Reader* self) asm("read-one");
 struct ReadResult read_all_with_macros(struct StrView src, struct Vector_RMacro* table) asm("read-all-with-macros");
 struct ReadResult read_all(struct StrView src) asm("read-all");
+struct ReadResult read_all_edn(struct StrView src) asm("read-all-edn");
 void rd_write_escaped(struct String* out, struct StrView sv) asm("rd-write-escaped");
 void rd_write_hex(struct String* out, uint64_t v) asm("rd-write-hex");
 void sexp_write_string(struct String* out, struct StrView sv) asm("sexp-write-string");

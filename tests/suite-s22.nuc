@@ -1,0 +1,898 @@
+; Stage 22 — EDN (design/stage22-edn/overview.md).
+;
+; ED-1's reader additions are Nucleus syntax as well as EDN, so they are asked
+; of `read-all` and `read-all-edn` both; `lib/edn.nuc` is asked in-process, the
+; whole-program view being examples/edn-read.nuc.
+
+(import-use edn)
+
+; What a read produced: the canonical text, then each top-level list's
+; bracket mark, or the error.
+(defn s22-read (src:StrView edn:bool):String
+  (let (out:String (string-new))
+    (match (if edn (read-all-edn src) (read-all src))
+      ((ok forms)
+        (node-write &out forms)
+        (dotimes (i (node-len forms))
+          (let (f:?&Node (node-at forms i))
+            (when (and (!= f null) (= (f 'kind) NODE-LIST))
+              (str-into &out " " (f 'i))))))
+      ((err e)
+        (str-into &out "error " (err-name (e 'code)) " line " (e 'line) ": " (e 'msg))))
+    (return out)))
+
+(defn s22-check-read (src:StrView edn:bool want:StrView):!void
+  (let (got:String (s22-read src edn))
+    (try (check-golden (string-as-view &got) want))
+    (drop &got))
+  (return (ok)))
+
+; Both readers, one answer.
+(defn s22-check-both (src:StrView want:StrView):!void
+  (try (s22-check-read src false want))
+  (try (s22-check-read src true want))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; ED-1: the reader
+; ---------------------------------------------------------------------------
+
+(deftest s22-commas-are-whitespace
+  (try (s22-check-both "{:a 1, :b 2}" "((hashmap-lit :a 1 :b 2)) 2"))
+  (try (s22-check-both "[1,2 , 3,]" "((vector-lit 1 2 3)) 1"))
+  (try (s22-check-both "(a,b),(c)" "((a b) (c)) 0 0"))
+  (try (s22-check-both "\"a,b\"" "(\"a,b\")"))
+  (try (s22-check-both "\\," "(\\u{2c})"))
+  (return (ok)))
+
+(deftest s22-discard
+  (try (s22-check-both "(a #_ b c)" "((a c)) 0"))
+  (try (s22-check-both "[#_ #_ x y z]" "((vector-lit z)) 1"))
+  (try (s22-check-both "{:a #_ :zz 1}" "((hashmap-lit :a 1)) 2"))
+  (try (s22-check-both "#_ (a (b)) c" "(c)"))
+  (try (s22-check-both "a #_ b" "(a)"))
+  (try (s22-check-both "a #_ b ; trailing\n" "(a)"))
+  (try (s22-check-both "(a #_)" "error read-bad-discard line 1: #_ must be followed by a form to discard"))
+  (try (s22-check-both "a\n#_" "error read-bad-discard line 2: #_ must be followed by a form to discard"))
+  (try (s22-check-both "(a #_ (b" "error read-unterminated-list line 1: unterminated list"))
+  (return (ok)))
+
+(deftest s22-tagged-literals
+  (try (s22-check-both "#inst \"1985\"" "((tagged-lit inst \"1985\")) 4"))
+  (try (s22-check-both "#my/Point {:x 1}" "((tagged-lit my/Point (hashmap-lit :x 1))) 4"))
+  (try (s22-check-both "#a #b 1" "((tagged-lit a (tagged-lit b 1))) 4"))
+  (try (s22-check-both "#a #_ 1 2" "((tagged-lit a 2)) 4"))
+  (try (s22-check-both "{:k #t 1}" "((hashmap-lit :k (tagged-lit t 1))) 2"))
+  (try (s22-check-both "(ns #p1)" "error read-bad-tag line 1: tagged literal '#p1' has no value"))
+  (try (s22-check-both "#t" "error read-bad-tag line 1: tagged literal '#t' has no value"))
+  (try (s22-check-both "# x" "error read-bad-tag line 1: '#' must be followed by '{', '_' or a tag that starts with a letter"))
+  (try (s22-check-both "#1 x" "error read-bad-tag line 1: '#' must be followed by '{', '_' or a tag that starts with a letter"))
+  (try (s22-check-both "a#b" "(a#b)"))
+  (return (ok)))
+
+(deftest s22-unicode-escapes
+  (try (s22-check-both "\"\\u00e9\\u0041\"" "(\"éA\")"))
+  (try (s22-check-both "\\u0041 \\u00e9 \\u \\u{41}" "(\\u{41} \\u{e9} \\u{75} \\u{41})"))
+  (try (s22-check-both "\"\\u004\"" "error read-bad-escape line 1: \\u escape needs exactly four hex digits"))
+  (try (s22-check-both "\"\\ud800\"" "error read-bad-escape line 1: \\u escape names a surrogate, which is not a character"))
+  (try (s22-check-both "\\udfff" "error read-bad-char line 1: invalid-codepoint: surrogate 0xD800..0xDFFF is not a scalar value"))
+  (try (s22-check-both "\\u004" "error read-bad-char line 1: unknown named char literal '\\u004'"))
+  (return (ok)))
+
+(deftest s22-literal-marks
+  (try (s22-check-both "[1] (vector-lit 1) {} #{} (x)" "((vector-lit 1) (vector-lit 1) (hashmap-lit) (hashset-lit) (x)) 1 0 2 3 0"))
+  ; node-eq ignores the mark: the round trip through node-write loses it.
+  (match (read-all "[1] (vector-lit 1)")
+    ((ok forms) (try (check (node-eq (node-at forms 0) (node-at forms 1)) "node-eq ignores marks")))
+    ((err e) (try (check false "read"))))
+  (return (ok)))
+
+(deftest s22-edn-mode
+  ; The Nucleus sugar is off: reader macros, the `&` sigil, the fuse, `c"`.
+  (try (s22-check-read "&x a:&b c:(1) 'q c\"s\"" true "(&x a:&b c: (1) 'q c \"s\") 0"))
+  (try (s22-check-read "&x a:&b c:(1) 'q" false "((ref x) a:ref:b (c (1)) (quote q)) 0 0 0"))
+  ; `N` and `M` are suffixes in EDN only; values must fit a signed 64 bits.
+  (try (s22-check-read "1N -2N 1.5M 2M 1e3M" true "(1 -2 1.5M 2M 1e3M)"))
+  (try (s22-check-read "1N 1.5M" false "(1N 1.5M)"))
+  (try (s22-check-read "9223372036854775807 -9223372036854775808" true
+                       "(9223372036854775807 -9223372036854775808)"))
+  (try (s22-check-read "9223372036854775808" true "error read-int-range line 1: integer literal out of range"))
+  (try (s22-check-read "9223372036854775808N" true "error read-int-range line 1: integer literal out of range"))
+  ; Hex and the non-finite spellings are Nucleus atoms, not EDN numbers.
+  (try (s22-check-read "0x10 +inf.0" true "(0x10 +inf.0)"))
+  ; A `def-rmacro` form is data in EDN text.
+  (try (s22-check-read "(def-rmacro \"$\" w) $x" true "((def-rmacro \"$\" w) $x) 0"))
+  (try (s22-check-read "(def-rmacro \"$\" w) $x" false "((def-rmacro \"$\" w) (w x)) 0 0"))
+  (return (ok)))
+
+; A comma is whitespace, so it can no longer begin a reader-macro prefix.
+(deftest s22-def-rmacro-comma-refused
+  (try (s22-check-read "(def-rmacro \",\" w)" false
+                       "error read-bad-rmacro line 1: def-rmacro: prefix must not begin with a byte that can start an atom"))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; ED-2: the view
+; ---------------------------------------------------------------------------
+
+(defn s22-parse (src:StrView):String
+  (let (out:String (string-new))
+    (match (edn-parse src)
+      ((ok v) (do (write-str &out (edn-kind-name (edn-kind v)))
+                  (write-str &out " ")
+                  (edn-write &out v)))
+      ((err e) (str-into &out "error " (err-name (e 'code)) " line " (e 'line) ": " (e 'msg))))
+    (return out)))
+
+(defn s22-check-parse (src:StrView want:StrView):!void
+  (let (got:String (s22-parse src))
+    (try (check-golden (string-as-view &got) want))
+    (drop &got))
+  (return (ok)))
+
+(deftest s22-edn-kinds
+  (try (s22-check-parse "nil" "nil nil"))
+  (try (s22-check-parse "true" "a boolean true"))
+  (try (s22-check-parse "-7" "an integer -7"))
+  (try (s22-check-parse "2.5" "a float 2.5"))
+  (try (s22-check-parse "\"s\"" "a string \"s\""))
+  (try (s22-check-parse "\\x" "a character \\x"))
+  (try (s22-check-parse "sym" "a symbol sym"))
+  (try (s22-check-parse ":k" "a keyword :k"))
+  (try (s22-check-parse "()" "a list ()"))
+  (try (s22-check-parse "(vector-lit 1)" "a list (vector-lit 1)"))
+  (try (s22-check-parse "[1]" "a vector [1]"))
+  (try (s22-check-parse "{}" "a map {}"))
+  (try (s22-check-parse "#{}" "a set #{}"))
+  (try (s22-check-parse "#t 1" "a tagged value #t 1"))
+  (return (ok)))
+
+(deftest s22-edn-parse-shape
+  (try (s22-check-parse "" "error edn-no-value line 1: EDN text holds no value"))
+  (try (s22-check-parse " ; only a comment\n #_ 1" "error edn-no-value line 2: EDN text holds no value"))
+  (try (s22-check-parse "1 2" "error edn-trailing line 1: EDN text holds more than one value"))
+  (try (s22-check-parse "#_ 1 2 #_ 3" "an integer 2"))
+  (match (edn-parse-all "1 [2] #_ 3 :four")
+    ((ok forms) (try (check-eq-int (as i64 (node-len forms)) 3 "edn-parse-all count")))
+    ((err e) (try (check false "edn-parse-all"))))
+  (return (ok)))
+
+(deftest s22-edn-validation
+  (try (s22-check-parse "{:a 1 :a 2}" "error edn-dup-key line 1: duplicate map key :a"))
+  (try (s22-check-parse "{:a\n\n {:b 1 :b 2}}" "error edn-dup-key line 3: duplicate map key :b"))
+  (try (s22-check-parse "#{1 [2] [2]}" "error edn-dup-elem line 1: duplicate set element [2]"))
+  (try (s22-check-parse "#{(1) [1]}" "a set #{(1) [1]}"))
+  (try (s22-check-parse "{1 :a 1.0 :b}" "a map {1 :a 1.0 :b}"))
+  (try (s22-check-parse "'q" "error edn-bad-symbol line 1: ''q' is not a legal EDN symbol"))
+  (try (s22-check-parse "1abc" "error edn-bad-symbol line 1: '1abc' is not a legal EDN symbol"))
+  (try (s22-check-parse "-1abc" "error edn-bad-symbol line 1: '-1abc' is not a legal EDN symbol"))
+  (try (s22-check-parse "a/b/c" "error edn-bad-symbol line 1: 'a/b/c' is not a legal EDN symbol"))
+  (try (s22-check-parse "::a" "error edn-bad-symbol line 1: '::a' is not a legal EDN keyword"))
+  (try (s22-check-parse "#a/b/c 1" "error edn-bad-symbol line 1: '#a/b/c' is not a legal EDN tag"))
+  (try (s22-check-parse "[/ a/b :a/b -x +.a .b *x* a:b a#b <=>]" "a vector [/ a/b :a/b -x +.a .b *x* a:b a#b <=>]"))
+  (return (ok)))
+
+(deftest s22-edn-access
+  (match (edn-parse "{:v [1 2 3] :s #{:x} :t #inst \"2026\" :m {[1] :vec}}")
+    ((ok m)
+      (try (check-eq-int (as i64 (edn-count m)) 4 "map entries"))
+      (let (v:?&Node (edn-get m "v"))
+        (try (check-eq-int (as i64 (edn-count v)) 3 "vector count"))
+        (try (check-eq-int (unwrap-or (edn-int (edn-nth v 2)) -1) 3 "edn-nth"))
+        (try (check (= (edn-nth v 3) null) "edn-nth past the end"))
+        (let (sum:i64 0)
+          (when-some (xs (edn-elems v))
+            (doseq (x xs NodeIter)
+              (set! sum (+ sum (unwrap-or (edn-int x) 0)))))
+          (try (check-eq-int sum 6 "edn-elems walk"))))
+      (try (check-eq-int (as i64 (edn-count (edn-get m "s"))) 1 "set count"))
+      (try (check (= (edn-get m "absent") null) "absent key"))
+      (try (check (= (unwrap-or (edn-tag (edn-get m "t")) "") "inst") "edn-tag"))
+      (try (check (= (unwrap-or (edn-str (edn-tagged-value (edn-get m "t"))) "") "2026") "tagged value"))
+      (match (edn-tag (edn-get m "v"))
+        ((ok t) (try (check false "edn-tag on a vector")))
+        ((err e) (try (check (= e edn-type) "edn-tag refuses with edn-type"))))
+      (match (edn-parse "[1]")
+        ((ok k) (let (hit:?&Node (edn-lookup (edn-get m "m") k))
+                  (try (check (= (unwrap-or (edn-keyword hit) (keyword-intern "none"))
+                                 (keyword-intern "vec")) "edn-lookup by vector key"))))
+        ((err e) (try (check false "parse key")))))
+    ((err e) (try (check false "parse"))))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; ED-3: writing, and the scalar codecs
+; ---------------------------------------------------------------------------
+
+; read -> write -> read gives an equal value, and writing is a fixed point.
+(deftest s22-edn-roundtrip
+  (let (corpus:StrView "{:a [1 -2 3.5 1.5M 7N] :b #{\"x\\ty\\u0001\" \\newline \\u00e9 \\u{1F600}}
+ :c (nil true false sym ns/sym :kw) :d #my/tag {:e []} :f \"\\\"q\\\\\" :g \\space}")
+    (match (edn-parse corpus)
+      ((ok a)
+        (let (t1:String (edn-text a))
+          (match (edn-parse (string-as-view &t1))
+            ((ok b)
+              (try (check (edn-eq a b) "reread is edn-eq"))
+              (let (t2:String (edn-text b))
+                (try (check-golden (string-as-view &t2) (string-as-view &t1)))
+                (drop &t2)))
+            ((err e) (try (check false "reread"))))
+          (try (check-golden (string-as-view &t1)
+                             "{:a [1 -2 3.5 1.5M 7] :b #{\"x\\ty\\u0001\" \\newline \\u00e9 \\u{1f600}} :c (nil true false sym ns/sym :kw) :d #my/tag {:e []} :f \"\\\"q\\\\\" :g \\space}"))
+          (drop &t1)))
+      ((err e) (try (check false "parse corpus")))))
+  (return (ok)))
+
+(defn s22-read-error (r:ReadResult):String
+  (let (out:String (string-new))
+    (match r
+      ((ok v) (write-str &out "ok"))
+      ((err e) (str-into &out (err-name (e 'code)) ": " (e 'msg))))
+    (return out)))
+
+(defn s22-check-conv (r:ReadResult want:StrView):!void
+  (let (got:String (s22-read-error r))
+    (try (check-golden (string-as-view &got) want))
+    (drop &got))
+  (return (ok)))
+
+(deftest s22-edn-read-scalars
+  (match (edn-parse "[127 128 -129 255 -1 1.5 3 1e39 true \\q \"s\" :k nil 9223372036854775807 4294967295]")
+    ((ok v)
+      (let (i8v:i8 0 i16v:i16 0 i32v:i32 0 i64v:i64 0 u8v:ui8 0 u16v:ui16 0 u32v:ui32 0 u64v:ui64 0
+            f:f64 0.0 f32v:f32 0.0 b:bool false c:Char \z sv:StrView "" st:&String (alloca String)
+            kw:Keyword (keyword-intern "x"))
+        (try (s22-check-conv (edn-read &i8v (edn-nth v 0)) "ok"))
+        (try (check-eq-int (as i64 i8v) 127 "i8 value"))
+        (try (s22-check-conv (edn-read &i8v (edn-nth v 1)) "edn-range: 128 is out of range for i8"))
+        (try (s22-check-conv (edn-read &i8v (edn-nth v 2)) "edn-range: -129 is out of range for i8"))
+        (try (s22-check-conv (edn-read &i16v (edn-nth v 2)) "ok"))
+        (try (s22-check-conv (edn-read &u8v (edn-nth v 3)) "ok"))
+        (try (check-eq-int (as i64 u8v) 255 "ui8 value"))
+        (try (s22-check-conv (edn-read &u8v (edn-nth v 4)) "edn-range: -1 is out of range for ui8"))
+        (try (s22-check-conv (edn-read &u16v (edn-nth v 4)) "edn-range: -1 is out of range for ui16"))
+        (try (s22-check-conv (edn-read &u32v (edn-nth v 14)) "ok"))
+        (try (check-eq-int (as i64 u32v) 4294967295 "ui32 value"))
+        (try (s22-check-conv (edn-read &i32v (edn-nth v 14)) "edn-range: 4294967295 is out of range for i32"))
+        (try (s22-check-conv (edn-read &u64v (edn-nth v 4)) "edn-range: -1 is out of range for ui64"))
+        (try (s22-check-conv (edn-read &u64v (edn-nth v 13)) "ok"))
+        (try (s22-check-conv (edn-read &i64v (edn-nth v 13)) "ok"))
+        (try (s22-check-conv (edn-read &i64v (edn-nth v 5)) "edn-type: expected an integer, got a float"))
+        (try (s22-check-conv (edn-read &f (edn-nth v 6)) "ok"))
+        (try (check (= f 3.0) "an integer reads as f64"))
+        (try (s22-check-conv (edn-read &f32v (edn-nth v 5)) "ok"))
+        (try (check (= f32v 1.5) "f32 value"))
+        (try (s22-check-conv (edn-read &f32v (edn-nth v 7)) "edn-range: 1e39 is out of range for f32"))
+        (try (s22-check-conv (edn-read &f (edn-nth v 7)) "ok"))
+        (try (s22-check-conv (edn-read &f (edn-nth v 8)) "edn-type: expected a number, got a boolean"))
+        (try (s22-check-conv (edn-read &b (edn-nth v 8)) "ok"))
+        (try (check b "bool value"))
+        (try (s22-check-conv (edn-read &c (edn-nth v 9)) "ok"))
+        (try (check (= c \q) "char value"))
+        (try (s22-check-conv (edn-read &sv (edn-nth v 10)) "ok"))
+        (try (check (= sv "s") "StrView value"))
+        (try (s22-check-conv (edn-read st (edn-nth v 10)) "ok"))
+        (try (check (= (string-as-view st) "s") "String value"))
+        (try (s22-check-conv (edn-read &kw (edn-nth v 11)) "ok"))
+        (try (check (= kw (keyword-intern "k")) "Keyword value"))
+        (try (s22-check-conv (edn-read &kw (edn-nth v 10)) "edn-type: expected a keyword, got a string"))
+        (try (s22-check-conv (edn-read &i32v (edn-nth v 12)) "edn-type: expected an integer, got nil"))
+        (drop st)))
+    ((err e) (try (check false "parse"))))
+  (return (ok)))
+
+(deftest s22-edn-write-scalars
+  (let (out:String (string-new)
+        f1:f32 0.1
+        sv:StrView "q\"\n"
+        st:String (string-new))
+    (string-push-str-unchecked &st &sv)
+    (try (edn-write &out (as i8 -5))) (write-str &out " ")
+    (try (edn-write &out (as ui32 4294967295))) (write-str &out " ")
+    (try (edn-write &out (as ui64 9223372036854775807))) (write-str &out " ")
+    (try (edn-write &out 1.0)) (write-str &out " ")
+    (try (edn-write &out 0.1)) (write-str &out " ")
+    (try (edn-write &out f1)) (write-str &out " ")
+    (try (edn-write &out 1e300)) (write-str &out " ")
+    (try (edn-write &out false)) (write-str &out " ")
+    (try (edn-write &out \newline)) (write-str &out " ")
+    (try (edn-write &out sv)) (write-str &out " ")
+    (try (edn-write &out &st)) (write-str &out " ")
+    (try (edn-write &out (keyword-intern "kw")))
+    (try (check-golden (string-as-view &out)
+                       "-5 4294967295 9223372036854775807 1.0 0.1 0.1 1e+300 false \\newline \"q\\\"\\n\" \"q\\\"\\n\" :kw"))
+    (match (edn-write &out (as ui64 18446744073709551615))
+      ((ok) (try (check false "ui64 beyond i64 refused")))
+      ((err e) (try (check (= e edn-range) "ui64 beyond i64 is edn-range"))))
+    (match (edn-write &out (/ 0.0 0.0))
+      ((ok) (try (check false "NaN refused")))
+      ((err e) (try (check (= e edn-range) "NaN is edn-range"))))
+    (match (edn-write &out (/ 1.0 0.0))
+      ((ok) (try (check false "inf refused")))
+      ((err e) (try (check (= e edn-range) "inf is edn-range"))))
+    (drop &st)
+    (drop &out))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; ED-4.1: definitions a top-level macro produces are registered like written
+; ones (design/stage22-edn/macro-definitions.md)
+; ---------------------------------------------------------------------------
+
+(defn s22-run (src:StrView want:StrView):!void
+  (let (out:String (try (build-run-source src)))
+    (try (check-eq (string-as-view &out) want))
+    (drop &out))
+  (return (ok)))
+
+(defn s22-shape-src (body:StrView):String
+  (return (str "(import-use \"stdio.h\")
+(defprotocol Shape (area (self:&Self):i32))
+(defstruct Sq side:i32)
+(defn total (x:&T :where (Shape T)):i32 (return (area x)))
+" body "
+(defn main ():i32
+  (let (q:Sq (Sq 3))
+    (printf \"%d\\n\" (total &q))
+    (return 0)))
+")))
+
+(deftest s22-macro-extend-either-order
+  (let (fwd:String (s22-shape-src "(defmacro derive-shape (t)
+  `(do (defn area (s:(ref ~t)):i32 (return (* (s 'side) (s 'side))))
+       (extend ~t Shape)))
+(derive-shape Sq)")
+        bwd:String (s22-shape-src "(defmacro derive-shape (t)
+  `(do (extend ~t Shape)
+       (defn area (s:(ref ~t)):i32 (return (* (s 'side) (s 'side))))))
+(derive-shape Sq)"))
+    (try (s22-run (string-as-view &fwd) "9\n"))
+    (try (s22-run (string-as-view &bwd) "9\n"))
+    (drop &bwd)
+    (drop &fwd))
+  (return (ok)))
+
+; A late overload joins a written one; the written one keeps the symbol a call
+; above the expansion already used.
+(deftest s22-macro-overloads
+  (try (s22-run "(import-use \"stdio.h\")
+(defstruct Sq side:i32)
+(defstruct Circ r:i32)
+(defstruct Rect side:i32)
+(defn area (c:&Circ):i32 (return (* 3 (c 'r) (c 'r))))
+(defn early (c:&Circ):i32 (return (area c)))
+(defmacro derive-area (t)
+  `(defn area (s:(ref ~t)):i32 (return (* (s 'side) (s 'side)))))
+(derive-area Sq)
+(derive-area Rect)
+(defn main ():i32
+  (let (q:Sq (Sq 3) c:Circ (Circ 2) r:Rect (Rect 4))
+    (printf \"%d %d %d %d\\n\" (area &q) (area &c) (early &c) (area &r))
+    (return 0)))
+" "9 12 12 16\n"))
+  (return (ok)))
+
+(deftest s22-macro-template
+  (try (s22-run "(import-use \"stdio.h\")
+(defmacro def-twice ()
+  `(defn twice (x:T :where (Any T)):T (return x)))
+(def-twice)
+(defn main ():i32
+  (printf \"%d\\n\" (twice 21))
+  (return 0))
+" "21\n"))
+  (return (ok)))
+
+; One expansion defines a union, a protocol, a struct, a method, the extend and
+; a generic over the protocol: the late prescans run in the file prescan's order.
+(deftest s22-macro-definition-kinds
+  (try (s22-run "(import-use \"stdio.h\")
+(defmacro make-kinds ()
+  `(do (defunion Shape (circle r:i32) (square s:i32))
+       (defprotocol Sized (size (self:&Self):i32))
+       (defstruct Box w:i32)
+       (defn size (b:&Box):i32 (return (b 'w)))
+       (extend Box Sized)
+       (defn big? (x:&T :where (Sized T)):bool (return (> (size x) 10)))))
+(make-kinds)
+(defn main ():i32
+  (let (b:Box (Box 12)
+        s:Shape (Shape-circle 4))
+    (printf \"%d %d\\n\" (if (big? &b) 1 0)
+            (match s ((circle r) r) ((square q) q)))
+    (return 0)))
+" "1 4\n"))
+  (return (ok)))
+
+(deftest s22-macrolet-body-extend
+  (let (src:String (s22-shape-src "(macrolet ((sq-side (s) `(* (~s 'side) (~s 'side))))
+  (defn area (s:&Sq):i32 (return (sq-side s)))
+  (extend Sq Shape))"))
+    (try (s22-run (string-as-view &src) "9\n"))
+    (drop &src))
+  (return (ok)))
+
+; A name a late overload made overloaded has no solitary binding left, exactly
+; as two written overloads have none.
+(deftest s22-macro-overload-not-a-value
+  (let (c:Compiled (try (compile-source "(defstruct Sq side:i32)
+(defstruct Circ r:i32)
+(defn area (c:&Circ):i32 (return (c 'r)))
+(defmacro derive-area (t)
+  `(defn area (s:(ref ~t)):i32 (return (s 'side))))
+(derive-area Sq)
+(defn main ():i32
+  (let (f:(fn i32)(&Circ) area c:Circ (Circ 5))
+    (return (f &c))))
+")))
+    (try (check (not (c 'ok?)) "a value reference to an overloaded name is refused"))
+    (try (check-contains (string-as-view (ref c 'raw-text)) "undefined: area"))
+    (drop &c))
+  (return (ok)))
+
+; The ED-4 shape: a codec namespace (protocol, generic, derive macro), a type
+; namespace, and a companion that derives through a prefixed import.
+(defn s22-companion-files (dir:StrView):!void
+  (let (a:String (try (write-into dir "s22codec.nuc" "(ns s22codec)
+(defprotocol Enc (enc (v:&Self):i32))
+(defn enc-twice (x:&T :where (Enc T)):i32 (return (* 2 (enc x))))
+(defmacro derive-enc (t)
+  `(do (extend ~t Enc)
+       (defn enc (v:(ref ~t)):i32 (return (+ 100 (v 'n))))))
+"))
+        b:String (try (write-into dir "s22geom.nuc" "(ns s22geom)
+(defstruct Pt n:i32)
+(defstruct Qt n:i32)
+"))
+        c:String (try (write-into dir "s22geomenc.nuc" "(ns s22geomenc)
+(import-use s22codec)
+(import s22geom g)
+(derive-enc g/Pt)
+(derive-enc g/Qt)
+")))
+    (drop &c)
+    (drop &b)
+    (drop &a))
+  (return (ok)))
+
+(defn s22-companion-main ():StrView
+  (return "(import-use \"stdio.h\")
+(import-use s22geom)
+(import-use s22codec)
+(import-use s22geomenc)
+(defn main ():i32
+  (let (p:Pt (Pt 1) q:Qt (Qt 2))
+    (printf \"%d %d\\n\" (enc-twice &p) (enc-twice &q))
+    (return 0)))
+"))
+
+(deftest s22-macro-companion-source
+  (let (dir:String (try (test-scratch-sub "cs")))
+    (try (s22-companion-files (string-as-view &dir)))
+    (let (m:String (try (write-into (string-as-view &dir) "main.nuc" (s22-companion-main)))
+          out:String (try (build-run-file "" "" (string-as-view &m))))
+      (try (check-eq (string-as-view &out) "202 204\n"))
+      (drop &out)
+      (drop &m))
+    (drop &dir))
+  (return (ok)))
+
+; Separately compiled: the companion is namespaced, so its derived `extend`s and
+; methods must survive into its `.nuch` (the spliced `(do …)` used to be lost).
+(deftest s22-macro-companion-nuch
+  (let (src:String (try (test-scratch-sub "l"))
+        hdr:String (try (test-scratch-sub "h"))
+        dir:StrView (try (test-scratch))
+        sv:StrView (string-as-view &src)
+        hv:StrView (string-as-view &hdr))
+    (try (s22-companion-files sv))
+    (let (objs:String (string-new))
+      (dotimes (i 3)
+        (let (nm:StrView (case i 0 "s22codec" 1 "s22geom" "s22geomenc")
+              lib:String (str sv "/" nm ".nuc")
+              hn:String (str nm ".nuch")
+              obj:String (str dir "/" nm ".o")
+              h:String (try (emit-into "" "--emit-nuch" (string-as-view &lib) hv
+                                       (string-as-view &hn))))
+          (try (compile-object (string-as-view &lib) (string-as-view &obj)))
+          (str-into &objs " " (string-as-view &obj))
+          (drop &h) (drop &obj) (drop &hn) (drop &lib)))
+      (let (hp:String (str hv "/s22geomenc.nuch")
+            hpv:StrView (string-as-view &hp)
+            htext:String (try (read-file hpv)))
+        (try (check-contains (string-as-view &htext) "(extend g/Pt Enc)"))
+        (try (check-contains (string-as-view &htext) "(extend g/Qt Enc)"))
+        (drop &htext)
+        (drop &hp))
+      (let (m:String (try (test-write-file "main.nuc" (s22-companion-main)))
+            mo:String (str dir "/main.o"))
+        (try (compile-object-in hv (string-as-view &m) (string-as-view &mo)))
+        (let (parts:String (str (string-as-view &mo) (string-as-view &objs))
+              out:String (try (link-run (string-as-view &parts))))
+          (try (check-eq (string-as-view &out) "202 204\n"))
+          (drop &out)
+          (drop &parts))
+        (drop &mo)
+        (drop &m))
+      (drop &objs))
+    (drop &hdr)
+    (drop &src))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; ED-4.2: `struct-fields` / `type-name` (design/stage22-edn/ed4-struct-codecs.md)
+; ---------------------------------------------------------------------------
+
+; The macro prints at run time what it saw at expansion time. `g/Pt` resolves
+; through the caller's prefixed import; `Late` is defined below the call.
+(deftest s22-struct-fields
+  (let (dir:String (try (test-scratch-sub "sf")))
+    (let (g:String (try (write-into (string-as-view &dir) "s22sfgeom.nuc" "(ns s22sfgeom)
+(import-use vector)
+(defstruct Pt x:i32 y:i32)
+(defstruct Box (at Pt) (pts (Vector i64)) (size (struct w:f64 h:f64)) (next ?&Pt))
+"))
+          m:String (try (write-into (string-as-view &dir) "main.nuc" "(import-use io)
+(import-use read)
+(import-use string)
+(import s22sfgeom g)
+(defmacro show (t)
+  (let (o:String (string-new))
+    (node-write &o (struct-fields t))
+    (let (sn:&Node (alloc-node))
+      (set! (sn 'kind) NODE-STR)
+      (set! (sn 's) (symbol-intern (string-as-view &o)))
+      `(println ~sn))))
+(defmacro show-name (t)
+  (let (sn:&Node (alloc-node))
+    (set! (sn 'kind) NODE-STR)
+    (set! (sn 's) ((type-name t) 's))
+    `(println ~sn)))
+(defstruct Here a:f64 b:bool)
+(defn main ():i32
+  (show-name g/Pt)
+  (show g/Box)
+  (show-name Here)
+  (show (struct u:i8 v:Here))
+  (show Late)
+  (return 0))
+(defstruct Late n:i64)
+"))
+          out:String (try (build-run-file "" "" (string-as-view &m))))
+      (try (check-eq (string-as-view &out) "s22sfgeom/Pt
+((at s22sfgeom/Pt) (pts (Vector i64)) (size (struct w:f64 h:f64)) (next ?ref:s22sfgeom/Pt))
+user/Here
+((u i8) (v Here))
+((n i64))
+"))
+      (drop &out) (drop &m) (drop &g))
+    (drop &dir))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; Conditional template conformance: `(extend (Box T) P :where (P T))` conforms
+; exactly the instances whose argument conforms.
+; ---------------------------------------------------------------------------
+
+(defn s22-box-src (body:StrView):String
+  (return (str "(import-use \"stdio.h\")
+(defprotocol Codec (dec (dst:&Self):i32))
+(extend i32 Codec)
+(defn dec (dst:&i32):i32 (return 1))
+(defstruct (Box T) v:T)
+(extend (Box T) Codec :where (Codec T))
+(defn dec (dst:&(Box T) :where (Codec T)):i32 (return (+ 10 (dec (ref dst 'v)))))
+(defn use (x:&T :where (Codec T)):i32 (return (dec x)))
+" body)))
+
+; `(Box f64)` is stamped but does not conform, which is not an error; a nested
+; instance conforms through its argument.
+(deftest s22-conditional-conformance
+  (let (ok-src:String (s22-box-src "(defn main ():i32
+  (let (a:(Box i32) ((Box i32) 5)
+        b:(Box f64) ((Box f64) 1.0)
+        c:(Box (Box i32)) ((Box (Box i32)) a))
+    (printf \"%d %d\\n\" (use &a) (use &c))
+    (return 0)))")
+        bad-src:String (s22-box-src "(defn main ():i32
+  (let (b:(Box f64) ((Box f64) 1.0))
+    (return (use &b))))"))
+    (try (s22-run (string-as-view &ok-src) "11 21\n"))
+    (let (c:Compiled (try (compile-source (string-as-view &bad-src))))
+      (try (check (not (c 'ok?)) "a non-conforming instance is refused at its use"))
+      (try (check-contains (string-as-view (ref c 'raw-text)) "no matching method for 'use'"))
+      (drop &c))
+    (drop &bad-src)
+    (drop &ok-src))
+  (return (ok)))
+
+; An instance stamped before its argument's conformance exists is checked again
+; when a macro's `extend` supplies it.
+(deftest s22-conditional-conformance-retry
+  (try (s22-run "(import-use \"stdio.h\")
+(defprotocol Codec (dec (dst:&Self):i32))
+(defstruct (Box T) v:T)
+(extend (Box T) Codec :where (Codec T))
+(defn dec (dst:&(Box T) :where (Codec T)):i32 (return (+ 10 (dec (ref dst 'v)))))
+(defstruct Pt n:i32)
+(defstruct Holder b:(Box Pt) bb:(Box (Box Pt)))
+(defn use (x:&T :where (Codec T)):i32 (return (dec x)))
+(defmacro derive-codec (t)
+  `(do (extend ~t Codec) (defn dec (d:(ref ~t)):i32 (return (d 'n)))))
+(derive-codec Pt)
+(defn main ():i32
+  (let (p:Pt (Pt 5)
+        b:(Box Pt) ((Box Pt) p)
+        bb:(Box (Box Pt)) ((Box (Box Pt)) b))
+    (printf \"%d %d\\n\" (use &b) (use &bb))
+    (return 0)))
+" "15 25\n"))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; ED-4.3: EdnCodec and collections
+; ---------------------------------------------------------------------------
+
+(defn s22-node (src:StrView):?&Node
+  (match (edn-parse src)
+    ((ok v) (return v))
+    ((err e) (return null))))
+
+(defn s22-encoded (v:&T :where (EdnCodec T)):String
+  (let (s:String (string-new))
+    (match (edn-write &s v)
+      ((ok) 0)
+      ((err e) (write-str &s "<error>")))
+    (return s)))
+
+(deftest s22-edn-collections
+  (let (v:&(Vector i64) (alloca (Vector i64))
+        m:&(HashMap StrView (Vector String)) (alloca (HashMap StrView (Vector String)))
+        ks:&(HashSet Keyword) (alloca (HashSet Keyword)))
+    (try (s22-check-conv (edn-read v (s22-node "[1 -2 3]")) "ok"))
+    (let (t:String (s22-encoded v))
+      (try (check-eq (string-as-view &t) "[1 -2 3]"))
+      (drop &t))
+    (edn-release v)
+    (try (s22-check-conv (edn-read v (s22-node "(1 2)")) "edn-type: expected a vector, got a list"))
+    (try (s22-check-conv (edn-read v (s22-node "[1 \"x\"]")) "edn-type: expected an integer, got a string"))
+    (try (s22-check-conv (edn-read m (s22-node "{\"a\" [\"x\" \"y\"] \"b\" []}")) "ok"))
+    (try (check-eq-int (as i64 (count m)) 2 "map entries"))
+    (match (get m "a")
+      ((some xs)
+        (let (t:String (s22-encoded &xs))
+          (try (check-eq (string-as-view &t) "[\"x\" \"y\"]"))
+          (drop &t)))
+      (none (try (check false "key a"))))
+    (let (t:String (s22-encoded m)
+          back:&(HashMap StrView (Vector String)) (alloca (HashMap StrView (Vector String))))
+      (try (s22-check-conv (edn-read back (s22-node (string-as-view &t))) "ok"))
+      (try (check-eq-int (as i64 (count back)) 2 "round-tripped map entries"))
+      (edn-release back)
+      (drop &t))
+    (edn-release m)
+    (try (s22-check-conv (edn-read m (s22-node "#x/y {\"a\" []}")) "edn-type: expected a map, got a tagged value"))
+    (try (s22-check-conv (edn-read ks (s22-node "#{:a :b}")) "ok"))
+    (try (check (contains? ks (keyword-intern "b")) "set element"))
+    (let (t:String (s22-encoded ks))
+      (try (check-contains (string-as-view &t) ":a"))
+      (drop &t))
+    (edn-release ks))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; ED-4.4: derive-edn
+; ---------------------------------------------------------------------------
+
+(defstruct S22Pt x:i32 y:i32)
+(defstruct S22Shape (name String) (at S22Pt) (pts (Vector S22Pt))
+  (box (struct w:f64 h:f64)) (tags (HashSet Keyword)))
+(derive-edn S22Pt S22Shape)
+
+(deftest s22-derive-edn-flat
+  (let (p:S22Pt (S22Pt 3 -4)
+        q:&S22Pt (alloca S22Pt))
+    (let (t:String (s22-encoded &p))
+      (try (check-eq (string-as-view &t) "#user/S22Pt {:x 3 :y -4}"))
+      (try (s22-check-conv (edn-read q (s22-node (string-as-view &t))) "ok"))
+      (try (check-eq-int (as i64 (q 'y)) -4 "y"))
+      (drop &t))
+    (try (s22-check-conv (edn-read q (s22-node "#geom/S22Pt {:x 1 :y 2}"))
+                         "edn-wrong-tag: expected #user/S22Pt, got #geom/S22Pt"))
+    (try (s22-check-conv (edn-read q (s22-node "{:x 1 :y 2}"))
+                         "edn-wrong-tag: expected #user/S22Pt, got a map"))
+    (try (s22-check-conv (edn-read q (s22-node "#user/S22Pt [1 2]"))
+                         "edn-type: expected a map, got a vector"))
+    (try (s22-check-conv (edn-read q (s22-node "#user/S22Pt {:x 1}"))
+                         "edn-missing-key: missing key :y for #user/S22Pt"))
+    (try (s22-check-conv (edn-read q (s22-node "#user/S22Pt {:x 1 :y 2 :z 3}"))
+                         "edn-unknown-key: unknown key :z for #user/S22Pt"))
+    (try (s22-check-conv (edn-read q (s22-node "#user/S22Pt {:x 1 \"y\" 2}"))
+                         "edn-unknown-key: unknown key \"y\" for #user/S22Pt"))
+    (try (s22-check-conv (edn-read q (s22-node "#user/S22Pt {:x 1 :y 99999999999}"))
+                         "edn-range: :y: 99999999999 is out of range for i32")))
+  (return (ok)))
+
+(deftest s22-derive-edn-nested
+  (let (sh:&S22Shape (alloca S22Shape)
+        src:StrView "#user/S22Shape {:name \"tri\" :at #user/S22Pt {:x 1 :y 1} :pts [#user/S22Pt {:x 0 :y 0} #user/S22Pt {:x 3 :y 4}] :box #nucleus/struct {:w 1.5 :h 2.0} :tags #{:k}}")
+    (try (s22-check-conv (edn-read sh (s22-node src)) "ok"))
+    (try (check-eq (string-as-view (ref sh 'name)) "tri"))
+    (try (check-eq-int (as i64 (count (ref sh 'pts))) 2 "pts"))
+    (let (t:String (s22-encoded sh))
+      (try (check-eq (string-as-view &t) src))
+      (drop &t))
+    (edn-release sh)
+    (match (edn-read sh (s22-node "#user/S22Shape {:name \"tri\" :at #user/S22Pt {:x 1 :y 1}
+ :pts [#user/S22Pt {:x 0 :y 0}
+       #user/S22Pt {:x 3 :y \"4\"}] :box #nucleus/struct {:w 1.5 :h 2.0} :tags #{}}"))
+      ((ok v) (try (check false "a bad nested field fails")))
+      ((err e)
+        (try (check-eq (e 'msg) ":pts :y: expected an integer, got a string"))
+        (try (check-eq-int (as i64 (e 'line)) 3 "the inner value's line"))))
+    (try (s22-check-conv (edn-read sh (s22-node "#user/S22Shape {:name \"tri\" :at #user/S22Pt {:x 1 :y 1} :pts [] :box #user/S22Pt {:x 1 :y 2} :tags #{}}"))
+                         "edn-wrong-tag: :box: expected #nucleus/struct, got #user/S22Pt")))
+  (return (ok)))
+
+; A decode that fails part-way releases what it built: thousands of failing and
+; succeeding round trips leave the heap where they found it.
+(deftest s22-derive-edn-release
+  (try (s22-run "(import-use \"malloc.h\")
+(import-use io)
+(import-use string)
+(import-use vector)
+(import-use hashmap)
+(import-use read)
+(import-use edn)
+(defstruct Rec (name String) (tags (Vector String)) (n i32))
+(derive-edn Rec)
+(defn in-use ():i64
+  (let (mi:mallinfo2 (mallinfo2))
+    (return (as i64 (mi 'uordblks)))))
+(defn node (src:StrView):?&Node
+  (match (edn-parse src) ((ok v) (return v)) ((err e) (return null))))
+(defn main ():i32
+  (let (good:?&Node (node \"#user/Rec {:name \\\"a\\\" :tags [\\\"x\\\" \\\"y\\\"] :n 1}\")
+        bad:?&Node (node \"#user/Rec {:name \\\"a\\\" :tags [\\\"x\\\" \\\"y\\\" 3] :n 1}\")
+        late:?&Node (node \"#user/Rec {:name \\\"a\\\" :tags [\\\"x\\\"] :n \\\"1\\\"}\")
+        dup:?&Node (node \"{\\\"a\\\" \\\"x\\\" \\\"b\\\" 3}\")
+        r:&Rec (alloca Rec)
+        m:&(HashMap StrView String) (alloca (HashMap StrView String))
+        before:i64 (in-use))
+    (dotimes (i 20000)
+      (edn-read r bad)
+      (edn-read r late)
+      (edn-read m dup)
+      (match (edn-read r good) ((ok v) (edn-release r)) ((err e) (println \"unexpected\"))))
+    (println (if (< (- (in-use) before) 100000) \"no leak\" \"leak\")))
+  (return 0))
+" "no leak\n"))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; ED-4.5: a companion library; a program that never serializes links no EDN
+; ---------------------------------------------------------------------------
+
+(defn s22-geometry-files (dir:StrView):!void
+  (let (a:String (try (write-into dir "s22geometry.nuc" "(ns s22geometry)
+(defstruct Point x:i32 y:i32)
+(defstruct Seg (a Point) (b Point))
+(defn seg-len2 (s:&Seg):i32
+  (let (a:Point (s 'a) b:Point (s 'b)
+        dx:i32 (- (b 'x) (a 'x)) dy:i32 (- (b 'y) (a 'y)))
+    (return (+ (* dx dx) (* dy dy)))))
+"))
+        b:String (try (write-into dir "s22geometry-edn.nuc" "(ns s22geometry-edn)
+(import-use s22geometry)
+(import-use edn)
+(derive-edn Point Seg)
+")))
+    (drop &b)
+    (drop &a))
+  (return (ok)))
+
+(deftest s22-edn-companion
+  (let (dir:String (try (test-scratch-sub "ge")))
+    (try (s22-geometry-files (string-as-view &dir)))
+    (let (m:String (try (write-into (string-as-view &dir) "main.nuc" "(import-use io)
+(import-use string)
+(import-use read)
+(import-use edn)
+(import s22geometry g)
+(import-use s22geometry-edn)
+(defn main ():i32
+  (let (s:&g/Seg (alloca g/Seg))
+    (match (edn-parse \"#s22geometry/Seg {:a #s22geometry/Point {:x 0 :y 0} :b #s22geometry/Point {:x 3 :y 4}}\")
+      ((ok n) (match (edn-read s n)
+                ((ok v) (println (g/seg-len2 s)))
+                ((err e) (println (e 'msg)))))
+      ((err e) (println (e 'msg))))
+    (let (out:String (string-new))
+      (edn-write &out s)
+      (println (string-as-view &out))))
+  (return 0))
+"))
+          out:String (try (build-run-file "" "" (string-as-view &m))))
+      (try (check-eq (string-as-view &out) "25
+#s22geometry/Seg {:a #s22geometry/Point {:x 0 :y 0} :b #s22geometry/Point {:x 3 :y 4}}
+"))
+      (drop &out) (drop &m))
+    (let (p:String (try (write-into (string-as-view &dir) "plain.nuc" "(import-use \"stdio.h\")
+(import-use s22geometry)
+(defn main ():i32
+  (let (s:Seg (Seg (Point 0 0) (Point 1 1)))
+    (printf \"%d\\n\" (seg-len2 &s))
+    (return 0)))
+"))
+          ir:String (try (emit-for-file "" "--emit-llvm" (string-as-view &p))))
+      (try (check-contains (string-as-view &ir) "seg-len2"))
+      (try (check-not-contains (string-as-view &ir) "@edn"))
+      (drop &ir) (drop &p))
+    (drop &dir))
+  (return (ok)))
+
+; The companion compiled separately: its `.nuch` carries the derived methods
+; and the `extend`, and the program links against the objects.
+(deftest s22-edn-companion-nuch
+  (let (src:String (try (test-scratch-sub "gl"))
+        hdr:String (try (test-scratch-sub "gh"))
+        dir:StrView (try (test-scratch))
+        sv:StrView (string-as-view &src)
+        hv:StrView (string-as-view &hdr))
+    (try (s22-geometry-files sv))
+    (let (objs:String (string-new))
+      (dotimes (i 2)
+        (let (nm:StrView (if (= i 0) "s22geometry" "s22geometry-edn")
+              lib:String (str sv "/" nm ".nuc")
+              hn:String (str nm ".nuch")
+              obj:String (str dir "/" nm ".o")
+              h:String (try (emit-into hv "--emit-nuch" (string-as-view &lib) hv
+                                       (string-as-view &hn))))
+          (try (compile-object-in hv (string-as-view &lib) (string-as-view &obj)))
+          (str-into &objs " " (string-as-view &obj))
+          (drop &h) (drop &obj) (drop &hn) (drop &lib)))
+      (let (hp:String (str hv "/s22geometry-edn.nuch")
+            htext:String (try (read-file (string-as-view &hp))))
+        (try (check-contains (string-as-view &htext) "(extend Point EdnCodec)"))
+        (drop &htext)
+        (drop &hp))
+      (let (m:String (try (test-write-file "main.nuc" "(import-use io)
+(import-use string)
+(import-use edn)
+(import-use s22geometry)
+(import-use s22geometry-edn)
+(defn main ():i32
+  (let (s:Seg (Seg (Point 1 2) (Point 3 4)) out:String (string-new))
+    (edn-write &out &s)
+    (println (string-as-view &out)))
+  (return 0))
+"))
+            mo:String (str dir "/main.o"))
+        (try (compile-object-in hv (string-as-view &m) (string-as-view &mo)))
+        (let (parts:String (str (string-as-view &mo) (string-as-view &objs))
+              out:String (try (link-run (string-as-view &parts))))
+          (try (check-eq (string-as-view &out)
+                         "#s22geometry/Seg {:a #s22geometry/Point {:x 1 :y 2} :b #s22geometry/Point {:x 3 :y 4}}\n"))
+          (drop &out)
+          (drop &parts))
+        (drop &mo)
+        (drop &m))
+      (drop &objs))
+    (drop &hdr)
+    (drop &src))
+  (return (ok)))
+
+; The reader leaves `&rest` unexpanded so a parameter list can name the retired
+; marker; in an expression it is still the address of a local `rest`.
+(deftest s22-ref-of-marker-named-local
+  (try (s22-run "(import-use \"stdio.h\")
+(defn bump (p:&i32):void (set! @p (+ @p 1)))
+(defn main ():i32
+  (let (rest:i32 5 where:i32 7)
+    (bump &rest)
+    (bump &where)
+    (printf \"%d %d\\n\" rest where))
+  (return 0))
+" "6 8\n"))
+  (return (ok)))

@@ -731,7 +731,7 @@
 ; have broken every bare `:ptr` global in the tree.
 (accept "g5-noinit-carve-outs" (file "tests/fixtures/g5-noinit-raw-ok.nuc"))
 (reject "w5e-ns-hash-reserved" (file "tests/fixtures/w5e-ns-hash-reserved.nuc")
-        (message "a namespace name may not begin with '#'"))
+        (message "tagged literal '#p1' has no value"))
 
 ; --- Stage 15 W7: a bare selector symbol may be a value ---------------------
 ; design/stage15-stress-test/selector-ambiguity.md. The positive matrix is
@@ -913,3 +913,37 @@
 (reject "s21-frame-cond-join" (file "tests/fixtures/s21-frame-cond-join.nuc") (line 6)
         (message "address of frame-local storage escapes via return"))
 (accept "s21-frame-discharge-accepts" (file "tests/fixtures/s21-frame-discharge-accepts.nuc"))
+
+; Stage 22 ED-1: a tagged literal is data syntax with no reader in source.
+(reject "s22-tagged-lit-source" (file "tests/fixtures/s22-tagged-lit-source.nuc") (line 4)
+        (message "tagged literal '#inst' is data syntax: Nucleus source has no reader for it"))
+
+; Stage 22 ED-4.1: macro-produced definitions are registered like written ones
+; (design/stage22-edn/macro-definitions.md), so a repeated one is a duplicate and
+; an extend still needs its method.
+(reject "s22-macro-dup-defn" (file "tests/fixtures/s22-macro-dup-defn.nuc") (line 8)
+        (message "duplicate definition of 'area'"))
+(reject "s22-macro-extend-missing" (file "tests/fixtures/s22-macro-extend-missing.nuc") (line 6)
+        (message "type 'Sq' does not conform to protocol 'Shape'")
+        (note "Sq does not implement Shape.area"))
+
+; Stage 22 ED-4.2: `struct-fields` / `type-name` refuse what has no
+; `(name type)` list or no name (design/stage22-edn/ed4-struct-codecs.md §2.1).
+(reject "s22-struct-fields-not-struct" (file "tests/fixtures/s22-struct-fields-not-struct.nuc") (line 4)
+        (message "struct-fields: U is not a struct"))
+(reject "s22-struct-fields-template" (file "tests/fixtures/s22-struct-fields-template.nuc") (line 4)
+        (message "struct-fields: Vector is a template"))
+(reject "s22-struct-fields-instance" (file "tests/fixtures/s22-struct-fields-instance.nuc") (line 4)
+        (message "struct-fields: (Vector i32) is a template instance"))
+(reject "s22-struct-fields-bitfield" (file "tests/fixtures/s22-struct-fields-bitfield.nuc") (line 4)
+        (message "struct-fields: Flags field 'mode' is a bit-field"))
+(reject "s22-struct-fields-runtime" (file "tests/fixtures/s22-struct-fields-runtime.nuc") (line 4)
+        (message "struct-fields: only available inside a defmacro, macrolet or compile-time body"))
+(reject "s22-type-name-anon" (file "tests/fixtures/s22-type-name-anon.nuc") (line 3)
+        (message "type-name: an anonymous struct has no name"))
+
+; Stage 22 ED-4.3/4.4: a pointer field and a leaking key type have no codec.
+(reject "s22-derive-edn-pointer" (file "tests/fixtures/s22-derive-edn-pointer.nuc") (line 5)
+        (message "derive-edn: field 'next' is a pointer, which EDN cannot spell"))
+(reject "s22-edn-key-type" (file "tests/fixtures/s22-edn-key-type.nuc") (line 9)
+        (message "no matching method for 'edn-read'"))

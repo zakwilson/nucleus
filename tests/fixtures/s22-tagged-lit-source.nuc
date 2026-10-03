@@ -1,0 +1,5 @@
+; Stage 22: `#tag form` reads everywhere, but Nucleus source has no reader for
+; a tagged literal, so the compiler refuses one rather than calling `tagged-lit`.
+(defn main ():i32
+  #inst "1985"
+  (return 0))

@@ -1,0 +1,5 @@
+; Stage 22 ED-4.2: a bit-field has no `(name type)` spelling.
+(defmacro fields-of (t) (struct-fields t) `(defvar g-x:i32 0))
+(defstruct Flags (:bits 3 mode:i32) n:i32)
+(fields-of Flags)
+(defn main ():i32 (return 0))

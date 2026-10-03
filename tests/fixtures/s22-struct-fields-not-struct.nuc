@@ -1,0 +1,5 @@
+; Stage 22 ED-4.2: `struct-fields` refuses a type that is not a struct.
+(defmacro fields-of (t) (struct-fields t) `(defvar g-x:i32 0))
+(defunion U (a x:i32) (b y:f64))
+(fields-of U)
+(defn main ():i32 (return 0))

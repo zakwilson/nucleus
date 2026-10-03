@@ -283,6 +283,12 @@
 ; individually arena-allocated; the vector holds the pointers in registration
 ; order). count = number of generics; invoke = indexed access.
 (defvar g-generics:&(Vector &Generic) (build-generics))
+; Set while a top-level expansion's definitions are registered after emission has
+; begun: finalize-generics must not rename a method that may already be emitted.
+(defvar g-late-prescan:i32 0)
+; The unit root's forms as the dispatch loop walks them. After a leading `(ns …)`
+; that is a separate list header, so expansions spliced into it reach only this.
+(defvar g-root-forms:?&Node null)
 
 ; Monomorphization worklist (Stage 9 rung 4): stamped concrete defn forms
 ; awaiting emission. Generic calls resolve + register an instantiation eagerly
@@ -468,6 +474,7 @@
 ; fires, so byte-identical for programs using no parametric protocols.
 ; (Vector ptr) of TmplConformance* (each individually arena-allocated).
 (defvar g-tmpl-conformances:&(Vector &TmplConformance) (vector-new-in &g-arena-alloc))
+(defvar g-pending-tmpl-checks:&(Vector &PendingTmplCheck) (vector-new-in &g-arena-alloc))
 
 ; Stage 12 N8: late-binding hooks that bridge a single back-edge each, where an
 ; earlier-imported file must call a function that lives in a later-imported file
@@ -1221,6 +1228,12 @@
     (when (symbol-none? s) (return ""))
     (when (!= (nn 'kind) NODE-SYM) (return ""))
     (return (legacy-marker-tail (symbol-as-view s)))))
+
+; In an expression the reader's unexpanded `&rest` (above) is just `(ref rest)`.
+(defn legacy-marker-ref (n:?&Node):?&Node
+  (let (nm:StrView (legacy-marker-name n))
+    (when (str-empty? &nm) (return null))
+    (return (node-list2 'ref (intern-node (symbol-intern nm)) (node-line n 0)))))
 
 (defn reject-legacy-marker (n:?&Node encl:i32):void
   (let (nm:StrView (legacy-marker-name n))
@@ -2792,6 +2805,19 @@
                 ", ptr " d ", i64 " n ")\n")
           (return (alloc-val ty-void "")))))))
 
+; Stage 22 ED-4.2: `(struct-fields t)` / `(type-name t)` — a Node in, a Node out.
+(defn emit-macro-type-query (call:?&Node scope:&Scope who:StrView fn:StrView):&Val
+  (let (cc:(ptr Node) call)
+    (when (= (in-jit-module) 0)
+      (die-at (cc 'line)
+        (fstr who ": only available inside a defmacro, macrolet or compile-time body")))
+    (when (!= (node-len call) 2)
+      (die-at (cc 'line) (fstr who ": expects one type")))
+    (let (tv:&Val (emit-node (as ?&Node (node-at cc 1)) scope)
+          tmp:StrView (new-tmp))
+      (emit g-body-stream "  " tmp " = call ptr @" fn "(ptr " (tv 'val) ")\n")
+      (return (alloc-val (ty-ref-node) tmp)))))
+
 ; ============================================================
 ; Stage 10: flow narrowing (nullability.md §4) + escape analysis (lifecycle.md)
 ; ============================================================
@@ -3969,6 +3995,7 @@
     (when (= n 'true)  (return (alloc-val ty-bool "1")))
     (when (= n 'false) (return (alloc-val ty-bool "0")))
     (when (= n 'none)  (return (alloc-val ty-maybe-ptr "null")))
+    (if-some (r (legacy-marker-ref n)) (return (emit-node r scope)) 0)
     (let (lookup-name:Symbol (symbol-none)
           annot:Symbol (symbol-none))
       (split-typed (nn 's) (as &Symbol &lookup-name) (as &Symbol &annot))
@@ -6060,6 +6087,54 @@
 (defn field-name-anon (name:Symbol):i32
   (when (symbol-none? name) (return 0))
   (return (if (strview-has-prefix (symbol-as-view name) "__anon.") 1 0)))
+
+; Stage 22 ED-4.2: `(struct-fields t)` / `(type-name t)` in a macro body. The
+; JIT runs mid-expansion, so `t` resolves in the calling file's environment.
+(defn macro-struct-arg (who:StrView t:?&Node):&StructDef
+  (let (line:i32 (node-line t (ct-fault-call-line)))
+    (when (and (!= t null) (= (t 'kind) NODE-SYM) (!= (struct-template-lookup-ref (t 's)) null))
+      (die-at line (fstr who ": " (t 's) " is a template"))))
+  (let (line:i32 (node-line t (ct-fault-call-line))
+        ty:&Type (parse-type-from-node (as ptr t) line)
+        sd:?&StructDef (if (= (ty 'kind) TY-STRUCT) (ty 'sdef) null))
+    (when (or (= sd null) (!= (sd 'udef) null) (!= (sd 'is-union) 0))
+      (die-at line (fstr who ": " (type-display ty) " is not a struct")))
+    (when (!= (sd 'origin-template) null)
+      (die-at line (fstr who ": " (type-display ty) " is a template instance")))
+    (when (or (= (sd 'laid-out) 0) (!= (sd 'opaque) 0))
+      (die-at line (fstr who ": struct " (type-display ty) " has no layout")))
+    (return sd)))
+
+(defn type-display-node (t:?&Type):?&Node
+  (let (text:StrView (type-display t))
+    (match (read-all text)
+      ((ok forms) (when (= (node-len forms) 1) (return (node-at forms 0))))
+      ((err e) 0))
+    (return (intern-node (symbol-intern text)))))
+
+(defn nucleus_struct_fields (t:?&Node):?&Node
+  (let (sd:&StructDef (macro-struct-arg "struct-fields" t)
+        line:i32 (node-line t (ct-fault-call-line))
+        out:&Node (node-list-new line))
+    (dotimes (i (sd 'num-fields))
+      (let (f:&Field (field-at (sd 'fields) i))
+        (when (!= (field-name-anon (f 'name)) 0)
+          (die-at line (fstr "struct-fields: " (sdef-display sd) " has an anonymous member")))
+        (when (!= (f 'bit-width) 0)
+          (die-at line (fstr "struct-fields: " (sdef-display sd) " field '" (f 'name)
+                             "' is a bit-field")))
+        (node-push out (node-list2 (intern-node (f 'name)) (type-display-node (f 'type)) line))))
+    (return out)))
+
+; Bare names are `user` types, which the qualified spelling makes explicit.
+(defn nucleus_type_name (t:?&Node):?&Node
+  (let (sd:&StructDef (macro-struct-arg "type-name" t)
+        nm:Symbol (sd 'name))
+    (when (strview-has-prefix (symbol-as-view nm) "__anon_struct_h")
+      (die-at (node-line t (ct-fault-call-line))
+              "type-name: an anonymous struct has no name"))
+    (when (symbol-contains-byte nm 47) (return (intern-node nm)))
+    (return (intern-node (symbol-intern (fstr "user/" nm))))))
 
 ; Set by struct-field-ref when a name was reachable through two different
 ; anonymous members — C's own ambiguity rule, reported by the emit sites, which
@@ -12800,6 +12875,8 @@
             (emit g-body-stream "  " tmp " = call ptr @nucleus_gensym()\n")
             (return (alloc-val (ty-ref-node) tmp))))
         (when (= hp 'macro-error) (return (emit-macro-error n scope)))
+        (when (= hp 'struct-fields) (return (emit-macro-type-query n scope "struct-fields" "nucleus_struct_fields")))
+        (when (= hp 'type-name) (return (emit-macro-type-query n scope "type-name" "nucleus_type_name")))
         ; Stage 14 UN-5 / Stage 15 B2b: the bare `funcall-ptr-*` spellings do not
         ; resolve because the `unsafe` namespace is bound PREFIXED in every file
         ; and never flattened — the binding is the mechanism, and the targeted
@@ -12827,6 +12904,9 @@
         (when (= hp 'hashmap-lit)
           (return (emit-collection-lit n scope (symbol-intern "HashMap") "map" "hashmap-init" "assoc" 1
                     "empty map literal: use (hashmap-new), e.g. (let (m:(ref (HashMap K V)) (hashmap-new)) ...)")))
+        (when (= hp 'tagged-lit)
+          (die-at (node-line n 0) (fstr "tagged literal '#" (node-head-sym (node-rest n))
+                                  "' is data syntax: Nucleus source has no reader for it")))
         (when (= hp 'with) (return (emit-with n scope)))
         (when (= hp 'cond) (return (emit-cond n scope)))
         (when (= hp 'quote) (return (emit-quote n)))
@@ -16338,6 +16418,8 @@
             ; Stage 20 M3: reachable from a CT body as from a macro body — the
             ; emitter's guard is `in-jit-module`, which covers both.
             (emit ct-decl "declare void @nucleus_macro_error(ptr, ptr, i64)\n")
+            (emit ct-decl "declare ptr @nucleus_struct_fields(ptr)\n")
+            (emit ct-decl "declare ptr @nucleus_type_name(ptr)\n")
 
             ; D9: the flush at the top of this function is stale by now — the CT
             ; body itself stamps types — so re-drain and re-flush before
@@ -16659,6 +16741,8 @@
                   ; Always declare nucleus_gensym
                   (emit ct-decl "declare ptr @nucleus_gensym()\n")
                   (emit ct-decl "declare void @nucleus_macro_error(ptr, ptr, i64)\n")
+                  (emit ct-decl "declare ptr @nucleus_struct_fields(ptr)\n")
+                  (emit ct-decl "declare ptr @nucleus_type_name(ptr)\n")
 
 
                   ; Union type defs are emitted lazily; make sure any pending
@@ -18469,8 +18553,6 @@
 ; recursing into a fresh dispatch loop would re-run the per-form root-hoist
 ; bookkeeping `emit-toplevel-forms` owns.
 ;
-; Body definitions are invisible to the pre-scans, exactly as macro-produced ones
-; are (docs/macros.md) — the scans walk the top-level list and see the `macrolet`.
 (defn emit-toplevel-macrolet (forms:?&Node i:i32 f:&Node):i32
   (when (< (node-len (as ptr f)) 3)
     (die-at (f 'line) "macrolet: expects a binding list and at least one body form"))
@@ -18484,6 +18566,7 @@
         (set! (cnt 'kind) NODE-INT)
         (set! (cnt 'line) (f 'line))
         (set! (cnt 'i) (as i64 nb))
+        (late-prescan (node-rest (node-rest f)))
         (toplevel-splice forms i
                          (node-rest (node-rest f))
                          (as &Node
@@ -18504,10 +18587,23 @@
         (let (body:ptr (node-rest (unsafe/cast &Node ex)))
           (when (= body null)
             (die-at (f 'line) (fstr "top-level macro '" h "' expanded to an empty (do)")))
+          (late-prescan body)
           (toplevel-splice forms i body null)
           (return 1))))
+    (late-prescan (node-list1 ex (f 'line)))
     (node-set-at (unsafe/cast &Node forms) i ex)
     (return 1)))
+
+; The file's prescans never saw forms a top-level expansion splices in, so they
+; run here, in the same order, before any of those forms is dispatched
+; (design/stage22-edn/macro-definitions.md).
+(defn late-prescan (forms:?&Node):void
+  (set! g-late-prescan 1)
+  (prescan-protocols forms)
+  (prescan-struct-names forms)
+  (prescan-defn-signatures forms)
+  (prescan-value-names forms)
+  (set! g-late-prescan 0))
 
 ; Emit a list of top-level forms (pre-scan + dispatch loop).
 ; Used by main and by emit-import for recursive processing.
@@ -18533,6 +18629,7 @@
   ; prescans register any names, so global keys (and forward references) are
   ; qualified consistently from the first definition onward.
   (set! forms (apply-leading-ns forms))
+  (when (= g-toplevel-depth 1) (set! g-root-forms forms))
   ; Stage 12 N4: apply a leading `set-ir-prefix` before prescans so
   ; `finalize-generics` sees the correct ir-prefix when baking ir-names.
   (apply-early-set-ir-prefix forms)
@@ -19794,11 +19891,11 @@
        "quote" "quasiquote" "char"
        ; Stage 16: reader-generated collection-literal heads. Reserved (not
        ; user-writable sugar) so nothing may shadow what `[…]` expands to.
-       "vector-lit" "hashset-lit" "hashmap-lit"
+       "vector-lit" "hashset-lit" "hashmap-lit" "tagged-lit"
         ; logic
         "not" "_and" "_or"
        ; macros / functions
-       "gensym" "macro-error" "funcall" "funcall-void"
+       "gensym" "macro-error" "struct-fields" "type-name" "funcall" "funcall-void"
        "funcall-ptr-1" "funcall-ptr-i32" "funcall-ptr-i64" "funcall-ptr-ptr"
        ; Stage 14 UN-2: reserved `unsafe/` pseudo-namespace spellings (D2) —
        ; each routes to the exact same emitter as its bare alias above. UN-5
@@ -20307,8 +20404,8 @@
           (if (= g-header-request 1) (set! g-emit-nuch 1) (set! g-emit-cheader 1))
           (header-out-open)
           (if (= g-header-request 1)
-            (emit-nuch-header forms source-file)
-            (emit-cheader-header forms source-file))
+            (emit-nuch-header g-root-forms source-file)
+            (emit-cheader-header g-root-forms source-file))
           (header-out-close)
           (return 0))
         (flush-module-ir source-file))))

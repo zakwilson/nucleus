@@ -30,11 +30,13 @@ See `examples/read-sexp.nuc` for a worked example.
 | `(read-all-with-macros src table)` | The same, reading through a caller-owned reader-macro table instead of a fresh built-in one. |
 | `(reader src)` | A `Reader` over `src`, for reading one form at a time, with a fresh built-in macro table. |
 | `(reader-with-macros src table)` | The same, sharing a caller-owned table. |
-| `(reader-eof? r)` | `true` when only whitespace and comments remain. |
+| `(reader-eof? r)` | `true` when only whitespace, comments and `#_` discards remain. |
 | `(read-one r)` | `ReadResult` — the next form. |
+| `(reader-edn src)` | A `Reader` in [EDN mode](#edn-mode). |
+| `(read-all-edn src)` | `read-all` in EDN mode. |
 
-Check `reader-eof?` before `read-one`: `()` reads as a **null node**, so an
-`ok` of `null` is an empty list, not end of input.
+Check `reader-eof?` before `read-one`: at end of input `read-one` is a
+`read-eof` error. `()` reads as an empty list, not a null node.
 
 `read-all` is the whole-text form and keeps its `Reader` private; use the
 `reader`/`read-one` pair when a line number matters as you go, or when several
@@ -53,7 +55,7 @@ not a plain `!ptr:Node`:
 (defcast ReadError Err read-error-code)
 ```
 
-- `code` — one of the ten `deferror` ids below (§Errors).
+- `code` — one of the twelve `deferror` ids below (§Errors).
 - `line` — the line to blame.
 - `msg` — the specific, formatted message for this failure (`unknown escape
   \q`, not just `read-bad-escape`'s generic `deferror` text — `err-message`
@@ -127,9 +129,9 @@ Refused, all `read-bad-rmacro`:
 The last refusal exists because nothing else caught it: an unguarded
 `(def-rmacro "my" w)` used to read `myvar` as `(w var)`, and `(def-rmacro "<"
 w)` broke `<=`. A prefix may begin only with one of the eight bytes no atom
-starts with — `` $ ' , @ ^ ` | ~ `` — everything else (a letter, digit, sign,
-`?`/`!`/`&`/`#`/`:`/`.`, an operator character, a delimiter, or an empty
-string) is refused.
+starts with — `` $ ' @ ^ ` | ~ `` — everything else (a letter, digit, sign,
+`?`/`!`/`&`/`#`/`:`/`.`, an operator character, a delimiter, a comma, which is
+whitespace, or an empty string) is refused.
 
 ## Table API
 
@@ -164,20 +166,43 @@ The s-expression language, and Nucleus's atom syntax:
 | Symbols | including colon chains — `ptr:i8`, `x:ref:T` |
 | Integers | decimal and `0x` hex, signed; a positive literal too big for `i64` is read at `ui64` width |
 | Floats | `1.5`, `2e10`, `0x1p0`, and `+inf.0` / `-inf.0` / `+nan.0` |
-| Strings | `"…"` with `\n \t \r \0 \\ \"` and `\xHH`, and `c"…"` for a `CStr`; no length cap |
-| Chars | `\a`, `\newline`, `\u{1F600}` |
+| Strings | `"…"` with `\n \t \r \0 \\ \"`, `\xHH` and `\uXXXX`, and `c"…"` for a `CStr`; no length cap |
+| Chars | `\a`, `\newline`, `\u{1F600}`, `\u00e9` |
 | Keywords | `:name` |
 | Comments | `;` to end of line |
+| Whitespace | the C `isspace` set, **and the comma**: `{:a 1, :b 2}` |
+| Discard | `#_ form` reads `form` and drops it, wherever a form may appear — `#_ #_ a b` drops two; a map's even-count check counts what is left |
+| Tagged literals | `#tag form` → `(tagged-lit tag form)`; the tag starts with a letter. Data syntax: the compiler refuses one in source (`tagged literal '#tag' is data syntax`) |
 | Reader macros | `'` `` ` `` `~` `~@` `@` `&` → `quote` `quasiquote` `unquote` `unquote-splice` `deref` `ref` — one head for both worlds: `&T` in a type slot is the non-null pointer `(ref T)`, `&x` in a value slot is the address-of `(ref x)` |
 | Type sugar | `&T` → `ref:T`, and the colon-paren fuse `name:(Type)` → `(name (Type))` — on any atom whose final chain segment is open (`x:`, `x:?`, `?`, `?!`, the lone `:`) and is immediately followed by `(`, wherever the atom is read: a list element, a reader-macro operand, a literal element, a top-level form ([types.md](types.md#type-syntax-and-desugar)) |
-| Collection literals | `[a b]` → `(vector-lit a b)`, `{k v}` → `(hashmap-lit k v)`, `#{a b}` → `(hashset-lit a b)` — **no element-type inference and no gensym**; the compiler infers a literal's element type and mints its hygiene symbol itself, at emit time |
+| Collection literals | `[a b]` → `(vector-lit a b)`, `{k v}` → `(hashmap-lit k v)`, `#{a b}` → `(hashset-lit a b)` — **no element-type inference and no gensym**; the compiler infers a literal's element type and mints its hygiene symbol itself, at emit time. The cell's `i` field holds its `LitMark` — `LIT-VECTOR`, `LIT-MAP`, `LIT-SET`, `LIT-TAGGED`, or `LIT-NONE` (0) for every other list — so `[1]` can be told from the text `(vector-lit 1)`. `node-write` and `node-eq` ignore the mark. |
 | `def-rmacro` | registers a new reader macro as it is read (above) |
+
+## EDN mode
+
+`reader-edn` / `read-all-edn` read [EDN](edn.md) data rather than Nucleus
+source. Everything above applies, except:
+
+- no reader macros: `'q`, `&x` and `@x` are symbols;
+- no `&` sigil in an atom (`a:&b` stays `a:&b`) and no colon-paren fuse
+  (`a:(1)` is two forms);
+- `(def-rmacro …)` is a list, not a directive, and `c"…"` is the symbol `c`
+  then a string;
+- an integer must fit a signed 64 bits (no `ui64` widening), and may carry an
+  `N` suffix; a number with an `M` suffix reads as a float whose text keeps the
+  `M`;
+- hex numbers and `+inf.0`/`-inf.0`/`+nan.0` are symbols.
+
+The EDN rules the reader does not check — legal symbols, unique map keys and
+set elements — are `lib/edn.nuc`'s.
 
 ## Errors
 
 `deferror` codes: `read-eof`, `read-unterminated-list`, `read-unexpected-close`,
 `read-unterminated-string`, `read-bad-escape`, `read-bad-char`,
-`read-int-range`, `read-empty-segment`, `read-map-odd`, `read-bad-rmacro`.
+`read-int-range`, `read-empty-segment`, `read-map-odd`, `read-bad-rmacro`,
+`read-bad-tag` (a `#` with no tag, or a tag with no value), `read-bad-discard`
+(a `#_` with no form after it).
 
 `(err-name (e 'code))` / `(err-message (e 'code))` give the code's stable name
 and its generic `deferror` text; `(e 'msg)` / `(e 'note)` give the specific

@@ -37,6 +37,13 @@
 (deferror read-empty-segment "empty segment in colon-chain")
 (deferror read-map-odd "map literal: odd number of elements")
 (deferror read-bad-rmacro "bad def-rmacro form")
+(deferror read-bad-tag "bad tagged literal")
+(deferror read-bad-discard "#_ with no form to discard")
+
+; What brackets a literal cell was read from, stamped on its unused `i`: the
+; text `(vector-lit 1)` and `[1]` are otherwise the same tree, and EDN needs to
+; tell them apart (design/stage22-edn/overview.md §2).
+(defenum LitMark LIT-NONE LIT-VECTOR LIT-MAP LIT-SET LIT-TAGGED)
 
 ; ---------------------------------------------------------------------------
 ; The error value: the code a program `match`es on, plus the line and the text
@@ -125,7 +132,10 @@
   form-open-line:i32
   col0-open-line:i32
   col0-open-depth:i32
-  macros:&(Vector RMacro))
+  macros:&(Vector RMacro)
+  ; EDN data, not Nucleus source: no reader macros, `&` sigil, colon-paren
+  ; fuse, `def-rmacro` or `c"…"`; `N`/`M` number suffixes.
+  edn:bool)
 
 ; A reader over `src` whose reader-macro table is `table`, which the caller
 ; owns and may share with the readers it builds next.
@@ -139,10 +149,18 @@
     (set! (r 'col0-open-line) 0)
     (set! (r 'col0-open-depth) 0)
     (set! (r 'macros) table)
+    (set! (r 'edn) false)
     (return @r)))
 
 (defn reader (src:StrView):Reader
   (return (reader-with-macros src (read-macro-table-new))))
+
+; A reader for EDN text (design/stage22-edn/overview.md).
+(defn reader-edn (src:StrView):Reader
+  (let (tbl:&(Vector RMacro) (vector-new-in (arena-allocator &g-read-alloc))
+        r:Reader (reader-with-macros src tbl))
+    (set! (r 'edn) true)
+    (return r)))
 
 ; 0 at end of input, exactly as the compiler's NUL sentinel behaves -- so an
 ; embedded NUL byte ends the text in both readers rather than in neither.
@@ -192,8 +210,7 @@
                 " form(s) still open"))
     (return (rd-error read-unterminated-list open-line msg (rd-arena-str &note)))))
 
-; The C locale's `isspace` set, spelled out: the compiler's reader calls libc
-; and this must agree with it byte for byte.
+; The C locale's `isspace` set. The reader skips commas too; callers test that.
 (defn rd-space? (c:i32):bool
   (when (= c 32) (return true))
   (when (and (>= c 9) (<= c 13)) (return true))
@@ -203,16 +220,16 @@
   (return (and (>= c 48) (<= c 57))))
 
 (defn rd-hex-val (c:i32):i32
-  (when (and (>= c 48) (<= c 57)) (return (- c 48)))
-  (when (and (>= c 97) (<= c 102)) (return (+ (- c 97) 10)))
-  (when (and (>= c 65) (<= c 70)) (return (+ (- c 65) 10)))
-  (return -1))
+  (return (cond (and (>= c 48) (<= c 57)) (- c 48)
+                (and (>= c 97) (<= c 102)) (+ (- c 97) 10)
+                (and (>= c 65) (<= c 70)) (+ (- c 65) 10)
+                true -1)))
 
 (defn rd-skip-ws (self:&Reader):void
   (while true
     (let (c:i32 (rd-peek self))
       (when (= c 0) (return))
-      (cond (rd-space? c)
+      (cond (or (rd-space? c) (= c 44))
               (rd-next self)
             (= c 59)                       ; ';' to end of line
               (while (and (!= (rd-peek self) 0) (!= (rd-peek self) 10))
@@ -220,18 +237,10 @@
             true
               (return)))))
 
+; Not NUL, whitespace, `,` or one of `( ) " ; [ ] { }`.
 (defn rd-sym-char? (c:i32):bool
-  (when (= c 0) (return false))
-  (when (rd-space? c) (return false))
-  (when (= c 40) (return false))    ; (
-  (when (= c 41) (return false))    ; )
-  (when (= c 34) (return false))    ; "
-  (when (= c 59) (return false))    ; ;
-  (when (= c 91) (return false))    ; [
-  (when (= c 93) (return false))    ; ]
-  (when (= c 123) (return false))   ; {
-  (when (= c 125) (return false))   ; }
-  (return true))
+  (return (not (or (= c 0) (rd-space? c) (= c 44) (= c 40) (= c 41) (= c 34)
+                   (= c 59) (= c 91) (= c 93) (= c 123) (= c 125)))))
 
 ; The slice from `start` to the current position.
 (defn rd-slice (self:&Reader start:usize):StrView
@@ -332,11 +341,10 @@
           (while (and (< i n) (rd-digit? (rd-tv-at tv i)))
             (set! digits-exp true)
             (set! i (+ i 1)))))
-      (when (!= i n) (return false))
-      (when (and (not saw-dot) (not saw-e)) (return false))
-      (when (and (not digits-before) (not digits-after)) (return false))
-      (when (and saw-e (not digits-exp)) (return false))
-      (return true))))
+      (return (not (or (!= i n)
+                       (and (not saw-dot) (not saw-e))
+                       (and (not digits-before) (not digits-after))
+                       (and saw-e (not digits-exp))))))))
 
 ; The two-step the compiler's `lex-int-value` performs: a non-negative literal
 ; that overflows signed i64 may still be a ui64/usize value, and its bits go
@@ -375,11 +383,7 @@
 (defn rd-legacy-marker? (sv:StrView):bool
   (when (not (strview-has-prefix sv "&")) (return false))
   (let (tail:StrView (strview-drop-bytes sv 1))
-    (when (= tail "rest") (return true))
-    (when (= tail "where") (return true))
-    (when (= tail "optional") (return true))
-    (when (= tail "repr") (return true))
-    (return false)))
+    (return (or (= tail "rest") (= tail "where") (= tail "optional") (= tail "repr")))))
 
 (defn rd-expand-sigil (tv:StrView):Symbol
   (let (n:usize (tv 'len)
@@ -435,51 +439,81 @@
 ; Literals
 ; ---------------------------------------------------------------------------
 
+; The four hex digits after `\u`, consumed, or -1 (consuming nothing) when
+; there are fewer.
+(defn rd-hex4 (self:&Reader):i32
+  (let (cp:i32 0
+        i:usize 0)
+    (while (< i 4)
+      (when (< (rd-hex-val (rd-at self (+ (self 'pos) i))) 0) (return -1))
+      (set! i (+ i 1)))
+    (dotimes (k 4)
+      (set! cp (+ (* cp 16) (rd-hex-val (rd-next self)))))
+    (return cp)))
+
+(defn rd-surrogate? (cp:i32):bool
+  (return (and (>= cp 55296) (<= cp 57343))))
+
 ; No length ceiling: the buffer grows.
 (defn rd-string (self:&Reader open-line:i32 is-cstr:bool):ReadResult
   (let (buf:String (string-new)
         one:&ui8 (as &ui8 (alloca ui8 1)))
     (while true
       (let (c:i32 (rd-next self))
-        (when (= c 0)
-          (drop &buf)
-          (return (err (rd-error read-unterminated-string open-line
-                                 "unterminated string literal" ""))))
-        (when (= c 34)
-          (let (n:&Node (rd-node NODE-STR open-line))
-            (set! (n 's) (symbol-intern (string-as-view &buf)))
-            (set! (n 'i) (if is-cstr 1 0))
-            (drop &buf)
-            (return (ok n))))
-        (when (= c 92)
-          (let (e:i32 (rd-next self)
-                handled:bool true)
-            (cond (= e 110) (set! c 10)
-                  (= e 116) (set! c 9)
-                  (= e 114) (set! c 13)
-                  (= e 48)  (set! c 0)
-                  (= e 92)  (set! c 92)
-                  (= e 34)  (set! c 34)
-                  ; `\xHH`: one or two hex digits, deliberately not C's greedy run.
-                  (= e 120)
-                    (let (h1:i32 (rd-hex-val (rd-peek self)))
-                      (when (< h1 0)
-                        (drop &buf)
-                        (return (err (rd-error read-bad-escape (self 'line)
-                                               "\\x escape needs at least one hex digit" ""))))
-                      (rd-next self)
-                      (set! c h1)
-                      (let (h2:i32 (rd-hex-val (rd-peek self)))
-                        (when (>= h2 0)
-                          (rd-next self)
-                          (set! c (+ (* c 16) h2)))))
-                  true (set! handled false))
-            (when (not handled)
+        (cond
+          (= c 0)
+            (do (drop &buf)
+                (return (err (rd-error read-unterminated-string open-line
+                                       "unterminated string literal" ""))))
+          (= c 34)
+            (let (n:&Node (rd-node NODE-STR open-line))
+              (set! (n 's) (symbol-intern (string-as-view &buf)))
+              (set! (n 'i) (if is-cstr 1 0))
               (drop &buf)
-              (let (m:String (str "unknown escape \\" (as Char (as ui32 e))))
-                (return (err (rd-error read-bad-escape (self 'line) (rd-arena-str &m) "")))))))
-        (set! (aref one 0) (unsafe/cast ui8 c))
-        (string-push-bytes-raw &buf one 1)))
+              (return (ok n)))
+          (= c 92)
+            (let (e:i32 (rd-next self)
+                  handled:bool true)
+              (cond (= e 110) (set! c 10)
+                    (= e 116) (set! c 9)
+                    (= e 114) (set! c 13)
+                    (= e 48)  (set! c 0)
+                    (= e 92)  (set! c 92)
+                    (= e 34)  (set! c 34)
+                    ; `\xHH`: one or two hex digits, deliberately not C's greedy run.
+                    (= e 120)
+                      (let (h1:i32 (rd-hex-val (rd-peek self)))
+                        (when (< h1 0)
+                          (drop &buf)
+                          (return (err (rd-error read-bad-escape (self 'line)
+                                                 "\\x escape needs at least one hex digit" ""))))
+                        (rd-next self)
+                        (set! c h1)
+                        (let (h2:i32 (rd-hex-val (rd-peek self)))
+                          (when (>= h2 0)
+                            (rd-next self)
+                            (set! c (+ (* c 16) h2)))))
+                    ; `\uXXXX`, EDN's (and Java's) spelling: exactly four digits.
+                    (= e 117)
+                      (let (cp:i32 (rd-hex4 self))
+                        (when (< cp 0)
+                          (drop &buf)
+                          (return (err (rd-error read-bad-escape (self 'line)
+                                                 "\\u escape needs exactly four hex digits" ""))))
+                        (when (rd-surrogate? cp)
+                          (drop &buf)
+                          (return (err (rd-error read-bad-escape (self 'line)
+                                                 "\\u escape names a surrogate, which is not a character" ""))))
+                        (string-push-char &buf (as Char (as ui32 cp)))
+                        (set! c -1))
+                    true (set! handled false))
+              (when (not handled)
+                (drop &buf)
+                (let (m:String (str "unknown escape \\" (as Char (as ui32 e))))
+                  (return (err (rd-error read-bad-escape (self 'line) (rd-arena-str &m) "")))))))
+        (when (>= c 0)
+          (set! (aref one 0) (unsafe/cast ui8 c))
+          (string-push-bytes-raw &buf one 1))))
     (return (err (rd-error read-unterminated-string open-line
                            "unterminated string literal" "")))))
 
@@ -516,14 +550,14 @@
                       (when (> ndigits 6)
                         (return (err (rd-error read-bad-char open-line
                                                "codepoint out of range in \\u{...} (max 0x10FFFF)" ""))))))))
-        (when (= ndigits 0)
-          (return (err (rd-error read-bad-char open-line "empty \\u{...} char literal" ""))))
-        (when (> cp 1114111)
-          (return (err (rd-error read-bad-char open-line
-                                 "invalid-codepoint: value exceeds 0x10FFFF" ""))))
-        (when (and (>= cp 55296) (<= cp 57343))
-          (return (err (rd-error read-bad-char open-line
-                                 "invalid-codepoint: surrogate 0xD800..0xDFFF is not a scalar value" ""))))
+        (cond (= ndigits 0)
+                (return (err (rd-error read-bad-char open-line "empty \\u{...} char literal" "")))
+              (> cp 1114111)
+                (return (err (rd-error read-bad-char open-line
+                                       "invalid-codepoint: value exceeds 0x10FFFF" "")))
+              (rd-surrogate? cp)
+                (return (err (rd-error read-bad-char open-line
+                                       "invalid-codepoint: surrogate 0xD800..0xDFFF is not a scalar value" ""))))
         (return (ok (as &Node (rd-char-node cp open-line))))))
     ; A non-symbol character after the backslash is a literal of that byte.
     (when (not (rd-sym-char? c0))
@@ -535,14 +569,20 @@
       (let (tv:StrView (rd-slice self start))
         (when (= (tv 'len) 1)
           (return (ok (as &Node (rd-char-node (rd-tv-at &tv 0) open-line)))))
-        (when (= tv "newline")   (return (ok (as &Node (rd-char-node 10 open-line)))))
-        (when (= tv "return")    (return (ok (as &Node (rd-char-node 13 open-line)))))
-        (when (= tv "tab")       (return (ok (as &Node (rd-char-node 9 open-line)))))
-        (when (= tv "space")     (return (ok (as &Node (rd-char-node 32 open-line)))))
-        (when (= tv "nul")       (return (ok (as &Node (rd-char-node 0 open-line)))))
-        (when (= tv "escape")    (return (ok (as &Node (rd-char-node 27 open-line)))))
-        (when (= tv "backspace") (return (ok (as &Node (rd-char-node 8 open-line)))))
-        (when (= tv "delete")    (return (ok (as &Node (rd-char-node 127 open-line)))))
+        (let (named:i32 (case tv "newline" 10 "return" 13 "tab" 9 "space" 32 "nul" 0
+                                 "escape" 27 "backspace" 8 "delete" 127 -1))
+          (when (>= named 0) (return (ok (as &Node (rd-char-node named open-line))))))
+        (when (and (= (tv 'len) 5) (= (rd-tv-at &tv 0) 117))
+          (let (cp:i32 0
+                hex:bool true)
+            (dotimes (k 4)
+              (let (hv:i32 (rd-hex-val (rd-tv-at &tv (as usize (+ k 1)))))
+                (if (< hv 0) (set! hex false) (set! cp (+ (* cp 16) hv)))))
+            (when hex
+              (when (rd-surrogate? cp)
+                (return (err (rd-error read-bad-char open-line
+                                       "invalid-codepoint: surrogate 0xD800..0xDFFF is not a scalar value" ""))))
+              (return (ok (as &Node (rd-char-node cp open-line)))))))
         (let (m:String (str "unknown named char literal '\\" tv "'"))
           (return (err (rd-error read-bad-char open-line (rd-arena-str &m) ""))))))))
 
@@ -555,6 +595,42 @@
       (set! (n 'i) v)
       (return (ok n)))))
 
+(defn rd-float-node (tv:StrView line:i32):&Node
+  (let (n:&Node (rd-node NODE-FLOAT line))
+    (set! (n 's) (symbol-intern tv))
+    (return n)))
+
+; EDN integers are signed 64-bit: the ui64 widening Nucleus literals get would
+; read a too-big positive as a negative.
+(defn rd-edn-int (tv:StrView line:i32):ReadResult
+  (let (n:?&Node (try (rd-int-node tv 10 line)))
+    (when (and (!= n null) (< (n 'i) 0) (!= (rd-tv-at &tv 0) 45))
+      (return (err (rd-error read-int-range line "integer literal out of range" ""))))
+    (return (ok n))))
+
+; An EDN atom: no `&` sigil, no hex, `+inf.0` and friends are symbols, and `N`
+; marks an integer, `M` a decimal kept as its text (suffix included).
+(defn rd-edn-atom (tv:StrView line:i32):ReadResult
+  (let (tp:&StrView &tv
+        n:usize (tv 'len)
+        last:i32 (rd-tv-at tp (- n 1)))
+    (when (and (> n 1) (or (= last 78) (= last 77)))
+      (let (body:StrView (strview-take-bytes tv (- n 1))
+            bp:&StrView &body)
+        (when (and (= last 78) (rd-int-atom? bp))
+          (return (rd-edn-int body line)))
+        (when (and (= last 77) (or (rd-int-atom? bp) (rd-float-atom? bp)))
+          (return (ok (rd-float-node tv line))))))
+    (cond (rd-int-atom? tp)
+            (return (rd-edn-int tv line))
+          (and (rd-float-atom? tp) (!= n 6))
+            (return (ok (rd-float-node tv line)))
+          (and (> n 1) (= (rd-tv-at tp 0) 58))
+            (let (k:&Node (rd-node NODE-KEYWORD line))
+              (set! (k 's) (symbol-intern (strview-drop-bytes tv 1)))
+              (return (ok k))))
+    (return (ok (as &Node (intern-node (symbol-intern tv)))))))
+
 (defn rd-atom (self:&Reader):ReadResult
   (let (line:i32 (self 'line)
         start:usize (self 'pos))
@@ -562,25 +638,18 @@
       (rd-next self))
     (let (tv:StrView (rd-slice self start)
           tp:&StrView &tv)
-      (when (rd-int-atom? tp)
-        (return (rd-int-node tv 10 line)))
       (let (hk:i32 (rd-hex-kind tp))
-        (when (= hk 2)
-          (let (n:&Node (rd-node NODE-FLOAT line))
-            (set! (n 's) (symbol-intern tv))
-            (return (ok n))))
-        (when (= hk 1)
-          (return (rd-int-node tv 16 line))))
-      (when (rd-float-atom? tp)
-        (let (n:&Node (rd-node NODE-FLOAT line))
-          (set! (n 's) (symbol-intern tv))
-          (return (ok n))))
-      ; A leading ':' with a non-empty remainder is a keyword; a lone ':' is a
-      ; plain symbol, which is what makes the `):(` return-type sugar lex.
-      (when (and (> (tv 'len) 1) (= (rd-tv-at tp 0) 58))
-        (let (n:&Node (rd-node NODE-KEYWORD line))
-          (set! (n 's) (rd-expand-sigil (strview-drop-bytes tv 1)))
-          (return (ok n))))
+        (cond (self 'edn) (return (rd-edn-atom tv line))
+              (rd-int-atom? tp) (return (rd-int-node tv 10 line))
+              (= hk 2) (return (ok (rd-float-node tv line)))
+              (= hk 1) (return (rd-int-node tv 16 line))
+              (rd-float-atom? tp) (return (ok (rd-float-node tv line)))
+              ; A leading ':' with a non-empty remainder is a keyword; a lone ':'
+              ; is a plain symbol, which is what makes the `):(` return-type sugar lex.
+              (and (> (tv 'len) 1) (= (rd-tv-at tp 0) 58))
+                (let (n:&Node (rd-node NODE-KEYWORD line))
+                  (set! (n 's) (rd-expand-sigil (strview-drop-bytes tv 1)))
+                  (return (ok n)))))
       ; Symbols are interned singletons shared across the whole program, so
       ; they carry no per-occurrence line -- see node-line in lib/node.nuc.
       (return (ok (as &Node (intern-node (rd-expand-sigil tv))))))))
@@ -614,17 +683,10 @@
     (return best)))
 
 ; Only a byte no atom begins with may start a prefix: `"my"` read `myvar` as
-; `(w var)` and `"<"` broke `<=`. These eight are the ones the grammar leaves free.
+; `(w var)` and `"<"` broke `<=`. These seven -- $ ' @ ^ ` | ~ -- are the ones
+; the grammar leaves free.
 (defn rd-atom-start? (c:i32):bool
-  (when (= c 36) (return false))    ; $
-  (when (= c 39) (return false))    ; '
-  (when (= c 44) (return false))    ; ,
-  (when (= c 64) (return false))    ; @
-  (when (= c 94) (return false))    ; ^
-  (when (= c 96) (return false))    ; `
-  (when (= c 124) (return false))   ; |
-  (when (= c 126) (return false))   ; ~
-  (return true))
+  (return (not (or (= c 36) (= c 39) (= c 64) (= c 94) (= c 96) (= c 124) (= c 126)))))
 
 ; Add `prefix` to this reader's table, with the two checks a `(def-rmacro …)`
 ; form gets. `ok` carries no node.
@@ -762,10 +824,27 @@
             (drop &segs)
             (return (ok result))))))))
 
+; Whitespace, comments and `#_`-discarded forms. A discard can fail, which is
+; why this is not `rd-skip-ws`.
+(defn rd-skip-discard (self:&Reader):ReadResult
+  (let (none:?&Node null)
+    (while true
+      (rd-skip-ws self)
+      (when (or (!= (rd-peek self) 35) (!= (rd-peek1 self) 95))
+        (return (ok none)))
+      (let (line:i32 (self 'line))
+        (rd-next self) (rd-next self)
+        (rd-skip-ws self)
+        (let (c:i32 (rd-peek self))
+          (when (or (= c 0) (= c 41) (= c 93) (= c 125))
+            (return (err (rd-error read-bad-discard line "#_ must be followed by a form to discard" "")))))
+        (try (rd-form self))))
+    (return (ok none))))
+
 (defn rd-list (self:&Reader open-line:i32):ReadResult
   (let (b:&Node (node-list-new open-line))
     (while true
-      (rd-skip-ws self)
+      (try (rd-skip-discard self))
       (let (c:i32 (rd-peek self))
         (when (= c 0)
           (return (err (rd-unterminated self open-line "unterminated list" ")"))))
@@ -781,7 +860,7 @@
 (defn rd-lit-elems (self:&Reader what:StrView closer:i32 open-line:i32):ReadResult
   (let (b:&Node (node-list-new open-line))
     (while true
-      (rd-skip-ws self)
+      (try (rd-skip-discard self))
       (let (c:i32 (rd-peek self))
         (when (= c 0)
           (let (m:String (str "unterminated " what " literal"))
@@ -797,68 +876,97 @@
 
 ; `(vector-lit e…)` / `(hashmap-lit k v…)` / `(hashset-lit e…)` -- no gensym
 ; element; the compiler mints its own after reading.
-(defn rd-lit-cell (name:StrView elems:?&Node line:i32):?&Node
-  (return (as &Node (node-cons (as &Node (intern-node (symbol-intern name)))
-                         elems line))))
+(defn rd-lit-cell (name:StrView elems:?&Node line:i32 mark:i32):&Node
+  (let (cell:&Node (node-cons (as &Node (intern-node (symbol-intern name))) elems line))
+    (set! (cell 'i) mark)
+    (return cell)))
+
+; `#tag form` -> `(tagged-lit tag form)`, the `#` already consumed.
+(defn rd-tagged (self:&Reader line:i32):ReadResult
+  (let (start:usize (self 'pos))
+    (while (rd-sym-char? (rd-peek self))
+      (rd-next self))
+    (let (tv:StrView (rd-slice self start))
+      (try (rd-skip-discard self))
+      (let (c:i32 (rd-peek self))
+        (when (or (= c 0) (= c 41) (= c 93) (= c 125))
+          (let (m:String (str "tagged literal '#" tv "' has no value"))
+            (return (err (rd-error read-bad-tag line (rd-arena-str &m) ""))))))
+      (let (value:?&Node (try (rd-form self))
+            tag:&Node (as &Node (intern-node (symbol-intern tv)))
+            elems:&Node (node-list2 tag value line))
+        (return (ok (rd-lit-cell "tagged-lit" elems line LIT-TAGGED)))))))
+
+(defn rd-letter? (c:i32):bool
+  (return (or (and (>= c 97) (<= c 122)) (and (>= c 65) (<= c 90)))))
 
 ; The fuse lives here, not in `rd-list`, so it fires wherever an atom is read:
 ; a reader-macro operand, a literal element, a top-level form.
 (defn rd-atom-form (self:&Reader line:i32):ReadResult
   (let (atom:?&Node (try (rd-atom self)))
+    (when (self 'edn) (return (ok atom)))
     (return (rd-fuse-colon-paren self atom line))))
 
 (defn rd-form (self:&Reader):ReadResult
-  (rd-skip-ws self)
+  (try (rd-skip-discard self))
   (let (line:i32 (self 'line)
         c:i32 (rd-peek self))
-    (when (= c 0)
-      (return (err (rd-error read-eof line "unexpected end of input" ""))))
-    (when (= c 40)
-      (rd-open-bracket self line true)
-      (rd-next self)
-      (return (rd-list self line)))
-    ; Only a `)` at NEGATIVE depth has no opener anywhere (one inside an unclosed
-    ; `[…]` closes a real bracket), so only then is the note's search bounded.
-    (when (= c 41)
-      (rd-close-bracket self)
-      (rd-next self)
-      (let (note:StrView ""
-            fo:i32 (self 'form-open-line))
-        (when (and (< (self 'paren-depth) 0) (!= fo 0))
-          (let (m:String (str "the form opened at line " fo
-                              " is already closed -- look for an extra ')' between lines "
-                              fo " and " line))
-            (set! note (rd-arena-str &m))))
-        (return (err (rd-error read-unexpected-close line "unexpected )" note)))))
-    (when (= c 91)
-      (rd-open-bracket self line false)
-      (rd-next self)
-      (let (elems:?&Node (try (rd-lit-elems self "vector" 93 line)))
-        (return (ok (rd-lit-cell "vector-lit" elems line)))))
-    (when (= c 93)
-      (rd-close-bracket self)
-      (rd-next self)
-      (return (err (rd-error read-unexpected-close line "unexpected ]" ""))))
-    (when (and (= c 35) (= (rd-peek1 self) 123))
-      (rd-open-bracket self line false)
-      (rd-next self) (rd-next self)
-      (let (elems:?&Node (try (rd-lit-elems self "set" 125 line)))
-        (return (ok (rd-lit-cell "hashset-lit" elems line)))))
-    (when (= c 123)
-      (rd-open-bracket self line false)
-      (rd-next self)
-      (let (elems:?&Node (try (rd-lit-elems self "map" 125 line)))
-        (when (!= (bit-and (node-len elems) 1) 0)
-          (return (err (rd-error read-map-odd line "map literal: odd number of elements" ""))))
-        (return (ok (rd-lit-cell "hashmap-lit" elems line)))))
-    (when (= c 125)
-      (rd-close-bracket self)
-      (rd-next self)
-      (return (err (rd-error read-unexpected-close line "unexpected }" ""))))
-    ; A retired `&x` marker must reach the compiler's own check rather than be
-    ; consumed by the `&` reader macro.
-    (when (and (= c 38) (rd-at-legacy-marker self))
-      (return (rd-atom-form self line)))
+    (cond
+      (= c 0)
+        (return (err (rd-error read-eof line "unexpected end of input" "")))
+      (= c 40)
+        (do (rd-open-bracket self line true)
+            (rd-next self)
+            (return (rd-list self line)))
+      ; Only a `)` at NEGATIVE depth has no opener anywhere (one inside an unclosed
+      ; `[…]` closes a real bracket), so only then is the note's search bounded.
+      (= c 41)
+        (do (rd-close-bracket self)
+            (rd-next self)
+            (let (note:StrView ""
+                  fo:i32 (self 'form-open-line))
+              (when (and (< (self 'paren-depth) 0) (!= fo 0))
+                (let (m:String (str "the form opened at line " fo
+                                    " is already closed -- look for an extra ')' between lines "
+                                    fo " and " line))
+                  (set! note (rd-arena-str &m))))
+              (return (err (rd-error read-unexpected-close line "unexpected )" note)))))
+      (= c 91)
+        (do (rd-open-bracket self line false)
+            (rd-next self)
+            (let (elems:?&Node (try (rd-lit-elems self "vector" 93 line)))
+              (return (ok (rd-lit-cell "vector-lit" elems line LIT-VECTOR)))))
+      (= c 93)
+        (do (rd-close-bracket self)
+            (rd-next self)
+            (return (err (rd-error read-unexpected-close line "unexpected ]" ""))))
+      (and (= c 35) (= (rd-peek1 self) 123))
+        (do (rd-open-bracket self line false)
+            (rd-next self) (rd-next self)
+            (let (elems:?&Node (try (rd-lit-elems self "set" 125 line)))
+              (return (ok (rd-lit-cell "hashset-lit" elems line LIT-SET)))))
+      ; `#_` was taken by rd-skip-discard, so any other `#` here opens a tag.
+      (= c 35)
+        (do (when (not (rd-letter? (rd-peek1 self)))
+              (return (err (rd-error read-bad-tag line
+                                     "'#' must be followed by '{', '_' or a tag that starts with a letter" ""))))
+            (rd-next self)
+            (return (rd-tagged self line)))
+      (= c 123)
+        (do (rd-open-bracket self line false)
+            (rd-next self)
+            (let (elems:?&Node (try (rd-lit-elems self "map" 125 line)))
+              (when (!= (bit-and (node-len elems) 1) 0)
+                (return (err (rd-error read-map-odd line "map literal: odd number of elements" ""))))
+              (return (ok (rd-lit-cell "hashmap-lit" elems line LIT-MAP)))))
+      (= c 125)
+        (do (rd-close-bracket self)
+            (rd-next self)
+            (return (err (rd-error read-unexpected-close line "unexpected }" ""))))
+      ; A retired `&x` marker must reach the compiler's own check rather than be
+      ; consumed by the `&` reader macro.
+      (and (= c 38) (rd-at-legacy-marker self))
+        (return (rd-atom-form self line)))
     (let (mi:i32 (rd-macro-match self))
       (when (>= mi 0)
         (let (rm:RMacro (invoke (self 'macros) (as usize mi))
@@ -874,31 +982,46 @@
                           (node-list2 sym
                             inner line))))))))
     ; `c"…"` -- a `c` glued to an opening quote -- is an explicit CStr literal.
-    (when (and (= c 99) (= (rd-peek1 self) 34))
-      (rd-next self)
-      (rd-next self)
-      (return (rd-string self line true)))
-    (when (= c 34)
-      (rd-next self)
-      (return (rd-string self line false)))
-    (when (= c 92)
-      (return (rd-char self line)))
+    (cond (and (= c 99) (= (rd-peek1 self) 34) (not (self 'edn)))
+            (do (rd-next self)
+                (rd-next self)
+                (return (rd-string self line true)))
+          (= c 34)
+            (do (rd-next self)
+                (return (rd-string self line false)))
+          (= c 92)
+            (return (rd-char self line)))
     (return (rd-atom-form self line))))
 
 ; ---------------------------------------------------------------------------
 ; Public entry points
 ; ---------------------------------------------------------------------------
 
+; A trailing `#_ x` is not a form, so it counts as end of input. A discard that
+; fails leaves the reader where it was, for `read-one` to report.
 (defn reader-eof? (self:&Reader):bool
-  (rd-skip-ws self)
-  (return (= (rd-peek self) 0)))
+  (let (pos:usize (self 'pos)
+        line:i32 (self 'line)
+        depth:i32 (self 'paren-depth)
+        fo:i32 (self 'form-open-line)
+        c0:i32 (self 'col0-open-line)
+        c0d:i32 (self 'col0-open-depth))
+    (match (rd-skip-discard self)
+      ((ok v) (return (= (rd-peek self) 0)))
+      ((err e)
+        (set! (self 'pos) pos)
+        (set! (self 'line) line)
+        (set! (self 'paren-depth) depth)
+        (set! (self 'form-open-line) fo)
+        (set! (self 'col0-open-line) c0)
+        (set! (self 'col0-open-depth) c0d)
+        (return false)))))
 
-; The next form. Check `reader-eof?` first: `()` reads as a null node, so a
-; null return is a legitimate empty list rather than end of input. A top-level
-; `def-rmacro` takes effect here, before the form is returned.
+; The next form. Check `reader-eof?` first. A top-level `def-rmacro` takes
+; effect here, before the form is returned.
 (defn read-one (self:&Reader):ReadResult
   (let (form:?&Node (try (rd-form self)))
-    (when (rd-def-rmacro-form? form)
+    (when (and (not (self 'edn)) (rd-def-rmacro-form? form))
       (try (rd-def-rmacro self form)))
     (return (ok form))))
 
@@ -921,6 +1044,14 @@
 ; The same over a fresh table: a `def-rmacro` in `src` is scoped to `src`.
 (defn read-all (src:StrView):ReadResult
   (return (read-all-with-macros src (read-macro-table-new))))
+
+; Every form in EDN text `src`, as a list.
+(defn read-all-edn (src:StrView):ReadResult
+  (let (r:Reader (reader-edn src)
+        b:&Node (node-list-new 0))
+    (while (not (reader-eof? &r))
+      (node-push b (try (read-one &r))))
+    (return (ok (node-list-done b)))))
 
 ; ---------------------------------------------------------------------------
 ; Writing and comparing
@@ -1010,17 +1141,13 @@
 ; Structural equality: same shape, same kinds, same values. Symbols compare by
 ; interned identity, which is what makes two reads of one spelling equal.
 (defn node-eq (a:?&Node b:?&Node):bool
-  (when (and (= a null) (= b null)) (return true))
-  (when (or (= a null) (= b null)) (return false))
-  (when (!= (a 'kind) (b 'kind)) (return false))
+  (cond (and (= a null) (= b null)) (return true)
+        (or (= a null) (= b null)) (return false)
+        (!= (a 'kind) (b 'kind)) (return false))
   (let (k:i32 (a 'kind))
-    (when (or (= k NODE-INT) (= k NODE-CHAR))
-      (return (= (a 'i) (b 'i))))
-    (when (= k NODE-STR)
-      (return (and (= (a 'i) (b 'i)) (= (a 's) (b 's)))))
-    (when (or (= k NODE-SYM) (or (= k NODE-FLOAT) (= k NODE-KEYWORD)))
-      (return (= (a 's) (b 's))))
-    (when (= k NODE-LIST)
-      (when (not (node-eq (node-first a) (node-first b))) (return false))
-      (return (node-eq (node-rest a) (node-rest b))))
-    (return false)))
+    (return (cond (or (= k NODE-INT) (= k NODE-CHAR)) (= (a 'i) (b 'i))
+                  (= k NODE-STR) (and (= (a 'i) (b 'i)) (= (a 's) (b 's)))
+                  (or (= k NODE-SYM) (= k NODE-FLOAT) (= k NODE-KEYWORD)) (= (a 's) (b 's))
+                  (= k NODE-LIST) (and (node-eq (node-first a) (node-first b))
+                                       (node-eq (node-rest a) (node-rest b)))
+                  true false))))

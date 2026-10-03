@@ -525,6 +525,39 @@ importing unit when a concrete instance is stamped there. See
 `examples/assoc-types-extend-cross.nuc` for an end-to-end cross-unit chain test and
 `design/stage11/assoc-types-extend.md` §10 for the design.
 
+### Conditional conformance: a plain constraint on `extend`
+
+A plain constraint on a template `extend`, one that names a protocol and a
+subject variable with no arguments, is a **condition**: the instance conforms
+only when its argument does.
+
+```lisp
+(defprotocol Codec (dec (dst:&Self):i32))
+(extend i32 Codec)
+(defn dec (dst:&i32):i32 (return 1))
+
+(defstruct (Box T) v:T)
+(extend (Box T) Codec :where (Codec T))
+(defn dec (dst:&(Box T) :where (Codec T)):i32 (return (+ 10 (dec (ref dst 'v)))))
+
+(Box i32)          ; conforms
+(Box (Box i32))    ; conforms, through (Box i32)
+(Box f64)          ; does not conform -- and that is not an error
+```
+
+- **A failing instance is skipped, not refused.** `(Box f64)` is still a usable
+  struct; it just is not a `Codec`, so passing one where a `Codec` is required
+  is refused at that call (`no matching method`).
+- **Checked again later.** An instance stamped before its argument conforms is
+  remembered, and conforms as soon as the argument's `extend` is recorded. That
+  happens when a top-level macro produces the `extend`
+  ([macros.md](macros.md#macros-in-top-level-position)), after a field of type
+  `(Box Pt)` has already stamped the instance.
+- **Several conditions** all have to hold: `lib/edn` conforms
+  `(extend (HashMap K V) EdnCodec :where (EdnCodec K) (EdnKey K) (EdnCodec V))`.
+- **A constraint with arguments** (`((Iterator S) I)`) is not a condition: it
+  recovers arguments, as described above.
+
 ### Bound kinds: named protocols, blanket (`Any`/`Struct`), and `Valid`
 
 A `:where` constraint names one of three kinds of bound (a name is still a type

@@ -1,0 +1,87 @@
+; Reading and writing EDN (lib/edn.nuc).
+;
+; EDN values are the reader's `Node` tree, read in EDN mode and classified by
+; `edn-kind`; `edn-read` converts one into a Nucleus scalar, range-checked.
+
+(import-use error)
+(import-use strview)
+(import-use string)
+(import-use io)
+(import-use node)
+(import-use read)
+(import-use edn)
+
+(defn config ():StrView (return "
+; a little configuration file
+{:server {:host \"localhost\", :port 8080}
+ :tags   #{:fast :verbose}
+ :ratio  0.75
+ :limits [10 20 #_ 30 40]
+ :since  #inst \"2026-10-02T00:00:00Z\"}
+"))
+
+(defn show (label:StrView n:?&Node):void
+  (let (s:String (edn-text n))
+    (print label " (" (edn-kind-name (edn-kind n)) ") " (string-as-view &s) "\n")
+    (drop &s)))
+
+(defn report (what:StrView r:ReadResult):void
+  (match r
+    ((ok v) (do))
+    ((err e) (print what ": " (err-name (e 'code)) " line " (e 'line) ": " (e 'msg) "\n"))))
+
+(defn main ():i32
+  (match (edn-parse (config))
+    ((err e)
+      (eprint "read failed: line " (e 'line) ": " (e 'msg) "\n")
+      (return 1))
+    ((ok cfg)
+      (show "config" cfg)
+      (let (server:?&Node (edn-get cfg "server"))
+        (show "server" server)
+        (let (host:StrView "" port:i32 0)
+          (report "host" (edn-read &host (edn-get server "host")))
+          (report "port" (edn-read &port (edn-get server "port")))
+          (print "host=" host " port=" port "\n")))
+      (let (ratio:f32 0.0)
+        (report "ratio" (edn-read &ratio (edn-get cfg "ratio")))
+        (print "ratio=" ratio "\n"))
+      ; A vector's elements walk like any list of nodes.
+      (let (sum:i64 0)
+        (when-some (xs (edn-elems (edn-get cfg "limits")))
+          (doseq (x xs NodeIter)
+            (match (edn-int x)
+              ((ok v) (set! sum (+ sum v)))
+              ((err e) (do)))))
+        (print "limits sum=" sum "\n"))
+      ; Map entries come in pairs.
+      (let (n:usize (edn-count cfg))
+        (print "keys:")
+        (dotimes (i n)
+          (let (s:String (edn-text (edn-key cfg (as usize i))))
+            (print " " (string-as-view &s))
+            (drop &s)))
+        (print "\n"))
+      (let (since:?&Node (edn-get cfg "since"))
+        (match (edn-tag since)
+          ((ok t) (do (print "#" t " -> ") (show "value" (edn-tagged-value since))))
+          ((err e) (print "untagged\n"))))
+      ; Conversions refuse what does not fit.
+      (let (small:i8 0)
+        (report "i8" (edn-read &small (edn-get (edn-get cfg "server") "port"))))
+      (let (absent:i32 0)
+        (report "missing" (edn-read &absent (edn-get cfg "nope"))))))
+  ; Writing scalars, then refusals the reader leaves to the library.
+  (let (out:String (string-new))
+    (write-str &out "[")
+    (edn-write &out 42) (write-str &out " ")
+    (edn-write &out 2.0) (write-str &out " ")
+    (edn-write &out "a \"quoted\" word") (write-str &out " ")
+    (edn-write &out \tab)
+    (write-str &out "]")
+    (print "wrote " (string-as-view &out) "\n")
+    (drop &out))
+  (match (edn-parse "{:a 1 :a 2}")
+    ((ok v) (print "accepted?\n"))
+    ((err e) (print "refused: " (e 'msg) "\n")))
+  (return 0))

@@ -1,0 +1,7 @@
+; Stage 22 ED-4.1: a macro may now emit an `extend` beside its methods, but an
+; extend whose method genuinely does not exist is still refused.
+(defprotocol Shape (area (self:&Self):i32))
+(defstruct Sq side:i32)
+(defmacro bad (t) `(extend ~t Shape))
+(bad Sq)
+(defn main ():i32 (return 0))

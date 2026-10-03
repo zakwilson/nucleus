@@ -85,6 +85,8 @@ failure.
 | `unsafe/import-private` | Prefix-qualified import that also reaches a library's private (`defn-`/`defvar-`/etc.) symbols: `(unsafe/import-private lib prefix sym...)`. See [Top-level forms](toplevel.md#top-level-forms). | — |
 | `gensym` | Return a fresh unique symbol `Node*` (e.g. `__gs_0`); for use in macro bodies to avoid variable capture | — |
 | `macro-error` | `(macro-error node message)` — report `message` at `node`'s line and abort the expansion. Only inside a `defmacro`/`macrolet`/`compile-time` body; the message is a literal, a `StrView` or a `String` (so a body that imports `fmt` can build one with `str`). See [Macros](macros.md#macro-error--a-macro-rejecting-its-own-call-site). | — |
+| `struct-fields` | `(struct-fields t)` — the fields of struct type `t` as `((name type) …)`, in declaration order. Macro bodies only. See [Macros](macros.md#struct-fields-and-type-name--a-structs-shape-at-expansion-time). | — |
+| `type-name` | `(type-name t)` — struct `t`'s qualified name as a symbol (`geom/Point`, `user/Point`). Macro bodies only. | — |
 | `some` | `(some r)` — wrap a non-null `(ref T)` as `?T` / `(Maybe (ref T))`. Pure relabel, no IR. | — |
 | `as-ref` | `(as-ref p)` — launder an unchecked pointer (`(ptr T)`) into `?&T` (null stays none). Pure relabel, no IR; narrow before use. | — |
 | `unwrap` | `(unwrap m)` — the `(ref T)` inside a `?T`, or trap (`llvm.trap`) if none. The one runtime branch nullability costs, paid only where written. | `assert(p); p` |

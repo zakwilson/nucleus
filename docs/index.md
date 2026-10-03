@@ -69,8 +69,9 @@ carry are `:rest`, `:optional` ([`defn`](builtins.md#defn) / [`defmacro`](macros
 [`extend`](generics.md#conforming-combinators-where-on-extend)) and `:repr`
 ([union layout](structs-unions.md#niche-layout-and-repr-stage-10-c4)), matching
 the declaration attributes `:const` and `:volatile`. They were once spelled
-`&rest` / `&optional` / `&where` / `&repr`; the ampersand forms are now a
-compile-time error naming their replacement.
+`&rest` / `&optional` / `&where` / `&repr`; in a parameter list the ampersand
+forms are now a compile-time error naming their replacement. In an expression
+they are ordinary address-of: `&rest` is `(ref rest)`.
 
 **Errors** — fallible functions return `!T` (= `(Result T Err)`):
 ```lisp
@@ -101,7 +102,8 @@ compile-time error naming their replacement.
 | [Collections](collections.md) | Core collection protocols (`Coll`/`Seq`/`Assoc`/`Set`/`Drop`), `Hash`, `Vector`, `HashMap`, `HashSet` (`lib/coll.nuc`, `lib/hash.nuc`, `lib/vector.nuc`, `lib/hashmap.nuc`, `lib/hashset.nuc`) |
 | [Strings](strings.md) | `Char` scalar, `StrView` borrowed slice, `String` owning type, UTF-8 encode/decode, `ByteStr`/`Str` protocols, split, lines, trim, `FromStr`/`parse`, `Writer`/`ToStr`/`str` formatting, and which of `StrView`/`String`/`Symbol`/`CStr` to reach for (`lib/char.nuc`, `lib/strview.nuc`, `lib/string.nuc`, `lib/parse.nuc`, `lib/string-split.nuc`, `lib/fmt.nuc`) |
 | [Processes](process.md) | Starting other programs: `Command` as an argv (never a shell command line), `run`, `spawn`/`wait-any` for a job pool, typed `ExitStatus` (`lib/process.nuc`) |
-| [Reading s-expressions](reading.md) | Text to `Node` at runtime: `read-all`, the `Reader`/`read-one` pair, `node-write`/`node-eq`; agrees with the compiler's own reader (`lib/read.nuc`) |
+| [Reading s-expressions](reading.md) | Text to `Node` at runtime: `read-all`, the `Reader`/`read-one` pair, `node-write`/`node-eq`; agrees with the compiler's own reader; EDN mode (`lib/read.nuc`) |
+| [EDN](edn.md) | EDN data as a typed view over the reader's `Node`: `edn-parse`, `edn-kind` and accessors, `edn-write`, range-checked `edn-read` conversions, the `EdnCodec` protocol over collections, and `derive-edn` struct codecs (`lib/edn.nuc`) |
 | [Testing](testing.md) | Declaring tests with `deftest`, the `check-*` assertions, scoped IR matching, `fail!`, and the s-expression result records a suite prints (`lib/test.nuc`) |
 | [I/O](io.md) | Standard streams and files as `Writer`s over raw descriptors: `FdOut`, `print`/`println`/`eprint`/`eprintln`, `read-line`, `File`, `BufWriter` (`lib/io.nuc`, `lib/file.nuc`) |
 | [AVR targets](avr.md) | Cross-compiling to 8-bit AVR microcontrollers: flags, a two-device walkthrough, the v1 profile and its exclusions, MMIO/ISR idioms (`lib/avr.nuc`, `lib/avr/*.nuc`) |
@@ -142,6 +144,8 @@ Additional libraries available via `import-use`:
 - `(import-use string-protocols)` — `ByteStr ByteI` and `Str CharI` read-only protocol shapes
 - `(import-use string)` — `String` owning type: constructors, mutation, conformances (`lib/string.nuc`)
 - `(import-use string-split)` — `SplitIter`/`LineIter` for `strview-split`/`strview-lines` (`lib/string-split.nuc`)
+- `(import-use read)` — the s-expression reader: text to `Node`, and back (`lib/read.nuc`)
+- `(import-use edn)` — EDN data over the reader's `Node` tree, and codecs for scalars, collections and derived structs (`lib/edn.nuc`)
 - `(import-use parse)` — `FromStr R` protocol and `parse` macro for `i32`/`i64`/`f64` (`lib/parse.nuc`)
 - `(import-use seq)` — empty placeholder; `IntIndexable`, `Call`, and `BinaryCall` were removed in C2.5 (use `UnaryFn`/`FoldFn` from `(import-use iterator)`)
 

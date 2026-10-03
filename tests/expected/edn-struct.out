@@ -1,0 +1,5 @@
+name:     search
+replicas: 2
+qps:      500
+#user/Endpoint {:host "10.0.0.1" :port 8080}
+line 5: :replicas :port: 70000 is out of range for ui16
