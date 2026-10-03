@@ -56,6 +56,14 @@
       (set! (sc 'len) (+ (sc 'len) 1))
       (return sym))))
 
+; Hide every binding of IR symbol `ir`. A Sym is never removed: its address may
+; already be held, so the key is changed to one no source spelling can reach.
+(defn scope-unbind-ir (sc:&Scope ir:StrView):void
+  (dotimes (i (sc 'len))
+    (let (sym:&Sym (as &Sym (unsafe/ptr+ (unsafe/cast &Sym (sc 'syms)) i)))
+      (when (= (sym 'ir-name) ir)
+        (set! (sym 'name) (symbol-intern "#unbound"))))))
+
 ; Where a global was defined, for the REPL's `locate`. Called only by the
 ; Nucleus definers: an `extern`, a C-header import and a prelude registration
 ; genuinely have no source line here, and `locate` says so rather than blaming

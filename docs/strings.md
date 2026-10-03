@@ -137,8 +137,9 @@ The bare struct type is registered in the prelude, so `StrView` is available as 
 
 In overloaded (`defn`/multimethod) dispatch, a `StrView`-typed argument adapts to a `CStr`-typed parameter but *not* to a bare `ptr`-typed parameter — this reproduces the dispatch a `CStr` literal produced before this type existed. To bind a bounded generic (e.g. an `Eq`-bounded parameter) at `StrView` from a literal, `(import-use strview)` must be in scope so `StrView`'s protocol conformances are registered; otherwise `as` the literal to `CStr` explicitly (see `examples/cstr.nuc`). `CStr` itself is unchanged by this: it remains the dedicated FFI `char*` type, still distinct for dispatch, with only `=`/`!=` defined — no existing `:CStr`/`:ptr`-typed signature was retyped, only the literal's own inferred type and its emission changed.
 
-**Escapes inside a literal** — `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, and `\xHH`
-(a raw byte, **capped at two hex digits**, unlike C's greedy `\x`) — are decoded
+**Escapes inside a literal** — `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\xHH`
+(a raw byte, **capped at two hex digits**, unlike C's greedy `\x`) and `\uXXXX`
+(a codepoint, UTF-8 encoded) — are decoded
 by the reader and apply identically to `"…"` and `c"…"`. See
 [Types — String literal escapes](types.md#string-literal-escapes--n-xhh) for
 the full table, the two-digit rationale, and the embedded-NUL limitation.

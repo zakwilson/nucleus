@@ -1046,6 +1046,16 @@
   num-constraints:i32   ; 0 for a :where-free extend
   ptr-depth:i32)        ; pointers over the template in the subject (`&(Vector T)`)
 
+; An instance's template conformance that waits on a `:where` constraint: a later
+; conformance may satisfy it, and `conformance-add` retries it then.
+(defstruct PendingTmplCheck
+  (c ?&TmplConformance)
+  st:ptr
+  iname:Symbol
+  args:ptr
+  nargs:i32
+  line:i32)
+
 ; A queued generic instantiation: the stamped concrete defn form awaiting body
 ; emission, plus a human-readable context ("while instantiating @name.toks…
 ; requested at file:line") attached to any compile error raised while emitting it.

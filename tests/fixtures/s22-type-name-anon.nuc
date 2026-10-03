@@ -1,0 +1,4 @@
+; Stage 22 ED-4.2: an anonymous struct has fields but no name.
+(defmacro name-of (t) (type-name t) `(defvar g-x:i32 0))
+(name-of (struct a:i8 b:i8))
+(defn main ():i32 (return 0))

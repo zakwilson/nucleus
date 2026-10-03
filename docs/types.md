@@ -313,7 +313,8 @@ after another `&`, or after a `?`/`!` prefix. An interior `&` is an ordinary
 symbol character, so a `&` inside a token keeps its name, and the retired
 `&rest`/`&where`/`&optional`/
 `&repr` markers still report their keyword replacements rather than reading as
-types.
+types. In an expression they are ordinary address-of, so `&rest` takes the
+address of a local named `rest`.
 
 A `&` that starts a whole **token** is the address-of reader macro instead —
 `&x` is `(ref x)`, see [Special forms](special-forms.md). The two are split
@@ -1014,6 +1015,7 @@ The complete set:
 | `\\` | 0x5C | a literal backslash |
 | `\"` | 0x22 | a literal double quote |
 | `\xHH` | 0x00–0xFF | a raw byte as **one or two** hex digits, either case |
+| `\uXXXX` | 1–3 bytes | the UTF-8 encoding of a codepoint, as **exactly four** hex digits (EDN's and Java's spelling); a surrogate `D800`–`DFFF` is refused |
 
 Any other character after a backslash is a positioned reader error
 (`unknown escape \<c>`); a `\x` with no following hex digit is likewise an
@@ -1054,8 +1056,9 @@ A **char literal** is a backslash followed by one of three forms, evaluating to 
 | `\a` | A single printable codepoint — the character after the backslash | `\A` → 65, `\x` → 120, `\(` → 40 |
 | `\name` | A named control code | `\newline` (0x0A), `\return` (0x0D), `\tab` (0x09), `\space` (0x20), `\nul` (0x00), `\escape` (0x1B), `\backspace` (0x08), `\delete` (0x7F) |
 | `\u{HEX}` | An explicit codepoint as hex digits between braces | `\u{41}` → 65, `\u{1F600}` → 😀 (128512) |
+| `\uXXXX` | A codepoint as exactly four hex digits — EDN's spelling, Basic Multilingual Plane only | `\u0041` → 65, `\u00e9` → é |
 
-The `\u{…}` form is validated at read time: a value above `0x10FFFF`, a UTF-16 surrogate (`0xD800..=0xDFFF`), an empty or non-hex body, or an unknown `\name` is a reader error (`invalid-codepoint` / `unknown named char literal`). A lone printable form is exactly the byte after the backslash, so a single-character spelling like `\u` (no brace) is the letter `u`, not a malformed escape.
+The `\u{…}` and `\uXXXX` forms are validated at read time: a value above `0x10FFFF`, a UTF-16 surrogate (`0xD800..=0xDFFF`), an empty or non-hex body, or an unknown `\name` is a reader error (`invalid-codepoint` / `unknown named char literal`). A lone printable form is exactly the byte after the backslash, so a single-character spelling like `\u` (no brace) is the letter `u`, not a malformed escape.
 
 ```lisp
 (printf "%u\n" (as ui32 \A))            ; 65

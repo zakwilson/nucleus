@@ -1,0 +1,5 @@
+; Stage 22 ED-4.2: `struct-fields` answers at expansion time only.
+(defstruct P x:i32)
+(defn main ():i32
+  (struct-fields P)
+  (return 0))

@@ -1,0 +1,11 @@
+config (a map) {:server {:host "localhost" :port 8080} :tags #{:fast :verbose} :ratio 0.75 :limits [10 20 40] :since #inst "2026-10-02T00:00:00Z"}
+server (a map) {:host "localhost" :port 8080}
+host=localhost port=8080
+ratio=0.75
+limits sum=70
+keys: :server :tags :ratio :limits :since
+#inst -> value (a string) "2026-10-02T00:00:00Z"
+i8: edn-range line 3: 8080 is out of range for i8
+missing: edn-type line 0: expected an integer, got nil
+wrote [42 2.0 "a \"quoted\" word" \tab]
+refused: duplicate map key :a

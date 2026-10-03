@@ -1,0 +1,66 @@
+; Struct codecs over EDN (lib/edn.nuc).
+;
+; `derive-edn` gives a struct an `EdnCodec` conformance, so `edn-read` and
+; `edn-write` take it like any scalar. A struct is written as a map tagged with
+; its qualified name; this file has no `(ns …)`, so the tag is `#user/…`.
+
+(import-use string)
+(import-use io)
+(import-use vector)
+(import-use hashmap)
+(import-use keyword)
+(import-use read)
+(import-use edn)
+
+(defstruct Endpoint (host String) port:ui16)
+(defstruct Service
+  (name String)
+  (at Endpoint)
+  (replicas (Vector Endpoint))
+  (limits (HashMap Keyword i64))
+  (window (struct lo:f64 hi:f64)))
+
+(derive-edn Endpoint Service)
+
+(defn config ():StrView (return "
+#user/Service
+{:name     \"search\"
+ :at       #user/Endpoint {:host \"10.0.0.1\" :port 8080}
+ :replicas [#user/Endpoint {:host \"10.0.0.2\" :port 8080}
+            #user/Endpoint {:host \"10.0.0.3\" :port 8081}]
+ :limits   {:qps 500}
+ :window   #nucleus/struct {:lo 0.25 :hi 0.75}}
+"))
+
+(defn bad-config ():StrView (return "
+#user/Service
+{:name     \"search\"
+ :at       #user/Endpoint {:host \"10.0.0.1\" :port 8080}
+ :replicas [#user/Endpoint {:host \"10.0.0.2\" :port 70000}]
+ :limits   {}
+ :window   #nucleus/struct {:lo 0.25 :hi 0.75}}
+"))
+
+(defn load (src:StrView svc:&Service):bool
+  (match (edn-parse src)
+    ((err e) (println "line " (e 'line) ": " (e 'msg)) (return false))
+    ((ok n)
+      (match (edn-read svc n)
+        ((err e) (println "line " (e 'line) ": " (e 'msg)) (return false))
+        ((ok v) (return true))))))
+
+(defn main ():i32
+  (let (svc:&Service (alloca Service))
+    (when (load (config) svc)
+      (println "name:     " (string-as-view (ref svc 'name)))
+      (println "replicas: " (count (ref svc 'replicas)))
+      (match (get (ref svc 'limits) (keyword-intern "qps"))
+        ((some q) (println "qps:      " q))
+        (none (println "qps:      unset")))
+      (let (out:String (string-new))
+        (edn-write &out (ref svc 'at))
+        (println (string-as-view &out))
+        (drop &out))
+      (edn-release svc))
+    (load (bad-config) svc))
+  (return 0))

@@ -603,7 +603,7 @@ nodes.
 ## Literal sugar (`[…]`, `{…}`, `#{…}`)
 
 The reader provides bracket literals that construct and initialise a collection
-from scalar elements. Each expands, in the reader, to a `let` that
+from scalar elements. Commas are whitespace, so `{:a 1, :b 2}` is `{:a 1 :b 2}`. Each expands, in the reader, to a `let` that
 stack-allocates the (stamped) collection, runs its in-place init constructor
 with the **default (libc) allocator**, `conj`/`assoc`-es every element, and
 yields the `(ref Coll)`. Placed as the right-hand side of a `with` binding, the

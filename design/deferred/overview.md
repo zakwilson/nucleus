@@ -142,7 +142,9 @@ That gate is not a spelling problem and no selector syntax removes it: iterating
 - a sum-typed result (`(get p sel)` returning a union over the field types),
   which makes every computed read a `match`;
 - generated per-struct accessors, i.e. reflection over a struct's field table
-  as compile-time data;
+  as compile-time data. The data now exists: `struct-fields` (Stage 22 ED-4.2,
+  `docs/macros.md`) gives a macro the field table, so such accessors can be
+  derived the way `derive-edn` derives codecs;
 - restricting computed access to a declared homogeneous *subset* of fields.
 
 Until one is chosen, computed field access stays what it is today: correct, and
@@ -472,3 +474,44 @@ feature: a program `defn` whose name lands on one of those 1,658 binds to the
 *compiler's* function silently, and with a mismatched signature segfaults the
 compiler. Naming a supported compile-time API — and hiding the rest — stays
 deferred there (§10).
+
+
+### The REPL does not accept a top-level macro that expands to a definition
+
+Noted 2026-10-03 while building Stage 22 ED-4.1
+([stage22-edn/macro-definitions.md](stage22-edn/macro-definitions.md) §3).
+
+**Symptom.** At the prompt, `(derive-area Sq)` fails with
+`unknown: defn — not defined anywhere in this compilation unit`, where
+`derive-area` expands to a `defn`. It fails the same way before and after
+ED-4.1. In a compiled file the same call works.
+
+**Cause.** The REPL chooses a handler for each prompt form by its head, using
+the per-definer arms in `src/repl.nuc` (`defn`, `defvar`, `defstruct`,
+`defmacro`, …). A macro call matches none of them, so the form takes the
+expression path, which compiles the expansion as a function body, where
+`defn` is not a form.
+
+**Fix sketch.** Expand a top-level macro call first, splice a `(do …)`, and
+re-dispatch each resulting form through the same arms.
+
+**Two follow-ons:**
+- The REPL's `defn` arm handles only a solitary name (`repl.nuc`, the
+  redefinition thunk). A macro that produces overloads, which is the point of
+  derivation (ED-4), also needs the REPL to support overloads.
+- A REPL `extend` arm must see the expansion's methods. Batch compilation gets
+  this from `late-prescan`; the REPL already registers each `defn` as it
+  arrives.
+
+**Not wanted until** a REPL user derives codecs at the prompt. Importing a
+companion library that a compiled file derived already works.
+
+## List literals are not (ref Node)
+
+List literals are (ptr Node), but functions defined in node.nuc like `contains?` expect &Node.
+
+## Names in macro expansions aren't namespaced
+
+A file calling derive-edn needs (import-use edn), because the expansion refers to lib/edn functions by bare name and macros here have no hygiene.
+
+This should probably work like Clojure.

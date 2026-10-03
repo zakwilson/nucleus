@@ -1,0 +1,9 @@
+; Stage 22 ED-4.1: a macro-produced definition is registered like a written one,
+; so emitting the same overload twice is the duplicate-definition diagnostic
+; rather than an LLVM "invalid redefinition" crash.
+(defstruct Sq side:i32)
+(defmacro derive-area (t)
+  `(defn area (s:(ref ~t)):i32 (return (s 'side))))
+(derive-area Sq)
+(derive-area Sq)
+(defn main ():i32 (return 0))

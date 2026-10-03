@@ -843,6 +843,19 @@
                     "\n  note: "
                     (fstr acand " and " bcand " both match; qualify the call to choose one"))))))
 
+; A late registration (a top-level macro expansion) re-finalizes after emission
+; has begun, so a method that already has a symbol may already be called by it.
+(defn late-renamable? (m:&Method):bool
+  (return (or (= g-late-prescan 0) (symbol-none? (m 'ir-name)))))
+
+; A late overload makes a solitary name registry-dispatched. Its solitary binding
+; goes, so a value reference behaves as it would for hand-written overloads.
+(defn generic-unbind-solitary (gg:&Generic):void
+  (dotimes (k (unsafe/cast i32 (count (gg 'methods))))
+    (let (m:&Method (as &Method (invoke (gg 'methods) (as usize k))))
+      (when (and (= (m 'ir-fixed) 0) (not (symbol-none? (m 'ir-name))))
+        (scope-unbind-ir g-globals (symbol-as-view (m 'ir-name)))))))
+
 ; Decide mangling for every not-yet-finalized user generic. A solitary concrete
 ; name keeps its unmangled @name and is bound in g-globals (so forward references
 ; and the byte-identical single-function path keep working). An overloaded set —
@@ -889,13 +902,15 @@
                   ; by the unit that DEFINED it, and its `g-globals` binding was
                   ; made by the declare with flags this rebind would drop
                   ; (extern-decl, noreturn). Nothing here is ours to decide.
-                  (when (= (m0 'ir-fixed) 0)
+                  (when (and (= (m0 'ir-fixed) 0) (late-renamable? m0))
                     (set! (m0 'ir-name) (symbol-intern (fstr "@"
                                               (ns-compose (method-ir-prefix gg m0)
                                                      (ir-name-token (symbol-as-view (strip-priv-qualifier (gg 'name))))))))
                     (let (fs:&Sym (scope-define g-globals (gg 'name) (m0 'fn-type) (symbol-as-view (m0 'ir-name)) 0))
                       (when (!= (m0 'priv) 0) (set! (fs 'sym-private) 1)))))
                 (do
+                  (when (and (!= g-late-prescan 0) (= (gg 'mangled) 0))
+                    (generic-unbind-solitary gg))
                   (set! (gg 'mangled) 1)
                   (let (i:i32 0)
                     (while (< i (unsafe/cast i32 (count (gg 'methods))))
@@ -958,7 +973,7 @@
                           ; above — a local overload sharing its prefix really
                           ; does share the name and must be mangled — so only
                           ; the rename is skipped, not the tally.
-                          (when (= (mi 'ir-fixed) 0)
+                          (when (and (= (mi 'ir-fixed) 0) (late-renamable? mi))
                             (let (pfx:Symbol (method-ir-prefix gg mi))
                               (if (and (= has-intrinsic 0) (= has-generic 0)
                                        (= (generic-user-methods-with-prefix gg pfx) 1))
@@ -3481,6 +3496,7 @@
                         'ast-first 'ast-rest 'ast-at 'ast-len
                         'not '_and '_or 'cast 'ref 'deref 'ptr+ '_get
                         'sizeof 'source-file 'source-line 'alloca 'char 'aref 'gensym 'macro-error
+                        'struct-fields 'type-name
                         'funcall 'funcall-void
                         'funcall-ptr-1 'funcall-ptr-i32 'funcall-ptr-i64 'funcall-ptr-ptr
                         'as 'unsafe/cast 'unsafe/ptr+ 'unsafe/funcall-ptr-1 
@@ -4455,7 +4471,8 @@
       (set! (c 'type-name) type-name)
       (set! (c 'proto-name) proto-name)
       (set! (c 'args) av)
-      (conj g-conformances c))))
+      (conj g-conformances c)
+      (tmpl-retry-pending))))
 
 ; Has a synthesized closure-conformance forwarder with this exact ir-name
 ; already been registered (and thus queued for emission) in generic `gen-name`?
@@ -5500,14 +5517,22 @@
         (when (= (recover-assoc-into (cc 'tyvars) out-bound ntv
                                      (cc 'constraints)
                                      (cc 'num-constraints) line false) 0)
+          (tmpl-check-defer c st iname arg-spellings nargs line)
           (return))
         ; recover-assoc-into fills the associated tyvars; the full map must now be
         ; total over the conformance's tyvars (the determination fixpoint in
         ; emit-extend guaranteed every protocol-app tyvar is reachable). Any still-
         ; unbound entry means a constraint never fired — also a deferral.
         (dotimes (bk ntv)
-          (when (= (aref (unsafe/cast &ptr out-bound) bk) null) (return))
+          (when (= (aref (unsafe/cast &ptr out-bound) bk) null)
+            (tmpl-check-defer c st iname arg-spellings nargs line)
+            (return))
           (set! (aref (unsafe/cast &Symbol spellings) bk) (type-spelling (aref (unsafe/cast &ptr out-bound) bk))))
+        ; A plain constraint is the extend's condition: an instance that fails it
+        ; is not a conformer, and is retried if the conformance arrives later.
+        (when (not (tmpl-plain-constraints-hold? cc out-bound line))
+          (tmpl-check-defer c st iname arg-spellings nargs line)
+          (return))
         (set! subst-tyvars (cc 'tyvars))
         (set! subst-spellings spellings)
         (set! subst-ntv ntv)))
@@ -5526,6 +5551,41 @@
     ; conformance retains them.
     (verify-conformance-params (ptr-key iname (cc 'ptr-depth)) (proto 'name)
                                pspellings nb line 1)))
+
+(defn tmpl-plain-constraints-hold? (c:ptr:TmplConformance bound:ptr line:i32):bool
+  (dotimes (i (c 'num-constraints))
+    (let (crec:ref:Constraint (constraints-at (c 'constraints) i)
+          proto:Symbol (constraint-proto crec)
+          idx:i32 (tyvar-index-of (crec 'var) (c 'tyvars) (c 'num-tyvars)))
+      (when (and (= (crec 'nargs) 0) (>= idx 0))
+        (let (bt:ptr (aref (unsafe/cast &ptr bound) idx))
+          (when (and (!= bt null)
+                     (= (blanket-conforms bt proto) 0)
+                     (!= proto "Valid")
+                     (= (conformance-lookup (type-spelling bt) proto) 0)
+                     (= (derive-closure-conformance bt proto line) 0))
+            (return false))))))
+  (return true))
+
+(defn tmpl-check-defer (c:?&TmplConformance st:ptr iname:Symbol args:ptr nargs:i32 line:i32):void
+  (let (p:&PendingTmplCheck (new PendingTmplCheck))
+    (set! (p 'c) c)
+    (set! (p 'st) st)
+    (set! (p 'iname) iname)
+    (set! (p 'args) args)
+    (set! (p 'nargs) nargs)
+    (set! (p 'line) line)
+    (conj g-pending-tmpl-checks p)))
+
+; A conformance just arrived: retry every instance check that waited on one. The
+; queue is swapped out first, so a check that still waits re-queues itself.
+(defn tmpl-retry-pending ():void
+  (when (= (count g-pending-tmpl-checks) 0) (return))
+  (let (todo:&(Vector &PendingTmplCheck) g-pending-tmpl-checks
+        fresh:&(Vector &PendingTmplCheck) (vector-new-in &g-arena-alloc))
+    (set! g-pending-tmpl-checks fresh)
+    (doseq (p todo (VecIter &PendingTmplCheck))
+      (tmpl-conformance-check-one (p 'c) (p 'st) (p 'iname) (p 'args) (p 'nargs) (p 'line)))))
 
 ; Every variable a :where-free template extend's protocol argument names is one
 ; of the subject's; any other would be read as a type only at the first stamp.
@@ -6073,6 +6133,7 @@
   (when (= n 'true)  (return ty-bool))
   (when (= n 'false) (return ty-bool))
   (when (= n 'none)  (return ty-maybe-ptr))
+  (if-some (r (legacy-marker-ref (as ?&Node n))) (return (node-type r scope)) 0)
   (let (lookup-name:Symbol (symbol-none)
         annot:Symbol (symbol-none))
     (split-typed (n 's)
@@ -6586,6 +6647,7 @@
         ; Stage 20 M3: `macro-error` aborts the expansion, so nothing consumes
         ; its value; void keeps it in lockstep with emit-macro-error.
         (when (= hp 'macro-error) (return ty-void))
+        (when (or (= hp 'struct-fields) (= hp 'type-name)) (return (ty-ref-node)))
         ; Stage 14 UN-5 / Stage 15 B2b: the bare `funcall-ptr-*` spellings do not
         ; resolve (the `unsafe` namespace is bound prefixed, never flattened), so
         ; there is nothing to refuse here either. Mirrors emit-list's routing in
@@ -6615,6 +6677,7 @@
         (when (= hp 'vector-lit) (return null))
         (when (= hp 'hashset-lit) (return null))
         (when (= hp 'hashmap-lit) (return null))
+        (when (= hp 'tagged-lit) (return null))
         (when (= hp 'let) (return (node-type-block n scope)))
         (when (= hp 'with) (return (node-type-block n scope)))
         (when (= hp 'cond) (return null))

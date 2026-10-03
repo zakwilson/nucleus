@@ -6,8 +6,10 @@
 ; ordinary `<ns>/<name>` spellings — that is what makes `qualify-name`
 ; idempotent on them and `strip-ns-qualifier` able to recover the bare name — so
 ; the only thing keeping a synthetic key from colliding with a user one is that
-; `#` cannot start a user namespace. Compiling this must FAIL with:
-;   "a namespace name may not begin with '#'"
+; `#` cannot start a user namespace. Since Stage 22 the reader refuses a leading
+; `#` before the `ns` check can (`#p1` opens a tagged literal with no value);
+; the check stays for a name a macro builds. Compiling this must FAIL with:
+;   "tagged literal '#p1' has no value"
 (ns #p1)
 
 (defn noop ():i32

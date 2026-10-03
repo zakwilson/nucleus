@@ -2503,14 +2503,34 @@ Passing around untyped pointers and using casts is unsafe and must be reserved a
 
 A tree-wide rewrite of a special-form spelling (the Stage 14 `cast`→`as`/`unsafe/cast` split, UN-3/UN-4/UN-5) can miss sites where the compiler *programmatically* builds an AST node headed by the old spelling via `(intern-symbol "cast")` + `make-cell`, rather than writing `(cast …)` as literal source text. A `grep -n '(cast '` sweep is blind to these — the head symbol only exists as a string argument to `intern-symbol`. Found in UN-5: `fn-make-drop-method` (src/nucleusc.nuc, the cfn env-drop synthesizer) built a `(cast (raw ui8) self)` pointer reinterpret and a `(cast usize 8)` alignment literal this way; both survived the UN-3/UN-4 sweeps undetected and would have died the moment UN-5 retired the bare spelling (every with-bound closure with an owned env synthesizes a drop method through this path). When retiring or renaming a special-form spelling, also grep `intern-symbol "<old-name>"` (and check any other AST-synthesizing helper — lambda lift, closure invoke/drop, defunion arm ctors, type-erasure forwarding methods, per the `defn` synthesizer list above) before declaring the sweep complete.
 
-## Top-level macro expansion happens in the dispatcher's DEFAULT arm — so it is invisible to every prescan
+## Top-level macro expansion happens in the dispatcher's DEFAULT arm — after the prescans, which `late-prescan` replays
 
 Stage 18 TF-4 gave the top-level dispatcher (`emit-toplevel-forms`' `case hp` in `src/nucleusc.nuc`) a macro path, which it had never had: `toplevel-expand-macro` is called from the `case`'s **default** arm only — where the head is already unknown to the compiler — expands to fixpoint, `desugar-form`s the result, rewrites the list cell in place, and returns 1 so the loop re-dispatches the same cell without advancing. `(do …)` splices its children as separate top-level forms, copying the spine rather than relinking the expansion's own cells (a `quote` template hands out a shared subtree). Two consequences worth knowing before designing around it:
 
 - **Nothing else moved.** Because expansion is attempted only where the old code died, every built-in form still wins its own name, and a program that never wrote a top-level macro call emits the same bytes. This is the property that made the change safe to land inside a phase; do not "simplify" it by expanding before the `case`.
-- **The prescans never see the result.** `prescan-defn-signatures`, `prescan-struct-layouts` and the rest run over the form list *before* the loop, so a macro-produced definition is not forward-referenceable, and a macro cannot emit an `extend` together with the methods that satisfy it — the conformance check reads the prescanned method registry, whatever order the `do` splices in. Moving expansion ahead of the prescans means JIT-compiling `defmacro` bodies (and resolving their imports) before any other top-level form: a front-end staging change, deferred as stage18-tooling §T9.7.
+- **The file prescans never see the result, so `late-prescan` replays them on the splice.** `toplevel-expand-macro` (and a top-level `macrolet` body) runs `prescan-protocols` → `prescan-struct-names` → `prescan-defn-signatures` → `prescan-value-names` over the spliced forms before dispatching them (Stage 22 ED-4.1, `design/stage22-edn/macro-definitions.md`). Without it, a macro-produced `defn` is no method at all: it took `emit-defn`'s fallback `@name` binding, shadowing a written overload, and a macro-produced template returned early and vanished. A macro-produced definition is still not forward-referenceable. Expanding ahead of the prescans would fix that, but it needs `defmacro` bodies JIT-compiled before the helpers they call are emitted (deferred, stage18-tooling §T9.7).
+- **A late registration must never rename an emitted symbol.** `generic-add-method` clears `finalized`, so `finalize-generics` re-derives every method's `ir-name` — safe in the prescan, wrong once a call to the old name is already in the IR. Under `g-late-prescan`, `late-renamable?` keeps any method that already has an `ir-name`, and `generic-unbind-solitary` hides the solitary binding when the name becomes registry-dispatched. A method's symbol can therefore depend on source order; headers stay right only because they ask the registry (`defn-form-mangled-name`), never re-derive.
+- **After a leading `(ns …)` the loop walks a different list header.** `apply-leading-ns` returns a `node-rest` view, and `node-splice-at` gives that view a fresh array, so a `(do …)` splice never reaches the caller's list. The header writers read `g-root-forms` (the walked list) for that reason; anything else that reads the unit's forms after compilation must do the same.
 
 The pre-TF-4 note here said top-level sugar had to be a compiler directive (`fn-attr`-shaped: a `g-special-form-set` entry + a `case hp` arm + an `emit-<name>`). That is still the answer when the sugar must be visible to a prescan, or must reuse a built-in head; a `defmacro` is now the answer when neither applies — which is what `deftest` (`lib/test.nuc`) is.
+
+## A macro-body form that calls into the compiler is six edits
+
+`gensym`, `macro-error`, `struct-fields` and `type-name` each touch:
+1. the host export (`nucleus_gensym`, `nucleus_struct_fields`, … in `src/nucleusc.nuc`);
+2. its lowering in `emit-list`;
+3. its `node-type` arm (`src/generics.nuc`);
+4. the `gcheck-special-form` set;
+5. a `declare` in **both** JIT module builders, the macro one and the compile-time one;
+6. the reserved-name set.
+
+Miss a `declare` and only the module kind you did not test fails to link.
+
+**Private macros are not exported to a `.nuch`.** A public macro whose body or expansion uses a `defmacro-` works from source and fails through the header, so make the helper public (`lib/edn.nuc`'s `edn-str-node`).
+
+## A plain `:where` on a template `extend` is a condition, retried when a conformance is added
+
+`(extend (Box T) P :where (P T))` conforms only the instances whose argument conforms. `tmpl-conformance-check-one-in` skips a failing instance and queues it on `g-pending-tmpl-checks`, and `conformance-add` retries the queue (Stage 22, `design/stage22-edn/ed4-struct-codecs.md` §6). A new path that records a conformance without going through `conformance-add` would leave the queued instances unconformed.
 
 ## A diagnostic's notes already live in its MESSAGE — split there, do not re-plumb 688 call sites
 
@@ -7282,3 +7302,36 @@ equals `g-narrow-gen`:
 - `push-function-state` and `pop-function-state` save and restore the
   generation, as they do `g-nundo`.
 - Anything new that reads `ntype` must check `ngen` too.
+
+## A leading `#` is reader syntax — synthesized `#` names rely on it
+
+Since Stage 22 a token-initial `#` is dispatch (`#{`, `#_`, `#tag`), so no
+source spelling produces a symbol that begins with `#`. The compiler's own
+synthesized names — W5e's `#pN` namespaces, `#env-arg-N`, `#c/…`, `#dry` — are
+collision-free because of it. Never print one into text that is read back
+(`--emit-nuch`, `--dump-ast`, a REPL echo): it will not read
+(design/stage22-edn/overview.md §1.5).
+
+## Style: dispatch with `case`/`cond`, not `when` chains
+
+Write new code this way, and apply it when refactoring:
+
+- **More than two `when`s in a row become a `case` or a `cond`.** This applies to
+  early returns as well as to effects.
+- **When every arm has the same shape** (one value compared against constants,
+  one expression per result), use `case`, inside `return` when the arms are
+  values: `(return (case k EDN-NIL "nil" … "a tagged value"))`. Mixed tests or
+  results use `cond`. `edn-kind` and `edn-kind-name` in `lib/edn.nuc` are the
+  models.
+- **`when`s that all return the same thing are one `when` over a variadic
+  `or`**, not a `cond` that repeats the result. Don't nest `or`/`and`:
+  `(or a b c)`, never `(or a (or b c))`.
+- **Don't refactor if the result is longer** than the chain it replaces. Arms
+  with several statements take `(do …)`, opened on the arm's first line, so a
+  `cond` comes out the same length as the `when`s (`rd-form` in `lib/read.nuc`).
+  Sequential parsing that advances state between tests (`rd-hex-kind`) is not a
+  dispatch. Leave it as it is.
+
+`case`'s default is a **lone trailing element**, not a `true X` pair. `true X`
+compiles as `(= k true)` and leaves the `case` with no default
+(`lib/macros.nuc`, `case`). `cond` takes `true X`.

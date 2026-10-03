@@ -273,6 +273,7 @@
   (when (= name "w4c-unterminated-last-form.nuc") (return "read-unterminated-list"))
   (when (= name "w4c-unterminated-bracket.nuc") (return "read-unterminated-list"))
   (when (= name "w5a-hex-escape-no-digit.nuc") (return "read-bad-escape"))
+  (when (= name "w5e-ns-hash-reserved.nuc") (return "read-bad-tag"))
   (return ""))
 
 ; One print must read back as exactly one form, or a printer that dropped a
@@ -297,7 +298,7 @@
   (return (ok)))
 
 ; Returns the number of files that round-tripped; a refused file counts in
-; `refused` only when it is one of the six above, with the right code.
+; `refused` only when it is one of the seven above, with the right code.
 (defn roundtrip-over (dir:StrView (refused (ref i64))):!i64
   (let (d:DirEntries (try (read-dir dir))
         n:usize (dir-count &d)
@@ -338,9 +339,9 @@
         c:i64 (try (roundtrip-over "lib" &refused))
         d:i64 (try (roundtrip-over "src" &refused)))
     ; A sweep that swept nothing passes every assertion it never made -- and the
-    ; six refusals are part of what it must have reached.
+    ; seven refusals are part of what it must have reached.
     (try (check (> (+ a (+ b (+ c d))) 200) "the corpus to hold more than 200 readable files"))
-    (try (check-eq-int refused 6 "reader-error fixtures refused")))
+    (try (check-eq-int refused 7 "reader-error fixtures refused")))
   (return (ok)))
 
 ; ---------------------------------------------------------------------------

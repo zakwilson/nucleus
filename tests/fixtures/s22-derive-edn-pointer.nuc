@@ -1,0 +1,6 @@
+; Stage 22 ED-4.4: EDN has no spelling for a pointer, so derivation refuses one.
+(import-use string)
+(import-use edn)
+(defstruct Node2 v:i32 (next ?&Node2))
+(derive-edn Node2)
+(defn main ():i32 (return 0))

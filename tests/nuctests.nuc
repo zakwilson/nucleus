@@ -46,6 +46,7 @@
 (import-use suite-runtime)
 (import-use suite-audits)
 (import-use suite-s21)
+(import-use suite-s22)
 
 
 

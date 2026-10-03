@@ -1,0 +1,10 @@
+; Stage 22 ED-4.3: a String key would leak (HashMap never drops keys), so it is
+; not an EDN key type and the map has no codec.
+(import-use string)
+(import-use hashmap)
+(import-use edn)
+(defn main ():i32
+  (let (m:&(HashMap String i32) (alloca (HashMap String i32))
+        n:?&Node null)
+    (edn-read m n)
+    (return 0)))

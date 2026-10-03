@@ -1,0 +1,5 @@
+; Stage 22 ED-4.2: a template has no fields until it is applied.
+(import-use vector)
+(defmacro fields-of (t) (struct-fields t) `(defvar g-x:i32 0))
+(fields-of Vector)
+(defn main ():i32 (return 0))
