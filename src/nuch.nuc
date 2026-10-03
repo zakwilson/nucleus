@@ -274,7 +274,8 @@
                    (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM))
                    (not (gensym-definition? fc)))
           (nuch-extent-values fc)
-          (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
+          (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's))
+                mark:usize ((string-as-view &g-hdr-buf) 'len))
             (case h
               "defstruct"    (emit-nuch-defstruct (as ptr f))
               ; defunion exports verbatim (template or monomorphic); the
@@ -297,7 +298,35 @@
                              (do (header-print-node (as ptr f)) (emit g-hdr "\n"))
               "defenum"      (emit-nuch-defenum (as ptr f))
               "defmacro"     (emit-nuch-defmacro (as ptr f))
-              0)))))))
+              ; An exported macro's body may call it, and the importer compiles that body.
+              "defmacro-"    (emit-nuch-defmacro (as ptr f))
+              0)
+            (nuch-respell-since mark f)))))))
+
+; The text one form just wrote, with each quasiquote tag spelled the way this header's
+; importer will read it, or the form refused (quasiquote-resolution.md §3.11).
+(defn nuch-respell-since (mark:usize f:&Node):void
+  (let (tail:StrView (strview-drop-bytes (string-as-view &g-hdr-buf) mark))
+    (set! g-hyg-unspellable (symbol-none))
+    (let (fixed:StrView (hyg-scrub-in tail true))
+      (when (not (symbol-none? g-hyg-unspellable))
+        (diag-stage-note
+          (fstr "a header is read in another compilation, which can write only what this file's imports reach;"
+                " import the namespace that defines it, or keep the definition out of the header"))
+        (die-at (f 'line)
+          (fstr "--emit-nuch: cannot export '" (nuch-construct f) "': it names '"
+                (hyg-display g-hyg-unspellable) "', which this file has no spelling for")))
+      (when (!= (as ptr (fixed 'data)) (as ptr (tail 'data)))
+        (string-truncate-unchecked &g-hdr-buf mark)
+        (str-into &g-hdr-buf fixed)))))
+
+; `(head name …)`, for naming an exported form in a diagnostic.
+(defn nuch-construct (f:&Node):StrView
+  (let (h:Symbol (qq-head f)
+        n:?&Node (node-at f 1))
+    (when (= (node-kind n) NODE-SYM)
+      (return (fstr "(" h " " (hyg-display ((unsafe/cast &Node n) 's)) " …)")))
+    (return (fstr "(" h " …)"))))
 
 ; ============================================================
 ; .nuch import processing

@@ -920,6 +920,51 @@ The four items the compile-first batch left, plus three found fixing them. The s
 
 ---
 
+## Stage 22 — quasiquote name resolution, HY-4 to HY-6 built (2026-10-03)
+
+[stage22-edn/quasiquote-resolution.md](stage22-edn/quasiquote-resolution.md). The second as-built block at the end of its §5 has the details.
+- **Arm names.** A tagged arm name now means only its spelling. `arm-spelling` is applied in `union-arm-index` and at arm registration, so an arm constructor `(circle r)` beside a `defn circle` in the macro's file stays a constructor.
+- **Pre-existing bug fixed: union target rewrites.** A union rewrite spelled its target as the bare `UnionDef` key. A caller that reached the namespace only through a prefix therefore failed, and the baseline compiler failed too. `union-target-spelling` now writes the resolved type when the key is qualified.
+- **Forward macros.** `note-file-macros` records every file's top-level `defmacro` names before its forms emit, so a template may name a macro defined further down. Recording was chosen over a warning because it is cheaper.
+- **`.nuch` export.** Each root form's header text is re-spelled in the exporting file's environment. A tag with no spelling there is refused at the form's line, naming the form and the tag.
+- **HY-5.** `lib/edn.nuc` is `(ns edn)`. No import changes were needed, and `lib/edn.h`, `lib/edn.nuch` and `lib/test.nuch` were regenerated. `fmt` and `io` were measured (about 30 and 11 dependent files that do not import them) and left in `user`.
+- **HY-6.** Docs updated:
+  - `docs/compiler.md`: `--report-qq-resolution`, `.nuch` re-spelling, the refusal, and `defmacro-` export;
+  - `docs/macros.md`: arm names and forward macros;
+  - `docs/edn.md`: `(ns edn)`;
+  - `context/conventions.md` and `context/macros-jit.md`.
+- **Tests.** Seven new suite tests: `s22-hyg-arm-name`, `-forward-macro`, `-level-two`, `-str-prefixed-fmt`, `-nuch-respell`, `-nuch-unspellable` and `-edn-prefix-only`.
+
+`make test`: 1,291 passed, plus the five known LLVM-22 failures. Bootstrap converged, and `boot/*.ll` was copied back. Across the 455-file IR corpus, `examples/edn-read`, `edn-struct` and `self-test` differ only by the `edn__` prefix (checked as a sorted diff with the prefix stripped). The other differences are the two HY-3 fixtures, which are new.
+
+Pre-existing, not fixed:
+- a qualified `f/to-str` through a user-namespace library prefix does not narrow the overload set;
+- `"stdio.h"` plus `lib/edn` in a namespaced file declares `@remove` twice.
+
+**Follow-up, same day.**
+- **REPL rollback.** `g-file-macros` is on the REPL rollback roster (`n-file-macros`). Test: `s22-hyg-repl-file-macros-rollback`.
+- **Typed binders.** Writing that test exposed an HY-3 hole: a typed binder (`thing:i32`) was never tagged, while the template's references to `thing` were. The body therefore meant the file's global. In binder positions a typed token now tags its name part too, so it is refused by §3.5 like an untyped binder. Manifest row: `s22-hyg-typed-binder`.
+- **Gates.** `make test`: 1,293 passed, plus the known five. Bootstrap converged, and `boot/*.ll` was copied back. The IR corpus is identical to the HY-5 corpus apart from the new fixture. The census reports no binder collisions besides the two fixtures, and the roster check passes with 70 rows.
+- **Pre-existing, not fixed.** Re-importing a file whose failed import had already compiled a `defmacro` hits a duplicate JIT symbol.
+
+---
+
+## Stage 22 — quasiquote name resolution, HY-0 to HY-3 built (2026-10-03)
+
+[stage22-edn/quasiquote-resolution.md](stage22-edn/quasiquote-resolution.md), D1–D5 as written. The HY-0 answers, the census and the as-built deltas are recorded at the end of its §5.
+- **HY-2, the inert plumbing.** A tag is `#h<N>/<spelling>`. `N` indexes `g-hyg-envs`, a table of `HygEnv {env who kind}` that is on the REPL roster. Every reference resolver that HY-0 listed has a tag branch, and so does the C header's `type-node-to-c`. `resolve-spelling` refuses a tag with an internal error. Messages, the REPL printer and header text render a tag as the spelling its file would use.
+- **HY-1, the census.** `--report-qq-resolution` prints each rewrite and each static binder collision. Before the fixes it found 90 rewrites and 3 collisions in 29 macros across 12 files.
+- **HY-3, the rewrite.** It runs in `defmacro`, `~e` and `compile-time` bodies, not in `macrolet` or `macmap`. `scope-define` and `guard-name-kind` refuse a tagged binder. Seven collisions were fixed with `~'x`: `edn-scalar-codec`'s three, `derive-edn`'s, and three inline macros in `suite-s22`. `derive-edn` now follows §4, and `edn-str-node` is `defmacro-`. `.nuch` handling is minimal: tags are re-spelled at the header sink, and `defmacro-` forms are exported. A top-level expansion's late prescan now blames the call line.
+- **Tests.** Five suite tests, `s22-hyg-*` (q1–q5, where q5 is a namespaced caller with its own `edn-put`). Two manifest rows: the binder refusal and a planted tag reaching the assertion.
+
+`make test`: 1,284 passed, plus the five known LLVM-22 failures. Bootstrap converged (clean, make, update-bootstrap, clean, make, bootstrap), and the refreshed `boot/*.ll` was copied back. The IR corpus of 455 examples and fixtures is byte-identical to the pre-HY baseline. `lib/edn.nuch` was regenerated. Open: HY-4 (forward macros, real `.nuch` re-spelling or refusal, nested-quasiquote tests), HY-5, HY-6 (docs/context), and the arm-name residual of HY-0 Q3.
+
+## Stage 22 — quasiquote name resolution designed (2026-10-03)
+
+[stage22-edn/quasiquote-resolution.md](stage22-edn/quasiquote-resolution.md). **Plan only; nothing built.** Names in a macro template will resolve in the file that wrote it, Clojure-style, through a tagged spelling and the existing `NameEnv`. Probes against `342ad50` reproduced five failures. Three block namespaced macro libraries: a prefixed importer, a private helper, and a type. Two hit users today: a caller local capturing an expansion name, and a namespaced caller's own `edn-put` making `derive-edn` ambiguous. Milestones HY-0 … HY-6; decisions D1–D5 await the user.
+
+---
+
 ## Stage 22 — test reporting in EDN (2026-10-03)
 
 [stage22-edn/test-records.md](stage22-edn/test-records.md) §7. The three Stage 18 s-expression formats became one-line EDN maps whose first key says what each line is:

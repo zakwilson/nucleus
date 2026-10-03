@@ -1,0 +1,6 @@
+; A typed binder is refused like an untyped one; left bare, the template's `bump`
+; would mean the global (design/stage22-edn/quasiquote-resolution.md §3.5).
+(defn bump (x:i32):i32 (return (+ x 1)))
+(defmacro with-bump (e) `(let (bump:i32 ~e) (+ bump 1)))
+(defn main ():i32
+  (return (with-bump 1)))

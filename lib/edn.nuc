@@ -7,6 +7,8 @@
 ; Nucleus scalars and writes EDN back. Nothing is copied: a value is the `Node`
 ; the reader built, and its strings are interned for the life of the process.
 
+(ns edn)
+
 (import-use error)
 (import-use strview)
 (import-use string)
@@ -604,9 +606,9 @@
   (edn-release (v:&Self):void))
 
 (defmacro- edn-scalar-codec (t)
-  `(do (defn edn-decode (dst:(ref ~t) n:?&Node):ReadResult (return (edn-read dst n)))
-       (defn edn-encode (out:&String v:(ref ~t)):!void (return (edn-write out @v)))
-       (defn edn-release (v:(ref ~t)):void (return))
+  `(do (defn ~'edn-decode (dst:(ref ~t) n:?&Node):ReadResult (return (edn-read dst n)))
+       (defn ~'edn-encode (out:&String v:(ref ~t)):!void (return (edn-write out @v)))
+       (defn ~'edn-release (v:(ref ~t)):void (return))
        (extend ~t EdnCodec)))
 
 (edn-scalar-codec i8)
@@ -838,9 +840,8 @@
                        (str ":" key ": " msg)))
         (return (edn-err (e 'code) (e 'line) &m))))))
 
-; A string literal node with `sym`'s text. Public because the exported
-; `edn-derive-struct` expands it in the importer.
-(defmacro edn-str-node (sym)
+; A string literal node with `sym`'s text.
+(defmacro- edn-str-node (sym)
   `(let (sn:&Node (alloc-node))
      (set! (sn 'kind) NODE-STR)
      (set! (sn 's) ~sym)
@@ -861,9 +862,9 @@
       (let (f:ptr:Node (ast-at fields i)
             fname:ptr:Node (ast-at f 0)
             ftype:ptr:Node (ast-at f 1)
-            fe:ptr:Node 'edn-encode
-            fd:ptr:Node 'edn-decode
-            fr:ptr:Node 'edn-release
+            fe:ptr:Node `edn-encode
+            fd:ptr:Node `edn-decode
+            fr:ptr:Node `edn-release
             key:&Node (edn-str-node (fname 's))
             place:ptr:Node `(ref dst '~fname))
         (let (hd:ptr:Node ftype)
@@ -912,11 +913,11 @@
     out))
 
 ; `(derive-edn T …)`: an EdnCodec conformance for each named struct `T`,
-; written as `#ns/T {:field value …}`. The caller needs `(import-use edn)`.
+; written as `#ns/T {:field value …}`.
 (defmacro derive-edn (:rest types)
   (let (out:&Node (node-list-new (types 'line)))
     (node-push out 'do)
     (doseq (t types NodeIter)
-      (node-push out `(edn-derive-struct ~t ~(type-name t) edn-encode edn-decode edn-release))
+      (node-push out `(edn-derive-struct ~t ~(type-name t) ~'edn-encode ~'edn-decode ~'edn-release))
       (node-push out `(extend ~t EdnCodec)))
     out))

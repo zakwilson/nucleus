@@ -363,7 +363,7 @@
 (defn area (c:&Circ):i32 (return (* 3 (c 'r) (c 'r))))
 (defn early (c:&Circ):i32 (return (area c)))
 (defmacro derive-area (t)
-  `(defn area (s:(ref ~t)):i32 (return (* (s 'side) (s 'side)))))
+  `(defn ~'area (s:(ref ~t)):i32 (return (* (s 'side) (s 'side)))))
 (derive-area Sq)
 (derive-area Rect)
 (defn main ():i32
@@ -420,7 +420,7 @@
 (defstruct Circ r:i32)
 (defn area (c:&Circ):i32 (return (c 'r)))
 (defmacro derive-area (t)
-  `(defn area (s:(ref ~t)):i32 (return (s 'side))))
+  `(defn ~'area (s:(ref ~t)):i32 (return (s 'side))))
 (derive-area Sq)
 (defn main ():i32
   (let (f:(fn i32)(&Circ) area c:Circ (Circ 5))
@@ -619,7 +619,7 @@ user/Here
 (defstruct Holder b:(Box Pt) bb:(Box (Box Pt)))
 (defn use (x:&T :where (Codec T)):i32 (return (dec x)))
 (defmacro derive-codec (t)
-  `(do (extend ~t Codec) (defn dec (d:(ref ~t)):i32 (return (d 'n)))))
+  `(do (extend ~t Codec) (defn ~'dec (d:(ref ~t)):i32 (return (d 'n)))))
 (derive-codec Pt)
 (defn main ():i32
   (let (p:Pt (Pt 5)
@@ -971,4 +971,278 @@ user/Here
                           "manifest: a row is a map, not a vector"))
   (let (forms:?&Node (try (manifest-rows "{:name \"a\" :expect :reject :file \"f.nuc\" :line 4 :notes [\"n\"]}")))
     (try (check-eq-int (as i64 (node-len forms)) 1 "rows")))
+  (return (ok)))
+
+; ---------------------------------------------------------------------------
+; HY-3: quasiquote names resolve where the macro was written
+; (design/stage22-edn/quasiquote-resolution.md)
+; ---------------------------------------------------------------------------
+
+(defn s22-hyg-lib (dir:StrView):!void
+  (let (l:String (try (write-into dir "s22hyglib.nuc" "(ns s22hyglib)
+(defn helper (x:i32):i32 (return (+ x 100)))
+(defn- secret (x:i32):i32 (return (+ x 1000)))
+(defstruct Box v:i32)
+(defmacro twice-helper (e) `(helper (helper ~e)))
+(defmacro use-secret (e) `(secret ~e))
+(defmacro make-box (e) `(Box ~e))
+")))
+    (drop &l))
+  (return (ok)))
+
+; `main` is the probe's body; the library sits beside it.
+(defn s22-hyg-run (sub:StrView imports:StrView body:StrView want:StrView):!void
+  (let (dir:String (try (test-scratch-sub sub)))
+    (try (s22-hyg-lib (string-as-view &dir)))
+    (let (src:String (str "(import-use \"stdio.h\")\n" imports "\n(defn main ():i32\n" body "\n  (return 0))\n")
+          m:String (try (write-into (string-as-view &dir) "main.nuc" (string-as-view &src)))
+          out:String (try (build-run-file "" "" (string-as-view &m))))
+      (try (check-eq (string-as-view &out) want))
+      (drop &out) (drop &m) (drop &src))
+    (drop &dir))
+  (return (ok)))
+
+; q1: a prefixed import cannot spell the library's own helper bare.
+(deftest s22-hyg-prefixed-import
+  (try (s22-hyg-run "hq1" "(import s22hyglib m)"
+                    "  (printf \"%d\\n\" (m/twice-helper 1))" "201\n"))
+  (return (ok)))
+
+; q2: a private helper is the defining file's to name.
+(deftest s22-hyg-private-helper
+  (try (s22-hyg-run "hq2" "(import-use s22hyglib)"
+                    "  (printf \"%d\\n\" (use-secret 1))" "1001\n"))
+  (return (ok)))
+
+; q3: a type the template constructs, through a prefix.
+(deftest s22-hyg-prefixed-type
+  (try (s22-hyg-run "hq3" "(import s22hyglib m)"
+                    "  (let (b:m/Box (m/make-box 3)) (printf \"%d\\n\" (b 'v)))" "3\n"))
+  (return (ok)))
+
+; q4: a caller's local of the same name does not capture the template's call.
+(deftest s22-hyg-local-shadow
+  (try (s22-hyg-run "hq4" "(import-use s22hyglib)"
+                    "  (let (helper:i32 5) (printf \"%d %d\\n\" (twice-helper 1) helper))" "201 5\n"))
+  (return (ok)))
+
+; q5: derive-edn in a namespaced caller that defines its own `edn-put`: the
+; derived encoder calls the library's, so the call is not ambiguous.
+(deftest s22-hyg-derive-edn-own-put
+  (let (dir:String (try (test-scratch-sub "hq5")))
+    (let (l:String (try (write-into (string-as-view &dir) "s22hygcaller.nuc" "(ns s22hygcaller)
+(import-use string)
+(import-use edn)
+(defn edn-put (out:&String s:StrView):void (return))
+(defstruct Pt x:i32 y:i32)
+(derive-edn Pt)
+(defn pt-edn (s:&String):void
+  (let (p:Pt (Pt 1 2)) (edn-write s &p)))
+"))
+          m:String (try (write-into (string-as-view &dir) "main.nuc" "(import-use io)
+(import-use string)
+(import-use s22hygcaller)
+(defn main ():i32
+  (let (s:String (string-new))
+    (pt-edn &s)
+    (println (string-as-view &s)))
+  (return 0))
+"))
+          out:String (try (build-run-file "" "" (string-as-view &m))))
+      (try (check-eq (string-as-view &out) "#s22hygcaller/Pt {:x 1 :y 2}\n"))
+      (drop &out) (drop &m) (drop &l))
+    (drop &dir))
+  (return (ok)))
+
+; Files written into a fresh scratch directory; the answer is `main.nuc`'s output.
+(defn s22-hyg-files (sub:StrView names:&(Vector StrView) texts:&(Vector StrView)
+                     main:StrView want:StrView):!void
+  (let (dir:String (try (test-scratch-sub sub))
+        dv:StrView (string-as-view &dir))
+    (dotimes (i (unsafe/cast i32 (count names)))
+      (let (w:String (try (write-into dv (invoke names i:usize) (invoke texts i:usize))))
+        (drop &w)))
+    (let (m:String (try (write-into dv "main.nuc" main))
+          out:String (try (build-run-file "" "" (string-as-view &m))))
+      (try (check-eq (string-as-view &out) want))
+      (drop &out) (drop &m))
+    (drop &dir))
+  (return (ok)))
+
+; An arm name is never a global: a template's `(circle r)` constructs the arm
+; even where its file also defines a function `circle`, and through a prefix.
+(deftest s22-hyg-arm-name
+  (let (names:(Vector StrView) (vector-new)
+        texts:(Vector StrView) (vector-new))
+    (conj &names "armlib.nuc")
+    (conj &texts "(ns armlib)
+(defunion Shape (circle r:i32) (square s:i32))
+(defn circle (x:i32):i32 (return (* x 100)))
+(defmacro circle-r (e)
+  `(let (s:Shape (circle ~e))
+     (match s ((circle r) r) ((square q) q))))
+")
+    (try (s22-hyg-files "harm" &names &texts "(import-use \"stdio.h\")
+(import armlib a)
+(defn main ():i32
+  (let (s:a/Shape (circle 8))
+    (printf \"%d %d\\n\" (a/circle-r 7) (match s ((circle r) r) ((square q) q))))
+  (return 0))
+" "7 8\n"))
+    (drop &texts) (drop &names))
+  (return (ok)))
+
+; A template may name a macro its file defines further down (§3.10).
+(deftest s22-hyg-forward-macro
+  (let (names:(Vector StrView) (vector-new)
+        texts:(Vector StrView) (vector-new))
+    (conj &names "fwdlib.nuc")
+    (conj &texts "(ns fwdlib)
+(defmacro outer (e) `(inner (inner ~e)))
+(defmacro inner (e) `(+ ~e 10))
+")
+    (try (s22-hyg-files "hfwd" &names &texts "(import-use \"stdio.h\")
+(import fwdlib f)
+(defn main ():i32 (printf \"%d\\n\" (f/outer 1)) (return 0))
+" "21\n"))
+    (drop &texts) (drop &names))
+  (return (ok)))
+
+; Level 2: a macro-defining macro's inner template names its file's helper, and
+; the caller's local of that name does not capture it.
+(deftest s22-hyg-level-two
+  (let (names:(Vector StrView) (vector-new)
+        texts:(Vector StrView) (vector-new))
+    (conj &names "mm.nuc")
+    (conj &texts "(ns mm)
+(defn helper (x:i32):i32 (return (+ x 100)))
+(defmacro def-adder (name) `(defmacro ~name (x) `(helper ~x)))
+")
+    (try (s22-hyg-files "hl2" &names &texts "(import-use \"stdio.h\")
+(import mm m)
+(m/def-adder add100)
+(defn main ():i32 (let (helper:i32 1) (printf \"%d\\n\" (add100 helper))) (return 0))
+" "101\n"))
+    (drop &texts) (drop &names))
+  (return (ok)))
+
+; `str` through a prefixed `fmt` in a namespaced caller: the level-2 `to-str`
+; reaches the caller's conforming `Pt`, and the caller's local `to-str` is a value.
+(deftest s22-hyg-str-prefixed-fmt
+  (let (names:(Vector StrView) (vector-new)
+        texts:(Vector StrView) (vector-new))
+    (conj &names "s22hygapp.nuc")
+    (conj &texts "(ns s22hygapp)
+(import-use string)
+(import fmt f)
+(defstruct Pt x:i32)
+(extend Pt f/ToStr)
+(defn to-str (self:Pt out:&String):!void (return (f/to-str \"P\" out)))
+(defn show ():String
+  (let (p:Pt (Pt 7) to-str:i32 5)
+    (return (f/str \"n=\" to-str \" p=\" p))))
+")
+    (try (s22-hyg-files "hstr" &names &texts "(import-use io)
+(import-use string)
+(import-use s22hygapp)
+(defn main ():i32 (let (s:String (show)) (println (string-as-view &s))) (return 0))
+" "n=5 p=P\n"))
+    (drop &texts) (drop &names))
+  (return (ok)))
+
+(defn s22-hyg-maclib (dir:StrView):!void
+  (let (a:String (try (write-into dir "innerns.nuc" "(ns innerns)
+(defstruct Secret n:i32)
+"))
+        b:String (try (write-into dir "maclib.nuc" "(ns maclib)
+(import-use innerns)
+(defstruct Cfg n:i32)
+(defmacro def-get (name) `(defn ~name (c:&Cfg):i32 (return (c 'n))))
+(defmacro def-peek (name) `(defn ~name (s:&Secret):i32 (return (s 'n))))
+")))
+    (drop &b) (drop &a))
+  (return (ok)))
+
+; A header re-spells a tag the way its importer will read it: here through the
+; companion's own prefix.
+(deftest s22-hyg-nuch-respell
+  (let (dir:String (try (test-scratch-sub "hnr"))
+        dv:StrView (string-as-view &dir))
+    (try (s22-hyg-maclib dv))
+    (let (c:String (try (write-into dv "comp.nuc" "(ns comp)
+(import maclib m)
+(m/def-get getn)
+"))
+          h:String (try (emit-for-file "" "--emit-nuch" (string-as-view &c))))
+      (try (check-contains (string-as-view &h) "(declare getn ((c (ref m/Cfg))) :i32)"))
+      (try (check-not-contains (string-as-view &h) "#h"))
+      (drop &h) (drop &c))
+    (drop &dir))
+  (return (ok)))
+
+; ...and refuses a construct naming what the companion cannot spell at all.
+(deftest s22-hyg-nuch-unspellable
+  (let (dir:String (try (test-scratch-sub "hnu"))
+        dv:StrView (string-as-view &dir))
+    (try (s22-hyg-maclib dv))
+    (let (c:String (try (write-into dv "comp.nuc" "(ns comp)
+(import maclib m)
+(m/def-peek peek)
+"))
+          r:Compiled (try (emit-checked "" "--emit-nuch" (string-as-view &c))))
+      (try (check (not (r 'ok?)) "an unspellable export is refused"))
+      (try (check-contains (string-as-view (ref r 'raw-text))
+             "--emit-nuch: cannot export '(defn peek …)': it names 'innerns/Secret', which this file has no spelling for"))
+      (drop &r) (drop &c))
+    (drop &dir))
+  (return (ok)))
+
+; `lib/edn` has its own namespace: a namespaced companion derives through a
+; prefix alone, and so does the program that writes the value.
+(deftest s22-hyg-edn-prefix-only
+  (let (names:(Vector StrView) (vector-new)
+        texts:(Vector StrView) (vector-new))
+    (conj &names "s22hygco.nuc")
+    (conj &texts "(ns s22hygco)
+(import edn e)
+(defstruct Pt x:i32 y:i32)
+(e/derive-edn Pt)
+")
+    (try (s22-hyg-files "hco" &names &texts "(import-use io)
+(import-use string)
+(import edn e)
+(import-use s22hygco)
+(defn main ():i32
+  (let (s:String (string-new) p:Pt (Pt 1 2))
+    (e/edn-write &s &p)
+    (println (string-as-view &s)))
+  (return 0))
+" "#s22hygco/Pt {:x 1 :y 2}\n"))
+    (drop &texts) (drop &names))
+  (return (ok)))
+
+; An import that dies rolls back the macro names it recorded: else the fixed file's
+; `thing` would still count as a macro of its file, and its binder would be refused.
+(deftest s22-hyg-repl-file-macros-rollback
+  (let (dir:String (try (test-scratch-sub "hrb"))
+        dv:StrView (string-as-view &dir)
+        v1:String (try (write-into dv "v1.nuc" "(ns rfm)
+(no-such-fn-anywhere 3)
+(defmacro thing (x) x)
+"))
+        v2:String (try (write-into dv "v2.nuc" "(ns rfm)
+(defmacro use-it () `(let (thing:i32 41) (+ thing 1)))
+"))
+        lib:String (str dv "/rfm.nuc")
+        a:StrView (string-as-view &v1)
+        b:StrView (string-as-view &v2)
+        l:StrView (string-as-view &lib)
+        text:String (str "(system \"cp " a " " l "\")\n(import-use \"" l "\")\n"
+                         "(system \"cp " b " " l "\")\n(import-use \"" l "\")\n(use-it)\n")
+        t:String (try (repl-session (string-as-view &text)))
+        tv:StrView (string-as-view &t))
+    (try (check-contains tv "unknown top-level form: no-such-fn-anywhere"))
+    (try (check-not-contains tv "binds 'thing'"))
+    (try (check-contains tv "nuc>   42\n"))
+    (drop &t) (drop &text) (drop &lib) (drop &v2) (drop &v1) (drop &dir))
   (return (ok)))

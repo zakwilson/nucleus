@@ -146,6 +146,16 @@
 (defvar g-type-alias-depth:i32 0)
 ; Append-only: a marker's index is its identity (`env-arg-sym`).
 (defvar g-env-args:&(Vector &EnvArg) (vector-new-in &g-arena-alloc))
+; A quasiquote tag's N indexes this (`hyg-of`); append-only within a compilation.
+(defvar g-hyg-envs:&(Vector &HygEnv) (vector-new-in &g-arena-alloc))
+; Armed while a defmacro, `~e` or compile-time body compiles: its quasiquotes resolve (§3.6).
+(defvar g-qq-resolve:i32 0)
+; `--report-qq-resolution`: print each quasiquote's rewrites and binder collisions.
+(defvar g-report-qq:i32 0)
+; The last tag `hyg-respell` found no spelling for, or none.
+(defvar g-hyg-unspellable:Symbol)
+; Every file's macro names, so a template may name one its file defines further down.
+(defvar g-file-macros:&(Vector &FileMacro) (vector-new-in &g-arena-alloc))
 ; (Vector ptr) of EnumDef* (each individually arena-allocated).
 (defvar g-enumdefs:&(Vector &EnumDef) (vector-new-in &g-arena-alloc))
 (defvar g-pending-unions:&(Vector &StructDef) (vector-new-in &g-arena-alloc))
@@ -1173,7 +1183,7 @@
 
 (defn fprint-node (out:ptr n:?&Node):void
   (let (s:String (node-str n))
-    (emit-all out &s)
+    (emit out (hyg-scrub (string-as-view &s)))
     (drop &s)))
 
 (defn print-node (n:?&Node):void
@@ -2734,7 +2744,10 @@
 (defn emit-quasiquote (call:?&Node scope:&Scope):&Val
   (let (cc:(ptr Node) call)
     (when (!= (node-len call) 2) (die-at (cc 'line) "quasiquote: expects 1 arg"))
-    (return (emit-qq-form (node-at call 1) scope 1))))
+    (let (tmpl:?&Node (node-at call 1))
+      (when (and (!= g-qq-resolve 0) (!= (in-jit-module) 0))
+        (set! tmpl (qq-resolve tmpl (cc 'line))))
+      (return (emit-qq-form tmpl scope 1)))))
 
 ; One field of a by-value struct Val, as IR text: `path` is the extractvalue index
 ; prefix already walked, and a `usize` length is widened to the callee's i64.
@@ -5364,6 +5377,10 @@
 
 ; THE canonicaliser. See the section header for the rules.
 (defn resolve-spelling (spelling:Symbol):&NameRef
+  (when (>= (hyg-index spelling) 0)
+    (die-at g-form-line
+      (fstr "internal error: the quasiquote name tag '" spelling "' (table entry "
+            (hyg-index spelling) ") reached resolve-spelling unwrapped -- a reference resolver is missing its tag branch (design/stage22-edn/quasiquote-resolution.md §3.4)")))
   (let (r:&NameRef (new NameRef))
     (set! (r 'spelling) spelling)
     (set! (r 'bare) spelling)
@@ -5431,6 +5448,11 @@
 ; Resolve a source REFERENCE against the global scope. `sc` is the global frame
 ; (the unique null-parent Scope); `name` is the spelling as written.
 (defn globals-lookup-ref (sc:?&Scope name:Symbol):?&Sym
+  (when-some (h (hyg-of name))
+    (let (here:NameEnv (hyg-enter h)
+          r:?&Sym (globals-lookup-ref sc (hyg-inner name)))
+      (name-env-set here)
+      (return r)))
   (let (n:i64 (qualifier-len name))
     (when (<= n 0)
       ; Unqualified: the current namespace's key — the pre-B2b rule, unchanged,
@@ -5687,6 +5709,11 @@
 ; asked here. Identity and admission need different data; admission is asked at
 ; the annotation site, where the spelling the author wrote still exists.
 (defn dyn-proto-key (spelling:Symbol):Symbol
+  (when-some (h (hyg-of spelling))
+    (let (here:NameEnv (hyg-enter h)
+          k:Symbol (dyn-proto-key (hyg-inner spelling)))
+      (name-env-set here)
+      (return k)))
   (let (r:&NameRef (resolve-spelling spelling))
     (when (= (r 'status) NR-UNBOUND) (return spelling))
     (when (= (r 'status) NR-QUALIFIED) (return (r 'canonical)))
@@ -11745,6 +11772,11 @@
   (return null))
 
 (defn find-macro (spelling:Symbol):?&MacroDef
+  (when-some (h (hyg-of spelling))
+    (let (here:NameEnv (hyg-enter h)
+          r:?&MacroDef (find-macro (hyg-inner spelling)))
+      (name-env-set here)
+      (return r)))
   ; Stage 16: lexical bindings win over the global registry. `find-macro` is the
   ; registry's only reader, so this one probe covers emit-list's dispatch,
   ; node-type, gcheck, valid-walk and the BK-MACRO name-kind lookup at once.
@@ -12315,6 +12347,416 @@
       (when (not (symbol-none? p)) (return (symbol-intern (fstr p "/" bare)))))
     (return (symbol-none))))
 
+; How the tag's own file names what it resolves to: `mylib/helper`, or `helper` in `user`.
+; For reading only; it is never re-read (quasiquote-resolution.md §3.9).
+(defn hyg-display (name:Symbol):StrView
+  (if-some (h (hyg-of name))
+    (let (here:NameEnv (hyg-enter h)
+          shown:StrView (binding-display (hyg-inner name)))
+      (name-env-set here)
+      (return shown))
+    (return (symbol-as-view name))))
+
+; The tag's binding as the current file spells it, falling back to `hyg-display`.
+(defn hyg-respell (name:Symbol):StrView
+  (if-some (h (hyg-of name))
+    (let (here:NameEnv (hyg-enter h)
+          inner:Symbol (hyg-inner name)
+          bare:Symbol inner
+          hit:?&BindingHit (binding-find inner null 0 BINDING-KIND-COUNT 0 NK-NONE))
+      (when (> (qualifier-len inner) 0)
+        (set! bare ((resolve-spelling inner) 'bare)))
+      (name-env-set here)
+      (when-some (b hit)
+        (let (s:Symbol (binding-usable-spelling (b 'kind) (b 'payload) bare))
+          (when (not (symbol-none? s)) (return (symbol-as-view s)))))
+      (set! g-hyg-unspellable name)
+      (return (hyg-display name)))
+    (return (symbol-as-view name))))
+
+; §3.5: a template name its own file resolves may not be bound by the expansion.
+(defn hyg-refuse-binder (name:Symbol line:i32):void
+  (when (= (count g-hyg-envs) 0) (return))
+  (when-some (h (hyg-of name))
+    (let (inner:Symbol (hyg-inner name)
+          here:NameEnv (hyg-enter h)
+          noun:StrView "a global"
+          shown:StrView (binding-display inner))
+      (when-some (hit (binding-find inner null 0 BINDING-KIND-COUNT 0 NK-NONE))
+        (set! noun (binding-noun (hit 'kind) (hit 'payload))))
+      (name-env-set here)
+      (let (who:StrView (case (h 'kind)
+                          1 (fstr "the computed argument '" (h 'who) "'")
+                          2 "a compile-time block"
+                          (fstr "macro '" (h 'who) "'"))
+            the:StrView (cond (strview-has-prefix noun "an ") (fstr "the " (strview-drop-bytes noun (as usize 3)))
+                              (strview-has-prefix noun "a ") (fstr "the " (strview-drop-bytes noun (as usize 2)))
+                              true noun))
+        (diag-stage-note
+          (fstr "a template name that names a global in the macro's file refers to that global;\n  write ~'"
+                inner " to bind the caller's name, or use (gensym)"))
+        ; A template's lists carry no line; the expansion is blamed at its call.
+        (die-at (if (= line 0) g-form-line line)
+                (fstr who " binds '" inner "', which its file resolves to " the " '" shown "'"))))))
+
+; The current file's global `name` as `ns/bare`, or bare when it lives in `user`.
+(defn binding-display (name:Symbol):StrView
+  (let (bare:Symbol name
+        ns:Symbol (symbol-none))
+    (when (> (qualifier-len name) 0)
+      (let (r:&NameRef (resolve-spelling name))
+        (set! bare (r 'bare))
+        (set! ns (r 'ns))))
+    (when-some (hit (binding-find name null 0 BINDING-KIND-COUNT 0 NK-NONE))
+      (set! ns (binding-src-ns (hit 'kind) (hit 'payload))))
+    (when (or (symbol-none? ns) (= ns "user")) (return (symbol-as-view bare)))
+    (return (fstr ns "/" bare))))
+
+; ------------------------------------------------------------
+; The quasiquote pass (design/stage22-edn/quasiquote-resolution.md §3.2, §3.7)
+; ------------------------------------------------------------
+
+; The prelude and its macros: in every file by construction, so never tagged.
+(defn qq-prelude-file? (path:Symbol):bool
+  (when (= (path-under-ct-lib-root path) 0) (return false))
+  (let (base:StrView (strview-drop-bytes (symbol-as-view path)
+                                         (+ (symbol-len g-ct-lib-root) (as usize 1))))
+    (return (or (= base "prelude.nuc") (= base "macros.nuc")))))
+
+; Does a template naming this binding mean the defining file's? Not when every file
+; sees the same thing: built-ins, prelude, intrinsic operators, C names (§3.2).
+(defn qq-hit-resolves? (kind:i32 payload:ptr):bool
+  (let (file:Symbol (symbol-none))
+    (case kind
+      BK-GLOBAL          (set! file ((unsafe/cast &Sym payload) 'src-file))
+      BK-GENERIC
+        (let (g:&Generic (unsafe/cast &Generic payload))
+          (dotimes (i (unsafe/cast i32 (count (g 'methods))))
+            (let (m:&Method (as &Method (invoke (g 'methods) i:usize)))
+              (when (or (= (m 'kind) METHOD-INTRINSIC) (qq-prelude-file? (m 'src-file)))
+                (return false))
+              (when (symbol-none? file) (set! file (m 'src-file))))))
+      BK-MACRO           (set! file ((unsafe/cast &MacroDef payload) 'src-file))
+      BK-PROTOCOL        (set! file ((unsafe/cast &Protocol payload) 'src-file))
+      BK-STRUCT          (set! file ((unsafe/cast &StructDef payload) 'src-file))
+      BK-UNION           (set! file ((unsafe/cast &UnionDef payload) 'src-file))
+      BK-STRUCT-TEMPLATE (set! file ((unsafe/cast &StructTemplate payload) 'src-file))
+      BK-UNION-TEMPLATE  (set! file ((unsafe/cast &UnionTemplate payload) 'src-file))
+      BK-ENUM            (set! file ((unsafe/cast &EnumDef payload) 'src-file))
+      BK-TYPE-ALIAS      (set! file ((unsafe/cast &TypeAlias payload) 'src-file))
+      0)
+    (when (symbol-none? file) (return false))
+    (when (qq-prelude-file? file) (return false))
+    (when (strview-has-suffix (symbol-as-view file) ".h") (return false))
+    (return true)))
+
+; The global a template symbol names in the file compiling the quasiquote, or null
+; when the symbol stays as written. A typed token is split by the caller (§3.8).
+(defn qq-resolvable (name:Symbol):?&BindingHit
+  (when (= (symbol-len name) 0) (return null))
+  (when (= (symbol-byte-at name (as usize 0)) 35) (return null))
+  (when (symbol-contains-byte name 58) (return null))
+  (when (or (= name "true") (= name "false") (= name "null")) (return null))
+  (when (strview-has-prefix (symbol-as-view name) "unsafe/") (return null))
+  (when (!= (special-form-named name) 0) (return null))
+  (when (or (!= (primitive-type-named name) 0) (!= (pointer-kind-named name) 0))
+    (return null))
+  (if-some (hit (binding-find name null 0 BINDING-KIND-COUNT 0 NK-NONE))
+    (when (qq-hit-resolves? (hit 'kind) (hit 'payload)) (return hit))
+    ; A macro this file defines below the template is not registered yet (§3.10).
+    (when (file-defines-macro? g-source-path name)
+      (let (hit:&BindingHit (new BindingHit))
+        (set! (hit 'kind) BK-MACRO)
+        (set! (hit 'payload) null)
+        (return hit))))
+  (return null))
+
+(defn note-file-macros (forms:?&Node):void
+  (dotimes (i (node-len forms))
+    (let (f:?&Node (node-at forms i))
+      (when (= (node-kind f) NODE-LIST)
+        (let (h:Symbol (qq-head (unsafe/cast &Node f))
+              n:?&Node (node-at f 1))
+          (when (and (or (= h "defmacro") (= h "defmacro-")) (= (node-kind n) NODE-SYM)
+                     (not (file-defines-macro? g-source-path ((unsafe/cast &Node n) 's))))
+            (let (rec:&FileMacro (new FileMacro))
+              (set! (rec 'path) g-source-path)
+              (set! (rec 'name) ((unsafe/cast &Node n) 's))
+              (conj g-file-macros rec))))))))
+
+(defn file-defines-macro? (path:Symbol name:Symbol):bool
+  (doseq (m g-file-macros (VecIter &FileMacro))
+    (when (and (= (m 'path) path) (= (m 'name) name)) (return true)))
+  (return false))
+
+; A type position names a type or protocol; a value of the same spelling is not it.
+(defn qq-type-kind? (kind:i32):bool
+  (case kind
+    (:or BK-STRUCT BK-UNION BK-STRUCT-TEMPLATE BK-UNION-TEMPLATE BK-ENUM
+         BK-TYPE-ALIAS BK-PROTOCOL)
+      (return true)
+    (return false)))
+
+(defn qq-report (line:i32 what:StrView name:Symbol hit:&BindingHit):void
+  (emit stderr "qq-resolution: " g-source-path ":" line ": " (ct-body-who) ": " what " '"
+        name "' -> " (binding-noun (hit 'kind) (hit 'payload)) " '" (binding-display name) "'\n"))
+
+; `name` tagged when it resolves (and, if `type-only`, to a type); else `name`.
+(defn qq-tag-name (name:Symbol type-only:bool line:i32):Symbol
+  (if-some (hit (qq-resolvable name))
+    (do
+      (when (and type-only (not (qq-type-kind? (hit 'kind)))) (return name))
+      (when (!= g-report-qq 0) (qq-report line "rewrite" name hit))
+      (return (hyg-mint name)))
+    (return name)))
+
+; A spelling whose type part's leaf is tagged (§3.8): the name before `from` and
+; the `ref:`/`?&`/`!` wrapping are kept as written.
+(defn qq-tag-type-leaf (spelling:Symbol from:usize line:i32):Symbol
+  (let (sv:StrView (symbol-as-view spelling)
+        start:usize from
+        n:usize (symbol-len spelling))
+    (dotimes (i (unsafe/cast i32 (- n from)))
+      (when (= (symbol-byte-at spelling (+ from (as usize i))) 58)
+        (set! start (+ (+ from (as usize i)) (as usize 1)))))
+    (while (and (< start n) (qq-type-sigil? (symbol-byte-at spelling start)))
+      (set! start (+ start (as usize 1))))
+    (when (>= start n) (return spelling))
+    (let (leaf:Symbol (symbol-intern (strview-drop-bytes sv start))
+          tagged:Symbol (qq-tag-name leaf true line))
+      (when (= tagged leaf) (return spelling))
+      (return (symbol-intern (fstr (strview-take-bytes sv start) tagged))))))
+
+; `?`, `&`, `!`, `*` wrap a type spelling's leaf name.
+(defn qq-type-sigil? (c:i32):bool
+  (case c
+    (:or 63 38 33 42) (return true)
+    (return false)))
+
+(defn qq-sym-node (s:Symbol):&Node
+  (return (intern-node s)))
+
+(defn qq-keyword-node (old:&Node s:Symbol):&Node
+  (let (k:&Node (alloc-node))
+    (set! (k 'kind) NODE-KEYWORD)
+    (set! (k 'line) (old 'line))
+    (set! (k 's) s)
+    (return k)))
+
+; One data symbol: a typed token keeps its binder and tags its type's leaf.
+(defn qq-resolve-sym (e:&Node line:i32):&Node
+  (let (s:Symbol (e 's)
+        sv:StrView (symbol-as-view s))
+    (match (strview-find-byte sv 58)
+      ((some i)
+        (let (t:Symbol (qq-tag-type-leaf s (+ i (as usize 1)) line))
+          (when (= t s) (return e))
+          (return (qq-sym-node t))))
+      (none
+        (let (t:Symbol (qq-tag-name s false line))
+          (when (= t s) (return e))
+          (return (qq-sym-node t)))))))
+
+; A binder: a typed token's name part is tagged too, so `scope-define` refuses it as it
+; does an untyped one; left bare, the template's own references would mean the global.
+(defn qq-resolve-binder (b:?&Node line:i32):?&Node
+  (case (node-kind b)
+    NODE-LIST (return (qq-resolve-binders (unsafe/cast &Node b) 0 line))
+    NODE-SYM
+      (let (e:&Node (unsafe/cast &Node b)
+            s:Symbol (e 's)
+            sv:StrView (symbol-as-view s))
+        (match (strview-find-byte sv 58)
+          ((some i)
+            (let (name:Symbol (symbol-intern (strview-take-bytes sv i))
+                  tn:Symbol (qq-tag-name name false line))
+              (when (= tn name) (return (qq-resolve-sym e line)))
+              (let (typed:Symbol (qq-tag-type-leaf s (+ i (as usize 1)) line))
+                (return (qq-sym-node (symbol-intern
+                          (fstr tn (strview-drop-bytes (symbol-as-view typed) i))))))))
+          (none (return (qq-resolve-sym e line)))))
+    (return b)))
+
+; `lst` with every `stride`th element, from 0, resolved as a binder; stride 0 means only element 0.
+(defn qq-resolve-binders (lst:&Node stride:i32 line:i32):?&Node
+  (let (out:&Node (node-list-new (lst 'line))
+        changed:bool false)
+    (dotimes (i (node-len lst))
+      (let (e:?&Node (node-at lst i)
+            r:?&Node (if (if (= stride 0) (= i 0) (= (% i stride) 0))
+                       (qq-resolve-binder e line)
+                       (qq-resolve-node e (if (= (node-kind e) NODE-LIST)
+                                            (qq-ret-index (qq-head (unsafe/cast &Node e))) -1)
+                                        line)))
+        (when (!= (as ptr r) (as ptr e)) (set! changed true))
+        (node-push out r)))
+    (when changed (return out))
+    (return lst)))
+
+; The element of a form with head `h` that holds its binders, or -1.
+(defn qq-binder-slot (h:Symbol):i32
+  (cond (or (= h "let") (= h "with") (= h "fn")
+            (= h "when-some") (= h "if-some") (= h "dotimes") (= h "doseq")
+            (= h "doseq-iter") (= h "for")
+            (= h "defvar") (= h "defvar-") (= h "defconst") (= h "defconst-"))
+          (return 1)
+        (or (= h "defn") (= h "defn-") (= h "defmacro") (= h "defmacro-"))
+          (return 2)
+        true (return -1)))
+
+(defn qq-binder-stride (h:Symbol):i32
+  (cond (or (= h "let") (= h "with")) (return 2)
+        (or (= h "fn") (= h "defn") (= h "defn-") (= h "defmacro") (= h "defmacro-")) (return 1)
+        true (return 0)))
+
+; The empty spelling, not `symbol-none`, when there is no symbol head: callers compare it.
+(defn qq-head (lst:&Node):Symbol
+  (when-some (h (node-first lst))
+    (when (= (h 'kind) NODE-SYM) (return (h 's))))
+  (return (symbol-intern "")))
+
+; A binder the head binds: a template symbol there that resolves would be refused (§3.5).
+(defn qq-check-binder (b:?&Node line:i32):void
+  (when (= (node-kind b) NODE-LIST)
+    (set! b (node-at b 0)))
+  (when (!= (node-kind b) NODE-SYM) (return))
+  (let (s:Symbol ((unsafe/cast &Node b) 's)
+        sv:StrView (symbol-as-view s))
+    (match (strview-find-byte sv 58)
+      ((some i) (set! s (symbol-intern (strview-take-bytes sv i))))
+      (none (do)))
+    (when-some (hit (qq-resolvable s))
+      (qq-report line "binder" s hit))))
+
+(defn qq-check-binder-list (lst:?&Node stride:i32 line:i32):void
+  (let (i:i32 0)
+    (while (< i (node-len lst))
+      (qq-check-binder (node-at lst i) line)
+      (set! i (+ i stride)))))
+
+(defn qq-report-binders (lst:&Node h:Symbol line:i32):void
+  (cond (or (= h "let") (= h "with"))
+          (qq-check-binder-list (node-at lst 1) 2 line)
+        (or (= h "when-some") (= h "if-some") (= h "dotimes") (= h "doseq")
+            (= h "doseq-iter") (= h "for"))
+          (qq-check-binder (node-at lst 1) line)
+        (= h "fn")
+          (qq-check-binder-list (node-at lst 1) 1 line)
+        (or (= h "defn") (= h "defn-") (= h "defmacro") (= h "defmacro-"))
+          (do (qq-check-binder (node-at lst 1) line)
+              (qq-check-binder-list (node-at lst 2) 1 line))
+        (or (= h "defvar") (= h "defvar-") (= h "defconst") (= h "defconst-")
+            (= h "defstruct") (= h "defstruct-") (= h "defunion") (= h "defunion-")
+            (= h "defenum") (= h "defenum-") (= h "defprotocol") (= h "defprotocol-")
+            (= h "deferror") (= h "extern") (= h "deftype"))
+          (qq-check-binder (node-at lst 1) line)
+        (= h "extend")
+          (dotimes (i (node-len lst))
+            (when (and (>= i 3) (= (node-kind (node-at lst i)) NODE-LIST))
+              (qq-check-binder (node-at (node-at lst i) 0) line)))
+        true 0))
+
+; Where a `):Ret` keyword sits in a form with this head, or -1 (§3.8).
+(defn qq-ret-index (h:Symbol):i32
+  (when (or (= h "defn") (= h "defn-") (= h "extern")) (return 3))
+  (when (= h "fn") (return 2))
+  (return -1))
+
+(defn qq-resolve-node (e:?&Node ret-at:i32 line:i32):?&Node
+  (case (node-kind e)
+    NODE-SYM  (return (qq-resolve-sym (unsafe/cast &Node e) line))
+    NODE-LIST (return (qq-resolve-list (unsafe/cast &Node e) ret-at line))
+    (return e)))
+
+; §3.7: data at every level is resolved; `quote`d data and anything under an
+; unquote are left as written. A `match` pattern and `make`'s arm name arms, not globals.
+(defn qq-resolve-list (lst:&Node ret-at:i32 line:i32):?&Node
+  (let (h:Symbol (qq-head lst)
+        here:i32 (node-line (as ?&Node lst) line)
+        n:i32 (node-len lst)
+        out:&Node (node-list-new (lst 'line))
+        changed:bool false)
+    (when (or (= h "quote") (= h "unquote") (= h "unquote-splice")) (return lst))
+    (when (!= g-report-qq 0) (qq-report-binders lst h here))
+    (dotimes (i n)
+      (let (e:?&Node (node-at lst i)
+            r:?&Node e)
+        (cond (and (= h "make") (= i 2)) 0
+              (= i (qq-binder-slot h))
+                (set! r (if (= (node-kind e) NODE-LIST)
+                          (qq-resolve-binders (unsafe/cast &Node e) (qq-binder-stride h) here)
+                          (qq-resolve-binder e here)))
+              (and (= h "match") (>= i 2) (= (node-kind e) NODE-LIST))
+                (let (arm:&Node (unsafe/cast &Node e)
+                      na:&Node (node-list-new (arm 'line))
+                      armc:bool false)
+                  (dotimes (j (node-len arm))
+                    (let (ae:?&Node (node-at arm j)
+                          ar:?&Node (if (= j 0) ae (qq-resolve-node ae -1 here)))
+                      (when (!= (as ptr ar) (as ptr ae)) (set! armc true))
+                      (node-push na ar)))
+                  (when armc (set! r na)))
+              (and (= i ret-at) (= (node-kind e) NODE-KEYWORD))
+                (let (k:&Node (unsafe/cast &Node e)
+                      t:Symbol (qq-tag-type-leaf (k 's) (as usize 0) here))
+                  (when (!= t (k 's)) (set! r (qq-keyword-node k t))))
+              (or (= h "defprotocol") (= h "defprotocol-"))
+                (set! r (qq-resolve-node e (if (>= i 2) 2 -1) here))
+              true
+                (set! r (qq-resolve-node e (if (= (node-kind e) NODE-LIST)
+                                             (qq-ret-index (qq-head (unsafe/cast &Node e))) -1)
+                                         here)))
+        (when (!= (as ptr r) (as ptr e)) (set! changed true))
+        (node-push out r)))
+    (when changed (return out))
+    (return lst)))
+
+; The template with its resolvable data symbols tagged, or the template itself.
+(defn qq-resolve (tmpl:?&Node line:i32):?&Node
+  (case (node-kind tmpl)
+    NODE-SYM  (return (qq-resolve-sym (unsafe/cast &Node tmpl) line))
+    NODE-LIST (return (qq-resolve-list (unsafe/cast &Node tmpl)
+                                       (qq-ret-index (qq-head (unsafe/cast &Node tmpl))) line))
+    (return tmpl)))
+
+; `text` with every minted tag replaced by `hyg-display`: the one rule for messages,
+; printed nodes and header text. The identity whenever nothing minted a tag.
+(defn hyg-scrub (text:StrView):StrView
+  (return (hyg-scrub-in text false)))
+
+; `respell`: each tag as the file being compiled would write it, for text another
+; compilation reads; else as the tag's own file names it.
+(defn hyg-scrub-in (text:StrView respell:bool):StrView
+  (when (= (count g-hyg-envs) 0) (return text))
+  (let (n:i64 (as i64 (text 'len))
+        out:String (string-new)
+        i:i64 0
+        copied:i64 0)
+    (while (< i n)
+      (if (and (= (text-byte-at text i) 35) (< (+ i 1) n) (= (text-byte-at text (+ i 1)) 104))
+        (let (j:i64 (+ i 2))
+          (while (and (< j n) (hyg-symbol-byte? (text-byte-at text j))) (set! j (+ j 1)))
+          (let (tag:Symbol (symbol-intern (strview (unsafe/ptr+ (text 'data) i) (as usize (- j i)))))
+            (if (= (hyg-of tag) null)
+              (set! i (+ i 1))
+              (do (str-into &out (strview (unsafe/ptr+ (text 'data) copied) (as usize (- i copied))))
+                  (str-into &out (if respell (hyg-respell tag) (hyg-display tag)))
+                  (set! i j)
+                  (set! copied j)))))
+        (set! i (+ i 1))))
+    (when (= copied 0)
+      (drop &out)
+      (return text))
+    (str-into &out (strview (unsafe/ptr+ (text 'data) copied) (as usize (- n copied))))
+    (return (string-as-view &out))))
+
+; Can byte `c` continue a symbol in printed text?
+(defn hyg-symbol-byte? (c:i32):bool
+  (when (<= c 32) (return false))
+  (case c
+    (:or 40 41 91 93 123 125 39 34 96 44 59) (return false)
+    (return true)))
+
 ; ------------------------------------------------------------
 ; probe
 ; ------------------------------------------------------------
@@ -12454,6 +12896,11 @@
 ; exactly as the registry probes are — a facade's alias is reachable only from a
 ; file that can name the facade.
 (defn binding-alias-find (spelling:Symbol kind:i32):ptr
+  (when-some (h (hyg-of spelling))
+    (let (here:NameEnv (hyg-enter h)
+          r:ptr (binding-alias-find (hyg-inner spelling) kind))
+      (name-env-set here)
+      (return r)))
   (when (= g-binding-aliases null) (return null))
   (let (tbl:&(Vector &BindingAlias) (unsafe/cast &(Vector &BindingAlias) g-binding-aliases))
     (dotimes (i (name-ref-key-count spelling))
@@ -13051,7 +13498,7 @@
 ; which `emit-ns` refuses precisely because this binding pre-owns the name.
 (defn unsafe-qualified-op (spelling:Symbol):i32
   (let (n:i64 (qualifier-len spelling))
-    (when (<= n 0) (return 0))
+    (when (or (<= n 0) (>= (hyg-index spelling) 0)) (return 0))
     (let (r:&NameRef (resolve-spelling spelling))
       (when (symbol-none? (r 'ns)) (return 0))
       (when (!= (r 'ns) "unsafe") (return 0))
@@ -13125,6 +13572,7 @@
 ; struct's own guard runs (before that the struct prescan always won the race
 ; and the clash was reported at the protocol's line as "a type").
 (defn guard-name-kind (name:Symbol line:i32 newk:i32):void
+  (hyg-refuse-binder name line)
   (cconst-yield name)
   (if-some (hit (binding-find name null 0 BINDING-KIND-COUNT 1 newk))
     (die-at line
@@ -14797,6 +15245,11 @@
 ; Stage 15 B3′: the reference resolver for the enum NAME (its members are
 ; ordinary `g-globals` entries and were cut over by B2b).
 (defn enumdef-lookup-ref (spelling:Symbol):?&EnumDef
+  (when-some (h (hyg-of spelling))
+    (let (here:NameEnv (hyg-enter h)
+          r:?&EnumDef (enumdef-lookup-ref (hyg-inner spelling)))
+      (name-env-set here)
+      (return r)))
   (dotimes (i (name-ref-key-count spelling))
     (match (name-ref-key-at spelling i)
       ((some k)
@@ -16257,9 +16710,11 @@
             saved-ct-roots:&(Vector Symbol) g-ct-roots
             saved-ct-defns:&(Vector Symbol) g-ct-module-defns
             saved-ct-name:Symbol g-ct-body-name
+            saved-qq:i32 g-qq-resolve
             saved-macro-decls:&(Vector Symbol) g-macro-decls
             saved-node-ctor:i32 g-node-ctor-used)
         (set! g-node-ctor-used 0)
+        (set! g-qq-resolve 1)
         (set! g-decl-out &ct-decl)
         ; Fresh per-module declare set, restored below (see emit-defmacro /
         ; macro-jit-ensure-decl).
@@ -16397,6 +16852,7 @@
             (set! g-ct-roots saved-ct-roots)
             (set! g-ct-module-defns saved-ct-defns)
             (set! g-ct-body-name saved-ct-name)
+            (set! g-qq-resolve saved-qq)
             (ct-block-note ct-sym ct-roots)
 
             ; Declare the host-defined node runtime if the body built any node.
@@ -16587,7 +17043,10 @@
             ; (design/stage16-ergonomics/macrolet.md §5.1). Everything above this
             ; line is registration — the half a macrolet binding does NOT do.
             ; Stage 20 L4: it writes `ct-roots`, so the record has to be in scope.
-            (compile-macro-body mdef jit-name macro-name pnames pcount form 3 0)))))))
+            (let (saved-qq:i32 g-qq-resolve)
+              (set! g-qq-resolve 1)
+              (compile-macro-body mdef jit-name macro-name pnames pcount form 3 0)
+              (set! g-qq-resolve saved-qq))))))))
 
 ; Compile a macro body into its own JIT module and add it to the JIT. Shared by
 ; `emit-defmacro` (body-start 3, over the whole `(defmacro name (params) …)`
@@ -16797,8 +17256,11 @@
     ; mid-function, and `compile-macro-body` calls `reset-function-state`.
     (let (inner:&Node (as &Node (node-list1 e line))
           form:&Node (as &Node (node-cons null inner line))
-          saved:&FnState (push-function-state))
+          saved:&FnState (push-function-state)
+          saved-qq:i32 g-qq-resolve)
+      (set! g-qq-resolve 1)
       (compile-macro-body mdef jit-name who null 0 form 1 1)
+      (set! g-qq-resolve saved-qq)
       (pop-function-state saved))
     (when (= (ct-mirror-flush (mdef 'ct-roots) line) 0)
       (ct-mirror-report-refusal (fstr "the computed argument '" who "'") line))
@@ -16892,8 +17354,12 @@
             ; The push/pop bracket is what makes compiling a macro *mid-function*
             ; safe; compile-macro-body calls reset-function-state, which would
             ; otherwise clobber the enclosing function's entry/body streams.
-            (let (saved:&FnState (push-function-state))
+            ; §3.6: a macrolet template means the enclosing function's names.
+            (let (saved:&FnState (push-function-state)
+                  saved-qq:i32 g-qq-resolve)
+              (set! g-qq-resolve 0)
               (compile-macro-body mdef jit-name mname pnames pcount b 2 0)
+              (set! g-qq-resolve saved-qq)
               (pop-function-state saved))))))))
 
 (defn emit-macrolet (call:?&Node scope:&Scope):&Val
@@ -18566,7 +19032,7 @@
         (set! (cnt 'kind) NODE-INT)
         (set! (cnt 'line) (f 'line))
         (set! (cnt 'i) (as i64 nb))
-        (late-prescan (node-rest (node-rest f)))
+        (late-prescan (node-rest (node-rest f)) (f 'line))
         (toplevel-splice forms i
                          (node-rest (node-rest f))
                          (as &Node
@@ -18587,23 +19053,27 @@
         (let (body:ptr (node-rest (unsafe/cast &Node ex)))
           (when (= body null)
             (die-at (f 'line) (fstr "top-level macro '" h "' expanded to an empty (do)")))
-          (late-prescan body)
+          (late-prescan body (f 'line))
           (toplevel-splice forms i body null)
           (return 1))))
-    (late-prescan (node-list1 ex (f 'line)))
+    (late-prescan (node-list1 ex (f 'line)) (f 'line))
     (node-set-at (unsafe/cast &Node forms) i ex)
     (return 1)))
 
 ; The file's prescans never saw forms a top-level expansion splices in, so they
 ; run here, in the same order, before any of those forms is dispatched
 ; (design/stage22-edn/macro-definitions.md).
-(defn late-prescan (forms:?&Node):void
-  (set! g-late-prescan 1)
-  (prescan-protocols forms)
-  (prescan-struct-names forms)
-  (prescan-defn-signatures forms)
-  (prescan-value-names forms)
-  (set! g-late-prescan 0))
+; `line` is the expanding call's: a prescan's own refusals have no form line to blame.
+(defn late-prescan (forms:?&Node line:i32):void
+  (let (saved-line:i32 g-form-line)
+    (set! g-form-line line)
+    (set! g-late-prescan 1)
+    (prescan-protocols forms)
+    (prescan-struct-names forms)
+    (prescan-defn-signatures forms)
+    (prescan-value-names forms)
+    (set! g-late-prescan 0)
+    (set! g-form-line saved-line)))
 
 ; Emit a list of top-level forms (pre-scan + dispatch loop).
 ; Used by main and by emit-import for recursive processing.
@@ -18639,6 +19109,7 @@
   ; Stage 15 B3′: this file's own import environment, before any prescan that
   ; resolves a NAME. Cheap (no file is read) and idempotent with `do-import`.
   (prescan-file-imports forms)
+  (note-file-macros forms)
   (when (= g-toplevel-depth 1)
     (prescan-imported-types forms))
   ; Stage 15 W3c: the unit's explicit `(declare …)` names, collected before any
@@ -20266,6 +20737,8 @@
                 (set! g-header-request 1)
               (= argview "--dump-ast")
                 (set! g-dump-ast 1)
+              (= argview "--report-qq-resolution")
+                (set! g-report-qq 1)
               (= argview "--emit-cheader")
                 (set! g-header-request 2)
               (or (= argview "--emit-llvm") (= argview "-S"))

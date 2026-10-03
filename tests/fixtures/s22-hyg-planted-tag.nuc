@@ -1,0 +1,7 @@
+; Stage 22 HY-2: a tag no quasiquote minted reaches `resolve-spelling` only
+; through a resolver with no tag branch, which is an internal error (§3.4).
+(import-use node)
+(defn helper ():i32 (return 1))
+(defmacro id (x) x)
+(defn main ():i32
+  (return (id ~(intern-node (symbol-intern "#h999/helper")))))

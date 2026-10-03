@@ -284,6 +284,11 @@
 ; synthesized-spelling key fallback (`g-type-key-ok`). A unit that declares no
 ; namespace runs exactly one probe with exactly the key the pre-B3′ code used.
 (defn struct-lookup-ref (spelling:Symbol):?&StructDef
+  (when-some (h (hyg-of spelling))
+    (let (here:NameEnv (hyg-enter h)
+          r:?&StructDef (struct-lookup-ref (hyg-inner spelling)))
+      (name-env-set here)
+      (return r)))
   (if-some (a (env-arg-of spelling))
     (do
       (when (!= (a 'type) null)
@@ -384,6 +389,11 @@
 (defn resolve-type-name (name:Symbol line:i32 array-ok:i32):&Type
   (let (sv:StrView (symbol-as-view name))
   (if-some (at (env-arg-type name array-ok)) (return at) 0)
+  (when-some (h (hyg-of name))
+    (let (here:NameEnv (hyg-enter h)
+          t:&Type (resolve-type-name (hyg-inner name) line array-ok))
+      (name-env-set here)
+      (return t)))
   (reject-bare-sigil name line)
   ; Stage 10 errors sugar: ?!T => (Maybe (Result T Err)) — a fallible result
   ; that may be absent. The leading ?! reads as a *value* Maybe over the Result
@@ -805,6 +815,11 @@
   (return null))
 
 (defn uniondef-lookup-ref (spelling:Symbol):?&UnionDef
+  (when-some (h (hyg-of spelling))
+    (let (here:NameEnv (hyg-enter h)
+          r:?&UnionDef (uniondef-lookup-ref (hyg-inner spelling)))
+      (name-env-set here)
+      (return r)))
   (if-some (a (env-arg-of spelling))
     (do
       (when (!= (a 'type) null) (return (uniondef-for-type (a 'type))))
@@ -836,6 +851,11 @@
   (return null))
 
 (defn union-template-lookup-ref (spelling:Symbol):?&UnionTemplate
+  (when-some (h (hyg-of spelling))
+    (let (here:NameEnv (hyg-enter h)
+          r:?&UnionTemplate (union-template-lookup-ref (hyg-inner spelling)))
+      (name-env-set here)
+      (return r)))
   (if-some (a (env-arg-of spelling))
     (let (here:NameEnv (name-env-here)
           nm:Symbol (env-arg-name-enter a &here))
@@ -868,6 +888,11 @@
   (return null))
 
 (defn struct-template-lookup-ref (spelling:Symbol):?&StructTemplate
+  (when-some (h (hyg-of spelling))
+    (let (here:NameEnv (hyg-enter h)
+          r:?&StructTemplate (struct-template-lookup-ref (hyg-inner spelling)))
+      (name-env-set here)
+      (return r)))
   (if-some (a (env-arg-of spelling))
     (let (here:NameEnv (name-env-here)
           nm:Symbol (env-arg-name-enter a &here))
@@ -900,6 +925,11 @@
   (return null))
 
 (defn type-alias-lookup-ref (spelling:Symbol):?&TypeAlias
+  (when-some (h (hyg-of spelling))
+    (let (here:NameEnv (hyg-enter h)
+          r:?&TypeAlias (type-alias-lookup-ref (hyg-inner spelling)))
+      (name-env-set here)
+      (return r)))
   (if-some (a (env-arg-of spelling))
     (let (here:NameEnv (name-env-here)
           nm:Symbol (env-arg-name-enter a &here))
@@ -961,7 +991,13 @@
       (when (!= ((invoke (ud 'arms) (as usize ni)) 'nfields) 0) (return null))
       (return ud))))
 
+; An arm is never a global, so a quasiquote tag on an arm name means only the
+; name its file wrote (quasiquote-resolution.md §3.2).
+(defn arm-spelling (name:Symbol):Symbol
+  (if (>= (hyg-index name) 0) (hyg-inner name) name))
+
 (defn union-arm-index (ud:?&UnionDef name:Symbol):i32
+  (set! name (arm-spelling name))
   (let (udd:ptr:UnionDef ud)
     (dotimes (i (udd 'num-arms))
       (let (arm:&Arm (invoke (udd 'arms) i:usize))
@@ -1120,10 +1156,10 @@
               nf:i32 0)
           (require-defunion-arm arm line)
           (if (= (arm 'kind) NODE-SYM)
-            (set! aname (arm 's))
+            (set! aname (arm-spelling (arm 's)))
             (do
               (let (an:&Node (unsafe/cast &Node (node-at (as ptr arm) 0)))
-                (set! aname (an 's)))
+                (set! aname (arm-spelling (an 's))))
               (set! nf (- (node-len (as ptr arm)) 1))
               (when (> nf 0)
                 (set! fnames (arena-alloc (* (as i64 nf) (ptr-bytes))))
@@ -1693,6 +1729,63 @@
   (set! (aref out-here 0) (name-env-here))
   (name-env-set (a 'env))
   (return ((a 'node) 's)))
+
+; ------------------------------------------------------------
+; Quasiquote name tags, `#h<N>/name` (design/stage22-edn/quasiquote-resolution.md
+; §3.3–3.4). Every reference resolver unwraps one with `hyg-of` + `hyg-enter`.
+; ------------------------------------------------------------
+
+; N for anything spelled `#h<digits>/…`, minted or not; -1 for every other symbol.
+(defn hyg-index (name:Symbol):i32
+  (when (or (!= (symbol-byte-at name 0) 35) (!= (symbol-byte-at name 1) 104)) (return -1))
+  (let (i:usize 2
+        n:i32 0)
+    (while (and (>= (symbol-byte-at name i) 48) (<= (symbol-byte-at name i) 57) (< i 9))
+      (set! n (+ (* n 10) (- (symbol-byte-at name i) 48)))
+      (set! i (+ i 1)))
+    (when (or (= i 2) (!= (symbol-byte-at name i) 47)) (return -1))
+    (return n)))
+
+; The environment a minted tag resolves in, or null — a forged `#h<N>/` is not one.
+(defn hyg-of (name:Symbol):?&HygEnv
+  (let (i:i32 (hyg-index name))
+    (when (or (< i 0) (>= i (unsafe/cast i32 (count g-hyg-envs)))) (return null))
+    (return (invoke g-hyg-envs (as usize i)))))
+
+; The spelling the tag's file wrote: everything after the tag's first `/`.
+(defn hyg-inner (name:Symbol):Symbol
+  (let (i:usize 2)
+    (while (!= (symbol-byte-at name i) 47) (set! i (+ i 1)))
+    (return (symbol-intern (strview-drop-bytes (symbol-as-view name) (+ i 1))))))
+
+; Enter the tag's environment; returns what to restore, like `name-env-enter`.
+(defn hyg-enter (h:&HygEnv):NameEnv
+  (let (saved:NameEnv (name-env-here))
+    (name-env-set (h 'env))
+    (return saved)))
+
+; The tag for `spelling` written by the body compiling now, minting its environment once.
+(defn hyg-mint (spelling:Symbol):Symbol
+  (let (here:NameEnv (name-env-here)
+        who:Symbol g-ct-body-name
+        kind:i32 (cond (!= g-ct-body-arg 0) 1 (symbol-none? who) 2 true 0)
+        n:i32 (unsafe/cast i32 (count g-hyg-envs))
+        idx:i32 -1)
+    (dotimes (i n)
+      (let (h:&HygEnv (invoke g-hyg-envs (as usize i))
+            e:NameEnv (h 'env))
+        (when (and (= idx -1) (= (e 'ns) (here 'ns)) (= (e 'path) (here 'path))
+                   (= (as ptr (e 'imports)) (as ptr (here 'imports)))
+                   (= (h 'who) who) (= (h 'kind) kind))
+          (set! idx i))))
+    (when (= idx -1)
+      (let (h:&HygEnv (new HygEnv))
+        (set! (h 'env) here)
+        (set! (h 'who) who)
+        (set! (h 'kind) kind)
+        (conj g-hyg-envs h)
+        (set! idx n)))
+    (return (symbol-intern (fstr "#h" idx "/" spelling)))))
 
 ; Stage 16: register `(deftype Name Type)` / `(deftype- Name Type)`
 ; (container-type-sugar.md §3.4). Defines no type and emits no IR — a use of

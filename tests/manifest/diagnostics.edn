@@ -1134,6 +1134,21 @@
  :messages ["type 'Sq' does not conform to protocol 'Shape'"]
  :notes ["Sq does not implement Shape.area"]}
 
+; Stage 22 HY-3/HY-2: a quasiquote name resolves where the macro was written
+; (design/stage22-edn/quasiquote-resolution.md), so binding one is refused, and a
+; tag reaching `resolve-spelling` is an internal error -- reachable only planted.
+{:name "s22-hyg-binder" :expect :reject
+ :file "tests/fixtures/s22-hyg-binder.nuc" :line 6
+ :messages ["macro 'with-bump' binds 'bump', which its file resolves to the function 'bump'"]
+ :notes ["write ~'bump to bind the caller's name, or use (gensym)"]}
+{:name "s22-hyg-typed-binder" :expect :reject
+ :file "tests/fixtures/s22-hyg-typed-binder.nuc" :line 6
+ :messages ["macro 'with-bump' binds 'bump', which its file resolves to the function 'bump'"]
+ :notes ["write ~'bump to bind the caller's name, or use (gensym)"]}
+{:name "s22-hyg-planted-tag" :expect :reject
+ :file "tests/fixtures/s22-hyg-planted-tag.nuc" :line 7
+ :messages ["internal error: the quasiquote name tag '#h999/helper' (table entry 999) reached resolve-spelling unwrapped"]}
+
 ; Stage 22 ED-4.2: `struct-fields` / `type-name` refuse what has no
 ; `(name type)` list or no name (design/stage22-edn/ed4-struct-codecs.md §2.1).
 {:name "s22-struct-fields-not-struct" :expect :reject

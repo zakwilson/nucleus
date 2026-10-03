@@ -1849,6 +1849,7 @@
   cenum-folding:i32
   bind-call:BindCall
   where-checked:i32
+  qq-resolve:i32
   ; --- registry watermarks ---
   globals-len:i32
   n-structs:i32
@@ -1873,7 +1874,9 @@
   n-mono:i32
   n-init:i32
   n-dyn-annots:i32
-  n-where-checks:i32)
+  n-where-checks:i32
+  n-hyg-envs:i32
+  n-file-macros:i32)
 
 ; Truncating `g-generics` recovers only the generics a died import CREATED; a
 ; method appended to a pre-existing one needs this per-entry watermark instead.
@@ -1946,7 +1949,8 @@
                  (cmacro-folding g-cmacro-folding)
                  (cenum-folding g-cenum-folding)
                  (bind-call g-bind-call)
-                 (where-checked g-where-checked))))
+                 (where-checked g-where-checked)
+                 (qq-resolve g-qq-resolve))))
            (over-repl-registries (spec)
              `(macmap ~spec
                 ((n-structs g-structs)
@@ -1974,7 +1978,9 @@
                  (n-mono g-mono-worklist)
                  (n-init g-init-worklist)
                  (n-dyn-annots g-dyn-annots)
-                 (n-where-checks g-where-checks)))))
+                 (n-where-checks g-where-checks)
+                 (n-hyg-envs g-hyg-envs)
+                 (n-file-macros g-file-macros)))))
 
   (defn repl-snapshot (st:&ReplState):void
     (over-repl-globals ((f g) `(set! (st '~f) ~g)))

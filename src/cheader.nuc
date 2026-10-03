@@ -3692,8 +3692,9 @@
   (set! g-hdr-buf (string-new))
   (set! g-hdr &g-hdr-buf))
 
+; A tag means nothing in the compilation that reads the header (quasiquote-resolution.md §3.11).
 (defn header-out-close ():void
-  (emit-all stdout &g-hdr-buf)
+  (emit stdout (hyg-scrub-in (string-as-view &g-hdr-buf) true))
   (set! g-hdr null))
 
 (defn header-print-node (n:?&Node):void
@@ -3823,6 +3824,11 @@
     (case (n 'kind)
       NODE-SYM
         (do
+          (when-some (h (hyg-of (n 's)))
+            (let (here:NameEnv (hyg-enter h)
+                  c:StrView (type-node-to-c (as ptr (intern-node (hyg-inner (n 's))))))
+              (name-env-set here)
+              (return c)))
           (match (niche-sym-to-c (n 's))
             ((some nc) (return nc))
             (none 0))

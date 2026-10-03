@@ -112,9 +112,9 @@
 ; and the stage cleared, so an interactive session — where `repl-throw` unwinds
 ; instead of exiting — cannot carry one onto an unrelated later error.
 (defn diag-emit (severity:StrView path:Symbol line:i32 msg:StrView):void
-  (let (full:StrView msg)
+  (let (full:StrView (hyg-scrub msg))
     (when (not (str-empty? &g-diag-note))
-      (set! full (fstr full "\n  note: " g-diag-note))
+      (set! full (fstr full "\n  note: " (hyg-scrub g-diag-note)))
       (set! g-diag-note ""))
     (let (s:String (string-new))
       (diag-render &s severity path line full)

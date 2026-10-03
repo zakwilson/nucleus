@@ -24,6 +24,67 @@ The prelude is flattened into every file, so `when`, `unless`, `dotimes` and the
 rest below are always available unqualified, including from inside a file with
 its own `(ns …)`.
 
+## A template's names mean the macro file's names
+
+A name in a `defmacro` quasiquote means what it meant in the file that wrote the
+macro, not in the file that calls it. A library macro can therefore call its own
+helpers (private ones included) and build its own types. The caller does not
+have to import them, and a caller's local or overload with the same name does not
+capture the call:
+
+```lisp
+; mylib.nuc
+(ns mylib)
+(defn- helper (x:i32):i32 (return (+ x 100)))
+(defmacro twice-helper (e) `(helper (helper ~e)))
+
+; main.nuc
+(import mylib m)
+(let (helper:i32 5)
+  (m/twice-helper 1))          ; 201: mylib's helper, not the local
+```
+
+**Which names.** A symbol in the template's data is resolved when it names a
+global of the macro's file: a function, value, type, protocol or macro. These
+are left as written, and mean the caller's thing as before:
+
+- a name the macro's file does not define or reach, such as a template local, a
+  caller's name, a type variable, or a field or arm name;
+- the prelude's names and the built-in operators (`when`, `+`, `Node`, …),
+  special forms, and `unsafe/…`;
+- anything under `quote` (`'field`) or under an unquote (`~x`);
+- a union arm's name, wherever it appears: in a `match` pattern, as `make`'s
+  arm, or as a target-typed constructor `(circle r)`, even when the macro's file
+  also has a function `circle`;
+- the name half of a typed token (in `x:Point` only `Point` is resolved),
+  except where the token binds a name: there, `(let (count:i32 0) …)` is
+  refused like `(let (count 0) …)`, below.
+
+The rule covers `defmacro` bodies, `~e` arguments and `compile-time` blocks. A
+`macrolet` or `macmap` template expands in the file that wrote it, and exists to
+name the enclosing function's locals, so it is left alone.
+
+**Binding a resolved name is an error.** If a template defines or binds a name
+that its file resolves to a global, the expansion is refused:
+
+```
+main.nuc:6: error: macro 'm' binds 'count', which its file resolves to the function 'mylib/count'
+  note: a template name that names a global in the macro's file refers to that global;
+  write ~'count to bind the caller's name, or use (gensym)
+```
+
+To bind the caller's name, write `~'count`. For example, a template that defines
+a protocol method for the caller's type does this. For a fresh local, use
+`(gensym)`.
+
+Messages, `macroexpand` and REPL output show a resolved name the way the macro's
+file spells it: `mylib/helper`, or `helper` for a file in `user`.
+`--report-qq-resolution` prints each name a quasiquote resolves and each binder
+that would be refused.
+
+A template may name a macro that its file defines further down. That macro must
+still be defined by the time the expansion runs.
+
 ## Standard Macros (`lib/macros.nuc`)
 
 Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defines the `Node` struct, the `NODE-*` enum, and `(import-use macros)`) into every program, so all of these are available without an explicit `(import-use macros)`. **Defining or using a macro costs a program nothing**: a macro body becomes its own JIT module and resolves the node constructors against the compiler process, so no runtime is emitted for it. To opt out — e.g. when a source file should compile against the bare language with no macros, no `Node` type, and no `string` libc declarations — make `(exclude-prelude)` the first form in the file.
@@ -189,8 +250,8 @@ destructures** the row, which must then be a list of that many elements:
 
 * **The template is an ordinary quasiquote**, compiled exactly as a `macrolet`
   body is — `~param` splices a row element, `gensym` is available, and names in
-  the expansion resolve at the call site. There is no hygiene, as everywhere else
-  in this macro system.
+  the expansion resolve at the call site. Unlike a `defmacro` template, its names
+  are not [resolved in the defining file](#a-templates-names-mean-the-macro-files-names).
 * **`:rest` works** in the parameter list, under the same "second-to-last"
   rule as `defmacro`.
 * **The results are spliced in order**, so a template may expand to a statement
@@ -486,9 +547,9 @@ BINDING ::= (NAME (PARAM ...) MACRO-BODY-FORM ...)
     total))
 ```
 
-`take` names `total` and `p` — locals of the enclosing function. There is no
-hygiene, exactly as with `defmacro`: names in the expansion resolve at the call
-site, which is the point. `gensym` is available in a `macrolet` body for the
+`take` names `total` and `p` — locals of the enclosing function. Names in the
+expansion resolve at the call site, which is the point. A `defmacro` template's
+names [resolve in its own file](#a-templates-names-mean-the-macro-files-names) instead. `gensym` is available in a `macrolet` body for the
 cases that want a fresh name instead.
 
 The full example is [`examples/macrolet.nuc`](../examples/macrolet.nuc).
