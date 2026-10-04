@@ -1,6 +1,6 @@
 # Reading s-expressions
 
-`lib/read.nuc` — text to `Node`, at runtime.
+`lib/nucleus/read.nuc` — text to `Node`, at runtime.
 
 Every Nucleus program is already handed `Node` and `NodeKind` by the prelude,
 because macros are written against them. What the language did not ship was any
@@ -11,7 +11,7 @@ directly, so a program and the compiler read the same syntax through the same
 code.
 
 ```lisp
-(import-use read)
+(import-use nucleus.read)
 
 (match (read-all "(port 8080)")
   ((ok forms) (let (s:String (node-str (node-first forms)))
@@ -194,7 +194,7 @@ source. Everything above applies, except:
 - hex numbers and `+inf.0`/`-inf.0`/`+nan.0` are symbols.
 
 The EDN rules the reader does not check — legal symbols, unique map keys and
-set elements — are `lib/edn.nuc`'s.
+set elements — are `lib/nucleus/edn.nuc`'s.
 
 ## Errors
 

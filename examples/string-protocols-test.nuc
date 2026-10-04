@@ -7,8 +7,8 @@
 ; the protocol shapes resolve and the error descriptors are interned.
 
 (import-use "stdio.h")
-(import-use string-errors)
-(import-use string-protocols)
+(import-use nucleus.string-errors)
+(import-use nucleus.string-protocols)
 
 (defn main ():i32
   ; Print the error identity values (Err is a distinct ui32-sized type; we

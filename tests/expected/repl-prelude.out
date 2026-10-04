@@ -10,7 +10,7 @@ nuc> nuc>   7
 nuc>   10
 nuc> nuc> nuc>   string.h already imported
 nuc>   stdio.h already imported
-nuc> nuc> nuc> nuc>   imported strview
+nuc> nuc> nuc> nuc>   imported nucleus.strview
 nuc> nuc>   defined
 nuc> half 4
   7

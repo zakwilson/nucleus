@@ -1,7 +1,7 @@
 ; defconst takes any literal and any constant aggregate (Stage 21 item 8,
 ; design/stage21-cleanup/defconst-values.md).
 (import-use "stdio.h")
-(import-use strview)
+(import-use nucleus.strview)
 
 (defstruct Pt x:i32 y:i32)
 

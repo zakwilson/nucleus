@@ -20,22 +20,24 @@
 ; writes literal chunks straight to the sink with `write-str`. Add it when a
 ; call site wants it.
 
+(ns nucleus.fmt)
+
 (import-use "stdio.h")
 (import-use "string.h")
 
-(import-use error)
-(import-use string-errors)
-(import-use numeric)
-(import-use char)
-(import-use strview)
-(import-use vector)
-(import-use string)
-(import-use allocator)
+(import-use nucleus.error)
+(import-use nucleus.string-errors)
+(import-use nucleus.numeric)
+(import-use nucleus.char)
+(import-use nucleus.strview)
+(import-use nucleus.vector)
+(import-use nucleus.string)
+(import-use nucleus.allocator)
 
 ; ---------------------------------------------------------------------------
 ; Writer — an output sink that accepts bytes.
 ; ---------------------------------------------------------------------------
-; `s` is BY VALUE, unlike every `(ref StrView)` in lib/string-protocols.nuc.
+; `s` is BY VALUE, unlike every `(ref StrView)` in lib/nucleus/string-protocols.nuc.
 ; Those are by-reference only because they are `Self` and `String` conforms too
 ; (design/stage17-native-strings/borrow-conventions.md §2). `s` is not `Self`, so
 ; the constraint does not reach it, and two words in two registers lets a literal

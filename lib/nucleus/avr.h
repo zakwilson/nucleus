@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-/* Generated from lib/avr.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/avr.nuc by nucleusc --emit-cheader */
 
 uint8_t reg8_read(size_t addr) asm("reg8-read");
 void reg8_write(size_t addr, uint8_t val) asm("reg8-write");

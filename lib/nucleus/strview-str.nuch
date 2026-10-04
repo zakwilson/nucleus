@@ -1,4 +1,7 @@
-; .nuch header for lib/strview-str.nuc
+; .nuch header for lib/nucleus/strview-str.nuc
+(ns nucleus.strview-str)
+(import-use nucleus.strview)
+(import-use nucleus.string-protocols)
 (extend StrView (ByteStr ByteIter))
 (declare byte-len ((self (ref StrView))) :usize)
 (declare byte-at ((self (ref StrView)) (i usize)) :!ui8)

@@ -462,7 +462,7 @@ Two related facts from the same step:
   after the struct's layout is available**, not merely after its name resolves.
   `g-arena-alloc` could not move above the first registry as
   `design/global-init.md` §2.10 planned, because `%AllocHandle` comes in with
-  `(import-use vector)` far below; the renderer sees a fieldless registry entry
+  `(import-use nucleus.vector)` far below; the renderer sees a fieldless registry entry
   and dies *"too many initializers for struct 'AllocHandle'"*. It did not need
   to move up: a constant initializer is applied by the loader, so it has no
   order, and every reference to it is `&…`, which is an address rather
@@ -762,7 +762,7 @@ Two consequences when you work here:
 Two halves of one 2026-09-03 finding, both in `lib/`.
 
 Stage 17 C8 fixed the join rule so that `(if c "a" "b")` is a `StrView` (it used
-to collapse to `CStr` unless the destination armed the want channel). `lib/fmt.nuc`'s
+to collapse to `CStr` unless the destination armed the want channel). `lib/nucleus/fmt.nuc`'s
 `bool` conformance had been written *around* that rule — `(strview-from-cstr (if
 self c"true" c"false"))`, an explicit pair of C literals and a `strlen` per
 formatted bool — and stayed that way after the rule changed, because nothing
@@ -782,7 +782,7 @@ list, since a second script counting a second directory would only move the line
 
 ## A template function nothing instantiates has never been compiled
 
-`lib/hashset.nuc`'s `hashset-new-in` spelled its allocation
+`lib/nucleus/hashset.nuc`'s `hashset-new-in` spelled its allocation
 `(as (ref (HashSet T)) (alloc-handle-alloc …))`, which `as` refuses — the handle
 returns `ptr:ui8`, and reinterpreting it needs `unsafe/cast` (which
 `hashmap-new-in`, three files over, already used). It shipped that way because
@@ -964,7 +964,7 @@ symbol; when it fires it **defines** that symbol, as an absolute address, in the
 JITDylib it is attached to. The name is then taken there for the life of the
 session, and any later module that *defines* it is rejected —
 `Duplicate definition of symbol 'alloc-node'`, which is exactly how
-`(import-use node)` in the REPL failed until 2026-08-29.
+`(import-use nucleus.node)` in the REPL failed until 2026-08-29.
 
 `LLJITBuilderState` carries `LinkProcessSymbolsByDefault = true`, so LLJIT
 already builds a `<Process Symbols>` JITDylib with a process search generator and
@@ -992,7 +992,7 @@ re-deriving:
 
 The consequence to keep in mind when changing REPL emission: **in the REPL the
 session's own definition wins over the host compiler's.** That is right for a
-prompt-typed `defn`, and it is why importing `lib/node.nuc` gives the session a
+prompt-typed `defn`, and it is why importing `lib/nucleus/node.nuc` gives the session a
 *second* intern table — and symbol identity is compared by pointer (see "Symbol
 nodes are interned singletons").
 
@@ -1201,7 +1201,7 @@ Stage 21 item 8. Ask `(= (sym 'home) g-globals)` for "is a global".
 ## A standalone `&T` in a type slot is a `(ref T)` node — the same head as the value form
 
 `&` at a token boundary is the `ref` reader macro (`read-macro-table-new`,
-`lib/read.nuc`), so `(as &T x)`, `(Vector &T)`, `(p &T)` and `&x` all reach the
+`lib/nucleus/read.nuc`), so `(as &T x)`, `(Vector &T)`, `(p &T)` and `&x` all reach the
 parser as `(ref …)`: one node, the non-null pointer in a type slot and the
 address-of in a value slot, and `--emit-nuch` prints it canonically. Only a `&`
 *inside* an atom (`p:&T`, `?&T`, `):&T`) is the type sigil the lexer rewrites to
@@ -1444,7 +1444,7 @@ parser (`%Full?` → "expected comma after getelementptr's type"), not silently.
 
 ## Symbol nodes are interned singletons — they have **no line**, and you must never write one
 
-`lib/read.nuc`'s `rd-atom` interns every symbol it reads (`intern-node
+`lib/nucleus/read.nuc`'s `rd-atom` interns every symbol it reads (`intern-node
 (rd-expand-sigil tv)`): every occurrence of a spelling anywhere
 in the program is the **same `Node`**, and `intern-symbol` sets its `line` to 0.
 Every other node kind (`NODE-INT`, `NODE-STR`, `NODE-CHAR`, `NODE-FLOAT`,
@@ -1454,7 +1454,7 @@ carry its reader line.
 Two consequences, both load-bearing:
 
 - **`(sym line)` is 0, so a diagnostic whose subject is (or may be) a symbol
-  must borrow the enclosing form's line.** Use `node-line` (`lib/node.nuc`):
+  must borrow the enclosing form's line.** Use `node-line` (`lib/nucleus/node.nuc`):
   `(die-at (node-line subject (cc line)) …)` — it returns the node's own line
   when it has one and the fallback otherwise, so the same expression is correct
   whether the subject turns out to be a symbol or a cell. Stage 15 W4a converted
@@ -1498,7 +1498,7 @@ first and every enclosing one just propagates its `(err! parse-error)` through
 asserted the opposite; measured false.)
 
 Bracket balance is tracked on the `Reader` itself (`rd-open-bracket` /
-`rd-close-bracket`, `lib/read.nuc`, called as each bracket **token** is
+`rd-close-bracket`, `lib/nucleus/read.nuc`, called as each bracket **token** is
 produced) covering `(`/`)`, `[`/`]`, `{`/`}`, `#{`/`}`. Two properties are
 load-bearing: the depth (the `paren-depth` field) is **not clamped at zero**
 (a negative depth is exactly "this closer has no matching opener", which is
@@ -1558,7 +1558,7 @@ field interning.
 
 **A hand-mirrored struct drifts in its field TYPES too, and Stage 16 R2 removed the
 only one.** `repl-register-node` used to build `Node` by hand for the REPL, and had to
-mirror `lib/prelude.nuc`'s `defstruct Node` slot for slot. It did not: when `car`/`cdr`
+mirror `lib/nucleus/core.nuc`'s `defstruct Node` slot for slot. It did not: when `car`/`cdr`
 were retyped `ptr`→`(raw Node)` the mirror kept bare `ty-ptr`, and three `NODE-*`
 ordinals were never registered at all. The bare-`ptr` symptom is worth knowing on its
 own — a macro that reads `(p car)` once works, while one that **chains** without a cast
@@ -1583,7 +1583,7 @@ function-pointer member segfaults"; ten separate sites were faulting).
 Two rules when you touch a loop over user-written list elements:
 
 - **Never compute a diagnostic's line with `((unsafe/cast ptr:Node x) line)`.**
-  Use `(node-line x <enclosing-line>)` (`lib/node.nuc`) — it is null-safe *and*
+  Use `(node-line x <enclosing-line>)` (`lib/nucleus/node.nuc`) — it is null-safe *and*
   it upgrades an interned symbol's always-0 line to the enclosing form's (the
   W4a `:0:` class). The two are the same fix; the raw deref is never right.
   Note the trap this hides: the line argument is evaluated **before** the callee
@@ -1608,7 +1608,7 @@ rule rather than two.
 
 `(fn ret)` and its parameter list are separate list elements
 (`((fn ret) (params))` canonical), so the colon-paren binding fuse
-(`rd-fuse-colon-paren`, `lib/read.nuc`) — which absorbs *one* paren form after an
+(`rd-fuse-colon-paren`, `lib/nucleus/read.nuc`) — which absorbs *one* paren form after an
 atom whose final chain segment is open (`x:`, `x:?`, `?`; Stage 21 PK-2, called
 from `rd-form` on every atom) — cannot express a function-pointer type by itself.
 `rd-fuse-fn-params` (added in W5f, called from `rd-fuse-colon-paren` right after the
@@ -1973,7 +1973,7 @@ reproduce emit's rules from the RAW field type — an array field decays to
 `ptr:elem`, and wrapping `node-type-field`'s already-decayed answer gives
 `ptr:ptr:elem`.
 
-The `->` macro (`lib/macros.nuc`) was extended to substitute `_` in **head**
+The `->` macro (`lib/nucleus/macros.nuc`) was extended to substitute `_` in **head**
 position (it scans the whole form, not just args), so a threaded value can land in
 call position: `(-> s (_ 'field))` ⇒ `(s 'field)`.
 
@@ -2023,7 +2023,7 @@ places `(deref p)` / `(aref a i)`.
 `(s i)` on a `Seq` conformer routes to `invoke`, and `(s 'field)` is member
 access — two rules that never met until `Node` conformed to `Seq` while keeping
 `kind`/`line`/`i`/`s`/`len` as real fields. The moment `invoke` existed for
-`(ref Node)`, every `(n 'kind)` in `lib/macros.nuc` became
+`(ref Node)`, every `(n 'kind)` in `lib/nucleus/macros.nuc` became
 `no matching method for overloaded 'invoke' with argument types (ptr:Node, ptr:Node)`.
 
 The fix is a precedence-1 branch in `emit-callable-value`, ahead of the invoke
@@ -2057,7 +2057,7 @@ exception: they need the receiver's own **storage**, so they take exactly what
 error ("the receiver is a temporary struct value, so it has no address"), which
 is also what stops a pointer into a compiler-made copy from being returned.
 
-The older `&v`-then-access shape (`lib/strview.nuc`,
+The older `&v`-then-access shape (`lib/nucleus/strview.nuc`,
 `examples/comb-order.nuc:30`) is still correct and is how a member place on a
 by-value parameter is spelled when the receiver is not already a name.
 
@@ -2285,13 +2285,13 @@ keeps `when-some` and hands back the whole record instead of one field.
 ## `(import-use X)` in a file named `X.nuc` silently imports nothing
 
 The compilation unit's ROOT file is on none of the import lists (see the rule of
-that name above), so an `(import-use process)` inside a file called
-`process.nuc` resolves to the file itself and the real `lib/process.nuc` is never
+that name above), so an `(import-use nucleus.process)` inside a file called
+`process.nuc` resolves to the file itself and the real `lib/nucleus/process.nuc` is never
 loaded. Every name from the module then goes missing, and the diagnostic is
 accurate but reads like a bug in the module:
 
     error: unknown type: Command — not defined anywhere in this compilation unit
-      note: 'Command' is defined in lib/process.nuc, which no import in this unit reaches
+      note: 'Command' is defined in lib/nucleus/process.nuc, which no import in this unit reaches
 
 Found writing `examples/process.nuc` for Stage 19; the example is
 `examples/subprocess.nuc` for this reason alone. **Never name a file after a
@@ -2300,7 +2300,7 @@ demonstrably imported, check the root file's basename first.
 
 ## `Vector`'s `drop` frees the array and does NOT drop the elements
 
-`(defn drop ((self (ptr (Vector T)))))` in `lib/vector.nuc` frees the element
+`(defn drop ((self (ptr (Vector T)))))` in `lib/nucleus/vector.nuc` frees the element
 buffer through the allocator handle and zeroes the header. It never calls `drop`
 on an element, so a `(Vector String)`, `(Vector File)` or any other vector of
 owning values leaks one heap buffer per element unless the owner walks it first.
@@ -2352,7 +2352,7 @@ which every union stamp now records as `StructDef` does.
 
 Until then, a raw payload in a sum with a non-`Err` error arm is a **named**
 union with the same arms — `(defunion ReadResult (ok v:raw:Node) (err
-e:ReadError))` in `lib/read.nuc` — which `try`/`unwrap`/`match` treat exactly
+e:ReadError))` in `lib/nucleus/read.nuc` — which `try`/`unwrap`/`match` treat exactly
 like a `Result` because `result-union-of` is structural.
 
 Two smaller traps from the same work: a two-element **call** in a positional
@@ -2407,8 +2407,8 @@ passed and only stage 2 failed.
 
 ## `macros.nuc` is auto-imported — adding macros shifts the string pool
 
-`lib/macros.nuc` is transitively auto-imported into **every** compilation
-including the compiler itself (via `lib/prelude.nuc`). Adding new macro
+`lib/nucleus/macros.nuc` is transitively auto-imported into **every** compilation
+including the compiler itself (via `lib/nucleus/core.nuc`). Adding new macro
 definitions (with quasiquote string literals like `"let"`, `"i32"`, etc.) shifts
 the compiler's internal string pool numbering. This causes a spurious bootstrap
 diff that has nothing to do with correctness. Convergence requires two passes:
@@ -2491,7 +2491,7 @@ every level being collapsed may carry trailing forms after its inner `let`, and
 all of them have to survive into the single merged body. Losing them is not a
 type error — a `!T` function that falls off the end still compiles.
 `read-vector-literal` and `read-hashset-literal` (then two separate functions
-in `src/reader.nuc`, now one shared `rd-lit-elems` in `lib/read.nuc`) were
+in `src/reader.nuc`, now one shared `rd-lit-elems` in `lib/nucleus/read.nuc`) were
 flattened correctly and lost their `(return (ok …))` tails, which surfaced as
 `'()' is not an expression` reported against the *caller's* source line.
 
@@ -2512,7 +2512,7 @@ Stage 18 TF-4 gave the top-level dispatcher (`emit-toplevel-forms`' `case hp` in
 - **A late registration must never rename an emitted symbol.** `generic-add-method` clears `finalized`, so `finalize-generics` re-derives every method's `ir-name` — safe in the prescan, wrong once a call to the old name is already in the IR. Under `g-late-prescan`, `late-renamable?` keeps any method that already has an `ir-name`, and `generic-unbind-solitary` hides the solitary binding when the name becomes registry-dispatched. A method's symbol can therefore depend on source order; headers stay right only because they ask the registry (`defn-form-mangled-name`), never re-derive.
 - **After a leading `(ns …)` the loop walks a different list header.** `apply-leading-ns` returns a `node-rest` view, and `node-splice-at` gives that view a fresh array, so a `(do …)` splice never reaches the caller's list. The header writers read `g-root-forms` (the walked list) for that reason; anything else that reads the unit's forms after compilation must do the same.
 
-The pre-TF-4 note here said top-level sugar had to be a compiler directive (`fn-attr`-shaped: a `g-special-form-set` entry + a `case hp` arm + an `emit-<name>`). That is still the answer when the sugar must be visible to a prescan, or must reuse a built-in head; a `defmacro` is now the answer when neither applies — which is what `deftest` (`lib/test.nuc`) is.
+The pre-TF-4 note here said top-level sugar had to be a compiler directive (`fn-attr`-shaped: a `g-special-form-set` entry + a `case hp` arm + an `emit-<name>`). That is still the answer when the sugar must be visible to a prescan, or must reuse a built-in head; a `defmacro` is now the answer when neither applies — which is what `deftest` (`lib/nucleus/test.nuc`) is.
 
 ## A macro-body form that calls into the compiler is six edits
 
@@ -2526,7 +2526,7 @@ The pre-TF-4 note here said top-level sugar had to be a compiler directive (`fn-
 
 Miss a `declare` and only the module kind you did not test fails to link.
 
-**Private macros are not exported to a `.nuch`.** A public macro whose body or expansion uses a `defmacro-` works from source and fails through the header, so make the helper public (`lib/edn.nuc`'s `edn-str-node`).
+**Private macros are not exported to a `.nuch`.** A public macro whose body or expansion uses a `defmacro-` works from source and fails through the header, so make the helper public (`lib/nucleus/edn.nuc`'s `edn-str-node`).
 
 ## A plain `:where` on a template `extend` is a condition, retried when a conformance is added
 
@@ -2541,7 +2541,7 @@ That identity is what makes the change gateable, and the gate is not a new test:
 Two rules that fall out and are easy to get wrong:
 
 - **A note printed AFTER the call is not a field.** Three sites did exactly that (`report-unterminated`, the stray-`)` note in `read-form`, the preprocessor's sysroot advice) because `die-at` is `:noreturn` and there is no "and also" after it. They stage the note first with `diag-stage-note`, which **appends** rather than overwrites — a site that clobbers `g-diag-note` silently drops whatever another site had to say about the same error.
-- **One diagnostic is one line** in `--diagnostics=edn`, because the writer escapes every newline inside a string. That invariant is load-bearing on the reader side: `read-diagnostics` (`lib/test.nuc`) skips any line that is not a diagnostic, which it must, since the `clang -E` a C-header import shells out to writes its own text to the same stream. Do not add a field that can span lines.
+- **One diagnostic is one line** in `--diagnostics=edn`, because the writer escapes every newline inside a string. That invariant is load-bearing on the reader side: `read-diagnostics` (`lib/nucleus/test.nuc`) skips any line that is not a diagnostic, which it must, since the `clang -E` a C-header import shells out to writes its own text to the same stream. Do not add a field that can span lines.
 
 A message with no source location (a toolchain message, not one about the user's file) passes `line` -1: the text back-end omits the `path:line: ` prefix, the EDN one writes `:file nil :line nil`. Absence is spelled, never omitted — a reader that has to ask whether a key is present is a reader that will get it wrong.
 
@@ -2985,7 +2985,7 @@ LLVM rejects a second `declare` for the same symbol **even when the two agree**.
 
 The trap: simply dropping the header's copy leaves the name **undefined between
 the import and the explicit declare's own position**. Measured —
-`examples/cstr-lit-test.nuc` declares `strlen` at line 15, and `lib/arena.nuc`
+`examples/cstr-lit-test.nuc` declares `strlen` at line 15, and `lib/nucleus/arena.nuc`
 calls it from inside the prelude import that precedes it, so suppression alone
 broke that build with `unknown: strlen`. The fix is to emit the explicit
 declaration *at the point of first need*
@@ -3140,7 +3140,7 @@ at the very next drain and the window is empty. When the payload is a **struct**
 (`!String`), the union waits for `%String`, which arrives with a later import —
 and every module assembled in between carries `%X`'s reference to an undefined
 `%__anon_union_…`. That is an LLVM *parse* error inside a `compile-time`/
-`defmacro` JIT module, reported against `lib/macros.nuc:11` (the first macro
+`defmacro` JIT module, reported against `lib/nucleus/macros.nuc:11` (the first macro
 compiled), which points nowhere near the cause.
 
 Two things to carry forward:
@@ -3418,11 +3418,11 @@ registered a second method of the same name: the definition went out as the
 solitary `@append`, the generic then became mangled, and every call site emitted
 afterwards went through `emit-generic-call` and named `@append.ptr.ptr` — a
 symbol nothing defines. Minimal repro on the pre-W1a compiler,
-`lib/list.nuc`'s concrete `append` plus `lib/vector.nuc`'s `append` template:
+`lib/nucleus/list.nuc`'s concrete `append` plus `lib/nucleus/vector.nuc`'s `append` template:
 
 ```lisp
-(import-use "lib/list.nuc")
-(import-use vector)
+(import-use "lib/nucleus/list.nuc")
+(import-use nucleus.vector)
 (defn main ():i32
   (let (c:ptr (make-cell null null 0) r:ptr (append c c)) (return 0)))
 ```
@@ -3463,7 +3463,7 @@ that asks "is this path part of the unit?" needs the fourth check too.
 
 **Stage 15 W9 item 1 made two of those lists load-bearing, because the root is
 not merely *unlisted* — it is REACHABLE.** The compiler auto-prepends
-`(import-use prelude)`, and the prelude's own closure is
+`(import-use nucleus.core)`, and the prelude's own closure is
 `prelude → macros, node → arena`, so compiling any of those four files as the
 entry point makes the unit import its own root. `emit-toplevel-forms` now
 records `g-source-path` on **`g-prescan-sigs`** (the second
@@ -3477,8 +3477,8 @@ error fired first). The push is skipped when the path is already on
 
 **The interesting half is that a cycle SKIP on the root is wrong.** Pushing the
 root onto `g-importing` alone routes the re-entry into W1d's cycle path — which
-fixed `arena`/`node` and instantly broke `lib/macros.nuc`, because a cycle
-deliberately does not carry macros and `lib/arena.nuc` needs `when`. Here the
+fixed `arena`/`node` and instantly broke `lib/nucleus/macros.nuc`, because a cycle
+deliberately does not carry macros and `lib/nucleus/arena.nuc` needs `when`. Here the
 skipped file is precisely the one holding what the rest of the chain is about to
 use. So `do-import` **hoists** instead: `import-reentry-hoists-root` lets the
 re-entry fall through to the ordinary read-and-emit, and the depth-1 loop then
@@ -3508,14 +3508,14 @@ is that every `lib/*.nuc` compiles as its own entry file in all three emit
 modes. The reader is the worked example of **both** directions of this rule:
 it moved out of `lib/` at W9 item 1 because it read and wrote compiler globals
 (`g-src`/`g-pos`/`g-line`/`g-source-path`/`g-peek`/`g-interactive`/`g-mono-context`),
-and it moved back — as `lib/read.nuc` — at Stage 21 R-1/R-2
+and it moved back — as `lib/nucleus/read.nuc` — at Stage 21 R-1/R-2
 (`design/stage21-cleanup/one-reader.md`) once its state became a `Reader`
 *value* with no compiler dependency left. What genuinely needs the globals —
 `die-at`, `report-at`, the two byte helpers — split out into
 `src/diagnostics.nuc` instead, which stays in `src/` for exactly the original
 reason; `repl.nuc` / `cheader.nuc` / `format.nuc` are there for the same
 reason. Import resolution searches the importing file's own directory first,
-so `(import-use read)` / `(import-use diagnostics)` from `src/nucleusc.nuc`
+so `(import-use nucleus.read)` / `(import-use diagnostics)` from `src/nucleusc.nuc`
 find them wherever they live, and a file's IR is byte-identical across a move
 like either of these. If you add a file under `lib/`, compile it standalone
 once; the `w9-lib-emit-*` units (`tests/suite-linking.nuc`) will otherwise
@@ -3567,7 +3567,7 @@ platforms can host the compiler.)
 Before Stage 21, `read-program` / `desugar` mutated five compiler globals
 (`g-src`, `g-pos`, `g-line`, `g-peek`, `g-peek-valid`), and composing a
 diagnostic was not a safe moment to do that: the message is being built from
-state that belongs to the form being blamed. `lib/read.nuc`'s `Reader` is a
+state that belongs to the form being blamed. `lib/nucleus/read.nuc`'s `Reader` is a
 value now, with no ambient state to clobber, but the rule still holds for a
 different reason (`text-defines-name`'s own comment, `src/nucleusc.nuc`): a
 full read plus `desugar` from a diagnostic path buys nothing a byte scan does
@@ -4462,7 +4462,7 @@ load block. Two traps it encodes:
 **A rule like this finds bugs, so budget for fixing the tree.** `name-resolution.md`
 §11.1 predicted one casualty from a scan of `src/` + `lib/`; measured across
 `examples/` too it was three, all the same class — two more copies of the `Node`
-redefinition §11.7 removed from `lib/list.nuc`, and `examples/defmacro.nuc`
+redefinition §11.7 removed from `lib/nucleus/list.nuc`, and `examples/defmacro.nuc`
 defining `when`/`unless` over the prelude's. That last one is the sharpest
 illustration of why the rule is worth having: `find-macro` returns the FIRST
 match and the prelude registers first, so **neither definition in that example
@@ -4599,7 +4599,7 @@ Two working notes from fixing it:
   identical IR, and `aref`/`unsafe/ptr+` through a `raw` is the documented
   unchecked waiver. Reach for `unsafe/cast` only where the non-null claim is
   actually load-bearing, and add a runtime guard where the value comes from a
-  caller (`lib/hash.nuc`'s `Hash` conformance) rather than from an internal
+  caller (`lib/nucleus/hash.nuc`'s `Hash` conformance) rather than from an internal
   registry (`src/union-registry.nuc`'s `fnv-str`).
 
 ## Tightening a rule? The corpus sweep is not the measurement — stage 2 is
@@ -4754,7 +4754,7 @@ function-pointer return type emitted `()` instead of `(void)` because
 it), and `ct-eval-require-list` became vacuous because its walk started at a
 node that is no longer a cons chain.
 
-**The null-safe accessors still carry the diagnostics.** `lib/node.nuc` has
+**The null-safe accessors still carry the diagnostics.** `lib/nucleus/node.nuc` has
 `node-line` (borrows the enclosing line), `node-is-list`, `node-empty?`, and —
 since W9 item 45 — `node-kind`, which answers `NODE-NIL` (−1, deliberately
 outside `NodeKind`'s range) for a null node **and for `()`**. That second half
@@ -5045,7 +5045,7 @@ When output ordering forces a discovery pass before emission (item 37: the
 *rendering* — call the emitter's own `type-node-to-c`, so the answer cannot
 drift — but the "is this exported at all?" decisions have to be replicated by
 hand. Miss them and the pass discovers dependencies of things that are never
-emitted: `lib/vector.h` and `lib/combinators.h`, which spell no `struct`
+emitted: `lib/nucleus/vector.h` and `lib/nucleus/combinators.h`, which spell no `struct`
 anywhere, took includes for a parametric `defstruct`'s field and a generic
 template's return type. The four that mattered were `defn-is-generic-template`, a
 non-`NODE-SYM` name node (parametric head), `cheader-template-instance` and
@@ -5060,10 +5060,10 @@ the references" look the same in a passing test suite.
 ## A generated C header that COMPILES can still be unusable
 
 `clang -fsyntax-only` over a generated header under-reports, because C requires a
-complete type only where a value is formed. Before W9 item 37, `lib/strview.h`
+complete type only where a value is formed. Before W9 item 37, `lib/nucleus/strview.h`
 passed that check while declaring `_Bool eq_StrView_StrView(struct StrView a,
 struct StrView b)` over a tag nothing defines — the declaration parses and no
-caller can ever write the call. Only `lib/string-split.h`, which used the type in
+caller can ever write the call. Only `lib/nucleus/string-split.h`, which used the type in
 a by-value *field*, failed outright.
 
 So test the two separately: parse the header, **and** form a value of every type
@@ -5124,7 +5124,7 @@ registered union template, and has since Stage 11. `!ui8` is a
 `(Result ui8 Err)` — but it reaches the emitter as a `NODE-SYM`, so the cell test
 never fires and it fell through to the "assume struct" arm three functions away.
 The header ended up with two different answers for two spellings of one type, and
-they shipped side by side in `lib/strview-str.h`:
+they shipped side by side in `lib/nucleus/strview-str.h`:
 `/* byte-find: uses a defunion-template instance type; not exported */` two lines
 above `struct _BANGui8 byte_at(...)`.
 
@@ -5352,8 +5352,8 @@ module stream — and if so, open one, as its neighbours do.
 
 ## A transitive import is an undeclared dependency, and only shows up when the middle is removed
 
-Stage 16 dropped `(import-use node)` from `lib/prelude.nuc`. `lib/node.nuc`
-imports `lib/arena.nuc`, which imports `stdio.h`, `stdlib.h` and `string.h` — so
+Stage 16 dropped `(import-use nucleus.node)` from `lib/nucleus/core.nuc`. `lib/nucleus/node.nuc`
+imports `lib/nucleus/arena.nuc`, which imports `stdio.h`, `stdlib.h` and `string.h` — so
 for as long as the prelude carried node, **every program in the tree was handed
 `printf` and `malloc` for free**. Twelve examples, seven fixtures and several
 inline harness fixtures used one without importing it,
@@ -5372,7 +5372,7 @@ day it is removed is the day that becomes visible.
 
 `import-ct` (Stage 16) discards a library's definitions by pointing
 `g-def-stream` at a throwaway memstream. The first attempt redirected the
-declaration stream too, and `lib/arena.nuc`'s own `defmacro` then JIT'd a
+declaration stream too, and `lib/nucleus/arena.nuc`'s own `defmacro` then JIT'd a
 `call @malloc` into a module whose `declare` had been thrown away.
 
 The cause generalizes past that one flag. The compiler keeps a family of
@@ -5503,8 +5503,8 @@ such a block and asserts the block's own output.
 
 The same feature's second defect. `emit-import-forms` bumped a depth counter
 around a compile-time-only import and left it alone for ordinary imports, so an
-`(import-use vector)` reached *through* a ct-imported library inherited the sink:
-`lib/vector.nuc` was imported for real by the program and still had every
+`(import-use nucleus.vector)` reached *through* a ct-imported library inherited the sink:
+`lib/nucleus/vector.nuc` was imported for real by the program and still had every
 definition marked compile-time-only, and the program was refused at its own
 `[1 2 3]`.
 
@@ -5518,7 +5518,7 @@ ordinary import back the real stream and a zero flag — rather than treating
 `do-import`'s flatten dedup returns early when the path is on `g-imported`, and
 the W1d cycle skip deliberately does *not* push there because that list means
 *finished*. A compile-time-only import registers a file and emits nothing, so it
-records on `g-ct-imported` instead; otherwise a later real `(import-use node)`
+records on `g-ct-imported` instead; otherwise a later real `(import-use nucleus.node)`
 was deduplicated away and the program was refused at its own quote — correct in
 one import order and silently wrong in the other.
 
@@ -5758,7 +5758,7 @@ and `text-token-is-definer` (so the "defined nowhere" note can name the file).
 :Count)` naming a `Count` it did not carry, so the *importer* failed on an
 unresolvable type with nothing pointing back at the exporter.
 
-The specific wrong inference worth not repeating: reading `lib/hashmap.nuch` and
+The specific wrong inference worth not repeating: reading `lib/nucleus/hashmap.nuch` and
 seeing a literal `(defstruct (Entry K V) …)` looks like proof the format is a
 verbatim pass-through. It is not — that form is there because `"defstruct"` has
 an arm. **"The format carries X verbatim" is a claim about a dispatch table, not
@@ -5914,9 +5914,9 @@ module it is writing. Under the REPL that module is assembled as **preamble +
 ct-decl + ct-def**, and the import arm's declare-backfill may already have put
 the same line in the preamble — so a second `declare ptr @alloc-node()` lands in
 one module and LLVM refuses it with `invalid redefinition of function`. Reproduce
-with `(import-use error)` then `(import-use arena)`: `lib/error.nuc` does
-`(import-ct node)`, which registers `alloc-node` as a `TY-FN` global, and
-`lib/arena.nuc`'s `defmacro new` builds a node.
+with `(import-use nucleus.error)` then `(import-use nucleus.arena)`: `lib/nucleus/error.nuc` does
+`(import-ct nucleus.node)`, which registers `alloc-node` as a `TY-FN` global, and
+`lib/nucleus/arena.nuc`'s `defmacro new` builds a node.
 
 It predates Stage 16 R2 (the pre-R1 boot binary fails identically) and R2 only
 made it reachable, by making both imports succeed on their own. The rule it
@@ -6313,7 +6313,7 @@ it becomes `ref:x`, which already parses as "the variable `ref`, cast to type
 `x`", and `ref` is a legal *binding* name — a definition may not take it
 (name-resolution.md §15) but a `let` or a parameter still may, which is exactly
 the position the ambiguity lives in. The right layer is the **reader-macro
-table** (`read-macro-table-new` in `lib/read.nuc`, beside `@` → `deref`), which
+table** (`read-macro-table-new` in `lib/nucleus/read.nuc`, beside `@` → `deref`), which
 is matched *before* `rd-atom` and only at a token boundary — so it wraps the
 next form in a head instead of minting a spelling. Wrapping in a head the
 compiler already matches on costs nothing downstream; a head new to one world
@@ -6336,11 +6336,11 @@ are easy to get wrong, and both were measured on Stage 16's
 `--strict-selectors` (`design/stage16-ergonomics/dot-forms.md` §2):
 
 - **A generic body is emitted once per instantiation**, so a site inside one is
-  reported once per instantiation: `lib/vector.nuc`'s 29 `(_get …)` sites
+  reported once per instantiation: `lib/nucleus/vector.nuc`'s 29 `(_get …)` sites
   produced 629 reports. Dedup on `file:line:name` before believing a total —
   raw 7555 vs. real 6106.
 - **A generic this unit never instantiates is never visited at all.** 27 files
-  under `src/`+`lib/` reported nothing, `lib/string.nuc` among them. A per-unit
+  under `src/`+`lib/` reported nothing, `lib/nucleus/string.nuc` among them. A per-unit
   check is not a tree-wide inventory; `examples/` and `tests/fixtures/` need
   their own runs, and a form inside a quasiquote template is data that no run
   reaches.
@@ -6370,12 +6370,12 @@ which of its own emissions use that spelling. A macro's quasiquote template is
 the same hazard one layer up — the template is data, so a form inside it is
 reported at the macro's USE site with a gensym receiver, never at the template.
 
-## A macro BODY sees only what precedes it — `lib/macros.nuc` is order-dependent
+## A macro BODY sees only what precedes it — `lib/nucleus/macros.nuc` is order-dependent
 
 A macro body is ordinary user-scope code compiled at **definition** time, so it
 can only call macros already defined above it in the file. `case` sits above
 `when`, and `(when …)` inside its body fails with `unknown: when` — from
-`lib/macros.nuc`'s own line number, which reads like a defect in the prelude
+`lib/nucleus/macros.nuc`'s own line number, which reads like a defect in the prelude
 rather than in the macro being written. Use `cond` (a special form, always
 available) and whatever is defined earlier; do not reorder the file to get a
 macro into scope, because the same edit moves every other body's horizon.
@@ -6401,7 +6401,7 @@ exit 1, rather than exit 139 with nothing — but it says only *that* the body
 crashed, never what the user wrote wrong, so the guard below is still the
 discipline. The boundary covers the JIT call only; a null ELEMENT the body puts
 into its expansion is refused afterwards by `stamp-macro-lines`, which walks
-exactly the macro-built cells. And `lib/macros.nuc` cannot reach `node-kind`: the prelude
+exactly the macro-built cells. And `lib/nucleus/macros.nuc` cannot reach `node-kind`: the prelude
 registers the `Node` type and imports no node runtime, so a body has member
 access, the `ast-*` special forms, and nothing else.
 
@@ -6432,7 +6432,7 @@ so a boot older than that prints `:0:` for those guards.
 
 ## A form whose SHAPE depends on its operand's type cannot be a macro
 
-`try` was a macro in `lib/error.nuc` expanding to a fixed
+`try` was a macro in `lib/nucleus/error.nuc` expanding to a fixed
 `(match r ((ok v) v) ((err e) (return (err! e))))`. Stage 17 A1 made `!void`
 work — `(Result void Err)` stamps a **payload-less** `ok` arm, because
 `defunion-register` now drops a `void` field — and that fixed expansion became an
@@ -6452,7 +6452,7 @@ The general rule: a macro may *contain* type-dependent code, but it may not
 so the library macro and the special form cannot coexist for even one commit.
 (2) The compiler's own sources must compile under the **previous** boot, which
 has neither the new special form nor the renamed macro. With `src/reader.nuc`
-(since deleted; Stage 21 moved the reader to `lib/read.nuc`) holding 19 `try`
+(since deleted; Stage 21 moved the reader to `lib/nucleus/read.nuc`) holding 19 `try`
 sites, the migration is therefore three states, not two: rename
 the macro (`try-boot`) and repoint `src/` at it; land the special form and drop
 the old macro name; `make update-bootstrap`; then flip `src/` back and delete the
@@ -6573,7 +6573,7 @@ The sequence is: land the feature (src/ still not using it) → `make` green →
 
 ## Importing the string stack into `src/` collides on protocol method names
 
-`lib/strview-str.nuc` / `lib/string.nuc` bring `char-at`, `byte-at`, `bytes`,
+`lib/nucleus/strview-str.nuc` / `lib/nucleus/string.nuc` bring `char-at`, `byte-at`, `bytes`,
 `as-view`, `chars`, `count`, `sub-bytes` into scope as protocol methods. The
 compiler has always been free to use those spellings for its own helpers, and
 one of them had: `src/reader.nuc`'s `char-at (s:ptr pos:i64)` (the function
@@ -6606,7 +6606,7 @@ Three consequences that are not obvious from a call site:
   clear in place. A copy left behind carries a stale length over a buffer the
   nested emission then reallocates.
 - **A `String` may not be a `defstruct` field in `src/compiler-types.nuc`.** That
-  file is imported before `lib/string.nuc`, so a `%String`-typed field names a
+  file is imported before `lib/nucleus/string.nuc`, so a `%String`-typed field names a
   type the compile-time module's own type section does not carry, and the JIT
   dies with "use of undefined type named 'String'" on the first `compile-time`
   form. A pointer field is `ptr` in IR and carries nothing — park the value in
@@ -6750,20 +6750,20 @@ own view-returning wrapper (`cheader-c-ident-view`) instead of bridging at each
 call site: the null contract is then stated once, and cannot be missed at the
 next site added.
 
-## What `lib/node.nuc` imports, every AVR program imports — and `f64` is fatal there
+## What `lib/nucleus/node.nuc` imports, every AVR program imports — and `f64` is fatal there
 
 `avr-reject-f64` (`src/abi.nuc`) refuses an `f64` **annotation** anywhere in the
-translation unit, live or not. `lib/numeric.nuc:39` (`(extend f64 Ord)`) and
-`lib/hash.nuc`'s `f64` conformance are both reached from `strview`, so importing
-any of `numeric`/`hash`/`strview` into `lib/node.nuc` — or into anything
-`lib/node.nuc` imports — makes every macro-using program un-compilable for AVR.
-That is why `lib/intern.nuc` imports libc and `lib/fnv.nuc` and nothing else,
+translation unit, live or not. `lib/nucleus/numeric.nuc:39` (`(extend f64 Ord)`) and
+`lib/nucleus/hash.nuc`'s `f64` conformance are both reached from `strview`, so importing
+any of `numeric`/`hash`/`strview` into `lib/nucleus/node.nuc` — or into anything
+`lib/nucleus/node.nuc` imports — makes every macro-using program un-compilable for AVR.
+That is why `lib/nucleus/intern.nuc` imports libc and `lib/nucleus/fnv.nuc` and nothing else,
 and why the fold lives in `fnv` rather than in `hash`. `tests/fixtures/avr2-16bit.nuc`
 is the gate; it fails at the *import*, not at a use.
 
 ## Two `defn`s of one name in one TU resolve by overload mangling, silently
 
-`lib/node.nuc` and `lib/intern.nuc` each had an `intern-grow`. Different arities,
+`lib/nucleus/node.nuc` and `lib/nucleus/intern.nuc` each had an `intern-grow`. Different arities,
 so nothing errored: every module importing both emitted `@intern_grow.usize` for
 one of them, and the generated C header declared `void intern_grow(void);` with
 no `asm` alias — unlinkable. Library-internal helpers get a module-specific
@@ -6828,31 +6828,31 @@ the unit being compiled).
 with, which makes it a *round-trip* obligation: whatever it prints has to read
 back as the same tree. It was not treated as one, and Stage 18 TF-3 found three
 ways it silently lost information — a `NODE-CHAR` fell through the `case` and
-printed **nothing** (so `lib/io.nuch` exported `println` without its newline,
+printed **nothing** (so `lib/nucleus/io.nuch` exported `println` without its newline,
 and any multi-TU build importing that header got a `println` that behaved as
 `print`), `c"…"` printed as `"…"` (NS-4's CStr flag lives in `NODE-STR.i`), and
 the default byte case did `(emit out (as Char (as ui32 c)))`, widening each
 *byte* to a codepoint and re-encoding it as UTF-8 so `"hé"` came back `"hÃ©"`.
 
-**Adding a `NodeKind` means adding a `node-write` arm** (`lib/read.nuc`), and
+**Adding a `NodeKind` means adding a `node-write` arm** (`lib/nucleus/read.nuc`), and
 its default arm must stay unreachable rather than silently drop a node.
 
 Neither `check-headers` nor the IR snapshot catches this class: both compare the
 compiler's output against *itself*, so a lossy printer is consistently lossy and
-stays green. `print-node` is a wrapper over `lib/read.nuc`'s `node-write`; R-4's
+stays green. `print-node` is a wrapper over `lib/nucleus/read.nuc`'s `node-write`; R-4's
 round-trip unit reads the output back.
 
-## The reader is `lib/read.nuc`; the compiler's diagnostics are `src/diagnostics.nuc`
+## The reader is `lib/nucleus/read.nuc`; the compiler's diagnostics are `src/diagnostics.nuc`
 
 Since Stage 21 R-2 (`design/stage21-cleanup/one-reader.md`) `src/reader.nuc` is
-gone and `lib/read.nuc` is the only reader — standalone-compilable, used by the
-compiler, `lib/test.nuc` and any program. A reader error reaches a caller as a
+gone and `lib/nucleus/read.nuc` is the only reader — standalone-compilable, used by the
+compiler, `lib/nucleus/test.nuc` and any program. A reader error reaches a caller as a
 `ReadError` value (`code line msg note`, arena-owned strings; `docs/reading.md`
-§`ReadResult`), not a `report-at` call: `lib/read.nuc` has no diagnostics
+§`ReadResult`), not a `report-at` call: `lib/nucleus/read.nuc` has no diagnostics
 dependency and cannot have one (`context/macros-jit.md`'s "a macro body cannot
 call `die-at`/`report-at`" is exactly this same layer, one file over). Adding a
 new reader diagnostic is adding a new `msg` wording at the fault site in
-`lib/read.nuc`, nothing else. The compiler is the one caller that renders a
+`lib/nucleus/read.nuc`, nothing else. The compiler is the one caller that renders a
 `ReadError`, through `read-source-or-report` (`src/nucleusc.nuc`), which calls
 `report-at`/`diag-stage-note` (`src/diagnostics.nuc`) with the value's fields.
 The general rule this generalizes: a library whose failures carry context
@@ -6866,19 +6866,19 @@ emit, so `__gs_N` numbering is emission order and a `--dump-ast` tree carries
 none. Nothing may rely on the second element of a `*-lit` cell being anything
 but the first element.
 
-## `readdir` order is not an ordering — `lib/file.nuc`'s `read-dir` sorts
+## `readdir` order is not an ordering — `lib/nucleus/file.nuc`'s `read-dir` sorts
 
 `read-dir` returns entries **sorted by name**, and the compiler's
 `scan-dir-for-definer` goes through it. Anything that was "first match wins"
 over `readdir` was previously decided by the filesystem: the same tree on
 another machine, or after a rename, picks a different first match. One
 diagnostic in the corpus depended on it (`w9-unknown-type-ctor-unimported`
-named `lib/vector.nuch`; it now names `lib/vector.nuc`, which is also what
+named `lib/nucleus/vector.nuch`; it now names `lib/nucleus/vector.nuc`, which is also what
 `resolve-import` would pick). If you add a directory scan, do not re-derive an
 order from `readdir` — and if you need first-match-wins to mean something, say
 which order in the code.
 
-The `d_name` offset lives in `lib/file.nuc` **once**. Do not re-declare
+The `d_name` offset lives in `lib/nucleus/file.nuc` **once**. Do not re-declare
 `opendir`/`readdir`/`closedir` in a second module: the C-header reader registers
 `struct dirent` opaque (its `char d_name[256]` is a shape the declaration parser
 declines), so the offset is a hardcoded 19, and two copies is two things to be
@@ -6894,14 +6894,14 @@ a target with a side effect: a `begin`-shaped target clears the buffer between
 pieces, so all but the last piece disappear.
 
 The same shape bites when a piece READS the buffer the target writes: converting
-a skip into a failure (`lib/test.nuc`, `--no-skip`) has to copy the reason out
+a skip into a failure (`lib/nucleus/test.nuc`, `--no-skip`) has to copy the reason out
 of the failure buffer *before* beginning the replacement message, or the
 message comes out empty with no error anywhere. Bind first, then push.
 
 ## `(parse f64 …)` takes a hex float with NO exponent — so an LLVM bit pattern parses
 
 `(parse f64 "0x3FF0000000000000")` returns **4.6e18**, not 1.0. C's *grammar*
-requires a hex float's binary exponent, but `strtod` — which `lib/parse.nuc`
+requires a hex float's binary exponent, but `strtod` — which `lib/nucleus/parse.nuc`
 delegates to — makes it optional, so LLVM's 16-hex-digit f64 **bit pattern**
 parses as an integer-valued hex float and every digit is consumed. There is no
 error to notice: `parse` only rejects trailing garbage, and there is none.
@@ -7303,25 +7303,24 @@ equals `g-narrow-gen`:
   generation, as they do `g-nundo`.
 - Anything new that reads `ntype` must check `ngen` too.
 
-## Every reference resolver unwraps a quasiquote tag (`#h<N>/name`)
+## A macro's template names need its library in the CALLER's closure
 
-Since Stage 22 HY-3 a `defmacro`/`~e`/`compile-time` quasiquote rewrites a
-symbol that names a global of its file to `#h<N>/name`
-(design/stage22-edn/quasiquote-resolution.md). Every **reference** resolver
-starts with the `hyg-of` branch: enter `(hyg-enter h)`, resolve `(hyg-inner s)`,
-then `name-env-set` back. Key lookups never see a tag. A new reference resolver
-without the branch fails loudly: `resolve-spelling` raises "internal error: the
-quasiquote name tag … reached resolve-spelling unwrapped". A printer whose text
-is read back must re-spell tags (`.nuch`: `nuch-respell-since` per form). A
-binder that registers a name must go through `scope-define` or `guard-name-kind`,
-which refuse a tag. A lookup by spelling of something that is never a global
-(a union arm: `arm-spelling`) strips the tag instead.
+Since Stage 23 AN-4 a `defmacro`/`~e`/`compile-time` quasiquote writes each name
+its file defines as a full name (`nucleus.fmt/str-into`, `user/emit-buf`;
+design/stage23-namespaces/ambient-namespaces.md, "AN-4 as built"). The caller
+resolves it through its own import closure. A file that reaches a `user`-namespace
+macro without importing its file (the `src/` files get strfmt's `emit` from the
+unit) therefore fails with "unknown: nucleus.fmt/str-into — 'nucleus.fmt' is not
+in scope in this file": import the namespace named. A binder spelled `ns/name` is
+refused (`refuse-qualified-binder`, in `scope-define` for locals and
+`guard-name-kind` for definers); a lookup of something never global (a union arm,
+`arm-spelling`) strips the qualifier instead.
 
 ## A leading `#` is reader syntax — synthesized `#` names rely on it
 
 Since Stage 22 a token-initial `#` is dispatch (`#{`, `#_`, `#tag`), so no
 source spelling produces a symbol that begins with `#`. The compiler's own
-synthesized names — W5e's `#pN` namespaces, `#env-arg-N`, `#c/…`, `#dry`, `#h<N>/` — are
+synthesized names — W5e's `#pN` namespaces, `#env-arg-N`, `#c/…`, `#dry` — are
 collision-free because of it. Never print one into text that is read back
 (`--emit-nuch`, `--dump-ast`, a REPL echo): it will not read
 (design/stage22-edn/overview.md §1.5).
@@ -7335,17 +7334,17 @@ Write new code this way, and apply it when refactoring:
 - **When every arm has the same shape** (one value compared against constants,
   one expression per result), use `case`, inside `return` when the arms are
   values: `(return (case k EDN-NIL "nil" … "a tagged value"))`. Mixed tests or
-  results use `cond`. `edn-kind` and `edn-kind-name` in `lib/edn.nuc` are the
+  results use `cond`. `edn-kind` and `edn-kind-name` in `lib/nucleus/edn.nuc` are the
   models.
 - **`when`s that all return the same thing are one `when` over a variadic
   `or`**, not a `cond` that repeats the result. Don't nest `or`/`and`:
   `(or a b c)`, never `(or a (or b c))`.
 - **Don't refactor if the result is longer** than the chain it replaces. Arms
   with several statements take `(do …)`, opened on the arm's first line, so a
-  `cond` comes out the same length as the `when`s (`rd-form` in `lib/read.nuc`).
+  `cond` comes out the same length as the `when`s (`rd-form` in `lib/nucleus/read.nuc`).
   Sequential parsing that advances state between tests (`rd-hex-kind`) is not a
   dispatch. Leave it as it is.
 
 `case`'s default is a **lone trailing element**, not a `true X` pair. `true X`
 compiles as `(= k true)` and leaves the `case` with no default
-(`lib/macros.nuc`, `case`). `cond` takes `true X`.
+(`lib/nucleus/macros.nuc`, `case`). `cond` takes `true X`.

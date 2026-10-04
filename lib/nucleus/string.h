@@ -3,10 +3,10 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "allocator.h"
-#include "prelude.h"
+#include "core.h"
 #include "strview.h"
 
-/* Generated from lib/string.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/string.nuc by nucleusc --emit-cheader */
 
 #ifndef NUC_INST_Vector_u8
 #define NUC_INST_Vector_u8

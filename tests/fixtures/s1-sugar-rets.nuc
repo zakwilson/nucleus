@@ -3,7 +3,7 @@
 ; did. Compile-only: the harness asserts this emits cleanly and that `noreturn`
 ; lands on the define. Each function is solitary (always emitted).
 (import-use "stdio.h")
-(import-use error)
+(import-use nucleus.error)
 
 (defstruct Pt x:i32 y:i32)
 (deferror bad "bad")

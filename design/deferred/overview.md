@@ -510,8 +510,8 @@ companion library that a compiled file derived already works.
 
 List literals are (ptr Node), but functions defined in node.nuc like `contains?` expect &Node.
 
-## Names in macro expansions aren't namespaced
+## Namespace issues
 
-A file calling derive-edn needs (import-use edn), because the expansion refers to lib/edn functions by bare name and macros here have no hygiene.
-
-This should probably work like Clojure.
+- A user defvar or defn whose link name matches a core one gives an LLVM or link error with no source location. Structs get a proper located error.
+- After a failed import in the REPL, its namespace stays cached.
+- A .nuch header drops an import-use of a library in user, so the import closure is lost through that header.

@@ -11,8 +11,10 @@
 ;
 ; Design: design/stage11/string.md §"S3 StrView read layer".
 
-(import-use strview)          ; StrView, ByteIter, CharIter, strview-* helpers
-(import-use string-protocols) ; ByteStr, Str
+(ns nucleus.strview-str)
+
+(import-use nucleus.strview)          ; StrView, ByteIter, CharIter, strview-* helpers
+(import-use nucleus.string-protocols) ; ByteStr, Str
 
 ; ---------------------------------------------------------------------------
 ; ByteStr conformance for StrView.

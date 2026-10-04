@@ -3,7 +3,7 @@
 ; `macrolet` names a template once and then applies it by hand, one call per
 ; row. These three do the applying too: `macmap` walks a literal table, the
 ; folds walk a variadic argument list. Neither is a compiler builtin — both are
-; ordinary macros in lib/macros.nuc, and `macmap` lowers to the `macrolet` you
+; ordinary macros in lib/nucleus/macros.nuc, and `macmap` lowers to the `macrolet` you
 ; would have written.
 ;
 ; Shape:  (macmap ((param ...) template) (row ...))

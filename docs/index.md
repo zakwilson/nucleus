@@ -56,7 +56,7 @@ Source files contain top-level forms (`defn`, `defvar`, `defstruct`, etc.). A `m
 
 **Generics** — use protocols and bounded `defn`:
 ```lisp
-(import-use numeric)
+(import-use nucleus.numeric)
 (defn maxv (a:T b:T :where (Ord T)):T
   (if (< a b) b a))
 (maxv 3 9)    ; → 9 (stamps @maxv.i32.i32)
@@ -96,21 +96,23 @@ they are ordinary address-of: `&rest` is `(ref rest)`.
 | [Macros](macros.md) | Standard macros (`if`, `when`, `for`, `dotimes`, `->`), variadic arithmetic, writing macros |
 | [Generics](generics.md) | Multimethods, `defprotocol`/`extend`, parametric protocols, bounded `:where` generics |
 | [Error handling](errors.md) | `deferror`, `!T`, `try`/`unwrap`, `with-handler`, `signal` |
-| [Standard library](stdlib.md) | Pre-declared libc bindings (stdio, stdlib, string, ctype, unistd); `StrView` byte-slice substrate (`lib/strview.nuc`); `Symbol` interned identity (`lib/intern.nuc`); `Keyword` interned names (`lib/keyword.nuc`) |
-| [Allocators](allocators.md) | `Allocator` protocol, `AllocHandle`, libc/arena backends (`lib/allocator.nuc`) |
-| [Iterators](iterators.md) | `Iterator` protocol, concrete iterators, lazy combinators, reduce (`lib/iterator.nuc`) |
-| [Collections](collections.md) | Core collection protocols (`Coll`/`Seq`/`Assoc`/`Set`/`Drop`), `Hash`, `Vector`, `HashMap`, `HashSet` (`lib/coll.nuc`, `lib/hash.nuc`, `lib/vector.nuc`, `lib/hashmap.nuc`, `lib/hashset.nuc`) |
-| [Strings](strings.md) | `Char` scalar, `StrView` borrowed slice, `String` owning type, UTF-8 encode/decode, `ByteStr`/`Str` protocols, split, lines, trim, `FromStr`/`parse`, `Writer`/`ToStr`/`str` formatting, and which of `StrView`/`String`/`Symbol`/`CStr` to reach for (`lib/char.nuc`, `lib/strview.nuc`, `lib/string.nuc`, `lib/parse.nuc`, `lib/string-split.nuc`, `lib/fmt.nuc`) |
-| [Processes](process.md) | Starting other programs: `Command` as an argv (never a shell command line), `run`, `spawn`/`wait-any` for a job pool, typed `ExitStatus` (`lib/process.nuc`) |
-| [Reading s-expressions](reading.md) | Text to `Node` at runtime: `read-all`, the `Reader`/`read-one` pair, `node-write`/`node-eq`; agrees with the compiler's own reader; EDN mode (`lib/read.nuc`) |
-| [EDN](edn.md) | EDN data as a typed view over the reader's `Node`: `edn-parse`, `edn-kind` and accessors, `edn-write`, range-checked `edn-read` conversions, the `EdnCodec` protocol over collections, and `derive-edn` struct codecs (`lib/edn.nuc`) |
-| [Testing](testing.md) | Declaring tests with `deftest`, the `check-*` assertions, scoped IR matching, `fail!`, and the EDN result records a suite prints (`lib/test.nuc`) |
-| [I/O](io.md) | Standard streams and files as `Writer`s over raw descriptors: `FdOut`, `print`/`println`/`eprint`/`eprintln`, `read-line`, `File`, `BufWriter` (`lib/io.nuc`, `lib/file.nuc`) |
-| [AVR targets](avr.md) | Cross-compiling to 8-bit AVR microcontrollers: flags, a two-device walkthrough, the v1 profile and its exclusions, MMIO/ISR idioms (`lib/avr.nuc`, `lib/avr/*.nuc`) |
+| [Standard library](stdlib.md) | Pre-declared libc bindings (stdio, stdlib, string, ctype, unistd); `StrView` byte-slice substrate (`lib/nucleus/strview.nuc`); `Symbol` interned identity (`lib/nucleus/intern.nuc`); `Keyword` interned names (`lib/nucleus/keyword.nuc`) |
+| [Allocators](allocators.md) | `Allocator` protocol, `AllocHandle`, libc/arena backends (`lib/nucleus/allocator.nuc`) |
+| [Iterators](iterators.md) | `Iterator` protocol, concrete iterators, lazy combinators, reduce (`lib/nucleus/iterator.nuc`) |
+| [Collections](collections.md) | Core collection protocols (`Coll`/`Seq`/`Assoc`/`Set`/`Drop`), `Hash`, `Vector`, `HashMap`, `HashSet` (`lib/nucleus/coll.nuc`, `lib/nucleus/hash.nuc`, `lib/nucleus/vector.nuc`, `lib/nucleus/hashmap.nuc`, `lib/nucleus/hashset.nuc`) |
+| [Strings](strings.md) | `Char` scalar, `StrView` borrowed slice, `String` owning type, UTF-8 encode/decode, `ByteStr`/`Str` protocols, split, lines, trim, `FromStr`/`parse`, `Writer`/`ToStr`/`str` formatting, and which of `StrView`/`String`/`Symbol`/`CStr` to reach for (`lib/nucleus/char.nuc`, `lib/nucleus/strview.nuc`, `lib/nucleus/string.nuc`, `lib/nucleus/parse.nuc`, `lib/nucleus/string-split.nuc`, `lib/nucleus/fmt.nuc`) |
+| [Processes](process.md) | Starting other programs: `Command` as an argv (never a shell command line), `run`, `spawn`/`wait-any` for a job pool, typed `ExitStatus` (`lib/nucleus/process.nuc`) |
+| [Reading s-expressions](reading.md) | Text to `Node` at runtime: `read-all`, the `Reader`/`read-one` pair, `node-write`/`node-eq`; agrees with the compiler's own reader; EDN mode (`lib/nucleus/read.nuc`) |
+| [EDN](edn.md) | EDN data as a typed view over the reader's `Node`: `edn-parse`, `edn-kind` and accessors, `edn-write`, range-checked `edn-read` conversions, the `EdnCodec` protocol over collections, and `derive-edn` struct codecs (`lib/nucleus/edn.nuc`) |
+| [Testing](testing.md) | Declaring tests with `deftest`, the `check-*` assertions, scoped IR matching, `fail!`, and the EDN result records a suite prints (`lib/nucleus/test.nuc`) |
+| [I/O](io.md) | Standard streams and files as `Writer`s over raw descriptors: `FdOut`, `print`/`println`/`eprint`/`eprintln`, `read-line`, `File`, `BufWriter` (`lib/nucleus/io.nuc`, `lib/nucleus/file.nuc`) |
+| [AVR targets](avr.md) | Cross-compiling to 8-bit AVR microcontrollers: flags, a two-device walkthrough, the v1 profile and its exclusions, MMIO/ISR idioms (`lib/nucleus/avr.nuc`, `lib/nucleus/avr/*.nuc`) |
 
 ## Standard library overview
 
-The prelude (`lib/prelude.nuc`) is auto-imported into every program and provides:
+The standard libraries live in `lib/nucleus/`, each in namespace `nucleus.<file>`
+(see [The core libraries](toplevel.md#the-core-libraries-nucleus)). The prelude,
+`nucleus.core` (`lib/nucleus/core.nuc`), is auto-imported into every program and provides:
 - The `Node` struct and `NODE-*` enum (for macro AST manipulation)
 - All standard macros (`if`, `when`, `unless`, `for`, `dotimes`, `->`, `case`, etc.)
 - `(import-use "string.h")` declarations for `strlen`, `strcmp`, `memcpy`, etc.
@@ -121,32 +123,32 @@ program that quotes, calls a `:rest` function, or writes `printf`/`malloc` impor
 what it uses. See [The node runtime is a library](toplevel.md#the-node-runtime-is-a-library).
 
 Additional libraries available via `import-use`:
-- `(import-use macros)` — standard macros (already in prelude)
-- `(import-use numeric)` — `Eq`, `Ord`, `Num` protocols for operators
-- `(import-use error)` — `try`, `with-handler`, `signal`, `err-find-handler`
-- `(import-use node)` — `alloc-node`, `node-int`, `intern-symbol`, the list API and `Node`'s `Coll`/`Seq` conformances: the runtime behind `'sym`, `` `(…) `` and a `:rest` call
-- `(import-use arena)` — arena allocator + `(new T)` convenience macro
-- `(import-use allocator)` — `Allocator` protocol and `AllocHandle`
-- `(import-use iterator)` — `Iterator` protocol and concrete iterators
-- `(import-use coll)` — core collection protocols (`Coll`, `Seq`, `Assoc`, `Set`, `Drop`)
-- `(import-use strview)` — `StrView` immutable byte-slice substrate (`Hash`+`Eq` conformances)
-- `(import-use strview-str)` — `ByteStr`/`Str` protocol conformances for `StrView` (separate to avoid circular imports)
-- `(import-use keyword)` — `Keyword` interned self-evaluating names, usable as `HashMap`/`HashSet` keys
-- `(import-use intern)` — `Symbol` interned identity and its table (libc + `fnv` only, so `node` can depend on it)
-- `(import-use intern-str)` — `Eq`/`Hash`/`ToStr`/`ByteStr`/`Str` conformances for `Symbol`
-- `(import-use fnv)` — the FNV-1a fold (`fnv1a-byte`, `fnv1a-int`, `fnv1a-bytes`)
-- `(import-use hash)` — `Hash` protocol with `i32`/`i64`/`usize`/`CStr` conformances (FNV-1a)
-- `(import-use vector)` — `Vector T` dynamic array and `VecIter T`
-- `(import-use hashmap)` — `HashMap K V` and `HashMapKeyIter K V`
-- `(import-use hashset)` — `HashSet T` and `HashSetIter T`
-- `(import-use char)` — `Char` UTF-8 encode/decode, classification, case conversion (`lib/char.nuc`)
-- `(import-use string-errors)` — the six string/parse error codes as `deferror` symbols
-- `(import-use string-protocols)` — `ByteStr ByteI` and `Str CharI` read-only protocol shapes
-- `(import-use string)` — `String` owning type: constructors, mutation, conformances (`lib/string.nuc`)
-- `(import-use string-split)` — `SplitIter`/`LineIter` for `strview-split`/`strview-lines` (`lib/string-split.nuc`)
-- `(import-use read)` — the s-expression reader: text to `Node`, and back (`lib/read.nuc`)
-- `(import-use edn)` — EDN data over the reader's `Node` tree, and codecs for scalars, collections and derived structs (`lib/edn.nuc`)
-- `(import-use parse)` — `FromStr R` protocol and `parse` macro for `i32`/`i64`/`f64` (`lib/parse.nuc`)
-- `(import-use seq)` — empty placeholder; `IntIndexable`, `Call`, and `BinaryCall` were removed in C2.5 (use `UnaryFn`/`FoldFn` from `(import-use iterator)`)
+- `(import-use nucleus.macros)` — standard macros (already in prelude)
+- `(import-use nucleus.numeric)` — `Eq`, `Ord`, `Num` protocols for operators
+- `(import-use nucleus.error)` — `try`, `with-handler`, `signal`, `err-find-handler`
+- `(import-use nucleus.node)` — `alloc-node`, `node-int`, `intern-symbol`, the list API and `Node`'s `Coll`/`Seq` conformances: the runtime behind `'sym`, `` `(…) `` and a `:rest` call
+- `(import-use nucleus.arena)` — arena allocator + `(new T)` convenience macro
+- `(import-use nucleus.allocator)` — `Allocator` protocol and `AllocHandle`
+- `(import-use nucleus.iterator)` — `Iterator` protocol and concrete iterators
+- `(import-use nucleus.coll)` — core collection protocols (`Coll`, `Seq`, `Assoc`, `Set`, `Drop`)
+- `(import-use nucleus.strview)` — `StrView` immutable byte-slice substrate (`Hash`+`Eq` conformances)
+- `(import-use nucleus.strview-str)` — `ByteStr`/`Str` protocol conformances for `StrView` (separate to avoid circular imports)
+- `(import-use nucleus.keyword)` — `Keyword` interned self-evaluating names, usable as `HashMap`/`HashSet` keys
+- `(import-use nucleus.intern)` — `Symbol` interned identity and its table (libc + `fnv` only, so `node` can depend on it)
+- `(import-use nucleus.intern-str)` — `Eq`/`Hash`/`ToStr`/`ByteStr`/`Str` conformances for `Symbol`
+- `(import-use nucleus.fnv)` — the FNV-1a fold (`fnv1a-byte`, `fnv1a-int`, `fnv1a-bytes`)
+- `(import-use nucleus.hash)` — `Hash` protocol with `i32`/`i64`/`usize`/`CStr` conformances (FNV-1a)
+- `(import-use nucleus.vector)` — `Vector T` dynamic array and `VecIter T`
+- `(import-use nucleus.hashmap)` — `HashMap K V` and `HashMapKeyIter K V`
+- `(import-use nucleus.hashset)` — `HashSet T` and `HashSetIter T`
+- `(import-use nucleus.char)` — `Char` UTF-8 encode/decode, classification, case conversion (`lib/nucleus/char.nuc`)
+- `(import-use nucleus.string-errors)` — the six string/parse error codes as `deferror` symbols
+- `(import-use nucleus.string-protocols)` — `ByteStr ByteI` and `Str CharI` read-only protocol shapes
+- `(import-use nucleus.string)` — `String` owning type: constructors, mutation, conformances (`lib/nucleus/string.nuc`)
+- `(import-use nucleus.string-split)` — `SplitIter`/`LineIter` for `strview-split`/`strview-lines` (`lib/nucleus/string-split.nuc`)
+- `(import-use nucleus.read)` — the s-expression reader: text to `Node`, and back (`lib/nucleus/read.nuc`)
+- `(import-use nucleus.edn)` — EDN data over the reader's `Node` tree, and codecs for scalars, collections and derived structs (`lib/nucleus/edn.nuc`)
+- `(import-use nucleus.parse)` — `FromStr R` protocol and `parse` macro for `i32`/`i64`/`f64` (`lib/nucleus/parse.nuc`)
+- `(import-use nucleus.seq)` — empty placeholder; `IntIndexable`, `Call`, and `BinaryCall` were removed in C2.5 (use `UnaryFn`/`FoldFn` from `(import-use nucleus.iterator)`)
 
 Use `(exclude-prelude)` as the first form in a file to suppress the auto-import and compile against the bare language.

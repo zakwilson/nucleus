@@ -2,9 +2,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include "prelude.h"
+#include "core.h"
 
-/* Generated from lib/intern.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/intern.nuc by nucleusc --emit-cheader */
 
 typedef struct SymHeader {
     size_t hash;

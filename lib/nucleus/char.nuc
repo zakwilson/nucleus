@@ -1,7 +1,7 @@
 ; Stage 11 M6 (S1) — Char library: UTF-8 encode/decode + ASCII classification.
 ;
 ; This is the pure-Char byte layer: no String, no StrView, no ownership. It
-; depends only on `lib/error.nuc` (for `!T` / `deferror` / `err!`) and the
+; depends only on `lib/nucleus/error.nuc` (for `!T` / `deferror` / `err!`) and the
 ; `Char` built-in scalar (S0).
 ;
 ; Design: design/stage11/string.md §"Char types".
@@ -21,10 +21,12 @@
 ;     but share the `i32` IR representation.
 ; ---------------------------------------------------------------------------
 
+(ns nucleus.char)
+
 (import-use "stdlib.h")
 
-(import-use error)          ; deferror / !T / err!
-(import-use string-errors)  ; invalid-codepoint (canonical home)
+(import-use nucleus.error)          ; deferror / !T / err!
+(import-use nucleus.string-errors)  ; invalid-codepoint (canonical home)
 
 ; ---------------------------------------------------------------------------
 ; DecodeResult — the outcome of a single UTF-8 decode attempt.

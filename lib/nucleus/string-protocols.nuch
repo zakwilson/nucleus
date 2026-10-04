@@ -1,4 +1,9 @@
-; .nuch header for lib/string-protocols.nuc
+; .nuch header for lib/nucleus/string-protocols.nuc
+(ns nucleus.string-protocols)
+(import-use nucleus.strview)
+(import-use nucleus.iterator)
+(import-use nucleus.string-errors)
+(import-use nucleus.numeric)
 (defprotocol (ByteStr ByteI) (byte-len (self:ref:Self) :usize) (byte-at (self:ref:Self i:usize) :!ui8) (bytes (self:ref:Self) :ByteI) (as-view (self:ref:Self) :StrView) (sub-bytes (self:ref:Self start:usize end:usize) :!StrView) (byte-find (self:ref:Self needle:ref:StrView) :?usize))
 (defprotocol (Str CharI) (char-count (self:ref:Self) :usize) (str-empty? (self:ref:Self) :bool) (char-at (self:ref:Self i:usize) :!Char) (chars (self:ref:Self) :CharI) (starts-with? (self:ref:Self prefix:ref:StrView) :bool) (ends-with? (self:ref:Self suffix:ref:StrView) :bool) (contains-str? (self:ref:Self needle:ref:StrView) :bool))
 (extend Str Eq)

@@ -37,6 +37,12 @@
 #     a null prefix, i.e. a full flatten, and the symbol list is a comment
 #     (§11.2) — the two `import-only-unlisted-*` rows.
 #
+# Stage 23 AN-1 reversed R3 (design/stage23-namespaces/ambient-namespaces.md
+# §8): a namespace in the consumer's import closure is reachable by its full
+# name, so the ten `zn/` cells are `ok`; `nope/` and the cross-file prefix stay
+# `err`, because a prefix is never ambient. The same re-record picked up two
+# bare cells W9 items 43/35 had moved without one.
+#
 # Do not "fix" a cell here. B0 records; B1/B2 change. When a later step moves a
 # cell, re-run with --baseline and commit the new table as part of that step.
 #
@@ -149,7 +155,7 @@ probe_spellings() {
 
 # A type in an annotation. Only the annotation's spelling varies.
 probe_spellings type-annot '(import-prefixed zzlib zx)
-(defn zzp-f ((x (ref @Q@Zs))):i32 (return (_get x n)))
+(defn zzp-f ((x (ref @Q@Zs))):i32 (return (_get x '\''n)))
 (defn main ():i32 (return 0))
 '
 
@@ -166,7 +172,7 @@ probe_spellings type-annot '(import-prefixed zzlib zx)
 probe_spellings struct-ctor '(import-prefixed zzlib zx)
 (defn main ():i32
   (let (s:(ref zx/Zs) (@Q@Zs 4))
-    (return (_get s n))))
+    (return (_get s '\''n))))
 '
 
 # A solitary defn.
@@ -195,7 +201,7 @@ probe_spellings defenum-member '(import-prefixed zzlib zx)
 # the protocol spelling alone.
 probe_spellings protocol-extend '(import-prefixed zzlib zx)
 (defstruct Cs n:i32)
-(defn zmeth ((self (ref Cs))):i32 (return (_get self n)))
+(defn zmeth ((self (ref Cs))):i32 (return (_get self '\''n)))
 (extend Cs @Q@Zp)
 (defn main ():i32 (return 0))
 '
@@ -229,10 +235,10 @@ probe_spellings protocol-dyn-annot '(import-prefixed zzlib zx)
 # consumer asked for (`zx/`) is the one that works. Re-pointing the pin is a
 # deliberate part of the cut-over, not a re-baseline: a fixture that pins a
 # defect becomes unreachable when the defect is fixed.
-probe_spellings protocol-dyn-box '(import-use allocator)
+probe_spellings protocol-dyn-box '(import-use nucleus.allocator)
 (import-prefixed zzlib zx)
 (defstruct Cs n:i32)
-(defn zmeth ((self (ref Cs))):i32 (return (_get self n)))
+(defn zmeth ((self (ref Cs))):i32 (return (_get self '\''n)))
 (extend Cs zx/Zp)
 (defn main ():i32
   (let (b:(dyn @Q@Zp) (Cs 5))
@@ -254,7 +260,7 @@ probe import-only-unlisted-fn bare '(import-only zzonly only-a)
 
 # ...and an unlisted type both still resolve.
 probe import-only-unlisted-type bare '(import-only zzonly only-a)
-(defn zzp-g ((x (ref OnlyS))):i32 (return (_get x m)))
+(defn zzp-g ((x (ref OnlyS))):i32 (return (_get x '\''m)))
 (defn main ():i32 (return 0))
 '
 

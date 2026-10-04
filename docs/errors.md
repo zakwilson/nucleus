@@ -104,7 +104,7 @@ Results are plain data with no handler machinery either way.
 
 ```lisp
 (import-use "stdio.h")
-(import-use error)
+(import-use nucleus.error)
 (deferror parse-failed "could not parse value")
 
 (defn checked (n:i64):!i64
@@ -146,7 +146,7 @@ expands to when the caller is a plain `!T`:
     (return (ok (try (parse-config src))))))   ; ReadError -> Err, via the defcast
 ```
 
-`lib/read.nuc`'s own `ReadError` ([Reading s-expressions](reading.md#readresult-and-readerror))
+`lib/nucleus/read.nuc`'s own `ReadError` ([Reading s-expressions](reading.md#readresult-and-readerror))
 is exactly this shape, and is why `read-all`/`read-one` can hand a caller a
 line and a formatted message without `Err` growing a payload or the reader
 inventing side fields for it. A library whose failures carry context should
@@ -156,7 +156,7 @@ bolted onto some other value.
 
 A `defunion` with an `ok` arm and an `err` arm is eliminated as a Result by
 `match`/`try`/`unwrap`/`unwrap-or` **structurally** — it need not be a
-`(Result T E)` template instance. `lib/read.nuc`'s `ReadResult` relies on
+`(Result T E)` template instance. `lib/nucleus/read.nuc`'s `ReadResult` relies on
 this: a template instance stamped over a nullable pointer payload
 loses that pointer kind (`type-spelling` re-spells every stamped pointer as
 non-null `ref:`), so `(Result ?&Node ReadError)` would refuse to hold a
@@ -227,7 +227,7 @@ it for you. Pointer niches are declared normally. See
 
 ## Handler-aware `err` and `with-handler` (E3)
 
-When `(import-use error)` is in scope, returning `(err E)` from a `!T` function
+When `(import-use nucleus.error)` is in scope, returning `(err E)` from a `!T` function
 consults the dynamically-bound handler chain before returning the error value. A
 matching handler can **repair** the fault: the function returns `(ok v)` instead
 of the error. `(err! E)` always bypasses the chain.
@@ -247,7 +247,7 @@ stored in the error value:
 ```
 
 **`with-handler`.** Binds a handler in the current dynamic extent (from
-`lib/error.nuc`; requires `(import-use error)`):
+`lib/nucleus/error.nuc`; requires `(import-use nucleus.error)`):
 
 ```lisp
 (with-handler (error-value repair-type handler-fn ctx) body…)
@@ -281,8 +281,8 @@ error. The type key is the type's mangled-name string (pointer-compare with
   path. Programs that bind no handlers pay one global pointer load and null
   compare per `err` return, on the error path only. `err!` costs nothing extra.
 
-**Gating.** The handler machinery lives in `lib/error.nuc`. Without
-`(import-use error)`, `(err E)` behaves like `(err! E)` — the check is never
+**Gating.** The handler machinery lives in `lib/nucleus/error.nuc`. Without
+`(import-use nucleus.error)`, `(err E)` behaves like `(err! E)` — the check is never
 emitted. `with-handler`, `Handler`, and `err-find-handler` require the import;
 `try` does not (it is a special form, not a library macro).
 
@@ -294,7 +294,7 @@ not supported in v1.
 
 ```lisp
 (import-use "stdio.h")
-(import-use error)
+(import-use nucleus.error)
 
 (deferror config-missing "config file not found")
 
@@ -346,7 +346,7 @@ allocator's grow path signalling for a replacement block, falling back to its ow
 behavior if policy declines:
 
 ```lisp
-(import-use error)
+(import-use nucleus.error)
 (deferror out-of-memory "allocation grow needs a policy decision")
 
 (defn grow (need:i64):i64
@@ -361,7 +361,7 @@ behavior if policy declines:
   (grow 8))                      ; → 16
 ```
 
-`signal` requires `(import-use error)` (it references the handler chain). Its result
+`signal` requires `(import-use nucleus.error)` (it references the handler chain). Its result
 is a **value** `(Maybe T)`, eliminated with `match` (not `if-some`, which is
 pointer-only). The **v1 repair-type-is-a-value-type limitation** applies: a
 `(ref X)` niche-pointer repair is not a struct, so the struct-return call path

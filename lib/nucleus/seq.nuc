@@ -1,8 +1,10 @@
-; lib/seq.nuc — retained as a placeholder after removal of the fixed-type
+; lib/nucleus/seq.nuc — retained as a placeholder after removal of the fixed-type
 ; IntIndexable, Call, and BinaryCall protocols (C2.5, design/stage11/cleanup2.md).
 ;
 ; Those protocols named the `invoke` capability over concrete types (i32, ptr).
 ; The parametric replacements are (UnaryFn Arg Ret) and (FoldFn Acc Elem) in
-; lib/iterator.nuc. The call mechanism itself (a value in head position routes
+; lib/nucleus/iterator.nuc. The call mechanism itself (a value in head position routes
 ; to the `invoke` generic) does not depend on protocol conformance — an `invoke`
 ; method works without it. See docs/builtins.md §invoke and examples/callable.nuc.
+(ns nucleus.seq)
+

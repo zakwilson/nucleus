@@ -1,5 +1,5 @@
 ; Stage 22 ED-4.2: a template instance's fields are the template's business.
-(import-use vector)
+(import-use nucleus.vector)
 (defmacro fields-of (t) (struct-fields t) `(defvar g-x:i32 0))
 (fields-of (Vector i32))
 (defn main ():i32 (return 0))

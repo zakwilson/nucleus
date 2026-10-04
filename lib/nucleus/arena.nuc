@@ -9,6 +9,8 @@
 ; allocated. Old blocks remain valid (pointers into them are never
 ; invalidated).
 
+(ns nucleus.arena)
+
 (import-use "stdio.h")
 (import-use "stdlib.h")
 (import-use "string.h")

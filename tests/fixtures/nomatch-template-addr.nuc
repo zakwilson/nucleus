@@ -1,6 +1,6 @@
 ; A template method's reason binds its type variables the way resolution does,
 ; so a by-value collection argument is reported as needing `&`.
-(import-use vector)
+(import-use nucleus.vector)
 
 (defn tag (n:i32 x:&(Vector T)):i32 (return n))
 (defn tag (n:f64):f64 (return n))

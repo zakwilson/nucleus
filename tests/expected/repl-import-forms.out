@@ -1,6 +1,6 @@
 Nucleus REPL (type Ctrl-D to exit)
 nuc> nuc> nuc> nuc> nuc> nuc> nuc> nuc>   imported mathlib
-nuc> <repl>:1: error: 'square' was imported compile-time-only — it has no definition in this program (import-ct)
+nuc> <repl>:1: error: 'square' was imported compile-time-only — it has no definition in this program (import-ct or require-ct)
   error: error (recovered)
 nuc> nuc> nuc>   imported mathlib
 nuc>   25

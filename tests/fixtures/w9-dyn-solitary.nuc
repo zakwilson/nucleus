@@ -14,7 +14,7 @@
 ; The two-conformer spelling is deliberately here too: it already dispatched
 ; correctly through emit-generic-call, and its IR must not move.
 
-(import-use allocator)
+(import-use nucleus.allocator)
 
 (defprotocol Adder (add-k ((self (ref Self)) k:i32):i32))
 

@@ -7,7 +7,7 @@
 ;
 ;   - The corpus walks — every `tests/fixtures/*.nuc` compiles without a line-0
 ;     location; every readable file in four directories survives a print and
-;     re-read through `lib/read.nuc`. Both discover their inputs from the
+;     re-read through `lib/nucleus/read.nuc`. Both discover their inputs from the
 ;     directory, so a new file is covered with no edit here.
 ;
 ;   - The spawns — the struct-ABI and struct-layout oracles, the two generated-
@@ -28,6 +28,15 @@
 ; Phase C (design/stage8/platform.md): Nucleus<->C aggregate passing and
 ; returning must match the platform C ABI. A mismatch is silently catastrophic
 ; at the C boundary, which is why it gates rather than living in `make abi-test`.
+(import-use nucleus.vector)
+(import-use nucleus.test)
+(import-use nucleus.strview)
+(import-use nucleus.file)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.node)
+(import-use nucleus.read)
+(import-use nucleus.edn)
 (deftest abi-interop
   (try (require-cc))
   (try (check-script-ok "./tests/run-abi-test.sh" ""))
@@ -82,7 +91,7 @@
 ; every module the compiler assembles, so before S1 a macro body's quasiquote
 ; spellings were emitted into the PROGRAM module and never referenced there —
 ; 106 dead `@.str` constants in a program with no literal of its own, and one
-; more for every macro anyone adds to `lib/prelude.nuc`. The subject is the
+; more for every macro anyone adds to `lib/nucleus/core.nuc`. The subject is the
 ; tree's own prelude rather than any one program, and the symptom is bytes
 ; nobody reads, so nothing but an assertion keeps the class away.
 ; design/stage20-macros/string-table-per-module.md §5 (S3).
@@ -336,7 +345,7 @@
   (let (refused:i64 0
         a:i64 (try (roundtrip-over "tests/fixtures" &refused))
         b:i64 (try (roundtrip-over "examples" &refused))
-        c:i64 (try (roundtrip-over "lib" &refused))
+        c:i64 (+ (try (roundtrip-over "lib" &refused)) (try (roundtrip-over "lib/nucleus" &refused)))
         d:i64 (try (roundtrip-over "src" &refused)))
     ; A sweep that swept nothing passes every assertion it never made -- and the
     ; seven refusals are part of what it must have reached.
@@ -413,7 +422,7 @@
     (match (edn-parse ev)
       ((ok m) (try (check-eq (try (edn-str (edn-get m "file"))) pv)))
       ((err e)
-        (fail! "lib/edn.nuc could not read the diagnostic\n     line "
+        (fail! "lib/nucleus/edn.nuc could not read the diagnostic\n     line "
                (e 'line) ": " (e 'msg))))
     (drop &r)
     (drop &p))

@@ -5,16 +5,19 @@
 ; `fork`+`exec`, not `system`/`popen`: a shell command line makes quoting the
 ; caller's correctness problem, and an argv vector has none (§2.1).
 
+(ns nucleus.process)
+
 (import-use "unistd.h")
 (import-use "fcntl.h")
 (import-use "sys/wait.h")
 (import-use "signal.h")
 (import-use "poll.h")
 
-(import-use error)
-(import-use strview)
-(import-use vector)
-(import-use string)
+(import-use nucleus.error)
+(import-use nucleus.strview)
+(import-use nucleus.vector)
+(import-use nucleus.string)
+(import-use nucleus.coll)
 
 ; The parent's environment, for the merge `command-env` does. Declared rather
 ; than imported: the C header reader takes function declarations and object-like

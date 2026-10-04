@@ -2,9 +2,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include "prelude.h"
+#include "core.h"
 
-/* Generated from lib/node.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/node.nuc by nucleusc --emit-cheader */
 
 struct Node* alloc_node(void) asm("alloc-node");
 struct Node* node_int(int64_t v) asm("node-int");

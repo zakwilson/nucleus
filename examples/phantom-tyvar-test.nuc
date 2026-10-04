@@ -3,7 +3,7 @@
 ; REGRESSION TEST — kept to validate phantom-param recovery, an orthogonal
 ; feature from associated types. New code should NOT use the four-param verbose
 ; form demonstrated here; prefer the two-param `(MapIter I F)` in
-; `lib/iterator.nuc`, which recovers element types via `:where` constraints on
+; `lib/nucleus/iterator.nuc`, which recovers element types via `:where` constraints on
 ; `extend` (A0–A4, see docs/generics.md and design/stage11/assoc-types.md §4.2).
 ; The `MapIterVerbose` struct below is superseded by associated types.
 ;
@@ -43,7 +43,7 @@
 ; combinator with explicit phantom params for source/result element types.
 ;   I = source container type, F = mapping-fn placeholder,
 ;   S = source element type (phantom), E = result element type (phantom).
-; New code uses (MapIter I F) from lib/iterator.nuc instead.
+; New code uses (MapIter I F) from lib/nucleus/iterator.nuc instead.
 (defstruct (MapIterVerbose I F S E)
   source:I
   f:F)

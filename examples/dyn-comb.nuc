@@ -6,11 +6,11 @@
 ; with the (dyn P) heterogeneous storage path.
 
 (import-use "stdio.h")
-(import-use allocator)
-(import-use coll)
-(import-use iterator)
-(import-use combinators)
-(import-use vector)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
+(import-use nucleus.combinators)
+(import-use nucleus.vector)
 
 (defprotocol Render
   (render (self:&Self) i32))

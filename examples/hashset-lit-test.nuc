@@ -6,11 +6,11 @@
 ; fires Drop at scope exit.
 
 (import-use "stdio.h")
-(import-use allocator)
-(import-use coll)
-(import-use iterator)
-(import-use hash)
-(import-use hashset)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
+(import-use nucleus.hash)
+(import-use nucleus.hashset)
 
 (defn main ():i32
   (with (s:&(HashSet CStr) #{"a" "b" "c"})

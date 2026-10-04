@@ -15,6 +15,11 @@
 ; ---------------------------------------------------------------------------
 
 ; clang's driver takes the bare architecture for AVR; nucleusc wants a triple.
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.fmt)
+(import-use nucleus.string-split)
+(import-use nucleus.test)
 (defn layout-nuc-target (t:StrView):StrView
   (when (= t "avr") (return "avr-unknown-unknown-elf"))
   (return t))

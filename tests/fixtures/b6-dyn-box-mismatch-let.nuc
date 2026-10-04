@@ -12,7 +12,7 @@
 ;   nucleusc: failed to parse generated IR: … '%t6' defined with type
 ;   '%__dyn.Pp' but expected '%__dyn.Qq'
 ; with no source location at all.
-(import-use allocator)
+(import-use nucleus.allocator)
 
 (defprotocol Pp (pm ((self (ref Self))) i32))
 (defprotocol Qq (qm ((self (ref Self))) i32))

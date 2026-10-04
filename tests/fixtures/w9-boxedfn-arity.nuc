@@ -2,7 +2,7 @@
 ; same one-substitution-helper/two-substitutions mistake, same garbage-count
 ; symptom ("got 115").
 (import-use "stdio.h")
-(import-use allocator)
+(import-use nucleus.allocator)
 
 (defn main ():i32
   (with (bf:(BoxedFn (i32) i32) (fn (x:i32):i32 (+ x 1)))

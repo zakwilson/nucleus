@@ -6,10 +6,10 @@
 ; unchecked append, and the !void re-signatures of push-str / truncate.
 
 (import-use "stdio.h")
-(import-use vector)
-(import-use strview)
-(import-use string)
-(import-use char)
+(import-use nucleus.vector)
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.char)
 
 (defn show-maybe (label:CStr m:?usize):void
   (match m

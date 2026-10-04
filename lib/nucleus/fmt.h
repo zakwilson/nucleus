@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include "string.h"
 
-/* Generated from lib/fmt.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/fmt.nuc by nucleusc --emit-cheader */
 
 /* write-str: uses an error-union or option type; not exported */
 typedef struct CFile {

@@ -1,9 +1,9 @@
 ; Stage 19 P1: spawn/wait and the typed exit status. WIFEXITED and friends are
 ; function-like macros the header importer does not admit, so the wait-status
-; layout is decoded in lib/process.nuc — this is what checks the decoding.
-(import-use process)
-(import-use io)
-(import-use strview)
+; layout is decoded in lib/nucleus/process.nuc — this is what checks the decoding.
+(import-use nucleus.process)
+(import-use nucleus.io)
+(import-use nucleus.strview)
 
 (defn run-sh (script:StrView):i32
   (let (c:Command (command "sh"))

@@ -2,11 +2,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include "prelude.h"
+#include "core.h"
 #include "string.h"
 #include "allocator.h"
 
-/* Generated from lib/read.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/read.nuc by nucleusc --emit-cheader */
 
 enum LitMark {
     LitMark_LIT_NONE = 0,

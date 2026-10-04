@@ -18,8 +18,9 @@
 ; naming their keyword replacements rather than reading as types.
 
 (import-use "stdio.h")
-(import-use node)
-(import-use vector)
+(import-use nucleus.node)
+(import-use nucleus.vector)
+(import-use nucleus.allocator)
 
 (defstruct Point
   x:i32

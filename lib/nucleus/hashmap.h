@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-/* Generated from lib/hashmap.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/hashmap.nuc by nucleusc --emit-cheader */
 
 void hashmap_oom(void) asm("hashmap-oom");
 /* hashmap-init: generic template; not exported */

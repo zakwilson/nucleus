@@ -1,6 +1,6 @@
-# Strings (`lib/char.nuc`, `lib/strview.nuc`, `lib/string.nuc`, Stage 11)
+# Strings (`lib/nucleus/char.nuc`, `lib/nucleus/strview.nuc`, `lib/nucleus/string.nuc`, Stage 11)
 
-`(import-use string)` provides the full string stack: the `Char` scalar, the `StrView` borrowed slice, the `String` owning type, UTF-8 encode/decode, split, lines, trim, and `parse`. Individual sub-libraries may be imported when only part of the stack is needed; see the import list at the end of each section.
+`(import-use nucleus.string)` provides the full string stack: the `Char` scalar, the `StrView` borrowed slice, the `String` owning type, UTF-8 encode/decode, split, lines, trim, and `parse`. Individual sub-libraries may be imported when only part of the stack is needed; see the import list at the end of each section.
 
 ## Which string type?
 
@@ -64,9 +64,9 @@ The `\u{…}` form validates that the value is a Unicode scalar value: it must b
 
 ---
 
-## §2 — `Char` functions (`lib/char.nuc`)
+## §2 — `Char` functions (`lib/nucleus/char.nuc`)
 
-`(import-use char)` — requires `(import-use error)` and `(import-use string-errors)` (transitively satisfied).
+`(import-use nucleus.char)` — requires `(import-use nucleus.error)` and `(import-use nucleus.string-errors)` (transitively satisfied).
 
 ### `DecodeResult`
 
@@ -119,7 +119,7 @@ All functions are **total**: non-ASCII input returns 0.
 
 ## §3 — `StrView` — borrowed byte/char substrate
 
-`(import-use strview)` — also requires `(import-use hash)` and `(import-use numeric)` (transitively satisfied). For `ByteStr`/`Str` protocol conformances, use `(import-use strview-str)` instead.
+`(import-use nucleus.strview)` — also requires `(import-use nucleus.hash)` and `(import-use nucleus.numeric)` (transitively satisfied). For `ByteStr`/`Str` protocol conformances, use `(import-use nucleus.strview-str)` instead.
 
 `StrView` is a non-owning, immutable, length-prefixed byte slice. It borrows its bytes — copying a `StrView` copies two words; there is no `Drop` conformance and nothing is freed.
 
@@ -131,11 +131,11 @@ All functions are **total**: non-ASCII input returns 0.
 
 `data` points to the first byte of the underlying buffer. `len` is authoritative; the buffer need not be NUL-terminated (except when created via `strview-from-cstr`, in which case `strview-to-cstr` is sound).
 
-The bare struct type is registered in the prelude, so `StrView` is available as a type in every compilation unit without any import. The functions and protocol conformances below still require `(import-use strview)`.
+The bare struct type is registered in the prelude, so `StrView` is available as a type in every compilation unit without any import. The functions and protocol conformances below still require `(import-use nucleus.strview)`.
 
 **A bare `"…"` string literal's static type is `StrView`** (not `CStr`). Nothing about *writing* a literal changes; what changes is what type-checking and codegen see it as. Emission stays target-aware: at a `ptr`/`CStr`-typed consumer (a `printf`/libc argument, `strcmp`, `=`/`!=`, a `:CStr`/`:ptr` parameter or slot) the literal collapses to the same bare pointer it always emitted, with no extra IR — no `{data,len}` struct is built. Only when a literal flows into a genuinely `StrView`-typed `let`, field, or parameter does it materialize the two-word view. This is sound because a literal's backing rodata global is always NUL-terminated at `data[len]`, exactly the guarantee `CStr` literals always relied on.
 
-In overloaded (`defn`/multimethod) dispatch, a `StrView`-typed argument adapts to a `CStr`-typed parameter but *not* to a bare `ptr`-typed parameter — this reproduces the dispatch a `CStr` literal produced before this type existed. To bind a bounded generic (e.g. an `Eq`-bounded parameter) at `StrView` from a literal, `(import-use strview)` must be in scope so `StrView`'s protocol conformances are registered; otherwise `as` the literal to `CStr` explicitly (see `examples/cstr.nuc`). `CStr` itself is unchanged by this: it remains the dedicated FFI `char*` type, still distinct for dispatch, with only `=`/`!=` defined — no existing `:CStr`/`:ptr`-typed signature was retyped, only the literal's own inferred type and its emission changed.
+In overloaded (`defn`/multimethod) dispatch, a `StrView`-typed argument adapts to a `CStr`-typed parameter but *not* to a bare `ptr`-typed parameter — this reproduces the dispatch a `CStr` literal produced before this type existed. To bind a bounded generic (e.g. an `Eq`-bounded parameter) at `StrView` from a literal, `(import-use nucleus.strview)` must be in scope so `StrView`'s protocol conformances are registered; otherwise `as` the literal to `CStr` explicitly (see `examples/cstr.nuc`). `CStr` itself is unchanged by this: it remains the dedicated FFI `char*` type, still distinct for dispatch, with only `=`/`!=` defined — no existing `:CStr`/`:ptr`-typed signature was retyped, only the literal's own inferred type and its emission changed.
 
 **Escapes inside a literal** — `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\xHH`
 (a raw byte, **capped at two hex digits**, unlike C's greedy `\x`) and `\uXXXX`
@@ -276,14 +276,14 @@ All three return a `StrView` by value that borrows the same underlying bytes. No
 | `Eq` | Byte equality: same length and identical bytes. Takes `StrView` by value. Comparing a view with `null` is a compile error — a view is never null; test the empty view with `str-empty?`. |
 | `Ord` | Byte-lexicographic: `memcmp` on `min(a.len, b.len)` bytes; shorter is less-than on tie. |
 | `Hash` | FNV-1a over exactly `len` bytes (handles embedded NULs). Receiver `(ref StrView)`. |
-| `ByteStr ByteIter` | Via `(import-use strview-str)` (separate import to avoid circular dependency). |
-| `Str CharIter` | Via `(import-use strview-str)`. |
+| `ByteStr ByteIter` | Via `(import-use nucleus.strview-str)` (separate import to avoid circular dependency). |
+| `Str CharIter` | Via `(import-use nucleus.strview-str)`. |
 
 ---
 
 ## §4 — `ByteStr` and `Str` protocols
 
-`(import-use string-protocols)` — also requires `(import-use strview)` and `(import-use iterator)` (transitively satisfied).
+`(import-use nucleus.string-protocols)` — also requires `(import-use nucleus.strview)` and `(import-use nucleus.iterator)` (transitively satisfied).
 
 Two read-only protocol layers define the public string surface.
 
@@ -339,16 +339,16 @@ Two read-only protocol layers define the public string surface.
 
 | Type | `ByteStr ByteI` | `Str CharI` | Import |
 |------|-----------------|-------------|--------|
-| `StrView` | `(ByteStr ByteIter)` | `(Str CharIter)` | `(import-use strview-str)` |
-| `String` | `(ByteStr ByteIter)` | `(Str CharIter)` | `(import-use string)` |
+| `StrView` | `(ByteStr ByteIter)` | `(Str CharIter)` | `(import-use nucleus.strview-str)` |
+| `String` | `(ByteStr ByteIter)` | `(Str CharIter)` | `(import-use nucleus.string)` |
 
-**Circular-import note.** `string-protocols.nuc` imports `strview` (for `StrView` in method signatures). Therefore `strview.nuc` cannot import `string-protocols` — a circular dependency. The conformances for `StrView` live in the separate `lib/strview-str.nuc`, which imports both at the leaf level. Use `(import-use strview-str)` to get `ByteStr`/`Str` on `StrView`.
+**Circular-import note.** `string-protocols.nuc` imports `strview` (for `StrView` in method signatures). Therefore `strview.nuc` cannot import `string-protocols` — a circular dependency. The conformances for `StrView` live in the separate `lib/nucleus/strview-str.nuc`, which imports both at the leaf level. Use `(import-use nucleus.strview-str)` to get `ByteStr`/`Str` on `StrView`.
 
 ---
 
 ## §5 — `String` — owning type
 
-`(import-use string)` — also requires `(import-use vector)`, `(import-use strview-str)`, `(import-use char)`, `(import-use string-protocols)`, and `(import-use hash)` (all transitively satisfied).
+`(import-use nucleus.string)` — also requires `(import-use nucleus.vector)`, `(import-use nucleus.strview-str)`, `(import-use nucleus.char)`, `(import-use nucleus.string-protocols)`, and `(import-use nucleus.hash)` (all transitively satisfied).
 
 `String` owns a heap byte buffer and releases it at `with`-scope exit. All reading is delegated through a zero-copy `string-as-view` bridge to `StrView`.
 
@@ -411,8 +411,8 @@ Two read-only protocol layers define the public string surface.
 ### Example
 
 ```lisp
-(import-use string)
-(import-use vector)
+(import-use nucleus.string)
+(import-use nucleus.vector)
 
 (defn main ():i32
   (with (s:String (string-new))
@@ -427,7 +427,7 @@ Two read-only protocol layers define the public string surface.
 
 ## §6 — Split, lines, and trim
 
-`(import-use string-split)` — requires `(import-use strview)` (transitively satisfied).
+`(import-use nucleus.string-split)` — requires `(import-use nucleus.strview)` (transitively satisfied).
 
 Lazy splitting with no allocation — iterators hold raw pointers into the source `StrView`. The source must remain alive for the iterator's lifetime.
 
@@ -503,7 +503,7 @@ char-folded with `reduce` like a `String` (which folds via `string-as-view` +
 
 ### Trim
 
-Trim functions live in `lib/strview.nuc` (available via `(import-use strview)`):
+Trim functions live in `lib/nucleus/strview.nuc` (available via `(import-use nucleus.strview)`):
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
@@ -517,7 +517,7 @@ All three return a `StrView` by value that borrows the same underlying bytes. No
 
 ## §7 — `FromStr` and `parse`
 
-`(import-use parse)` — requires `(import-use strview)` (transitively satisfied).
+`(import-use nucleus.parse)` — requires `(import-use nucleus.strview)` (transitively satisfied).
 
 ### `FromStr R` protocol
 
@@ -530,10 +530,10 @@ All three return a `StrView` by value that borrows the same underlying bytes. No
 
 | Conformer | `R` | Import |
 |-----------|-----|--------|
-| `i32` | `!i32` | `(import-use parse)` |
-| `i64` | `!i64` | `(import-use parse)` |
-| `ui64` | `!ui64` | `(import-use parse)` |
-| `f64` | `!f64` | `(import-use parse)` |
+| `i32` | `!i32` | `(import-use nucleus.parse)` |
+| `i64` | `!i64` | `(import-use nucleus.parse)` |
+| `ui64` | `!ui64` | `(import-use nucleus.parse)` |
+| `f64` | `!f64` | `(import-use nucleus.parse)` |
 
 ### `parse` macro
 
@@ -573,7 +573,7 @@ Before Stage 17, `(parse i64 "99999999999999999999")` returned
 through `errno`, which the consumed-bytes check cannot see.
 
 ```lisp
-(import-use parse)
+(import-use nucleus.parse)
 
 (defn main ():i32
   (let ((sv (ref StrView)) (alloca StrView))
@@ -589,8 +589,8 @@ through `errno`, which the consumed-bytes check cannot see.
 
 ## §8 — Error codes
 
-All string-related error codes (defined in `lib/string-errors.nuc`, except
-`parse-float-error` in `lib/parse.nuc`):
+All string-related error codes (defined in `lib/nucleus/string-errors.nuc`, except
+`parse-float-error` in `lib/nucleus/parse.nuc`):
 
 | Error code | Message | Raised by |
 |------------|---------|-----------|
@@ -608,9 +608,9 @@ All of these conform to the `Err` type and are usable with `(err-name e)`, `try`
 
 ---
 
-## §9 — Formatting (`lib/fmt.nuc`, Stage 17)
+## §9 — Formatting (`lib/nucleus/fmt.nuc`, Stage 17)
 
-`(import-use fmt)`. Two protocols and three macros; there is **no format
+`(import-use nucleus.fmt)`. Two protocols and three macros; there is **no format
 string**. Arity and argument types are settled at macro expansion, so a
 mismatch is a compile error rather than a runtime misread.
 
@@ -679,7 +679,7 @@ See `examples/fmt-test.nuc`.
 
 ## §10 — `Symbol` — interned identity
 
-`(import-use intern)` for the type and the table; `(import-use intern-str)` for
+`(import-use nucleus.intern)` for the type and the table; `(import-use nucleus.intern-str)` for
 its text methods. Full reference: [Standard library — `Symbol`](stdlib.md#symbol-libinternnuc-stage-17).
 
 ```lisp
@@ -713,7 +713,7 @@ only ever read back out of zeroed memory.
 
 ## §11 — Writing strings out
 
-`(import-use io)` and `(import-use file)`. Full reference: [I/O](io.md).
+`(import-use nucleus.io)` and `(import-use nucleus.file)`. Full reference: [I/O](io.md).
 
 Every sink in the library is a [`Writer`](#writer--an-output-sink), so the same
 `write-str` reaches a descriptor, a file, a buffered file or a `String`:
@@ -750,5 +750,5 @@ stripped) and `file-read-to-string` (`!String`, bytes, no UTF-8 validation).
 - **A materialized `StrView` at a C variadic call site contributes only its `data` pointer.** Passing a `StrView` value (not a fixed parameter) to a variadic function such as `printf` (`%s`) passes just the `char*`, never the `{data,len}` pair as two variadic slots — otherwise the carried length would occupy an extra vararg slot and shift every later argument's conversion. A *fixed* (non-variadic) `StrView` by-value parameter is unaffected and still receives the full two-eightbyte struct per the platform ABI. See `examples/strview-vararg-test.nuc`.
 - **Coercing a `StrView` to `CStr`/`ptr` (implicitly, or via `as`/`unsafe/cast`) always takes just `data`, unconditionally** — the same trust `strview-to-cstr` above requires: sound only when the view's buffer is actually NUL-terminated at `data[len]`. A string literal and a view built from a `CStr` satisfy this; an arbitrary sub-slice from `strview-sub-bytes` may not.
 - **String literals meeting at a branch yield a `StrView`.** `(if c "one" "two")` is a `StrView`, and so are the corresponding `cond` and `match` joins — each arm materializes its own `{data,len}` in its own block, which is the only place a phi operand may be defined. This holds with no target type in view: a `let` with no declared type binds a view, and an argument position binds one too. (Before Stage 17 C8 it depended on the destination, and an unarmed join collapsed to `CStr`.) An explicit `c"…"` in an arm is still a `CStr` — the explicit spelling is never overridden. The one destination that does steer the join is a `CStr` slot: under `(let (t:CStr (if c "lit" cs)) …)` a literal arm joins as `CStr`, so it meets a `CStr` sibling. With no `CStr` want, `(if c "lit" cs)` is a `StrView`/`CStr` mismatch, and the error says so.
-- **A string literal inside a collection literal is a `StrView`.** `#{"a" "b"}` is a `(HashSet StrView)` and `{"foo" 42}` a `(HashMap StrView i32)` — the same type `"…"` has everywhere else. A container declared `(HashSet CStr)` is unaffected: the literal still free-coerces at `insert`/`contains?`, so only the *inferred* element type changed. `StrView`'s `Hash` conformance is in `lib/hash.nuc` beside `CStr`'s, so a string-keyed container needs no import beyond the collection's.
+- **A string literal inside a collection literal is a `StrView`.** `#{"a" "b"}` is a `(HashSet StrView)` and `{"foo" 42}` a `(HashMap StrView i32)` — the same type `"…"` has everywhere else. A container declared `(HashSet CStr)` is unaffected: the literal still free-coerces at `insert`/`contains?`, so only the *inferred* element type changed. `StrView`'s `Hash` conformance is in `lib/nucleus/hash.nuc` beside `CStr`'s, so a string-keyed container needs no import beyond the collection's.
 - **A quoted `c"…"` inside a macro `quasiquote` does not carry its `CStr` marker.** Quoting deliberately does not preserve the flag through expansion, so a quoted `c"…"` reads back as a plain `StrView` literal at the macro's output site. Write the `c"…"` literal directly in code (outside a quasiquote) when the explicit `CStr` spelling matters.

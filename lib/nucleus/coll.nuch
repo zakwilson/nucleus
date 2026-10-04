@@ -1,4 +1,5 @@
-; .nuch header for lib/coll.nuc
+; .nuch header for lib/nucleus/coll.nuc
+(ns nucleus.coll)
 (defprotocol (Coll E It) (count (self:ref:Self) :usize) (conj (self:ref:Self elem:E) :void) (empty? (self:ref:Self) :bool) (iter (self:ref:Self) :It))
 (defprotocol (Seq E) (invoke (self:ref:Self i:usize) :E) (append (self:ref:Self elem:E) :void) (contains? (self:ref:Self elem:E) :bool) (insert (self:ref:Self i:usize elem:E) :void))
 (defprotocol (Assoc K V Ki Vi) (assoc (self:ref:Self key:K val:V) :void) (dissoc (self:ref:Self key:K) :void) (get (self:ref:Self key:K) :?V) (keys (self:ref:Self) :Ki) (vals (self:ref:Self) :Vi))

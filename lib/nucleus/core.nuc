@@ -4,15 +4,17 @@
 ; Provides:
 ;   - The Node struct and NODE-* enum, so AST-aware macros (variadic +,
 ;     dotimes, ->) can introspect their arguments.
-;   - Standard macros from lib/macros.nuc (variadic +, -, *, /; if, when,
+;   - Standard macros from lib/nucleus/macros.nuc (variadic +, -, *, /; if, when,
 ;     unless, zero?, null?, for, dotimes, ->).
 ;   - libc string functions (needed by the macros' JIT'd bodies).
 ;
 ; Every form here is compile-time only: a type, a template, a protocol or a
 ; macro, none of which emit IR. The node/arena RUNTIME is not here — see
 ; design/stage16-ergonomics/compile-time-imports.md §4b. A program that quotes
-; or calls a :rest function needs `(import-use node)`, which the compiler
+; or calls a :rest function needs `(import-use nucleus.node)`, which the compiler
 ; demands by name.
+
+(ns nucleus.core)
 
 (import-use "string.h")
 
@@ -20,7 +22,7 @@
 ; Symbol — one word pointing at interned bytes, with `[hash][len]` behind the
 ; pointer. Promoted here for the same reason StrView was: `Node.s` is a Symbol,
 ; so the reader, the macro JIT module and the bootstrap all need the type
-; registered without importing anything. `lib/intern.nuc` provides the table
+; registered without importing anything. `lib/nucleus/intern.nuc` provides the table
 ; and every method; this is only the bare data definition.
 (defstruct Symbol p:&ui8)
 
@@ -47,15 +49,15 @@
 
 ; Stage 14 NS-1 (design/stage14/native-strings.md): StrView — a length-
 ; prefixed, non-owning view over UTF-8 bytes, `{ data, len }`. Promoted here
-; (out of lib/strview.nuc) so the type is registered in every compilation
+; (out of lib/nucleus/strview.nuc) so the type is registered in every compilation
 ; unit, including the reader/macros/bootstrap, not just files that
-; `(import-use strview)`. lib/strview.nuc still provides every method
+; `(import-use nucleus.strview)`. lib/nucleus/strview.nuc still provides every method
 ; (`extend`/`defn`); this is only the bare data definition.
 (defstruct StrView
   data:&ui8
   len:usize)
 
-(import-use macros)
+(import-use nucleus.macros)
 
 ; Stage 13 L2 (design/stage13/lambda.md §"The Clone protocol"): the Clone
 ; protocol, always available so `(:where (Clone T))` bounds resolve and `vfn`

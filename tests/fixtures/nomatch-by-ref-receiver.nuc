@@ -1,5 +1,5 @@
 ; No method takes the first argument as given, but one takes it by reference.
-(import-use vector)
+(import-use nucleus.vector)
 
 (defvar options:(Vector i32) [500 1000 1500])
 

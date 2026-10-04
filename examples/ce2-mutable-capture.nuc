@@ -9,8 +9,8 @@
 ;  5. cfn dec! on a captured counter via a reference.
 
 (import-use "stdio.h")
-(import-use iterator)
-(import-use allocator)
+(import-use nucleus.iterator)
+(import-use nucleus.allocator)
 
 (defn main ():i32
   (let (r:&IntRangeIter (alloca IntRangeIter))

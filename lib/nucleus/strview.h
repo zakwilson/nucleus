@@ -2,9 +2,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include "prelude.h"
+#include "core.h"
 
-/* Generated from lib/strview.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/strview.nuc by nucleusc --emit-cheader */
 
 bool strview_eq(struct StrView* a, struct StrView* b) asm("strview-eq");
 typedef struct ByteIter {

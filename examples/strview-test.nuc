@@ -6,8 +6,8 @@
 
 (import-use "stdio.h")
 (import-use "stdlib.h")
-(import-use strview)
-(import-use hash)
+(import-use nucleus.strview)
+(import-use nucleus.hash)
 
 (defn main ():i32
   ; Build three views: two with identical content, one different.

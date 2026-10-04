@@ -10,7 +10,7 @@
 
 (import-use "stdio.h")
 (import-use "string.h")
-(import-use iterator)
+(import-use nucleus.iterator)
 
 ; ---------------------------------------------------------------------------
 ; FoldFn conformer: sums two i64 values.

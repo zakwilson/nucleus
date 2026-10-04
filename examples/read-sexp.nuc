@@ -1,14 +1,15 @@
-; Reading s-expressions at runtime (lib/read.nuc).
+; Reading s-expressions at runtime (lib/nucleus/read.nuc).
 ;
 ; The compiler hands every program `Node` and no way to build one from text.
 ; `read-all` is that way: configuration, a saved value, a wire protocol.
 
-(import-use error)
-(import-use strview)
-(import-use string)
-(import-use io)
-(import-use node)
-(import-use read)
+(import-use nucleus.error)
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.io)
+(import-use nucleus.node)
+(import-use nucleus.read)
+(import-use nucleus.intern)
 
 ; `defconst` takes integer literals only, so the text is a function.
 (defn config ():StrView (return "

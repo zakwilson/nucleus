@@ -1,4 +1,5 @@
-; .nuch header for lib/arena.nuc
+; .nuch header for lib/nucleus/arena.nuc
+(ns nucleus.arena)
 (defconst ARENA-SIZE 16777216)
 (extern (g-arena ptr))
 (extern (g-arena-used i64))

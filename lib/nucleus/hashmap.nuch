@@ -1,4 +1,10 @@
-; .nuch header for lib/hashmap.nuc
+; .nuch header for lib/nucleus/hashmap.nuc
+(ns nucleus.hashmap)
+(import-use nucleus.numeric)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
+(import-use nucleus.hash)
 (declare hashmap-oom () :void)
 (defstruct (Entry K V) (key K) (val V))
 (defstruct (HashMap K V) (keys ?ref:ui8) (vals ?ref:ui8) (states ?ref:ui8) (count usize) (cap usize) (alloc AllocHandle))

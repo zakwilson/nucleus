@@ -2,12 +2,12 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include "prelude.h"
+#include "core.h"
 #include "allocator.h"
 #include "string.h"
 #include "keyword.h"
 
-/* Generated from lib/test.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/test.nuc by nucleusc --emit-cheader */
 
 enum TestStatus {
     TestStatus_TEST_PASS = 0,

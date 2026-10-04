@@ -7,6 +7,8 @@
 ; A runaway-growth guard, not a preallocation size (g-structs is a Vector).
 ; Every C struct, opaque forward decl and typedef alias takes a slot, and
 ; `gtk/gtk.h` alone brings in thousands — 1024 was "too many structs" for it.
+(import-use nucleus.vector)
+(import-use nucleus.string)
 (defconst MAX-STRUCTS 16384)
 (defconst MAX-CAST-RULES 256)
 ; Stage 10 unions (design/stage10/unions.md)
@@ -144,7 +146,7 @@
 (defconst DEFVAR-DECLARED 1)  ; prescan-defvar-name registered it; not yet emitted
 (defconst DEFVAR-REACHED 2)   ; emit-defvar has emitted its @g = global line
 
-; Node struct and NODE-* kinds come from lib/prelude.nuc (imported below).
+; Node struct and NODE-* kinds come from lib/nucleus/core.nuc (imported below).
 
 ; Type kinds. TY-TYVAR is an abstract type variable used only by the Stage 9
 ; rung-4 A2 def-time check of generic bodies; it never reaches codegen (generic
@@ -543,7 +545,7 @@
   ; site today).
   arr-len:i32)
 
-; Node struct comes from lib/prelude.nuc (imported below).
+; Node struct comes from lib/nucleus/core.nuc (imported below).
 
 (defstruct Sym
   ; The scope KEY, fully qualified for a global. A `Symbol`, so `scope-frame-find`'s
@@ -1087,6 +1089,7 @@
   (form ?&Node)
   ns:Symbol
   path:Symbol
+  imports:?&ImportVec
   line:i32
   name:Symbol
   ; Stage 20 L6: the global's `@name`, so a compile-time mirror can ask whether
@@ -1151,7 +1154,7 @@
   loop-depth:i32
   nundo:&(Vector &NarrowUndo)
   narrow-gen:i32
-  ; Pointers, not `String` values: this file is imported before `lib/string.nuc`,
+  ; Pointers, not `String` values: this file is imported before `lib/nucleus/string.nuc`,
   ; so a `%String`-typed field names a type the compile-time module's own type
   ; section does not carry. A pointer field is `ptr` in IR and carries nothing.
   entry-stream:&String
@@ -1220,10 +1223,10 @@
 ; entry in the FILE-scoped import environment: what a single import form bound in
 ; the file that wrote it. `prefix` is the qualifier an `import-prefixed` (or the
 ; prefixed `import` / `unsafe/import-private`) bound, and is **null** for a
-; flattening `import-use`/`import-only` — the null-prefix entries are exactly the
-; "namespaces this file flattened" set §8.3 needs. `path` is the resolved file
-; path (or the header spelling for a C include), which is what B2 will map to the
-; imported file's namespace.
+; flattening `import-use`/`import-only` — the null-prefix entries without
+; `bind-none` are exactly the "namespaces this file flattened" set §8.3 needs.
+; `path` is the resolved file path (or the header spelling for a C include),
+; which is what B2 will map to the imported file's namespace.
 ;
 ; Stage 15 B2b: `private` is 1 only for `unsafe/import-private`, the one form
 ; that asks to reach the imported file's *file-private* key space (`#pN/name`,
@@ -1235,7 +1238,14 @@
 (defstruct ImportBind
   prefix:Symbol ; bound qualifier, or `symbol-none` for a flattening import
   path:Symbol   ; resolved path of the imported file / header spelling
-  private:i32)  ; 1 iff this import asked for the file's private names too
+  private:i32   ; 1 iff this import asked for the file's private names too
+  bind-none:i32) ; 1 iff only `require`/`require-ct` wrote it: it flattens nothing
+
+; One import form's edge in the unit's import graph, keyed by the file that wrote
+; it; a file's import closure is walked over these (ambient-namespaces.md §2).
+(defstruct ImportEdge
+  from:Symbol
+  to:Symbol)
 
 ; Pointer kind left outside, as for ConstraintVec: `g-file-imports` and the
 ; saved copies of it are `?&` (null before the first import), the locals that
@@ -1249,17 +1259,10 @@
   path:Symbol
   imports:?&ImportVec)
 
-; What a quasiquote tag `#h<N>/name` resolves in: the environment of the file whose
-; template wrote it, and the body that did, for the binder refusal (quasiquote-resolution.md §3.3).
-; A `defmacro` a file defines, known before its forms emit (quasiquote-resolution.md §3.10).
+; A `defmacro` a file defines, known before its forms emit (stage23-namespaces/quasiquote-resolution.md §3.10).
 (defstruct FileMacro
   path:Symbol
   name:Symbol)
-
-(defstruct HygEnv
-  env:NameEnv
-  who:Symbol
-  kind:i32)
 
 ; A spelling substituted into another file's text (an alias argument, a protocol's
 ; `Self`) as the marker `#env-arg-N`, which the parser reads back in `env` (`env-arg-type`).

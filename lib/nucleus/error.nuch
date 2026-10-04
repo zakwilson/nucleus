@@ -1,4 +1,5 @@
-; .nuch header for lib/error.nuc
+; .nuch header for lib/nucleus/error.nuc
+(ns nucleus.error)
 (deferror unhandled-error "unhandled error")
 (defstruct Handler (what Err) (rty ptr) (hfn ptr) (ctx ptr) (prev ptr))
 (extern (g-handler-top ptr))

@@ -4,10 +4,10 @@
 ; the child writes more than that to stderr hangs forever — the child blocks on
 ; the full stderr pipe and never closes stdout. The second case here overflows
 ; BOTH buffers, so it completes only if the capture polls them together.
-(import-use process)
-(import-use io)
-(import-use strview)
-(import-use string)
+(import-use nucleus.process)
+(import-use nucleus.io)
+(import-use nucleus.strview)
+(import-use nucleus.string)
 
 (defn main ():i32
   (let (c:Command (command "sh"))

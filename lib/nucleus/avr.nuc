@@ -8,7 +8,7 @@
 ; value the type system can hand out safely).
 ;
 ; The concrete addresses live in the per-device register files
-; (lib/avr/attiny1634.nuc, lib/avr/avr32dd20.nuc, lib/avr/atmega328p.nuc) as
+; (lib/nucleus/avr/attiny1634.nuc, lib/nucleus/avr/avr32dd20.nuc, lib/nucleus/avr/atmega328p.nuc) as
 ; `defconst`s; a program imports one of those plus this file.
 ;
 ; Self-contained by design: this file imports nothing and uses only
@@ -22,6 +22,8 @@
 ; `unsafe/cast` to a pointer is a clean same-width `inttoptr`.
 
 ; --- 8-bit register access ---
+
+(ns nucleus.avr)
 
 (defn reg8-read (addr:usize):ui8
   (return (deref (unsafe/cast (ptr :volatile ui8) addr))))

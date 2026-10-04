@@ -1,4 +1,9 @@
-; .nuch header for lib/node.nuc
+; .nuch header for lib/nucleus/node.nuc
+(ns nucleus.node)
+(import-use nucleus.arena)
+(import-use nucleus.intern)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
 (declare alloc-node () :ref:Node)
 (declare node-int ((v i64)) :ref:Node)
 (declare node-at ((n (ptr Node)) (i i32)) :?ref:Node)

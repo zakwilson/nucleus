@@ -10,8 +10,8 @@
 
 (import-use "stdio.h")
 (import-use "stdlib.h")
-(import-use error)
-(import-use char)
+(import-use nucleus.error)
+(import-use nucleus.char)
 
 ; --- UTF-8 encode/decode round-trip for a given codepoint ---
 ; Encodes c to a temporary buffer, then decodes from that buffer and prints

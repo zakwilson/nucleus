@@ -7,20 +7,21 @@
 ; Nucleus scalars and writes EDN back. Nothing is copied: a value is the `Node`
 ; the reader built, and its strings are interned for the life of the process.
 
-(ns edn)
+(ns nucleus.edn)
 
-(import-use error)
-(import-use strview)
-(import-use string)
-(import-use fmt)
-(import-use char)
-(import-use keyword)
-(import-use parse)
-(import-use node)
-(import-use read)
-(import-use vector)
-(import-use hashset)
-(import-use hashmap)
+(import-use nucleus.error)
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.char)
+(import-use nucleus.keyword)
+(import-use nucleus.parse)
+(import-use nucleus.node)
+(import-use nucleus.read)
+(import-use nucleus.vector)
+(import-use nucleus.hashset)
+(import-use nucleus.hashmap)
+(import-use nucleus.intern)
 
 (deferror edn-type "EDN value of the wrong kind")
 (deferror edn-range "EDN value out of range")
@@ -840,8 +841,9 @@
                        (str ":" key ": " msg)))
         (return (edn-err (e 'code) (e 'line) &m))))))
 
-; A string literal node with `sym`'s text.
-(defmacro- edn-str-node (sym)
+; A string literal node with `sym`'s text. Public because the exported
+; `edn-derive-struct` expands it in the importer.
+(defmacro edn-str-node (sym)
   `(let (sn:&Node (alloc-node))
      (set! (sn 'kind) NODE-STR)
      (set! (sn 's) ~sym)

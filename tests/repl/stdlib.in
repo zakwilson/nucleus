@@ -3,7 +3,7 @@
 ; body `drain-mono-worklist` used to emit only from `emit-toplevel-forms` — a
 ; path a prompt entry never reaches (D3). Results are printed as integers: a
 ; collection literal's own value is a stack address, which differs per run.
-(import-use hashset)
+(import-use nucleus.hashset)
 (contains? #{1 2 3} 2)
 (contains? #{1 2 3} 9)
 ; The same instance, several entries later: `g-mono-drained` is a persistent
@@ -18,13 +18,13 @@
 ; Two more libraries in the same session. `(extern stderr:ptr)` appears in both
 ; hashset and vector, and its process-wide dedup used to leave the second
 ; import's module without the line.
-(import-use vector)
+(import-use nucleus.vector)
 (let (v [10 20 30]) (v 1))
 (if (> 2 1) 555 666)
 (let (v [7 8]) (unsafe/cast i32 (count v)))
-; D8: `lib/error.nuc` does `(import-ct node)`, so `alloc-node` reaches the
-; preamble as a declare; `lib/arena.nuc`'s `defmacro new` then builds a node and
+; D8: `lib/nucleus/error.nuc` does `(import-ct nucleus.node)`, so `alloc-node` reaches the
+; preamble as a declare; `lib/nucleus/arena.nuc`'s `defmacro new` then builds a node and
 ; its JIT module declared it a second time.
-(import-use error)
-(import-use arena)
+(import-use nucleus.error)
+(import-use nucleus.arena)
 (if (> 2 1) 777 888)

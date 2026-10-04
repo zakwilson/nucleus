@@ -94,7 +94,7 @@ Macro output is desugared before compilation, so macro-generated code can use ei
 
 **A `defstruct`, `defunion`, `defenum` or struct/union template defined inside `(ns n)` is keyed `n/Type`**, exactly like a `defn` or `defvar` declared there — see [`ns`](toplevel.md) and [What an import brings into scope](toplevel.md#what-an-import-brings-into-scope). Two namespaces may each define a type of the same name; they are two distinct types. Type identity (what `type-eq` checks for a struct or union) compares the underlying `StructDef`/`UnionDef` by pointer, so `(ns a) (defstruct Vector …)` and `(ns b) (defstruct Vector …)` are unrelated even when their field lists happen to match: distinct layouts, distinct field-access diagnostics (`no field 'c' on struct 'a/Vector'`), and distinct protocol conformances — extending `a/Vector` does not extend `b/Vector`.
 
-A type reference resolves through the writing file's own import environment exactly like any other name, per the table in [What an import brings into scope](toplevel.md#what-an-import-brings-into-scope): `(import-prefixed lib p)` makes the type spellable as `p/Type` only; `(import-use lib)` makes it spellable both bare and as `<lib-namespace>/Type`; a file's own `(ns n)` makes it spellable both bare and as `n/Type`. The prelude, every un-namespaced library, and every C-header type are always reachable bare — they live in `user`, which every namespaced file can still see unqualified.
+A type reference resolves through the writing file's own import environment exactly like any other name, per the table in [What an import brings into scope](toplevel.md#what-an-import-brings-into-scope): `(import-prefixed lib p)` makes the type spellable as `p/Type` and (as every import does) by its full name `<lib-namespace>/Type`; `(import-use lib)` makes it spellable both bare and as `<lib-namespace>/Type`; `(require lib)` makes it spellable as `<lib-namespace>/Type` only; a file's own `(ns n)` makes it spellable both bare and as `n/Type`. The prelude, every un-namespaced library, and every C-header type are always reachable bare — they live in `user`, which every namespaced file can still see unqualified.
 
 A qualifier that names no namespace in scope is refused rather than silently resolved — a mistyped or bogus prefix used to resolve to whatever type had that bare name, from any namespace, which is no longer true:
 
@@ -105,10 +105,9 @@ A qualifier that names no namespace in scope is refused rather than silently res
 
 ```
 demo.nuc:2: error: unknown type: nope/Cat — 'nope' is not in scope in this file
-  note: 'nope' is not in scope in this file — a prefixed import binds its
-  library under the prefix it names and not under the library's own namespace,
-  and an unimported namespace is not nameable at all. This file has no import
-  qualifiers in scope.
+  note: 'nope' is neither an import prefix this file binds nor a namespace its
+  imports load — (require …) a library to reach its namespace by its full name.
+  This file has no import qualifiers in scope.
 ```
 
 A **bare** reference to a type that genuinely is defined in the compilation unit, but under a namespace this file never imported, gets a diagnostic that names the defining namespace rather than claiming the type does not exist anywhere — and, when this file has bound some prefix that reaches that namespace, a note offering the spelling it can actually write:
@@ -124,7 +123,7 @@ If the file has bound nothing for that namespace, the message ends `— defined 
 
 ```
 demo.nuc:1: error: unknown type: Vector — not defined anywhere in this compilation unit
-  note: 'Vector' is defined in lib/vector.nuch, which no import in this unit reaches
+  note: 'Vector' is defined in lib/nucleus/vector.nuch, which no import in this unit reaches
 ```
 
 Writing a type where a type *constructor* belongs is a distinct error, since the head is a real type. The usual way to reach it is a doubled annotation — `x:i32:i32` means `(i32 i32)`:
@@ -489,9 +488,9 @@ Pointer size and the target are not hardcoded as `i64`/`8` throughout codegen: a
 
 **`usize` and `ssize`** are the portable index and length types for pointer-sized arithmetic. They resolve to the target's pointer-width integer at compile time: `i32` on ILP32 (4-byte pointer) targets and `i64` on LP64 (8-byte pointer) targets. `usize` is unsigned; `ssize` is signed. They are valid in any type position and are handled correctly by `sizeof`, type mangling, `type-eq`, and arithmetic operators. Use `usize` for lengths, counts, and non-negative offsets; use `ssize` for signed differences or offsets that may be negative. Both participate in the standard numeric promotions and are mangled distinctly (e.g. `usize`, `ssize`) in method symbols and stamped struct names.
 
-**A bare `"…"` string literal has static type `StrView`**, not `CStr` — a borrowed `{data:(ptr ui8), len:usize}` view over the literal's rodata storage (see [Strings](strings.md) for the full `StrView` API). `StrView` is a library struct, but its bare type is promoted into the prelude, so it is available everywhere without an import; its methods and protocol conformances still require `(import-use strview)`. A literal's backing storage is always NUL-terminated at `data[len]` (the same rodata global `CStr` literals always used), so a `StrView` value coerces to `CStr`/`ptr` **for free** (no IR) at any assignment, call argument, `as`/`unsafe/cast`, or return boundary, by taking `data` — this is what keeps every existing `:CStr`/`:ptr`-typed function, `printf`/libc call, and `strcmp`-style `=`/`!=` comparison working with a string literal unchanged. Only when a literal flows into a genuinely `StrView`-typed slot does it materialize the two-word `{data,len}` struct. In overloaded (`defn`/multimethod) dispatch, a `StrView`-typed argument adapts to a `CStr` parameter but *not* to a bare `ptr` parameter, reproducing the resolution a `CStr` literal produced before this type existed. A materialized `StrView` passed to a C variadic parameter (e.g. `printf`'s `%s`) contributes only its `data` pointer, never the two-word struct; a *fixed* (non-variadic) `StrView` by-value parameter is unaffected and still receives the full two-eightbyte struct per the platform ABI (`examples/strview-vararg-test.nuc`).
+**A bare `"…"` string literal has static type `StrView`**, not `CStr` — a borrowed `{data:(ptr ui8), len:usize}` view over the literal's rodata storage (see [Strings](strings.md) for the full `StrView` API). `StrView` is a library struct, but its bare type is promoted into the prelude, so it is available everywhere without an import; its methods and protocol conformances still require `(import-use nucleus.strview)`. A literal's backing storage is always NUL-terminated at `data[len]` (the same rodata global `CStr` literals always used), so a `StrView` value coerces to `CStr`/`ptr` **for free** (no IR) at any assignment, call argument, `as`/`unsafe/cast`, or return boundary, by taking `data` — this is what keeps every existing `:CStr`/`:ptr`-typed function, `printf`/libc call, and `strcmp`-style `=`/`!=` comparison working with a string literal unchanged. Only when a literal flows into a genuinely `StrView`-typed slot does it materialize the two-word `{data,len}` struct. In overloaded (`defn`/multimethod) dispatch, a `StrView`-typed argument adapts to a `CStr` parameter but *not* to a bare `ptr` parameter, reproducing the resolution a `CStr` literal produced before this type existed. A materialized `StrView` passed to a C variadic parameter (e.g. `printf`'s `%s`) contributes only its `data` pointer, never the two-word struct; a *fixed* (non-variadic) `StrView` by-value parameter is unaffected and still receives the full two-eightbyte struct per the platform ABI (`examples/strview-vararg-test.nuc`).
 
-`CStr` is the C-interop `char*` type — the FFI boundary type a `:CStr`-typed parameter, field, or return expects. It lowers to `ptr` (same ABI) and flows into any `ptr`-typed C function with no cast, but it is a **distinct type for operator dispatch**: `=` / `!=` on two `CStr` (or a `CStr`/`ptr`/`StrView` mix) do a `strcmp`-style **content** comparison (so equal text compares equal across distinct buffers), whereas `=` on two raw `ptr` is pointer identity. **Comparing against the `null` literal is the one exception: `(= s null)` / `(!= s null)` on a `CStr` is a pointer-identity test, not a content comparison** — `strcmp(s, NULL)` is undefined behaviour in C, so a null check is always a null check. This makes the ordinary `(if (= s null) …)` guard safe on a `CStr` parameter, local, field, or global. (A `StrView` is a two-word struct and can never be null; compare its `data` field if you need that.) `CStr` conforms to the `Eq` protocol (`lib/numeric.nuc`), so it works in an `Eq`-bounded generic; it is not `Ord` (no ordering — out of scope here, along with Unicode). Only `=` / `!=` are defined; other operators on `CStr` are an error. A `CStr` and a `ptr` are freely interconvertible with `as` (no IR) and coerce automatically in value positions (assignment, return, field/array store). (Multimethod dispatch treats `CStr` as distinct — overload on `CStr` explicitly, or `as` to `ptr`.) `strcmp` must be declared, which the prelude's `(import-use "string.h")` provides. To bind an `Eq`-bounded generic at `StrView` from a literal, `(import-use strview)` must be in scope; otherwise `as` the literal to `CStr` explicitly. Example: `examples/cstr.nuc`.
+`CStr` is the C-interop `char*` type — the FFI boundary type a `:CStr`-typed parameter, field, or return expects. It lowers to `ptr` (same ABI) and flows into any `ptr`-typed C function with no cast, but it is a **distinct type for operator dispatch**: `=` / `!=` on two `CStr` (or a `CStr`/`ptr`/`StrView` mix) do a `strcmp`-style **content** comparison (so equal text compares equal across distinct buffers), whereas `=` on two raw `ptr` is pointer identity. **Comparing against the `null` literal is the one exception: `(= s null)` / `(!= s null)` on a `CStr` is a pointer-identity test, not a content comparison** — `strcmp(s, NULL)` is undefined behaviour in C, so a null check is always a null check. This makes the ordinary `(if (= s null) …)` guard safe on a `CStr` parameter, local, field, or global. (A `StrView` is a two-word struct and can never be null; compare its `data` field if you need that.) `CStr` conforms to the `Eq` protocol (`lib/nucleus/numeric.nuc`), so it works in an `Eq`-bounded generic; it is not `Ord` (no ordering — out of scope here, along with Unicode). Only `=` / `!=` are defined; other operators on `CStr` are an error. A `CStr` and a `ptr` are freely interconvertible with `as` (no IR) and coerce automatically in value positions (assignment, return, field/array store). (Multimethod dispatch treats `CStr` as distinct — overload on `CStr` explicitly, or `as` to `ptr`.) `strcmp` must be declared, which the prelude's `(import-use "string.h")` provides. To bind an `Eq`-bounded generic at `StrView` from a literal, `(import-use nucleus.strview)` must be in scope; otherwise `as` the literal to `CStr` explicitly. Example: `examples/cstr.nuc`.
 
 A **global** of `CStr` type may be initialized with a string literal directly (`(defvar g-name:CStr "doom")`) or with the explicit `(as CStr "doom")` spelling — both emit the same `@g-name = global ptr @.str.N` line. `(as CStr …)` in an initializer works because a `defvar` init is a constant *expression*, not merely a literal; see [Global initializers](toplevel.md#global-initializers). A `StrView` global takes a plain string literal too (`(defvar g-name:StrView "doom")`), as does a `StrView` field or element of a constant aggregate: the constant is the literal's rodata pointer and byte length.
 
@@ -1075,17 +1074,17 @@ The `(char "x")` special form is equivalent sugar for the single-byte case: `(ch
 
 A `Keyword` has static type `Keyword` and conforms to both `Hash` and `Eq`, making it a natural key type for `HashMap` and member type for `HashSet`.
 
-**Requires `(import-use keyword)`** — and transitively `(import-use strview)`, `(import-use hash)`, and `(import-use numeric)`. Without the import the compiler emits `undefined: keyword-intern`. See [Keywords and StrView](stdlib.md#strview-libstrviewnuc) for the full API.
+**Requires `(import-use nucleus.keyword)`** — and transitively `(import-use nucleus.strview)`, `(import-use nucleus.hash)`, and `(import-use nucleus.numeric)`. Without the import the compiler emits `undefined: keyword-intern`. See [Keywords and StrView](stdlib.md#strview-libstrviewnuc) for the full API.
 
 ```lisp
 (import-use "stdio.h")
-(import-use strview)
-(import-use hash)
-(import-use keyword)
-(import-use allocator)
-(import-use coll)
-(import-use iterator)
-(import-use hashmap)
+(import-use nucleus.strview)
+(import-use nucleus.hash)
+(import-use nucleus.keyword)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
+(import-use nucleus.hashmap)
 
 (defn main ():i32
   ; Self-evaluation.
@@ -1118,7 +1117,7 @@ keyword's name, which is what makes the keyword-led return spelling `):&T` work
 (the body `&T` expands to `ref:T` exactly as the bare symbol would). The
 consequence to know: a keyword **value** written `:&x` reads as `:ref:x`.
 
-**No intern pool limit.** Since Stage 17 a keyword is one interned `Symbol` (`lib/intern.nuc`), whose table is open-addressed and grows. The old fixed 256-entry pool, and the abort past it, are gone.
+**No intern pool limit.** Since Stage 17 a keyword is one interned `Symbol` (`lib/nucleus/intern.nuc`), whose table is open-addressed and grows. The old fixed 256-entry pool, and the abort past it, are gone.
 
 ## Symbols
 
@@ -1130,7 +1129,7 @@ A symbol is a `Node*` with `kind = NODE-SYM` and `s` pointing to its spelling. S
   (= h 'defn))             ; true iff the head symbol of `form` spells "defn"
 ```
 
-The interning is global to the process. The reader interns at lex time, and `quote` of a symbol calls `intern-symbol` at runtime so a quoted symbol and a reader-produced symbol with the same spelling are bit-identical pointers. The canonical-node table lives in `lib/node.nuc` (the interned bytes themselves in `lib/intern.nuc`), which a program that writes a quote imports with `(import-use node)` — the prelude registers the `Node` *type* but no longer emits the runtime (see [The node runtime is a library](toplevel.md#the-node-runtime-is-a-library)). Beyond the import, user code never has to touch the table directly.
+The interning is global to the process. The reader interns at lex time, and `quote` of a symbol calls `intern-symbol` at runtime so a quoted symbol and a reader-produced symbol with the same spelling are bit-identical pointers. The canonical-node table lives in `lib/nucleus/node.nuc` (the interned bytes themselves in `lib/nucleus/intern.nuc`), which a program that writes a quote imports with `(import-use nucleus.node)` — the prelude registers the `Node` *type* but no longer emits the runtime (see [The node runtime is a library](toplevel.md#the-node-runtime-is-a-library)). Beyond the import, user code never has to touch the table directly.
 
 `gensym` deliberately bypasses the intern table — `(gensym)` always returns a fresh unique `Node*` whose spelling (e.g. `__gs_0`) does not collide with anything else, so it is safe in hygienic macros.
 

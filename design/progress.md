@@ -920,9 +920,61 @@ The four items the compile-first batch left, plus three found fixing them. The s
 
 ---
 
+## Stage 23 — AN-4 built: quasiquote names are full names (2026-10-04)
+
+[stage23-namespaces/ambient-namespaces.md](stage23-namespaces/ambient-namespaces.md) §8, "AN-4 as built"; [quasiquote-resolution.md](stage23-namespaces/quasiquote-resolution.md) carries an "AN-4 rebase" note.
+- **Rewrite.** A `defmacro`/`~e`/`compile-time` template symbol that names a global of its file becomes that definition's full name (`nucleus.edn/edn-put`, `mylib/Box`, `user/x`). It resolves by the ordinary qualified path, so the `#h<N>/` tag and its machinery are deleted: `HygEnv`, the table and roster row, 15 resolver unwrap blocks, the `resolve-spelling` assertion, the display scrub, and the `.nuch` re-spelling and refusal. `src/` nets −206 lines.
+- **Kept:** the whole classification (core exemption, operators, special forms, `unsafe/`, `quote`, binder slots, typed-token leaf, `):Ret`, arm names, forward macros, the `macrolet`/`macmap`/plain-`defn` exemption).
+- **D2.** An overload is named through the one namespace that reaches every method the template's file sees, a declaring protocol's first; otherwise it is refused at the template. There are 0 refusals in the tree; without the protocol step, `emit`'s `byte-len` would have been one.
+- **D3 reversed.** A full name reaches public names only. A `user` file's private name is refused at the template. `edn-str-node` is public, and the `.nuch` `defmacro-` export is gone.
+- **Binders.** A qualified binding name is refused everywhere, for locals, parameters, definers and `defenum`. Before this, it reached LLVM or was silently accepted.
+- **Caller closure.** `src/union-emit.nuc` imports `nucleus.fmt`, which strfmt's `emit` now names by full name.
+
+**Tests.** 4 new `an4-*` units: the D2 refusal, the `user`-private refusal, qualified binders, and `macroexpand` printing re-readable full names. The planted-tag fixture and row are deleted. Re-pointed: q2 (`s22-hyg-private-helper`) is now a refusal test; the binder rows have the new message; `s22-hyg-nuch-respell` compiles a consumer against the headers; `s22-hyg-nuch-unspellable` pins the private-type refusal in both modes; the two companion-header units expect full names.
+
+**Gates.** Suite 1,313 passed, plus the five known failures. Bootstrap converged with the boot refreshed and copied back. IR corpus: 456/456 shared files byte-identical to post-AN-2. Examples 162/162. The census finds 89 rewrites in 31 macros.
+
+---
+
+## Stage 23 — AN-2 built: the core libraries are `nucleus.*` (2026-10-04)
+
+[stage23-namespaces/ambient-namespaces.md](stage23-namespaces/ambient-namespaces.md) §8, "AN-2 as built".
+- **Move.** 41 libraries moved to `lib/nucleus/`, 111 renames counting `.nuch`/`.h`. Each is `(ns nucleus.<stem>)`. The prelude is `lib/nucleus/core.nuc` (`nucleus.core`). `lib/avr/` became `lib/nucleus/avr/`, and the D-TESTLIB set stays at the root. Every import in the tree is dotted (330 files rewritten, 355 paths changed) with no compatibility aliases. Headers were regenerated.
+- **D-IR / D-CORE.** `core-ns?` gives `nucleus.*` an empty IR prefix, so link names and the C API are unchanged except that `edn` loses `edn__`. `nucleus.core`/`nucleus.macros` are a virtual flattened tier in every file. Lookup order is own namespace → imports → core → `user` last; a C-header import's `user` bind is no longer walked ahead of the core.
+- **Synthesized references.** Literal lowering spells full names (`core-spelling`) and refuses with the import to add when the library is not in the closure (`core-ns-require`). Recognition and types go by key (`core-named?`, `core-proto-key`, `core-global`, `core-struct`), never by bare-string compare.
+- **New refusals.** A user `defstruct` that links as a core type's name; an operator call whose exact method exists but is unreachable. That one found a real `StrView` strcmp in `src/union-emit.nuc`.
+- **Compile time.** Self-compile went 6.55 s → 8.50 s, then back to ~7.1–7.2 s (+9%) via a `g-globals` index and three memos.
+
+**Tests.** 4 new `an2-*` units in `suite-namespaces.nuc`. Suite modules gained the imports they use, because name resolution is per file now (context/build.md). Re-pointed: `template-sig-nuch` (the `nucleus.vector` row), `bind-error` (line 2), `s22-hyg-planted-tag` (line 8), REPL `imported nucleus.X` fixtures, and the `lib/` scans in `suite-cheader`/`suite-linking`/`suite-audits`, which now cover `lib/nucleus/`.
+
+**Gates.** Suite 1,310 passed, plus the five known LLVM-22 datalayout failures. Bootstrap converged at every step; the final boot was rebuilt from clean with boot == stage1 == stage2 and copied back. Examples 162/162. IR corpus: 390 of 456 byte-identical. 62 differ only in the anonymous-type hash (keys now carry `nucleus.x/`). `edn-read`/`edn-struct`/`self-test` differ only by `edn__` as well, and `list.nuc` by an import-shifted line number. Rejections are unchanged. Docs: `docs/toplevel.md` (new "core libraries" section), `docs/index.md`, `docs/generics.md`, `docs/compiler.md`, plus the import spellings throughout `docs/`.
+
+---
+
+## Stage 23 — AN-1 built: closure-scoped namespace reach, `require` (2026-10-03)
+
+[stage23-namespaces/ambient-namespaces.md](stage23-namespaces/ambient-namespaces.md) §8, "AN-1 as built". R3 is reversed as ruled:
+- **Reach.** `resolve-spelling` gained a last tier: a qualifier naming a namespace declared anywhere in the file's **import closure** (the file plus every file its imports reach, cycles included) is `NR-QUALIFIED`. The closure is walked over a new unit-wide edge table (`g-import-edges`) seeded from `g-file-imports`, memoized, and gated on `g-ns-declared`. Privacy is unchanged; a prefix still shadows a namespace of the same name, silently.
+- **`require` / `require-ct`.** Imports that bind nothing (`ImportBind.bind-none`); `require` loads like `import-use` and is walked by both prescans, `require-ct` withholds like `import-ct`. Recognized at the top-level dispatch, `import-form-bind`, `import-head?`, the reserved-name set, `.nuch` read/write and the REPL. `(require "x.h")` is refused.
+- **Dotted library names are directories** (`import-name-relpath` in `resolve-import`): `(require a.b)` finds `<root>/a/b.nuc`.
+- **Diagnostics.** The unbound note now separates "a namespace declared in <file>, outside this file's closure" from the general case, and both suggest `(require …)`. Did-you-mean offers `ns/name` for a closure namespace.
+- **AN-0.** `g-file-ns` is complete at prescan for every file reached through ordinary imports; `import-ct`/`require-ct` targets are recorded when emission reaches them.
+
+**Tests.** 13 new (12 `an1-*` suite units, `repl-an1-require`). Re-pointed rather than deleted: `b2a-scope-diagnostic` (now the outside-the-closure refusal), `b2b-…-ns-reached`, `b4-…-ns-reached`, `b7-macro-ns-reached`, `s21-where-imported-protocol`, `s22-hyg-nuch-unspellable` (a private type is the unspellable case now), and the manifest's two `b2a` rows (`:accept`, fixtures renamed `*-through-closure`). `tests/resolution-matrix.sh` had stale probes and two stale bare cells; fixed and re-recorded, and the ten `zn/` cells are the only ones AN-1 moved.
+
+**Gates.** `make test` 1,306 passed, plus the five known LLVM-22 datalayout failures. `make bootstrap` passed with no refresh (the compiler's own IR is unchanged by construction). IR corpus: 456 of 456 shared files byte-identical to the pre-AN-1 corpus; the two renamed `b2a` fixtures compile where they failed. Docs: `docs/toplevel.md` (import scope table, dotted names, `require-ct`), `docs/types.md`, `docs/compiler.md`. Open items are in the as-built block.
+
+---
+
+## Stage 23 — ambient namespaces analysed (2026-10-03)
+
+[stage23-namespaces/ambient-namespaces.md](stage23-namespaces/ambient-namespaces.md). **Analysis only; nothing built or decided.** The recommended scope for reach by full name is each file's import closure, with `require`/`require-ct` as imports that bind nothing. Rebasing the quasiquote rewrite on full names would be a net deletion, at the cost of D3. Proposed order: AN-0 … AN-5.
+
+---
+
 ## Stage 22 — quasiquote name resolution, HY-4 to HY-6 built (2026-10-03)
 
-[stage22-edn/quasiquote-resolution.md](stage22-edn/quasiquote-resolution.md). The second as-built block at the end of its §5 has the details.
+[stage23-namespaces/quasiquote-resolution.md](stage23-namespaces/quasiquote-resolution.md). The second as-built block at the end of its §5 has the details.
 - **Arm names.** A tagged arm name now means only its spelling. `arm-spelling` is applied in `union-arm-index` and at arm registration, so an arm constructor `(circle r)` beside a `defn circle` in the macro's file stays a constructor.
 - **Pre-existing bug fixed: union target rewrites.** A union rewrite spelled its target as the bare `UnionDef` key. A caller that reached the namespace only through a prefix therefore failed, and the baseline compiler failed too. `union-target-spelling` now writes the resolved type when the key is qualified.
 - **Forward macros.** `note-file-macros` records every file's top-level `defmacro` names before its forms emit, so a template may name a macro defined further down. Recording was chosen over a warning because it is cheaper.
@@ -951,7 +1003,7 @@ Pre-existing, not fixed:
 
 ## Stage 22 — quasiquote name resolution, HY-0 to HY-3 built (2026-10-03)
 
-[stage22-edn/quasiquote-resolution.md](stage22-edn/quasiquote-resolution.md), D1–D5 as written. The HY-0 answers, the census and the as-built deltas are recorded at the end of its §5.
+[stage23-namespaces/quasiquote-resolution.md](stage23-namespaces/quasiquote-resolution.md), D1–D5 as written. The HY-0 answers, the census and the as-built deltas are recorded at the end of its §5.
 - **HY-2, the inert plumbing.** A tag is `#h<N>/<spelling>`. `N` indexes `g-hyg-envs`, a table of `HygEnv {env who kind}` that is on the REPL roster. Every reference resolver that HY-0 listed has a tag branch, and so does the C header's `type-node-to-c`. `resolve-spelling` refuses a tag with an internal error. Messages, the REPL printer and header text render a tag as the spelling its file would use.
 - **HY-1, the census.** `--report-qq-resolution` prints each rewrite and each static binder collision. Before the fixes it found 90 rewrites and 3 collisions in 29 macros across 12 files.
 - **HY-3, the rewrite.** It runs in `defmacro`, `~e` and `compile-time` bodies, not in `macrolet` or `macmap`. `scope-define` and `guard-name-kind` refuse a tagged binder. Seven collisions were fixed with `~'x`: `edn-scalar-codec`'s three, `derive-edn`'s, and three inline macros in `suite-s22`. `derive-edn` now follows §4, and `edn-str-node` is `defmacro-`. `.nuch` handling is minimal: tags are re-spelled at the header sink, and `defmacro-` forms are exported. A top-level expansion's late prescan now blames the call line.
@@ -961,7 +1013,7 @@ Pre-existing, not fixed:
 
 ## Stage 22 — quasiquote name resolution designed (2026-10-03)
 
-[stage22-edn/quasiquote-resolution.md](stage22-edn/quasiquote-resolution.md). **Plan only; nothing built.** Names in a macro template will resolve in the file that wrote it, Clojure-style, through a tagged spelling and the existing `NameEnv`. Probes against `342ad50` reproduced five failures. Three block namespaced macro libraries: a prefixed importer, a private helper, and a type. Two hit users today: a caller local capturing an expansion name, and a namespaced caller's own `edn-put` making `derive-edn` ambiguous. Milestones HY-0 … HY-6; decisions D1–D5 await the user.
+[stage23-namespaces/quasiquote-resolution.md](stage23-namespaces/quasiquote-resolution.md). **Plan only; nothing built.** Names in a macro template will resolve in the file that wrote it, Clojure-style, through a tagged spelling and the existing `NameEnv`. Probes against `342ad50` reproduced five failures. Three block namespaced macro libraries: a prefixed importer, a private helper, and a type. Two hit users today: a caller local capturing an expansion name, and a namespaced caller's own `edn-put` making `derive-edn` ambiguous. Milestones HY-0 … HY-6; decisions D1–D5 await the user.
 
 ---
 

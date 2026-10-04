@@ -20,26 +20,28 @@
 ; allocation; and `as-cstr` is free, because the bytes are still NUL-terminated,
 ; so every remaining FFI seam takes a Symbol with no copy.
 
+(ns nucleus.intern)
+
 (import-use "stdlib.h")
 (import-use "string.h")
 (import-use "stdio.h")
 
 (extern stderr:ptr)
 
-; `fnv` is the ONLY Nucleus import, and that is the point: `lib/node.nuc`
+; `fnv` is the ONLY Nucleus import, and that is the point: `lib/nucleus/node.nuc`
 ; delegates its symbol table here (C7-2), and `node` is what every macro-using
 ; program imports. `hash`, `numeric` and `strview` all reach an `f64`
 ; annotation, which AVR rejects outright, so importing any of them would make
 ; every macro-using program un-compilable for an 8-bit target. The `Eq`/`Hash`
 ; conformance records and the `ToStr`/`ByteStr`/`Str` methods live in
-; `lib/intern-str.nuc` — the same split, for the same reason, as `strview` /
+; `lib/nucleus/intern-str.nuc` — the same split, for the same reason, as `strview` /
 ; `strview-str`.
 ;
-; `Symbol` itself is declared in `lib/prelude.nuc`, beside `StrView` and for the
+; `Symbol` itself is declared in `lib/nucleus/core.nuc`, beside `StrView` and for the
 ; same reason (design/stage17-native-strings/c7-interned-substrate.md §2.2):
 ; `Node.s` is one, so the reader, the macro JIT module and the bootstrap all
 ; need the type registered without importing anything.
-(import-use fnv)
+(import-use nucleus.fnv)
 
 ; The header behind `p`, as a type rather than as byte offsets: `usize` is two
 ; bytes on AVR and eight on a host, so hand-written `-8`/`-16` would silently
@@ -63,7 +65,7 @@
   (let (h:&SymHeader (symbol-header self))
     (return (h 'hash))))
 
-; Spelled out rather than `(strview …)`: the constructor lives in lib/strview.nuc,
+; Spelled out rather than `(strview …)`: the constructor lives in lib/nucleus/strview.nuc,
 ; which this file cannot import.
 (defn symbol-as-view (self:Symbol):StrView
   (let (sv:&StrView (alloca StrView))
@@ -119,7 +121,7 @@
 ; ---------------------------------------------------------------------------
 ; The table — open-addressed, power-of-two, linear probing.
 ;
-; Not lib/keyword.nuc's 256-entry linear scan with a `strcmp` per probe: the
+; Not lib/nucleus/keyword.nuc's 256-entry linear scan with a `strcmp` per probe: the
 ; compiler interns tens of thousands of distinct names, and that shape is O(n)
 ; per intern and capped besides. Not a HashMap either — a HashMap's keys want to
 ; be interned, so building the interner on it is circular.
@@ -228,6 +230,6 @@
 
 ; Eq is pointer identity — the property the whole layout exists to preserve.
 ; The bare overloads resolve on their own; the `Eq`/`Hash` conformance RECORDS
-; need `numeric`/`hash`, so they are registered in lib/intern-str.nuc.
+; need `numeric`/`hash`, so they are registered in lib/nucleus/intern-str.nuc.
 (defn = (a:Symbol b:Symbol):bool (return (= (as ptr (a 'p)) (as ptr (b 'p)))))
 (defn != (a:Symbol b:Symbol):bool (return (!= (as ptr (a 'p)) (as ptr (b 'p)))))

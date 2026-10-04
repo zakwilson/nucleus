@@ -12,21 +12,21 @@
 ; the thing it says is now a comparison against one `Diagnostic` record rather
 ; than two greps over one stderr blob.
 
-(import-use error)
-(import-use strview)
-(import-use string)
-(import-use string-split)
-(import-use fmt)
-(import-use vector)
-(import-use io)
-(import-use file)
-(import-use process)
-(import-use node)
-(import-use parse)
-(import-use read)
-(import-use keyword)
-(import-use edn)
-(import-use test)
+(import-use nucleus.error)
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.string-split)
+(import-use nucleus.fmt)
+(import-use nucleus.vector)
+(import-use nucleus.io)
+(import-use nucleus.file)
+(import-use nucleus.process)
+(import-use nucleus.node)
+(import-use nucleus.parse)
+(import-use nucleus.read)
+(import-use nucleus.keyword)
+(import-use nucleus.edn)
+(import-use nucleus.test)
 (import-use suite-s16)
 (import-use suite-modules)
 (import-use suite-float)
@@ -49,6 +49,8 @@
 (import-use suite-audits)
 (import-use suite-s21)
 (import-use suite-s22)
+(import-use nucleus.intern)
+(import-use nucleus.coll)
 
 
 
@@ -1606,7 +1608,7 @@
 ; ---------------------------------------------------------------------------
 
 ; Present and readable. Asked by reading it, because there is no `stat` in
-; `lib/file.nuc` and the file is small and about to be read anyway.
+; `lib/nucleus/file.nuc` and the file is small and about to be read anyway.
 (defn have-file? (path:StrView):bool
   (match (read-file path)
     ((ok t) (let (s:String t) (drop &s) (return true)))

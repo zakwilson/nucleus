@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-/* Generated from lib/arena.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/arena.nuc by nucleusc --emit-cheader */
 
 #define ARENA_SIZE 16777216
 extern void* g_arena asm("g-arena");

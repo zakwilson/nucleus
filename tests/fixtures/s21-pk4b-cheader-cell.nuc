@@ -4,7 +4,7 @@
 ; `void* r_cell(...)` — a by-value tagged struct declared as a pointer — and the
 ; niche pointer `?&Pt` rendered `void*` outside a struct field while
 ; `(Maybe &Pt)` was refused as a template instance. One question, one answer.
-(import-use vector)
+(import-use nucleus.vector)
 (defstruct Pt x:i32 y:i32)
 (defstruct Diagnostic line:i32)
 

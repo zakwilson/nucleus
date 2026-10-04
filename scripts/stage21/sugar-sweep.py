@@ -57,7 +57,7 @@ import sys
 from collections import Counter
 
 # ---------------------------------------------------------------------------
-# Scanner: the reader's token grammar (lib/read.nuc), spans kept for splicing.
+# Scanner: the reader's token grammar (lib/nucleus/read.nuc), spans kept for splicing.
 # ---------------------------------------------------------------------------
 
 RMACROS = ("~@", "~", "'", "`", "@", "&")

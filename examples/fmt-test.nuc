@@ -1,4 +1,4 @@
-; Stage 17 B1 — lib/fmt.nuc: Writer, ToStr, and the `str` family.
+; Stage 17 B1 — lib/nucleus/fmt.nuc: Writer, ToStr, and the `str` family.
 ;
 ; The replacement for a printf format string: arity and types are settled at
 ; macro expansion, so there is no format string to get wrong.
@@ -6,12 +6,12 @@
 ; design/stage17-native-strings/overview.md §2.5, §2.6.
 
 (import-use "stdio.h")
-(import-use allocator)
-(import-use arena)
-(import-use strview)
-(import-use strview-str)
-(import-use string)
-(import-use fmt)
+(import-use nucleus.allocator)
+(import-use nucleus.arena)
+(import-use nucleus.strview)
+(import-use nucleus.strview-str)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
 
 (extern stdout:ptr)
 

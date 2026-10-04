@@ -23,8 +23,8 @@
 
 (exclude-prelude)
 
-(import-use "lib/avr.nuc")
-(import-use "lib/avr/atmega328p.nuc")
+(import-use "lib/nucleus/avr.nuc")
+(import-use "lib/nucleus/avr/atmega328p.nuc")
 
 ; USART0: 9600 baud @ 8 MHz, 8N1, transmitter enabled.
 (defn uart-init ():void

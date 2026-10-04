@@ -1,4 +1,5 @@
-; .nuch header for lib/string-errors.nuc
+; .nuch header for lib/nucleus/string-errors.nuc
+(ns nucleus.string-errors)
 (deferror str-index-out-of-bounds "string index out of bounds")
 (deferror invalid-char-boundary "byte offset is not a UTF-8 codepoint boundary")
 (deferror invalid-utf8 "bytes are not valid UTF-8")

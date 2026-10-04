@@ -21,7 +21,8 @@
 ;     note: 'dp' is not in scope in this file — a prefixed import binds its
 ;     library under the prefix it names and not under the library's own
 ;     namespace … In scope here: dpx, dpx2.
-; (It is pinned as an error by tests/fixtures/b2a-ns-not-in-scope.nuc.) The
+; Stage 23 AN-1 reversed that: `dp` is in this file's import closure, so
+; `dp/Describe` resolves too (tests/fixtures/b2a-ns-through-closure.nuc). The
 ; earlier version of this file spelled `dp/`, and its header comment explained
 ; that an import prefix "aliases g-globals entries; it does not name protocols" —
 ; documenting the defect as if it were the design.
@@ -57,7 +58,7 @@
 ; is the witness.
 
 (import-use "stdio.h")
-(import-use allocator)
+(import-use nucleus.allocator)
 (import-prefixed nsdescribe dpx)
 (import-prefixed nsdescribe2 dpx2)
 

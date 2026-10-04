@@ -1,13 +1,13 @@
-; Running another program: lib/process.nuc.
+; Running another program: lib/nucleus/process.nuc.
 ;
 ; A Command is an argv, not a command line — there is no shell between this
 ; program and the one it starts, so an argument containing spaces or quotes is
 ; one argument and nobody has to escape it.
 
-(import-use process)
-(import-use io)
-(import-use string)
-(import-use strview)
+(import-use nucleus.process)
+(import-use nucleus.io)
+(import-use nucleus.string)
+(import-use nucleus.strview)
 
 ; One-shot: run it, capture both streams, wait.
 (defn show (label:StrView c:&Command):void

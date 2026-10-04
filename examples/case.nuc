@@ -1,4 +1,4 @@
-; The `case` macro — multi-way equality dispatch (lib/macros.nuc).
+; The `case` macro — multi-way equality dispatch (lib/nucleus/macros.nuc).
 ;
 ; (case form v1 r1 v2 r2 ... default) compares `form` against each value with
 ; `=`, yielding the first matching result. A value may also be (:or v ...),

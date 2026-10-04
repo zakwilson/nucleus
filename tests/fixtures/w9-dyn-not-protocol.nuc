@@ -25,7 +25,7 @@
 ; `dp/Missing` is qualified so both `%s` substitutions still carry a non-trivial
 ; string — a regression to `fmt-s` would still segfault here.
 (import-use "stdio.h")
-(import-use allocator)
+(import-use nucleus.allocator)
 (import-prefixed w9-dynprotolib dp)
 
 (defstruct Cat n:i32)

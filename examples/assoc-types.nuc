@@ -7,7 +7,7 @@
 ;   ((Iterator S) I)  — S := the element type I's Iterator conformance yields
 ;   ((UnaryFn S E) F) — S is checked against F's arg, E := F's result
 ;
-; MapIter, UnaryFn, FoldFn, FilterIter, and reduce are now in lib/iterator.nuc.
+; MapIter, UnaryFn, FoldFn, FilterIter, and reduce are now in lib/nucleus/iterator.nuc.
 ;
 ; chain: IntRangeIter[1,4) -> Double -> 2 4 6
 ;        (next yields some 2, some 4, some 6, then none)
@@ -20,15 +20,15 @@
 ;     .nuc.fail mechanism; errors are compile-time diagnostics, not runtime output.)
 
 (import-use "stdio.h")
-(import-use allocator)
-(import-use coll)
-(import-use iterator)
-(import-use vector)
-(import-use combinators)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
+(import-use nucleus.vector)
+(import-use nucleus.combinators)
 
 ; ---------------------------------------------------------------------------
 ; A function object mapping i32 -> i32 (doubles its input). Conforms to
-; (UnaryFn i32 i32) from lib/iterator.nuc: conformance args = {"i32","i32"}.
+; (UnaryFn i32 i32) from lib/nucleus/iterator.nuc: conformance args = {"i32","i32"}.
 ; The first (arg) position carries the already-recovered S=i32 and is CHECKED;
 ; the second (ret) position carries the undetermined E and is RECOVERED -> E=i32.
 ; ---------------------------------------------------------------------------

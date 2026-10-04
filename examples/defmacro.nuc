@@ -1,7 +1,7 @@
 (import-use "stdio.h")
 
 ; Stage 15 B4 (name-resolution.md §11.1): these two were spelled `when` and
-; `unless`, which the auto-imported prelude (lib/macros.nuc) already defines —
+; `unless`, which the auto-imported prelude (lib/nucleus/macros.nuc) already defines —
 ; with `:rest body`, so the versions here were strictly weaker. `find-macro`
 ; returns the FIRST match and the prelude registers first, so neither definition
 ; below was ever expanded: the example demonstrated a macro it did not use. R4

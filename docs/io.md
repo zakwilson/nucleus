@@ -1,12 +1,12 @@
-# I/O (`lib/io.nuc`, `lib/file.nuc`, Stage 17)
+# I/O (`lib/nucleus/io.nuc`, `lib/nucleus/file.nuc`, Stage 17)
 
-`(import-use io)` for the standard streams, `(import-use file)` for files. Both
+`(import-use nucleus.io)` for the standard streams, `(import-use nucleus.file)` for files. Both
 expose their sinks as [`Writer`](strings.md#writer--an-output-sink) conformers
 over raw file descriptors.
 
 Nothing here is `FILE*`-backed. A `FILE` carries a hidden libc buffer, so its
 output can reorder against writes issued any other way; a descriptor has no
-buffer to disagree about. Explicit buffering is `BufWriter` (`lib/file.nuc`).
+buffer to disagree about. Explicit buffering is `BufWriter` (`lib/nucleus/file.nuc`).
 
 ---
 
@@ -17,7 +17,7 @@ buffer to disagree about. Explicit buffering is `BufWriter` (`lib/file.nuc`).
 ```
 
 A **borrowed** descriptor. It is never closed — the owning, `Drop`-closed
-descriptor is `File` in `lib/file.nuc`.
+descriptor is `File` in `lib/nucleus/file.nuc`.
 
 | Function | Signature | Notes |
 |----------|-----------|-------|
@@ -92,7 +92,7 @@ per byte. The input buffer is stdin's alone and is never shared with `print`'s.
 
 ---
 
-## §4 — `File` (`lib/file.nuc`)
+## §4 — `File` (`lib/nucleus/file.nuc`)
 
 ```lisp
 (defstruct File fd:i32)
@@ -137,7 +137,7 @@ handed.
 
 ---
 
-## §4b — Directories (`lib/file.nuc`)
+## §4b — Directories (`lib/nucleus/file.nuc`)
 
 | Function | Signature |
 |----------|-----------|
@@ -174,7 +174,7 @@ the difference between failing and returning names read out of the middle of
 
 ---
 
-## §5 — `BufWriter` (`lib/file.nuc`)
+## §5 — `BufWriter` (`lib/nucleus/file.nuc`)
 
 ```lisp
 (defstruct BufWriter out:File buf:String)

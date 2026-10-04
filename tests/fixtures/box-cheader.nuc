@@ -11,7 +11,7 @@
 ; which needs a hand-defined __vfn_env_N struct). The header mode compiles it
 ; first, so every body is valid; there is no main.
 
-(import-use allocator)
+(import-use nucleus.allocator)
 
 ; Minimal protocol for the dyn test case.
 (defprotocol Showable

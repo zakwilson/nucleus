@@ -2,7 +2,7 @@
 
 | Name | Description | C Equivalent |
 |------|-------------|--------------|
-| `defn` | Define a function. **Signature.** The mandatory return type is written as its own operand after the parameter list (`(defn name (params):ret body…)`), matching the anonymous forms `fn`/`vfn`/`mfn`/`cfn`. A parenthesized return type is written space-separated or with the `:(…)` lone-colon fuse — `(defn name (params) (Maybe i32) …)` / `(defn name (params):(Maybe i32) …)`. Optional [declaration attributes](#declaration-attributes) (`:noreturn`, `:returns-twice`) follow the return type. `defprotocol` method signatures and `declare` use the same grammar. (The legacy return-in-the-name spelling `(defn name:ret (params) …)` was retired in Stage 14 and is now a hard error.) Supports `:rest` for variadic functions: `(defn name (a:t :rest xs:elem) ...)`. The rest parameter receives a list `Node` built at the call site, so **calling** a `:rest` function needs `(import-use node)` in the caller's unit — the call emits `@node-list-new` and `@node-push`, which since Stage 16 the prelude no longer supplies (see [The node runtime is a library](#the-node-runtime-is-a-library)). The element type annotation is documentation only — non-`ptr` args are `inttoptr`'d into the element slot. `:rest` functions are not directly C-callable; calling through a function pointer requires manually constructing the rest list. `:rest` must be the second-to-last param. Supports `:optional` for trailing parameters with defaults: `(defn name (a:t :optional (b:t default) ...) ...)`. Each `:optional` param must be a 2-element list `(name:type default-expr)`. Defaults are evaluated at the call site in the caller's scope (Common Lisp semantics), so non-constant defaults like `(next-counter)` produce a fresh value per call. Implicit casts apply to defaults. The compiled function has fixed maximum arity at the LLVM/C ABI level — calling through a function pointer or from C requires supplying every argument including the optional ones. `:optional` cannot be combined with `:rest`. **Both describe a solitary name.** Overload dispatch matches on exact arity and on the *declared* parameter types, so an overloaded `:optional` method is reachable only when every optional argument is supplied, and an overloaded `:rest` method is not reachable at all (its rest slot is typed `ptr`, which no ordinary argument adapts to). **Calls are arity-checked** against the signature — exactly `num-params` for a plain `defn`, a band for `:optional`, a floor for `:rest` (see [Call arity](compiler.md#call-arity)). A struct-by-value parameter or return is lowered to the platform C ABI (see [Passing and returning structs by value](structs-unions.md#passing-and-returning-structs-by-value)). **Docstring**: if the first body form is a string literal AND there is at least one more form after it, that string is captured as the function's docstring (visible via `(doc fn)` and `(apropos)`); a function whose body is a single string literal is treated as returning the string, not as having a docstring. The same convention applies to `defmacro`. **Overloadable:** defining `defn` again with the same name but different parameter types adds a method — see [Polymorphism](generics.md#polymorphism-overloaded-defn-multimethods). | function definition |
+| `defn` | Define a function. **Signature.** The mandatory return type is written as its own operand after the parameter list (`(defn name (params):ret body…)`), matching the anonymous forms `fn`/`vfn`/`mfn`/`cfn`. A parenthesized return type is written space-separated or with the `:(…)` lone-colon fuse — `(defn name (params) (Maybe i32) …)` / `(defn name (params):(Maybe i32) …)`. Optional [declaration attributes](#declaration-attributes) (`:noreturn`, `:returns-twice`) follow the return type. `defprotocol` method signatures and `declare` use the same grammar. (The legacy return-in-the-name spelling `(defn name:ret (params) …)` was retired in Stage 14 and is now a hard error.) Supports `:rest` for variadic functions: `(defn name (a:t :rest xs:elem) ...)`. The rest parameter receives a list `Node` built at the call site, so **calling** a `:rest` function needs `(import-use nucleus.node)` in the caller's unit — the call emits `@node-list-new` and `@node-push`, which since Stage 16 the prelude no longer supplies (see [The node runtime is a library](#the-node-runtime-is-a-library)). The element type annotation is documentation only — non-`ptr` args are `inttoptr`'d into the element slot. `:rest` functions are not directly C-callable; calling through a function pointer requires manually constructing the rest list. `:rest` must be the second-to-last param. Supports `:optional` for trailing parameters with defaults: `(defn name (a:t :optional (b:t default) ...) ...)`. Each `:optional` param must be a 2-element list `(name:type default-expr)`. Defaults are evaluated at the call site in the caller's scope (Common Lisp semantics), so non-constant defaults like `(next-counter)` produce a fresh value per call. Implicit casts apply to defaults. The compiled function has fixed maximum arity at the LLVM/C ABI level — calling through a function pointer or from C requires supplying every argument including the optional ones. `:optional` cannot be combined with `:rest`. **Both describe a solitary name.** Overload dispatch matches on exact arity and on the *declared* parameter types, so an overloaded `:optional` method is reachable only when every optional argument is supplied, and an overloaded `:rest` method is not reachable at all (its rest slot is typed `ptr`, which no ordinary argument adapts to). **Calls are arity-checked** against the signature — exactly `num-params` for a plain `defn`, a band for `:optional`, a floor for `:rest` (see [Call arity](compiler.md#call-arity)). A struct-by-value parameter or return is lowered to the platform C ABI (see [Passing and returning structs by value](structs-unions.md#passing-and-returning-structs-by-value)). **Docstring**: if the first body form is a string literal AND there is at least one more form after it, that string is captured as the function's docstring (visible via `(doc fn)` and `(apropos)`); a function whose body is a single string literal is treated as returning the string, not as having a docstring. The same convention applies to `defmacro`. **Overloadable:** defining `defn` again with the same name but different parameter types adds a method — see [Polymorphism](generics.md#polymorphism-overloaded-defn-multimethods). | function definition |
 | `defconst` | Define a compile-time constant `(defconst name[:T] value)`. The value is a **literal** (integer, float, string, character, `true`/`false`/`null`, or a folded integer expression) or a constant **aggregate** (`(S …)`, `(array T …)`, `&g`). A literal constant has no storage: each use is the literal, so an unannotated one types and adapts exactly as the literal would (`(defconst K 512)` makes `(<= ans:ui32 K)` legal exactly when `(<= ans:ui32 512)` is). An aggregate lives in read-only storage. An annotation fixes the type. Every write to a constant is a compile-time error, and a value that needs run-time work is refused. See [Constants](#constants). | `#define` / `static const` |
 | `defenum` | Define an enumeration `(defenum Name member ...)` — a flat list of member names, each bound to its 0-based ordinal as an `i32` constant. A member is a named integer literal and adapts at a use site exactly as `defconst` does (`(= c:ui32 GREEN)` is as legal as `(= c:ui32 1)`). The enum's own name takes no type annotation. | `enum` |
 | `defvar` | Define a global variable `(defvar name:type [init])`. **The initializer grammar has three tiers.** (1) A **compile-time constant** — a literal, a `defconst` / `defenum` name, a constant *expression* over them (arithmetic, bit operations, `(sizeof T)`, `(as T x)`), `&g`, and constant **aggregates**: an `(array T …)` literal and an `(S …)` struct literal, nested to any depth. These are baked into the emitted global, applied by the loader before any code runs, and cost nothing. (2) Anything else — a call, an allocation, a read of another global — is a **run-time initializer**: the slot is emitted zero-filled and the initializer runs at **startup, before `main`**, as an ordinary assignment, so `(defvar g:ptr:T (make-thing))` typechecks with `g` non-null. (3) **Refused:** a run-time initializer at an `(array T N)` slot, or inside a `compile-time` / `defmacro` body; a non-constant *element* of a constant aggregate; a scalar at an aggregate slot; and an initializer that syntactically names a global whose own `defvar` has not been reached yet (the error names both sites). See [Global initializers](#global-initializers) for the constant grammar and the arithmetic rules, and [Run-time initializers](#run-time-initializers) for the ordering rule and its diagnostic, the zero-cost-when-unused guarantee, and the targets (AVR) that refuse one. An integer initializer, literal, named or folded, that does not fit the declared type is a compile-time error rather than a silent truncation. Omitted inits default to zero / `null` / `false`; a global of **aggregate** type (struct, union, or `(array T N)`) with no init is zero-filled (`zeroinitializer`), so e.g. `(defvar g:MyStruct)` and `(defvar g:(array i32 256))` are valid. **An omitted init is refused for a non-null pointer** — `(defvar g:&T)` is an error, because the zero it would take is `null`; give it an initializer or declare it `?&T`. See [A non-null global must be initialized](#a-non-null-global-must-be-initialized). `set!` works on the result. The symbol is exported with default linkage and is visible to C consumers (`extern T name;` in the generated C header -- with an `asm("...")` label when the Nucleus name is not a C identifier; see [Reaching a library's globals from C](compiler.md#reaching-a-librarys-globals-from-c)) and other Nucleus modules (`(extern name:type)`). **Storage class specifiers:** file-scope `static` is the private definer `defvar-` (internal linkage); `register` is a no-op (LLVM ignores it); `thread_local` is reserved in the declaration-attribute slot (`:thread-local`) but not yet implemented — it errors with a targeted diagnostic pointing at the threading-stage blocker (`design/stage14/attributes.md` §5). Function-scope `static` locals and `:align`/`:section`/`:weak` are sketched but not implemented (same doc, §6). Function attributes ARE implemented (Stage 14 AVR-5) — but as the separate top-level `fn-attr` directive below, not as a keyword in this decl-attribute slot. A read-only global — C's `const` — is a [`defconst`](#constants); `(defvar :const …)` was retired and is an error naming it. | global variable definition |
@@ -24,11 +24,11 @@
 | *a macro call* | A top-level form whose head names none of the forms in this table, but does name a `defmacro`, **expands** — and its expansion is dispatched as a top-level form in turn. An expansion to `(do …)` splices, so one call can define several things. Because the built-in forms are matched first, a macro can never change what `defn` means; because expansion happens during the dispatch loop rather than in a pre-scan, the macro must be defined earlier in file order and what it defines is not forward-referenceable. See [Macros in top-level position](macros.md#macros-in-top-level-position). | — |
 | `defcast` | Register an implicit conversion `(defcast From To conv-fn)`. `conv-fn` must be a unary function with signature `To (From)` already in scope; the compiler emits a call to it wherever a value of `From` reaches a slot expecting `To` — **every** implicit position, not only arguments: `let`/`with` init, explicit and implicit `return`, every `set!` place, struct-literal fields, union payloads and `as` all consult the rule. Pairs already covered by built-in coercion (identity, int↔int, `f32`→`f64`) are rejected at registration, so built-in conversion always wins. Rules are unidirectional and non-transitive, and they **do not compose with built-in coercion** either — a rule is matched on the exact pair, so an `i64 → ptr` rule is not reached by the `i32` literal in `(take 0)` (write `(take (as i64 0))`, or register from `i32`). A failure that a rule *almost* covers says so in a note. Exported in `.nuch` headers. See [implicit-conversions.md](../design/stage15-stress-test/implicit-conversions.md). | implicit conversion |
 | `def-rmacro` | Define a reader macro `(def-rmacro "prefix" symbol)`. When `prefix` appears at the start of a token, the reader wraps the next form: `(symbol form)`. The reader registers the macro **as it reads it**, so it takes effect only for the forms after it — in its own file (a different file never sees it; a REPL session keeps one table across prompts, so a `def-rmacro` at one prompt is visible at the next). Refused if `prefix` is already registered, or begins with a byte that can start an atom — a prefix may open only with one of `` $ ' , @ ^ ` \| ~ ``. Built-in reader macros: `'` (quote), `` ` `` (quasiquote), `~` (unquote), `~@` (unquote-splice), `@` (deref), `&` (ref). See [Reading s-expressions](reading.md#def-rmacro). | — |
-| `exclude-prelude` | Suppress the implicit `(import-use prelude)` for this source file. Must be the first top-level form; takes no arguments. Use when a file should compile against the bare language without the standard macros, `Node` struct, or `(import-use "string.h")` declarations. The directive applies to the **compilation unit's entry file only** — the prelude is a property of the unit, not of a file — so a copy of it in a file that is *imported* is ignored rather than being an error. | — |
+| `exclude-prelude` | Suppress the implicit `(import-use nucleus.core)` for this source file. Must be the first top-level form; takes no arguments. Use when a file should compile against the bare language without the standard macros, `Node` struct, or `(import-use "string.h")` declarations. The directive applies to the **compilation unit's entry file only** — the prelude is a property of the unit, not of a file — so a copy of it in a file that is *imported* is ignored rather than being an error. | — |
 | `ns` | Set the current namespace for this source file: `(ns name)`. `name` must be a slash-free symbol. Symbols defined after this form are stored under `namespace/name` qualified keys. A second `ns` in the same file warns at compile time (silent in the REPL). The default namespace is `user`, which stores bare keys — byte-identical to pre-namespace behavior. Conventionally the first form in a file. **Everything defined after `(ns …)` is namespaced**: functions, values, protocols and **types** alike — a `defstruct`/`defunion`/`defenum`/template declared in `(ns shapes)` defines `shapes/Circle`, exactly as a `defn` there defines `shapes/area` (see [Protocols are namespaced](generics.md#protocols-are-namespaced) and [Namespaced type names](types.md#namespaced-type-names)). Two namespaces may each declare a type of the same name — they are two distinct types — and a reference to either, bare or qualified, resolves through the writing file's own import environment exactly like any other name; see [What an import brings into scope](#what-an-import-brings-into-scope). | — (concept: C++ `namespace` / Clojure `ns`) |
 | `set-ir-prefix` | Override the IR-mangling prefix for the current namespace: `(set-ir-prefix "prefix")`. An empty string forces bare IR names regardless of the namespace (C-ABI escape hatch). A non-empty string replaces the namespace name in emitted IR identifiers. Applies to symbols defined after this directive. Typically placed immediately after `ns`. | — |
 | `export` | Re-export symbols from this namespace: `(export sym1 sym2 ...)`. Makes the listed symbols visible to importers of this namespace under their unqualified names (the part after the last `/`). Typically used in facade libraries to re-expose imported symbols without the importer needing to know the original source namespace. The symbols must already be in scope (via `import-prefixed` or defined in this file). No new IR is emitted — it adds alias entries to the module's export table. Example: `(export geom/area geom/perimeter)` in a `gfacade` namespace causes `(import-prefixed gfacade g)` to expose `g/area` and `g/perimeter` to the importer. The facade's `.nuch` header carries the `export` form along with the import forms it names through. Those imports load nothing, so a consumer of the header must also import `nsgeom`; otherwise the export is refused at the header's line with a note saying so (see [The imports a header carries](compiler.md#the-imports-a-header-carries)). **Functions, values, protocols, structs, unions, enums, templates and macros can be re-exported.** Types are on this list because type identity is namespaced (see [Namespaced type names](types.md#namespaced-type-names)): a facade that re-exports `geom/area` but not `geom/Pt` would export a function whose signature names a type the consumer has no way to spell. **An overloaded function, a special form, or a built-in type name cannot** — none of them is keyed by namespace, so a re-export would not change how it resolves. An overloaded name is the deliberate case: one entry per bare name carries every namespace's methods (see [Qualifying an overloaded function](#qualifying-an-overloaded-function)), so it is already reachable everywhere. Naming one is refused with `export: 'X' is a function — that kind is not keyed by namespace, so a re-export would not change how it resolves` (the noun changes with the kind: "a special form", "a built-in type"). | — (closest C analogue: a header that `extern`-declares symbols from another translation unit) |
-| `fn-attr` | Attach one or more LLVM string function attributes to a `defn`: `(fn-attr name "attr" ...)`. `name` is a bare function-name symbol (not a string) matched against the target `defn`'s source name (equal to the emitted `@`-symbol in the default `user` namespace); each remaining argument must be a string literal. Attributes accumulate — several strings in one call, or several `fn-attr` calls naming the same function, all apply — and are stored/emitted verbatim (Nucleus does not validate the string; an unrecognized attribute is an LLVM-level error, not a compiler diagnostic). Emitted as a space-prefixed quoted attribute directly on that function's `define` line (e.g. `define void @tick() "signal" {`), coexisting with `noreturn`/`returns_twice` when both apply (see [Declaration attributes](#declaration-attributes)). **The `fn-attr` directive must appear before the `defn` it targets** — there is no forward-reference prescan for the attribute table (the same order-sensitive-directive pattern as `set-ir-prefix`, above, which likewise takes effect only for what follows it in source order). Deliberately generic: the first consumer is AVR interrupt handlers (the `"signal"`/`"interrupt"` attributes make the AVR backend emit the interrupt prologue/epilogue and `reti` instead of `ret`; see the block comment in `lib/avr.nuc` and `examples/avr-isr.nuc`), but any LLVM function-attribute string works the same way. A unit that never calls `fn-attr` is byte-identical to before this directive existed. | — (closest C analogue: `__attribute__((...))` on a function declaration) |
+| `fn-attr` | Attach one or more LLVM string function attributes to a `defn`: `(fn-attr name "attr" ...)`. `name` is a bare function-name symbol (not a string) matched against the target `defn`'s source name (equal to the emitted `@`-symbol in the default `user` namespace); each remaining argument must be a string literal. Attributes accumulate — several strings in one call, or several `fn-attr` calls naming the same function, all apply — and are stored/emitted verbatim (Nucleus does not validate the string; an unrecognized attribute is an LLVM-level error, not a compiler diagnostic). Emitted as a space-prefixed quoted attribute directly on that function's `define` line (e.g. `define void @tick() "signal" {`), coexisting with `noreturn`/`returns_twice` when both apply (see [Declaration attributes](#declaration-attributes)). **The `fn-attr` directive must appear before the `defn` it targets** — there is no forward-reference prescan for the attribute table (the same order-sensitive-directive pattern as `set-ir-prefix`, above, which likewise takes effect only for what follows it in source order). Deliberately generic: the first consumer is AVR interrupt handlers (the `"signal"`/`"interrupt"` attributes make the AVR backend emit the interrupt prologue/epilogue and `reti` instead of `ret`; see the block comment in `lib/nucleus/avr.nuc` and `examples/avr-isr.nuc`), but any LLVM function-attribute string works the same way. A unit that never calls `fn-attr` is byte-identical to before this directive existed. | — (closest C analogue: `__attribute__((...))` on a function declaration) |
 | Private definers: `defn-` `defvar-` `defconst-` `defenum-` `defstruct-` `defunion-` `defmacro-` `defprotocol-` `deftype-` | The `-` suffix marks a definition as private. **In a file with no `(ns …)`, a `defn-`, `defvar-`, `defconst-` or `defenum-` name is private to that file** (see [Private names are file-scoped](#private-names-are-file-scoped) below); in a file that declares a namespace, every private name is private to that namespace. Private symbols are not placed in the module's export table and cannot be imported by other namespaces. For link-emitting forms (`defn-`, `defvar-`), the LLVM symbol also receives internal linkage (`define internal` / `internal global`), preventing link-time name collisions with other translation units — equivalent to C `static`. For compile-time-only forms (`defconst-`, `defenum-`, `defstruct-`, `defunion-`, `defmacro-`, `defprotocol-`, `deftype-`), there is no linkage dimension; private means the name is invisible to importers. All other semantics (type checking, overloading, parametric templates, protocol conformance) are identical to the public form: a `defn-` template is called in its own file as a public one is, and two files' private templates of one name stamp separately. | `static` function / `static` global (for `defn-` / `defvar-`); — for compile-time-only forms |
 
 ## Declaration attributes
@@ -177,27 +177,42 @@ Two edges:
 
 * The **same prefix in two files** for the same library is fine and common;
   two *different* libraries may still not share one prefix within a unit.
-* A **namespace** qualifier is subject to the same file scope — see the next
-  section.
+* A **namespace** qualifier is not a prefix: it reaches every file whose
+  imports, followed transitively, load the library that declares it — see the
+  next section. A prefix is never reachable that way.
 
 ## What an import brings into scope
 
-**A qualifier means something only in a file whose own import form bound it.**
-There is no ambient list of namespaces: an import declares what this file can
-spell, and that declaration is the whole answer.
+**A prefix means something only in the file whose own import form bound it; a
+namespace's full name means something in every file whose import closure loads
+it.** A file's *import closure* is the file plus every file its import forms
+reach, transitively (cycles included). A qualifier resolves, in order, as the
+file's own namespace, `user`, `unsafe`, a prefix this file bound, a namespace
+this file flattened, and last a namespace any file in the closure declares — so
+a prefix shadows a namespace of the same name, silently.
 
 | Import form | What the file can spell |
 |---|---|
-| `(import-prefixed lib p)` / `(import lib p)` | `p/name` — **and not** the library's own namespace |
+| `(import-prefixed lib p)` / `(import lib p)` | `p/name`, and (through the closure) `<lib-namespace>/name` |
 | `(import-use lib)` | `name` (unqualified) **and** `<lib-namespace>/name` |
+| `(require lib)` | nothing new unqualified: the library is loaded as `import-use` loads it, and `<lib-namespace>/name` — plus every namespace `lib` itself loads — is reachable by full name |
+| `(require-ct lib)` | as `require`, compile-time-only like `import-ct` (below) |
+| `(require "x.h")` | refused — a C header has no namespace to require |
 | `(import-only lib a b)` | as `import-use` today; the filter is not yet built |
 | `(import-ct lib)` | as `import-use` — the *names* are identical; what differs is that the definitions behind them are not emitted |
-| implicit prelude | as `import-use` — so `user/` and every bare prelude name are always in scope |
+| implicit prelude | as `import-use nucleus.core` and `import-use nucleus.macros`, after the file's own import forms — so every bare prelude name is always in scope |
 | the file's own `(ns n)` | `name` and `n/name` |
 | implicit `unsafe` | as `import-prefixed` — `unsafe/cast`, `unsafe/ptr+`, `unsafe/funcall-ptr-*`, `unsafe/import-private`, and **nothing unqualified** |
 
-The second column of row 1 is the point: an import prefix *is* the API the
-consumer chose, so the library's internal namespace stays the library's business.
+Full-name reach follows the closure, not the unit: a library that spells
+`edn/x` must load `edn` itself (an `import` or a `require`), or it compiles in
+one program and fails in another. Leaning on a namespace that a library loads
+only as an implementation detail is allowed and is the user's risk. Privacy is
+unchanged — a full name reaches public names only, unless it is the file's own
+namespace. (Stage 23 reversed the earlier rule that a namespace was reachable
+only through an import form that bound it;
+design/stage23-namespaces/ambient-namespaces.md.)
+
 Row 2's second clause is the escape hatch for a collision — when two flattened
 libraries both define `Vector`, `a/Vector` disambiguates without rewriting the
 import form.
@@ -211,15 +226,28 @@ binds — so it is never flattened, and there is nothing to write unqualified.
 (import-prefixed shapes sh)     ; lib/shapes.nuc declares (ns shapes)
 
 (extend Circle sh/Shape)        ; ok — sh is what this file bound
-(extend Circle shapes/Shape)    ; error — the namespace is not in scope here
+(extend Circle shapes/Shape)    ; ok — the same protocol, by its full name
+(extend Circle shapez/Shape)    ; error — no file in the closure declares shapez
 ```
 
 ```
-main.nuc:6: error: extend: unknown protocol 'shapes/Shape'
-  note: 'shapes' is not in scope in this file — a prefixed import binds its
-  library under the prefix it names and not under the library's own namespace,
-  and an unimported namespace is not nameable at all. In scope here: sh.
+main.nuc:7: error: extend: unknown protocol 'shapez/Shape'
+  note: 'shapez' is neither an import prefix this file binds nor a namespace its
+  imports load — (require …) a library to reach its namespace by its full name.
+  In scope here: sh.
 ```
+
+When some *other* file of the unit declares the namespace, the note names it
+instead: `namespace 'shapez' (declared in lib/shapez.nuc) is not loaded by this
+file's imports — add (require …) naming its library to reach it by its full name.`
+
+### Library names: dots are directories
+
+A dotted library name in any import form names a subdirectory of a search root:
+`(require nucleus.edn)` finds `<root>/nucleus/edn.nuc` (or `.nuch`) on the same
+search path a bare name uses. Hyphens are kept as written. The default prefix of
+`(import a.b)` is the last component, `b`. A string-path import is a path and is
+unchanged.
 
 **Scope of the rule today.** It governs **protocol** references (`extend`,
 `(dyn P)`, `:where` constraints, protocol inheritance), every **global** —
@@ -229,10 +257,11 @@ functions — and every **type** — struct, union, enum and template names alik
 its qualifier in scope in exactly the way a global or protocol reference does.
 **Overloaded** functions are on this path too, by a different mechanism — see
 [Qualifying an overloaded function](#qualifying-an-overloaded-function) below.
-**Macros** are on it as well: `p/my-macro` resolves through an import prefix,
-the defining namespace does not, and two namespaces may each declare a macro of
-the same name. The names *inside* a macro's quasiquote are resolved in the
-macro's own file, so the caller needs to reach only the macro (see
+**Macros** are on it as well: `p/my-macro` resolves through an import prefix
+and `ns/my-macro` through the closure, and two namespaces may each declare a
+macro of the same name. The names *inside* a macro's quasiquote are resolved in the
+macro's own file and written as full names, which the caller reaches through the
+macro's library in its closure; so the caller needs to reach only the macro (see
 [A template's names mean the macro file's names](macros.md#a-templates-names-mean-the-macro-files-names)).
 Every name-keyed kind now answers the same scope question.
 
@@ -269,8 +298,8 @@ Three consequences of globals and types sharing this path, all new:
   key the library already registered — for a type as much as for a `defn`.
 * **A qualified reference needs its qualifier in scope even inside the unit.**
   Cross-file *reachability* (next section) is unchanged for bare names, but
-  `otherns/thing` requires an import in **this** file that binds `otherns` —
-  either `(import-use otherlib)` or a prefix of your own. This applies to
+  `otherns/thing` requires a prefix this file bound or a namespace this file's
+  import closure loads — the unit alone is not enough. This applies to
   `otherns/Circle` exactly as to `otherns/some-fn`.
 * **A bare type reference to a type defined in a namespace this file did not
   import** gets a located diagnostic naming the defining namespace, plus a
@@ -279,6 +308,53 @@ Three consequences of globals and types sharing this path, all new:
   [Namespaced type names](types.md#namespaced-type-names) for the exact
   message. The same tier fires in head position too, so a bare struct
   constructor for a type in an unimported namespace gets the same answer.
+
+### The core libraries: `nucleus.*`
+
+The standard libraries live in `lib/nucleus/` and each declares its namespace:
+`lib/nucleus/string.nuc` is `(ns nucleus.string)`, imported as
+`(import-use nucleus.string)`; the AVR support is `nucleus.avr` and
+`nucleus.avr.attiny1634` etc. The prelude is `nucleus.core`
+(`lib/nucleus/core.nuc`), flattened into every file with `nucleus.macros` as if
+each file ended its import forms with `(import-use nucleus.core)`;
+`(exclude-prelude)` still removes it. A file that uses a library's names imports
+that library — another file of the unit loading it is not enough.
+
+**Lookup order.** A bare name is looked up in the file's own namespace, then
+each namespace the file flattened (its `import-use`s, then the prelude), then
+`user`. So inside a namespaced library a `user` definition never shadows a core
+one, while in a `user` file the file's own definitions come first.
+
+**Link names stay bare.** A `nucleus.*` namespace composes an empty IR prefix,
+so `string-new` links as `@string-new`, `String` is `%String`, and the C names
+in `lib/nucleus/*.h` are unchanged. The cost: a `user` type named like a core
+type would be a second `%String`, so it is refused where it is defined —
+
+```
+main.nuc:1: error: defstruct: String links as %String, the LLVM type of nucleus.string/String — rename it, or give this file an (ns …)
+```
+
+— and a type of the same name under the file's own `(ns app)` is `app/String`,
+linked as `%app__String`, and coexists with the core one.
+
+**What the compiler writes for you names the library too.** A collection or
+keyword literal lowers to calls into its library by full name, so the file must
+load that library:
+
+```
+main.nuc:3: error: a vector literal needs nucleus.vector — add (import-use nucleus.vector)
+```
+
+(`#{…}` needs `nucleus.hashset`, `{…}` `nucleus.hashmap`, `:kw` `nucleus.keyword`.)
+The types and protocols the compiler itself reasons about — `StrView` for a
+string literal, `Node` in a macro, `Drop`, `Clone`, `Maybe`, `Result`, `Err`'s
+handler chain — are the core library's by key, whatever the file names them.
+
+**An operator method the file cannot reach is refused, not replaced.** `=` on
+two `StrView`s is a method in `nucleus.strview`. Where some file of the unit
+loads it but this file does not import it, the comparison is refused with a note
+naming the namespace, rather than falling to the built-in, which compares a
+view's bytes only up to a NUL.
 
 ### A template is read as the file that wrote it
 
@@ -364,13 +440,14 @@ means "the `describe` methods that came from the namespace `p` names":
 (pb/desc 1 2)    ; 23
 (pa/desc 1 2)    ; error: no matching method for overloaded 'desc'
                  ;        with argument types (i32, i32)
-(na/desc 1)      ; error: 'na' is not in scope in this file
+(na/desc 1)      ; 101 — liba's own namespace, through the import closure
+(nz/desc 1)      ; error: 'nz' is not in scope in this file
 ```
 
 The third line is the point: the qualifier really does restrict the method set,
 so an overload another namespace contributed is not reachable through `pa/`.
-The fourth is the ordinary scope rule — a prefixed import binds the prefix, not
-the library's namespace.
+The fourth filters by the namespace's full name exactly as `pa/` does; the fifth
+is the ordinary scope rule — no file this one loads declares `nz`.
 
 The registry is merged, but **the merge is not what a bare call sees**. A bare
 name is filtered too, by the same rule every other kind of name obeys: it
@@ -470,8 +547,8 @@ Notes on what this does and does not cover:
 
 ## The node runtime is a library
 
-`lib/prelude.nuc` is auto-imported into every unit, and until Stage 16 it ended
-with `(import-use node)` — so every program, including one that never wrote a
+`lib/nucleus/core.nuc` is auto-imported into every unit, and until Stage 16 it ended
+with `(import-use nucleus.node)` — so every program, including one that never wrote a
 quote, carried `alloc-node`, the list builders, `intern-symbol`, the symbol
 intern table and the arena behind them: sixteen definitions and 4.5 KB of `.text` for a
 `main` that reaches none of it. On a freestanding target it was worse than
@@ -481,18 +558,18 @@ only way to build for AVR was `(exclude-prelude)` — giving up `if`, `when`,
 
 The prelude now holds only forms that emit no IR: the `Node`, `StrView` and
 `Symbol` **types**, the `NODE-*` enum, the standard macros, `Clone`, and the
-`Result` / `Maybe` templates. The runtime is `lib/node.nuc`, imported like any
+`Result` / `Maybe` templates. The runtime is `lib/nucleus/node.nuc`, imported like any
 other library. A prelude-only program emits **one** definition, its own `main`.
 
 `Node.s` is a [`Symbol`](stdlib.md#symbol-libinternnuc-stage-17) — one word pointing at interned
-bytes. `lib/node.nuc` keeps the canonical-`Node`-per-spelling map on top of it:
+bytes. `lib/nucleus/node.nuc` keeps the canonical-`Node`-per-spelling map on top of it:
 `intern-node` takes the `Symbol`, `intern-symbol` is the `CStr` wrapper `'foo`
-lowers to. `lib/intern.nuc` owns the byte table itself and imports nothing but
-libc and `lib/fnv.nuc`, so a macro-using program does not drag the string stack
+lowers to. `lib/nucleus/intern.nuc` owns the byte table itself and imports nothing but
+libc and `lib/nucleus/fnv.nuc`, so a macro-using program does not drag the string stack
 — and, on AVR, does not become uncompilable for it.
 
 Three things lower to calls on that runtime, so a program using any of them needs
-`(import-use node)`:
+`(import-use nucleus.node)`:
 
 | Written | Lowers to |
 |---|---|
@@ -500,7 +577,7 @@ Three things lower to calls on that runtime, so a program using any of them need
 | a call to a `:rest` function | `@node-list-new`, then `@node-push` per trailing argument |
 | a literal selector reaching a user `get` method | `@intern-symbol` |
 
-Each is refused by name — `quote needs the node runtime — add (import-use node)`
+Each is refused by name — `quote needs the node runtime — add (import-use nucleus.node)`
 — rather than left to fail at link with no location. A **macro body** needs no
 import: it is compiled into its own JIT module and resolves those symbols against
 the compiler process, which is why defining a macro costs a program nothing.
@@ -511,9 +588,9 @@ the compiler process, which is why defining a macro costs a program nothing.
 signatures, constants, macros — and emits none of its definitions.
 
 The case it exists for is a macro that calls a library function to build its
-expansion. `lib/error.nuc`'s `with-handler` destructures its spec with `node-at`;
+expansion. `lib/nucleus/error.nuc`'s `with-handler` destructures its spec with `node-at`;
 that is a compile-time call, made by a JIT'd macro body against the compiler
-process, but writing `(import-use node)` to get the signature would have emitted
+process, but writing `(import-use nucleus.node)` to get the signature would have emitted
 the whole node runtime into every program that handles an error. `(import-ct
 node)` registers `node-at` and emits nothing.
 
@@ -533,6 +610,11 @@ Two rules make it safe to use:
   it for real. This holds in both orders and through nesting: a library imported
   compile-time-only may itself `import-use` a library the program uses, and that
   one stays real.
+
+`(require-ct lib)` is the same import binding nothing (see
+[What an import brings into scope](#what-an-import-brings-into-scope)): the
+library's names are reachable only by full name, and a run-time reference to a
+withheld one is the same located error.
 
 A C header (`(import-ct "stdio.h")`) is imported normally: a header emits only
 declarations, and libc supplies the definitions either way, so there is nothing

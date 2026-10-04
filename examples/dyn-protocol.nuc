@@ -15,11 +15,11 @@
 ; concrete types here are POD, so each box has a null drop slot and Drop just frees.
 
 (import-use "stdio.h")
-(import-use allocator)
-(import-use coll)
-(import-use iterator)
-(import-use vector)
-(import-use keyword)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
+(import-use nucleus.vector)
+(import-use nucleus.keyword)
 
 ; A single, single-method user protocol: `describe` maps a value to an int.
 (defprotocol Describe

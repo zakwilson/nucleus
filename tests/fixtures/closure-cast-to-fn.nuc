@@ -4,7 +4,7 @@
 ;
 ; Compiling this must FAIL with:
 ;   "unsafe/cast: a capturing closure cannot be used as a function pointer"
-(import-use allocator)
+(import-use nucleus.allocator)
 
 (defn connect (cb:(fn void)(ptr ptr)):void
   (return))

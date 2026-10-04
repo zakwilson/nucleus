@@ -15,18 +15,21 @@
 ; Failure text is rendered in ONE place, here, rather than at each assertion's
 ; call site. See docs/testing.md.
 
-(import-use error)
-(import-use strview)
-(import-use string)
-(import-use string-split)
-(import-use fmt)
-(import-use vector)
-(import-use io)
-(import-use file)
-(import-use allocator)
-(import-use read)
-(import-use keyword)
-(import-use edn)
+(ns nucleus.test)
+
+(import-use nucleus.error)
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.string-split)
+(import-use nucleus.fmt)
+(import-use nucleus.vector)
+(import-use nucleus.io)
+(import-use nucleus.file)
+(import-use nucleus.allocator)
+(import-use nucleus.read)
+(import-use nucleus.keyword)
+(import-use nucleus.edn)
+(import-use nucleus.intern)
 
 (deferror test-failed "assertion failed")
 (deferror test-skipped "test skipped")
@@ -58,7 +61,7 @@
 (defvar g-test-alloc:AllocHandle)
 (defvar g-tests:&(Vector TestCase)
   (vector-new-in (arena-allocator &g-test-alloc)))
-; Lazily built, like lib/io.nuc's output buffer: a global String with a
+; Lazily built, like lib/nucleus/io.nuc's output buffer: a global String with a
 ; constant initializer would need an allocator this module has no reason to own.
 (defvar g-fail-buf:String)
 (defvar g-fail-ready:i32 0)

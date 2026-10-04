@@ -1,4 +1,12 @@
-; .nuch header for lib/io.nuc
+; .nuch header for lib/nucleus/io.nuc
+(ns nucleus.io)
+(import-use nucleus.error)
+(import-use nucleus.string-errors)
+(import-use nucleus.char)
+(import-use nucleus.strview)
+(import-use nucleus.vector)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
 (defstruct FdOut (fd i32))
 (declare fd-out ((fd i32)) :FdOut)
 (declare std-out () :FdOut)

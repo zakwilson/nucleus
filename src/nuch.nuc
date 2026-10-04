@@ -16,6 +16,14 @@
 ; .nuch header emission
 ; ============================================================
 
+(import-use nucleus.node)
+(import-use nucleus.intern)
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.fmt)
+(import-use nucleus.arena)
+(import-use nucleus.vector)
+(import-use nucleus.strview-str)
 (defn emit-nuch-list (form:ptr):void
   (dotimes (i (node-len form))
     (when (!= i 0) (emit g-hdr " "))
@@ -199,8 +207,9 @@
   (emit g-hdr ")\n"))
 
 ; The import forms that bind a name in this file's environment — a prefix, or a
-; flattened namespace other than `user` (which every file already sees) — so the
-; importer reads the header's templates and signatures as this file read them.
+; flattened namespace other than `user` and the prelude (which every file already
+; sees) — so the importer reads the header's templates and signatures as this file
+; read them.
 (defn emit-nuch-import-env (forms:ptr):void
   (dotimes (fi (node-len forms))
     (let (f:ptr:Node (as ptr:Node (node-at forms fi)))
@@ -218,11 +227,15 @@
                   (emit g-hdr " " prefix ")\n")))
             (or (= h "import-use") (= h "import-only"))
               (let (path:Symbol (import-form-path lib (f 'line)))
-                (when (and (not (symbol-none? path)) (!= (import-path-ns path) "user"))
+                (when (and (not (symbol-none? path)) (!= (import-path-ns path) "user")
+                           (not (prelude-ns? (import-path-ns path))))
                   (header-print-node f)
                   (emit g-hdr "\n")))
             ; Always a prefix, and the one binding that reaches private names.
             (and (= h "unsafe/import-private") (>= (node-len f) 3))
+              (do (header-print-node f) (emit g-hdr "\n"))
+            ; Binds nothing but the closure, which the header's text may lean on.
+            (and (require-head? h) (= (node-len f) 2))
               (do (header-print-node f) (emit g-hdr "\n"))
             true 0))))))
 
@@ -274,8 +287,7 @@
                    (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 'kind) (= _ NODE-SYM))
                    (not (gensym-definition? fc)))
           (nuch-extent-values fc)
-          (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's))
-                mark:usize ((string-as-view &g-hdr-buf) 'len))
+          (let (h:Symbol (-> f (node-at _ 0) (unsafe/cast &Node _) (_ 's)))
             (case h
               "defstruct"    (emit-nuch-defstruct (as ptr f))
               ; defunion exports verbatim (template or monomorphic); the
@@ -298,35 +310,7 @@
                              (do (header-print-node (as ptr f)) (emit g-hdr "\n"))
               "defenum"      (emit-nuch-defenum (as ptr f))
               "defmacro"     (emit-nuch-defmacro (as ptr f))
-              ; An exported macro's body may call it, and the importer compiles that body.
-              "defmacro-"    (emit-nuch-defmacro (as ptr f))
-              0)
-            (nuch-respell-since mark f)))))))
-
-; The text one form just wrote, with each quasiquote tag spelled the way this header's
-; importer will read it, or the form refused (quasiquote-resolution.md §3.11).
-(defn nuch-respell-since (mark:usize f:&Node):void
-  (let (tail:StrView (strview-drop-bytes (string-as-view &g-hdr-buf) mark))
-    (set! g-hyg-unspellable (symbol-none))
-    (let (fixed:StrView (hyg-scrub-in tail true))
-      (when (not (symbol-none? g-hyg-unspellable))
-        (diag-stage-note
-          (fstr "a header is read in another compilation, which can write only what this file's imports reach;"
-                " import the namespace that defines it, or keep the definition out of the header"))
-        (die-at (f 'line)
-          (fstr "--emit-nuch: cannot export '" (nuch-construct f) "': it names '"
-                (hyg-display g-hyg-unspellable) "', which this file has no spelling for")))
-      (when (!= (as ptr (fixed 'data)) (as ptr (tail 'data)))
-        (string-truncate-unchecked &g-hdr-buf mark)
-        (str-into &g-hdr-buf fixed)))))
-
-; `(head name …)`, for naming an exported form in a diagnostic.
-(defn nuch-construct (f:&Node):StrView
-  (let (h:Symbol (qq-head f)
-        n:?&Node (node-at f 1))
-    (when (= (node-kind n) NODE-SYM)
-      (return (fstr "(" h " " (hyg-display ((unsafe/cast &Node n) 's)) " …)")))
-    (return (fstr "(" h " …)"))))
+              0)))))))
 
 ; ============================================================
 ; .nuch import processing
@@ -818,7 +802,8 @@
                 (emit-set-ir-prefix (as ptr f))
               ; The source file's bindings (emit-nuch-import-env): they name what
               ; its text was written against and load nothing, like its `declare`s.
-              (:or "import" "import-prefixed" "import-use" "import-only" "unsafe/import-private")
+              (:or "import" "import-prefixed" "import-use" "import-only" "unsafe/import-private"
+                   "require" "require-ct")
                 (when (not (import-form-bind f))
                   (die-import-not-found (-> f (node-at _ 1) (unsafe/cast &Node _) (_ 's))
                                         (f 'line)))

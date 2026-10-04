@@ -1,4 +1,11 @@
-; .nuch header for lib/strview.nuc
+; .nuch header for lib/nucleus/strview.nuc
+(ns nucleus.strview)
+(import-use nucleus.hash)
+(import-use nucleus.numeric)
+(import-use nucleus.char)
+(import-use nucleus.string-errors)
+(import-use nucleus.iterator)
+(import-use nucleus.fnv)
 (declare strview-eq ((a (ref StrView)) (b (ref StrView))) :bool)
 (defstruct ByteIter (buf (ref ui8)) (pos usize) (len usize))
 (extend ByteIter (Iterator ui8))

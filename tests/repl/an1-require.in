@@ -1,0 +1,9 @@
+; Stage 23 AN-1 (design/stage23-namespaces/ambient-namespaces.md §8): the REPL's
+; import closure is its session. `geom` is unreachable until something loads it.
+(geom/area 3 4)
+; `require` binds nothing: nsgfacade's own namespace and, transitively, the
+; `geom` namespace it imports under a prefix are now reachable by full name.
+(require nsgfacade)
+(geom/area 3 4)
+(gfacade/perimeter 2 5)
+(area 1 1)

@@ -3,7 +3,7 @@
 (import-use "stdio.h")
 
 ; Simple macro library for testing import.
-; Separate from lib/macros.nuc because dotimes/-> require the Node struct.
+; Separate from lib/nucleus/macros.nuc because dotimes/-> require the Node struct.
 (import-use testmacros)
 
 (defn main ():int

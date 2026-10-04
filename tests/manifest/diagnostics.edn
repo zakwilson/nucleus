@@ -246,7 +246,7 @@
 {:name "w9-unknown-type-ctor-unimported" :expect :reject
  :file "tests/fixtures/w9-unknown-type-ctor-unimported.nuc" :line 12
  :messages ["unknown type: Vector"]
- :notes ["'Vector' is defined in lib/vector.nuc, which no import in this unit reaches"]}
+ :notes ["'Vector' is defined in lib/nucleus/vector.nuc, which no import in this unit reaches"]}
 
 ; The other mistake class at the same fall-through: a head that IS a type. One
 ; message for both would lie about this one.
@@ -613,7 +613,7 @@
 ; renderer calls the same predicate — and `as-ptr-convert` carried a second copy
 ; of the premise. Measured before the fix: all three of these compiled clean and
 ; segfaulted; the corpus contained exactly ONE conversion that this rejects
-; (lib/hash.nuc's CStr Hash conformance), now null-guarded.
+; (lib/nucleus/hash.nuc's CStr Hash conformance), now null-guarded.
 {:name "w9-cstr-into-ref-defvar" :expect :reject
  :file "tests/fixtures/w9-cstr-into-ref-defvar.nuc" :line 17
  :messages ["defvar: unchecked pointer where non-null (ref ...) is required"]}
@@ -1022,12 +1022,15 @@
 {:name "w9-ns-proto-ambiguous" :expect :reject
  :file "tests/fixtures/w9-ns-proto-ambiguous.nuc" :line 17
  :messages ["extend: unknown protocol 'Describe'"]}
-{:name "b2a-extend-ns-not-in-scope" :expect :reject
- :file "tests/fixtures/b2a-ns-not-in-scope.nuc" :line 25
- :messages ["extend: unknown protocol 'dp/Describe'"]}
-{:name "b2a-dyn-ns-not-in-scope" :expect :reject
- :file "tests/fixtures/b2a-dyn-ns-not-in-scope.nuc" :line 27
- :messages ["(dyn dp/Describe): 'dp/Describe' is not a declared protocol"]}
+;
+; Stage 23 AN-1 reversed R3 (design/stage23-namespaces/ambient-namespaces.md §8):
+; these two were `b2a-extend-ns-not-in-scope` / `b2a-dyn-ns-not-in-scope`, the
+; library's namespace refused under a prefix. It is in the file's import closure
+; now, so both spellings are accepted.
+{:name "b2a-extend-ns-through-closure" :expect :accept
+ :file "tests/fixtures/b2a-ns-through-closure.nuc"}
+{:name "b2a-dyn-ns-through-closure" :expect :accept
+ :file "tests/fixtures/b2a-dyn-ns-through-closure.nuc"}
 
 ; Defect #7's other half, and defect #4. `strip-ns-qualifier` used to discard a
 ; type spelling's qualifier without checking it, so a type was reachable from
@@ -1134,20 +1137,17 @@
  :messages ["type 'Sq' does not conform to protocol 'Shape'"]
  :notes ["Sq does not implement Shape.area"]}
 
-; Stage 22 HY-3/HY-2: a quasiquote name resolves where the macro was written
-; (design/stage22-edn/quasiquote-resolution.md), so binding one is refused, and a
-; tag reaching `resolve-spelling` is an internal error -- reachable only planted.
+; Stage 22 HY-3, rebased in Stage 23 AN-4: a quasiquote name is the full name of what
+; its file resolves it to, and a binding name may not be qualified
+; (design/stage23-namespaces/ambient-namespaces.md, "AN-4 as built").
 {:name "s22-hyg-binder" :expect :reject
  :file "tests/fixtures/s22-hyg-binder.nuc" :line 6
- :messages ["macro 'with-bump' binds 'bump', which its file resolves to the function 'bump'"]
+ :messages ["cannot bind 'user/bump': a binding name may not be qualified"]
  :notes ["write ~'bump to bind the caller's name, or use (gensym)"]}
 {:name "s22-hyg-typed-binder" :expect :reject
  :file "tests/fixtures/s22-hyg-typed-binder.nuc" :line 6
- :messages ["macro 'with-bump' binds 'bump', which its file resolves to the function 'bump'"]
+ :messages ["cannot bind 'user/bump': a binding name may not be qualified"]
  :notes ["write ~'bump to bind the caller's name, or use (gensym)"]}
-{:name "s22-hyg-planted-tag" :expect :reject
- :file "tests/fixtures/s22-hyg-planted-tag.nuc" :line 7
- :messages ["internal error: the quasiquote name tag '#h999/helper' (table entry 999) reached resolve-spelling unwrapped"]}
 
 ; Stage 22 ED-4.2: `struct-fields` / `type-name` refuse what has no
 ; `(name type)` list or no name (design/stage22-edn/ed4-struct-codecs.md §2.1).

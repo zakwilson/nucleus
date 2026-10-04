@@ -979,7 +979,7 @@ applies.
 ```lisp
 (import-use "stdio.h")
 (import-use "stdlib.h")
-(import-use error)
+(import-use nucleus.error)
 (defstruct Pt x:i32 y:i32)
 (deferror not-found "point not found")
 

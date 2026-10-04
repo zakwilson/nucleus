@@ -1,4 +1,12 @@
-; .nuch header for lib/combinators.nuc
+; .nuch header for lib/nucleus/combinators.nuc
+(ns nucleus.combinators)
+(import-use nucleus.allocator)
+(import-use nucleus.iterator)
+(import-use nucleus.numeric)
+(import-use nucleus.strview)
+(import-use nucleus.vector)
+(import-use nucleus.string)
+(import-use nucleus.coll)
 (defprotocol (BinaryFn A R) (apply2 (self:ref:Self (x A) (y A)) R))
 (defn map ((g (ref G)) (it (ref I)) :where ((Iterator S) I) ((UnaryFn S E) G)) (Vector E) (let ((out (ref (Vector E))) (alloca (Vector E))) (vector-init out) (let (done:i32 0) (while (= done 0) (match (next it) ((some v) (conj out (apply g v))) (none (set! done 1))))) (return (deref out))))
 (defn filter ((pred (ref P)) (it (ref I)) :where ((Iterator S) I) ((UnaryFn S bool) P)) (Vector S) (let ((out (ref (Vector S))) (alloca (Vector S))) (vector-init out) (let (done:i32 0) (while (= done 0) (match (next it) ((some v) (when (apply pred v) (conj out v))) (none (set! done 1))))) (return (deref out))))

@@ -6,7 +6,7 @@
 
 (import-use "stdio.h")
 
-; 1. Castless variadic operator — mirrors the now-castless + / * in lib/macros.nuc.
+; 1. Castless variadic operator — mirrors the now-castless + / * in lib/nucleus/macros.nuc.
 ;    The single-arg base case returns a bare `ast-at`, a (ptr Node), joined with
 ;    the quasiquote branches (also (ptr Node)) — no cast.
 (defmacro sum (:rest args)

@@ -2,8 +2,8 @@
 ; Under the hood these build a list Node with the node runtime's list builders.
 
 (import-use "stdio.h")
-(import-use iterator)
-(import-use node)   ; a runtime quasiquote calls intern-symbol and node-push
+(import-use nucleus.iterator)
+(import-use nucleus.node)   ; a runtime quasiquote calls intern-symbol and node-push
 
 (defn first (n:ptr):ptr (return (node-first n)))
 (defn rest  (n:ptr):ptr (return (node-rest n)))

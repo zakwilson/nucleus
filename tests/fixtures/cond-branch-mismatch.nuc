@@ -1,6 +1,6 @@
 ; An `if` whose branches disagree has no value; the error names both branch types.
-(import-use string)
-(import-use fmt)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
 
 (defn describe (c:bool):CStr
   (with (t:CStr (if c

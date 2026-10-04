@@ -21,6 +21,10 @@
 ; `nucleusc -I <this test's scratch dir> -o … <main>`, run; the exit status is
 ; the answer. The scratch directory is where `test-write-file` puts every file
 ; the unit wrote, so one `-I` makes the whole graph reachable.
+(import-use nucleus.string)
+(import-use nucleus.test)
+(import-use nucleus.fmt)
+(import-use nucleus.strview)
 (defn w1-exit (main:StrView want:i32):!void
   (let (dir:StrView (try (test-scratch)))
     (try (check-file-exit dir main want)))
@@ -294,9 +298,9 @@
 ; agreeing is the other half of "definition and call sites disagree", so it is
 ; asserted here too.
 (deftest w1-late-overload-symbol
-  (let (m:String (try (test-write-file "w1-late.nuc" "(import-use \"lib/list.nuc\")
-(import-use vector)
-(import-use node)
+  (let (m:String (try (test-write-file "w1-late.nuc" "(import-use \"lib/nucleus/list.nuc\")
+(import-use nucleus.vector)
+(import-use nucleus.node)
 (defn main ():i32
   (let (c:ptr (as ptr (node-list-new 0))
         r:ptr (append c c))
@@ -325,7 +329,7 @@
 ; rather than a search of stderr for its text.
 (deftest w1-deferred-union-payload
   (let (m:String (try (test-write-file "w1-ctdefer.nuc" "(compile-time (+ 1 1))
-(import-use string)
+(import-use nucleus.string)
 (defn w1-wrap (sv:StrView):!String (return (string-from-view sv)))
 (defn main ():i32 (return 0))
 "))
@@ -779,14 +783,14 @@
 ; A library that imports the root re-enters it. If the re-entry lands while the
 ; root has emitted none of its own forms, `do-import` HOISTS the root — emits it
 ; there — and the depth-1 loop stops because its own path is now on the imported
-; list. That is the shape the auto-prelude creates for lib/macros.nuc and
-; lib/arena.nuc, where a plain cycle skip is not merely suboptimal: the skipped
+; list. That is the shape the auto-prelude creates for lib/nucleus/macros.nuc and
+; lib/nucleus/arena.nuc, where a plain cycle skip is not merely suboptimal: the skipped
 ; file holds the macros the rest of the chain is about to use.
 ; `(exclude-prelude)` is how a hand-written test reaches the same window, since
 ; with the prelude prepended form 0 is the prelude import.
 ;
 ; Both roots carry an OVERLOADED name, which is what makes the prescan half
-; observable and is exactly how lib/arena.nuc failed; both fail on the committed
+; observable and is exactly how lib/nucleus/arena.nuc failed; both fail on the committed
 ; boot compiler with `duplicate definition of 'dup-fn'`.
 ; The compiled file must BE `w9h-main.nuc`: the library imports it under that
 ; name, so a copy under any other name puts both in the unit and collides on

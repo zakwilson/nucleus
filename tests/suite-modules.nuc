@@ -13,6 +13,11 @@
 ; `redefinition of 'X'` and again for `<file>:2: error:`; one `check-error-at`
 ; requires both of the same diagnostic, and `check-no-line-zero` is the sweep
 ; that used to be a `:0:` substring search.
+(import-use nucleus.string)
+(import-use nucleus.test)
+(import-use nucleus.fmt)
+(import-use nucleus.coll)
+(import-use nucleus.vector)
 (defn check-redefines (src:StrView nm:StrView):!void
   (let (p:String (try (test-write-file "t.nuc" src))
         pv:StrView (string-as-view &p)
@@ -107,8 +112,8 @@
 " "rd-vm")))
 
 ; The shape R4 was actually written for (§11.1): the two definitions are in two
-; different FILES and neither file can see the other. `lib/prelude.nuc` and
-; `lib/list.nuc` both defining `Node` with different field nullability was this,
+; different FILES and neither file can see the other. `lib/nucleus/core.nuc` and
+; `lib/nucleus/list.nuc` both defining `Node` with different field nullability was this,
 ; and the winner was decided by import order. The diagnostic must name the other
 ; file, which is the whole reason the definition records carry `src-file`.
 (deftest b4-redefinition-cross-file
@@ -1170,7 +1175,7 @@
 
 (defn w24-use-src ((l (ref NuchLib))):String
   (return (str "(import-use \"stdio.h\")
-(import-use allocator)
+(import-use nucleus.allocator)
 (import \"" (nuch-header l) "\" wx)
 (defn main ():i32
   (let (b:(dyn wx/Describe) (wx/Fox 309))
@@ -1342,10 +1347,10 @@
     (drop &l)))
 
 ; Accepting half A: the idempotent re-declaration the skip exists for stays
-; silent. `strlen` is declared by BOTH string.h and lib/string.nuch.
+; silent. `strlen` is declared by BOTH string.h and lib/nucleus/string.nuch.
 (deftest w9-nuch-redeclare-still-silent
   (let (c:Compiled (try (compile-source "(import-use \"string.h\")
-(import-use string)
+(import-use nucleus.string)
 (defn main ():i32 (return (unsafe/cast i32 (strlen \"abc\"))))
 ")))
     (when (not (c 'ok?))

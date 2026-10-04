@@ -4,9 +4,9 @@
 ; name). Owning results (new Vectors) are dropped exactly once.
 
 (import-use "stdio.h")
-(import-use vector)
-(import-use iterator)
-(import-use combinators)
+(import-use nucleus.vector)
+(import-use nucleus.iterator)
+(import-use nucleus.combinators)
 
 ; A named UnaryFn conformer for flat-map: x -> a fresh Vector [x, x+k].
 (defstruct ExpandFn k:i32)

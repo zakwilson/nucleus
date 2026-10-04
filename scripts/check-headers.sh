@@ -64,7 +64,7 @@ report() { echo "$*"; bad=1; }
 
 # 1. Coverage: a new lib/*.nuc whose headers were never generated is drift of the
 #    header *set*, which a content-only diff cannot see.
-for src in lib/*.nuc; do
+for src in lib/*.nuc lib/nucleus/*.nuc; do
   base="${src%.nuc}"
   for ext in h nuch; do
     [ -f "$base.$ext" ] || report "MISSING  $base.$ext (no committed header for $src)"
@@ -72,7 +72,7 @@ for src in lib/*.nuc; do
 done
 
 # 2 + 3. Provenance and content, for both header flavours.
-for hdr in lib/*.h lib/*.nuch; do
+for hdr in lib/*.h lib/*.nuch lib/nucleus/*.h lib/nucleus/*.nuch; do
   [ -f "$hdr" ] || continue
   case "$hdr" in
     *.h)    marker='s|^/\* Generated from \(.*\) by nucleusc --emit-cheader \*/$|\1|p'

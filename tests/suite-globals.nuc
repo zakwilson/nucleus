@@ -20,6 +20,9 @@
 
 ; `nucleusc -I <this test's scratch dir> -o … <main>`, run; the exit status is
 ; the answer.
+(import-use nucleus.test)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
 (defn g-exit (main:StrView want:i32):!void
   (let (dir:StrView (try (test-scratch)))
     (try (check-file-exit dir main want)))

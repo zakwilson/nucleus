@@ -1,4 +1,13 @@
-; .nuch header for lib/fmt.nuc
+; .nuch header for lib/nucleus/fmt.nuc
+(ns nucleus.fmt)
+(import-use nucleus.error)
+(import-use nucleus.string-errors)
+(import-use nucleus.numeric)
+(import-use nucleus.char)
+(import-use nucleus.strview)
+(import-use nucleus.vector)
+(import-use nucleus.string)
+(import-use nucleus.allocator)
 (defprotocol Writer (write-str (self:ref:Self s:StrView) :!void))
 (extend String Writer)
 (defmethod "@write_str.pString.StrView" write-str ((self (ref String)) (s StrView)) :!void)

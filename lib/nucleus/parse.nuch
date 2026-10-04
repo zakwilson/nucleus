@@ -1,4 +1,7 @@
-; .nuch header for lib/parse.nuc
+; .nuch header for lib/nucleus/parse.nuc
+(ns nucleus.parse)
+(import-use nucleus.strview)
+(import-use nucleus.string-errors)
 (deferror parse-float-error "invalid float")
 (defprotocol (FromStr R) (from-str ((self Self) sv:ref:StrView) :R))
 (defmacro parse (ty sv) (quasiquote (from-str (unsafe/cast (unquote ty) 0) (unquote sv))))

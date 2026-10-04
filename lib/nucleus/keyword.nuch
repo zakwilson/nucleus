@@ -1,4 +1,12 @@
-; .nuch header for lib/keyword.nuc
+; .nuch header for lib/nucleus/keyword.nuc
+(ns nucleus.keyword)
+(import-use nucleus.numeric)
+(import-use nucleus.hash)
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.intern)
+(import-use nucleus.intern-str)
 (defstruct Keyword (sym Symbol))
 (declare keyword-intern ((sv StrView)) :Keyword)
 (declare keyword-name ((self Keyword)) :StrView)

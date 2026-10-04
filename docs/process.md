@@ -1,10 +1,10 @@
 # Processes
 
-`lib/process.nuc` — start another program, control its streams, wait for it, and
+`lib/nucleus/process.nuc` — start another program, control its streams, wait for it, and
 read a typed exit status.
 
 ```lisp
-(import-use process)
+(import-use nucleus.process)
 
 (let (c:Command (command "git"))
   (command-arg &c "rev-parse")

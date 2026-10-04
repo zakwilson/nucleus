@@ -2,12 +2,12 @@
 ; failure is a VALUE -- code, line, message, note -- and a `!void` caller
 ; `try`s it through the `defcast` to the bare code. The escape has to sit
 ; inside a string literal: `(a \q)` is a char literal in the reader.
-(import-use error)
-(import-use strview)
-(import-use string)
-(import-use io)
-(import-use node)
-(import-use read)
+(import-use nucleus.error)
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.io)
+(import-use nucleus.node)
+(import-use nucleus.read)
 
 (defn show (label:StrView text:StrView):void
   (match (read-all text)

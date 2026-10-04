@@ -4,9 +4,9 @@
 ; / * / <).
 
 (import-use "stdio.h")
-(import-use vector)
-(import-use iterator)
-(import-use combinators)
+(import-use nucleus.vector)
+(import-use nucleus.iterator)
+(import-use nucleus.combinators)
 
 (defn main ():i32
   (with (v:&(Vector i32) (alloca (Vector i32)))

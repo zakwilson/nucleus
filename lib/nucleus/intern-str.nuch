@@ -1,4 +1,16 @@
-; .nuch header for lib/intern-str.nuc
+; .nuch header for lib/nucleus/intern-str.nuc
+(ns nucleus.intern-str)
+(import-use nucleus.error)
+(import-use nucleus.numeric)
+(import-use nucleus.char)
+(import-use nucleus.strview)
+(import-use nucleus.strview-str)
+(import-use nucleus.vector)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.intern)
+(import-use nucleus.hash)
+(import-use nucleus.string-protocols)
 (extend Symbol Eq)
 (extend Symbol Hash)
 (defmethod "@hash.pSymbol" hash ((self (ref Symbol))) :usize)

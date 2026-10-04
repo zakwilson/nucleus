@@ -3,5 +3,5 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-/* Generated from lib/numeric.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/numeric.nuc by nucleusc --emit-cheader */
 

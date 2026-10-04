@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-/* Generated from lib/list.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/list.nuc by nucleusc --emit-cheader */
 
 void* cons(void* car, void* cdr);
 void* first(void* n);

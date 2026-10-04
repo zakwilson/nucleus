@@ -40,7 +40,7 @@
 ; discriminant plus allocator-specific `data`; the alloc-handle-* helpers branch
 ; on `kind`. This is precisely the design's "Plumbing (decided): stored field" —
 ; the collection stores one AllocHandle and uses it for conj/assoc/Drop. The libc
-; arm calls libc malloc/realloc/free; the arena arm defers to lib/arena.nuc. The
+; arm calls libc malloc/realloc/free; the arena arm defers to lib/nucleus/arena.nuc. The
 ; `Allocator` *protocol* below is still defined as the documented contract (inert,
 ; zero-code), so a future single, statically-known allocator can `extend` it
 ; directly in its own unit.
@@ -52,11 +52,13 @@
 ; type name (the design doc's `u8` reads as `ui8` here).
 ; ---------------------------------------------------------------------------
 
+(ns nucleus.allocator)
+
 (import-use "stdio.h")
 (import-use "stdlib.h")
 (import-use "string.h")
 
-(import-use arena)
+(import-use nucleus.arena)
 
 ; ---------------------------------------------------------------------------
 ; 1. The Allocator protocol (the design's contract).
@@ -88,7 +90,7 @@
 ;    calls these; they branch on `kind`. malloc/realloc take size_t and free
 ;    takes void* — sizes are pointer-sized, so casting usize -> i64 is width-
 ;    preserving on the target (i64 on LP64, i32 on ILP32) and the call boundary
-;    coerces i64 -> size_t, exactly as lib/arena.nuc does.
+;    coerces i64 -> size_t, exactly as lib/nucleus/arena.nuc does.
 ; ---------------------------------------------------------------------------
 
 ; (alloc-handle-alloc h size align) -> ?&ui8. Returns null on libc OOM (the
@@ -150,7 +152,7 @@
   (return h))
 
 ; Initialise a caller-owned slot as the arena handle and return it. The arena's
-; state lives in lib/arena.nuc's module globals, so `data` stays null.
+; state lives in lib/nucleus/arena.nuc's module globals, so `data` stays null.
 (defn arena-allocator (h:&AllocHandle):&AllocHandle
   (set! (h 'kind) ALLOC-ARENA)
   (set! (h 'data) null)

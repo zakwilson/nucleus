@@ -6,7 +6,7 @@ added to a persistent JIT session, and (for expression forms) called
 immediately. Definitions persist across forms instead of exiting. Recovery is
 split by error kind: **reader/source syntax errors** (unbalanced `)`,
 unterminated form, bad escape, …) are an ordinary `!T` value path as of Stage 10
-E4 — `read-source-or-report` (the shim over `lib/read.nuc`'s `read-all`) returns
+E4 — `read-source-or-report` (the shim over `lib/nucleus/read.nuc`'s `read-all`) returns
 `(err parse-error)`, the REPL `match`es it and continues; **eval/JIT errors** (and the `die-at` panic tier) still unwind via
 `repl-throw` (`_setjmp`/`longjmp`, in `src/repl.nuc`). That was C —
 `src/repl_shim.c`, the tree's last C file — until 2026-08-30, when Stage 16's
@@ -38,7 +38,7 @@ Prompts depend on stdin. On a tty, `nuc> `/`...> ` are printed only when no line
 stdio.h, stdlib.h, string.h, ctype.h, and unistd.h are pre-loaded at startup,
 so libc functions are available without an explicit `(include ...)`.
 
-Since Stage 16 R2 the session also boots by evaluating `(import-use prelude)`
+Since Stage 16 R2 the session also boots by evaluating `(import-use nucleus.core)`
 through the ordinary import arm (`repl-preload-prelude`), which is what batch
 `main` splices in. So `Node`, all seven `NODE-*` ordinals, `StrView`,
 `(Maybe T)`/`?T`, `(Result T E)`/`!T`, `Clone` and the standard macros are in
@@ -58,7 +58,7 @@ Prefer the REPL when iteration speed matters more than reproducibility:
 - **Exploring a library before using it.** Import the lib, call its functions
   with sample inputs, inspect return values. Faster than reading code top-down.
   **Working as of 2026-08-25.** Stage 16 R2 boots the session with
-  `(import-use prelude)` through the ordinary import arm, so every one of the
+  `(import-use nucleus.core)` through the ordinary import arm, so every one of the
   34 modules in `lib/` imports in a fresh session. `node` was the last
   exception, fixed 2026-08-29 by deleting a redundant process-symbol generator
   the compiler attached to the JIT's *main* dylib — see "Importing a library the
@@ -147,8 +147,8 @@ Prefer the REPL when iteration speed matters more than reproducibility:
 ## Importing a library the compiler itself links
 
 **The session's own definition wins.** The JIT's main dylib is searched before
-the `<Process Symbols>` dylib LLJIT links last, so `(import-use vector)` at the
-prompt gives you the session's copy of `lib/vector.nuc`, not the one inside
+the `<Process Symbols>` dylib LLJIT links last, so `(import-use nucleus.vector)` at the
+prompt gives you the session's copy of `lib/nucleus/vector.nuc`, not the one inside
 `build/nucleusc`. That is what makes a prompt-typed `(defn emit-defn …)` your
 function rather than the compiler's, and the prelude preload has relied on it
 since R2. For a stateless library the two copies are indistinguishable.
@@ -156,12 +156,12 @@ since R2. For a stateless library the two copies are indistinguishable.
 **`node` is the one library where it shows.** Its state — the intern table — is
 the compiler's own identity mechanism, and `emit-node` dispatches special forms
 by **pointer** identity on interned symbols (conventions.md, "Symbol nodes are
-interned singletons"). After `(import-use node)`, a macro whose JIT module is
+interned singletons"). After `(import-use nucleus.node)`, a macro whose JIT module is
 *first expanded after* the import calls the session's `intern-symbol`, so its
 `cond`/`let`/`while` heads come from a second table and are not recognised:
 
 ```
-nuc> (import-use node)
+nuc> (import-use nucleus.node)
 nuc> (defmacro mc (a) `(cond (> ~a 5) 111 true 222))
 nuc> (mc 9)
 <repl>:1: error: unknown: cond — not defined anywhere in this compilation unit

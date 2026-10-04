@@ -6,7 +6,7 @@
 ; protocol signature, a lambda, a template argument. `(?! X)` composes a
 ; value-Maybe over a Result; `(?ref X)` is the glued head PK-3 leaves as it was.
 (import-use "stdio.h")
-(import-use vector)
+(import-use nucleus.vector)
 
 (defstruct Pt x:i32 y:i32)
 

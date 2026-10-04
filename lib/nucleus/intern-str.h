@@ -2,10 +2,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include "prelude.h"
+#include "core.h"
 #include "strview.h"
 
-/* Generated from lib/intern-str.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/intern-str.nuc by nucleusc --emit-cheader */
 
 size_t hash_pSymbol(struct Symbol* self) asm("hash.pSymbol");
 /* to-str: uses an error-union or option type; not exported */

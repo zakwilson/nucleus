@@ -29,7 +29,7 @@
 (useit 5)
 (useit 41)
 ; 5. Collection literals need the prelude's templates and the drain together.
-(import-use vector)
+(import-use nucleus.vector)
 (let (v [1 2 3]) (v 2))
 (let (v [4 5 6]) (unsafe/cast i32 (count v)))
 ; 6. Stage 16 R4 (§3.3): a CAPTURING closure. Its `%__vfn_env_N` type line went

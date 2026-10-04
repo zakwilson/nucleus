@@ -6,7 +6,7 @@
 ; - defconst- creates a private compile-time constant
 ; - public defn is unaffected
 
-(import-use prelude)
+(import-use nucleus.core)
 (import-use "stdio.h")
 
 (defn- helper-add (a:i32 b:i32):i32

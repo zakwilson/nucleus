@@ -1,5 +1,5 @@
-; Stage 17 B4 benchmark — `symbol-intern` (lib/intern.nuc) against the
-; compiler's own `intern-symbol` (lib/node.nuc), over the same corpus.
+; Stage 17 B4 benchmark — `symbol-intern` (lib/nucleus/intern.nuc) against the
+; compiler's own `intern-symbol` (lib/nucleus/node.nuc), over the same corpus.
 ;
 ; `Symbol` is destined for the hottest path in the compiler, so a regression
 ; here is a stage-level failure. Not an example: the output is timings, which no
@@ -17,15 +17,15 @@
 (import-use "time.h")
 (import-use "string.h")
 
-(import-use node)
-(import-use strview)
-(import-use string)
-(import-use fmt)
-(import-use io)
-(import-use vector)
-(import-use allocator)
-(import-use intern)
-(import-use intern-str)
+(import-use nucleus.node)
+(import-use nucleus.strview)
+(import-use nucleus.string)
+(import-use nucleus.fmt)
+(import-use nucleus.io)
+(import-use nucleus.vector)
+(import-use nucleus.allocator)
+(import-use nucleus.intern)
+(import-use nucleus.intern-str)
 
 (defconst N-NAMES 20000)
 (defconst N-LOOKUPS 20)

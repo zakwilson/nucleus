@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include "string.h"
 
-/* Generated from lib/io.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/io.nuc by nucleusc --emit-cheader */
 
 typedef struct FdOut {
     int32_t fd;

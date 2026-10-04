@@ -14,8 +14,8 @@
 ; declaration) — needs a unit with no header-derived `printf` to shadow, so it
 ; is pinned separately by `tests/fixtures/w9-declare-open-tail.nuc`.
 (import-use "stdio.h")
-(import-use allocator)
-(import-use node)   ; count-rest is :rest — the call builds a Node list
+(import-use nucleus.allocator)
+(import-use nucleus.node)   ; count-rest is :rest — the call builds a Node list
 
 ; --- 1: :optional — 1, 2 or 3 arguments are all legal -------------------------
 (defn opt3 (a:i32 :optional (b:i32 20) (c:i32 300)):i32

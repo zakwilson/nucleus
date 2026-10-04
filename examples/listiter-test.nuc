@@ -9,11 +9,11 @@
 
 (import-use "stdio.h")
 (import-use "stdlib.h")
-; Explicit path: a bare (import-use list) would resolve to examples/list.nuc
+; Explicit path: a bare (import-use nucleus.list) would resolve to examples/list.nuc
 ; (importer-dir is searched first), which has its own `main`. The path form
 ; reaches the library unambiguously.
-(import-use "lib/list.nuc")
-(import-use iterator)
+(import-use "lib/nucleus/list.nuc")
+(import-use nucleus.iterator)
 
 ; FoldFn: add the .i field of each list node (a Node*, arriving as a ptr) to acc.
 (defstruct SumNodeI dummy:i32)

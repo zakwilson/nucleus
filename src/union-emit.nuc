@@ -22,6 +22,14 @@
 ; ============================================================
 
 ; (some r) — wrap a non-null (ref T) as (Maybe (ref T)). Pure relabel, no IR.
+(import-use nucleus.vector)
+(import-use nucleus.node)
+(import-use nucleus.intern)
+(import-use nucleus.string)
+(import-use nucleus.strview-str)
+(import-use nucleus.arena)
+(import-use nucleus.strview)
+(import-use nucleus.fmt)
 (defn emit-some (call:ptr scope:&Scope):&Val
   (let (cc:&Node (unsafe/cast &Node call))
     (when (!= (node-len cc) 2) (die-at (cc 'line) "some expects 1 arg"))
@@ -98,7 +106,7 @@
         (emit g-body-stream "  " msg " = load ptr, ptr " mgep ", align 8\n")
         ; Stage 10 C3 panic-tier hook (errors.md §4): consult the unhandled-error
         ; handler chain before aborting, mirroring die-at (lib/reader.nuc). The
-        ; library-fn refactor (move the abort into lib/error.nuc) is infeasible:
+        ; library-fn refactor (move the abort into lib/nucleus/error.nuc) is infeasible:
         ; the abort is `@llvm.trap()`, raw IR with no Nucleus spelling — routing
         ; through libc abort() would change the abort mechanism and break byte
         ; identity. So we inject the same chain-walk IR `signal`/emit-handler-call
@@ -110,7 +118,7 @@
         ; falls straight through to the abort below. The (Maybe i32) repair is
         ; discarded — the panic path traps regardless.
         (when (!= (error-lib-in-scope) 0)
-          (let (uesym:?&Sym (scope-lookup g-globals (symbol-intern "unhandled-error")))
+          (let (uesym:?&Sym (core-global "unhandled-error"))
             (when (and (!= uesym null)
                        (!= ((unsafe/cast &Sym uesym) 'is-const) 0))
               (emit-handler-call ((unsafe/cast &Sym uesym) 'const-val)
@@ -232,7 +240,7 @@
               "\n")
         (emit g-body-stream "  " msg " = load ptr, ptr " mgep ", align 8\n")
         (when (!= (error-lib-in-scope) 0)
-          (let (uesym:?&Sym (scope-lookup g-globals (symbol-intern "unhandled-error")))
+          (let (uesym:?&Sym (core-global "unhandled-error"))
             (when (and (!= uesym null) (!= ((unsafe/cast &Sym uesym) 'is-const) 0))
               (emit-handler-call ((unsafe/cast &Sym uesym) 'const-val)
                                  (as ptr ty-i32) msg scope line))))
@@ -661,9 +669,9 @@
       ; with no natural null-guard at the use sites, the cast-to-(ref) is the
       ; audited "known valid" assertion (nullability.md §5).
       (let (h:StrView (new-tmp)
-            efh:&Sym (unsafe/cast &Sym (scope-lookup g-globals (symbol-intern "err-find-handler")))
-            ght:&Sym (unsafe/cast &Sym (scope-lookup g-globals (symbol-intern "g-handler-top")))
-            hsd:&StructDef (unsafe/cast &StructDef (struct-lookup-ref (symbol-intern "Handler")))
+            efh:&Sym (unsafe/cast &Sym (core-global "err-find-handler"))
+            ght:&Sym (unsafe/cast &Sym (core-global "g-handler-top"))
+            hsd:&StructDef (unsafe/cast &StructDef (core-struct "Handler"))
             id:i32 (new-label-id))
         (emit g-body-stream "  " h " = call ptr " (efh 'ir-name) "(i32 " eid ", ptr " tok ")\n")
         (let (hnull:StrView (new-tmp)
@@ -718,14 +726,14 @@
 ; does not wrap the result in (ok v): it hands the handler's (Maybe RepairType)
 ; straight back, so the caller decides what to do (continue in place, fall back,
 ; propagate). RepairType is a *type* operand, parsed not evaluated, like
-; with-handler's type-token. Resolves only when (import error) is in scope.
+; with-handler's type-token. Resolves only when (import nucleus.error) is in scope.
 (defn emit-signal (call:ptr scope:&Scope):&Val
   (let (cc:&Node (unsafe/cast &Node call)
         ln:i32 ((unsafe/cast &Node call) 'line))
     (when (< (node-len cc) 3)
       (die-at ln "signal: expects (signal E RepairType [detail])"))
     (when (= (error-lib-in-scope) 0)
-      (die-at ln "signal: requires (import error) — it walks the handler chain"))
+      (die-at ln "signal: requires (import nucleus.error) — it walks the handler chain"))
     (let (ev:&Val (emit-node (node-at cc 1) scope)
           eid:StrView (ev 'val)
           repair-ty:ptr (parse-type-from-node (node-at cc 2) ln)
@@ -847,15 +855,15 @@
       (set! (aref (unsafe/cast &ptr argts) 0) t)
       (return (union-template-stamp-types ut argts 1 line)))))
 
-; The error library (lib/error.nuc) is in scope: g-handler-top and
+; The error library (lib/nucleus/error.nuc) is in scope: g-handler-top and
 ; err-find-handler resolve and the Handler struct is registered. The
 ; handler-aware err check (E3) is emitted only then — a program that never
-; (import error) has no chain to consult, so plain err == err! and the compiler
+; (import nucleus.error) has no chain to consult, so plain err == err! and the compiler
 ; (which imports no error) self-compiles byte-identically.
 (defn error-lib-in-scope ():i32
-  (when (= (scope-lookup g-globals (symbol-intern "g-handler-top")) null) (return 0))
-  (when (= (scope-lookup g-globals (symbol-intern "err-find-handler")) null) (return 0))
-  (when (= (as ptr (struct-lookup-ref (symbol-intern "Handler"))) null) (return 0))
+  (when (= (core-global "g-handler-top") null) (return 0))
+  (when (= (core-global "err-find-handler") null) (return 0))
+  (when (= (as ptr (core-struct "Handler")) null) (return 0))
   (return 1))
 
 ; True iff `ud`'s `err` arm is the `!T` shape: a single payload field of type

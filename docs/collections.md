@@ -1,10 +1,10 @@
-# Collections (`lib/coll.nuc`, `lib/hash.nuc`, `lib/vector.nuc`, `lib/hashmap.nuc`, `lib/hashset.nuc`, Stage 11)
+# Collections (`lib/nucleus/coll.nuc`, `lib/nucleus/hash.nuc`, `lib/nucleus/vector.nuc`, `lib/nucleus/hashmap.nuc`, `lib/nucleus/hashset.nuc`, Stage 11)
 
-`(import-use coll)` provides the core collection protocols (`Coll`, `Seq`, `Assoc`, `Set`, `Drop`) that every owning collection conforms to. The concrete types (`Vector`, `HashMap`, `HashSet`, and the AST's own `Node`) are separate libraries and must be imported individually.
+`(import-use nucleus.coll)` provides the core collection protocols (`Coll`, `Seq`, `Assoc`, `Set`, `Drop`) that every owning collection conforms to. The concrete types (`Vector`, `HashMap`, `HashSet`, and the AST's own `Node`) are separate libraries and must be imported individually.
 
 These collections are **mutable and in-place** in the STL spirit — `conj`, `assoc`, and the set-algebra operations mutate the receiver. They own heap memory through a stored `AllocHandle` and free it via `Drop` at `with`-scope exit. See [Allocators](allocators.md) for the allocator protocol and handle type.
 
-## Core protocols (`lib/coll.nuc`)
+## Core protocols (`lib/nucleus/coll.nuc`)
 
 ### `(Coll E It)` — minimum every collection implements
 
@@ -118,13 +118,13 @@ All four methods take `(ref Self)` receivers. The algebra methods (`union`, `dif
 
 Every owning collection conforms to `Drop` so a `with`-bound value frees its buffer at scope exit, in reverse binding order. The method is named `drop` (not `free`) so it does not shadow libc `@free`. See [Special forms](special-forms.md) for `with`/`move`/`defer` semantics.
 
-`Drop` is declared in `lib/coll.nuc` so every owning collection library can `(import-use coll)` and extend it.
+`Drop` is declared in `lib/nucleus/coll.nuc` so every owning collection library can `(import-use nucleus.coll)` and extend it.
 
 ---
 
-## `Hash` protocol (`lib/hash.nuc`)
+## `Hash` protocol (`lib/nucleus/hash.nuc`)
 
-`(import-use hash)` is required by `hashmap` and `hashset`. A key type or set-member type must conform to both `Hash` and `Eq`.
+`(import-use nucleus.hash)` is required by `hashmap` and `hashset`. A key type or set-member type must conform to both `Hash` and `Eq`.
 
 ```lisp
 (defprotocol Hash
@@ -142,24 +142,24 @@ Every owning collection conforms to `Drop` so a `with`-bound value frees its buf
 
 | Type | Library | Coverage |
 |------|---------|----------|
-| `i32` | `lib/hash.nuc` | Folds 4 bytes of the value. |
-| `i64` | `lib/hash.nuc` | Folds 8 bytes. |
-| `usize` | `lib/hash.nuc` | Folds 8 bytes (high bytes are zero on 32-bit targets). |
-| `f64` | `lib/hash.nuc` | Folds the 8-byte bit pattern, with `-0.0` normalised to `+0.0`. |
-| `f32` | `lib/hash.nuc` | Folds the 4-byte bit pattern, with `-0.0` normalised to `+0.0`. |
-| `(ref Node)` | `lib/hash.nuc` | A symbol. Folds the canonical node pointer — `intern-symbol` gives one node per spelling, so pointer identity is symbol identity. |
-| `CStr` | `lib/hash.nuc` | Folds each character byte up to (not including) the NUL terminator. |
-| `StrView` | `lib/hash.nuc` | FNV-1a fold over exactly `len` bytes (handles embedded NULs). Beside `CStr`'s rather than in `lib/strview.nuc`, so a string-literal collection works on the collection import alone. |
-| `Keyword` | `lib/keyword.nuc` | Returns the hash cached at intern time — O(1), no byte walk. |
-| `Symbol` | `lib/intern-str.nuc` | Returns the hash cached at intern time — O(1), no byte walk. |
+| `i32` | `lib/nucleus/hash.nuc` | Folds 4 bytes of the value. |
+| `i64` | `lib/nucleus/hash.nuc` | Folds 8 bytes. |
+| `usize` | `lib/nucleus/hash.nuc` | Folds 8 bytes (high bytes are zero on 32-bit targets). |
+| `f64` | `lib/nucleus/hash.nuc` | Folds the 8-byte bit pattern, with `-0.0` normalised to `+0.0`. |
+| `f32` | `lib/nucleus/hash.nuc` | Folds the 4-byte bit pattern, with `-0.0` normalised to `+0.0`. |
+| `(ref Node)` | `lib/nucleus/hash.nuc` | A symbol. Folds the canonical node pointer — `intern-symbol` gives one node per spelling, so pointer identity is symbol identity. |
+| `CStr` | `lib/nucleus/hash.nuc` | Folds each character byte up to (not including) the NUL terminator. |
+| `StrView` | `lib/nucleus/hash.nuc` | FNV-1a fold over exactly `len` bytes (handles embedded NULs). Beside `CStr`'s rather than in `lib/nucleus/strview.nuc`, so a string-literal collection works on the collection import alone. |
+| `Keyword` | `lib/nucleus/keyword.nuc` | Returns the hash cached at intern time — O(1), no byte walk. |
+| `Symbol` | `lib/nucleus/intern-str.nuc` | Returns the hash cached at intern time — O(1), no byte walk. |
 
 Unlike `numeric.nuc`'s code-free operator conformances, these are real method bodies because there is no built-in `hash` operator.
 
-The fold itself lives in `lib/fnv.nuc` (`fnv1a-byte`, `fnv1a-int`, `fnv1a-bytes`), which `lib/hash.nuc` imports. It is a separate module so that `lib/intern.nuc` can use the fold without importing `hash` — whose `f64` conformance is rejected on AVR, and which the compiler's symbol table therefore cannot depend on.
+The fold itself lives in `lib/nucleus/fnv.nuc` (`fnv1a-byte`, `fnv1a-int`, `fnv1a-bytes`), which `lib/nucleus/hash.nuc` imports. It is a separate module so that `lib/nucleus/intern.nuc` can use the fold without importing `hash` — whose `f64` conformance is rejected on AVR, and which the compiler's symbol table therefore cannot depend on.
 
 ### Symbols as keys
 
-`'foo` is an interned symbol: `intern-symbol` keeps one canonical `Node` per spelling, so pointer identity is symbol identity, `=` already compared correctly, and Stage 16 supplied the missing `hash`. A quoted symbol types `(ref Node)` (see [the quote table](macros.md#the-type-of-a-quoted-form)), so it drops straight into a collection with no cast — the `Node` *type* comes from `lib/prelude.nuc`, but `'foo` calls `intern-symbol` at run time, so symbol keys need `(import-use node)` — exactly as `:foo` needs `keyword` (see [The node runtime is a library](toplevel.md#the-node-runtime-is-a-library)).
+`'foo` is an interned symbol: `intern-symbol` keeps one canonical `Node` per spelling, so pointer identity is symbol identity, `=` already compared correctly, and Stage 16 supplied the missing `hash`. A quoted symbol types `(ref Node)` (see [the quote table](macros.md#the-type-of-a-quoted-form)), so it drops straight into a collection with no cast — the `Node` *type* comes from `lib/nucleus/core.nuc`, but `'foo` calls `intern-symbol` at run time, so symbol keys need `(import-use nucleus.node)` — exactly as `:foo` needs `keyword` (see [The node runtime is a library](toplevel.md#the-node-runtime-is-a-library)).
 
 ```lisp
 (with ((s (ref (HashSet (ref Node)))) #{'alpha 'beta})
@@ -176,8 +176,8 @@ Choose between the two key types by what the key *is*: `Keyword` for a name that
 
 ```lisp
 (import-use "stdio.h")
-(import-use strview) (import-use hash) (import-use keyword)
-(import-use allocator) (import-use coll) (import-use iterator) (import-use hashmap)
+(import-use nucleus.strview) (import-use nucleus.hash) (import-use nucleus.keyword)
+(import-use nucleus.allocator) (import-use nucleus.coll) (import-use nucleus.iterator) (import-use nucleus.hashmap)
 
 (defn main ():i32
   (with ((m (ref (HashMap Keyword i32))) (alloca (HashMap Keyword i32)))
@@ -190,7 +190,7 @@ Choose between the two key types by what the key *is*: `Keyword` for a name that
   (return 0))
 ```
 
-See [Keyword literals](types.md#keyword-literals----foo) in the Types reference for the full semantics and the `(import-use keyword)` requirement.
+See [Keyword literals](types.md#keyword-literals----foo) in the Types reference for the full semantics and the `(import-use nucleus.keyword)` requirement.
 
 **Conforming a user type:** extend `Hash` and provide the `hash` method:
 
@@ -202,9 +202,9 @@ See [Keyword literals](types.md#keyword-literals----foo) in the Types reference 
 
 ---
 
-## `Vector T` (`lib/vector.nuc`)
+## `Vector T` (`lib/nucleus/vector.nuc`)
 
-`(import-use vector)` provides a dynamically-sized, heap-backed mutable sequence. Append is O(1) amortized (capacity doubles); indexed access and `insert` are O(1) and O(n) respectively. Conforms to `(Coll T (VecIter T))`, `(Seq T)`, and `Drop`.
+`(import-use nucleus.vector)` provides a dynamically-sized, heap-backed mutable sequence. Append is O(1) amortized (capacity doubles); indexed access and `insert` are O(1) and O(n) respectively. Conforms to `(Coll T (VecIter T))`, `(Seq T)`, and `Drop`.
 
 ### Construction
 
@@ -290,10 +290,10 @@ See [Iterators](iterators.md) for `doseq` / `doseq-iter` and the `Iterator` prot
 
 ```lisp
 (import-use "stdio.h")
-(import-use allocator)
-(import-use coll)
-(import-use iterator)
-(import-use vector)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
+(import-use nucleus.vector)
 
 (defn main ():i32
   (with ((v (ref (Vector i32))) (alloca (Vector i32)))
@@ -309,9 +309,9 @@ See [Iterators](iterators.md) for `doseq` / `doseq-iter` and the `Iterator` prot
 
 ---
 
-## `HashMap K V` (`lib/hashmap.nuc`)
+## `HashMap K V` (`lib/nucleus/hashmap.nuc`)
 
-`(import-use hashmap)` provides an open-addressing hash map with linear probing and tombstone deletion. O(1) average `assoc`/`dissoc`/`get`. Conforms to `(Assoc K V (HashMapKeyIter K V) (HashMapValIter K V))`, `(Coll (Entry K V) (HashMapEntryIter K V))`, and `Drop`. Keys must conform to `Hash` and `Eq`.
+`(import-use nucleus.hashmap)` provides an open-addressing hash map with linear probing and tombstone deletion. O(1) average `assoc`/`dissoc`/`get`. Conforms to `(Assoc K V (HashMapKeyIter K V) (HashMapValIter K V))`, `(Coll (Entry K V) (HashMapEntryIter K V))`, and `Drop`. Keys must conform to `Hash` and `Eq`.
 
 **Implementation:** three parallel byte arrays (keys, vals, states). Capacity is always a power of two; a 75% load factor triggers doubling. Tombstone entries are skipped during lookup and dropped on resize.
 
@@ -438,11 +438,11 @@ Iteration order is hash-dependent and unspecified for both `keys` and `vals`.
 
 ```lisp
 (import-use "stdio.h")
-(import-use allocator)
-(import-use coll)
-(import-use iterator)
-(import-use hash)
-(import-use hashmap)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
+(import-use nucleus.hash)
+(import-use nucleus.hashmap)
 
 (defn main ():i32
   (with ((m (ref (HashMap CStr i32))) (alloca (HashMap CStr i32)))
@@ -459,9 +459,9 @@ Iteration order is hash-dependent and unspecified for both `keys` and `vals`.
 
 ---
 
-## `HashSet T` (`lib/hashset.nuc`)
+## `HashSet T` (`lib/nucleus/hashset.nuc`)
 
-`(import-use hashset)` provides an open-addressing hash set with linear probing. O(1) average `insert`/`contains?`/`set-remove`. Conforms to `(Coll T (HashSetIter T))`, `(Set T)`, and `Drop`. Members must conform to `Hash` and `Eq`.
+`(import-use nucleus.hashset)` provides an open-addressing hash set with linear probing. O(1) average `insert`/`contains?`/`set-remove`. Conforms to `(Coll T (HashSetIter T))`, `(Set T)`, and `Drop`. Members must conform to `Hash` and `Eq`.
 
 **Implementation:** two parallel byte arrays (keys buffer and state buffer). Same open-addressing layout as `HashMap`; same 75% load-factor doubling policy.
 
@@ -523,11 +523,11 @@ Iteration order is hash-dependent and unspecified.
 
 ```lisp
 (import-use "stdio.h")
-(import-use allocator)
-(import-use coll)
-(import-use iterator)
-(import-use hash)
-(import-use hashset)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
+(import-use nucleus.hash)
+(import-use nucleus.hashset)
 
 (defn main ():i32
   ; Basic membership
@@ -553,18 +553,18 @@ Iteration order is hash-dependent and unspecified.
 
 ---
 
-## `Node` (`lib/node.nuc`)
+## `Node` (`lib/nucleus/node.nuc`)
 
-`(import-use node)` provides the compiler's own AST type. A list `Node` is a
+`(import-use nucleus.node)` provides the compiler's own AST type. A list `Node` is a
 header over an array of element pointers — the same shape as a `Vector` — so it
 conforms to `(Coll (ref Node) NodeIter)` and `(Seq (ref Node))`. A form read
 from source is an ordinary collection: `count`, `(xs i)`, `conj`, `append`,
 `insert`, `contains?`, `doseq` and `into` all work on it.
 
 ```lisp
-(import-use node)
-(import-use coll)
-(import-use iterator)
+(import-use nucleus.node)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
 
 (let (xs:&Node (unsafe/cast &Node `(10 20 30))
       i:usize 1)
@@ -671,8 +671,8 @@ collection, so `[n 1]` at a declared `(Vector i32)` with `n:i64` is refused
 rather than truncated. With nothing but adaptable literals the defaults are
 `i32` and `f64`, and there is no magnitude-based `i64` promotion.
 
-**A keyword literal needs `(import-use keyword)`.** The other three literal
-element types are builtins, but `Keyword` is defined in `lib/keyword.nuc` and is
+**A keyword literal needs `(import-use nucleus.keyword)`.** The other three literal
+element types are builtins, but `Keyword` is defined in `lib/nucleus/keyword.nuc` and is
 not reached transitively from the collection imports — so `#{:a :b}` is the one
 bracket literal that can fail with `unknown type: Keyword` despite the collection
 itself being imported. The diagnostic names the file to import. Keywords are the

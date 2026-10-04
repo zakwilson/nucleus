@@ -17,8 +17,8 @@
 
 (exclude-prelude)
 
-(import-use "lib/avr.nuc")
-(import-use "lib/avr/avr32dd20.nuc")
+(import-use "lib/nucleus/avr.nuc")
+(import-use "lib/nucleus/avr/avr32dd20.nuc")
 
 (defn delay ():void
   (let (:volatile i:usize 0)

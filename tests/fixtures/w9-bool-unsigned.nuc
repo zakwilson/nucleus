@@ -2,7 +2,7 @@
 ; widens to 1 and orders above `false`. Each check returns a distinct code so a
 ; failure names itself.
 (import-use "stdio.h")
-(import prelude)
+(import nucleus.core)
 
 (defn main ():i32
   ; The widening half. `true` must widen to 1, matching docs/types.md's literal

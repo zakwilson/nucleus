@@ -1,4 +1,5 @@
-; .nuch header for lib/fnv.nuc
+; .nuch header for lib/nucleus/fnv.nuc
+(ns nucleus.fnv)
 (declare fnv1a-byte ((h i64) (b i64)) :i64)
 (declare fnv1a-int ((h i64) (v i64) (n i32)) :i64)
 (declare fnv1a-bytes ((p (ref ui8)) (n usize)) :usize)

@@ -12,6 +12,10 @@
 ; ---------------------------------------------------------------------------
 
 ; No implicit coercion in either direction — the {0,1} rule's replacement.
+(import-use nucleus.string)
+(import-use nucleus.test)
+(import-use nucleus.fmt)
+(import-use nucleus.strview)
 (deftest s16-bool-no-implicit-coercion
   (try (check-source-rejects
          "(defvar g:bool 1)
@@ -266,8 +270,8 @@
 "))
   ; ...and `ref` is still not a resolvable type NAME, so a bare one in a
   ; template argument is reported rather than collected as a tyvar.
-  (try (check-source-rejects "(import-use node)
-(import-use vector)
+  (try (check-source-rejects "(import-use nucleus.node)
+(import-use nucleus.vector)
 (defn h (v:(Vector ref)):i32 (return 0))
 "
          "'ref' is a pointer kind, not a type argument")))
@@ -286,7 +290,7 @@
 ; value-Maybe test reads the tag word.
 (deftest s16-truthiness-six-sites
   (let (src:StrView "(import-use \"stdio.h\")
-(import-use arena)
+(import-use nucleus.arena)
 
 (defstruct Pt x:i32)
 
@@ -374,7 +378,7 @@ mval 29 25 10 2
 ; fails, i.e. the sugar would break exactly the case that motivates it.
 (deftest s16-truthiness-narrows-bare-symbol
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
-(import-use arena)
+(import-use nucleus.arena)
 
 (defstruct Pt x:i32)
 
@@ -477,9 +481,9 @@ mval 29 25 10 2
 
 (defn litvar-pre ():StrView
   (return "(import-use \"stdio.h\")
-(import-use vector)
-(import-use hashset)
-(import-use hashmap)
+(import-use nucleus.vector)
+(import-use nucleus.hashset)
+(import-use nucleus.hashmap)
 "))
 
 (defn check-litvar-rejects (body:StrView needle:StrView):!void
@@ -681,9 +685,9 @@ map=2
 ; reclassified as an uninstantiable template, `emit-defn` skipped its define,
 ; and nothing at all was reported.
 (defn check-chain-refused (body:StrView needle:StrView):!void
-  (let (src:String (str "(import-use vector)
-(import-use hashmap)
-(import-use node)
+  (let (src:String (str "(import-use nucleus.vector)
+(import-use nucleus.hashmap)
+(import-use nucleus.node)
 " body "\n(defn main ():i32 (return 0))\n")
         p:String (try (test-write-file "t.nuc" (string-as-view &src)))
         pv:StrView (string-as-view &p)
@@ -718,10 +722,10 @@ map=2
 ; missing define IS the §1.2 bug.
 (deftest s16-chain-working-spellings
   (let (src:StrView "(import-use \"stdio.h\")
-(import-use vector)
-(import-use hashmap)
-(import-use node)
-(import-use coll)
+(import-use nucleus.vector)
+(import-use nucleus.hashmap)
+(import-use nucleus.node)
+(import-use nucleus.coll)
 (defn ca (x:ref:HashMap:CStr:i32):i32 (return 1))
 (defn cb (x:ref:Vector:i32):i32 (return 2))
 (defn cc (x:ref:(Vector (ref Node))):i32 (return 3))
@@ -751,12 +755,12 @@ map=2
 ; asserted as IR equality rather than as a claim (the §3.11 convention). Both
 ; compile from the same path, so even the module header lines must agree.
 (deftest s16-chain-fuse-transparent-ir
-  (let (a:String (try (source-ir "(import-use hashmap)
-(import-use coll)
+  (let (a:String (try (source-ir "(import-use nucleus.hashmap)
+(import-use nucleus.coll)
 (defn t (m:ref:(HashMap CStr i32)):i64 (return (as i64 (count m))))
 "))
-        b:String (try (source-ir "(import-use hashmap)
-(import-use coll)
+        b:String (try (source-ir "(import-use nucleus.hashmap)
+(import-use nucleus.coll)
 (defn t (m:(ref (HashMap CStr i32))):i64 (return (as i64 (count m))))
 ")))
     (try (check-golden (string-as-view &a) (string-as-view &b)))
@@ -771,8 +775,8 @@ map=2
 ; sugar (§3.9 -- a single-token type name needs no fuse at all).
 (deftest s16-deftype-every-position
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
-(import-use hashset)
-(import-use coll)
+(import-use nucleus.hashset)
+(import-use nucleus.coll)
 (deftype NameSet (ref (HashSet CStr)))
 (deftype Count i64)
 (defstruct Reg names:NameSet)
@@ -795,13 +799,13 @@ map=2
 ; This is also what keeps the bootstrap byte-identical until a source file
 ; adopts one.
 (deftest s16-deftype-transparent-ir
-  (let (a:String (try (source-ir "(import-use hashmap)
-(import-use coll)
+  (let (a:String (try (source-ir "(import-use nucleus.hashmap)
+(import-use nucleus.coll)
 (deftype SymTab (ref (HashMap CStr i32)))
 (defn tally (m:SymTab):i64 (return (as i64 (count m))))
 "))
-        b:String (try (source-ir "(import-use hashmap)
-(import-use coll)
+        b:String (try (source-ir "(import-use nucleus.hashmap)
+(import-use nucleus.coll)
 (defn tally (m:(ref (HashMap CStr i32))):i64 (return (as i64 (count m))))
 ")))
     (try (check-golden (string-as-view &a) (string-as-view &b)))
@@ -813,7 +817,7 @@ map=2
 ; sites without their own code.
 (deftest s16-deftype-composes
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
-(import-use vector)
+(import-use nucleus.vector)
 (defstruct Pt x:i32 y:i32)
 (deftype P Pt)
 (deftype PRef (ref P))
@@ -839,7 +843,7 @@ map=2
   (try (check-source-rejects "(defstruct Pt x:i32)
 (deftype Pt i32)
 " "already names a type"))
-  (try (check-source-rejects "(import-use vector)
+  (try (check-source-rejects "(import-use nucleus.vector)
 (deftype Vector i32)
 " "already names a struct template"))
   (try (check-source-rejects "(defenum E A B)
@@ -968,9 +972,9 @@ map=2
 ; substitutes segment-wise rather than by node.
 (deftest s16-deftype-parametric-every-position
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
-(import-use vector)
-(import-use hashmap)
-(import-use coll)
+(import-use nucleus.vector)
+(import-use nucleus.hashmap)
+(import-use nucleus.coll)
 (deftype (Vec T) (ref (Vector T)))
 (deftype (Table V) (ref (HashMap CStr V)))
 (deftype (Ref T) ref:T)
@@ -998,8 +1002,8 @@ map=2
 ; `collect-pattern-tyvars` and `unify-tpat` taught about aliases.
 (deftest s16-deftype-parametric-receiver
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
-(import-use vector)
-(import-use coll)
+(import-use nucleus.vector)
+(import-use nucleus.coll)
 (deftype (Vec T) (ref (Vector T)))
 (defn second (v:(Vec T)):T (return (invoke v (as usize 1))))
 (defn main ():i32
@@ -1017,9 +1021,9 @@ map=2
 ; Transparency, including the generic `t3`, whose stamped instance must mangle
 ; from the expansion and not from the alias name.
 (deftest s16-deftype-parametric-transparent-ir
-  (let (a:String (try (source-ir "(import-use vector)
-(import-use hashmap)
-(import-use coll)
+  (let (a:String (try (source-ir "(import-use nucleus.vector)
+(import-use nucleus.hashmap)
+(import-use nucleus.coll)
 (deftype (Vec T) (ref (Vector T)))
 (deftype (Table V) (ref (HashMap CStr V)))
 (defn t1 (v:(Vec i32)):i64 (return (as i64 (count v))))
@@ -1027,9 +1031,9 @@ map=2
 (defn t3 (v:(Vec T)):i64 (return (as i64 (count v))))
 (defn use ():i64 (return (t3 (unsafe/cast (ref (Vector CStr)) null))))
 "))
-        b:String (try (source-ir "(import-use vector)
-(import-use hashmap)
-(import-use coll)
+        b:String (try (source-ir "(import-use nucleus.vector)
+(import-use nucleus.hashmap)
+(import-use nucleus.coll)
 (defn t1 (v:(ref (Vector i32))):i64 (return (as i64 (count v))))
 (defn t2 (m:(ref (HashMap CStr i32))):i64 (return (as i64 (count m))))
 (defn t3 (v:(ref (Vector T))):i64 (return (as i64 (count v))))
@@ -1044,19 +1048,19 @@ map=2
 ; `parse-type-from-node` does not cover `collect-pattern-tyvars`, which reaches
 ; a defn parameter first and looped forever until it got its own.
 (deftest s16-deftype-parametric-refusals
-  (try (check-source-rejects "(import-use vector)
+  (try (check-source-rejects "(import-use nucleus.vector)
 (deftype (Vec T) (ref (Vector T)))
 (defn f (v:(Vec i32 CStr)):i32 (return 0))
 " "Vec: wrong number of type arguments for type alias (2 given)"))
-  (try (check-source-rejects "(import-use hashmap)
+  (try (check-source-rejects "(import-use nucleus.hashmap)
 (deftype (Table K V) (ref (HashMap K V)))
 (defn f (m:(Table CStr)):i32 (return 0))
 " "Table: wrong number of type arguments for type alias (1 given)"))
-  (try (check-source-rejects "(import-use vector)
+  (try (check-source-rejects "(import-use nucleus.vector)
 (deftype (Vec T) (ref (Vector T)))
 (defn f (v:Vec):i32 (return 0))
 " "type alias 'Vec' takes 1 type arguments"))
-  (try (check-source-rejects "(import-use node)
+  (try (check-source-rejects "(import-use nucleus.node)
 (deftype (Ref T) ref:T)
 (defn f (v:(Ref (ref Node))):i32 (return 0))
 " "must be a single token"))
@@ -1072,8 +1076,8 @@ map=2
 ; must carry the `deftype` itself, since the `declare` beside it spells its
 ; parameters in terms of the alias.
 (deftest s16-deftype-parametric-nuch-roundtrip
-  (let (lib:String (try (test-write-file "plib.nuc" "(import-use vector)
-(import-use coll)
+  (let (lib:String (try (test-write-file "plib.nuc" "(import-use nucleus.vector)
+(import-use nucleus.coll)
 (deftype (Vec T) (ref (Vector T)))
 (defn plen (v:(Vec i32)):i64 (return (as i64 (count v))))
 "))
@@ -1083,8 +1087,8 @@ map=2
         dir:StrView (try (test-scratch))
         obj:String (str dir "/plib.o")
         usesrc:String (str "(import-use \"stdio.h\")
-(import-use vector)
-(import-use coll)
+(import-use nucleus.vector)
+(import-use nucleus.coll)
 (import-use \"" (string-as-view &hp) "\")
 (defn main ():i32
   (with (v:(ref (Vector i32)) (alloca (Vector i32)))
@@ -1111,13 +1115,13 @@ map=2
 ; The C header has no spelling for an alias, parametric or not, so it must show
 ; the expansion.
 (deftest s16-deftype-parametric-cheader-expands
-  (let (a:String (try (source-cheader "(import-use vector)
-(import-use coll)
+  (let (a:String (try (source-cheader "(import-use nucleus.vector)
+(import-use nucleus.coll)
 (deftype (Vec T) (ref (Vector T)))
 (defn plen (v:(Vec i32)):i64 (return (as i64 (count v))))
 "))
-        b:String (try (source-cheader "(import-use vector)
-(import-use coll)
+        b:String (try (source-cheader "(import-use nucleus.vector)
+(import-use nucleus.coll)
 (defn plen (v:(ref (Vector i32))):i64 (return (as i64 (count v))))
 ")))
     (try (check-golden (string-as-view &a) (string-as-view &b)))
@@ -1272,8 +1276,8 @@ map=2
 
 ; Sugar, not a second type: both spellings emit byte-identical IR.
 (deftest s16-ref-sigil-ir-identical
-  (let (a:String (try (source-ir "(import-use node)
-(import-use vector)
+  (let (a:String (try (source-ir "(import-use nucleus.node)
+(import-use nucleus.vector)
 (defstruct Pt x:i32 y:i32)
 (defn s1 (p:&Pt):i32 (return (+ (p 'x) (p 'y))))
 (defn id1 (p:&Pt):&Pt (return p))
@@ -1281,8 +1285,8 @@ map=2
 (defn tot (v:&(Vector &Pt)):i32
   (let (s:i32 0) (dotimes (i (count v)) (set! s (+ s (s1 (v i))))) (return s)))
 "))
-        b:String (try (source-ir "(import-use node)
-(import-use vector)
+        b:String (try (source-ir "(import-use nucleus.node)
+(import-use nucleus.vector)
 (defstruct Pt x:i32 y:i32)
 (defn s1 (p:ref:Pt):i32 (return (+ (p 'x) (p 'y))))
 (defn id1 (p:ref:Pt):ref:Pt (return p))
@@ -1478,7 +1482,7 @@ map=2
   ; 5. A LONE trailing form is the body, never an attribute -- otherwise a
   ;    keyword-returning one-expression body would be silently eaten.
   (let (src:StrView "(import-use \"stdio.h\")
-(import-use keyword)
+(import-use nucleus.keyword)
 (defn kw ():Keyword :noreturn)
 (defn main ():i32 (printf \"%d\\n\" (if (= (kw) :noreturn) 1 0)) (return 0))
 ")
@@ -1495,7 +1499,7 @@ map=2
 
 ; The definitions really are gone: one `define`, for `main`.
 (deftest s16-import-ct-emits-no-definitions
-  (let (ir:String (try (source-ir "(import-ct node)
+  (let (ir:String (try (source-ir "(import-ct nucleus.node)
 (defn main ():i32 (return 0))
 ")))
     (try (check-eq-int (count-lines-with-prefix (string-as-view &ir) "define ")
@@ -1505,12 +1509,12 @@ map=2
 ; The promise is kept at the two kinds of use: the compiler-synthesized one (a
 ; quote lowers to @intern-symbol) and the ordinary one (a direct call).
 (deftest s16-import-ct-quote-refused
-  (try (check-source-rejects "(import-ct node)
+  (try (check-source-rejects "(import-ct nucleus.node)
 (defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))
 " "quote needs the node runtime")))
 
 (deftest s16-import-ct-call-refused
-  (try (check-source-rejects "(import-ct node)
+  (try (check-source-rejects "(import-ct nucleus.node)
 (defn main ():i32 (return (node-len null)))
 " "imported compile-time-only")))
 
@@ -1519,7 +1523,7 @@ map=2
 ; the message and again for `:2:`; one `check-error-at` requires both of the
 ; same diagnostic.
 (deftest s16-import-ct-refusal-is-located
-  (let (p:String (try (test-write-file "t.nuc" "(import-ct node)
+  (let (p:String (try (test-write-file "t.nuc" "(import-ct nucleus.node)
 (defn main ():i32 (return (node-len null)))
 "))
         pv:StrView (string-as-view &p)
@@ -1551,20 +1555,20 @@ map=2
   (try (ct-global-refused "(let (q:&i32 &ctg-v) (return 0))"))
   (try (ct-global-refused "(return (ctg-o 'x))")))
 
-; Order independence. `lib/error.nuc` does `(import-ct node)`, so a program that
+; Order independence. `lib/nucleus/error.nuc` does `(import-ct nucleus.node)`, so a program that
 ; uses error handling AND quotes must get the runtime either way round. Getting
 ; this wrong is silent in one order and a refusal in the other.
 (deftest s16-import-ct-real-import-wins-ct-first
-  (let (ir:String (try (source-ir "(import-use error)
-(import-use node)
+  (let (ir:String (try (source-ir "(import-use nucleus.error)
+(import-use nucleus.node)
 (defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))
 ")))
     (try (check-match (string-as-view &ir) "define *@intern-symbol(*"))
     (drop &ir)))
 
 (deftest s16-import-ct-real-import-wins-real-first
-  (let (ir:String (try (source-ir "(import-use node)
-(import-use error)
+  (let (ir:String (try (source-ir "(import-use nucleus.node)
+(import-use nucleus.error)
 (defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))
 ")))
     (try (check-match (string-as-view &ir) "define *@intern-symbol(*"))
@@ -1578,12 +1582,12 @@ map=2
 ; refused at its own `[1 2 3]`.
 (deftest s16-import-ct-nested-real-import-survives
   (let (libdir:String (try (test-scratch-sub "l"))
-        lib:String (try (test-write-file "l/ctlib.nuc" "(import-use vector)
+        lib:String (try (test-write-file "l/ctlib.nuc" "(import-use nucleus.vector)
 (defn ctlib-count ((v (ref (Vector i32)))):usize (return (count v)))
 "))
         use:String (try (test-write-file "nested.nuc" "(import-use \"stdio.h\")
 (import-ct ctlib)
-(import-use vector)
+(import-use nucleus.vector)
 (defn main ():i32
   (with ((v (ref (Vector i32))) [1 2 3])
     (printf \"%d\\n\" (unsafe/cast i32 (count v))))
@@ -1599,11 +1603,11 @@ map=2
 
 ; What `import-ct` is FOR: the compile-time surface is really registered, so a
 ; macro body may call the library's functions. `with-handler` (lib/error) is the
-; in-tree case — it calls `node-at` under `(import-ct node)` — and it must still
+; in-tree case — it calls `node-at` under `(import-ct nucleus.node)` — and it must still
 ; expand in a program carrying no node runtime at all.
 (deftest s16-import-ct-macro-runs-with-no-runtime
   (let (src:StrView "(import-use \"stdio.h\")
-(import-use error)
+(import-use nucleus.error)
 (deferror EGone \"gone\")
 (defn probe ((e Err) (ctx ptr)):(Maybe i32) (return (some 7)))
 (defn risky (x:i32):!i32 (if (< x 0) (return (err EGone)) (return (ok x))))
@@ -1637,12 +1641,12 @@ map=2
 ; `:where(Ord T)` with no separating space (the reader's colon-paren fuse keys
 ; on a TRAILING colon, so a keyword must not trigger it), and an `:optional`
 ; default that is itself a keyword VALUE one level down. `Ord3`/`less3` rather
-; than `Ord`/`less`: lib/numeric.nuc defines those and `import-use keyword`
+; than `Ord`/`less`: lib/nucleus/numeric.nuc defines those and `import-use keyword`
 ; reaches it, so the obvious names are a redefinition.
 (deftest s16-keyword-markers-accepted
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
-(import-use node)
-(import-use keyword)
+(import-use nucleus.node)
+(import-use nucleus.keyword)
 (defprotocol Ord3 (less3 (a:Self b:Self):bool))
 (defn less3 (a:i32 b:i32):bool (return (< a b)))
 (extend i32 Ord3)
@@ -1797,7 +1801,7 @@ map=2
 ; in a `cond` arm, and one inside a generic template body (compiled once per
 ; monomorphization, hence the monotonic jit-name counter).
 (deftest s16-macrolet-abi
-  (try (check-source-exit "(import-use numeric)
+  (try (check-source-exit "(import-use nucleus.numeric)
 (defstruct Big a:i64 b:i64 c:i64)
 (defstruct Pair x:i64 y:i64)
 
@@ -2198,7 +2202,7 @@ map=2
 ; §1.1, mode 1. `Symbols not found: [ my-ident ]` before L4 — the program's
 ; `define` was text in g-def-buf that nothing compiled until after expansion.
 (deftest s20-macro-calls-own-defn
-  (try (check-source-exit "(import-use node)
+  (try (check-source-exit "(import-use nucleus.node)
 (defn my-ident (n:(ptr Node)):(ptr Node) (return n))
 (defmacro ident (x) (my-ident x))
 (defn main ():i32 (return (ident 7)))
@@ -2208,7 +2212,7 @@ map=2
 ; recurse, because the only recursion available to it was a helper. The REPL
 ; answered 4 for this file while the batch compiler said `Symbols not found`.
 (deftest s20-macro-calls-recursive-helper
-  (try (check-source-exit "(import-use node)
+  (try (check-source-exit "(import-use nucleus.node)
 (defn depth (n:(ptr Node)):i32
   (if (= (node-len n) 0) (return 0)
       (return (_+ 1 (depth (node-rest n))))))
@@ -2226,7 +2230,7 @@ map=2
 ; through the HOST's `alloc-node` because the mirror only declares it, and both
 ; expansions survive to runtime.
 (deftest s20-macro-helper-shares-arena
-  (try (check-source-exit "(import-use node)
+  (try (check-source-exit "(import-use nucleus.node)
 (defn mk (v:i64):(ptr Node)
   (let (n:&Node (alloc-node))
     (set! (n 'kind) NODE-INT)
@@ -2317,7 +2321,7 @@ map=2
 ; roots reset the way `g-macro-decls` is — reset, never restored — this file
 ; fails with `Symbols not found: [ mk, base ]` (measured).
 (deftest s20-macro-roots-survive-nested-macrolet
-  (try (check-source-exit "(import-use node)
+  (try (check-source-exit "(import-use nucleus.node)
 (defn mk (v:i64):(ptr Node)
   (let (n:&Node (alloc-node))
     (set! (n 'kind) NODE-INT)
@@ -2530,7 +2534,7 @@ map=2
 ; helper reads the HOST's arena counter. A copy of `g-arena-used` would be a
 ; fresh zero, and the expansion would be 99.
 (deftest s20-macro-lib-global-is-the-hosts
-  (try (check-source-exit "(import-use arena)
+  (try (check-source-exit "(import-use nucleus.arena)
 (defn s20-arena-used ():i64 (return g-arena-used))
 (defmacro probe () (if (> (s20-arena-used) 0) `7 `99))
 (defn main ():i32 (return (probe)))
@@ -2577,7 +2581,7 @@ map=2
 ; `macmap` as if they had been written out. Before C2 this was
 ; `unquote outside quasiquote`.
 (deftest s20-computed-arg-macmap
-  (try (check-source-exit "(import-use node)
+  (try (check-source-exit "(import-use nucleus.node)
 (defn s20-rows ():(ptr Node) (return `((a 1) (b 2) (c 3))))
 (macmap ((name arity) `(defn ~name ():i32 (return ~arity))) ~(s20-rows))
 (defn main ():i32 (return (_+ (a) (_+ (b) (c)))))
@@ -2586,7 +2590,7 @@ map=2
 ; The closure, which is L4's machinery doing the work: the evaluated form calls
 ; a program `defn` that calls another, so BOTH spans have to reach the mirror.
 (deftest s20-computed-arg-calls-helper
-  (try (check-source-exit "(import-use node)
+  (try (check-source-exit "(import-use nucleus.node)
 (defn s20-leaf ():(ptr Node) (return `(_* 4 3)))
 (defn s20-rows2 ():(ptr Node) (return `((p ~(s20-leaf)) (q 5))))
 (macmap ((name v) `(defn ~name ():i32 (return ~v))) ~(s20-rows2))
@@ -2599,7 +2603,7 @@ map=2
 ; that says `ct-eval-node` brackets `push-function-state` the way `macrolet-bind`
 ; does: without it the enclosing `main`'s entry/body streams are reset under it.
 (deftest s20-computed-arg-macrolet
-  (try (check-source-exit "(import-use node)
+  (try (check-source-exit "(import-use nucleus.node)
 (defn s20-val ():(ptr Node) (return `(_* 6 7)))
 (defn main ():i32
   (macrolet ((one (x) x))
@@ -2610,7 +2614,7 @@ map=2
 ; needs no mirror — which is what keeps `~e` usable under `--target=` (the other
 ; half is `s20-computed-arg-cross-target` in suite-refusals.nuc).
 (deftest s20-computed-arg-host-resolved
-  (try (check-source-exit "(import-use node)
+  (try (check-source-exit "(import-use nucleus.node)
 (defmacro one (x) x)
 (defn main ():i32 (return (one ~`(_* 6 7))))
 " 42)))
@@ -2626,11 +2630,11 @@ map=2
 ; §4.3 verbatim, and the same list through `+` — which lowers to `macfoldr` only
 ; above two arguments, so the two units together cover both of that macro's arms.
 (deftest s20-computed-arg-splice
-  (try (check-source-exit "(import-use node)
+  (try (check-source-exit "(import-use nucleus.node)
 (defn s20-nums ():(ptr Node) (return `(1 2 3 4)))
 (defn main ():i32 (return (macfoldr _+ 0 ~@(s20-nums))))
 " 10))
-  (try (check-source-exit "(import-use node)
+  (try (check-source-exit "(import-use nucleus.node)
 (defn s20-nums2 ():(ptr Node) (return `(1 2 3 4)))
 (defn main ():i32 (return (+ ~@(s20-nums2))))
 " 10))
@@ -2640,7 +2644,7 @@ map=2
 ; §2.1's third bullet. The splice lands in the macro's OWN `:rest`, so what it
 ; sees is four arguments and not one list.
 (deftest s20-computed-arg-splice-rest-macro
-  (try (check-source-exit "(import-use node)
+  (try (check-source-exit "(import-use nucleus.node)
 (defn s20-nums3 ():(ptr Node) (return `(1 2 3 4)))
 (defmacro s20-count (:rest args)
   (let ((acc (ptr Node)) `0
@@ -2654,11 +2658,11 @@ map=2
 ; the failure mode a copy-the-cell implementation would have. `macfoldr` with no
 ; args is its unit, so 7 says the argument list really is empty.
 (deftest s20-computed-arg-splice-empty
-  (try (check-source-exit "(import-use node)
+  (try (check-source-exit "(import-use nucleus.node)
 (defn s20-nothing ():(ptr Node) (return null))
 (defn main ():i32 (return (macfoldr _+ 7 ~@(s20-nothing))))
 " 7))
-  (try (check-source-exit "(import-use node)
+  (try (check-source-exit "(import-use nucleus.node)
 (defn s20-nothing2 ():(ptr Node) (return null))
 (defmacro s20-sum (:rest args) `(macfoldr _+ 100 ~@args))
 (defn main ():i32 (return (s20-sum ~@(s20-nothing2))))
@@ -2669,7 +2673,7 @@ map=2
 ; list to exactly the two arguments the middle needs while `~` stays one, or the
 ; arity check rejects the call. 1+2+3+4+5.
 (deftest s20-computed-arg-splice-mixed
-  (try (check-source-exit "(import-use node)
+  (try (check-source-exit "(import-use nucleus.node)
 (defn s20-mid ():(ptr Node) (return `(2 3)))
 (defn s20-one ():(ptr Node) (return `4))
 (defmacro s20-five (a b c d e) `(_+ ~a (_+ ~b (_+ ~c (_+ ~d ~e)))))
@@ -2679,7 +2683,7 @@ map=2
 ; `macrolet` is on this path for `~@` too, mid-function — the same confirmation
 ; §4.4 asked for and C2 made for `~`.
 (deftest s20-computed-arg-splice-macrolet
-  (try (check-source-exit "(import-use node)
+  (try (check-source-exit "(import-use nucleus.node)
 (defn s20-pair ():(ptr Node) (return `(6 7)))
 (defn main ():i32
   (macrolet ((s20-mul (a b) `(_* ~a ~b)))
@@ -2691,13 +2695,13 @@ map=2
 ; constructor — and the producer for a spliced list is the shape that wanted
 ; one, which C3's units had to write out of quasiquoted literals instead.
 (deftest s20-node-int
-  (try (check-source-exit "(import-use node)
+  (try (check-source-exit "(import-use nucleus.node)
 (defmacro s20-double ()
   (let (n:i32 21)
     `(_* ~(node-int n) 2)))
 (defn main ():i32 (return (s20-double)))
 " 42))
-  (try (check-source-exit "(import-use node)
+  (try (check-source-exit "(import-use nucleus.node)
 (defn s20-range ():(ptr Node)
   (let ((acc (ptr Node)) null
         i:i64 4)
@@ -2887,8 +2891,8 @@ map=2
 ; form, in both spellings.
 (deftest s16-set-generic-collections
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
-(import-use vector)
-(import-use hashmap)
+(import-use nucleus.vector)
+(import-use nucleus.hashmap)
 (defn main ():i32
   (with ((v (ref (Vector i32))) (alloca (Vector i32)))
     (vector-init v) (conj v 10) (conj v 20) (conj v 30)
@@ -2954,15 +2958,15 @@ map=2
 ; The preamble is ten lines, so every mixed-literal body below is line 11.
 (defn kwlit-src (body:StrView):String
   (return (str "(import-use \"stdio.h\")
-(import-use strview)
-(import-use hash)
-(import-use keyword)
-(import-use allocator)
-(import-use coll)
-(import-use iterator)
-(import-use hashset)
-(import-use hashmap)
-(import-use vector)
+(import-use nucleus.strview)
+(import-use nucleus.hash)
+(import-use nucleus.keyword)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
+(import-use nucleus.hashset)
+(import-use nucleus.hashmap)
+(import-use nucleus.vector)
 " body "
 ")))
 
@@ -3016,13 +3020,13 @@ map=2
 ; This preamble is eight lines, so each body is line 9.
 (defn symlit-src (elems:StrView):String
   (return (str "(import-use \"stdio.h\")
-(import-use numeric)
-(import-use node)
-(import-use hash)
-(import-use allocator)
-(import-use coll)
-(import-use iterator)
-(import-use hashset)
+(import-use nucleus.numeric)
+(import-use nucleus.node)
+(import-use nucleus.hash)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
+(import-use nucleus.hashset)
 (defn main ():i32 (with ((s (ref (HashSet (ref Node)))) " elems ") 0) 0)
 ")))
 
@@ -3050,17 +3054,17 @@ map=2
   (try (check-symlit "#{(f x)}" "unknown: f — not defined anywhere in this compilation unit"))
   (return (ok)))
 
-; Without `(import-use keyword)` the expansion names a type the unit cannot see.
+; Without `(import-use nucleus.keyword)` the expansion names a type the unit cannot see.
 ; The note must point at the FILE, or the reader's expansion looks like a
 ; compiler bug to whoever wrote `#{:a :b}`. The shell grepped for the head and
 ; the path independently, so a note belonging to some other diagnostic would
 ; have satisfied it; here both are matched against one record.
 (deftest s16-kwlit-missing-import-names-file
   (let (p:String (try (test-write-file "noimp.nuc" "(import-use \"stdio.h\")
-(import-use allocator)
-(import-use coll)
-(import-use iterator)
-(import-use hashset)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
+(import-use nucleus.hashset)
 (defn main ():i32 (with ((s (ref (HashSet Keyword))) #{:a :b}) 0) 0)
 "))
         pv:StrView (string-as-view &p)
@@ -3068,7 +3072,7 @@ map=2
     (try (check-error-at (ref c 'diags) pv 6
                          "unknown type: Keyword — not defined anywhere in this compilation unit"))
     (try (check-note-at (ref c 'diags) pv 6
-                        "'Keyword' is defined in lib/keyword.nuc, which no import in this unit reaches"))
+                        "'Keyword' is defined in lib/nucleus/keyword.nuc, which no import in this unit reaches"))
     (drop &c)
     (drop &p))
   (return (ok)))
@@ -3077,20 +3081,20 @@ map=2
 ; A quoted symbol is a value, and it is non-null
 ; ---------------------------------------------------------------------------
 ;
-; `(import-use node)` throughout because a quote is a RUNTIME call since the
+; `(import-use nucleus.node)` throughout because a quote is a RUNTIME call since the
 ; prelude split — without it the list case would fail for the wrong reason and
 ; the nullability assertion would pass vacuously.
 
 ; A quoted symbol fits a `(ref Node)` slot with no cast.
 (deftest s16-quoted-symbol-is-ref
-  (try (check-source-accepts "(import-use node)
+  (try (check-source-accepts "(import-use nucleus.node)
 (defn main ():i32 (let (l:(ref Node) (quote a)) (return 0)))
 "))
   (return (ok)))
 
 ; …and it really is the intern call, not a laundered raw pointer.
 (deftest s16-quoted-symbol-lowers-to-intern
-  (let (c:Compiled (try (compile-source "(import-use node)
+  (let (c:Compiled (try (compile-source "(import-use nucleus.node)
 (defn main ():i32 (let (l:(ref Node) (quote a)) (return 0)))
 ")))
     (try (check-match (compiled-ir &c) "*call ptr @intern-symbol*"))
@@ -3100,14 +3104,14 @@ map=2
 ; A quoted LIST stays nullable. If this ever passes, the conditional has been
 ; flattened and `'()` is being typed non-null.
 (deftest s16-quoted-list-stays-raw
-  (try (check-place-refused "(import-use node)
+  (try (check-place-refused "(import-use nucleus.node)
 (defn main ():i32 (let (l:(ref Node) (quote (a b))) (return 0)))
 " 2 "unchecked pointer where non-null (ref ...) is required"))
   (return (ok)))
 
 ; Non-null narrows into a nullable slot, so pre-Stage-16 spellings still build.
 (deftest s16-quoted-symbol-still-fits-raw
-  (try (check-source-accepts "(import-use node)
+  (try (check-source-accepts "(import-use nucleus.node)
 (defn main ():i32 (let (l:(ptr Node) (quote a)) (return 0)))
 "))
   (return (ok)))
@@ -3121,7 +3125,7 @@ map=2
 ; computed selector all reach the same two fields.
 (deftest s16-selector-quoted-is-the-field
   (let (p:String (try (test-write-file "sel.nuc" "(import-use \"stdio.h\")
-(import-use node)
+(import-use nucleus.node)
 (defstruct Pt x:i32 y:i32)
 (defn main ():i32
   (let (p:&Pt (alloca Pt))
@@ -3170,8 +3174,8 @@ map=2
 ; What a program pays for a runtime it never reaches
 ; ---------------------------------------------------------------------------
 ;
-; Design: design/stage16-ergonomics/compile-time-imports.md §4b. `lib/prelude.nuc`
-; had `(import-use node)`, so EVERY program carried alloc-node / the list
+; Design: design/stage16-ergonomics/compile-time-imports.md §4b. `lib/nucleus/core.nuc`
+; had `(import-use nucleus.node)`, so EVERY program carried alloc-node / the list
 ; builders / intern-symbol / the intern table and the arena behind them — sixteen
 ; definitions and 4569 bytes of .text for a program reaching none of it, and an
 ; unlinkable one for freestanding AVR. The prelude now holds only forms that
@@ -3235,13 +3239,13 @@ map=2
 ; pinned; the shell grepped the stderr blob.
 (deftest s16-quote-demands-node-import
   (try (check-place-refused "(defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))
-" 1 "quote needs the node runtime — add (import-use node)"))
+" 1 "quote needs the node runtime — add (import-use nucleus.node)"))
   (return (ok)))
 
 ; The same program with the import compiles — a diagnostic naming a fix that
 ; does not work is worse than none — and reaches the call the refusal was about.
 (deftest s16-quote-import-is-the-fix
-  (let (c:Compiled (try (compile-source "(import-use node)
+  (let (c:Compiled (try (compile-source "(import-use nucleus.node)
 (defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))
 ")))
     (try (check-no-errors (ref c 'diags)))
@@ -3255,7 +3259,7 @@ map=2
 (deftest s16-rest-call-demands-node-import
   (try (check-place-refused "(defn takes (:rest xs:i64):i32 (return 0))
 (defn main ():i32 (return (takes 1 2)))
-" 2 "a :rest call needs the node runtime — add (import-use node)"))
+" 2 "a :rest call needs the node runtime — add (import-use nucleus.node)"))
   (return (ok)))
 
 ; What the split must not take away: `Node` is a type, the prelude still
@@ -3290,7 +3294,7 @@ map=2
 ; the shell's needle dropped, is what says which call is blamed.
 (deftest s16-se1-template-ref-refused
   (try (check-place-refused "(import-use \"stdio.h\")
-(import-use vector)
+(import-use nucleus.vector)
 (defn takes ((v (ref (Vector i64)))):i64 (return (invoke v 0)))
 (defn main ():i32
   (with ((a (ref (Vector i32))) [1 2 3])
@@ -3298,13 +3302,13 @@ map=2
   (return 0))
 " 6 "takes: argument 1 has type &(Vector i32), which does not match parameter type &(Vector i64)"))
   (try (check-place-refused "(import-use \"stdio.h\")
-(import-use vector)
+(import-use nucleus.vector)
 (defn main ():i32
   (with ((a (ref (Vector i32))) [1 2 3])
     (let (b:(ref (Vector i64)) a) (return 0))))
 " 5 "let: init type mismatch for 'b': value is &(Vector i32), slot is &(Vector i64)"))
   (try (check-place-refused "(import-use \"stdio.h\")
-(import-use vector)
+(import-use nucleus.vector)
 (defn main ():i32
   (with ((a (ref (Vector i32))) [1 2 3]
          (b (ref (Vector i64))) [4 5 6])
@@ -3317,7 +3321,7 @@ map=2
 ; wrong stride — so the value is the assertion.
 (deftest s16-se1-template-ref-runtime
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
-(import-use vector)
+(import-use nucleus.vector)
 (defn takes ((v (ref (Vector i64)))):i64 (return (invoke v 0)))
 (defn main ():i32
   (with ((a (ref (Vector i64))) [1 2 3])
@@ -3370,7 +3374,8 @@ map=2
 ; exists to catch, satisfied it.
 (deftest s16-se2-want-stamped-instances
   (let (c:Compiled (try (compile-source "(import-use \"stdio.h\")
-(import-use vector)
+(import-use nucleus.vector)
+(import-use nucleus.allocator)
 (defn main ():i32
   (let (a:(ref (Vector i32)) (vector-new-in (default-allocator))
         b:(ref (Vector i64)) (vector-new-in (default-allocator)))
@@ -3388,7 +3393,8 @@ map=2
            1 "one stamp for the i64 instance"))
     (drop &c))
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
-(import-use vector)
+(import-use nucleus.vector)
+(import-use nucleus.allocator)
 (defn main ():i32
   (let (a:(ref (Vector i32)) (vector-new-in (default-allocator))
         b:(ref (Vector i64)) (vector-new-in (default-allocator)))
@@ -3463,7 +3469,7 @@ map=2
 ; assertion is `llvm-as` rather than the shell's hand-rolled `comm` over the
 ; call and define lines.
 (defn check-tyname-stamps (t:StrView):!void
-  (let (s:String (str "(import-use vector)
+  (let (s:String (str "(import-use nucleus.vector)
 (defn main ():i32
   (with ((v (ref (Vector " t "))) (alloca (Vector " t ")))
     (vector-init v))
@@ -3557,7 +3563,7 @@ map=2
   ; The rule the fix must not lose: a real `:rest` defn still registers has-rest
   ; at the prescan, so a forward call folds its tail into a node list.
   (let (out:String (try (build-run-source "(import-use \"stdio.h\")
-(import-use node)
+(import-use nucleus.node)
 (defn caller ():i64 (return (sum 1 2 3 4)))
 (defn sum (:rest args:i64):i64
   (let (lst:ptr:Node (unsafe/cast ptr:Node args)

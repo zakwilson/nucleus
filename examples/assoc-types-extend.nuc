@@ -14,17 +14,17 @@
 ; (FilterIter over MapIter) which recovers ITS element from the MapIter conformance.
 ;
 ; After A4.4: UnaryFn, FoldFn, MapIter, FilterIter, and reduce are all in
-; lib/iterator.nuc. This file only defines the concrete function objects and main.
+; lib/nucleus/iterator.nuc. This file only defines the concrete function objects and main.
 ;
 ; Output:
 ;   reduce(map sq [1,5)) = 30          ; 1+4+9+16
 ;   reduce(filter even (map sq [1,5))) = 20   ; 4+16
 
 (import-use "stdio.h")
-(import-use iterator)
+(import-use nucleus.iterator)
 
 ; SqFn: i32 -> i32, squares its input. Conforms to (UnaryFn i32 i32) from
-; lib/iterator.nuc: the arg position carries the recovered S=i32 (CHECKED),
+; lib/nucleus/iterator.nuc: the arg position carries the recovered S=i32 (CHECKED),
 ; the ret position the undetermined E (RECOVERED -> E=i32).
 (defstruct SqFn dummy:i32)
 (extend SqFn (UnaryFn i32 i32))

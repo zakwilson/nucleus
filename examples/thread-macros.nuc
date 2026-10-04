@@ -4,7 +4,7 @@
 ; to thread the value, so it can only be used in programs that define the
 ; Node type — currently just the compiler itself.
 ;
-; See the -> definition in lib/macros.nuc and its use in src/nucleusc.nuc.
+; See the -> definition in lib/nucleus/macros.nuc and its use in src/nucleusc.nuc.
 ;
 ; Examples (as they would appear inside the compiler):
 ;

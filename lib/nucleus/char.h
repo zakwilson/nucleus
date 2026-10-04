@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-/* Generated from lib/char.nuc by nucleusc --emit-cheader */
+/* Generated from lib/nucleus/char.nuc by nucleusc --emit-cheader */
 
 typedef struct DecodeResult {
     uint32_t ch;

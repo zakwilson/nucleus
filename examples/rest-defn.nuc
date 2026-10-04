@@ -2,10 +2,10 @@
 ; site into a Node list and passes a pointer to it.
 
 (import-use "stdio.h")
-(import-use "lib/list.nuc")
-(import-use iterator)
-(import-use combinators)
-(import-use node)   ; a :rest call folds its tail into a Node list
+(import-use "lib/nucleus/list.nuc")
+(import-use nucleus.iterator)
+(import-use nucleus.combinators)
+(import-use nucleus.node)   ; a :rest call folds its tail into a Node list
 
 ; Sum any number of i64 args. The compiler inttoptr's each into a list slot.
 (defn sum-args (:rest args:i64):i64

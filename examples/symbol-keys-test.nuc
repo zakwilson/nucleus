@@ -8,23 +8,23 @@
 ; `intern-symbol` call whose signature says so. A quoted LIST stays `(ptr Node)`:
 ; it builds cells, and `'()` IS null.
 ;
-; The `Node` TYPE comes from lib/prelude.nuc, but `'alpha` calls `intern-symbol`
-; at run time, so the program needs `(import-use node)` for the runtime half —
+; The `Node` TYPE comes from lib/nucleus/core.nuc, but `'alpha` calls `intern-symbol`
+; at run time, so the program needs `(import-use nucleus.node)` for the runtime half —
 ; exactly as `:foo` needs `keyword`.
 ;
 ; See design/stage16-ergonomics/container-literal-elements.md §3 and
 ; design/stage16-ergonomics/compile-time-imports.md §4b.
 
 (import-use "stdio.h")
-(import-use node)
-(import-use numeric)
-(import-use hash)
-(import-use allocator)
-(import-use coll)
-(import-use iterator)
-(import-use hashset)
-(import-use hashmap)
-(import-use vector)
+(import-use nucleus.node)
+(import-use nucleus.numeric)
+(import-use nucleus.hash)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
+(import-use nucleus.hashset)
+(import-use nucleus.hashmap)
+(import-use nucleus.vector)
 
 (defn main ():i32
   ; Set membership. The repeated 'alpha dedupes: interning made them one value.

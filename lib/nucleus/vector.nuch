@@ -1,4 +1,9 @@
-; .nuch header for lib/vector.nuc
+; .nuch header for lib/nucleus/vector.nuc
+(ns nucleus.vector)
+(import-use nucleus.numeric)
+(import-use nucleus.allocator)
+(import-use nucleus.coll)
+(import-use nucleus.iterator)
 (declare vector-oom () :void)
 (declare vector-bounds ((what StrView) (i usize) (n usize)) :void)
 (defstruct (Vector T) (data ?ref:ui8) (len usize) (cap usize) (alloc AllocHandle))

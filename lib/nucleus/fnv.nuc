@@ -1,9 +1,9 @@
-; FNV-1a, the byte fold shared by `lib/hash.nuc`'s conformances,
+; FNV-1a, the byte fold shared by `lib/nucleus/hash.nuc`'s conformances,
 ; `strview-hash` and the `Symbol` interner.
 ;
-; Its own module because `lib/intern.nuc` needs the fold and nothing else: it is
-; imported by `lib/node.nuc`, so every macro-using program — AVR included —
-; carries whatever it depends on, and `lib/hash.nuc` cannot be that (its `f64`
+; Its own module because `lib/nucleus/intern.nuc` needs the fold and nothing else: it is
+; imported by `lib/nucleus/node.nuc`, so every macro-using program — AVR included —
+; carries whatever it depends on, and `lib/nucleus/hash.nuc` cannot be that (its `f64`
 ; conformance is rejected outright on an 8-bit target).
 ;
 ; h := FNV_OFFSET_BASIS (0xcbf29ce484222325); for each byte b: h := (h ^ b) * prime.
@@ -11,6 +11,8 @@
 ; overflows the signed-literal range; the prime is 0x100000001b3.
 
 ; Fold one byte `b` (0..255, passed as i64) into the running hash `h`.
+(ns nucleus.fnv)
+
 (defn fnv1a-byte (h:i64 b:i64):i64
   (set! h (bit-xor h b))
   (set! h (* h 1099511628211))

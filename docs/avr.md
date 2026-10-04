@@ -1,4 +1,4 @@
-# AVR Microcontroller Targets (`lib/avr.nuc`, Stage 14)
+# AVR Microcontroller Targets (`lib/nucleus/avr.nuc`, Stage 14)
 
 Nucleus cross-compiles freestanding programs for 8-bit AVR microcontrollers.
 The compiler, its JIT, and macro expansion always run on the host — there is
@@ -117,7 +117,7 @@ flag exists.
 The code shapes differ meaningfully between the two devices, which is the
 point of having both examples: ATtiny1634 (classic AVR) has no dedicated
 bit-set/clear/toggle registers, so `avr-blink.nuc` does a
-read-modify-write on `PORTB` via `lib/avr.nuc`'s `reg8-toggle-bit!`.
+read-modify-write on `PORTB` via `lib/nucleus/avr.nuc`'s `reg8-toggle-bit!`.
 AVR32DD20 (modern AVR-Dx) exposes dedicated `DIRSET`/`OUTTGL` registers, so
 `avr-blink-dx.nuc` writes a 1-bit to `PORTA_OUTTGL` directly — no read
 needed, and atomic with respect to other bits.
@@ -155,7 +155,7 @@ example — behaviorally verified under `simavr`.
   ABI (C struct-by-value interop is explicitly deferred — see below).
 - `:volatile` MMIO — `(ptr :volatile T)` loads/stores through `deref`/
   a `(deref p)` place store compile to `load volatile`/`store volatile`; see
-  [Volatile qualifier](types.md#volatile-qualifier). This is what `lib/avr.nuc`'s
+  [Volatile qualifier](types.md#volatile-qualifier). This is what `lib/nucleus/avr.nuc`'s
   register helpers are built on.
 - ISRs, via the generic `fn-attr` top-level directive (see
   [MMIO/ISR idioms](#mmio-and-isr-idioms) below and the `fn-attr` row in
@@ -175,7 +175,7 @@ example — behaviorally verified under `simavr`.
   (avr-libc provides it). A quasiquote that constructs *quoted-symbol*
   leaves additionally pulls in the interning/arena runtime (which needs
   `perror`, unavailable freestanding). Since Stage 16 that is an explicit
-  `(import-use node)` rather than something the prelude did behind your back,
+  `(import-use nucleus.node)` rather than something the prelude did behind your back,
   so the cost is opt-in and a program that does not quote never pays it.
 
 **Not supported in v1** (each a targeted compile-time diagnostic, never a
@@ -260,7 +260,7 @@ device. A future niche-layout engine may remove the need for it.
 
 ## MMIO and ISR idioms
 
-`lib/avr.nuc` provides device-agnostic memory-mapped I/O helpers, built
+`lib/nucleus/avr.nuc` provides device-agnostic memory-mapped I/O helpers, built
 entirely on `(ptr :volatile T)` plus `unsafe/cast` (materializing a raw
 hardware address, which the type system cannot hand out safely on its own).
 The file is self-contained — it imports nothing and uses only
@@ -284,8 +284,8 @@ expose dedicated SET/CLR/TGL registers and are typically driven with a
 direct `reg8-write` to those (see `avr-blink-dx.nuc`) — both styles are
 plain applications of `reg8-write`/`reg8-read`, not separate APIs.
 
-Register **addresses** live in per-device files — `lib/avr/attiny1634.nuc`,
-`lib/avr/avr32dd20.nuc`, `lib/avr/atmega328p.nuc` — as `defconst` integers,
+Register **addresses** live in per-device files — `lib/nucleus/avr/attiny1634.nuc`,
+`lib/nucleus/avr/avr32dd20.nuc`, `lib/nucleus/avr/atmega328p.nuc` — as `defconst` integers,
 each cross-referenced in a comment against the real avr-libc 2.2.1 header it
 came from (`iotn1634.h`, `ioavr32dd20.h`, `iom328p.h`), not hand-derived from
 datasheets. C header import cannot produce these automatically: avr-libc
@@ -332,7 +332,7 @@ AVR-specific vector/attribute logic into a compiler builtin would break the
 layering that keeps `fn-attr` a generic, reusable directive. The two
 adjacent top-level forms above are the idiom; see `examples/avr-isr.nuc` for
 a complete example (Timer/Counter1 overflow on the ATmega328P) and the block
-comment in `lib/avr.nuc` for the convention written out in full.
+comment in `lib/nucleus/avr.nuc` for the convention written out in full.
 
 ## Testing
 

@@ -1,6 +1,6 @@
 ; `(v i)` on a by-value Vector: invoke takes `&(Vector T)`, so the call is not
 ; indexing. The error says so instead of reporting computed field access.
-(import-use vector)
+(import-use nucleus.vector)
 
 (defvar options:(Vector i32) [500 1000 1500])
 

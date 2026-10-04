@@ -1,5 +1,5 @@
 ; Stage 16 R2 (design/stage16-ergonomics/repl-libraries.md §3.1): the REPL boots
-; by evaluating (import-use prelude) through the ordinary import arm, so a
+; by evaluating (import-use nucleus.core) through the ordinary import arm, so a
 ; session sees the same types a batch compile does. One form per line.
 ;
 ; 1. all seven NODE-* ordinals — the hand mirror this replaced registered only
@@ -12,7 +12,7 @@ NODE-LIST
 NODE-FLOAT
 NODE-KEYWORD
 NODE-CHAR
-; 2. the standard macros still load — the prelude imports lib/macros.nuc itself
+; 2. the standard macros still load — the prelude imports lib/nucleus/macros.nuc itself
 (-> 3 (+ 4))
 (if (> 2 1) 10 20)
 ; 3. "string.h" is imported by the prelude AND preloaded by repl-include-all-libc;
@@ -22,7 +22,7 @@ NODE-CHAR
 ; 4. a library whose types come from the prelude imports cleanly. Pre-R2 this
 ;    died with "unknown type: StrView" (D1), and importing the prelude to fix
 ;    that died with "redefinition of type %Node" (D2).
-(import-use strview)
+(import-use nucleus.strview)
 ; 5. the prelude's templates and types are usable at the prompt
 (defn r2-half (n:i32):?i32 (when (= (% n 2) 0) (return (some (/ n 2)))) (return (none)))
 (match (r2-half 8) ((some v) (printf "half %d\n" v)) ((none) (printf "odd\n")))

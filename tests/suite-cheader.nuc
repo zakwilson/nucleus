@@ -14,6 +14,12 @@
 ; ---------------------------------------------------------------------------
 
 ; The `asm("…")` label on `l`, or an empty view when the line carries none.
+(import-use nucleus.string)
+(import-use nucleus.strview)
+(import-use nucleus.test)
+(import-use nucleus.string-split)
+(import-use nucleus.file)
+(import-use nucleus.fmt)
 (defn asm-label (l:StrView):StrView
   (let (m:StrView "asm(\"")
     (match (strview-find &l &m)
@@ -75,27 +81,32 @@
 ; The committed corpus
 ; ---------------------------------------------------------------------------
 
-; No committed `lib/*.h` may contain `needle`; the failure names the file. The
+; No committed `lib/*.h` or `lib/nucleus/*.h` may contain `needle`; the failure names the file. The
 ; corpus is the real regression surface — a fixture only proves the emitter did
 ; the right thing once.
 (defn check-lib-headers-lack (needle:StrView):!void
-  (let (d:DirEntries (try (read-dir "lib"))
+  (try (check-dir-headers-lack "lib" needle))
+  (try (check-dir-headers-lack "lib/nucleus" needle))
+  (return (ok)))
+
+(defn check-dir-headers-lack (dir:StrView needle:StrView):!void
+  (let (d:DirEntries (try (read-dir dir))
         n:usize (dir-count &d)
         i:usize 0)
     (while (< i n)
       (let (nm:StrView (dir-name &d i))
         (when (strview-has-suffix nm ".h")
-          (let (p:String (str "lib/" nm)
+          (let (p:String (str dir "/" nm)
                 t:String (try (read-file (string-as-view &p))))
             (when (strview-contains (string-as-view &t) needle)
-              (fail! "lib/" nm " contains " (test-show needle)))
+              (fail! (string-as-view &p) " contains " (test-show needle)))
             (drop &t)
             (drop &p))))
       (set! i (+ i 1)))
     (drop &d)
     (return (ok))))
 
-; Each of the space-separated `stems` names a committed `lib/<stem>.h` that a C
+; Each of the space-separated `stems` names a committed `lib/nucleus/<stem>.h` that a C
 ; program can include on its own.
 (defn check-lib-headers-compile (stems:StrView):!void
   (let (sp:StrView " "
@@ -104,9 +115,9 @@
       (let (stem:StrView (split-iter-next &it)
             src:String (str "#include \"" stem ".h\"\nint main(void){return 0;}\n")
             r:CcCheck (try (c-consumer-syntax
-                             "lib" (string-as-view &src))))
+                             "lib/nucleus" (string-as-view &src))))
         (when (not (r 'ok?))
-          (fail! "lib/" stem ".h does not compile\n     "
+          (fail! "lib/nucleus/" stem ".h does not compile\n     "
                  (test-show (string-as-view (ref r 'err)))))
         (drop &r)
         (drop &src)))
@@ -399,7 +410,7 @@ int main(void) { Seg s = seg_make(5); struct Pt p = s.a; return p.x; }
 ; struct complete. Fails if the committed copies are regenerated wrong.
 (deftest w9-cheader-committed-header-usable
   (let (r:CcCheck (try (c-consumer-syntax "."
-"#include \"lib/string.h\"
+"#include \"lib/nucleus/string.h\"
 int main(void) {
     String s = string_new();
     struct StrView v = string_as_view(&s);   /* imported struct, by value */
@@ -409,7 +420,7 @@ int main(void) {
 }
 ")))
     (when (not (r 'ok?))
-      (fail! "lib/string.h is not usable\n     "
+      (fail! "lib/nucleus/string.h is not usable\n     "
              (test-show (string-as-view (ref r 'err)))))
     (drop &r)
     (return (ok))))
@@ -424,8 +435,8 @@ int main(void) {
 ; ---------------------------------------------------------------------------
 
 (defn w44-lib ():StrView
-  (return "(import-use prelude)
-(import-use error)
+  (return "(import-use nucleus.core)
+(import-use nucleus.error)
 (deferror w44-range \"index out of range\")
 (defstruct W44Pt (x i32) (y i32))
 (defvar g-w44-flag:!ui8)
@@ -484,8 +495,8 @@ int main(void) {
 (deftest w9-cheader-niche-refused-decl-adds-no-include
   (let (base:CLib (try (c-lib "w44base" "(defstruct W44Only (x i32))\n"))
         t:String (try (c-header "w44only"
-"(import-use prelude)
-(import-use error)
+"(import-use nucleus.core)
+(import-use nucleus.error)
 (import-use w44base)
 (deferror w44-only-bad \"bad\")
 (defn w44-probe (p:&W44Only):!ui8
@@ -505,7 +516,7 @@ int main(void) {
 (deftest w9-cheader-committed-headers-no-niche-tag
   (try (check-lib-headers-lack "struct _BANG"))
   (try (check-lib-headers-lack "struct _QMARK"))
-  (let (t:String (try (read-file "lib/string.h")))
+  (let (t:String (try (read-file "lib/nucleus/string.h")))
     (try (check-contains (string-as-view &t)
                          "struct String string_from_cstr_unchecked"))
     (drop &t))
@@ -658,21 +669,26 @@ int main(void) {
 ; reaching the C side looks like.
 (deftest w9-cheader-no-operator-c-name
   (try (check-lib-headers-lack " _("))
-  (let (d:DirEntries (try (read-dir "lib"))
+  (try (check-dir-no-operator-label "lib"))
+  (try (check-dir-no-operator-label "lib/nucleus"))
+  (return (ok)))
+
+(defn check-dir-no-operator-label (dir:StrView):!void
+  (let (d:DirEntries (try (read-dir dir))
         n:usize (dir-count &d)
         i:usize 0
         nl:StrView "\n")
     (while (< i n)
       (let (nm:StrView (dir-name &d i))
         (when (strview-has-suffix nm ".h")
-          (let (p:String (str "lib/" nm)
+          (let (p:String (str dir "/" nm)
                 t:String (try (read-file (string-as-view &p)))
                 tv:StrView (string-as-view &t)
                 it:SplitIter (strview-split &tv &nl))
             (while (not (split-iter-done &it))
               (let (lab:StrView (asm-label (split-iter-next &it)))
                 (when (and (not (= lab "")) (not (has-ascii-letter? lab)))
-                  (fail! "lib/" nm " binds the operator label "
+                  (fail! (string-as-view &p) " binds the operator label "
                          (test-show lab)))))
             (drop &t)
             (drop &p))))

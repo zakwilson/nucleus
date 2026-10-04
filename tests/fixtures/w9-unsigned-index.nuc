@@ -9,7 +9,7 @@
 ; instruction instead, in `w9-unsigned-index`.
 (import-use "stdio.h")
 (import-use "stdlib.h")
-(import prelude)
+(import nucleus.core)
 
 (defn main ():i32
   ; --- ui8 index, 200: sext reads it as -56 ---------------------------------
